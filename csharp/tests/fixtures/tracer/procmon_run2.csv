@@ -1,0 +1,5 @@
+﻿"Time of Day","Process Name","PID","Operation","Path","Result","Detail"
+"1:00:00.0000001 PM","game.exe","42","ReadFile","q:\astergame\a.bin","SUCCESS","Offset: 1,000, Length: 4,096, I/O Flags: Non-cached, Paging I/O, Synchronous Paging I/O, Priority: Normal"
+"1:00:00.0000001 PM","game.exe","42","ReadFile","Q:\AsterGame\A.bin","SUCCESS","Offset: 200,000, Length: 100,000, I/O Flags: Non-cached, Paging I/O, Synchronous Paging I/O, Priority: Normal"
+"1:00:00.0000001 PM","game.exe","42","ReadFile","Q:\AsterGame\data\한글.pak","SUCCESS","Offset: 65,000, Length: 70,000, I/O Flags: Non-cached, Paging I/O, Synchronous Paging I/O, Priority: Normal"
+"1:00:00.0000001 PM","game.exe","42","ReadFile","Q:\AsterGame\b.bin","SUCCESS","Offset: 70,000, Length: 65,536, I/O Flags: Non-cached, Paging I/O, Synchronous Paging I/O, Priority: Normal"

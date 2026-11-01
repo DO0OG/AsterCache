@@ -1,0 +1,4 @@
+"Process Name",Operation,Path,Result,Detail
+game.exe,ReadFile,Q:\AsterGame\p.bin,SUCCESS,"Offset: 4,096, Length: 8,192, Priority: Normal"
+
+game.exe,ReadFile,"Q:\AsterGame\q ""x"".bin",SUCCESS,"Offset: 0, Length: 1"

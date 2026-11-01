@@ -117,6 +117,8 @@ T_load = N_pos × t_pos  +  B / R(z)  +  N_req × t_ovh
 - G-A 기준(스트림 + 재생 3.0 s 이내)은 약 1.40 s 로 **충족**합니다. 다만 막 쓴 파일에서 잰 값이므로 SMR 재매핑 영향은 분리하지 못했습니다.
 - 판정: **조건부 통과**입니다. 연속 배치의 순차 속도는 확인했지만, 파일 연속성과 SMR 영향은 E1c 와 E3 에서 확정합니다.
 
+**E3 뒤 판정 (2026-11-01, SSD 와 같은 범위).** 합성 데이터셋에서 접근 순서 재배치와 스트림 선읽기는 HDD 콜드 로딩 17.1 s 를 1.1~1.2 s 로 줄여, 같은 조건의 SSD 콜드 로딩(0.76~1.22 s)과 같은 범위에 들어왔습니다. 게임이 읽기만 하고 연산을 하지 않는 극단에서는 스트림 속도(순차 약 160 MiB/s, 243 MB 에 1.4~1.6 s)가 바닥이라 SSD 콜드의 1.35~2.2배입니다(기준 SSD 값에 따라 다릅니다). 요청당 0.25 ms 이상 연산하는 보통의 로딩에서는 동시 스트림으로 SSD 와 같거나 더 짧았습니다. 실제 게임 트레이스, 24시간 지속성, CMR 드라이브는 미검증입니다. 근거는 `results/relayout_e3/20261101_225446/summary.json`, `results/relayout_e3/20261101_235628/summary.json`, `results/stream_tuning_20261101/`입니다.
+
 ### 1.5 목표 문구와 성공 기준 (다시 세움)
 
 **목표 문구:** "HDD 단독 SSD 급"이 아니라 **"재배치와 스트림으로 HDD 로딩을 SSD 에 근접시키고, CPU 겹침이나 사전 예열 조건에서는 체감 차이를 없앤다"**로 둡니다.
@@ -296,9 +298,10 @@ core 를 score 내림차순으로 게임별 존 예산 C_game 까지 채우고, 
 1. 연산 목록: 단위들을 LCN 오름차순으로 두고, 같은 파일의 인접 단위는 합침.
    재배치 뒤에는 prefetch.scheduler.schedule(strategy='physical') 이 이 순서를 그대로 내놓음.
    layout_fn 이 새 extent 를 돌려주므로 새 코드가 필요 없음. 존 안에서는 간격 병합의 gap 이 거의 0
-2. 큐 깊이: threads = 2~4 (prefetch.reader.read_ops 의 threads 재사용).
-   존 안의 단위는 파일이 서로 달라 요청이 쪼개지므로, QD 2 이상으로 드라이브가 다음 요청을 미리 받게 함.
-   E1/E3 에서 1/2/4 를 측정해 (존 전송률 ÷ R) ≥ 0.9 를 만족하는 가장 작은 값을 기본값으로 정함
+2. 큐 깊이: threads = 1 (기본, prefetch.reader.read_ops 의 threads 재사용).
+   재배치 존 튜닝(2026-11-01, `results/stream_tuning_20261101/sweep.json`, 1 MiB, 핸들 닫기 기준 중앙값)에서 큐 깊이 1 이 가장 빨랐습니다: 1 → 1.48 s, 2 → 1.64 s, 4 → 1.66 s. 같은 존에서 핸들 유지(큐 깊이 1)는 1.42 s(`reuse_qd1.json`)였습니다.
+   1.4a 의 큐 깊이 4 개선(10.19 s → 7.80 s)은 재배치 전 흩어진 배치에서의 결과이며, 재배치 뒤 존에는 적용되지 않습니다.
+   청크 1~16 MiB 는 차이가 없었고, 256 KiB 는 3.9~4.6배 느렸습니다. 기본 청크는 1 MiB 입니다. SEQUENTIAL_SCAN 힌트는 같은 청크·큐 깊이 대비 10.7~16.9배 느려 끕니다.
 3. 소비 속도: 기본은 "존 전체를 최대 속도로" 읽기 (243 MB 는 RAM 32 GiB 에 비해 작음).
    게임별 존이 RAM 예산(기본 4 GiB [가정])을 넘을 때만 앞서 읽기 창을 씀:
      창 L = max(64 MiB, r_game × 2 s), r_game = 직전 트레이스의 단계별 바이트/초
@@ -351,7 +354,8 @@ core 를 score 내림차순으로 게임별 존 예산 C_game 까지 채우고, 
 | E3 (실제 D:\AsterBench, 64 파일 2.1 GiB, 트레이스 4,000건) | 이동 243,531,776 바이트(1,048 작업), 실패 0, 해시 64/64, 매니페스트 동일, 순서 1,059 → 1 구간 | 무결성·순서 충족 |
 | E3 G-A (스트림+재생, 기준 3.0 s 이내) | D 선읽기 1.05 s(중앙값) + 재생 0.047 s = **1.09 s** (실행 3회 0.97 / 1.09 / 1.68 s) | **충족** |
 | E3 G-B (직접 읽기, 기준 6 s 이내, 편차 ≤ 1.3) | C 직접 7.72 s (7.69~7.90). 편차 1.03 | **미달** (재배치 전 A 17.11 s) |
-| E3 SSD 기준 | E 콜드 직접 0.763 s. D/E = 1.43 | 참고 |
+| E3 SSD 기준 | E 콜드 직접 0.763 s(225446), 1.218 s(235628). D/E = 1.43, 0.94 | 참고. 실행마다 SSD 기준이 흔들렸으므로 범위로 적음 |
+| E3 재측정 (이동 1시간 뒤, 이동 없음, `-SkipRelayout`) | C 직접 7.49 s, D 선읽기+재생 1.14 s, E 직접 1.22 s. 매니페스트 동일. 동시 스트림(F) 연산 0 µs 1.65 s, 250 µs 2.36 s, 1000 µs 6.13 s (`results/relayout_e3/20261101_235628/`) | 참고. 24시간 뒤 재측정 전까지 지속 성능으로 채택하지 않음 |
 
 **1.4 예상과의 비교.** 1.4 모델 B 의 예상은 R = 86.9 MB/s 일 때 2.96 s, R = 150 MB/s 일 때 1.78 s입니다. 실측 1.09 s는 두 값보다 짧습니다. 1.4a 절의 연속 배치 실측(1.40 s)과도 맞지 않습니다. 원인은 분리하지 못했습니다. 가장 유력한 설명은 이동 직후 드라이브 캐시(SMR 미디어 캐시·DRAM)의 영향입니다. 같은 드라이브의 안정 순차 속도는 E1b에서 90~110 MB/s였습니다. 이 속도로 243 MB를 읽으면 약 2.5 s이며, 이를 보수적 기대치로 둡니다. 이 값은 SSD 콜드의 약 3.3배입니다. 24시간 뒤 재측정(E1c-24h)으로 지속성을 판정하기 전까지 1.09 s를 지속 성능으로 채택하지 않습니다.
 
@@ -440,7 +444,7 @@ core 를 score 내림차순으로 게임별 존 예산 C_game 까지 채우고, 
 |---|---|---|
 | prefetch/layout.py | 재사용 | extent 조회. 이동 후 검증과 재적용 감시에도 씀 |
 | prefetch/scheduler.py | 재사용 (변경 없음) | 재배치 뒤에는 strategy='physical' 이 곧 존 순서 |
-| prefetch/reader.py, prefetch/cli.py | 재사용 | AsterStream 본체. threads 기본값만 E1/E3 결과로 조정 |
+| prefetch/reader.py, prefetch/cli.py | 재사용 | AsterStream 본체. threads 기본값 1, 청크 1 MiB, 핸들 유지, 힌트 끔(재배치 존 튜닝 2026-11-01) |
 | bench/ (run, replay, sweep, cache_control, dataset) | 재사용 | E1·E3 측정. sweep.contig 가 E1. E1b·E1c 는 sweep 에 단계로 추가 |
 | procmon_import.py | 재사용 + 수정 | 경로 정규화, 실제 CSV 픽스처 테스트 |
 | session_planner.py | 재사용 (빈도, decay) | 순서 합의는 relayout/plan.py 의 새 함수 |
@@ -460,7 +464,7 @@ core 를 score 내림차순으로 게임별 존 예산 C_game 까지 채우고, 
 | S0 | E1·E1b·E1c 결과, 1.4 표와 1.5 기준 갱신, SMR 판정 | `python -m bench.sweep ...` 결과 파일(contig_upper_bound.json 등) |
 | S1 | relayout/plan.py, tests/test_relayout_plan.py. 시험 항목: 같은 실행 3회 → 그 순서, 인접 교환 수렴, 단위 묶기, 예산 초과, 제자리 생략, 순환 끊기, 16 KiB 정렬, drift 계산 | `python -B -m unittest tests.test_relayout_plan -v`, 그리고 전체 `python -B -m unittest discover -s tests` |
 | S2 | relayout/mover.py, VHDX 스크립트 (E2) | 관리자: `python -m relayout.cli apply --plan plan.json --volume V:`, `python -m relayout.cli verify` (해시 불일치 0), `chkdsk V: /scan`, 강제 종료 뒤 `apply --resume` |
-| S3 | D:\AsterBench 재배치 (E3) | `python -m relayout.cli plan --trace D:\AsterBench\trace.json --root D:\AsterBench`, 관리자 `apply`, `python -m bench.run --root-hdd D:\AsterBench --root-ssd C:\AsterBench --repeat 3 --prewarm-cmd "python -m prefetch.cli --strategy physical --threads 2 --execute"`, `defrag D: /O` 뒤 `python -m relayout.cli status` |
+| S3 | D:\AsterBench 재배치 (E3) | `python -m relayout.cli plan --trace D:\AsterBench\trace.json --root D:\AsterBench`, 관리자 `apply`, `python -m bench.run --root-hdd D:\AsterBench --root-ssd C:\AsterBench --repeat 3 --prewarm-cmd "python -m prefetch.cli --strategy physical --execute"`, `defrag D: /O` 뒤 `python -m relayout.cli status` |
 | S4 | 실제 게임 트레이스, 커버리지, 예상 시간 (E4) | procmon_import 픽스처 테스트, `relayout.cli plan --dry-run` 보고서 |
 | S5 | 게임 적용 (E5, 사용자 승인), reapply 예약 작업 | 플랫폼의 게임 무결성 검사 통과, SSD 설치본 대비 p50·p95 |
 | S6 | 문서 | README 의 목표 문구를 1.5 대로 바꾸고, 한계(1.5, 7절)를 그대로 반영. 아래 불일치 정정 |

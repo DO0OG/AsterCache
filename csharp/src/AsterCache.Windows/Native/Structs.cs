@@ -1,0 +1,56 @@
+using System.Runtime.InteropServices;
+
+namespace AsterCache.Windows.Native;
+
+/// FSCTL_MOVE_FILE 입력 (x64 에서 32바이트).
+/// https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-move_file_data
+[StructLayout(LayoutKind.Sequential)]
+internal struct MoveFileData
+{
+    public nint FileHandle;
+    public long StartingVcn;
+    public long StartingLcn;
+    public uint ClusterCount;
+}
+
+/// FSCTL_GET_NTFS_VOLUME_DATA 출력 (96바이트).
+/// https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-ntfs_volume_data_buffer
+[StructLayout(LayoutKind.Sequential)]
+internal struct NtfsVolumeDataBuffer
+{
+    public long VolumeSerialNumber;
+    public long NumberSectors;
+    public long TotalClusters;
+    public long FreeClusters;
+    public long TotalReserved;
+    public uint BytesPerSector;
+    public uint BytesPerCluster;
+    public uint BytesPerFileRecordSegment;
+    public uint ClustersPerFileRecordSegment;
+    public long MftValidDataLength;
+    public long MftStartLcn;
+    public long Mft2StartLcn;
+    public long MftZoneStart;
+    public long MftZoneEnd;
+}
+
+/// GetFileInformationByHandleEx(FileBasicInfo) 출력 (40바이트, 시각은 FILETIME 100ns 단위).
+/// https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_basic_info
+[StructLayout(LayoutKind.Sequential)]
+internal struct FileBasicInfo
+{
+    public long CreationTime;
+    public long LastAccessTime;
+    public long LastWriteTime;
+    public long ChangeTime;
+    public uint FileAttributes;
+}
+
+/// PrefetchVirtualMemory 입력 한 줄 (x64 에서 16바이트).
+/// https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/ns-memoryapi-win32_memory_range_entry
+[StructLayout(LayoutKind.Sequential)]
+public struct Win32MemoryRangeEntry
+{
+    public nint VirtualAddress;
+    public nuint NumberOfBytes;
+}

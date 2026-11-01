@@ -6,6 +6,9 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="AsterCache.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\AsterCache.Core\AsterCache.Core.csproj" />
   </ItemGroup>
 </Project>

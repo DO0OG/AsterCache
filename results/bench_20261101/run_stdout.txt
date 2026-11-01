@@ -1,0 +1,58 @@
+{
+ "result_file": "D:\\Git\\AsterCache\\results\\bench_20261101\\20261101_204602.json",
+ "summary": {
+  "hdd": {
+   "cold": {
+    "total_s": 71.20860150008957,
+    "p50_ms": 0.4776999994646758,
+    "p95_ms": 65.4930999953649,
+    "p99_ms": 93.95470000163186,
+    "throughput_mib_s": 3.5108118223566787,
+    "cold_method": "unbuffered_proxy"
+   },
+   "warm": {
+    "total_s": 0.07998539999971399,
+    "p50_ms": 0.013800003216601908,
+    "p95_ms": 0.048800000513438135,
+    "p99_ms": 0.1272999943466857,
+    "throughput_mib_s": 3125.570416612206
+   },
+   "prewarm_naive": {
+    "prewarm_s": 29.093394700001227,
+    "replay_total_s": 0.06964249999873573,
+    "replay_p50_ms": 0.01309999788645655,
+    "replay_p95_ms": 0.037500001781154424,
+    "cache_condition": "unbuffered_evict_observed",
+    "total_s": 29.163037199999962
+   }
+  },
+  "ssd": {
+   "cold": {
+    "total_s": 1.1113517003395827,
+    "p50_ms": 0.2015999998548068,
+    "p95_ms": 0.6396999960998073,
+    "p99_ms": 1.3227000017650425,
+    "throughput_mib_s": 224.95129122815976,
+    "cold_method": "unbuffered_proxy"
+   },
+   "warm": {
+    "total_s": 0.06260280022252118,
+    "p50_ms": 0.011500000255182385,
+    "p95_ms": 0.03930000093532726,
+    "p99_ms": 0.07979999645613134,
+    "throughput_mib_s": 3993.4315895036148
+   }
+  }
+ },
+ "verdict": {
+  "hdd_cold_over_ssd_cold": 64.07386741598648,
+  "hdd_warm_over_ssd_warm": 1.277664892231761,
+  "cold_method": "unbuffered_proxy",
+  "caveats": [
+   "prewarm_naive: no standby purge; start state = trace ranges evicted by an unbuffered pass (observed on NTFS, verified by timing on D: and C:, not an API guarantee)",
+   "cold = unbuffered proxy (FILE_FLAG_NO_BUFFERING), not a standby-list purge; drive/controller caches remain"
+  ],
+  "prewarm_naive_total_over_ssd_cold": 26.24105149709939,
+  "prewarm_naive_replay_only_over_ssd_cold": 0.06266468119629086
+ }
+}

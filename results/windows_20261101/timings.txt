@@ -1,0 +1,4 @@
+repeat_validation rc=0 secs=38138ms
+stress rc=0 secs=111510ms
+integration_smoke rc=0 secs=736ms
+bench_api rc=0 secs=6003ms

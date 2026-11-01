@@ -1,0 +1,39 @@
+{
+  "note": "REFERENCE ONLY: OS page cache not flushed (file freshly written, so origin reads are likely served from RAM); cold = empty SQLite cache, not cold disk.",
+  "origin": "D: (WDC WD20EZAZ HDD, SATA)",
+  "cache": "C:\\AsterCacheTest (Samsung MZVLB1T0HBLR NVMe SSD)",
+  "block_size": 65536,
+  "blocks": 256,
+  "trials": [
+    {
+      "trial": 1,
+      "cold_read_s": 5.6367,
+      "reread_s": 0.3542,
+      "plain_origin_read_s": 0.0028,
+      "misses_after_cold": 256,
+      "hits_after_reread": 256,
+      "db_bytes": 20471696
+    },
+    {
+      "trial": 2,
+      "cold_read_s": 5.362,
+      "reread_s": 0.3413,
+      "plain_origin_read_s": 0.0037,
+      "misses_after_cold": 256,
+      "hits_after_reread": 256,
+      "db_bytes": 20471696
+    },
+    {
+      "trial": 3,
+      "cold_read_s": 4.8904,
+      "reread_s": 0.3454,
+      "plain_origin_read_s": 0.0027,
+      "misses_after_cold": 256,
+      "hits_after_reread": 256,
+      "db_bytes": 20471696
+    }
+  ],
+  "median_cold_s": 5.362,
+  "median_reread_s": 0.3454,
+  "median_plain_origin_s": 0.0028
+}

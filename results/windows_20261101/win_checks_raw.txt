@@ -1,0 +1,38 @@
+## a. _fingerprint on NTFS (D:)
+fingerprint = [73177880, 1970324838219528, 196613, 1793531318525156400, 1793531318525156400, 134380049185251564] (st_dev, st_ino, size, mtime_ns, ctime_ns, ChangeTime[FILETIME])
+st_ctime_ns            = 1793531318525156400
+CreationTime->unix ns  = 1793531318525156400   equal to st_ctime_ns: True
+ChangeTime->unix ns    = 1793531318525156400   equal to st_ctime_ns: True
+after in-place write: st_ctime_ns changed: False | ChangeTime changed: True | mtime_ns changed: True
+
+## b. test_104 Windows version (content change + os.utime restore mtime)
+fp before  : [73177880, 1688849861508874, 196613, 1793531318590162700, 1793531318589658700, 134380049185901627]
+fp after   : [73177880, 1688849861508874, 196613, 1793531318590162700, 1793531318589658700, 134380049187554995]
+size same: True | mtime_ns restored: True | st_ctime_ns same: True | ChangeTime differs: True
+c.read after change = b'Z' -> new bytes returned: True
+stats: {'block_hits': 0, 'block_misses': 2, 'block_count': 2}
+
+## c. case-different paths
+resolve("test.bin") = D:\astercache_chk__7_d3ezc\c\test.bin
+resolve("Test.bin") = D:\astercache_chk__7_d3ezc\c\test.bin
+resolve("TEST.BIN") = D:\astercache_chk__7_d3ezc\c\test.bin
+same bytes: True
+ after test.bin: hits=0 misses=1 block_count=1
+ after Test.bin: hits=1 misses=1 block_count=1
+ after TEST.BIN: hits=2 misses=1 block_count=1
+origin_root lower-case -> D:\astercache_chk__7_d3ezc\c
+ reopened w/ lower-case origin_root, same cache dir: hits=1 misses=0 block_count=1
+origin_root upper-case -> D:\astercache_chk__7_d3ezc\c
+ reopened w/ upper-case origin_root: hits=1 misses=0 block_count=1
+
+## d. cross-drive origin D: / cache C:
+root = D:\astercache_chk__7_d3ezc\d | cache dir = C:\AsterCacheTest\d\astercache-v07-private | construction OK (no ValueError)
+bytes correct: True | snapshot: {'block_hits': 2, 'block_misses': 2, 'origin_bytes': 131072, 'cache_bytes_read': 131072, 'cache_bytes_written': 131072, 'evictions': 0, 'invalid_blocks': 0, 'skipped_low_space': 0, 'skipped_write_error': 0, 'db_read_errors': 0, 'cache_bytes': 131072, 'block_count': 2, 'on_disk_db_bytes': 205816}
+
+## 5. cross-drive bench (origin D: HDD, cache C: NVMe), 16 MiB, 256 x 64KiB blocks; OS page cache NOT flushed
+{'trial': 1, 'cold_read_s': 5.6367, 'reread_s': 0.3542, 'plain_origin_read_s': 0.0028, 'misses_after_cold': 256, 'hits_after_reread': 256, 'db_bytes': 20471696}
+{'trial': 2, 'cold_read_s': 5.362, 'reread_s': 0.3413, 'plain_origin_read_s': 0.0037, 'misses_after_cold': 256, 'hits_after_reread': 256, 'db_bytes': 20471696}
+{'trial': 3, 'cold_read_s': 4.8904, 'reread_s': 0.3454, 'plain_origin_read_s': 0.0027, 'misses_after_cold': 256, 'hits_after_reread': 256, 'db_bytes': 20471696}
+medians: cold 5.362 reread 0.3454 plain origin 0.0028
+
+cleanup: C:\AsterCacheTest exists = False | temp origin exists = False

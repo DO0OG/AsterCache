@@ -1,0 +1,41 @@
+test_116_frequently_read_block_survives_new_admission (test_116_120.NewEdgeTests.test_116_frequently_read_block_survives_new_admission) ... ok
+test_117_cross_process_like_second_connection_reads_data (test_116_120.NewEdgeTests.test_117_cross_process_like_second_connection_reads_data) ... ok
+test_118_large_capacity_with_small_cache_no_count_overflow (test_116_120.NewEdgeTests.test_118_large_capacity_with_small_cache_no_count_overflow) ... ok
+test_119_read_only_mode_does_not_cache (test_116_120.NewEdgeTests.test_119_read_only_mode_does_not_cache) ... ok
+test_120_evicting_hot_old_block_does_not_return_wrong_bytes (test_116_120.NewEdgeTests.test_120_evicting_hot_old_block_does_not_return_wrong_bytes) ... ok
+test_100_corrupted_payload_falls_back (test_86_115.Validation86_115.test_100_corrupted_payload_falls_back) ... ok
+test_101_corrupted_digest_falls_back (test_86_115.Validation86_115.test_101_corrupted_digest_falls_back) ... ok
+test_102_missing_entry_falls_back (test_86_115.Validation86_115.test_102_missing_entry_falls_back) ... ok
+test_103_mtime_change_new_generation (test_86_115.Validation86_115.test_103_mtime_change_new_generation) ... ok
+test_104_restore_mtime_still_invalidate (test_86_115.Validation86_115.test_104_restore_mtime_still_invalidate) ... skipped 'POSIX ctime property; Windows needs an actual machine'
+test_105_atomic_rename_changed_generation (test_86_115.Validation86_115.test_105_atomic_rename_changed_generation) ... ok
+test_106_truncation_rejected (test_86_115.Validation86_115.test_106_truncation_rejected) ... ok
+test_107_growth_invalidates (test_86_115.Validation86_115.test_107_growth_invalidates) ... ok
+test_108_mid_read_change_rejected (test_86_115.Validation86_115.test_108_mid_read_change_rejected) ... ok
+test_109_ssd_insert_fails_open_to_source (test_86_115.Validation86_115.test_109_ssd_insert_fails_open_to_source) ... ok
+test_110_low_space_skips_write (test_86_115.Validation86_115.test_110_low_space_skips_write) ... ok
+test_111_read_db_error_falls_back (test_86_115.Validation86_115.test_111_read_db_error_falls_back) ... ok
+test_112_parallel_thread_reads_correct (test_86_115.Validation86_115.test_112_parallel_thread_reads_correct) ... ok
+test_113_two_sqlite_cache_handles_consistent (test_86_115.Validation86_115.test_113_two_sqlite_cache_handles_consistent) ... ok
+test_114_aborted_sqlite_transaction_no_partial_blob (test_86_115.Validation86_115.test_114_aborted_sqlite_transaction_no_partial_blob) ... ok
+test_115_planner_heldout_and_budget (test_86_115.Validation86_115.test_115_planner_heldout_and_budget) ... ok
+test_86_exact_bytes_first_read (test_86_115.Validation86_115.test_86_exact_bytes_first_read) ... ok
+test_87_overlap_different_lengths (test_86_115.Validation86_115.test_87_overlap_different_lengths) ... ok
+test_88_cross_boundary (test_86_115.Validation86_115.test_88_cross_boundary) ... ok
+test_89_last_partial_block (test_86_115.Validation86_115.test_89_last_partial_block) ... ok
+test_90_past_eof_fails (test_86_115.Validation86_115.test_90_past_eof_fails) ... ok
+test_91_oversized_read_rejected (test_86_115.Validation86_115.test_91_oversized_read_rejected) ... ok
+test_92_bool_offsets_rejected (test_86_115.Validation86_115.test_92_bool_offsets_rejected) ... ok
+test_93_non_power_of_two_block (test_86_115.Validation86_115.test_93_non_power_of_two_block) ... ok
+test_94_overlap_directories_rejected (test_86_115.Validation86_115.test_94_overlap_directories_rejected) ... ok
+test_95_parent_traversal_denied (test_86_115.Validation86_115.test_95_parent_traversal_denied) ... ok
+test_96_symlink_to_outside_denied (test_86_115.Validation86_115.test_96_symlink_to_outside_denied) ... ok
+test_97_reopen_persists (test_86_115.Validation86_115.test_97_reopen_persists) ... ok
+test_98_byte_capacity (test_86_115.Validation86_115.test_98_byte_capacity) ... ok
+test_99_evicted_block_refetch (test_86_115.Validation86_115.test_99_evicted_block_refetch) ... ok
+
+----------------------------------------------------------------------
+Ran 35 tests in 3.355s
+
+OK (skipped=1)
+elapsed 

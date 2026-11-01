@@ -1,0 +1,10 @@
+{
+  "v06": {
+    "initial_batch_ms": 436.161,
+    "repeat_batch_ms": 113.737
+  },
+  "v07": {
+    "initial_batch_ms": 174.978,
+    "repeat_batch_ms": 80.395
+  }
+}

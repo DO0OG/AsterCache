@@ -1,0 +1,7 @@
+{
+  "result": "PASS",
+  "read_data_matches": true,
+  "source_sha256_unchanged": true,
+  "plan_blocks": 2,
+  "future_trace_blocks": 3
+}

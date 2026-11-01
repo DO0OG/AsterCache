@@ -1,0 +1,55 @@
+{
+  "a": {
+    "fp": [
+      73177880,
+      1970324838219528,
+      196613,
+      1793531318525156400,
+      1793531318525156400,
+      134380049185251564
+    ],
+    "st_ctime_is_creation": true,
+    "ctime_changes_on_write": false,
+    "ChangeTime_changes_on_write": true
+  },
+  "b": {
+    "read": "Z",
+    "ok": true
+  },
+  "c_path_case": {
+    "duplicate_load": false,
+    "block_count": 1,
+    "hits": 2,
+    "misses": 1
+  },
+  "c_root_case_lower": {
+    "hits": 1,
+    "misses": 0,
+    "block_count": 1,
+    "root": "D:\\astercache_chk__7_d3ezc\\c"
+  },
+  "c_root_case_upper": {
+    "hits": 1,
+    "misses": 0,
+    "block_count": 1,
+    "root": "D:\\astercache_chk__7_d3ezc\\c"
+  },
+  "d": {
+    "ok": true,
+    "snap": {
+      "block_hits": 2,
+      "block_misses": 2,
+      "origin_bytes": 131072,
+      "cache_bytes_read": 131072,
+      "cache_bytes_written": 131072,
+      "evictions": 0,
+      "invalid_blocks": 0,
+      "skipped_low_space": 0,
+      "skipped_write_error": 0,
+      "db_read_errors": 0,
+      "cache_bytes": 131072,
+      "block_count": 2,
+      "on_disk_db_bytes": 205816
+    }
+  }
+}

@@ -1,0 +1,23 @@
+[
+    {
+        "DeviceId":  "1",
+        "FriendlyName":  "SAMSUNG MZVLB1T0HBLR-00000",
+        "MediaType":  "SSD",
+        "BusType":  "NVMe",
+        "Size":  1024209543168
+    },
+    {
+        "DeviceId":  "2",
+        "FriendlyName":  "Micron Crucial X8 SSD",
+        "MediaType":  "SSD",
+        "BusType":  "USB",
+        "Size":  500107862016
+    },
+    {
+        "DeviceId":  "0",
+        "FriendlyName":  "WDC WD20EZAZ-00GGJB0",
+        "MediaType":  "HDD",
+        "BusType":  "SATA",
+        "Size":  2000398934016
+    }
+]

@@ -1,0 +1,55 @@
+{
+    "computer_os":  "Microsoft Windows 11 Pro",
+    "os_version":  "10.0.26200",
+    "ram_bytes":  34282184704,
+    "physical_drives":  [
+                            {
+                                "Index":  1,
+                                "Model":  "SAMSUNG MZVLB1T0HBLR-00000",
+                                "InterfaceType":  "SCSI",
+                                "MediaType":  "Fixed hard disk media",
+                                "Size":  1024203640320
+                            },
+                            {
+                                "Index":  2,
+                                "Model":  "Micron Crucial X8 SSD SCSI Disk Device",
+                                "InterfaceType":  "SCSI",
+                                "MediaType":  "External hard disk media",
+                                "Size":  500105249280
+                            },
+                            {
+                                "Index":  0,
+                                "Model":  "WDC WD20EZAZ-00GGJB0",
+                                "InterfaceType":  "IDE",
+                                "MediaType":  "Fixed hard disk media",
+                                "Size":  2000396321280
+                            }
+                        ],
+    "volumes":  [
+                    {
+                        "DeviceID":  "C:",
+                        "FileSystem":  "NTFS",
+                        "Size":  1023189643264,
+                        "FreeSpace":  71889035264
+                    },
+                    {
+                        "DeviceID":  "D:",
+                        "FileSystem":  "NTFS",
+                        "Size":  2000381014016,
+                        "FreeSpace":  599385145344
+                    },
+                    {
+                        "DeviceID":  "E:",
+                        "FileSystem":  "NTFS",
+                        "Size":  499972567040,
+                        "FreeSpace":  496225624064
+                    },
+                    {
+                        "DeviceID":  "V:",
+                        "FileSystem":  "FUSE-rclone",
+                        "Size":  3936819662848,
+                        "FreeSpace":  3109519917056
+                    }
+                ],
+    "note":  "Read-only inventory. MediaType and SSD/HDD identification may be missing or inaccurate; corroborate in Disk Management."
+}

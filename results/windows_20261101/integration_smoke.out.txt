@@ -1,0 +1,31 @@
+launch0.csv {'rows': 2, 'read_success_rows': 2, 'parsed': 2, 'ignored': 0}
+launch1.csv {'rows': 2, 'read_success_rows': 2, 'parsed': 2, 'ignored': 0}
+launch2.csv {'rows': 2, 'read_success_rows': 2, 'parsed': 2, 'ignored': 0}
+Plan saved: C:\Users\AJH\AppData\Local\Temp\tmpe1ybuak0\plan.json bytes= 131072
+{
+  "request_blocks": 3,
+  "covered_blocks": 2,
+  "coverage_pct": 66.667
+}
+{"action": "inspect", "jobs": 1, "bytes": 131072, "executing": false}
+{"action": "ram-warm", "jobs": 1, "bytes": 131072, "executing": true}
+{"read_bytes": 131072, "note": "OS page cache residency is not guaranteed"}
+elapsed_seconds= 0.000481
+{"action": "ssd-warm", "jobs": 1, "bytes": 131072, "executing": true}
+{
+  "block_hits": 0,
+  "block_misses": 2,
+  "origin_bytes": 131072,
+  "cache_bytes_read": 0,
+  "cache_bytes_written": 131072,
+  "evictions": 0,
+  "invalid_blocks": 0,
+  "skipped_low_space": 0,
+  "skipped_write_error": 0,
+  "db_read_errors": 0,
+  "cache_bytes": 131072,
+  "block_count": 2,
+  "on_disk_db_bytes": 205816
+}
+elapsed_seconds= 0.128832
+{"result": "PASS", "read_data_matches": true, "source_sha256_unchanged": true, "plan_blocks": 2, "future_trace_blocks": 3}

@@ -1,0 +1,2 @@
+﻿{"zone_start_lcn":95135032,"tasks_total":1048,"tasks_todo":1048,"bytes_todo":243531776,"skipped_files":{},"executed":false,"moved_bytes":0,"failed":[],"stopped":null,"dry_run":true,"plan_saved":true}
+

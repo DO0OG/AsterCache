@@ -1,0 +1,223 @@
+﻿{
+    "root":  "D:\\AsterBench",
+    "volume":  "D:",
+    "label":  "로컬 디스크",
+    "label_enforced":  true,
+    "disk_model":  "WDC WD20EZAZ-00GGJB0",
+    "bus_type":  "SATA",
+    "zone_mib":  300,
+    "purge_ok":  true,
+    "purge_runs":  16,
+    "plan_paths_checked":  2160,
+    "A_before_direct":  {
+                            "dir":  "D:\\AsterBench",
+                            "prefetch":  false,
+                            "runs":  [
+                                         {
+                                             "prefetch_s":  0,
+                                             "prefetch_bytes":  0,
+                                             "replay_s":  17.169779099946027,
+                                             "total_s":  17.169779099946027
+                                         },
+                                         {
+                                             "prefetch_s":  0,
+                                             "prefetch_bytes":  0,
+                                             "replay_s":  17.114251499915554,
+                                             "total_s":  17.114251499915554
+                                         },
+                                         {
+                                             "prefetch_s":  0,
+                                             "prefetch_bytes":  0,
+                                             "replay_s":  17.11494120003772,
+                                             "total_s":  17.11494120003772
+                                         }
+                                     ],
+                            "median_total_s":  17.11494120003772,
+                            "median_prefetch_s":  0,
+                            "median_replay_s":  17.11494120003772
+                        },
+    "B_before_prefetch":  {
+                              "dir":  "D:\\AsterBench",
+                              "prefetch":  true,
+                              "runs":  [
+                                           {
+                                               "prefetch_s":  8.0212,
+                                               "prefetch_bytes":  243531776,
+                                               "replay_s":  0.048291999934008345,
+                                               "total_s":  8.0694919999340087
+                                           },
+                                           {
+                                               "prefetch_s":  7.7649,
+                                               "prefetch_bytes":  243531776,
+                                               "replay_s":  0.044340099804685451,
+                                               "total_s":  7.8092400998046854
+                                           },
+                                           {
+                                               "prefetch_s":  7.9903,
+                                               "prefetch_bytes":  243531776,
+                                               "replay_s":  0.051428899954771623,
+                                               "total_s":  8.0417288999547729
+                                           }
+                                       ],
+                              "median_total_s":  8.0417288999547729,
+                              "median_prefetch_s":  7.9903,
+                              "median_replay_s":  0.048291999934008345
+                          },
+    "C_after_direct":  {
+                           "dir":  "D:\\AsterBench",
+                           "prefetch":  false,
+                           "runs":  [
+                                        {
+                                            "prefetch_s":  0,
+                                            "prefetch_bytes":  0,
+                                            "replay_s":  7.7198387996177189,
+                                            "total_s":  7.7198387996177189
+                                        },
+                                        {
+                                            "prefetch_s":  0,
+                                            "prefetch_bytes":  0,
+                                            "replay_s":  7.6865109001955716,
+                                            "total_s":  7.6865109001955716
+                                        },
+                                        {
+                                            "prefetch_s":  0,
+                                            "prefetch_bytes":  0,
+                                            "replay_s":  7.9031764002429554,
+                                            "total_s":  7.9031764002429554
+                                        }
+                                    ],
+                           "median_total_s":  7.7198387996177189,
+                           "median_prefetch_s":  0,
+                           "median_replay_s":  7.7198387996177189
+                       },
+    "D_after_prefetch":  {
+                             "dir":  "D:\\AsterBench",
+                             "prefetch":  true,
+                             "runs":  [
+                                          {
+                                              "prefetch_s":  1.6345,
+                                              "prefetch_bytes":  243531776,
+                                              "replay_s":  0.047009699861519039,
+                                              "total_s":  1.6815096998615191
+                                          },
+                                          {
+                                              "prefetch_s":  1.0467,
+                                              "prefetch_bytes":  243531776,
+                                              "replay_s":  0.047351700050057843,
+                                              "total_s":  1.0940517000500578
+                                          },
+                                          {
+                                              "prefetch_s":  0.9274,
+                                              "prefetch_bytes":  243531776,
+                                              "replay_s":  0.04712380025011953,
+                                              "total_s":  0.97452380025011953
+                                          }
+                                      ],
+                             "median_total_s":  1.0940517000500578,
+                             "median_prefetch_s":  1.0467,
+                             "median_replay_s":  0.04712380025011953
+                         },
+    "E_ssd_direct":  {
+                         "dir":  "C:\\AsterBench",
+                         "prefetch":  false,
+                         "runs":  [
+                                      {
+                                          "prefetch_s":  0,
+                                          "prefetch_bytes":  0,
+                                          "replay_s":  0.77110910042392788,
+                                          "total_s":  0.77110910042392788
+                                      },
+                                      {
+                                          "prefetch_s":  0,
+                                          "prefetch_bytes":  0,
+                                          "replay_s":  0.762664600428252,
+                                          "total_s":  0.762664600428252
+                                      },
+                                      {
+                                          "prefetch_s":  0,
+                                          "prefetch_bytes":  0,
+                                          "replay_s":  0.70288759991672123,
+                                          "total_s":  0.70288759991672123
+                                      }
+                                  ],
+                         "median_total_s":  0.762664600428252,
+                         "median_prefetch_s":  0,
+                         "median_replay_s":  0.762664600428252
+                     },
+    "ratios":  {
+                   "D_total_over_E":  1.435,
+                   "C_over_E":  10.122,
+                   "A_over_E":  22.441,
+                   "D_total_over_A":  0.064
+               },
+    "moved_bytes":  243531776,
+    "tasks_total":  1048,
+    "tasks_todo":  1048,
+    "probe":  {
+                  "volume":  "D:",
+                  "label":  "로컬 디스크",
+                  "cluster_bytes":  4096,
+                  "total_clusters":  488374271,
+                  "free_clusters_ntfs":  145542558,
+                  "free_clusters_bitmap":  145542558,
+                  "bitmap_bits":  488374271,
+                  "free_match":  true,
+                  "mft_zone":  [
+                                   410659712,
+                                   410676768
+                               ],
+                  "zone_clusters_needed":  59456,
+                  "zone_candidate_lcn":  95135032
+              },
+    "dry_run":  {
+                    "zone_start_lcn":  95135032,
+                    "tasks_total":  1048,
+                    "tasks_todo":  1048,
+                    "bytes_todo":  243531776,
+                    "skipped_files":  {
+
+                                      },
+                    "executed":  false,
+                    "moved_bytes":  0,
+                    "failed":  [
+
+                               ],
+                    "stopped":  null,
+                    "dry_run":  true,
+                    "plan_saved":  true
+                },
+    "apply":  {
+                  "zone_start_lcn":  95135032,
+                  "tasks_total":  1048,
+                  "tasks_todo":  1048,
+                  "bytes_todo":  243531776,
+                  "skipped_files":  {
+
+                                    },
+                  "executed":  true,
+                  "moved_bytes":  243531776,
+                  "failed":  [
+
+                             ],
+                  "stopped":  null,
+                  "dry_run":  false,
+                  "plan_saved":  false,
+                  "sha_checked":  64,
+                  "sha_mismatch":  [
+
+                                   ]
+              },
+    "verify":  {
+                   "hot_clusters":  59456,
+                   "ordered_runs":  1,
+                   "expected_runs":  1,
+                   "current_runs_at_plan_time":  1059,
+                   "ascending":  true,
+                   "in_zone_clusters":  59456,
+                   "missing_files":  0,
+                   "contiguous":  true,
+                   "verdict":  "contiguous"
+               },
+    "manifest_identical":  true,
+    "note":  "Times are medians of 3 cold runs (standby purge). Prefetch+replay total = prefetch seconds + replay total_s."
+}

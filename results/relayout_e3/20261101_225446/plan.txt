@@ -1,0 +1,2 @@
+﻿{"dry_run":false,"out":"D:\\Git\\AsterCache\\results\\relayout_e3\\20261101_225446\\plan.json","sessions":1,"cluster_bytes":4096,"zone":{"start_lcn":null,"clusters":76800},"stats":{"preserved_segments":0,"preserved_bytes":0,"in_place_bytes":0,"overflow_bytes":0,"misaligned_pieces":783,"hot_bytes":243531776,"moved_bytes":243531776,"tasks":1048,"avg_clusters_per_task":56.73,"zone_used_clusters":59456,"skipped_files":0,"current_runs":1059,"expected_runs":1,"hot_blocks":3716,"units":1048}}
+

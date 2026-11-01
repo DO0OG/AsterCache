@@ -6,8 +6,18 @@
     <OutputType>WinExe</OutputType>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="AsterCache.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="Avalonia" Version="11.3.12" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.12" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.12" />
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.0" />
+    <PackageReference Include="Velopack" Version="1.2.0" />
+    <!-- Avalonia.Desktop 이 끌어오는 0.21.2 는 GHSA-xrw6-gwf8-vvr9 취약판이라 올려 고정. -->
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
     <ProjectReference Include="..\AsterCache.Core\AsterCache.Core.csproj" />
     <ProjectReference Include="..\AsterCache.Windows\AsterCache.Windows.csproj" />
+    <ProjectReference Include="..\AsterCache.Service\AsterCache.Service.csproj" />
   </ItemGroup>
 </Project>

@@ -1,0 +1,2 @@
+﻿{"hot_clusters":47504,"ordered_runs":949,"expected_runs":1,"current_runs_at_plan_time":949,"ascending":false,"in_zone_clusters":null,"missing_files":0,"contiguous":false,"verdict":"non-contiguous"}
+

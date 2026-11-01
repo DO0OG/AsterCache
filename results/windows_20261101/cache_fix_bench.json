@@ -26,7 +26,7 @@
   "runs": [
     {
       "label": "before_py311",
-      "module": "C:\\Users/AJH/AppData/Local/Temp/claude/astercache_fix_bench/before\\sqlite_cache.py",
+      "module": "<temp copy>/before/sqlite_cache.py",
       "python": "3.11.4",
       "sqlite": "3.42.0",
       "trials": [

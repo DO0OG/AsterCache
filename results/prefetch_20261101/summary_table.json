@@ -1,0 +1,57 @@
+[
+ {
+  "config": "final_physical",
+  "hdd_cold": [
+   17.8,
+   19.0,
+   17.3
+  ],
+  "cmd_prewarm": [
+   11.2,
+   11.0,
+   11.1
+  ],
+  "cmd_replay": [
+   0.04,
+   0.05,
+   0.05
+  ],
+  "med_cold": 17.8,
+  "med_total": 11.1,
+  "ssd_cold": 0.8,
+  "total_over_ssd_cold": 13.94,
+  "replay_only_over_ssd_cold": 0.058,
+  "bytes_mib": 431,
+  "requests": 536,
+  "naive": {
+   "prewarm": 10.1,
+   "total": 10.2,
+   "over_ssd": 12.77
+  }
+ },
+ {
+  "config": "final_path",
+  "hdd_cold": [
+   17.4,
+   17.3,
+   17.2
+  ],
+  "cmd_prewarm": [
+   11.4,
+   11.5,
+   11.2
+  ],
+  "cmd_replay": [
+   0.04,
+   0.05,
+   0.05
+  ],
+  "med_cold": 17.3,
+  "med_total": 11.4,
+  "ssd_cold": 0.79,
+  "total_over_ssd_cold": 14.53,
+  "replay_only_over_ssd_cold": 0.06,
+  "bytes_mib": 444,
+  "requests": 507
+ }
+]

@@ -1,0 +1,47 @@
+{
+ "note": "PARTIAL (measure.py killed by its 900s timeout after 6 of 10 runs; numbers copied from its console output). 4x256MiB interleaved-written scratch set on D: (HDD), 1000 random 64KiB blocks, eviction = unbuffered same-bytes rewrite. Single rep each, high variance; physical extents=4/4 files resolved (layout_ok_files=4). Superseded by bench_physical/ runs.",
+ "runs": [
+  {
+   "strategy": "none",
+   "gap_kib": 0,
+   "seconds": 33.39,
+   "requests": 1000,
+   "bytes": 65536000
+  },
+  {
+   "strategy": "path",
+   "gap_kib": 1024,
+   "seconds": 21.62,
+   "requests": 345,
+   "bytes": 345702400
+  },
+  {
+   "strategy": "physical",
+   "gap_kib": 1024,
+   "seconds": 31.0,
+   "requests": 370,
+   "bytes": 330891264
+  },
+  {
+   "strategy": "path",
+   "gap_kib": 0,
+   "seconds": 28.31,
+   "requests": 949,
+   "bytes": 65536000
+  },
+  {
+   "strategy": "physical",
+   "gap_kib": 0,
+   "seconds": 16.82,
+   "requests": 952,
+   "bytes": 65536000
+  },
+  {
+   "strategy": "path",
+   "gap_kib": 1024,
+   "seconds": 18.16,
+   "requests": 345,
+   "bytes": 345702400
+  }
+ ]
+}

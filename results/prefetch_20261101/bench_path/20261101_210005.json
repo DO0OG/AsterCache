@@ -1,0 +1,426 @@
+{
+ "timestamp": "20261101_210005",
+ "argv": [
+  "--root-hdd",
+  "D:\\AsterBench",
+  "--root-ssd",
+  "C:\\AsterBench",
+  "--repeat",
+  "3",
+  "--prewarm",
+  "none",
+  "--prewarm-cmd",
+  "python -m prefetch.cli --strategy path --execute",
+  "--out-dir",
+  "D:\\Git\\AsterCache\\results\\prefetch_20261101\\bench_path"
+ ],
+ "dataset": {
+  "files": 64,
+  "total_bytes": 2135949312,
+  "trace_n": 4000,
+  "block": 65536,
+  "seed": 20261101
+ },
+ "roots": {
+  "hdd": "D:\\AsterBench",
+  "ssd": "C:\\AsterBench"
+ },
+ "repeat": 3,
+ "environment": {
+  "python": "3.11.4",
+  "platform": "Windows-10-10.0.26200-SP0",
+  "is_admin": false,
+  "ram_bytes": 34282184704,
+  "cpu_count": 16,
+  "drive_to_disk": {
+   "D": {
+    "DeviceId": "0",
+    "FriendlyName": "WDC WD20EZAZ-00GGJB0",
+    "MediaType": "HDD",
+    "BusType": "SATA"
+   },
+   "C": {
+    "DeviceId": "1",
+    "FriendlyName": "SAMSUNG MZVLB1T0HBLR-00000",
+    "MediaType": "SSD",
+    "BusType": "NVMe"
+   }
+  }
+ },
+ "summary": {
+  "hdd": {
+   "cold": {
+    "total_s": 17.85628459991858,
+    "p50_ms": 0.3470999945420772,
+    "p95_ms": 20.511000002443325,
+    "p99_ms": 26.373299995611887,
+    "throughput_mib_s": 14.000672906005313,
+    "cold_method": "unbuffered_proxy"
+   },
+   "warm": {
+    "total_s": 0.05717280030512484,
+    "p50_ms": 0.01049999991664663,
+    "p95_ms": 0.032500000088475645,
+    "p99_ms": 0.09069999941857532,
+    "throughput_mib_s": 4372.708677304207
+   },
+   "prewarm_cmd": {
+    "prewarm_s": 16.137114199998905,
+    "replay_total_s": 0.06176489986683009,
+    "replay_p50_ms": 0.011200005246791989,
+    "replay_p95_ms": 0.03090000245720148,
+    "cache_condition": "unbuffered_evict_observed",
+    "total_s": 16.198879099865735
+   }
+  },
+  "ssd": {
+   "cold": {
+    "total_s": 0.8182347996116732,
+    "p50_ms": 0.18319999799132347,
+    "p95_ms": 0.33260000054724514,
+    "p99_ms": 1.066299999365583,
+    "throughput_mib_s": 305.5357705620046,
+    "cold_method": "unbuffered_proxy"
+   },
+   "warm": {
+    "total_s": 0.05328869972436223,
+    "p50_ms": 0.009399998816661537,
+    "p95_ms": 0.03210000431863591,
+    "p99_ms": 0.060200000007171184,
+    "throughput_mib_s": 4691.426161515185
+   }
+  }
+ },
+ "verdict": {
+  "hdd_cold_over_ssd_cold": 21.822934698442317,
+  "hdd_warm_over_ssd_warm": 1.072887884314184,
+  "cold_method": "unbuffered_proxy",
+  "caveats": [
+   "prewarm_cmd: no standby purge; start state = trace ranges evicted by an unbuffered pass (observed on NTFS, verified by timing on D: and C:, not an API guarantee)",
+   "cold = unbuffered proxy (FILE_FLAG_NO_BUFFERING), not a standby-list purge; drive/controller caches remain"
+  ],
+  "prewarm_cmd_total_over_ssd_cold": 19.797348032072914,
+  "prewarm_cmd_replay_only_over_ssd_cold": 0.07548554509798795
+ },
+ "runs": {
+  "hdd": [
+   {
+    "cold": {
+     "cold_method": "unbuffered_proxy",
+     "unbuffered": true,
+     "purge": {
+      "ok": false,
+      "is_admin": false,
+      "error": "not_admin"
+     },
+     "mode": "unbuffered",
+     "requests": 4000,
+     "bytes": 262144000,
+     "crc32": 2859603442,
+     "total_s": 17.85628459991858,
+     "throughput_mib_s": 14.000672906005313,
+     "p50_ms": 0.34869999944930896,
+     "p95_ms": 20.511000002443325,
+     "p99_ms": 26.373299995611887
+    },
+    "prewarm_cmd": {
+     "prewarm": {
+      "kind": "cmd",
+      "cmd": "python -m prefetch.cli --strategy path --execute",
+      "seconds": 16.137114199998905,
+      "returncode": 0,
+      "stdout_tail": "{\"strategy\":\"path\",\"fallback\":false,\"layout_ok_files\":0,\"layout_files\":0,\"full_files\":0,\"gap_bytes\":1200000,\"bytes\":465633280,\"requests\":507,\"errors\":0,\"seconds\":15.9503}\n",
+      "stderr_tail": ""
+     },
+     "replay": {
+      "mode": "buffered",
+      "requests": 4000,
+      "bytes": 262144000,
+      "crc32": 2859603442,
+      "total_s": 0.054517699776624795,
+      "throughput_mib_s": 4585.666692181149,
+      "p50_ms": 0.00960000033956021,
+      "p95_ms": 0.027400004910305142,
+      "p99_ms": 0.09100000170292333
+     },
+     "cold": {
+      "cold_method": "unbuffered_proxy",
+      "unbuffered": true,
+      "purge": {
+       "ok": false,
+       "is_admin": false,
+       "error": "not_admin"
+      },
+      "evict_pass_s": 17.620958600120503
+     },
+     "cache_condition": "unbuffered_evict_observed"
+    },
+    "warm": {
+     "mode": "buffered",
+     "requests": 4000,
+     "bytes": 262144000,
+     "crc32": 2859603442,
+     "total_s": 0.05413720016076695,
+     "throughput_mib_s": 4617.896737503876,
+     "p50_ms": 0.009399998816661537,
+     "p95_ms": 0.029400005587376654,
+     "p99_ms": 0.08819999493425712
+    }
+   },
+   {
+    "cold": {
+     "cold_method": "unbuffered_proxy",
+     "unbuffered": true,
+     "purge": {
+      "ok": false,
+      "is_admin": false,
+      "error": "not_admin"
+     },
+     "mode": "unbuffered",
+     "requests": 4000,
+     "bytes": 262144000,
+     "crc32": 2859603442,
+     "total_s": 17.614047200026107,
+     "throughput_mib_s": 14.193217331655013,
+     "p50_ms": 0.3470999945420772,
+     "p95_ms": 20.20799999445444,
+     "p99_ms": 25.376599995070137
+    },
+    "prewarm_cmd": {
+     "prewarm": {
+      "kind": "cmd",
+      "cmd": "python -m prefetch.cli --strategy path --execute",
+      "seconds": 16.403509899995697,
+      "returncode": 0,
+      "stdout_tail": "{\"strategy\":\"path\",\"fallback\":false,\"layout_ok_files\":0,\"layout_files\":0,\"full_files\":0,\"gap_bytes\":1200000,\"bytes\":465633280,\"requests\":507,\"errors\":0,\"seconds\":16.2226}\n",
+      "stderr_tail": ""
+     },
+     "replay": {
+      "mode": "buffered",
+      "requests": 4000,
+      "bytes": 262144000,
+      "crc32": 2859603442,
+      "total_s": 1.6831428001605673,
+      "throughput_mib_s": 148.5316634905551,
+      "p50_ms": 0.011999996786471456,
+      "p95_ms": 0.2815000043483451,
+      "p99_ms": 16.5636000019731
+     },
+     "cold": {
+      "cold_method": "unbuffered_proxy",
+      "unbuffered": true,
+      "purge": {
+       "ok": false,
+       "is_admin": false,
+       "error": "not_admin"
+      },
+      "evict_pass_s": 17.71429230013746
+     },
+     "cache_condition": "unbuffered_evict_observed"
+    },
+    "warm": {
+     "mode": "buffered",
+     "requests": 4000,
+     "bytes": 262144000,
+     "crc32": 2859603442,
+     "total_s": 0.057468900056846905,
+     "throughput_mib_s": 4350.17896205958,
+     "p50_ms": 0.01049999991664663,
+     "p95_ms": 0.033700001949910074,
+     "p99_ms": 0.09069999941857532
+    }
+   },
+   {
+    "cold": {
+     "cold_method": "unbuffered_proxy",
+     "unbuffered": true,
+     "purge": {
+      "ok": false,
+      "is_admin": false,
+      "error": "not_admin"
+     },
+     "mode": "unbuffered",
+     "requests": 4000,
+     "bytes": 262144000,
+     "crc32": 2859603442,
+     "total_s": 18.23581350029417,
+     "throughput_mib_s": 13.709286947684957,
+     "p50_ms": 0.34639999648788944,
+     "p95_ms": 20.697399995697197,
+     "p99_ms": 27.69300000363728
+    },
+    "prewarm_cmd": {
+     "prewarm": {
+      "kind": "cmd",
+      "cmd": "python -m prefetch.cli --strategy path --execute",
+      "seconds": 16.016128999996,
+      "returncode": 0,
+      "stdout_tail": "{\"strategy\":\"path\",\"fallback\":false,\"layout_ok_files\":0,\"layout_files\":0,\"full_files\":0,\"gap_bytes\":1200000,\"bytes\":465633280,\"requests\":507,\"errors\":0,\"seconds\":15.838}\n",
+      "stderr_tail": ""
+     },
+     "replay": {
+      "mode": "buffered",
+      "requests": 4000,
+      "bytes": 262144000,
+      "crc32": 2859603442,
+      "total_s": 0.06176489986683009,
+      "throughput_mib_s": 4047.6063352975452,
+      "p50_ms": 0.011200005246791989,
+      "p95_ms": 0.03090000245720148,
+      "p99_ms": 0.12110000534448773
+     },
+     "cold": {
+      "cold_method": "unbuffered_proxy",
+      "unbuffered": true,
+      "purge": {
+       "ok": false,
+       "is_admin": false,
+       "error": "not_admin"
+      },
+      "evict_pass_s": 17.65369449987338
+     },
+     "cache_condition": "unbuffered_evict_observed"
+    },
+    "warm": {
+     "mode": "buffered",
+     "requests": 4000,
+     "bytes": 262144000,
+     "crc32": 2859603442,
+     "total_s": 0.05717280030512484,
+     "throughput_mib_s": 4372.708677304207,
+     "p50_ms": 0.01049999991664663,
+     "p95_ms": 0.032500000088475645,
+     "p99_ms": 0.09309999586548656
+    }
+   }
+  ],
+  "ssd": [
+   {
+    "cold": {
+     "cold_method": "unbuffered_proxy",
+     "unbuffered": true,
+     "purge": {
+      "ok": false,
+      "is_admin": false,
+      "error": "not_admin"
+     },
+     "mode": "unbuffered",
+     "requests": 4000,
+     "bytes": 262144000,
+     "crc32": 2859603442,
+     "total_s": 0.7951649999813526,
+     "throughput_mib_s": 314.40015594985033,
+     "p50_ms": 0.18370000179857016,
+     "p95_ms": 0.33260000054724514,
+     "p99_ms": 0.7765999980620109
+    },
+    "populate": {
+     "mode": "buffered",
+     "requests": 4000,
+     "bytes": 262144000,
+     "crc32": 2859603442,
+     "total_s": 0.6116484000522178,
+     "throughput_mib_s": 408.73155227522375,
+     "p50_ms": 0.1629999969736673,
+     "p95_ms": 0.3254000039305538,
+     "p99_ms": 0.8335999955306761
+    },
+    "warm": {
+     "mode": "buffered",
+     "requests": 4000,
+     "bytes": 262144000,
+     "crc32": 2859603442,
+     "total_s": 0.05328869972436223,
+     "throughput_mib_s": 4691.426161515185,
+     "p50_ms": 0.009399998816661537,
+     "p95_ms": 0.03239999932702631,
+     "p99_ms": 0.07329999789362773
+    }
+   },
+   {
+    "cold": {
+     "cold_method": "unbuffered_proxy",
+     "unbuffered": true,
+     "purge": {
+      "ok": false,
+      "is_admin": false,
+      "error": "not_admin"
+     },
+     "mode": "unbuffered",
+     "requests": 4000,
+     "bytes": 262144000,
+     "crc32": 2859603442,
+     "total_s": 0.8182347996116732,
+     "throughput_mib_s": 305.5357705620046,
+     "p50_ms": 0.18319999799132347,
+     "p95_ms": 0.33119999716291204,
+     "p99_ms": 1.0771000015665777
+    },
+    "populate": {
+     "mode": "buffered",
+     "requests": 4000,
+     "bytes": 262144000,
+     "crc32": 2859603442,
+     "total_s": 0.6271554999038926,
+     "throughput_mib_s": 398.6252213977408,
+     "p50_ms": 0.16139999934239313,
+     "p95_ms": 0.42409999878145754,
+     "p99_ms": 0.9368999963044189
+    },
+    "warm": {
+     "mode": "buffered",
+     "requests": 4000,
+     "bytes": 262144000,
+     "crc32": 2859603442,
+     "total_s": 0.05009679998329375,
+     "throughput_mib_s": 4990.3387059327115,
+     "p50_ms": 0.009200004569720477,
+     "p95_ms": 0.029499999072868377,
+     "p99_ms": 0.058599995099939406
+    }
+   },
+   {
+    "cold": {
+     "cold_method": "unbuffered_proxy",
+     "unbuffered": true,
+     "purge": {
+      "ok": false,
+      "is_admin": false,
+      "error": "not_admin"
+     },
+     "mode": "unbuffered",
+     "requests": 4000,
+     "bytes": 262144000,
+     "crc32": 2859603442,
+     "total_s": 0.836361199944804,
+     "throughput_mib_s": 298.9139142472162,
+     "p50_ms": 0.18200000340584666,
+     "p95_ms": 0.5060999974375591,
+     "p99_ms": 1.066299999365583
+    },
+    "populate": {
+     "mode": "buffered",
+     "requests": 4000,
+     "bytes": 262144000,
+     "crc32": 2859603442,
+     "total_s": 0.538297799830616,
+     "throughput_mib_s": 464.42694002960167,
+     "p50_ms": 0.15800000255694613,
+     "p95_ms": 0.261199995293282,
+     "p99_ms": 0.517000000400003
+    },
+    "warm": {
+     "mode": "buffered",
+     "requests": 4000,
+     "bytes": 262144000,
+     "crc32": 2859603442,
+     "total_s": 0.054415600083302706,
+     "throughput_mib_s": 4594.270753557525,
+     "p50_ms": 0.010199997632298619,
+     "p95_ms": 0.03210000431863591,
+     "p99_ms": 0.060200000007171184
+    }
+   }
+  ]
+ }
+}

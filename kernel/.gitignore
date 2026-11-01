@@ -1,0 +1,19 @@
+# 빌드 산출물과 서명 자료는 저장소에 넣지 않습니다 (서명 키·인증서 포함).
+x64/
+ARM64/
+Debug/
+Release/
+.vs/
+*.sys
+*.pdb
+*.cer
+*.pfx
+*.cat
+*.obj
+*.lib
+*.exp
+*.ilk
+*.tlog
+*.log
+*.vcxproj.user
+*.wpp

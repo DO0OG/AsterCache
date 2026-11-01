@@ -1,0 +1,78 @@
+;
+; AsterFlt.inf -- K1 관찰 전용 미니필터 설치 정보 (PoC)
+;
+; 이 INF 는 VM 안에서만 쓰는 것을 전제로 합니다. 개발 PC 에는 설치하지 않습니다 (kernel/README.md).
+;
+; [Altitude 경고] 아래 365990 은 FSFilter Activity Monitor 대역(360000-389999) 안의 "임시" 값입니다.
+; 이 대역의 실제 값은 Microsoft 가 할당하며(Filter altitude 신청), 배포 전에 반드시 정식 할당을 받아야
+; 합니다. 임시 값은 다른 필터와 겹칠 수 있으므로 VM 시험 용도 이외로 쓰지 않습니다.
+; 참고: https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/allocated-altitudes
+;       https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/load-order-groups-and-altitudes-for-minifilter-drivers
+;
+; StartType = 3 (SERVICE_DEMAND_START): 부팅 때 자동 적재되지 않습니다. 수동으로 적재해야 합니다.
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = "ActivityMonitor"
+ClassGuid   = {b86dff51-a31e-4bac-b3cf-e8cfe75c9fc2}
+Provider    = %ManufacturerString%
+DriverVer   =
+CatalogFile = AsterFlt.cat
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir          = 12
+MiniFilter.DriverFiles  = 12            ; %windir%\system32\drivers
+
+[DefaultInstall.NTamd64]
+OptionDesc  = %ServiceDescription%
+CopyFiles   = MiniFilter.DriverFiles
+
+[DefaultInstall.NTamd64.Services]
+AddService  = %ServiceName%,,MiniFilter.Service
+
+[DefaultUninstall.NTamd64]
+LegacyUninstall = 1
+DelFiles    = MiniFilter.DriverFiles
+
+[DefaultUninstall.NTamd64.Services]
+DelService  = %ServiceName%,0x200       ; SPSVCINST_STOPSERVICE
+
+[MiniFilter.DriverFiles]
+%DriverName%.sys
+
+[SourceDisksNames]
+1 = %DiskId1%,,,
+
+[SourceDisksFiles]
+AsterFlt.sys = 1,,
+
+[MiniFilter.Service]
+DisplayName      = %ServiceName%
+Description      = %ServiceDescription%
+ServiceBinary    = %12%\%DriverName%.sys
+Dependencies     = "FltMgr"
+ServiceType      = 2                    ; SERVICE_FILE_SYSTEM_DRIVER
+StartType        = 3                    ; SERVICE_DEMAND_START
+ErrorControl     = 1                    ; SERVICE_ERROR_NORMAL
+LoadOrderGroup   = "FSFilter Activity Monitor"
+AddReg           = MiniFilter.AddRegistry
+
+[MiniFilter.AddRegistry]
+HKR,,"DebugFlags",0x00010001,0x0
+HKR,,"SupportedFeatures",0x00010001,0x3
+HKR,"Instances","DefaultInstance",0x00000000,%DefaultInstance%
+HKR,"Instances\"%Instance1.Name%,"Altitude",0x00000000,%Instance1.Altitude%
+HKR,"Instances\"%Instance1.Name%,"Flags",0x00010001,%Instance1.Flags%
+
+[Strings]
+ManufacturerString  = "AsterCache"
+ServiceDescription  = "AsterCache 읽기 관찰 미니필터 (PoC)"
+ServiceName         = "AsterFlt"
+DriverName          = "AsterFlt"
+DiskId1             = "AsterFlt 설치 디스크"
+
+DefaultInstance     = "AsterFlt Instance"
+Instance1.Name      = "AsterFlt Instance"
+Instance1.Altitude  = "365990"          ; 임시. 배포 전 Microsoft 할당 필요
+Instance1.Flags     = 0x0               ; 모든 볼륨 부착 허용

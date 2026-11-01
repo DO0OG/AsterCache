@@ -1,7 +1,7 @@
 launch0.csv {'rows': 2, 'read_success_rows': 2, 'parsed': 2, 'ignored': 0}
 launch1.csv {'rows': 2, 'read_success_rows': 2, 'parsed': 2, 'ignored': 0}
 launch2.csv {'rows': 2, 'read_success_rows': 2, 'parsed': 2, 'ignored': 0}
-Plan saved: C:\Users\AJH\AppData\Local\Temp\tmpe1ybuak0\plan.json bytes= 131072
+Plan saved: <temp>\plan.json bytes= 131072
 {
   "request_blocks": 3,
   "covered_blocks": 2,

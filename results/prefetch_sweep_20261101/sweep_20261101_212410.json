@@ -131,7 +131,7 @@
  },
  "threads": {
   "threads=1,gap=1200": {
-   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 1 --gap-kib 1200 --execute",
+   "cmd": "\"python.exe\" -m prefetch.cli --strategy physical --threads 1 --gap-kib 1200 --execute",
    "passes": [
     {
      "prewarm_s": 10.933529499998258,
@@ -187,7 +187,7 @@
    "prewarm_cmd_total_over_ssd_cold": 9.8137821712734
   },
   "threads=2,gap=1200": {
-   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 2 --gap-kib 1200 --execute",
+   "cmd": "\"python.exe\" -m prefetch.cli --strategy physical --threads 2 --gap-kib 1200 --execute",
    "passes": [
     {
      "prewarm_s": 11.333487299998524,
@@ -243,7 +243,7 @@
    "prewarm_cmd_total_over_ssd_cold": 10.039516649861365
   },
   "threads=4,gap=1200": {
-   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 4 --gap-kib 1200 --execute",
+   "cmd": "\"python.exe\" -m prefetch.cli --strategy physical --threads 4 --gap-kib 1200 --execute",
    "passes": [
     {
      "prewarm_s": 10.092615500005195,
@@ -302,7 +302,7 @@
  "best_threads": 4,
  "gaps": {
   "threads=1,gap=0": {
-   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 1 --gap-kib 0 --execute",
+   "cmd": "\"python.exe\" -m prefetch.cli --strategy physical --threads 1 --gap-kib 0 --execute",
    "passes": [
     {
      "prewarm_s": 10.189311899994209,
@@ -358,7 +358,7 @@
    "prewarm_cmd_total_over_ssd_cold": 9.131470233518474
   },
   "threads=1,gap=256": {
-   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 1 --gap-kib 256 --execute",
+   "cmd": "\"python.exe\" -m prefetch.cli --strategy physical --threads 1 --gap-kib 256 --execute",
    "passes": [
     {
      "prewarm_s": 10.228202300000703,
@@ -414,7 +414,7 @@
    "prewarm_cmd_total_over_ssd_cold": 9.139926120143611
   },
   "threads=1,gap=4096": {
-   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 1 --gap-kib 4096 --execute",
+   "cmd": "\"python.exe\" -m prefetch.cli --strategy physical --threads 1 --gap-kib 4096 --execute",
    "passes": [
     {
      "prewarm_s": 16.928489500001888,
@@ -470,7 +470,7 @@
    "prewarm_cmd_total_over_ssd_cold": 15.160789504732797
   },
   "threads=1,gap=16384": {
-   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 1 --gap-kib 16384 --execute",
+   "cmd": "\"python.exe\" -m prefetch.cli --strategy physical --threads 1 --gap-kib 16384 --execute",
    "passes": [
     {
      "prewarm_s": 21.205036200000905,
@@ -526,7 +526,7 @@
    "prewarm_cmd_total_over_ssd_cold": 18.956460457951245
   },
   "threads=4,gap=0": {
-   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 4 --gap-kib 0 --execute",
+   "cmd": "\"python.exe\" -m prefetch.cli --strategy physical --threads 4 --gap-kib 0 --execute",
    "passes": [
     {
      "prewarm_s": 7.86384459999681,
@@ -582,7 +582,7 @@
    "prewarm_cmd_total_over_ssd_cold": 6.996584815404651
   },
   "threads=4,gap=256": {
-   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 4 --gap-kib 256 --execute",
+   "cmd": "\"python.exe\" -m prefetch.cli --strategy physical --threads 4 --gap-kib 256 --execute",
    "passes": [
     {
      "prewarm_s": 7.9529217000017525,
@@ -638,7 +638,7 @@
    "prewarm_cmd_total_over_ssd_cold": 7.092836596730867
   },
   "threads=4,gap=1200": {
-   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 4 --gap-kib 1200 --execute",
+   "cmd": "\"python.exe\" -m prefetch.cli --strategy physical --threads 4 --gap-kib 1200 --execute",
    "passes": [
     {
      "prewarm_s": 10.081484399997862,
@@ -694,7 +694,7 @@
    "prewarm_cmd_total_over_ssd_cold": 9.054001609758986
   },
   "threads=4,gap=4096": {
-   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 4 --gap-kib 4096 --execute",
+   "cmd": "\"python.exe\" -m prefetch.cli --strategy physical --threads 4 --gap-kib 4096 --execute",
    "passes": [
     {
      "prewarm_s": 19.78903960000025,
@@ -750,7 +750,7 @@
    "prewarm_cmd_total_over_ssd_cold": 17.59645852755558
   },
   "threads=4,gap=16384": {
-   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 4 --gap-kib 16384 --execute",
+   "cmd": "\"python.exe\" -m prefetch.cli --strategy physical --threads 4 --gap-kib 16384 --execute",
    "passes": [
     {
      "prewarm_s": 24.553280499996617,
@@ -808,7 +808,7 @@
  },
  "full_file_ratio": {
   "ratio=0.05,threads=1,gap=1200": {
-   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 1 --gap-kib 1200 --full-file-ratio 0.05 --execute",
+   "cmd": "\"python.exe\" -m prefetch.cli --strategy physical --threads 1 --gap-kib 1200 --full-file-ratio 0.05 --execute",
    "passes": [
     {
      "prewarm_s": 16.145805200001632,
@@ -836,7 +836,7 @@
    "prewarm_cmd_total_over_ssd_cold": 14.444243381650812
   },
   "ratio=0.1,threads=1,gap=1200": {
-   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 1 --gap-kib 1200 --full-file-ratio 0.1 --execute",
+   "cmd": "\"python.exe\" -m prefetch.cli --strategy physical --threads 1 --gap-kib 1200 --full-file-ratio 0.1 --execute",
    "passes": [
     {
      "prewarm_s": 16.125348199995642,

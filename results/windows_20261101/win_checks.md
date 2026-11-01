@@ -2,7 +2,7 @@
 
 환경: Windows 11 Pro 10.0.26200, Python 3.11.4, SQLite 3.42.0, 비관리자(IsAdmin=False), 개발자 모드 켜짐(AllowDevelopmentWithoutDevLicense=1).
 장치: D: = Disk 0 WDC WD20EZAZ (Get-PhysicalDisk MediaType=HDD, SATA) / C: = Disk 1 SAMSUNG MZVLB1T0HBLR (SSD, NVMe) / E: = Disk 2 Micron Crucial X8 (SSD, USB).
-스크립트: C:\Users\AJH\AppData\Local\Temp\claude\astercache_win_checks\win_checks.py (저장소 밖). 원본 출력: win_checks_raw.txt, win_checks.json.
+스크립트: 저장소 밖 임시 폴더의 win_checks.py. 원본 출력: win_checks_raw.txt, win_checks.json.
 
 ## a. _fingerprint (NTFS, D:)
 [st_dev, st_ino, size, mtime_ns, ctime_ns, ChangeTime(FILETIME)] = [73177880, 1970324838219528, 196613, 1793531318525156400, 1793531318525156400, 134380049185251564]

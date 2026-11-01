@@ -71,14 +71,14 @@ def _worker(ops, hint, stats, lock):
 
 def read_ops(ops, threads=1, sequential_hint=False):
     """ops [(path, offset, length)] -> {'bytes','requests','seconds','fallback','errors'}.
-    threads=1 keeps strict op order; 2 runs two workers pulling from the same ordered queue."""
+    threads=1 keeps strict op order; N (max 8) runs N workers pulling from the same ordered queue."""
     q = queue.Queue()
     for op in ops:
         q.put(op)
     stats = {'bytes': 0, 'requests': 0, 'errors': 0, 'fallback': False}
     lock = threading.Lock()
     t0 = time.perf_counter()
-    ts = [threading.Thread(target=_worker, args=(q, sequential_hint, stats, lock)) for _ in range(max(1, min(threads, 4)))]
+    ts = [threading.Thread(target=_worker, args=(q, sequential_hint, stats, lock)) for _ in range(max(1, min(threads, 8)))]
     for t in ts:
         t.start()
     for t in ts:

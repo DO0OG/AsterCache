@@ -10,7 +10,7 @@
   check the disk is file-backed virtual and the label is right -> dataset + trace -> SHA-256 manifest ->
   cold replay x3 (before) -> relayout plan -> probe (read-only FSCTL check) -> apply --dry-run (fixes the zone,
   moves nothing) -> apply --execute -> check the apply report -> verify -> detach + re-attach the VHDX (drops every
-  cache) -> SHA-256 manifest again -> cold replay x3 (after) -> save results to results\relayout_e2 -> detach
+  cache) -> SHA-256 manifest again -> cold replay x3 (after) -> save results to results\relayout_e2\<yyyyMMdd_HHmmss> -> detach
   (the VHDX file is NOT deleted).
 
   Every relayout command also gets --allowed-root <the VHDX folder> and --require-volume-label AsterTrial, so a
@@ -40,11 +40,11 @@ if (Test-Path -LiteralPath $VhdxPath) { throw "VHDX already exists, refusing to 
 
 # Windows PowerShell 5.1 leaves $PSScriptRoot empty while param defaults are evaluated.
 if (-not $Repo) { $Repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path) }
-$out = Join-Path $Repo 'results\relayout_e2'
+$stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+$out = Join-Path $Repo "results\relayout_e2\$stamp"
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $VhdxPath) | Out-Null
 # an earlier run's plan/journal must never be reused or silently overwritten
-$stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 foreach ($n in 'plan.json', 'journal.jsonl') {
     $old = Join-Path $out $n
     if (Test-Path -LiteralPath $old) { Move-Item -LiteralPath $old -Destination (Join-Path $out "old_${stamp}_$n") }

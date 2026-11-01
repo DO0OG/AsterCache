@@ -39,6 +39,22 @@
 | 물리 위치 정렬 선읽기 | 콜드 17.8 s → 예열 11.1 s + 재생 0.05 s (SSD 콜드 0.8 s의 13.94배) | `results/prefetch_20261101/summary_table.json` |
 | 스트레스 (Windows) | 50 시드 × 250 작업 = 12,500 작업, 읽기 11,239회 검증, 손상 0 | `results/windows_20261101/stress_win.json` |
 
+### 재배치 실험 (E2·E3)
+
+접근 순서 재배치(`relayout/`, FSCTL_MOVE_FILE)를 관리자 권한으로 실행했습니다. 설계 기준과 판정은 `docs/design_v1_relayout.md` 5.1절에 있습니다.
+
+| 실험 | 재배치 전 | 재배치 후 | 무결성 | 출처 |
+|---|---:|---:|---|---|
+| E2 VHDX (C: NVMe, 16 파일 463,470,592 바이트) | 콜드 재생 0.736 s | 0.342 s | 해시 16/16 일치, 매니페스트 동일, 순서 949 → 1 구간 | `results/relayout_e2/summary.json`, `results/relayout_e2/dataset.txt` |
+| E2 VHDX (D: HDD, 같은 데이터) | 콜드 27.1 s (13.7 / 64.6 / 27.1) | 5.73 s (6.07 / 5.73 / 5.68) | 해시 동일 | `results/relayout_e2_hdd/summary.json` |
+| E3 D:\AsterBench (64 파일 2.1 GiB, 트레이스 4,000건) | 직접 17.11 s, 선읽기+재생 8.04 s | 직접 7.72 s, 선읽기+재생 1.09 s (선읽기 1.05 s + 재생 0.047 s) | 이동 1,048 작업 243.5 MB, 실패 0, 해시 64/64 일치, 매니페스트 동일, 순서 1,059 → 1 구간 | `results/relayout_e3/20261101_225446/summary.json` |
+
+- 콜드 조건은 관리자 스탠바이 목록 비우기로 만들었습니다(E2 SSD·HDD, E3 모두 `purge` 성공).
+- E3 의 SSD 기준은 C: NVMe 직접 콜드 0.763 s입니다. 선읽기+재생 1.09 s는 이 값의 1.43배입니다.
+- 선읽기 1.09 s는 이동 직후 드라이브 캐시(SMR 미디어 캐시·DRAM)의 영향일 수 있습니다. 같은 드라이브의 안정 순차 속도 90~110 MB/s 로 보면 약 2.5 s 입니다. 24시간 뒤 재측정 전까지 지속 성능으로 보지 않습니다.
+- E2 는 강제 종료 5회, VHDX 강제 분리, `chkdsk /scan` 을 실행하지 않았습니다. E3 는 이동 직후 1회 측정이며 10분 유휴와 `defrag D: /O` 뒤 측정은 없습니다.
+- 재배치 되돌리기(`relayout.cli revert`)는 실행하지 않았습니다. 해시 검증으로 데이터 내용이 같음만 확인했습니다.
+
 ### 결과 파일 목록
 
 - `results/windows_20261101/`: `win_checks.md`, `win_checks.json`, `win_checks_raw.txt`, `cache_fix_bench.json`, `bench_cross_drive.json`, `api_microbenchmark_win.json`, `physicaldisk.json`, `diagnostics.json`, `unittest_win.log`, `repeat10_win.json`, `stress_win.json`, `stress.out.txt`, `integration_win.json`

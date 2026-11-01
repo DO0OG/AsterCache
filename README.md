@@ -1,13 +1,15 @@
 # AsterCache — HDD에서 SSD 수준의 로딩 속도를 얻기 위한 실험
 
-AsterCache는 HDD에 설치된 게임과 대용량 자산을 SSD에 가까운 시간에 읽는 알고리즘과 시스템을 만드는 실험 프로젝트입니다. 목표는 HDD 로딩 시간을 SSD 로딩 시간에 가깝게 줄이는 것이며, 지금은 그 목표에 도달하지 못했습니다.
+AsterCache는 HDD에 설치된 게임과 대용량 자산을 SSD에 가까운 시간에 읽는 알고리즘과 시스템을 만드는 실험 프로젝트입니다. 목표는 HDD 로딩 시간을 SSD 로딩 시간에 가깝게 줄이는 것입니다. 접근 순서 물리 재배치와 스트림 선읽기를 합성 데이터셋에 적용한 결과, D: HDD 의 콜드 로딩이 SSD 콜드 로딩의 1.43배까지 근접했고 재배치 전 대비 15.6배 단축되었습니다. 실제 게임, 지속성, CMR 드라이브는 아직 검증하지 않았습니다.
 
-**현재 상태 (2026-11-01):** 구현은 세 가지입니다. ① HDD/SSD 로딩을 같은 조건으로 재는 측정 하네스(`bench/`), ② 학습된 읽기 블록을 HDD 물리 배치 순서로 RAM에 미리 읽는 선읽기(`prefetch/`), ③ Python API로 명시적으로 호출하는 SSD 블록 캐시(`sqlite_cache.py`). 기존 게임 프로세스를 투명하게 가속하는 경로는 아직 없습니다. 일반 게임은 이 캐시를 자동으로 사용하지 않습니다. 측정은 Windows 11 실기에서 합성 데이터셋으로 수행했으며, 실제 게임 로딩 시간은 아직 재지 않았습니다.
+**현재 상태 (2026-11-01):** 구현은 네 가지입니다. ① HDD/SSD 로딩을 같은 조건으로 재는 측정 하네스(`bench/`), ② 학습된 읽기 블록을 HDD 물리 배치 순서로 RAM에 미리 읽는 선읽기(`prefetch/`), ③ Python API로 명시적으로 호출하는 SSD 블록 캐시(`sqlite_cache.py`), ④ 핫 블록을 NTFS 안에서 한 구간으로 옮기는 재배치(`relayout/`, FSCTL_MOVE_FILE). 기존 게임 프로세스를 투명하게 가속하는 경로는 아직 없습니다. 일반 게임은 이 캐시를 자동으로 사용하지 않습니다. 측정은 Windows 11 실기에서 합성 데이터셋으로 수행했으며, 실제 게임 로딩 시간은 아직 재지 않았습니다.
 
 ## 구성
 
 - `bench/` — 합성 데이터셋(약 2 GiB, 트레이스 4,000건) 생성, 콜드·웜 재생, 콜드 조건 준비, 시나리오 실행기
 - `prefetch/` — NTFS extent 조회(`layout.py`), 물리 위치 정렬과 손익분기 간격 병합(`scheduler.py`), 순차 선읽기(`reader.py`), 명령행 진입점(`cli.py`)
+- `relayout/` — 트레이스 기준 핫 블록 계획(`plan.py`), NTFS 제자리 이동(`mover.py`), 계획 적용·검증·되돌리기(`apply.py`), 명령행 진입점(`cli.py`)
+- `scripts/` — 관리자 PowerShell에서 한 번 실행하는 실험 스크립트. `e2_vhdx_trial.ps1`(일회용 VHDX 시제품), `e3_hdd_dataset.ps1`(D:\AsterBench 실측)
 - `sqlite_cache.py` — 블록·SHA-256을 한 행에 저장하는 SQLite 캐시와 원본 검증, 축출, 장애 폴백
 - `astercache_v07.py` — 추적 계획(`plan`), 평가(`evaluate`), 점검(`inspect`), RAM·SSD 예열(`ram-warm`, `ssd-warm`) 명령
 - `session_planner.py`, `procmon_import.py` — 이전 버전에서 가져온 학습 계획과 Procmon CSV 가져오기 구성요소. 실제 Windows CSV에서의 동작은 아직 검증하지 않았습니다.
@@ -45,6 +47,30 @@ python -m bench.run --root-hdd D:\AsterBench --root-ssd C:\AsterBench [--repeat 
 - `--prewarm`의 기본값은 `naive`입니다. `--prewarm-cmd`를 주면 외부 예열 명령을 실행하며, 이 명령은 환경변수 `ASTER_TRACE`(트레이스 JSON 경로)와 `ASTER_ROOT`를 받습니다.
 - `--out-dir`의 기본값은 `results/bench_20261101`입니다.
 - `--cleanup`은 두 데이터셋을 지우고 종료합니다.
+
+### 재배치 (`relayout`)
+
+```bash
+python -m relayout.cli plan --trace trace.json --origin-root D:\AsterBench --zone-mib 300 --out plan.json [--dry-run]
+python -m relayout.cli verify --plan plan.json
+python -m relayout.cli probe --volume D: [--require-volume-label 라벨] [--plan plan.json | --zone-mib 300]          # 관리자
+python -m relayout.cli apply --plan plan.json --allowed-root D:\AsterBench [--require-volume-label 라벨] [--dry-run | --execute] [--journal j.jsonl]   # 관리자
+python -m relayout.cli revert --journal j.jsonl --allowed-root D:\AsterBench [--require-volume-label 라벨] [--execute]   # 관리자
+```
+
+- `plan`과 `verify`는 권한이 필요 없습니다. `probe`, `apply`, `revert`는 관리자가 아니면 `{"error":"not_admin"}`으로 끝납니다.
+- `--execute`를 붙이지 않으면 아무것도 옮기지 않습니다. `--dry-run`은 고른 핫 존을 계획 파일에 저장합니다.
+- 계획의 볼륨, 원본 루트, `--allowed-root`, 열린 볼륨이 모두 같은 드라이브여야 하고, 라벨이 다르면 아무것도 건드리지 않습니다.
+- 저널은 JSON Lines입니다. `revert`는 저널을 거꾸로 적용해 예전 물리 배치를 되돌립니다. 데이터 내용은 바뀌지 않습니다.
+- 두 실험 스크립트는 관리자 PowerShell에서 저장소 최상위 폴더 기준으로 실행합니다.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\e2_vhdx_trial.ps1 [-VhdxPath 경로] [-SizeGiB 8] [-Files 16]
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\e3_hdd_dataset.ps1 [-Root D:\AsterBench] [-SsdRoot C:\AsterBench]
+```
+
+- `e2_vhdx_trial.ps1`은 일회용 고정 크기 VHDX를 만들어 재배치를 끝까지 돌리고 분리합니다. VHDX 파일은 지우지 않습니다. 기본 경로는 C: 위이므로 그 시간은 SSD 기준이며 HDD 증거가 아닙니다.
+- `e3_hdd_dataset.ps1`은 이미 있는 `D:\AsterBench`의 `dataset_meta.json`과 `trace.json`을 옮깁니다. 스크립트는 결과 폴더 `results\relayout_e3\<날짜시각>`에 되돌리기 명령을 `README.txt`로 남깁니다.
 
 ### 선읽기 계획과 실행 (`prefetch`)
 
@@ -133,7 +159,29 @@ HDD 콜드는 SSD 콜드의 약 64.1배(`verdict.hdd_cold_over_ssd_cold`), 단�
 
 출처: `results/prefetch_20261101/summary_table.json`.
 
+### 접근 순서 재배치 실측 (2026-11-01)
+
+| 실험 | 구성 | 재배치 전 | 재배치 후 | 무결성 | 출처 |
+|---|---|---:|---:|---|---|
+| E2 SSD | 16 파일 442 MiB(463,470,592 바이트) VHDX, C: NVMe. 이동 194.6 MB(949개 작업) | 콜드 재생 0.736 s (중앙값) | 0.342 s | SHA-256 16/16 일치, 매니페스트 동일, 순차 구간 949 → 1 | `results/relayout_e2/summary.json`, `dataset.txt` |
+| E2 HDD | 같은 데이터, VHDX 를 D: HDD 위에 둠 | 콜드 27.1 s (13.7 / 64.6 / 27.1) | 5.73 s (6.07 / 5.73 / 5.68) | 같음 | `results/relayout_e2_hdd/summary.json` |
+| E3 실제 데이터셋 | D:\AsterBench, 64 파일 2.1 GiB, 트레이스 4,000건. 이동 243.5 MB(1,048 작업), 실패 0 | A 직접 17.11 s | C 직접 7.72 s, D 선읽기+재생 1.09 s | SHA-256 64/64 일치, 매니페스트 동일, 순차 구간 1,059 → 1 | `results/relayout_e3/20261101_225446/summary.json` |
+
+E3 중앙값(3회, 관리자 스탠바이 목록 비우기 뒤 측정)은 다음과 같습니다. B 는 재배치 전 선읽기 후 재생 8.04 s, E 는 SSD(C: NVMe) 콜드 직접 0.763 s입니다.
+
+- D/E 1.43, C/E 10.1, A/E 22.4, D/A 0.064(재배치 전 대비 약 15.6배 단축)
+- 선읽기 0.93~1.63 s(중앙값 1.05 s) + 재생 0.047 s. D 의 실행 3회 값은 0.97 / 1.09 / 1.68 s입니다.
+
 ## 결과 해석
+
+- **재배치의 효과.** 같은 데이터셋에서 재배치는 HDD 콜드 직접 읽기를 17.1 s 에서 7.7 s 로 줄였고, 여기에 선읽기를 더하면 1.1 s 가 됩니다. 재배치 뒤 선읽기 시간은 이전 선읽기 실험(11.1 s)과 비교해 크게 짧습니다. 다만 이 수치는 아래 캐시 가능성을 포함합니다.
+- **캐시 가능성.** D 의 선읽기가 243 MB 를 1 초 안팎(150 MB/s 이상)에 읽은 것은 이동 직후 드라이브 캐시(SMR 미디어 캐시와 DRAM)의 영향일 수 있습니다. 같은 드라이브의 안정 순차 속도는 90~110 MB/s 였습니다(E1b). 보수적 기대치는 선읽기 약 2.5 s 이며, 이는 SSD 콜드 0.763 s 의 약 3.3배입니다. 24 시간 뒤 재측정으로 지속성을 판정합니다. 그 전까지 이 값을 지속 성능으로 보지 않습니다.
+- **SMR.** WD20EZAZ 는 드라이브 관리형 SMR 로 보도되었습니다(2차 자료). 이동 직후 측정은 재매핑 전 상태일 수 있습니다. 드라이브 위치별 속도는 차이가 없어(`results/zone_curve_20261101`), 핫 존의 위치를 맞추는 최적화는 설계에서 뺐습니다.
+- **첫 실행에는 이득이 없습니다.** 재배치는 파일을 옮기는 데 시간이 듭니다. 이득은 재배치 이후 반복 읽기에서만 나타납니다.
+- **관리자 권한이 필요합니다.** 볼륨 핸들과 FSCTL_MOVE_FILE 은 관리자만 씁니다. 측정 자체는 스탠바이 목록 비우기를 위해 관리자로 실행했습니다.
+- **E2 의 범위.** E2 는 무결성, 순서, 재생 시간을 확인했습니다. 강제 종료 5회, VHDX 강제 분리, `chkdsk /scan` 은 `summary.json` 에 기록이 없어 실행하지 않은 것으로 봅니다.
+- **E3 의 범위.** 이동 직후 1회 측정만 있습니다. 10 분 유휴 뒤와 `defrag D: /O` 뒤의 측정은 없습니다.
+- **합성 데이터입니다.** 실제 게임의 트레이스와 로딩 시간은 아직 없습니다. 목표 1.25배에는 아직 도달했다고 볼 수 없습니다.
 
 - **SSD와의 거리.** 콜드 기준으로 HDD는 SSD보다 약 64배 느렸습니다. 선읽기를 적용해도 SSD 콜드의 약 13.9배입니다. 웜 상태에서는 HDD와 SSD가 1.28배 차이가 납니다(벤치마크 중앙값). 웜은 OS 파일 캐시가 이미 채워진 상태라서 차이가 작습니다. 목표로 정한 반복 로딩 p50 1.25배 이내에는 도달하지 못했습니다.
 - **아직 멀리 있는 이유.** 선읽기는 HDD에서 필요한 바이트를 미리 읽어 로딩 중의 랜덤 읽기를 RAM 적중으로 바꿉니다. 하지만 HDD의 읽기 처리량(약 39 MiB/s)과 탐색 횟수가 하한을 정합니다. 예열 비용이 재생보다 훨씬 크므로 예열을 로딩 전에 끝낼 수 있는 경우에만 의미가 있습니다.
@@ -150,6 +198,7 @@ HDD 콜드는 SSD 콜드의 약 64.1배(`verdict.hdd_cold_over_ssd_cold`), 단�
 ## 경고
 
 - 안티치트가 적용된 게임, 온라인 계정과 연동되는 게임, 중요한 데이터가 있는 드라이브에서는 사용하지 않습니다.
+- 재배치는 NTFS 디프래그 API(FSCTL_MOVE_FILE)로 파일 데이터를 실제로 옮깁니다. 테스트 폴더에서만 실행하고, 되돌리기는 `revert` 명령으로 합니다. 이동 중 강제 종료에 대한 시험은 아직 하지 않았습니다.
 - MIT 라이선스에 따라 무보증으로 제공합니다. 위 수치는 한 PC에서 얻은 결과입니다.
 - 예열과 계획 명령은 원본 파일을 열어 읽기만 하며 원본 내용을 바꾸지 않습니다. 벤치마크는 지정한 루트 아래에 자체 데이터셋을 만들고, `--cleanup`으로 지웁니다.
 - 디스크 읽기 부하가 큽니다. HDD 예열은 수백 MiB에서 수 GiB를 읽을 수 있습니다. SSD 캐시는 파일에 쓰며, 예산은 논리 페이로드 기준이므로 SQLite 데이터베이스와 WAL 파일은 예산 밖의 공간을 더 씁니다. 사용 가능한 SSD 여유 공간을 충분히 남겨 두십시오.

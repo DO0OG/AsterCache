@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from .layout import cluster_size, file_extents
-from .reader import read_ops
+from .reader import METHODS, read_ops
 from .scheduler import MIB, breakeven_gap, schedule
 
 
@@ -54,13 +54,14 @@ def main(argv=None):
     ap.add_argument('--chunk-kib', type=int, default=1024, help='bytes per read call (256 is 4x slower, 1024..16384 equal)')
     ap.add_argument('--no-reuse', action='store_true', help='close each file between ops (default keeps handles open: 8-15%% faster)')
     ap.add_argument('--seq-hint', action='store_true', help='open with FILE_FLAG_SEQUENTIAL_SCAN (measured 10-17x slower on the relocated zone, do not use)')
+    ap.add_argument('--method', choices=METHODS, default='pvm', help='how the ranges are brought into the cache (default pvm: one PrefetchVirtualMemory call in zone order, measured 2x faster than read; read = plain buffered loop (overlapped: --threads = requests in flight, up to 64)')
     ap.add_argument('--execute', action='store_true')
     a = ap.parse_args(argv)
     a.plan = a.plan or (Path(os.environ['ASTER_TRACE']) if os.environ.get('ASTER_TRACE') else None)
     a.origin_root = a.origin_root or (Path(os.environ['ASTER_ROOT']) if os.environ.get('ASTER_ROOT') else None)
     if not a.plan or not a.origin_root:
         ap.error('--plan/--trace and --origin-root are required (or env ASTER_TRACE / ASTER_ROOT)')
-    if a.budget_mib < 1 or (a.gap_kib or 0) < 0 or a.read_mbps <= 0 or a.seek_ms < 0 or not 1 <= a.threads <= 8 or a.chunk_kib < 4:
+    if a.budget_mib < 1 or (a.gap_kib or 0) < 0 or a.read_mbps <= 0 or a.seek_ms < 0 or not 1 <= a.threads <= (64 if a.method == 'overlapped' else 8) or a.chunk_kib < 4:
         ap.error('invalid budget/gap/speed/threads')
     ranges = load_ranges(a.plan, a.origin_root)
     ops, info = schedule(ranges, a.strategy, a.budget_mib * MIB, a.gap_kib * 1024 if a.gap_kib is not None
@@ -69,7 +70,8 @@ def main(argv=None):
            'layout_files': info['layout_files'], 'full_files': info['full_files'],
            'gap_bytes': info['gap_bytes']}
     if a.execute:
-        out.update(read_ops(ops, a.threads, a.seq_hint, a.chunk_kib * 1024, not a.no_reuse))
+        out.update(read_ops(ops, a.threads, a.seq_hint, a.chunk_kib * 1024, not a.no_reuse, a.method))
+        out['method'] = a.method
     else:
         out.update(dry_run=True, bytes=sum(o[2] for o in ops), requests=len(ops), ops=ops)
     print(json.dumps(out, separators=(',', ':')))

@@ -1,0 +1,28 @@
+0 overlapped-qd2  stream=2.648s replay=0.079s cpu=0.062s
+0 mmap-touch      stream=16.964s replay=0.368s cpu=0.281s
+0 overlapped-qd4  stream=2.126s replay=0.134s cpu=0.047s
+0 pvm-file        stream=7.033s replay=0.068s cpu=0.062s
+0 read            stream=2.970s replay=0.057s cpu=0.125s
+0 overlapped-qd3  stream=2.126s replay=0.048s cpu=0.047s
+0 pvm             stream=1.421s replay=0.050s cpu=0.031s
+1 pvm             stream=1.376s replay=0.045s cpu=0.047s
+1 pvm-file        stream=7.033s replay=0.053s cpu=0.078s
+1 read            stream=2.791s replay=0.051s cpu=0.156s
+1 overlapped-qd3  stream=2.426s replay=0.055s cpu=0.000s
+1 overlapped-qd4  stream=2.145s replay=0.071s cpu=0.047s
+1 overlapped-qd2  stream=2.760s replay=0.077s cpu=0.094s
+1 mmap-touch      stream=16.663s replay=0.060s cpu=0.172s
+2 pvm             stream=1.344s replay=0.064s cpu=0.047s
+2 overlapped-qd4  stream=1.740s replay=0.047s cpu=0.031s
+2 pvm-file        stream=6.188s replay=0.052s cpu=0.031s
+2 overlapped-qd3  stream=2.181s replay=0.050s cpu=0.109s
+2 mmap-touch      stream=16.271s replay=0.044s cpu=0.234s
+2 read            stream=2.602s replay=0.044s cpu=0.203s
+2 overlapped-qd2  stream=2.404s replay=0.049s cpu=0.109s
+{'label': 'pvm', 'stream_s': 1.3756, 'min_s': 1.3439, 'max_s': 1.4211, 'replay_s': 0.0495, 'cpu_s': 0.0469, 'bytes': 243531776, 'crc_ok': True}
+{'label': 'overlapped-qd4', 'stream_s': 2.1264, 'min_s': 1.7401, 'max_s': 2.1448, 'replay_s': 0.0707, 'cpu_s': 0.0469, 'bytes': 243531776, 'crc_ok': True}
+{'label': 'overlapped-qd3', 'stream_s': 2.1813, 'min_s': 2.1256, 'max_s': 2.4257, 'replay_s': 0.0499, 'cpu_s': 0.0469, 'bytes': 243531776, 'crc_ok': True}
+{'label': 'overlapped-qd2', 'stream_s': 2.648, 'min_s': 2.4035, 'max_s': 2.7595, 'replay_s': 0.0771, 'cpu_s': 0.0938, 'bytes': 243531776, 'crc_ok': True}
+{'label': 'read', 'stream_s': 2.7907, 'min_s': 2.6022, 'max_s': 2.9697, 'replay_s': 0.0511, 'cpu_s': 0.1562, 'bytes': 243531776, 'crc_ok': True}
+{'label': 'pvm-file', 'stream_s': 7.0334, 'min_s': 6.1882, 'max_s': 7.0334, 'replay_s': 0.0529, 'cpu_s': 0.0625, 'bytes': 243531776, 'crc_ok': True}
+{'label': 'mmap-touch', 'stream_s': 16.6633, 'min_s': 16.2713, 'max_s': 16.9637, 'replay_s': 0.0596, 'cpu_s': 0.2344, 'bytes': 243531776, 'crc_ok': True}

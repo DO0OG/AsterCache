@@ -1,0 +1,120 @@
+{
+  "entries": [
+    {
+      "path": "ARCHITECTURE_NEXT.md",
+      "size": 2987,
+      "sha256": "efc58a22156fa6f484f14a83a125b38f001e58b0e02ea8a7c9cf98dff520d6ed"
+    },
+    {
+      "path": "README.md",
+      "size": 6529,
+      "sha256": "712fe22c910237b6d7c3494acfc03e2cba83d96fb58615948e8870b67a5ff225"
+    },
+    {
+      "path": "VALIDATION_REPORT.md",
+      "size": 6862,
+      "sha256": "d70cc37f2c1dcb58143116b0cd24d763c9a940e3dad3f4eae1c900fa5c0dd50b"
+    },
+    {
+      "path": "astercache_v06.py",
+      "size": 5046,
+      "sha256": "7c6af099fd13aacd0a0185b224d5c49f2ed4a9fd6c089a8c3ec19dd1071bf1bf"
+    },
+    {
+      "path": "astercache_v07.py",
+      "size": 5435,
+      "sha256": "c1cbe45c2d4950779753ab2206bafb64fb90ce224af894edaf8363929b212407"
+    },
+    {
+      "path": "bench_api.py",
+      "size": 2000,
+      "sha256": "4d68daf7e7b8c329d509852c3be1e5281d5e342fa4896a914b19694a926b9f40"
+    },
+    {
+      "path": "blockcache_v06.py",
+      "size": 9096,
+      "sha256": "5c4958eaa54e9cdbe3eb43265aaad224f44a76c0b1174b73cbf2e416a0ed7a61"
+    },
+    {
+      "path": "integration_smoke.py",
+      "size": 2344,
+      "sha256": "6e32cac3f8662f9410d6f4ca62114077d7ecaa627a853f670f7161e0f85fec07"
+    },
+    {
+      "path": "procmon_import.py",
+      "size": 2208,
+      "sha256": "8111c26be78fcf4ca6d7ac40fef1f19ecd81ce892062080a80197a81d212c660"
+    },
+    {
+      "path": "repeat_validation.py",
+      "size": 1315,
+      "sha256": "f52c5eb2020f68b19c0e7262ccd57477f426f440ca3bb96ec165e08b6aa5d75b"
+    },
+    {
+      "path": "results/api_microbenchmark.json",
+      "size": 15286,
+      "sha256": "c373812a78c94dd16747aeb86e18d6eaf8f60e0d29f4ef69d3673138e17370ca"
+    },
+    {
+      "path": "results/integration.json",
+      "size": 135,
+      "sha256": "2c44c2978147839ca99859dd0c1eaf4629d8db02266c198f1fc13de19b8346b4"
+    },
+    {
+      "path": "results/regression_v05.log",
+      "size": 98,
+      "sha256": "8a18efc497037a015bb987d0b8c6f9649c69da93556a38cf3378ce4b55f2f2c7"
+    },
+    {
+      "path": "results/regression_v06.log",
+      "size": 98,
+      "sha256": "44debb1c80b84478a7806f507d5015a28e6424cc7d7f74f594ea8ca5b6fb6f30"
+    },
+    {
+      "path": "results/repeat10.json",
+      "size": 1125,
+      "sha256": "23a3b99b675e9a66f81a6d67b87a2e07b9efcfde1d35a8ce8ea6a98edd9a6860"
+    },
+    {
+      "path": "results/stress.json",
+      "size": 27742,
+      "sha256": "5a9daef487d12e40b32ca92c8008d0557401a9518c365b50b435f06caa8309ed"
+    },
+    {
+      "path": "results/unittest_v07.log",
+      "size": 3966,
+      "sha256": "60b8a2022211bc6ffea45c4b86571eb4939088515de3c142eb6b5d7b362a4a51"
+    },
+    {
+      "path": "session_planner.py",
+      "size": 3599,
+      "sha256": "87e5a83224a11f52fffad82e2b75005e5ef5a22c576a5c9912d2cb41ed5e5613"
+    },
+    {
+      "path": "sqlite_cache.py",
+      "size": 12357,
+      "sha256": "0e9692ae0e92b4d817ebab26eb7310bd90835e29a92d5613eabd083c8edacc87"
+    },
+    {
+      "path": "stress.py",
+      "size": 2643,
+      "sha256": "5cd928512a93bb882a365215b71ffc77a6fdd9886ba6ee017a3affacd9ce0455"
+    },
+    {
+      "path": "tests/test_116_120.py",
+      "size": 2139,
+      "sha256": "dd538b485334ab75369b33db6b36004da1a222f005d46d6d33f0153b42d70752"
+    },
+    {
+      "path": "tests/test_86_115.py",
+      "size": 8240,
+      "sha256": "70ccdec3257f4c7615f873a4c629c36496fd193381c5365b9a57395d72a898be"
+    },
+    {
+      "path": "windows_diagnostics.ps1",
+      "size": 767,
+      "sha256": "3e5519aa86fb9e75b6730a777c9590b0281c83f9ac4482ec04110cb8641b5d2d"
+    }
+  ],
+  "hashes_are_for_extracted_files": true
+}

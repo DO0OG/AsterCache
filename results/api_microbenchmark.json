@@ -1,0 +1,571 @@
+{
+  "environment": "container filesystem, Linux, buffered read; NOT physical HDD vs SSD",
+  "trials": 15,
+  "median_ms": {
+    "v06": {
+      "initial_batch_ms": 34.701,
+      "repeat_batch_ms": 12.082
+    },
+    "v07": {
+      "initial_batch_ms": 25.976,
+      "repeat_batch_ms": 10.396
+    }
+  },
+  "runs": [
+    {
+      "v06": {
+        "initial_batch_ms": 42.34,
+        "repeat_batch_ms": 13.22,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "ssd_bytes": 4718592,
+          "cache_bytes_written": 524288,
+          "corruptions": 0,
+          "evictions": 0,
+          "skipped_low_space": 0,
+          "cache_bytes": 524288,
+          "block_count": 8
+        }
+      },
+      "v07": {
+        "initial_batch_ms": 37.336,
+        "repeat_batch_ms": 12.756,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "cache_bytes_read": 4718592,
+          "cache_bytes_written": 524288,
+          "evictions": 0,
+          "invalid_blocks": 0,
+          "skipped_low_space": 0,
+          "skipped_write_error": 0,
+          "db_read_errors": 0,
+          "cache_bytes": 524288,
+          "block_count": 8,
+          "on_disk_db_bytes": 716696
+        }
+      }
+    },
+    {
+      "v07": {
+        "initial_batch_ms": 33.916,
+        "repeat_batch_ms": 9.762,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "cache_bytes_read": 4718592,
+          "cache_bytes_written": 524288,
+          "evictions": 0,
+          "invalid_blocks": 0,
+          "skipped_low_space": 0,
+          "skipped_write_error": 0,
+          "db_read_errors": 0,
+          "cache_bytes": 524288,
+          "block_count": 8,
+          "on_disk_db_bytes": 716696
+        }
+      },
+      "v06": {
+        "initial_batch_ms": 54.343,
+        "repeat_batch_ms": 32.918,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "ssd_bytes": 4718592,
+          "cache_bytes_written": 524288,
+          "corruptions": 0,
+          "evictions": 0,
+          "skipped_low_space": 0,
+          "cache_bytes": 524288,
+          "block_count": 8
+        }
+      }
+    },
+    {
+      "v06": {
+        "initial_batch_ms": 95.135,
+        "repeat_batch_ms": 14.494,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "ssd_bytes": 4718592,
+          "cache_bytes_written": 524288,
+          "corruptions": 0,
+          "evictions": 0,
+          "skipped_low_space": 0,
+          "cache_bytes": 524288,
+          "block_count": 8
+        }
+      },
+      "v07": {
+        "initial_batch_ms": 30.659,
+        "repeat_batch_ms": 13.128,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "cache_bytes_read": 4718592,
+          "cache_bytes_written": 524288,
+          "evictions": 0,
+          "invalid_blocks": 0,
+          "skipped_low_space": 0,
+          "skipped_write_error": 0,
+          "db_read_errors": 0,
+          "cache_bytes": 524288,
+          "block_count": 8,
+          "on_disk_db_bytes": 716696
+        }
+      }
+    },
+    {
+      "v07": {
+        "initial_batch_ms": 20.901,
+        "repeat_batch_ms": 14.196,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "cache_bytes_read": 4718592,
+          "cache_bytes_written": 524288,
+          "evictions": 0,
+          "invalid_blocks": 0,
+          "skipped_low_space": 0,
+          "skipped_write_error": 0,
+          "db_read_errors": 0,
+          "cache_bytes": 524288,
+          "block_count": 8,
+          "on_disk_db_bytes": 716696
+        }
+      },
+      "v06": {
+        "initial_batch_ms": 59.573,
+        "repeat_batch_ms": 15.926,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "ssd_bytes": 4718592,
+          "cache_bytes_written": 524288,
+          "corruptions": 0,
+          "evictions": 0,
+          "skipped_low_space": 0,
+          "cache_bytes": 524288,
+          "block_count": 8
+        }
+      }
+    },
+    {
+      "v06": {
+        "initial_batch_ms": 27.735,
+        "repeat_batch_ms": 10.152,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "ssd_bytes": 4718592,
+          "cache_bytes_written": 524288,
+          "corruptions": 0,
+          "evictions": 0,
+          "skipped_low_space": 0,
+          "cache_bytes": 524288,
+          "block_count": 8
+        }
+      },
+      "v07": {
+        "initial_batch_ms": 27.661,
+        "repeat_batch_ms": 32.632,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "cache_bytes_read": 4718592,
+          "cache_bytes_written": 524288,
+          "evictions": 0,
+          "invalid_blocks": 0,
+          "skipped_low_space": 0,
+          "skipped_write_error": 0,
+          "db_read_errors": 0,
+          "cache_bytes": 524288,
+          "block_count": 8,
+          "on_disk_db_bytes": 716696
+        }
+      }
+    },
+    {
+      "v07": {
+        "initial_batch_ms": 47.42,
+        "repeat_batch_ms": 20.751,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "cache_bytes_read": 4718592,
+          "cache_bytes_written": 524288,
+          "evictions": 0,
+          "invalid_blocks": 0,
+          "skipped_low_space": 0,
+          "skipped_write_error": 0,
+          "db_read_errors": 0,
+          "cache_bytes": 524288,
+          "block_count": 8,
+          "on_disk_db_bytes": 716696
+        }
+      },
+      "v06": {
+        "initial_batch_ms": 74.93,
+        "repeat_batch_ms": 11.252,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "ssd_bytes": 4718592,
+          "cache_bytes_written": 524288,
+          "corruptions": 0,
+          "evictions": 0,
+          "skipped_low_space": 0,
+          "cache_bytes": 524288,
+          "block_count": 8
+        }
+      }
+    },
+    {
+      "v06": {
+        "initial_batch_ms": 34.701,
+        "repeat_batch_ms": 10.419,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "ssd_bytes": 4718592,
+          "cache_bytes_written": 524288,
+          "corruptions": 0,
+          "evictions": 0,
+          "skipped_low_space": 0,
+          "cache_bytes": 524288,
+          "block_count": 8
+        }
+      },
+      "v07": {
+        "initial_batch_ms": 25.976,
+        "repeat_batch_ms": 11.606,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "cache_bytes_read": 4718592,
+          "cache_bytes_written": 524288,
+          "evictions": 0,
+          "invalid_blocks": 0,
+          "skipped_low_space": 0,
+          "skipped_write_error": 0,
+          "db_read_errors": 0,
+          "cache_bytes": 524288,
+          "block_count": 8,
+          "on_disk_db_bytes": 716696
+        }
+      }
+    },
+    {
+      "v07": {
+        "initial_batch_ms": 18.767,
+        "repeat_batch_ms": 8.053,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "cache_bytes_read": 4718592,
+          "cache_bytes_written": 524288,
+          "evictions": 0,
+          "invalid_blocks": 0,
+          "skipped_low_space": 0,
+          "skipped_write_error": 0,
+          "db_read_errors": 0,
+          "cache_bytes": 524288,
+          "block_count": 8,
+          "on_disk_db_bytes": 716696
+        }
+      },
+      "v06": {
+        "initial_batch_ms": 30.694,
+        "repeat_batch_ms": 14.683,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "ssd_bytes": 4718592,
+          "cache_bytes_written": 524288,
+          "corruptions": 0,
+          "evictions": 0,
+          "skipped_low_space": 0,
+          "cache_bytes": 524288,
+          "block_count": 8
+        }
+      }
+    },
+    {
+      "v06": {
+        "initial_batch_ms": 40.218,
+        "repeat_batch_ms": 12.082,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "ssd_bytes": 4718592,
+          "cache_bytes_written": 524288,
+          "corruptions": 0,
+          "evictions": 0,
+          "skipped_low_space": 0,
+          "cache_bytes": 524288,
+          "block_count": 8
+        }
+      },
+      "v07": {
+        "initial_batch_ms": 26.571,
+        "repeat_batch_ms": 12.589,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "cache_bytes_read": 4718592,
+          "cache_bytes_written": 524288,
+          "evictions": 0,
+          "invalid_blocks": 0,
+          "skipped_low_space": 0,
+          "skipped_write_error": 0,
+          "db_read_errors": 0,
+          "cache_bytes": 524288,
+          "block_count": 8,
+          "on_disk_db_bytes": 716696
+        }
+      }
+    },
+    {
+      "v07": {
+        "initial_batch_ms": 19.656,
+        "repeat_batch_ms": 9.999,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "cache_bytes_read": 4718592,
+          "cache_bytes_written": 524288,
+          "evictions": 0,
+          "invalid_blocks": 0,
+          "skipped_low_space": 0,
+          "skipped_write_error": 0,
+          "db_read_errors": 0,
+          "cache_bytes": 524288,
+          "block_count": 8,
+          "on_disk_db_bytes": 716696
+        }
+      },
+      "v06": {
+        "initial_batch_ms": 30.009,
+        "repeat_batch_ms": 12.119,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "ssd_bytes": 4718592,
+          "cache_bytes_written": 524288,
+          "corruptions": 0,
+          "evictions": 0,
+          "skipped_low_space": 0,
+          "cache_bytes": 524288,
+          "block_count": 8
+        }
+      }
+    },
+    {
+      "v06": {
+        "initial_batch_ms": 30.535,
+        "repeat_batch_ms": 14.316,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "ssd_bytes": 4718592,
+          "cache_bytes_written": 524288,
+          "corruptions": 0,
+          "evictions": 0,
+          "skipped_low_space": 0,
+          "cache_bytes": 524288,
+          "block_count": 8
+        }
+      },
+      "v07": {
+        "initial_batch_ms": 31.894,
+        "repeat_batch_ms": 10.396,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "cache_bytes_read": 4718592,
+          "cache_bytes_written": 524288,
+          "evictions": 0,
+          "invalid_blocks": 0,
+          "skipped_low_space": 0,
+          "skipped_write_error": 0,
+          "db_read_errors": 0,
+          "cache_bytes": 524288,
+          "block_count": 8,
+          "on_disk_db_bytes": 716696
+        }
+      }
+    },
+    {
+      "v07": {
+        "initial_batch_ms": 17.74,
+        "repeat_batch_ms": 7.983,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "cache_bytes_read": 4718592,
+          "cache_bytes_written": 524288,
+          "evictions": 0,
+          "invalid_blocks": 0,
+          "skipped_low_space": 0,
+          "skipped_write_error": 0,
+          "db_read_errors": 0,
+          "cache_bytes": 524288,
+          "block_count": 8,
+          "on_disk_db_bytes": 716696
+        }
+      },
+      "v06": {
+        "initial_batch_ms": 32.393,
+        "repeat_batch_ms": 10.609,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "ssd_bytes": 4718592,
+          "cache_bytes_written": 524288,
+          "corruptions": 0,
+          "evictions": 0,
+          "skipped_low_space": 0,
+          "cache_bytes": 524288,
+          "block_count": 8
+        }
+      }
+    },
+    {
+      "v06": {
+        "initial_batch_ms": 28.885,
+        "repeat_batch_ms": 8.006,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "ssd_bytes": 4718592,
+          "cache_bytes_written": 524288,
+          "corruptions": 0,
+          "evictions": 0,
+          "skipped_low_space": 0,
+          "cache_bytes": 524288,
+          "block_count": 8
+        }
+      },
+      "v07": {
+        "initial_batch_ms": 16.544,
+        "repeat_batch_ms": 8.737,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "cache_bytes_read": 4718592,
+          "cache_bytes_written": 524288,
+          "evictions": 0,
+          "invalid_blocks": 0,
+          "skipped_low_space": 0,
+          "skipped_write_error": 0,
+          "db_read_errors": 0,
+          "cache_bytes": 524288,
+          "block_count": 8,
+          "on_disk_db_bytes": 716696
+        }
+      }
+    },
+    {
+      "v07": {
+        "initial_batch_ms": 15.579,
+        "repeat_batch_ms": 9.836,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "cache_bytes_read": 4718592,
+          "cache_bytes_written": 524288,
+          "evictions": 0,
+          "invalid_blocks": 0,
+          "skipped_low_space": 0,
+          "skipped_write_error": 0,
+          "db_read_errors": 0,
+          "cache_bytes": 524288,
+          "block_count": 8,
+          "on_disk_db_bytes": 716696
+        }
+      },
+      "v06": {
+        "initial_batch_ms": 50.945,
+        "repeat_batch_ms": 10.197,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "ssd_bytes": 4718592,
+          "cache_bytes_written": 524288,
+          "corruptions": 0,
+          "evictions": 0,
+          "skipped_low_space": 0,
+          "cache_bytes": 524288,
+          "block_count": 8
+        }
+      }
+    },
+    {
+      "v06": {
+        "initial_batch_ms": 28.47,
+        "repeat_batch_ms": 9.447,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "ssd_bytes": 4718592,
+          "cache_bytes_written": 524288,
+          "corruptions": 0,
+          "evictions": 0,
+          "skipped_low_space": 0,
+          "cache_bytes": 524288,
+          "block_count": 8
+        }
+      },
+      "v07": {
+        "initial_batch_ms": 18.067,
+        "repeat_batch_ms": 8.254,
+        "stats": {
+          "block_hits": 72,
+          "block_misses": 8,
+          "origin_bytes": 524288,
+          "cache_bytes_read": 4718592,
+          "cache_bytes_written": 524288,
+          "evictions": 0,
+          "invalid_blocks": 0,
+          "skipped_low_space": 0,
+          "skipped_write_error": 0,
+          "db_read_errors": 0,
+          "cache_bytes": 524288,
+          "block_count": 8,
+          "on_disk_db_bytes": 716696
+        }
+      }
+    }
+  ]
+}

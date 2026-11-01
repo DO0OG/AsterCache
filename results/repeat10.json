@@ -1,0 +1,68 @@
+{
+  "repetitions": 10,
+  "tests_per_repetition": 35,
+  "total_test_executions": 350,
+  "all_pass": true,
+  "rounds": [
+    {
+      "round": 1,
+      "passed": true,
+      "seconds": 1.9769,
+      "summary": "OK"
+    },
+    {
+      "round": 2,
+      "passed": true,
+      "seconds": 1.6352,
+      "summary": "OK"
+    },
+    {
+      "round": 3,
+      "passed": true,
+      "seconds": 1.8603,
+      "summary": "OK"
+    },
+    {
+      "round": 4,
+      "passed": true,
+      "seconds": 1.6104,
+      "summary": "OK"
+    },
+    {
+      "round": 5,
+      "passed": true,
+      "seconds": 1.6691,
+      "summary": "OK"
+    },
+    {
+      "round": 6,
+      "passed": true,
+      "seconds": 1.7522,
+      "summary": "OK"
+    },
+    {
+      "round": 7,
+      "passed": true,
+      "seconds": 1.6689,
+      "summary": "OK"
+    },
+    {
+      "round": 8,
+      "passed": true,
+      "seconds": 1.7961,
+      "summary": "OK"
+    },
+    {
+      "round": 9,
+      "passed": true,
+      "seconds": 2.1334,
+      "summary": "OK"
+    },
+    {
+      "round": 10,
+      "passed": true,
+      "seconds": 1.8096,
+      "summary": "OK"
+    }
+  ]
+}

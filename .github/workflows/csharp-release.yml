@@ -1,0 +1,58 @@
+name: C# package release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: SemVer release version
+        required: true
+
+jobs:
+  verify:
+    uses: ./.github/workflows/csharp-ci.yml
+
+  package:
+    needs: verify
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+      - name: Publish service (self-contained, win-x64)
+        run: dotnet publish csharp/src/AsterCache.Service/AsterCache.Service.csproj -c Release -r win-x64 --self-contained -p:Version=${{ inputs.version }} -o artifacts/service
+      - name: Publish CLI (self-contained, win-x64)
+        run: dotnet publish csharp/src/AsterCache.Cli/AsterCache.Cli.csproj -c Release -r win-x64 --self-contained -p:Version=${{ inputs.version }} -o artifacts/cli
+      - name: Warn about signing
+        shell: pwsh
+        run: |
+          if (-not $env:WINDOWS_SIGNING_CERTIFICATE) { Write-Warning 'Unsigned Windows artifacts: configure signing secrets before public release.' }
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+      - name: Build installer (service, registration and plans ACL)
+        shell: pwsh
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path -LiteralPath $iscc)) { throw "ISCC.exe not found: $iscc" }
+          $ws = $env:GITHUB_WORKSPACE
+          & $iscc "/DAppVersion=${{ inputs.version }}" "/DServiceDir=$ws\artifacts\service" "/DOutputDir=$ws\artifacts\installer" "$ws\csharp\packaging\windows\aster.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed (exit $LASTEXITCODE)" }
+      - name: Pack CLI with Velopack
+        shell: bash
+        run: |
+          dotnet tool install -g vpk --version 1.2.0
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          # packId is the install folder name under %LOCALAPPDATA%; it must differ from the service folder.
+          vpk pack --packId AsterCacheCli --packVersion "${{ inputs.version }}" --packDir artifacts/cli --mainExe aster.exe --outputDir releases/cli --channel win --packAuthors DO0OG
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AsterCache-win-x64-${{ inputs.version }}
+          path: |
+            artifacts/installer
+            releases/cli
+
+# Artifacts are uploaded only. Publishing a GitHub release (vpk upload github) is not configured here:
+# it needs the user's approval for each release. Tray packaging (WP9) is not part of this workflow yet.

@@ -1,0 +1,24 @@
+name: C# CI
+
+on:
+  workflow_call:
+  push:
+    branches: [main]
+    paths: ["csharp/**", ".github/workflows/csharp-*.yml"]
+  pull_request:
+    paths: ["csharp/**", ".github/workflows/csharp-*.yml"]
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet restore csharp/AsterCache.sln
+      - run: dotnet build csharp/AsterCache.sln --configuration Release --no-restore
+      # Live tests need D:\AsterBench and the Python reference, so they never run here.
+      - run: dotnet test csharp/AsterCache.sln --configuration Release --no-build --filter "Category!=Live"
+      - run: dotnet format csharp/AsterCache.sln --verify-no-changes --no-restore

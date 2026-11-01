@@ -16,6 +16,16 @@ import sqlite3
 import threading
 import time
 
+RACY_WINDOW_NS = 2_000_000_000  # files modified this recently may share a timestamp tick with the bytes read
+if os.name == 'nt':
+    class FileBasicInfo(ctypes.Structure):
+        _fields_ = [('CreationTime',ctypes.c_int64), ('LastAccessTime',ctypes.c_int64),
+                    ('LastWriteTime',ctypes.c_int64), ('ChangeTime',ctypes.c_int64),
+                    ('FileAttributes',ctypes.c_uint32)]
+    _GetFileInfo = ctypes.WinDLL('kernel32', use_last_error=True).GetFileInformationByHandleEx
+    _GetFileInfo.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    _GetFileInfo.restype = ctypes.c_int
+
 class SourceChanged(RuntimeError):
     pass
 
@@ -64,13 +74,15 @@ class SQLiteBlockCache:
         try:
             self.conn.execute('PRAGMA busy_timeout=4000')
             self.conn.execute('PRAGMA journal_mode=WAL')
-            self.conn.execute('PRAGMA synchronous=FULL')
+            # WAL+NORMAL: safe against corruption; a power loss may roll back the last commit (cache refills).
+            self.conn.execute('PRAGMA synchronous=NORMAL')
             self.conn.execute('PRAGMA trusted_schema=OFF')
             self.conn.execute('''CREATE TABLE IF NOT EXISTS blocks (
                 cache_key TEXT PRIMARY KEY, payload BLOB NOT NULL,
                 sha TEXT NOT NULL, touched INTEGER NOT NULL,
                 byte_count INTEGER NOT NULL CHECK(byte_count > 0))''')
-            self.conn.execute('CREATE INDEX IF NOT EXISTS ix_blocks_touched ON blocks(touched, cache_key)')
+            self.conn.execute('DROP INDEX IF EXISTS ix_blocks_touched')
+            self.conn.execute('CREATE INDEX IF NOT EXISTS ix_blocks_lru ON blocks(touched, cache_key, byte_count)')
             self.conn.commit()
         except Exception:
             self.conn.close()
@@ -90,16 +102,9 @@ class SQLiteBlockCache:
         fp = [st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns]
         if os.name == 'nt':
             import msvcrt
-            class FileBasicInfo(ctypes.Structure):
-                _fields_ = [('CreationTime',ctypes.c_int64), ('LastAccessTime',ctypes.c_int64),
-                            ('LastWriteTime',ctypes.c_int64), ('ChangeTime',ctypes.c_int64),
-                            ('FileAttributes',ctypes.c_uint32)]
-            fun = ctypes.WinDLL('kernel32', use_last_error=True).GetFileInformationByHandleEx
-            fun.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
-            fun.restype = ctypes.c_int
             info = FileBasicInfo()
             h = msvcrt.get_osfhandle(stream.fileno())
-            if not fun(ctypes.c_void_p(h), 0, ctypes.byref(info), ctypes.sizeof(info)):
+            if not _GetFileInfo(ctypes.c_void_p(h), 0, ctypes.byref(info), ctypes.sizeof(info)):
                 raise ctypes.WinError(ctypes.get_last_error())
             fp.append(int(info.ChangeTime))
         return fp
@@ -119,7 +124,8 @@ class SQLiteBlockCache:
     def _path_stat_mismatch(path, fp):
         try:
             s = path.stat()
-            return [s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns] != fp[:5]
+            n = 4 if os.name == 'nt' else 5  # Windows stat() st_ctime is creation time; ChangeTime is fp[5]
+            return [s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns][:n] != fp[:n]
         except OSError:
             return True
 
@@ -161,6 +167,7 @@ class SQLiteBlockCache:
                 self.stats['skipped_low_space'] += len(pending)
                 return
             with self.conn:
+                self.conn.execute('BEGIN IMMEDIATE')
                 # Refresh LRU for recently-read blocks *only* when another write occurs.
                 # This avoids one SSD metadata transaction per cache hit.
                 for hot_key, stamp in self._recent_hits.items():
@@ -222,11 +229,16 @@ class SQLiteBlockCache:
                         self.stats['origin_bytes'] += expected
                         pending.append((key,data))
                     chunks.append(data)
-                if (before != self._fingerprint(fd) or self._source(relative) != path
+                if (before != self._fingerprint(fd)
                     or self._path_stat_mismatch(path, before)):
                     raise SourceChanged('source changed during read')
                 result = b''.join(chunks)[offset-first*self.block_size:offset-first*self.block_size+length]
                 # Do not admit cache data until fully validated against same source generation.
+                newest = max(before[3], before[4])
+                if os.name == 'nt':
+                    newest = max(newest, (before[5] - 116444736000000000) * 100)  # FILETIME -> Unix ns
+                if time.time_ns() - newest < RACY_WINDOW_NS:
+                    pending = []  # same-tick rewrites cannot be told apart by fp
                 self._write_batch(pending)
                 return result
 

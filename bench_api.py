@@ -8,6 +8,7 @@ import statistics
 import tempfile
 import time
 from pathlib import Path
+import sqlite_cache
 from sqlite_cache import SQLiteBlockCache
 from blockcache_v06 import BlockCache
 B=65536
@@ -26,6 +27,7 @@ def sample(cls,root,cachebase,jobs):
 
 def run(trials=5):
     runs=[]
+    sqlite_cache.RACY_WINDOW_NS=0  # source is written right before timing; guard disabled so warm hits are measured
     with tempfile.TemporaryDirectory() as td:
         base=Path(td);root=base/'source';root.mkdir()
         payload=random.Random(123).randbytes(16*B)
@@ -41,6 +43,7 @@ def run(trials=5):
             runs.append(row)
     return {'environment':'container filesystem, Linux, buffered read; NOT physical HDD vs SSD',
             'trials':trials,
+            'racy_window_ns':sqlite_cache.RACY_WINDOW_NS,
             'median_ms':{k:{phase:round(statistics.median(x[k][phase] for x in runs),3)
                             for phase in ('initial_batch_ms','repeat_batch_ms')} for k in ('v06','v07')},'runs':runs}
 

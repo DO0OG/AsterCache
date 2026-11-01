@@ -5,6 +5,7 @@ import random
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from sqlite_cache import SQLiteBlockCache
@@ -12,6 +13,7 @@ B=65536
 class NewEdgeTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        racy=patch('sqlite_cache.RACY_WINDOW_NS',0);racy.start();self.addCleanup(racy.stop)
         self.root=Path(self.temp.name)/'hdd';self.root.mkdir();self.dest=Path(self.temp.name)/'ssd'
         self.contents=random.Random(2).randbytes(B*8);(self.root/'a').write_bytes(self.contents)
     def cache(self,**kw):

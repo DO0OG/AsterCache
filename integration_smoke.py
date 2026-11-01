@@ -5,10 +5,12 @@ import json
 import tempfile
 from pathlib import Path
 from astercache_v07 import main
+import sqlite_cache
 from sqlite_cache import SQLiteBlockCache
 B=65536
 
 def run():
+    sqlite_cache.RACY_WINDOW_NS=0  # source is created moments before warm/read; guard disabled for this smoke test
     with tempfile.TemporaryDirectory() as temp:
         base=Path(temp);root=base/'games';root.mkdir()
         source=root/'gameassets.dat';source.write_bytes(b'A'*B+b'B'*B+b'C'*B)

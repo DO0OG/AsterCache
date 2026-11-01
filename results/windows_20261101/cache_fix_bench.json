@@ -1,0 +1,133 @@
+{
+  "note": "REFERENCE ONLY: origin D: (HDD) file freshly written, OS page cache not flushed; cache on C: (NVMe). Each trial uses a new empty SQLite cache. 64KiB x 256 blocks, one read() per block. Source waits 2.5 s after writing so the racy-clean guard does not apply.",
+  "criteria": "cold <= 6 ms/block, hit <= 1.1 ms/block (after versions)",
+  "baseline_reference": "before: bench_cross_drive.json (19-22 ms cold, 1.35 ms hit)",
+  "summary": {
+    "before_py311": {
+      "cold_ms_per_block_median": 21.338,
+      "hit_ms_per_block_median": 1.757,
+      "all_bytes_ok": true
+    },
+    "after_py311": {
+      "cold_ms_per_block_median": 4.206,
+      "hit_ms_per_block_median": 1.14,
+      "all_bytes_ok": true,
+      "meets_cold_le_6": true,
+      "meets_hit_le_1_1": false
+    },
+    "after_py312": {
+      "cold_ms_per_block_median": 3.967,
+      "hit_ms_per_block_median": 0.979,
+      "all_bytes_ok": true,
+      "meets_cold_le_6": true,
+      "meets_hit_le_1_1": true
+    }
+  },
+  "runs": [
+    {
+      "label": "before_py311",
+      "module": "C:\\Users/AJH/AppData/Local/Temp/claude/astercache_fix_bench/before\\sqlite_cache.py",
+      "python": "3.11.4",
+      "sqlite": "3.42.0",
+      "trials": [
+        {
+          "trial": 1,
+          "cold_ms_per_block": 26.167,
+          "hit_ms_per_block": 1.757,
+          "misses_in_cold": 256,
+          "hits_in_hit_pass": 256,
+          "blocks_cached": 256,
+          "bytes_ok": true
+        },
+        {
+          "trial": 2,
+          "cold_ms_per_block": 20.981,
+          "hit_ms_per_block": 1.988,
+          "misses_in_cold": 256,
+          "hits_in_hit_pass": 256,
+          "blocks_cached": 256,
+          "bytes_ok": true
+        },
+        {
+          "trial": 3,
+          "cold_ms_per_block": 21.338,
+          "hit_ms_per_block": 1.706,
+          "misses_in_cold": 256,
+          "hits_in_hit_pass": 256,
+          "blocks_cached": 256,
+          "bytes_ok": true
+        }
+      ]
+    },
+    {
+      "label": "after_py311",
+      "module": "D:\\Git/AsterCache\\sqlite_cache.py",
+      "python": "3.11.4",
+      "sqlite": "3.42.0",
+      "trials": [
+        {
+          "trial": 1,
+          "cold_ms_per_block": 5.199,
+          "hit_ms_per_block": 1.225,
+          "misses_in_cold": 256,
+          "hits_in_hit_pass": 256,
+          "blocks_cached": 256,
+          "bytes_ok": true
+        },
+        {
+          "trial": 2,
+          "cold_ms_per_block": 4.206,
+          "hit_ms_per_block": 1.14,
+          "misses_in_cold": 256,
+          "hits_in_hit_pass": 256,
+          "blocks_cached": 256,
+          "bytes_ok": true
+        },
+        {
+          "trial": 3,
+          "cold_ms_per_block": 4.055,
+          "hit_ms_per_block": 1.133,
+          "misses_in_cold": 256,
+          "hits_in_hit_pass": 256,
+          "blocks_cached": 256,
+          "bytes_ok": true
+        }
+      ]
+    },
+    {
+      "label": "after_py312",
+      "module": "D:\\Git/AsterCache\\sqlite_cache.py",
+      "python": "3.12.10",
+      "sqlite": "3.49.1",
+      "trials": [
+        {
+          "trial": 1,
+          "cold_ms_per_block": 4.329,
+          "hit_ms_per_block": 1.054,
+          "misses_in_cold": 256,
+          "hits_in_hit_pass": 256,
+          "blocks_cached": 256,
+          "bytes_ok": true
+        },
+        {
+          "trial": 2,
+          "cold_ms_per_block": 3.967,
+          "hit_ms_per_block": 0.979,
+          "misses_in_cold": 256,
+          "hits_in_hit_pass": 256,
+          "blocks_cached": 256,
+          "bytes_ok": true
+        },
+        {
+          "trial": 3,
+          "cold_ms_per_block": 3.856,
+          "hit_ms_per_block": 0.903,
+          "misses_in_cold": 256,
+          "hits_in_hit_pass": 256,
+          "blocks_cached": 256,
+          "bytes_ok": true
+        }
+      ]
+    }
+  ]
+}

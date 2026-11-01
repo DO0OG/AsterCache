@@ -23,6 +23,7 @@ class Validation86_115(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        racy = patch('sqlite_cache.RACY_WINDOW_NS', 0); racy.start(); self.addCleanup(racy.stop)
         self.root = Path(self.tmp.name)/'HDD'; self.root.mkdir()
         self.ssd = Path(self.tmp.name)/'SSD'
         self.data = random.Random(42).randbytes(B*12+111)
@@ -87,7 +88,6 @@ class Validation86_115(unittest.TestCase):
         self.assertEqual(c.read('test.bin',0,100),self.data[:100]);self.assertEqual(c.snapshot()['block_misses'],2)
     def test_103_mtime_change_new_generation(self):
         c=self.cache();c.read('test.bin',0,10);self.path.write_bytes(b'Z'+self.data[1:]);self.assertEqual(c.read('test.bin',0,10),b'Z'+self.data[1:10])
-    @unittest.skipIf(os.name=='nt','POSIX ctime property; Windows needs an actual machine')
     def test_104_restore_mtime_still_invalidate(self):
         c=self.cache();c.read('test.bin',0,10);st=self.path.stat();self.path.write_bytes(b'Z'+self.data[1:]);os.utime(self.path,ns=(st.st_atime_ns,st.st_mtime_ns));self.assertEqual(c.read('test.bin',0,1),b'Z')
     def test_105_atomic_rename_changed_generation(self):

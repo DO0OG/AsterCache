@@ -1,0 +1,103 @@
+﻿{
+    "vhdx":  "D:\\AsterVHDX\\trial.vhdx",
+    "drive":  "Z:",
+    "label":  "AsterTrial",
+    "zone_mib":  300,
+    "files":  16,
+    "probe":  {
+                  "volume":  "Z:",
+                  "label":  "AsterTrial",
+                  "cluster_bytes":  4096,
+                  "total_clusters":  2096639,
+                  "free_clusters_ntfs":  1976090,
+                  "free_clusters_bitmap":  1976090,
+                  "bitmap_bits":  2096639,
+                  "free_match":  true,
+                  "mft_zone":  [
+                                   786432,
+                                   837664
+                               ],
+                  "zone_clusters_needed":  47504,
+                  "zone_candidate_lcn":  133884
+              },
+    "dry_run":  {
+                    "zone_start_lcn":  133884,
+                    "tasks_total":  949,
+                    "tasks_todo":  949,
+                    "bytes_todo":  194576384,
+                    "skipped_files":  {
+
+                                      },
+                    "executed":  false,
+                    "moved_bytes":  0,
+                    "failed":  [
+
+                               ],
+                    "stopped":  null,
+                    "dry_run":  true,
+                    "plan_saved":  true
+                },
+    "apply":  {
+                  "zone_start_lcn":  133884,
+                  "tasks_total":  949,
+                  "tasks_todo":  949,
+                  "bytes_todo":  194576384,
+                  "skipped_files":  {
+
+                                    },
+                  "executed":  true,
+                  "moved_bytes":  194576384,
+                  "failed":  [
+
+                             ],
+                  "stopped":  null,
+                  "dry_run":  false,
+                  "plan_saved":  false,
+                  "sha_checked":  16,
+                  "sha_mismatch":  [
+
+                                   ]
+              },
+    "verify":  {
+                   "hot_clusters":  47504,
+                   "ordered_runs":  1,
+                   "expected_runs":  1,
+                   "current_runs_at_plan_time":  949,
+                   "ascending":  true,
+                   "in_zone_clusters":  47504,
+                   "missing_files":  0,
+                   "contiguous":  true,
+                   "verdict":  "contiguous"
+               },
+    "verify_after_remount":  {
+                                 "hot_clusters":  47504,
+                                 "ordered_runs":  1,
+                                 "expected_runs":  1,
+                                 "current_runs_at_plan_time":  949,
+                                 "ascending":  true,
+                                 "in_zone_clusters":  47504,
+                                 "missing_files":  0,
+                                 "contiguous":  true,
+                                 "verdict":  "contiguous"
+                             },
+    "manifest_identical":  true,
+    "replay_before":  {
+                          "runs_s":  [
+                                         13.718303999892669,
+                                         64.588203099963721,
+                                         27.094322899924009
+                                     ],
+                          "median_s":  27.094322899924009,
+                          "purge":  true
+                      },
+    "replay_after":  {
+                         "runs_s":  [
+                                        6.0686842998766224,
+                                        5.7295888996231952,
+                                        5.6765046000582515
+                                    ],
+                         "median_s":  5.7295888996231952,
+                         "purge":  true
+                     },
+    "note":  "VHDX on C: (SSD) unless -VhdxPath points at the HDD: timing is not HDD evidence."
+}

@@ -1,0 +1,175 @@
+{
+ "root": "D:/AsterBench",
+ "is_admin": false,
+ "time": "20261101_234500",
+ "series": {
+  "0": {
+   "runs": [
+    {
+     "wall_s": 1.4934762999982922,
+     "stream_done_s": 1.5137880999973277,
+     "stream_s": 1.5125,
+     "stream_bytes": 243531776,
+     "stream_errors": 0,
+     "requests": 4000,
+     "slow_requests": 345,
+     "slow_ratio": 0.08625,
+     "replay_sum_s": 1.4901057998722536,
+     "p50_ms": 0.020600004063453525,
+     "p95_ms": 2.121000004990492,
+     "p99_ms": 4.328299997723661,
+     "think_us": 0,
+     "cold_method": "unbuffered_proxy"
+    },
+    {
+     "wall_s": 1.5712379000033252,
+     "stream_done_s": 1.5723797000027844,
+     "stream_s": 1.5709,
+     "stream_bytes": 243531776,
+     "stream_errors": 0,
+     "requests": 4000,
+     "slow_requests": 343,
+     "slow_ratio": 0.08575,
+     "replay_sum_s": 1.5675245997263119,
+     "p50_ms": 0.02160000440198928,
+     "p95_ms": 2.1164999998291023,
+     "p99_ms": 4.3260000020381995,
+     "think_us": 0,
+     "cold_method": "unbuffered_proxy"
+    },
+    {
+     "wall_s": 1.5713475000011385,
+     "stream_done_s": 1.5724253000007593,
+     "stream_s": 1.5715,
+     "stream_bytes": 243531776,
+     "stream_errors": 0,
+     "requests": 4000,
+     "slow_requests": 355,
+     "slow_ratio": 0.08875,
+     "replay_sum_s": 1.5682133004956995,
+     "p50_ms": 0.021400002879090607,
+     "p95_ms": 2.154599998902995,
+     "p99_ms": 4.3660000010277145,
+     "think_us": 0,
+     "cold_method": "unbuffered_proxy"
+    }
+   ],
+   "median_wall_s": 1.5712379000033252,
+   "median_stream_done_s": 1.5723797000027844,
+   "median_slow_ratio": 0.08625,
+   "median_replay_sum_s": 1.5675245997263119
+  },
+  "250": {
+   "runs": [
+    {
+     "wall_s": 2.3843650999988313,
+     "stream_done_s": 1.4274499999955879,
+     "stream_s": 1.4261,
+     "stream_bytes": 243531776,
+     "stream_errors": 0,
+     "requests": 4000,
+     "slow_requests": 1,
+     "slow_ratio": 0.00025,
+     "replay_sum_s": 0.13943669998116093,
+     "p50_ms": 0.023399996280204505,
+     "p95_ms": 0.058800003898795694,
+     "p99_ms": 0.1598999951966107,
+     "think_us": 250,
+     "cold_method": "unbuffered_proxy"
+    },
+    {
+     "wall_s": 2.3991998999990756,
+     "stream_done_s": 1.4275258999987273,
+     "stream_s": 1.4262,
+     "stream_bytes": 243531776,
+     "stream_errors": 0,
+     "requests": 4000,
+     "slow_requests": 1,
+     "slow_ratio": 0.00025,
+     "replay_sum_s": 0.14013740023801802,
+     "p50_ms": 0.022700005501974374,
+     "p95_ms": 0.057000004744622856,
+     "p99_ms": 0.16930000128922984,
+     "think_us": 250,
+     "cold_method": "unbuffered_proxy"
+    },
+    {
+     "wall_s": 2.4077660999973887,
+     "stream_done_s": 1.4526304000028176,
+     "stream_s": 1.4517,
+     "stream_bytes": 243531776,
+     "stream_errors": 0,
+     "requests": 4000,
+     "slow_requests": 2,
+     "slow_ratio": 0.0005,
+     "replay_sum_s": 0.14340000004449394,
+     "p50_ms": 0.023200002033263445,
+     "p95_ms": 0.05999999848427251,
+     "p99_ms": 0.17500000103609636,
+     "think_us": 250,
+     "cold_method": "unbuffered_proxy"
+    }
+   ],
+   "median_wall_s": 2.3991998999990756,
+   "median_stream_done_s": 1.4275258999987273,
+   "median_slow_ratio": 0.00025,
+   "median_replay_sum_s": 0.14013740023801802
+  },
+  "1000": {
+   "runs": [
+    {
+     "wall_s": 6.175999300001422,
+     "stream_done_s": 1.4939940999975079,
+     "stream_s": 1.4929,
+     "stream_bytes": 243531776,
+     "stream_errors": 0,
+     "requests": 4000,
+     "slow_requests": 1,
+     "slow_ratio": 0.00025,
+     "replay_sum_s": 0.1678138001516345,
+     "p50_ms": 0.027900001441594213,
+     "p95_ms": 0.0731999971321784,
+     "p99_ms": 0.21279999782564119,
+     "think_us": 1000,
+     "cold_method": "unbuffered_proxy"
+    },
+    {
+     "wall_s": 6.151668899998185,
+     "stream_done_s": 1.4274684000047273,
+     "stream_s": 1.4266,
+     "stream_bytes": 243531776,
+     "stream_errors": 0,
+     "requests": 4000,
+     "slow_requests": 1,
+     "slow_ratio": 0.00025,
+     "replay_sum_s": 0.1636083999692346,
+     "p50_ms": 0.02729999687289819,
+     "p95_ms": 0.0714999987394549,
+     "p99_ms": 0.1975999985006638,
+     "think_us": 1000,
+     "cold_method": "unbuffered_proxy"
+    },
+    {
+     "wall_s": 6.174861899999087,
+     "stream_done_s": 1.4609368000019458,
+     "stream_s": 1.4595,
+     "stream_bytes": 243531776,
+     "stream_errors": 0,
+     "requests": 4000,
+     "slow_requests": 1,
+     "slow_ratio": 0.00025,
+     "replay_sum_s": 0.1714212003571447,
+     "p50_ms": 0.028299997211433947,
+     "p95_ms": 0.07760000153211877,
+     "p99_ms": 0.2049000031547621,
+     "think_us": 1000,
+     "cold_method": "unbuffered_proxy"
+    }
+   ],
+   "median_wall_s": 6.174861899999087,
+   "median_stream_done_s": 1.4609368000019458,
+   "median_slow_ratio": 0.00025,
+   "median_replay_sum_s": 0.1678138001516345
+  }
+ }
+}

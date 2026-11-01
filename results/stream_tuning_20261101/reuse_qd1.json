@@ -1,0 +1,71 @@
+{
+ "ops": 1048,
+ "hot_bytes": 243531776,
+ "flush_bytes": 314572800,
+ "rows": [
+  {
+   "rep": 0,
+   "chunk": 1048576,
+   "qd": 1,
+   "hint": false,
+   "reuse": true,
+   "seconds": 1.4262,
+   "bytes": 243531776,
+   "cold_method": "unbuffered_proxy"
+  },
+  {
+   "rep": 1,
+   "chunk": 1048576,
+   "qd": 1,
+   "hint": false,
+   "reuse": true,
+   "seconds": 1.4939,
+   "bytes": 243531776,
+   "cold_method": "unbuffered_proxy"
+  },
+  {
+   "rep": 2,
+   "chunk": 1048576,
+   "qd": 1,
+   "hint": false,
+   "reuse": true,
+   "seconds": 1.4158,
+   "bytes": 243531776,
+   "cold_method": "unbuffered_proxy"
+  },
+  {
+   "rep": 3,
+   "chunk": 1048576,
+   "qd": 1,
+   "hint": false,
+   "reuse": true,
+   "seconds": 1.4148,
+   "bytes": 243531776,
+   "cold_method": "unbuffered_proxy"
+  },
+  {
+   "rep": 4,
+   "chunk": 1048576,
+   "qd": 1,
+   "hint": false,
+   "reuse": true,
+   "seconds": 1.4155,
+   "bytes": 243531776,
+   "cold_method": "unbuffered_proxy"
+  }
+ ],
+ "table": [
+  {
+   "chunk_kib": 1024,
+   "qd": 1,
+   "seq_hint": false,
+   "reuse": true,
+   "median_s": 1.4158,
+   "min_s": 1.4148,
+   "max_s": 1.4939,
+   "mib_s": 164.0
+  }
+ ],
+ "is_admin": false,
+ "time": "20261101_234239"
+}

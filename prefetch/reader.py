@@ -35,8 +35,8 @@ def _open(path, hint, stats):
     return open(path, 'rb', buffering=0)
 
 
-def _worker(ops, hint, stats, lock):
-    f, cur, buf = None, None, bytearray(BUF)
+def _worker(ops, hint, stats, lock, chunk=BUF, reuse=False):
+    f, cur, buf, handles = None, None, bytearray(chunk), {}
     local = {'bytes': 0, 'requests': 0, 'errors': 0, 'fallback': False}
     while True:
         try:
@@ -45,14 +45,18 @@ def _worker(ops, hint, stats, lock):
             break
         try:
             if path != cur:
-                if f:
+                if f and not reuse:
                     f.close()
                 f, cur = None, path
-                f = _open(path, hint, local)
+                f = handles.get(path) if reuse else None
+                if f is None:
+                    f = _open(path, hint, local)
+                    if reuse:
+                        handles[path] = f
             f.seek(off)
             left = n
             while left > 0:
-                got = f.readinto(memoryview(buf)[:min(left, BUF)])
+                got = f.readinto(memoryview(buf)[:min(left, chunk)])
                 if not got:
                     break
                 left -= got
@@ -60,25 +64,28 @@ def _worker(ops, hint, stats, lock):
             local['requests'] += 1
         except OSError:
             local['errors'] += 1
+            if reuse and handles.get(cur):
+                handles.pop(cur).close()
             f, cur = None, None
-    if f:
-        f.close()
+    for h in (handles.values() if reuse else [f] if f else []):
+        h.close()
     with lock:
         for key in ('bytes', 'requests', 'errors'):
             stats[key] += local[key]
         stats['fallback'] |= local['fallback']
 
 
-def read_ops(ops, threads=1, sequential_hint=False):
+def read_ops(ops, threads=1, sequential_hint=False, chunk=BUF, reuse=False):
     """ops [(path, offset, length)] -> {'bytes','requests','seconds','fallback','errors'}.
-    threads=1 keeps strict op order; N (max 8) runs N workers pulling from the same ordered queue."""
+    threads=1 keeps strict op order; N (max 8) runs N workers pulling from the same ordered queue.
+    chunk = bytes per read call; reuse = each worker keeps its file handles open until the end."""
     q = queue.Queue()
     for op in ops:
         q.put(op)
     stats = {'bytes': 0, 'requests': 0, 'errors': 0, 'fallback': False}
     lock = threading.Lock()
     t0 = time.perf_counter()
-    ts = [threading.Thread(target=_worker, args=(q, sequential_hint, stats, lock)) for _ in range(max(1, min(threads, 8)))]
+    ts = [threading.Thread(target=_worker, args=(q, sequential_hint, stats, lock, chunk, reuse)) for _ in range(max(1, min(threads, 8)))]
     for t in ts:
         t.start()
     for t in ts:

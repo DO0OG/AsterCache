@@ -50,15 +50,17 @@ def main(argv=None):
     ap.add_argument('--seek-ms', type=float, default=12.0, help='assumed seek cost for the break-even gap')
     ap.add_argument('--gap-kib', type=int, default=0, help='max hole to read through (default 0 = sweep optimum; the read-mbps x seek-ms break-even is unused)')
     ap.add_argument('--full-file-ratio', type=float, default=0.3, help='needed fraction at which a file is read whole (>1 disables)')
-    ap.add_argument('--threads', type=int, default=4, help='1..8 (default 4 = sweep optimum)')
-    ap.add_argument('--seq-hint', action='store_true', help='open with FILE_FLAG_SEQUENTIAL_SCAN (measured slower, and pages evicted early)')
+    ap.add_argument('--threads', type=int, default=1, help='1..8 (default 1: strict zone order, fastest on the relocated zone, results/stream_tuning_20261101)')
+    ap.add_argument('--chunk-kib', type=int, default=1024, help='bytes per read call (256 is 4x slower, 1024..16384 equal)')
+    ap.add_argument('--no-reuse', action='store_true', help='close each file between ops (default keeps handles open: ~8%% faster)')
+    ap.add_argument('--seq-hint', action='store_true', help='open with FILE_FLAG_SEQUENTIAL_SCAN (measured 8-15x slower on the relocated zone, do not use)')
     ap.add_argument('--execute', action='store_true')
     a = ap.parse_args(argv)
     a.plan = a.plan or (Path(os.environ['ASTER_TRACE']) if os.environ.get('ASTER_TRACE') else None)
     a.origin_root = a.origin_root or (Path(os.environ['ASTER_ROOT']) if os.environ.get('ASTER_ROOT') else None)
     if not a.plan or not a.origin_root:
         ap.error('--plan/--trace and --origin-root are required (or env ASTER_TRACE / ASTER_ROOT)')
-    if a.budget_mib < 1 or (a.gap_kib or 0) < 0 or a.read_mbps <= 0 or a.seek_ms < 0 or not 1 <= a.threads <= 8:
+    if a.budget_mib < 1 or (a.gap_kib or 0) < 0 or a.read_mbps <= 0 or a.seek_ms < 0 or not 1 <= a.threads <= 8 or a.chunk_kib < 4:
         ap.error('invalid budget/gap/speed/threads')
     ranges = load_ranges(a.plan, a.origin_root)
     ops, info = schedule(ranges, a.strategy, a.budget_mib * MIB, a.gap_kib * 1024 if a.gap_kib is not None
@@ -67,7 +69,7 @@ def main(argv=None):
            'layout_files': info['layout_files'], 'full_files': info['full_files'],
            'gap_bytes': info['gap_bytes']}
     if a.execute:
-        out.update(read_ops(ops, a.threads, a.seq_hint))
+        out.update(read_ops(ops, a.threads, a.seq_hint, a.chunk_kib * 1024, not a.no_reuse))
     else:
         out.update(dry_run=True, bytes=sum(o[2] for o in ops), requests=len(ops), ops=ops)
     print(json.dumps(out, separators=(',', ':')))

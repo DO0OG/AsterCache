@@ -1,4 +1,6 @@
 """prefetch package: scheduler (pure), layout (real NTFS or None, never raises), reader."""
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -106,8 +108,8 @@ class IoTests(unittest.TestCase):
 
     def test_reader_bytes_equal_request_sum(self):
         ops = [(self.f, 0, 100000), (self.f, MIB, 70000), (self.f, 2 * MIB + 5, 12345)]
-        for threads, hint in ((1, False), (2, False), (1, True)):
-            r = read_ops(ops, threads=threads, sequential_hint=hint)
+        for threads, hint, chunk, reuse in ((1, False, 1 << 20, False), (2, False, 4096, True), (1, True, 8 << 20, True)):
+            r = read_ops(ops, threads=threads, sequential_hint=hint, chunk=chunk, reuse=reuse)
             self.assertEqual(r['bytes'], sum(o[2] for o in ops))
             self.assertEqual((r['requests'], r['errors']), (3, 0))
 
@@ -133,6 +135,15 @@ class IoTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as other:  # outside origin-root -> dropped
             self.assertEqual(cli.load_ranges(trace, other), [])
 
+
+    def test_cli_defaults_and_chunk_options(self):
+        trace = Path(self.tmp.name) / 't.json'
+        trace.write_text(json.dumps([{'path': self.f, 'offset': 0, 'length': 3 * MIB, 'cost': 8.}]))
+        for extra in ([], ['--no-reuse', '--chunk-kib', '64', '--threads', '2']):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                cli.main(['--trace', str(trace), '--origin-root', self.tmp.name, '--strategy', 'path', '--execute'] + extra)
+            self.assertEqual((json.loads(out.getvalue())['bytes'], json.loads(out.getvalue())['errors']), (3 * MIB, 0))
 
     def test_cli_reads_env_when_no_options(self):
         trace = Path(self.tmp.name) / 't.json'

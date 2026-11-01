@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+  </PropertyGroup>
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>aster</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AsterCache.Core\AsterCache.Core.csproj" />
+    <ProjectReference Include="..\AsterCache.Windows\AsterCache.Windows.csproj" />
+    <ProjectReference Include="..\AsterCache.Prefetch\AsterCache.Prefetch.csproj" />
+    <ProjectReference Include="..\AsterCache.Tracer\AsterCache.Tracer.csproj" />
+    <ProjectReference Include="..\AsterCache.Service\AsterCache.Service.csproj" />
+  </ItemGroup>
+</Project>

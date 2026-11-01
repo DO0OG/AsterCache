@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AsterCache.Core\AsterCache.Core.csproj" />
+    <ProjectReference Include="..\AsterCache.Windows\AsterCache.Windows.csproj" />
+  </ItemGroup>
+</Project>

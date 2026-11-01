@@ -1,0 +1,556 @@
+{
+ "volume": {
+  "root": "D:\\",
+  "cluster_bytes": 4096,
+  "total_clusters": 488374271
+ },
+ "unit": "MiB/s (mb_s == mib_s)",
+ "params": {
+  "span_mib": 32,
+  "chunk_mib": 4,
+  "reps": 3,
+  "per_bin": 3,
+  "random_bytes": 65536,
+  "random_n": 200,
+  "candidates": 1707,
+  "extents_queried": 1707
+ },
+ "idle_bytes_per_s": {
+  "before": [
+   5405.410577125566
+  ],
+  "between_laps": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "after": 16378.403499524198
+ },
+ "samples": [
+  {
+   "file_off": 0,
+   "lcn_start": 1590077,
+   "name": "STOVE\\libcef.dll",
+   "lcn_pct": 0.326,
+   "mb_s_runs": [
+    92.01,
+    142.71,
+    101.8
+   ],
+   "mib_s": 101.8,
+   "mb_s": 101.8
+  },
+  {
+   "file_off": 0,
+   "lcn_start": 19971647,
+   "name": "game\\sa_weaponsm_00002.pkg",
+   "lcn_pct": 4.089,
+   "mb_s_runs": [
+    106.5,
+    95.78,
+    112.7
+   ],
+   "mib_s": 106.5,
+   "mb_s": 106.5
+  },
+  {
+   "file_off": 0,
+   "lcn_start": 20043863,
+   "name": "game\\sa_tex2019_00000.pkg",
+   "lcn_pct": 4.104,
+   "mb_s_runs": [
+    144.65,
+    167.42,
+    142.59
+   ],
+   "mib_s": 144.65,
+   "mb_s": 144.65
+  },
+  {
+   "file_off": 0,
+   "lcn_start": 76845950,
+   "name": "_Canvas\\_Canvas_019.wz",
+   "lcn_pct": 15.735,
+   "mb_s_runs": [
+    112.25,
+    107.3,
+    112.03
+   ],
+   "mib_s": 112.03,
+   "mb_s": 112.03
+  },
+  {
+   "file_off": 0,
+   "lcn_start": 84522838,
+   "name": "_Canvas\\_Canvas_086.wz",
+   "lcn_pct": 17.307,
+   "mb_s_runs": [
+    88.91,
+    111.69,
+    98.46
+   ],
+   "mib_s": 98.46,
+   "mb_s": 98.46
+  },
+  {
+   "file_off": 0,
+   "lcn_start": 96791020,
+   "name": "kss_raw\\train-00000-of-00007.parquet",
+   "lcn_pct": 19.819,
+   "mb_s_runs": [
+    134.12,
+    144.3,
+    128.04
+   ],
+   "mib_s": 134.12,
+   "mb_s": 134.12
+  },
+  {
+   "file_off": 0,
+   "lcn_start": 98293794,
+   "name": "_Canvas\\_Canvas_044.wz",
+   "lcn_pct": 20.127,
+   "mb_s_runs": [
+    159.07,
+    164.18,
+    143.97
+   ],
+   "mib_s": 159.07,
+   "mb_s": 159.07
+  },
+  {
+   "file_off": 0,
+   "lcn_start": 141259351,
+   "name": "game\\sa_charactersm_00003.pkg",
+   "lcn_pct": 28.924,
+   "mb_s_runs": [
+    97.96,
+    111.4,
+    99.74
+   ],
+   "mib_s": 99.74,
+   "mb_s": 99.74
+  },
+  {
+   "file_off": 0,
+   "lcn_start": 141792219,
+   "name": "Champions\\Gwen.wad.client",
+   "lcn_pct": 29.034,
+   "mb_s_runs": [
+    19.8,
+    20.64,
+    23.32
+   ],
+   "mib_s": 20.64,
+   "mb_s": 20.64
+  },
+  {
+   "file_off": 0,
+   "lcn_start": 153135430,
+   "name": "game\\sa_resourcem_00011.pkg",
+   "lcn_pct": 31.356,
+   "mb_s_runs": [
+    91.64,
+    102.29,
+    120.05
+   ],
+   "mib_s": 102.29,
+   "mb_s": 102.29
+  },
+  {
+   "file_off": 602112,
+   "lcn_start": 165819593,
+   "name": "s22_D10\\last.pt",
+   "lcn_pct": 33.953,
+   "mb_s_runs": [
+    96.79,
+    106.7,
+    113.32
+   ],
+   "mib_s": 106.7,
+   "mb_s": 106.7
+  },
+  {
+   "file_off": 0,
+   "lcn_start": 187548266,
+   "name": "left4dead2_dlc3\\pak01_002.vpk",
+   "lcn_pct": 38.403,
+   "mb_s_runs": [
+    76.04,
+    81.12,
+    80.62
+   ],
+   "mib_s": 80.62,
+   "mb_s": 80.62
+  },
+  {
+   "file_off": 0,
+   "lcn_start": 202807798,
+   "name": "Champions\\Nami.wad.client",
+   "lcn_pct": 41.527,
+   "mb_s_runs": [
+    15.44,
+    17.98,
+    17.83
+   ],
+   "mib_s": 17.83,
+   "mb_s": 17.83
+  },
+  {
+   "file_off": 3887104,
+   "lcn_start": 203877644,
+   "name": "s22_T\\last.pt",
+   "lcn_pct": 41.746,
+   "mb_s_runs": [
+    118.13,
+    100.51,
+    126.71
+   ],
+   "mib_s": 118.13,
+   "mb_s": 118.13
+  },
+  {
+   "file_off": 0,
+   "lcn_start": 212811192,
+   "name": "LobotomyCorp_Data\\resources.assets",
+   "lcn_pct": 43.575,
+   "mb_s_runs": [
+    133.57,
+    132.6,
+    133.4
+   ],
+   "mib_s": 133.4,
+   "mb_s": 133.4
+  },
+  {
+   "file_off": 0,
+   "lcn_start": 247308194,
+   "name": "game\\fx_00004.pkg",
+   "lcn_pct": 50.639,
+   "mb_s_runs": [
+    85.99,
+    118.45,
+    103.01
+   ],
+   "mib_s": 103.01,
+   "mb_s": 103.01
+  },
+  {
+   "file_off": 0,
+   "lcn_start": 248623684,
+   "name": "Champions\\Ashe.wad.client",
+   "lcn_pct": 50.908,
+   "mb_s_runs": [
+    23.16,
+    22.64,
+    23.09
+   ],
+   "mib_s": 23.09,
+   "mb_s": 23.09
+  },
+  {
+   "file_off": 2059739136,
+   "lcn_start": 248766864,
+   "name": "Paks\\pakchunk6-WindowsNoEditor.pak",
+   "lcn_pct": 50.938,
+   "mb_s_runs": [
+    116.68,
+    116.6,
+    122.93
+   ],
+   "mib_s": 116.68,
+   "mb_s": 116.68
+  },
+  {
+   "file_off": 0,
+   "lcn_start": 296540999,
+   "name": "data\\data.001",
+   "lcn_pct": 60.72,
+   "mb_s_runs": [
+    26.76,
+    28.06,
+    34.04
+   ],
+   "mib_s": 28.06,
+   "mb_s": 28.06
+  },
+  {
+   "file_off": 831488,
+   "lcn_start": 325978556,
+   "name": "emns3\\wav_int16.pt",
+   "lcn_pct": 66.748,
+   "mb_s_runs": [
+    104.73,
+    96.98,
+    114.87
+   ],
+   "mib_s": 104.73,
+   "mb_s": 104.73
+  },
+  {
+   "file_off": 0,
+   "lcn_start": 333878071,
+   "name": "data\\data.013",
+   "lcn_pct": 68.365,
+   "mb_s_runs": [
+    28.97,
+    29.71,
+    34.27
+   ],
+   "mib_s": 29.71,
+   "mb_s": 29.71
+  },
+  {
+   "file_off": 0,
+   "lcn_start": 348330916,
+   "name": "기존\\ABP-408-4K 우에하라 미즈호.mp4.terabox.p.downloading",
+   "lcn_pct": 71.325,
+   "mb_s_runs": [
+    64.18,
+    78.95,
+    90.12
+   ],
+   "mib_s": 78.95,
+   "mb_s": 78.95
+  },
+  {
+   "file_off": 83107840,
+   "lcn_start": 353521479,
+   "name": "manifest_cdec4fff0821d83e5a2fb82eeb774bcc23928f2e7fee0123797ef45d9b3f500c\\mel-53682948fb0548e6a77a60d9d96f7f87.npy",
+   "lcn_pct": 72.387,
+   "mb_s_runs": [
+    106.92,
+    111.02,
+    101.47
+   ],
+   "mib_s": 106.92,
+   "mb_s": 106.92
+  },
+  {
+   "file_off": 13611008,
+   "lcn_start": 357217902,
+   "name": "s22_C\\last.pt",
+   "lcn_pct": 73.144,
+   "mb_s_runs": [
+    107.11,
+    116.04,
+    111.15
+   ],
+   "mib_s": 111.15,
+   "mb_s": 111.15
+  },
+  {
+   "file_off": 0,
+   "lcn_start": 403808688,
+   "name": "기존\\ABP-557_4K.mp4.terabox.p.downloading",
+   "lcn_pct": 82.684,
+   "mb_s_runs": [
+    72.42,
+    81.16,
+    72.86
+   ],
+   "mib_s": 72.86,
+   "mb_s": 72.86
+  },
+  {
+   "file_off": 4319887360,
+   "lcn_start": 410720347,
+   "name": "Paks\\pakchunk0-WindowsNoEditor.pak",
+   "lcn_pct": 84.1,
+   "mb_s_runs": [
+    122.13,
+    138.98,
+    118.71
+   ],
+   "mib_s": 122.13,
+   "mb_s": 122.13
+  },
+  {
+   "file_off": 0,
+   "lcn_start": 410921882,
+   "name": "StandaloneWindows64\\defaultlocalgroup_assets_all_792a2b75155d6f5f9418663367afe6de.bundle",
+   "lcn_pct": 84.141,
+   "mb_s_runs": [
+    104.23,
+    118.69,
+    122.37
+   ],
+   "mib_s": 118.69,
+   "mb_s": 118.69
+  }
+ ],
+ "bins": [
+  {
+   "bin": "0-10%",
+   "n": 3,
+   "median_mib_s": 106.5,
+   "min": 101.8,
+   "max": 144.65
+  },
+  {
+   "bin": "10-20%",
+   "n": 3,
+   "median_mib_s": 112.03,
+   "min": 98.46,
+   "max": 134.12
+  },
+  {
+   "bin": "20-30%",
+   "n": 3,
+   "median_mib_s": 99.74,
+   "min": 20.64,
+   "max": 159.07
+  },
+  {
+   "bin": "30-40%",
+   "n": 3,
+   "median_mib_s": 102.29,
+   "min": 80.62,
+   "max": 106.7
+  },
+  {
+   "bin": "40-50%",
+   "n": 3,
+   "median_mib_s": 118.13,
+   "min": 17.83,
+   "max": 133.4
+  },
+  {
+   "bin": "50-60%",
+   "n": 3,
+   "median_mib_s": 103.01,
+   "min": 23.09,
+   "max": 116.68
+  },
+  {
+   "bin": "60-70%",
+   "n": 3,
+   "median_mib_s": 29.71,
+   "min": 28.06,
+   "max": 104.73
+  },
+  {
+   "bin": "70-80%",
+   "n": 3,
+   "median_mib_s": 106.92,
+   "min": 78.95,
+   "max": 111.15
+  },
+  {
+   "bin": "80-90%",
+   "n": 3,
+   "median_mib_s": 118.69,
+   "min": 72.86,
+   "max": 122.13
+  },
+  {
+   "bin": "90-100%",
+   "n": 0,
+   "median_mib_s": null,
+   "min": null,
+   "max": null
+  }
+ ],
+ "random_64k": {
+  "spread": {
+   "low_0-10%": {
+    "n": 200,
+    "mean_ms": 15.938,
+    "median_ms": 17.285,
+    "p95_ms": 27.931
+   },
+   "mid_40-50%": {
+    "n": 200,
+    "mean_ms": 16.131,
+    "median_ms": 15.546,
+    "p95_ms": 25.63
+   }
+  },
+  "single": {
+   "low_0-10%": {
+    "n": 200,
+    "mean_ms": 14.073,
+    "median_ms": 16.122,
+    "p95_ms": 24.567
+   },
+   "mid_40-50%": {
+    "n": 200,
+    "mean_ms": 16.698,
+    "median_ms": 16.908,
+    "p95_ms": 25.123
+   }
+  }
+ },
+ "conclusion": {
+  "empty_bins": [
+   "90-100%"
+  ],
+  "outer_over_inner": 0.897,
+  "outer_bin": "0-10%",
+  "inner_bin": "80-90%",
+  "spearman_lcn_vs_speed": -0.096,
+  "fastest_bin": "80-90%",
+  "ref_mib_s": 179.0,
+  "ref_closest_bin": "80-90%",
+  "ref_closest_bin_median": 118.69,
+  "max_sample_mib_s": 159.07,
+  "within_bin_spread_ratio": [
+   1.42,
+   1.36,
+   7.71,
+   1.32,
+   7.48,
+   5.05,
+   3.73,
+   1.41,
+   1.68
+  ],
+  "monotonic_bin_medians": false
+ },
+ "analysis": {
+  "fast_only_bin_median_mib_s": {
+   "0-10%": 106.5,
+   "10-20%": 112.0,
+   "20-30%": 129.4,
+   "30-40%": 102.3,
+   "40-50%": 125.8,
+   "50-60%": 109.8,
+   "60-70%": 104.7,
+   "70-80%": 106.9,
+   "80-90%": 118.7
+  },
+  "slow_outliers_lt40": [
+   [
+    "Champions\\Gwen.wad.client",
+    29.034,
+    20.64
+   ],
+   [
+    "Champions\\Nami.wad.client",
+    41.527,
+    17.83
+   ],
+   [
+    "Champions\\Ashe.wad.client",
+    50.908,
+    23.09
+   ],
+   [
+    "data\\data.001",
+    60.72,
+    28.06
+   ],
+   [
+    "data\\data.013",
+    68.365,
+    29.71
+   ]
+  ],
+  "text": [
+   "LCN 위치와 속도 사이 뚜렷한 상관 없음(Spearman ~ -0.1): 0~85% 전 구간 정상 샘플이 90~160 MiB/s에 흩어짐, 바깥(0-10%)이 안쪽(80-90%)보다 빠르지 않음.",
+   "일부 샘플(Champions/*.wad.client 2026-10-21 기록, data.001/013)은 단일 연속 extent인데도 17~34 MiB/s로 재현성 있게 느림, data.013 은 32MiB 안에서 230ms→30ms/4MiB로 가속 - LBA 순서가 물리 순서와 일치하지 않는 간접 매핑(SMR 미디어 캐시 등)과 부합하는 징후.",
+   "90-100% 구간은 D: 가 70% 사용 중이라 파일이 없음(비어 있음). 80-90% 도 파일은 있음.",
+   "random_64k 의 single/high_80-90% 는 사전 할당된 .downloading 파일(유효 데이터 길이 밖 0 반환) 오염 가능성이 있어 신뢰하지 말 것. random_followup.json 의 값(저 20.6 vs 고 21.9 ms, 400건)을 쓸 것: 위치 차이 없음."
+  ]
+ }
+}

@@ -1,0 +1,45 @@
+{
+ "note": "one-off follow-up: random 64KiB, 400 reqs each, excludes preallocated .downloading files, runs spread across the decile; runs are the >=32MiB contiguous runs of the named files",
+ "pools": {
+  "low_0-10%": [
+   [
+    "STOVE/libcef.dll",
+    101
+   ],
+   [
+    "game/sa_tex2019_00000.pkg",
+    69
+   ],
+   [
+    "game/sa_weaponsm_00002.pkg",
+    32
+   ]
+  ],
+  "high_80-90%": [
+   [
+    "StandaloneWindows64/defaultlocalgroup_assets_all_792a2b75155d6f5f9418663367afe6de.bundle",
+    202
+   ],
+   [
+    "Paks/pakchunk0-WindowsNoEditor.pak",
+    574
+   ]
+  ]
+ },
+ "result": {
+  "low_0-10%": {
+   "n": 400,
+   "mean_ms": 20.61,
+   "median_ms": 22.15,
+   "p95_ms": 29.58,
+   "min_ms": 0.21
+  },
+  "high_80-90%": {
+   "n": 400,
+   "mean_ms": 21.94,
+   "median_ms": 22.46,
+   "p95_ms": 30.2,
+   "min_ms": 0.19
+  }
+ }
+}

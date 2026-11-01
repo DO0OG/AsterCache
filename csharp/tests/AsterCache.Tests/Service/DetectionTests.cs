@@ -1,0 +1,262 @@
+using System.Collections.Concurrent;
+using System.Security.AccessControl;
+using System.Security.Principal;
+using AsterCache.Core;
+using AsterCache.Core.Logging;
+using AsterCache.Core.Settings;
+using AsterCache.Prefetch;
+using AsterCache.Service;
+using AsterCache.Tests.Windows;
+using Xunit;
+
+namespace AsterCache.Tests.Service;
+
+internal sealed class ListLog : ILog
+{
+    private readonly ConcurrentQueue<string> _lines = new();
+
+    public IReadOnlyCollection<string> Lines => _lines;
+
+    public void Write(LogLevel level, string message, Exception? exception = null) =>
+        _lines.Enqueue($"{level}: {message}" + (exception is null ? string.Empty : " | " + exception.Message));
+}
+
+internal sealed class FakeStreamer : IGameStreamer
+{
+    public ConcurrentQueue<(string Game, long At)> Calls { get; } = new();
+
+    public Exception? Throw { get; set; }
+
+    public StreamStats Stream(GameSettings game)
+    {
+        Calls.Enqueue((game.Name, System.Diagnostics.Stopwatch.GetTimestamp()));
+        return Throw is null ? new StreamStats(100, 2, 0, 0.01) : throw Throw;
+    }
+}
+
+internal static class Games
+{
+    public static GameSettings Make(string name, params string[] exes) => new(name, exes, @"C:\p\" + name + ".prefetch.json", @"C:\p\" + name + ".plan.json",
+        @"D:\Games\" + name, [@"D:\Games"], "GAMES", 60);
+}
+
+public sealed class PollingWatcherTests
+{
+    [Fact]
+    public async Task ReportsOnlyNewWatchedProcessesNotTheBaseline()
+    {
+        var steps = new List<(int, string)[]>
+        {
+            new[] { (1, "a.exe"), (2, "game.exe") },                   // 기준선: 이미 떠 있는 game.exe 는 알리지 않음
+            new[] { (1, "a.exe"), (2, "game.exe") },
+            new[] { (1, "a.exe"), (2, "game.exe"), (3, "GAME.EXE"), (9, "other.exe") }, // 새 game (대소문자 다름), 감시 밖 other
+            new[] { (1, "a.exe"), (2, "tool.exe"), (9, "other.exe") },  // 3 종료, PID 2 는 다른 이름
+            new[] { (1, "a.exe"), (2, "game.exe") },                    // PID 2 가 game.exe 로 재사용 → 새 프로세스
+            new[] { (1, "a.exe"), (2, "game.exe") },
+        };
+        int i = 0;
+        using var cts = new CancellationTokenSource();
+        var found = new List<ProcessStart>();
+        var watcher = new PollingProcessWatcher(["game.exe"], TimeSpan.FromMilliseconds(5), () =>
+        {
+            IReadOnlyList<(int, string)> now = steps[Math.Min(i, steps.Count - 1)];
+            if (++i > steps.Count)
+            {
+                cts.Cancel();
+            }
+
+            return now;
+        });
+
+        await watcher.RunAsync(found.Add, cts.Token);
+
+        Assert.Equal([3, 2], found.Select(s => s.Pid));
+        Assert.All(found, s => Assert.Equal("game.exe", s.ExeName, ignoreCase: true));
+    }
+}
+
+public sealed class EtwWatcherTests
+{
+    [Theory]
+    [InlineData(@"\Device\HarddiskVolume3\Windows\System32\cmd.exe", "cmd.exe")]
+    [InlineData(@"C:\Games\MW4\game.exe", "game.exe")]
+    [InlineData("game.exe", "game.exe")]
+    [InlineData(@"\Device\HarddiskVolume3\dir\", null)]
+    [InlineData("", null)]
+    [InlineData(null, null)]
+    public void ExeNameIsTheLastPathPart(string? image, string? expected)
+    {
+        Assert.Equal(expected, EtwProcessWatcher.ExeNameOf(image));
+    }
+
+    [Fact]
+    public void NonAdministratorGetsNotAdminBeforeAnySessionExists()
+    {
+        var watcher = new EtwProcessWatcher(["game.exe"], () => false);
+
+        Assert.Throws<NotAdminException>(() => { _ = watcher.RunAsync(_ => { }, CancellationToken.None); });
+    }
+
+    [Fact]
+    public void WorkerChoosesEtwOnlyForAdministratorsAndKeepsPollingAsFallback()
+    {
+        var s = new AsterSettings(250, [Games.Make("g", "game.exe")]);
+
+        (IProcessWatcher p1, IProcessWatcher? f1) = Worker.ChooseWatchers(s, admin: false);
+        (IProcessWatcher p2, IProcessWatcher? f2) = Worker.ChooseWatchers(s, admin: true);
+
+        Assert.IsType<PollingProcessWatcher>(p1);
+        Assert.Null(f1);
+        Assert.IsType<EtwProcessWatcher>(p2);
+        Assert.IsType<PollingProcessWatcher>(f2);
+    }
+}
+
+public sealed class DispatcherTests
+{
+    private static readonly GameSettings Mw4 = Games.Make("mw4", "game.exe", "launcher.exe");
+    private static readonly GameSettings Other = Games.Make("other", "other.exe");
+
+    private static ProcessStart Start(string exe) => new(1, exe, 0);
+
+    [Fact]
+    public void DetectedExeStreamsItsOwnGameCaseInsensitively()
+    {
+        var streamer = new FakeStreamer();
+        var d = new GameDispatcher([Mw4, Other], streamer, new ListLog());
+
+        Assert.True(d.Handle(Start("GAME.EXE")));
+        Assert.True(d.Handle(Start("other.exe")));
+        Assert.False(d.Handle(Start("notepad.exe")));
+
+        Assert.Equal(["mw4", "other"], streamer.Calls.Select(c => c.Game));
+    }
+
+    [Fact]
+    public void SameGameStreamsOnceWithinCooldown()
+    {
+        var streamer = new FakeStreamer();
+        DateTimeOffset now = DateTimeOffset.UnixEpoch;
+        var d = new GameDispatcher([Mw4], streamer, new ListLog(), () => now);
+
+        Assert.True(d.Handle(Start("launcher.exe")));
+        now += TimeSpan.FromSeconds(5);
+        Assert.False(d.Handle(Start("game.exe")));
+        now += GameDispatcher.Cooldown;
+        Assert.True(d.Handle(Start("game.exe")));
+
+        Assert.Equal(2, streamer.Calls.Count);
+    }
+
+    [Fact]
+    public void StreamFailureIsLoggedAndDoesNotStopLaterStreams()
+    {
+        var streamer = new FakeStreamer { Throw = new IOException("disk gone") };
+        var log = new ListLog();
+        DateTimeOffset now = DateTimeOffset.UnixEpoch;
+        var d = new GameDispatcher([Mw4], streamer, log, () => now);
+
+        Assert.False(d.Handle(Start("game.exe")));
+        streamer.Throw = null;
+        now += GameDispatcher.Cooldown;
+        Assert.True(d.Handle(Start("game.exe")));
+
+        Assert.Contains(log.Lines, l => l.StartsWith("Error: mw4: stream failed", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task WorkerTurnsAWatcherEventIntoAStreamCall()
+    {
+        var streamer = new FakeStreamer();
+        var emitted = new TaskCompletionSource();
+        var settings = new AsterSettings(250, [Mw4]);
+        var worker = new Worker(settings, new ListLog(), new OneShotWatcher(Start("game.exe"), emitted), null, streamer,
+            new ReapplyChecker(ReapplyTests.NoIoEnv(), new ListLog()));
+
+        await worker.StartAsync(CancellationToken.None);
+        await emitted.Task;
+        for (int i = 0; i < 200 && streamer.Calls.IsEmpty; i++)
+        {
+            await Task.Delay(10);
+        }
+
+        await worker.StopAsync(CancellationToken.None);
+
+        Assert.Equal("mw4", Assert.Single(streamer.Calls).Game);
+    }
+
+    private sealed class OneShotWatcher(ProcessStart start, TaskCompletionSource emitted) : IProcessWatcher
+    {
+        public async Task RunAsync(Action<ProcessStart> onStart, CancellationToken cancellationToken)
+        {
+            onStart(start);
+            emitted.SetResult();
+            try
+            {
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // 취소는 정상 종료
+            }
+        }
+    }
+}
+
+public sealed class AclCheckTests
+{
+    private static readonly SecurityIdentifier Admins = new(WellKnownSidType.BuiltinAdministratorsSid, null);
+    private static readonly SecurityIdentifier System_ = new(WellKnownSidType.LocalSystemSid, null);
+    private static readonly SecurityIdentifier Users = new(WellKnownSidType.BuiltinUsersSid, null);
+
+    private static DirectorySecurity Locked()
+    {
+        var sec = new DirectorySecurity();
+        sec.SetOwner(Admins);
+        sec.AddAccessRule(new FileSystemAccessRule(Admins, FileSystemRights.FullControl, AccessControlType.Allow));
+        sec.AddAccessRule(new FileSystemAccessRule(System_, FileSystemRights.FullControl, AccessControlType.Allow));
+        return sec;
+    }
+
+    [Fact]
+    public void AdminsAndSystemOnlyIsSafe() => Assert.Empty(AclCheck.UntrustedWriters(Locked()));
+
+    [Fact]
+    public void ReadOnlyAccessForUsersIsStillSafe()
+    {
+        DirectorySecurity sec = Locked();
+        sec.AddAccessRule(new FileSystemAccessRule(Users, FileSystemRights.ReadAndExecute, AccessControlType.Allow));
+
+        Assert.Empty(AclCheck.UntrustedWriters(sec));
+    }
+
+    [Theory]
+    [InlineData(FileSystemRights.Modify)]
+    [InlineData(FileSystemRights.WriteData)]
+    [InlineData(FileSystemRights.AppendData)]
+    [InlineData(FileSystemRights.ChangePermissions)]
+    public void WriteAccessForUsersIsReported(FileSystemRights rights)
+    {
+        DirectorySecurity sec = Locked();
+        sec.AddAccessRule(new FileSystemAccessRule(Users, rights, AccessControlType.Allow));
+
+        Assert.Equal([Users.Value], AclCheck.UntrustedWriters(sec));
+    }
+
+    [Fact]
+    public void UntrustedOwnerIsReported()
+    {
+        DirectorySecurity sec = Locked();
+        sec.SetOwner(Users);
+
+        Assert.Equal(["owner:" + Users.Value], AclCheck.UntrustedWriters(sec));
+    }
+
+    [Fact]
+    public void OrdinaryUserFolderIsNotSafe()
+    {
+        using var tmp = new TempDir();
+
+        Assert.NotEmpty(AclCheck.UntrustedWriters(tmp.Path));
+    }
+}

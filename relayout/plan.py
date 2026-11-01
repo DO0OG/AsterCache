@@ -53,17 +53,23 @@ def _positions(runs):
     return [{key: i / len(r) for i, key in enumerate(r)} for r in runs]
 
 
-def hot_set(sessions, budget_bytes, block=BLOCK, decay=0.85, theta_core=0.5, theta_tail=0.2, contiguous=frozenset()):
+def hot_set(sessions, budget_bytes, block=BLOCK, decay=0.85, theta_core=0.5, theta_tail=0.2, contiguous=frozenset(),
+             min_sessions=1):
     """Pick hot blocks. score = weighted frequency x (0.5 + 0.5 x order stability) x (0.2 if already contiguous).
     Returns (blocks, stats): blocks in selection order (core by score, then tail), stats[key] = (f, m, s, score).
-    With K=1 every block has f=1, s=1: ties break by earliest consensus position."""
+    With K=1 every block has f=1, s=1: ties break by earliest consensus position.
+    min_sessions: blocks seen in fewer runs than this are dropped (1 = keep everything)."""
     if type(budget_bytes) is not int or budget_bytes < 0 or block < 4096 or block & (block - 1):
         raise ValueError('invalid budget/block')
     runs = _runs(sessions, block)
     pos = _positions(runs)
     w = _weights(len(runs), decay)
     total_w = sum(w)
-    keys = {key for r in runs for key in r}
+    seen_in = defaultdict(int)
+    for r in runs:
+        for key in r:
+            seen_in[key] += 1
+    keys = {key for key, n in seen_in.items() if n >= min_sessions}
     stats = {}
     for key in keys:
         obs = [(p[key], wk) for p, wk in zip(pos, w) if key in p]
@@ -283,9 +289,9 @@ def fingerprint(path):
 
 
 def make_plan(sessions, origin_root, zone_bytes, cluster_bytes, extents_fn, size_fn=os.path.getsize,
-              zone_start_lcn=None, block=BLOCK, **kw):
+              zone_start_lcn=None, block=BLOCK, min_sessions=1, **kw):
     """Full plan dict. zone_start_lcn None = chosen at apply time from the volume bitmap (targets are zone offsets)."""
-    hot, _ = hot_set(sessions, zone_bytes, block)
+    hot, _ = hot_set(sessions, zone_bytes, block, min_sessions=min_sessions)
     units = consensus_order(sessions, hot, block)
     paths = sorted({u[0] for u in units})
     ext = {p: extents_fn(p) for p in paths}
@@ -299,6 +305,23 @@ def make_plan(sessions, origin_root, zone_bytes, cluster_bytes, extents_fn, size
             'tasks': [dict(path=p, vcn=v, clusters=n, target_lcn=t) for p, v, n, t in tasks],
             'order': [dict(path=p, vcn=v, clusters=n) for p, v, n in order],
             'fingerprints': {p: fingerprint(p) for p in sorted({o[0] for o in order})}, 'stats': stats}
+
+
+def prefetch_trace(plan, sessions):
+    """Prefetch input for exactly the planned hot ranges, in zone (= consensus access) order: the plan's `order`
+    as [{'path','offset','length','cost'}] (same shape as a trace; prefetch clamps the file end). Bytes = stats.hot_bytes."""
+    block, cb = plan['block'], plan['cluster_bytes']
+    cost = {}
+    for s in sessions:
+        for path, first, last, c in _validated_events(s, block):
+            for b in range(first, last + 1):
+                cost[(path, b)] = max(cost.get((path, b), 0.0), c)
+    rows = []
+    for o in plan['order']:
+        off, n = o['vcn'] * cb, o['clusters'] * cb
+        c = max(cost.get((o['path'], b), 0.0) for b in range(off // block, (off + n - 1) // block + 1))
+        rows.append(dict(path=o['path'], offset=off, length=n, cost=c))
+    return rows
 
 
 def resolve_plan(plan, base):

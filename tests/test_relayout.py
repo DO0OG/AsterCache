@@ -51,6 +51,16 @@ class HotSetTests(unittest.TestCase):
         blocks, _ = rplan.hot_set([run(('b', 3), ('a', 7), ('b', 1))], 10 * BLK)
         self.assertEqual(blocks, [('b', 3), ('a', 7), ('b', 1)])
 
+    def test_min_sessions_drops_single_run_blocks(self):
+        every, _ = rplan.hot_set(self.s, 10 * BLK)
+        self.assertEqual(set(every), {('f', 0), ('f', 1), ('f', 2), ('f', 5), ('f', 9)})
+        blocks, st = rplan.hot_set(self.s, 10 * BLK, min_sessions=2)
+        self.assertEqual(set(blocks), {('f', 0), ('f', 1), ('f', 2)})
+        self.assertNotIn(('f', 9), st)
+        self.assertEqual(rplan.hot_set(self.s, 10 * BLK, min_sessions=3)[0].__len__(), 3)
+        one = [run(('b', 3), ('a', 7))]
+        self.assertEqual(rplan.hot_set(one, 10 * BLK, min_sessions=1)[0], [('b', 3), ('a', 7)])
+
     def test_bad_input(self):
         with self.assertRaises(ValueError):
             rplan.hot_set([], BLK)
@@ -290,6 +300,16 @@ class PlanFileTests(ApplyBase):
         self.assertEqual((p['stats']['expected_runs'], p['zone']['start_lcn']), (1, None))
         self.assertGreater(p['stats']['current_runs'], 1)
 
+    def test_prefetch_trace_is_exactly_the_zone_in_zone_order(self):
+        self.sess = self.sess + [run((self.f1, 12), (self.f2, 0), (self.f1, 0), (self.f1, 4)), run((self.f2, 3))]
+        p = self.make()
+        self.assertEqual(p['stats']['hot_bytes'], sum(o['clusters'] for o in p['order']) * CB)
+        rows = rplan.prefetch_trace(p, self.sess)
+        self.assertEqual(sum(r['length'] for r in rows), p['stats']['hot_bytes'])
+        self.assertEqual([(r['path'], r['offset'] // CB, r['length'] // CB) for r in rows],
+                         [(o['path'], o['vcn'], o['clusters']) for o in p['order']])
+        self.assertTrue(all(set(r) == {'path', 'offset', 'length', 'cost'} and r['cost'] == 8.0 for r in rows))
+
     def test_resolve_plan_shifts_targets(self):
         p = self.make()
         r = rplan.resolve_plan(p, 777)
@@ -449,6 +469,31 @@ class CliTests(ApplyBase):
         self.assertEqual((code, out['dry_run'], out['out']), (0, True, None))
         self.assertIn('moved_bytes', out['stats'])
         self.assertFalse((Path(self.root) / 'plan.json').exists())
+
+    def test_plan_writes_prefetch_trace_and_min_sessions_default(self):
+        traces = []
+        for i, sess in enumerate([self.sess[0], self.sess[0] + run((self.f2, 5)), self.sess[0]]):
+            t = Path(self.root) / ('t%d.json' % i)
+            t.write_text(json.dumps(sess))
+            traces.append(str(t))
+        out = Path(self.root) / 'plan.json'
+        with mock.patch.object(cli, 'file_extents', lambda q: self.files[q]):
+            code, o = self.run_cli('plan', '--trace', *traces, '--origin-root', self.root, '--zone-mib', '2',
+                                   '--cluster-bytes', str(CB), '--out', str(out))
+            self.assertEqual((code, o['min_sessions'], o['prefetch_trace']), (0, 2, str(out) + '.prefetch.json'))
+            rows = json.loads(Path(o['prefetch_trace']).read_text(encoding='utf-8'))
+            self.assertEqual(sum(r['length'] for r in rows), o['stats']['hot_bytes'])
+            self.assertNotIn((self.f2, 5 * BLK), [(r['path'], r['offset']) for r in rows])  # read in one run only
+            code, o1 = self.run_cli('plan', '--trace', *traces, '--origin-root', self.root, '--zone-mib', '2',
+                                    '--cluster-bytes', str(CB), '--min-sessions', '1', '--dry-run')
+            self.assertEqual((code, o1['prefetch_trace']), (0, None))
+            self.assertGreater(o1['stats']['hot_bytes'], o['stats']['hot_bytes'])
+            code, o2 = self.run_cli('plan', '--trace', traces[0], '--origin-root', self.root, '--zone-mib', '2',
+                                    '--cluster-bytes', str(CB), '--dry-run')
+            self.assertEqual((code, o2['min_sessions']), (0, 1))
+            code, o3 = self.run_cli('plan', '--trace', *traces, '--origin-root', self.root, '--zone-mib', '2',
+                                    '--cluster-bytes', str(CB), '--min-sessions', '4', '--dry-run')
+            self.assertEqual((code, o3['error']), (1, 'ValueError'))
 
     def test_verify_reports_non_contiguous_without_privileges(self):
         pf = Path(self.root) / 'plan.json'

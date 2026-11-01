@@ -109,6 +109,18 @@ python astercache_v07.py ssd-warm --plan plan.json --origin-root "D:\Games" --ca
 - `ram-warm`과 `ssd-warm`은 `--execute`가 없으면 계획만 표시합니다.
 - `ssd-warm`의 결과는 이 API를 호출하는 프로그램에서만 쓰입니다. 기존 게임 프로세스는 이 캐시를 읽지 않습니다.
 
+### Procmon 트레이스 변환과 선읽기 입력 (`trace`)
+
+```bash
+python astercache_v07.py trace --csv run1.csv run2.csv run3.csv --prefix "D:\Games" --out trace.json
+python -m relayout.cli plan --trace trace.run1.json trace.run2.json trace.run3.json --origin-root "D:\Games" --zone-mib 512 --out relayout_plan.json [--min-sessions N]
+python -m prefetch.cli --trace relayout_plan.json.prefetch.json --origin-root "D:\Games" --full-file-ratio 2 [--execute]
+```
+
+- `trace`는 Procmon CSV를 `trace.json`(모든 실행에서 읽힌 64 KiB 블록의 합집합)과 실행별 `trace.run1.json`, `trace.run2.json`, ...(읽은 순서 그대로)으로 바꿉니다.
+- `relayout plan`은 `--out` 옆에 `<out>.prefetch.json`을 함께 씁니다. 재배치 존에 들어간 블록만 존 순서로 담은 선읽기 입력이며, `prefetch.cli`가 그대로 받습니다. 재배치한 뒤에는 `trace.json` 대신 이 파일로 선읽기합니다(읽는 바이트 = 계획의 `hot_bytes`).
+- `--min-sessions N`은 N개 미만의 실행에서만 읽힌 블록을 핫 집합에서 뺍니다. 기본값은 트레이스가 2개 이상이면 2, 1개면 1입니다.
+
 ### 캐시 API
 
 ```python

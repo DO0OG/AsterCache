@@ -161,8 +161,10 @@ PowerShell은 `trace.run*.json` 같은 와일드카드를 네이티브 명령에
 ### 2c. 선읽기 계획 미리 보기 (선택)
 
 ```powershell
-python -m prefetch.cli --trace D:\AsterWork\trace.json --origin-root D:\Games\CoD4 --full-file-ratio 2
+python -m prefetch.cli --trace D:\AsterWork\relayout_plan.json.prefetch.json --origin-root D:\Games\CoD4 --full-file-ratio 2
 ```
+
+`relayout plan`은 계획과 함께 `relayout_plan.json.prefetch.json`을 씁니다. 재배치 존에 들어간 블록만, 존 순서대로 담은 선읽기 입력이므로 재배치한 뒤에는 `trace.json` 대신 이 파일을 넘깁니다(읽는 바이트가 `hot_bytes`와 같습니다). `--min-sessions N`은 N개 미만의 실행에서만 읽힌 블록을 핫 집합에서 뺍니다(기본: 트레이스가 2개 이상이면 2, 1개면 1).
 
 `--execute` 없이 실행하면 읽지 않고 `bytes`(읽을 바이트)와 `requests`(요청 수)만 보여 줍니다. 4단계가 읽을 양입니다.
 
@@ -211,7 +213,7 @@ python -m relayout.cli revert --journal D:\AsterWork\relayout_plan.json.journal.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File D:\Git\AsterCache\scripts\game_launch.ps1 `
-  -Trace D:\AsterWork\trace.json -OriginRoot D:\Games\CoD4 -Game D:\Games\CoD4\iw3sp.exe
+  -Trace D:\AsterWork\relayout_plan.json.prefetch.json -OriginRoot D:\Games\CoD4 -Game D:\Games\CoD4\iw3sp.exe
 ```
 
 스크립트는 선읽기(`prefetch.cli`, 존 순서)를 먼저 숨은 백그라운드 프로세스로 시작하고 곧바로 게임을 실행한 뒤, 스트림이 끝날 때까지 기다려 소요 시간과 읽은 바이트를 출력합니다. 시험 출력(게임 대신 `cmd.exe /c exit`, 캐시가 따뜻한 상태)
@@ -261,4 +263,32 @@ stream done: 0.46 s since launch (read time 0.06 s), 195.7 MiB, 2169 requests, e
 
 ## 참고: 리그 오브 레전드 (Vanguard)
 
-리그 오브 레전드는 Riot Vanguard를 씁니다. Vanguard도 커널 수준의 안티치트이므로 위 Ricochet와 같은 주의를 적용합니다. 안티치트가 켜진 상태에서 Procmon이나 ETW 같은 수집기를 쓰는 것, 게임 파일을 재배치하는 것이 Vanguard에서 허용되는지는 확인하지 못했습니다. 설치 용량, 로딩 시 읽기 특성, Vanguard의 도구 감시 정책은 미조사입니다. 별도 조사 결과가 나오면 이 절에 반영합니다. 그 전까지는 재배치와 수집을 시도하지 마십시오.
+리그 오브 레전드는 Riot Vanguard를 씁니다. Vanguard도 커널 수준의 안티치트이므로 위 Ricochet와 같은 주의를 적용합니다. 아래는 2026-11-02에 웹으로 조사한 결과이며, 조사 범위가 얕습니다. 각 항목의 출처 등급을 [확인](공식·1차), [2차](블로그·요약), [추측](근거 없는 추정)으로 표시합니다.
+
+**Vanguard와 수집·재배치 도구**
+- Procmon, ETW, 디스크 디프래그와 Vanguard가 충돌한다는 공개 보고는 찾지 못했습니다. 그렇다고 안전하다는 근거도 없습니다. 보고가 없었다는 사실이 안전을 뜻하지는 않으며, 계정 제재 위험을 0이라고 볼 수 없습니다.
+- Riot의 "Incompatible Software" 문서는 "호환되지 않는 소프트웨어·드라이버"라고만 쓰며 도구 범주나 위 도구 이름을 언급하지 않습니다. [확인] https://support.riotgames.com/en-us/valorant/performance/van-incompatible-software
+- 차단 대상은 주로 치트에 악용될 수 있는 취약 드라이버입니다. 차단될 때 오류에 파일 경로가 표시됩니다. [2차] https://dotesports.com/valorant/news/riot-is-shipping-a-hotfix-to-increase-vanguards-compatibility-with-cheat-vulnerable-drivers
+- Procmon은 PROCMON24.SYS 필터 드라이버를 올리므로 세 도구 가운데 위험이 가장 큽니다. 트레이스와 재배치는 Vanguard를 끈 상태에서 하고, 플레이 중에는 수집·재배치 도구를 모두 닫으십시오. [추측]
+- ETW 세션과 디스크 재배치 API는 별도 드라이버를 올리지 않아 위험이 상대적으로 낮을 것으로 추정합니다. 공개 근거는 없습니다. [추측]
+
+**설치 용량**
+- Riot 공식 문서는 일반 설치 약 35~40GB라고 밝힙니다. [확인] https://support.riotgames.com/en-us/league-of-legends/client/league-of-legends-takes-too-much-space
+- 2차 블로그는 16~25GB라고 해 자료가 상충합니다. 정확한 값은 사용자 PC에서 직접 측정해야 하며, 그 전까지는 20~40GB를 기준으로 봅니다. [2차] https://nokiamob.net/2026/02/19/how-big-is-league-of-legends-in-2026/
+- Game 폴더에는 큰 파일이 약 400개 있습니다. 릴리스 전체는 30만 개 이상의 chunk로 나뉩니다. [확인] https://www.riotgames.com/en/news/supercharging-data-delivery-new-league-patcher
+
+**패치와 재배치 유지**
+- 새 패처는 파일을 통째로 교체하지 않고 chunk 단위로 제자리 갱신합니다. Riot은 파일 배치를 버전 간 안정적으로 유지하도록 패키징을 바꿨다고 밝혔습니다. [확인] 같은 출처
+- 따라서 재배치한 파일이 패치 뒤에도 남을 가능성이 있습니다. 실측 보고는 없습니다. [추측]
+- 패처가 파일을 삭제한 뒤 다시 내려받는 경로라면 재배치가 깨집니다. 패치 뒤에는 배치 상태를 다시 확인하십시오. [추측]
+
+**로딩 특성**
+- HDD와 SSD의 LoL 로딩 시간 차이를 보여 주는 수치는 찾지 못했습니다. 일반 게임에서 HDD가 SSD보다 2~3배 느리다는 일반론만 확인했습니다. [2차] https://www.gamepressure.com/newsroom/hdd-sshd-ssd-m2-speed-benchmark-of-hard-drives/z1692
+- LoL은 네트워크와 CPU 대기 비중이 커서 디스크 이득이 작을 수 있습니다. [추측]
+- 로딩 중 읽는 바이트 양은 공개 자료가 없으므로 직접 트레이스로 측정해야 합니다.
+
+**권장 순서**
+1. Vanguard가 없는 다른 게임에서 트레이스, 재배치, 선읽기 파이프라인을 먼저 검증합니다.
+2. LoL은 Vanguard를 끈 상태와 오프라인 상태에서 읽기량만 측정해 HDD 이득의 여지를 판단합니다. 트레이스 수집은 이 상태에서만 합니다.
+3. 재배치 기록은 ETW 대신 파일 읽기 순서를 직접 남기는 방식도 검토합니다. 플레이 중에는 수집 도구를 쓰지 않고, 재배치 뒤 읽기 속도만 비교합니다.
+4. 패치 뒤 재배치가 유지되는지 확인합니다. 계정 위험이 없다고 확인된 범위에서만 다음 단계로 넘어갑니다.

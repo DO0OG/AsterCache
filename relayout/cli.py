@@ -1,6 +1,7 @@
 """AsterCache relayout prototype.
 
-  python -m relayout.cli plan   --trace t1.json [t2.json ...] --origin-root D:\\AsterBench --zone-mib 300 --out plan.json [--dry-run]
+  python -m relayout.cli plan   --trace t1.json [t2.json ...] --origin-root D:\\AsterBench --zone-mib 300 --out plan.json
+                                [--min-sessions N] [--dry-run]   (also writes plan.json.prefetch.json)
   python -m relayout.cli probe  --volume X: [--require-volume-label L] [--plan plan.json | --zone-mib N]   (Administrator, read-only)
   python -m relayout.cli apply  --plan plan.json --allowed-root D:\\AsterBench [--require-volume-label L]
                                 [--dry-run | --execute] [--journal j.jsonl]   (Administrator)
@@ -23,7 +24,7 @@ from prefetch.layout import cluster_size, file_extents
 
 from .apply import PlanRejected, apply_plan, revert_journal, verify_layout
 from .mover import NotAdmin, Volume, find_free_run, volume_label
-from .plan import load_plan, make_plan, save_plan
+from .plan import load_plan, make_plan, prefetch_trace, save_plan
 
 MIB = 1 << 20
 
@@ -39,13 +40,20 @@ def cmd_plan(a):
         raise ValueError('cluster size unknown: pass --cluster-bytes')
     sessions = [load_ranges(t, a.origin_root) for t in a.trace]
     start = None if a.zone_start_lcn == 'auto' else int(a.zone_start_lcn)
+    min_sessions = a.min_sessions or (2 if len(sessions) >= 2 else 1)
+    if min_sessions > len(sessions):
+        raise ValueError('--min-sessions %d exceeds the %d traces given' % (min_sessions, len(sessions)))
     plan = make_plan(sessions, a.origin_root, a.zone_mib * MIB, cb, file_extents, zone_start_lcn=start,
-                     preserve_bytes=a.preserve_mib * MIB)
+                     preserve_bytes=a.preserve_mib * MIB, min_sessions=min_sessions)
+    pf = None
     if not a.dry_run:
         if not a.out:
             raise ValueError('--out is required unless --dry-run')
         save_plan(plan, a.out)
-    return _emit({'dry_run': a.dry_run, 'out': None if a.dry_run else str(a.out), 'sessions': len(sessions),
+        pf = Path(str(a.out) + '.prefetch.json')
+        pf.write_text(json.dumps(prefetch_trace(plan, sessions), ensure_ascii=False) + '\n', encoding='utf-8')
+    return _emit({'dry_run': a.dry_run, 'out': None if a.dry_run else str(a.out),
+                  'prefetch_trace': str(pf) if pf else None, 'min_sessions': min_sessions, 'sessions': len(sessions),
                   'cluster_bytes': cb, 'zone': plan['zone'], 'stats': plan['stats']})
 
 
@@ -118,7 +126,8 @@ def build_parser():
     p.add_argument('--zone-start-lcn', default='auto', help="'auto' = pick a free run on the volume at apply time")
     p.add_argument('--cluster-bytes', type=int, help='only when the volume cannot be queried')
     p.add_argument('--preserve-mib', type=int, default=8, help='contiguous runs this long stay in place')
-    p.add_argument('--out', type=Path)
+    p.add_argument('--min-sessions', type=int, help='drop blocks read in fewer runs (default: 2 with 2+ traces, else 1)')
+    p.add_argument('--out', type=Path, help='plan file; <out>.prefetch.json (prefetch input, exactly the zone blocks) is written next to it')
     p.add_argument('--dry-run', action='store_true', help='print statistics only, write nothing')
     p.set_defaults(fn=cmd_plan)
     p = sub.add_parser('apply')
@@ -151,7 +160,7 @@ def build_parser():
 
 def main(argv=None):
     a = build_parser().parse_args(argv)
-    if getattr(a, 'zone_mib', 1) < 1 or getattr(a, 'chunk_mib', 1) < 1 or getattr(a, 'write_cap_mib', 1) < 1:
+    if getattr(a, 'zone_mib', 1) < 1 or (getattr(a, 'min_sessions', None) or 1) < 1 or getattr(a, 'chunk_mib', 1) < 1 or getattr(a, 'write_cap_mib', 1) < 1:
         return _emit({'error': 'invalid_argument'}, 2)
     try:
         return a.fn(a)

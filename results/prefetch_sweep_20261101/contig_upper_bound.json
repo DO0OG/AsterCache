@@ -1,0 +1,95 @@
+{
+ "timestamp": "20261101_215527",
+ "ssd_cold_s": {
+  "runs": [
+   1.4501037997979438,
+   0.8651578999924823,
+   0.7729758002096787
+  ],
+  "median": 0.8651578999924823
+ },
+ "unique_blocks": 3716,
+ "file_bytes": 243531776,
+ "disk_activity_before": {
+  "counter": "\\PhysicalDisk(0 D:)\\Disk Bytes/sec",
+  "bytes_per_s": [
+   0.0,
+   0.0,
+   0.0
+  ]
+ },
+ "build_s": 7.436780199997884,
+ "extents": 38,
+ "a_full_read_buffered": {
+  "runs": [
+   {
+    "chunk_mib": 1,
+    "seconds": 1.5002590000003693
+   },
+   {
+    "chunk_mib": 1,
+    "seconds": 1.085326400003396
+   },
+   {
+    "chunk_mib": 1,
+    "seconds": 1.008142400001816
+   },
+   {
+    "chunk_mib": 4,
+    "seconds": 1.3606836999970255
+   },
+   {
+    "chunk_mib": 4,
+    "seconds": 1.1341468999962672
+   },
+   {
+    "chunk_mib": 4,
+    "seconds": 1.7786045000029844
+   },
+   {
+    "chunk_mib": 8,
+    "seconds": 1.3898485000026994
+   },
+   {
+    "chunk_mib": 8,
+    "seconds": 1.3229455999971833
+   },
+   {
+    "chunk_mib": 8,
+    "seconds": 1.6341737999973702
+   }
+  ],
+  "median_4mib_s": 1.3606836999970255,
+  "over_ssd_cold": 1.5727576434415604,
+  "mb_s": 178.97750667589563
+ },
+ "b_ram_replay": {
+  "runs": [
+   0.040341099876968656,
+   0.03602790015429491,
+   0.04137889980484033
+  ],
+  "median_s": 0.040341099876968656,
+  "over_ssd_cold": 0.04662859794416626
+ },
+ "c_cold_replay_unbuffered": {
+  "runs": [
+   1.8921014001898584,
+   1.8143004999001278,
+   1.7711728999056504
+  ],
+  "median_s": 1.8143004999001278,
+  "over_ssd_cold": 2.097074418341314
+ },
+ "c_cold_replay_buffered": {
+  "runs": [
+   1.365892800189613,
+   2.074245700139727,
+   1.6560143000024254
+  ],
+  "median_s": 1.6560143000024254,
+  "over_ssd_cold": 1.9141179893483204
+ },
+ "note": "a+b = read hot file then replay from RAM; c = no prefetch, trace played straight from the contiguous file",
+ "hot_contig_deleted": true
+}

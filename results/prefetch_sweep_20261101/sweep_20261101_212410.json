@@ -1,0 +1,874 @@
+{
+ "timestamp": "20261101_212410",
+ "argv": [],
+ "roots": {
+  "hdd": "D:\\AsterBench",
+  "ssd": "C:\\AsterBench"
+ },
+ "repeat": 3,
+ "budget_min": 40,
+ "environment": {
+  "python": "3.11.4",
+  "platform": "Windows-10-10.0.26200-SP0",
+  "is_admin": false,
+  "ram_bytes": 34282184704,
+  "cpu_count": 16,
+  "drive_to_disk": {
+   "D": {
+    "DeviceId": "0",
+    "FriendlyName": "WDC WD20EZAZ-00GGJB0",
+    "MediaType": "HDD",
+    "BusType": "SATA"
+   },
+   "C": {
+    "DeviceId": "1",
+    "FriendlyName": "SAMSUNG MZVLB1T0HBLR-00000",
+    "MediaType": "SSD",
+    "BusType": "NVMe"
+   }
+  }
+ },
+ "disk_activity_before": {
+  "counter": "\\PhysicalDisk(0 D:)\\Disk Bytes/sec",
+  "bytes_per_s": [
+   24222.7881477866,
+   16193.0051238645,
+   0.0,
+   56531.2669346605,
+   0.0
+  ]
+ },
+ "dataset_bytes": 2135949312,
+ "ssd_cold_s": {
+  "runs": [
+   0.7309279000182869,
+   1.4687951998712379,
+   1.1209351000507013
+  ],
+  "median": 1.1209351000507013
+ },
+ "hdd_cold_s": {
+  "runs": [
+   18.020877299866697,
+   17.35681749980722,
+   17.290610799776914
+  ],
+  "median": 17.35681749980722
+ },
+ "stage_done": "done",
+ "elapsed_s": 1771.0568261146545,
+ "floors": {
+  "seq_1gib": [
+   {
+    "bytes": 1073741824,
+    "seconds": 12.206074499998067,
+    "mb_s": 87.96782487278527
+   },
+   {
+    "bytes": 1073741824,
+    "seconds": 12.362038799998118,
+    "mb_s": 86.85798850592214
+   },
+   {
+    "bytes": 1073741824,
+    "seconds": 12.55079680000199,
+    "mb_s": 85.55168577024764
+   }
+  ],
+  "rand_64k": [
+   {
+    "mean_ms": 14.376078200002667,
+    "median_ms": 14.628950000769692,
+    "p95_ms": 22.812699993664864
+   },
+   {
+    "mean_ms": 15.535013799977605,
+    "median_ms": 15.087449995917268,
+    "p95_ms": 23.590700002387166
+   },
+   {
+    "mean_ms": 14.681328000107897,
+    "median_ms": 14.702700002089841,
+    "p95_ms": 23.501099996792618
+   }
+  ],
+  "trace": {
+   "events": 4000,
+   "merged_ranges": 932,
+   "unique_bytes": 243531776,
+   "files": 64
+  },
+  "seq_mb_s": 86.85798850592214,
+  "rand_mean_ms": 14.681328000107897,
+  "lower_bound_s": {
+   "stream_only": 2.8037924915034793,
+   "stream_plus_one_random_cost_per_merged_range": 16.486790187604036,
+   "note": "random cost is for a full-dataset random span; a monotonic sweep pays less per hop, so the 2nd value is conservative"
+  }
+ },
+ "read_all_buffered": {
+  "runs": [
+   {
+    "bytes": 2135949312,
+    "seconds": 23.943072299996857
+   },
+   {
+    "bytes": 2135949312,
+    "seconds": 23.932274300001154
+   },
+   {
+    "bytes": 2135949312,
+    "seconds": 24.875689100001182
+   }
+  ],
+  "median_s": 23.943072299996857,
+  "bytes": 2135949312,
+  "over_ssd_cold": 21.35990950672691
+ },
+ "threads_8": {
+  "returncode": 2,
+  "stderr": "     [--budget-mib BUDGET_MIB] [--strategy {physical,path,none}]\n              [--read-mbps READ_MBPS] [--seek-ms SEEK_MS] [--gap-kib GAP_KIB]\n              [--full-file-ratio FULL_FILE_RATIO] [--threads THREADS]\n              [--seq-hint] [--execute]\ncli.py: error: invalid budget/gap/speed/threads\n"
+ },
+ "threads": {
+  "threads=1,gap=1200": {
+   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 1 --gap-kib 1200 --execute",
+   "passes": [
+    {
+     "prewarm_s": 10.933529499998258,
+     "read_s": 10.6893,
+     "bytes": 452067328,
+     "requests": 536,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 1228800,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.04743459996097954,
+     "replay_p95_ms": 0.022000000171829015,
+     "evict_s": 24.77188930000557
+    },
+    {
+     "prewarm_s": 10.955625599999621,
+     "read_s": 10.7489,
+     "bytes": 452067328,
+     "requests": 536,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 1228800,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.04670220012485515,
+     "replay_p95_ms": 0.022300002456177026,
+     "evict_s": 23.70674660000077
+    },
+    {
+     "prewarm_s": 10.955396099998325,
+     "read_s": 10.7395,
+     "bytes": 452067328,
+     "requests": 536,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 1228800,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.04521680003381334,
+     "replay_p95_ms": 0.021100000594742596,
+     "evict_s": 23.68294210000022
+    }
+   ],
+   "prewarm_s": 10.955396099998325,
+   "read_s": 10.7395,
+   "mib": 431.125,
+   "requests": 536,
+   "replay_s": 0.04670220012485515,
+   "total_s": 11.000612900032138,
+   "n": 3,
+   "replay_cache_ok": true,
+   "prewarm_cmd_total_over_ssd_cold": 9.8137821712734
+  },
+  "threads=2,gap=1200": {
+   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 2 --gap-kib 1200 --execute",
+   "passes": [
+    {
+     "prewarm_s": 11.333487299998524,
+     "read_s": 11.1248,
+     "bytes": 452067328,
+     "requests": 536,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 1228800,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.04427119983301964,
+     "replay_p95_ms": 0.0208000055863522,
+     "evict_s": 23.90430429999833
+    },
+    {
+     "prewarm_s": 11.126445999994758,
+     "read_s": 10.9008,
+     "bytes": 452067328,
+     "requests": 536,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 1228800,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.05482429984112969,
+     "replay_p95_ms": 0.027300004148855805,
+     "evict_s": 23.7824846999938
+    },
+    {
+     "prewarm_s": 11.211281700001564,
+     "read_s": 10.9493,
+     "bytes": 452067328,
+     "requests": 536,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 1228800,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.04236490037146723,
+     "replay_p95_ms": 0.019099999917671084,
+     "evict_s": 23.708269999995537
+    }
+   ],
+   "prewarm_s": 11.211281700001564,
+   "read_s": 10.9493,
+   "mib": 431.125,
+   "requests": 536,
+   "replay_s": 0.04427119983301964,
+   "total_s": 11.253646600373031,
+   "n": 3,
+   "replay_cache_ok": true,
+   "prewarm_cmd_total_over_ssd_cold": 10.039516649861365
+  },
+  "threads=4,gap=1200": {
+   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 4 --gap-kib 1200 --execute",
+   "passes": [
+    {
+     "prewarm_s": 10.092615500005195,
+     "read_s": 9.8749,
+     "bytes": 452067328,
+     "requests": 536,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 1228800,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.043594200258667115,
+     "replay_p95_ms": 0.020600004063453525,
+     "evict_s": 24.697829299999285
+    },
+    {
+     "prewarm_s": 10.066674599998805,
+     "read_s": 9.8525,
+     "bytes": 452067328,
+     "requests": 536,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 1228800,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.04730280005605891,
+     "replay_p95_ms": 0.02340000355616212,
+     "evict_s": 23.6550814000002
+    },
+    {
+     "prewarm_s": 10.28173329999845,
+     "read_s": 10.0798,
+     "bytes": 452067328,
+     "requests": 536,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 1228800,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.04102060029254062,
+     "replay_p95_ms": 0.018699996871873736,
+     "evict_s": 23.668306599996868
+    }
+   ],
+   "prewarm_s": 10.092615500005195,
+   "read_s": 9.8749,
+   "mib": 431.125,
+   "requests": 536,
+   "replay_s": 0.043594200258667115,
+   "total_s": 10.136209700263862,
+   "n": 3,
+   "replay_cache_ok": true,
+   "prewarm_cmd_total_over_ssd_cold": 9.042637437087471
+  }
+ },
+ "best_threads": 4,
+ "gaps": {
+  "threads=1,gap=0": {
+   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 1 --gap-kib 0 --execute",
+   "passes": [
+    {
+     "prewarm_s": 10.189311899994209,
+     "read_s": 9.9837,
+     "bytes": 243531776,
+     "requests": 943,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 0,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.046473599824821576,
+     "replay_p95_ms": 0.023799999326001853,
+     "evict_s": 24.08830229999876
+    },
+    {
+     "prewarm_s": 10.189607899999828,
+     "read_s": 9.9714,
+     "bytes": 243531776,
+     "requests": 943,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 0,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.045135599801142234,
+     "replay_p95_ms": 0.02099999983329326,
+     "evict_s": 23.59805580000102
+    },
+    {
+     "prewarm_s": 10.233104699997057,
+     "read_s": 10.0321,
+     "bytes": 243531776,
+     "requests": 943,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 0,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.042155700182775036,
+     "replay_p95_ms": 0.01979999797185883,
+     "evict_s": 23.76410079999914
+    }
+   ],
+   "prewarm_s": 10.189607899999828,
+   "read_s": 9.9837,
+   "mib": 232.25,
+   "requests": 943,
+   "replay_s": 0.045135599801142234,
+   "total_s": 10.23578549981903,
+   "n": 3,
+   "replay_cache_ok": true,
+   "prewarm_cmd_total_over_ssd_cold": 9.131470233518474
+  },
+  "threads=1,gap=256": {
+   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 1 --gap-kib 256 --execute",
+   "passes": [
+    {
+     "prewarm_s": 10.228202300000703,
+     "read_s": 10.0106,
+     "bytes": 264175616,
+     "requests": 814,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 262144,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.043066999976872467,
+     "replay_p95_ms": 0.019500002963468432,
+     "evict_s": 23.76227900000231
+    },
+    {
+     "prewarm_s": 10.201718100004655,
+     "read_s": 9.9946,
+     "bytes": 264175616,
+     "requests": 814,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 262144,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.04354589993454283,
+     "replay_p95_ms": 0.020300001779105514,
+     "evict_s": 23.786477699999523
+    },
+    {
+     "prewarm_s": 10.20010149999871,
+     "read_s": 10.0031,
+     "bytes": 264175616,
+     "requests": 814,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 262144,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.04278529994189739,
+     "replay_p95_ms": 0.019500002963468432,
+     "evict_s": 23.747357200001716
+    }
+   ],
+   "prewarm_s": 10.201718100004655,
+   "read_s": 10.0031,
+   "mib": 251.9375,
+   "requests": 814,
+   "replay_s": 0.043066999976872467,
+   "total_s": 10.245263999939198,
+   "n": 3,
+   "replay_cache_ok": true,
+   "prewarm_cmd_total_over_ssd_cold": 9.139926120143611
+  },
+  "threads=1,gap=4096": {
+   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 1 --gap-kib 4096 --execute",
+   "passes": [
+    {
+     "prewarm_s": 16.928489500001888,
+     "read_s": 16.7177,
+     "bytes": 1145700352,
+     "requests": 233,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 4194304,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.04603520009550266,
+     "replay_p95_ms": 0.02340000355616212,
+     "evict_s": 23.707477999996627
+    },
+    {
+     "prewarm_s": 17.172559899998305,
+     "read_s": 16.9507,
+     "bytes": 1145700352,
+     "requests": 233,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 4194304,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.043618299743684474,
+     "replay_p95_ms": 0.020899999071843922,
+     "evict_s": 23.69906909999554
+    },
+    {
+     "prewarm_s": 16.94999490000191,
+     "read_s": 16.7287,
+     "bytes": 1145700352,
+     "requests": 233,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 4194304,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.04426620033336803,
+     "replay_p95_ms": 0.021100000594742596,
+     "evict_s": 23.757797899997968
+    }
+   ],
+   "prewarm_s": 16.94999490000191,
+   "read_s": 16.7287,
+   "mib": 1092.625,
+   "requests": 233,
+   "replay_s": 0.04426620033336803,
+   "total_s": 16.99426110033528,
+   "n": 3,
+   "replay_cache_ok": true,
+   "prewarm_cmd_total_over_ssd_cold": 15.160789504732797
+  },
+  "threads=1,gap=16384": {
+   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 1 --gap-kib 16384 --execute",
+   "passes": [
+    {
+     "prewarm_s": 21.205036200000905,
+     "read_s": 20.9505,
+     "bytes": 1571487744,
+     "requests": 163,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 16777216,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.04392570003983565,
+     "replay_p95_ms": 0.021899999410379678,
+     "evict_s": 23.68167479999829
+    },
+    {
+     "prewarm_s": 21.217185900000914,
+     "read_s": 21.0069,
+     "bytes": 1571487744,
+     "requests": 163,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 16777216,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.05212609979935223,
+     "replay_p95_ms": 0.024599998141638935,
+     "evict_s": 23.63634440000169
+    },
+    {
+     "prewarm_s": 21.138868800000637,
+     "read_s": 20.9224,
+     "bytes": 1571487744,
+     "requests": 163,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 16777216,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.04471950014703907,
+     "replay_p95_ms": 0.020900006347801536,
+     "evict_s": 23.836751100003312
+    }
+   ],
+   "prewarm_s": 21.205036200000905,
+   "read_s": 20.9505,
+   "mib": 1498.6875,
+   "requests": 163,
+   "replay_s": 0.04471950014703907,
+   "total_s": 21.24896190004074,
+   "n": 3,
+   "replay_cache_ok": true,
+   "prewarm_cmd_total_over_ssd_cold": 18.956460457951245
+  },
+  "threads=4,gap=0": {
+   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 4 --gap-kib 0 --execute",
+   "passes": [
+    {
+     "prewarm_s": 7.86384459999681,
+     "read_s": 7.6565,
+     "bytes": 243531776,
+     "requests": 943,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 0,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.04423510043125134,
+     "replay_p95_ms": 0.02179999864893034,
+     "evict_s": 23.662060599999677
+    },
+    {
+     "prewarm_s": 7.7970470000000205,
+     "read_s": 7.5858,
+     "bytes": 243531776,
+     "requests": 943,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 0,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.045670500068808906,
+     "replay_p95_ms": 0.022100000933278352,
+     "evict_s": 23.6793170000019
+    },
+    {
+     "prewarm_s": 7.775565899995854,
+     "read_s": 7.5669,
+     "bytes": 243531776,
+     "requests": 943,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 0,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.04429680004977854,
+     "replay_p95_ms": 0.020699997548945248,
+     "evict_s": 23.682077099998423
+    }
+   ],
+   "prewarm_s": 7.7970470000000205,
+   "read_s": 7.5858,
+   "mib": 232.25,
+   "requests": 943,
+   "replay_s": 0.04429680004977854,
+   "total_s": 7.842717500068829,
+   "n": 3,
+   "replay_cache_ok": true,
+   "prewarm_cmd_total_over_ssd_cold": 6.996584815404651
+  },
+  "threads=4,gap=256": {
+   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 4 --gap-kib 256 --execute",
+   "passes": [
+    {
+     "prewarm_s": 7.9529217000017525,
+     "read_s": 7.7398,
+     "bytes": 264175616,
+     "requests": 814,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 262144,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.04698250014189398,
+     "replay_p95_ms": 0.023300002794712782,
+     "evict_s": 23.679586300000665
+    },
+    {
+     "prewarm_s": 7.774843800005328,
+     "read_s": 7.5658,
+     "bytes": 264175616,
+     "requests": 814,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 262144,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.042415500050992705,
+     "replay_p95_ms": 0.019599996448960155,
+     "evict_s": 24.03341100000398
+    },
+    {
+     "prewarm_s": 7.908071099998779,
+     "read_s": 7.7095,
+     "bytes": 264175616,
+     "requests": 814,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 262144,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.04253840020101052,
+     "replay_p95_ms": 0.01979999797185883,
+     "evict_s": 23.721112500003073
+    }
+   ],
+   "prewarm_s": 7.908071099998779,
+   "read_s": 7.7095,
+   "mib": 251.9375,
+   "requests": 814,
+   "replay_s": 0.04253840020101052,
+   "total_s": 7.950609500199789,
+   "n": 3,
+   "replay_cache_ok": true,
+   "prewarm_cmd_total_over_ssd_cold": 7.092836596730867
+  },
+  "threads=4,gap=1200": {
+   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 4 --gap-kib 1200 --execute",
+   "passes": [
+    {
+     "prewarm_s": 10.081484399997862,
+     "read_s": 9.8808,
+     "bytes": 452067328,
+     "requests": 536,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 1228800,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.044349400159262586,
+     "replay_p95_ms": 0.020499996026046574,
+     "evict_s": 23.710017700002936
+    },
+    {
+     "prewarm_s": 10.300364599999739,
+     "read_s": 10.0962,
+     "bytes": 452067328,
+     "requests": 536,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 1228800,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.0441962000913918,
+     "replay_p95_ms": 0.021100000594742596,
+     "evict_s": 23.682230899998103
+    },
+    {
+     "prewarm_s": 10.103743700004998,
+     "read_s": 9.9053,
+     "bytes": 452067328,
+     "requests": 536,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 1228800,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.04520450028940104,
+     "replay_p95_ms": 0.022000000171829015,
+     "evict_s": 23.67055409999739
+    }
+   ],
+   "prewarm_s": 10.103743700004998,
+   "read_s": 9.9053,
+   "mib": 431.125,
+   "requests": 536,
+   "replay_s": 0.044349400159262586,
+   "total_s": 10.148948200294399,
+   "n": 3,
+   "replay_cache_ok": true,
+   "prewarm_cmd_total_over_ssd_cold": 9.054001609758986
+  },
+  "threads=4,gap=4096": {
+   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 4 --gap-kib 4096 --execute",
+   "passes": [
+    {
+     "prewarm_s": 19.78903960000025,
+     "read_s": 19.574,
+     "bytes": 1145700352,
+     "requests": 233,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 4194304,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.0446482003244455,
+     "replay_p95_ms": 0.0208000055863522,
+     "evict_s": 23.653235400000995
+    },
+    {
+     "prewarm_s": 19.677323999996588,
+     "read_s": 19.4744,
+     "bytes": 1145700352,
+     "requests": 233,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 4194304,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.047164000126940664,
+     "replay_p95_ms": 0.022100000933278352,
+     "evict_s": 24.40035290000378
+    },
+    {
+     "prewarm_s": 19.533474900003057,
+     "read_s": 19.2676,
+     "bytes": 1145700352,
+     "requests": 233,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 4194304,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.05112449979787925,
+     "replay_p95_ms": 0.025200002710334957,
+     "evict_s": 23.748647499996878
+    }
+   ],
+   "prewarm_s": 19.677323999996588,
+   "read_s": 19.4744,
+   "mib": 1092.625,
+   "requests": 233,
+   "replay_s": 0.047164000126940664,
+   "total_s": 19.72448800012353,
+   "n": 3,
+   "replay_cache_ok": true,
+   "prewarm_cmd_total_over_ssd_cold": 17.59645852755558
+  },
+  "threads=4,gap=16384": {
+   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 4 --gap-kib 16384 --execute",
+   "passes": [
+    {
+     "prewarm_s": 24.553280499996617,
+     "read_s": 24.3355,
+     "bytes": 1571487744,
+     "requests": 163,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 16777216,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.046964500288595445,
+     "replay_p95_ms": 0.022899999748915434,
+     "evict_s": 23.744775300001493
+    },
+    {
+     "prewarm_s": 24.71631059999345,
+     "read_s": 24.4788,
+     "bytes": 1571487744,
+     "requests": 163,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 16777216,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.04340389999561012,
+     "replay_p95_ms": 0.02010000025620684,
+     "evict_s": 23.717605099998764
+    },
+    {
+     "prewarm_s": 24.921424499996647,
+     "read_s": 24.7212,
+     "bytes": 1571487744,
+     "requests": 163,
+     "errors": 0,
+     "full_files": 0,
+     "gap_bytes": 16777216,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.05418450015713461,
+     "replay_p95_ms": 0.02699999458855018,
+     "evict_s": 23.66892270000244
+    }
+   ],
+   "prewarm_s": 24.71631059999345,
+   "read_s": 24.4788,
+   "mib": 1498.6875,
+   "requests": 163,
+   "replay_s": 0.046964500288595445,
+   "total_s": 24.75971449998906,
+   "n": 3,
+   "replay_cache_ok": true,
+   "prewarm_cmd_total_over_ssd_cold": 22.088446065137177
+  }
+ },
+ "full_file_ratio": {
+  "ratio=0.05,threads=1,gap=1200": {
+   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 1 --gap-kib 1200 --full-file-ratio 0.05 --execute",
+   "passes": [
+    {
+     "prewarm_s": 16.145805200001632,
+     "read_s": 15.9462,
+     "bytes": 1133314048,
+     "requests": 369,
+     "errors": 0,
+     "full_files": 35,
+     "gap_bytes": 1228800,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.045254200165800285,
+     "replay_p95_ms": 0.022499996703118086,
+     "evict_s": 24.10867960000178
+    }
+   ],
+   "prewarm_s": 16.145805200001632,
+   "read_s": 15.9462,
+   "mib": 1080.8125,
+   "requests": 369,
+   "replay_s": 0.045254200165800285,
+   "total_s": 16.191059400167433,
+   "n": 1,
+   "replay_cache_ok": true,
+   "prewarm_cmd_total_over_ssd_cold": 14.444243381650812
+  },
+  "ratio=0.1,threads=1,gap=1200": {
+   "cmd": "\"C:\\Users\\AJH\\AppData\\Local\\Programs\\Python\\Python311\\python.exe\" -m prefetch.cli --strategy physical --threads 1 --gap-kib 1200 --full-file-ratio 0.1 --execute",
+   "passes": [
+    {
+     "prewarm_s": 16.125348199995642,
+     "read_s": 15.9209,
+     "bytes": 1120468992,
+     "requests": 372,
+     "errors": 0,
+     "full_files": 34,
+     "gap_bytes": 1228800,
+     "returncode": 0,
+     "stderr": "",
+     "replay_s": 0.04566740030713845,
+     "replay_p95_ms": 0.022299995180219412,
+     "evict_s": 23.74265440000454
+    }
+   ],
+   "prewarm_s": 16.125348199995642,
+   "read_s": 15.9209,
+   "mib": 1068.5625,
+   "requests": 372,
+   "replay_s": 0.04566740030713845,
+   "total_s": 16.17101560030278,
+   "n": 1,
+   "replay_cache_ok": true,
+   "prewarm_cmd_total_over_ssd_cold": 14.4263620610786
+  }
+ },
+ "disk_activity_after": {
+  "counter": "\\PhysicalDisk(0 D:)\\Disk Bytes/sec",
+  "bytes_per_s": [
+   0.0,
+   0.0
+  ]
+ }
+}

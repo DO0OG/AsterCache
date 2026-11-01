@@ -1,0 +1,51 @@
+{"type": "header", "plan_sha": "7d64ea23fe801a163474da54bbb63ce1c5523dc107c4cccec5806319eff74424", "zone_start_lcn": 95135032, "cluster_bytes": 4096, "started": 1793541396.8990724}
+{"type": "file", "path": "D:\\AsterBench\\data\\f008.bin", "sha_before": "cb3920ad00f5b3e5b8d71cf45597eb7c97c01a79882db493fd7d0c0cbd54014d"}
+{"type": "step", "idx": 0, "state": "planned", "path": "D:\\AsterBench\\data\\f008.bin", "vcn": 6176, "clusters": 16, "target_lcn": 95135032, "from": [[6176, 246733158, 16]]}
+{"type": "step", "idx": 0, "state": "done", "reason": null}
+{"type": "file", "path": "D:\\AsterBench\\data\\f020.bin", "sha_before": "1cf3fb80aaa1fd0b59cd012d20f210c45f9bb7d9ffedb5c4fb7b50830dbb19eb"}
+{"type": "step", "idx": 1, "state": "planned", "path": "D:\\AsterBench\\data\\f020.bin", "vcn": 5312, "clusters": 64, "target_lcn": 95135048, "from": [[5312, 246701080, 64]]}
+{"type": "step", "idx": 1, "state": "done", "reason": null}
+{"type": "file", "path": "D:\\AsterBench\\data\\f025.bin", "sha_before": "c6ec2fe1afc18393984f29c77636b23a53e17a74272b74ed989c60591701d8a1"}
+{"type": "step", "idx": 2, "state": "planned", "path": "D:\\AsterBench\\data\\f025.bin", "vcn": 6624, "clusters": 16, "target_lcn": 95135112, "from": [[6624, 242214412, 16]]}
+{"type": "step", "idx": 2, "state": "done", "reason": null}
+{"type": "file", "path": "D:\\AsterBench\\data\\f059.bin", "sha_before": "e75d8a325c3b7da254a3496173947db2d88a6b424a70fb368d2e86f9b83481ac"}
+{"type": "step", "idx": 3, "state": "planned", "path": "D:\\AsterBench\\data\\f059.bin", "vcn": 6512, "clusters": 16, "target_lcn": 95135128, "from": [[6512, 306928483, 16]]}
+{"type": "step", "idx": 3, "state": "done", "reason": null}
+{"type": "file", "path": "D:\\AsterBench\\data\\f023.bin", "sha_before": "8c424c28e75d810988f35275791079a3bac4a4c50bf734748b9fa70a81916540"}
+{"type": "step", "idx": 4, "state": "planned", "path": "D:\\AsterBench\\data\\f023.bin", "vcn": 3328, "clusters": 16, "target_lcn": 95135144, "from": [[3328, 307604642, 16]]}
+{"type": "step", "idx": 4, "state": "done", "reason": null}
+{"type": "file", "path": "D:\\AsterBench\\data\\f056.bin", "sha_before": "c60fa0775f3f6804ce5e695bc1a34b3b67526416cadd5b8da597e362a88a6008"}
+{"type": "step", "idx": 5, "state": "planned", "path": "D:\\AsterBench\\data\\f056.bin", "vcn": 1632, "clusters": 16, "target_lcn": 95135160, "from": [[1632, 330244164, 16]]}
+{"type": "step", "idx": 5, "state": "done", "reason": null}
+{"type": "file", "path": "D:\\AsterBench\\data\\f007.bin", "sha_before": "008b50db1e6574aae94560feee1e7469a8006c5081328312282f29064be4540c"}
+{"type": "step", "idx": 6, "state": "planned", "path": "D:\\AsterBench\\data\\f007.bin", "vcn": 1680, "clusters": 16, "target_lcn": 95135176, "from": [[1680, 7762794, 16]]}
+{"type": "step", "idx": 6, "state": "done", "reason": null}
+{"type": "file", "path": "D:\\AsterBench\\data\\f009.bin", "sha_before": "9de509ea111d68d8ecd5f2e21091d71eb2b69e2d5c44f81f8260a1209319666d"}
+{"type": "step", "idx": 7, "state": "planned", "path": "D:\\AsterBench\\data\\f009.bin", "vcn": 5600, "clusters": 16, "target_lcn": 95135192, "from": [[5600, 318486310, 16]]}
+{"type": "step", "idx": 7, "state": "done", "reason": null}
+{"type": "file", "path": "D:\\AsterBench\\data\\f000.bin", "sha_before": "b3b5d17ad8575424282aade3c6fa375e3c623fe53b5d95828191862b2f7069dc"}
+{"type": "step", "idx": 8, "state": "planned", "path": "D:\\AsterBench\\data\\f000.bin", "vcn": 4640, "clusters": 144, "target_lcn": 95135208, "from": [[4640, 33786851, 144]]}
+{"type": "step", "idx": 8, "state": "done", "reason": null}
+{"type": "step", "idx": 9, "state": "planned", "path": "D:\\AsterBench\\data\\f008.bin", "vcn": 1952, "clusters": 16, "target_lcn": 95135352, "from": [[1952, 53013110, 16]]}
+{"type": "step", "idx": 9, "state": "done", "reason": null}
+{"type": "file", "path": "D:\\AsterBench\\data\\f028.bin", "sha_before": "9c15bb7737ca78cdc0055a89e08af76c10d7636133749108a2aaaf2f54f4737e"}
+{"type": "step", "idx": 10, "state": "planned", "path": "D:\\AsterBench\\data\\f028.bin", "vcn": 1616, "clusters": 16, "target_lcn": 95135368, "from": [[1616, 281099357, 16]]}
+{"type": "step", "idx": 10, "state": "done", "reason": null}
+{"type": "file", "path": "D:\\AsterBench\\data\\f037.bin", "sha_before": "92528c8530e1781dafa610f9dfbd01f18a24488ec611492153de58a5d8cac1be"}
+{"type": "step", "idx": 11, "state": "planned", "path": "D:\\AsterBench\\data\\f037.bin", "vcn": 8544, "clusters": 16, "target_lcn": 95135384, "from": [[8544, 358897033, 16]]}
+{"type": "step", "idx": 11, "state": "done", "reason": null}
+{"type": "file", "path": "D:\\AsterBench\\data\\f055.bin", "sha_before": "02ee986727a46784c2d7d6c1a6d6b08269b4b546264382be83fa8adaebde19ce"}
+{"type": "step", "idx": 12, "state": "planned", "path": "D:\\AsterBench\\data\\f055.bin", "vcn": 2336, "clusters": 16, "target_lcn": 95135400, "from": [[2336, 212384206, 16]]}
+{"type": "step", "idx": 12, "state": "done", "reason": null}
+{"type": "step", "idx": 13, "state": "planned", "path": "D:\\AsterBench\\data\\f020.bin", "vcn": 2208, "clusters": 16, "target_lcn": 95135416, "from": [[2208, 33788515, 16]]}
+{"type": "step", "idx": 13, "state": "done", "reason": null}
+{"type": "file", "path": "D:\\AsterBench\\data\\f041.bin", "sha_before": "ddfddcf5dcf8147bd503a074869524d4ffdf2cf8ed9a91679f82d8c708dea36d"}
+{"type": "step", "idx": 14, "state": "planned", "path": "D:\\AsterBench\\data\\f041.bin", "vcn": 7840, "clusters": 16, "target_lcn": 95135432, "from": [[7840, 241317825, 16]]}
+{"type": "step", "idx": 14, "state": "done", "reason": null}
+{"type": "file", "path": "D:\\AsterBench\\data\\f002.bin", "sha_before": "dfd0e787d55f3ec3018bed6509577f9396e719dc810f1e6c9f793d54aafcfb4c"}
+{"type": "step", "idx": 15, "state": "planned", "path": "D:\\AsterBench\\data\\f002.bin", "vcn": 2656, "clusters": 16, "target_lcn": 95135448, "from": [[2656, 294123253, 16]]}
+{"type": "step", "idx": 15, "state": "done", "reason": null}
+{"type": "file", "path": "D:\\AsterBench\\data\\f044.bin", "sha_before": "3c73d40980db1c181b777f46565ab3f2d039ab262f783b7470d81c2dc77daca3"}
+{"type": "step", "idx": 16, "state": "planned", "path": "D:\\AsterBench\\data\\f044.bin", "vcn": 7120, "clusters": 16, "target_lcn": 95135464, "from": [[7120, 229186029, 16]]}
+{"type": "step", "idx": 16, "state": "done", "reason": null}
+{"type": "file", "path": "D:\\AsterBench\\data\\f017.bin", "sha_before

@@ -1,0 +1,5529 @@
+{
+ "version": 1,
+ "origin_root": "D:\\AsterBench",
+ "volume": "D:",
+ "cluster_bytes": 4096,
+ "block": 65536,
+ "zone": {
+  "start_lcn": 95135032,
+  "clusters": 76800
+ },
+ "tasks": [],
+ "order": [
+  {
+   "path": "D:\\AsterBench\\data\\f008.bin",
+   "vcn": 6176,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 5312,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f025.bin",
+   "vcn": 6624,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f059.bin",
+   "vcn": 6512,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f023.bin",
+   "vcn": 3328,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 1632,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f007.bin",
+   "vcn": 1680,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f009.bin",
+   "vcn": 5600,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f000.bin",
+   "vcn": 4640,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f008.bin",
+   "vcn": 1952,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 1616,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 8544,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 2336,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 2208,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f041.bin",
+   "vcn": 7840,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 2656,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f044.bin",
+   "vcn": 7120,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f017.bin",
+   "vcn": 1872,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 2224,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f033.bin",
+   "vcn": 1520,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 2096,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f058.bin",
+   "vcn": 8144,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f008.bin",
+   "vcn": 1504,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f013.bin",
+   "vcn": 1824,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f023.bin",
+   "vcn": 6304,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f023.bin",
+   "vcn": 3120,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f005.bin",
+   "vcn": 1056,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 6784,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f036.bin",
+   "vcn": 5376,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 3536,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f062.bin",
+   "vcn": 304,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f006.bin",
+   "vcn": 7264,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f008.bin",
+   "vcn": 7744,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f025.bin",
+   "vcn": 6256,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f015.bin",
+   "vcn": 3088,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 96,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f040.bin",
+   "vcn": 2848,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f057.bin",
+   "vcn": 2192,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f049.bin",
+   "vcn": 5248,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f043.bin",
+   "vcn": 5584,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 2544,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f026.bin",
+   "vcn": 5632,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f051.bin",
+   "vcn": 2256,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f047.bin",
+   "vcn": 5088,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f038.bin",
+   "vcn": 4640,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 3712,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f025.bin",
+   "vcn": 944,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 2832,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f006.bin",
+   "vcn": 2784,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f041.bin",
+   "vcn": 7088,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f004.bin",
+   "vcn": 4544,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f036.bin",
+   "vcn": 6192,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f021.bin",
+   "vcn": 2368,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f041.bin",
+   "vcn": 6128,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f057.bin",
+   "vcn": 4080,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 3264,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f051.bin",
+   "vcn": 5568,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f052.bin",
+   "vcn": 11520,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f054.bin",
+   "vcn": 2336,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f024.bin",
+   "vcn": 4544,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f015.bin",
+   "vcn": 3504,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f016.bin",
+   "vcn": 5424,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f017.bin",
+   "vcn": 2960,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f033.bin",
+   "vcn": 9408,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f050.bin",
+   "vcn": 3088,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 8320,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f025.bin",
+   "vcn": 8272,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f043.bin",
+   "vcn": 5472,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 3856,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f006.bin",
+   "vcn": 6928,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f011.bin",
+   "vcn": 10816,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 5632,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f013.bin",
+   "vcn": 496,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f059.bin",
+   "vcn": 3072,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f052.bin",
+   "vcn": 2464,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f024.bin",
+   "vcn": 5248,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f011.bin",
+   "vcn": 3904,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f063.bin",
+   "vcn": 3728,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f001.bin",
+   "vcn": 1152,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f004.bin",
+   "vcn": 2528,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f024.bin",
+   "vcn": 2912,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 5744,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f062.bin",
+   "vcn": 256,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f011.bin",
+   "vcn": 2336,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 1760,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f010.bin",
+   "vcn": 1664,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f053.bin",
+   "vcn": 2656,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f029.bin",
+   "vcn": 7088,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 7152,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 8208,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f038.bin",
+   "vcn": 464,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 8560,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f031.bin",
+   "vcn": 4096,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 3664,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f063.bin",
+   "vcn": 3408,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 6336,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f013.bin",
+   "vcn": 3264,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f036.bin",
+   "vcn": 3632,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 2336,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f027.bin",
+   "vcn": 720,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f023.bin",
+   "vcn": 0,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f023.bin",
+   "vcn": 6592,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f021.bin",
+   "vcn": 3808,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f040.bin",
+   "vcn": 4448,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f060.bin",
+   "vcn": 10736,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f048.bin",
+   "vcn": 1600,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 5552,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 5232,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f017.bin",
+   "vcn": 3744,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 4288,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f022.bin",
+   "vcn": 3696,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f007.bin",
+   "vcn": 1792,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f051.bin",
+   "vcn": 3904,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f026.bin",
+   "vcn": 5216,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 6448,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 7104,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f060.bin",
+   "vcn": 7776,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f061.bin",
+   "vcn": 8736,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f029.bin",
+   "vcn": 5312,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f060.bin",
+   "vcn": 6128,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f025.bin",
+   "vcn": 4048,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 9328,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f048.bin",
+   "vcn": 7280,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f004.bin",
+   "vcn": 2368,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f036.bin",
+   "vcn": 3936,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f022.bin",
+   "vcn": 496,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f006.bin",
+   "vcn": 6464,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f038.bin",
+   "vcn": 9040,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f061.bin",
+   "vcn": 10528,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f011.bin",
+   "vcn": 4352,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f032.bin",
+   "vcn": 64,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f016.bin",
+   "vcn": 3072,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 3568,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f034.bin",
+   "vcn": 1184,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f031.bin",
+   "vcn": 48,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f050.bin",
+   "vcn": 6768,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 5424,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f010.bin",
+   "vcn": 4816,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f000.bin",
+   "vcn": 4256,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f034.bin",
+   "vcn": 5968,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f062.bin",
+   "vcn": 5280,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f036.bin",
+   "vcn": 1232,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f023.bin",
+   "vcn": 3888,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f006.bin",
+   "vcn": 4640,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f016.bin",
+   "vcn": 7104,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f005.bin",
+   "vcn": 2976,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f062.bin",
+   "vcn": 6000,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f014.bin",
+   "vcn": 1824,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f038.bin",
+   "vcn": 1568,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f005.bin",
+   "vcn": 3360,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f039.bin",
+   "vcn": 2992,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f046.bin",
+   "vcn": 4448,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f008.bin",
+   "vcn": 2832,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f006.bin",
+   "vcn": 6736,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f038.bin",
+   "vcn": 8016,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f025.bin",
+   "vcn": 7680,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f012.bin",
+   "vcn": 720,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f003.bin",
+   "vcn": 4304,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f057.bin",
+   "vcn": 4288,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 1968,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f018.bin",
+   "vcn": 256,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 2352,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f058.bin",
+   "vcn": 8352,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f050.bin",
+   "vcn": 336,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f050.bin",
+   "vcn": 6384,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f054.bin",
+   "vcn": 624,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f036.bin",
+   "vcn": 144,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f031.bin",
+   "vcn": 2736,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f023.bin",
+   "vcn": 2032,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 2416,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f008.bin",
+   "vcn": 7664,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f044.bin",
+   "vcn": 7008,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f034.bin",
+   "vcn": 7344,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f041.bin",
+   "vcn": 10000,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f004.bin",
+   "vcn": 848,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f052.bin",
+   "vcn": 6816,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f000.bin",
+   "vcn": 5168,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f063.bin",
+   "vcn": 2672,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f021.bin",
+   "vcn": 1696,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f054.bin",
+   "vcn": 3328,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 784,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 7056,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f032.bin",
+   "vcn": 3104,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f000.bin",
+   "vcn": 3008,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f033.bin",
+   "vcn": 1680,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f049.bin",
+   "vcn": 4560,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f038.bin",
+   "vcn": 3280,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 3072,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f010.bin",
+   "vcn": 3360,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f030.bin",
+   "vcn": 1456,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f027.bin",
+   "vcn": 6496,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f033.bin",
+   "vcn": 4704,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f045.bin",
+   "vcn": 7648,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f061.bin",
+   "vcn": 2608,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f045.bin",
+   "vcn": 7088,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f052.bin",
+   "vcn": 560,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f026.bin",
+   "vcn": 3936,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 5776,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f000.bin",
+   "vcn": 3344,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f010.bin",
+   "vcn": 544,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f029.bin",
+   "vcn": 2960,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f005.bin",
+   "vcn": 2960,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f008.bin",
+   "vcn": 2208,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f047.bin",
+   "vcn": 6048,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f054.bin",
+   "vcn": 3440,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f034.bin",
+   "vcn": 5952,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f034.bin",
+   "vcn": 5984,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f003.bin",
+   "vcn": 336,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 1600,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f017.bin",
+   "vcn": 1840,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f040.bin",
+   "vcn": 464,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f012.bin",
+   "vcn": 3760,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f046.bin",
+   "vcn": 5728,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 5344,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f043.bin",
+   "vcn": 560,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f035.bin",
+   "vcn": 1488,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f031.bin",
+   "vcn": 464,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 6832,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f061.bin",
+   "vcn": 11136,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f033.bin",
+   "vcn": 5696,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f047.bin",
+   "vcn": 11792,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f018.bin",
+   "vcn": 11856,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f040.bin",
+   "vcn": 2608,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f022.bin",
+   "vcn": 1024,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f060.bin",
+   "vcn": 11408,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f039.bin",
+   "vcn": 1568,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f050.bin",
+   "vcn": 6304,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f039.bin",
+   "vcn": 624,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f000.bin",
+   "vcn": 2464,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 4368,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f052.bin",
+   "vcn": 10784,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f004.bin",
+   "vcn": 3712,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f047.bin",
+   "vcn": 11856,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f049.bin",
+   "vcn": 5488,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f054.bin",
+   "vcn": 1008,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f004.bin",
+   "vcn": 352,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 1728,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 752,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f036.bin",
+   "vcn": 5968,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f018.bin",
+   "vcn": 5536,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f026.bin",
+   "vcn": 2160,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f029.bin",
+   "vcn": 3248,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f029.bin",
+   "vcn": 8416,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f009.bin",
+   "vcn": 2816,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 8208,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f016.bin",
+   "vcn": 608,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 400,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f006.bin",
+   "vcn": 3424,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 8912,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f044.bin",
+   "vcn": 4688,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f030.bin",
+   "vcn": 2080,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 6384,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f031.bin",
+   "vcn": 3120,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f062.bin",
+   "vcn": 4128,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f021.bin",
+   "vcn": 6064,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f044.bin",
+   "vcn": 2208,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f005.bin",
+   "vcn": 1600,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f059.bin",
+   "vcn": 4768,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f018.bin",
+   "vcn": 10256,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f044.bin",
+   "vcn": 6496,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f034.bin",
+   "vcn": 2112,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f053.bin",
+   "vcn": 9296,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f058.bin",
+   "vcn": 3120,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 2768,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f012.bin",
+   "vcn": 6688,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f045.bin",
+   "vcn": 3600,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f046.bin",
+   "vcn": 2064,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 7568,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f023.bin",
+   "vcn": 1792,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f007.bin",
+   "vcn": 6960,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 4800,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f016.bin",
+   "vcn": 1984,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f038.bin",
+   "vcn": 7664,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f009.bin",
+   "vcn": 3568,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f058.bin",
+   "vcn": 1520,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f059.bin",
+   "vcn": 2192,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f017.bin",
+   "vcn": 1792,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 8864,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f007.bin",
+   "vcn": 2896,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f013.bin",
+   "vcn": 480,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f000.bin",
+   "vcn": 2448,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f061.bin",
+   "vcn": 1840,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f061.bin",
+   "vcn": 2128,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f053.bin",
+   "vcn": 256,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f005.bin",
+   "vcn": 4240,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f009.bin",
+   "vcn": 5136,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f054.bin",
+   "vcn": 2800,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 688,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f010.bin",
+   "vcn": 6176,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 6288,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f011.bin",
+   "vcn": 1120,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f003.bin",
+   "vcn": 3184,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f008.bin",
+   "vcn": 2928,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f021.bin",
+   "vcn": 288,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f044.bin",
+   "vcn": 3808,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f051.bin",
+   "vcn": 5344,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f058.bin",
+   "vcn": 10480,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 8896,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f014.bin",
+   "vcn": 3072,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f058.bin",
+   "vcn": 5824,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f054.bin",
+   "vcn": 1120,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f008.bin",
+   "vcn": 2000,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f006.bin",
+   "vcn": 2224,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f003.bin",
+   "vcn": 224,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f053.bin",
+   "vcn": 9840,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f052.bin",
+   "vcn": 5072,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 4960,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f057.bin",
+   "vcn": 1296,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f046.bin",
+   "vcn": 1376,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f016.bin",
+   "vcn": 5248,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f062.bin",
+   "vcn": 5152,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f050.bin",
+   "vcn": 3344,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f010.bin",
+   "vcn": 5952,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f001.bin",
+   "vcn": 2192,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f040.bin",
+   "vcn": 3136,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 1680,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f021.bin",
+   "vcn": 6192,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f038.bin",
+   "vcn": 8176,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f008.bin",
+   "vcn": 6048,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f036.bin",
+   "vcn": 2128,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f031.bin",
+   "vcn": 2992,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f041.bin",
+   "vcn": 2272,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 7584,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f025.bin",
+   "vcn": 1616,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f010.bin",
+   "vcn": 5104,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f017.bin",
+   "vcn": 2576,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f046.bin",
+   "vcn": 2096,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f031.bin",
+   "vcn": 3328,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 2048,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 2112,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f021.bin",
+   "vcn": 4640,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f049.bin",
+   "vcn": 3312,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 8352,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f049.bin",
+   "vcn": 3872,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 1936,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 2512,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f035.bin",
+   "vcn": 8912,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f000.bin",
+   "vcn": 64,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f027.bin",
+   "vcn": 1440,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f001.bin",
+   "vcn": 3136,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f049.bin",
+   "vcn": 1376,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f038.bin",
+   "vcn": 1264,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f015.bin",
+   "vcn": 160,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f053.bin",
+   "vcn": 1600,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 10160,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f011.bin",
+   "vcn": 5856,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f007.bin",
+   "vcn": 2224,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f030.bin",
+   "vcn": 1520,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 6032,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f047.bin",
+   "vcn": 9616,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f052.bin",
+   "vcn": 2320,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 7408,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f003.bin",
+   "vcn": 2352,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f026.bin",
+   "vcn": 4000,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f010.bin",
+   "vcn": 3312,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f015.bin",
+   "vcn": 3712,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 9296,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f032.bin",
+   "vcn": 4208,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 128,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 4224,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f031.bin",
+   "vcn": 1920,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f059.bin",
+   "vcn": 3136,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 5520,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f040.bin",
+   "vcn": 3696,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f016.bin",
+   "vcn": 7728,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f063.bin",
+   "vcn": 800,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f033.bin",
+   "vcn": 10016,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f054.bin",
+   "vcn": 1664,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 5904,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f027.bin",
+   "vcn": 2528,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 5984,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f034.bin",
+   "vcn": 4000,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f007.bin",
+   "vcn": 6016,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f018.bin",
+   "vcn": 10000,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 2352,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f023.bin",
+   "vcn": 4480,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f024.bin",
+   "vcn": 4000,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f008.bin",
+   "vcn": 128,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f004.bin",
+   "vcn": 2912,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f018.bin",
+   "vcn": 2432,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f001.bin",
+   "vcn": 4368,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f006.bin",
+   "vcn": 2528,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f033.bin",
+   "vcn": 8112,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f049.bin",
+   "vcn": 976,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f043.bin",
+   "vcn": 3216,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f000.bin",
+   "vcn": 2096,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f039.bin",
+   "vcn": 3952,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f001.bin",
+   "vcn": 320,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f000.bin",
+   "vcn": 1792,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f049.bin",
+   "vcn": 4432,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f049.bin",
+   "vcn": 4576,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f052.bin",
+   "vcn": 11088,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f039.bin",
+   "vcn": 2064,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 5616,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f007.bin",
+   "vcn": 4816,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f008.bin",
+   "vcn": 4896,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 2704,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 2032,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f047.bin",
+   "vcn": 11472,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f063.bin",
+   "vcn": 6048,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f000.bin",
+   "vcn": 1040,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f034.bin",
+   "vcn": 7760,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f015.bin",
+   "vcn": 2800,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f046.bin",
+   "vcn": 672,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 6224,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f045.bin",
+   "vcn": 7216,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f023.bin",
+   "vcn": 2368,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f021.bin",
+   "vcn": 4544,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f047.bin",
+   "vcn": 10096,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f029.bin",
+   "vcn": 5120,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f057.bin",
+   "vcn": 2160,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f057.bin",
+   "vcn": 2208,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f024.bin",
+   "vcn": 2176,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f024.bin",
+   "vcn": 960,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f044.bin",
+   "vcn": 112,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 2304,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f033.bin",
+   "vcn": 7072,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f005.bin",
+   "vcn": 656,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f050.bin",
+   "vcn": 3520,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f024.bin",
+   "vcn": 1824,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f062.bin",
+   "vcn": 1216,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f040.bin",
+   "vcn": 3152,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f017.bin",
+   "vcn": 3040,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 4624,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f031.bin",
+   "vcn": 3984,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f031.bin",
+   "vcn": 4112,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f000.bin",
+   "vcn": 2736,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 8224,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f008.bin",
+   "vcn": 9136,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f036.bin",
+   "vcn": 5328,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f009.bin",
+   "vcn": 5232,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 2384,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f031.bin",
+   "vcn": 4768,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f033.bin",
+   "vcn": 3168,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f030.bin",
+   "vcn": 48,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f010.bin",
+   "vcn": 1472,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f016.bin",
+   "vcn": 544,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f058.bin",
+   "vcn": 1184,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f062.bin",
+   "vcn": 6336,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f007.bin",
+   "vcn": 3664,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f014.bin",
+   "vcn": 928,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f025.bin",
+   "vcn": 5184,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f012.bin",
+   "vcn": 640,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f046.bin",
+   "vcn": 2512,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 4608,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f014.bin",
+   "vcn": 656,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f009.bin",
+   "vcn": 5968,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f050.bin",
+   "vcn": 8000,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f043.bin",
+   "vcn": 1504,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f058.bin",
+   "vcn": 1840,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f016.bin",
+   "vcn": 3872,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f048.bin",
+   "vcn": 5984,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f051.bin",
+   "vcn": 5360,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f017.bin",
+   "vcn": 2800,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f053.bin",
+   "vcn": 7360,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f045.bin",
+   "vcn": 10720,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f051.bin",
+   "vcn": 4912,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f038.bin",
+   "vcn": 8944,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f038.bin",
+   "vcn": 9056,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f003.bin",
+   "vcn": 4544,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f039.bin",
+   "vcn": 3408,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f007.bin",
+   "vcn": 784,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f030.bin",
+   "vcn": 2272,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 2416,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f024.bin",
+   "vcn": 3760,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f001.bin",
+   "vcn": 3232,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f030.bin",
+   "vcn": 2384,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f016.bin",
+   "vcn": 288,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f033.bin",
+   "vcn": 5632,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f012.bin",
+   "vcn": 3120,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 7344,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 7424,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 3792,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 9952,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f062.bin",
+   "vcn": 2000,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f021.bin",
+   "vcn": 2832,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f013.bin",
+   "vcn": 4512,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f009.bin",
+   "vcn": 1328,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f000.bin",
+   "vcn": 2976,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f047.bin",
+   "vcn": 3232,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f057.bin",
+   "vcn": 16,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 3168,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f006.bin",
+   "vcn": 528,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f030.bin",
+   "vcn": 480,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f047.bin",
+   "vcn": 7840,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 4736,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 352,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 1232,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f027.bin",
+   "vcn": 1136,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f015.bin",
+   "vcn": 2816,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f045.bin",
+   "vcn": 544,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f022.bin",
+   "vcn": 4000,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 928,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f033.bin",
+   "vcn": 3040,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f036.bin",
+   "vcn": 1952,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f041.bin",
+   "vcn": 7440,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 3648,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f011.bin",
+   "vcn": 10256,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f047.bin",
+   "vcn": 4368,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f001.bin",
+   "vcn": 1840,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f053.bin",
+   "vcn": 496,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f006.bin",
+   "vcn": 5280,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f034.bin",
+   "vcn": 3552,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f050.bin",
+   "vcn": 6224,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f027.bin",
+   "vcn": 208,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 1920,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f059.bin",
+   "vcn": 6160,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f015.bin",
+   "vcn": 3856,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f022.bin",
+   "vcn": 3184,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f039.bin",
+   "vcn": 1968,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f035.bin",
+   "vcn": 1520,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f027.bin",
+   "vcn": 2320,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f060.bin",
+   "vcn": 3344,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f059.bin",
+   "vcn": 2576,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f039.bin",
+   "vcn": 3376,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f017.bin",
+   "vcn": 192,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f023.bin",
+   "vcn": 3056,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f039.bin",
+   "vcn": 512,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f039.bin",
+   "vcn": 640,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f039.bin",
+   "vcn": 1632,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f031.bin",
+   "vcn": 2576,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 6256,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f041.bin",
+   "vcn": 9936,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f053.bin",
+   "vcn": 7504,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f005.bin",
+   "vcn": 3984,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 6016,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 7360,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f052.bin",
+   "vcn": 96,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 3168,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f034.bin",
+   "vcn": 8112,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f048.bin",
+   "vcn": 4880,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f015.bin",
+   "vcn": 896,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f006.bin",
+   "vcn": 7440,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f040.bin",
+   "vcn": 1600,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f040.bin",
+   "vcn": 1552,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f010.bin",
+   "vcn": 5248,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f018.bin",
+   "vcn": 1584,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f030.bin",
+   "vcn": 1648,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f038.bin",
+   "vcn": 7552,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f036.bin",
+   "vcn": 80,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f059.bin",
+   "vcn": 4800,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f043.bin",
+   "vcn": 1456,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f032.bin",
+   "vcn": 7136,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 4768,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f031.bin",
+   "vcn": 1664,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f029.bin",
+   "vcn": 2016,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 6336,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 6464,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 6816,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 6848,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f034.bin",
+   "vcn": 7664,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f003.bin",
+   "vcn": 3360,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f033.bin",
+   "vcn": 784,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f043.bin",
+   "vcn": 1040,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f063.bin",
+   "vcn": 1168,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f045.bin",
+   "vcn": 5520,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f048.bin",
+   "vcn": 256,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f062.bin",
+   "vcn": 2192,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f030.bin",
+   "vcn": 208,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f033.bin",
+   "vcn": 1792,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f022.bin",
+   "vcn": 2240,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f059.bin",
+   "vcn": 3328,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 4848,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f004.bin",
+   "vcn": 1296,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f013.bin",
+   "vcn": 752,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 960,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f061.bin",
+   "vcn": 6080,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f051.bin",
+   "vcn": 5952,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f006.bin",
+   "vcn": 5776,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f043.bin",
+   "vcn": 5984,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 10864,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f003.bin",
+   "vcn": 2992,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f048.bin",
+   "vcn": 6720,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f025.bin",
+   "vcn": 4944,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f059.bin",
+   "vcn": 7360,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 3296,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f034.bin",
+   "vcn": 2224,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f021.bin",
+   "vcn": 5600,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f043.bin",
+   "vcn": 4800,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f039.bin",
+   "vcn": 2576,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f022.bin",
+   "vcn": 3552,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f058.bin",
+   "vcn": 11536,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 7104,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f063.bin",
+   "vcn": 4608,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 7920,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f034.bin",
+   "vcn": 2416,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f007.bin",
+   "vcn": 3120,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f047.bin",
+   "vcn": 5888,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f057.bin",
+   "vcn": 5216,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 9616,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f046.bin",
+   "vcn": 1552,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 8832,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f026.bin",
+   "vcn": 4544,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f050.bin",
+   "vcn": 1856,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f048.bin",
+   "vcn": 2880,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f035.bin",
+   "vcn": 3760,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f015.bin",
+   "vcn": 3232,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f023.bin",
+   "vcn": 5280,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 5648,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 5856,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f026.bin",
+   "vcn": 3024,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 8416,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f038.bin",
+   "vcn": 9776,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 544,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 704,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f041.bin",
+   "vcn": 3776,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f008.bin",
+   "vcn": 864,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f027.bin",
+   "vcn": 5952,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f022.bin",
+   "vcn": 2112,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f039.bin",
+   "vcn": 1760,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 1952,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 5552,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f062.bin",
+   "vcn": 2096,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f048.bin",
+   "vcn": 80,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 6544,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 6736,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f051.bin",
+   "vcn": 560,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f036.bin",
+   "vcn": 6448,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f036.bin",
+   "vcn": 272,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f010.bin",
+   "vcn": 3552,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f059.bin",
+   "vcn": 5360,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f032.bin",
+   "vcn": 1856,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f029.bin",
+   "vcn": 80,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f060.bin",
+   "vcn": 6336,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f043.bin",
+   "vcn": 1760,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f018.bin",
+   "vcn": 9680,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f033.bin",
+   "vcn": 4192,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f057.bin",
+   "vcn": 5824,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 9184,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f063.bin",
+   "vcn": 4736,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f013.bin",
+   "vcn": 3520,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f021.bin",
+   "vcn": 1392,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f015.bin",
+   "vcn": 2464,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f054.bin",
+   "vcn": 2752,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f027.bin",
+   "vcn": 3760,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f016.bin",
+   "vcn": 2192,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f026.bin",
+   "vcn": 1616,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f017.bin",
+   "vcn": 2256,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f053.bin",
+   "vcn": 5760,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f012.bin",
+   "vcn": 11072,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f008.bin",
+   "vcn": 688,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 3984,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 416,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 8416,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f062.bin",
+   "vcn": 352,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f058.bin",
+   "vcn": 5264,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f026.bin",
+   "vcn": 2880,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 3536,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f058.bin",
+   "vcn": 3968,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f050.bin",
+   "vcn": 4368,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f018.bin",
+   "vcn": 1536,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f022.bin",
+   "vcn": 2912,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f015.bin",
+   "vcn": 272,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f041.bin",
+   "vcn": 1696,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f032.bin",
+   "vcn": 16,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f039.bin",
+   "vcn": 3792,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 3568,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f011.bin",
+   "vcn": 848,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f050.bin",
+   "vcn": 8352,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f026.bin",
+   "vcn": 2448,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f053.bin",
+   "vcn": 8864,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f016.bin",
+   "vcn": 6368,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 3024,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f045.bin",
+   "vcn": 10592,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f031.bin",
+   "vcn": 656,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f051.bin",
+   "vcn": 2928,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f045.bin",
+   "vcn": 9536,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f001.bin",
+   "vcn": 4352,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f030.bin",
+   "vcn": 80,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f035.bin",
+   "vcn": 6144,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 5392,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f050.bin",
+   "vcn": 6640,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f054.bin",
+   "vcn": 1792,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f043.bin",
+   "vcn": 2592,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f059.bin",
+   "vcn": 1408,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f013.bin",
+   "vcn": 1232,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 6368,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f021.bin",
+   "vcn": 1968,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f046.bin",
+   "vcn": 2560,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f004.bin",
+   "vcn": 720,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f021.bin",
+   "vcn": 7184,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f054.bin",
+   "vcn": 144,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f050.bin",
+   "vcn": 2992,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f050.bin",
+   "vcn": 3104,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f032.bin",
+   "vcn": 3360,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f013.bin",
+   "vcn": 5024,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f033.bin",
+   "vcn": 1200,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f018.bin",
+   "vcn": 1072,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 5040,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f030.bin",
+   "vcn": 1216,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 9104,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f024.bin",
+   "vcn": 2736,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f057.bin",
+   "vcn": 3184,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f011.bin",
+   "vcn": 3136,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f024.bin",
+   "vcn": 5408,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f014.bin",
+   "vcn": 736,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f013.bin",
+   "vcn": 1568,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f004.bin",
+   "vcn": 4512,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f005.bin",
+   "vcn": 2192,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f040.bin",
+   "vcn": 2032,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 2656,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f010.bin",
+   "vcn": 3824,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f014.bin",
+   "vcn": 384,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f010.bin",
+   "vcn": 3200,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f010.bin",
+   "vcn": 3328,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f041.bin",
+   "vcn": 10160,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f046.bin",
+   "vcn": 4320,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f052.bin",
+   "vcn": 272,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 8320,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f030.bin",
+   "vcn": 1792,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f031.bin",
+   "vcn": 4528,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f010.bin",
+   "vcn": 1024,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f017.bin",
+   "vcn": 1344,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 5008,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f024.bin",
+   "vcn": 1568,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f030.bin",
+   "vcn": 1888,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 11168,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f044.bin",
+   "vcn": 7104,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f004.bin",
+   "vcn": 2240,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f054.bin",
+   "vcn": 2848,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 1824,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f000.bin",
+   "vcn": 1216,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 11360,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f050.bin",
+   "vcn": 7616,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f052.bin",
+   "vcn": 9360,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f036.bin",
+   "vcn": 64,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f006.bin",
+   "vcn": 4896,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f010.bin",
+   "vcn": 2016,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f025.bin",
+   "vcn": 7008,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f007.bin",
+   "vcn": 4368,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f063.bin",
+   "vcn": 2928,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f010.bin",
+   "vcn": 2800,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f054.bin",
+   "vcn": 704,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f053.bin",
+   "vcn": 10288,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f040.bin",
+   "vcn": 4560,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f045.bin",
+   "vcn": 3936,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f003.bin",
+   "vcn": 4208,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f003.bin",
+   "vcn": 352,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f011.bin",
+   "vcn": 3488,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f009.bin",
+   "vcn": 2160,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f012.bin",
+   "vcn": 6864,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f005.bin",
+   "vcn": 528,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f005.bin",
+   "vcn": 672,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 3600,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f036.bin",
+   "vcn": 4768,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f035.bin",
+   "vcn": 8016,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f041.bin",
+   "vcn": 10912,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f027.bin",
+   "vcn": 3216,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f034.bin",
+   "vcn": 1440,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f033.bin",
+   "vcn": 2912,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f041.bin",
+   "vcn": 11088,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f062.bin",
+   "vcn": 4960,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f000.bin",
+   "vcn": 272,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f027.bin",
+   "vcn": 4816,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 2928,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f036.bin",
+   "vcn": 5744,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 1904,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f061.bin",
+   "vcn": 7312,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f004.bin",
+   "vcn": 2896,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f038.bin",
+   "vcn": 10672,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f018.bin",
+   "vcn": 10608,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f046.bin",
+   "vcn": 6592,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f054.bin",
+   "vcn": 2256,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f010.bin",
+   "vcn": 2128,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f058.bin",
+   "vcn": 10928,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f000.bin",
+   "vcn": 544,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f021.bin",
+   "vcn": 11472,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f053.bin",
+   "vcn": 10976,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f013.bin",
+   "vcn": 1856,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f012.bin",
+   "vcn": 576,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f027.bin",
+   "vcn": 5600,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f027.bin",
+   "vcn": 3520,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f061.bin",
+   "vcn": 10576,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f036.bin",
+   "vcn": 6256,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f051.bin",
+   "vcn": 16,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 928,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f035.bin",
+   "vcn": 4224,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f007.bin",
+   "vcn": 6384,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f049.bin",
+   "vcn": 4336,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f031.bin",
+   "vcn": 5760,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 4064,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f040.bin",
+   "vcn": 2384,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 2640,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f032.bin",
+   "vcn": 3120,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 2592,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f057.bin",
+   "vcn": 4608,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f034.bin",
+   "vcn": 5664,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f009.bin",
+   "vcn": 4320,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 3920,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f062.bin",
+   "vcn": 464,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f011.bin",
+   "vcn": 3568,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f018.bin",
+   "vcn": 5952,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f059.bin",
+   "vcn": 4992,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f011.bin",
+   "vcn": 5904,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f025.bin",
+   "vcn": 2000,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 10048,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 4832,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f016.bin",
+   "vcn": 3616,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f040.bin",
+   "vcn": 640,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 5104,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f047.bin",
+   "vcn": 5696,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f027.bin",
+   "vcn": 1056,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f003.bin",
+   "vcn": 3680,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f017.bin",
+   "vcn": 2224,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f011.bin",
+   "vcn": 1136,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 2528,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 10048,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f058.bin",
+   "vcn": 8448,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f034.bin",
+   "vcn": 5472,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 3920,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 5312,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 2464,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f021.bin",
+   "vcn": 9344,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f046.bin",
+   "vcn": 5088,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f050.bin",
+   "vcn": 9200,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f043.bin",
+   "vcn": 1824,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f006.bin",
+   "vcn": 4816,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 4576,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f000.bin",
+   "vcn": 4832,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f004.bin",
+   "vcn": 3040,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f003.bin",
+   "vcn": 4688,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f012.bin",
+   "vcn": 2544,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f050.bin",
+   "vcn": 9696,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f033.bin",
+   "vcn": 3392,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f008.bin",
+   "vcn": 2016,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f036.bin",
+   "vcn": 4848,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f038.bin",
+   "vcn": 6080,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 8496,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f040.bin",
+   "vcn": 416,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f040.bin",
+   "vcn": 480,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 5520,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f007.bin",
+   "vcn": 1168,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 8032,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f009.bin",
+   "vcn": 4736,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f013.bin",
+   "vcn": 2704,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f058.bin",
+   "vcn": 11312,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f050.bin",
+   "vcn": 6560,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f021.bin",
+   "vcn": 3584,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f047.bin",
+   "vcn": 5760,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f062.bin",
+   "vcn": 6416,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 8304,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f044.bin",
+   "vcn": 5120,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f014.bin",
+   "vcn": 2032,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f036.bin",
+   "vcn": 880,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 8240,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 8336,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 8432,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f027.bin",
+   "vcn": 1920,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f009.bin",
+   "vcn": 5424,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f026.bin",
+   "vcn": 7904,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f025.bin",
+   "vcn": 7120,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f021.bin",
+   "vcn": 7632,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f018.bin",
+   "vcn": 752,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 2672,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f018.bin",
+   "vcn": 5104,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f058.bin",
+   "vcn": 8752,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f025.bin",
+   "vcn": 8336,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f048.bin",
+   "vcn": 4864,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f012.bin",
+   "vcn": 10736,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f034.bin",
+   "vcn": 3696,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f029.bin",
+   "vcn": 528,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f003.bin",
+   "vcn": 4784,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f043.bin",
+   "vcn": 6240,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f053.bin",
+   "vcn": 7376,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f040.bin",
+   "vcn": 1440,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f032.bin",
+   "vcn": 3328,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f057.bin",
+   "vcn": 4768,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f024.bin",
+   "vcn": 1104,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f034.bin",
+   "vcn": 2400,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f034.bin",
+   "vcn": 2432,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f029.bin",
+   "vcn": 5824,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f051.bin",
+   "vcn": 6224,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f032.bin",
+   "vcn": 5872,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f062.bin",
+   "vcn": 5936,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f004.bin",
+   "vcn": 1856,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f010.bin",
+   "vcn": 1184,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f034.bin",
+   "vcn": 400,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f022.bin",
+   "vcn": 784,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f039.bin",
+   "vcn": 3552,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f015.bin",
+   "vcn": 1520,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f063.bin",
+   "vcn": 1328,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f053.bin",
+   "vcn": 8368,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f059.bin",
+   "vcn": 640,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 6864,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f039.bin",
+   "vcn": 304,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f008.bin",
+   "vcn": 6304,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f021.bin",
+   "vcn": 5632,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 2064,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f021.bin",
+   "vcn": 9392,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 4160,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f004.bin",
+   "vcn": 2768,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f032.bin",
+   "vcn": 6256,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f024.bin",
+   "vcn": 2816,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f024.bin",
+   "vcn": 2928,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f008.bin",
+   "vcn": 336,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f058.bin",
+   "vcn": 10816,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f033.bin",
+   "vcn": 6416,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 8048,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f024.bin",
+   "vcn": 5168,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f061.bin",
+   "vcn": 3168,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f008.bin",
+   "vcn": 8112,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f032.bin",
+   "vcn": 6736,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f014.bin",
+   "vcn": 3600,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f059.bin",
+   "vcn": 1536,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f053.bin",
+   "vcn": 6192,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f006.bin",
+   "vcn": 5936,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f044.bin",
+   "vcn": 1984,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f048.bin",
+   "vcn": 10944,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f061.bin",
+   "vcn": 9648,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 2144,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f006.bin",
+   "vcn": 2464,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f011.bin",
+   "vcn": 5136,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f041.bin",
+   "vcn": 4496,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f057.bin",
+   "vcn": 4672,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 3408,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f061.bin",
+   "vcn": 1072,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f047.bin",
+   "vcn": 8240,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f044.bin",
+   "vcn": 3984,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 9920,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f050.bin",
+   "vcn": 16,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f006.bin",
+   "vcn": 5200,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f005.bin",
+   "vcn": 752,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f035.bin",
+   "vcn": 4160,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f005.bin",
+   "vcn": 3472,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 1648,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 6240,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f023.bin",
+   "vcn": 5168,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 864,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f051.bin",
+   "vcn": 2768,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f046.bin",
+   "vcn": 3120,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f001.bin",
+   "vcn": 5040,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f023.bin",
+   "vcn": 752,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f007.bin",
+   "vcn": 3680,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f006.bin",
+   "vcn": 6336,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f038.bin",
+   "vcn": 3168,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f001.bin",
+   "vcn": 544,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f032.bin",
+   "vcn": 1504,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f018.bin",
+   "vcn": 11312,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f027.bin",
+   "vcn": 6384,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f048.bin",
+   "vcn": 7488,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f061.bin",
+   "vcn": 4208,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f027.bin",
+   "vcn": 480,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f007.bin",
+   "vcn": 8112,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f005.bin",
+   "vcn": 1376,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f063.bin",
+   "vcn": 768,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f063.bin",
+   "vcn": 816,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f029.bin",
+   "vcn": 3392,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f045.bin",
+   "vcn": 3840,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f017.bin",
+   "vcn": 2768,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 3424,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f005.bin",
+   "vcn": 784,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f042.bin",
+   "vcn": 5360,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f044.bin",
+   "vcn": 7232,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f027.bin",
+   "vcn": 6880,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f062.bin",
+   "vcn": 3712,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f062.bin",
+   "vcn": 224,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f044.bin",
+   "vcn": 4912,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f020.bin",
+   "vcn": 2928,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f044.bin",
+   "vcn": 3968,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f048.bin",
+   "vcn": 9696,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f059.bin",
+   "vcn": 2752,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f025.bin",
+   "vcn": 7776,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f013.bin",
+   "vcn": 2576,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f000.bin",
+   "vcn": 1728,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f044.bin",
+   "vcn": 3296,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f005.bin",
+   "vcn": 4304,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f045.bin",
+   "vcn": 1728,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f026.bin",
+   "vcn": 5440,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f015.bin",
+   "vcn": 1504,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f038.bin",
+   "vcn": 2464,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f002.bin",
+   "vcn": 4624,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f048.bin",
+   "vcn": 10928,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f038.bin",
+   "vcn": 3856,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f038.bin",
+   "vcn": 5424,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f021.bin",
+   "vcn": 2656,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f014.bin",
+   "vcn": 16,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f059.bin",
+   "vcn": 6016,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f024.bin",
+   "vcn": 1456,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f038.bin",
+   "vcn": 8112,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f026.bin",
+   "vcn": 928,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f049.bin",
+   "vcn": 3136,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f012.bin",
+   "vcn": 6224,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f013.bin",
+   "vcn": 3040,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f032.bin",
+   "vcn": 2528,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f048.bin",
+   "vcn": 7840,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f047.bin",
+   "vcn": 2560,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f043.bin",
+   "vcn": 1792,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f043.bin",
+   "vcn": 1968,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f059.bin",
+   "vcn": 656,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f007.bin",
+   "vcn": 6080,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f032.bin",
+   "vcn": 7824,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f034.bin",
+   "vcn": 6352,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f036.bin",
+   "vcn": 3440,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f006.bin",
+   "vcn": 1248,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f058.bin",
+   "vcn": 8624,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f055.bin",
+   "vcn": 4672,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f018.bin",
+   "vcn": 2272,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f040.bin",
+   "vcn": 4240,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f031.bin",
+   "vcn": 752,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f016.bin",
+   "vcn": 3456,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f043.bin",
+   "vcn": 128,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f011.bin",
+   "vcn": 1376,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f039.bin",
+   "vcn": 3712,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f062.bin",
+   "vcn": 1232,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f038.bin",
+   "vcn": 7376,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 5728,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f045.bin",
+   "vcn": 6368,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f014.bin",
+   "vcn": 4176,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f063.bin",
+   "vcn": 7104,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f010.bin",
+   "vcn": 4272,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f035.bin",
+   "vcn": 1472,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 3440,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 7376,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f013.bin",
+   "vcn": 4368,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f019.bin",
+   "vcn": 9568,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 4736,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 4816,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f056.bin",
+   "vcn": 560,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f043.bin",
+   "vcn": 6304,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f057.bin",
+   "vcn": 4048,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f009.bin",
+   "vcn": 2880,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f027.bin",
+   "vcn": 5056,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f015.bin",
+   "vcn": 176,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f014.bin",
+   "vcn": 5568,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f018.bin",
+   "vcn": 4704,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f026.bin",
+   "vcn": 608,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f007.bin",
+   "vcn": 8368,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f012.bin",
+   "vcn": 496,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f061.bin",
+   "vcn": 4416,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f048.bin",
+   "vcn": 736,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f044.bin",
+   "vcn": 8080,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f025.bin",
+   "vcn": 5664,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f037.bin",
+   "vcn": 2336,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f051.bin",
+   "vcn": 1696,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f063.bin",
+   "vcn": 1360,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f039.bin",
+   "vcn": 4032,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f006.bin",
+   "vcn": 4512,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f030.bin",
+   "vcn": 3488,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f044.bin",
+   "vcn": 1536,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f049.bin",
+   "vcn": 5024,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f015.bin",
+   "vcn": 1424,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f031.bin",
+   "vcn": 1568,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f059.bin",
+   "vcn": 6400,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f009.bin",
+   "vcn": 3824,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f047.bin",
+   "vcn": 9920,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f033.bin",
+   "vcn": 5088,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f004.bin",
+   "vcn": 2800,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\AsterBench\\data\\f028.bin",
+   "vcn": 4800,
+   "clusters": 16
+  }
+ ],
+ "fingerprints": {
+  "D:\\AsterBench\\data\\f000.bin": [
+   22020096,
+   1793532711069054400
+  ],
+  "D:\\AsterBench\\data\\f001.bin": [
+   24117248,
+   1793532711157026000
+  ],
+  "D:\\AsterBench\\data\\f002.bin": [
+   42991616,
+   1793532711438241200
+  ],
+  "D:\\AsterBench\\data\\f003.bin": [
+   19922944,
+   1793532711499767600
+  ],
+  "D:\\AsterBench\\data\\f004.bin": [
+   18874368,
+   1793532712182132500
+  ],
+  "D:\\AsterBench\\data\\f005.bin": [
+   19922944,
+   1793532712372752800
+  ],
+  "D:\\AsterBench\\data\\f006.bin": [
+   31457280,
+   1793532712620712300
+  ],
+  "D:\\AsterBench\\data\\f007.bin": [
+   34603008,
+   1793532712746612800
+  ],
+  "D:\\AsterBench\\data\\f008.bin": [
+   38797312,
+   1793532712962417500
+  ],
+  "D:\\AsterBench\\data\\f009.bin": [
+   25165824,
+   1793532713155958700
+  ],
+  "D:\\AsterBench\\data\\f010.bin": [
+   26214400,
+   1793532713244447700
+  ],
+  "D:\\AsterBench\\data\\f011.bin": [
+   46137344,
+   1793532714054083800
+  ],
+  "D:\\AsterBench\\data\\f012.bin": [
+   49283072,
+   1793532714698326400
+  ],
+  "D:\\AsterBench\\data\\f013.bin": [
+   22020096,
+   1793532715019167500
+  ],
+  "D:\\AsterBench\\data\\f014.bin": [
+   25165824,
+   1793532715418154100
+  ],
+  "D:\\AsterBench\\data\\f015.bin": [
+   16777216,
+   1793532715721385400
+  ],
+  "D:\\AsterBench\\data\\f016.bin": [
+   39845888,
+   1793532716539114800
+  ],
+  "D:\\AsterBench\\data\\f017.bin": [
+   17825792,
+   1793532716969682600
+  ],
+  "D:\\AsterBench\\data\\f018.bin": [
+   49283072,
+   1793532717419828900
+  ],
+  "D:\\AsterBench\\data\\f019.bin": [
+   41943040,
+   1793532718288852800
+  ],
+  "D:\\AsterBench\\data\\f020.bin": [
+   23068672,
+   1793532718691212800
+  ],
+  "D:\\AsterBench\\data\\f021.bin": [
+   49283072,
+   1793532720038479300
+  ],
+  "D:\\AsterBench\\data\\f022.bin": [
+   16777216,
+   1793532720795217800
+  ],
+  "D:\\AsterBench\\data\\f023.bin": [
+   28311552,
+   1793532721476553300
+  ],
+  "D:\\AsterBench\\data\\f024.bin": [
+   23068672,
+   1793532721963975700
+  ],
+  "D:\\AsterBench\\data\\f025.bin": [
+   38797312,
+   1793532722929829600
+  ],
+  "D:\\AsterBench\\data\\f026.bin": [
+   32505856,
+   1793532723106073400
+  ],
+  "D:\\AsterBench\\data\\f027.bin": [
+   28311552,
+   1793532723660434500
+  ],
+  "D:\\AsterBench\\data\\f028.bin": [
+   36700160,
+   1793532724746245800
+  ],
+  "D:\\AsterBench\\data\\f029.bin": [
+   37748736,
+   1793532726053440900
+  ],
+  "D:\\AsterBench\\data\\f030.bin": [
+   17825792,
+   1793532726433316600
+  ],
+  "D:\\AsterBench\\data\\f031.bin": [
+   27262976,
+   1793532727123533900
+  ],
+  "D:\\AsterBench\\data\\f032.bin": [
+   32505856,
+   1793532727680528000
+  ],
+  "D:\\AsterBench\\data\\f033.bin": [
+   44040192,
+   1793532728280230600
+  ],
+  "D:\\AsterBench\\data\\f034.bin": [
+   36700160,
+   1793532729271404000
+  ],
+  "D:\\AsterBench\\data\\f035.bin": [
+   38797312,
+   1793532729434525200
+  ],
+  "D:\\AsterBench\\data\\f036.bin": [
+   32505856,
+   1793532730003170200
+  ],
+  "D:\\AsterBench\\data\\f037.bin": [
+   47185920,
+   1793532731696488900
+  ],
+  "D:\\AsterBench\\data\\f038.bin": [
+   44040192,
+   1793532732729470200
+  ],
+  "D:\\AsterBench\\data\\f039.bin": [
+   19922944,
+   1793532732959331500
+  ],
+  "D:\\AsterBench\\data\\f040.bin": [
+   19922944,
+   1793532733310974700
+  ],
+  "D:\\AsterBench\\data\\f041.bin": [
+   46137344,
+   1793532734192100200
+  ],
+  "D:\\AsterBench\\data\\f042.bin": [
+   46137344,
+   1793532734852782700
+  ],
+  "D:\\AsterBench\\data\\f043.bin": [
+   27262976,
+   1793532735185692200
+  ],
+  "D:\\AsterBench\\data\\f044.bin": [
+   38797312,
+   1793532735563832000
+  ],
+  "D:\\AsterBench\\data\\f045.bin": [
+   49283072,
+   1793532737060182400
+  ],
+  "D:\\AsterBench\\data\\f046.bin": [
+   28311552,
+   1793532737784631500
+  ],
+  "D:\\AsterBench\\data\\f047.bin": [
+   49283072,
+   1793532739036203100
+  ],
+  "D:\\AsterBench\\data\\f048.bin": [
+   47185920,
+   1793532739934621300
+  ],
+  "D:\\AsterBench\\data\\f049.bin": [
+   23068672,
+   1793532740043532700
+  ],
+  "D:\\AsterBench\\data\\f050.bin": [
+   41943040,
+   1793532740536829400
+  ],
+  "D:\\AsterBench\\data\\f051.bin": [
+   26214400,
+   1793532740697124800
+  ],
+  "D:\\AsterBench\\data\\f052.bin": [
+   49283072,
+   1793532741381946100
+  ],
+  "D:\\AsterBench\\data\\f053.bin": [
+   49283072,
+   1793532742204642800
+  ],
+  "D:\\AsterBench\\data\\f054.bin": [
+   16777216,
+   1793532742698277700
+  ],
+  "D:\\AsterBench\\data\\f055.bin": [
+   24117248,
+   1793532744285476400
+  ],
+  "D:\\AsterBench\\data\\f056.bin": [
+   26214400,
+   1793532746042840500
+  ],
+  "D:\\AsterBench\\data\\f057.bin": [
+   26214400,
+   1793532746541619200
+  ],
+  "D:\\AsterBench\\data\\f058.bin": [
+   48234496,
+   1793532747719258000
+  ],
+  "D:\\AsterBench\\data\\f059.bin": [
+   30408704,
+   1793532748432158700
+  ],
+  "D:\\AsterBench\\data\\f060.bin": [
+   48234496,
+   1793532749033630500
+  ],
+  "D:\\AsterBench\\data\\f061.bin": [
+   47185920,
+   1793532749831657300
+  ],
+  "D:\\AsterBench\\data\\f062.bin": [
+   28311552,
+   1793532750535247200
+  ],
+  "D:\\AsterBench\\data\\f063.bin": [
+   30408704,
+   1793532751774742000
+  ]
+ },
+ "stats": {
+  "preserved_segments": 1,
+  "preserved_bytes": 243531776,
+  "in_place_bytes": 0,
+  "overflow_bytes": 0,
+  "misaligned_pieces": 0,
+  "hot_bytes": 243531776,
+  "moved_bytes": 0,
+  "tasks": 0,
+  "avg_clusters_per_task": 0,
+  "zone_used_clusters": 0,
+  "skipped_files": 0,
+  "current_runs": 1,
+  "expected_runs": 1,
+  "hot_blocks": 3716,
+  "units": 1048
+ }
+}

@@ -4,6 +4,15 @@ AsterCache는 HDD에 설치된 게임과 대용량 자산을 SSD에 가까운 �
 
 **현재 상태 (2026-11-01):** 구현은 네 가지입니다. ① HDD/SSD 로딩을 같은 조건으로 재는 측정 하네스(`bench/`), ② 학습된 읽기 블록을 HDD 물리 배치 순서로 RAM에 미리 읽는 선읽기(`prefetch/`), ③ Python API로 명시적으로 호출하는 SSD 블록 캐시(`sqlite_cache.py`), ④ 핫 블록을 NTFS 안에서 한 구간으로 옮기는 재배치(`relayout/`, FSCTL_MOVE_FILE). 기존 게임 프로세스를 투명하게 가속하는 경로는 아직 없습니다. 일반 게임은 이 캐시를 자동으로 사용하지 않습니다. 측정은 Windows 11 실기에서 합성 데이터셋으로 수행했으며, 실제 게임 로딩 시간은 아직 재지 않았습니다. 선읽기의 기본값은 스레드 1, 청크 1 MiB, 파일 핸들 유지, SEQUENTIAL_SCAN 끔입니다(재배치 존 튜닝, 2026-11-01).
 
+## 어느 것을 쓰나
+
+| 구성 | 위치 | 상태 |
+|---|---|---|
+| C# 최종본 (실사용 대상) | `csharp/` ([csharp/README.md](csharp/README.md)) | CLI·서비스·트레이. 관리자 스크립트 실행과 실제 게임 확인은 아직 남음 |
+| Python 참조 구현 | 이 README 의 나머지 | 연구·측정 도구이자 C# 교차 검증 기준 |
+| 커널 미니필터 | `kernel/` ([kernel/README.md](kernel/README.md)) | C 소스만 있음. WDK 가 없어 아직 빌드되지 않음 |
+| 게임 적용 안내 | [docs/GAME_GUIDE.md](docs/GAME_GUIDE.md) | 실제 게임에 적용하는 절차 |
+
 ## 구성
 
 - `bench/` — 합성 데이터셋(약 2 GiB, 트레이스 4,000건) 생성, 콜드·웜 재생, 콜드 조건 준비, 시나리오 실행기

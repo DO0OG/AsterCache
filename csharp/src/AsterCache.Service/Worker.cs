@@ -1,7 +1,6 @@
 using System.Threading.Channels;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Settings;
-using AsterCache.Windows;
 using Microsoft.Extensions.Hosting;
 
 namespace AsterCache.Service;

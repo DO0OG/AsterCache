@@ -469,6 +469,17 @@ core 를 score 내림차순으로 게임별 존 예산 C_game 까지 채우고, 
 | S5 | 게임 적용 (E5, 사용자 승인), reapply 예약 작업 | 플랫폼의 게임 무결성 검사 통과, SSD 설치본 대비 p50·p95 |
 | S6 | 문서 | README 의 목표 문구를 1.5 대로 바꾸고, 한계(1.5, 7절)를 그대로 반영. 아래 불일치 정정 |
 
+**진행 현황 (2026-11-02)**
+
+- S0 완료: `results/zone_curve_20261101`, `results/prefetch_sweep_20261101/contig_upper_bound.json`, `contig_persistence_*.json`. 단 24시간 지속성은 미측정.
+- S1 완료: `relayout/plan.py`, `tests/test_relayout.py`.
+- S2 완료(일부): `relayout/mover.py`, `scripts/e2_vhdx_trial.ps1`, `results/relayout_e2`, `results/relayout_e2_hdd`. 강제 종료 5회·강제 분리·`chkdsk /scan` 은 미실행(관리자 권한 필요).
+- S3 완료(일부): `results/relayout_e3/20261101_225446`, `20261101_235628`. `defrag D: /O` 뒤 측정은 미실행(관리자 권한 필요).
+- S4 미완료: 실제 게임 Procmon 트레이스가 아직 없음.
+- S5 미완료: S4 와 사용자 승인 뒤. 게임 적용 전.
+- S6 일부: README 의 목표 문구와 한계는 반영함(`README.md`, `ARCHITECTURE_NEXT.md`). 실제 게임 기준 판정은 미반영.
+- 코드 포팅: C# 최종본(`csharp/`)이 이 로드맵의 상위 구현으로 추가됨. 관리자 스크립트 실행은 미완료.
+
 ### 8.3 이번 검토에서 찾은 문서 불일치 (수정하지 않음)
 
 - README.md "물리 위치 순서 선읽기" 절은 이 실험이 "다른 데이터셋(4개 파일, 각 256 MiB, 조각난 배치)"이라고 적었습니다. 그런데 summary_table.json 의 근거인 results/prefetch_20261101/final_physical/20261101_211330.json 의 argv 와 dataset 은 D:\AsterBench 의 64개 파일, 2.136 GB 데이터셋입니다. 4×256 MiB 는 measure.py 의 부분 실행(prefetch_measure_partial.json)입니다. 따라서 "두 결과의 HDD 콜드는 직접 비교할 수 없다"는 문장도 틀렸습니다. 17.8 s 와 71.2 s 의 차이는 같은 데이터셋에서 실행 간 편차입니다(1.3).

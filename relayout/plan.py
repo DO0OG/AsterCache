@@ -1,6 +1,6 @@
 """Pure planning: hot block selection, access-order consensus, hot-zone allocation. No I/O except plan JSON.
 
-Design: scratchpad design_astercache_v1.md 3.1-3.3. A block is (path, block_index) with 64 KiB blocks.
+Design: docs/design_v1_relayout.md 3.1-3.3. A block is (path, block_index) with 64 KiB blocks.
 """
 from __future__ import annotations
 

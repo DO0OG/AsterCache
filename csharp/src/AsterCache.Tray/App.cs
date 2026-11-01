@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using AsterCache.Core.Logging;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -6,7 +7,6 @@ using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Themes.Fluent;
 using Avalonia.Threading;
-using AsterCache.Core.Logging;
 
 namespace AsterCache.Tray;
 

@@ -1,10 +1,10 @@
 using System.Diagnostics;
-using Avalonia;
-using Avalonia.Controls;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Settings;
 using AsterCache.Service;
 using AsterCache.Tray;
+using Avalonia;
+using Avalonia.Controls;
 using Velopack;
 
 // 사용법: AsterCache.Tray [--data-dir <폴더>] [--smoke]   (기본 폴더 %ProgramData%\AsterCache)

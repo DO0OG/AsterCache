@@ -22,7 +22,7 @@ dotnet publish csharp\src\AsterCache.Cli\AsterCache.Cli.csproj -c Release -r win
 dotnet publish csharp\src\AsterCache.Service\AsterCache.Service.csproj -c Release -r win-x64 --self-contained -o csharp\publish\service
 ```
 
-CLI 명령(`aster plan`, `probe`, `apply`, `verify`, `revert`, `trace`, `prefetch`, `status`, `launch`)과 옵션은 Python `relayout/cli.py`, `prefetch/cli.py` 와 같은 이름을 씁니다. CLI 가 완성되기 전이라 스크립트의 인자는 [CLI 완성 후 재확인] 상태입니다.
+CLI 명령(`aster plan`, `probe`, `apply`, `verify`, `revert`, `trace`, `prefetch`, `status`, `launch`, `stream-bench`)과 옵션은 `aster <명령> --help` 로 확인합니다. 재배치와 선읽기 명령은 Python `relayout/cli.py`, `prefetch/cli.py` 와 같은 이름을 씁니다.
 
 서비스는 `AsterCache.Service.exe [--console] [--data-dir <폴더>]` 로 실행합니다. 기본 데이터 폴더는 `%ProgramData%\AsterCache` 이며 `config.json`, `plans\`, `journals\`, `logs\` 를 씁니다.
 
@@ -32,12 +32,12 @@ CLI 명령(`aster plan`, `probe`, `apply`, `verify`, `revert`, `trace`, `prefetc
 
 | 스크립트 | 용도 | 판정 기준 |
 |---|---|---|
-| `cs_e2_vhdx.ps1` | 일회용 VHDX 에서 재배치 전 과정 (강제 종료 5회 후 재개, 강제 분리 1회, chkdsk, revert) | 해시 불일치 0, 재개 5/5, chkdsk 오류 0, 처리량 20 MB/s 이상 |
-| `cs_e3_check.ps1` | D:\AsterBench 에서 probe 비교, 계획 경로 검사, dry-run, verify, 콜드 스트림 (a) pvm, (b) 중첩 읽기 | C# 중앙값 ≤ Python 중앙값, 매니페스트 불변 |
-| `cs_etw_check.ps1` | 실시간 ETW 트레이스와 WPR .etl 수집 | 비교 단계 미구현, 판정 `not_evaluated` |
-| `cs_service.ps1 -Action install / test / uninstall [-PurgeData]` | 서비스 등록(LocalSystem), plans 폴더 ACL, 메모장 감지 지연 20회 | p95 ≤ 100 ms, 제거 뒤 서비스 없음 |
-| `cs_relayout_window.ps1` | 창 묶음 계획 (미채택 옵션) | 스켈레톤, 실행하면 바로 멈춤 |
-| `wdk_install.ps1 -AcceptWdkInstall` | WDK 설치만 (사용자가 결정한 뒤) | km 폴더 존재 |
+| S1 `cs_e2_vhdx.ps1` | 일회용 VHDX 에서 재배치 전 과정 (강제 종료 5회 후 재개, 강제 분리 1회, chkdsk, revert) | 해시 불일치 0, 재개 5/5, chkdsk 오류 0, 처리량 20 MB/s 이상 |
+| S2 `cs_e3_check.ps1` | D:\AsterBench 에서 probe 비교, 계획 경로 검사, dry-run, verify, 콜드 스트림 (a) pvm, (b) 중첩 읽기 | C# 중앙값 ≤ Python 중앙값, 매니페스트 불변 |
+| S3 `cs_etw_check.ps1` | 실시간 ETW 트레이스와 WPR .etl 수집 | 비교 단계 미구현, 판정 `not_evaluated` |
+| S4 `cs_service.ps1 -Action install / test / uninstall [-PurgeData]` | 서비스 등록(LocalSystem), plans 폴더 ACL, 메모장 감지 지연 20회 | p95 ≤ 100 ms, 제거 뒤 서비스 없음 |
+| S5 `cs_relayout_window.ps1` | 창 묶음 계획 (미채택 옵션) | 스켈레톤, 실행하면 바로 멈춤 |
+| S6 `wdk_install.ps1 -AcceptWdkInstall` | WDK 설치만 (사용자가 결정한 뒤) | km 폴더 존재 |
 
 ### 권한 경계
 

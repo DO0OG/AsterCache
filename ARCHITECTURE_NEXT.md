@@ -66,12 +66,25 @@ Windows BypassIO의 문서상 지원 범위와 영향에 유의하십시오: htt
 - **(b) 투명 SSD 캐시를 위한 WinFsp 사용자 모드 파일시스템 프로토타입.** G3로 가는 첫 단계입니다. 안티치트 호환은 아직 미검증입니다. WinFsp의 라이선스(GPLv3와 FLOSS 예외)를 이 프로젝트의 MIT 라이선스와 함께 검토해야 합니다.
 - **(c) 큐 깊이·간격 튜닝과 E1 결과.** 튜닝은 끝났습니다. 물리 정렬, 큐 깊이 4, 간격 0 이 선읽기 7.84 s 로 최선이었고, 간격 4 MiB 이상은 역효과였습니다(`results/prefetch_sweep_20261101/sweep_20261101_212410.json`). 재배치 존에서는 큐 깊이 1, 1 MiB 청크, 핸들 유지가 최선이었습니다(`results/stream_tuning_20261101/`). E1 연속 배치 상한은 합계 약 1.40 s(SSD 콜드 0.865 s 의 1.6배)였고, 판정은 조건부 통과입니다. 수치와 판정 기준은 `docs/design_v1_relayout.md` 1.4a 절에 있습니다(`results/prefetch_sweep_20261101/contig_upper_bound.json`).
 
+## 다음 단계 현재 상태 (2026-11-02)
+
+완료
+- 재배치 계획·이동·검증·되돌리기 Python 구현과 VHDX(E2)·D:\AsterBench(E3) 실측. E3 는 직접 17.11 s 에서 선읽기+재생 1.09~1.14 s (`results/relayout_e3/*/summary.json`).
+- C# 최종본 `csharp/`: Core·Windows·Prefetch·Tracer·Service·Cli·Tray, 오버랩 I/O 비교(`results/stream_bench_csharp_20261102/`).
+- 커널 미니필터 소스 `kernel/AsterFlt/` (빌드·적재는 하지 않음).
+
+남은 일
+- 관리자 스크립트 6개 실행(사용자가 직접, `csharp/scripts/`, 설명은 `csharp/README.md`): S1 `cs_e2_vhdx.ps1`(VHDX 재배치, 강제 종료·분리·chkdsk), S2 `cs_e3_check.ps1`(D:\AsterBench 비교·콜드 스트림), S3 `cs_etw_check.ps1`(ETW·WPR 수집), S4 `cs_service.ps1`(서비스 설치·감지 지연·제거), S5 `cs_relayout_window.ps1`(창 묶음, 미채택 스켈레톤), S6 `wdk_install.ps1`(WDK 설치, 결정 뒤).
+- 24시간 지속성 측정 (E1c-24h). 지금은 t0·t10m·t17m 값만 있음.
+- 실제 게임 트레이스와 적용 (E4·E5).
+- WDK 설치 여부 결정. 결정 전에는 `kernel/` 을 빌드하지 않음.
+
 ## 다음 실험 (설계 문서 기준)
 
 설계 문서 `docs/design_v1_relayout.md` 5절의 순서를 따릅니다. 성공 기준의 수치는 설계 문서에서 [가정]으로 표기한 값이므로, 실험으로 확인하기 전에는 확정으로 보지 않습니다.
 
 - **E1b 존 속도 곡선 (완료).** 위치별 순차 속도 차이가 없었습니다(`results/zone_curve_20261101`). SMR 간접 매핑 징후가 있으므로 핫 존 위치 최적화는 설계에서 제외합니다.
-- **E1c-24h 지속성 (다음).** 이동 뒤 24 시간 되었을 때 같은 선읽기를 다시 측정합니다. 결과는 `results/prefetch_sweep_20261101/contig_persistence_*.json`에 둡니다. 현재의 t0·t10m 값은 배경 부하가 있어 판정을 보류합니다.
+- **E1c-24h 지속성 (미실행, 남은 일).** 이동 뒤 24 시간 되었을 때 같은 선읽기를 다시 측정합니다. 결과는 `results/prefetch_sweep_20261101/contig_persistence_*.json`에 둡니다. 현재의 t0·t10m 값은 배경 부하가 있어 판정을 보류합니다.
 - **E2 VHDX 재배치 (완료, 일부).** 무결성·순서·재생 시간을 확인했습니다. 강제 종료 5회, VHDX 강제 분리, `chkdsk /scan`은 실행하지 않았습니다.
 - **E3 D:\AsterBench 재배치 (완료, 일부).** 판정은 선읽기+재생 3.0 s 이내를 충족했습니다. 직접 읽기 6 s 이내는 미달입니다. 1시간 뒤 재측정(직접 7.49 s, 선읽기+재생 1.14 s, 이동 없음)은 마쳤습니다. 10분 유휴 뒤와 `defrag D: /O` 뒤 측정은 아직 없습니다.
 - **E4 실제 게임 트레이스 (다음).** 안티치트와 온라인 연동이 없는 단일 플레이 게임 하나를 Procmon 으로 5회 기록합니다. 4회로 학습해 5번째 실행의 읽기 바이트 커버리지를 확인하고, 핫 바이트와 예상 시간을 산출합니다.

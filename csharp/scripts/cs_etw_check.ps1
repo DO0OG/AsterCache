@@ -12,7 +12,7 @@
 
   NOT YET DONE: the comparison (block coverage >= 99 %, Kendall tau >= 0.99) against the original trace.
   It needs the final C# trace output format. Until then the verdict is written as not_evaluated and the script warns.
-  Assumed CLI and WPR names: `aster trace --live --out`, WPR profile FileIO. CLI 완성 후 재확인, WPR 프로필 [확인 필요].
+  Assumed CLI and WPR names: `aster trace --live --exe <python>.exe --origin-root <Root> --out`, WPR profile FileIO. WPR 프로필 [확인 필요].
 #>
 [CmdletBinding()]
 param(
@@ -53,7 +53,7 @@ try {
     $wprStarted = $true
 
     Write-Host '== 2. C# live trace in the background'
-    $live = Start-Process -FilePath $AsterExe -ArgumentList "trace --live --out `"$liveOut`"" -PassThru -WindowStyle Hidden
+    $live = Start-Process -FilePath $AsterExe -ArgumentList "trace --live --exe $([IO.Path]::GetFileNameWithoutExtension($Python)).exe --origin-root `"$Root`" --out `"$liveOut`"" -PassThru -WindowStyle Hidden
     Start-Sleep -Seconds 3
     if ($live.HasExited) { throw "trace --live exited early (exit $($live.ExitCode)); the ETW session did not start" }
 

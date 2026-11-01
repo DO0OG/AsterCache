@@ -1,12 +1,16 @@
 """AsterCache relayout prototype.
 
   python -m relayout.cli plan   --trace t1.json [t2.json ...] --origin-root D:\\AsterBench --zone-mib 300 --out plan.json [--dry-run]
-  python -m relayout.cli apply  --plan plan.json [--execute] [--journal j.jsonl]   (Administrator)
+  python -m relayout.cli probe  --volume X: [--require-volume-label L] [--plan plan.json | --zone-mib N]   (Administrator, read-only)
+  python -m relayout.cli apply  --plan plan.json --allowed-root D:\\AsterBench [--require-volume-label L]
+                                [--dry-run | --execute] [--journal j.jsonl]   (Administrator)
   python -m relayout.cli verify --plan plan.json
-  python -m relayout.cli revert --journal j.jsonl --allowed-root D:\\AsterBench [--execute]   (Administrator)
+  python -m relayout.cli revert --journal j.jsonl --allowed-root D:\\AsterBench [--require-volume-label L] [--execute]
 
-plan/verify need no privileges. apply/revert exit with {"error":"not_admin"} unless elevated, and without --execute
-they move nothing. The journal is JSON Lines.
+plan/verify need no privileges. probe/apply/revert exit with {"error":"not_admin"} unless elevated. Without --execute
+nothing is moved (--dry-run also stores the chosen zone in the plan file). The plan's volume, origin root, every
+--allowed-root and the opened volume must all be the same drive, and --require-volume-label must match the label, or
+nothing is touched. The journal is JSON Lines.
 """
 import argparse
 import json
@@ -18,7 +22,7 @@ from prefetch.cli import load_ranges
 from prefetch.layout import cluster_size, file_extents
 
 from .apply import PlanRejected, apply_plan, revert_journal, verify_layout
-from .mover import NotAdmin, Volume
+from .mover import NotAdmin, Volume, find_free_run, volume_label
 from .plan import load_plan, make_plan, save_plan
 
 MIB = 1 << 20
@@ -45,14 +49,43 @@ def cmd_plan(a):
                   'cluster_bytes': cb, 'zone': plan['zone'], 'stats': plan['stats']})
 
 
+def open_checked(letter, label):
+    """Open the volume (admin only); refuse, with nothing touched, if its label is not the required one."""
+    vol = Volume.open(letter)
+    if label is not None:
+        found = volume_label(vol.letter)
+        if found != label:
+            vol.close()
+            raise PlanRejected('volume label %r != required %r on %s' % (found, label, letter))
+    return vol
+
+
+def cmd_probe(a):
+    zone_clusters = load_plan(a.plan)['stats']['zone_used_clusters'] if a.plan else None
+    vol = open_checked(a.volume, a.require_volume_label)
+    try:
+        bm = vol.bitmap()
+        free = sum(n for _, n in bm.free_runs())
+        need = zone_clusters or a.zone_mib * MIB // vol.cluster_bytes
+        return _emit({'volume': vol.letter, 'label': volume_label(vol.letter), 'cluster_bytes': vol.cluster_bytes,
+                      'total_clusters': vol.total_clusters, 'free_clusters_ntfs': vol.free_clusters,
+                      'free_clusters_bitmap': free, 'bitmap_bits': bm.nbits,
+                      'free_match': abs(free - vol.free_clusters) <= max(4096, vol.total_clusters // 1000),
+                      'mft_zone': list(vol.mft_zone), 'zone_clusters_needed': need,
+                      'zone_candidate_lcn': find_free_run(bm, need, align=4)})
+    finally:
+        vol.close()
+
+
 def cmd_apply(a):
+    if a.execute and a.dry_run:
+        raise ValueError('--execute and --dry-run are exclusive')
     plan = load_plan(a.plan)
-    vol = Volume.open(plan['volume'])
+    vol = open_checked(plan['volume'], a.require_volume_label)
     try:
         journal = a.journal or Path(str(a.plan) + '.journal.jsonl')
-        roots = a.allowed_root or [plan['origin_root']]
-        return _emit(apply_plan(plan, vol, roots, journal, a.execute, a.chunk_mib * MIB, a.write_cap_mib * MIB,
-                                save_to=a.plan))
+        return _emit(apply_plan(plan, vol, a.allowed_root, journal, a.execute, a.chunk_mib * MIB,
+                                a.write_cap_mib * MIB, save_to=a.plan, dry_run=a.dry_run))
     finally:
         vol.close()
 
@@ -68,7 +101,7 @@ def cmd_revert(a):
                   if '"type": "step"' in x), None)
     if not first:
         raise ValueError('journal has no steps')
-    vol = Volume.open(os.path.splitdrive(first['path'])[0])
+    vol = open_checked(os.path.splitdrive(first['path'])[0], a.require_volume_label)
     try:
         return _emit(revert_journal(a.journal, vol, a.allowed_root, a.execute, a.chunk_mib * MIB, a.write_cap_mib * MIB))
     finally:
@@ -91,8 +124,14 @@ def build_parser():
     p = sub.add_parser('apply')
     p.add_argument('--plan', type=Path, required=True)
     p.add_argument('--journal', type=Path)
-    p.add_argument('--allowed-root', type=Path, action='append', help='default: the plan origin root')
+    p.add_argument('--allowed-root', type=Path, action='append', required=True)
+    p.add_argument('--dry-run', action='store_true', help='resolve and store the zone, move nothing')
     p.set_defaults(fn=cmd_apply)
+    p = sub.add_parser('probe', description='read-only FSCTL check: volume data, bitmap, zone candidate')
+    p.add_argument('--volume', required=True)
+    p.add_argument('--plan', type=Path)
+    p.add_argument('--zone-mib', type=int, default=300)
+    p.set_defaults(fn=cmd_probe)
     p = sub.add_parser('verify')
     p.add_argument('--plan', type=Path, required=True)
     p.set_defaults(fn=cmd_verify)
@@ -100,6 +139,8 @@ def build_parser():
     p.add_argument('--journal', type=Path, required=True)
     p.add_argument('--allowed-root', type=Path, action='append', required=True)
     p.set_defaults(fn=cmd_revert)
+    for name in ('probe', 'apply', 'revert'):
+        sub.choices[name].add_argument('--require-volume-label', help='refuse unless the volume has exactly this label')
     for name in ('apply', 'revert'):
         q = sub.choices[name]
         q.add_argument('--execute', action='store_true', help='without it nothing is moved')

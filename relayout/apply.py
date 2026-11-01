@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import time
+from collections import defaultdict
 from pathlib import Path
 
 from prefetch.layout import file_extents
@@ -18,6 +19,8 @@ from .mover import find_free_run, sample_digest, skip_reason
 from .plan import _pieces, count_runs, resolve_plan, save_plan, validate_plan
 
 MOVE_RETRIES = 3
+TASK_SPAN = 64 << 10  # bytes hashed at each end of every moved range
+ZONE_ALIGN = 4  # clusters (16 KiB with 4 KiB clusters): shadow-copy friendly zone start
 
 
 class PlanRejected(ValueError):
@@ -38,13 +41,28 @@ def inside(path, roots):
     return False
 
 
+def _drive(path):
+    return os.path.splitdrive(os.path.realpath(path))[0].upper()
+
+
+def check_roots(roots, letter):
+    """Every allowed root must really live on the volume that is about to be opened."""
+    if not roots:
+        raise PlanRejected('no allowed root given')
+    for r in roots:
+        if _drive(str(r)) != letter:
+            raise PlanRejected('allowed root %s is on %s, not on the opened volume %s' % (r, _drive(str(r)), letter))
+
+
 def check_plan(plan, roots, letter):
-    """Reject the whole plan when any path is outside the allowed roots, off the volume, or changed since planning."""
+    """Reject the whole plan when plan volume, origin root, allowed roots and the opened volume disagree, when any path
+    (after resolving links) is outside the allowed roots or off the volume, or a file changed since planning."""
     letter = letter.upper().rstrip('\\')
-    if plan['volume'].upper() != letter:
-        raise PlanRejected('plan volume %s != %s' % (plan['volume'], letter))
+    if plan['volume'].upper() != letter or _drive(plan['origin_root']) != letter:
+        raise PlanRejected('plan volume %s / origin %s != opened volume %s' % (plan['volume'], plan['origin_root'], letter))
+    check_roots(roots, letter)
     for p in {t['path'] for t in plan['tasks']} | {o['path'] for o in plan['order']}:
-        if os.path.splitdrive(p)[0].upper() != letter or not inside(p, roots):
+        if _drive(p) != letter or not inside(p, roots):
             raise PlanRejected('outside_allowed_root: %s' % p)
     for p, fp in plan['fingerprints'].items():
         st = os.stat(p)
@@ -55,8 +73,16 @@ def check_plan(plan, roots, letter):
 class Journal:
     def __init__(self, path):
         self.path, self.rows = Path(path), []
+        self._fix_newline = False
         if self.path.exists():
-            self.rows = [json.loads(x) for x in self.path.read_text(encoding='utf-8').splitlines() if x.strip()]
+            lines = [x for x in self.path.read_text(encoding='utf-8').splitlines() if x.strip()]
+            for i, x in enumerate(lines):
+                try:
+                    self.rows.append(json.loads(x))
+                except ValueError:
+                    if i != len(lines) - 1:
+                        raise
+                    self._fix_newline = True  # last line cut off by a crash mid-write: drop it, appends start on a new line
         self._f = None
 
     def first(self, kind, key, val):
@@ -68,6 +94,8 @@ class Journal:
 
     def add(self, **row):
         if self._f is None:
+            if self._fix_newline:  # drop the cut-off fragment first, or it would become a bad middle line
+                self.path.write_text(''.join(json.dumps(r) + '\n' for r in self.rows), encoding='utf-8')
             self._f = open(self.path, 'a', encoding='utf-8')
         self._f.write(json.dumps(row) + '\n')
         self._f.flush()
@@ -110,7 +138,7 @@ def resolve_zone(plan, vol, extents_fn):
     bm = vol.bitmap()
     if plan['zone']['start_lcn'] is None:
         need = plan['stats']['zone_used_clusters']
-        base = find_free_run(bm, need, prefer_low_lcn=True)
+        base = find_free_run(bm, need, prefer_low_lcn=True, align=ZONE_ALIGN)
         if base is None:
             raise PlanRejected('no free run of %d clusters' % need)
         plan = resolve_plan(plan, base)
@@ -132,9 +160,21 @@ def _move_chunk(vol, t, off, c, sleep):
     return err  # all retries failed
 
 
+def moved_ranges(plan):
+    """{path: [(byte_offset, length)]}: first and last TASK_SPAN bytes of every task's VCN range, for the SHA samples."""
+    cb, out = plan['cluster_bytes'], defaultdict(list)
+    for t in plan['tasks']:
+        lo, hi = t['vcn'] * cb, (t['vcn'] + t['clusters']) * cb
+        n = min(TASK_SPAN, hi - lo)
+        out[t['path']] += [(lo, n), (hi - n, n)]
+    return out
+
+
 def apply_plan(plan, vol, roots, journal_path, execute=False, chunk_bytes=4 << 20, write_cap=2 << 30,
-               extents_fn=file_extents, digest_fn=sample_digest, attr_fn=None, sleep=time.sleep, save_to=None):
-    """Returns a report dict. execute=False: report what would move, touch nothing (journal and plan file included)."""
+               extents_fn=file_extents, digest_fn=sample_digest, attr_fn=None, sleep=time.sleep, save_to=None,
+               dry_run=False):
+    """Returns a report dict. execute=False moves nothing and writes no journal. dry_run=True additionally fixes an
+    automatic zone and stores it in save_to (a plan-file write, still no move)."""
     validate_plan(plan)
     check_plan(plan, roots, vol.letter)
     cb = vol.cluster_bytes
@@ -156,15 +196,21 @@ def apply_plan(plan, vol, roots, journal_path, execute=False, chunk_bytes=4 << 2
     rep = {'zone_start_lcn': plan['zone']['start_lcn'], 'tasks_total': len(plan['tasks']), 'tasks_todo': len(todo),
            'bytes_todo': sum((t['clusters'] - d) * cb for _, t, d in todo), 'skipped_files': skipped,
            'executed': execute, 'moved_bytes': 0, 'failed': [], 'stopped': None}
+    persist = bool(save_to and auto_zone and (execute or dry_run))  # the chosen zone must survive a resume
+    if persist:
+        save_plan(plan, save_to)
+    rep.update(dry_run=dry_run, plan_saved=persist)
     if not execute:
         return rep
-    if save_to and auto_zone:  # persist the chosen zone so a resume uses the same targets
-        save_plan(plan, save_to)
     return _execute(plan, vol, todo, rep, journal_path, chunk, write_cap, extents_fn, digest_fn, sleep)
 
 
 def _execute(plan, vol, todo, rep, journal_path, chunk, write_cap, extents_fn, digest_fn, sleep):
     jr, before, state = Journal(journal_path), {}, {'written': 0}
+    ranges = moved_ranges(plan)
+
+    def digest(p):  # same ranges every run, so a resumed run can reuse the journaled 'before' value
+        return digest_fn(p, os.path.getsize(p), ranges.get(p, ()))
     psha = plan_sha(plan)
     if jr.rows and not jr.first('header', 'plan_sha', psha):
         raise PlanRejected('journal belongs to a different plan')
@@ -172,11 +218,14 @@ def _execute(plan, vol, todo, rep, journal_path, chunk, write_cap, extents_fn, d
         jr.add(type='header', plan_sha=psha, zone_start_lcn=plan['zone']['start_lcn'], cluster_bytes=vol.cluster_bytes,
                started=time.time())
     try:
-        _run_tasks(vol, todo, rep, jr, before, state, chunk, write_cap, extents_fn, digest_fn, sleep)
+        _run_tasks(vol, todo, rep, jr, before, state, chunk, write_cap, extents_fn, digest, sleep)
     except BaseException:
-        _finish(rep, jr, before, state['written'], digest_fn, strict=False)
+        try:
+            _finish(rep, jr, before, state['written'], digest, strict=False)
+        except Exception:  # never hide the original error
+            pass
         raise
-    return _finish(rep, jr, before, state['written'], digest_fn)
+    return _finish(rep, jr, before, state['written'], digest)
 
 
 def _run_tasks(vol, todo, rep, jr, before, state, chunk, write_cap, extents_fn, digest_fn, sleep):
@@ -185,7 +234,7 @@ def _run_tasks(vol, todo, rep, jr, before, state, chunk, write_cap, extents_fn, 
         p = t['path']
         if p not in before:
             row = jr.first('file', 'path', p)
-            before[p] = row['sha_before'] if row else digest_fn(p, os.path.getsize(p))
+            before[p] = row['sha_before'] if row else digest_fn(p)
             if not row:
                 jr.add(type='file', path=p, sha_before=before[p])
         if not jr.first('step', 'idx', i):  # keep the very first 'from': a resume must not overwrite it
@@ -210,7 +259,7 @@ def _run_tasks(vol, todo, rep, jr, before, state, chunk, write_cap, extents_fn, 
 
 def _finish(rep, jr, before, written, digest_fn, strict=True):
     """Compare SHA samples of every touched file; a mismatch is reported loudly and never swallowed."""
-    bad = [p for p, d in before.items() if digest_fn(p, os.path.getsize(p)) != d]
+    bad = [p for p, d in before.items() if digest_fn(p) != d]
     rep.update(moved_bytes=written, sha_checked=len(before), sha_mismatch=bad)
     jr.add(type='end', stopped=rep['stopped'], written_bytes=written, sha_mismatch=bad)
     jr.close()
@@ -225,6 +274,7 @@ def revert_journal(journal_path, vol, roots, execute=False, chunk_bytes=4 << 20,
     guaranteed: freed clusters may have been reused). Steps are undone in reverse order."""
     jr = Journal(journal_path)
     letter = vol.letter
+    check_roots(roots, letter)
     steps = {}
     for r in jr.rows:
         if r['type'] == 'step' and 'from' in r:
@@ -232,7 +282,7 @@ def revert_journal(journal_path, vol, roots, execute=False, chunk_bytes=4 << 20,
     chunk, written, rep = max(1, chunk_bytes // vol.cluster_bytes), 0, {'executed': execute, 'restored': 0,
                                                                          'skipped': [], 'moved_bytes': 0}
     for r in steps.values():
-        if os.path.splitdrive(r['path'])[0].upper() != letter.upper() or not inside(r['path'], roots):
+        if _drive(r['path']) != letter.upper() or not inside(r['path'], roots):
             raise PlanRejected('outside_allowed_root: %s' % r['path'])
     for idx in sorted(steps, reverse=True):
         r = steps[idx]

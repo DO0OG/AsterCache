@@ -106,11 +106,12 @@ class Bitmap:
             yield from emit(run, end_bit)
 
 
-def find_free_run(bitmap, clusters_needed, prefer_low_lcn=True, min_lcn=0):
-    """First LCN of a free run >= clusters_needed (lowest run, or highest run when prefer_low_lcn is False); None if none."""
+def find_free_run(bitmap, clusters_needed, prefer_low_lcn=True, min_lcn=0, align=1):
+    """First LCN (multiple of align) of a free run >= clusters_needed (lowest run, or highest run when prefer_low_lcn
+    is False); None if none."""
     found = None
     for lcn, n in bitmap.free_runs():
-        start = max(lcn, min_lcn)
+        start = -(-max(lcn, min_lcn) // align) * align
         if lcn + n - start >= clusters_needed:
             if prefer_low_lcn:
                 return start
@@ -123,7 +124,8 @@ class Volume:
 
     def __init__(self, handle, k32):
         self._h, self._k = handle, k32
-        self.cluster_bytes = self.total_clusters = None
+        self.cluster_bytes = self.total_clusters = self.free_clusters = None
+        self.mft_zone = (0, 0)
         self.letter = ''
 
     @classmethod
@@ -154,6 +156,7 @@ class Volume:
             raise ctypes.WinError(err)
         d = NTFS_VOLUME_DATA_BUFFER.from_buffer_copy(out[:ctypes.sizeof(NTFS_VOLUME_DATA_BUFFER)])
         self.cluster_bytes, self.total_clusters = d.BytesPerCluster, d.TotalClusters
+        self.free_clusters, self.mft_zone = d.FreeClusters, (d.MftZoneStart, d.MftZoneEnd)
 
     def bitmap(self, chunk_bytes=1 << 20):
         """Whole-volume bitmap, fetched in chunk_bytes pieces (start LCN stays a multiple of 8)."""
@@ -187,6 +190,16 @@ class Volume:
             raise ctypes.WinError(err)
 
 
+def volume_label(letter):
+    """Volume label of 'X:' (GetVolumeInformationW), '' if unreadable."""
+    k = _k32()
+    k.GetVolumeInformationW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_void_p,
+                                        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32]
+    buf = ctypes.create_unicode_buffer(262)
+    ok = k.GetVolumeInformationW(letter.rstrip(':\\') + ':\\', buf, 262, None, None, None, None, 0)
+    return buf.value if ok else ''
+
+
 def file_attrs(path):
     k = _k32()
     k.GetFileAttributesW.argtypes = [ctypes.c_wchar_p]
@@ -218,22 +231,25 @@ def _read_unbuffered(path, offset, length):
     a = offset // SECTOR * SECTOR
     size = (offset + length - a + SECTOR - 1) // SECTOR * SECTOR
     buf = mmap.mmap(-1, size)
+    view = None
     try:
         view = (ctypes.c_char * size).from_buffer(buf)
         got = ctypes.c_uint32()
         if not k.SetFilePointerEx(h, a, None, 0) or not k.ReadFile(h, ctypes.addressof(view), size, ctypes.byref(got), None):
             raise ctypes.WinError(ctypes.get_last_error())
-        del view
         return bytes(buf[offset - a:min(got.value, offset - a + length)])
     finally:
+        view = None  # release the exported buffer first, or close() raises BufferError and hides the real error
         buf.close()
         k.CloseHandle(h)
 
 
-def sample_digest(path, size, span=1 << 20, unbuffered=True):
-    """SHA-256 over the first, middle and last `span` bytes (and the size). Unbuffered so a corrupted move is not
-    hidden by cached pages; falls back to buffered reads if the unbuffered open fails."""
-    spans = sorted({(0, min(span, size)), (max(0, size // 2 - span // 2), min(span, size)), (max(0, size - span), min(span, size))})
+def sample_digest(path, size, extra=(), span=1 << 20, unbuffered=True):
+    """SHA-256 over the first, middle and last `span` bytes, every (offset, length) in `extra` (the moved ranges) and
+    the size. Unbuffered so a corrupted move is not hidden by cached pages; falls back to buffered reads if the
+    unbuffered open fails."""
+    spans = {(0, min(span, size)), (max(0, size // 2 - span // 2), min(span, size)), (max(0, size - span), min(span, size))}
+    spans = sorted(spans | {(o, min(n, size - o)) for o, n in extra if 0 <= o < size})
     h = hashlib.sha256(struct.pack('<q', size))
     for off, n in spans:
         if n <= 0:

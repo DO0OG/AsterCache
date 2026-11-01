@@ -223,6 +223,9 @@ class FakeVol:
     """Volume stand-in: extents per path, move() really re-maps clusters."""
     cluster_bytes = CB
     total = 200000
+    total_clusters = total
+    free_clusters = total
+    mft_zone = (0, 0)
 
     def __init__(self, files, letter, fail_after=None):
         self.ext, self.letter, self.moves, self.fail_after, self.closed = files, letter, [], fail_after, False
@@ -368,7 +371,7 @@ class ApplyTests(ApplyBase):
     def test_sha_mismatch_is_reported(self):
         calls = []
 
-        def digest(path, size):
+        def digest(path, size, extra=()):
             calls.append(path)
             return 'a' if len(calls) <= 2 else 'b'
         with self.assertRaises(RuntimeError) as cm:
@@ -420,7 +423,7 @@ class CliTests(ApplyBase):
         rplan.save_plan(p, pf)
         with mock.patch.object(mover, 'is_admin', return_value=False), \
                 mock.patch.object(mover, '_k32', side_effect=AssertionError('volume touched')):
-            code, out = self.run_cli('apply', '--plan', str(pf), '--execute')
+            code, out = self.run_cli('apply', '--plan', str(pf), '--allowed-root', self.root, '--execute')
             self.assertEqual((code, out), (3, {'error': 'not_admin'}))
             jf = Path(self.root) / 'x.jsonl'
             jf.write_text(json.dumps({'type': 'step', 'idx': 0, 'path': self.f1}) + '\n')
@@ -433,7 +436,7 @@ class CliTests(ApplyBase):
         with mock.patch.object(cli.Volume, 'open', return_value=self.vol), \
                 mock.patch.object(rapply, 'file_extents', lambda q: self.vol.ext[q]), \
                 mock.patch.object(rapply, 'skip_reason', return_value=None):
-            code, out = self.run_cli('apply', '--plan', str(pf))
+            code, out = self.run_cli('apply', '--plan', str(pf), '--allowed-root', self.root)
         self.assertEqual((code, out['executed'], out['tasks_todo']), (0, False, 5))
         self.assertEqual(self.vol.moves, [])
         self.assertTrue(self.vol.closed)
@@ -473,6 +476,151 @@ class SafetyHelperTests(unittest.TestCase):
             self.assertNotEqual(a, mover.sample_digest(p, len(data), unbuffered=True))
             if sys.platform == 'win32':
                 self.assertEqual(mover._read_unbuffered(p, 5000, 7000), Path(p).read_bytes()[5000:12000])
+
+
+class ReviewFixTests(ApplyBase):
+    """B1 volume identity, M1 automatic zone, M2 moved-range samples, journal/unbuffered robustness, probe."""
+
+    def run_cli(self, *argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = cli.main(list(argv))
+        return code, json.loads(out.getvalue())
+
+    def test_auto_zone_with_data_at_low_lcn_has_no_cycle_or_fake_in_place(self):
+        # sim.py case: every file starts at LCN 1000. Before the fix the fake zone [0, n) caused a cycle error.
+        clusters = (1 << 20) // CB
+        self.files = {self.f1: [(0, 1000, clusters)], self.f2: [(0, 1000 + clusters, clusters)]}
+        p = self.make()
+        self.assertEqual(p['stats']['in_place_bytes'], 0)
+        self.assertEqual(len(p['tasks']), 5)
+        self.assertEqual(p['tasks'][0]['target_lcn'], 0)  # zone-relative offsets
+        # repro.py (a): a piece whose LCN equals the zone offset is NOT already in place
+        tasks, st, _ = rplan.allocate_zone([('A', 0, 1)], {'A': [(0, 0, PER)]}, None, 1000, CB)
+        self.assertEqual((tasks, st['in_place_bytes']), ([('A', 0, PER, 0)], 0))
+        # repro.py (b): two files sitting on each other's zone offsets used to raise
+        files = {'A': [(0, PER, PER)], 'B': [(0, 0, PER)]}
+        tasks, _, _ = rplan.allocate_zone([('A', 0, 1), ('B', 0, 1)], files, None, 1000, CB)
+        self.assertEqual([t[3] for t in tasks], [0, PER])
+
+    def test_explicit_zone_start_zero_is_honoured(self):
+        tasks, st, _ = rplan.allocate_zone([('A', 0, 1)], {'A': [(0, 0, PER)]}, 0, 1000, CB)
+        self.assertEqual((tasks, st['in_place_bytes']), ([], BLK))
+
+    def test_zone_start_is_aligned_to_16kib(self):
+        used = set(range(0, 1001))
+        self.assertEqual(mover.find_free_run(BitmapTests.make(used, 5000), 10, align=4), 1004)
+
+    def test_dry_run_fixes_zone_in_plan_file_but_moves_nothing(self):
+        pf = Path(self.root) / 'plan.json'
+        rplan.save_plan(self.make(), pf)
+        with mock.patch.object(cli.Volume, 'open', return_value=self.vol):
+            code, out = self.run_cli('apply', '--plan', str(pf), '--allowed-root', self.root, '--dry-run')
+        self.assertEqual((code, out['plan_saved'], out['executed']), (0, True, False))
+        self.assertEqual(self.vol.moves, [])
+        self.assertEqual(rplan.load_plan(pf)['zone']['start_lcn'] % 4, 0)
+        self.assertFalse(Path(self.root, 'plan.json.journal.jsonl').exists())
+
+    def test_wrong_label_refuses_before_anything(self):
+        pf = Path(self.root) / 'plan.json'
+        rplan.save_plan(self.make(), pf)
+        with mock.patch.object(cli.Volume, 'open', return_value=self.vol), \
+                mock.patch.object(cli, 'volume_label', return_value='Windows'):
+            code, out = self.run_cli('apply', '--plan', str(pf), '--allowed-root', self.root, '--execute',
+                                     '--require-volume-label', 'AsterTrial')
+        self.assertEqual((code, out['error']), (1, 'PlanRejected'))
+        self.assertEqual(self.vol.moves, [])
+        self.assertTrue(self.vol.closed)
+        self.assertFalse(Path(self.root, 'plan.json.journal.jsonl').exists())
+
+    def test_right_label_passes(self):
+        pf = Path(self.root) / 'plan.json'
+        rplan.save_plan(self.make(), pf)
+        with mock.patch.object(cli.Volume, 'open', return_value=self.vol), \
+                mock.patch.object(cli, 'volume_label', return_value='AsterTrial'):
+            code, out = self.run_cli('apply', '--plan', str(pf), '--allowed-root', self.root,
+                                     '--require-volume-label', 'AsterTrial')
+        self.assertEqual((code, out['tasks_todo']), (0, 5))
+
+    def test_allowed_root_on_other_drive_or_plan_on_other_volume_rejected(self):
+        p = self.make()
+        other = 'Q:\\' if self.letter != 'Q:' else 'R:\\'
+        with self.assertRaises(rapply.PlanRejected):
+            self.apply_with_roots(p, [other])
+        self.vol.letter = 'Q:' if self.letter != 'Q:' else 'R:'
+        with self.assertRaises(rapply.PlanRejected):
+            self.apply(p)  # opened volume differs from the plan volume
+
+    def test_link_resolving_to_other_drive_rejected(self):
+        p = self.make()
+        real = os.path.realpath
+        fake = lambda x: 'Q:\\elsewhere\\f1.bin' if str(x) == self.f1 else real(x)  # noqa: E731
+        with mock.patch.object(rapply.os.path, 'realpath', fake):
+            with self.assertRaises(rapply.PlanRejected):
+                self.apply(p)
+
+    def apply_with_roots(self, plan, roots):
+        return rapply.apply_plan(plan, self.vol, roots, os.path.join(self.root, 'j.jsonl'),
+                                 extents_fn=lambda q: self.vol.ext[q], attr_fn=lambda q: 0x20)
+
+    def test_revert_checks_roots_drive(self):
+        with self.assertRaises(rapply.PlanRejected):
+            rapply.revert_journal(os.path.join(self.root, 'none.jsonl'), self.vol, ['Q:\\x'])
+
+    def test_probe_reports_volume_and_zone_candidate(self):
+        self.vol.total_clusters, self.vol.free_clusters, self.vol.mft_zone = FakeVol.total, FakeVol.total - 2048 * 3, (1, 2)
+        pf = Path(self.root) / 'plan.json'
+        rplan.save_plan(self.make(), pf)
+        with mock.patch.object(cli.Volume, 'open', return_value=self.vol), \
+                mock.patch.object(cli, 'volume_label', return_value='AsterTrial'):
+            code, out = self.run_cli('probe', '--volume', self.letter, '--plan', str(pf),
+                                     '--require-volume-label', 'AsterTrial')
+        self.assertEqual(code, 0)
+        self.assertEqual((out['label'], out['cluster_bytes'], out['bitmap_bits']), ('AsterTrial', CB, FakeVol.total))
+        used = sum(n for e in self.vol.ext.values() for _, _, n in e)
+        self.assertEqual(out['free_clusters_bitmap'], FakeVol.total - used)
+        self.assertIsNotNone(out['zone_candidate_lcn'])
+        self.assertEqual(self.vol.moves, [])
+
+    def test_moved_ranges_are_hashed(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, 'f.bin')
+            data = bytearray(os.urandom(8 << 20))
+            Path(p).write_bytes(data)
+            hole = 2 * (1 << 20) + (1 << 19)  # outside the head/middle/tail 1 MiB samples
+            plain = mover.sample_digest(p, len(data))
+            ranged = mover.sample_digest(p, len(data), [(hole - 100, 200)])
+            data[hole] ^= 1
+            Path(p).write_bytes(data)
+            self.assertEqual(mover.sample_digest(p, len(data)), plain)  # not seen without the moved range
+            self.assertNotEqual(mover.sample_digest(p, len(data), [(hole - 100, 200)]), ranged)
+        plan = self.make()
+        mr = rapply.moved_ranges(plan)
+        self.assertEqual(sum(len(v) for v in mr.values()), 2 * len(plan['tasks']))
+        self.assertTrue(all(n <= rapply.TASK_SPAN for v in mr.values() for _, n in v))
+
+    def test_truncated_last_journal_line_is_dropped_and_appends_stay_valid(self):
+        jp = Path(self.root) / 'j.jsonl'
+        jp.write_text(json.dumps({'type': 'header', 'plan_sha': 'x'}) + '\n' + '{"type": "step", "idx": 0, "sta')
+        j = rapply.Journal(jp)
+        self.assertEqual([r['type'] for r in j.rows], ['header'])
+        j.add(type='end')
+        j.close()
+        self.assertEqual([r['type'] for r in rapply.Journal(jp).rows], ['header', 'end'])
+        jp.write_text('{"type": "header"\n' + json.dumps({'type': 'end'}) + '\n')
+        with self.assertRaises(ValueError):  # damage in the middle is not silently skipped
+            rapply.Journal(jp)
+
+    def test_unbuffered_read_failure_is_oserror_not_buffererror(self):
+        k = mock.MagicMock()
+        k.CreateFileW.return_value = 5
+        k.SetFilePointerEx.return_value = 1
+        k.ReadFile.return_value = 0
+        with mock.patch.object(mover, '_k32', return_value=k):
+            with self.assertRaises(OSError):
+                mover._read_unbuffered('x', 0, 4096)
+        with mock.patch.object(mover, '_k32', return_value=k), mock.patch('builtins.open', mock.mock_open(read_data=b'abc')):
+            self.assertEqual(len(mover.sample_digest('x', 3)), 64)  # falls back to buffered reads
 
 
 if __name__ == '__main__':

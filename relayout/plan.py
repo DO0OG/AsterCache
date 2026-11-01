@@ -15,6 +15,7 @@ from session_planner import _validated_events  # event validation shared with th
 
 BLOCK = 65536
 PLAN_VERSION = 1
+REL_BASE = 1 << 60  # stand-in zone start when the real one is chosen at apply time: never collides with a real LCN
 
 
 def _runs(sessions, block):
@@ -218,9 +219,14 @@ def allocate_zone(units, extents_by_file, zone_start_lcn, zone_clusters, cluster
     extents_by_file: {path: [(vcn, lcn, n)]} (missing/None/[] -> file skipped). sizes: {path: bytes} clamps the file end
     (clusters past the size-rounded end cannot be moved). Physically contiguous runs of the access order that are
     >= preserve_bytes stay in place (one extra seek is cheaper than moving them). Pieces already at their target stay.
+    zone_start_lcn None = zone not placed yet: targets are returned as offsets from the zone start, and no piece can
+    count as 'already in place' or overlap the zone (apply picks a completely free run).
     Returns (tasks, stats, order): tasks = [(path, vcn, clusters, target_lcn)], order = [(path, vcn, clusters)]
     (all hot ranges in access order, including unmoved ones)."""
     cb = cluster_bytes
+    rel = zone_start_lcn is None
+    if rel:
+        zone_start_lcn = REL_BASE
     order, skipped = _hot_ranges(units, extents_by_file, cb, block, sizes)
     flat = [(p, v, lcn, n) for p, a, n0 in order for v, lcn, n in _pieces(extents_by_file[p], a, a + n0)]
     groups = []  # physically contiguous runs of consecutive pieces
@@ -260,6 +266,8 @@ def allocate_zone(units, extents_by_file, zone_start_lcn, zone_clusters, cluster
                 sources.append([(lcn, n)])
     if any(zone_start_lcn < lcn + n and lcn < zone_start_lcn + zone_clusters for s in sources for lcn, n in s):
         tasks = _order_tasks(tasks, sources)
+    if rel:
+        tasks = [(p, v, n, t - REL_BASE) for p, v, n, t in tasks]
     moved = sum(t[2] for t in tasks)
     stats = dict(st, hot_bytes=sum(p[3] for p in flat) * cb, moved_bytes=moved * cb, tasks=len(tasks),
                  avg_clusters_per_task=round(moved / len(tasks), 2) if tasks else 0,
@@ -283,7 +291,7 @@ def make_plan(sessions, origin_root, zone_bytes, cluster_bytes, extents_fn, size
     ext = {p: extents_fn(p) for p in paths}
     sizes = {p: size_fn(p) for p in paths}
     zc = zone_bytes // cluster_bytes
-    tasks, stats, order = allocate_zone(units, ext, zone_start_lcn or 0, zc, cluster_bytes, block, sizes, **kw)
+    tasks, stats, order = allocate_zone(units, ext, zone_start_lcn, zc, cluster_bytes, block, sizes, **kw)
     stats.update(hot_blocks=len(hot), units=len(units))
     return {'version': PLAN_VERSION, 'origin_root': str(origin_root),
             'volume': os.path.splitdrive(str(origin_root))[0].upper(), 'cluster_bytes': cluster_bytes, 'block': block,
@@ -312,6 +320,7 @@ def validate_plan(plan):
         ok = (plan['version'] == PLAN_VERSION and _uint(plan['cluster_bytes']) and plan['cluster_bytes'] > 0
               and _uint(plan['zone']['clusters']) and (start is None or _uint(start))
               and isinstance(plan['origin_root'], str) and isinstance(plan['stats'], dict)
+              and isinstance(plan['volume'], str) and isinstance(plan['fingerprints'], dict)
               and all(isinstance(t['path'], str) and _uint(t['vcn']) and _uint(t['clusters']) and t['clusters'] > 0
                       and _uint(t['target_lcn']) for t in plan['tasks'])
               and all(isinstance(o['path'], str) and _uint(o['vcn']) and _uint(o['clusters']) for o in plan['order']))

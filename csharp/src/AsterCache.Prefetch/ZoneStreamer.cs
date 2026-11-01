@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using AsterCache.Core.Prefetch;
+using AsterCache.Prefetch.Modes;
 using AsterCache.Windows;
 using AsterCache.Windows.Native;
 using Microsoft.Win32.SafeHandles;
@@ -16,6 +17,9 @@ public enum StreamMethod
 
     /// 버퍼드 ReadFile 을 큐 깊이 1 (엄격한 존 순서), 파일 핸들 유지, 조각 크기 chunkBytes (기본 1 MiB) 로 반복.
     Read,
+
+    /// FILE_FLAG_OVERLAPPED 버퍼드 읽기를 queueDepth 개까지 동시에, 발행은 항상 존 순서 (Modes/OverlappedReader).
+    Overlapped,
 }
 
 /// 읽기 결과 (Python read_ops 의 stats).
@@ -27,10 +31,15 @@ public static class ZoneStreamer
     public const int DefaultChunkBytes = 1 << 20;
     private const long Page = 4096;
 
-    public static StreamStats Run(IReadOnlyList<ReadOp> ops, StreamMethod method = StreamMethod.Pvm, int chunkBytes = DefaultChunkBytes)
+    public static StreamStats Run(IReadOnlyList<ReadOp> ops, StreamMethod method = StreamMethod.Pvm, int chunkBytes = DefaultChunkBytes, int queueDepth = 2)
     {
         var watch = Stopwatch.StartNew();
-        (long bytes, long requests, long errors) = method == StreamMethod.Pvm ? RunPvm(ops) : RunRead(ops, chunkBytes);
+        (long bytes, long requests, long errors) = method switch
+        {
+            StreamMethod.Pvm => RunPvm(ops),
+            StreamMethod.Overlapped => OverlappedReader.Run(ops, queueDepth, chunkBytes),
+            _ => RunRead(ops, chunkBytes),
+        };
         return new StreamStats(bytes, requests, errors, Math.Round(watch.Elapsed.TotalSeconds, 4));
     }
 

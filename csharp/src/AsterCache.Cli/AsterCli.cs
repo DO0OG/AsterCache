@@ -23,6 +23,7 @@ public static class AsterCli
         new("trace", TraceCommand.Options, TraceCommand.Run),
         new("launch", LaunchCommand.Options, LaunchCommand.Run),
         new("status", StatusCommand.Options, StatusCommand.Run),
+        new("stream-bench", StreamBenchCommand.Options, StreamBenchCommand.Run),
     ];
 
     public static int Run(IReadOnlyList<string> args, TextWriter stdout, TextWriter stderr)

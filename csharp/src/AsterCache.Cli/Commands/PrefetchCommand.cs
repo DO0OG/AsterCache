@@ -9,7 +9,7 @@ namespace AsterCache.Cli.Commands;
 /// prefetch/cli.py. 계획이나 트레이스의 핫 범위를 스케줄해 --execute 면 파일 캐시로 읽어 들입니다. 쓰기 없음.
 internal static class PrefetchCommand
 {
-    public static readonly string[] Methods = ["read", "pvm", "pvm-file", "overlapped", "mmap-touch"];
+    public static readonly string[] Methods = ["read", "pvm", "pvm-file", "overlapped", "mmap-touch", "ovl2", "ovl3", "ovl4"];
 
     public static readonly ArgOption[] Options =
     [
@@ -55,10 +55,12 @@ internal static class PrefetchCommand
             StreamMethod m = method switch
             {
                 "pvm" => StreamMethod.Pvm,
+                "ovl2" or "ovl3" or "ovl4" or "overlapped" => StreamMethod.Overlapped,
                 "read" when threads == 1 && !a.Flag("no-reuse") && !a.Flag("seq-hint") => StreamMethod.Read,
-                _ => throw new NotSupportedException("this method/option combination is not available in the C# build: use --method pvm, or --method read without --threads/--no-reuse/--seq-hint"),
+                _ => throw new NotSupportedException("this method/option combination is not available in the C# build: use --method pvm/ovl2/ovl3/ovl4, or --method read without --threads/--no-reuse/--seq-hint"),
             };
-            StreamStats s = ZoneStreamer.Run(ops, m, checked((int)a.Int("chunk-kib")!.Value * 1024));
+            StreamStats s = ZoneStreamer.Run(ops, m, checked((int)a.Int("chunk-kib")!.Value * 1024),
+                method.StartsWith("ovl", StringComparison.Ordinal) ? method[3] - '0' : (int)threads);
             json["fallback"] = false; // Python 은 읽기 쪽 fallback (SEQUENTIAL_SCAN 열기 실패) 값으로 덮어씀
             json.Add("bytes", s.Bytes);
             json.Add("requests", s.Requests);

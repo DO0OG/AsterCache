@@ -1,0 +1,30 @@
+﻿think_us=0 wall=1.582s stream_done=1.583s slow=8.6%
+think_us=0 wall=1.749s stream_done=1.750s slow=8.8%
+think_us=0 wall=1.649s stream_done=1.650s slow=9.0%
+think_us=250 wall=2.348s stream_done=1.394s slow=0.0%
+think_us=250 wall=2.359s stream_done=1.418s slow=0.0%
+think_us=250 wall=2.362s stream_done=1.494s slow=0.0%
+think_us=1000 wall=6.126s stream_done=1.405s slow=0.0%
+think_us=1000 wall=6.133s stream_done=1.405s slow=0.0%
+think_us=1000 wall=6.135s stream_done=1.461s slow=0.0%
+{
+ "0": {
+  "median_wall_s": 1.6489660999941407,
+  "median_stream_done_s": 1.650097799996729,
+  "median_slow_ratio": 0.0885,
+  "median_replay_sum_s": 1.6455184002043097
+ },
+ "250": {
+  "median_wall_s": 2.3585024000058183,
+  "median_stream_done_s": 1.4180227000033483,
+  "median_slow_ratio": 0.00025,
+  "median_replay_sum_s": 0.121315999829676
+ },
+ "1000": {
+  "median_wall_s": 6.133491599997797,
+  "median_stream_done_s": 1.4052748000030988,
+  "median_slow_ratio": 0.00025,
+  "median_replay_sum_s": 0.14409840024018195
+ }
+}
+

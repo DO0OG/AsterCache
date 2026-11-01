@@ -26,7 +26,7 @@ param(
     [int]$Files = 16,
     [int]$ZoneMiB = 300,
     [string]$Python = 'python',
-    [string]$Repo = (Split-Path -Parent $PSScriptRoot)
+    [string]$Repo = ''
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -38,6 +38,8 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 if (Test-Path -LiteralPath $VhdxPath) { throw "VHDX already exists, refusing to reuse or overwrite: $VhdxPath" }
 
+# Windows PowerShell 5.1 leaves $PSScriptRoot empty while param defaults are evaluated.
+if (-not $Repo) { $Repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path) }
 $out = Join-Path $Repo 'results\relayout_e2'
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $VhdxPath) | Out-Null

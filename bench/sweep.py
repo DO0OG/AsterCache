@@ -151,8 +151,25 @@ def run_configs(cfgs, reps, events, root, files, ssd_cold, deadline):
     return rows
 
 
-def contig(root_hdd, root_ssd, reps, out_dir):
-    """Relocation upper bound: unique trace blocks (first-access order) written into one file; time full read, RAM replay, cold replay."""
+def control_reads(hot, ctl_files, reps):
+    """Alternate a full unbuffered pass of hot (also pushes older data out of the drive DRAM cache) with
+    32MiB unbuffered reads from the start of old files; decimal MB/s."""
+    out = dict(hot_full_unbuffered_mb_s=[], old_32mib_mb_s={Path(p).name: [] for p in ctl_files})
+    for _ in range(reps):
+        s = seq_read([hot])
+        out['hot_full_unbuffered_mb_s'].append(s['bytes'] / 1e6 / s['seconds'])
+        for p in ctl_files:
+            s = seq_read([p], limit=32 * MIB)
+            out['old_32mib_mb_s'][Path(p).name].append(s['bytes'] / 1e6 / s['seconds'])
+    out['hot_median'] = med(out['hot_full_unbuffered_mb_s'])
+    out['old_median_per_file'] = {k: med(v) for k, v in out['old_32mib_mb_s'].items()}
+    out['old_median_all'] = med([x for v in out['old_32mib_mb_s'].values() for x in v])
+    return out
+
+
+def contig(root_hdd, root_ssd, reps, out_dir, keep=False, remeasure=None, tag=None):
+    """Relocation upper bound: unique trace blocks (first-access order) written into one file; time full read, RAM replay, cold replay.
+    keep: leave hot_contig.bin; remeasure=<path>: reuse that file and redo only (a) 4MiB sequential read and (c) direct replay."""
     global CHUNK
     from prefetch.layout import file_extents
     ev_h, ev_s = dataset.load_trace(root_hdd), dataset.load_trace(root_ssd)
@@ -165,54 +182,75 @@ def contig(root_hdd, root_ssd, reps, out_dir):
     for k in order:
         offs[k] = off
         off += k[2]
-    mapped = [dict(e, path=str(Path(root_hdd) / 'hot_contig.bin'), offset=offs[(e['path'], e['offset'], e['length'])]) for e in ev_h]
-    hot = Path(root_hdd) / 'hot_contig.bin'
+    hot = Path(remeasure) if remeasure else Path(root_hdd) / 'hot_contig.bin'
+    mapped = [dict(e, path=str(hot), offset=offs[(e['path'], e['offset'], e['length'])]) for e in ev_h]
+    meta = json.loads((Path(root_hdd) / dataset.MARKER).read_text())
+    files = [str(Path(root_hdd) / f['rel']) for f in meta['files']]
+    ctl = [str(Path(root_hdd) / f['rel']) for f in sorted(meta['files'], key=lambda f: -f['size']) if f['size'] >= 32 * MIB][:5]
     out = dict(timestamp=time.strftime('%Y%m%d_%H%M%S'), ssd_cold_s=dict(runs=ssd, median=ssd_cold), unique_blocks=len(order),
                file_bytes=off, disk_activity_before=disk_activity(n=3))
     try:
-        t0 = time.perf_counter()
-        r = replay.BufferedReader()
-        try:
-            with open(hot, 'wb') as f:
-                for k in order:
-                    f.write(r.read(k[0], k[1], k[2]))
-                f.flush()
-                os.fsync(f.fileno())
-        finally:
-            r.close()
-        out['build_s'] = time.perf_counter() - t0
-        time.sleep(2)
+        if remeasure:
+            if hot.stat().st_size != off:
+                raise SystemExit('%s is %d bytes, trace expects %d' % (hot, hot.stat().st_size, off))
+        else:
+            t0 = time.perf_counter()
+            r = replay.BufferedReader()
+            try:
+                with open(hot, 'wb') as f:
+                    for k in order:
+                        f.write(r.read(k[0], k[1], k[2]))
+                    f.flush()
+                    os.fsync(f.fileno())
+            finally:
+                r.close()
+            out['build_s'] = time.perf_counter() - t0
+            time.sleep(2)
         ext = file_extents(str(hot))
         out['extents'] = None if ext is None else len(ext)
+        out['first_extent_lcn'] = ext[0][1] if ext else None
+        out['age_s_at_start'] = time.time() - hot.stat().st_mtime
+        # persistence probe: first pass as-is, then again after pushing other data through the drive cache
+        s = seq_read([str(hot)])
+        out['first_pass_unbuffered'] = dict(s, mb_s=s['bytes'] / 1e6 / s['seconds'], age_s=time.time() - hot.stat().st_mtime)
+        out['drive_cache_flush'] = evict(files)
+        s = seq_read([str(hot)])
+        out['after_flush_unbuffered'] = dict(s, mb_s=s['bytes'] / 1e6 / s['seconds'], age_s=time.time() - hot.stat().st_mtime)
         a, b, c, cb = [], [], [], []
-        for chunk_mib in (1, 4, 8):
+        for chunk_mib in ((4,) if remeasure else (1, 4, 8)):
             for _ in range(reps):
-                seq_read([str(hot)])  # unbuffered pass evicts the file's cached pages
+                seq_read([str(hot)])  # unbuffered pass evicts the file cached pages
                 CHUNK = chunk_mib * MIB
                 s = seq_read([str(hot)], buffered=True)
                 a.append(dict(chunk_mib=chunk_mib, seconds=s['seconds']))
-                if chunk_mib == 4:
+                if chunk_mib == 4 and not remeasure:
                     b.append(replay.replay(mapped)['total_s'])  # same pages now in RAM
         CHUNK = 4 * MIB
         for _ in range(reps):
             seq_read([str(hot)])
             c.append(replay.replay(mapped, True)['total_s'])
-            seq_read([str(hot)])
-            cb.append(replay.replay(mapped)['total_s'])
+            if not remeasure:
+                seq_read([str(hot)])
+                cb.append(replay.replay(mapped)['total_s'])
         m4 = med([x['seconds'] for x in a if x['chunk_mib'] == 4])
         out.update(
             a_full_read_buffered=dict(runs=a, median_4mib_s=m4, over_ssd_cold=m4 / ssd_cold,
                                       mb_s=off / 1e6 / m4),
-            b_ram_replay=dict(runs=b, median_s=med(b), over_ssd_cold=med(b) / ssd_cold),
             c_cold_replay_unbuffered=dict(runs=c, median_s=med(c), over_ssd_cold=med(c) / ssd_cold),
-            c_cold_replay_buffered=dict(runs=cb, median_s=med(cb), over_ssd_cold=med(cb) / ssd_cold),
             note='a+b = read hot file then replay from RAM; c = no prefetch, trace played straight from the contiguous file')
+        if not remeasure:
+            out.update(b_ram_replay=dict(runs=b, median_s=med(b), over_ssd_cold=med(b) / ssd_cold),
+                       c_cold_replay_buffered=dict(runs=cb, median_s=med(cb), over_ssd_cold=med(cb) / ssd_cold))
+        out['control'] = control_reads(str(hot), ctl, reps)
+        out['age_s_at_end'] = time.time() - hot.stat().st_mtime
     finally:
-        hot.unlink(missing_ok=True)
+        if not (keep or remeasure):
+            hot.unlink(missing_ok=True)
         out['hot_contig_deleted'] = not hot.exists()
-    path = Path(out_dir) / 'contig_upper_bound.json'
+    name = 'contig_persistence_%s.json' % (tag or ('remeasure' if remeasure else 't0')) if (keep or remeasure) else 'contig_upper_bound.json'
+    path = Path(out_dir) / name
     path.write_text(json.dumps(out, indent=1))
-    print(path, json.dumps({k: v for k, v in out.items() if k.startswith(('a_', 'b_', 'c_'))}, default=str)[:1500])
+    print(path, json.dumps({k: v for k, v in out.items() if k.startswith(('a_', 'b_', 'c_', 'first_pass', 'after_flush', 'control'))}, default=str)[:3000])
 
 
 def main(argv=None):
@@ -223,11 +261,14 @@ def main(argv=None):
     ap.add_argument('--budget-min', type=float, default=40, help='stop starting new passes after this many minutes')
     ap.add_argument('--out-dir', default=str(OUT))
     ap.add_argument('--contig', action='store_true', help='only run the relocation upper-bound experiment (hot_contig.bin)')
+    ap.add_argument('--contig-keep', action='store_true', help='with --contig: keep hot_contig.bin and write contig_persistence_<tag>.json')
+    ap.add_argument('--contig-remeasure', metavar='PATH', help='reuse an existing hot_contig.bin; redo only (a) 4MiB read and (c) direct replay')
+    ap.add_argument('--tag', help='time-point label for contig_persistence_<tag>.json (default t0 / remeasure)')
     a = ap.parse_args(argv)
     os.chdir(REPO)
-    if a.contig:
+    if a.contig or a.contig_keep or a.contig_remeasure:
         Path(a.out_dir).mkdir(parents=True, exist_ok=True)
-        contig(a.root_hdd, a.root_ssd, a.repeat, a.out_dir)
+        contig(a.root_hdd, a.root_ssd, a.repeat, a.out_dir, a.contig_keep, a.contig_remeasure, a.tag)
         return 0
     deadline = T0 + a.budget_min * 60
     meta = json.loads((Path(a.root_hdd) / dataset.MARKER).read_text())

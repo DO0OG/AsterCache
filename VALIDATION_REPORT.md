@@ -1,5 +1,60 @@
 # AsterCache v0.7 검증 보고서 — 명명된 검사 86~120
 
+## Windows 실기 검증 (2026-11-01)
+
+### 환경
+
+- Windows 11 Pro 10.0.26200, 비관리자 권한, 개발자 모드 켜짐, 메모리 32 GiB, 논리 코어 16개
+- Python 3.11.4(SQLite 3.42.0), Python 3.12.10(SQLite 3.49.1)
+- D: WDC WD20EZAZ(SATA, MediaType=HDD, 원본 측정용), C: SAMSUNG MZVLB1T0HBLR(NVMe, MediaType=SSD, 캐시·기준선), E: Micron Crucial X8(USB, SSD)
+- 출처: `results/windows_20261101/win_checks.md`, `results/windows_20261101/physicaldisk.json`
+
+### 테스트 결과
+
+| 구분 | 테스트 수 | 결과 | 출처 |
+|---|---:|---|---|
+| 수정 전 (v0.7 원본, Python 3.11) | 35 | 34 통과, test_104 skip 1 | `results/windows_20261101/unittest_win.log` |
+| 수정 전 반복 (10회 새 프로세스) | 35 × 10 | 10회 모두 `OK (skipped=1)` | `results/windows_20261101/repeat10_win.json` |
+| 수정 후 (Python 3.11.4) | 59 | 59 통과, skip 0 | `python -B -m unittest discover -s tests -p "test_*.py"` |
+| 수정 후 (Python 3.12.10) | 59 | 59 통과, skip 0 | 같은 명령을 `py -3.12`로 실행 |
+
+수정 전 35개 중 test_104는 Windows에서 skip되었습니다. 수정 후 해제하여 전체 59개가 두 버전에서 모두 통과합니다.
+
+### 발견하고 고친 결함
+
+1. **Python 3.12 Windows에서 캐시 전면 실패.** 3.12에서는 파일 핸들의 `fstat`의 `st_ctime`이 ChangeTime, 경로의 `stat`의 `st_ctime`이 생성 시각이라 두 값이 달라집니다. 그래서 거의 모든 읽기가 원본 교체 오류로 끝났습니다. Windows에서는 경로 stat 비교를 앞 4개 필드로 줄이고, ChangeTime은 핸들에서 따로 비교하도록 고쳤습니다(커밋 `bc287ef`).
+2. **적재 성능.** 쓰기마다 캐시 전체 blob을 훑는 SUM과 `synchronous=FULL`의 fsync 때문에 콜드 적재가 블록당 21.3 ms였습니다. `synchronous=NORMAL`, (touched, cache_key, byte_count) covering 인덱스, `BEGIN IMMEDIATE`로 4.2 ms가 되었습니다(`results/windows_20261101/cache_fix_bench.json`).
+3. **경쟁 가드.** 방금 수정된 파일의 블록을 적재하면 같은 시각 틱의 재수정을 지문으로 구분할 수 없습니다. 마지막 수정이 2초 이내인 파일은 적재하지 않도록 했습니다(`RACY_WINDOW_NS`).
+4. **반복 검증이 skip을 통과로 셈.** `repeat_validation.py`의 판정에 `'skipped' not in proc.stderr` 조건을 추가했습니다. 이 수정으로 위 반복 기록의 `OK (skipped=1)`은 실패로 셉니다.
+5. **진단 스크립트가 SSD와 HDD를 구분하지 못함.** `Win32_DiskDrive`의 MediaType이 세 장치 모두 `Fixed hard disk media`로만 나왔습니다(`results/windows_20261101/diagnostics.json`). `windows_diagnostics.ps1`에 `Get-PhysicalDisk` 결과를 `physical_disks_storage` 키로 추가했습니다. 기존 키는 유지했습니다.
+
+### 벤치마크와 선읽기 수치
+
+| 항목 | 값 | 출처 |
+|---|---|---|
+| SQLite 캐시 콜드 적재 (3.11) | 21.338 → 4.206 ms/블록 | `results/windows_20261101/cache_fix_bench.json` |
+| SQLite 캐시 적중 (3.11 / 3.12) | 1.757 → 1.140 ms/블록 (3.12 수정 후 0.979) | 같은 파일 |
+| HDD 콜드 / SSD 콜드 (3회 중앙값) | 71.21 s / 1.11 s, 비관리자 언버퍼드 대체 | `results/bench_20261101/20261101_204602.json` |
+| 단순 선읽기 예열 / 재생 | 29.09 s / 0.070 s | 같은 파일 `prewarm_naive` |
+| 물리 위치 정렬 선읽기 | 콜드 17.8 s → 예열 11.1 s + 재생 0.05 s (SSD 콜드 0.8 s의 13.94배) | `results/prefetch_20261101/summary_table.json` |
+| 스트레스 (Windows) | 50 시드 × 250 작업 = 12,500 작업, 읽기 11,239회 검증, 손상 0 | `results/windows_20261101/stress_win.json` |
+
+### 결과 파일 목록
+
+- `results/windows_20261101/`: `win_checks.md`, `win_checks.json`, `win_checks_raw.txt`, `cache_fix_bench.json`, `bench_cross_drive.json`, `api_microbenchmark_win.json`, `physicaldisk.json`, `diagnostics.json`, `unittest_win.log`, `repeat10_win.json`, `stress_win.json`, `stress.out.txt`, `integration_win.json`
+- `results/bench_20261101/`: `20261101_204602.json`(채택), `run_stdout.txt`, `superseded_20261101_203628.json.txt`(이전 실행, 참고용)
+- `results/prefetch_20261101/`: `summary_table.json`, `measure.py`, `prefetch_measure_partial.json`
+
+### 남은 문제
+
+- `repeat_validation.py`는 여전히 `'Ran 35 tests'`를 기대합니다. 현재 `unittest discover`는 59개를 실행하므로, 이 스크립트는 전체 59개 기준으로는 실패로 판정됩니다. 기대 개수를 바꾸는 것은 이번 수정 범위 밖이어서 그대로 두었습니다.
+- 3.11의 캐시 적중 1.140 ms는 `cache_fix_bench.json`이 정한 기준 1.1 ms를 넘습니다. 3.12에서는 기준을 넘습니다.
+- 콜드 측정은 비관리자 조건의 언버퍼드 대체입니다. 스탠바이 목록 비우기는 실행하지 않았습니다.
+- 두 HDD 콜드 실험(벤치마크 71.2 s, 선읽기 실험 17.8 s)은 데이터셋과 콜드 방식이 달라 직접 비교할 수 없습니다.
+- 쓰기 중 정전·SSD 손상, BitLocker, DirectStorage, minifilter 환경은 시험하지 않았습니다.
+
+## Linux 컨테이너 검증
+
 검증 날짜: **2026-11-01**. 환경: Linux 컨테이너, Python 3.13.5, SQLite 내장 라이브러리. 실제 사용자의 Windows/HDD/SSD에서는 실행하지 않았습니다.
 
 ## 재현 및 테스트 실적

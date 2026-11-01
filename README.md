@@ -1,81 +1,161 @@
-# AsterCache v0.7 — SSD 영속 블록 캐시 실험기
+# AsterCache — HDD에서 SSD 수준의 로딩 속도를 얻기 위한 실험
 
-**현재 상태: 사용자 모드 / 명시적 호출 API / Linux 컨테이너 검증.**
+AsterCache는 HDD에 설치된 게임과 대용량 자산을 SSD에 가까운 시간에 읽는 알고리즘과 시스템을 만드는 실험 프로젝트입니다. 목표는 HDD 로딩 시간을 SSD 로딩 시간에 가깝게 줄이는 것이며, 지금은 그 목표에 도달하지 못했습니다.
 
-> **아직 기존 Windows 게임을 자동으로 가속하지 않습니다.** Python API `SQLiteBlockCache.read()`를 통해 접근하는 프로그램만 이 SSD 캐시를 사용할 수 있습니다. `ram-warm`은 OS 파일 캐시가 채워질 가능성을 이용하지만, RAM 상주나 게임 로딩 개선을 보장하지 않습니다. Windows 드라이버/실제 HDD/SSD 벤치마크는 포함되지 않습니다.
+**현재 상태 (2026-11-01):** 구현은 세 가지입니다. ① HDD/SSD 로딩을 같은 조건으로 재는 측정 하네스(`bench/`), ② 학습된 읽기 블록을 HDD 물리 배치 순서로 RAM에 미리 읽는 선읽기(`prefetch/`), ③ Python API로 명시적으로 호출하는 SSD 블록 캐시(`sqlite_cache.py`). 기존 게임 프로세스를 투명하게 가속하는 경로는 아직 없습니다. 일반 게임은 이 캐시를 자동으로 사용하지 않습니다. 측정은 Windows 11 실기에서 합성 데이터셋으로 수행했으며, 실제 게임 로딩 시간은 아직 재지 않았습니다.
 
-## v0.6에서 바뀐 점
+## 구성
 
-- 파일 블록마다 `.bin + .json`을 만드는 방식 대신 하나의 SQLite 파일에서 블록과 SHA-256을 **동일 트랜잭션**으로 저장합니다. WAL + `synchronous=NORMAL`을 사용합니다. 정전 시 마지막 커밋이 롤백될 수 있지만 캐시이므로 다시 읽어 채워집니다. 마지막 수정이 2초 이내인 원본의 블록은 적재하지 않습니다(경쟁 가드).
-- 캐시 데이터에 오류가 있으면 원본에서 다시 읽으며, 디스크 여유가 부족하거나 캐시 쓰기 오류가 나도 **원본 읽기 경로를 우선** 사용합니다.
-- 읽은 원본 파일의 파일 정체성/크기/시간을 열려 있는 핸들과 경로에서 읽기 전후 비교합니다. 외부 쓰기의 모든 경우를 탐지하는 일관성 프로토콜은 아닙니다.
-- 최근 읽은 블록을 다음 적재 트랜잭션 시 함께 갱신하여 단순 FIFO로 축출되는 문제를 완화했습니다.
-- 학습 계획에서 RAM(운영체제 파일 캐시) 또는 API 전용 SSD 캐시로 예열할 수 있는 명령을 분리했습니다.
-- 저장 공간 제한은 **논리적 캐시 페이로드 바이트** 기준입니다. SQLite 데이터베이스·WAL·파일시스템 오버헤드로 물리 공간 사용량이 예산을 초과할 수 있습니다.
+- `bench/` — 합성 데이터셋(약 2 GiB, 트레이스 4,000건) 생성, 콜드·웜 재생, 콜드 조건 준비, 시나리오 실행기
+- `prefetch/` — NTFS extent 조회(`layout.py`), 물리 위치 정렬과 손익분기 간격 병합(`scheduler.py`), 순차 선읽기(`reader.py`), 명령행 진입점(`cli.py`)
+- `sqlite_cache.py` — 블록·SHA-256을 한 행에 저장하는 SQLite 캐시와 원본 검증, 축출, 장애 폴백
+- `astercache_v07.py` — 추적 계획(`plan`), 평가(`evaluate`), 점검(`inspect`), RAM·SSD 예열(`ram-warm`, `ssd-warm`) 명령
+- `session_planner.py`, `procmon_import.py` — 이전 버전에서 가져온 학습 계획과 Procmon CSV 가져오기 구성요소. 실제 Windows CSV에서의 동작은 아직 검증하지 않았습니다.
+- `blockcache_v06.py` — 이전 방식과의 비교용으로 보존한 코드
+- `tests/` — 단위·회귀 테스트 59개
+- `stress.py`, `integration_smoke.py`, `bench_api.py`, `repeat_validation.py` — 검증과 마이크로벤치마크
+- `windows_diagnostics.ps1` — 읽기 전용 PC 환경 점검 스크립트
+- `results/` — 측정 결과 JSON과 로그
 
 ## 실행 요구조건
 
-- Python 3.10 이상, pip 의존성 없음
-- 소스와 캐시 경로는 **별도 디렉터리 트리**여야 합니다. 실제 속도 검증 시 서로 다른 물리 HDD/SSD가 필요합니다.
-- Windows용 실기 검증 이전에는 중요 게임 데이터나 시스템 드라이브의 설정 변경에 사용하지 마세요. 테스트 폴더에서 시작하세요.
-- Linux 파일 IO와 Windows NTFS I/O는 동등하지 않습니다.
+- Python 3.11 이상. 외부 패키지 의존성은 없습니다. Windows 11에서 Python 3.11.4와 3.12.10으로 검증했습니다.
+- 원본 경로와 캐시 경로는 서로 다른 디렉터리 트리여야 합니다. 실제 속도 비교에는 서로 다른 물리 HDD와 SSD가 필요합니다.
+- 측정은 비관리자 권한으로 수행했습니다. 관리자 권한은 선택 사항이며, 스탠바이 목록 비우기에만 쓰입니다.
+- 중요한 게임 데이터나 시스템 드라이브에서 바로 쓰지 않습니다. 테스트 폴더에서 먼저 실행하세요.
+- Linux 파일 I/O와 Windows NTFS I/O는 동등하지 않습니다. Linux 컨테이너 검증 결과는 `VALIDATION_REPORT.md`에 따로 정리했습니다.
 
-## 검증 실행
+## 빠른 시작
+
+### 테스트
 
 ```bash
 python -m unittest discover -s tests -v
-python repeat_validation.py
-python stress.py
-python integration_smoke.py
-python bench_api.py
 ```
 
-`repeat_validation.py`는 35개 검사를 **새 Python 프로세스에서 10번 반복**합니다. `stress.py`는 50개 시드 × 시드당 250개의 파일/캐시 연산을 실행하며 읽기 바이트를 대조합니다. `bench_api.py`는 OS 페이지 캐시가 통제되지 않은 컨테이너 마이크로벤치마크입니다. **물리 HDD/SSD의 속도 비교가 아닙니다.**
+### 벤치마크 (`bench`)
 
-## Windows CLI 개념 실험
+`bench/run.py`는 패키지로 실행해야 합니다. `python bench/run.py`로 실행하면 상대 import 오류가 납니다. 저장소 최상위 폴더에서 다음과 같이 실행합니다.
 
-Microsoft Process Monitor에서 게임 실행마다 `ReadFile` 성공 이벤트를 CSV로 내보낸 다음, 기존 실행 3개로 학습하고 다음 실행 CSV로 따로 평가합니다. 파일 경로가 실제 Windows PC에 존재하는지 확인한 후 테스트용으로 사용합니다.
-
-```powershell
-# Windows에서만 실제 실행 경로로 바꿔주세요.
-python astercache_v07.py plan --csv .\run1.csv .\run2.csv .\run3.csv --prefix "D:\Games" --budget-mib 256 --out .\plan.json
-python astercache_v07.py evaluate --plan .\plan.json --csv .\run4.csv --prefix "D:\Games"
-python astercache_v07.py inspect --plan .\plan.json --origin-root "D:\Games" --budget-mib 256
-
-# 원본을 변경하지 않는 RAM 예열: 실제 OS 캐시 효과는 Windows에서 측정해야 함
-python astercache_v07.py ram-warm --plan .\plan.json --origin-root "D:\Games" --budget-mib 256 --execute
-
-# 테스트용 SSD 캐시: 이 데이터를 기존 게임 프로세스가 자동으로 읽지는 않음
-python astercache_v07.py ssd-warm --plan .\plan.json --origin-root "D:\Games" --cache-dir "C:\AsterCacheTest" --budget-mib 256 --execute
+```bash
+python -m bench.run --root-hdd D:\AsterBench --root-ssd C:\AsterBench [--repeat 3] [--prewarm none|naive] [--prewarm-cmd CMD] [--files 64] [--min-mib 16] [--max-mib 48] [--trace 4000] [--min-free-gib 5] [--out-dir DIR] [--cleanup]
 ```
 
-중요: `--execute`가 없으면 예열하지 않으며 계획만 표시합니다. Windows의 파일 수집·경로 규칙은 아직 실기 검증 전이므로, **처음에는 비중요 테스트 파일에서만 실행**하세요. `--execute`는 원본 파일을 수정하지 않지만 디스크 읽기 부하와 SSD 캐시 파일 쓰기가 발생합니다. 사용 가능한 SSD 공간을 충분히 남겨두세요.
+- `--root-hdd`, `--root-ssd`는 각 물리 장치 위의 데이터셋 폴더입니다. 데이터셋을 만든 뒤 콜드·웜 재생과 예열 비교를 수행합니다.
+- `--prewarm`의 기본값은 `naive`입니다. `--prewarm-cmd`를 주면 외부 예열 명령을 실행하며, 이 명령은 환경변수 `ASTER_TRACE`(트레이스 JSON 경로)와 `ASTER_ROOT`를 받습니다.
+- `--out-dir`의 기본값은 `results/bench_20261101`입니다.
+- `--cleanup`은 두 데이터셋을 지우고 종료합니다.
 
-PC 환경 정보는 별도 읽기 전용 `windows_diagnostics.ps1`에서 확인할 수 있습니다.
+### 선읽기 계획과 실행 (`prefetch`)
 
-## 새 파일
+```bash
+python -m prefetch.cli --plan trace.json --origin-root D:\Games [--strategy physical|path|none] [--budget-mib 1024] [--read-mbps 100] [--seek-ms 12] [--gap-kib N] [--full-file-ratio 0.3] [--threads 1] [--seq-hint] [--execute]
+```
 
-- `sqlite_cache.py` — 데이터/해시 트랜잭션, 블록 캐싱, 원본 검증, 축출, 장애 폴백
-- `astercache_v07.py` — 추적 계획·검증·RAM/SSD 예열 명령
-- `session_planner.py`, `procmon_import.py` — 이전 v0.6 알고리즘을 가져온 구성요소, 실제 Windows 호환성 미확인
-- `blockcache_v06.py` — 이전 방식과의 비교용 보존 코드
-- `tests/` — 신규 명명된 검사 86~120 (35개)
-- `stress.py`, `integration_smoke.py`, `bench_api.py`, `repeat_validation.py` — 검증·마이크로벤치마크
-- `results/` — 이번 실행 결과
+- `--execute`를 붙이지 않으면 실제 읽기 없이 계획만 JSON으로 출력합니다.
+- `--plan`(또는 `--trace`)과 `--origin-root`는 환경변수 `ASTER_TRACE`, `ASTER_ROOT`로 대신할 수 있습니다.
+- `--strategy physical`은 NTFS extent 기준 물리 위치 정렬, `path`는 경로 정렬, `none`은 정렬 없이 읽습니다.
+- `--gap-kib`를 주지 않으면 간격은 `--read-mbps` × `--seek-ms`로 정해집니다.
 
-## 다음 단계와 남은 위험
+### 학습 계획과 예열 (`astercache_v07.py`)
 
-1. **Windows OS 위에서** 파일 ID/ChangeTime 조회, SQLite DB의 SSD 성능, Procmon CSV 원본 파서 확인.
-2. 동일 게임의 과거 3~5회·다음 실행 기록을 분리하고, 사전 예열 소요시간을 포함한 로딩 시간을 비교.
-3. 별도 VM/VHDX에서 OS 필터·블록 읽기 대체와 쓰기 무효화, 메모리 매핑/페이징 I/O/DirectStorage, BitLocker 호환성 검증.
-4. 파일/게임 원본 위치를 건드리지 않고 투명하게 가속하려면 아직 미구현인 실제 Windows I/O 경로가 필요함.
+```bash
+python astercache_v07.py plan --csv run1.csv run2.csv run3.csv --prefix "D:\Games" --budget-mib 256 --out plan.json
+python astercache_v07.py evaluate --plan plan.json --csv run4.csv --prefix "D:\Games"
+python astercache_v07.py inspect --plan plan.json --origin-root "D:\Games" --budget-mib 256
+python astercache_v07.py ram-warm --plan plan.json --origin-root "D:\Games" --budget-mib 256 [--execute]
+python astercache_v07.py ssd-warm --plan plan.json --origin-root "D:\Games" --cache-dir "C:\AsterCacheTest" --budget-mib 256 [--execute]
+```
 
-**보안/정확성 경고:** timestamp, 크기, inode, Windows ChangeTime은 모두 파일 변경 판정에 유용하지만, 외부의 악의적 수정 또는 모든 동시 쓰기를 탐지하는 완전한 방어책이 아닙니다. SHA-256은 캐시 자체의 우발적 손상 검출용이며 원본 파일과의 강제 재해시를 수행하지 않습니다. 캐시 DB가 시작부터 심각하게 손상된 경우 초기화가 실패할 수 있습니다. 쓰기 중 SSD 손상/전원 차단을 실제 하드웨어에서 시험한 것은 아닙니다.
+- `plan`은 Procmon CSV 여러 개에서 다음 실행의 읽기 블록을 예측합니다. `evaluate`는 학습에 쓰지 않은 CSV로 예측 정확도를 봅니다.
+- `ram-warm`과 `ssd-warm`은 `--execute`가 없으면 계획만 표시합니다.
+- `ssd-warm`의 결과는 이 API를 호출하는 프로그램에서만 쓰입니다. 기존 게임 프로세스는 이 캐시를 읽지 않습니다.
+
+### 캐시 API
+
+```python
+from sqlite_cache import SQLiteBlockCache
+
+cache = SQLiteBlockCache(origin_root, cache_dir, capacity_bytes=256 << 20)
+data = cache.read("relative/path.bin", offset, length)   # bytes 반환
+print(cache.stats)
+```
+
+`block_size`의 기본값은 64 KiB이며 4 KiB에서 4 MiB 사이의 2의 거듭제곱이어야 합니다. `capacity_bytes`는 논리 캐시 페이로드 기준입니다.
+
+## 측정 결과
+
+### 측정 환경
+
+- Windows 11 Pro 10.0.26200, 비관리자 권한, 메모리 32 GiB, 논리 코어 16개
+- Python 3.11.4(SQLite 3.42.0), Python 3.12.10(SQLite 3.49.1)
+- 원본 HDD: WDC WD20EZAZ (SATA, `Get-PhysicalDisk` MediaType=HDD), D:
+- 캐시 SSD: SAMSUNG MZVLB1T0HBLR (NVMe, MediaType=SSD), C:
+
+### SQLite 캐시 (블록 256개, 64 KiB, 3회 중앙값, 블록당 ms)
+
+| 구성 | 콜드 적재 | 적중 |
+|---|---:|---:|
+| 수정 전, Python 3.11 | 21.338 | 1.757 |
+| 수정 후, Python 3.11 | 4.206 | 1.140 |
+| 수정 후, Python 3.12 | 3.967 | 0.979 |
+
+출처: `results/windows_20261101/cache_fix_bench.json`. 3.11의 적중 1.140은 이 파일이 정한 기준 1.1 ms를 넘습니다.
+
+### HDD·SSD 로딩 벤치마크 (합성 데이터셋, 3회 중앙값)
+
+데이터셋은 64개 파일, 약 2.0 GiB(2,135,949,312 바이트), 트레이스 4,000건, 블록 64 KiB입니다.
+
+| 항목 | 중앙값 | 3회 값 | 출처 |
+|---|---:|---|---|
+| HDD 콜드 | 71.21 s | 55.66 / 71.21 / 71.32 s | `results/bench_20261101/20261101_204602.json` |
+| SSD 콜드 | 1.11 s | 1.022 / 1.150 / 1.111 s | 같은 파일 |
+| HDD 웜 | 0.080 s | 0.080 / 0.212 / 0.067 s | 같은 파일 |
+| SSD 웜 | 0.063 s | — | 같은 파일 |
+| 단순 선읽기 후 재생 (예열 포함 총합) | 29.16 s | 예열 29.09 s, 재생 0.070 s | 같은 파일 `prewarm_naive` |
+
+HDD 콜드는 SSD 콜드의 약 64.1배(`verdict.hdd_cold_over_ssd_cold`), 단순 선읽기 총합은 SSD 콜드의 약 26.2배입니다.
+
+### 물리 위치 순서 선읽기 (별도 실험, 3회 중앙값)
+
+이 실험은 위 벤치마크와 다른 데이터셋(4개 파일, 각 256 MiB, 조각난 배치)으로 수행했습니다. 두 결과의 HDD 콜드 시간을 직접 비교할 수 없습니다.
+
+| 구성 | HDD 콜드 | 선읽기 | 재생 | SSD 콜드 대비 |
+|---|---:|---:|---:|---:|
+| 물리 위치 정렬 (`final_physical`) | 17.8 s | 11.1 s | 0.05 s | 13.94배 |
+| 경로 정렬 (`final_path`) | 17.3 s | 11.4 s | 0.05 s | — |
+
+- 같은 실험의 SSD 콜드는 0.8 s입니다(`ssd_cold`). 위 벤치마크의 SSD 콜드 1.11 s와 다른 실험입니다.
+- 선읽기 후 재생은 HDD 콜드보다 약 37% 짧습니다(계산값). 읽은 양 431 MiB 기준 선읽기 처리량은 약 39 MiB/s입니다(계산값).
+- 이 데이터셋에서는 물리 정렬과 경로 정렬의 차이가 노이즈 수준입니다. 파일이 순차로 쓰여 조각이 적었기 때문입니다.
+
+출처: `results/prefetch_20261101/summary_table.json`.
+
+## 결과 해석
+
+- **SSD와의 거리.** 콜드 기준으로 HDD는 SSD보다 약 64배 느렸습니다. 선읽기를 적용해도 SSD 콜드의 약 13.9배입니다. 웜 상태에서는 HDD와 SSD가 1.28배 차이가 납니다(벤치마크 중앙값). 웜은 OS 파일 캐시가 이미 채워진 상태라서 차이가 작습니다. 목표로 정한 반복 로딩 p50 1.25배 이내에는 도달하지 못했습니다.
+- **아직 멀리 있는 이유.** 선읽기는 HDD에서 필요한 바이트를 미리 읽어 로딩 중의 랜덤 읽기를 RAM 적중으로 바꿉니다. 하지만 HDD의 읽기 처리량(약 39 MiB/s)과 탐색 횟수가 하한을 정합니다. 예열 비용이 재생보다 훨씬 크므로 예열을 로딩 전에 끝낼 수 있는 경우에만 의미가 있습니다.
+- **콜드 측정 조건의 한계.** 측정은 비관리자로 실행했습니다. 스탠바이 목록을 비우지 못해서 콜드 조건을 언버퍼드 재읽기(`FILE_FLAG_NO_BUFFERING`)로 대체했습니다(`cold_method: unbuffered_proxy`). 드라이브와 컨트롤러 내장 캐시는 비우지 않았습니다. 실행 간 편차가 55.7~71.3 s로 큽니다. 동시에 일어난 디스크 사용의 영향으로 추정하지만, 원인은 측정하지 않았습니다.
+- **게임 로딩 시간이 아닙니다.** 합성 데이터셋과 합성 트레이스로 재현한 결과입니다. 실제 게임의 Procmon 트레이스와 로딩 시간 측정은 아직 없습니다.
+
+## 경고
+
+- 안티치트가 적용된 게임, 온라인 계정과 연동되는 게임, 중요한 데이터가 있는 드라이브에서는 사용하지 않습니다.
+- MIT 라이선스에 따라 무보증으로 제공합니다. 위 수치는 한 PC에서 얻은 결과입니다.
+- 예열과 계획 명령은 원본 파일을 열어 읽기만 하며 원본 내용을 바꾸지 않습니다. 벤치마크는 지정한 루트 아래에 자체 데이터셋을 만들고, `--cleanup`으로 지웁니다.
+- 디스크 읽기 부하가 큽니다. HDD 예열은 수백 MiB에서 수 GiB를 읽을 수 있습니다. SSD 캐시는 파일에 쓰며, 예산은 논리 페이로드 기준이므로 SQLite 데이터베이스와 WAL 파일은 예산 밖의 공간을 더 씁니다. 사용 가능한 SSD 여유 공간을 충분히 남겨 두십시오.
+- 캐시는 2초 이내에 수정된 원본 파일의 블록을 적재하지 않습니다. 외부 쓰기를 모두 탐지하는 것은 아닙니다. SHA-256은 캐시 데이터의 우발적 손상을 찾을 뿐이며, 원본과의 재해시는 하지 않습니다.
+- 정전과 SSD 손상 상황은 실제 하드웨어에서 시험하지 않았습니다. 캐시 DB가 심각하게 손상되면 초기화가 실패할 수 있습니다.
+- 현재 구현은 드라이버나 파일 시스템 계층이 아닙니다. 파일 시스템을 가로채지 않으므로 기존 게임의 I/O 경로를 바꾸지 않습니다.
+
+## 라이선스
+
+MIT License. 저작권 표시는 `LICENSE` 파일을 보십시오. Copyright (c) 2026 DO0OG.
 
 ## 기술 근거
 
-- Microsoft: https://learn.microsoft.com/en-us/windows/win32/fileio/file-caching
-- Microsoft: https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/bypassio
-- Microsoft: https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/filter-manager-concepts
+- Microsoft, File Caching: https://learn.microsoft.com/en-us/windows/win32/fileio/file-caching
+- Microsoft, BypassIO: https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/bypassio
+- Microsoft, Filter Manager concepts: https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/filter-manager-concepts
 - SQLite WAL: https://sqlite.org/wal.html
-- SQLite synchronous: https://sqlite.org/pragma.html#pragma_synchronous
+- SQLite `synchronous` pragma: https://sqlite.org/pragma.html#pragma_synchronous

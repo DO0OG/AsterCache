@@ -9,6 +9,7 @@ $result=[ordered]@{
   os_version=$os.Version
   ram_bytes=([long]$os.TotalVisibleMemorySize)*1024
   physical_drives=@($phys)
+  physical_disks_storage=@(Get-PhysicalDisk | Select-Object FriendlyName,MediaType,BusType,Size)
   volumes=@($volumes)
   note='Read-only inventory. MediaType and SSD/HDD identification may be missing or inaccurate; corroborate in Disk Management.'
 }

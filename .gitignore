@@ -2,3 +2,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.sqlite3*
+.omx/
+.omc/
+results/linux_original/
+*.sqlite3-wal
+*.sqlite3-shm

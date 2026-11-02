@@ -97,26 +97,63 @@ public sealed class ReapplyEnv
         Extents = FileLayout.Extents,
         Stat = PlanFile.FingerprintOf,
         RealPath = RealPaths.Real,
-        Apply = (g, plan, ct) =>
-        {
-            string letter = PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant();
-            if (!string.Equals(VolumeInfo.Label(letter), g.VolumeLabel, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new PlanRejectedException("volume label mismatch");
-            }
-
-            Directory.CreateDirectory(journalDir);
-            var hooks = new ApplyHooks
-            {
-                Extents = FileLayout.Extents,
-                Digest = (p, size, extra) => SampleDigest.Compute(p, size, extra),
-                SkipReason = p => FileGuards.SkipReason(p),
-                RealPath = RealPaths.Real,
-            };
-            using NtfsVolume vol = NtfsVolume.Open(letter);
-            return Applier.Apply(plan, vol, g.AllowedRoots, Path.Combine(journalDir, g.Name + ".jsonl"), hooks, new ApplyOptions(Execute: true), ct);
-        },
+        Apply = (g, plan, ct) => Run(journalDir, g, plan, new ApplyOptions(Execute: true, SaveTo: g.Plan), ct), // 존을 다시 정하면 계획에 남김
     };
+
+    /// 레이블 확인 → 볼륨 열기 → Applier. 재적용과 자동 모드의 첫 재배치가 같은 길을 씁니다 (DryRun 은 존 시작만 계획에 저장).
+    public static ApplyReport Run(string journalDir, GameSettings g, PlanFile plan, ApplyOptions options, CancellationToken ct)
+    {
+        using NtfsVolume vol = OpenChecked(g);
+        Directory.CreateDirectory(journalDir);
+        return Applier.Apply(plan, vol, g.AllowedRoots, JournalPath(journalDir, g), Hooks(), options, ct);
+    }
+
+    /// 저널대로 되돌립니다 (skipRows 줄 뒤부터만, 게임이 뜨면 조각 사이에서 멈춤). 저널이 없으면 (아무것도 옮기지 않았음) null.
+    public static RevertReport? Revert(string journalDir, GameSettings g, int skipRows = 0, CancellationToken ct = default)
+    {
+        string journal = JournalPath(journalDir, g);
+        if (!File.Exists(journal))
+        {
+            return null;
+        }
+
+        using NtfsVolume vol = OpenChecked(g);
+        return Reverter.Revert(journal, vol, g.AllowedRoots, Hooks(), new ApplyOptions(Execute: true), ct, skipRows);
+    }
+
+    /// 저널의 현재 줄 수 (없으면 0).
+    public static int JournalRows(string journalDir, GameSettings g)
+    {
+        string journal = JournalPath(journalDir, g);
+        if (!File.Exists(journal))
+        {
+            return 0;
+        }
+
+        using var jr = new Journal(journal);
+        return jr.Rows.Count;
+    }
+
+    private static string JournalPath(string journalDir, GameSettings g) => Path.Combine(journalDir, g.Name + ".jsonl");
+
+    private static ApplyHooks Hooks() => new()
+    {
+        Extents = FileLayout.Extents,
+        Digest = (p, size, extra) => SampleDigest.Compute(p, size, extra),
+        SkipReason = p => FileGuards.SkipReason(p),
+        RealPath = RealPaths.Real,
+    };
+
+    private static NtfsVolume OpenChecked(GameSettings g)
+    {
+        string letter = PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant();
+        if (!string.Equals(VolumeInfo.Label(letter), g.VolumeLabel, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new PlanRejectedException("volume label mismatch");
+        }
+
+        return NtfsVolume.Open(letter);
+    }
 }
 
 /// 재적용 하나를 감싸는 취소 창. 게임 시작 알림이 Cancel 을 부르면 지금 도는 재적용만 멈추고 (한 조각을 끝낸 뒤), 돌고 있지 않으면 아무 일도 없습니다.
@@ -185,7 +222,7 @@ public sealed class ReapplyChecker
                 return ReapplyVerdict.NotApplied;
             }
 
-            CheckPaths(plan, game);
+            CheckPaths(plan, game, _env.RealPath);
             bool applied = plan.Zone.StartLcn is not null;
             bool changed = applied && plan.Fingerprints.Any(Changed);
             LayoutReport? layout = applied && !changed ? LayoutVerifier.Verify(plan, _env.Extents) : null;
@@ -206,6 +243,11 @@ public sealed class ReapplyChecker
             if (v == ReapplyVerdict.Reapply)
             {
                 ApplyReport rep = _env.Apply(game, plan, cancellationToken);
+                if (rep.ZoneRetargeted)
+                {
+                    _log.Info($"{game.Name}: previous zone was taken by another file, zone moved" + (rep.JournalArchivedTo is { } a ? $", earlier journal kept as {a}" : string.Empty));
+                }
+
                 _log.Info($"{game.Name}: reapplied, moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed" + (rep.Stopped is { } s ? $", stopped: {s}" : string.Empty));
                 if (rep.Stopped == "cancelled")
                 {
@@ -230,23 +272,26 @@ public sealed class ReapplyChecker
         }
     }
 
-    // 계획 안의 모든 경로가 (링크를 푼 뒤) 허용 루트 안인가. 서비스는 SYSTEM 이라 계획 파일을 그대로 믿지 않습니다.
-    private void CheckPaths(PlanFile plan, GameSettings game)
+    /// 계획 안의 모든 경로가 (링크를 푼 뒤) 허용 루트 안인가. 서비스는 SYSTEM 이라 계획 파일을 그대로 믿지 않습니다.
+    public static void CheckPaths(PlanFile plan, GameSettings game, Func<string, string> realPath)
     {
         foreach (string p in plan.Tasks.Select(t => t.Path).Concat(plan.Order.Select(o => o.Path)).Distinct(StringComparer.Ordinal))
         {
-            if (!PlanGuards.Inside(p, game.AllowedRoots, _env.RealPath))
+            if (!PlanGuards.Inside(p, game.AllowedRoots, realPath))
             {
                 throw new PlanRejectedException("outside_allowed_root in plan");
             }
         }
     }
 
-    private bool Changed(Fingerprint fp)
+    private bool Changed(Fingerprint fp) => Changed(fp, _env.Stat);
+
+    /// 계획 뒤 파일이 바뀌었거나 (크기·수정 시각) 읽을 수 없게 됐는가. 자동 재배치도 같은 기준으로 계획을 다시 만들지 정합니다.
+    public static bool Changed(Fingerprint fp, Func<string, Fingerprint> stat)
     {
         try
         {
-            Fingerprint now = _env.Stat(fp.Path);
+            Fingerprint now = stat(fp.Path);
             return now.Size != fp.Size || now.MtimeNs != fp.MtimeNs;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)

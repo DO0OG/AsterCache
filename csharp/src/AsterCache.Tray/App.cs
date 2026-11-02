@@ -33,6 +33,10 @@ internal sealed class App : Application
     private MainWindow? _main;
     private IClassicDesktopStyleApplicationLifetime? _desktop;
     private DateTime _lastClick = DateTime.MinValue;
+    private readonly DateTimeOffset _started = DateTimeOffset.UtcNow;
+    private readonly HashSet<string> _seenEvents = [];
+    private readonly List<AutoToast> _toasts = [];
+    private string _lastNotice = string.Empty;
 
     public override void Initialize() => Styles.Add(new FluentTheme());
 
@@ -68,7 +72,12 @@ internal sealed class App : Application
             poll.Tick += (_, _) =>
             {
                 Update(Model.Refresh);
+                AutoStatusFile? auto = Manage.ReloadAuto();
                 _main.UpdateStatus();
+                if (!Smoke)
+                {
+                    Notify(auto);
+                }
             };
             poll.Start();
             if (Smoke)
@@ -98,8 +107,29 @@ internal sealed class App : Application
 
     private void Rebuild()
     {
-        _icon!.ToolTipText = Model.LastMessage.Length == 0 ? Model.StatusText : Model.StatusText + "\n" + Model.LastMessage;
+        _icon!.ToolTipText = (Model.LastMessage.Length == 0 ? Model.StatusText : Model.StatusText + "\n" + Model.LastMessage)
+            + (_lastNotice.Length == 0 ? string.Empty : "\n" + _lastNotice);
         _icon.Menu = BuildMenu();
+    }
+
+    /// 트레이 시작 이후 auto_status.json 에 새로 생긴 발견·재배치를 알림 창으로 한 번씩 띄웁니다.
+    private void Notify(AutoStatusFile? status)
+    {
+        if (status is null)
+        {
+            return;
+        }
+
+        foreach (AutoNotice e in AutoStatusFile.NewEvents(status.Events, _started, _seenEvents))
+        {
+            _seenEvents.Add(e.Key);
+            _lastNotice = AutoStatusFile.Notice(e, L.Current);
+            var toast = new AutoToast(_lastNotice, _toasts.Count, ShowMain);
+            _toasts.Add(toast);
+            toast.Closed += (_, _) => _toasts.Remove(toast);
+            toast.Show();
+            Rebuild();
+        }
     }
 
     private void Update(Action change)

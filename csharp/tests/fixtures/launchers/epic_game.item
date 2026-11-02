@@ -1,0 +1,10 @@
+{
+	"FormatVersion": 0,
+	"bIsApplication": true,
+	"LaunchExecutable": "Game\\Binaries\\Win64\\Game.exe",
+	"AppCategories": ["public", "games", "applications"],
+	"DisplayName": "Epic Test Game",
+	"InstallLocation": "D:\\Epic\\TestGame",
+	"MainGameAppName": "",
+	"AppName": "abc123"
+}

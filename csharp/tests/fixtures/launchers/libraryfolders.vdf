@@ -1,0 +1,18 @@
+"libraryfolders"
+{
+	// 첫 라이브러리: 이스케이프된 역슬래시
+	"0"
+	{
+		"path"		"C:\\Program Files (x86)\\Steam"
+		"label"		""
+		"apps"
+		{
+			"480"		"1000"
+		}
+	}
+	"1"
+	{
+		"path"		"D:\\Steam \"Games\""
+		"label"		"데이터"
+	}
+}

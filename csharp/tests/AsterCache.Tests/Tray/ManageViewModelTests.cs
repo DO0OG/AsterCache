@@ -1,3 +1,4 @@
+using AsterCache.Core.I18n;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Settings;
@@ -541,6 +542,125 @@ public sealed class ManageViewModelTests : IDisposable
     }
 
     // ---- 가짜 ----
+
+    // ---- 자동 모드 ----
+
+    private void WriteAuto(string json) => File.WriteAllText(Path.Combine(_dir, "auto_status.json"), json);
+
+    [Fact]
+    public void AutoColumnsAndStageChainShowUpToTheCurrentStage()
+    {
+        Register("mw4");
+        Assert.True(_tray.AddGame(Game("frost") with { ExeNames = ["frost.exe"], TriggerExes = null }).Ok);
+        _cli.On("status", (_, _) => CliResult.Parse("{}"));
+        WriteAuto("{\"games\":{\"frost\":{\"source\":\"auto\",\"launcher\":\"steam\",\"stage\":\"tracing\",\"detail\":null,\"at\":\"2026-11-02T01:00:00+00:00\"}}}");
+        Assert.True(_vm.RefreshStatus().Ok);
+
+        GameRow frost = _vm.GameRows(null).Single(r => r.Name == "frost");
+        GameRow mw4 = _vm.GameRows(null).Single(r => r.Name == "mw4");
+        Assert.Equal(("수동", "-"), (mw4.Source, mw4.Stage));
+        Assert.Equal("트레이스 수집 중", frost.Stage);
+        string[] lines = _vm.StatusLines(null).ToArray();
+        Assert.Contains("  자동: frost 발견 → [트레이스 수집 중]", lines);
+        Assert.DoesNotContain(lines, l => l.Contains("자동: mw4"));
+    }
+
+    [Fact]
+    public void ReloadAutoAloneUpdatesStageWithoutAsterProcess()
+    {
+        Assert.True(_tray.AddGame(Game("frost") with { ExeNames = ["frost.exe"], TriggerExes = null }).Ok);
+        WriteAuto("{\"games\":{\"frost\":{\"source\":\"auto\",\"launcher\":\"steam\",\"stage\":\"tracing\",\"detail\":null,\"at\":\"2026-11-02T01:00:00+00:00\"}}}");
+        Assert.NotNull(_vm.ReloadAuto());
+        Assert.Equal("트레이스 수집 중", _vm.GameRows(null).Single().Stage);
+        WriteAuto("{\"games\":{\"frost\":{\"source\":\"auto\",\"launcher\":\"steam\",\"stage\":\"done\",\"detail\":null,\"at\":\"2026-11-02T01:05:00+00:00\"}}}");
+        _vm.ReloadAuto();
+        Assert.Equal("완료", _vm.GameRows(null).Single().Stage);
+        Assert.Contains("  자동: frost 발견 → 트레이스 수집 중 → 재배치 대기 → 재배치 중 → [완료]", _vm.StatusLines(null));
+    }
+
+    [Fact]
+    public void AntiCheatColumnShowsTheDetectedKindOrDash()
+    {
+        Assert.True(_tray.AddGame(Game("a") with { AntiCheat = "eac" }).Ok);
+        Assert.True(_tray.AddGame(Game("b") with { ExeNames = ["b.exe"], TriggerExes = null }).Ok);
+
+        Assert.Equal("eac", _vm.GameRows(null).Single(r => r.Name == "a").AntiCheat);
+        Assert.Equal("-", _vm.GameRows(null).Single(r => r.Name == "b").AntiCheat);
+        Assert.Equal(("안티치트", "Anti-cheat"), (L.Get("ko", "Col_AntiCheat"), L.Get("en", "Col_AntiCheat")));
+    }
+
+    [Fact]
+    public void AutoSourceColumnReadsTheRegisteredSource()
+    {
+        Assert.True(_tray.AddGame(Game("a") with { Source = "auto" }).Ok);
+        Assert.Equal("자동", _vm.GameRows(null).Single().Source);
+    }
+
+    [Fact]
+    public void AutoLineEnglishDoneAndFailedAndSkipped()
+    {
+        var done = new AutoGame("auto", "gog", "done", null);
+        Assert.Equal("Auto: g discovered → collecting trace → waiting to relocate → relocating → [done]", AutoStatusFile.Line("g", done, "en"));
+        Assert.Equal("자동: g 발견 → 트레이스 수집 중 → 재배치 대기 → 재배치 중 → [완료]", AutoStatusFile.Line("g", done, "ko"));
+        Assert.Equal("자동: g [실패] (no trace)", AutoStatusFile.Line("g", done with { Stage = "failed", Detail = "no trace" }, "ko"));
+        Assert.Equal("Auto: g [skipped] (too small)", AutoStatusFile.Line("g", done with { Stage = "skipped", Detail = "too small" }, "en"));
+        Assert.Equal("Auto: g [skipped]", AutoStatusFile.Line("g", done with { Stage = "skipped" }, "en"));
+        Assert.Equal("Auto: g [weird]", AutoStatusFile.Line("g", done with { Stage = "weird" }, "en"));
+    }
+
+    [Fact]
+    public void MissingOrCorruptAutoStatusMeansNoLines()
+    {
+        Register();
+        _cli.On("status", (_, _) => CliResult.Parse("{}"));
+        _vm.RefreshStatus();
+        Assert.Equal("-", _vm.GameRows(null).Single().Stage);
+
+        WriteAuto("{not json");
+        _vm.RefreshStatus();
+        Assert.Equal("-", _vm.GameRows(null).Single().Stage);
+        Assert.DoesNotContain(_vm.StatusLines(null), l => l.Contains("자동:"));
+        Assert.Null(AutoStatusFile.Load(Path.Combine(_dir, "auto_status.json")));
+    }
+
+    [Fact]
+    public void NotificationsPickOnlyNewDiscoveredAndRelocatedEventsAfterStart()
+    {
+        WriteAuto("{\"events\":[{\"at\":\"2026-11-02T00:59:00+00:00\",\"game\":\"old\",\"kind\":\"discovered\"},"
+            + "{\"at\":\"2026-11-02T01:01:00+00:00\",\"game\":\"a\",\"kind\":\"discovered\"},"
+            + "{\"at\":\"2026-11-02T01:02:00+00:00\",\"game\":\"a\",\"kind\":\"relocated\"},"
+            + "{\"at\":\"2026-11-02T01:03:00+00:00\",\"game\":\"a\",\"kind\":\"other\"}]}");
+        AutoStatusFile file = AutoStatusFile.Load(Path.Combine(_dir, "auto_status.json"))!;
+        var since = DateTimeOffset.Parse("2026-11-02T01:00:00+00:00", System.Globalization.CultureInfo.InvariantCulture);
+        var seen = new HashSet<string>();
+
+        IReadOnlyList<AutoNotice> first = AutoStatusFile.NewEvents(file.Events, since, seen);
+        foreach (AutoNotice e in first)
+        {
+            seen.Add(e.Key);
+        }
+
+        Assert.Equal(["discovered", "relocated"], first.Select(e => e.Kind));
+        Assert.Empty(AutoStatusFile.NewEvents(file.Events, since, seen));
+        Assert.Equal("새 게임을 찾았습니다: a", AutoStatusFile.Notice(first[0], "ko"));
+        Assert.Equal("Relocation finished: a", AutoStatusFile.Notice(first[1], "en"));
+    }
+
+    [Fact]
+    public void SetAutoRoundTripKeepsTheOtherAutoValues()
+    {
+        Register();
+        AutoSettings before = _tray.Settings!.Auto;
+
+        Assert.True(_tray.SetAuto(false, true, false, true, 5, " a.exe, ,b.exe ").Ok);
+
+        AutoSettings after = new ConfigEditor(_dir).Load()!.Auto;
+        Assert.Equal((false, true, false, true, 5), (after.Enabled, after.Discover, after.Trace, after.Relocate, after.PrewarmRecent));
+        Assert.Equal(["a.exe", "b.exe"], after.IgnoreExes);
+        Assert.Equal((before.IdleMinutes, before.TraceCapSeconds, before.TraceCapMib, before.MaxRelocationsPerDay), (after.IdleMinutes, after.TraceCapSeconds, after.TraceCapMib, after.MaxRelocationsPerDay));
+        Assert.False(_tray.SetAuto(true, true, true, true, 9, string.Empty).Ok); // 범위 밖은 검증이 거부
+        Assert.Equal(5, new ConfigEditor(_dir).Load()!.Auto.PrewarmRecent);
+    }
 
     private sealed class FakeCli : IAsterCli
     {

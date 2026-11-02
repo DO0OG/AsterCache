@@ -291,5 +291,27 @@ public sealed class CliTests
         Assert.Null(Json(missing)["prewarm"]);
     }
 
+    [Fact]
+    public void StatusShowsAutoGamesAndRelocationsOrNull()
+    {
+        using var dir = new TempDir();
+        string file = dir.Combine("auto_status.json");
+        File.WriteAllText(file, "{\"updated\": \"2026-11-02T01:00:00+00:00\", \"relocations\": [\"2026-11-02T00:30:00+00:00\"], \"games\": {\"g\": {\"stage\": \"done\"}}, \"events\": []}");
+        string bad = dir.Combine("bad.json");
+        File.WriteAllText(bad, "{oops");
+
+        (int code, string text, _) = Run("status", "--prewarm-status", dir.Combine("none.json"), "--auto-status", file);
+        (_, string missing, _) = Run("status", "--prewarm-status", dir.Combine("none.json"), "--auto-status", dir.Combine("none.json"));
+        (_, string corrupt, _) = Run("status", "--prewarm-status", dir.Combine("none.json"), "--auto-status", bad);
+
+        Assert.Equal(0, code);
+        JObject auto = (JObject)Json(text)["auto"]!;
+        Assert.Equal(["games", "relocations"], auto.Select(kv => kv.Key));
+        Assert.Equal("done", ((JObject)((JObject)auto["games"]!)["g"]!)["stage"]);
+        Assert.Equal("auto", Json(text).Last().Key);
+        Assert.Null(Json(missing)["auto"]);
+        Assert.Null(Json(corrupt)["auto"]);
+    }
+
     private static (int, string) Pair((int Code, string Out, string Err) r) => (r.Code, r.Out);
 }

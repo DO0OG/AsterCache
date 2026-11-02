@@ -11,14 +11,16 @@ bool console = args.Contains("--console");
 int at = Array.IndexOf(args, "--data-dir");
 string dataDir = at >= 0 && at + 1 < args.Length ? Path.GetFullPath(args[at + 1]) : SettingsStore.DefaultDataDir;
 string plansDir = Path.Combine(dataDir, "plans");
+string configPath = Path.Combine(dataDir, "config.json");
 
 ILog log;
 AsterSettings settings;
+(long Length, long Ticks)? configStamp = SettingsReloader.StampOf(configPath); // 읽기 직전에 재서 그 사이의 변경도 다시 읽게 함
 try
 {
     ILog file = new FileLog(Path.Combine(dataDir, "logs", "service.log"));
     log = console ? new TeeLog(file) : file;
-    settings = SettingsStore.Load(Path.Combine(dataDir, "config.json"), plansDir);
+    settings = SettingsStore.Load(configPath, plansDir);
 }
 catch (Exception e) when (e is SettingsException or IOException or UnauthorizedAccessException)
 {
@@ -35,9 +37,10 @@ if (console && watchAt >= 0)
 }
 
 bool admin = Elevation.IsAdmin();
-bool canApply = Worker.CanApply(admin, [dataDir, plansDir], log, [Path.Combine(dataDir, "config.json")]);
+bool canApply = Worker.CanApply(admin, [dataDir, plansDir], log, [configPath]);
 (IProcessWatcher primary, IProcessWatcher? fallback) = Worker.ChooseWatchers(settings, admin);
-var checker = new ReapplyChecker(ReapplyEnv.Create(canApply, Path.Combine(dataDir, "journals")), log);
+string journalDir = Path.Combine(dataDir, "journals");
+var checker = new ReapplyChecker(ReapplyEnv.Create(canApply, journalDir), log);
 
 HostApplicationBuilder builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { ContentRootPath = AppContext.BaseDirectory });
 if (!console)
@@ -47,9 +50,23 @@ if (!console)
 
 var streamer = new PrefetchStreamer();
 var prewarm = new Prewarmer(settings.Games, streamer, PrewarmEnv.Create(), log, canApply ? Path.Combine(dataDir, "prewarm_status.json") : null); // 데이터 폴더를 믿을 수 없으면 (SYSTEM 이 일반 사용자가 쓸 수 있는 곳에 쓰지 않도록) 상태 파일을 쓰지 않음
-builder.Services.AddHostedService(_ => new Worker(settings, log, primary, fallback, streamer, checker, prewarm: prewarm));
+// 자동 모드는 설정·이동을 쓰므로 canApply 일 때만 (상태 파일도 같은 이유로)
+var auto = canApply ? new AutoMode(new ConfigEditor(dataDir), AutoEnv.Create(journalDir), new AutoStatus(Path.Combine(dataDir, "auto_status.json"), log), log, settings) : null;
+var reloader = new SettingsReloader(() => SettingsReloader.StampOf(configPath), LoadChecked, s => Worker.ChooseWatchers(s, admin), log, configStamp);
+builder.Services.AddHostedService(_ => new Worker(settings, log, primary, fallback, streamer, checker, prewarm: prewarm, auto: auto, reload: reloader));
 await builder.Build().RunAsync();
 return 0;
+
+// 다시 읽을 때도 시작 때와 같은 권한 검사를 합니다 (그 사이 데이터 폴더·설정 파일을 일반 사용자가 쓸 수 있게 바뀌었으면 옛 설정 유지).
+AsterSettings LoadChecked()
+{
+    if (canApply && (AclCheck.UntrustedFileWriters(configPath).Count > 0 || AclCheck.UntrustedWriters(dataDir).Count > 0 || AclCheck.UntrustedWriters(plansDir).Count > 0))
+    {
+        throw new SettingsException("config: data folder or file is writable by non-admin principals");
+    }
+
+    return SettingsStore.Load(configPath, plansDir);
+}
 
 /// 콘솔 모드: 파일 로그와 같은 줄을 화면에도 냅니다.
 internal sealed class TeeLog(ILog inner) : ILog

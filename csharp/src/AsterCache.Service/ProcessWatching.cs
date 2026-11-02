@@ -154,7 +154,10 @@ public static unsafe partial class ProcessSnapshot
     }
 
     /// 프로세스 이미지의 파일 이름 (예: cmd.exe). 열 수 없거나 이미 끝났으면 null.
-    public static string? ImageName(int pid)
+    public static string? ImageName(int pid) => ImagePath(pid) is { } full ? full[(full.LastIndexOf('\\') + 1)..] : null;
+
+    /// 프로세스 이미지의 전체 경로. 열 수 없거나 이미 끝났으면 null.
+    public static string? ImagePath(int pid)
     {
         nint h = OpenProcess(ProcessQueryLimitedInformation, false, (uint)pid);
         if (h == 0)
@@ -166,18 +169,47 @@ public static unsafe partial class ProcessSnapshot
         {
             char* buf = stackalloc char[1024];
             uint size = 1024;
-            if (!QueryFullProcessImageNameW(h, 0, buf, ref size))
-            {
-                return null;
-            }
-
-            string full = new(buf, 0, (int)size);
-            return full[(full.LastIndexOf('\\') + 1)..];
+            return QueryFullProcessImageNameW(h, 0, buf, ref size) ? new string(buf, 0, (int)size) : null;
         }
         finally
         {
             CloseHandle(h);
         }
+    }
+
+    /// 프로세스가 시작 뒤 읽은 누적 바이트 (IO_COUNTERS.ReadTransferCount, 캐시 적중 포함). 열 수 없거나 끝났으면 null.
+    public static long? ReadBytes(int pid)
+    {
+        nint h = OpenProcess(ProcessQueryLimitedInformation, false, (uint)pid);
+        if (h == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            return GetProcessIoCounters(h, out IoCounters c) ? (long)Math.Min(c.ReadTransferCount, long.MaxValue) : null;
+        }
+        finally
+        {
+            CloseHandle(h);
+        }
+    }
+
+    /// 이름이 맞는 실행 중인 프로세스의 (PID, 읽은 누적 바이트). 읽지 못한 프로세스는 건너뜁니다.
+    public static IReadOnlyList<(int Pid, long ReadBytes)> ReadCounters(IEnumerable<string> exeNames)
+    {
+        var names = new HashSet<string>(exeNames, StringComparer.OrdinalIgnoreCase);
+        var result = new List<(int, long)>();
+        foreach ((int pid, string exe) in Take())
+        {
+            if (names.Contains(exe) && ReadBytes(pid) is { } bytes)
+            {
+                result.Add((pid, bytes));
+            }
+        }
+
+        return result;
     }
 
     public static bool IsRunning(IEnumerable<string> exeNames)
@@ -217,6 +249,21 @@ public static unsafe partial class ProcessSnapshot
     private static partial bool CloseHandle(nint handle);
 
     private const uint ProcessQueryLimitedInformation = 0x1000;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IoCounters
+    {
+        public ulong ReadOperationCount;
+        public ulong WriteOperationCount;
+        public ulong OtherOperationCount;
+        public ulong ReadTransferCount;
+        public ulong WriteTransferCount;
+        public ulong OtherTransferCount;
+    }
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetProcessIoCounters(nint process, out IoCounters counters);
 
     [LibraryImport("kernel32.dll", EntryPoint = "K32EnumProcesses", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

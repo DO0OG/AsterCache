@@ -1,0 +1,240 @@
+using AsterCache.Core.Settings;
+using AsterCache.Service;
+using Xunit;
+
+namespace AsterCache.Tests.Service;
+
+/// 최근 게임 예열 선택, 게임 시작 처리, 설정 교체, 워커 연결.
+public sealed class AutoModeTests : IDisposable
+{
+    private readonly AutoRig _rig = new();
+
+    public void Dispose() => _rig.Dispose();
+
+    private static readonly DateTimeOffset T0 = new(2026, 11, 2, 12, 0, 0, TimeSpan.Zero);
+
+    private AutoMode Mode() => new(_rig.Editor, _rig.World.Env(), _rig.Status, _rig.Log, _rig.Settings);
+
+    private void AddGame(string name, string source, bool onServiceStart = false, IReadOnlyList<string>? triggers = null)
+    {
+        _rig.Editor.Add(_rig.Input(name, name + ".exe", @"D:\Games\" + name, source, triggers) with { OnServiceStart = onServiceStart });
+        _rig.Reload();
+    }
+
+    private void Played(string name, int hoursAgo) => _rig.Status.MarkPlayed(name, "auto", AutoStage.WaitingIdle, T0 - TimeSpan.FromHours(hoursAgo));
+
+    private static IEnumerable<string> Names(IEnumerable<GameSettings> games) => games.Select(g => g.Name);
+
+    // ---- 최근 게임 선택 ----
+
+    [Fact]
+    public void RecentIsNewestFirstLimitedToNAndSkipsGamesNeverPlayed()
+    {
+        foreach (string n in new[] { "a", "b", "c", "d" })
+        {
+            AddGame(n, "auto");
+        }
+
+        Played("a", 5);
+        Played("b", 1);
+        Played("c", 3);
+
+        Assert.Equal(["b", "c"], Names(AutoMode.Recent(_rig.Settings.Games, _rig.Status.LastPlayed(), 2)));
+        Assert.Equal(["b", "c", "a"], Names(AutoMode.Recent(_rig.Settings.Games, _rig.Status.LastPlayed(), 8)));
+        Assert.Empty(AutoMode.Recent(_rig.Settings.Games, _rig.Status.LastPlayed(), 0));
+    }
+
+    [Fact]
+    public void StartupRecentLeavesOutGamesTheServiceStartAlreadyWarms()
+    {
+        AddGame("warm", "auto", onServiceStart: true);
+        AddGame("x", "auto");
+        AddGame("y", "manual");
+        Played("warm", 1);
+        Played("x", 2);
+        Played("y", 3);
+
+        _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { PrewarmRecent = 2 } };
+        Assert.Equal(["x", "y"], Names(Mode().StartupRecent()));
+
+        _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { PrewarmRecent = 0 } };
+        Assert.Empty(Mode().StartupRecent());
+        _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { Enabled = false } };
+        Assert.Empty(Mode().StartupRecent());
+    }
+
+    [Fact]
+    public void TriggerWarmsEveryManualGameButOnlyTheNewestAutoGames()
+    {
+        AddGame("m1", "manual", triggers: ["steam.exe"]);
+        AddGame("m2", "manual", triggers: ["steam.exe"]);
+        AddGame("a1", "auto", triggers: ["steam.exe"]);
+        AddGame("a2", "auto", triggers: ["steam.exe"]);
+        AddGame("a3", "auto", triggers: ["steam.exe"]);
+        Played("a1", 9);
+        Played("a2", 1);
+        Played("a3", 5);
+        IReadOnlyList<GameSettings> hit = _rig.Settings.Games;
+
+        _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { PrewarmRecent = 2 } };
+        Assert.Equal(["m1", "m2", "a2", "a3"], Names(Mode().NarrowTriggered(hit)));
+
+        _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { PrewarmRecent = 0 } };
+        Assert.Equal(["m1", "m2"], Names(Mode().NarrowTriggered(hit)));
+
+        _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { Enabled = false } };
+        Assert.Equal(["m1", "m2", "a1", "a2", "a3"], Names(Mode().NarrowTriggered(hit)));
+    }
+
+    [Fact]
+    public void PrewarmerStreamsOnlyTheGamesTheTriggerNarrowingKept()
+    {
+        AddGame("m1", "manual", triggers: ["steam.exe"]);
+        AddGame("a1", "auto", triggers: ["steam.exe"]);
+        AddGame("a2", "auto", triggers: ["steam.exe"]);
+        Played("a1", 1);
+        Played("a2", 2);
+        _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { PrewarmRecent = 1 } };
+        var streamer = new FakeStreamer();
+        var prewarm = new Prewarmer(_rig.Settings.Games, streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => 99999,
+            GameRunning = _ => false,
+            ZoneBytes = _ => 1 << 20,
+            TraceExists = _ => true,
+        }, _rig.Log);
+
+        prewarm.OnProcessStart(new ProcessStart(1, "steam.exe", 0), Mode().NarrowTriggered);
+
+        Assert.Equal(["m1", "a1"], streamer.Calls.Select(c => c.Game));
+    }
+
+    // ---- 게임 시작 ----
+
+    private GameSettings Game(string name = "foo") => _rig.Settings.Games.Single(g => g.Name == name);
+
+    [Fact]
+    public void GameStartRecordsLastPlayedAndOpensAnAutoTraceWhenTheRawTraceIsMissing()
+    {
+        AddGame("foo", "auto");
+        _rig.World.Session = new FakeTrace();
+        _rig.World.Now = T0;
+
+        Mode().OnGameStart(Game());
+
+        Assert.Equal(T0, _rig.Status.Get("foo")!.LastPlayed);
+        Assert.Equal(AutoStage.Tracing, _rig.Status.Get("foo")!.Stage);
+        Assert.Equal(1, _rig.World.TraceStarts);
+    }
+
+    [Fact]
+    public void GameStartWithATraceAlreadyOnDiskOnlyRecordsThePlay()
+    {
+        AddGame("foo", "manual");
+        _rig.World.Files.Add(AutoTracer.RawTracePath(Game()));
+
+        Mode().OnGameStart(Game());
+
+        Assert.Equal((AutoStage.WaitingIdle, "manual"), (_rig.Status.Get("foo")!.Stage, _rig.Status.Get("foo")!.Source));
+        Assert.NotNull(_rig.Status.Get("foo")!.LastPlayed);
+        Assert.Equal(0, _rig.World.TraceStarts);
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void GameStartHonorsTheTraceAndEnabledSwitches(bool traceOn, bool enabled)
+    {
+        AddGame("foo", "auto");
+        _rig.World.Session = new FakeTrace();
+        _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { Trace = traceOn, Enabled = enabled } };
+
+        Mode().OnGameStart(Game());
+
+        Assert.Equal(0, _rig.World.TraceStarts);
+        Assert.Equal(enabled, _rig.Status.Get("foo") is not null);
+    }
+
+    [Fact]
+    public void ExceptionsInsideAnAutoActionAreLoggedNotThrown()
+    {
+        AddGame("foo", "auto");
+        _rig.World.StartTraceThrows = new InvalidOperationException("boom");
+
+        Mode().OnGameStart(Game()); // 세션 시작 실패는 failed 로 기록됨
+        Mode().RelocateTick(new ReapplyGate(), CancellationToken.None); // 가짜 세계가 CpuPercent 만 쓰고 끝남
+
+        Assert.Equal(AutoStage.Failed, _rig.Status.Get("foo")!.Stage);
+    }
+
+    [Fact]
+    public void SettingsReplacementForgetsGamesThatLeftTheConfig()
+    {
+        AddGame("keep", "auto");
+        AddGame("gone", "auto");
+        _rig.Status.Set("keep", "auto", null, AutoStage.Discovered, null);
+        _rig.Status.Set("gone", "auto", null, AutoStage.Discovered, null);
+        AutoMode mode = Mode();
+        _rig.Editor.Remove("gone");
+
+        mode.SetSettings(_rig.Reload());
+
+        Assert.NotNull(_rig.Status.Get("keep"));
+        Assert.Null(_rig.Status.Get("gone"));
+    }
+
+    // ---- 워커 연결 ----
+
+    [Fact]
+    public async Task WorkerRecordsPlaysAndWarmsTheRecentGamesAfterTheServiceStartWarmup()
+    {
+        AddGame("warm", "auto", onServiceStart: true);
+        AddGame("recent", "auto");
+        AddGame("old", "auto");
+        Played("warm", 9);
+        Played("recent", 1);
+        Played("old", 9);
+        _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { PrewarmRecent = 1 } };
+        var streamer = new FakeStreamer();
+        var prewarm = new Prewarmer(_rig.Settings.Games, streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => 99999,
+            GameRunning = _ => false,
+            ZoneBytes = _ => 1 << 20,
+            TraceExists = _ => true,
+        }, _rig.Log);
+        var emitted = new TaskCompletionSource();
+        _rig.World.Files.Add(AutoTracer.RawTracePath(Game("warm")));
+        var worker = new Worker(_rig.Settings, _rig.Log, new OneShotStart(new ProcessStart(7, "warm.exe", 0), emitted), null, new FakeStreamer(),
+            new ReapplyChecker(ReapplyTests.NoIoEnv(), _rig.Log), prewarm: prewarm, auto: Mode());
+
+        await worker.StartAsync(CancellationToken.None);
+        await emitted.Task;
+        for (int i = 0; i < 300 && (streamer.Calls.Count < 2 || _rig.Status.Get("warm")!.LastPlayed < T0); i++)
+        {
+            await Task.Delay(10);
+        }
+
+        await worker.StopAsync(CancellationToken.None);
+
+        Assert.Equal(["warm", "recent"], streamer.Calls.Select(c => c.Game));
+        Assert.Equal(T0, _rig.Status.Get("warm")!.LastPlayed); // 게임 시작 알림이 last_played 를 기록함 (가짜 시계)
+    }
+
+    private sealed class OneShotStart(ProcessStart start, TaskCompletionSource emitted) : IProcessWatcher
+    {
+        public async Task RunAsync(Action<ProcessStart> onStart, CancellationToken cancellationToken)
+        {
+            onStart(start);
+            emitted.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // 취소는 정상 종료
+            }
+        }
+    }
+}

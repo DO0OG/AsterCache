@@ -54,7 +54,7 @@ public sealed record DriveRow(string Letter, string Label, string FileSystem, lo
 }
 
 /// 게임 탭 한 줄. Verdict: aster verify 의 판정 (contiguous, non-contiguous, resume-needed), 계획이 없으면 "-", 아직 확인 전이면 "?".
-public sealed record GameRow(string Name, string Exe, string Origin, bool HasPlan, bool HasTrace, string Verdict, string Prewarm);
+public sealed record GameRow(string Name, string Exe, string Origin, bool HasPlan, bool HasTrace, string Verdict, string Prewarm, string Source, string Stage, string AntiCheat);
 
 /// 게임 하나의 배치 상태 (aster status --plan 결과와 저널 파일 시각).
 public sealed record GameStatus(string Verdict, double? ZoneHitPercent, DateTime? LastRelayout);
@@ -74,6 +74,7 @@ public sealed class ManageViewModel(
     private readonly Dictionary<string, GameStatus> _status = new(StringComparer.OrdinalIgnoreCase);
     private readonly TimeSpan _poll = poll ?? TimeSpan.FromMilliseconds(500);
     private JObject? _prewarm;
+    private AutoStatusFile? _auto;
 
     public bool IsAdmin => isAdmin();
 
@@ -96,6 +97,8 @@ public sealed class ManageViewModel(
     }
 
     public string DataDir => Path.GetDirectoryName(config.ConfigPath)!;
+
+    public string AutoStatusPath => Path.Combine(DataDir, "auto_status.json");
 
     public string PrewarmStatusPath => Path.Combine(DataDir, "prewarm_status.json");
 
@@ -181,7 +184,8 @@ public sealed class ManageViewModel(
         {
             bool plan = File.Exists(g.Plan);
             return new GameRow(g.Name, string.Join(", ", g.ExeNames), g.OriginRoot, plan, File.Exists(g.Trace), plan ? _status.TryGetValue(g.Name, out GameStatus? s) ? s.Verdict : "?" : "-",
-                DescribePrewarm(g.Prewarm));
+                DescribePrewarm(g.Prewarm), L.T(g.Source == "auto" ? "Source_Auto" : "Source_Manual"),
+                _auto?.Games.TryGetValue(g.Name, out AutoGame? a) == true ? AutoStatusFile.StageName(a.Stage, L.Current) : "-", g.AntiCheat ?? "-");
         }).ToList();
 
     /// 서비스 상태 + 감시기 + 마지막 예열 + 게임별 배치 상태.
@@ -195,10 +199,17 @@ public sealed class ManageViewModel(
                     ? L.T("Layout_Line", s.Verdict, s.ZoneHitPercent is { } p ? p.ToString("F1", CultureInfo.InvariantCulture) + "%" : "-", s.LastRelayout is { } t ? t.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) : L.T("Word_Never"))
                     : L.T("Layout_Unchecked");
             lines.Add(L.T("Layout_Game", g.Name, layout, PrewarmText(g.Name)));
+            if (_auto?.Games.TryGetValue(g.Name, out AutoGame? auto) == true)
+            {
+                lines.Add("  " + AutoStatusFile.Line(g.Name, auto, L.Current));
+            }
         }
 
         return lines;
     }
+
+    /// auto_status.json 만 다시 읽습니다 (aster 프로세스 없음, 5 초 주기용). 읽은 결과를 돌려줍니다.
+    public AutoStatusFile? ReloadAuto() => _auto = AutoStatusFile.Load(AutoStatusPath);
 
     /// aster status 로 예열 기록과 게임별 배치 상태를 다시 읽습니다 (게임마다 프로세스 한 번).
     public ActionResult RefreshStatus()
@@ -207,6 +218,7 @@ public sealed class ManageViewModel(
         _status.Clear();
         CliResult all = cli.Run(AsterArgs.Status(PrewarmStatusPath, null, null));
         _prewarm = Get(all.Json, "prewarm") as JObject;
+        ReloadAuto();
         foreach (GameSettings g in Games.Where(g => File.Exists(g.Plan)))
         {
             string journal = JournalPath(g.Name);

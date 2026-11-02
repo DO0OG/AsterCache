@@ -1,0 +1,438 @@
+using AsterCache.Core.Discovery;
+using AsterCache.Core.Json;
+using AsterCache.Core.Logging;
+using AsterCache.Core.Settings;
+using AsterCache.Windows;
+
+namespace AsterCache.Service;
+
+/// 게임 자동 등록: 런처 목록 발견 (6 시간마다) 과 실행 중 읽기량 휴리스틱 (2 초마다). 등록은 ConfigEditor 로 config.json 에 쓰고, 서비스는 그 변경을 다시 읽습니다.
+public sealed class AutoRegistry
+{
+    public const int MaxExeNames = 16;
+    private const int MaxLabelChars = 32;
+    private const int MaxRootClimb = 3;
+
+    // 런처 보조 프로그램·도구: 많이 읽어도 게임이 아님 (런처 본체는 LauncherExes.All).
+    private static readonly HashSet<string> NotGames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "steamwebhelper.exe", "EpicWebHelper.exe", "Agent.exe", "explorer.exe", "aster.exe",
+    };
+
+    // exe 폴더가 이 이름이면 설치 폴더는 그 위 (Unreal 의 Game\Binaries\Win64 등).
+    private static readonly HashSet<string> BinaryFolders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Binaries", "Win64", "Win32", "x64", "x86", "bin", "Bin64", "Bin32",
+    };
+
+    private readonly ConfigEditor _editor;
+    private readonly AutoEnv _env;
+    private readonly AutoStatus _status;
+    private readonly ILog _log;
+    private readonly Func<AsterSettings> _settings;
+    private readonly Dictionary<string, bool?> _hdd = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _refusedLogged = new(StringComparer.OrdinalIgnoreCase); // 거부 이유를 이미 남긴 대상 (같은 줄이 반복되지 않게)
+    private readonly Dictionary<int, DateTimeOffset> _pending = [];
+    private readonly HashSet<int> _noCounter = []; // 읽기량을 못 연 PID: 수명 동안 다시 열지 않음
+    private readonly Dictionary<int, DateTimeOffset> _etwWait = []; // ETW 로 읽기량을 기다리는 후보 (대기 시작 시각)
+    private IReadWatch? _watch;
+    private readonly object _lock = new(); // 발견 루프와 휴리스틱 루프가 아래 두 목록을 함께 씀
+    private readonly List<GameSettings> _added = []; // 방금 쓴 등록 (설정을 다시 읽기 전까지 겹침 검사에 포함)
+    private readonly HashSet<string> _addedExes = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<int>? _known;
+
+    public AutoRegistry(ConfigEditor editor, AutoEnv env, AutoStatus status, ILog log, Func<AsterSettings> settings)
+    {
+        _editor = editor;
+        _env = env;
+        _status = status;
+        _log = log;
+        _settings = settings;
+    }
+
+    /// 런처 목록을 한 번 훑어 새 게임을 등록합니다. 등록한 수를 돌려줍니다.
+    public int DiscoverOnce()
+    {
+        AutoSettings a = _settings().Auto;
+        if (!a.Enabled || !a.Discover)
+        {
+            return 0;
+        }
+
+        int added = 0;
+        foreach (DiscoveredGame d in _env.Scan())
+        {
+            if (d.ExePath is null)
+            {
+                continue; // exe 를 모르면 감시할 수 없음
+            }
+
+            string? refused = _env.DriveRefusal(d.InstallDir) ?? (d.OnHdd == true ? null : "not an HDD"); // 시스템 볼륨·SSD·종류를 모르는 드라이브는 재배치할 이유가 없거나 건드리면 안 됨
+            if (refused is not null)
+            {
+                LogRefusedOnce(d.InstallDir, $"auto {d.Launcher}: skipped {d.Name} ({refused})");
+                continue;
+            }
+
+            string exe = Path.GetFileName(d.ExePath);
+            IReadOnlyList<GameSettings> games = AllGames();
+            if (Ignored(a, exe) || Registered(games, exe) || games.Any(g => Overlaps(g.OriginRoot, d.InstallDir)))
+            {
+                continue;
+            }
+
+            if (games.Count >= SettingsStore.MaxGames)
+            {
+                _log.Info("auto discovery: game list is full, skipping the rest"); // 빈 자리가 있을 때만 (밀어내기는 실제로 실행된 게임에만): 안 쓴 게임끼리 번갈아 밀어내는 일을 막음
+                break;
+            }
+
+            if (Register(d.Name, d.Launcher, exe, d.InstallDir, LauncherExes.ForLauncher(d.Launcher, d.TriggerExe), d.AntiCheat, evict: false))
+            {
+                added++;
+            }
+        }
+
+        return added;
+    }
+
+    /// 새로 뜬 프로세스를 지켜보다가 HeuristicWindowSeconds 뒤 그 동안 HeuristicReadMib 이상 읽었으면 게임 후보로 봅니다.
+    public void HeuristicTick()
+    {
+        IReadOnlyList<int> pids = _env.Pids();
+        DateTimeOffset now = _env.Now();
+        HashSet<int> current = [.. pids];
+        if (_known is null)
+        {
+            _known = current; // 서비스 시작 때 떠 있던 프로세스는 제외
+            return;
+        }
+
+        foreach (int pid in current.Where(p => !_known.Contains(p)))
+        {
+            _pending[pid] = now;
+        }
+
+        _known = current;
+        foreach (int gone in _pending.Keys.Where(p => !current.Contains(p)).ToList())
+        {
+            _pending.Remove(gone);
+        }
+
+        _noCounter.RemoveWhere(p => !current.Contains(p));
+        foreach (int gone in _etwWait.Keys.Where(p => !current.Contains(p)).ToList())
+        {
+            _etwWait.Remove(gone);
+        }
+
+        AsterSettings s = _settings();
+        bool on = s.Auto.Enabled && s.Auto.Discover;
+        foreach (int pid in _pending.Where(kv => now - kv.Value >= TimeSpan.FromSeconds(AutoSettings.HeuristicWindowSeconds)).Select(kv => kv.Key).ToList())
+        {
+            _pending.Remove(pid);
+            if (!on)
+            {
+                continue;
+            }
+
+            if (_env.ReadBytes(pid) is { } read)
+            {
+                Evaluate(pid, s.Auto, read);
+            }
+            else if (_noCounter.Add(pid))
+            {
+                _etwWait[pid] = now; // 프로세스를 열 수 없음 (보호된 프로세스): 다시 열지 않고 ETW 로 센다
+            }
+        }
+
+        EtwStep(now, s.Auto, on);
+    }
+
+    /// 서비스 종료: 돌고 있는 ETW 세션을 정리합니다.
+    public void Shutdown()
+    {
+        _etwWait.Clear();
+        StopWatch("service stopping");
+    }
+
+    // 대체가 필요한 후보가 있을 때만 세션을 켜고, 후보가 모두 없어지면 끕니다. 대기는 HeuristicWindowSeconds 까지.
+    private void EtwStep(DateTimeOffset now, AutoSettings a, bool on)
+    {
+        if (!on)
+        {
+            _etwWait.Clear();
+        }
+
+        if (_etwWait.Count > 0 && _watch is null)
+        {
+            try
+            {
+                _watch = _env.StartReadWatch();
+                _log.Info("auto heuristic: read-count session started for processes that cannot be opened");
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                _log.Warn("auto heuristic: read-count session could not start: " + e.GetType().Name);
+                _etwWait.Clear();
+            }
+        }
+
+        foreach ((int pid, DateTimeOffset since) in _etwWait.ToList())
+        {
+            long read = _watch?.ReadBytes(pid) ?? 0;
+            if (read >= (long)AutoSettings.HeuristicReadMib << 20)
+            {
+                _etwWait.Remove(pid);
+                Evaluate(pid, a, read);
+            }
+            else if (now - since >= TimeSpan.FromSeconds(AutoSettings.HeuristicWindowSeconds))
+            {
+                _etwWait.Remove(pid);
+            }
+        }
+
+        if (_etwWait.Count == 0)
+        {
+            StopWatch("no candidates left");
+        }
+    }
+
+    private void StopWatch(string why)
+    {
+        if (_watch is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _watch.Dispose();
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _log.Warn("auto heuristic: read-count session did not stop cleanly: " + e.GetType().Name);
+        }
+
+        _watch = null;
+        _log.Info($"auto heuristic: read-count session stopped ({why})");
+    }
+
+    /// 설정을 다시 읽어 방금 쓴 등록이 설정에 들어왔으면 임시 기록에서 뺍니다.
+    public void SettingsReloaded(AsterSettings s)
+    {
+        lock (_lock)
+        {
+            _added.RemoveAll(a => s.Games.Any(g => g.Name == a.Name));
+        }
+    }
+
+    // 트레이스는 다음 실행부터 잡힘: 이번 실행은 이미 시작 부분의 읽기를 놓쳤고 정확한 게임인지도 이제야 알았기 때문.
+    private void Evaluate(int pid, AutoSettings a, long read)
+    {
+        // 열 수 없는 PID 는 ETW 가 본 이미지 경로를 먼저 씁니다 (다시 열지 않음).
+        string? image = _noCounter.Contains(pid) ? _watch?.ImagePath(pid) ?? _env.ImagePath(pid) : _env.ImagePath(pid) ?? _watch?.ImagePath(pid);
+        if (read < (long)AutoSettings.HeuristicReadMib << 20 || image is null)
+        {
+            return;
+        }
+
+        string exe = Path.GetFileName(image);
+        string folder = Path.GetDirectoryName(image) ?? string.Empty;
+        string? letter = image.Length > 2 && char.IsAsciiLetter(image[0]) && image[1] == ':' ? image[..2].ToUpperInvariant() : null;
+        if (letter is null || Ignored(a, exe) || NotGames.Contains(exe) || LauncherExes.Is(exe) || exe.StartsWith("AsterCache.", StringComparison.OrdinalIgnoreCase)
+            || Under(image, _env.WindowsDir) || Under(image, _env.ServiceDir))
+        {
+            return;
+        }
+
+        if (string.Equals(letter, _env.SystemDrive, StringComparison.OrdinalIgnoreCase) || !IsHdd(letter))
+        {
+            LogRefusedOnce(letter, $"auto heuristic: ignoring programs on {letter} (system volume, SSD or unknown drive type)");
+            return;
+        }
+
+        IReadOnlyList<GameSettings> games = AllGames();
+        if (Registered(games, exe))
+        {
+            return;
+        }
+
+        if (games.FirstOrDefault(g => Under(folder, g.OriginRoot) || string.Equals(folder.TrimEnd('\\'), g.OriginRoot, StringComparison.OrdinalIgnoreCase)) is { } owner)
+        {
+            AddExe(owner, exe);
+            return; // 수동 등록 게임이면 건드리지 않음
+        }
+
+        string origin = OriginRoot(folder);
+        if (origin.Length <= 2)
+        {
+            _log.Info("auto heuristic: skipped a process at a drive root");
+            return;
+        }
+
+        if (!games.Any(g => Overlaps(g.OriginRoot, origin)))
+        {
+            Register(Path.GetFileName(origin), "heuristic", exe, origin, LauncherExes.ForOrigin(origin), _env.AntiCheatOf(origin), evict: true);
+        }
+    }
+
+    private void AddExe(GameSettings owner, string exe)
+    {
+        if (owner.Source != "auto")
+        {
+            return;
+        }
+
+        if (owner.ExeNames.Count >= MaxExeNames)
+        {
+            _log.Info($"{owner.Name}: exe list is full, not adding {exe}");
+            return;
+        }
+
+        try
+        {
+            _editor.AddExeName(owner.Name, exe);
+            lock (_lock)
+            {
+                _addedExes.Add(exe);
+            }
+
+            _log.Info($"{owner.Name}: added exe {exe} (read heavily after start)");
+        }
+        catch (Exception e) when (e is SettingsException or IOException or UnauthorizedAccessException or PyValueException)
+        {
+            _log.Warn($"{owner.Name}: could not add exe {exe}: {e.Message}");
+        }
+    }
+
+    private bool Register(string display, string launcher, string exe, string installDir, IReadOnlyList<string> triggers, string? antiCheat, bool evict)
+    {
+        string letter = installDir[..2].ToUpperInvariant();
+        string label = _env.VolumeLabel(letter);
+        if (label.Length == 0 || label.Length > MaxLabelChars)
+        {
+            _log.Info($"auto {launcher}: skipped {display}: volume has no usable label");
+            return false;
+        }
+
+        IReadOnlyList<GameSettings> games = AllGames();
+        var taken = new HashSet<string>(games.Select(g => g.Name), StringComparer.OrdinalIgnoreCase);
+        string folderName = Path.GetFileName(installDir);
+        string name = LauncherManifests.MakeUnique(LauncherManifests.SafeName(display, folderName, Path.GetFileNameWithoutExtension(exe)), taken);
+        string plan = Path.Combine(_editor.PlansDir, name + ".plan.json");
+        var input = new GameInput(name, [exe], plan + ".prefetch.json", plan, installDir, [installDir], label, null, triggers) { Source = "auto", OnServiceStart = false, AntiCheat = antiCheat };
+        string? evicted = null;
+        try
+        {
+            if (evict)
+            {
+                evicted = _editor.AddAuto(input, _status.LastPlayed());
+            }
+            else
+            {
+                _editor.Add(input); // 빈 자리가 없으면 SettingsException
+            }
+        }
+        catch (Exception e) when (e is SettingsException or IOException or UnauthorizedAccessException or PyValueException)
+        {
+            _log.Warn($"auto {launcher}: could not register {name}: {e.Message}");
+            return false;
+        }
+
+        lock (_lock)
+        {
+            _added.Add(new GameSettings(name, input.ExeNames, input.Trace, input.Plan, installDir, input.AllowedRoots, label, SettingsStore.DefaultReapplyMinutes)
+            {
+                Source = "auto",
+                AntiCheat = antiCheat,
+                Prewarm = new PrewarmSettings(false, triggers, PrewarmSettings.Default.MinFreeRamMib, PrewarmSettings.Default.CooldownMin),
+            });
+            _addedExes.Add(exe);
+        }
+
+        _status.Set(name, "auto", launcher, AutoStage.Discovered, null);
+        _status.AddEvent(name, "discovered");
+        _log.Info($"auto {launcher}: registered {name} ({exe})");
+        if (antiCheat is not null)
+        {
+            _log.Info($"{name}: anti-cheat detected ({antiCheat}); AsterCache only reads files and never opens the game process beyond query access");
+        }
+        if (evicted is not null)
+        {
+            _status.Remove(evicted);
+            lock (_lock)
+            {
+                _added.RemoveAll(g => g.Name == evicted);
+            }
+
+            _log.Info($"auto {launcher}: game list was full, removed the least recently played auto game {evicted}");
+        }
+
+        return true;
+    }
+
+    private IReadOnlyList<GameSettings> AllGames()
+    {
+        AsterSettings s = _settings();
+        lock (_lock)
+        {
+            return [.. s.Games, .. _added.Where(a => s.Games.All(g => g.Name != a.Name))];
+        }
+    }
+
+    private bool Registered(IReadOnlyList<GameSettings> games, string exe)
+    {
+        lock (_lock)
+        {
+            return _addedExes.Contains(exe) || games.Any(g => g.ExeNames.Contains(exe, StringComparer.OrdinalIgnoreCase));
+        }
+    }
+
+    private void LogRefusedOnce(string key, string message)
+    {
+        bool first;
+        lock (_lock)
+        {
+            first = _refusedLogged.Add(key);
+        }
+
+        if (first)
+        {
+            _log.Info(message);
+        }
+    }
+
+    private bool IsHdd(string letter)
+    {
+        if (!_hdd.TryGetValue(letter, out bool? hdd))
+        {
+            _hdd[letter] = hdd = _env.IsHdd(letter);
+        }
+
+        return hdd == true;
+    }
+
+    private static bool Ignored(AutoSettings a, string exe) => a.IgnoreExes.Contains(exe, StringComparer.OrdinalIgnoreCase);
+
+    private static bool Under(string path, string root) =>
+        root.Length > 0 && path.StartsWith(root.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase);
+
+    private static bool Overlaps(string a, string b)
+    {
+        string x = a.TrimEnd('\\');
+        string y = b.TrimEnd('\\');
+        return string.Equals(x, y, StringComparison.OrdinalIgnoreCase) || Under(x, y) || Under(y, x);
+    }
+
+    /// exe 폴더에서 Binaries/Win64 같은 폴더 이름인 동안 (최대 3 번) 위로 올라간 설치 폴더. 드라이브 루트까지 오면 길이 2 ("D:") 이하.
+    public static string OriginRoot(string exeFolder)
+    {
+        string cur = exeFolder.TrimEnd('\\');
+        for (int i = 0; i < MaxRootClimb && cur.Length > 2 && BinaryFolders.Contains(Path.GetFileName(cur)); i++)
+        {
+            cur = (Path.GetDirectoryName(cur) ?? string.Empty).TrimEnd('\\');
+        }
+
+        return cur;
+    }
+}

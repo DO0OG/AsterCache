@@ -9,7 +9,7 @@ namespace AsterCache.Cli.Commands;
 /// 읽기 전용 현황 (관리자 불필요): 권한, 환경변수, 그리고 --plan 의 현재 배치 검사 (verify 와 같음), --journal 의 진행 요약.
 internal static class StatusCommand
 {
-    public static readonly ArgOption[] Options = [new("plan"), new("journal"), new("prewarm-status")];
+    public static readonly ArgOption[] Options = [new("plan"), new("journal"), new("prewarm-status"), new("auto-status")];
 
     public static int Run(ParsedArgs a, TextWriter o)
     {
@@ -29,6 +29,7 @@ internal static class StatusCommand
             { "plan", plan },
             { "journal", journal },
             { "prewarm", PrewarmStatus(a.Text("prewarm-status") ?? Path.Combine(SettingsStore.DefaultDataDir, "prewarm_status.json")) },
+            { "auto", AutoStatus(a.Text("auto-status") ?? Path.Combine(SettingsStore.DefaultDataDir, "auto_status.json")) },
         });
     }
 
@@ -47,6 +48,21 @@ internal static class StatusCommand
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
         {
             return new JObject { { "error", "unreadable prewarm status" } };
+        }
+    }
+
+    // 서비스가 남긴 자동 모드 상태 중 games·relocations 만, 없거나 읽지 못하면 null.
+    private static object? AutoStatus(string path)
+    {
+        try
+        {
+            return File.Exists(path) && JsonRead.ReadFile(path) is JObject root
+                ? new JObject { { "games", root.TryGetValue("games", out object? g) ? g : null }, { "relocations", root.TryGetValue("relocations", out object? r) ? r : null } }
+                : null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            return null;
         }
     }
 

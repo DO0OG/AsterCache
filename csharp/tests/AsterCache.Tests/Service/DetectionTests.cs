@@ -277,7 +277,11 @@ public sealed class DispatcherTests
         var worker = new Worker(new AsterSettings(250, []), log, watcher, watcher, new FakeStreamer(), new ReapplyChecker(ReapplyTests.NoIoEnv(), log));
 
         await worker.StartAsync(CancellationToken.None);
-        await Task.Delay(100);
+        for (int i = 0; i < 500 && !log.Lines.Any(l => l.Contains("service started", StringComparison.Ordinal)); i++)
+        {
+            await Task.Delay(10); // 고정 대기 대신 시작 로그가 나올 때까지 (상한 5 초)
+        }
+
         await worker.StopAsync(CancellationToken.None);
 
         Assert.Equal(0, watcher.Runs);

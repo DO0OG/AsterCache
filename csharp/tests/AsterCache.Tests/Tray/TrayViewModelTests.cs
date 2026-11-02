@@ -14,11 +14,12 @@ public sealed class TrayViewModelTests : IDisposable
     private readonly FakeStreamer _streamer = new();
     private readonly FakeShell _shell = new();
     private readonly TrayViewModel _vm;
+    private readonly MemoryLog _log = new();
 
     public TrayViewModelTests()
     {
         Directory.CreateDirectory(_dir);
-        _vm = new TrayViewModel(new ConfigEditor(_dir), _service, _streamer, _shell, new MemoryLog());
+        _vm = new TrayViewModel(new ConfigEditor(_dir), _service, _streamer, _shell, _log);
     }
 
     public void Dispose() => Directory.Delete(_dir, true);
@@ -26,6 +27,52 @@ public sealed class TrayViewModelTests : IDisposable
     private GameInput Game(string name = "mw4") => new(
         name, ["game.exe"], Path.Combine(_dir, "plans", name + ".prefetch.json"), Path.Combine(_dir, "plans", name + ".plan.json"),
         Path.Combine(_dir, "Games", name), [Path.Combine(_dir, "Games")], "GAMES");
+
+    [Theory]
+    [InlineData("auto", "30", true, 0, 30)]
+    [InlineData("AUTO", "0", true, 0, 0)]
+    [InlineData(" 4096 ", "5", false, 4096, 5)]
+    public void SpeedSettingsWriteTheZoneLimitAndTheKeepWarmInterval(string zone, string minutes, bool auto, int mib, int rewarm)
+    {
+        Assert.True(_vm.AddGame(Game()).Ok);
+
+        Assert.True(_vm.SetSpeed(zone, minutes).Ok);
+
+        AsterSettings s = new ConfigEditor(_dir).Load()!;
+        Assert.Equal(auto, s.MaxZoneAuto);
+        if (!auto)
+        {
+            Assert.Equal(mib, s.MaxZoneMib);
+        }
+
+        Assert.Equal(rewarm, s.Auto.RewarmMinutes);
+        Assert.Equal(AutoSettings.Default.IdleMinutes, s.Auto.IdleMinutes); // 나머지 auto 값은 그대로
+    }
+
+    [Theory]
+    [InlineData("big", "10")]
+    [InlineData("", "10")]
+    [InlineData("4096", "-1")]
+    [InlineData("4096", "x")]
+    [InlineData("-5", "10")]
+    public void SpeedSettingsRejectNonNumbersWithoutWriting(string zone, string minutes)
+    {
+        Assert.True(_vm.AddGame(Game()).Ok);
+        byte[] before = File.ReadAllBytes(Path.Combine(_dir, "config.json"));
+
+        ActionResult r = _vm.SetSpeed(zone, minutes);
+
+        Assert.False(r.Ok);
+        Assert.Equal(before, File.ReadAllBytes(Path.Combine(_dir, "config.json")));
+    }
+
+    [Fact]
+    public void SpeedSettingsOutOfRangeAreRefusedByTheConfigCheck()
+    {
+        Assert.True(_vm.AddGame(Game()).Ok);
+
+        Assert.False(_vm.SetSpeed("63", "10").Ok); // max_zone_mib 는 64 이상
+    }
 
     [Fact]
     public void NotInstalledServiceIsShown()
@@ -53,6 +100,33 @@ public sealed class TrayViewModelTests : IDisposable
         _vm.Refresh();
         Assert.Contains("설정 오류", _vm.StatusText);
         Assert.Empty(_vm.Games);
+    }
+
+    [Fact]
+    public void RemovingAnAutoGameLogsWhenIgnoreExesPushedOutOldNames()
+    {
+        var editor = new ConfigEditor(_dir);
+        editor.Add(Game("a") with { Source = "auto" });
+        editor.SetAuto(AutoSettings.Default with { IgnoreExes = Enumerable.Range(0, 64).Select(i => $"e{i}.exe").ToList() });
+        _vm.Refresh();
+
+        Assert.True(_vm.RemoveGame("a").Ok);
+
+        Assert.Contains(_log.Lines, l => l.Contains("e0.exe", StringComparison.Ordinal));
+        Assert.Contains("game.exe", editor.Load()!.Auto.IgnoreExes);
+    }
+
+    [Fact]
+    public void SetAutoAndSetSpeedKeepValuesChangedInTheFileAfterTheLastRefresh()
+    {
+        Assert.True(_vm.AddGame(Game()).Ok);
+        new ConfigEditor(_dir).SetAuto(AutoSettings.Default with { IdleMinutes = 7, TraceCapMib = 128 }); // 화면이 모르는 사이에 바뀐 값
+
+        Assert.True(_vm.SetAuto(true, true, true, true, 2, string.Empty).Ok);
+        Assert.True(_vm.SetSpeed("auto", "5").Ok);
+
+        AutoSettings a = new ConfigEditor(_dir).Load()!.Auto;
+        Assert.Equal((7, 128, 2, 5), (a.IdleMinutes, a.TraceCapMib, a.PrewarmRecent, a.RewarmMinutes));
     }
 
     [Fact]
@@ -277,8 +351,8 @@ public sealed class TrayViewModelTests : IDisposable
 
     private sealed class MemoryLog : ILog
     {
-        public void Write(LogLevel level, string message, Exception? exception = null)
-        {
-        }
+        public List<string> Lines { get; } = [];
+
+        public void Write(LogLevel level, string message, Exception? exception = null) => Lines.Add(message);
     }
 }

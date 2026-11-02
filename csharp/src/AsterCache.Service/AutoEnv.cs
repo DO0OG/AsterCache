@@ -29,6 +29,12 @@ public sealed class AutoEnv
 
     public required Func<IReadOnlyList<DiscoveredGame>> Scan { get; init; }
 
+    /// 폴더가 게임처럼 보이는가 (휴리스틱 등록 전 확인: 큰 파일이나 런처 매니페스트 흔적). 시험 기본값은 항상 참.
+    public Func<string, bool> LooksLikeGame { get; init; } = _ => true;
+
+    /// 설치 폴더 아래의 exe 와 크기 (제거 목록 exe 재평가, exe 지문). 읽을 수 없으면 빈 목록, 시험 기본값도 빈 목록.
+    public Func<string, IReadOnlyList<(string Path, long Size)>> ExeFiles { get; init; } = _ => [];
+
     /// 'X:' 의 볼륨 레이블 (읽지 못하면 "").
     public required Func<string, string> VolumeLabel { get; init; }
 
@@ -73,6 +79,12 @@ public sealed class AutoEnv
 
     /// (게임 exe 이름들, 선행 읽기 알림 또는 null) → ETW 세션. 알림이 있으면 읽기·열기를 실시간으로 알리고 세션 버퍼를 짧은 간격으로 내려 보냅니다.
     public required Func<IReadOnlyCollection<string>, LiveListener?, IAutoTrace> StartTrace { get; init; }
+
+    /// 부트스트랩 S2: 프리페치 기록 (.pf) 으로 이 게임의 boot 트레이스를 만듭니다. 만든 범위 수, 못 만들면 0 (이미 있거나 기록 없음). 시험 기본값은 0.
+    public Func<GameSettings, int> PrefetchBoot { get; init; } = _ => 0;
+
+    /// boot 트레이스 파일의 "source" 표시 (프리페치 기록으로 만든 것이면 "prefetch"), 없으면 null. 시험 기본값은 null.
+    public Func<string, string?> TraceSource { get; init; } = _ => null;
 
     public required Func<IEnumerable<TraceEvent>, List<TraceEvent>> Canonicalize { get; init; }
 
@@ -142,6 +154,8 @@ public sealed class AutoEnv
         {
             Now = () => DateTimeOffset.UtcNow,
             Scan = () => LauncherScan.Scan(),
+            LooksLikeGame = dir => LauncherScan.LooksLikeGame(dir),
+            ExeFiles = dir => LauncherScan.InstalledExes(dir),
             VolumeLabel = VolumeInfo.Label,
             IsHdd = letter => DiskInfo.Query(letter).IncursSeekPenalty,
             Pids = ProcessSnapshot.Pids,
@@ -161,6 +175,8 @@ public sealed class AutoEnv
             StartTrace = (exes, listener) => new LiveAutoTrace(LiveSession.Start(
                 exes, TraceSessionName, restartExisting: true, listener: listener, flushInterval: listener is null ? null : EtwProcessWatcher.FlushInterval)),
             Canonicalize = events => TraceBuilder.CanonicalizeCase(events),
+            PrefetchBoot = g => AutoTracer.BootFromPrefetch(g),
+            TraceSource = AutoTracer.TraceSourceOf,
             LoadTrace = (raw, origin) => TraceLoader.LoadRanges(raw, origin, RealPaths.Resolve),
             MakePlan = (sessions, origin, zoneMib) => MakePlanAtLcn(sessions, origin, zoneMib, null),
             MakePlanAt = (sessions, origin, zoneMib, start) => MakePlanAtLcn(sessions, origin, zoneMib, start),

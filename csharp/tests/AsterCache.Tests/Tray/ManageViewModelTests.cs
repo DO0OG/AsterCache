@@ -684,6 +684,17 @@ public sealed class ManageViewModelTests : IDisposable
     }
 
     [Fact]
+    public void RelocatedPrefetchDetailShowsRelocatedPrefetchAlongsideThePrewarmTag()
+    {
+        var done = new AutoGame("auto", null, "done", "relocated (prefetch)");
+
+        Assert.Equal("완료 (재배치됨(프리페치))", AutoStatusFile.StageText(done, "ko"));
+        Assert.Equal("done (relocated (prefetch))", AutoStatusFile.StageText(done, "en"));
+        Assert.Equal("완료 (재배치됨(프리페치), 예열됨)", AutoStatusFile.StageText(done with { Detail = "relocated (prefetch), prewarmed" }, "ko"));
+        Assert.Equal("done (relocated (prefetch), prewarming 3/8 MB)", AutoStatusFile.StageText(done with { Detail = "relocated (prefetch), prewarming 3/8 MiB" }, "en"));
+    }
+
+    [Fact]
     public void PrewarmedDetailShowsFullFolderOrProfileName()
     {
         var discovered = new AutoGame("manual", null, "discovered", "prewarmed (profile Unity)");

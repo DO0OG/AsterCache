@@ -79,6 +79,14 @@ internal static unsafe partial class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool PrefetchVirtualMemory(nint process, nuint numberOfEntries, Win32MemoryRangeEntry* entries, uint flags);
 
+    // https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-rtlgetcompressionworkspacesize
+    [LibraryImport("ntdll.dll")]
+    internal static partial int RtlGetCompressionWorkSpaceSize(ushort format, out uint compressBufferWorkSpaceSize, out uint compressFragmentWorkSpaceSize);
+
+    // https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-rtldecompressbufferex
+    [LibraryImport("ntdll.dll")]
+    internal static partial int RtlDecompressBufferEx(ushort format, byte* uncompressed, uint uncompressedSize, byte* compressed, uint compressedSize, out uint finalUncompressedSize, byte* workSpace);
+
     [LibraryImport("shell32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool IsUserAnAdmin();

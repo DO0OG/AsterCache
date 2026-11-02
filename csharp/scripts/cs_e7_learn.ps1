@@ -31,7 +31,8 @@ param(
     [string]$OutPrefix = 'csharp_e7',
     [ValidateSet('saturated', 'paced')][string]$Replay = 'saturated',
     [double]$ThinkMs = 20,
-    [int]$ThinkEvery = 1
+    [int]$ThinkEvery = 1,
+    [string]$LearnMode = ''
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -46,6 +47,7 @@ if (-not (Test-Path -LiteralPath $Aster)) { throw "aster.exe not found: $Aster" 
 if (-not $Trace -or -not (Test-Path -LiteralPath $Trace)) { throw "trace not found: '$Trace' (-Trace is required for -Mode synthetic)" }
 if (-not (Test-Path -LiteralPath $Root)) { throw "root not found: $Root (synthetic: python -m bench.dataset --root $Root)" }
 $Root = $Root.TrimEnd('\')
+$learnModeArgs = @(); if ($LearnMode) { $learnModeArgs = @('--mode', $LearnMode) }
 $otherPython = @(Get-Process -Name 'python*' -ErrorAction SilentlyContinue).Count  # other python programs may run: learn only reads files under -Root, but then it ends at the -Seconds cap instead of when the replay ends
 if (@(Get-Process -Name 'Frostpunk' -ErrorAction SilentlyContinue).Count -gt 0) { throw 'Frostpunk is running' }
 
@@ -53,7 +55,7 @@ $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $out = Join-Path $Repo "results\$($OutPrefix)_$stamp"
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 $log = Join-Path $out 'progress.log'
-$summary = [ordered]@{ replay = $Replay; think_ms = $ThinkMs; think_every = $ThinkEvery; other_python_processes = $otherPython; mode = $Mode; root = $Root; trace = $Trace; aster = (Split-Path -Leaf $Aster); runs = $Runs; learn_seconds_cap = $Seconds; rows = @() }
+$summary = [ordered]@{ learn_mode = $LearnMode; replay = $Replay; think_ms = $ThinkMs; think_every = $ThinkEvery; other_python_processes = $otherPython; mode = $Mode; root = $Root; trace = $Trace; aster = (Split-Path -Leaf $Aster); runs = $Runs; learn_seconds_cap = $Seconds; rows = @() }
 function Log([string]$m) { $l = "{0} {1}" -f (Get-Date -Format 'HH:mm:ss'), $m; Add-Content -LiteralPath $log -Value $l -Encoding UTF8; Write-Host $l }
 function Save-Summary { $summary | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $out 'summary.json') -Encoding UTF8 }
 function Get-Median($v) { return @($v | Sort-Object)[[int][math]::Floor(@($v).Count / 2)] }
@@ -93,7 +95,7 @@ try {
             $row.replay_s = [double](Invoke-Replay $tag).total_s
         } else {
             $learnOut = Join-Path $out "$tag-learn.txt"; $learnErr = Join-Path $out "$tag-learn.err.txt"
-            $lp = Start-Process -FilePath $Aster -ArgumentList @('learn', '--exe', 'python.exe', '--root', "`"$Root`"", '--seconds', "$Seconds", '--json') `
+            $lp = Start-Process -FilePath $Aster -ArgumentList (@('learn', '--exe', 'python.exe', '--root', "`"$Root`"", '--seconds', "$Seconds", '--json') + $learnModeArgs) `
                 -RedirectStandardOutput $learnOut -RedirectStandardError $learnErr -PassThru -WindowStyle Hidden
             Start-Sleep -Seconds 3   # let the trace session start before the "game" begins
             try { $row.replay_s = [double](Invoke-Replay $tag).total_s }
@@ -121,7 +123,7 @@ try {
         $wprOk = $true
         Invoke-Purge 'W'
         $learnOut = Join-Path $out 'W-learn.txt'; $learnErr = Join-Path $out 'W-learn.err.txt'
-        $lp = Start-Process -FilePath $Aster -ArgumentList @('learn', '--exe', 'python.exe', '--root', "`"$Root`"", '--seconds', "$Seconds", '--json') -RedirectStandardOutput $learnOut -RedirectStandardError $learnErr -PassThru -WindowStyle Hidden
+        $lp = Start-Process -FilePath $Aster -ArgumentList (@('learn', '--exe', 'python.exe', '--root', "`"$Root`"", '--seconds', "$Seconds", '--json') + $learnModeArgs) -RedirectStandardOutput $learnOut -RedirectStandardError $learnErr -PassThru -WindowStyle Hidden
         Start-Sleep -Seconds 3
         try { $summary.wpr_replay_s = [double](Invoke-Replay 'W').total_s } finally { if (-not $lp.WaitForExit(($Seconds + 30) * 1000)) { Stop-Process -Id $lp.Id -Force } }
         Log ("W (DiskIo capture): replay {0:N2} s" -f $summary.wpr_replay_s)

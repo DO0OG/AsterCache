@@ -1,14 +1,25 @@
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using AsterCache.Core.Json;
 
 namespace AsterCache.Core.Discovery;
 
-/// Steam appmanifest 한 개에서 읽은 값.
-public sealed record SteamApp(string AppId, string Name, string InstallDir);
+/// Steam appmanifest 한 개에서 읽은 값. InstalledDepots: depot id → manifest gid (gid 가 없는 depot 은 뺌), LastPlayed: 유닉스 초 (없으면 null).
+public sealed record SteamApp(string AppId, string Name, string InstallDir)
+{
+    private static readonly IReadOnlyDictionary<string, string> NoDepots = new Dictionary<string, string>();
 
-/// Epic 설치 항목 (*.item) 한 개에서 읽은 값. LaunchExecutable 은 없으면 빈 문자열.
-public sealed record EpicApp(string AppName, string DisplayName, string InstallLocation, string LaunchExecutable);
+    public IReadOnlyDictionary<string, string> InstalledDepots { get; init; } = NoDepots;
+
+    public long? LastPlayed { get; init; }
+}
+
+/// Epic 설치 항목 (*.item) 한 개에서 읽은 값. LaunchExecutable·AppVersionString 은 없으면 빈 문자열.
+public sealed record EpicApp(string AppName, string DisplayName, string InstallLocation, string LaunchExecutable)
+{
+    public string AppVersionString { get; init; } = string.Empty;
+}
 
 /// 런처 설치 목록 파일의 순수 파서와 설정용 이름 만들기. 파일·레지스트리에는 접근하지 않습니다.
 public static partial class LauncherManifests
@@ -63,7 +74,26 @@ public static partial class LauncherManifests
         }
 
         string name = s.GetValueOrDefault("name") as string ?? string.Empty;
-        return id == "228980" || NonGameNamePrefixes.Any(p => name.StartsWith(p, StringComparison.OrdinalIgnoreCase)) ? null : new SteamApp(id, name, dir);
+        if (id == "228980" || NonGameNamePrefixes.Any(p => name.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+        {
+            return null;
+        }
+
+        var app = new SteamApp(id, name, dir);
+        var depots = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (s.GetValueOrDefault("InstalledDepots") is Dictionary<string, object> ds)
+        {
+            foreach ((string depot, object v) in ds)
+            {
+                if (v is Dictionary<string, object> d && d.GetValueOrDefault("manifest") is string { Length: > 0 } gid)
+                {
+                    depots[depot] = gid;
+                }
+            }
+        }
+
+        long? last = s.GetValueOrDefault("LastPlayed") is string lp && long.TryParse(lp, NumberStyles.None, CultureInfo.InvariantCulture, out long t) && t > 0 ? t : null;
+        return depots.Count == 0 && last is null ? app : app with { InstalledDepots = depots, LastPlayed = last };
     }
 
     /// Epic *.item (JSON) → 항목. InstallLocation 이 없거나 게임이 아니면 (DLC, 소프트웨어) null.
@@ -77,7 +107,9 @@ public static partial class LauncherManifests
         string appName = Get(o, "AppName") ?? string.Empty;
         string main = Get(o, "MainGameAppName") ?? string.Empty;
         bool notGame = o.TryGetValue("AppCategories", out object? cats) && cats is List<object?> list && !list.Contains("games");
-        return notGame || (main.Length > 0 && main != appName) ? null : new EpicApp(appName, Get(o, "DisplayName") ?? string.Empty, loc, Get(o, "LaunchExecutable") ?? string.Empty);
+        return notGame || (main.Length > 0 && main != appName)
+            ? null
+            : new EpicApp(appName, Get(o, "DisplayName") ?? string.Empty, loc, Get(o, "LaunchExecutable") ?? string.Empty) { AppVersionString = Get(o, "AppVersionString") ?? string.Empty };
     }
 
     /// Riot product_settings.yaml 의 최상위 product_install_full_path 값 한 줄 (따옴표와 \uXXXX·\\ 이스케이프를 풀고 / 는 \ 로). 없거나 비면 null.

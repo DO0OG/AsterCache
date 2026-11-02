@@ -23,7 +23,7 @@ public static class AutoLearn
 
     /// 창·상한은 설정 (max_total_mib 0 = 자동), 허용 루트는 게임의 원점 루트, RAM 여유는 게임의 prewarm.min_free_ram_mib.
     public static ReadAhead Create(GameSettings g, LearnSettings s, long physicalRamBytes, LearnEnv env) => new(
-        new ReadAheadOptions([g.OriginRoot], Math.Max(1, (long)s.WindowMib) << 20, ReadAhead.ResolveMaxBytes(s.MaxTotalMib, physicalRamBytes), g.Prewarm.MinFreeRamMib, env.AvailableRamMib, Stream: s.Mode == LearnSettings.StreamMode),
+        new ReadAheadOptions([g.OriginRoot], Math.Max(1, (long)s.WindowMib) << 20, ReadAhead.ResolveMaxBytes(s.MaxTotalMib, physicalRamBytes), g.Prewarm.MinFreeRamMib, env.AvailableRamMib, Stream: s.Mode != LearnSettings.GapMode, Bounded: s.Mode is LearnSettings.BoundedMode or LearnSettings.AdaptiveMode, Adaptive: s.Mode == LearnSettings.AdaptiveMode, SaturationMbps: s.SaturationMbps),
         env.OpenIo());
 
     public static LiveListener Listener(ReadAhead engine) => new(engine.OnRead, engine.OnOpen, engine.OnLateRead);
@@ -32,5 +32,5 @@ public static class AutoLearn
 
     public static string Summary(ReadAheadStats st) => string.Create(
         CultureInfo.InvariantCulture,
-        $"{st.ReadAheadBytes >> 20} MiB read ahead, hit estimate {st.HitRatio * 100:F0}% of {st.GameReadBytes >> 20} MiB game reads, {st.ResolvedReads} resolved reads, {st.LateReads} late reads, {st.SequentialFiles} sequential files, {st.LowPriorityFailures} low I/O hint failures, gap_count {st.GapCount}, yielded_requests {st.YieldedRequests}, read_ahead_while_idle_bytes {st.ReadAheadWhileIdleBytes}");
+        $"{st.ReadAheadBytes >> 20} MiB read ahead, hit estimate {st.HitRatio * 100:F0}% of {st.GameReadBytes >> 20} MiB game reads, {st.ResolvedReads} resolved reads, {st.LateReads} late reads, {st.SequentialFiles} sequential files, {st.LowPriorityFailures} low I/O hint failures, gap_count {st.GapCount}, yielded_requests {st.YieldedRequests}, read_ahead_while_idle_bytes {st.ReadAheadWhileIdleBytes}, saturated_ms {st.SaturatedMs}, paused_requests {st.PausedRequests}");
 }

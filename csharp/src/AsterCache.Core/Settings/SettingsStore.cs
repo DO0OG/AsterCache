@@ -28,10 +28,12 @@ public static class SettingsStore
     private static readonly string[] AutoKeys =
     [
         "enabled", "discover", "trace", "relocate", "prewarm_recent", "idle_minutes", "trace_cap_seconds", "trace_cap_mib",
-        "max_relocations_per_day", "ignore_exes", "rewarm_minutes", "idle_seconds", "learn", "full_prewarm", "full_prewarm_max_mib", "engine_profiles",
+        "max_relocations_per_day", "ignore_exes", "rewarm_minutes", "idle_seconds", "learn", "full_prewarm", "full_prewarm_max_mib", "engine_profiles", "shared_profiles",
     ];
     private static readonly string[] PrewarmKeys = ["on_service_start", "trigger_exes", "min_free_ram_mib", "cooldown_min", "pin"];
-    private static readonly string[] LearnKeys = ["enabled", "window_mib", "max_total_mib", "mode"];
+    private static readonly string[] LearnKeys = ["enabled", "window_mib", "max_total_mib", "mode", "saturation_mbps"];
+    private static readonly string[] SharedProfilesKeys = ["enabled", "url"];
+    private const int MaxUrlChars = 2048;
 
     public static string DefaultDataDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "AsterCache");
 
@@ -154,6 +156,7 @@ public static class SettingsStore
             IdleMinutesSet = o.ContainsKey("idle_minutes") && !migrated,
             Migrated = migrated,
             Learn = learn,
+            SharedProfiles = o.TryGetValue("shared_profiles", out object? sp) ? ParseSharedProfiles(sp) : SharedProfilesSettings.Default,
             FullPrewarm = OptBool(o, "full_prewarm", d.FullPrewarm),
             FullPrewarmMaxMib = OptInt(o, "full_prewarm_max_mib", 0, 1048576, d.FullPrewarmMaxMib),
             EngineProfiles = OptBool(o, "engine_profiles", d.EngineProfiles),
@@ -168,8 +171,23 @@ public static class SettingsStore
         bool enabled = o.TryGetValue("enabled", out object? b) ? b as bool? ?? throw new SettingsException("auto.learn.enabled: true or false expected") : d.Enabled;
         int window = o.TryGetValue("window_mib", out object? wm) ? Int(wm, "auto.learn.window_mib", 1, 1024) : d.WindowMib;
         int total = o.TryGetValue("max_total_mib", out object? mt) ? Int(mt, "auto.learn.max_total_mib", 0, 65536) : d.MaxTotalMib;
-        string mode = o.TryGetValue("mode", out object? m) ? m is LearnSettings.StreamMode or LearnSettings.GapMode ? (string)m : throw new SettingsException("auto.learn.mode: \"stream\" or \"gap\" expected") : d.Mode;
-        return new LearnSettings(enabled, window, total) { Mode = mode };
+        string mode = o.TryGetValue("mode", out object? m) ? m is LearnSettings.StreamMode or LearnSettings.GapMode or LearnSettings.BoundedMode or LearnSettings.AdaptiveMode ? (string)m : throw new SettingsException("auto.learn.mode: \"stream\", \"gap\", \"bounded\" or \"adaptive\" expected") : d.Mode;
+        int saturation = o.TryGetValue("saturation_mbps", out object? sm) ? Int(sm, "auto.learn.saturation_mbps", 1, 10000) : d.SaturationMbps;
+        return new LearnSettings(enabled, window, total) { Mode = mode, SaturationMbps = saturation };
+    }
+
+    private static SharedProfilesSettings ParseSharedProfiles(object? v)
+    {
+        JObject o = v as JObject ?? throw new SettingsException("auto.shared_profiles: object expected");
+        Unknown(o, SharedProfilesKeys, "auto.shared_profiles");
+        SharedProfilesSettings d = SharedProfilesSettings.Default;
+        bool enabled = o.TryGetValue("enabled", out object? b) ? b as bool? ?? throw new SettingsException("auto.shared_profiles.enabled: true or false expected") : d.Enabled;
+        string url = o.TryGetValue("url", out object? u)
+            ? u is string s && s.Length <= MaxUrlChars && Uri.TryCreate(s, UriKind.Absolute, out Uri? uri) && uri.Scheme == Uri.UriSchemeHttps && uri.UserInfo.Length == 0
+                ? s
+                : throw new SettingsException("auto.shared_profiles.url: https URL expected")
+            : d.Url;
+        return new SharedProfilesSettings(enabled, url);
     }
 
     private static bool OptBool(JObject o, string key, bool dflt) =>

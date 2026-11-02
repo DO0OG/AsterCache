@@ -280,10 +280,17 @@ public sealed class GameProfile
         return bad;
     }
 
+    /// boot 트레이스 "source" 값: 수동 가져오기 (aster profile import) 와 공유 프로필 피드. 프리페치는 PrefetchFiles.BootSource.
+    public const string BootSourceImport = "import";
+    public const string BootSourceShared = "shared";
+
     /// 상대 경로 이벤트를 origin_root 아래 절대 경로 이벤트로 바꾸고 trace 파일 본문 (CRLF) 으로 직렬화합니다.
-    public static byte[] TraceBytes(IReadOnlyList<TraceEvent> events, string originRoot)
+    /// source 가 있으면 {"source": ..., "ranges": [...]} (프리페치 boot 와 같은 형식), 없으면 행 목록.
+    public static byte[] TraceBytes(IReadOnlyList<TraceEvent> events, string originRoot, string? source = null)
     {
-        string text = PyJson.Dumps(events.Select(e => (object?)(e with { Path = Absolute(e.Path, originRoot) }).ToJson()).ToList(), ensureAscii: false) + "\n";
+        List<object?> rows = events.Select(e => (object?)(e with { Path = Absolute(e.Path, originRoot) }).ToJson()).ToList();
+        object? body = source is null ? rows : new JObject { { "source", source }, { "ranges", rows } };
+        string text = PyJson.Dumps(body, ensureAscii: false) + "\n";
         return PyJson.Utf8.GetBytes(PyJson.ToCrlf(text));
     }
 

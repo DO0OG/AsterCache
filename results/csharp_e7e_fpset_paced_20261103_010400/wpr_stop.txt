@@ -1,0 +1,3 @@
+Press Ctrl+C to cancel the stop operation.
+The trace was successfully saved.
+

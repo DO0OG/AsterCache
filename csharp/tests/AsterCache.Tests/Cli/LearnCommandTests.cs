@@ -45,7 +45,7 @@ public sealed class LearnCommandTests : IDisposable
         Assert.Equal(0, code);
         var o = (JObject)JsonRead.Parse(text)!;
         Assert.Equal(
-            ["read_ahead_bytes", "game_read_bytes", "hit_ratio", "events", "events_lost", "resolved_reads", "late_reads", "unresolved_reads", "sequential_files", "hit_bytes", "gap_count", "yielded_requests", "read_ahead_while_idle_bytes", "out", "trace_events"],
+            ["read_ahead_bytes", "game_read_bytes", "hit_ratio", "events", "events_lost", "resolved_reads", "late_reads", "unresolved_reads", "sequential_files", "hit_bytes", "gap_count", "yielded_requests", "read_ahead_while_idle_bytes", "saturated_ms", "paused_requests", "out", "trace_events"],
             o.Select(kv => kv.Key));
         Assert.Equal(3 * Mib, o["read_ahead_bytes"]);
         Assert.Equal(8 * Mib, o["game_read_bytes"]);
@@ -59,6 +59,7 @@ public sealed class LearnCommandTests : IDisposable
         Assert.Equal(1L, o["gap_count"]); // 읽기가 끝난 뒤 틈 하나에서 3 MiB
         Assert.Equal(0L, o["yielded_requests"]);
         Assert.Equal(3 * Mib, o["read_ahead_while_idle_bytes"]);
+        Assert.Equal((0L, 0L), (o["saturated_ms"], o["paused_requests"]));
         Assert.Equal(trace, o["out"]);
         Assert.Equal(1L, o["trace_events"]);
         Assert.True(File.Exists(trace));
@@ -87,6 +88,44 @@ public sealed class LearnCommandTests : IDisposable
         var o = (JObject)JsonRead.Parse(text)!;
         Assert.Equal(76 * Mib, o["read_ahead_bytes"]); // 창 [7, 519) MiB 가 넉넉해서 게임 읽기 8 MiB × 1.5 + 64 MiB 상한에서 멈춤 (창 64 였다면 63 MiB)
         Assert.Equal(0L, o["gap_count"]); // 스트림 모드: 틈을 기다리지 않음
+    }
+
+    [Fact]
+    public void BoundedModeIsAcceptedAndCapsReadAheadAtGameReadsPlus32Mib()
+    {
+        _io.Sizes[GameFile] = 1000 * Mib;
+        LearnCommand.Deps = Deps(waitForReadAhead: 40 * Mib, neverSeen: false);
+
+        (int code, string text, _) = CliTests.Run("learn", "--exe", "foo.exe", "--root", @"D:\Games\Foo", "--mode", "bounded", "--seconds", "30", "--json");
+
+        Assert.Equal(0, code);
+        var o = (JObject)JsonRead.Parse(text)!;
+        Assert.Equal(8 * Mib + 32 * Mib, o["read_ahead_bytes"]); // 게임 읽기 8 MiB x 1.0 + 32 MiB (스트림이면 48 MiB 이상까지 감)
+    }
+
+    [Fact]
+    public void AdaptiveModeIsAcceptedAndKeepsTheBoundedCapUnlessTheSaturationThresholdIsLow()
+    {
+        _io.Sizes[GameFile] = 1000 * Mib;
+        LearnCommand.Deps = Deps(waitForReadAhead: 40 * Mib, neverSeen: false);
+
+        (int code, string text, _) = CliTests.Run("learn", "--exe", "foo.exe", "--root", @"D:\Games\Foo", "--mode", "adaptive", "--seconds", "30", "--json");
+
+        Assert.Equal(0, code);
+        var o = (JObject)JsonRead.Parse(text)!;
+        Assert.Equal((8 * Mib) + (32 * Mib), o["read_ahead_bytes"]); // 게임 읽기 8 MiB 가 500 ms 에 16 MiB/s: 기본 기준 80 미만
+        Assert.Equal(0L, o["saturated_ms"]);
+    }
+
+    [Fact]
+    public void SaturationMbpsReachesTheEngineAndSaturatedMsIsReported()
+    {
+        _io.Sizes[GameFile] = 1000 * Mib;
+        LearnCommand.Deps = Deps(waitForReadAhead: 40 * Mib, neverSeen: false);
+        (int code, string text, _) = CliTests.Run("learn", "--exe", "foo.exe", "--root", @"D:\Games\Foo", "--mode", "adaptive", "--saturation-mbps", "1", "--seconds", "30", "--json");
+        var o = (JObject)JsonRead.Parse(text)!;
+        Assert.Equal(0, code);
+        Assert.True((long)o["saturated_ms"]! > 0); // 8 MiB / 0.5 s 가 기준 1 MiB/s 이상이라 창이 비는 약 500 ms 동안 쉼
     }
 
     [Fact]
@@ -124,6 +163,9 @@ public sealed class LearnCommandTests : IDisposable
     [InlineData("learn", "--exe", "a.exe", "--root", @"D:\g", "--window-mib", "x")]
     [InlineData("learn", "--exe", "a.exe", "--root", @"D:\g", "--seq-runs", "0")]
     [InlineData("learn", "--exe", "a.exe", "--root", @"D:\g", "--gap-ms", "x")]
+    [InlineData("learn", "--exe", "a.exe", "--root", @"D:\g", "--saturation-mbps", "0")]
+    [InlineData("learn", "--exe", "a.exe", "--root", @"D:\g", "--saturation-mbps", "10001")]
+    [InlineData("learn", "--exe", "a.exe", "--root", @"D:\g", "--saturation-mbps", "x")]
     public void MissingOrMalformedArgumentsAreUsageErrors(params string[] args)
     {
         (int code, _, string err) = CliTests.Run(args);

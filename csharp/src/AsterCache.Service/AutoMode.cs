@@ -19,10 +19,11 @@ public sealed class AutoMode
     private readonly AutoTracer _tracer;
     private readonly AutoRelocator _relocator;
     private readonly Prewarmer? _prewarm;
+    private readonly ProfileFeed _feed;
     private volatile AsterSettings _settings;
     private DateTimeOffset? _summaryNext; // 재적용 틱 스레드에서만 씀
 
-    public AutoMode(ConfigEditor editor, AutoEnv env, AutoStatus status, ILog log, AsterSettings settings, Prewarmer? prewarm = null)
+    public AutoMode(ConfigEditor editor, AutoEnv env, AutoStatus status, ILog log, AsterSettings settings, Prewarmer? prewarm = null, IFeedHttp? feedHttp = null)
     {
         _env = env;
         _prewarm = prewarm;
@@ -30,6 +31,7 @@ public sealed class AutoMode
         _log = log;
         _settings = settings;
         _registry = new AutoRegistry(editor, env, status, log, () => _settings);
+        _feed = new ProfileFeed(Path.GetDirectoryName(editor.ConfigPath) ?? string.Empty, feedHttp ?? new HttpFeedClient(), log, env.Now, env.ExeFiles);
         _tracer = new AutoTracer(env, status, log, () => _settings);
         _relocator = new AutoRelocator(env, status, log, () => _settings, prewarm);
         if (prewarm is not null)
@@ -43,6 +45,8 @@ public sealed class AutoMode
     public AutoStatus Status { get; }
 
     public AutoRegistry Registry => _registry;
+
+    public ProfileFeed Feed => _feed;
 
     public AutoTracer Tracer => _tracer;
 
@@ -134,9 +138,16 @@ public sealed class AutoMode
         return [.. n < 0 ? [] : n > 0 ? ordered.Take(n) : ordered];
     }
 
+    /// 발견 한 번 + 공유 프로필 맞추기 (묶음은 첫 주기와 7 일마다 받음). 둘은 서로 독립이라 앞이 실패해도 뒤를 돌립니다.
+    public void DiscoverAndFeed()
+    {
+        Guard("discovery", () => _registry.DiscoverOnce());
+        Guard("shared profiles", () => _feed.Run(_settings, _registry.LastScan));
+    }
+
     /// 발견 (처음 1 분 뒤, 이후 6 시간마다), 휴리스틱 (2 초마다), 트레이스 감시 (1 초마다) 를 취소될 때까지 돌립니다.
     public Task RunAsync(CancellationToken ct) => Task.WhenAll(
-        Loop(FirstDiscoveryDelay, DiscoveryEvery, "discovery", () => _registry.DiscoverOnce(), ct),
+        Loop(FirstDiscoveryDelay, DiscoveryEvery, "discovery", DiscoverAndFeed, ct),
         Loop(HeuristicEvery, HeuristicEvery, "heuristic", _registry.HeuristicTick, ct),
         Loop(TraceEvery, TraceEvery, "trace", _tracer.Step, ct));
 

@@ -112,7 +112,7 @@ internal static class ProfileCommand
         var writes = new List<(string Path, byte[] Bytes)>();
         if (profile.RawTrace.Count > 0)
         {
-            writes.Add((rawPath, GameProfile.TraceBytes(profile.RawTrace, g.OriginRoot)));
+            writes.Add((rawPath, GameProfile.TraceBytes(profile.RawTrace, g.OriginRoot, GameProfile.BootSourceImport)));
         }
 
         if (profile.PrefetchTrace.Count > 0)

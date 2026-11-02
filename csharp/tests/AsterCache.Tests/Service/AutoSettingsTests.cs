@@ -357,11 +357,70 @@ public sealed class AutoSettingsTests
         Assert.Contains("auto.learn." + key, e.Message);
     }
 
+    [Fact]
+    public void LearnModeBoundedIsAccepted() =>
+        Assert.Equal(LearnSettings.BoundedMode, ParseAuto(new JsonObject { ["learn"] = new JsonObject { ["mode"] = "bounded" } }).Auto.Learn.Mode);
+
+    [Fact]
+    public void LearnModeAdaptiveAndSaturationMbpsAreParsedWithDefault80()
+    {
+        Assert.Equal(80, ParseAuto(new JsonObject { ["learn"] = new JsonObject() }).Auto.Learn.SaturationMbps);
+        Assert.Equal(LearnSettings.AdaptiveMode, ParseAuto(new JsonObject { ["learn"] = new JsonObject { ["mode"] = "adaptive" } }).Auto.Learn.Mode);
+        Assert.False(ParseAuto(new JsonObject()).Auto.Learn.Enabled);
+        Assert.Equal(LearnSettings.StreamMode, ParseAuto(new JsonObject()).Auto.Learn.Mode);
+        Assert.Equal(1, ParseAuto(new JsonObject { ["learn"] = new JsonObject { ["saturation_mbps"] = 1 } }).Auto.Learn.SaturationMbps);
+        Assert.Equal(10000, ParseAuto(new JsonObject { ["learn"] = new JsonObject { ["saturation_mbps"] = 10000 } }).Auto.Learn.SaturationMbps);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(10001)]
+    [InlineData(-5)]
+    public void LearnSaturationMbpsOutOfRangeIsRejected(int value)
+    {
+        var e = Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["learn"] = new JsonObject { ["saturation_mbps"] = value } }));
+        Assert.Contains("auto.learn.saturation_mbps", e.Message);
+        Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["learn"] = new JsonObject { ["saturation_mbps"] = "80" } }));
+    }
+
+    [Fact]
+    public void SharedProfilesDefaultToOnWithTheOfficialUrl()
+    {
+        SharedProfilesSettings d = ParseAuto(new JsonObject()).Auto.SharedProfiles;
+
+        Assert.True(d.Enabled);
+        Assert.Equal("https://github.com/DO0OG/AsterCache-profiles/releases/latest/download/profiles.zip", d.Url);
+        Assert.Equal(new SharedProfilesSettings(false, d.Url), ParseAuto(new JsonObject { ["shared_profiles"] = new JsonObject { ["enabled"] = false } }).Auto.SharedProfiles);
+        Assert.Equal(new SharedProfilesSettings(true, "https://example.org/p.zip"), ParseAuto(new JsonObject { ["shared_profiles"] = new JsonObject { ["url"] = "https://example.org/p.zip" } }).Auto.SharedProfiles);
+    }
+
+    [Theory]
+    [InlineData("http://example.org/p.zip")]
+    [InlineData("ftp://example.org/p.zip")]
+    [InlineData("file:///C:/p.zip")]
+    [InlineData("example.org/p.zip")]
+    [InlineData("https://user:pw@example.org/p.zip")]
+    [InlineData("")]
+    public void SharedProfilesUrlMustBeAnAbsoluteHttpsUrl(string url)
+    {
+        var e = Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["shared_profiles"] = new JsonObject { ["url"] = url } }));
+        Assert.Contains("auto.shared_profiles.url", e.Message);
+    }
+
+    [Fact]
+    public void SharedProfilesBadTypesAndUnknownKeysAreRejected()
+    {
+        Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["shared_profiles"] = new JsonObject { ["url"] = 1 } }));
+        Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["shared_profiles"] = new JsonObject { ["enabled"] = "yes" } }));
+        Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["shared_profiles"] = new JsonObject { ["bogus"] = 1 } }));
+        Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["shared_profiles"] = true }));
+    }
+
     [Theory]
     [InlineData("burst")]
     [InlineData("")]
     [InlineData("STREAM")]
-    public void LearnModeOtherThanStreamOrGapIsRejected(string mode)
+    public void LearnModeOtherThanStreamGapOrBoundedIsRejected(string mode)
     {
         var e = Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["learn"] = new JsonObject { ["mode"] = mode } }));
         Assert.Contains("auto.learn.mode", e.Message);

@@ -94,6 +94,12 @@ internal sealed class FakeWorld
     /// 폴더가 있는가 (거짓이면 드라이브가 분리된 것과 같음).
     public Func<string, bool> DirectoryExists { get; set; } = _ => true;
 
+    /// 휴리스틱 후보의 설치 폴더가 게임처럼 보이는가 (기본: 항상 참).
+    public Func<string, bool> LooksLikeGame { get; set; } = _ => true;
+
+    /// 설치 폴더 → 그 아래 exe 와 크기 (제거 목록 exe 재평가, exe 지문).
+    public Dictionary<string, List<(string Path, long Size)>> ExeFiles { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     public FakeTrace? Session { get; set; }
 
     public Exception? StartTraceThrows { get; set; }
@@ -117,6 +123,15 @@ internal sealed class FakeWorld
     public Func<IReadOnlyList<IReadOnlyList<TraceEvent>>, string, long, long, PlanFile> MakePlanAt { get; set; } = (_, _, _, _) => throw new InvalidOperationException("MakePlanAt");
 
     public List<long> PlanStarts { get; } = [];
+
+    /// 프리페치 기록 부트스트랩 (S2) 의 가짜: 시험이 boot 트레이스를 만든 것처럼 Files 를 바꾸고 만든 범위 수를 돌려줍니다 (기본 0 = 기록 없음).
+    public Func<GameSettings, int> PrefetchBoot { get; set; } = _ => 0;
+
+    /// PrefetchBoot 를 부른 게임 이름들.
+    public List<string> PrefetchCalls { get; } = [];
+
+    /// boot 트레이스 파일의 "source" 표시 (프리페치 기록으로 만든 것이면 "prefetch").
+    public Dictionary<string, string> TraceSources { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public Func<GameSettings, string?> ArchiveJournal { get; set; } = _ => null;
 
@@ -166,6 +181,8 @@ internal sealed class FakeWorld
         GameProcesses = _ => Procs,
         AnyRunning = exes => Running || exes.Any(RunningExes.Contains),
         DirectoryExists = p => DirectoryExists(p),
+        LooksLikeGame = p => LooksLikeGame(p),
+        ExeFiles = p => ExeFiles.TryGetValue(p, out List<(string Path, long Size)>? list) ? list : [],
         StartTrace = (_, listener) =>
         {
             TraceStarts++;
@@ -173,6 +190,12 @@ internal sealed class FakeWorld
             return StartTraceThrows is null ? Session ?? throw new InvalidOperationException("Session") : throw StartTraceThrows;
         },
         Canonicalize = e => e.ToList(),
+        PrefetchBoot = g =>
+        {
+            PrefetchCalls.Add(g.Name);
+            return PrefetchBoot(g);
+        },
+        TraceSource = p => TraceSources.GetValueOrDefault(p),
         LoadTrace = (_, _) => LoadSessions()[0],
         MakePlan = (sessions, origin, zoneMib) =>
         {

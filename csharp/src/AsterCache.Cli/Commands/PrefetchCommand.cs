@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using AsterCache.Core.Json;
 using AsterCache.Core.Prefetch;
 using AsterCache.Core.Trace;
@@ -28,6 +29,7 @@ internal static class PrefetchCommand
         new("seq-hint", ArgKind.Flag),
         new("method", Choices: Methods, Default: "pvm"),
         new("execute", ArgKind.Flag),
+        new("timing", ArgKind.Flag),
     ];
 
     public static int Run(ParsedArgs a, TextWriter o)
@@ -47,8 +49,10 @@ internal static class PrefetchCommand
             throw new ArgException("invalid budget/gap/speed/threads");
         }
 
+        StageTimes? times = a.Flag("timing") ? new StageTimes() : null;
+        var total = Stopwatch.StartNew();
         (List<ReadOp> ops, ScheduleInfo info) = Schedule(PathText.Str(trace), PathText.Str(root), a.Text("strategy")!, a.Int("budget-mib")!.Value,
-            a.Int("gap-kib")!.Value, a.Double("full-file-ratio")!.Value);
+            a.Int("gap-kib")!.Value, a.Double("full-file-ratio")!.Value, times);
         JObject json = InfoJson(a.Text("strategy")!, a.Flag("seq-hint"), info);
         if (a.Flag("execute"))
         {
@@ -67,6 +71,7 @@ internal static class PrefetchCommand
             json.Add("errors", s.Errors);
             json.Add("seconds", s.Seconds);
             json.Add("method", method);
+            times?.Add("stream_ms", s.Seconds * 1000);
         }
         else
         {
@@ -76,14 +81,68 @@ internal static class PrefetchCommand
             json.Add("ops", ops.Select(op => (object?)new List<object?> { op.Path, op.Offset, op.Length }).ToList());
         }
 
+        if (times is not null)
+        {
+            times.Add("total_in_command_ms", total.Elapsed.TotalMilliseconds);
+            json.Add("timing_ms", times.ToJson());
+        }
+
         return AsterCli.Emit(o, json);
     }
 
     /// 트레이스나 계획을 읽어 (루트 안의 파일만, 파일 크기로 자름) 스케줄합니다. launch 도 씁니다.
-    internal static (List<ReadOp> Ops, ScheduleInfo Info) Schedule(string trace, string root, string strategy, long budgetMib, long gapKib, double fullFileRatio)
+    internal static (List<ReadOp> Ops, ScheduleInfo Info) Schedule(string trace, string root, string strategy, long budgetMib, long gapKib, double fullFileRatio,
+        StageTimes? times = null)
     {
-        List<ReadRange> ranges = TraceLoader.LoadRanges(trace, root, RealPaths.Resolve).Select(e => new ReadRange(e.Path, e.Offset, e.Length)).ToList();
-        return Scheduler.Schedule(ranges, strategy, budgetMib * Scheduler.Mib, gapKib * 1024, FileLayout.Get, p => new FileInfo(p).Length, fullFileRatio);
+        Func<string, string?> resolve = times is null ? RealPaths.Resolve : p => times.Time("resolve", () => RealPaths.Resolve(p));
+        Func<string, FileLayoutInfo?> layout = times is null ? FileLayout.Get : p => times.Time("layout", () => FileLayout.Get(p));
+        Func<string, long> size = times is null ? p => new FileInfo(p).Length : p => times.Time("size", () => new FileInfo(p).Length);
+        var sw = Stopwatch.StartNew();
+        List<ReadRange> ranges = TraceLoader.LoadRanges(trace, root, resolve).Select(e => new ReadRange(e.Path, e.Offset, e.Length)).ToList();
+        times?.Add("load_ms", sw.Elapsed.TotalMilliseconds);
+        sw.Restart();
+        var result = Scheduler.Schedule(ranges, strategy, budgetMib * Scheduler.Mib, gapKib * 1024, layout, size, fullFileRatio);
+        times?.Add("schedule_ms", sw.Elapsed.TotalMilliseconds);
+        return result;
+    }
+
+    /// --timing: 단계별 시간 (load = 추적 읽기 + 경로 해석, schedule = 스케줄 + 배치 조회, stream = 읽기) 과 안쪽 호출의 합계·횟수.
+    internal sealed class StageTimes
+    {
+        private readonly OrderedDictionary<string, double> _ms = [];
+        private readonly Dictionary<string, long> _calls = [];
+
+        public void Add(string key, double ms) => _ms[key] = _ms.GetValueOrDefault(key) + ms;
+
+        public T Time<T>(string key, Func<T> work)
+        {
+            long t0 = Stopwatch.GetTimestamp();
+            try
+            {
+                return work();
+            }
+            finally
+            {
+                Add(key + "_ms", Stopwatch.GetElapsedTime(t0).TotalMilliseconds);
+                _calls[key + "_calls"] = _calls.GetValueOrDefault(key + "_calls") + 1;
+            }
+        }
+
+        public JObject ToJson()
+        {
+            var j = new JObject();
+            foreach ((string k, double v) in _ms)
+            {
+                j.Add(k, Math.Round(v, 1));
+            }
+
+            foreach ((string k, long v) in _calls)
+            {
+                j.Add(k, v);
+            }
+
+            return j;
+        }
     }
 
     internal static JObject InfoJson(string strategy, bool seqHint, ScheduleInfo info) => new()

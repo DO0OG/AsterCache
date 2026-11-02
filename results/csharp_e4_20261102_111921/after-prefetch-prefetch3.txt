@@ -1,0 +1,2 @@
+﻿{"strategy":"physical","seq_hint":false,"fallback":false,"layout_ok_files":20,"layout_files":20,"full_files":12,"gap_bytes":0,"bytes":2047714320,"requests":1677,"errors":0,"seconds":15.2105,"method":"pvm"}
+

@@ -1,0 +1,588 @@
+{"type": "header", "plan_sha": "6cfb5fbfbe910ad05fb22990ed50e13da56593859cea771b4f36cdcbbc521784", "zone_start_lcn": 75528740, "cluster_bytes": 4096, "started": 1793586117.9638004}
+{"type": "file", "path": "D:\\Frostpunk\\sounds.dat", "sha_before": "f224591293ad508055674c5cc226bf3997f8a0565e7fd47e2a29594b750e0f42"}
+{"type": "step", "idx": 0, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 115952, "clusters": 96, "target_lcn": 75528740, "from": [[115952, 114091653, 96]]}
+{"type": "step", "idx": 0, "state": "done", "reason": null}
+{"type": "step", "idx": 1, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 83424, "clusters": 64, "target_lcn": 75528836, "from": [[83424, 114091749, 64]]}
+{"type": "step", "idx": 1, "state": "done", "reason": null}
+{"type": "step", "idx": 2, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 116096, "clusters": 32, "target_lcn": 75528900, "from": [[116096, 114091813, 32]]}
+{"type": "step", "idx": 2, "state": "done", "reason": null}
+{"type": "step", "idx": 3, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 83504, "clusters": 64, "target_lcn": 75528932, "from": [[83504, 114091845, 64]]}
+{"type": "step", "idx": 3, "state": "done", "reason": null}
+{"type": "step", "idx": 4, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 116160, "clusters": 48, "target_lcn": 75528996, "from": [[116160, 114091909, 48]]}
+{"type": "step", "idx": 4, "state": "done", "reason": null}
+{"type": "file", "path": "D:\\Frostpunk\\textures-s3.dat", "sha_before": "de629b728b07c7fde019f310a0353960f9abefafe419412432250ac4e8713f4d"}
+{"type": "step", "idx": 5, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 989600, "clusters": 1424, "target_lcn": 75529044, "from": [[989600, 114140013, 1424]]}
+{"type": "step", "idx": 5, "state": "done", "reason": null}
+{"type": "step", "idx": 6, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 867568, "clusters": 80, "target_lcn": 75530468, "from": [[867568, 114156877, 80]]}
+{"type": "step", "idx": 6, "state": "done", "reason": null}
+{"type": "step", "idx": 7, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 727344, "clusters": 32, "target_lcn": 75530548, "from": [[727344, 114156957, 32]]}
+{"type": "step", "idx": 7, "state": "done", "reason": null}
+{"type": "step", "idx": 8, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 720784, "clusters": 48, "target_lcn": 75530580, "from": [[720784, 114156989, 48]]}
+{"type": "step", "idx": 8, "state": "done", "reason": null}
+{"type": "step", "idx": 9, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 721424, "clusters": 48, "target_lcn": 75530628, "from": [[721424, 114157037, 48]]}
+{"type": "step", "idx": 9, "state": "done", "reason": null}
+{"type": "step", "idx": 10, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 721536, "clusters": 64, "target_lcn": 75530676, "from": [[721536, 114157085, 64]]}
+{"type": "step", "idx": 10, "state": "done", "reason": null}
+{"type": "step", "idx": 11, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 722368, "clusters": 48, "target_lcn": 75530740, "from": [[722368, 114157149, 48]]}
+{"type": "step", "idx": 11, "state": "done", "reason": null}
+{"type": "step", "idx": 12, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 721088, "clusters": 64, "target_lcn": 75530788, "from": [[721088, 114157197, 64]]}
+{"type": "step", "idx": 12, "state": "done", "reason": null}
+{"type": "step", "idx": 13, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 721296, "clusters": 48, "target_lcn": 75530852, "from": [[721296, 114157261, 48]]}
+{"type": "step", "idx": 13, "state": "done", "reason": null}
+{"type": "step", "idx": 14, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 722480, "clusters": 64, "target_lcn": 75530900, "from": [[722480, 114157309, 64]]}
+{"type": "step", "idx": 14, "state": "done", "reason": null}
+{"type": "step", "idx": 15, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 727392, "clusters": 48, "target_lcn": 75530964, "from": [[727392, 114157373, 48]]}
+{"type": "step", "idx": 15, "state": "done", "reason": null}
+{"type": "step", "idx": 16, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 720672, "clusters": 96, "target_lcn": 75531012, "from": [[720672, 114157421, 96]]}
+{"type": "step", "idx": 16, "state": "done", "reason": null}
+{"type": "step", "idx": 17, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 721472, "clusters": 64, "target_lcn": 75531108, "from": [[721472, 114157517, 64]]}
+{"type": "step", "idx": 17, "state": "done", "reason": null}
+{"type": "step", "idx": 18, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 722272, "clusters": 96, "target_lcn": 75531172, "from": [[722272, 114157581, 96]]}
+{"type": "step", "idx": 18, "state": "done", "reason": null}
+{"type": "step", "idx": 19, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 722416, "clusters": 64, "target_lcn": 75531268, "from": [[722416, 114157677, 64]]}
+{"type": "step", "idx": 19, "state": "done", "reason": null}
+{"type": "step", "idx": 20, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 721152, "clusters": 80, "target_lcn": 75531332, "from": [[721152, 114157741, 80]]}
+{"type": "step", "idx": 20, "state": "done", "reason": null}
+{"type": "step", "idx": 21, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 721344, "clusters": 80, "target_lcn": 75531412, "from": [[721344, 114157821, 80]]}
+{"type": "step", "idx": 21, "state": "done", "reason": null}
+{"type": "step", "idx": 22, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 723600, "clusters": 96, "target_lcn": 75531492, "from": [[723600, 114157901, 96]]}
+{"type": "step", "idx": 22, "state": "done", "reason": null}
+{"type": "step", "idx": 23, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 867424, "clusters": 144, "target_lcn": 75531588, "from": [[867424, 114157997, 144]]}
+{"type": "step", "idx": 23, "state": "done", "reason": null}
+{"type": "step", "idx": 24, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 867760, "clusters": 512, "target_lcn": 75531732, "from": [[867760, 114158141, 512]]}
+{"type": "step", "idx": 24, "state": "done", "reason": null}
+{"type": "step", "idx": 25, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 877856, "clusters": 96, "target_lcn": 75532244, "from": [[877856, 114158653, 96]]}
+{"type": "step", "idx": 25, "state": "done", "reason": null}
+{"type": "step", "idx": 26, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 867648, "clusters": 112, "target_lcn": 75532340, "from": [[867648, 114158749, 112]]}
+{"type": "step", "idx": 26, "state": "done", "reason": null}
+{"type": "step", "idx": 27, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 866816, "clusters": 608, "target_lcn": 75532452, "from": [[866816, 114158861, 608]]}
+{"type": "step", "idx": 27, "state": "done", "reason": null}
+{"type": "file", "path": "D:\\Frostpunk\\common.dat", "sha_before": "01f94391efb2386c9bc8c4646af1d665873e6e68c805a64c2b5455f81959472b"}
+{"type": "step", "idx": 28, "state": "planned", "path": "D:\\Frostpunk\\common.dat", "vcn": 2960, "clusters": 16, "target_lcn": 75533060, "from": [[2960, 114159469, 16]]}
+{"type": "step", "idx": 28, "state": "done", "reason": null}
+{"type": "step", "idx": 29, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 255728, "clusters": 352, "target_lcn": 75533076, "from": [[255728, 114159485, 352]]}
+{"type": "step", "idx": 29, "state": "done", "reason": null}
+{"type": "file", "path": "D:\\Frostpunk\\animations.dat", "sha_before": "7f76e8bf28d1a11026d5af838992f683394042b62ef29472bf792b55d63bf7e9"}
+{"type": "step", "idx": 30, "state": "planned", "path": "D:\\Frostpunk\\animations.dat", "vcn": 992, "clusters": 16, "target_lcn": 75533428, "from": [[992, 114159837, 16]]}
+{"type": "step", "idx": 30, "state": "done", "reason": null}
+{"type": "step", "idx": 31, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 417808, "clusters": 208, "target_lcn": 75533444, "from": [[417808, 114159853, 208]]}
+{"type": "step", "idx": 31, "state": "done", "reason": null}
+{"type": "file", "path": "D:\\Frostpunk\\templates.dat", "sha_before": "6df62f551fe7779f785e1a2e6f40c7cd83d3c1b5b9d265ce9253fa919c5a1421"}
+{"type": "step", "idx": 32, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 73072, "clusters": 96, "target_lcn": 75533652, "from": [[73072, 114160061, 96]]}
+{"type": "step", "idx": 32, "state": "done", "reason": null}
+{"type": "step", "idx": 33, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 67968, "clusters": 64, "target_lcn": 75533748, "from": [[67968, 114160157, 64]]}
+{"type": "step", "idx": 33, "state": "done", "reason": null}
+{"type": "step", "idx": 34, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 67568, "clusters": 48, "target_lcn": 75533812, "from": [[67568, 114160221, 48]]}
+{"type": "step", "idx": 34, "state": "done", "reason": null}
+{"type": "step", "idx": 35, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 32320, "clusters": 16, "target_lcn": 75533860, "from": [[32320, 114160269, 16]]}
+{"type": "step", "idx": 35, "state": "done", "reason": null}
+{"type": "step", "idx": 36, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 67296, "clusters": 272, "target_lcn": 75533876, "from": [[67296, 114160285, 272]]}
+{"type": "step", "idx": 36, "state": "done", "reason": null}
+{"type": "step", "idx": 37, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 72416, "clusters": 224, "target_lcn": 75534148, "from": [[72416, 114160557, 224]]}
+{"type": "step", "idx": 37, "state": "done", "reason": null}
+{"type": "step", "idx": 38, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 75904, "clusters": 48, "target_lcn": 75534372, "from": [[75904, 114160781, 48]]}
+{"type": "step", "idx": 38, "state": "done", "reason": null}
+{"type": "step", "idx": 39, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 723888, "clusters": 80, "target_lcn": 75534420, "from": [[723888, 114192829, 80]]}
+{"type": "step", "idx": 39, "state": "done", "reason": null}
+{"type": "step", "idx": 40, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 724352, "clusters": 48, "target_lcn": 75534500, "from": [[724352, 114192909, 48]]}
+{"type": "step", "idx": 40, "state": "done", "reason": null}
+{"type": "step", "idx": 41, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 724080, "clusters": 96, "target_lcn": 75534548, "from": [[724080, 114192957, 96]]}
+{"type": "step", "idx": 41, "state": "done", "reason": null}
+{"type": "step", "idx": 42, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 724000, "clusters": 80, "target_lcn": 75534644, "from": [[724000, 114193053, 80]]}
+{"type": "step", "idx": 42, "state": "done", "reason": null}
+{"type": "step", "idx": 43, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 724464, "clusters": 64, "target_lcn": 75534724, "from": [[724464, 114193133, 64]]}
+{"type": "step", "idx": 43, "state": "done", "reason": null}
+{"type": "step", "idx": 44, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 727568, "clusters": 96, "target_lcn": 75534788, "from": [[727568, 114193197, 96]]}
+{"type": "step", "idx": 44, "state": "done", "reason": null}
+{"type": "step", "idx": 45, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 727680, "clusters": 96, "target_lcn": 75534884, "from": [[727680, 114193293, 96]]}
+{"type": "step", "idx": 45, "state": "done", "reason": null}
+{"type": "step", "idx": 46, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 915984, "clusters": 64, "target_lcn": 75534980, "from": [[915984, 114193389, 64]]}
+{"type": "step", "idx": 46, "state": "done", "reason": null}
+{"type": "step", "idx": 47, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 915808, "clusters": 176, "target_lcn": 75535044, "from": [[915808, 114193453, 176]]}
+{"type": "step", "idx": 47, "state": "done", "reason": null}
+{"type": "step", "idx": 48, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1367744, "clusters": 32, "target_lcn": 75535220, "from": [[1367744, 114198669, 32]]}
+{"type": "step", "idx": 48, "state": "done", "reason": null}
+{"type": "step", "idx": 49, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1339008, "clusters": 1120, "target_lcn": 75535252, "from": [[1339008, 114198701, 16], [1339024, 149878005, 1104]]}
+{"type": "step", "idx": 49, "state": "done", "reason": null}
+{"type": "step", "idx": 50, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1317504, "clusters": 128, "target_lcn": 75536372, "from": [[1317504, 149856485, 128]]}
+{"type": "step", "idx": 50, "state": "done", "reason": null}
+{"type": "step", "idx": 51, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1639616, "clusters": 16, "target_lcn": 75536500, "from": [[1639616, 180668597, 16]]}
+{"type": "step", "idx": 51, "state": "done", "reason": null}
+{"type": "step", "idx": 52, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1533296, "clusters": 32, "target_lcn": 75536516, "from": [[1533296, 180562277, 32]]}
+{"type": "step", "idx": 52, "state": "done", "reason": null}
+{"type": "step", "idx": 53, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1533344, "clusters": 16, "target_lcn": 75536548, "from": [[1533344, 180562325, 16]]}
+{"type": "step", "idx": 53, "state": "done", "reason": null}
+{"type": "step", "idx": 54, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1479728, "clusters": 16, "target_lcn": 75536564, "from": [[1479728, 180508709, 16]]}
+{"type": "step", "idx": 54, "state": "done", "reason": null}
+{"type": "step", "idx": 55, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1246144, "clusters": 192, "target_lcn": 75536580, "from": [[1246144, 149785125, 192]]}
+{"type": "step", "idx": 55, "state": "done", "reason": null}
+{"type": "step", "idx": 56, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1639024, "clusters": 32, "target_lcn": 75536772, "from": [[1639024, 180668005, 32]]}
+{"type": "step", "idx": 56, "state": "done", "reason": null}
+{"type": "step", "idx": 57, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1634352, "clusters": 16, "target_lcn": 75536804, "from": [[1634352, 180663333, 16]]}
+{"type": "step", "idx": 57, "state": "done", "reason": null}
+{"type": "step", "idx": 58, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1638976, "clusters": 32, "target_lcn": 75536820, "from": [[1638976, 180667957, 32]]}
+{"type": "step", "idx": 58, "state": "done", "reason": null}
+{"type": "step", "idx": 59, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1638880, "clusters": 96, "target_lcn": 75536852, "from": [[1638880, 180667861, 96]]}
+{"type": "step", "idx": 59, "state": "done", "reason": null}
+{"type": "step", "idx": 60, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1634416, "clusters": 32, "target_lcn": 75536948, "from": [[1634416, 180663397, 32]]}
+{"type": "step", "idx": 60, "state": "done", "reason": null}
+{"type": "step", "idx": 61, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1638240, "clusters": 16, "target_lcn": 75536980, "from": [[1638240, 180667221, 16]]}
+{"type": "step", "idx": 61, "state": "done", "reason": null}
+{"type": "step", "idx": 62, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1636992, "clusters": 800, "target_lcn": 75536996, "from": [[1636992, 180665973, 800]]}
+{"type": "step", "idx": 62, "state": "done", "reason": null}
+{"type": "step", "idx": 63, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1639840, "clusters": 96, "target_lcn": 75537796, "from": [[1639840, 180668821, 96]]}
+{"type": "step", "idx": 63, "state": "done", "reason": null}
+{"type": "step", "idx": 64, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 93120, "clusters": 16, "target_lcn": 75537892, "from": [[93120, 177971046, 16]]}
+{"type": "step", "idx": 64, "state": "done", "reason": null}
+{"type": "step", "idx": 65, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 93072, "clusters": 16, "target_lcn": 75537908, "from": [[93072, 177970998, 16]]}
+{"type": "step", "idx": 65, "state": "done", "reason": null}
+{"type": "step", "idx": 66, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1640144, "clusters": 256, "target_lcn": 75537924, "from": [[1640144, 180669125, 256]]}
+{"type": "step", "idx": 66, "state": "done", "reason": null}
+{"type": "step", "idx": 67, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1318320, "clusters": 64, "target_lcn": 75538180, "from": [[1318320, 149857301, 64]]}
+{"type": "step", "idx": 67, "state": "done", "reason": null}
+{"type": "step", "idx": 68, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1640128, "clusters": 16, "target_lcn": 75538244, "from": [[1640128, 180669109, 16]]}
+{"type": "step", "idx": 68, "state": "done", "reason": null}
+{"type": "step", "idx": 69, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1641328, "clusters": 448, "target_lcn": 75538260, "from": [[1641328, 180670309, 448]]}
+{"type": "step", "idx": 69, "state": "done", "reason": null}
+{"type": "step", "idx": 70, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1640400, "clusters": 304, "target_lcn": 75538708, "from": [[1640400, 180669381, 304]]}
+{"type": "step", "idx": 70, "state": "done", "reason": null}
+{"type": "step", "idx": 71, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 424400, "clusters": 48, "target_lcn": 75539012, "from": [[424400, 153826989, 48]]}
+{"type": "step", "idx": 71, "state": "done", "reason": null}
+{"type": "step", "idx": 72, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1637792, "clusters": 64, "target_lcn": 75539060, "from": [[1637792, 180666773, 64]]}
+{"type": "step", "idx": 72, "state": "done", "reason": null}
+{"type": "step", "idx": 73, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 93088, "clusters": 16, "target_lcn": 75539124, "from": [[93088, 177971014, 16]]}
+{"type": "step", "idx": 73, "state": "done", "reason": null}
+{"type": "step", "idx": 74, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1480736, "clusters": 32, "target_lcn": 75539140, "from": [[1480736, 180509717, 32]]}
+{"type": "step", "idx": 74, "state": "done", "reason": null}
+{"type": "step", "idx": 75, "state": "planned", "path": "D:\\Frostpunk\\common.dat", "vcn": 146288, "clusters": 96, "target_lcn": 75539172, "from": [[146288, 158746333, 96]]}
+{"type": "step", "idx": 75, "state": "done", "reason": null}
+{"type": "step", "idx": 76, "state": "planned", "path": "D:\\Frostpunk\\common.dat", "vcn": 144768, "clusters": 176, "target_lcn": 75539268, "from": [[144768, 158744813, 176]]}
+{"type": "step", "idx": 76, "state": "done", "reason": null}
+{"type": "step", "idx": 77, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1638464, "clusters": 192, "target_lcn": 75539444, "from": [[1638464, 180667445, 192]]}
+{"type": "step", "idx": 77, "state": "done", "reason": null}
+{"type": "step", "idx": 78, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 92960, "clusters": 32, "target_lcn": 75539636, "from": [[92960, 177970886, 32]]}
+{"type": "step", "idx": 78, "state": "done", "reason": null}
+{"type": "step", "idx": 79, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1533536, "clusters": 16, "target_lcn": 75539668, "from": [[1533536, 180562517, 16]]}
+{"type": "step", "idx": 79, "state": "done", "reason": null}
+{"type": "step", "idx": 80, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1533360, "clusters": 176, "target_lcn": 75539684, "from": [[1533360, 180562341, 176]]}
+{"type": "step", "idx": 80, "state": "done", "reason": null}
+{"type": "step", "idx": 81, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1533776, "clusters": 512, "target_lcn": 75539860, "from": [[1533776, 180562757, 512]]}
+{"type": "step", "idx": 81, "state": "done", "reason": null}
+{"type": "step", "idx": 82, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1638784, "clusters": 96, "target_lcn": 75540372, "from": [[1638784, 180667765, 96]]}
+{"type": "step", "idx": 82, "state": "done", "reason": null}
+{"type": "step", "idx": 83, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1634272, "clusters": 64, "target_lcn": 75540468, "from": [[1634272, 180663253, 64]]}
+{"type": "step", "idx": 83, "state": "done", "reason": null}
+{"type": "step", "idx": 84, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1097648, "clusters": 16, "target_lcn": 75540532, "from": [[1097648, 149636629, 16]]}
+{"type": "step", "idx": 84, "state": "done", "reason": null}
+{"type": "step", "idx": 85, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1102928, "clusters": 48, "target_lcn": 75540548, "from": [[1102928, 149641909, 48]]}
+{"type": "step", "idx": 85, "state": "done", "reason": null}
+{"type": "step", "idx": 86, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1123168, "clusters": 16, "target_lcn": 75540596, "from": [[1123168, 149662149, 16]]}
+{"type": "step", "idx": 86, "state": "done", "reason": null}
+{"type": "step", "idx": 87, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1533552, "clusters": 32, "target_lcn": 75540612, "from": [[1533552, 180562533, 32]]}
+{"type": "step", "idx": 87, "state": "done", "reason": null}
+{"type": "step", "idx": 88, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1634448, "clusters": 576, "target_lcn": 75540644, "from": [[1634448, 180663429, 576]]}
+{"type": "step", "idx": 88, "state": "done", "reason": null}
+{"type": "step", "idx": 89, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1639312, "clusters": 48, "target_lcn": 75541220, "from": [[1639312, 180668293, 48]]}
+{"type": "step", "idx": 89, "state": "done", "reason": null}
+{"type": "step", "idx": 90, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 544, "clusters": 16, "target_lcn": 75541268, "from": [[544, 69518572, 16]]}
+{"type": "step", "idx": 90, "state": "done", "reason": null}
+{"type": "step", "idx": 91, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1085056, "clusters": 688, "target_lcn": 75541284, "from": [[1085056, 149624037, 688]]}
+{"type": "step", "idx": 91, "state": "done", "reason": null}
+{"type": "step", "idx": 92, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1084896, "clusters": 64, "target_lcn": 75541972, "from": [[1084896, 149623877, 64]]}
+{"type": "step", "idx": 92, "state": "done", "reason": null}
+{"type": "step", "idx": 93, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1085840, "clusters": 656, "target_lcn": 75542036, "from": [[1085840, 149624821, 656]]}
+{"type": "step", "idx": 93, "state": "done", "reason": null}
+{"type": "step", "idx": 94, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1085744, "clusters": 96, "target_lcn": 75542692, "from": [[1085744, 149624725, 96]]}
+{"type": "step", "idx": 94, "state": "done", "reason": null}
+{"type": "step", "idx": 95, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1086496, "clusters": 128, "target_lcn": 75542788, "from": [[1086496, 149625477, 128]]}
+{"type": "step", "idx": 95, "state": "done", "reason": null}
+{"type": "step", "idx": 96, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1084800, "clusters": 96, "target_lcn": 75542916, "from": [[1084800, 149623781, 96]]}
+{"type": "step", "idx": 96, "state": "done", "reason": null}
+{"type": "step", "idx": 97, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1084960, "clusters": 96, "target_lcn": 75543012, "from": [[1084960, 149623941, 96]]}
+{"type": "step", "idx": 97, "state": "done", "reason": null}
+{"type": "step", "idx": 98, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1053728, "clusters": 400, "target_lcn": 75543108, "from": [[1053728, 163775025, 400]]}
+{"type": "step", "idx": 98, "state": "done", "reason": null}
+{"type": "step", "idx": 99, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 92912, "clusters": 16, "target_lcn": 75543508, "from": [[92912, 177970838, 16]]}
+{"type": "step", "idx": 99, "state": "done", "reason": null}
+{"type": "step", "idx": 100, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1317904, "clusters": 32, "target_lcn": 75543524, "from": [[1317904, 149856885, 32]]}
+{"type": "step", "idx": 100, "state": "done", "reason": null}
+{"type": "step", "idx": 101, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 93056, "clusters": 16, "target_lcn": 75543556, "from": [[93056, 177970982, 16]]}
+{"type": "step", "idx": 101, "state": "done", "reason": null}
+{"type": "step", "idx": 102, "state": "planned", "path": "D:\\Frostpunk\\common.dat", "vcn": 3616, "clusters": 16, "target_lcn": 75543572, "from": [[3616, 14813935, 16]]}
+{"type": "step", "idx": 102, "state": "done", "reason": null}
+{"type": "step", "idx": 103, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 93040, "clusters": 16, "target_lcn": 75543588, "from": [[93040, 177970966, 16]]}
+{"type": "step", "idx": 103, "state": "done", "reason": null}
+{"type": "step", "idx": 104, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1637856, "clusters": 80, "target_lcn": 75543604, "from": [[1637856, 180666837, 80]]}
+{"type": "step", "idx": 104, "state": "done", "reason": null}
+{"type": "step", "idx": 105, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1070752, "clusters": 80, "target_lcn": 75543684, "from": [[1070752, 149609733, 80]]}
+{"type": "step", "idx": 105, "state": "done", "reason": null}
+{"type": "step", "idx": 106, "state": "planned", "path": "D:\\Frostpunk\\common.dat", "vcn": 144944, "clusters": 272, "target_lcn": 75543764, "from": [[144944, 158744989, 272]]}
+{"type": "step", "idx": 106, "state": "done", "reason": null}
+{"type": "step", "idx": 107, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 93104, "clusters": 16, "target_lcn": 75544036, "from": [[93104, 177971030, 16]]}
+{"type": "step", "idx": 107, "state": "done", "reason": null}
+{"type": "step", "idx": 108, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 362832, "clusters": 144, "target_lcn": 75544052, "from": [[362832, 153765421, 144]]}
+{"type": "step", "idx": 108, "state": "done", "reason": null}
+{"type": "step", "idx": 109, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 8464, "clusters": 560, "target_lcn": 75544196, "from": [[8464, 177980863, 560]]}
+{"type": "step", "idx": 109, "state": "done", "reason": null}
+{"type": "step", "idx": 110, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1487584, "clusters": 160, "target_lcn": 75544756, "from": [[1487584, 180516565, 160]]}
+{"type": "step", "idx": 110, "state": "done", "reason": null}
+{"type": "step", "idx": 111, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1487136, "clusters": 112, "target_lcn": 75544916, "from": [[1487136, 180516117, 112]]}
+{"type": "step", "idx": 111, "state": "done", "reason": null}
+{"type": "step", "idx": 112, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 93136, "clusters": 32, "target_lcn": 75545028, "from": [[93136, 177971062, 32]]}
+{"type": "step", "idx": 112, "state": "done", "reason": null}
+{"type": "step", "idx": 113, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1032464, "clusters": 16, "target_lcn": 75545060, "from": [[1032464, 163753761, 16]]}
+{"type": "step", "idx": 113, "state": "done", "reason": null}
+{"type": "step", "idx": 114, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1032512, "clusters": 32, "target_lcn": 75545076, "from": [[1032512, 163753809, 32]]}
+{"type": "step", "idx": 114, "state": "done", "reason": null}
+{"type": "step", "idx": 115, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1032576, "clusters": 48, "target_lcn": 75545108, "from": [[1032576, 163753873, 48]]}
+{"type": "step", "idx": 115, "state": "done", "reason": null}
+{"type": "step", "idx": 116, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1033904, "clusters": 32, "target_lcn": 75545156, "from": [[1033904, 163755201, 32]]}
+{"type": "step", "idx": 116, "state": "done", "reason": null}
+{"type": "step", "idx": 117, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1032320, "clusters": 80, "target_lcn": 75545188, "from": [[1032320, 163753617, 80]]}
+{"type": "step", "idx": 117, "state": "done", "reason": null}
+{"type": "step", "idx": 118, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1032416, "clusters": 32, "target_lcn": 75545268, "from": [[1032416, 163753713, 32]]}
+{"type": "step", "idx": 118, "state": "done", "reason": null}
+{"type": "step", "idx": 119, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1032304, "clusters": 16, "target_lcn": 75545300, "from": [[1032304, 163753601, 16]]}
+{"type": "step", "idx": 119, "state": "done", "reason": null}
+{"type": "step", "idx": 120, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1032400, "clusters": 16, "target_lcn": 75545316, "from": [[1032400, 163753697, 16]]}
+{"type": "step", "idx": 120, "state": "done", "reason": null}
+{"type": "step", "idx": 121, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1032480, "clusters": 16, "target_lcn": 75545332, "from": [[1032480, 163753777, 16]]}
+{"type": "step", "idx": 121, "state": "done", "reason": null}
+{"type": "step", "idx": 122, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1032272, "clusters": 32, "target_lcn": 75545348, "from": [[1032272, 163753569, 32]]}
+{"type": "step", "idx": 122, "state": "done", "reason": null}
+{"type": "step", "idx": 123, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1030064, "clusters": 32, "target_lcn": 75545380, "from": [[1030064, 163751361, 32]]}
+{"type": "step", "idx": 123, "state": "done", "reason": null}
+{"type": "step", "idx": 124, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1031104, "clusters": 32, "target_lcn": 75545412, "from": [[1031104, 163752401, 32]]}
+{"type": "step", "idx": 124, "state": "done", "reason": null}
+{"type": "step", "idx": 125, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1032448, "clusters": 16, "target_lcn": 75545444, "from": [[1032448, 163753745, 16]]}
+{"type": "step", "idx": 125, "state": "done", "reason": null}
+{"type": "step", "idx": 126, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1032544, "clusters": 16, "target_lcn": 75545460, "from": [[1032544, 163753841, 16]]}
+{"type": "step", "idx": 126, "state": "done", "reason": null}
+{"type": "step", "idx": 127, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1032496, "clusters": 16, "target_lcn": 75545476, "from": [[1032496, 163753793, 16]]}
+{"type": "step", "idx": 127, "state": "done", "reason": null}
+{"type": "step", "idx": 128, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1032560, "clusters": 16, "target_lcn": 75545492, "from": [[1032560, 163753857, 16]]}
+{"type": "step", "idx": 128, "state": "done", "reason": null}
+{"type": "step", "idx": 129, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1639136, "clusters": 16, "target_lcn": 75545508, "from": [[1639136, 180668117, 16]]}
+{"type": "step", "idx": 129, "state": "done", "reason": null}
+{"type": "step", "idx": 130, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1033936, "clusters": 16, "target_lcn": 75545524, "from": [[1033936, 163755233, 16]]}
+{"type": "step", "idx": 130, "state": "done", "reason": null}
+{"type": "step", "idx": 131, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1030048, "clusters": 16, "target_lcn": 75545540, "from": [[1030048, 163751345, 16]]}
+{"type": "step", "idx": 131, "state": "done", "reason": null}
+{"type": "step", "idx": 132, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1031136, "clusters": 16, "target_lcn": 75545556, "from": [[1031136, 163752433, 16]]}
+{"type": "step", "idx": 132, "state": "done", "reason": null}
+{"type": "step", "idx": 133, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1033952, "clusters": 160, "target_lcn": 75545572, "from": [[1033952, 163755249, 160]]}
+{"type": "step", "idx": 133, "state": "done", "reason": null}
+{"type": "step", "idx": 134, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1032624, "clusters": 80, "target_lcn": 75545732, "from": [[1032624, 163753921, 80]]}
+{"type": "step", "idx": 134, "state": "done", "reason": null}
+{"type": "step", "idx": 135, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1033504, "clusters": 304, "target_lcn": 75545812, "from": [[1033504, 163754801, 304]]}
+{"type": "step", "idx": 135, "state": "done", "reason": null}
+{"type": "step", "idx": 136, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1032992, "clusters": 32, "target_lcn": 75546116, "from": [[1032992, 163754289, 32]]}
+{"type": "step", "idx": 136, "state": "done", "reason": null}
+{"type": "step", "idx": 137, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1033424, "clusters": 80, "target_lcn": 75546148, "from": [[1033424, 163754721, 80]]}
+{"type": "step", "idx": 137, "state": "done", "reason": null}
+{"type": "step", "idx": 138, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1033024, "clusters": 64, "target_lcn": 75546228, "from": [[1033024, 163754321, 64]]}
+{"type": "step", "idx": 138, "state": "done", "reason": null}
+{"type": "step", "idx": 139, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1032864, "clusters": 128, "target_lcn": 75546292, "from": [[1032864, 163754161, 128]]}
+{"type": "step", "idx": 139, "state": "done", "reason": null}
+{"type": "step", "idx": 140, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1033088, "clusters": 16, "target_lcn": 75546420, "from": [[1033088, 163754385, 16]]}
+{"type": "step", "idx": 140, "state": "done", "reason": null}
+{"type": "step", "idx": 141, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1033824, "clusters": 80, "target_lcn": 75546436, "from": [[1033824, 163755121, 80]]}
+{"type": "step", "idx": 141, "state": "done", "reason": null}
+{"type": "step", "idx": 142, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1033808, "clusters": 16, "target_lcn": 75546516, "from": [[1033808, 163755105, 16]]}
+{"type": "step", "idx": 142, "state": "done", "reason": null}
+{"type": "step", "idx": 143, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1033104, "clusters": 320, "target_lcn": 75546532, "from": [[1033104, 163754401, 320]]}
+{"type": "step", "idx": 143, "state": "done", "reason": null}
+{"type": "step", "idx": 144, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1032736, "clusters": 112, "target_lcn": 75546852, "from": [[1032736, 163754033, 112]]}
+{"type": "step", "idx": 144, "state": "done", "reason": null}
+{"type": "step", "idx": 145, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1032704, "clusters": 32, "target_lcn": 75546964, "from": [[1032704, 163754001, 32]]}
+{"type": "step", "idx": 145, "state": "done", "reason": null}
+{"type": "step", "idx": 146, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1032848, "clusters": 16, "target_lcn": 75546996, "from": [[1032848, 163754145, 16]]}
+{"type": "step", "idx": 146, "state": "done", "reason": null}
+{"type": "step", "idx": 147, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1030400, "clusters": 144, "target_lcn": 75547012, "from": [[1030400, 163751697, 144]]}
+{"type": "step", "idx": 147, "state": "done", "reason": null}
+{"type": "step", "idx": 148, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1030224, "clusters": 160, "target_lcn": 75547156, "from": [[1030224, 163751521, 160]]}
+{"type": "step", "idx": 148, "state": "done", "reason": null}
+{"type": "step", "idx": 149, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1031152, "clusters": 224, "target_lcn": 75547316, "from": [[1031152, 163752449, 224]]}
+{"type": "step", "idx": 149, "state": "done", "reason": null}
+{"type": "step", "idx": 150, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1030144, "clusters": 80, "target_lcn": 75547540, "from": [[1030144, 163751441, 80]]}
+{"type": "step", "idx": 150, "state": "done", "reason": null}
+{"type": "step", "idx": 151, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1030544, "clusters": 16, "target_lcn": 75547620, "from": [[1030544, 163751841, 16]]}
+{"type": "step", "idx": 151, "state": "done", "reason": null}
+{"type": "step", "idx": 152, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1030384, "clusters": 16, "target_lcn": 75547636, "from": [[1030384, 163751681, 16]]}
+{"type": "step", "idx": 152, "state": "done", "reason": null}
+{"type": "step", "idx": 153, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1258464, "clusters": 32, "target_lcn": 75547652, "from": [[1258464, 149797445, 32]]}
+{"type": "step", "idx": 153, "state": "done", "reason": null}
+{"type": "step", "idx": 154, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1541248, "clusters": 80, "target_lcn": 75547684, "from": [[1541248, 180570229, 80]]}
+{"type": "step", "idx": 154, "state": "done", "reason": null}
+{"type": "step", "idx": 155, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1541648, "clusters": 160, "target_lcn": 75547764, "from": [[1541648, 180570629, 160]]}
+{"type": "step", "idx": 155, "state": "done", "reason": null}
+{"type": "step", "idx": 156, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1541184, "clusters": 64, "target_lcn": 75547924, "from": [[1541184, 180570165, 64]]}
+{"type": "step", "idx": 156, "state": "done", "reason": null}
+{"type": "step", "idx": 157, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1633984, "clusters": 32, "target_lcn": 75547988, "from": [[1633984, 180662965, 32]]}
+{"type": "step", "idx": 157, "state": "done", "reason": null}
+{"type": "step", "idx": 158, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1542096, "clusters": 48, "target_lcn": 75548020, "from": [[1542096, 180571077, 48]]}
+{"type": "step", "idx": 158, "state": "done", "reason": null}
+{"type": "step", "idx": 159, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1618816, "clusters": 112, "target_lcn": 75548068, "from": [[1618816, 180647797, 112]]}
+{"type": "step", "idx": 159, "state": "done", "reason": null}
+{"type": "step", "idx": 160, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1541376, "clusters": 272, "target_lcn": 75548180, "from": [[1541376, 180570357, 272]]}
+{"type": "step", "idx": 160, "state": "done", "reason": null}
+{"type": "step", "idx": 161, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1621840, "clusters": 576, "target_lcn": 75548452, "from": [[1621840, 180650821, 576]]}
+{"type": "step", "idx": 161, "state": "done", "reason": null}
+{"type": "step", "idx": 162, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1634160, "clusters": 32, "target_lcn": 75549028, "from": [[1634160, 180663141, 32]]}
+{"type": "step", "idx": 162, "state": "done", "reason": null}
+{"type": "step", "idx": 163, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 410656, "clusters": 32, "target_lcn": 75549060, "from": [[410656, 153813245, 32]]}
+{"type": "step", "idx": 163, "state": "done", "reason": null}
+{"type": "step", "idx": 164, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1002352, "clusters": 16, "target_lcn": 75549092, "from": [[1002352, 163723649, 16]]}
+{"type": "step", "idx": 164, "state": "done", "reason": null}
+{"type": "step", "idx": 165, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 415200, "clusters": 432, "target_lcn": 75549108, "from": [[415200, 153817789, 432]]}
+{"type": "step", "idx": 165, "state": "done", "reason": null}
+{"type": "step", "idx": 166, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1002496, "clusters": 32, "target_lcn": 75549540, "from": [[1002496, 163723793, 32]]}
+{"type": "step", "idx": 166, "state": "done", "reason": null}
+{"type": "step", "idx": 167, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 88896, "clusters": 16, "target_lcn": 75549572, "from": [[88896, 177966822, 16]]}
+{"type": "step", "idx": 167, "state": "done", "reason": null}
+{"type": "step", "idx": 168, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1562224, "clusters": 288, "target_lcn": 75549588, "from": [[1562224, 180591205, 288]]}
+{"type": "step", "idx": 168, "state": "done", "reason": null}
+{"type": "step", "idx": 169, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1568464, "clusters": 288, "target_lcn": 75549876, "from": [[1568464, 180597445, 288]]}
+{"type": "step", "idx": 169, "state": "done", "reason": null}
+{"type": "step", "idx": 170, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1567296, "clusters": 160, "target_lcn": 75550164, "from": [[1567296, 180596277, 160]]}
+{"type": "step", "idx": 170, "state": "done", "reason": null}
+{"type": "step", "idx": 171, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1568080, "clusters": 272, "target_lcn": 75550324, "from": [[1568080, 180597061, 272]]}
+{"type": "step", "idx": 171, "state": "done", "reason": null}
+{"type": "step", "idx": 172, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1567456, "clusters": 32, "target_lcn": 75550596, "from": [[1567456, 180596437, 32]]}
+{"type": "step", "idx": 172, "state": "done", "reason": null}
+{"type": "step", "idx": 173, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1568352, "clusters": 112, "target_lcn": 75550628, "from": [[1568352, 180597333, 112]]}
+{"type": "step", "idx": 173, "state": "done", "reason": null}
+{"type": "step", "idx": 174, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1634256, "clusters": 16, "target_lcn": 75550740, "from": [[1634256, 180663237, 16]]}
+{"type": "step", "idx": 174, "state": "done", "reason": null}
+{"type": "step", "idx": 175, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1487248, "clusters": 112, "target_lcn": 75550756, "from": [[1487248, 180516229, 112]]}
+{"type": "step", "idx": 175, "state": "done", "reason": null}
+{"type": "step", "idx": 176, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1494144, "clusters": 128, "target_lcn": 75550868, "from": [[1494144, 180523125, 128]]}
+{"type": "step", "idx": 176, "state": "done", "reason": null}
+{"type": "step", "idx": 177, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 93184, "clusters": 16, "target_lcn": 75550996, "from": [[93184, 177971110, 16]]}
+{"type": "step", "idx": 177, "state": "done", "reason": null}
+{"type": "step", "idx": 178, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1639264, "clusters": 48, "target_lcn": 75551012, "from": [[1639264, 180668245, 48]]}
+{"type": "step", "idx": 178, "state": "done", "reason": null}
+{"type": "step", "idx": 179, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1244448, "clusters": 272, "target_lcn": 75551060, "from": [[1244448, 149783429, 272]]}
+{"type": "step", "idx": 179, "state": "done", "reason": null}
+{"type": "step", "idx": 180, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1245600, "clusters": 224, "target_lcn": 75551332, "from": [[1245600, 149784581, 224]]}
+{"type": "step", "idx": 180, "state": "done", "reason": null}
+{"type": "step", "idx": 181, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1237280, "clusters": 176, "target_lcn": 75551556, "from": [[1237280, 149776261, 176]]}
+{"type": "step", "idx": 181, "state": "done", "reason": null}
+{"type": "step", "idx": 182, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1317936, "clusters": 288, "target_lcn": 75551732, "from": [[1317936, 149856917, 288]]}
+{"type": "step", "idx": 182, "state": "done", "reason": null}
+{"type": "step", "idx": 183, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1012144, "clusters": 16, "target_lcn": 75552020, "from": [[1012144, 163733441, 16]]}
+{"type": "step", "idx": 183, "state": "done", "reason": null}
+{"type": "step", "idx": 184, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1002160, "clusters": 48, "target_lcn": 75552036, "from": [[1002160, 163723457, 48]]}
+{"type": "step", "idx": 184, "state": "done", "reason": null}
+{"type": "step", "idx": 185, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 424288, "clusters": 112, "target_lcn": 75552084, "from": [[424288, 153826877, 112]]}
+{"type": "step", "idx": 185, "state": "done", "reason": null}
+{"type": "step", "idx": 186, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1219648, "clusters": 32, "target_lcn": 75552196, "from": [[1219648, 149758629, 32]]}
+{"type": "step", "idx": 186, "state": "done", "reason": null}
+{"type": "step", "idx": 187, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1476256, "clusters": 192, "target_lcn": 75552228, "from": [[1476256, 180505237, 192]]}
+{"type": "step", "idx": 187, "state": "done", "reason": null}
+{"type": "step", "idx": 188, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1478032, "clusters": 80, "target_lcn": 75552420, "from": [[1478032, 180507013, 80]]}
+{"type": "step", "idx": 188, "state": "done", "reason": null}
+{"type": "step", "idx": 189, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1639152, "clusters": 112, "target_lcn": 75552500, "from": [[1639152, 180668133, 112]]}
+{"type": "step", "idx": 189, "state": "done", "reason": null}
+{"type": "step", "idx": 190, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1639104, "clusters": 16, "target_lcn": 75552612, "from": [[1639104, 180668085, 16]]}
+{"type": "step", "idx": 190, "state": "done", "reason": null}
+{"type": "step", "idx": 191, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 425008, "clusters": 384, "target_lcn": 75552628, "from": [[425008, 153827597, 384]]}
+{"type": "step", "idx": 191, "state": "done", "reason": null}
+{"type": "step", "idx": 192, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1480000, "clusters": 224, "target_lcn": 75553012, "from": [[1480000, 180508981, 224]]}
+{"type": "step", "idx": 192, "state": "done", "reason": null}
+{"type": "step", "idx": 193, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 426368, "clusters": 256, "target_lcn": 75553236, "from": [[426368, 153828957, 256]]}
+{"type": "step", "idx": 193, "state": "done", "reason": null}
+{"type": "step", "idx": 194, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1002768, "clusters": 208, "target_lcn": 75553492, "from": [[1002768, 163724065, 208]]}
+{"type": "step", "idx": 194, "state": "done", "reason": null}
+{"type": "step", "idx": 195, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1244720, "clusters": 512, "target_lcn": 75553700, "from": [[1244720, 149783701, 512]]}
+{"type": "step", "idx": 195, "state": "done", "reason": null}
+{"type": "step", "idx": 196, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1245824, "clusters": 96, "target_lcn": 75554212, "from": [[1245824, 149784805, 96]]}
+{"type": "step", "idx": 196, "state": "done", "reason": null}
+{"type": "step", "idx": 197, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1264176, "clusters": 592, "target_lcn": 75554308, "from": [[1264176, 149803157, 592]]}
+{"type": "step", "idx": 197, "state": "done", "reason": null}
+{"type": "step", "idx": 198, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1001728, "clusters": 336, "target_lcn": 75554900, "from": [[1001728, 163723025, 336]]}
+{"type": "step", "idx": 198, "state": "done", "reason": null}
+{"type": "step", "idx": 199, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1002368, "clusters": 64, "target_lcn": 75555236, "from": [[1002368, 163723665, 64]]}
+{"type": "step", "idx": 199, "state": "done", "reason": null}
+{"type": "step", "idx": 200, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1000336, "clusters": 464, "target_lcn": 75555300, "from": [[1000336, 163721633, 464]]}
+{"type": "step", "idx": 200, "state": "done", "reason": null}
+{"type": "step", "idx": 201, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1009760, "clusters": 1120, "target_lcn": 75555764, "from": [[1009760, 163731057, 1120]]}
+{"type": "step", "idx": 201, "state": "done", "reason": null}
+{"type": "step", "idx": 202, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1213168, "clusters": 512, "target_lcn": 75556884, "from": [[1213168, 149752149, 512]]}
+{"type": "step", "idx": 202, "state": "done", "reason": null}
+{"type": "step", "idx": 203, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1215264, "clusters": 560, "target_lcn": 75557396, "from": [[1215264, 149754245, 560]]}
+{"type": "step", "idx": 203, "state": "done", "reason": null}
+{"type": "step", "idx": 204, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1201424, "clusters": 1728, "target_lcn": 75557956, "from": [[1201424, 149740405, 1728]]}
+{"type": "step", "idx": 204, "state": "done", "reason": null}
+{"type": "step", "idx": 205, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1214240, "clusters": 544, "target_lcn": 75559684, "from": [[1214240, 149753221, 544]]}
+{"type": "step", "idx": 205, "state": "done", "reason": null}
+{"type": "step", "idx": 206, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1213680, "clusters": 560, "target_lcn": 75560228, "from": [[1213680, 149752661, 560]]}
+{"type": "step", "idx": 206, "state": "done", "reason": null}
+{"type": "step", "idx": 207, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 88912, "clusters": 16, "target_lcn": 75560788, "from": [[88912, 177966838, 16]]}
+{"type": "step", "idx": 207, "state": "done", "reason": null}
+{"type": "step", "idx": 208, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1245920, "clusters": 224, "target_lcn": 75560804, "from": [[1245920, 149784901, 224]]}
+{"type": "step", "idx": 208, "state": "done", "reason": null}
+{"type": "step", "idx": 209, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1244016, "clusters": 144, "target_lcn": 75561028, "from": [[1244016, 149782997, 144]]}
+{"type": "step", "idx": 209, "state": "done", "reason": null}
+{"type": "step", "idx": 210, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 424736, "clusters": 272, "target_lcn": 75561172, "from": [[424736, 153827325, 272]]}
+{"type": "step", "idx": 210, "state": "done", "reason": null}
+{"type": "step", "idx": 211, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 425712, "clusters": 608, "target_lcn": 75561444, "from": [[425712, 153828301, 608]]}
+{"type": "step", "idx": 211, "state": "done", "reason": null}
+{"type": "step", "idx": 212, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1639632, "clusters": 160, "target_lcn": 75562052, "from": [[1639632, 180668613, 160]]}
+{"type": "step", "idx": 212, "state": "done", "reason": null}
+{"type": "step", "idx": 213, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 425520, "clusters": 192, "target_lcn": 75562212, "from": [[425520, 153828109, 192]]}
+{"type": "step", "idx": 213, "state": "done", "reason": null}
+{"type": "step", "idx": 214, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1502096, "clusters": 144, "target_lcn": 75562404, "from": [[1502096, 180531077, 144]]}
+{"type": "step", "idx": 214, "state": "done", "reason": null}
+{"type": "step", "idx": 215, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1317712, "clusters": 192, "target_lcn": 75562548, "from": [[1317712, 149856693, 192]]}
+{"type": "step", "idx": 215, "state": "done", "reason": null}
+{"type": "file", "path": "D:\\Frostpunk\\sequences.dat", "sha_before": "1cb0da42c7e416c2c94a93d3f9b8ecfa4e7ea93df30474b726fa81c6df92eca7"}
+{"type": "step", "idx": 216, "state": "planned", "path": "D:\\Frostpunk\\sequences.dat", "vcn": 0, "clusters": 9, "target_lcn": 75562740, "from": [[0, 398935, 9]]}
+{"type": "step", "idx": 216, "state": "done", "reason": null}
+{"type": "step", "idx": 217, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 405312, "clusters": 16, "target_lcn": 75562749, "from": [[405312, 153807901, 16]]}
+{"type": "step", "idx": 217, "state": "done", "reason": null}
+{"type": "step", "idx": 218, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 394048, "clusters": 304, "target_lcn": 75562765, "from": [[394048, 153796637, 304]]}
+{"type": "step", "idx": 218, "state": "done", "reason": null}
+{"type": "step", "idx": 219, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 409040, "clusters": 32, "target_lcn": 75563069, "from": [[409040, 153811629, 32]]}
+{"type": "step", "idx": 219, "state": "done", "reason": null}
+{"type": "step", "idx": 220, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 407536, "clusters": 752, "target_lcn": 75563101, "from": [[407536, 153810125, 752]]}
+{"type": "step", "idx": 220, "state": "done", "reason": null}
+{"type": "step", "idx": 221, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 403760, "clusters": 64, "target_lcn": 75563853, "from": [[403760, 153806349, 64]]}
+{"type": "step", "idx": 221, "state": "done", "reason": null}
+{"type": "step", "idx": 222, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1324848, "clusters": 1376, "target_lcn": 75563917, "from": [[1324848, 149863829, 1376]]}
+{"type": "step", "idx": 222, "state": "done", "reason": null}
+{"type": "step", "idx": 223, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1330192, "clusters": 1552, "target_lcn": 75565293, "from": [[1330192, 149869173, 1552]]}
+{"type": "step", "idx": 223, "state": "done", "reason": null}
+{"type": "step", "idx": 224, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1328368, "clusters": 192, "target_lcn": 75566845, "from": [[1328368, 149867349, 192]]}
+{"type": "step", "idx": 224, "state": "done", "reason": null}
+{"type": "step", "idx": 225, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 88800, "clusters": 16, "target_lcn": 75567037, "from": [[88800, 177966726, 16]]}
+{"type": "step", "idx": 225, "state": "done", "reason": null}
+{"type": "step", "idx": 226, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 1386912, "clusters": 400, "target_lcn": 75567053, "from": [[1386912, 180415893, 400]]}
+{"type": "step", "idx": 226, "state": "done", "reason": null}
+{"type": "step", "idx": 227, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 356112, "clusters": 32, "target_lcn": 75567453, "from": [[356112, 153758701, 32]]}
+{"type": "step", "idx": 227, "state": "done", "reason": null}
+{"type": "step", "idx": 228, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 115104, "clusters": 48, "target_lcn": 75567485, "from": [[115104, 297453326, 48]]}
+{"type": "step", "idx": 228, "state": "done", "reason": null}
+{"type": "step", "idx": 229, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 355232, "clusters": 48, "target_lcn": 75567533, "from": [[355232, 153757821, 48]]}
+{"type": "step", "idx": 229, "state": "done", "reason": null}
+{"type": "step", "idx": 230, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 354704, "clusters": 32, "target_lcn": 75567581, "from": [[354704, 153757293, 32]]}
+{"type": "step", "idx": 230, "state": "done", "reason": null}
+{"type": "step", "idx": 231, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 8784, "clusters": 96, "target_lcn": 75567613, "from": [[8784, 297598351, 96]]}
+{"type": "step", "idx": 231, "state": "done", "reason": null}
+{"type": "step", "idx": 232, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 29216, "clusters": 608, "target_lcn": 75567709, "from": [[29216, 178001615, 608]]}
+{"type": "step", "idx": 232, "state": "done", "reason": null}
+{"type": "step", "idx": 233, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 31056, "clusters": 736, "target_lcn": 75568317, "from": [[31056, 178003455, 736]]}
+{"type": "step", "idx": 233, "state": "done", "reason": null}
+{"type": "step", "idx": 234, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 8464, "clusters": 32, "target_lcn": 75569053, "from": [[8464, 297598031, 32]]}
+{"type": "step", "idx": 234, "state": "done", "reason": null}
+{"type": "step", "idx": 235, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 8880, "clusters": 32, "target_lcn": 75569085, "from": [[8880, 297598447, 32]]}
+{"type": "step", "idx": 235, "state": "done", "reason": null}
+{"type": "step", "idx": 236, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 57968, "clusters": 16, "target_lcn": 75569117, "from": [[57968, 177935894, 16]]}
+{"type": "step", "idx": 236, "state": "done", "reason": null}
+{"type": "step", "idx": 237, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 37984, "clusters": 80, "target_lcn": 75569133, "from": [[37984, 297627551, 80]]}
+{"type": "step", "idx": 237, "state": "done", "reason": null}
+{"type": "step", "idx": 238, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 37680, "clusters": 80, "target_lcn": 75569213, "from": [[37680, 297627247, 80]]}
+{"type": "step", "idx": 238, "state": "done", "reason": null}
+{"type": "step", "idx": 239, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 193328, "clusters": 160, "target_lcn": 75569293, "from": [[193328, 178165727, 160]]}
+{"type": "step", "idx": 239, "state": "done", "reason": null}
+{"type": "step", "idx": 240, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 195472, "clusters": 240, "target_lcn": 75569453, "from": [[195472, 178167871, 240]]}
+{"type": "step", "idx": 240, "state": "done", "reason": null}
+{"type": "step", "idx": 241, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 37760, "clusters": 64, "target_lcn": 75569693, "from": [[37760, 297627327, 64]]}
+{"type": "step", "idx": 241, "state": "done", "reason": null}
+{"type": "step", "idx": 242, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 189408, "clusters": 592, "target_lcn": 75569757, "from": [[189408, 178161807, 592]]}
+{"type": "step", "idx": 242, "state": "done", "reason": null}
+{"type": "step", "idx": 243, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 190784, "clusters": 672, "target_lcn": 75570349, "from": [[190784, 178163183, 672]]}
+{"type": "step", "idx": 243, "state": "done", "reason": null}
+{"type": "step", "idx": 244, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 58160, "clusters": 16, "target_lcn": 75571021, "from": [[58160, 177936086, 16]]}
+{"type": "step", "idx": 244, "state": "done", "reason": null}
+{"type": "step", "idx": 245, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 528, "clusters": 432, "target_lcn": 75571037, "from": [[528, 9445774, 87], [615, 177973014, 345]]}
+{"type": "step", "idx": 245, "state": "done", "reason": null}
+{"type": "step", "idx": 246, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 699072, "clusters": 208, "target_lcn": 75571469, "from": [[699072, 180923518, 208]]}
+{"type": "step", "idx": 246, "state": "done", "reason": null}
+{"type": "step", "idx": 247, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 46208, "clusters": 96, "target_lcn": 75571677, "from": [[46208, 177924134, 96]]}
+{"type": "step", "idx": 247, "state": "done", "reason": null}
+{"type": "step", "idx": 248, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 257616, "clusters": 448, "target_lcn": 75571773, "from": [[257616, 153660205, 448]]}
+{"type": "step", "idx": 248, "state": "done", "reason": null}
+{"type": "step", "idx": 249, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 258640, "clusters": 704, "target_lcn": 75572221, "from": [[258640, 153661229, 704]]}
+{"type": "step", "idx": 249, "state": "done", "reason": null}
+{"type": "step", "idx": 250, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 45984, "clusters": 48, "target_lcn": 75572925, "from": [[45984, 177923910, 48]]}
+{"type": "step", "idx": 250, "state": "done", "reason": null}
+{"type": "step", "idx": 251, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 258064, "clusters": 576, "target_lcn": 75572973, "from": [[258064, 153660653, 576]]}
+{"type": "step", "idx": 251, "state": "done", "reason": null}
+{"type": "step", "idx": 252, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 259936, "clusters": 960, "target_lcn": 75573549, "from": [[259936, 153662525, 960]]}
+{"type": "step", "idx": 252, "state": "done", "reason": null}
+{"type": "step", "idx": 253, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 46176, "clusters": 32, "target_lcn": 75574509, "from": [[46176, 177924102, 32]]}
+{"type": "step", "idx": 253, "state": "done", "reason": null}
+{"type": "step", "idx": 254, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 58016, "clusters": 32, "target_lcn": 75574541, "from": [[58016, 177935942, 32]]}
+{"type": "step", "idx": 254, "state": "done", "reason": null}
+{"type": "step", "idx": 255, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 88320, "clusters": 48, "target_lcn": 75574573, "from": [[88320, 177966246, 48]]}
+{"type": "step", "idx": 255, "state": "done", "reason": null}
+{"type": "step", "idx": 256, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 259344, "clusters": 592, "target_lcn": 75574621, "from": [[259344, 153661933, 592]]}
+{"type": "step", "idx": 256, "state": "done", "reason": null}
+{"type": "step", "idx": 257, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 260896, "clusters": 1216, "target_lcn": 75575213, "from": [[260896, 153663485, 1216]]}
+{"type": "step", "idx": 257, "state": "done", "reason": null}
+{"type": "step", "idx": 258, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 88368, "clusters": 16, "target_lcn": 75576429, "from": [[88368, 177966294, 16]]}
+{"type": "step", "idx": 258, "state": "done", "reason": null}
+{"type": "step", "idx": 259, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 32864, "clusters": 48, "target_lcn": 75576445, "from": [[32864, 297622431, 48]]}
+{"type": "step", "idx": 259, "state": "done", "reason": null}
+{"type": "step", "idx": 260, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 141616, "clusters": 192, "target_lcn": 75576493, "from": [[141616, 178114015, 192]]}
+{"type": "step", "idx": 260, "state": "done", "reason": null}
+{"type": "step", "idx": 261, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 142736, "clusters": 160, "target_lcn": 75576685, "from": [[142736, 178115135, 160]]}
+{"type": "step", "idx": 261, "state": "done", "reason": null}
+{"type": "step", "idx": 262, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 32912, "clusters": 64, "target_lcn": 75576845, "from": [[32912, 297622479, 64]]}
+{"type": "step", "idx": 262, "state": "done", "reason": null}
+{"type": "step", "idx": 263, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 32816, "clusters": 48, "target_lcn": 75576909, "from": [[32816, 297622383, 48]]}
+{"type": "step", "idx": 263, "state": "done", "reason": null}
+{"type": "step", "idx": 264, "state": "planned", "path": "D:\\Frostpunk\\animations.dat", "vcn": 576, "clusters": 16, "target_lcn": 75576957, "from": [[576, 16231411, 16]]}
+{"type": "step", "idx": 264, "state": "done", "reason": null}
+{"type": "step", "idx": 265, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 47664, "clusters": 96, "target_lcn": 75576973, "from": [[47664, 177925590, 96]]}
+{"type": "step", "idx": 265, "state": "done", "reason": null}
+{"type": "step", "idx": 266, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 280736, "clusters": 608, "target_lcn": 75577069, "from": [[280736, 153683325, 608]]}
+{"type": "step", "idx": 266, "state": "done", "reason": null}
+{"type": "step", "idx": 267, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 282208, "clusters": 848, "target_lcn": 75577677, "from": [[282208, 153684797, 848]]}
+{"type": "step", "idx": 267, "state": "done", "reason": null}
+{"type": "step", "idx": 268, "state": "planned", "path": "D:\\Frostpunk\\textures-s3.dat", "vcn": 285056, "clusters": 1488, "target_lcn": 75578525, "from": [[285056, 153687645, 1488]]}
+{"type": "step", "idx": 268, "state": "done", "reason": null}
+{"type": "step", "idx": 269, "state": "planned", "path": "D:\\Frostpunk\\templates.dat", "vcn": 47760, "clusters": 96, "target_lcn": 75580013, "from": [[47760, 177925686, 96]]}
+{"type": "step", "idx": 269, "state": "done", "reason": null}
+{"type": "step", "idx": 270, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 112432, "clusters": 48, "target_lcn": 75580109, "from": [[112432, 297450654, 48]]}
+{"type": "step", "idx": 270, "state": "done", "reason": null}
+{"type": "step", "idx": 271, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 109792, "clusters": 48, "target_lcn": 75580157, "from": [[109792, 297448014, 48]]}
+{"type": "step", "idx": 271, "state": "done", "reason": null}
+{"type": "step", "idx": 272, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 108464, "clusters": 48, "target_lcn": 75580205, "from": [[108464, 297446686, 48]]}
+{"type": "step", "idx": 272, "state": "done", "reason": null}
+{"type": "step", "idx": 273, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 231456, "clusters": 48, "target_lcn": 75580253, "from": [[231456, 297569678, 48]]}
+{"type": "step", "idx": 273, "state": "done", "reason": null}
+{"type": "step", "idx": 274, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 204784, "clusters": 48, "target_lcn": 75580301, "from": [[204784, 297543006, 48]]}
+{"type": "step", "idx": 274, "state": "done", "reason": null}
+{"type": "step", "idx": 275, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 112480, "clusters": 16, "target_lcn": 75580349, "from": [[112480, 297450702, 16]]}
+{"type": "step", "idx": 275, "state": "done", "reason": null}
+{"type": "step", "idx": 276, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 108512, "clusters": 16, "target_lcn": 75580365, "from": [[108512, 297446734, 16]]}
+{"type": "step", "idx": 276, "state": "done", "reason": null}
+{"type": "step", "idx": 277, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 204832, "clusters": 16, "target_lcn": 75580381, "from": [[204832, 297543054, 16]]}
+{"type": "step", "idx": 277, "state": "done", "reason": null}
+{"type": "step", "idx": 278, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 115152, "clusters": 16, "target_lcn": 75580397, "from": [[115152, 297453374, 16]]}
+{"type": "step", "idx": 278, "state": "done", "reason": null}
+{"type": "step", "idx": 279, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 109840, "clusters": 16, "target_lcn": 75580413, "from": [[109840, 297448062, 16]]}
+{"type": "step", "idx": 279, "state": "done", "reason": null}
+{"type": "step", "idx": 280, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 204848, "clusters": 16, "target_lcn": 75580429, "from": [[204848, 297543070, 16]]}
+{"type": "step", "idx": 280, "state": "done", "reason": null}
+{"type": "step", "idx": 281, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 112496, "clusters": 16, "target_lcn": 75580445, "from": [[112496, 297450718, 16]]}
+{"type": "step", "idx": 281, "state": "done", "reason": null}
+{"type": "step", "idx": 282, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 108528, "clusters": 16, "target_lcn": 75580461, "from": [[108528, 297446750, 16]]}
+{"type": "step", "idx": 282, "state": "done", "reason": null}
+{"type": "step", "idx": 283, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 204864, "clusters": 16, "target_lcn": 75580477, "from": [[204864, 297543086, 16]]}
+{"type": "step", "idx": 283, "state": "done", "reason": null}
+{"type": "step", "idx": 284, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 109856, "clusters": 16, "target_lcn": 75580493, "from": [[109856, 297448078, 16]]}
+{"type": "step", "idx": 284, "state": "done", "reason": null}
+{"type": "step", "idx": 285, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 204880, "clusters": 16, "target_lcn": 75580509, "from": [[204880, 297543102, 16]]}
+{"type": "step", "idx": 285, "state": "done", "reason": null}
+{"type": "step", "idx": 286, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 112512, "clusters": 16, "target_lcn": 75580525, "from": [[112512, 297450734, 16]]}
+{"type": "step", "idx": 286, "state": "done", "reason": null}
+{"type": "step", "idx": 287, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 108544, "clusters": 16, "target_lcn": 75580541, "from": [[108544, 297446766, 16]]}
+{"type": "step", "idx": 287, "state": "done", "reason": null}
+{"type": "step", "idx": 288, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 204896, "clusters": 16, "target_lcn": 75580557, "from": [[204896, 297543118, 16]]}
+{"type": "step", "idx": 288, "state": "done", "reason": null}
+{"type": "step", "idx": 289, "state": "planned", "path": "D:\\Frostpunk\\sounds.dat", "vcn": 244560, "clusters": 16, "target_lcn": 75580573, "from": [[244560, 297582782, 16]]}
+{"type": "step", "idx": 289, "state": "done", "reason": null}
+{"type": "end", "stopped": null, "written_bytes": 212373504, "sha_mismatch": []}

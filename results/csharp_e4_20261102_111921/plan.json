@@ -1,0 +1,10049 @@
+{
+ "version": 1,
+ "origin_root": "D:\\Frostpunk",
+ "volume": "D:",
+ "cluster_bytes": 4096,
+ "block": 65536,
+ "zone": {
+  "start_lcn": 75528740,
+  "clusters": 524288
+ },
+ "tasks": [
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 115952,
+   "clusters": 96,
+   "target_lcn": 75528740
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 83424,
+   "clusters": 64,
+   "target_lcn": 75528836
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 116096,
+   "clusters": 32,
+   "target_lcn": 75528900
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 83504,
+   "clusters": 64,
+   "target_lcn": 75528932
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 116160,
+   "clusters": 48,
+   "target_lcn": 75528996
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 989600,
+   "clusters": 1424,
+   "target_lcn": 75529044
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 867568,
+   "clusters": 80,
+   "target_lcn": 75530468
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 727344,
+   "clusters": 32,
+   "target_lcn": 75530548
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 720784,
+   "clusters": 48,
+   "target_lcn": 75530580
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 721424,
+   "clusters": 48,
+   "target_lcn": 75530628
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 721536,
+   "clusters": 64,
+   "target_lcn": 75530676
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 722368,
+   "clusters": 48,
+   "target_lcn": 75530740
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 721088,
+   "clusters": 64,
+   "target_lcn": 75530788
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 721296,
+   "clusters": 48,
+   "target_lcn": 75530852
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 722480,
+   "clusters": 64,
+   "target_lcn": 75530900
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 727392,
+   "clusters": 48,
+   "target_lcn": 75530964
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 720672,
+   "clusters": 96,
+   "target_lcn": 75531012
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 721472,
+   "clusters": 64,
+   "target_lcn": 75531108
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 722272,
+   "clusters": 96,
+   "target_lcn": 75531172
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 722416,
+   "clusters": 64,
+   "target_lcn": 75531268
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 721152,
+   "clusters": 80,
+   "target_lcn": 75531332
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 721344,
+   "clusters": 80,
+   "target_lcn": 75531412
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 723600,
+   "clusters": 96,
+   "target_lcn": 75531492
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 867424,
+   "clusters": 144,
+   "target_lcn": 75531588
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 867760,
+   "clusters": 512,
+   "target_lcn": 75531732
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 877856,
+   "clusters": 96,
+   "target_lcn": 75532244
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 867648,
+   "clusters": 112,
+   "target_lcn": 75532340
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 866816,
+   "clusters": 608,
+   "target_lcn": 75532452
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2960,
+   "clusters": 16,
+   "target_lcn": 75533060
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 255728,
+   "clusters": 352,
+   "target_lcn": 75533076
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 992,
+   "clusters": 16,
+   "target_lcn": 75533428
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 417808,
+   "clusters": 208,
+   "target_lcn": 75533444
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 73072,
+   "clusters": 96,
+   "target_lcn": 75533652
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 67968,
+   "clusters": 64,
+   "target_lcn": 75533748
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 67568,
+   "clusters": 48,
+   "target_lcn": 75533812
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 32320,
+   "clusters": 16,
+   "target_lcn": 75533860
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 67296,
+   "clusters": 272,
+   "target_lcn": 75533876
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 72416,
+   "clusters": 224,
+   "target_lcn": 75534148
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 75904,
+   "clusters": 48,
+   "target_lcn": 75534372
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 723888,
+   "clusters": 80,
+   "target_lcn": 75534420
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 724352,
+   "clusters": 48,
+   "target_lcn": 75534500
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 724080,
+   "clusters": 96,
+   "target_lcn": 75534548
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 724000,
+   "clusters": 80,
+   "target_lcn": 75534644
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 724464,
+   "clusters": 64,
+   "target_lcn": 75534724
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 727568,
+   "clusters": 96,
+   "target_lcn": 75534788
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 727680,
+   "clusters": 96,
+   "target_lcn": 75534884
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 915984,
+   "clusters": 64,
+   "target_lcn": 75534980
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 915808,
+   "clusters": 176,
+   "target_lcn": 75535044
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1367744,
+   "clusters": 32,
+   "target_lcn": 75535220
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1339008,
+   "clusters": 1120,
+   "target_lcn": 75535252
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1317504,
+   "clusters": 128,
+   "target_lcn": 75536372
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639616,
+   "clusters": 16,
+   "target_lcn": 75536500
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1533296,
+   "clusters": 32,
+   "target_lcn": 75536516
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1533344,
+   "clusters": 16,
+   "target_lcn": 75536548
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1479728,
+   "clusters": 16,
+   "target_lcn": 75536564
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1246144,
+   "clusters": 192,
+   "target_lcn": 75536580
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639024,
+   "clusters": 32,
+   "target_lcn": 75536772
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1634352,
+   "clusters": 16,
+   "target_lcn": 75536804
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1638976,
+   "clusters": 32,
+   "target_lcn": 75536820
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1638880,
+   "clusters": 96,
+   "target_lcn": 75536852
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1634416,
+   "clusters": 32,
+   "target_lcn": 75536948
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1638240,
+   "clusters": 16,
+   "target_lcn": 75536980
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1636992,
+   "clusters": 800,
+   "target_lcn": 75536996
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639840,
+   "clusters": 96,
+   "target_lcn": 75537796
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93120,
+   "clusters": 16,
+   "target_lcn": 75537892
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93072,
+   "clusters": 16,
+   "target_lcn": 75537908
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1640144,
+   "clusters": 256,
+   "target_lcn": 75537924
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1318320,
+   "clusters": 64,
+   "target_lcn": 75538180
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1640128,
+   "clusters": 16,
+   "target_lcn": 75538244
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1641328,
+   "clusters": 448,
+   "target_lcn": 75538260
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1640400,
+   "clusters": 304,
+   "target_lcn": 75538708
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 424400,
+   "clusters": 48,
+   "target_lcn": 75539012
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1637792,
+   "clusters": 64,
+   "target_lcn": 75539060
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93088,
+   "clusters": 16,
+   "target_lcn": 75539124
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1480736,
+   "clusters": 32,
+   "target_lcn": 75539140
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 146288,
+   "clusters": 96,
+   "target_lcn": 75539172
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 144768,
+   "clusters": 176,
+   "target_lcn": 75539268
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1638464,
+   "clusters": 192,
+   "target_lcn": 75539444
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 92960,
+   "clusters": 32,
+   "target_lcn": 75539636
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1533536,
+   "clusters": 16,
+   "target_lcn": 75539668
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1533360,
+   "clusters": 176,
+   "target_lcn": 75539684
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1533776,
+   "clusters": 512,
+   "target_lcn": 75539860
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1638784,
+   "clusters": 96,
+   "target_lcn": 75540372
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1634272,
+   "clusters": 64,
+   "target_lcn": 75540468
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1097648,
+   "clusters": 16,
+   "target_lcn": 75540532
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1102928,
+   "clusters": 48,
+   "target_lcn": 75540548
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1123168,
+   "clusters": 16,
+   "target_lcn": 75540596
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1533552,
+   "clusters": 32,
+   "target_lcn": 75540612
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1634448,
+   "clusters": 576,
+   "target_lcn": 75540644
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639312,
+   "clusters": 48,
+   "target_lcn": 75541220
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 544,
+   "clusters": 16,
+   "target_lcn": 75541268
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1085056,
+   "clusters": 688,
+   "target_lcn": 75541284
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1084896,
+   "clusters": 64,
+   "target_lcn": 75541972
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1085840,
+   "clusters": 656,
+   "target_lcn": 75542036
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1085744,
+   "clusters": 96,
+   "target_lcn": 75542692
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1086496,
+   "clusters": 128,
+   "target_lcn": 75542788
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1084800,
+   "clusters": 96,
+   "target_lcn": 75542916
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1084960,
+   "clusters": 96,
+   "target_lcn": 75543012
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1053728,
+   "clusters": 400,
+   "target_lcn": 75543108
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 92912,
+   "clusters": 16,
+   "target_lcn": 75543508
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1317904,
+   "clusters": 32,
+   "target_lcn": 75543524
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93056,
+   "clusters": 16,
+   "target_lcn": 75543556
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 3616,
+   "clusters": 16,
+   "target_lcn": 75543572
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93040,
+   "clusters": 16,
+   "target_lcn": 75543588
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1637856,
+   "clusters": 80,
+   "target_lcn": 75543604
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1070752,
+   "clusters": 80,
+   "target_lcn": 75543684
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 144944,
+   "clusters": 272,
+   "target_lcn": 75543764
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93104,
+   "clusters": 16,
+   "target_lcn": 75544036
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 362832,
+   "clusters": 144,
+   "target_lcn": 75544052
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 8464,
+   "clusters": 560,
+   "target_lcn": 75544196
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1487584,
+   "clusters": 160,
+   "target_lcn": 75544756
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1487136,
+   "clusters": 112,
+   "target_lcn": 75544916
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93136,
+   "clusters": 32,
+   "target_lcn": 75545028
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032464,
+   "clusters": 16,
+   "target_lcn": 75545060
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032512,
+   "clusters": 32,
+   "target_lcn": 75545076
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032576,
+   "clusters": 48,
+   "target_lcn": 75545108
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1033904,
+   "clusters": 32,
+   "target_lcn": 75545156
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032320,
+   "clusters": 80,
+   "target_lcn": 75545188
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032416,
+   "clusters": 32,
+   "target_lcn": 75545268
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032304,
+   "clusters": 16,
+   "target_lcn": 75545300
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032400,
+   "clusters": 16,
+   "target_lcn": 75545316
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032480,
+   "clusters": 16,
+   "target_lcn": 75545332
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032272,
+   "clusters": 32,
+   "target_lcn": 75545348
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1030064,
+   "clusters": 32,
+   "target_lcn": 75545380
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1031104,
+   "clusters": 32,
+   "target_lcn": 75545412
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032448,
+   "clusters": 16,
+   "target_lcn": 75545444
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032544,
+   "clusters": 16,
+   "target_lcn": 75545460
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032496,
+   "clusters": 16,
+   "target_lcn": 75545476
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032560,
+   "clusters": 16,
+   "target_lcn": 75545492
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639136,
+   "clusters": 16,
+   "target_lcn": 75545508
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1033936,
+   "clusters": 16,
+   "target_lcn": 75545524
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1030048,
+   "clusters": 16,
+   "target_lcn": 75545540
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1031136,
+   "clusters": 16,
+   "target_lcn": 75545556
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1033952,
+   "clusters": 160,
+   "target_lcn": 75545572
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032624,
+   "clusters": 80,
+   "target_lcn": 75545732
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1033504,
+   "clusters": 304,
+   "target_lcn": 75545812
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032992,
+   "clusters": 32,
+   "target_lcn": 75546116
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1033424,
+   "clusters": 80,
+   "target_lcn": 75546148
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1033024,
+   "clusters": 64,
+   "target_lcn": 75546228
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032864,
+   "clusters": 128,
+   "target_lcn": 75546292
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1033088,
+   "clusters": 16,
+   "target_lcn": 75546420
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1033824,
+   "clusters": 80,
+   "target_lcn": 75546436
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1033808,
+   "clusters": 16,
+   "target_lcn": 75546516
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1033104,
+   "clusters": 320,
+   "target_lcn": 75546532
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032736,
+   "clusters": 112,
+   "target_lcn": 75546852
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032704,
+   "clusters": 32,
+   "target_lcn": 75546964
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032848,
+   "clusters": 16,
+   "target_lcn": 75546996
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1030400,
+   "clusters": 144,
+   "target_lcn": 75547012
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1030224,
+   "clusters": 160,
+   "target_lcn": 75547156
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1031152,
+   "clusters": 224,
+   "target_lcn": 75547316
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1030144,
+   "clusters": 80,
+   "target_lcn": 75547540
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1030544,
+   "clusters": 16,
+   "target_lcn": 75547620
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1030384,
+   "clusters": 16,
+   "target_lcn": 75547636
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1258464,
+   "clusters": 32,
+   "target_lcn": 75547652
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1541248,
+   "clusters": 80,
+   "target_lcn": 75547684
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1541648,
+   "clusters": 160,
+   "target_lcn": 75547764
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1541184,
+   "clusters": 64,
+   "target_lcn": 75547924
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1633984,
+   "clusters": 32,
+   "target_lcn": 75547988
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1542096,
+   "clusters": 48,
+   "target_lcn": 75548020
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1618816,
+   "clusters": 112,
+   "target_lcn": 75548068
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1541376,
+   "clusters": 272,
+   "target_lcn": 75548180
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1621840,
+   "clusters": 576,
+   "target_lcn": 75548452
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1634160,
+   "clusters": 32,
+   "target_lcn": 75549028
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 410656,
+   "clusters": 32,
+   "target_lcn": 75549060
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1002352,
+   "clusters": 16,
+   "target_lcn": 75549092
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 415200,
+   "clusters": 432,
+   "target_lcn": 75549108
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1002496,
+   "clusters": 32,
+   "target_lcn": 75549540
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88896,
+   "clusters": 16,
+   "target_lcn": 75549572
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1562224,
+   "clusters": 288,
+   "target_lcn": 75549588
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1568464,
+   "clusters": 288,
+   "target_lcn": 75549876
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1567296,
+   "clusters": 160,
+   "target_lcn": 75550164
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1568080,
+   "clusters": 272,
+   "target_lcn": 75550324
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1567456,
+   "clusters": 32,
+   "target_lcn": 75550596
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1568352,
+   "clusters": 112,
+   "target_lcn": 75550628
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1634256,
+   "clusters": 16,
+   "target_lcn": 75550740
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1487248,
+   "clusters": 112,
+   "target_lcn": 75550756
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1494144,
+   "clusters": 128,
+   "target_lcn": 75550868
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93184,
+   "clusters": 16,
+   "target_lcn": 75550996
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639264,
+   "clusters": 48,
+   "target_lcn": 75551012
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1244448,
+   "clusters": 272,
+   "target_lcn": 75551060
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1245600,
+   "clusters": 224,
+   "target_lcn": 75551332
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1237280,
+   "clusters": 176,
+   "target_lcn": 75551556
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1317936,
+   "clusters": 288,
+   "target_lcn": 75551732
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1012144,
+   "clusters": 16,
+   "target_lcn": 75552020
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1002160,
+   "clusters": 48,
+   "target_lcn": 75552036
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 424288,
+   "clusters": 112,
+   "target_lcn": 75552084
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1219648,
+   "clusters": 32,
+   "target_lcn": 75552196
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1476256,
+   "clusters": 192,
+   "target_lcn": 75552228
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1478032,
+   "clusters": 80,
+   "target_lcn": 75552420
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639152,
+   "clusters": 112,
+   "target_lcn": 75552500
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639104,
+   "clusters": 16,
+   "target_lcn": 75552612
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 425008,
+   "clusters": 384,
+   "target_lcn": 75552628
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1480000,
+   "clusters": 224,
+   "target_lcn": 75553012
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 426368,
+   "clusters": 256,
+   "target_lcn": 75553236
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1002768,
+   "clusters": 208,
+   "target_lcn": 75553492
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1244720,
+   "clusters": 512,
+   "target_lcn": 75553700
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1245824,
+   "clusters": 96,
+   "target_lcn": 75554212
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1264176,
+   "clusters": 592,
+   "target_lcn": 75554308
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1001728,
+   "clusters": 336,
+   "target_lcn": 75554900
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1002368,
+   "clusters": 64,
+   "target_lcn": 75555236
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1000336,
+   "clusters": 464,
+   "target_lcn": 75555300
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1009760,
+   "clusters": 1120,
+   "target_lcn": 75555764
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1213168,
+   "clusters": 512,
+   "target_lcn": 75556884
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1215264,
+   "clusters": 560,
+   "target_lcn": 75557396
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1201424,
+   "clusters": 1728,
+   "target_lcn": 75557956
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1214240,
+   "clusters": 544,
+   "target_lcn": 75559684
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1213680,
+   "clusters": 560,
+   "target_lcn": 75560228
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88912,
+   "clusters": 16,
+   "target_lcn": 75560788
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1245920,
+   "clusters": 224,
+   "target_lcn": 75560804
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1244016,
+   "clusters": 144,
+   "target_lcn": 75561028
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 424736,
+   "clusters": 272,
+   "target_lcn": 75561172
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 425712,
+   "clusters": 608,
+   "target_lcn": 75561444
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639632,
+   "clusters": 160,
+   "target_lcn": 75562052
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 425520,
+   "clusters": 192,
+   "target_lcn": 75562212
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1502096,
+   "clusters": 144,
+   "target_lcn": 75562404
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1317712,
+   "clusters": 192,
+   "target_lcn": 75562548
+  },
+  {
+   "path": "D:\\Frostpunk\\sequences.dat",
+   "vcn": 0,
+   "clusters": 9,
+   "target_lcn": 75562740
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 405312,
+   "clusters": 16,
+   "target_lcn": 75562749
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 394048,
+   "clusters": 304,
+   "target_lcn": 75562765
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 409040,
+   "clusters": 32,
+   "target_lcn": 75563069
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 407536,
+   "clusters": 752,
+   "target_lcn": 75563101
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 403760,
+   "clusters": 64,
+   "target_lcn": 75563853
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1324848,
+   "clusters": 1376,
+   "target_lcn": 75563917
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1330192,
+   "clusters": 1552,
+   "target_lcn": 75565293
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1328368,
+   "clusters": 192,
+   "target_lcn": 75566845
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88800,
+   "clusters": 16,
+   "target_lcn": 75567037
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1386912,
+   "clusters": 400,
+   "target_lcn": 75567053
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 356112,
+   "clusters": 32,
+   "target_lcn": 75567453
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 115104,
+   "clusters": 48,
+   "target_lcn": 75567485
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 355232,
+   "clusters": 48,
+   "target_lcn": 75567533
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 354704,
+   "clusters": 32,
+   "target_lcn": 75567581
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 8784,
+   "clusters": 96,
+   "target_lcn": 75567613
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 29216,
+   "clusters": 608,
+   "target_lcn": 75567709
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 31056,
+   "clusters": 736,
+   "target_lcn": 75568317
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 8464,
+   "clusters": 32,
+   "target_lcn": 75569053
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 8880,
+   "clusters": 32,
+   "target_lcn": 75569085
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 57968,
+   "clusters": 16,
+   "target_lcn": 75569117
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 37984,
+   "clusters": 80,
+   "target_lcn": 75569133
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 37680,
+   "clusters": 80,
+   "target_lcn": 75569213
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 193328,
+   "clusters": 160,
+   "target_lcn": 75569293
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 195472,
+   "clusters": 240,
+   "target_lcn": 75569453
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 37760,
+   "clusters": 64,
+   "target_lcn": 75569693
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 189408,
+   "clusters": 592,
+   "target_lcn": 75569757
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 190784,
+   "clusters": 672,
+   "target_lcn": 75570349
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 58160,
+   "clusters": 16,
+   "target_lcn": 75571021
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 528,
+   "clusters": 432,
+   "target_lcn": 75571037
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 699072,
+   "clusters": 208,
+   "target_lcn": 75571469
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 46208,
+   "clusters": 96,
+   "target_lcn": 75571677
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 257616,
+   "clusters": 448,
+   "target_lcn": 75571773
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 258640,
+   "clusters": 704,
+   "target_lcn": 75572221
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 45984,
+   "clusters": 48,
+   "target_lcn": 75572925
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 258064,
+   "clusters": 576,
+   "target_lcn": 75572973
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 259936,
+   "clusters": 960,
+   "target_lcn": 75573549
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 46176,
+   "clusters": 32,
+   "target_lcn": 75574509
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 58016,
+   "clusters": 32,
+   "target_lcn": 75574541
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88320,
+   "clusters": 48,
+   "target_lcn": 75574573
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 259344,
+   "clusters": 592,
+   "target_lcn": 75574621
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 260896,
+   "clusters": 1216,
+   "target_lcn": 75575213
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88368,
+   "clusters": 16,
+   "target_lcn": 75576429
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 32864,
+   "clusters": 48,
+   "target_lcn": 75576445
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 141616,
+   "clusters": 192,
+   "target_lcn": 75576493
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 142736,
+   "clusters": 160,
+   "target_lcn": 75576685
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 32912,
+   "clusters": 64,
+   "target_lcn": 75576845
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 32816,
+   "clusters": 48,
+   "target_lcn": 75576909
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 576,
+   "clusters": 16,
+   "target_lcn": 75576957
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 47664,
+   "clusters": 96,
+   "target_lcn": 75576973
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 280736,
+   "clusters": 608,
+   "target_lcn": 75577069
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 282208,
+   "clusters": 848,
+   "target_lcn": 75577677
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 285056,
+   "clusters": 1488,
+   "target_lcn": 75578525
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 47760,
+   "clusters": 96,
+   "target_lcn": 75580013
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 112432,
+   "clusters": 48,
+   "target_lcn": 75580109
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 109792,
+   "clusters": 48,
+   "target_lcn": 75580157
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 108464,
+   "clusters": 48,
+   "target_lcn": 75580205
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 231456,
+   "clusters": 48,
+   "target_lcn": 75580253
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 204784,
+   "clusters": 48,
+   "target_lcn": 75580301
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 112480,
+   "clusters": 16,
+   "target_lcn": 75580349
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 108512,
+   "clusters": 16,
+   "target_lcn": 75580365
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 204832,
+   "clusters": 16,
+   "target_lcn": 75580381
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 115152,
+   "clusters": 16,
+   "target_lcn": 75580397
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 109840,
+   "clusters": 16,
+   "target_lcn": 75580413
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 204848,
+   "clusters": 16,
+   "target_lcn": 75580429
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 112496,
+   "clusters": 16,
+   "target_lcn": 75580445
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 108528,
+   "clusters": 16,
+   "target_lcn": 75580461
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 204864,
+   "clusters": 16,
+   "target_lcn": 75580477
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 109856,
+   "clusters": 16,
+   "target_lcn": 75580493
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 204880,
+   "clusters": 16,
+   "target_lcn": 75580509
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 112512,
+   "clusters": 16,
+   "target_lcn": 75580525
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 108544,
+   "clusters": 16,
+   "target_lcn": 75580541
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 204896,
+   "clusters": 16,
+   "target_lcn": 75580557
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 244560,
+   "clusters": 16,
+   "target_lcn": 75580573
+  }
+ ],
+ "order": [
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2784,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\AnselSDK64.dll",
+   "vcn": 64,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2704,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 144,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1808,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2256,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2608,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2688,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1952,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2320,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1968,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 128,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2448,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1312,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2640,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2496,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2464,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1376,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1248,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1360,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1232,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1408,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2512,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 320,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1424,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 848,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 11216,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 11456,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 11568,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 11632,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 11664,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 10496,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 3536,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8832,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 3632,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 3616,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7696,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4080,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 3568,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4064,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4144,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4320,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4256,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4240,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7744,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7712,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 32,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4128,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4160,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4432,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 10544,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4288,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4464,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4176,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4480,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7792,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7760,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4336,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 48,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4208,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4192,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4224,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4544,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4304,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 64,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4368,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4352,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4384,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 80,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4512,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7808,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 96,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4592,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4576,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7824,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 112,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4608,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7840,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4672,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4656,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 128,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7856,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4736,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4704,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 144,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4784,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7872,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4800,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4752,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4720,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 160,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7376,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8784,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7680,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4768,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5632,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8208,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8192,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7952,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7904,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7984,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7936,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8032,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5648,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8000,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5200,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8016,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8064,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5168,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8048,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 192,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4816,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 224,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4832,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6432,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6928,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8640,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8416,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 240,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4880,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 288,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4912,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 304,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4928,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 320,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4960,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 336,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6560,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8464,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6544,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8448,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6528,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6864,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8608,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8560,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8304,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6416,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8384,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6752,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8624,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8128,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5728,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8224,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5696,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6800,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8576,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6640,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8496,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5376,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6688,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8528,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6576,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8160,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 3456,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8400,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6720,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8544,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6736,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8352,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6624,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8288,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8336,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6896,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8592,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6512,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5920,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6832,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5680,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8480,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5088,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6480,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6672,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4992,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 352,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5008,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 368,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7552,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5040,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 384,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5056,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 400,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5072,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6608,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 416,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8320,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8240,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 432,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5120,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 448,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7568,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5232,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5664,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5248,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 480,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6656,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8176,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5280,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5264,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5296,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 496,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5312,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6496,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5328,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8368,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 512,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5344,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 528,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5360,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 544,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5392,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 608,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8080,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5408,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 640,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5424,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 672,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8096,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 688,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5440,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 720,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5456,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 768,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8112,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 784,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5472,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 816,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5488,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 848,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5520,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 880,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7584,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5504,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 896,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5536,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 960,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5552,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 992,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5568,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1024,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5600,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5584,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1072,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5712,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1136,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5744,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1152,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5760,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1184,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5776,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1200,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5808,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8256,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5824,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1232,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5856,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5840,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5872,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1248,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8272,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1280,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5904,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7600,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1296,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5936,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1344,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5952,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1360,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5968,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1376,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 5984,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1408,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6000,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1424,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6016,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1440,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6032,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1456,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6048,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1472,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6080,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6064,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6096,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1488,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6112,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1504,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6128,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1520,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6144,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1536,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6160,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1552,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6176,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1584,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6192,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1600,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6208,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1616,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6224,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1632,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6256,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1664,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6272,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1680,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6288,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1712,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7616,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6320,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1728,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6336,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1776,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6368,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1792,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6384,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1808,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6400,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1840,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6848,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 1888,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7008,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 2112,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7632,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6912,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 2144,
+   "clusters": 320
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6768,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 2464,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6784,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 2496,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7648,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 2560,
+   "clusters": 352
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8656,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 2912,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6992,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 2944,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8672,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7664,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 2976,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7184,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 2992,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7024,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 3008,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7040,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 3040,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8688,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 3056,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8704,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 3248,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7152,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 3312,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7168,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8720,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 3360,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7200,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 3392,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8736,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 3424,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7216,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 3440,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 11520,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 9168,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 11488,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 9152,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 352,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 176,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 736,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 832,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2416,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 464,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 752,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 512,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 304,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1296,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 768,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 288,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1280,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 608,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1184,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 592,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1888,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1936,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2288,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1872,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1920,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2016,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1904,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2304,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1984,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2336,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2048,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2352,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1840,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2000,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 16,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2368,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 640,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2080,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2064,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 64,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 48,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1856,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2112,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2144,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2592,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2128,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2384,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2160,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2400,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2096,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1504,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1088,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 272,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 720,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 576,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2560,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2672,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2528,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 9200,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 224,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 192,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 800,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 880,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 864,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1216,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1056,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1136,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1120,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1024,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1168,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1008,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 992,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2192,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2240,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1520,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 1472,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 912,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 976,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 944,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 672,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 960,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 3648,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.idx",
+   "vcn": 0,
+   "clusters": 7
+  },
+  {
+   "path": "D:\\Frostpunk\\common.idx",
+   "vcn": 0,
+   "clusters": 51
+  },
+  {
+   "path": "D:\\Frostpunk\\scenes.idx",
+   "vcn": 0,
+   "clusters": 2
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.idx",
+   "vcn": 0,
+   "clusters": 15
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.idx",
+   "vcn": 0,
+   "clusters": 45
+  },
+  {
+   "path": "D:\\Frostpunk\\videos.idx",
+   "vcn": 0,
+   "clusters": 1
+  },
+  {
+   "path": "D:\\Frostpunk\\archives.idx",
+   "vcn": 0,
+   "clusters": 76
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7328,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 146240,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7312,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4496,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.idx",
+   "vcn": 0,
+   "clusters": 30
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 4416,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7344,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 0,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 0,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2880,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2864,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2992,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2976,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1440,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 576,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1456,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 624,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1056,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 560,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1504,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 224,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1104,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 272,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1152,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 608,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 240,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1168,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1120,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1072,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1488,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 192,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1008,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 176,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 128,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1040,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1408,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 992,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1840,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 528,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 112,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 960,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1024,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 96,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 976,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 160,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 592,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 544,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1424,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1472,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1136,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 208,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 256,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 640,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 688,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1568,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1088,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 704,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1584,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 656,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1536,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 48,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 16,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 80,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 672,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1600,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 720,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 304,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1552,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1616,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 736,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 496,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1328,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1392,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1680,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1664,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1728,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 816,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 448,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1376,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 464,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 512,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 880,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 784,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1344,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1216,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 352,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 832,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1712,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1280,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1312,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1232,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 416,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1760,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 848,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 432,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1648,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 400,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 768,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 336,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 896,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1824,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 944,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 928,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1808,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1184,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 368,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1248,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1696,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 320,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 800,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 752,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1632,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1200,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 384,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1264,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1360,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1296,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 480,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1744,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 912,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 864,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1792,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1856,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 48,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 9136,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 9248,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 9216,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 510208,
+   "clusters": 2880
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 514320,
+   "clusters": 3808
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 32,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2720,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2784,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2704,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2768,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2816,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2800,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2736,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2832,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2688,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 96,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 0,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1318416,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 208,
+   "clusters": 320
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8752,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7232,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 3008,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7504,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 3248,
+   "clusters": 272
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 146624,
+   "clusters": 4
+  },
+  {
+   "path": "D:\\Frostpunk\\localizations.dat",
+   "vcn": 0,
+   "clusters": 272
+  },
+  {
+   "path": "D:\\Frostpunk\\localizations.dat",
+   "vcn": 1712,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 0,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 3728,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 10528,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 3712,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 3776,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 3760,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 146256,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 146384,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 146480,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 146272,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 146464,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 146544,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93024,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1494848,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1529744,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1529728,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1529792,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1002528,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1495920,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639936,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1641792,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1480768,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1641776,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 101184,
+   "clusters": 16272
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 92896,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93008,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1484480,
+   "clusters": 384
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1480992,
+   "clusters": 352
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1502656,
+   "clusters": 672
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1002544,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1497408,
+   "clusters": 1152
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1495968,
+   "clusters": 1200
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1494544,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 399264,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1494272,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1484464,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1494464,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 387920,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1480784,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1495120,
+   "clusters": 800
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1501968,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93216,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 512,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 410528,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2592,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2624,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1012176,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 55952,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 390064,
+   "clusters": 736
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2640,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 92848,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1002608,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 410592,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2576,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2608,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 92992,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1494720,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1002704,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639968,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1634368,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639472,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1640704,
+   "clusters": 624
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1318464,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1479744,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1318400,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1317648,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1541808,
+   "clusters": 288
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1510688,
+   "clusters": 272
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88688,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 59920,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1002624,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1002256,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1527440,
+   "clusters": 416
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 59872,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 999728,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 401008,
+   "clusters": 352
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2656,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 424448,
+   "clusters": 288
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1002432,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 3744,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 60112,
+   "clusters": 14384
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1530288,
+   "clusters": 368
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1637936,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1510960,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1492224,
+   "clusters": 864
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1491456,
+   "clusters": 768
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1490352,
+   "clusters": 752
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1489824,
+   "clusters": 528
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1634016,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1317472,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1000800,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 92928,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1481344,
+   "clusters": 672
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 145216,
+   "clusters": 336
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1494912,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1529952,
+   "clusters": 336
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88704,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 3888,
+   "clusters": 32816
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93248,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1126560,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1010880,
+   "clusters": 896
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1529808,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1502240,
+   "clusters": 272
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1494736,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1633936,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1219696,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88944,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1528720,
+   "clusters": 960
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1527936,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1527856,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1527408,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1529680,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1527360,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1528384,
+   "clusters": 336
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 56000,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1530976,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1532256,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1527200,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1527152,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1527296,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1527280,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1527136,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1528176,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1528016,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1527088,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1491104,
+   "clusters": 352
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1489424,
+   "clusters": 400
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 54784,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 363648,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1493552,
+   "clusters": 464
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1493088,
+   "clusters": 464
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1494016,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1532288,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1482496,
+   "clusters": 1968
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1486992,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1314448,
+   "clusters": 336
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1315504,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1314784,
+   "clusters": 304
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1315344,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1315088,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1314416,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88928,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1531056,
+   "clusters": 1200
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1532320,
+   "clusters": 976
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1497264,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1497168,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1530656,
+   "clusters": 320
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1482016,
+   "clusters": 480
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1637984,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1219600,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1634240,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88864,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1248816,
+   "clusters": 704
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1012160,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1249616,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1249520,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1250624,
+   "clusters": 352
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1016368,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1028992,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1249728,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1250432,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 92944,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1528240,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1501952,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1251664,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1638144,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1528272,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639056,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 55936,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 391984,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 6960,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\scenes.dat",
+   "vcn": 0,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2432,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2480,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2528,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 425392,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1029024,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1071696,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1072608,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1134976,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1231952,
+   "clusters": 1728
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1233808,
+   "clusters": 592
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1245232,
+   "clusters": 368
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1439504,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1441200,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1441184,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1443296,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 0,
+   "clusters": 83360
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 115952,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 83424,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 116096,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 83504,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 116160,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 83584,
+   "clusters": 12464
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7424,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 96048,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 8816,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 96176,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7456,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 96208,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 7296,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 96304,
+   "clusters": 1632
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88720,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 393168,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88736,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 92880,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1480272,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1480704,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1480672,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1123440,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 224,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 272,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 92784,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53664,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6784,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53184,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6752,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 240,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 256,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 688,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\videos.dat",
+   "vcn": 162224,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 448,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 496,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 384,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 9232,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\videos.dat",
+   "vcn": 162256,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 112,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 96,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2224,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\videos.dat",
+   "vcn": 162384,
+   "clusters": 2304
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 2576,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 400,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\videos.dat",
+   "vcn": 164688,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\Frostpunk\\videos.dat",
+   "vcn": 166704,
+   "clusters": 928
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 432,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll",
+   "vcn": 416,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\videos.dat",
+   "vcn": 167632,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 11648,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\Frostpunk.exe",
+   "vcn": 10304,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 244496,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 247136,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 56128,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 402576,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 403712,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 400112,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 400448,
+   "clusters": 384
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 399648,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 405200,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2416,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2512,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2400,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 400160,
+   "clusters": 288
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 92800,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 422032,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 388496,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 421952,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 389664,
+   "clusters": 400
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 422672,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 56576,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 401632,
+   "clusters": 480
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 388032,
+   "clusters": 464
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1029040,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 423680,
+   "clusters": 608
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 81856,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 54272,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 54304,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53472,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 349504,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 350224,
+   "clusters": 304
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1936,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 349424,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1952,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53200,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 353216,
+   "clusters": 480
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6080,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 3312,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 2960,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6176,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 3392,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 4768,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 4752,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 4784,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6192,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 3008,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 3264,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 4928,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6032,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 4608,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 4704,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 3040,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 4688,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 4672,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 3056,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 4736,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 4848,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 3120,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 5040,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 4832,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6208,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6064,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 3152,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6224,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6320,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6304,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 5072,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 3200,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6240,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 5952,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 5936,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 5968,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 3216,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6256,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 3232,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6288,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6352,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 3248,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6384,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 3520,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 3680,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 3648,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 3776,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 3872,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 3856,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 3952,
+   "clusters": 656
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6560,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6656,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6608,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6688,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 5632,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 5104,
+   "clusters": 528
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 5856,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 5808,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 5920,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6720,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6704,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6736,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53456,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 349184,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 349920,
+   "clusters": 304
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 348912,
+   "clusters": 272
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 348848,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1968,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53376,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 344832,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 346032,
+   "clusters": 304
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53504,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 352800,
+   "clusters": 416
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53360,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 349328,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53488,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53680,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6800,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 54288,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1013696,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 54848,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 420672,
+   "clusters": 432
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 55056,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 373776,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 54816,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 365536,
+   "clusters": 496
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 422528,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 54832,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 402624,
+   "clusters": 416
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 376720,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53408,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 346704,
+   "clusters": 880
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 67056,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 495536,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 490496,
+   "clusters": 928
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2048,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 491424,
+   "clusters": 4112
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 496864,
+   "clusters": 1808
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 495856,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1984,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 496128,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 498672,
+   "clusters": 1328
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 496320,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2032,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 495984,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 495888,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 495552,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 487216,
+   "clusters": 1232
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 495728,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 496496,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 368,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 92832,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88384,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 699280,
+   "clusters": 1408
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 50752,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 296864,
+   "clusters": 624
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 50720,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 300096,
+   "clusters": 496
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 50624,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 297488,
+   "clusters": 576
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 299424,
+   "clusters": 672
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2000,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 71264,
+   "clusters": 480
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 72000,
+   "clusters": 336
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 1168,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 90416,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 362800,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 420080,
+   "clusters": 592
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88400,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 279408,
+   "clusters": 576
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 275552,
+   "clusters": 912
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2224,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2256,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 279248,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2240,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 188768,
+   "clusters": 640
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 190560,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 1008,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88416,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 278992,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1904,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 51568,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 59792,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 3920,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 23440,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 27632,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1002736,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 57840,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1872,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 320,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 376688,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1002720,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 374016,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 399424,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 366032,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 54800,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2672,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 410912,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 411792,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 56608,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 33440,
+   "clusters": 304
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 146336,
+   "clusters": 1872
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 151168,
+   "clusters": 1120
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 7008,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6992,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 7024,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 37216,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 592,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 81888,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 362064,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88672,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2272,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 35008,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88656,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88576,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 276464,
+   "clusters": 1520
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88432,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 277984,
+   "clusters": 512
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88560,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88528,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 55376,
+   "clusters": 304
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 148288,
+   "clusters": 1888
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 7136,
+   "clusters": 8
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 55680,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 143808,
+   "clusters": 464
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 148208,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 7088,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 55872,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 150176,
+   "clusters": 992
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 399296,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 399440,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 399344,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 399632,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 415632,
+   "clusters": 736
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 35024,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 154272,
+   "clusters": 368
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 362176,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2208,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 70592,
+   "clusters": 672
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 401360,
+   "clusters": 272
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 416368,
+   "clusters": 736
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 365392,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 421104,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 362096,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 70064,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1029568,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 400,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 697984,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 86736,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 84352,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 695856,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 697088,
+   "clusters": 496
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 3904,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 416,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 87168,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 995040,
+   "clusters": 4112
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 989600,
+   "clusters": 1424
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 992416,
+   "clusters": 2624
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2560,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 750544,
+   "clusters": 640
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 746256,
+   "clusters": 1344
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 576304,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 570736,
+   "clusters": 352
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 698160,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 84608,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 978096,
+   "clusters": 464
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 87568,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 968384,
+   "clusters": 1200
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 605392,
+   "clusters": 1728
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 610704,
+   "clusters": 2864
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 87632,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 972256,
+   "clusters": 1536
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 970720,
+   "clusters": 1536
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 577520,
+   "clusters": 608
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 570688,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1016432,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1013680,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1013856,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1016400,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 70800,
+   "clusters": 304
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 600048,
+   "clusters": 2848
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 594528,
+   "clusters": 5520
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2064,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 73168,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 56160,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 56560,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 56176,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1027088,
+   "clusters": 976
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 87968,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 999264,
+   "clusters": 464
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2320,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 87760,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88128,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88048,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 87936,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88032,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 87856,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 85024,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 981168,
+   "clusters": 368
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 982736,
+   "clusters": 320
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 698256,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 81920,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 962016,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 960432,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88960,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 81904,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 92864,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 32336,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 134528,
+   "clusters": 1392
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 544,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 391456,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1002064,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 75568,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 863072,
+   "clusters": 3744
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 867568,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 727344,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 720784,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 721424,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 721536,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 722368,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 721088,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 721296,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 722480,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 727392,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 720672,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 721472,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 722272,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 722416,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 721152,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 721344,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 723600,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 867424,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 867760,
+   "clusters": 512
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 877856,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 867648,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 854800,
+   "clusters": 8208
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 866816,
+   "clusters": 608
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2960,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 255728,
+   "clusters": 352
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 992,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 417808,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 73072,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 727840,
+   "clusters": 3216
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 67968,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 67568,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 32320,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 67296,
+   "clusters": 272
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 561632,
+   "clusters": 3664
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 72416,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 75904,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 708672,
+   "clusters": 7840
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 362288,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 364384,
+   "clusters": 992
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2016,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 1920,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 67088,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 68032,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 576448,
+   "clusters": 1072
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 92448,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 67616,
+   "clusters": 352
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 566736,
+   "clusters": 3936
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 140448,
+   "clusters": 592
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 92624,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 346336,
+   "clusters": 368
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 697584,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 340752,
+   "clusters": 448
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 340640,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53344,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 340496,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 350560,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 350864,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 52992,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53616,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 6768,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 51248,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 303504,
+   "clusters": 704
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 305152,
+   "clusters": 832
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 1200,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 51392,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 369488,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 422816,
+   "clusters": 736
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 374416,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 57632,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 352,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 9600,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 34576,
+   "clusters": 1568
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 9696,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2288,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 30848,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 9584,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 369472,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2464,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 58064,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 42672,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 225424,
+   "clusters": 592
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 42752,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 226016,
+   "clusters": 624
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 224768,
+   "clusters": 656
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 960,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 42736,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 411008,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 40144,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 209440,
+   "clusters": 608
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 206096,
+   "clusters": 2992
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 40208,
+   "clusters": 304
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 39712,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 210720,
+   "clusters": 480
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 211696,
+   "clusters": 880
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 129056,
+   "clusters": 368
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 130192,
+   "clusters": 512
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 384,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 57872,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 366464,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 369536,
+   "clusters": 1200
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 365376,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 13056,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 72336,
+   "clusters": 608
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 73760,
+   "clusters": 864
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 12976,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 176,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 13024,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 57984,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 373664,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 54592,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 426320,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 426624,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53024,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 336,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 39040,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 197632,
+   "clusters": 736
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 199664,
+   "clusters": 1008
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 39136,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 38992,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 373904,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 33232,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 143296,
+   "clusters": 512
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 145440,
+   "clusters": 896
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 33280,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 33376,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 416,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 57920,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53584,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 349856,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 350528,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 55072,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53600,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 399328,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88464,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 278496,
+   "clusters": 496
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53568,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53696,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53840,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 37328,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 184096,
+   "clusters": 1200
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88496,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 960320,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88480,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 33744,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 152288,
+   "clusters": 1984
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 154640,
+   "clusters": 4016
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 656,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 410928,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53440,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 348416,
+   "clusters": 432
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53424,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 347584,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 348128,
+   "clusters": 288
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 51344,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 306656,
+   "clusters": 704
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 57760,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 51312,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 305984,
+   "clusters": 672
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 57712,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 39104,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 199024,
+   "clusters": 640
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 201664,
+   "clusters": 1008
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 58480,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 33344,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 57952,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 81872,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 8080,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 56032,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 399520,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 56592,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 390800,
+   "clusters": 656
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 56080,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 464,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 81936,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 448,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 480,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 432,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 76064,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 905376,
+   "clusters": 352
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 727248,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 727376,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 905360,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 905344,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2912,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 911600,
+   "clusters": 4208
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 723888,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 724352,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 724080,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 724000,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 724464,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 727568,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 727680,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 915984,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 915808,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 733248,
+   "clusters": 2352
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 732624,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 2304,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 421216,
+   "clusters": 736
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1002112,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\scenes.dat",
+   "vcn": 848,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 697600,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 697712,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 288,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 54080,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 356672,
+   "clusters": 528
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 359088,
+   "clusters": 944
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 358512,
+   "clusters": 576
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 356096,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93936,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93888,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93968,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93856,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93296,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 54112,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93904,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93824,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 53856,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93776,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1533632,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639792,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1318304,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1318224,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1318432,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1317680,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1635024,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639120,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1029808,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93168,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1317632,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 3520,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93200,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639808,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1541168,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93232,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1318384,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1479872,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1338832,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1533328,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1318528,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1317696,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1318448,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1638256,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1638656,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1395072,
+   "clusters": 2720
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1367744,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1339008,
+   "clusters": 1120
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1317504,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639616,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1533296,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1533344,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1479728,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1246144,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639024,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1634352,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1638976,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1638880,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1634416,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1638240,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1636992,
+   "clusters": 800
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639840,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93120,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93072,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1640144,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1318320,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1640128,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1641328,
+   "clusters": 448
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1640400,
+   "clusters": 304
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 424400,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1637792,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93088,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1480736,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 146288,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 144768,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1638464,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 92960,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1533536,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1534288,
+   "clusters": 6880
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1533360,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1533776,
+   "clusters": 512
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1638784,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1634272,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1097648,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1102928,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1123168,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1533552,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1634448,
+   "clusters": 576
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639312,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 544,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1085056,
+   "clusters": 688
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1084896,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1085840,
+   "clusters": 656
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1085744,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1086496,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1084800,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1084960,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1053728,
+   "clusters": 400
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 92912,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1317904,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93056,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 3616,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93040,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1637856,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1070752,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 144944,
+   "clusters": 272
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93104,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 362832,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 8464,
+   "clusters": 560
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1487584,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1487136,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93136,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032464,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032512,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032576,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1033904,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032320,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032416,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032304,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032400,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032480,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032272,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1030064,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1031104,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032448,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032544,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032496,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032560,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639136,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1033936,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1030048,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1031136,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1033952,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032624,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1033504,
+   "clusters": 304
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032992,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1033424,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1033024,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032864,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1033088,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1033824,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1033808,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1033104,
+   "clusters": 320
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032736,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032704,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1032848,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1030400,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1030224,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1031152,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1030144,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1030544,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1030384,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1258464,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1541248,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1541648,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1541184,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1633984,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1542096,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1618816,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1541376,
+   "clusters": 272
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1621840,
+   "clusters": 576
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1634160,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 410656,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1002352,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 415200,
+   "clusters": 432
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1002496,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88896,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1562224,
+   "clusters": 288
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1568464,
+   "clusters": 288
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1567296,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1568080,
+   "clusters": 272
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1567456,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1568352,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1634256,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1487248,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1494144,
+   "clusters": 128
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 93184,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639264,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1244448,
+   "clusters": 272
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1245600,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1237280,
+   "clusters": 176
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1317936,
+   "clusters": 288
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1012144,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1002160,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 424288,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1219648,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1476256,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1478032,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639152,
+   "clusters": 112
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639104,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 425008,
+   "clusters": 384
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1007232,
+   "clusters": 2528
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1480000,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 426368,
+   "clusters": 256
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1002768,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1244720,
+   "clusters": 512
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1245824,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1484864,
+   "clusters": 2128
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1264176,
+   "clusters": 592
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1001728,
+   "clusters": 336
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1002368,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1000336,
+   "clusters": 464
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1009760,
+   "clusters": 1120
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1213168,
+   "clusters": 512
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1215264,
+   "clusters": 560
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1201424,
+   "clusters": 1728
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1203456,
+   "clusters": 4144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1214240,
+   "clusters": 544
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1213680,
+   "clusters": 560
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1207600,
+   "clusters": 5568
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88912,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1245920,
+   "clusters": 224
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1244016,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 424736,
+   "clusters": 272
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 425712,
+   "clusters": 608
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1639632,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 425520,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\Frostpunk\\common.dat",
+   "vcn": 117456,
+   "clusters": 27168
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1502096,
+   "clusters": 144
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1317712,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\Frostpunk\\sequences.dat",
+   "vcn": 0,
+   "clusters": 9
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1003664,
+   "clusters": 3568
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 405312,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 394048,
+   "clusters": 304
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 409040,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 407536,
+   "clusters": 752
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 403760,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1324848,
+   "clusters": 1376
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1330192,
+   "clusters": 1552
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1328368,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88800,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 1386912,
+   "clusters": 400
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 356112,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 115104,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 355232,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 354704,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 8784,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 29216,
+   "clusters": 608
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 31056,
+   "clusters": 736
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 8464,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 24672,
+   "clusters": 2960
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 8880,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 57968,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 37984,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 37680,
+   "clusters": 80
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 193328,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 195472,
+   "clusters": 240
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 37760,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 189408,
+   "clusters": 592
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 190784,
+   "clusters": 672
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 58160,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 528,
+   "clusters": 432
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 699072,
+   "clusters": 208
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 46208,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 257616,
+   "clusters": 448
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 258640,
+   "clusters": 704
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 45984,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 258064,
+   "clusters": 576
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 259936,
+   "clusters": 960
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 46176,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 58016,
+   "clusters": 32
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88320,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 259344,
+   "clusters": 592
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 260896,
+   "clusters": 1216
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 88368,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 32864,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 141616,
+   "clusters": 192
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 142736,
+   "clusters": 160
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 32912,
+   "clusters": 64
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 32816,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\animations.dat",
+   "vcn": 576,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 47664,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 280736,
+   "clusters": 608
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 282208,
+   "clusters": 848
+  },
+  {
+   "path": "D:\\Frostpunk\\textures-s3.dat",
+   "vcn": 285056,
+   "clusters": 1488
+  },
+  {
+   "path": "D:\\Frostpunk\\templates.dat",
+   "vcn": 47760,
+   "clusters": 96
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 112432,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 109792,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 108464,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 231456,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 204784,
+   "clusters": 48
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 112480,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 108512,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 204832,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 115152,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 109840,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 204848,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 112496,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 108528,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 204864,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 109856,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 204880,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 112512,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 108544,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 204896,
+   "clusters": 16
+  },
+  {
+   "path": "D:\\Frostpunk\\sounds.dat",
+   "vcn": 244560,
+   "clusters": 16
+  }
+ ],
+ "fingerprints": {
+  "D:\\Frostpunk\\AnselSDK64.dll": [
+   667664,
+   1729909055462803600
+  ],
+  "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll": [
+   11508704,
+   1729909075352141900
+  ],
+  "D:\\Frostpunk\\Frostpunk.exe": [
+   49278464,
+   1729909075421139800
+  ],
+  "D:\\Frostpunk\\animations.dat": [
+   29260989,
+   1729909055461802500
+  ],
+  "D:\\Frostpunk\\animations.idx": [
+   26952,
+   1729909055461802500
+  ],
+  "D:\\Frostpunk\\archives.idx": [
+   307875,
+   1729909055863192300
+  ],
+  "D:\\Frostpunk\\common.dat": [
+   600587010,
+   1729909075183119700
+  ],
+  "D:\\Frostpunk\\common.idx": [
+   207651,
+   1729909075344138500
+  ],
+  "D:\\Frostpunk\\localizations.dat": [
+   9675077,
+   1729909076122774100
+  ],
+  "D:\\Frostpunk\\scenes.dat": [
+   10749493,
+   1729909076131783100
+  ],
+  "D:\\Frostpunk\\scenes.idx": [
+   4419,
+   1729909076132779500
+  ],
+  "D:\\Frostpunk\\sequences.dat": [
+   33554,
+   1729909076132779500
+  ],
+  "D:\\Frostpunk\\sounds.dat": [
+   1048872323,
+   1729909126128127100
+  ],
+  "D:\\Frostpunk\\sounds.idx": [
+   57460,
+   1729909126129125000
+  ],
+  "D:\\Frostpunk\\templates.dat": [
+   385109411,
+   1729909139575767900
+  ],
+  "D:\\Frostpunk\\templates.idx": [
+   183494,
+   1729909139575767900
+  ],
+  "D:\\Frostpunk\\textures-s3.dat": [
+   6725416443,
+   1729909393899051700
+  ],
+  "D:\\Frostpunk\\textures-s3.idx": [
+   120419,
+   1729909393899051700
+  ],
+  "D:\\Frostpunk\\videos.dat": [
+   752528180,
+   1729909418871799500
+  ],
+  "D:\\Frostpunk\\videos.idx": [
+   881,
+   1729909418927761600
+  ]
+ },
+ "stats": {
+  "preserved_segments": 50,
+  "preserved_bytes": 1808396288,
+  "in_place_bytes": 0,
+  "overflow_bytes": 0,
+  "misaligned_pieces": 270,
+  "hot_bytes": 2020769792,
+  "moved_bytes": 212373504,
+  "tasks": 290,
+  "avg_clusters_per_task": 178.79,
+  "zone_used_clusters": 51849,
+  "skipped_files": 3,
+  "current_runs": 300,
+  "expected_runs": 66,
+  "hot_blocks": 30843,
+  "units": 1642
+ }
+}

@@ -1,0 +1,211 @@
+﻿{
+    "game":  "D:\\Frostpunk\\Frostpunk.exe",
+    "root":  "D:\\Frostpunk",
+    "runs":  3,
+    "max_zone_mib":  2048,
+    "repo":  "D:\\Git\\AsterCache",
+    "skip_apply":  false,
+    "trace_json_reused":  "D:\\Git\\AsterCache\\results\\csharp_e4_20261102_105938\\trace.json",
+    "volume":  "D:",
+    "label":  "로컬 디스크",
+    "disk_model":  "WDC WD20EZAZ-00GGJB0",
+    "bus_type":  "SATA",
+    "trace":  {
+                  "file":  "D:\\Git\\AsterCache\\results\\csharp_e4_20261102_111921\\trace.json",
+                  "file_bytes":  2876037,
+                  "events":  30844,
+                  "reused_from":  "D:\\Git\\AsterCache\\results\\csharp_e4_20261102_105938\\trace.json",
+                  "read_bytes":  2021392384,
+                  "events_lost":  null,
+                  "live_line":  null,
+                  "format":  "list of {path,offset,length,cost}: read as is by bench.replay (python -X utf8)"
+              },
+    "hot_bytes":  2020769792,
+    "plan_stats_max_zone":  {
+                                "preserved_segments":  50,
+                                "preserved_bytes":  1808396288,
+                                "in_place_bytes":  0,
+                                "overflow_bytes":  0,
+                                "misaligned_pieces":  270,
+                                "hot_bytes":  2020769792,
+                                "moved_bytes":  212373504,
+                                "tasks":  290,
+                                "avg_clusters_per_task":  178.79,
+                                "zone_used_clusters":  51849,
+                                "skipped_files":  3,
+                                "current_runs":  300,
+                                "expected_runs":  66,
+                                "hot_blocks":  30843,
+                                "units":  1642
+                            },
+    "plan_stats":  {
+                       "preserved_segments":  50,
+                       "preserved_bytes":  1808396288,
+                       "in_place_bytes":  0,
+                       "overflow_bytes":  0,
+                       "misaligned_pieces":  270,
+                       "hot_bytes":  2020769792,
+                       "moved_bytes":  212373504,
+                       "tasks":  290,
+                       "avg_clusters_per_task":  178.79,
+                       "zone_used_clusters":  51849,
+                       "skipped_files":  3,
+                       "current_runs":  300,
+                       "expected_runs":  66,
+                       "hot_blocks":  30843,
+                       "units":  1642
+                   },
+    "zone_mib":  2048,
+    "apply_skipped":  false,
+    "plan_paths_checked":  20,
+    "before_direct":  {
+                          "prefetch":  false,
+                          "runs":  [
+                                       {
+                                           "prefetch_s":  0,
+                                           "prefetch_bytes":  0,
+                                           "replay_s":  32.628283196798293,
+                                           "total_s":  32.628283196798293
+                                       },
+                                       {
+                                           "prefetch_s":  0,
+                                           "prefetch_bytes":  0,
+                                           "replay_s":  30.655215600127121,
+                                           "total_s":  30.655215600127121
+                                       },
+                                       {
+                                           "prefetch_s":  0,
+                                           "prefetch_bytes":  0,
+                                           "replay_s":  22.027839000249511,
+                                           "total_s":  22.027839000249511
+                                       }
+                                   ],
+                          "median_total_s":  30.655215600127121,
+                          "median_prefetch_s":  0,
+                          "median_replay_s":  30.655215600127121
+                      },
+    "before_median_s":  30.655215600127121,
+    "probe":  {
+                  "volume":  "D:",
+                  "label":  "로컬 디스크",
+                  "cluster_bytes":  4096,
+                  "total_clusters":  488374271,
+                  "free_clusters_ntfs":  142535220,
+                  "free_clusters_bitmap":  142535220,
+                  "bitmap_bits":  488374271,
+                  "free_match":  true,
+                  "mft_zone":  [
+                                   410659712,
+                                   410676768
+                               ],
+                  "zone_clusters_needed":  51849,
+                  "zone_candidate_lcn":  75528740
+              },
+    "dry_run":  {
+                    "zone_start_lcn":  75528740,
+                    "tasks_total":  290,
+                    "tasks_todo":  290,
+                    "bytes_todo":  212373504,
+                    "skipped_files":  {
+
+                                      },
+                    "executed":  false,
+                    "moved_bytes":  0,
+                    "failed":  [
+
+                               ],
+                    "stopped":  null,
+                    "dry_run":  true,
+                    "plan_saved":  true
+                },
+    "apply":  {
+                  "zone_start_lcn":  75528740,
+                  "tasks_total":  290,
+                  "tasks_todo":  290,
+                  "bytes_todo":  212373504,
+                  "skipped_files":  {
+
+                                    },
+                  "executed":  true,
+                  "moved_bytes":  212373504,
+                  "failed":  [
+
+                             ],
+                  "stopped":  null,
+                  "dry_run":  false,
+                  "plan_saved":  false,
+                  "sha_checked":  6,
+                  "sha_mismatch":  [
+
+                                   ]
+              },
+    "apply_seconds":  45.257,
+    "moved_bytes":  212373504,
+    "apply_mb_s":  4.48,
+    "verify":  {
+                   "hot_clusters":  493352,
+                   "ordered_runs":  66,
+                   "expected_runs":  66,
+                   "current_runs_at_plan_time":  300,
+                   "ascending":  false,
+                   "in_zone_clusters":  51849,
+                   "missing_files":  0,
+                   "contiguous":  true,
+                   "verdict":  "contiguous"
+               },
+    "manifest_identical":  true,
+    "after_direct":  {
+                         "prefetch":  false,
+                         "runs":  [
+                                      {
+                                          "prefetch_s":  0,
+                                          "prefetch_bytes":  0,
+                                          "replay_s":  21.66795690022991,
+                                          "total_s":  21.66795690022991
+                                      },
+                                      {
+                                          "prefetch_s":  0,
+                                          "prefetch_bytes":  0,
+                                          "replay_s":  21.7475627988606,
+                                          "total_s":  21.7475627988606
+                                      },
+                                      {
+                                          "prefetch_s":  0,
+                                          "prefetch_bytes":  0,
+                                          "replay_s":  22.027470496803289,
+                                          "total_s":  22.027470496803289
+                                      }
+                                  ],
+                         "median_total_s":  21.7475627988606,
+                         "median_prefetch_s":  0,
+                         "median_replay_s":  21.7475627988606
+                     },
+    "after_prefetch":  {
+                           "prefetch":  true,
+                           "runs":  [
+                                        {
+                                            "prefetch_s":  15.0547,
+                                            "prefetch_bytes":  2047714320,
+                                            "replay_s":  0.29570289987896103,
+                                            "total_s":  15.350402899878961
+                                        },
+                                        {
+                                            "prefetch_s":  15.1282,
+                                            "prefetch_bytes":  2047714320,
+                                            "replay_s":  0.31615429960947949,
+                                            "total_s":  15.444354299609479
+                                        },
+                                        {
+                                            "prefetch_s":  15.2105,
+                                            "prefetch_bytes":  2047714320,
+                                            "replay_s":  0.39617090110550635,
+                                            "total_s":  15.606670901105506
+                                        }
+                                    ],
+                           "median_total_s":  15.444354299609479,
+                           "median_prefetch_s":  15.1282,
+                           "median_replay_s":  0.31615429960947949
+                       },
+    "after_median_s":  21.7475627988606,
+    "after_prefetch_median_s":  15.444354299609479
+}

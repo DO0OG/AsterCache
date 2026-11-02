@@ -127,4 +127,48 @@ public sealed class SchedulerTests
     {
         Assert.Equal(1 << 20, Mib);
     }
+
+    [Fact]
+    public void HeadBytesPutsTheAccessOrderPrefixFirstThenPhysicalOrder()
+    {
+        // 접근 순서: A@0(디스크 1000대), B@0(500대), A@15(100대). 물리 순서만이면 A15, B0, A0.
+        ReadRange[] rs = { Rng("A", 0, Cs), Rng("B", 0, Cs), Rng("A", 15 * Cs, Cs) };
+
+        (List<ReadOp> ops, ScheduleInfo info) = Scheduler.Schedule(rs, "physical", gapBytes: 0, layoutFn: LayoutOf, headBytes: Cs);
+
+        Assert.Equal(Ops(("A", 0, Cs), ("A", 15 * Cs, Cs), ("B", 0, Cs)), ops); // 앞 4 KiB 는 접근 순서, 나머지는 물리 순서
+        Assert.Equal(3L * Cs, info.SelectedBytes);
+    }
+
+    [Fact]
+    public void HeadBytesTakesWholeRangesUntilTheThresholdIsReached()
+    {
+        ReadRange[] rs = { Rng("B", 10 * Cs, Cs), Rng("A", 0, Cs), Rng("B", 0, Cs) };
+
+        (List<ReadOp> ops, _) = Scheduler.Schedule(rs, "physical", gapBytes: 0, layoutFn: LayoutOf, headBytes: (2 * Cs) - 1);
+
+        Assert.Equal(Ops(("B", 10 * Cs, Cs), ("A", 0, Cs), ("B", 0, Cs)), ops); // 두 범위로 기준을 넘기고 세 번째가 나머지
+    }
+
+    [Fact]
+    public void HeadBytesBiggerThanEverythingKeepsAccessOrderAndZeroChangesNothing()
+    {
+        ReadRange[] rs = { Rng("A", 0, Cs), Rng("B", 0, Cs), Rng("A", 15 * Cs, Cs) };
+        (List<ReadOp> plain, _) = Scheduler.Schedule(rs, "physical", gapBytes: 0, layoutFn: LayoutOf);
+
+        (List<ReadOp> all, _) = Scheduler.Schedule(rs, "physical", gapBytes: 0, layoutFn: LayoutOf, headBytes: 256 * Mib);
+        (List<ReadOp> zero, _) = Scheduler.Schedule(rs, "physical", gapBytes: 0, layoutFn: LayoutOf, headBytes: 0);
+
+        Assert.Equal(Ops(("A", 0, Cs), ("B", 0, Cs), ("A", 15 * Cs, Cs)), all);
+        Assert.Equal(plain, zero);
+    }
+
+    [Fact]
+    public void PhysicalOrderIsNotAccessOrderByDefault()
+    {
+        (List<ReadOp> ops, _) = Scheduler.Schedule(
+            new[] { Rng("A", 0, Cs), Rng("A", 15 * Cs, Cs) }, "physical", gapBytes: 0, layoutFn: LayoutOf);
+
+        Assert.Equal(Ops(("A", 15 * Cs, Cs), ("A", 0, Cs)), ops);
+    }
 }

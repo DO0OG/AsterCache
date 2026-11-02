@@ -19,7 +19,8 @@ public static class Scheduler
         long? gapBytes = null,
         Func<string, FileLayoutInfo?>? layoutFn = null,
         Func<string, long>? sizeFn = null,
-        double fullFileRatio = 0.3)
+        double fullFileRatio = 0.3,
+        long? headBytes = null)
     {
         long gap = gapBytes ?? BreakevenGap();
         if (strategy is not ("physical" or "path" or "none"))
@@ -51,6 +52,20 @@ public static class Scheduler
         if (strategy == "none")
         {
             return (chosen.Select(r => new ReadOp(r.Path, r.Offset, r.Length)).ToList(), info);
+        }
+
+        // 게임 시작에 먼저 필요한 접근 순서 앞부분은 디스크 순으로 섞지 않고 순서대로 앞에 둠 (범위 단위로 자르므로 headBytes 를 조금 넘길 수 있음)
+        var head = new List<ReadOp>();
+        if (headBytes is > 0)
+        {
+            int k = 0;
+            for (long taken = 0; k < chosen.Count && taken < headBytes; k++)
+            {
+                head.Add(new ReadOp(chosen[k].Path, chosen[k].Offset, chosen[k].Length));
+                taken += chosen[k].Length;
+            }
+
+            chosen = chosen.GetRange(k, chosen.Count - k);
         }
 
         var byPath = new OrderedDictionary<string, List<ReadRange>>();
@@ -124,7 +139,8 @@ public static class Scheduler
         // OrderBy 는 안정 정렬이라 Python list.sort(key=...) 와 같습니다.
         var cmp = Comparer<(string Drive, bool Unknown, long Phys, string Path, long Off, ReadOp Op)>.Create(CompareKeys);
         List<ReadOp> ops = keyed.OrderBy(k => k, cmp).Select(k => k.Op).ToList();
-        return (ops, info);
+        head.AddRange(ops);
+        return (head, info);
     }
 
     private static int CompareDens((double Ratio, string Path, long Size, long Need) a, (double Ratio, string Path, long Size, long Need) b)

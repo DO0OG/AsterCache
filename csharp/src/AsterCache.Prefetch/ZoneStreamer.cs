@@ -101,7 +101,7 @@ public static class ZoneStreamer
         return (bytes, requests, errors);
     }
 
-    // Python _read_pvm(per_file=False): 어느 단계든 실패하면 오류 1 로 전체를 멈춥니다 (바이트·요청은 호출이 성공했을 때만 셈).
+    // Python _read_pvm 과 달리 파일 하나의 열기·매핑 실패 (게임이 배타적으로 연 파일 등) 는 그 파일만 오류 1 로 건너뛰고 나머지는 계속합니다 (바이트·요청은 호출이 성공했을 때만 셈).
     private static (long, long, long) RunPvm(IReadOnlyList<ReadOp> ops)
     {
         var views = new Dictionary<string, FileMapping>();
@@ -110,30 +110,44 @@ public static class ZoneStreamer
         long bytes = 0;
         long requests = 0;
         long errors = 0;
+        var failed = new HashSet<string>();
         try
         {
             long need = 0;
             foreach (ReadOp op in ops)
             {
-                if (!sizes.TryGetValue(op.Path, out long size))
-                {
-                    sizes[op.Path] = size = new FileInfo(op.Path).Length;
-                }
-
-                long n = Math.Min(op.Length, size - op.Offset);
-                if (n <= 0)
+                if (failed.Contains(op.Path))
                 {
                     continue;
                 }
 
-                if (!views.TryGetValue(op.Path, out FileMapping? view))
+                try
                 {
-                    views[op.Path] = view = FileMapping.Open(op.Path);
-                }
+                    if (!sizes.TryGetValue(op.Path, out long size))
+                    {
+                        sizes[op.Path] = size = new FileInfo(op.Path).Length;
+                    }
 
-                long a = op.Offset - (op.Offset % Page);
-                ranges.Add(new Win32MemoryRangeEntry { VirtualAddress = view.BaseAddress + (nint)a, NumberOfBytes = (nuint)(op.Offset + n - a) });
-                need += n;
+                    long n = Math.Min(op.Length, size - op.Offset);
+                    if (n <= 0)
+                    {
+                        continue;
+                    }
+
+                    if (!views.TryGetValue(op.Path, out FileMapping? view))
+                    {
+                        views[op.Path] = view = FileMapping.Open(op.Path);
+                    }
+
+                    long a = op.Offset - (op.Offset % Page);
+                    ranges.Add(new Win32MemoryRangeEntry { VirtualAddress = view.BaseAddress + (nint)a, NumberOfBytes = (nuint)(op.Offset + n - a) });
+                    need += n;
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException or Win32Exception)
+                {
+                    errors++;
+                    failed.Add(op.Path);
+                }
             }
 
             if (ranges.Count > 0)
@@ -148,10 +162,6 @@ public static class ZoneStreamer
                     errors++;
                 }
             }
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or Win32Exception)
-        {
-            errors++;
         }
         finally
         {

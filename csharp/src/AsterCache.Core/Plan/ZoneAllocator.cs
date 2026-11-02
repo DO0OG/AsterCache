@@ -240,7 +240,7 @@ public static class ZoneAllocator
     /// zoneStartLcn 이 null 이면 존을 아직 못 정한 것: 목표는 존 시작 기준 오프셋으로 돌려주고, 제자리·존 겹침은 없다고 봅니다.
     public static AllocResult Allocate(IReadOnlyList<Unit> units, IReadOnlyDictionary<string, IReadOnlyList<Extent>?> extentsByFile,
         long? zoneStartLcn, long zoneClusters, long clusterBytes, long block = HotSet.Block,
-        IReadOnlyDictionary<string, long>? sizes = null, long preserveBytes = 8L << 20, long alignClusters = 4)
+        IReadOnlyDictionary<string, long>? sizes = null, long preserveBytes = 0, long alignClusters = 4)
     {
         long cb = clusterBytes;
         bool rel = zoneStartLcn is null;
@@ -278,7 +278,7 @@ public static class ZoneAllocator
         foreach (List<Piece> g in groups)
         {
             long total = g.Sum(p => p.N);
-            if (total * cb >= preserveBytes)
+            if (preserveBytes > 0 && total * cb >= preserveBytes)
             {
                 preservedSegments++;
                 preservedBytes += total * cb;

@@ -1,3 +1,4 @@
+using AsterCache.Core.Json;
 using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Volume;
@@ -123,18 +124,60 @@ public static class PlanGuards
     }
 
     /// 존 시작을 정하고 (계획에 없으면 비트맵의 빈 구간) 목표를 확인합니다.
-    public static PlanFile ResolveZone(PlanFile plan, IVolume vol, Func<string, IReadOnlyList<Extent>?> extents)
+    public static PlanFile ResolveZone(PlanFile plan, IVolume vol, Func<string, IReadOnlyList<Extent>?> extents) =>
+        ResolveZone(plan, vol, extents, null, out _);
+
+    /// journalPath 를 주면, 이미 정한 존이 다른 파일에 막혔고 (zone_not_free) 그 저널에 끝나지 않은 단계가 없으며 계획이 제자리 조각 없이
+    /// 존 오프셋만으로 된 것이면 (in_place_bytes == 0) 새 빈 구간을 찾아 목표를 옮깁니다 (rezoned = true). 이어할 단계가 있으면 기존처럼 거부합니다.
+    public static PlanFile ResolveZone(PlanFile plan, IVolume vol, Func<string, IReadOnlyList<Extent>?> extents, string? journalPath, out bool rezoned)
     {
+        rezoned = false;
         VolumeBitmap bm = vol.Bitmap();
         if (plan.Zone.StartLcn is null)
         {
-            long need = (long)plan.Stats["zone_used_clusters"]!;
-            long? baseLcn = bm.FindFreeRun(need, preferLowLcn: true, align: ZoneAlign);
-            return baseLcn is null ? throw new PlanRejectedException($"no free run of {need} clusters") : plan.Resolve(baseLcn.Value);
+            return plan.Resolve(FindZone(plan, bm));
         }
 
-        CheckZoneFree(plan, bm, extents);
-        return plan;
+        try
+        {
+            CheckZoneFree(plan, bm, extents);
+            return plan;
+        }
+        catch (PlanRejectedException e) when (journalPath is not null && e.Message.StartsWith("zone_not_free", StringComparison.Ordinal)
+            && plan.Stats.TryGetValue("in_place_bytes", out object? inPlace) && inPlace is 0L && !HasUnfinishedStep(journalPath))
+        {
+            long oldStart = plan.Zone.StartLcn.Value;
+            long start = FindZone(plan, bm);
+            rezoned = true;
+            return plan with { Zone = plan.Zone with { StartLcn = start }, Tasks = plan.Tasks.Select(t => t with { TargetLcn = t.TargetLcn - oldStart + start }).ToList() };
+        }
+    }
+
+    /// 저널에 마지막 state 가 done 이 아닌 단계 (planned·failed) 가 있나. 저널이 없으면 없음.
+    public static bool HasUnfinishedStep(string journalPath)
+    {
+        if (!File.Exists(journalPath))
+        {
+            return false;
+        }
+
+        using var jr = new Journal(journalPath);
+        var last = new Dictionary<long, string?>();
+        foreach (JObject r in jr.Rows)
+        {
+            if (r.TryGetValue("type", out object? t) && Equals(t, "step") && r.TryGetValue("idx", out object? i) && i is long idx)
+            {
+                last[idx] = r.TryGetValue("state", out object? s) ? s as string : null;
+            }
+        }
+
+        return last.Values.Any(s => s != "done");
+    }
+
+    private static long FindZone(PlanFile plan, VolumeBitmap bm)
+    {
+        long need = (long)plan.Stats["zone_used_clusters"]!;
+        return bm.FindFreeRun(need, preferLowLcn: true, align: ZoneAlign) ?? throw new PlanRejectedException($"no free run of {need} clusters");
     }
 
     // bisect_right(starts, lcn) - 1

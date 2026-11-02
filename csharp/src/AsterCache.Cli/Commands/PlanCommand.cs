@@ -16,7 +16,7 @@ internal static class PlanCommand
         new("zone-mib", Type: ArgType.Int, Required: true),
         new("zone-start-lcn", Default: "auto"),
         new("cluster-bytes", Type: ArgType.Int),
-        new("preserve-mib", Type: ArgType.Int, Default: "8"),
+        new("preserve-mib", Type: ArgType.Int, Default: "0"),
         new("min-sessions", Type: ArgType.Int),
         new("out"),
         new("dry-run", ArgKind.Flag),
@@ -57,10 +57,7 @@ internal static class PlanCommand
                 throw new PyValueException("--out is required unless --dry-run");
             }
 
-            plan.Save(outPath);
-            prefetchPath = outPath + ".prefetch.json";
-            string rows = PyJson.Dumps(plan.PrefetchTrace(sessions).Select(e => e.ToJson()).ToList(), ensureAscii: false) + "\n";
-            File.WriteAllBytes(prefetchPath, PyJson.Utf8.GetBytes(PyJson.ToCrlf(rows)));
+            prefetchPath = PlanOutput.Save(plan, sessions, outPath);
         }
 
         JObject json = plan.ToJson();

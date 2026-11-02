@@ -1,0 +1,9 @@
+﻿21:21:58 mode=synthetic root=D:\AsterBench_e7 trace=D:\AsterBench_e7\trace.json runs=3 order=A,B,B,A,A,B
+21:22:19 A1: replay 19.82 s 
+21:23:09 B1: replay 39.40 s read_ahead=1140588544 hit=0.2803
+21:23:56 B2: replay 38.71 s read_ahead=1168900096 hit=0.2847
+21:24:17 A2: replay 19.98 s 
+21:24:37 A3: replay 19.75 s 
+21:25:24 B3: replay 37.99 s read_ahead=1176109056 hit=0.264
+21:26:11 W (DiskIo capture): replay 37.03 s
+21:26:13 median A (no learn) 19.82 s, B (learn) 38.71 s, A/B = 0.512

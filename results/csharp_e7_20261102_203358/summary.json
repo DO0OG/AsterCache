@@ -1,0 +1,100 @@
+{
+ "other_python_processes": 11,
+ "mode": "synthetic",
+ "root": "D:\\AsterBench_e7",
+ "trace": "D:\\AsterBench_e7\\trace.json",
+ "aster": "aster.exe",
+ "runs": 3,
+ "learn_seconds_cap": 45,
+ "rows": [
+  {
+   "arm": "A",
+   "run": 1,
+   "replay_s": 21.665508000383852
+  },
+  {
+   "arm": "B",
+   "run": 1,
+   "replay_s": 45.35143569961656,
+   "read_ahead_bytes": 1775239168,
+   "hit_ratio": 0.0,
+   "events": 65,
+   "events_lost": 0
+  },
+  {
+   "arm": "B",
+   "run": 2,
+   "replay_s": 44.89765729926876,
+   "read_ahead_bytes": 1673913923,
+   "hit_ratio": 0.0,
+   "events": 65,
+   "events_lost": 0
+  },
+  {
+   "arm": "A",
+   "run": 2,
+   "replay_s": 21.48980000037409
+  },
+  {
+   "arm": "A",
+   "run": 3,
+   "replay_s": 23.826820899936138
+  },
+  {
+   "arm": "B",
+   "run": 3,
+   "replay_s": 43.43907490080164,
+   "read_ahead_bytes": 1839202304,
+   "hit_ratio": 0.0,
+   "events": 65,
+   "events_lost": 0
+  }
+ ],
+ "wpr_error": "wpr -start failed (exit -2147024773)",
+ "median_a_s": 21.665508000383852,
+ "median_b_s": 44.89765729926876,
+ "speedup": 0.483,
+ "dataset": {
+  "root": "D:\\AsterBench_e7",
+  "files": 64,
+  "total_bytes": 2135949312,
+  "slice_mib": 1,
+  "extents_total": 350,
+  "extents_per_file_min": 4,
+  "extents_per_file_max": 7,
+  "hot_runs": 948,
+  "hot_bytes": 243531776,
+  "lcn_min": 75529092,
+  "lcn_max": 389963126
+ },
+ "diagnosis": {
+  "learn_standalone_json": {
+   "read_ahead_bytes": 2136335939,
+   "game_read_bytes": 0,
+   "hit_ratio": 0.0,
+   "events": 65,
+   "events_lost": 0,
+   "out": "D:\\Git\\AsterCache\\results\\csharp_e7_20261102_203358\\diag_learn_trace.json",
+   "trace_events": 4699
+  },
+  "conclusion": "ETW session works (65 FileIO Create events -> OnOpen; 4699 trace records incl. 4000 reads) but OnRead is never called (game_read_bytes=0): KernelCollector.OnRead only notifies the listener when the FileKey name is already known; FileKey names (FileIOName/FileCreate/Rundown) arrive only at rundown, so every live read is parked in _pending. Read-ahead then comes only from OnOpen whole-file queueing of files <= 64 MiB.",
+  "code_location": [
+   "csharp/src/AsterCache.Tracer/KernelCollector.cs:104-119 (OnRead: name null -> _pending, no listener call)",
+   "csharp/src/AsterCache.Tracer/FileNames.cs AtRead (trusts FileKey names only; FileObject name is only a fallback)",
+   "csharp/src/AsterCache.Prefetch/ReadAhead.cs Step(): Sized files <= SmallFileBytes (64 MiB) are queued whole on OnOpen"
+  ],
+  "diskio_B": {
+   "disk0_reads": 3803,
+   "disk0_bytes": 2187755008,
+   "replay_requested_bytes": 262144000,
+   "sizes_bytes": {
+    "<=64K": 79000000.0,
+    "64K-1M": 217000000.0,
+    "1M": 1334000000.0,
+    ">1M": 558000000.0
+   },
+   "window_s": 46.5,
+   "note": "per-process split unreliable (ReadInit join covers 1103 of 18140 events; PID 4 System issues 1.14 GB cache-manager IO)"
+  }
+ }
+}

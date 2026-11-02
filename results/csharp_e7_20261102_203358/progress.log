@@ -1,0 +1,9 @@
+﻿20:33:58 mode=synthetic root=D:\AsterBench_e7 trace=D:\AsterBench_e7\trace.json runs=3 order=A,B,B,A,A,B
+20:34:24 A1: replay 21.67 s 
+20:35:14 B1: replay 45.35 s read_ahead=1775239168 hit=0.0
+20:36:03 B2: replay 44.90 s read_ahead=1673913923 hit=0.0
+20:36:25 A2: replay 21.49 s 
+20:36:52 A3: replay 23.83 s 
+20:37:40 B3: replay 43.44 s read_ahead=1839202304 hit=0.0
+20:37:40 DiskIo capture failed: wpr -start failed (exit -2147024773)
+20:37:40 median A (no learn) 21.67 s, B (learn) 44.90 s, A/B = 0.483

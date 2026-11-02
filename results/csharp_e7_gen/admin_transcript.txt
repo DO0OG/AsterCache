@@ -1,0 +1,37 @@
+﻿**********************
+Windows PowerShell 기록 시작
+시작 시간: 20261102203357
+사용자 이름: <host>\<user>
+RunAs 사용자: <host>\<user>
+구성 이름: 
+Machine: <host> (Microsoft Windows NT 10.0.26200.0)
+호스트 응용 프로그램: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File <scratch>\admin\e7_1.ps1
+프로세스 ID: 32840
+PSVersion: 5.1.26100.9168
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9168
+BuildVersion: 10.0.26100.9168
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+20:33:58 mode=synthetic root=D:\AsterBench_e7 trace=D:\AsterBench_e7\trace.json runs=3 order=A,B,B,A,A,B
+20:34:24 A1: replay 21.67 s
+20:35:14 B1: replay 45.35 s read_ahead=1775239168 hit=0.0
+20:36:03 B2: replay 44.90 s read_ahead=1673913923 hit=0.0
+20:36:25 A2: replay 21.49 s
+20:36:52 A3: replay 23.83 s
+20:37:40 B3: replay 43.44 s read_ahead=1839202304 hit=0.0
+20:37:40 DiskIo capture failed: wpr -start failed (exit -2147024773)
+20:37:40 median A (no learn) 21.67 s, B (learn) 44.90 s, A/B = 0.483
+Done: D:\Git\AsterCache\results\csharp_e7_20261102_203358\summary.json
+This script changed nothing on disk. If you undid the relayout before this run, restore it with (elevated, Frostpunk clo
+sed):
+  & "D:\Git\AsterCache\csharp\publish\cli\aster.exe" apply --plan "D:\Git\AsterCache\results\csharp_e4_20261102_111921\p
+lan.json" --journal <new journal.jsonl> --allowed-root "D:\AsterBench_e7" --execute
+driver exit=0
+**********************
+Windows PowerShell 기록 끝
+종료 시간: 20261102203740
+**********************

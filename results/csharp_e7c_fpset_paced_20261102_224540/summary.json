@@ -1,0 +1,87 @@
+﻿{
+    "replay":  "paced",
+    "think_ms":  120,
+    "think_every":  100,
+    "other_python_processes":  10,
+    "mode":  "synthetic",
+    "root":  "D:\\AsterBench_fp",
+    "trace":  "D:\\AsterBench_fp\\trace_fp.json",
+    "aster":  "D:\\Git\\AsterCache\\csharp\\publish\\gui\\aster.exe",
+    "runs":  3,
+    "learn_seconds_cap":  120,
+    "rows":  [
+                 {
+                     "arm":  "A",
+                     "run":  1,
+                     "replay_s":  49.667346996051492
+                 },
+                 {
+                     "arm":  "B",
+                     "run":  1,
+                     "replay_s":  52.152660399704473,
+                     "read_ahead_bytes":  589278004,
+                     "game_read_bytes":  2337252469,
+                     "hit_ratio":  0.137,
+                     "events":  35608,
+                     "events_lost":  0,
+                     "resolved_reads":  54347,
+                     "late_reads":  0,
+                     "unresolved_reads":  6782,
+                     "sequential_files":  7,
+                     "hit_bytes":  320274432,
+                     "gap_count":  150,
+                     "yielded_requests":  148,
+                     "read_ahead_while_idle_bytes":  435530548
+                 },
+                 {
+                     "arm":  "B",
+                     "run":  2,
+                     "replay_s":  50.112378399877343,
+                     "read_ahead_bytes":  628402996,
+                     "game_read_bytes":  2351408245,
+                     "hit_ratio":  0.1341,
+                     "events":  35824,
+                     "events_lost":  0,
+                     "resolved_reads":  55829,
+                     "late_reads":  0,
+                     "unresolved_reads":  814,
+                     "sequential_files":  7,
+                     "hit_bytes":  315293696,
+                     "gap_count":  148,
+                     "yielded_requests":  147,
+                     "read_ahead_while_idle_bytes":  479046452
+                 },
+                 {
+                     "arm":  "A",
+                     "run":  2,
+                     "replay_s":  40.963928597047925
+                 },
+                 {
+                     "arm":  "A",
+                     "run":  3,
+                     "replay_s":  40.027771499619121
+                 },
+                 {
+                     "arm":  "B",
+                     "run":  3,
+                     "replay_s":  40.966093600465683,
+                     "read_ahead_bytes":  699575092,
+                     "game_read_bytes":  2349769845,
+                     "hit_ratio":  0.1662,
+                     "events":  35799,
+                     "events_lost":  0,
+                     "resolved_reads":  46742,
+                     "late_reads":  0,
+                     "unresolved_reads":  350,
+                     "sequential_files":  7,
+                     "hit_bytes":  390463488,
+                     "gap_count":  163,
+                     "yielded_requests":  162,
+                     "read_ahead_while_idle_bytes":  532130612
+                 }
+             ],
+    "wpr_replay_s":  44.260411701223347,
+    "median_a_s":  40.963928597047925,
+    "median_b_s":  50.112378399877343,
+    "speedup":  0.817
+}

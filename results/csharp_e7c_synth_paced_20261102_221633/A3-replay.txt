@@ -1,0 +1,18 @@
+﻿{
+ "mode": "buffered_paced",
+ "think_ms": 120.0,
+ "every": 100,
+ "from_trace": false,
+ "requests": 4000,
+ "bytes": 262144000,
+ "crc32": 2859603442,
+ "total_s": 19.448513199400622,
+ "wall_s": 24.378924499993445,
+ "throughput_mib_s": 12.854453059563683,
+ "p50_ms": 0.34919999598059803,
+ "p95_ms": 22.556799987796694,
+ "p99_ms": 35.86269999505021,
+ "missing_files": 0,
+ "skipped_requests": 0
+}
+

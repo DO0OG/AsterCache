@@ -1,0 +1,164 @@
+{
+ "synth": {
+  "folder": "csharp_e7b_synth_20261102_212158",
+  "median_a": 19.82388050032023,
+  "median_b": 38.71406330057653,
+  "speedup": 0.512,
+  "rows": [
+   {
+    "arm": "A",
+    "run": 1,
+    "replay_s": 19.82388050032023
+   },
+   {
+    "arm": "B",
+    "run": 1,
+    "replay_s": 39.40431110003556,
+    "read_ahead_bytes": 1140588544,
+    "game_read_bytes": 337565253,
+    "hit_ratio": 0.2803,
+    "events": 5207,
+    "events_lost": 0,
+    "resolved_reads": 14860,
+    "late_reads": 0,
+    "unresolved_reads": 384,
+    "sequential_files": 64,
+    "hit_bytes": 94633984
+   },
+   {
+    "arm": "B",
+    "run": 2,
+    "replay_s": 38.71406330057653,
+    "read_ahead_bytes": 1168900096,
+    "game_read_bytes": 335795781,
+    "hit_ratio": 0.2847,
+    "events": 5180,
+    "events_lost": 0,
+    "resolved_reads": 14347,
+    "late_reads": 0,
+    "unresolved_reads": 315,
+    "sequential_files": 64,
+    "hit_bytes": 95617024
+   },
+   {
+    "arm": "A",
+    "run": 2,
+    "replay_s": 19.97982600000978
+   },
+   {
+    "arm": "A",
+    "run": 3,
+    "replay_s": 19.745854300330393
+   },
+   {
+    "arm": "B",
+    "run": 3,
+    "replay_s": 37.991676699821255,
+    "read_ahead_bytes": 1176109056,
+    "game_read_bytes": 335926853,
+    "hit_ratio": 0.264,
+    "events": 5182,
+    "events_lost": 0,
+    "resolved_reads": 9913,
+    "late_reads": 0,
+    "unresolved_reads": 316,
+    "sequential_files": 64,
+    "hit_bytes": 88670208
+   }
+  ],
+  "wpr_replay_s": 37.02914829971269
+ },
+ "frost": {
+  "folder": "csharp_e7b_frost_20261102_212613",
+  "median_a": 18.98202450069948,
+  "median_b": 37.403287300126976,
+  "speedup": 0.507,
+  "rows": [
+   {
+    "arm": "A",
+    "run": 1,
+    "replay_s": 18.88340320106363
+   },
+   {
+    "arm": "B",
+    "run": 1,
+    "replay_s": 39.567083101006574,
+    "read_ahead_bytes": 2330101959,
+    "game_read_bytes": 2430406656,
+    "hit_ratio": 0.5373,
+    "events": 37116,
+    "events_lost": 0,
+    "resolved_reads": 41730,
+    "late_reads": 0,
+    "unresolved_reads": 440,
+    "sequential_files": 13,
+    "hit_bytes": 1305870336
+   },
+   {
+    "arm": "B",
+    "run": 2,
+    "replay_s": 32.895058600086486,
+    "read_ahead_bytes": 2417608207,
+    "game_read_bytes": 2353860608,
+    "hit_ratio": 0.579,
+    "events": 35948,
+    "events_lost": 0,
+    "resolved_reads": 44186,
+    "late_reads": 0,
+    "unresolved_reads": 437,
+    "sequential_files": 13,
+    "hit_bytes": 1362821120
+   },
+   {
+    "arm": "A",
+    "run": 2,
+    "replay_s": 23.42906999876141
+   },
+   {
+    "arm": "A",
+    "run": 3,
+    "replay_s": 18.98202450069948
+   },
+   {
+    "arm": "B",
+    "run": 3,
+    "replay_s": 37.403287300126976,
+    "read_ahead_bytes": 2183278253,
+    "game_read_bytes": 2429423616,
+    "hit_ratio": 0.4951,
+    "events": 37101,
+    "events_lost": 0,
+    "resolved_reads": 43691,
+    "late_reads": 0,
+    "unresolved_reads": 369,
+    "sequential_files": 13,
+    "hit_bytes": 1202827939
+   }
+  ],
+  "wpr_replay_s": 32.19175499971607
+ },
+ "diskio": {
+  "frost": {
+   "reads": 14950,
+   "bytes": 3109500000.0,
+   "requested": 2020700000.0,
+   "sizes_mb": {
+    "<=64K": 579,
+    "64K-1M": 861,
+    "1M": 729,
+    ">1M": 941
+   }
+  },
+  "synth": {
+   "reads": 4467,
+   "bytes": 1409200000.0,
+   "requested": 262100000.0,
+   "sizes_mb": {
+    "<=64K": 122,
+    "64K-1M": 646,
+    "1M": 428,
+    ">1M": 214
+   }
+  }
+ }
+}

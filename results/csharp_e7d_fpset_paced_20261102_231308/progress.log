@@ -1,0 +1,9 @@
+﻿23:13:08 mode=synthetic root=D:\AsterBench_fp trace=D:\AsterBench_fp\trace_fp.json runs=3 order=A,B,B,A,A,B
+23:14:48 A1: replay 60.14 s 
+23:16:52 B1: replay 80.86 s read_ahead=3494876847 hit=0.5887
+23:18:54 B2: replay 46.68 s read_ahead=3345192623 hit=0.6826
+23:20:25 A2: replay 51.41 s 
+23:21:54 A3: replay 49.16 s 
+23:23:56 B3: replay 38.41 s read_ahead=3329267375 hit=0.6883
+23:25:58 W (DiskIo capture): replay 38.47 s
+23:26:00 median A (no learn) 51.41 s, B (learn) 46.68 s, A/B = 1.101

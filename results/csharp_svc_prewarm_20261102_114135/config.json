@@ -1,0 +1,25 @@
+{
+ "watcher": "poll",
+ "games": [
+  {
+   "name": "frostpunk",
+   "exe_names": [
+    "Frostpunk.exe"
+   ],
+   "trace": "C:\\ProgramData\\AsterCache\\plans\\frostpunk.prefetch.json",
+   "plan": "C:\\ProgramData\\AsterCache\\plans\\frostpunk.plan.json",
+   "origin_root": "D:\\Frostpunk",
+   "allowed_roots": [
+    "D:\\Frostpunk"
+   ],
+   "volume_label": "로컬 디스크",
+   "prewarm": {
+    "on_service_start": true,
+    "trigger_exes": [],
+    "min_free_ram_mib": 4096,
+    "cooldown_min": 30
+   },
+   "max_stream_mib": 4096
+  }
+ ]
+}

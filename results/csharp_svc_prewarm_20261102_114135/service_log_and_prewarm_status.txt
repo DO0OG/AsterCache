@@ -1,0 +1,18 @@
+2026-11-02T11:41:36.2839871+09:00 [INFO] service started: 1 game(s), watcher PollingProcessWatcher
+2026-11-02T11:41:36.2893582+09:00 [INFO] process watcher: PollingProcessWatcher
+2026-11-02T11:41:36.6726560+09:00 [INFO] frostpunk: prewarm done (service start): 1952 MiB in 0.22 s = 9028 MB/s, 1677 requests, 0 errors
+2026-11-02T11:42:38.1960604+09:00 [INFO] frostpunk: layout check Reapply (zone hit 10.5%)
+2026-11-02T11:42:38.1964632+09:00 [WARN] frostpunk: layout degraded while source files are unchanged; scheduled drive optimization may be undoing it (not changed automatically)
+2026-11-02T11:42:38.9329047+09:00 [INFO] frostpunk: reapplied, moved 0 bytes, 0 failed
+{
+  "games": {
+    "frostpunk": {
+      "at": "2026-11-02T02:41:36.2891722+00:00",
+      "result": "ok",
+      "reason": null,
+      "bytes": 2047714320,
+      "seconds": 0.2163,
+      "mb_per_s": 9028.4
+    }
+  }
+}

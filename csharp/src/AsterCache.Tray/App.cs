@@ -27,6 +27,9 @@ internal sealed class App : Application
 
     public static int ScreenshotTab { get; set; }
 
+    /// --smoke --click <apply-auto|apply-language|apply-watcher>: 해당 버튼의 처리 경로를 실행하고 종료 코드로 결과를 알립니다 (0 정상, 3 실패).
+    public static string? SmokeClick { get; set; }
+
     private static readonly TimeSpan DoubleClick = TimeSpan.FromMilliseconds(500);
 
     private TrayIcon? _icon;
@@ -83,26 +86,54 @@ internal sealed class App : Application
             if (Smoke)
             {
                 Log.Info($"smoke: tray icon visible={_icon.IsVisible} menu_items={_icon.Menu?.Items.Count} main window visible={_main.IsVisible} status={Model.StatusText}");
-                var stop = new DispatcherTimer { Interval = TimeSpan.FromSeconds(ScreenshotPath is null ? 3 : 3.5) };
-                stop.Tick += (_, _) =>
+                if (SmokeClick is not null)
                 {
-                    stop.Stop();
-                    if (ScreenshotPath is not null)
+                    ClickAndExit(desktop, _main, SmokeClick);
+                }
+                else
+                {
+                    var stop = new DispatcherTimer { Interval = TimeSpan.FromSeconds(ScreenshotPath is null ? 3 : 3.5) };
+                    stop.Tick += (_, _) =>
                     {
-                        using var shot = new RenderTargetBitmap(new PixelSize(1100, 720), new Vector(96, 96));
-                        shot.Render(_main);
-                        shot.Save(ScreenshotPath);
-                        Log.Info("smoke: screenshot saved");
-                    }
+                        stop.Stop();
+                        if (ScreenshotPath is not null)
+                        {
+                            using var shot = new RenderTargetBitmap(new PixelSize(1100, 720), new Vector(96, 96));
+                            shot.Render(_main);
+                            shot.Save(ScreenshotPath);
+                            Log.Info("smoke: screenshot saved");
+                        }
 
-                    _icon.IsVisible = false;
-                    desktop.Shutdown(0);
-                };
-                stop.Start();
+                        _icon.IsVisible = false;
+                        desktop.Shutdown(0);
+                    };
+                    stop.Start();
+                }
             }
         }
 
         base.OnFrameworkInitializationCompleted();
+    }
+
+    private async void ClickAndExit(IClassicDesktopStyleApplicationLifetime desktop, MainWindow main, string click)
+    {
+        int code;
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(500)); // 창이 열린 직후의 첫 읽기가 시작되도록
+            ActionResult r = await main.SmokeClick(click);
+            Log.Info($"smoke: click {click} {(r.Ok ? "ok" : "failed")}: {r.Message}");
+            code = r.Ok ? 0 : 3;
+        }
+        catch (Exception e)
+        {
+            // 최상위 경계: 어떤 예외든 종료 코드 3 으로 알림
+            Log.Error($"smoke: click {click} threw", e);
+            code = 3;
+        }
+
+        _icon!.IsVisible = false;
+        desktop.Shutdown(code);
     }
 
     private void Rebuild()

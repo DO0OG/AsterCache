@@ -31,6 +31,14 @@ public sealed class TrayViewModel(
 
     public IReadOnlyList<string> Games => _settings?.Games.Select(g => g.Name).ToList() ?? [];
 
+    /// 마지막으로 읽은 설정 (읽지 못했거나 아직 없으면 null).
+    public AsterSettings? Settings => _settings;
+
+    public string? TrayVersion => trayVersion;
+
+    /// 등록된 서비스 실행 파일의 버전 (미설치면 null).
+    public string? ServiceVersion { get; private set; }
+
     /// 확인된 새 버전 (없으면 null).
     public string? PendingVersion { get; private set; }
 
@@ -45,6 +53,7 @@ public sealed class TrayViewModel(
     {
         Service = service.Query();
         string? serviceVersion = Service == ServiceState.NotInstalled ? null : service.InstalledVersion();
+        ServiceVersion = serviceVersion;
         ServiceReinstallNeeded = trayVersion is not null && serviceVersion is not null && !SameVersion(trayVersion, serviceVersion);
         try
         {
@@ -103,6 +112,12 @@ public sealed class TrayViewModel(
     public ActionResult StartService() => Elevated(service.RequestStart, "서비스 시작 요청함");
 
     public ActionResult StopService() => Elevated(service.RequestStop, "서비스 정지 요청함");
+
+    public ActionResult InstallService(string serviceExe) => Elevated(() => service.RequestInstall(serviceExe, Path.GetDirectoryName(config.ConfigPath)!), "서비스 설치 요청함");
+
+    public ActionResult UninstallService() => Elevated(service.RequestUninstall, "서비스 제거 요청함 (데이터 폴더는 남김)");
+
+    public ActionResult SetWatcher(string watcher) => Edit(() => config.SetWatcher(watcher), $"감시기를 {watcher} 로 바꿈: 서비스를 다시 시작하면 적용됩니다");
 
     public ActionResult OpenLogs()
     {

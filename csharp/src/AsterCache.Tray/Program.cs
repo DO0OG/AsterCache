@@ -3,12 +3,14 @@ using AsterCache.Core.Logging;
 using AsterCache.Core.Settings;
 using AsterCache.Service;
 using AsterCache.Tray;
+using AsterCache.Windows;
 using Avalonia;
 using Avalonia.Controls;
 using Velopack;
 
 // 사용법: AsterCache.Tray [--data-dir <폴더>] [--smoke]   (기본 폴더 %ProgramData%\AsterCache)
-// --smoke: 트레이 아이콘을 만들고 3초 뒤 스스로 종료합니다 (창·알림 없음, 로그 한 줄). 종료 코드 0 정상, 2 설정 오류.
+// --smoke: 트레이 아이콘과 메인 창을 만들고 3초 뒤 스스로 종료합니다 (알림 없음, 로그 한 줄). 종료 코드 0 정상, 2 설정 오류.
+// --smoke --screenshot <png> [--tab <0..3>]: 메인 창을 1100x720 으로 그려 PNG 로 저장합니다 (드라이브 목록은 이 PC 대신 예시 값).
 internal static class Program
 {
     [STAThread]
@@ -32,8 +34,17 @@ internal static class Program
         UpdateService? updates = tray.UpdateEnabled ? new UpdateService(new VelopackUpdateManager(tray.UpdateFeedUrl!), log) : null;
         App.Log = log;
         App.Smoke = args.Contains("--smoke");
-        App.Model = new TrayViewModel(new ConfigEditor(dataDir), new ScmServiceControl(new UacElevator()), new PrefetchStreamer(), new ExplorerShell(), log, updates,
+        int shot = Array.IndexOf(args, "--screenshot");
+        App.ScreenshotPath = shot >= 0 && shot + 1 < args.Length ? Path.GetFullPath(args[shot + 1]) : null;
+        int tab = Array.IndexOf(args, "--tab");
+        App.ScreenshotTab = tab >= 0 && tab + 1 < args.Length && int.TryParse(args[tab + 1], out int t) ? t : 0;
+        var config = new ConfigEditor(dataDir);
+        var elevator = new UacElevator();
+        var shell = new ExplorerShell();
+        App.Model = new TrayViewModel(config, new ScmServiceControl(elevator), new PrefetchStreamer(), shell, log, updates,
             ScmServiceControl.FileVersionOf(Environment.ProcessPath));
+        App.Manage = new ManageViewModel(App.Model, config, new AsterProcess(elevator, Elevation.IsAdmin, log), App.ScreenshotPath is null ? new SystemDrives() : new SampleDrives(), elevator, shell, log, Elevation.IsAdmin,
+            ProcessSnapshot.IsRunning, string.Join(' ', args.Select(AsterProcess.Quote)));
         return AppBuilder.Configure<App>().UsePlatformDetect().StartWithClassicDesktopLifetime(args, ShutdownMode.OnExplicitShutdown);
     }
 
@@ -57,4 +68,14 @@ internal static class Program
 internal sealed class ExplorerShell : IShell
 {
     public void Open(string path) => Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true })?.Dispose();
+}
+
+/// 문서용 그림에 쓰는 예시 드라이브 (--screenshot): 이 PC 의 볼륨 이름·모델이 그림에 남지 않게 합니다.
+internal sealed class SampleDrives : IDriveSource
+{
+    public IReadOnlyList<DriveFacts> Fixed() =>
+    [
+        new("C:", "Windows", "NTFS", 476L << 30, 212L << 30, "Sample NVMe SSD", false),
+        new("D:", "Games", "NTFS", 2000L << 30, 880L << 30, "Sample 2TB HDD", true),
+    ];
 }

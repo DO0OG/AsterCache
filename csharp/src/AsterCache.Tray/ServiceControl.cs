@@ -18,20 +18,57 @@ public interface IServiceControl
     void RequestStart();
 
     void RequestStop();
+
+    /// 서비스 등록 (데이터 폴더 권한 설정 포함, 설치 프로그램과 같은 순서). serviceExe 는 관리자 전용 폴더에 있어야 합니다 (SYSTEM 으로 실행됨).
+    void RequestInstall(string serviceExe, string dataDir);
+
+    /// 서비스 정지와 삭제 (데이터 폴더는 남김).
+    void RequestUninstall();
 }
 
 /// 관리자 권한으로 명령을 한 번 실행 (UAC 확인창). 사용자가 취소하면 Win32Exception (1223).
 public interface IElevator
 {
+    /// 끝날 때까지 기다립니다.
     void Run(string exe, string arguments);
+
+    /// 인자를 하나씩 넘겨 (따옴표·특수문자 처리를 시스템에 맡김) 끝날 때까지 기다립니다.
+    void Run(string exe, IReadOnlyList<string> arguments);
+
+    /// 기다리지 않고 승격 실행만 시작합니다 (관리자로 다시 실행).
+    void Start(string exe, string arguments);
 }
 
 public sealed class UacElevator : IElevator
 {
     public void Run(string exe, string arguments)
     {
-        using Process? p = Process.Start(new ProcessStartInfo { FileName = exe, Arguments = arguments, Verb = "runas", UseShellExecute = true, CreateNoWindow = true });
+        using Process? p = Launch(exe, arguments, []);
         p?.WaitForExit();
+    }
+
+    public void Run(string exe, IReadOnlyList<string> arguments)
+    {
+        using Process? p = Launch(exe, null, arguments);
+        p?.WaitForExit();
+    }
+
+    public void Start(string exe, string arguments) => Launch(exe, arguments, [])?.Dispose();
+
+    private static Process? Launch(string exe, string? arguments, IReadOnlyList<string> list)
+    {
+        var psi = new ProcessStartInfo { FileName = exe, Verb = "runas", UseShellExecute = true, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden };
+        if (arguments is not null)
+        {
+            psi.Arguments = arguments;
+        }
+
+        foreach (string a in list)
+        {
+            psi.ArgumentList.Add(a);
+        }
+
+        return Process.Start(psi);
     }
 }
 
@@ -97,4 +134,24 @@ public sealed class ScmServiceControl(IElevator elevator, string serviceName = S
     public void RequestStart() => elevator.Run(Sc, "start " + serviceName);
 
     public void RequestStop() => elevator.Run(Sc, "stop " + serviceName);
+
+    public void RequestInstall(string serviceExe, string dataDir) => elevator.Run(Cmd, InstallArguments(serviceExe, dataDir));
+
+    public void RequestUninstall() => elevator.Run(Cmd, $"/d /c \"\"{Sc}\" stop {serviceName} & \"{Sc}\" delete {serviceName}\"");
+
+    private static string Cmd => Path.Combine(Environment.SystemDirectory, "cmd.exe");
+
+    /// 설치 프로그램 (aster.iss) 과 같은 순서: 폴더 만들기, 소유자를 Administrators 로, 권한 초기화, SYSTEM·Administrators 전체 + Users 읽기만, 서비스 등록 (LocalSystem, 자동), 시작.
+    /// 폴더 만들기만 실패해도 (이미 있음) 이어가고, 그 뒤 한 단계라도 실패하면 나머지는 하지 않습니다.
+    internal string InstallArguments(string serviceExe, string dataDir)
+    {
+        string icacls = Path.Combine(Environment.SystemDirectory, "icacls.exe");
+        string bin = $"\\\"{serviceExe}\\\" --data-dir \\\"{dataDir}\\\"";
+        return $"/d /c \"mkdir \"{dataDir}\\plans\" \"{dataDir}\\journals\" \"{dataDir}\\logs\" & "
+            + $"\"{icacls}\" \"{dataDir}\" /setowner *S-1-5-32-544 /T /C && "
+            + $"\"{icacls}\" \"{dataDir}\" /reset /T /C && "
+            + $"\"{icacls}\" \"{dataDir}\" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX && "
+            + $"\"{Sc}\" create {serviceName} binPath= \"{bin}\" start= auto obj= LocalSystem DisplayName= {serviceName} && "
+            + $"\"{Sc}\" start {serviceName}\"";
+    }
 }

@@ -46,6 +46,14 @@ public sealed class ConfigEditor(string dataDir)
         Save(root);
     }
 
+    /// "poll" 또는 "etw" (그 밖의 값은 검증에서 거부됨).
+    public void SetWatcher(string watcher)
+    {
+        JObject root = ReadRoot();
+        root["watcher"] = watcher;
+        Save(root);
+    }
+
     public void Remove(string name)
     {
         JObject root = ReadRoot();

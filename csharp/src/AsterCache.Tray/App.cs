@@ -10,16 +10,28 @@ using Avalonia.Threading;
 
 namespace AsterCache.Tray;
 
-/// 창 없이 트레이 아이콘만 있는 앱. 메뉴 항목은 TrayViewModel 을 부르기만 합니다.
+/// 트레이 아이콘과 메인 창(닫으면 트레이로)을 가진 앱. 메뉴 항목은 TrayViewModel 을 부르기만 합니다.
 internal sealed class App : Application
 {
     public static TrayViewModel Model { get; set; } = null!;
 
     public static ILog Log { get; set; } = null!;
 
+    public static ManageViewModel Manage { get; set; } = null!;
+
     public static bool Smoke { get; set; }
 
+    /// --smoke --screenshot <png>: 메인 창을 1100x720 으로 그려 저장하고 끝냅니다 (문서용 그림).
+    public static string? ScreenshotPath { get; set; }
+
+    public static int ScreenshotTab { get; set; }
+
+    private static readonly TimeSpan DoubleClick = TimeSpan.FromMilliseconds(500);
+
     private TrayIcon? _icon;
+    private MainWindow? _main;
+    private IClassicDesktopStyleApplicationLifetime? _desktop;
+    private DateTime _lastClick = DateTime.MinValue;
 
     public override void Initialize() => Styles.Add(new FluentTheme());
 
@@ -27,20 +39,52 @@ internal sealed class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
+            _desktop = desktop;
             Model.Refresh();
-            _icon = new TrayIcon { Icon = new WindowIcon(MakeIcon()), IsVisible = true };
+            _icon = new TrayIcon { Icon = LoadIcon("aster-tray.png") ?? new WindowIcon(MakeIcon()), IsVisible = true };
             Rebuild();
+            _icon.Clicked += (_, _) => // 트레이 아이콘 더블클릭 (Avalonia 는 클릭만 알려 주므로 시간으로 판정)
+            {
+                DateTime now = DateTime.UtcNow;
+                if (now - _lastClick < DoubleClick)
+                {
+                    ShowMain();
+                }
+
+                _lastClick = now;
+            };
             TrayIcon.SetIcons(this, [_icon]);
+            _main = new MainWindow(Manage, Model, Quit);
+            if (Smoke && ScreenshotPath is not null)
+            {
+                _main.Width = 1100;
+                _main.Height = 720;
+                _main.SelectTab(ScreenshotTab);
+            }
+
+            _main.Show();
             var poll = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
-            poll.Tick += (_, _) => Update(Model.Refresh);
+            poll.Tick += (_, _) =>
+            {
+                Update(Model.Refresh);
+                _main.UpdateStatus();
+            };
             poll.Start();
             if (Smoke)
             {
-                Log.Info($"smoke: tray icon visible={_icon.IsVisible} menu_items={_icon.Menu?.Items.Count} status={Model.StatusText}");
-                var stop = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+                Log.Info($"smoke: tray icon visible={_icon.IsVisible} menu_items={_icon.Menu?.Items.Count} main window visible={_main.IsVisible} status={Model.StatusText}");
+                var stop = new DispatcherTimer { Interval = TimeSpan.FromSeconds(ScreenshotPath is null ? 3 : 3.5) };
                 stop.Tick += (_, _) =>
                 {
                     stop.Stop();
+                    if (ScreenshotPath is not null)
+                    {
+                        using var shot = new RenderTargetBitmap(new PixelSize(1100, 720), new Vector(96, 96));
+                        shot.Render(_main);
+                        shot.Save(ScreenshotPath);
+                        Log.Info("smoke: screenshot saved");
+                    }
+
                     _icon.IsVisible = false;
                     desktop.Shutdown(0);
                 };
@@ -89,6 +133,7 @@ internal sealed class App : Application
 
         var menu = new NativeMenu();
         menu.Items.Add(new NativeMenuItem(Model.StatusText) { IsEnabled = false });
+        menu.Items.Add(Item("열기", ShowMain));
         menu.Items.Add(new NativeMenuItemSeparator());
         menu.Items.Add(new NativeMenuItem("게임") { Menu = games });
         menu.Items.Add(Item("서비스 시작", () => InBackground(Model.StartService), state == ServiceState.Stopped));
@@ -101,8 +146,36 @@ internal sealed class App : Application
         }
 
         menu.Items.Add(new NativeMenuItemSeparator());
-        menu.Items.Add(Item("종료", () => (ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Shutdown(0)));
+        menu.Items.Add(Item("종료", Quit));
         return menu;
+    }
+
+    /// 진행 중인 트레이스는 저장하도록 기다린 뒤 (최대 10 초) 끝냅니다.
+    private async void Quit()
+    {
+        if (_main is not null)
+        {
+            await _main.StopTraceAsync();
+        }
+
+        _desktop?.Shutdown(0);
+    }
+
+    private void ShowMain()
+    {
+        if (_main is null)
+        {
+            return;
+        }
+
+        _main.Show();
+        if (_main.WindowState == WindowState.Minimized)
+        {
+            _main.WindowState = WindowState.Normal;
+        }
+
+        _main.Activate();
+        _main.Reload();
     }
 
     private async void CheckUpdate()
@@ -118,7 +191,22 @@ internal sealed class App : Application
         return item;
     }
 
-    /// 파란 원 (32x32). 아이콘 파일 없이 메모리에서 만듭니다.
+    /// 포함 자원 Assets\<파일> 의 아이콘, 읽지 못하면 null (트레이는 MakeIcon 으로 대신함).
+    public static WindowIcon? LoadIcon(string file)
+    {
+        try
+        {
+            using Stream s = AssetLoader.Open(new Uri("avares://AsterCache.Tray/Assets/" + file));
+            return new WindowIcon(s);
+        }
+        catch (Exception e) when (e is IOException or FileNotFoundException or ArgumentException or InvalidOperationException)
+        {
+            Log?.Warn($"icon {file} not loaded: {e.GetType().Name}");
+            return null;
+        }
+    }
+
+    /// 파란 원 (32x32). 아이콘 자원을 읽지 못할 때만 쓰는 대체 아이콘으로 메모리에서 만듭니다.
     private static WriteableBitmap MakeIcon()
     {
         const int size = 32;

@@ -6,6 +6,7 @@
   </PropertyGroup>
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <ApplicationIcon>..\AsterCache.Tray\Assets\aster.ico</ApplicationIcon>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>

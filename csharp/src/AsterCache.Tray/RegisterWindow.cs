@@ -8,21 +8,23 @@ internal sealed class RegisterWindow : Window
 {
     private readonly Dictionary<string, TextBox> _fields = [];
 
-    public RegisterWindow(TrayViewModel model, Action onRegistered)
+    /// prefill: 관리 창이 exe 파일에서 추론한 값 (모든 칸은 그대로 고칠 수 있음).
+    public RegisterWindow(TrayViewModel model, Action onRegistered, GameInput? prefill = null)
     {
         Title = "AsterCache 게임 등록";
+        Icon = App.LoadIcon("aster.ico");
         Width = 560;
         SizeToContent = SizeToContent.Height;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         var panel = new StackPanel { Margin = new Avalonia.Thickness(12), Spacing = 6 };
-        AddField(panel, "name", "이름 (영문·숫자·. _ -)", string.Empty);
-        AddField(panel, "exe", "실행 파일 이름 (쉼표로 구분)", string.Empty);
-        AddField(panel, "origin", "게임 폴더 (예: D:\\Games\\MW4)", string.Empty);
-        AddField(panel, "roots", "허용 루트 (세미콜론으로 구분, 예: D:\\Games)", string.Empty);
-        AddField(panel, "label", "볼륨 라벨", string.Empty);
+        AddField(panel, "name", "이름 (영문·숫자·. _ -)", prefill?.Name ?? string.Empty);
+        AddField(panel, "exe", "실행 파일 이름 (쉼표로 구분)", string.Join(", ", prefill?.ExeNames ?? []));
+        AddField(panel, "origin", "게임 폴더 (예: D:\\Games\\MW4)", prefill?.OriginRoot ?? string.Empty);
+        AddField(panel, "roots", "허용 루트 (세미콜론으로 구분, 예: D:\\Games)", string.Join("; ", prefill?.AllowedRoots ?? []));
+        AddField(panel, "label", "볼륨 라벨", prefill?.VolumeLabel ?? string.Empty);
         AddField(panel, "triggers", "예열 트리거 프로그램 (선택, 쉼표로 구분, 예: Steam.exe)", string.Empty);
-        AddField(panel, "trace", "트레이스 (.prefetch.json)", Path.Combine(model.PlansDir, "<이름>.prefetch.json"));
-        AddField(panel, "plan", "계획 (.json)", Path.Combine(model.PlansDir, "<이름>.plan.json"));
+        AddField(panel, "trace", "트레이스 (.prefetch.json)", prefill?.Trace ?? Path.Combine(model.PlansDir, "<이름>.prefetch.json"));
+        AddField(panel, "plan", "계획 (.json)", prefill?.Plan ?? Path.Combine(model.PlansDir, "<이름>.plan.json"));
         var result = new TextBlock { TextWrapping = Avalonia.Media.TextWrapping.Wrap };
         var ok = new Button { Content = "등록", HorizontalAlignment = HorizontalAlignment.Right };
         ok.Click += (_, _) =>

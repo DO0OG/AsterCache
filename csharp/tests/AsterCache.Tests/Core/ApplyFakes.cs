@@ -29,6 +29,9 @@ public sealed class FakeVolume : IVolume
     /// 이 번째 (0 부터) 이동 호출에서 IOException 이 아닌 예외를 던집니다.
     public int? CrashAt { get; set; }
 
+    /// 이동이 성공한 직후 (지금까지 성공한 이동 수) 불립니다. 시험이 이 시점에 취소를 겁니다.
+    public Action<int>? AfterMove { get; set; }
+
     public bool Strict { get; set; } = true;
 
     public bool Closed { get; private set; }
@@ -115,6 +118,7 @@ public sealed class FakeVolume : IVolume
 
         Ext[path] = outList;
         Moves.Add((path, vcn, lcn, clusters));
+        AfterMove?.Invoke(Moves.Count);
     }
 
     public void Dispose() => Closed = true;

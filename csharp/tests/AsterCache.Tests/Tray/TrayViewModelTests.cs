@@ -32,7 +32,7 @@ public sealed class TrayViewModelTests : IDisposable
     {
         _service.State = ServiceState.NotInstalled;
         _vm.Refresh();
-        Assert.Equal("AsterCache: 서비스 미설치 · 게임 0개", _vm.StatusText);
+        Assert.Equal("AsterCache: 서비스 미설치 · 등록된 게임 없음", _vm.StatusText);
         Assert.Empty(_vm.Games);
     }
 
@@ -80,13 +80,33 @@ public sealed class TrayViewModelTests : IDisposable
     }
 
     [Fact]
-    public void RemoveUnknownOrLastGameIsRejected()
+    public void RemoveUnknownIsRejectedButLastGameCanBeRemoved()
     {
         Assert.False(_vm.RemoveGame("nope").Ok);
         Assert.True(_vm.AddGame(Game()).Ok);
-        ActionResult last = _vm.RemoveGame("mw4"); // 게임이 0개인 설정은 서비스가 읽지 못함
-        Assert.False(last.Ok);
-        Assert.Equal(["mw4"], _vm.Games);
+        _service.State = ServiceState.Running;
+        ActionResult last = _vm.RemoveGame("mw4"); // 빈 목록은 정상 설정: 서비스는 대기만 함
+        Assert.True(last.Ok);
+        Assert.Empty(_vm.Games);
+        Assert.Equal("AsterCache: 서비스 실행 중 · 등록된 게임 없음", _vm.StatusText);
+        Assert.True(_vm.AddGame(Game("again")).Ok);
+    }
+
+    [Fact]
+    public void SaveDeniedByFolderPermissionsAsksForAdministratorAndKeepsConfig()
+    {
+        Assert.True(_vm.AddGame(Game("a")).Ok);
+        byte[] before = File.ReadAllBytes(Path.Combine(_dir, "config.json"));
+        Directory.CreateDirectory(Path.Combine(_dir, "config.json.tmp")); // 임시 파일 자리를 폴더로 막아 UnauthorizedAccessException 을 흉내
+
+        ActionResult add = _vm.AddGame(Game("b") with { ExeNames = ["b.exe"] });
+        ActionResult remove = _vm.RemoveGame("a");
+
+        Assert.False(add.Ok);
+        Assert.False(remove.Ok);
+        Assert.Contains("관리자 권한으로 트레이를 다시 실행", add.Message);
+        Assert.Contains("관리자 권한으로 트레이를 다시 실행", remove.Message);
+        Assert.Equal(before, File.ReadAllBytes(Path.Combine(_dir, "config.json")));
     }
 
     [Fact]
@@ -121,6 +141,47 @@ public sealed class TrayViewModelTests : IDisposable
     }
 
     [Fact]
+    public void ServiceVersionDifferingFromTrayShowsReinstallNeeded()
+    {
+        var vm = new TrayViewModel(new ConfigEditor(_dir), _service, _streamer, _shell, new MemoryLog(), trayVersion: "1.3.0.0");
+        _service.State = ServiceState.Running;
+        _service.Version = "1.2.0.0";
+        vm.Refresh();
+        Assert.True(vm.ServiceReinstallNeeded);
+        Assert.Contains("서비스 재설치 필요 (서비스 1.2.0.0, 트레이 1.3.0.0)", vm.StatusText);
+
+        _service.Version = "1.3.0"; // 4번째 자리가 없어도 같은 버전
+        vm.Refresh();
+        Assert.False(vm.ServiceReinstallNeeded);
+        Assert.DoesNotContain("재설치", vm.StatusText);
+
+        _service.Version = null; // 읽지 못하면 비교하지 않음
+        vm.Refresh();
+        Assert.False(vm.ServiceReinstallNeeded);
+        _service.Version = "9.9.9.9";
+        _service.State = ServiceState.NotInstalled; // 서비스가 없으면 "미설치"가 먼저
+        vm.Refresh();
+        Assert.False(vm.ServiceReinstallNeeded);
+    }
+
+    [Fact]
+    public async Task AppliedUpdateNeverTouchesTheService()
+    {
+        var manager = new FakeUpdates();
+        var vm = new TrayViewModel(new ConfigEditor(_dir), _service, _streamer, _shell, new MemoryLog(), new UpdateService(manager, new MemoryLog()), "1.0.0.0");
+        _service.State = ServiceState.Running;
+        _service.Version = "1.0.0.0";
+
+        Assert.True((await vm.CheckUpdateAsync()).Ok);
+        ActionResult applied = await vm.ApplyUpdateAsync(CancellationToken.None);
+
+        Assert.True(applied.Ok);
+        Assert.Contains("서비스는 설치 프로그램으로", applied.Message);
+        Assert.True(manager.Applied);
+        Assert.Equal((0, 0), (_service.Starts, _service.Stops)); // 서비스 시작·정지·교체 요청 없음
+    }
+
+    [Fact]
     public void OpenLogsOpensLogsFolder()
     {
         Assert.True(_vm.OpenLogs().Ok);
@@ -141,13 +202,23 @@ public sealed class TrayViewModelTests : IDisposable
 
         public int Starts { get; private set; }
 
+        public int Stops { get; private set; }
+
+        public string? Version { get; set; }
+
         public bool Cancel { get; set; }
 
         public ServiceState Query() => State;
 
+        public string? InstalledVersion() => Version;
+
         public void RequestStart() => Starts++;
 
-        public void RequestStop() => Throw();
+        public void RequestStop()
+        {
+            Stops++;
+            Throw();
+        }
 
         private void Throw()
         {
@@ -156,6 +227,19 @@ public sealed class TrayViewModelTests : IDisposable
                 throw new System.ComponentModel.Win32Exception(1223);
             }
         }
+    }
+
+    private sealed class FakeUpdates : IUpdateManager
+    {
+        public bool Applied { get; private set; }
+
+        public bool IsInstalled => true;
+
+        public Task<string?> CheckForUpdatesAsync() => Task.FromResult<string?>("2.0.0");
+
+        public Task DownloadUpdatesAsync(Action<int> progress, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public void ApplyUpdatesAndRestart() => Applied = true;
     }
 
     private sealed class FakeStreamer : IGameStreamer

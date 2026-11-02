@@ -4,16 +4,16 @@ using Microsoft.Diagnostics.Tracing.Parsers.Kernel;
 namespace AsterCache.Tracer;
 
 /// 커널 파서 이벤트 → 대상 프로세스 트리의 TraceRecord. EtlReader (파일) 와 LiveSession (실시간) 이 함께 씁니다.
-/// 파일 이름은 직접 짠 표로 풉니다: FileIOName / FileIOFileCreate / FileIOFileRundown 은 FileKey, FileIOCreate 는 FileObject 를 열쇠로 삼고
-/// (TraceEvent 의 FileName 속성과 같은 규칙), 읽기는 FileKey 먼저, 없으면 FileObject 로 찾습니다.
-/// 읽기가 이름보다 먼저 오는 경우 (실행 전에 열린 파일은 이름이 정리 (rundown) 이벤트로 세션 끝에 옴) 는 Finish 에서 한꺼번에 풉니다.
+/// 파일 이름은 직접 짠 표로 풉니다: FileIOName / FileIOFileCreate / FileIOFileRundown 은 FileKey, FileIOCreate 는 FileObject 를 열쇠로 삼습니다.
+/// 읽기는 FileKey 이름이 이미 있으면 그것을, 없으면 Finish 에서 (정리 (rundown) 이벤트는 세션 끝에 옴) FileKey 이름을 먼저, 없으면 읽을 때의 FileObject 이름을 씁니다.
+/// FileObject 주소는 닫힌 뒤 다른 파일에 재사용되고 이벤트가 유실되면 옛 이름이 남으므로, 실제 .etl 로 확인한 대로 FileKey 이름을 우선합니다.
 internal sealed class KernelCollector
 {
     private readonly ProcessTree _tree;
     private readonly DevicePaths _devices;
-    private readonly Dictionary<ulong, string> _names = [];
+    private readonly FileNames _names = new();
     private readonly List<TraceRecord> _records = [];
-    private readonly List<(int Index, ulong Key, ulong Obj)> _pending = [];
+    private readonly List<(int Index, ulong Key, string? ObjName)> _pending = [];
 
     public KernelCollector(KernelTraceEventParser kernel, IReadOnlyCollection<string> exeNames, DevicePaths devices)
     {
@@ -26,10 +26,11 @@ internal sealed class KernelCollector
             _tree.Stop(d.ProcessID);
             _records.Add(TraceRecord.Stop(d.TimeStamp, d.ProcessID));
         };
-        kernel.FileIOName += d => AddName(d.FileKey, d.FileName);
-        kernel.FileIOFileCreate += d => AddName(d.FileKey, d.FileName);
-        kernel.FileIOFileRundown += d => AddName(d.FileKey, d.FileName);
-        kernel.FileIOCreate += d => AddName(d.FileObject, d.FileName);
+        kernel.FileIOName += d => _names.NameKey(d.FileKey, d.FileName);
+        kernel.FileIOFileCreate += d => _names.NameKey(d.FileKey, d.FileName);
+        kernel.FileIOFileRundown += d => _names.NameKey(d.FileKey, d.FileName);
+        kernel.FileIOCreate += d => _names.NameObject(d.FileObject, d.FileName);
+        kernel.FileIOClose += d => _names.CloseObject(d.FileObject);
         kernel.FileIORead += OnRead;
     }
 
@@ -39,9 +40,9 @@ internal sealed class KernelCollector
     public List<TraceRecord> Finish()
     {
         var dropped = new HashSet<int>();
-        foreach ((int index, ulong key, ulong obj) in _pending)
+        foreach ((int index, ulong key, string? objName) in _pending)
         {
-            string? name = Lookup(key, obj);
+            string? name = _names.Settle(key, objName);
             if (name is null)
             {
                 dropped.Add(index);
@@ -85,25 +86,14 @@ internal sealed class KernelCollector
             return;
         }
 
-        string? name = Lookup(d.FileKey, d.FileObject);
+        (string? name, string? fallback) = _names.AtRead(d.FileKey, d.FileObject);
         if (name is null)
         {
-            _pending.Add((_records.Count, d.FileKey, d.FileObject));
+            _pending.Add((_records.Count, d.FileKey, fallback));
         }
 
         _records.Add(TraceRecord.Read(d.TimeStamp, d.ProcessID, name ?? "", d.Offset, d.IoSize));
     }
-
-    private void AddName(ulong id, string? name)
-    {
-        if (id != 0 && !string.IsNullOrEmpty(name))
-        {
-            _names[id] = name;
-        }
-    }
-
-    private string? Lookup(ulong key, ulong obj) =>
-        _names.TryGetValue(key, out string? n) ? n : _names.TryGetValue(obj, out n) ? n : null;
 
     private static string FirstToken(string commandLine)
     {

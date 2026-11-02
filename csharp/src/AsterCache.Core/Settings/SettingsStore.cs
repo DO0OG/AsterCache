@@ -53,9 +53,9 @@ public static class SettingsStore
         JObject top = root as JObject ?? throw new SettingsException("config: object expected");
         Unknown(top, TopKeys, "config");
         int poll = top.ContainsKey("poll_ms") ? Int(top["poll_ms"], "poll_ms", 50, 5000) : DefaultPollMs;
-        if (!top.TryGetValue("games", out object? g) || g is not List<object?> games || games.Count == 0 || games.Count > MaxGames)
+        if (!top.TryGetValue("games", out object? g) || g is not List<object?> games || games.Count > MaxGames)
         {
-            throw new SettingsException($"games: list of 1..{MaxGames} expected");
+            throw new SettingsException($"games: list of 0..{MaxGames} expected"); // 빈 목록은 정상: 서비스는 대기만 함
         }
 
         string plans = FullPath(plansDir, "plans_dir");

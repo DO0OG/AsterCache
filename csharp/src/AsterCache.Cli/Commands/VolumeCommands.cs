@@ -107,7 +107,7 @@ internal static class VolumeCommands
     internal static JObject Verdict(LayoutReport report)
     {
         JObject r = report.ToJson();
-        r.Add("verdict", report.Contiguous ? "contiguous" : "non-contiguous");
+        r.Add("verdict", report.Contiguous ? "contiguous" : report.ResumeNeeded ? "resume-needed" : "non-contiguous");
         return r;
     }
 

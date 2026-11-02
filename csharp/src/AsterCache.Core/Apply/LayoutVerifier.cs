@@ -9,6 +9,9 @@ public sealed record LayoutReport(
     long HotClusters, long OrderedRuns, long ExpectedRuns, long CurrentRunsAtPlanTime, bool Ascending, long? InZoneClusters,
     long MissingFiles, bool Contiguous)
 {
+    /// 일부만 존에 들어간 부분 적용 (재적용이 도중에 멈췄거나 일부가 되돌려짐). 오류가 아니라 apply 를 다시 돌리면 이어가는 상태입니다.
+    public bool ResumeNeeded => !Contiguous && MissingFiles == 0 && InZoneClusters is > 0 && InZoneClusters < HotClusters;
+
     public JObject ToJson() => new()
     {
         { "hot_clusters", HotClusters },

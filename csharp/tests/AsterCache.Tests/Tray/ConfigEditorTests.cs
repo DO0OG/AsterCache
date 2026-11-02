@@ -50,6 +50,27 @@ public sealed class ConfigEditorTests : IDisposable
     }
 
     [Fact]
+    public void RemovingTheLastGameLeavesAValidEmptyList()
+    {
+        var editor = new ConfigEditor(_dir);
+        editor.Add(Game("a"));
+        editor.Remove("a");
+        Assert.Empty(editor.Load()!.Games);
+    }
+
+    [Fact]
+    public void BlockedWriteThrowsUnauthorizedAndLeavesConfigUntouched()
+    {
+        var editor = new ConfigEditor(_dir);
+        editor.Add(Game("a"));
+        byte[] before = File.ReadAllBytes(editor.ConfigPath);
+        Directory.CreateDirectory(editor.ConfigPath + ".tmp");
+
+        Assert.Throws<UnauthorizedAccessException>(() => editor.Add(Game("b")));
+        Assert.Equal(before, File.ReadAllBytes(editor.ConfigPath));
+    }
+
+    [Fact]
     public void MissingConfigLoadsAsNull()
     {
         Assert.Null(new ConfigEditor(_dir).Load());

@@ -65,6 +65,7 @@ public sealed class GameDispatcher
             return false;
         }
 
+        _log.Info($"{g.Name}: {start.ExeName} started (pid {start.Pid})"); // 감지 지연 측정 (cs_service.ps1 test) 이 쿨다운과 무관하게 매번 이 줄을 봅니다
         DateTimeOffset now = _now();
         if (_last.TryGetValue(g.Name, out DateTimeOffset prev) && now - prev < Cooldown)
         {
@@ -72,12 +73,16 @@ public sealed class GameDispatcher
         }
 
         _last[g.Name] = now;
-        _log.Info($"{g.Name}: {start.ExeName} started (pid {start.Pid}), streaming");
         try
         {
             StreamStats r = _streamer.Stream(g);
             _log.Info($"{g.Name}: streamed {r.Bytes} bytes in {r.Requests} requests, {r.Errors} errors, {r.Seconds:F3} s");
             return true;
+        }
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
+        {
+            _log.Info($"{g.Name}: no trace file yet, nothing to stream"); // 아직 추적을 만들지 않은 게임은 오류가 아님
+            return false;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
         {

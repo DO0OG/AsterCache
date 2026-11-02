@@ -166,7 +166,6 @@ public sealed class SettingsTests
     [Theory]
     [InlineData("[]")]
     [InlineData("{}")]
-    [InlineData("{\"games\":[]}")]
     [InlineData("{\"games\":{}}")]
     [InlineData("{\"games\":[1]}")]
     [InlineData("not json")]
@@ -181,6 +180,16 @@ public sealed class SettingsTests
     public void PollOutOfRangeIsRejected(int poll)
     {
         Assert.Throws<SettingsException>(() => SettingsStore.Parse(Cfg(Game(), t => t["poll_ms"] = poll), Plans));
+    }
+
+    [Fact]
+    public void EmptyGameListIsValid()
+    {
+        AsterSettings s = SettingsStore.Parse("{\"games\":[]}", Plans);
+
+        Assert.Empty(s.Games);
+        Assert.Equal(SettingsStore.DefaultPollMs, s.PollMs);
+        Assert.Throws<SettingsException>(() => SettingsStore.Parse("{}", Plans)); // games 키 자체는 여전히 필요
     }
 
     [Fact]

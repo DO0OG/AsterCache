@@ -17,13 +17,17 @@ public interface IShell
 
 /// 트레이 메뉴가 보여주고 부르는 모든 것. UI 없이 시험할 수 있게 화면 객체를 직접 쓰지 않습니다.
 public sealed class TrayViewModel(
-    ConfigEditor config, IServiceControl service, IGameStreamer streamer, IShell shell, ILog log, UpdateService? updates = null)
+    ConfigEditor config, IServiceControl service, IGameStreamer streamer, IShell shell, ILog log, UpdateService? updates = null,
+    string? trayVersion = null)
 {
     private AsterSettings? _settings;
     private string? _configError;
     private int _streaming;
 
     public ServiceState Service { get; private set; } = ServiceState.Unknown;
+
+    /// 서비스 실행 파일 버전이 트레이와 다름 (트레이만 Velopack 으로 갱신됐을 때): 설치 프로그램으로 서비스를 다시 설치해야 합니다.
+    public bool ServiceReinstallNeeded { get; private set; }
 
     public IReadOnlyList<string> Games => _settings?.Games.Select(g => g.Name).ToList() ?? [];
 
@@ -40,6 +44,8 @@ public sealed class TrayViewModel(
     public void Refresh()
     {
         Service = service.Query();
+        string? serviceVersion = Service == ServiceState.NotInstalled ? null : service.InstalledVersion();
+        ServiceReinstallNeeded = trayVersion is not null && serviceVersion is not null && !SameVersion(trayVersion, serviceVersion);
         try
         {
             _settings = config.Load();
@@ -51,7 +57,12 @@ public sealed class TrayViewModel(
             _configError = FileLog.Scrub(e.Message);
         }
 
-        string text = $"AsterCache: {Describe(Service)} · 게임 {Games.Count}개";
+        string text = $"AsterCache: {Describe(Service)} · " + (Games.Count == 0 && _configError is null ? "등록된 게임 없음" : $"게임 {Games.Count}개");
+        if (ServiceReinstallNeeded)
+        {
+            text += $" · 서비스 재설치 필요 (서비스 {serviceVersion}, 트레이 {trayVersion})";
+        }
+
         StatusText = _configError is null ? text : text + " · 설정 오류: " + _configError;
     }
 
@@ -133,7 +144,7 @@ public sealed class TrayViewModel(
         try
         {
             await updates.DownloadAndApplyAsync(_ => { }, cancellationToken);
-            return Report(true, "업데이트 적용 중");
+            return Report(true, "업데이트 적용 중 (트레이만 갱신됨: 서비스는 설치 프로그램으로 다시 설치)");
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
@@ -148,7 +159,12 @@ public sealed class TrayViewModel(
         {
             edit();
         }
-        catch (Exception e) when (e is SettingsException or IOException or UnauthorizedAccessException)
+        catch (UnauthorizedAccessException)
+        {
+            // 데이터 폴더는 SYSTEM·Administrators 만 쓸 수 있음 (서비스가 SYSTEM 으로 파일을 옮기므로 일반 사용자 쓰기를 막아 둠)
+            return Report(false, "설정을 저장할 권한이 없음: 관리자 권한으로 트레이를 다시 실행하십시오");
+        }
+        catch (Exception e) when (e is SettingsException or IOException)
         {
             return Report(false, "설정을 바꾸지 못함: " + FileLog.Scrub(e.Message));
         }
@@ -177,6 +193,11 @@ public sealed class TrayViewModel(
         log.Info(message);
         return new ActionResult(ok, message);
     }
+
+    private static bool SameVersion(string a, string b) =>
+        Version.TryParse(a, out Version? x) && Version.TryParse(b, out Version? y)
+            ? (x.Major, x.Minor, Math.Max(0, x.Build), Math.Max(0, x.Revision)) == (y.Major, y.Minor, Math.Max(0, y.Build), Math.Max(0, y.Revision))
+            : string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
     private static string Describe(ServiceState s) => s switch
     {

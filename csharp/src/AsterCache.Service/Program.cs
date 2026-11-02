@@ -27,7 +27,7 @@ catch (Exception e) when (e is SettingsException or IOException or UnauthorizedA
 }
 
 bool admin = Elevation.IsAdmin();
-bool canApply = Worker.CanApply(admin, [dataDir, plansDir], log);
+bool canApply = Worker.CanApply(admin, [dataDir, plansDir], log, [Path.Combine(dataDir, "config.json")]);
 (IProcessWatcher primary, IProcessWatcher? fallback) = Worker.ChooseWatchers(settings, admin);
 var checker = new ReapplyChecker(ReapplyEnv.Create(canApply, Path.Combine(dataDir, "journals")), log);
 

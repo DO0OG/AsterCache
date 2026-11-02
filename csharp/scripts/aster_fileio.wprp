@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- WPR profile for cs_etw_check.ps1: kernel process + file read events only, with large buffers (1 MB x 512, file mode) so a FileIO burst is not dropped.
+     Start: wpr.exe -start "<this file>!AsterFileIO"   Stop: wpr.exe -stop <out.etl> -->
+<WindowsPerformanceRecorder Version="1.0" Author="AsterCache" Team="AsterCache" Comments="FileIO read trace with large buffers" Company="" Copyright="" Tag="">
+  <Profiles>
+    <SystemCollector Id="SystemCollector_AsterFileIO" Name="NT Kernel Logger">
+      <BufferSize Value="1024" />
+      <Buffers Value="512" />
+    </SystemCollector>
+    <SystemProvider Id="SystemProvider_AsterFileIO">
+      <Keywords>
+        <Keyword Value="ProcessThread" />
+        <Keyword Value="FileIO" />
+        <Keyword Value="FileIOInit" />
+      </Keywords>
+    </SystemProvider>
+    <Profile Id="AsterFileIO.Verbose.File" LoggingMode="File" Name="AsterFileIO" DetailLevel="Verbose" Description="AsterCache FileIO reads">
+      <Collectors>
+        <SystemCollectorId Value="SystemCollector_AsterFileIO">
+          <SystemProviderId Value="SystemProvider_AsterFileIO" />
+        </SystemCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>

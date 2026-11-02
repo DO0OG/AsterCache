@@ -143,11 +143,11 @@ The management window (Games tab) and the Status tab. They were produced with `A
 
 ### 1. Install
 
-1. Open [GitHub Releases](https://github.com/DO0OG/AsterCache/releases) and download `AsterCache-v<version>-win-x64-setup.exe` (pre-release, for example v0.9.0-beta.2).
+1. Open [GitHub Releases](https://github.com/DO0OG/AsterCache/releases) and download `AsterCache-v<version>-win-x64-setup.exe` (pre-release, for example v0.9.0-beta.3).
 2. Run it and choose a language (English or 한국어).
 3. Keep the default choices (desktop and Start menu shortcuts, start with Windows, install the service) and click Next until it finishes.
 
-Prefer no installer? The same release has a zip, `AsterCache-0.9.0-beta.2-win-x64.zip`. Extract it, run `AsterCache.Tray.exe` as administrator, and install and start the service from the Settings tab.
+Prefer no installer? The same release has a zip, `AsterCache-0.9.0-beta.3-win-x64.zip`. Extract it, run `AsterCache.Tray.exe` as administrator, and install and start the service from the Settings tab.
 
 Running a newer installer upgrades the existing installation. Uninstalling removes the program and the service but keeps the data folder `%ProgramData%\AsterCache`. The installer is not code-signed, so Windows SmartScreen may show a warning.
 
@@ -158,7 +158,7 @@ After installing, you have nothing else to do. [Automatic mode](#automatic-mode)
 | When | What AsterCache does |
 |---|---|
 | Right after install | The background service starts. |
-| About 1 minute later (then every 6 hours) | It looks through your Steam, Epic, GOG, and Ubisoft libraries and registers games installed on an HDD. |
+| About 1 minute later (then every 6 hours) | It looks through your Steam, Epic, GOG, Ubisoft, and Riot libraries and the Windows uninstall list, and registers games installed on an HDD. |
 | The first time you play a registered game | It records what the game reads (the trace). The game loads at its normal speed this time. |
 | After you quit the game and the PC has been idle for 3 minutes | It moves the game's pieces into one zone, one game at a time. This takes a few minutes (about 5 minutes per 2 GB). If you start a game meanwhile, it pauses and continues later. |
 | From then on, every time the PC starts or the launcher opens | It prewarms the zone into RAM. |
@@ -245,10 +245,13 @@ Automatic mode is on by default. In the usual case you do not need to register g
 | Epic Games Store | `LaunchExecutable` in `%ProgramData%\Epic\EpicGamesLauncher\Data\Manifests\*.item` | `EpicGamesLauncher.exe` |
 | GOG Galaxy | Registry `HKLM\SOFTWARE\WOW6432Node\GOG.com\Games` | `GalaxyClient.exe` |
 | Ubisoft Connect | Registry `Launcher\Installs`, value `InstallDir` | `upc.exe`, `UbisoftConnect.exe` |
+| Riot Client | `product_install_full_path` in `%ProgramData%\Riot Games\Metadata\<product>.live\*.product_settings.yaml`. League of Legends (`LeagueClient.exe`, `League of Legends.exe`) and Teamfight Tactics use the same exe names, and their entries are merged when they share a folder. VALORANT uses `VALORANT.exe` and `VALORANT-Win64-Shipping.exe`. Other products use the largest `.exe` in the folder. Entries that are not `.live` (for example PBE) are skipped. Marked as Vanguard anti-cheat | `RiotClientServices.exe` |
+| Windows uninstall list | `Uninstall` keys of HKLM and HKCU (32-bit too). Kept when the install folder is on an HDD (not the system drive), is at least 1 GiB, is not from a common publisher (Microsoft, Intel, NVIDIA, and others), and is not a launcher's own folder. The exe is the largest `.exe` in the folder. Catches standalone games such as Battle.net, EA, Nexon, and HoYoverse titles. Limits: a launcher-style folder can give the wrong exe; after the game runs, the heuristic adds the real exe. | None |
+| Xbox (Microsoft Store) | `XboxGames\<game>\Content` folder on each HDD. The exe is the largest `.exe`. Folders that cannot be read are skipped. | None |
 
-The GOG and Ubisoft readers have not been checked on a real PC yet.
+The GOG and Ubisoft readers have not been checked on a real PC yet. The Riot reader was checked on this PC with League of Legends on D: (an HDD). The Xbox reader has not been checked, because this PC has no such folder.
 
-Not supported for discovery: Battle.net, EA app, Riot Client, and Xbox (PC Game Pass). Games from these, and games installed without a launcher, are found only by the heuristic below. `Battle.net.exe`, `RiotClientServices.exe`, and `EADesktop.exe` are listed only as prewarm trigger programs; the service does not read their libraries.
+Not read for discovery: Battle.net and EA app. Games from these, and games installed without a launcher, are found by the Windows uninstall list above when it matches, and otherwise by the heuristic below. A game in the same folder as a game you registered by hand is not registered automatically, and a log line is written. `Battle.net.exe` and `EADesktop.exe` are listed only as prewarm trigger programs; the service does not read their libraries.
 
 ### Heuristic detection
 
@@ -340,6 +343,13 @@ The configuration file is `%ProgramData%\AsterCache\config.json`. Editing it in 
 | `prewarm.pin` | Keep prewarmed data open as read-only mappings in the service. Default `false`; works only with 16 GiB of RAM or more. See [Anti-cheat compatibility](#anti-cheat-compatibility) |
 
 The service re-reads the whole `config.json` every 5 seconds (when its size or modified time changes), so adding, removing, or changing games and the watcher takes effect without a restart. If the new configuration fails validation or the folder permission check, the previous settings stay in force and the reason is written to the log.
+
+| Watcher | How it works | Permission | Detection latency (S4 measurement) | Load | Recommended |
+|---|---|---|---|---|---|
+| `poll` | Reads the PID list every 50 ms and looks up the names of new PIDs only | No administrator rights | median 27 ms, p95 58 ms | About 1% of one core when idle | Default and recommended |
+| `etw` | Subscribes to kernel process events in a real-time session and flushes the buffer every 50 ms with `FlushTrace` | Administrator rights (the service runs as LocalSystem) | p95 119 ms (1.65 s before the 50 ms flush) | Session buffer memory | Falls back to polling if it fails |
+
+In the **Settings** tab the saved value is `poll` or `etw`, and the label shows `poll (recommended)` or `etw`.
 
 ### Language
 

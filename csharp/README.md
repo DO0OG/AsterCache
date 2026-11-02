@@ -26,7 +26,7 @@ dotnet publish csharp\src\AsterCache.Service\AsterCache.Service.csproj -c Releas
 
 Check the CLI commands (`aster plan`, `probe`, `apply`, `verify`, `revert`, `trace`, `prefetch`, `status`, `launch`, `stream-bench`) and their options with `aster <command> --help`. The relocation and prefetch commands use the same names as Python `relayout/cli.py` and `prefetch/cli.py`.
 
-`aster discover [--json]` lists the games found in the supported launchers' libraries, read only, with the anticheat marker. `aster status --auto-status` prints the automatic mode state (`auto_status.json`).
+`aster discover [--json]` lists the games found in the supported launchers' libraries, read only, with the anticheat marker. The `launcher` value of each entry can also be `riot`, `uninstall`, or `xbox`. `aster status --auto-status` prints the automatic mode state (`auto_status.json`).
 
 The CLI language is set with the global option `--lang ko|en` or the environment variable `ASTER_LANG` (priority: `--lang` > `ASTER_LANG` > `config.json` `"language"` > OS language). JSON output does not depend on the language.
 
@@ -156,14 +156,19 @@ Defines: `/DAppDir` (folder with the management window, `aster.exe`, and the run
 ## Distribution and CI
 
 - `.github/workflows/csharp-ci.yml`: windows-latest, .NET 10.0.x, restore, build, test (without Live), format.
-- `.github/workflows/csharp-release.yml`: manual run (`workflow_dispatch`, `version` input, default `0.9.0-beta.2`, runner windows-2022). It runs verify → package (management-window zip `AsterCache-<version>-win-x64.zip`, Inno Setup installer) → release (creates the GitHub Release; a version containing `-` is marked as a pre-release; the zip and the installer `.exe` are attached as assets). There is no code signing (only the unsigned-publisher warning).
+- `.github/workflows/csharp-release.yml`: manual run (`workflow_dispatch`, `version` input, default `0.9.0-beta.3`, runner windows-2022). It runs verify → package (management-window zip `AsterCache-<version>-win-x64.zip`, Inno Setup installer) → release (creates the GitHub Release; a version containing `-` is marked as a pre-release; the zip and the installer `.exe` are attached as assets). There is no code signing (only the unsigned-publisher warning).
 
 ## Performance conclusions (reference measurements)
 
 - On the relocated zone the Python stream takes 1.42 s, and the upper bound of reading the same hot bytes as one file is 1.09 s (see `results/prefetch_methods_20261102` and `results/prefetch_sweep_20261101/contig_upper_bound.json`).
 - The hot-set reduction option gave no gain and was not adopted.
 - Request coalescing breaks the read order and was not adopted. The window-batch option (S5) remains not adopted.
-- Game start detection: polling by default (`"watcher": "poll"` in `config.json`, interval `poll_ms` default 50 ms). It gets only the PID list (`K32EnumProcesses`, about 0.05 ms per call) and looks up the image name of new PIDs only, which is about 1% of one core when idle, and in a 20-run test the detection latency had median 31 ms and p95 47 ms (50 ms interval; a full Toolhelp snapshot takes about 10 ms per call, so at the same interval it would be 25%). `"watcher": "etw"` is used only with administrator rights (it falls back to polling on failure), and because the live session buffers are flushed on a seconds scale, the measured latency in S4 was about 1.65 seconds. To reduce it, the session buffer is flushed with `FlushTrace` every 50 ms, but the effect has to be confirmed with the administrator S4 test (`-Watcher etw`). The millisecond flush flag (`EVENT_TRACE_USE_MS_FLUSH_TIMER`) is not in the public SDK header (10.0.26100), so it is not used. Limits of polling: it cannot see a process that starts and ends between two ticks, nor a PID reused between ticks. The `started (pid N) via poll|etw-raw|etw-tdh` in the log shows which path caught it.
+- Game start detection: polling by default (`"watcher": "poll"` in `config.json`, interval `poll_ms` default 50 ms). It gets only the PID list (`K32EnumProcesses`, about 0.05 ms per call) and looks up the image name of new PIDs only, which is about 1% of one core when idle, and in a 20-run test the detection latency had median 31 ms and p95 47 ms (50 ms interval; a full Toolhelp snapshot takes about 10 ms per call, so at the same interval it would be 25%). `"watcher": "etw"` is used only with administrator rights (it falls back to polling on failure), and because the live session buffers are flushed on a seconds scale, the measured S4 latency before the change was about 1.65 seconds. With the session buffer flushed with `FlushTrace` every 50 ms, the S4 measurement is p95 119 ms (VALIDATION_REPORT, item D; the S4 polling values are median 27 ms, p95 58 ms). The 20-run test above is a separate measurement, not the S4 value. The millisecond flush flag (`EVENT_TRACE_USE_MS_FLUSH_TIMER`) is not in the public SDK header (10.0.26100), so it is not used. Limits of polling: it cannot see a process that starts and ends between two ticks, nor a PID reused between ticks. The `started (pid N) via poll|etw-raw|etw-tdh` in the log shows which path caught it.
+
+| Watcher | How it works | Permission | Detection latency (S4 measurement) | Load | Recommended |
+|---|---|---|---|---|---|
+| `poll` | Reads the PID list every 50 ms and looks up the names of new PIDs only | No administrator rights | median 27 ms, p95 58 ms | About 1% of one core when idle | Default and recommended |
+| `etw` | Subscribes to kernel process events in a real-time session and flushes the buffer every 50 ms with `FlushTrace` | Administrator rights (the service runs as LocalSystem) | p95 119 ms (1.65 s before the 50 ms flush) | Session buffer memory | Falls back to polling if it fails |
 
 ## Limits and unverified items
 

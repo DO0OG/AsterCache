@@ -19,14 +19,13 @@
 ## 목차
 
 - [무엇을 하는가](#무엇을-하는가)
+- [작동 원리](#작동-원리)
 - [주요 기능](#주요-기능)
 - [실측 결과](#실측-결과)
 - [스크린샷](#스크린샷)
 - [시스템 요구 사항](#시스템-요구-사항)
-- [설치](#설치)
-- [빠른 시작](#빠른-시작)
+- [시작하기](#시작하기)
 - [자동 모드](#자동-모드)
-- [작동 원리](#작동-원리)
 - [설정](#설정)
 - [안전 장치](#안전-장치)
 - [안티치트 호환](#안티치트-호환)
@@ -39,14 +38,57 @@
 
 ## 무엇을 하는가
 
-AsterCache는 HDD에 설치된 게임이 로딩할 때 읽는 파일 블록을 기록하고, 그 읽기 순서대로 블록을 드라이브 안의 한 구간에 모아 둡니다. 게임이 같은 데이터를 읽을 때 헤드가 여기저기 흩어진 위치를 오가지 않도록 하는 것이 목적입니다. 재배치는 NTFS 안에서 파일 데이터를 제자리에서 옮기며, 복사본을 만들거나 드라이버를 적재하지 않습니다.
+AsterCache 는 하드 디스크(HDD)에 설치한 게임의 로딩을 빠르게 해 줍니다. 게임이 로딩할 때 무엇을 읽는지 지켜보고, 그 조각들을 디스크의 한 곳에 나란히 모아 두며, 게임을 켜기 전에 RAM 에 미리 올려 둡니다. 게임 파일의 내용을 바꾸지 않고, 다른 드라이브로 복사하지도 않습니다. 설치한 뒤에는 따로 할 일이 없습니다. 백그라운드에서 알아서 동작합니다([시작하기](#시작하기) 참고).
 
-재배치된 구간을 읽는 방법은 두 가지입니다.
+이 문서의 수치는 실제 게임 1종을 드라이브 1대에서 측정한, 기록한 읽기 패턴의 재생 시간입니다. 게임을 실행한 전체 로딩 시간이 아닙니다. 자세한 내용은 [실측 결과](#실측-결과)와 `VALIDATION_REPORT.md` 를 보십시오.
 
-1. **동시 선읽기.** 게임 exe 가 뜨는 순간 재배치된 구간을 접근 순서대로 읽기 시작합니다. 이 방식은 HDD 의 순차 읽기 속도에 묶입니다.
-2. **사전 예열.** 게임을 켜기 전에 같은 구간을 RAM(파일 캐시)에 올려 둡니다. 서비스 시작 때, 또는 지정한 런처 같은 트리거 프로그램이 뜰 때 자동으로 실행합니다. 게임이 뜰 때는 디스크를 거의 읽지 않습니다.
+## 작동 원리
 
-측정은 합성 데이터셋과 실제 게임 1종(Frostpunk, 안티치트 없음)의 추적 읽기 패턴 재생으로 했습니다. 게임 전체 로딩 시간과 여러 번 반복한 로딩 시간 분포는 아직 재지 않았습니다. 자세한 내용은 [실측 결과](#실측-결과)와 `VALIDATION_REPORT.md` 를 보십시오.
+### 문제
+
+하드 디스크는 움직이는 헤드로 데이터를 읽습니다. 레코드 플레이어의 바늘 팔과 비슷합니다. 헤드가 다른 위치로 건너뛸 때마다 기다려야 합니다. 게임이 한 스테이지를 로딩할 때는 디스크 곳곳에 흩어진 조각을 수천 개 읽으므로, 헤드가 읽는 시간보다 건너뛰는 시간이 훨씬 깁니다.
+
+도서관에 비유하면 이렇습니다. 건물 곳곳의 서가에서 책 수백 권을 찾아 오려면 한참 걸립니다. 같은 책이 필요한 순서대로 카트 하나에 쌓여 있다면 금방 가져옵니다. AsterCache 는 그 카트를 만들어 줍니다.
+
+시험한 드라이브에서 흩어진 읽기는 약 39 MiB/s, 끊기지 않는 연속 읽기는 90~110 MB/s 였습니다([docs/RESULTS_SUMMARY.md](docs/RESULTS_SUMMARY.md)). 드라이브마다 다릅니다.
+
+### 장치 1: 기록 (Trace)
+
+게임이 로딩하는 동안 한 번 지켜보며, 어떤 파일의 어느 부분을 어떤 순서로 읽는지 적어 둡니다. 이때 Windows 자체의 이벤트 추적(ETW)을 씁니다. 게임 프로세스는 건드리지 않습니다.
+
+```mermaid
+flowchart LR
+    A["게임을 한 번 실행"] --> B["Windows ETW 가 읽은 파일 부분을 기록"] --> C["읽기 순서 목록 (트레이스)"]
+```
+
+### 장치 2: 재배치 (Relocate)
+
+그 목록대로 조각들을 디스크의 한 구역에, 게임이 읽는 순서대로 나란히 옮깁니다. 파일 내용은 그대로입니다. 디스크 조각 모음 프로그램이 쓰는 NTFS 의 공식 이동 기능을 쓰고, 모든 단계를 저널(기록)로 남기므로 되돌릴 수 있습니다.
+
+```mermaid
+flowchart LR
+    A["디스크에 흩어진 조각"] --> B["읽는 순서대로 이동 (NTFS 이동, 저널 기록)"] --> C["한 곳에 모인 구역"]
+```
+
+### 장치 3: 예열 (Prewarm)
+
+게임을 켜기 전에, 예를 들어 PC 를 켤 때나 게임 런처를 켤 때 그 구역 전체를 RAM(파일 캐시)에 올려 둡니다. 게임이 뜨면 디스크 대신 RAM 에서 읽습니다. 예열이 제때 되지 않았다면 게임이 켜지는 순간 그 구역을 순서대로 읽기 시작합니다(선읽기). 흩어진 원래 상태보다는 훨씬 빠릅니다.
+
+```mermaid
+flowchart LR
+    A["PC 또는 런처 시작"] --> B["구역을 RAM 에 읽어 둠"] --> C["게임은 디스크 대신 RAM 에서 읽음"]
+```
+
+### 결과
+
+측정(Frostpunk, 첫 맵 로딩에서 읽는 2 GB 데이터, SMR HDD)에서 기록한 읽기를 재생하면, 아무것도 하지 않았을 때 24 s, 재배치와 선읽기 뒤 약 12 s, 예열 뒤 약 0.5 s 였습니다. 같은 읽기를 NVMe SSD 에서 콜드로 하면 3.8 s 였습니다. 예열 자체는 선읽기와 비슷한 시간이 걸리므로, 게임을 켜기 전에 끝나 있을 때 가장 효과가 큽니다. 게임 1종, 드라이브 1대의 재생 시간이며 전체 게임 로딩 시간이 아닙니다.
+
+### AsterCache 가 하지 않는 일
+
+- 게임 파일의 내용을 바꾸지 않습니다. 옮기기 전후의 SHA-256 검사로 확인합니다.
+- 게임 프로세스에 손대지 않습니다. 주입, 후킹, 드라이버를 쓰지 않습니다.
+- 게임을 SSD 로 복사하지 않습니다.
+- RAM 은 예열에만 쓰고, 여유가 충분할 때(기본은 구역 크기 + 4 GB 이상)만 씁니다. 예열한 데이터는 일반 파일 캐시라서, 다른 프로그램이 메모리를 필요로 하면 Windows 가 비워 갑니다.
 
 ## 주요 기능
 
@@ -97,77 +139,91 @@ AsterCache는 HDD에 설치된 게임이 로딩할 때 읽는 파일 블록을 �
 - 트레이스 수집(ETW), 재배치(`apply`, `revert`), 서비스 설치에는 관리자 권한이 필요합니다.
 - 재배치 대상은 NTFS 볼륨이어야 합니다. 원본과 캐시를 비교하려면 서로 다른 물리 장치가 필요합니다.
 
-## 설치
+## 시작하기
 
-### ① 릴리스(베타)
+### 1. 설치
 
-[GitHub Releases](https://github.com/DO0OG/AsterCache/releases) 의 **v0.9.0-beta.2** 프리릴리스에서 `AsterCache-0.9.0-beta.2-win-x64.zip` 을 받습니다. 안에 `AsterCache.Tray.exe`(관리 창), `aster.exe`(명령행), `AsterCache.Service.exe`(서비스)가 들어 있습니다. 압축을 풀고 `AsterCache.Tray.exe` 를 관리자 권한으로 실행한 뒤, 설정 탭에서 서비스를 설치하고 시작합니다.
+1. [GitHub Releases](https://github.com/DO0OG/AsterCache/releases) 에서 `AsterCache-v<버전>-win-x64-setup.exe` 를 받습니다(프리릴리스, 예: v0.9.0-beta.2).
+2. 실행해서 언어(English 또는 한국어)를 고릅니다.
+3. 기본 선택(바탕화면·시작 메뉴 바로가기, Windows 시작 시 실행, 서비스 설치)을 그대로 두고 끝날 때까지 다음을 누릅니다.
 
-### ② 설치 프로그램
+설치 프로그램이 싫다면 같은 릴리스의 zip `AsterCache-0.9.0-beta.2-win-x64.zip` 을 쓸 수 있습니다. 압축을 풀고 `AsterCache.Tray.exe` 를 관리자 권한으로 실행한 뒤, 설정 탭에서 서비스를 설치하고 시작합니다.
 
-`AsterCache-v<버전>-win-x64-setup.exe` 설치본은 관리 창, `aster.exe`, 서비스, 런타임 전체를 `Program Files\AsterCache` 에 설치합니다. `AsterCache` 서비스를 자동 시작으로 등록하고 데이터 폴더 권한을 설정합니다. 설치 중에 다음을 고를 수 있으며, 모두 기본으로 켜져 있습니다.
+새 설치본을 다시 실행하면 기존 설치를 업그레이드합니다. 제거하면 프로그램과 서비스는 지워지지만 데이터 폴더 `%ProgramData%\AsterCache` 는 남습니다. 설치 프로그램에는 코드 서명이 없어 Windows SmartScreen 경고가 뜰 수 있습니다.
 
-- 언어: English 또는 한국어. 고른 언어는 `config.json` 의 `"language"` 에 기록됩니다.
-- 바탕화면 바로가기, 시작 메뉴 바로가기
-- Windows 로그인 때 관리 창을 열고 트레이 아이콘을 상주(바로가기는 모든 사용자 시작 프로그램 폴더)
-- AsterCache 서비스 설치와 시작
-- 마지막 화면에서 관리 창 실행
+### 2. 끝입니다: 자동 모드
 
-같은 설치본을 다시 실행하면 업그레이드합니다. 서비스를 멈추고 파일을 바꾼 뒤 서비스를 다시 등록하고 시작합니다. 제거하면 서비스를 멈추고 지우며 트레이 앱을 종료합니다. 데이터 폴더 `%ProgramData%\AsterCache` 는 남으며, 제거 화면에서 이를 안내합니다. 서명되지 않아 SmartScreen 경고가 뜰 수 있습니다.
+설치하고 나면 더 할 일이 없습니다. [자동 모드](#자동-모드)가 기본으로 켜져 있습니다. 시간이 지나면서 이런 일이 일어납니다.
 
-릴리스 워크플로가 이 설치본을 GitHub 릴리스에 `.exe` 로 첨부합니다. 설치본 정의는 [csharp/README.ko.md](csharp/README.ko.md) 에 있습니다. 직접 빌드할 때는 다음과 같이 합니다.
+| 언제 | AsterCache 가 하는 일 |
+|---|---|
+| 설치 직후 | 백그라운드 서비스가 시작됩니다. |
+| 약 1분 뒤(그 뒤 6시간마다) | Steam, Epic, GOG, Ubisoft 라이브러리를 훑어 HDD 에 설치된 게임을 등록합니다. |
+| 등록된 게임을 처음 플레이할 때 | 게임이 읽는 내용을 기록합니다(트레이스). 이번 로딩은 평소 속도입니다. |
+| 게임을 끄고 PC 가 3분 동안 한가할 때 | 게임의 조각을 한 구역으로 옮깁니다. 한 번에 게임 하나씩이며 몇 분 걸립니다(2 GB 당 약 5분). 그 사이 게임을 켜면 멈췄다가 나중에 이어서 합니다. |
+| 그 뒤 PC 를 켤 때, 런처를 켤 때마다 | 그 구역을 RAM 에 예열합니다. |
+| 두 번째 실행부터 | 게임이 빨리 로딩됩니다. |
 
-```bat
-ISCC.exe /DAppDir=<관리 창 publish 경로> /DAppVersion=<버전> csharp\packaging\windows\aster.iss
-```
+"한가하다"는 디스크 사용이 적고 CPU 사용이 낮으며 AC 전원이 연결된(또는 배터리 50% 이상) 상태입니다. 게임마다 지금 어느 단계인지는 관리 창(트레이 아이콘 또는 바탕화면 바로가기)의 **상태** 탭과 **게임** 탭의 단계 열에서 볼 수 있습니다.
 
-### ③ 직접 빌드
+### 3. 직접 하려면(선택)
 
-.NET 10 SDK 로 세 실행 파일을 게시합니다. 게시 결과는 `csharp\publish\` 아래에 생기며 Git 에서 무시합니다.
+단계를 직접 다루고 싶거나, 자동 모드가 건너뛴 게임을 시험할 때 씁니다. 관리 창을 관리자 권한으로 열고 **게임** 탭에서 아래 버튼을 순서대로 누릅니다.
 
-```bat
-dotnet publish csharp\src\AsterCache.Cli\AsterCache.Cli.csproj -c Release -r win-x64 --self-contained -o csharp\publish\cli
-dotnet publish csharp\src\AsterCache.Service\AsterCache.Service.csproj -c Release -r win-x64 --self-contained -o csharp\publish\service
-dotnet publish csharp\src\AsterCache.Tray\AsterCache.Tray.csproj -c Release -r win-x64 --self-contained -o csharp\publish\gui
-```
+| 순서 | 버튼 | 하는 일 |
+|---|---|---|
+| 1 | 등록 | exe 파일을 골라 게임을 추가합니다. |
+| 2 | 트레이스 수집 | 게임을 실행해 첫 맵까지 로딩하고 끕니다. 읽기 순서를 기록합니다. |
+| 3 | 계획 만들기 | 조각을 어디에 둘지 정합니다. |
+| 4 | 재배치 실행 | 조각을 옮깁니다. 저널이 남습니다. |
+| 5 | 지금 예열 | 그 구역을 바로 RAM 에 올립니다. |
+| 6 | 측정 | 구역을 한 번 읽는 시간을 잽니다. |
 
-- `csharp\publish\cli\aster.exe` 는 명령행 도구입니다.
-- `csharp\publish\gui\AsterCache.Tray.exe` 는 관리 창입니다.
-- 서비스는 관리자 PowerShell 에서 설치합니다.
-
-```powershell
-csharp\scripts\cs_service.ps1 -Action install
-```
-
-## 빠른 시작
-
-### 관리 창으로
-
-1. 관리 창을 관리자 권한으로 실행합니다. 비관리자로 실행했다면 상단 안내 띠에서 다시 실행합니다.
-2. 게임 탭에서 게임을 등록합니다. exe 이름과 설치 폴더를 지정합니다.
-3. 트레이스를 수집합니다. 게임을 한 번 실행해 첫 맵까지 로딩합니다.
-4. 수집한 기록으로 계획을 만듭니다.
-5. 계획을 재배치합니다. 되돌리기도 같은 탭에서 합니다.
-6. 설정 탭에서 서비스를 설치하고 시작합니다. 예열 옵션은 게임 설정에서 정합니다.
-
-### 명령행 `aster` 로
+같은 단계를 명령행(`aster`)으로도 할 수 있습니다. 예를 들면 다음과 같습니다.
 
 ```bat
+aster discover
 aster trace --live --exe Frostpunk.exe --origin-root D:\Games\Frostpunk --out trace.json --seconds 180
 aster plan --trace trace.json --origin-root D:\Games\Frostpunk --zone-mib 1536 --out plan.json
 aster apply --plan plan.json --allowed-root D:\Games --require-volume-label GAMES --dry-run
 aster apply --plan plan.json --allowed-root D:\Games --require-volume-label GAMES --execute
-aster verify --plan plan.json
 aster prewarm --plan plan.json --origin-root D:\Games\Frostpunk
 ```
 
-- `--seconds` 대신 `--stop-file <파일>` 을 주고 그 파일을 만들어 수집을 끝낼 수 있습니다.
+- `discover` 는 런처 라이브러리에서 찾은 게임 목록을 읽기 전용으로 보여 줍니다.
 - `trace --live`, `apply --execute` 는 관리자 PowerShell 에서 실행합니다.
-- `--dry-run` 은 아무것도 옮기지 않고 계획만 보여 줍니다.
-- `--require-volume-label` 이 실제 볼륨 레이블과 다르면 아무것도 옮기지 않습니다.
-- `aster prewarm` 은 `aster prefetch --execute --method pvm` 의 별칭입니다.
-- `--zone-mib` 값은 예시입니다. 게임의 핫 데이터 크기에 맞춰 정하십시오.
-- 전역 옵션 `--lang ko|en` 으로 출력 언어를 정합니다([언어](#언어) 참고).
+- `--dry-run` 은 아무것도 옮기지 않고 계획만 보여 줍니다. `--require-volume-label` 이 실제 볼륨 레이블과 다르면 아무것도 옮기지 않습니다.
+- `--zone-mib` 값은 예시입니다. 게임의 핫 데이터 크기에 맞춰 정하십시오. 전역 옵션 `--lang ko|en` 으로 출력 언어를 정합니다([언어](#언어) 참고).
+- 모든 명령과 옵션은 [csharp/README.ko.md](csharp/README.ko.md) 에 있습니다.
+
+### 4. 끄기와 되돌리기
+
+- **자동 모드 끄기.** **설정** 탭에서 **자동 모드 사용** 체크를 풀고 **자동 모드 적용**을 누릅니다. 또는 `%ProgramData%\AsterCache\config.json` 에 `"auto": {"enabled": false}` 를 씁니다. 게임 하나만 빼려면 그 exe 를 `auto.ignore_exes` 에 넣습니다. [자동 모드](#자동-모드)를 보십시오.
+- **게임 되돌리기.** **게임** 탭에서 게임을 고르고 **되돌리기**를 누릅니다. 저널을 따라 예전 디스크 배치로 복원합니다. 파일 내용은 처음부터 바뀌지 않았습니다.
+- **제거.** Windows 설치된 앱에서 지웁니다. 데이터 폴더 `%ProgramData%\AsterCache` 는 남으며, `cs_service.ps1 -Action uninstall -PurgeData` 를 실행했을 때만 지웁니다.
+
+### 자주 묻는 질문
+
+**SSD 에 설치한 게임도 되나요?**
+아니요. HDD 에 있는 게임만 대상입니다. SSD 나 Windows 가 있는 드라이브의 게임은 SSD 에는 필요가 없으므로 건너뜁니다.
+
+**안티치트 게임에서 안전한가요?**
+AsterCache 는 게임 프로세스에 손대지 않습니다. 자기 프로세스에서 파일을 읽고, Windows 이벤트 추적으로 파일 읽기를 관찰하며, 게임이 종료된 뒤에만 파일을 옮깁니다. 다만 안티치트 게임에서는 아직 시험하지 않았습니다. 그런 게임은 먼저 자동 모드를 끄거나 `auto.ignore_exes` 에 넣으십시오. 자세한 내용은 [안티치트 호환](#안티치트-호환)을 보십시오.
+
+**RAM 을 얼마나 쓰나요?**
+구역 크기만큼입니다. 구역은 게임이 읽는 데이터 묶음이며 기본 상한은 2 GiB 입니다. 예열 뒤에도 가용 RAM 이 4 GB 이상 남을 때만 실행하고, 다른 프로그램이 메모리를 필요로 하면 Windows 가 캐시를 회수합니다.
+
+**게임 업데이트 뒤에는 어떻게 되나요?**
+패치로 파일이 바뀌면 저장해 둔 계획과 맞지 않을 수 있습니다. AsterCache 는 옮기기 전에 계획을 확인해 바뀐 파일은 건너뛰고, 게임이 꺼져 있는 동안 5분마다 배치가 흐트러졌는지 보고 흐트러졌으면 계획을 다시 적용합니다. 큰 패치 뒤에는 트레이스 수집, 계획 만들기, 재배치 실행을 다시 하십시오. 실제 게임 업데이트로는 아직 시험하지 않았습니다.
+
+**SMR 인지 CMR 인지가 중요한가요?**
+SMR 드라이브(WD20EZAZ) 1대만 측정했고 CMR 은 측정하지 않았습니다. 헤드 이동을 줄이는 것이므로 둘 다 도움이 될 것으로 보지만 검증하지 않았습니다. SMR 은 처음 한 번 옮길 때 쓰기가 느려질 수 있습니다.
+
+**처음 실행도 빨라지나요?**
+아니요. 첫 실행은 게임이 읽는 내용을 기록하는 데 쓰고, 옮기는 일은 그 뒤에 합니다. 빨라지는 것은 두 번째 실행부터입니다. 런처 라이브러리가 아니라 실행 감지로만 찾은 게임은 그 다음 실행부터 기록을 시작합니다.
+
+**파일이 망가질 수 있나요?**
+옮길 때마다 SHA-256 으로 검증하고, 되돌릴 수 있는 저널에 기록합니다. 그래도 실제 데이터를 옮기는 베타이므로 중요한 드라이브는 먼저 백업하십시오. [안전 장치](#안전-장치)를 보십시오.
 
 ## 자동 모드
 
@@ -233,12 +289,6 @@ GOG 와 Ubisoft 읽기는 아직 실제 PC 에서 확인하지 않았습니다.
 ### 효과
 
 자동 모드의 속도 효과는 아직 측정하지 않았습니다. 측정 결과가 나오면 [docs/RESULTS_SUMMARY.md](docs/RESULTS_SUMMARY.md) 에 추가할 예정입니다.
-
-## 작동 원리
-
-- **접근 순서 물리 재배치.** 추적한 읽기 순서대로 핫 블록을 NTFS 안에서 제자리 이동(FSCTL_MOVE_FILE)해 한 구간에 모읍니다. 이동 전후 SHA-256 으로 내용이 같은지 확인합니다.
-- **존 순서 스트림.** 재배치된 구간을 접근 순서대로 순차에 가깝게 읽습니다. 게임이 뜨는 순간 시작하며, 읽은 데이터는 OS 파일 캐시에 올라갑니다.
-- **사전 예열.** 게임을 켜기 전에 같은 구간을 RAM 파일 캐시에 올려 둡니다. 가용 RAM 이 구간 크기와 `min_free_ram_mib` 의 합 이상일 때만 실행합니다.
 
 ## 설정
 
@@ -395,6 +445,34 @@ GOG 와 Ubisoft 읽기는 아직 실제 PC 에서 확인하지 않았습니다.
 - `VALIDATION_REPORT.md` — 검증 보고서
 
 ## 개발
+
+### 직접 빌드
+
+.NET 10 SDK 로 세 실행 파일을 게시합니다. 게시 결과는 `csharp\publish\` 아래에 생기며 Git 에서 무시합니다.
+
+```bat
+dotnet publish csharp\src\AsterCache.Cli\AsterCache.Cli.csproj -c Release -r win-x64 --self-contained -o csharp\publish\cli
+dotnet publish csharp\src\AsterCache.Service\AsterCache.Service.csproj -c Release -r win-x64 --self-contained -o csharp\publish\service
+dotnet publish csharp\src\AsterCache.Tray\AsterCache.Tray.csproj -c Release -r win-x64 --self-contained -o csharp\publish\gui
+```
+
+- `csharp\publish\cli\aster.exe` 는 명령행 도구입니다.
+- `csharp\publish\gui\AsterCache.Tray.exe` 는 관리 창입니다.
+- 서비스는 관리자 PowerShell 에서 설치합니다.
+
+```powershell
+csharp\scripts\cs_service.ps1 -Action install
+```
+
+### 설치 프로그램 빌드
+
+릴리스 워크플로가 설치 프로그램을 GitHub 릴리스에 `.exe` 로 첨부합니다. 설치본 정의는 [csharp/README.ko.md](csharp/README.ko.md) 에 있습니다. 직접 빌드할 때는 다음과 같이 합니다.
+
+```bat
+ISCC.exe /DAppDir=<관리 창 publish 경로> /DAppVersion=<버전> csharp\packaging\windows\aster.iss
+```
+
+### 빌드와 시험
 
 ```bat
 dotnet build csharp/AsterCache.sln -c Release

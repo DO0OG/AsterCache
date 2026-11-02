@@ -19,14 +19,13 @@
 ## Table of contents
 
 - [What it does](#what-it-does)
+- [How it works](#how-it-works)
 - [Features](#features)
 - [Measured results](#measured-results)
 - [Screenshots](#screenshots)
 - [System requirements](#system-requirements)
-- [Installation](#installation)
-- [Quick start](#quick-start)
+- [Getting started](#getting-started)
 - [Automatic mode](#automatic-mode)
-- [How it works](#how-it-works)
 - [Configuration](#configuration)
 - [Safety measures](#safety-measures)
 - [Anti-cheat compatibility](#anti-cheat-compatibility)
@@ -39,14 +38,57 @@
 
 ## What it does
 
-AsterCache records which file blocks a game reads while loading, then gathers those blocks into one zone of the drive in that read order. The goal is that the drive head no longer has to jump between scattered locations when the game reads the same data. Relocation moves file data in place inside NTFS; it makes no copies and loads no driver.
+AsterCache helps games installed on a hard disk (HDD) load faster. It watches what a game reads while it loads, puts those pieces side by side in one place on the disk, and loads them into RAM before you start the game. It does not change your game files and does not copy them to another drive. Once it is installed you do not have to do anything: it works in the background (see [Getting started](#getting-started)).
 
-There are two ways to read the relocated zone.
+The figures in this document are replay times of recorded read patterns of one real game on one drive, not total load times of a running game. See [Measured results](#measured-results) and [VALIDATION_REPORT.md](VALIDATION_REPORT.md) for details.
 
-1. **Concurrent prefetch.** The moment the game exe starts, the relocated zone is read in access order. This is bound by the HDD's sequential read speed.
-2. **Prewarm.** Before you start the game, the same zone is loaded into RAM (the file cache). It runs automatically when the service starts, or when a trigger program such as a launcher you specify starts. When the game starts, it reads almost nothing from disk.
+## How it works
 
-Measurements used a synthetic dataset and a replay of the traced read pattern of one real game (Frostpunk, no anti-cheat). Total game load time and the distribution of repeated load times have not been measured yet. See [Measured results](#measured-results) and [VALIDATION_REPORT.md](VALIDATION_REPORT.md) for details.
+### The problem
+
+A hard disk reads data with a moving head, like the arm of a record player. Every time the head has to jump to another spot, it waits. A game that loads a level reads thousands of pieces that are spread all over the disk, so the head spends most of its time jumping instead of reading.
+
+Think of a library. Fetching a few hundred books from shelves all over the building takes a long time. Taking the same books from one cart, already stacked in the order you need them, is fast. AsterCache builds that cart.
+
+On the test drive, scattered reads ran at about 39 MiB/s, while one continuous read ran at 90~110 MB/s ([docs/RESULTS_SUMMARY.md](docs/RESULTS_SUMMARY.md)). Other drives will differ.
+
+### Part 1: Trace
+
+AsterCache watches the game once while it loads and writes down which parts of which files it reads, and in what order. It uses Windows' own event tracing (ETW) for this. It never touches the game process.
+
+```mermaid
+flowchart LR
+    A["You play the game once"] --> B["Windows ETW logs which file parts are read"] --> C["Read-order list (trace)"]
+```
+
+### Part 2: Relocate
+
+Using that list, AsterCache moves the pieces to one area of the disk, side by side, in the order the game reads them. File contents stay exactly the same. The move uses the official NTFS move function (the one disk defragmenters use), keeps a journal of every step, and can be reverted.
+
+```mermaid
+flowchart LR
+    A["Pieces scattered over the disk"] --> B["Moved in read order (NTFS move, journal kept)"] --> C["One tidy zone"]
+```
+
+### Part 3: Prewarm
+
+Before you start the game, for example when the PC boots or when your game launcher opens, AsterCache reads that whole zone into RAM (the file cache). When the game starts, it reads from RAM instead of the disk. If the zone was not prewarmed in time, AsterCache starts reading it in order the moment the game starts (read-ahead), which is still much faster than the scattered original.
+
+```mermaid
+flowchart LR
+    A["PC or launcher starts"] --> B["Zone read into RAM"] --> C["Game reads from RAM, not the disk"]
+```
+
+### The result
+
+In the measurement (Frostpunk, a 2 GB set of data read while loading the first map, on an SMR HDD), replaying the recorded reads took 24 s with nothing done, about 12 s after relocation plus read-ahead, and about 0.5 s after prewarm; the same reads on an NVMe SSD, cold, took 3.8 s. Prewarm itself needs about as long as the read-ahead, so it helps most when it finishes before you start the game. These are single-game, single-drive replay times, not full game load times.
+
+### What AsterCache does not do
+
+- It does not change the content of your game files. A SHA-256 check before and after each move confirms this.
+- It does not touch the game process: no injection, no hooking, no driver.
+- It does not copy your game to an SSD.
+- RAM is used only for prewarm, and only when enough memory is free (at least the zone size plus 4 GB by default). Prewarmed data is ordinary file cache, which Windows can drop when programs need the memory.
 
 ## Features
 
@@ -97,77 +139,91 @@ The management window (Games tab) and the Status tab. They were produced with `A
 - Trace capture (ETW), relocation (`apply`, `revert`), and service installation require administrator rights.
 - The relocation target must be an NTFS volume. Comparing origin against cache requires two different physical devices.
 
-## Installation
+## Getting started
 
-### 1. Release (beta)
+### 1. Install
 
-Download `AsterCache-0.9.0-beta.2-win-x64.zip` from the **v0.9.0-beta.2** pre-release on [GitHub Releases](https://github.com/DO0OG/AsterCache/releases). It contains `AsterCache.Tray.exe` (management window), `aster.exe` (command line), and `AsterCache.Service.exe` (service). Extract it, run `AsterCache.Tray.exe` as administrator, and install and start the service from the Settings tab.
+1. Open [GitHub Releases](https://github.com/DO0OG/AsterCache/releases) and download `AsterCache-v<version>-win-x64-setup.exe` (pre-release, for example v0.9.0-beta.2).
+2. Run it and choose a language (English or 한국어).
+3. Keep the default choices (desktop and Start menu shortcuts, start with Windows, install the service) and click Next until it finishes.
 
-### 2. Installer
+Prefer no installer? The same release has a zip, `AsterCache-0.9.0-beta.2-win-x64.zip`. Extract it, run `AsterCache.Tray.exe` as administrator, and install and start the service from the Settings tab.
 
-The installer `AsterCache-v<version>-win-x64-setup.exe` installs the management window, `aster.exe`, the service, and the runtime into `Program Files\AsterCache`. It registers the `AsterCache` service for automatic start and sets permissions on the data folder. During setup you can choose the following. All of them are checked by default.
+Running a newer installer upgrades the existing installation. Uninstalling removes the program and the service but keeps the data folder `%ProgramData%\AsterCache`. The installer is not code-signed, so Windows SmartScreen may show a warning.
 
-- Language: English or 한국어. The choice is saved as `"language"` in `config.json`.
-- A desktop shortcut and a Start menu shortcut.
-- Opening the management window and keeping the tray icon when you sign in to Windows (the shortcut is in the all-users Startup folder).
-- Installing and starting the AsterCache service.
-- Starting the management window on the last page.
+### 2. That is all: automatic mode
 
-Running the same installer again upgrades the installation: it stops the service, replaces the files, and then registers and starts the service again. Uninstalling stops and removes the service and quits the tray app. It leaves the data folder `%ProgramData%\AsterCache` in place, and the uninstaller tells you so. The installer is not code-signed, so SmartScreen may show a warning.
+After installing, you have nothing else to do. [Automatic mode](#automatic-mode) is on by default. This is what happens over time:
 
-The release workflow attaches the installer `.exe` to the GitHub release. The installer's defines are listed in [csharp/README.md](csharp/README.md). To build it yourself:
+| When | What AsterCache does |
+|---|---|
+| Right after install | The background service starts. |
+| About 1 minute later (then every 6 hours) | It looks through your Steam, Epic, GOG, and Ubisoft libraries and registers games installed on an HDD. |
+| The first time you play a registered game | It records what the game reads (the trace). The game loads at its normal speed this time. |
+| After you quit the game and the PC has been idle for 3 minutes | It moves the game's pieces into one zone, one game at a time. This takes a few minutes (about 5 minutes per 2 GB). If you start a game meanwhile, it pauses and continues later. |
+| From then on, every time the PC starts or the launcher opens | It prewarms the zone into RAM. |
+| From the second launch | The game loads faster. |
 
-```bat
-ISCC.exe /DAppDir=<gui publish path> /DAppVersion=<version> csharp\packaging\windows\aster.iss
-```
+"Idle" means little disk activity, low CPU use, and AC power (or a battery at 50 % or more). To see which stage each game is in, open the management window (tray icon, or the desktop shortcut) and look at the **Status** tab and the stage column of the **Games** tab.
 
-### 3. Build from source
+### 3. Doing it by hand (optional)
 
-Publish the three executables with the .NET 10 SDK. The output goes under `csharp\publish\` and is ignored by Git.
+Use this if you want to control each step, or to try a game that automatic mode skipped. Start the management window as administrator, open the **Games** tab, and work through the buttons in this order.
 
-```bat
-dotnet publish csharp\src\AsterCache.Cli\AsterCache.Cli.csproj -c Release -r win-x64 --self-contained -o csharp\publish\cli
-dotnet publish csharp\src\AsterCache.Service\AsterCache.Service.csproj -c Release -r win-x64 --self-contained -o csharp\publish\service
-dotnet publish csharp\src\AsterCache.Tray\AsterCache.Tray.csproj -c Release -r win-x64 --self-contained -o csharp\publish\gui
-```
+| Step | Button | What it does |
+|---|---|---|
+| 1 | Register | Add the game by choosing its exe file. |
+| 2 | Collect trace | Run the game, load up to the first map, and quit. This records the read order. |
+| 3 | Create plan | Decide where the pieces should go. |
+| 4 | Apply relocation | Move the pieces. A journal is kept. |
+| 5 | Prewarm now | Load the zone into RAM right away. |
+| 6 | Measure | Time one read of the zone. |
 
-- `csharp\publish\cli\aster.exe` is the command-line tool.
-- `csharp\publish\gui\AsterCache.Tray.exe` is the management window.
-- Install the service from an administrator PowerShell.
-
-```powershell
-csharp\scripts\cs_service.ps1 -Action install
-```
-
-## Quick start
-
-### With the management window
-
-1. Run the management window as administrator. If you started it without administrator rights, relaunch from the banner at the top.
-2. Register a game on the Games tab. Specify the exe name and install folder.
-3. Capture a trace. Run the game once and load up to the first map.
-4. Build a plan from the captured trace.
-5. Relocate the plan. Reverting is done on the same tab.
-6. Install and start the service on the Settings tab. Prewarm options are set in the game's settings.
-
-### With the command line `aster`
+The same steps are available on the command line (`aster`), for example:
 
 ```bat
+aster discover
 aster trace --live --exe Frostpunk.exe --origin-root D:\Games\Frostpunk --out trace.json --seconds 180
 aster plan --trace trace.json --origin-root D:\Games\Frostpunk --zone-mib 1536 --out plan.json
 aster apply --plan plan.json --allowed-root D:\Games --require-volume-label GAMES --dry-run
 aster apply --plan plan.json --allowed-root D:\Games --require-volume-label GAMES --execute
-aster verify --plan plan.json
 aster prewarm --plan plan.json --origin-root D:\Games\Frostpunk
 ```
 
-- Instead of `--seconds` you can pass `--stop-file <file>` and create that file to end the capture.
+- `discover` lists the games found in your launcher libraries, read only.
 - Run `trace --live` and `apply --execute` from an administrator PowerShell.
-- `--dry-run` moves nothing and only shows the plan.
-- If `--require-volume-label` does not match the actual volume label, nothing is moved.
-- `aster prewarm` is an alias of `aster prefetch --execute --method pvm`.
-- The `--zone-mib` value is an example. Set it to fit the game's hot data size.
-- The global option `--lang ko|en` sets the output language (see [Language](#language)).
+- `--dry-run` moves nothing and only shows the plan. If `--require-volume-label` does not match the actual volume label, nothing is moved.
+- `--zone-mib` is an example value; set it to fit the game's hot data size. The global option `--lang ko|en` sets the output language (see [Language](#language)).
+- Every command and option is described in [csharp/README.md](csharp/README.md).
+
+### 4. Turning it off and reverting
+
+- **Turn off automatic mode.** In the **Settings** tab, clear **Use automatic mode** and click **Apply automatic mode**. Or set `"auto": {"enabled": false}` in `%ProgramData%\AsterCache\config.json`. To exclude one game, add its exe to `auto.ignore_exes`. See [Automatic mode](#automatic-mode).
+- **Put a game back.** On the **Games** tab, select the game and click **Revert**. It follows the journal and restores the previous disk layout; the file contents never changed.
+- **Uninstall.** Use Windows' Installed apps. Your data folder `%ProgramData%\AsterCache` stays; it is deleted only if you run `cs_service.ps1 -Action uninstall -PurgeData`.
+
+### FAQ
+
+**Does it work for games installed on an SSD?**
+No. It only targets games on an HDD. Games on an SSD or on the Windows system drive are skipped, because an SSD does not need it.
+
+**Is it safe with anti-cheat games?**
+AsterCache never touches the game process; it only reads files from its own process, watches file reads with Windows event tracing, and moves files after the game has exited. But it has not been tested with any anti-cheat game yet. For such a game, turn automatic mode off or add the game to `auto.ignore_exes` first. Details are in [Anti-cheat compatibility](#anti-cheat-compatibility).
+
+**How much RAM does it use?**
+About the size of the zone, which is the game's recorded read set (up to 2 GiB by default). Prewarm runs only when at least 4 GB of RAM would still be free afterwards, and Windows can reclaim the cache when your programs need the memory.
+
+**What happens after a game update?**
+A patch can change files, so a saved plan may no longer match them. AsterCache checks the plan before moving anything and skips files that changed, and every 5 minutes (while the game is off) it re-applies the plan if the layout has fallen apart. After a big patch, run Collect trace, Create plan, and Apply relocation again. This has not been tried with a real game update yet.
+
+**Does it matter whether my drive is SMR or CMR?**
+Only one SMR drive (WD20EZAZ) has been measured; CMR drives have not. Removing head movement should help both kinds, but that is not verified. SMR drives can write slowly during the one-time move.
+
+**Will the very first launch be faster?**
+No. The first launch is used to record what the game reads, and the move happens afterwards. The speed-up starts with the second launch. A game found only by activity detection (not from a launcher library) starts recording on its next launch.
+
+**Can my files get damaged?**
+Every move is verified with a SHA-256 check and written to a journal that can be reverted. Still, this is a beta that moves real data: back up important drives first. See [Safety measures](#safety-measures).
 
 ## Automatic mode
 
@@ -233,12 +289,6 @@ A process that is not registered, starts from an exe on an HDD volume, and reads
 ### Effect
 
 The speed effect of automatic mode has not been measured yet. When results exist, they will be added to [docs/RESULTS_SUMMARY.md](docs/RESULTS_SUMMARY.md).
-
-## How it works
-
-- **Access-order physical relocation.** Hot blocks are moved in place inside NTFS (FSCTL_MOVE_FILE) in the traced read order to gather them into one zone. SHA-256 before and after the move confirms the content is identical.
-- **Zone-ordered stream.** The relocated zone is read in access order, close to sequential. It starts the moment the game starts, and the data read is placed in the OS file cache.
-- **Prewarm.** Before you start the game, the same zone is loaded into the RAM file cache. It runs only when available RAM is at least the zone size plus `min_free_ram_mib`.
 
 ## Configuration
 
@@ -395,6 +445,34 @@ The reason it was skipped is recorded in `service.log`. Typical causes are insuf
 - `VALIDATION_REPORT.md` — validation report
 
 ## Development
+
+### Build from source
+
+Publish the three executables with the .NET 10 SDK. The output goes under `csharp\publish\` and is ignored by Git.
+
+```bat
+dotnet publish csharp\src\AsterCache.Cli\AsterCache.Cli.csproj -c Release -r win-x64 --self-contained -o csharp\publish\cli
+dotnet publish csharp\src\AsterCache.Service\AsterCache.Service.csproj -c Release -r win-x64 --self-contained -o csharp\publish\service
+dotnet publish csharp\src\AsterCache.Tray\AsterCache.Tray.csproj -c Release -r win-x64 --self-contained -o csharp\publish\gui
+```
+
+- `csharp\publish\cli\aster.exe` is the command-line tool.
+- `csharp\publish\gui\AsterCache.Tray.exe` is the management window.
+- Install the service from an administrator PowerShell.
+
+```powershell
+csharp\scripts\cs_service.ps1 -Action install
+```
+
+### Build the installer
+
+The release workflow attaches the installer `.exe` to the GitHub release. The installer's defines are listed in [csharp/README.md](csharp/README.md). To build it yourself:
+
+```bat
+ISCC.exe /DAppDir=<gui publish path> /DAppVersion=<version> csharp\packaging\windows\aster.iss
+```
+
+### Build and test
 
 ```bat
 dotnet build csharp/AsterCache.sln -c Release

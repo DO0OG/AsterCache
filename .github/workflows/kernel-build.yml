@@ -10,7 +10,7 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2022  # NuGet WDK 10.0.26100.6584 ships build tasks for VS 2022 (17.x) only
     steps:
       - uses: actions/checkout@v5
       - uses: NuGet/setup-nuget@v2

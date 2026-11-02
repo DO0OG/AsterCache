@@ -115,4 +115,26 @@ public sealed class LauncherManifestsTests
         Assert.Equal(64, second.Length);
         Assert.EndsWith("-2", second);
     }
+
+    [Theory]
+    [InlineData("product_install_full_path: \"D:/Riot Games/League of Legends\"\n", @"D:\Riot Games\League of Legends")]
+    [InlineData("a: 1\r\nproduct_install_full_path: 'D:/It''s/Games'\r\nb: 2\r\n", @"D:\It's\Games")]
+    [InlineData("product_install_full_path: \"D:\\\\Games\\uAC8C\\uC784\"\n", "D:\\Games\uAC8C\uC784")]
+    [InlineData("product_install_full_path: E:/Plain Games\n", @"E:\Plain Games")]
+    [InlineData("settings:\n    product_install_full_path: \"D:/Nested\"\n", null)]
+    [InlineData("product_install_full_path: \"\"\n", null)]
+    [InlineData("", null)]
+    public void RiotInstallPathIsTheTopLevelLineWithQuotesAndEscapesResolved(string yaml, string? expected) =>
+        Assert.Equal(expected, LauncherManifests.ParseRiotInstallPath(yaml));
+
+    [Fact]
+    public void RiotFixtureGivesTheLiveAndPbeFolders()
+    {
+        string root = Path.Combine(AppContext.BaseDirectory, "fixtures", "launchers", "riot", "Metadata");
+
+        string Path_(string product) => LauncherManifests.ParseRiotInstallPath(File.ReadAllText(Path.Combine(root, product, product + ".product_settings.yaml")))!;
+
+        Assert.Equal(@"D:\Games\Riot Games\League of Legends", Path_("league_of_legends.live"));
+        Assert.Equal(@"C:\Riot Games\League of Legends (PBE)", Path_("league_of_legends.pbe"));
+    }
 }

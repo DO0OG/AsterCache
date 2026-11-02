@@ -12,6 +12,7 @@ using Velopack;
 // 사용법: AsterCache.Tray [--data-dir <폴더>] [--lang ko|en] [--smoke]   (기본 폴더 %ProgramData%\AsterCache)
 // 언어: --lang > 환경변수 ASTER_LANG > config.json 의 language (auto 는 OS 표시 언어). 화면 문구는 시작할 때 한 번 정합니다.
 // --smoke: 트레이 아이콘과 메인 창을 만들고 3초 뒤 스스로 종료합니다 (알림 없음, 로그 한 줄). 종료 코드 0 정상, 2 설정 오류.
+// --smoke --click <apply-auto|apply-language|apply-watcher>: 창을 연 뒤 해당 버튼의 처리 경로를 실행하고, 성공이면 로그에 "smoke: click <이름> ok" 를 남기고 종료 코드 0, 실패·예외는 3.
 // --smoke --screenshot <png> [--tab <0..3>]: 메인 창을 1100x720 으로 그려 PNG 로 저장합니다 (드라이브 목록은 이 PC 대신 예시 값).
 internal static class Program
 {
@@ -43,6 +44,8 @@ internal static class Program
         App.ScreenshotPath = shot >= 0 && shot + 1 < args.Length ? Path.GetFullPath(args[shot + 1]) : null;
         int tab = Array.IndexOf(args, "--tab");
         App.ScreenshotTab = tab >= 0 && tab + 1 < args.Length && int.TryParse(args[tab + 1], out int t) ? t : 0;
+        int click = Array.IndexOf(args, "--click");
+        App.SmokeClick = click >= 0 && click + 1 < args.Length ? args[click + 1] : null;
         var config = new ConfigEditor(dataDir);
         var elevator = new UacElevator();
         var shell = new ExplorerShell();

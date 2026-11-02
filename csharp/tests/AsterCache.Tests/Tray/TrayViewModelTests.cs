@@ -49,6 +49,36 @@ public sealed class TrayViewModelTests : IDisposable
         Assert.Equal(AutoSettings.Default.IdleMinutes, s.Auto.IdleMinutes); // 나머지 auto 값은 그대로
     }
 
+    [Fact]
+    public void ApplyAutoSavesTheFormValuesAndTheSpeedSettingsFromPlainValues()
+    {
+        var form = new AutoForm(false, true, false, true, 3, "a.exe, b.exe", "2048", "7");
+
+        Assert.True(_vm.ApplyAuto(form).Ok);
+
+        AsterSettings s = new ConfigEditor(_dir).Load()!;
+        Assert.False(s.Auto.Enabled);
+        Assert.True(s.Auto.Discover);
+        Assert.True(s.Auto.Relocate);
+        Assert.Equal(3, s.Auto.PrewarmRecent);
+        Assert.Equal(["a.exe", "b.exe"], s.Auto.IgnoreExes);
+        Assert.Equal(2048, s.MaxZoneMib);
+        Assert.Equal(7, s.Auto.RewarmMinutes);
+    }
+
+    [Fact]
+    public void ApplyAutoStopsAtTheFirstFailureAndKeepsTheSpeedSettings()
+    {
+        Assert.False(_vm.ApplyAuto(new AutoForm(true, true, true, true, 0, string.Empty, "big", "10")).Ok);
+    }
+
+    [Fact]
+    public void BriefShowsTheExceptionTypeAndTheFirstMessageLine()
+    {
+        Assert.Equal("InvalidOperationException: first", TrayViewModel.Brief(new InvalidOperationException("first\nsecond")));
+        Assert.Equal("IOException", TrayViewModel.Brief(new IOException(string.Empty)));
+    }
+
     [Theory]
     [InlineData("big", "10")]
     [InlineData("", "10")]

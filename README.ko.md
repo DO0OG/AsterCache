@@ -143,11 +143,11 @@ flowchart LR
 
 ### 1. 설치
 
-1. [GitHub Releases](https://github.com/DO0OG/AsterCache/releases) 에서 `AsterCache-v<버전>-win-x64-setup.exe` 를 받습니다(프리릴리스, 예: v0.9.0-beta.2).
+1. [GitHub Releases](https://github.com/DO0OG/AsterCache/releases) 에서 `AsterCache-v<버전>-win-x64-setup.exe` 를 받습니다(프리릴리스, 예: v0.9.0-beta.3).
 2. 실행해서 언어(English 또는 한국어)를 고릅니다.
 3. 기본 선택(바탕화면·시작 메뉴 바로가기, Windows 시작 시 실행, 서비스 설치)을 그대로 두고 끝날 때까지 다음을 누릅니다.
 
-설치 프로그램이 싫다면 같은 릴리스의 zip `AsterCache-0.9.0-beta.2-win-x64.zip` 을 쓸 수 있습니다. 압축을 풀고 `AsterCache.Tray.exe` 를 관리자 권한으로 실행한 뒤, 설정 탭에서 서비스를 설치하고 시작합니다.
+설치 프로그램이 싫다면 같은 릴리스의 zip `AsterCache-0.9.0-beta.3-win-x64.zip` 을 쓸 수 있습니다. 압축을 풀고 `AsterCache.Tray.exe` 를 관리자 권한으로 실행한 뒤, 설정 탭에서 서비스를 설치하고 시작합니다.
 
 새 설치본을 다시 실행하면 기존 설치를 업그레이드합니다. 제거하면 프로그램과 서비스는 지워지지만 데이터 폴더 `%ProgramData%\AsterCache` 는 남습니다. 설치 프로그램에는 코드 서명이 없어 Windows SmartScreen 경고가 뜰 수 있습니다.
 
@@ -158,7 +158,7 @@ flowchart LR
 | 언제 | AsterCache 가 하는 일 |
 |---|---|
 | 설치 직후 | 백그라운드 서비스가 시작됩니다. |
-| 약 1분 뒤(그 뒤 6시간마다) | Steam, Epic, GOG, Ubisoft 라이브러리를 훑어 HDD 에 설치된 게임을 등록합니다. |
+| 약 1분 뒤(그 뒤 6시간마다) | Steam, Epic, GOG, Ubisoft, Riot 라이브러리와 Windows 제거 목록을 훑어 HDD 에 설치된 게임을 등록합니다. |
 | 등록된 게임을 처음 플레이할 때 | 게임이 읽는 내용을 기록합니다(트레이스). 이번 로딩은 평소 속도입니다. |
 | 게임을 끄고 PC 가 3분 동안 한가할 때 | 게임의 조각을 한 구역으로 옮깁니다. 한 번에 게임 하나씩이며 몇 분 걸립니다(2 GB 당 약 5분). 그 사이 게임을 켜면 멈췄다가 나중에 이어서 합니다. |
 | 그 뒤 PC 를 켤 때, 런처를 켤 때마다 | 그 구역을 RAM 에 예열합니다. |
@@ -245,10 +245,13 @@ SMR 드라이브(WD20EZAZ) 1대만 측정했고 CMR 은 측정하지 않았습�
 | Epic Games Store | `%ProgramData%\Epic\EpicGamesLauncher\Data\Manifests\*.item` 의 `LaunchExecutable` | `EpicGamesLauncher.exe` |
 | GOG Galaxy | 레지스트리 `HKLM\SOFTWARE\WOW6432Node\GOG.com\Games` | `GalaxyClient.exe` |
 | Ubisoft Connect | 레지스트리 `Launcher\Installs` 의 `InstallDir` 값 | `upc.exe`, `UbisoftConnect.exe` |
+| Riot Client | `%ProgramData%\Riot Games\Metadata\<제품>.live\*.product_settings.yaml` 의 `product_install_full_path`. 리그 오브 레전드(`LeagueClient.exe`, `League of Legends.exe`)와 전략적 팀 전투는 같은 실행 파일 이름을 쓰며, 같은 폴더면 합칩니다. 발로란트는 `VALORANT.exe`, `VALORANT-Win64-Shipping.exe` 를 씁니다. 그 밖의 제품은 폴더에서 가장 큰 `.exe` 입니다. `.live` 가 아닌 항목(예: PBE)은 제외합니다. Vanguard 안티치트로 표시합니다 | `RiotClientServices.exe` |
+| Windows 제거 목록 | HKLM·HKCU 의 `Uninstall` 레지스트리(32비트 포함). 설치 폴더가 HDD(시스템 드라이브가 아님)이고 1 GiB 이상이며, Microsoft·Intel·NVIDIA 등 일반 소프트웨어 게시자가 아니고, 런처 본체 폴더가 아닌 항목을 씁니다. exe 는 폴더에서 가장 큰 `.exe` 입니다. Battle.net·EA·넥슨·호요버스 등 독립 설치 게임이 여기로 잡힙니다. 한계: 런처형 폴더는 엉뚱한 exe 가 골라질 수 있고, 게임을 실제로 실행하면 휴리스틱이 실제 exe 를 더합니다 | 없음 |
+| Xbox(Microsoft Store) | 각 HDD 의 `XboxGames\<게임>\Content` 폴더. exe 는 가장 큰 `.exe` 입니다. 읽을 수 없는 폴더는 건너뜁니다 | 없음 |
 
-GOG 와 Ubisoft 읽기는 아직 실제 PC 에서 확인하지 않았습니다.
+GOG 와 Ubisoft 읽기는 아직 실제 PC 에서 확인하지 않았습니다. Riot 읽기는 이 PC 의 D: (HDD) 에 있는 리그 오브 레전드가 잡히는 것을 확인했습니다. Xbox 읽기는 이 PC 에 해당 폴더가 없어 확인하지 못했습니다.
 
-발견을 지원하지 않는 런처: Battle.net, EA 앱, Riot, Xbox(PC Game Pass). 이들과 런처 없이 설치한 게임은 아래 휴리스틱으로만 잡힙니다. `Battle.net.exe`, `RiotClientServices.exe`, `EADesktop.exe` 는 예열 트리거 프로그램으로만 적혀 있으며, 서비스가 이 런처들의 라이브러리를 읽지는 않습니다.
+라이브러리를 읽지 않는 런처: Battle.net, EA 앱. 이들의 게임과 런처 없이 설치한 게임은 위의 Windows 제거 목록에 맞으면 거기서 잡히고, 그 밖은 아래 휴리스틱으로 잡힙니다. 수동으로 등록한 게임과 같은 폴더에 있는 게임은 자동 등록하지 않으며, 로그에 한 줄을 남깁니다. `Battle.net.exe`, `EADesktop.exe` 는 예열 트리거 프로그램으로만 적혀 있으며, 서비스가 이 런처들의 라이브러리를 읽지는 않습니다.
 
 ### 휴리스틱 감지
 
@@ -340,6 +343,13 @@ GOG 와 Ubisoft 읽기는 아직 실제 PC 에서 확인하지 않았습니다.
 | `prewarm.pin` | 예열한 데이터를 서비스가 읽기 전용 매핑으로 열어 둡니다. 기본 `false`, RAM 16 GiB 이상에서만 동작합니다. [안티치트 호환](#안티치트-호환) 을 보십시오. |
 
 서비스는 `config.json` 전체를 5초마다 다시 읽습니다(크기나 수정 시각이 바뀔 때). 그래서 게임을 등록·제거하거나 감시기를 바꿔도 다시 시작하지 않아도 반영됩니다. 새 설정이 검증이나 폴더 권한 검사에 실패하면 옛 설정을 유지하고 이유를 로그에 남깁니다.
+
+| 감시기 | 방식 | 권한 | 감지 지연 (S4 실측) | 부담 | 권장 |
+|---|---|---|---|---|---|
+| `poll` | 50 ms 마다 PID 목록만 받고 새 PID 의 이름만 조회 | 관리자 불필요 | 중앙값 27 ms, p95 58 ms | 유휴 때 한 코어의 약 1% | 기본·권장 |
+| `etw` | 커널 프로세스 이벤트를 실시간 세션으로 구독하고, 50 ms 마다 `FlushTrace` 로 버퍼를 내림 | 관리자 필요(서비스는 LocalSystem 이라 가능) | p95 119 ms (플러시 전 1.65 초) | 세션 버퍼 메모리 | 실패하면 폴링으로 자동 복귀 |
+
+설정 탭에서 바꾸며, 저장 값은 `poll`/`etw`, 화면 라벨은 `poll (권장)`/`etw` 입니다.
 
 ### 언어
 

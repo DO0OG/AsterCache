@@ -10,6 +10,10 @@ namespace AsterCache.Tray;
 
 public readonly record struct ActionResult(bool Ok, string Message);
 
+/// 설정 탭의 자동 모드 입력값 (UI 스레드에서 읽어 배경 작업에 넘기는 값 묶음).
+public sealed record AutoForm(
+    bool Enabled, bool Discover, bool Trace, bool Relocate, int PrewarmRecent, string IgnoreExes, string ZoneLimit, string RewarmMinutes);
+
 /// 파일·폴더를 기본 프로그램으로 엽니다. 시험은 가짜로 바꿉니다.
 public interface IShell
 {
@@ -142,6 +146,20 @@ public sealed class TrayViewModel(
             IgnoreExes = ignoreExes.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries),
         }), L.T("Msg_AutoSet"));
 
+    /// 설정 탭의 "자동 모드 적용": auto 값을 저장하고, 성공하면 존 상한·예열 유지 주기도 저장합니다.
+    public ActionResult ApplyAuto(AutoForm f)
+    {
+        ActionResult saved = SetAuto(f.Enabled, f.Discover, f.Trace, f.Relocate, f.PrewarmRecent, f.IgnoreExes);
+        return saved.Ok ? SetSpeed(f.ZoneLimit, f.RewarmMinutes) : saved;
+    }
+
+    /// 오류 알림용 한 줄: 예외 형식과 메시지 첫 줄 (사용자 폴더 경로는 가림).
+    public static string Brief(Exception e)
+    {
+        string first = FileLog.Scrub(e.Message).Split('\n', 2)[0].Trim();
+        return first.Length == 0 ? e.GetType().Name : e.GetType().Name + ": " + first;
+    }
+
     /// 존 상한 ("auto" 또는 MiB 숫자) 과 예열 유지 주기 (분, 0 = 끔) 를 기록합니다. 나머지 auto 값은 그대로 보존합니다.
     public ActionResult SetSpeed(string zoneLimit, string rewarmMinutes)
     {
@@ -215,13 +233,15 @@ public sealed class TrayViewModel(
         {
             edit();
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException e)
         {
+            log.Error("config change denied", e);
             // 데이터 폴더는 SYSTEM·Administrators 만 쓸 수 있음 (서비스가 SYSTEM 으로 파일을 옮기므로 일반 사용자 쓰기를 막아 둠)
             return Report(false, L.T("Err_NoPermission"));
         }
         catch (Exception e) when (e is SettingsException or IOException)
         {
+            log.Error("config change failed", e);
             return Report(false, L.T("Err_ConfigChange", FileLog.Scrub(e.Message)));
         }
 

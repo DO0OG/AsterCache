@@ -1,4 +1,5 @@
 using AsterCache.Core.I18n;
+using AsterCache.Core.Logging;
 using AsterCache.Core.Settings;
 using AsterCache.Windows;
 using Avalonia;
@@ -53,7 +54,7 @@ internal sealed class MainWindow : Window
     private readonly TextBox _serviceLog = ReadOnlyBox();
     private readonly TextBox _trayLog = ReadOnlyBox();
     private readonly TextBlock _versions = new() { TextWrapping = TextWrapping.Wrap };
-    private readonly ComboBox _watcher = new() { ItemsSource = new[] { "poll", "etw" }, MinWidth = 90 };
+    private readonly ComboBox _watcher = new() { ItemsSource = new[] { L.T("Watcher_Poll"), "etw" }, MinWidth = 140 };
     private readonly ComboBox _language = new() { ItemsSource = new[] { L.T("Lang_Auto"), L.T("Lang_Ko"), L.T("Lang_En") }, MinWidth = 200 };
     private readonly CheckBox _autoEnabled = new() { Content = L.T("Auto_Enabled") };
     private readonly CheckBox _autoDiscover = new() { Content = L.T("Auto_Discover") };
@@ -70,6 +71,7 @@ internal sealed class MainWindow : Window
     private readonly TabControl _tabs = new() { Margin = new Thickness(0, 4, 8, 0) };
     private Task? _traceRun;
     private static readonly string[] LanguageValues = ["auto", L.Ko, L.En];
+    private static readonly string[] WatcherValues = ["poll", "etw"]; // 저장 값 (화면 라벨과 분리)
     private static readonly TimeSpan TraceStopWait = TimeSpan.FromSeconds(10);
 
     private int _busy;
@@ -265,7 +267,7 @@ internal sealed class MainWindow : Window
 
     private Control SettingsTab()
     {
-        var apply = Btn(L.T("Btn_ApplyWatcher"), () => _ = RunAsync(L.T("Op_WatcherChange"), () => _tray.SetWatcher(_watcher.SelectedItem as string ?? "poll")));
+        var apply = Btn(L.T("Btn_ApplyWatcher"), () => _ = ApplyWatcher());
         var service = new WrapPanel
         {
             Children =
@@ -280,14 +282,8 @@ internal sealed class MainWindow : Window
         {
             Children = { Btn(L.T("Btn_OpenData"), () => _progress.Text = _manage.OpenDataFolder().Message), Btn(L.T("Btn_OpenLogs"), () => _progress.Text = _tray.OpenLogs().Message) },
         };
-        var applyLanguage = Btn(L.T("Btn_ApplyLanguage"), () => _ = RunAsync(L.T("Op_LanguageChange"), () => _tray.SetLanguage(LanguageValues[Math.Max(0, _language.SelectedIndex)])));
-        var applyAuto = Btn(L.T("Btn_ApplyAuto"), () => _ = RunAsync(L.T("Op_AutoChange"), () =>
-        {
-            ActionResult saved = _tray.SetAuto(
-                _autoEnabled.IsChecked == true, _autoDiscover.IsChecked == true, _autoTrace.IsChecked == true, _autoRelocate.IsChecked == true,
-                Math.Max(0, _autoPrewarm.SelectedIndex), _autoIgnore.Text ?? string.Empty);
-            return saved.Ok ? _tray.SetSpeed(_zoneLimit.Text ?? string.Empty, _rewarmMinutes.Text ?? string.Empty) : saved;
-        }));
+        var applyLanguage = Btn(L.T("Btn_ApplyLanguage"), () => _ = ApplyLanguage());
+        var applyAuto = Btn(L.T("Btn_ApplyAuto"), () => _ = ApplyAuto());
         return new StackPanel
         {
             Margin = new Thickness(8),
@@ -307,6 +303,7 @@ internal sealed class MainWindow : Window
                 service,
                 new TextBlock { Text = L.T("Set_Watcher"), FontWeight = FontWeight.Bold },
                 new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { _watcher, apply } },
+                new TextBlock { Text = L.T("Set_WatcherPoll") + Environment.NewLine + L.T("Set_WatcherEtw"), TextWrapping = TextWrapping.Wrap },
                 new TextBlock { Text = L.T("Set_PrewarmDefaults"), FontWeight = FontWeight.Bold },
                 new TextBlock { Text = ManageViewModel.DescribePrewarm(PrewarmSettings.Default), TextWrapping = TextWrapping.Wrap },
                 new TextBlock { Text = L.T("Set_Language"), FontWeight = FontWeight.Bold },
@@ -329,6 +326,44 @@ internal sealed class MainWindow : Window
         Place(trayTitle, grid, 2, true);
         Place(_trayLog, grid, 3, true);
         return grid;
+    }
+
+    // 설정 탭 적용: 컨트롤 값은 UI 스레드에서 지금 읽고, 배경 작업(RunAsync)에는 값만 넘깁니다 (배경 스레드에서 컨트롤을 읽으면 Avalonia 가 InvalidOperationException 을 냄).
+    private Task<ActionResult> ApplyAuto()
+    {
+        var form = new AutoForm(
+            _autoEnabled.IsChecked == true, _autoDiscover.IsChecked == true, _autoTrace.IsChecked == true, _autoRelocate.IsChecked == true,
+            Math.Max(0, _autoPrewarm.SelectedIndex), _autoIgnore.Text ?? string.Empty, _zoneLimit.Text ?? string.Empty, _rewarmMinutes.Text ?? string.Empty);
+        return RunAsync(L.T("Op_AutoChange"), () => _tray.ApplyAuto(form));
+    }
+
+    private Task<ActionResult> ApplyLanguage()
+    {
+        string language = LanguageValues[Math.Max(0, _language.SelectedIndex)];
+        return RunAsync(L.T("Op_LanguageChange"), () => _tray.SetLanguage(language));
+    }
+
+    private Task<ActionResult> ApplyWatcher()
+    {
+        string watcher = WatcherValues[Math.Max(0, _watcher.SelectedIndex)];
+        return RunAsync(L.T("Op_WatcherChange"), () => _tray.SetWatcher(watcher));
+    }
+
+    /// --smoke --click <apply-auto|apply-language|apply-watcher>: 해당 버튼의 처리 경로를 실행하고 결과를 돌려줍니다 (열 때 읽기가 끝나기를 기다린 뒤).
+    public async Task<ActionResult> SmokeClick(string name)
+    {
+        for (int i = 0; i < 100 && Volatile.Read(ref _busy) != 0; i++)
+        {
+            await Task.Delay(100);
+        }
+
+        return name switch
+        {
+            "apply-auto" => await ApplyAuto(),
+            "apply-language" => await ApplyLanguage(),
+            "apply-watcher" => await ApplyWatcher(),
+            _ => new ActionResult(false, "unknown click: " + name),
+        };
     }
 
     private async void Register()
@@ -390,12 +425,12 @@ internal sealed class MainWindow : Window
     }
 
     /// 한 번에 하나만: 작업을 백그라운드로 돌리고 (진행 띠 표시), 끝나면 상태·목록·로그를 다시 읽어 그립니다.
-    private async Task RunAsync(string what, Func<ActionResult> work)
+    private async Task<ActionResult> RunAsync(string what, Func<ActionResult> work)
     {
         if (Interlocked.CompareExchange(ref _busy, 1, 0) != 0)
         {
             _progress.Text = L.T("Msg_Busy");
-            return;
+            return new ActionResult(false, L.T("Msg_Busy"));
         }
 
         _busyBar.IsVisible = true;
@@ -410,8 +445,9 @@ internal sealed class MainWindow : Window
                 }
                 catch (Exception e)
                 {
-                    // 창 맨 위 경계: 어떤 예외도 앱을 죽이지 않고 메시지로 보여줌 (원인은 tray.log 의 aster 줄과 함께 봄)
-                    return new ActionResult(false, L.T("Msg_OpFailed", what, e.GetType().Name));
+                    // 창 맨 위 경계: 어떤 예외도 앱을 죽이지 않고 메시지로 보여주고 tray.log 에 남김
+                    App.Log.Error(what + " failed", e);
+                    return new ActionResult(false, L.T("Msg_OpFailed", what, TrayViewModel.Brief(e)));
                 }
             });
             _progress.Text = r.Message;
@@ -426,6 +462,7 @@ internal sealed class MainWindow : Window
                 catch (Exception e)
                 {
                     // 창 맨 위 경계: 상태를 못 읽어도 앱을 죽이지 않음
+                    App.Log.Error("status reload failed", e);
                     return (Rows: (IReadOnlyList<DriveRow>)[], Service: L.T("Msg_ReadFailed", e.GetType().Name), Tray: string.Empty);
                 }
             });
@@ -444,9 +481,10 @@ internal sealed class MainWindow : Window
             _autoIgnore.Text = string.Join(", ", auto.IgnoreExes);
             _rewarmMinutes.Text = auto.RewarmMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture);
             _zoneLimit.Text = _tray.Settings?.MaxZoneAuto == true ? "auto" : (_tray.Settings?.MaxZoneMib ?? SettingsStore.DefaultMaxZoneMib).ToString(System.Globalization.CultureInfo.InvariantCulture);
-            _watcher.SelectedItem = _tray.Settings?.Watcher;
+            _watcher.SelectedIndex = Math.Max(0, Array.IndexOf(WatcherValues, _tray.Settings?.Watcher));
             _language.SelectedIndex = Math.Max(0, Array.IndexOf(LanguageValues, _tray.Settings?.Language));
             UpdateStatus();
+            return r;
         }
         finally
         {

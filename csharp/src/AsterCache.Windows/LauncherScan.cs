@@ -4,17 +4,38 @@ using Microsoft.Win32;
 
 namespace AsterCache.Windows;
 
-/// 런처가 설치한 게임 한 개. ExePath 는 모르면 null, OnHdd 는 설치 드라이브가 HDD 인지 (판정 못 하면 null), TriggerExe 는 그 런처의 프로그램 이름.
+/// 런처가 설치한 게임 한 개. ExePath 는 모르면 null, OnHdd 는 설치 드라이브가 HDD 인지 (판정 못 하면 null), TriggerExe 는 그 런처의 프로그램 이름 (없으면 null).
 public sealed record DiscoveredGame(string Name, string Launcher, string InstallDir, string? ExePath, bool? OnHdd, string? TriggerExe)
 {
+    /// ExePath 말고 같은 게임이 실행하는 다른 exe 이름 (폴더 안에 실제로 있는 것만, 이름만).
+    public IReadOnlyList<string> ExtraExes { get; init; } = [];
+
     /// 설치 폴더 이름에서 알아낸 안티치트 ("eac" | "battleye" | "vanguard" | "ricochet" | "unknown"), 흔적이 없으면 null.
     public string? AntiCheat { get; init; }
 }
+
+/// 프로그램 제거 목록의 항목 한 개 (값이 없으면 빈 문자열).
+public sealed record UninstallEntry(string DisplayName, string Publisher, string InstallLocation);
 
 /// LauncherScan 이 바깥 세계에 접근하는 길 (시험에서는 가짜로 바꿈).
 public interface ILauncherEnv
 {
     string ProgramData { get; }
+
+    /// 시스템(Windows) 볼륨의 드라이브 ("C:").
+    string SystemDrive { get; }
+
+    /// 고정 드라이브 ("C:" 형식).
+    IReadOnlyList<string> FixedDrives();
+
+    /// 폴더 바로 아래 폴더의 전체 경로. 폴더가 없거나 읽을 수 없으면 빈 목록.
+    IReadOnlyList<string> SubDirs(string dir);
+
+    /// 프로그램 제거 목록 (HKLM 64·32비트 보기, HKCU) 의 항목, 시스템 구성 요소는 뺌.
+    IReadOnlyList<UninstallEntry> UninstallEntries();
+
+    /// 폴더 아래 파일 크기 합이 bytes 이상인가. 깊이·항목 수에 상한을 두고 넘으면 곧바로 멈춤 (상한까지 모자라면 false).
+    bool FolderAtLeast(string dir, long bytes);
 
     /// HKLM (machine = true, 64비트 보기) 또는 HKCU 의 문자열 값. 없거나 문자열이 아니면 null.
     string? RegString(bool machine, string subKey, string name);
@@ -42,12 +63,15 @@ public interface ILauncherEnv
     bool? IncursSeekPenalty(string letter);
 }
 
-/// 설치된 런처 (Steam, Epic, GOG, Ubisoft) 의 설치 목록을 읽어 게임을 찾습니다. 읽기 전용이며 관리자가 필요 없습니다.
-/// Battle.net, EA, Riot, Xbox 는 공개된 목록 형식이 없어 다루지 않습니다 (실행 중 읽기량 휴리스틱으로 잡힘).
-public static class LauncherScan
+/// 설치된 런처 (Steam, Epic, GOG, Ubisoft, Riot, Xbox) 의 설치 목록과, 그 밖의 큰 설치 폴더 (프로그램 제거 목록) 를 읽어 게임을 찾습니다. 읽기 전용이며 관리자가 필요 없습니다.
+/// 목록이 없는 나머지는 제거 목록이나 실행 중 읽기량 휴리스틱으로 잡힙니다.
+public static partial class LauncherScan
 {
     private const string GogKey = @"SOFTWARE\WOW6432Node\GOG.com\Games";
     private const string UbisoftKey = @"SOFTWARE\WOW6432Node\Ubisoft\Launcher\Installs";
+    private const string UninstallKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";
+    private const string UninstallKey32 = @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall";
+    private const string UninstallKeyUser = @"Software\Microsoft\Windows\CurrentVersion\Uninstall";
     private const int ExeDepth = 3;
     public const int AntiCheatDepth = 4; // 이름만 열거하므로 깊은 위치의 안티치트 폴더까지 봄
 
@@ -55,49 +79,74 @@ public static class LauncherScan
     private static readonly string[] ExcludedExeParts =
         ["unins", "redist", "vcredist", "dxsetup", "directx", "crashhandler", "crashreport", "setup", "installer", "easyanticheat", "battleye", "ue4prereq"];
 
-    private sealed record Raw(string Display, string Launcher, string InstallDir, string? Exe, string Trigger);
+    private sealed record Raw(string Display, string Launcher, string InstallDir, string? Exe, string? Trigger)
+    {
+        public IReadOnlyList<string> Extra { get; init; } = [];
+
+        public string? AntiCheat { get; init; }
+    }
 
     public static IReadOnlyList<DiscoveredGame> Scan(ILauncherEnv? env = null)
     {
         env ??= new SystemLauncherEnv();
         var raws = new List<Raw>();
-        foreach (Func<ILauncherEnv, IEnumerable<Raw>> source in new Func<ILauncherEnv, IEnumerable<Raw>>[] { Steam, Epic, Gog, Ubisoft })
+        foreach (Func<ILauncherEnv, IEnumerable<Raw>> source in new Func<ILauncherEnv, IEnumerable<Raw>>[] { Steam, Epic, Gog, Ubisoft, Riot, Xbox })
         {
-            try
-            {
-                raws.AddRange(source(env).ToList());
-            }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException or FormatException or PyValueException or ArgumentException)
-            {
-                // 한 런처의 읽기 실패가 다른 런처 열거를 막지 않게 함
-            }
+            raws.AddRange(Collect(() => source(env)));
         }
 
         var result = new List<DiscoveredGame>();
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var dirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var disks = new Dictionary<string, bool?>(StringComparer.OrdinalIgnoreCase);
-        foreach (Raw r in raws)
+        bool? IsHdd(string letter)
         {
-            string? dir = Normalize(r.InstallDir);
-            if (dir is null || dir.Length <= 3 || !env.DirectoryExists(dir) || !dirs.Add(dir))
-            {
-                continue; // 드라이브 루트 (설정이 드라이브 전체를 거부), 없는 폴더, 이미 나온 폴더
-            }
-
-            string? exe = ResolveExe(env, dir, r.Exe);
-            string letter = dir[..2].ToUpperInvariant();
             if (!disks.TryGetValue(letter, out bool? hdd))
             {
                 disks[letter] = hdd = env.IncursSeekPenalty(letter);
             }
 
+            return hdd;
+        }
+
+        void Add(Raw r)
+        {
+            string? dir = Normalize(r.InstallDir);
+            if (dir is null || dir.Length <= 3 || !env.DirectoryExists(dir) || !dirs.Add(dir))
+            {
+                return; // 드라이브 루트 (설정이 드라이브 전체를 거부), 없는 폴더, 이미 나온 폴더
+            }
+
+            string? exe = ResolveExe(env, dir, r.Exe);
             string name = LauncherManifests.MakeUnique(
                 LauncherManifests.SafeName(r.Display, Path.GetFileName(dir), exe is null ? string.Empty : Path.GetFileNameWithoutExtension(exe)), names);
-            result.Add(new DiscoveredGame(name, r.Launcher, dir, exe, hdd, r.Trigger) { AntiCheat = DetectAntiCheat(env, dir) });
+            result.Add(new DiscoveredGame(name, r.Launcher, dir, exe, IsHdd(dir[..2].ToUpperInvariant()), r.Trigger)
+            {
+                AntiCheat = r.AntiCheat ?? DetectAntiCheat(env, dir),
+                ExtraExes = r.Extra,
+            });
+        }
+
+        raws.ForEach(Add);
+        foreach (Raw r in Collect(() => Uninstall(env, dirs, IsHdd))) // 제거 목록은 마지막: 앞의 결과와 겹치면 그쪽이 우선
+        {
+            Add(r);
         }
 
         return result;
+    }
+
+    // 한 원천의 읽기 실패가 다른 원천 열거를 막지 않게 함
+    private static List<Raw> Collect(Func<IEnumerable<Raw>> source)
+    {
+        try
+        {
+            return source().ToList();
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException or FormatException or PyValueException or ArgumentException)
+        {
+            return [];
+        }
     }
 
     private static string? DetectAntiCheat(ILauncherEnv env, string dir)
@@ -258,8 +307,53 @@ public static class LauncherScan
     private sealed class SystemLauncherEnv : ILauncherEnv
     {
         private const long MaxTextBytes = 4 << 20;
+        private const int SizeDepth = 6;
+        private const int SizeEntries = 20_000; // shortcut: 파일이 이만큼 넘게 잘게 쪼개진 폴더는 크기를 못 채우면 작다고 봄, 느려지는 게 문제되면 올림
 
         public string ProgramData => Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+
+        public string SystemDrive { get; } = Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.Windows))![..2].ToUpperInvariant();
+
+        public IReadOnlyList<string> FixedDrives() => DriveInfo.GetDrives().Where(d => d.DriveType == DriveType.Fixed).Select(d => d.Name[..2].ToUpperInvariant()).ToList();
+
+        public IReadOnlyList<string> SubDirs(string dir) =>
+            Directory.Exists(dir) ? Directory.GetDirectories(dir, "*", new EnumerationOptions { IgnoreInaccessible = true }) : [];
+
+        public IReadOnlyList<UninstallEntry> UninstallEntries()
+        {
+            var list = new List<UninstallEntry>();
+            foreach ((bool machine, string root) in new[] { (true, UninstallKey), (true, UninstallKey32), (false, UninstallKeyUser) })
+            {
+                using RegistryKey? key = Open(machine, root);
+                foreach (string id in key?.GetSubKeyNames() ?? [])
+                {
+                    using RegistryKey? item = key!.OpenSubKey(id);
+                    if (item?.GetValue("InstallLocation") is string { Length: > 0 } loc && item.GetValue("DisplayName") is string { Length: > 0 } display && item.GetValue("SystemComponent") is not 1)
+                    {
+                        list.Add(new UninstallEntry(display, item.GetValue("Publisher") as string ?? string.Empty, loc));
+                    }
+                }
+            }
+
+            return list;
+        }
+
+        public bool FolderAtLeast(string dir, long bytes)
+        {
+            var options = new EnumerationOptions { IgnoreInaccessible = true, RecurseSubdirectories = true, MaxRecursionDepth = SizeDepth, AttributesToSkip = FileAttributes.ReparsePoint };
+            long sum = 0;
+            int seen = 0;
+            foreach (FileInfo f in new DirectoryInfo(dir).EnumerateFiles("*", options))
+            {
+                sum += f.Length;
+                if (sum >= bytes || ++seen >= SizeEntries)
+                {
+                    break;
+                }
+            }
+
+            return sum >= bytes;
+        }
 
         public string? RegString(bool machine, string subKey, string name)
         {

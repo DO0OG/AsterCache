@@ -26,7 +26,7 @@ dotnet publish csharp\src\AsterCache.Service\AsterCache.Service.csproj -c Releas
 
 CLI 명령(`aster plan`, `probe`, `apply`, `verify`, `revert`, `trace`, `prefetch`, `status`, `launch`, `stream-bench`)과 옵션은 `aster <명령> --help` 로 확인합니다. 재배치와 선읽기 명령은 Python `relayout/cli.py`, `prefetch/cli.py` 와 같은 이름을 씁니다.
 
-`aster discover [--json]` 은 지원 런처 라이브러리에서 찾은 게임 목록을 읽기 전용으로 보여 주며, 안티치트 표시를 함께 냅니다. `aster status --auto-status` 는 자동 모드 상태(`auto_status.json`)를 보여 줍니다.
+`aster discover [--json]` 은 지원 런처 라이브러리에서 찾은 게임 목록을 읽기 전용으로 보여 주며, 안티치트 표시를 함께 냅니다. 각 항목의 `launcher` 값에 `riot`, `uninstall`, `xbox` 가 추가됐습니다(Riot 라이브러리, Windows 제거 목록, Xbox 폴더). `aster status --auto-status` 는 자동 모드 상태(`auto_status.json`)를 보여 줍니다.
 
 명령행 언어는 전역 옵션 `--lang ko|en` 또는 환경변수 `ASTER_LANG` 으로 정합니다 (우선순위: `--lang` > `ASTER_LANG` > `config.json` 의 `"language"` > OS 언어). JSON 출력은 언어와 무관합니다.
 
@@ -156,14 +156,19 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 ## 배포와 CI
 
 - `.github/workflows/csharp-ci.yml`: windows-latest, .NET 10.0.x, restore·build·test(Live 제외)·format.
-- `.github/workflows/csharp-release.yml`: 수동 실행(`workflow_dispatch`, `version` 입력, 기본 `0.9.0-beta.2`, 러너 windows-2022). verify → package(관리 창 zip `AsterCache-<version>-win-x64.zip`, Inno Setup 설치본) → release(GitHub Release 생성, 버전에 `-` 가 있으면 프리릴리스, zip 과 설치본 `.exe` 를 자산으로 첨부) 순으로 돌아갑니다. 코드 서명은 없습니다(게시자 미확인 경고만).
+- `.github/workflows/csharp-release.yml`: 수동 실행(`workflow_dispatch`, `version` 입력, 기본 `0.9.0-beta.3`, 러너 windows-2022). verify → package(관리 창 zip `AsterCache-<version>-win-x64.zip`, Inno Setup 설치본) → release(GitHub Release 생성, 버전에 `-` 가 있으면 프리릴리스, zip 과 설치본 `.exe` 를 자산으로 첨부) 순으로 돌아갑니다. 코드 서명은 없습니다(게시자 미확인 경고만).
 
 ## 성능 결론 (참조 측정)
 
 - 재배치 존 기준 Python 스트림은 1.42 s, 같은 핫 바이트를 한 파일로 읽은 상한은 1.09 s 입니다 (`results/prefetch_methods_20261102` 와 `results/prefetch_sweep_20261101/contig_upper_bound.json` 참조).
 - 핫 집합 축소 옵션은 이득이 없어 채택하지 않았습니다.
 - 요청 묶기는 읽기 순서를 깨뜨려 채택하지 않았습니다. 창 묶음 옵션(S5)은 미채택 상태입니다.
-- 게임 시작 감지: 기본은 폴링(`config.json` 의 `"watcher": "poll"`, 간격 `poll_ms` 기본 50 ms). PID 목록만 받아(`K32EnumProcesses`, 한 번에 약 0.05 ms) 새 PID 의 이미지 이름만 조회해 유휴 시 한 코어의 약 1%이고, 20회 시험에서 감지 지연 중앙값 31 ms, p95 47 ms 였습니다 (50 ms 간격, Toolhelp 전체 스냅샷은 한 번에 약 10 ms 라 같은 간격이면 25%). `"watcher": "etw"` 는 관리자일 때만 쓰이며 (실패하면 폴링으로 내려감) 실시간 세션 버퍼가 초 단위로 내려가 S4 실측 지연이 약 1.65 초였습니다. 이를 줄이려고 세션 버퍼를 50 ms 마다 `FlushTrace` 로 내려 보내지만 효과는 관리자 S4 시험(`-Watcher etw`)으로 확인해야 합니다. 밀리초 플러시 플래그(`EVENT_TRACE_USE_MS_FLUSH_TIMER`)는 공개 SDK 헤더(10.0.26100)에 없어서 쓰지 않았습니다. 폴링의 한계: 두 틱 사이에 떴다가 끝난 프로세스와 틱 사이에 재사용된 PID 는 보지 못합니다. 로그의 `started (pid N) via poll|etw-raw|etw-tdh` 가 어느 길로 잡았는지 보여 줍니다.
+- 게임 시작 감지: 기본은 폴링(`config.json` 의 `"watcher": "poll"`, 간격 `poll_ms` 기본 50 ms). PID 목록만 받아(`K32EnumProcesses`, 한 번에 약 0.05 ms) 새 PID 의 이미지 이름만 조회해 유휴 시 한 코어의 약 1%이고, 20회 시험에서 감지 지연 중앙값 31 ms, p95 47 ms 였습니다 (50 ms 간격, Toolhelp 전체 스냅샷은 한 번에 약 10 ms 라 같은 간격이면 25%). `"watcher": "etw"` 는 관리자일 때만 쓰이며 (실패하면 폴링으로 내려감) 실시간 세션 버퍼가 초 단위로 내려가 변경 전 S4 실측 지연이 약 1.65 초였습니다. 세션 버퍼를 50 ms 마다 `FlushTrace` 로 내려 보낸 뒤 S4 실측은 p95 119 ms 입니다(VALIDATION_REPORT D 항목, 폴링은 중앙값 27 ms, p95 58 ms). 위의 20회 시험은 S4 값과 다른 측정입니다. 밀리초 플러시 플래그(`EVENT_TRACE_USE_MS_FLUSH_TIMER`)는 공개 SDK 헤더(10.0.26100)에 없어서 쓰지 않았습니다. 폴링의 한계: 두 틱 사이에 떴다가 끝난 프로세스와 틱 사이에 재사용된 PID 는 보지 못합니다. 로그의 `started (pid N) via poll|etw-raw|etw-tdh` 가 어느 길로 잡았는지 보여 줍니다.
+
+| 감시기 | 방식 | 권한 | 감지 지연 (S4 실측) | 부담 | 권장 |
+|---|---|---|---|---|---|
+| `poll` | 50 ms 마다 PID 목록만 받고 새 PID 의 이름만 조회 | 관리자 불필요 | 중앙값 27 ms, p95 58 ms | 유휴 때 한 코어의 약 1% | 기본·권장 |
+| `etw` | 커널 프로세스 이벤트를 실시간 세션으로 구독하고, 50 ms 마다 `FlushTrace` 로 버퍼를 내림 | 관리자 필요(서비스는 LocalSystem 이라 가능) | p95 119 ms (플러시 전 1.65 초) | 세션 버퍼 메모리 | 실패하면 폴링으로 자동 복귀 |
 
 ## 한계와 미검증 항목
 

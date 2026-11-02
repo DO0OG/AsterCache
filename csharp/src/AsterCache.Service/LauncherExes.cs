@@ -1,12 +1,11 @@
+using AsterCache.Windows;
+
 namespace AsterCache.Service;
 
 /// 런처 프로그램 이름을 한 곳에: 휴리스틱이 게임으로 보지 않는 목록이자, 상주 고정을 푸는 신호 (런처 업데이트가 파일을 고칠 수 있게).
 public static class LauncherExes
 {
-    public static readonly IReadOnlyList<string> All =
-    [
-        "steam.exe", "EpicGamesLauncher.exe", "GalaxyClient.exe", "Battle.net.exe", "RiotClientServices.exe", "EADesktop.exe", "upc.exe", "UbisoftConnect.exe",
-    ];
+    public static readonly IReadOnlyList<string> All = LauncherScan.LauncherPrograms;
 
     public static bool Is(string exe) => All.Contains(exe, StringComparer.OrdinalIgnoreCase);
 

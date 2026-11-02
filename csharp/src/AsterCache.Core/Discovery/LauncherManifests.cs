@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using AsterCache.Core.Json;
 
 namespace AsterCache.Core.Discovery;
@@ -10,7 +11,7 @@ public sealed record SteamApp(string AppId, string Name, string InstallDir);
 public sealed record EpicApp(string AppName, string DisplayName, string InstallLocation, string LaunchExecutable);
 
 /// 런처 설치 목록 파일의 순수 파서와 설정용 이름 만들기. 파일·레지스트리에는 접근하지 않습니다.
-public static class LauncherManifests
+public static partial class LauncherManifests
 {
     private const int MaxDepth = 16;
     private const int MaxNameLength = 64;
@@ -78,6 +79,28 @@ public static class LauncherManifests
         bool notGame = o.TryGetValue("AppCategories", out object? cats) && cats is List<object?> list && !list.Contains("games");
         return notGame || (main.Length > 0 && main != appName) ? null : new EpicApp(appName, Get(o, "DisplayName") ?? string.Empty, loc, Get(o, "LaunchExecutable") ?? string.Empty);
     }
+
+    /// Riot product_settings.yaml 의 최상위 product_install_full_path 값 한 줄 (따옴표와 \uXXXX·\\ 이스케이프를 풀고 / 는 \ 로). 없거나 비면 null.
+    public static string? ParseRiotInstallPath(string yaml)
+    {
+        const string key = "product_install_full_path:";
+        string? line = yaml.Split('\n').FirstOrDefault(l => l.StartsWith(key, StringComparison.Ordinal)); // 들여쓴 줄은 안쪽 키
+        string v = line is null ? string.Empty : line[key.Length..].Trim();
+        if (v.Length >= 2 && v[0] == '"' && v[^1] == '"')
+        {
+            v = YamlEscape().Replace(v[1..^1], m => m.Groups[1].Success ? ((char)Convert.ToInt32(m.Groups[1].Value, 16)).ToString() : m.Groups[2].Value);
+        }
+        else if (v.Length >= 2 && v[0] == '\'' && v[^1] == '\'')
+        {
+            v = v[1..^1].Replace("''", "'");
+        }
+
+        v = v.Replace('/', '\\');
+        return v.Length > 0 ? v : null;
+    }
+
+    [GeneratedRegex(@"\\(?:u([0-9A-Fa-f]{4})|(.))")]
+    private static partial Regex YamlEscape();
 
     /// config.json 의 게임 이름 ([A-Za-z0-9._-]{1,64}): 후보를 순서대로 보고, 허용 밖 글자는 _ 로 바꿔 연속 _ 를 하나로 줄이고 양끝의 _ . 를 뗀 것이 비지 않은 첫 후보. 다 비면 "game".
     public static string SafeName(string display, string folder, string exeStem)

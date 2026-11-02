@@ -1,110 +1,115 @@
+**English** | [한국어](README.ko.md)
+
 # AsterCache C#
 
-Python 참조 구현(`relayout/`, `prefetch/`, `bench/`)을 C#으로 옮긴 최종본입니다. Python 은 참조 구현과 교차 검증 정답 생성기로 그대로 둡니다.
+The final C# port of the Python reference implementation (`relayout/`, `prefetch/`, `bench/`). Python stays as the reference implementation and as the generator of ground truth for cross-validation.
 
-## 빌드와 시험
+## Build and test
 
 ```
 dotnet build  csharp\AsterCache.sln -c Release
 dotnet test   csharp\AsterCache.sln -c Release --filter "Category!=Live"
-dotnet test   csharp\AsterCache.sln -c Release --filter "Category=Live"    # D:\AsterBench 와 Python 참조 필요, 비관리자
+dotnet test   csharp\AsterCache.sln -c Release --filter "Category=Live"    # needs D:\AsterBench and the Python reference, non-administrator
 dotnet format csharp\AsterCache.sln --verify-no-changes
 ```
 
-대상은 .NET 10 (`global.json` 은 SDK 10.0.400, `latestPatch`). CI(`.github/workflows/csharp-ci.yml`)는 Live 시험을 뺀 build·test·format 을 돌립니다.
+The target is .NET 10 (`global.json` uses SDK 10.0.400, `latestPatch`). CI (`.github/workflows/csharp-ci.yml`) runs build, test, and format without the Live tests.
 
-## 실행 파일 게시
+## Publishing the executables
 
-스크립트는 아래 위치를 기본으로 씁니다. 게시는 사용자가 직접 합니다.
+The scripts use the locations below by default. Publishing is done by the user.
 
 ```
 dotnet publish csharp\src\AsterCache.Cli\AsterCache.Cli.csproj -c Release -r win-x64 --self-contained -o csharp\publish\cli
 dotnet publish csharp\src\AsterCache.Service\AsterCache.Service.csproj -c Release -r win-x64 --self-contained -o csharp\publish\service
 ```
 
-CLI 명령(`aster plan`, `probe`, `apply`, `verify`, `revert`, `trace`, `prefetch`, `status`, `launch`, `stream-bench`)과 옵션은 `aster <명령> --help` 로 확인합니다. 재배치와 선읽기 명령은 Python `relayout/cli.py`, `prefetch/cli.py` 와 같은 이름을 씁니다.
+Check the CLI commands (`aster plan`, `probe`, `apply`, `verify`, `revert`, `trace`, `prefetch`, `status`, `launch`, `stream-bench`) and their options with `aster <command> --help`. The relocation and prefetch commands use the same names as Python `relayout/cli.py` and `prefetch/cli.py`.
 
-서비스는 `AsterCache.Service.exe [--console] [--data-dir <폴더>]` 로 실행합니다. 기본 데이터 폴더는 `%ProgramData%\AsterCache` 이며 `config.json`, `plans\`, `journals\`, `logs\` 를 씁니다.
+The CLI language is set with the global option `--lang ko|en` or the environment variable `ASTER_LANG` (priority: `--lang` > `ASTER_LANG` > `config.json` `"language"` > OS language). JSON output does not depend on the language.
 
-`AsterCache.Service.exe --console --watch-test <초>` 는 서비스를 띄우지 않고 설정의 exe 이름으로 ETW 감시기를 그 시간 동안 돌려, 감지한 시작과 세션으로 들어온 Kernel-Process 이벤트 집계(길·ID 별: 원시 `raw`, TDH 로 푼 `decoded`), 첫 이벤트의 페이로드 모양, 예외를 출력하고 이어서 폴링 감시기로 같은 시험을 한 번 더 돌립니다 (관리자 필요). ETW 감시기(`"watcher": "etw"`)는 시작 이벤트를 두 길로 받고, 60초 동안 시작 이벤트가 하나도 안 오면 예외로 끝나 서비스가 폴링으로 내려갑니다. ETW 실시간 세션은 버퍼를 약 1초마다 내려 보내므로 감지 지연이 폴링(250 ms)보다 클 수 있습니다.
+Run the service with `AsterCache.Service.exe [--console] [--data-dir <folder>]`. The default data folder is `%ProgramData%\AsterCache`, which holds `config.json`, `plans\`, `journals\`, and `logs\`.
 
-`aster prefetch --timing` 은 출력 JSON 에 `timing_ms` (load, schedule, stream 과 경로 해석·배치 조회·크기 조회의 합계·횟수, 명령 안 총시간) 를 더합니다. 게시할 때(`-r win-x64`) `PublishReadyToRun` 이 켜져 시작 JIT 를 줄입니다.
+`AsterCache.Service.exe --console --watch-test <seconds>` does not start the service. For that duration it runs the ETW watcher on the exe names in the configuration and prints the starts it detected, the tally of Kernel-Process events that came into the session (per path and ID: raw `raw`, decoded with TDH `decoded`), the payload shape of the first event, and exceptions; it then runs the same test once more with the polling watcher (administrator required). The ETW watcher (`"watcher": "etw"`) receives start events by two paths, and if no start event arrives for 60 seconds it ends with an exception and the service falls back to polling. The ETW live session flushes its buffers about once per second, so detection latency can be larger than polling (250 ms).
 
-## 관리 창
+`aster prefetch --timing` adds `timing_ms` to the output JSON (load, schedule, stream, plus the totals and counts of path resolution, layout lookup, and size lookup, and the total time inside the command). When publishing (`-r win-x64`), `PublishReadyToRun` is on and reduces start-up JIT.
 
-트레이 앱(`AsterCache.Tray`)에 드라이브 관리 유틸리티처럼 한눈에 보고 조작하는 메인 창 "AsterCache" 가 있습니다. 앱을 시작하면 기본으로 열리고, 닫으면 트레이로 내려갑니다 (트레이 아이콘 더블클릭 또는 메뉴 "열기" 로 다시 엽니다). 로직은 새로 만들지 않고 같은 폴더의 `aster.exe` 를 자식 프로세스로 불러 한 줄 JSON 을 읽으며 (`aster status`, `plan`, `apply`, `verify`, `revert`, `trace`, `prefetch`), 설정 편집과 서비스 제어는 트레이의 `ConfigEditor`·`ServiceControl` 을 씁니다. 실행한 명령과 결과(JSON·오류)는 모두 `tray.log` 에 남고 로그 탭에서 봅니다.
+## Management window
+
+The tray app (`AsterCache.Tray`) has a main window "AsterCache" for seeing and operating everything at a glance, like a drive management utility. It opens by default when the app starts, and closing it sends the app to the tray (reopen with a double-click on the tray icon or the "Open" menu). No new logic is built in: the window launches `aster.exe` from the same folder as a child process and reads its one-line JSON (`aster status`, `plan`, `apply`, `verify`, `revert`, `trace`, `prefetch`), while configuration editing and service control use the tray's `ConfigEditor` and `ServiceControl`. Every executed command and its result (JSON or error) is written to `tray.log` and shown on the Log tab.
 
 ```
 dotnet publish csharp\src\AsterCache.Tray\AsterCache.Tray.csproj -c Release -r win-x64 --self-contained -o csharp\publish\gui
-csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
+csharp\publish\gui\AsterCache.Tray.exe [--data-dir <folder>]
 ```
 
-`aster.exe` 와 `AsterCache.Service.exe` 가 같은 `gui` 폴더에 함께 게시됩니다 (`--data-dir` 의 기본값은 `%ProgramData%\AsterCache`).
+`aster.exe` and `AsterCache.Service.exe` are published together into the same `gui` folder (the default of `--data-dir` is `%ProgramData%\AsterCache`).
 
-| 화면 | 내용 |
+| Area | Content |
 |---|---|
-| 왼쪽 드라이브 목록 | 고정 볼륨마다 문자·레이블·파일시스템·전체/여유 용량·디스크 모델·HDD/SSD(`IOCTL_STORAGE_QUERY_PROPERTY` 의 `IncursSeekPenalty`, 실패하면 "알 수 없음")·등록된 게임 수. 선택하면 오른쪽에 그 드라이브의 게임만 보입니다 ("전체 드라이브" 가 맨 위). |
-| 상태 탭 | 서비스 설치·실행 여부, 감시기 종류, 마지막 예열(시각·MiB·초), 게임별 배치 판정(`aster status --plan` 의 `verdict`), 존 적중률(`in_zone_clusters / hot_clusters`), 마지막 재배치 시각(저널 파일 시각), 게임별 예열 결과. 새로 고침 버튼. |
-| 게임 탭 | 목록: 이름·exe·원점 루트·계획/트레이스 유무·배치 verdict·예열 설정. 버튼은 아래 표. |
-| 설정 탭 | 서비스 설치·제거·시작·정지, 감시기 poll/etw(서비스를 다시 시작해야 적용), 예열 기본값 표시, 데이터 폴더·로그 폴더 열기, 트레이·서비스 버전. |
-| 로그 탭 | `service.log` 와 `tray.log` 의 끝 200줄, 새로 고침. |
-| 위쪽 띠 | 관리자 권한이 없으면 "관리자 권한 없음: 트레이스·재배치·서비스 제어는 관리자 재실행 필요" 와 [관리자로 다시 실행] 버튼. |
+| Drive list on the left | For each fixed volume: letter, label, file system, total/free capacity, disk model, HDD/SSD (`IncursSeekPenalty` from `IOCTL_STORAGE_QUERY_PROPERTY`; "unknown" on failure), and the number of registered games. Selecting one shows only that drive's games on the right ("All drives" is at the top). |
+| Status tab | Whether the service is installed and running, watcher type, last prewarm (time, MiB, seconds), per-game layout verdict (`verdict` of `aster status --plan`), zone hit rate (`in_zone_clusters / hot_clusters`), last relocation time (journal file time), and per-game prewarm results. Refresh button. |
+| Games tab | List: name, exe, origin root, plan/trace present or not, layout verdict, prewarm settings. The buttons are in the table below. |
+| Settings tab | Service install, uninstall, start, and stop; watcher poll/etw (restart the service to apply); display of prewarm defaults; open the data folder and log folder; tray and service versions; **language** (auto / Korean / English). |
+| Log tab | The last 200 lines of `service.log` and `tray.log`, with refresh. |
+| Top banner | Without administrator rights: "No administrator rights: trace, relocation, and service control require relaunching as administrator", with a [Relaunch as administrator] button. |
 
-| 게임 탭 버튼 | 동작 |
+| Games tab button | Action |
 |---|---|
-| 등록 | exe 파일을 고르면 원점 루트·허용 루트는 exe 폴더, 이름은 파일 이름, 볼륨 라벨은 그 드라이브에서 채운 등록창이 열리고 (모든 칸 수정 가능, 트리거 프로그램 칸 포함) 기존 설정 검증을 통과해야 저장됩니다. |
-| 제거 | 설정에서 게임을 뺍니다 (파일은 그대로). |
-| 트레이스 수집 | 관리자. `aster trace --live --exe <exe> --origin-root <루트> --out plans\<이름>.trace.json --stop-file <임시>` 를 승격 실행합니다. "게임을 실행해 첫 맵까지 로딩한 뒤 종료하십시오" 를 보여 주고, 게임 프로세스가 뜬 뒤 사라지면 (또는 [수집 중지]) stop-file 을 만들어 정상 종료시킨 다음 건수와 MiB 를 표시합니다. |
-| 계획 만들기 | `aster plan --dry-run` (존 16 GiB) 으로 핫 바이트를 본 뒤, 존 크기를 핫 바이트의 1.1 배를 16 MiB 로 올림한 값으로 정해 승격 `aster plan --out plans\<이름>.plan.json` 을 씁니다. 핫·존·이동 MiB 와 작업 수를 보여 줍니다. |
-| 재배치 실행 | 확인창에 이동 바이트와 되돌리기 가능 안내를 보여 준 뒤, 승격 `aster apply --dry-run` 다음 `--execute --allowed-root <루트> --require-volume-label <라벨>` 을 돌립니다. 진행은 저널 줄 수로 표시하고 끝나면 `aster verify` 결과를 보여 줍니다. |
-| 되돌리기 | 확인 뒤 승격 `aster revert --journal <저널> --execute`. |
-| 지금 예열 | 트레이의 "지금 예열 (스트림)" 과 같은 즉시 스트림. |
-| 측정 | `aster prefetch --execute --timing` 1회: 선읽기 MiB·초·MB/s 와 단계별(로드·스케줄·스트림) ms. 읽으면 파일 캐시가 데워지므로 같은 값을 다시 재려면 캐시를 비워야 합니다. |
+| Register | Pick an exe file and a registration dialog opens with the origin root and allowed root set to the exe's folder, the name to the file name, and the volume label filled from that drive (every field is editable, including the trigger program field); it is saved only if it passes the existing configuration validation. |
+| Remove | Removes the game from the configuration (files stay as they are). |
+| Capture trace | Administrator. Runs `aster trace --live --exe <exe> --origin-root <root> --out plans\<name>.trace.json --stop-file <temp>` elevated. It shows "Run the game, load up to the first map, then exit", and once the game process has appeared and then disappeared (or on [Stop capture]) it creates the stop file for a clean shutdown and then shows the record count and MiB. |
+| Create plan | Looks at the hot bytes with `aster plan --dry-run` (zone 16 GiB), sets the zone size to 1.1 times the hot bytes rounded up to 16 MiB, and writes the plan with an elevated `aster plan --out plans\<name>.plan.json`. It shows hot, zone, and moved MiB and the number of operations. |
+| Run relocation | A confirmation dialog shows the bytes to move and a note that reverting is possible, then runs an elevated `aster apply --dry-run` followed by `--execute --allowed-root <root> --require-volume-label <label>`. Progress is shown as a count of journal lines, and the result of `aster verify` is shown at the end. |
+| Revert | After confirmation, an elevated `aster revert --journal <journal> --execute`. |
+| Prewarm now | The same immediate stream as the tray's "Prewarm now (stream)". |
+| Measure | One `aster prefetch --execute --timing`: prefetch MiB, seconds, MB/s, and per-stage (load, schedule, stream) ms. Reading warms the file cache, so to measure the same value again you must clear the cache. |
 
-- 파일 자리: 트레이스 `plans\<이름>.trace.json`, 계획 `plans\<이름>.plan.json`, 계획이 같이 쓰는 읽기 순서 `plans\<이름>.plan.json.prefetch.json` (등록창이 설정의 `trace` 로 이 이름을 채웁니다), 저널 `journals\<이름>.jsonl` (서비스의 재적용 저널과 같은 파일이라 이어하기·되돌리기가 서비스와 맞습니다).
-- 관리자 권한: 데이터 폴더는 관리자만 쓰므로 트레이스·계획·재배치·되돌리기·설정 저장은 관리자가 필요합니다. 비관리자로 열면 `aster.exe` 를 UAC 로 직접 승격 실행하고 (인자는 하나씩 전달, 결과는 전역 옵션 `aster --result-file <경로> <명령> ...` 이 표준 출력을 복사해 둔 파일로 받음, 실행마다 새 임시 하위 폴더) 설정 저장은 거부됩니다. `aster.exe` 폴더를 일반 사용자가 바꿀 수 있으면 창 위에 경고가 뜹니다. 보기·예열·측정은 비관리자로 됩니다. 관리자 재실행 버튼은 같은 인자로 새 프로세스를 승격해 띄우고 지금 프로세스를 끝냅니다.
-- 서비스 설치: 설치 프로그램과 같은 순서 (폴더 생성, 소유자·권한 설정, `sc create` LocalSystem 자동 시작, 시작) 를 한 번의 UAC 로 실행합니다. 서비스는 SYSTEM 으로 실행 파일을 돌리므로, 실행 파일 폴더를 일반 사용자가 바꿀 수 있으면 (개발 폴더 등) 설치를 거부하고 설치 프로그램을 쓰라고 안내합니다. `config.json` 이 없으면 먼저 게임을 등록해야 합니다.
-- 재배치·되돌리기는 게임이 실행 중이면 거부하고, 한 번에 쓰는 양이 2 GiB (`--write-cap-mib`) 로 제한되어 큰 이동은 "다시 실행하면 이어서 합니다" 안내와 함께 여러 번 실행해야 할 수 있습니다. 트레이스 수집은 최대 3600 초이고, 앱 종료·관리자 재실행 때 진행 중이면 저장을 최대 10 초 기다립니다.
-- 문서용 그림: `AsterCache.Tray.exe --smoke --screenshot <png> [--tab <0..3>] --data-dir <폴더>` 는 메인 창을 1100x720 으로 저장하고 끝납니다 (`docs\images\main-window.png`, 드라이브 목록은 예시 값).
-- 게임을 등록·제거하거나 감시기를 바꾼 뒤에는 서비스를 다시 시작해야 반영됩니다 (서비스는 시작할 때만 설정을 읽습니다).
-- 아직 안 한 것: 예열 기본값 편집 (표시만), 창 화면 시험 (뷰모델·명령 조립 시험만 있고 `Avalonia.Headless` 는 쓰지 않음), 관리자 승격 경로의 실제 UAC 실행 시험.
+- File locations: trace `plans\<name>.trace.json`, plan `plans\<name>.plan.json`, the read order the plan also uses `plans\<name>.plan.json.prefetch.json` (the registration dialog fills the configuration's `trace` with this name), journal `journals\<name>.jsonl` (the same file as the service's re-apply journal, so resume and revert match the service).
+- Administrator rights: the data folder is writable only by administrators, so trace, plan, relocation, revert, and saving the configuration need administrator rights. When opened without them, `aster.exe` is elevated directly via UAC (arguments are passed one by one; the result is received through a file into which the global option `aster --result-file <path> <command> ...` copies standard output, in a fresh temporary subfolder for each run), and saving the configuration is refused. If ordinary users can modify the `aster.exe` folder, a warning appears above the window. Viewing, prewarm, and measurement work without administrator rights. The relaunch-as-administrator button starts a new elevated process with the same arguments and ends the current one.
+- Service installation: runs the same sequence as the installer (create folders, set owner and permissions, `sc create` LocalSystem automatic start, start) with a single UAC prompt. Because the service runs the executable as SYSTEM, if ordinary users can modify the executable folder (a development folder, for example), installation is refused and you are told to use the installer. If `config.json` does not exist, register a game first.
+- Relocation and revert are refused while a game is running, and the amount written at one time is limited to 2 GiB (`--write-cap-mib`), so a large move may need several runs with the note "Run again and it continues". Trace capture lasts at most 3600 seconds, and when the app exits or relaunches as administrator while a capture is in progress, it waits up to 10 seconds for the save.
+- Images for documentation: `AsterCache.Tray.exe --smoke --screenshot <png> [--tab <0..3>] --data-dir <folder>` saves the main window at 1100x720 and exits (`docs\images\main-window.png`; the drive list is sample values). Adding `--lang en` or the environment variable `ASTER_LANG=en` renders the English UI (this is how `docs\images\main-window.en.png` is made).
+- After registering or removing games or changing the watcher, restart the service for it to take effect (the service reads the configuration only when it starts).
+- Not done yet: editing prewarm defaults (display only), window screen tests (only view-model and command-assembly tests exist; `Avalonia.Headless` is not used), and an actual UAC test of the elevation path.
 
-## 관리자 스크립트 (사용자가 직접 실행)
+## Administrator scripts (run by the user)
 
-`csharp\scripts\` 의 스크립트는 모두 관리자 PowerShell 에서 사용자가 한 번씩 실행합니다. 자동화나 작업자가 실행하지 않습니다. 각 스크립트는 첫 단계에서 관리자 권한을 확인하고, 없으면 아무것도 바꾸지 않고 멈춥니다. 결과는 `results\csharp_<yyyyMMdd_HHmmss>\` 에 쌓이며, 되돌리기 명령은 그 폴더의 `README.txt` 에 적히지만 스크립트가 실행하지는 않습니다.
+The scripts in `csharp\scripts\` are each run once by the user from an administrator PowerShell. Automation and workers do not run them. Each script checks for administrator rights as its first step and stops without changing anything if it lacks them. Results accumulate in `results\csharp_<yyyyMMdd_HHmmss>\`, and revert commands are written to the `README.txt` in that folder, but the scripts do not run them.
 
-| 스크립트 | 용도 | 판정 기준 |
+| Script | Purpose | Pass criteria |
 |---|---|---|
-| S1 `cs_e2_vhdx.ps1` | 일회용 VHDX 에서 재배치 전 과정 (강제 종료 5회 후 재개, 강제 분리 1회, chkdsk, revert) | 해시 불일치 0, 재개 5/5, chkdsk 오류 0, 처리량 20 MB/s 이상 |
-| S2 `cs_e3_check.ps1` | D:\AsterBench 에서 probe 비교, 계획 경로 검사, dry-run, verify, 콜드 스트림 (a) pvm, (b) 중첩 읽기 | C# 중앙값 ≤ Python 중앙값, 매니페스트 불변 |
-| S3 `cs_etw_check.ps1` | 실시간 ETW 트레이스(`trace --live --stop-file` 로 정상 종료)와 WPR .etl 수집, .etl 변환 진단(`etl_dump.txt`) | 비교 단계 미구현, 판정 `not_evaluated` |
-| S4 `cs_service.ps1 -Action install [-TestConfig] / test / uninstall [-PurgeData]` | 서비스 등록(LocalSystem), 데이터 폴더 ACL, 스스로 끝나는 `cmd.exe` 감지 지연 20회 (프로세스를 죽이지 않고 PID 로 로그와 맞춤), 감시기 종류(ETW/폴링) 기록 | p95 ≤ 100 ms, 제거 뒤 서비스 없음 |
-| S5 `cs_relayout_window.ps1` | 창 묶음 계획 (미채택 옵션) | 스켈레톤, 실행하면 바로 멈춤 |
-| S6 `wdk_install.ps1 -AcceptWdkInstall` | WDK 설치만 (사용자가 결정한 뒤) | km 폴더 존재 |
+| S1 `cs_e2_vhdx.ps1` | Whole relocation flow on a throwaway VHDX (5 forced terminations then resume, 1 forced detach, chkdsk, revert) | 0 hash mismatches, resume 5/5, 0 chkdsk errors, throughput 20 MB/s or more |
+| S2 `cs_e3_check.ps1` | On D:\AsterBench: probe comparison, plan path check, dry-run, verify, cold stream (a) pvm, (b) overlapped reads | C# median ≤ Python median, manifest unchanged |
+| S3 `cs_etw_check.ps1` | Live ETW trace (ended cleanly with `trace --live --stop-file`) and WPR .etl capture, .etl conversion diagnostics (`etl_dump.txt`) | Comparison step not implemented, verdict `not_evaluated` |
+| S4 `cs_service.ps1 -Action install [-TestConfig] / test / uninstall [-PurgeData]` | Service registration (LocalSystem), data folder ACL, detection latency of a self-terminating `cmd.exe` 20 times (without killing the process; matched to the log by PID), recording of the watcher type (ETW/polling) | p95 ≤ 100 ms, no service after uninstall |
+| S5 `cs_relayout_window.ps1` | Window-batch plan (option not adopted) | Skeleton; stops immediately when run |
+| S6 `wdk_install.ps1 -AcceptWdkInstall` | WDK installation only (after the user decides) | km folder exists |
 
-### 권한 경계
+### Privilege boundaries
 
-- 스크립트와 설치 프로그램은 드라이버를 적재하거나 서명하지 않습니다. 부트 설정, 보안 부팅, 가상화 기반 보안, Hyper-V 설정도 바꾸지 않습니다.
-- 데이터 폴더는 기본적으로 제거하지 않습니다. `cs_service.ps1 -Action uninstall -PurgeData` 를 명시했을 때만 지웁니다.
-- 재배치(`apply --execute`, `revert --execute`)는 `--allowed-root` 와 `--require-volume-label` 로 지정 폴더와 볼륨만 대상으로 합니다.
-- 서비스는 관리자 권한으로 상주합니다. 서비스가 SYSTEM 으로 `config.json`·계획에 적힌 파일을 옮기므로, 데이터 폴더 전체(`%ProgramData%\AsterCache`: config.json, plans, journals, logs)를 SYSTEM·Administrators 만 쓸 수 있고 일반 사용자는 읽기만 합니다 (설치 프로그램과 `cs_service.ps1 install` 이 같은 ACL 을 겁니다). 그래서 트레이로 게임을 등록·제거해 `config.json` 을 저장하려면 트레이를 관리자 권한으로 실행해야 하고, 권한이 없으면 "설정을 저장할 권한이 없음: 관리자 권한으로 트레이를 다시 실행하십시오" 를 표시합니다 (설정은 그대로). 트레이 로그는 쓸 수 없으면 `%LocalAppData%\AsterCache\logs` 에 씁니다.
+- The scripts and the installer do not load or sign drivers. They also do not change boot configuration, Secure Boot, virtualization-based security, or Hyper-V settings.
+- The data folder is not removed by default. It is deleted only when you explicitly pass `cs_service.ps1 -Action uninstall -PurgeData`.
+- Relocation (`apply --execute`, `revert --execute`) targets only the specified folders and volume through `--allowed-root` and `--require-volume-label`.
+- The service stays resident with administrator rights. Because the service moves, as SYSTEM, the files named in `config.json` and the plan, the whole data folder (`%ProgramData%\AsterCache`: config.json, plans, journals, logs) is writable only by SYSTEM and Administrators, and ordinary users can only read it (the installer and `cs_service.ps1 install` apply the same ACL). So to register or remove games from the tray and save `config.json`, the tray must run with administrator rights; without them it shows "No permission to save settings: relaunch the tray as administrator" (the settings stay unchanged). If the tray log cannot be written, it is written to `%LocalAppData%\AsterCache\logs`.
 
-## 서비스 동작
+## Service behavior
 
-- 재적용 중 등록된 게임이 시작되면 (ETW/폴링 시작 알림) 취소 토큰이 `Applier` 의 조각 루프까지 전해집니다. 이동 중이던 한 조각(`MOVE_FILE` 한 번)만 끝내고 멈추며 `stopped = "cancelled"` 와 저널의 재개 지점이 남습니다. 게임이 끝난 뒤 5분 간격 검사에서 같은 계획·저널로 이어갑니다 (`aster verify` 는 이 상태를 오류가 아니라 `verdict = "resume-needed"` 로 보고합니다).
-- 재적용은 `aster verify` 와 같은 판정으로 배치가 연속이 아닐 때(`non-contiguous`, 취소돼 부분 적용된 `resume-needed` 포함)만 합니다. 존 안 비율(`zone hit`)은 참고 로그일 뿐입니다: 계획이 이미 연속인 구간을 제자리에 보존하면 비율이 낮아도(실제 게임 계획에서 10.5%) 배치는 연속이라 재적용하지 않습니다. 파일 배치를 읽지 못한 항목이 있으면 판단하지 않고 건강으로 봅니다.
-- 등록된 게임이 0개인 `config.json` 은 정상입니다. 서비스는 감시·재적용 없이 대기만 하고, 트레이는 "등록된 게임 없음" 으로 표시합니다. 서비스는 시작할 때만 설정을 읽으므로 게임을 추가·제거한 뒤에는 서비스를 다시 시작해야 합니다.
-- 계획·추적 파일이 아직 없는 게임은 검사·스트림을 건너뛰고 정보 줄만 남깁니다 (오류 아님). 게임 프로세스 감지는 로그에 `<이름>: <exe> started (pid N)` 로 매번 남고, 어떤 감시기를 쓰는지는 `process watcher: EtwProcessWatcher` 또는 `PollingProcessWatcher` 로 남습니다.
+- If a registered game starts during a re-apply (ETW/polling start notification), a cancellation token reaches the fragment loop of `Applier`. Only the fragment being moved (one `MOVE_FILE`) is finished, then it stops, leaving `stopped = "cancelled"` and a resume point in the journal. After the game ends, the 5-minute check continues with the same plan and journal (`aster verify` reports this state not as an error but as `verdict = "resume-needed"`).
+- Re-apply happens only when the layout is not contiguous by the same judgment as `aster verify` (`non-contiguous`, including a cancelled, partially applied `resume-needed`). The in-zone ratio (`zone hit`) is only a reference log: when the plan preserves already-contiguous stretches in place, the layout is contiguous even if the ratio is low (10.5% in a real game plan), so no re-apply happens. If any entry's file layout could not be read, no judgment is made and it is treated as healthy.
+- A `config.json` with 0 registered games is normal. The service just waits without watching or re-applying, and the tray shows "No registered games". The service reads the configuration only when it starts, so restart it after adding or removing games.
+- A game whose plan or trace file does not exist yet skips the check and stream and logs only an info line (not an error). Every detection of a game process is logged as `<name>: <exe> started (pid N)`, and which watcher is used is logged as `process watcher: EtwProcessWatcher` or `PollingProcessWatcher`.
 
-## 두 동작 모드: 동시 선읽기 / 사전 예열
+## Two operating modes: concurrent prefetch / prewarm
 
-- **동시 선읽기** (기본 동작): 게임 exe 가 뜨는 순간 존 순서로 읽기 시작합니다. 재배치된 존은 HDD 순차 한계(이 PC 에서 약 140 MB/s)로 읽히므로 핫 집합이 1.6 GB 면 약 11.6 s 가 걸려 SSD(2 GB 에 2~4 s)를 넘지 못합니다.
-- **사전 예열** (RAM 상주, SSD 이상): 게임을 켜기 *전에* 같은 존 스트림(pvm, 제자리 실행)을 돌려 핫 집합을 RAM(파일 캐시 대기 목록)에 올려 둡니다. 게임이 뜰 때는 캐시 적중이라 디스크를 읽지 않습니다. 서비스가 시작될 때(부팅·로그온 뒤)와, 게임별 `trigger_exes` 의 프로그램(런처 등)이 뜰 때 실행합니다. 게임 exe 가 뜰 때의 동시 선읽기는 그대로 남아, 예열 중에 게임이 시작돼도 스트림은 멈추지 않고 이어집니다 (같은 데이터).
+- **Concurrent prefetch** (default behavior): reading starts in zone order the moment the game exe starts. The relocated zone is read at the HDD sequential limit (about 140 MB/s on the test PC), so a hot set of 1.6 GB takes about 11.6 s and cannot beat an SSD (2~4 s for 2 GB).
+- **Prewarm** (RAM-resident, better than SSD): *before* you start the game, the same zone stream (pvm, in-place execution) runs and loads the hot set into RAM (the file cache standby list). When the game starts it hits the cache and reads no disk. It runs when the service starts (after boot or logon) and when a program in a game's `trigger_exes` (a launcher, for example) starts. The concurrent prefetch at game exe start stays as it is, so if the game starts during prewarm the stream is not stopped and continues (it is the same data).
 
-예열은 가용 RAM ≥ 존 크기 + `min_free_ram_mib`, 게임이 실행 중이 아님, 쿨다운이 지남, 계획·추적 파일이 있음, 이 조건을 모두 만족할 때만 합니다. 아니면 건너뛰고 이유를 `service.log` 에 남깁니다. 결과(바이트·초·MB/s·건너뜀 이유)는 `service.log` 와 `%ProgramData%\AsterCache\prewarm_status.json` 에 남고 `aster status` 의 `prewarm` 로 보입니다.
+Prewarm runs only if all of these hold: available RAM ≥ zone size + `min_free_ram_mib`, the game is not running, the cooldown has passed, and the plan and trace files exist. Otherwise it is skipped and the reason is written to `service.log`. The result (bytes, seconds, MB/s, skip reason) is recorded in `service.log` and `%ProgramData%\AsterCache\prewarm_status.json` and appears as `prewarm` in `aster status`.
 
 ```json
 {
+  "language": "auto",
   "watcher": "poll",
   "games": [
     {
@@ -127,44 +132,44 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 }
 ```
 
-한 번의 스트림·예열이 읽는 양은 계획의 존 크기(계획이 없거나 존이 비면 추적의 총 바이트)이고 게임별 `max_stream_mib`(기본 4096)가 상한입니다. 예열의 RAM 판정도 이 읽을 양 기준이며, 존이 비어 있으면 통과가 아니라 `no zone` 으로 건너뜁니다. 서비스의 데이터 폴더를 믿을 수 없는 상태(`canApply` 가 아님)에서는 `prewarm_status.json` 을 쓰지 않습니다.
+The amount one stream or prewarm reads is the plan's zone size (the trace's total bytes if there is no plan or the zone is empty), capped by each game's `max_stream_mib` (default 4096). The RAM check for prewarm is also based on this amount, and an empty zone is skipped as `no zone` rather than passing. When the service's data folder cannot be trusted (`canApply` is false), `prewarm_status.json` is not written.
 
-기본값은 `on_service_start` true, `trigger_exes` 비어 있음, `min_free_ram_mib` 4096, `cooldown_min` 30 이고, `prewarm` 을 생략하면 이 기본값입니다. `aster prewarm --plan <plan.json> --origin-root <root>` 는 `prefetch --execute --method pvm` 의 별칭입니다 (같은 옵션). 트레이의 "지금 예열 (스트림)" 은 같은 스트림을 트레이 프로세스에서 바로 돌리고 (파일 캐시는 시스템 공통이라 같은 효과), 게임 등록창의 "예열 트리거 프로그램" 칸에 쉼표로 `trigger_exes` 를 넣습니다. 실제 게임에서의 효과(RAM 적중 시 시작 시간)는 아직 측정하지 않았습니다.
+The defaults are `on_service_start` true, `trigger_exes` empty, `min_free_ram_mib` 4096, and `cooldown_min` 30, and omitting `prewarm` gives these defaults. `aster prewarm --plan <plan.json> --origin-root <root>` is an alias of `prefetch --execute --method pvm` (same options). The tray's "Prewarm now (stream)" runs the same stream directly in the tray process (the file cache is system-wide, so the effect is the same), and the "Prewarm trigger programs" field of the game registration dialog takes `trigger_exes` separated by commas. The effect on a real game (start time on a RAM hit) has not been measured yet.
 
-## 트레이 갱신과 서비스
+## Tray updates and the service
 
-트레이(Velopack, `%LocalAppData%\<packId>\current`)와 서비스(Inno Setup, `{autopf}\AsterCache`, `sc create` 경로)는 설치 경로가 다르고, 둘이 `%ProgramData%\AsterCache` (`config.json`, `plans\`, `journals\`, `logs\`) 를 공유합니다. Velopack 갱신은 트레이 폴더만 바꾸고 서비스 실행 파일은 건드리지 않습니다 (`UpdateService` 는 서비스 제어에 접근하지 않고 시험으로 고정). 그래서 서비스는 설치 프로그램으로 다시 설치하기 전까지 옛 버전으로 남습니다.
+The tray (Velopack, `%LocalAppData%\<packId>\current`) and the service (Inno Setup, `{autopf}\AsterCache`, the `sc create` path) are installed in different locations, and the two share `%ProgramData%\AsterCache` (`config.json`, `plans\`, `journals\`, `logs\`). A Velopack update replaces only the tray folder and does not touch the service executable (`UpdateService` does not access service control and is pinned by a test). So the service stays on the old version until it is reinstalled with the installer.
 
-- 형식 호환: `config.json` 은 알려진 키만 받으므로 새 트레이가 새 키를 쓰면 옛 서비스는 시작하지 못하고(종료 코드 2), 계획 파일은 `version` 이 정확히 일치해야 하며 (현재 1), 저널은 형식 버전이 없고 계획 SHA 로만 짝을 맞춥니다. 지금까지 형식을 바꾼 적은 없지만 바뀌면 어긋납니다.
-- 결정: 갱신 경로는 합치지 않고, 트레이가 SCM 에 등록된 서비스 실행 파일의 FileVersion 을 자기 FileVersion 과 비교해 다르면 상태 표시줄에 "서비스 재설치 필요 (서비스 x, 트레이 y)" 를 띄웁니다. 트레이와 서비스는 같은 `-p:Version` 으로 게시해야 비교가 의미 있습니다 (개발 빌드는 모두 1.0.0.0).
+- Format compatibility: `config.json` accepts only known keys, so if a new tray writes a new key, the old service cannot start (exit code 2); plan files require an exact `version` match (currently 1); the journal has no format version and is matched only by the plan SHA. The formats have never changed so far, but if they do, the two will go out of step.
+- Decision: the update paths are not merged. The tray compares the FileVersion of the service executable registered with the SCM against its own FileVersion, and if they differ it shows "Service reinstall required (service x, tray y)" in the status bar. For the comparison to mean anything, the tray and the service must be published with the same `-p:Version` (development builds are all 1.0.0.0).
 
-## 설치 프로그램
+## Installer
 
-`packaging\windows\aster.iss` (Inno Setup 6) 는 서비스 파일을 설치하고, `AsterCache` 서비스를 등록하며(LocalSystem, 자동 시작), 데이터 폴더 전체의 ACL 을 설정합니다. 관리자 설치만 허용합니다. 제거하면 서비스를 지우고 데이터 폴더는 남깁니다. 컴파일은 `ISCC.exe /DServiceDir=<서비스 publish 경로> /DAppVersion=<버전> aster.iss` 로 합니다. 이 파일은 아직 컴파일해 보지 않았습니다.
+`packaging\windows\aster.iss` (Inno Setup 6) installs the service files, registers the `AsterCache` service (LocalSystem, automatic start), and sets the ACL of the whole data folder. It allows administrator installs only. Uninstalling removes the service and leaves the data folder. Compile it with `ISCC.exe /DServiceDir=<service publish path> /DAppVersion=<version> aster.iss`; the release workflow does the same.
 
-## 배포와 CI
+## Distribution and CI
 
-- `.github/workflows/csharp-ci.yml`: windows-latest, .NET 10.0.x, restore·build·test(Live 제외)·format. 푸시를 하지 않았으므로 실제 실행은 미확인입니다.
-- `.github/workflows/csharp-release.yml`: 수동 실행. 서비스와 CLI 를 게시하고, 설치 프로그램은 Inno Setup, CLI 는 Velopack 으로 묶어 산출물로만 올립니다. GitHub 릴리스 게시는 설정하지 않았습니다(릴리스마다 사용자 승인). 서명은 아직 없습니다. 트레이 패키징은 WP9 이후입니다.
+- `.github/workflows/csharp-ci.yml`: windows-latest, .NET 10.0.x, restore, build, test (without Live), format.
+- `.github/workflows/csharp-release.yml`: manual run (`workflow_dispatch`, `version` input, default `0.9.0-beta.1`, runner windows-2022). It runs verify → package (management-window zip `AsterCache-<version>-win-x64.zip`, Inno Setup installer, CLI Velopack artifacts) → release (creates the GitHub Release; a version containing `-` is marked as a pre-release; the zip and the installer `.exe` are attached as assets). There is no code signing (only the unsigned-publisher warning).
 
-## 성능 결론 (참조 측정)
+## Performance conclusions (reference measurements)
 
-- 재배치 존 기준 Python 스트림은 1.42 s, 같은 핫 바이트를 한 파일로 읽은 상한은 1.09 s 입니다 (`results/prefetch_methods_20261102` 와 `results/prefetch_sweep_20261101/contig_upper_bound.json` 참조).
-- 핫 집합 축소 옵션은 이득이 없어 채택하지 않았습니다.
-- 요청 묶기는 읽기 순서를 깨뜨려 채택하지 않았습니다. 창 묶음 옵션(S5)은 미채택 상태입니다.
-- 게임 시작 감지: 기본은 폴링(`config.json` 의 `"watcher": "poll"`, 간격 `poll_ms` 기본 50 ms). PID 목록만 받아(`K32EnumProcesses`, 한 번에 약 0.05 ms) 새 PID 의 이미지 이름만 조회해 유휴 시 한 코어의 약 1%이고, 20회 시험에서 감지 지연 중앙값 31 ms, p95 47 ms 였습니다 (50 ms 간격, Toolhelp 전체 스냅샷은 한 번에 약 10 ms 라 같은 간격이면 25%). `"watcher": "etw"` 는 관리자일 때만 쓰이며 (실패하면 폴링으로 내려감) 실시간 세션 버퍼가 초 단위로 내려가 S4 실측 지연이 약 1.65 초였습니다. 이를 줄이려고 세션 버퍼를 50 ms 마다 `FlushTrace` 로 내려 보내지만 효과는 관리자 S4 시험(`-Watcher etw`)으로 확인해야 합니다. 밀리초 플러시 플래그(`EVENT_TRACE_USE_MS_FLUSH_TIMER`)는 공개 SDK 헤더(10.0.26100)에 없어서 쓰지 않았습니다. 폴링의 한계: 두 틱 사이에 떴다가 끝난 프로세스와 틱 사이에 재사용된 PID 는 보지 못합니다. 로그의 `started (pid N) via poll|etw-raw|etw-tdh` 가 어느 길로 잡았는지 보여 줍니다.
+- On the relocated zone the Python stream takes 1.42 s, and the upper bound of reading the same hot bytes as one file is 1.09 s (see `results/prefetch_methods_20261102` and `results/prefetch_sweep_20261101/contig_upper_bound.json`).
+- The hot-set reduction option gave no gain and was not adopted.
+- Request coalescing breaks the read order and was not adopted. The window-batch option (S5) remains not adopted.
+- Game start detection: polling by default (`"watcher": "poll"` in `config.json`, interval `poll_ms` default 50 ms). It gets only the PID list (`K32EnumProcesses`, about 0.05 ms per call) and looks up the image name of new PIDs only, which is about 1% of one core when idle, and in a 20-run test the detection latency had median 31 ms and p95 47 ms (50 ms interval; a full Toolhelp snapshot takes about 10 ms per call, so at the same interval it would be 25%). `"watcher": "etw"` is used only with administrator rights (it falls back to polling on failure), and because the live session buffers are flushed on a seconds scale, the measured latency in S4 was about 1.65 seconds. To reduce it, the session buffer is flushed with `FlushTrace` every 50 ms, but the effect has to be confirmed with the administrator S4 test (`-Watcher etw`). The millisecond flush flag (`EVENT_TRACE_USE_MS_FLUSH_TIMER`) is not in the public SDK header (10.0.26100), so it is not used. Limits of polling: it cannot see a process that starts and ends between two ticks, nor a PID reused between ticks. The `started (pid N) via poll|etw-raw|etw-tdh` in the log shows which path caught it.
 
-## 한계와 미검증 항목
+## Limits and unverified items
 
-- S1~S6 와 Live 시험은 실행하지 않았습니다. 관리자 권한과 실제 D: 디스크가 필요합니다.
-- 비관리자 실행 확인(첫 단계 멈춤)은 실행 금지 지시에 따라 하지 않았습니다. 정적 검사만 했습니다.
-- 성능 수치는 비관리자 언버퍼드 프록시 콜드, SMR 의심 드라이브 1대, 합성 데이터 기준입니다. 이동 직후 캐시 영향 때문에 24시간 뒤 지속성은 측정하지 않았습니다.
-- TraceEvent 3.0.2 의 커널 파서 필드(`FileIORead`: `Offset` `IoSize` `FileKey` `FileObject` `ProcessID`, `FileIOName/FileCreate/FileRundown`: `FileKey` `FileName`, `FileIOCreate`: `FileObject` `FileName`, `ProcessStart`: `KernelImageFileName` `CommandLine` `ParentID`)는 어셈블리 리플렉션으로 이름·형식을 대조했고, 서비스가 읽는 `Microsoft-Windows-Kernel-Process` 이벤트 1 의 `ProcessID` `ImageName` 은 이 PC 에 등록된 매니페스트와 대조했습니다. 실제 .etl 변환은 `aster trace --etl <파일> --exe <이름> --origin-root <루트> --out <파일> --dump-first 20` 로 확인합니다 (요약 한 줄과 처음 20건의 읽기). 사설 커널 세션의 실시간 동작, FileIO 읽기가 캐시 적중을 포함하는지, PrefetchVirtualMemory 의 동기성은 확인하지 않았습니다.
-- ETW 수집 버퍼: 실시간 세션(`LiveSession`)은 버퍼 256 MB 로 열고 (WPR 로 받은 .etl 에서 수백만 건의 유실이 관찰돼 키움, 열지 못하면 64 MB 로 한 번 다시 시도), `trace --live`/`--etl` 의 통계 줄에 `'events_lost': N` 을 남깁니다 (trace JSON 형식은 그대로). `cs_etw_check.ps1` 의 WPR 수집은 `scripts\aster_fileio.wprp` (FileIO, 1 MB × 512 버퍼, 파일 모드) 를 씁니다.
-- 읽기 재현율의 상한: 실제 .etl 의 파이썬 재생 읽기 4,000건 중 FileIO 읽기 이벤트는 앱 수준 IRP(`IoFlags` 0 또는 0x60900) 약 2,811건과, 캐시 관리자의 페이징 읽기(0x60403) 1,244건이었습니다. 페이징 읽기는 같은 오프셋에서 약 50 µs 뒤에 한 번 더 나와 중복 블록(1,358개 대 기준 284개)의 원인이고 (Init/Complete 이중 집계가 아님: Complete 는 별도 `FileIOOperationEnd`), 캐시 적중으로 끝난 읽기(FastIO)는 이벤트가 없어서 서로 다른 블록이 기준의 약 72.6% 에 그쳤습니다. 블록 단위 합집합에서는 중복이 사라지지만, 캐시 적중 읽기는 ETW 로 얻을 수 없으므로 수집 전에 캐시를 비우거나 언버퍼드 재생으로 모아야 합니다.
-- 알려진 한계: 파일 삭제(`FileIOFileDelete`)로 사라진 FileKey 이름은 처리하지 않습니다.
-- 파일 이름은 FileKey(정리 이벤트는 세션 끝에 옴)를 우선하고 읽을 때의 FileObject 이름을 보조로 씁니다. FileObject 주소는 재사용되기 때문입니다. WPR FileIO 프로필의 실제 .etl 에서 이벤트 유실이 크면 (한 번의 수집에서 3.8M건) 읽기 일부가 빠지므로, 이 .etl 변환의 재현율은 수집 손실과 분리해 평가할 수 없습니다.
-- 안티치트 게임(Ricochet, Vanguard)에서 ETW 수집과 서비스 상주의 영향은 검증하지 않았습니다. 안티치트가 없는 게임으로 먼저 확인합니다.
-- Velopack 갱신은 트레이만 바꾸므로 서비스는 설치 프로그램으로 따로 갱신합니다 (위 "트레이 갱신과 서비스"). 실제 Velopack 설치본에서의 갱신 시험은 하지 않았습니다 (트레이 패키징 전).
-- WDK 설치 크기와 winget 패키지 ID 는 확인하지 않았습니다.
-- 커널 미니필터(AsterFlt)는 소스 단계이며, 이 PC 에 적재하지 않습니다. 적재 검증은 VM 절차로만 다룹니다.
+- S1~S6 and the Live tests have not been run. They need administrator rights and the real D: disk.
+- The non-administrator run check (stopping at the first step) was not done, following the instruction not to run it. Only static checks were done.
+- Performance numbers are based on an unbuffered-proxy cold read without administrator rights, one suspected-SMR drive, and synthetic data. Persistence after 24 hours was not measured because of cache effects right after the move.
+- The TraceEvent 3.0.2 kernel parser fields (`FileIORead`: `Offset` `IoSize` `FileKey` `FileObject` `ProcessID`; `FileIOName/FileCreate/FileRundown`: `FileKey` `FileName`; `FileIOCreate`: `FileObject` `FileName`; `ProcessStart`: `KernelImageFileName` `CommandLine` `ParentID`) were checked for name and type by assembly reflection, and `ProcessID` and `ImageName` of `Microsoft-Windows-Kernel-Process` event 1, which the service reads, were checked against the manifest registered on the test PC. Actual .etl conversion is checked with `aster trace --etl <file> --exe <name> --origin-root <root> --out <file> --dump-first 20` (a one-line summary and the first 20 reads). The live behavior of the private kernel session, whether FileIO reads include cache hits, and the synchronicity of PrefetchVirtualMemory were not confirmed.
+- ETW capture buffer: the live session (`LiveSession`) opens with 256 MB buffers (increased after millions of lost events were observed in an .etl captured with WPR; if it cannot open them, it retries once with 64 MB), and the statistics line of `trace --live`/`--etl` records `'events_lost': N` (the trace JSON format is unchanged). The WPR capture in `cs_etw_check.ps1` uses `scripts\aster_fileio.wprp` (FileIO, 1 MB × 512 buffers, file mode).
+- Upper bound on read recall: of 4,000 Python-replayed reads in a real .etl, the FileIO read events were about 2,811 application-level IRPs (`IoFlags` 0 or 0x60900) and 1,244 paging reads from the cache manager (0x60403). The paging reads come out once more about 50 µs later at the same offset, which causes the duplicate blocks (1,358 versus 284 in the baseline) (this is not Init/Complete double counting: Complete is a separate `FileIOOperationEnd`), and reads served from the cache (FastIO) produce no event, so the distinct blocks reached only about 72.6% of the baseline. A block-level union removes the duplicates, but cache-hit reads cannot be obtained from ETW, so you must clear the cache before capture or collect with unbuffered replay.
+- Known limit: names of FileKeys that disappeared through file deletion (`FileIOFileDelete`) are not handled.
+- File names prefer the FileKey (the cleanup event arrives at the end of the session) and use the FileObject name at read time as a fallback, because FileObject addresses are reused. In a real .etl from the WPR FileIO profile, large event loss (3.8M in one capture) drops some reads, so the recall of this .etl conversion cannot be evaluated separately from capture loss.
+- The effect of ETW capture and a resident service on anti-cheat games (Ricochet, Vanguard) has not been verified. Check first with a game that has no anti-cheat.
+- A Velopack update changes only the tray, so the service is updated separately with the installer (see "Tray updates and the service" above). An update test on a real Velopack installation was not done (before tray packaging).
+- The WDK install size and the winget package ID were not checked.
+- The kernel minifilter (AsterFlt) is at the source stage and is not loaded on the test PC. Load verification is covered only by the VM procedure.

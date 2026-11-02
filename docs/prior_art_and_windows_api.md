@@ -1,3 +1,5 @@
+> Research notes (Korean). The product documentation is in English: see [README.md](../README.md).
+
 # AsterCache 조사 결과: 선행 기술 · Windows 재배치 제약 · 위치 추적 · HDD 특성 · 게임 로딩 I/O
 
 조사일 2026-11-01. 읽기 전용 웹 조사(저장소 수정 없음).

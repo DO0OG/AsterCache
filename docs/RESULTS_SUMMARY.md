@@ -1,101 +1,103 @@
-# 측정 결과 요약
+**English** | [한국어](RESULTS_SUMMARY.ko.md)
 
-이 문서는 이전 README 의 측정 표와 결과 해석 중 `VALIDATION_REPORT.md` 에 없던 내용을 옮긴 것입니다. 전체 기록과 검증 항목은 `VALIDATION_REPORT.md` 에 있으며, 각 표의 출처 경로를 함께 적었습니다.
+# Results summary
 
-## HDD·SSD 로딩 벤치마크 (합성 데이터셋, 3회 중앙값)
+This document carries over the measurement tables and interpretation from the earlier README that were not in `VALIDATION_REPORT.md`. The full record and the validation items are in `VALIDATION_REPORT.md`, and the source path of each table is listed with it.
 
-데이터셋은 64개 파일, 약 2.0 GiB(2,135,949,312 바이트), 트레이스 4,000건, 블록 64 KiB 입니다.
+## HDD and SSD loading benchmark (synthetic dataset, median of 3 runs)
 
-| 항목 | 중앙값 | 3회 값 |
+The dataset has 64 files, about 2.0 GiB (2,135,949,312 bytes), 4,000 trace entries, and 64 KiB blocks.
+
+| Item | Median | Values of the 3 runs |
 |---|---:|---|
-| HDD 콜드 | 71.21 s | 55.66 / 71.21 / 71.32 s |
-| SSD 콜드 | 1.11 s | 1.022 / 1.150 / 1.111 s |
-| HDD 웜 | 0.080 s | 0.080 / 0.212 / 0.067 s |
-| SSD 웜 | 0.063 s | — |
-| 단순 선읽기 후 재생 (예열 포함 총합) | 29.16 s | 예열 29.09 s, 재생 0.070 s |
+| HDD cold | 71.21 s | 55.66 / 71.21 / 71.32 s |
+| SSD cold | 1.11 s | 1.022 / 1.150 / 1.111 s |
+| HDD warm | 0.080 s | 0.080 / 0.212 / 0.067 s |
+| SSD warm | 0.063 s | — |
+| Replay after naive prefetch (total including prewarm) | 29.16 s | prewarm 29.09 s, replay 0.070 s |
 
-- HDD 콜드는 SSD 콜드의 약 64.1배, 단순 선읽기 총합은 SSD 콜드의 약 26.2배입니다.
-- 출처: `results/bench_20261101/20261101_204602.json`
+- HDD cold is about 64.1 times SSD cold, and the naive prefetch total is about 26.2 times SSD cold.
+- Source: `results/bench_20261101/20261101_204602.json`
 
-## 물리 위치 순서 선읽기 (별도 실험, 3회 중앙값)
+## Prefetch in physical-position order (separate experiment, median of 3 runs)
 
-같은 합성 데이터셋(64개 파일, 2.1 GiB)으로 수행했습니다. 이 실험의 HDD 콜드는 17.3~19.0 s(중앙값 17.8 s)였고, 벤치마크의 HDD 콜드는 55.7~71.3 s 였습니다. 같은 조건에서도 편차가 이만큼 크므로 두 값의 차이는 방법 차이가 아니라 편차로 봅니다.
+This was run with the same synthetic dataset (64 files, 2.1 GiB). The HDD cold in this experiment was 17.3~19.0 s (median 17.8 s), while the benchmark's HDD cold was 55.7~71.3 s. Because the variation is this large even under the same conditions, the difference between the two values is treated as variation, not as a difference in method.
 
-| 구성 | 선읽기 | 재생 | 비고 |
+| Configuration | Prefetch | Replay | Note |
 |---|---:|---:|---|
-| 물리 위치 정렬 (`final_physical`) | 11.1 s | 0.05 s | HDD 콜드 17.8 s, SSD 콜드 대비 13.94배 |
-| 경로 정렬 (`final_path`) | 11.4 s | 0.05 s | HDD 콜드 17.3 s |
-| 스윕 최선: 물리 정렬, 큐 깊이 4, 간격 0 | 7.80 s | 0.04 s | 합계 7.84 s, SSD 콜드 1.12 s 기준 7.0배 |
-| 연속 배치 상한: 핫 243 MB 단일 파일 순차 읽기, 4 MiB 청크 | 1.36 s | 0.04 s | 합계 약 1.40 s, SSD 콜드 0.865 s 기준 1.6배. 1 MiB 청크는 1.09 s |
+| Physical-position sort (`final_physical`) | 11.1 s | 0.05 s | HDD cold 17.8 s, 13.94 times SSD cold |
+| Path sort (`final_path`) | 11.4 s | 0.05 s | HDD cold 17.3 s |
+| Best of the sweep: physical sort, queue depth 4, gap 0 | 7.80 s | 0.04 s | Total 7.84 s, 7.0 times the SSD cold of 1.12 s |
+| Contiguous-layout upper bound: 243 MB of hot data read sequentially as a single file, 4 MiB chunks | 1.36 s | 0.04 s | Total about 1.40 s, 1.6 times the SSD cold of 0.865 s. 1 MiB chunks: 1.09 s |
 
-- 같은 실험의 SSD 콜드는 0.8 s 입니다(`ssd_cold`).
-- 선읽기 뒤 재생은 HDD 콜드보다 약 37% 짧습니다(계산값). 읽은 양 431 MiB 기준 선읽기 처리량은 약 39 MiB/s 입니다(계산값).
-- 이 데이터셋에서는 물리 정렬과 경로 정렬의 차이가 노이즈 수준입니다. 파일이 순차로 쓰여 조각이 적었기 때문입니다.
-- 출처: `results/prefetch_20261101/summary_table.json`, `results/prefetch_sweep_20261101/sweep_20261101_212410.json`, `results/prefetch_sweep_20261101/contig_upper_bound.json`
+- The SSD cold of the same experiment is 0.8 s (`ssd_cold`).
+- Replay after prefetch is about 37% shorter than HDD cold (calculated value). Based on 431 MiB read, the prefetch throughput is about 39 MiB/s (calculated value).
+- On this dataset the difference between physical sort and path sort is at noise level, because the files were written sequentially and had few fragments.
+- Source: `results/prefetch_20261101/summary_table.json`, `results/prefetch_sweep_20261101/sweep_20261101_212410.json`, `results/prefetch_sweep_20261101/contig_upper_bound.json`
 
-## 재배치 실험 세부 (2026-11-01)
+## Relocation experiment details (2026-11-01)
 
-- **E2 HDD (VHDX, D: HDD).** 콜드 27.1 s (13.7 / 64.6 / 27.1), 재배치 뒤 5.73 s (6.07 / 5.73 / 5.68). 출처: `results/relayout_e2_hdd/summary.json`
-- **E3 중앙값 (3회, 관리자 스탠바이 비우기 뒤).** 재배치 전 선읽기+재생 8.04 s, SSD(C: NVMe) 직접 0.763 s. 재배치 뒤 선읽기 중앙값 1.05 s(0.93~1.63 s, 실행 3회 값 0.97 / 1.09 / 1.68 s) + 재생 0.047 s.
-  - 비율: D/E 1.43, C/E 10.1, A/E 22.4, D/A 0.064(재배치 전 대비 약 15.6배 단축)
-  - 이 중앙값의 원자료 경로는 이전 README 에 적혀 있지 않아 확인하지 못했습니다.
+- **E2 HDD (VHDX, D: HDD).** Cold 27.1 s (13.7 / 64.6 / 27.1), 5.73 s after relocation (6.07 / 5.73 / 5.68). Source: `results/relayout_e2_hdd/summary.json`
+- **E3 median (3 runs, after clearing the standby list with administrator rights).** Before relocation, prefetch + replay 8.04 s, SSD (C: NVMe) direct 0.763 s. After relocation, the prefetch median is 1.05 s (0.93~1.63 s, values of the 3 runs 0.97 / 1.09 / 1.68 s) + replay 0.047 s.
+  - Ratios: D/E 1.43, C/E 10.1, A/E 22.4, D/A 0.064 (about 15.6 times shorter than before relocation)
+  - The earlier README did not give the raw-data path for this median, so it could not be confirmed.
 
-## SQLite 캐시 (블록 256개, 64 KiB, 3회 중앙값)
+## SQLite cache (256 blocks, 64 KiB, median of 3 runs)
 
-| 구성 | 콜드 적재 (ms/블록) | 적중 (ms/블록) |
+| Configuration | Cold load (ms/block) | Hit (ms/block) |
 |---|---:|---:|
-| 수정 전, Python 3.11 | 21.338 | 1.757 |
-| 수정 후, Python 3.11 | 4.206 | 1.140 |
-| 수정 후, Python 3.12 | 3.967 | 0.979 |
+| Before the fix, Python 3.11 | 21.338 | 1.757 |
+| After the fix, Python 3.11 | 4.206 | 1.140 |
+| After the fix, Python 3.12 | 3.967 | 0.979 |
 
-- 3.11 의 적중 1.140 ms 는 이 파일이 정한 기준 1.1 ms 를 넘습니다.
-- 출처: `results/windows_20261101/cache_fix_bench.json`
+- The 3.11 hit of 1.140 ms exceeds this file's criterion of 1.1 ms.
+- Source: `results/windows_20261101/cache_fix_bench.json`
 
-## 스트림 읽기 튜닝 (재배치 존, 비관리자)
+## Stream read tuning (relocated zone, non-administrator)
 
-재배치된 243.5 MB 존(1,048 작업)에서 잰 값입니다. 표의 값은 3회 중앙값이며, `reuse_qd1.json` 만 5회입니다. 콜드 조건은 관리자 권한 없이 만든 언버퍼드 대체 방식(`cold_method: unbuffered_proxy`)입니다.
+Values measured on the relocated 243.5 MB zone (1,048 operations). The table values are the median of 3 runs, except `reuse_qd1.json`, which has 5 runs. The cold condition is an unbuffered substitute made without administrator rights (`cold_method: unbuffered_proxy`).
 
-| 조건 | 시간 | 출처 |
+| Condition | Time | Source |
 |---|---:|---|
-| 큐 깊이 4, 핸들 닫기, 1 MiB | 1.66 s | `sweep.json` |
-| 큐 깊이 1, 핸들 닫기, 1 MiB | 1.48 s | `sweep.json` |
-| 큐 깊이 1, 핸들 유지, 1 MiB | 1.42 s | `reuse_qd1.json` |
-| 큐 깊이 1, 1·4·8·16 MiB (닫기) | 1.48~1.49 s (차이 없음) | `sweep.json` |
-| 256 KiB, 큐 깊이 1·2·4 | 6.4~6.9 s (3.9~4.6배 느림) | `sweep.json` |
-| SEQUENTIAL_SCAN 힌트 | 같은 청크·큐 깊이 대비 10.7~16.9배 느림 | `sweep.json` |
+| Queue depth 4, close handles, 1 MiB | 1.66 s | `sweep.json` |
+| Queue depth 1, close handles, 1 MiB | 1.48 s | `sweep.json` |
+| Queue depth 1, keep handles, 1 MiB | 1.42 s | `reuse_qd1.json` |
+| Queue depth 1, chunks of 1/4/8/16 MiB (close handles) | 1.48~1.49 s (no difference) | `sweep.json` |
+| 256 KiB, queue depth 1/2/4 | 6.4~6.9 s (3.9~4.6 times slower) | `sweep.json` |
+| SEQUENTIAL_SCAN hint | 10.7~16.9 times slower than the same chunk and queue depth | `sweep.json` |
 
-- 큐 깊이 4 대 1 은 같은 실행 안에서 1.66 s 대 1.48 s(약 11%)입니다. 핸들 유지까지 합치면 1.66 s 대 1.42 s(약 15%)이며, 두 값은 다른 실행입니다.
-- 재배치 전의 흩어진 배치에서는 큐 깊이 4 가 도움이 됐습니다(`results/prefetch_sweep_20261101`). 그래서 이 결론은 재배치 존에만 적용합니다.
+- Queue depth 4 versus 1 is 1.66 s versus 1.48 s within the same run (about 11%). Adding handle reuse, it is 1.66 s versus 1.42 s (about 15%), and those two values come from different runs.
+- On the scattered layout before relocation, queue depth 4 helped (`results/prefetch_sweep_20261101`). So this conclusion applies only to the relocated zone.
 
-## 동시 스트림 세부 (2026-11-01)
+## Concurrent stream details (2026-11-01)
 
-| 요청당 게임 연산 | 벽시계 중앙값 (실행 값) | 같은 조건 SSD 대비 |
+| Game compute per request | Wall-clock median (run values) | Versus SSD under the same conditions |
 |---|---:|---|
-| 0 µs | 1.65 s (1.58 / 1.75 / 1.65) | SSD 콜드 1.22 s 의 1.35배 (앞선 실행 0.763 s 기준 2.2배) |
-| 250 µs | 2.36 s | 비관리자 측정 2.98 s 의 0.79배 |
-| 1000 µs | 6.13 s | 비관리자 측정 6.30 s 의 0.97배 |
+| 0 µs | 1.65 s (1.58 / 1.75 / 1.65) | 1.35 times the SSD cold of 1.22 s (2.2 times against the earlier run's 0.763 s) |
+| 250 µs | 2.36 s | 0.79 times the non-administrator measurement of 2.98 s |
+| 1000 µs | 6.13 s | 0.97 times the non-administrator measurement of 6.30 s |
 
-- 250 µs·1000 µs 의 기준 SSD 값은 `results/stream_tuning_20261101/ssd_think_baseline.json`(비관리자, 같은 연산 조건)입니다. 관리자 측정과 조건이 달라 참고값입니다.
-- 출처: `results/relayout_e3/20261101_235628/summary.json`, `results/relayout_e3/20261101_235628/F-concurrent.json`
+- The SSD baseline values for 250 µs and 1000 µs are in `results/stream_tuning_20261101/ssd_think_baseline.json` (non-administrator, same compute conditions). They are reference values because the conditions differ from the administrator measurement.
+- Source: `results/relayout_e3/20261101_235628/summary.json`, `results/relayout_e3/20261101_235628/F-concurrent.json`
 
-## 결과 해석 (옮긴 내용)
+## Interpretation of the results (carried over)
 
-- **드라이브 위치별 속도.** 드라이브 위치별 속도 차이는 없었습니다(`results/zone_curve_20261101`). 그래서 핫 존의 위치를 맞추는 최적화는 설계에서 뺐습니다.
-- **첫 실행에는 이득이 없습니다.** 재배치는 파일을 옮기는 데 시간이 걸립니다. 이득은 재배치 이후 반복 읽기에서 나타납니다.
-- **재배치 전 선읽기의 한계.** 재배치 전에는 HDD 탐색 횟수와 읽기 처리량(약 39 MiB/s)이 하한을 정했습니다. 재배치 뒤에는 핫 존 한 구간을 순차로 읽으므로 이 하한이 크게 줄었습니다. 예열 비용이 재생보다 훨씬 크므로, 예열을 로딩 전에 끝낼 수 있을 때만 의미가 있습니다.
-- **콜드 조건의 한계.** 비관리자 측정은 콜드 조건을 언버퍼드 재읽기(`FILE_FLAG_NO_BUFFERING`)로 대체했습니다. 드라이브와 컨트롤러 내장 캐시는 비우지 않았습니다. 벤치마크의 실행 간 편차 55.7~71.3 s 는 동시에 일어난 디스크 사용의 영향으로 추정하지만, 원인은 측정하지 않았습니다.
-- **웜 상태.** 웜 상태에서 HDD 와 SSD 는 1.28배 차이입니다(벤치마크 중앙값). OS 파일 캐시가 이미 채워진 상태라 차이가 작습니다.
-- **SMR.** WD20EZAZ 는 드라이브 관리형 SMR 로 보도되었습니다(2차 자료). 이동 직후 측정은 재매핑 전 상태일 수 있습니다. 같은 드라이브의 안정 순차 속도는 90~110 MB/s 였습니다(E1b). 이 값으로 보면 선읽기 기대치는 약 2.5 s 입니다.
-- **목표 판정.** 목표(SSD 대비 p50 1.25배 이내)는 판정하지 않았습니다. 게임 전체 로딩 시간과 반복 로딩의 p50·p95 가 아직 없기 때문입니다.
-- **게임 로딩 시간이 아닙니다.** 합성 데이터셋과 합성 트레이스로 재현한 결과입니다. Frostpunk 는 ETW 로 1회 추적한 뒤 재생했습니다. Procmon 트레이스와 게임 실행 전체 시간 측정은 아직 없습니다.
+- **Speed by drive position.** There was no difference in speed by position on the drive (`results/zone_curve_20261101`). So the optimization of placing the hot zone at a particular position was dropped from the design.
+- **No gain on the first run.** Relocation takes time to move the files. The gain appears in repeated reads after relocation.
+- **Limit of prefetch before relocation.** Before relocation, the number of HDD seeks and the read throughput (about 39 MiB/s) set the lower bound. After relocation the hot zone is read sequentially as one stretch, so this lower bound dropped substantially. Because the prewarm cost is much larger than the replay, prewarm is meaningful only when it can finish before loading.
+- **Limit of the cold condition.** The non-administrator measurements replaced the cold condition with an unbuffered re-read (`FILE_FLAG_NO_BUFFERING`). The drive and controller internal caches were not cleared. The run-to-run variation of 55.7~71.3 s in the benchmark is presumed to come from concurrent disk use, but the cause was not measured.
+- **Warm state.** In the warm state HDD and SSD differ by a factor of 1.28 (benchmark median). The OS file cache is already filled, so the difference is small.
+- **SMR.** The WD20EZAZ has been reported as drive-managed SMR (secondary source). A measurement right after a move may be in a state before remapping. The stable sequential speed of the same drive was 90~110 MB/s (E1b). By this value the prefetch expectation is about 2.5 s.
+- **Goal verdict.** The goal (p50 within 1.25 times of SSD) was not judged, because there is not yet a total game load time or the p50/p95 of repeated loads.
+- **This is not game load time.** These are results reproduced with a synthetic dataset and a synthetic trace. Frostpunk was traced once with ETW and then replayed. There is not yet a Procmon trace or a measurement of the full game launch time.
 
-## 후속 방향 (이전 README 의 "다음 방향" 절)
+## Next directions (the "next directions" section of the earlier README)
 
-- 접근 순서 물리 재배치 설계의 자세한 내용은 `docs/design_v1_relayout.md` 에 있습니다. 1.4a 절에 E1 실측 결과가 있습니다.
-- 블록 단위 접근 순서 재배치라는 개념은 BORG(FAST'09)가 먼저 제시했습니다. 출처와 Windows API 제약은 `docs/prior_art_and_windows_api.md` 에 있습니다.
-- SMR 영향은 아직 분리하지 않았습니다. 대량 이동 쓰기가 쓰기 정체를 일으킬 수 있어, 작은 청크와 쓰기 상한으로 나눠 실측합니다.
+- The details of the access-order physical relocation design are in `docs/design_v1_relayout.md`. Section 1.4a has the E1 measurement results.
+- The idea of block-level access-order relocation was first presented by BORG (FAST'09). The sources and the Windows API constraints are in `docs/prior_art_and_windows_api.md`.
+- The SMR effect has not been isolated yet. Bulk move writes can cause write stalls, so measure with small chunks and a write cap.
 
-## 참고 문헌 (이전 README 의 기술 근거)
+## References (technical basis from the earlier README)
 
 - Microsoft, File Caching: https://learn.microsoft.com/en-us/windows/win32/fileio/file-caching
 - Microsoft, BypassIO: https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/bypassio

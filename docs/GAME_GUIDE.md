@@ -1,55 +1,57 @@
-# 실제 게임에 적용하는 방법
+**English** | [한국어](GAME_GUIDE.ko.md)
 
-이 문서는 D: HDD에 설치한 게임의 로딩을 AsterCache로 줄이는 전 과정을 순서대로 안내합니다. 빌드와 pip 설치는 필요 없습니다. 아래 명령은 모두 저장소 최상위 폴더(`D:\Git\AsterCache`)에서 실행합니다.
+# Applying AsterCache to a real game
 
-검증 범위: 트레이스 변환, 계획, 선읽기 실행, 실행 스크립트는 D:\AsterBench의 실제 파일 경로로 만든 Procmon 형식 CSV 3개(각 2,000행)로 끝까지 실행해 확인했습니다. Python 의 관리자 단계(재배치 `probe`, `apply`, `revert`)는 비관리자로 `not_admin`이 나오는 것까지만 확인했고, 게임에서는 실행하지 않았습니다. 2026-11-02 에는 실제 게임 Frostpunk(D:\Frostpunk, 안티치트 없음)로 C# 도구의 추적·재배치·재생·사전 예열을 끝까지 수행했습니다(아래 "Frostpunk 로 검증한 절차" 절).
+This document walks through, in order, the whole process of reducing the load time of a game installed on the D: HDD with AsterCache. No build or pip install is needed. All commands below are run from the top-level folder of the repository (`D:\Git\AsterCache`).
 
-## 먼저 알아 둘 것 (대상 게임: Call of Duty: Modern Warfare 4)
+Scope of validation: trace conversion, planning, prefetch execution, and the launch script were run end to end with three Procmon-format CSV files (2,000 rows each) built from real file paths in D:\AsterBench. The Python administrator steps (relocation `probe`, `apply`, `revert`) were verified only up to getting `not_admin` as a non-administrator, and were not run on a game. On 2026-11-02, tracing, relocation, replay, and prewarm with the C# tools were run end to end on a real game, Frostpunk (D:\Frostpunk, no anti-cheat) (see the section "Procedure validated with Frostpunk" below).
 
-- **HDD 설치는 공식 지원 범위 밖입니다.** MW4(2026-10-23 출시)의 Activision 공식 PC 요구 사양은 최소, 권장, 레이트레이싱 세 등급 모두 "SSD 115 GB 이상의 여유 공간"입니다. HDD 설치가 막히는지는 확인하지 못했습니다. 모든 모드에 온디맨드 텍스처 스트리밍이 있다고 하므로, HDD에서는 로딩 외에 플레이 중 끊김도 예상됩니다. 이 도구가 줄이는 것은 정해진 로딩 구간의 읽기뿐이고, 플레이 중 계속 발생하는 스트리밍 읽기는 줄이지 못할 수 있습니다.
-- **TPM 2.0, Secure Boot, Ricochet 커널 안티치트 드라이버가 필수입니다.** Ricochet는 게임과 상호작용하는 애플리케이션을 감시하고 보고합니다. 어떤 도구가 허용되는지 공개된 목록은 없습니다. MW4 베타에서 오탐으로 영구 제재된 사례가 있었고 Activision이 오탐을 인정했습니다. 계정을 잃을 위험이 현실에 있습니다.
-- **Ricochet 게임에서는 Procmon을 쓰지 않는 것을 권합니다.** Procmon과 Ricochet를 함께 쓴 공개 보고는 찾지 못했고, 안전하다는 증거도 아닙니다. 다른 안티치트(BattlEye, EA)에서는 Procmon 드라이버 때문에 게임 실행이 거부되고, Procmon을 종료한 뒤에도 드라이버가 남아 재부팅이 필요했던 사례가 있습니다. 대안은 Windows 내장 ETW(`wpr`, `logman`)입니다. 다만 "ETW가 더 안전하다"는 것은 추측이며, Ricochet와 ETW의 충돌 여부를 다룬 보고도 찾지 못했습니다.
-- **Python 도구는 Procmon CSV만 읽습니다.** ETW `.etl` 변환은 C# CLI `aster trace --etl <파일> --exe <게임 exe> --origin-root <게임 폴더> --out <파일>` 로 합니다. S3(`cs_etw_check.ps1`)에서 `.etl` 로 시험했고, 그 과정에서 이름 해석 결함을 고쳤습니다. Python 의 `trace`·`plan` 명령은 `.etl`을 읽지 못합니다. **커널 안티치트가 없는 게임은 Procmon 경로 또는 Frostpunk 와 같은 C# 경로로 끝까지 따라 할 수 있습니다.**
+## What to know first (target game: Call of Duty: Modern Warfare 4)
 
-### 권장 순서
+- **Installing on an HDD is outside official support.** Activision's official PC requirements for MW4 (released 2026-10-23) list "115 GB or more of free SSD space" for all three tiers: minimum, recommended, and ray tracing. Whether installation on an HDD is blocked was not confirmed. All modes reportedly have on-demand texture streaming, so besides load times, stutter during play is also expected on an HDD. This tool only reduces the reads of fixed loading stretches, and may not reduce the streaming reads that keep happening during play.
+- **TPM 2.0, Secure Boot, and the Ricochet kernel anti-cheat driver are mandatory.** Ricochet monitors and reports applications that interact with the game. There is no public list of which tools are allowed. In the MW4 beta there was a case of a permanent ban from a false positive, and Activision acknowledged the false positive. The risk of losing an account is real.
+- **Using Procmon with Ricochet games is not recommended.** No public report of using Procmon with Ricochet was found, and that is not evidence that it is safe. With other anti-cheats (BattlEye, EA), there are cases where the Procmon driver caused the game to refuse to launch, and where the driver stayed after Procmon was closed and a reboot was needed. The alternative is Windows built-in ETW (`wpr`, `logman`). However, "ETW is safer" is a guess, and no report on whether Ricochet conflicts with ETW was found either.
+- **The Python tools read only Procmon CSV.** ETW `.etl` conversion is done with the C# CLI `aster trace --etl <file> --exe <game exe> --origin-root <game folder> --out <file>`. It was tested with an `.etl` in S3 (`cs_etw_check.ps1`), and a name resolution defect was fixed in the process. The Python `trace` and `plan` commands cannot read `.etl`. **For a game without a kernel anti-cheat you can follow the process end to end, either on the Procmon path or on the same C# path as Frostpunk.**
 
-1. **먼저 커널 안티치트가 없는 게임으로 전 과정을 검증합니다.** Frostpunk 1종은 2026-11-02 에 C# 경로로 마쳤습니다(아래 절). 예: Steam의 Call of Duty 4: Modern Warfare (2007, 약 8 GB, 커널 안티치트 없음). 싱글플레이(캠페인)만 쓰고 온라인 모드에는 접속하지 않습니다. 계정 위험 없이 이 도구의 효과를 실제 게임에서 처음 재어 보는 방법입니다.
-2. 효과와 안전을 확인한 뒤 MW4에 적용하려면: 오프라인 캠페인에서만 시험하고, 게임과 Battle.net(또는 Steam) 런처를 완전히 종료한 상태에서 재배치하고, 멀티플레이와 DMZ는 첫 시험에서 제외합니다.
-3. MW4의 트레이스 수집은 ETW 경로로 합니다. C# `aster trace --etl` 변환은 관리자 스크립트 S3(`csharp\scripts\cs_etw_check.ps1`)에서 검증했습니다. 다만 MW4에서 수집해도 안전한지는 미검증이므로 짧은 임무 하나로 먼저 시험합니다. 그 전까지 MW4에서 Procmon을 쓰는 것은 권하지 않습니다.
+### Recommended order
 
-## Frostpunk 로 검증한 절차 (2026-11-02)
+1. **First validate the whole process with a game that has no kernel anti-cheat.** One game, Frostpunk, was completed on the C# path on 2026-11-02 (see the section below). Another example is Call of Duty 4: Modern Warfare on Steam (2007, about 8 GB, no kernel anti-cheat). Use only single player (the campaign) and do not connect to online modes. This is a way to measure the tool's effect on a real game for the first time without account risk.
+2. To apply it to MW4 after confirming the effect and safety: test only in the offline campaign, relocate with the game and the Battle.net (or Steam) launcher fully closed, and leave multiplayer and DMZ out of the first test.
+3. Collect the MW4 trace through the ETW path. The C# `aster trace --etl` conversion was validated in the administrator script S3 (`csharp\scripts\cs_etw_check.ps1`). However, whether collecting on MW4 is safe is unvalidated, so test first with one short mission. Until then, using Procmon on MW4 is not recommended.
 
-대상은 D:\Frostpunk(9.2 GB, 안티치트 없음, D: SMR HDD)입니다. 아래 두 스크립트를 관리자 PowerShell 에서 저장소 최상위 폴더 기준으로 실행했습니다. C# CLI(`csharp\publish\cli\aster.exe`)가 먼저 게시되어 있어야 합니다(`csharp\README.md`).
+## Procedure validated with Frostpunk (2026-11-02)
 
-1. **추적과 재배치, 콜드 재생.** 게임을 켜지 않은 상태에서 실행합니다.
+The target is D:\Frostpunk (9.2 GB, no anti-cheat, D: SMR HDD). The two scripts below were run from an administrator PowerShell relative to the top-level folder of the repository. The C# CLI (`csharp\publish\cli\aster.exe`) must be published first (`csharp\README.md`).
+
+1. **Trace, relocate, and cold replay.** Run it with the game not started.
 
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File csharp\scripts\cs_e4_game.ps1
    ```
 
-   스크립트는 ETW 실시간 추적(`aster trace --live`)을 시작한 뒤 게임이 뜨고 끝날 때까지 기다립니다(`-WaitGameSeconds`, 기본 600초). 첫 맵 로딩까지 진행하고 게임을 종료하면 다음 순서로 진행합니다. 계획 → 계획 파일의 SHA-256 기록 → 스탠바이 비우기 뒤 콜드 재생 3회 → probe → `apply --dry-run` → `apply --execute` → `verify` → 스탠바이 비우기 뒤 SHA-256 재확인 → 재배치 뒤 콜드 재생 3회와 선읽기+재생 3회. 결과는 `results\csharp_e4_<날짜시각>\summary.json`에 남습니다. 되돌리기 명령은 같은 폴더의 `README.txt`에 있으며 스크립트는 실행하지 않습니다.
+   The script starts the ETW live trace (`aster trace --live`) and waits until the game starts and ends (`-WaitGameSeconds`, default 600 seconds). Load up to the first map and exit the game, and it proceeds in this order: plan → record the SHA-256 of the plan file → cold replay 3 times after clearing the standby list → probe → `apply --dry-run` → `apply --execute` → `verify` → re-check SHA-256 after clearing the standby list → cold replay 3 times and prefetch + replay 3 times after relocation. The result is left in `results\csharp_e4_<date-time>\summary.json`. The revert command is in `README.txt` in the same folder, and the script does not run it.
 
-2. **핫 집합 전체를 담는 존으로 다시 재배치하고 SSD 와 비교.**
+2. **Relocate again with a zone that holds the whole hot set, and compare with the SSD.**
 
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File csharp\scripts\cs_e4_compare.ps1 -ZoneMiB 2048
    ```
 
-   1단계의 추적 파일로 2 GiB 존에 다시 계획해 적용합니다(이미 옮긴 데이터는 그대로). 같은 읽기 패턴을 `C:\AsterShadow\Frostpunk` 의 희소 사본에 만들어 SSD 기준을 3회 잽니다. 그다음 스탠바이를 비우고 `aster prefetch --method pvm` 으로 존을 올린 뒤 60초를 기다려 재생을 3회 잽니다. 결과는 `results\csharp_e4cmp_<날짜시각>\summary.json`입니다.
+   Using the trace file from step 1, it plans again into a 2 GiB zone and applies it (data that was already moved stays). It builds a sparse copy of the same read pattern at `C:\AsterShadow\Frostpunk` and measures the SSD baseline 3 times. Then it clears the standby list, loads the zone with `aster prefetch --method pvm`, waits 60 seconds, and measures the replay 3 times. The result is `results\csharp_e4cmp_<date-time>\summary.json`.
 
-권장 설정
+Recommended settings
 
-- **존 크기는 핫 바이트 전체를 담게 잡습니다.** `cs_e4_game.ps1`은 존을 핫 바이트의 1.1배를 16 MiB 단위로 올린 값으로 잡고, `-MaxZoneMiB`를 넘으면 재배치를 건너뜁니다(`hot_set_too_large`). 존이 모자라면 `-MaxZoneMiB`를 핫 바이트 이상으로 주십시오.
-- **사전 예열을 게임 시작 전에 끝냅니다.** 서비스 설정의 게임 항목에서 `prewarm.on_service_start`(기본 true)를 쓰거나, 런처를 `trigger_exes`에 넣습니다. 예열은 게임 시작보다 15초 이상 앞서 끝나야 한다는 것이 측정 전제입니다. 예열은 가용 RAM이 존 크기 + `min_free_ram_mib`(기본 4096 MiB) 이상일 때만 실행됩니다. 설정 형식은 `csharp\README.md`의 "두 동작 모드" 절에 있습니다.
-- 재배치는 게임을 끈 상태에서만 합니다(스크립트가 실행 중이면 멈춥니다). 런처도 끄는 것을 권합니다. 재배치 뒤에는 5단계의 자동 최적화 제외를 확인하십시오.
+- **Size the zone so it holds all the hot bytes.** `cs_e4_game.ps1` sets the zone to 1.1 times the hot bytes rounded up to 16 MiB units, and skips relocation if it exceeds `-MaxZoneMiB` (`hot_set_too_large`). If the zone is too small, pass `-MaxZoneMiB` at or above the hot bytes.
+- **Finish prewarm before the game starts.** Use `prewarm.on_service_start` (default true) in the game entry of the service configuration, or put the launcher in `trigger_exes`. The measurement assumes prewarm finishes at least 15 seconds before the game starts. Prewarm runs only when available RAM is at least the zone size + `min_free_ram_mib` (default 4096 MiB). The configuration format is in the "Two operating modes" section of `csharp\README.md`.
+- Relocate only while the game is off (the script stops if it is running). It is recommended to close the launcher too. After relocation, check the automatic optimization exclusion in step 5.
 
-결과와 한계는 `VALIDATION_REPORT.md`의 2026-11-02 절에 있습니다. 측정값은 추적한 읽기 패턴의 재생 시간이며, 게임을 실행한 전체 로딩 시간이 아닙니다. 24시간 지속성, CMR 드라이브, 안티치트 게임은 미검증입니다.
+Results and limits are in the 2026-11-02 section of `VALIDATION_REPORT.md`. The measured values are replay times of traced read patterns, not total load times of a running game. 24-hour persistence, CMR drives, and anti-cheat games are unvalidated.
 
-## 요구 사항
+## Requirements
 
-- Windows 11, Python 3.11 이상(3.11.4와 3.12.10에서 시험). `python --version`으로 확인합니다.
-- 게임은 D:(NTFS HDD)에 설치합니다. 트레이스와 계획 파일은 게임 폴더 밖(예: `D:\AsterWork`)에 둡니다.
-- 관리자 PowerShell은 3단계(재배치)에서만 씁니다. 2, 4, 5단계는 일반 사용자로 실행합니다. Procmon은 스스로 관리자 권한을 요구합니다.
+- Windows 11, Python 3.11 or later (tested on 3.11.4 and 3.12.10). Check with `python --version`.
+- Install the game on D: (an NTFS HDD). Keep the trace and plan files outside the game folder (for example `D:\AsterWork`).
+- Use an administrator PowerShell only in step 3 (relocation). Run steps 2, 4, and 5 as an ordinary user. Procmon asks for administrator rights by itself.
 
 ```powershell
 mkdir D:\AsterWork
@@ -57,86 +59,86 @@ cd D:\Git\AsterCache
 python --version
 ```
 
-경로 끝에는 백슬래시를 붙이지 않는 것을 권합니다. 붙여도 이 도구는 처리하지만 CMD에서는 `"D:\Games\"`가 따옴표를 닫지 못해 오류가 납니다. 대소문자는 구분하지 않습니다.
+Do not end paths with a backslash. The tool handles it either way, but in CMD `"D:\Games\"` fails to close the quote and gives an error. Case is not distinguished.
 
-## MW4에 직접 적용하는 절차
+## Applying directly to MW4
 
-위 권고(안티치트 없는 게임으로 먼저 검증)는 참고이며, MW4에 직접 적용할 때의 실제 순서는 아래와 같습니다. 각 번호의 세부 명령은 뒤의 단계 설명에 있습니다. 이 절차 전체는 MW4로 한 번도 실행해 보지 않았고, Ricochet와 ETW/Procmon의 충돌 여부는 미검증입니다.
+The recommendation above (validate first with a game without anti-cheat) is advice; the actual order when applying directly to MW4 is below. The detailed commands for each number are in the step descriptions that follow. This whole procedure has never been run with MW4, and whether Ricochet conflicts with ETW/Procmon is unvalidated.
 
-1. **설치 경로 확인.** Battle.net 또는 Steam(또는 Xbox PC 앱)에서 MW4를 D: 드라이브에 설치하고, 런처가 보여 주는 설치 폴더(예: `D:\...\Call of Duty`)를 그대로 `--prefix`, `--origin-root`, `--allowed-root`에 씁니다. 폴더 선택 메뉴 이름은 런처 버전에 따라 다르므로 설치 화면에서 확인하십시오. 설치 용량은 공식 115 GB(SSD 기준)이지만 팩 구성에 따라 2차 자료에서는 200 GB 안팎으로도 나옵니다. 설치 화면의 실제 용량을 기준으로 하고, 재배치용 연속 빈 공간(핫 집합 크기 이상)도 D:에 따로 남겨 두십시오. 설치가 끝나고 셰이더 컴파일 등 설치 후 작업이 끝난 뒤에 시작합니다.
-2. **기준 구간 정하기.** 오프라인 캠페인에서 같은 지점(예: 메인 메뉴에서 캠페인 임무 하나를 시작해 조작 가능한 화면이 뜰 때까지)을 로딩 1회로 정합니다. 매번 같은 임무, 같은 메뉴 경로로 반복합니다. 멀티플레이와 DMZ는 첫 시험에서 제외합니다. 스톱워치로 이 구간의 현재 로딩 시간을 먼저 잽니다(4단계 "효과 재는 법"의 `-NoPrefetch` 기준값).
-3. **트레이스 수집(1단계).** 두 가지 방법이 있습니다.
-   - **ETW(권장, `.etl` 변환은 C# CLI에서 S3로 검증).** 관리자 PowerShell에서 게임 시작 전에 `wpr -start FileIO -filemode`(프로필 이름은 `wpr -profiles`로 확인), 게임을 실행해 기준 구간까지 로딩한 뒤 `wpr -stop D:\AsterWork\mw4_run1.etl`을 실행합니다. 현재 Python 도구는 `.etl`을 읽지 못하므로, `.etl`은 C# CLI `aster trace --etl`로 변환합니다. 수집기 자체가 Ricochet에 어떻게 보이는지는 미검증이므로 첫 수집은 짧은 임무 하나로 하고, 실행 거부, 경고, 계정 알림이 있으면 즉시 중단합니다.
-   - **Procmon(사용자가 위험을 감수할 때만).** Procmon을 먼저 켜고(필터 `Process Name`, `Operation`, `Result`, `Path` 설정과 캡처 시작), 그 뒤에 게임을 실행합니다. Procmon을 켜 둔 채 Ricochet 게임을 실행하는 것이 가장 위험이 큰 조합일 수 있으며 공개된 안전 보고는 없습니다. 기준 구간까지 로딩한 뒤 캡처를 끄고 CSV로 저장하고, 게임을 종료한 다음 **Procmon을 완전히 종료(File > Exit)하고 PC를 재부팅**합니다. Procmon 드라이버가 종료 후에도 남을 수 있어서, 다음 수집 실행과 실제 플레이는 모두 재부팅 뒤에 합니다. 그래서 수집 1회마다 재부팅이 필요합니다(3~5회). 평소 플레이할 때는 Procmon을 설치된 채로 두지 말고 켜지 마십시오.
-4. **계획 만들기(2단계).** Procmon CSV가 있으면 `trace`, `plan`, `relayout plan`을 실행합니다. ETW만 모은 경우는 C# CLI 변환을 실제 `.etl`로 검증하기 전까지 여기서 멈춥니다.
-5. **재배치(3단계).** Battle.net(또는 Steam) 런처와 MW4를 완전히 종료하고, 작업 관리자에서 관련 프로세스가 남아 있지 않은지 확인한 뒤 관리자 PowerShell에서 실행합니다. 재배치는 설치 후 업데이트가 없는 상태에서 합니다(업데이트가 파일을 새로 쓰면 계획이 거부됩니다). 끝난 뒤 런처의 파일 검사/복구를 한 번 돌려 영향이 없는지 확인합니다.
-6. **실행과 측정(4단계).** `game_launch.ps1`로 시작하고 2번의 기준 구간으로 `-NoPrefetch`와 비교합니다. 런처가 게임을 띄우는 구조이므로 `-Game`에 실행 파일이 아니라 런처 URI를 써야 할 수도 있습니다.
-7. **유지(5단계).** D:를 Windows 자동 최적화에서 제외하고, 업데이트 뒤에는 `verify`로 확인해 필요하면 1단계부터 다시 합니다.
+1. **Check the install path.** Install MW4 on the D: drive from Battle.net or Steam (or the Xbox PC app), and use the install folder that the launcher shows (for example `D:\...\Call of Duty`) as is for `--prefix`, `--origin-root`, and `--allowed-root`. The folder selection menu name differs by launcher version, so check it on the install screen. The official install size is 115 GB (SSD basis), but depending on the pack composition secondary sources also give around 200 GB. Use the actual size on the install screen as the reference, and also leave contiguous free space on D: for relocation (at least the hot set size). Start after the install is finished and post-install work such as shader compilation is done.
+2. **Define the reference stretch.** In the offline campaign, define the same point (for example, from the main menu starting one campaign mission until a controllable screen appears) as one load. Repeat with the same mission and the same menu path every time. Leave multiplayer and DMZ out of the first test. First measure the current load time of this stretch with a stopwatch (the `-NoPrefetch` baseline in "How to measure the effect" of step 4).
+3. **Collect the trace (step 1).** There are two ways.
+   - **ETW (recommended; `.etl` conversion validated in the C# CLI with S3).** From an administrator PowerShell before starting the game, run `wpr -start FileIO -filemode` (check the profile name with `wpr -profiles`), start the game and load up to the reference stretch, then run `wpr -stop D:\AsterWork\mw4_run1.etl`. The current Python tools cannot read `.etl`, so convert the `.etl` with the C# CLI `aster trace --etl`. How the collector itself looks to Ricochet is unvalidated, so make the first collection one short mission, and stop immediately if there is a launch refusal, a warning, or an account notice.
+   - **Procmon (only when the user accepts the risk).** Turn on Procmon first (set the `Process Name`, `Operation`, `Result`, and `Path` filters and start capture), then start the game. Running a Ricochet game with Procmon on may be the highest-risk combination, and there is no public safety report. After loading up to the reference stretch, turn off capture and save as CSV, exit the game, then **fully exit Procmon (File > Exit) and reboot the PC**. The Procmon driver can remain after exit, so both the next collection run and actual play are done after a reboot. So each collection needs a reboot (3~5 times). Do not leave Procmon installed and running during normal play.
+4. **Create the plan (step 2).** If you have Procmon CSV files, run `trace`, `plan`, and `relayout plan`. If you collected only ETW, stop here until the C# CLI conversion has been validated on a real `.etl`.
+5. **Relocate (step 3).** Fully close the Battle.net (or Steam) launcher and MW4, check in Task Manager that no related process remains, then run from an administrator PowerShell. Relocate while there is no post-install update (if an update rewrites files, the plan is rejected). When finished, run the launcher's file check/repair once to confirm there is no effect.
+6. **Run and measure (step 4).** Start with `game_launch.ps1` and compare with `-NoPrefetch` using the reference stretch from number 2. Because the launcher starts the game, you may need to give `-Game` the launcher URI instead of the executable.
+7. **Maintain (step 5).** Exclude D: from Windows automatic optimization, and after updates check with `verify` and, if necessary, start again from step 1.
 
-### MW4에서 핫 집합이 GB 단위일 때의 기대 효과
+### Expected effect when the hot set in MW4 is in the GB range
 
-아래 값은 순차 속도 160 MB/s를 가정한 계산이며 MW4의 실제 핫 집합 크기는 모릅니다(미측정). 재배치와 선읽기는 탐색 시간을 없애지만 읽는 바이트 수 자체는 줄이지 못합니다.
+The values below are calculated assuming a sequential speed of 160 MB/s, and the real hot set size of MW4 is unknown (not measured). Relocation and prefetch remove seek time but do not reduce the number of bytes read.
 
-| 핫 집합 | 선읽기 바닥 시간 | 기대 |
+| Hot set | Prefetch floor time | Expectation |
 |---:|---:|---|
-| 2 GB 이하 | 약 12.5초 이하 | 탐색 제거 효과가 크게 나올 수 있음 |
-| 5 GB | 약 31초 | 이득은 있을 수 있으나 선읽기 시간이 로딩과 비슷해질 수 있음 |
-| 10 GB | 약 62.5초 | 선읽기 바닥이 로딩보다 길 수 있어 효과 제한적 |
-| 20 GB 이상 | 약 125초 이상 | 효과를 기대하기 어려움 |
+| 2 GB or less | about 12.5 s or less | The seek-removal effect can be large |
+| 5 GB | about 31 s | There may be a gain, but the prefetch time may become similar to the loading |
+| 10 GB | about 62.5 s | The prefetch floor may be longer than the loading, so the effect is limited |
+| 20 GB or more | about 125 s or more | Hard to expect an effect |
 
-HDD에서 MW4의 로딩 시간은 보고된 바가 없습니다. 온디맨드 텍스처 스트리밍은 플레이 중에도 읽기를 일으키므로 로딩 구간 밖의 끊김은 이 도구로 줄어들지 않을 수 있습니다.
+No load time of MW4 on an HDD has been reported. On-demand texture streaming causes reads during play too, so stutter outside loading stretches may not be reduced by this tool.
 
-## 0단계. 안전 점검
+## Step 0. Safety check
 
-- 위 권장 순서의 1번부터 합니다. 안티치트가 있는 게임이나 온라인 계정과 연결된 게임에서는 처음 시험하지 않습니다.
-- 재배치는 파일 내용을 바꾸지 않고 디스크 위의 물리적 위치(클러스터)만 옮깁니다(NTFS 디프래그 API `FSCTL_MOVE_FILE`). 적용할 때 도구가 파일마다 SHA-256 표본을 이동 전후로 비교하고, 결과의 `sha_mismatch`가 빈 배열이어야 합니다. 더 확실히 하려면 큰 파일 몇 개를 적용 전후에 직접 해시해서 같은지 봅니다.
+- Start from number 1 of the recommended order above. Do not test first on a game with anti-cheat or a game tied to an online account.
+- Relocation does not change file content; it moves only the physical position (clusters) on disk (the NTFS defrag API `FSCTL_MOVE_FILE`). When applying, the tool compares a SHA-256 sample of each file before and after the move, and `sha_mismatch` in the result must be an empty array. To be surer, hash a few large files yourself before and after applying and check that they are equal.
 
 ```powershell
-Get-FileHash 'D:\Games\CoD4\큰파일.ff' | Select-Object Hash   # 적용 전후에 각각 실행해서 비교
+Get-FileHash 'D:\Games\CoD4\bigfile.ff' | Select-Object Hash   # run before and after applying and compare
 ```
 
-- 되돌리기: 3단계의 `revert` 명령이 저널을 거꾸로 적용해 예전 물리 배치로 돌립니다. 데이터 내용은 바뀌지 않으므로 되돌리지 않아도 게임 파일은 안전합니다.
-- 게임을 패치하거나 파일 검증/복구를 돌리면 파일이 새로 쓰여 배치가 풀리거나 계획이 거부됩니다. 5단계를 보십시오.
-- SMR HDD는 대량 쓰기(재배치) 때 쓰기가 느려질 수 있습니다. 이 도구는 기본으로 4 MiB씩 나눠 옮기지만, Python 도구로는 실제 게임 크기로 시험하지 않았습니다. C# 도구로 Frostpunk 의 재배치를 한 기록은 아래 "Frostpunk 로 검증한 절차" 절에 있습니다.
-- 재배치 중 강제 종료는 실제 게임 데이터로 시험하지 않았습니다. VHDX 시험(S1)에서는 중단 5회 뒤 재개를 확인했습니다. 이동 중에는 PC를 끄거나 절전 모드로 두지 않습니다.
-- 압축, 스파스, 암호화 속성이 있는 파일과 재파싱 지점은 재배치가 자동으로 건너뜁니다(`apply` 결과의 `skipped_files`에 이유가 나옵니다). 그런 파일은 재배치 이득만 못 받을 뿐 문제는 생기지 않습니다. 게임 폴더를 NTFS 압축한 적이 있다면 `compact /u /s:D:\Games\CoD4`로 먼저 풀어 둘 수 있습니다.
+- Reverting: the `revert` command in step 3 applies the journal in reverse and returns to the previous physical layout. The data content does not change, so the game files are safe even if you do not revert.
+- Patching the game or running file verification/repair rewrites files, which can undo the layout or cause the plan to be rejected. See step 5.
+- SMR HDDs can slow down writes during bulk writes (relocation). The tool moves in 4 MiB pieces by default, but the Python tool was not tested at real game sizes. The record of relocating Frostpunk with the C# tool is in the section "Procedure validated with Frostpunk" below.
+- A forced termination during relocation was not tested with real game data. In the VHDX test (S1), resume after 5 interruptions was confirmed. Do not power off the PC or put it to sleep while moving.
+- Files with compression, sparse, or encryption attributes and reparse points are skipped automatically by relocation (the reason appears in `skipped_files` in the `apply` result). Such files simply do not get the relocation gain, and no problem arises. If you have ever NTFS-compressed the game folder, you can first undo it with `compact /u /s:D:\Games\CoD4`.
 
-## 1단계. 트레이스 수집
+## Step 1. Collect the trace
 
-게임이 로딩 중에 어떤 파일의 어느 구간을 읽는지 기록합니다. 같은 로딩을 3~5회 반복해 기록하면 매번 읽는 부분과 우연히 읽은 부분을 구분할 수 있습니다.
+This records which parts of which files the game reads while loading. Recording the same load 3~5 times lets you tell what is read every time from what is read by chance.
 
-### 안티치트가 없는 게임: Process Monitor
+### Games without anti-cheat: Process Monitor
 
-1. Microsoft Sysinternals에서 Process Monitor(Procmon)를 내려받아 관리자 권한으로 실행합니다.
-2. Filter > Filter...에서 아래 네 조건을 Include로 추가하고 Add, Apply를 누릅니다.
-   - `Process Name` `is` `게임 실행 파일.exe`
+1. Download Process Monitor (Procmon) from Microsoft Sysinternals and run it as administrator.
+2. In Filter > Filter..., add the four conditions below as Include and press Add, then Apply.
+   - `Process Name` `is` `game executable.exe`
    - `Operation` `is` `ReadFile`
    - `Result` `is` `SUCCESS`
-   - `Path` `begins with` `D:\Games\CoD4` (게임 설치 폴더)
-3. Options > Select Columns에서 Time of Day, Process Name, PID, Operation, Path, Result, Detail이 켜져 있는지 확인합니다. **Operation, Path, Result, Detail은 필수입니다.** 화면을 다른 열로 정렬하지 마십시오. 도구는 CSV의 행 순서를 읽기 순서로 씁니다.
-4. 캡처를 끄고(돋보기 아이콘, Ctrl+E) Edit > Clear Display(Ctrl+X)로 비운 뒤 캡처를 켭니다.
-5. 게임을 실행해 로딩이 끝나는 지점(메인 메뉴나 레벨 시작 화면)까지 진행하고 캡처를 끕니다. 게임 종료는 그다음에 합니다.
-6. File > Save...에서 `Events displayed using current filter`, 형식 `CSV`를 골라 `D:\AsterWork\run1.csv`로 저장합니다.
-7. 게임을 완전히 종료하고 4~6을 반복해 `run2.csv`, `run3.csv`(가능하면 `run4.csv`, `run5.csv`)를 만듭니다. 매번 같은 로딩(같은 메뉴 경로, 같은 레벨)이어야 합니다.
+   - `Path` `begins with` `D:\Games\CoD4` (the game install folder)
+3. In Options > Select Columns, check that Time of Day, Process Name, PID, Operation, Path, Result, and Detail are on. **Operation, Path, Result, and Detail are required.** Do not sort the display by another column. The tool uses the row order of the CSV as the read order.
+4. Turn capture off (magnifier icon, Ctrl+E), clear with Edit > Clear Display (Ctrl+X), and turn capture on.
+5. Start the game, proceed to the point where loading ends (the main menu or the level start screen), and turn capture off. Exit the game afterward.
+6. In File > Save..., choose `Events displayed using current filter` and format `CSV`, and save as `D:\AsterWork\run1.csv`.
+7. Fully exit the game and repeat 4~6 to make `run2.csv` and `run3.csv` (and `run4.csv`, `run5.csv` if possible). Each time must be the same load (the same menu path, the same level).
 
-이 도구는 프로세스 이름으로 거르지 않고 Path 접두사만 봅니다. Process Name 필터를 빼면 런처와 백신 같은 다른 프로세스의 읽기도 같은 폴더면 섞입니다.
+This tool does not filter by process name; it looks only at the Path prefix. If you remove the Process Name filter, reads from other processes such as launchers and antivirus are mixed in as well if they are in the same folder.
 
-### Ricochet 게임(MW4 등): ETW로 `.etl`만 남기기 (참고용, C# `aster trace --etl` 변환은 S3에서 검증)
+### Ricochet games (MW4 and others): leave only an `.etl` with ETW (for reference; the C# `aster trace --etl` conversion was validated in S3)
 
-아래는 Windows 내장 `wpr`로 파일 I/O를 기록하는 참고 명령입니다. 이 `FileIO` 프로필 명령은 실행해 보지 않았고, S3 는 저장소의 `csharp\scripts\aster_fileio.wprp` 프로필로 시험했습니다. Microsoft 문서에 따르면 ETW 파일 읽기 이벤트에는 `Offset`(64비트), `IoSize`(Microsoft-Windows-Kernel-File 공급자에서는 ByteOffset, IOSize), `FileKey`가 있어 오프셋과 길이를 얻을 수 있습니다. 수집기는 게임 시작 전에 켜고 종료 후에 끄며, 이상 징후(실행 거부, 경고, 계정 알림)가 있으면 즉시 중단합니다. 첫 시험은 오프라인 캠페인에서 짧게 합니다.
+Below is a reference command that records file I/O with the built-in Windows `wpr`. This `FileIO` profile command was not run, and S3 was tested with the repository's `csharp\scripts\aster_fileio.wprp` profile. According to Microsoft documentation, ETW file read events have `Offset` (64-bit), `IoSize` (ByteOffset, IOSize in the Microsoft-Windows-Kernel-File provider), and `FileKey`, so offset and length can be obtained. Turn the collector on before the game starts and off after it exits, and stop immediately if there is any sign of trouble (launch refusal, warning, account notice). Make the first test short, in the offline campaign.
 
 ```powershell
-# 관리자 PowerShell. 프로필 이름은 wpr -profiles 로 로컬에서 확인해야 합니다(미확인).
+# Administrator PowerShell. The profile name must be checked locally with wpr -profiles (not confirmed).
 wpr -start FileIO -filemode
-# ... 게임 실행 -> 로딩 완료 -> 게임 종료 ...
+# ... start game -> loading finished -> exit game ...
 wpr -stop D:\AsterWork\mw4_run1.etl
 ```
 
-이 `.etl`은 위 Python `trace` 명령이 읽지 못합니다. C# CLI 의 `aster trace --etl <파일> --origin-root <게임 폴더> --out <파일> --dump-first 20` 으로 변환해 읽기 건수와 처음 20건을 확인할 수 있습니다.
+The Python `trace` command above cannot read this `.etl`. You can convert it with the C# CLI `aster trace --etl <file> --origin-root <game folder> --out <file> --dump-first 20` and check the read count and the first 20 entries.
 
-## 2단계. 계획 만들기
+## Step 2. Create the plan
 
-### 2a. 선읽기 계획 `plan.json`과 트레이스 변환
+### 2a. The prefetch plan `plan.json` and trace conversion
 
 ```powershell
 python astercache_v07.py plan --csv D:\AsterWork\run1.csv D:\AsterWork\run2.csv D:\AsterWork\run3.csv `
@@ -146,32 +148,32 @@ python astercache_v07.py trace --csv D:\AsterWork\run1.csv D:\AsterWork\run2.csv
   --prefix D:\Games\CoD4 --out D:\AsterWork\trace.json
 ```
 
-`--prefix`는 게임 폴더입니다. 그 아래 경로의 읽기만 쓰며 `D:\Games\CoD4Other` 같은 이름이 비슷한 폴더는 걸러집니다.
+`--prefix` is the game folder. Only reads under that path are used, and similarly named folders such as `D:\Games\CoD4Other` are filtered out.
 
-CSV마다 `{'rows': ..., 'read_success_rows': ..., 'parsed': ..., 'ignored': ...}` 한 줄이 나옵니다. `parsed`가 0이거나 `rows`에 비해 아주 작으면 Procmon 필터 또는 `--prefix`가 틀린 것입니다. 시험 CSV에서는 `parsed`가 1,463~1,481이었습니다(나머지는 END OF FILE, 폴더 밖 경로, 읽기가 아닌 행).
+For each CSV, one line `{'rows': ..., 'read_success_rows': ..., 'parsed': ..., 'ignored': ...}` appears. If `parsed` is 0 or very small compared with `rows`, the Procmon filter or `--prefix` is wrong. In the test CSV files `parsed` was 1,463~1,481 (the rest were END OF FILE, paths outside the folder, and non-read rows).
 
-두 명령이 만드는 파일의 용도는 다릅니다.
+The files the two commands make serve different purposes.
 
-| 파일 | 만든 명령 | 여러 CSV를 합치는 방식 | 쓰는 곳 |
+| File | Made by | How multiple CSVs are combined | Used for |
 |---|---|---|---|
-| `plan.json` | `plan` | 2회 이상 읽힌 64 KiB 블록만, 최근 실행에 가중치(0.85씩 감쇠), `--budget-mib`까지 | 선읽기(`prefetch.cli --trace`) |
-| `trace.json` | `trace` | 모든 실행에서 한 번이라도 읽힌 64 KiB 블록의 합집합(중복 제거) | 선읽기, `game_launch.ps1` |
-| `trace.run1.json`, `trace.run2.json`, ... | `trace` | 실행마다 따로, 읽은 순서 그대로 | `relayout.cli plan --trace` (실행마다 하나씩) |
+| `plan.json` | `plan` | Only 64 KiB blocks read two or more times, weighted toward recent runs (decay of 0.85 each), up to `--budget-mib` | Prefetch (`prefetch.cli --trace`) |
+| `trace.json` | `trace` | The union of 64 KiB blocks read at least once in any run (duplicates removed) | Prefetch, `game_launch.ps1` |
+| `trace.run1.json`, `trace.run2.json`, ... | `trace` | Separately for each run, in the order read | `relayout.cli plan --trace` (one per run) |
 
-재배치는 실행별 읽기 순서를 비교해 일관된 순서를 찾기 때문에 실행마다 따로 받습니다. `plan.json`도 재배치가 받기는 하지만 경로 순으로 정렬돼 있어 읽기 순서 정보가 없으므로 권하지 않습니다.
+Relocation compares the per-run read orders to find a consistent order, so it takes them separately per run. Relocation also accepts `plan.json`, but it is sorted by path and has no read order information, so it is not recommended.
 
-두 명령은 Procmon이 같은 파일을 다른 대소문자(`d:\games\a.bin`과 `D:\Games\A.bin`)로 기록해도 실제 파일의 대소문자로 통일합니다. 통일하지 않으면 같은 파일이 둘로 나뉘어 이동이 중복됩니다. 시험 CSV에서 이 문제가 실제로 발생했고 수정했습니다.
+Even if Procmon records the same file in different case (`d:\games\a.bin` and `D:\Games\A.bin`), both commands unify it to the case of the real file. Without unification the same file would be split in two and the move would be duplicated. This problem actually occurred in the test CSV files and was fixed.
 
-### 2b. 재배치 계획 `relayout_plan.json`
+### 2b. The relocation plan `relayout_plan.json`
 
 ```powershell
 python -m relayout.cli plan --trace D:\AsterWork\trace.run1.json D:\AsterWork\trace.run2.json D:\AsterWork\trace.run3.json `
   --origin-root D:\Games\CoD4 --zone-mib 512 --out D:\AsterWork\relayout_plan.json
 ```
 
-PowerShell은 `trace.run*.json` 같은 와일드카드를 네이티브 명령에 넘겨주지 않으므로 파일을 하나씩 적습니다(`trace` 명령이 마지막 줄에 파일 목록을 출력합니다). `--out` 대신 `--dry-run`을 쓰면 파일을 저장하지 않고 통계만 봅니다.
+PowerShell does not expand wildcards such as `trace.run*.json` for native commands, so list the files one by one (the `trace` command prints the file list on its last line). If you use `--dry-run` instead of `--out`, the file is not saved and you see only the statistics.
 
-출력 통계에서 볼 것(시험 CSV 3개, `--zone-mib 512`)
+What to look at in the output statistics (3 test CSV files, `--zone-mib 512`)
 
 ```
 "sessions":3,"cluster_bytes":4096,
@@ -179,144 +181,144 @@ PowerShell은 `trace.run*.json` 같은 와일드카드를 네이티브 명령에
          "overflow_bytes":0,"skipped_files":0,"current_runs":3049,"expected_runs":1,...}
 ```
 
-- `hot_bytes`: 옮길 핫 데이터의 크기(여기서는 약 196 MiB)입니다. `--zone-mib`는 이보다 커야 하며, `overflow_bytes`가 0보다 크면 존이 모자란 것이므로 늘립니다. 존이 너무 크면 연속 빈 공간을 더 요구하고 이동 시간이 길어지므로 핫 바이트의 1.2배 정도를 기준으로 삼으십시오.
-- `tasks`: 이동 작업 수. `current_runs`는 핫 데이터가 현재 몇 조각으로 흩어졌는지, `expected_runs`는 재배치 뒤 몇 조각인지입니다(1이면 한 구간).
-- `skipped_files`: 위치를 알 수 없어 건너뛴 파일 수입니다.
-- 존은 D:에 같은 크기의 **연속 빈 공간**이 있어야 합니다. 3단계 `probe`의 `zone_candidate_lcn`이 `null`이면 없는 것이므로 `--zone-mib`를 줄이거나 D:의 공간을 비우십시오.
+- `hot_bytes`: the size of the hot data to move (about 196 MiB here). `--zone-mib` must be larger than this, and if `overflow_bytes` is greater than 0 the zone is too small, so increase it. A zone that is too large needs more contiguous free space and makes the move longer, so take about 1.2 times the hot bytes as the reference.
+- `tasks`: the number of move tasks. `current_runs` is how many fragments the hot data is currently scattered into, and `expected_runs` is how many fragments it will be after relocation (1 means one stretch).
+- `skipped_files`: the number of files skipped because their position could not be determined.
+- The zone needs the same amount of **contiguous free space** on D:. If `zone_candidate_lcn` in `probe` of step 3 is `null`, there is none, so reduce `--zone-mib` or free space on D:.
 
-게임 폴더 밖 경로는 계획에서 자동으로 빠집니다.
+Paths outside the game folder are dropped from the plan automatically.
 
-### 2c. 선읽기 계획 미리 보기 (선택)
+### 2c. Preview the prefetch plan (optional)
 
 ```powershell
 python -m prefetch.cli --trace D:\AsterWork\relayout_plan.json.prefetch.json --origin-root D:\Games\CoD4 --full-file-ratio 2
 ```
 
-`relayout plan`은 계획과 함께 `relayout_plan.json.prefetch.json`을 씁니다. 재배치 존에 들어간 블록만, 존 순서대로 담은 선읽기 입력이므로 재배치한 뒤에는 `trace.json` 대신 이 파일을 넘깁니다(읽는 바이트가 `hot_bytes`와 같습니다). `--min-sessions N`은 N개 미만의 실행에서만 읽힌 블록을 핫 집합에서 뺍니다(기본: 트레이스가 2개 이상이면 2, 1개면 1).
+`relayout plan` writes `relayout_plan.json.prefetch.json` along with the plan. It is the prefetch input containing only the blocks that went into the relocation zone, in zone order, so after relocation pass this file instead of `trace.json` (the bytes read equal `hot_bytes`). `--min-sessions N` removes from the hot set blocks that were read in fewer than N runs (default: 2 if there are two or more traces, 1 if there is one).
 
-`--execute` 없이 실행하면 읽지 않고 `bytes`(읽을 바이트)와 `requests`(요청 수)만 보여 줍니다. 4단계가 읽을 양입니다.
+Run without `--execute`, it does not read and shows only `bytes` (bytes to be read) and `requests` (the number of requests). This is the amount that step 4 will read.
 
-## 3단계. 재배치 (관리자 PowerShell)
+## Step 3. Relocate (administrator PowerShell)
 
-게임과 런처를 완전히 종료하고, 시작 메뉴에서 PowerShell을 우클릭해 "관리자 권한으로 실행"을 선택합니다.
+Fully close the game and the launcher, right-click PowerShell in the Start menu, and choose "Run as administrator".
 
 ```powershell
 cd D:\Git\AsterCache
 
-# 1) 읽기 전용 점검
+# 1) Read-only check
 python -m relayout.cli probe --volume D: --plan D:\AsterWork\relayout_plan.json
 
-# 2) 모의 실행: 존 위치를 정해 계획 파일에 저장하고 아무것도 옮기지 않음
+# 2) Dry run: decide the zone position, save it to the plan file, and move nothing
 python -m relayout.cli apply --plan D:\AsterWork\relayout_plan.json --allowed-root D:\Games\CoD4 --dry-run
 
-# 3) 실제 이동
+# 3) Actual move
 python -m relayout.cli apply --plan D:\AsterWork\relayout_plan.json --allowed-root D:\Games\CoD4 --execute
 
-# 4) 결과 확인
+# 4) Check the result
 python -m relayout.cli verify --plan D:\AsterWork\relayout_plan.json
 ```
 
-각 출력에서 볼 것
+What to look at in each output
 
-- `probe`: `free_match`가 `true`여야 합니다(비트맵의 빈 클러스터 수가 NTFS 보고값과 같다는 뜻). `false`면 중단합니다. `zone_candidate_lcn`은 숫자여야 합니다. 관리자가 아니면 `{"error":"not_admin"}`으로 끝납니다.
-- `apply --dry-run`: `tasks_todo`가 0보다 크고 `skipped_files`에 예상 밖의 파일이 없는지 봅니다. `bytes_todo`가 옮길 바이트입니다.
-- `apply --execute`: `failed`가 빈 배열, `stopped`가 `null`, `sha_mismatch`가 빈 배열, `moved_bytes`가 `bytes_todo`와 같아야 합니다. 한 번 실행에 기본 2,048 MiB까지 옮기고 `"stopped":"write_cap"`으로 멈출 수 있습니다. 이때는 **같은 `--execute` 명령을 다시 실행**하면 이어서 진행합니다(`--write-cap-mib`로 한도를 올릴 수도 있습니다).
-- `verify`: `"verdict":"contiguous"`여야 합니다(핫 데이터가 한 구간에 순서대로 모였다는 뜻).
+- `probe`: `free_match` must be `true` (meaning the number of free clusters in the bitmap equals the value NTFS reports). If `false`, stop. `zone_candidate_lcn` must be a number. If you are not an administrator it ends with `{"error":"not_admin"}`.
+- `apply --dry-run`: check that `tasks_todo` is greater than 0 and `skipped_files` has no unexpected files. `bytes_todo` is the bytes to be moved.
+- `apply --execute`: `failed` must be an empty array, `stopped` must be `null`, `sha_mismatch` must be an empty array, and `moved_bytes` must equal `bytes_todo`. One run moves up to 2,048 MiB by default and may stop with `"stopped":"write_cap"`. In that case **run the same `--execute` command again** and it continues (you can also raise the limit with `--write-cap-mib`).
+- `verify`: it must be `"verdict":"contiguous"` (meaning the hot data has been gathered into one stretch in order).
 
-소요 시간: D:\AsterBench의 243 MB(1,048개 작업)는 1~2분이 걸렸습니다. 게임의 핫 데이터는 GB 단위이므로 이에 비례해 더 걸릴 것으로 예상합니다(5 GB면 수십 분이라는 외삽이며 실측이 아닙니다). 실측으로는 Frostpunk 에서 1차 1.5 GiB 존에 639 MB 를 131 s(4.9 MB/s), 2차 2 GiB 존에 212 MB 를 45 s 로 옮겼습니다(SMR HDD 한 대, 두 차례 합계 851 MB 는 계산값).
+Time taken: 243 MB (1,048 tasks) of D:\AsterBench took 1~2 minutes. The hot data of a game is in the GB range, so it is expected to take proportionally longer (5 GB being tens of minutes is an extrapolation, not a measurement). As measurements, on Frostpunk the first pass moved 639 MB into a 1.5 GiB zone in 131 s (4.9 MB/s), and the second pass moved 212 MB into a 2 GiB zone in 45 s (one SMR HDD; the two-pass total of 851 MB is a calculated value).
 
-저널(JSON Lines)은 `--journal`을 주지 않으면 `D:\AsterWork\relayout_plan.json.journal.jsonl`에 생깁니다. 되돌리기에 필요하므로 지우지 마십시오.
+If you do not give `--journal`, the journal (JSON Lines) is created at `D:\AsterWork\relayout_plan.json.journal.jsonl`. It is needed for reverting, so do not delete it.
 
-되돌리기
+Reverting
 
 ```powershell
 python -m relayout.cli revert --journal D:\AsterWork\relayout_plan.json.journal.jsonl --allowed-root D:\Games\CoD4 --execute
 ```
 
-`--execute`를 빼면 아무것도 옮기지 않습니다.
+Without `--execute`, nothing is moved.
 
-## 4단계. 게임 실행 (선읽기와 동시에)
+## Step 4. Run the game (together with prefetch)
 
-일반 PowerShell에서 실행합니다.
+Run from an ordinary PowerShell.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File D:\Git\AsterCache\scripts\game_launch.ps1 `
   -Trace D:\AsterWork\relayout_plan.json.prefetch.json -OriginRoot D:\Games\CoD4 -Game D:\Games\CoD4\iw3sp.exe
 ```
 
-스크립트는 선읽기(`prefetch.cli`, 존 순서)를 먼저 숨은 백그라운드 프로세스로 시작하고 곧바로 게임을 실행한 뒤, 스트림이 끝날 때까지 기다려 소요 시간과 읽은 바이트를 출력합니다. 시험 출력(게임 대신 `cmd.exe /c exit`, 캐시가 따뜻한 상태)
+The script first starts the prefetch (`prefetch.cli`, zone order) as a hidden background process, immediately starts the game, then waits until the stream finishes and prints the elapsed time and the bytes read. Test output (`cmd.exe /c exit` instead of a game, with a warm cache)
 
 ```
 prefetch started (pid 26632), game started 0.07 s later (pid 32532)
 stream done: 0.46 s since launch (read time 0.06 s), 195.7 MiB, 2169 requests, errors 0, 3,445 MiB/s
 ```
 
-이 값은 캐시가 따뜻한 상태라 속도 참고용이 아닙니다. `errors`가 0이 아니면 트레이스가 낡은 것입니다(패치 등).
+This value is for a warm cache, so it is not a speed reference. If `errors` is not 0, the trace is stale (a patch, for example).
 
-- `-Game`에는 실행 파일 외에 `battlenet://...`, `steam://rungameid/...` 같은 URI도 줄 수 있습니다. 런처가 게임을 띄우는 구조에서는 선읽기가 게임 시작에 앞서 끝나지 않을 수 있습니다.
-- `-NoPrefetch`를 붙이면 선읽기 없이 게임만 실행합니다(비교용).
-- 게임 인자는 `-GameArgs '+set','x'`처럼 배열로 줍니다.
-- 기본 `-FullFileRatio 2`는 기록된 블록만 읽습니다. 재배치 뒤 파일의 나머지는 핫 존에 없으므로 파일 전체를 읽는 것(`prefetch.cli` 기본값 0.3)은 시간 낭비입니다(시험 데이터에서 읽는 양이 205 MB에서 402 MB로 늘었습니다).
+- `-Game` can also take a URI such as `battlenet://...` or `steam://rungameid/...` besides an executable. When the launcher starts the game, the prefetch may not finish before the game starts.
+- With `-NoPrefetch` it runs only the game without prefetch (for comparison).
+- Pass game arguments as an array, like `-GameArgs '+set','x'`.
+- The default `-FullFileRatio 2` reads only the recorded blocks. After relocation the rest of a file is not in the hot zone, so reading whole files (the `prefetch.cli` default of 0.3) is wasted time (in the test data the amount read grew from 205 MB to 402 MB).
 
-### 효과 재는 법
+### How to measure the effect
 
-1. PC를 재부팅한 직후(캐시가 비어 있는 상태)에 `-NoPrefetch`로 게임을 실행해 스톱워치로 로딩 시간(실행부터 로딩 완료까지)을 잽니다. 재부팅하고 3회 반복합니다.
-2. 같은 방식으로 `-NoPrefetch` 없이 3회 잽니다.
-3. 두 결과의 중앙값을 비교합니다. 재부팅 없이 반복하면 Windows 파일 캐시 때문에 항상 빠르게 나와 비교가 무의미합니다.
+1. Right after rebooting the PC (with an empty cache), run the game with `-NoPrefetch` and measure the load time (from launch to load complete) with a stopwatch. Reboot and repeat 3 times.
+2. Measure 3 times the same way without `-NoPrefetch`.
+3. Compare the medians of the two results. If you repeat without rebooting, the Windows file cache always makes it fast and the comparison is meaningless.
 
-## 5단계. 유지 관리
+## Step 5. Maintenance
 
-- 게임 패치, 파일 검증/복구 뒤에는 `verify`로 배치가 깨졌는지 봅니다. `verdict`가 `non-contiguous`이거나 `apply`가 `source_changed`를 보고하면 1단계부터 트레이스를 다시 모으고 2~3단계를 다시 합니다. 패치된 파일은 크기/수정 시간이 바뀌어 기존 계획이 거부됩니다.
-- **Windows 자동 드라이브 최적화에서 D:를 제외하십시오.** Windows는 주 1회 예약 작업으로 HDD를 디프래그하며 이것이 재배치한 배치를 되돌릴 수 있습니다. 시작 메뉴에서 "드라이브 조각 모음 및 최적화"(Defragment and Optimize Drives)를 열고, 최적화 예약의 "설정 변경"을 눌러 "선택"으로 드라이브 목록을 열고 D:의 체크를 해제합니다. 직접 `defrag D:`도 실행하지 마십시오.
-- 시간이 지난 뒤에도 배치가 유지되는지는 합성 데이터셋에서 10시간까지 확인했습니다(배치 유지). 24시간 확인은 없습니다.
+- After a game patch or file verification/repair, check with `verify` whether the layout is broken. If `verdict` is `non-contiguous` or `apply` reports `source_changed`, collect the trace again from step 1 and redo steps 2~3. Patched files have a changed size/modified time, so the existing plan is rejected.
+- **Exclude D: from Windows automatic drive optimization.** Windows defragments HDDs with a weekly scheduled task, which can undo the relocated layout. Open "Defragment and Optimize Drives" from the Start menu, press "Change settings" for the optimization schedule, open the drive list with "Choose", and uncheck D:. Do not run `defrag D:` yourself either.
+- Whether the layout persists over time was confirmed up to 10 hours on the synthetic dataset (the layout held). There is no 24-hour confirmation.
 
-## 한계
+## Limits
 
-- **첫 실행은 이득이 없습니다.** 트레이스를 모으는 실행과 재배치 시간은 비용만 듭니다. 이득은 재배치 이후 반복 로딩에서만 나옵니다.
-- **핫 집합이 클수록 선읽기 바닥 시간이 커집니다.** 순차 읽기를 약 160 MB/s로 두면 바닥은 바이트 수 ÷ 160 MB/s입니다(1 GB = 1000 MB 기준, GiB로 재면 약 7% 늘어납니다).
+- **The first run has no gain.** The run that collects the trace and the relocation time are pure cost. The gain comes only from repeated loads after relocation.
+- **The larger the hot set, the larger the prefetch floor time.** With sequential reads at about 160 MB/s, the floor is bytes ÷ 160 MB/s (on a 1 GB = 1000 MB basis; measured in GiB it is about 7% more).
 
-| 핫 집합 | 선읽기 바닥 시간 |
+| Hot set | Prefetch floor time |
 |---:|---:|
-| 2 GB | 약 12.5초 |
-| 5 GB | 약 31초 |
-| 10 GB | 약 62.5초 |
-| 20 GB | 약 125초 |
-| 30 GB | 약 188초 |
+| 2 GB | about 12.5 s |
+| 5 GB | about 31 s |
+| 10 GB | about 62.5 s |
+| 20 GB | about 125 s |
+| 30 GB | about 188 s |
 
-핫 집합이 수 GB를 넘으면 선읽기 시간이 바닥이 되어 효과가 제한적이고, 이득은 주로 탐색(seek) 제거에서 나옵니다. 합성 데이터셋(243 MB)에서는 선읽기가 1.1~1.7초였습니다. Frostpunk 는 읽기 패턴이 2.02 GB 였고, 재배치 존에서 HDD 순차 한계(약 135 MB/s)로 15.1 s 가 걸렸습니다. MW4 의 핫 집합 크기는 아직 모릅니다.
+When the hot set exceeds a few GB, the prefetch time becomes the floor and the effect is limited, and the gain comes mainly from removing seeks. On the synthetic dataset (243 MB) the prefetch took 1.1~1.7 seconds. Frostpunk's read pattern was 2.02 GB, and on the relocated zone it took 15.1 s at the HDD sequential limit (about 135 MB/s). The hot set size of MW4 is not yet known.
 
-- **트레이스에 없는 읽기는 느립니다.** 기록한 로딩과 다른 레벨/모드, 플레이 중 텍스처 스트리밍 같은 읽기는 이 도구가 돕지 못합니다. 한 번만 읽힌 블록(특히 오래된 실행에서만 나온 것)은 존에 들어가지 않아 선읽기 때 탐색이 생길 수 있으므로 3~5회 실행의 일관성이 중요합니다.
-- **이 도구는 게임에 주입하거나 후킹하지 않고 별도 프로세스로 파일만 읽습니다.** 그래도 안티치트가 "게임 파일에 접근하는 앱"으로 볼 수 있는지는 검증되지 않았습니다. `FSCTL_MOVE_FILE`이 게임의 무결성 검사에 걸리는지도 공식 확인이 없습니다(파일 내용이 바뀌지 않으므로 해시 검사에는 걸리지 않을 것으로 추정). 재배치 뒤에는 런처의 파일 검사/복구를 한 번 돌려 영향이 없는지 확인하십시오.
-- **검증한 게임은 Frostpunk 1종뿐입니다.** 2026-11-02 에 재생으로 측정했고, 게임을 실행한 전체 시간은 재지 않았습니다. README의 나머지 수치는 합성 데이터셋에서 얻었습니다. MW4와 LoL 은 아직 검증하지 않았습니다.
+- **Reads not in the trace are slow.** Reads such as a different level/mode from the recorded load, or texture streaming during play, are not helped by this tool. Blocks read only once (especially those that appear only in old runs) do not go into the zone and can cause seeks during prefetch, so consistency across 3~5 runs matters.
+- **This tool does not inject into or hook the game; it only reads files from a separate process.** Even so, whether an anti-cheat could regard it as an "app accessing game files" is unvalidated. There is also no official confirmation of whether `FSCTL_MOVE_FILE` triggers a game's integrity check (since the file content does not change, a hash check is presumed not to trigger). After relocation, run the launcher's file check/repair once to confirm there is no effect.
+- **Frostpunk is the only game validated.** It was measured by replay on 2026-11-02, and the total time of running the game was not measured. The other figures in the README were obtained from the synthetic dataset. MW4 and LoL have not been validated yet.
 
-## 참고: 리그 오브 레전드 (Vanguard)
+## Reference: League of Legends (Vanguard)
 
-리그 오브 레전드는 Riot Vanguard를 씁니다. Vanguard도 커널 수준의 안티치트이므로 위 Ricochet와 같은 주의를 적용합니다. 아래는 2026-11-02에 웹으로 조사한 결과이며, 조사 범위가 얕습니다. 각 항목의 출처 등급을 [확인](공식·1차), [2차](블로그·요약), [추측](근거 없는 추정)으로 표시합니다.
+League of Legends uses Riot Vanguard. Vanguard is also a kernel-level anti-cheat, so the same cautions as for Ricochet above apply. Below are the results of a web survey on 2026-11-02, and the scope of the survey is shallow. The source grade of each item is marked [confirmed] (official or primary), [secondary] (blogs, summaries), or [speculation] (an estimate without evidence).
 
-**Vanguard와 수집·재배치 도구**
-- Procmon, ETW, 디스크 디프래그와 Vanguard가 충돌한다는 공개 보고는 찾지 못했습니다. 그렇다고 안전하다는 근거도 없습니다. 보고가 없었다는 사실이 안전을 뜻하지는 않으며, 계정 제재 위험을 0이라고 볼 수 없습니다.
-- Riot의 "Incompatible Software" 문서는 "호환되지 않는 소프트웨어·드라이버"라고만 쓰며 도구 범주나 위 도구 이름을 언급하지 않습니다. [확인] https://support.riotgames.com/en-us/valorant/performance/van-incompatible-software
-- 차단 대상은 주로 치트에 악용될 수 있는 취약 드라이버입니다. 차단될 때 오류에 파일 경로가 표시됩니다. [2차] https://dotesports.com/valorant/news/riot-is-shipping-a-hotfix-to-increase-vanguards-compatibility-with-cheat-vulnerable-drivers
-- Procmon은 PROCMON24.SYS 필터 드라이버를 올리므로 세 도구 가운데 위험이 가장 큽니다. 트레이스와 재배치는 Vanguard를 끈 상태에서 하고, 플레이 중에는 수집·재배치 도구를 모두 닫으십시오. [추측]
-- ETW 세션과 디스크 재배치 API는 별도 드라이버를 올리지 않아 위험이 상대적으로 낮을 것으로 추정합니다. 공개 근거는 없습니다. [추측]
+**Vanguard and collection/relocation tools**
+- No public report was found that Procmon, ETW, or disk defragmentation conflict with Vanguard. That is not evidence of safety either. The absence of reports does not mean it is safe, and the risk of an account sanction cannot be regarded as zero.
+- Riot's "Incompatible Software" document says only "incompatible software and drivers" and does not mention tool categories or the names of the tools above. [confirmed] https://support.riotgames.com/en-us/valorant/performance/van-incompatible-software
+- The blocked items are mainly vulnerable drivers that can be abused for cheating. When blocked, the error shows a file path. [secondary] https://dotesports.com/valorant/news/riot-is-shipping-a-hotfix-to-increase-vanguards-compatibility-with-cheat-vulnerable-drivers
+- Procmon loads the PROCMON24.SYS filter driver, so it carries the highest risk of the three tools. Do the trace and relocation with Vanguard off, and close all collection and relocation tools during play. [speculation]
+- ETW sessions and the disk relocation API do not load a separate driver, so the risk is presumed to be relatively lower. There is no public evidence. [speculation]
 
-**설치 용량**
-- Riot 공식 문서는 일반 설치 약 35~40GB라고 밝힙니다. [확인] https://support.riotgames.com/en-us/league-of-legends/client/league-of-legends-takes-too-much-space
-- 2차 블로그는 16~25GB라고 해 자료가 상충합니다. 정확한 값은 사용자 PC에서 직접 측정해야 하며, 그 전까지는 20~40GB를 기준으로 봅니다. [2차] https://nokiamob.net/2026/02/19/how-big-is-league-of-legends-in-2026/
-- Game 폴더에는 큰 파일이 약 400개 있습니다. 릴리스 전체는 30만 개 이상의 chunk로 나뉩니다. [확인] https://www.riotgames.com/en/news/supercharging-data-delivery-new-league-patcher
+**Install size**
+- Riot's official document states that a normal install is about 35~40GB. [confirmed] https://support.riotgames.com/en-us/league-of-legends/client/league-of-legends-takes-too-much-space
+- A secondary blog says 16~25GB, so the sources conflict. The exact value must be measured on the user's own PC, and until then take 20~40GB as the reference. [secondary] https://nokiamob.net/2026/02/19/how-big-is-league-of-legends-in-2026/
+- The Game folder has about 400 large files. The whole release is split into more than 300,000 chunks. [confirmed] https://www.riotgames.com/en/news/supercharging-data-delivery-new-league-patcher
 
-**패치와 재배치 유지**
-- 새 패처는 파일을 통째로 교체하지 않고 chunk 단위로 제자리 갱신합니다. Riot은 파일 배치를 버전 간 안정적으로 유지하도록 패키징을 바꿨다고 밝혔습니다. [확인] 같은 출처
-- 따라서 재배치한 파일이 패치 뒤에도 남을 가능성이 있습니다. 실측 보고는 없습니다. [추측]
-- 패처가 파일을 삭제한 뒤 다시 내려받는 경로라면 재배치가 깨집니다. 패치 뒤에는 배치 상태를 다시 확인하십시오. [추측]
+**Patches and keeping the relocation**
+- The new patcher does not replace files wholesale but updates them in place chunk by chunk. Riot stated that it changed packaging so the file layout stays stable across versions. [confirmed] same source
+- So relocated files may remain after a patch. There is no measured report. [speculation]
+- If the patcher deletes a file and downloads it again, the relocation is broken. Check the layout state again after patches. [speculation]
 
-**로딩 특성**
-- HDD와 SSD의 LoL 로딩 시간 차이를 보여 주는 수치는 찾지 못했습니다. 일반 게임에서 HDD가 SSD보다 2~3배 느리다는 일반론만 확인했습니다. [2차] https://www.gamepressure.com/newsroom/hdd-sshd-ssd-m2-speed-benchmark-of-hard-drives/z1692
-- LoL은 네트워크와 CPU 대기 비중이 커서 디스크 이득이 작을 수 있습니다. [추측]
-- 로딩 중 읽는 바이트 양은 공개 자료가 없으므로 직접 트레이스로 측정해야 합니다.
+**Loading characteristics**
+- No figures showing the difference in LoL load time between HDD and SSD were found. Only the general claim that an HDD is 2~3 times slower than an SSD in typical games was confirmed. [secondary] https://www.gamepressure.com/newsroom/hdd-sshd-ssd-m2-speed-benchmark-of-hard-drives/z1692
+- LoL has a large share of network and CPU waiting, so the disk gain may be small. [speculation]
+- There is no public data on the number of bytes read during loading, so it must be measured with your own trace.
 
-**권장 순서**
-1. Vanguard가 없는 다른 게임에서 트레이스, 재배치, 선읽기 파이프라인을 먼저 검증합니다.
-2. LoL은 Vanguard를 끈 상태와 오프라인 상태에서 읽기량만 측정해 HDD 이득의 여지를 판단합니다. 트레이스 수집은 이 상태에서만 합니다.
-3. 재배치 기록은 ETW 대신 파일 읽기 순서를 직접 남기는 방식도 검토합니다. 플레이 중에는 수집 도구를 쓰지 않고, 재배치 뒤 읽기 속도만 비교합니다.
-4. 패치 뒤 재배치가 유지되는지 확인합니다. 계정 위험이 없다고 확인된 범위에서만 다음 단계로 넘어갑니다.
+**Recommended order**
+1. First validate the trace, relocation, and prefetch pipeline on another game without Vanguard.
+2. For LoL, measure only the read volume with Vanguard off and offline, to judge the room for an HDD gain. Collect traces only in this state.
+3. For recording the relocation, also consider a method that leaves the file read order directly instead of ETW. Do not use collection tools during play, and compare only the read speed after relocation.
+4. Check that the relocation persists after a patch. Move to the next stage only within the range confirmed to have no account risk.

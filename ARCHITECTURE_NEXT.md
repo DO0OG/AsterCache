@@ -1,3 +1,5 @@
+> Research notes (Korean). The product documentation is in English: see [README.md](README.md).
+
 # 실사용 Windows SSD급 게임 로딩으로 가는 설계 경로
 
 ## 현재 데이터 흐름 (실제 구현)

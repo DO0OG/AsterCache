@@ -1,3 +1,5 @@
+> Research notes (Korean). The product documentation is in English: see [README.md](../README.md).
+
 # AsterCache v1 설계: 가로채기 없는 HDD 로딩 가속 (AsterLayout + AsterStream + 재적용 루프)
 
 작성 2026-11-01. 읽기 전용 설계 문서이며, 저장소 파일은 고치지 않았습니다.

@@ -1,0 +1,2 @@
+live {'reads': 8230, 'parsed': 5724, 'ignored': 2506, 'truncated': False, 'events_lost': 0}
+{"union": "D:\\Git\\AsterCache\\results\\csharp_20261102_101413\\csharp_live.json", "union_events": 3722, "per_run": ["D:\\Git\\AsterCache\\results\\csharp_20261102_101413\\csharp_live.run1.json"]}

@@ -1,0 +1,87 @@
+﻿{
+    "vhdx":  "C:\\AsterVHDX\\cs_trial3.vhdx",
+    "label":  "AsterCsTrial",
+    "zone_mib":  300,
+    "files":  16,
+    "repo":  "D:\\Git\\AsterCache",
+    "replay_before":  {
+                          "runs_s":  [
+                                         0.573564699065173,
+                                         0.50128710079297889,
+                                         0.55918999979621731
+                                     ],
+                          "median_s":  0.55918999979621731
+                      },
+    "probe":  {
+                  "volume":  "Z:",
+                  "label":  "AsterCsTrial",
+                  "cluster_bytes":  4096,
+                  "total_clusters":  2096639,
+                  "free_clusters_ntfs":  1976791,
+                  "free_clusters_bitmap":  1976791,
+                  "bitmap_bits":  2096639,
+                  "free_match":  true,
+                  "mft_zone":  [
+                                   786432,
+                                   837664
+                               ],
+                  "zone_clusters_needed":  47504,
+                  "zone_candidate_lcn":  133172
+              },
+    "dry_run":  {
+                    "zone_start_lcn":  133172,
+                    "tasks_total":  949,
+                    "tasks_todo":  949,
+                    "bytes_todo":  194576384,
+                    "skipped_files":  {
+
+                                      },
+                    "executed":  false,
+                    "moved_bytes":  0,
+                    "failed":  [
+
+                               ],
+                    "stopped":  null,
+                    "dry_run":  true,
+                    "plan_saved":  true
+                },
+    "throughput_note":  "final run 2.29 MB/s (below the 20 MB/s guess; compare with the Python E2 journal)",
+    "interrupts":  {
+                       "kills":  5,
+                       "resumed":  5,
+                       "forced_detach_at":  3
+                   },
+    "apply":  {
+                  "zone_start_lcn":  133172,
+                  "tasks_total":  949,
+                  "tasks_todo":  773,
+                  "bytes_todo":  155582464,
+                  "skipped_files":  {
+
+                                    },
+                  "executed":  true,
+                  "moved_bytes":  155582464,
+                  "failed":  [
+
+                             ],
+                  "stopped":  null,
+                  "dry_run":  false,
+                  "plan_saved":  false,
+                  "sha_checked":  16,
+                  "sha_mismatch":  [
+
+                                   ]
+              },
+    "throughput_mb_s":  2.29,
+    "chkdsk":  "not_run: Program \u0027chkdsk.exe\u0027 failed to run: Access is deniedAt D:\\Git\\AsterCache\\csharp\\scripts\\cs_e2_vhdx.ps1:214 char:17\r\n+         $chk = (\u0026 chkdsk.exe \"${letter}:\" /scan 2\u003e\u00261 | Out-String)\r\n+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~.",
+    "manifest_identical":  true,
+    "replay_after":  {
+                         "runs_s":  [
+                                        0.39528010012872983,
+                                        0.35265140024421271,
+                                        0.377997500312631
+                                    ],
+                         "median_s":  0.377997500312631
+                     },
+    "manifest_after_revert_identical":  true
+}

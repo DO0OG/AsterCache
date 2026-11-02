@@ -1,0 +1,1 @@
+tracing; press Ctrl+C or Enter to stop

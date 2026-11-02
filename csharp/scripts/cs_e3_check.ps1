@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   S2 (C#): probe, plan, dry-run, verify and cold stream comparison on the REAL D:\AsterBench dataset.
 
@@ -107,23 +107,25 @@ try {
     if ($bad.Count -gt 0) { throw "plan path outside ${Root}: $($bad[0])" }
     $allowed = @('--allowed-root', $Root)
     $dry = Invoke-Tool 'apply-dry-run' $AsterExe (@('apply', '--plan', $plan, '--journal', $journal, '--dry-run') + $allowed) | ConvertFrom-Json
-    if ($dry.tasks_todo -le 0) { throw 'dry-run found nothing to move' }
-    Invoke-Tool 'verify' $AsterExe @('verify', '--plan', $plan) | Out-Null
+    # tasks_todo 0 is the normal outcome on a dataset the Python applier already relocated (E3): nothing to move, the
+    # zone is already contiguous. The stream comparison below is still meaningful, so record it and continue.
+    $summary.already_contiguous = ($dry.tasks_todo -le 0)
+    $summary.verify = Invoke-Tool 'verify' $AsterExe @('verify', '--plan', $plan) | ConvertFrom-Json
     $summary.dry_run = $dry
 
     Write-Host '== 3. cold stream: Python and C#, modes (a) pvm and (b) overlapped read, alternating'
     $modes = @(
         @{ name = 'a_pvm'; flags = @('--method', 'pvm') },
-        @{ name = 'b_read_qd2'; flags = @('--method', 'read', '--threads', '2') }
+        @{ name = 'b_overlapped_qd2'; flags = @('--method', 'overlapped', '--threads', '2') }
     )
     $summary.modes = [ordered]@{}
     foreach ($mode in $modes) {
         $py = @(); $cs = @()
         for ($i = 1; $i -le $Runs; $i++) {
             Invoke-Purge "$($mode.name)-py$i"
-            $py += Invoke-Timed "$($mode.name)-py$i" $Python (@('-m', 'prefetch.cli', '--plan', $plan, '--origin-root', $Root, '--execute') + $mode.flags)
+            $py += Invoke-Timed "$($mode.name)-py$i" $Python (@('-m', 'prefetch.cli', '--plan', "$plan.prefetch.json", '--origin-root', $Root, '--execute') + $mode.flags)
             Invoke-Purge "$($mode.name)-cs$i"
-            $cs += Invoke-Timed "$($mode.name)-cs$i" $AsterExe (@('prefetch', '--plan', $plan, '--origin-root', $Root, '--execute') + $mode.flags)
+            $cs += Invoke-Timed "$($mode.name)-cs$i" $AsterExe (@('prefetch', '--plan', "$plan.prefetch.json", '--origin-root', $Root, '--execute') + $mode.flags)
         }
         $pyMed = ($py | Sort-Object)[[int][math]::Floor($Runs / 2)]
         $csMed = ($cs | Sort-Object)[[int][math]::Floor($Runs / 2)]

@@ -1,0 +1,11 @@
+﻿{
+    "root":  "D:\\AsterBench",
+    "repo":  "D:\\Git\\AsterCache",
+    "verdict":  "not_evaluated",
+    "reason":  "comparison not implemented yet (needs the final C# trace output format)",
+    "live_bytes":  348553,
+    "etl_bytes":  108003328,
+    "etl_dump_exit":  0,
+    "live_events_lost":  0,
+    "etl_events_lost":  0
+}

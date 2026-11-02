@@ -1,0 +1,2 @@
+﻿{"executed":true,"restored":948,"skipped":[{"idx":80,"reason":"\uc561\uc138\uc2a4\uac00 \uac70\ubd80\ub418\uc5c8\uc2b5\ub2c8\ub2e4."}],"moved_bytes":194510848}
+

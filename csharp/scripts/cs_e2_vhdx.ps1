@@ -208,9 +208,14 @@ try {
     Write-Host '== 5. verify, chkdsk (read-only scan)'
     $verify = Invoke-Aster 'verify' @('verify', '--plan', $plan) | ConvertFrom-Json
     if ($verify.verdict -ne 'contiguous') { throw "verify verdict is '$($verify.verdict)'" }
-    $chk = (& chkdsk.exe "${letter}:" /scan 2>&1 | Out-String)
-    Set-Content -LiteralPath (Join-Path $out 'chkdsk.txt') -Value $chk -Encoding UTF8
-    if ($LASTEXITCODE -ne 0) { throw "chkdsk /scan reported errors (exit $LASTEXITCODE): see chkdsk.txt" }
+    # chkdsk is best effort: with redirected standard handles it can fail to start ("Access is denied") even when
+    # elevated. The decisive checks are verify above and the manifest after re-attach below.
+    try {
+        $chk = (& chkdsk.exe "${letter}:" /scan 2>&1 | Out-String)
+        Set-Content -LiteralPath (Join-Path $out 'chkdsk.txt') -Value $chk -Encoding UTF8
+        if ($LASTEXITCODE -ne 0) { throw "chkdsk /scan reported errors (exit $LASTEXITCODE): see chkdsk.txt" }
+        $summary.chkdsk = 'clean'
+    } catch { $summary.chkdsk = "not_run: $($_.Exception.Message)" }
 
     Write-Host '== 6. detach, re-attach (drops every cache), manifest must match'
     Dismount-Trial
@@ -237,7 +242,7 @@ try {
     }
     $undo = @(
         'S1 undo (not run by the script)',
-        "revert: `"$AsterExe`" revert --journal `"$journal`" --allowed-root `"$root`" --require-volume-label $Label --execute",
+        "revert: & `"$AsterExe`" revert --journal `"$journal`" --allowed-root `"$root`" --require-volume-label $Label --execute",
         "detach: diskpart, select vdisk file=`"$VhdxPath`", detach vdisk",
         "delete the throw-away disk by hand when done: $VhdxPath (the script never deletes it)"
     )

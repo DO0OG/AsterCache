@@ -1,0 +1,2 @@
+etl records=10929 reads=8288 process_starts=1534 unresolved_reads=2 events_lost=0
+# 23 dump lines in total; lines for other processes omitted (0 kept)

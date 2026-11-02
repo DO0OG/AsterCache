@@ -1,0 +1,69 @@
+﻿{
+    "root":  "D:\\AsterBench",
+    "zone_mib":  300,
+    "runs":  3,
+    "repo":  "D:\\Git\\AsterCache",
+    "probe_same":  true,
+    "already_contiguous":  true,
+    "verify":  {
+                   "hot_clusters":  59456,
+                   "ordered_runs":  1,
+                   "expected_runs":  1,
+                   "current_runs_at_plan_time":  1,
+                   "ascending":  true,
+                   "in_zone_clusters":  0,
+                   "missing_files":  0,
+                   "contiguous":  true,
+                   "verdict":  "contiguous"
+               },
+    "dry_run":  {
+                    "zone_start_lcn":  48657208,
+                    "tasks_total":  0,
+                    "tasks_todo":  0,
+                    "bytes_todo":  0,
+                    "skipped_files":  {
+
+                                      },
+                    "executed":  false,
+                    "moved_bytes":  0,
+                    "failed":  [
+
+                               ],
+                    "stopped":  null,
+                    "dry_run":  true,
+                    "plan_saved":  true
+                },
+    "modes":  {
+                  "a_pvm":  {
+                                "python_s":  [
+                                                 1.899,
+                                                 1.338,
+                                                 1.181
+                                             ],
+                                "csharp_s":  [
+                                                 2.453,
+                                                 1.948,
+                                                 1.901
+                                             ],
+                                "python_median_s":  1.338,
+                                "csharp_median_s":  1.948,
+                                "csharp_not_slower":  false
+                            },
+                  "b_overlapped_qd2":  {
+                                           "python_s":  [
+                                                            2.609,
+                                                            1.305,
+                                                            1.163
+                                                        ],
+                                           "csharp_s":  [
+                                                            2.028,
+                                                            1.794,
+                                                            1.805
+                                                        ],
+                                           "python_median_s":  1.305,
+                                           "csharp_median_s":  1.805,
+                                           "csharp_not_slower":  false
+                                       }
+              },
+    "manifest_identical":  true
+}

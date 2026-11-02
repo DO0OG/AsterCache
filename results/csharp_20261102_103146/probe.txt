@@ -1,0 +1,2 @@
+﻿{"volume":"Z:","label":"AsterCsTrial","cluster_bytes":4096,"total_clusters":2096639,"free_clusters_ntfs":1976791,"free_clusters_bitmap":1976791,"bitmap_bits":2096639,"free_match":true,"mft_zone":[786432,837664],"zone_clusters_needed":47504,"zone_candidate_lcn":133172}
+

@@ -1,0 +1,2 @@
+﻿{"strategy":"physical","seq_hint":false,"fallback":false,"layout_ok_files":64,"layout_files":64,"full_files":0,"gap_bytes":0,"bytes":243531776,"requests":1048,"errors":0,"seconds":1.0809,"method":"overlapped"}
+

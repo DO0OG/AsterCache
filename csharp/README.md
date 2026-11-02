@@ -57,6 +57,41 @@ CLI 명령(`aster plan`, `probe`, `apply`, `verify`, `revert`, `trace`, `prefetc
 - 등록된 게임이 0개인 `config.json` 은 정상입니다. 서비스는 감시·재적용 없이 대기만 하고, 트레이는 "등록된 게임 없음" 으로 표시합니다. 서비스는 시작할 때만 설정을 읽으므로 게임을 추가·제거한 뒤에는 서비스를 다시 시작해야 합니다.
 - 계획·추적 파일이 아직 없는 게임은 검사·스트림을 건너뛰고 정보 줄만 남깁니다 (오류 아님). 게임 프로세스 감지는 로그에 `<이름>: <exe> started (pid N)` 로 매번 남고, 어떤 감시기를 쓰는지는 `process watcher: EtwProcessWatcher` 또는 `PollingProcessWatcher` 로 남습니다.
 
+## 두 동작 모드: 동시 선읽기 / 사전 예열
+
+- **동시 선읽기** (기본 동작): 게임 exe 가 뜨는 순간 존 순서로 읽기 시작합니다. 재배치된 존은 HDD 순차 한계(이 PC 에서 약 140 MB/s)로 읽히므로 핫 집합이 1.6 GB 면 약 11.6 s 가 걸려 SSD(2 GB 에 2~4 s)를 넘지 못합니다.
+- **사전 예열** (RAM 상주, SSD 이상): 게임을 켜기 *전에* 같은 존 스트림(pvm, 제자리 실행)을 돌려 핫 집합을 RAM(파일 캐시 대기 목록)에 올려 둡니다. 게임이 뜰 때는 캐시 적중이라 디스크를 읽지 않습니다. 서비스가 시작될 때(부팅·로그온 뒤)와, 게임별 `trigger_exes` 의 프로그램(런처 등)이 뜰 때 실행합니다. 게임 exe 가 뜰 때의 동시 선읽기는 그대로 남아, 예열 중에 게임이 시작돼도 스트림은 멈추지 않고 이어집니다 (같은 데이터).
+
+예열은 가용 RAM ≥ 존 크기 + `min_free_ram_mib`, 게임이 실행 중이 아님, 쿨다운이 지남, 계획·추적 파일이 있음, 이 조건을 모두 만족할 때만 합니다. 아니면 건너뛰고 이유를 `service.log` 에 남깁니다. 결과(바이트·초·MB/s·건너뜀 이유)는 `service.log` 와 `%ProgramData%\AsterCache\prewarm_status.json` 에 남고 `aster status` 의 `prewarm` 로 보입니다.
+
+```json
+{
+  "watcher": "poll",
+  "games": [
+    {
+      "name": "frostpunk",
+      "exe_names": ["Frostpunk.exe"],
+      "trace": "C:\\ProgramData\\AsterCache\\plans\\frostpunk.prefetch.json",
+      "plan": "C:\\ProgramData\\AsterCache\\plans\\frostpunk.plan.json",
+      "origin_root": "D:\\Games\\Frostpunk",
+      "allowed_roots": ["D:\\Games"],
+      "max_stream_mib": 4096,
+      "volume_label": "GAMES",
+      "prewarm": {
+        "on_service_start": true,
+        "trigger_exes": ["Steam.exe"],
+        "min_free_ram_mib": 4096,
+        "cooldown_min": 30
+      }
+    }
+  ]
+}
+```
+
+한 번의 스트림·예열이 읽는 양은 계획의 존 크기(계획이 없거나 존이 비면 추적의 총 바이트)이고 게임별 `max_stream_mib`(기본 4096)가 상한입니다. 예열의 RAM 판정도 이 읽을 양 기준이며, 존이 비어 있으면 통과가 아니라 `no zone` 으로 건너뜁니다. 서비스의 데이터 폴더를 믿을 수 없는 상태(`canApply` 가 아님)에서는 `prewarm_status.json` 을 쓰지 않습니다.
+
+기본값은 `on_service_start` true, `trigger_exes` 비어 있음, `min_free_ram_mib` 4096, `cooldown_min` 30 이고, `prewarm` 을 생략하면 이 기본값입니다. `aster prewarm --plan <plan.json> --origin-root <root>` 는 `prefetch --execute --method pvm` 의 별칭입니다 (같은 옵션). 트레이의 "지금 예열 (스트림)" 은 같은 스트림을 트레이 프로세스에서 바로 돌리고 (파일 캐시는 시스템 공통이라 같은 효과), 게임 등록창의 "예열 트리거 프로그램" 칸에 쉼표로 `trigger_exes` 를 넣습니다. 실제 게임에서의 효과(RAM 적중 시 시작 시간)는 아직 측정하지 않았습니다.
+
 ## 트레이 갱신과 서비스
 
 트레이(Velopack, `%LocalAppData%\<packId>\current`)와 서비스(Inno Setup, `{autopf}\AsterCache`, `sc create` 경로)는 설치 경로가 다르고, 둘이 `%ProgramData%\AsterCache` (`config.json`, `plans\`, `journals\`, `logs\`) 를 공유합니다. Velopack 갱신은 트레이 폴더만 바꾸고 서비스 실행 파일은 건드리지 않습니다 (`UpdateService` 는 서비스 제어에 접근하지 않고 시험으로 고정). 그래서 서비스는 설치 프로그램으로 다시 설치하기 전까지 옛 버전으로 남습니다.
@@ -78,7 +113,7 @@ CLI 명령(`aster plan`, `probe`, `apply`, `verify`, `revert`, `trace`, `prefetc
 - 재배치 존 기준 Python 스트림은 1.42 s, 같은 핫 바이트를 한 파일로 읽은 상한은 1.09 s 입니다 (`results/prefetch_methods_20261102` 와 `results/prefetch_sweep_20261101/contig_upper_bound.json` 참조).
 - 핫 집합 축소 옵션은 이득이 없어 채택하지 않았습니다.
 - 요청 묶기는 읽기 순서를 깨뜨려 채택하지 않았습니다. 창 묶음 옵션(S5)은 미채택 상태입니다.
-- 게임 시작 감지: 기본은 폴링(`config.json` 의 `"watcher": "poll"`, 간격 `poll_ms` 기본 50 ms). PID 목록만 받아(`K32EnumProcesses`, 한 번에 약 0.05 ms) 새 PID 의 이미지 이름만 조회해 유휴 시 한 코어의 약 1%이고, 20회 시험에서 감지 지연 중앙값 31 ms, p95 47 ms 였습니다 (50 ms 간격, Toolhelp 전체 스냅샷은 한 번에 약 10 ms 라 같은 간격이면 25%). `"watcher": "etw"` 는 관리자일 때만 쓰이며 (실패하면 폴링으로 내려감) 실시간 세션 버퍼가 초 단위로 내려가 S4 실측 지연이 약 1.65 초였습니다. 이를 줄이려고 세션 버퍼를 50 ms 마다 `FlushTrace` 로 내려 보내지만 효과는 관리자 S4 시험(`-Watcher etw`)으로 확인해야 합니다. 밀리초 플러시 플래그(`EVENT_TRACE_USE_MS_FLUSH_TIMER`)는 공개 SDK 헤더(10.0.26100)에 없어서 쓰지 않았습니다. 로그의 `started (pid N) via poll|etw-raw|etw-tdh` 가 어느 길로 잡았는지 보여 줍니다.
+- 게임 시작 감지: 기본은 폴링(`config.json` 의 `"watcher": "poll"`, 간격 `poll_ms` 기본 50 ms). PID 목록만 받아(`K32EnumProcesses`, 한 번에 약 0.05 ms) 새 PID 의 이미지 이름만 조회해 유휴 시 한 코어의 약 1%이고, 20회 시험에서 감지 지연 중앙값 31 ms, p95 47 ms 였습니다 (50 ms 간격, Toolhelp 전체 스냅샷은 한 번에 약 10 ms 라 같은 간격이면 25%). `"watcher": "etw"` 는 관리자일 때만 쓰이며 (실패하면 폴링으로 내려감) 실시간 세션 버퍼가 초 단위로 내려가 S4 실측 지연이 약 1.65 초였습니다. 이를 줄이려고 세션 버퍼를 50 ms 마다 `FlushTrace` 로 내려 보내지만 효과는 관리자 S4 시험(`-Watcher etw`)으로 확인해야 합니다. 밀리초 플러시 플래그(`EVENT_TRACE_USE_MS_FLUSH_TIMER`)는 공개 SDK 헤더(10.0.26100)에 없어서 쓰지 않았습니다. 폴링의 한계: 두 틱 사이에 떴다가 끝난 프로세스와 틱 사이에 재사용된 PID 는 보지 못합니다. 로그의 `started (pid N) via poll|etw-raw|etw-tdh` 가 어느 길로 잡았는지 보여 줍니다.
 
 ## 한계와 미검증 항목
 

@@ -74,7 +74,7 @@ internal sealed class App : Application
         foreach (string name in Model.Games)
         {
             var one = new NativeMenu();
-            one.Items.Add(Item("지금 스트림", () => InBackground(() => Model.StreamNow(name))));
+            one.Items.Add(Item("지금 예열 (스트림)", () => InBackground(() => Model.StreamNow(name))));
             one.Items.Add(Item("제거", () => Update(() => Model.RemoveGame(name))));
             games.Items.Add(new NativeMenuItem(name) { Menu = one });
         }

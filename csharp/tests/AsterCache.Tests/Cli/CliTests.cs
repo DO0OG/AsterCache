@@ -214,6 +214,7 @@ public sealed class CliTests
     [InlineData("plan", "--trace", "t.json", "--origin-root", "R", "--zone-mib", "abc")]
     [InlineData("verify", "--plan", "p.json", "--bogus")]
     [InlineData("verify")]
+    [InlineData("prewarm")]
     [InlineData("trace", "--csv", "x.csv", "--prefix", "D:/Games", "--out", "o.json", "--dump-first", "20")] // --dump-first 는 --etl 에서만
     [InlineData("trace", "--etl", "x.etl", "--exe", "a.exe", "--prefix", "D:/Games", "--out", "o.json", "--stop-file", "s")] // --stop-file 은 --live 에서만
     [InlineData("prefetch", "--strategy", "zzz")]
@@ -271,6 +272,23 @@ public sealed class CliTests
         Assert.Equal(1048L, journal["steps"]);
         Assert.Equal(1048L, journal["done"]);
         Assert.Equal(true, journal["ended"]);
+    }
+
+    [Fact]
+    public void StatusShowsTheLastPrewarmResultFromTheServiceFile()
+    {
+        using var dir = new TempDir();
+        string file = dir.Combine("prewarm_status.json");
+        File.WriteAllText(file, "{\"games\": {\"mw4\": {\"at\": \"2026-11-02T01:00:00.0000000+00:00\", \"result\": \"ok\", \"bytes\": 1610612736, \"seconds\": 4.2, \"mb_per_s\": 365.7}}}");
+
+        (int code, string text, _) = Run("status", "--prewarm-status", file);
+        (int missingCode, string missing, _) = Run("status", "--prewarm-status", dir.Combine("none.json"));
+
+        Assert.Equal(0, code);
+        var mw4 = (JObject)((JObject)((JObject)Json(text)["prewarm"]!)["games"]!)["mw4"]!;
+        Assert.Equal("ok", mw4["result"]);
+        Assert.Equal(0, missingCode);
+        Assert.Null(Json(missing)["prewarm"]);
     }
 
     private static (int, string) Pair((int Code, string Out, string Err) r) => (r.Code, r.Out);

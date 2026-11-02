@@ -1,6 +1,7 @@
 using AsterCache.Core.Apply;
 using AsterCache.Core.Json;
 using AsterCache.Core.Plan;
+using AsterCache.Core.Settings;
 using AsterCache.Windows;
 
 namespace AsterCache.Cli.Commands;
@@ -8,7 +9,7 @@ namespace AsterCache.Cli.Commands;
 /// 읽기 전용 현황 (관리자 불필요): 권한, 환경변수, 그리고 --plan 의 현재 배치 검사 (verify 와 같음), --journal 의 진행 요약.
 internal static class StatusCommand
 {
-    public static readonly ArgOption[] Options = [new("plan"), new("journal")];
+    public static readonly ArgOption[] Options = [new("plan"), new("journal"), new("prewarm-status")];
 
     public static int Run(ParsedArgs a, TextWriter o)
     {
@@ -27,7 +28,26 @@ internal static class StatusCommand
             { "aster_root", PrefetchCommand.EnvOrNull("ASTER_ROOT") },
             { "plan", plan },
             { "journal", journal },
+            { "prewarm", PrewarmStatus(a.Text("prewarm-status") ?? Path.Combine(SettingsStore.DefaultDataDir, "prewarm_status.json")) },
         });
+    }
+
+    // 서비스가 남긴 마지막 예열 결과 (게임별 시각·결과·바이트·초·MB/s·건너뜀 이유), 없으면 null.
+    private static object? PrewarmStatus(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonRead.ReadFile(path);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            return new JObject { { "error", "unreadable prewarm status" } };
+        }
     }
 
     private static JObject Summarize(Journal jr)

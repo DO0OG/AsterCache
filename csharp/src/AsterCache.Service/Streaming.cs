@@ -3,6 +3,7 @@ using AsterCache.Core;
 using AsterCache.Core.Apply;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
+using AsterCache.Core.Plan;
 using AsterCache.Core.Prefetch;
 using AsterCache.Core.Settings;
 using AsterCache.Core.Trace;
@@ -17,10 +18,27 @@ public interface IGameStreamer
     StreamStats Stream(GameSettings game);
 }
 
-/// 게임의 .prefetch.json 을 Python prefetch.cli 기본값 (physical, 1 GiB 예산, 간격 0, 파일 30% 이상이면 통째) 으로 스케줄해 PrefetchVirtualMemory 로 읽습니다.
+/// 게임의 .prefetch.json 을 Python prefetch.cli 기본값 (physical, 간격 0, 파일 30% 이상이면 통째) 으로 스케줄해 PrefetchVirtualMemory 로 읽습니다.
+/// 예산은 계획의 존 크기 (계획이 없거나 존이 0 이면 추적의 총 바이트) 이고, 게임별 max_stream_mib 가 상한입니다. 고정 1 GiB 는 더 큰 핫 집합을 잘랐습니다.
 public sealed class PrefetchStreamer : IGameStreamer
 {
-    public const long BudgetBytes = 1024L << 20;
+    /// 계획의 존 크기 (바이트). 계획 파일이 없거나 읽을 수 없으면 null, 존이 비어 있으면 0.
+    public static long? ZoneBytes(GameSettings game)
+    {
+        try
+        {
+            PlanFile plan = PlanFile.Load(game.Plan);
+            return plan.Zone.Clusters * plan.ClusterBytes;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            return null;
+        }
+    }
+
+    /// 이번에 읽을 바이트의 예산: 존 크기 (없거나 0 이면 추적 총 바이트) 를 max_stream_mib 로 자른 값.
+    public static long Budget(GameSettings game, long? zoneBytes, long traceBytes) =>
+        Math.Min((long)game.MaxStreamMib << 20, zoneBytes is > 0 ? zoneBytes.Value : traceBytes);
 
     public StreamStats Stream(GameSettings game)
     {
@@ -31,7 +49,8 @@ public sealed class PrefetchStreamer : IGameStreamer
 
         List<TraceEvent> rows = TraceLoader.LoadRanges(game.Trace, game.OriginRoot, RealPaths.Resolve,
             p => File.Exists(p) ? new FileInfo(p).Length : null);
-        (List<ReadOp> ops, _) = Scheduler.Schedule(rows.Select(r => new ReadRange(r.Path, r.Offset, r.Length)), "physical", BudgetBytes, 0,
+        long budget = Budget(game, ZoneBytes(game), rows.Sum(r => r.Length));
+        (List<ReadOp> ops, _) = Scheduler.Schedule(rows.Select(r => new ReadRange(r.Path, r.Offset, r.Length)), "physical", budget, 0,
             FileLayout.Get, p => new FileInfo(p).Length);
         return ZoneStreamer.Run(ops, StreamMethod.Pvm);
     }

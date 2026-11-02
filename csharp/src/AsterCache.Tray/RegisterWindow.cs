@@ -20,6 +20,7 @@ internal sealed class RegisterWindow : Window
         AddField(panel, "origin", "게임 폴더 (예: D:\\Games\\MW4)", string.Empty);
         AddField(panel, "roots", "허용 루트 (세미콜론으로 구분, 예: D:\\Games)", string.Empty);
         AddField(panel, "label", "볼륨 라벨", string.Empty);
+        AddField(panel, "triggers", "예열 트리거 프로그램 (선택, 쉼표로 구분, 예: Steam.exe)", string.Empty);
         AddField(panel, "trace", "트레이스 (.prefetch.json)", Path.Combine(model.PlansDir, "<이름>.prefetch.json"));
         AddField(panel, "plan", "계획 (.json)", Path.Combine(model.PlansDir, "<이름>.plan.json"));
         var result = new TextBlock { TextWrapping = Avalonia.Media.TextWrapping.Wrap };
@@ -29,7 +30,7 @@ internal sealed class RegisterWindow : Window
             string name = Text("name");
             ActionResult r = model.AddGame(new GameInput(
                 name, Split(Text("exe"), ','), Text("trace").Replace("<이름>", name), Text("plan").Replace("<이름>", name),
-                Text("origin"), Split(Text("roots"), ';'), Text("label")));
+                Text("origin"), Split(Text("roots"), ';'), Text("label"), null, Split(Text("triggers"), ',')));
             result.Text = r.Message;
             if (r.Ok)
             {

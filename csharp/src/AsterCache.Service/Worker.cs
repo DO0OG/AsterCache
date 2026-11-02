@@ -19,10 +19,12 @@ public sealed class Worker : BackgroundService
     private readonly GameDispatcher _dispatcher;
     private readonly ReapplyChecker _checker;
     private readonly ReapplyGate _gate;
+    private readonly Prewarmer? _prewarm;
 
     public Worker(AsterSettings settings, ILog log, IProcessWatcher primary, IProcessWatcher? fallback, IGameStreamer streamer, ReapplyChecker checker,
-        ReapplyGate? gate = null)
+        ReapplyGate? gate = null, Prewarmer? prewarm = null)
     {
+        _prewarm = prewarm;
         _settings = settings;
         _log = log;
         _primary = primary;
@@ -35,7 +37,7 @@ public sealed class Worker : BackgroundService
     /// 설정이 etw 이고 관리자면 ETW (실패하면 폴링으로 내려감), 아니면 폴링 (기본).
     public static (IProcessWatcher Primary, IProcessWatcher? Fallback) ChooseWatchers(AsterSettings s, bool admin)
     {
-        IEnumerable<string> names = s.Games.SelectMany(g => g.ExeNames);
+        IEnumerable<string> names = s.Games.SelectMany(g => g.ExeNames.Concat(g.Prewarm.TriggerExes)).Distinct(StringComparer.OrdinalIgnoreCase);
         var polling = new PollingProcessWatcher(names, TimeSpan.FromMilliseconds(s.PollMs));
         return admin && s.Watcher == "etw" ? (new EtwProcessWatcher(names), polling) : (polling, null);
     }
@@ -59,6 +61,11 @@ public sealed class Worker : BackgroundService
         }
 
         _log.Info($"service started: {_settings.Games.Count} game(s), watcher {_primary.GetType().Name}");
+        if (_prewarm is not null)
+        {
+            _ = Task.Run(() => RunPrewarm(() => _prewarm.RunServiceStart()), CancellationToken.None);
+        }
+
         var channel = Channel.CreateUnbounded<ProcessStart>();
         Task watch = WatchAsync(channel.Writer, stoppingToken);
         Task consume = Task.Run(() => ConsumeAsync(channel.Reader, stoppingToken), CancellationToken.None);
@@ -101,9 +108,30 @@ public sealed class Worker : BackgroundService
     // 게임이 뜨면 돌고 있는 재적용을 먼저 멈춥니다 (읽기 큐 처리보다 앞서, 감시 스레드에서 바로).
     private Action<ProcessStart> OnStart(ChannelWriter<ProcessStart> writer) => s =>
     {
-        _gate.Cancel();
+        if (_settings.Games.Any(g => g.ExeNames.Contains(s.ExeName, StringComparer.OrdinalIgnoreCase)))
+        {
+            _gate.Cancel(); // 재적용은 게임 exe 시작에서만 멈춥니다 (런처 같은 트리거 전용 프로그램은 아님)
+        }
+
         writer.TryWrite(s);
+        if (_prewarm?.IsTrigger(s.ExeName) == true)
+        {
+            _ = Task.Run(() => RunPrewarm(() => _prewarm.OnProcessStart(s)), CancellationToken.None);
+        }
     };
+
+    // 예열은 스트림 한 번이 수 초라 감시기 스레드를 막지 않게 따로 돌립니다. 알 수 없는 예외도 서비스를 죽이지 않음.
+    private void RunPrewarm(Action run)
+    {
+        try
+        {
+            run();
+        }
+        catch (Exception e)
+        {
+            _log.Error("prewarm failed", e);
+        }
+    }
 
     private async Task ConsumeAsync(ChannelReader<ProcessStart> reader, CancellationToken ct)
     {

@@ -20,6 +20,7 @@ public static class AsterCli
         new("verify", VolumeCommands.VerifyOptions, VolumeCommands.Verify, Relayout: true),
         new("revert", VolumeCommands.RevertOptions, VolumeCommands.Revert, Relayout: true),
         new("prefetch", PrefetchCommand.Options, PrefetchCommand.Run),
+        new("prewarm", PrewarmCommand.Options, PrewarmCommand.Run),
         new("trace", TraceCommand.Options, TraceCommand.Run),
         new("launch", LaunchCommand.Options, LaunchCommand.Run),
         new("status", StatusCommand.Options, StatusCommand.Run),

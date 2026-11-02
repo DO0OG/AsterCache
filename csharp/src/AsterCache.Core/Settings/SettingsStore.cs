@@ -10,6 +10,7 @@ public static class SettingsStore
 {
     public const int DefaultPollMs = 50;
     public const int DefaultReapplyMinutes = 1440;
+    public const int DefaultMaxStreamMib = 4096;
 
     /// 프로세스 시작 감지: "poll" (기본, 지연이 짧음) 또는 "etw" (관리자, 실시간 세션이라 지연이 더 길 수 있음).
     public const string DefaultWatcher = "poll";
@@ -18,7 +19,8 @@ public static class SettingsStore
 
     private static readonly string[] TopKeys = ["games", "poll_ms", "watcher"];
     private static readonly string[] GameKeys =
-        ["name", "exe_names", "trace", "plan", "origin_root", "allowed_roots", "volume_label", "reapply_interval_minutes"];
+        ["name", "exe_names", "trace", "plan", "origin_root", "allowed_roots", "volume_label", "reapply_interval_minutes", "prewarm", "max_stream_mib"];
+    private static readonly string[] PrewarmKeys = ["on_service_start", "trigger_exes", "min_free_ram_mib", "cooldown_min"];
 
     public static string DefaultDataDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "AsterCache");
 
@@ -141,7 +143,32 @@ public static class SettingsStore
         int minutes = g.ContainsKey("reapply_interval_minutes")
             ? Int(g["reapply_interval_minutes"], $"{at}.reapply_interval_minutes", 5, 10080)
             : DefaultReapplyMinutes;
-        return new GameSettings(name, exeNames, trace, plan, origin, allowed, label, minutes);
+        PrewarmSettings prewarm = g.TryGetValue("prewarm", out object? pw) ? ParsePrewarm(pw, $"{at}.prewarm") : PrewarmSettings.Default;
+        int maxStream = g.ContainsKey("max_stream_mib") ? Int(g["max_stream_mib"], $"{at}.max_stream_mib", 64, 1 << 20) : DefaultMaxStreamMib;
+        return new GameSettings(name, exeNames, trace, plan, origin, allowed, label, minutes) { Prewarm = prewarm, MaxStreamMib = maxStream };
+    }
+
+    private static PrewarmSettings ParsePrewarm(object? v, string at)
+    {
+        JObject o = v as JObject ?? throw new SettingsException($"{at}: object expected");
+        Unknown(o, PrewarmKeys, at);
+        PrewarmSettings d = PrewarmSettings.Default;
+        bool onStart = o.TryGetValue("on_service_start", out object? b) ? b as bool? ?? throw new SettingsException($"{at}.on_service_start: true or false expected") : d.OnServiceStart;
+        List<string> triggers = [];
+        if (o.TryGetValue("trigger_exes", out object? t))
+        {
+            if (t is not List<object?> list || list.Count > 16)
+            {
+                throw new SettingsException($"{at}.trigger_exes: list of 0..16 expected");
+            }
+
+            triggers = list.Select((e, k) => ExeName(e, $"{at}.trigger_exes[{k}]")).ToList();
+            CheckUnique(triggers, $"{at}.trigger_exes: duplicate");
+        }
+
+        int minFree = o.TryGetValue("min_free_ram_mib", out object? m) ? Int(m, $"{at}.min_free_ram_mib", 0, 1 << 20) : d.MinFreeRamMib;
+        int cooldown = o.TryGetValue("cooldown_min", out object? c) ? Int(c, $"{at}.cooldown_min", 0, 10080) : d.CooldownMin;
+        return new PrewarmSettings(onStart, triggers, minFree, cooldown);
     }
 
     private static object? Need(JObject o, string key, string at) =>

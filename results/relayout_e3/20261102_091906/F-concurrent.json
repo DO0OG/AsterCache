@@ -1,0 +1,175 @@
+{
+ "root": "D:\\AsterBench",
+ "is_admin": true,
+ "time": "20261102_092048",
+ "series": {
+  "0": {
+   "runs": [
+    {
+     "wall_s": 1.4129032000055304,
+     "stream_done_s": 1.4149338999995962,
+     "stream_s": 1.4137,
+     "stream_bytes": 243531776,
+     "stream_errors": 0,
+     "requests": 4000,
+     "slow_requests": 351,
+     "slow_ratio": 0.08775,
+     "replay_sum_s": 1.4096635995811084,
+     "p50_ms": 0.0202999945031479,
+     "p95_ms": 2.1502999879885465,
+     "p99_ms": 4.479199997149408,
+     "think_us": 0,
+     "cold_method": "standby_purge"
+    },
+    {
+     "wall_s": 1.590025899989996,
+     "stream_done_s": 1.591582399996696,
+     "stream_s": 1.5906,
+     "stream_bytes": 243531776,
+     "stream_errors": 0,
+     "requests": 4000,
+     "slow_requests": 349,
+     "slow_ratio": 0.08725,
+     "replay_sum_s": 1.5864338002575096,
+     "p50_ms": 0.024900000425986946,
+     "p95_ms": 2.2367000055965036,
+     "p99_ms": 4.610299991327338,
+     "think_us": 0,
+     "cold_method": "standby_purge"
+    },
+    {
+     "wall_s": 1.545730600002571,
+     "stream_done_s": 1.546631700010039,
+     "stream_s": 1.5458,
+     "stream_bytes": 243531776,
+     "stream_errors": 0,
+     "requests": 4000,
+     "slow_requests": 346,
+     "slow_ratio": 0.0865,
+     "replay_sum_s": 1.542909199881251,
+     "p50_ms": 0.01889999839477241,
+     "p95_ms": 2.1551999961957335,
+     "p99_ms": 4.576999999699183,
+     "think_us": 0,
+     "cold_method": "standby_purge"
+    }
+   ],
+   "median_wall_s": 1.545730600002571,
+   "median_stream_done_s": 1.546631700010039,
+   "median_slow_ratio": 0.08725,
+   "median_replay_sum_s": 1.542909199881251
+  },
+  "250": {
+   "runs": [
+    {
+     "wall_s": 2.600986700010253,
+     "stream_done_s": 2.1573613000073237,
+     "stream_s": 2.1565,
+     "stream_bytes": 243531776,
+     "stream_errors": 0,
+     "requests": 4000,
+     "slow_requests": 6,
+     "slow_ratio": 0.0015,
+     "replay_sum_s": 0.3331311009969795,
+     "p50_ms": 0.022499996703118086,
+     "p95_ms": 0.06400000711437315,
+     "p99_ms": 0.17560001288075,
+     "think_us": 250,
+     "cold_method": "standby_purge"
+    },
+    {
+     "wall_s": 2.3957080999971367,
+     "stream_done_s": 1.41278539999621,
+     "stream_s": 1.4115,
+     "stream_bytes": 243531776,
+     "stream_errors": 0,
+     "requests": 4000,
+     "slow_requests": 2,
+     "slow_ratio": 0.0005,
+     "replay_sum_s": 0.15216789991245605,
+     "p50_ms": 0.023800006601959467,
+     "p95_ms": 0.07979999645613134,
+     "p99_ms": 0.1638999965507537,
+     "think_us": 250,
+     "cold_method": "standby_purge"
+    },
+    {
+     "wall_s": 2.2612594999955036,
+     "stream_done_s": 1.412798200006364,
+     "stream_s": 1.4114,
+     "stream_bytes": 243531776,
+     "stream_errors": 0,
+     "requests": 4000,
+     "slow_requests": 2,
+     "slow_ratio": 0.0005,
+     "replay_sum_s": 0.12544169940520078,
+     "p50_ms": 0.02139998832717538,
+     "p95_ms": 0.04730001091957092,
+     "p99_ms": 0.13169999874662608,
+     "think_us": 250,
+     "cold_method": "standby_purge"
+    }
+   ],
+   "median_wall_s": 2.3957080999971367,
+   "median_stream_done_s": 1.412798200006364,
+   "median_slow_ratio": 0.0005,
+   "median_replay_sum_s": 0.15216789991245605
+  },
+  "1000": {
+   "runs": [
+    {
+     "wall_s": 6.111653200001456,
+     "stream_done_s": 1.4352776000014273,
+     "stream_s": 1.4344,
+     "stream_bytes": 243531776,
+     "stream_errors": 0,
+     "requests": 4000,
+     "slow_requests": 1,
+     "slow_ratio": 0.00025,
+     "replay_sum_s": 0.13068959950760473,
+     "p50_ms": 0.023200002033263445,
+     "p95_ms": 0.04909999552182853,
+     "p99_ms": 0.1303999888477847,
+     "think_us": 1000,
+     "cold_method": "standby_purge"
+    },
+    {
+     "wall_s": 6.552314499989734,
+     "stream_done_s": 3.0017661999881966,
+     "stream_s": 3.0008,
+     "stream_bytes": 243531776,
+     "stream_errors": 0,
+     "requests": 4000,
+     "slow_requests": 21,
+     "slow_ratio": 0.00525,
+     "replay_sum_s": 0.4467717993975384,
+     "p50_ms": 0.025300003471784294,
+     "p95_ms": 0.06639999628532678,
+     "p99_ms": 0.2700000040931627,
+     "think_us": 1000,
+     "cold_method": "standby_purge"
+    },
+    {
+     "wall_s": 6.217974600003799,
+     "stream_done_s": 1.4129927000030875,
+     "stream_s": 1.4118,
+     "stream_bytes": 243531776,
+     "stream_errors": 0,
+     "requests": 4000,
+     "slow_requests": 10,
+     "slow_ratio": 0.0025,
+     "replay_sum_s": 0.18260469974484295,
+     "p50_ms": 0.025399989681318402,
+     "p95_ms": 0.0909000082174316,
+     "p99_ms": 0.324200009345077,
+     "think_us": 1000,
+     "cold_method": "standby_purge"
+    }
+   ],
+   "median_wall_s": 6.217974600003799,
+   "median_stream_done_s": 1.4352776000014273,
+   "median_slow_ratio": 0.0025,
+   "median_replay_sum_s": 0.18260469974484295
+  }
+ }
+}

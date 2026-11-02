@@ -103,7 +103,7 @@ try {
     Invoke-Tool 'plan' $AsterExe @('plan', '--trace', (Join-Path $Root 'trace.json'), '--origin-root', $Root,
                                    '--zone-mib', "$ZoneMiB", '--out', $plan) | Out-Null
     $planObj = Get-Content -LiteralPath $plan -Raw | ConvertFrom-Json
-    $bad = @(Get-JsonStrings $planObj | Where-Object { $_ -match '^[A-Za-z]:\\' -and -not $_.StartsWith("$Root\", [StringComparison]::OrdinalIgnoreCase) })
+    $bad = @(Get-JsonStrings $planObj | Where-Object { $_ -match '^[A-Za-z]:\\' -and -not ($_ -ieq $Root) -and -not $_.StartsWith("$Root\", [StringComparison]::OrdinalIgnoreCase) })
     if ($bad.Count -gt 0) { throw "plan path outside ${Root}: $($bad[0])" }
     $allowed = @('--allowed-root', $Root)
     $dry = Invoke-Tool 'apply-dry-run' $AsterExe (@('apply', '--plan', $plan, '--journal', $journal, '--dry-run') + $allowed) | ConvertFrom-Json

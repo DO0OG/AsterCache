@@ -32,11 +32,27 @@ public sealed record LearnSettings(bool Enabled, int WindowMib, int MaxTotalMib)
 {
     public const string StreamMode = "stream";
     public const string GapMode = "gap";
+    public const string BoundedMode = "bounded";
+    public const string AdaptiveMode = "adaptive";
+    public const int DefaultSaturationMbps = 80;
 
     public static LearnSettings Default { get; } = new(false, 512, 0); // E7 재측정 전까지 기본 꺼짐
 
     /// "stream" (기본): 순차 판정된 파일은 틈을 기다리지 않고 앞쪽을 바로 읽음. "gap": 게임이 쉬는 틈에만 읽음.
+    /// "bounded": stream 처럼 16 MiB 씩 읽되 총량은 게임 읽기 x 1.0 + 32 MiB 까지, 게임 읽기 알림 뒤 50 ms 는 새 요청을 내지 않음.
+    /// "adaptive": bounded 규칙 위에, 최근 500 ms 게임 읽기 처리량이 saturation_mbps 이상이면 선행을 쉬고 우리 요청 지연이 2 배로 오르면 200 ms 쉼.
     public string Mode { get; init; } = StreamMode;
+
+    /// adaptive 포화 기준 (MiB/s, 1..10000). 80 = HDD 순차 135~170 MB/s 의 약 50%.
+    public int SaturationMbps { get; init; } = DefaultSaturationMbps;
+}
+
+/// 공유 프로필 묶음 내려받기 (auto.shared_profiles): 주 1 회 묶음 zip 하나만 받음. url 은 https 만.
+public sealed record SharedProfilesSettings(bool Enabled, string Url)
+{
+    public const string DefaultUrl = "https://github.com/DO0OG/AsterCache-profiles/releases/latest/download/profiles.zip";
+
+    public static SharedProfilesSettings Default { get; } = new(true, DefaultUrl);
 }
 
 /// 자동 모드 (config.json 의 auto 가 없으면 기본값): 런처 발견, 처음 보는 게임의 트레이스, 재배치와 최근 게임 예열을 사용자가 손대지 않아도 하게 하는 설정.
@@ -77,6 +93,9 @@ public sealed record AutoSettings(
 
     /// 첫 실행 학습·선행 읽기 설정.
     public LearnSettings Learn { get; init; } = LearnSettings.Default;
+
+    /// 공유 프로필 (다른 PC 에서 만든 기록) 묶음 내려받기.
+    public SharedProfilesSettings SharedProfiles { get; init; } = SharedProfilesSettings.Default;
 
     /// 유휴 대기 시간: idle_seconds 가 명시됐거나 둘 다 없으면 IdleSeconds 초, idle_minutes 만 명시됐으면 IdleMinutes 분.
     public TimeSpan IdleWindow => IdleSecondsSet || !IdleMinutesSet ? TimeSpan.FromSeconds(IdleSeconds) : TimeSpan.FromMinutes(IdleMinutes);

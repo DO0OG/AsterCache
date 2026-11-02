@@ -13,6 +13,11 @@ public sealed record DiscoveredGame(string Name, string Launcher, string Install
 
     /// 설치 폴더 이름에서 알아낸 안티치트 ("eac" | "battleye" | "vanguard" | "ricochet" | "unknown"), 흔적이 없으면 null.
     public string? AntiCheat { get; init; }
+
+    /// Steam / Epic 매니페스트에서 읽은 값 (공유 프로필 지문), 그 런처가 아니면 null.
+    public SteamApp? Steam { get; init; }
+
+    public EpicApp? Epic { get; init; }
 }
 
 /// 프로그램 제거 목록의 항목 한 개 (값이 없으면 빈 문자열).
@@ -100,6 +105,10 @@ public static partial class LauncherScan
         public IReadOnlyList<string> Extra { get; init; } = [];
 
         public string? AntiCheat { get; init; }
+
+        public SteamApp? Steam { get; init; }
+
+        public EpicApp? Epic { get; init; }
     }
 
     public static ScanResult Scan(ILauncherEnv? env = null)
@@ -140,6 +149,8 @@ public static partial class LauncherScan
             {
                 AntiCheat = r.AntiCheat ?? DetectAntiCheat(env, dir),
                 ExtraExes = r.Extra,
+                Steam = r.Steam,
+                Epic = r.Epic,
             });
         }
 
@@ -190,7 +201,7 @@ public static partial class LauncherScan
             pool = exes.Where(f => !ExcludedExeParts.Any(p => System.IO.Path.GetFileName(f.Path).Contains(p, StringComparison.OrdinalIgnoreCase))
                 && (lenient || !LauncherLikeParts.Any(p => System.IO.Path.GetFileName(f.Path).Contains(p, StringComparison.OrdinalIgnoreCase)))).ToList();
             // 런처 셸 (Games.exe 등) 은 버전 폴더에 두고 게임 본체를 "games" 하위 폴더에 설치하는 구조: 그 안의 exe 를 먼저 봄.
-            var underGames = pool.Where(f => (System.IO.Path.GetDirectoryName(f.Path) ?? string.Empty).Split(System.IO.Path.DirectorySeparatorChar).Skip(1).Any(d => d.Equals("games", StringComparison.OrdinalIgnoreCase))).ToList();
+            var underGames = pool.Where(f => UnderGamesFolder(f.Path)).ToList();
             if (underGames.Count > 0 && underGames.Count < pool.Count)
             {
                 pool = underGames;
@@ -200,6 +211,36 @@ public static partial class LauncherScan
         return pool.OrderByDescending(f => f.Size).ThenBy(f => f.Path.Length).ThenBy(f => f.Path, StringComparer.OrdinalIgnoreCase)
             .Select(f => f.Path).FirstOrDefault();
     }
+
+    private static bool UnderGamesFolder(string path) =>
+        (System.IO.Path.GetDirectoryName(path) ?? string.Empty).Split(System.IO.Path.DirectorySeparatorChar).Skip(1).Any(d => d.Equals("games", StringComparison.OrdinalIgnoreCase));
+
+    /// 게임 본체가 아닌 이름인가 (PickExe 가 빼는 제외 조각이나 런처형 조각이 들어 있음, *-Shipping.exe 는 제외 단어와 무관하게 본체).
+    public static bool IsExcludedExeName(string exeName) =>
+        !exeName.EndsWith("-Shipping.exe", StringComparison.OrdinalIgnoreCase)
+        && ExcludedExeParts.Concat(LauncherLikeParts).Any(p => exeName.Contains(p, StringComparison.OrdinalIgnoreCase));
+
+    /// 이미 등록된 제거 목록 게임의 exe 를 지금 PickExe 규칙으로 다시 고릅니다: 지금 exe 이름이 제외 단어에 걸리거나,
+    /// 지금 규칙은 games 하위 폴더의 exe 를 먼저 고르는데 등록된 것은 그 밖에 있으면 새 exe 의 전체 경로, 그 밖에는 (바꿀 이유가 없으면) null.
+    public static string? ReselectExe(IReadOnlyList<(string Path, long Size)> files, string currentName)
+    {
+        string? picked = PickExe(files);
+        if (picked is null || System.IO.Path.GetFileName(picked).Equals(currentName, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        if (IsExcludedExeName(currentName))
+        {
+            return picked;
+        }
+
+        string? current = files.Select(f => f.Path).FirstOrDefault(p => System.IO.Path.GetFileName(p).Equals(currentName, StringComparison.OrdinalIgnoreCase));
+        return current is not null && !UnderGamesFolder(current) && UnderGamesFolder(picked) ? picked : null;
+    }
+
+    /// 설치 폴더 아래 ExeDepth 단계까지의 exe 와 크기, 읽을 수 없으면 빈 목록.
+    public static IReadOnlyList<(string Path, long Size)> InstalledExes(string dir, ILauncherEnv? env = null) => ExeList(env ?? new SystemLauncherEnv(), dir) ?? [];
 
     // 런처가 게임이라고 알려 준 폴더 (Steam·Epic·Riot·Xbox 등): 런처형 이름이 아닌 exe 를 먼저 찾고, 없으면 예전처럼 런처형 이름도 허용 (알려진 게임의 exe 를 잃지 않게).
     internal static string? PickGameExe(IEnumerable<(string Path, long Size)> files) => PickExe(files) ?? PickExe(files, lenient: true);
@@ -281,7 +322,7 @@ public static partial class LauncherScan
 
                 if (app is not null && app.InstallDir == Path.GetFileName(app.InstallDir) && app.InstallDir is not ("." or ".."))
                 {
-                    yield return new Raw(app.Name, "steam", Path.Combine(apps, "common", app.InstallDir), null, "steam.exe");
+                    yield return new Raw(app.Name, "steam", Path.Combine(apps, "common", app.InstallDir), null, "steam.exe") { Steam = app };
                 }
             }
         }
@@ -304,7 +345,7 @@ public static partial class LauncherScan
 
             if (app is not null)
             {
-                yield return new Raw(app.DisplayName, "epic", app.InstallLocation, app.LaunchExecutable, "EpicGamesLauncher.exe");
+                yield return new Raw(app.DisplayName, "epic", app.InstallLocation, app.LaunchExecutable, "EpicGamesLauncher.exe") { Epic = app };
             }
         }
     }

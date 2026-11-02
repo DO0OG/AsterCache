@@ -19,6 +19,14 @@ public sealed class AutoRegistry
         "steamwebhelper.exe", "EpicWebHelper.exe", "Agent.exe", "explorer.exe", "aster.exe",
     };
 
+    // 휴리스틱 후보에서 제외하는 이미지 경로의 폴더 (빌드 산출물, 저장소, 사용자 데이터)와 개발·시스템 도구 exe (끝의 * 는 접두). auto.ignore_exes 와 별도의 고정 목록.
+    private static readonly string[] NonGameFolders = ["\\bin\\Debug\\", "\\bin\\Release\\", "\\obj\\", "\\.git\\", "\\node_modules\\", "\\AppData\\Local\\Temp\\"];
+
+    private static readonly string[] ToolExes =
+    [
+        "testhost*", "dotnet", "msbuild", "vstest*", "python*", "node", "java*", "powershell", "pwsh", "cmd", "conhost", "explorer", "7z*", "winrar",
+    ];
+
     // exe 폴더가 이 이름이면 설치 폴더는 그 위 (Unreal 의 Game\Binaries\Win64 등).
     private static readonly HashSet<string> BinaryFolders = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -36,6 +44,7 @@ public sealed class AutoRegistry
     private readonly HashSet<int> _noCounter = []; // 읽기량을 못 연 PID: 수명 동안 다시 열지 않음
     private readonly Dictionary<int, DateTimeOffset> _etwWait = []; // ETW 로 읽기량을 기다리는 후보 (대기 시작 시각)
     private IReadWatch? _watch;
+    private bool _exesReviewed; // 제거 목록 게임의 exe 재평가는 서비스 시작 뒤 첫 발견 때 한 번
     private readonly object _lock = new(); // 발견 루프와 휴리스틱 루프가 아래 두 목록을 함께 씀
     private readonly List<GameSettings> _added = []; // 방금 쓴 등록 (설정을 다시 읽기 전까지 겹침 검사에 포함)
     private readonly HashSet<string> _addedExes = new(StringComparer.OrdinalIgnoreCase);
@@ -50,6 +59,9 @@ public sealed class AutoRegistry
         _settings = settings;
     }
 
+    /// 가장 최근 발견에서 본 런처 게임 목록 (공유 프로필 지문 맞추기용).
+    public IReadOnlyList<DiscoveredGame> LastScan { get; private set; } = [];
+
     /// 런처 목록을 한 번 훑어 새 게임을 등록합니다. 등록한 수를 돌려줍니다.
     public int DiscoverOnce()
     {
@@ -59,8 +71,9 @@ public sealed class AutoRegistry
             return 0;
         }
 
+        ReviewUninstallExes();
         int added = 0;
-        IReadOnlyList<DiscoveredGame> found = _env.Scan();
+        IReadOnlyList<DiscoveredGame> found = LastScan = _env.Scan();
         foreach (SkippedFolder f in (found as ScanResult)?.Skipped ?? [])
         {
             LogRefusedOnce("launcher|" + f.InstallDir, $"auto uninstall: launcher folder skipped: {f.Name} ({f.InstallDir})"); // 같은 줄이 6 시간마다 반복되지 않게
@@ -112,6 +125,56 @@ public sealed class AutoRegistry
         }
 
         return added;
+    }
+
+    // 예전 규칙으로 고른 제거 목록 게임의 exe (HYSafeMode.exe, 런처 셸 Games.exe 등) 를 지금 PickExe 규칙으로 다시 고름. 읽기 전용 열거 + config 편집 한 번.
+    private void ReviewUninstallExes()
+    {
+        if (_exesReviewed)
+        {
+            return;
+        }
+
+        _exesReviewed = true;
+        foreach (GameSettings g in _settings().Games.Where(x => x.Source == "auto" && x.ExeNames.Count > 0 && _status.Get(x.Name)?.Launcher == "uninstall"))
+        {
+            string current = g.ExeNames[0];
+            if (LauncherScan.ReselectExe(_env.ExeFiles(g.OriginRoot), current) is not { } picked)
+            {
+                continue;
+            }
+
+            string exe = Path.GetFileName(picked);
+            if (AllGames().Any(o => o.Name != g.Name && o.ExeNames.Contains(exe, StringComparer.OrdinalIgnoreCase)))
+            {
+                continue; // 다른 게임이 이미 쓰는 이름: 설정이 거부함
+            }
+
+            List<string> exes = [exe, .. g.ExeNames.Skip(1).Where(x => !x.Equals(exe, StringComparison.OrdinalIgnoreCase))];
+            try
+            {
+                _editor.ReplaceExeNames(g.Name, exes.Take(MaxExeNames).ToList());
+                lock (_lock)
+                {
+                    _addedExes.Add(exe);
+                }
+
+                _log.Info($"auto uninstall: {g.Name}: main exe changed from {current} to {exe}");
+            }
+            catch (Exception e) when (e is SettingsException or IOException or UnauthorizedAccessException or PyValueException)
+            {
+                _log.Warn($"auto uninstall: {g.Name}: could not change the main exe: {e.Message}");
+            }
+        }
+    }
+
+    /// 이미지 경로가 빌드 산출물·저장소·사용자 데이터 폴더 안이거나 개발·시스템 도구 exe 이면 게임 후보에서 뺍니다 (고정 규칙).
+    public static bool IsNonGameImage(string image)
+    {
+        string dir = (Path.GetDirectoryName(image) ?? string.Empty) + "\\";
+        string stem = Path.GetFileNameWithoutExtension(image);
+        return NonGameFolders.Any(p => dir.Contains(p, StringComparison.OrdinalIgnoreCase))
+            || ToolExes.Any(t => t.EndsWith('*') ? stem.StartsWith(t[..^1], StringComparison.OrdinalIgnoreCase) : stem.Equals(t, StringComparison.OrdinalIgnoreCase));
     }
 
     /// 새로 뜬 프로세스를 지켜보다가 HeuristicWindowSeconds 뒤 그 동안 HeuristicReadMib 이상 읽었으면 게임 후보로 봅니다.
@@ -258,7 +321,7 @@ public sealed class AutoRegistry
         string folder = Path.GetDirectoryName(image) ?? string.Empty;
         string? letter = image.Length > 2 && char.IsAsciiLetter(image[0]) && image[1] == ':' ? image[..2].ToUpperInvariant() : null;
         if (letter is null || Ignored(a, exe) || NotGames.Contains(exe) || LauncherExes.Is(exe) || exe.StartsWith("AsterCache.", StringComparison.OrdinalIgnoreCase)
-            || Under(image, _env.WindowsDir) || Under(image, _env.ServiceDir))
+            || IsNonGameImage(image) || Under(image, _env.WindowsDir) || Under(image, _env.ServiceDir))
         {
             return;
         }
@@ -290,6 +353,12 @@ public sealed class AutoRegistry
 
         if (!games.Any(g => Overlaps(g.OriginRoot, origin)))
         {
+            if (!_env.LooksLikeGame(origin))
+            {
+                LogRefusedOnce("notgame|" + origin, $"auto heuristic: skipped {exe} (the folder does not look like a game: no file of 256 MiB or more and no launcher manifest)");
+                return;
+            }
+
             Register(Path.GetFileName(origin), "heuristic", exe, origin, LauncherExes.ForOrigin(origin), _env.AntiCheatOf(origin), evict: true);
         }
     }

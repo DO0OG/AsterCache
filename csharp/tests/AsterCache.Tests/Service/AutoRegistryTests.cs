@@ -280,6 +280,169 @@ public sealed class AutoRegistryTests : IDisposable
         Assert.Empty(Registered());
     }
 
+    [Theory]
+    [InlineData(@"D:\Git\Repo\tests\bin\Release\net10.0-windows\testhost.exe")]
+    [InlineData(@"D:\Git\Repo\obj\Debug\game.exe")]
+    [InlineData(@"D:\Work\.git\hooks\game.exe")]
+    [InlineData(@"D:\Work\node_modules\app\game.exe")]
+    [InlineData(@"D:\Users\Me\AppData\Local\Temp\Prog\prog.exe")]
+    [InlineData(@"D:\Git\Repo\BIN\DEBUG\net10.0\game.exe")]
+    [InlineData(@"D:\Games\Foo\TESTHOST.EXE")]
+    [InlineData(@"D:\Games\Foo\testhost.net10.0.exe")]
+    [InlineData(@"D:\Games\Foo\dotnet.exe")]
+    [InlineData(@"D:\Games\Foo\MSBuild.exe")]
+    [InlineData(@"D:\Games\Foo\vstest.console.exe")]
+    [InlineData(@"D:\Games\Foo\python.exe")]
+    [InlineData(@"D:\Games\Foo\pythonw3.12.exe")]
+    [InlineData(@"D:\Games\Foo\node.exe")]
+    [InlineData(@"D:\Games\Foo\java.exe")]
+    [InlineData(@"D:\Games\Foo\javaw.exe")]
+    [InlineData(@"D:\Games\Foo\powershell.exe")]
+    [InlineData(@"D:\Games\Foo\pwsh.exe")]
+    [InlineData(@"D:\Games\Foo\cmd.exe")]
+    [InlineData(@"D:\Games\Foo\conhost.exe")]
+    [InlineData(@"D:\Games\Foo\7zG.exe")]
+    [InlineData(@"D:\Games\Foo\WinRAR.exe")]
+    public void BuildOutputsDevToolsAndArchiversAreNeverGameCandidates(string image)
+    {
+        Run(_rig.Registry(), 10, image, 900);
+
+        Assert.Empty(Registered());
+        Assert.True(AutoRegistry.IsNonGameImage(image));
+    }
+
+    [Theory]
+    [InlineData(@"D:\Games\Foo\foo.exe")]
+    [InlineData(@"D:\Games\Foo\Binaries\Win64\foo-Win64-Shipping.exe")]
+    [InlineData(@"D:\Games\Nodes\node_game.exe")]
+    [InlineData(@"D:\Games\Cmdr\cmdr.exe")]
+    [InlineData(@"D:\Games\Foo\Bin64\foo.exe")]
+    [InlineData(@"D:\SteamLibrary\steamapps\common\Counter-Strike Global Offensive\game\bin\win64\cs2.exe")]
+    [InlineData(@"D:\Games\The Witcher 3\bin\x64\witcher3.exe")]
+    [InlineData(@"D:\Games\Foo\bin\x64\foo.exe")]
+    [InlineData(@"D:\Users\Me\AppData\Local\Programs\Game\game.exe")]
+    public void OrdinaryGameImagesAreNotExcludedByTheFixedRules(string image) => Assert.False(AutoRegistry.IsNonGameImage(image));
+
+    [Fact]
+    public void FixedExclusionsDoNotDependOnOrChangeIgnoreExes()
+    {
+        _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { IgnoreExes = [] } };
+
+        Run(_rig.Registry(), 10, @"D:\Games\Foo\testhost.exe", 900);
+
+        Assert.Empty(Registered());
+        Assert.Empty(_rig.Settings.Auto.IgnoreExes);
+    }
+
+    [Fact]
+    public void FolderThatDoesNotLookLikeAGameIsNotRegisteredAndLoggedOnce()
+    {
+        World.LooksLikeGame = _ => false;
+        AutoRegistry reg = _rig.Registry();
+
+        Run(reg, 10, @"D:\Tools\Tiny\tiny.exe", 900);
+        Run(reg, 11, @"D:\Tools\Tiny\tiny2.exe", 900);
+
+        Assert.Empty(Registered());
+        Assert.Single(_rig.Log.Lines, l => l.Contains("does not look like a game", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void GameLikeFolderCheckGetsTheInstallRootAndAllowsTheRegistration()
+    {
+        var seen = new List<string>();
+        World.LooksLikeGame = d =>
+        {
+            seen.Add(d);
+            return d == @"D:\Games\Foo Bar";
+        };
+
+        Run(_rig.Registry(), 10, @"D:\Games\Foo Bar\Binaries\Win64\foo.exe", 900);
+
+        Assert.Equal([@"D:\Games\Foo Bar"], seen);
+        Assert.Equal(["Foo_Bar"], Registered());
+    }
+
+    // ---- 제거 목록 게임의 exe 재평가 ----
+
+    private void UninstallGame(string name, string exe, string root, string launcher = "uninstall", string source = "auto")
+    {
+        _rig.Add(name, exe, root, source);
+        _rig.Status.Set(name, source, launcher, AutoStage.Discovered, null);
+    }
+
+    [Fact]
+    public void FirstDiscoveryReselectsALauncherLikeExeOfAnUninstallGameAndKeepsTheOtherNames()
+    {
+        UninstallGame("HoYoPlay", "HYSafeMode.exe", @"D:\HoYoPlay");
+        _rig.Editor.AddExeName("HoYoPlay", "extra.exe");
+        _rig.Reload();
+        World.ExeFiles[@"D:\HoYoPlay"] = [(@"D:\HoYoPlay\launcher\HYSafeMode.exe", 900), (@"D:\HoYoPlay\games\Genshin\GenshinImpact.exe", 50)];
+
+        _rig.Registry().DiscoverOnce();
+
+        Assert.Equal(["GenshinImpact.exe", "extra.exe"], _rig.Reload().Games.Single().ExeNames);
+        Assert.Single(_rig.Log.Lines, l => l.Contains("HoYoPlay: main exe changed from HYSafeMode.exe to GenshinImpact.exe", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void GamesFolderExeReplacesALauncherShellOutsideIt()
+    {
+        UninstallGame("GRYPHLINK", "Games.exe", @"D:\GRYPHLINK");
+        World.ExeFiles[@"D:\GRYPHLINK"] = [(@"D:\GRYPHLINK\1.0\Games.exe", 900), (@"D:\GRYPHLINK\1.0\games\Arknights\Arknights.exe", 100)];
+
+        _rig.Registry().DiscoverOnce();
+
+        Assert.Equal(["Arknights.exe"], _rig.Reload().Games.Single().ExeNames);
+    }
+
+    [Fact]
+    public void ReselectRunsOnlyOncePerServiceStartAndOnlyForAutoUninstallGames()
+    {
+        UninstallGame("Steamy", "Safe.exe", @"D:\Steamy", launcher: "steam");
+        UninstallGame("Manual", "Safe2.exe", @"D:\Manual", source: "manual");
+        UninstallGame("Fine", "Fine.exe", @"D:\Fine");
+        UninstallGame("Late", "LateSafe.exe", @"D:\Late");
+        World.ExeFiles[@"D:\Steamy"] = [(@"D:\Steamy\Safe.exe", 9), (@"D:\Steamy\Real.exe", 5)];
+        World.ExeFiles[@"D:\Manual"] = [(@"D:\Manual\Safe2.exe", 9), (@"D:\Manual\Real2.exe", 5)];
+        World.ExeFiles[@"D:\Fine"] = [(@"D:\Fine\Fine.exe", 9), (@"D:\Fine\Small.exe", 5)];
+        AutoRegistry reg = _rig.Registry();
+
+        reg.DiscoverOnce();
+        World.ExeFiles[@"D:\Late"] = [(@"D:\Late\LateSafe.exe", 9), (@"D:\Late\LateReal.exe", 5)]; // 첫 주기 뒤에 생긴 목록
+        reg.DiscoverOnce();
+
+        Dictionary<string, string> exes = _rig.Reload().Games.ToDictionary(g => g.Name, g => g.ExeNames[0]);
+        Assert.Equal(("Safe.exe", "Safe2.exe", "Fine.exe", "LateSafe.exe"), (exes["Steamy"], exes["Manual"], exes["Fine"], exes["Late"]));
+    }
+
+    [Fact]
+    public void ReselectSkipsAnExeAnotherGameAlreadyUsesAndEmptyListings()
+    {
+        UninstallGame("A", "ASafe.exe", @"D:\A");
+        _rig.Add("B", "Real.exe", @"D:\B", "auto");
+        UninstallGame("C", "CSafe.exe", @"D:\C"); // 열거가 비어 있음
+        World.ExeFiles[@"D:\A"] = [(@"D:\A\ASafe.exe", 9), (@"D:\A\Real.exe", 5)];
+
+        _rig.Registry().DiscoverOnce();
+
+        Dictionary<string, string> exes = _rig.Reload().Games.ToDictionary(g => g.Name, g => g.ExeNames[0]);
+        Assert.Equal(("ASafe.exe", "CSafe.exe"), (exes["A"], exes["C"]));
+    }
+
+    [Fact]
+    public void ReselectIsSkippedWhileAutoDiscoveryIsOff()
+    {
+        UninstallGame("HoYoPlay", "HYSafeMode.exe", @"D:\HoYoPlay");
+        World.ExeFiles[@"D:\HoYoPlay"] = [(@"D:\HoYoPlay\games\G\Game.exe", 50), (@"D:\HoYoPlay\HYSafeMode.exe", 900)];
+        _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { Discover = false } };
+        AutoRegistry reg = _rig.Registry();
+
+        reg.DiscoverOnce();
+
+        Assert.Equal("HYSafeMode.exe", _rig.Reload().Games.Single().ExeNames[0]);
+    }
+
     [Fact]
     public void ExeAlreadyRegisteredIsSkipped()
     {

@@ -132,7 +132,23 @@ public sealed class AutoLearnTests : IDisposable
         Assert.Equal(AutoStage.WaitingIdle, _rig.Status.Get("foo")!.Stage);
         Assert.True(File.Exists(AutoTracer.RawTracePath(_game)));
         Assert.Contains(_rig.Log.Lines, l => l.Contains("learn ended, 4 MiB read ahead, hit estimate 0% of 8 MiB game reads", StringComparison.Ordinal));
-        Assert.Contains(_rig.Log.Lines, l => l.EndsWith("gap_count 1, yielded_requests 0, read_ahead_while_idle_bytes 4194304", StringComparison.Ordinal)); // 틈 하나에 4 MiB, 게임 읽기에 양보한 적 없음
+        Assert.Contains(_rig.Log.Lines, l => l.EndsWith("gap_count 1, yielded_requests 0, read_ahead_while_idle_bytes 4194304, saturated_ms 0, paused_requests 0", StringComparison.Ordinal)); // 틈 하나에 4 MiB, 게임 읽기에 양보한 적 없음
+    }
+
+    [Fact]
+    public void AdaptiveModeWithALowThresholdWaitsOutTheSaturatedWindowAndLogsSaturatedMs()
+    {
+        Configure(LearnSettings.Default with { Enabled = true, Mode = LearnSettings.AdaptiveMode, SaturationMbps = 1 });
+        _trace.Records.Add(TraceRecord.Start(DateTime.UtcNow, 100, 1, "foo.exe"));
+        _trace.Records.Add(TraceRecord.Read(DateTime.UtcNow, 100, File1, 0, 65536));
+        _tracer.Start(_game);
+        SequentialReads(_rig.World.Listener!.OnRead); // 8 MiB / 0.5 s 는 기준 1 MiB/s 이상: 창이 비는 약 500 ms 뒤에야 읽음
+
+        WaitFor(() => _io.ReadBytes == 4 * Mib);
+        _rig.World.Running = false;
+        _tracer.Step();
+
+        Assert.Contains(_rig.Log.Lines, l => System.Text.RegularExpressions.Regex.IsMatch(l, @"saturated_ms [1-9]\d*, paused_requests 0$"));
     }
 
     [Fact]
@@ -148,7 +164,7 @@ public sealed class AutoLearnTests : IDisposable
         _rig.World.Running = false;
         _tracer.Step();
 
-        Assert.Contains(_rig.Log.Lines, l => l.EndsWith("gap_count 0, yielded_requests 0, read_ahead_while_idle_bytes 4194304", StringComparison.Ordinal));
+        Assert.Contains(_rig.Log.Lines, l => l.EndsWith("gap_count 0, yielded_requests 0, read_ahead_while_idle_bytes 4194304, saturated_ms 0, paused_requests 0", StringComparison.Ordinal));
     }
 
     [Fact]

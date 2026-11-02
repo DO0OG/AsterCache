@@ -104,6 +104,38 @@ public static partial class LauncherScan
         }
     }
 
+    private const int MaxTraceSubDirs = 64;
+
+    /// 휴리스틱 후보의 설치 폴더가 게임처럼 보이는가: 256 MiB 이상 파일이 하나라도 있거나 (열거 상한은 FileAtLeast 와 같음),
+    /// 런처 매니페스트 흔적 (steam_appid.txt, .egstore 폴더, goggame-*.info — 폴더 바로 아래나 그 하위 폴더 64 개 안, 또는 steamapps\common 의 상위 appmanifest *.acf) 이 있음. 읽을 수 없으면 false.
+    public static bool LooksLikeGame(string dir, ILauncherEnv? env = null)
+    {
+        env ??= new SystemLauncherEnv();
+        try
+        {
+            return env.FileAtLeast(dir, MinGameContentBytes) || HasLauncherTrace(env, dir);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static bool HasLauncherTrace(ILauncherEnv env, string dir)
+    {
+        foreach (string d in new[] { dir }.Concat(env.SubDirs(dir).Take(MaxTraceSubDirs)))
+        {
+            if (env.FileExists(Path.Combine(d, "steam_appid.txt")) || env.DirectoryExists(Path.Combine(d, ".egstore")) || env.Files(d, "goggame-*.info").Count > 0)
+            {
+                return true;
+            }
+        }
+
+        string? common = Path.GetDirectoryName(dir);
+        return common is not null && Path.GetFileName(common).Equals("common", StringComparison.OrdinalIgnoreCase)
+            && Path.GetDirectoryName(common) is { } apps && env.Files(apps, "*.acf").Count > 0;
+    }
+
     // 게임 내용이 있는 폴더: 256 MiB 이상 파일이 있거나, 그만큼 큰 하위 폴더에 게임 exe 가 있음.
     private static bool HasGameContent(ILauncherEnv env, string dir) =>
         env.FileAtLeast(dir, MinGameContentBytes)

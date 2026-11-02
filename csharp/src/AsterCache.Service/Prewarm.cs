@@ -95,11 +95,15 @@ public sealed class PrewarmEnv
     /// 기록 없는 예열이 건드리면 안 되는 드라이브면 이유 (시스템 볼륨·SSD·판정 불가), 아니면 null. 기본은 거부 없음 (시험용), Create 는 진짜 판정.
     public Func<GameSettings, string?> ColdRefusal { get; init; } = _ => null;
 
+    /// 부트스트랩 S2: 기록 없는 게임의 boot 트레이스를 프리페치 기록 (.pf) 으로 만들어 봅니다 (ColdRefusal 이 없을 때만 부름). 만들었으면 true: 그러면 더는 기록 없는 게임이 아니라 통째·프로필 예열 (S3) 을 하지 않습니다. 기본 false.
+    public Func<GameSettings, bool> PrefetchBoot { get; init; } = _ => false;
+
     /// 기록 없이 예열한 게임의 표본 (경로, 오프셋, 길이) 들을 읽어 잰 결과 (CacheProbe), 읽을 수 없으면 null.
     public Func<IReadOnlyList<(string Path, long Offset, int Bytes)>, ProbeResult?> ProbeSamples { get; init; } = s => CacheProbe.Probe(s);
 
     public static PrewarmEnv Create() => new()
     {
+        PrefetchBoot = g => AutoTracer.BootFromPrefetch(g) > 0,
         ColdRefusal = g => AutoEnv.DriveRefusal(g.OriginRoot, Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.Windows))![..2].ToUpperInvariant(), letter => DiskInfo.Query(letter).IncursSeekPenalty),
         RawTraceExists = g => AutoTracer.PlanTracePath(g, File.Exists) is not null,
         ColdPlanner = (g, full, profile, ct) => PlanGuards.Inside(g.OriginRoot, g.AllowedRoots, RealPaths.Real)
@@ -458,7 +462,7 @@ public sealed class Prewarmer
                 return new PrewarmResult(game.Name, false, Cancelled, null, now);
             }
 
-            if (IsCold(game))
+            if (IsCold(game) && !(_env.ColdRefusal(game) is null && _env.PrefetchBoot(game))) // S2 가 먼저: boot 트레이스가 생기면 더는 기록 없는 게임이 아님
             {
                 return RunCold(game, why, now, ct, usedMib);
             }

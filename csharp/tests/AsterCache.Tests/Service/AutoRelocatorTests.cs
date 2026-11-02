@@ -4,6 +4,7 @@ using AsterCache.Core.Json;
 using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
+using AsterCache.Core.Trace;
 using AsterCache.Prefetch;
 using AsterCache.Service;
 using AsterCache.Tests.Core;
@@ -1547,6 +1548,198 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         Assert.Equal(AutoStage.Done, Entry.Stage);
         Assert.True(File.Exists(_game.Plan));
         Assert.Empty(_w.Moved);
+    }
+
+    // ---- 부트스트랩 S2: 프리페치 기록으로 만든 boot 트레이스 ----
+
+    // 원시·boot 트레이스가 없는 게임에 프리페치 기록이 있는 것처럼: 부르면 boot 트레이스가 생기고 "prefetch" 표시가 붙음.
+    private void UsePrefetchRecord(int ranges = 3)
+    {
+        _w.Files.Remove(AutoTracer.RawTracePath(_game));
+        _w.PrefetchBoot = _ =>
+        {
+            string boot = AutoTracer.BootTracePath(_game);
+            _w.Files.Add(boot);
+            _w.TraceSources[boot] = AutoRelocator.PlanSourcePrefetch;
+            return ranges;
+        };
+    }
+
+    [Fact]
+    public void PrefetchRecordMakesTheBootTraceThenPlansRelocatesAndShowsRelocatedPrefetch()
+    {
+        UsePrefetchRecord();
+
+        Tick();
+        RunUntilDone();
+
+        Assert.Equal(["bench"], _w.PrefetchCalls);
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.Equal("relocated (prefetch)", Entry.Detail);
+        Assert.NotNull(Entry.RelocatedAt);
+        Assert.Equal("prefetch", PlanFile.Load(_game.Plan).Stats["source"] as string);
+        Assert.Contains(_log.Lines, l => l.Contains("boot trace made from the prefetch record (3 ranges)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void PrefetchTagSurvivesThePrewarmedTag()
+    {
+        UsePrefetchRecord();
+        UsePrewarm();
+        _w.Files.Remove(AutoTracer.RawTracePath(_game));
+        _w.FileTimes.Remove(AutoTracer.RawTracePath(_game));
+        _w.FileTimes[AutoTracer.BootTracePath(_game)] = _w.Now - TimeSpan.FromMinutes(1);
+
+        Tick();
+        Assert.Equal(1, Streams); // 새 boot 트레이스로 바로 예열
+        _w.Now += Step;
+        RunUntilDone();
+
+        Assert.Equal($"{AutoRelocator.RelocatedPrefetch}, {AutoRelocator.Prewarmed}", Entry.Detail);
+    }
+
+    [Fact]
+    public void SharedProfileBootComesFirstAndPrefetchIsNeverAsked()
+    {
+        UseBootOnly(); // S1: 공유 프로필이 만든 boot
+        UsePrefetchRecord();
+        _w.Files.Add(AutoTracer.BootTracePath(_game));
+
+        Tick();
+        RunUntilDone();
+
+        Assert.Empty(_w.PrefetchCalls);
+        Assert.Equal(AutoRelocator.RelocatedProfile, Entry.Detail);
+        Assert.Equal("boot", PlanFile.Load(_game.Plan).Stats["source"] as string);
+    }
+
+    [Fact]
+    public void RawTraceMeansPrefetchIsNeverAsked()
+    {
+        _w.PrefetchBoot = _ => 5;
+
+        Tick();
+
+        Assert.Empty(_w.PrefetchCalls);
+    }
+
+    [Theory]
+    [InlineData("ssd")]
+    [InlineData("system")]
+    [InlineData("unknown")]
+    [InlineData("running")]
+    public void PrefetchIsNotAskedForSystemVolumeSsdUnknownDriveOrARunningGame(string why)
+    {
+        UsePrefetchRecord();
+        switch (why)
+        {
+            case "ssd":
+                _w.Hdd[Letter] = false;
+                break;
+            case "unknown":
+                _w.Hdd[Letter] = null;
+                break;
+            case "system":
+                _w.SystemDrive = Letter;
+                break;
+            default:
+                _w.Running = true;
+                break;
+        }
+
+        Tick();
+
+        Assert.Empty(_w.PrefetchCalls);
+    }
+
+    [Fact]
+    public void MissingPrefetchRecordIsAskedOncePerDiscoveryPeriodAndFallsBackToNothing()
+    {
+        _w.Files.Remove(AutoTracer.RawTracePath(_game));
+
+        Tick();
+        _w.Now += Step;
+        Tick();
+        _w.Now += Step;
+        Tick();
+        Assert.Equal(["bench"], _w.PrefetchCalls); // 30 초마다 .pf 를 다시 훑지 않음
+
+        _w.Now += AutoMode.DiscoveryEvery;
+        Tick();
+        Assert.Equal(["bench", "bench"], _w.PrefetchCalls);
+        Assert.False(File.Exists(_game.Plan));
+    }
+
+    [Fact]
+    public void PrefetchFailureIsLoggedAndDoesNotStopTheTick()
+    {
+        _w.Files.Remove(AutoTracer.RawTracePath(_game));
+        _w.PrefetchBoot = _ => throw new UnauthorizedAccessException();
+
+        Tick();
+
+        Assert.Contains(_log.Lines, l => l.Contains("prefetch record could not be used (UnauthorizedAccessException)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void PrefetchPlanTakesWholeSmallFilesInPhysicalOrderAndLeavesBigFilesAlone()
+    {
+        UsePrefetchRecord();
+        _w.LoadSessions = () => [[new TraceEvent(F2, 0, 1 << 20), new TraceEvent(F1, 0, 1 << 20)]]; // 프리페치 순서는 F2 가 먼저지만 물리 위치는 F1 (LCN 1000) 이 앞
+        Tick();
+
+        PlanFile small = PlanFile.Load(_game.Plan);
+        Assert.Equal([F1, F2], small.Order.Select(o => o.Path).Distinct()); // 물리 순서
+        Assert.Equal(256, small.Order.Where(o => o.Path == F1).Sum(o => o.Clusters)); // 파일 통째 (1 MiB / 4 KiB)
+        Assert.Equal(256, small.Order.Where(o => o.Path == F2).Sum(o => o.Clusters));
+        Assert.Equal(0, small.Order.Where(o => o.Path == F1).Min(o => o.Vcn));
+
+        File.Delete(_game.Plan);
+        _w.Stat = p => p == F2 ? new Fingerprint(p, (64L << 20) + 1, 0) : PlanFile.FingerprintOf(p); // F2 는 64 MiB 를 넘음
+        _status.Set("bench", "auto", null, AutoStage.Discovered, null);
+        Tick();
+
+        PlanFile big = PlanFile.Load(_game.Plan);
+        Assert.Equal([F1], big.Order.Select(o => o.Path).Distinct());
+        Assert.DoesNotContain(big.Tasks, t => t.Path == F2);
+    }
+
+    [Fact]
+    public void FileExactlyAtTheLimitIsStillIncluded()
+    {
+        UsePrefetchRecord();
+        _w.Stat = p => p == F2 ? new Fingerprint(p, AutoRelocator.PrefetchMaxFileBytes, 0) : PlanFile.FingerprintOf(p);
+
+        Tick();
+
+        Assert.Contains(PlanFile.Load(_game.Plan).Order, o => o.Path == F2);
+    }
+
+    [Fact]
+    public void FirstRunRecordingReplacesThePrefetchPlanAndPlansAgainIntoTheSameZone()
+    {
+        UsePrefetchRecord();
+        long start = DoneAndReadyToReplan(out string raw);
+        Assert.Equal(AutoRelocator.RelocatedPrefetch, Entry.Detail);
+
+        _w.Files.Add(raw); // 첫 실행이 끝나 원시 트레이스가 생김
+        _status.Set("bench", "auto", null, AutoStage.WaitingIdle, null);
+        _w.Now += AutoRelocator.StaleCheckEvery;
+        Tick();
+
+        Assert.Equal(AutoStage.WaitingIdle, Entry.Stage);
+        Assert.Null(Entry.RelocatedAt);
+        Assert.Contains(raw, _w.Files);
+        Assert.Equal([start], _w.PlanStarts); // 이전 존 시작에 맞춰 먼저 계획함
+        Assert.Contains(_log.Lines, l => l.Contains("previous zone holds data this plan does not move", StringComparison.Ordinal)); // 존에 남은 자기 파일의 나머지 부분이 목표를 막아 새 존으로
+        Assert.True(File.Exists(_game.Plan + ".stale"));
+        Assert.Single(_w.PrefetchCalls); // 다시 묻지 않음
+
+        RunUntilDone();
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.False(PlanFile.Load(_game.Plan).Stats.ContainsKey("source"));
+        Assert.DoesNotContain(AutoRelocator.RelocatedPrefetch, Entry.Detail ?? string.Empty, StringComparison.Ordinal);
     }
 
     // ---- 지문 검사 비용: 대표 파일만 먼저 ----

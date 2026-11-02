@@ -137,6 +137,7 @@ public sealed class ProfileCommandTests : IDisposable
         Assert.Equal(0, code);
         Assert.Equal(true, result["imported"]);
         Assert.Equal(expected, Rows(_boot)); // 가져온 기록은 boot 이름: 원시 trace 가 생기면 첫 실행 기록이 건너뛰어지므로
+        Assert.Equal(GameProfile.BootSourceImport, AsterCache.Service.AutoTracer.TraceSourceOf(_boot));
         Assert.False(File.Exists(_raw));
         Assert.Equal(expected, Rows(_prefetch));
         Assert.False(File.Exists(Path.Combine(_plans, "Foo.plan.json")));

@@ -101,6 +101,20 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
         Save(root);
     }
 
+    /// 기존 게임의 exe_names 를 통째로 바꿈 (최대 16, 중복·형식은 검증이 거부). 다른 키는 그대로.
+    public void ReplaceExeNames(string game, IReadOnlyList<string> exes)
+    {
+        using FileStream _ = Lock();
+        JObject root = ReadRoot();
+        if (FindGame(GamesOf(root), game) is not { } o || !o.ContainsKey("exe_names"))
+        {
+            throw new SettingsException("games: no game with that name");
+        }
+
+        o["exe_names"] = exes.Cast<object?>().ToList();
+        Save(root);
+    }
+
     /// auto 객체 전체를 기록 (기본값과 같아도 모든 키를 씀).
     public void SetAuto(AutoSettings a)
     {
@@ -147,7 +161,8 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             { "full_prewarm", a.FullPrewarm },
             { "full_prewarm_max_mib", (long)a.FullPrewarmMaxMib },
             { "engine_profiles", a.EngineProfiles },
-            { "learn", new JObject { { "enabled", a.Learn.Enabled }, { "window_mib", (long)a.Learn.WindowMib }, { "max_total_mib", (long)a.Learn.MaxTotalMib }, { "mode", a.Learn.Mode } } },
+            { "learn", new JObject { { "enabled", a.Learn.Enabled }, { "window_mib", (long)a.Learn.WindowMib }, { "max_total_mib", (long)a.Learn.MaxTotalMib }, { "mode", a.Learn.Mode }, { "saturation_mbps", (long)a.Learn.SaturationMbps } } },
+            { "shared_profiles", new JObject { { "enabled", a.SharedProfiles.Enabled }, { "url", a.SharedProfiles.Url } } },
         };
         if (a.IdleSecondsSet || !a.IdleMinutesSet) // idle_minutes 만 명시된 설정은 그 값이 이기도록 idle_seconds 를 쓰지 않음
         {

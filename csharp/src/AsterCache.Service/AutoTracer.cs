@@ -1,9 +1,11 @@
+using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Profiles;
 using AsterCache.Core.Settings;
 using AsterCache.Core.Trace;
 using AsterCache.Prefetch;
 using AsterCache.Tracer;
+using AsterCache.Windows;
 
 namespace AsterCache.Service;
 
@@ -47,6 +49,52 @@ public sealed class AutoTracer
     /// 계획·예열이 읽을 트레이스: 원시가 있으면 원시, 없으면 boot, 둘 다 없으면 null.
     public static string? PlanTracePath(GameSettings g, Func<string, bool> exists) =>
         exists(RawTracePath(g)) ? RawTracePath(g) : exists(BootTracePath(g)) ? BootTracePath(g) : null;
+
+    /// boot 트레이스 파일의 "source" 표시 (프리페치 기록으로 만든 것이면 "prefetch", 가져온 프로필 등 표시가 없으면 null). 읽을 수 없으면 null.
+    public static string? TraceSourceOf(string path)
+    {
+        try
+        {
+            return JsonRead.ReadFile(path) is JObject o && o.TryGetValue("source", out object? v) ? v as string : null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            return null;
+        }
+    }
+
+    /// 부트스트랩 S2: 기록 없는 게임의 boot 트레이스를 Windows 프리페치 기록 (.pf) 으로 만듭니다. 만든 범위 수, 못 만들면 0.
+    /// 프리페처가 꺼져 있거나 맞는 기록이 없거나, 원시·boot 트레이스가 이미 있으면 (공유 프로필 S1 이 먼저) 0. 쓸 때도 이미 있으면 덮지 않습니다.
+    public static int BootFromPrefetch(GameSettings g, Func<bool>? prefetcherOn = null, string? prefetchDir = null, IReadOnlyDictionary<uint, string>? letters = null)
+    {
+        string boot = BootTracePath(g);
+        if (File.Exists(RawTracePath(g)) || File.Exists(boot) || !(prefetcherOn ?? SystemProbes.PrefetcherOn)()
+            || PrefetchFiles.BootTrace(g.ExeNames, g.OriginRoot, prefetchDir, letters) is not { Count: > 0 } events)
+        {
+            return 0;
+        }
+
+        string temp = $"{boot}.{Guid.NewGuid():N}.tmp"; // 고유 이름: 동시에 만드는 쪽끼리 임시 파일을 공유하지 않음
+        try
+        {
+            File.WriteAllBytes(temp, PrefetchFiles.BootTraceBytes(events));
+            File.Move(temp, boot, false); // 그 사이 다른 쪽이 boot 를 만들었으면 IOException
+            return events.Count;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            try
+            {
+                File.Delete(temp);
+            }
+            catch (Exception d) when (d is IOException or UnauthorizedAccessException)
+            {
+                // 정리도 못 하면 남겨 둠
+            }
+
+            return 0;
+        }
+    }
 
     public void Start(GameSettings g)
     {

@@ -45,6 +45,11 @@ public sealed class ColdPrewarmTests : IDisposable
 
     private string? Refusal { get; set; }
 
+    /// 부트스트랩 S2 (프리페치 기록으로 boot 트레이스 만들기) 가짜: 부른 횟수와 결과. 만들었으면 true 를 돌려주고 원시·boot 트레이스가 생긴 것으로 침.
+    private bool PrefetchMakesBoot { get; set; }
+
+    private int _bootAsked;
+
     private double? ProbeMs { get; set; } = 0.5;
 
     private readonly List<IReadOnlyList<(string Path, long Offset, int Bytes)>> _probed = [];
@@ -63,6 +68,12 @@ public sealed class ColdPrewarmTests : IDisposable
             RawTraceExists = _ => RawTraceExists,
             DiskBytesPerSecond = _ => Disk,
             ColdRefusal = _ => Refusal,
+            PrefetchBoot = _ =>
+            {
+                _bootAsked++;
+                RawTraceExists |= PrefetchMakesBoot;
+                return PrefetchMakesBoot;
+            },
             ProbeSamples = samples =>
             {
                 _probed.Add(samples);
@@ -105,6 +116,46 @@ public sealed class ColdPrewarmTests : IDisposable
         Assert.Contains(_log.Lines, l => l.Contains("prewarm done (service start, full)", StringComparison.Ordinal));
         var g = (JObject)((JObject)((JObject)JsonRead.ReadFile(Path.Combine(_dir, "status.json"))!)["games"]!)["g"]!;
         Assert.Equal(("ok", "full"), (g["result"], g["mode"]));
+    }
+
+    [Fact]
+    public void PrefetchRecordIsTriedBeforeTheColdWarmAndWinsWhenItMakesABootTrace()
+    {
+        PrefetchMakesBoot = true;
+        Prewarmer p = MakeOne();
+
+        PrewarmResult r = p.Run(Game("g"), "service start");
+
+        Assert.Equal(1, _bootAsked);
+        Assert.Empty(_caps); // S3 (통째·프로필 예열) 은 계획조차 만들지 않음
+        Assert.Empty(_reads);
+        Assert.False(r.Ran); // 계획이 만들어지기 전이라 핫 집합 예열은 아직 (자동 모드가 계획한 뒤 새 트레이스로 예열)
+    }
+
+    [Fact]
+    public void WithoutAPrefetchRecordTheColdWarmStillRuns()
+    {
+        Prewarmer p = MakeOne();
+
+        PrewarmResult r = p.Run(Game("g"), "service start");
+
+        Assert.Equal(1, _bootAsked);
+        Assert.True(r.Ran);
+        Assert.Equal("full", r.Mode);
+    }
+
+    [Fact]
+    public void PrefetchRecordIsNotTriedOnARefusedDriveOrWhenTheGameAlreadyHasATrace()
+    {
+        PrefetchMakesBoot = true;
+        Refusal = "not an HDD";
+        MakeOne().Run(Game("g"), "t");
+        Assert.Equal(0, _bootAsked);
+
+        Refusal = null;
+        RawTraceExists = true;
+        MakeOne().Run(Game("g"), "t");
+        Assert.Equal(0, _bootAsked);
     }
 
     [Fact]

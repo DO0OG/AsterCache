@@ -78,8 +78,8 @@ public sealed class ReadAheadTests
     private long _nowMs;
 
     // 기존 시험은 틈 모드의 규칙을 보므로 stream 은 기본 false.
-    private ReadAhead Make(long windowMib = 4, long maxMib = 1024, long minFreeMib = 100, long gapMs = 100, int seqRuns = 6, bool stream = false) =>
-        new(new ReadAheadOptions([@"D:\Games\Foo"], windowMib * Mib, maxMib * Mib, minFreeMib, () => Volatile.Read(ref _availableMib), () => Volatile.Read(ref _nowMs), gapMs, seqRuns, stream), _io);
+    private ReadAhead Make(long windowMib = 4, long maxMib = 1024, long minFreeMib = 100, long gapMs = 100, int seqRuns = 6, bool stream = false, bool bounded = false, bool adaptive = false, int saturationMbps = 80) =>
+        new(new ReadAheadOptions([@"D:\Games\Foo"], windowMib * Mib, maxMib * Mib, minFreeMib, () => Volatile.Read(ref _availableMib), () => Volatile.Read(ref _nowMs), gapMs, seqRuns, stream, bounded, adaptive, saturationMbps), _io);
 
     private static void Drain(ReadAhead r)
     {
@@ -614,6 +614,213 @@ public sealed class ReadAheadTests
         _io.Sizes[B] = 1000 * Mib;
         Drain(small);
         Assert.Equal(3 * Mib, _io.Reads.Sum(x => (long)x.Count)); // 창 4 MiB: [8, 11)
+    }
+
+    [Fact]
+    public void BoundedModeWaitsFiftyMillisecondsAfterAGameReadThenReadsInSixteenMibRequestsUpToGameReadsPlus32Mib()
+    {
+        _io.Sizes[A] = 1000 * Mib;
+        ReadAhead r = Make(windowMib: 64, stream: true, bounded: true);
+
+        Stream(r, A, 0, everyMs: 1); // 마지막 읽기 1 ms 뒤
+        Assert.False(r.Step());
+        _nowMs += 48; // 마지막 읽기 49 ms 뒤: 아직 쉼
+        Assert.False(r.Step());
+        Assert.Equal(0, _io.ReadCount);
+        _nowMs += 1; // 정확히 50 ms
+        Drain(r);
+
+        Assert.Equal([8 * Mib, 24 * Mib, 40 * Mib], _io.Reads.Select(x => (long)x.Offset));
+        Assert.Equal([16 * Mib, 16 * Mib, 8 * Mib], _io.Reads.Select(x => (long)x.Count));
+        ReadAheadStats st = r.Stats;
+        Assert.Equal((8 * Mib) + (32 * Mib), st.ReadAheadBytes); // 게임 읽기 x 1.0 + 32 MiB (스트림 모드는 76 MiB)
+        Assert.Equal((1L, 0L), (st.GapCount, st.YieldedRequests));
+        Assert.False(r.Step());
+    }
+
+    [Fact]
+    public void BoundedModeCapGrowsWithGameReadsAndStaysWithinMaxTotal()
+    {
+        _io.Sizes[A] = 1000 * Mib;
+        ReadAhead r = Make(windowMib: 512, maxMib: 50, stream: true, bounded: true);
+        long next = Stream(r, A, 0);
+        Quiet(ReadAhead.BoundedQuietMs);
+        Drain(r);
+        Assert.Equal(40 * Mib, r.Stats.ReadAheadBytes);
+
+        Stream(r, A, next + (64 * Mib), 1 * Mib, count: 4); // 같은 파일에서 큰 간격을 건너뛰어 읽음: 순차가 풀림 (게임 읽기 +4 MiB)
+        Quiet(ReadAhead.BoundedQuietMs);
+        Drain(r);
+
+        Assert.Equal(44 * Mib, r.Stats.ReadAheadBytes); // 게임 읽기 12 MiB + 32 MiB (max_total 50 MiB 이내)
+    }
+
+    [Fact]
+    public void BoundedModeLetsTheRequestInFlightFinishAndThenWaitsAgain()
+    {
+        _io.Sizes[A] = 1000 * Mib;
+        ReadAhead r = Make(windowMib: 64, stream: true, bounded: true);
+        long next = Stream(r, A, 0, everyMs: 1);
+        _nowMs += ReadAhead.BoundedQuietMs;
+        bool once = false;
+        _io.DuringRead = () =>
+        {
+            if (!once)
+            {
+                once = true;
+                r.OnRead(A, next, Mib); // 요청이 진행되는 동안 게임이 읽음
+                _nowMs += 1;
+            }
+        };
+
+        Assert.True(r.Step()); // 진행 중이던 요청은 끝남
+        Assert.Equal(1, _io.ReadCount);
+        Assert.False(r.Step()); // 새 요청은 게임 읽기 뒤 50 ms 동안 내지 않음
+        Assert.Equal(1, _io.ReadCount);
+        _nowMs += ReadAhead.BoundedQuietMs - 2; // 게임 읽기 뒤 49 ms
+        Assert.False(r.Step());
+        _nowMs += 1; // 50 ms
+        Assert.True(r.Step());
+        Assert.Equal(2, _io.ReadCount);
+    }
+
+    [Fact]
+    public void BoundedModeReadsAheadOnlyInFilesJudgedSequential()
+    {
+        _io.Sizes[A] = 1000 * Mib;
+        ReadAhead r = Make(windowMib: 64, stream: true, bounded: true);
+        for (int i = 0; i < 12; i++)
+        {
+            r.OnRead(A, i * 100 * Mib % (900 * Mib), Mib); // 큰 간격으로 건너뛰는 읽기
+            _nowMs += 10;
+        }
+
+        Quiet(ReadAhead.BoundedQuietMs);
+        Drain(r);
+
+        Assert.Equal(0, _io.ReadCount);
+        Assert.Equal(0, r.Stats.SequentialFiles);
+    }
+
+    [Fact]
+    public void AdaptiveModeIssuesNothingWhileTheGameReadsAt100MibPerSecondAndCountsTheRest()
+    {
+        _io.Sizes[A] = 2000 * Mib;
+        ReadAhead r = Make(windowMib: 512, stream: true, adaptive: true);
+        for (int i = 0; i < 12; i++)
+        {
+            r.OnRead(A, i * 8 * Mib, 8 * Mib); // 8 MiB 마다 60 ms = 133 MiB/s 연속
+            _nowMs += 60; // 게임 읽기 뒤 50 ms 규칙은 넘김: 막는 것은 포화뿐
+            Assert.False(r.Step());
+        }
+
+        Assert.Equal(0, _io.ReadCount);
+        Assert.Equal(300, r.Stats.SaturatedMs); // 순차 판정 뒤 첫 확인 (420 ms) 부터 720 ms 까지
+        Assert.Equal(0, r.Stats.PausedRequests);
+    }
+
+    [Fact]
+    public void AdaptiveModeReadsAheadBelowTheThresholdKeepsTheBoundedCapAndResumesWhenTheStreamCalmsDown()
+    {
+        _io.Sizes[A] = 2000 * Mib;
+        ReadAhead r = Make(windowMib: 512, stream: true, adaptive: true);
+        for (int i = 0; i < 12; i++)
+        {
+            r.OnRead(A, i * 3 * Mib, 3 * Mib); // 3 MiB 마다 60 ms = 50 MiB/s
+            _nowMs += 60;
+            r.Step();
+        }
+
+        Assert.True(_io.ReadCount > 0);
+        Assert.Equal(0, r.Stats.SaturatedMs);
+        Drain(r);
+        Assert.Equal((36 * Mib) + (32 * Mib), r.Stats.ReadAheadBytes); // bounded 규칙: 게임 읽기 x 1.0 + 32 MiB
+
+        _nowMs = 0; // 새 엔진과 새 시간축
+        ReadAhead busy = Make(windowMib: 512, stream: true, adaptive: true);
+        _io.Sizes[B] = 2000 * Mib;
+        _io.Reads.Clear();
+        for (int i = 0; i < 12; i++)
+        {
+            busy.OnRead(B, i * 8 * Mib, 8 * Mib); // 133 MiB/s
+            _nowMs += 60;
+        }
+
+        Assert.False(busy.Step());
+        _nowMs += 919 - 720; // 지금 919 ms: 창 (419, 919] 에 읽기 다섯 개 = 40 MiB = 정확히 80 MiB/s
+        Assert.False(busy.Step());
+        _nowMs += 1; // 920 ms: 가장 오래된 읽기 (420 ms) 가 창 밖으로 나가 32 MiB = 64 MiB/s: 재개
+        Assert.True(busy.Step());
+        Assert.Equal(1, _io.ReadCount);
+    }
+
+    [Theory]
+    [InlineData(0, true)] // 정확히 80 MiB/s (500 ms 에 40 MiB): 기준 이상이라 쉼
+    [InlineData(1, true)]
+    [InlineData(-1, false)] // 1 바이트 모자람: 선행 함
+    public void AdaptiveModeThresholdBoundaryIsInclusive(int deltaBytes, bool saturated)
+    {
+        _io.Sizes[A] = 2000 * Mib;
+        ReadAhead r = Make(windowMib: 512, stream: true, adaptive: true);
+        Stream(r, A, 0, everyMs: 1); // 8 MiB, 순차 판정 (t = 0..7 ms)
+        r.OnRead(@"D:\Games\Other\x.bin", 0, (32 * Mib) + deltaBytes); // 루트 밖 읽기도 디스크 처리량에 듦: 합 40 MiB 정확히 (deltaBytes = 0)
+        _nowMs += ReadAhead.BoundedQuietMs; // 게임 읽기 뒤 50 ms
+
+        Assert.Equal(!saturated, r.Step());
+    }
+
+    [Fact]
+    public void AdaptiveModePausesTwoHundredMillisecondsWhenOurRequestLatencyDoublesTheLastWindowAverage()
+    {
+        _io.Sizes[A] = 2000 * Mib;
+        ReadAhead r = Make(windowMib: 512, stream: true, adaptive: true, saturationMbps: 10000);
+        Stream(r, A, 0, count: 32, everyMs: 1); // 게임 읽기 32 MiB: 상한 64 MiB = 16 MiB 요청 넷
+        _nowMs += ReadAhead.BoundedQuietMs;
+        long latency = 100;
+        _io.DuringRead = () => _nowMs += latency;
+
+        Assert.True(r.Step()); // 지연 100 ms: 비교할 직전 창이 없음
+        Assert.True(r.Step()); // 100 ms: 평균 100 의 2 배 미만
+        latency = 199;
+        Assert.True(r.Step()); // 199 ms < 200: 쉬지 않음
+        Assert.Equal(0, r.Stats.PausedRequests);
+        Assert.True(r.Step()); // 199 ms, 평균 (100 + 100 + 199) / 3 = 133 의 2 배 (266) 미만
+        Assert.Equal(0, r.Stats.PausedRequests);
+
+        // 같은 흐름을 새 엔진으로 다시: 마지막 요청만 평균의 2 배 이상
+        ReadAhead s = Make(windowMib: 512, stream: true, adaptive: true, saturationMbps: 10000);
+        _io.Sizes[B] = 2000 * Mib;
+        Stream(s, B, 0, count: 32, everyMs: 1);
+        _nowMs += ReadAhead.BoundedQuietMs;
+        latency = 100;
+        Assert.True(s.Step());
+        Assert.True(s.Step());
+        latency = 200; // 정확히 2 배
+        Assert.True(s.Step());
+        Assert.Equal(1, s.Stats.PausedRequests);
+        _io.DuringRead = null;
+        Assert.False(s.Step()); // 200 ms 쉼
+        _nowMs += ReadAhead.ContentionPauseMs - 1;
+        Assert.False(s.Step());
+        _nowMs += 1;
+        Assert.True(s.Step());
+        Assert.Equal(1, s.Stats.PausedRequests);
+    }
+
+    [Fact]
+    public void NonAdaptiveModesNeverCountSaturationOrPauses()
+    {
+        _io.Sizes[A] = 2000 * Mib;
+        ReadAhead r = Make(windowMib: 512, stream: true, bounded: true);
+        for (int i = 0; i < 12; i++)
+        {
+            r.OnRead(A, i * 8 * Mib, 8 * Mib);
+            _nowMs += 60;
+        }
+
+        Drain(r);
+        Assert.True(_io.ReadCount > 0);
+        Assert.Equal((0L, 0L), (r.Stats.SaturatedMs, r.Stats.PausedRequests));
     }
 
     [Fact]

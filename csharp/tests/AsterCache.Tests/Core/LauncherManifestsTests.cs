@@ -33,6 +33,40 @@ public sealed class LauncherManifestsTests
     }
 
     [Fact]
+    public void AppManifestGivesInstalledDepotsWithManifestAndLastPlayed()
+    {
+        const string acf = "\"AppState\" { \"appid\" \"730\" \"name\" \"G\" \"installdir\" \"G\" \"LastPlayed\" \"1700000000\" "
+            + "\"InstalledDepots\" { \"731\" { \"manifest\" \"111\" \"size\" \"5\" } \"732\" { \"size\" \"1\" } \"733\" { \"manifest\" \"333\" } } }";
+
+        SteamApp app = LauncherManifests.ParseAppManifest(acf)!;
+
+        Assert.Equal(new Dictionary<string, string> { ["731"] = "111", ["733"] = "333" }, app.InstalledDepots); // manifest 가 없는 depot 은 뺌
+        Assert.Equal(1700000000L, app.LastPlayed);
+    }
+
+    [Theory]
+    [InlineData("\"LastPlayed\" \"0\"")]
+    [InlineData("\"LastPlayed\" \"soon\"")]
+    [InlineData("")]
+    public void AppManifestWithoutUsableLastPlayedOrDepotsKeepsTheOldShape(string extra)
+    {
+        SteamApp app = LauncherManifests.ParseAppManifest("\"AppState\" { \"appid\" \"1\" \"name\" \"n\" \"installdir\" \"d\" " + extra + " }")!;
+
+        Assert.Equal(new SteamApp("1", "n", "d"), app);
+        Assert.Empty(app.InstalledDepots);
+        Assert.Null(app.LastPlayed);
+    }
+
+    [Fact]
+    public void EpicItemGivesAppVersionString()
+    {
+        EpicApp app = LauncherManifests.ParseEpicItem("{\"InstallLocation\":\"D:\\\\x\",\"AppName\":\"abc\",\"AppVersionString\":\"1.2.3-4\"}")!;
+
+        Assert.Equal("1.2.3-4", app.AppVersionString);
+        Assert.Equal(string.Empty, LauncherManifests.ParseEpicItem(Fixture("epic_game.item"))!.AppVersionString);
+    }
+
+    [Fact]
     public void SteamworksRedistributableIsNotAGame() => Assert.Null(LauncherManifests.ParseAppManifest(Fixture("appmanifest_228980.acf")));
 
     [Fact]

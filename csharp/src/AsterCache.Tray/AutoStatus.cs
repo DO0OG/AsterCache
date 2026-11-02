@@ -124,7 +124,7 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
         return key is null ? stage : L.Get(lang, key);
     }
 
-    /// 단계 이름 뒤에 붙일 부가 설명: 학습 중이면 선행 읽기 양 ("<n> MiB read ahead" 를 풀어 보임), detail 에 프로필 재배치 표시가 있으면 "재배치됨(프로필)", 예열 표시가 있으면 "예열됨" (전체 폴더·엔진 프로필은 그 이름까지). 없으면 null.
+    /// 단계 이름 뒤에 붙일 부가 설명: 학습 중이면 선행 읽기 양 ("<n> MiB read ahead" 를 풀어 보임), detail 에 프로필·프리페치 재배치 표시가 있으면 "재배치됨(프로필)"·"재배치됨(프리페치)", 예열 표시가 있으면 "예열됨" (전체 폴더·엔진 프로필은 그 이름까지). 없으면 null.
     public static string? StageExtra(AutoGame g, string lang)
     {
         if (g.Stage == "learning")
@@ -137,6 +137,10 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
         if ((g.Detail ?? string.Empty).Contains("relocated (profile)", StringComparison.Ordinal))
         {
             parts.Add(L.Get(lang, "Stage_RelocatedProfile")); // boot 트레이스 (가져온 프로필) 로 재배치함
+        }
+        else if ((g.Detail ?? string.Empty).Contains("relocated (prefetch)", StringComparison.Ordinal))
+        {
+            parts.Add(L.Get(lang, "Stage_RelocatedPrefetch")); // boot 트레이스 (Windows 프리페치 기록) 로 재배치함
         }
 
         Match now = Prewarming().Match(g.Detail ?? string.Empty);

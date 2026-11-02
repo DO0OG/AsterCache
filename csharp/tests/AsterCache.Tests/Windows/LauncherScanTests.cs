@@ -114,6 +114,75 @@ public sealed class LauncherScanTests
     }
 
     [Fact]
+    public void ScanCarriesTheSteamAndEpicFingerprints()
+    {
+        FakeEnv env = SteamEnv();
+        env.Text[@"D:\Lib\steamapps\appmanifest_2.acf"] =
+            "\"AppState\" { \"appid\" \"2\" \"name\" \"Slow Game\" \"installdir\" \"SlowGame\" \"InstalledDepots\" { \"3\" { \"manifest\" \"99\" } } }";
+        env.Text[@"C:\ProgramData\Epic\EpicGamesLauncher\Data\Manifests\a.item"] =
+            "{\"DisplayName\":\"Epic One\",\"InstallLocation\":\"D:\\\\Epic\\\\One\",\"AppName\":\"abc\",\"AppVersionString\":\"7\",\"LaunchExecutable\":\"one.exe\"}";
+        env.Dirs.Add(@"D:\Epic\One");
+        env.Exes[@"D:\Epic\One\one.exe"] = 1;
+
+        IReadOnlyList<DiscoveredGame> games = LauncherScan.Scan(env);
+
+        Assert.Equal("99", games.Single(g => g.Name == "Slow_Game").Steam!.InstalledDepots["3"]);
+        Assert.Null(games.Single(g => g.Name == "Fast_Game").Epic);
+        DiscoveredGame epic = games.Single(g => g.Launcher == "epic");
+        Assert.Equal(("abc", "7"), (epic.Epic!.AppName, epic.Epic.AppVersionString));
+        Assert.Null(epic.Steam);
+    }
+
+    [Fact]
+    public void LooksLikeGameNeedsABigFileOrALauncherManifestTrace()
+    {
+        var env = new FakeEnv();
+        env.Dirs.UnionWith([@"D:\Small", @"D:\Big", @"D:\Epic", @"D:\Epic\.egstore", @"D:\Steamy", @"D:\Steamy\Binaries", @"D:\Gog", @"D:\Lib\steamapps\common\Y", @"D:\Other\Y"]);
+        env.BigFiles.Add(@"D:\Big");
+        env.Exes[@"D:\Steamy\Binaries\steam_appid.txt"] = 1;
+        env.Text[@"D:\Gog\goggame-1.info"] = "x";
+        env.Text[@"D:\Lib\steamapps\appmanifest_5.acf"] = "x";
+
+        Assert.False(LauncherScan.LooksLikeGame(@"D:\Small", env));
+        Assert.True(LauncherScan.LooksLikeGame(@"D:\Big", env));
+        Assert.True(LauncherScan.LooksLikeGame(@"D:\Epic", env));
+        Assert.True(LauncherScan.LooksLikeGame(@"D:\Steamy", env)); // 하위 폴더 안의 steam_appid.txt
+        Assert.True(LauncherScan.LooksLikeGame(@"D:\Gog", env));
+        Assert.True(LauncherScan.LooksLikeGame(@"D:\Lib\steamapps\common\Y", env)); // 상위 steamapps 의 appmanifest
+        Assert.False(LauncherScan.LooksLikeGame(@"D:\Other\Y", env));
+    }
+
+    [Theory]
+    [InlineData("HYSafeMode.exe", true)]
+    [InlineData("GameLauncher.exe", true)]
+    [InlineData("unins000.exe", true)]
+    [InlineData("CrashReportClient.exe", true)]
+    [InlineData("Game-Win64-Shipping.exe", false)]
+    [InlineData("Genshin.exe", false)]
+    public void ExcludedExeNamesFollowThePickExeRules(string name, bool excluded) => Assert.Equal(excluded, LauncherScan.IsExcludedExeName(name));
+
+    [Fact]
+    public void ReselectExePicksAGameExeWhenTheRegisteredOneIsLauncherLike()
+    {
+        List<(string Path, long Size)> files = [(@"D:\HoYoPlay\launcher\HYSafeMode.exe", 900), (@"D:\HoYoPlay\launcher\HoYoPlay.exe", 800), (@"D:\HoYoPlay\games\Genshin\GenshinImpact.exe", 50)];
+
+        Assert.Equal(@"D:\HoYoPlay\games\Genshin\GenshinImpact.exe", LauncherScan.ReselectExe(files, "HYSafeMode.exe"));
+        Assert.Null(LauncherScan.ReselectExe(files, "GenshinImpact.exe")); // 이미 맞음
+    }
+
+    [Fact]
+    public void ReselectExePrefersTheGamesSubfolderOverALauncherShellOutsideIt()
+    {
+        List<(string Path, long Size)> files = [(@"D:\GRYPHLINK\1.0\Games.exe", 900), (@"D:\GRYPHLINK\1.0\games\Arknights\Arknights.exe", 100)];
+
+        Assert.Equal(@"D:\GRYPHLINK\1.0\games\Arknights\Arknights.exe", LauncherScan.ReselectExe(files, "Games.exe"));
+        Assert.Null(LauncherScan.ReselectExe(files, "Arknights.exe"));
+        Assert.Null(LauncherScan.ReselectExe([(@"D:\X\Big.exe", 900), (@"D:\X\Small.exe", 100)], "Small.exe")); // games 폴더도 제외 단어도 없으면 그대로
+        Assert.Null(LauncherScan.ReselectExe([], "HYSafeMode.exe"));
+        Assert.Null(LauncherScan.ReselectExe([(@"D:\X\updater.exe", 100)], "updater.exe")); // 고를 것이 없음
+    }
+
+    [Fact]
     public void EachDriveIsQueriedOnce()
     {
         FakeEnv env = SteamEnv();

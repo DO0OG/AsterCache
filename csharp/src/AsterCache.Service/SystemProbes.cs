@@ -1,9 +1,49 @@
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.ServiceProcess;
+using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 
 namespace AsterCache.Service;
+
+/// Windows 프리페처가 켜져 있는가 (읽기만 함). 프리페치 기록 (.pf) 으로 첫 실행 없이 boot 트레이스를 만들려면 프리페처가 응용 프로그램을 기록하고 있어야 합니다.
+public static class SystemProbes
+{
+    private const string PrefetchKey = @"SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters";
+    private const int ApplicationBit = 1; // EnablePrefetcher: 1 = 응용 프로그램, 2 = 부팅, 3 = 둘 다
+
+    public static bool PrefetcherOn() => PrefetcherOn(SysMainRunning, EnablePrefetcher);
+
+    /// SysMain 서비스가 돌고 있고 EnablePrefetcher 의 응용 프로그램 비트가 켜져 있을 때만 참 (값을 읽지 못하면 거짓).
+    public static bool PrefetcherOn(Func<bool> sysMainRunning, Func<int?> enablePrefetcher) => enablePrefetcher() is { } v && (v & ApplicationBit) != 0 && sysMainRunning();
+
+    private static bool SysMainRunning()
+    {
+        try
+        {
+            using var sc = new ServiceController("SysMain");
+            return sc.Status == ServiceControllerStatus.Running;
+        }
+        catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return false; // 서비스가 없거나 읽을 수 없음
+        }
+    }
+
+    private static int? EnablePrefetcher()
+    {
+        try
+        {
+            using RegistryKey? key = Registry.LocalMachine.OpenSubKey(PrefetchKey);
+            return key?.GetValue("EnablePrefetcher") as int?;
+        }
+        catch (Exception e) when (e is System.Security.SecurityException or UnauthorizedAccessException or IOException)
+        {
+            return null;
+        }
+    }
+}
 
 /// 링크·정션을 푼 실제 경로 (GetFinalPathNameByHandle). 열 수 없으면 null.
 public static partial class RealPaths

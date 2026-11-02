@@ -28,13 +28,14 @@ public sealed class ConfigEditorAutoTests : IDisposable
         editor.Add(Game("a"));
         editor.SetAuto(AutoSettings.Default);
 
-        Assert.Equal(16, CountKeys(File.ReadAllText(editor.ConfigPath), "auto"));
+        Assert.Equal(17, CountKeys(File.ReadAllText(editor.ConfigPath), "auto"));
         Assert.Equal(Plain(AutoSettings.Default), Plain(editor.Load()!.Auto));
 
         var custom = new AutoSettings(false, false, true, false, 3, 7, 90, 128, 5, ["a.exe", "b.exe"])
         {
             IdleSeconds = 45,
-            Learn = new LearnSettings(false, 256, 1024) { Mode = LearnSettings.GapMode },
+            Learn = new LearnSettings(false, 256, 1024) { Mode = LearnSettings.AdaptiveMode, SaturationMbps = 120 },
+            SharedProfiles = new SharedProfilesSettings(false, "https://example.com/profiles.zip"),
             FullPrewarm = false,
             FullPrewarmMaxMib = 2048,
             EngineProfiles = false,
@@ -45,9 +46,28 @@ public sealed class ConfigEditorAutoTests : IDisposable
         Assert.Equal(45, read.IdleSeconds);
         Assert.Equal(["a.exe", "b.exe"], read.IgnoreExes);
         Assert.Equal((false, 2048, false), (read.FullPrewarm, read.FullPrewarmMaxMib, read.EngineProfiles));
+        Assert.Equal((LearnSettings.AdaptiveMode, false, "https://example.com/profiles.zip"), (read.Learn.Mode, read.SharedProfiles.Enabled, read.SharedProfiles.Url));
+        Assert.Equal(120, read.Learn.SaturationMbps);
 
         editor.SetAuto(AutoSettings.Default with { RewarmMinutes = 0 });
         Assert.Equal(0, editor.Load()!.Auto.RewarmMinutes);
+    }
+
+    [Fact]
+    public void ReplaceExeNamesSwapsTheListKeepsTheRestAndRejectsDuplicatesAcrossGames()
+    {
+        var editor = new ConfigEditor(_dir);
+        editor.Add(Game("a", "auto"));
+        editor.Add(Game("b"));
+
+        editor.ReplaceExeNames("a", ["real.exe", "extra.exe"]);
+
+        GameSettings a = editor.Load()!.Games.Single(g => g.Name == "a");
+        Assert.Equal(["real.exe", "extra.exe"], a.ExeNames);
+        Assert.Equal("auto", a.Source);
+        Assert.Throws<SettingsException>(() => editor.ReplaceExeNames("a", ["b.exe"])); // 다른 게임이 쓰는 이름
+        Assert.Equal(["real.exe", "extra.exe"], editor.Load()!.Games.Single(g => g.Name == "a").ExeNames); // 거부되면 파일은 그대로
+        Assert.Throws<SettingsException>(() => editor.ReplaceExeNames("nope", ["x.exe"]));
     }
 
     [Fact]

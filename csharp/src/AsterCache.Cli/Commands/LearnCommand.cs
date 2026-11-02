@@ -106,7 +106,8 @@ internal static class LearnCommand
         new("max-mib", Type: ArgType.Int),
         new("gap-ms", Type: ArgType.Int),
         new("seq-runs", Type: ArgType.Int),
-        new("mode", Choices: [LearnSettings.StreamMode, LearnSettings.GapMode], Default: LearnSettings.StreamMode),
+        new("mode", Choices: [LearnSettings.StreamMode, LearnSettings.GapMode, LearnSettings.BoundedMode, LearnSettings.AdaptiveMode], Default: LearnSettings.StreamMode),
+        new("saturation-mbps", Type: ArgType.Int),
         new("out"),
         new("json", ArgKind.Flag),
     ];
@@ -134,12 +135,19 @@ internal static class LearnCommand
             throw new ArgException("--gap-ms must be 0 or more and --seq-runs must be 1 or more");
         }
 
+        long saturationMbps = a.Int("saturation-mbps") ?? LearnSettings.DefaultSaturationMbps;
+        if (saturationMbps is < 1 or > 10000)
+        {
+            throw new ArgException("--saturation-mbps must be between 1 and 10000");
+        }
+
         LearnDeps deps = Deps;
         IReadOnlyList<string> exes = a.List("exe");
         string root = PathText.Str(a.Text("root")!);
         string? outPath = a.Text("out") is { } p ? PathText.Str(p) : null;
         long maxBytes = ReadAhead.ResolveMaxBytes((int)Math.Min(maxMib ?? 0, int.MaxValue), deps.PhysicalRamBytes());
-        using var engine = new ReadAhead(new ReadAheadOptions([root], window << 20, maxBytes, DefaultMinFreeRamMib, deps.AvailableRamMib, GapMs: gapMs, SeqRuns: (int)seqRuns, Stream: a.Text("mode") == LearnSettings.StreamMode), deps.OpenIo());
+        string mode = a.Text("mode")!;
+        using var engine = new ReadAhead(new ReadAheadOptions([root], window << 20, maxBytes, DefaultMinFreeRamMib, deps.AvailableRamMib, GapMs: gapMs, SeqRuns: (int)seqRuns, Stream: mode != LearnSettings.GapMode, Bounded: mode is LearnSettings.BoundedMode or LearnSettings.AdaptiveMode, Adaptive: mode == LearnSettings.AdaptiveMode, SaturationMbps: (int)saturationMbps), deps.OpenIo());
 
         using var stop = new ManualResetEventSlim();
         ConsoleCancelEventHandler onCancel = (_, e) =>
@@ -188,6 +196,8 @@ internal static class LearnCommand
             { "gap_count", st.GapCount },
             { "yielded_requests", st.YieldedRequests },
             { "read_ahead_while_idle_bytes", st.ReadAheadWhileIdleBytes },
+            { "saturated_ms", st.SaturatedMs },
+            { "paused_requests", st.PausedRequests },
         };
         if (outPath is not null)
         {

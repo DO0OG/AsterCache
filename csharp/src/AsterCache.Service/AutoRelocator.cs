@@ -3,9 +3,11 @@ using System.Text.RegularExpressions;
 using AsterCache.Core;
 using AsterCache.Core.Apply;
 using AsterCache.Core.Logging;
+using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
 using AsterCache.Core.Trace;
+using AsterCache.Windows;
 
 namespace AsterCache.Service;
 
@@ -52,6 +54,13 @@ public sealed class AutoRelocator
     /// boot 트레이스 (가져온 프로필) 로 만든 계획의 stats.source, 그 계획으로 재배치를 마친 게임의 detail 표시.
     public const string PlanSourceBoot = "boot";
     public const string RelocatedProfile = "relocated (profile)";
+
+    /// 프리페치 기록 (.pf) 으로 만든 boot 트레이스 (부트스트랩 S2) 로 만든 계획의 stats.source, 그 계획으로 재배치를 마친 게임의 detail 표시.
+    public const string PlanSourcePrefetch = PrefetchFiles.BootSource;
+    public const string RelocatedPrefetch = "relocated (prefetch)";
+
+    /// 프리페치 계획은 이 크기 이하의 파일만 통째로 존에 모읍니다 (더 큰 파일은 옮기지 않고 예열 때만 읽음).
+    public const long PrefetchMaxFileBytes = 64L << 20;
     private const string FirstRunDetail = "first run recorded, planning again";
 
     /// 업데이트 뒤 재계획 검사 간격: 배치까지 끝낸 게임마다 이 주기로만 계획의 지문을 봅니다 (ReapplyChecker 의 주기보다 짧게: 게임을 다시 켜기 전에 잡으려고).
@@ -74,6 +83,7 @@ public sealed class AutoRelocator
     private readonly ConcurrentDictionary<string, DateTimeOffset> _coldTried = new(StringComparer.Ordinal); // 이번 서비스 실행 중 기록 없는 예열을 요청한 게임과 그 시각 (영구 건너뜀은 발견 주기마다 다시 시도)
     private (bool, int, bool) _coldKey; // 틱 스레드에서만 씀: 설정이 바뀌면 _coldTried 를 비움
     private readonly Dictionary<string, DateTimeOffset> _staleChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀
+    private readonly Dictionary<string, DateTimeOffset> _prefetchTried = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 프리페치 기록으로 boot 를 만들어 본 게임과 그 시각
     private readonly HashSet<string> _seeded = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 이전 존 시작에 맞춰 계획을 만든 게임
     private readonly ConcurrentDictionary<string, DateTimeOffset> _traceWarmTried = new(StringComparer.Ordinal); // 게임별로 예열을 시도한 트레이스 파일 시각
     private readonly object _warmLock = new(); // 아래 예열 큐 상태
@@ -152,6 +162,7 @@ public sealed class AutoRelocator
 
         RecoverReplan(s);
         ReplanChanged(s);
+        PrefetchBootstrap(s);
         WarmCold(s, warms);
         bool relocateOn = s.Auto.Relocate && s.Auto.MaxRelocationsPerDay > 0;
         IReadOnlyDictionary<string, DateTimeOffset> played = _status.LastPlayed();
@@ -205,6 +216,34 @@ public sealed class AutoRelocator
         });
         _idle.Reset(); // 다음 재배치도 다시 유휴를 기다림
         Warm(next, "after relocation", warms); // 끝났든 보류·실패했든 트레이스가 있으면 그 범위로 바로 예열 (새 배치가 RAM 에 오르게)
+    }
+
+    // 부트스트랩 S2: 원시 트레이스도 boot 트레이스도 (S1: 공유 프로필이 만든 것 포함) 없는 등록 게임은 Windows 프리페치 기록 (.pf) 으로 boot 트레이스를 만듭니다.
+    // 못 만들면 (프리페처 꺼짐, 맞는 기록 없음) 바로 아래 WarmCold (S3) 가 폴더 통째·엔진 프로필로 예열합니다. 재배치 대상 (HDD) 에서 게임이 돌지 않을 때만, 게임마다 발견 주기에 한 번 시도합니다.
+    private void PrefetchBootstrap(AsterSettings s)
+    {
+        IReadOnlyDictionary<string, DateTimeOffset> played = _status.LastPlayed();
+        foreach (GameSettings g in s.Games.OrderByDescending(g => played.GetValueOrDefault(g.Name, DateTimeOffset.MinValue)).ThenBy(g => g.Name, StringComparer.Ordinal))
+        {
+            if (AutoTracer.PlanTracePath(g, _env.FileExists) is not null || _prefetchTried.TryGetValue(g.Name, out DateTimeOffset at) && _env.Now() - at < AutoMode.DiscoveryEvery
+                || _env.DriveRefusal(g.OriginRoot) is not null || AnyGameRunning(g))
+            {
+                continue;
+            }
+
+            _prefetchTried[g.Name] = _env.Now();
+            try
+            {
+                if (_env.PrefetchBoot(g) is > 0 and int n)
+                {
+                    _log.Info($"{g.Name}: boot trace made from the prefetch record ({n} ranges)");
+                }
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                _log.Warn($"{g.Name}: prefetch record could not be used ({e.GetType().Name})");
+            }
+        }
     }
 
     // 기록 (원시 트레이스·prefetch 기록) 이 없는 등록 게임은 첫 실행 없이 폴더 통째·엔진 프로필로 예열합니다 (게임당 서비스 실행 중 한 번: 일시적 이유로 건너뛰면 다음 틱에 다시).
@@ -574,7 +613,9 @@ public sealed class AutoRelocator
         {
             string tracePath = AutoTracer.PlanTracePath(g, _env.FileExists) ?? AutoTracer.RawTracePath(g);
             bool boot = tracePath == AutoTracer.BootTracePath(g);
-            IReadOnlyList<IReadOnlyList<TraceEvent>> sessions = [_env.LoadTrace(tracePath, g.OriginRoot)];
+            bool prefetch = boot && _env.TraceSource(tracePath) == PlanSourcePrefetch;
+            IReadOnlyList<TraceEvent> trace = _env.LoadTrace(tracePath, g.OriginRoot);
+            IReadOnlyList<IReadOnlyList<TraceEvent>> sessions = [prefetch ? WholeFilesByLcn(trace) : trace];
             PlanFile probe = _env.MakePlan(sessions, g.OriginRoot, ZoneSize.ProbeMib);
             long hot = probe.Stats.TryGetValue("hot_bytes", out object? h) && h is long bytes ? bytes : 0;
             if (hot == 0)
@@ -586,10 +627,16 @@ public sealed class AutoRelocator
             long zoneMib = Math.Min(ZoneSize.ZoneMib(hot), s.MaxZoneAuto ? ZoneSize.AutoMaxMib(_env.PhysicalRamBytes()) : s.MaxZoneMib);
             long? start = reuseZone && _env.MakePlanAt is not null ? PreviousZoneStart(g) : null;
             PlanFile plan = start is { } lcn ? _env.MakePlanAt!(sessions, g.OriginRoot, zoneMib, lcn) : _env.MakePlan(sessions, g.OriginRoot, zoneMib);
+            if (start is not null && ZoneBlockedByOwnData(plan))
+            {
+                _log.Info($"{g.Name}: previous zone holds data this plan does not move, looking for a new one");
+                (start, plan) = (null, _env.MakePlan(sessions, g.OriginRoot, zoneMib));
+            }
+
             _ = start is null ? _seeded.Remove(g.Name) : _seeded.Add(g.Name);
             if (boot)
             {
-                plan.Stats.Add("source", PlanSourceBoot);
+                plan.Stats.Add("source", prefetch ? PlanSourcePrefetch : PlanSourceBoot);
             }
 
             _env.SavePlan(plan, sessions, g.Plan);
@@ -603,10 +650,75 @@ public sealed class AutoRelocator
         }
     }
 
-    private static bool IsBootPlan(PlanFile plan) => plan.Stats.TryGetValue("source", out object? v) && v is PlanSourceBoot;
+    // boot 트레이스 (가져온 프로필 또는 프리페치 기록) 로 만든 계획인가.
+    private static bool IsBootPlan(PlanFile plan) => plan.Stats.TryGetValue("source", out object? v) && v is PlanSourceBoot or PlanSourcePrefetch;
 
-    // 완료 단계의 detail 은 예열 표시를 새로 붙일 때 비우되, 프로필로 재배치했다는 표시는 남깁니다.
-    private static string? DoneDetail(AutoGameEntry e) => e.Stage != AutoStage.Done ? e.Detail : e.Detail?.Contains(RelocatedProfile, StringComparison.Ordinal) == true ? RelocatedProfile : null;
+    // 재배치를 마친 게임의 표시: 프리페치 기록이면 "relocated (prefetch)", 프로필이면 "relocated (profile)", 원시 트레이스면 없음.
+    private static string? RelocatedTag(PlanFile plan) =>
+        !IsBootPlan(plan) ? null : plan.Stats["source"] is PlanSourcePrefetch ? RelocatedPrefetch : RelocatedProfile;
+
+    // 완료 단계의 detail 은 예열 표시를 새로 붙일 때 비우되, 프로필·프리페치 기록으로 재배치했다는 표시는 남깁니다.
+    private static string? DoneDetail(AutoGameEntry e) => e.Stage != AutoStage.Done ? e.Detail
+        : e.Detail?.Contains(RelocatedPrefetch, StringComparison.Ordinal) == true ? RelocatedPrefetch
+        : e.Detail?.Contains(RelocatedProfile, StringComparison.Ordinal) == true ? RelocatedProfile : null;
+
+    // 프리페치 계획의 입력: 트레이스에 나온 파일 중 크기가 PrefetchMaxFileBytes 이하인 것을 통째로, 물리 순서 (첫 extent 의 LCN, 오름차순) 로.
+    // shortcut: 프리페치 순서가 실제 접근 순서와 얼마나 맞는지 아직 재지 않아서 (τ 검증 전) 접근 순서를 따르지 않고 물리 순서로 보수적으로 정렬함, 검증되면 프리페치 순서로 바꿈.
+    private List<TraceEvent> WholeFilesByLcn(IReadOnlyList<TraceEvent> trace)
+    {
+        var rows = new List<(string Path, long Size, long Lcn)>();
+        foreach (string path in trace.Select(e => e.Path).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            long size = _env.Stat(path).Size;
+            if (size > 0 && size <= PrefetchMaxFileBytes && _env.Extents(path) is { Count: > 0 } extents)
+            {
+                rows.Add((path, size, extents.Min(x => x.Lcn)));
+            }
+        }
+
+        return rows.OrderBy(r => r.Lcn).ThenBy(r => r.Path, StringComparer.Ordinal).Select(r => new TraceEvent(r.Path, 0, r.Size)).ToList();
+    }
+
+    // 같은 존을 다시 쓰는 계획의 목표 자리에 이 계획이 옮기지 않는 자기 파일 데이터 (예: 이전 계획이 존에 모은, 이번 기록에서는 핫이 아닌 부분) 가 있는가.
+    // 그런 목표로는 이동이 늘 실패하므로 (사용 중인 클러스터) 새 존을 찾아야 합니다. 핫 범위(Order) 밖의 조각이 존의 쓰는 구간과 겹치는지 봅니다.
+    private bool ZoneBlockedByOwnData(PlanFile plan)
+    {
+        if (plan.Zone.StartLcn is not { } zoneStart || !plan.Stats.TryGetValue("zone_used_clusters", out object? u) || u is not long used)
+        {
+            return false;
+        }
+
+        foreach (IGrouping<string, PlanRange> file in plan.Order.GroupBy(o => o.Path, StringComparer.Ordinal))
+        {
+            if (_env.Extents(file.Key) is not { } extents)
+            {
+                continue;
+            }
+
+            List<(long A, long B)> hot = [.. file.Select(o => (A: o.Vcn, B: o.Vcn + o.Clusters)).OrderBy(r => r.A)];
+            foreach (Extent e in extents.Where(e => e.Lcn < zoneStart + used && zoneStart < e.Lcn + e.Clusters))
+            {
+                long cur = e.Vcn + Math.Max(0, zoneStart - e.Lcn); // 존과 겹치는 VCN 구간 [cur, end)
+                long end = e.Vcn + Math.Min(e.Clusters, zoneStart + used - e.Lcn);
+                foreach ((long a, long b) in hot.Where(r => r.B > cur && r.A < end))
+                {
+                    if (a > cur)
+                    {
+                        return true;
+                    }
+
+                    cur = Math.Max(cur, b);
+                }
+
+                if (cur < end)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
 
     private long? PreviousZoneStart(GameSettings g)
     {
@@ -701,7 +813,7 @@ public sealed class AutoRelocator
             {
                 LayoutReport layout = LayoutVerifier.Verify(_env.LoadPlan(g.Plan), _env.Extents);
                 _log.Info($"{g.Name}: auto relocation verified: " + (layout.Contiguous ? "contiguous" : layout.ResumeNeeded ? "resume-needed" : "non-contiguous"));
-                _status.Complete(g.Name, g.Source, _env.Now(), counted: true, IsBootPlan(plan) ? RelocatedProfile : null);
+                _status.Complete(g.Name, g.Source, _env.Now(), counted: true, RelocatedTag(plan));
                 _log.Info($"{g.Name}: auto relocation done");
             }
         }

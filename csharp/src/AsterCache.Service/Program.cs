@@ -5,7 +5,7 @@ using AsterCache.Windows;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
-// 사용법: AsterCache.Service [--console] [--data-dir <폴더>]   (기본 폴더 %ProgramData%\AsterCache: config.json, plans\, journals\, logs\)
+// 사용법: AsterCache.Service [--console [--watch-test <초>]] [--data-dir <폴더>]   (기본 폴더 %ProgramData%\AsterCache: config.json, plans\, journals\, logs\)
 // 종료 코드: 0 정상, 2 설정 오류.
 bool console = args.Contains("--console");
 int at = Array.IndexOf(args, "--data-dir");
@@ -24,6 +24,14 @@ catch (Exception e) when (e is SettingsException or IOException or UnauthorizedA
 {
     Console.Error.WriteLine("AsterCache.Service: cannot start: " + FileLog.Scrub(e.Message));
     return 2;
+}
+
+int watchAt = Array.IndexOf(args, "--watch-test");
+if (console && watchAt >= 0)
+{
+    // 진단: 서비스를 띄우지 않고 감시기만 돌려 본다 (ETW 가 시작 이벤트를 못 받는 원인을 가르는 용도)
+    int seconds = watchAt + 1 < args.Length && int.TryParse(args[watchAt + 1], out int n) && n is > 0 and <= 3600 ? n : 30;
+    return await WatchTest.RunAsync(settings.Games.SelectMany(g => g.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase).ToList(), seconds, Console.Out);
 }
 
 bool admin = Elevation.IsAdmin();

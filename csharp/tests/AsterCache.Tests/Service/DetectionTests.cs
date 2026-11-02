@@ -90,6 +90,37 @@ public sealed class EtwWatcherTests
     }
 
     [Fact]
+    public void RawProcessStartPayloadYieldsPidAndImageWithoutTdh()
+    {
+        // 버전 4 배치: ProcessID, ProcessSequenceNumber, CreateTime, ParentProcessID, ParentSequenceNumber, SessionID, Flags, ElevationType, IsElevated, SID, ImageName, ...
+        var ms = new MemoryStream();
+        using (var w = new BinaryWriter(ms, System.Text.Encoding.Unicode, leaveOpen: true))
+        {
+            w.Write(4242u);
+            w.Write(7UL);
+            w.Write(133000000000000000L);
+            w.Write(100u);
+            w.Write(8UL);
+            w.Write(1u);
+            w.Write(0u);
+            w.Write(2u);
+            w.Write(1u);
+            w.Write(new byte[] { 1, 1, 0, 0, 0, 0, 0, 16, 0, 48, 0, 0 }); // S-1-16-12288
+            w.Write(System.Text.Encoding.Unicode.GetBytes(@"\Device\HarddiskVolume3\Windows\System32\cmd.exe" + "\0"));
+            w.Write(0x1234u);
+            w.Write(0x5678u);
+            w.Write(System.Text.Encoding.Unicode.GetBytes("Package_1.0_x64__abc\0"));
+        }
+
+        Assert.True(ProcessStartPayload.TryParse(ms.ToArray(), out int pid, out string? image));
+        Assert.Equal(4242, pid);
+        Assert.Equal(@"\Device\HarddiskVolume3\Windows\System32\cmd.exe", image);
+        Assert.Equal("cmd.exe", EtwProcessWatcher.ExeNameOf(image));
+        Assert.False(ProcessStartPayload.TryParse(new byte[4], out _, out _));
+        Assert.False(ProcessStartPayload.TryParse(new byte[64], out _, out _));
+    }
+
+    [Fact]
     public void NonAdministratorGetsNotAdminBeforeAnySessionExists()
     {
         var watcher = new EtwProcessWatcher(["game.exe"], () => false);
@@ -235,6 +266,34 @@ public sealed class DispatcherTests
         Assert.Contains(log.Lines, l => l.StartsWith("Info: service started: no games registered", StringComparison.Ordinal));
         Assert.Contains(log.Lines, l => l.Equals("Info: service stopped", StringComparison.Ordinal));
         Assert.DoesNotContain(log.Lines, l => l.StartsWith("Error", StringComparison.Ordinal) || l.StartsWith("Warn", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task FaultedPrimaryWatcherIsLoggedAndPollingFallbackTakesOver()
+    {
+        var streamer = new FakeStreamer();
+        var log = new ListLog();
+        var emitted = new TaskCompletionSource();
+        var worker = new Worker(new AsterSettings(250, [Games.Make("mw4", "game.exe")]), log, new ThrowingWatcher(), new OneShotWatcher(new ProcessStart(1, "game.exe", 0), emitted), streamer,
+            new ReapplyChecker(ReapplyTests.NoIoEnv(), log));
+
+        await worker.StartAsync(CancellationToken.None);
+        await emitted.Task;
+        for (int i = 0; i < 200 && streamer.Calls.IsEmpty; i++)
+        {
+            await Task.Delay(10);
+        }
+
+        await worker.StopAsync(CancellationToken.None);
+
+        Assert.Contains(log.Lines, l => l.StartsWith("Error: process watcher failed", StringComparison.Ordinal) && l.Contains("session never started", StringComparison.Ordinal));
+        Assert.Contains(log.Lines, l => l.StartsWith("Warn: falling back to", StringComparison.Ordinal));
+        Assert.Equal("mw4", Assert.Single(streamer.Calls).Game);
+    }
+
+    private sealed class ThrowingWatcher : IProcessWatcher
+    {
+        public Task RunAsync(Action<ProcessStart> onStart, CancellationToken cancellationToken) => throw new InvalidOperationException("session never started");
     }
 
     private sealed class CountingWatcher : IProcessWatcher

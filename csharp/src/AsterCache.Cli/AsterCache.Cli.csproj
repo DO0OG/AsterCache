@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
+    <!-- 게시(-r win-x64)할 때만 적용: 시작 때의 JIT 를 줄임 (콜드 시작에서 이득이 큼) -->
+    <PublishReadyToRun>true</PublishReadyToRun>
   </PropertyGroup>
   <PropertyGroup>
     <OutputType>Exe</OutputType>

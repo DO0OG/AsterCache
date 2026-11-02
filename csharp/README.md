@@ -26,6 +26,10 @@ CLI 명령(`aster plan`, `probe`, `apply`, `verify`, `revert`, `trace`, `prefetc
 
 서비스는 `AsterCache.Service.exe [--console] [--data-dir <폴더>]` 로 실행합니다. 기본 데이터 폴더는 `%ProgramData%\AsterCache` 이며 `config.json`, `plans\`, `journals\`, `logs\` 를 씁니다.
 
+`AsterCache.Service.exe --console --watch-test <초>` 는 서비스를 띄우지 않고 설정의 exe 이름으로 ETW 감시기를 그 시간 동안 돌려, 감지한 시작과 세션으로 들어온 Kernel-Process 이벤트 집계(길·ID 별: 원시 `raw`, TDH 로 푼 `decoded`), 첫 이벤트의 페이로드 모양, 예외를 출력하고 이어서 폴링 감시기로 같은 시험을 한 번 더 돌립니다 (관리자 필요). ETW 감시기는 시작 이벤트를 두 길로 받고, 60초 동안 시작 이벤트가 하나도 안 오면 예외로 끝나 서비스가 폴링으로 내려갑니다. ETW 실시간 세션은 버퍼를 약 1초마다 내려 보내므로 감지 지연이 폴링(250 ms)보다 클 수 있습니다.
+
+`aster prefetch --timing` 은 출력 JSON 에 `timing_ms` (load, schedule, stream 과 경로 해석·배치 조회·크기 조회의 합계·횟수, 명령 안 총시간) 를 더합니다. 게시할 때(`-r win-x64`) `PublishReadyToRun` 이 켜져 시작 JIT 를 줄입니다.
+
 ## 관리자 스크립트 (사용자가 직접 실행)
 
 `csharp\scripts\` 의 스크립트는 모두 관리자 PowerShell 에서 사용자가 한 번씩 실행합니다. 자동화나 작업자가 실행하지 않습니다. 각 스크립트는 첫 단계에서 관리자 권한을 확인하고, 없으면 아무것도 바꾸지 않고 멈춥니다. 결과는 `results\csharp_<yyyyMMdd_HHmmss>\` 에 쌓이며, 되돌리기 명령은 그 폴더의 `README.txt` 에 적히지만 스크립트가 실행하지는 않습니다.

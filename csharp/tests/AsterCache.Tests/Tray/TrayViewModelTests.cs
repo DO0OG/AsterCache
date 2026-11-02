@@ -220,6 +220,14 @@ public sealed class TrayViewModelTests : IDisposable
             Throw();
         }
 
+        public void RequestInstall(string serviceExe, string dataDir)
+        {
+        }
+
+        public void RequestUninstall()
+        {
+        }
+
         private void Throw()
         {
             if (Cancel)

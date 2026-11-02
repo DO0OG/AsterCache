@@ -27,8 +27,15 @@ public static class AsterCli
         new("stream-bench", StreamBenchCommand.Options, StreamBenchCommand.Run),
     ];
 
+    /// 전역 옵션 `--result-file <경로>` (명령 앞에): 표준 출력 내용을 그 파일에도 씁니다 (승격 실행처럼 표준 출력을 가져올 수 없을 때 결과를 받는 길).
     public static int Run(IReadOnlyList<string> args, TextWriter stdout, TextWriter stderr)
     {
+        if (args.Count >= 2 && args[0] == "--result-file")
+        {
+            using var file = new StreamWriter(args[1], false, new System.Text.UTF8Encoding(false));
+            return Run(args.Skip(2).ToList(), new TeeWriter(stdout, file), stderr);
+        }
+
         if (args.Count == 0 || args[0] is "-h" or "--help")
         {
             (args.Count == 0 ? stderr : stdout).WriteLine("usage: aster {" + string.Join(",", Commands.Select(c => c.Name)) + "} ...");

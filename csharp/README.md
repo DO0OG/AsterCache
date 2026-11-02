@@ -30,6 +30,45 @@ CLI 명령(`aster plan`, `probe`, `apply`, `verify`, `revert`, `trace`, `prefetc
 
 `aster prefetch --timing` 은 출력 JSON 에 `timing_ms` (load, schedule, stream 과 경로 해석·배치 조회·크기 조회의 합계·횟수, 명령 안 총시간) 를 더합니다. 게시할 때(`-r win-x64`) `PublishReadyToRun` 이 켜져 시작 JIT 를 줄입니다.
 
+## 관리 창
+
+트레이 앱(`AsterCache.Tray`)에 드라이브 관리 유틸리티처럼 한눈에 보고 조작하는 메인 창 "AsterCache" 가 있습니다. 앱을 시작하면 기본으로 열리고, 닫으면 트레이로 내려갑니다 (트레이 아이콘 더블클릭 또는 메뉴 "열기" 로 다시 엽니다). 로직은 새로 만들지 않고 같은 폴더의 `aster.exe` 를 자식 프로세스로 불러 한 줄 JSON 을 읽으며 (`aster status`, `plan`, `apply`, `verify`, `revert`, `trace`, `prefetch`), 설정 편집과 서비스 제어는 트레이의 `ConfigEditor`·`ServiceControl` 을 씁니다. 실행한 명령과 결과(JSON·오류)는 모두 `tray.log` 에 남고 로그 탭에서 봅니다.
+
+```
+dotnet publish csharp\src\AsterCache.Tray\AsterCache.Tray.csproj -c Release -r win-x64 --self-contained -o csharp\publish\gui
+csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
+```
+
+`aster.exe` 와 `AsterCache.Service.exe` 가 같은 `gui` 폴더에 함께 게시됩니다 (`--data-dir` 의 기본값은 `%ProgramData%\AsterCache`).
+
+| 화면 | 내용 |
+|---|---|
+| 왼쪽 드라이브 목록 | 고정 볼륨마다 문자·레이블·파일시스템·전체/여유 용량·디스크 모델·HDD/SSD(`IOCTL_STORAGE_QUERY_PROPERTY` 의 `IncursSeekPenalty`, 실패하면 "알 수 없음")·등록된 게임 수. 선택하면 오른쪽에 그 드라이브의 게임만 보입니다 ("전체 드라이브" 가 맨 위). |
+| 상태 탭 | 서비스 설치·실행 여부, 감시기 종류, 마지막 예열(시각·MiB·초), 게임별 배치 판정(`aster status --plan` 의 `verdict`), 존 적중률(`in_zone_clusters / hot_clusters`), 마지막 재배치 시각(저널 파일 시각), 게임별 예열 결과. 새로 고침 버튼. |
+| 게임 탭 | 목록: 이름·exe·원점 루트·계획/트레이스 유무·배치 verdict·예열 설정. 버튼은 아래 표. |
+| 설정 탭 | 서비스 설치·제거·시작·정지, 감시기 poll/etw(서비스를 다시 시작해야 적용), 예열 기본값 표시, 데이터 폴더·로그 폴더 열기, 트레이·서비스 버전. |
+| 로그 탭 | `service.log` 와 `tray.log` 의 끝 200줄, 새로 고침. |
+| 위쪽 띠 | 관리자 권한이 없으면 "관리자 권한 없음: 트레이스·재배치·서비스 제어는 관리자 재실행 필요" 와 [관리자로 다시 실행] 버튼. |
+
+| 게임 탭 버튼 | 동작 |
+|---|---|
+| 등록 | exe 파일을 고르면 원점 루트·허용 루트는 exe 폴더, 이름은 파일 이름, 볼륨 라벨은 그 드라이브에서 채운 등록창이 열리고 (모든 칸 수정 가능, 트리거 프로그램 칸 포함) 기존 설정 검증을 통과해야 저장됩니다. |
+| 제거 | 설정에서 게임을 뺍니다 (파일은 그대로). |
+| 트레이스 수집 | 관리자. `aster trace --live --exe <exe> --origin-root <루트> --out plans\<이름>.trace.json --stop-file <임시>` 를 승격 실행합니다. "게임을 실행해 첫 맵까지 로딩한 뒤 종료하십시오" 를 보여 주고, 게임 프로세스가 뜬 뒤 사라지면 (또는 [수집 중지]) stop-file 을 만들어 정상 종료시킨 다음 건수와 MiB 를 표시합니다. |
+| 계획 만들기 | `aster plan --dry-run` (존 16 GiB) 으로 핫 바이트를 본 뒤, 존 크기를 핫 바이트의 1.1 배를 16 MiB 로 올림한 값으로 정해 승격 `aster plan --out plans\<이름>.plan.json` 을 씁니다. 핫·존·이동 MiB 와 작업 수를 보여 줍니다. |
+| 재배치 실행 | 확인창에 이동 바이트와 되돌리기 가능 안내를 보여 준 뒤, 승격 `aster apply --dry-run` 다음 `--execute --allowed-root <루트> --require-volume-label <라벨>` 을 돌립니다. 진행은 저널 줄 수로 표시하고 끝나면 `aster verify` 결과를 보여 줍니다. |
+| 되돌리기 | 확인 뒤 승격 `aster revert --journal <저널> --execute`. |
+| 지금 예열 | 트레이의 "지금 예열 (스트림)" 과 같은 즉시 스트림. |
+| 측정 | `aster prefetch --execute --timing` 1회: 선읽기 MiB·초·MB/s 와 단계별(로드·스케줄·스트림) ms. 읽으면 파일 캐시가 데워지므로 같은 값을 다시 재려면 캐시를 비워야 합니다. |
+
+- 파일 자리: 트레이스 `plans\<이름>.trace.json`, 계획 `plans\<이름>.plan.json`, 계획이 같이 쓰는 읽기 순서 `plans\<이름>.plan.json.prefetch.json` (등록창이 설정의 `trace` 로 이 이름을 채웁니다), 저널 `journals\<이름>.jsonl` (서비스의 재적용 저널과 같은 파일이라 이어하기·되돌리기가 서비스와 맞습니다).
+- 관리자 권한: 데이터 폴더는 관리자만 쓰므로 트레이스·계획·재배치·되돌리기·설정 저장은 관리자가 필요합니다. 비관리자로 열면 `aster.exe` 를 UAC 로 직접 승격 실행하고 (인자는 하나씩 전달, 결과는 전역 옵션 `aster --result-file <경로> <명령> ...` 이 표준 출력을 복사해 둔 파일로 받음, 실행마다 새 임시 하위 폴더) 설정 저장은 거부됩니다. `aster.exe` 폴더를 일반 사용자가 바꿀 수 있으면 창 위에 경고가 뜹니다. 보기·예열·측정은 비관리자로 됩니다. 관리자 재실행 버튼은 같은 인자로 새 프로세스를 승격해 띄우고 지금 프로세스를 끝냅니다.
+- 서비스 설치: 설치 프로그램과 같은 순서 (폴더 생성, 소유자·권한 설정, `sc create` LocalSystem 자동 시작, 시작) 를 한 번의 UAC 로 실행합니다. 서비스는 SYSTEM 으로 실행 파일을 돌리므로, 실행 파일 폴더를 일반 사용자가 바꿀 수 있으면 (개발 폴더 등) 설치를 거부하고 설치 프로그램을 쓰라고 안내합니다. `config.json` 이 없으면 먼저 게임을 등록해야 합니다.
+- 재배치·되돌리기는 게임이 실행 중이면 거부하고, 한 번에 쓰는 양이 2 GiB (`--write-cap-mib`) 로 제한되어 큰 이동은 "다시 실행하면 이어서 합니다" 안내와 함께 여러 번 실행해야 할 수 있습니다. 트레이스 수집은 최대 3600 초이고, 앱 종료·관리자 재실행 때 진행 중이면 저장을 최대 10 초 기다립니다.
+- 문서용 그림: `AsterCache.Tray.exe --smoke --screenshot <png> [--tab <0..3>] --data-dir <폴더>` 는 메인 창을 1100x720 으로 저장하고 끝납니다 (`docs\images\main-window.png`, 드라이브 목록은 예시 값).
+- 게임을 등록·제거하거나 감시기를 바꾼 뒤에는 서비스를 다시 시작해야 반영됩니다 (서비스는 시작할 때만 설정을 읽습니다).
+- 아직 안 한 것: 예열 기본값 편집 (표시만), 창 화면 시험 (뷰모델·명령 조립 시험만 있고 `Avalonia.Headless` 는 쓰지 않음), 관리자 승격 경로의 실제 UAC 실행 시험.
+
 ## 관리자 스크립트 (사용자가 직접 실행)
 
 `csharp\scripts\` 의 스크립트는 모두 관리자 PowerShell 에서 사용자가 한 번씩 실행합니다. 자동화나 작업자가 실행하지 않습니다. 각 스크립트는 첫 단계에서 관리자 권한을 확인하고, 없으면 아무것도 바꾸지 않고 멈춥니다. 결과는 `results\csharp_<yyyyMMdd_HHmmss>\` 에 쌓이며, 되돌리기 명령은 그 폴더의 `README.txt` 에 적히지만 스크립트가 실행하지는 않습니다.

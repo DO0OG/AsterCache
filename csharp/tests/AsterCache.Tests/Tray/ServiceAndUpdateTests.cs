@@ -89,6 +89,10 @@ public sealed class ServiceAndUpdateTests
         public List<(string Exe, string Args)> Calls { get; } = [];
 
         public void Run(string exe, string arguments) => Calls.Add((exe, arguments));
+
+        public void Run(string exe, IReadOnlyList<string> arguments) => Calls.Add((exe, string.Join(' ', arguments)));
+
+        public void Start(string exe, string arguments) => Calls.Add((exe, arguments));
     }
 
     private sealed class FakeManager : IUpdateManager

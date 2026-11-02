@@ -4,7 +4,11 @@
   </PropertyGroup>
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
+    <ApplicationIcon>Assets\aster.ico</ApplicationIcon>
   </PropertyGroup>
+  <ItemGroup>
+    <AvaloniaResource Include="Assets\**" />
+  </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="AsterCache.Tests" />
   </ItemGroup>
@@ -19,5 +23,7 @@
     <ProjectReference Include="..\AsterCache.Core\AsterCache.Core.csproj" />
     <ProjectReference Include="..\AsterCache.Windows\AsterCache.Windows.csproj" />
     <ProjectReference Include="..\AsterCache.Service\AsterCache.Service.csproj" />
+    <!-- 관리 창이 자식 프로세스로 부르는 aster.exe 를 트레이와 같은 폴더에 둠 -->
+    <ProjectReference Include="..\AsterCache.Cli\AsterCache.Cli.csproj" />
   </ItemGroup>
 </Project>

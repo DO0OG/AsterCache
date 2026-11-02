@@ -24,9 +24,18 @@ dotnet publish csharp\src\AsterCache.Cli\AsterCache.Cli.csproj -c Release -r win
 dotnet publish csharp\src\AsterCache.Service\AsterCache.Service.csproj -c Release -r win-x64 --self-contained -o csharp\publish\service
 ```
 
-Check the CLI commands (`aster plan`, `probe`, `apply`, `verify`, `revert`, `trace`, `prefetch`, `status`, `launch`, `stream-bench`) and their options with `aster <command> --help`. The relocation and prefetch commands use the same names as Python `relayout/cli.py` and `prefetch/cli.py`.
+Check the CLI commands (`aster plan`, `probe`, `apply`, `verify`, `revert`, `trace`, `prefetch`, `status`, `launch`, `stream-bench`, `learn`, `profile`) and their options with `aster <command> --help`. The relocation and prefetch commands use the same names as Python `relayout/cli.py` and `prefetch/cli.py`.
 
 `aster discover [--json]` lists the games found in the supported launchers' libraries, read only, with the anticheat marker. The `launcher` value of each entry can also be `riot`, `uninstall`, or `xbox`. `aster status --auto-status` prints the automatic mode state (`auto_status.json`).
+
+`aster learn --exe <name>... --root <folder> [--seconds N] [--window-mib M] [--max-mib M] [--mode stream|gap] [--gap-ms N] [--seq-runs N] [--out trace.json] [--json]` runs the first-run learning (trace plus read-ahead) without the service, for measurement and debugging. It needs administrator rights. Its output includes `read_ahead_bytes`, `game_read_bytes`, `hit_ratio`, `events`, and `events_lost`. The new JSON keys are `resolved_reads`, `late_reads`, `unresolved_reads`, `sequential_files`, `hit_bytes`, `gap_count`, `yielded_requests`, and `read_ahead_while_idle_bytes`.
+
+- `--gap-ms` (default 100): read-ahead starts only after this much time has passed since the game's last read (gap-only).
+- `--seq-runs` (default 6): a file counts as sequential only when increasing reads of 4 MiB or less continue for this many runs and at least 8 MiB of the file was read.
+- The total read-ahead is capped at game reads × 1.5 + 64 MiB.
+- `--mode stream` (default) reads ahead in 16 MiB steps without waiting for gaps in the game's reads; `--mode gap` is the earlier method (reads only after 100 ms of quiet, 1 MiB requests). Stream is the default because alternating 1 MiB reads with the game's reads costs a rotational delay at each switch, and the gap-only mode was about 2 times slower in the E7b re-measurement (`results\csharp_e7b_gen\README.md`: synthetic 19.82 → 38.71 s, Frostpunk 42% zone 18.98 → 37.40 s). Stream was measured in E7d and is not adopted either (no gain), so read-ahead stays off by default.
+
+`aster profile export --game <name> --out <file.json|file.zip> [--data-dir <folder>]` writes one game's trace as a file with relative paths (format `astercache-profile`, version 1: `files` with path, size, and `sample_sha256`, plus `raw_trace` and `prefetch_trace`). `aster profile import --file <file> --game <name> [--data-dir <folder>] [--json]` accepts the file only when the size and sample SHA of every file match. On a mismatch it lists the mismatches and exits with code 1. Writing needs administrator rights.
 
 The CLI language is set with the global option `--lang ko|en` or the environment variable `ASTER_LANG` (priority: `--lang` > `ASTER_LANG` > `config.json` `"language"` > OS language). JSON output does not depend on the language.
 
@@ -73,7 +82,7 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <folder>]
 - Relocation and revert are refused while a game is running, and the amount written at one time is limited to 2 GiB (`--write-cap-mib`), so a large move may need several runs with the note "Run again and it continues". Trace capture lasts at most 3600 seconds, and when the app exits or relaunches as administrator while a capture is in progress, it waits up to 10 seconds for the save.
 - Images for documentation: `AsterCache.Tray.exe --smoke --screenshot <png> [--tab <0..3>] --data-dir <folder>` saves the main window at 1100x720 and exits (`docs\images\main-window.png`; the drive list is sample values). Adding `--lang en` or the environment variable `ASTER_LANG=en` renders the English UI (this is how `docs\images\main-window.en.png` is made).
 - The service re-reads the whole `config.json` every 5 seconds, so registering or removing games and changing the watcher take effect without a restart. If the new configuration fails validation or the folder permission check, the previous settings stay in force and the reason is logged.
-- Prewarm pinning (`prewarm.pin`) is not on the Settings tab. Set it per game in `config.json` (off by default; 16 GiB of RAM or more only; a prewarm started by a trigger program is not pinned). Its effect has not been measured yet.
+- Prewarm pinning (`prewarm.pin`) is not on the Settings tab. Set it per game in `config.json` (off by default; 16 GiB of RAM or more only; a prewarm started by a trigger program is not pinned). Off by default, effect unverified (needs an experiment).
 - Not done yet: editing prewarm defaults (display only), window screen tests (only view-model and command-assembly tests exist; `Avalonia.Headless` is not used), and an actual UAC test of the elevation path.
 
 ## Administrator scripts (run by the user)
@@ -88,6 +97,7 @@ The scripts in `csharp\scripts\` are each run once by the user from an administr
 | S4 `cs_service.ps1 -Action install [-TestConfig] / test / uninstall [-PurgeData]` | Service registration (LocalSystem), data folder ACL, detection latency of a self-terminating `cmd.exe` 20 times (without killing the process; matched to the log by PID), recording of the watcher type (ETW/polling) | p95 ≤ 100 ms, no service after uninstall |
 | S5 `cs_relayout_window.ps1` | Window-batch plan (option not adopted) | Skeleton; stops immediately when run |
 | S6 `wdk_install.ps1 -AcceptWdkInstall` | WDK installation only (after the user decides) | km folder exists |
+| E7 `cs_e7_learn.ps1` | First-run learning and read-ahead (trace replay) | Measured on synthetic data and trace replay (E7 to E7d): no gain proven, so read-ahead is off by default. The first version slowed the cold replay of the scattered synthetic dataset from 21.67 s to 44.90 s (`results\csharp_e7_20261102_203358\README.md`) |
 
 ### Privilege boundaries
 
@@ -103,6 +113,9 @@ The scripts in `csharp\scripts\` are each run once by the user from an administr
 - A `config.json` with 0 registered games is normal. The service just waits without watching or re-applying, and the tray shows "No registered games". Adding or removing games takes effect within 5 seconds without a restart.
 - A game whose plan or trace file does not exist yet skips the check and stream and logs only an info line (not an error). Every detection of a game process is logged as `<name>: <exe> started (pid N)`, and which watcher is used is logged as `process watcher: EtwProcessWatcher` or `PollingProcessWatcher`.
 - Automatic mode (see [Automatic mode](../README.md#automatic-mode)) runs inside the service. The service re-reads the whole `config.json` every 5 seconds, so changes take effect without a restart. Its state is written to `%ProgramData%\AsterCache\auto_status.json`, which only the service writes.
+- The read-ahead engine (`Prefetch\ReadAhead`) runs first-run learning inside the service. `Tracer`'s real-time callback feeds it, and it flushes every 50 ms. See [Automatic mode](../README.md#automatic-mode).
+- Full prewarm of games with no record (`auto.full_prewarm`).
+- Engine-profile prewarm (`auto.engine_profiles`, embedded `Core\Profiles\engines.json`).
 
 ## Two operating modes: concurrent prefetch / prewarm
 

@@ -24,9 +24,18 @@ dotnet publish csharp\src\AsterCache.Cli\AsterCache.Cli.csproj -c Release -r win
 dotnet publish csharp\src\AsterCache.Service\AsterCache.Service.csproj -c Release -r win-x64 --self-contained -o csharp\publish\service
 ```
 
-CLI 명령(`aster plan`, `probe`, `apply`, `verify`, `revert`, `trace`, `prefetch`, `status`, `launch`, `stream-bench`)과 옵션은 `aster <명령> --help` 로 확인합니다. 재배치와 선읽기 명령은 Python `relayout/cli.py`, `prefetch/cli.py` 와 같은 이름을 씁니다.
+CLI 명령(`aster plan`, `probe`, `apply`, `verify`, `revert`, `trace`, `prefetch`, `status`, `launch`, `stream-bench`, `learn`, `profile`)과 옵션은 `aster <명령> --help` 로 확인합니다. 재배치와 선읽기 명령은 Python `relayout/cli.py`, `prefetch/cli.py` 와 같은 이름을 씁니다.
 
 `aster discover [--json]` 은 지원 런처 라이브러리에서 찾은 게임 목록을 읽기 전용으로 보여 주며, 안티치트 표시를 함께 냅니다. 각 항목의 `launcher` 값에 `riot`, `uninstall`, `xbox` 가 추가됐습니다(Riot 라이브러리, Windows 제거 목록, Xbox 폴더). `aster status --auto-status` 는 자동 모드 상태(`auto_status.json`)를 보여 줍니다.
+
+`aster learn --exe <이름>... --root <폴더> [--seconds N] [--window-mib M] [--max-mib M] [--mode stream|gap] [--gap-ms N] [--seq-runs N] [--out trace.json] [--json]` 은 서비스 없이 첫 실행 학습(트레이스 + 선행 읽기)을 돌리는 측정·디버그용 명령입니다. 관리자 권한이 필요합니다. 출력에는 `read_ahead_bytes`, `game_read_bytes`, `hit_ratio`, `events`, `events_lost` 가 나옵니다. JSON 새 키는 `resolved_reads`, `late_reads`, `unresolved_reads`, `sequential_files`, `hit_bytes`, `gap_count`, `yielded_requests`, `read_ahead_while_idle_bytes` 입니다.
+
+- `--gap-ms` (기본 100): 게임의 마지막 읽기 뒤 이 시간이 지나야 선행 읽기를 합니다 (틈 전용).
+- `--seq-runs` (기본 6): 간격 4 MiB 이하의 증가 읽기가 이만큼 이어지고 그 파일을 8 MiB 이상 읽었을 때만 순차로 봅니다.
+- 선행 읽기 총량은 게임 읽기 × 1.5 + 64 MiB 를 넘지 않습니다.
+- `--mode stream`(기본)은 게임 읽기의 틈을 기다리지 않고 16 MiB 단위로 선행 읽기를 합니다. `--mode gap` 은 이전 방식(100 ms 조용할 때만, 1 MiB 요청)입니다. 기본을 stream 으로 한 것은, 게임 읽기와 선행 읽기가 1 MiB 씩 번갈아 나오면 전환마다 회전 지연이 생기고 틈 전용 방식이 E7b 재측정에서 약 2배 느렸기 때문입니다(`results\csharp_e7b_gen\README.md`: 합성 19.82 → 38.71 s, Frostpunk 42% 존 18.98 → 37.40 s). stream 도 E7d 에서 측정했으나 이득이 없어 채택하지 않았으므로, 선행 읽기는 기본으로 꺼져 있습니다.
+
+`aster profile export --game <이름> --out <파일.json|파일.zip> [--data-dir <폴더>]` 는 게임 하나의 trace 를 상대 경로의 파일로 내보냅니다 (형식 `astercache-profile`, 버전 1: `files`[path·size·sample_sha256], `raw_trace`, `prefetch_trace`). `aster profile import --file <파일> --game <이름> [--data-dir <폴더>] [--json]` 는 파일마다 크기와 표본 SHA 가 모두 맞을 때만 받아들입니다. 불일치하면 목록을 보여 주고 종료 코드 1 로 끝납니다. 쓰기는 관리자 권한이 필요합니다.
 
 명령행 언어는 전역 옵션 `--lang ko|en` 또는 환경변수 `ASTER_LANG` 으로 정합니다 (우선순위: `--lang` > `ASTER_LANG` > `config.json` 의 `"language"` > OS 언어). JSON 출력은 언어와 무관합니다.
 
@@ -73,7 +82,7 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 - 재배치·되돌리기는 게임이 실행 중이면 거부하고, 한 번에 쓰는 양이 2 GiB (`--write-cap-mib`) 로 제한되어 큰 이동은 "다시 실행하면 이어서 합니다" 안내와 함께 여러 번 실행해야 할 수 있습니다. 트레이스 수집은 최대 3600 초이고, 앱 종료·관리자 재실행 때 진행 중이면 저장을 최대 10 초 기다립니다.
 - 문서용 그림: `AsterCache.Tray.exe --smoke --screenshot <png> [--tab <0..3>] --data-dir <폴더>` 는 메인 창을 1100x720 으로 저장하고 끝납니다 (`docs\images\main-window.png`, 드라이브 목록은 예시 값). `--lang en` 또는 환경변수 `ASTER_LANG=en` 을 함께 주면 영어 UI 로 그립니다 (`docs\images\main-window.en.png` 가 이렇게 만든 것).
 - 서비스는 `config.json` 전체를 5초마다 다시 읽으므로 게임 등록·제거와 감시기 변경은 다시 시작하지 않아도 반영됩니다. 새 설정이 검증이나 폴더 권한 검사에 실패하면 옛 설정을 유지하고 그 이유를 로그에 남깁니다.
-- 예열 고정(`prewarm.pin`)은 설정 탭에 없고 게임별로 `config.json` 에서 정합니다 (기본 꺼짐, RAM 16 GiB 이상에서만 동작, 트리거 프로그램으로 뜬 예열은 고정하지 않음). 효과는 아직 측정하지 않았습니다.
+- 예열 고정(`prewarm.pin`)은 설정 탭에 없고 게임별로 `config.json` 에서 정합니다 (기본 꺼짐, RAM 16 GiB 이상에서만 동작, 트리거 프로그램으로 뜬 예열은 고정하지 않음). 기본 꺼짐, 효과 미확인(실험 필요).
 - 아직 안 한 것: 예열 기본값 편집 (표시만), 창 화면 시험 (뷰모델·명령 조립 시험만 있고 `Avalonia.Headless` 는 쓰지 않음), 관리자 승격 경로의 실제 UAC 실행 시험.
 
 ## 관리자 스크립트 (사용자가 직접 실행)
@@ -88,6 +97,7 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 | S4 `cs_service.ps1 -Action install [-TestConfig] / test / uninstall [-PurgeData]` | 서비스 등록(LocalSystem), 데이터 폴더 ACL, 스스로 끝나는 `cmd.exe` 감지 지연 20회 (프로세스를 죽이지 않고 PID 로 로그와 맞춤), 감시기 종류(ETW/폴링) 기록 | p95 ≤ 100 ms, 제거 뒤 서비스 없음 |
 | S5 `cs_relayout_window.ps1` | 창 묶음 계획 (미채택 옵션) | 스켈레톤, 실행하면 바로 멈춤 |
 | S6 `wdk_install.ps1 -AcceptWdkInstall` | WDK 설치만 (사용자가 결정한 뒤) | km 폴더 존재 |
+| E7 `cs_e7_learn.ps1` | 첫 실행 학습·선행 읽기(트레이스 재생) | 합성 데이터·트레이스 재생으로 측정(E7~E7d): 이득이 입증되지 않아 선행 읽기는 기본으로 꺼져 있습니다. 첫 버전은 흩어진 합성 데이터셋의 콜드 재생을 21.67 s → 44.90 s 로 느리게 했습니다 (`results\csharp_e7_20261102_203358\README.md`) |
 
 ### 권한 경계
 
@@ -103,6 +113,9 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 - 등록된 게임이 0개인 `config.json` 은 정상입니다. 서비스는 감시·재적용 없이 대기만 하고, 트레이는 "등록된 게임 없음" 으로 표시합니다. 게임을 추가·제거하면 다시 시작하지 않아도 5초 안에 반영됩니다.
 - 계획·추적 파일이 아직 없는 게임은 검사·스트림을 건너뛰고 정보 줄만 남깁니다 (오류 아님). 게임 프로세스 감지는 로그에 `<이름>: <exe> started (pid N)` 로 매번 남고, 어떤 감시기를 쓰는지는 `process watcher: EtwProcessWatcher` 또는 `PollingProcessWatcher` 로 남습니다.
 - 자동 모드([자동 모드](../README.ko.md#자동-모드))는 서비스 안에서 돕니다. 서비스는 `config.json` 전체를 5초마다 다시 읽으므로 바꾼 값이 다시 시작하지 않아도 적용됩니다. 상태는 `%ProgramData%\AsterCache\auto_status.json` 에 쓰며, 이 파일은 서비스만 씁니다.
+- 선행 읽기 엔진(`Prefetch\ReadAhead`)은 서비스 안에서 첫 실행 학습을 맡습니다. `Tracer` 의 실시간 콜백을 받아 50 ms 마다 플러시합니다. [자동 모드](../README.ko.md#자동-모드)를 보십시오.
+- 기록 없는 게임의 통째 예열 (`auto.full_prewarm`).
+- 엔진 프로필 예열 (`auto.engine_profiles`, 임베디드 `Core\Profiles\engines.json`).
 
 ## 두 동작 모드: 동시 선읽기 / 사전 예열
 

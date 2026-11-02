@@ -88,7 +88,7 @@ In the measurement (Frostpunk, a 2 GB set of data read while loading the first m
 - It does not change the content of your game files. A SHA-256 check before and after each move confirms this.
 - It does not touch the game process: no injection, no hooking, no driver.
 - It does not copy your game to an SSD.
-- RAM is used only for prewarm, and only when enough memory is free (at least the zone size plus 4 GB by default). Prewarmed data is ordinary file cache, which Windows can drop when programs need the memory.
+- RAM is used only for prewarm and first-run read-ahead, within a budget: by default at most a quarter of physical RAM (read-ahead is also capped at 4 GiB), and only while the free RAM stays above `prewarm.min_free_ram_mib` (4 GB by default). Prewarmed data is ordinary file cache, which Windows can drop when programs need the memory.
 
 ## Features
 
@@ -101,6 +101,7 @@ In the measurement (Frostpunk, a 2 GB set of data read while loading the first m
 - **Service.** Detects game launches to run concurrent prefetch, and manages prewarm and re-apply. Runs as a Windows service (LocalSystem, automatic start).
 - **Status and logs.** Tabs show service and watcher state, the last prewarm result, per-game layout state, and logs.
 - **Measurement.** Measures cold replay time per game before and after relocation.
+- **Profile export and import.** Moves a recorded trace to another PC with `aster profile export` and `aster profile import`. An import is accepted only when the file size and a sampled hash match.
 - **Management window.** Without administrator rights a banner appears at the top, and you can relaunch as administrator.
 - **Command line `aster`.** Runs the same operations as the management window as commands, for automation.
 - **English and Korean UI.** The management window and the CLI support both languages (see [Language](#language)).
@@ -116,6 +117,7 @@ The figures are replay times of traced read patterns, not total load times of a 
 | Frostpunk, 2.02 GB read while loading the first map | HDD cold replay → concurrent prefetch after relocation | 24.3 s → 11.93 s (median of 3, see note) |
 | Frostpunk | Replay after prewarm | 0.48 s |
 | Frostpunk, same read pattern | NVMe SSD cold replay | 3.8 s |
+| Frostpunk-trace replica, scattered vs contiguous layout (2.02 GB) | Direct replay of the same read pattern, read-ahead off, median | Scattered 41.0~55.3 s → contiguous 19.3~20.5 s ([result folder](results/csharp_e7c_gen/README.md)) |
 | Service | Game start detection latency (polling, p95) | 58 ms |
 
 - The HDD is a WD20EZAZ (SATA, D:) and the SSD is NVMe (C:). The test machine runs Windows 11 Pro 10.0.26200 with 32 GiB of memory.
@@ -153,18 +155,19 @@ Running a newer installer upgrades the existing installation. Uninstalling remov
 
 ### 2. That is all: automatic mode
 
-After installing, you have nothing else to do. [Automatic mode](#automatic-mode) is on by default. This is what happens over time:
+After installing, you have nothing else to do. [Automatic mode](#automatic-mode) is on by default. In short: install → automatic discovery → prewarm (a small game's whole folder, or a large game's engine profile, even without a trace) → record reads on the first launch → about 30 seconds after you quit the game, relocation → prewarm the moved zone right away → the full effect from the second launch. First-run read-ahead is off by default. No button needs pressing. This is what happens over time:
 
 | When | What AsterCache does |
 |---|---|
 | Right after install | The background service starts. |
 | About 1 minute later (then every 6 hours) | It looks through your Steam, Epic, GOG, Ubisoft, and Riot libraries and the Windows uninstall list, and registers games installed on an HDD. |
-| The first time you play a registered game | It records what the game reads (the trace). The game loads at its normal speed this time. |
-| After you quit the game and the PC has been idle for 3 minutes | It moves the game's pieces into one zone, one game at a time. This takes a few minutes (about 5 minutes per 2 GB). If you start a game meanwhile, it pauses and continues later. |
-| From then on, every time the PC starts or the launcher opens | It prewarms the zone into RAM. |
-| From the second launch | The game loads faster. |
+| Registered game, before its first launch (at service start, launcher start, or after a game quits) | A small game (folder within the RAM budget) gets its whole folder prewarmed; a larger game gets only its engine profile (Unity, Unreal, Source). This happens without a trace. The effect of this prewarm is not yet measured. |
+| The first time you play a registered game | It records what the game reads (the trace). First-run read-ahead is off by default based on measurements (E7 to E7d, no gain; `auto.learn.enabled`), so this run only records. The full effect comes from the second launch. |
+| You quit the game, the game's drive stays under 4 MiB/s for 30 seconds, CPU use is low, and the PC is on AC power (or a battery at 50 % or more) | It moves the game's pieces into one zone, one game at a time, then prewarms that zone right away. This takes a few minutes (about 5 minutes per 2 GB). If you start a game meanwhile, it pauses and continues later. |
+| Every time the PC starts or the launcher opens | It prewarms the zone into RAM, within a RAM budget. |
+| From the second launch | The full effect applies (figures in [Measured results](#measured-results); total load time is not yet measured). |
 
-"Idle" means little disk activity, low CPU use, and AC power (or a battery at 50 % or more). To see which stage each game is in, open the management window (tray icon, or the desktop shortcut) and look at the **Status** tab and the stage column of the **Games** tab.
+"Idle" means the game's drive stays under 4 MiB/s for 30 seconds in a row, CPU use is low, and the PC is on AC power (or a battery at 50 % or more). To see which stage each game is in, open the management window (tray icon, or the desktop shortcut) and look at the **Status** tab and the stage column of the **Games** tab.
 
 ### 3. Doing it by hand (optional)
 
@@ -219,8 +222,11 @@ A patch can change files, so a saved plan may no longer match them. AsterCache c
 **Does it matter whether my drive is SMR or CMR?**
 Only one SMR drive (WD20EZAZ) has been measured; CMR drives have not. Removing head movement should help both kinds, but that is not verified. SMR drives can write slowly during the one-time move.
 
+**Is the first run required?**
+Relocation needs a trace (the record of what the game reads), and the trace comes from the first run, so relocation waits until one exists. Prewarm still runs without a trace. A game whose whole install folder fits the RAM budget (the smaller of a quarter of physical RAM and free RAM minus `prewarm.min_free_ram_mib`) is prewarmed in full (`auto.full_prewarm`, on by default; the budget can be changed with `auto.full_prewarm_max_mib`). A larger game gets only the files its engine (Unity, Unreal, or Source) reads almost every time at the start of loading (`auto.engine_profiles`, on by default). Their effect has not been measured yet. A trace recorded on another PC can be brought in with `aster profile import` (see `aster profile export`). It is saved as `plans\<name>.boot.trace.json`, so relocation and prewarm can start from it without a first run; the first run is still recorded, and the plan is then made again from that recording (same zone first).
+
 **Will the very first launch be faster?**
-No. The first launch is used to record what the game reads, and the move happens afterwards. The speed-up starts with the second launch. A game found only by activity detection (not from a launcher library) starts recording on its next launch.
+First-run read-ahead is off by default based on measurements (E7 to E7d, no gain; `auto.learn.enabled`). The first launch only records what the game reads; the full effect comes from the second launch, after the move and prewarm. A game found only by activity detection (not from a launcher library) starts recording on its next launch. The measurements and the next candidate are in [docs/RESULTS_SUMMARY.md](docs/RESULTS_SUMMARY.md#e7-first-run-read-ahead). Prewarm (the whole folder or an engine profile) also runs without a trace, but its effect has not been measured yet.
 
 **Can my files get damaged?**
 Every move is verified with a SHA-256 check and written to a journal that can be reverted. Still, this is a beta that moves real data: back up important drives first. See [Safety measures](#safety-measures).
@@ -232,10 +238,10 @@ Automatic mode is on by default. In the usual case you do not need to register g
 ### Stages
 
 1. **Discovery.** One minute after the service starts, and every 6 hours after that, the service reads the libraries of the supported launchers (below). A game installed on an HDD (rotational volume) is registered with `"source": "auto"`. A game is skipped if its volume label is empty or longer than 32 characters (a log line is written), or if its exe name or an overlapping folder is already registered. The list holds up to 32 games. When it is full, launcher discovery stops, and a game that is actually run and detected replaces the least recently used automatic entry.
-2. **Trace.** When a registered game without a trace starts, the service records its reads with a live ETW session named `AsterCacheAutoTrace`. Recording stops at the first of: the game exiting, 600 seconds (`trace_cap_seconds`), or 6144 MiB (`trace_cap_mib`). The result is saved as `plans\<name>.trace.json`, the same file that the manual **Capture trace** button writes. A game detected at its start has already begun loading, so its trace is recorded from the next run.
-3. **Plan and relocation.** After a trace exists, the game is not running, and the PC has been idle for `idle_minutes` (default 3) in a row, the service handles one game at a time. It plans the zone (hot data × 1.1, capped by `max_zone_mib`), moves the data with the same Applier as manual relocation (journal and SHA-256 sample check), and confirms the layout. Idle means: throughput on the game's drive below 4 MiB/s, CPU below 20 %, and either AC power or a battery at 50 % or more. At most `max_relocations_per_day` (default 2) relocations run in 24 hours, and each game gets one automatic first relocation; later upkeep uses the existing periodic check. If a game starts during a move, the move stops after the current fragment and resumes later from the journal. If the data check fails or an error occurs while the game is off, the journal is used to revert, and the failure is recorded.
-4. **Prewarm.** At service start, the most recently played game is prewarmed (`prewarm_recent`, default 1). When a supported launcher starts, its most recently played `prewarm_recent` games are prewarmed. To keep the prewarm, every `rewarm_minutes` (default 10; 0 turns it off) the service reads 1 MiB from each of 8 places in the zone. If the average takes more than 2 ms, the data has probably been evicted from the file cache, so it prewarms again while keeping `min_free_ram_mib` free. It does not run while a game is running.
-5. **Pinning (optional).** With `prewarm.pin` set to `true` (off by default; works only with 16 GiB of RAM or more), the prewarmed pages stay open as read-only mappings in the service, so they are less likely to be evicted. The mappings are released at once when free RAM falls below the reserve or when a game or launcher starts, so launcher updates can change the files. A prewarm started by a trigger program is not pinned. The effect of pinning has not been measured yet.
+2. **Trace.** When a registered game without a trace starts, the service records its reads with a live ETW session named `AsterCacheAutoTrace`. Recording stops at the first of: the game exiting, 600 seconds (`trace_cap_seconds`), or 6144 MiB (`trace_cap_mib`). The result is saved as `plans\<name>.trace.json`, the same file that the manual **Capture trace** button writes. A game detected at its start has already begun loading, so its trace is recorded from the next run. While this trace is recorded, the service can also read ahead (first-run learning). This is off by default (`auto.learn.enabled` is `false`) while its effect is being measured. When it is on, it reads ahead only in files the game reads sequentially: a file is judged sequential after 6 forward reads in a row, each at most 4 MiB past the end of the previous read, and the game has read at least 8 MiB of that file. Such a file is read ahead in 16 MiB steps from the current position, up to `auto.learn.window_mib` (default 512 MiB) further, without waiting for gaps in the game's reads, and it keeps going while the game reads (`auto.learn.mode` `"stream"`, the default). With `"gap"`, it reads ahead only after 100 ms of quiet, in 1 MiB requests. Reads come from the service's own process, with one reader thread, low I/O priority, and the most recently read file first. Files the game has opened exclusively are skipped. The total is at most the game's reads × 1.5 + 64 MiB, and stays within `auto.learn.max_total_mib` (default: the smaller of a quarter of physical RAM and 4096 MiB) and keeps the free-RAM reserve (`min_free_ram_mib`). Only games on an HDD that is not the system drive are learned. The game process is never opened; reads are only observed through ETW.
+3. **Plan and relocation.** After a trace exists, the game is not running, and the PC has been idle for `idle_seconds` (default 30) in a row, the service handles one game at a time. It plans the zone (hot data × 1.1, capped by `max_zone_mib`), moves the data with the same Applier as manual relocation (journal and SHA-256 sample check), and confirms the layout. Idle means: throughput on the game's drive below 4 MiB/s, CPU below 20 %, and either AC power or a battery at 50 % or more. At most `max_relocations_per_day` (default 2) relocations run in 24 hours, and each game gets one automatic first relocation; later upkeep uses the existing periodic check. If a game starts during a move, the move stops after the current fragment and resumes later from the journal. If the data check fails or an error occurs while the game is off, the journal is used to revert, and the failure is recorded. Right after a move finishes (or fails, if a trace exists), the zone is prewarmed. Moves carry a low I/O priority hint (`FileIoPriorityHintInfo` Low). The documentation does not guarantee that the kernel applies it to the copy I/O of a move, and this has not been measured yet. If a game's files change size or modification time after relocation (a game update), the trace and plan are set aside as `.stale` (checked every 10 minutes), the stage goes back to discovery, and the game is traced and relocated again on its next run, trying its previous zone position first.
+4. **Prewarm.** At service start, when a supported launcher starts, and after a game exits, the most recently played games are prewarmed. With `prewarm_recent` at its default 0, the service prewarms as many recent games as fit in the budget (the smaller of a quarter of physical RAM and free RAM minus `min_free_ram_mib`); a value from 1 to 32 caps the number of games instead. To keep the prewarm, every `rewarm_minutes` (default 10; 0 turns it off) the service reads 1 MiB from each of 8 places in the zone (the first 4 in read order and 4 evenly spaced). If at least 2 of them take more than 2 ms, the data has probably been evicted from the file cache, so it prewarms again while keeping `min_free_ram_mib` free. It does not run while a game is running. The prewarm reads in 64 MiB batches: if another game starts, it stops at the next batch boundary; if the game being prewarmed starts, it reads to the end. The management window shows `prewarming x/y MiB`, and a tray notification is sent when a game's prewarm finishes (once per game per day). A full-folder prewarm reads in the disk's physical order.
+5. **Pinning (optional).** With `prewarm.pin` set to `true` (off by default; works only with 16 GiB of RAM or more), the prewarmed pages stay open as read-only mappings in the service, so they are less likely to be evicted. The mappings are released at once when free RAM falls below the reserve or when a game or launcher starts, so launcher updates can change the files. A prewarm started by a trigger program is not pinned. Off by default, effect unverified (needs an experiment).
 
 ### Supported launchers
 
@@ -267,8 +273,12 @@ A process that is not registered, starts from an exe on an HDD volume, and reads
     "discover": true,
     "trace": true,
     "relocate": true,
-    "prewarm_recent": 1,
-    "idle_minutes": 3,
+    "full_prewarm": true,
+    "full_prewarm_max_mib": 0,
+    "engine_profiles": true,
+    "learn": {"enabled": false, "mode": "stream", "window_mib": 512, "max_total_mib": 0},
+    "prewarm_recent": 0,
+    "idle_seconds": 30,
     "trace_cap_seconds": 600,
     "trace_cap_mib": 6144,
     "max_relocations_per_day": 2,
@@ -278,10 +288,10 @@ A process that is not registered, starts from an exe on an HDD volume, and reads
 }
 ```
 
-- `"auto": {"enabled": false}` turns off the whole automatic mode. `discover`, `trace`, and `relocate` turn off one stage each. `max_zone_mib` can also be `"auto"`.
+- `"auto": {"enabled": false}` turns off the whole automatic mode. `discover`, `trace`, and `relocate` turn off one stage each. `max_zone_mib` can also be `"auto"`. `"auto": {"learn": {"enabled": true}}` turns the first-run read-ahead on (it is off by default). `mode` is `"stream"` (default) or `"gap"`. `idle_seconds` replaces the older `idle_minutes`; if only `idle_minutes` is written, that value is used.
 - The manual buttons (register, capture trace, create plan, run relocation, prewarm now) work as before.
 - The service writes its state to `%ProgramData%\AsterCache\auto_status.json`. Only the service writes that file.
-- The Status tab shows one line per game, such as "Auto: Frostpunk discovered → collecting trace → waiting to relocate → relocating → [done]". The Games tab shows the source, stage, and anti-cheat columns. Tray notifications are sent only for discovery and for a finished relocation.
+- The Status tab shows one line per game, such as "Auto: Frostpunk discovered → collecting trace → waiting to relocate → relocating → [done]". The Games tab shows the source, stage, and anti-cheat columns. The learning stage shows "First run: learning (read-ahead n MiB)", and "Prewarmed" appears after prewarm. Tray notifications are sent for discovery, for a finished relocation, and when a first run ends ("Faster from the next launch: <game>").
 - `aster status` has an `"auto"` key. `aster discover [--json]` lists the launcher games read-only, with the anti-cheat marker.
 - A game you registered by hand is also relocated automatically when `auto.relocate` is on, once its trace exists and the PC is idle. To prevent this, turn off `auto.relocate` (in the Settings tab of the management window, clear the Relocate box) or add the game's exe to `auto.ignore_exes`.
 - Games on the Windows system drive and on SSDs are not automatically registered, traced, or relocated.
@@ -340,7 +350,7 @@ The configuration file is `%ProgramData%\AsterCache\config.json`. Editing it in 
 | `max_zone_mib` | Upper limit of the zone size for automatic planning, in MiB (default 2048), or `"auto"` (physical RAM ÷ 4, between 2048 and 8192 MiB) |
 | `games[].source` | `auto` for a game found automatically, `manual` for a game you registered |
 | `games[].anticheat` | Anti-cheat folders found in the install folder, for example `EasyAntiCheat`. Shown in the Games tab; it does not change behavior |
-| `prewarm.pin` | Keep prewarmed data open as read-only mappings in the service. Default `false`; works only with 16 GiB of RAM or more. See [Anti-cheat compatibility](#anti-cheat-compatibility) |
+| `prewarm.pin` | Keep prewarmed data open as read-only mappings in the service. Off by default (`false`), effect unverified (needs an experiment); works only with 16 GiB of RAM or more. See [Anti-cheat compatibility](#anti-cheat-compatibility) |
 
 The service re-reads the whole `config.json` every 5 seconds (when its size or modified time changes), so adding, removing, or changing games and the watcher takes effect without a restart. If the new configuration fails validation or the folder permission check, the previous settings stay in force and the reason is written to the log.
 
@@ -375,6 +385,7 @@ Many current games run kernel-level anti-cheat. This section says what AsterCach
 ### What it does
 
 - The service reads game files from inside its own process, read-only, with shared access (read, write, and delete sharing), or only maps them.
+- First-run read-ahead also reads files from the service's own process. The game process is not touched; reads are only observed through ETW.
 - It watches file-read events with a live ETW kernel session. It needs no handle to the game process.
 - It moves file clusters with the NTFS defragmentation API (`FSCTL_MOVE_FILE`), and only after the game has fully exited. File content, size, and modified time do not change. Before a move, the plan's fingerprint (size and modified time) is checked.
 

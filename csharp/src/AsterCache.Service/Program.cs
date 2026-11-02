@@ -45,7 +45,9 @@ if (!console)
     builder.Services.AddWindowsService(o => o.ServiceName = "AsterCache");
 }
 
-builder.Services.AddHostedService(_ => new Worker(settings, log, primary, fallback, new PrefetchStreamer(), checker));
+var streamer = new PrefetchStreamer();
+var prewarm = new Prewarmer(settings.Games, streamer, PrewarmEnv.Create(), log, canApply ? Path.Combine(dataDir, "prewarm_status.json") : null); // 데이터 폴더를 믿을 수 없으면 (SYSTEM 이 일반 사용자가 쓸 수 있는 곳에 쓰지 않도록) 상태 파일을 쓰지 않음
+builder.Services.AddHostedService(_ => new Worker(settings, log, primary, fallback, streamer, checker, prewarm: prewarm));
 await builder.Build().RunAsync();
 return 0;
 

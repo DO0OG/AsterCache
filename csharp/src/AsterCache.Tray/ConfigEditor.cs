@@ -6,7 +6,7 @@ namespace AsterCache.Tray;
 /// 등록할 게임 한 개의 입력값 (config.json 의 한 항목).
 public sealed record GameInput(
     string Name, IReadOnlyList<string> ExeNames, string Trace, string Plan, string OriginRoot, IReadOnlyList<string> AllowedRoots,
-    string VolumeLabel, int? ReapplyMinutes = null);
+    string VolumeLabel, int? ReapplyMinutes = null, IReadOnlyList<string>? TriggerExes = null);
 
 /// config.json 편집. 바꾼 결과 전체를 SettingsStore 검증에 통과시킨 뒤에만 씁니다 (서비스가 읽을 수 없는 설정을 만들지 않음).
 /// 쓰기 형식은 고정 (들여쓰기 2, UTF-8 BOM 없음, LF) 이라 이 형식의 파일은 읽고 쓰면 바이트가 그대로입니다.
@@ -35,6 +35,11 @@ public sealed class ConfigEditor(string dataDir)
         if (g.ReapplyMinutes is int minutes)
         {
             game.Add("reapply_interval_minutes", (long)minutes);
+        }
+
+        if (g.TriggerExes is { Count: > 0 })
+        {
+            game.Add("prewarm", new JObject { { "trigger_exes", g.TriggerExes.Cast<object?>().ToList() } });
         }
 
         GamesOf(root).Add(game);

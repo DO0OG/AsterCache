@@ -202,6 +202,86 @@ public sealed class SettingsTests
     }
 
     [Fact]
+    public void PrewarmDefaultsApplyWhenAbsent()
+    {
+        PrewarmSettings p = Parse(Game()).Games[0].Prewarm;
+
+        Assert.True(p.OnServiceStart);
+        Assert.Empty(p.TriggerExes);
+        Assert.Equal((4096, 30), (p.MinFreeRamMib, p.CooldownMin));
+    }
+
+    [Fact]
+    public void PrewarmValuesAreParsedAndPartialObjectsKeepDefaults()
+    {
+        JsonObject g = Game();
+        g["prewarm"] = new JsonObject
+        {
+            ["on_service_start"] = false,
+            ["trigger_exes"] = new JsonArray("Steam.exe", "EpicGamesLauncher.exe"),
+            ["min_free_ram_mib"] = 2048,
+        };
+
+        PrewarmSettings p = Parse(g).Games[0].Prewarm;
+
+        Assert.False(p.OnServiceStart);
+        Assert.Equal(["Steam.exe", "EpicGamesLauncher.exe"], p.TriggerExes);
+        Assert.Equal((2048, 30), (p.MinFreeRamMib, p.CooldownMin));
+    }
+
+    [Theory]
+    [InlineData("on_service_start", "yes")]
+    [InlineData("on_service_start", 1)]
+    [InlineData("min_free_ram_mib", -1)]
+    [InlineData("min_free_ram_mib", "4096")]
+    [InlineData("cooldown_min", 100000)]
+    [InlineData("trigger_exes", "Steam.exe")]
+    [InlineData("trigger_exes", new[] { "C:\\Steam\\Steam.exe" })]
+    [InlineData("trigger_exes", new[] { "notexe" })]
+    [InlineData("trigger_exes", new[] { "a.exe", "A.EXE" })]
+    [InlineData("unknown_key", 1)]
+    public void InvalidPrewarmIsRejected(string key, object value)
+    {
+        JsonObject g = Game();
+        JsonNode? node = value switch
+        {
+            string[] arr => new JsonArray(arr.Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()),
+            bool b => JsonValue.Create(b),
+            int n => JsonValue.Create(n),
+            string t => JsonValue.Create(t),
+            _ => null,
+        };
+        g["prewarm"] = new JsonObject { [key] = node };
+
+        Assert.Throws<SettingsException>(() => Parse(g));
+    }
+
+    private static JsonObject WithMax(JsonNode value)
+    {
+        JsonObject g = Game();
+        g["max_stream_mib"] = value;
+        return g;
+    }
+
+    [Fact]
+    public void MaxStreamMibDefaultsParsesAndIsRangeChecked()
+    {
+        Assert.Equal(4096, Parse(Game()).Games[0].MaxStreamMib);
+        Assert.Equal(8192, Parse(WithMax(8192)).Games[0].MaxStreamMib);
+        Assert.Throws<SettingsException>(() => Parse(WithMax(10)));
+        Assert.Throws<SettingsException>(() => Parse(WithMax("big")));
+    }
+
+    [Fact]
+    public void PrewarmThatIsNotAnObjectIsRejected()
+    {
+        JsonObject g = Game();
+        g["prewarm"] = true;
+
+        Assert.Throws<SettingsException>(() => Parse(g));
+    }
+
+    [Fact]
     public void EmptyGameListIsValid()
     {
         AsterSettings s = SettingsStore.Parse("{\"games\":[]}", Plans);

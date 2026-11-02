@@ -71,6 +71,20 @@ public sealed class ConfigEditorTests : IDisposable
     }
 
     [Fact]
+    public void TriggerExesAreWrittenAsPrewarmSetting()
+    {
+        var editor = new ConfigEditor(_dir);
+        editor.Add(Game("a") with { TriggerExes = ["Steam.exe"] });
+        editor.Add(Game("b") with { TriggerExes = [] });
+
+        AsterSettings s = editor.Load()!;
+
+        Assert.Equal(["Steam.exe"], s.Games[0].Prewarm.TriggerExes);
+        Assert.Empty(s.Games[1].Prewarm.TriggerExes);
+        Assert.DoesNotContain("prewarm", File.ReadAllText(editor.ConfigPath).Split("\"b.exe\"")[1], StringComparison.Ordinal); // 입력이 없으면 키를 쓰지 않음
+    }
+
+    [Fact]
     public void MissingConfigLoadsAsNull()
     {
         Assert.Null(new ConfigEditor(_dir).Load());

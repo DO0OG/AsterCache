@@ -6,7 +6,7 @@ public sealed record GameSettings(
     string VolumeLabel, int ReapplyMinutes);
 
 /// config.json 한 벌 (검증을 통과한 값만 존재).
-public sealed record AsterSettings(int PollMs, IReadOnlyList<GameSettings> Games);
+public sealed record AsterSettings(int PollMs, IReadOnlyList<GameSettings> Games, string Watcher = SettingsStore.DefaultWatcher);
 
 /// 설정이 형식·경로 검증을 통과하지 못함. 메시지는 필드 이름만 담고 값(경로)은 담지 않습니다.
 public sealed class SettingsException : Exception

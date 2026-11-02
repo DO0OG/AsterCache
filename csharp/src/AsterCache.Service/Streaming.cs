@@ -65,7 +65,7 @@ public sealed class GameDispatcher
             return false;
         }
 
-        _log.Info($"{g.Name}: {start.ExeName} started (pid {start.Pid})"); // 감지 지연 측정 (cs_service.ps1 test) 이 쿨다운과 무관하게 매번 이 줄을 봅니다
+        _log.Info($"{g.Name}: {start.ExeName} started (pid {start.Pid})" + (start.Route is { } route ? $" via {route}" : string.Empty)); // 감지 지연 측정 (cs_service.ps1 test) 이 쿨다운과 무관하게 매번 이 줄을 봅니다
         DateTimeOffset now = _now();
         if (_last.TryGetValue(g.Name, out DateTimeOffset prev) && now - prev < Cooldown)
         {

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using AsterCache.Core.Settings;
 using AsterCache.Windows;
 
 namespace AsterCache.Service;
@@ -23,7 +24,7 @@ public static class WatchTest
             o.WriteLine("  session events: none (the session received no Kernel-Process event at all)");
         }
 
-        int poll = await RunOneAsync("PollingProcessWatcher", new PollingProcessWatcher(exeNames, TimeSpan.FromMilliseconds(250)), seconds, o);
+        int poll = await RunOneAsync("PollingProcessWatcher", new PollingProcessWatcher(exeNames, TimeSpan.FromMilliseconds(SettingsStore.DefaultPollMs)), seconds, o);
         o.WriteLine($"watch-test result: etw detected {etw} start(s), polling detected {poll} start(s)");
         return 0;
     }

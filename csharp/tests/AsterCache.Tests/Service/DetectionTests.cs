@@ -131,7 +131,7 @@ public sealed class EtwWatcherTests
     [Fact]
     public void WorkerChoosesEtwOnlyForAdministratorsAndKeepsPollingAsFallback()
     {
-        var s = new AsterSettings(250, [Games.Make("g", "game.exe")]);
+        var s = new AsterSettings(250, [Games.Make("g", "game.exe")], "etw");
 
         (IProcessWatcher p1, IProcessWatcher? f1) = Worker.ChooseWatchers(s, admin: false);
         (IProcessWatcher p2, IProcessWatcher? f2) = Worker.ChooseWatchers(s, admin: true);
@@ -140,6 +140,24 @@ public sealed class EtwWatcherTests
         Assert.Null(f1);
         Assert.IsType<EtwProcessWatcher>(p2);
         Assert.IsType<PollingProcessWatcher>(f2);
+    }
+
+    [Fact]
+    public void PollingIsTheDefaultEvenForAdministrators()
+    {
+        var s = new AsterSettings(250, [Games.Make("g", "game.exe")]);
+
+        (IProcessWatcher p, IProcessWatcher? f) = Worker.ChooseWatchers(s, admin: true);
+
+        Assert.Equal("poll", s.Watcher);
+        Assert.IsType<PollingProcessWatcher>(p);
+        Assert.Null(f);
+    }
+
+    [Fact]
+    public void FlushingAMissingSessionReturnsAnErrorCodeInsteadOfThrowing()
+    {
+        Assert.NotEqual(0u, EtwFlush.Flush("AsterCache-NoSuchSession-" + Guid.NewGuid().ToString("N")));
     }
 }
 
@@ -186,10 +204,10 @@ public sealed class DispatcherTests
         var log = new ListLog();
         var d = new GameDispatcher([Mw4], streamer, log, () => DateTimeOffset.UnixEpoch);
 
-        Assert.False(d.Handle(new ProcessStart(111, "game.exe", 0)));
+        Assert.False(d.Handle(new ProcessStart(111, "game.exe", 0, "poll")));
         Assert.False(d.Handle(new ProcessStart(222, "game.exe", 0))); // 쿨다운 안: 스트림은 안 부르지만 감지는 기록
 
-        Assert.Contains(log.Lines, l => l.Contains("game.exe started (pid 111)", StringComparison.Ordinal));
+        Assert.Contains(log.Lines, l => l.Contains("game.exe started (pid 111) via poll", StringComparison.Ordinal)); // 어느 길로 잡았는지 남김
         Assert.Contains(log.Lines, l => l.Contains("game.exe started (pid 222)", StringComparison.Ordinal));
         Assert.DoesNotContain(log.Lines, l => l.StartsWith("Error", StringComparison.Ordinal));
     }

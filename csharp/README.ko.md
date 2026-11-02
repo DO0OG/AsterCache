@@ -150,7 +150,7 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 ## 배포와 CI
 
 - `.github/workflows/csharp-ci.yml`: windows-latest, .NET 10.0.x, restore·build·test(Live 제외)·format.
-- `.github/workflows/csharp-release.yml`: 수동 실행(`workflow_dispatch`, `version` 입력, 기본 `0.9.0-beta.1`, 러너 windows-2022). verify → package(관리 창 zip `AsterCache-<version>-win-x64.zip`, Inno Setup 설치본, CLI Velopack 아티팩트) → release(GitHub Release 생성, 버전에 `-` 가 있으면 프리릴리스, zip 과 설치본 `.exe` 를 자산으로 첨부) 순으로 돌아갑니다. 코드 서명은 없습니다(게시자 미확인 경고만).
+- `.github/workflows/csharp-release.yml`: 수동 실행(`workflow_dispatch`, `version` 입력, 기본 `0.9.0-beta.1`, 러너 windows-2022). verify → package(관리 창 zip `AsterCache-<version>-win-x64.zip`, Inno Setup 설치본) → release(GitHub Release 생성, 버전에 `-` 가 있으면 프리릴리스, zip 과 설치본 `.exe` 를 자산으로 첨부) 순으로 돌아갑니다. 코드 서명은 없습니다(게시자 미확인 경고만).
 
 ## 성능 결론 (참조 측정)
 

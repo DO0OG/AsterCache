@@ -63,19 +63,11 @@ jobs:
           $ws = $env:GITHUB_WORKSPACE
           & $iscc "/DAppVersion=${{ inputs.version }}" "/DServiceDir=$ws\artifacts\service" "/DOutputDir=$ws\artifacts\installer" "$ws\csharp\packaging\windows\aster.iss"
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed (exit $LASTEXITCODE)" }
-      - name: Pack CLI with Velopack
-        shell: bash
-        run: |
-          dotnet tool install -g vpk --version 1.2.0
-          export PATH="$PATH:$HOME/.dotnet/tools"
-          # packId is the install folder name under %LOCALAPPDATA%; it must differ from the service folder.
-          vpk pack --packId AsterCacheCli --packVersion "${{ inputs.version }}" --packDir artifacts/cli --mainExe aster.exe --outputDir releases/cli --channel win --packAuthors DO0OG
       - uses: actions/upload-artifact@v4
         with:
           name: AsterCache-win-x64-${{ inputs.version }}
           path: |
             artifacts/installer
-            releases/cli
             releases/gui
 
   release:
@@ -104,5 +96,5 @@ jobs:
 
 # Runs after verify and package. Publishes a GitHub release with the management-window zip and the
 # Inno Setup installer. A version containing "-" (e.g. 0.9.0-beta.1) is marked as a prerelease.
-# The CLI Velopack output is uploaded as a workflow artifact only, not attached to the release.
+# The CLI (aster.exe) ships inside the management-window zip; it is not packaged separately.
 # Signing is not configured: the signing warning step only reminds that artifacts are unsigned.

@@ -12,7 +12,8 @@ namespace AsterCache.Service;
 /// NT Kernel Logger 는 쓰지 않으므로 추적기(Tracer)의 커널 세션과 겹치지 않습니다. 세션 이름은 서비스 전용 하나.
 /// 같은 이벤트를 두 길로 받습니다: TDH 로 푼 필드 (RegisteredTraceEventParser) 와 원시 페이로드 (AllEvents, <see cref="ProcessStartPayload"/>).
 /// 앞쪽이 어떤 이유로 풀지 못해도 감지가 끊기지 않게 하려는 것이고, 두 길이 같은 시작을 알리면 한 번만 넘깁니다.
-/// ETW 실시간 세션은 버퍼를 약 1초마다 내려 보내므로 폴링 (250 ms) 보다 감지가 늦을 수 있습니다.
+/// ETW 실시간 세션은 버퍼를 약 1초 단위로 내려 보내 감지가 약 1.65초 늦었습니다 (S4 실측). 그래서 기본 감시기는 폴링이고 ETW 는 설정 `watcher: "etw"` 로 고릅니다.
+/// 세션 버퍼는 <see cref="FlushInterval"/> 마다 FlushTrace 로 내려 보냅니다 (<see cref="EtwFlush"/>): 이것이 지연을 줄이는지는 관리자 S4 시험으로 확인해야 합니다.
 /// silenceTimeout 동안 (감시 대상이 아니어도) 시작 이벤트가 하나도 안 오면 예외로 끝내 Worker 가 폴링으로 내려가게 합니다.
 public sealed class EtwProcessWatcher : IProcessWatcher
 {
@@ -23,6 +24,9 @@ public sealed class EtwProcessWatcher : IProcessWatcher
     private const ulong ProcessKeyword = 0x10; // WINEVENT_KEYWORD_PROCESS
     private const int ProcessStartId = 1;
     private static readonly TimeSpan DuplicateWindow = TimeSpan.FromSeconds(2);
+
+    /// 세션 버퍼를 이 간격으로 내려 보냅니다 (기본 플러시는 초 단위).
+    public static readonly TimeSpan FlushInterval = TimeSpan.FromMilliseconds(50);
 
     private readonly HashSet<string> _names;
     private readonly Func<bool> _isAdmin;
@@ -94,7 +98,7 @@ public sealed class EtwProcessWatcher : IProcessWatcher
             }
 
             recent[pid] = now;
-            onStart(new ProcessStart(pid, exe, now));
+            onStart(new ProcessStart(pid, exe, now, "etw-" + route));
         }
 
         session.Source.AllEvents += data =>
@@ -141,6 +145,14 @@ public sealed class EtwProcessWatcher : IProcessWatcher
             }
         };
 
+        using var flusher = new Timer(_ =>
+        {
+            uint rc = EtwFlush.Flush(SessionName);
+            if (rc != 0)
+            {
+                _diag?.Once("flush", () => $"FlushTrace returned {rc}");
+            }
+        }, null, FlushInterval, FlushInterval);
         bool silent = false;
         using var watchdog = new Timer(_ =>
         {

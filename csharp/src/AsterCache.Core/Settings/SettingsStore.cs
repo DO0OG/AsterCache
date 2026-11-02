@@ -8,12 +8,15 @@ namespace AsterCache.Core.Settings;
 /// plan·trace 는 plansDir (관리자·SYSTEM 전용 ACL 폴더) 안에 있어야 하고, origin_root 는 allowed_roots 중 하나 안에 있어야 합니다.
 public static class SettingsStore
 {
-    public const int DefaultPollMs = 250;
+    public const int DefaultPollMs = 50;
     public const int DefaultReapplyMinutes = 1440;
+
+    /// 프로세스 시작 감지: "poll" (기본, 지연이 짧음) 또는 "etw" (관리자, 실시간 세션이라 지연이 더 길 수 있음).
+    public const string DefaultWatcher = "poll";
     public const long MaxFileBytes = 1 << 20;
     public const int MaxGames = 32;
 
-    private static readonly string[] TopKeys = ["games", "poll_ms"];
+    private static readonly string[] TopKeys = ["games", "poll_ms", "watcher"];
     private static readonly string[] GameKeys =
         ["name", "exe_names", "trace", "plan", "origin_root", "allowed_roots", "volume_label", "reapply_interval_minutes"];
 
@@ -52,6 +55,12 @@ public static class SettingsStore
     {
         JObject top = root as JObject ?? throw new SettingsException("config: object expected");
         Unknown(top, TopKeys, "config");
+        string watcher = DefaultWatcher;
+        if (top.TryGetValue("watcher", out object? w))
+        {
+            watcher = w is "etw" or "poll" ? (string)w : throw new SettingsException("watcher: \"etw\" or \"poll\" expected");
+        }
+
         int poll = top.ContainsKey("poll_ms") ? Int(top["poll_ms"], "poll_ms", 50, 5000) : DefaultPollMs;
         if (!top.TryGetValue("games", out object? g) || g is not List<object?> games || games.Count > MaxGames)
         {
@@ -67,7 +76,7 @@ public static class SettingsStore
 
         CheckUnique(result.Select(x => x.Name), "games: duplicate name");
         CheckUnique(result.SelectMany(x => x.ExeNames), "games: exe name used twice");
-        return new AsterSettings(poll, result);
+        return new AsterSettings(poll, result, watcher);
     }
 
     private static GameSettings ParseGame(object? v, string at, string plansDir)

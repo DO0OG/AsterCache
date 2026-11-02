@@ -32,12 +32,12 @@ public sealed class Worker : BackgroundService
         _gate = gate ?? new ReapplyGate();
     }
 
-    /// 관리자면 ETW (실패하면 폴링으로 내려감), 아니면 폴링.
+    /// 설정이 etw 이고 관리자면 ETW (실패하면 폴링으로 내려감), 아니면 폴링 (기본).
     public static (IProcessWatcher Primary, IProcessWatcher? Fallback) ChooseWatchers(AsterSettings s, bool admin)
     {
         IEnumerable<string> names = s.Games.SelectMany(g => g.ExeNames);
         var polling = new PollingProcessWatcher(names, TimeSpan.FromMilliseconds(s.PollMs));
-        return admin ? (new EtwProcessWatcher(names), polling) : (polling, null);
+        return admin && s.Watcher == "etw" ? (new EtwProcessWatcher(names), polling) : (polling, null);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

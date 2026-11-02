@@ -39,7 +39,7 @@ public sealed class SettingsTests
         AsterSettings s = Parse(g);
 
         GameSettings game = Assert.Single(s.Games);
-        Assert.Equal((250, 1440), (s.PollMs, game.ReapplyMinutes));
+        Assert.Equal((50, 1440), (s.PollMs, game.ReapplyMinutes));
         Assert.Equal(@"D:\Games\MW4", game.OriginRoot);
         Assert.Equal(["game.exe", "Launcher.exe"], game.ExeNames);
         Assert.Equal([@"D:\Games"], game.AllowedRoots);
@@ -180,6 +180,25 @@ public sealed class SettingsTests
     public void PollOutOfRangeIsRejected(int poll)
     {
         Assert.Throws<SettingsException>(() => SettingsStore.Parse(Cfg(Game(), t => t["poll_ms"] = poll), Plans));
+    }
+
+    [Theory]
+    [InlineData("etw")]
+    [InlineData("poll")]
+    public void WatcherChoiceIsParsedAndDefaultsToPoll(string watcher)
+    {
+        Assert.Equal(watcher, SettingsStore.Parse(Cfg(Game(), t => t["watcher"] = watcher), Plans).Watcher);
+        Assert.Equal("poll", Parse(Game()).Watcher);
+    }
+
+    [Theory]
+    [InlineData("ETW")]
+    [InlineData("")]
+    [InlineData("kernel")]
+    public void UnknownWatcherIsRejected(string watcher)
+    {
+        Assert.Throws<SettingsException>(() => SettingsStore.Parse(Cfg(Game(), t => t["watcher"] = watcher), Plans));
+        Assert.Throws<SettingsException>(() => SettingsStore.Parse(Cfg(Game(), t => t["watcher"] = 1), Plans));
     }
 
     [Fact]

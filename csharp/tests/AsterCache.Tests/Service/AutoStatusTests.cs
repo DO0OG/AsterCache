@@ -142,11 +142,15 @@ public sealed class AutoStatusTests : IDisposable
         AutoStatus s = Make();
         s.Set("g", "auto", null, AutoStage.Discovered, null);
         using var held = new FileStream(StatusPath, FileMode.Open, FileAccess.Read, FileShare.None);
+        // 해제 스레드가 실제로 돌기 시작한 뒤에 쓰기를 시작해야, 느린 러너의 스레드 풀 지연이 재시도 창(5 x 100 ms)을 잡아먹지 않습니다.
+        using var started = new ManualResetEventSlim();
         Task release = Task.Run(() =>
         {
-            Thread.Sleep(250);
+            started.Set();
+            Thread.Sleep(150);
             held.Dispose();
         });
+        started.Wait();
 
         s.Set("g", "auto", null, AutoStage.Tracing, null);
         await release;

@@ -32,7 +32,8 @@ internal static class Program
         UpdateService? updates = tray.UpdateEnabled ? new UpdateService(new VelopackUpdateManager(tray.UpdateFeedUrl!), log) : null;
         App.Log = log;
         App.Smoke = args.Contains("--smoke");
-        App.Model = new TrayViewModel(new ConfigEditor(dataDir), new ScmServiceControl(new UacElevator()), new PrefetchStreamer(), new ExplorerShell(), log, updates);
+        App.Model = new TrayViewModel(new ConfigEditor(dataDir), new ScmServiceControl(new UacElevator()), new PrefetchStreamer(), new ExplorerShell(), log, updates,
+            ScmServiceControl.FileVersionOf(Environment.ProcessPath));
         return AppBuilder.Configure<App>().UsePlatformDetect().StartWithClassicDesktopLifetime(args, ShutdownMode.OnExplicitShutdown);
     }
 
@@ -41,9 +42,12 @@ internal static class Program
     {
         try
         {
-            return new FileLog(Path.Combine(dataDir, "logs", "tray.log"));
+            string path = Path.Combine(dataDir, "logs", "tray.log");
+            var log = new FileLog(path);
+            File.AppendAllText(path, string.Empty); // 데이터 폴더는 일반 사용자 쓰기 금지: FileLog 는 쓰기 실패를 삼키므로 여기서 미리 확인
+            return log;
         }
-        catch (UnauthorizedAccessException)
+        catch (Exception e) when (e is UnauthorizedAccessException or IOException)
         {
             return new FileLog(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AsterCache", "logs", "tray.log"));
         }

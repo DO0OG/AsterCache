@@ -15,6 +15,7 @@ internal static partial class RealPaths
     /// 없거나 열 수 없으면 null (resolve(strict=True) 가 실패하는 경우).
     public static string? Resolve(string path)
     {
+        path = DriveRoot(path);
         try
         {
             using SafeFileHandle handle = CreateFileW(Path.GetFullPath(path), FileReadAttributes, ShareAll, 0, OpenExisting, BackupSemantics, 0);
@@ -42,6 +43,7 @@ internal static partial class RealPaths
     /// os.path.realpath (엄격하지 않음): 없는 경로는 절대 경로로만 바꿉니다.
     public static string Real(string path)
     {
+        path = DriveRoot(path);
         string? resolved = Resolve(path);
         if (resolved is not null)
         {
@@ -51,6 +53,9 @@ internal static partial class RealPaths
         string full = Path.GetFullPath(path);
         return full.Length > 3 ? full.TrimEnd('\\') : full;
     }
+
+    /// 구분자 없는 "D:" 는 GetFullPath 가 D: 의 현재 디렉터리로 풀어 버리므로 루트 "D:\" 로 바꿉니다.
+    private static string DriveRoot(string path) => path.Length == 2 && path[1] == ':' ? path + '\\' : path;
 
     [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
     private static partial SafeFileHandle CreateFileW(string fileName, uint access, uint share, nint security, uint disposition, uint flags, nint template);

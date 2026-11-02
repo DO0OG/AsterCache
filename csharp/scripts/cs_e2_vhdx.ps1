@@ -79,7 +79,9 @@ function Invoke-Aster([string]$Name, [string[]]$AsterArgs) {
 # Starts the CLI without waiting, so the run can be killed in the middle of a move.
 function Start-AsterBackground([string[]]$AsterArgs) {
     $line = ($AsterArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
-    return Start-Process -FilePath $AsterExe -ArgumentList $line -PassThru -WindowStyle Hidden
+    $p = Start-Process -FilePath $AsterExe -ArgumentList $line -PassThru -WindowStyle Hidden
+    $null = $p.Handle  # PowerShell 5.1 loses ExitCode of a process whose handle was never touched
+    return $p
 }
 
 function Wait-Drive {

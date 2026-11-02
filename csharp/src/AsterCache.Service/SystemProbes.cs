@@ -122,7 +122,10 @@ public static class AclCheck
     /// 폴더를 바꾸거나 권한을 바꿀 수 있는 신뢰 밖 주체의 SID 목록 (비어 있으면 안전).
     public static IReadOnlyList<string> UntrustedWriters(string directory) => UntrustedWriters(new DirectoryInfo(directory).GetAccessControl());
 
-    public static IReadOnlyList<string> UntrustedWriters(DirectorySecurity security)
+    /// 파일(config.json) 쪽 같은 검사: 소유자와 쓰기 권한.
+    public static IReadOnlyList<string> UntrustedFileWriters(string file) => UntrustedWriters(new FileInfo(file).GetAccessControl());
+
+    public static IReadOnlyList<string> UntrustedWriters(FileSystemSecurity security)
     {
         var bad = new SortedSet<string>(StringComparer.Ordinal);
         if (security.GetOwner(typeof(SecurityIdentifier)) is SecurityIdentifier owner && !Trusted.Contains(owner))

@@ -6,6 +6,7 @@ using AsterCache.Core.Plan;
 namespace AsterCache.Core.Apply;
 
 /// relayout/apply.py 의 apply_plan, _execute, _run_tasks, _finish, _move_chunk, moved_ranges.
+/// 취소 토큰은 조각 사이에서만 봅니다 (한 조각의 MOVE_FILE 은 끝까지 감). 취소되면 Stopped = "cancelled" 이고 다음 실행이 이어받습니다.
 /// 저널은 이어하기 힌트일 뿐이고 진실은 매번 다시 조회한 extent 입니다. Execute 가 아니면 아무것도 옮기지 않고 저널도 쓰지 않습니다.
 public static class Applier
 {
@@ -15,7 +16,7 @@ public static class Applier
     public const long TaskSpan = 64 << 10;
 
     public static ApplyReport Apply(PlanFile plan, IVolume vol, IReadOnlyList<string> roots, string journalPath, ApplyHooks hooks,
-        ApplyOptions? options = null)
+        ApplyOptions? options = null, CancellationToken cancellationToken = default)
     {
         options ??= new ApplyOptions();
         Func<string, long, IReadOnlyList<(long Offset, long Length)>, string> digest = hooks.Digest ?? throw new ArgumentException("hooks.Digest is required");
@@ -65,7 +66,7 @@ public static class Applier
 
         rep.DryRun = options.DryRun;
         rep.PlanSaved = persist;
-        return options.Execute ? Execute(plan, vol, todo, rep, journalPath, chunk, options.WriteCap, hooks, digest) : rep;
+        return options.Execute ? Execute(plan, vol, todo, rep, journalPath, chunk, options.WriteCap, hooks, digest, cancellationToken) : rep;
     }
 
     /// path → [(바이트 오프셋, 길이)]: 모든 작업의 VCN 범위 앞뒤 TaskSpan 바이트. SHA 표본에 들어갑니다.
@@ -115,7 +116,8 @@ public static class Applier
     }
 
     private static ApplyReport Execute(PlanFile plan, IVolume vol, List<(int Idx, PlanTask Task, long Done)> todo, ApplyReport rep,
-        string journalPath, long chunk, long writeCap, ApplyHooks hooks, Func<string, long, IReadOnlyList<(long Offset, long Length)>, string> digestFn)
+        string journalPath, long chunk, long writeCap, ApplyHooks hooks, Func<string, long, IReadOnlyList<(long Offset, long Length)>, string> digestFn,
+        CancellationToken ct)
     {
         using var jr = new Journal(journalPath);
         var before = new OrderedDictionary<string, string?>(StringComparer.Ordinal);
@@ -144,7 +146,7 @@ public static class Applier
 
         try
         {
-            RunTasks(vol, todo, rep, jr, before, chunk, writeCap, hooks, Digest);
+            RunTasks(vol, todo, rep, jr, before, chunk, writeCap, hooks, Digest, ct);
         }
         catch (Exception)
         {
@@ -165,11 +167,17 @@ public static class Applier
 
     // 쓴 양은 예외가 나도 end 행에 남도록 rep.MovedBytes 에 계속 누적합니다.
     private static void RunTasks(IVolume vol, List<(int Idx, PlanTask Task, long Done)> todo, ApplyReport rep, Journal jr,
-        OrderedDictionary<string, string?> before, long chunk, long writeCap, ApplyHooks hooks, Func<string, string> digest)
+        OrderedDictionary<string, string?> before, long chunk, long writeCap, ApplyHooks hooks, Func<string, string> digest, CancellationToken ct)
     {
         long cb = vol.ClusterBytes;
         foreach ((int i, PlanTask t, long d) in todo)
         {
+            if (ct.IsCancellationRequested) // 다음 작업으로 넘어가기 전에도 확인: 취소된 뒤에는 새 단계의 planned 행을 남기지 않음
+            {
+                rep.Stopped = "cancelled";
+                return;
+            }
+
             string p = t.Path;
             if (!before.ContainsKey(p))
             {
@@ -202,6 +210,12 @@ public static class Applier
             string? err = null;
             while (off < t.Clusters && err is null)
             {
+                if (ct.IsCancellationRequested) // 진행 중이던 조각은 이미 끝났음: 저널의 planned 행이 재개 지점 (DonePrefix 가 실제 extent 로 다시 계산)
+                {
+                    rep.Stopped = "cancelled";
+                    return;
+                }
+
                 long c = Math.Min(chunk, t.Clusters - off);
                 if (rep.MovedBytes + (c * cb) > writeCap)
                 {

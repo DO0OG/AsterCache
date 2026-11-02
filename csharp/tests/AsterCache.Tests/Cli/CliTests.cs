@@ -214,6 +214,8 @@ public sealed class CliTests
     [InlineData("plan", "--trace", "t.json", "--origin-root", "R", "--zone-mib", "abc")]
     [InlineData("verify", "--plan", "p.json", "--bogus")]
     [InlineData("verify")]
+    [InlineData("trace", "--csv", "x.csv", "--prefix", "D:/Games", "--out", "o.json", "--dump-first", "20")] // --dump-first 는 --etl 에서만
+    [InlineData("trace", "--etl", "x.etl", "--exe", "a.exe", "--prefix", "D:/Games", "--out", "o.json", "--stop-file", "s")] // --stop-file 은 --live 에서만
     [InlineData("prefetch", "--strategy", "zzz")]
     [InlineData("prefetch", "--trace", "t.json", "--origin-root", "R", "--threads", "9")]
     [InlineData("no-such-command")]
@@ -224,6 +226,18 @@ public sealed class CliTests
         Assert.Equal(2, code);
         Assert.Equal(string.Empty, text);
         Assert.NotEqual(string.Empty, err);
+    }
+
+    [Fact]
+    public void BareDriveLetterIsTheDriveRootNotTheCurrentDirectory()
+    {
+        string drive = Path.GetPathRoot(Environment.SystemDirectory)![..2]; // "C:"
+
+        Assert.Equal(drive + @"\", RealPaths.Real(drive));
+        Assert.Equal(drive + @"\", RealPaths.Resolve(drive));
+        Assert.Equal(@"Q:\", RealPaths.Real("Q:")); // 없는 드라이브도 루트로만 정규화
+        Assert.True(AsterCache.Core.Apply.PlanGuards.Inside(Environment.SystemDirectory, [drive], RealPaths.Real));
+        Assert.False(AsterCache.Core.Apply.PlanGuards.Inside(Environment.SystemDirectory, ["Q:"], RealPaths.Real));
     }
 
     [Fact]

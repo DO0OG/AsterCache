@@ -24,6 +24,9 @@ public enum ReapplyVerdict
     /// 관리자가 아니거나 설정·계획 폴더 권한이 안전하지 않음: 상태만 기록.
     ApplyDisabled,
     Reapply,
+
+    /// 재적용 도중 게임이 시작돼 멈춤 (저널에 재개 지점이 남음). 오류가 아니고, 게임이 끝난 뒤 다음 검사에서 이어갑니다.
+    Cancelled,
     Failed,
 }
 
@@ -83,7 +86,7 @@ public sealed class ReapplyEnv
 
     public required Func<string, string> RealPath { get; init; }
 
-    public required Func<GameSettings, PlanFile, ApplyReport> Apply { get; init; }
+    public required Func<GameSettings, PlanFile, CancellationToken, ApplyReport> Apply { get; init; }
 
     /// 실제 구현. 재적용은 관리자이고 폴더 권한이 안전할 때만 (canApply). 저널은 게임마다 journalDir\이름.jsonl 하나를 계속 씁니다 (같은 저널 규칙: 이어하기·되돌리기).
     public static ReapplyEnv Create(bool canApply, string journalDir) => new()
@@ -95,7 +98,7 @@ public sealed class ReapplyEnv
         Extents = FileLayout.Extents,
         Stat = PlanFile.FingerprintOf,
         RealPath = RealPaths.Real,
-        Apply = (g, plan) =>
+        Apply = (g, plan, ct) =>
         {
             string letter = PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant();
             if (!string.Equals(VolumeInfo.Label(letter), g.VolumeLabel, StringComparison.OrdinalIgnoreCase))
@@ -112,9 +115,47 @@ public sealed class ReapplyEnv
                 RealPath = RealPaths.Real,
             };
             using NtfsVolume vol = NtfsVolume.Open(letter);
-            return Applier.Apply(plan, vol, g.AllowedRoots, Path.Combine(journalDir, g.Name + ".jsonl"), hooks, new ApplyOptions(Execute: true));
+            return Applier.Apply(plan, vol, g.AllowedRoots, Path.Combine(journalDir, g.Name + ".jsonl"), hooks, new ApplyOptions(Execute: true), ct);
         },
     };
+}
+
+/// 재적용 하나를 감싸는 취소 창. 게임 시작 알림이 Cancel 을 부르면 지금 도는 재적용만 멈추고 (한 조각을 끝낸 뒤), 돌고 있지 않으면 아무 일도 없습니다.
+public sealed class ReapplyGate
+{
+    private readonly object _lock = new();
+    private CancellationTokenSource? _current;
+
+    public T Run<T>(CancellationToken stop, Func<CancellationToken, T> work)
+    {
+        CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(stop);
+        lock (_lock)
+        {
+            _current = cts;
+        }
+
+        try
+        {
+            return work(cts.Token);
+        }
+        finally
+        {
+            lock (_lock)
+            {
+                _current = null; // Cancel 이 잠금 안에서만 _current 를 건드리므로 이 뒤에 Dispose 해도 안전
+            }
+
+            cts.Dispose();
+        }
+    }
+
+    public void Cancel()
+    {
+        lock (_lock)
+        {
+            _current?.Cancel();
+        }
+    }
 }
 
 /// 게임 하나의 주기 검사: 지문 비교 → verify_layout → 존 적중률 → (게임 미실행·디스크 유휴·권한 OK 이면) Applier 재적용.
@@ -122,6 +163,7 @@ public sealed class ReapplyChecker
 {
     private readonly ReapplyEnv _env;
     private readonly ILog _log;
+    private readonly HashSet<string> _cancelled = new(StringComparer.Ordinal); // 취소로 반쯤 적용된 게임
 
     public ReapplyChecker(ReapplyEnv env, ILog log)
     {
@@ -129,18 +171,32 @@ public sealed class ReapplyChecker
         _log = log;
     }
 
-    public ReapplyVerdict Check(GameSettings game)
+    public ReapplyVerdict Check(GameSettings game, CancellationToken cancellationToken = default)
     {
         try
         {
-            PlanFile plan = _env.LoadPlan(game.Plan);
+            PlanFile plan;
+            try
+            {
+                plan = _env.LoadPlan(game.Plan);
+            }
+            catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
+            {
+                _log.Info($"{game.Name}: no plan file yet, nothing to check"); // 아직 계획을 만들지 않은 게임은 오류가 아님
+                return ReapplyVerdict.NotApplied;
+            }
+
             CheckPaths(plan, game);
             bool applied = plan.Zone.StartLcn is not null;
             bool changed = applied && plan.Fingerprints.Any(Changed);
             double? ratio = applied && !changed ? HitRatio(plan) : null;
             ReapplyVerdict v = ReapplyPolicy.Decide(new ReapplyInputs(applied, changed, ratio, () => _env.GameRunning(game), () => _env.DiskBusy(game), _env.CanApply));
             _log.Info($"{game.Name}: layout check {v}" + (ratio is { } r ? $" (zone hit {r * 100:F1}%)" : string.Empty));
-            if (ratio < ReapplyPolicy.MinZoneHitRatio)
+            if (ratio < ReapplyPolicy.MinZoneHitRatio && _cancelled.Contains(game.Name))
+            {
+                _log.Info($"{game.Name}: partially applied (an earlier reapply was cancelled by a game start); resuming");
+            }
+            else if (ratio < ReapplyPolicy.MinZoneHitRatio)
             {
                 // 설계 2.3-6: 원본이 그대로인데 배치가 풀렸으면 정기 드라이브 최적화가 되돌렸을 수 있음. 자동으로 해제하지 않고 알리기만 함.
                 _log.Warn($"{game.Name}: layout degraded while source files are unchanged; scheduled drive optimization may be undoing it (not changed automatically)");
@@ -148,8 +204,15 @@ public sealed class ReapplyChecker
 
             if (v == ReapplyVerdict.Reapply)
             {
-                ApplyReport rep = _env.Apply(game, plan);
+                ApplyReport rep = _env.Apply(game, plan, cancellationToken);
                 _log.Info($"{game.Name}: reapplied, moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed" + (rep.Stopped is { } s ? $", stopped: {s}" : string.Empty));
+                if (rep.Stopped == "cancelled")
+                {
+                    _cancelled.Add(game.Name);
+                    return ReapplyVerdict.Cancelled;
+                }
+
+                _cancelled.Remove(game.Name);
             }
 
             return v;

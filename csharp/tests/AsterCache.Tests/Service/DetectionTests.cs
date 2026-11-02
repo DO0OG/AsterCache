@@ -149,6 +149,21 @@ public sealed class DispatcherTests
     }
 
     [Fact]
+    public void EveryDetectionIsLoggedWithPidEvenWithinCooldownAndMissingTraceIsNotAnError()
+    {
+        var streamer = new FakeStreamer { Throw = new FileNotFoundException() };
+        var log = new ListLog();
+        var d = new GameDispatcher([Mw4], streamer, log, () => DateTimeOffset.UnixEpoch);
+
+        Assert.False(d.Handle(new ProcessStart(111, "game.exe", 0)));
+        Assert.False(d.Handle(new ProcessStart(222, "game.exe", 0))); // 쿨다운 안: 스트림은 안 부르지만 감지는 기록
+
+        Assert.Contains(log.Lines, l => l.Contains("game.exe started (pid 111)", StringComparison.Ordinal));
+        Assert.Contains(log.Lines, l => l.Contains("game.exe started (pid 222)", StringComparison.Ordinal));
+        Assert.DoesNotContain(log.Lines, l => l.StartsWith("Error", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void StreamFailureIsLoggedAndDoesNotStopLaterStreams()
     {
         var streamer = new FakeStreamer { Throw = new IOException("disk gone") };
@@ -185,6 +200,56 @@ public sealed class DispatcherTests
         Assert.Equal("mw4", Assert.Single(streamer.Calls).Game);
     }
 
+    [Fact]
+    public async Task WatcherEventCancelsTheRunningReapplyBeforeStreaming()
+    {
+        var gate = new ReapplyGate();
+        using var started = new ManualResetEventSlim();
+        Task<bool> reapply = Task.Run(() => gate.Run(CancellationToken.None, token =>
+        {
+            started.Set();
+            return token.WaitHandle.WaitOne(TimeSpan.FromSeconds(10));
+        }));
+        Assert.True(started.Wait(TimeSpan.FromSeconds(10)));
+        var worker = new Worker(new AsterSettings(250, [Mw4]), new ListLog(), new OneShotWatcher(Start("game.exe"), new TaskCompletionSource()), null,
+            new FakeStreamer(), new ReapplyChecker(ReapplyTests.NoIoEnv(), new ListLog()), gate);
+
+        await worker.StartAsync(CancellationToken.None);
+
+        Assert.True(await reapply);
+        await worker.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task WorkerWithNoGamesIdlesWithoutWatchingOrReapplying()
+    {
+        var log = new ListLog();
+        var watcher = new CountingWatcher();
+        var worker = new Worker(new AsterSettings(250, []), log, watcher, watcher, new FakeStreamer(), new ReapplyChecker(ReapplyTests.NoIoEnv(), log));
+
+        await worker.StartAsync(CancellationToken.None);
+        await Task.Delay(100);
+        await worker.StopAsync(CancellationToken.None);
+
+        Assert.Equal(0, watcher.Runs);
+        Assert.Contains(log.Lines, l => l.StartsWith("Info: service started: no games registered", StringComparison.Ordinal));
+        Assert.Contains(log.Lines, l => l.Equals("Info: service stopped", StringComparison.Ordinal));
+        Assert.DoesNotContain(log.Lines, l => l.StartsWith("Error", StringComparison.Ordinal) || l.StartsWith("Warn", StringComparison.Ordinal));
+    }
+
+    private sealed class CountingWatcher : IProcessWatcher
+    {
+        private int _runs;
+
+        public int Runs => _runs;
+
+        public Task RunAsync(Action<ProcessStart> onStart, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _runs);
+            return Task.CompletedTask;
+        }
+    }
+
     private sealed class OneShotWatcher(ProcessStart start, TaskCompletionSource emitted) : IProcessWatcher
     {
         public async Task RunAsync(Action<ProcessStart> onStart, CancellationToken cancellationToken)
@@ -216,6 +281,18 @@ public sealed class AclCheckTests
         sec.AddAccessRule(new FileSystemAccessRule(Admins, FileSystemRights.FullControl, AccessControlType.Allow));
         sec.AddAccessRule(new FileSystemAccessRule(System_, FileSystemRights.FullControl, AccessControlType.Allow));
         return sec;
+    }
+
+    [Fact]
+    public void FileOwnedByAUserIsFlaggedEvenWithoutWriteRules()
+    {
+        var sec = new FileSecurity();
+        sec.SetOwner(Users);
+        sec.AddAccessRule(new FileSystemAccessRule(Admins, FileSystemRights.FullControl, AccessControlType.Allow));
+
+        Assert.Equal(["owner:" + Users.Value], AclCheck.UntrustedWriters(sec));
+        sec.SetOwner(Admins);
+        Assert.Empty(AclCheck.UntrustedWriters(sec));
     }
 
     [Fact]

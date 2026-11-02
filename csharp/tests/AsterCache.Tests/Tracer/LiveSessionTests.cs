@@ -13,6 +13,30 @@ public sealed class LiveSessionTests
     }
 
     [Fact]
+    public void DescribeShowsSummaryThenFirstReadsOnly()
+    {
+        DateTime t = new(2026, 11, 2, 12, 0, 0, DateTimeKind.Utc);
+        var records = new List<TraceRecord>
+        {
+            TraceRecord.Start(t, 10, 1, @"D:\Games\game.exe"),
+            TraceRecord.Read(t, 10, @"D:\Games b.bin", 4096, 65536),
+            TraceRecord.Read(t, 10, @"D:\Games\c.bin", 0, 512),
+            TraceRecord.Read(t, 10, @"D:\Games\d.bin", 1, 2),
+        };
+
+        string[] lines = EtlReader.Describe(records, 3, 7, 2).ToArray();
+
+        Assert.Equal(
+            [
+                "etl records=4 reads=3 process_starts=1 unresolved_reads=3 events_lost=7",
+                @"FileIORead pid=10 offset=4096 length=65536 path=D:\Games b.bin",
+                @"FileIORead pid=10 offset=0 length=512 path=D:\Games\c.bin",
+            ],
+            lines);
+        Assert.Single(EtlReader.Describe(records, 0, 0, 0));
+    }
+
+    [Fact]
     public void EtlReaderRejectsMissingFile()
     {
         string missing = Path.Combine(Path.GetTempPath(), "astercache-missing-" + Guid.NewGuid().ToString("N") + ".etl");

@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.ServiceProcess;
+using Microsoft.Win32;
 
 namespace AsterCache.Tray;
 
@@ -10,6 +11,9 @@ public enum ServiceState { NotInstalled, Stopped, Running, Pending, Unknown }
 public interface IServiceControl
 {
     ServiceState Query();
+
+    /// 등록된 서비스 실행 파일의 FileVersion. 설치되지 않았거나 읽지 못하면 null.
+    string? InstalledVersion();
 
     void RequestStart();
 
@@ -57,6 +61,37 @@ public sealed class ScmServiceControl(IElevator elevator, string serviceName = S
         {
             return e.InnerException is Win32Exception { NativeErrorCode: ErrorServiceDoesNotExist } ? ServiceState.NotInstalled : ServiceState.Unknown;
         }
+    }
+
+    /// SCM 에 등록된 경로 (ImagePath, 일반 사용자도 읽음) 의 실행 파일 버전. 트레이는 Velopack 으로, 서비스는 설치 프로그램으로 따로 갱신되므로 둘이 어긋날 수 있습니다.
+    public string? InstalledVersion()
+    {
+        try
+        {
+            string? exe = ImagePathExe(Registry.GetValue(@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\" + serviceName, "ImagePath", null) as string);
+            return exe is null || !File.Exists(exe) ? null : FileVersionOf(exe);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            return null;
+        }
+    }
+
+    /// 파일의 FileVersion (예: 1.2.3.0), 없으면 null.
+    public static string? FileVersionOf(string? path) => path is null ? null : FileVersionInfo.GetVersionInfo(path).FileVersion;
+
+    /// ImagePath ("C:\Program Files\x\a.exe" --data-dir ...) 에서 실행 파일 경로만. 따옴표가 없으면 첫 .exe 까지.
+    public static string? ImagePathExe(string? imagePath)
+    {
+        string s = imagePath?.Trim() ?? string.Empty;
+        if (s.StartsWith('"'))
+        {
+            int close = s.IndexOf('"', 1);
+            return close > 1 ? s[1..close] : null;
+        }
+
+        int exe = s.IndexOf(".exe", StringComparison.OrdinalIgnoreCase);
+        return exe > 0 ? s[..(exe + 4)] : null;
     }
 
     public void RequestStart() => elevator.Run(Sc, "start " + serviceName);

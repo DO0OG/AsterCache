@@ -96,18 +96,23 @@ begin
   RunTool(ExpandConstant('{sys}\sc.exe'), 'description {#ServiceName} "AsterCache game-start prefetch and layout check"', False);
 end;
 
-procedure SetPlansAcl();
+procedure SetDataAcl();
 var
-  Common, Plans: String;
+  Common, Data: String;
 begin
   Common := ExpandConstant('{commonappdata}');
-  Plans := Common + '\{#AppName}\plans';
-  ForceDirectories(Plans);
-  ForceDirectories(Common + '\{#AppName}\journals');
-  ForceDirectories(Common + '\{#AppName}\logs');
-  // SYSTEM and Administrators: full. Users: read only (the service refuses to reapply when non-admins can write).
+  Data := Common + '\{#AppName}';
+  ForceDirectories(Data + '\plans');
+  ForceDirectories(Data + '\journals');
+  ForceDirectories(Data + '\logs');
+  // The whole data folder (config.json, plans, journals, logs), not only plans: the service runs as SYSTEM and moves files named in config.json and plans,
+  // so a user who could write them could escalate. SYSTEM and Administrators: full. Users: read only (the service also refuses to reapply otherwise).
+  // Owner first: a user who created the folder or config.json earlier would own it and could rewrite its ACL (and AclCheck flags a non-admin owner, which would disable reapply for good).
+  // /reset drops any ACL the user set on existing children so they inherit the locked one.
+  RunTool(ExpandConstant('{sys}\icacls.exe'), '"' + Data + '" /setowner *S-1-5-32-544 /T /C', True);
+  RunTool(ExpandConstant('{sys}\icacls.exe'), '"' + Data + '" /reset /T /C', True);
   RunTool(ExpandConstant('{sys}\icacls.exe'),
-    '"' + Plans + '" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX', True);
+    '"' + Data + '" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX', True);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -116,7 +121,7 @@ begin
   if CurStep = ssPostInstall then
   begin
     RegisterService();
-    SetPlansAcl();
+    SetDataAcl();
     RunTool(ExpandConstant('{sys}\sc.exe'), 'start {#ServiceName}', False);
   end;
 end;

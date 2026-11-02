@@ -4,16 +4,21 @@
 
 .DESCRIPTION
   Run from an elevated (Administrator) PowerShell, by the user only:
-    cs_service.ps1 -Action install   [-ExePath <published AsterCache.Service.exe>] [-DataDir <folder>]
+    cs_service.ps1 -Action install   [-ExePath <published AsterCache.Service.exe>] [-DataDir <folder>] [-TestConfig [-TestRoot <folder>]]
     cs_service.ps1 -Action test
     cs_service.ps1 -Action uninstall [-PurgeData]
 
-  install   : requires <DataDir>\config.json (the games list is never written by this script). Creates plans, journals,
-              logs. Registers service AsterCache (LocalSystem, automatic start) with --data-dir. plans gets ACL:
-              SYSTEM and Administrators full control, Users read only. Starts the service.
-  test      : service must be running and config.json must list notepad.exe. Closes all notepad processes first
-              (refuses if any are open, so the start event is real). Starts notepad 20 times and measures the time from
-              start to the "notepad.exe started" line in service.log. Verdict: p95 <= 100 ms.
+  install   : requires <DataDir>\config.json, except that -TestConfig writes a placeholder one when the file is missing
+              (one game: exe cmd.exe, origin root -TestRoot (default D:\AsterBench), no trace/plan files; an existing
+              config.json is never touched). Creates plans, journals, logs. Registers service AsterCache (LocalSystem,
+              automatic start) with --data-dir. the data folder gets ACL: SYSTEM and Administrators full control, Users read only.
+              Starts the service.
+  test      : service must be running and config.json must list cmd.exe. Starts the self-ending process
+              `cmd.exe /c "ping -n 2 127.0.0.1 >nul"` -Samples times (it exits by itself after about 1 s; nothing is killed,
+              and cmd.exe processes that are already open are ignored) and matches each new PID to the service.log line
+              "cmd.exe started (pid N)". Delay = log time minus the process creation time. Verdict: p95 <= 100 ms.
+              The watcher in use (EtwProcessWatcher = ETW, PollingProcessWatcher = polling) is read from service.log and
+              written to service_test.json.
   uninstall : stops and deletes the service. Data folder is kept unless -PurgeData is given.
   Results: <repo>\results\csharp_<yyyyMMdd_HHmmss>\ (service_test.json, undo notes in README.txt).
   Each failure stops the script. Nothing here is executed by automation.
@@ -26,6 +31,8 @@ param(
     [string]$ServiceName = 'AsterCache',
     [int]$Samples = 20,
     [switch]$PurgeData,
+    [switch]$TestConfig,
+    [string]$TestRoot = 'D:\AsterBench',
     [string]$Repo = ''
 )
 Set-StrictMode -Version Latest
@@ -57,13 +64,33 @@ function Invoke-Native([string]$Exe, [string[]]$NativeArgs) {
 switch ($Action) {
     'install' {
         if (-not (Test-Path -LiteralPath $ExePath)) { throw "service binary not found: $ExePath (publish it first, see csharp\README.md)" }
-        if (-not (Test-Path -LiteralPath (Join-Path $DataDir 'config.json'))) { throw "missing $DataDir\config.json : create the games list first" }
+        $cfgPath = Join-Path $DataDir 'config.json'
+        if (-not (Test-Path -LiteralPath $cfgPath) -and -not $TestConfig) { throw "missing $cfgPath : create the games list first (or pass -TestConfig for a placeholder config)" }
         if (Get-AsterService) { throw "service '$ServiceName' already exists: run uninstall first" }
         New-Item -ItemType Directory -Force -Path $plans, (Join-Path $DataDir 'journals'), (Join-Path $DataDir 'logs') | Out-Null
+        if (-not (Test-Path -LiteralPath $cfgPath)) {
+            # Placeholder config (schema of Core/Settings): watches cmd.exe only; trace and plan files do not exist, which the service treats as "nothing to do yet".
+            $label = ''
+            try { $label = [string](Get-Volume -DriveLetter $TestRoot.Substring(0, 1) -ErrorAction Stop).FileSystemLabel } catch { $label = '' }
+            if (-not $label) { $label = 'AsterBench' }
+            $game = [ordered]@{
+                name = 'astertest'; exe_names = @('cmd.exe')
+                trace = (Join-Path $plans 'astertest.prefetch.json'); plan = (Join-Path $plans 'astertest.plan.json')
+                origin_root = $TestRoot; allowed_roots = @($TestRoot); volume_label = $label.Substring(0, [math]::Min(32, $label.Length))
+            }
+            $json = ConvertTo-Json -InputObject ([ordered]@{ games = @($game) }) -Depth 6
+            [IO.File]::WriteAllText($cfgPath, $json, (New-Object Text.UTF8Encoding($false)))
+            Write-Host "wrote test config: $cfgPath (remove it with: uninstall -PurgeData)"
+        }
         $bin = '"{0}" --data-dir "{1}"' -f $ExePath, $DataDir
         New-Service -Name $ServiceName -BinaryPathName $bin -DisplayName $ServiceName -StartupType Automatic -Description 'AsterCache game-start prefetch and layout check' | Out-Null
-        # SYSTEM and Administrators: full. Users: read only (the service refuses to reapply if non-admins can write).
-        $acl = Invoke-Native 'icacls.exe' @($plans, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', '*S-1-5-32-545:(OI)(CI)RX')
+        # The whole data folder (config.json, plans, journals, logs): SYSTEM runs the service and moves files named there. SYSTEM and Administrators: full. Users: read only (the service refuses to reapply if non-admins can write).
+        # Owner first (a user who created the folder or config.json earlier would own it, could rewrite the ACL, and AclCheck would disable reapply), then drop ACLs set on children.
+        foreach ($step in @(@($DataDir, '/setowner', '*S-1-5-32-544', '/T', '/C'), @($DataDir, '/reset', '/T', '/C'))) {
+            $r = Invoke-Native 'icacls.exe' $step
+            if ($r.Code -ne 0) { throw "icacls failed (exit $($r.Code)): $($r.Text)" }
+        }
+        $acl = Invoke-Native 'icacls.exe' @($DataDir, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', '*S-1-5-32-545:(OI)(CI)RX')
         if ($acl.Code -ne 0) { throw "icacls failed (exit $($acl.Code)): $($acl.Text)" }
         Start-Service -Name $ServiceName
         if ((Get-AsterService).Status -ne 'Running') { throw 'service did not reach Running' }
@@ -87,35 +114,42 @@ switch ($Action) {
         $svc = Get-AsterService
         if (-not $svc -or $svc.Status -ne 'Running') { throw "service '$ServiceName' is not running" }
         $cfg = Get-Content -LiteralPath (Join-Path $DataDir 'config.json') -Raw
-        if ($cfg -notmatch 'notepad\.exe') { throw 'config.json does not list notepad.exe: add it to the games list, then run test again' }
-        if (Get-Process -Name notepad -ErrorAction SilentlyContinue) { throw 'close every notepad window first (an already-open process gives no start event)' }
+        if ($cfg -notmatch 'cmd\.exe') { throw 'config.json does not list cmd.exe: add it to the games list (or install with -TestConfig), then run test again' }
 
         New-Item -ItemType Directory -Force -Path $out | Out-Null
         $delays = @()
+        $fromCall = @()
         for ($i = 1; $i -le $Samples; $i++) {
             $before = 0
             if (Test-Path -LiteralPath $logFile) { $before = @(Get-Content -LiteralPath $logFile -Encoding UTF8).Count }
             $t0 = [DateTimeOffset]::Now
-            $p = Start-Process -FilePath 'notepad.exe' -PassThru
+            # Self-ending child (about 1 s). It is matched by PID, so a cmd.exe the user already has open is never touched.
+            $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c "ping -n 2 127.0.0.1 >nul"' -PassThru -WindowStyle Hidden
+            $null = $p.Handle  # keeps StartTime/ExitCode readable on PowerShell 5.1
+            $started = $p.StartTime
+            $pidPattern = 'cmd\.exe started \(pid ' + $p.Id + '\)'
             $found = $null
             for ($w = 0; $w -lt 100 -and -not $found; $w++) {
                 Start-Sleep -Milliseconds 50
                 if (-not (Test-Path -LiteralPath $logFile)) { continue }
                 $new = @(Get-Content -LiteralPath $logFile -Encoding UTF8 | Select-Object -Skip $before)
-                $hit = $new | Where-Object { $_ -match 'notepad\.exe started' } | Select-Object -First 1
+                $hit = $new | Where-Object { $_ -match $pidPattern } | Select-Object -First 1
                 if ($hit) { $found = $hit }
             }
-            Stop-Process -Name notepad -Force -ErrorAction SilentlyContinue
-            if (-not $found) { throw "sample ${i}: no 'notepad.exe started' line in service.log within 5 s" }
+            if (-not $found) { throw "sample ${i}: no 'cmd.exe started (pid $($p.Id))' line in service.log within 5 s" }
             $ts = [DateTimeOffset]::Parse($found.Split(' ')[0])
-            $delays += [math]::Round(($ts - $t0).TotalMilliseconds, 1)
+            $fromCall += [math]::Round(($ts - $t0).TotalMilliseconds, 1)
+            $delays += [math]::Round(($ts - [DateTimeOffset]$started).TotalMilliseconds, 1)
+            [void]$p.WaitForExit(10000)
             Start-Sleep -Milliseconds 300
         }
         $sorted = $delays | Sort-Object
         $p95 = $sorted[[int][math]::Ceiling(0.95 * $sorted.Count) - 1]
-        $result = [ordered]@{ samples = $delays; p95_ms = $p95; threshold_ms = 100; pass = ($p95 -le 100) }
+        $watcherLine = @(Get-Content -LiteralPath $logFile -Encoding UTF8 | Where-Object { $_ -match 'process watcher: ' } | Select-Object -Last 1)
+        $watcher = if ($watcherLine.Count -gt 0) { ($watcherLine[0] -replace '^.*process watcher: ', '').Trim() } else { 'unknown' }
+        $result = [ordered]@{ samples = $delays; samples_from_start_process_call = $fromCall; p95_ms = $p95; threshold_ms = 100; pass = ($p95 -le 100); watcher = $watcher }
         $result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $out 'service_test.json') -Encoding UTF8
-        Write-Host "p95 = $p95 ms (threshold 100 ms): pass = $($result.pass)"
+        Write-Host "p95 = $p95 ms (threshold 100 ms): pass = $($result.pass), watcher = $watcher"
     }
 }
 

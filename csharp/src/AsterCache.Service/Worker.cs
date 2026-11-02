@@ -10,6 +10,7 @@ public sealed class Worker : BackgroundService
 {
     public static readonly TimeSpan FirstCheckDelay = TimeSpan.FromMinutes(1);
     public static readonly TimeSpan CheckTick = TimeSpan.FromSeconds(30);
+    public static readonly TimeSpan ResumeRetry = TimeSpan.FromMinutes(5);
 
     private readonly AsterSettings _settings;
     private readonly ILog _log;
@@ -17,8 +18,10 @@ public sealed class Worker : BackgroundService
     private readonly IProcessWatcher? _fallback;
     private readonly GameDispatcher _dispatcher;
     private readonly ReapplyChecker _checker;
+    private readonly ReapplyGate _gate;
 
-    public Worker(AsterSettings settings, ILog log, IProcessWatcher primary, IProcessWatcher? fallback, IGameStreamer streamer, ReapplyChecker checker)
+    public Worker(AsterSettings settings, ILog log, IProcessWatcher primary, IProcessWatcher? fallback, IGameStreamer streamer, ReapplyChecker checker,
+        ReapplyGate? gate = null)
     {
         _settings = settings;
         _log = log;
@@ -26,6 +29,7 @@ public sealed class Worker : BackgroundService
         _fallback = fallback;
         _dispatcher = new GameDispatcher(settings.Games, streamer, log);
         _checker = checker;
+        _gate = gate ?? new ReapplyGate();
     }
 
     /// 관리자면 ETW (실패하면 폴링으로 내려감), 아니면 폴링.
@@ -38,6 +42,22 @@ public sealed class Worker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (_settings.Games.Count == 0)
+        {
+            _log.Info("service started: no games registered, idle (nothing is watched or reapplied)");
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // 종료
+            }
+
+            _log.Info("service stopped");
+            return;
+        }
+
         _log.Info($"service started: {_settings.Games.Count} game(s), watcher {_primary.GetType().Name}");
         var channel = Channel.CreateUnbounded<ProcessStart>();
         Task watch = WatchAsync(channel.Writer, stoppingToken);
@@ -53,7 +73,8 @@ public sealed class Worker : BackgroundService
         {
             try
             {
-                await _primary.RunAsync(s => writer.TryWrite(s), ct);
+                _log.Info($"process watcher: {_primary.GetType().Name}");
+                await _primary.RunAsync(OnStart(writer), ct);
                 if (!ct.IsCancellationRequested)
                 {
                     _log.Warn("process watcher ended unexpectedly");
@@ -67,7 +88,8 @@ public sealed class Worker : BackgroundService
             if (!ct.IsCancellationRequested && _fallback is not null)
             {
                 _log.Warn($"falling back to {_fallback.GetType().Name}");
-                await _fallback.RunAsync(s => writer.TryWrite(s), ct);
+                _log.Info($"process watcher: {_fallback.GetType().Name}");
+                await _fallback.RunAsync(OnStart(writer), ct);
             }
         }
         finally
@@ -75,6 +97,13 @@ public sealed class Worker : BackgroundService
             writer.TryComplete();
         }
     }
+
+    // 게임이 뜨면 돌고 있는 재적용을 먼저 멈춥니다 (읽기 큐 처리보다 앞서, 감시 스레드에서 바로).
+    private Action<ProcessStart> OnStart(ChannelWriter<ProcessStart> writer) => s =>
+    {
+        _gate.Cancel();
+        writer.TryWrite(s);
+    };
 
     private async Task ConsumeAsync(ChannelReader<ProcessStart> reader, CancellationToken ct)
     {
@@ -95,14 +124,17 @@ public sealed class Worker : BackgroundService
     {
         DateTimeOffset start = DateTimeOffset.UtcNow;
         var due = _settings.Games.ToDictionary(g => g.Name, _ => start + FirstCheckDelay);
+        var resuming = new HashSet<string>(StringComparer.Ordinal); // 취소돼 반쯤 적용된 게임: 게임이 끝날 때까지 짧게 다시 확인
         try
         {
             while (!ct.IsCancellationRequested)
             {
                 foreach (GameSettings g in _settings.Games.Where(g => DateTimeOffset.UtcNow >= due[g.Name]))
                 {
-                    due[g.Name] = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(g.ReapplyMinutes);
-                    _checker.Check(g);
+                    ReapplyVerdict v = _gate.Run(ct, token => _checker.Check(g, token));
+                    bool waiting = v == ReapplyVerdict.Cancelled || (resuming.Contains(g.Name) && v is ReapplyVerdict.GameRunning or ReapplyVerdict.DiskBusy);
+                    _ = waiting ? resuming.Add(g.Name) : resuming.Remove(g.Name);
+                    due[g.Name] = DateTimeOffset.UtcNow + (waiting ? ResumeRetry : TimeSpan.FromMinutes(g.ReapplyMinutes));
                 }
 
                 await Task.Delay(CheckTick, ct);
@@ -115,9 +147,19 @@ public sealed class Worker : BackgroundService
     }
 
     /// 시작 때 설정·계획 폴더 권한을 확인해 재적용 허용 여부를 정합니다 (관리자 + 두 폴더 모두 신뢰 밖 쓰기 권한 없음).
-    public static bool CanApply(bool admin, IEnumerable<string> folders, ILog log)
+    public static bool CanApply(bool admin, IEnumerable<string> folders, ILog log, IEnumerable<string>? files = null)
     {
         bool ok = admin;
+        foreach (string file in files ?? [])
+        {
+            IReadOnlyList<string> bad = File.Exists(file) ? AclCheck.UntrustedFileWriters(file) : [];
+            if (bad.Count > 0)
+            {
+                log.Error($"file {Path.GetFileName(file)} is owned or writable by non-admin principals ({string.Join(", ", bad.Take(3))}); reapply disabled");
+                ok = false;
+            }
+        }
+
         foreach (string dir in folders)
         {
             IReadOnlyList<string> bad = Directory.Exists(dir) ? AclCheck.UntrustedWriters(dir) : [];

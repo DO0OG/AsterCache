@@ -15,6 +15,23 @@ public sealed class ServiceAndUpdateTests
         Assert.Equal(ServiceState.NotInstalled, new ScmServiceControl(new RecordingElevator(), NoSuchService).Query());
     }
 
+    [Theory]
+    [InlineData(@"""C:\Program Files\AsterCache\AsterCache.Service.exe"" --data-dir ""C:\ProgramData\AsterCache""", @"C:\Program Files\AsterCache\AsterCache.Service.exe")]
+    [InlineData(@"C:\Aster\AsterCache.Service.exe --data-dir C:\d", @"C:\Aster\AsterCache.Service.exe")]
+    [InlineData("\"unterminated", null)]
+    [InlineData("", null)]
+    [InlineData(null, null)]
+    public void ImagePathYieldsTheServiceExecutable(string? imagePath, string? expected)
+    {
+        Assert.Equal(expected, ScmServiceControl.ImagePathExe(imagePath));
+    }
+
+    [Fact]
+    public void UninstalledServiceHasNoInstalledVersion()
+    {
+        Assert.Null(new ScmServiceControl(new RecordingElevator(), NoSuchService).InstalledVersion());
+    }
+
     [Fact]
     public void StartAndStopUseScThroughTheElevatorOnly()
     {

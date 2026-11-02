@@ -68,7 +68,7 @@ public sealed class ReapplyTests
         Extents = _ => throw new InvalidOperationException(),
         Stat = _ => throw new InvalidOperationException(),
         RealPath = Path.GetFullPath,
-        Apply = (_, _) => throw new InvalidOperationException(),
+        Apply = (_, _, _) => throw new InvalidOperationException(),
     };
 
     private sealed class Rig
@@ -94,13 +94,21 @@ public sealed class ReapplyTests
 
         public Exception? ApplyThrows { get; set; }
 
+        public bool ApplyCancelled { get; set; }
+
+        public bool PlanMissing { get; set; }
+
+        public CancellationToken LastToken { get; private set; }
+
         public int ApplyCalls { get; private set; }
 
         public int ExtentCalls { get; private set; }
 
         public ListLog Log { get; } = new();
 
-        public ReapplyVerdict Check(GameSettings game)
+        private ReapplyChecker? _checker;
+
+        public ReapplyVerdict Check(GameSettings game, CancellationToken ct = default)
         {
             ILookup<string, PlanTask> byPath = Plan.Tasks.ToLookup(t => t.Path, StringComparer.Ordinal);
             Dictionary<string, Fingerprint> fps = Plan.Fingerprints.ToDictionary(f => f.Path, StringComparer.Ordinal);
@@ -109,7 +117,7 @@ public sealed class ReapplyTests
                 CanApply = CanApply,
                 GameRunning = _ => GameRunning,
                 DiskBusy = _ => DiskBusy,
-                LoadPlan = _ => Plan,
+                LoadPlan = _ => PlanMissing ? throw new FileNotFoundException() : Plan,
                 Extents = p =>
                 {
                     ExtentCalls++;
@@ -119,13 +127,14 @@ public sealed class ReapplyTests
                 },
                 Stat = p => SourceMissing ? throw new FileNotFoundException() : SourceChanged ? fps[p] with { Size = fps[p].Size + 1 } : fps[p],
                 RealPath = Path.GetFullPath,
-                Apply = (_, _) =>
+                Apply = (_, _, token) =>
                 {
                     ApplyCalls++;
-                    return ApplyThrows is null ? new ApplyReport { MovedBytes = 4096 } : throw ApplyThrows;
+                    LastToken = token;
+                    return ApplyThrows is null ? new ApplyReport { MovedBytes = 4096, Stopped = ApplyCancelled ? "cancelled" : null } : throw ApplyThrows;
                 },
             };
-            return new ReapplyChecker(env, Log).Check(game);
+            return (_checker ??= new ReapplyChecker(env, Log)).Check(game, ct);
         }
     }
 
@@ -174,6 +183,16 @@ public sealed class ReapplyTests
     }
 
     [Fact]
+    public void MissingPlanFileIsWaitingNotAnError()
+    {
+        var rig = new Rig { PlanMissing = true };
+
+        Assert.Equal(ReapplyVerdict.NotApplied, rig.Check(Bench));
+        Assert.Equal((0, 0), (rig.ApplyCalls, rig.ExtentCalls));
+        Assert.DoesNotContain(rig.Log.Lines, l => l.StartsWith("Error", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void PlanThatWasNeverAppliedIsLeftToTheUser()
     {
         var rig = new Rig("fresh/plan.json") { Moved = false };
@@ -200,6 +219,46 @@ public sealed class ReapplyTests
 
         Assert.Equal(ReapplyVerdict.Failed, rig.Check(Bench));
         Assert.Contains(rig.Log.Lines, l => l.Contains("DATA CHECK FAILED", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ApplyCancelledByGameStartIsAResumableStateNotAnError()
+    {
+        var rig = new Rig { Moved = false, ApplyCancelled = true };
+        using var cts = new CancellationTokenSource();
+
+        Assert.Equal(ReapplyVerdict.Cancelled, rig.Check(Bench, cts.Token));
+        Assert.Equal(cts.Token, rig.LastToken);
+        Assert.DoesNotContain(rig.Log.Lines, l => l.StartsWith("Error", StringComparison.Ordinal));
+
+        rig.ApplyCancelled = false; // 게임이 끝난 뒤 다음 검사: 같은 계획·저널로 이어서 적용
+        Assert.Equal(ReapplyVerdict.Reapply, rig.Check(Bench));
+        Assert.Equal(2, rig.ApplyCalls);
+        Assert.Contains(rig.Log.Lines, l => l.Contains("partially applied", StringComparison.Ordinal));
+        Assert.Single(rig.Log.Lines, l => l.Contains("optimization", StringComparison.Ordinal)); // 첫 검사의 경고뿐, 재개 검사는 경고 아님
+    }
+
+    [Fact]
+    public async Task GateCancelsTheRunningReapplyOnlyAndIgnoresStrayCancels()
+    {
+        var gate = new ReapplyGate();
+        gate.Cancel(); // 돌고 있는 재적용이 없으면 무시
+        using var started = new ManualResetEventSlim();
+        Task<bool> running = Task.Run(() => gate.Run(CancellationToken.None, token =>
+        {
+            started.Set();
+            return token.WaitHandle.WaitOne(TimeSpan.FromSeconds(10));
+        }));
+        Assert.True(started.Wait(TimeSpan.FromSeconds(10)));
+
+        gate.Cancel();
+
+        Assert.True(await running);
+        gate.Cancel(); // 끝난 뒤에도 안전
+        Assert.False(gate.Run(CancellationToken.None, token => token.IsCancellationRequested)); // 다음 재적용은 취소 상태로 시작하지 않음
+        using var stop = new CancellationTokenSource();
+        stop.Cancel();
+        Assert.True(gate.Run(stop.Token, token => token.IsCancellationRequested)); // 서비스 종료도 같은 토큰으로 전해짐
     }
 
     [Fact]

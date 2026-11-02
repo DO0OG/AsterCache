@@ -85,6 +85,64 @@ public sealed class ApplyPortTests : ApplyTestBase
     }
 
     [Fact]
+    public void CancelAfterKthChunkStopsWithResumePointAndNextRunContinuesAfterIt()
+    {
+        PlanFile p = Make().Resolve(20000);
+        Assert.False(Verify(p).ResumeNeeded); // 아직 아무것도 안 옮김: 부분 적용이 아님
+        const int k = 3;
+        using var cts = new CancellationTokenSource();
+        Vol.AfterMove = n =>
+        {
+            if (n == k)
+            {
+                cts.Cancel();
+            }
+        };
+
+        ApplyReport r1 = Applier.Apply(p, Vol, [Root], JournalPath, Hooks(), Exec(8 * Cb), cts.Token);
+
+        Assert.Equal("cancelled", r1.Stopped);
+        Assert.Empty(r1.Failed);
+        Assert.Equal(k, Vol.Moves.Count); // 취소가 걸린 조각까지만 끝내고 멈춤
+        List<JObject> rows = JournalRows();
+        Assert.Equal("cancelled", rows[^1]["stopped"]);
+        long inFlight = (long)rows.Last(r => Equals(r["type"], "step"))["idx"]!;
+        Assert.Equal("planned", new Journal(JournalPath).LastState(inFlight)); // 끝나지 않은 단계는 planned 로 남음
+        LayoutReport partial = Verify(p);
+        Assert.False(partial.Contiguous);
+        Assert.True(partial.ResumeNeeded);
+        Assert.Equal("resume-needed", AsterCache.Cli.Commands.VolumeCommands.Verdict(partial)["verdict"]);
+
+        Vol.AfterMove = null;
+        var firstK = Vol.Moves.ToList();
+        ApplyReport r2 = Apply(p, Exec(8 * Cb));
+
+        Assert.Null(r2.Stopped);
+        Assert.Equal(firstK, Vol.Moves.Take(k).ToList());
+        Assert.Equal((firstK[^1].Path, firstK[^1].Vcn + firstK[^1].N), (Vol.Moves[k].Path, Vol.Moves[k].Vcn)); // k+1 번째 조각부터
+        Assert.Equal(Vol.Moves.Count, Vol.Moves.Select(m => (m.Path, m.Vcn)).Distinct().Count()); // 어떤 조각도 두 번 옮기지 않음
+        LayoutReport full = Verify(p);
+        Assert.True(full.Contiguous);
+        Assert.False(full.ResumeNeeded);
+        rows = JournalRows();
+        Assert.Equal(1, rows.Count(r => Equals(r["type"], "header")));
+        Assert.Equal(new string?[] { "cancelled", null }, rows.Where(r => Equals(r["type"], "end")).Select(r => (string?)r["stopped"]).ToList());
+    }
+
+    [Fact]
+    public void AlreadyCancelledTokenMovesNothingButClosesTheJournal()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        ApplyReport rep = Applier.Apply(Make().Resolve(20000), Vol, [Root], JournalPath, Hooks(), Exec(8 * Cb), cts.Token);
+
+        Assert.Equal("cancelled", rep.Stopped);
+        Assert.Empty(Vol.Moves);
+        Assert.Equal("cancelled", JournalRows()[^1]["stopped"]);
+    }
+
+    [Fact]
     public void ResumeAfterInterruptionKeepsOriginalExtents()
     {
         PlanFile p = Make().Resolve(20000);

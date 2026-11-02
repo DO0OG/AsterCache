@@ -1,0 +1,807 @@
+{
+ "root": "D:\\Frostpunk",
+ "out": "D:\\Git\\AsterCache\\results\\cold_limit_20261102_155900",
+ "aster": "<scratch>\\e6cli\\aster.exe",
+ "trace": "D:\\Git\\AsterCache\\results\\cold_limit_20261102_155900\\trace.json",
+ "zone_mib": 2048,
+ "preserve_mib": 4096,
+ "runs": 3,
+ "stages": {
+  "free0": {
+   "file": "free_runs_before.json"
+  },
+  "sweep": {
+   "rows": [
+    {
+     "qd": 1,
+     "chunk_mib": 4,
+     "seconds": 16.754052599993884,
+     "mb_s": 120.6137906001762
+    },
+    {
+     "qd": 2,
+     "chunk_mib": 4,
+     "seconds": 16.13242550000723,
+     "mb_s": 125.26137449071712
+    },
+    {
+     "qd": 4,
+     "chunk_mib": 4,
+     "seconds": 16.90995309999562,
+     "mb_s": 119.5017975538042
+    },
+    {
+     "qd": 8,
+     "chunk_mib": 4,
+     "seconds": 16.631114899995737,
+     "mb_s": 121.5053713567043
+    },
+    {
+     "qd": 4,
+     "chunk_mib": 1,
+     "seconds": 16.051828999989084,
+     "mb_s": 125.8903139325353
+    },
+    {
+     "qd": 4,
+     "chunk_mib": 16,
+     "seconds": 16.16896359999373,
+     "mb_s": 124.97831289574945
+    }
+   ]
+  },
+  "curve": {
+   "file": "lba_curve.json",
+   "mbps_0_10pct": 31.629389855498545,
+   "mbps_90_100pct": 324.7629888099724,
+   "ratio": 0.09739222431533218,
+   "spearman": 0.6977443609022557
+  },
+  "raw0": {
+   "file": "raw_hot_before.json",
+   "runs": 35,
+   "hot_bytes": 2020769792,
+   "t_raw_median_s": 16.592183300002944,
+   "reps": [
+    {
+     "bytes": 2020769792,
+     "seconds": 16.592183300002944,
+     "mb_s": 121.79046937117923,
+     "requests": 498
+    },
+    {
+     "bytes": 2020769792,
+     "seconds": 16.898994300005143,
+     "mb_s": 119.57929307067612,
+     "requests": 498
+    },
+    {
+     "bytes": 2020769792,
+     "seconds": 16.22128579999844,
+     "mb_s": 124.57519193701613,
+     "requests": 498
+    }
+   ]
+  },
+  "relayout": {
+   "plan_dry_stats": {
+    "preserved_segments": 0,
+    "preserved_bytes": 0,
+    "in_place_bytes": 0,
+    "overflow_bytes": 0,
+    "misaligned_pieces": 858,
+    "hot_bytes": 2020769792,
+    "moved_bytes": 2020769792,
+    "tasks": 1639,
+    "avg_clusters_per_task": 301.01,
+    "zone_used_clusters": 493352,
+    "skipped_files": 3,
+    "current_runs": 66,
+    "expected_runs": 1,
+    "hot_blocks": 30843,
+    "units": 1642
+   },
+   "plan_stats": {
+    "preserved_segments": 0,
+    "preserved_bytes": 0,
+    "in_place_bytes": 0,
+    "overflow_bytes": 0,
+    "misaligned_pieces": 858,
+    "hot_bytes": 2020769792,
+    "moved_bytes": 2020769792,
+    "tasks": 1639,
+    "avg_clusters_per_task": 301.01,
+    "zone_used_clusters": 493352,
+    "skipped_files": 3,
+    "current_runs": 66,
+    "expected_runs": 1,
+    "hot_blocks": 30843,
+    "units": 1642
+   },
+   "probe": {
+    "volume": "D:",
+    "label": "로컬 디스크",
+    "cluster_bytes": 4096,
+    "total_clusters": 488374271,
+    "free_clusters_ntfs": 141300806,
+    "free_clusters_bitmap": 141300806,
+    "bitmap_bits": 488374271,
+    "free_match": true,
+    "mft_zone": [
+     410659712,
+     410676768
+    ],
+    "zone_clusters_needed": 493352,
+    "zone_candidate_lcn": 205810188
+   },
+   "zone_pct_of_volume": 42.142,
+   "apply_dry_run": {
+    "zone_start_lcn": 205810188,
+    "tasks_total": 1639,
+    "tasks_todo": 1639,
+    "bytes_todo": 2020769792,
+    "skipped_files": {},
+    "executed": false,
+    "moved_bytes": 0,
+    "failed": [],
+    "stopped": null,
+    "dry_run": true,
+    "plan_saved": true
+   },
+   "apply": {
+    "zone_start_lcn": 205810188,
+    "tasks_total": 1639,
+    "tasks_todo": 1639,
+    "bytes_todo": 2020769792,
+    "skipped_files": {},
+    "executed": true,
+    "moved_bytes": 2020769792,
+    "failed": [],
+    "stopped": null,
+    "dry_run": false,
+    "plan_saved": false,
+    "sha_checked": 20,
+    "sha_mismatch": []
+   },
+   "apply_seconds": 270.06,
+   "apply_mb_s": 7.14,
+   "verify": {
+    "hot_clusters": 493352,
+    "ordered_runs": 1,
+    "expected_runs": 1,
+    "current_runs_at_plan_time": 66,
+    "ascending": true,
+    "in_zone_clusters": 493352,
+    "missing_files": 0,
+    "contiguous": true,
+    "verdict": "contiguous"
+   },
+   "sha_identical": true,
+   "files_hashed": 20
+  },
+  "raw1": {
+   "file": "raw_hot_after.json",
+   "runs": 1,
+   "hot_bytes": 2020769792,
+   "t_raw_median_s": 12.699168999999529,
+   "reps": [
+    {
+     "bytes": 2020769792,
+     "seconds": 13.366084799999953,
+     "mb_s": 151.18636625738054,
+     "requests": 482
+    },
+    {
+     "bytes": 2020769792,
+     "seconds": 12.321479499994894,
+     "mb_s": 164.00382697555415,
+     "requests": 482
+    },
+    {
+     "bytes": 2020769792,
+     "seconds": 12.699168999999529,
+     "mb_s": 159.12614376579089,
+     "requests": 482
+    }
+   ]
+  },
+  "measure": {
+   "pvm": [
+    {
+     "prefetch_s": 12.8285,
+     "bytes": 2047714320,
+     "requests": 1679,
+     "errors": 0,
+     "mb_s": 159.6,
+     "replay_after_s": 0.31812419966445304
+    },
+    {
+     "prefetch_s": 12.0567,
+     "bytes": 2047714320,
+     "requests": 1679,
+     "errors": 0,
+     "mb_s": 169.8,
+     "replay_after_s": 0.31508670083712786
+    },
+    {
+     "prefetch_s": 11.8371,
+     "bytes": 2047714320,
+     "requests": 1679,
+     "errors": 0,
+     "mb_s": 173.0,
+     "replay_after_s": 0.33064349957567174
+    }
+   ],
+   "direct": [
+    {
+     "replay_s": 21.64364010145073,
+     "mib_s": 89.03918179467217
+    },
+    {
+     "replay_s": 27.316843500579125,
+     "mib_s": 70.54738976890476
+    },
+    {
+     "replay_s": 18.94183209912444,
+     "mib_s": 101.73947248643427
+    }
+   ],
+   "median_pvm_prefetch_s": 12.0567,
+   "median_direct_s": 21.64364010145073,
+   "etw_prefetch_s": 12.4825
+  }
+ },
+ "disk": "WDC WD20EZAZ-00GGJB0 bus=SATA",
+ "analysis": {
+  "curve": {
+   "points": [
+    {
+     "i": 0,
+     "pct": 0.0,
+     "mbps": 16.3,
+     "passes": [
+      16.8,
+      15.9
+     ]
+    },
+    {
+     "i": 1,
+     "pct": 5.3,
+     "mbps": 46.9,
+     "passes": [
+      51.1,
+      42.8
+     ]
+    },
+    {
+     "i": 2,
+     "pct": 10.5,
+     "mbps": 83.3,
+     "passes": [
+      85.2,
+      81.5
+     ]
+    },
+    {
+     "i": 3,
+     "pct": 15.8,
+     "mbps": 148.7,
+     "passes": [
+      140.0,
+      157.3
+     ]
+    },
+    {
+     "i": 4,
+     "pct": 21.0,
+     "mbps": 32.5,
+     "passes": [
+      32.8,
+      32.2
+     ]
+    },
+    {
+     "i": 5,
+     "pct": 26.3,
+     "mbps": 68.3,
+     "passes": [
+      67.3,
+      69.3
+     ]
+    },
+    {
+     "i": 6,
+     "pct": 31.6,
+     "mbps": 68.4,
+     "passes": [
+      66.0,
+      70.8
+     ]
+    },
+    {
+     "i": 7,
+     "pct": 36.8,
+     "mbps": 149.6,
+     "passes": [
+      156.5,
+      142.7
+     ]
+    },
+    {
+     "i": 8,
+     "pct": 42.1,
+     "mbps": 192.2,
+     "passes": [
+      189.2,
+      195.3
+     ]
+    },
+    {
+     "i": 9,
+     "pct": 47.4,
+     "mbps": 82.5,
+     "passes": [
+      82.2,
+      82.8
+     ]
+    },
+    {
+     "i": 10,
+     "pct": 52.6,
+     "mbps": 148.4,
+     "passes": [
+      147.1,
+      149.8
+     ]
+    },
+    {
+     "i": 11,
+     "pct": 57.9,
+     "mbps": 86.5,
+     "passes": [
+      90.8,
+      82.1
+     ]
+    },
+    {
+     "i": 12,
+     "pct": 63.1,
+     "mbps": 88.8,
+     "passes": [
+      91.2,
+      86.5
+     ]
+    },
+    {
+     "i": 13,
+     "pct": 68.4,
+     "mbps": 87.0,
+     "passes": [
+      84.5,
+      89.5
+     ]
+    },
+    {
+     "i": 14,
+     "pct": 73.7,
+     "mbps": 300.1,
+     "passes": [
+      297.6,
+      302.6
+     ]
+    },
+    {
+     "i": 15,
+     "pct": 78.9,
+     "mbps": 312.4,
+     "passes": [
+      303.7,
+      321.2
+     ]
+    },
+    {
+     "i": 16,
+     "pct": 84.2,
+     "mbps": 51.6,
+     "passes": [
+      51.1,
+      52.2
+     ]
+    },
+    {
+     "i": 17,
+     "pct": 89.4,
+     "mbps": 325.6,
+     "passes": [
+      322.8,
+      328.4
+     ]
+    },
+    {
+     "i": 18,
+     "pct": 94.7,
+     "mbps": 316.1,
+     "passes": [
+      307.8,
+      324.3
+     ]
+    },
+    {
+     "i": 19,
+     "pct": 100.0,
+     "mbps": 333.5,
+     "passes": [
+      338.7,
+      328.2
+     ]
+    }
+   ],
+   "mbps_0_10pct": 31.629389855498545,
+   "mbps_90_100pct": 324.7629888099724,
+   "ratio_0_10_over_90_100": 0.09739222431533218,
+   "spearman": 0.6977443609022557
+  },
+  "raw_hot": {
+   "before": {
+    "runs": 35,
+    "lcn_pct": [
+     15.465339664739751,
+     63.07776077933933
+    ],
+    "seconds": [
+     16.592183300002944,
+     16.898994300005143,
+     16.22128579999844
+    ],
+    "median_s": 16.592183300002944
+   },
+   "after": {
+    "runs": 1,
+    "lcn_pct": [
+     42.14189808917698,
+     42.24291733369607
+    ],
+    "seconds": [
+     13.366084799999953,
+     12.321479499994894,
+     12.699168999999529
+    ],
+    "median_s": 12.699168999999529
+   }
+  },
+  "reader_sweep_before_layout": [
+   {
+    "cfg": "qd1/4MiB",
+    "seconds": 16.75,
+    "mb_s": 120.6
+   },
+   {
+    "cfg": "qd2/4MiB",
+    "seconds": 16.13,
+    "mb_s": 125.3
+   },
+   {
+    "cfg": "qd4/4MiB",
+    "seconds": 16.91,
+    "mb_s": 119.5
+   },
+   {
+    "cfg": "qd8/4MiB",
+    "seconds": 16.63,
+    "mb_s": 121.5
+   },
+   {
+    "cfg": "qd4/1MiB",
+    "seconds": 16.05,
+    "mb_s": 125.9
+   },
+   {
+    "cfg": "qd4/16MiB",
+    "seconds": 16.17,
+    "mb_s": 125.0
+   }
+  ],
+  "pvm_after": {
+   "seconds": [
+    12.8285,
+    12.0567,
+    11.8371
+   ],
+   "median_s": 12.0567,
+   "mb_s": [
+    159.6,
+    169.8,
+    173.0
+   ]
+  },
+  "direct_after": {
+   "seconds": [
+    21.64364010145073,
+    27.316843500579125,
+    18.94183209912444
+   ],
+   "median_s": 21.64364010145073
+  },
+  "previous": {
+   "pvm_after_first_relayout_s": 15.13,
+   "direct_after_first_relayout_s": [
+    21.7,
+    22.6
+   ],
+   "cold_before_s": 24.3
+  },
+  "speedup": {
+   "pvm": 1.2549039123474917,
+   "t_raw": 1.3065566179963082
+  },
+  "wof": {
+   "total": {
+    "orig": 2020744370,
+    "c8192": 1992477694,
+    "c16384": 1988783781,
+    "n8192": 246682,
+    "n16384": 123345,
+    "ratio_8k": 1.0141866963354822,
+    "ratio_8k_with_table": 1.013684692688235,
+    "ratio_16k": 1.0160704191704186,
+    "ratio_16k_with_table": 1.0158184136514097
+   },
+   "by_ext": {
+    ".dat": {
+     "files": 9,
+     "orig": 1974352593,
+     "c8192": 1970398881,
+     "c16384": 1967816732,
+     "n8192": 241011,
+     "n16384": 120506,
+     "ratio_8k": 1.0020065541236978,
+     "ratio_8k_with_table": 1.0015165487602948,
+     "ratio_16k": 1.0033213768811475,
+     "ratio_16k_with_table": 1.0030756697790648
+    },
+    ".dll": {
+     "files": 2,
+     "orig": 10027008,
+     "c8192": 5417549,
+     "c16384": 5151590,
+     "n8192": 1224,
+     "n16384": 612,
+     "ratio_8k": 1.8508384511150706,
+     "ratio_8k_with_table": 1.8491673036794287,
+     "ratio_16k": 1.946390920084867,
+     "ratio_16k_with_table": 1.9454664478608812
+    },
+    ".exe": {
+     "files": 1,
+     "orig": 35454976,
+     "c8192": 16189979,
+     "c16384": 15357006,
+     "n8192": 4328,
+     "n16384": 2164,
+     "ratio_8k": 2.1899334149846643,
+     "ratio_8k_with_table": 2.1875942129995694,
+     "ratio_16k": 2.3087166860519557,
+     "ratio_16k_with_table": 2.3074161074218607
+    },
+    ".idx": {
+     "files": 11,
+     "orig": 909793,
+     "c8192": 471285,
+     "c16384": 458453,
+     "n8192": 119,
+     "n16384": 63,
+     "ratio_8k": 1.9304518497299936,
+     "ratio_8k_with_table": 1.9285040518398087,
+     "ratio_16k": 1.9844847781561032,
+     "ratio_16k_with_table": 1.9833945564142532
+    }
+   }
+  },
+  "diskio_pvm": {
+   "disk0_reads": 3432,
+   "bytes": 2048012800,
+   "sizes": {
+    "m1": 1504,
+    "k64_256": 1293,
+    "k256_1m": 635
+   },
+   "window_s": 12.65,
+   "ascending_fraction": 0.992,
+   "lcn_pct": "42.0-42.2% (2020.6 MB)"
+  },
+  "e6_4": "not run",
+  "e6_5": {
+   "points_used": [
+    {
+     "i": 0,
+     "pct": 0.0,
+     "mbps": 16.3,
+     "used": 1.0
+    },
+    {
+     "i": 1,
+     "pct": 5.3,
+     "mbps": 46.9,
+     "used": 1.0
+    },
+    {
+     "i": 2,
+     "pct": 10.5,
+     "mbps": 83.3,
+     "used": 1.0
+    },
+    {
+     "i": 3,
+     "pct": 15.8,
+     "mbps": 148.7,
+     "used": 1.0
+    },
+    {
+     "i": 4,
+     "pct": 21.0,
+     "mbps": 32.5,
+     "used": 1.0
+    },
+    {
+     "i": 5,
+     "pct": 26.3,
+     "mbps": 68.3,
+     "used": 1.0
+    },
+    {
+     "i": 6,
+     "pct": 31.6,
+     "mbps": 68.4,
+     "used": 1.0
+    },
+    {
+     "i": 7,
+     "pct": 36.8,
+     "mbps": 149.6,
+     "used": 1.0
+    },
+    {
+     "i": 8,
+     "pct": 42.1,
+     "mbps": 192.2,
+     "used": 0.334
+    },
+    {
+     "i": 9,
+     "pct": 47.4,
+     "mbps": 82.5,
+     "used": 1.0
+    },
+    {
+     "i": 10,
+     "pct": 52.6,
+     "mbps": 148.4,
+     "used": 1.0
+    },
+    {
+     "i": 11,
+     "pct": 57.9,
+     "mbps": 86.5,
+     "used": 0.94
+    },
+    {
+     "i": 12,
+     "pct": 63.1,
+     "mbps": 88.8,
+     "used": 1.0
+    },
+    {
+     "i": 13,
+     "pct": 68.4,
+     "mbps": 87.0,
+     "used": 1.0
+    },
+    {
+     "i": 14,
+     "pct": 73.7,
+     "mbps": 300.1,
+     "used": 0.0
+    },
+    {
+     "i": 15,
+     "pct": 78.9,
+     "mbps": 312.4,
+     "used": 0.0
+    },
+    {
+     "i": 16,
+     "pct": 84.2,
+     "mbps": 51.6,
+     "used": 1.0
+    },
+    {
+     "i": 17,
+     "pct": 89.4,
+     "mbps": 325.6,
+     "used": 0.0
+    },
+    {
+     "i": 18,
+     "pct": 94.7,
+     "mbps": 316.1,
+     "used": 0.0
+    },
+    {
+     "i": 19,
+     "pct": 100.0,
+     "mbps": 333.5,
+     "used": 0.0
+    }
+   ],
+   "high_band": {
+    "zone_start_lcn": 439536840,
+    "zone_pct": 90.0,
+    "apply_seconds": 278.38,
+    "raw_after_write": {
+     "runs": 1,
+     "lcn_pct": [
+      89.99999901714725,
+      90.10101826166633
+     ],
+     "seconds": 20.680739100003848,
+     "mb_s": 97.71264857742072
+    },
+    "pvm_s": [
+     19.0608,
+     19.0788,
+     18.1226
+    ],
+    "pvm_median_s": 19.0608,
+    "direct_s": [
+     31.76525780017255,
+     27.589565801157732,
+     27.85642420077056
+    ],
+    "direct_median_s": 27.85642420077056,
+    "pvm_after_10min_idle": {
+     "prefetch_s": 19.314,
+     "mb_s": 106.0,
+     "replay_after_s": 0.4556842004240025
+    },
+    "raw_after_idle": {
+     "runs": 1,
+     "lcn_pct": [
+      89.99999901714725,
+      90.10101826166633
+     ],
+     "seconds": 20.07879499999399,
+     "mb_s": 100.64198533829371
+    }
+   },
+   "back_to_low_zone": {
+    "zone_start_lcn": 205810272,
+    "zone_pct": 42.142,
+    "apply_seconds": 206.3,
+    "sha_identical": true,
+    "verify": "contiguous",
+    "raw": {
+     "runs": 1,
+     "lcn_pct": [
+      42.14191528910024,
+      42.242934533619334
+     ],
+     "seconds": 12.694185300002573,
+     "mb_s": 159.18861622412194
+    },
+    "pvm_s": [
+     12.1897,
+     11.931,
+     11.8445
+    ],
+    "pvm_median_s": 11.931,
+    "direct_s": [
+     18.331999499641825,
+     17.639395199119463,
+     17.5091040013358
+    ],
+    "direct_median_s": 17.639395199119463
+   },
+   "final_layout": "hot set in one run at LCN 205810272 (42.142%)"
+  }
+ }
+}

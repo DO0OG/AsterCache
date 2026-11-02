@@ -170,6 +170,39 @@ public sealed class PlanPortTests
     }
 
     [Fact]
+    public void Allocate_ZeroPreserveMovesEveryHotRange()
+    {
+        const long big = 3 * 256;
+        var files = new Dictionary<string, IReadOnlyList<Extent>?>
+        {
+            ["A"] = Ext((0, 100, big)),
+            ["B"] = Ext((0, 100 + big, big)),
+            ["C"] = Ext((0, 9000, Per)),
+        };
+        Unit[] units = [new Unit("A", 0, 48), new Unit("B", 0, 48), new Unit("C", 0, 1)];
+
+        AllocResult r = Alloc(units, files, clusters: 5000, preserve: 0);
+
+        Assert.Equal((0L, 0L), (r.Stats.PreservedSegments, r.Stats.PreservedBytes));
+        Assert.Equal(["A", "B", "C"], r.Tasks.Select(t => t.Path).Distinct());
+        Assert.Equal(1L, r.Stats.ExpectedRuns);
+        // 기본값도 보존 없음
+        AllocResult byDefault = ZoneAllocator.Allocate(units, files, 5000, 5000, Cb, Blk);
+        Assert.Equal(0L, byDefault.Stats.PreservedSegments);
+        Assert.Equal(r.Tasks, byDefault.Tasks);
+    }
+
+    [Fact]
+    public void PlanDefaultsPreserveNothing()
+    {
+        PlanFile viaDefault = PlanFile.Make(PlanSessions(), @"D:oot", 2L << 20, Cb, p => PlanFiles[p], p => PlanSizes[p], p => new Fingerprint(p, PlanSizes[p], 123));
+
+        Assert.Equal(0L, viaDefault.Stats["preserved_segments"]);
+        Assert.Equal(viaDefault.Stats["hot_bytes"], viaDefault.Stats["moved_bytes"]);
+        Assert.Equal("0", AsterCache.Cli.Commands.PlanCommand.Options.Single(o => o.Name == "preserve-mib").Default);
+    }
+
+    [Fact]
     public void Allocate_OverflowKeepsPrefix()
     {
         var files = new Dictionary<string, IReadOnlyList<Extent>?> { ["A"] = Ext((0, 100, 3 * Per)) };

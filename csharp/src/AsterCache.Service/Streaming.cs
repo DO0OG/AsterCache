@@ -40,7 +40,13 @@ public sealed class PrefetchStreamer : IGameStreamer
     public static long Budget(GameSettings game, long? zoneBytes, long traceBytes) =>
         Math.Min((long)game.MaxStreamMib << 20, zoneBytes is > 0 ? zoneBytes.Value : traceBytes);
 
-    public StreamStats Stream(GameSettings game)
+    /// 접근 순서 앞쪽 이만큼 (게임 시작에 먼저 필요한 부분) 을 먼저 읽고 나머지는 물리 순서로.
+    public const long HeadBytes = 256L << 20;
+
+    public StreamStats Stream(GameSettings game) => ZoneStreamer.Run(Ops(game), StreamMethod.Pvm);
+
+    /// 게임의 선읽기 순서 목록 (허용 루트 검사 포함). 스트림·식음 확인·고정이 같은 목록을 씁니다.
+    public static List<ReadOp> Ops(GameSettings game)
     {
         if (!PlanGuards.Inside(game.OriginRoot, game.AllowedRoots, RealPaths.Real))
         {
@@ -51,9 +57,41 @@ public sealed class PrefetchStreamer : IGameStreamer
             p => File.Exists(p) ? new FileInfo(p).Length : null);
         long budget = Budget(game, ZoneBytes(game), rows.Sum(r => r.Length));
         (List<ReadOp> ops, _) = Scheduler.Schedule(rows.Select(r => new ReadRange(r.Path, r.Offset, r.Length)), "physical", budget, 0,
-            FileLayout.Get, p => new FileInfo(p).Length);
-        return ZoneStreamer.Run(ops, StreamMethod.Pvm);
+            FileLayout.Get, p => new FileInfo(p).Length, headBytes: HeadBytes);
+        return ops;
     }
+
+    /// 고정할 파일: 선읽기 목록의 파일 중 허용 루트 안인 것 (읽기 전용으로만 쓰임). 매핑 총합이 capBytes 를 넘기 전의 앞쪽 파일만.
+    public static IReadOnlyList<string> PinPaths(GameSettings game, long capBytes = long.MaxValue) =>
+        WithinCap(Ops(game).Select(o => o.Path).Distinct(StringComparer.OrdinalIgnoreCase).Where(p => PlanGuards.Inside(p, game.AllowedRoots, RealPaths.Real)),
+            capBytes, p => File.Exists(p) ? new FileInfo(p).Length : 0);
+
+    /// 총 매핑 상한: 존 크기 (알면), 물리 RAM 의 1/4, 가용 RAM 에서 min_free_ram_mib 를 뺀 값 중 가장 작은 것.
+    public static long PinCapBytes(long? zoneBytes, long physicalRamBytes, long availableRamMib, int minFreeRamMib) =>
+        Math.Min(Math.Min(zoneBytes is > 0 ? zoneBytes.Value : long.MaxValue, physicalRamBytes / 4), Math.Max(0, availableRamMib - minFreeRamMib) << 20);
+
+    /// 앞에서부터 크기를 더하다가 다음 파일이 상한을 넘기면 거기서 멈춥니다.
+    public static IReadOnlyList<string> WithinCap(IEnumerable<string> paths, long capBytes, Func<string, long> size)
+    {
+        var kept = new List<string>();
+        long total = 0;
+        foreach (string p in paths)
+        {
+            long len = size(p);
+            if (total + len > capBytes)
+            {
+                break;
+            }
+
+            total += len;
+            kept.Add(p);
+        }
+
+        return kept;
+    }
+
+    /// 선읽기 목록에서 고르게 고른 몇 곳을 읽어 잰 1 MiB 평균 읽기 시간 (ms).
+    public static double? ProbeReadMs(GameSettings game) => CacheProbe.AverageReadMs(CacheProbe.PickSamples(Ops(game)));
 }
 
 /// 감지된 프로세스를 게임에 대응시켜 스트림을 부릅니다. 같은 게임은 Cooldown 안에 한 번만 (런처·보조 프로세스가 연달아 떠도 중복 읽기 없음).
@@ -61,7 +99,7 @@ public sealed class GameDispatcher
 {
     public static readonly TimeSpan Cooldown = TimeSpan.FromSeconds(60);
 
-    private readonly IReadOnlyList<GameSettings> _games;
+    private volatile IReadOnlyList<GameSettings> _games;
     private readonly IGameStreamer _streamer;
     private readonly ILog _log;
     private readonly Func<DateTimeOffset> _now;
@@ -74,6 +112,9 @@ public sealed class GameDispatcher
         _log = log;
         _now = now ?? (() => DateTimeOffset.UtcNow);
     }
+
+    /// 설정을 다시 읽었을 때 게임 목록만 바꿉니다 (쿨다운은 유지).
+    public void SetGames(IReadOnlyList<GameSettings> games) => _games = games;
 
     /// 스트림을 불렀으면 true. 스트림 실패는 로그만 남기고 서비스를 멈추지 않습니다.
     public bool Handle(ProcessStart start)

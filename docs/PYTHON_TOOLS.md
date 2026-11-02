@@ -117,6 +117,17 @@ python -m prefetch.cli --trace relayout_plan.json.prefetch.json --origin-root "D
 - `relayout plan` also writes `<out>.prefetch.json` next to `--out`. It is the prefetch input holding only the blocks that went into the relocation zone, in zone order, and `prefetch.cli` accepts it as is. After relocation, prefetch with this file instead of `trace.json` (bytes read = the plan's `hot_bytes`).
 - `--min-sessions N` removes from the hot set the blocks read in fewer than N runs. The default is 2 if there are two or more traces, and 1 if there is one.
 
+### E6 cold-limit measurement scripts (`bench`, `csharp/scripts`)
+
+- `bench/lba_curve.py` — read-only raw transfer-rate curve of a volume: 512 MiB at each of 20 points, 4 MiB requests, queue depth 4 (administrator)
+- `bench/raw_hot_read.py` — maps a trace's hot ranges to LCNs (no administrator); `--read` reads them in LCN order (administrator)
+- `bench/wof_ratio.py` — WOF-style XPRESS Huffman compression ratio of the hot ranges at 8 and 16 KiB chunks (no administrator)
+- `bench/free_runs.py` — lists free-space runs of an NTFS volume from the volume bitmap, read-only (administrator)
+- `csharp/scripts/cs_e6_cold_limit.ps1` — run once as administrator: LBA curve, raw read, full move (no preservation), re-measure, and SHA-256 check
+- `csharp/scripts/cs_e6_highband.ps1` — run once as administrator: moves the whole hot set to a zone at 90% of the volume and re-measures against the 42% zone
+- `csharp/scripts/cs_e6_moveback.ps1` — run once as administrator: moves the hot set back to the lowest free zone, verifies, and re-measures
+- `csharp/scripts/aster_diskio.wprp` — WPR profile for DiskIo (read size and offset) used by `cs_e6_cold_limit.ps1`
+
 ### Cache API
 
 ```python

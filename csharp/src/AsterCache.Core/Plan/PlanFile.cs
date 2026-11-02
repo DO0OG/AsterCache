@@ -23,7 +23,7 @@ public sealed record PlanFile(
 
     public static PlanFile Make(IReadOnlyList<IReadOnlyList<TraceEvent>> sessions, string originRoot, long zoneBytes, long clusterBytes,
         Func<string, IReadOnlyList<Extent>?> extentsFn, Func<string, long>? sizeFn = null, Func<string, Fingerprint>? fingerprintFn = null,
-        long? zoneStartLcn = null, long block = HotSet.Block, int minSessions = 1, long preserveBytes = 8L << 20, long alignClusters = 4)
+        long? zoneStartLcn = null, long block = HotSet.Block, int minSessions = 1, long preserveBytes = 0, long alignClusters = 4)
     {
         sizeFn ??= p => new FileInfo(p).Length;
         fingerprintFn ??= FingerprintOf;

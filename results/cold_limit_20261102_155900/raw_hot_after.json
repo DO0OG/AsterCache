@@ -1,0 +1,141 @@
+{
+ "runs": 1,
+ "hot_bytes": 2020769792,
+ "min_lcn_pct": 42.14189808917698,
+ "max_lcn_pct": 42.24291733369607,
+ "bytes_by_lcn_pct_bucket": {
+  "40-45%": 2020769792
+ },
+ "run_mib_p50": 1927.15625,
+ "run_mib_max": 1927.15625,
+ "runs_ge_8mib": 1,
+ "files": {
+  "D:\\Frostpunk\\EOSSDK-Win64-Shipping.dll": {
+   "hot_bytes": 9895936,
+   "extents": 122
+  },
+  "D:\\Frostpunk\\AnselSDK64.dll": {
+   "hot_bytes": 131072,
+   "extents": 3
+  },
+  "D:\\Frostpunk\\Frostpunk.exe": {
+   "hot_bytes": 35454976,
+   "extents": 381
+  },
+  "D:\\Frostpunk\\symbols\\dll\\msasn1.pdb": {
+   "hot_bytes": 0,
+   "extents": 0,
+   "missing": true
+  },
+  "D:\\Frostpunk\\animations.idx": {
+   "hot_bytes": 65536,
+   "extents": 1
+  },
+  "D:\\Frostpunk\\common.idx": {
+   "hot_bytes": 262144,
+   "extents": 1
+  },
+  "D:\\Frostpunk\\sequences.idx": {
+   "hot_bytes": 0,
+   "extents": 0,
+   "missing": true
+  },
+  "D:\\Frostpunk\\scenes.idx": {
+   "hot_bytes": 65536,
+   "extents": 1
+  },
+  "D:\\Frostpunk\\sounds.idx": {
+   "hot_bytes": 65536,
+   "extents": 1
+  },
+  "D:\\Frostpunk\\templates.idx": {
+   "hot_bytes": 196608,
+   "extents": 1
+  },
+  "D:\\Frostpunk\\voices.idx": {
+   "hot_bytes": 0,
+   "extents": 0,
+   "missing": true
+  },
+  "D:\\Frostpunk\\localizations.idx": {
+   "hot_bytes": 0,
+   "extents": 0,
+   "missing": true
+  },
+  "D:\\Frostpunk\\videos.idx": {
+   "hot_bytes": 65536,
+   "extents": 1
+  },
+  "D:\\Frostpunk\\archives.idx": {
+   "hot_bytes": 327680,
+   "extents": 1
+  },
+  "D:\\Frostpunk\\common.dat": {
+   "hot_bytes": 390529024,
+   "extents": 193
+  },
+  "D:\\Frostpunk\\textures-s3.idx": {
+   "hot_bytes": 131072,
+   "extents": 1
+  },
+  "D:\\Frostpunk\\templates.dat": {
+   "hot_bytes": 44498944,
+   "extents": 324
+  },
+  "D:\\Frostpunk\\textures-s3.dat": {
+   "hot_bytes": 1099038720,
+   "extents": 846
+  },
+  "D:\\Frostpunk\\localizations.dat": {
+   "hot_bytes": 1769472,
+   "extents": 4
+  },
+  "D:\\Frostpunk\\scenes.dat": {
+   "hot_bytes": 1114112,
+   "extents": 4
+  },
+  "D:\\Frostpunk\\sounds.dat": {
+   "hot_bytes": 404226048,
+   "extents": 49
+  },
+  "D:\\Frostpunk\\animations.dat": {
+   "hot_bytes": 17760256,
+   "extents": 95
+  },
+  "D:\\Frostpunk\\videos.dat": {
+   "hot_bytes": 15466496,
+   "extents": 10
+  },
+  "D:\\Frostpunk\\sequences.dat": {
+   "hot_bytes": 65536,
+   "extents": 1
+  }
+ },
+ "runs_list": [
+  [
+   205810188,
+   493352
+  ]
+ ],
+ "raw_reps": [
+  {
+   "bytes": 2020769792,
+   "seconds": 13.366084799999953,
+   "mb_s": 151.18636625738054,
+   "requests": 482
+  },
+  {
+   "bytes": 2020769792,
+   "seconds": 12.321479499994894,
+   "mb_s": 164.00382697555415,
+   "requests": 482
+  },
+  {
+   "bytes": 2020769792,
+   "seconds": 12.699168999999529,
+   "mb_s": 159.12614376579089,
+   "requests": 482
+  }
+ ],
+ "t_raw_median_s": 12.699168999999529
+}

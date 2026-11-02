@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Globalization;
 using AsterCache.Core.Json;
 using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
@@ -30,7 +31,7 @@ public static class Applier
         }
 
         bool autoZone = plan.Zone.StartLcn is null;
-        plan = PlanGuards.ResolveZone(plan, vol, hooks.Extents);
+        plan = PlanGuards.ResolveZone(plan, vol, hooks.Extents, journalPath, out bool rezoned);
         long chunk = Math.Max(1, options.ChunkBytes / cb);
         var rep = new ApplyReport();
         foreach (string p in plan.Tasks.Select(t => t.Path).Distinct(StringComparer.Ordinal).OrderBy(p => p, CodePointComparer.Instance))
@@ -58,7 +59,13 @@ public static class Applier
         rep.TasksTodo = todo.Count;
         rep.BytesTodo = todo.Sum(x => (x.Task.Clusters - x.Done) * cb);
         rep.Executed = options.Execute;
-        bool persist = options.SaveTo is not null && autoZone && (options.Execute || options.DryRun); // 정한 존은 이어하기를 위해 남아야 함
+        bool persist = options.SaveTo is not null && (autoZone || rezoned) && (options.Execute || options.DryRun); // 정한 존은 이어하기를 위해 남아야 함
+        rep.ZoneRetargeted = rezoned;
+        if (rezoned && (persist || options.Execute))
+        {
+            rep.JournalArchivedTo = ArchiveJournal(journalPath, hooks); // 새 계획은 다른 저널 header 를 쓰므로, 끝난 저널은 되돌리기 기록으로 옆에 보관
+        }
+
         if (persist)
         {
             plan.Save(options.SaveTo!);
@@ -67,6 +74,20 @@ public static class Applier
         rep.DryRun = options.DryRun;
         rep.PlanSaved = persist;
         return options.Execute ? Execute(plan, vol, todo, rep, journalPath, chunk, options.WriteCap, hooks, digest, cancellationToken) : rep;
+    }
+
+    // 끝난 저널을 <이름>.<UTC 시각> 으로 옮깁니다. 저널이 없으면 null.
+    private static string? ArchiveJournal(string journalPath, ApplyHooks hooks)
+    {
+        if (!File.Exists(journalPath))
+        {
+            return null;
+        }
+
+        string stamp = DateTime.UnixEpoch.AddSeconds(hooks.Clock()).ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
+        string dest = $"{journalPath}.{stamp}";
+        File.Move(journalPath, dest);
+        return dest;
     }
 
     /// path → [(바이트 오프셋, 길이)]: 모든 작업의 VCN 범위 앞뒤 TaskSpan 바이트. SHA 표본에 들어갑니다.

@@ -1,0 +1,57 @@
+using AsterCache.Core.Discovery;
+using AsterCache.Windows;
+using Xunit;
+
+namespace AsterCache.Tests.Core;
+
+/// 안티치트 흔적 판정: 가짜 설치 폴더 (tests/fixtures/anticheat, 빈 파일) 의 실제 열거 결과와 이름 목록 직접 판정.
+public sealed class AntiCheatTests
+{
+    private static string? Detect(string fixture) =>
+        AntiCheat.Detect(LauncherScan.ListNames(Path.Combine(AppContext.BaseDirectory, "fixtures", "anticheat", fixture), 2));
+
+    [Theory]
+    [InlineData("eac", "eac")]
+    [InlineData("eac_start", "eac")]
+    [InlineData("battleye", "battleye")]
+    [InlineData("vanguard", "vanguard")]
+    [InlineData("ricochet", "ricochet")]
+    [InlineData("unknown", "unknown")]
+    [InlineData("none", null)]
+    public void FixtureFoldersAreClassified(string fixture, string? expected) => Assert.Equal(expected, Detect(fixture));
+
+    [Fact]
+    public void FirstRuleInOrderWinsWhenSeveralArePresent() => Assert.Equal("eac", Detect("order"));
+
+    [Fact]
+    public void OrderIsEacBattleyeVanguardRicochetUnknown()
+    {
+        Assert.Equal("battleye", AntiCheat.Detect(["BEService.exe", "vgk.sys", "ricochet.dll", "xigncode"]));
+        Assert.Equal("vanguard", AntiCheat.Detect(["vgk.sys", "ricochet.dll", "xigncode"]));
+        Assert.Equal("ricochet", AntiCheat.Detect(["RICOCHET.dll", "xigncode"]));
+        Assert.Equal("unknown", AntiCheat.Detect(["nProtect GameGuard", "Game.exe"]));
+    }
+
+    [Theory]
+    [InlineData("EasyAntiCheat_EOS", "eac")]
+    [InlineData("easyanticheat_launcher.exe", "eac")]
+    [InlineData("start_protected_game.exe", "eac")]
+    [InlineData("battleye", "battleye")]
+    [InlineData("BEClient_x64.dll", "battleye")]
+    [InlineData("VGC.EXE", "vanguard")]
+    [InlineData("Riot Vanguard", "vanguard")]
+    [InlineData("randgrid.sys", "ricochet")]
+    [InlineData("Anti-Cheat", "unknown")]
+    [InlineData(@"Binaries\Win64\EasyAntiCheat", "eac")]
+    public void SingleNamesAndPathsAreMatchedByLeafIgnoringCase(string name, string expected) => Assert.Equal(expected, AntiCheat.Detect([name]));
+
+    [Theory]
+    [InlineData("Game.exe")]
+    [InlineData("mavgcfoo.exe")]
+    [InlineData("vgcore.dll")]
+    [InlineData("BEClient.exe")]
+    public void OrdinaryNamesGiveNull(string name) => Assert.Null(AntiCheat.Detect([name]));
+
+    [Fact]
+    public void EmptyListGivesNull() => Assert.Null(AntiCheat.Detect([]));
+}

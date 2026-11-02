@@ -1,0 +1,2 @@
+﻿{"dry_run":true,"out":null,"prefetch_trace":null,"min_sessions":1,"sessions":1,"cluster_bytes":4096,"zone":{"start_lcn":null,"clusters":524288},"stats":{"preserved_segments":0,"preserved_bytes":0,"in_place_bytes":0,"overflow_bytes":0,"misaligned_pieces":858,"hot_bytes":2020769792,"moved_bytes":2020769792,"tasks":1639,"avg_clusters_per_task":301.01,"zone_used_clusters":493352,"skipped_files":3,"current_runs":66,"expected_runs":1,"hot_blocks":30843,"units":1642}}
+

@@ -1,0 +1,36 @@
+﻿**********************
+Windows PowerShell 기록 시작
+시작 시간: 20261102170823
+사용자 이름: <user>
+RunAs 사용자: <user>
+구성 이름: 
+Machine: <host> (Microsoft Windows NT 10.0.26200.0)
+호스트 응용 프로그램: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File <scratch>\admin\e6_5.ps1
+프로세스 ID: 41408
+PSVersion: 5.1.26100.9168
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9168
+BuildVersion: 10.0.26100.9168
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+17:08:25 == stage back start
+17:08:28 lowest free zone candidate lcn=205810272 = 42.142%
+17:13:18 == stage back end ok=True 293s
+17:13:18 == stage measure start
+17:13:31 raw: 12.69s 159.2 MB/s
+17:13:46 backpvm1: pvm 12.19s 168.0 MB/s replay 0.33s
+17:14:00 backpvm2: pvm 11.93s 171.6 MB/s replay 0.32s
+17:14:14 backpvm3: pvm 11.84s 172.9 MB/s replay 0.32s
+17:14:33 backdirect1: 18.33s
+17:14:52 backdirect2: 17.64s
+17:15:11 backdirect3: 17.51s
+17:15:11 == stage measure end ok=True 113s
+17:15:11 done exit=0
+driver exit=0
+**********************
+Windows PowerShell 기록 끝
+종료 시간: 20261102171511
+**********************

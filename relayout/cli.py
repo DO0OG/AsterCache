@@ -125,7 +125,7 @@ def build_parser():
     p.add_argument('--zone-mib', type=int, required=True)
     p.add_argument('--zone-start-lcn', default='auto', help="'auto' = pick a free run on the volume at apply time")
     p.add_argument('--cluster-bytes', type=int, help='only when the volume cannot be queried')
-    p.add_argument('--preserve-mib', type=int, default=8, help='contiguous runs this long stay in place')
+    p.add_argument('--preserve-mib', type=int, default=0, help='contiguous runs this long stay in place (0 = move everything)')
     p.add_argument('--min-sessions', type=int, help='drop blocks read in fewer runs (default: 2 with 2+ traces, else 1)')
     p.add_argument('--out', type=Path, help='plan file; <out>.prefetch.json (prefetch input, exactly the zone blocks) is written next to it')
     p.add_argument('--dry-run', action='store_true', help='print statistics only, write nothing')

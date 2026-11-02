@@ -49,11 +49,20 @@ internal sealed class MainWindow : Window
     private readonly ListBox _drives = new() { Margin = new Thickness(0, 4, 8, 0) };
     private readonly ListBox _games = new();
     private readonly TextBox _status = ReadOnlyBox();
+    private string _stages = string.Empty;
     private readonly TextBox _serviceLog = ReadOnlyBox();
     private readonly TextBox _trayLog = ReadOnlyBox();
     private readonly TextBlock _versions = new() { TextWrapping = TextWrapping.Wrap };
     private readonly ComboBox _watcher = new() { ItemsSource = new[] { "poll", "etw" }, MinWidth = 90 };
     private readonly ComboBox _language = new() { ItemsSource = new[] { L.T("Lang_Auto"), L.T("Lang_Ko"), L.T("Lang_En") }, MinWidth = 200 };
+    private readonly CheckBox _autoEnabled = new() { Content = L.T("Auto_Enabled") };
+    private readonly CheckBox _autoDiscover = new() { Content = L.T("Auto_Discover") };
+    private readonly CheckBox _autoTrace = new() { Content = L.T("Auto_Trace") };
+    private readonly CheckBox _autoRelocate = new() { Content = L.T("Auto_Relocate") };
+    private readonly ComboBox _autoPrewarm = new() { ItemsSource = Enumerable.Range(0, 9).ToList(), MinWidth = 70 };
+    private readonly TextBox _autoIgnore = new() { MinWidth = 320 };
+    private readonly TextBox _zoneLimit = new() { MinWidth = 90 };
+    private readonly TextBox _rewarmMinutes = new() { MinWidth = 70 };
     private readonly TextBlock _bar = new() { Margin = new Thickness(8, 2) };
     private readonly TextBlock _progress = new() { Margin = new Thickness(8, 2), TextWrapping = TextWrapping.Wrap };
     private readonly ProgressBar _busyBar = new() { IsIndeterminate = true, IsVisible = false, Height = 4 };
@@ -122,7 +131,31 @@ internal sealed class MainWindow : Window
     public void SelectTab(int index) => _tabs.SelectedIndex = index;
 
     /// 아래 줄: 서비스 상태 (트레이의 5 초 갱신이 부릅니다).
-    public void UpdateStatus() => _bar.Text = _tray.StatusText;
+    public void UpdateStatus()
+    {
+        _bar.Text = _tray.StatusText;
+        if (_games.ItemsSource is null)
+        {
+            return;
+        }
+
+        // 단계 열은 값이 바뀐 때만 목록을 다시 채워 선택·스크롤을 지킵니다.
+        IReadOnlyList<GameRow> rows = _manage.GameRows(_letter);
+        string stages = string.Join("|", rows.Select(r => r.Stage));
+        if (stages != _stages)
+        {
+            _stages = stages;
+            int selected = _games.SelectedIndex;
+            _games.ItemsSource = rows;
+            _games.SelectedIndex = selected < rows.Count ? selected : -1;
+        }
+
+        string text = string.Join(Environment.NewLine, _manage.StatusLines(_letter));
+        if (_status.Text != text)
+        {
+            _status.Text = text;
+        }
+    }
 
     /// 열 때마다 상태·목록·로그를 다시 읽습니다 (다른 작업 중이면 그 작업이 끝날 때 읽으므로 건너뜀).
     public void Reload()
@@ -197,7 +230,7 @@ internal sealed class MainWindow : Window
     private Control GamesTab()
     {
         _games.ItemTemplate = new FuncDataTemplate<GameRow>((row, _) => row is null ? new Panel() : Cells(
-            [row.Name, row.Exe, row.Origin, L.T(row.HasPlan ? "Cell_Yes" : "Cell_No"), L.T(row.HasTrace ? "Cell_Yes" : "Cell_No"), row.Verdict, row.Prewarm]));
+            [row.Name, row.Exe, row.Origin, L.T(row.HasPlan ? "Cell_Yes" : "Cell_No"), L.T(row.HasTrace ? "Cell_Yes" : "Cell_No"), row.Verdict, row.Prewarm, row.Source, row.AntiCheat, row.Stage]));
         _games.Styles.Add(new Style(x => x.OfType<ListBoxItem>()) { Setters = { new Setter(ContentControl.HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch) } });
         var buttons = new WrapPanel
         {
@@ -221,7 +254,7 @@ internal sealed class MainWindow : Window
         };
         var panel = new DockPanel { Margin = new Thickness(4) };
         DockPanel.SetDock(buttons, Dock.Top);
-        var header = Cells([L.T("Col_Name"), L.T("Col_Exe"), L.T("Col_Origin"), L.T("Col_Plan"), L.T("Col_Trace"), L.T("Col_Layout"), L.T("Col_Prewarm")], FontWeight.Bold);
+        var header = Cells([L.T("Col_Name"), L.T("Col_Exe"), L.T("Col_Origin"), L.T("Col_Plan"), L.T("Col_Trace"), L.T("Col_Layout"), L.T("Col_Prewarm"), L.T("Col_Source"), L.T("Col_AntiCheat"), L.T("Col_Stage")], FontWeight.Bold);
         header.Margin = new Thickness(8, 0, 0, 2);
         DockPanel.SetDock(header, Dock.Top);
         panel.Children.Add(buttons);
@@ -248,12 +281,28 @@ internal sealed class MainWindow : Window
             Children = { Btn(L.T("Btn_OpenData"), () => _progress.Text = _manage.OpenDataFolder().Message), Btn(L.T("Btn_OpenLogs"), () => _progress.Text = _tray.OpenLogs().Message) },
         };
         var applyLanguage = Btn(L.T("Btn_ApplyLanguage"), () => _ = RunAsync(L.T("Op_LanguageChange"), () => _tray.SetLanguage(LanguageValues[Math.Max(0, _language.SelectedIndex)])));
+        var applyAuto = Btn(L.T("Btn_ApplyAuto"), () => _ = RunAsync(L.T("Op_AutoChange"), () =>
+        {
+            ActionResult saved = _tray.SetAuto(
+                _autoEnabled.IsChecked == true, _autoDiscover.IsChecked == true, _autoTrace.IsChecked == true, _autoRelocate.IsChecked == true,
+                Math.Max(0, _autoPrewarm.SelectedIndex), _autoIgnore.Text ?? string.Empty);
+            return saved.Ok ? _tray.SetSpeed(_zoneLimit.Text ?? string.Empty, _rewarmMinutes.Text ?? string.Empty) : saved;
+        }));
         return new StackPanel
         {
             Margin = new Thickness(8),
             Spacing = 10,
             Children =
             {
+                new TextBlock { Text = L.T("Set_Auto"), FontWeight = FontWeight.Bold },
+                new TextBlock { Text = L.T("Set_AutoNote"), TextWrapping = TextWrapping.Wrap },
+                new WrapPanel { Children = { _autoEnabled, _autoDiscover, _autoTrace, _autoRelocate } },
+                new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { new TextBlock { Text = L.T("Auto_Prewarm"), VerticalAlignment = VerticalAlignment.Center }, _autoPrewarm } },
+                new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { new TextBlock { Text = L.T("Auto_Ignore"), VerticalAlignment = VerticalAlignment.Center }, _autoIgnore } },
+                new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { new TextBlock { Text = L.T("Auto_ZoneLimit"), VerticalAlignment = VerticalAlignment.Center }, _zoneLimit } },
+                new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { new TextBlock { Text = L.T("Auto_Rewarm"), VerticalAlignment = VerticalAlignment.Center }, _rewarmMinutes } },
+                new TextBlock { Text = L.T("Set_PinNote"), TextWrapping = TextWrapping.Wrap },
+                applyAuto,
                 new TextBlock { Text = L.T("Set_Service"), FontWeight = FontWeight.Bold },
                 service,
                 new TextBlock { Text = L.T("Set_Watcher"), FontWeight = FontWeight.Bold },
@@ -386,6 +435,15 @@ internal sealed class MainWindow : Window
             _trayLog.Text = loaded.Tray;
             _trayLog.CaretIndex = loaded.Tray.Length;
             _versions.Text = L.T("Ver_Line", _tray.TrayVersion ?? L.T("Word_Unknown"), _tray.ServiceVersion ?? L.T("Word_NotInstalled"), _tray.ServiceReinstallNeeded ? L.T("Ver_Reinstall") : string.Empty);
+            AutoSettings auto = _tray.Settings?.Auto ?? AutoSettings.Default;
+            _autoEnabled.IsChecked = auto.Enabled;
+            _autoDiscover.IsChecked = auto.Discover;
+            _autoTrace.IsChecked = auto.Trace;
+            _autoRelocate.IsChecked = auto.Relocate;
+            _autoPrewarm.SelectedIndex = Math.Clamp(auto.PrewarmRecent, 0, 8);
+            _autoIgnore.Text = string.Join(", ", auto.IgnoreExes);
+            _rewarmMinutes.Text = auto.RewarmMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            _zoneLimit.Text = _tray.Settings?.MaxZoneAuto == true ? "auto" : (_tray.Settings?.MaxZoneMib ?? SettingsStore.DefaultMaxZoneMib).ToString(System.Globalization.CultureInfo.InvariantCulture);
             _watcher.SelectedItem = _tray.Settings?.Watcher;
             _language.SelectedIndex = Math.Max(0, Array.IndexOf(LanguageValues, _tray.Settings?.Language));
             UpdateStatus();
@@ -408,7 +466,9 @@ internal sealed class MainWindow : Window
 
     private void ShowRows()
     {
-        _games.ItemsSource = _manage.GameRows(_letter);
+        IReadOnlyList<GameRow> rows = _manage.GameRows(_letter);
+        _stages = string.Join("|", rows.Select(r => r.Stage));
+        _games.ItemsSource = rows;
         _status.Text = string.Join(Environment.NewLine, _manage.StatusLines(_letter));
     }
 
@@ -443,7 +503,7 @@ internal sealed class MainWindow : Window
 
     private static Grid Cells(IReadOnlyList<string> text, FontWeight? weight = null)
     {
-        var g = new Grid { ColumnDefinitions = new ColumnDefinitions("120,130,2*,50,70,110,2*") };
+        var g = new Grid { ColumnDefinitions = new ColumnDefinitions("120,130,2*,50,70,110,2*,60,90,110") };
         for (int i = 0; i < text.Count; i++)
         {
             var t = new TextBlock { Text = text[i], FontWeight = weight ?? FontWeight.Normal, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 0, 8, 0) };

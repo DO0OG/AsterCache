@@ -149,6 +149,18 @@ class AllocateTests(unittest.TestCase):
         self.assertEqual(tasks, [('B', 0, PER, 5000 + PER)])
         self.assertEqual(st['in_place_bytes'], BLK)
 
+    def test_zero_preserve_moves_every_hot_range_and_is_the_default(self):
+        big = 3 * 256
+        files = {'A': ext((0, 100, big)), 'B': ext((0, 100 + big, big)), 'C': ext((0, 9000, PER))}
+        units = [('A', 0, 48), ('B', 0, 48), ('C', 0, 1)]
+        tasks, st, _ = self.alloc(units, files, clusters=5000, preserve_bytes=0)
+        self.assertEqual((st['preserved_segments'], st['preserved_bytes']), (0, 0))
+        self.assertEqual({t[0] for t in tasks}, {'A', 'B', 'C'})
+        self.assertEqual(st['expected_runs'], 1)
+        self.assertEqual(self.alloc(units, files, clusters=5000), (tasks, st, _))
+        args = cli.build_parser().parse_args(['plan', '--trace', 't', '--origin-root', 'r', '--zone-mib', '1'])
+        self.assertEqual(args.preserve_mib, 0)
+
     def test_large_contiguous_run_is_preserved(self):
         big = 3 * 256  # 3 MiB of clusters per file; preserve at 4 MiB across two files
         files = {'A': ext((0, 100, big)), 'B': ext((0, 100 + big, big)), 'C': ext((0, 9000, PER))}

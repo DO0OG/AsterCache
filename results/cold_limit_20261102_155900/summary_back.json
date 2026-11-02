@@ -1,0 +1,192 @@
+﻿{
+    "zone_start_pct":  90,
+    "prev42_lcn":  205810188,
+    "baseline42_median_s":  12.0567,
+    "stages":  {
+                   "move_back":  {
+                                     "zone_start_lcn":  205810272,
+                                     "plan_stats":  {
+                                                        "preserved_segments":  0,
+                                                        "preserved_bytes":  0,
+                                                        "in_place_bytes":  0,
+                                                        "overflow_bytes":  0,
+                                                        "misaligned_pieces":  0,
+                                                        "hot_bytes":  2020769792,
+                                                        "moved_bytes":  2020769792,
+                                                        "tasks":  1639,
+                                                        "avg_clusters_per_task":  301.01,
+                                                        "zone_used_clusters":  493352,
+                                                        "skipped_files":  3,
+                                                        "current_runs":  1,
+                                                        "expected_runs":  1,
+                                                        "hot_blocks":  30843,
+                                                        "units":  1642
+                                                    },
+                                     "apply_dry_run":  {
+                                                           "zone_start_lcn":  205810272,
+                                                           "tasks_total":  1639,
+                                                           "tasks_todo":  1639,
+                                                           "bytes_todo":  2020769792,
+                                                           "skipped_files":  {
+
+                                                                             },
+                                                           "executed":  false,
+                                                           "moved_bytes":  0,
+                                                           "failed":  [
+
+                                                                      ],
+                                                           "stopped":  null,
+                                                           "dry_run":  true,
+                                                           "plan_saved":  false
+                                                       },
+                                     "apply":  {
+                                                   "zone_start_lcn":  205810272,
+                                                   "tasks_total":  1639,
+                                                   "tasks_todo":  1639,
+                                                   "bytes_todo":  2020769792,
+                                                   "skipped_files":  {
+
+                                                                     },
+                                                   "executed":  true,
+                                                   "moved_bytes":  2020769792,
+                                                   "failed":  [
+
+                                                              ],
+                                                   "stopped":  null,
+                                                   "dry_run":  false,
+                                                   "plan_saved":  false,
+                                                   "sha_checked":  20,
+                                                   "sha_mismatch":  [
+
+                                                                    ]
+                                               },
+                                     "apply_seconds":  206.3,
+                                     "verify":  {
+                                                    "hot_clusters":  493352,
+                                                    "ordered_runs":  1,
+                                                    "expected_runs":  1,
+                                                    "current_runs_at_plan_time":  1,
+                                                    "ascending":  true,
+                                                    "in_zone_clusters":  493352,
+                                                    "missing_files":  0,
+                                                    "contiguous":  true,
+                                                    "verdict":  "contiguous"
+                                                },
+                                     "zone_pct_of_volume":  42.142,
+                                     "sha_identical":  true
+                                 },
+                   "back":  {
+                                "zone_start_lcn":  205810272,
+                                "plan_stats":  {
+                                                   "preserved_segments":  0,
+                                                   "preserved_bytes":  0,
+                                                   "in_place_bytes":  0,
+                                                   "overflow_bytes":  0,
+                                                   "misaligned_pieces":  0,
+                                                   "hot_bytes":  2020769792,
+                                                   "moved_bytes":  2020769792,
+                                                   "tasks":  1639,
+                                                   "avg_clusters_per_task":  301.01,
+                                                   "zone_used_clusters":  493352,
+                                                   "skipped_files":  3,
+                                                   "current_runs":  1,
+                                                   "expected_runs":  1,
+                                                   "hot_blocks":  30843,
+                                                   "units":  1642
+                                               },
+                                "apply_dry_run":  {
+                                                      "zone_start_lcn":  205810272,
+                                                      "tasks_total":  1639,
+                                                      "tasks_todo":  1639,
+                                                      "bytes_todo":  2020769792,
+                                                      "skipped_files":  {
+
+                                                                        },
+                                                      "executed":  false,
+                                                      "moved_bytes":  0,
+                                                      "failed":  [
+
+                                                                 ],
+                                                      "stopped":  null,
+                                                      "dry_run":  true,
+                                                      "plan_saved":  false
+                                                  },
+                                "apply":  {
+                                              "zone_start_lcn":  205810272,
+                                              "tasks_total":  1639,
+                                              "tasks_todo":  1639,
+                                              "bytes_todo":  2020769792,
+                                              "skipped_files":  {
+
+                                                                },
+                                              "executed":  true,
+                                              "moved_bytes":  2020769792,
+                                              "failed":  [
+
+                                                         ],
+                                              "stopped":  null,
+                                              "dry_run":  false,
+                                              "plan_saved":  false,
+                                              "sha_checked":  20,
+                                              "sha_mismatch":  [
+
+                                                               ]
+                                          },
+                                "apply_seconds":  206.3,
+                                "verify":  {
+                                               "hot_clusters":  493352,
+                                               "ordered_runs":  1,
+                                               "expected_runs":  1,
+                                               "current_runs_at_plan_time":  1,
+                                               "ascending":  true,
+                                               "in_zone_clusters":  493352,
+                                               "missing_files":  0,
+                                               "contiguous":  true,
+                                               "verdict":  "contiguous"
+                                           },
+                                "zone_pct_of_volume":  42.142,
+                                "sha_identical":  true
+                            },
+                   "measure":  {
+                                   "pvm":  [
+                                               {
+                                                   "prefetch_s":  12.1897,
+                                                   "mb_s":  168.0,
+                                                   "replay_after_s":  0.3343873996345792
+                                               },
+                                               {
+                                                   "prefetch_s":  11.931,
+                                                   "mb_s":  171.6,
+                                                   "replay_after_s":  0.32021170001826249
+                                               },
+                                               {
+                                                   "prefetch_s":  11.8445,
+                                                   "mb_s":  172.9,
+                                                   "replay_after_s":  0.32003710145363584
+                                               }
+                                           ],
+                                   "direct":  [
+                                                  {
+                                                      "replay_s":  18.331999499641825
+                                                  },
+                                                  {
+                                                      "replay_s":  17.639395199119463
+                                                  },
+                                                  {
+                                                      "replay_s":  17.5091040013358
+                                                  }
+                                              ],
+                                   "raw":  {
+                                               "runs":  1,
+                                               "lcn_pct":  [
+                                                               42.14191528910024,
+                                                               42.242934533619334
+                                                           ],
+                                               "seconds":  12.694185300002573,
+                                               "mb_s":  159.18861622412194
+                                           },
+                                   "median_pvm_s":  11.931,
+                                   "median_direct_s":  17.639395199119463
+                               }
+               }
+}

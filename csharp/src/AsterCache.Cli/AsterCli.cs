@@ -27,6 +27,7 @@ public static class AsterCli
         new("launch", LaunchCommand.Options, LaunchCommand.Run),
         new("status", StatusCommand.Options, StatusCommand.Run),
         new("stream-bench", StreamBenchCommand.Options, StreamBenchCommand.Run),
+        new("discover", DiscoverCommand.Options, DiscoverCommand.Run),
     ];
 
     /// 전역 옵션 (명령 앞에, 순서 무관): `--result-file <경로>` 는 표준 출력 내용을 그 파일에도 씁니다 (승격 실행처럼 표준 출력을 가져올 수 없을 때 결과를 받는 길).

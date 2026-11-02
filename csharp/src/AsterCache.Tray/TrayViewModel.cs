@@ -78,7 +78,17 @@ public sealed class TrayViewModel(
 
     public ActionResult AddGame(GameInput game) => Edit(() => config.Add(game), L.T("Msg_Registered", game.Name));
 
-    public ActionResult RemoveGame(string name) => Edit(() => config.Remove(name), L.T("Msg_Removed", name));
+    public ActionResult RemoveGame(string name)
+    {
+        IReadOnlyList<string> dropped = [];
+        ActionResult r = Edit(() => dropped = config.Remove(name), L.T("Msg_Removed", name));
+        if (r.Ok && dropped.Count > 0)
+        {
+            log.Warn($"auto.ignore_exes full: dropped oldest {string.Join(", ", dropped)}");
+        }
+
+        return r;
+    }
 
     /// 선택한 게임의 .prefetch.json 으로 지금 스트림 (비관리자 가능). 이미 돌고 있으면 거절.
     public ActionResult StreamNow(string name)
@@ -119,6 +129,33 @@ public sealed class TrayViewModel(
     public ActionResult UninstallService() => Elevated(service.RequestUninstall, L.T("Msg_UninstallRequested"));
 
     public ActionResult SetWatcher(string watcher) => Edit(() => config.SetWatcher(watcher), L.T("Msg_WatcherSet", watcher));
+
+    /// 자동 모드 켬·꺼짐과 예열 개수, 제외 exe (쉼표로 구분) 를 기록합니다. 나머지 auto 값은 지금 값을 그대로 보존합니다.
+    public ActionResult SetAuto(bool enabled, bool discover, bool trace, bool relocate, int prewarmRecent, string ignoreExes) =>
+        Edit(() => config.UpdateAuto(a => a with
+        {
+            Enabled = enabled,
+            Discover = discover,
+            Trace = trace,
+            Relocate = relocate,
+            PrewarmRecent = prewarmRecent,
+            IgnoreExes = ignoreExes.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries),
+        }), L.T("Msg_AutoSet"));
+
+    /// 존 상한 ("auto" 또는 MiB 숫자) 과 예열 유지 주기 (분, 0 = 끔) 를 기록합니다. 나머지 auto 값은 그대로 보존합니다.
+    public ActionResult SetSpeed(string zoneLimit, string rewarmMinutes)
+    {
+        string zone = zoneLimit.Trim();
+        int mib = 0;
+        bool auto = zone.Equals("auto", StringComparison.OrdinalIgnoreCase);
+        if ((!auto && !int.TryParse(zone, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out mib))
+            || !int.TryParse(rewarmMinutes.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int minutes))
+        {
+            return Report(false, L.T("Err_SpeedInput"));
+        }
+
+        return Edit(() => config.UpdateAuto(a => a with { RewarmMinutes = minutes }, mib, auto), L.T("Msg_SpeedSet"));
+    }
 
     /// "auto", "ko" 또는 "en". 화면 언어는 앱을 다시 실행해야 바뀝니다.
     public ActionResult SetLanguage(string language) => Edit(() => config.SetLanguage(language), L.T("Msg_LanguageSaved"));

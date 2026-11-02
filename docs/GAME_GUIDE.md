@@ -19,6 +19,47 @@ Scope of validation: trace conversion, planning, prefetch execution, and the lau
 2. To apply it to MW4 after confirming the effect and safety: test only in the offline campaign, relocate with the game and the Battle.net (or Steam) launcher fully closed, and leave multiplayer and DMZ out of the first test.
 3. Collect the MW4 trace through the ETW path. The C# `aster trace --etl` conversion was validated in the administrator script S3 (`csharp\scripts\cs_etw_check.ps1`). However, whether collecting on MW4 is safe is unvalidated, so test first with one short mission. Until then, using Procmon on MW4 is not recommended.
 
+## Anti-cheat compatibility
+
+Many current games run kernel-level anti-cheat. This section says what AsterCache does and does not do, so you can decide whether to use it with a game. Anti-cheat policies differ per game and can change. AsterCache has not been tested with any anti-cheat game yet.
+
+### What it does
+
+- The service reads game files from inside its own process, read-only, with shared access (read, write, and delete sharing), or only maps them.
+- It watches file-read events with a live ETW kernel session. It needs no handle to the game process.
+- It moves file clusters with the NTFS defragmentation API (`FSCTL_MOVE_FILE`), and only after the game has fully exited. File content, size, and modified time do not change. Before a move, the plan's fingerprint (size and modified time) is checked.
+
+### What it does not do
+
+- No code injection, no thread creation in the game process, no reading or writing of its memory, no debug privilege, no hooking, no overlay, and no handle duplication.
+- Game processes are opened only with `PROCESS_QUERY_LIMITED_INFORMATION`, to read the name, path, and bytes read. If a protected process refuses even that, the service decides from ETW events alone and does not try to open that process again. In that case it judges from the reads in the 20 seconds after the refusal is confirmed; reads before those 20 seconds are not counted.
+- No kernel driver.
+
+### Skipped and marked files
+
+- Files that the game has opened exclusively are skipped.
+- During automatic discovery, the service looks at file and folder names up to 4 levels deep in the install folder. It recognizes EasyAntiCheat, BattlEye, Vanguard (`vgc`, `vgk`), and Ricochet; other names containing anticheat, xigncode, nprotect, or gameguard are marked `unknown`. A game with such a trace is marked in the Games tab and in the `anticheat` setting, and one log line is written. The behavior does not change.
+
+### Why each speed feature is considered safe
+
+These are the reasons each feature is considered safe. They are reasoning, not verified results.
+
+- **Prewarm:** reads ordinary files from the service's own process.
+- **Prewarm upkeep:** samples ordinary 1 MiB file reads.
+- **Pinning:** read-only mappings in the service's own process, released when a game or launcher starts.
+- **Relocation:** runs only after the game has exited, and file content does not change.
+- **Detection:** a query-only process handle, or ETW events.
+
+### Signing
+
+The executables are not code-signed, so Windows SmartScreen may show a warning. That warning is the only effect confirmed so far. Whether signing status relates to anti-cheat decisions has not been checked.
+
+### Limits and advice
+
+- Automatic mode is on by default. For a game with anti-cheat, turn automatic mode off in the Settings tab, or add the game's exe to `auto.ignore_exes`, before you play.
+- Automatic tracing uses the same kind of ETW collection as the manual route, so the Ricochet and Vanguard cautions in this guide ("What to know first", Step 1, and "Reference: League of Legends") still apply.
+- Not yet tested on any real anti-cheat game. This is outside the current validation.
+
 ## Procedure validated with Frostpunk (2026-11-02)
 
 The target is D:\Frostpunk (9.2 GB, no anti-cheat, D: SMR HDD). The two scripts below were run from an administrator PowerShell relative to the top-level folder of the repository. The C# CLI (`csharp\publish\cli\aster.exe`) must be published first (`csharp\README.md`).

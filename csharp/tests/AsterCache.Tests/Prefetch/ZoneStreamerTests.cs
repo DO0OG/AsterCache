@@ -79,6 +79,39 @@ public sealed class ZoneStreamerTests
     }
 
     [Fact]
+    public void PvmSkipsOnlyTheFileThatCannotBeMappedAndKeepsTheRest()
+    {
+        using var tmp = new TempDir();
+        tmp.WriteRandom("a.bin", 100_000);
+        tmp.WriteRandom("locked.bin", 100_000);
+        tmp.WriteRandom("c.bin", 100_000);
+        using var exclusive = new FileStream(tmp.Combine("locked.bin"), FileMode.Open, FileAccess.ReadWrite, FileShare.None); // 게임이 배타적으로 연 파일처럼
+        ReadOp[] ops =
+        {
+            new(tmp.Combine("a.bin"), 0, 40_000), new(tmp.Combine("locked.bin"), 0, 5000), new(tmp.Combine("c.bin"), 0, 30_000),
+            new(tmp.Combine("locked.bin"), 8192, 5000), new(tmp.Combine("nope.bin"), 0, 10),
+        };
+
+        StreamStats r = ZoneStreamer.Run(ops, StreamMethod.Pvm);
+
+        Assert.Equal((70_000L, 2L, 2L), (r.Bytes, r.Requests, r.Errors)); // 잠긴 파일과 없는 파일이 각각 오류 1
+    }
+
+    [Fact]
+    public void ReadMethodAlsoSkipsTheLockedFileOnly()
+    {
+        using var tmp = new TempDir();
+        tmp.WriteRandom("a.bin", 100_000);
+        tmp.WriteRandom("locked.bin", 100_000);
+        using var exclusive = new FileStream(tmp.Combine("locked.bin"), FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        ReadOp[] ops = { new(tmp.Combine("locked.bin"), 0, 5000), new(tmp.Combine("a.bin"), 0, 40_000) };
+
+        StreamStats r = ZoneStreamer.Run(ops, StreamMethod.Read);
+
+        Assert.Equal((40_000L, 1L, 1L), (r.Bytes, r.Requests, r.Errors));
+    }
+
+    [Fact]
     public void ColdOpsPicksOnlyExtentsOutsideTheHotLcnSpan()
     {
         const int cs = 4096;

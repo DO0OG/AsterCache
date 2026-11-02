@@ -80,6 +80,23 @@ Values measured on the relocated 243.5 MB zone (1,048 operations). The table val
 - The SSD baseline values for 250 µs and 1000 µs are in `results/stream_tuning_20261101/ssd_think_baseline.json` (non-administrator, same compute conditions). They are reference values because the conditions differ from the administrator measurement.
 - Source: `results/relayout_e3/20261101_235628/summary.json`, `results/relayout_e3/20261101_235628/F-concurrent.json`
 
+## E6 cold limit experiment (2026-11-02)
+
+The hot set of Frostpunk is 2,020,769,792 bytes (30,843 blocks) on the D: WDC WD20EZAZ (SATA). The standby list was purged before each measurement, and the game was not running. The full record is [results/cold_limit_20261102_155900/README.md](../results/cold_limit_20261102_155900/README.md). Why the experiment was run is in [research_cold_limit.md](research_cold_limit.md).
+
+| Stage | Cold prefetch (pvm), seconds | Direct replay, seconds | Zone position | Share of hot data inside the zone |
+|---|---:|---:|---|---:|
+| Before relocation (original layout, 35 runs) | 15.05 (1 run) | 24.3 (1 run) | Scattered, 15.47~63.08% | Not applicable |
+| First relocation, preservation rule on (earlier value) | 15.13 | 21.7 / 22.6 (2 runs) | Not recorded in the result folder | Not recorded in the result folder |
+| Full move, 42.142% zone, first measurement | 12.06 (median of 3; 11.84~12.83) | 21.64 (median of 3; 18.94~27.32) | 42.142% (LCN 205,810,188) | 100% (493,352 of 493,352 clusters) |
+| Full move, 42.142% zone, final layout | 11.93 (median of 3; 11.84~12.19) | 17.64 (median of 3; 17.51~18.33) | 42.142% (LCN 205,810,272) | 100% |
+| Full move, high band 90.00% | 19.06 (median of 3; 18.12~19.08) | 27.86 (median of 3; 27.59~31.77) | 90.00% (LCN 439,536,840) | 100% |
+
+- Reading width and queue depth had no effect. In the original layout, queue depth 1, 2, 4, and 8 with 4 MiB requests, queue depth 4 with 1 MiB and 16 MiB requests took 16.05~16.91 s.
+- The WOF compression ratio is 1.014 at 8 KiB chunks and 1.016 at 16 KiB chunks. This saves only 1.4~1.6% of the bytes read, so it is not worth the decompression cost. 97.7% of the hot bytes are in nine `.dat` files, whose ratio is 1.002~1.003.
+- The high band (the outer 90% of the disk) was about 1.6 times slower than the 42% zone (19.06 s against 11.93 s, pvm). The 300 MB/s points of the LBA curve (73.7%, 78.9%, 89.4%, 94.7%, 100%) were measured on empty space, so they are not valid speeds for data.
+- Conclusion: the default plan now moves everything (preservation off, `--preserve-mib 0`, no segments kept in place). The final layout stays in the 42.142% zone. The cost is a larger move, about 2 GB taking 270~280 s.
+
 ## Interpretation of the results (carried over)
 
 - **Speed by drive position.** There was no difference in speed by position on the drive (`results/zone_curve_20261101`). So the optimization of placing the hot zone at a particular position was dropped from the design.

@@ -1,5 +1,4 @@
 using AsterCache.Core.Settings;
-using AsterCache.Tray;
 using Xunit;
 
 namespace AsterCache.Tests.Tray;

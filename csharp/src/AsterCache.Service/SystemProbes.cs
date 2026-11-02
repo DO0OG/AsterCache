@@ -145,3 +145,68 @@ public static class AclCheck
         return bad.ToList();
     }
 }
+
+/// 전체 CPU 사용률 (GetSystemTimes): 호출 사이의 사용 시간 비율.
+public sealed partial class CpuLoad
+{
+    private long _idle;
+    private long _total;
+    private bool _primed;
+
+    /// 직전 호출 뒤의 CPU 사용률 (0..100). 처음 부르거나 읽지 못하면 null.
+    public double? Percent()
+    {
+        if (!GetSystemTimes(out long idle, out long kernel, out long user))
+        {
+            return null;
+        }
+
+        long total = kernel + user; // kernel 에는 idle 이 포함됨
+        double? result = null;
+        if (_primed && total > _total)
+        {
+            result = 100.0 * (1.0 - ((double)(idle - _idle) / (total - _total)));
+        }
+
+        (_idle, _total, _primed) = (idle, total, true);
+        return result;
+    }
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetSystemTimes(out long idle, out long kernel, out long user);
+}
+
+/// 전원 상태 (GetSystemPowerStatus).
+public static partial class PowerProbe
+{
+    private const byte AcOnline = 1;
+    private const byte NoBattery = 128;
+    private const byte Unknown = 255;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PowerStatus
+    {
+        public byte AcLineStatus;
+        public byte BatteryFlag;
+        public byte BatteryLifePercent;
+        public byte SystemStatusFlag;
+        public uint BatteryLifeTime;
+        public uint BatteryFullLifeTime;
+    }
+
+    /// AC 연결, 배터리 없음, 알 수 없음은 true (방해될 일이 없음). 배터리면 남은 비율이 minBatteryPercent 이상일 때만 true.
+    public static bool PowerOk(int minBatteryPercent)
+    {
+        if (!GetSystemPowerStatus(out PowerStatus s) || s.AcLineStatus is AcOnline or Unknown || (s.BatteryFlag & NoBattery) != 0)
+        {
+            return true;
+        }
+
+        return s.BatteryLifePercent != Unknown && s.BatteryLifePercent >= minBatteryPercent;
+    }
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetSystemPowerStatus(out PowerStatus status);
+}

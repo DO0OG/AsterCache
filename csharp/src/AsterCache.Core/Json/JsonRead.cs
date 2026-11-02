@@ -26,7 +26,13 @@ public static class JsonRead
     /// UTF-8 (BOM 허용, Python utf-8-sig) 파일을 읽습니다.
     public static object? ReadFile(string path)
     {
-        byte[] bytes = File.ReadAllBytes(path);
+        byte[] bytes;
+        using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        {
+            bytes = new byte[fs.Length];
+            fs.ReadExactly(bytes);
+        }
+
         int skip = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? 3 : 0;
         string text;
         try

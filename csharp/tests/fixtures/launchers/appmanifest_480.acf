@@ -1,0 +1,14 @@
+"AppState"
+{
+	"appid"		"480"
+	"name"		"Space Wars: Ultimate Edition!"
+	"StateFlags"		"4"
+	"installdir"		"Space Wars"
+	"InstalledDepots"
+	{
+		"481"
+		{
+			"size"		"123"
+		}
+	}
+}

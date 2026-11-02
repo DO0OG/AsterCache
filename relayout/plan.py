@@ -229,11 +229,11 @@ def _hot_ranges(units, extents_by_file, cb, block, sizes):
 
 
 def allocate_zone(units, extents_by_file, zone_start_lcn, zone_clusters, cluster_bytes, block=BLOCK,
-                  sizes=None, preserve_bytes=8 << 20, align_clusters=4):
+                  sizes=None, preserve_bytes=0, align_clusters=4):
     """Place units, in access order, at consecutive zone clusters.
     extents_by_file: {path: [(vcn, lcn, n)]} (missing/None/[] -> file skipped). sizes: {path: bytes} clamps the file end
     (clusters past the size-rounded end cannot be moved). Physically contiguous runs of the access order that are
-    >= preserve_bytes stay in place (one extra seek is cheaper than moving them). Pieces already at their target stay.
+    >= preserve_bytes stay in place (0 = preserve nothing, move everything). Pieces already at their target stay.
     zone_start_lcn None = zone not placed yet: targets are returned as offsets from the zone start, and no piece can
     count as 'already in place' or overlap the zone (apply picks a completely free run).
     Returns (tasks, stats, order): tasks = [(path, vcn, clusters, target_lcn)], order = [(path, vcn, clusters)]
@@ -254,7 +254,7 @@ def allocate_zone(units, extents_by_file, zone_start_lcn, zone_clusters, cluster
     st = dict(preserved_segments=0, preserved_bytes=0, in_place_bytes=0, overflow_bytes=0, misaligned_pieces=0)
     for g in groups:
         total = sum(p[3] for p in g)
-        if total * cb >= preserve_bytes:
+        if preserve_bytes > 0 and total * cb >= preserve_bytes:
             st['preserved_segments'] += 1
             st['preserved_bytes'] += total * cb
             final += [(p[2], p[3]) for p in g]

@@ -1,20 +1,22 @@
-; AsterCache Windows 설치 프로그램 (Inno Setup 6). 바탕: YttStudio packaging/windows/yttStudio.iss
+﻿; AsterCache Windows 설치 프로그램 (Inno Setup 6). 바탕: YttStudio packaging/windows/yttStudio.iss
 ;
 ; 릴리즈 워크플로가 아래 정의를 넘긴다.
-;   /DAppVersion=0.1.0  /DServiceDir=<서비스 publish 경로>  /DOutputDir=<출력 경로>
-;   /DHaveKorean        (컴파일러에 Korean.isl 이 있을 때만)
+;   /DAppVersion=0.1.0  /DAppNumVersion=0.1.0  /DAppDir=<gui publish 경로>  /DOutputDir=<출력 경로>
 ; 로컬 시험용 기본값은 아래 #ifndef 블록에 있다. 이 스크립트는 컴파일만 하고 실행하지 않는다.
 ;
-; CLI(aster.exe)는 이 설치 프로그램에 넣지 않는다. 서비스만 설치한다.
+; 설치 대상은 관리 창 publish 폴더 전체(Tray, aster.exe, 서비스, 런타임)다. 서비스 등록은 [Tasks] service 를 선택했을 때만 한다.
 ;
-; 권한: 서비스 등록과 plans 폴더 ACL 때문에 관리자 설치만 허용한다 (사용자 범위 설치 없음).
-; 제거 때 데이터 폴더(plans, journals, logs)는 남긴다. 사용자 데이터이기 때문이다.
+; 권한: 서비스 등록과 데이터 폴더 ACL 때문에 관리자 설치만 허용한다 (사용자 범위 설치 없음).
+; 제거 때 데이터 폴더(plans, journals, logs, config.json)는 남긴다. 사용자 데이터이기 때문이다.
 
 #ifndef AppVersion
   #define AppVersion "0.1.0"
 #endif
-#ifndef ServiceDir
-  #define ServiceDir "..\..\publish\service"
+#ifndef AppNumVersion
+  #define AppNumVersion "0.1.0"
+#endif
+#ifndef AppDir
+  #define AppDir "..\..\publish\gui"
 #endif
 #ifndef OutputDir
   #define OutputDir "..\..\artifacts"
@@ -23,6 +25,7 @@
 #define AppName "AsterCache"
 #define ServiceExe "AsterCache.Service.exe"
 #define ServiceName "AsterCache"
+#define TrayExe "AsterCache.Tray.exe"
 
 [Setup]
 ; 이 GUID 는 업그레이드 판정 기준이다. 새로 생성했으며 절대 바꾸지 않는다.
@@ -31,15 +34,27 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher=DO0OG
+AppPublisherURL=https://github.com/DO0OG/AsterCache
+AppSupportURL=https://github.com/DO0OG/AsterCache
+AppUpdatesURL=https://github.com/DO0OG/AsterCache
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputDir={#OutputDir}
 OutputBaseFilename=AsterCache-v{#AppVersion}-win-x64-setup
+SetupIconFile=..\..\src\AsterCache.Tray\Assets\aster.ico
 UninstallDisplayName={#AppName}
+UninstallDisplayIcon={app}\{#TrayExe}
+VersionInfoVersion={#AppNumVersion}
+VersionInfoProductVersion={#AppNumVersion}
+VersionInfoProductTextVersion={#AppVersion}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+ShowLanguageDialog=yes
+LanguageDetectionMethod=uilanguage
+; 업그레이드 때 실행 중인 트레이 파일을 교체할 수 있도록 닫는다.
+CloseApplications=yes
 ; 서비스 등록과 ACL 설정에 관리자 권한이 필요하다.
 PrivilegesRequired=admin
 ; x64compatible 은 Inno Setup 6.3 부터다. 그 이전 컴파일러도 받아들이도록 분기한다.
@@ -54,16 +69,45 @@ MinVersion=10.0
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
-#ifdef HaveKorean
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
-#endif
+
+[CustomMessages]
+english.AdditionalTasks=Additional tasks:
+korean.AdditionalTasks=추가 작업:
+english.TaskDesktop=Create a desktop shortcut
+korean.TaskDesktop=바탕화면 바로가기 만들기
+english.TaskStartMenu=Create a Start menu shortcut
+korean.TaskStartMenu=시작 메뉴 바로가기 만들기
+english.TaskAutostart=Start AsterCache (management window and tray icon) when I sign in to Windows
+korean.TaskAutostart=Windows 로그인 때 AsterCache 관리 창과 트레이 아이콘 실행
+english.TaskService=Install and start the AsterCache service
+korean.TaskService=AsterCache 서비스 설치 및 시작
+english.RunTray=Open the AsterCache management window
+korean.RunTray=설치 후 AsterCache 관리 창 실행
+english.DataKept=The data folder (%1) was kept. Delete it yourself if you do not need it.
+korean.DataKept=데이터 폴더(%1)는 남겨 두었습니다. 필요 없으면 직접 지우십시오.
+
+[Tasks]
+Name: "desktopicon"; Description: "{cm:TaskDesktop}"; GroupDescription: "{cm:AdditionalTasks}"
+Name: "startmenuicon"; Description: "{cm:TaskStartMenu}"
+Name: "autostart"; Description: "{cm:TaskAutostart}"
+Name: "service"; Description: "{cm:TaskService}"
 
 [Files]
-Source: "{#ServiceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#AppDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Icons]
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#TrayExe}"; Tasks: desktopicon
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#TrayExe}"; Tasks: startmenuicon
+Name: "{commonstartup}\{#AppName}"; Filename: "{app}\{#TrayExe}"; Tasks: autostart
+
+[Run]
+Filename: "{app}\{#TrayExe}"; Description: "{cm:RunTray}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [UninstallRun]
-; 서비스 제거만 한다. 데이터 폴더는 남긴다.
-Filename: "{sys}\sc.exe"; Parameters: "stop {#ServiceName}"; Flags: runhidden waituntilterminated; RunOnceId: "StopAsterCacheService"
+; 트레이를 먼저 끈 뒤 서비스를 제거한다. 데이터 폴더는 남긴다.
+Filename: "{sys}\taskkill.exe"; Parameters: "/IM {#TrayExe} /F"; Flags: runhidden waituntilterminated; RunOnceId: "StopAsterCacheTray"
+Filename: "{sys}\net.exe"; Parameters: "stop {#ServiceName}"; Flags: runhidden waituntilterminated; RunOnceId: "StopAsterCacheService"
 Filename: "{sys}\sc.exe"; Parameters: "delete {#ServiceName}"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteAsterCacheService"
 
 [Code]
@@ -80,8 +124,50 @@ end;
 // Before file copy: an earlier install's service must not hold the old files. Failure here is expected on a first install.
 procedure StopAndDeleteOldService();
 begin
-  RunTool(ExpandConstant('{sys}\sc.exe'), 'stop {#ServiceName}', False);
+  RunTool(ExpandConstant('{sys}\net.exe'), 'stop {#ServiceName}', False);
   RunTool(ExpandConstant('{sys}\sc.exe'), 'delete {#ServiceName}', False);
+end;
+
+procedure ReplaceToken(var Text: AnsiString; const OldTok, NewTok: String);
+var
+  P: Integer;
+begin
+  P := Pos(OldTok, Text);
+  if P > 0 then
+  begin
+    Delete(Text, P, Length(OldTok));
+    Insert(NewTok, Text, P);
+  end;
+end;
+
+// Stores the chosen installer language in config.json. Only "auto" or a missing key is changed, so an earlier ko/en choice stays. Runs before SetDataAcl so the file gets the locked ACL.
+// Bytes outside the edited token are kept as they are (AnsiString, no re-encoding).
+procedure WriteLanguageConfig();
+var
+  Dir, Path, Code: String;
+  Text: AnsiString;
+  P: Integer;
+begin
+  Dir := ExpandConstant('{commonappdata}\{#AppName}');
+  Path := Dir + '\config.json';
+  if ExpandConstant('{language}') = 'korean' then Code := 'ko' else Code := 'en';
+  ForceDirectories(Dir);
+  if not FileExists(Path) then
+  begin
+    SaveStringToFile(Path, '{' + #10 + '  "games": [],' + #10 + '  "language": "' + Code + '"' + #10 + '}' + #10, False);
+    Exit;
+  end;
+  if not LoadStringFromFile(Path, Text) then Exit;
+  if Pos('"language"', Text) > 0 then
+  begin
+    ReplaceToken(Text, '"language": "auto"', '"language": "' + Code + '"');
+  end
+  else
+  begin
+    P := Pos('{', Text);
+    if P > 0 then Insert('"language": "' + Code + '", ', Text, P + 1);
+  end;
+  SaveStringToFile(Path, Text, False);
 end;
 
 procedure RegisterService();
@@ -93,7 +179,7 @@ begin
   // binPath= "\"<exe>\" --data-dir \"<ProgramData>\AsterCache\""  (sc.exe quoting; LocalSystem, automatic start)
   Args := 'create {#ServiceName} binPath= "\"' + App + '\{#ServiceExe}\" --data-dir \"' + Common + '\{#AppName}\"" start= auto obj= LocalSystem DisplayName= {#AppName}';
   RunTool(ExpandConstant('{sys}\sc.exe'), Args, True);
-  RunTool(ExpandConstant('{sys}\sc.exe'), 'description {#ServiceName} "AsterCache game-start prefetch and layout check"', False);
+  RunTool(ExpandConstant('{sys}\sc.exe'), 'description {#ServiceName} "AsterCache game detection, prefetch and layout maintenance"', False);
 end;
 
 procedure SetDataAcl();
@@ -117,11 +203,26 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if CurStep = ssInstall then StopAndDeleteOldService();
+  if CurStep = ssInstall then
+  begin
+    // The running tray keeps its files locked, so it is closed before the copy.
+    RunTool(ExpandConstant('{sys}\taskkill.exe'), '/IM {#TrayExe} /F', False);
+    StopAndDeleteOldService();
+  end;
   if CurStep = ssPostInstall then
   begin
-    RegisterService();
+    WriteLanguageConfig();
     SetDataAcl();
-    RunTool(ExpandConstant('{sys}\sc.exe'), 'start {#ServiceName}', False);
+    if WizardIsTaskSelected('service') then
+    begin
+      RegisterService();
+      RunTool(ExpandConstant('{sys}\sc.exe'), 'start {#ServiceName}', False);
+    end;
   end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if (CurUninstallStep = usPostUninstall) and (not UninstallSilent) then
+    MsgBox(Format(CustomMessage('DataKept'), [ExpandConstant('{commonappdata}\{#AppName}')]), mbInformation, MB_OK);
 end;

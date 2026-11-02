@@ -201,13 +201,74 @@ public sealed class ApplyPortTests : ApplyTestBase
     }
 
     [Fact]
-    public void ZoneInUseIsRejected()
+    public void FreeZoneIsKeptAsIs()
+    {
+        ApplyReport rep = Apply(Make().Resolve(20000), Exec());
+
+        Assert.Equal(20000L, rep.ZoneStartLcn);
+        Assert.False(rep.ZoneRetargeted);
+        Assert.Null(rep.JournalArchivedTo);
+        Assert.False(rep.ToJson().ContainsKey("zone_retargeted"));
+    }
+
+    [Fact]
+    public void ZoneInUseWithUnfinishedJournalStepIsRejected()
     {
         Vol.Ext["other"] = [new(0, 20000, 8)];
+        using (var jr = new Journal(JournalPath))
+        {
+            jr.Add(new JObject { { "type", "header" }, { "plan_sha", "x" } });
+            jr.Add(new JObject { { "type", "step" }, { "idx", 0L }, { "state", "planned" }, { "path", F1 } });
+        }
 
         var ex = Assert.Throws<PlanRejectedException>(() => Apply(Make().Resolve(20000)));
 
         Assert.Contains("zone_not_free", ex.Message, StringComparison.Ordinal);
+        Assert.True(File.Exists(JournalPath));
+    }
+
+    [Fact]
+    public void ZoneInUseWithoutJournalMovesToNewZone()
+    {
+        Vol.Ext["other"] = [new(0, 20000, 8)];
+
+        ApplyReport rep = Apply(Make().Resolve(20000));
+
+        Assert.True(rep.ZoneRetargeted);
+        Assert.NotEqual(20000L, rep.ZoneStartLcn);
+        Assert.Null(rep.JournalArchivedTo);
+    }
+
+    [Fact]
+    public void ZoneInUseAfterFinishedJournalArchivesItAndContinuesInNewZone()
+    {
+        string saved = Path.Combine(Root, "plan.json");
+        PlanFile p = Make().Resolve(20000);
+        Apply(p, Exec());
+        Reverter.Revert(JournalPath, Vol, [Root], Hooks(), Exec());
+        Vol.Ext["other"] = [new(0, 20000, 8)];
+        Vol.Moves.Clear();
+        p.Save(saved);
+
+        ApplyReport dry = Apply(PlanFile.Load(saved), new ApplyOptions(DryRun: true, SaveTo: saved));
+
+        string archived = Assert.Single(Directory.GetFiles(Root, "j.jsonl.*"));
+        Assert.Equal(archived, dry.JournalArchivedTo);
+        Assert.Matches(@"j\.jsonl\.\d{8}T\d{6}Z$", archived);
+        Assert.False(File.Exists(JournalPath));
+        Assert.True(dry.ZoneRetargeted);
+        Assert.True(dry.PlanSaved);
+        PlanFile again = PlanFile.Load(saved);
+        Assert.NotEqual(20000L, again.Zone.StartLcn);
+        Assert.NotEqual(p.Sha(), again.Sha());
+        Assert.Empty(Vol.Moves);
+
+        ApplyReport rep = Apply(again, Exec());
+
+        Assert.False(rep.ZoneRetargeted);
+        Assert.Empty(rep.Failed);
+        Assert.True(Verify(again).Contiguous);
+        Assert.Contains(new Journal(archived).Rows, r => Equals(r["type"], "revert"));
     }
 
     [Fact]

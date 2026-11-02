@@ -1,4 +1,5 @@
 using AsterCache.Core.I18n;
+using AsterCache.Core.Settings;
 using Avalonia.Controls;
 using Avalonia.Layout;
 

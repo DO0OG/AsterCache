@@ -42,6 +42,11 @@ public sealed class ApplyReport
 
     public bool PlanSaved { get; set; }
 
+    /// 이전 존이 다른 파일에 막혀 새 존으로 계획을 다시 정했는가, 그때 옮겨 보관한 끝난 저널 (없으면 null).
+    public bool ZoneRetargeted { get; set; }
+
+    public string? JournalArchivedTo { get; set; }
+
     public long? ShaChecked { get; set; }
 
     public List<string>? ShaMismatch { get; set; }
@@ -68,6 +73,12 @@ public sealed class ApplyReport
             { "dry_run", DryRun },
             { "plan_saved", PlanSaved },
         };
+        if (ZoneRetargeted)
+        {
+            o.Add("zone_retargeted", true);
+            o.Add("journal_archived_to", JournalArchivedTo);
+        }
+
         if (ShaChecked is not null)
         {
             o.Add("sha_checked", ShaChecked);

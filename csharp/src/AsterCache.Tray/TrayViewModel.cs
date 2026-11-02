@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using AsterCache.Core;
+using AsterCache.Core.I18n;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Settings;
@@ -66,18 +67,18 @@ public sealed class TrayViewModel(
             _configError = FileLog.Scrub(e.Message);
         }
 
-        string text = $"AsterCache: {Describe(Service)} · " + (Games.Count == 0 && _configError is null ? "등록된 게임 없음" : $"게임 {Games.Count}개");
+        string text = $"AsterCache: {Describe(Service)} · " + (Games.Count == 0 && _configError is null ? L.T("Status_NoGames") : L.T("Status_GameCount", Games.Count));
         if (ServiceReinstallNeeded)
         {
-            text += $" · 서비스 재설치 필요 (서비스 {serviceVersion}, 트레이 {trayVersion})";
+            text += " · " + L.T("Status_Reinstall", serviceVersion, trayVersion);
         }
 
-        StatusText = _configError is null ? text : text + " · 설정 오류: " + _configError;
+        StatusText = _configError is null ? text : text + " · " + L.T("Status_ConfigError", _configError);
     }
 
-    public ActionResult AddGame(GameInput game) => Edit(() => config.Add(game), $"{game.Name} 등록함");
+    public ActionResult AddGame(GameInput game) => Edit(() => config.Add(game), L.T("Msg_Registered", game.Name));
 
-    public ActionResult RemoveGame(string name) => Edit(() => config.Remove(name), $"{name} 제거함");
+    public ActionResult RemoveGame(string name) => Edit(() => config.Remove(name), L.T("Msg_Removed", name));
 
     /// 선택한 게임의 .prefetch.json 으로 지금 스트림 (비관리자 가능). 이미 돌고 있으면 거절.
     public ActionResult StreamNow(string name)
@@ -85,23 +86,23 @@ public sealed class TrayViewModel(
         GameSettings? game = _settings?.Games.FirstOrDefault(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase));
         if (game is null)
         {
-            return Report(false, $"{name}: 등록된 게임이 아님");
+            return Report(false, L.T("Err_NotRegistered", name));
         }
 
         if (Interlocked.CompareExchange(ref _streaming, 1, 0) != 0)
         {
-            return Report(false, "이미 스트림 중");
+            return Report(false, L.T("Err_AlreadyStreaming"));
         }
 
         try
         {
             AsterCache.Prefetch.StreamStats r = streamer.Stream(game);
-            return Report(true, $"{name}: {r.Bytes >> 20} MiB, 요청 {r.Requests}개, 오류 {r.Errors}개, {r.Seconds:F2} 초");
+            return Report(true, L.T("Msg_Streamed", name, r.Bytes >> 20, r.Requests, r.Errors, r.Seconds));
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
         {
             log.Error($"{name}: stream failed", e);
-            return Report(false, $"{name}: 스트림 실패 ({e.GetType().Name})");
+            return Report(false, L.T("Err_StreamFailed", name, e.GetType().Name));
         }
         finally
         {
@@ -109,26 +110,29 @@ public sealed class TrayViewModel(
         }
     }
 
-    public ActionResult StartService() => Elevated(service.RequestStart, "서비스 시작 요청함");
+    public ActionResult StartService() => Elevated(service.RequestStart, L.T("Msg_StartRequested"));
 
-    public ActionResult StopService() => Elevated(service.RequestStop, "서비스 정지 요청함");
+    public ActionResult StopService() => Elevated(service.RequestStop, L.T("Msg_StopRequested"));
 
-    public ActionResult InstallService(string serviceExe) => Elevated(() => service.RequestInstall(serviceExe, Path.GetDirectoryName(config.ConfigPath)!), "서비스 설치 요청함");
+    public ActionResult InstallService(string serviceExe) => Elevated(() => service.RequestInstall(serviceExe, Path.GetDirectoryName(config.ConfigPath)!), L.T("Msg_InstallRequested"));
 
-    public ActionResult UninstallService() => Elevated(service.RequestUninstall, "서비스 제거 요청함 (데이터 폴더는 남김)");
+    public ActionResult UninstallService() => Elevated(service.RequestUninstall, L.T("Msg_UninstallRequested"));
 
-    public ActionResult SetWatcher(string watcher) => Edit(() => config.SetWatcher(watcher), $"감시기를 {watcher} 로 바꿈: 서비스를 다시 시작하면 적용됩니다");
+    public ActionResult SetWatcher(string watcher) => Edit(() => config.SetWatcher(watcher), L.T("Msg_WatcherSet", watcher));
+
+    /// "auto", "ko" 또는 "en". 화면 언어는 앱을 다시 실행해야 바뀝니다.
+    public ActionResult SetLanguage(string language) => Edit(() => config.SetLanguage(language), L.T("Msg_LanguageSaved"));
 
     public ActionResult OpenLogs()
     {
         try
         {
             shell.Open(Path.Combine(Path.GetDirectoryName(config.ConfigPath)!, "logs"));
-            return Report(true, "로그 폴더 열음");
+            return Report(true, L.T("Msg_LogsOpened"));
         }
         catch (Exception e) when (e is Win32Exception or InvalidOperationException)
         {
-            return Report(false, "로그 폴더를 열지 못함");
+            return Report(false, L.T("Err_LogsOpen"));
         }
     }
 
@@ -136,16 +140,16 @@ public sealed class TrayViewModel(
     {
         if (updates is null)
         {
-            return Report(false, "업데이트 비활성 (tray.json 의 update_feed_url 이 없음)");
+            return Report(false, L.T("Err_UpdateDisabled"));
         }
 
         if (!updates.IsSupported)
         {
-            return Report(false, "설치된 실행이 아니라 업데이트를 확인할 수 없음");
+            return Report(false, L.T("Err_UpdateUnsupported"));
         }
 
         PendingVersion = await updates.CheckAsync();
-        return Report(true, PendingVersion is null ? "최신 버전" : "새 버전 " + PendingVersion);
+        return Report(true, PendingVersion is null ? L.T("Msg_UpToDate") : L.T("Msg_NewVersion", PendingVersion));
     }
 
     /// 확인된 업데이트를 받아 적용하고 다시 시작합니다.
@@ -153,18 +157,18 @@ public sealed class TrayViewModel(
     {
         if (updates is null || PendingVersion is null)
         {
-            return Report(false, "확인된 업데이트가 없음");
+            return Report(false, L.T("Err_NoUpdate"));
         }
 
         try
         {
             await updates.DownloadAndApplyAsync(_ => { }, cancellationToken);
-            return Report(true, "업데이트 적용 중 (트레이만 갱신됨: 서비스는 설치 프로그램으로 다시 설치)");
+            return Report(true, L.T("Msg_Updating"));
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
             log.Error("update apply failed", e);
-            return Report(false, "업데이트를 설치하지 못함");
+            return Report(false, L.T("Err_UpdateFailed"));
         }
     }
 
@@ -177,11 +181,11 @@ public sealed class TrayViewModel(
         catch (UnauthorizedAccessException)
         {
             // 데이터 폴더는 SYSTEM·Administrators 만 쓸 수 있음 (서비스가 SYSTEM 으로 파일을 옮기므로 일반 사용자 쓰기를 막아 둠)
-            return Report(false, "설정을 저장할 권한이 없음: 관리자 권한으로 트레이를 다시 실행하십시오");
+            return Report(false, L.T("Err_NoPermission"));
         }
         catch (Exception e) when (e is SettingsException or IOException)
         {
-            return Report(false, "설정을 바꾸지 못함: " + FileLog.Scrub(e.Message));
+            return Report(false, L.T("Err_ConfigChange", FileLog.Scrub(e.Message)));
         }
 
         Refresh();
@@ -196,7 +200,7 @@ public sealed class TrayViewModel(
         }
         catch (Win32Exception e)
         {
-            return Report(false, e.NativeErrorCode == 1223 ? "관리자 승인이 취소됨" : "서비스 제어 실패 (" + e.NativeErrorCode + ")");
+            return Report(false, e.NativeErrorCode == 1223 ? L.T("Err_UacCancelled") : L.T("Err_ServiceControl", e.NativeErrorCode));
         }
 
         return Report(true, done);
@@ -216,10 +220,10 @@ public sealed class TrayViewModel(
 
     private static string Describe(ServiceState s) => s switch
     {
-        ServiceState.NotInstalled => "서비스 미설치",
-        ServiceState.Running => "서비스 실행 중",
-        ServiceState.Stopped => "서비스 정지됨",
-        ServiceState.Pending => "서비스 전환 중",
-        _ => "서비스 상태 알 수 없음",
+        ServiceState.NotInstalled => L.T("Svc_NotInstalled"),
+        ServiceState.Running => L.T("Svc_Running"),
+        ServiceState.Stopped => L.T("Svc_Stopped"),
+        ServiceState.Pending => L.T("Svc_Pending"),
+        _ => L.T("Svc_Unknown"),
     };
 }

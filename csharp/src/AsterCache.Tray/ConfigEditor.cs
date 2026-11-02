@@ -54,6 +54,14 @@ public sealed class ConfigEditor(string dataDir)
         Save(root);
     }
 
+    /// "auto", "ko" 또는 "en" (그 밖의 값은 검증에서 거부됨).
+    public void SetLanguage(string language)
+    {
+        JObject root = ReadRoot();
+        root["language"] = language;
+        Save(root);
+    }
+
     public void Remove(string name)
     {
         JObject root = ReadRoot();

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using AsterCache.Core.I18n;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Settings;
 using AsterCache.Service;
@@ -8,7 +9,8 @@ using Avalonia;
 using Avalonia.Controls;
 using Velopack;
 
-// 사용법: AsterCache.Tray [--data-dir <폴더>] [--smoke]   (기본 폴더 %ProgramData%\AsterCache)
+// 사용법: AsterCache.Tray [--data-dir <폴더>] [--lang ko|en] [--smoke]   (기본 폴더 %ProgramData%\AsterCache)
+// 언어: --lang > 환경변수 ASTER_LANG > config.json 의 language (auto 는 OS 표시 언어). 화면 문구는 시작할 때 한 번 정합니다.
 // --smoke: 트레이 아이콘과 메인 창을 만들고 3초 뒤 스스로 종료합니다 (알림 없음, 로그 한 줄). 종료 코드 0 정상, 2 설정 오류.
 // --smoke --screenshot <png> [--tab <0..3>]: 메인 창을 1100x720 으로 그려 PNG 로 저장합니다 (드라이브 목록은 이 PC 대신 예시 값).
 internal static class Program
@@ -19,6 +21,9 @@ internal static class Program
         VelopackApp.Build().Run();
         int at = Array.IndexOf(args, "--data-dir");
         string dataDir = at >= 0 && at + 1 < args.Length ? Path.GetFullPath(args[at + 1]) : SettingsStore.DefaultDataDir;
+        int lang = Array.IndexOf(args, "--lang");
+        L.Current = L.Resolve(lang >= 0 && lang + 1 < args.Length ? args[lang + 1] : null, Environment.GetEnvironmentVariable("ASTER_LANG"),
+            SettingsStore.ReadLanguage(Path.Combine(dataDir, "config.json")));
         ILog log = OpenLog(dataDir);
         TraySettings tray;
         try

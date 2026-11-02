@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
+using AsterCache.Core.I18n;
 using AsterCache.Core.Json;
 using AsterCache.Core.Prefetch;
 using AsterCache.Prefetch;
@@ -41,7 +42,7 @@ internal static partial class LaunchCommand
         string? root = a.Text("origin-root") ?? PrefetchCommand.EnvOrNull("ASTER_ROOT");
         if (trace is null || root is null)
         {
-            throw new ArgException("--trace and --origin-root are required (or env ASTER_TRACE / ASTER_ROOT)");
+            throw new ArgException(L.Get(a.Lang, "Cli_Launch_NeedArgs"));
         }
 
         trace = PathText.Str(trace);
@@ -69,7 +70,7 @@ internal static partial class LaunchCommand
         double wall = watch.Elapsed.TotalSeconds;
         if (s.Errors != 0)
         {
-            Console.Error.WriteLine("warning: some reads failed: the trace may be stale (game patched?). Check with verify.");
+            Console.Error.WriteLine(L.Get(a.Lang, "Cli_Launch_ReadsFailed"));
         }
 
         return AsterCli.Emit(o, new JObject

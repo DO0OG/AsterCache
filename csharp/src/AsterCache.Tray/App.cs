@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using AsterCache.Core.I18n;
 using AsterCache.Core.Logging;
 using Avalonia;
 using Avalonia.Controls;
@@ -118,35 +119,35 @@ internal sealed class App : Application
         foreach (string name in Model.Games)
         {
             var one = new NativeMenu();
-            one.Items.Add(Item("지금 예열 (스트림)", () => InBackground(() => Model.StreamNow(name))));
-            one.Items.Add(Item("제거", () => Update(() => Model.RemoveGame(name))));
+            one.Items.Add(Item(L.T("Menu_PrewarmStream"), () => InBackground(() => Model.StreamNow(name))));
+            one.Items.Add(Item(L.T("Btn_Remove"), () => Update(() => Model.RemoveGame(name))));
             games.Items.Add(new NativeMenuItem(name) { Menu = one });
         }
 
         if (Model.Games.Count == 0)
         {
-            games.Items.Add(new NativeMenuItem("(등록된 게임 없음)") { IsEnabled = false });
+            games.Items.Add(new NativeMenuItem(L.T("Menu_NoGames")) { IsEnabled = false });
         }
 
         games.Items.Add(new NativeMenuItemSeparator());
-        games.Items.Add(Item("게임 등록...", () => new RegisterWindow(Model, () => Update(Model.Refresh)).Show()));
+        games.Items.Add(Item(L.T("Menu_Register"), () => new RegisterWindow(Model, () => Update(Model.Refresh)).Show()));
 
         var menu = new NativeMenu();
         menu.Items.Add(new NativeMenuItem(Model.StatusText) { IsEnabled = false });
-        menu.Items.Add(Item("열기", ShowMain));
+        menu.Items.Add(Item(L.T("Menu_Open"), ShowMain));
         menu.Items.Add(new NativeMenuItemSeparator());
-        menu.Items.Add(new NativeMenuItem("게임") { Menu = games });
-        menu.Items.Add(Item("서비스 시작", () => InBackground(Model.StartService), state == ServiceState.Stopped));
-        menu.Items.Add(Item("서비스 정지", () => InBackground(Model.StopService), state == ServiceState.Running));
-        menu.Items.Add(Item("로그 열기", () => Update(() => Model.OpenLogs())));
-        menu.Items.Add(Item("업데이트 확인", CheckUpdate));
+        menu.Items.Add(new NativeMenuItem(L.T("Menu_Games")) { Menu = games });
+        menu.Items.Add(Item(L.T("Btn_ServiceStart"), () => InBackground(Model.StartService), state == ServiceState.Stopped));
+        menu.Items.Add(Item(L.T("Btn_ServiceStop"), () => InBackground(Model.StopService), state == ServiceState.Running));
+        menu.Items.Add(Item(L.T("Menu_OpenLogs"), () => Update(() => Model.OpenLogs())));
+        menu.Items.Add(Item(L.T("Menu_CheckUpdate"), CheckUpdate));
         if (Model.PendingVersion is not null)
         {
-            menu.Items.Add(Item("업데이트 설치 (" + Model.PendingVersion + ")", () => _ = Model.ApplyUpdateAsync(CancellationToken.None)));
+            menu.Items.Add(Item(L.T("Menu_InstallUpdate", Model.PendingVersion), () => _ = Model.ApplyUpdateAsync(CancellationToken.None)));
         }
 
         menu.Items.Add(new NativeMenuItemSeparator());
-        menu.Items.Add(Item("종료", Quit));
+        menu.Items.Add(Item(L.T("Menu_Exit"), Quit));
         return menu;
     }
 

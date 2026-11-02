@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
+using AsterCache.Core.I18n;
 
 namespace AsterCache.Cli;
 
@@ -47,6 +48,9 @@ internal sealed class ParsedArgs
 
     public ParsedArgs(IEnumerable<ArgOption> spec) => _spec = spec.ToDictionary(o => o.Name, StringComparer.Ordinal);
 
+    /// 오류·안내 문구의 언어 (ko/en).
+    public string Lang { get; init; } = L.En;
+
     public bool Flag(string name) => _values.ContainsKey(name);
 
     public bool Given(string name) => _values.ContainsKey(name);
@@ -81,9 +85,9 @@ internal sealed class ParsedArgs
 /// 직접 만든 작은 인자 파서. argparse 와 같은 규칙: --opt value, --opt=value, 유일한 접두 줄임, 음수는 값, nargs='+'.
 internal static partial class ArgParser
 {
-    public static ParsedArgs Parse(IReadOnlyList<ArgOption> spec, IReadOnlyList<string> args)
+    public static ParsedArgs Parse(IReadOnlyList<ArgOption> spec, IReadOnlyList<string> args, string lang = L.En)
     {
-        var result = new ParsedArgs(spec);
+        var result = new ParsedArgs(spec) { Lang = lang };
         var extras = new List<string>();
         for (int i = 0; i < args.Count; i++)
         {
@@ -108,7 +112,7 @@ internal static partial class ArgParser
                 inline = token[(eq + 1)..];
             }
 
-            ArgOption? opt = Find(spec, name, token);
+            ArgOption? opt = Find(spec, name, token, lang);
             if (opt is null)
             {
                 extras.Add(token);
@@ -121,7 +125,7 @@ internal static partial class ArgParser
                 case ArgKind.Flag:
                     if (inline is not null)
                     {
-                        throw new ArgException($"argument {label}: ignored explicit argument {PyRepr.Str(inline)}");
+                        throw new ArgException(L.Get(lang, "Cli_Arg_ExplicitValue", label, PyRepr.Str(inline)));
                     }
 
                     result.SetFlag(opt.Name);
@@ -142,19 +146,19 @@ internal static partial class ArgParser
 
                     if (values.Count == 0)
                     {
-                        throw new ArgException($"argument {label}: expected at least one argument");
+                        throw new ArgException(L.Get(lang, "Cli_Arg_NeedOneOrMore", label));
                     }
 
                     for (int k = 0; k < values.Count; k++)
                     {
-                        Check(opt, label, values[k]);
+                        Check(opt, label, values[k], lang);
                         result.Set(opt.Name, values[k], append: k > 0);
                     }
 
                     break;
                 default:
-                    string value = inline ?? (i + 1 < args.Count && !IsOption(args[i + 1]) ? args[++i] : throw new ArgException($"argument {label}: expected one argument"));
-                    Check(opt, label, value);
+                    string value = inline ?? (i + 1 < args.Count && !IsOption(args[i + 1]) ? args[++i] : throw new ArgException(L.Get(lang, "Cli_Arg_NeedOne", label)));
+                    Check(opt, label, value, lang);
                     result.Set(opt.Name, value, opt.Kind == ArgKind.Many);
                     break;
             }
@@ -163,14 +167,14 @@ internal static partial class ArgParser
         string[] missing = spec.Where(o => o.Required && !result.Given(o.Name)).Select(o => "--" + o.Name).ToArray();
         if (missing.Length > 0)
         {
-            throw new ArgException("the following arguments are required: " + string.Join(", ", missing));
+            throw new ArgException(L.Get(lang, "Cli_Arg_Required", string.Join(", ", missing)));
         }
 
-        return extras.Count > 0 ? throw new ArgException("unrecognized arguments: " + string.Join(" ", extras)) : result;
+        return extras.Count > 0 ? throw new ArgException(L.Get(lang, "Cli_Arg_Unrecognized", string.Join(" ", extras))) : result;
     }
 
-    public static string Usage(string command, IReadOnlyList<ArgOption> spec) =>
-        "usage: aster " + command + string.Concat(spec.Select(o =>
+    public static string Usage(string command, IReadOnlyList<ArgOption> spec, string lang = L.En) =>
+        L.Get(lang, "Cli_Usage") + "aster " + command + string.Concat(spec.Select(o =>
         {
             string body = "--" + o.Name + (o.Kind == ArgKind.Flag ? "" : o.Kind == ArgKind.List ? " V [V ...]" : " V");
             return o.Required ? " " + body : " [" + body + "]";
@@ -181,7 +185,7 @@ internal static partial class ArgParser
 
     private static bool IsOption(string token) => token.Length > 1 && token[0] == '-' && !NegativeNumber().IsMatch(token);
 
-    private static ArgOption? Find(IReadOnlyList<ArgOption> spec, string name, string token)
+    private static ArgOption? Find(IReadOnlyList<ArgOption> spec, string name, string token, string lang)
     {
         if (!name.StartsWith("--", StringComparison.Ordinal))
         {
@@ -200,11 +204,11 @@ internal static partial class ArgParser
         {
             1 => byPrefix[0],
             0 => null,
-            _ => throw new ArgException($"ambiguous option: {token} could match {string.Join(", ", byPrefix.Select(o => "--" + o.Name))}"),
+            _ => throw new ArgException(L.Get(lang, "Cli_Arg_Ambiguous", token, string.Join(", ", byPrefix.Select(o => "--" + o.Name)))),
         };
     }
 
-    private static void Check(ArgOption opt, string label, string value)
+    private static void Check(ArgOption opt, string label, string value, string lang)
     {
         bool ok = opt.Type switch
         {
@@ -214,12 +218,12 @@ internal static partial class ArgParser
         };
         if (!ok)
         {
-            throw new ArgException($"argument {label}: invalid {(opt.Type == ArgType.Int ? "int" : "float")} value: {PyRepr.Str(value)}");
+            throw new ArgException(L.Get(lang, "Cli_Arg_InvalidValue", label, L.Get(lang, opt.Type == ArgType.Int ? "Cli_Type_Int" : "Cli_Type_Float"), PyRepr.Str(value)));
         }
 
         if (opt.Choices is not null && !opt.Choices.Contains(value))
         {
-            throw new ArgException($"argument {label}: invalid choice: {PyRepr.Str(value)} (choose from {string.Join(", ", opt.Choices.Select(PyRepr.Str))})");
+            throw new ArgException(L.Get(lang, "Cli_Arg_InvalidChoice", label, PyRepr.Str(value), string.Join(", ", opt.Choices.Select(PyRepr.Str))));
         }
     }
 }

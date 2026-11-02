@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
+using AsterCache.Core.I18n;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 
@@ -49,7 +50,7 @@ public sealed class AsterProcess(IElevator elevator, Func<bool> isAdmin, ILog lo
     public CliResult Run(IReadOnlyList<string> args, bool elevate = false)
     {
         string line = string.Join(' ', args.Select(Quote));
-        log.Info("aster " + line + (elevate && !isAdmin() ? " (승격)" : string.Empty));
+        log.Info("aster " + line + (elevate && !isAdmin() ? L.T("Run_Elevated") : string.Empty));
         CliResult result;
         try
         {
@@ -57,15 +58,15 @@ public sealed class AsterProcess(IElevator elevator, Func<bool> isAdmin, ILog lo
         }
         catch (Win32Exception e)
         {
-            result = CliResult.Fail(e.NativeErrorCode == 1223 ? "관리자 승인이 취소됨" : $"aster 를 실행하지 못함 ({e.NativeErrorCode})");
+            result = CliResult.Fail(e.NativeErrorCode == 1223 ? L.T("Err_UacCancelled") : L.T("Run_NotStarted", e.NativeErrorCode));
         }
         catch (IOException e)
         {
-            result = CliResult.Fail("aster 출력을 읽지 못함: " + e.GetType().Name);
+            result = CliResult.Fail(L.T("Run_ReadFailed", e.GetType().Name));
         }
 
         string shown = result.Output.Length > MaxLogged ? result.Output[..MaxLogged] + "..." : result.Output;
-        log.Info($"aster 결과 {(result.Ok ? "성공" : "실패")}: {shown.Trim()}");
+        log.Info(L.T(result.Ok ? "Run_ResultOk" : "Run_ResultFail", shown.Trim()));
         return result;
     }
 
@@ -129,7 +130,7 @@ public sealed class AsterProcess(IElevator elevator, Func<bool> isAdmin, ILog lo
         try
         {
             elevator.Run(_exe, ["--result-file", file, .. args]);
-            return File.Exists(file) ? CliResult.Parse(File.ReadAllText(file, Encoding.UTF8)) : CliResult.Fail("승격 실행의 결과 파일이 없음");
+            return File.Exists(file) ? CliResult.Parse(File.ReadAllText(file, Encoding.UTF8)) : CliResult.Fail(L.T("Run_NoResultFile"));
         }
         finally
         {

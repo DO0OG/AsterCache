@@ -2,7 +2,9 @@ using System.ComponentModel;
 using AsterCache.Cli.Commands;
 using AsterCache.Core;
 using AsterCache.Core.Apply;
+using AsterCache.Core.I18n;
 using AsterCache.Core.Json;
+using AsterCache.Core.Settings;
 
 namespace AsterCache.Cli;
 
@@ -27,42 +29,57 @@ public static class AsterCli
         new("stream-bench", StreamBenchCommand.Options, StreamBenchCommand.Run),
     ];
 
-    /// 전역 옵션 `--result-file <경로>` (명령 앞에): 표준 출력 내용을 그 파일에도 씁니다 (승격 실행처럼 표준 출력을 가져올 수 없을 때 결과를 받는 길).
-    public static int Run(IReadOnlyList<string> args, TextWriter stdout, TextWriter stderr)
+    /// 전역 옵션 (명령 앞에, 순서 무관): `--result-file <경로>` 는 표준 출력 내용을 그 파일에도 씁니다 (승격 실행처럼 표준 출력을 가져올 수 없을 때 결과를 받는 길).
+    /// `--lang ko|en` 은 안내·오류 문구의 언어 (JSON 출력은 그대로). 언어 결정 순서: --lang > 환경변수 ASTER_LANG > config.json 의 language > OS 표시 언어.
+    public static int Run(IReadOnlyList<string> args, TextWriter stdout, TextWriter stderr) => Run(args, stdout, stderr, null);
+
+    private static int Run(IReadOnlyList<string> args, TextWriter stdout, TextWriter stderr, string? flagLang)
     {
         if (args.Count >= 2 && args[0] == "--result-file")
         {
             using var file = new StreamWriter(args[1], false, new System.Text.UTF8Encoding(false));
-            return Run(args.Skip(2).ToList(), new TeeWriter(stdout, file), stderr);
+            return Run(args.Skip(2).ToList(), new TeeWriter(stdout, file), stderr, flagLang);
         }
 
+        if (args.Count >= 2 && args[0] == "--lang")
+        {
+            if (!L.IsLanguage(args[1]))
+            {
+                stderr.WriteLine(L.Get(ResolveLanguage(null), "Cli_InvalidLang", PyRepr.Str(args[1])));
+                return 2;
+            }
+
+            return Run(args.Skip(2).ToList(), stdout, stderr, args[1]);
+        }
+
+        string lang = ResolveLanguage(flagLang);
         if (args.Count == 0 || args[0] is "-h" or "--help")
         {
-            (args.Count == 0 ? stderr : stdout).WriteLine("usage: aster {" + string.Join(",", Commands.Select(c => c.Name)) + "} ...");
+            (args.Count == 0 ? stderr : stdout).WriteLine(L.Get(lang, "Cli_Usage") + "aster {" + string.Join(",", Commands.Select(c => c.Name)) + "} ...");
             return args.Count == 0 ? 2 : 0;
         }
 
         Command? cmd = Commands.FirstOrDefault(c => c.Name == args[0]);
         if (cmd is null)
         {
-            stderr.WriteLine($"aster: error: argument cmd: invalid choice: {PyRepr.Str(args[0])} (choose from {string.Join(", ", Commands.Select(c => PyRepr.Str(c.Name)))})");
+            stderr.WriteLine(L.Get(lang, "Cli_InvalidCommand", PyRepr.Str(args[0]), string.Join(", ", Commands.Select(c => PyRepr.Str(c.Name)))));
             return 2;
         }
 
         try
         {
-            ParsedArgs a = ArgParser.Parse(cmd.Options, args.Skip(1).ToList());
+            ParsedArgs a = ArgParser.Parse(cmd.Options, args.Skip(1).ToList(), lang);
             return cmd.Relayout && !ValidRelayoutNumbers(a) ? Emit(stdout, new JObject { { "error", "invalid_argument" } }, 2) : cmd.Run(a, stdout);
         }
         catch (HelpRequestedException)
         {
-            stdout.WriteLine(ArgParser.Usage(cmd.Name, cmd.Options));
+            stdout.WriteLine(ArgParser.Usage(cmd.Name, cmd.Options, lang));
             return 0;
         }
         catch (ArgException e)
         {
-            stderr.WriteLine(ArgParser.Usage(cmd.Name, cmd.Options));
-            stderr.WriteLine($"aster {cmd.Name}: error: {e.Message}");
+            stderr.WriteLine(ArgParser.Usage(cmd.Name, cmd.Options, lang));
+            stderr.WriteLine(L.Get(lang, "Cli_ErrorLine", cmd.Name, e.Message));
             return 2;
         }
         catch (NotAdminException)
@@ -74,6 +91,14 @@ public static class AsterCli
             (string name, string detail) = Describe(e);
             return Emit(stdout, new JObject { { "error", name }, { "detail", detail } }, 1);
         }
+    }
+
+    /// 언어 결정 (--lang 값은 호출한 쪽이 넘김): ASTER_LANG, config.json 의 language, OS 표시 언어 순서. 앞 단계에서 정해지면 config.json 은 읽지 않습니다.
+    internal static string ResolveLanguage(string? flag)
+    {
+        string? env = Environment.GetEnvironmentVariable("ASTER_LANG");
+        bool decided = L.Normalize(flag) is not null || L.Normalize(env) is not null;
+        return L.Resolve(flag, env, decided ? null : SettingsStore.ReadLanguage(Path.Combine(SettingsStore.DefaultDataDir, "config.json")));
     }
 
     /// 한 줄 JSON (Python json.dumps(obj, separators=(',', ':'))) 을 쓰고 코드를 돌려줍니다.

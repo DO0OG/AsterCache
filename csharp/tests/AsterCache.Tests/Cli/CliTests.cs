@@ -163,7 +163,7 @@ public sealed class CliTests
     [Fact]
     public void TraceNeedsExactlyOneSource()
     {
-        (int code, _, string err) = Run("trace", "--out", "x.json");
+        (int code, _, string err) = Run("--lang", "en", "trace", "--out", "x.json");
         Assert.Equal(2, code);
         Assert.Contains("exactly one of --csv, --etl, --live", err, StringComparison.Ordinal);
 

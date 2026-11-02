@@ -1,3 +1,4 @@
+using AsterCache.Core.I18n;
 using AsterCache.Core.Json;
 using AsterCache.Core.Prefetch;
 using AsterCache.Prefetch;
@@ -30,14 +31,14 @@ internal static class StreamBenchCommand
         string[] names = a.Text("modes")!.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (repeat < 1 || flushMib < 0 || names.Length == 0)
         {
-            throw new ArgException("invalid repeat/flush-mib/modes");
+            throw new ArgException(L.Get(a.Lang, "Cli_Bench_BadNumbers"));
         }
 
         string trace = Path.Combine(root, "trace.json");
         var modes = names.Select(StreamBench.ParseMode).ToList();
         if (a.Flag("with-python"))
         {
-            string repo = a.Text("python-repo") is { } r ? PathText.Str(r) : FindPythonRepo();
+            string repo = a.Text("python-repo") is { } r ? PathText.Str(r) : FindPythonRepo(a.Lang);
             modes.AddRange(names.Select(n => StreamBench.ParsePythonMode(n, a.Text("python")!, repo, trace, root)));
         }
 
@@ -116,7 +117,7 @@ internal static class StreamBenchCommand
     };
 
     // 현재 폴더와 실행 파일 위치에서 위로 올라가며 prefetch/cli.py 가 있는 폴더를 찾습니다.
-    private static string FindPythonRepo()
+    private static string FindPythonRepo(string lang)
     {
         foreach (string start in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
         {
@@ -129,6 +130,6 @@ internal static class StreamBenchCommand
             }
         }
 
-        throw new ArgException("--python-repo is required: no folder with prefetch/cli.py above the current folder");
+        throw new ArgException(L.Get(lang, "Cli_Bench_NeedRepo"));
     }
 }

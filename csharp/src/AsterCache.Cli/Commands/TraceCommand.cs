@@ -1,3 +1,4 @@
+using AsterCache.Core.I18n;
 using AsterCache.Core.Json;
 using AsterCache.Core.Trace;
 using AsterCache.Tracer;
@@ -27,24 +28,24 @@ internal static class TraceCommand
         int modes = (a.Given("csv") ? 1 : 0) + (a.Given("etl") ? 1 : 0) + (a.Flag("live") ? 1 : 0);
         if (modes != 1)
         {
-            throw new ArgException("exactly one of --csv, --etl, --live is required");
+            throw new ArgException(L.Get(a.Lang, "Cli_Trace_ExactlyOne"));
         }
 
-        string prefix = a.Text("prefix") ?? a.Text("origin-root") ?? throw new ArgException("--prefix (or --origin-root) is required");
+        string prefix = a.Text("prefix") ?? a.Text("origin-root") ?? throw new ArgException(L.Get(a.Lang, "Cli_Trace_NeedPrefix"));
         IReadOnlyList<string> exes = a.List("exe");
         if (!a.Given("csv") && exes.Count == 0)
         {
-            throw new ArgException("--exe is required with --etl and --live");
+            throw new ArgException(L.Get(a.Lang, "Cli_Trace_NeedExe"));
         }
 
         if (a.Given("dump-first") && !a.Given("etl"))
         {
-            throw new ArgException("--dump-first needs --etl");
+            throw new ArgException(L.Get(a.Lang, "Cli_Trace_DumpNeedsEtl"));
         }
 
         if (a.Given("stop-file") && !a.Flag("live"))
         {
-            throw new ArgException("--stop-file needs --live");
+            throw new ArgException(L.Get(a.Lang, "Cli_Trace_StopNeedsLive"));
         }
 
         var sessions = new List<List<TraceEvent>>();
@@ -75,7 +76,7 @@ internal static class TraceCommand
         }
         else
         {
-            (List<TraceRecord> live, long liveLost) = CaptureLive(exes, a.Int("seconds"), a.Text("stop-file"));
+            (List<TraceRecord> live, long liveLost) = CaptureLive(exes, a.Int("seconds"), a.Text("stop-file"), a.Lang);
             sessions.Add(Build(o, "live", live, exes, prefix, liveLost));
         }
 
@@ -100,7 +101,7 @@ internal static class TraceCommand
 
     // 세션은 관리자만 열 수 있습니다 (NotAdminException, 아무것도 만들기 전에). Ctrl+C, (터미널이면) Enter, 또는 --seconds 로 멈춥니다.
     // --stop-file: 그 파일이 생기면 멈춥니다 (스크립트가 프로세스를 강제 종료하지 않고 출력을 끝까지 쓰게 하는 길).
-    private static (List<TraceRecord> Records, long EventsLost) CaptureLive(IReadOnlyList<string> exes, long? seconds, string? stopFile)
+    private static (List<TraceRecord> Records, long EventsLost) CaptureLive(IReadOnlyList<string> exes, long? seconds, string? stopFile, string lang)
     {
         if (stopFile is not null)
         {
@@ -117,7 +118,7 @@ internal static class TraceCommand
         Console.CancelKeyPress += onCancel;
         try
         {
-            Console.Error.WriteLine("tracing; press Ctrl+C" + (Console.IsInputRedirected ? "" : " or Enter") + " to stop");
+            Console.Error.WriteLine(L.Get(lang, Console.IsInputRedirected ? "Cli_Trace_Tracing" : "Cli_Trace_TracingEnter"));
             if (!Console.IsInputRedirected)
             {
                 _ = Task.Run(() =>

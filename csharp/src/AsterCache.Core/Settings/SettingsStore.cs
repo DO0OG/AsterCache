@@ -14,10 +14,13 @@ public static class SettingsStore
 
     /// 프로세스 시작 감지: "poll" (기본, 지연이 짧음) 또는 "etw" (관리자, 실시간 세션이라 지연이 더 길 수 있음).
     public const string DefaultWatcher = "poll";
+
+    /// 화면·명령줄 언어: "auto" (OS 표시 언어를 따름, 기본), "ko", "en".
+    public const string DefaultLanguage = "auto";
     public const long MaxFileBytes = 1 << 20;
     public const int MaxGames = 32;
 
-    private static readonly string[] TopKeys = ["games", "poll_ms", "watcher"];
+    private static readonly string[] TopKeys = ["games", "poll_ms", "watcher", "language"];
     private static readonly string[] GameKeys =
         ["name", "exe_names", "trace", "plan", "origin_root", "allowed_roots", "volume_label", "reapply_interval_minutes", "prewarm", "max_stream_mib"];
     private static readonly string[] PrewarmKeys = ["on_service_start", "trigger_exes", "min_free_ram_mib", "cooldown_min"];
@@ -38,6 +41,20 @@ public static class SettingsStore
         catch (PyValueException e)
         {
             throw new SettingsException("config: " + e.Message);
+        }
+    }
+
+    /// 언어만 느슨하게 읽습니다 (명령줄·트레이가 시작할 때 쓰며, 다른 칸이 잘못돼도 언어는 읽음). "ko"/"en" 이 아니거나 읽지 못하면 null.
+    public static string? ReadLanguage(string configPath)
+    {
+        try
+        {
+            return File.Exists(configPath) && new FileInfo(configPath).Length <= MaxFileBytes && JsonRead.ReadFile(configPath) is JObject o
+                && o.TryGetValue("language", out object? v) && v is "ko" or "en" ? (string)v : null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            return null;
         }
     }
 
@@ -63,6 +80,12 @@ public static class SettingsStore
             watcher = w is "etw" or "poll" ? (string)w : throw new SettingsException("watcher: \"etw\" or \"poll\" expected");
         }
 
+        string language = DefaultLanguage;
+        if (top.TryGetValue("language", out object? lang))
+        {
+            language = lang is "auto" or "ko" or "en" ? (string)lang : throw new SettingsException("language: \"auto\", \"ko\" or \"en\" expected");
+        }
+
         int poll = top.ContainsKey("poll_ms") ? Int(top["poll_ms"], "poll_ms", 50, 5000) : DefaultPollMs;
         if (!top.TryGetValue("games", out object? g) || g is not List<object?> games || games.Count > MaxGames)
         {
@@ -78,7 +101,7 @@ public static class SettingsStore
 
         CheckUnique(result.Select(x => x.Name), "games: duplicate name");
         CheckUnique(result.SelectMany(x => x.ExeNames), "games: exe name used twice");
-        return new AsterSettings(poll, result, watcher);
+        return new AsterSettings(poll, result, watcher, language);
     }
 
     private static GameSettings ParseGame(object? v, string at, string plansDir)

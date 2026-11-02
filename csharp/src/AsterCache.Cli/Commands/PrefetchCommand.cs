@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using AsterCache.Core.I18n;
 using AsterCache.Core.Json;
 using AsterCache.Core.Prefetch;
 using AsterCache.Core.Trace;
@@ -38,7 +39,7 @@ internal static class PrefetchCommand
         string? root = a.Text("origin-root") ?? EnvOrNull("ASTER_ROOT");
         if (trace is null || root is null)
         {
-            throw new ArgException("--plan/--trace and --origin-root are required (or env ASTER_TRACE / ASTER_ROOT)");
+            throw new ArgException(L.Get(a.Lang, "Cli_Prefetch_NeedArgs"));
         }
 
         string method = a.Text("method")!;
@@ -46,7 +47,7 @@ internal static class PrefetchCommand
         if (a.Int("budget-mib")! < 1 || a.Int("gap-kib")! < 0 || a.Double("read-mbps")! <= 0 || a.Double("seek-ms")! < 0
             || threads < 1 || threads > (method == "overlapped" ? 64 : 8) || a.Int("chunk-kib")! < 4)
         {
-            throw new ArgException("invalid budget/gap/speed/threads");
+            throw new ArgException(L.Get(a.Lang, "Cli_Prefetch_BadNumbers"));
         }
 
         StageTimes? times = a.Flag("timing") ? new StageTimes() : null;

@@ -116,6 +116,7 @@ NuGet WDK 도 Visual Studio 의 "Windows Driver Kit" 구성 요소(플랫폼 도
 첫 빌드에서 고친 것
 - `asterflt_proto.h`: `ASTER_PORT_NAME` 이 `L"\AsterFltPort"` 여서 C4129(알 수 없는 이스케이프)였음 -> `L"\\AsterFltPort"`. 이대로 두면 포트 이름이 깨져 통신 포트 생성이 실패했을 코드입니다.
 - `AsterFlt.c`: `AsterDoGetRecords`/`AsterDoGetStats` 의 출력 버퍼 SAL 을 `_Inout_updates_bytes_(OutLen)` 로, `ProbeForWrite` 길이에 `OutLen` 상한을 둠 (정적 분석 C6001 2건 제거. `n` 은 이미 `maxFit` 으로 제한돼 동작은 같음).
+- `AsterFlt.c`: `AsterDisconnect`/`AsterUnload`(PAGED_CODE)가 스핀락을 직접 잡아 드라이버 분석 C28150(IRQL 상한 초과)이 났음 -> 비페이징 함수 `AsterDisarm()` 으로 옮김. 이 규칙은 `toolset-shim` 이 분석 플러그인(`WindowsPrefast.dll`)을 빠뜨려 처음 로컬 분석에서는 안 보였고 CI 에서 발견되었음 (shim 수정 후 로컬에서도 재현·통과).
 - `AsterFlt.inf`: `CopyFiles` 와 `DelFiles` 가 같은 섹션을 가리켜 경고 1205 -> 삭제용 섹션 `MiniFilter.DelFiles` 분리.
 - `AsterFlt.vcxproj`: NuGet 패키지 props 가져오기, `WindowsTargetPlatformVersion` 을 `10.0.26100.0` 으로 고정, NuGet WDK(x64 전용)의 도구 폴더를 x64 로 지정.
 

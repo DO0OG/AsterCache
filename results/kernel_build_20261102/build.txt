@@ -19,10 +19,11 @@ AsterFlt 커널 미니필터 빌드 결과 (2026-11-02)
             -p:CodeAnalysisRuleSet=<WDK>\CodeAnalysis\DriverRecommendedRules.ruleset
 
 결과
-  Release|x64   컴파일 /W4 /WX            경고 0, 오류 0   AsterFlt.sys 13,312 바이트 (SHA-256 앞 16자 63fe1e67b84ace92)
+  (2차 실행: 드라이버 전용 분석 플러그인 WindowsPrefast.dll·drivers.dll 포함, 아래 "2차 수정" 참조)
+  Release|x64   컴파일 /W4 /WX            경고 0, 오류 0   AsterFlt.sys 13,312 바이트 (SHA-256 앞 16자 bae21e0db29f16d6)
   Release|x64   정적 분석(Recommended)    경고 0 (경고를 오류로 처리해도 통과)
   Debug|x64     컴파일 /W4 /WX            경고 0, 오류 0   AsterFlt.sys 13,824 바이트
-  Debug|x64     정적 분석(Recommended)    경고 0
+  Debug|x64     정적 분석(Recommended)    경고 0 (build.ps1 -Configuration Debug -Analyze)
   ApiValidator (Universal)                통과
   infverif /v /u  (Universal)             INF is VALID
   infverif /v /w  (Windows Driver)        실패: 1323 x5 (서비스 레지스트리 키가 Parameters 하위가 아님), 1322 x1 (DIRID 12, 격리된 DIRID 13 아님)
@@ -34,6 +35,14 @@ AsterFlt 커널 미니필터 빌드 결과 (2026-11-02)
   AsterFlt.c             GetRecords/GetStats 출력 버퍼 SAL, ProbeForWrite 길이 상한 (정적 분석 C6001 2건)
   AsterFlt.inf           DelFiles 전용 섹션 분리 (infverif 경고 1205)
   AsterFlt.vcxproj       NuGet 패키지 props, 대상 SDK 10.0.26100.0 고정, NuGet WDK 도구 폴더(x64) 지정
+2차 수정 (CI windows-2022 Release 분석에서 C28150 2건: AsterFlt.c 430·675행)
+  원인 1(분석 누락): kernel\toolset-shim 이 드라이버 분석 플러그인(WindowsPrefast.dll, drivers.dll)을 ClCompile 항목보다 늦게
+    정의해 적용되지 않아 로컬 분석이 C28xxx 규칙 없이 돌았음 -> Toolset.props 에서 ItemDefinitionGroup 으로 미리 정의.
+    수정 후 로컬에서 CI 와 같은 C28150 2건이 재현됨 (규칙 집합은 build.ps1 과 워크플로가 같은 DriverRecommendedRules).
+  원인 2(코드): PAGED_CODE 인 AsterDisconnect·AsterUnload 가 KeAcquireSpinLock 으로 IRQL 을 올림
+    -> 스핀락 구간을 비페이징 함수 AsterDisarm() 으로 옮김 (동작 동일, 두 함수는 AsterDisarm() 호출).
+  결과: Release -Analyze, Debug -Analyze 모두 경고 0, infverif /u INF is VALID.
+
 vcxproj 속성 확인: SignMode=Off, EnableInf2cat=false, Driver_SpectreMitigation=false 모두 WDK 속성 정의의 유효한 값이며
   빌드에서 서명·.cat·/Qspectre 가 생기지 않음.
 

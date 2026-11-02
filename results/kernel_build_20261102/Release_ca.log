@@ -1,0 +1,66 @@
+빌드 시작: 2026-11-02 오전 11:55:42
+
+1 노드의 "D:\Git\AsterCache\kernel\AsterFlt\AsterFlt.vcxproj" 프로젝트(Rebuild 대상)입니다.
+_PrepareForClean:
+  "x64\Release\AsterFlt.tlog\AsterFlt.lastbuildstate" 파일을 삭제하고 있습니다.
+CoreClean:
+  "D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.sys" 파일을 삭제하고 있습니다.
+  "D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.sys.lastcodeanalysissucceeded" 파일을 삭제하고 있습니다.
+  "D:\Git\AsterCache\kernel\AsterFlt\x64\Release\NativeCodeAnalysis.read.1.tlog" 파일을 삭제하고 있습니다.
+CleanOutput:
+  "x64\Release\AsterFlt.sys.recipe" 파일을 삭제하고 있습니다.
+  "x64\Release\AsterFlt.vcxproj.FileListAbsolute.txt" 파일을 삭제하고 있습니다.
+  "x64\Release\AsterFlt\AsterFlt.inf" 파일을 삭제하고 있습니다.
+  "x64\Release\AsterFlt\" 디렉터리를 제거하고 있습니다.
+DriverBuildNotifications:
+  Building 'AsterFlt' with toolset 'WindowsKernelModeDriver10.0' and the 'Universal' target platform.
+  Using KMDF 1.15.
+PrepareForBuild:
+  구조적 출력을 사용할 수 있습니다. 컴파일러 진단의 서식은 오류 계층 구조를 반영합니다. 자세한 내용은 https://aka.ms/cpp/structured-output을 참조하세요.
+InitializeBuildStatus:
+  "AlwaysCreate"이(가) 지정되었기 때문에 "x64\Release\AsterFlt.tlog\unsuccessfulbuild"을(를) 만들고 있습니다.
+  "x64\Release\AsterFlt.tlog\unsuccessfulbuild"에 연결(touching)하고 있습니다.
+StampInf:
+  D:\Git\AsterCache\kernel\packages\Microsoft.Windows.WDK.x64.10.0.26100.6584\c\bin\10.0.26100.0\x64\stampinf.exe -d "*" -a "amd64" -v "*" -k "1.15"  -x -f x64\Release\AsterFlt.inf 
+  Copying "D:\Git\AsterCache\kernel\AsterFlt\AsterFlt.inf" to "x64\Release\AsterFlt.inf" for stamping
+  Stamping x64\Release\AsterFlt.inf
+  Stamping [Version] section with DriverVer=11/02/2026,11.55.43.249
+ClCompile:
+  C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64\CL.exe /c /ID:\Git\AsterCache\kernel\AsterFlt\ /Ix64\Release\ /Zi /nologo /W4 /WX /diagnostics:column /Ox /Os /Oy- /D CODE_ANALYSIS /D _WIN64 /D _AMD64_ /D AMD64 /D _WIN32_WINNT=0x0A00 /D WINVER=0x0A00 /D WINNT=1 /D NTDDI_VERSION=0xA000010 /GF /Gm- /Zp8 /GS /guard:cf /Gy /fp:precise /Zc:wchar_t- /Zc:forScope /Zc:inline /GR- /Fo"x64\Release\\" /Fd"x64\Release\vc143.pdb" /external:W4 /Gz /wd4603 /wd4627 /wd4986 /wd4987 /FID:\Git\AsterCache\kernel\packages\Microsoft.Windows.SDK.CPP.10.0.26100.6584\c\Include\10.0.26100.0\shared\warning.h /analyze /analyze:projectdirectory"D:\Git\AsterCache\kernel\AsterFlt" /analyze:rulesetdirectory";C:\Program Files\Microsoft Visual Studio\2022\Community\Team Tools\Static Analysis Tools\\Rule Sets;" /analyze:ruleset"D:\Git\AsterCache\kernel\packages\Microsoft.Windows.WDK.x64.10.0.26100.6584\c\CodeAnalysis\DriverMinimumRules.ruleset" /analyze:quiet /analyze:stacksize1024 /analyze:plugin"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64\EspXEngine.dll" /FC /errorReport:queue /utf-8 /kernel -cbstring -d2epilogunwind  /d1nodatetime /d1import_no_registry /d2AllowCompatibleILVersions /d2Zi+ AsterFlt.c
+  AsterFlt.c
+Link:
+  C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64\link.exe /ERRORREPORT:QUEUE /OUT:"D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.sys" /VERSION:"10.0" /INCREMENTAL:NO /NOLOGO /WX /SECTION:"INIT,d" FltMgr.lib D:\Git\AsterCache\kernel\packages\Microsoft.Windows.WDK.x64.10.0.26100.6584\c\Lib\10.0.26100.0\km\x64\BufferOverflowFastFailK.lib D:\Git\AsterCache\kernel\packages\Microsoft.Windows.WDK.x64.10.0.26100.6584\c\Lib\10.0.26100.0\km\x64\ntoskrnl.lib D:\Git\AsterCache\kernel\packages\Microsoft.Windows.WDK.x64.10.0.26100.6584\c\Lib\10.0.26100.0\km\x64\hal.lib D:\Git\AsterCache\kernel\packages\Microsoft.Windows.WDK.x64.10.0.26100.6584\c\Lib\10.0.26100.0\km\x64\wmilib.lib /NODEFAULTLIB /MANIFEST:NO /DEBUG /PDB:"D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.pdb" /SUBSYSTEM:NATIVE,"10.00" /Driver /OPT:REF /OPT:ICF /ENTRY:"GsDriverEntry" /RELEASE /IMPLIB:"D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.lib" /MERGE:"_TEXT=.text;_PAGE=PAGE" /MACHINE:X64 /PROFILE /guard:cf /kernel /IGNORE:4198,4010,4037,4039,4065,4070,4078,4087,4089,4221,4108,4088,4218,4218,4235 /osversion:10.0 /pdbcompress /debugtype:pdata x64\Release\AsterFlt.obj
+  AsterFlt.vcxproj -> D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.sys
+ApiValidator:
+  Validating 'Universal' driver using ApiValidator.exe
+  cmd.exe /D /C "C:\Users\AJH\AppData\Local\Temp\MSBuildTemp\tmp125638c25ce24d7f97dde1258d9eada0.cmd"
+  "D:\Git\AsterCache\kernel\packages\Microsoft.Windows.WDK.x64.10.0.26100.6584\c\bin\10.0.26100.0\x64\ApiValidator.exe" -DriverPackagePath:D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.sys -SupportedApiXmlFiles:D:\Git\AsterCache\kernel\packages\Microsoft.Windows.WDK.x64.10.0.26100.6584\c\build\10.0.26100.0\universalDDIs\x64\UniversalDDIs.xml -ModuleWhiteListXmlFiles:D:\Git\AsterCache\kernel\packages\Microsoft.Windows.WDK.x64.10.0.26100.6584\c\build\10.0.26100.0\universalDDIs\x64\ModuleWhiteList.xml -ApiExtractorExePath:D:\Git\AsterCache\kernel\packages\Microsoft.Windows.WDK.x64.10.0.26100.6584\c\bin\10.0.26100.0\x64 
+  Driver is 'Universal'.
+DriverPackageTarget:
+  Packaging up the following projects for the following configurations:
+  
+   Configuration='' Platform=''
+  
+  
+  The following files will be packaged:
+  
+  File to package:      x64\Release\AsterFlt.inf.
+  Location in Package:  \AsterFlt.inf.
+  Requested by project: 
+  
+  
+  "D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt" 디렉터리를 만들고 있습니다.
+  "D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.inf"에서 "D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt\AsterFlt.inf"(으)로 파일을 복사하고 있습니다.
+DrvCat:
+  DrvCat task was skipped as there was no catalog file to process
+  
+FinalizeBuildStatus:
+  "x64\Release\AsterFlt.tlog\unsuccessfulbuild" 파일을 삭제하고 있습니다.
+  "x64\Release\AsterFlt.tlog\AsterFlt.lastbuildstate"에 연결(touching)하고 있습니다.
+"D:\Git\AsterCache\kernel\AsterFlt\AsterFlt.vcxproj" 프로젝트를 빌드했습니다(Rebuild 대상).
+
+빌드했습니다.
+    경고 0개
+    오류 0개
+
+경과 시간: 00:00:03.47

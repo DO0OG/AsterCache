@@ -5,7 +5,7 @@ packages.config에 나열된 모든 패키지가 이미 설치되어 있습니다.
 
   Building 'AsterFlt' with toolset 'WindowsKernelModeDriver10.0' and the 'Universal' target platform.
   Stamping x64\Release\AsterFlt.inf
-  Stamping [Version] section with DriverVer=11/02/2026,9.52.28.411
+  Stamping [Version] section with DriverVer=11/02/2026,11.57.0.264
   AsterFlt.c
   AsterFlt.vcxproj -> D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.sys
   Driver is 'Universal'.
@@ -18,7 +18,7 @@ Running Universal INF check
 Validating AsterFlt.inf
 INF is VALID
 
-Checked 1 INF(s) in 0 m 0 s 9 ms
+Checked 1 INF(s) in 0 m 0 s 7 ms
 Running in Verbose
 Running Windows Driver INF check
 
@@ -32,4 +32,4 @@ ERROR(1323) in D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.inf, line 
 ERROR(1322) in D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.inf, line 42: Destination file path 'C:\WINDOWS\System32\drivers' for file 'AsterFlt.sys' is not isolated to DIRID 13.
 INF is NOT VALID
 
-Checked 1 INF(s) in 0 m 0 s 1 ms
+Checked 1 INF(s) in 0 m 0 s 3 ms

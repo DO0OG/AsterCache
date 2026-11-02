@@ -30,4 +30,11 @@
   <Import Project="$(WDKContentRoot)build\$(WDKBuildFolder)\WindowsDriver.KernelMode.props" />
   <Import Project="$(WDKContentRoot)build\$(WDKBuildFolder)\WindowsDriver.LateEvaluation.props" />
   <Import Project="$(WDKContentRoot)build\$(WDKBuildFolder)\WindowsDriver.KernelMode.LateEvaluation.props" />
+  <!-- 드라이버 전용 정적 분석 규칙(C28xxx: IRQL, 페이징 등) 플러그인. WindowsDriver.Common.targets 에도 같은 정의가 있지만
+       ClCompile 항목보다 늦게 평가되어 적용되지 않으므로 props 쪽에서 미리 정의합니다 -->
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PREfastAdditionalPlugins>$(WDKBinRoot_x64)\WindowsPrefast.dll;$(WDKBinRoot_x64)\drivers.dll</PREfastAdditionalPlugins>
+    </ClCompile>
+  </ItemDefinitionGroup>
 </Project>

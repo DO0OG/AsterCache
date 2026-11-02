@@ -153,6 +153,18 @@ static VOID AsterSnapPolicy(_Out_ ASTER_POLICY_SNAP *Snap)
     KeReleaseSpinLock(&g.Lock, oldIrql);
 }
 
+/* IRQL <= DISPATCH_LEVEL. 관찰을 끄고 세대를 올려 낡은 stream context 를 무효화.
+ * 스핀락은 IRQL 을 올리므로 PAGED_CODE 함수(Disconnect·Unload)가 아닌 이 비페이징 함수에서 잡는다 */
+static VOID AsterDisarm(VOID)
+{
+    KIRQL oldIrql;
+
+    KeAcquireSpinLock(&g.Lock, &oldIrql);
+    g.Armed = 0;
+    g.Generation++;
+    KeReleaseSpinLock(&g.Lock, oldIrql);
+}
+
 /* IRQL <= APC_LEVEL (RtlEqualUnicodeString 은 대소문자 비교에 페이지드 테이블을 쓸 수 있음).
  * 둘 다 NUL 종료 WCHAR 배열, 대소문자 무시 */
 static BOOLEAN AsterGuidEqual(_In_ const WCHAR *A, _In_ const WCHAR *B)
@@ -422,15 +434,11 @@ static NTSTATUS FLTAPI AsterConnect(
 static VOID FLTAPI AsterDisconnect(_In_opt_ PVOID ConnectionCookie)
 {
     PFLT_PORT port;
-    KIRQL oldIrql;
 
     UNREFERENCED_PARAMETER(ConnectionCookie);
     PAGED_CODE();
 
-    KeAcquireSpinLock(&g.Lock, &oldIrql);
-    g.Armed = 0;
-    g.Generation++;
-    KeReleaseSpinLock(&g.Lock, oldIrql);
+    AsterDisarm();
 
     port = (PFLT_PORT)InterlockedExchangePointer((PVOID *)&g.ClientPort, NULL);
     if (port != NULL && g.Filter != NULL) {   /* 언로드가 Filter 를 비운 뒤 도착한 끊김은 포트를 닫을 수 없음: VM 에서 확인 */
@@ -661,8 +669,6 @@ static const FLT_REGISTRATION g_Registration = {
  */
 static NTSTATUS FLTAPI AsterUnload(_In_ FLT_FILTER_UNLOAD_FLAGS Flags)
 {
-    KIRQL oldIrql;
-
     PAGED_CODE();
 
     if (g.ClientPort != NULL && !FlagOn(Flags, FLTFL_FILTER_UNLOAD_MANDATORY)) {
@@ -672,10 +678,7 @@ static NTSTATUS FLTAPI AsterUnload(_In_ FLT_FILTER_UNLOAD_FLAGS Flags)
     FltCloseCommunicationPort(g.ServerPort);
     g.ServerPort = NULL;
 
-    KeAcquireSpinLock(&g.Lock, &oldIrql);
-    g.Armed = 0;
-    g.Generation++;
-    KeReleaseSpinLock(&g.Lock, oldIrql);
+    AsterDisarm();
 
     ExWaitForRundownProtectionRelease(&g.Rundown);
 

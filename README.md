@@ -1,321 +1,267 @@
-# AsterCache — HDD에서 SSD 수준의 로딩 속도를 얻기 위한 실험
+<p align="center"><img src="csharp/src/AsterCache.Tray/Assets/aster.png" width="128" alt="AsterCache 아이콘"></p>
 
-AsterCache는 HDD에 설치된 게임과 대용량 자산을 SSD에 가까운 시간에 읽는 알고리즘과 시스템을 만드는 실험 프로젝트입니다. 목표는 HDD 로딩 시간을 SSD 로딩 시간에 가깝게 줄이는 것입니다. 합성 데이터셋에서 접근 순서 물리 재배치와 스트림 선읽기로 HDD 콜드 로딩 17.1 s 를 1.1~1.2 s 로 줄여, 같은 조건의 SSD 콜드 로딩(0.76~1.22 s)과 같은 범위에 들어왔습니다. 게임이 읽기만 하고 연산을 하지 않는 극단에서는 스트림 속도(순차 약 160 MiB/s, 243 MB 에 1.4~1.6 s)가 바닥이라 SSD 콜드의 1.35~2.2배입니다(기준 SSD 값에 따라 다름). 요청당 0.25 ms 이상 연산하는 보통의 로딩에서는 동시 스트림으로 SSD 와 같거나 더 짧았습니다.
+<h1 align="center">AsterCache</h1>
 
-이 도구는 두 동작 모드를 가집니다. ① **동시 선읽기**: 게임 exe 가 뜨는 순간 존 순서로 읽기 시작합니다. HDD 순차 한계(약 135 MB/s)에 묶여 SSD 를 넘지 못했습니다(실제 게임 Frostpunk 2.02 GB 기준 15.1 s). ② **사전 예열**: 게임이 뜨기 전(15 s 이상 앞서)에 재배치된 존을 RAM 에 올려 둡니다. 같은 Frostpunk 읽기 패턴을 예열 뒤 재생하면 중앙값 0.48 s 로, SSD(NVMe) 콜드 재생 중앙값 3.8 s 의 0.13배였습니다. 실제 게임 1종(Frostpunk, 안티치트 없음, HDD 설치)은 검증했습니다. 24시간 지속성, CMR 드라이브, 안티치트 게임(MW4·LoL 등)은 미검증입니다.
+<p align="center">HDD에 설치한 게임의 로딩 시간을 SSD에 가깝게 줄이는 Windows 데스크톱 유틸리티</p>
 
-**현재 상태 (2026-11-02):** 구현은 네 가지입니다. ① HDD/SSD 로딩을 같은 조건으로 재는 측정 하네스(`bench/`), ② 학습된 읽기 블록을 HDD 물리 배치 순서로 RAM에 미리 읽는 선읽기(`prefetch/`), ③ Python API로 명시적으로 호출하는 SSD 블록 캐시(`sqlite_cache.py`), ④ 핫 블록을 NTFS 안에서 한 구간으로 옮기는 재배치(`relayout/`, FSCTL_MOVE_FILE). 기존 게임 프로세스를 투명하게 가속하는 경로는 아직 없습니다. 일반 게임은 이 캐시를 자동으로 사용하지 않습니다. 측정은 Windows 11 실기에서 합성 데이터셋과 실제 게임 1종(Frostpunk)의 추적 읽기 패턴 재생으로 수행했습니다. 게임을 실제로 실행한 전체 로딩 시간은 아직 재지 않았습니다. 선읽기의 기본값은 스레드 1, 청크 1 MiB, 파일 핸들 유지, SEQUENTIAL_SCAN 끔입니다(재배치 존 튜닝, 2026-11-01).
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+  <img alt="Platform: Windows 11 x64" src="https://img.shields.io/badge/platform-Windows%2011%20x64-0078D4.svg">
+  <img alt=".NET 10" src="https://img.shields.io/badge/.NET-10-512BD4.svg">
+  <a href="https://github.com/DO0OG/AsterCache/actions/workflows/csharp-ci.yml"><img alt="C# CI" src="https://github.com/DO0OG/AsterCache/actions/workflows/csharp-ci.yml/badge.svg"></a>
+  <a href="https://github.com/DO0OG/AsterCache/actions/workflows/kernel-build.yml"><img alt="Kernel Build" src="https://github.com/DO0OG/AsterCache/actions/workflows/kernel-build.yml/badge.svg"></a>
+</p>
 
-## 어느 것을 쓰나
+## 목차
 
-| 구성 | 위치 | 상태 |
+- [무엇을 하는가](#무엇을-하는가)
+- [주요 기능](#주요-기능)
+- [실측 결과](#실측-결과)
+- [스크린샷](#스크린샷)
+- [시스템 요구 사항](#시스템-요구-사항)
+- [설치](#설치)
+- [빠른 시작](#빠른-시작)
+- [작동 원리](#작동-원리)
+- [설정](#설정)
+- [안전 장치](#안전-장치)
+- [알려진 제한](#알려진-제한)
+- [문제 해결](#문제-해결)
+- [프로젝트 구조](#프로젝트-구조)
+- [개발](#개발)
+- [라이선스](#라이선스)
+- [면책](#면책)
+
+## 무엇을 하는가
+
+AsterCache는 HDD에 설치된 게임이 로딩할 때 읽는 파일 블록을 기록하고, 그 읽기 순서대로 블록을 드라이브 안의 한 구간에 모아 둡니다. 게임이 같은 데이터를 읽을 때 헤드가 여기저기 흩어진 위치를 오가지 않도록 하는 것이 목적입니다. 재배치는 NTFS 안에서 파일 데이터를 제자리에서 옮기며, 복사본을 만들거나 드라이버를 적재하지 않습니다.
+
+재배치된 구간을 읽는 방법은 두 가지입니다.
+
+1. **동시 선읽기.** 게임 exe 가 뜨는 순간 재배치된 구간을 접근 순서대로 읽기 시작합니다. 이 방식은 HDD 의 순차 읽기 속도에 묶입니다.
+2. **사전 예열.** 게임을 켜기 전에 같은 구간을 RAM(파일 캐시)에 올려 둡니다. 서비스 시작 때, 또는 지정한 런처 같은 트리거 프로그램이 뜰 때 자동으로 실행합니다. 게임이 뜰 때는 디스크를 거의 읽지 않습니다.
+
+측정은 합성 데이터셋과 실제 게임 1종(Frostpunk, 안티치트 없음)의 추적 읽기 패턴 재생으로 했습니다. 게임 전체 로딩 시간과 여러 번 반복한 로딩 시간 분포는 아직 재지 않았습니다. 자세한 내용은 [실측 결과](#실측-결과)와 `VALIDATION_REPORT.md` 를 보십시오.
+
+## 주요 기능
+
+- **드라이브 목록.** HDD/SSD 구분, 용량, 모델, 등록된 게임 수를 보여 줍니다.
+- **게임 등록.** 게임 이름, exe 이름, 설치 폴더, 허용 폴더, 볼륨 레이블을 정하고 예열 트리거 프로그램을 지정합니다.
+- **트레이스 수집.** 게임을 한 번 실행해 첫 맵까지 로딩하면 읽기 블록을 ETW 실시간 세션으로 기록합니다(관리자 권한).
+- **계획, 재배치, 되돌리기.** 기록으로 배치 계획을 만들고 적용합니다. 적용 기록(저널)을 거꾸로 적용해 예전 배치로 되돌릴 수 있습니다.
+- **사전 예열.** 자동(서비스 시작, 트리거 프로그램 실행)으로 또는 "지금 예열"로 실행합니다.
+- **서비스.** 게임 시작을 감지해 동시 선읽기를 실행하고, 예열과 재적용을 관리합니다. Windows 서비스(LocalSystem, 자동 시작)로 상주합니다.
+- **상태와 로그.** 서비스와 감시기 상태, 마지막 예열 결과, 게임별 배치 상태, 로그를 탭에서 확인합니다.
+- **측정.** 게임별로 재배치 전후 콜드 재생 시간을 잽니다.
+- **관리 창.** 관리자 권한이 없으면 상단 안내 띠가 나타나며, 관리자 권한으로 다시 실행할 수 있습니다.
+- **명령행 `aster`.** 관리 창의 같은 작업을 명령으로 실행합니다. 자동화에 씁니다.
+
+## 실측 결과
+
+수치는 추적한 읽기 패턴을 재생한 시간입니다. 게임을 실행한 전체 로딩 시간이 아닙니다.
+
+| 대상 | 측정 | 결과 |
 |---|---|---|
-| C# 최종본 (실사용 대상) | `csharp/` ([csharp/README.md](csharp/README.md)) | CLI·서비스·트레이. 관리자 스크립트 S1~S4 실행 통과, 실제 게임 1종(Frostpunk) 측정 완료. 24시간·CMR·안티치트 게임은 미검증 |
-| Python 참조 구현 | 이 README 의 나머지 | 연구·측정 도구이자 C# 교차 검증 기준 |
-| 커널 미니필터 | `kernel/` ([kernel/README.md](kernel/README.md)) | NuGet WDK 로 Release·Debug x64 빌드 통과(경고 0). 서명·적재는 하지 않음 |
-| 게임 적용 안내 | [docs/GAME_GUIDE.md](docs/GAME_GUIDE.md) | 실제 게임에 적용하는 절차 |
+| 합성 데이터셋 2.1 GiB | HDD 콜드 읽기 → 재배치 후 선읽기 | 17.1 s → 1.14 s (재배치 10시간 뒤에도 유지) |
+| 합성 데이터셋 2.1 GiB | 같은 조건 SSD 콜드 읽기 | 0.76~1.22 s |
+| Frostpunk, 첫 맵 로딩 읽기 2.02 GB | HDD 콜드 재생 → 재배치 후 동시 선읽기 | 24.3 s → 15.1 s (HDD 순차 읽기 한계) |
+| Frostpunk | 사전 예열 뒤 재생 | 0.48 s |
+| Frostpunk, 같은 읽기 패턴 | NVMe SSD 콜드 재생 | 3.8 s |
+| 서비스 | 게임 시작 감지 지연 (폴링, p95) | 58 ms |
 
-## 구성
+- HDD 는 WD20EZAZ(SATA, D:), SSD 는 NVMe(C:)입니다. 측정 환경은 Windows 11 Pro 10.0.26200, 메모리 32 GiB 입니다.
+- Frostpunk 결과는 게임 1종을 1회 추적한 뒤 재생한 값입니다. 반복 로딩의 p50·p95 는 아직 없습니다.
+- 합성 데이터셋의 SSD 값과 Frostpunk 의 NVMe 값은 데이터와 방법이 달라 직접 비교하지 않습니다.
+- 사전 예열이 SSD 콜드보다 빠르려면 예열이 게임 시작보다 15 s 이상 앞서 끝나야 합니다. 메모리 압박이 있으면 효과가 줄어듭니다.
+- 더 많은 표와 해석은 `docs/RESULTS_SUMMARY.md` 와 `VALIDATION_REPORT.md` 에 있습니다.
 
-- `bench/` — 합성 데이터셋(약 2 GiB, 트레이스 4,000건) 생성, 콜드·웜 재생, 콜드 조건 준비, 시나리오 실행기
-- `prefetch/` — NTFS extent 조회(`layout.py`), 물리 위치 정렬과 손익분기 간격 병합(`scheduler.py`), 순차 선읽기(`reader.py`), 명령행 진입점(`cli.py`)
-- `relayout/` — 트레이스 기준 핫 블록 계획(`plan.py`), NTFS 제자리 이동(`mover.py`), 계획 적용·검증·되돌리기(`apply.py`), 명령행 진입점(`cli.py`)
-- `scripts/` — 관리자 PowerShell에서 한 번 실행하는 실험 스크립트. `e2_vhdx_trial.ps1`(일회용 VHDX 시제품), `e3_hdd_dataset.ps1`(D:\AsterBench 실측)
-- `sqlite_cache.py` — 블록·SHA-256을 한 행에 저장하는 SQLite 캐시와 원본 검증, 축출, 장애 폴백
-- `astercache_v07.py` — 추적 계획(`plan`), 평가(`evaluate`), 점검(`inspect`), RAM·SSD 예열(`ram-warm`, `ssd-warm`) 명령
-- `session_planner.py`, `procmon_import.py` — 이전 버전에서 가져온 학습 계획과 Procmon CSV 가져오기 구성요소. 실제 Windows CSV에서의 동작은 아직 검증하지 않았습니다.
-- `blockcache_v06.py` — 이전 방식과의 비교용으로 보존한 코드
-- `tests/` — 단위·회귀 테스트 59개
-- `stress.py`, `integration_smoke.py`, `bench_api.py`, `repeat_validation.py` — 검증과 마이크로벤치마크
-- `windows_diagnostics.ps1` — 읽기 전용 PC 환경 점검 스크립트
-- `results/` — 측정 결과 JSON과 로그
+## 스크린샷
 
-## 실행 요구조건
+관리 창 스크린샷은 준비 중입니다.
 
-- Python 3.11 이상. 외부 패키지 의존성은 없습니다. Windows 11에서 Python 3.11.4와 3.12.10으로 검증했습니다.
-- 원본 경로와 캐시 경로는 서로 다른 디렉터리 트리여야 합니다. 실제 속도 비교에는 서로 다른 물리 HDD와 SSD가 필요합니다.
-- 벤치마크와 스트림 튜닝은 비관리자 권한으로 수행했습니다. 재배치 실측(E2·E3)의 콜드 조건은 관리자 권한으로 스탠바이 목록을 비운 뒤 만들었고, 재배치 자체도 관리자 권한이 필요합니다.
-- 중요한 게임 데이터나 시스템 드라이브에서 바로 쓰지 않습니다. 테스트 폴더에서 먼저 실행하세요.
-- Linux 파일 I/O와 Windows NTFS I/O는 동등하지 않습니다. Linux 컨테이너 검증 결과는 `VALIDATION_REPORT.md`에 따로 정리했습니다.
+## 시스템 요구 사항
+
+- Windows 11 x64. 검증 환경은 Windows 11 Pro 10.0.26200 입니다.
+- 직접 빌드할 때는 .NET 10 SDK 가 필요합니다. 저장소의 `csharp/global.json` 은 SDK 10.0.400 을 씁니다(latestPatch).
+- 트레이스 수집(ETW), 재배치(`apply`, `revert`), 서비스 설치에는 관리자 권한이 필요합니다.
+- 재배치 대상은 NTFS 볼륨이어야 합니다. 원본과 캐시를 비교하려면 서로 다른 물리 장치가 필요합니다.
+
+## 설치
+
+### ① 설치 프로그램
+
+`csharp/packaging/windows/aster.iss`(Inno Setup 6)로 설치본을 만들 수 있습니다. 서비스 파일을 설치하고 `AsterCache` 서비스를 자동 시작으로 등록하며, 데이터 폴더 권한을 설정합니다. 아직 릴리스에 올리지 않았으므로 직접 빌드해야 합니다. 이 스크립트는 아직 컴파일해 보지 않았습니다.
+
+```bat
+ISCC.exe /DServiceDir=<서비스 publish 경로> /DAppVersion=<버전> csharp\packaging\windows\aster.iss
+```
+
+### ② 직접 빌드
+
+.NET 10 SDK 로 세 실행 파일을 게시합니다. 게시 결과는 `csharp\publish\` 아래에 생기며 Git 에서 무시합니다.
+
+```bat
+dotnet publish csharp\src\AsterCache.Cli\AsterCache.Cli.csproj -c Release -r win-x64 --self-contained -o csharp\publish\cli
+dotnet publish csharp\src\AsterCache.Service\AsterCache.Service.csproj -c Release -r win-x64 --self-contained -o csharp\publish\service
+dotnet publish csharp\src\AsterCache.Tray\AsterCache.Tray.csproj -c Release -r win-x64 --self-contained -o csharp\publish\gui
+```
+
+- `csharp\publish\cli\aster.exe` 는 명령행 도구입니다.
+- `csharp\publish\gui\AsterCache.Tray.exe` 는 관리 창입니다.
+- 서비스는 관리자 PowerShell 에서 설치합니다.
+
+```powershell
+csharp\scripts\cs_service.ps1 -Action install
+```
 
 ## 빠른 시작
 
-### C# 최종본: 사전 예열 (`csharp/`)
+### 관리 창으로
 
-```bash
-aster prewarm --plan <plan.json> --origin-root <게임 폴더>
+1. 관리 창을 관리자 권한으로 실행합니다. 비관리자로 실행했다면 상단 안내 띠에서 다시 실행합니다.
+2. 게임 탭에서 게임을 등록합니다. exe 이름과 설치 폴더를 지정합니다.
+3. 트레이스를 수집합니다. 게임을 한 번 실행해 첫 맵까지 로딩합니다.
+4. 수집한 기록으로 계획을 만듭니다.
+5. 계획을 재배치합니다. 되돌리기도 같은 탭에서 합니다.
+6. 설정 탭에서 서비스를 설치하고 시작합니다. 예열 옵션은 게임 설정에서 정합니다.
+
+### 명령행 `aster` 로
+
+```bat
+aster trace --live --exe Frostpunk.exe --origin-root D:\Games\Frostpunk --out trace.json --seconds 180
+aster plan --trace trace.json --origin-root D:\Games\Frostpunk --zone-mib 1536 --out plan.json
+aster apply --plan plan.json --allowed-root D:\Games --require-volume-label GAMES --dry-run
+aster apply --plan plan.json --allowed-root D:\Games --require-volume-label GAMES --execute
+aster verify --plan plan.json
+aster prewarm --plan plan.json --origin-root D:\Games\Frostpunk
 ```
 
-- `aster prewarm` 은 `aster prefetch --execute --method pvm` 의 별칭입니다. 게임을 켜기 전에 재배치된 존을 RAM 에 올립니다.
-- 서비스 설정의 게임 항목 `prewarm`(`on_service_start`, `trigger_exes`, `min_free_ram_mib`, `cooldown_min`)으로 자동 실행합니다. 두 동작 모드와 설정 예시는 [csharp/README.md](csharp/README.md) 의 "두 동작 모드" 절을 보십시오.
+- `--seconds` 대신 `--stop-file <파일>` 을 주고 그 파일을 만들어 수집을 끝낼 수 있습니다.
+- `trace --live`, `apply --execute` 는 관리자 PowerShell 에서 실행합니다.
+- `--dry-run` 은 아무것도 옮기지 않고 계획만 보여 줍니다.
+- `--require-volume-label` 이 실제 볼륨 레이블과 다르면 아무것도 옮기지 않습니다.
+- `aster prewarm` 은 `aster prefetch --execute --method pvm` 의 별칭입니다.
+- `--zone-mib` 값은 예시입니다. 게임의 핫 데이터 크기에 맞춰 정하십시오.
 
-### 테스트
+## 작동 원리
 
-```bash
-python -m unittest discover -s tests -v
+- **접근 순서 물리 재배치.** 추적한 읽기 순서대로 핫 블록을 NTFS 안에서 제자리 이동(FSCTL_MOVE_FILE)해 한 구간에 모읍니다. 이동 전후 SHA-256 으로 내용이 같은지 확인합니다.
+- **존 순서 스트림.** 재배치된 구간을 접근 순서대로 순차에 가깝게 읽습니다. 게임이 뜨는 순간 시작하며, 읽은 데이터는 OS 파일 캐시에 올라갑니다.
+- **사전 예열.** 게임을 켜기 전에 같은 구간을 RAM 파일 캐시에 올려 둡니다. 가용 RAM 이 구간 크기와 `min_free_ram_mib` 의 합 이상일 때만 실행합니다.
+
+## 설정
+
+설정 파일은 `%ProgramData%\AsterCache\config.json` 입니다. 관리 창에서 편집하는 것을 권장합니다. 직접 고칠 때는 JSON 의 백슬래시를 `\\` 로 씁니다.
+
+```json
+{
+  "watcher": "poll",
+  "games": [
+    {
+      "name": "frostpunk",
+      "exe_names": ["Frostpunk.exe"],
+      "trace": "C:\\ProgramData\\AsterCache\\plans\\frostpunk.prefetch.json",
+      "plan": "C:\\ProgramData\\AsterCache\\plans\\frostpunk.plan.json",
+      "origin_root": "D:\\Games\\Frostpunk",
+      "allowed_roots": ["D:\\Games"],
+      "volume_label": "GAMES",
+      "max_stream_mib": 4096,
+      "prewarm": {
+        "on_service_start": true,
+        "trigger_exes": ["Steam.exe"],
+        "min_free_ram_mib": 4096,
+        "cooldown_min": 30
+      }
+    }
+  ]
+}
 ```
 
-### 벤치마크 (`bench`)
+| 키 | 뜻 |
+|---|---|
+| `watcher` | 게임 시작 감지 방식. `poll`(기본) 또는 `etw`. `etw` 는 관리자 권한이 필요하며 실패하면 폴링으로 내려갑니다. |
+| `games[].name`, `exe_names` | 게임 이름과 실행 파일 이름 목록 |
+| `trace`, `plan` | 추적 파일과 계획 파일 경로 |
+| `origin_root` | 게임 설치 폴더 |
+| `allowed_roots` | 재배치를 허용하는 폴더 |
+| `volume_label` | 대상 볼륨 레이블. 다르면 재배치하지 않습니다. |
+| `max_stream_mib` | 한 번의 스트림·예열이 읽는 상한(기본 4096) |
+| `prewarm.on_service_start` | 서비스 시작 때 예열 실행(기본 `true`) |
+| `prewarm.trigger_exes` | 이 프로그램이 뜨면 예열 실행(예: 런처). 기본은 비어 있음 |
+| `prewarm.min_free_ram_mib` | 예열 뒤에도 남겨 둘 가용 RAM(기본 4096) |
+| `prewarm.cooldown_min` | 예열 사이의 최소 간격(기본 30분) |
 
-`bench/run.py`는 패키지로 실행해야 합니다. `python bench/run.py`로 실행하면 상대 import 오류가 납니다. 저장소 최상위 폴더에서 다음과 같이 실행합니다.
+서비스는 시작할 때만 설정을 읽습니다. 게임을 추가하거나 제거한 뒤에는 서비스를 다시 시작하십시오.
 
-```bash
-python -m bench.run --root-hdd D:\AsterBench --root-ssd C:\AsterBench [--repeat 3] [--prewarm none|naive] [--prewarm-cmd CMD] [--files 64] [--min-mib 16] [--max-mib 48] [--trace 4000] [--min-free-gib 5] [--out-dir DIR] [--cleanup]
+## 안전 장치
+
+- **내용 검증.** 재배치 전후 SHA-256 을 비교합니다. 내용이 다르면 실패로 기록합니다.
+- **저널과 되돌리기.** 이동한 조각마다 저널(JSON Lines)을 남기며, `revert` 로 예전 물리 배치로 되돌립니다. 데이터 내용은 바뀌지 않습니다.
+- **허용 폴더와 볼륨 고정.** `allowed_roots` 밖의 파일과 `volume_label` 이 다른 볼륨은 건드리지 않습니다.
+- **중단 처리.** 재배치 중 게임이 시작되면 이동 중이던 한 조각만 끝내고 멈춥니다. 저널에 재개 지점을 남기고, 게임이 끝난 뒤 같은 계획으로 이어갑니다.
+- **데이터 폴더 권한.** `%ProgramData%\AsterCache` 는 SYSTEM 과 Administrators 만 쓸 수 있고, 일반 사용자는 읽기만 합니다. 서비스를 제거해도 데이터 폴더는 남으며, `cs_service.ps1 -Action uninstall -PurgeData` 를 명시했을 때만 지웁니다.
+- **권한 확인.** 관리자 권한이 없으면 재배치와 되돌리기는 아무것도 바꾸지 않고 `not_admin` 으로 끝납니다.
+
+## 알려진 제한
+
+- 드라이버나 파일 시스템 필터가 아닙니다. 게임의 I/O 경로를 가로채지 않습니다. 커널 미니필터(`kernel/`)는 실험용 소스이며 적재하지 않습니다.
+- 추적은 디스크까지 간 읽기만 기록합니다. 이미 캐시에 있던 읽기는 빠질 수 있습니다.
+- 실제 게임은 Frostpunk 1종만 측정했습니다. 안티치트 게임(MW4, LoL 등)은 검증하지 않았습니다.
+- 지속성은 재배치 뒤 10시간까지 확인했습니다. 24시간 이후는 측정하지 않았습니다.
+- SMR 드라이브(WD20EZAZ) 1대에서만 측정했습니다. CMR 드라이브는 측정하지 않았습니다.
+- 콜드 조건은 관리자 권한으로 스탠바이 목록을 비워 만들었습니다. 드라이브 내장 캐시는 비우지 않았습니다.
+- 재배치는 파일을 실제로 옮기므로 처음 한 번은 시간이 오래 걸립니다. 이득은 재배치 뒤 반복 로딩에서 나타납니다.
+- 정전, SSD 손상, BitLocker, DirectStorage 환경은 시험하지 않았습니다.
+- 설치 프로그램(`aster.iss`)은 아직 컴파일해 보지 않았습니다.
+- 트레이만 갱신되면 서비스는 옛 버전으로 남습니다. 트레이가 버전 차이를 표시하며, 설치 프로그램으로 서비스를 다시 설치해야 합니다.
+
+## 문제 해결
+
+**설정을 저장할 권한이 없다고 나옵니다.**
+데이터 폴더는 관리자만 쓸 수 있습니다. 관리 창을 관리자 권한으로 다시 실행하십시오.
+
+**게임을 추가하거나 제거했는데 반영되지 않습니다.**
+서비스는 시작할 때만 설정을 읽습니다. 설정 탭에서 서비스를 정지한 뒤 다시 시작하십시오.
+
+**트레이에 "서비스 재설치 필요"가 표시됩니다.**
+트레이 갱신은 서비스 실행 파일을 바꾸지 않습니다. 설치 프로그램으로 서비스를 다시 설치하십시오.
+
+**재배치 명령이 `not_admin` 으로 끝납니다.**
+재배치, 되돌리기, 볼륨 명령은 관리자 PowerShell 에서 실행하십시오.
+
+**예열이 실행되지 않았습니다.**
+건너뛴 이유는 `service.log` 에 남습니다. 가용 RAM 이 부족하거나, 게임이 실행 중이거나, 쿨다운 중이거나, 계획 파일이 없는 경우입니다. `aster status` 의 `prewarm` 항목에서도 확인할 수 있습니다.
+
+## 프로젝트 구조
+
+- `csharp/` — 최종 C# 구현. 명령행 도구 `aster`, 서비스, 관리 창, 설치 프로그램 스크립트, 시험
+- `kernel/` — 커널 미니필터 AsterFlt 소스. 실험용이며 적재하지 않습니다.
+- `prefetch/`, `relayout/`, `bench/` — Python 참조 구현(선읽기, 재배치, 측정 도구). C# 의 교차 검증 기준입니다. 명령과 구성은 [docs/PYTHON_TOOLS.md](docs/PYTHON_TOOLS.md) 를 보십시오.
+- `scripts/` — 참조 구현의 실험용 관리자 PowerShell 스크립트
+- `docs/` — 설계 문서, 게임 적용 안내, 측정 결과 요약
+- `tests/` — Python 참조 구현의 단위·회귀 시험
+- `results/` — 측정 결과 JSON 과 로그
+- `.github/workflows/` — C# 빌드와 시험, 커널 빌드 워크플로
+- 루트의 `*.py` — 이전 버전과 SQLite 캐시 참조 구현, 시험·측정 스크립트
+- `VALIDATION_REPORT.md` — 검증 보고서
+
+## 개발
+
+```bat
+dotnet build csharp/AsterCache.sln -c Release
+dotnet test csharp/AsterCache.sln -c Release --filter "Category!=Live"
+dotnet format csharp/AsterCache.sln --verify-no-changes
+py -3.12 -m unittest discover -s tests
 ```
 
-- `--root-hdd`, `--root-ssd`는 각 물리 장치 위의 데이터셋 폴더입니다. 데이터셋을 만든 뒤 콜드·웜 재생과 예열 비교를 수행합니다.
-- `--prewarm`의 기본값은 `naive`입니다. `--prewarm-cmd`를 주면 외부 예열 명령을 실행하며, 이 명령은 환경변수 `ASTER_TRACE`(트레이스 JSON 경로)와 `ASTER_ROOT`를 받습니다.
-- `--out-dir`의 기본값은 `results/bench_20261101`입니다.
-- `--cleanup`은 두 데이터셋을 지우고 종료합니다.
-
-### 스트림 튜닝과 동시 모드 (`bench`)
-
-```bash
-python -m bench.stream_tune --root D:\AsterBench --repeat 3 --out results\stream_tuning_20261101\sweep.json [--chunks-kib ...] [--qds ...] [--hints ...] [--reuse] [--flush-mib N]
-python -m bench.concurrent_run --root D:\AsterBench --repeat 3 --think-us 0 250 1000 --out results\stream_tuning_20261101\concurrent.json [--threads 1] [--chunk-kib 1024] [--seq-hint] [--no-reuse]
-```
-
-- `stream_tune`은 재배치된 존에서 청크 크기, 큐 깊이, SEQUENTIAL_SCAN 힌트를 바꿔 가며 잽니다. 콜드 준비는 도구 설명대로 언버퍼드 읽기로 핫 범위를 밀어낸 뒤 `--flush-mib`만큼 다른 데이터를 읽는 방식입니다. 드라이브 캐시를 완전히 비웠는지는 확인하지 않았습니다. `--reuse`를 주면 파일 핸들을 유지합니다.
-- `concurrent_run`은 스트림과 트레이스 재생을 동시에 시작하고, 마지막 요청까지의 벽시계 시간을 잽니다. `--think-us`는 요청당 게임 연산 시간(마이크로초)입니다.
-
-### 재배치 (`relayout`)
-
-```bash
-python -m relayout.cli plan --trace trace.json --origin-root D:\AsterBench --zone-mib 300 --out plan.json [--dry-run]
-python -m relayout.cli verify --plan plan.json
-python -m relayout.cli probe --volume D: [--require-volume-label 라벨] [--plan plan.json | --zone-mib 300]          # 관리자
-python -m relayout.cli apply --plan plan.json --allowed-root D:\AsterBench [--require-volume-label 라벨] [--dry-run | --execute] [--journal j.jsonl]   # 관리자
-python -m relayout.cli revert --journal j.jsonl --allowed-root D:\AsterBench [--require-volume-label 라벨] [--execute]   # 관리자
-```
-
-- `plan`과 `verify`는 권한이 필요 없습니다. `probe`, `apply`, `revert`는 관리자가 아니면 `{"error":"not_admin"}`으로 끝납니다.
-- `--execute`를 붙이지 않으면 아무것도 옮기지 않습니다. `--dry-run`은 고른 핫 존을 계획 파일에 저장합니다.
-- 계획의 볼륨, 원본 루트, `--allowed-root`, 열린 볼륨이 모두 같은 드라이브여야 하고, 라벨이 다르면 아무것도 건드리지 않습니다.
-- 저널은 JSON Lines입니다. `revert`는 저널을 거꾸로 적용해 예전 물리 배치를 되돌립니다. 데이터 내용은 바뀌지 않습니다.
-- 두 실험 스크립트는 관리자 PowerShell에서 저장소 최상위 폴더 기준으로 실행합니다.
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\e2_vhdx_trial.ps1 [-VhdxPath 경로] [-SizeGiB 8] [-Files 16]
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\e3_hdd_dataset.ps1 [-Root D:\AsterBench] [-SsdRoot C:\AsterBench] [-SkipRelayout]
-```
-
-- `e2_vhdx_trial.ps1`은 일회용 고정 크기 VHDX를 만들어 재배치를 끝까지 돌리고 분리합니다. VHDX 파일은 지우지 않습니다. 기본 경로는 C: 위이므로 그 시간은 SSD 기준이며 HDD 증거가 아닙니다.
-- `e3_hdd_dataset.ps1`은 이미 있는 `D:\AsterBench`의 `dataset_meta.json`과 `trace.json`을 옮깁니다. 스크립트는 결과 폴더 `results\relayout_e3\<날짜시각>`에 되돌리기 명령을 `README.txt`로 남깁니다.
-- `-SkipRelayout`은 이미 재배치된 데이터셋을 다시 재는 옵션입니다. 이동하지 않고 C(직접)·D(선읽기+재생)·F(동시 스트림)·E(SSD)를 재며, 매니페스트를 가장 최근의 `manifest_after.json`과 비교합니다. 재배치 뒤 시간이 지난 뒤의 지속성을 재는 데 씁니다.
-
-### 선읽기 계획과 실행 (`prefetch`)
-
-```bash
-python -m prefetch.cli --plan trace.json --origin-root D:\Games [--strategy physical|path|none] [--budget-mib 1024] [--read-mbps 100] [--seek-ms 12] [--gap-kib N] [--full-file-ratio 0.3] [--threads 1] [--chunk-kib 1024] [--no-reuse] [--seq-hint] [--execute]
-```
-
-- `--execute`를 붙이지 않으면 실제 읽기 없이 계획만 JSON으로 출력합니다.
-- `--plan`(또는 `--trace`)과 `--origin-root`는 환경변수 `ASTER_TRACE`, `ASTER_ROOT`로 대신할 수 있습니다.
-- `--strategy physical`은 NTFS extent 기준 물리 위치 정렬, `path`는 경로 정렬, `none`은 정렬 없이 읽습니다.
-- 기본값은 스레드 1(엄격한 존 순서), 청크 1 MiB, 파일 핸들 유지, SEQUENTIAL_SCAN 끔입니다. 재배치 존에서 이 조합이 가장 빨랐습니다(`results/stream_tuning_20261101`). `--no-reuse`는 파일마다 핸들을 닫습니다.
-- `--gap-kib`의 기본값은 0입니다(스윕 최선). `--read-mbps`와 `--seek-ms`는 현재 간격 계산에 쓰지 않습니다.
-
-### 학습 계획과 예열 (`astercache_v07.py`)
-
-```bash
-python astercache_v07.py plan --csv run1.csv run2.csv run3.csv --prefix "D:\Games" --budget-mib 256 --out plan.json
-python astercache_v07.py evaluate --plan plan.json --csv run4.csv --prefix "D:\Games"
-python astercache_v07.py inspect --plan plan.json --origin-root "D:\Games" --budget-mib 256
-python astercache_v07.py ram-warm --plan plan.json --origin-root "D:\Games" --budget-mib 256 [--execute]
-python astercache_v07.py ssd-warm --plan plan.json --origin-root "D:\Games" --cache-dir "C:\AsterCacheTest" --budget-mib 256 [--execute]
-```
-
-- `plan`은 Procmon CSV 여러 개에서 다음 실행의 읽기 블록을 예측합니다. `evaluate`는 학습에 쓰지 않은 CSV로 예측 정확도를 봅니다.
-- `ram-warm`과 `ssd-warm`은 `--execute`가 없으면 계획만 표시합니다.
-- `ssd-warm`의 결과는 이 API를 호출하는 프로그램에서만 쓰입니다. 기존 게임 프로세스는 이 캐시를 읽지 않습니다.
-
-### Procmon 트레이스 변환과 선읽기 입력 (`trace`)
-
-```bash
-python astercache_v07.py trace --csv run1.csv run2.csv run3.csv --prefix "D:\Games" --out trace.json
-python -m relayout.cli plan --trace trace.run1.json trace.run2.json trace.run3.json --origin-root "D:\Games" --zone-mib 512 --out relayout_plan.json [--min-sessions N]
-python -m prefetch.cli --trace relayout_plan.json.prefetch.json --origin-root "D:\Games" --full-file-ratio 2 [--execute]
-```
-
-- `trace`는 Procmon CSV를 `trace.json`(모든 실행에서 읽힌 64 KiB 블록의 합집합)과 실행별 `trace.run1.json`, `trace.run2.json`, ...(읽은 순서 그대로)으로 바꿉니다.
-- `relayout plan`은 `--out` 옆에 `<out>.prefetch.json`을 함께 씁니다. 재배치 존에 들어간 블록만 존 순서로 담은 선읽기 입력이며, `prefetch.cli`가 그대로 받습니다. 재배치한 뒤에는 `trace.json` 대신 이 파일로 선읽기합니다(읽는 바이트 = 계획의 `hot_bytes`).
-- `--min-sessions N`은 N개 미만의 실행에서만 읽힌 블록을 핫 집합에서 뺍니다. 기본값은 트레이스가 2개 이상이면 2, 1개면 1입니다.
-
-### 캐시 API
-
-```python
-from sqlite_cache import SQLiteBlockCache
-
-cache = SQLiteBlockCache(origin_root, cache_dir, capacity_bytes=256 << 20)
-data = cache.read("relative/path.bin", offset, length)   # bytes 반환
-print(cache.stats)
-```
-
-`block_size`의 기본값은 64 KiB이며 4 KiB에서 4 MiB 사이의 2의 거듭제곱이어야 합니다. `capacity_bytes`는 논리 캐시 페이로드 기준입니다.
-
-## 측정 결과
-
-### 실제 게임 1종 실측 (Frostpunk, 2026-11-02)
-
-대상은 D: SMR HDD(WD20EZAZ)에 설치한 Frostpunk 9.2 GB(안티치트 없음)입니다. 아래 값은 추적한 읽기 패턴의 재생 시간이며, 게임을 실행한 전체 로딩 시간이 아닙니다.
-
-| 항목 | 결과 | 출처 |
-|---|---|---|
-| 추적 | ETW 실시간 세션(`aster trace --live`, 손실 0)으로 첫 맵 로딩 1회 기록. 24개 파일 2.02 GB, 64 KiB 블록 30,844개 | `results/csharp_e4_20261102_105938`, `results/csharp_e4_20261102_111921` |
-| 재배치 | 1차 1.5 GiB 존에 639 MB 이동 131 s(4.9 MB/s), 2차 2 GiB 존에 212 MB 추가 이동 45 s. SHA-256 전후 동일, 연속 검증 조각 1,394 → 50 | 같은 폴더 |
-| 콜드 재생 (스탠바이 비움, 3회 중앙값) | 재배치 전 24.3 s → 재배치 뒤 직접 21.7~22.6 s → 존 순서 선읽기 15.1 s + 재생 0.3 s | 같은 폴더 |
-| 동시 선읽기 한계 | 2.02 GB 를 15.1 s(약 135 MB/s)에 읽음. 이 HDD 의 순차 한계 | 같은 폴더 |
-| SSD 기준 (같은 읽기 패턴, NVMe C: 희소 사본) | 콜드 재생 3.36 / 3.82 / 4.55 s, 중앙값 3.8 s | `results/csharp_e4cmp_20261102_111921` |
-| 사전 예열 (재배치 뒤, 스탠바이 비움 → 존 선읽기 15 s → 60 s 대기 → 재생) | 재생 0.30 / 0.48 / 0.71 s, 중앙값 0.48 s = SSD 콜드의 0.13배 | 같은 폴더 |
-
-- 사전 예열이 SSD 보다 빠르려면 예열이 게임 시작보다 15 s 이상 앞서 끝나야 합니다. 메모리 압박으로 스탠바이 목록이 비워지면 효과가 줄어듭니다.
-- SSD 기준 3.8 s 는 NVMe 희소 사본의 같은 읽기 패턴 값입니다. 위 합성 데이터셋의 SSD 콜드(0.76~1.22 s)와는 데이터와 방법이 달라 직접 비교하지 않습니다.
-
-### 측정 환경
-
-- Windows 11 Pro 10.0.26200, 비관리자 권한, 메모리 32 GiB, 논리 코어 16개
-- Python 3.11.4(SQLite 3.42.0), Python 3.12.10(SQLite 3.49.1)
-- 원본 HDD: WDC WD20EZAZ (SATA, `Get-PhysicalDisk` MediaType=HDD), D:
-- 캐시 SSD: SAMSUNG MZVLB1T0HBLR (NVMe, MediaType=SSD), C:
-
-### SQLite 캐시 (블록 256개, 64 KiB, 3회 중앙값, 블록당 ms)
-
-| 구성 | 콜드 적재 | 적중 |
-|---|---:|---:|
-| 수정 전, Python 3.11 | 21.338 | 1.757 |
-| 수정 후, Python 3.11 | 4.206 | 1.140 |
-| 수정 후, Python 3.12 | 3.967 | 0.979 |
-
-출처: `results/windows_20261101/cache_fix_bench.json`. 3.11의 적중 1.140은 이 파일이 정한 기준 1.1 ms를 넘습니다.
-
-### HDD·SSD 로딩 벤치마크 (합성 데이터셋, 3회 중앙값)
-
-데이터셋은 64개 파일, 약 2.0 GiB(2,135,949,312 바이트), 트레이스 4,000건, 블록 64 KiB입니다.
-
-| 항목 | 중앙값 | 3회 값 | 출처 |
-|---|---:|---|---|
-| HDD 콜드 | 71.21 s | 55.66 / 71.21 / 71.32 s | `results/bench_20261101/20261101_204602.json` |
-| SSD 콜드 | 1.11 s | 1.022 / 1.150 / 1.111 s | 같은 파일 |
-| HDD 웜 | 0.080 s | 0.080 / 0.212 / 0.067 s | 같은 파일 |
-| SSD 웜 | 0.063 s | — | 같은 파일 |
-| 단순 선읽기 후 재생 (예열 포함 총합) | 29.16 s | 예열 29.09 s, 재생 0.070 s | 같은 파일 `prewarm_naive` |
-
-HDD 콜드는 SSD 콜드의 약 64.1배(`verdict.hdd_cold_over_ssd_cold`), 단순 선읽기 총합은 SSD 콜드의 약 26.2배입니다.
-
-### 물리 위치 순서 선읽기 (별도 실험, 3회 중앙값)
-
-이 실험은 위 벤치마크와 같은 데이터셋(64개 파일, 2.1 GiB 합성 데이터셋, bench 데이터셋과 동일)으로 수행했습니다. 같은 데이터셋의 HDD 콜드 시간은 이 실험에서 17.3~19.0 s(중앙값 17.8 s), 벤치마크에서 55.7~71.3 s(중앙값 71.2 s)였습니다. 같은 조건에서도 실행 간 편차가 이만큼 크므로, 두 값의 차이는 방법의 차이가 아니라 편차로 봅니다.
-
-| 구성 | HDD 콜드 | 선읽기 | 재생 | SSD 콜드 대비 |
-|---|---:|---:|---:|---:|
-| 물리 위치 정렬 (`final_physical`) | 17.8 s | 11.1 s | 0.05 s | 13.94배 |
-| 경로 정렬 (`final_path`) | 17.3 s | 11.4 s | 0.05 s | — |
-| 스윕 최선: 물리 정렬, 큐 깊이 4, 간격 0 (`results/prefetch_sweep_20261101/sweep_20261101_212410.json`, 3회 중앙값) | — | 7.80 s | 0.04 s | 7.0배 (합계 7.84 s, SSD 콜드 1.12 s 기준) |
-| 연속 배치 상한: 핫 243 MB 단일 파일 순차 읽기 (`results/prefetch_sweep_20261101/contig_upper_bound.json`, 4 MiB 청크, 3회 중앙값, 38 extents) | — | 1.36 s | 0.04 s | 1.6배 (합계 약 1.40 s, SSD 콜드 0.865 s 기준, 1 MiB 청크는 1.09 s) |
-
-- 같은 실험의 SSD 콜드는 0.8 s입니다(`ssd_cold`). 위 벤치마크의 SSD 콜드 1.11 s와 다른 실험입니다.
-- 선읽기 후 재생은 HDD 콜드보다 약 37% 짧습니다(계산값). 읽은 양 431 MiB 기준 선읽기 처리량은 약 39 MiB/s입니다(계산값).
-- 이 데이터셋에서는 물리 정렬과 경로 정렬의 차이가 노이즈 수준입니다. 파일이 순차로 쓰여 조각이 적었기 때문입니다.
-
-출처: `results/prefetch_20261101/summary_table.json`.
-
-### 접근 순서 재배치 실측 (2026-11-01)
-
-| 실험 | 구성 | 재배치 전 | 재배치 후 | 무결성 | 출처 |
-|---|---|---:|---:|---|---|
-| E2 SSD | 16 파일 442 MiB(463,470,592 바이트) VHDX, C: NVMe. 이동 194.6 MB(949개 작업) | 콜드 재생 0.736 s (중앙값) | 0.342 s | SHA-256 16/16 일치, 매니페스트 동일, 순차 구간 949 → 1 | `results/relayout_e2/summary.json`, `dataset.txt` |
-| E2 HDD | 같은 데이터, VHDX 를 D: HDD 위에 둠 | 콜드 27.1 s (13.7 / 64.6 / 27.1) | 5.73 s (6.07 / 5.73 / 5.68) | 같음 | `results/relayout_e2_hdd/summary.json` |
-| E3 실제 데이터셋 | D:\AsterBench, 64 파일 2.1 GiB, 트레이스 4,000건. 이동 243.5 MB(1,048 작업), 실패 0 | A 직접 17.11 s | C 직접 7.72 s, D 선읽기+재생 1.09 s | SHA-256 64/64 일치, 매니페스트 동일, 순차 구간 1,059 → 1 | `results/relayout_e3/20261101_225446/summary.json` |
-| E3 재측정 (이동 1시간 뒤, 이동 없음, `-SkipRelayout`) | 같은 데이터 | — | 직접 7.49 s, 선읽기+재생 1.14 s (선읽기 1.09 s + 재생 0.056 s) | 매니페스트 동일 | `results/relayout_e3/20261101_235628/summary.json` |
-
-E3 중앙값(3회, 관리자 스탠바이 목록 비우기 뒤 측정)은 다음과 같습니다. B 는 재배치 전 선읽기 후 재생 8.04 s, E 는 SSD(C: NVMe) 콜드 직접 0.763 s입니다.
-
-- D/E 1.43, C/E 10.1, A/E 22.4, D/A 0.064(재배치 전 대비 약 15.6배 단축)
-- 선읽기 0.93~1.63 s(중앙값 1.05 s) + 재생 0.047 s. D 의 실행 3회 값은 0.97 / 1.09 / 1.68 s입니다.
-
-### E3 재측정과 동시 스트림 (2026-11-01)
-
-관리자 스탠바이 목록 비우기 뒤 3회 중앙값입니다. SSD 기준이 실행마다 0.763 s 와 1.218 s 로 달라서 두 실행을 모두 적습니다.
-
-| 항목 | 재배치 직후 (`20261101_225446`) | 1시간 뒤, 이동 없음 (`20261101_235628`) |
-|---|---:|---:|
-| A 재배치 전 직접 | 17.11 s | — |
-| B 재배치 전 선읽기+재생 | 8.04 s | — |
-| C 재배치 후 직접 | 7.72 s | 7.49 s |
-| D 재배치 후 선읽기+재생 | 1.09 s | 1.14 s (선읽기 1.09 s + 재생 0.056 s) |
-| E SSD(C: NVMe) 직접 | 0.763 s | 1.218 s |
-| D/E | 1.43 | 0.94 |
-
-동시 스트림(`F`, 1시간 뒤 실행)은 스트림과 재생을 같은 순간에 시작해 마지막 요청까지의 벽시계 시간을 잽니다.
-
-| 요청당 게임 연산 | 벽시계 중앙값 (3회) | 스트림 종료 | 디스크로 간 요청 | 같은 조건 SSD |
-|---|---:|---:|---:|---|
-| 0 µs | 1.65 s (1.58 / 1.75 / 1.65) | 1.65 s | 8.9% (8.6~9.0%) | SSD 콜드 1.22 s 의 1.35배 (앞선 실행 0.763 s 기준 2.2배) |
-| 250 µs | 2.36 s | 1.42 s | 1건 (0.03%) | 비관리자 측정 2.98 s 의 0.79배 |
-| 1000 µs | 6.13 s | 1.41 s | 1건 (0.03%) | 비관리자 측정 6.30 s 의 0.97배 |
-
-- 동시 모드의 250 µs·1000 µs 기준 SSD 값은 `results/stream_tuning_20261101/ssd_think_baseline.json`(비관리자, 같은 연산 조건)입니다. 관리자 측정과 조건이 달라 참고값입니다.
-- 출처: `results/relayout_e3/20261101_235628/summary.json`, `results/relayout_e3/20261101_235628/F-concurrent.json`.
-
-### 스트림 읽기 튜닝 (재배치 존, 비관리자)
-
-재배치된 243.5 MB 존(1,048 작업)에서 잰 결과입니다. 표의 값은 3회 중앙값(`reuse_qd1.json`만 5회)입니다.
-
-| 조건 | 시간 | 출처 |
-|---|---:|---|
-| 큐 깊이 4, 핸들 닫기, 1 MiB | 1.66 s | `sweep.json` |
-| 큐 깊이 1, 핸들 닫기, 1 MiB | 1.48 s | `sweep.json` |
-| 큐 깊이 1, 핸들 유지, 1 MiB | 1.42 s | `reuse_qd1.json` |
-| 큐 깊이 1, 1·4·8·16 MiB (닫기) | 1.48~1.49 s (차이 없음) | `sweep.json` |
-| 256 KiB, 큐 깊이 1·2·4 | 6.4~6.9 s (3.9~4.6배 느림) | `sweep.json` |
-| SEQUENTIAL_SCAN 힌트 | 같은 청크·큐 깊이 대비 10.7~16.9배 느림 | `sweep.json` |
-
-- 큐 깊이 4 대 1 은 같은 실행 안에서 1.66 s 대 1.48 s 입니다(약 11%). 핸들 유지까지 합치면 1.66 s 대 1.42 s(약 15%)이며, 두 값은 다른 실행입니다.
-- 이 결과로 선읽기 기본값을 스레드 1, 청크 1 MiB, 핸들 유지, 힌트 끔으로 정했습니다. 재배치 전의 흩어진 배치에서는 큐 깊이 4가 도움이 됐으므로(`prefetch_sweep_20261101`), 이 결론은 재배치 존에만 적용합니다.
-- 이 측정의 콜드 조건은 관리자 권한 없이 만든 언버퍼드 대체 방식입니다(`cold_method: unbuffered_proxy`).
-
-## 결과 해석
-
-- **재배치의 효과.** 같은 데이터셋에서 재배치는 HDD 콜드 직접 읽기를 17.1 s 에서 7.5~7.7 s 로 줄였고, 여기에 선읽기를 더하면 1.1 s 가 됩니다. 재배치 뒤 선읽기 시간은 이전 선읽기 실험(11.1 s)과 비교해 크게 짧습니다. 1시간 뒤 재측정(이동 없음)에서도 직접 7.49 s, 선읽기+재생 1.14 s 로 비슷했습니다. 다만 이 수치는 아래 캐시 가능성을 포함합니다.
-- **캐시 가능성.** D 의 선읽기가 243 MB 를 1 초 안팎(약 224 MB/s 이상)에 읽은 것은 이동 직후 드라이브 캐시(SMR 미디어 캐시와 DRAM)의 영향일 수 있습니다. 같은 드라이브의 안정 순차 속도는 90~110 MB/s 였습니다(E1b). 보수적 기대치는 선읽기 약 2.5 s 이며, 이는 SSD 콜드 0.763 s 의 약 3.3배입니다. 1시간 뒤에도 1.14 s 로 유지됐습니다. 드라이브 캐시 영향 가능성은 24 시간 뒤 재측정으로 확인합니다. 그 전까지 이 값을 지속 성능으로 보지 않습니다.
-- **SMR.** WD20EZAZ 는 드라이브 관리형 SMR 로 보도되었습니다(2차 자료). 이동 직후 측정은 재매핑 전 상태일 수 있습니다. 드라이브 위치별 속도는 차이가 없어(`results/zone_curve_20261101`), 핫 존의 위치를 맞추는 최적화는 설계에서 뺐습니다.
-- **첫 실행에는 이득이 없습니다.** 재배치는 파일을 옮기는 데 시간이 듭니다. 이득은 재배치 이후 반복 읽기에서만 나타납니다.
-- **관리자 권한이 필요합니다.** 볼륨 핸들과 FSCTL_MOVE_FILE 은 관리자만 씁니다. 측정 자체는 스탠바이 목록 비우기를 위해 관리자로 실행했습니다.
-- **E2 의 범위.** E2 는 무결성, 순서, 재생 시간을 확인했습니다. 강제 종료 5회, VHDX 강제 분리, `chkdsk /scan` 은 `summary.json` 에 기록이 없어 실행하지 않은 것으로 봅니다. 2026-11-02 관리자 시험(S1)에서는 중단 5회 뒤 재개와 강제 분리를 실행해 SHA 일치와 매니페스트 동일을 확인했습니다. `chkdsk` 은 표준 핸들 리다이렉트 상태에서 시작하지 못해 선택 항목으로 남겼습니다.
-- **E3 의 범위.** 이동 직후 3회 측정(225446)과 1시간 뒤 재측정 1회(235628, 이동 없음)가 있습니다. 10 분 유휴 뒤와 `defrag D: /O` 뒤의 측정은 없습니다. 2026-11-02 에는 10시간 뒤 재측정(`results/prefetch_sweep_20261101/contig_persistence_t10h.json`, `results/relayout_e3/20261102_091906`)을 했습니다. 배치는 유지됐고(extent 39개, 시작 LCN 동일), 선읽기+재생 1.14 s, 스탠바이를 비운 직접 콜드 8.65 s 였습니다(재배치 전 17.1 s). 24시간 지점은 측정하지 않았습니다.
-- **합성 데이터 중심입니다.** Frostpunk 1종의 결과는 위 실측 절에 있으며, 이것도 추적 읽기의 재생 시간입니다. 게임 실행 전체 로딩 시간과 반복 로딩의 p50·p95 는 아직 없으므로 목표(SSD 대비 p50 1.25배 이내)는 판정하지 않았습니다.
-
-- **SSD와의 거리.** 재배치 전에는 콜드 기준으로 HDD가 SSD보다 약 64배 느렸고, 선읽기만으로는 SSD 콜드의 약 13.9배였습니다. 재배치 뒤에는 선읽기+재생이 SSD 콜드의 0.94~1.43배입니다(두 실행의 범위). 웜 상태에서는 HDD와 SSD가 1.28배 차이가 납니다(벤치마크 중앙값). 웜은 OS 파일 캐시가 이미 채워진 상태라서 차이가 작습니다.
-- **재배치 전 선읽기의 한계.** 재배치 전에는 HDD 탐색 횟수와 읽기 처리량(약 39 MiB/s)이 하한을 정했습니다. 재배치 뒤에는 핫 존 한 구간을 순차로 읽으므로 이 하한이 크게 줄었습니다. 예열 비용이 재생보다 훨씬 크므로 예열을 로딩 전에 끝낼 수 있는 경우에만 의미가 있다는 점은 같습니다.
-- **콜드 측정 조건의 한계.** 측정은 비관리자로 실행했습니다. 스탠바이 목록을 비우지 못해서 콜드 조건을 언버퍼드 재읽기(`FILE_FLAG_NO_BUFFERING`)로 대체했습니다(`cold_method: unbuffered_proxy`). 드라이브와 컨트롤러 내장 캐시는 비우지 않았습니다. 실행 간 편차가 55.7~71.3 s로 큽니다. 동시에 일어난 디스크 사용의 영향으로 추정하지만, 원인은 측정하지 않았습니다.
-- **게임 로딩 시간이 아닙니다.** 합성 데이터셋과 합성 트레이스로 재현한 결과입니다. 실제 게임 1종(Frostpunk)은 ETW 로 1회 추적한 뒤 재생했고, Procmon 트레이스와 게임 실행 전체 시간 측정은 아직 없습니다.
-
-## 다음 방향
-
-- **접근 순서 물리 재배치 설계.** 게임 트레이스의 접근 순서대로 핫 블록을 NTFS 안에서 제자리 이동(FSCTL_MOVE_FILE)해 한 구간에 모으고, 그 구간을 선읽기하는 설계입니다. 자세한 내용은 [docs/design_v1_relayout.md](docs/design_v1_relayout.md)에 있습니다. 1.4a 절에 E1 실측 결과가 있습니다.
-- **선행 기술과의 관계.** 블록 단위 접근 순서 재배치라는 개념은 BORG(FAST'09)가 먼저 제시했습니다. 이 설계의 차이는 드라이버와 복사본 없이 NTFS 제자리 이동을 쓰는 구현 방식과, 게임 로딩 구간에 맞춘 조합입니다. 출처와 Windows API 제약은 [docs/prior_art_and_windows_api.md](docs/prior_art_and_windows_api.md)에 있습니다.
-- **관리자 권한 필요.** 볼륨 핸들은 관리자만 열 수 있으므로 재배치 실행에는 관리자 권한이 필요합니다. 측정과 선읽기는 지금처럼 비관리자 권한으로 계속합니다.
-- **SMR 드라이브 주의.** WD20EZAZ 는 드라이브 관리형 SMR 로 보도되었습니다(2차 자료). 대량 이동 쓰기가 쓰기 정체를 일으킬 수 있으므로, 작은 청크와 쓰기 상한으로 나눠 실측합니다. SMR 영향은 아직 분리하지 않았습니다.
-
-## 경고
-
-- 안티치트가 적용된 게임, 온라인 계정과 연동되는 게임, 중요한 데이터가 있는 드라이브에서는 사용하지 않습니다.
-- 재배치는 NTFS 디프래그 API(FSCTL_MOVE_FILE)로 파일 데이터를 실제로 옮깁니다. 테스트 폴더에서만 실행하고, 되돌리기는 `revert` 명령으로 합니다. VHDX 시험(S1)에서는 이동을 5회 중단한 뒤 재개해 무결성을 확인했습니다. 실제 게임 데이터에서 이동 중 강제 종료는 시험하지 않았습니다.
-- MIT 라이선스에 따라 무보증으로 제공합니다. 위 수치는 한 PC에서 얻은 결과입니다.
-- 예열과 계획 명령은 원본 파일을 열어 읽기만 하며 원본 내용을 바꾸지 않습니다. 벤치마크는 지정한 루트 아래에 자체 데이터셋을 만들고, `--cleanup`으로 지웁니다.
-- 디스크 읽기 부하가 큽니다. HDD 예열은 수백 MiB에서 수 GiB를 읽을 수 있습니다. SSD 캐시는 파일에 쓰며, 예산은 논리 페이로드 기준이므로 SQLite 데이터베이스와 WAL 파일은 예산 밖의 공간을 더 씁니다. 사용 가능한 SSD 여유 공간을 충분히 남겨 두십시오.
-- 캐시는 2초 이내에 수정된 원본 파일의 블록을 적재하지 않습니다. 외부 쓰기를 모두 탐지하는 것은 아닙니다. SHA-256은 캐시 데이터의 우발적 손상을 찾을 뿐이며, 원본과의 재해시는 하지 않습니다.
-- 정전과 SSD 손상 상황은 실제 하드웨어에서 시험하지 않았습니다. 캐시 DB가 심각하게 손상되면 초기화가 실패할 수 있습니다.
-- 현재 구현은 드라이버나 파일 시스템 계층이 아닙니다. 파일 시스템을 가로채지 않으므로 기존 게임의 I/O 경로를 바꾸지 않습니다.
+- `Category=Live` 시험은 `D:\AsterBench` 와 Python 참조 구현이 필요하므로 위에서 제외했습니다.
+- Python 참조 구현은 Python 3.11 이상이며 외부 패키지가 없습니다. Python 3.11.4 와 3.12.10 에서 검증했습니다. 명령과 구성은 [docs/PYTHON_TOOLS.md](docs/PYTHON_TOOLS.md) 를 보십시오.
 
 ## 라이선스
 
-MIT License. 저작권 표시는 `LICENSE` 파일을 보십시오. Copyright (c) 2026 DO0OG.
+MIT License. 자세한 내용은 [LICENSE](LICENSE) 파일을 보십시오. Copyright (c) 2026 DO0OG.
 
-## 기술 근거
+## 면책
 
-- Microsoft, File Caching: https://learn.microsoft.com/en-us/windows/win32/fileio/file-caching
-- Microsoft, BypassIO: https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/bypassio
-- Microsoft, Filter Manager concepts: https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/filter-manager-concepts
-- SQLite WAL: https://sqlite.org/wal.html
-- SQLite `synchronous` pragma: https://sqlite.org/pragma.html#pragma_synchronous
+- 안티치트가 적용된 게임과 온라인 계정에 묶인 게임에서는 검증하지 않았습니다.
+- 재배치는 파일 데이터를 실제로 옮깁니다. 중요한 데이터가 있는 드라이브에서 쓰기 전에 백업하고, 먼저 테스트 폴더에서 실행하십시오.
+- MIT 라이선스에 따라 무보증으로 제공합니다. 측정 수치는 한 PC 에서 얻은 결과입니다.

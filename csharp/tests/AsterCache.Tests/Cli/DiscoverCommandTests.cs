@@ -42,6 +42,29 @@ public sealed class DiscoverCommandTests
     }
 
     [Fact]
+    public void RiotUninstallAndXboxLaunchersAreWrittenAsIs()
+    {
+        DiscoveredGame[] games =
+        [
+            new("League_of_Legends", "riot", @"D:\Riot Games\League of Legends", @"D:\Riot Games\League of Legends\LeagueClient.exe", true, "RiotClientServices.exe") { AntiCheat = "vanguard" },
+            new("Big_Game", "uninstall", @"D:\Apps\Big", @"D:\Apps\Big\big.exe", true, null),
+            new("Forza", "xbox", @"D:\XboxGames\Forza\Content", @"D:\XboxGames\Forza\Content\f.exe", false, null),
+        ];
+        var json = new StringWriter();
+        DiscoverCommand.Run(ArgParser.Parse(DiscoverCommand.Options, ["--json"]), json, games);
+        var table = new StringWriter();
+        DiscoverCommand.Run(ArgParser.Parse(DiscoverCommand.Options, []), table, games);
+
+        var rows = (List<object?>)((JObject)JsonRead.Parse(json.ToString())!)["games"]!;
+        Assert.Equal(["riot", "uninstall", "xbox"], rows.Select(r => ((JObject)r!)["launcher"]));
+        Assert.Equal(["name", "launcher", "install_dir", "exe", "on_hdd", "trigger_exe", "anticheat"], ((JObject)rows[1]!).Select(kv => kv.Key));
+        Assert.Null(((JObject)rows[2]!)["trigger_exe"]);
+        string[] lines = table.ToString().TrimEnd().Split('\n').Select(l => l.TrimEnd('\r')).ToArray();
+        Assert.Equal("League_of_Legends\triot\thdd\t" + games[0].ExePath + "\tvanguard", lines[0]);
+        Assert.Equal("Forza\txbox\tssd\t" + games[2].ExePath + "\t-", lines[2]);
+    }
+
+    [Fact]
     public void EmptyListGivesEmptyArray()
     {
         var o = new StringWriter();

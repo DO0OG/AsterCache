@@ -1,0 +1,12 @@
+auto_patching_enabled_by_player: false
+dependencies:
+    vanguard: true
+locale_data:
+    default_locale: "en_US"
+patching_policy: "manual"
+product_dependency: "teamfighttactics.live"
+product_install_full_path: "D:/Games/Riot Games/League of Legends"
+product_install_root: "D:/Games/Riot Games"
+settings:
+    locale: "ko_KR"
+should_repair: false

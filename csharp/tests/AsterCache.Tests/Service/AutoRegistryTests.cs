@@ -420,6 +420,106 @@ public sealed class AutoRegistryTests : IDisposable
         Assert.False(LauncherExes.Is("game.exe"));
     }
 
+    // ---- Riot · 제거 목록 · Xbox ----
+
+    private static DiscoveredGame Lol(string dir = @"D:\Games\Riot Games\League of Legends") =>
+        new("League_of_Legends", "riot", dir, dir + @"\LeagueClient.exe", true, "RiotClientServices.exe") { AntiCheat = "vanguard", ExtraExes = ["League of Legends.exe"] };
+
+    [Fact]
+    public void RiotGameIsRegisteredWithBothExesTheClientTriggerAndVanguard()
+    {
+        World.Found.Add(Lol());
+
+        Assert.Equal(1, _rig.Registry().DiscoverOnce());
+
+        GameSettings g = Assert.Single(_rig.Reload().Games);
+        Assert.Equal(["LeagueClient.exe", "League of Legends.exe"], g.ExeNames);
+        Assert.Equal(["RiotClientServices.exe"], g.Prewarm.TriggerExes);
+        Assert.Equal("vanguard", g.AntiCheat);
+        Assert.Equal("riot", _rig.Status.Get("League_of_Legends")!.Launcher);
+    }
+
+    [Fact]
+    public void ExtraExesAlreadyRegisteredOrIgnoredAreLeftOut()
+    {
+        _rig.Add("other", "League of Legends.exe", @"D:\Games\Other");
+        _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { IgnoreExes = ["ignored.exe"] } };
+        World.Found.Add(Lol() with { ExtraExes = ["League of Legends.exe", "Extra.exe", "IGNORED.exe", "leagueclient.EXE", "extra.exe"] });
+
+        Assert.Equal(1, _rig.Registry().DiscoverOnce());
+
+        Assert.Equal(["LeagueClient.exe", "Extra.exe"], _rig.Reload().Games.Single(g => g.Name == "League_of_Legends").ExeNames);
+    }
+
+    [Fact]
+    public void ManualGameInTheSameFolderIsLeftAloneAndLoggedOnce()
+    {
+        _rig.Add("LeagueOfLegens", "lol.exe", @"D:\Games\Riot Games\League of Legends", "manual");
+        World.Found.Add(Lol());
+        AutoRegistry reg = _rig.Registry();
+
+        Assert.Equal(0, reg.DiscoverOnce());
+        Assert.Equal(0, reg.DiscoverOnce());
+
+        Assert.Equal(["LeagueOfLegens"], Registered());
+        Assert.Single(_rig.Log.Lines, l => l.Contains("LeagueOfLegens", StringComparison.Ordinal) && l.Contains("same folder", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void GameAddedAfterTheServiceReadItsSettingsIsStillSeenJustBeforeWriting()
+    {
+        World.Found.Add(Lol());
+        _rig.Editor.Add(_rig.Input("LeagueOfLegens", "lol.exe", @"D:\Games\Riot Games\League of Legends")); // 서비스가 들고 있는 설정은 아직 모름
+
+        Assert.Equal(0, _rig.Registry().DiscoverOnce());
+
+        Assert.Equal(["LeagueOfLegens"], Registered());
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("League_of_Legends", StringComparison.Ordinal) && l.Contains("same folder", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AutoGameOfAnEarlierScanIsNotLoggedAsAnOverlap()
+    {
+        World.Found.Add(Lol());
+        AutoRegistry reg = _rig.Registry();
+        reg.DiscoverOnce();
+        _rig.Reload();
+
+        Assert.Equal(0, reg.DiscoverOnce());
+
+        Assert.DoesNotContain(_rig.Log.Lines, l => l.Contains("same folder", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("riot")]
+    [InlineData("xbox")]
+    [InlineData("uninstall")]
+    public void NewLaunchersFollowTheSameDriveRules(string launcher)
+    {
+        World.Found.Add(new DiscoveredGame("G", launcher, @"D:\Games\G", @"D:\Games\G\g.exe", true, null));
+        World.Hdd["D:"] = false;
+        Assert.Equal(0, _rig.Registry().DiscoverOnce());
+
+        World.Hdd["D:"] = true;
+        World.SystemDrive = "D:";
+        Assert.Equal(0, _rig.Registry().DiscoverOnce());
+
+        Assert.Empty(Registered());
+    }
+
+    [Theory]
+    [InlineData("xbox")]
+    [InlineData("uninstall")]
+    public void LaunchersWithoutAProgramRegisterWithoutTriggers(string launcher)
+    {
+        World.Found.Add(new DiscoveredGame("G", launcher, @"D:\Games\G", @"D:\Games\G\g.exe", true, null));
+
+        Assert.Equal(1, _rig.Registry().DiscoverOnce());
+
+        Assert.Empty(Assert.Single(_rig.Reload().Games).Prewarm.TriggerExes);
+        Assert.Equal(launcher, _rig.Status.Get("G")!.Launcher);
+    }
+
     // ---- 읽기량을 못 여는 프로세스: ETW 대체 ----
 
     private FakeReadWatch UseWatch() => World.Watch = new FakeReadWatch();

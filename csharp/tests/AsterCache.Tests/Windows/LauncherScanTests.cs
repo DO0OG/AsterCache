@@ -23,6 +23,25 @@ public sealed class LauncherScanTests
 
         public string ProgramData => @"C:\ProgramData";
 
+        public string SystemDrive => "C:";
+
+        public List<string> Drives { get; } = ["C:", "D:"];
+
+        public List<UninstallEntry> Uninstalls { get; } = [];
+
+        public Dictionary<string, long> Sizes { get; } = new(StringComparer.OrdinalIgnoreCase); // 폴더 -> 전체 크기
+
+        public HashSet<string> Denied { get; } = new(StringComparer.OrdinalIgnoreCase); // exe 를 열거하면 접근 거부가 나는 폴더
+
+        public IReadOnlyList<string> FixedDrives() => Drives;
+
+        public IReadOnlyList<string> SubDirs(string dir) =>
+            Dirs.Where(d => string.Equals(Path.GetDirectoryName(d), dir.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)).ToList();
+
+        public IReadOnlyList<UninstallEntry> UninstallEntries() => Uninstalls;
+
+        public bool FolderAtLeast(string dir, long bytes) => Sizes.GetValueOrDefault(dir) >= bytes;
+
         public string? RegString(bool machine, string subKey, string name) => Reg.GetValueOrDefault($"{(machine ? "M" : "U")}|{subKey}|{name}");
 
         public IReadOnlyList<string> RegSubKeys(string subKey) =>
@@ -39,7 +58,7 @@ public sealed class LauncherScanTests
         public bool FileExists(string path) => Exes.ContainsKey(path);
 
         public IEnumerable<(string Path, long Size)> ExeFiles(string dir, int maxDepth) =>
-            Exes.Where(e => e.Key.StartsWith(dir + "\\", StringComparison.OrdinalIgnoreCase)).Select(e => (e.Key, e.Value));
+            Denied.Contains(dir) ? throw new UnauthorizedAccessException() : Exes.Where(e => e.Key.StartsWith(dir + "\\", StringComparison.OrdinalIgnoreCase)).Select(e => (e.Key, e.Value));
 
         public List<int> EntryDepths { get; } = [];
 
@@ -234,6 +253,188 @@ public sealed class LauncherScanTests
         Assert.Equal("eac", games.Single(g => g.Name == "Fast_Game").AntiCheat);
         Assert.Null(games.Single(g => g.Name == "Slow_Game").AntiCheat);
         Assert.All(env.EntryDepths, d => Assert.Equal(4, d)); // 깊은 위치의 안티치트 폴더까지 이름을 봄
+    }
+
+    // ---- Riot ----
+
+    private static FakeEnv RiotEnv()
+    {
+        var env = new FakeEnv();
+        string root = Path.Combine(AppContext.BaseDirectory, "fixtures", "launchers", "riot", "Metadata");
+        const string meta = @"C:\ProgramData\Riot Games\Metadata";
+        env.Dirs.Add(meta);
+        foreach (string dir in Directory.GetDirectories(root))
+        {
+            env.Dirs.Add(Path.Combine(meta, Path.GetFileName(dir)));
+            foreach (string file in Directory.GetFiles(dir))
+            {
+                env.Text[Path.Combine(meta, Path.GetFileName(dir), Path.GetFileName(file))] = File.ReadAllText(file);
+            }
+        }
+
+        env.Dirs.UnionWith([@"D:\Games\Riot Games\League of Legends", @"D:\Games\Riot Games\VALORANT\live", @"D:\Games\Riot Games\LoR", @"C:\Riot Games\League of Legends (PBE)", @"D:\Games\Riot Games\Patch"]);
+        env.Exes[@"D:\Games\Riot Games\League of Legends\LeagueClient.exe"] = 30;
+        env.Exes[@"D:\Games\Riot Games\League of Legends\LeagueClientUx.exe"] = 40; // 더 큰 exe 보다 이름 목록이 먼저
+        env.Exes[@"D:\Games\Riot Games\League of Legends\Game\League of Legends.exe"] = 50;
+        env.Exes[@"D:\Games\Riot Games\VALORANT\live\ShooterGame\Binaries\Win64\VALORANT-Win64-Shipping.exe"] = 90;
+        env.Exes[@"D:\Games\Riot Games\VALORANT\live\VALORANT.exe"] = 10;
+        env.Exes[@"D:\Games\Riot Games\LoR\small.exe"] = 1;
+        env.Exes[@"D:\Games\Riot Games\LoR\LoR.exe"] = 5;
+        env.Exes[@"C:\Riot Games\League of Legends (PBE)\LeagueClient.exe"] = 30;
+        env.Exes[@"D:\Games\Riot Games\Patch\patch.exe"] = 30;
+        env.Hdd["D:"] = true;
+        return env;
+    }
+
+    [Fact]
+    public void RiotLiveProductsComeFromMetadataAndTftIsMergedIntoLeague()
+    {
+        IReadOnlyList<DiscoveredGame> games = LauncherScan.Scan(RiotEnv());
+
+        Assert.Equal(["Legends_of_Runeterra", "League_of_Legends", "VALORANT"], games.Select(g => g.Name)); // pbe·game_patch·같은 폴더의 TFT 는 없음
+        DiscoveredGame lol = games[1];
+        Assert.Equal(("riot", @"D:\Games\Riot Games\League of Legends", @"D:\Games\Riot Games\League of Legends\LeagueClient.exe", true, "RiotClientServices.exe", "vanguard"),
+            (lol.Launcher, lol.InstallDir, lol.ExePath, lol.OnHdd, lol.TriggerExe, lol.AntiCheat));
+        Assert.Equal(["League of Legends.exe"], lol.ExtraExes);
+        Assert.Equal(@"D:\Games\Riot Games\VALORANT\live\VALORANT.exe", games[2].ExePath);
+        Assert.Equal(["VALORANT-Win64-Shipping.exe"], games[2].ExtraExes);
+        Assert.Equal(@"D:\Games\Riot Games\LoR\LoR.exe", games[0].ExePath); // 이름 목록이 없으면 가장 큰 exe
+        Assert.Empty(games[0].ExtraExes);
+        Assert.All(games, g => Assert.Equal("vanguard", g.AntiCheat));
+    }
+
+    [Fact]
+    public void RiotProductWithoutFolderOrExeIsSkipped()
+    {
+        FakeEnv env = RiotEnv();
+        env.Dirs.Remove(@"D:\Games\Riot Games\VALORANT\live");
+        env.Exes.Remove(@"D:\Games\Riot Games\LoR\LoR.exe");
+        env.Exes.Remove(@"D:\Games\Riot Games\LoR\small.exe");
+
+        Assert.Equal(["League_of_Legends"], LauncherScan.Scan(env).Select(g => g.Name));
+    }
+
+    // ---- Xbox ----
+
+    [Fact]
+    public void XboxGamesAreTheContentFoldersOfEveryFixedDriveWithoutATrigger()
+    {
+        var env = new FakeEnv();
+        env.Dirs.UnionWith([@"D:\XboxGames", @"D:\XboxGames\Forza Horizon", @"D:\XboxGames\Forza Horizon\Content", @"D:\XboxGames\NoContent", @"D:\XboxGames\Denied", @"D:\XboxGames\Denied\Content", @"D:\XboxGames\Empty", @"D:\XboxGames\Empty\Content", @"C:\XboxGames", @"C:\XboxGames\Fast", @"C:\XboxGames\Fast\Content"]);
+        env.Exes[@"D:\XboxGames\Forza Horizon\Content\gamelaunchhelper.exe"] = 1;
+        env.Exes[@"D:\XboxGames\Forza Horizon\Content\ForzaHorizon5.exe"] = 100;
+        env.Exes[@"D:\XboxGames\Denied\Content\x.exe"] = 100;
+        env.Exes[@"C:\XboxGames\Fast\Content\fast.exe"] = 100;
+        env.Denied.Add(@"D:\XboxGames\Denied\Content");
+        env.Hdd["C:"] = false;
+        env.Hdd["D:"] = true;
+
+        IReadOnlyList<DiscoveredGame> games = LauncherScan.Scan(env);
+
+        Assert.Equal(["Fast", "Forza_Horizon"], games.Select(g => g.Name).Order()); // 접근 거부·Content 없음·exe 없음은 건너뜀
+        DiscoveredGame forza = games.Single(g => g.Name == "Forza_Horizon");
+        Assert.Equal(("xbox", @"D:\XboxGames\Forza Horizon\Content", @"D:\XboxGames\Forza Horizon\Content\ForzaHorizon5.exe", true, null), (forza.Launcher, forza.InstallDir, forza.ExePath, forza.OnHdd, forza.TriggerExe));
+        Assert.Equal(false, games.Single(g => g.Name == "Fast").OnHdd); // 거부는 등록 쪽 몫
+    }
+
+    // ---- 제거 목록 ----
+
+    private const long Gib = 1L << 30;
+
+    private static FakeEnv UninstallEnv(params (string Name, string Publisher, string Dir, long Size, long ExeSize)[] items)
+    {
+        var env = new FakeEnv();
+        env.Hdd["C:"] = true; // 시스템 볼륨이 HDD 여도 제외
+        env.Hdd["D:"] = true;
+        env.Hdd["E:"] = false;
+        foreach ((string name, string publisher, string dir, long size, long exeSize) in items)
+        {
+            env.Uninstalls.Add(new UninstallEntry(name, publisher, dir));
+            string plain = dir.Trim('"').TrimEnd('\\');
+            env.Dirs.Add(plain);
+            env.Sizes[plain] = size;
+            if (exeSize > 0)
+            {
+                env.Exes[plain + @"\game.exe"] = exeSize;
+            }
+        }
+
+        return env;
+    }
+
+    [Fact]
+    public void UninstallListFindsBigGamesOnHddsOutsideTheSystemVolume()
+    {
+        FakeEnv env = UninstallEnv(
+            ("Big Game", "Some Studio", @"D:\Apps\Big Game", 2 * Gib, 7),
+            ("Quoted", "", "\"D:\\Apps\\Quoted\\\"", Gib, 3),
+            ("Twin", "Studio", @"D:\Apps\Twin", 2 * Gib, 7),
+            ("Twin Again", "Studio", @"D:\Apps\Twin\", 2 * Gib, 7), // 다른 보기에 같은 폴더가 한 번 더
+            ("Intelligent Games", "Intelligent Games Ltd.", @"D:\Apps\Intelligent", Gib, 7), // Intel 이 아님 (낱말 단위 비교)
+            ("Office", "Microsoft Corporation", @"D:\Apps\Office", 5 * Gib, 7),
+            ("Driver", "NVIDIA Corporation", @"D:\Apps\NV", 5 * Gib, 7),
+            ("Chip", "Advanced Micro Devices, Inc.", @"D:\Apps\AMD", 5 * Gib, 7),
+            ("Small", "Studio", @"D:\Apps\Small", Gib - 1, 7),
+            ("OnSsd", "Studio", @"E:\Apps\OnSsd", 2 * Gib, 7),
+            ("OnSystem", "Studio", @"C:\Apps\OnSystem", 2 * Gib, 7),
+            ("NoExe", "Studio", @"D:\Apps\NoExe", 2 * Gib, 0),
+            ("Missing", "Studio", @"D:\Apps\Missing", 2 * Gib, 7),
+            ("Root", "Studio", @"D:\", 2 * Gib, 7),
+            ("Launcher", "Studio", @"D:\Apps\Launcher", 2 * Gib, 7));
+        env.Dirs.Remove(@"D:\Apps\Missing");
+        env.Exes[@"D:\Apps\Launcher\Battle.net.exe"] = 1; // 런처 본체가 든 폴더는 게임이 아님
+
+        IReadOnlyList<DiscoveredGame> games = LauncherScan.Scan(env);
+
+        Assert.Equal(["Big_Game", "Quoted", "Twin", "Intelligent_Games"], games.Select(g => g.Name));
+        Assert.All(games, g => Assert.Equal(("uninstall", true, null), (g.Launcher, g.OnHdd, g.TriggerExe)));
+        Assert.Equal(@"D:\Apps\Big Game\game.exe", games[0].ExePath);
+        Assert.Equal(@"D:\Apps\Quoted", games[1].InstallDir);
+    }
+
+    [Fact]
+    public void UninstallEntriesOverlappingEarlierResultsOrEachOtherAreDropped()
+    {
+        FakeEnv env = SteamEnv();
+        env.Hdd["D:"] = true;
+        env.Dirs.UnionWith([@"D:\Lib", @"D:\Lib\steamapps"]);
+        env.Uninstalls.AddRange(
+        [
+            new UninstallEntry("Slow Game (again)", "Valve", @"D:\Lib\steamapps\common\SlowGame"), // 같은 폴더
+            new UninstallEntry("Steam Library", "Valve", @"D:\Lib"), // 바깥
+            new UninstallEntry("Inside", "Valve", @"D:\Lib\steamapps\common\SlowGame\Sub"), // 안쪽
+            new UninstallEntry("Outer App", "Studio", @"D:\Outer"),
+            new UninstallEntry("Inner App", "Studio", @"D:\Outer\Inner"),
+        ]);
+        env.Dirs.UnionWith([@"D:\Lib\steamapps\common\SlowGame\Sub", @"D:\Outer", @"D:\Outer\Inner"]);
+        foreach (string d in new[] { @"D:\Lib", @"D:\Lib\steamapps\common\SlowGame", @"D:\Lib\steamapps\common\SlowGame\Sub", @"D:\Outer", @"D:\Outer\Inner" })
+        {
+            env.Sizes[d] = 2 * Gib;
+        }
+
+        env.Exes[@"D:\Outer\o.exe"] = 4;
+        env.Exes[@"D:\Outer\Inner\i.exe"] = 4;
+
+        IReadOnlyList<DiscoveredGame> games = LauncherScan.Scan(env);
+
+        Assert.Equal(["steam", "steam", "uninstall"], games.Select(g => g.Launcher)); // 제거 목록은 마지막, 겹치면 앞 결과 우선
+        Assert.Equal("Outer_App", games[^1].Name);
+    }
+
+    [Fact]
+    public void UninstallScanQueriesEachDriveOnceAndFailureDoesNotHideLauncherGames()
+    {
+        FakeEnv env = SteamEnv();
+        env.Hdd["D:"] = true;
+        env.Uninstalls.Add(new UninstallEntry("X", "Studio", @"D:\X"));
+        env.Dirs.Add(@"D:\X");
+        env.Sizes[@"D:\X"] = 2 * Gib;
+        env.Denied.Add(@"D:\X");
+
+        IReadOnlyList<DiscoveredGame> games = LauncherScan.Scan(env);
+
+        Assert.Equal(2, games.Count);
+        Assert.Equal(["C:", "D:"], env.DiskQueries.Order());
     }
 
     [Fact]

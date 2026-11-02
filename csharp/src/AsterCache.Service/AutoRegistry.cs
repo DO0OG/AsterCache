@@ -76,8 +76,18 @@ public sealed class AutoRegistry
 
             string exe = Path.GetFileName(d.ExePath);
             IReadOnlyList<GameSettings> games = AllGames();
-            if (Ignored(a, exe) || Registered(games, exe) || games.Any(g => Overlaps(g.OriginRoot, d.InstallDir)))
+            if (Ignored(a, exe) || Registered(games, exe))
             {
+                continue;
+            }
+
+            if (games.FirstOrDefault(g => Overlaps(g.OriginRoot, d.InstallDir)) is { } owner)
+            {
+                if (owner.Source != "auto")
+                {
+                    LogRefusedOnce("overlap|" + d.InstallDir, $"auto {d.Launcher}: skipped {d.Name} (same folder as the registered game {owner.Name})"); // 수동 등록이 있으면 건드리지 않음
+                }
+
                 continue;
             }
 
@@ -87,7 +97,9 @@ public sealed class AutoRegistry
                 break;
             }
 
-            if (Register(d.Name, d.Launcher, exe, d.InstallDir, LauncherExes.ForLauncher(d.Launcher, d.TriggerExe), d.AntiCheat, evict: false))
+            List<string> extra = d.ExtraExes.Where(x => !x.Equals(exe, StringComparison.OrdinalIgnoreCase) && !Ignored(a, x) && !Registered(games, x))
+                .Distinct(StringComparer.OrdinalIgnoreCase).Take(MaxExeNames - 1).ToList();
+            if (Register(d.Name, d.Launcher, exe, d.InstallDir, LauncherExes.ForLauncher(d.Launcher, d.TriggerExe), d.AntiCheat, evict: false, extra))
             {
                 added++;
             }
@@ -305,7 +317,7 @@ public sealed class AutoRegistry
         }
     }
 
-    private bool Register(string display, string launcher, string exe, string installDir, IReadOnlyList<string> triggers, string? antiCheat, bool evict)
+    private bool Register(string display, string launcher, string exe, string installDir, IReadOnlyList<string> triggers, string? antiCheat, bool evict, IReadOnlyList<string>? extraExes = null)
     {
         string letter = installDir[..2].ToUpperInvariant();
         string label = _env.VolumeLabel(letter);
@@ -315,12 +327,19 @@ public sealed class AutoRegistry
             return false;
         }
 
+        if (FreshOverlap(installDir) is { } other)
+        {
+            _log.Info($"auto {launcher}: skipped {display} (same folder as the registered game {other})"); // 서비스가 들고 있는 설정 뒤에 방금 등록된 게임까지 쓰기 직전 파일 기준으로 다시 봄
+            return false;
+        }
+
         IReadOnlyList<GameSettings> games = AllGames();
         var taken = new HashSet<string>(games.Select(g => g.Name), StringComparer.OrdinalIgnoreCase);
         string folderName = Path.GetFileName(installDir);
         string name = LauncherManifests.MakeUnique(LauncherManifests.SafeName(display, folderName, Path.GetFileNameWithoutExtension(exe)), taken);
         string plan = Path.Combine(_editor.PlansDir, name + ".plan.json");
-        var input = new GameInput(name, [exe], plan + ".prefetch.json", plan, installDir, [installDir], label, null, triggers) { Source = "auto", OnServiceStart = false, AntiCheat = antiCheat };
+        IReadOnlyList<string> exes = [exe, .. extraExes ?? []];
+        var input = new GameInput(name, exes, plan + ".prefetch.json", plan, installDir, [installDir], label, null, triggers) { Source = "auto", OnServiceStart = false, AntiCheat = antiCheat };
         string? evicted = null;
         try
         {
@@ -347,7 +366,7 @@ public sealed class AutoRegistry
                 AntiCheat = antiCheat,
                 Prewarm = new PrewarmSettings(false, triggers, PrewarmSettings.Default.MinFreeRamMib, PrewarmSettings.Default.CooldownMin),
             });
-            _addedExes.Add(exe);
+            _addedExes.UnionWith(exes);
         }
 
         _status.Set(name, "auto", launcher, AutoStage.Discovered, null);
@@ -369,6 +388,18 @@ public sealed class AutoRegistry
         }
 
         return true;
+    }
+
+    private string? FreshOverlap(string root)
+    {
+        try
+        {
+            return _editor.Load()?.Games.FirstOrDefault(g => Overlaps(g.OriginRoot, root))?.Name;
+        }
+        catch (Exception e) when (e is SettingsException or IOException or UnauthorizedAccessException or PyValueException)
+        {
+            return null; // 읽지 못하면 쓰기 쪽 검증이 판단함
+        }
     }
 
     private IReadOnlyList<GameSettings> AllGames()

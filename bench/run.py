@@ -44,7 +44,10 @@ def naive_prewarm(events):
     r, nbytes, t0 = replay.BufferedReader(), 0, time.perf_counter()
     try:
         for p, s, t in merged:
-            nbytes += len(r.read(p, s, t - s))
+            try:
+                nbytes += len(r.read(p, s, t - s))
+            except (FileNotFoundError, PermissionError):
+                continue  # trace names a file that is gone
     finally:
         r.close()
     return dict(kind='naive', seconds=time.perf_counter() - t0, bytes=nbytes, ranges=len(merged))

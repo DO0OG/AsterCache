@@ -91,10 +91,17 @@ def replay(events, unbuffered=False):
     """total_s = sum of per-request read latencies (file open on first use is included, crc is not)."""
     r = UnbufferedReader() if unbuffered else BufferedReader()
     lat, crc, nbytes = [], 0, 0
+    missing, skipped, skipped_bytes = set(), 0, 0  # files the trace names but the disk no longer has
     try:
         for e in events:
             t = time.perf_counter()
-            d = r.read(e['path'], e['offset'], e['length'])
+            try:
+                d = r.read(e['path'], e['offset'], e['length'])
+            except (FileNotFoundError, PermissionError):
+                missing.add(e['path'])
+                skipped += 1
+                skipped_bytes += e['length']
+                continue
             lat.append(time.perf_counter() - t)
             crc = zlib.crc32(d, crc)
             nbytes += len(d)
@@ -103,7 +110,8 @@ def replay(events, unbuffered=False):
     total, s = sum(lat), sorted(lat)
     return dict(mode='unbuffered' if unbuffered else 'buffered', requests=len(lat), bytes=nbytes, crc32=crc,
                 total_s=total, throughput_mib_s=nbytes / MIB / total if total else None,
-                p50_ms=_pct(s, 50) * 1e3, p95_ms=_pct(s, 95) * 1e3, p99_ms=_pct(s, 99) * 1e3)
+                p50_ms=_pct(s, 50) * 1e3, p95_ms=_pct(s, 95) * 1e3, p99_ms=_pct(s, 99) * 1e3,
+                missing_files=len(missing), skipped_requests=skipped, skipped_bytes=skipped_bytes)
 
 
 def main(argv=None):

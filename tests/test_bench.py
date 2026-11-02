@@ -41,6 +41,16 @@ class BenchTests(unittest.TestCase):
         rb, ru = replay.replay(self.events), replay.replay(self.events, unbuffered=True)
         self.assertEqual((rb['crc32'], rb['bytes']), (ru['crc32'], ru['bytes']))
 
+    def test_replay_skips_missing_files(self):
+        gone = str(Path(self.tmp.name) / 'gone' / 'msasn1.pdb')
+        events = self.events + [dict(path=gone, offset=0, length=4096, cost=8.0)] * 2
+        base = replay.replay(self.events)
+        for unbuffered in (False, True):
+            r = replay.replay(events, unbuffered)
+            self.assertEqual((r['missing_files'], r['skipped_requests'], r['skipped_bytes']), (1, 2, 8192))
+            self.assertEqual((r['requests'], r['bytes'], r['crc32']), (base['requests'], base['bytes'], base['crc32']))
+        self.assertEqual((base['missing_files'], base['skipped_requests'], base['skipped_bytes']), (0, 0, 0))
+
     def test_cache_control_non_admin(self):
         with mock.patch.object(cache_control, 'is_admin', return_value=False):
             p = cache_control.purge_standby()

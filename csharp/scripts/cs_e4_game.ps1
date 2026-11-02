@@ -10,6 +10,7 @@
   plan (zone sized from the hot bytes) -> SHA-256 of the planned files -> cold replay x Runs (standby purge before each run) ->
   probe -> apply --dry-run -> apply --execute -> verify -> purge + SHA-256 again (must be identical) ->
   cold replay x Runs, cold prefetch + replay x Runs (prefetch and replay seconds kept apart).
+  -TraceJson <path>: skip step 1 (no live trace, no waiting for the game); the file is copied to the result folder as trace.json.
   -SkipApply: trace, plan and the "before" measurement only; nothing is moved.
   The game must not be running when anything is measured or moved; apply refuses to start while the process exists.
   Results: <repo>\results\csharp_e4_<yyyyMMdd_HHmmss>\summary.json and README.txt (revert command, NOT run by the script).
@@ -28,6 +29,7 @@ param(
     [string]$Python = 'python',
     [string]$AsterExe = '',
     [string]$Repo = '',
+    [string]$TraceJson = '',
     [switch]$SkipApply
 )
 Set-StrictMode -Version Latest
@@ -47,6 +49,7 @@ if ($Root -notmatch '^[A-Za-z]:\\[^\\]+$') { throw "Root must look like X:\Folde
 if (-not (Test-Path -LiteralPath $GameExe -PathType Leaf)) { throw "game exe not found: $GameExe" }
 if (-not $GameExe.StartsWith("$Root\", [StringComparison]::OrdinalIgnoreCase)) { throw "GameExe must be inside ${Root}: $GameExe" }
 if ($Runs -lt 1 -or $MaxZoneMiB -lt 16 -or $WaitGameSeconds -lt 30) { throw 'Runs >= 1, MaxZoneMiB >= 16, WaitGameSeconds >= 30 required' }
+if ($TraceJson -and -not (Test-Path -LiteralPath $TraceJson -PathType Leaf)) { throw "TraceJson not found: $TraceJson" }
 $letter = $Root.Substring(0, 1)
 $exeName = Split-Path -Leaf $GameExe
 $gameName = [System.IO.Path]::GetFileNameWithoutExtension($GameExe)
@@ -54,7 +57,7 @@ $gameName = [System.IO.Path]::GetFileNameWithoutExtension($GameExe)
 $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $out = Join-Path $Repo "results\csharp_e4_$stamp"
 New-Item -ItemType Directory -Force -Path $out | Out-Null
-$traceJson = Join-Path $out 'trace.json'
+$traceOut = Join-Path $out 'trace.json'
 $stopFile = Join-Path $out 'live.stop'
 $liveOut = Join-Path $out 'trace-live-stdout.txt'
 $liveErr = Join-Path $out 'trace-live-stderr.txt'
@@ -63,7 +66,7 @@ $plan = Join-Path $out 'plan.json'
 $prefetchJson = "$plan.prefetch.json"
 $journal = Join-Path $out 'journal.jsonl'
 $Mib = 1MB
-$summary = [ordered]@{ game = $GameExe; root = $Root; runs = $Runs; max_zone_mib = $MaxZoneMiB; repo = $Repo; skip_apply = [bool]$SkipApply }
+$summary = [ordered]@{ game = $GameExe; root = $Root; runs = $Runs; max_zone_mib = $MaxZoneMiB; repo = $Repo; skip_apply = [bool]$SkipApply; trace_json_reused = $TraceJson }
 $live = $null
 $label = ''
 $exitCode = 0
@@ -104,7 +107,7 @@ function Measure-Cold([string]$Tag, [bool]$Prefetch) {
             if ($pf.errors -ne 0 -or $pf.bytes -le 0) { throw "prefetch read errors=$($pf.errors) bytes=$($pf.bytes)" }
             $pfS = [double]$pf.seconds; $pfB = [int64]$pf.bytes
         }
-        $r = Invoke-Tool "$Tag-replay$i" $Python @('-X', 'utf8', '-m', 'bench.replay', '--trace', $traceJson) | ConvertFrom-Json
+        $r = Invoke-Tool "$Tag-replay$i" $Python @('-X', 'utf8', '-m', 'bench.replay', '--trace', $traceOut) | ConvertFrom-Json
         $rows += [pscustomobject]@{ prefetch_s = $pfS; prefetch_bytes = $pfB; replay_s = [double]$r.total_s; total_s = $pfS + [double]$r.total_s }
     }
     return [ordered]@{
@@ -122,7 +125,7 @@ function Get-Manifest([string[]]$Paths) {
 }
 
 function New-Plan([int]$ZoneMib) {
-    return Invoke-Tool "plan-z$ZoneMib" $AsterExe @('plan', '--trace', $traceJson, '--origin-root', $Root, '--zone-mib', "$ZoneMib", '--out', $plan) | ConvertFrom-Json
+    return Invoke-Tool "plan-z$ZoneMib" $AsterExe @('plan', '--trace', $traceOut, '--origin-root', $Root, '--zone-mib', "$ZoneMib", '--out', $plan) | ConvertFrom-Json
 }
 
 function Save-Readme {
@@ -161,65 +164,73 @@ try {
     Write-Host "volume ${letter}: label='$label' disk='$diskModel' bus=$busType"
     Assert-GameClosed 'the trace'
 
-    Write-Host '== 1. live trace'
-    $argText = (@('trace', '--live', '--exe', $exeName, '--origin-root', $Root, '--out', $traceJson, '--stop-file', $stopFile) |
-        ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
-    [System.IO.File]::WriteAllBytes($liveIn, [byte[]]@())  # empty stdin: an Enter keypress must not stop the trace
-    $live = Start-Process -FilePath $AsterExe -ArgumentList $argText -RedirectStandardInput $liveIn -RedirectStandardOutput $liveOut -RedirectStandardError $liveErr -PassThru -WindowStyle Hidden
-    $null = $live.Handle  # PS 5.1 loses ExitCode of a -PassThru process unless the handle is read right away
-    Start-Sleep -Seconds 3
-    if ($live.HasExited) {
-        throw "live trace exited right away (exit $($live.ExitCode)): $((Get-Content -LiteralPath $liveOut, $liveErr -Raw -ErrorAction SilentlyContinue) -join ' ')"
+    $union = $null; $lost = $null; $liveLine = $null
+    if ($TraceJson) {
+        Write-Host "== 1. live trace skipped, reusing $TraceJson"
+        Copy-Item -LiteralPath $TraceJson -Destination $traceOut -Force
+    } else {
+        Write-Host '== 1. live trace'
+        $argText = (@('trace', '--live', '--exe', $exeName, '--origin-root', $Root, '--out', $traceOut, '--stop-file', $stopFile) |
+            ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
+        [System.IO.File]::WriteAllBytes($liveIn, [byte[]]@())  # empty stdin: an Enter keypress must not stop the trace
+        $live = Start-Process -FilePath $AsterExe -ArgumentList $argText -RedirectStandardInput $liveIn -RedirectStandardOutput $liveOut -RedirectStandardError $liveErr -PassThru -WindowStyle Hidden
+        $null = $live.Handle  # PS 5.1 loses ExitCode of a -PassThru process unless the handle is read right away
+        Start-Sleep -Seconds 3
+        if ($live.HasExited) {
+            throw "live trace exited right away (exit $($live.ExitCode)): $((Get-Content -LiteralPath $liveOut, $liveErr -Raw -ErrorAction SilentlyContinue) -join ' ')"
+        }
+        Write-Host ''
+        Write-Host '################################################################' -ForegroundColor Yellow
+        Write-Host "  지금 $gameName 를 실행해 첫 맵 로딩까지 간 뒤 게임을 종료하십시오" -ForegroundColor Yellow
+        Write-Host "  (최대 $WaitGameSeconds 초 안에 시작, 시작 뒤에도 같은 시간 안에 종료)" -ForegroundColor Yellow
+        Write-Host '################################################################' -ForegroundColor Yellow
+        Write-Host ''
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        while (@(Get-GameProcess).Count -eq 0) {
+            if ($live.HasExited) { throw 'live trace stopped by itself while waiting for the game' }
+            if ($sw.Elapsed.TotalSeconds -ge $WaitGameSeconds) { throw "game_not_started: no $gameName process within $WaitGameSeconds s" }
+            Start-Sleep -Milliseconds 500
+        }
+        Write-Host "$gameName started. Waiting for it to exit..."
+        $sw.Restart()
+        while (@(Get-GameProcess).Count -gt 0) {
+            if ($live.HasExited) { throw 'live trace stopped by itself while the game was running' }
+            if ($sw.Elapsed.TotalSeconds -ge $WaitGameSeconds) { throw "game_still_running after $WaitGameSeconds s: close it and run the script again" }
+            Start-Sleep -Milliseconds 500
+        }
+        Write-Host "$gameName exited. Stopping the trace in 5 s..."
+        Start-Sleep -Seconds 5
+        while (@(Get-GameProcess).Count -gt 0) {  # the game came back (launcher restart): keep waiting
+            if ($live.HasExited) { throw 'live trace stopped by itself while the game was running' }
+            if ($sw.Elapsed.TotalSeconds -ge $WaitGameSeconds) { throw "game_still_running after $WaitGameSeconds s: close it and run the script again" }
+            Start-Sleep -Milliseconds 500
+        }
+        New-Item -ItemType File -Path $stopFile | Out-Null
+        if (-not $live.WaitForExit(120000)) { throw 'live trace did not finish within 120 s after the stop file' }
+        if ($live.ExitCode -ne 0) { throw "live trace failed (exit $($live.ExitCode)): $((Get-Content -LiteralPath $liveOut, $liveErr -Raw -ErrorAction SilentlyContinue) -join ' ')" }
+        $liveText = Get-Content -LiteralPath $liveOut -Raw -Encoding UTF8
+        $lost = $null
+        if ($liveText -match "'events_lost': (\d+)") { $lost = [int64]$Matches[1] }
+        $liveLine = @($liveText -split "`r?`n" | Where-Object { $_ -match '^live \{' }) | Select-Object -Last 1
+        $unionLine = @($liveText -split "`r?`n" | Where-Object { $_ -match '^\{"union"' }) | Select-Object -Last 1
+        if (-not (Test-Path -LiteralPath $traceOut) -or -not $unionLine) { throw "trace.json was not written: see $liveOut" }
+        $union = $unionLine | ConvertFrom-Json
     }
-    Write-Host ''
-    Write-Host '################################################################' -ForegroundColor Yellow
-    Write-Host "  지금 $gameName 를 실행해 첫 맵 로딩까지 간 뒤 게임을 종료하십시오" -ForegroundColor Yellow
-    Write-Host "  (최대 $WaitGameSeconds 초 안에 시작, 시작 뒤에도 같은 시간 안에 종료)" -ForegroundColor Yellow
-    Write-Host '################################################################' -ForegroundColor Yellow
-    Write-Host ''
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    while (@(Get-GameProcess).Count -eq 0) {
-        if ($live.HasExited) { throw 'live trace stopped by itself while waiting for the game' }
-        if ($sw.Elapsed.TotalSeconds -ge $WaitGameSeconds) { throw "game_not_started: no $gameName process within $WaitGameSeconds s" }
-        Start-Sleep -Milliseconds 500
-    }
-    Write-Host "$gameName started. Waiting for it to exit..."
-    $sw.Restart()
-    while (@(Get-GameProcess).Count -gt 0) {
-        if ($live.HasExited) { throw 'live trace stopped by itself while the game was running' }
-        if ($sw.Elapsed.TotalSeconds -ge $WaitGameSeconds) { throw "game_still_running after $WaitGameSeconds s: close it and run the script again" }
-        Start-Sleep -Milliseconds 500
-    }
-    Write-Host "$gameName exited. Stopping the trace in 5 s..."
-    Start-Sleep -Seconds 5
-    while (@(Get-GameProcess).Count -gt 0) {  # the game came back (launcher restart): keep waiting
-        if ($live.HasExited) { throw 'live trace stopped by itself while the game was running' }
-        if ($sw.Elapsed.TotalSeconds -ge $WaitGameSeconds) { throw "game_still_running after $WaitGameSeconds s: close it and run the script again" }
-        Start-Sleep -Milliseconds 500
-    }
-    New-Item -ItemType File -Path $stopFile | Out-Null
-    if (-not $live.WaitForExit(120000)) { throw 'live trace did not finish within 120 s after the stop file' }
-    if ($live.ExitCode -ne 0) { throw "live trace failed (exit $($live.ExitCode)): $((Get-Content -LiteralPath $liveOut, $liveErr -Raw -ErrorAction SilentlyContinue) -join ' ')" }
-    $liveText = Get-Content -LiteralPath $liveOut -Raw -Encoding UTF8
-    $lost = $null
-    if ($liveText -match "'events_lost': (\d+)") { $lost = [int64]$Matches[1] }
-    $liveLine = @($liveText -split "`r?`n" | Where-Object { $_ -match '^live \{' }) | Select-Object -Last 1
-    $unionLine = @($liveText -split "`r?`n" | Where-Object { $_ -match '^\{"union"' }) | Select-Object -Last 1
-    if (-not (Test-Path -LiteralPath $traceJson) -or -not $unionLine) { throw "trace.json was not written: see $liveOut" }
-    $union = $unionLine | ConvertFrom-Json
-    $rows = Get-Content -LiteralPath $traceJson -Raw -Encoding UTF8 | ConvertFrom-Json
+    $rows = Get-Content -LiteralPath $traceOut -Raw -Encoding UTF8 | ConvertFrom-Json
     $rows = @($rows)  # PS 5.1: a JSON array comes back as ONE object; @() on the variable keeps the array
     if ($rows.Count -eq 0) { throw 'trace has no events: the game was not seen or no read was inside the root' }
     $r0 = $rows[0]
     foreach ($k in 'path', 'offset', 'length') { if (-not ($r0.PSObject.Properties.Name -contains $k)) { throw "trace row has no '$k': bench.replay cannot read it" } }
     $traceBytes = [int64]($rows | Measure-Object -Property length -Sum).Sum
+    $rowCount = $rows.Count
     $rows = $null
-    $summary.trace = [ordered]@{ file = $traceJson; file_bytes = (Get-Item -LiteralPath $traceJson).Length; events = [int64]$union.union_events
+    $summary.trace = [ordered]@{ file = $traceOut; file_bytes = (Get-Item -LiteralPath $traceOut).Length; events = $(if ($union) { [int64]$union.union_events } else { $rowCount }); reused_from = $(if ($TraceJson) { $TraceJson } else { $null })
                                  read_bytes = $traceBytes; events_lost = $lost; live_line = $liveLine
                                  format = 'list of {path,offset,length,cost}: read as is by bench.replay (python -X utf8)' }
-    Write-Host "trace: $($union.union_events) events, $traceBytes bytes, events_lost=$lost"
+    Write-Host "trace: $($summary.trace.events) events, $traceBytes bytes, events_lost=$lost"
     if ($lost -gt 0) { Write-Warning "events_lost=$lost : some reads may be missing from the trace" }
 
+    Assert-GameClosed 'the plan and the measurements'
     Write-Host '== 2. plan (zone sized from the hot bytes)'
     $p1 = New-Plan $MaxZoneMiB
     $hot = [int64]$p1.stats.hot_bytes

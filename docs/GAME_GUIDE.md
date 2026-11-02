@@ -316,6 +316,8 @@ This value is for a warm cache, so it is not a speed reference. If `errors` is n
 ## Limits
 
 - **The first run has no gain.** The run that collects the trace and the relocation time are pure cost. The gain comes only from repeated loads after relocation.
+- **Is the first run required?** Relocation needs a trace from a run, so it cannot start without one. Without a trace, automatic mode still prewarms: the whole folder if it fits the RAM budget, otherwise the files of the game's engine profile (`auto.full_prewarm`, `auto.engine_profiles`, both on by default). Their effect has not been measured yet. A trace recorded on another PC can be brought in with `aster profile import` (see `aster profile export`). The README FAQ has the same entry.
+- First-run read-ahead (E7) stays off by default until it is re-measured. See [RESULTS_SUMMARY.md](RESULTS_SUMMARY.md#e7-first-run-read-ahead).
 - **The larger the hot set, the larger the prefetch floor time.** With sequential reads at about 160 MB/s, the floor is bytes ÷ 160 MB/s (on a 1 GB = 1000 MB basis; measured in GiB it is about 7% more).
 
 | Hot set | Prefetch floor time |

@@ -6,6 +6,7 @@ public static partial class LauncherScan
 {
     private const string RiotClientExe = "RiotClientServices.exe";
     private const long MinUninstallBytes = 1L << 30;
+    private const long MinGameContentBytes = 256L << 20; // 이 크기 이상의 파일이나 하위 게임 폴더가 없으면 런처 폴더로 봄
 
     /// 런처 본체의 프로그램 이름: 이 exe 가 든 폴더는 게임이 아니라 런처 (제거 목록에서 뺌).
     public static readonly IReadOnlyList<string> LauncherPrograms =
@@ -20,7 +21,7 @@ public static partial class LauncherScan
     private static readonly Dictionary<string, (string Display, string[] Exes)> RiotProducts = new(StringComparer.OrdinalIgnoreCase)
     {
         ["league_of_legends"] = ("League of Legends", LeagueExes),
-        ["teamfighttactics"] = ("Teamfight Tactics", LeagueExes),
+        ["teamfighttactics"] = ("Teamfight Tactics", ["TFTClient-Win64-Shipping.exe", .. LeagueExes]),
         ["valorant"] = ("VALORANT", ["VALORANT.exe", "VALORANT-Win64-Shipping.exe"]),
         ["bacon"] = ("Legends of Runeterra", []),
         ["lion"] = ("2XKO", []),
@@ -52,7 +53,7 @@ public static partial class LauncherScan
             string product = id[..^".live".Length];
             (string display, string[] names) = RiotProducts.GetValueOrDefault(product, (product, Array.Empty<string>()));
             string[] found = names.Where(n => files.Any(f => Path.GetFileName(f.Path).Equals(n, StringComparison.OrdinalIgnoreCase))).ToArray();
-            string? exe = found.Length > 0 ? files.First(f => Path.GetFileName(f.Path).Equals(found[0], StringComparison.OrdinalIgnoreCase)).Path : PickExe(files);
+            string? exe = found.Length > 0 ? files.First(f => Path.GetFileName(f.Path).Equals(found[0], StringComparison.OrdinalIgnoreCase)).Path : PickGameExe(files);
             if (exe is not null)
             {
                 yield return new Raw(display, "riot", dir, exe, RiotClientExe) { Extra = found.Skip(1).ToList(), AntiCheat = "vanguard" }; // Riot 게임은 모두 Vanguard
@@ -68,7 +69,7 @@ public static partial class LauncherScan
             foreach (string game in env.SubDirs(letter + @"\XboxGames"))
             {
                 string content = Path.Combine(game, "Content");
-                if (env.DirectoryExists(content) && ExeList(env, content) is { } files && PickExe(files) is { } exe)
+                if (env.DirectoryExists(content) && ExeList(env, content) is { } files && PickGameExe(files) is { } exe)
                 {
                     yield return new Raw(Path.GetFileName(game), "xbox", content, exe, null);
                 }
@@ -77,7 +78,8 @@ public static partial class LauncherScan
     }
 
     // 프로그램 제거 목록: HDD 의 시스템 볼륨 밖에서 1 GiB 이상이고 exe 가 있으며 일반 소프트웨어 게시자나 런처가 아닌 설치 폴더. 앞선 결과와 겹치는 폴더는 뺌.
-    private static IEnumerable<Raw> Uninstall(ILauncherEnv env, IReadOnlyCollection<string> known, Func<string, bool?> isHdd)
+    // 런처형 폴더 (exe 가 런처형 이름뿐이거나, 256 MiB 이상 파일과 큰 하위 게임 폴더가 모두 없음) 는 등록하지 않고 skipped 에 남깁니다.
+    private static IEnumerable<Raw> Uninstall(ILauncherEnv env, IReadOnlyCollection<string> known, Func<string, bool?> isHdd, List<SkippedFolder> skipped)
     {
         var taken = new List<string>(known);
         foreach (UninstallEntry e in env.UninstallEntries())
@@ -86,8 +88,14 @@ public static partial class LauncherScan
             if (dir is null || dir.Length <= 3 || dir[..2].Equals(env.SystemDrive, StringComparison.OrdinalIgnoreCase)
                 || SoftwarePublishers.Any(p => HasWord(e.Publisher, p)) || taken.Any(t => Overlaps(t, dir))
                 || isHdd(dir[..2].ToUpperInvariant()) != true || !env.DirectoryExists(dir) || !env.FolderAtLeast(dir, MinUninstallBytes)
-                || ExeList(env, dir) is not { } files || files.Any(f => LauncherPrograms.Contains(Path.GetFileName(f.Path), StringComparer.OrdinalIgnoreCase)) || PickExe(files) is not { } exe)
+                || ExeList(env, dir) is not { } files || files.Count == 0 || files.Any(f => LauncherPrograms.Contains(Path.GetFileName(f.Path), StringComparer.OrdinalIgnoreCase)))
             {
+                continue;
+            }
+
+            if (PickExe(files) is not { } exe || !HasGameContent(env, dir))
+            {
+                skipped.Add(new SkippedFolder(e.DisplayName, dir));
                 continue;
             }
 
@@ -95,6 +103,11 @@ public static partial class LauncherScan
             yield return new Raw(e.DisplayName, "uninstall", dir, exe, null);
         }
     }
+
+    // 게임 내용이 있는 폴더: 256 MiB 이상 파일이 있거나, 그만큼 큰 하위 폴더에 게임 exe 가 있음.
+    private static bool HasGameContent(ILauncherEnv env, string dir) =>
+        env.FileAtLeast(dir, MinGameContentBytes)
+        || env.SubDirs(dir).Any(sub => env.FolderAtLeast(sub, MinGameContentBytes) && ExeList(env, sub) is { } files && PickExe(files) is not null);
 
     // 폴더의 exe 목록, 접근 거부 등으로 읽을 수 없으면 null.
     private static List<(string Path, long Size)>? ExeList(ILauncherEnv env, string dir)

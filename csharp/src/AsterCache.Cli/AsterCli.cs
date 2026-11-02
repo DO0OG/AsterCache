@@ -28,6 +28,9 @@ public static class AsterCli
         new("status", StatusCommand.Options, StatusCommand.Run),
         new("stream-bench", StreamBenchCommand.Options, StreamBenchCommand.Run),
         new("discover", DiscoverCommand.Options, DiscoverCommand.Run),
+        new("learn", LearnCommand.Options, LearnCommand.Run),
+        new("profile export", ProfileCommand.ExportOptions, ProfileCommand.Export),
+        new("profile import", ProfileCommand.ImportOptions, ProfileCommand.Import),
     ];
 
     /// 전역 옵션 (명령 앞에, 순서 무관): `--result-file <경로>` 는 표준 출력 내용을 그 파일에도 씁니다 (승격 실행처럼 표준 출력을 가져올 수 없을 때 결과를 받는 길).
@@ -60,7 +63,9 @@ public static class AsterCli
             return args.Count == 0 ? 2 : 0;
         }
 
-        Command? cmd = Commands.FirstOrDefault(c => c.Name == args[0]);
+        // "profile export" 처럼 두 단어인 명령은 앞 두 인자를 이름으로 봅니다.
+        string cmdName = args[0] == "profile" && args.Count > 1 ? args[0] + " " + args[1] : args[0];
+        Command? cmd = Commands.FirstOrDefault(c => c.Name == cmdName);
         if (cmd is null)
         {
             stderr.WriteLine(L.Get(lang, "Cli_InvalidCommand", PyRepr.Str(args[0]), string.Join(", ", Commands.Select(c => PyRepr.Str(c.Name)))));
@@ -69,7 +74,7 @@ public static class AsterCli
 
         try
         {
-            ParsedArgs a = ArgParser.Parse(cmd.Options, args.Skip(1).ToList(), lang);
+            ParsedArgs a = ArgParser.Parse(cmd.Options, args.Skip(cmd.Name.Contains(' ') ? 2 : 1).ToList(), lang);
             return cmd.Relayout && !ValidRelayoutNumbers(a) ? Emit(stdout, new JObject { { "error", "invalid_argument" } }, 2) : cmd.Run(a, stdout);
         }
         catch (HelpRequestedException)

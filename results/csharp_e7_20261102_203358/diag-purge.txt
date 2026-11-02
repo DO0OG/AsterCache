@@ -1,0 +1,1 @@
+{'cold_method': 'standby_purge', 'unbuffered': False, 'purge': {'ok': True, 'is_admin': True, 'error': None}}

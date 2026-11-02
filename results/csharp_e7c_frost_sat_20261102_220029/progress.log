@@ -1,0 +1,9 @@
+﻿22:00:29 mode=frostpunk root=D:\Frostpunk trace=D:\Git\AsterCache\results\csharp_e4_20261102_111921\trace.json runs=3 order=A,B,B,A,A,B
+22:00:52 A1: replay 20.45 s 
+22:02:05 B1: replay 18.95 s read_ahead=127707956 hit=0.0
+22:03:00 B2: replay 18.11 s read_ahead=124562228 hit=0.0
+22:03:21 A2: replay 18.80 s 
+22:03:45 A3: replay 21.62 s 
+22:04:33 B3: replay 20.48 s read_ahead=126200628 hit=0.0007
+22:05:22 W (DiskIo capture): replay 18.62 s
+22:05:24 median A (no learn) 20.45 s, B (learn) 18.95 s, A/B = 1.079

@@ -1,0 +1,12 @@
+wpr.exe : 
+위치 D:\Git\AsterCache\csharp\scripts\cs_e7_learn.ps1:113 문자:9
++         & wpr.exe -start "$wprFile!AsterDiskIO" -filemode 2>&1 | Out- ...
++         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+	The filename, directory name, or volume label syntax is incorrect.
+
+
+	Error code: 0x8007007b
+

@@ -1,0 +1,75 @@
+﻿{
+    "other_python_processes":  10,
+    "mode":  "frostpunk",
+    "root":  "D:\\Frostpunk",
+    "trace":  "D:\\Git\\AsterCache\\results\\csharp_e4_20261102_111921\\trace.json",
+    "aster":  "D:\\Git\\AsterCache\\csharp\\publish\\gui\\aster.exe",
+    "runs":  3,
+    "learn_seconds_cap":  45,
+    "rows":  [
+                 {
+                     "arm":  "A",
+                     "run":  1,
+                     "replay_s":  18.883403201063629
+                 },
+                 {
+                     "arm":  "B",
+                     "run":  1,
+                     "replay_s":  39.567083101006574,
+                     "read_ahead_bytes":  2330101959,
+                     "game_read_bytes":  2430406656,
+                     "hit_ratio":  0.5373,
+                     "events":  37116,
+                     "events_lost":  0,
+                     "resolved_reads":  41730,
+                     "late_reads":  0,
+                     "unresolved_reads":  440,
+                     "sequential_files":  13,
+                     "hit_bytes":  1305870336
+                 },
+                 {
+                     "arm":  "B",
+                     "run":  2,
+                     "replay_s":  32.895058600086486,
+                     "read_ahead_bytes":  2417608207,
+                     "game_read_bytes":  2353860608,
+                     "hit_ratio":  0.579,
+                     "events":  35948,
+                     "events_lost":  0,
+                     "resolved_reads":  44186,
+                     "late_reads":  0,
+                     "unresolved_reads":  437,
+                     "sequential_files":  13,
+                     "hit_bytes":  1362821120
+                 },
+                 {
+                     "arm":  "A",
+                     "run":  2,
+                     "replay_s":  23.42906999876141
+                 },
+                 {
+                     "arm":  "A",
+                     "run":  3,
+                     "replay_s":  18.982024500699481
+                 },
+                 {
+                     "arm":  "B",
+                     "run":  3,
+                     "replay_s":  37.403287300126976,
+                     "read_ahead_bytes":  2183278253,
+                     "game_read_bytes":  2429423616,
+                     "hit_ratio":  0.4951,
+                     "events":  37101,
+                     "events_lost":  0,
+                     "resolved_reads":  43691,
+                     "late_reads":  0,
+                     "unresolved_reads":  369,
+                     "sequential_files":  13,
+                     "hit_bytes":  1202827939
+                 }
+             ],
+    "wpr_replay_s":  32.191754999716068,
+    "median_a_s":  18.982024500699481,
+    "median_b_s":  37.403287300126976,
+    "speedup":  0.507
+}

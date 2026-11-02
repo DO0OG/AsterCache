@@ -1,0 +1,13 @@
+{
+ "root": "D:\\AsterBench_e7",
+ "files": 64,
+ "total_bytes": 2135949312,
+ "slice_mib": 1,
+ "extents_total": 350,
+ "extents_per_file_min": 4,
+ "extents_per_file_max": 7,
+ "hot_runs": 948,
+ "hot_bytes": 243531776,
+ "lcn_min": 75529092,
+ "lcn_max": 389963126
+}

@@ -1,9 +1,12 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using AsterCache.Core;
+using AsterCache.Core.Apply;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Plan;
+using AsterCache.Core.Prefetch;
+using AsterCache.Core.Profiles;
 using AsterCache.Core.Settings;
 using AsterCache.Prefetch;
 using AsterCache.Windows;
@@ -77,11 +80,31 @@ public sealed class PrewarmEnv
     /// 파일들을 읽기 전용 매핑으로 고정.
     public Func<IReadOnlyList<string>, PinHandle> OpenPin { get; init; } = _ => new PinHandle(new Nothing(), 0, 0);
 
-    /// 핫 집합 몇 곳을 읽어 잰 1 MiB 평균 읽기 시간 (ms), 읽을 수 없으면 null.
-    public Func<GameSettings, double?> ProbeReadMs { get; init; } = _ => null;
+    /// 핫 집합 몇 곳을 읽어 잰 결과 (CacheProbe), 읽을 수 없으면 null.
+    public Func<GameSettings, ProbeResult?> ProbeReadMs { get; init; } = _ => null;
+
+    /// 원시 트레이스 (자동 트레이스 결과) 나 boot 트레이스 (가져온 프로필) 가 있는가. 기록 없는 게임의 통째·프로필 예열은 이 파일과 TraceExists 가 모두 없을 때만 합니다.
+    public Func<GameSettings, bool> RawTraceExists { get; init; } = _ => false;
+
+    /// 기록 없는 게임의 예열 계획 (게임, 통째 상한 바이트 (0 = 끔), 프로필 예산 바이트 (0 = 끔), 취소). null 이면 이 기능 없음 (기본).
+    public Func<GameSettings, long, long, CancellationToken, ColdPlan>? ColdPlanner { get; init; }
+
+    /// 계획을 읽습니다 (묶음 사이에서 취소를 봄): (통계, 끝까지 읽었는가).
+    public Func<IReadOnlyList<ReadOp>, CancellationToken, (StreamStats Stats, bool Complete)> ColdRead { get; init; } = (ops, ct) => FolderWarm.Read(ops, ct);
+
+    /// 기록 없는 예열이 건드리면 안 되는 드라이브면 이유 (시스템 볼륨·SSD·판정 불가), 아니면 null. 기본은 거부 없음 (시험용), Create 는 진짜 판정.
+    public Func<GameSettings, string?> ColdRefusal { get; init; } = _ => null;
+
+    /// 기록 없이 예열한 게임의 표본 (경로, 오프셋, 길이) 들을 읽어 잰 결과 (CacheProbe), 읽을 수 없으면 null.
+    public Func<IReadOnlyList<(string Path, long Offset, int Bytes)>, ProbeResult?> ProbeSamples { get; init; } = s => CacheProbe.Probe(s);
 
     public static PrewarmEnv Create() => new()
     {
+        ColdRefusal = g => AutoEnv.DriveRefusal(g.OriginRoot, Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.Windows))![..2].ToUpperInvariant(), letter => DiskInfo.Query(letter).IncursSeekPenalty),
+        RawTraceExists = g => AutoTracer.PlanTracePath(g, File.Exists) is not null,
+        ColdPlanner = (g, full, profile, ct) => PlanGuards.Inside(g.OriginRoot, g.AllowedRoots, RealPaths.Real)
+            ? FolderWarm.Plan(g.OriginRoot, g.ExeNames, full, profile, EngineProfiles.Builtin, ct)
+            : throw new PlanRejectedException("origin_root resolves outside allowed roots"),
         PhysicalRamBytes = SystemMemory.TotalBytes,
         PinPaths = g => PrefetchStreamer.PinPaths(g, PrefetchStreamer.PinCapBytes(PrefetchStreamer.ZoneBytes(g), SystemMemory.TotalBytes(), SystemMemory.AvailableMib(), g.Prewarm.MinFreeRamMib)),
         LauncherRunning = () => ProcessSnapshot.IsRunning(LauncherExes.All),
@@ -92,7 +115,7 @@ public sealed class PrewarmEnv
             FilePin pin = FilePin.Open(paths);
             return new PinHandle(pin, pin.Count, pin.Skipped);
         },
-        ProbeReadMs = PrefetchStreamer.ProbeReadMs,
+        ProbeReadMs = g => File.Exists(g.Trace) ? PrefetchStreamer.ProbeReadMs(g) : null, // 기록 없이 예열한 게임은 비교할 핫 집합이 없음
         AvailableRamMib = SystemMemory.AvailableMib,
         GameRunning = g => ProcessSnapshot.IsRunning(g.ExeNames),
         ZoneBytes = g => PrefetchStreamer.ZoneBytes(g) is { } z ? Math.Min(z, (long)g.MaxStreamMib << 20) : null,
@@ -110,23 +133,37 @@ internal sealed class Nothing : IDisposable
     }
 }
 
-public sealed record PrewarmResult(string Game, bool Ran, string? SkipReason, StreamStats? Stats, DateTimeOffset At);
+public sealed record PrewarmResult(string Game, bool Ran, string? SkipReason, StreamStats? Stats, DateTimeOffset At)
+{
+    /// 기록 없이 예열했을 때의 방식 이름표 ("full" 또는 "profile Unity"), 핫 집합 예열이면 null.
+    public string? Mode { get; init; }
+}
 
 /// 사전 예열: 서비스 시작 때와 트리거 프로그램이 뜰 때, 게임의 존 순서 스트림 (기존 IGameStreamer, pvm) 을 돌려 핫 집합을 RAM 에 올립니다.
 /// 결과는 service.log 와 상태 파일 (aster status 가 읽음) 에 남깁니다. 예열 중 게임이 시작돼도 스트림은 멈추지 않습니다 (같은 데이터).
 public sealed class Prewarmer
 {
+    /// 게임 시작으로 취소돼 스트림을 시작하지 않았다는 표시 (PrewarmResult.SkipReason).
+    public const string Cancelled = "cancelled";
+
     private volatile IReadOnlyList<GameSettings> _games;
     private readonly IGameStreamer _streamer;
     private readonly PrewarmEnv _env;
     private readonly ILog _log;
     private readonly string? _statusPath;
     private readonly Func<DateTimeOffset> _now;
-    private readonly object _gate = new();
+    private readonly object _gate = new(); // _last 만 보호 (짧게): 스트림이 도는 동안에도 LastWarmed·Warmed 가 막히지 않게
+    private readonly object _run = new(); // 예열을 한 번에 하나로
     private readonly Dictionary<string, DateTimeOffset> _last = new(StringComparer.OrdinalIgnoreCase);
     private readonly JObject _status = new();
     private readonly PinKeeper _pins;
     private readonly Rewarmer _rewarm;
+    private readonly Dictionary<string, long> _coldMib = new(StringComparer.OrdinalIgnoreCase); // 기록 없이 예열해 RAM 에 올려 둔 양 (MiB), _gate 로 보호
+    private readonly Dictionary<string, IReadOnlyList<(string Path, long Offset, int Bytes)>> _coldSamples = new(StringComparer.OrdinalIgnoreCase); // 기록 없이 예열한 파일 목록에서 고른 재예열 점검 표본, _gate 로 보호
+    private readonly HashSet<string> _refusedLogged = new(StringComparer.OrdinalIgnoreCase); // 드라이브 거부를 이미 로그한 게임, _gate 로 보호
+    private volatile AutoSettings _auto = AutoSettings.Default;
+    private volatile string? _streaming; // 핫 집합 스트림이 도는 게임
+    private volatile bool _keepStream; // 그 게임이 시작돼 (같은 데이터를 동시에 읽으므로) 취소 신호에도 끝까지 읽기로 한 표시
 
     public Prewarmer(IReadOnlyList<GameSettings> games, IGameStreamer streamer, PrewarmEnv env, ILog log, string? statusPath = null, Func<DateTimeOffset>? now = null)
     {
@@ -140,15 +177,70 @@ public sealed class Prewarmer
         _rewarm = new Rewarmer(this, env, log, _now);
     }
 
+    /// 기록 없이 (통째·프로필) 예열에 성공했을 때: 게임과 방식 이름표.
+    public event Action<GameSettings, string>? ColdWarmed;
+
+    /// 핫 집합 예열의 진행 (묶음마다, ProgressEvery 에 한 번 이하): 게임, 읽은 MiB, 총 MiB.
+    public event Action<GameSettings, long, long>? Progress;
+
+    /// 핫 집합 스트림이 끝났을 때 (취소·실패 포함): 게임, 끝까지 읽었는가.
+    public event Action<GameSettings, bool>? StreamEnded;
+
+    public static readonly TimeSpan ProgressEvery = TimeSpan.FromSeconds(10);
+
+    /// 게임 exe 가 떴을 때 (스트림 취소보다 먼저): 그 게임의 예열 스트림이 도는 중이면 취소하지 않고 끝까지 읽게 하고 (게임과 같은 데이터를 동시에 읽는 효과),
+    /// 기록 없는 예열이 잡아 둔 예산은 풉니다 (게임이 돌면 RAM 이 달라지므로 다음 예산 계산에 쓰지 않음).
+    public void NoteGameStart(string game)
+    {
+        if (string.Equals(_streaming, game, StringComparison.OrdinalIgnoreCase))
+        {
+            _keepStream = true;
+        }
+
+        lock (_gate)
+        {
+            _coldMib.Remove(game);
+        }
+    }
+
+    /// 자동 모드 설정 (full_prewarm 등)을 바꿉니다. 시작 때와 설정을 다시 읽을 때 부름.
+    public void SetAuto(AutoSettings auto) => _auto = auto;
+
+    /// 이 게임이 기록 없는 예열 대상인가: 기능이 켜져 있고 (자동 모드, full_prewarm 이나 engine_profiles) 원시 트레이스도 prefetch 기록도 없음.
+    public bool IsCold(GameSettings game)
+    {
+        AutoSettings a = _auto;
+        return _env.ColdPlanner is not null && a.Enabled && (a.FullPrewarm || a.EngineProfiles) && !_env.TraceExists(game) && !_env.RawTraceExists(game);
+    }
+
     /// 지금 고정을 들고 있는 게임 이름.
     public IReadOnlyCollection<string> Pinned => _pins.Held;
 
     internal IReadOnlyList<GameSettings> Games => _games;
 
+    /// 이 게임을 마지막으로 예열한 시각, 예열한 적이 없으면 null.
+    public DateTimeOffset? LastWarmed(string game)
+    {
+        lock (_gate)
+        {
+            return _last.TryGetValue(game, out DateTimeOffset at) ? at : null;
+        }
+    }
+
     /// 설정을 다시 읽었을 때 게임 목록만 바꿉니다 (쿨다운·상태는 유지). pin 이 꺼졌거나 빠진 게임의 고정은 풉니다.
     public void SetGames(IReadOnlyList<GameSettings> games)
     {
         _games = games;
+        lock (_gate)
+        {
+            foreach (string gone in _coldMib.Keys.Where(k => !games.Any(g => string.Equals(g.Name, k, StringComparison.OrdinalIgnoreCase))).ToList())
+            {
+                _coldMib.Remove(gone);
+                _coldSamples.Remove(gone);
+                _refusedLogged.Remove(gone);
+            }
+        }
+
         _pins.Reconcile(games);
     }
 
@@ -160,11 +252,11 @@ public sealed class Prewarmer
 
     public void Shutdown() => _pins.ReleaseAll("service stopping");
 
-    /// 주기 점검 (재적용 틱마다): 가용 RAM 이 모자라면 고정 해제, 예열 유지 주기가 되면 식은 게임을 다시 예열.
-    public void Tick(AutoSettings auto)
+    /// 주기 점검 (재적용 틱마다): 가용 RAM 이 모자라면 고정 해제, 예열 유지 주기가 되면 식은 게임을 다시 예열. ct 가 취소되면 (게임 시작) 시작하지 않은 예열은 하지 않습니다.
+    public void Tick(AutoSettings auto, CancellationToken ct = default)
     {
         _pins.CheckMemory(_games);
-        _rewarm.Tick(auto);
+        _rewarm.Tick(auto, ct);
     }
 
     /// 예열에 성공한 적이 있는 게임 (최근 순, 설정에 아직 있는 것만).
@@ -176,7 +268,16 @@ public sealed class Prewarmer
         }
     }
 
-    internal PrewarmResult RewarmGame(GameSettings game) => Guarded(game, "rewarm", pin: true, ignoreCooldown: true);
+    /// 기록 없이 예열한 게임의 재예열 점검 표본 (그 게임이 지금도 기록 없는 예열 대상이고 예열한 적이 있을 때만), 아니면 null.
+    internal IReadOnlyList<(string Path, long Offset, int Bytes)>? ColdSamples(GameSettings game)
+    {
+        lock (_gate)
+        {
+            return IsCold(game) && _coldSamples.TryGetValue(game.Name, out IReadOnlyList<(string, long, int)>? s) ? s : null;
+        }
+    }
+
+    internal PrewarmResult RewarmGame(GameSettings game, CancellationToken ct = default) => Guarded(game, "rewarm", pin: true, ignoreCooldown: true, ct);
 
     /// 이 프로세스가 어느 게임의 trigger_exes 에 들어 있는가 (대소문자 무시).
     public bool IsTrigger(string exeName) => _games.Any(g => IsTrigger(g, exeName));
@@ -184,50 +285,157 @@ public sealed class Prewarmer
     public static bool IsTrigger(GameSettings g, string exeName) => g.Prewarm.TriggerExes.Contains(exeName, StringComparer.OrdinalIgnoreCase);
 
     /// 서비스 시작 뒤: on_service_start 인 게임을 차례로.
-    public IReadOnlyList<PrewarmResult> RunServiceStart() => RunBatch(_games.Where(g => g.Prewarm.OnServiceStart), "service start");
+    /// recent (최근순) 를 주면 한 묶음으로 합칩니다: on_service_start 게임 먼저, 그다음 최근순 (중복 제거) — RAM 예산을 한 번만 씁니다.
+    public IReadOnlyList<PrewarmResult> RunServiceStart(IEnumerable<GameSettings>? recent = null, CancellationToken ct = default)
+    {
+        GameSettings[] first = _games.Where(g => g.Prewarm.OnServiceStart).ToArray();
+        IEnumerable<GameSettings> rest = (recent ?? []).Where(g => !first.Any(f => string.Equals(f.Name, g.Name, StringComparison.OrdinalIgnoreCase)));
+        return RunBatch(first.Concat(rest), "service start", ct: ct);
+    }
 
     /// 트리거 프로그램이 떴을 때: 그 프로그램을 trigger_exes 에 둔 게임을 차례로. narrow 가 있으면 그 목록에서 예열할 게임만 고릅니다.
-    public IReadOnlyList<PrewarmResult> OnProcessStart(ProcessStart start, Func<IReadOnlyList<GameSettings>, IEnumerable<GameSettings>>? narrow = null)
+    public IReadOnlyList<PrewarmResult> OnProcessStart(ProcessStart start, Func<IReadOnlyList<GameSettings>, IEnumerable<GameSettings>>? narrow = null, CancellationToken ct = default)
     {
         IReadOnlyList<GameSettings> hit = _games.Where(g => IsTrigger(g, start.ExeName)).ToList();
-        return RunBatch(narrow?.Invoke(hit) ?? hit, $"trigger {start.ExeName}", pin: !LauncherExes.Is(start.ExeName)); // 런처가 뜰 때는 고정하지 않음 (런처 업데이트가 파일을 고칠 수 있게)
+        return RunBatch(narrow?.Invoke(hit) ?? hit, $"trigger {start.ExeName}", pin: !LauncherExes.Is(start.ExeName), ct: ct); // 런처가 뜰 때는 고정하지 않음 (런처 업데이트가 파일을 고칠 수 있게)
     }
 
     /// 주어진 게임을 차례로 (한 게임의 실패가 나머지를 막지 않음).
     public IReadOnlyList<PrewarmResult> RunAll(IEnumerable<GameSettings> games, string why) => RunBatch(games, why);
 
-    // 한 묶음 안에서 존 크기 합이 (가용 RAM - 여유) 를 넘으면 그 뒤 게임은 건너뜁니다 (앞쪽 = 최근 순서가 우선). 첫 게임은 Run 의 자체 판단에 맡깁니다.
-    private IReadOnlyList<PrewarmResult> RunBatch(IEnumerable<GameSettings> games, string why, bool pin = true)
+    // 한 묶음의 예산 = min(물리 RAM / 4, 가용 RAM - 여유). 존 크기 합이 예산을 넘으면 그 뒤 게임은 건너뜁니다 (앞쪽 = 최근 순서가 우선).
+    // 서비스 시작·런처 시작이 같은 규칙입니다. 첫 게임의 가용 RAM 쪽 판단은 Run 의 자체 판단에 맡깁니다.
+    private IReadOnlyList<PrewarmResult> RunBatch(IEnumerable<GameSettings> games, string why, bool pin = true, CancellationToken ct = default)
     {
         var results = new List<PrewarmResult>();
+        IReadOnlyList<GameSettings> list = games as IReadOnlyList<GameSettings> ?? [.. games];
+        WarmHeads(list, ct);
         long avail = _env.AvailableRamMib();
-        long used = 0;
+        long physCap = _env.PhysicalRamBytes() is > 0 and long phys ? phys >> 22 : long.MaxValue; // MiB, 물리 RAM 의 1/4
+        long used = 0; // 핫 집합 예열의 MiB (기록 없는 예열은 _coldMib 가 셈)
         bool cut = false;
-        foreach (GameSettings g in games)
+        foreach (GameSettings g in list)
         {
             long zoneMib = ((_env.ZoneBytes(g) ?? 0) + (1 << 20) - 1) >> 20;
-            if (cut || (used > 0 && used + zoneMib > avail - g.Prewarm.MinFreeRamMib))
+            long held = used + ColdMib(null); // 이미 올린 양 (기록 없는 예열 포함)
+            if (cut || held + zoneMib > physCap || (held > 0 && held + zoneMib > avail - g.Prewarm.MinFreeRamMib))
             {
                 cut = true;
-                _log.Info($"{g.Name}: prewarm skipped (batch zones {used + zoneMib} MiB exceed available {avail} MiB - reserve {g.Prewarm.MinFreeRamMib} MiB) [{why}]");
+                _log.Info($"{g.Name}: prewarm skipped (batch zones {held + zoneMib} MiB exceed the budget: min(1/4 of RAM, available {avail} MiB - reserve {g.Prewarm.MinFreeRamMib} MiB)) [{why}]");
                 results.Add(new PrewarmResult(g.Name, false, "batch memory budget", null, _now()));
                 continue;
             }
 
-            PrewarmResult r = Guarded(g, why, pin);
+            PrewarmResult r = Guarded(g, why, pin, ct: ct, usedMib: used);
             results.Add(r);
-            used += r.Ran ? zoneMib : 0;
+            used += r.Ran && r.Mode is null ? zoneMib : 0;
         }
 
         return results;
     }
 
+    // 묶음에 게임이 둘 이상이면 각 게임의 로딩 앞부분 (tier0) 을 최근 순서로 먼저 모두 올리고, 그 뒤 게임별 전체 (tier1 포함) 를 읽습니다 (앞부분은 이미 올라와 있어 다시 읽어도 빠름).
+    // 올릴 게임은 RunBatch 와 같은 예산과 Run 과 같은 건너뜀 조건으로 고릅니다. 취소는 앞부분 묶음 사이에서 보고, 읽던 게임이 시작되면 끝까지 읽습니다 (StreamHot 과 같음).
+    private void WarmHeads(IReadOnlyList<GameSettings> games, CancellationToken ct)
+    {
+        if (games.Count < 2)
+        {
+            return;
+        }
+
+        long avail = _env.AvailableRamMib();
+        long physCap = _env.PhysicalRamBytes() is > 0 and long phys ? phys >> 22 : long.MaxValue;
+        long planned = ColdMib(null);
+        foreach (GameSettings g in games)
+        {
+            if (ct.IsCancellationRequested)
+            {
+                return;
+            }
+
+            long zoneMib = ((_env.ZoneBytes(g) ?? 0) + (1 << 20) - 1) >> 20;
+            if (planned + zoneMib > physCap || (planned > 0 && planned + zoneMib > avail - g.Prewarm.MinFreeRamMib))
+            {
+                return; // 이 게임부터 RunBatch 도 건너뜀
+            }
+
+            TimeSpan? since = LastWarmed(g.Name) is { } prev ? _now() - prev : null;
+            if (IsCold(g) || PrewarmPolicy.SkipReason(_env.ZoneBytes(g), _env.TraceExists(g), _env.GameRunning(g), avail, g.Prewarm.MinFreeRamMib, since, TimeSpan.FromMinutes(g.Prewarm.CooldownMin)) is not null)
+            {
+                continue;
+            }
+
+            planned += zoneMib;
+            lock (_run)
+            {
+                StreamHead(g, ct);
+            }
+        }
+    }
+
+    private void StreamHead(GameSettings game, CancellationToken ct)
+    {
+        using var stop = new CancellationTokenSource();
+        (_keepStream, _streaming) = (false, game.Name);
+        using CancellationTokenRegistration reg = ct.Register(() =>
+        {
+            if (!_keepStream)
+            {
+                stop.Cancel();
+            }
+        });
+        try
+        {
+            _streamer.StreamHead(game, stop.Token);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
+        {
+            _log.Warn($"{game.Name}: load head prewarm failed: {e.GetType().Name}"); // 전체 예열(Run)이 같은 오류를 판단해 기록함
+        }
+        finally
+        {
+            _streaming = null;
+        }
+    }
+
+    // 기록 없이 예열한 게임들이 지금도 RAM 에 있다고 보는 양 (MiB): 기록한 양이되, 표본을 다시 읽어 식었으면 (CacheProbe) 0 으로 바꿉니다. 영구히 예산을 막지 않게.
+    // 표본을 읽을 수 없으면 (null) 기록한 양을 그대로 씁니다. 표본 읽기는 잠금 밖에서.
+    private long ColdMib(string? except)
+    {
+        List<(string Name, IReadOnlyList<(string Path, long Offset, int Bytes)>? Samples)> held;
+        lock (_gate)
+        {
+            held = [.. _coldMib.Where(kv => kv.Value > 0 && !string.Equals(kv.Key, except, StringComparison.OrdinalIgnoreCase)).Select(kv => (kv.Key, _coldSamples.GetValueOrDefault(kv.Key)))];
+        }
+
+        foreach ((string name, var samples) in held)
+        {
+            if (samples is not null && _env.ProbeSamples(samples) is { Cold: true })
+            {
+                lock (_gate)
+                {
+                    if (_coldMib.ContainsKey(name))
+                    {
+                        _coldMib[name] = 0;
+                    }
+                }
+
+                _log.Info($"{name}: cold prewarm no longer counts against the budget (its samples left the file cache)");
+            }
+        }
+
+        lock (_gate)
+        {
+            return _coldMib.Where(kv => !string.Equals(kv.Key, except, StringComparison.OrdinalIgnoreCase)).Sum(kv => kv.Value);
+        }
+    }
+
     // 한 게임의 예외가 나머지 게임의 예열을 막지 않게 합니다.
-    private PrewarmResult Guarded(GameSettings game, string why, bool pin = true, bool ignoreCooldown = false)
+    internal PrewarmResult Guarded(GameSettings game, string why, bool pin = true, bool ignoreCooldown = false, CancellationToken ct = default, long usedMib = 0)
     {
         try
         {
-            return Run(game, why, pin, ignoreCooldown);
+            return Run(game, why, pin, ignoreCooldown, ct, usedMib);
         }
         catch (Exception e)
         {
@@ -237,24 +445,49 @@ public sealed class Prewarmer
     }
 
     /// 한 게임을 지금 예열 (조건을 만족할 때만). 동시에 하나만 돕니다.
-    public PrewarmResult Run(GameSettings game, string why, bool pin = true, bool ignoreCooldown = false)
+    /// ct 는 스트림을 시작하기 전 (차례를 기다린 뒤) 과 핫 집합 스트림의 묶음 사이에서 확인합니다. 단 지금 읽는 그 게임이 시작됐으면 (NoteGameStart) 멈추지 않고 끝까지 읽습니다.
+    /// usedMib: 같은 묶음에서 앞서 올린 핫 집합의 양 (기록 없는 예열의 예산에서 뺌).
+    public PrewarmResult Run(GameSettings game, string why, bool pin = true, bool ignoreCooldown = false, CancellationToken ct = default, long usedMib = 0)
     {
-        lock (_gate)
+        lock (_run)
         {
             DateTimeOffset now = _now();
-            TimeSpan? since = !ignoreCooldown && _last.TryGetValue(game.Name, out DateTimeOffset prev) ? now - prev : null;
+            if (ct.IsCancellationRequested)
+            {
+                _log.Info($"{game.Name}: prewarm cancelled ({why})");
+                return new PrewarmResult(game.Name, false, Cancelled, null, now);
+            }
+
+            if (IsCold(game))
+            {
+                return RunCold(game, why, now, ct, usedMib);
+            }
+
+            TimeSpan? since = !ignoreCooldown && LastWarmed(game.Name) is { } prev ? now - prev : null;
             string? skip = PrewarmPolicy.SkipReason(_env.ZoneBytes(game), _env.TraceExists(game), _env.GameRunning(game), _env.AvailableRamMib(),
                 game.Prewarm.MinFreeRamMib, since, TimeSpan.FromMinutes(game.Prewarm.CooldownMin));
             if (skip is null)
             {
                 try
                 {
-                    StreamStats s = _streamer.Stream(game);
-                    _last[game.Name] = now;
+                    (StreamStats s, bool complete) = StreamHot(game, ct);
+                    if (!complete)
+                    {
+                        _log.Info($"{game.Name}: prewarm cancelled ({why}) after {s.Bytes >> 20} MiB");
+                        return Record(game, now, new PrewarmResult(game.Name, false, Cancelled, s, now), 0);
+                    }
+
+                    lock (_gate)
+                    {
+                        _last[game.Name] = now;
+                        _coldMib.Remove(game.Name); // 기록이 생겨 핫 집합으로 바뀜
+                        _coldSamples.Remove(game.Name);
+                    }
+
                     double mbps = s.Seconds > 0 ? s.Bytes / 1048576.0 / s.Seconds : 0;
                     _log.Info($"{game.Name}: prewarm done ({why}): {s.Bytes >> 20} MiB in {s.Seconds:F2} s = {mbps:F0} MB/s, {s.Requests} requests, {s.Errors} errors");
                     PrewarmResult done = Record(game, now, new PrewarmResult(game.Name, true, null, s, now), mbps);
-                    if (pin)
+                    if (pin && !ct.IsCancellationRequested)
                     {
                         _pins.TryPin(game);
                     }
@@ -277,6 +510,142 @@ public sealed class Prewarmer
         }
     }
 
+    // 핫 집합 스트림 한 번. ct 가 취소돼도 이 게임이 시작된 경우 (_keepStream) 에는 스트림을 멈추지 않습니다.
+    private (StreamStats Stats, bool Complete) StreamHot(GameSettings game, CancellationToken ct)
+    {
+        using var stop = new CancellationTokenSource();
+        (_keepStream, _streaming) = (false, game.Name);
+        using CancellationTokenRegistration reg = ct.Register(() =>
+        {
+            if (!_keepStream)
+            {
+                stop.Cancel();
+            }
+        });
+        DateTimeOffset? last = null;
+        bool complete = false;
+        try
+        {
+            (StreamStats, bool) r = _streamer.Stream(game, stop.Token, (done, total) =>
+            {
+                DateTimeOffset at = _now();
+                if (last is null || at - last >= ProgressEvery)
+                {
+                    last = at;
+                    Progress?.Invoke(game, done >> 20, (total + (1 << 20) - 1) >> 20);
+                }
+            });
+            complete = r.Item2;
+            return r;
+        }
+        finally
+        {
+            _streaming = null;
+            StreamEnded?.Invoke(game, complete);
+        }
+    }
+
+    // 기록 (원시 트레이스·prefetch 기록) 이 없는 게임: 설치 폴더가 예산 이하면 통째로, 크면 엔진 프로필로. 쿨다운은 항상 지킵니다 (같은 폴더를 연달아 두 번 읽지 않게): 재예열도 쿨다운 안이면 다음 점검으로 미룸.
+    // 순서: 드라이브 거부 (시스템 볼륨·SSD·판정 불가) → 게임 실행 중 → 쿨다운 → 디스크 유휴 → RAM 예산 → 폴더 열거 (비싼 일은 마지막).
+    private PrewarmResult RunCold(GameSettings game, string why, DateTimeOffset now, CancellationToken ct, long usedMib)
+    {
+        AutoSettings a = _auto;
+        TimeSpan cooldown = TimeSpan.FromMinutes(game.Prewarm.CooldownMin);
+        if (_env.ColdRefusal(game) is { } refused)
+        {
+            bool first;
+            lock (_gate)
+            {
+                first = _refusedLogged.Add(game.Name);
+            }
+
+            if (first)
+            {
+                _log.Info($"{game.Name}: prewarm without a record skipped ({refused}) [{why}]");
+            }
+
+            return new PrewarmResult(game.Name, false, refused, null, now); // 상태 파일에도 쓰지 않음: 기록 없는 예열 대상이 아닌 드라이브
+        }
+
+        string? skip = null;
+        if (_env.GameRunning(game))
+        {
+            skip = "game is running";
+        }
+        else if (LastWarmed(game.Name) is { } prev && now - prev < cooldown)
+        {
+            skip = $"cooldown ({Math.Ceiling((cooldown - (now - prev)).TotalMinutes)} min left)";
+        }
+        else if (_env.DiskBytesPerSecond(game) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond)
+        {
+            skip = "drive busy";
+        }
+
+        long held = usedMib + ColdMib(game.Name);
+        long avail = _env.AvailableRamMib();
+        long availBudget = avail - game.Prewarm.MinFreeRamMib - held; // MiB
+        long ram = Math.Min(availBudget, (_env.PhysicalRamBytes() is > 0 and long phys ? phys >> 22 : long.MaxValue) - held); // min(물리 RAM / 4, 가용 RAM - 여유) - 이미 올린 양
+        long fullMib = !a.FullPrewarm ? 0 : a.FullPrewarmMaxMib > 0 ? Math.Min(a.FullPrewarmMaxMib, availBudget) : ram;
+        long profileMib = !a.EngineProfiles ? 0 : a.FullPrewarm && a.FullPrewarmMaxMib > 0 ? Math.Min(ram, fullMib) : ram;
+        if (skip is null && Math.Max(fullMib, profileMib) <= 0)
+        {
+            skip = $"low memory (available {avail} MiB, reserve {game.Prewarm.MinFreeRamMib} MiB, already held {held} MiB)";
+        }
+
+        StreamStats? stats = null;
+        string? label = null;
+        List<(string Path, long Offset, int Bytes)>? samples = null;
+        if (skip is null)
+        {
+            try
+            {
+                ColdPlan plan = _env.ColdPlanner!(game, Math.Max(0, fullMib) << 20, Math.Max(0, profileMib) << 20, ct);
+                if (plan.Skip is not null)
+                {
+                    skip = plan.Skip;
+                }
+                else
+                {
+                    (StreamStats s, bool complete) = _env.ColdRead(plan.Ops, ct);
+                    (stats, label, skip) = (s, plan.Label, complete ? null : Cancelled);
+                    samples = CacheProbe.PickSamples(plan.Ops);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                skip = Cancelled;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                skip = "install folder not found";
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
+            {
+                _log.Error($"{game.Name}: prewarm failed ({why})", e);
+                return Record(game, now, new PrewarmResult(game.Name, false, "failed: " + e.GetType().Name, null, now), 0);
+            }
+        }
+
+        if (skip is not null || stats is null)
+        {
+            _log.Info($"{game.Name}: prewarm {(skip == Cancelled ? "cancelled" : $"skipped ({skip})")} [{why}]");
+            return Record(game, now, new PrewarmResult(game.Name, false, skip, stats, now), 0);
+        }
+
+        lock (_gate)
+        {
+            _last[game.Name] = now;
+            _coldMib[game.Name] = (stats.Bytes + (1 << 20) - 1) >> 20;
+            _coldSamples[game.Name] = samples!;
+        }
+
+        double mbps = stats.Seconds > 0 ? stats.Bytes / 1048576.0 / stats.Seconds : 0;
+        _log.Info($"{game.Name}: prewarm done ({why}, {label}): {stats.Bytes >> 20} MiB in {stats.Seconds:F2} s = {mbps:F0} MB/s, {stats.Requests} requests, {stats.Errors} errors");
+        PrewarmResult done = Record(game, now, new PrewarmResult(game.Name, true, null, stats, now) { Mode = label }, mbps);
+        ColdWarmed?.Invoke(game, label!);
+        return done;
+    }
+
     private PrewarmResult Record(GameSettings game, DateTimeOffset now, PrewarmResult r, double mbps)
     {
         _status[game.Name] = new JObject
@@ -288,6 +657,16 @@ public sealed class Prewarmer
             { "seconds", r.Stats?.Seconds },
             { "mb_per_s", r.Stats is null ? null : Math.Round(mbps, 1) },
         };
+        if (r.Ran && r.Mode is null && _streamer.LoadHeadBytes(game) is { } head)
+        {
+            ((JObject)_status[game.Name]!)["head_mib"] = head >> 20; // 로딩 앞부분 (관리 창 상태 탭)
+        }
+
+        if (r.Mode is not null)
+        {
+            ((JObject)_status[game.Name]!)["mode"] = r.Mode;
+        }
+
         if (_statusPath is not null)
         {
             try

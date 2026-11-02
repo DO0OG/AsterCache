@@ -50,6 +50,18 @@ public sealed class TraceWriterTests
     }
 
     [Fact]
+    public void UnionKeepsTheTimeOfTheFirstReadOfEachBlock()
+    {
+        IReadOnlyList<TraceEvent>[] sessions =
+        [
+            [new TraceEvent("p", 0, 65_536 * 2, 8, 100), new TraceEvent("p", 65_536, 65_536 * 2, 8, 900)], // 블록 1 은 100 ms 에 처음, 블록 2 는 900 ms
+            [new TraceEvent("q", 0, 1)],                                                                      // t_ms 없는 행은 없는 채로
+        ];
+
+        Assert.Equal([100L, 100L, 900L, null], TraceWriter.Union(sessions).Select(e => e.TMs));
+    }
+
+    [Fact]
     public void UnionKeepsFirstSeenBlockOrderAndCostPerEvent()
     {
         IReadOnlyList<TraceEvent>[] sessions =

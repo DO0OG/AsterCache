@@ -19,7 +19,7 @@ public sealed class AutoTracerTests : IDisposable
         Directory.CreateDirectory(Path.Combine(_rig.Dir, "plans"));
         string plan = Path.Combine(_rig.Dir, "plans", "foo.plan.json");
         _game = new GameSettings("foo", ["foo.exe"], plan + ".prefetch.json", plan, @"D:\Games\Foo", [@"D:\Games\Foo"], "GAMES", 1440) { Source = "auto" };
-        _rig.Settings = new AsterSettings(50, [_game]) { Auto = AutoSettings.Default with { TraceCapSeconds = 30, TraceCapMib = 64 } };
+        _rig.Settings = new AsterSettings(50, [_game]) { Auto = AutoSettings.Default with { TraceCapSeconds = 30, TraceCapMib = 64, Learn = LearnSettings.Default with { Enabled = false } } };
         _rig.World.Session = _trace;
         _tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings);
     }
@@ -54,6 +54,30 @@ public sealed class AutoTracerTests : IDisposable
         _rig.World.Files.Add(Raw);
         _tracer.Start(_game);
         Assert.Equal(1, _rig.World.TraceStarts); // 원시 트레이스가 이미 있음
+    }
+
+    [Fact]
+    public void ABootTraceAloneDoesNotStopTheFirstRunRecordingAndTheRawTraceIsWrittenNextToIt()
+    {
+        string boot = AutoTracer.BootTracePath(_game);
+        _rig.World.Files.Add(boot); // 가져온 프로필
+        Reads((0, 65536));
+
+        _tracer.Start(_game);
+
+        Assert.True(_tracer.Active);
+        Assert.Equal(1, _rig.World.TraceStarts);
+        _rig.World.Procs = [];
+        _rig.World.Running = false;
+        _tracer.Step();
+        Assert.True(File.Exists(Raw));
+        Assert.EndsWith("foo.boot.trace.json", boot, StringComparison.Ordinal);
+        bool Exists(string path) => _rig.World.Files.Contains(path) || File.Exists(path);
+        Assert.Equal(Raw, AutoTracer.PlanTracePath(_game, Exists)); // 원시가 생기면 그쪽이 우선
+        File.Delete(Raw);
+        Assert.Equal(boot, AutoTracer.PlanTracePath(_game, Exists));
+        _rig.World.Files.Remove(boot);
+        Assert.Null(AutoTracer.PlanTracePath(_game, Exists));
     }
 
     [Fact]

@@ -7,7 +7,7 @@ using AsterCache.Windows;
 
 namespace AsterCache.Service;
 
-/// 예열 유지: rewarm_minutes 마다, 등록 게임이 하나도 안 돌고 PC 가 한가할 때 (CPU 와 그 게임 드라이브 처리량이 자동 재배치의 유휴 기준 아래), 예열한 적 있는 게임의 핫 집합 몇 곳을 읽어 보고 식었으면 (평균 > CacheProbe.ColdThresholdMs) 다시 예열합니다.
+/// 예열 유지: rewarm_minutes 마다, 등록 게임이 하나도 안 돌고 PC 가 한가할 때 (CPU 와 그 게임 드라이브 처리량이 자동 재배치의 유휴 기준 아래), 예열한 적 있는 게임의 핫 집합 몇 곳을 읽어 보고 식었으면 (CacheProbe.Cold: 표본 8 곳 중 2 곳 이상이 CacheProbe.ColdThresholdMs 초과) 다시 예열합니다.
 public sealed class Rewarmer
 {
     private readonly Prewarmer _prewarm;
@@ -24,7 +24,7 @@ public sealed class Rewarmer
         _now = now;
     }
 
-    public void Tick(AutoSettings auto)
+    public void Tick(AutoSettings auto, CancellationToken ct = default)
     {
         if (!auto.Enabled || auto.RewarmMinutes <= 0)
         {
@@ -61,22 +61,28 @@ public sealed class Rewarmer
 
         foreach (GameSettings g in _prewarm.Warmed())
         {
+            if (ct.IsCancellationRequested)
+            {
+                _log.Info("rewarm check stopped: a game started");
+                return;
+            }
+
             if (_env.DiskBytesPerSecond(g) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond)
             {
                 _log.Info($"{g.Name}: rewarm check skipped (the game drive is busy or its load is unknown)");
                 continue;
             }
 
-            Check(g);
+            Check(g, ct);
         }
     }
 
-    private void Check(GameSettings g)
+    private void Check(GameSettings g, CancellationToken ct)
     {
-        double? ms;
+        ProbeResult? probe;
         try
         {
-            ms = _env.ProbeReadMs(g);
+            probe = _prewarm.ColdSamples(g) is { } samples ? _env.ProbeSamples(samples) : _env.ProbeReadMs(g); // 기록 없이 예열한 게임은 그때 읽은 파일 목록에서 고른 표본
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
         {
@@ -84,18 +90,18 @@ public sealed class Rewarmer
             return;
         }
 
-        if (ms is not { } avg)
+        if (probe is null)
         {
             _log.Info($"{g.Name}: rewarm check skipped (no readable samples)");
         }
-        else if (avg <= CacheProbe.ColdThresholdMs)
+        else if (!probe.Cold)
         {
-            _log.Info($"{g.Name}: rewarm check: warm ({avg:F2} ms per MiB)");
+            _log.Info($"{g.Name}: rewarm check: warm ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms, average {probe.AverageMs:F2} ms)");
         }
         else
         {
-            _log.Info($"{g.Name}: rewarm check: cold ({avg:F2} ms per MiB > {CacheProbe.ColdThresholdMs:F1}), prewarming again (cooldown ignored)");
-            _prewarm.RewarmGame(g);
+            _log.Info($"{g.Name}: rewarm check: cold ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms, average {probe.AverageMs:F2} ms), prewarming again (cooldown ignored)");
+            _prewarm.RewarmGame(g, ct);
         }
     }
 }

@@ -97,6 +97,70 @@ The hot set of Frostpunk is 2,020,769,792 bytes (30,843 blocks) on the D: WDC WD
 - The high band (the outer 90% of the disk) was about 1.6 times slower than the 42% zone (19.06 s against 11.93 s, pvm). The 300 MB/s points of the LBA curve (73.7%, 78.9%, 89.4%, 94.7%, 100%) were measured on empty space, so they are not valid speeds for data.
 - Conclusion: the default plan now moves everything (preservation off, `--preserve-mib 0`, no segments kept in place). The final layout stays in the 42.142% zone. The cost is a larger move, about 2 GB taking 270~280 s.
 
+## E7 first-run read-ahead
+
+Conclusion: first-run read-ahead (`auto.learn.enabled`) stays off by default. In the conditions measured, turning it on slowed the replay or showed no proven gain. Stream mode (`stream`), which reads ahead while the game is still reading, was measured as E7d and is not adopted either (see E7d below).
+
+All figures are replay times of traced read patterns, not total load times of a running game. Cold runs purged the standby list before each run. A is the replay without read-ahead; B is the replay with read-ahead on. Runs were alternated in the order A,B,B,A,A,B, three runs each. The synthetic dataset is `D:\AsterBench_e7`, and Frostpunk is `D:\Frostpunk`.
+
+### E7, E7b: first measurement and after the name-resolution fix
+
+| Configuration | Cold replay, seconds (A → B, median of 3) | Read-ahead bytes (B) | Live read names resolved (B) | Notes |
+|---|---|---|---|---|
+| E7 synthetic scattered, first measurement ([result](../results/csharp_e7_20261102_203358/README.md)) | 21.67 → 44.90 (A/B 0.48) | 1.67~1.84 GB | 0 (no read events) | Names unresolved; reading whole open files competed with the replay for the disk |
+| E7b synthetic scattered, after the name-resolution fix ([result](../results/csharp_e7b_gen/README.md)) | 19.82 → 38.71 (A/B 0.51) | 1.14~1.18 GB | 9,913~14,860 resolved, 315~384 unresolved | Hit ratio 26~29% |
+| E7b Frostpunk, 42% zone contiguous layout ([result](../results/csharp_e7b_gen/README.md)) | 18.98 → 37.40 (A/B 0.51) | 2.18~2.42 GB | 41,730~44,186 resolved, 369~440 unresolved | Hit ratio 50~58%, no gain |
+
+The name-resolution defect (zero read events) was fixed in E7b. Even so, read-ahead competed with the replay for the same disk, and B was about twice as slow as A.
+
+### Relocation effect (same read pattern, read-ahead off)
+
+| Layout | Saturated replay, A median (s) | Gapped replay, A median (s) |
+|---|---:|---:|
+| Scattered, a replica of the Frostpunk trace (`fpset`) | 55.3 | 41.0 |
+| Frostpunk contiguous (42% zone) | 20.5 | 19.3 |
+
+With the same read pattern, the scattered layout took 41.0~55.3 s and the contiguous layout took 19.3~20.5 s (about 2.1 to 2.7 times, on a median basis). This is the basis for relocation reducing read time ([result](../results/csharp_e7c_gen/README.md)).
+
+### E7c: gap-only read-ahead (`--gap-ms` / `--seq-runs`)
+
+This build reads ahead only in the gaps between game reads. Saturated replay (`bench.replay`, 45 s) and gapped replay (a 120 ms wait every 100 requests) were measured separately. The times in the table are replay seconds (`replay_s` in `summary.json`).
+
+| Dataset | Replay | A 3 runs | B 3 runs | A median | B median | Ratio (A/B) | gap_count | yielded | idle read-ahead (MB) | total read-ahead (MB) | hit ratio |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Synthetic random | saturated | 22.2/37.1/32.5 | 20.1/26.3/31.4 | 32.5 | 26.3 | 1.24 | 5/13/11 | 4/12/10 | 47/40/42 | 51 | 0 |
+| Frostpunk contiguous | saturated | 20.5/18.8/21.6 | 19.0/18.1/20.5 | 20.5 | 19.0 | 1.08 | 13/9/9 | 12/8/8 | 117/117/118 | 125~128 | 0.00 |
+| **fpset scattered** | **saturated** | 55.3/49.0/55.8 | 49.2/54.9/49.5 | 55.3 | 49.5 | 1.12 | 12/18/12 | 12/18/12 | 6/17/9 | 18/36/21 | 0.003~0.010 |
+| Synthetic random | gapped | 22.1/19.4/19.4 | 18.6/22.2/22.3 | 19.5 | 22.2 | 0.88 | 6/8/7 | 5/7/6 | 21/45/45 | 26/51/51 | 0 |
+| Frostpunk contiguous | gapped | 23.4/19.3/15.2 | 16.4/19.9/15.1 | 19.3 | 16.4 | 1.18 | 149/135/128 | 148/134/126 | 616/520/600 | 766/656/731 | 0.19/0.16/0.19 |
+| **fpset scattered** | **gapped** | 49.7/41.0/40.0 | 52.2/50.1/41.0 | 41.0 | 50.1 | **0.82** | 150/148/163 | 148/147/162 | 436/479/532 | 589/628/700 | 0.14/0.13/0.17 |
+
+- Saturated replay: all three datasets ran 1.08 to 1.24 times faster with B. Read-ahead shrank to 18~128 MB, and the earlier build's roughly twofold slowdown is gone. A varied widely (19~37 s on the synthetic dataset), so this is not counted as a gain; the reading is only that it did no harm.
+- Gapped replay, the main evidence (`fpset` scattered): the B median of 50.1 s was slower than the A median of 41.0 s (0.82). The hit ratio was 13~17%, and the 0.4~0.5 GB read ahead in the gaps probably competed with the game reads for the disk.
+- The gapped Frostpunk contiguous result of 1.18 times is not significant, because A ranged from 15.2 to 23.4 s.
+- Gap detection worked. gap_count was 128~163 in the gapped Frostpunk contiguous and `fpset` runs, and 6~8 in the gapped synthetic random runs.
+- The replay is trace-based, and the 120 ms gap is an artificial value. It cannot be taken as matching a real game's pattern.
+
+### E7d: stream mode (`--mode stream`, 16 MiB steps, 512 MiB window)
+
+Same conditions as above: cold purge before each run, order A,B,B,A,A,B, three runs each. Times are replay seconds (`replay_s` in `summary.json`). Raw data: [E7d](../results/csharp_e7d_gen/README.md).
+
+| Condition | A median (s) | B median (s) | A/B | Notes |
+|---|---:|---:|---:|---|
+| fpset scattered, saturated | 45.1 | 56.2 | 0.80 | B 20% slower; about 2.0 GB read ahead competed with the game reads for the disk |
+| fpset scattered, gapped | 51.4 | 46.7 | 1.10 | B runs 80.9/46.7/38.4 s; too noisy to count as a gain in 3 runs |
+| Frostpunk contiguous, gapped | 17.7 | 19.5 | 0.91 | read ahead 3.2~3.4 GB, 1.6 times the replay request (2.0 GB); no gain |
+
+Stream mode is not adopted. The saturated case fails the no-harm check (B at least 0.95 × A), and the gapped cases show no reproducible gain.
+
+### Conclusion
+
+- First-run read-ahead (`auto.learn.enabled`) stays off by default. No gain was proven in this set of measurements (saturated and gapped, contiguous and scattered layouts).
+- Stream mode (`stream`) was measured as E7d and is not adopted. `auto.learn.enabled` stays off by default, and this is confirmed.
+- Next candidate (E7e): cap the total read-ahead at no more than the game's request volume, and yield to game reads.
+- This record is synthetic data and trace replay. It is not the total load time of Frostpunk running in the game.
+- Raw data: [E7](../results/csharp_e7_20261102_203358/README.md), [E7b](../results/csharp_e7b_gen/README.md), [E7c](../results/csharp_e7c_gen/README.md), [E7d](../results/csharp_e7d_gen/README.md).
+
 ## Interpretation of the results (carried over)
 
 - **Speed by drive position.** There was no difference in speed by position on the drive (`results/zone_curve_20261101`). So the optimization of placing the hot zone at a particular position was dropped from the design.

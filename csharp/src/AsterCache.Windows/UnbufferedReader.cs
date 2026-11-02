@@ -12,14 +12,16 @@ public sealed unsafe class UnbufferedReader : IDisposable
     private const int Sector = 4096; // 512e 와 4Kn 모두 덮음
 
     private readonly uint _share;
+    private readonly IoPriorityHint? _hint;
     private readonly Dictionary<string, SafeFileHandle> _handles = new();
     private void* _buffer;
     private nuint _capacity;
 
     /// share: 공유 모드 (기본 읽기만 = Python replay, 삭제·쓰기까지 허용하려면 Win32 ShareAll = 7).
-    public UnbufferedReader(uint share = Win32.ShareRead)
+    public UnbufferedReader(uint share = Win32.ShareRead, IoPriorityHint? hint = null)
     {
         _share = share;
+        _hint = hint;
     }
 
     /// 파일 [offset, offset + length) 를 읽어 돌려줍니다 (파일 끝을 넘으면 짧게). 실패하면 Win32Exception 또는 IOException.
@@ -35,6 +37,7 @@ public sealed unsafe class UnbufferedReader : IDisposable
                 throw new Win32Exception(err);
             }
 
+            _hint?.SetLow(h);
             _handles[path] = h;
         }
 

@@ -1,5 +1,6 @@
 using AsterCache.Core.Settings;
 using AsterCache.Service;
+using AsterCache.Windows;
 using Xunit;
 
 namespace AsterCache.Tests.Service;
@@ -58,7 +59,7 @@ public sealed class PinAndRewarmTests
         ProbeReadMs = _ =>
         {
             _probeCalls++;
-            return _probe;
+            return _probe is { } ms ? new ProbeResult(8, ms > CacheProbe.ColdThresholdMs ? 8 : 0, ms) : null;
         },
     }, _log, null, () => _now);
 
@@ -478,6 +479,21 @@ public sealed class PinAndRewarmTests
         p.RunAll(games, "recent");
 
         Assert.Equal(["a", "b", "c"], _streamer.Calls.Select(c => c.Game));
+    }
+
+    [Fact]
+    public void BatchBudgetIsAtMostAQuarterOfPhysicalRamEvenWhenMoreIsAvailable()
+    {
+        GameSettings[] games = [Game("a", false), Game("b", false), Game("c", false)];
+        Prewarmer p = Make(games);
+        _ram = 8 * Gib; // 1/4 = 2048 MiB: 존 1610 은 하나만
+        _avail = 40000;
+
+        IReadOnlyList<PrewarmResult> results = p.RunAll(games, "recent");
+
+        Assert.Equal(["a"], _streamer.Calls.Select(c => c.Game));
+        Assert.Equal([true, false, false], results.Select(r => r.Ran));
+        Assert.Equal("batch memory budget", results[1].SkipReason);
     }
 
     [Fact]

@@ -3,6 +3,9 @@
     <TargetFramework>net10.0-windows</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="AsterCache.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\AsterCache.Core\AsterCache.Core.csproj" />
     <ProjectReference Include="..\AsterCache.Windows\AsterCache.Windows.csproj" />
   </ItemGroup>

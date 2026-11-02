@@ -1,0 +1,39 @@
+using System.Collections.Concurrent;
+using AsterCache.Core.Json;
+using AsterCache.Core.Settings;
+using AsterCache.Core.Trace;
+
+namespace AsterCache.Service;
+
+/// 게임의 로딩 경계 (원시 트레이스 plans\<이름>.trace.json 의 t_ms 로 계산). 트레이스가 바뀔 때만 (쓴 시각·크기) 다시 계산해 메모리에 둡니다:
+/// 서비스가 쓰고 읽는 파일이라 따로 저장하지 않고, 읽을 때 TraceLoader 가 형식을 검증합니다. t_ms 가 없는 옛 트레이스·파일 없음·읽기 실패는 null.
+public static class LoadTiers
+{
+    private static readonly ConcurrentDictionary<string, (DateTime Written, long Length, LoadBoundary? Boundary)> Cache = new(StringComparer.OrdinalIgnoreCase);
+
+    public static LoadBoundary? For(GameSettings game)
+    {
+        string raw = AutoTracer.PlanTracePath(game, File.Exists) ?? AutoTracer.RawTracePath(game); // 원시가 없으면 가져온 boot 트레이스
+        try
+        {
+            var info = new FileInfo(raw);
+            if (!info.Exists)
+            {
+                return null;
+            }
+
+            if (Cache.TryGetValue(raw, out var hit) && hit.Written == info.LastWriteTimeUtc && hit.Length == info.Length)
+            {
+                return hit.Boundary;
+            }
+
+            LoadBoundary? b = LoadBoundaries.Find(TraceLoader.LoadRanges(raw, game.OriginRoot, RealPaths.Resolve, p => File.Exists(p) ? new FileInfo(p).Length : null));
+            Cache[raw] = (info.LastWriteTimeUtc, info.Length, b);
+            return b;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            return null;
+        }
+    }
+}

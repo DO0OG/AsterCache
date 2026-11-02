@@ -25,6 +25,31 @@ public sealed class AutoModeTests : IDisposable
 
     private static IEnumerable<string> Names(IEnumerable<GameSettings> games) => games.Select(g => g.Name);
 
+    // ---- 기록 없는 예열의 상태 표시 ----
+
+    [Theory]
+    [InlineData("full", "prewarmed (full)")]
+    [InlineData("profile Unreal", "prewarmed (profile Unreal)")]
+    public void ColdPrewarmFromAnyPathShowsTheModeInAutoStatus(string label, string expected)
+    {
+        AddGame("g", "auto");
+        var prewarm = new Prewarmer(_rig.Settings.Games, new FakeStreamer(), new PrewarmEnv
+        {
+            AvailableRamMib = () => 99999,
+            GameRunning = _ => false,
+            ZoneBytes = _ => null,
+            TraceExists = _ => false,
+            ColdPlanner = (_, _, _, _) => new AsterCache.Prefetch.ColdPlan(label, [new AsterCache.Core.Prefetch.ReadOp(@"D:\Games\g.bin", 0, 1 << 20)], 1 << 20, null),
+            ColdRead = (ops, _) => (new AsterCache.Prefetch.StreamStats(1 << 20, 1, 0, 0.1), true),
+        }, _rig.Log, null, () => T0);
+        _ = new AutoMode(_rig.Editor, _rig.World.Env(), _rig.Status, _rig.Log, _rig.Settings, prewarm);
+        _rig.Status.Set("g", "auto", null, AutoStage.Discovered, null);
+
+        prewarm.RunServiceStart([_rig.Settings.Games[0]]); // 서비스 시작 경로 (틱 밖)
+
+        Assert.Equal((AutoStage.Discovered, expected), (_rig.Status.Get("g")!.Stage, _rig.Status.Get("g")!.Detail));
+    }
+
     // ---- 최근 게임 선택 ----
 
     [Fact]
@@ -41,7 +66,7 @@ public sealed class AutoModeTests : IDisposable
 
         Assert.Equal(["b", "c"], Names(AutoMode.Recent(_rig.Settings.Games, _rig.Status.LastPlayed(), 2)));
         Assert.Equal(["b", "c", "a"], Names(AutoMode.Recent(_rig.Settings.Games, _rig.Status.LastPlayed(), 8)));
-        Assert.Empty(AutoMode.Recent(_rig.Settings.Games, _rig.Status.LastPlayed(), 0));
+        Assert.Equal(["b", "c", "a"], Names(AutoMode.Recent(_rig.Settings.Games, _rig.Status.LastPlayed(), 0))); // 0 = 개수 제한 없음 (예산이 정함)
     }
 
     [Fact]
@@ -58,7 +83,7 @@ public sealed class AutoModeTests : IDisposable
         Assert.Equal(["x", "y"], Names(Mode().StartupRecent()));
 
         _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { PrewarmRecent = 0 } };
-        Assert.Empty(Mode().StartupRecent());
+        Assert.Equal(["x", "y"], Names(Mode().StartupRecent())); // 0 = 가능한 만큼, 최근 순
         _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { Enabled = false } };
         Assert.Empty(Mode().StartupRecent());
     }
@@ -80,7 +105,7 @@ public sealed class AutoModeTests : IDisposable
         Assert.Equal(["m1", "m2", "a2", "a3"], Names(Mode().NarrowTriggered(hit)));
 
         _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { PrewarmRecent = 0 } };
-        Assert.Equal(["m1", "m2"], Names(Mode().NarrowTriggered(hit)));
+        Assert.Equal(["m1", "m2", "a2", "a3", "a1"], Names(Mode().NarrowTriggered(hit))); // 0 = 가능한 만큼, 최근 순
 
         _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { Enabled = false } };
         Assert.Equal(["m1", "m2", "a1", "a2", "a3"], Names(Mode().NarrowTriggered(hit)));
@@ -123,7 +148,7 @@ public sealed class AutoModeTests : IDisposable
         Mode().OnGameStart(Game());
 
         Assert.Equal(T0, _rig.Status.Get("foo")!.LastPlayed);
-        Assert.Equal(AutoStage.Tracing, _rig.Status.Get("foo")!.Stage);
+        Assert.Equal(AutoStage.Tracing, _rig.Status.Get("foo")!.Stage); // auto.learn 기본 꺼짐 (E7 재측정 전): 일반 트레이스 단계
         Assert.Equal(1, _rig.World.TraceStarts);
     }
 

@@ -1,6 +1,7 @@
 using AsterCache.Core;
 using AsterCache.Core.Apply;
 using AsterCache.Core.Discovery;
+using AsterCache.Core.Logging;
 using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
@@ -59,12 +60,19 @@ public sealed class AutoEnv
 
     public required Func<string, bool> FileExists { get; init; }
 
+    /// 폴더가 있는가 (드라이브가 분리되면 거짓). 시험 기본값은 항상 참.
+    public Func<string, bool> DirectoryExists { get; init; } = _ => true;
+
+    /// 파일의 마지막 수정 시각 (UTC), 없으면 null. 원시 트레이스가 마지막 예열보다 새로운지 보는 데 씁니다.
+    public Func<string, DateTimeOffset?> FileWriteTime { get; init; } = _ => null;
+
     /// 이름이 맞는 실행 중인 프로세스의 (PID, 읽은 누적 바이트).
     public required Func<IReadOnlyCollection<string>, IReadOnlyList<(int Pid, long ReadBytes)>> GameProcesses { get; init; }
 
     public required Func<IReadOnlyCollection<string>, bool> AnyRunning { get; init; }
 
-    public required Func<IReadOnlyCollection<string>, IAutoTrace> StartTrace { get; init; }
+    /// (게임 exe 이름들, 선행 읽기 알림 또는 null) → ETW 세션. 알림이 있으면 읽기·열기를 실시간으로 알리고 세션 버퍼를 짧은 간격으로 내려 보냅니다.
+    public required Func<IReadOnlyCollection<string>, LiveListener?, IAutoTrace> StartTrace { get; init; }
 
     public required Func<IEnumerable<TraceEvent>, List<TraceEvent>> Canonicalize { get; init; }
 
@@ -72,6 +80,9 @@ public sealed class AutoEnv
 
     /// (세션, 원점 루트, 존 MiB) → 계획 (존 시작 미정).
     public required Func<IReadOnlyList<IReadOnlyList<TraceEvent>>, string, long, PlanFile> MakePlan { get; init; }
+
+    /// (세션, 원점 루트, 존 MiB, 존 시작 LCN) → 그 자리에 존을 두고 만든 계획 (제자리·겹침을 계산에 넣음). 없으면 이전 존 시작을 쓰지 않고 MakePlan 만 씁니다.
+    public Func<IReadOnlyList<IReadOnlyList<TraceEvent>>, string, long, long, PlanFile>? MakePlanAt { get; init; }
 
     public required Action<PlanFile, IReadOnlyList<IReadOnlyList<TraceEvent>>, string> SavePlan { get; init; }
 
@@ -86,6 +97,12 @@ public sealed class AutoEnv
 
     /// 게임 저널의 현재 줄 수 (저널이 없으면 0). 자동 적용이 시작 전의 줄 수를 기억해 두었다가 실패하면 그 뒤 줄만 되돌립니다.
     public required Func<GameSettings, int> JournalRows { get; init; }
+
+    /// 끝난 게임 저널을 옆으로 옮겨 보관하고 그 경로를 돌려줍니다 (저널이 없으면 null). 새 계획은 다른 저널 header 를 쓰기 때문입니다.
+    public Func<GameSettings, string?> ArchiveJournal { get; init; } = _ => null;
+
+    /// (원본, 새 이름) 파일 이동, 이미 있으면 덮어씀. 낡은 트레이스·계획을 .stale 로 치우는 데 씁니다.
+    public Action<string, string> MoveAside { get; init; } = (_, _) => { };
 
     /// (게임, 건너뛸 앞쪽 저널 줄 수, 취소) → 저널의 그 뒤 줄만 되돌린 결과, 저널이 없으면 null.
     public required Func<GameSettings, int, CancellationToken, RevertReport?> Revert { get; init; }
@@ -102,11 +119,14 @@ public sealed class AutoEnv
     public required Func<bool> PowerOk { get; init; }
 
     /// 자동 모드가 이 설치 루트를 건드리면 안 되는 이유, 건드려도 되면 (HDD 로 확인된 시스템 볼륨 밖) null.
-    public string? DriveRefusal(string originRoot)
+    public string? DriveRefusal(string originRoot) => DriveRefusal(originRoot, SystemDrive, IsHdd);
+
+    /// 같은 판정을 환경 없이 (기록 없는 예열이 서비스 시작·트리거 경로에서도 씀).
+    public static string? DriveRefusal(string originRoot, string systemDrive, Func<string, bool?> isHdd)
     {
         string letter = PlanFile.SplitDrive(originRoot).ToUpperInvariant();
-        return string.Equals(letter, SystemDrive, StringComparison.OrdinalIgnoreCase) ? "system volume"
-            : IsHdd(letter) switch
+        return string.Equals(letter, systemDrive, StringComparison.OrdinalIgnoreCase) ? "system volume"
+            : isHdd(letter) switch
             {
                 true => null,
                 false => "not an HDD",
@@ -114,7 +134,8 @@ public sealed class AutoEnv
             };
     }
 
-    public static AutoEnv Create(string journalDir)
+    /// log 가 있으면 재배치의 이동·검증 읽기에 낮은 I/O 우선순위 힌트를 붙입니다 (자동 모드는 사용자 PC 를 덜 방해해야 함).
+    public static AutoEnv Create(string journalDir, ILog? log = null)
     {
         var cpu = new CpuLoad();
         return new AutoEnv
@@ -133,28 +154,36 @@ public sealed class AutoEnv
             SystemDrive = Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.Windows))![..2].ToUpperInvariant(),
             ServiceDir = AppContext.BaseDirectory,
             FileExists = File.Exists,
+            DirectoryExists = Directory.Exists,
+            FileWriteTime = path => File.Exists(path) ? File.GetLastWriteTimeUtc(path) : null,
             GameProcesses = exes => ProcessSnapshot.ReadCounters(exes),
             AnyRunning = exes => ProcessSnapshot.IsRunning(exes),
-            StartTrace = exes => new LiveAutoTrace(LiveSession.Start(exes, TraceSessionName, restartExisting: true)),
+            StartTrace = (exes, listener) => new LiveAutoTrace(LiveSession.Start(
+                exes, TraceSessionName, restartExisting: true, listener: listener, flushInterval: listener is null ? null : EtwProcessWatcher.FlushInterval)),
             Canonicalize = events => TraceBuilder.CanonicalizeCase(events),
             LoadTrace = (raw, origin) => TraceLoader.LoadRanges(raw, origin, RealPaths.Resolve),
-            MakePlan = (sessions, origin, zoneMib) =>
-            {
-                int cb = FileLayout.ClusterBytes(origin) is > 0 and int c ? c : throw new PlanRejectedException("cluster size unknown");
-                return PlanFile.Make(sessions, origin, zoneMib << 20, cb, FileLayout.Extents);
-            },
+            MakePlan = (sessions, origin, zoneMib) => MakePlanAtLcn(sessions, origin, zoneMib, null),
+            MakePlanAt = (sessions, origin, zoneMib, start) => MakePlanAtLcn(sessions, origin, zoneMib, start),
             SavePlan = (plan, sessions, path) => PlanOutput.Save(plan, sessions, path),
             LoadPlan = PlanFile.Load,
             RealPath = RealPaths.Real,
             Stat = PlanFile.FingerprintOf,
-            Apply = (g, plan, options, ct) => ReapplyEnv.Run(journalDir, g, plan, options, ct),
+            Apply = (g, plan, options, ct) => ReapplyEnv.Run(journalDir, g, plan, options, ct, log),
             JournalRows = g => ReapplyEnv.JournalRows(journalDir, g),
+            ArchiveJournal = g => ReapplyEnv.ArchiveJournal(journalDir, g),
+            MoveAside = (src, dst) => File.Move(src, dst, true),
             Revert = (g, skipRows, ct) => ReapplyEnv.Revert(journalDir, g, skipRows, ct),
             Extents = FileLayout.Extents,
             DiskBytesPerSecond = letter => DiskActivity.BytesPerSecond(letter),
             CpuPercent = cpu.Percent,
             PowerOk = () => PowerProbe.PowerOk(MinBatteryPercent),
         };
+    }
+
+    private static PlanFile MakePlanAtLcn(IReadOnlyList<IReadOnlyList<TraceEvent>> sessions, string origin, long zoneMib, long? start)
+    {
+        int cb = FileLayout.ClusterBytes(origin) is > 0 and int c ? c : throw new PlanRejectedException("cluster size unknown");
+        return PlanFile.Make(sessions, origin, zoneMib << 20, cb, FileLayout.Extents, zoneStartLcn: start);
     }
 
     // 발견 때와 같은 이름 열거 (LauncherScan 과 같은 깊이, 읽기 전용).

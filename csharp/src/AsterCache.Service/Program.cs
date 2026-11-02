@@ -38,9 +38,10 @@ if (console && watchAt >= 0)
 
 bool admin = Elevation.IsAdmin();
 bool canApply = Worker.CanApply(admin, [dataDir, plansDir], log, [configPath]);
+settings = Worker.ForApply(settings, canApply, log);
 (IProcessWatcher primary, IProcessWatcher? fallback) = Worker.ChooseWatchers(settings, admin);
 string journalDir = Path.Combine(dataDir, "journals");
-var checker = new ReapplyChecker(ReapplyEnv.Create(canApply, journalDir), log);
+var checker = new ReapplyChecker(ReapplyEnv.Create(canApply, journalDir, log), log);
 
 HostApplicationBuilder builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { ContentRootPath = AppContext.BaseDirectory });
 if (!console)
@@ -51,7 +52,7 @@ if (!console)
 var streamer = new PrefetchStreamer();
 var prewarm = new Prewarmer(settings.Games, streamer, PrewarmEnv.Create(), log, canApply ? Path.Combine(dataDir, "prewarm_status.json") : null); // 데이터 폴더를 믿을 수 없으면 (SYSTEM 이 일반 사용자가 쓸 수 있는 곳에 쓰지 않도록) 상태 파일을 쓰지 않음
 // 자동 모드는 설정·이동을 쓰므로 canApply 일 때만 (상태 파일도 같은 이유로)
-var auto = canApply ? new AutoMode(new ConfigEditor(dataDir), AutoEnv.Create(journalDir), new AutoStatus(Path.Combine(dataDir, "auto_status.json"), log), log, settings) : null;
+var auto = canApply ? new AutoMode(new ConfigEditor(dataDir), AutoEnv.Create(journalDir, log), new AutoStatus(Path.Combine(dataDir, "auto_status.json"), log), log, settings, prewarm) : null;
 var reloader = new SettingsReloader(() => SettingsReloader.StampOf(configPath), LoadChecked, s => Worker.ChooseWatchers(s, admin), log, configStamp);
 builder.Services.AddHostedService(_ => new Worker(settings, log, primary, fallback, streamer, checker, prewarm: prewarm, auto: auto, reload: reloader));
 await builder.Build().RunAsync();
@@ -65,7 +66,8 @@ AsterSettings LoadChecked()
         throw new SettingsException("config: data folder or file is writable by non-admin principals");
     }
 
-    return SettingsStore.Load(configPath, plansDir);
+    AsterSettings loaded = SettingsStore.Load(configPath, plansDir);
+    return canApply || !loaded.Auto.Enabled ? loaded : loaded with { Auto = loaded.Auto with { Enabled = false } }; // 시작 때와 같이 자동 모드 끔
 }
 
 /// 콘솔 모드: 파일 로그와 같은 줄을 화면에도 냅니다.

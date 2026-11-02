@@ -20,10 +20,13 @@ public sealed record GameInput(
 /// config.json 편집. 바꾼 결과 전체를 SettingsStore 검증에 통과시킨 뒤에만 씁니다 (서비스가 읽을 수 없는 설정을 만들지 않음).
 /// 쓰기 형식은 고정 (들여쓰기 2, UTF-8 BOM 없음, LF) 이라 이 형식의 파일은 읽고 쓰면 바이트가 그대로입니다.
 /// 읽기-수정-쓰기는 데이터 폴더의 config.json.lock 을 독점으로 잡고 하므로 트레이와 서비스가 동시에 고쳐도 서로의 변경을 덮지 않습니다.
-public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000)
+/// sleep (밀리초)·now 는 잠금·교체 재시도의 대기와 시계 (시험이 바꿈, 기본은 실제로 잠).
+public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<int>? sleep = null, Func<DateTime>? now = null)
 {
     private const int LockRetryMs = 100;
     private const int MoveTries = 5;
+    private readonly Action<int> _sleep = sleep ?? Thread.Sleep;
+    private readonly Func<DateTime> _now = now ?? (() => DateTime.UtcNow);
 
     public string ConfigPath { get; } = Path.Combine(dataDir, "config.json");
 
@@ -32,20 +35,28 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000)
     /// 설정이 아직 없으면 null. 있는데 검증을 통과하지 못하면 SettingsException.
     public AsterSettings? Load() => File.Exists(ConfigPath) ? SettingsStore.Load(ConfigPath, PlansDir) : null;
 
+    /// 수동 등록은 겹치는 폴더를 막지 않습니다 (기존 동작). source 가 auto 인 입력만 잠금 안에서 겹침을 검사해 거부합니다 (SettingsException).
     public void Add(GameInput g)
     {
         using FileStream _ = Lock();
         JObject root = ReadRoot();
-        GamesOf(root).Add(GameObject(g));
+        List<object?> games = GamesOf(root);
+        if (g.Source == "auto")
+        {
+            RejectOverlap(games, g);
+        }
+
+        games.Add(GameObject(g));
         Save(root);
     }
 
-    /// 자동 등록. 항목이 꽉 찼으면 source=auto 중 lastPlayed 가 가장 오래된 하나 (기록 없음이 가장 오래됨, 동률이면 앞쪽) 를 빼고 넣습니다. 뺀 이름 (없으면 null) 반환.
+    /// 자동 등록. 이미 등록된 게임의 origin_root 와 같거나 안쪽·바깥이면 거부합니다 (SettingsException, 파일은 그대로). 항목이 꽉 찼으면 source=auto 중 lastPlayed 가 가장 오래된 하나 (기록 없음이 가장 오래됨, 동률이면 앞쪽) 를 빼고 넣습니다. 뺀 이름 (없으면 null) 반환.
     public string? AddAuto(GameInput g, IReadOnlyDictionary<string, DateTimeOffset> lastPlayed)
     {
         using FileStream _ = Lock();
         JObject root = ReadRoot();
         List<object?> games = GamesOf(root);
+        RejectOverlap(games, g);
         string? evicted = null;
         if (games.Count >= SettingsStore.MaxGames)
         {
@@ -118,8 +129,9 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000)
         Save(root);
     }
 
-    private static void WriteAuto(JObject root, AutoSettings a) =>
-        root["auto"] = new JObject
+    private static void WriteAuto(JObject root, AutoSettings a)
+    {
+        var auto = new JObject
         {
             { "enabled", a.Enabled },
             { "discover", a.Discover },
@@ -132,7 +144,18 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000)
             { "max_relocations_per_day", (long)a.MaxRelocationsPerDay },
             { "ignore_exes", a.IgnoreExes.Cast<object?>().ToList() },
             { "rewarm_minutes", (long)a.RewarmMinutes },
+            { "full_prewarm", a.FullPrewarm },
+            { "full_prewarm_max_mib", (long)a.FullPrewarmMaxMib },
+            { "engine_profiles", a.EngineProfiles },
+            { "learn", new JObject { { "enabled", a.Learn.Enabled }, { "window_mib", (long)a.Learn.WindowMib }, { "max_total_mib", (long)a.Learn.MaxTotalMib }, { "mode", a.Learn.Mode } } },
         };
+        if (a.IdleSecondsSet || !a.IdleMinutesSet) // idle_minutes 만 명시된 설정은 그 값이 이기도록 idle_seconds 를 쓰지 않음
+        {
+            auto.Add("idle_seconds", (long)a.IdleSeconds);
+        }
+
+        root["auto"] = auto;
+    }
 
     public void SetMaxZoneMib(int mib)
     {
@@ -216,6 +239,38 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000)
         return dropped;
     }
 
+    // 같은 잠금 안에서 최신 파일 기준으로 판단: 호출한 쪽이 먼저 본 목록 이후에 다른 쪽이 등록한 게임과도 겹치지 않게 함.
+    private static void RejectOverlap(List<object?> games, GameInput g)
+    {
+        foreach (JObject o in games.OfType<JObject>())
+        {
+            if (o.TryGetValue("origin_root", out object? root) && root is string existing && Overlaps(existing, g.OriginRoot))
+            {
+                throw new SettingsException("games: origin_root overlaps the registered game " + (o.TryGetValue("name", out object? n) && n is string name ? name : existing));
+            }
+        }
+    }
+
+    // 대소문자를 무시하고 경로를 정규화해 같거나 한쪽이 다른 쪽 안에 있으면 겹침.
+    private static bool Overlaps(string a, string b)
+    {
+        string x = Full(a) + "\\";
+        string y = Full(b) + "\\";
+        return x.StartsWith(y, StringComparison.OrdinalIgnoreCase) || y.StartsWith(x, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string Full(string path)
+    {
+        try
+        {
+            return Path.GetFullPath(path).TrimEnd('\\', '/');
+        }
+        catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return path.TrimEnd('\\', '/');
+        }
+    }
+
     private static bool IsNamed(JObject o, string name) =>
         o.TryGetValue("name", out object? n) && string.Equals(n as string, name, StringComparison.OrdinalIgnoreCase);
 
@@ -272,16 +327,16 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000)
     {
         Directory.CreateDirectory(dataDir);
         string path = ConfigPath + ".lock";
-        DateTime until = DateTime.UtcNow.AddMilliseconds(lockWaitMs);
+        DateTime until = _now().AddMilliseconds(lockWaitMs);
         while (true)
         {
             try
             {
                 return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
             }
-            catch (IOException) when (DateTime.UtcNow < until)
+            catch (IOException) when (_now() < until)
             {
-                Thread.Sleep(LockRetryMs);
+                _sleep(LockRetryMs);
             }
         }
     }
@@ -328,7 +383,7 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000)
                     throw;
                 }
 
-                Thread.Sleep(LockRetryMs); // 서비스나 백신이 잠깐 잡고 있는 공유 위반
+                _sleep(LockRetryMs); // 서비스나 백신이 잠깐 잡고 있는 공유 위반
             }
         }
     }

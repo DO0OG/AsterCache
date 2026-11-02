@@ -36,7 +36,7 @@ public sealed class AutoSettingsTests
 
         Assert.Equal(AutoSettings.Default, s.Auto);
         Assert.Equal(2048, s.MaxZoneMib);
-        Assert.Equal((true, true, true, true, 1, 3, 600, 6144, 2), (s.Auto.Enabled, s.Auto.Discover, s.Auto.Trace, s.Auto.Relocate, s.Auto.PrewarmRecent, s.Auto.IdleMinutes, s.Auto.TraceCapSeconds, s.Auto.TraceCapMib, s.Auto.MaxRelocationsPerDay));
+        Assert.Equal((true, true, true, true, 0, 3, 600, 6144, 2), (s.Auto.Enabled, s.Auto.Discover, s.Auto.Trace, s.Auto.Relocate, s.Auto.PrewarmRecent, s.Auto.IdleMinutes, s.Auto.TraceCapSeconds, s.Auto.TraceCapMib, s.Auto.MaxRelocationsPerDay));
         Assert.Empty(s.Auto.IgnoreExes);
         Assert.Equal((20, 256), (AutoSettings.HeuristicWindowSeconds, AutoSettings.HeuristicReadMib));
     }
@@ -65,10 +65,12 @@ public sealed class AutoSettingsTests
     }
 
     [Theory]
-    [InlineData("prewarm_recent", -1)]
-    [InlineData("prewarm_recent", 9)]
+    [InlineData("prewarm_recent", -2)]
+    [InlineData("prewarm_recent", 33)]
     [InlineData("idle_minutes", 0)]
     [InlineData("idle_minutes", 1441)]
+    [InlineData("idle_seconds", 9)]
+    [InlineData("idle_seconds", 86401)]
     [InlineData("trace_cap_seconds", 29)]
     [InlineData("trace_cap_seconds", 7201)]
     [InlineData("trace_cap_mib", 63)]
@@ -82,7 +84,9 @@ public sealed class AutoSettingsTests
     }
 
     [Theory]
-    [InlineData("prewarm_recent", 8)]
+    [InlineData("prewarm_recent", 32)]
+    [InlineData("idle_seconds", 10)]
+    [InlineData("idle_seconds", 86400)]
     [InlineData("idle_minutes", 1440)]
     [InlineData("trace_cap_seconds", 30)]
     [InlineData("trace_cap_mib", 65536)]
@@ -95,6 +99,45 @@ public sealed class AutoSettingsTests
     [InlineData("trace")]
     [InlineData("relocate")]
     public void NonBoolFlagIsRejected(string key) => Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { [key] = "yes" }));
+
+    [Fact]
+    public void ColdStartKeysDefaultToOnAndAutoBudget()
+    {
+        AutoSettings a = ParseTop(_ => { }).Auto;
+
+        Assert.Equal((true, 0, true), (a.FullPrewarm, a.FullPrewarmMaxMib, a.EngineProfiles));
+    }
+
+    [Fact]
+    public void ColdStartKeysAreParsed()
+    {
+        AutoSettings a = ParseAuto(new JsonObject { ["full_prewarm"] = false, ["full_prewarm_max_mib"] = 8192, ["engine_profiles"] = false }).Auto;
+
+        Assert.Equal((false, 8192, false), (a.FullPrewarm, a.FullPrewarmMaxMib, a.EngineProfiles));
+    }
+
+    [Theory]
+    [InlineData(0, true)]
+    [InlineData(1048576, true)]
+    [InlineData(-1, false)]
+    [InlineData(1048577, false)]
+    public void FullPrewarmMaxMibRange(int value, bool ok)
+    {
+        if (ok)
+        {
+            Assert.Equal(value, ParseAuto(new JsonObject { ["full_prewarm_max_mib"] = value }).Auto.FullPrewarmMaxMib);
+        }
+        else
+        {
+            Assert.Contains("auto.full_prewarm_max_mib", Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["full_prewarm_max_mib"] = value })).Message);
+        }
+    }
+
+    [Theory]
+    [InlineData("full_prewarm")]
+    [InlineData("engine_profiles")]
+    public void ColdStartFlagsMustBeBooleans(string key) =>
+        Assert.Contains("auto." + key, Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { [key] = 1 })).Message);
 
     [Fact]
     public void WrongTypesAndUnknownKeysAreRejected()
@@ -214,6 +257,123 @@ public sealed class AutoSettingsTests
         JsonObject g2 = Game();
         g2["anticheat"] = 1;
         Assert.Throws<SettingsException>(() => SettingsStore.Parse(new JsonObject { ["games"] = new JsonArray(g2) }.ToJsonString(), Plans));
+    }
+
+    [Fact]
+    public void NewAutoKeysHaveDefaults()
+    {
+        AutoSettings a = ParseAuto(new JsonObject()).Auto;
+        Assert.Equal((0, 30, LearnSettings.Default), (a.PrewarmRecent, a.IdleSeconds, a.Learn));
+        Assert.Equal(new LearnSettings(false, 512, 0), LearnSettings.Default); // E7 재측정 전까지 기본 꺼짐, 스트림 모드·창 512 MiB
+        Assert.Equal(LearnSettings.StreamMode, LearnSettings.Default.Mode);
+    }
+
+    [Theory]
+    [InlineData(1, 3, true)] // beta.3 트레이가 항상 쓰던 기본
+    [InlineData(2, 3, false)]
+    [InlineData(1, 5, false)]
+    [InlineData(0, 3, false)]
+    public void Beta3DefaultsMigrateOnlyWhenBothMatchAndThereIsNoLearnKey(int recent, int idleMinutes, bool migrated)
+    {
+        AutoSettings a = ParseAuto(new JsonObject { ["prewarm_recent"] = recent, ["idle_minutes"] = idleMinutes }).Auto;
+
+        Assert.Equal(migrated, a.Migrated);
+        Assert.Equal(migrated ? 0 : recent, a.PrewarmRecent);
+        Assert.Equal(migrated ? TimeSpan.FromSeconds(30) : TimeSpan.FromMinutes(idleMinutes), a.IdleWindow);
+    }
+
+    [Fact]
+    public void LearnKeyOrMissingKeysPreventTheMigration()
+    {
+        Assert.False(ParseAuto(new JsonObject { ["prewarm_recent"] = 1, ["idle_minutes"] = 3, ["learn"] = new JsonObject() }).Auto.Migrated);
+        Assert.False(ParseAuto(new JsonObject { ["prewarm_recent"] = 1 }).Auto.Migrated);
+        Assert.False(ParseAuto(new JsonObject()).Auto.Migrated);
+    }
+
+    [Fact]
+    public void PrewarmRecentAcceptsMinusOneAndRejectsBelow()
+    {
+        Assert.Equal(-1, ParseAuto(new JsonObject { ["prewarm_recent"] = -1 }).Auto.PrewarmRecent);
+        Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["prewarm_recent"] = -2 }));
+    }
+
+    [Fact]
+    public void MinusOneSelectsNoRecentGames()
+    {
+        GameSettings g = new("a", ["a.exe"], "t", "p", @"D:\G", [@"D:\G"], "L", 1440);
+        var played = new Dictionary<string, DateTimeOffset> { ["a"] = DateTimeOffset.UtcNow };
+
+        Assert.Empty(AsterCache.Service.AutoMode.Recent([g], played, -1));
+        Assert.Single(AsterCache.Service.AutoMode.Recent([g], played, 0));
+    }
+
+    [Fact]
+    public void WithoutApplyRightsAutoModeIsSwitchedOffWithALogLine()
+    {
+        var log = new ListLog();
+        AsterSettings s = AsterCache.Service.Worker.ForApply(ParseAuto(new JsonObject()), canApply: false, log);
+
+        Assert.False(s.Auto.Enabled);
+        Assert.Single(log.Lines);
+        Assert.True(AsterCache.Service.Worker.ForApply(ParseAuto(new JsonObject()), canApply: true, log).Auto.Enabled);
+    }
+
+    [Fact]
+    public void IdleWindowUsesIdleSecondsWhenGivenOrWhenNeitherIsGiven()
+    {
+        Assert.Equal(TimeSpan.FromSeconds(30), ParseAuto(new JsonObject()).Auto.IdleWindow);
+        Assert.Equal(TimeSpan.FromSeconds(45), ParseAuto(new JsonObject { ["idle_seconds"] = 45 }).Auto.IdleWindow);
+        Assert.Equal(TimeSpan.FromSeconds(45), ParseAuto(new JsonObject { ["idle_seconds"] = 45, ["idle_minutes"] = 10 }).Auto.IdleWindow);
+    }
+
+    [Fact]
+    public void IdleWindowUsesIdleMinutesWhenOnlyItIsGiven()
+    {
+        Assert.Equal(TimeSpan.FromMinutes(10), ParseAuto(new JsonObject { ["idle_minutes"] = 10 }).Auto.IdleWindow);
+    }
+
+    [Fact]
+    public void LearnValuesAreParsedWithDefaults()
+    {
+        Assert.Equal(LearnSettings.Default, ParseAuto(new JsonObject()).Auto.Learn);
+        Assert.Equal(new LearnSettings(false, 1024, 65536), ParseAuto(new JsonObject
+        {
+            ["learn"] = new JsonObject { ["enabled"] = false, ["window_mib"] = 1024, ["max_total_mib"] = 65536 },
+        }).Auto.Learn);
+        Assert.Equal(new LearnSettings(false, 512, 0), ParseAuto(new JsonObject { ["learn"] = new JsonObject() }).Auto.Learn);
+        Assert.Equal(new LearnSettings(true, 512, 0), ParseAuto(new JsonObject { ["learn"] = new JsonObject { ["enabled"] = true } }).Auto.Learn);
+        Assert.Equal(new LearnSettings(false, 512, 0) { Mode = LearnSettings.GapMode }, ParseAuto(new JsonObject { ["learn"] = new JsonObject { ["mode"] = "gap" } }).Auto.Learn);
+    }
+
+    [Theory]
+    [InlineData("window_mib", 0)]
+    [InlineData("window_mib", 1025)]
+    [InlineData("max_total_mib", -1)]
+    [InlineData("max_total_mib", 65537)]
+    public void LearnNumbersOutOfRangeAreRejected(string key, int value)
+    {
+        var learn = new JsonObject { [key] = value };
+        var e = Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["learn"] = learn }));
+        Assert.Contains("auto.learn." + key, e.Message);
+    }
+
+    [Theory]
+    [InlineData("burst")]
+    [InlineData("")]
+    [InlineData("STREAM")]
+    public void LearnModeOtherThanStreamOrGapIsRejected(string mode)
+    {
+        var e = Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["learn"] = new JsonObject { ["mode"] = mode } }));
+        Assert.Contains("auto.learn.mode", e.Message);
+        Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["learn"] = new JsonObject { ["mode"] = 1 } }));
+    }
+
+    [Fact]
+    public void UnknownLearnKeyAndBadLearnTypesAreRejected()
+    {
+        Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["learn"] = new JsonObject { ["bogus"] = 1 } }));
+        Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["learn"] = new JsonObject { ["enabled"] = "yes" } }));
+        Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["learn"] = 1 }));
     }
 
     [Fact]

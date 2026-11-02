@@ -1,9 +1,11 @@
+using System.Globalization;
 using AsterCache.Core.I18n;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Settings;
 using AsterCache.Windows;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Templates;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -60,7 +62,7 @@ internal sealed class MainWindow : Window
     private readonly CheckBox _autoDiscover = new() { Content = L.T("Auto_Discover") };
     private readonly CheckBox _autoTrace = new() { Content = L.T("Auto_Trace") };
     private readonly CheckBox _autoRelocate = new() { Content = L.T("Auto_Relocate") };
-    private readonly ComboBox _autoPrewarm = new() { ItemsSource = Enumerable.Range(0, 9).ToList(), MinWidth = 70 };
+    private readonly ComboBox _autoPrewarm = new() { ItemsSource = Enumerable.Range(-1, 34).Select(n => n == -1 ? L.T("Auto_PrewarmOff") : n == 0 ? L.T("Auto_PrewarmAuto") : n.ToString(CultureInfo.InvariantCulture)).ToList(), MinWidth = 70 };
     private readonly TextBox _autoIgnore = new() { MinWidth = 320 };
     private readonly TextBox _zoneLimit = new() { MinWidth = 90 };
     private readonly TextBox _rewarmMinutes = new() { MinWidth = 70 };
@@ -117,7 +119,7 @@ internal sealed class MainWindow : Window
         tabs.Items.Add(new TabItem { Header = L.T("Tab_Settings"), Content = SettingsTab() });
         tabs.Items.Add(new TabItem { Header = L.T("Tab_Logs"), Content = LogsTab() });
 
-        var body = new Grid { ColumnDefinitions = new ColumnDefinitions("290,*") };
+        var body = new Grid { ColumnDefinitions = new ColumnDefinitions("270,*") };
         Place(driveSide, body, 0);
         Place(tabs, body, 1);
 
@@ -225,6 +227,8 @@ internal sealed class MainWindow : Window
         var refresh = Btn(L.T("Btn_Refresh"), () => _ = RunAsync(L.T("Btn_Refresh"), () => new ActionResult(true, L.T("Btn_Refresh"))));
         DockPanel.SetDock(refresh, Dock.Top);
         panel.Children.Add(refresh);
+        _status.TextWrapping = TextWrapping.Wrap;
+        ScrollViewer.SetHorizontalScrollBarVisibility(_status, Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled);
         panel.Children.Add(_status);
         return panel;
     }
@@ -232,8 +236,11 @@ internal sealed class MainWindow : Window
     private Control GamesTab()
     {
         _games.ItemTemplate = new FuncDataTemplate<GameRow>((row, _) => row is null ? new Panel() : Cells(
-            [row.Name, row.Exe, row.Origin, L.T(row.HasPlan ? "Cell_Yes" : "Cell_No"), L.T(row.HasTrace ? "Cell_Yes" : "Cell_No"), row.Verdict, row.Prewarm, row.Source, row.AntiCheat, row.Stage]));
-        _games.Styles.Add(new Style(x => x.OfType<ListBoxItem>()) { Setters = { new Setter(ContentControl.HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch) } });
+            [row.Name, row.Exe, row.Origin, L.T(row.HasPlan ? "Cell_Yes" : "Cell_No"), L.T(row.HasTrace ? "Cell_Yes" : "Cell_No"), row.Verdict, row.Prewarm, row.Source, row.AntiCheat, row.Stage], tips: [null, null, null, null, null, null, row.PrewarmFull, null, null, null]));
+        _games.Styles.Add(new Style(x => x.OfType<ListBoxItem>())
+        {
+            Setters = { new Setter(ContentControl.HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch), new Setter(TemplatedControl.PaddingProperty, RowPadding) },
+        });
         var buttons = new WrapPanel
         {
             Children =
@@ -252,12 +259,15 @@ internal sealed class MainWindow : Window
                 Btn(L.T("Btn_Revert"), () => WithGame(Revert)),
                 Btn(L.T("Btn_Prewarm"), () => WithGame(g => RunAsync(L.T("Op_PrewarmStream"), () => _tray.StreamNow(g)))),
                 Btn(L.T("Btn_Measure"), () => WithGame(g => RunAsync(L.T("Btn_Measure"), () => _manage.Measure(g)))),
+                Btn(L.T("Btn_ExportProfile"), () => WithGame(ExportProfile)),
+                Btn(L.T("Btn_ImportProfile"), () => WithGame(ImportProfile)),
             },
         };
         var panel = new DockPanel { Margin = new Thickness(4) };
+        Grid.SetIsSharedSizeScope(panel, true); // 헤더와 행이 열 폭을 함께 정함
         DockPanel.SetDock(buttons, Dock.Top);
         var header = Cells([L.T("Col_Name"), L.T("Col_Exe"), L.T("Col_Origin"), L.T("Col_Plan"), L.T("Col_Trace"), L.T("Col_Layout"), L.T("Col_Prewarm"), L.T("Col_Source"), L.T("Col_AntiCheat"), L.T("Col_Stage")], FontWeight.Bold);
-        header.Margin = new Thickness(8, 0, 0, 2);
+        header.Margin = new Thickness(RowPadding.Left + _games.BorderThickness.Left, 0, 0, 2);
         DockPanel.SetDock(header, Dock.Top);
         panel.Children.Add(buttons);
         panel.Children.Add(header);
@@ -333,7 +343,7 @@ internal sealed class MainWindow : Window
     {
         var form = new AutoForm(
             _autoEnabled.IsChecked == true, _autoDiscover.IsChecked == true, _autoTrace.IsChecked == true, _autoRelocate.IsChecked == true,
-            Math.Max(0, _autoPrewarm.SelectedIndex), _autoIgnore.Text ?? string.Empty, _zoneLimit.Text ?? string.Empty, _rewarmMinutes.Text ?? string.Empty);
+            Math.Max(0, _autoPrewarm.SelectedIndex) - 1, _autoIgnore.Text ?? string.Empty, _zoneLimit.Text ?? string.Empty, _rewarmMinutes.Text ?? string.Empty);
         return RunAsync(L.T("Op_AutoChange"), () => _tray.ApplyAuto(form));
     }
 
@@ -400,6 +410,40 @@ internal sealed class MainWindow : Window
         {
             await RunAsync(L.T("Btn_Revert"), () => _manage.Revert(name, Progress));
         }
+    }
+
+    private async Task ExportProfile(string name)
+    {
+        IStorageFile? file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = L.T("Pick_ProfileSave"),
+            SuggestedFileName = name + ".aster-profile.json",
+            DefaultExtension = "json",
+            FileTypeChoices = [new FilePickerFileType(L.T("Pick_ProfileFilter")) { Patterns = ["*.json", "*.zip"] }],
+        });
+        if (file?.TryGetLocalPath() is not { } path)
+        {
+            return;
+        }
+
+        string target = path.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ? path : path + ".json";
+        await RunAsync(L.T("Btn_ExportProfile"), () => _manage.ExportProfile(name, target));
+    }
+
+    private async Task ImportProfile(string name)
+    {
+        IReadOnlyList<IStorageFile> files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = L.T("Pick_ProfileOpen"),
+            AllowMultiple = false,
+            FileTypeFilter = [new FilePickerFileType(L.T("Pick_ProfileFilter")) { Patterns = ["*.json", "*.zip"] }],
+        });
+        if (files.Count == 0 || files[0].TryGetLocalPath() is not { } path)
+        {
+            return;
+        }
+
+        await RunAsync(L.T("Btn_ImportProfile"), () => _manage.ImportProfile(name, path));
     }
 
     private async Task Confirmed(string text, string what, Func<ActionResult> work)
@@ -477,7 +521,7 @@ internal sealed class MainWindow : Window
             _autoDiscover.IsChecked = auto.Discover;
             _autoTrace.IsChecked = auto.Trace;
             _autoRelocate.IsChecked = auto.Relocate;
-            _autoPrewarm.SelectedIndex = Math.Clamp(auto.PrewarmRecent, 0, 8);
+            _autoPrewarm.SelectedIndex = Math.Clamp(auto.PrewarmRecent, -1, 32) + 1;
             _autoIgnore.Text = string.Join(", ", auto.IgnoreExes);
             _rewarmMinutes.Text = auto.RewarmMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture);
             _zoneLimit.Text = _tray.Settings?.MaxZoneAuto == true ? "auto" : (_tray.Settings?.MaxZoneMib ?? SettingsStore.DefaultMaxZoneMib).ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -539,12 +583,46 @@ internal sealed class MainWindow : Window
         return box;
     }
 
-    private static Grid Cells(IReadOnlyList<string> text, FontWeight? weight = null)
+    // 게임 표의 열. 이름·exe·원점·예열은 안 내용만큼 (최대 Max) 이고 헤더와 모든 행이 SharedSizeGroup 으로 폭을 함께 정합니다. 짧은 열은 고정 폭, 단계는 남는 폭.
+    private sealed record Col(string? Group, double Fixed, double Max, int Lines);
+
+    private static readonly Col[] GameCols =
+    [
+        new("name", 0, 84, 2), new("exe", 0, 104, 1), new("origin", 0, 112, 3), new(null, 34, 0, 1), new(null, 56, 0, 1),
+        new(null, 64, 0, 2), new("prewarm", 0, 94, 3), new(null, 56, 0, 1), new(null, 64, 0, 1), new(null, 0, 0, 3),
+    ];
+
+    private static readonly Thickness RowPadding = new(6, 3);
+
+    private static Grid Cells(IReadOnlyList<string> text, FontWeight? weight = null, IReadOnlyList<string?>? tips = null)
     {
-        var g = new Grid { ColumnDefinitions = new ColumnDefinitions("120,130,2*,50,70,110,2*,60,90,110") };
+        var g = new Grid();
+        foreach (Col c in GameCols)
+        {
+            g.ColumnDefinitions.Add(c.Group is not null ? new ColumnDefinition(GridLength.Auto) { SharedSizeGroup = c.Group }
+                : c.Fixed > 0 ? new ColumnDefinition(c.Fixed, GridUnitType.Pixel) : new ColumnDefinition(1, GridUnitType.Star) { MinWidth = 96 });
+        }
+
         for (int i = 0; i < text.Count; i++)
         {
-            var t = new TextBlock { Text = text[i], FontWeight = weight ?? FontWeight.Normal, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 0, 8, 0) };
+            Col c = GameCols[i];
+            var t = new TextBlock
+            {
+                Text = text[i],
+                FontWeight = weight ?? FontWeight.Normal,
+                FontSize = 12,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextWrapping = c.Lines > 1 ? TextWrapping.Wrap : TextWrapping.NoWrap,
+                MaxLines = c.Lines,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Margin = new Thickness(0, 0, 4, 0),
+            };
+            if (c.Max > 0)
+            {
+                t.MaxWidth = c.Max;
+            }
+
+            ToolTip.SetTip(t, tips?[i] ?? text[i]);
             Grid.SetColumn(t, i);
             g.Children.Add(t);
         }

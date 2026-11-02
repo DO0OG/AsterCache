@@ -1,0 +1,87 @@
+﻿{
+    "replay":  "paced",
+    "think_ms":  120,
+    "think_every":  100,
+    "other_python_processes":  12,
+    "mode":  "frostpunk",
+    "root":  "D:\\Frostpunk",
+    "trace":  "D:\\Git\\AsterCache\\results\\csharp_e4_20261102_111921\\trace.json",
+    "aster":  "D:\\Git\\AsterCache\\csharp\\publish\\gui\\aster.exe",
+    "runs":  3,
+    "learn_seconds_cap":  120,
+    "rows":  [
+                 {
+                     "arm":  "A",
+                     "run":  1,
+                     "replay_s":  23.356887598143658
+                 },
+                 {
+                     "arm":  "B",
+                     "run":  1,
+                     "replay_s":  16.415874500278733,
+                     "read_ahead_bytes":  766356276,
+                     "game_read_bytes":  2335379456,
+                     "hit_ratio":  0.1943,
+                     "events":  35666,
+                     "events_lost":  0,
+                     "resolved_reads":  50944,
+                     "late_reads":  0,
+                     "unresolved_reads":  2911,
+                     "sequential_files":  7,
+                     "hit_bytes":  453705728,
+                     "gap_count":  149,
+                     "yielded_requests":  148,
+                     "read_ahead_while_idle_bytes":  615754548
+                 },
+                 {
+                     "arm":  "B",
+                     "run":  2,
+                     "replay_s":  19.888770799807389,
+                     "read_ahead_bytes":  656059188,
+                     "game_read_bytes":  2438467584,
+                     "hit_ratio":  0.1615,
+                     "events":  37239,
+                     "events_lost":  0,
+                     "resolved_reads":  52364,
+                     "late_reads":  0,
+                     "unresolved_reads":  280,
+                     "sequential_files":  7,
+                     "hit_bytes":  393871360,
+                     "gap_count":  135,
+                     "yielded_requests":  134,
+                     "read_ahead_while_idle_bytes":  520399668
+                 },
+                 {
+                     "arm":  "A",
+                     "run":  2,
+                     "replay_s":  19.298813799920023
+                 },
+                 {
+                     "arm":  "A",
+                     "run":  3,
+                     "replay_s":  15.240223399392562
+                 },
+                 {
+                     "arm":  "B",
+                     "run":  3,
+                     "replay_s":  15.131388501773472,
+                     "read_ahead_bytes":  730508084,
+                     "game_read_bytes":  2314932224,
+                     "hit_ratio":  0.1929,
+                     "events":  35354,
+                     "events_lost":  0,
+                     "resolved_reads":  49051,
+                     "late_reads":  0,
+                     "unresolved_reads":  385,
+                     "sequential_files":  7,
+                     "hit_bytes":  446627840,
+                     "gap_count":  128,
+                     "yielded_requests":  126,
+                     "read_ahead_while_idle_bytes":  600025908
+                 }
+             ],
+    "wpr_replay_s":  19.374655099018128,
+    "median_a_s":  19.298813799920023,
+    "median_b_s":  16.415874500278733,
+    "speedup":  1.176
+}

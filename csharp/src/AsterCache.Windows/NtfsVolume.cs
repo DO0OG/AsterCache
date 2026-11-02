@@ -13,6 +13,7 @@ namespace AsterCache.Windows;
 public class NtfsVolume : IVolume
 {
     private readonly SafeFileHandle? _handle;
+    private IoPriorityHint? _hint;
 
     protected NtfsVolume(SafeFileHandle? handle, string letter)
     {
@@ -122,6 +123,17 @@ public class NtfsVolume : IVolume
         }
     }
 
+    /// 이 볼륨 핸들과 이동하는 파일 핸들에 낮은 I/O 우선순위 힌트를 붙입니다 (서비스의 백그라운드 이동용, 수동 적용은 쓰지 않음).
+    /// FSCTL_MOVE_FILE 이 커널 안에서 내는 복사 I/O 에 힌트가 적용되는지는 문서가 보장하지 않습니다.
+    public void UseLowIoPriority(IoPriorityHint hint)
+    {
+        _hint = hint;
+        if (_handle is { IsInvalid: false })
+        {
+            hint.SetLow(_handle);
+        }
+    }
+
     /// FSCTL_MOVE_FILE: path 의 clusters 개 클러스터(VCN vcn 부터)를 물리 lcn 으로 다시 매핑합니다. 실패하면 Win32Exception.
     public void Move(string path, long vcn, long lcn, uint clusters)
     {
@@ -131,6 +143,7 @@ public class NtfsVolume : IVolume
             throw new Win32Exception(Marshal.GetLastPInvokeError());
         }
 
+        _hint?.SetLow(h);
         var req = new MoveFileData { FileHandle = h.DangerousGetHandle(), StartingVcn = vcn, StartingLcn = lcn, ClusterCount = clusters };
         (bool ok, int err, _) = Ioctl(Win32.FsctlMoveFile, MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref req, 1)), 0);
         if (!ok)

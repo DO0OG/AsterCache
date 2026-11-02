@@ -1,0 +1,55 @@
+﻿**********************
+Windows PowerShell 기록 시작
+시작 시간: 20261102212157
+사용자 이름: <host>\<user>
+RunAs 사용자: <host>\<user>
+구성 이름: 
+Machine: <host> (Microsoft Windows NT 10.0.26200.0)
+호스트 응용 프로그램: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File <scratch>\admin\e7_3.ps1
+프로세스 ID: 9640
+PSVersion: 5.1.26100.9168
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9168
+BuildVersion: 10.0.26100.9168
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+21:21:58 mode=synthetic root=D:\AsterBench_e7 trace=D:\AsterBench_e7\trace.json runs=3 order=A,B,B,A,A,B
+21:22:19 A1: replay 19.82 s
+21:23:09 B1: replay 39.40 s read_ahead=1140588544 hit=0.2803
+21:23:56 B2: replay 38.71 s read_ahead=1168900096 hit=0.2847
+21:24:17 A2: replay 19.98 s
+21:24:37 A3: replay 19.75 s
+21:25:24 B3: replay 37.99 s read_ahead=1176109056 hit=0.264
+21:26:11 W (DiskIo capture): replay 37.03 s
+100%  [>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>]
+21:26:13 median A (no learn) 19.82 s, B (learn) 38.71 s, A/B = 0.512
+Done: D:\Git\AsterCache\results\csharp_e7b_synth_20261102_212158\summary.json
+This script changed nothing on disk. If you undid the relayout before this run, restore it with (elevated, Frostpunk clo
+sed):
+  & "D:\Git\AsterCache\csharp\publish\cli\aster.exe" apply --plan "D:\Git\AsterCache\results\csharp_e4_20261102_111921\p
+lan.json" --journal <new journal.jsonl> --allowed-root "D:\AsterBench_e7" --execute
+synthetic exit=0
+21:26:13 mode=frostpunk root=D:\Frostpunk trace=D:\Git\AsterCache\results\csharp_e4_20261102_111921\trace.json runs=3 or
+der=A,B,B,A,A,B
+21:26:34 A1: replay 18.88 s
+21:27:21 B1: replay 39.57 s read_ahead=2330101959 hit=0.5373
+21:28:09 B2: replay 32.90 s read_ahead=2417608207 hit=0.579
+21:28:35 A2: replay 23.43 s
+21:28:57 A3: replay 18.98 s
+21:29:44 B3: replay 37.40 s read_ahead=2183278253 hit=0.4951
+21:30:33 W (DiskIo capture): replay 32.19 s
+100%  [>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>]
+21:30:35 median A (no learn) 18.98 s, B (learn) 37.40 s, A/B = 0.507
+Done: D:\Git\AsterCache\results\csharp_e7b_frost_20261102_212613\summary.json
+This script changed nothing on disk. If you undid the relayout before this run, restore it with (elevated, Frostpunk clo
+sed):
+  & "D:\Git\AsterCache\csharp\publish\cli\aster.exe" apply --plan "D:\Git\AsterCache\results\csharp_e4_20261102_111921\p
+lan.json" --journal <new journal.jsonl> --allowed-root "D:\Frostpunk" --execute
+frostpunk exit=0
+**********************
+Windows PowerShell 기록 끝
+종료 시간: 20261102213035
+**********************

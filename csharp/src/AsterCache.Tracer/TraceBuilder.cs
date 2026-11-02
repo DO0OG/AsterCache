@@ -20,11 +20,13 @@ public static class TraceBuilder
         var tree = new ProcessTree(exeNames);
         string prefix = rootPrefix.Length > 0 ? NtPath.NormCase(NtPath.NormPath(rootPrefix)) : "";
         var events = new List<TraceEvent>();
+        DateTime? start = null; // 첫 기록의 시각 = 세션 시작 (t_ms 의 0)
         int reads = 0;
         int ignored = 0;
         bool truncated = false;
         foreach (TraceRecord r in records)
         {
+            start ??= r.Time;
             switch (r.Kind)
             {
                 case RecordKind.ProcessStart:
@@ -47,7 +49,7 @@ public static class TraceBuilder
                         break;
                     }
 
-                    events.Add(new TraceEvent(r.Path, r.Offset, r.Length));
+                    events.Add(new TraceEvent(r.Path, r.Offset, r.Length, TMs: Math.Max(0, (long)(r.Time - start.Value).TotalMilliseconds)));
                     break;
             }
 

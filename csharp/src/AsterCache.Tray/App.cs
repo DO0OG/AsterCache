@@ -38,6 +38,9 @@ internal sealed class App : Application
     private DateTime _lastClick = DateTime.MinValue;
     private readonly DateTimeOffset _started = DateTimeOffset.UtcNow;
     private readonly HashSet<string> _seenEvents = [];
+    private readonly Dictionary<string, string> _stageSeen = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _prewarmSeen = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateOnly> _prewarmToast = new(StringComparer.OrdinalIgnoreCase); // 게임별로 예열 완료를 알린 날 (게임당 하루 한 번)
     private readonly List<AutoToast> _toasts = [];
     private string _lastNotice = string.Empty;
 
@@ -154,13 +157,28 @@ internal sealed class App : Application
         foreach (AutoNotice e in AutoStatusFile.NewEvents(status.Events, _started, _seenEvents))
         {
             _seenEvents.Add(e.Key);
-            _lastNotice = AutoStatusFile.Notice(e, L.Current);
-            var toast = new AutoToast(_lastNotice, _toasts.Count, ShowMain);
-            _toasts.Add(toast);
-            toast.Closed += (_, _) => _toasts.Remove(toast);
-            toast.Show();
-            Rebuild();
+            Toast(AutoStatusFile.Notice(e, L.Current));
         }
+
+        foreach (string game in AutoStatusFile.FirstRunFinished(_stageSeen, status)) // 이벤트로는 알 수 없어 단계 변화로 감지
+        {
+            Toast(L.T("Toast_FirstRun", game));
+        }
+
+        foreach (string game in AutoStatusFile.PrewarmFinished(_prewarmSeen, _prewarmToast, status, DateOnly.FromDateTime(DateTime.Now)))
+        {
+            Toast(L.T("Toast_Prewarmed", game));
+        }
+    }
+
+    private void Toast(string text)
+    {
+        _lastNotice = text;
+        var toast = new AutoToast(text, _toasts.Count, ShowMain);
+        _toasts.Add(toast);
+        toast.Closed += (_, _) => _toasts.Remove(toast);
+        toast.Show();
+        Rebuild();
     }
 
     private void Update(Action change)

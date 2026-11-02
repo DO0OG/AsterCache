@@ -28,9 +28,10 @@ public static class SettingsStore
     private static readonly string[] AutoKeys =
     [
         "enabled", "discover", "trace", "relocate", "prewarm_recent", "idle_minutes", "trace_cap_seconds", "trace_cap_mib",
-        "max_relocations_per_day", "ignore_exes", "rewarm_minutes",
+        "max_relocations_per_day", "ignore_exes", "rewarm_minutes", "idle_seconds", "learn", "full_prewarm", "full_prewarm_max_mib", "engine_profiles",
     ];
     private static readonly string[] PrewarmKeys = ["on_service_start", "trigger_exes", "min_free_ram_mib", "cooldown_min", "pin"];
+    private static readonly string[] LearnKeys = ["enabled", "window_mib", "max_total_mib", "mode"];
 
     public static string DefaultDataDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "AsterCache");
 
@@ -131,14 +132,44 @@ public static class SettingsStore
             CheckUnique(ignore, "auto.ignore_exes: duplicate");
         }
 
+        LearnSettings learn = o.TryGetValue("learn", out object? ln) ? ParseLearn(ln) : LearnSettings.Default;
+        int recent = OptInt(o, "prewarm_recent", -1, 32, d.PrewarmRecent);
+        int idleMin = OptInt(o, "idle_minutes", 1, 1440, d.IdleMinutes);
+        // beta.3 트레이가 항상 쓰던 기본 (1, 3 분) 은 새 기본으로 해석 (파일은 다음 저장 때 새 형식으로 바뀜)
+        bool migrated = !o.ContainsKey("learn") && o.ContainsKey("prewarm_recent") && o.ContainsKey("idle_minutes") && recent == 1 && idleMin == 3;
+        if (migrated)
+        {
+            recent = d.PrewarmRecent;
+        }
+
         return new AutoSettings(
             OptBool(o, "enabled", d.Enabled), OptBool(o, "discover", d.Discover), OptBool(o, "trace", d.Trace), OptBool(o, "relocate", d.Relocate),
-            OptInt(o, "prewarm_recent", 0, 8, d.PrewarmRecent), OptInt(o, "idle_minutes", 1, 1440, d.IdleMinutes),
+            recent, idleMin,
             OptInt(o, "trace_cap_seconds", 30, 7200, d.TraceCapSeconds), OptInt(o, "trace_cap_mib", 64, 65536, d.TraceCapMib),
             OptInt(o, "max_relocations_per_day", 0, 24, d.MaxRelocationsPerDay), ignore)
         {
             RewarmMinutes = OptInt(o, "rewarm_minutes", 0, 1440, d.RewarmMinutes),
+            IdleSeconds = OptInt(o, "idle_seconds", 10, 86400, d.IdleSeconds),
+            IdleSecondsSet = o.ContainsKey("idle_seconds"),
+            IdleMinutesSet = o.ContainsKey("idle_minutes") && !migrated,
+            Migrated = migrated,
+            Learn = learn,
+            FullPrewarm = OptBool(o, "full_prewarm", d.FullPrewarm),
+            FullPrewarmMaxMib = OptInt(o, "full_prewarm_max_mib", 0, 1048576, d.FullPrewarmMaxMib),
+            EngineProfiles = OptBool(o, "engine_profiles", d.EngineProfiles),
         };
+    }
+
+    private static LearnSettings ParseLearn(object? v)
+    {
+        JObject o = v as JObject ?? throw new SettingsException("auto.learn: object expected");
+        Unknown(o, LearnKeys, "auto.learn");
+        LearnSettings d = LearnSettings.Default;
+        bool enabled = o.TryGetValue("enabled", out object? b) ? b as bool? ?? throw new SettingsException("auto.learn.enabled: true or false expected") : d.Enabled;
+        int window = o.TryGetValue("window_mib", out object? wm) ? Int(wm, "auto.learn.window_mib", 1, 1024) : d.WindowMib;
+        int total = o.TryGetValue("max_total_mib", out object? mt) ? Int(mt, "auto.learn.max_total_mib", 0, 65536) : d.MaxTotalMib;
+        string mode = o.TryGetValue("mode", out object? m) ? m is LearnSettings.StreamMode or LearnSettings.GapMode ? (string)m : throw new SettingsException("auto.learn.mode: \"stream\" or \"gap\" expected") : d.Mode;
+        return new LearnSettings(enabled, window, total) { Mode = mode };
     }
 
     private static bool OptBool(JObject o, string key, bool dflt) =>

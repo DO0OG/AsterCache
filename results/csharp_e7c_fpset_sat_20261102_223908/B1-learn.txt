@@ -1,0 +1,1 @@
+{"read_ahead_bytes":17891328,"game_read_bytes":2057573493,"hit_ratio":0.0042,"events":31339,"events_lost":0,"resolved_reads":38529,"late_reads":0,"unresolved_reads":358,"sequential_files":7,"hit_bytes":8585216,"gap_count":12,"yielded_requests":12,"read_ahead_while_idle_bytes":6291456}

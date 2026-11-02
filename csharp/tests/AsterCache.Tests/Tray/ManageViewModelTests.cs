@@ -112,8 +112,8 @@ public sealed class ManageViewModelTests : IDisposable
         Assert.Equal("--execute", AsterArgs.Apply("p", "j", ["r1"], "L", execute: true)[^1]);
         Assert.Equal(["revert", "--journal", "j", "--allowed-root", "r1", "--require-volume-label", "L", "--execute"], AsterArgs.Revert("j", ["r1"], "L"));
         Assert.Equal(["verify", "--plan", "p"], AsterArgs.Verify("p"));
-        Assert.Equal(["status", "--prewarm-status", "w", "--plan", "p", "--journal", "j"], AsterArgs.Status("w", "p", "j"));
-        Assert.Equal(["status"], AsterArgs.Status(null, null, null));
+        Assert.Equal(["status", "--prewarm-status", "w", "--auto-status", "a", "--plan", "p", "--journal", "j"], AsterArgs.Status("w", "a", "p", "j"));
+        Assert.Equal(["status", "--prewarm-status", "w", "--auto-status", "a"], AsterArgs.Status("w", "a", null, null));
         Assert.Equal(["prefetch", "--trace", "t", "--origin-root", "r", "--budget-mib", "112", "--execute", "--timing"], AsterArgs.Timing("t", "r", 112));
     }
 
@@ -183,7 +183,7 @@ public sealed class ManageViewModelTests : IDisposable
         File.WriteAllText(_vm.JournalPath("mw4"), "{}\n");
         _cli.On("status", (args, _) => args.Contains("--plan")
             ? CliResult.Parse("{\"plan\":{\"hot_clusters\":200,\"in_zone_clusters\":150,\"verdict\":\"contiguous\"},\"journal\":{\"rows\":4}}")
-            : CliResult.Parse("{\"admin\":false,\"prewarm\":{\"games\":{\"mw4\":{\"at\":\"2026-11-02T01:02:03+00:00\",\"result\":\"ok\",\"reason\":null,\"bytes\":1073741824,\"seconds\":5.5,\"mb_per_s\":186.2},"
+            : CliResult.Parse("{\"admin\":false,\"prewarm\":{\"games\":{\"mw4\":{\"at\":\"2026-11-02T01:02:03+00:00\",\"result\":\"ok\",\"reason\":null,\"bytes\":1073741824,\"seconds\":5.5,\"mb_per_s\":186.2,\"head_mib\":5},"
                 + "\"old\":{\"at\":\"2025-01-01T00:00:00+00:00\",\"result\":\"skipped\",\"reason\":\"low memory\",\"bytes\":null,\"seconds\":null}}}}"));
 
         Assert.Equal("?", _vm.GameRows(null).Single().Verdict);
@@ -191,8 +191,8 @@ public sealed class ManageViewModelTests : IDisposable
 
         GameRow row = _vm.GameRows(null).Single();
         Assert.Equal(("mw4", "game.exe", true, false, "contiguous"), (row.Name, row.Exe, row.HasPlan, row.HasTrace, row.Verdict));
-        Assert.Contains("트리거 Steam.exe", row.Prewarm);
-        Assert.Contains("여유 RAM 4096 MiB", row.Prewarm);
+        Assert.Equal("시작 예 · Steam.exe", row.Prewarm);
+        Assert.Contains("여유 RAM 4096 MiB", row.PrewarmFull);
         Assert.Empty(_vm.GameRows("Q:"));
         Assert.Single(_vm.GameRows(_drive));
 
@@ -203,8 +203,8 @@ public sealed class ManageViewModelTests : IDisposable
         Assert.Contains("1024 MiB", lines[2]);
         Assert.Contains("5.5 초", lines[2]);
         Assert.Contains("배치 contiguous · 존 적중 75.0% · 마지막 재배치 20", lines[3]);
-        Assert.Contains("예열 ok", lines[3]);
-        Assert.Contains(_cli.Calls, c => c.Args.SequenceEqual(AsterArgs.Status(null, Path.Combine(Plans, "mw4.plan.json"), _vm.JournalPath("mw4"))));
+        Assert.Contains("예열 ok · 로딩 앞부분 5 MiB", lines[3]);
+        Assert.Contains(_cli.Calls, c => c.Args.SequenceEqual(AsterArgs.Status(_vm.PrewarmStatusPath, _vm.AutoStatusPath, Path.Combine(Plans, "mw4.plan.json"), _vm.JournalPath("mw4"))));
     }
 
     [Fact]
@@ -216,6 +216,15 @@ public sealed class ManageViewModelTests : IDisposable
         Assert.Equal("-", row.Verdict);
         Assert.Contains("계획 없음", _vm.StatusLines(null)[^1]);
         Assert.Contains("마지막 예열: 기록 없음", _vm.StatusLines(null)[2]);
+    }
+
+    [Fact]
+    public void RefreshStatusPassesTheDataDirStatusFilesSoAsterNeverReadsProgramData()
+    {
+        Register();
+        _cli.On("status", (_, _) => CliResult.Parse("{}"));
+        Assert.True(_vm.RefreshStatus().Ok);
+        Assert.Equal(AsterArgs.Status(Path.Combine(_dir, "prewarm_status.json"), Path.Combine(_dir, "auto_status.json"), null, null), _cli.Calls.Single().Args);
     }
 
     // ---- 동작 ----
@@ -394,6 +403,35 @@ public sealed class ManageViewModelTests : IDisposable
         Assert.Contains("선읽기 100 MiB, 2.00 초 (50 MB/s)", r.Message);
         Assert.Contains("스트림 2000", r.Message);
         Assert.Equal("4096", _cli.Calls.Single().Args[^3]); // 계획이 없으면 max_stream_mib
+    }
+
+    [Fact]
+    public void ExportAndImportProfileRunAsterProfileElevatedAndReportTheResult()
+    {
+        Register();
+        string file = Path.Combine(_dir, "mw4.json");
+        _cli.On("profile", (args, elevate) =>
+        {
+            Assert.True(elevate);
+            return args[1] == "export"
+                ? CliResult.Parse("{\"game\":\"mw4\",\"files\":2,\"raw_events\":5,\"prefetch_events\":3}")
+                : CliResult.Parse("{\"imported\":false,\"error\":\"profile_mismatch\",\"mismatch_count\":2,\"mismatches\":[{\"path\":\"a.bin\",\"reason\":\"size\",\"expected_size\":1,\"actual_size\":2}]}", 1);
+        });
+
+        ActionResult export = _vm.ExportProfile("mw4", file);
+        Assert.True(export.Ok);
+        Assert.Contains("파일 2개", export.Message);
+        Assert.Equal(["profile", "export", "--game", "mw4", "--out", file, "--data-dir", _dir], _cli.Calls[0].Args);
+
+        ActionResult import = _vm.ImportProfile("mw4", file);
+        Assert.False(import.Ok);
+        Assert.Contains("일치하지 않는 파일 2개", import.Message);
+        Assert.Contains("a.bin", import.Message);
+        Assert.Equal(["profile", "import", "--file", file, "--game", "mw4", "--data-dir", _dir, "--json"], _cli.Calls[1].Args);
+
+        _cli.On("profile", (_, _) => CliResult.Parse("{\"imported\":true,\"game\":\"mw4\",\"files\":2,\"raw_events\":5,\"prefetch_events\":3}"));
+        Assert.True(_vm.ImportProfile("mw4", file).Ok);
+        Assert.False(_vm.ExportProfile("nope", file).Ok);
     }
 
     [Fact]
@@ -609,6 +647,128 @@ public sealed class ManageViewModelTests : IDisposable
     }
 
     [Fact]
+    public void LearningStageShowsInPlaceOfTracingWithTheReadAheadAmount()
+    {
+        var learning = new AutoGame("auto", "gog", "learning", "512 MiB read ahead");
+
+        Assert.Equal("자동: g 발견 → [첫 실행: 학습 중] (선행 읽기 512 MiB)", AutoStatusFile.Line("g", learning, "ko"));
+        Assert.Equal("Auto: g discovered → [first run: learning] (512 MiB read ahead)", AutoStatusFile.Line("g", learning, "en"));
+        Assert.Equal("첫 실행: 학습 중 (선행 읽기 512 MiB)", AutoStatusFile.StageText(learning, "ko"));
+        Assert.Equal("자동: g 발견 → [첫 실행: 학습 중]", AutoStatusFile.Line("g", learning with { Detail = null }, "ko"));
+        Assert.Equal("first run: learning (something else)", AutoStatusFile.StageText(learning with { Detail = "something else" }, "en")); // 모르는 형식은 그대로
+    }
+
+    [Fact]
+    public void PrewarmedDetailAddsPrewarmedToAnyStage()
+    {
+        var waiting = new AutoGame("auto", "gog", "waiting_idle", "prewarmed");
+
+        Assert.Equal("재배치 대기 (예열됨)", AutoStatusFile.StageText(waiting, "ko"));
+        Assert.Equal("done (prewarmed)", AutoStatusFile.StageText(waiting with { Stage = "done" }, "en"));
+        Assert.Equal("완료 (예열됨)", AutoStatusFile.StageText(waiting with { Stage = "done" }, "ko"));
+        Assert.Equal("자동: g 발견 → 트레이스 수집 중 → [재배치 대기] (예열됨)", AutoStatusFile.Line("g", waiting, "ko"));
+        Assert.Equal("재배치 대기 (예열됨)", AutoStatusFile.StageText(waiting with { Detail = "daily limit reached, prewarmed" }, "ko"));
+        Assert.Equal("재배치 대기", AutoStatusFile.StageText(waiting with { Detail = "daily limit reached" }, "ko"));
+        Assert.Equal("실패 (예열됨)", AutoStatusFile.StageText(waiting with { Stage = "failed" }, "ko"));
+    }
+
+    [Fact]
+    public void RelocatedProfileDetailShowsRelocatedProfileAlongsideThePrewarmTag()
+    {
+        var done = new AutoGame("auto", null, "done", "relocated (profile)");
+
+        Assert.Equal("완료 (재배치됨(프로필))", AutoStatusFile.StageText(done, "ko"));
+        Assert.Equal("done (relocated (profile))", AutoStatusFile.StageText(done, "en"));
+        Assert.Equal("완료 (재배치됨(프로필), 예열됨)", AutoStatusFile.StageText(done with { Detail = "relocated (profile), prewarmed" }, "ko"));
+        Assert.Equal("done (relocated (profile), prewarming 3/8 MB)", AutoStatusFile.StageText(done with { Detail = "relocated (profile), prewarming 3/8 MiB" }, "en"));
+    }
+
+    [Fact]
+    public void PrewarmedDetailShowsFullFolderOrProfileName()
+    {
+        var discovered = new AutoGame("manual", null, "discovered", "prewarmed (profile Unity)");
+
+        Assert.Equal("발견 (예열됨(프로필 Unity))", AutoStatusFile.StageText(discovered, "ko"));
+        Assert.Equal("discovered (prewarmed (profile Unity))", AutoStatusFile.StageText(discovered, "en"));
+        Assert.Equal("발견 (예열됨(전체))", AutoStatusFile.StageText(discovered with { Detail = "prewarmed (full)" }, "ko"));
+        Assert.Equal("discovered (prewarmed (full folder))", AutoStatusFile.StageText(discovered with { Detail = "prewarmed (full)" }, "en"));
+        Assert.Equal("발견 (예열됨(프로필 Unity+Source))", AutoStatusFile.StageText(discovered with { Detail = "prewarmed (profile Unity+Source)" }, "ko"));
+        Assert.Equal("done (prewarmed (full folder))", AutoStatusFile.StageText(discovered with { Stage = "done", Detail = "daily limit reached, prewarmed (full)" }, "en"));
+    }
+
+    [Fact]
+    public void PrewarmingDetailShowsTheProgressInStageColumnAndLine()
+    {
+        var waiting = new AutoGame("auto", "gog", "waiting_idle", "daily limit reached, prewarming 128/512 MiB");
+
+        Assert.Equal("재배치 대기 (예열 중 128/512 MB)", AutoStatusFile.StageText(waiting, "ko"));
+        Assert.Equal("waiting to relocate (prewarming 128/512 MB)", AutoStatusFile.StageText(waiting, "en"));
+        Assert.Equal("자동: g 발견 → 트레이스 수집 중 → [재배치 대기] (예열 중 128/512 MB)", AutoStatusFile.Line("g", waiting, "ko"));
+        Assert.Equal("done (prewarming 1/2 MB)", AutoStatusFile.StageText(waiting with { Stage = "done", Detail = "prewarming 1/2 MiB" }, "en"));
+    }
+
+    [Fact]
+    public void PrewarmFinishedFiresOnTheTransitionOncePerGamePerDay()
+    {
+        var seen = new Dictionary<string, string>();
+        var told = new Dictionary<string, DateOnly>();
+        var day1 = new DateOnly(2026, 11, 2);
+        AutoStatusFile Status(string? detail) => new(new Dictionary<string, AutoGame> { ["g"] = new("auto", null, "waiting_idle", detail) }, []);
+
+        Assert.Empty(AutoStatusFile.PrewarmFinished(seen, told, Status("prewarmed"), day1)); // 트레이를 켰을 때 이미 예열돼 있던 것은 알리지 않음
+        Assert.Empty(AutoStatusFile.PrewarmFinished(seen, told, Status("prewarming 64/512 MiB"), day1));
+        Assert.Empty(AutoStatusFile.PrewarmFinished(seen, told, Status("prewarming 256/512 MiB"), day1));
+        Assert.Equal(["g"], AutoStatusFile.PrewarmFinished(seen, told, Status("prewarmed"), day1));
+        Assert.Empty(AutoStatusFile.PrewarmFinished(seen, told, Status("prewarmed"), day1)); // 한 번만
+        Assert.Empty(AutoStatusFile.PrewarmFinished(seen, told, Status("prewarming 64/512 MiB"), day1));
+        Assert.Empty(AutoStatusFile.PrewarmFinished(seen, told, Status("prewarmed"), day1)); // 같은 날 두 번째 예열은 알리지 않음
+        Assert.Empty(AutoStatusFile.PrewarmFinished(seen, told, Status("prewarming 64/512 MiB"), day1.AddDays(1)));
+        Assert.Equal(["g"], AutoStatusFile.PrewarmFinished(seen, told, Status("prewarmed"), day1.AddDays(1))); // 다음 날은 다시
+        Assert.Empty(AutoStatusFile.PrewarmFinished(seen, told, Status("prewarming 64/512 MiB"), day1.AddDays(1)));
+        Assert.Empty(AutoStatusFile.PrewarmFinished(seen, told, Status(null), day1.AddDays(1))); // 취소돼 표시만 사라지면 알리지 않음
+    }
+
+    [Fact]
+    public void PrewarmFinishedAlsoFiresWhenTheTrayNeverSawTheProgress()
+    {
+        var seen = new Dictionary<string, string>();
+        var told = new Dictionary<string, DateOnly>();
+        AutoStatusFile Status(string? detail) => new(new Dictionary<string, AutoGame> { ["g"] = new("auto", null, "discovered", detail) }, []);
+
+        Assert.Empty(AutoStatusFile.PrewarmFinished(seen, told, Status(null), new DateOnly(2026, 11, 2)));
+        Assert.Equal(["g"], AutoStatusFile.PrewarmFinished(seen, told, Status("prewarmed (full)"), new DateOnly(2026, 11, 2)));
+    }
+
+    [Fact]
+    public void GameRowStageColumnShowsTheExtra()
+    {
+        Register();
+        WriteAuto("""{"games": {"mw4": {"source": "auto", "stage": "waiting_idle", "detail": "prewarmed", "at": "2026-11-02T00:00:00Z"}}, "events": []}""");
+        _vm.ReloadAuto();
+
+        Assert.Contains("(예열됨)", _vm.GameRows(null).Single().Stage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FirstRunFinishedFiresOnlyOnTheTransitionTheTrayWatched()
+    {
+        AutoStatusFile Status(string stage) => new(new Dictionary<string, AutoGame> { ["g"] = new("auto", null, stage, null) }, []);
+        var seen = new Dictionary<string, string>();
+
+        Assert.Empty(AutoStatusFile.FirstRunFinished(seen, Status("waiting_idle"))); // 트레이를 켰을 때 이미 끝나 있던 것은 알리지 않음
+        Assert.Empty(AutoStatusFile.FirstRunFinished(seen, Status("learning")));
+        Assert.Empty(AutoStatusFile.FirstRunFinished(seen, Status("learning")));
+        Assert.Equal(["g"], AutoStatusFile.FirstRunFinished(seen, Status("waiting_idle")));
+        Assert.Empty(AutoStatusFile.FirstRunFinished(seen, Status("waiting_idle"))); // 한 번만
+        Assert.Empty(AutoStatusFile.FirstRunFinished(seen, Status("tracing")));
+        Assert.Empty(AutoStatusFile.FirstRunFinished(seen, Status("failed"))); // 실패는 알리지 않음
+        Assert.Empty(AutoStatusFile.FirstRunFinished(seen, Status("tracing")));
+        Assert.Equal(["g"], AutoStatusFile.FirstRunFinished(seen, Status("done")));
+        Assert.Equal("다음 실행부터 빨라집니다: g", L.Get("ko", "Toast_FirstRun", "g"));
+        Assert.Equal("Faster from the next launch: g", L.Get("en", "Toast_FirstRun", "g"));
+    }
+
+    [Fact]
     public void MissingOrCorruptAutoStatusMeansNoLines()
     {
         Register();
@@ -658,7 +818,7 @@ public sealed class ManageViewModelTests : IDisposable
         Assert.Equal((false, true, false, true, 5), (after.Enabled, after.Discover, after.Trace, after.Relocate, after.PrewarmRecent));
         Assert.Equal(["a.exe", "b.exe"], after.IgnoreExes);
         Assert.Equal((before.IdleMinutes, before.TraceCapSeconds, before.TraceCapMib, before.MaxRelocationsPerDay), (after.IdleMinutes, after.TraceCapSeconds, after.TraceCapMib, after.MaxRelocationsPerDay));
-        Assert.False(_tray.SetAuto(true, true, true, true, 9, string.Empty).Ok); // 범위 밖은 검증이 거부
+        Assert.False(_tray.SetAuto(true, true, true, true, 33, string.Empty).Ok); // 범위 밖은 검증이 거부
         Assert.Equal(5, new ConfigEditor(_dir).Load()!.Auto.PrewarmRecent);
     }
 

@@ -10,6 +10,21 @@ public sealed class TraceTests
     private const long Block = 65536;
 
     [Fact]
+    public void TMsIsOptionalAndOnlyWrittenWhenPresent()
+    {
+        Assert.Equal("{\"path\": \"p\", \"offset\": 1, \"length\": 2, \"cost\": 8.0}", PyJson.Dumps(new TraceEvent("p", 1, 2).ToJson()));
+        Assert.Equal("{\"path\": \"p\", \"offset\": 1, \"length\": 2, \"cost\": 8.0, \"t_ms\": 1500}", PyJson.Dumps(new TraceEvent("p", 1, 2, TMs: 1500).ToJson()));
+
+        Assert.Null(TraceEvents.FromJson(JsonRead.Parse("{\"path\":\"p\",\"offset\":1,\"length\":2}")).TMs);
+        Assert.Equal(1500L, TraceEvents.FromJson(JsonRead.Parse("{\"path\":\"p\",\"offset\":1,\"length\":2,\"t_ms\":1500}")).TMs);
+        Assert.Null(TraceEvents.FromJson(JsonRead.Parse("{\"path\":\"p\",\"offset\":1,\"length\":2,\"t_ms\":null}")).TMs);
+        foreach (string bad in new[] { "-1", "\"5\"", "1.5", "true" })
+        {
+            Assert.Throws<PyValueException>(() => TraceEvents.FromJson(JsonRead.Parse("{\"path\":\"p\",\"offset\":1,\"length\":2,\"t_ms\":" + bad + "}")));
+        }
+    }
+
+    [Fact]
     public void ValidatedMapsRequestsToBlocks()
     {
         List<BlockEvent> got = TraceEvents.Validated(

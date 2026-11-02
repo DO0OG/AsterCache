@@ -60,7 +60,13 @@ public sealed class AutoRegistry
         }
 
         int added = 0;
-        foreach (DiscoveredGame d in _env.Scan())
+        IReadOnlyList<DiscoveredGame> found = _env.Scan();
+        foreach (SkippedFolder f in (found as ScanResult)?.Skipped ?? [])
+        {
+            LogRefusedOnce("launcher|" + f.InstallDir, $"auto uninstall: launcher folder skipped: {f.Name} ({f.InstallDir})"); // 같은 줄이 6 시간마다 반복되지 않게
+        }
+
+        foreach (DiscoveredGame d in found)
         {
             if (d.ExePath is null)
             {

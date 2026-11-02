@@ -30,35 +30,46 @@ public sealed class LiveSession : IDisposable
     private readonly TraceEventSession _session;
     private readonly KernelCollector _collector;
     private readonly Task _pump;
+    private readonly Timer? _flusher;
 
-    private LiveSession(TraceEventSession session, KernelCollector collector, Task pump)
+    private LiveSession(TraceEventSession session, KernelCollector collector, Task pump, Timer? flusher)
     {
         _session = session;
         _collector = collector;
         _pump = pump;
+        _flusher = flusher;
     }
 
+    /// 대상 프로세스 트리가 지금 하나라도 살아 있는가 / 세션이 한 번이라도 본 적이 있는가.
+    public bool TargetsActive => _collector.TargetsActive;
+
+    public bool SawTarget => _collector.SawTarget;
+
     public int Unresolved => _collector.Unresolved;
+
+    /// 읽기 이름 해석 집계 (Stop 뒤에 읽음; 리스너 없이 시작했으면 Resolved·Late 는 0).
+    public ReadNameStats NameStats => new(_collector.ResolvedReads, _collector.LateReads, _collector.Unresolved);
 
     /// 세션이 버퍼 부족으로 잃은 이벤트 수 (Stop 직전 값). 0 이 아니면 이 기록은 불완전합니다.
     public long EventsLost { get; private set; }
 
     /// 비관리자면 NotAdminException (세션을 만들기 전에 검사).
     public static LiveSession Start(IReadOnlyCollection<string> exeNames, string sessionName = DefaultSessionName, bool restartExisting = false,
-        Func<bool>? isAdmin = null, DevicePaths? devices = null, int bufferMB = DefaultBufferMB)
+        Func<bool>? isAdmin = null, DevicePaths? devices = null, int bufferMB = DefaultBufferMB, LiveListener? listener = null, TimeSpan? flushInterval = null)
     {
         Elevation.RequireAdmin(isAdmin);
         try
         {
-            return Open(exeNames, sessionName, restartExisting, devices, bufferMB);
+            return Open(exeNames, sessionName, restartExisting, devices, bufferMB, listener, flushInterval);
         }
         catch (Exception) when (bufferMB > FallbackBufferMB)
         {
-            return Open(exeNames, sessionName, restartExisting, devices, FallbackBufferMB);
+            return Open(exeNames, sessionName, restartExisting, devices, FallbackBufferMB, listener, flushInterval);
         }
     }
 
-    private static LiveSession Open(IReadOnlyCollection<string> exeNames, string sessionName, bool restartExisting, DevicePaths? devices, int bufferMB)
+    private static LiveSession Open(
+        IReadOnlyCollection<string> exeNames, string sessionName, bool restartExisting, DevicePaths? devices, int bufferMB, LiveListener? listener, TimeSpan? flushInterval)
     {
         var session = new TraceEventSession(sessionName,
             restartExisting ? TraceEventSessionOptions.Create : TraceEventSessionOptions.NoRestartOnCreate);
@@ -66,9 +77,11 @@ public sealed class LiveSession : IDisposable
         {
             session.BufferSizeMB = bufferMB; // 제공자를 켜기 전에만 설정 가능
             session.EnableKernelProvider(KernelTraceEventParser.Keywords.Process | KernelTraceEventParser.Keywords.FileIO | KernelTraceEventParser.Keywords.FileIOInit);
-            var collector = new KernelCollector(session.Source.Kernel, exeNames, devices ?? DevicePaths.FromSystem());
+            var collector = new KernelCollector(session.Source.Kernel, exeNames, devices ?? DevicePaths.FromSystem(), listener);
             Task pump = Task.Run(() => session.Source.Process());
-            return new LiveSession(session, collector, pump);
+            // 실시간 알림을 받는 쪽은 버퍼가 차기를 기다리지 않도록 짧은 간격으로 내려 보냄 (SessionFlush)
+            Timer? flusher = flushInterval is { } every ? new Timer(_ => SessionFlush.Flush(sessionName), null, every, every) : null;
+            return new LiveSession(session, collector, pump, flusher);
         }
         catch
         {
@@ -80,11 +93,16 @@ public sealed class LiveSession : IDisposable
     /// 세션을 멈추고 남은 이벤트까지 처리한 뒤 모은 기록을 돌려줍니다.
     public List<TraceRecord> Stop()
     {
+        _flusher?.Dispose();
         EventsLost = _session.EventsLost;
         _session.Stop();
         _pump.Wait();
         return _collector.Finish();
     }
 
-    public void Dispose() => _session.Dispose();
+    public void Dispose()
+    {
+        _flusher?.Dispose();
+        _session.Dispose();
+    }
 }

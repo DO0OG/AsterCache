@@ -1,0 +1,11 @@
+{
+ "files": 23,
+ "hot_bytes": 2020744370,
+ "written_bytes": 2020744370,
+ "events": 30844,
+ "skipped_events": 0,
+ "extents_total": 3373,
+ "hot_runs": 669,
+ "lcn_min": 95231158,
+ "lcn_max": 358653995
+}

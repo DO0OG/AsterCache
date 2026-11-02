@@ -36,7 +36,7 @@ public static class TraceWriter
                 {
                     if (seen.Add((e.Path, blk)))
                     {
-                        union.Add(new TraceEvent(e.Path, blk * Block, Block, e.Cost));
+                        union.Add(new TraceEvent(e.Path, blk * Block, Block, e.Cost, e.TMs)); // 블록을 처음 읽은 시각
                     }
                 }
             }

@@ -1,0 +1,54 @@
+﻿**********************
+Windows PowerShell 기록 시작
+시작 시간: 20261102223907
+사용자 이름: <host>\<user>
+RunAs 사용자: <host>\<user>
+구성 이름: 
+Machine: <host> (Microsoft Windows NT 10.0.26200.0)
+호스트 응용 프로그램: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File <scratch>\admin\e7_6.ps1
+프로세스 ID: 34352
+PSVersion: 5.1.26100.9168
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9168
+BuildVersion: 10.0.26100.9168
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+22:39:08 mode=synthetic root=D:\AsterBench_fp trace=D:\AsterBench_fp\trace_fp.json runs=3 order=A,B,B,A,A,B
+22:40:05 A1: replay 55.35 s
+22:41:00 B1: replay 49.23 s read_ahead=17891328 hit=0.0042
+22:41:59 B2: replay 54.88 s read_ahead=35651584 hit=0.0097
+22:42:50 A2: replay 49.03 s
+22:43:48 A3: replay 55.82 s
+22:44:43 B3: replay 49.46 s read_ahead=21364736 hit=0.0034
+22:45:37 W (DiskIo capture): replay 49.55 s
+100%  [>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>]
+22:45:39 median A (no learn) 55.35 s, B (learn) 49.46 s, A/B = 1.119
+Done: D:\Git\AsterCache\results\csharp_e7c_fpset_sat_20261102_223908\summary.json
+This script changed nothing on disk. If you undid the relayout before this run, restore it with (elevated, Frostpunk clo
+sed):
+  & "D:\Git\AsterCache\csharp\publish\cli\aster.exe" apply --plan "D:\Git\AsterCache\results\csharp_e4_20261102_111921\p
+lan.json" --journal <new journal.jsonl> --allowed-root "D:\AsterBench_fp" --execute
+fp sat exit=0
+22:45:40 mode=synthetic root=D:\AsterBench_fp trace=D:\AsterBench_fp\trace_fp.json runs=3 order=A,B,B,A,A,B
+22:47:08 A1: replay 49.67 s
+22:49:13 B1: replay 52.15 s read_ahead=589278004 hit=0.137
+22:51:15 B2: replay 50.11 s read_ahead=628402996 hit=0.1341
+22:52:36 A2: replay 40.96 s
+22:53:54 A3: replay 40.03 s
+22:55:56 B3: replay 40.97 s read_ahead=699575092 hit=0.1662
+22:57:59 W (DiskIo capture): replay 44.26 s
+100%  [>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>]
+22:58:01 median A (no learn) 40.96 s, B (learn) 50.11 s, A/B = 0.817
+Done: D:\Git\AsterCache\results\csharp_e7c_fpset_paced_20261102_224540\summary.json
+This script changed nothing on disk. If you undid the relayout before this run, restore it with (elevated, Frostpunk clo
+sed):
+  & "D:\Git\AsterCache\csharp\publish\cli\aster.exe" apply --plan "D:\Git\AsterCache\results\csharp_e4_20261102_111921\p
+lan.json" --journal <new journal.jsonl> --allowed-root "D:\AsterBench_fp" --execute
+fp paced exit=0
+**********************
+Windows PowerShell 기록 끝
+종료 시간: 20261102225801
+**********************

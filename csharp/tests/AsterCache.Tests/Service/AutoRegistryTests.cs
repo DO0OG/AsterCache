@@ -43,6 +43,21 @@ public sealed class AutoRegistryTests : IDisposable
     }
 
     [Fact]
+    public void LauncherFoldersTheScanSkippedAreLoggedOnceNotRegistered()
+    {
+        World.Skipped.Add(new SkippedFolder("HoYoPlay", @"D:\HoYoPlay"));
+        World.Found.Add(Found("Mw4", @"D:\Games\Mw4", "mw4.exe"));
+        AutoRegistry registry = _rig.Registry();
+
+        registry.DiscoverOnce();
+        registry.DiscoverOnce();
+
+        Assert.Equal(["Mw4"], Registered());
+        string line = Assert.Single(_rig.Log.Lines, l => l.Contains("launcher folder skipped", StringComparison.Ordinal)); // 6 시간마다 반복되지 않음
+        Assert.Contains("HoYoPlay", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void DiscoverySkipsGamesThatCannotOrShouldNotBeRegistered()
     {
         _rig.Add("old", "old.exe", @"D:\Games\Old", "manual");

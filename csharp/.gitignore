@@ -1,3 +1,5 @@
 bin/
 obj/
 TestResults/
+# test fixtures: keep bin/ folders that hold sample engine binaries
+!tests/fixtures/**/bin/

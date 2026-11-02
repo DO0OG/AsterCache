@@ -17,7 +17,7 @@ public sealed class AutoStatusTests : IDisposable
 
     private string StatusPath => Path.Combine(_dir, "auto_status.json");
 
-    private AutoStatus Make(string? path = "") => new(path == string.Empty ? StatusPath : path, _log, () => _now);
+    private AutoStatus Make(string? path = "", Action<TimeSpan>? sleep = null) => new(path == string.Empty ? StatusPath : path, _log, () => _now, sleep ?? (_ => { }));
 
     [Fact]
     public void FileHasTheAgreedShapeAndRoundTrips()
@@ -137,24 +137,43 @@ public sealed class AutoStatusTests : IDisposable
     }
 
     [Fact]
-    public async Task SharingViolationDuringTheSwapIsRetriedUntilTheFileIsFree()
+    public void ResetForReplanClearsRelocatedAtAndGoesBackToDiscoveredButKeepsTheDailyCount()
     {
         AutoStatus s = Make();
-        s.Set("g", "auto", null, AutoStage.Discovered, null);
-        using var held = new FileStream(StatusPath, FileMode.Open, FileAccess.Read, FileShare.None);
-        // 해제 스레드가 실제로 돌기 시작한 뒤에 쓰기를 시작해야, 느린 러너의 스레드 풀 지연이 재시도 창(5 x 100 ms)을 잡아먹지 않습니다.
-        using var started = new ManualResetEventSlim();
-        Task release = Task.Run(() =>
+        s.BeginRelocation(_now);
+        s.Complete("g", "auto", _now, counted: true, null);
+        _now = _now.AddMinutes(5);
+
+        s.ResetForReplan("g", "game updated");
+        s.ResetForReplan("nobody", "ignored");
+
+        AutoGameEntry e = s.Get("g")!;
+        Assert.Equal((AutoStage.Discovered, "game updated", null, _now), (e.Stage, e.Detail, e.RelocatedAt, e.At));
+        Assert.Equal(1, s.RelocationsWithin(TimeSpan.FromHours(24)));
+        Assert.Null(s.Get("nobody"));
+        Assert.Null(Make().Get("g")!.RelocatedAt); // 저장돼 다시 읽어도 지워져 있음
+    }
+
+    [Fact]
+    public void SharingViolationDuringTheSwapIsRetriedUntilTheFileIsFree()
+    {
+        FileStream? held = null;
+        var waits = new List<TimeSpan>();
+        // 대기 훅이 두 번째 재시도 전에 파일을 풂: 실제로 자지도, 스레드 시점에 기대지도 않음
+        AutoStatus s = Make(sleep: wait =>
         {
-            started.Set();
-            Thread.Sleep(150);
-            held.Dispose();
+            waits.Add(wait);
+            if (waits.Count == 2)
+            {
+                held!.Dispose();
+            }
         });
-        started.Wait();
+        s.Set("g", "auto", null, AutoStage.Discovered, null);
+        held = new FileStream(StatusPath, FileMode.Open, FileAccess.Read, FileShare.None);
 
         s.Set("g", "auto", null, AutoStage.Tracing, null);
-        await release;
 
+        Assert.Equal([AutoStatus.MoveRetryDelay, AutoStatus.MoveRetryDelay], waits);
         Assert.DoesNotContain(_log.Lines, l => l.Contains("not written", StringComparison.Ordinal));
         Assert.Contains("tracing", File.ReadAllText(StatusPath), StringComparison.Ordinal);
     }
@@ -162,12 +181,14 @@ public sealed class AutoStatusTests : IDisposable
     [Fact]
     public void FileThatStaysLockedIsGivenUpAfterTheRetriesWithAWarning()
     {
-        AutoStatus s = Make();
+        var waits = new List<TimeSpan>();
+        AutoStatus s = Make(sleep: waits.Add);
         s.Set("g", "auto", null, AutoStage.Discovered, null);
         using var held = new FileStream(StatusPath, FileMode.Open, FileAccess.Read, FileShare.None);
 
         s.Set("g", "auto", null, AutoStage.Tracing, null);
 
+        Assert.Equal(Enumerable.Repeat(AutoStatus.MoveRetryDelay, AutoStatus.MoveRetries), waits); // 정해진 횟수만 기다리고 포기
         Assert.Contains(_log.Lines, l => l.Contains("auto status file not written", StringComparison.Ordinal));
         Assert.Equal(AutoStage.Tracing, s.Get("g")!.Stage); // 메모리 상태는 유지
     }

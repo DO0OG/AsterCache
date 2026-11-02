@@ -1,0 +1,233 @@
+{
+ "fpset_sat": {
+  "folder": "csharp_e7d_fpset_sat_20261102_230617",
+  "median_a_s": 45.12324359934428,
+  "median_b_s": 56.198916600609664,
+  "speedup": 0.803,
+  "rows": [
+   {
+    "arm": "A",
+    "run": 1,
+    "replay_s": 47.643590201070765
+   },
+   {
+    "arm": "B",
+    "run": 1,
+    "replay_s": 63.62188599878573,
+    "read_ahead_bytes": 1996431023,
+    "game_read_bytes": 1288574069,
+    "hit_ratio": 0.505,
+    "events": 19605,
+    "events_lost": 0,
+    "resolved_reads": 28185,
+    "late_reads": 0,
+    "unresolved_reads": 572,
+    "sequential_files": 7,
+    "hit_bytes": 650738877,
+    "gap_count": 0,
+    "yielded_requests": 0,
+    "read_ahead_while_idle_bytes": 85458944
+   },
+   {
+    "arm": "B",
+    "run": 2,
+    "replay_s": 56.198916600609664,
+    "read_ahead_bytes": 2078760623,
+    "game_read_bytes": 1350472821,
+    "hit_ratio": 0.4744,
+    "events": 20552,
+    "events_lost": 0,
+    "resolved_reads": 27564,
+    "late_reads": 0,
+    "unresolved_reads": 290,
+    "sequential_files": 7,
+    "hit_bytes": 640597181,
+    "gap_count": 0,
+    "yielded_requests": 0,
+    "read_ahead_while_idle_bytes": 158057283
+   },
+   {
+    "arm": "A",
+    "run": 2,
+    "replay_s": 44.9063632983889
+   },
+   {
+    "arm": "A",
+    "run": 3,
+    "replay_s": 45.12324359934428
+   },
+   {
+    "arm": "B",
+    "run": 3,
+    "replay_s": 55.63983220249065,
+    "read_ahead_bytes": 2119360175,
+    "game_read_bytes": 1373607029,
+    "hit_ratio": 0.4875,
+    "events": 20905,
+    "events_lost": 0,
+    "resolved_reads": 26302,
+    "late_reads": 0,
+    "unresolved_reads": 351,
+    "sequential_files": 7,
+    "hit_bytes": 669696000,
+    "gap_count": 0,
+    "yielded_requests": 0,
+    "read_ahead_while_idle_bytes": 121446703
+   }
+  ]
+ },
+ "fpset_paced": {
+  "folder": "csharp_e7d_fpset_paced_20261102_231308",
+  "median_a_s": 51.410536305222195,
+  "median_b_s": 46.67845979749109,
+  "speedup": 1.101,
+  "rows": [
+   {
+    "arm": "A",
+    "run": 1,
+    "replay_s": 60.139630001969635
+   },
+   {
+    "arm": "B",
+    "run": 1,
+    "replay_s": 80.86196460179053,
+    "read_ahead_bytes": 3494876847,
+    "game_read_bytes": 2295391349,
+    "hit_ratio": 0.5887,
+    "events": 34978,
+    "events_lost": 0,
+    "resolved_reads": 55984,
+    "late_reads": 0,
+    "unresolved_reads": 315,
+    "sequential_files": 7,
+    "hit_bytes": 1351351485,
+    "gap_count": 0,
+    "yielded_requests": 0,
+    "read_ahead_while_idle_bytes": 459524916
+   },
+   {
+    "arm": "B",
+    "run": 2,
+    "replay_s": 46.67845979749109,
+    "read_ahead_bytes": 3345192623,
+    "game_read_bytes": 2185389173,
+    "hit_ratio": 0.6826,
+    "events": 33297,
+    "events_lost": 0,
+    "resolved_reads": 49717,
+    "late_reads": 0,
+    "unresolved_reads": 753,
+    "sequential_files": 7,
+    "hit_bytes": 1491834420,
+    "gap_count": 0,
+    "yielded_requests": 0,
+    "read_ahead_while_idle_bytes": 717427721
+   },
+   {
+    "arm": "A",
+    "run": 2,
+    "replay_s": 51.410536305222195
+   },
+   {
+    "arm": "A",
+    "run": 3,
+    "replay_s": 49.15722120055579
+   },
+   {
+    "arm": "B",
+    "run": 3,
+    "replay_s": 38.405313698371174,
+    "read_ahead_bytes": 3329267375,
+    "game_read_bytes": 2174772341,
+    "hit_ratio": 0.6883,
+    "events": 33135,
+    "events_lost": 0,
+    "resolved_reads": 45487,
+    "late_reads": 0,
+    "unresolved_reads": 369,
+    "sequential_files": 7,
+    "hit_bytes": 1496824684,
+    "gap_count": 0,
+    "yielded_requests": 0,
+    "read_ahead_while_idle_bytes": 787091849
+   }
+  ]
+ },
+ "frost_paced": {
+  "folder": "csharp_e7d_frost_paced_20261102_232600",
+  "median_a_s": 17.665498101327103,
+  "median_b_s": 19.46739010096644,
+  "speedup": 0.907,
+  "rows": [
+   {
+    "arm": "A",
+    "run": 1,
+    "replay_s": 17.665498101327103
+   },
+   {
+    "arm": "B",
+    "run": 1,
+    "replay_s": 17.777965401735855,
+    "read_ahead_bytes": 3364747264,
+    "game_read_bytes": 2198425600,
+    "hit_ratio": 0.6585,
+    "events": 33582,
+    "events_lost": 0,
+    "resolved_reads": 48817,
+    "late_reads": 0,
+    "unresolved_reads": 2159,
+    "sequential_files": 7,
+    "hit_bytes": 1447607485,
+    "gap_count": 0,
+    "yielded_requests": 0,
+    "read_ahead_while_idle_bytes": 1224123506
+   },
+   {
+    "arm": "B",
+    "run": 2,
+    "replay_s": 19.47073409744189,
+    "read_ahead_bytes": 3368704000,
+    "game_read_bytes": 2201063424,
+    "hit_ratio": 0.6666,
+    "events": 33620,
+    "events_lost": 0,
+    "resolved_reads": 48913,
+    "late_reads": 0,
+    "unresolved_reads": 322,
+    "sequential_files": 7,
+    "hit_bytes": 1467317437,
+    "gap_count": 0,
+    "yielded_requests": 0,
+    "read_ahead_while_idle_bytes": 1166908908
+   },
+   {
+    "arm": "A",
+    "run": 2,
+    "replay_s": 15.369927697465757
+   },
+   {
+    "arm": "A",
+    "run": 3,
+    "replay_s": 21.65458079808741
+   },
+   {
+    "arm": "B",
+    "run": 3,
+    "replay_s": 19.46739010096644,
+    "read_ahead_bytes": 3184973824,
+    "game_read_bytes": 2078576640,
+    "hit_ratio": 0.7278,
+    "events": 31749,
+    "events_lost": 0,
+    "resolved_reads": 45633,
+    "late_reads": 0,
+    "unresolved_reads": 2304,
+    "sequential_files": 7,
+    "hit_bytes": 1512849408,
+    "gap_count": 0,
+    "yielded_requests": 0,
+    "read_ahead_while_idle_bytes": 1335683892
+   }
+  ]
+ }
+}

@@ -13,7 +13,7 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from prefetch.layout import file_extents
+from prefetch.layout import drive_root, file_extents
 
 from .mover import find_free_run, sample_digest, skip_reason
 from .plan import _pieces, count_runs, resolve_plan, save_plan, validate_plan
@@ -33,16 +33,16 @@ def plan_sha(plan):
 
 
 def inside(path, roots):
-    p = os.path.normcase(os.path.realpath(path))
+    p = os.path.normcase(os.path.realpath(drive_root(path)))
     for r in roots:
-        r = os.path.normcase(os.path.realpath(r))
+        r = os.path.normcase(os.path.realpath(drive_root(r)))
         if p == r or p.startswith(r.rstrip('\\/') + os.sep):
             return True
     return False
 
 
 def _drive(path):
-    return os.path.splitdrive(os.path.realpath(path))[0].upper()
+    return os.path.splitdrive(os.path.realpath(drive_root(path)))[0].upper()
 
 
 def check_roots(roots, letter):

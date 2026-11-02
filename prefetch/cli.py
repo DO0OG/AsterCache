@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 
-from .layout import cluster_size, file_extents
+from .layout import cluster_size, drive_root, file_extents
 from .reader import METHODS, read_ops
 from .scheduler import MIB, breakeven_gap, schedule
 
@@ -15,7 +15,7 @@ def load_ranges(plan_path, origin_root):
     Drops rows outside origin_root / missing; clamps to file size."""
     data = json.loads(Path(plan_path).read_text(encoding='utf-8-sig'))
     rows = data['ranges'] if isinstance(data, dict) else data
-    root = Path(origin_root).resolve(strict=True)
+    root = Path(drive_root(origin_root)).resolve(strict=True)
     sizes, out = {}, []
     for r in rows:
         p = r.get('path')

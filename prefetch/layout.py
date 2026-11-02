@@ -21,6 +21,14 @@ _HEADER = 16  # ExtentCount + padding + StartingVcn
 _MAX_CHUNK_EXTENTS = 4096
 
 
+def drive_root(path):
+    r"""A bare drive ('D:') means "current directory on D:" to the OS; as a root it is meant to be the drive root.
+    Intended: the device form \\.\D: also resolves to D:\ (a device-style drive root counts as a root)."""
+    path = os.fspath(path)
+    drive, rest = os.path.splitdrive(path)
+    return path + os.sep if drive and not rest else path
+
+
 def _k32():
     k = ctypes.WinDLL('kernel32', use_last_error=True)
     k.CreateFileW.restype = ctypes.c_void_p

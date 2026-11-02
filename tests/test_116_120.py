@@ -4,10 +4,12 @@ from pathlib import Path
 import random
 import sqlite3
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+import sqlite_cache
 from sqlite_cache import SQLiteBlockCache
 B=65536
 class NewEdgeTests(unittest.TestCase):
@@ -22,6 +24,13 @@ class NewEdgeTests(unittest.TestCase):
     def test_116_frequently_read_block_survives_new_admission(self):
         c=self.cache();c.read('a',0,1);c.read('a',B,1);c.read('a',0,1);c.read('a',2*B,1)
         before=c.snapshot()['block_hits'];c.read('a',0,1)
+        self.assertEqual(c.snapshot()['block_hits'],before+1)
+    def test_116b_hot_block_survives_with_frozen_clock(self):
+        frozen = time.time_ns() + 10 ** 13  # far past RACY_WINDOW_NS, so blocks are admitted; every stamp would tie
+        with patch.object(sqlite_cache.time, 'time_ns', return_value=frozen):
+            c=self.cache()
+            for i in (0,1,0,2):c.read('a',i*B,1)
+            before=c.snapshot()['block_hits'];c.read('a',0,1)
         self.assertEqual(c.snapshot()['block_hits'],before+1)
     def test_117_cross_process_like_second_connection_reads_data(self):
         c=self.cache();c.read('a',0,1)

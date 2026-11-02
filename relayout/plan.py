@@ -32,6 +32,15 @@ def _runs(sessions, block):
     return out
 
 
+def _lsum(values):
+    """Naive left-to-right float sum, identical on every Python version (3.12+ builtin sum() compensates)
+    and in the C# port. Do not replace with sum() or math.fsum()."""
+    acc = 0.0
+    for v in values:
+        acc += v
+    return acc
+
+
 def _weights(k, decay):
     return [decay ** (k - 1 - i) for i in range(k)]
 
@@ -39,7 +48,7 @@ def _weights(k, decay):
 def _wmedian(pairs):
     """Weighted median of [(value, weight)]; lower median on ties."""
     pairs = sorted(pairs)
-    half = sum(w for _, w in pairs) / 2.0
+    half = _lsum(w for _, w in pairs) / 2.0
     acc = 0.0
     for v, w in pairs:
         acc += w
@@ -64,7 +73,7 @@ def hot_set(sessions, budget_bytes, block=BLOCK, decay=0.85, theta_core=0.5, the
     runs = _runs(sessions, block)
     pos = _positions(runs)
     w = _weights(len(runs), decay)
-    total_w = sum(w)
+    total_w = _lsum(w)
     seen_in = defaultdict(int)
     for r in runs:
         for key in r:
@@ -73,7 +82,7 @@ def hot_set(sessions, budget_bytes, block=BLOCK, decay=0.85, theta_core=0.5, the
     stats = {}
     for key in keys:
         obs = [(p[key], wk) for p, wk in zip(pos, w) if key in p]
-        f = sum(wk for _, wk in obs) / total_w
+        f = _lsum(wk for _, wk in obs) / total_w
         m = _wmedian(obs)
         mad = _wmedian([(abs(v - m), wk) for v, wk in obs])
         s = 1.0 - min(1.0, 2.0 * mad)
@@ -126,7 +135,7 @@ def consensus_order(sessions, hot_blocks, block=BLOCK, decay=0.85, theta_core=0.
         return _wmedian([(p[first(u)], wk) for p, wk in zip(pos, w) if first(u) in p])
 
     def pref(x, y):  # weight of runs where x is read before y
-        return sum(wk for p, wk in zip(pos, w) if first(x) in p and first(y) in p and p[first(x)] < p[first(y)])
+        return _lsum(wk for p, wk in zip(pos, w) if first(x) in p and first(y) in p and p[first(x)] < p[first(y)])
 
     units.sort(key=lambda u: (m(u), u))
     for _ in range(max_passes):

@@ -2,8 +2,10 @@
 Volume access is faked; nothing here needs Administrator or touches a real volume layout."""
 import contextlib
 import ctypes
+import hashlib
 import io
 import json
+import math
 import os
 import random
 import sys
@@ -19,6 +21,7 @@ from relayout import cli, mover, plan as rplan
 BLK = 65536
 CB = 4096
 PER = BLK // CB  # clusters per block
+HOT_SET_HASH = 'eaa13a3fa904ba257465c1af48ae2769ba5cd0e07d39e723e0d26c815af7b6f3'
 
 
 def ev(path, block, n=1):
@@ -33,6 +36,34 @@ class HotSetTests(unittest.TestCase):
     def setUp(self):
         self.s = [run(('f', 0), ('f', 1), ('f', 2), ('f', 9)), run(('f', 0), ('f', 1), ('f', 2)),
                   run(('f', 0), ('f', 2), ('f', 1), ('f', 5))]
+
+    def test_float_sum_is_naive_left_to_right(self):
+        vals = [0.1] * 10  # builtin sum() on 3.12+ gives 1.0, naive accumulation (3.11, C#) gives 0.9999999999999999
+        acc = 0.0
+        for v in vals:
+            acc += v
+        self.assertEqual(rplan._lsum(vals), acc)
+        self.assertEqual(rplan._lsum(iter(vals)).hex(), acc.hex())
+        self.assertEqual(rplan._lsum([]), 0.0)
+        big = [1e16] + [1.0] * 10  # naive sum stays 1e16; compensated sums (3.12 sum(), fsum) reach 1e16 + 10
+        acc = 0.0
+        for v in big:
+            acc += v
+        self.assertEqual(rplan._lsum(big), acc)
+        self.assertNotEqual(acc, math.fsum(big))
+
+    def test_hot_set_and_consensus_hash_is_python_version_independent(self):
+        h = hashlib.sha256()
+        for seed in range(40):
+            rng = random.Random(seed)
+            sessions = [[ev(rng.choice('abc'), rng.randrange(30), rng.choice([1, 2])) for _ in range(rng.randrange(40, 120))]
+                        for _ in range(rng.randrange(2, 33))]
+            decay = rng.choice([0.85, 0.7, 0.93, 0.61])
+            blocks, st = rplan.hot_set(sessions, 1 << 40, decay=decay, theta_tail=0.0)
+            order = rplan.consensus_order(sessions, blocks, decay=decay)
+            h.update(repr((blocks, sorted(st.items()), order)).encode())
+        # computed with naive left-to-right sums (Python 3.11); 3.12 builtin sum() would give a different digest
+        self.assertEqual(h.hexdigest(), HOT_SET_HASH)
 
     def test_core_before_tail_and_budget(self):
         blocks, st = rplan.hot_set(self.s, 3 * BLK)
@@ -509,6 +540,29 @@ class SafetyHelperTests(unittest.TestCase):
         self.assertEqual(mover.skip_reason('x', lambda p: 0x20 | 0x4000), 'encrypted')
         self.assertEqual(mover.skip_reason('x', lambda p: 0x200), 'sparse')
         self.assertTrue(mover.skip_reason('x', mock.Mock(side_effect=OSError('nope'))).startswith('attrs_unreadable'))
+
+    @unittest.skipUnless(sys.platform == 'win32', 'drive letters')
+    def test_inside_drive_root_forms(self):
+        with tempfile.TemporaryDirectory() as d:
+            drive = os.path.splitdrive(os.path.realpath(d))[0]
+            other = 'E:' if drive.upper() != 'E:' else 'F:'
+            bs = os.sep
+            inner = drive + bs + 'aster_inside_test' + bs + 'f.bin'
+            cwd = os.getcwd()
+            os.chdir(d)  # a bare 'D:' must not turn into this directory
+            try:
+                for root in (drive + bs, drive + '/', drive + bs + bs, drive.lower() + bs, drive.lower() + '/', drive):
+                    with self.subTest(root=root):
+                        self.assertTrue(rapply.inside(inner, [root]))
+                        self.assertTrue(rapply.inside(inner.lower().replace(bs, '/'), [root]))
+                        self.assertTrue(rapply.inside(drive + bs, [root]))
+                        self.assertFalse(rapply.inside(other + bs + 'aster_inside_test' + bs + 'f.bin', [root]))
+                        self.assertEqual(rapply._drive(root), drive.upper())
+                self.assertFalse(rapply.inside(inner, [os.path.join(d, 'sub')]))
+                self.assertEqual(rapply.drive_root(drive), drive + bs)
+                self.assertEqual(rapply.drive_root(inner), inner)
+            finally:
+                os.chdir(cwd)
 
     def test_sample_digest_unbuffered_matches_buffered(self):
         with tempfile.TemporaryDirectory() as d:

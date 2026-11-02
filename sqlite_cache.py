@@ -65,6 +65,7 @@ class SQLiteBlockCache:
         self.lock = threading.RLock()
         # Defer SQL atime writes: batch recent cache hits into the next insert transaction.
         self._recent_hits = OrderedDict()
+        self._last_stamp = 0
         self.closed = False
         self.stats = dict(block_hits=0, block_misses=0, origin_bytes=0,
                           cache_bytes_read=0, cache_bytes_written=0, evictions=0,
@@ -129,6 +130,11 @@ class SQLiteBlockCache:
         except OSError:
             return True
 
+    def _stamp(self):
+        # Strictly increasing LRU clock: coarse OS clocks give equal time_ns() to successive events, making LRU order arbitrary.
+        self._last_stamp = max(time.time_ns(), self._last_stamp + 1)
+        return self._last_stamp
+
     def _key(self, actual, fp, block):
         packed = json.dumps([str(actual), fp, block, self.block_size], separators=(',',':'))
         return hashlib.sha256(packed.encode('utf-8')).hexdigest()
@@ -140,7 +146,7 @@ class SQLiteBlockCache:
                 return None
             data, digest, declared = row
             if declared == expected and len(data) == expected and hashlib.sha256(data).hexdigest() == digest:
-                self._recent_hits[key] = time.time_ns()
+                self._recent_hits[key] = self._stamp()
                 self._recent_hits.move_to_end(key)
                 if len(self._recent_hits)>512:
                     self._recent_hits.popitem(last=False)
@@ -190,7 +196,7 @@ class SQLiteBlockCache:
                         used -= victim[1]
                         evicted += 1
                     self.conn.execute('INSERT INTO blocks VALUES (?,?,?,?,?)',
-                                      (key,data,hashlib.sha256(data).hexdigest(),time.time_ns(),n))
+                                      (key,data,hashlib.sha256(data).hexdigest(),self._stamp(),n))
                     inserted += n
                     used += n
             self._recent_hits.clear()

@@ -4,7 +4,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import session_planner
-from bench import cache_control, dataset, replay, run
+from bench import cache_control, dataset, replay, run, shadow_copy
 
 SMALL = dict(n_files=2, min_mib=1, max_mib=1, trace_n=50, min_free_gib=0)
 
@@ -50,6 +50,45 @@ class BenchTests(unittest.TestCase):
             self.assertEqual((r['missing_files'], r['skipped_requests'], r['skipped_bytes']), (1, 2, 8192))
             self.assertEqual((r['requests'], r['bytes'], r['crc32']), (base['requests'], base['bytes'], base['crc32']))
         self.assertEqual((base['missing_files'], base['skipped_requests'], base['skipped_bytes']), (0, 0, 0))
+
+    def test_shadow_copy_sparse_hot_blocks_only(self):
+        B = shadow_copy.BLOCK
+        src, dst = Path(self.tmp.name) / 'src', Path(self.tmp.name) / 'dst'
+        (src / 'sub').mkdir(parents=True)
+        da, db = os.urandom(3 * B + 100), os.urandom(2 * B)
+        (src / 'a.bin').write_bytes(da)
+        (src / 'sub' / 'b.bin').write_bytes(db)
+        ev = lambda p, o, n: dict(path=str(p), offset=o, length=n, cost=8.0)
+        trace = [ev(src / 'a.bin', B + 10, 20), ev(src / 'sub' / 'b.bin', 0, 5), ev(src / 'a.bin', 3 * B + 50, 500),
+                 ev(src / 'gone.bin', 0, 10), ev(Path(self.tmp.name) / 'elsewhere.bin', 0, 10)]
+        for _ in range(2):  # a second run overwrites the first shadow
+            out, sm = shadow_copy.shadow_copy(trace, str(src), str(dst))
+        self.assertEqual((sm['files'], sm['missing_files'], sm['outside_root_requests']), (2, 1, 1))
+        self.assertEqual(sm['written_bytes'], B + B + 100)  # a: block 1 and the 100-byte tail block; b: block 0
+        self.assertEqual([e['path'] for e in out], [str(dst / 'a.bin'), str(dst / 'sub' / 'b.bin'), str(dst / 'a.bin'),
+                                                    str(dst / 'gone.bin')])
+        self.assertEqual([e['cost'] for e in out], [8.0] * 4)
+        ra, rb = (dst / 'a.bin').read_bytes(), (dst / 'sub' / 'b.bin').read_bytes()
+        self.assertEqual((len(ra), len(rb)), (len(da), len(db)))
+        self.assertEqual(ra[B:2 * B], da[B:2 * B])
+        self.assertEqual(ra[3 * B:], da[3 * B:])
+        self.assertEqual(ra[:B] + ra[2 * B:3 * B], bytes(2 * B))
+        self.assertEqual(rb[:B], db[:B])
+        self.assertEqual(rb[B:], bytes(B))
+        if sm['sparse']:
+            self.assertLess(sm['allocated_bytes'], len(da) + len(db))
+
+    def test_shadow_copy_allocates_only_hot_blocks(self):
+        B = shadow_copy.BLOCK
+        src, dst = Path(self.tmp.name) / 'src', Path(self.tmp.name) / 'dst'
+        src.mkdir()
+        (src / 'big.bin').write_bytes(b'a' * (64 << 20))
+        trace = [dict(path=str(src / 'big.bin'), offset=o, length=4096, cost=1.0) for o in (0, 20 << 20, 50 << 20)]
+        _, sm = shadow_copy.shadow_copy(trace, str(src), str(dst))
+        self.assertEqual(sm['written_bytes'], 3 * B)
+        self.assertEqual((dst / 'big.bin').stat().st_size, 64 << 20)
+        if sm['sparse']:
+            self.assertLessEqual(sm['allocated_bytes'], 2 * sm['written_bytes'])  # cluster rounding only, no zero fill
 
     def test_cache_control_non_admin(self):
         with mock.patch.object(cache_control, 'is_admin', return_value=False):

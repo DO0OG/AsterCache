@@ -165,13 +165,13 @@ switch ($Action) {
         $sorted = $delays | Sort-Object
         $p95 = $sorted[[int][math]::Ceiling(0.95 * $sorted.Count) - 1]
         $watcherLine = @(Get-Content -LiteralPath $logFile -Encoding UTF8 | Where-Object { $_ -match 'process watcher: ' } | Select-Object -Last 1)
-        $watcher = if ($watcherLine.Count -gt 0) { ($watcherLine[0] -replace '^.*process watcher: ', '').Trim() } else { 'unknown' }
+        $watcherInUse = if ($watcherLine.Count -gt 0) { ($watcherLine[0] -replace '^.*process watcher: ', '').Trim() } else { 'unknown' }
         $cfgNow = Get-Content -LiteralPath (Join-Path $DataDir 'config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
         $configured = if ($cfgNow.PSObject.Properties.Name -contains 'watcher') { $cfgNow.watcher } else { 'poll (default)' }
         $routes = @($routeList | Group-Object | ForEach-Object { '{0}={1}' -f $_.Name, $_.Count })
-        $result = [ordered]@{ samples = $delays; samples_from_start_process_call = $fromCall; p95_ms = $p95; threshold_ms = 100; pass = ($p95 -le 100); watcher = $watcher; configured_watcher = $configured; routes = $routes }
+        $result = [ordered]@{ samples = $delays; samples_from_start_process_call = $fromCall; p95_ms = $p95; threshold_ms = 100; pass = ($p95 -le 100); watcher = $watcherInUse; configured_watcher = $configured; routes = $routes }
         $result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $out 'service_test.json') -Encoding UTF8
-        Write-Host "p95 = $p95 ms (threshold 100 ms): pass = $($result.pass), watcher = $watcher"
+        Write-Host "p95 = $p95 ms (threshold 100 ms): pass = $($result.pass), watcher = $watcherInUse"
     }
 }
 

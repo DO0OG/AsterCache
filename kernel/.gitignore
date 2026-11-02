@@ -17,3 +17,6 @@ Release/
 *.log
 *.vcxproj.user
 *.wpp
+obj/
+bin/
+packages/

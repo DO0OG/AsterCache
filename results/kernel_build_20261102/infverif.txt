@@ -1,0 +1,41 @@
+> infverif.exe /v /w <stamped AsterFlt.inf>  (exit 1627)
+Running in Verbose
+Running Windows Driver INF check
+
+
+Validating AsterFlt.inf
+ERROR(1323) in D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.inf, line 33: Service registry key 'DebugFlags' must be under the Parameters subkey.
+ERROR(1323) in D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.inf, line 33: Service registry key 'DefaultInstance' must be under the Parameters subkey.
+ERROR(1323) in D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.inf, line 33: Service registry key 'SupportedFeatures' must be under the Parameters subkey.
+ERROR(1323) in D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.inf, line 33: Service registry key 'Flags' must be under the Parameters subkey.
+ERROR(1323) in D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.inf, line 33: Service registry key 'Altitude' must be under the Parameters subkey.
+ERROR(1322) in D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.inf, line 42: Destination file path 'C:\WINDOWS\System32\drivers' for file 'AsterFlt.sys' is not isolated to DIRID 13.
+INF is NOT VALID
+
+Checked 1 INF(s) in 0 m 0 s 3 ms
+
+> infverif.exe /v /u <stamped AsterFlt.inf>  (exit 0)
+Running in Verbose
+Running Universal INF check
+
+
+Validating AsterFlt.inf
+INF is VALID
+
+Checked 1 INF(s) in 0 m 0 s 2 ms
+
+> infverif.exe /v /h <stamped AsterFlt.inf>  (exit 1627)
+Running in Verbose
+Running signature requirements check
+Using rules from OS build: 10.0.26200
+
+
+Validating AsterFlt.inf
+ERROR(1323) in D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.inf, line 33: Service registry key 'DebugFlags' must be under the Parameters subkey.
+ERROR(1323) in D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.inf, line 33: Service registry key 'DefaultInstance' must be under the Parameters subkey.
+ERROR(1323) in D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.inf, line 33: Service registry key 'SupportedFeatures' must be under the Parameters subkey.
+ERROR(1323) in D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.inf, line 33: Service registry key 'Flags' must be under the Parameters subkey.
+ERROR(1323) in D:\Git\AsterCache\kernel\AsterFlt\x64\Release\AsterFlt.inf, line 33: Service registry key 'Altitude' must be under the Parameters subkey.
+INF is NOT VALID
+
+Checked 1 INF(s) in 0 m 0 s 3 ms

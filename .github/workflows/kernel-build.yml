@@ -1,0 +1,33 @@
+name: Kernel Build
+
+on:
+  push:
+    branches: [main]
+    paths: ["kernel/**", ".github/workflows/kernel-build.yml"]
+  pull_request:
+    paths: ["kernel/**", ".github/workflows/kernel-build.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: NuGet/setup-nuget@v2
+      # Restores the WDK NuGet packages, builds AsterFlt (x64), runs infverif /u. No signing, no driver load.
+      - name: Debug build
+        shell: pwsh
+        run: ./kernel/build.ps1 -Configuration Debug
+      # Release also runs code analysis (WDK DriverRecommendedRules, warnings are errors).
+      - name: Release build, code analysis, infverif
+        shell: pwsh
+        run: ./kernel/build.ps1 -Configuration Release -Analyze
+      # Unsigned build outputs for inspection only; they cannot be loaded on a normal boot.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: asterflt-unsigned
+          path: |
+            kernel/AsterFlt/x64/Release/AsterFlt.sys
+            kernel/AsterFlt/x64/Release/AsterFlt.inf
+            kernel/AsterFlt/x64/Release/AsterFlt.pdb
+          if-no-files-found: error

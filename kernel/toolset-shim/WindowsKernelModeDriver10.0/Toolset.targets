@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Toolset.props 와 짝: VS 기본 도구 집합 타깃 뒤에 NuGet WDK 의 드라이버 타깃(stampinf, InfVerif, ApiValidator)을 얹습니다. -->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(VCTargetsPath)Platforms\x64\PlatformToolsets\$(DefaultPlatformToolset)\Toolset.targets" />
+  <Import Project="$(WDKContentRoot)build\$(WDKBuildFolder)\WindowsDriver.Common.targets" />
+</Project>

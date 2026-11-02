@@ -24,8 +24,8 @@
  *   FltGetFileNameInformation  https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/fltkernel/nf-fltkernel-fltgetfilenameinformation
  *   FltBuildDefaultSecurityDescriptor https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/fltkernel/nf-fltkernel-fltbuilddefaultsecuritydescriptor
  *
- * 주의: 이 파일은 WDK 없이 작성되어 아직 컴파일되지 않았다. 각 IRQL 범위는 위 문서로
- * 첫 빌드 때 다시 대조할 것 (README 의 검토 체크리스트).
+ * 주의: 컴파일과 정적 분석은 통과했지만 적재·실행한 적은 없다. 각 IRQL 범위는 위 문서로
+ * 다시 대조할 것 (README 의 검토 체크리스트).
  */
 
 #include <fltKernel.h>
@@ -492,7 +492,7 @@ static NTSTATUS AsterDoSetPolicy(_In_ const ASTER_SET_POLICY *P)
 }
 
 /* PASSIVE_LEVEL. 링에서 최대 maxFit 건을 사용자 버퍼로 복사하고 Tail 을 전진 (복사 성공 뒤에만) */
-static NTSTATUS AsterDoGetRecords(_Out_ PVOID Out, _In_ ULONG OutLen, _Out_ PULONG Returned)
+static NTSTATUS AsterDoGetRecords(_Inout_updates_bytes_(OutLen) PVOID Out, _In_ ULONG OutLen, _Out_ PULONG Returned)
 {
     ULONG head, tail, avail, maxFit, n, chunk, i;
     ASTER_BATCH_HEADER hdr;
@@ -524,7 +524,8 @@ static NTSTATUS AsterDoGetRecords(_Out_ PVOID Out, _In_ ULONG OutLen, _Out_ PULO
     hdr.DroppedTotal = dropped;
     dst = (PUCHAR)Out;
     __try {
-        ProbeForWrite(Out, sizeof(ASTER_BATCH_HEADER) + (SIZE_T)n * sizeof(ASTER_READ_RECORD), 8);
+        /* n 은 maxFit 으로 제한돼 항상 OutLen 이하. MIN 은 정적 분석기에 상한을 알려 주는 용도 */
+        ProbeForWrite(Out, ASTER_MIN(sizeof(ASTER_BATCH_HEADER) + (SIZE_T)n * sizeof(ASTER_READ_RECORD), (SIZE_T)OutLen), 8);
         RtlCopyMemory(dst, &hdr, sizeof(hdr));
         dst += sizeof(hdr);
         for (i = 0; i < n; i += chunk) {   /* 링 끝에서 감기는 구간은 두 번에 나눠 복사 */
@@ -547,7 +548,7 @@ static NTSTATUS AsterDoGetRecords(_Out_ PVOID Out, _In_ ULONG OutLen, _Out_ PULO
 }
 
 /* PASSIVE_LEVEL */
-static NTSTATUS AsterDoGetStats(_Out_ PVOID Out, _In_ ULONG OutLen, _Out_ PULONG Returned)
+static NTSTATUS AsterDoGetStats(_Inout_updates_bytes_(OutLen) PVOID Out, _In_ ULONG OutLen, _Out_ PULONG Returned)
 {
     ASTER_STATS st;
     KIRQL oldIrql;

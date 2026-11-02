@@ -3,7 +3,7 @@
  *
  * 규칙: 고정 크기, 명시 정렬(8바이트), 포인터 없음. 드라이버(C)와 사용자 모드(C/C#)가
  * 같은 레이아웃을 쓰므로 필드를 바꾸면 ASTER_PROTO_VERSION 을 올립니다.
- * 통신: FilterConnectCommunicationPort(L"\AsterFltPort") 하나, FilterSendMessage 로
+ * 통신: FilterConnectCommunicationPort(L"\\AsterFltPort") 하나, FilterSendMessage 로
  *   요청-응답 (드라이버가 사용자 모드로 먼저 보내지 않음). 메시지 종류는 세 가지입니다.
  *     ASTER_CMD_SET_POLICY  정책 설정 (볼륨 GUID, 볼륨 상대 루트, 켜기/끄기)
  *     ASTER_CMD_GET_RECORDS 읽기 기록 묶음 가져오기 (가져간 만큼 링 버퍼에서 제거)
@@ -14,7 +14,7 @@
 #define ASTERFLT_PROTO_H
 
 #define ASTER_PROTO_VERSION    1UL
-#define ASTER_PORT_NAME        L"\AsterFltPort"
+#define ASTER_PORT_NAME        L"\\AsterFltPort"
 
 #define ASTER_GUID_CCH         40   /* "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}" 38자 + NUL, 2자 여유 */
 #define ASTER_ROOT_CCH         260  /* 볼륨 상대 경로, 예: L"\Games\Foo" (NUL 포함) */

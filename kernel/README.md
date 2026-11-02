@@ -7,7 +7,7 @@
 
 | 단계 | 내용 | 상태 |
 |---|---|---|
-| K1 관찰 | 지정 볼륨의 지정 루트 아래 파일의 `IRP_MJ_READ` 를 Pre-Read 에서 **기록만** 합니다 (파일 ID, 오프셋, 길이, 페이징·비캐시·fast I/O 플래그, 요청 PID, 시각) | 소스 작성 (이 폴더). 컴파일 여부는 아래 "빌드 상태" |
+| K1 관찰 | 지정 볼륨의 지정 루트 아래 파일의 `IRP_MJ_READ` 를 Pre-Read 에서 **기록만** 합니다 (파일 ID, 오프셋, 길이, 페이징·비캐시·fast I/O 플래그, 요청 PID, 시각) | 소스 작성 (이 폴더). 컴파일·정적 분석·INF 검증까지 확인 (7절). 적재·실행은 하지 않음 |
 | K2 비교 | VM 안에서 K1 트레이스와 ETW(Tracer) 트레이스를 같은 재생으로 비교 | 절차 문서만 (5절) |
 | K3 SSD 캐시 리다이렉션 | 정책 표에 걸린 비캐시·페이징 읽기를 SSD 사본에서 채워 완료 | 설계 문서만 (6절). 코드 없음 |
 
@@ -22,8 +22,11 @@
 | `AsterFlt/AsterFlt.c` | DriverEntry, 등록, InstanceSetup(볼륨 GUID), PostCreate(파일 ID·루트 일치 -> stream context), Pre-Read, 링 버퍼, 통신 포트, FilterUnload |
 | `AsterFlt/inc/asterflt_proto.h` | 사용자 모드와 공유하는 메시지 구조체 (고정 크기, 8바이트 정렬, 크기 정적 검사) |
 | `AsterFlt/AsterFlt.inf` | 설치 정보. 임시 altitude 365990, **배포 전 Microsoft 할당 필요** |
-| `AsterFlt/AsterFlt.vcxproj` | WDM 기반 미니필터, x64, 서명 끔 |
-| `.gitignore` | `x64/`, `*.sys`, `*.pdb`, `*.cer` 등 제외 |
+| `AsterFlt/AsterFlt.vcxproj` | WDM 기반 미니필터, x64, 서명 끔, NuGet WDK 참조 |
+| `AsterFlt/packages.config` | NuGet WDK 패키지 고정 (`Microsoft.Windows.WDK.x64`, `SDK.CPP`, `SDK.CPP.x64` 10.0.26100.6584) |
+| `build.ps1` | 복원 -> msbuild -> infverif 한 번에. `-Analyze` 는 정적 분석 포함 |
+| `toolset-shim/` | VS 에 "Windows Driver Kit" 구성 요소가 없을 때만 쓰는 `WindowsKernelModeDriver10.0` 도구 집합 대체본 |
+| `.gitignore` | `x64/`, `packages/`, `*.sys`, `*.pdb`, `*.cer` 등 제외 |
 
 ## 3. 인터페이스 (통신 포트 하나, 메시지 세 종류)
 
@@ -86,16 +89,39 @@
 
 ## 7. 빌드
 
-WDK(Windows Driver Kit)와 VS 의 WDK 확장이 필요합니다. 설치·EWDK 다운로드는 사용자 결정 사항입니다 (관리자 권한, 수 GB).
+WDK 는 설치하지 않고 NuGet 패키지(`Microsoft.Windows.WDK.x64` + `SDK.CPP` + `SDK.CPP.x64`, 10.0.26100.6584)로 `kernel\packages\` 에 받습니다 (관리자 권한 불필요, 약 1.4 GB 압축 해제, git 제외). Visual Studio 2022 + C++ 워크로드와 `nuget.exe` 가 필요합니다.
 
 ```
-msbuild kernel\AsterFlt\AsterFlt.vcxproj /p:Configuration=Release /p:Platform=x64
-msbuild kernel\AsterFlt\AsterFlt.vcxproj /p:Configuration=Release /p:Platform=x64 /p:RunCodeAnalysis=true
+powershell -File kernel\build.ps1 -Configuration Release -Analyze
 ```
 
-출력은 `kernel\AsterFlt\x64\Release\` (또는 `kernel\x64\Release\`) 아래이며 서명하지 않고 적재하지 않습니다.
+`build.ps1` 이 하는 일: `nuget restore` -> `MSBuild.exe`(64비트) -> `infverif /u`(실패 시 중단) -> `infverif /w`(참고용). 같은 내용을 수동으로 하려면 `nuget restore AsterFlt\packages.config -PackagesDirectory packages` 뒤에 `msbuild AsterFlt\AsterFlt.vcxproj /p:Configuration=Release /p:Platform=x64` (정적 분석은 `/p:RunCodeAnalysis=true`) 를 실행합니다. 32비트 MSBuild 로 돌리면 WDK 도구를 x86 폴더에서 찾아 ApiValidator·InfVerif 가 실패하므로 `MSBuild\Current\Bin\amd64\MSBuild.exe` 를 씁니다.
 
-빌드 상태: 이 문서를 쓴 시점에 WDK 가 설치되어 있지 않아 **미실행**입니다 (`Windows Kits\10\Include\*\km` 없음). 소스는 컴파일된 적이 없으므로 첫 빌드에서 오류·경고가 나오면 그것부터 수정합니다.
+NuGet WDK 도 Visual Studio 의 "Windows Driver Kit" 구성 요소(플랫폼 도구 집합 `WindowsKernelModeDriver10.0`)가 있어야 vcxproj 가 로드됩니다. 이 구성 요소는 VS 설치 폴더에 쓰므로 관리자 권한이 필요한데, 이 PC 에는 없습니다. 그래서 `build.ps1` 은 구성 요소가 없을 때만 VS 의 `MSBuild\Microsoft\VC\v170` 폴더(약 4 MB)를 `kernel\packages\vctargets\` 로 복사하고 그 위에 `toolset-shim\` 을 얹은 뒤 `/p:VCTargetsPath` 로 가리킵니다 (VS 설치는 건드리지 않음). 구성 요소가 있으면 대체본을 쓰지 않습니다. 대체본은 `KM_IncludePath`, `DDK_LIB_PATH` 등 NuGet 패키지가 정의하지 않는 경로 속성만 채우므로, 진짜 구성 요소와 결과가 같은지는 구성 요소가 있는 PC 에서 따로 확인해야 합니다.
+
+출력은 `kernel\AsterFlt\x64\<구성>\` 아래이며 서명하지 않고 적재하지 않습니다. 카탈로그(.cat)도 만들지 않습니다 (`SignMode=Off`, `EnableInf2cat=false`).
+
+빌드 상태 (2026-11-02, Visual Studio 2022 MSVC 14.44.35207, WDK/SDK 10.0.26100.6584, Windows 11 26200 x64):
+
+| 항목 | 결과 |
+|---|---|
+| Release\|x64 빌드 (`/W4 /WX`) | 성공, 경고 0, 오류 0. `AsterFlt.sys` 13,312 바이트 |
+| Debug\|x64 빌드 | 성공, 경고 0, 오류 0. `AsterFlt.sys` 13,824 바이트 |
+| 정적 분석 (`RunCodeAnalysis`, `DriverRecommendedRules.ruleset`, 경고를 오류로) | Release·Debug 모두 경고 0 (수정 전 `DriverMinimumRules` 에서 C6001 2건, 아래 참조) |
+| ApiValidator (Universal) | 통과 (`Driver is 'Universal'`) |
+| `infverif /v /u` (대상 플랫폼 Universal) | `INF is VALID` |
+| `infverif /v /w` (Windows Driver 규칙) | 실패: 오류 1323 5건(`DebugFlags`·`SupportedFeatures`·`Instances` 하위 `DefaultInstance`·`Altitude`·`Flags` 가 Parameters 하위 키가 아님), 오류 1322 1건(대상 경로가 DIRID 12, 격리된 DIRID 13 아님) |
+| vcxproj 속성 | `SignMode=Off`, `EnableInf2cat=false`, `Driver_SpectreMitigation=false` 모두 NuGet WDK 의 속성 정의(`Sign.xml`, `Inf2cat.xml`, `drivercl.xml`)에 있는 값이고 실제 빌드에서 서명·카탈로그·`/Qspectre` 가 생기지 않음을 확인 |
+
+첫 빌드에서 고친 것
+- `asterflt_proto.h`: `ASTER_PORT_NAME` 이 `L"\AsterFltPort"` 여서 C4129(알 수 없는 이스케이프)였음 -> `L"\\AsterFltPort"`. 이대로 두면 포트 이름이 깨져 통신 포트 생성이 실패했을 코드입니다.
+- `AsterFlt.c`: `AsterDoGetRecords`/`AsterDoGetStats` 의 출력 버퍼 SAL 을 `_Inout_updates_bytes_(OutLen)` 로, `ProbeForWrite` 길이에 `OutLen` 상한을 둠 (정적 분석 C6001 2건 제거. `n` 은 이미 `maxFit` 으로 제한돼 동작은 같음).
+- `AsterFlt.inf`: `CopyFiles` 와 `DelFiles` 가 같은 섹션을 가리켜 경고 1205 -> 삭제용 섹션 `MiniFilter.DelFiles` 분리.
+- `AsterFlt.vcxproj`: NuGet 패키지 props 가져오기, `WindowsTargetPlatformVersion` 을 `10.0.26100.0` 으로 고정, NuGet WDK(x64 전용)의 도구 폴더를 x64 로 지정.
+
+미해결 (결정 필요)
+- `infverif /w`(드라이버 격리) 1322·1323: 1322 는 INF 를 DIRID 13(드라이버 스토어 실행)으로 바꾸면 되지만 설치·제거 방식이 달라지므로 VM 시험 전에 바꾸지 않았습니다. 1323 은 미니필터 `Instances` 키를 FltMgr 가 서비스 키 바로 아래에서 읽으므로 Parameters 아래로 옮길 수 없는 성격이라, 정식 서명(WHQL 경로)을 할 때 이 규칙이 면제인지 Microsoft 문서로 확인해야 합니다. 현재 대상 플랫폼 설정(Universal)에서는 `/u` 가 통과합니다.
+- 진짜 `WindowsKernelModeDriver10.0` 구성 요소가 있는 환경에서의 빌드는 이 PC 에서 시험하지 못했습니다 (CI 가 첫 확인 기회).
 
 ## 8. 소스 검토 체크리스트 (WDK 없이 작성한 코드의 자체 검토)
 
@@ -112,4 +138,4 @@ msbuild kernel\AsterFlt\AsterFlt.vcxproj /p:Configuration=Release /p:Platform=x6
 | 언로드 경합 | 클라이언트가 붙어 있으면 비강제 언로드 거부. 서버 포트 닫기 -> 정책 끄기 -> Rundown 대기 -> `FltUnregisterFilter` -> 그다음에 ring 해제 | 강제 언로드 중 늦게 오는 Disconnect 에서 `g.Filter` 가 NULL 이면 클라이언트 포트를 닫지 못함 (가드만 있음). VM 에서 확인 |
 | stream context | 루트 밖 파일은 만들지 않음. 세대 불일치는 무시 | 같은 FCB 를 여는 서로 다른 핸들의 컨텍스트 공유 동작 |
 | 알려진 한계 | 정책 설정 전에 열린 파일, 커널 모드 요청, 비NTFS 는 관찰하지 않음 | K2 비교에서 누락률로 확인 |
-| 미검증 | WDK 없음: 컴파일, 정적 분석(`/p:RunCodeAnalysis`), INF 검증(`infverif`), vcxproj 속성 이름(`SignMode`, `EnableInf2cat`, `Driver_SpectreMitigation`) | 첫 빌드에서 확인 |
+| 컴파일·정적 분석·INF 검증 | 2026-11-02 확인 (7절 표): `/W4 /WX` 경고 0, 정적 분석 경고 0, `infverif /u` VALID. vcxproj 속성(`SignMode`, `EnableInf2cat`, `Driver_SpectreMitigation`) 실제 확인 | `infverif /w` 1322·1323 (7절 미해결). 실행·적재 동작은 VM 에서만 |

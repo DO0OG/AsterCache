@@ -23,6 +23,7 @@ PnpLockdown = 1
 [DestinationDirs]
 DefaultDestDir          = 12
 MiniFilter.DriverFiles  = 12            ; %windir%\system32\drivers
+MiniFilter.DelFiles     = 12
 
 [DefaultInstall.NTamd64]
 OptionDesc  = %ServiceDescription%
@@ -33,12 +34,15 @@ AddService  = %ServiceName%,,MiniFilter.Service
 
 [DefaultUninstall.NTamd64]
 LegacyUninstall = 1
-DelFiles    = MiniFilter.DriverFiles
+DelFiles    = MiniFilter.DelFiles
 
 [DefaultUninstall.NTamd64.Services]
 DelService  = %ServiceName%,0x200       ; SPSVCINST_STOPSERVICE
 
 [MiniFilter.DriverFiles]
+%DriverName%.sys
+
+[MiniFilter.DelFiles]
 %DriverName%.sys
 
 [SourceDisksNames]

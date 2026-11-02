@@ -1,0 +1,40 @@
+AsterFlt 커널 미니필터 빌드 결과 (2026-11-02)
+서명·적재·설치 없음. 컴파일, 정적 분석, INF 검증까지만 수행.
+
+환경
+- Windows 11 Pro 26200 x64, 관리자 권한 없음
+- Visual Studio 2022 Community, MSVC 14.44.35207 (HostX64\x64), MSBuild 64비트 (MSBuild\Current\Bin\amd64)
+- WDK: NuGet Microsoft.Windows.WDK.x64 10.0.26100.6584
+  SDK: NuGet Microsoft.Windows.SDK.CPP 10.0.26100.6584, Microsoft.Windows.SDK.CPP.x64 10.0.26100.6584
+- infverif 10.0.26100.6584 (WDK 패키지 tools\10.0.26100.0\x64)
+- 패키지 위치 kernel\packages\ (git 제외). 받은 nupkg 110.9 + 160.0 + 52.2 MB = 약 323 MB, 압축 해제 합계 약 1,472 MB
+  (WDK.x64 415 MB, SDK.CPP 817 MB, SDK.CPP.x64 240 MB), 대체 VC 타깃 복사본 4 MB (kernel\packages\vctargets)
+- VS 에 "Windows Driver Kit" 구성 요소(WindowsKernelModeDriver10.0 도구 집합)가 없어 kernel\toolset-shim 대체본 사용
+
+명령
+  powershell -File kernel\build.ps1 -Configuration Release -Analyze
+  powershell -File kernel\build.ps1 -Configuration Debug
+  (내부: nuget restore -> MSBuild.exe -t:Rebuild -p:Configuration=<구성> -p:Platform=x64 -> infverif /v /u, /v /w)
+  -Analyze: -p:RunCodeAnalysis=true -p:CodeAnalysisTreatWarningsAsErrors=true
+            -p:CodeAnalysisRuleSet=<WDK>\CodeAnalysis\DriverRecommendedRules.ruleset
+
+결과
+  Release|x64   컴파일 /W4 /WX            경고 0, 오류 0   AsterFlt.sys 13,312 바이트 (SHA-256 앞 16자 63fe1e67b84ace92)
+  Release|x64   정적 분석(Recommended)    경고 0 (경고를 오류로 처리해도 통과)
+  Debug|x64     컴파일 /W4 /WX            경고 0, 오류 0   AsterFlt.sys 13,824 바이트
+  Debug|x64     정적 분석(Recommended)    경고 0
+  ApiValidator (Universal)                통과
+  infverif /v /u  (Universal)             INF is VALID
+  infverif /v /w  (Windows Driver)        실패: 1323 x5 (서비스 레지스트리 키가 Parameters 하위가 아님), 1322 x1 (DIRID 12, 격리된 DIRID 13 아님)
+  infverif /v /h  (WHQL 서명 기준)        실패: 1323 x5
+  전체 출력: infverif.txt, 빌드 출력: build_ps1_Release.log, build_ps1_Debug.log
+
+코드 쪽에서 고친 것
+  inc\asterflt_proto.h   ASTER_PORT_NAME  L"\AsterFltPort" -> L"\\AsterFltPort"  (C4129, 포트 이름이 깨지던 버그)
+  AsterFlt.c             GetRecords/GetStats 출력 버퍼 SAL, ProbeForWrite 길이 상한 (정적 분석 C6001 2건)
+  AsterFlt.inf           DelFiles 전용 섹션 분리 (infverif 경고 1205)
+  AsterFlt.vcxproj       NuGet 패키지 props, 대상 SDK 10.0.26100.0 고정, NuGet WDK 도구 폴더(x64) 지정
+vcxproj 속성 확인: SignMode=Off, EnableInf2cat=false, Driver_SpectreMitigation=false 모두 WDK 속성 정의의 유효한 값이며
+  빌드에서 서명·.cat·/Qspectre 가 생기지 않음.
+
+하지 않은 것: 드라이버 적재, 서명, 테스트 서명, 인증서 설치, Driver Verifier, 레지스트리 서비스 키 변경, .sys 실행.

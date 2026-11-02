@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  WindowsKernelModeDriver10.0 플랫폼 도구 집합 대체본.
+  Visual Studio 의 "Windows Driver Kit" 구성 요소(관리자 권한 설치)가 없는 PC·러너에서 NuGet WDK 만으로
+  AsterFlt.vcxproj 를 빌드하려고 kernel\build.ps1 이 VC 타깃 복사본에 얹습니다.
+  VS 에 진짜 도구 집합이 있으면 쓰지 않습니다. 컴파일러는 VS 기본 도구 집합(v143 등)을 그대로 쓰고,
+  NuGet WDK 패키지의 WindowsDriver.*.props 를 가져오며, 그 패키지가 정의하지 않는 경로 속성만 채웁니다.
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <WDKContentRoot Condition="!HasTrailingSlash('$(WDKContentRoot)')">$(WDKContentRoot)\</WDKContentRoot>
+    <WDKBuildFolder Condition="'$(WDKBuildFolder)' == ''">$(WindowsTargetPlatformVersion)</WDKBuildFolder>
+    <IsKernelModeToolset>true</IsKernelModeToolset>
+    <IsUserModeToolset>false</IsUserModeToolset>
+    <IsDriverAppToolset>false</IsDriverAppToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)Platforms\x64\PlatformToolsets\$(DefaultPlatformToolset)\Toolset.props" />
+  <Import Project="$(WDKContentRoot)build\$(WDKBuildFolder)\WindowsDriver.Default.props" />
+  <PropertyGroup>
+    <DDKPlatform>x64</DDKPlatform>
+    <KM_IncludePath>$(WDKContentRoot)Include\$(TargetPlatformVersion)\km</KM_IncludePath>
+    <CRT_IncludePath>$(WDKContentRoot)Include\$(TargetPlatformVersion)\km\crt</CRT_IncludePath>
+    <KIT_SHARED_INC_PATH_WDK>$(WDKContentRoot)Include\$(TargetPlatformVersion)\shared</KIT_SHARED_INC_PATH_WDK>
+    <DDK_LIB_PATH>$(WDKContentRoot)Lib\$(TargetPlatformVersion)\km\x64\</DDK_LIB_PATH>
+    <DDK_LibraryPath_DDKPlatform>$(DDK_LIB_PATH)</DDK_LibraryPath_DDKPlatform>
+  </PropertyGroup>
+  <Import Project="$(WDKContentRoot)build\$(WDKBuildFolder)\WindowsDriver.Common.props" />
+  <Import Project="$(WDKContentRoot)build\$(WDKBuildFolder)\WindowsDriver.KernelMode.Default.props" />
+  <Import Project="$(WDKContentRoot)build\$(WDKBuildFolder)\x64\WindowsKernelModeDriver\WDK.x64.WindowsKernelModeDriver.props" />
+  <Import Project="$(WDKContentRoot)build\$(WDKBuildFolder)\WindowsDriver.KernelMode.props" />
+  <Import Project="$(WDKContentRoot)build\$(WDKBuildFolder)\WindowsDriver.LateEvaluation.props" />
+  <Import Project="$(WDKContentRoot)build\$(WDKBuildFolder)\WindowsDriver.KernelMode.LateEvaluation.props" />
+</Project>

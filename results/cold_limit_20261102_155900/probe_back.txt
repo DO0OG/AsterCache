@@ -1,0 +1,2 @@
+﻿{"volume":"D:","label":"\ub85c\uceec \ub514\uc2a4\ud06c","cluster_bytes":4096,"total_clusters":488374271,"free_clusters_ntfs":141201607,"free_clusters_bitmap":141201607,"bitmap_bits":488374271,"free_match":true,"mft_zone":[410659712,410676768],"zone_clusters_needed":493352,"zone_candidate_lcn":205810272}
+

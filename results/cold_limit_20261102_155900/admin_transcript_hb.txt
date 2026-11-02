@@ -1,0 +1,50 @@
+﻿**********************
+Windows PowerShell 기록 시작
+시작 시간: 20261102164412
+사용자 이름: <user>
+RunAs 사용자: <user>
+구성 이름: 
+Machine: <host> (Microsoft Windows NT 10.0.26200.0)
+호스트 응용 프로그램: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File <scratch>\admin\e6_4.ps1
+프로세스 ID: 32716
+PSVersion: 5.1.26100.9168
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9168
+BuildVersion: 10.0.26100.9168
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+16:44:15 volume D: label='로로컬컬 디디스스크크'
+16:44:15 == stage points start
+16:44:22 == stage points end ok=True 7s
+16:44:22 == stage relayout start
+16:44:22 high-band zone start lcn=439536840 (90% of 488374271)
+16:44:23 SHA-256 before (20 files)
+16:50:14 == stage relayout end ok=True 352s
+16:50:14 == stage measure start
+16:50:35 raw right after write: 20.68s 97.7 MB/s
+16:50:57 hbpvm1: pvm 19.06s 107.4 MB/s replay 0.35s
+16:51:18 hbpvm2: pvm 19.08s 107.3 MB/s replay 0.32s
+16:51:39 hbpvm3: pvm 18.12s 113.0 MB/s replay 0.35s
+16:52:12 hbdirect1: 31.77s
+16:52:41 hbdirect2: 27.59s
+16:53:10 hbdirect3: 27.86s
+16:53:10 idle 600 s
+17:03:32 hbidle: pvm 19.31s 106.0 MB/s replay 0.46s
+17:03:53 raw after idle: 20.08s 100.6 MB/s
+17:03:53 == stage measure end ok=True 819s
+17:03:53 == stage finish start
+17:05:29 high band NOT faster (19.0608 s vs 12.0567 s): moving back to the 42% zone
+17:05:31 stage finish FAILED: step 'apply_dry_back42' failed (exit 1):
+{"error":"PlanRejected","detail":"zone_not_free: LCN 205810188 is in use by another file"}
+
+
+17:05:31 == stage finish end ok=False 98s
+17:05:31 done exit=1
+driver exit=1
+**********************
+Windows PowerShell 기록 끝
+종료 시간: 20261102170531
+**********************

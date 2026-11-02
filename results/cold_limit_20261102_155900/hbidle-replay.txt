@@ -1,0 +1,15 @@
+﻿{
+ "mode": "buffered",
+ "requests": 30843,
+ "bytes": 2020744370,
+ "crc32": 540756,
+ "total_s": 0.4556842004240025,
+ "throughput_mib_s": 4229.095509342614,
+ "p50_ms": 0.009399998816661537,
+ "p95_ms": 0.03779999678954482,
+ "p99_ms": 0.0627999979769811,
+ "missing_files": 1,
+ "skipped_requests": 1,
+ "skipped_bytes": 65536
+}
+

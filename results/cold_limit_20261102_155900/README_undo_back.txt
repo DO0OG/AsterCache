@@ -1,0 +1,1 @@
+﻿[back] undo (NOT run): & "<scratch>\e6cli\aster.exe" revert --journal "D:\Git\AsterCache\results\cold_limit_20261102_155900\journal_back.jsonl" --allowed-root "D:\Frostpunk" --require-volume-label "로컬 디스크" [--execute]

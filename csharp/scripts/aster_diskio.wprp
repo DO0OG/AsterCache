@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- WPR profile for cs_e6_cold_limit.ps1: kernel DiskIo (physical read size and offset) with large buffers, file mode.
+     Start: wpr.exe -start "<this file>!AsterDiskIO" -filemode   Stop: wpr.exe -stop <out.etl> -->
+<WindowsPerformanceRecorder Version="1.0" Author="AsterCache" Team="AsterCache" Comments="DiskIo trace" Company="" Copyright="" Tag="">
+  <Profiles>
+    <SystemCollector Id="SystemCollector_AsterDiskIO" Name="NT Kernel Logger">
+      <BufferSize Value="1024" />
+      <Buffers Value="256" />
+    </SystemCollector>
+    <SystemProvider Id="SystemProvider_AsterDiskIO">
+      <Keywords>
+        <Keyword Value="DiskIO" />
+        <Keyword Value="DiskIOInit" />
+      </Keywords>
+    </SystemProvider>
+    <Profile Id="AsterDiskIO.Verbose.File" LoggingMode="File" Name="AsterDiskIO" DetailLevel="Verbose" Description="AsterCache DiskIo reads">
+      <Collectors>
+        <SystemCollectorId Value="SystemCollector_AsterDiskIO">
+          <SystemProviderId Value="SystemProvider_AsterDiskIO" />
+        </SystemCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>

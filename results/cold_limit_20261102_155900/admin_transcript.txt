@@ -1,0 +1,54 @@
+﻿**********************
+Windows PowerShell 기록 시작
+시작 시간: 20261102161626
+사용자 이름: <user>
+RunAs 사용자: <user>
+구성 이름: 
+Machine: <host> (Microsoft Windows NT 10.0.26200.0)
+호스트 응용 프로그램: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File <scratch>\admin\e6_2.ps1
+프로세스 ID: 12000
+PSVersion: 5.1.26100.9168
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9168
+BuildVersion: 10.0.26100.9168
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+16:16:28 volume D: label='로로컬컬 디디스스크크' disk=WDC WD20EZAZ-00GGJB0 bus=SATA
+16:16:28 == stage free0 start
+16:16:30 == stage free0 end ok=True 3s
+16:16:30 == stage sweep start
+16:16:47 sweep qd=1 chunk=4MiB: 16.75s 120.6 MB/s
+16:17:04 sweep qd=2 chunk=4MiB: 16.13s 125.3 MB/s
+16:17:21 sweep qd=4 chunk=4MiB: 16.91s 119.5 MB/s
+16:17:38 sweep qd=8 chunk=4MiB: 16.63s 121.5 MB/s
+16:17:54 sweep qd=4 chunk=1MiB: 16.05s 125.9 MB/s
+16:18:11 sweep qd=4 chunk=16MiB: 16.17s 125.0 MB/s
+16:18:11 == stage sweep end ok=True 100s
+16:18:11 == stage curve start
+16:27:34 == stage curve end ok=True 563s
+16:27:34 == stage raw0 start
+16:28:24 == stage raw0 end ok=True 50s
+16:28:24 == stage relayout start
+16:28:27 zone candidate lcn=205810188 = 42.142% of the volume
+16:28:28 SHA-256 before (20 files)
+16:35:31 == stage relayout end ok=True 428s
+16:35:31 == stage raw1 start
+16:36:10 == stage raw1 end ok=True 39s
+16:36:10 == stage measure start
+16:36:26 pvm1: 12.83s 159.6 MB/s replay 0.32s
+16:36:40 pvm2: 12.06s 169.8 MB/s replay 0.32s
+16:36:54 pvm3: 11.84s 173.0 MB/s replay 0.33s
+16:37:17 direct1: 21.64s
+16:37:46 direct2: 27.32s
+16:38:06 direct3: 18.94s
+100%  [>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>]
+16:38:22 == stage measure end ok=True 131s
+16:38:22 done exit=0
+driver exit=0
+**********************
+Windows PowerShell 기록 끝
+종료 시간: 20261102163822
+**********************

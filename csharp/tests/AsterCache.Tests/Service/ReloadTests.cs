@@ -244,7 +244,8 @@ public sealed class ReloadTests
 
         r.Stamp = 2;
         await Until(() => r.Log.Lines.Any(l => l.Contains("settings reloaded", StringComparison.Ordinal)));
-        await Task.Delay(50);
+        r.Stamp = 3;
+        await Until(() => r.Log.Lines.Count(l => l.Contains("settings reloaded", StringComparison.Ordinal)) >= 2); // 다시 읽기는 한 스레드라 첫 번째 적용 (감시기 재시작 판단 포함) 이 끝난 뒤에야 두 번째가 로그에 나옴
 
         Assert.Equal(1, r.WatcherCount);
         Assert.False(r.Initial.Cancelled);
@@ -256,7 +257,7 @@ public sealed class ReloadTests
     {
         var r = new Rig(new AsterSettings(50, []), () => One());
         await r.Worker.StartAsync(CancellationToken.None);
-        await Task.Delay(150);
+        await Until(() => r.Log.Lines.Any(l => l.StartsWith("Info: service started: no games registered yet", StringComparison.Ordinal)));
 
         Assert.False(r.Initial.Started.IsCompleted); // 감시할 이름이 없으면 감시기를 돌리지 않음
         Assert.Contains(r.Log.Lines, l => l.StartsWith("Info: service started: no games registered yet", StringComparison.Ordinal));

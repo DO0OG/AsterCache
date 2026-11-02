@@ -32,6 +32,7 @@ public sealed class Worker : BackgroundService
         ReapplyGate? gate = null, Prewarmer? prewarm = null, AutoMode? auto = null, SettingsReloader? reload = null)
     {
         _prewarm = prewarm;
+        _prewarm?.SetAuto(settings.Auto);
         _auto = auto;
         _reload = reload;
         _settings = settings;
@@ -82,14 +83,7 @@ public sealed class Worker : BackgroundService
             : $"service started: {_settings.Games.Count} game(s), watcher {_watchers.Primary.GetType().Name}");
         if (_prewarm is not null)
         {
-            _ = Task.Run(() => RunPrewarm(() =>
-            {
-                _prewarm.RunServiceStart();
-                if (_auto?.StartupRecent() is { Count: > 0 } recent)
-                {
-                    _prewarm.RunAll(recent, "recent");
-                }
-            }), CancellationToken.None);
+            _ = Task.Run(() => RunPrewarm(() => _prewarm.RunServiceStart(_auto?.StartupRecent(), _auto?.WarmToken ?? default)), CancellationToken.None);
         }
 
         var channel = Channel.CreateUnbounded<ProcessStart>();
@@ -187,8 +181,10 @@ public sealed class Worker : BackgroundService
     {
         if (_settings.Games.FirstOrDefault(g => g.ExeNames.Contains(s.ExeName, StringComparer.OrdinalIgnoreCase)) is { } game)
         {
+            _prewarm?.NoteGameStart(game.Name); // 그 게임을 예열하던 스트림은 아래 취소에도 끝까지 (다른 게임의 예열은 묶음 경계에서 멈춤), 기록 없는 예열의 예산은 풂
             _prewarm?.ReleasePin(game.Name, "game started"); // 고정은 스트림·재적용 취소보다 먼저 풂
             _gate.Cancel(); // 재적용은 게임 exe 시작에서만 멈춥니다 (런처 같은 트리거 전용 프로그램은 아님)
+            _auto?.CancelWarm(); // 자동 모드의 예열 작업도 (핫 집합 스트림은 묶음 경계에서 멈추고, 그 뒤 예열은 시작하지 않음)
             if (_auto is not null)
             {
                 _ = Task.Run(() => _auto.OnGameStart(game), CancellationToken.None); // last_played 와 자동 트레이스 시작은 감시기 스레드를 막지 않게 따로
@@ -203,7 +199,7 @@ public sealed class Worker : BackgroundService
         writer.TryWrite(s);
         if (_prewarm?.IsTrigger(s.ExeName) == true)
         {
-            _ = Task.Run(() => RunPrewarm(() => _prewarm.OnProcessStart(s, _auto is null ? null : _auto.NarrowTriggered)), CancellationToken.None);
+            _ = Task.Run(() => RunPrewarm(() => _prewarm.OnProcessStart(s, _auto is null ? null : _auto.NarrowTriggered, _auto?.WarmToken ?? default)), CancellationToken.None);
         }
     };
 
@@ -272,6 +268,7 @@ public sealed class Worker : BackgroundService
         _settings = s;
         _dispatcher.SetGames(s.Games);
         _prewarm?.SetGames(s.Games);
+        _prewarm?.SetAuto(s.Auto);
         _auto?.SetSettings(s);
         _log.Info($"settings reloaded: {s.Games.Count} game(s)");
         string key = WatchKey(s);
@@ -333,13 +330,31 @@ public sealed class Worker : BackgroundService
         {
             try
             {
-                RunPrewarm(() => _prewarm.Tick(_settings.Auto));
+                CancellationToken warmToken = _auto?.WarmToken ?? CancellationToken.None;
+                RunPrewarm(() => _prewarm.Tick(_settings.Auto, warmToken));
             }
             finally
             {
                 Interlocked.Exchange(ref _maintaining, 0);
             }
         }, CancellationToken.None);
+    }
+
+    /// 시작·다시 읽을 때 설정 보정: 이관 로그 한 줄, canApply 가 거짓이면 자동 모드를 꺼서 (취소 토큰 없는 통째 예열 등이 돌지 않게) 넘김.
+    public static AsterSettings ForApply(AsterSettings s, bool canApply, ILog log)
+    {
+        if (s.Auto.Migrated)
+        {
+            log.Info("config: beta.3 auto settings (prewarm_recent 1, idle_minutes 3) read as the new defaults (prewarm_recent 0, idle_seconds 30); the file is rewritten on the next save");
+        }
+
+        if (!canApply && s.Auto.Enabled)
+        {
+            log.Warn("auto mode disabled: administrator rights and a trusted data folder are required");
+            return s with { Auto = s.Auto with { Enabled = false } };
+        }
+
+        return s;
     }
 
     /// 시작 때 설정·계획 폴더 권한을 확인해 재적용 허용 여부를 정합니다 (관리자 + 두 폴더 모두 신뢰 밖 쓰기 권한 없음).

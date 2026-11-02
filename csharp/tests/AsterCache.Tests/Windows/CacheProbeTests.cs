@@ -4,19 +4,19 @@ using Xunit;
 
 namespace AsterCache.Tests.Windows;
 
-/// 캐시 온도 표본: 고르게 고르기, 열기 실패 표본 제외.
+/// 캐시 온도 표본: 앞 4 곳 + 고르게 4 곳 고르기, 표본 길이, 판정, 열기 실패 표본 제외.
 public sealed class CacheProbeTests
 {
     private static List<ReadOp> Zone(int n) => Enumerable.Range(0, n).Select(i => new ReadOp("f" + i, i * 100L, 10)).ToList();
 
     [Fact]
-    public void PickSamplesIsEvenAcrossTheOrderedList()
+    public void PickSamplesTakesTheFirstFourThenFourEvenlyFromTheRest()
     {
-        List<(string Path, long Offset)> picked = CacheProbe.PickSamples(Zone(80));
+        List<(string Path, long Offset, int Bytes)> picked = CacheProbe.PickSamples(Zone(84));
 
         Assert.Equal(8, picked.Count);
-        Assert.Equal(Enumerable.Range(0, 8).Select(i => "f" + (i * 10)), picked.Select(p => p.Path));
-        Assert.Equal(Enumerable.Range(0, 8).Select(i => i * 1000L), picked.Select(p => p.Offset));
+        Assert.Equal(["f0", "f1", "f2", "f3", "f4", "f24", "f44", "f64"], picked.Select(p => p.Path)); // 앞 4 + 나머지 80 개에서 20 칸 간격
+        Assert.Equal(8, picked.Select(p => p.Path).Distinct().Count());
     }
 
     [Theory]
@@ -27,16 +27,34 @@ public sealed class CacheProbeTests
     [InlineData(1000, 8)]
     public void PickSamplesNeverExceedsCountOrList(int n, int expected)
     {
-        List<(string Path, long Offset)> picked = CacheProbe.PickSamples(Zone(n));
+        List<(string Path, long Offset, int Bytes)> picked = CacheProbe.PickSamples(Zone(n));
 
         Assert.Equal(expected, picked.Count);
         Assert.Equal(picked.Count, picked.Select(p => p.Path).Distinct().Count());
     }
 
     [Fact]
-    public void PickSamplesHonoursCustomCount()
+    public void PickSamplesHonoursCustomCounts()
     {
-        Assert.Equal(["f0", "f50"], CacheProbe.PickSamples(Zone(100), 2).Select(p => p.Path));
+        Assert.Equal(["f0", "f1", "f2", "f51"], CacheProbe.PickSamples(Zone(100), 2, 2).Select(p => p.Path));
+    }
+
+    [Fact]
+    public void SampleLengthIsTheOpLengthCappedAtOneMiB()
+    {
+        List<(string Path, long Offset, int Bytes)> picked = CacheProbe.PickSamples([new ReadOp("a", 0, 4096), new ReadOp("b", 5, 1 << 20), new ReadOp("c", 0, 200L << 20)]);
+
+        Assert.Equal([4096, 1 << 20, 1 << 20], picked.Select(p => p.Bytes));
+    }
+
+    [Fact]
+    public void ColdMeansTwoOrMoreSlowSamplesOrAllWhenFewer()
+    {
+        Assert.False(new ProbeResult(8, 1, 3).Cold);
+        Assert.True(new ProbeResult(8, 2, 3).Cold);
+        Assert.False(new ProbeResult(8, 0, 0.5).Cold);
+        Assert.True(new ProbeResult(1, 1, 9).Cold); // 표본이 하나뿐이면 그것이 느리면 식음
+        Assert.False(new ProbeResult(1, 0, 0.5).Cold);
     }
 
     [Fact]
@@ -46,14 +64,25 @@ public sealed class CacheProbeTests
         tmp.WriteRandom("a.bin", 3 << 20);
         tmp.WriteRandom("b.bin", 3 << 20);
 
-        double? ok = CacheProbe.AverageReadMs([(tmp.Combine("a.bin"), 0), (tmp.Combine("nope.bin"), 0), (tmp.Combine("b.bin"), 1 << 20)]);
-        double? none = CacheProbe.AverageReadMs([(tmp.Combine("nope.bin"), 0), (tmp.Combine("nope2.bin"), 0)]);
-        double? empty = CacheProbe.AverageReadMs([]);
+        ProbeResult? ok = CacheProbe.Probe([(tmp.Combine("a.bin"), 0, 1 << 20), (tmp.Combine("nope.bin"), 0, 1 << 20), (tmp.Combine("b.bin"), 1 << 20, 1 << 20)]);
+        ProbeResult? none = CacheProbe.Probe([(tmp.Combine("nope.bin"), 0, 1 << 20), (tmp.Combine("nope2.bin"), 0, 1 << 20)]);
+        ProbeResult? empty = CacheProbe.Probe([]);
 
         Assert.NotNull(ok);
-        Assert.True(ok >= 0);
+        Assert.Equal(2, ok.Samples);
+        Assert.True(ok.AverageMs >= 0);
         Assert.Null(none);
         Assert.Null(empty);
+    }
+
+    [Fact]
+    public void ReadsOnlyTheSampleLengthSoAShortOpDoesNotTouchItsNeighbour()
+    {
+        using var tmp = new TempDir();
+        tmp.WriteRandom("a.bin", 1 << 20);
+
+        Assert.Equal(1, CacheProbe.Probe([(tmp.Combine("a.bin"), 0, 4096)])!.Samples);
+        Assert.Null(CacheProbe.Probe([(tmp.Combine("a.bin"), 0, 0)])); // 길이 0 은 읽을 것이 없음
     }
 
     [Fact]
@@ -64,8 +93,8 @@ public sealed class CacheProbeTests
         tmp.WriteRandom("locked.bin", 1 << 20);
         using var exclusive = new FileStream(tmp.Combine("locked.bin"), FileMode.Open, FileAccess.ReadWrite, FileShare.None);
 
-        Assert.NotNull(CacheProbe.AverageReadMs([(tmp.Combine("a.bin"), 0), (tmp.Combine("locked.bin"), 0)]));
-        Assert.Null(CacheProbe.AverageReadMs([(tmp.Combine("locked.bin"), 0), (tmp.Combine("a.bin"), 5 << 20)]));
+        Assert.NotNull(CacheProbe.Probe([(tmp.Combine("a.bin"), 0, 1 << 20), (tmp.Combine("locked.bin"), 0, 1 << 20)]));
+        Assert.Null(CacheProbe.Probe([(tmp.Combine("locked.bin"), 0, 1 << 20), (tmp.Combine("a.bin"), 5 << 20, 1 << 20)]));
     }
 
     [Fact]

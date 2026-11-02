@@ -10,7 +10,7 @@ public static class SampleDigest
 {
     /// 처음·가운데·끝 span 바이트 + extra 의 모든 (offset, length) (옮긴 범위) + 크기에 대한 SHA-256 (소문자 hex).
     /// 손상된 이동이 캐시된 페이지에 가려지지 않도록 기본은 언버퍼드 읽기이고, 언버퍼드 열기가 실패하면 버퍼드로 읽습니다.
-    public static string Compute(string path, long size, IEnumerable<(long Offset, long Length)>? extra = null, long span = 1 << 20, bool unbuffered = true)
+    public static string Compute(string path, long size, IEnumerable<(long Offset, long Length)>? extra = null, long span = 1 << 20, bool unbuffered = true, IoPriorityHint? hint = null)
     {
         var spans = new HashSet<(long, long)>
         {
@@ -30,7 +30,7 @@ public static class SampleDigest
         Span<byte> sizeLe = stackalloc byte[8];
         BinaryPrimitives.WriteInt64LittleEndian(sizeLe, size);
         hash.AppendData(sizeLe);
-        using var reader = new UnbufferedReader(Win32.ShareAll);
+        using var reader = new UnbufferedReader(Win32.ShareAll, hint);
         foreach ((long off, long n) in spans.OrderBy(s => s.Item1).ThenBy(s => s.Item2))
         {
             if (n <= 0)
@@ -50,7 +50,7 @@ public static class SampleDigest
             }
             catch (Exception e) when (e is IOException or Win32Exception or UnauthorizedAccessException)
             {
-                data = ReadBuffered(path, off, n);
+                data = ReadBuffered(path, off, n, hint);
             }
 
             hash.AppendData(data);
@@ -59,9 +59,10 @@ public static class SampleDigest
         return Convert.ToHexStringLower(hash.GetHashAndReset());
     }
 
-    private static byte[] ReadBuffered(string path, long offset, long length)
+    private static byte[] ReadBuffered(string path, long offset, long length, IoPriorityHint? hint)
     {
         using Microsoft.Win32.SafeHandles.SafeFileHandle h = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        hint?.SetLow(h);
         var buf = new byte[length];
         int total = 0;
         while (total < length)

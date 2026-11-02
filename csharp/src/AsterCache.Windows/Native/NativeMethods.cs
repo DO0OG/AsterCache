@@ -24,6 +24,8 @@ internal static class Win32
     public const uint PageReadonly = 2;
     public const uint FileMapRead = 4;
     public const int FileBasicInfoClass = 0; // FILE_INFO_BY_HANDLE_CLASS.FileBasicInfo
+    public const int FileIoPriorityHintInfoClass = 12; // FILE_INFO_BY_HANDLE_CLASS.FileIoPriorityHintInfo
+    public const int IoPriorityHintLow = 1; // PRIORITY_HINT: VeryLow = 0, Low = 1, Normal = 2
 }
 
 internal static unsafe partial class NativeMethods
@@ -40,6 +42,10 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Kernel32, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool GetFileInformationByHandleEx(SafeFileHandle file, int infoClass, byte* info, uint size);
+
+    [LibraryImport(Kernel32, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool SetFileInformationByHandle(SafeFileHandle file, int infoClass, byte* info, uint size);
 
     [LibraryImport(Kernel32, EntryPoint = "GetVolumeInformationW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

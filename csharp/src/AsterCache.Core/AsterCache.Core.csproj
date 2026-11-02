@@ -4,4 +4,8 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Profiles\engines.json" LogicalName="AsterCache.Core.Profiles.engines.json" />
+  </ItemGroup>
+
 </Project>

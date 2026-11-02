@@ -91,6 +91,17 @@ public sealed class PrewarmTests : IDisposable
     // ---- 서비스 시작과 트리거 ----
 
     [Fact]
+    public void ServiceStartMergesRecentGamesIntoOneBatchWithoutDuplicates()
+    {
+        GameSettings a = Game("a"), b = Game("b", PrewarmSettings.Default with { OnServiceStart = false }), c = Game("c", PrewarmSettings.Default with { OnServiceStart = false });
+        Prewarmer p = Make(a, b, c);
+
+        p.RunServiceStart([b, a, c]);
+
+        Assert.Equal(["a", "b", "c"], _streamer.Calls.Select(x => x.Game));
+    }
+
+    [Fact]
     public void ServiceStartWarmsOnlyGamesThatAskForItAndRecordsTheResult()
     {
         Prewarmer p = Make(Game("a"), Game("b", PrewarmSettings.Default with { OnServiceStart = false }));
@@ -196,6 +207,57 @@ public sealed class PrewarmTests : IDisposable
         await worker.StopAsync(CancellationToken.None);
 
         Assert.Equal(["a"], _streamer.Calls.Select(c => c.Game));
+    }
+
+    [Fact]
+    public void CancelledTokenSkipsTheStreamWithoutRecordingAStatus()
+    {
+        GameSettings g = Game("a");
+        Prewarmer p = Make(g);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        PrewarmResult r = p.Run(g, "test", ct: cts.Token);
+
+        Assert.Equal((false, Prewarmer.Cancelled), (r.Ran, r.SkipReason));
+        Assert.Empty(_streamer.Calls);
+        Assert.Null(p.LastWarmed("a"));
+        Assert.False(File.Exists(StatusPath));
+    }
+
+    [Fact]
+    public async Task LastWarmedAnswersWhileAStreamIsStillRunning()
+    {
+        GameSettings g = Game("a");
+        using var started = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var p = new Prewarmer([g], new HoldingStreamer(started, release), new PrewarmEnv
+        {
+            AvailableRamMib = () => AvailableMib,
+            GameRunning = _ => false,
+            ZoneBytes = _ => ZoneBytes,
+            TraceExists = _ => true,
+        }, _log, null, () => _now);
+        Task<PrewarmResult> run = Task.Run(() => p.Run(g, "test"));
+        Assert.True(started.Wait(TimeSpan.FromSeconds(10)));
+
+        Task<DateTimeOffset?> probe = Task.Run(() => p.LastWarmed("a")); // 스트림이 도는 동안 틱 스레드가 물어도 막히지 않아야 함
+        Assert.Same(probe, await Task.WhenAny(probe, Task.Delay(TimeSpan.FromSeconds(10))));
+        Assert.Null(await probe);
+
+        release.Set();
+        Assert.True((await run).Ran);
+        Assert.NotNull(p.LastWarmed("a"));
+    }
+
+    private sealed class HoldingStreamer(ManualResetEventSlim started, ManualResetEventSlim release) : IGameStreamer
+    {
+        public AsterCache.Prefetch.StreamStats Stream(GameSettings game)
+        {
+            started.Set();
+            release.Wait(TimeSpan.FromSeconds(30));
+            return new AsterCache.Prefetch.StreamStats(100, 2, 0, 0.01);
+        }
     }
 
     private sealed class IdleWatcher : IProcessWatcher

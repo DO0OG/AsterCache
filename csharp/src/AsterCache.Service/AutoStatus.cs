@@ -14,6 +14,7 @@ public static class AutoStage
     public const string Done = "done";
     public const string Failed = "failed";
     public const string Skipped = "skipped";
+    public const string Learning = "learning";
 }
 
 public sealed record AutoGameEntry(
@@ -34,15 +35,18 @@ public sealed class AutoStatus
     private readonly string? _path;
     private readonly ILog _log;
     private readonly Func<DateTimeOffset> _now;
+    private readonly Action<TimeSpan> _sleep;
     private readonly Dictionary<string, AutoGameEntry> _games = new(StringComparer.Ordinal);
     private readonly List<DateTimeOffset> _relocations = [];
     private readonly List<AutoEvent> _events = [];
 
-    public AutoStatus(string? path, ILog log, Func<DateTimeOffset>? now = null)
+    /// sleep 은 파일 교체를 다시 시도하기 전의 대기 (시험이 바꿈, 기본은 MoveRetryDelay 만큼 실제로 잠).
+    public AutoStatus(string? path, ILog log, Func<DateTimeOffset>? now = null, Action<TimeSpan>? sleep = null)
     {
         _path = path;
         _log = log;
         _now = now ?? (() => DateTimeOffset.UtcNow);
+        _sleep = sleep ?? Thread.Sleep;
         Load();
     }
 
@@ -138,6 +142,19 @@ public sealed class AutoStatus
         }
     }
 
+    /// 업데이트로 계획이 낡음: relocated_at 을 지우고 discovered 로 되돌려 다음 실행의 트레이스 → 계획 → 재배치를 다시 타게 합니다. 이미 센 일일 상한 기록은 그대로입니다.
+    public void ResetForReplan(string name, string detail)
+    {
+        lock (_lock)
+        {
+            if (_games.TryGetValue(name, out AutoGameEntry? old))
+            {
+                _games[name] = old with { Stage = AutoStage.Discovered, Detail = detail, At = _now(), RelocatedAt = null };
+                Save();
+            }
+        }
+    }
+
     /// 최근 window 안에 시작한 자동 적용 수.
     public int RelocationsWithin(TimeSpan window)
     {
@@ -221,7 +238,7 @@ public sealed class AutoStatus
     }
 
     // 트레이나 백신이 파일을 잠깐 열고 있으면 덮어쓰기가 공유 위반 (IOException) 이나 접근 거부 (UnauthorizedAccessException) 로 실패하므로 짧게 다시 시도합니다.
-    private static void MoveOver(string tmp, string path)
+    private void MoveOver(string tmp, string path)
     {
         for (int retry = 0; ; retry++)
         {
@@ -232,7 +249,7 @@ public sealed class AutoStatus
             }
             catch (Exception e) when ((e is IOException or UnauthorizedAccessException) && retry < MoveRetries)
             {
-                Thread.Sleep(MoveRetryDelay);
+                _sleep(MoveRetryDelay);
             }
         }
     }

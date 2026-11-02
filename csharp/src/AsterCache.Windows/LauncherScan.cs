@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using AsterCache.Core.Discovery;
 using AsterCache.Core.Json;
 using Microsoft.Win32;
@@ -17,6 +18,15 @@ public sealed record DiscoveredGame(string Name, string Launcher, string Install
 /// 프로그램 제거 목록의 항목 한 개 (값이 없으면 빈 문자열).
 public sealed record UninstallEntry(string DisplayName, string Publisher, string InstallLocation);
 
+/// 프로그램 제거 목록에서 나왔지만 런처형 폴더라 등록하지 않은 설치 폴더.
+public sealed record SkippedFolder(string Name, string InstallDir);
+
+/// Scan 의 결과: 발견한 게임 목록 (이 자체가 목록) 과 등록하지 않은 런처형 폴더 (서비스 로그에 한 줄씩 남기는 용도).
+public sealed class ScanResult(List<DiscoveredGame> games, IReadOnlyList<SkippedFolder> skipped) : ReadOnlyCollection<DiscoveredGame>(games)
+{
+    public IReadOnlyList<SkippedFolder> Skipped { get; } = skipped;
+}
+
 /// LauncherScan 이 바깥 세계에 접근하는 길 (시험에서는 가짜로 바꿈).
 public interface ILauncherEnv
 {
@@ -33,6 +43,9 @@ public interface ILauncherEnv
 
     /// 프로그램 제거 목록 (HKLM 64·32비트 보기, HKCU) 의 항목, 시스템 구성 요소는 뺌.
     IReadOnlyList<UninstallEntry> UninstallEntries();
+
+    /// 폴더 아래에 bytes 이상인 파일이 하나라도 있는가. 깊이·항목 수 상한은 FolderAtLeast 와 같음.
+    bool FileAtLeast(string dir, long bytes);
 
     /// 폴더 아래 파일 크기 합이 bytes 이상인가. 깊이·항목 수에 상한을 두고 넘으면 곧바로 멈춤 (상한까지 모자라면 false).
     bool FolderAtLeast(string dir, long bytes);
@@ -77,7 +90,10 @@ public static partial class LauncherScan
 
     // 설치 폴더의 가장 큰 exe 를 고를 때 빼는 이름 조각 (제거 프로그램, 재배포 패키지, 크래시 보고, 안티치트).
     private static readonly string[] ExcludedExeParts =
-        ["unins", "redist", "vcredist", "dxsetup", "directx", "crashhandler", "crashreport", "setup", "installer", "easyanticheat", "battleye", "ue4prereq"];
+        ["unins", "redist", "vcredist", "dxsetup", "directx", "crashhandler", "crashreport", "setup", "installer", "easyanticheat", "battleye", "ue4prereq", "prereq", "helper", "crashpad", "bugsplat", "service"];
+
+    // 게임 본체가 아닌 런처·클라이언트·안전 모드·업데이트·크래시·보고 프로그램의 이름 조각 (PickExe 가 더 빼는 것).
+    private static readonly string[] LauncherLikeParts = ["launcher", "client", "safe", "update", "crash", "report"];
 
     private sealed record Raw(string Display, string Launcher, string InstallDir, string? Exe, string? Trigger)
     {
@@ -86,7 +102,7 @@ public static partial class LauncherScan
         public string? AntiCheat { get; init; }
     }
 
-    public static IReadOnlyList<DiscoveredGame> Scan(ILauncherEnv? env = null)
+    public static ScanResult Scan(ILauncherEnv? env = null)
     {
         env ??= new SystemLauncherEnv();
         var raws = new List<Raw>();
@@ -128,12 +144,13 @@ public static partial class LauncherScan
         }
 
         raws.ForEach(Add);
-        foreach (Raw r in Collect(() => Uninstall(env, dirs, IsHdd))) // 제거 목록은 마지막: 앞의 결과와 겹치면 그쪽이 우선
+        var skipped = new List<SkippedFolder>();
+        foreach (Raw r in Collect(() => Uninstall(env, dirs, IsHdd, skipped))) // 제거 목록은 마지막: 앞의 결과와 겹치면 그쪽이 우선
         {
             Add(r);
         }
 
-        return result;
+        return new ScanResult(result, skipped);
     }
 
     // 한 원천의 읽기 실패가 다른 원천 열거를 막지 않게 함
@@ -161,12 +178,31 @@ public static partial class LauncherScan
         }
     }
 
-    /// 후보 중 가장 큰 exe (같으면 경로가 짧은 것, 그다음 사전순). 제외 이름만 남으면 null.
-    internal static string? PickExe(IEnumerable<(string Path, long Size)> files) =>
-        files.Where(f => f.Path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
-                && !ExcludedExeParts.Any(p => System.IO.Path.GetFileName(f.Path).Contains(p, StringComparison.OrdinalIgnoreCase)))
-            .OrderByDescending(f => f.Size).ThenBy(f => f.Path.Length).ThenBy(f => f.Path, StringComparer.OrdinalIgnoreCase)
+    /// 후보 중 가장 큰 exe (같으면 경로가 짧은 것, 그다음 사전순). 이름에 제외 조각 (런처형 이름 포함) 이 든 것은 빼고, 남는 것이 없으면 null.
+    /// lenient 면 런처형 이름 (launcher, client, safe, update, crash, report) 은 빼지 않습니다.
+    internal static string? PickExe(IEnumerable<(string Path, long Size)> files, bool lenient = false)
+    {
+        var exes = files.Where(f => f.Path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)).ToList();
+        // 언리얼 게임 본체 관례 (*-Shipping.exe) 는 제외 단어와 무관하게 우선 후보.
+        var pool = exes.Where(f => f.Path.EndsWith("-Shipping.exe", StringComparison.OrdinalIgnoreCase)).ToList();
+        if (pool.Count == 0)
+        {
+            pool = exes.Where(f => !ExcludedExeParts.Any(p => System.IO.Path.GetFileName(f.Path).Contains(p, StringComparison.OrdinalIgnoreCase))
+                && (lenient || !LauncherLikeParts.Any(p => System.IO.Path.GetFileName(f.Path).Contains(p, StringComparison.OrdinalIgnoreCase)))).ToList();
+            // 런처 셸 (Games.exe 등) 은 버전 폴더에 두고 게임 본체를 "games" 하위 폴더에 설치하는 구조: 그 안의 exe 를 먼저 봄.
+            var underGames = pool.Where(f => (System.IO.Path.GetDirectoryName(f.Path) ?? string.Empty).Split(System.IO.Path.DirectorySeparatorChar).Skip(1).Any(d => d.Equals("games", StringComparison.OrdinalIgnoreCase))).ToList();
+            if (underGames.Count > 0 && underGames.Count < pool.Count)
+            {
+                pool = underGames;
+            }
+        }
+
+        return pool.OrderByDescending(f => f.Size).ThenBy(f => f.Path.Length).ThenBy(f => f.Path, StringComparer.OrdinalIgnoreCase)
             .Select(f => f.Path).FirstOrDefault();
+    }
+
+    // 런처가 게임이라고 알려 준 폴더 (Steam·Epic·Riot·Xbox 등): 런처형 이름이 아닌 exe 를 먼저 찾고, 없으면 예전처럼 런처형 이름도 허용 (알려진 게임의 exe 를 잃지 않게).
+    internal static string? PickGameExe(IEnumerable<(string Path, long Size)> files) => PickExe(files) ?? PickExe(files, lenient: true);
 
     // 폴더 아래 maxDepth 단계까지의 항목 이름 (접근 못 하는 하위는 건너뜀).
     public static List<string> ListNames(string dir, int maxDepth)
@@ -211,7 +247,7 @@ public static partial class LauncherScan
             }
         }
 
-        return PickExe(env.ExeFiles(dir, ExeDepth));
+        return PickGameExe(env.ExeFiles(dir, ExeDepth).ToList());
     }
 
     private static IEnumerable<Raw> Steam(ILauncherEnv env)
@@ -308,6 +344,7 @@ public static partial class LauncherScan
     {
         private const long MaxTextBytes = 4 << 20;
         private const int SizeDepth = 6;
+        private static readonly EnumerationOptions SizeScan = new() { IgnoreInaccessible = true, RecurseSubdirectories = true, MaxRecursionDepth = SizeDepth, AttributesToSkip = FileAttributes.ReparsePoint };
         private const int SizeEntries = 20_000; // shortcut: 파일이 이만큼 넘게 잘게 쪼개진 폴더는 크기를 못 채우면 작다고 봄, 느려지는 게 문제되면 올림
 
         public string ProgramData => Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
@@ -338,12 +375,30 @@ public static partial class LauncherScan
             return list;
         }
 
+        public bool FileAtLeast(string dir, long bytes)
+        {
+            int seen = 0;
+            foreach (FileInfo f in new DirectoryInfo(dir).EnumerateFiles("*", SizeScan))
+            {
+                if (f.Length >= bytes)
+                {
+                    return true;
+                }
+
+                if (++seen >= SizeEntries)
+                {
+                    break;
+                }
+            }
+
+            return false;
+        }
+
         public bool FolderAtLeast(string dir, long bytes)
         {
-            var options = new EnumerationOptions { IgnoreInaccessible = true, RecurseSubdirectories = true, MaxRecursionDepth = SizeDepth, AttributesToSkip = FileAttributes.ReparsePoint };
             long sum = 0;
             int seen = 0;
-            foreach (FileInfo f in new DirectoryInfo(dir).EnumerateFiles("*", options))
+            foreach (FileInfo f in new DirectoryInfo(dir).EnumerateFiles("*", SizeScan))
             {
                 sum += f.Length;
                 if (sum >= bytes || ++seen >= SizeEntries)

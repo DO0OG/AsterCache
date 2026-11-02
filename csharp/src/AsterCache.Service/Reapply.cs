@@ -88,7 +88,7 @@ public sealed class ReapplyEnv
     public required Func<GameSettings, PlanFile, CancellationToken, ApplyReport> Apply { get; init; }
 
     /// 실제 구현. 재적용은 관리자이고 폴더 권한이 안전할 때만 (canApply). 저널은 게임마다 journalDir\이름.jsonl 하나를 계속 씁니다 (같은 저널 규칙: 이어하기·되돌리기).
-    public static ReapplyEnv Create(bool canApply, string journalDir) => new()
+    public static ReapplyEnv Create(bool canApply, string journalDir, ILog? log = null) => new()
     {
         CanApply = canApply,
         GameRunning = g => ProcessSnapshot.IsRunning(g.ExeNames),
@@ -97,15 +97,22 @@ public sealed class ReapplyEnv
         Extents = FileLayout.Extents,
         Stat = PlanFile.FingerprintOf,
         RealPath = RealPaths.Real,
-        Apply = (g, plan, ct) => Run(journalDir, g, plan, new ApplyOptions(Execute: true, SaveTo: g.Plan), ct), // 존을 다시 정하면 계획에 남김
+        Apply = (g, plan, ct) => Run(journalDir, g, plan, new ApplyOptions(Execute: true, SaveTo: g.Plan), ct, log), // 존을 다시 정하면 계획에 남김
     };
 
     /// 레이블 확인 → 볼륨 열기 → Applier. 재적용과 자동 모드의 첫 재배치가 같은 길을 씁니다 (DryRun 은 존 시작만 계획에 저장).
-    public static ApplyReport Run(string journalDir, GameSettings g, PlanFile plan, ApplyOptions options, CancellationToken ct)
+    /// lowIoLog 가 있으면 이동과 SHA 표본 읽기에 낮은 I/O 우선순위 힌트를 붙이고 (서비스의 백그라운드 경로), 힌트가 실패하면 거기에 한 번 남깁니다. null 이면 보통 우선순위.
+    public static ApplyReport Run(string journalDir, GameSettings g, PlanFile plan, ApplyOptions options, CancellationToken ct, ILog? lowIoLog = null)
     {
+        IoPriorityHint? hint = lowIoLog is null ? null : new IoPriorityHint(err => lowIoLog.Warn($"{g.Name}: low I/O priority hint not applied (Win32 error {err}), continuing at normal priority"));
         using NtfsVolume vol = OpenChecked(g);
+        if (hint is not null)
+        {
+            vol.UseLowIoPriority(hint);
+        }
+
         Directory.CreateDirectory(journalDir);
-        return Applier.Apply(plan, vol, g.AllowedRoots, JournalPath(journalDir, g), Hooks(), options, ct);
+        return Applier.Apply(plan, vol, g.AllowedRoots, JournalPath(journalDir, g), Hooks(hint), options, ct);
     }
 
     /// 저널대로 되돌립니다 (skipRows 줄 뒤부터만, 게임이 뜨면 조각 사이에서 멈춤). 저널이 없으면 (아무것도 옮기지 않았음) null.
@@ -118,7 +125,21 @@ public sealed class ReapplyEnv
         }
 
         using NtfsVolume vol = OpenChecked(g);
-        return Reverter.Revert(journal, vol, g.AllowedRoots, Hooks(), new ApplyOptions(Execute: true), ct, skipRows);
+        return Reverter.Revert(journal, vol, g.AllowedRoots, Hooks(null), new ApplyOptions(Execute: true), ct, skipRows);
+    }
+
+    /// 끝난 저널을 <이름>.jsonl.<UTC 시각> 으로 옮겨 둡니다 (Applier 가 존을 옮길 때 보관하는 것과 같은 이름). 저널이 없으면 null.
+    public static string? ArchiveJournal(string journalDir, GameSettings g)
+    {
+        string journal = JournalPath(journalDir, g);
+        if (!File.Exists(journal))
+        {
+            return null;
+        }
+
+        string dest = $"{journal}.{DateTime.UtcNow:yyyyMMdd'T'HHmmss'Z'}";
+        File.Move(journal, dest);
+        return dest;
     }
 
     /// 저널의 현재 줄 수 (없으면 0).
@@ -136,10 +157,10 @@ public sealed class ReapplyEnv
 
     private static string JournalPath(string journalDir, GameSettings g) => Path.Combine(journalDir, g.Name + ".jsonl");
 
-    private static ApplyHooks Hooks() => new()
+    private static ApplyHooks Hooks(IoPriorityHint? hint) => new()
     {
         Extents = FileLayout.Extents,
-        Digest = (p, size, extra) => SampleDigest.Compute(p, size, extra),
+        Digest = (p, size, extra) => SampleDigest.Compute(p, size, extra, hint: hint),
         SkipReason = p => FileGuards.SkipReason(p),
         RealPath = RealPaths.Real,
     };

@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using AsterCache.Core.Json;
 using AsterCache.Core.Settings;
 using Xunit;
@@ -27,14 +28,23 @@ public sealed class ConfigEditorAutoTests : IDisposable
         editor.Add(Game("a"));
         editor.SetAuto(AutoSettings.Default);
 
-        Assert.Equal(11, CountKeys(File.ReadAllText(editor.ConfigPath), "auto"));
-        Assert.Equal(AutoSettings.Default, editor.Load()!.Auto with { IgnoreExes = [] });
+        Assert.Equal(16, CountKeys(File.ReadAllText(editor.ConfigPath), "auto"));
+        Assert.Equal(Plain(AutoSettings.Default), Plain(editor.Load()!.Auto));
 
-        var custom = new AutoSettings(false, false, true, false, 3, 7, 90, 128, 5, ["a.exe", "b.exe"]);
+        var custom = new AutoSettings(false, false, true, false, 3, 7, 90, 128, 5, ["a.exe", "b.exe"])
+        {
+            IdleSeconds = 45,
+            Learn = new LearnSettings(false, 256, 1024) { Mode = LearnSettings.GapMode },
+            FullPrewarm = false,
+            FullPrewarmMaxMib = 2048,
+            EngineProfiles = false,
+        };
         editor.SetAuto(custom);
         AutoSettings read = editor.Load()!.Auto;
-        Assert.Equal(custom with { IgnoreExes = [] }, read with { IgnoreExes = [] });
+        Assert.Equal(Plain(custom), Plain(read));
+        Assert.Equal(45, read.IdleSeconds);
         Assert.Equal(["a.exe", "b.exe"], read.IgnoreExes);
+        Assert.Equal((false, 2048, false), (read.FullPrewarm, read.FullPrewarmMaxMib, read.EngineProfiles));
 
         editor.SetAuto(AutoSettings.Default with { RewarmMinutes = 0 });
         Assert.Equal(0, editor.Load()!.Auto.RewarmMinutes);
@@ -66,9 +76,28 @@ public sealed class ConfigEditorAutoTests : IDisposable
         Assert.Throws<SettingsException>(() => editor.Add(Game("c") with { AntiCheat = "robot" }));
     }
 
+    // 파싱 때만 정해지는 명시 여부 (idle_seconds·idle_minutes 키)는 비교에서 뺌.
+    private static AutoSettings Plain(AutoSettings a) => a with { IgnoreExes = [], IdleSecondsSet = false, IdleMinutesSet = false };
+
     // 최상위 객체 obj 의 키 개수.
     private static int CountKeys(string json, string obj) =>
         ((JObject)((JObject)JsonRead.Parse(json)!)[obj]!).Count;
+
+    [Fact]
+    public void IdleMinutesOnlyFileKeepsItsWindowAcrossWriteAuto()
+    {
+        var editor = new ConfigEditor(_dir);
+        editor.Add(Game("a"));
+        JsonObject root = JsonNode.Parse(File.ReadAllText(editor.ConfigPath))!.AsObject();
+        root["auto"] = new JsonObject { ["idle_minutes"] = 10 };
+        File.WriteAllText(editor.ConfigPath, root.ToJsonString());
+
+        editor.UpdateAuto(a => a with { Relocate = false });
+
+        AsterSettings s = editor.Load()!;
+        Assert.Equal((TimeSpan.FromMinutes(10), false), (s.Auto.IdleWindow, s.Auto.Relocate));
+        Assert.DoesNotContain("idle_seconds", File.ReadAllText(editor.ConfigPath), StringComparison.Ordinal);
+    }
 
     [Fact]
     public void RejectedAutoDoesNotChangeTheFile()
@@ -198,6 +227,79 @@ public sealed class ConfigEditorAutoTests : IDisposable
         Assert.Equal(before, File.ReadAllBytes(editor.ConfigPath));
     }
 
+    private GameInput GameAt(string name, string root, string? source = null) => Game(name, source) with { OriginRoot = root };
+
+    [Theory]
+    [InlineData("Games/a")] // 같은 폴더
+    [InlineData("GAMES/A/")] // 대소문자·끝 구분자 무시
+    [InlineData("Games/a/sub")] // 안쪽
+    [InlineData("Games/a/../a/sub")] // 정규화
+    [InlineData("Games")] // 바깥
+    public void AddAutoRejectsAnOverlappingOriginRootInsideTheLockAndKeepsTheFile(string relative)
+    {
+        var editor = new ConfigEditor(_dir);
+        editor.AddAuto(Game("a"), new Dictionary<string, DateTimeOffset>());
+        byte[] before = File.ReadAllBytes(editor.ConfigPath);
+
+        SettingsException e = Assert.Throws<SettingsException>(() => editor.AddAuto(GameAt("b", Path.Combine(_dir, relative.Replace('/', Path.DirectorySeparatorChar)), "auto"), new Dictionary<string, DateTimeOffset>()));
+
+        Assert.Contains("overlaps the registered game a", e.Message, StringComparison.Ordinal);
+        Assert.Equal(before, File.ReadAllBytes(editor.ConfigPath));
+    }
+
+    [Fact]
+    public void OverlapIsRejectedBeforeAnythingIsEvictedAndSiblingFoldersPass()
+    {
+        ConfigEditor editor = Full(0, 32);
+        byte[] before = File.ReadAllBytes(editor.ConfigPath);
+
+        Assert.Throws<SettingsException>(() => editor.AddAuto(GameAt("new", Path.Combine(_dir, "Games", "a5", "sub")), new Dictionary<string, DateTimeOffset>()));
+        Assert.Equal(before, File.ReadAllBytes(editor.ConfigPath)); // 가득 찬 상태에서도 아무것도 밀어내지 않음
+
+        Assert.Equal("a0", editor.AddAuto(Game("a50"), new Dictionary<string, DateTimeOffset>())); // 이웃 폴더 (a5 와 a50) 는 겹치지 않음
+    }
+
+    [Fact]
+    public void AddWithAutoSourceIsCheckedLikeAddAutoButManualAddKeepsItsOldBehavior()
+    {
+        var editor = new ConfigEditor(_dir);
+        editor.Add(Game("a"));
+
+        Assert.Throws<SettingsException>(() => editor.Add(GameAt("b", Path.Combine(_dir, "Games", "a", "sub"), "auto")));
+        editor.Add(GameAt("c", Path.Combine(_dir, "Games", "a", "sub"))); // 수동 등록은 기존처럼 막지 않음
+        editor.Add(GameAt("d", Path.Combine(_dir, "Games"), "manual"));
+
+        Assert.Equal(["a", "c", "d"], editor.Load()!.Games.Select(g => g.Name));
+    }
+
+    [Fact]
+    public void TwoOverlappingAutoRegistrationsAtOnceLetExactlyOneIn()
+    {
+        var a = new ConfigEditor(_dir);
+        var b = new ConfigEditor(_dir);
+        int accepted = 0;
+
+        Parallel.Invoke(
+            () => Interlocked.Add(ref accepted, Try(a, GameAt("x", Path.Combine(_dir, "Games", "x")))),
+            () => Interlocked.Add(ref accepted, Try(b, GameAt("y", Path.Combine(_dir, "Games", "x", "inner")))));
+
+        Assert.Equal(1, accepted);
+        Assert.Single(a.Load()!.Games);
+
+        static int Try(ConfigEditor editor, GameInput g)
+        {
+            try
+            {
+                editor.AddAuto(g, new Dictionary<string, DateTimeOffset>());
+                return 1;
+            }
+            catch (SettingsException)
+            {
+                return 0;
+            }
+        }
+    }
+
     [Fact]
     public void AddExeNameAppendsToAnExistingGame()
     {
@@ -231,15 +333,20 @@ public sealed class ConfigEditorAutoTests : IDisposable
     [Fact]
     public void HeldLockMakesTheEditWaitThenFailWithoutChangingTheConfig()
     {
-        var editor = new ConfigEditor(_dir, 300);
+        DateTime clock = new(2026, 11, 2, 12, 0, 0, DateTimeKind.Utc); // 가짜 시계: 대기는 시계를 앞으로 보낼 뿐 실제로 자지 않음
+        var waits = new List<int>();
+        var editor = new ConfigEditor(_dir, 300, ms =>
+        {
+            waits.Add(ms);
+            clock = clock.AddMilliseconds(ms);
+        }, () => clock);
         editor.Add(Game("a"));
         byte[] before = File.ReadAllBytes(editor.ConfigPath);
 
         using (new FileStream(editor.ConfigPath + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
         {
-            var watch = System.Diagnostics.Stopwatch.StartNew();
             Assert.Throws<IOException>(() => editor.Add(Game("b")));
-            Assert.InRange(watch.ElapsedMilliseconds, 250, 4000);
+            Assert.Equal([100, 100, 100], waits); // 300 ms 한도를 100 ms 간격으로 채우고 포기
         }
 
         Assert.Equal(before, File.ReadAllBytes(editor.ConfigPath));
@@ -248,19 +355,19 @@ public sealed class ConfigEditorAutoTests : IDisposable
     }
 
     [Fact]
-    public async Task LockReleasedWhileWaitingLetsTheEditThrough()
+    public void LockReleasedWhileWaitingLetsTheEditThrough()
     {
-        var editor = new ConfigEditor(_dir, 5000);
-        var held = new FileStream(editor.ConfigPath + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-        Task release = Task.Run(() =>
+        FileStream? held = null;
+        var editor = new ConfigEditor(_dir, 5000, _ =>
         {
-            Thread.Sleep(250);
-            held.Dispose();
+            held?.Dispose(); // 첫 대기 중에 잠금이 풀림
+            held = null;
         });
+        held = new FileStream(editor.ConfigPath + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
 
         editor.Add(Game("a"));
 
-        await release;
+        Assert.Null(held);
         Assert.Single(editor.Load()!.Games);
     }
 
@@ -273,6 +380,22 @@ public sealed class ConfigEditorAutoTests : IDisposable
         Parallel.For(0, 20, i => (i % 2 == 0 ? a : b).Add(Game("g" + i)));
 
         Assert.Equal(20, a.Load()!.Games.Count);
+    }
+
+    [Fact]
+    public void MinusOneAndMigratedSettingsRoundTripInTheNewFormat()
+    {
+        var editor = new ConfigEditor(_dir);
+        editor.SetAuto(AutoSettings.Default with { PrewarmRecent = -1 });
+        Assert.Equal(-1, editor.Load()!.Auto.PrewarmRecent);
+
+        File.WriteAllText(editor.ConfigPath, """{"games":[],"auto":{"prewarm_recent":1,"idle_minutes":3}}""");
+        AutoSettings old = editor.Load()!.Auto;
+        Assert.True(old.Migrated);
+        editor.SetAuto(old);
+        AutoSettings now = editor.Load()!.Auto;
+        Assert.False(now.Migrated);
+        Assert.Equal((0, TimeSpan.FromSeconds(30)), (now.PrewarmRecent, now.IdleWindow));
     }
 
     [Fact]

@@ -11,23 +11,33 @@ public sealed class AutoMode
     public static readonly TimeSpan DiscoveryEvery = TimeSpan.FromHours(6);
     public static readonly TimeSpan HeuristicEvery = TimeSpan.FromSeconds(2);
     public static readonly TimeSpan TraceEvery = TimeSpan.FromSeconds(1);
+    public static readonly TimeSpan SummaryEvery = TimeSpan.FromHours(1);
 
     private readonly AutoEnv _env;
     private readonly ILog _log;
     private readonly AutoRegistry _registry;
     private readonly AutoTracer _tracer;
     private readonly AutoRelocator _relocator;
+    private readonly Prewarmer? _prewarm;
     private volatile AsterSettings _settings;
+    private DateTimeOffset? _summaryNext; // 재적용 틱 스레드에서만 씀
 
-    public AutoMode(ConfigEditor editor, AutoEnv env, AutoStatus status, ILog log, AsterSettings settings)
+    public AutoMode(ConfigEditor editor, AutoEnv env, AutoStatus status, ILog log, AsterSettings settings, Prewarmer? prewarm = null)
     {
         _env = env;
+        _prewarm = prewarm;
         Status = status;
         _log = log;
         _settings = settings;
         _registry = new AutoRegistry(editor, env, status, log, () => _settings);
         _tracer = new AutoTracer(env, status, log, () => _settings);
-        _relocator = new AutoRelocator(env, status, log, () => _settings);
+        _relocator = new AutoRelocator(env, status, log, () => _settings, prewarm);
+        if (prewarm is not null)
+        {
+            prewarm.ColdWarmed += (g, label) => Guard("cold prewarm note", () => _relocator.NoteColdWarmed(g, label)); // 서비스 시작·트리거·틱 어디서 예열하든 같은 표시
+            prewarm.Progress += (g, done, total) => Guard("prewarm progress", () => _relocator.NoteProgress(g, done, total));
+            prewarm.StreamEnded += (g, complete) => Guard("prewarm end", () => _relocator.NoteStreamEnded(g, complete));
+        }
     }
 
     public AutoStatus Status { get; }
@@ -67,19 +77,48 @@ public sealed class AutoMode
         });
     }
 
-    /// 재적용 틱 (30 초) 마다. 호출한 스레드에서 이동까지 돌므로 재적용과 겹치지 않습니다.
-    public void RelocateTick(ReapplyGate gate, CancellationToken ct) => Guard("relocation", () => _relocator.Tick(gate, ct));
+    /// 재적용 틱 (30 초) 마다. 호출한 스레드에서 이동까지 돌므로 재적용과 겹치지 않습니다 (예열은 따로 돌아 틱을 늦추지 않음).
+    public void RelocateTick(ReapplyGate gate, CancellationToken ct)
+    {
+        Guard("relocation", () => _relocator.Tick(gate, ct));
+        Guard("summary", LogSummaryIfDue);
+    }
 
-    /// 서비스 시작 예열 뒤 추가로 예열할 게임: 최근에 한 순서로 prewarm_recent 개 (on_service_start 로 이미 도는 게임은 제외).
+    /// 게임 exe 가 떴을 때 (감시기 스레드에서 바로): 자동 모드의 예열 작업을 취소합니다.
+    public void CancelWarm() => _relocator.CancelWarm();
+
+    /// 예열 유지 같은 다른 예열 작업이 함께 쓰는 취소 신호.
+    public CancellationToken WarmToken => _relocator.WarmToken;
+
+    // 서비스 시작 뒤 첫 틱과 매 1 시간: 자동 모드의 게임 수를 한 줄로 (자동 모드가 꺼져 있으면 남기지 않음).
+    private void LogSummaryIfDue()
+    {
+        AsterSettings s = _settings;
+        DateTimeOffset now = _env.Now();
+        if (!s.Auto.Enabled || now < _summaryNext)
+        {
+            return;
+        }
+
+        _summaryNext = now + SummaryEvery;
+        IReadOnlyList<GameSettings> games = s.Games;
+        int Count(string stage) => games.Count(g => Status.Get(g.Name)?.Stage == stage);
+        int auto = games.Count(g => g.Source == "auto");
+        int prewarmed = _prewarm is null ? 0 : games.Count(g => _prewarm.LastWarmed(g.Name) is not null);
+        _log.Info($"auto summary: registered {games.Count} (auto {auto}, manual {games.Count - auto}), learning {Count(AutoStage.Learning)}, waiting_idle {Count(AutoStage.WaitingIdle)}, "
+            + $"relocating {Count(AutoStage.Relocating)}, done {Count(AutoStage.Done)}, prewarmed {prewarmed}, failed {Count(AutoStage.Failed)}, skipped {Count(AutoStage.Skipped)}");
+    }
+
+    /// 서비스 시작 예열 뒤 추가로 예열할 게임: 최근에 한 순서로 prewarm_recent 개, 0 이면 전부, -1 이면 없음 (on_service_start 로 이미 도는 게임은 제외). 실제로 올리는 양은 예열 묶음의 RAM 예산이 정합니다.
     public IReadOnlyList<GameSettings> StartupRecent()
     {
         AsterSettings s = _settings;
-        return s.Auto.Enabled && s.Auto.PrewarmRecent > 0
+        return s.Auto.Enabled
             ? Recent(s.Games.Where(g => !g.Prewarm.OnServiceStart), Status.LastPlayed(), s.Auto.PrewarmRecent)
             : [];
     }
 
-    /// 트리거 프로그램에 걸린 게임 중 예열할 것: 수동 게임은 전부, 자동 등록 게임은 최근 순 상위 prewarm_recent 개 (자동 모드가 꺼져 있으면 전부).
+    /// 트리거 프로그램에 걸린 게임 중 예열할 것: 수동 게임은 전부, 자동 등록 게임은 최근 순 상위 prewarm_recent 개 (0 이면 전부, -1 이면 자동 등록 게임은 없음, 자동 모드가 꺼져 있으면 전부).
     public IEnumerable<GameSettings> NarrowTriggered(IReadOnlyList<GameSettings> hit)
     {
         AsterSettings s = _settings;
@@ -88,9 +127,12 @@ public sealed class AutoMode
             : hit;
     }
 
-    /// last_played 가 있는 게임을 최근 순으로 n 개.
-    public static IReadOnlyList<GameSettings> Recent(IEnumerable<GameSettings> games, IReadOnlyDictionary<string, DateTimeOffset> lastPlayed, int n) =>
-        [.. games.Where(g => lastPlayed.ContainsKey(g.Name)).OrderByDescending(g => lastPlayed[g.Name]).ThenBy(g => g.Name, StringComparer.Ordinal).Take(n)];
+    /// last_played 가 있는 게임을 최근 순으로 n 개 (n 이 0 이면 전부, 음수면 없음).
+    public static IReadOnlyList<GameSettings> Recent(IEnumerable<GameSettings> games, IReadOnlyDictionary<string, DateTimeOffset> lastPlayed, int n)
+    {
+        IEnumerable<GameSettings> ordered = games.Where(g => lastPlayed.ContainsKey(g.Name)).OrderByDescending(g => lastPlayed[g.Name]).ThenBy(g => g.Name, StringComparer.Ordinal);
+        return [.. n < 0 ? [] : n > 0 ? ordered.Take(n) : ordered];
+    }
 
     /// 발견 (처음 1 분 뒤, 이후 6 시간마다), 휴리스틱 (2 초마다), 트레이스 감시 (1 초마다) 를 취소될 때까지 돌립니다.
     public Task RunAsync(CancellationToken ct) => Task.WhenAll(

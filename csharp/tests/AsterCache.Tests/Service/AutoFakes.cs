@@ -49,6 +49,9 @@ internal sealed class FakeWorld
 
     public List<DiscoveredGame> Found { get; } = [];
 
+    /// 발견이 런처형이라 등록하지 않았다고 알리는 폴더 (비어 있으면 평범한 목록).
+    public List<SkippedFolder> Skipped { get; } = [];
+
     public Dictionary<string, string> Labels { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public Dictionary<string, bool?> Hdd { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -78,15 +81,27 @@ internal sealed class FakeWorld
 
     public HashSet<string> Files { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+    /// 파일의 마지막 수정 시각: 원시 트레이스가 마지막 예열보다 새로운지 보는 시험이 채웁니다.
+    public Dictionary<string, DateTimeOffset> FileTimes { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     public List<(int Pid, long ReadBytes)> Procs { get; set; } = [];
 
     public bool Running { get; set; }
+
+    /// 이 exe 이름이 도는 중인 것으로 침 (Running 은 이름과 상관없이 모두).
+    public HashSet<string> RunningExes { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// 폴더가 있는가 (거짓이면 드라이브가 분리된 것과 같음).
+    public Func<string, bool> DirectoryExists { get; set; } = _ => true;
 
     public FakeTrace? Session { get; set; }
 
     public Exception? StartTraceThrows { get; set; }
 
     public int TraceStarts { get; private set; }
+
+    /// 마지막 StartTrace 에 넘어온 선행 읽기 알림 (학습이 꺼졌으면 null).
+    public LiveListener? Listener { get; private set; }
 
     public double? Disk { get; set; } = 0;
 
@@ -97,6 +112,19 @@ internal sealed class FakeWorld
     public Func<IReadOnlyList<IReadOnlyList<TraceEvent>>, string, long, PlanFile> MakePlan { get; set; } = (_, _, _) => throw new InvalidOperationException("MakePlan");
 
     public List<long> PlanZones { get; } = [];
+
+    /// 존 시작을 지정한 계획 (업데이트 뒤 재계획의 이전 존 시작 시도). 시험이 필요하면 바꿔 끼움.
+    public Func<IReadOnlyList<IReadOnlyList<TraceEvent>>, string, long, long, PlanFile> MakePlanAt { get; set; } = (_, _, _, _) => throw new InvalidOperationException("MakePlanAt");
+
+    public List<long> PlanStarts { get; } = [];
+
+    public Func<GameSettings, string?> ArchiveJournal { get; set; } = _ => null;
+
+    /// MoveAside 로 옮긴 (원본, 새 이름) 기록. 파일 집합 (Files) 도 따라 바뀝니다.
+    public List<(string From, string To)> Moved { get; } = [];
+
+    /// true 면 MoveAside 가 (파일이 잠긴 것처럼) IOException 으로 실패합니다.
+    public bool MoveFails { get; set; }
 
     public Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> Apply { get; set; } = (_, _, _, _) => throw new InvalidOperationException("Apply");
 
@@ -113,7 +141,7 @@ internal sealed class FakeWorld
     public AutoEnv Env() => new()
     {
         Now = () => Now,
-        Scan = () => Found,
+        Scan = () => Skipped.Count == 0 ? Found : new ScanResult([.. Found], [.. Skipped]),
         VolumeLabel = l => Labels.GetValueOrDefault(l, "GAMES"),
         IsHdd = l => Hdd.TryGetValue(l, out bool? v) ? v : true,
         Pids = () => Pids,
@@ -134,11 +162,14 @@ internal sealed class FakeWorld
         SystemDrive = SystemDrive,
         ServiceDir = ServiceDir,
         FileExists = p => Files.Contains(p) || File.Exists(p),
+        FileWriteTime = p => FileTimes.TryGetValue(p, out DateTimeOffset t) ? t : null,
         GameProcesses = _ => Procs,
-        AnyRunning = _ => Running,
-        StartTrace = _ =>
+        AnyRunning = exes => Running || exes.Any(RunningExes.Contains),
+        DirectoryExists = p => DirectoryExists(p),
+        StartTrace = (_, listener) =>
         {
             TraceStarts++;
+            Listener = listener;
             return StartTraceThrows is null ? Session ?? throw new InvalidOperationException("Session") : throw StartTraceThrows;
         },
         Canonicalize = e => e.ToList(),
@@ -148,12 +179,33 @@ internal sealed class FakeWorld
             PlanZones.Add(zoneMib);
             return MakePlan(sessions, origin, zoneMib);
         },
+        MakePlanAt = (sessions, origin, zoneMib, start) =>
+        {
+            PlanStarts.Add(start);
+            return MakePlanAt(sessions, origin, zoneMib, start);
+        },
         SavePlan = (plan, sessions, path) => PlanOutput.Save(plan, sessions, path),
         LoadPlan = PlanFile.Load,
         RealPath = Path.GetFullPath,
         Apply = (g, plan, options, ct) => Apply(g, plan, options, ct),
         Stat = p => Stat(p),
         JournalRows = g => JournalRows(g),
+        ArchiveJournal = g => ArchiveJournal(g),
+        MoveAside = (src, dst) =>
+        {
+            if (MoveFails)
+            {
+                throw new IOException("locked");
+            }
+
+            Moved.Add((src, dst));
+            Files.Remove(src);
+            Files.Add(dst);
+            if (File.Exists(src))
+            {
+                File.Move(src, dst, true);
+            }
+        },
         Revert = (g, skipRows, ct) => Revert(g, skipRows, ct),
         Extents = p => Extents(p),
         DiskBytesPerSecond = _ => Disk,

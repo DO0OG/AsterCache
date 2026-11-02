@@ -1,6 +1,8 @@
 using AsterCache.Core.Logging;
+using AsterCache.Core.Profiles;
 using AsterCache.Core.Settings;
 using AsterCache.Core.Trace;
+using AsterCache.Prefetch;
 using AsterCache.Tracer;
 
 namespace AsterCache.Service;
@@ -13,15 +15,17 @@ public sealed class AutoTracer
     private readonly AutoStatus _status;
     private readonly ILog _log;
     private readonly Func<AsterSettings> _settings;
+    private readonly LearnEnv _learn;
     private readonly object _lock = new();
     private Run? _run;
 
-    public AutoTracer(AutoEnv env, AutoStatus status, ILog log, Func<AsterSettings> settings)
+    public AutoTracer(AutoEnv env, AutoStatus status, ILog log, Func<AsterSettings> settings, LearnEnv? learn = null)
     {
         _env = env;
         _status = status;
         _log = log;
         _settings = settings;
+        _learn = learn ?? LearnEnv.Real;
     }
 
     public bool Active
@@ -37,9 +41,17 @@ public sealed class AutoTracer
 
     public static string RawTracePath(GameSettings g) => Path.Combine(Path.GetDirectoryName(g.Plan) ?? string.Empty, g.Name + ".trace.json");
 
+    /// 가져온 프로필·합성 트레이스 (plans\<이름>.boot.trace.json). 원시 트레이스가 없을 때만 계획·예열의 입력이 되고, 첫 실행 기록은 막지 않습니다.
+    public static string BootTracePath(GameSettings g) => Path.Combine(Path.GetDirectoryName(g.Plan) ?? string.Empty, g.Name + GameProfile.BootTraceSuffix);
+
+    /// 계획·예열이 읽을 트레이스: 원시가 있으면 원시, 없으면 boot, 둘 다 없으면 null.
+    public static string? PlanTracePath(GameSettings g, Func<string, bool> exists) =>
+        exists(RawTracePath(g)) ? RawTracePath(g) : exists(BootTracePath(g)) ? BootTracePath(g) : null;
+
     public void Start(GameSettings g)
     {
         string? refused;
+        ReadAhead? learn = null;
         lock (_lock)
         {
             if (_run is not null || _env.FileExists(RawTracePath(g)))
@@ -52,10 +64,14 @@ public sealed class AutoTracer
             {
                 try
                 {
-                    _run = new Run(g, _env.StartTrace(g.ExeNames), _env.Now());
+                    LearnSettings ls = _settings().Auto.Learn;
+                    learn = ls.Enabled ? AutoLearn.Create(g, ls, _env.PhysicalRamBytes(), _learn) : null; // 시스템 볼륨·SSD 는 위에서 이미 걸러짐
+                    _run = new Run(g, _env.StartTrace(g.ExeNames, learn is null ? null : AutoLearn.Listener(learn)), _env.Now()) { Learn = learn };
+                    learn?.Start();
                 }
                 catch (Exception e) when (e is not OperationCanceledException)
                 {
+                    learn?.Dispose();
                     _log.Error($"{g.Name}: auto trace could not start", e);
                     _status.Set(g.Name, g.Source, null, AutoStage.Failed, "trace session failed to start");
                     return;
@@ -73,8 +89,8 @@ public sealed class AutoTracer
             return;
         }
 
-        _status.Set(g.Name, g.Source, null, AutoStage.Tracing, null);
-        _log.Info($"{g.Name}: auto trace started");
+        _status.Set(g.Name, g.Source, null, learn is null ? AutoStage.Tracing : AutoStage.Learning, learn is null ? null : AutoLearn.Detail(learn.Stats));
+        _log.Info($"{g.Name}: auto trace started" + (learn is null ? string.Empty : " (learning: read ahead while the game runs)"));
     }
 
     /// 1 초마다 부릅니다. 끝내야 하면 세션을 멈추고 트레이스를 씁니다.
@@ -102,6 +118,12 @@ public sealed class AutoTracer
         }
 
         run.Primed = true;
+        if (run.Learn is { } learn && _env.Now() - run.LastStatusAt >= AutoLearn.StatusEvery)
+        {
+            run.LastStatusAt = _env.Now();
+            _status.Set(run.Game.Name, run.Game.Source, null, AutoStage.Learning, AutoLearn.Detail(learn.Stats));
+        }
+
         TimeSpan elapsed = _env.Now() - run.StartedAt;
         string? why = !_env.AnyRunning(run.Game.ExeNames) ? "game exited" // 읽기량을 못 연 (보호된) 게임 프로세스도 실행 중으로 셈
             : elapsed >= TimeSpan.FromSeconds(a.TraceCapSeconds) ? "time cap"
@@ -123,6 +145,7 @@ public sealed class AutoTracer
         }
 
         run?.Session.Dispose();
+        run?.Learn?.Dispose();
     }
 
     private void Finish(Run run, string why)
@@ -131,6 +154,7 @@ public sealed class AutoTracer
         try
         {
             IReadOnlyList<TraceRecord> records = run.Session.Stop();
+            EndLearn(run);
             (List<TraceEvent> events, _) = TraceBuilder.Build(records, g.ExeNames, g.OriginRoot);
             List<TraceEvent> canonical = _env.Canonicalize(events);
             if (canonical.Count == 0)
@@ -152,11 +176,24 @@ public sealed class AutoTracer
         finally
         {
             run.Session.Dispose();
+            run.Learn?.Dispose();
             lock (_lock)
             {
                 _run = null;
             }
         }
+    }
+
+    // 세션이 멈춘 뒤 선행 읽기를 끝내고 결과를 남깁니다 (Dispose 는 작업자 스레드를 기다림).
+    private void EndLearn(Run run)
+    {
+        if (run.Learn is not { } learn)
+        {
+            return;
+        }
+
+        learn.Dispose();
+        _log.Info($"{run.Game.Name}: learn ended, {AutoLearn.Summary(learn.Stats)}");
     }
 
     private sealed class Run(GameSettings game, IAutoTrace session, DateTimeOffset startedAt)
@@ -172,5 +209,10 @@ public sealed class AutoTracer
         public bool Primed { get; set; }
 
         public long Read { get; set; }
+
+        /// 첫 실행 선행 읽기 (auto.learn 이 켜졌을 때).
+        public ReadAhead? Learn { get; init; }
+
+        public DateTimeOffset LastStatusAt { get; set; } = startedAt;
     }
 }

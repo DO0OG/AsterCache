@@ -16,6 +16,8 @@ internal sealed class ProcessTree
         }
     }
 
+    public int ActiveCount => _active.Count;
+
     public bool IsTarget(int pid) => _active.Contains(pid);
 
     public bool Start(int pid, int parentPid, string image)

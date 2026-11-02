@@ -34,13 +34,28 @@ public sealed class TraceBuilderTests
 
         Assert.Equal(
             [
-                new TraceEvent(@"D:\Games\a.bin", 0, 100),
-                new TraceEvent(@"D:\Games\b.bin", 7, 200),
-                new TraceEvent(@"D:\Games\a.bin", 50, 300),
+                new TraceEvent(@"D:\Games\a.bin", 0, 100, TMs: 0),
+                new TraceEvent(@"D:\Games\b.bin", 7, 200, TMs: 0),
+                new TraceEvent(@"D:\Games\a.bin", 50, 300, TMs: 0),
             ],
             events);
         Assert.All(events, e => Assert.Equal(8.0, e.Cost));
         Assert.Equal(new BuildStats(4, 3, 1, false), stats);
+    }
+
+    [Fact]
+    public void TMsIsMillisecondsFromTheFirstRecord()
+    {
+        var records = new[]
+        {
+            TraceRecord.Start(T0, 100, 0, "game.exe"),
+            TraceRecord.Read(T0.AddMilliseconds(1500.9), 100, @"D:\Games\a.bin", 0, 10),
+            TraceRecord.Read(T0.AddSeconds(61), 100, @"D:\Games\a.bin", 10, 10),
+        };
+
+        (List<TraceEvent> events, _) = TraceBuilder.Build(records, Game, @"D:\Games");
+
+        Assert.Equal([1500L, 61_000L], events.Select(e => e.TMs!.Value));
     }
 
     [Fact]

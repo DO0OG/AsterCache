@@ -4,6 +4,7 @@ using System.Text;
 using AsterCache.Core.I18n;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
+using AsterCache.Core.Profiles;
 using AsterCache.Core.Settings;
 using AsterCache.Core.Trace;
 using AsterCache.Service;
@@ -54,7 +55,7 @@ public sealed record DriveRow(string Letter, string Label, string FileSystem, lo
 }
 
 /// 게임 탭 한 줄. Verdict: aster verify 의 판정 (contiguous, non-contiguous, resume-needed), 계획이 없으면 "-", 아직 확인 전이면 "?".
-public sealed record GameRow(string Name, string Exe, string Origin, bool HasPlan, bool HasTrace, string Verdict, string Prewarm, string Source, string Stage, string AntiCheat);
+public sealed record GameRow(string Name, string Exe, string Origin, bool HasPlan, bool HasTrace, string Verdict, string Prewarm, string Source, string Stage, string AntiCheat, string PrewarmFull);
 
 /// 게임 하나의 배치 상태 (aster status --plan 결과와 저널 파일 시각).
 public sealed record GameStatus(string Verdict, double? ZoneHitPercent, DateTime? LastRelayout);
@@ -143,6 +144,9 @@ public sealed class ManageViewModel(
     public static string DescribePrewarm(PrewarmSettings p) =>
         L.T("Prewarm_Line", L.T(p.OnServiceStart ? "Word_Yes" : "Word_No"), p.TriggerExes.Count == 0 ? L.T("Word_None") : string.Join(", ", p.TriggerExes), p.MinFreeRamMib, p.CooldownMin);
 
+    public static string DescribePrewarmShort(PrewarmSettings p) =>
+        L.T("Prewarm_Short", L.T(p.OnServiceStart ? "Word_Yes" : "Word_No"), p.TriggerExes.Count == 0 ? L.T("Word_None") : string.Join(", ", p.TriggerExes));
+
     /// 줄 끝 N 줄 (쓰는 중인 로그도 읽도록 공유 읽기).
     public static string Tail(string path, int lines = LogLines)
     {
@@ -184,8 +188,8 @@ public sealed class ManageViewModel(
         {
             bool plan = File.Exists(g.Plan);
             return new GameRow(g.Name, string.Join(", ", g.ExeNames), g.OriginRoot, plan, File.Exists(g.Trace), plan ? _status.TryGetValue(g.Name, out GameStatus? s) ? s.Verdict : "?" : "-",
-                DescribePrewarm(g.Prewarm), L.T(g.Source == "auto" ? "Source_Auto" : "Source_Manual"),
-                _auto?.Games.TryGetValue(g.Name, out AutoGame? a) == true ? AutoStatusFile.StageName(a.Stage, L.Current) : "-", g.AntiCheat ?? "-");
+                DescribePrewarmShort(g.Prewarm), L.T(g.Source == "auto" ? "Source_Auto" : "Source_Manual"),
+                _auto?.Games.TryGetValue(g.Name, out AutoGame? a) == true ? AutoStatusFile.StageText(a, L.Current) : "-", g.AntiCheat ?? "-", DescribePrewarm(g.Prewarm));
         }).ToList();
 
     /// 서비스 상태 + 감시기 + 마지막 예열 + 게임별 배치 상태.
@@ -216,14 +220,14 @@ public sealed class ManageViewModel(
     {
         tray.Refresh();
         _status.Clear();
-        CliResult all = cli.Run(AsterArgs.Status(PrewarmStatusPath, null, null));
+        CliResult all = cli.Run(AsterArgs.Status(PrewarmStatusPath, AutoStatusPath, null, null));
         _prewarm = Get(all.Json, "prewarm") as JObject;
         ReloadAuto();
         foreach (GameSettings g in Games.Where(g => File.Exists(g.Plan)))
         {
             string journal = JournalPath(g.Name);
             bool hasJournal = File.Exists(journal);
-            CliResult r = cli.Run(AsterArgs.Status(null, g.Plan, hasJournal ? journal : null));
+            CliResult r = cli.Run(AsterArgs.Status(PrewarmStatusPath, AutoStatusPath, g.Plan, hasJournal ? journal : null));
             object? plan = Get(r.Json, "plan");
             long? hot = Get(plan, "hot_clusters") as long?;
             long? inZone = Get(plan, "in_zone_clusters") as long?;
@@ -257,7 +261,8 @@ public sealed class ManageViewModel(
     private string PrewarmText(string name)
     {
         object? e = Get(Get(_prewarm, "games"), name);
-        return e is null ? L.T("Word_NoRecord") : Get(e, "result") as string is { } r && Get(e, "reason") is string why ? $"{r} ({why})" : Get(e, "result") as string ?? "?";
+        string text = e is null ? L.T("Word_NoRecord") : Get(e, "result") as string is { } r && Get(e, "reason") is string why ? $"{r} ({why})" : Get(e, "result") as string ?? "?";
+        return Get(e, "head_mib") is long head ? $"{text} · {L.T("Status_LoadHead", head)}" : text;
     }
 
     // ---- 게임 동작 ----
@@ -316,6 +321,11 @@ public sealed class ManageViewModel(
         }
 
         string raw = RawTracePath(g.Name);
+        if (!File.Exists(raw))
+        {
+            raw = Path.Combine(config.PlansDir, g.Name + GameProfile.BootTraceSuffix); // 가져온 프로필만 있으면 그것으로
+        }
+
         if (!File.Exists(raw))
         {
             return Report(false, L.T("Plan_NoTrace", g.Name));
@@ -463,6 +473,40 @@ public sealed class ManageViewModel(
         return Report(true, L.T("Measure_Done", g.Name, bytes / Mib, seconds, seconds > 0 ? bytes / (double)Mib / seconds : 0, Get(t, "load_ms"), Get(t, "schedule_ms"), Get(t, "stream_ms")));
     }
 
+    /// 프로필 내보내기: aster profile export (plans 폴더를 읽으므로 승격). 파일은 사용자가 고른 .json 또는 .zip.
+    public ActionResult ExportProfile(string name, string file)
+    {
+        if (Find(name) is not { } g)
+        {
+            return Report(false, L.T("Err_NotRegistered", name));
+        }
+
+        CliResult r = cli.Run(AsterArgs.ProfileExport(g.Name, file, DataDir), elevate: true);
+        return r.Ok
+            ? Report(true, L.T("Profile_Exported", g.Name, Get(r.Json, "files"), Get(r.Json, "raw_events"), Get(r.Json, "prefetch_events"), file))
+            : Failed(r, "Fail_ProfileExport", g.Name);
+    }
+
+    /// 프로필 가져오기: aster profile import (plans 폴더에 쓰므로 승격). 파일이 하나라도 다르면 아무것도 쓰지 않고 다른 파일을 알려 줍니다.
+    public ActionResult ImportProfile(string name, string file)
+    {
+        if (Find(name) is not { } g)
+        {
+            return Report(false, L.T("Err_NotRegistered", name));
+        }
+
+        CliResult r = cli.Run(AsterArgs.ProfileImport(g.Name, file, DataDir), elevate: true);
+        if (Get(r.Json, "error") as string == "profile_mismatch")
+        {
+            string first = Get(r.Json, "mismatches") is List<object?> { Count: > 0 } list ? Get(list[0], "path") as string ?? "?" : "?";
+            return Report(false, L.T("Profile_Mismatch", g.Name, Get(r.Json, "mismatch_count"), first));
+        }
+
+        return r.Ok
+            ? Report(true, L.T("Profile_Imported", g.Name, Get(r.Json, "files"), Get(r.Json, "raw_events"), Get(r.Json, "prefetch_events")))
+            : Failed(r, "Fail_ProfileImport", g.Name);
+    }
+
     // ---- 설정·서비스 ----
 
     public ActionResult InstallService()
@@ -590,10 +634,12 @@ public static class AsterArgs
     /// 트레이스 수집 상한 (초): 멈추는 길이 모두 막혀도 세션이 영원히 남지 않게 함.
     public const string MaxTraceSeconds = "3600";
 
-    public static string[] Status(string? prewarmStatus, string? plan, string? journal) =>
+    /// 예열·자동 상태 경로는 항상 넘깁니다 (없으면 aster 가 %ProgramData% 를 읽음).
+    public static string[] Status(string prewarmStatus, string autoStatus, string? plan, string? journal) =>
     [
         "status",
-        .. prewarmStatus is null ? [] : new[] { "--prewarm-status", prewarmStatus },
+        "--prewarm-status", prewarmStatus,
+        "--auto-status", autoStatus,
         .. plan is null ? [] : new[] { "--plan", plan },
         .. journal is null ? [] : new[] { "--journal", journal },
     ];
@@ -612,6 +658,10 @@ public static class AsterArgs
         ["revert", "--journal", journal, .. Roots(allowedRoots), "--require-volume-label", label, "--execute"];
 
     public static string[] Verify(string plan) => ["verify", "--plan", plan];
+
+    public static string[] ProfileExport(string game, string output, string dataDir) => ["profile", "export", "--game", game, "--out", output, "--data-dir", dataDir];
+
+    public static string[] ProfileImport(string game, string file, string dataDir) => ["profile", "import", "--file", file, "--game", game, "--data-dir", dataDir, "--json"];
 
     public static string[] Timing(string trace, string originRoot, long budgetMib) =>
         ["prefetch", "--trace", trace, "--origin-root", originRoot, "--budget-mib", budgetMib.ToString(CultureInfo.InvariantCulture), "--execute", "--timing"];

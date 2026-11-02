@@ -31,6 +31,8 @@ public sealed class LauncherScanTests
 
         public Dictionary<string, long> Sizes { get; } = new(StringComparer.OrdinalIgnoreCase); // 폴더 -> 전체 크기
 
+        public HashSet<string> BigFiles { get; } = new(StringComparer.OrdinalIgnoreCase); // 256 MiB 이상 파일이 든 폴더 (exe 가 아닌 데이터 파일도 셈)
+
         public HashSet<string> Denied { get; } = new(StringComparer.OrdinalIgnoreCase); // exe 를 열거하면 접근 거부가 나는 폴더
 
         public IReadOnlyList<string> FixedDrives() => Drives;
@@ -41,6 +43,9 @@ public sealed class LauncherScanTests
         public IReadOnlyList<UninstallEntry> UninstallEntries() => Uninstalls;
 
         public bool FolderAtLeast(string dir, long bytes) => Sizes.GetValueOrDefault(dir) >= bytes;
+
+        public bool FileAtLeast(string dir, long bytes) =>
+            BigFiles.Contains(dir) || Exes.Any(x => x.Key.StartsWith(dir + "\\", StringComparison.OrdinalIgnoreCase) && x.Value >= bytes);
 
         public string? RegString(bool machine, string subKey, string name) => Reg.GetValueOrDefault($"{(machine ? "M" : "U")}|{subKey}|{name}");
 
@@ -353,6 +358,7 @@ public sealed class LauncherScanTests
             string plain = dir.Trim('"').TrimEnd('\\');
             env.Dirs.Add(plain);
             env.Sizes[plain] = size;
+            env.BigFiles.Add(plain); // 이 도우미가 만드는 폴더는 모두 큰 데이터 파일이 든 진짜 게임 형태
             if (exeSize > 0)
             {
                 env.Exes[plain + @"\game.exe"] = exeSize;
@@ -412,6 +418,7 @@ public sealed class LauncherScanTests
             env.Sizes[d] = 2 * Gib;
         }
 
+        env.BigFiles.Add(@"D:\Outer");
         env.Exes[@"D:\Outer\o.exe"] = 4;
         env.Exes[@"D:\Outer\Inner\i.exe"] = 4;
 
@@ -435,6 +442,114 @@ public sealed class LauncherScanTests
 
         Assert.Equal(2, games.Count);
         Assert.Equal(["C:", "D:"], env.DiskQueries.Order());
+    }
+
+    private const long Mib = 1L << 20;
+
+    private static void Folder(FakeEnv env, string dir, long size, params (string Exe, long Size)[] exes)
+    {
+        env.Dirs.Add(dir);
+        env.Sizes[dir] = size;
+        foreach ((string exe, long exeSize) in exes)
+        {
+            env.Exes[dir + "\\" + exe] = exeSize;
+        }
+    }
+
+    private static FakeEnv LauncherShapes()
+    {
+        FakeEnv env = UninstallEnv();
+        // HoYoPlay 형태: 런처형 이름의 exe 뿐이고 내려받은 게임이 없음
+        Folder(env, @"D:\HoYoPlay", 2 * Gib, ("launcher.exe", 40 * Mib), ("HYSafeMode.exe", 90 * Mib), ("HoYoPlayUpdate.exe", 3 * Mib));
+        // GRYPHLINK 형태: 런처형 이름이 아닌 exe 가 있어도 큰 파일도 게임 하위 폴더도 없음
+        Folder(env, @"D:\GRYPHLINK", 2 * Gib, ("Games.exe", 30 * Mib), ("crashpad_handler.exe", 2 * Mib));
+        // 정상 게임: 256 MiB 이상 데이터 파일
+        Folder(env, @"D:\Apps\Real Game", 20 * Gib, ("RealGame.exe", 80 * Mib), ("CrashReporter.exe", 5 * Mib));
+        env.BigFiles.Add(@"D:\Apps\Real Game");
+        // 런처 아래 큰 하위 게임 폴더가 있으면 게임이 든 폴더로 봄 (런처형 이름 exe 는 고르지 않음)
+        Folder(env, @"D:\HoYoPlay Full", 30 * Gib, ("launcher.exe", 40 * Mib), ("HYSafeMode.exe", 90 * Mib));
+        Folder(env, @"D:\HoYoPlay Full\games", 25 * Gib, ("GenshinImpact.exe", 70 * Mib));
+        foreach ((string name, string dir) in new[] { ("HoYoPlay", @"D:\HoYoPlay"), ("GRYPHLINK", @"D:\GRYPHLINK"), ("Real Game", @"D:\Apps\Real Game"), ("HoYoPlay Full", @"D:\HoYoPlay Full") })
+        {
+            env.Uninstalls.Add(new UninstallEntry(name, "Studio", dir));
+        }
+
+        return env;
+    }
+
+    [Fact]
+    public void LauncherShapedUninstallFoldersAreNotRegisteredAndAreReported()
+    {
+        ScanResult result = LauncherScan.Scan(LauncherShapes());
+
+        Assert.Equal(["Real_Game", "HoYoPlay_Full"], result.Select(g => g.Name));
+        Assert.Equal([@"D:\HoYoPlay", @"D:\GRYPHLINK"], result.Skipped.Select(s => s.InstallDir));
+        Assert.Equal(["HoYoPlay", "GRYPHLINK"], result.Skipped.Select(s => s.Name));
+    }
+
+    [Fact]
+    public void UninstallPicksTheBiggestNonLauncherExe()
+    {
+        ScanResult result = LauncherScan.Scan(LauncherShapes());
+
+        Assert.Equal(@"D:\Apps\Real Game\RealGame.exe", result.Single(g => g.Name == "Real_Game").ExePath); // CrashReporter 는 제외
+        Assert.Equal(@"D:\HoYoPlay Full\games\GenshinImpact.exe", result.Single(g => g.Name == "HoYoPlay_Full").ExePath); // HYSafeMode 가 더 커도 제외
+    }
+
+    [Theory]
+    [InlineData("HYSafeMode.exe")]
+    [InlineData("Launcher.exe")]
+    [InlineData("GameClient.exe")]
+    [InlineData("AutoUpdate.exe")]
+    [InlineData("CrashSender.exe")]
+    [InlineData("BugReport.exe")]
+    [InlineData("unins000.exe")]
+    [InlineData("vc_setup.exe")]
+    [InlineData("EpicWebHelper.exe")]
+    [InlineData("crashpad_handler.exe")]
+    [InlineData("PrereqInstall.exe")]
+    [InlineData("ACE-Service64.exe")]
+    public void PickExeSkipsLauncherLikeAndInstallerNamesCaseInsensitively(string name)
+    {
+        (string, long)[] files = [(@"D:\G\" + name.ToUpperInvariant(), 900), (@"D:\G\game.exe", 5)];
+
+        Assert.Equal(@"D:\G\game.exe", LauncherScan.PickExe(files));
+        Assert.Null(LauncherScan.PickExe(files.Take(1)));
+    }
+
+    [Fact]
+    public void PickExePrefersShippingExeOverHelpersAndClients()
+    {
+        (string, long)[] files =
+        [
+            (@"D:\T\Engine\Binaries\Win64\EpicWebHelper.exe", 900), (@"D:\T\Client\Small.exe", 100), (@"D:\T\TFT\Binaries\Win64\TFTClient-Win64-Shipping.exe", 50),
+        ];
+
+        Assert.Equal(@"D:\T\TFT\Binaries\Win64\TFTClient-Win64-Shipping.exe", LauncherScan.PickExe(files));
+    }
+
+    [Fact]
+    public void PickExePrefersExesUnderGamesFolderOverLauncherShell()
+    {
+        (string, long)[] files = [(@"D:\L\1.4.0\Games.exe", 27000), (@"D:\L\games\X\Endfield.exe", 800), (@"D:\L\games\X\UnityCrashHandler64.exe", 900)];
+
+        Assert.Equal(@"D:\L\games\X\Endfield.exe", LauncherScan.PickExe(files));
+        Assert.Equal(@"D:\L\1.4.0\Games.exe", LauncherScan.PickExe(files.Take(1)));
+    }
+
+    [Fact]
+    public void KnownLauncherGamesKeepALauncherLikeExeWhenItIsTheOnlyChoice()
+    {
+        FakeEnv env = SteamEnv();
+        env.Exes.Remove(@"D:\Lib\steamapps\common\SlowGame\slow.exe");
+        env.Exes[@"D:\Lib\steamapps\common\SlowGame\SlowLauncher.exe"] = 10;
+        env.Exes[@"C:\Steam\steamapps\common\FastGame\FastClient.exe"] = 99; // 더 큰 런처형 이름이 있어도 일반 이름이 먼저
+        env.Exes[@"C:\Steam\steamapps\common\FastGame\fast.exe"] = 10;
+
+        IReadOnlyList<DiscoveredGame> games = LauncherScan.Scan(env);
+
+        Assert.Equal(@"D:\Lib\steamapps\common\SlowGame\SlowLauncher.exe", games.Single(g => g.Name == "Slow_Game").ExePath); // 알려진 게임의 exe 를 잃지 않음
+        Assert.Equal(@"C:\Steam\steamapps\common\FastGame\fast.exe", games.Single(g => g.Name == "Fast_Game").ExePath);
     }
 
     [Fact]

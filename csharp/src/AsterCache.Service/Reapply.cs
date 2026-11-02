@@ -31,13 +31,12 @@ public enum ReapplyVerdict
 }
 
 /// 재적용 판단 입력. GameRunning·DiskBusy 는 비싸므로 필요할 때만 부르는 지연 값입니다.
-public sealed record ReapplyInputs(bool PlanApplied, bool FingerprintsChanged, double? ZoneHitRatio, Func<bool> GameRunning, Func<bool> DiskBusy, bool CanApply);
+/// Contiguous 는 LayoutVerifier 와 같은 판정 (null = 알 수 없음, 건강으로 봄). 존 안 비율이 아니라 이 판정이 기준인 이유: 계획이 이미 연속인 구간을 제자리에 보존하면
+/// 존 안 비율이 낮아도 배치는 연속입니다 (실제 게임 계획에서 10.5% 인데 verify 는 contiguous 였음).
+public sealed record ReapplyInputs(bool PlanApplied, bool FingerprintsChanged, bool? Contiguous, Func<bool> GameRunning, Func<bool> DiskBusy, bool CanApply);
 
 public static class ReapplyPolicy
 {
-    /// 핫 데이터 중 존 안에 있는 비율이 이보다 낮아야 재적용합니다.
-    public const double MinZoneHitRatio = 0.9;
-
     public static ReapplyVerdict Decide(ReapplyInputs i)
     {
         if (!i.PlanApplied)
@@ -50,7 +49,7 @@ public static class ReapplyPolicy
             return ReapplyVerdict.PlanChanged;
         }
 
-        if (i.ZoneHitRatio is null or >= MinZoneHitRatio)
+        if (i.Contiguous is null or true)
         {
             return ReapplyVerdict.Healthy;
         }
@@ -158,7 +157,7 @@ public sealed class ReapplyGate
     }
 }
 
-/// 게임 하나의 주기 검사: 지문 비교 → verify_layout → 존 적중률 → (게임 미실행·디스크 유휴·권한 OK 이면) Applier 재적용.
+/// 게임 하나의 주기 검사: 지문 비교 → verify_layout (연속 여부, 존 적중률은 참고 로그) → (게임 미실행·디스크 유휴·권한 OK 이면) Applier 재적용.
 public sealed class ReapplyChecker
 {
     private readonly ReapplyEnv _env;
@@ -189,14 +188,16 @@ public sealed class ReapplyChecker
             CheckPaths(plan, game);
             bool applied = plan.Zone.StartLcn is not null;
             bool changed = applied && plan.Fingerprints.Any(Changed);
-            double? ratio = applied && !changed ? HitRatio(plan) : null;
-            ReapplyVerdict v = ReapplyPolicy.Decide(new ReapplyInputs(applied, changed, ratio, () => _env.GameRunning(game), () => _env.DiskBusy(game), _env.CanApply));
-            _log.Info($"{game.Name}: layout check {v}" + (ratio is { } r ? $" (zone hit {r * 100:F1}%)" : string.Empty));
-            if (ratio < ReapplyPolicy.MinZoneHitRatio && _cancelled.Contains(game.Name))
+            LayoutReport? layout = applied && !changed ? LayoutVerifier.Verify(plan, _env.Extents) : null;
+            // 파일 배치를 못 읽은 항목이 있으면 (희소 파일 등) 판단할 수 없으므로 건강으로 봅니다: 같은 이유로 매 주기 재적용하며 0 바이트를 옮기는 일을 피함.
+            bool? contiguous = layout is null || layout.HotClusters == 0 || layout.MissingFiles > 0 ? null : layout.Contiguous;
+            ReapplyVerdict v = ReapplyPolicy.Decide(new ReapplyInputs(applied, changed, contiguous, () => _env.GameRunning(game), () => _env.DiskBusy(game), _env.CanApply));
+            _log.Info($"{game.Name}: layout check {v}" + (layout is null ? string.Empty : $" ({LayoutState(layout)}{ZoneHit(layout)})"));
+            if (contiguous == false && _cancelled.Contains(game.Name))
             {
                 _log.Info($"{game.Name}: partially applied (an earlier reapply was cancelled by a game start); resuming");
             }
-            else if (ratio < ReapplyPolicy.MinZoneHitRatio)
+            else if (contiguous == false)
             {
                 // 설계 2.3-6: 원본이 그대로인데 배치가 풀렸으면 정기 드라이브 최적화가 되돌렸을 수 있음. 자동으로 해제하지 않고 알리기만 함.
                 _log.Warn($"{game.Name}: layout degraded while source files are unchanged; scheduled drive optimization may be undoing it (not changed automatically)");
@@ -254,9 +255,10 @@ public sealed class ReapplyChecker
         }
     }
 
-    private double? HitRatio(PlanFile plan)
-    {
-        LayoutReport r = LayoutVerifier.Verify(plan, _env.Extents);
-        return r.HotClusters == 0 || r.InZoneClusters is not { } z ? null : (double)z / r.HotClusters;
-    }
+    private static string LayoutState(LayoutReport r) =>
+        r.MissingFiles > 0 ? "layout unreadable for some files" : r.Contiguous ? "contiguous" : r.ResumeNeeded ? "resume-needed" : "non-contiguous";
+
+    // 참고용: 핫 데이터 중 존 안 클러스터 비율 (보존 구간이 있는 계획에서는 낮아도 정상).
+    private static string ZoneHit(LayoutReport r) =>
+        r.HotClusters > 0 && r.InZoneClusters is { } z ? $", zone hit {100.0 * z / r.HotClusters:F1}%" : string.Empty;
 }

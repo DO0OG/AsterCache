@@ -9,40 +9,38 @@ using Xunit;
 
 namespace AsterCache.Tests.Service;
 
-/// 재적용 판단 표: 적중률, 게임 실행, 디스크 바쁨, 지문 변경, 권한의 조합.
+/// 재적용 판단 표: 배치 연속 여부, 게임 실행, 디스크 바쁨, 지문 변경, 권한의 조합.
 public sealed class ReapplyTests
 {
-    private const double Hit = 1.0;
-    private const double Miss = 0.5;
+    private const bool Hit = true;
+    private const bool Miss = false;
 
-    private static ReapplyVerdict Decide(bool applied, bool changed, double? ratio, bool game, bool disk, bool can) =>
-        ReapplyPolicy.Decide(new ReapplyInputs(applied, changed, ratio, () => game, () => disk, can));
+    private static ReapplyVerdict Decide(bool applied, bool changed, bool? contiguous, bool game, bool disk, bool can) =>
+        ReapplyPolicy.Decide(new ReapplyInputs(applied, changed, contiguous, () => game, () => disk, can));
 
-    public static TheoryData<bool, bool, double?, bool, bool, bool, ReapplyVerdict> Table => new()
+    public static TheoryData<bool, bool, bool?, bool, bool, bool, ReapplyVerdict> Table => new()
     {
-        // applied, changed, ratio, game, disk, canApply, expected
+        // applied, changed, contiguous, game, disk, canApply, expected
         { false, false, Miss, false, false, true, ReapplyVerdict.NotApplied },
         { false, true, Miss, false, false, true, ReapplyVerdict.NotApplied },
         { true, true, Miss, false, false, true, ReapplyVerdict.PlanChanged },
         { true, true, Hit, false, false, true, ReapplyVerdict.PlanChanged },
         { true, false, Hit, true, true, false, ReapplyVerdict.Healthy },
-        { true, false, 0.9, true, true, false, ReapplyVerdict.Healthy },
         { true, false, null, true, true, false, ReapplyVerdict.Healthy },
-        { true, false, 0.8999, false, false, true, ReapplyVerdict.Reapply },
         { true, false, Miss, true, false, true, ReapplyVerdict.GameRunning },
         { true, false, Miss, true, true, true, ReapplyVerdict.GameRunning },
         { true, false, Miss, true, false, false, ReapplyVerdict.GameRunning },
         { true, false, Miss, false, true, true, ReapplyVerdict.DiskBusy },
         { true, false, Miss, false, true, false, ReapplyVerdict.DiskBusy },
         { true, false, Miss, false, false, false, ReapplyVerdict.ApplyDisabled },
-        { true, false, 0.0, false, false, true, ReapplyVerdict.Reapply },
+        { true, false, Miss, false, false, true, ReapplyVerdict.Reapply },
     };
 
     [Theory]
     [MemberData(nameof(Table))]
-    public void DecisionTable(bool applied, bool changed, double? ratio, bool game, bool disk, bool can, ReapplyVerdict expected)
+    public void DecisionTable(bool applied, bool changed, bool? contiguous, bool game, bool disk, bool can, ReapplyVerdict expected)
     {
-        Assert.Equal(expected, Decide(applied, changed, ratio, game, disk, can));
+        Assert.Equal(expected, Decide(applied, changed, contiguous, game, disk, can));
     }
 
     [Fact]
@@ -50,9 +48,9 @@ public sealed class ReapplyTests
     {
         static bool Boom() => throw new InvalidOperationException("probed");
 
-        Assert.Equal(ReapplyVerdict.Healthy, ReapplyPolicy.Decide(new ReapplyInputs(true, false, 0.95, Boom, Boom, true)));
-        Assert.Equal(ReapplyVerdict.PlanChanged, ReapplyPolicy.Decide(new ReapplyInputs(true, true, 0.1, Boom, Boom, true)));
-        Assert.Equal(ReapplyVerdict.GameRunning, ReapplyPolicy.Decide(new ReapplyInputs(true, false, 0.1, () => true, Boom, true)));
+        Assert.Equal(ReapplyVerdict.Healthy, ReapplyPolicy.Decide(new ReapplyInputs(true, false, true, Boom, Boom, true)));
+        Assert.Equal(ReapplyVerdict.PlanChanged, ReapplyPolicy.Decide(new ReapplyInputs(true, true, false, Boom, Boom, true)));
+        Assert.Equal(ReapplyVerdict.GameRunning, ReapplyPolicy.Decide(new ReapplyInputs(true, false, false, () => true, Boom, true)));
     }
 
     // ---- 실제 계획(e3 픽스처: 1048 구간, 존 시작 있음)으로 검사기 전체를 돌립니다 ----
@@ -82,6 +80,9 @@ public sealed class ReapplyTests
 
         public bool Moved { get; set; } = true;
 
+        /// 계획이 약속한 순서대로 이어 붙은 연속 배치지만 존 밖에 있음 (이미 연속인 구간을 제자리에 보존한 계획): 존 적중률은 0% 인데 배치는 건강합니다.
+        public bool PreservedInPlace { get; set; }
+
         public bool SourceChanged { get; set; }
 
         public bool SourceMissing { get; set; }
@@ -108,6 +109,24 @@ public sealed class ReapplyTests
 
         private ReapplyChecker? _checker;
 
+        // 존 밖 (LCN 1,000,000 부터) 에 order 순서대로 이어 붙인 extent: LayoutVerifier 가 연속 (실행 구간 1 = 약속한 1) 으로 봅니다.
+        private List<Extent> PreservedExtents(string path)
+        {
+            long cursor = 1_000_000;
+            var mine = new List<Extent>();
+            foreach (PlanRange o in Plan.Order)
+            {
+                if (o.Path == path)
+                {
+                    mine.Add(new Extent(o.Vcn, cursor, o.Clusters));
+                }
+
+                cursor += o.Clusters;
+            }
+
+            return mine.OrderBy(e => e.Vcn).ToList();
+        }
+
         public ReapplyVerdict Check(GameSettings game, CancellationToken ct = default)
         {
             ILookup<string, PlanTask> byPath = Plan.Tasks.ToLookup(t => t.Path, StringComparer.Ordinal);
@@ -121,6 +140,11 @@ public sealed class ReapplyTests
                 Extents = p =>
                 {
                     ExtentCalls++;
+                    if (PreservedInPlace)
+                    {
+                        return PreservedExtents(p);
+                    }
+
                     return Moved
                         ? byPath[p].OrderBy(t => t.Vcn).Select(t => new Extent(t.Vcn, t.TargetLcn, t.Clusters)).ToList()
                         : [new Extent(0, 1000, 1_000_000)];
@@ -145,7 +169,22 @@ public sealed class ReapplyTests
 
         Assert.Equal(ReapplyVerdict.Healthy, rig.Check(Bench));
         Assert.Equal(0, rig.ApplyCalls);
-        Assert.Contains(rig.Log.Lines, l => l.Contains("zone hit 100.0%", StringComparison.Ordinal));
+        Assert.Contains(rig.Log.Lines, l => l.Contains("contiguous, zone hit 100.0%", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ContiguousLayoutOutsideTheZoneIsHealthyAndNeverReappliedEvenRepeatedly()
+    {
+        var rig = new Rig { PreservedInPlace = true };
+
+        for (int cycle = 0; cycle < 3; cycle++)
+        {
+            Assert.Equal(ReapplyVerdict.Healthy, rig.Check(Bench));
+        }
+
+        Assert.Equal(0, rig.ApplyCalls); // 매 주기 "reapplied, moved 0 bytes" 가 반복되지 않음
+        Assert.Contains(rig.Log.Lines, l => l.Contains("contiguous, zone hit 0.0%", StringComparison.Ordinal)); // 적중률은 참고 로그일 뿐
+        Assert.DoesNotContain(rig.Log.Lines, l => l.StartsWith("Warn", StringComparison.Ordinal));
     }
 
     [Fact]

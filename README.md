@@ -76,7 +76,10 @@ AsterCache는 HDD에 설치된 게임이 로딩할 때 읽는 파일 블록을 �
 
 ## 스크린샷
 
-관리 창 스크린샷은 준비 중입니다.
+관리 창(게임 탭)과 상태 탭입니다. `AsterCache.Tray.exe --smoke --screenshot <png>` 로 만든 예시 화면이라 드라이브 정보는 샘플 값입니다.
+
+<p align="center"><img src="docs/images/main-window.png" width="800" alt="관리 창 게임 탭"></p>
+<p align="center"><img src="docs/images/status-tab.png" width="800" alt="관리 창 상태 탭"></p>
 
 ## 시스템 요구 사항
 

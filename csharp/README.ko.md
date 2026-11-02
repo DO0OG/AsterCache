@@ -26,6 +26,8 @@ dotnet publish csharp\src\AsterCache.Service\AsterCache.Service.csproj -c Releas
 
 CLI 명령(`aster plan`, `probe`, `apply`, `verify`, `revert`, `trace`, `prefetch`, `status`, `launch`, `stream-bench`)과 옵션은 `aster <명령> --help` 로 확인합니다. 재배치와 선읽기 명령은 Python `relayout/cli.py`, `prefetch/cli.py` 와 같은 이름을 씁니다.
 
+`aster discover [--json]` 은 지원 런처 라이브러리에서 찾은 게임 목록을 읽기 전용으로 보여 주며, 안티치트 표시를 함께 냅니다. `aster status --auto-status` 는 자동 모드 상태(`auto_status.json`)를 보여 줍니다.
+
 명령행 언어는 전역 옵션 `--lang ko|en` 또는 환경변수 `ASTER_LANG` 으로 정합니다 (우선순위: `--lang` > `ASTER_LANG` > `config.json` 의 `"language"` > OS 언어). JSON 출력은 언어와 무관합니다.
 
 서비스는 `AsterCache.Service.exe [--console] [--data-dir <폴더>]` 로 실행합니다. 기본 데이터 폴더는 `%ProgramData%\AsterCache` 이며 `config.json`, `plans\`, `journals\`, `logs\` 를 씁니다.
@@ -50,9 +52,9 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 | 왼쪽 드라이브 목록 | 고정 볼륨마다 문자·레이블·파일시스템·전체/여유 용량·디스크 모델·HDD/SSD(`IOCTL_STORAGE_QUERY_PROPERTY` 의 `IncursSeekPenalty`, 실패하면 "알 수 없음")·등록된 게임 수. 선택하면 오른쪽에 그 드라이브의 게임만 보입니다 ("전체 드라이브" 가 맨 위). |
 | 상태 탭 | 서비스 설치·실행 여부, 감시기 종류, 마지막 예열(시각·MiB·초), 게임별 배치 판정(`aster status --plan` 의 `verdict`), 존 적중률(`in_zone_clusters / hot_clusters`), 마지막 재배치 시각(저널 파일 시각), 게임별 예열 결과. 새로 고침 버튼. |
 | 게임 탭 | 목록: 이름·exe·원점 루트·계획/트레이스 유무·배치 verdict·예열 설정. 버튼은 아래 표. |
-| 설정 탭 | 서비스 설치·제거·시작·정지, 감시기 poll/etw(서비스를 다시 시작해야 적용), 예열 기본값 표시, 데이터 폴더·로그 폴더 열기, 트레이·서비스 버전, **언어**(자동 / 한국어 / English). |
+| 설정 탭 | 서비스 설치·제거·시작·정지, 감시기 poll/etw, 예열 기본값 표시, **자동 모드** 묶음(켬·발견·트레이스·재배치·예열 개수·존 상한·예열 유지 주기·제외 exe), 데이터 폴더·로그 폴더 열기, 트레이·서비스 버전, **언어**(자동 / 한국어 / English). |
 | 로그 탭 | `service.log` 와 `tray.log` 의 끝 200줄, 새로 고침. |
-| 위쪽 띠 | 관리자 권한이 없으면 "관리자 권한 없음: 트레이스·재배치·서비스 제어는 관리자 재실행 필요" 와 [관리자로 다시 실행] 버튼. |
+| 위쪽 띠 | 관리자 권한이 없으면 "관리자 권한 없음: 설정 저장·트레이스·재배치·서비스 제어는 관리자 재실행 필요" 와 [관리자로 다시 실행] 버튼. |
 
 | 게임 탭 버튼 | 동작 |
 |---|---|
@@ -70,7 +72,8 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 - 서비스 설치: 설치 프로그램과 같은 순서 (폴더 생성, 소유자·권한 설정, `sc create` LocalSystem 자동 시작, 시작) 를 한 번의 UAC 로 실행합니다. 서비스는 SYSTEM 으로 실행 파일을 돌리므로, 실행 파일 폴더를 일반 사용자가 바꿀 수 있으면 (개발 폴더 등) 설치를 거부하고 설치 프로그램을 쓰라고 안내합니다. `config.json` 이 없으면 먼저 게임을 등록해야 합니다.
 - 재배치·되돌리기는 게임이 실행 중이면 거부하고, 한 번에 쓰는 양이 2 GiB (`--write-cap-mib`) 로 제한되어 큰 이동은 "다시 실행하면 이어서 합니다" 안내와 함께 여러 번 실행해야 할 수 있습니다. 트레이스 수집은 최대 3600 초이고, 앱 종료·관리자 재실행 때 진행 중이면 저장을 최대 10 초 기다립니다.
 - 문서용 그림: `AsterCache.Tray.exe --smoke --screenshot <png> [--tab <0..3>] --data-dir <폴더>` 는 메인 창을 1100x720 으로 저장하고 끝납니다 (`docs\images\main-window.png`, 드라이브 목록은 예시 값). `--lang en` 또는 환경변수 `ASTER_LANG=en` 을 함께 주면 영어 UI 로 그립니다 (`docs\images\main-window.en.png` 가 이렇게 만든 것).
-- 게임을 등록·제거하거나 감시기를 바꾼 뒤에는 서비스를 다시 시작해야 반영됩니다 (서비스는 시작할 때만 설정을 읽습니다).
+- 서비스는 `config.json` 전체를 5초마다 다시 읽으므로 게임 등록·제거와 감시기 변경은 다시 시작하지 않아도 반영됩니다. 새 설정이 검증이나 폴더 권한 검사에 실패하면 옛 설정을 유지하고 그 이유를 로그에 남깁니다.
+- 예열 고정(`prewarm.pin`)은 설정 탭에 없고 게임별로 `config.json` 에서 정합니다 (기본 꺼짐, RAM 16 GiB 이상에서만 동작, 트리거 프로그램으로 뜬 예열은 고정하지 않음). 효과는 아직 측정하지 않았습니다.
 - 아직 안 한 것: 예열 기본값 편집 (표시만), 창 화면 시험 (뷰모델·명령 조립 시험만 있고 `Avalonia.Headless` 는 쓰지 않음), 관리자 승격 경로의 실제 UAC 실행 시험.
 
 ## 관리자 스크립트 (사용자가 직접 실행)
@@ -97,8 +100,9 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 
 - 재적용 중 등록된 게임이 시작되면 (ETW/폴링 시작 알림) 취소 토큰이 `Applier` 의 조각 루프까지 전해집니다. 이동 중이던 한 조각(`MOVE_FILE` 한 번)만 끝내고 멈추며 `stopped = "cancelled"` 와 저널의 재개 지점이 남습니다. 게임이 끝난 뒤 5분 간격 검사에서 같은 계획·저널로 이어갑니다 (`aster verify` 는 이 상태를 오류가 아니라 `verdict = "resume-needed"` 로 보고합니다).
 - 재적용은 `aster verify` 와 같은 판정으로 배치가 연속이 아닐 때(`non-contiguous`, 취소돼 부분 적용된 `resume-needed` 포함)만 합니다. 존 안 비율(`zone hit`)은 참고 로그일 뿐입니다: 계획이 이미 연속인 구간을 제자리에 보존하면 비율이 낮아도(실제 게임 계획에서 10.5%) 배치는 연속이라 재적용하지 않습니다. 파일 배치를 읽지 못한 항목이 있으면 판단하지 않고 건강으로 봅니다.
-- 등록된 게임이 0개인 `config.json` 은 정상입니다. 서비스는 감시·재적용 없이 대기만 하고, 트레이는 "등록된 게임 없음" 으로 표시합니다. 서비스는 시작할 때만 설정을 읽으므로 게임을 추가·제거한 뒤에는 서비스를 다시 시작해야 합니다.
+- 등록된 게임이 0개인 `config.json` 은 정상입니다. 서비스는 감시·재적용 없이 대기만 하고, 트레이는 "등록된 게임 없음" 으로 표시합니다. 게임을 추가·제거하면 다시 시작하지 않아도 5초 안에 반영됩니다.
 - 계획·추적 파일이 아직 없는 게임은 검사·스트림을 건너뛰고 정보 줄만 남깁니다 (오류 아님). 게임 프로세스 감지는 로그에 `<이름>: <exe> started (pid N)` 로 매번 남고, 어떤 감시기를 쓰는지는 `process watcher: EtwProcessWatcher` 또는 `PollingProcessWatcher` 로 남습니다.
+- 자동 모드([자동 모드](../README.ko.md#자동-모드))는 서비스 안에서 돕니다. 서비스는 `config.json` 전체를 5초마다 다시 읽으므로 바꾼 값이 다시 시작하지 않아도 적용됩니다. 상태는 `%ProgramData%\AsterCache\auto_status.json` 에 쓰며, 이 파일은 서비스만 씁니다.
 
 ## 두 동작 모드: 동시 선읽기 / 사전 예열
 
@@ -138,19 +142,21 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 
 ## 트레이 갱신과 서비스
 
-트레이(Velopack, `%LocalAppData%\<packId>\current`)와 서비스(Inno Setup, `{autopf}\AsterCache`, `sc create` 경로)는 설치 경로가 다르고, 둘이 `%ProgramData%\AsterCache` (`config.json`, `plans\`, `journals\`, `logs\`) 를 공유합니다. Velopack 갱신은 트레이 폴더만 바꾸고 서비스 실행 파일은 건드리지 않습니다 (`UpdateService` 는 서비스 제어에 접근하지 않고 시험으로 고정). 그래서 서비스는 설치 프로그램으로 다시 설치하기 전까지 옛 버전으로 남습니다.
+트레이(Velopack, `%LocalAppData%\<packId>\current`)와 서비스(Inno Setup, `{autopf}\AsterCache`, `sc create` 경로)는 설치 경로가 다르고, 둘이 `%ProgramData%\AsterCache` (`config.json`, `plans\`, `journals\`, `logs\`) 를 공유합니다. 설치본으로 설치하면 관리 창(트레이), `aster.exe`, 서비스가 모두 `Program Files\AsterCache` 에 설치됩니다. 새 버전은 새 설치본을 다시 실행해 갱신합니다 (서비스 중지→교체→시작). Velopack 자동 갱신은 Velopack 으로 설치한 트레이에만 해당하며 설치본 설치에는 쓰이지 않습니다 (`UpdateService` 는 서비스 제어에 접근하지 않고 시험으로 고정). 실제 Velopack 설치 갱신 시험은 아직 하지 않았습니다.
 
 - 형식 호환: `config.json` 은 알려진 키만 받으므로 새 트레이가 새 키를 쓰면 옛 서비스는 시작하지 못하고(종료 코드 2), 계획 파일은 `version` 이 정확히 일치해야 하며 (현재 1), 저널은 형식 버전이 없고 계획 SHA 로만 짝을 맞춥니다. 지금까지 형식을 바꾼 적은 없지만 바뀌면 어긋납니다.
 - 결정: 갱신 경로는 합치지 않고, 트레이가 SCM 에 등록된 서비스 실행 파일의 FileVersion 을 자기 FileVersion 과 비교해 다르면 상태 표시줄에 "서비스 재설치 필요 (서비스 x, 트레이 y)" 를 띄웁니다. 트레이와 서비스는 같은 `-p:Version` 으로 게시해야 비교가 의미 있습니다 (개발 빌드는 모두 1.0.0.0).
 
 ## 설치 프로그램
 
-`packaging\windows\aster.iss` (Inno Setup 6) 는 서비스 파일을 설치하고, `AsterCache` 서비스를 등록하며(LocalSystem, 자동 시작), 데이터 폴더 전체의 ACL 을 설정합니다. 관리자 설치만 허용합니다. 제거하면 서비스를 지우고 데이터 폴더는 남깁니다. 컴파일은 `ISCC.exe /DServiceDir=<서비스 publish 경로> /DAppVersion=<버전> aster.iss` 로 합니다. 릴리스 워크플로도 같은 방식으로 컴파일합니다.
+`packaging\windows\aster.iss` (Inno Setup 6) 는 관리 창, `aster.exe`, 서비스, 런타임 전체를 `Program Files\AsterCache` 에 설치하고, `AsterCache` 서비스를 등록하며(LocalSystem, 자동 시작), 데이터 폴더 전체의 ACL 을 설정합니다. 관리자 설치만 허용합니다. 설치 중 언어(English 또는 한국어, `config.json` 의 `"language"` 에 기록), 바탕화면·시작 메뉴 바로가기, 로그인 때 관리 창 실행과 트레이 아이콘 상주(바로가기는 모든 사용자 시작 프로그램 폴더), 서비스 설치와 시작, 마지막 화면의 관리 창 실행을 고를 수 있으며 모두 기본으로 켜져 있습니다. 제거하면 서비스를 멈추고 지우며 트레이를 종료하고, 데이터 폴더는 남깁니다.
+
+정의(`/D`): `/DAppDir`(관리 창·`aster.exe`·런타임이 든 폴더), `/DAppVersion`(사용자에게 보이는 버전), `/DAppNumVersion`(숫자 버전), `/DOutputDir`(설치본 `.exe` 를 쓸 폴더). 컴파일은 `ISCC.exe /DAppDir=<관리 창 publish 경로> /DAppVersion=<버전> aster.iss` 로 합니다. 릴리스 워크플로도 같은 방식으로 컴파일합니다.
 
 ## 배포와 CI
 
 - `.github/workflows/csharp-ci.yml`: windows-latest, .NET 10.0.x, restore·build·test(Live 제외)·format.
-- `.github/workflows/csharp-release.yml`: 수동 실행(`workflow_dispatch`, `version` 입력, 기본 `0.9.0-beta.1`, 러너 windows-2022). verify → package(관리 창 zip `AsterCache-<version>-win-x64.zip`, Inno Setup 설치본) → release(GitHub Release 생성, 버전에 `-` 가 있으면 프리릴리스, zip 과 설치본 `.exe` 를 자산으로 첨부) 순으로 돌아갑니다. 코드 서명은 없습니다(게시자 미확인 경고만).
+- `.github/workflows/csharp-release.yml`: 수동 실행(`workflow_dispatch`, `version` 입력, 기본 `0.9.0-beta.2`, 러너 windows-2022). verify → package(관리 창 zip `AsterCache-<version>-win-x64.zip`, Inno Setup 설치본) → release(GitHub Release 생성, 버전에 `-` 가 있으면 프리릴리스, zip 과 설치본 `.exe` 를 자산으로 첨부) 순으로 돌아갑니다. 코드 서명은 없습니다(게시자 미확인 경고만).
 
 ## 성능 결론 (참조 측정)
 
@@ -170,6 +176,6 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 - 알려진 한계: 파일 삭제(`FileIOFileDelete`)로 사라진 FileKey 이름은 처리하지 않습니다.
 - 파일 이름은 FileKey(정리 이벤트는 세션 끝에 옴)를 우선하고 읽을 때의 FileObject 이름을 보조로 씁니다. FileObject 주소는 재사용되기 때문입니다. WPR FileIO 프로필의 실제 .etl 에서 이벤트 유실이 크면 (한 번의 수집에서 3.8M건) 읽기 일부가 빠지므로, 이 .etl 변환의 재현율은 수집 손실과 분리해 평가할 수 없습니다.
 - 안티치트 게임(Ricochet, Vanguard)에서 ETW 수집과 서비스 상주의 영향은 검증하지 않았습니다. 안티치트가 없는 게임으로 먼저 확인합니다.
-- Velopack 갱신은 트레이만 바꾸므로 서비스는 설치 프로그램으로 따로 갱신합니다 (위 "트레이 갱신과 서비스"). 실제 Velopack 설치본에서의 갱신 시험은 하지 않았습니다 (트레이 패키징 전).
+- Velopack 갱신은 Velopack 으로 설치한 트레이에만 해당합니다. 설치본은 새 설치 프로그램을 실행해 갱신합니다 (위 "트레이 갱신과 서비스"). 실제 Velopack 설치 갱신 시험은 하지 않았습니다.
 - WDK 설치 크기와 winget 패키지 ID 는 확인하지 않았습니다.
 - 커널 미니필터(AsterFlt)는 소스 단계이며, 이 PC 에 적재하지 않습니다. 적재 검증은 VM 절차로만 다룹니다.

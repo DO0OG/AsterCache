@@ -117,6 +117,17 @@ python -m prefetch.cli --trace relayout_plan.json.prefetch.json --origin-root "D
 - `relayout plan`은 `--out` 옆에 `<out>.prefetch.json`을 함께 씁니다. 재배치 존에 들어간 블록만 존 순서로 담은 선읽기 입력이며, `prefetch.cli`가 그대로 받습니다. 재배치한 뒤에는 `trace.json` 대신 이 파일로 선읽기합니다(읽는 바이트 = 계획의 `hot_bytes`).
 - `--min-sessions N`은 N개 미만의 실행에서만 읽힌 블록을 핫 집합에서 뺍니다. 기본값은 트레이스가 2개 이상이면 2, 1개면 1입니다.
 
+### E6 콜드 한계 측정 스크립트 (`bench`, `csharp/scripts`)
+
+- `bench/lba_curve.py` — 볼륨의 원시 전송 속도 곡선을 읽기 전용으로 잽니다. 20개 지점마다 512 MiB, 4 MiB 요청, 큐 깊이 4 (관리자 권한 필요)
+- `bench/raw_hot_read.py` — 추적한 핫 범위를 LCN 으로 옮깁니다(관리자 권한 불필요). `--read` 를 주면 LCN 순서로 읽습니다(관리자 권한 필요)
+- `bench/wof_ratio.py` — 핫 범위를 8·16 KiB 청크로 나눠 WOF 방식 XPRESS Huffman 압축률을 잽니다(관리자 권한 불필요)
+- `bench/free_runs.py` — 볼륨 비트맵으로 NTFS 볼륨의 빈 구간을 읽기 전용으로 나열합니다(관리자 권한 필요)
+- `csharp/scripts/cs_e6_cold_limit.ps1` — 관리자 권한으로 한 번 실행합니다. 곡선 측정, 원시 읽기, 보존 없이 전부 이동, 재측정, SHA-256 검사를 합니다
+- `csharp/scripts/cs_e6_highband.ps1` — 관리자 권한으로 한 번 실행합니다. 핫 집합 전체를 볼륨의 90% 위치 존으로 옮기고 42% 존과 비교합니다
+- `csharp/scripts/cs_e6_moveback.ps1` — 관리자 권한으로 한 번 실행합니다. 핫 집합을 가장 낮은 빈 존으로 되돌리고 검사한 뒤 재측정합니다
+- `csharp/scripts/aster_diskio.wprp` — `cs_e6_cold_limit.ps1` 이 쓰는 DiskIo(읽기 크기와 위치) WPR 프로필입니다
+
 ### 캐시 API
 
 ```python

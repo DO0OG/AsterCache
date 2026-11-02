@@ -117,6 +117,14 @@ Access-order relocation (`relayout/`, FSCTL_MOVE_FILE) was run with administrato
 - `results/csharp_e4cmp_20261102_111921`
 - `results/prefetch_sweep_20261101/contig_persistence_t10h.json`, `results/relayout_e3/20261102_091906`
 
+## E6 cold limit experiment (2026-11-02)
+
+- Method: `csharp/scripts/cs_e6_cold_limit.ps1` (administrator). Raw LBA curve, raw read of the hot set, full move with preservation off, re-measure with the standby list purged before each run, SHA-256 before and after, DiskIo trace. Source: `results/cold_limit_20261102_155900/README.md`.
+- Result: after the full move to the 42.142% zone, cold prefetch median 11.93 s (3 runs; 15.13 s with preservation on). Direct replay median 17.64 s. SHA-256 identical for 20 files, contiguous verify (493,352 clusters). The move took 270 s for 2.02 GB.
+- High band (90.00%): prefetch median 19.06 s, about 1.6 times slower. The hot set was moved back to the 42.142% zone, SHA-256 identical, contiguous.
+- Reading width and queue depth had no effect (16.05~16.91 s). WOF compression ratio 1.014. Not run: E6-4 (overwrite-fill of the cache).
+- Conclusion: the default plan moves everything (preservation off). Limits: one SMR drive and one game.
+
 ## Linux container validation
 
 Validation date: **2026-11-01**. Environment: Linux container, Python 3.13.5, built-in SQLite library. It was not run on a real user's Windows/HDD/SSD.

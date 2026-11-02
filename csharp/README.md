@@ -26,6 +26,8 @@ dotnet publish csharp\src\AsterCache.Service\AsterCache.Service.csproj -c Releas
 
 Check the CLI commands (`aster plan`, `probe`, `apply`, `verify`, `revert`, `trace`, `prefetch`, `status`, `launch`, `stream-bench`) and their options with `aster <command> --help`. The relocation and prefetch commands use the same names as Python `relayout/cli.py` and `prefetch/cli.py`.
 
+`aster discover [--json]` lists the games found in the supported launchers' libraries, read only, with the anticheat marker. `aster status --auto-status` prints the automatic mode state (`auto_status.json`).
+
 The CLI language is set with the global option `--lang ko|en` or the environment variable `ASTER_LANG` (priority: `--lang` > `ASTER_LANG` > `config.json` `"language"` > OS language). JSON output does not depend on the language.
 
 Run the service with `AsterCache.Service.exe [--console] [--data-dir <folder>]`. The default data folder is `%ProgramData%\AsterCache`, which holds `config.json`, `plans\`, `journals\`, and `logs\`.
@@ -50,9 +52,9 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <folder>]
 | Drive list on the left | For each fixed volume: letter, label, file system, total/free capacity, disk model, HDD/SSD (`IncursSeekPenalty` from `IOCTL_STORAGE_QUERY_PROPERTY`; "unknown" on failure), and the number of registered games. Selecting one shows only that drive's games on the right ("All drives" is at the top). |
 | Status tab | Whether the service is installed and running, watcher type, last prewarm (time, MiB, seconds), per-game layout verdict (`verdict` of `aster status --plan`), zone hit rate (`in_zone_clusters / hot_clusters`), last relocation time (journal file time), and per-game prewarm results. Refresh button. |
 | Games tab | List: name, exe, origin root, plan/trace present or not, layout verdict, prewarm settings. The buttons are in the table below. |
-| Settings tab | Service install, uninstall, start, and stop; watcher poll/etw (restart the service to apply); display of prewarm defaults; open the data folder and log folder; tray and service versions; **language** (auto / Korean / English). |
+| Settings tab | Service install, uninstall, start, and stop; watcher poll/etw; display of prewarm defaults; the **Automatic mode** group (on, discover, trace, relocate, prewarm count, zone cap, rewarm interval, excluded exes); open the data folder and log folder; tray and service versions; **language** (auto / Korean / English). |
 | Log tab | The last 200 lines of `service.log` and `tray.log`, with refresh. |
-| Top banner | Without administrator rights: "No administrator rights: trace, relocation, and service control require relaunching as administrator", with a [Relaunch as administrator] button. |
+| Top banner | Without administrator rights: "No administrator rights: saving settings, trace, relocation, and service control require relaunching as administrator", with a [Relaunch as administrator] button. |
 
 | Games tab button | Action |
 |---|---|
@@ -70,7 +72,8 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <folder>]
 - Service installation: runs the same sequence as the installer (create folders, set owner and permissions, `sc create` LocalSystem automatic start, start) with a single UAC prompt. Because the service runs the executable as SYSTEM, if ordinary users can modify the executable folder (a development folder, for example), installation is refused and you are told to use the installer. If `config.json` does not exist, register a game first.
 - Relocation and revert are refused while a game is running, and the amount written at one time is limited to 2 GiB (`--write-cap-mib`), so a large move may need several runs with the note "Run again and it continues". Trace capture lasts at most 3600 seconds, and when the app exits or relaunches as administrator while a capture is in progress, it waits up to 10 seconds for the save.
 - Images for documentation: `AsterCache.Tray.exe --smoke --screenshot <png> [--tab <0..3>] --data-dir <folder>` saves the main window at 1100x720 and exits (`docs\images\main-window.png`; the drive list is sample values). Adding `--lang en` or the environment variable `ASTER_LANG=en` renders the English UI (this is how `docs\images\main-window.en.png` is made).
-- After registering or removing games or changing the watcher, restart the service for it to take effect (the service reads the configuration only when it starts).
+- The service re-reads the whole `config.json` every 5 seconds, so registering or removing games and changing the watcher take effect without a restart. If the new configuration fails validation or the folder permission check, the previous settings stay in force and the reason is logged.
+- Prewarm pinning (`prewarm.pin`) is not on the Settings tab. Set it per game in `config.json` (off by default; 16 GiB of RAM or more only; a prewarm started by a trigger program is not pinned). Its effect has not been measured yet.
 - Not done yet: editing prewarm defaults (display only), window screen tests (only view-model and command-assembly tests exist; `Avalonia.Headless` is not used), and an actual UAC test of the elevation path.
 
 ## Administrator scripts (run by the user)
@@ -97,8 +100,9 @@ The scripts in `csharp\scripts\` are each run once by the user from an administr
 
 - If a registered game starts during a re-apply (ETW/polling start notification), a cancellation token reaches the fragment loop of `Applier`. Only the fragment being moved (one `MOVE_FILE`) is finished, then it stops, leaving `stopped = "cancelled"` and a resume point in the journal. After the game ends, the 5-minute check continues with the same plan and journal (`aster verify` reports this state not as an error but as `verdict = "resume-needed"`).
 - Re-apply happens only when the layout is not contiguous by the same judgment as `aster verify` (`non-contiguous`, including a cancelled, partially applied `resume-needed`). The in-zone ratio (`zone hit`) is only a reference log: when the plan preserves already-contiguous stretches in place, the layout is contiguous even if the ratio is low (10.5% in a real game plan), so no re-apply happens. If any entry's file layout could not be read, no judgment is made and it is treated as healthy.
-- A `config.json` with 0 registered games is normal. The service just waits without watching or re-applying, and the tray shows "No registered games". The service reads the configuration only when it starts, so restart it after adding or removing games.
+- A `config.json` with 0 registered games is normal. The service just waits without watching or re-applying, and the tray shows "No registered games". Adding or removing games takes effect within 5 seconds without a restart.
 - A game whose plan or trace file does not exist yet skips the check and stream and logs only an info line (not an error). Every detection of a game process is logged as `<name>: <exe> started (pid N)`, and which watcher is used is logged as `process watcher: EtwProcessWatcher` or `PollingProcessWatcher`.
+- Automatic mode (see [Automatic mode](../README.md#automatic-mode)) runs inside the service. The service re-reads the whole `config.json` every 5 seconds, so changes take effect without a restart. Its state is written to `%ProgramData%\AsterCache\auto_status.json`, which only the service writes.
 
 ## Two operating modes: concurrent prefetch / prewarm
 
@@ -138,19 +142,21 @@ The defaults are `on_service_start` true, `trigger_exes` empty, `min_free_ram_mi
 
 ## Tray updates and the service
 
-The tray (Velopack, `%LocalAppData%\<packId>\current`) and the service (Inno Setup, `{autopf}\AsterCache`, the `sc create` path) are installed in different locations, and the two share `%ProgramData%\AsterCache` (`config.json`, `plans\`, `journals\`, `logs\`). A Velopack update replaces only the tray folder and does not touch the service executable (`UpdateService` does not access service control and is pinned by a test). So the service stays on the old version until it is reinstalled with the installer.
+An installer install puts the tray, `aster.exe`, and the service in `Program Files\AsterCache`, and they share `%ProgramData%\AsterCache` (`config.json`, `plans\`, `journals\`, `logs\`). A newer version is installed by running the new installer again, which stops the service, replaces the files, and starts it again. Velopack automatic update applies only to a tray installed with Velopack, not to an installer install (`UpdateService` does not access service control and is pinned by a test). An actual Velopack install update test has not been done.
 
 - Format compatibility: `config.json` accepts only known keys, so if a new tray writes a new key, the old service cannot start (exit code 2); plan files require an exact `version` match (currently 1); the journal has no format version and is matched only by the plan SHA. The formats have never changed so far, but if they do, the two will go out of step.
 - Decision: the update paths are not merged. The tray compares the FileVersion of the service executable registered with the SCM against its own FileVersion, and if they differ it shows "Service reinstall required (service x, tray y)" in the status bar. For the comparison to mean anything, the tray and the service must be published with the same `-p:Version` (development builds are all 1.0.0.0).
 
 ## Installer
 
-`packaging\windows\aster.iss` (Inno Setup 6) installs the service files, registers the `AsterCache` service (LocalSystem, automatic start), and sets the ACL of the whole data folder. It allows administrator installs only. Uninstalling removes the service and leaves the data folder. Compile it with `ISCC.exe /DServiceDir=<service publish path> /DAppVersion=<version> aster.iss`; the release workflow does the same.
+`packaging\windows\aster.iss` (Inno Setup 6) installs the management window, `aster.exe`, the service, and the runtime into `Program Files\AsterCache`. It registers the `AsterCache` service (LocalSystem, automatic start) and sets the ACL of the whole data folder. It allows administrator installs only. The setup asks for the language (English or Korean, saved as `"language"` in `config.json`), desktop and Start menu shortcuts, opening the management window and keeping the tray icon at sign-in (the shortcut is in the all-users Startup folder), installing and starting the service, and starting the management window at the end. All of them are checked by default. Uninstalling stops and removes the service, quits the tray, and leaves the data folder.
+
+Defines: `/DAppDir` (folder with the management window, `aster.exe`, and the runtime), `/DAppVersion` (version shown to the user), `/DAppNumVersion` (numeric version), and `/DOutputDir` (folder for the setup `.exe`). Compile it with `ISCC.exe /DAppDir=<gui publish path> /DAppVersion=<version> aster.iss`; the release workflow does the same.
 
 ## Distribution and CI
 
 - `.github/workflows/csharp-ci.yml`: windows-latest, .NET 10.0.x, restore, build, test (without Live), format.
-- `.github/workflows/csharp-release.yml`: manual run (`workflow_dispatch`, `version` input, default `0.9.0-beta.1`, runner windows-2022). It runs verify → package (management-window zip `AsterCache-<version>-win-x64.zip`, Inno Setup installer) → release (creates the GitHub Release; a version containing `-` is marked as a pre-release; the zip and the installer `.exe` are attached as assets). There is no code signing (only the unsigned-publisher warning).
+- `.github/workflows/csharp-release.yml`: manual run (`workflow_dispatch`, `version` input, default `0.9.0-beta.2`, runner windows-2022). It runs verify → package (management-window zip `AsterCache-<version>-win-x64.zip`, Inno Setup installer) → release (creates the GitHub Release; a version containing `-` is marked as a pre-release; the zip and the installer `.exe` are attached as assets). There is no code signing (only the unsigned-publisher warning).
 
 ## Performance conclusions (reference measurements)
 
@@ -170,6 +176,6 @@ The tray (Velopack, `%LocalAppData%\<packId>\current`) and the service (Inno Set
 - Known limit: names of FileKeys that disappeared through file deletion (`FileIOFileDelete`) are not handled.
 - File names prefer the FileKey (the cleanup event arrives at the end of the session) and use the FileObject name at read time as a fallback, because FileObject addresses are reused. In a real .etl from the WPR FileIO profile, large event loss (3.8M in one capture) drops some reads, so the recall of this .etl conversion cannot be evaluated separately from capture loss.
 - The effect of ETW capture and a resident service on anti-cheat games (Ricochet, Vanguard) has not been verified. Check first with a game that has no anti-cheat.
-- A Velopack update changes only the tray, so the service is updated separately with the installer (see "Tray updates and the service" above). An update test on a real Velopack installation was not done (before tray packaging).
+- A Velopack update changes only a tray installed with Velopack, and an installer install is updated by running the new installer (see "Tray updates and the service" above). An actual Velopack install update test has not been done.
 - The WDK install size and the winget package ID were not checked.
 - The kernel minifilter (AsterFlt) is at the source stage and is not loaded on the test PC. Load verification is covered only by the VM procedure.

@@ -153,13 +153,42 @@ Same conditions as above: cold purge before each run, order A,B,B,A,A,B, three r
 
 Stream mode is not adopted. The saturated case fails the no-harm check (B at least 0.95 × A), and the gapped cases show no reproducible gain.
 
+### E7e: bounded read-ahead (`--mode bounded`)
+
+Reads ahead only sequential files, in 16 MiB steps. The total stays at or below the game's cumulative reads plus 32 MiB, and it yields for 50 ms after each game read. Conditions are the same as E7d (cold standby list purge, order A,B,B,A,A,B, three runs each). Times are the sum of read delays (s). Raw data: [E7e](../results/csharp_e7e_gen/README.md).
+
+| Dataset | Replay | A 3 runs (s) | B 3 runs (s) | A median | B median | A/B | Read-ahead / request | Hit ratio | yielded |
+|---|---|---|---|---:|---:|---:|---|---|---|
+| fpset scattered | saturated | 49.6/48.0/46.6 | 53.4/54.6/51.4 | 48.0 | 53.4 | 0.90 | about 1.00 | 0.31~0.36 | 120~129 |
+| fpset scattered | gapped | 47.2/59.3/42.1 | 40.4/49.0/41.7 | 47.2 | 41.7 | 1.13 | about 1.01 | 0.53~0.55 | 238~261 |
+| Frostpunk contiguous | gapped | 16.4/15.2/14.9 | 18.8/17.3/18.2 | 15.2 | 18.2 | 0.84 | about 1.01 | 0.50~0.52 | 160~188 |
+
+- The total limit held (read-ahead ≈ game reads, +0 to 1%).
+- The gapped fpset replay is 1.13, but the saturated fpset replay is 0.90, which misses the no-harm criterion (0.95 or more). The Frostpunk contiguous gapped replay shows no gain. Three runs are too noisy to count any gain.
+- Verdict: bounded is not yet justified as a default.
+
+### E7f: adaptive (`--mode adaptive`)
+
+Same as bounded, plus a pause while the game's reads over the last 500 ms run at 80 MiB/s or more, and a 200 ms pause when our request latency doubles. Conditions: cold purge before each run; fpset order A,B,B,A,A,B,B,A,A,B (five runs each); Frostpunk three runs. Times are sums of read delays (s). Raw data: [E7f](../results/csharp_e7f_gen/README.md).
+
+| Dataset | Replay | A median (s) | B median (s) | A/B | Read-ahead / request | Hit ratio | yielded |
+|---|---|---:|---:|---:|---|---|---|
+| fpset scattered | saturated | 45.1 | 52.6 | 0.86 | 0.83~1.00 | 0.26~0.29 | 98~116 |
+| fpset scattered | gapped | 38.6 | 38.8 | 0.995 | 1.01~1.02 | 0.51~0.53 | 217~230 |
+| Frostpunk contiguous | gapped | 14.8 | 17.4 | 0.85 | 1.01~1.02 | 0.52~0.53 | 160~169 |
+
+- Saturated fpset (0.86) misses the no-harm bar (0.95). The hit ratio is low, and most B runs were slower than most A runs.
+- Gapped fpset (0.995) misses the gain bar (1.10). Read latency did not drop even though read-ahead matched the request volume. The earlier 1.13 was likely noise in A; A was stable this time (38.3~38.9 s).
+- Read-ahead read about 1.3~1.5 times the replay's total disk reads on the same disk, so the time saved by hits was lost again.
+- Verdict: adaptive is not justified as a default.
+
 ### Conclusion
 
-- First-run read-ahead (`auto.learn.enabled`) stays off by default. No gain was proven in this set of measurements (saturated and gapped, contiguous and scattered layouts).
+- First-run read-ahead (`auto.learn.enabled`) stays off by default. No gain was proven in E7 to E7f (saturated and gapped, contiguous and scattered layouts).
 - Stream mode (`stream`) was measured as E7d and is not adopted. `auto.learn.enabled` stays off by default, and this is confirmed.
-- Next candidate (E7e): cap the total read-ahead at no more than the game's request volume, and yield to game reads.
+- The real-time read-ahead family on the same HDD (E7 to E7f, six rounds) showed no gain in any round, and is closed. `learn` stays an experimental feature, off by default. First-run improvement goes to bootstrap (shared profile and Windows prefetch).
 - This record is synthetic data and trace replay. It is not the total load time of Frostpunk running in the game.
-- Raw data: [E7](../results/csharp_e7_20261102_203358/README.md), [E7b](../results/csharp_e7b_gen/README.md), [E7c](../results/csharp_e7c_gen/README.md), [E7d](../results/csharp_e7d_gen/README.md).
+- Raw data: [E7](../results/csharp_e7_20261102_203358/README.md), [E7b](../results/csharp_e7b_gen/README.md), [E7c](../results/csharp_e7c_gen/README.md), [E7d](../results/csharp_e7d_gen/README.md), [E7e](../results/csharp_e7e_gen/README.md), [E7f](../results/csharp_e7f_gen/README.md).
 
 ## Interpretation of the results (carried over)
 

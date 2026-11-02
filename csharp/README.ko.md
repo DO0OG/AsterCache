@@ -28,12 +28,12 @@ CLI 명령(`aster plan`, `probe`, `apply`, `verify`, `revert`, `trace`, `prefetc
 
 `aster discover [--json]` 은 지원 런처 라이브러리에서 찾은 게임 목록을 읽기 전용으로 보여 주며, 안티치트 표시를 함께 냅니다. 각 항목의 `launcher` 값에 `riot`, `uninstall`, `xbox` 가 추가됐습니다(Riot 라이브러리, Windows 제거 목록, Xbox 폴더). `aster status --auto-status` 는 자동 모드 상태(`auto_status.json`)를 보여 줍니다.
 
-`aster learn --exe <이름>... --root <폴더> [--seconds N] [--window-mib M] [--max-mib M] [--mode stream|gap] [--gap-ms N] [--seq-runs N] [--out trace.json] [--json]` 은 서비스 없이 첫 실행 학습(트레이스 + 선행 읽기)을 돌리는 측정·디버그용 명령입니다. 관리자 권한이 필요합니다. 출력에는 `read_ahead_bytes`, `game_read_bytes`, `hit_ratio`, `events`, `events_lost` 가 나옵니다. JSON 새 키는 `resolved_reads`, `late_reads`, `unresolved_reads`, `sequential_files`, `hit_bytes`, `gap_count`, `yielded_requests`, `read_ahead_while_idle_bytes` 입니다.
+`aster learn --exe <이름>... --root <폴더> [--seconds N] [--window-mib M] [--max-mib M] [--mode stream|gap|bounded|adaptive] [--saturation-mbps N] [--gap-ms N] [--seq-runs N] [--out trace.json] [--json]` 은 서비스 없이 첫 실행 학습(트레이스 + 선행 읽기)을 돌리는 측정·디버그용 명령입니다. 관리자 권한이 필요합니다. 출력에는 `read_ahead_bytes`, `game_read_bytes`, `hit_ratio`, `events`, `events_lost` 가 나옵니다. JSON 새 키는 `resolved_reads`, `late_reads`, `unresolved_reads`, `sequential_files`, `hit_bytes`, `gap_count`, `yielded_requests`, `read_ahead_while_idle_bytes` 입니다.
 
 - `--gap-ms` (기본 100): 게임의 마지막 읽기 뒤 이 시간이 지나야 선행 읽기를 합니다 (틈 전용).
 - `--seq-runs` (기본 6): 간격 4 MiB 이하의 증가 읽기가 이만큼 이어지고 그 파일을 8 MiB 이상 읽었을 때만 순차로 봅니다.
 - 선행 읽기 총량은 게임 읽기 × 1.5 + 64 MiB 를 넘지 않습니다.
-- `--mode stream`(기본)은 게임 읽기의 틈을 기다리지 않고 16 MiB 단위로 선행 읽기를 합니다. `--mode gap` 은 이전 방식(100 ms 조용할 때만, 1 MiB 요청)입니다. 기본을 stream 으로 한 것은, 게임 읽기와 선행 읽기가 1 MiB 씩 번갈아 나오면 전환마다 회전 지연이 생기고 틈 전용 방식이 E7b 재측정에서 약 2배 느렸기 때문입니다(`results\csharp_e7b_gen\README.md`: 합성 19.82 → 38.71 s, Frostpunk 42% 존 18.98 → 37.40 s). stream 도 E7d 에서 측정했으나 이득이 없어 채택하지 않았으므로, 선행 읽기는 기본으로 꺼져 있습니다.
+- `--mode stream`(기본)은 게임 읽기의 틈을 기다리지 않고 16 MiB 단위로 선행 읽기를 합니다. `--mode gap` 은 이전 방식(100 ms 조용할 때만, 1 MiB 요청)입니다. `--mode bounded` 는 순차 파일만 16 MiB 앞서 읽고, 총량은 게임 읽기 + 32 MiB 이하이며, 게임 읽기 뒤 50 ms 양보합니다(E7e 측정: 이득 없음). `--mode adaptive` 는 bounded 에 더해 최근 500 ms 의 게임 읽기 처리량이 `--saturation-mbps`(기본 80 MiB/s) 이상이면 쉬고 우리 요청 지연이 2 배로 오르면 200 ms 쉬며, `saturated_ms` 와 `paused_requests` 로 알려 줍니다(E7f 측정: 이득 없음). 기본을 stream 으로 한 것은, 게임 읽기와 선행 읽기가 1 MiB 씩 번갈아 나오면 전환마다 회전 지연이 생기고 틈 전용 방식이 E7b 재측정에서 약 2배 느렸기 때문입니다(`results\csharp_e7b_gen\README.md`: 합성 19.82 → 38.71 s, Frostpunk 42% 존 18.98 → 37.40 s). stream 도 E7d 에서 측정했으나 이득이 없어 채택하지 않았으므로, 선행 읽기는 기본으로 꺼져 있습니다.
 
 `aster profile export --game <이름> --out <파일.json|파일.zip> [--data-dir <폴더>]` 는 게임 하나의 trace 를 상대 경로의 파일로 내보냅니다 (형식 `astercache-profile`, 버전 1: `files`[path·size·sample_sha256], `raw_trace`, `prefetch_trace`). `aster profile import --file <파일> --game <이름> [--data-dir <폴더>] [--json]` 는 파일마다 크기와 표본 SHA 가 모두 맞을 때만 받아들입니다. 불일치하면 목록을 보여 주고 종료 코드 1 로 끝납니다. 쓰기는 관리자 권한이 필요합니다.
 
@@ -97,7 +97,7 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 | S4 `cs_service.ps1 -Action install [-TestConfig] / test / uninstall [-PurgeData]` | 서비스 등록(LocalSystem), 데이터 폴더 ACL, 스스로 끝나는 `cmd.exe` 감지 지연 20회 (프로세스를 죽이지 않고 PID 로 로그와 맞춤), 감시기 종류(ETW/폴링) 기록 | p95 ≤ 100 ms, 제거 뒤 서비스 없음 |
 | S5 `cs_relayout_window.ps1` | 창 묶음 계획 (미채택 옵션) | 스켈레톤, 실행하면 바로 멈춤 |
 | S6 `wdk_install.ps1 -AcceptWdkInstall` | WDK 설치만 (사용자가 결정한 뒤) | km 폴더 존재 |
-| E7 `cs_e7_learn.ps1` | 첫 실행 학습·선행 읽기(트레이스 재생) | 합성 데이터·트레이스 재생으로 측정(E7~E7d): 이득이 입증되지 않아 선행 읽기는 기본으로 꺼져 있습니다. 첫 버전은 흩어진 합성 데이터셋의 콜드 재생을 21.67 s → 44.90 s 로 느리게 했습니다 (`results\csharp_e7_20261102_203358\README.md`) |
+| E7 `cs_e7_learn.ps1` | 첫 실행 학습·선행 읽기(트레이스 재생) | 실험 기능입니다. 합성 데이터·트레이스 재생으로 측정(E7~E7f): 이득이 없어 선행 읽기는 기본으로 꺼져 있습니다. 첫 버전은 흩어진 합성 데이터셋의 콜드 재생을 21.67 s → 44.90 s 로 느리게 했습니다 (`results\csharp_e7_20261102_203358\README.md`) |
 
 ### 권한 경계
 
@@ -116,6 +116,30 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 - 선행 읽기 엔진(`Prefetch\ReadAhead`)은 서비스 안에서 첫 실행 학습을 맡습니다. `Tracer` 의 실시간 콜백을 받아 50 ms 마다 플러시합니다. [자동 모드](../README.ko.md#자동-모드)를 보십시오.
 - 기록 없는 게임의 통째 예열 (`auto.full_prewarm`).
 - 엔진 프로필 예열 (`auto.engine_profiles`, 임베디드 `Core\Profiles\engines.json`).
+
+## 자동 부트 자료: 구성 요소와 공유 프로필 index
+
+- `Service\ProfileFeed.cs`: 공유 프로필 묶음 zip(`auto.shared_profiles`)을 주 1회 ETag 로 받고, 내려받기를 64 MiB 로 제한하며, index 항목을 설치된 게임에 맞춥니다. https 주소만 씁니다.
+- `Service\AutoRegistry.cs`: 런처 발견과 휴리스틱. 경로와 도구 exe 의 고정 제외 목록, 게임처럼 보이는지 검사(256 MiB 이상 파일 또는 런처 흔적)를 맡습니다.
+- `Windows\PrefetchFiles.cs`, `Core\Prefetch\PfParser.cs`: Windows 프리페치 `.pf` 를 읽기 전용으로 읽어 파일 목록을 부트 트레이스로 바꿉니다. "미리 읽지 않음" 표시가 있는 파일은 뺍니다.
+- `Service\AutoRelocator.cs`(`PrefetchBootstrap`), `Service\AutoTracer.cs`(`BootFromPrefetch`): 기록 없는 게임의 부트 트레이스를 만들고 그것으로 계획합니다. 프리페치 계획에는 64 MiB 이하 파일만 넣습니다.
+- `Prefetch\ReadAhead.cs`: 첫 실행 선행 읽기 엔진(실험 기능, 기본 꺼짐; `stream`, `gap`, `bounded`, `adaptive` 모드).
+
+### 공유 프로필 index 형식 (기여자용)
+
+묶음 zip 에는 `index.json` 과 프로필 파일이 들어 있습니다.
+
+```json
+{"format":"astercache-profile-index","version":1,"entries":[
+  {"steam":{"appid":"730","depots":{"731":"<manifest gid>"}},"profile":"p/cs2.json"},
+  {"epic":{"app_name":"..","version":".."},"profile":".."},
+  {"exe":{"size":0,"sample_sha256":".."},"profile":".."}
+]}
+```
+
+- 항목마다 `steam`, `epic`, `exe` 중 하나만 씁니다.
+- `profile` 은 zip 안의 프로필 `.json` 경로이며, 형식은 `aster profile export` 의 결과와 같습니다.
+- 맞춤 규칙: Steam 은 앱 ID 와 모든 디포의 매니페스트 gid, Epic 은 앱 이름과 버전, exe 는 파일 크기와 표본 SHA-256 입니다. 맞더라도 프로필 파일의 크기와 표본 해시가 이 PC 와 맞을 때만 부트 트레이스로 저장합니다.
 
 ## 두 동작 모드: 동시 선읽기 / 사전 예열
 

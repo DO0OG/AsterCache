@@ -689,6 +689,12 @@ public sealed class AutoRelocator
         }
 
         _recovered = true;
+        // 계획이 없고 .stale 만 있는 failed 게임 (재계획이 실패한 채 꺼짐): 낡은 계획을 되살려 done (stale plan) 으로 돌립니다.
+        foreach (GameSettings g in s.Games.Where(g => _status.Get(g.Name) is { Stage: AutoStage.Failed, RelocatedAt: null } && !_env.FileExists(g.Plan) && _env.FileExists(g.Plan + StaleSuffix)))
+        {
+            _ = RestoreStalePlan(g, "failed before the service restarted");
+        }
+
         foreach (GameSettings g in s.Games.Where(g => _status.Get(g.Name)?.RelocatedAt is not null && !_env.FileExists(g.Plan) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
         {
             _status.ResetForReplan(g.Name, IsExtending(g) ? ExtendDetail : ReplanDetail);
@@ -912,9 +918,10 @@ public sealed class AutoRelocator
     private bool NeedsWork(GameSettings g, bool relocateOn)
     {
         AutoGameEntry? e = _status.Get(g.Name);
-        // 실패한 뒤 트레이스가 새로 쓰였으면 (다음 플레이·업데이트 뒤 재기록) 다시 시도합니다. 실패 시각은 Fail 이 남김 (같은 트레이스로는 되풀이하지 않음).
+        // 실패한 게임은 서비스 실행당 한 번 다시 시도하고 (저장된 실패 시각 e.At 은 트레이스가 먼저 쓰여 있으면 영영 못 넘으므로 쓰지 않음), 그 뒤로는 트레이스가 새로 쓰였을 때만 다시 시도합니다.
+        // 이번 실행의 실패 시각은 Fail 이 남김 (같은 트레이스로는 되풀이하지 않음).
         bool reopened = e is { Stage: AutoStage.Failed, RelocatedAt: null } && AutoTracer.PlanTracePath(g, _env.FileExists) is { } latest
-            && _env.FileWriteTime(latest) is { } written && written > _planFailedAt.GetValueOrDefault(g.Name, e.At);
+            && _env.FileWriteTime(latest) is { } written && written > _planFailedAt.GetValueOrDefault(g.Name, DateTimeOffset.MinValue);
         bool stageOpen = reopened || e is null || e.Stage is not (AutoStage.Done or AutoStage.Failed)
             && !(e.Stage == AutoStage.Skipped && !relocateOn)
             && e.RelocatedAt is null;

@@ -155,4 +155,53 @@ public sealed partial class AutoRelocatorTests
 
         Assert.Equal(AutoStage.Done, Entry.Stage);
     }
+
+    [Fact]
+    public void FailedGameWhoseTraceIsOlderThanTheFailureWithOnlyAStalePlanGetsItBackOnRestart()
+    {
+        DoneAndReadyToReplan(out string trace);
+        string before = File.ReadAllText(_game.Plan);
+        File.Move(_game.Plan, _game.Plan + ".stale"); // 재계획이 실패해 계획은 .stale 로만 남은 채 failed
+        _w.FileTimes[trace] = _w.Now - TimeSpan.FromHours(1); // 트레이스가 실패보다 먼저 쓰였고 새 트레이스도 없음
+        _status.ResetForReplan("bench", "x");
+        _status.Set("bench", "auto", null, AutoStage.Failed, "plan failed: PyValueException");
+        _w.Now += Step;
+        _relocator = null; // 서비스 재시작
+
+        Tick();
+
+        Assert.Equal((AutoStage.Done, AutoRelocator.StalePlanDetail), (Entry.Stage, Entry.Detail));
+        Assert.NotNull(Entry.RelocatedAt);
+        Assert.Equal(before, File.ReadAllText(_game.Plan));
+        Assert.False(File.Exists(_game.Plan + ".stale"));
+    }
+
+    [Fact]
+    public void FailedGameWithoutAStalePlanIsRetriedOncePerServiceRunEvenIfTheTraceIsOlder()
+    {
+        int attempts = 0;
+        _w.FileTimes[AutoTracer.RawTracePath(_game)] = _w.Now - TimeSpan.FromHours(1);
+        Func<IReadOnlyList<IReadOnlyList<TraceEvent>>, string, long, PlanFile> working = _w.MakePlan;
+        _w.MakePlan = (_, _, _) =>
+        {
+            attempts++;
+            throw new IOException("disk");
+        };
+        _status.Set("bench", "auto", null, AutoStage.Failed, "plan failed: IOException"); // 이전 실행의 실패
+
+        Tick();
+        for (int i = 0; i < 3; i++)
+        {
+            _w.Now += Step;
+            Tick();
+        }
+
+        Assert.Equal(1, attempts); // 이번 실행에서 한 번만
+
+        _relocator = null; // 서비스 재시작: 다시 한 번
+        _w.MakePlan = working;
+        RunUntilDone();
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+    }
 }

@@ -21,8 +21,9 @@ public interface ITierFs
     /// 표본 SHA 용 읽기: offset 에서 length 바이트 (파일 끝이면 그보다 적게).
     byte[] ReadRange(string path, long offset, long length);
 
-    /// 사본 만들기: 1 MiB 버퍼, 낮은 I/O 우선순위, 대상 폴더를 만들고 수정 시각을 원본과 맞춥니다. 대상이 있으면 덮어씁니다.
-    void Copy(string source, string destination);
+    /// 사본 만들기: 1 MiB 버퍼, 낮은 I/O 우선순위, 대상 폴더를 만들고 수정 시각·읽기 전용 등 속성을 원본과 맞춥니다. 대상이 있으면 덮어씁니다.
+    /// 블록마다 ct 를 확인하고, 취소되면 만들던 대상을 지우고 OperationCanceledException 을 던집니다.
+    void Copy(string source, string destination, CancellationToken ct = default);
 
     /// 이름 바꾸기. overwrite 가 거짓이면 대상이 있을 때 실패합니다.
     void Move(string from, string to, bool overwrite);

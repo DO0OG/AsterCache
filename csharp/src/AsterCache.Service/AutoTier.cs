@@ -26,6 +26,7 @@ public sealed class AutoTier
     private readonly Dictionary<string, DateTimeOffset> _tried = new(StringComparer.Ordinal); // 틱 스레드에서만 씀
     private readonly HashSet<string> _noted = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 이미 이유를 남긴 건너뜀
     private readonly Dictionary<string, string?> _cheat = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 폴더 이름으로 짐작한 안티치트 (서비스 실행당 게임마다 한 번)
+    private readonly HashSet<string> _deferNoted = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 되돌림을 미룬다고 이미 남긴 게임
     private string? _rootWhy; // 틱 스레드에서만 씀
 
     public AutoTier(AutoEnv env, AutoStatus status, ILog log, TierEngine engine)
@@ -70,7 +71,7 @@ public sealed class AutoTier
             GameSettings? g = s.Games.FirstOrDefault(x => x.Name == name);
             if (!on || g is null)
             {
-                if (g is null || !_env.AnyRunning(g.ExeNames))
+                if (!RevertDeferred(s, name, g, on ? "game removed" : "disabled"))
                 {
                     _ = _engine.Revert(name, on ? "game removed" : "disabled");
                     _tried.Remove(name);
@@ -94,13 +95,13 @@ public sealed class AutoTier
         _rootWhy = null;
         foreach (GameSettings g in s.Games.Where(g => !_env.AnyRunning(g.ExeNames)))
         {
-            Maintain(g, root, t);
+            Maintain(g, root, t, () => RevertDeferred(s, g.Name, g, "ssd_tier settings changed"));
         }
 
         long minFree = TierEngine.MinFreeFor(_engine.Fs.TotalBytes(root));
         if (_engine.Fs.FreeBytes(root) < minFree)
         {
-            if (_engine.OldestActive(root) is { } oldest)
+            if (_engine.OldestActive(root) is { } oldest && !RevertDeferred(s, oldest, s.Games.FirstOrDefault(x => x.Name == oldest), "ssd free space low"))
             {
                 _log.Warn($"{oldest}: ssd tier folder has less than {minFree >> 30} GiB free, reverting the oldest game (copies stay until `aster tier clean`)");
                 _ = _engine.Revert(oldest, "ssd free space low");
@@ -115,10 +116,10 @@ public sealed class AutoTier
     }
 
     // 링크·사본 확인. 설정(예산·폴더)이 저널과 다르면 (사용자가 바꿈) 되돌려서 다음에 새 설정으로 다시 적용합니다.
-    private void Maintain(GameSettings g, string root, SsdTierSettings t)
+    private void Maintain(GameSettings g, string root, SsdTierSettings t, Func<bool> revertDeferred)
     {
         TierGameInfo? info = _engine.Maintain(g.Name);
-        if (info is { Corrupt: false, Active: > 0 } && _engine.Read(g.Name).Journal is { } j && (j.BudgetGib != t.BudgetGib || !string.Equals(j.Root, root, StringComparison.OrdinalIgnoreCase)))
+        if (info is { Corrupt: false, Active: > 0 } && _engine.Read(g.Name).Journal is { } j && (j.BudgetGib != t.BudgetGib || !string.Equals(j.Root, root, StringComparison.OrdinalIgnoreCase)) && !revertDeferred())
         {
             _ = _engine.Revert(g.Name, "ssd_tier settings changed");
             _tried.Remove(g.Name);
@@ -206,6 +207,30 @@ public sealed class AutoTier
         }
 
         return _env.DiskBytesPerSecond(PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant()) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond ? "disk busy" : null;
+    }
+
+    // 링크를 되돌리면 링크로 열린 파일의 이후 쓰기가 유실될 수 있으므로, 같은 물리 디스크의 등록 게임 (그 게임 자신 포함) 이 돌면 미룹니다 (사유는 게임마다 한 번만 로그).
+    private bool RevertDeferred(AsterSettings s, string game, GameSettings? g, string reason)
+    {
+        if (!IsActive(game))
+        {
+            return false;
+        }
+
+        List<string> roots = [.. (g is null ? [] : new[] { g.OriginRoot }).Concat(_engine.Read(game).Journal?.Entries.Select(e => e.Path) ?? [])];
+        string[] exes = [.. s.Games.Where(x => roots.Any(r => _env.SameDisk(r, x.OriginRoot))).Concat(g is null ? [] : [g]).SelectMany(x => x.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)];
+        if (exes.Length == 0 || !_env.AnyRunning(exes))
+        {
+            _deferNoted.Remove(game);
+            return false;
+        }
+
+        if (_deferNoted.Add(game))
+        {
+            _log.Info($"{game}: ssd tier revert deferred ({reason}), a game on the same disk is running");
+        }
+
+        return true;
     }
 
     private void RefreshBytes(string game)

@@ -37,6 +37,40 @@ public sealed class TierFsTests(ITestOutputHelper output) : IDisposable
     }
 
     [Fact]
+    public void CancelledCopyLeavesNoDestinationFile()
+    {
+        _ = _dir.WriteRandom("a.bin", (3 << 20) + 17);
+        var fs = new TierFs();
+        string dst = _dir.Combine("a.bin.part");
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        _ = Assert.ThrowsAny<OperationCanceledException>(() => fs.Copy(_dir.Combine("a.bin"), dst, cts.Token));
+
+        Assert.False(File.Exists(dst));
+    }
+
+    [Fact]
+    public void CopyKeepsTheReadOnlyAttributeAndReadOnlyCopiesCanBeReplacedAndDeleted()
+    {
+        _ = _dir.WriteRandom("a.bin", 1000);
+        File.SetAttributes(_dir.Combine("a.bin"), FileAttributes.ReadOnly);
+        var fs = new TierFs();
+        string part = _dir.Combine("a.part");
+        string dst = _dir.Combine("copy.bin");
+
+        fs.Copy(_dir.Combine("a.bin"), part);
+        fs.Move(part, dst, true);
+
+        Assert.True(File.GetAttributes(dst).HasFlag(FileAttributes.ReadOnly));
+        fs.Copy(_dir.Combine("a.bin"), part);
+        fs.Move(part, dst, true); // 읽기 전용 사본 위에 덮어쓰기
+        fs.DeleteFile(dst);
+        Assert.False(File.Exists(dst));
+        File.SetAttributes(_dir.Combine("a.bin"), FileAttributes.Normal); // 임시 폴더 정리를 위해
+    }
+
+    [Fact]
     public void EnsureRootCreatesAnAdminOnlyWritableFolderAndLeavesAnExistingOneAlone()
     {
         try

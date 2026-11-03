@@ -166,18 +166,31 @@ public sealed class DriveRecoveryTests
         Assert.False(_r.IsRecovering(Drive));
     }
 
-    [Fact]
-    public void HighBaselineDoesNotRaiseTheFixedCeiling()
+    [Theory]
+    [InlineData(true, true)] // 같은 물리 디스크의 다른 볼륨 (조회 실패도 같은 취급)
+    [InlineData(false, false)]
+    public void ARecoveringVolumeMakesAnotherVolumeOnTheSameDiskRecoveringToo(bool sameDisk, bool recovering)
     {
-        _zone = 300; // 기준 400 의 90% 는 넘지만 고정 상한 250 을 넘는 캐시 적중
+        _w.SameDisk = (_, _) => sameDisk;
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        Assert.True(_r.IsRecovering(Drive));
+        Assert.Equal(recovering, _r.IsRecovering("F:"));
+    }
+
+    [Fact]
+    public void BaselineAboveTheSequentialCeilingIsInvalidSoEverySampleIsUnknown()
+    {
+        _zone = 400; // 기준 400 은 디스크 순차 상한 250 을 넘는 캐시 적중 의심: 기준 무효
         _ref = 380;
         _r.Begin(Drive, new DriveBaseline(new ProbeSpot(10, 400), new ProbeSpot(20, 380)), TimeSpan.FromMinutes(60));
 
         Pass(2);
         Pass(2);
+        Pass(2);
 
-        Assert.True(_r.IsRecovering(Drive));
-        Assert.Single(_log.Lines, l => l.Contains("250 MB/s sequential ceiling (disk cache hit)", StringComparison.Ordinal));
+        Assert.True(_r.IsRecovering(Drive)); // 통과로 세지 않음: 상한 시각까지 계속
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("recovered after", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -339,6 +352,59 @@ public sealed class DriveRecoveryTests
     }
 
     [Fact]
+    public void RestoreAfterTheClockJumpedTwoHoursForwardExpiresTheTrack()
+    {
+        using var dir = new TempDir();
+        (DriveRecovery first, _) = Open(StatusPath(dir));
+        first.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        _w.Now += TimeSpan.FromHours(2);
+
+        (DriveRecovery second, AutoStatus status) = Open(StatusPath(dir));
+
+        Assert.False(second.IsRecovering(Drive));
+        Assert.Empty(status.DriveRecoveries());
+    }
+
+    [Fact]
+    public void RestoreAfterTheClockJumpedTwoHoursBackCapsTheRemainingTimeAtTheLimit()
+    {
+        using var dir = new TempDir();
+        (DriveRecovery first, _) = Open(StatusPath(dir));
+        first.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        _w.Now -= TimeSpan.FromHours(2);
+
+        (DriveRecovery second, AutoStatus status) = Open(StatusPath(dir));
+
+        DriveRecoveryRecord saved = Assert.Single(status.DriveRecoveries());
+        Assert.Equal(_w.Now, saved.Started);
+        Assert.Equal(TimeSpan.FromMinutes(60), saved.Until - saved.Started);
+        _w.Now += TimeSpan.FromMinutes(59);
+        Assert.True(second.IsRecovering(Drive));
+        _w.Now += TimeSpan.FromMinutes(1);
+        Assert.False(second.IsRecovering(Drive));
+    }
+
+    [Fact]
+    public void RestoreInsideTheWindowKeepsTheSavedUntil()
+    {
+        using var dir = new TempDir();
+        (DriveRecovery first, _) = Open(StatusPath(dir));
+        first.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        DateTimeOffset until = _w.Now + TimeSpan.FromMinutes(60);
+        _w.Now += TimeSpan.FromMinutes(10);
+
+        (DriveRecovery second, AutoStatus status) = Open(StatusPath(dir));
+
+        DriveRecoveryRecord saved = Assert.Single(status.DriveRecoveries());
+        Assert.Equal(until, saved.Until);
+        Assert.Equal(_w.Now, saved.Started);
+        _w.Now += TimeSpan.FromMinutes(49);
+        Assert.True(second.IsRecovering(Drive));
+        _w.Now += TimeSpan.FromMinutes(1);
+        Assert.False(second.IsRecovering(Drive));
+    }
+
+    [Fact]
     public void InvalidSavedBaselineFallsBackToAFixedWaitWithoutProbing()
     {
         using var dir = new TempDir();
@@ -408,25 +474,42 @@ public sealed class DriveRecoveryTests
     }
 
     [Fact]
-    public void CeilingIsOnePointFiveTimesTheDrivesWarmMaximumElseTwoFifty()
+    public void CeilingIsOnePointFiveTimesTheReferenceBaselineElseTwoFifty()
     {
         Assert.Equal(250, _r.CeilingFor(Drive));
-        _r.NoteWarmMbps(Drive, 200);
-        _r.NoteWarmMbps("e:", 150); // 더 작은 값은 최대를 낮추지 않음
-        _r.NoteWarmMbps(Drive, double.NaN);
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        _r.NoteWarmMbps(Drive, 1000); // 예열 속도는 상한에 영향이 없음
 
-        Assert.Equal(300, _r.CeilingFor("E:"));
+        Assert.Equal(80 * DriveRecovery.CeilingFactor, _r.CeilingFor("E:"), 3);
         Assert.Equal(250, _r.CeilingFor(@"D:\"));
+        _r.Begin("F:", new DriveBaseline(new ProbeSpot(10, 100), null), TimeSpan.FromMinutes(60));
+        Assert.Equal(250, _r.CeilingFor("F:")); // 참조 기준이 없으면 고정 상한
     }
 
     [Fact]
-    public void WarmMeasuredCeilingLetsAFastDriveRecover()
+    public void FastPrewarmDoesNotLetADiskCacheHitCountAsRecovered()
     {
-        _zone = 290; // 고정 상한 250 이면 캐시 적중으로 빠지지만 예열이 200 MB/s 를 냈던 드라이브라면 상한 300
-        _r.NoteWarmMbps(Drive, 200);
+        _r.NoteWarmMbps(Drive, 1000);
+        _zone = 400; // 디스크 100 인데 표본 400: 참조 기준 80 × 1.5 = 120 초과 → 캐시 적중, UNKNOWN
         _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
 
         Pass(2);
+        Pass(2);
+
+        Assert.True(_r.IsRecovering(Drive));
+        Assert.Single(_log.Lines, l => l.Contains("120 MB/s sequential ceiling (disk cache hit)", StringComparison.Ordinal) && l.Contains("prewarm peak 1000 MB/s", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RisingSamplesAgainstTheReferenceCeilingRecover()
+    {
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        _zone = 70;
+        Pass(2);
+        _zone = 95;
+        Pass(2);
+        Assert.True(_r.IsRecovering(Drive)); // 95 는 좋음 1 회
+        _zone = 100;
         Pass(2);
 
         Assert.False(_r.IsRecovering(Drive));
@@ -479,6 +562,96 @@ public sealed class DriveRecoveryTests
 
         int n = 0;
         Assert.Null(DiskProbe.Run(0, _ => ++n < 70, () => 0, DiskProbe.WallLimit)); // 두 번째 구간 중간에서 읽기 실패
+    }
+
+    [Fact]
+    public void CancelMidSampleGivesUpAfterTheBlockInFlight()
+    {
+        using var cts = new CancellationTokenSource();
+        var round = new ProbeRound(cts.Token);
+        int reads = 0;
+
+        double? mbps = DiskProbe.Run(0, _ =>
+        {
+            if (++reads == 10)
+            {
+                cts.Cancel();
+            }
+
+            return true;
+        }, () => 0, DiskProbe.WallLimit, round);
+
+        Assert.Null(mbps);
+        Assert.Equal((10, "cancelled"), (reads, round.Aborted));
+        Assert.Equal(10L << 20, round.BytesRead);
+    }
+
+    [Fact]
+    public void ARoundStopsAt192MibAndZoneAndRefShareIt()
+    {
+        var spent = new ProbeRound(default) { BytesRead = 190L << 20 };
+        int reads = 0;
+        Assert.Null(DiskProbe.Run(0, _ => ++reads > 0, () => 0, DiskProbe.WallLimit, spent));
+        Assert.Equal((2, "byte limit"), (reads, spent.Aborted));
+
+        var shared = new ProbeRound(default, 2); // 존 + 참조: 구간마다 32 블록씩
+        Assert.NotNull(DiskProbe.Run(0, _ => true, () => 0, DiskProbe.WallLimit, shared));
+        Assert.NotNull(DiskProbe.Run(0, _ => true, () => 0, DiskProbe.WallLimit, shared));
+        Assert.Equal((192L << 20, null), (shared.BytesRead, shared.Aborted));
+    }
+
+    [Fact]
+    public void RoundWallClockIsSharedAcrossSamples()
+    {
+        long clock = 0;
+        var round = new ProbeRound(default, 2);
+        Func<long, bool> read = _ =>
+        {
+            clock += System.Diagnostics.Stopwatch.Frequency / 1000 * 60; // 블록당 60 ms: 96 블록 = 5.76 s
+            return true;
+        };
+
+        Assert.NotNull(DiskProbe.Run(0, read, () => clock, DiskProbe.WallLimit, round));
+        Assert.Null(DiskProbe.Run(0, read, () => clock, DiskProbe.WallLimit, round)); // 두 번째는 합쳐 10 s 를 넘김 (11.5 s)
+        Assert.Equal("wall limit", round.Aborted);
+    }
+
+    [Fact]
+    public void DiskActivityBetweenZoneAndReferenceSamplesAbortsTheRound()
+    {
+        _w.ProbeMbps = (_, lcn) =>
+        {
+            _probed.Add(lcn);
+            _w.Disk = 10L << 20; // 존을 재는 사이에 다른 읽기가 시작됨
+            return _zone;
+        };
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        Pass(2);
+
+        Assert.Equal([10L], _probed); // 참조 표본은 재지 않음
+        Assert.True(_r.IsRecovering(Drive));
+        Assert.Contains(_log.Lines, l => l.Contains("aborted (disk busy between samples)", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(@"E:\Games\X", true)]
+    [InlineData(@"D:\Games\X", false)]
+    public void GameStartCancelsOnlySamplesOnTheSameDisk(string gameRoot, bool cancelled)
+    {
+        _w.ProbeMbps = (_, lcn) =>
+        {
+            _probed.Add(lcn);
+            _r.YieldTo(gameRoot); // 존을 재는 중에 게임이 시작됨
+            return lcn == 10 ? _zone : _ref;
+        };
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        Pass(2);
+        Pass(2);
+
+        Assert.Equal(cancelled, !_probed.Contains(20));
+        Assert.Equal(cancelled, _r.IsRecovering(Drive)); // 취소된 회차는 판정 불가라 회복으로 세지 않음
     }
 
     private static VolumeBitmap Bits(params (bool Used, int Length)[] runs)

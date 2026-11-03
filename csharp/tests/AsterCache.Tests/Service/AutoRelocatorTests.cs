@@ -1236,8 +1236,19 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         Assert.Empty(Vol.Moves);
     }
 
+    [Theory]
+    [InlineData(true, 2)] // 다른 볼륨이 같은 물리 디스크
+    [InlineData(false, 1)] // 다른 디스크: 같은 문자의 게임만
+    public void SameDriveGamesFollowTheInjectedSameDiskJudgement(bool sameDisk, int count)
+    {
+        GameSettings d = Games.Make("d", "d.exe") with { OriginRoot = @"D:\Games\d" };
+        GameSettings e = Games.Make("e", "e.exe") with { OriginRoot = @"E:\Games\e" };
+
+        Assert.Equal(count, AutoRelocator.SameDriveGames([d, e], [d], (a, b) => a.Equals(b, StringComparison.Ordinal) || sameDisk).Count());
+    }
+
     [Fact]
-    public void MeasuredPrewarmSpeedRaisesTheRecoveryCeilingToOnePointFiveTimes()
+    public void MeasuredPrewarmSpeedDoesNotChangeTheRecoveryCeiling()
     {
         UseCold();
         _cold!.WarmMeasured += (g, mbps) => Relocator.NoteWarmMbps(g, mbps); // AutoMode 의 연결과 같음
@@ -1247,7 +1258,7 @@ public sealed class AutoRelocatorTests : ApplyTestBase
 
         Tick(); // 10 MiB / 0.1 s = 100 MB/s
 
-        Assert.Equal(100 * DriveRecovery.CeilingFactor, ((DriveRecovery)Relocator.Recovery).CeilingFor(drive), 3);
+        Assert.Equal(DriveRecovery.CeilingMbps, ((DriveRecovery)Relocator.Recovery).CeilingFor(drive));
     }
 
     [Fact]

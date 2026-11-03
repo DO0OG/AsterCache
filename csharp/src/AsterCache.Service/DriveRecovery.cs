@@ -25,14 +25,15 @@ public sealed class DriveRecovery : IDriveRecovery
 {
     public const double RecoveredFraction = 0.9;
     public const int RecoveredStreak = 2;
-    public const double CeilingMbps = 250; // 드라이브별 예열 측정값이 없을 때의 디스크 순차 상한
-    public const double CeilingFactor = 1.5; // 예열 측정 최대 MB/s 가 있으면 그 값 × 이 배수
+    public const double CeilingMbps = 250; // 비버퍼드 참조 기준값이 없을 때의 디스크 순차 상한이자 유효한 기준값의 한계 (넘으면 캐시 적중 의심)
+    public const double CeilingFactor = 1.5; // 비버퍼드 참조 기준값이 있으면 그 값 × 이 배수
     public static readonly TimeSpan SampleEvery = TimeSpan.FromMinutes(2);
 
     private readonly AutoEnv _env;
     private readonly ILog _log;
     private readonly AutoStatus? _status;
     private readonly Dictionary<string, double> _warmMax = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, CancellationTokenSource> _samples = new(StringComparer.Ordinal); // 표본을 재는 중인 드라이브별 취소 (게임 시작이 같은 디스크의 표본을 멈춤)
 
     public DriveRecovery(AutoEnv env, ILog log, AutoStatus? status = null)
     {
@@ -42,7 +43,7 @@ public sealed class DriveRecovery : IDriveRecovery
         Restore();
     }
 
-    /// 드라이브에서 예열이 실제로 낸 MB/s 를 알림: 가장 큰 값이 그 드라이브의 캐시 적중 상한 (× CeilingFactor) 이 됩니다.
+    /// 드라이브에서 예열이 실제로 낸 MB/s 를 알림: 진단 로그용일 뿐 판정에는 쓰이지 않습니다 (OS 캐시 적중이 섞여 있음).
     public void NoteWarmMbps(string drive, double mbps)
     {
         if (double.IsFinite(mbps) && mbps > 0)
@@ -55,12 +56,12 @@ public sealed class DriveRecovery : IDriveRecovery
         }
     }
 
-    /// 그 드라이브의 순차 읽기 상한 (MB/s): 예열 실측 최대의 1.5 배, 없으면 CeilingMbps.
+    /// 그 드라이브의 순차 읽기 상한 (MB/s): 비버퍼드 참조 기준값의 1.5 배, 참조 기준이 없으면 CeilingMbps.
     public double CeilingFor(string drive)
     {
         lock (_lock)
         {
-            return _warmMax.TryGetValue(Key(drive), out double max) ? max * CeilingFactor : CeilingMbps;
+            return _baselines.TryGetValue(Key(drive), out DriveBaseline? b) && b.Ref is { } r ? r.Mbps * CeilingFactor : CeilingMbps;
         }
     }
 
@@ -94,7 +95,8 @@ public sealed class DriveRecovery : IDriveRecovery
     {
         lock (_lock)
         {
-            return _active.TryGetValue(Key(drive), out Track? t) && _env.Now() - t.Started < t.Limit;
+            string key = Key(drive);
+            return _active.Any(a => (a.Key == key || _env.SameDisk(a.Key, key)) && _env.Now() - a.Value.Started < a.Value.Limit); // 같은 물리 디스크의 다른 볼륨 쓰기도 이 드라이브를 느리게 함
         }
     }
 
@@ -191,7 +193,7 @@ public sealed class DriveRecovery : IDriveRecovery
                 if (!t.CacheLogged)
                 {
                     t.CacheLogged = true;
-                    _log.Info($"drive {key} recovery sample {Show(Math.Max(got.Value.zone ?? 0, got.Value.reference ?? 0))} MB/s is above the {Show(ceiling)} MB/s sequential ceiling (disk cache hit), not counted");
+                    _log.Info($"drive {key} recovery sample {Show(Math.Max(got.Value.zone ?? 0, got.Value.reference ?? 0))} MB/s is above the {Show(ceiling)} MB/s sequential ceiling (disk cache hit), not counted{WarmNote(key)}");
                 }
 
                 Note(key, t, RecoveryVerdict.Unknown); // 캐시 적중: 판정에서 빼고 연속 횟수는 그대로
@@ -216,18 +218,49 @@ public sealed class DriveRecovery : IDriveRecovery
         }
     }
 
-    // 디스크가 바쁘거나 (읽을 수 없어도) 표본이 실패하면 null.
+    /// 게임이 gameDrive 에서 시작했다: 같은 물리 디스크 (AutoEnv.SameDisk) 에서 재는 중인 표본을 취소합니다 (그 표본은 판정 불가).
+    public void YieldTo(string gameDrive)
+    {
+        lock (_lock)
+        {
+            foreach ((string key, CancellationTokenSource cts) in _samples)
+            {
+                if (_env.SameDisk(gameDrive, key))
+                {
+                    cts.Cancel();
+                }
+            }
+        }
+    }
+
+    // 디스크가 바쁘거나 (읽을 수 없어도) 표본이 실패하거나 취소되면 null. 존과 참조 사이에 디스크 활동을 다시 봅니다.
     private (double? Zone, double? Ref)? Sample(string key, DriveBaseline b, int rotation)
     {
+        using var cts = new CancellationTokenSource();
+        lock (_lock)
+        {
+            _samples[key] = cts;
+        }
+
+        var round = new ProbeRound(cts.Token, (b.Zone is null ? 0 : 1) + (b.Ref is null ? 0 : 1));
+        long begin = System.Diagnostics.Stopwatch.GetTimestamp();
+        string? reason = null;
+        DiskProbe.Current = round;
         try
         {
-            if (_env.DiskBytesPerSecond(key) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond)
+            if (Busy(key))
             {
                 return null;
             }
 
             long step = _env.ProbeStepLcn(key) * (rotation % DiskProbe.RotationSteps);
             double? zone = b.Zone is { } z ? _env.ProbeMbps(key, z.Lcn + step) : null;
+            if (b.Zone is not null && b.Ref is not null && zone is not null && (cts.IsCancellationRequested || Busy(key)))
+            {
+                reason = cts.IsCancellationRequested ? "game started" : "disk busy between samples";
+                return null;
+            }
+
             double? reference = b.Ref is { } r ? _env.ProbeMbps(key, r.Lcn + step) : null;
             return (b.Zone is not null && zone is null) || (b.Ref is not null && reference is null) ? null : (zone, reference);
         }
@@ -235,9 +268,27 @@ public sealed class DriveRecovery : IDriveRecovery
         {
             return null;
         }
+        finally
+        {
+            DiskProbe.Current = null;
+            lock (_lock)
+            {
+                _ = _samples.Remove(key);
+            }
+
+            reason ??= round.Aborted;
+            if (round.BytesRead > 0 || reason is not null)
+            {
+                _log.Info($"drive {key} recovery sample read {round.BytesRead >> 20} MiB in {(long)System.Diagnostics.Stopwatch.GetElapsedTime(begin).TotalMilliseconds} ms" + (reason is null ? string.Empty : $", aborted ({reason})"));
+            }
+        }
     }
 
+    private bool Busy(string key) => _env.DiskBytesPerSecond(key) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond;
+
     private static bool Meets(ProbeSpot? baseline, double? now) => baseline is not { } b || now >= b.Mbps * RecoveredFraction;
+
+    private string WarmNote(string key) => _warmMax.TryGetValue(key, out double w) ? $" (prewarm peak {Show(w)} MB/s)" : string.Empty;
 
     private static string Show(double? v) => v is { } x ? Math.Round(x).ToString(System.Globalization.CultureInfo.InvariantCulture) : "-";
 
@@ -267,13 +318,13 @@ public sealed class DriveRecovery : IDriveRecovery
     private void Save(string key, Track t) =>
         _status?.SetDriveRecovery(new DriveRecoveryRecord(key, t.Started, t.Started + t.Limit, t.Baseline?.Zone, t.Baseline?.Ref, t.Verdict?.ToString().ToLowerInvariant()));
 
-    // 기준값이 있고 전부 유한한 양수인가 (아니면 판정할 수 없음).
+    // 기준값이 있고 전부 유한한 양수이며 디스크 순차 상한 이하인가 (아니면 판정할 수 없음: 상한 초과 기준은 캐시 적중 의심).
     private static bool ValidBaseline(DriveBaseline b) =>
         (b.Zone is not null || b.Ref is not null) && Positive(b.Zone) && Positive(b.Ref);
 
-    private static bool Positive(ProbeSpot? s) => s is not { } v || (double.IsFinite(v.Mbps) && v.Mbps > 0);
+    private static bool Positive(ProbeSpot? s) => s is not { } v || (double.IsFinite(v.Mbps) && v.Mbps > 0 && v.Mbps <= CeilingMbps);
 
-    // 서비스 시작: 저장된 추적 중 아직 안 끝난 것을 되살립니다 (상한이 지난 것은 지움). 기준이 없거나 무효이면 고정 대기.
+    // 서비스 시작: 저장된 추적 중 아직 안 끝난 것을 되살립니다 (상한이 지난 것은 지움). 남은 시간은 저장된 종료 시각 (Until) 기준이고, 원래 상한보다 크면 상한으로 자릅니다 (시계가 뒤로 간 경우). 기준이 없거나 무효이면 고정 대기.
     private void Restore()
     {
         if (_status is null)
@@ -286,23 +337,26 @@ public sealed class DriveRecovery : IDriveRecovery
         {
             string key = Key(r.Drive);
             TimeSpan limit = r.Until - r.Started;
+            TimeSpan left = r.Until - now;
             DriveBaseline? baseline = new DriveBaseline(r.Zone, r.Ref) is var b && ValidBaseline(b) ? b : null;
-            if (limit <= TimeSpan.Zero || now >= r.Until)
+            if (limit <= TimeSpan.Zero || left <= TimeSpan.Zero)
             {
                 _finished[key] = now;
                 _status.ClearDriveRecovery(r.Drive);
                 continue;
             }
 
+            left = left > limit ? limit : left; // 시계가 뒤로 가 남은 시간이 원래 상한보다 크면 상한으로 자름
             if (baseline is not null)
             {
                 _baselines[key] = baseline;
             }
 
-            var t = new Track(baseline, r.Started > now ? now : r.Started, limit) { Verdict = Enum.TryParse(r.Verdict, true, out RecoveryVerdict v) ? v : null };
+            var t = new Track(baseline, now, left) { Verdict = Enum.TryParse(r.Verdict, true, out RecoveryVerdict v) ? v : null };
             t.Next = now; // 시작 직후 한 번 바로 잼 (바쁘면 건너뜀)
             _active[key] = t;
-            _log.Info($"drive {key} recovery restored, {(int)(r.Until - now).TotalMinutes} min left ({(baseline is null ? "fixed wait" : "probe")})");
+            Save(key, t); // Started = now, Until = now + left 로 저장값을 맞춤
+            _log.Info($"drive {key} recovery restored, {(int)left.TotalMinutes} min left ({(baseline is null ? "fixed wait" : "probe")})");
         }
     }
 

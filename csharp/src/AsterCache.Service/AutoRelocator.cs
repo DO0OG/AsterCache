@@ -421,13 +421,13 @@ public sealed class AutoRelocator
 
     // g 와 같은 드라이브에 설치된 등록 게임 (g 포함) 이 도는 중인지: 다른 드라이브의 게임은 g 의 디스크 읽기와 겹치지 않으므로 보지 않습니다.
     private bool AnyGameRunning(GameSettings g) =>
-        _env.AnyRunning([.. SameDriveGames(_settings().Games, [g]).SelectMany(x => x.ExeNames).Concat(g.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)]);
+        _env.AnyRunning([.. SameDriveGames(_settings().Games, [g], _env.SameDisk).SelectMany(x => x.ExeNames).Concat(g.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)]);
 
-    // targets 와 같은 드라이브 문자에 설치된 games.
-    internal static IEnumerable<GameSettings> SameDriveGames(IEnumerable<GameSettings> games, IEnumerable<GameSettings> targets)
+    // targets 와 같은 물리 디스크 (sameDisk 판정) 에 설치된 games.
+    public static IEnumerable<GameSettings> SameDriveGames(IEnumerable<GameSettings> games, IEnumerable<GameSettings> targets, Func<string, string, bool> sameDisk)
     {
-        HashSet<string> drives = targets.Select(t => PlanFile.SplitDrive(t.OriginRoot).ToUpperInvariant()).ToHashSet();
-        return games.Where(x => drives.Contains(PlanFile.SplitDrive(x.OriginRoot).ToUpperInvariant()));
+        List<string> roots = [.. targets.Select(t => t.OriginRoot)];
+        return games.Where(x => roots.Any(r => sameDisk(r, x.OriginRoot)));
     }
 
     // 게임이 도는 중이면 디스크를 건드리지 않습니다. 쿨다운은 무시합니다 (트레이스나 배치가 새로 바뀐 뒤의 예열이므로).
@@ -720,7 +720,7 @@ public sealed class AutoRelocator
     // CPU 사용률은 보지 않습니다: HDD 이동은 Low I/O 우선순위로 대상 드라이브에만 영향을 주므로 백그라운드 작업이 있는 PC 도 재배치해야 합니다.
     private string? BusyReason(AsterSettings s, List<GameSettings> ready)
     {
-        if (_env.AnyRunning([.. SameDriveGames(s.Games, ready).SelectMany(g => g.ExeNames)]))
+        if (_env.AnyRunning([.. SameDriveGames(s.Games, ready, _env.SameDisk).SelectMany(g => g.ExeNames)]))
         {
             return "game running";
         }

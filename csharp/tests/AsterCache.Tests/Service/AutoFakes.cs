@@ -161,9 +161,12 @@ internal sealed class FakeWorld
 
     public Func<IReadOnlyList<IReadOnlyList<TraceEvent>>> LoadSessions { get; set; } = () => [[new TraceEvent(@"D:\g\a.bin", 0, 65536)]];
 
+    public Func<string, string, bool> SameDisk { get; set; } = AutoEnv.SameLetter;
+
     public AutoEnv Env() => new()
     {
         Now = () => Now,
+        SameDisk = (a, b) => SameDisk(a, b),
         Scan = () => Skipped.Count == 0 ? Found : new ScanResult([.. Found], [.. Skipped]),
         VolumeLabel = l => Labels.GetValueOrDefault(l, "GAMES"),
         IsHdd = l => Hdd.TryGetValue(l, out bool? v) ? v : true,

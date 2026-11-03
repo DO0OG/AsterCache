@@ -21,6 +21,9 @@ public sealed class KeepAwakeEnv
     /// 'X:' 가 HDD 인가 (SSD 면 false, 모르면 null: 모르는 디스크는 건드리지 않음).
     public required Func<string, bool?> IsHdd { get; init; }
 
+    /// 두 드라이브 ('X:') 가 같은 물리 디스크인가 (모르면 참): 한 디스크는 한 번만 깨우면 됨. 시험 기본값은 드라이브 문자 비교.
+    public Func<string, string, bool> SameDisk { get; init; } = AutoEnv.SameLetter;
+
     public required Func<IEnumerable<string>, bool> AnyRunning { get; init; }
 
     public required Func<bool> PowerOk { get; init; }
@@ -41,6 +44,7 @@ public sealed class KeepAwakeEnv
     {
         Now = () => DateTimeOffset.Now,
         IsHdd = letter => DiskInfo.Query(letter).IncursSeekPenalty,
+        SameDisk = VolumeDisks.SameDisk,
         AnyRunning = exes => ProcessSnapshot.IsRunning(exes),
         PowerOk = () => PowerProbe.PowerOk(BatteryNeverOk),
         Plays = plays,
@@ -123,7 +127,7 @@ public sealed class KeepAwake
         foreach (GameSettings g in s.Games)
         {
             string letter = PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant();
-            if (awake.Contains(letter))
+            if (awake.Any(a => _env.SameDisk(a, letter)))
             {
                 continue;
             }

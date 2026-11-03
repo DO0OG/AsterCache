@@ -169,6 +169,81 @@ public sealed class WarmStreamTests
         Assert.Equal(6, streamer.Read);
     }
 
+    [Theory]
+    [InlineData(true, 2, false)] // 같은 물리 디스크의 다른 볼륨: 양보
+    [InlineData(false, 6, true)] // 다른 디스크: 독립
+    public void AGameOnAnotherVolumeStopsTheStreamOnlyWhenThatVolumeIsTheSameDisk(bool sameDisk, int read, bool ran)
+    {
+        GameSettings a = Game("a");
+        GameSettings other = Game("c") with { OriginRoot = @"E:\Games\c" };
+        var streamer = new BatchStreamer(6, n =>
+        {
+            if (n == 2)
+            {
+                _p!.NoteGameStart("c");
+            }
+        });
+        _p = new Prewarmer([a, other], streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => 16000,
+            GameRunning = _ => false,
+            ZoneBytes = _ => 1610 * Mib,
+            TraceExists = _ => true,
+            SameDisk = (_, _) => sameDisk,
+        }, _log, null, () => _now);
+
+        Assert.Equal(ran, _p.Run(a, "test").Ran);
+        Assert.Equal(read, streamer.Read);
+    }
+
+    [Fact]
+    public void AnUnknownDiskIsTreatedAsTheSameDiskSoAGameStartStopsTheStream()
+    {
+        GameSettings a = Game("a");
+        GameSettings other = Game("c") with { OriginRoot = @"E:\Games\c" };
+        var streamer = new BatchStreamer(6, n =>
+        {
+            if (n == 2)
+            {
+                _p!.NoteGameStart("c");
+            }
+        });
+        var disks = new VolumeDisks(_ => null, () => 0); // 조회 실패
+        _p = new Prewarmer([a, other], streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => 16000,
+            GameRunning = _ => false,
+            ZoneBytes = _ => 1610 * Mib,
+            TraceExists = _ => true,
+            SameDisk = disks.AreSame,
+        }, _log, null, () => _now);
+
+        Assert.False(_p.Run(a, "test").Ran);
+        Assert.Equal(2, streamer.Read);
+    }
+
+    [Theory]
+    [InlineData(true, 0)] // 같은 디스크의 다른 볼륨 게임이 돌면 새 읽기 없음
+    [InlineData(false, 3)]
+    public void ARunningGameOnAnotherVolumeBlocksANewStreamOnlyOnTheSameDisk(bool sameDisk, int read)
+    {
+        GameSettings a = Game("a");
+        GameSettings other = Game("c") with { OriginRoot = @"E:\Games\c" };
+        var streamer = new BatchStreamer(3);
+        _p = new Prewarmer([a, other], streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => 16000,
+            GameRunning = g => g.Name == "c",
+            ZoneBytes = _ => 1610 * Mib,
+            TraceExists = _ => true,
+            SameDisk = (_, _) => sameDisk,
+        }, _log, null, () => _now);
+
+        _ = _p.Run(a, "test");
+
+        Assert.Equal(read, streamer.Read);
+    }
+
     [Fact]
     public void ARunningGameOnTheSameDriveBlocksANewStream()
     {

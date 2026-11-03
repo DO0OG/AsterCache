@@ -1,3 +1,4 @@
+using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
 using AsterCache.Service;
 using AsterCache.Windows;
@@ -24,6 +25,16 @@ public sealed class PinAndRewarmTests
     private int _probeCalls;
     private long _zoneMib = 1610;
     private Action? _onOpen;
+    private readonly FakeRecovery _recovery = new();
+    private Queue<long>? _availSeq;
+    private readonly Dictionary<string, long> _sizes = [];
+
+    private sealed class FakeRecovery : IDriveRecovery
+    {
+        public bool Recovering { get; set; } = true;
+
+        public bool IsRecovering(string drive) => Recovering;
+    }
 
     private sealed class FakePin(IReadOnlyList<string> paths) : IDisposable
     {
@@ -36,7 +47,7 @@ public sealed class PinAndRewarmTests
 
     private Prewarmer Make(params GameSettings[] games) => new(games, _streamer, new PrewarmEnv
     {
-        AvailableRamMib = () => _avail,
+        AvailableRamMib = () => _availSeq is { Count: > 0 } q ? q.Dequeue() : _avail,
         GameRunning = _ => _running,
         ZoneBytes = _ => _zoneMib << 20,
         TraceExists = _ => true,
@@ -48,6 +59,7 @@ public sealed class PinAndRewarmTests
             return _cpu;
         },
         DiskBytesPerSecond = _ => _disk,
+        FileStamp = path => new Fingerprint(path, _sizes.GetValueOrDefault(path), 0),
         PinPaths = g => [$@"D:\Games\{g.Name}\a.bin", $@"D:\Games\{g.Name}\b.bin"],
         OpenPin = paths =>
         {
@@ -61,7 +73,10 @@ public sealed class PinAndRewarmTests
             _probeCalls++;
             return _probe is { } ms ? new ProbeResult(8, ms > CacheProbe.ColdThresholdMs ? 8 : 0, ms) : null;
         },
-    }, _log, null, () => _now);
+    }, _log, null, () => _now)
+    {
+        Recovery = _recovery,
+    };
 
     private static GameSettings Game(string name, bool pin = true, params string[] triggers) =>
         Games.Make(name, name + ".exe") with { Prewarm = PrewarmSettings.Default with { Pin = pin, PinSet = true, TriggerExes = triggers } };
@@ -306,6 +321,102 @@ public sealed class PinAndRewarmTests
         Assert.True(Assert.Single(p.OnProcessStart(new ProcessStart(2, "custom.exe", 0))).Ran);
 
         Assert.Equal(["b"], p.Pinned);
+    }
+
+    // ---- 회복 기간 고정 ----
+
+    private const string AfterRelocation = "auto after relocation";
+
+    private static GameSettings Unset(string name) => Game(name) with { Prewarm = PrewarmSettings.Default }; // pin 키 없음
+
+    [Fact]
+    public void RecoveryPinSurvivesALauncherAndSmallRamUntilTheDriveRecovers()
+    {
+        _ram = 16 * Gib; // 평소 규칙이면 pin 을 적지 않은 게임은 24 GiB 부터라 고정 안 됨
+        _launcherRunning = true;
+        GameSettings g = Unset("a");
+        Prewarmer p = Make(g);
+
+        Assert.True(p.Run(g, AfterRelocation).Ran);
+        Assert.Equal(["a"], p.Pinned);
+        Assert.Contains(_log.Lines, l => l.Contains("a: pinned until drive recovers (2 file(s))", StringComparison.Ordinal));
+
+        p.ReleasePins("launcher steam.exe started"); // 런처 시작은 회복 기간 고정을 풀지 않음
+        p.Tick(Auto(0));
+        Assert.Equal(["a"], p.Pinned);
+        Assert.False(_pins[0].Disposed);
+
+        _recovery.Recovering = false;
+        p.Tick(Auto(0));
+
+        Assert.Empty(p.Pinned);
+        Assert.True(_pins[0].Disposed);
+        Assert.Contains(_log.Lines, l => l.Contains("a: pin released (drive recovered)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RecoveryPinExpiresAfterSixtyMinutes()
+    {
+        GameSettings g = Unset("a");
+        Prewarmer p = Make(g);
+        p.Run(g, AfterRelocation);
+
+        _now += TimeSpan.FromMinutes(59);
+        p.Tick(Auto(0));
+        Assert.Equal(["a"], p.Pinned);
+
+        _now += TimeSpan.FromMinutes(1);
+        p.Tick(Auto(0));
+
+        Assert.Empty(p.Pinned);
+        Assert.Contains(_log.Lines, l => l.Contains("a: pin released (recovery pin expired)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RecoveryPinIsNotTakenWhenAvailableRamIsBelowTheReserve()
+    {
+        GameSettings g = Unset("a");
+        Prewarmer p = Make(g);
+        _availSeq = new Queue<long>([16000, 4095]); // 예열 판단 때는 충분했다가 고정 직전에 여유 아래로
+
+        Assert.True(p.Run(g, AfterRelocation).Ran);
+
+        Assert.Empty(p.Pinned);
+        Assert.Empty(_pins);
+    }
+
+    [Fact]
+    public void RecoveryPinIsReleasedAtOnceWhenAPinnedFileChanges()
+    {
+        GameSettings g = Unset("a");
+        Prewarmer p = Make(g);
+        p.Run(g, AfterRelocation);
+
+        p.Tick(Auto(0));
+        Assert.Equal(["a"], p.Pinned);
+
+        _sizes[@"D:\Games\a\b.bin"] = 7; // 런처 업데이트가 파일을 고침
+        p.Tick(Auto(0));
+
+        Assert.Empty(p.Pinned);
+        Assert.Contains(_log.Lines, l => l.Contains("a: pin released (file changed: b.bin)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RecoveryPinIsNotTakenForExplicitPinFalseOrOtherReasonsOrWithoutARecoveryCheck()
+    {
+        _ram = 16 * Gib;
+        GameSettings off = Game("a", pin: false);
+        GameSettings unset = Unset("b");
+        GameSettings noCheck = Unset("c");
+        Prewarmer p = Make(off, unset, noCheck);
+
+        p.Run(off, AfterRelocation);
+        p.Run(unset, "service start");
+        p.Recovery = null; // 배선 전이면 기능이 꺼진 것과 같음
+        p.Run(noCheck, AfterRelocation);
+
+        Assert.Empty(p.Pinned);
     }
 
     [Fact]

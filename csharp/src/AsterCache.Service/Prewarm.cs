@@ -77,6 +77,9 @@ public sealed class PrewarmEnv
     /// 게임이 놓인 드라이브의 처리량 (바이트/초), 읽지 못하면 null. 예열 유지의 유휴 판정용 (기본은 한가함).
     public Func<GameSettings, double?> DiskBytesPerSecond { get; init; } = _ => 0;
 
+    /// 파일의 크기·수정 시각 (회복 기간 고정이 고정 중 파일 변경을 알아채는 데). 읽을 수 없으면 IOException 등. 기본은 항상 같은 값 (시험용), Create 는 진짜 값.
+    public Func<string, Fingerprint> FileStamp { get; init; } = p => new Fingerprint(p, 0, 0);
+
     /// 파일들을 읽기 전용 매핑으로 고정.
     public Func<IReadOnlyList<string>, PinHandle> OpenPin { get; init; } = _ => new PinHandle(new Nothing(), 0, 0);
 
@@ -110,6 +113,7 @@ public sealed class PrewarmEnv
             ? FolderWarm.Plan(g.OriginRoot, g.ExeNames, full, profile, EngineProfiles.Builtin, ct)
             : throw new PlanRejectedException("origin_root resolves outside allowed roots"),
         PhysicalRamBytes = SystemMemory.TotalBytes,
+        FileStamp = PlanFile.FingerprintOf,
         PinPaths = g => PrefetchStreamer.PinPaths(g, PrefetchStreamer.PinCapBytes(PrefetchStreamer.ZoneBytes(g), SystemMemory.TotalBytes(), SystemMemory.AvailableMib(), g.Prewarm.MinFreeRamMib)),
         LauncherRunning = () => ProcessSnapshot.IsRunning(LauncherExes.All),
         CpuPercent = new CpuLoad().Percent,
@@ -153,6 +157,9 @@ public sealed class Prewarmer
     /// 업데이트 직후 지연으로 시작하지 않았다는 표시 (PrewarmResult.SkipReason).
     public const string PostUpdateDelay = "post-update delay";
 
+    // 재배치 직후 예열의 이유 (AutoRelocator 가 "auto " + "after relocation" 으로 넘김): 회복 기간 고정의 조건.
+    private const string AfterRelocation = "auto after relocation";
+
     private volatile IReadOnlyList<GameSettings> _games;
     private readonly IGameStreamer _streamer;
     private readonly PrewarmEnv _env;
@@ -181,7 +188,7 @@ public sealed class Prewarmer
         _log = log;
         _statusPath = statusPath;
         _now = now ?? (() => DateTimeOffset.UtcNow);
-        _pins = new PinKeeper(env, log);
+        _pins = new PinKeeper(env, log, _now);
         _rewarm = new Rewarmer(this, env, log, _now);
     }
 
@@ -243,6 +250,13 @@ public sealed class Prewarmer
         return _env.ColdPlanner is not null && a.Enabled && (a.FullPrewarm || a.EngineProfiles) && !_env.TraceExists(game) && !_env.RawTraceExists(game);
     }
 
+    /// 재배치 직후 예열의 회복 기간 고정이 쓰는 드라이브 회복 판정. null 이면 그 고정은 꺼진 것과 같습니다.
+    public IDriveRecovery? Recovery
+    {
+        get => _pins.Recovery;
+        set => _pins.Recovery = value;
+    }
+
     /// 지금 고정을 들고 있는 게임 이름.
     public IReadOnlyCollection<string> Pinned => _pins.Held;
 
@@ -277,8 +291,8 @@ public sealed class Prewarmer
     /// 한 게임의 고정을 풉니다 (그 게임 exe 가 뜰 때, 스트림보다 먼저).
     public void ReleasePin(string game, string why) => _pins.Release(game, why);
 
-    /// 모든 고정을 풉니다 (런처가 뜰 때, 서비스 종료).
-    public void ReleasePins(string why) => _pins.ReleaseAll(why);
+    /// 모든 고정을 풉니다 (런처가 뜰 때). 회복 기간 고정은 남깁니다 (런처 업데이트는 파일 변경 해제로 막음).
+    public void ReleasePins(string why) => _pins.ReleaseAll(why, keepRecovery: true);
 
     public void Shutdown() => _pins.ReleaseAll("service stopping");
 
@@ -286,6 +300,7 @@ public sealed class Prewarmer
     public void Tick(AutoSettings auto, CancellationToken ct = default)
     {
         _pins.CheckMemory(_games);
+        _pins.CheckRecovery();
         _rewarm.Tick(auto, ct);
     }
 
@@ -542,7 +557,7 @@ public sealed class Prewarmer
                     PrewarmResult done = Record(game, now, new PrewarmResult(game.Name, true, null, s, now), mbps);
                     if (pin && !ct.IsCancellationRequested)
                     {
-                        _pins.TryPin(game);
+                        _pins.TryPin(game, why == AfterRelocation);
                     }
 
                     return done;

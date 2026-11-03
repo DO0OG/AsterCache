@@ -976,8 +976,8 @@ public sealed class AutoRelocator
 
     private ReapplyVerdict? ReapplyBlockedBy(GameSettings g, AsterSettings s)
     {
-        // 재배치를 끝내지 못했거나 확장 중인 게임의 계획에는 Zone.StartLcn 이 있어 재적용 검사가 적용됨으로 보므로, 여기서 막아 AutoRelocator 가 이어서 맡게 함.
-        if (_status.Get(g.Name)?.RelocatedAt is null || IsExtending(g))
+        // 확장 중이거나 자동 재배치를 끝내지 못한 게임의 계획에는 Zone.StartLcn 이 있어 적용됨으로 보이므로 막음 (항목 없음·Skipped 는 제외).
+        if (IsExtending(g) || _status.Get(g.Name) is { RelocatedAt: null, Stage: not AutoStage.Skipped })
         {
             return ReapplyVerdict.NotApplied;
         }

@@ -575,15 +575,15 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         var status = new AutoStatus(path, _log, () => _w.Now, ticks: FakeClock.Ticks(() => _w.Now));
         _relocator = new AutoRelocator(_w.Env(), status, _log, () => _settings);
 
+        Assert.Equal(ReapplyVerdict.DailyLimit, GateAfterIdle());
         Run(TimeSpan.FromMinutes(10));
         Assert.Equal(AutoStage.WaitingIdle, status.Get("bench")!.Stage);
         Assert.Contains("status file was unreadable; relocation held until", status.Get("bench")!.Detail, StringComparison.Ordinal);
         Assert.Empty(Vol.Moves);
         Assert.Equal(0L, status.RelocationBytesWithin(AutoRelocator.DailyWindow)); // 실제 이동 바이트 집계는 건드리지 않음
 
-        status.Complete(_game.Name, _game.Source, _w.Now, counted: false, "done"); // 재배치를 끝낸 게임만 재적용 게이트를 지남
-        Assert.Equal(ReapplyVerdict.DailyLimit, GateAfterIdle());
         _w.Now += TimeSpan.FromHours(24);
+        status.Complete(_game.Name, _game.Source, _w.Now, counted: false, "done"); // 자동 상태 항목이 있으면 재배치를 끝낸 게임만 게이트를 지남
         Assert.Null(GateAfterIdle());
     }
 
@@ -2569,7 +2569,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     }
     // ---- 정기 재적용 게이트: 자동 재배치와 같은 조건 ----
 
-    // 재배치를 끝낸 게임으로 만듭니다 (재배치 기록이 없으면 게이트는 늘 NotApplied).
+    // 자동 상태 항목이 있는 게임을 재배치를 끝낸 게임으로 만듭니다.
     private void MarkRelocated() => _status.Complete(_game.Name, _game.Source, _w.Now, counted: false, "done");
 
     private ReapplyVerdict? GateAfterIdle()
@@ -2582,7 +2582,6 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     [Fact]
     public void ReapplyGateNeedsTheIdleWindowThenPasses()
     {
-        MarkRelocated();
         Assert.Equal(ReapplyVerdict.NotIdle, Relocator.ReapplyBlock(_game));
         _w.Now += TimeSpan.FromMinutes(3);
 
@@ -2592,7 +2591,6 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     [Fact]
     public void ReapplyGateDefersWhileAnotherRegisteredGameOnTheSameDiskRuns()
     {
-        MarkRelocated();
         var other = new GameSettings("other", ["other.exe"], "t.json", "p.json", Root, [Root], "GAMES", 1440);
         _settings = _settings with { Games = [_game, other] };
         _w.RunningExes.Add("other.exe");
@@ -2603,7 +2601,6 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     [Fact]
     public void ReapplyGateDefersWhileTheDriveIsRecovering()
     {
-        MarkRelocated();
         SetAuto(a => a with { PostRelocateRecovery = AutoSettings.RecoveryFixed });
         Relocator.NoteReapplyStarted(_game, 1 << 20);
         Relocator.NoteReapplied(_game, 1 << 20);
@@ -2614,7 +2611,6 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     [Fact]
     public void ReapplyGateDefersWhenTheDailyBytesBudgetIsUsed()
     {
-        MarkRelocated();
         _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 8L << 30);
 
         Assert.Equal(ReapplyVerdict.DailyLimit, GateAfterIdle());
@@ -2623,7 +2619,6 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     [Fact]
     public void ReapplyGateDefersWhenTheDailyCountLimitIsReached()
     {
-        MarkRelocated();
         SetAuto(a => a with { MaxRelocateGibPerDay = 0 });
         for (int i = 0; i < _settings.Auto.MaxRelocationsPerDay; i++)
         {
@@ -2636,7 +2631,6 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     [Fact]
     public void ReapplyGateDefersOnBattery()
     {
-        MarkRelocated();
         _w.Power = false;
 
         Assert.Equal(ReapplyVerdict.OnBattery, GateAfterIdle());
@@ -2645,7 +2639,6 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     [Fact]
     public void ReapplyGateDefersOnASystemHdd()
     {
-        MarkRelocated();
         (_w.SystemDrive, _w.Hdd[Letter]) = (Letter, true);
 
         Assert.Equal(ReapplyVerdict.NotRelocatable, GateAfterIdle());
@@ -2983,11 +2976,17 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
-    public void ReapplyIsBlockedAsNotAppliedUntilARelocationIsCompleteAndWhileExtending()
+    public void ReapplyIsBlockedAsNotAppliedOnlyForAnUnfinishedAutoRelocationOrWhileExtending()
     {
+        Assert.NotEqual(ReapplyVerdict.NotApplied, Relocator.ReapplyBlock(_game)); // 자동 상태 항목 없음 (수동 적용 게임)
+
+        _status.Set(_game.Name, "auto", null, AutoStage.Discovered, "d");
         Assert.Equal(ReapplyVerdict.NotApplied, Relocator.ReapplyBlock(_game)); // 재배치 기록 없음 (확장 계획도 StartLcn 이 있어 적용됨으로 보일 수 있음)
 
-        _status.Complete(_game.Name, _game.Source, _w.Now, counted: false, "done");
+        _status.Set(_game.Name, "auto", null, AutoStage.Skipped, "off");
+        Assert.NotEqual(ReapplyVerdict.NotApplied, Relocator.ReapplyBlock(_game)); // 자동 재배치를 끈 게임
+
+        MarkRelocated();
         Assert.NotEqual(ReapplyVerdict.NotApplied, Relocator.ReapplyBlock(_game)); // 적용 완료는 기존 게이트대로
 
         _w.Files.Add(_game.Plan + AutoRelocator.ExtendSuffix);

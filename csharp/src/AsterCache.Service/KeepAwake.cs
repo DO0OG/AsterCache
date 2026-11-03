@@ -18,6 +18,11 @@ public sealed class KeepAwakeEnv
     /// 지역 시각 (습관 판정이 요일·시각을 이 오프셋으로 봄).
     public required Func<DateTimeOffset> Now { get; init; }
 
+    /// 주기 계산용 단조 경과 시간: 벽시계가 뒤로 가도 주기가 유지됩니다.
+    public Func<TimeSpan> Elapsed { get; init; } = () => Mono.Elapsed;
+
+    private static readonly Stopwatch Mono = Stopwatch.StartNew();
+
     /// 'X:' 가 HDD 인가 (SSD 면 false, 모르면 null: 모르는 디스크는 건드리지 않음).
     public required Func<string, bool?> IsHdd { get; init; }
 
@@ -75,8 +80,9 @@ public sealed class KeepAwake
     private readonly Func<AsterSettings> _settings;
     private readonly HashSet<string> _active = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _unknownLogged = new(StringComparer.OrdinalIgnoreCase);
-    private DateTimeOffset _next = DateTimeOffset.MinValue;
-    private DateTimeOffset _powerAt = DateTimeOffset.MinValue;
+    private readonly Dictionary<string, string> _picked = new(StringComparer.OrdinalIgnoreCase); // 게임 폴더 → 고른 파일 (읽기 실패 시 다시 고름)
+    private TimeSpan _next; // 단조 시각 기준
+    private TimeSpan _powerAt;
     private TimeSpan? _every; // 읽는 주기, 전원 설정 때문에 쉬는 동안은 null
     private bool _powerRead;
     private int? _lastIdle;
@@ -103,18 +109,19 @@ public sealed class KeepAwake
         }
 
         DateTimeOffset now = _env.Now();
-        if (now < _next)
+        TimeSpan mono = _env.Elapsed();
+        if (mono < _next)
         {
             return;
         }
 
-        if (!_powerRead || now - _powerAt >= PowerRecheck)
+        if (!_powerRead || mono - _powerAt >= PowerRecheck)
         {
-            _powerAt = now;
+            _powerAt = mono;
             ReadPower();
         }
 
-        _next = now + (_every ?? Every);
+        _next = mono + (_every ?? Every);
         if (_every is null || !_env.PowerOk())
         {
             Update([]);
@@ -132,6 +139,12 @@ public sealed class KeepAwake
                 continue;
             }
 
+            // 같은 물리 디스크에서 게임이 이미 돌고 있으면 디스크는 깨어 있으므로 건너뜀
+            if (s.Games.Any(o => o.ExeNames.Count > 0 && _env.SameDisk(PlanFile.SplitDrive(o.OriginRoot).ToUpperInvariant(), letter) && _env.AnyRunning(o.ExeNames)))
+            {
+                continue;
+            }
+
             if (!hdd.TryGetValue(letter, out bool isHdd))
             {
                 bool? kind = _env.IsHdd(letter);
@@ -145,9 +158,18 @@ public sealed class KeepAwake
 
             bool wanted = isHdd && ((g.Prewarm.TriggerExes.Count > 0 && _env.AnyRunning(g.Prewarm.TriggerExes))
                 || (plays.TryGetValue(g.Name, out IReadOnlyList<DateTimeOffset>? p) && PlayedAround(p, now)));
-            if (wanted && _env.PickFile(g) is { } file && TryRead(file))
+            if (!wanted)
+            {
+                continue;
+            }
+
+            if (PickCached(g) is { } file && TryRead(file))
             {
                 awake.Add(letter);
+            }
+            else
+            {
+                _picked.Remove(g.OriginRoot); // 파일이 사라졌거나 읽기 실패: 다음 주기에 다시 고름
             }
         }
 
@@ -218,6 +240,22 @@ public sealed class KeepAwake
         {
             return null;
         }
+    }
+
+    private string? PickCached(GameSettings g)
+    {
+        if (_picked.TryGetValue(g.OriginRoot, out string? file))
+        {
+            return file;
+        }
+
+        file = _env.PickFile(g);
+        if (file is not null)
+        {
+            _picked[g.OriginRoot] = file;
+        }
+
+        return file;
     }
 
     private bool TryRead(string file)

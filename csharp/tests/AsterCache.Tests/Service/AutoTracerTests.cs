@@ -19,7 +19,7 @@ public sealed class AutoTracerTests : IDisposable
         Directory.CreateDirectory(Path.Combine(_rig.Dir, "plans"));
         string plan = Path.Combine(_rig.Dir, "plans", "foo.plan.json");
         _game = new GameSettings("foo", ["foo.exe"], plan + ".prefetch.json", plan, @"D:\Games\Foo", [@"D:\Games\Foo"], "GAMES", 1440) { Source = "auto" };
-        _rig.Settings = new AsterSettings(50, [_game]) { Auto = AutoSettings.Default with { TraceCapSeconds = 30, TraceCapMib = 64, Learn = LearnSettings.Default with { Enabled = false } } };
+        _rig.Settings = new AsterSettings(50, [_game]) { Auto = AutoSettings.Default with { TraceRuns = 1, TraceCapSeconds = 30, TraceCapMib = 64, Learn = LearnSettings.Default with { Enabled = false } } };
         _rig.World.Session = _trace;
         _tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings);
     }
@@ -224,5 +224,110 @@ public sealed class AutoTracerTests : IDisposable
         Assert.False(File.Exists(Raw));
         Assert.False(_tracer.Active);
         _tracer.Step(); // 돌고 있는 것이 없으면 아무 일도 없음
+    }
+
+    // ---- 추가 플레이 기록 (auto.trace_runs) ----
+
+    private void FirstRunOfTwoBlocks()
+    {
+        Reads((0, 65536), (65536, 65536));
+        _tracer.Start(_game);
+        _rig.World.Running = false;
+        _tracer.Step();
+        Assert.False(_tracer.Active);
+        _trace.Records.Clear();
+    }
+
+    private void SetRuns(int runs) => _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { TraceRuns = runs } };
+
+    [Fact]
+    public void RunCountIsTheConsecutiveRunFilesOrOneForALoneRawTraceOrZeroWithoutIt()
+    {
+        var files = new HashSet<string>();
+        Assert.Equal(0, AutoTracer.RunCount(_game, files.Contains));
+        files.Add(TraceWriter.RunPath(Raw, 1)); // 원시 트레이스가 없으면 남은 run 파일은 세지 않음 (업데이트 뒤 옛 파일)
+        Assert.Equal(0, AutoTracer.RunCount(_game, files.Contains));
+        files.Remove(TraceWriter.RunPath(Raw, 1));
+        files.Add(Raw);
+        Assert.Equal(1, AutoTracer.RunCount(_game, files.Contains));
+        files.UnionWith([TraceWriter.RunPath(Raw, 1), TraceWriter.RunPath(Raw, 2), TraceWriter.RunPath(Raw, 4)]);
+        Assert.Equal(2, AutoTracer.RunCount(_game, files.Contains)); // 끊기면 거기까지
+    }
+
+    [Fact]
+    public void SecondRunIsSavedAsRun2AndMergedIntoTheRawTraceInTheFirstRunsOrderWithoutTouchingTheStage()
+    {
+        SetRuns(3);
+        FirstRunOfTwoBlocks();
+        _rig.Status.Complete("foo", "auto", _rig.World.Now, counted: false, null); // 재배치까지 끝난 게임
+
+        Reads((131072, 65536), (0, 65536)); // 새 블록 2 와 이미 있는 블록 0
+        _tracer.Start(_game);
+        Assert.True(_tracer.Active);
+        Assert.Null(_rig.World.Listener); // 두 번째부터는 선행 읽기를 켜지 않음
+        Assert.Equal(AutoStage.Done, _rig.Status.Get("foo")!.Stage);
+        _tracer.Step();
+
+        Assert.Equal(AutoStage.Done, _rig.Status.Get("foo")!.Stage);
+        Assert.Equal(2, AutoTracer.RunCount(_game, File.Exists));
+        var run2 = (List<object?>)JsonRead.ReadFile(TraceWriter.RunPath(Raw, 2))!;
+        Assert.Equal([131072L, 0L], run2.Select(r => ((JObject)r!)["offset"]));
+        var merged = (List<object?>)JsonRead.ReadFile(Raw)!;
+        Assert.Equal([0L, 65536L, 131072L], merged.Select(r => ((JObject)r!)["offset"])); // run1 의 순서 뒤에 새 블록
+        Assert.False(File.Exists(Raw + ".tmp"));
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("(run 2, merged)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void NoMoreRunsAreRecordedOnceTheConfiguredCountIsReached()
+    {
+        SetRuns(2);
+        FirstRunOfTwoBlocks();
+        Reads((131072, 65536));
+        _tracer.Start(_game);
+        _tracer.Step();
+        Assert.Equal(2, AutoTracer.RunCount(_game, File.Exists));
+
+        _tracer.Start(_game);
+
+        Assert.False(_tracer.Active);
+        Assert.Equal(2, _rig.World.TraceStarts);
+    }
+
+    [Fact]
+    public void ARawTraceWithoutRunFilesCountsAsRun1AndIsCopiedBeforeMerging()
+    {
+        SetRuns(3);
+        FirstRunOfTwoBlocks();
+        File.Delete(TraceWriter.RunPath(Raw, 1)); // 옛 방식으로 모은 트레이스
+        Assert.Equal(1, AutoTracer.RunCount(_game, File.Exists));
+
+        Reads((131072, 65536));
+        _tracer.Start(_game);
+        _tracer.Step();
+
+        Assert.Equal(2, AutoTracer.RunCount(_game, File.Exists));
+        Assert.True(File.Exists(TraceWriter.RunPath(Raw, 1)));
+        Assert.Equal(3, ((List<object?>)JsonRead.ReadFile(Raw)!).Count);
+    }
+
+    [Fact]
+    public void AnExtraRunThatCapturesNothingOrCannotStartKeepsTheTraceTheCountAndTheStatus()
+    {
+        SetRuns(3);
+        FirstRunOfTwoBlocks();
+        _rig.Status.Complete("foo", "auto", _rig.World.Now, counted: false, null);
+        string before = File.ReadAllText(Raw);
+
+        _tracer.Start(_game); // 읽기 0 건
+        _tracer.Step();
+        _rig.World.StartTraceThrows = new IOException("etw");
+        _tracer.Start(_game);
+
+        Assert.False(_tracer.Active);
+        Assert.Equal(before, File.ReadAllText(Raw));
+        Assert.False(File.Exists(TraceWriter.RunPath(Raw, 2)));
+        Assert.Equal(1, AutoTracer.RunCount(_game, File.Exists));
+        Assert.Equal(AutoStage.Done, _rig.Status.Get("foo")!.Stage);
     }
 }

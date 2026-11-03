@@ -101,7 +101,7 @@ public sealed class AutoMode
 
             bool traced = _env.FileExists(AutoTracer.RawTracePath(g));
             Status.MarkPlayed(g.Name, g.Source, traced ? AutoStage.WaitingIdle : AutoStage.Discovered, _env.Now());
-            if (a.Trace && !traced)
+            if (a.Trace && AutoTracer.RunCount(g, _env.FileExists) < a.TraceRuns)
             {
                 _tracer.Start(g);
             }

@@ -52,7 +52,7 @@ public sealed class AutoTierTests : IDisposable
         _world.Files.Add(AutoTracer.RawTracePath(g));
     }
 
-    private AsterSettings Settings(bool on = true, int budget = 8) => new(50, _games) { Auto = AutoSettings.Default with { SsdTier = new SsdTierSettings(on, budget, "auto") } };
+    private AsterSettings Settings(bool on = true, int budget = 8) => new(50, _games) { Auto = AutoSettings.Default with { TraceRuns = 1, SsdTier = new SsdTierSettings(on, budget, "auto") } };
 
     private void SetTrace() => _world.LoadSessions = () => [[new TraceEvent(@"D:\Games\Foo\a.bin", 0, 4000), new TraceEvent(@"D:\Games\Foo\b.bin", 0, 600), new TraceEvent(@"D:\Games\Bar\a.bin", 0, 4000)]];
 

@@ -28,8 +28,8 @@ public static class SettingsStore
     private static readonly string[] AutoKeys =
     [
         "enabled", "discover", "trace", "relocate", "prewarm_recent", "idle_minutes", "trace_cap_seconds", "trace_cap_mib",
-        "max_relocations_per_day", "ignore_exes", "rewarm_minutes", "idle_seconds", "learn", "full_prewarm", "full_prewarm_max_mib", "engine_profiles", "shared_profiles",
-        "ssd_tier", "post_update_delay_min", "recovery_max_min","relocate_chunk_mib", "relocate_parallel", "relocate_io_priority", "relocate_verify", "relocate_order", "max_relocate_gib_per_day", "post_relocate_recovery", "keep_awake", "keep_stream_on_game_start",
+        "max_relocations_per_day", "trace_runs", "trace_merge_min_mib", "ignore_exes", "rewarm_minutes", "idle_seconds", "learn", "full_prewarm", "full_prewarm_max_mib", "engine_profiles", "shared_profiles",
+        "ssd_tier", "post_update_delay_min", "recovery_max_min","relocate_chunk_mib", "relocate_parallel", "relocate_io_priority", "relocate_verify", "relocate_order", "max_relocate_gib_per_day", "post_relocate_recovery", "keep_awake", "keep_stream_on_game_start", "restream_cooldown_min", "rewarm_after_exit_min",
     ];
     private static readonly string[] PrewarmKeys = ["on_service_start", "trigger_exes", "min_free_ram_mib", "cooldown_min", "pin"];
     private static readonly string[] LearnKeys = ["enabled", "window_mib", "max_total_mib", "mode", "saturation_mbps"];
@@ -152,7 +152,11 @@ public static class SettingsStore
             OptInt(o, "trace_cap_seconds", 30, 7200, d.TraceCapSeconds), OptInt(o, "trace_cap_mib", 64, 65536, d.TraceCapMib),
             OptInt(o, "max_relocations_per_day", 0, 24, d.MaxRelocationsPerDay), ignore)
         {
+            TraceRuns = OptInt(o, "trace_runs", 1, 32, d.TraceRuns),
+            TraceMergeMinMib = OptInt(o, "trace_merge_min_mib", 1, 65536, d.TraceMergeMinMib),
             RewarmMinutes = OptInt(o, "rewarm_minutes", 0, 1440, d.RewarmMinutes),
+            RestreamCooldownMin = OptInt(o, "restream_cooldown_min", 0, 1440, d.RestreamCooldownMin),
+            RewarmAfterExitMin = OptInt(o, "rewarm_after_exit_min", 0, 1440, d.RewarmAfterExitMin),
             PostUpdateDelayMin = OptInt(o, "post_update_delay_min", 0, 1440, d.PostUpdateDelayMin),
             RecoveryMaxMin = OptInt(o, "recovery_max_min", 1, 1440, d.RecoveryMaxMin),
             PostRelocateRecovery = o.TryGetValue("post_relocate_recovery", out object? prr) && prr is AutoSettings.RecoveryProbe or AutoSettings.RecoveryFixed or AutoSettings.RecoveryOff ? (string)prr : d.PostRelocateRecovery,

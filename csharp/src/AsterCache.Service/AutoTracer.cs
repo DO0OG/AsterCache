@@ -43,6 +43,24 @@ public sealed class AutoTracer
 
     public static string RawTracePath(GameSettings g) => Path.Combine(Path.GetDirectoryName(g.Plan) ?? string.Empty, g.Name + ".trace.json");
 
+    /// 지금까지 모은 플레이 수: 원시 트레이스가 있을 때 trace.run1.json, run2.json ... 이 이어서 있는 개수, 그런 파일 없이 원시 트레이스만 있으면 1, 원시 트레이스가 없으면 0. 따로 저장하는 상태 없음.
+    public static int RunCount(GameSettings g, Func<string, bool> exists)
+    {
+        string raw = RawTracePath(g);
+        if (!exists(raw))
+        {
+            return 0;
+        }
+
+        int n = 0;
+        while (n < 32 && exists(TraceWriter.RunPath(raw, n + 1)))
+        {
+            n++;
+        }
+
+        return Math.Max(1, n);
+    }
+
     /// 가져온 프로필·합성 트레이스 (plans\<이름>.boot.trace.json). 원시 트레이스가 없을 때만 계획·예열의 입력이 되고, 첫 실행 기록은 막지 않습니다.
     public static string BootTracePath(GameSettings g) => Path.Combine(Path.GetDirectoryName(g.Plan) ?? string.Empty, g.Name + GameProfile.BootTraceSuffix);
 
@@ -100,9 +118,11 @@ public sealed class AutoTracer
     {
         string? refused;
         ReadAhead? learn = null;
+        int done; // 이미 모은 플레이 수: 0 이면 첫 기록, 1 이상이면 병합용 추가 기록 (상태·선행 읽기를 건드리지 않음)
         lock (_lock)
         {
-            if (_run is not null || _env.FileExists(RawTracePath(g)))
+            done = RunCount(g, _env.FileExists);
+            if (_run is not null || done >= _settings().Auto.TraceRuns)
             {
                 return;
             }
@@ -113,15 +133,19 @@ public sealed class AutoTracer
                 try
                 {
                     LearnSettings ls = _settings().Auto.Learn;
-                    learn = ls.Enabled ? AutoLearn.Create(g, ls, _env.PhysicalRamBytes(), _learn) : null; // 시스템 SSD·SSD 는 위에서 이미 걸러짐
-                    _run = new Run(g, _env.StartTrace(g.ExeNames, learn is null ? null : AutoLearn.Listener(learn)), _env.Now()) { Learn = learn };
+                    learn = ls.Enabled && done == 0 ? AutoLearn.Create(g, ls, _env.PhysicalRamBytes(), _learn) : null; // 시스템 SSD·SSD 는 위에서 이미 걸러짐
+                    _run = new Run(g, _env.StartTrace(g.ExeNames, learn is null ? null : AutoLearn.Listener(learn)), _env.Now()) { Learn = learn, Number = done + 1 };
                     learn?.Start();
                 }
                 catch (Exception e) when (e is not OperationCanceledException)
                 {
                     learn?.Dispose();
                     _log.Error($"{g.Name}: auto trace could not start", e);
-                    _status.Set(g.Name, g.Source, null, AutoStage.Failed, "trace session failed to start");
+                    if (done == 0)
+                    {
+                        _status.Set(g.Name, g.Source, null, AutoStage.Failed, "trace session failed to start");
+                    }
+
                     return;
                 }
             }
@@ -129,11 +153,17 @@ public sealed class AutoTracer
 
         if (refused is not null)
         {
-            if (_status.Set(g.Name, g.Source, null, AutoStage.Skipped, refused))
+            if (done == 0 && _status.Set(g.Name, g.Source, null, AutoStage.Skipped, refused))
             {
                 _log.Info($"{g.Name}: auto trace and relocation skipped ({refused})"); // 같은 이유면 매번 남기지 않음
             }
 
+            return;
+        }
+
+        if (done > 0)
+        {
+            _log.Info($"{g.Name}: auto trace started (run {done + 1}/{_settings().Auto.TraceRuns})");
             return;
         }
 
@@ -208,18 +238,36 @@ public sealed class AutoTracer
             if (canonical.Count == 0)
             {
                 _log.Warn($"{g.Name}: auto trace ended ({why}) with no reads captured");
-                _status.Set(g.Name, g.Source, null, AutoStage.Failed, "no reads captured");
+                if (run.Number == 1)
+                {
+                    _status.Set(g.Name, g.Source, null, AutoStage.Failed, "no reads captured");
+                }
+
                 return;
             }
 
-            TraceWriter.Write([canonical], RawTracePath(g));
-            _log.Info($"{g.Name}: auto trace ended ({why}), {canonical.Count} read events saved");
-            _status.Set(g.Name, g.Source, null, AutoStage.WaitingIdle, null);
+            if (run.Number == 1)
+            {
+                TraceWriter.Write([canonical], RawTracePath(g));
+            }
+            else
+            {
+                Merge(g, canonical, run.Number);
+            }
+
+            _log.Info($"{g.Name}: auto trace ended ({why}), {canonical.Count} read events saved" + (run.Number == 1 ? string.Empty : $" (run {run.Number}, merged)"));
+            if (run.Number == 1)
+            {
+                _status.Set(g.Name, g.Source, null, AutoStage.WaitingIdle, null);
+            }
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
             _log.Error($"{g.Name}: auto trace failed", e);
-            _status.Set(g.Name, g.Source, null, AutoStage.Failed, "trace failed: " + e.GetType().Name);
+            if (run.Number == 1)
+            {
+                _status.Set(g.Name, g.Source, null, AutoStage.Failed, "trace failed: " + e.GetType().Name); // 추가 기록이 실패해도 이미 있는 트레이스와 상태는 그대로
+            }
         }
         finally
         {
@@ -230,6 +278,29 @@ public sealed class AutoTracer
                 _run = null;
             }
         }
+    }
+
+    // 두 번째 이후 플레이: runN.json 으로 저장하고, run1..N 의 블록 합집합 (run1 의 접근 순서 뒤에 새 run 에서 처음 본 블록) 을 임시 파일을 거쳐 원시 트레이스로 한 번에 바꿔 씁니다.
+    private void Merge(GameSettings g, List<TraceEvent> canonical, int number)
+    {
+        string raw = RawTracePath(g);
+        string first = TraceWriter.RunPath(raw, 1);
+        if (number == 2 && !_env.FileExists(first))
+        {
+            File.Copy(raw, first, true); // run 파일 없이 원시 트레이스만 있던 게임: 그 트레이스가 run1
+        }
+
+        TraceWriter.WriteFile(TraceWriter.RunPath(raw, number), canonical);
+        var sessions = new List<IReadOnlyList<TraceEvent>>();
+        for (int i = 1; i < number; i++)
+        {
+            sessions.Add(JsonRead.ReadFile(TraceWriter.RunPath(raw, i)) is List<object?> rows ? [.. rows.Select(TraceEvents.FromJson)] : throw new PyValueException("bad trace file"));
+        }
+
+        sessions.Add(canonical);
+        string temp = raw + ".tmp";
+        TraceWriter.WriteFile(temp, TraceWriter.Union(sessions));
+        File.Move(temp, raw, true);
     }
 
     // 세션이 멈춘 뒤 선행 읽기를 끝내고 결과를 남깁니다 (Dispose 는 작업자 스레드를 기다림).
@@ -260,6 +331,9 @@ public sealed class AutoTracer
 
         /// 첫 실행 선행 읽기 (auto.learn 이 켜졌을 때).
         public ReadAhead? Learn { get; init; }
+
+        /// 이 플레이가 몇 번째 기록인가 (1 = 첫 기록).
+        public int Number { get; init; } = 1;
 
         public DateTimeOffset LastStatusAt { get; set; } = startedAt;
     }

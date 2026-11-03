@@ -162,7 +162,69 @@ public sealed class PrefetchStreamer : IGameStreamer
     public static ProbeResult? ProbeReadMs(GameSettings game) => CacheProbe.Probe(CacheProbe.PickSamples(Ops(game), round: CacheProbe.NextRound(game.Name))); // 점검마다 다른 위치 (앞 점검의 읽기가 캐시를 데우지 않게)
 }
 
+/// 게임 시작 스트림을 건너뛸 조건의 입력 (기본은 모두 건너뛰지 않음, 시험용). Create 는 진짜 판정.
+public sealed record DispatchEnv
+{
+    /// 새 프로세스가 이 시간보다 늦게 시작했으면 같은 시작 무리로 보고 (게임 exe 와 보조 exe 가 동시에 뜸) 이미 돌던 것으로 세지 않습니다.
+    public static readonly TimeSpan Settle = TimeSpan.FromSeconds(10);
+
+    /// 이 프로세스가 시작되기 전에 이미 돌던 이 게임의 다른 프로세스가 있는가.
+    public Func<GameSettings, ProcessStart, bool> OtherRunning { get; init; } = (_, _) => false;
+
+    /// 그 게임의 물리 디스크가 바쁜가 (읽지 못하면 바쁘지 않은 것으로 봄: 지표 없이 첫 시작 스트림까지 막지 않게).
+    public Func<GameSettings, bool> DiskBusy { get; init; } = _ => false;
+
+    /// 같은 게임의 시작 스트림 사이 최소 간격 (분), 0 = 끔.
+    public Func<int> RestreamCooldownMin { get; init; } = () => 0;
+
+    public static DispatchEnv Create() => new()
+    {
+        OtherRunning = IsOtherRunning,
+        DiskBusy = g => DiskActivity.BytesPerSecond(PlanFile.SplitDrive(g.OriginRoot)) is { } bps && bps >= DiskActivity.BusyBytesPerSecond,
+    };
+
+    /// 이미지 경로가 게임 폴더 아래인가 (다른 프로세스 판정과 종료 판정이 함께 씁니다).
+    internal static bool UnderRoot(GameSettings g, string? imagePath)
+    {
+        string root = g.OriginRoot.TrimEnd('\\', '/') + "\\";
+        return imagePath?.StartsWith(root, StringComparison.OrdinalIgnoreCase) == true;
+    }
+
+    private static bool IsOtherRunning(GameSettings g, ProcessStart start)
+    {
+        foreach ((int pid, string exe) in ProcessSnapshot.Take())
+        {
+            if (pid == start.Pid || pid == Environment.ProcessId)
+            {
+                continue;
+            }
+
+            bool named = g.ExeNames.Contains(exe, StringComparer.OrdinalIgnoreCase);
+            if ((named || UnderRoot(g, ProcessSnapshot.ImagePath(pid))) && StartedBeforeSettle(pid))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool StartedBeforeSettle(int pid)
+    {
+        try
+        {
+            using var p = System.Diagnostics.Process.GetProcessById(pid);
+            return DateTime.Now - p.StartTime > Settle;
+        }
+        catch (Exception e) when (e is ArgumentException or InvalidOperationException or Win32Exception)
+        {
+            return false; // 그 사이 끝났거나 시작 시각을 읽을 수 없음
+        }
+    }
+}
+
 /// 감지된 프로세스를 게임에 대응시켜 스트림을 부릅니다. 같은 게임은 Cooldown 안에 한 번만 (런처·보조 프로세스가 연달아 떠도 중복 읽기 없음).
+/// 게임 exe 가 다시 떴을 때 (게임이 이미 도는 중, 직전 스트림이 restream 간격 안, 그 디스크가 바쁨) 는 같은 데이터를 디스크에서 또 읽지 않도록 건너뜁니다. 런처 시작은 예외.
 public sealed class GameDispatcher
 {
     public static readonly TimeSpan Cooldown = TimeSpan.FromSeconds(60);
@@ -171,10 +233,12 @@ public sealed class GameDispatcher
     private readonly IGameStreamer _streamer;
     private readonly ILog _log;
     private readonly Func<DateTimeOffset> _now;
+    private readonly DispatchEnv _env;
     private readonly Dictionary<string, DateTimeOffset> _last = new(StringComparer.OrdinalIgnoreCase);
 
-    public GameDispatcher(IReadOnlyList<GameSettings> games, IGameStreamer streamer, ILog log, Func<DateTimeOffset>? now = null)
+    public GameDispatcher(IReadOnlyList<GameSettings> games, IGameStreamer streamer, ILog log, Func<DateTimeOffset>? now = null, DispatchEnv? env = null)
     {
+        _env = env ?? new DispatchEnv();
         _games = games;
         _streamer = streamer;
         _log = log;
@@ -183,6 +247,23 @@ public sealed class GameDispatcher
 
     /// 설정을 다시 읽었을 때 게임 목록만 바꿉니다 (쿨다운은 유지).
     public void SetGames(IReadOnlyList<GameSettings> games) => _games = games;
+
+    // 건너뛸 이유 (로그 문구), 없으면 null. 싼 판정부터.
+    private string? RestreamSkip(GameSettings g, ProcessStart start, DateTimeOffset now)
+    {
+        int min = _env.RestreamCooldownMin();
+        if (min > 0 && _last.TryGetValue(g.Name, out DateTimeOffset prev) && now - prev < TimeSpan.FromMinutes(min))
+        {
+            return $"last stream {(int)(now - prev).TotalMinutes} min ago, within restream cooldown of {min} min";
+        }
+
+        if (_env.OtherRunning(g, start))
+        {
+            return "game already running";
+        }
+
+        return _env.DiskBusy(g) ? "drive busy" : null;
+    }
 
     /// 스트림을 불렀으면 true. 스트림 실패는 로그만 남기고 서비스를 멈추지 않습니다.
     public bool Handle(ProcessStart start)
@@ -197,6 +278,12 @@ public sealed class GameDispatcher
         DateTimeOffset now = _now();
         if (_last.TryGetValue(g.Name, out DateTimeOffset prev) && now - prev < Cooldown)
         {
+            return false;
+        }
+
+        if (!LauncherExes.Is(start.ExeName) && RestreamSkip(g, start, now) is { } why)
+        {
+            _log.Info($"{g.Name}: start stream skipped ({why})");
             return false;
         }
 

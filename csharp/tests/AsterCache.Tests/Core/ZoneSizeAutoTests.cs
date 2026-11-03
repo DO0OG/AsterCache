@@ -18,6 +18,18 @@ public sealed class ZoneSizeAutoTests
     [InlineData(64L, 8192L)] // 상한
     public void AutoMaxMibIsAQuarterOfRamWithinTheLimits(long ramGib, long expectedMib) => Assert.Equal(expectedMib, ZoneSize.AutoMaxMib(ramGib * Gib));
 
+    [Theory]
+    [InlineData(4L, 2048L)]
+    [InlineData(16L, 2048L)]
+    [InlineData(64L, 2048L)]
+    public void AutoMaxMibIsCappedAt2048WhenDiskTypeIsUnknownOrUsb(long ramGib, long expectedMib) => Assert.Equal(expectedMib, ZoneSize.AutoMaxMib(ramGib * Gib, slowBus: true));
+
+    [Theory]
+    [InlineData(4L, 2048L)]
+    [InlineData(16L, 4096L)]
+    [InlineData(64L, 8192L)]
+    public void AutoMaxMibKeepsTheRamRuleForConfirmedInternalDisks(long ramGib, long expectedMib) => Assert.Equal(expectedMib, ZoneSize.AutoMaxMib(ramGib * Gib, slowBus: false));
+
     [Fact]
     public void AutoMaxMibRoundsDownInsideTheRange() => Assert.Equal(3000L, ZoneSize.AutoMaxMib((3000L * 4 * (1L << 20)) + 12345));
 }

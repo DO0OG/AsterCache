@@ -8,6 +8,7 @@ using AsterCache.Core.Trace;
 using AsterCache.Prefetch;
 using AsterCache.Service;
 using AsterCache.Tests.Core;
+using AsterCache.Tracer;
 using AsterCache.Windows;
 using Xunit;
 
@@ -71,7 +72,7 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         Directory.CreateDirectory(plans);
         string plan = Path.Combine(plans, "bench.plan.json");
         _game = new GameSettings("bench", ["bench.exe"], plan + ".prefetch.json", plan, Root, [Root], "GAMES", 1440) { Source = "auto" };
-        _settings = new AsterSettings(50, [_game]) with { Auto = AutoSettings.Default with { IdleMinutesSet = true, RelocateParallel = 1, RelocateParallelSet = true, PostRelocateRecovery = AutoSettings.RecoveryOff } }; // 기존 시험은 idle_minutes (3 분) 만 명시된 설정, 쓰기 뒤 회복 대기는 아래 별도 시험
+        _settings = new AsterSettings(50, [_game]) with { Auto = AutoSettings.Default with { TraceRuns = 1, IdleMinutesSet = true, RelocateParallel = 1, RelocateParallelSet = true, PostRelocateRecovery = AutoSettings.RecoveryOff } }; // 기존 시험은 idle_minutes (3 분) 만 명시된 설정, 쓰기 뒤 회복 대기는 아래 별도 시험
         _status = new AutoStatus(Path.Combine(Root, "auto_status.json"), _log, () => _w.Now, ticks: FakeClock.Ticks(() => _w.Now));
         _w.Files.Add(AutoTracer.RawTracePath(_game));
         _w.LoadSessions = () => Sessions;
@@ -2548,5 +2549,215 @@ public sealed class AutoRelocatorTests : ApplyTestBase
 
         Assert.Equal((1, 123L), (_status.RelocationsWithin(AutoRelocator.DailyWindow), _status.RelocationBytesWithin(AutoRelocator.DailyWindow)));
         Assert.True(Relocator.Recovery.IsRecovering(Letter));
+    }
+
+    // ---- 존 확장 재계획 (플레이를 더 모아 병합한 트레이스) ----
+
+    private static IEnumerable<(string, long)> OldBlocks(string f1, string f2) => [(f1, 12), (f2, 0), (f1, 0), (f1, 4), (f2, 8)];
+
+    // 첫 기록 5 블록 뒤에 extra 가 이어지는 병합 트레이스 (run1 의 순서가 앞).
+    private List<TraceEvent> Merged(IEnumerable<(string, long)> extra) => Run([.. OldBlocks(F1, F2), .. extra]);
+
+    // 두 파일의 나머지 모든 블록 (총 32 블록).
+    private IEnumerable<(string, long)> RestOfTheBlocks() =>
+        Enumerable.Range(0, 16).SelectMany(i => new[] { (F1, (long)i), (F2, (long)i) }).Except(OldBlocks(F1, F2));
+
+    // 재배치를 끝낸 게임에 두 번째 플레이가 병합돼 트레이스가 계획보다 새로운 상태.
+    private long DoneThenMergedTrace(List<TraceEvent> merged, int minMib = 1)
+    {
+        long start = DoneAndReadyToReplan(out string raw);
+        SetAuto(a => a with { TraceRuns = 3, TraceMergeMinMib = minMib, PostRelocateRecovery = AutoSettings.RecoveryOff });
+        Sessions = [merged];
+        _w.Files.Add(TraceWriter.RunPath(raw, 1));
+        _w.Files.Add(TraceWriter.RunPath(raw, 2));
+        _w.FileTimes[_game.Plan] = _w.Now - TimeSpan.FromHours(1);
+        _w.FileTimes[raw] = _w.Now;
+        Vol.Moves.Clear();
+        return start;
+    }
+
+    [Fact]
+    public void MergedTraceGrowthBelowTheMinimumDoesNotReplan()
+    {
+        DoneThenMergedTrace(Merged([(F1, 1), (F1, 2)])); // 128 KiB 증가, 기준 1 MiB
+
+        Tick();
+        _w.Now += AutoRelocator.StaleCheckEvery;
+        Tick();
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.NotNull(Entry.RelocatedAt);
+        Assert.True(File.Exists(_game.Plan));
+        Assert.Empty(_w.Moved);
+        Assert.Empty(Vol.Moves);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("extend", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void MergedTraceGrowthExtendsTheZoneByAppendingOnlyNewBlocksAfterTheExistingOnes()
+    {
+        long start = DoneThenMergedTrace(Merged(RestOfTheBlocks()));
+        PlanFile before = PlanFile.Load(_game.Plan);
+        long usedBefore = (long)before.Stats["zone_used_clusters"]!;
+        int daily = _status.RelocationsWithin(AutoRelocator.DailyWindow);
+
+        Tick();
+
+        Assert.Equal(AutoStage.WaitingIdle, Entry.Stage);
+        Assert.Null(Entry.RelocatedAt);
+        Assert.True(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix)); // 확장 중 표시 (이전 계획)
+        PlanFile planned = PlanFile.Load(_game.Plan);
+        Assert.Equal(start, planned.Zone.StartLcn); // 같은 존 시작
+        Assert.Equal(5L, before.Stats["hot_blocks"]);
+        Assert.Equal(32L, planned.Stats["hot_blocks"]);
+        Assert.All(planned.Tasks, t => Assert.True(t.TargetLcn >= start + usedBefore)); // 이미 존에 있는 블록 (접두) 은 작업이 없음
+        Assert.Equal(before.Stats["hot_bytes"], planned.Stats["in_place_bytes"]);
+
+        RunUntilDone();
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.NotEmpty(Vol.Moves);
+        Assert.All(Vol.Moves, m => Assert.True(m.Lcn >= start + usedBefore)); // 실제 이동도 존 뒤쪽으로만
+        Assert.True(Verify(PlanFile.Load(_game.Plan)).Contiguous);
+        Assert.False(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix) || _w.Files.Contains(_game.Plan + AutoRelocator.ExtendSuffix));
+        Assert.Equal(5L, PlanFile.Load(_game.Plan + ".stale").Stats["hot_blocks"]); // 이전 계획은 일반 .stale 자리로
+        Assert.Contains(_log.Lines, l => l.Contains("zone extended by 1 MiB (run 2)", StringComparison.Ordinal));
+        Assert.Equal(daily + 1, _status.RelocationsWithin(AutoRelocator.DailyWindow)); // 일반 재배치와 같이 일일 집계에 듦
+        Assert.Equal([start], _w.PlanStarts); // 이전 존 시작에 맞춰 한 번만 계획함
+    }
+
+    [Fact]
+    public void ExtensionBeyondMaxZoneKeepsTheEarliestRunBlocksAndLogsTheOverflow()
+    {
+        SetAuto(a => a with { TraceRuns = 3 });
+        _settings = _settings with { MaxZoneMib = 1 }; // 병합 트레이스는 2 MiB (32 블록), 존은 16 블록까지
+        long start = DoneThenMergedTrace(Merged(RestOfTheBlocks()), minMib: 0);
+        PlanFile before = PlanFile.Load(_game.Plan);
+        long usedBefore = (long)before.Stats["zone_used_clusters"]!;
+
+        Tick();
+        RunUntilDone();
+
+        PlanFile after = PlanFile.Load(_game.Plan);
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.Equal((16L, 256L), ((long)after.Stats["hot_blocks"]!, after.Zone.Clusters));
+        Assert.Equal(before.Stats["hot_bytes"], after.Stats["in_place_bytes"]); // run1 의 블록은 그대로 앞에
+        Assert.All(after.Tasks, t => Assert.True(t.TargetLcn >= start + usedBefore));
+        Assert.DoesNotContain(after.Order, o => o.Path == F2 && o.Vcn <= 240 && 240 < o.Vcn + o.Clusters); // 가장 늦게 본 블록이 잘림
+        Assert.Contains(_log.Lines, l => l.Contains("overflow 1 MiB dropped", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ExtensionWaitsForTheGameToStopAndPassesTheSameGatesAsAnyRelocation()
+    {
+        DoneThenMergedTrace(Merged(RestOfTheBlocks()));
+        _w.Running = true;
+        Tick();
+        Assert.False(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix)); // 게임이 도는 동안은 계획에 손대지 않음
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+
+        _w.Running = false;
+        SetAuto(a => a with { MaxRelocationsPerDay = 1 }); // 첫 재배치가 이미 하루 상한을 채움
+        for (int i = 0; i < 6; i++)
+        {
+            Tick();
+            _w.Now += TimeSpan.FromMinutes(5);
+        }
+
+        Assert.Empty(Vol.Moves);
+        Assert.Equal((AutoStage.WaitingIdle, "daily limit reached, trace 2/3"), (Entry.Stage, Entry.Detail));
+
+        _w.Now += AutoRelocator.DailyWindow;
+        RunUntilDone();
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.NotEmpty(Vol.Moves);
+    }
+
+    [Fact]
+    public void BlockedExtensionRestoresThePreviousPlanKeepsDoneAndDoesNotRetryTheSameTrace()
+    {
+        long start = DoneThenMergedTrace(Merged(RestOfTheBlocks()));
+        Vol.Ext[Path.Combine(Root, "other.bin")] = [new Extent(0, start + 100, 8)]; // 존 바로 뒤에 다른 파일
+        PlanFile before = PlanFile.Load(_game.Plan);
+
+        Tick();
+        RunUntilDone();
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.NotNull(Entry.RelocatedAt);
+        Assert.Empty(Vol.Moves); // 아무것도 옮기지 않음
+        Assert.Equal(before.Sha(), PlanFile.Load(_game.Plan).Sha()); // 이전 계획이 되살아남
+        Assert.False(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix) || _w.Files.Contains(_game.Plan + AutoRelocator.ExtendSuffix));
+        Assert.Single(_log.Lines, l => l.Contains("zone extension blocked: zone_not_free", StringComparison.Ordinal));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("looking for a new one", StringComparison.Ordinal)); // 전체 재배치로 떨어지지 않음
+        Assert.Equal([start], _w.PlanStarts);
+
+        for (int i = 0; i < 3; i++)
+        {
+            _w.Now += AutoRelocator.StaleCheckEvery;
+            Tick();
+        }
+
+        Assert.Equal([start], _w.PlanStarts); // 같은 트레이스로는 다시 시도하지 않음
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+
+        _w.FileTimes[AutoTracer.RawTracePath(_game)] = _w.Now; // 다음 플레이가 쌓여 트레이스가 바뀜
+        Tick();
+        RunUntilDone();
+        Assert.Equal([start, start], _w.PlanStarts);
+        Assert.Equal(2, _log.Lines.Count(l => l.Contains("zone extension blocked", StringComparison.Ordinal)));
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+    }
+
+    [Fact]
+    public void ExtensionBiggerThanTheDailyWriteBudgetIsBlockedBecauseItGetsNoFirstMoveException()
+    {
+        DoneThenMergedTrace(Merged(RestOfTheBlocks()));
+        SetAuto(a => a with { MaxRelocateGibPerDay = 1 });
+        _w.Now += AutoRelocator.DailyWindow + TimeSpan.FromHours(1); // 하루 창이 비어 있음
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
+        _w.Apply = (g, plan, options, ct) => options.DryRun ? new ApplyReport { TasksTotal = 1, TasksTodo = 1, BytesTodo = 3L << 30 } : real(g, plan, options, ct);
+
+        Tick();
+        RunUntilDone();
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.Empty(Vol.Moves);
+        Assert.Contains(_log.Lines, l => l.Contains("zone extension blocked: the extension is larger than the daily write budget", StringComparison.Ordinal));
+        Assert.Equal(5L, PlanFile.Load(_game.Plan).Stats["hot_blocks"]);
+    }
+
+    [Fact]
+    public void StatusShowsHowManyPlaysAreRecordedWhileMoreAreStillToCome()
+    {
+        DoneAndReadyToReplan(out string raw);
+        SetAuto(a => a with { TraceRuns = 3 });
+        _w.Files.Add(TraceWriter.RunPath(raw, 1));
+        _w.Files.Add(TraceWriter.RunPath(raw, 2));
+
+        Relocator.NoteProgress(_game, 1, 2);
+        Assert.Equal("trace 2/3, prewarming 1/2 MiB", Entry.Detail);
+
+        SetAuto(a => a with { TraceRuns = 2 }); // 다 모았으면 표시 없음
+        Relocator.NoteProgress(_game, 1, 2);
+        Assert.Equal("prewarming 1/2 MiB", Entry.Detail);
+    }
+
+    [Fact]
+    public void GameUpdateSetsTheRunFilesAsideToo()
+    {
+        DoneAndReadyToReplan(out string raw);
+        SetAuto(a => a with { TraceRuns = 3 });
+        _w.Files.Add(TraceWriter.RunPath(raw, 1));
+        _w.Files.Add(TraceWriter.RunPath(raw, 2));
+        Update();
+        _w.Now += AutoRelocator.StaleCheckEvery;
+
+        Tick();
+
+        Assert.Contains(TraceWriter.RunPath(raw, 1) + ".stale", _w.Files);
+        Assert.Contains(TraceWriter.RunPath(raw, 2) + ".stale", _w.Files);
+        Assert.DoesNotContain(TraceWriter.RunPath(raw, 1), _w.Files);
+        Assert.Equal(0, AutoTracer.RunCount(_game, _w.Env().FileExists));
     }
 }

@@ -56,7 +56,7 @@ public static class TraceWriter
         return Path.Combine(Path.GetDirectoryName(outPath) ?? "", $"{stem}.run{index}{suffix}");
     }
 
-    private static void WriteFile(string path, IEnumerable<TraceEvent> events)
+    public static void WriteFile(string path, IEnumerable<TraceEvent> events)
     {
         string text = PyJson.Dumps(events.Select(e => e.ToJson()).ToList(), ensureAscii: false) + "\n";
         File.WriteAllBytes(path, PyJson.Utf8.GetBytes(PyJson.ToCrlf(text)));

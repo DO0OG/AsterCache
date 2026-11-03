@@ -28,6 +28,7 @@ public sealed class Worker : BackgroundService
     private CancellationTokenSource? _generation;
     private bool _restart;
     private int _maintaining;
+    private readonly GameExitTracker _exits = new();
 
     public Worker(AsterSettings settings, ILog log, IProcessWatcher primary, IProcessWatcher? fallback, IGameStreamer streamer, ReapplyChecker checker,
         ReapplyGate? gate = null, Prewarmer? prewarm = null, AutoMode? auto = null, SettingsReloader? reload = null, KeepAwake? keepAwake = null, DispatchEnv? dispatchEnv = null)
@@ -362,6 +363,7 @@ public sealed class Worker : BackgroundService
                 }
 
                 _auto?.RelocateTick(_gate, ct);
+                NoteGameExits();
                 MaintainPrewarm();
                 await (_auto is null ? Task.Delay(CheckTick, ct) : _auto.WaitForTickAsync(CheckTick, ct)); // 발견이 새 게임을 등록하면 일찍 깨움
             }
@@ -370,6 +372,35 @@ public sealed class Worker : BackgroundService
         {
             // 종료
         }
+    }
+
+    // 폴링·ETW 어느 쪽이든 재적용 틱마다 (30 초) 프로세스 이름을 한 번 읽어 실행 중이던 게임이 사라졌는지 봅니다.
+    private void NoteGameExits()
+    {
+        if (_settings.Games.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            HashSet<string> names = new(ProcessSnapshot.Take().Select(p => p.Exe), StringComparer.OrdinalIgnoreCase);
+            foreach (GameSettings g in _exits.Poll(_settings.Games, names))
+            {
+                OnGameExit(g);
+            }
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _log.Error("game exit check failed", e);
+        }
+    }
+
+    // 게임 종료가 한 곳으로 모이는 자리: 로그와 재예열 앞당김 (종료 시 읽은 양 집계 같은 후속 작업도 여기에 붙임).
+    private void OnGameExit(GameSettings game)
+    {
+        _log.Info($"{game.Name}: exited");
+        _prewarm?.NoteGameExit();
     }
 
     // 고정의 RAM 확인과 예열 유지 점검: 다시 예열은 수 초 걸리므로 재적용 틱을 막지 않게 따로, 겹치지 않게 하나씩.

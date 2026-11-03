@@ -14,6 +14,7 @@ public sealed class Rewarmer
     private readonly PrewarmEnv _env;
     private readonly ILog _log;
     private readonly Func<DateTimeOffset> _now;
+    private readonly object _nextLock = new(); // Tick (유지 점검 스레드) 와 PullIn (재적용 틱 스레드) 이 같이 쓰는 _next 보호
     private DateTimeOffset? _next;
 
     public Rewarmer(Prewarmer prewarm, PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
@@ -24,29 +25,55 @@ public sealed class Rewarmer
         _now = now;
     }
 
+    /// 게임이 끝났을 때: 다음 점검을 auto.rewarm_after_exit_min 뒤로 당깁니다 (이미 더 이르면 그대로). 게이트 (게임 실행 중·디스크 바쁨) 와 식었을 때만 읽는 점검은 Tick 이 그대로 적용합니다.
+    public void PullIn(AutoSettings auto)
+    {
+        if (!auto.Enabled || auto.RewarmMinutes <= 0 || auto.RewarmAfterExitMin <= 0)
+        {
+            return;
+        }
+
+        DateTimeOffset due = _now() + TimeSpan.FromMinutes(auto.RewarmAfterExitMin);
+        lock (_nextLock)
+        {
+            if (_next is not { } next || due < next)
+            {
+                _next = due;
+            }
+        }
+    }
+
     public void Tick(AutoSettings auto, CancellationToken ct = default)
     {
         if (!auto.Enabled || auto.RewarmMinutes <= 0)
         {
-            _next = null;
+            lock (_nextLock)
+            {
+                _next = null;
+            }
+
             return;
         }
 
         _env.CpuPercent(); // 틱마다 불러 두 표본 사이가 한 틱이 되게 함 (재예열 판정에는 쓰지 않음)
 
         DateTimeOffset now = _now();
-        if (_next is null)
+        lock (_nextLock)
         {
-            _next = now + TimeSpan.FromMinutes(auto.RewarmMinutes); // 켜진 때부터 한 주기 뒤에 처음 점검
-            return;
+            if (_next is null)
+            {
+                _next = now + TimeSpan.FromMinutes(auto.RewarmMinutes); // 켜진 때부터 한 주기 뒤에 처음 점검
+                return;
+            }
+
+            if (now < _next)
+            {
+                return;
+            }
+
+            _next = now + TimeSpan.FromMinutes(auto.RewarmMinutes);
         }
 
-        if (now < _next)
-        {
-            return;
-        }
-
-        _next = now + TimeSpan.FromMinutes(auto.RewarmMinutes);
         IReadOnlyList<GameSettings> warmed = _prewarm.Warmed();
         if (AutoRelocator.SameDriveGames(_prewarm.Games, warmed, _env.SameDisk).Any(_env.GameRunning))
         {

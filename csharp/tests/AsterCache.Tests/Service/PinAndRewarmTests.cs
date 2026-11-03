@@ -591,6 +591,73 @@ public sealed class PinAndRewarmTests
         Assert.Equal(1, _probeCalls);
     }
 
+    private void ExitAndTick(Prewarmer p, TimeSpan exitAfter, TimeSpan tickAfter)
+    {
+        _now += exitAfter;
+        p.NoteGameExit();
+        TickAt(p, tickAfter);
+    }
+
+    [Fact]
+    public void GameExitPullsTheCheckInToAfterExitMinutesAndColdRestreams()
+    {
+        Prewarmer p = WarmedGame();
+        p.SetAuto(Auto());
+        TickAt(p, TimeSpan.Zero); // 다음 점검은 10 분 뒤
+        _probe = 5.0;
+        _now += TimeSpan.FromMinutes(1);
+        p.NoteGameExit(); // 1 분 지점에 종료 → 3 분 지점
+
+        TickAt(p, TimeSpan.FromSeconds(119));
+        Assert.Equal(0, _probeCalls);
+
+        TickAt(p, TimeSpan.FromSeconds(1));
+        Assert.Equal(1, _probeCalls);
+        Assert.Equal(2, _streamer.Calls.Count);
+    }
+
+    [Fact]
+    public void GameExitDoesNotPostponeAnEarlierCheck()
+    {
+        Prewarmer p = WarmedGame();
+        p.SetAuto(Auto());
+        TickAt(p, TimeSpan.Zero); // 다음 점검은 10 분 지점
+        TickAt(p, TimeSpan.FromMinutes(8.5));
+        p.NoteGameExit(); // 8.5 + 2 = 10.5 분은 더 늦으므로 무시
+
+        TickAt(p, TimeSpan.FromMinutes(1.5));
+
+        Assert.Equal(1, _probeCalls);
+    }
+
+    [Fact]
+    public void GameExitCheckIsHeldWhileAnotherGameRunsOnTheDrive()
+    {
+        Prewarmer p = WarmedGame();
+        p.SetAuto(Auto());
+        TickAt(p, TimeSpan.Zero);
+        _running = true;
+
+        ExitAndTick(p, TimeSpan.Zero, TimeSpan.FromMinutes(2));
+
+        Assert.Equal(0, _probeCalls);
+        Assert.Contains(_log.Lines, l => l.Contains("rewarm check skipped: a game is running", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(0, 10)] // 종료 뒤 앞당김을 끔
+    [InlineData(2, 0)] // 재예열 자체를 끔
+    public void GameExitDoesNothingWhenItsKeyOrRewarmIsOff(int afterExitMin, int rewarmMin)
+    {
+        Prewarmer p = WarmedGame();
+        p.SetAuto(AutoSettings.Default with { RewarmMinutes = rewarmMin, RewarmAfterExitMin = afterExitMin });
+        TickAt(p, TimeSpan.Zero, rewarmMin);
+
+        ExitAndTick(p, TimeSpan.Zero, TimeSpan.FromMinutes(2));
+
+        Assert.Equal(0, _probeCalls);
+    }
+
     [Fact]
     public void GamesNeverPrewarmedAreNotChecked()
     {

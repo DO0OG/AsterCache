@@ -362,15 +362,24 @@ public static partial class PowerProbe
         public uint BatteryFullLifeTime;
     }
 
-    /// AC 연결, 배터리 없음, 알 수 없음은 true (방해될 일이 없음). 배터리면 남은 비율이 minBatteryPercent 이상일 때만 true.
-    public static bool PowerOk(int minBatteryPercent)
+    /// AC 연결, 배터리 없음, 알 수 없음은 true (방해될 일이 없음). 배터리면 남은 비율이 minBatteryPercent 이상일 때만 true. 조회 자체가 실패하면 false (보수).
+    public static bool PowerOk(int minBatteryPercent) =>
+        Decide(GetSystemPowerStatus(out PowerStatus s), s.AcLineStatus, s.BatteryFlag, s.BatteryLifePercent, minBatteryPercent);
+
+    /// PowerOk 의 판정 (시험용으로 분리): queried 는 GetSystemPowerStatus 가 성공했는가.
+    public static bool Decide(bool queried, byte acLineStatus, byte batteryFlag, byte batteryLifePercent, int minBatteryPercent)
     {
-        if (!GetSystemPowerStatus(out PowerStatus s) || s.AcLineStatus is AcOnline or Unknown || (s.BatteryFlag & NoBattery) != 0)
+        if (!queried)
+        {
+            return false;
+        }
+
+        if (acLineStatus is AcOnline or Unknown || (batteryFlag & NoBattery) != 0)
         {
             return true;
         }
 
-        return s.BatteryLifePercent != Unknown && s.BatteryLifePercent >= minBatteryPercent;
+        return batteryLifePercent != Unknown && batteryLifePercent >= minBatteryPercent;
     }
 
     [LibraryImport("kernel32.dll", SetLastError = true)]

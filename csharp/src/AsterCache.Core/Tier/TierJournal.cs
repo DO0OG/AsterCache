@@ -111,7 +111,7 @@ public sealed class TierJournal
         string tmp = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp"; // 서비스와 CLI 가 동시에 저장해도 임시 파일을 공유하지 않음
         try
         {
-            File.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(PyJson.Dumps(root, indent: 2, ensureAscii: false) + "\n"));
+            DurableFile.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(PyJson.Dumps(root, indent: 2, ensureAscii: false) + "\n"));
             File.Move(tmp, path, true);
         }
         catch (Exception)

@@ -163,9 +163,12 @@ internal sealed class FakeWorld
 
     public Func<string, string, bool> SameDisk { get; set; } = AutoEnv.SameLetter;
 
+    /// 있으면 Now 대신 이 시계를 씀 (MonotonicClock 시험).
+    public Func<DateTimeOffset>? Clock { get; set; }
+
     public AutoEnv Env() => new()
     {
-        Now = () => Now,
+        Now = () => Clock?.Invoke() ?? Now,
         SameDisk = (a, b) => SameDisk(a, b),
         Scan = () => Skipped.Count == 0 ? Found : new ScanResult([.. Found], [.. Skipped]),
         VolumeLabel = l => Labels.GetValueOrDefault(l, "GAMES"),

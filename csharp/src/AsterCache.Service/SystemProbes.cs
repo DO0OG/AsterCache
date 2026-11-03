@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -109,14 +111,29 @@ public static partial class DiskActivity
     /// 읽지 못하면 바쁜 것으로 간주 (보수적: 재적용을 미룸).
     public static bool IsBusy(string letter) => BytesPerSecond(letter) is not { } bps || bps > BusyBytesPerSecond;
 
+    /// 실패 사유 (로그 문구이자 판정 기준).
+    public const string CounterUnavailable = "counter_unavailable";
+    public const string InstanceUnmapped = "instance_unmapped";
+    public const string ValueInvalid = "value_invalid";
+    public const string StatusText = "disk activity unavailable; optimization paused";
+
     /// 인스턴스 이름 ("0", "0 C: D:") → 값. letter 가 이름에 들어 있는 인스턴스의 합, 하나도 없으면 null.
-    public static double? Sum(string letter, IReadOnlyDictionary<string, double> instances)
+    public static double? Sum(string letter, IReadOnlyDictionary<string, double> instances) => Sum(letter, instances, out _);
+
+    /// 사유: 매핑 없음 = instance_unmapped, 유한하지 않거나 음수인 값이 있음 = value_invalid (그 경우 letter 와 무관하게 null).
+    public static double? Sum(string letter, IReadOnlyDictionary<string, double> instances, out string? reason)
     {
         string key = letter.TrimEnd(':', '\\').ToUpperInvariant() + ":";
         double sum = 0;
         bool found = false;
         foreach ((string name, double value) in instances)
         {
+            if (!double.IsFinite(value) || value < 0)
+            {
+                reason = ValueInvalid;
+                return null;
+            }
+
             string[] parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length > 1 && uint.TryParse(parts[0], out _) && parts.Skip(1).Contains(key, StringComparer.OrdinalIgnoreCase))
             {
@@ -125,7 +142,20 @@ public static partial class DiskActivity
             }
         }
 
+        reason = found ? null : InstanceUnmapped;
         return found ? sum : null;
+    }
+
+    private static readonly ConcurrentDictionary<string, byte> Reported = new(StringComparer.Ordinal);
+    private static bool _namesLogged;
+
+    /// 드라이브별 1 회만 기록 (반복 로그 방지).
+    private static void Report(string letter, string reason)
+    {
+        if (Reported.TryAdd(letter, 0))
+        {
+            Trace.WriteLine($"DiskActivity: {letter} {StatusText} ({reason})");
+        }
     }
 
     /// 모든 물리 디스크 인스턴스의 표본을 2 초 캐시해 같은 디스크를 묻는 여러 호출이 한 번만 잽니다.
@@ -150,7 +180,19 @@ public static partial class DiskActivity
                 instances = _last;
             }
 
-            return instances is null ? null : Sum(letter, instances);
+            if (instances is null)
+            {
+                Report(letter, CounterUnavailable);
+                return null;
+            }
+
+            double? bps = Sum(letter, instances, out string? reason);
+            if (reason is not null)
+            {
+                Report(letter, reason);
+            }
+
+            return bps;
         }
     }
 
@@ -193,6 +235,12 @@ public static partial class DiskActivity
                     }
 
                     result[Marshal.PtrToStringUni(item.Name) ?? string.Empty] = item.Value;
+                }
+
+                if (!_namesLogged)
+                {
+                    _namesLogged = true;
+                    Trace.WriteLine("DiskActivity: PhysicalDisk 인스턴스 " + string.Join(", ", result.Keys));
                 }
 
                 return result;

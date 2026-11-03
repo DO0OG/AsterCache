@@ -52,6 +52,24 @@ public sealed class ZoneStreamerTests
     [Theory]
     [InlineData(StreamMethod.Pvm)]
     [InlineData(StreamMethod.Read)]
+    public void CancelledTokenStopsAtTheNext8MibBoundary(StreamMethod method)
+    {
+        using var tmp = new TempDir();
+        tmp.WriteRandom("f.bin", (int)(20 * Mib));
+        ReadOp[] ops = { new(tmp.Combine("f.bin"), 0, 20 * Mib) };
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        StreamStats cut = ZoneStreamer.Run(ops, method, ct: cts.Token);
+        StreamStats full = ZoneStreamer.Run(ops, method);
+
+        Assert.Equal(ZoneStreamer.CancelCheckBytes, cut.Bytes);
+        Assert.Equal(20 * Mib, full.Bytes);
+    }
+
+    [Theory]
+    [InlineData(StreamMethod.Pvm)]
+    [InlineData(StreamMethod.Read)]
     public void ReaderDoesNotModifyTheFile(StreamMethod method)
     {
         using var tmp = new TempDir();

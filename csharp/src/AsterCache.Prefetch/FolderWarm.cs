@@ -57,7 +57,7 @@ public static class FolderWarm
     /// ops 를 묶음 (BatchBytes 이상이 모일 때까지, 파일 하나는 쪼개지 않음) 으로 읽습니다. ct 가 취소되면 다음 묶음부터 시작하지 않고, 읽은 만큼의 통계와 끝까지 읽었는지(complete) 를 돌려줍니다.
     public static (StreamStats Stats, bool Complete) Read(IReadOnlyList<ReadOp> ops, CancellationToken ct, Func<IReadOnlyList<ReadOp>, StreamStats>? read = null)
     {
-        read ??= batch => ZoneStreamer.Run(batch, StreamMethod.Pvm);
+        read ??= batch => ZoneStreamer.Run(batch, StreamMethod.Pvm, ct: ct);
         long bytes = 0;
         long requests = 0;
         long errors = 0;
@@ -77,8 +77,13 @@ public static class FolderWarm
                 size += ops[at++].Length;
             }
 
-            StreamStats s = read([.. ops.Skip(from).Take(at - from)]);
+            ReadOp[] batch = [.. ops.Skip(from).Take(at - from)];
+            StreamStats s = read(batch);
             (bytes, requests, errors, seconds) = (bytes + s.Bytes, requests + s.Requests, errors + s.Errors, seconds + s.Seconds);
+            if (ct.IsCancellationRequested && s.Bytes < batch.Sum(o => o.Length))
+            {
+                return (new StreamStats(bytes, requests, errors, seconds), false); // 묶음 도중 멈춤 (마지막 묶음이어도 끝까지 읽은 것이 아님)
+            }
         }
 
         return (new StreamStats(bytes, requests, errors, seconds), true);

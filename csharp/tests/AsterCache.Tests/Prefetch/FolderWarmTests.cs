@@ -287,6 +287,21 @@ public sealed class FolderWarmTests
     }
 
     [Fact]
+    public void CancelInsideTheLastBatchReportsIncomplete()
+    {
+        using var cts = new CancellationTokenSource();
+
+        (StreamStats stats, bool complete) = FolderWarm.Read([new ReadOp("x", 0, 40 * Mib)], cts.Token, _ =>
+        {
+            cts.Cancel(); // 묶음 도중 멈춤: 8 MiB 만 읽고 돌아옴
+            return new StreamStats(8 * Mib, 1, 0, 0.1);
+        });
+
+        Assert.False(complete);
+        Assert.Equal(8 * Mib, stats.Bytes);
+    }
+
+    [Fact]
     public void CancelledBeforeStartReadsNothing()
     {
         using var cts = new CancellationTokenSource();

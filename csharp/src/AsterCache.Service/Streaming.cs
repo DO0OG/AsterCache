@@ -87,7 +87,7 @@ public sealed class PrefetchStreamer : IGameStreamer
         long done = 0;
         return FolderWarm.Read(ops, stop, batch =>
         {
-            StreamStats s = ZoneStreamer.Run(batch, StreamMethod.Pvm);
+            StreamStats s = ZoneStreamer.Run(batch, StreamMethod.Pvm, ct: stop);
             done += s.Bytes;
             progress?.Invoke(done, total);
             return s;

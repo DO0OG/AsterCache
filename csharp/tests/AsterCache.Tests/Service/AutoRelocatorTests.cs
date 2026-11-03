@@ -2600,6 +2600,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     public void ReapplyGateDefersWhileTheDriveIsRecovering()
     {
         SetAuto(a => a with { PostRelocateRecovery = AutoSettings.RecoveryFixed });
+        Relocator.NoteReapplyStarted(_game, 1 << 20);
         Relocator.NoteReapplied(_game, 1 << 20);
 
         Assert.Equal(ReapplyVerdict.Recovering, GateAfterIdle());
@@ -2655,10 +2656,50 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     {
         SetAuto(a => a with { PostRelocateRecovery = AutoSettings.RecoveryFixed });
 
+        Relocator.NoteReapplyStarted(_game, 500);
         Relocator.NoteReapplied(_game, 123);
 
         Assert.Equal((1, 123L), (_status.RelocationsWithin(AutoRelocator.DailyWindow), _status.RelocationBytesWithin(AutoRelocator.DailyWindow)));
         Assert.True(Relocator.Recovery.IsRecovering(Letter));
+    }
+
+    [Fact]
+    public void ReapplyOptionsUseTheSmallerOfTheRunCapAndTheRemainingBudgetOnSmr()
+    {
+        _w.IsSmr = _ => true;
+        Assert.Equal(1L << 30, Relocator.ReapplyOptionsFor(_game).WriteCap); // 회당 1 GiB (예산 2 GiB 가 남음)
+
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), (2L << 30) - (1L << 29));
+        Assert.Equal(1L << 29, Relocator.ReapplyOptionsFor(_game).WriteCap);
+
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 1L << 30);
+        Assert.Equal(0, Relocator.ReapplyOptionsFor(_game).WriteCap);
+        Assert.Equal(_game.Plan, Relocator.ReapplyOptionsFor(_game).SaveTo);
+    }
+
+    [Fact]
+    public void ReappliedReplacesThePlannedBytesWithTheActualMovedBytes()
+    {
+        Relocator.NoteReapplyStarted(_game, 100L << 20);
+        Relocator.NoteReapplied(_game, 30L << 20);
+
+        Assert.Equal((1, 30L << 20), (_status.RelocationsWithin(AutoRelocator.DailyWindow), _status.RelocationBytesWithin(AutoRelocator.DailyWindow)));
+    }
+
+    [Fact]
+    public void LayoutWarnIsAllowedOnlyAfterACompleteRelocationOutsideExtension()
+    {
+        Assert.False(Relocator.LayoutWarnAllowed(_game)); // 재배치 기록 없음
+
+        _status.Complete(_game.Name, _game.Source, _w.Now, counted: false, "done");
+        Assert.True(Relocator.LayoutWarnAllowed(_game));
+
+        _w.Files.Add(_game.Plan + AutoRelocator.ExtendSuffix);
+        Assert.False(Relocator.LayoutWarnAllowed(_game)); // 확장 중
+        _w.Files.Remove(_game.Plan + AutoRelocator.ExtendSuffix);
+
+        _status.Set(_game.Name, _game.Source, null, AutoStage.WaitingIdle, "write limit reached, will continue");
+        Assert.False(Relocator.LayoutWarnAllowed(_game)); // 쓰기 상한으로 멈춘 부분 적용
     }
 
     // ---- 존 확장 재계획 (플레이를 더 모아 병합한 트레이스) ----

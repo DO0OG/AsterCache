@@ -708,6 +708,8 @@ public sealed class AutoRelocator
     }
 
     // 확장 중인가: 확장 재계획이 이전 계획을 .extend 로 치운 뒤 끝나거나 막히기 전까지 (파일이라 서비스를 다시 시작해도 이어짐).
+    private const string WriteLimitDetail = "write limit reached, will continue";
+
     private bool IsExtending(GameSettings g) => _env.FileExists(g.Plan + ExtendSuffix);
 
     // 존 확장 재계획: 배치까지 끝낸 게임의 병합 트레이스 (플레이를 더 모아 합집합이 된 trace.json) 가 계획보다 새롭고, 핫 집합이 TraceMergeMinMib 이상 커졌으면
@@ -955,12 +957,36 @@ public sealed class AutoRelocator
         return countHeld || bytesHeld ? ReapplyVerdict.DailyLimit : null;
     }
 
-    /// 정기 재적용이 끝났음 (예외로 끝났으면 0 바이트): 일일 상한·예산 집계에 시작으로 넣고, 쓴 바이트가 있으면 자동 재배치와 같이 드라이브 회복 추적을 시작합니다.
+    /// 정기 재적용이 쓸 옵션: 자동 재배치와 같은 회당 쓰기 상한·청크·검증·우선순위에 하루 남은 예산을 더해 제한합니다.
+    public ApplyOptions ReapplyOptionsFor(GameSettings g)
+    {
+        AsterSettings s = _settings();
+        ApplyOptions run = BaseApplyOptions(s, g);
+        long budget = BudgetBytes(s, g); // 0 = 무제한
+        run = run with { SaveTo = g.Plan };
+        return budget > 0 ? run with { WriteCap = Math.Max(0, Math.Min(run.WriteCap, budget - _status.RelocationBytesWithin(DailyWindow))) } : run;
+    }
+
+    private ApplyOptions BaseApplyOptions(AsterSettings s, GameSettings g)
+    {
+        bool smr = IsSmr(g);
+        return new ApplyOptions(Execute: true, ChunkBytes: (long)s.Auto.RelocateChunkMib << 20, LowIoPriority: s.Auto.RelocateIoPriority == AutoSettings.IoLow, Verify: s.Auto.RelocateVerify, Order: RelocateOrder.Resolve(s.Auto.RelocateOrder), Parallel: s.Auto.ParallelFor(_env.IsSlowBus(DriveOf(g)), smr),
+            WriteCap: AutoSettings.WriteCapFor(smr));
+    }
+
+    /// 정기 재적용이 시작됨: 자동 재배치처럼 실행 전에 예정 바이트로 일일 상한·예산 집계에 넣습니다.
+    public void NoteReapplyStarted(GameSettings g, long plannedBytes) => _status.BeginRelocation(_env.Now(), plannedBytes);
+
+    /// 정기 재적용이 끝났음 (예외로 끝났으면 0 바이트): 집계를 실제 이동량으로 바로잡고, 쓴 바이트가 있으면 자동 재배치와 같이 드라이브 회복 추적을 시작합니다.
     public void NoteReapplied(GameSettings g, long movedBytes)
     {
-        _status.BeginRelocation(_env.Now(), movedBytes);
+        _status.SetLastRelocationBytes(movedBytes);
         BeginRecovery(g, _settings().Auto, movedBytes, null);
     }
+
+    /// 배치 풀림 경고를 낼 만한지: 재배치를 끝낸 적이 있고, 확장 중이 아니며, 직전 실행이 쓰기 상한으로 멈춘 부분 적용이 아닐 때.
+    public bool LayoutWarnAllowed(GameSettings g)
+        => _status.Get(g.Name) is { RelocatedAt: not null } e && !IsExtending(g) && e.Detail != WriteLimitDetail;
 
     private bool NeedsWork(GameSettings g, bool relocateOn)
     {
@@ -1375,10 +1401,8 @@ public sealed class AutoRelocator
 
             plan = _env.LoadPlan(g.Plan);
             ReapplyChecker.CheckPaths(plan, g, _env.RealPath);
-            string order = RelocateOrder.Resolve(s.Auto.RelocateOrder);
-            bool smr = IsSmr(g);
-            var run = new ApplyOptions(Execute: true, ChunkBytes: (long)s.Auto.RelocateChunkMib << 20, LowIoPriority: s.Auto.RelocateIoPriority == AutoSettings.IoLow, Verify: s.Auto.RelocateVerify, Order: order, Parallel: s.Auto.ParallelFor(_env.IsSlowBus(DriveOf(g)), smr),
-                WriteCap: AutoSettings.WriteCapFor(smr));
+            ApplyOptions run = BaseApplyOptions(s, g);
+            string order = run.Order;
             if (_status.RelocationHeldUntil() is { } held)
             {
                 Note(g, AutoStage.WaitingIdle, WaitDetail(g, AutoStatus.HoldDetail(held)));
@@ -1421,7 +1445,7 @@ public sealed class AutoRelocator
             }
             else if (rep.Stopped is not null)
             {
-                Note(g, AutoStage.WaitingIdle, "write limit reached, will continue");
+                Note(g, AutoStage.WaitingIdle, WriteLimitDetail);
             }
             else if (rep.Failed.Count > 0)
             {

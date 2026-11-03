@@ -281,6 +281,13 @@ public sealed class Prewarmer
         }
     }
 
+    /// 게임 시작 때 핫 집합이 RAM 에 있는 비율 (%): 표본 몇 곳 (CacheProbe.PickSamples 규모) 을 읽어 느리지 않은 곳의 비율. 잴 표본이 없으면 null.
+    public int? HitPercent(GameSettings game)
+    {
+        ProbeResult? p = ColdSamples(game) is { } samples ? _env.ProbeSamples(samples) : _env.ProbeReadMs(game);
+        return p is { Samples: > 0 } ? (p.Samples - p.Slow) * 100 / p.Samples : null;
+    }
+
     internal PrewarmResult RewarmGame(GameSettings game, CancellationToken ct = default) => Guarded(game, "rewarm", pin: true, ignoreCooldown: true, ct);
 
     /// 이 프로세스가 어느 게임의 trigger_exes 에 들어 있는가 (대소문자 무시).

@@ -81,6 +81,7 @@ public static partial class L
         ["Stage_ReadAhead"] = ("선행 읽기 {0} MiB", "{0} MiB read ahead"),
         ["Stage_RelocatedProfile"] = ("재배치됨(프로필)", "relocated (profile)"),
         ["Stage_RelocatedPrefetch"] = ("재배치됨(프리페치)", "relocated (prefetch)"),
+        ["Stage_HitPercent"] = ("예열 적중 {0}%", "prewarm hit {0}%"),
         ["Stage_PrewarmedFull"] = ("예열됨(전체)", "prewarmed (full folder)"),
         ["Stage_PrewarmedProfile"] = ("예열됨(프로필 {0})", "prewarmed (profile {0})"),
         ["Stage_Prewarming"] = ("예열 중 {0}/{1} MB", "prewarming {0}/{1} MB"),

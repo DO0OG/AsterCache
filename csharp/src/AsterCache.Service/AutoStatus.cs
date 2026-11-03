@@ -18,7 +18,7 @@ public static class AutoStage
 }
 
 public sealed record AutoGameEntry(
-    string Source, string? Launcher, string Stage, string? Detail, DateTimeOffset At, DateTimeOffset? LastPlayed, DateTimeOffset? RelocatedAt);
+    string Source, string? Launcher, string Stage, string? Detail, DateTimeOffset At, DateTimeOffset? LastPlayed, DateTimeOffset? RelocatedAt, int? HitPercent = null, DateTimeOffset? HitAt = null);
 
 public sealed record AutoEvent(DateTimeOffset At, string Game, string Kind);
 
@@ -133,6 +133,19 @@ public sealed class AutoStatus
         }
     }
 
+    /// 게임 시작 때 잰 핫 집합의 RAM 상주율 (%)과 측정 시각. 항목이 없으면 남기지 않습니다.
+    public void RecordHit(string name, int percent, DateTimeOffset at)
+    {
+        lock (_lock)
+        {
+            if (_games.TryGetValue(name, out AutoGameEntry? old))
+            {
+                _games[name] = old with { HitPercent = Math.Clamp(percent, 0, 100), HitAt = at };
+                Save();
+            }
+        }
+    }
+
     public void AddEvent(string game, string kind)
     {
         lock (_lock)
@@ -206,7 +219,7 @@ public sealed class AutoStatus
         var games = new JObject();
         foreach ((string name, AutoGameEntry e) in _games.OrderBy(kv => kv.Key, StringComparer.Ordinal))
         {
-            games.Add(name, new JObject
+            var game = new JObject
             {
                 { "source", e.Source },
                 { "launcher", e.Launcher },
@@ -215,7 +228,14 @@ public sealed class AutoStatus
                 { "at", Iso(e.At) },
                 { "last_played", e.LastPlayed is { } p ? Iso(p) : null },
                 { "relocated_at", e.RelocatedAt is { } r ? Iso(r) : null },
-            });
+            };
+            if (e.HitPercent is { } hp)
+            {
+                game.Add("hit_percent", (long)hp); // 재지 않은 게임의 항목 모양은 그대로
+                game.Add("hit_at", e.HitAt is { } ha ? Iso(ha) : null);
+            }
+
+            games.Add(name, game);
         }
 
         var root = new JObject
@@ -279,7 +299,7 @@ public sealed class AutoStatus
                 {
                     if (value is JObject o && Str(o, "stage") is { } stage)
                     {
-                        _games[name] = new AutoGameEntry(Str(o, "source") ?? "manual", Str(o, "launcher"), stage, Str(o, "detail"), Time(o, "at") ?? _now(), Time(o, "last_played"), Time(o, "relocated_at"));
+                        _games[name] = new AutoGameEntry(Str(o, "source") ?? "manual", Str(o, "launcher"), stage, Str(o, "detail"), Time(o, "at") ?? _now(), Time(o, "last_played"), Time(o, "relocated_at"), o.TryGetValue("hit_percent", out object? hp) && hp is long h ? (int)Math.Clamp(h, 0, 100) : null, Time(o, "hit_at"));
                     }
                 }
             }

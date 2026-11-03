@@ -49,10 +49,8 @@ public sealed class ZoneStreamerTests
         Assert.Equal((0L, 1L), (missing.Bytes, missing.Errors));
     }
 
-    [Theory]
-    [InlineData(StreamMethod.Pvm)]
-    [InlineData(StreamMethod.Read)]
-    public void CancelledTokenStopsAtTheNext8MibBoundary(StreamMethod method)
+    [Fact]
+    public void CancelledTokenStopsReadMethodAtTheNext8MibBoundary()
     {
         using var tmp = new TempDir();
         tmp.WriteRandom("f.bin", (int)(20 * Mib));
@@ -60,11 +58,65 @@ public sealed class ZoneStreamerTests
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
-        StreamStats cut = ZoneStreamer.Run(ops, method, ct: cts.Token);
-        StreamStats full = ZoneStreamer.Run(ops, method);
+        StreamStats cut = ZoneStreamer.Run(ops, StreamMethod.Read, ct: cts.Token);
+        StreamStats full = ZoneStreamer.Run(ops, StreamMethod.Read);
 
-        Assert.Equal(ZoneStreamer.CancelCheckBytes, cut.Bytes);
-        Assert.Equal(20 * Mib, full.Bytes);
+        Assert.Equal((ZoneStreamer.CancelCheckBytes, true), (cut.Bytes, cut.Aborted));
+        Assert.Equal((20 * Mib, false, 20 * Mib), (full.Bytes, full.Aborted, full.RequestedBytes));
+    }
+
+    [Fact]
+    public void PvmCancelledBeforeTheFirstCallMakesNoCall()
+    {
+        using var tmp = new TempDir();
+        tmp.WriteRandom("f.bin", (int)(20 * Mib));
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        StreamStats cut = ZoneStreamer.Run([new(tmp.Combine("f.bin"), 0, 20 * Mib)], StreamMethod.Pvm, ct: cts.Token);
+        int calls = 0;
+        _ = ZoneStreamer.RunPvm([new(tmp.Combine("f.bin"), 0, 20 * Mib)], cts.Token, out bool aborted, out long hint, _ => { calls++; return true; });
+
+        Assert.Equal((0L, 0L, true, 20 * Mib), (cut.Bytes, cut.HintAcceptedBytes, cut.Aborted, cut.RequestedBytes));
+        Assert.Equal((0, true, 0L), (calls, aborted, hint));
+    }
+
+    [Theory]
+    [InlineData(1, 1, 8)] // 첫 호출 직후 취소 → 둘째 조각 전에 멈춤
+    [InlineData(2, 2, 16)] // 둘째 호출 직후 취소 → 마지막 조각 전에 멈춤
+    [InlineData(3, 3, 20)] // 마지막 호출 직후 취소는 다 끝난 것 (중단 아님)
+    public void PvmStopsBetweenSlicesWhenCancelledAfterACall(int cancelAfter, int expectedCalls, int expectedMib)
+    {
+        using var tmp = new TempDir();
+        tmp.WriteRandom("f.bin", (int)(20 * Mib)); // 8 + 8 + 4 MiB 세 조각
+        using var cts = new CancellationTokenSource();
+        int calls = 0;
+
+        (long bytes, _, _) = ZoneStreamer.RunPvm([new(tmp.Combine("f.bin"), 0, 20 * Mib)], cts.Token, out bool aborted, out long hint, _ =>
+        {
+            if (++calls == cancelAfter)
+            {
+                cts.Cancel();
+            }
+
+            return true;
+        });
+
+        Assert.Equal((expectedCalls, expectedMib * Mib, expectedMib * Mib), (calls, bytes, hint));
+        Assert.Equal(cancelAfter < 3, aborted);
+    }
+
+    [Fact]
+    public void PvmHintBytesAreSeparatedFromRequestedBytes()
+    {
+        using var tmp = new TempDir();
+        tmp.WriteRandom("f.bin", 10_000);
+
+        StreamStats r = ZoneStreamer.Run([new(tmp.Combine("f.bin"), 4000, 1_000_000)], StreamMethod.Pvm);
+        StreamStats read = ZoneStreamer.Run([new(tmp.Combine("f.bin"), 4000, 1_000_000)], StreamMethod.Read);
+
+        Assert.Equal((6000L, 6000L, 1_000_000L, false), (r.Bytes, r.HintAcceptedBytes, r.RequestedBytes, r.Aborted));
+        Assert.Equal((6000L, 0L), (read.Bytes, read.HintAcceptedBytes)); // 실제 읽기 방식은 힌트 바이트가 없음
     }
 
     [Theory]

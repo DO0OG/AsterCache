@@ -39,6 +39,7 @@ public sealed class AutoMode
         if (prewarm is not null)
         {
             prewarm.Recovery = _relocator.Recovery; // 재배치 직후 예열을 드라이브 회복까지 고정
+            prewarm.WarmMeasured += (g, mbps) => Guard("warm mbps note", () => _relocator.NoteWarmMbps(g, mbps));
             prewarm.ColdWarmed += (g, label) => Guard("cold prewarm note", () => _relocator.NoteColdWarmed(g, label)); // 서비스 시작·트리거·틱 어디서 예열하든 같은 표시
             prewarm.Progress += (g, done, total) => Guard("prewarm progress", () => _relocator.NoteProgress(g, done, total));
             prewarm.StreamEnded += (g, complete) => Guard("prewarm end", () => _relocator.NoteStreamEnded(g, complete));

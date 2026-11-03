@@ -198,6 +198,9 @@ public sealed class Prewarmer
     /// 기록 없이 (통째·프로필) 예열에 성공했을 때: 게임과 방식 이름표.
     public event Action<GameSettings, string>? ColdWarmed;
 
+    /// 예열이 끝났을 때의 실측 MB/s (드라이브 회복 판정의 캐시 적중 상한용).
+    public event Action<GameSettings, double>? WarmMeasured;
+
     /// 핫 집합 예열의 진행 (묶음마다, ProgressEvery 에 한 번 이하): 게임, 읽은 MiB, 총 MiB.
     public event Action<GameSettings, long, long>? Progress;
 
@@ -617,6 +620,7 @@ public sealed class Prewarmer
                     double mbps = s.Seconds > 0 ? s.Bytes / 1048576.0 / s.Seconds : 0;
                     _log.Info($"{game.Name}: prewarm done ({why}): {s.Bytes >> 20} MiB in {s.Seconds:F2} s = {mbps:F0} MB/s, {s.Requests} requests, {s.Errors} errors");
                     PrewarmResult done = Record(game, now, new PrewarmResult(game.Name, true, null, s, now), mbps);
+                    WarmMeasured?.Invoke(game, mbps);
                     if (pin && !ct.IsCancellationRequested)
                     {
                         _pins.TryPin(game, why == AfterRelocation);
@@ -779,6 +783,7 @@ public sealed class Prewarmer
         double mbps = stats.Seconds > 0 ? stats.Bytes / 1048576.0 / stats.Seconds : 0;
         _log.Info($"{game.Name}: prewarm done ({why}, {label}): {stats.Bytes >> 20} MiB in {stats.Seconds:F2} s = {mbps:F0} MB/s, {stats.Requests} requests, {stats.Errors} errors");
         PrewarmResult done = Record(game, now, new PrewarmResult(game.Name, true, null, stats, now) { Mode = label }, mbps);
+        WarmMeasured?.Invoke(game, mbps);
         ColdWarmed?.Invoke(game, label!);
         return done;
     }

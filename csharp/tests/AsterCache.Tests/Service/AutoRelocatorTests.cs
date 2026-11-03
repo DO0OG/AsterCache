@@ -1237,6 +1237,20 @@ public sealed class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
+    public void MeasuredPrewarmSpeedRaisesTheRecoveryCeilingToOnePointFiveTimes()
+    {
+        UseCold();
+        _cold!.WarmMeasured += (g, mbps) => Relocator.NoteWarmMbps(g, mbps); // AutoMode 의 연결과 같음
+        string drive = PlanFile.SplitDrive(_game.OriginRoot);
+        _status.Set("bench", "auto", null, AutoStage.Discovered, null);
+        Assert.Equal(DriveRecovery.CeilingMbps, ((DriveRecovery)Relocator.Recovery).CeilingFor(drive));
+
+        Tick(); // 10 MiB / 0.1 s = 100 MB/s
+
+        Assert.Equal(100 * DriveRecovery.CeilingFactor, ((DriveRecovery)Relocator.Recovery).CeilingFor(drive), 3);
+    }
+
+    [Fact]
     public void ProfileWarmShowsTheEngineInTheDetail()
     {
         UseCold();

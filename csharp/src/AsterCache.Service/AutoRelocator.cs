@@ -334,6 +334,9 @@ public sealed class AutoRelocator
         }
     }
 
+    /// 예열 실측 MB/s (Prewarmer.WarmMeasured): 그 드라이브의 회복 판정 상한이 됨.
+    public void NoteWarmMbps(GameSettings g, double mbps) => _recovery.NoteWarmMbps(DriveOf(g), mbps);
+
     /// 기록 없이 예열에 성공했을 때 (Prewarmer.ColdWarmed): auto_status 의 detail 을 "prewarmed (full)" 같은 표시로. 실패·건너뜀·재배치 중인 게임은 그대로 둡니다.
     public void NoteColdWarmed(GameSettings g, string label)
     {

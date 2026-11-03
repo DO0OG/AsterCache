@@ -96,6 +96,30 @@ public sealed class RelocateOrderTests : ApplyTestBase
     }
 
     [Fact]
+    public void SourceOrderFallsBackToTargetWhenTheZoneOverlapsCurrentExtents()
+    {
+        PlanFile p = Make().Resolve(1000); // 존이 F1 의 현재 extent (1000, 2000, 3000 …) 위에 놓임
+
+        ApplyReport rep = Apply(p, new ApplyOptions(Order: RelocateOrder.Source));
+
+        Assert.Equal("target", rep.OrderUsed);
+        Assert.Equal("zone overlaps current extents", rep.OrderFallbackReason);
+        var json = rep.ToJson();
+        Assert.Equal("target", json["order_used"]);
+        Assert.Equal("zone overlaps current extents", json["order_fallback_reason"]);
+    }
+
+    [Fact]
+    public void SourceOrderIsKeptWhenTheZoneIsClearOfCurrentExtents()
+    {
+        ApplyReport rep = Apply(Make().Resolve(20000), new ApplyOptions(Order: RelocateOrder.Source));
+
+        Assert.Equal("source", rep.OrderUsed);
+        Assert.False(rep.ToJson().ContainsKey("order_fallback_reason"));
+        Assert.False(Apply(Make().Resolve(20000), new ApplyOptions()).ToJson().ContainsKey("order_used")); // target 요청이면 필드 없음
+    }
+
+    [Fact]
     public void SourceOrderIsRevertedToTheOriginalExtents()
     {
         PlanFile p = Make().Resolve(20000);

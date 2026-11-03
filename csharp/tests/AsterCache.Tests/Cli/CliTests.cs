@@ -309,7 +309,8 @@ public sealed class CliTests
 
         Assert.Equal(0, code);
         JObject auto = (JObject)Json(text)["auto"]!;
-        Assert.Equal(["games", "relocations"], auto.Select(kv => kv.Key));
+        Assert.Equal(["games", "relocations", "progress"], auto.Select(kv => kv.Key));
+        Assert.Equal(1L, ((JObject)auto["progress"]!)["relocated"]);
         Assert.Equal("done", ((JObject)((JObject)auto["games"]!)["g"]!)["stage"]);
         Assert.Equal("auto", Json(text).Last().Key);
         Assert.Null(Json(missing)["auto"]);

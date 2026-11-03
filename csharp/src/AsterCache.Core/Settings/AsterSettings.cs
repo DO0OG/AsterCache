@@ -152,8 +152,8 @@ public sealed record AutoSettings(
     /// config 에 relocate_parallel 이 명시돼 있는가 (명시값은 그대로, 아니면 자동 규칙).
     public bool RelocateParallelSet { get; init; }
 
-    /// 실제 동시 수: 명시값, 아니면 대상 디스크 종류를 모르거나 USB 버스면 2, 그 밖에는 8.
-    public int ParallelFor(bool slowBus) => RelocateParallelSet ? RelocateParallel : slowBus ? SlowBusRelocateParallel : DefaultRelocateParallel;
+    /// 실제 동시 수: 명시값, 아니면 SMR 로 보이는 HDD 면 1 (순차 쓰기가 느려짐), 종류를 모르거나 USB 버스면 2, 그 밖에는 8.
+    public int ParallelFor(bool slowBus, bool smr = false) => RelocateParallelSet ? RelocateParallel : smr ? 1 : slowBus ? SlowBusRelocateParallel : DefaultRelocateParallel;
 
     /// 자동 재배치의 I/O 우선순위: "low" (기본, 낮은 I/O 힌트) 또는 "normal" (힌트 없음).
     public string RelocateIoPriority { get; init; } = IoLow;

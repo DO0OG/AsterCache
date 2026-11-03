@@ -102,7 +102,7 @@ public sealed class HitPercentTests : IDisposable
             Assert.Equal(75L, game["hit_percent"]);
             Assert.Equal("2026-11-03T09:00:00.0000000+00:00", game["hit_at"]);
             Assert.Equal(75, new AutoStatus(path, _rig.Log).Get("foo")!.HitPercent); // 다시 읽어도 유지
-            Assert.Equal("예열 적중 75%", AutoStatusFile.StageText(AutoStatusFile.Load(path)!.Games["foo"], "ko").Split('(', ')')[1]);
+            Assert.Equal("예열 직후 적중 75%", AutoStatusFile.StageText(AutoStatusFile.Load(path)!.Games["foo"], "ko").Split('(', ')')[1]);
         }
         finally
         {
@@ -120,8 +120,9 @@ public sealed class HitPercentTests : IDisposable
         Assert.Null(s.Get("foo")!.HitPercent);
 
         var g = new AutoGame("auto", null, "done", null, 40);
-        Assert.Equal("완료 (예열 적중 40%)", AutoStatusFile.StageText(g, "ko"));
-        Assert.Equal("done (prewarm hit 40%)", AutoStatusFile.StageText(g, "en"));
+        Assert.Equal("완료 (예열 직후 적중 40%)", AutoStatusFile.StageText(g, "ko"));
+        Assert.Equal("done (hit right after prewarm 40%)", AutoStatusFile.StageText(g, "en"));
         Assert.Equal("완료", AutoStatusFile.StageText(g with { HitPercent = null }, "ko"));
+        Assert.Contains("존 커버리지 18%", AutoStatusFile.StageText(g with { CoveragePercent = 18 }, "ko"));
     }
 }

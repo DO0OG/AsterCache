@@ -34,6 +34,7 @@ public sealed class PinKeeper
     private readonly Dictionary<string, RecoveryPin> _recovery = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string?> _cheat = new(StringComparer.OrdinalIgnoreCase); // 게임별 고정 금지 판정 (없음 포함, 탐지 실패는 넣지 않음)
     private readonly HashSet<string> _cheatLogged = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _holdLogged = new(StringComparer.OrdinalIgnoreCase); // 런처 보류 사유는 하나뿐이라 게임당 한 번만 남김
 
     public PinKeeper(PrewarmEnv env, ILog log, Func<DateTimeOffset>? now = null)
     {
@@ -86,7 +87,10 @@ public sealed class PinKeeper
 
             if (_env.LauncherRunning())
             {
-                _log.Info($"{game.Name}: pin held back (a launcher is running; its updates may change the files)");
+                if (_holdLogged.Add(game.Name))
+                {
+                    _log.Info($"{game.Name}: pin held back (a launcher is running; its updates may change the files)");
+                }
                 return;
             }
         }

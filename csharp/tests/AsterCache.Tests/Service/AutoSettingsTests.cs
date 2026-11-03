@@ -577,4 +577,12 @@ public sealed class AutoSettingsTests
         bad["prewarm"] = new JsonObject { ["pin"] = "yes" };
         Assert.Throws<SettingsException>(() => SettingsStore.Parse(new JsonObject { ["games"] = new JsonArray(bad) }.ToJsonString(), Plans));
     }
+
+    [Fact]
+    public void AutoParallelIsOneOnSmrAndKeepsTheBusRules()
+    {
+        Assert.Equal(1, AutoSettings.Default.ParallelFor(slowBus: false, smr: true));
+        Assert.Equal(2, AutoSettings.Default.ParallelFor(slowBus: true));
+        Assert.Equal(8, AutoSettings.Default.ParallelFor(slowBus: false));
+    }
 }

@@ -7,7 +7,7 @@ using AsterCache.Core.Json;
 namespace AsterCache.Tray;
 
 /// 서비스가 auto_status.json 에 적은 게임 하나의 자동 단계.
-public sealed record AutoGame(string Source, string? Launcher, string Stage, string? Detail, int? HitPercent = null);
+public sealed record AutoGame(string Source, string? Launcher, string Stage, string? Detail, int? HitPercent = null, int? CoveragePercent = null);
 
 /// 알림 대상 사건 (kind: discovered, relocated).
 public sealed record AutoNotice(DateTimeOffset At, string Game, string Kind)
@@ -38,7 +38,7 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
                 {
                     if (kv.Value is JObject g && Get(g, "stage") is string stage)
                     {
-                        games[kv.Key] = new AutoGame(Get(g, "source") as string ?? "auto", Get(g, "launcher") as string, stage, Get(g, "detail") as string, Get(g, "hit_percent") is long hp ? (int)Math.Clamp(hp, 0, 100) : null);
+                        games[kv.Key] = new AutoGame(Get(g, "source") as string ?? "auto", Get(g, "launcher") as string, stage, Get(g, "detail") as string, Get(g, "hit_percent") is long hp ? (int)Math.Clamp(hp, 0, 100) : null, Get(g, "coverage_percent") is long cp ? (int)Math.Clamp(cp, 0, 100) : null);
                     }
                 }
             }
@@ -167,6 +167,11 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
         if (g.HitPercent is { } hit)
         {
             parts.Add(L.Get(lang, "Stage_HitPercent", hit.ToString(CultureInfo.InvariantCulture)));
+        }
+
+        if (g.CoveragePercent is { } cover)
+        {
+            parts.Add(L.Get(lang, "Stage_CoveragePercent", cover.ToString(CultureInfo.InvariantCulture)));
         }
 
         return parts.Count == 0 ? null : string.Join(", ", parts);

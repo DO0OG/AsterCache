@@ -252,6 +252,7 @@ public sealed class ReapplyChecker
 {
     private readonly ReapplyEnv _env;
     private readonly ILog _log;
+    private readonly HashSet<string> _noPlanLogged = new(StringComparer.OrdinalIgnoreCase); // "계획 없음"은 게임당 한 번만
     private readonly HashSet<string> _cancelled = new(StringComparer.Ordinal); // 취소로 반쯤 적용된 게임
 
     public ReapplyChecker(ReapplyEnv env, ILog log)
@@ -271,7 +272,10 @@ public sealed class ReapplyChecker
             }
             catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
             {
-                _log.Info($"{game.Name}: no plan file yet, nothing to check"); // 아직 계획을 만들지 않은 게임은 오류가 아님
+                if (_noPlanLogged.Add(game.Name))
+                {
+                    _log.Info($"{game.Name}: no plan file yet, nothing to check"); // 아직 계획을 만들지 않은 게임은 오류가 아님
+                }
                 return ReapplyVerdict.NotApplied;
             }
 

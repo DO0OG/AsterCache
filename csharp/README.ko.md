@@ -121,6 +121,7 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 - 자동 모드([자동 모드](../README.ko.md#자동-모드))는 서비스 안에서 돕니다. 서비스는 `config.json` 전체를 5초마다 다시 읽으므로 바꾼 값이 다시 시작하지 않아도 적용됩니다. 상태는 `%ProgramData%\AsterCache\auto_status.json` 에 쓰며, 이 파일은 서비스만 씁니다.
 - 선행 읽기 엔진(`Prefetch\ReadAhead`)은 서비스 안에서 첫 실행 학습을 맡습니다. `Tracer` 의 실시간 콜백을 받아 50 ms 마다 플러시합니다. [자동 모드](../README.ko.md#자동-모드)를 보십시오.
 - 기록 없는 게임의 통째 예열 (`auto.full_prewarm`).
+- 부팅·서비스 시작 예열 (0.9.0-beta.14): 최근에 플레이한 게임만(`prewarm_recent`), 부팅 5분 뒤, 디스크가 유휴일 때만 합니다. 통째 예열 상한은 기본 1024 MiB입니다(`auto.full_prewarm_max_mib`; 0이면 RAM의 4분의 1 대신 1024 MiB). `auto.load_boundary`는 기본 꺼짐이며 게임이 끝나면 멈춥니다.
 - 엔진 프로필 예열 (`auto.engine_profiles`, 임베디드 `Core\Profiles\engines.json`).
 
 ## 자동 부트 자료: 구성 요소와 공유 프로필 index

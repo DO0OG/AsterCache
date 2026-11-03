@@ -121,6 +121,7 @@ The scripts in `csharp\scripts\` are each run once by the user from an administr
 - Automatic mode (see [Automatic mode](../README.md#automatic-mode)) runs inside the service. The service re-reads the whole `config.json` every 5 seconds, so changes take effect without a restart. Its state is written to `%ProgramData%\AsterCache\auto_status.json`, which only the service writes.
 - The read-ahead engine (`Prefetch\ReadAhead`) runs first-run learning inside the service. `Tracer`'s real-time callback feeds it, and it flushes every 50 ms. See [Automatic mode](../README.md#automatic-mode).
 - Full prewarm of games with no record (`auto.full_prewarm`).
+- Boot and service-start prewarm (0.9.0-beta.14): only recently played games (`prewarm_recent`), 5 minutes after boot, and only while the disk is idle. Full prewarm is capped at 1024 MiB by default (`auto.full_prewarm_max_mib`; 0 means 1024 MiB, not a quarter of RAM). `auto.load_boundary` is off by default and stops when the game exits.
 - Engine-profile prewarm (`auto.engine_profiles`, embedded `Core\Profiles\engines.json`).
 
 ## Automatic boot sources: components and shared profile index

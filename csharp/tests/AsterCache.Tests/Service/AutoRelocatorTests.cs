@@ -3137,6 +3137,20 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
+    public void ReapplyIsNotBlockedAsNotAppliedWhenAutoModeIsOff()
+    {
+        SetAuto(a => a with { Enabled = false });
+        foreach (string stage in new[] { AutoStage.Discovered, AutoStage.WaitingIdle })
+        {
+            _status.Set(_game.Name, "auto", null, stage, "d");
+            Assert.NotEqual(ReapplyVerdict.NotApplied, Relocator.ReapplyBlock(_game));
+        }
+
+        _w.Files.Add(_game.Plan + AutoRelocator.ExtendSuffix);
+        Assert.Equal(ReapplyVerdict.NotApplied, Relocator.ReapplyBlock(_game)); // 확장 중은 그대로 막음
+    }
+
+    [Fact]
     public void FailedExtensionArchivesItsJournalSoTheRestoredPlanCanBeAppliedAgain()
     {
         DoneThenMergedTrace(Merged(RestOfTheBlocks()));

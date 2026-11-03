@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using AsterCache.Core;
-using AsterCache.Core.Discovery;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Plan;
@@ -195,11 +194,11 @@ internal static class TierCommand
     {
         try
         {
-            return AntiCheat.Detect(LauncherScan.ListNames(dir, LauncherScan.AntiCheatDepth));
+            return LauncherScan.DetectAntiCheat(dir);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            return null;
+            return LauncherScan.AntiCheatUnknown;
         }
     }
 

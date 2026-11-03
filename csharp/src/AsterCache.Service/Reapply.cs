@@ -29,12 +29,20 @@ public enum ReapplyVerdict
     /// 재적용 도중 게임이 시작돼 멈춤 (저널에 재개 지점이 남음). 오류가 아니고, 게임이 끝난 뒤 다음 검사에서 이어갑니다.
     Cancelled,
     Failed,
+
+    /// 아래는 자동 모드와 같은 게이트가 미룬 이유 (같은 디스크 게임·다른 게임 실행은 GameRunning, 디스크 바쁨은 DiskBusy 를 씀).
+    Recovering,
+    OnBattery,
+    DailyLimit,
+    NotRelocatable,
+    PostUpdateDelay,
+    NotIdle,
 }
 
 /// 재적용 판단 입력. GameRunning·DiskBusy 는 비싸므로 필요할 때만 부르는 지연 값입니다.
 /// Contiguous 는 LayoutVerifier 와 같은 판정 (null = 알 수 없음, 건강으로 봄). 존 안 비율이 아니라 이 판정이 기준인 이유: 계획이 이미 연속인 구간을 제자리에 보존하면
 /// 존 안 비율이 낮아도 배치는 연속입니다 (실제 게임 계획에서 10.5% 인데 verify 는 contiguous 였음).
-public sealed record ReapplyInputs(bool PlanApplied, bool FingerprintsChanged, bool? Contiguous, Func<bool> GameRunning, Func<bool> DiskBusy, bool CanApply);
+public sealed record ReapplyInputs(bool PlanApplied, bool FingerprintsChanged, bool? Contiguous, Func<bool> GameRunning, Func<bool> DiskBusy, bool CanApply, Func<ReapplyVerdict?>? Gate = null);
 
 public static class ReapplyPolicy
 {
@@ -53,6 +61,11 @@ public static class ReapplyPolicy
         if (i.Contiguous is null or true)
         {
             return ReapplyVerdict.Healthy;
+        }
+
+        if (i.Gate?.Invoke() is { } blocked)
+        {
+            return blocked; // 자동 재배치와 같은 게이트 (같은 디스크 다른 게임·회복·전원·일일 예산·유휴 등)
         }
 
         if (i.GameRunning())
@@ -90,6 +103,12 @@ public sealed class ReapplyEnv
 
     /// 이 게임에 SSD 보조 저장 링크가 살아 있는가: 링크가 낀 파일은 배치를 읽을 수 없고 허용 루트 밖으로 풀리므로 그동안 배치 검사를 건너뜁니다 (링크는 재배치 전·업데이트 때 되돌려짐).
     public Func<GameSettings, bool> TierActive { get; init; } = _ => false;
+
+    /// 자동 모드와 같은 재적용 게이트 (서비스가 자동 모드를 만든 뒤 연결): 막는 이유 또는 null. 연결 전·시험 기본값은 막지 않음.
+    public Func<GameSettings, ReapplyVerdict?> Gate { get; set; } = _ => null;
+
+    /// 재적용이 끝난 뒤 (예외로 끝나도) 쓴 바이트를 일일 예산·회복 추적에 알림.
+    public Action<GameSettings, long> Spent { get; set; } = (_, _) => { };
 
     /// 실제 구현. 재적용은 관리자이고 폴더 권한이 안전할 때만 (canApply). 저널은 게임마다 journalDir\이름.jsonl 하나를 계속 씁니다 (같은 저널 규칙: 이어하기·되돌리기).
     public static ReapplyEnv Create(bool canApply, string journalDir, ILog? log = null, Func<string>? relocateOrder = null, Func<GameSettings, int>? relocateParallel = null) => new()
@@ -268,7 +287,7 @@ public sealed class ReapplyChecker
             LayoutReport? layout = applied && !changed ? LayoutVerifier.Verify(plan, _env.Extents) : null;
             // 파일 배치를 못 읽은 항목이 있으면 (희소 파일 등) 판단할 수 없으므로 건강으로 봅니다: 같은 이유로 매 주기 재적용하며 0 바이트를 옮기는 일을 피함.
             bool? contiguous = layout is null || layout.HotClusters == 0 || layout.MissingFiles > 0 ? null : layout.Contiguous;
-            ReapplyVerdict v = ReapplyPolicy.Decide(new ReapplyInputs(applied, changed, contiguous, () => _env.GameRunning(game), () => _env.DiskBusy(game), _env.CanApply));
+            ReapplyVerdict v = ReapplyPolicy.Decide(new ReapplyInputs(applied, changed, contiguous, () => _env.GameRunning(game), () => _env.DiskBusy(game), _env.CanApply, () => _env.Gate(game)));
             _log.Info($"{game.Name}: layout check {v}" + (layout is null ? string.Empty : $" ({LayoutState(layout)}{ZoneHit(layout)})"));
             if (contiguous == false && _cancelled.Contains(game.Name))
             {
@@ -282,7 +301,17 @@ public sealed class ReapplyChecker
 
             if (v == ReapplyVerdict.Reapply)
             {
-                ApplyReport rep = _env.Apply(game, plan, cancellationToken);
+                ApplyReport? done = null;
+                ApplyReport rep;
+                try
+                {
+                    rep = done = _env.Apply(game, plan, cancellationToken);
+                }
+                finally
+                {
+                    _env.Spent(game, done?.MovedBytes ?? 0); // 하루 예산은 시작 기준: 실패해도 한 번으로 셈
+                }
+
                 if (rep.ZoneRetargeted)
                 {
                     _log.Info($"{game.Name}: previous zone was taken by another file, zone moved" + (rep.JournalArchivedTo is { } a ? $", earlier journal kept as {a}" : string.Empty));

@@ -696,6 +696,78 @@ public sealed class AutoRelocator
         return true;
     }
 
+    /// 이 안에 다시 검사되지 않으면 유휴 연속 기록을 버립니다 (재적용 검사는 몇 분마다라 연속을 보장하지 못함: 같은 막힘 없이 두 번 연달아 통과해야 유휴).
+    private static readonly TimeSpan ReapplyIdleGap = TimeSpan.FromMinutes(30);
+
+    private readonly Dictionary<string, (IdleTracker Tracker, DateTimeOffset Last)> _reapplyIdle = new(StringComparer.Ordinal); // 재적용 틱 스레드에서만 씀
+
+    /// 정기 재적용이 자동 재배치와 같은 게이트를 지나는지: 막는 이유 (같은 디스크 등록 게임 실행, 회복 중, 시스템 HDD, 업데이트 직후, 배터리, 디스크 바쁨, 일일 상한·예산, 유휴 시간) 또는 null.
+    /// 재적용 루프 스레드에서만 부릅니다 (재배치 틱과 같은 스레드). 하루 예산은 이동 예정 바이트를 모르므로 한 바이트라도 남아야 통과 (그날 첫 이동은 허용).
+    public ReapplyVerdict? ReapplyBlock(GameSettings g)
+    {
+        AsterSettings s = _settings();
+        DateTimeOffset now = _env.Now();
+        if (!_reapplyIdle.TryGetValue(g.Name, out (IdleTracker Tracker, DateTimeOffset Last) idle) || now - idle.Last > ReapplyIdleGap)
+        {
+            idle = (new IdleTracker(), now);
+        }
+
+        _reapplyIdle[g.Name] = (idle.Tracker, now);
+        ReapplyVerdict? why = ReapplyBlockedBy(g, s);
+        if (why is not null)
+        {
+            idle.Tracker.Reset();
+            return why;
+        }
+
+        return idle.Tracker.Sample(now, true, s.Auto.IdleWindow) ? null : ReapplyVerdict.NotIdle;
+    }
+
+    private ReapplyVerdict? ReapplyBlockedBy(GameSettings g, AsterSettings s)
+    {
+        if (_env.AnyRunning([.. SameDriveGames(s.Games, [g], _env.SameDisk).SelectMany(x => x.ExeNames).Concat(g.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)]))
+        {
+            return ReapplyVerdict.GameRunning;
+        }
+
+        if (_recovery.IsRecovering(DriveOf(g)))
+        {
+            return ReapplyVerdict.Recovering;
+        }
+
+        if (!_env.Capabilities(g.OriginRoot).CanRelocate)
+        {
+            return ReapplyVerdict.NotRelocatable;
+        }
+
+        if (PostUpdateDelayed(g, s))
+        {
+            return ReapplyVerdict.PostUpdateDelay;
+        }
+
+        if (!_env.PowerOk())
+        {
+            return ReapplyVerdict.OnBattery;
+        }
+
+        if (_env.DiskBytesPerSecond(DriveOf(g)) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond)
+        {
+            return ReapplyVerdict.DiskBusy;
+        }
+
+        long budget = (long)s.Auto.MaxRelocateGibPerDay << 30; // 0 = 무제한
+        bool countHeld = s.Auto.MaxRelocationsPerDay > 0 && _status.RelocationsWithin(DailyWindow) >= s.Auto.MaxRelocationsPerDay;
+        bool bytesHeld = budget > 0 && _status.RelocationBytesWithin(DailyWindow) is > 0 and long used && used >= budget;
+        return countHeld || bytesHeld ? ReapplyVerdict.DailyLimit : null;
+    }
+
+    /// 정기 재적용이 끝났음 (예외로 끝났으면 0 바이트): 일일 상한·예산 집계에 시작으로 넣고, 쓴 바이트가 있으면 자동 재배치와 같이 드라이브 회복 추적을 시작합니다.
+    public void NoteReapplied(GameSettings g, long movedBytes)
+    {
+        _status.BeginRelocation(_env.Now(), movedBytes);
+        BeginRecovery(g, _settings().Auto, movedBytes, null);
+    }
+
     private bool NeedsWork(GameSettings g, bool relocateOn)
     {
         AutoGameEntry? e = _status.Get(g.Name);

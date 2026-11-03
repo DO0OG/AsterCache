@@ -97,6 +97,23 @@ public sealed class AutoMode
         });
     }
 
+    /// 정기 재적용이 지나야 하는 자동 모드와 같은 게이트 (재적용 루프 스레드에서 부름). 게이트 자체가 실패하면 보수적으로 미룸.
+    public ReapplyVerdict? ReapplyBlock(GameSettings g)
+    {
+        try
+        {
+            return _relocator.ReapplyBlock(g);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _log.Error("auto reapply gate failed", e);
+            return ReapplyVerdict.NotIdle;
+        }
+    }
+
+    /// 정기 재적용이 쓴 바이트를 일일 예산·회복 추적에 알림 (재적용 루프 스레드에서 부름).
+    public void ReapplySpent(GameSettings g, long movedBytes) => Guard("reapply note", () => _relocator.NoteReapplied(g, movedBytes));
+
     /// 재적용 틱 (30 초) 마다. 호출한 스레드에서 이동까지 돌므로 재적용과 겹치지 않습니다 (예열은 따로 돌아 틱을 늦추지 않음).
     public void RelocateTick(ReapplyGate gate, CancellationToken ct)
     {

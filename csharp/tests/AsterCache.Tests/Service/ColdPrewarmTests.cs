@@ -398,6 +398,56 @@ public sealed class ColdPrewarmTests : IDisposable
         Assert.Equal("batch memory budget", r[1].SkipReason);
     }
 
+    [Fact]
+    public void UnplayedColdGameDoesNotCountAgainstTheBudgetNorGetItsSamplesRead()
+    {
+        AvailableMib = 20000;
+        PhysicalBytes = 16L << 30; // 4096 MiB
+        GameSettings cold = Game("cold");
+        GameSettings hot = Game("hot");
+        int probes = 0;
+        var p = new Prewarmer([cold, hot], _streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => AvailableMib,
+            PhysicalRamBytes = () => PhysicalBytes,
+            GameRunning = _ => false,
+            ZoneBytes = g => g.Name == "hot" ? 3000 * Mib : null,
+            TraceExists = g => g.Name == "hot",
+            ProbeSamples = _ =>
+            {
+                probes++;
+                return new ProbeResult(8, 0, 0.3);
+            },
+            ColdPlanner = (_, _, _, _) => new ColdPlan("full", [new ReadOp(@"D:\g.bin", 0, 2000 * Mib)], 2000 * Mib, null),
+            ColdRead = (ops, _) => (new StreamStats(2000 * Mib, 1, 0, 1), true),
+        }, _log, null, () => _now)
+        {
+            HasPlayed = name => name != "cold",
+        };
+
+        IReadOnlyList<PrewarmResult> r = p.RunAll([cold, hot], "batch");
+
+        Assert.Equal([true, true], r.Select(x => x.Ran)); // 미플레이 cold 의 2000 MiB 는 예산에 넣지 않음
+        Assert.Equal(0, probes);
+    }
+
+    [Fact]
+    public void SameTriggerExeWithinAMinuteIsHandledOnceAndTheRestAreCounted()
+    {
+        GameSettings g = Game("g") with { Prewarm = PrewarmSettings.Default with { TriggerExes = ["steam.exe"] } };
+        Prewarmer p = Make(null, g);
+        var start = new ProcessStart(1, "steam.exe", 0);
+
+        Assert.Single(p.OnProcessStart(start));
+        Assert.Empty(p.OnProcessStart(start));
+        _now += TimeSpan.FromSeconds(30);
+        Assert.Empty(p.OnProcessStart(start));
+        _now += TimeSpan.FromSeconds(31);
+        Assert.Single(p.OnProcessStart(start));
+
+        Assert.Contains(_log.Lines, l => l.Contains("2 duplicate triggers suppressed", StringComparison.Ordinal));
+    }
+
     // ---- 실제 열거로 상한 판정 (Windows 임시 폴더, 가짜 읽기) ----
 
     private static GameSettings RealGame(string root) => Game("g") with { OriginRoot = root, AllowedRoots = [root], ExeNames = ["Game.exe"] };

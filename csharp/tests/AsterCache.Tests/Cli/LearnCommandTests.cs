@@ -14,6 +14,7 @@ public sealed class LearnCommandTests : IDisposable
     private const long Mib = 1L << 20;
     private const string GameFile = @"D:\Games\Foo\a.bin";
     private readonly LearnDeps _saved = LearnCommand.Deps;
+    private readonly (Func<string, string?> Folder, Func<bool> Vanguard) _savedGuard = (AntiCheatGuard.FolderKind, AntiCheatGuard.VanguardInstalled);
     private readonly FakeReadIo _io = new();
     private FakeLearnSession? _session;
 
@@ -23,7 +24,11 @@ public sealed class LearnCommandTests : IDisposable
         LearnCommand.Deps = Deps(waitForReadAhead: 3 * Mib, neverSeen: false);
     }
 
-    public void Dispose() => LearnCommand.Deps = _saved;
+    public void Dispose()
+    {
+        LearnCommand.Deps = _saved;
+        (AntiCheatGuard.FolderKind, AntiCheatGuard.VanguardInstalled) = _savedGuard;
+    }
 
     private LearnDeps Deps(long waitForReadAhead, bool neverSeen) => new()
     {
@@ -65,6 +70,34 @@ public sealed class LearnCommandTests : IDisposable
         Assert.True(File.Exists(trace));
         Assert.True(_session!.Disposed);
         Assert.True(_io.Disposed);
+    }
+
+    [Theory]
+    [InlineData("eac", @"D:\Games\Foo", false)]
+    [InlineData(null, @"D:\Riot Games\League of Legends", true)] // 폴더에는 흔적이 없지만 Riot 게임 + Vanguard 설치
+    public void LearnRefusesAnAntiCheatGameBeforeOpeningASession(string? folderKind, string root, bool vanguard)
+    {
+        AntiCheatGuard.FolderKind = _ => folderKind;
+        AntiCheatGuard.VanguardInstalled = () => vanguard;
+
+        (int code, string text, _) = CliTests.Run("learn", "--exe", "foo.exe", "--root", root);
+
+        Assert.Equal(1, code);
+        Assert.Contains("anti-cheat protected game; tracing disabled", text, StringComparison.Ordinal);
+        Assert.Null(_session);
+    }
+
+    [Fact]
+    public void LiveTraceRefusesAnAntiCheatGameButCsvIsNotAffected()
+    {
+        AntiCheatGuard.FolderKind = _ => "battleye";
+        using var dir = new TempDir();
+
+        (int code, string text, _) = CliTests.Run("trace", "--live", "--exe", "foo.exe", "--prefix", @"D:\Games\Foo", "--out", dir.Combine("t.json"));
+
+        Assert.Equal(1, code);
+        Assert.Contains("anti-cheat protected game; tracing disabled", text, StringComparison.Ordinal);
+        Assert.False(File.Exists(dir.Combine("t.json")));
     }
 
     [Fact]

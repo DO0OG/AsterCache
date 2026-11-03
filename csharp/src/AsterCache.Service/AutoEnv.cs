@@ -9,7 +9,6 @@ using AsterCache.Core.Tier;
 using AsterCache.Core.Trace;
 using AsterCache.Tracer;
 using AsterCache.Windows;
-using Microsoft.Win32;
 
 namespace AsterCache.Service;
 
@@ -268,21 +267,6 @@ public sealed class AutoEnv
 
     /// 등록에 저장해도 되는 탐지 결과 (모름은 null).
     public static string? KnownAntiCheat(string? found) => found == AntiCheatUnknown ? null : found;
-
-    /// 이 시스템에 Vanguard (vgk/vgc 서비스 또는 Riot Vanguard 폴더) 가 있는가.
-    internal static bool IsVanguardInstalled()
-    {
-        foreach (string service in new[] { "vgk", "vgc" })
-        {
-            using RegistryKey? key = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\" + service);
-            if (key is not null)
-            {
-                return true;
-            }
-        }
-
-        return Directory.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Riot Vanguard"));
-    }
 
     // 발견 때와 같은 이름 열거 (LauncherScan 과 같은 깊이, 읽기 전용).
     internal static string? DetectAntiCheat(string dir)

@@ -21,7 +21,7 @@ try
 {
     ILog file = new FileLog(Path.Combine(dataDir, "logs", "service.log"));
     log = console ? new TeeLog(file) : file;
-    settings = AntiCheat.WithRiotRule(SettingsStore.Load(configPath, plansDir), AutoEnv.IsVanguardInstalled);
+    settings = AntiCheat.WithRiotRule(SettingsStore.Load(configPath, plansDir), LauncherScan.IsVanguardInstalled);
 }
 catch (Exception e) when (e is SettingsException or IOException or UnauthorizedAccessException)
 {
@@ -74,7 +74,7 @@ AsterSettings LoadChecked()
         throw new SettingsException("config: data folder or file is writable by non-admin principals");
     }
 
-    AsterSettings loaded = AntiCheat.WithRiotRule(SettingsStore.Load(configPath, plansDir), AutoEnv.IsVanguardInstalled);
+    AsterSettings loaded = AntiCheat.WithRiotRule(SettingsStore.Load(configPath, plansDir), LauncherScan.IsVanguardInstalled);
     if (canApply && loaded.Auto.Migrated)
     {
         Worker.RewriteMigrated(new ConfigEditor(dataDir), log);

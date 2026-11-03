@@ -1,4 +1,5 @@
 using AsterCache.Cli;
+using AsterCache.Cli.Commands;
 using AsterCache.Core.Json;
 using AsterCache.Tests.Windows;
 using AsterCache.Windows;
@@ -184,7 +185,16 @@ public sealed class CliTests
         Assert.Equal((3, notAdmin), Pair(Run("probe", "--volume", "D:")));
         Assert.Equal((3, notAdmin), Pair(Run("apply", "--plan", plan, "--allowed-root", @"D:\AsterBench", "--execute")));
         Assert.Equal((3, notAdmin), Pair(Run("revert", "--journal", journal, "--allowed-root", @"D:\AsterBench")));
-        Assert.Equal((3, notAdmin), Pair(Run("trace", "--live", "--exe", "game.exe", "--prefix", @"D:\", "--out", "x.json")));
+        Func<string, string?> folderKind = AntiCheatGuard.FolderKind;
+        AntiCheatGuard.FolderKind = _ => null; // 실제 D:\ 를 열거하지 않음
+        try
+        {
+            Assert.Equal((3, notAdmin), Pair(Run("trace", "--live", "--exe", "game.exe", "--prefix", @"D:\", "--out", "x.json")));
+        }
+        finally
+        {
+            AntiCheatGuard.FolderKind = folderKind;
+        }
     }
 
     [Fact]

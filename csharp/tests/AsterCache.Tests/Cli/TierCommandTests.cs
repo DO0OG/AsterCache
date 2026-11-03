@@ -19,6 +19,7 @@ public sealed class TierCommandTests : IDisposable
     private readonly (Func<bool> Admin, Func<ITierFs> Fs, Func<string, bool?> Hdd, Func<GameSettings, bool> Running, Func<GameSettings, string?> Cheat, Func<string> Sys, Func<SsdTierSettings, ITierFs, TierRootChoice> Root) _saved =
         (TierCommand.IsAdmin, TierCommand.Fs, TierCommand.IsHdd, TierCommand.Running, TierCommand.AntiCheatOf, TierCommand.SystemDrive, TierCommand.ResolveRoot);
 
+    private readonly Func<bool> _savedVanguard = AntiCheatGuard.VanguardInstalled;
     private readonly ITestOutputHelper _output;
     private readonly TempDir _dir = new();
     private readonly MemTierFs _fs = new();
@@ -50,6 +51,7 @@ public sealed class TierCommandTests : IDisposable
     public void Dispose()
     {
         (TierCommand.IsAdmin, TierCommand.Fs, TierCommand.IsHdd, TierCommand.Running, TierCommand.AntiCheatOf, TierCommand.SystemDrive, TierCommand.ResolveRoot) = _saved;
+        AntiCheatGuard.VanguardInstalled = _savedVanguard;
         _dir.Dispose();
     }
 
@@ -155,6 +157,22 @@ public sealed class TierCommandTests : IDisposable
         Assert.Equal((1, "ssd_tier_disabled"), Refusal());
         Assert.Empty(_fs.Links);
         Assert.Equal(0, _fs.Mutations);
+    }
+
+    [Fact]
+    public void ApplyAppliesTheRiotRuleToSettingsItLoads()
+    {
+        WriteTrace(Path.Combine(_root, "a.bin"));
+        string config = Path.Combine(_data, "config.json");
+        File.WriteAllText(config, File.ReadAllText(config).Replace("foo.exe", "LeagueClient.exe", StringComparison.Ordinal)); // 수동 등록한 리그: anticheat 값이 비어 있음
+        TierCommand.AntiCheatOf = g => g.AntiCheat; // 설정에서 채운 값만 봄
+        AntiCheatGuard.VanguardInstalled = () => true;
+
+        Assert.Equal((1, "anti_cheat", "vanguard"), RefusalDetail());
+
+        AntiCheatGuard.VanguardInstalled = () => false;
+        (_, _, JObject applied) = Tier("tier", "apply", "--game", "Foo");
+        Assert.False(applied.TryGetValue("error", out object? error) && error as string == "anti_cheat");
     }
 
     private (int Code, string Error) Refusal()

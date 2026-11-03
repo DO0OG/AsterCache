@@ -245,6 +245,21 @@ public static partial class LauncherScan
     // 런처가 게임이라고 알려 준 폴더 (Steam·Epic·Riot·Xbox 등): 런처형 이름이 아닌 exe 를 먼저 찾고, 없으면 예전처럼 런처형 이름도 허용 (알려진 게임의 exe 를 잃지 않게).
     internal static string? PickGameExe(IEnumerable<(string Path, long Size)> files) => PickExe(files) ?? PickExe(files, lenient: true);
 
+    /// 이 시스템에 Vanguard (vgk/vgc 서비스 또는 Riot Vanguard 폴더) 가 있는가.
+    public static bool IsVanguardInstalled()
+    {
+        foreach (string service in new[] { "vgk", "vgc" })
+        {
+            using RegistryKey? key = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\" + service);
+            if (key is not null)
+            {
+                return true;
+            }
+        }
+
+        return Directory.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Riot Vanguard"));
+    }
+
     // 폴더 아래 maxDepth 단계까지의 항목 이름 (접근 못 하는 하위는 건너뜀).
     public static List<string> ListNames(string dir, int maxDepth)
     {

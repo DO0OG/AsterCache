@@ -60,7 +60,7 @@ internal static class TierCommand
     {
         RequireAdmin();
         (string dataDir, TierEngine engine) = Open(a);
-        AsterSettings s = SettingsStore.Load(Path.Combine(dataDir, "config.json"), Path.Combine(dataDir, "plans"));
+        AsterSettings s = AntiCheatGuard.Load(Path.Combine(dataDir, "config.json"), Path.Combine(dataDir, "plans"));
         string name = a.Text("game")!;
         GameSettings g = s.Games.FirstOrDefault(x => string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase)) ?? throw new PyValueException($"game not registered: {name}");
         SsdTierSettings t = s.Auto.SsdTier;
@@ -168,7 +168,7 @@ internal static class TierCommand
         try
         {
             string config = Path.Combine(dataDir, "config.json");
-            return File.Exists(config) ? SettingsStore.Load(config, Path.Combine(dataDir, "plans")) : null;
+            return File.Exists(config) ? AntiCheatGuard.Load(config, Path.Combine(dataDir, "plans")) : null;
         }
         catch (Exception e) when (e is SettingsException or IOException or UnauthorizedAccessException)
         {

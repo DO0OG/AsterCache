@@ -48,6 +48,11 @@ internal static class TraceCommand
             throw new ArgException(L.Get(a.Lang, "Cli_Trace_StopNeedsLive"));
         }
 
+        if (a.Flag("live") && AntiCheatGuard.RefuseTrace(o, prefix, exes) is { } refused)
+        {
+            return refused;
+        }
+
         var sessions = new List<List<TraceEvent>>();
         if (a.Given("csv"))
         {

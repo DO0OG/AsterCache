@@ -23,8 +23,13 @@ public static class Applier
     /// 위 경우 report.Stopped 에 넣는 이유. 서비스는 이 문자열을 보면 계획을 다시 세웁니다.
     public const string ZoneOccupied = "zone region appears occupied, stopping";
 
-    /// 이동 전후 비교 표본 규칙의 이름. 저널 header 의 digest_rule 이 없으면 옛 규칙 (처음·가운데·끝 1 MiB + 옮긴 범위) 입니다.
-    public const string EdgeRule = "edge64k-v1";
+    /// 이동 전후 비교 표본 규칙의 이름. 저널 header 의 digest_rule 이 없으면 옛 규칙 (파일 단위: 처음·가운데·끝 1 MiB + 옮긴 범위) 입니다.
+    /// edge64k-v2 (새 저널): 작업 단위 표본 (그 작업 범위의 앞뒤 64 KiB, 파일당 합계 1 MiB 상한) 을 그 작업의 이동 직전과 직후에 읽음. edge64k-v1: 파일 단위 같은 표본 (이어하기만 지원).
+    public const string EdgeRule = "edge64k-v2";
+    public const string EdgeFileRule = "edge64k-v1";
+
+    /// planned 행을 미리 기록하는 작업 수: 이만큼의 from 을 한 번에 쓰고 fsync 한 뒤 이동합니다.
+    public const int PlanAhead = 32;
 
     /// 새 규칙: 파일당 표본 합계 상한.
     public const long DigestCapBytes = 1 << 20;
@@ -92,7 +97,7 @@ public static class Applier
 
         rep.DryRun = options.DryRun;
         rep.PlanSaved = persist;
-        return options.Execute ? Execute(plan, vol, todo, rep, journalPath, chunk, options.WriteCap, hooks, digest, cancellationToken) : rep;
+        return options.Execute ? Execute(plan, vol, todo, rep, journalPath, chunk, options.WriteCap, hooks, digest, Math.Max(1, options.PlanAhead), cancellationToken) : rep;
     }
 
     /// 새 규칙의 표본: 범위 (이미 각 작업의 처음·끝 TaskSpan 바이트) 를 파일 안으로 자르고 정렬해, 합계가 DigestCapBytes 를 넘으면 고르게 솎습니다. 같은 입력이면 항상 같은 결과.
@@ -177,7 +182,7 @@ public static class Applier
 
     private static ApplyReport Execute(PlanFile plan, IVolume vol, List<(int Idx, PlanTask Task, long Done)> todo, ApplyReport rep,
         string journalPath, long chunk, long writeCap, ApplyHooks hooks, Func<string, long, IReadOnlyList<(long Offset, long Length)>, string> digestFn,
-        CancellationToken ct)
+        int planAhead, CancellationToken ct)
     {
         ApplyTimings tm = rep.Timings;
         using var jr = new Journal(journalPath);
@@ -192,13 +197,38 @@ public static class Applier
         }
 
         // 표본 규칙은 저널을 처음 만든 실행이 정함: 이어하기는 저널의 sha_before 와 같은 규칙으로 다시 계산해야 비교가 유효 (digest_rule 이 없는 옛 저널 = 옛 규칙)
-        bool edge = jr.Rows.Count == 0 || header!.TryGetValue("digest_rule", out object? rule) && Equals(rule, EdgeRule);
+        object? rule = null;
+        _ = header?.TryGetValue("digest_rule", out rule);
+        bool perTask = jr.Rows.Count == 0 || Equals(rule, EdgeRule);
+        bool edge = perTask || Equals(rule, EdgeFileRule);
         var edgeFn = hooks.EdgeDigest ?? digestFn;
+        var sizes = new Dictionary<string, long>(StringComparer.Ordinal);
+        var capped = new Dictionary<string, HashSet<(long, long)>>(StringComparer.Ordinal);
+        long SizeOf(string p) => sizes.TryGetValue(p, out long z) ? z : sizes[p] = hooks.FileSize(p);
+        IReadOnlyList<(long Offset, long Length)> RangesOf(string p) => ranges.TryGetValue(p, out List<(long, long)>? x) ? x : [];
         string Digest(string p)
         {
-            long size = hooks.FileSize(p);
-            IReadOnlyList<(long Offset, long Length)> r = ranges.TryGetValue(p, out List<(long, long)>? x) ? x : [];
-            return edge ? edgeFn(p, size, EdgeRanges(r, size)) : digestFn(p, size, r);
+            long size = SizeOf(p);
+            return edge ? edgeFn(p, size, EdgeRanges(RangesOf(p), size)) : digestFn(p, size, RangesOf(p));
+        }
+
+        // 작업 단위: 파일의 상한 적용된 표본 중 이 작업의 앞뒤 구간에 해당하는 것만. 없으면 null (읽을 것이 없음).
+        string? TaskDigest(int idx, PlanTask t)
+        {
+            string p = t.Path;
+            long size = SizeOf(p);
+            if (!capped.TryGetValue(p, out HashSet<(long, long)>? keep))
+            {
+                capped[p] = keep = EdgeRanges(RangesOf(p), size).ToHashSet();
+            }
+
+            long cb0 = vol.ClusterBytes;
+            long lo = t.Vcn * cb0;
+            long hi = (t.Vcn + t.Clusters) * cb0;
+            long n = Math.Min(TaskSpan, hi - lo);
+            var mine = new[] { (lo, n), (hi - n, n) }.Where(r => r.Item1 >= 0 && r.Item1 < size).Select(r => (r.Item1, Math.Min(r.Item2, size - r.Item1)))
+                .Where(keep.Contains).Distinct().ToList();
+            return mine.Count == 0 ? null : edgeFn(p, size, mine);
         }
 
         if (jr.Rows.Count == 0)
@@ -216,13 +246,13 @@ public static class Applier
 
         try
         {
-            RunTasks(vol, todo, rep, jr, before, chunk, writeCap, hooks, Digest, ct);
+            RunTasks(vol, todo, rep, jr, before, chunk, writeCap, hooks, Digest, perTask ? TaskDigest : null, planAhead, ct);
         }
         catch (Exception)
         {
             try
             {
-                Finish(rep, jr, before, Digest, strict: false);
+                Finish(rep, jr, before, perTask ? k => TaskDigest(TaskOf(k), plan.Tasks[TaskOf(k)]) : Digest, perTask ? k => plan.Tasks[TaskOf(k)].Path : k => k, strict: false);
             }
             catch (Exception)
             {
@@ -232,20 +262,29 @@ public static class Applier
             throw;
         }
 
-        ApplyReport done = Finish(rep, jr, before, Digest, strict: true);
+        ApplyReport done = Finish(rep, jr, before, perTask ? k => TaskDigest(TaskOf(k), plan.Tasks[TaskOf(k)]) : Digest, perTask ? k => plan.Tasks[TaskOf(k)].Path : k => k, strict: true);
         tm.Stop();
         return done;
     }
 
+    // 작업 단위 표본의 키: "t<idx>"
+    private static string TaskKey(int idx) => "t" + idx.ToString(CultureInfo.InvariantCulture);
+
+    private static int TaskOf(string key) => int.Parse(key.AsSpan(1), CultureInfo.InvariantCulture);
+
     // 쓴 양은 예외가 나도 end 행에 남도록 rep.MovedBytes 에 계속 누적합니다.
     private static void RunTasks(IVolume vol, List<(int Idx, PlanTask Task, long Done)> todo, ApplyReport rep, Journal jr,
-        OrderedDictionary<string, string?> before, long chunk, long writeCap, ApplyHooks hooks, Func<string, string> digest, CancellationToken ct)
+        OrderedDictionary<string, string?> before, long chunk, long writeCap, ApplyHooks hooks, Func<string, string> digest,
+        Func<int, PlanTask, string?>? taskDigest, int planAhead, CancellationToken ct)
     {
         long cb = vol.ClusterBytes;
         ApplyTimings tm = rep.Timings;
         int busyInARow = 0;
-        foreach ((int i, PlanTask t, long d) in todo)
+        int plannedUpTo = 0;
+        var fresh = new HashSet<int>(); // 이번 실행이 planned 행을 쓴 작업
+        for (int n = 0; n < todo.Count; n++)
         {
+            (int i, PlanTask t, long d) = todo[n];
             if (ct.IsCancellationRequested) // 다음 작업으로 넘어가기 전에도 확인: 취소된 뒤에는 새 단계의 planned 행을 남기지 않음
             {
                 rep.Stopped = "cancelled";
@@ -253,7 +292,29 @@ public static class Applier
             }
 
             string p = t.Path;
-            if (!before.ContainsKey(p))
+            if (n >= plannedUpTo)
+            {
+                PlanRows(todo, n, jr, hooks, tm, fresh, planAhead); // 되돌리기의 근거 (from) 는 이동 전에 디스크에 있어야 함: PlanAhead 개를 한 번에 쓰고 fsync
+                plannedUpTo = n + planAhead;
+            }
+
+            if (d == 0 && !fresh.Contains(i) && jr.First("step", "idx", (long)i) is { } planned)
+            {
+                // 앞선 실행이 미리 기록만 하고 시작하지 않은 작업: 이번 실행의 단계로 세도록 같은 from 을 새로 남김 (자동 재배치의 되돌리기는 이번 실행이 쓴 줄만 봄)
+                ApplyTimings.Time(ref tm.JournalTicks, () => jr.AddBatched(new JObject
+                {
+                    { "type", "step" },
+                    { "idx", (long)i },
+                    { "state", "resumed" },
+                    { "path", p },
+                    { "vcn", t.Vcn },
+                    { "clusters", t.Clusters },
+                    { "target_lcn", t.TargetLcn },
+                    { "from", planned["from"] },
+                }));
+            }
+
+            if (taskDigest is null && !before.ContainsKey(p))
             {
                 JObject? row = jr.First("file", "path", p);
                 before[p] = row is null ? ApplyTimings.Time(ref tm.DigestBeforeTicks, () => digest(p)) : row["sha_before"] as string;
@@ -262,26 +323,19 @@ public static class Applier
                     ApplyTimings.Time(ref tm.JournalTicks, () => jr.AddBatched(new JObject { { "type", "file" }, { "path", p }, { "sha_before", before[p] } }));
                 }
             }
-
-            if (jr.First("step", "idx", (long)i) is null) // 맨 처음 from 을 지킴: 이어하기가 덮어쓰면 안 됨
+            else if (taskDigest is not null && !before.ContainsKey(TaskKey(i)))
             {
-                var src = ZoneAllocator.Pieces(ApplyTimings.Time(ref tm.OpenTicks, () => hooks.Extents(p)) ?? [], t.Vcn, t.Vcn + t.Clusters)
-                    .Select(x => (object?)new List<object?> { x.Vcn, x.Lcn, x.N }).ToList();
-                ApplyTimings.Time(ref tm.JournalTicks, () =>
+                // 이 작업의 이동 직전에 그 범위의 가장자리만 읽음 (헤드가 원본 위치에 한 번만 감). 이어하기는 저널에 적힌 값을 씀.
+                JObject? row = jr.First("sha", "idx", (long)i);
+                string? sha = row is null ? ApplyTimings.Time(ref tm.DigestBeforeTicks, () => taskDigest(i, t)) : row["sha_before"] as string;
+                if (sha is not null)
                 {
-                    jr.AddBatched(new JObject
+                    before[TaskKey(i)] = sha;
+                    if (row is null)
                     {
-                    { "type", "step" },
-                    { "idx", (long)i },
-                    { "state", "planned" },
-                    { "path", p },
-                    { "vcn", t.Vcn },
-                    { "clusters", t.Clusters },
-                    { "target_lcn", t.TargetLcn },
-                    { "from", src },
-                    });
-                    jr.Flush(); // 되돌리기의 근거 (from) 는 이동 전에 디스크에 있어야 함
-                });
+                        ApplyTimings.Time(ref tm.JournalTicks, () => jr.AddBatched(new JObject { { "type", "sha" }, { "idx", (long)i }, { "sha_before", sha } }));
+                    }
+                }
             }
 
             long off = d;
@@ -331,13 +385,44 @@ public static class Applier
         }
     }
 
+    // todo[from..] 의 PlanAhead 개 중 planned 행이 없는 것을 쓰고 fsync. 맨 처음 from 을 지킴: 이어하기가 덮어쓰면 안 됨.
+    private static void PlanRows(List<(int Idx, PlanTask Task, long Done)> todo, int from, Journal jr, ApplyHooks hooks, ApplyTimings tm, HashSet<int> fresh, int planAhead)
+    {
+        for (int n = from; n < Math.Min(todo.Count, from + planAhead); n++)
+        {
+            (int i, PlanTask t, _) = todo[n];
+            if (jr.First("step", "idx", (long)i) is not null)
+            {
+                continue;
+            }
+
+            var src = ZoneAllocator.Pieces(ApplyTimings.Time(ref tm.OpenTicks, () => hooks.Extents(t.Path)) ?? [], t.Vcn, t.Vcn + t.Clusters)
+                .Select(x => (object?)new List<object?> { x.Vcn, x.Lcn, x.N }).ToList();
+            _ = fresh.Add(i);
+            ApplyTimings.Time(ref tm.JournalTicks, () => jr.AddBatched(new JObject
+            {
+                { "type", "step" },
+                { "idx", (long)i },
+                { "state", "planned" },
+                { "path", t.Path },
+                { "vcn", t.Vcn },
+                { "clusters", t.Clusters },
+                { "target_lcn", t.TargetLcn },
+                { "from", src },
+            }));
+        }
+
+        ApplyTimings.Time(ref tm.JournalTicks, jr.Flush);
+    }
+
     /// 건드린 모든 파일의 SHA 표본을 다시 비교합니다. 달라졌으면 크게 알리고 (strict) 절대 삼키지 않습니다. end 행은 어느 경우든 기록.
-    private static ApplyReport Finish(ApplyReport rep, Journal jr, OrderedDictionary<string, string?> before, Func<string, string> digest, bool strict)
+    private static ApplyReport Finish(ApplyReport rep, Journal jr, OrderedDictionary<string, string?> before, Func<string, string?> digest, Func<string, string> pathOf, bool strict)
     {
         ApplyTimings tm = rep.Timings;
-        var bad = before.Where(kv => ApplyTimings.Time(ref tm.DigestAfterTicks, () => digest(kv.Key)) != kv.Value).Select(kv => kv.Key).ToList();
-        rep.ShaChecked = before.Count;
-        tm.Files = before.Count;
+        var bad = before.Where(kv => ApplyTimings.Time(ref tm.DigestAfterTicks, () => digest(kv.Key)) != kv.Value).Select(kv => pathOf(kv.Key)).Distinct().ToList();
+        int files = before.Select(kv => pathOf(kv.Key)).Distinct().Count();
+        rep.ShaChecked = files;
+        tm.Files = files;
         rep.ShaMismatch = bad;
         ApplyTimings.Time(ref tm.JournalTicks, () =>
         {
@@ -350,6 +435,7 @@ public static class Applier
             });
             jr.Close();
         });
+        tm.JournalFlushes = jr.Flushes;
         return bad.Count > 0 && strict ? throw new ShaMismatchException(bad) : rep;
     }
 }

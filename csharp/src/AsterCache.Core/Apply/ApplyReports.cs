@@ -115,6 +115,9 @@ public sealed class ApplyTimings
 
     public long Files { get; internal set; }
 
+    /// 저널을 디스크까지 내린 횟수 (진단용, JSON 에는 넣지 않음).
+    public int JournalFlushes { get; internal set; }
+
     public double OpenS => Seconds(OpenTicks);
 
     public double DigestBeforeS => Seconds(DigestBeforeTicks);

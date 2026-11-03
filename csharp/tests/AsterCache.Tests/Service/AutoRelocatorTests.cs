@@ -1088,7 +1088,8 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         Vol.AfterMove = null;
         int rowsBefore = JournalRowCount();
         long firstStep = JournalRows().Where(r => Equals(r["type"], "step") && r.ContainsKey("from")).Select(r => (long)r["idx"]!).Min();
-        _w.Apply = (_, plan, options, ct) => Applier.Apply(plan, Vol, [Root], JournalPath, Hooks((_, _, _) => "changed"), options, ct);
+        int changed = 0;
+        _w.Apply = (_, plan, options, ct) => Applier.Apply(plan, Vol, [Root], JournalPath, Hooks((_, _, _) => "c" + changed++), options, ct);
 
         Run(TimeSpan.FromMinutes(3.5));
 

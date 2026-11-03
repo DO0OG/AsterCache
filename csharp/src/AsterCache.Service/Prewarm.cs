@@ -336,6 +336,9 @@ public sealed class Prewarmer
 
     public static bool IsTrigger(GameSettings g, string exeName) => g.Prewarm.TriggerExes.Contains(exeName, StringComparer.OrdinalIgnoreCase);
 
+    /// 로그용 예열 원인: "trigger X.exe" → "X.exe", "auto cold start" → "cold start", 그 밖은 앞의 "auto " 만 뗌.
+    public static string TriggerCause(string why) => why.StartsWith("trigger ", StringComparison.Ordinal) ? why["trigger ".Length..] : why.StartsWith("auto ", StringComparison.Ordinal) ? why["auto ".Length..] : why;
+
     /// 서비스 시작 뒤: on_service_start 인 게임을 차례로.
     /// recent (최근순) 를 주면 한 묶음으로 합칩니다: on_service_start 게임 먼저, 그다음 최근순 (중복 제거) — RAM 예산을 한 번만 씁니다.
     public IReadOnlyList<PrewarmResult> RunServiceStart(IEnumerable<GameSettings>? recent = null, CancellationToken ct = default)
@@ -536,6 +539,7 @@ public sealed class Prewarmer
                 game.Prewarm.MinFreeRamMib, since, TimeSpan.FromMinutes(game.Prewarm.CooldownMin));
             if (skip is null)
             {
+                _log.Info($"{game.Name}: prewarm triggered by {TriggerCause(why)}");
                 try
                 {
                     (StreamStats s, bool complete) = StreamHot(game, ct);
@@ -674,6 +678,7 @@ public sealed class Prewarmer
                 }
                 else
                 {
+                    _log.Info($"{game.Name}: prewarm triggered by {TriggerCause(why)}");
                     (StreamStats s, bool complete) = _env.ColdRead(plan.Ops, ct);
                     (stats, label, skip) = (s, plan.Label, complete ? null : Cancelled);
                     samples = CacheProbe.PickSamples(plan.Ops);

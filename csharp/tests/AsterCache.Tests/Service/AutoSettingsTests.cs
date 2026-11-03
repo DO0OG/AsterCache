@@ -602,12 +602,15 @@ public sealed class AutoSettingsTests
     public void SmrLowersOnlyTheUnsetDailyWriteLimitAndTheRunCap()
     {
         AutoSettings unset = ParseAuto(new JsonObject()).Auto;
-        AutoSettings set = ParseAuto(new JsonObject { ["max_relocate_gib_per_day"] = 8 }).Auto;
+        AutoSettings eight = ParseAuto(new JsonObject { ["max_relocate_gib_per_day"] = 8 }).Auto;
+        AutoSettings six = ParseAuto(new JsonObject { ["max_relocate_gib_per_day"] = 6 }).Auto;
 
         Assert.False(unset.MaxRelocateGibPerDaySet);
-        Assert.True(set.MaxRelocateGibPerDaySet);
+        Assert.False(eight.MaxRelocateGibPerDaySet); // 8 은 기본값으로 취급
+        Assert.True(six.MaxRelocateGibPerDaySet);
         Assert.Equal((8, 2), (unset.MaxRelocateGibFor(smr: false), unset.MaxRelocateGibFor(smr: true)));
-        Assert.Equal((8, 8), (set.MaxRelocateGibFor(smr: false), set.MaxRelocateGibFor(smr: true)));
+        Assert.Equal((8, 2), (eight.MaxRelocateGibFor(smr: false), eight.MaxRelocateGibFor(smr: true)));
+        Assert.Equal((6, 6), (six.MaxRelocateGibFor(smr: false), six.MaxRelocateGibFor(smr: true)));
         Assert.Equal((2L << 30, 1L << 30), (AutoSettings.WriteCapFor(false), AutoSettings.WriteCapFor(true)));
     }
 }

@@ -541,9 +541,10 @@ public sealed class Prewarmer
         {
             double?[] rates = [.. games.Select(g => _env.DiskBytesPerSecond(g))];
             bool settled = BootSettled();
-            if (settled && rates.All(r => r is null))
+            if (settled && rates.Any(r => r is null))
             {
                 // 디스크 유휴를 확인할 수 없음: 읽지 않고 계측값이 생길 때까지 (또는 취소될 때까지) 보류
+                idle = TimeSpan.Zero;
                 if (!heldLogged)
                 {
                     heldLogged = true;

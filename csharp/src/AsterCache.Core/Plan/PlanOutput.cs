@@ -14,7 +14,9 @@ public static class PlanOutput
         plan.Save(outPath);
         string prefetchPath = outPath + PrefetchSuffix;
         string rows = PyJson.Dumps(plan.PrefetchTrace(sessions).Select(e => e.ToJson()).ToList(), ensureAscii: false) + "\n";
-        File.WriteAllBytes(prefetchPath, PyJson.Utf8.GetBytes(PyJson.ToCrlf(rows)));
+        string tmp = prefetchPath + ".tmp";
+        DurableFile.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(PyJson.ToCrlf(rows)));
+        File.Move(tmp, prefetchPath, true);
         return prefetchPath;
     }
 }

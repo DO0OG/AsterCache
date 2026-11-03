@@ -298,6 +298,7 @@ public sealed class PlanPortTests
         {
             p.Save(tmp);
             PlanFile back = PlanFile.Load(tmp);
+            Assert.False(File.Exists(tmp + ".tmp"));
 
             Assert.Equal(p.Dumps(), back.Dumps());
             Assert.Equal(p.Sha(), back.Sha());

@@ -124,6 +124,7 @@ public static class SettingsStore
         JObject o = v as JObject ?? throw new SettingsException("auto: object expected");
         Unknown(o, AutoKeys, "auto");
         AutoSettings d = AutoSettings.Default;
+        int maxRelocateGib = OptInt(o, "max_relocate_gib_per_day", 0, 1048576, d.MaxRelocateGibPerDay);
         List<string> ignore = [];
         if (o.TryGetValue("ignore_exes", out object? ig))
         {
@@ -181,8 +182,8 @@ public static class SettingsStore
             RelocateIoPriority = o.TryGetValue("relocate_io_priority", out object? io) && io is AutoSettings.IoLow or AutoSettings.IoNormal ? (string)io : d.RelocateIoPriority,
             RelocateVerify = o.TryGetValue("relocate_verify", out object? rv) && rv is string rvs && VerifyMode.IsValid(rvs) ? rvs : d.RelocateVerify,
             RelocateOrder = o.TryGetValue("relocate_order", out object? ro) && ro is string ros && RelocateOrder.IsValidSetting(ros) ? ros : d.RelocateOrder,
-            MaxRelocateGibPerDay = OptInt(o, "max_relocate_gib_per_day", 0, 1048576, d.MaxRelocateGibPerDay),
-            MaxRelocateGibPerDaySet = o.ContainsKey("max_relocate_gib_per_day"),
+            MaxRelocateGibPerDay = maxRelocateGib,
+            MaxRelocateGibPerDaySet = o.ContainsKey("max_relocate_gib_per_day") && maxRelocateGib != d.MaxRelocateGibPerDay, // 8 은 기본값으로 취급 (SMR 기본 2 유지)
             SsdTier = o.TryGetValue("ssd_tier", out object? tier) ? ParseSsdTier(tier) : SsdTierSettings.Default,
         };
     }

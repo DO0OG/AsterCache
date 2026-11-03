@@ -109,7 +109,13 @@ public sealed record PlanFile(
     public string Dumps() => PyJson.Dumps(ToJson(), indent: 1);
 
     /// Path.write_text(json.dumps(plan, indent=1)) 와 같은 바이트: UTF-8, BOM 없음, Windows 텍스트 모드라 CRLF.
-    public void Save(string path) => File.WriteAllBytes(path, PyJson.Utf8.GetBytes(PyJson.ToCrlf(Dumps())));
+    public void Save(string path)
+    {
+        // 임시 파일을 디스크까지 내린 뒤 이름을 바꿈: 도중에 멈춰도 잘린 계획이 원본을 덮어쓰지 않음
+        string tmp = path + ".tmp";
+        DurableFile.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(PyJson.ToCrlf(Dumps())));
+        File.Move(tmp, path, true);
+    }
 
     public static PlanFile Load(string path) => FromJson(JsonRead.ReadFile(path));
 

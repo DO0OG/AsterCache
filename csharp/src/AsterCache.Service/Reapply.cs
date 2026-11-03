@@ -107,7 +107,7 @@ public sealed class ReapplyEnv
 
     public required Func<string, string> RealPath { get; init; }
 
-    public required Func<GameSettings, PlanFile, CancellationToken, ApplyReport> Apply { get; init; }
+    public required Func<GameSettings, PlanFile, ApplyOptions?, CancellationToken, ApplyReport> Apply { get; init; }
 
     /// 이 게임에 SSD 보조 저장 링크가 살아 있는가: 링크가 낀 파일은 배치를 읽을 수 없고 허용 루트 밖으로 풀리므로 그동안 배치 검사를 건너뜁니다 (링크는 재배치 전·업데이트 때 되돌려짐).
     public Func<GameSettings, bool> TierActive { get; init; } = _ => false;
@@ -142,7 +142,7 @@ public sealed class ReapplyEnv
             Extents = FileLayout.Extents,
             Stat = PlanFile.FingerprintOf,
             RealPath = RealPaths.Real,
-            Apply = (g, plan, ct) => Run(journalDir, g, plan, ChooseOptions(g, env.Options(g), relocateOrder?.Invoke() ?? RelocateOrder.Target, relocateParallel?.Invoke(g) ?? 1), ct, log), // 존을 다시 정하면 계획에 남김
+            Apply = (g, plan, injected, ct) => Run(journalDir, g, plan, ChooseOptions(g, injected, relocateOrder?.Invoke() ?? RelocateOrder.Target, relocateParallel?.Invoke(g) ?? 1), ct, log), // 존을 다시 정하면 계획에 남김
             TierActive = g => TierEngine.HasActive(Path.Combine(Path.GetDirectoryName(journalDir) ?? journalDir, "tier"), g.Name),
         };
         return env;
@@ -350,11 +350,12 @@ public sealed class ReapplyChecker
             {
                 ApplyReport? done = null;
                 ApplyReport rep;
-                long cap = (_env.Options(game) ?? new ApplyOptions()).WriteCap;
+                ApplyOptions? injected = _env.Options(game); // Started 가 집계를 늘리기 전에 한 번만 계산해 Apply 에도 그대로 넘김
+                long cap = (injected ?? new ApplyOptions()).WriteCap;
                 _env.Started(game, Math.Min(plan.Tasks.Sum(t => t.Clusters) * plan.ClusterBytes, cap)); // 예정 바이트 (근사: 계획 전체, 회당 상한까지)
                 try
                 {
-                    rep = done = _env.Apply(game, plan, cancellationToken);
+                    rep = done = _env.Apply(game, plan, injected, cancellationToken);
                 }
                 finally
                 {

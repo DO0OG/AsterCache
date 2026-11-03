@@ -79,7 +79,7 @@ public sealed class ReapplyTests
         Extents = _ => throw new InvalidOperationException(),
         Stat = _ => throw new InvalidOperationException(),
         RealPath = Path.GetFullPath,
-        Apply = (_, _, _) => throw new InvalidOperationException(),
+        Apply = (_, _, _, _) => throw new InvalidOperationException(),
     };
 
     private sealed class Rig
@@ -128,6 +128,12 @@ public sealed class ReapplyTests
         public List<string> Calls { get; } = [];
 
         public ApplyOptions? Options { get; set; }
+
+        public Func<ApplyOptions?>? OptionsFn { get; set; }
+
+        public Action<long>? OnStarted { get; set; }
+
+        public ApplyOptions? AppliedOptions { get; private set; }
 
         public bool WarnAllowed { get; set; } = true;
 
@@ -189,6 +195,7 @@ public sealed class ReapplyTests
                 Started = (_, bytes) =>
                 {
                     Started.Add(bytes);
+                    OnStarted?.Invoke(bytes);
                     Calls.Add("started");
                 },
                 Spent = (_, bytes) =>
@@ -196,12 +203,13 @@ public sealed class ReapplyTests
                     Spent.Add(bytes);
                     Calls.Add("spent");
                 },
-                Options = _ => Options,
+                Options = _ => OptionsFn is { } f ? f() : Options,
                 WarnDegraded = _ => WarnAllowed,
                 Now = () => Now,
-                Apply = (_, _, token) =>
+                Apply = (_, _, opts, token) =>
                 {
                     Calls.Add("apply");
+                    AppliedOptions = opts;
                     ApplyCalls++;
                     LastToken = token;
                     return ApplyThrows is null ? new ApplyReport { MovedBytes = 4096, Stopped = ApplyCancelled ? "cancelled" : null } : throw ApplyThrows;
@@ -311,6 +319,18 @@ public sealed class ReapplyTests
 
         Assert.Equal(ReapplyVerdict.Reapply, rig.Check(Bench));
         Assert.Equal([4096L], rig.Started);
+    }
+
+    [Fact]
+    public void ApplyReceivesTheOptionsComputedBeforeStartedCountedTheBytes()
+    {
+        var rig = new Rig { Moved = false };
+        long used = 0;
+        rig.OptionsFn = () => new ApplyOptions(WriteCap: (1L << 30) - used); // 실제 ReapplyOptionsFor 처럼 Started 로 늘어난 사용량만큼 상한이 줄어듦
+        rig.OnStarted = b => used += b;
+
+        Assert.Equal(ReapplyVerdict.Reapply, rig.Check(Bench));
+        Assert.Equal(1L << 30, rig.AppliedOptions!.WriteCap);
     }
 
     [Fact]

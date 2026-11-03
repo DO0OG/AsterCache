@@ -226,6 +226,12 @@ public sealed class AutoRelocator
             }
 
             WarmNewTrace(g, warms); // 재배치를 못 하거나 기다리는 동안에도 트레이스가 있으면 바로 체감할 수 있게
+            if (!_env.Capabilities(g.OriginRoot).CanRelocate)
+            {
+                Note(g, AutoStage.Skipped, DriveCapabilities.PrewarmOnly); // 시스템 HDD: 읽기 전용 예열만, 재배치 없음
+                continue;
+            }
+
             if (!relocateOn)
             {
                 Note(g, AutoStage.Skipped, RelocateOff);
@@ -281,7 +287,7 @@ public sealed class AutoRelocator
         foreach (GameSettings g in s.Games.OrderByDescending(g => played.GetValueOrDefault(g.Name, DateTimeOffset.MinValue)).ThenBy(g => g.Name, StringComparer.Ordinal))
         {
             if (AutoTracer.PlanTracePath(g, _env.FileExists) is not null || _prefetchTried.TryGetValue(g.Name, out DateTimeOffset at) && _env.Now() - at < RetryEvery
-                || _env.DriveRefusal(g.OriginRoot) is not null || AnyGameRunning(g))
+                || !_env.Capabilities(g.OriginRoot).CanPrewarm || AnyGameRunning(g))
             {
                 continue;
             }
@@ -320,7 +326,7 @@ public sealed class AutoRelocator
         IReadOnlyDictionary<string, DateTimeOffset> played = _status.LastPlayed();
         foreach (GameSettings g in s.Games.OrderByDescending(g => played.GetValueOrDefault(g.Name, DateTimeOffset.MinValue)).ThenBy(g => g.Name, StringComparer.Ordinal))
         {
-            if ((!_coldTried.TryGetValue(g.Name, out DateTimeOffset triedAt) || _env.Now() - triedAt >= RetryEvery) && !PostUpdateDelayed(g, s) && _prewarm.IsCold(g) && _prewarm.LastWarmed(g.Name) is null && _env.DriveRefusal(g.OriginRoot) is null && !AnyGameRunning(g))
+            if ((!_coldTried.TryGetValue(g.Name, out DateTimeOffset triedAt) || _env.Now() - triedAt >= RetryEvery) && !PostUpdateDelayed(g, s) && _prewarm.IsCold(g) && _prewarm.LastWarmed(g.Name) is null && _env.Capabilities(g.OriginRoot).CanPrewarm && !AnyGameRunning(g))
             {
                 _coldTried[g.Name] = _env.Now();
                 warms.Add((g, ColdWhy));
@@ -698,9 +704,9 @@ public sealed class AutoRelocator
             return false;
         }
 
-        if (_env.DriveRefusal(g.OriginRoot) is { } why) // 시스템 볼륨·SSD·종류를 모르는 드라이브는 옮기지 않음 (수동 등록 게임도 같음)
+        if (_env.Capabilities(g.OriginRoot) is { CanPrewarm: false } caps) // 시스템 SSD·SSD·종류를 모르는 드라이브는 건드리지 않음 (수동 등록 게임도 같음). 시스템 HDD 는 계획·예열까지만 (TickCore 가 재배치 앞에서 거름)
         {
-            Note(g, AutoStage.Skipped, why);
+            Note(g, AutoStage.Skipped, caps.Reason!);
             return false;
         }
 

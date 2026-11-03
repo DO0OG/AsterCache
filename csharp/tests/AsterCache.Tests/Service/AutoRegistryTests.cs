@@ -142,7 +142,7 @@ public sealed class AutoRegistryTests : IDisposable
     {
         switch (kind)
         {
-            case "system": World.SystemDrive = "D:"; break;
+            case "system": (World.SystemDrive, World.Hdd["D:"]) = ("D:", false); break; // 시스템 SSD (시스템 HDD 는 발견을 허용)
             case "ssd": World.Hdd["D:"] = false; break;
             default: World.Hdd["D:"] = null; break;
         }
@@ -158,8 +158,35 @@ public sealed class AutoRegistryTests : IDisposable
     }
 
     [Fact]
-    public void HeuristicIgnoresProgramsOnTheSystemVolumeAndLogsOncePerDrive()
+    public void DiscoveryRegistersGamesOnASystemHddAsPrewarmOnly()
     {
+        World.SystemDrive = "D:"; // D: 는 기본이 HDD
+        World.Found.Add(Found("Mw4", @"D:\Games\Mw4", "mw4.exe"));
+
+        Assert.Equal(1, _rig.Registry().DiscoverOnce());
+
+        Assert.Single(Registered());
+        Assert.Equal(DriveCapabilities.PrewarmOnly, _rig.Status.Get("Mw4")!.Detail);
+    }
+
+    [Theory]
+    [InlineData(@"D:\Users\me\AppData\Roaming\Foo\foo.exe", 0)]
+    [InlineData(@"D:\Program Files\WindowsApps\Foo\foo.exe", 0)]
+    [InlineData(@"D:\Program Files\Microsoft Office\foo.exe", 0)]
+    [InlineData(@"D:\Program Files\Foo\foo.exe", 1)]
+    public void HeuristicOnASystemHddKeepsSystemFoldersOutButAcceptsOtherGames(string image, int expected)
+    {
+        World.SystemDrive = "D:"; // 시스템 HDD
+
+        Run(_rig.Registry(), 10, image, 900);
+
+        Assert.Equal(expected, Registered().Count);
+    }
+
+    [Fact]
+    public void HeuristicIgnoresProgramsOnTheSystemSsdAndLogsOncePerDrive()
+    {
+        World.Hdd["C:"] = false;
         AutoRegistry reg = _rig.Registry();
 
         Run(reg, 10, @"C:\Games\Bigig.exe", 900);
@@ -678,7 +705,7 @@ public sealed class AutoRegistryTests : IDisposable
         World.Hdd["D:"] = false;
         Assert.Equal(0, _rig.Registry().DiscoverOnce());
 
-        World.Hdd["D:"] = true;
+        World.Hdd["D:"] = null;
         World.SystemDrive = "D:";
         Assert.Equal(0, _rig.Registry().DiscoverOnce());
 

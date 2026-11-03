@@ -166,7 +166,7 @@ public sealed class AutoTracerTests : IDisposable
     {
         switch (kind)
         {
-            case "system": _rig.World.SystemDrive = "D:"; break;
+            case "system": (_rig.World.SystemDrive, _rig.World.Hdd["D:"]) = ("D:", false); break; // 시스템 SSD (시스템 HDD 는 읽기 전용 트레이스를 허용)
             case "ssd": _rig.World.Hdd["D:"] = false; break;
             default: _rig.World.Hdd["D:"] = null; break;
         }

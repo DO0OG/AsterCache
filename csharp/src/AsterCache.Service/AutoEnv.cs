@@ -19,6 +19,33 @@ public interface IAutoTrace : IDisposable
     IReadOnlyList<TraceRecord> Stop();
 }
 
+/// 드라이브에서 자동 모드가 할 수 있는 일. 시스템 볼륨이 회전 디스크면 읽기 전용 경로 (발견·트레이스·예열) 만 허용하고 재배치·SSD 보조 저장은 거절합니다.
+/// 시스템 볼륨이 SSD 이거나 종류를 모르면 전부 거절, 시스템 볼륨 밖은 HDD 로 확인된 때만 전부 허용합니다.
+public sealed record DriveCapabilities(bool CanDiscover, bool CanPrewarm, bool CanRelocate, bool CanTier, bool IsSystem, bool IsRotational)
+{
+    /// 시스템 HDD 게임의 auto_status detail.
+    public const string PrewarmOnly = "prewarm only (system drive)";
+
+    /// 재배치를 거절하는 이유, 재배치해도 되면 null.
+    public string? Reason { get; init; }
+
+    /// 예열을 거절하는 이유, 예열해도 되면 null.
+    public string? PrewarmRefusal => CanPrewarm ? null : Reason;
+
+    public static DriveCapabilities Of(string originRoot, string systemDrive, Func<string, bool?> isHdd)
+    {
+        string letter = PlanFile.SplitDrive(originRoot).ToUpperInvariant();
+        bool system = string.Equals(letter, systemDrive, StringComparison.OrdinalIgnoreCase);
+        bool? hdd = isHdd(letter);
+        bool rotational = hdd == true; // 발견·트레이스·예열은 HDD 로 확인된 드라이브에서만 (시스템 볼륨이어도), 재배치·티어는 시스템 볼륨 밖에서만
+        bool all = rotational && !system;
+        string? reason = all ? null
+            : system ? (rotational ? PrewarmOnly : "system volume")
+            : hdd is false ? "not an HDD" : "drive type unknown";
+        return new DriveCapabilities(rotational, rotational, all, all, system, rotational) { Reason = reason };
+    }
+}
+
 /// 자동 모드가 바깥 세계에 닿는 곳 전부 (프로세스·디스크·CPU·전원, 런처 목록, 트레이스 세션, 계획·재배치). 시험은 가짜로 바꿉니다.
 public sealed class AutoEnv
 {
@@ -143,21 +170,8 @@ public sealed class AutoEnv
     /// SSD 보조 저장 (선택 기능) 의 엔진. 시험 기본값은 null (건드리지 않음).
     public TierEngine? Tier { get; init; }
 
-    /// 자동 모드가 이 설치 루트를 건드리면 안 되는 이유, 건드려도 되면 (HDD 로 확인된 시스템 볼륨 밖) null.
-    public string? DriveRefusal(string originRoot) => DriveRefusal(originRoot, SystemDrive, IsHdd);
-
-    /// 같은 판정을 환경 없이 (기록 없는 예열이 서비스 시작·트리거 경로에서도 씀).
-    public static string? DriveRefusal(string originRoot, string systemDrive, Func<string, bool?> isHdd)
-    {
-        string letter = PlanFile.SplitDrive(originRoot).ToUpperInvariant();
-        return string.Equals(letter, systemDrive, StringComparison.OrdinalIgnoreCase) ? "system volume"
-            : isHdd(letter) switch
-            {
-                true => null,
-                false => "not an HDD",
-                null => "drive type unknown",
-            };
-    }
+    /// 자동 모드가 이 설치 루트에 할 수 있는 일 (HDD 로 확인된 시스템 볼륨 밖은 전부, 회전 디스크인 시스템 볼륨은 발견·예열만).
+    public DriveCapabilities Capabilities(string originRoot) => DriveCapabilities.Of(originRoot, SystemDrive, IsHdd);
 
     /// log 가 있으면 재배치의 이동·검증 읽기에 낮은 I/O 우선순위 힌트를 붙입니다 (자동 모드는 사용자 PC 를 덜 방해해야 함).
     public static AutoEnv Create(string journalDir, ILog? log = null)

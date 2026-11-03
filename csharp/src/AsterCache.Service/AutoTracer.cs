@@ -107,13 +107,13 @@ public sealed class AutoTracer
                 return;
             }
 
-            refused = _env.DriveRefusal(g.OriginRoot); // 시스템 볼륨·SSD·종류를 모르는 드라이브는 건드리지 않음
+            refused = _env.Capabilities(g.OriginRoot).PrewarmRefusal; // 시스템 SSD·SSD·종류를 모르는 드라이브는 건드리지 않음 (시스템 HDD 는 읽기 전용 트레이스만)
             if (refused is null)
             {
                 try
                 {
                     LearnSettings ls = _settings().Auto.Learn;
-                    learn = ls.Enabled ? AutoLearn.Create(g, ls, _env.PhysicalRamBytes(), _learn) : null; // 시스템 볼륨·SSD 는 위에서 이미 걸러짐
+                    learn = ls.Enabled ? AutoLearn.Create(g, ls, _env.PhysicalRamBytes(), _learn) : null; // 시스템 SSD·SSD 는 위에서 이미 걸러짐
                     _run = new Run(g, _env.StartTrace(g.ExeNames, learn is null ? null : AutoLearn.Listener(learn)), _env.Now()) { Learn = learn };
                     learn?.Start();
                 }

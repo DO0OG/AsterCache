@@ -1304,7 +1304,7 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         _relocator = new AutoRelocator(_w.Env(), _status, _log, () => _settings, _cold);
 
         Tick();
-        _w.Now += AutoMode.DiscoveryEvery - Step;
+        _w.Now += AutoRelocator.RetryEvery - Step;
         Tick();
         Assert.Equal(1, plans); // 주기 전에는 다시 열거하지 않음
 
@@ -1960,7 +1960,7 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         Tick();
         Assert.Equal(["bench"], _w.PrefetchCalls); // 30 초마다 .pf 를 다시 훑지 않음
 
-        _w.Now += AutoMode.DiscoveryEvery;
+        _w.Now += AutoRelocator.RetryEvery;
         Tick();
         Assert.Equal(["bench", "bench"], _w.PrefetchCalls);
         Assert.False(File.Exists(_game.Plan));

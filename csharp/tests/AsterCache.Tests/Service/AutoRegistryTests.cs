@@ -53,7 +53,7 @@ public sealed class AutoRegistryTests : IDisposable
         registry.DiscoverOnce();
 
         Assert.Equal(["Mw4"], Registered());
-        string line = Assert.Single(_rig.Log.Lines, l => l.Contains("launcher folder skipped", StringComparison.Ordinal)); // 6 시간마다 반복되지 않음
+        string line = Assert.Single(_rig.Log.Lines, l => l.Contains("launcher folder skipped", StringComparison.Ordinal)); // 1 시간마다 반복되지 않음
         Assert.Contains("HoYoPlay", line, StringComparison.Ordinal);
     }
 
@@ -154,7 +154,7 @@ public sealed class AutoRegistryTests : IDisposable
         Assert.Equal(0, reg.DiscoverOnce());
 
         Assert.Empty(Registered());
-        Assert.Single(_rig.Log.Lines, l => l.Contains("skipped Mw4", StringComparison.Ordinal)); // 6 시간마다 다시 훑어도 한 번만
+        Assert.Single(_rig.Log.Lines, l => l.Contains("skipped Mw4", StringComparison.Ordinal)); // 1 시간마다 다시 훑어도 한 번만
     }
 
     [Fact]

@@ -680,14 +680,14 @@ public sealed class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
-    public void DefaultRelocateOptionsAre16MibAtLowPriority()
+    public void DefaultRelocateOptionsAre4MibAtLowPriority()
     {
         List<ApplyOptions> executed = FakeBytesTodo(1 << 20);
 
         Run(TimeSpan.FromMinutes(10));
 
         ApplyOptions o = Assert.Single(executed);
-        Assert.Equal((16L << 20, true), (o.ChunkBytes, o.LowIoPriority));
+        Assert.Equal((4L << 20, true), (o.ChunkBytes, o.LowIoPriority));
     }
 
     [Theory]

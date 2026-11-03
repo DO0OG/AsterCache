@@ -106,7 +106,7 @@ public sealed record AutoSettings(
     /// SSD 보조 저장 (선택 기능, 기본 꺼짐).
     public SsdTierSettings SsdTier { get; init; } = SsdTierSettings.Default;
 
-    public const int DefaultRelocateChunkMib = 16;
+    public const int DefaultRelocateChunkMib = 4;
     public const string IoLow = "low";
     public const string IoNormal = "normal";
 

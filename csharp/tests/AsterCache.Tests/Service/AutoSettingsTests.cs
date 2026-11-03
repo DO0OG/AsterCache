@@ -37,7 +37,7 @@ public sealed class AutoSettingsTests
         Assert.Equal(AutoSettings.Default, s.Auto);
         Assert.Equal(2048, s.MaxZoneMib);
         Assert.Equal((true, true, true, true, 0, 3, 600, 6144, 4), (s.Auto.Enabled, s.Auto.Discover, s.Auto.Trace, s.Auto.Relocate, s.Auto.PrewarmRecent, s.Auto.IdleMinutes, s.Auto.TraceCapSeconds, s.Auto.TraceCapMib, s.Auto.MaxRelocationsPerDay));
-        Assert.Equal((16, "low", 8), (s.Auto.RelocateChunkMib, s.Auto.RelocateIoPriority, s.Auto.MaxRelocateGibPerDay));
+        Assert.Equal((4, "low", 8), (s.Auto.RelocateChunkMib, s.Auto.RelocateIoPriority, s.Auto.MaxRelocateGibPerDay));
         Assert.Empty(s.Auto.IgnoreExes);
         Assert.Equal((20, 256), (AutoSettings.HeuristicWindowSeconds, AutoSettings.HeuristicReadMib));
     }

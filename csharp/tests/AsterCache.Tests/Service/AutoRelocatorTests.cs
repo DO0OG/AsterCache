@@ -541,6 +541,155 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         Assert.Equal(AutoStage.Done, Entry.Stage);
     }
 
+    [Fact]
+    public void DailyCountLimitOf4AllowsTheFourthRelocation()
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1 + i));
+        }
+
+        Run(TimeSpan.FromMinutes(10));
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.Equal(4, _status.RelocationsWithin(AutoRelocator.DailyWindow));
+    }
+
+    [Fact]
+    public void DailyCountLimitOf4HoldsTheFifthRelocation()
+    {
+        for (int i = 0; i < 4; i++)
+        {
+            _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1 + i));
+        }
+
+        Run(TimeSpan.FromMinutes(10));
+
+        Assert.Equal((AutoStage.WaitingIdle, "daily limit reached"), (Entry.Stage, Entry.Detail));
+        Assert.Empty(Vol.Moves);
+    }
+
+    // 예행이 말하는 이동 예정 바이트를 bytes 로 바꾸고, 실행 때 받은 옵션을 모아 돌려줍니다.
+    private List<ApplyOptions> FakeBytesTodo(long bytes)
+    {
+        var executed = new List<ApplyOptions>();
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            ApplyReport r = real(g, plan, options, ct);
+            if (options.DryRun)
+            {
+                r.BytesTodo = bytes;
+            }
+            else
+            {
+                executed.Add(options);
+            }
+
+            return r;
+        };
+        return executed;
+    }
+
+    [Fact]
+    public void DailyWriteBudgetAllowsASumExactlyAtTheLimit()
+    {
+        List<ApplyOptions> executed = FakeBytesTodo(2L << 30);
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 6L << 30);
+
+        Run(TimeSpan.FromMinutes(10));
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.Single(executed);
+        Assert.Equal(8L << 30, _status.RelocationBytesWithin(AutoRelocator.DailyWindow));
+    }
+
+    [Fact]
+    public void DailyWriteBudgetHoldsWhenTheSumExceedsTheLimitAndReleasesAfter24Hours()
+    {
+        List<ApplyOptions> executed = FakeBytesTodo(2L << 30);
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), (6L << 30) + 1);
+
+        Run(TimeSpan.FromMinutes(10));
+
+        Assert.Equal((AutoStage.WaitingIdle, "daily write budget reached"), (Entry.Stage, Entry.Detail));
+        Assert.Empty(executed);
+        Assert.Empty(Vol.Moves);
+        Assert.Equal(1, _status.RelocationsWithin(AutoRelocator.DailyWindow)); // 보류는 횟수를 늘리지 않음
+        int applyCalls = ApplyCalls;
+        Run(TimeSpan.FromMinutes(10));
+        Assert.Equal(applyCalls, ApplyCalls); // 이동량을 알고 보류 중이면 예행도 다시 하지 않음
+
+        _w.Now += TimeSpan.FromHours(24);
+        Run(TimeSpan.FromMinutes(3));
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+    }
+
+    [Fact]
+    public void DailyWriteBudgetSmallerThanOneRunStillAllowsTheFirstMoveOfTheDay()
+    {
+        SetAuto(a => a with { MaxRelocateGibPerDay = 1 });
+        string plan2 = Path.Combine(Root, "plans", "second.plan.json");
+        GameSettings second = _game with { Name = "second", ExeNames = ["second.exe"], Plan = plan2, Trace = plan2 + ".prefetch.json" };
+        _settings = _settings with { Games = [_game, second] };
+        _w.Files.Add(AutoTracer.RawTracePath(second));
+        _status.MarkPlayed("bench", "auto", AutoStage.WaitingIdle, _w.Now - TimeSpan.FromDays(2));
+        _status.MarkPlayed("second", "auto", AutoStage.WaitingIdle, _w.Now - TimeSpan.FromDays(1));
+        List<ApplyOptions> executed = FakeBytesTodo(2L << 30);
+
+        Run(TimeSpan.FromMinutes(10));
+
+        Assert.Single(executed); // 빈 창에서는 상한(1 GiB)보다 큰 2 GiB 도 한 번 허용
+        Assert.Equal(AutoStage.Done, _status.Get("second")!.Stage);
+        Assert.Equal((AutoStage.WaitingIdle, "daily write budget reached"), (Entry.Stage, Entry.Detail)); // 그 직후에는 다시 대기
+    }
+
+    [Fact]
+    public void ZeroDailyWriteBudgetMeansUnlimited()
+    {
+        SetAuto(a => a with { MaxRelocateGibPerDay = 0 });
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 500L << 30);
+
+        Run(TimeSpan.FromMinutes(10));
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+    }
+
+    [Fact]
+    public void RelocationBytesRecordedForTheBudgetAreCappedAtOneRunsWriteCap()
+    {
+        FakeBytesTodo(3L << 30);
+
+        Run(TimeSpan.FromMinutes(10));
+
+        Assert.Equal(2L << 30, _status.RelocationBytesWithin(AutoRelocator.DailyWindow));
+    }
+
+    [Theory]
+    [InlineData("low", true, 32)]
+    [InlineData("normal", false, 1)]
+    public void RelocateChunkSizeAndIoPriorityReachTheApplier(string priority, bool low, int mib)
+    {
+        List<ApplyOptions> executed = FakeBytesTodo(1 << 20);
+        SetAuto(a => a with { RelocateChunkMib = mib, RelocateIoPriority = priority });
+
+        Run(TimeSpan.FromMinutes(10));
+
+        ApplyOptions o = Assert.Single(executed);
+        Assert.Equal(((long)mib << 20, low), (o.ChunkBytes, o.LowIoPriority));
+    }
+
+    [Fact]
+    public void DefaultRelocateOptionsAre4MibAtLowPriority()
+    {
+        List<ApplyOptions> executed = FakeBytesTodo(1 << 20);
+
+        Run(TimeSpan.FromMinutes(10));
+
+        ApplyOptions o = Assert.Single(executed);
+        Assert.Equal((4L << 20, true), (o.ChunkBytes, o.LowIoPriority));
+    }
+
     [Theory]
     [InlineData(false, 2)]
     [InlineData(true, 0)]

@@ -151,7 +151,7 @@ public sealed class BootProbeTests : IDisposable
         Run(Settings(g), status, Ms(2, 0), 10);
 
         var game = (JObject)((JObject)((JObject)JsonRead.ReadFile(StatusPath)!)["games"]!)["a"]!;
-        Assert.Equal(["source", "launcher", "stage", "detail", "at", "last_played", "relocated_at", "hit_percent", "hit_at", "boot_probe"], game.Select(kv => kv.Key));
+        Assert.Equal(["source", "launcher", "stage", "detail", "at", "last_played", "relocated_at", "plays", "hit_percent", "hit_at", "boot_probe"], game.Select(kv => kv.Key));
         var probe = (JObject)game["boot_probe"]!;
         Assert.Equal(["at", "files", "open_ms_per_file"], probe.Select(kv => kv.Key));
         Assert.Equal(("2026-11-03T09:00:00.0000000+00:00", 10L, 5.0), (probe["at"], probe["files"], probe["open_ms_per_file"]));

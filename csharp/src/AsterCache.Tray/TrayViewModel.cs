@@ -18,6 +18,9 @@ public sealed record AutoForm(
     public bool TierEnabled { get; init; }
 
     public string TierBudget { get; init; } = "8";
+
+    /// 하루 재배치 쓰기 상한 (GiB 숫자, 0 = 무제한).
+    public string RelocateGib { get; init; } = "8";
 }
 
 /// 파일·폴더를 기본 프로그램으로 엽니다. 시험은 가짜로 바꿉니다.
@@ -157,7 +160,19 @@ public sealed class TrayViewModel(
     {
         ActionResult saved = SetAuto(f.Enabled, f.Discover, f.Trace, f.Relocate, f.PrewarmRecent, f.IgnoreExes);
         ActionResult speed = saved.Ok ? SetSpeed(f.ZoneLimit, f.RewarmMinutes) : saved;
-        return speed.Ok ? SetSsdTier(f.TierEnabled, f.TierBudget) : speed;
+        ActionResult tier = speed.Ok ? SetSsdTier(f.TierEnabled, f.TierBudget) : speed;
+        return tier.Ok ? SetRelocateGib(f.RelocateGib) : tier;
+    }
+
+    /// 하루 (24 시간) 에 자동 재배치가 쓸 수 있는 총량 (GiB, 0 = 무제한) 을 기록합니다. 나머지 auto 값은 그대로 보존합니다.
+    public ActionResult SetRelocateGib(string gib)
+    {
+        if (!int.TryParse(gib.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int n) || n > 1048576)
+        {
+            return Report(false, L.T("Err_RelocateGib"));
+        }
+
+        return Edit(() => config.UpdateAuto(a => a with { MaxRelocateGibPerDay = n }), L.T("Msg_AutoSet"));
     }
 
     /// SSD 보조 저장 (선택 기능) 의 켬과 예산 (GiB) 을 기록합니다. 폴더(root) 와 나머지 auto 값은 그대로 보존합니다. 링크는 서비스가 만듭니다 (트레이는 설정만 바꿈).

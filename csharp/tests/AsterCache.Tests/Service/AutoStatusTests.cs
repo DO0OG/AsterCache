@@ -35,9 +35,9 @@ public sealed class AutoStatusTests : IDisposable
         s.Set("kr", "manual", null, AutoStage.Failed, "한글 detail");
 
         var root = (JObject)JsonRead.ReadFile(StatusPath)!;
-        Assert.Equal(["updated", "relocations", "games", "events"], root.Select(kv => kv.Key));
+        Assert.Equal(["updated", "relocations", "relocation_bytes", "games", "events"], root.Select(kv => kv.Key));
         var game = (JObject)((JObject)root["games"]!)["mw4"]!;
-        Assert.Equal(["source", "launcher", "stage", "detail", "at", "last_played", "relocated_at"], game.Select(kv => kv.Key));
+        Assert.Equal(["source", "launcher", "stage", "detail", "at", "last_played", "relocated_at", "plays"], game.Select(kv => kv.Key));
         Assert.Equal(("auto", "steam", "done", null), (game["source"], game["launcher"], game["stage"], game["detail"]));
         Assert.Equal("2026-11-02T12:15:00.0000000+00:00", game["relocated_at"]);
         Assert.Equal("2026-11-02T12:05:00.0000000+00:00", game["last_played"]);
@@ -47,7 +47,8 @@ public sealed class AutoStatusTests : IDisposable
         Assert.Equal(["at", "game", "kind"], events[0].Select(kv => kv.Key));
 
         AutoStatus again = Make();
-        Assert.Equal(s.Get("mw4"), again.Get("mw4"));
+        Assert.Equal(s.Get("mw4")! with { Plays = null }, again.Get("mw4")! with { Plays = null }); // 목록은 참조 비교라 따로 견줌
+        Assert.Equal(s.Get("mw4")!.Plays, again.Get("mw4")!.Plays);
         Assert.Equal(s.Events, again.Events);
         Assert.Equal(1, again.RelocationsWithin(TimeSpan.FromHours(24)));
         Assert.StartsWith("{\n  \"updated\"", File.ReadAllText(StatusPath), StringComparison.Ordinal); // indent 2, ensure_ascii 거짓
@@ -121,6 +122,50 @@ public sealed class AutoStatusTests : IDisposable
         _now = _now.AddHours(19); // old 는 49 시간 전
         s.AddEvent("x", "discovered");
         var saved = (JObject)JsonRead.ReadFile(StatusPath)!;
+        Assert.Single((List<object?>)saved["relocations"]!);
+    }
+
+    [Fact]
+    public void RelocationBytesAreSummedWithinTheWindowAndRoundTrip()
+    {
+        AutoStatus s = Make();
+        s.BeginRelocation(_now, 5L << 30);
+        _now = _now.AddHours(30);
+        s.BeginRelocation(_now, 3L << 30);
+
+        Assert.Equal(3L << 30, s.RelocationBytesWithin(TimeSpan.FromHours(24)));
+        Assert.Equal(8L << 30, s.RelocationBytesWithin(TimeSpan.FromHours(48)));
+        var root = (JObject)JsonRead.ReadFile(StatusPath)!;
+        Assert.Equal([5L << 30, 3L << 30], ((List<object?>)root["relocation_bytes"]!).Cast<long>());
+        Assert.Equal(3L << 30, Make().RelocationBytesWithin(TimeSpan.FromHours(24)));
+    }
+
+    [Fact]
+    public void OldFileWithoutRelocationBytesReadsAsZeroAndShortListFillsWithZero()
+    {
+        string t1 = _now.AddHours(-3).ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        string t2 = _now.AddHours(-2).ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        File.WriteAllText(StatusPath, "{\"relocations\": [\"" + t1 + "\", \"" + t2 + "\"]}");
+        AutoStatus old = Make();
+        Assert.Equal((2, 0L), (old.RelocationsWithin(TimeSpan.FromHours(24)), old.RelocationBytesWithin(TimeSpan.FromHours(24))));
+
+        File.WriteAllText(StatusPath, "{\"relocations\": [\"" + t1 + "\", \"" + t2 + "\"], \"relocation_bytes\": [7]}");
+        AutoStatus shortList = Make();
+        Assert.Equal((2, 7L), (shortList.RelocationsWithin(TimeSpan.FromHours(24)), shortList.RelocationBytesWithin(TimeSpan.FromHours(24))));
+    }
+
+    [Fact]
+    public void ExpiringRelocationsTrimsTheByteListAlongWithTheTimes()
+    {
+        AutoStatus s = Make();
+        s.BeginRelocation(_now, 100);
+        _now = _now.AddHours(30);
+        s.BeginRelocation(_now, 200);
+        _now = _now.AddHours(19); // 첫 항목은 49 시간 전
+        s.AddEvent("x", "discovered");
+
+        var saved = (JObject)JsonRead.ReadFile(StatusPath)!;
+        Assert.Equal([200L], ((List<object?>)saved["relocation_bytes"]!).Cast<long>());
         Assert.Single((List<object?>)saved["relocations"]!);
     }
 

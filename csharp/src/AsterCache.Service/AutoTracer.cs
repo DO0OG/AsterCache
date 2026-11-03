@@ -1,3 +1,4 @@
+using AsterCache.Core.Discovery;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Profiles;
@@ -20,6 +21,8 @@ public sealed class AutoTracer
     private readonly LearnEnv _learn;
     private readonly object _lock = new();
     private Run? _run;
+    private readonly Dictionary<string, string?> _cheat = new(StringComparer.OrdinalIgnoreCase); // 게임별 트레이스 금지 판정 (없음 포함), _lock 으로 보호
+    private readonly HashSet<string> _cheatLogged = new(StringComparer.OrdinalIgnoreCase);
 
     public AutoTracer(AutoEnv env, AutoStatus status, ILog log, Func<AsterSettings> settings, LearnEnv? learn = null)
     {
@@ -114,8 +117,55 @@ public sealed class AutoTracer
         }
     }
 
+    // 안티치트 게임은 ETW 커널 트레이스를 걸지 않음 (보호 드라이버가 세션을 보고 클라이언트를 끊음). 등록 정보, Riot 규칙 (Vanguard 는 게임 폴더 밖), 폴더 이름 순으로 보고 (폴더 열거는 한 번만) 탐지 실패도 막음.
+    private string? TraceBlocker(GameSettings g)
+    {
+        lock (_lock)
+        {
+            if (_cheat.TryGetValue(g.Name, out string? known))
+            {
+                return known;
+            }
+        }
+
+        string? cheat = AntiCheat.ForbidsTrace(g.AntiCheat) ? g.AntiCheat
+            : AntiCheat.RiotVanguard(g.OriginRoot, g.ExeNames, _env.VanguardInstalled());
+        if (cheat is null)
+        {
+            string? found = _env.AntiCheatOf(g.OriginRoot);
+            cheat = AntiCheat.ForbidsTrace(found) ? found : null;
+            if (found == AutoEnv.AntiCheatUnknown)
+            {
+                return cheat; // 탐지 실패는 캐시하지 않음 (다음 시작에 다시 봄)
+            }
+        }
+
+        lock (_lock)
+        {
+            _cheat[g.Name] = cheat;
+        }
+
+        return cheat;
+    }
+
     public void Start(GameSettings g)
     {
+        if (TraceBlocker(g) is { } cheat)
+        {
+            bool first;
+            lock (_lock)
+            {
+                first = _cheatLogged.Add(g.Name);
+            }
+
+            if (first)
+            {
+                _log.Info($"{g.Name}: trace skipped (anti-cheat: {cheat})");
+            }
+
+            return;
+        }
+
         string? refused;
         ReadAhead? learn = null;
         int done; // 이미 모은 플레이 수: 0 이면 첫 기록, 1 이상이면 병합용 추가 기록 (상태·선행 읽기를 건드리지 않음)
@@ -187,6 +237,8 @@ public sealed class AutoTracer
 
         AutoSettings a = _settings().Auto;
         IReadOnlyList<(int Pid, long ReadBytes)> procs = _env.GameProcesses(run.Game.ExeNames);
+        IReadOnlyList<int> rooted = _env.RootPids(run.Game); // 게임 폴더 아래의 실제 게임 프로세스 (등록 exe 의 자식인 경우도 포함)
+        procs = [.. procs, .. rooted.Where(p => procs.All(x => x.Pid != p)).Select(p => (Pid: p, Bytes: _env.ReadBytes(p))).Where(x => x.Bytes is not null).Select(x => (x.Pid, x.Bytes!.Value))];
         foreach ((int pid, long bytes) in procs)
         {
             // 첫 표본의 프로세스는 지금 값이 기준, 그 뒤에 나타난 프로세스는 세션이 열린 뒤에 시작했으므로 0 이 기준
@@ -203,7 +255,7 @@ public sealed class AutoTracer
         }
 
         TimeSpan elapsed = _env.Now() - run.StartedAt;
-        string? why = !_env.AnyRunning(run.Game.ExeNames) ? "game exited" // 읽기량을 못 연 (보호된) 게임 프로세스도 실행 중으로 셈
+        string? why = !_env.AnyRunning(run.Game.ExeNames) && rooted.Count == 0 ? "game exited" // 읽기량을 못 연 (보호된) 게임 프로세스도 실행 중으로 셈, 등록 exe 가 먼저 끝나도 폴더 아래 프로세스가 남았으면 실행 중
             : elapsed >= TimeSpan.FromSeconds(a.TraceCapSeconds) ? "time cap"
             : run.Read >= (long)a.TraceCapMib << 20 ? "read cap"
             : null;

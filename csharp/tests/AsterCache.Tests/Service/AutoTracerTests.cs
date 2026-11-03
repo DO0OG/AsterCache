@@ -159,6 +159,83 @@ public sealed class AutoTracerTests : IDisposable
     }
 
     [Theory]
+    [InlineData("registered", "vanguard")]
+    [InlineData("folder", "eac")]
+    [InlineData("riot", "vanguard")]
+    [InlineData("detect-failed", "unknown")]
+    public void AntiCheatGamesNeverStartATraceInAnyRunAndTheReasonIsLoggedOnce(string how, string kind)
+    {
+        GameSettings g = _game;
+        switch (how)
+        {
+            case "registered": g = _game with { AntiCheat = kind }; break;
+            case "folder": _rig.World.AntiCheats[g.OriginRoot] = kind; break;
+            case "riot": (g, _rig.World.Vanguard) = (_game with { OriginRoot = @"D:\Riot Games\League of Legends" }, true); break;
+            default: _rig.World.AntiCheats[g.OriginRoot] = AutoEnv.AntiCheatUnknown; break;
+        }
+
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { TraceRuns = 3 } };
+        _tracer.Start(g);
+        _rig.World.Files.Add(Raw); // run 2 도 막힘
+        _tracer.Start(g);
+
+        Assert.False(_tracer.Active);
+        Assert.Equal(0, _rig.World.TraceStarts);
+        Assert.Single(_rig.Log.Lines, l => l.Contains($"foo: trace skipped (anti-cheat: {kind})", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RicochetAndPlainGamesAreStillTracedAndRiotNeedsVanguardOnTheSystem()
+    {
+        _rig.World.AntiCheats[_game.OriginRoot] = "ricochet";
+        _tracer.Start(_game);
+        Assert.True(_tracer.Active);
+        _tracer.Shutdown();
+
+        _tracer.Start(_game with { OriginRoot = @"D:\Riot Games\League of Legends" });
+        Assert.True(_tracer.Active); // Vanguard 가 없는 시스템의 Riot 폴더
+    }
+
+    [Fact]
+    public void ARegisteredExeThatLeftButWhoseChildStillRunsUnderTheGameFolderKeepsTheTraceGoingAndItsReadsCount()
+    {
+        Reads((0, 65536));
+        _tracer.Start(_game);
+        _rig.World.Procs = [(100, 1L << 20)];
+        _rig.World.Running = true;
+        _tracer.Step();
+
+        _rig.World.Running = false; // cod.exe 가 빠짐
+        _rig.World.Procs = [];
+        _rig.World.RootPids = [200]; // sp26-cod.exe 는 폴더 아래
+        _rig.World.Reads[200] = 40L << 20;
+        _tracer.Step();
+        Assert.True(_tracer.Active);
+        _rig.World.Reads[200] = 105L << 20; // 세션 뒤에 시작한 프로세스는 0 에서 세므로 64 MiB 를 넘음
+        _tracer.Step();
+        Assert.False(_tracer.Active);
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("(read cap)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TheTraceEndsAsGameExitedOnlyWhenNeitherTheRegisteredExeNorAnyProcessUnderTheFolderRemains()
+    {
+        Reads((0, 65536));
+        _tracer.Start(_game);
+        _rig.World.Procs = [];
+        _rig.World.Running = false;
+        _rig.World.RootPids = [200];
+        _rig.World.Reads[200] = 1L << 20;
+        _tracer.Step();
+        Assert.True(_tracer.Active);
+
+        _rig.World.RootPids = [];
+        _tracer.Step();
+        Assert.False(_tracer.Active);
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("auto trace ended (game exited)", StringComparison.Ordinal));
+    }
+
+    [Theory]
     [InlineData("system")]
     [InlineData("ssd")]
     [InlineData("unknown")]

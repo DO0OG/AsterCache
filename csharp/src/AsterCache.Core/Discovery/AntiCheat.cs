@@ -30,6 +30,19 @@ public static class AntiCheat
         return leaves.Any(n => new[] { "anticheat", "anti-cheat", "xigncode", "nprotect", "gameguard" }.Any(p => Has(n, p))) ? "unknown" : null;
     }
 
+    private static readonly string[] RiotExes =
+    [
+        "RiotClientServices.exe", "Riot Client.exe", "LeagueClient.exe", "League of Legends.exe", "VALORANT.exe", "VALORANT-Win64-Shipping.exe", "TFTClient-Win64-Shipping.exe",
+    ];
+
+    /// Vanguard 는 게임 폴더 밖 (Program Files\Riot Vanguard) 에 있어 폴더 이름으로는 안 잡힘: Riot 게임 (설치 경로가 "Riot Games" 폴더 아래이거나 exe 가 Riot 클라이언트·리그·발로란트) 이고
+    /// 시스템에 Vanguard (vgk/vgc 서비스 또는 폴더) 가 있으면 "vanguard", 아니면 null.
+    public static string? RiotVanguard(string originRoot, IEnumerable<string> exeNames, bool vanguardInstalled) =>
+        vanguardInstalled && (originRoot.Split('\\', '/').Any(s => Same(s, "Riot Games")) || exeNames.Any(e => RiotExes.Any(r => Same(e, r)))) ? "vanguard" : null;
+
+    /// ETW 트레이스를 걸면 안 되는 종류인가: 커널 수준 안티치트 (eac·battleye·vanguard) 와 탐지 실패 (unknown). 등록 정보에 쓰인 값도 같은 규칙입니다.
+    public static bool ForbidsTrace(string? kind) => kind is "eac" or "battleye" or "vanguard" or "unknown";
+
     private static bool IsEac(string n) =>
         Same(n, "EasyAntiCheat") || Starts(n, "EasyAntiCheat_EOS") || (Starts(n, "EasyAntiCheat") && Ends(n, ".exe")) || Same(n, "start_protected_game.exe");
 

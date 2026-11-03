@@ -54,4 +54,24 @@ public sealed class AntiCheatTests
 
     [Fact]
     public void EmptyListGivesNull() => Assert.Null(AntiCheat.Detect([]));
+
+    [Theory]
+    [InlineData(@"D:\Riot Games\League of Legends", "LeagueClient.exe", true, "vanguard")]
+    [InlineData(@"D:\Riot Games\League of Legends", "LeagueClient.exe", false, null)]
+    [InlineData(@"E:\Anything", "RiotClientServices.exe", true, "vanguard")]
+    [InlineData(@"E:\Valorant", "valorant-win64-shipping.exe", true, "vanguard")]
+    [InlineData(@"D:\Riot Games\Other", "game.exe", true, "vanguard")]
+    [InlineData(@"D:\Riot Games Fan", "game.exe", true, null)]
+    [InlineData(@"D:\Call of Duty", "cod.exe", true, null)]
+    public void RiotGamesAreVanguardOnlyWhenVanguardIsInstalled(string root, string exe, bool installed, string? expected) =>
+        Assert.Equal(expected, AntiCheat.RiotVanguard(root, [exe], installed));
+
+    [Theory]
+    [InlineData("eac", true)]
+    [InlineData("battleye", true)]
+    [InlineData("vanguard", true)]
+    [InlineData("unknown", true)]
+    [InlineData("ricochet", false)]
+    [InlineData(null, false)]
+    public void OnlyKernelAntiCheatsAndFailedDetectionForbidATrace(string? kind, bool expected) => Assert.Equal(expected, AntiCheat.ForbidsTrace(kind));
 }

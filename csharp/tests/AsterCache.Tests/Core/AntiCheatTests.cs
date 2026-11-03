@@ -1,5 +1,7 @@
 using AsterCache.Core.Discovery;
 using AsterCache.Core.Settings;
+using AsterCache.Service;
+using AsterCache.Tests.Service;
 using AsterCache.Windows;
 using Xunit;
 
@@ -52,6 +54,35 @@ public sealed class AntiCheatTests
     [InlineData("vgcore.dll")]
     [InlineData("BEClient.exe")]
     public void OrdinaryNamesGiveNull(string name) => Assert.Null(AntiCheat.Detect([name]));
+
+    // 접근 거부가 난 열거를 흉내 냄: 이름 목록과 완전성 표시만 돌려줌.
+    private static Func<string, int, (List<string>, bool)> Lister(bool complete, params string[] names) => (_, _) => ([.. names], complete);
+
+    [Fact]
+    public void IncompleteListingWithNothingFoundIsUnknown() => Assert.Equal(LauncherScan.AntiCheatUnknown, LauncherScan.DetectAntiCheat("X", Lister(false, "Game.exe")));
+
+    [Fact]
+    public void IncompleteListingThatFoundSomethingKeepsThatValue() => Assert.Equal("eac", LauncherScan.DetectAntiCheat("X", Lister(false, "Game.exe", "EasyAntiCheat")));
+
+    [Fact]
+    public void CompleteListingWithNothingFoundIsNull() => Assert.Null(LauncherScan.DetectAntiCheat("X", Lister(true, "Game.exe")));
+
+    [Fact]
+    public void ServiceDetectionLogsOnceWhenTheListingIsIncomplete()
+    {
+        var log = new ListLog();
+
+        Assert.Equal(AutoEnv.AntiCheatUnknown, AutoEnv.DetectAntiCheat("X", Lister(false, "Game.exe"), log));
+        Assert.Equal("eac", AutoEnv.DetectAntiCheat("X", Lister(false, "EasyAntiCheat"), log));
+        Assert.Null(AutoEnv.DetectAntiCheat("X", Lister(true, "Game.exe"), log));
+
+        Assert.Single(log.Lines);
+        Assert.Contains("anti-cheat check incomplete", log.Lines.Single());
+    }
+
+    [Fact]
+    public void MissingFolderListingIsIncompleteSoDetectionIsUnknown() =>
+        Assert.Equal(LauncherScan.AntiCheatUnknown, LauncherScan.DetectAntiCheat(Path.Combine(AppContext.BaseDirectory, "fixtures", "anticheat", "no-such-folder")));
 
     [Fact]
     public void EmptyListGivesNull() => Assert.Null(AntiCheat.Detect([]));

@@ -294,22 +294,23 @@ public sealed class ReapplyTests
     }
 
     [Fact]
-    public void ReapplyThatThrowsStillCountsAsAnAttemptWithZeroBytes()
+    public void ReapplyThatThrowsKeepsThePlannedBytesInTheBudget()
     {
         var rig = new Rig { Moved = false, ApplyThrows = new IOException("x") };
 
         Assert.Equal(ReapplyVerdict.Failed, rig.Check(Bench));
-        Assert.Equal([0L], rig.Spent);
+        Assert.Single(rig.Started);
+        Assert.Empty(rig.Spent);
     }
 
     [Fact]
-    public void ReapplyThatThrowsStillCallsStartedBeforeApplyAndSpentWithZero()
+    public void ReapplyThatThrowsCallsStartedBeforeApplyAndNeverSpent()
     {
         var rig = new Rig { Moved = false, ApplyThrows = new IOException("x") };
 
         Assert.Equal(ReapplyVerdict.Failed, rig.Check(Bench));
-        Assert.Equal(["started", "apply", "spent"], rig.Calls);
-        Assert.Equal([0L], rig.Spent);
+        Assert.Equal(["started", "apply"], rig.Calls);
+        Assert.Empty(rig.Spent);
     }
 
     [Fact]

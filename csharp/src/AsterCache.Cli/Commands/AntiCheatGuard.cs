@@ -10,12 +10,12 @@ internal static class AntiCheatGuard
 {
     internal static Func<bool> VanguardInstalled { get; set; } = LauncherScan.IsVanguardInstalled;
 
-    /// 폴더 이름으로 본 안티치트 종류. 폴더가 없으면 null, 열거에 실패하면 서비스처럼 "unknown" (모름 = 금지).
+    /// 폴더 이름으로 본 안티치트 종류. 폴더가 없으면 null, 열거에 실패하거나 접근 못 한 하위 폴더가 있으면 서비스처럼 "unknown" (모름 = 금지).
     internal static Func<string, string?> FolderKind { get; set; } = root =>
     {
         try
         {
-            return Directory.Exists(root) ? AntiCheat.Detect(LauncherScan.ListNames(root, LauncherScan.AntiCheatDepth)) : null;
+            return Directory.Exists(root) ? LauncherScan.DetectAntiCheat(root) : null;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {

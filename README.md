@@ -16,8 +16,17 @@
 
 > **Beta.** AsterCache is distributed as a beta pre-release. It physically moves file data, so back up drives that hold important data before using it. Validation covers one SMR drive (WD20EZAZ) and one real game (Frostpunk); CMR drives and anti-cheat games have not been tested (see [Known limitations](#known-limitations)).
 
+## Recent changes
+
+These changes are on `main` since beta.8. They are not a release yet.
+
+- **Parallel relocation.** Eight parallel reads cut relocation work on the test HDD from 186 s to 41 s (4.5×). See [docs/RESULTS_SUMMARY.md](docs/RESULTS_SUMMARY.md).
+- **Drive recovery check.** After a game update, or after a relocation on an SMR drive, the service judges whether the drive has recovered before it starts the next job (`auto.post_relocate_recovery`).
+- **Hands-off after install.** `aster status` and the manager window summary show one line: "found → bootstrap planned → relocated → prewarmed → average hit rate". While you are likely to play (a launcher is running or it is your usual play hour), the service reads 4 KiB every 10 minutes so the HDD does not spin down (`auto.keep_awake`, on by default; power settings are never changed).
+
 ## Table of contents
 
+- [Recent changes](#recent-changes)
 - [What it does](#what-it-does)
 - [How it works](#how-it-works)
 - [Features](#features)

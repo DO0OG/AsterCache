@@ -107,6 +107,8 @@ Filename: "{app}\{#TrayExe}"; Description: "{cm:RunTray}"; Flags: nowait postins
 [UninstallRun]
 ; 트레이를 먼저 끈 뒤 서비스를 제거한다. 데이터 폴더는 남긴다.
 Filename: "{sys}\taskkill.exe"; Parameters: "/IM {#TrayExe} /F"; Flags: runhidden waituntilterminated; RunOnceId: "StopAsterCacheTray"
+; SSD 보조 저장의 링크를 서비스를 멈추기 전에 모두 되돌린다 (원본 이름 복구, 사본은 tier 폴더에 남김).
+Filename: "{app}\aster.exe"; Parameters: "tier revert --all"; Flags: runhidden waituntilterminated; RunOnceId: "RevertAsterCacheTier"
 Filename: "{sys}\net.exe"; Parameters: "stop {#ServiceName}"; Flags: runhidden waituntilterminated; RunOnceId: "StopAsterCacheService"
 Filename: "{sys}\sc.exe"; Parameters: "delete {#ServiceName}"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteAsterCacheService"
 

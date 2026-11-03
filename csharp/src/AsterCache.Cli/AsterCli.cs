@@ -31,6 +31,10 @@ public static class AsterCli
         new("learn", LearnCommand.Options, LearnCommand.Run),
         new("profile export", ProfileCommand.ExportOptions, ProfileCommand.Export),
         new("profile import", ProfileCommand.ImportOptions, ProfileCommand.Import),
+        new("tier status", TierCommand.StatusOptions, TierCommand.Status),
+        new("tier apply", TierCommand.ApplyOptions, TierCommand.Apply),
+        new("tier revert", TierCommand.RevertOptions, TierCommand.Revert),
+        new("tier clean", TierCommand.CleanOptions, TierCommand.Clean),
     ];
 
     /// 전역 옵션 (명령 앞에, 순서 무관): `--result-file <경로>` 는 표준 출력 내용을 그 파일에도 씁니다 (승격 실행처럼 표준 출력을 가져올 수 없을 때 결과를 받는 길).
@@ -64,7 +68,7 @@ public static class AsterCli
         }
 
         // "profile export" 처럼 두 단어인 명령은 앞 두 인자를 이름으로 봅니다.
-        string cmdName = args[0] == "profile" && args.Count > 1 ? args[0] + " " + args[1] : args[0];
+        string cmdName = args[0] is "profile" or "tier" && args.Count > 1 ? args[0] + " " + args[1] : args[0];
         Command? cmd = Commands.FirstOrDefault(c => c.Name == cmdName);
         if (cmd is null)
         {

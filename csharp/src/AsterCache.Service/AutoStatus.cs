@@ -18,7 +18,7 @@ public static class AutoStage
 }
 
 public sealed record AutoGameEntry(
-    string Source, string? Launcher, string Stage, string? Detail, DateTimeOffset At, DateTimeOffset? LastPlayed, DateTimeOffset? RelocatedAt, int? HitPercent = null, DateTimeOffset? HitAt = null, AutoBootProbe? BootProbe = null, IReadOnlyList<DateTimeOffset>? Plays = null);
+    string Source, string? Launcher, string Stage, string? Detail, DateTimeOffset At, DateTimeOffset? LastPlayed, DateTimeOffset? RelocatedAt, int? HitPercent = null, DateTimeOffset? HitAt = null, AutoBootProbe? BootProbe = null, IReadOnlyList<DateTimeOffset>? Plays = null, int? LoadBoundaryMs = null, DateTimeOffset? LoadBoundaryAt = null);
 
 /// 부팅 뒤 첫 서비스 시작에서 잰 메타데이터 콜드 비용 (auto_status.json 의 boot_probe): 측정 시각, 연 파일 수, 파일당 평균 열기 시간 (ms).
 public sealed record AutoBootProbe(DateTimeOffset At, int Files, double OpenMsPerFile);
@@ -145,6 +145,19 @@ public sealed class AutoStatus
             if (_games.TryGetValue(name, out AutoGameEntry? old))
             {
                 _games[name] = old with { HitPercent = Math.Clamp(percent, 0, 100), HitAt = at };
+                Save();
+            }
+        }
+    }
+
+    /// 게임 시작 때 잰 로딩 경계 도달 시간 (ms)과 측정 시각. 항목이 없으면 남기지 않습니다.
+    public void RecordLoadBoundary(string name, int ms, DateTimeOffset at)
+    {
+        lock (_lock)
+        {
+            if (_games.TryGetValue(name, out AutoGameEntry? old))
+            {
+                _games[name] = old with { LoadBoundaryMs = Math.Max(0, ms), LoadBoundaryAt = at };
                 Save();
             }
         }
@@ -282,6 +295,12 @@ public sealed class AutoStatus
                 game.Add("boot_probe", new JObject { { "at", Iso(bp.At) }, { "files", (long)bp.Files }, { "open_ms_per_file", bp.OpenMsPerFile } });
             }
 
+            if (e.LoadBoundaryMs is { } lb)
+            {
+                game.Add("load_boundary_ms", (long)lb); // 재지 않은 게임의 항목 모양은 그대로
+                game.Add("load_boundary_at", e.LoadBoundaryAt is { } la ? Iso(la) : null);
+            }
+
             games.Add(name, game);
         }
 
@@ -348,7 +367,7 @@ public sealed class AutoStatus
                 {
                     if (value is JObject o && Str(o, "stage") is { } stage)
                     {
-                        _games[name] = new AutoGameEntry(Str(o, "source") ?? "manual", Str(o, "launcher"), stage, Str(o, "detail"), Time(o, "at") ?? _now(), Time(o, "last_played"), Time(o, "relocated_at"), o.TryGetValue("hit_percent", out object? hp) && hp is long h ? (int)Math.Clamp(h, 0, 100) : null, Time(o, "hit_at"), ReadBootProbe(o), ReadPlays(o));
+                        _games[name] = new AutoGameEntry(Str(o, "source") ?? "manual", Str(o, "launcher"), stage, Str(o, "detail"), Time(o, "at") ?? _now(), Time(o, "last_played"), Time(o, "relocated_at"), o.TryGetValue("hit_percent", out object? hp) && hp is long h ? (int)Math.Clamp(h, 0, 100) : null, Time(o, "hit_at"), ReadBootProbe(o), ReadPlays(o), o.TryGetValue("load_boundary_ms", out object? lb) && lb is long l ? (int)Math.Clamp(l, 0, int.MaxValue) : null, Time(o, "load_boundary_at"));
                     }
                 }
             }

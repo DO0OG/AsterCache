@@ -152,6 +152,9 @@ internal sealed class FakeWorld
     /// boot 트레이스 파일의 "source" 표시 (프리페치 기록으로 만든 것이면 "prefetch").
     public Dictionary<string, string> TraceSources { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+    /// 트레이스에서 알게 된 가변 파일 표시 (경로 → 사유).
+    public Dictionary<string, string> Volatile { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     public Func<GameSettings, string?> ArchiveJournal { get; set; } = _ => null;
 
     /// MoveAside 로 옮긴 (원본, 새 이름) 기록. 파일 집합 (Files) 도 따라 바뀝니다.
@@ -224,6 +227,7 @@ internal sealed class FakeWorld
         },
         TraceSource = p => TraceSources.GetValueOrDefault(p),
         LoadTrace = (_, _) => LoadSessions()[0],
+        LoadVolatile = _ => Volatile,
         MakePlan = (sessions, origin, zoneMib) =>
         {
             PlanZones.Add(zoneMib);

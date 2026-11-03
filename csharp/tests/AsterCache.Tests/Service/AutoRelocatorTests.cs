@@ -55,7 +55,7 @@ public sealed class IdleTrackerTests
 }
 
 /// 자동 계획·첫 재배치의 상태 기계. 가짜 볼륨과 실제 임시 파일, 가짜 시계·디스크·CPU·전원을 씁니다.
-public sealed class AutoRelocatorTests : ApplyTestBase
+public sealed partial class AutoRelocatorTests : ApplyTestBase
 {
     private static readonly TimeSpan Step = Worker.CheckTick;
     private readonly FakeWorld _w = new();

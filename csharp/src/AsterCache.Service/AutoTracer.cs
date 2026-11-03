@@ -1,6 +1,7 @@
 using AsterCache.Core.Discovery;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
+using AsterCache.Core.Plan;
 using AsterCache.Core.Profiles;
 using AsterCache.Core.Settings;
 using AsterCache.Core.Trace;
@@ -24,6 +25,11 @@ public sealed class AutoTracer
     private readonly Dictionary<string, string?> _cheat = new(StringComparer.OrdinalIgnoreCase); // 게임별 트레이스 금지 판정 (없음 포함), _lock 으로 보호
     private readonly HashSet<string> _cheatLogged = new(StringComparer.OrdinalIgnoreCase);
 
+    /// 두 번째 이후 플레이가 이보다 적게 읽었거나 (바이트) 첫 플레이의 1 % 보다 이벤트가 적으면 (메뉴만 켠 플레이 등) 저장하지 않고 회차로 세지 않습니다.
+    public const long MinExtraRunBytes = 64L << 20;
+
+    public long MinRunBytes { get; init; } = MinExtraRunBytes;
+
     public AutoTracer(AutoEnv env, AutoStatus status, ILog log, Func<AsterSettings> settings, LearnEnv? learn = null)
     {
         _env = env;
@@ -45,6 +51,31 @@ public sealed class AutoTracer
     }
 
     public static string RawTracePath(GameSettings g) => Path.Combine(Path.GetDirectoryName(g.Plan) ?? string.Empty, g.Name + ".trace.json");
+
+    /// 트레이스에서 알게 된 가변 파일 (경로 → 사유) 표시 파일: 계획에서 뺄 파일. 낡은 트레이스를 치울 때 같이 치웁니다.
+    public static string VolatilePath(GameSettings g) => Path.Combine(Path.GetDirectoryName(g.Plan) ?? string.Empty, g.Name + ".trace.volatile.json");
+
+    /// 표시 파일을 읽음. 없거나 읽을 수 없으면 빈 목록 (표시는 힌트일 뿐).
+    public static IReadOnlyDictionary<string, string> ReadVolatile(string path)
+    {
+        var marks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            if (File.Exists(path) && JsonRead.ReadFile(path) is JObject o)
+            {
+                foreach ((string file, object? why) in o)
+                {
+                    marks[file] = why as string ?? string.Empty;
+                }
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            marks.Clear();
+        }
+
+        return marks;
+    }
 
     /// 지금까지 모은 플레이 수: 원시 트레이스가 있을 때 trace.run1.json, run2.json ... 이 이어서 있는 개수, 그런 파일 없이 원시 트레이스만 있으면 1, 원시 트레이스가 없으면 0. 따로 저장하는 상태 없음.
     public static int RunCount(GameSettings g, Func<string, bool> exists)
@@ -297,6 +328,13 @@ public sealed class AutoTracer
                 return;
             }
 
+            if (run.Number > 1 && TooSmall(g, canonical) is { } small)
+            {
+                _log.Info($"{g.Name}: auto trace ended ({why}), run {run.Number} too small ({small}), not saved and not counted");
+                return;
+            }
+
+            Dictionary<string, string> marks = VolatileOfRun(run, records, canonical); // 이전 플레이 파일을 덮기 전에 (그 수정 시각이 기준)
             if (run.Number == 1)
             {
                 TraceWriter.Write([canonical], RawTracePath(g));
@@ -306,6 +344,7 @@ public sealed class AutoTracer
                 Merge(g, canonical, run.Number);
             }
 
+            SaveVolatile(g, marks);
             _log.Info($"{g.Name}: auto trace ended ({why}), {canonical.Count} read events saved" + (run.Number == 1 ? string.Empty : $" (run {run.Number}, merged)"));
             if (run.Number == 1)
             {
@@ -328,6 +367,96 @@ public sealed class AutoTracer
             {
                 _run = null;
             }
+        }
+    }
+
+    // 첫 플레이보다 훨씬 작은 (이벤트 수가 1 % 미만) 또는 읽은 양이 MinRunBytes 미만인 플레이의 사유, 아니면 null. 첫 플레이 크기를 못 읽으면 바이트 기준만 봄.
+    private string? TooSmall(GameSettings g, List<TraceEvent> canonical)
+    {
+        long bytes = canonical.Sum(e => e.Length);
+        if (bytes < MinRunBytes)
+        {
+            return $"{canonical.Count} events, {bytes >> 20} MiB read";
+        }
+
+        string raw = RawTracePath(g);
+        string first = _env.FileExists(TraceWriter.RunPath(raw, 1)) ? TraceWriter.RunPath(raw, 1) : raw;
+        try
+        {
+            return JsonRead.ReadFile(first) is List<object?> rows && canonical.Count * 100L < rows.Count ? $"{canonical.Count} events against {rows.Count} in run 1" : null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            return null;
+        }
+    }
+
+    // 이 플레이에서 가변 파일로 볼 것: 쓰기로 열린 파일, 그리고 (두 번째 이후) 이전 플레이를 저장한 뒤 수정된 파일. 읽을 수 없는 파일은 건너뜀.
+    private Dictionary<string, string> VolatileOfRun(Run run, IReadOnlyList<TraceRecord> records, List<TraceEvent> canonical)
+    {
+        GameSettings g = run.Game;
+        var marks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        HashSet<string> written = TraceBuilder.WrittenPaths(records, g.ExeNames, g.OriginRoot);
+        string raw = RawTracePath(g);
+        DateTimeOffset? since = run.Number > 1 ? _env.FileWriteTime(TraceWriter.RunPath(raw, run.Number - 1)) ?? _env.FileWriteTime(raw) : null;
+        foreach (string path in canonical.Select(e => e.Path).Distinct(StringComparer.Ordinal))
+        {
+            if (written.Contains(path))
+            {
+                marks[path] = "opened for write";
+            }
+            else if (since is { } at && ModifiedAfter(path, at))
+            {
+                marks[path] = "changed between runs";
+            }
+        }
+
+        return marks;
+    }
+
+    private bool ModifiedAfter(string path, DateTimeOffset at)
+    {
+        try
+        {
+            return new DateTimeOffset(Fingerprint.UnixEpochTicks + _env.Stat(path).MtimeNs / 100, TimeSpan.Zero) > at;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    // 표시 파일에 합칩니다 (임시 파일을 거쳐 한 번에 바꿔 씀). 실패해도 이미 저장한 트레이스는 그대로: 표시는 힌트일 뿐.
+    private void SaveVolatile(GameSettings g, Dictionary<string, string> marks)
+    {
+        if (marks.Count == 0)
+        {
+            return;
+        }
+
+        string path = VolatilePath(g);
+        try
+        {
+            var all = new Dictionary<string, string>(ReadVolatile(path), StringComparer.OrdinalIgnoreCase);
+            foreach ((string file, string why) in marks)
+            {
+                all[file] = why;
+            }
+
+            var o = new JObject();
+            foreach ((string file, string why) in all.OrderBy(k => k.Key, StringComparer.Ordinal))
+            {
+                o.Add(file, why);
+            }
+
+            string temp = path + ".tmp";
+            File.WriteAllBytes(temp, PyJson.Utf8.GetBytes(PyJson.Dumps(o, indent: 1)));
+            File.Move(temp, path, true);
+            _log.Info($"{g.Name}: {marks.Count} volatile file(s) marked from the trace ({all.Count} in total)");
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"{g.Name}: volatile file marks not saved ({e.GetType().Name})");
         }
     }
 

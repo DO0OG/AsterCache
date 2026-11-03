@@ -89,7 +89,13 @@ public sealed class ReapplyTests
             Plan = PlanFile.Load(PlanFixtures.PathOf(planFixture));
         }
 
-        public PlanFile Plan { get; }
+        public PlanFile Plan { get; set; }
+
+        /// 바뀐 것으로 보이는 파일 (비어 있으면 SourceChanged 만 따름).
+        public HashSet<string> ChangedPaths { get; } = new(StringComparer.Ordinal);
+
+        /// 읽을 때 잠김 오류가 나는 파일.
+        public string? LockedPath { get; set; }
 
         public bool Moved { get; set; } = true;
 
@@ -166,7 +172,7 @@ public sealed class ReapplyTests
                         ? byPath[p].OrderBy(t => t.Vcn).Select(t => new Extent(t.Vcn, t.TargetLcn, t.Clusters)).ToList()
                         : [new Extent(0, 1000, 1_000_000)];
                 },
-                Stat = p => SourceMissing ? throw new FileNotFoundException() : SourceChanged ? fps[p] with { Size = fps[p].Size + 1 } : fps[p],
+                Stat = p => SourceMissing ? throw new FileNotFoundException() : p == LockedPath ? throw new IOException("locked") : SourceChanged || ChangedPaths.Contains(p) ? fps[p] with { Size = fps[p].Size + 1 } : fps[p],
                 RealPath = Path.GetFullPath,
                 Gate = _ => GateBlock,
                 Spent = (_, bytes) => Spent.Add(bytes),
@@ -273,6 +279,47 @@ public sealed class ReapplyTests
 
         Assert.Equal(ReapplyVerdict.PlanChanged, rig.Check(Bench));
         Assert.Equal((0, 0), (rig.ApplyCalls, rig.ExtentCalls));
+    }
+
+    private static PlanFile WithFingerprints(PlanFile plan, params string[] paths) =>
+        plan with { Fingerprints = [.. plan.Fingerprints, .. paths.Select(p => new Fingerprint(p, 100, 5))] };
+
+    [Fact]
+    public void ChangedVolatileFileIsIgnoredSoThePlanStaysHealthyInsteadOfPermanentlyChanged()
+    {
+        string settings = @"D:\AsterBench\data\settings.json";
+        var rig = new Rig { Moved = false };
+        rig.Plan = WithFingerprints(rig.Plan, settings, @"D:\AsterBench\data\cache_index.dat");
+        rig.ChangedPaths.UnionWith([settings, @"D:\AsterBench\data\cache_index.dat"]);
+
+        Assert.Equal(ReapplyVerdict.Reapply, rig.Check(Bench)); // PlanChanged 가 아니라 배치 판정으로 넘어감
+        Assert.Equal(1, rig.ApplyCalls);
+    }
+
+    [Fact]
+    public void ChangedNonVolatileFileStillMeansPlanChanged()
+    {
+        var rig = new Rig { Moved = false };
+        rig.Plan = WithFingerprints(rig.Plan, @"D:\AsterBench\data\extra.pak");
+        rig.ChangedPaths.Add(@"D:\AsterBench\data\extra.pak");
+
+        Assert.Equal(ReapplyVerdict.PlanChanged, rig.Check(Bench));
+    }
+
+    [Fact]
+    public void UnreadablePlanFileHoldsTheReapplyWithoutCallingItAChangeAndHealthyLayoutStaysHealthy()
+    {
+        string locked = @"D:\AsterBench\data\extra.pak";
+        var degraded = new Rig { Moved = false, LockedPath = locked };
+        degraded.Plan = WithFingerprints(degraded.Plan, locked);
+
+        Assert.Equal(ReapplyVerdict.FilesUnreadable, degraded.Check(Bench)); // 모름: 재적용 보류, PlanChanged (재계획) 아님
+        Assert.Equal(0, degraded.ApplyCalls);
+
+        var healthy = new Rig { LockedPath = locked };
+        healthy.Plan = WithFingerprints(healthy.Plan, locked);
+
+        Assert.Equal(ReapplyVerdict.Healthy, healthy.Check(Bench));
     }
 
     [Fact]

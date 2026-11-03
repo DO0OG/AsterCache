@@ -75,9 +75,6 @@ public sealed class AutoEnv
     /// 'X:' 의 디스크 종류를 모르거나 USB 버스인가 (자동 재배치 동시 수 규칙). 시험 기본값은 참.
     public Func<string, bool> IsSlowBus { get; init; } = _ => true;
 
-    /// 'X:' 가 SMR 이 아닌 내장 디스크로 확인되면 그 볼륨의 여유 바이트, 아니면 null (자동 존 상한 규칙). 시험 기본값은 null.
-    public Func<string, long?> NonSmrFreeBytes { get; init; } = _ => null;
-
     public required Func<IReadOnlyList<int>> Pids { get; init; }
 
     public required Func<int, string?> ImagePath { get; init; }
@@ -204,7 +201,6 @@ public sealed class AutoEnv
             VolumeLabel = VolumeInfo.Label,
             IsHdd = letter => DiskInfo.Query(letter).IncursSeekPenalty,
             SameDisk = VolumeDisks.SameDisk,
-            NonSmrFreeBytes = _ => null, // shortcut: SMR 을 판정할 수단이 없어 모든 디스크를 미확인으로 봄, 판정 수단이 생기면 여기서 여유 바이트를 돌려줌
             IsSlowBus = letter => DiskInfo.Query(letter) is var d && (d.IncursSeekPenalty is null || d.BusType == DiskInfo.BusTypeUsb),
             Pids = ProcessSnapshot.Pids,
             ImagePath = ProcessSnapshot.ImagePath,

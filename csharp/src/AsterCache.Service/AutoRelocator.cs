@@ -729,7 +729,13 @@ public sealed class AutoRelocator
         }
     }
 
-    private long MaxZoneMib(AsterSettings s, GameSettings g) => s.MaxZoneAuto ? ZoneSize.AutoMaxMib(_env.PhysicalRamBytes(), _env.NonSmrFreeBytes(DriveOf(g))) : s.MaxZoneMib;
+    private long MaxZoneMib(AsterSettings s, GameSettings g) => s.MaxZoneAuto ? ZoneSize.AutoMaxMib(_env.PhysicalRamBytes(), SlowBus(g)) : s.MaxZoneMib;
+
+    private bool SlowBus(GameSettings g)
+    {
+        try { return _env.IsSlowBus(DriveOf(g)); }
+        catch (Exception) { return true; } // 질의 실패는 종류 미확인으로 본다
+    }
 
     // 트레이스의 고유 (경로, 64 KiB 블록) 수.
     private static long DistinctBlocks(IEnumerable<TraceEvent> events)

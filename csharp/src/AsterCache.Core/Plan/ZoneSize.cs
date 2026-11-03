@@ -18,9 +18,6 @@ public static class ZoneSize
     /// 자동 존 크기 상한 (MiB): 물리 RAM 의 1/4, 2048 이상 8192 이하.
     public static long AutoMaxMib(long physicalRamBytes) => Math.Max(2048, Math.Min(physicalRamBytes / Mib / 4, 8192));
 
-    /// 디스크까지 본 자동 상한 (MiB): 위 RAM 규칙과 디스크 규칙 중 작은 값. 디스크 규칙은 SMR 이 아닌 내장 디스크이고 볼륨 여유가 4096 MiB 존의 4 배 이상일 때만 4096, 그 밖 (SMR·USB·종류 미확인, nonSmrFreeBytes 가 null) 은 2048.
-    public static long AutoMaxMib(long physicalRamBytes, long? nonSmrFreeBytes) =>
-        Math.Min(AutoMaxMib(physicalRamBytes), nonSmrFreeBytes is { } free && free >= 4 * WideZoneMib * Mib ? WideZoneMib : 2048);
-
-    private const long WideZoneMib = 4096;
+    /// 디스크 종류를 모르거나 USB 이면 RAM 규칙 결과와 2048 중 작은 값.
+    public static long AutoMaxMib(long physicalRamBytes, bool slowBus) => slowBus ? Math.Min(AutoMaxMib(physicalRamBytes), 2048) : AutoMaxMib(physicalRamBytes);
 }

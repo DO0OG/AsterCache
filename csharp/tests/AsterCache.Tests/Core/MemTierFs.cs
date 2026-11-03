@@ -58,13 +58,14 @@ internal sealed class MemTierFs : ITierFs
         return d.AsSpan((int)offset, n).ToArray();
     }
 
-    public void Copy(string source, string destination)
+    public void Copy(string source, string destination, CancellationToken ct = default)
     {
         Mutations++;
         string src = Resolve(source);
         Files[N(destination)] = (byte[])Files[src].Clone();
         Mtimes[N(destination)] = Mtimes[src];
         AfterCopy?.Invoke(source, destination);
+        ct.ThrowIfCancellationRequested(); // 진짜 복사와 달리 만든 대상을 지우지 않음: 엔진이 .part 를 치우는지 확인하려는 것
     }
 
     public void Move(string from, string to, bool overwrite)

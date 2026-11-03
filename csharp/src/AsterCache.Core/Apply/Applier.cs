@@ -338,6 +338,22 @@ public static class Applier
             }));
         }
 
+        if (jr.Rows.LastOrDefault(r => Equals(r["type"], "end")) is { } prevEnd && prevEnd.TryGetValue("after_deferred", out object? deferredAfter) && Equals(deferredAfter, true))
+        {
+            // 앞선 실행이 취소돼 after 검증을 미뤘음: 저널의 sha_before 를 이번 실행의 비교 대상에 올림 (이어하기가 대신 검증)
+            foreach (JObject r in jr.Rows.ToList())
+            {
+                if (perTask && Equals(r["type"], "sha"))
+                {
+                    before[TaskKey((int)(long)r["idx"]!)] = r["sha_before"] as string;
+                }
+                else if (!perTask && Equals(r["type"], "file"))
+                {
+                    before[(string)r["path"]!] = r["sha_before"] as string;
+                }
+            }
+        }
+
         try
         {
             RunTasks(vol, todo, rep, jr, before, chunk, writeCap, hooks, Digest, perTask ? SampledDigest : null, planAhead, verify == VerifyMode.Off, parallel, ct);
@@ -482,6 +498,12 @@ public static class Applier
         {
             (int i, PlanTask t, long d) = todo[n];
             string p = t.Path;
+            if (ct.IsCancellationRequested) // 이동 전 표본(파일당 읽기)도 읽지 않음: 취소 뒤에는 디스크를 더 건드리지 않음
+            {
+                Stop("cancelled");
+                return;
+            }
+
             bool wasFresh;
             lock (gate)
             {
@@ -687,20 +709,27 @@ public static class Applier
     private static ApplyReport Finish(ApplyReport rep, Journal jr, OrderedDictionary<string, string?> before, Func<string, string?> digest, Func<string, string> pathOf, bool strict)
     {
         ApplyTimings tm = rep.Timings;
-        var bad = before.Where(kv => ApplyTimings.Time(ref tm.DigestAfterTicks, () => digest(kv.Key)) != kv.Value).Select(kv => pathOf(kv.Key)).Distinct().ToList();
+        bool deferred = rep.Stopped == "cancelled"; // 취소 뒤에는 표본을 다시 읽지 않음: 이어하기가 저널의 sha_before 로 검증
+        var bad = deferred ? [] : before.Where(kv => ApplyTimings.Time(ref tm.DigestAfterTicks, () => digest(kv.Key)) != kv.Value).Select(kv => pathOf(kv.Key)).Distinct().ToList();
         int files = before.Select(kv => pathOf(kv.Key)).Distinct().Count();
-        rep.ShaChecked = files;
+        rep.ShaChecked = deferred ? 0 : files;
         tm.Files = files;
         rep.ShaMismatch = bad;
         ApplyTimings.Time(ref tm.JournalTicks, () =>
         {
-            jr.Add(new JObject
+            var end = new JObject
             {
                 { "type", "end" },
                 { "stopped", rep.Stopped },
                 { "written_bytes", rep.MovedBytes },
                 { "sha_mismatch", bad.Cast<object?>().ToList() },
-            });
+            };
+            if (deferred)
+            {
+                end["after_deferred"] = true;
+            }
+
+            jr.Add(end);
             jr.Close();
         });
         tm.JournalFlushes = jr.Flushes;

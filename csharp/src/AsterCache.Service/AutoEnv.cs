@@ -191,7 +191,7 @@ public sealed class AutoEnv
         var cpu = new CpuLoad();
         return new AutoEnv
         {
-            Now = () => DateTimeOffset.UtcNow,
+            Now = MonotonicClock.Shared.Now, // 실행 중 시계가 튀어도 경과 시간이 변하지 않게
             Scan = () => LauncherScan.Scan(),
             LooksLikeGame = dir => LauncherScan.LooksLikeGame(dir),
             ExeFiles = dir => LauncherScan.InstalledExes(dir),

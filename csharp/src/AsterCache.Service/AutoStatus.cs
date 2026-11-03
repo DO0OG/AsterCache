@@ -1,4 +1,5 @@
 using System.Globalization;
+using AsterCache.Core;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 
@@ -53,7 +54,7 @@ public sealed class AutoStatus
     {
         _path = path;
         _log = log;
-        _now = now ?? (() => DateTimeOffset.UtcNow);
+        _now = now ?? MonotonicClock.Shared.Now;
         _sleep = sleep ?? Thread.Sleep;
         Load();
     }
@@ -373,7 +374,7 @@ public sealed class AutoStatus
         try
         {
             string tmp = _path + ".tmp";
-            File.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(PyJson.Dumps(root, indent: 2, ensureAscii: false) + "\n"));
+            DurableFile.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(PyJson.Dumps(root, indent: 2, ensureAscii: false) + "\n"));
             MoveOver(tmp, _path);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
@@ -456,11 +457,28 @@ public sealed class AutoStatus
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
         {
-            _log.Warn("auto status file unreadable, starting empty: " + e.GetType().Name);
+            _log.Warn("auto status file unreadable, starting empty and treating the daily limits as reached: " + e.GetType().Name);
             _games.Clear();
             _relocations.Clear();
             _events.Clear();
             _driveRecovery.Clear();
+            KeepBad();
+            // 일일 상한 기록이 사라졌으므로 24 시간 동안 상한에 도달한 것으로 봄 (보수): 지금 시작한 가짜 기록 24 개 (횟수 상한의 최댓값) 를 각 1 TiB 로 남김
+            _relocations.AddRange(Enumerable.Repeat((_now(), 1L << 40), 24));
+            Save(); // 다시 시작해도 24 시간은 유지되도록 바로 남김
+        }
+    }
+
+    // 읽을 수 없는 파일은 .bad 로 보관 (조사용), 못 옮기면 그대로 둠: 다음 저장이 덮어씀
+    private void KeepBad()
+    {
+        try
+        {
+            File.Move(_path!, _path + ".bad", true);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn("auto status file not kept as .bad: " + e.GetType().Name);
         }
     }
 

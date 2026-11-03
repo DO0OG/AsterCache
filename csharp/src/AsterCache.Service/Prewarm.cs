@@ -820,7 +820,7 @@ public sealed class Prewarmer
             try
             {
                 string tmp = _statusPath + ".tmp";
-                File.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(PyJson.Dumps(new JObject { { "games", _status } }, indent: 2, ensureAscii: false) + "\n"));
+                DurableFile.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(PyJson.Dumps(new JObject { { "games", _status } }, indent: 2, ensureAscii: false) + "\n"));
                 File.Move(tmp, _statusPath, true);
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)

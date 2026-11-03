@@ -275,17 +275,25 @@ public sealed class TierEngineTests : IDisposable
     }
 
     [Fact]
-    public void CancelStopsAfterTheCurrentFileIsFinished()
+    public void CancelDuringACopyAbortsThatFileAndLeavesNoPartFile()
     {
         using var cts = new CancellationTokenSource();
-        _fs.AfterCopy = (_, _) => cts.Cancel(); // 첫 파일을 복사하는 도중 게임이 시작됨
+        _fs.AfterCopy = (_, dst) =>
+        {
+            if (dst.Contains("b.bin", StringComparison.Ordinal))
+            {
+                cts.Cancel(); // 둘째 파일을 복사하는 도중 게임이 시작됨
+            }
+        };
 
         TierApplyReport rep = ApplyBoth(cts.Token);
 
         Assert.Equal((1, "cancelled"), (rep.Applied, rep.Stopped));
-        Assert.True(_fs.Links.ContainsKey(MemTierFs.N(A))); // 현재 파일은 끝까지
+        Assert.True(_fs.Links.ContainsKey(MemTierFs.N(A))); // 앞 파일은 끝까지
         Assert.False(_fs.Links.ContainsKey(MemTierFs.N(B)));
         Assert.Equal(_b, _fs.Files[MemTierFs.N(B)]);
+        Assert.DoesNotContain(_fs.Files.Keys, k => k.EndsWith(TierEngine.PartSuffix, StringComparison.OrdinalIgnoreCase));
+        Assert.Empty(rep.Skipped);
     }
 
     [Fact]

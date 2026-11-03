@@ -108,9 +108,17 @@ public sealed class TierJournal
             { "version", (long)Version }, { "game", Game }, { "root", Root }, { "budget_gib", (long)BudgetGib }, { "applied_at", Iso(AppliedAt) }, { "entries", entries },
         };
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
-        string tmp = path + ".tmp";
-        File.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(PyJson.Dumps(root, indent: 2, ensureAscii: false) + "\n"));
-        File.Move(tmp, path, true);
+        string tmp = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp"; // 서비스와 CLI 가 동시에 저장해도 임시 파일을 공유하지 않음
+        try
+        {
+            DurableFile.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(PyJson.Dumps(root, indent: 2, ensureAscii: false) + "\n"));
+            File.Move(tmp, path, true);
+        }
+        catch (Exception)
+        {
+            File.Delete(tmp); // 실패한 임시 파일을 남기지 않음
+            throw;
+        }
     }
 
     // 저널은 SYSTEM 이 이름을 바꾸고 링크를 지우는 근거라서, 모든 항목이 구조 규칙 (원본 이름 = 경로 + 접미사, 사본은 root 아래) 을 지켜야 합니다.

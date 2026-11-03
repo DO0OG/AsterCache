@@ -71,6 +71,23 @@ public sealed class AutoStatusTests : IDisposable
         Assert.NotNull(Make().Get("x"));
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("not json")]
+    public void UnreadableFileIsKeptAsBadAndCountsAsTheDailyLimitReachedFor24Hours(string text)
+    {
+        File.WriteAllText(StatusPath, text);
+
+        AutoStatus s = Make();
+
+        Assert.True(File.Exists(StatusPath + ".bad"));
+        Assert.True(s.RelocationsWithin(TimeSpan.FromHours(24)) >= 24); // 일일 횟수 상한의 최댓값
+        Assert.True(s.RelocationBytesWithin(TimeSpan.FromHours(24)) >= 1L << 40); // 일일 바이트 상한의 최댓값
+        Assert.Equal(s.RelocationsWithin(TimeSpan.FromHours(24)), Make().RelocationsWithin(TimeSpan.FromHours(24))); // 다시 시작해도 유지 (저장되지 않았다면 새 파일 없음 = 0 이 되지 않게)
+        _now = _now.AddHours(24).AddMinutes(1);
+        Assert.Equal(0, s.RelocationsWithin(TimeSpan.FromHours(24)));
+    }
+
     [Fact]
     public void AtChangesOnlyWhenTheStageChanges()
     {

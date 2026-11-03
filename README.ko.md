@@ -396,7 +396,7 @@ GOG 와 Ubisoft 읽기는 아직 실제 PC 에서 확인하지 않았습니다. 
 | `prewarm.min_free_ram_mib` | 예열 뒤에도 남겨 둘 가용 RAM(기본 4096) |
 | `prewarm.cooldown_min` | 예열 사이의 최소 간격(기본 30분) |
 | `auto` | 자동 모드 설정. 생략한 키는 기본값을 씁니다. [자동 모드](#자동-모드) 를 보십시오. |
-| `max_zone_mib` | 자동 계획의 존 크기 상한(MiB, 기본 2048), 또는 `"auto"`(물리 RAM ÷ 4, 2048~8192 MiB 사이) |
+| `max_zone_mib` | 자동 계획의 존 크기 상한(MiB, 기본 2048), 또는 `"auto"`(물리 RAM ÷ 4, 2048~8192 MiB 사이이며, SMR 이 아닌 내장 디스크로 확인되고 볼륨 여유가 16 GiB 이상일 때만 최대 4096 MiB, 그 밖에는 2048 MiB 로 제한합니다. 아직 SMR 을 판정할 수 없어 현재는 모든 디스크가 2048 MiB 입니다) |
 | `games[].source` | 자동으로 찾은 게임은 `auto`, 직접 등록한 게임은 `manual` |
 | `games[].anticheat` | 설치 폴더에서 찾은 안티치트 흔적(예: `EasyAntiCheat`). 게임 탭에 표시되며 동작은 바꾸지 않습니다. |
 | `auto.ssd_tier` | 선택 기능인 SSD 보조 저장: `enabled`(기본 `false`), `budget_gib`(기본 8), `root`(기본 `"auto"`). [SSD 보조 저장 (선택)](#ssd-보조-저장-선택)을 보십시오. |

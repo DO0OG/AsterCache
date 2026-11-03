@@ -396,7 +396,7 @@ The configuration file is `%ProgramData%\AsterCache\config.json`. Editing it in 
 | `prewarm.min_free_ram_mib` | Available RAM to leave free even after prewarm (default 4096) |
 | `prewarm.cooldown_min` | Minimum interval between prewarms (default 30 minutes) |
 | `auto` | Automatic mode settings. Omitted keys take their defaults. See [Automatic mode](#automatic-mode). |
-| `max_zone_mib` | Upper limit of the zone size for automatic planning, in MiB (default 2048), or `"auto"` (physical RAM ÷ 4, between 2048 and 8192 MiB) |
+| `max_zone_mib` | Upper limit of the zone size for automatic planning, in MiB (default 2048), or `"auto"` (physical RAM ÷ 4, between 2048 and 8192 MiB; capped at 2048 unless the disk is confirmed not to be SMR and the volume has at least 16 GiB free, in which case at most 4096 MiB. Because SMR cannot be detected yet, every disk currently gets 2048) |
 | `games[].source` | `auto` for a game found automatically, `manual` for a game you registered |
 | `games[].anticheat` | Anti-cheat folders found in the install folder, for example `EasyAntiCheat`. Shown in the Games tab; it does not change behavior |
 | `auto.ssd_tier` | Optional SSD assist storage: `enabled` (default `false`), `budget_gib` (default 8), `root` (default `"auto"`). See [SSD assist storage](#ssd-assist-storage-optional) |

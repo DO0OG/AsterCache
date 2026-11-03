@@ -20,4 +20,14 @@ public sealed class ZoneSizeAutoTests
 
     [Fact]
     public void AutoMaxMibRoundsDownInsideTheRange() => Assert.Equal(3000L, ZoneSize.AutoMaxMib((3000L * 4 * (1L << 20)) + 12345));
+
+    [Theory]
+    [InlineData(32L, null, 2048L)] // SMR·USB·종류 미확인
+    [InlineData(32L, 15L, 2048L)] // SMR 아님이지만 여유가 4096 MiB 존의 4 배 (16 GiB) 미만
+    [InlineData(32L, 16L, 4096L)]
+    [InlineData(32L, 500L, 4096L)]
+    [InlineData(16L, 500L, 4096L)] // RAM 규칙과 같음
+    [InlineData(8L, 500L, 2048L)] // RAM 규칙이 더 작음
+    public void AutoMaxMibWithDiskTakesTheSmallerOfRamAndDiskRule(long ramGib, long? freeGib, long expectedMib) =>
+        Assert.Equal(expectedMib, ZoneSize.AutoMaxMib(ramGib * Gib, freeGib * Gib));
 }

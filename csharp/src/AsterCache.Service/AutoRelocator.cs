@@ -708,7 +708,7 @@ public sealed class AutoRelocator
                     continue; // boot 계획은 첫 기록 재계획 (ReplanChanged) 의 몫
                 }
 
-                long cap = MaxZoneMib(s) << 20;
+                long cap = MaxZoneMib(s, g) << 20;
                 long merged = Math.Min(DistinctBlocks(_env.LoadTrace(raw, g.OriginRoot)) * HotSet.Block, cap);
                 long grew = merged - hotBlocks * HotSet.Block;
                 if (grew < (long)s.Auto.TraceMergeMinMib << 20)
@@ -729,7 +729,7 @@ public sealed class AutoRelocator
         }
     }
 
-    private long MaxZoneMib(AsterSettings s) => s.MaxZoneAuto ? ZoneSize.AutoMaxMib(_env.PhysicalRamBytes()) : s.MaxZoneMib;
+    private long MaxZoneMib(AsterSettings s, GameSettings g) => s.MaxZoneAuto ? ZoneSize.AutoMaxMib(_env.PhysicalRamBytes(), _env.NonSmrFreeBytes(DriveOf(g))) : s.MaxZoneMib;
 
     // 트레이스의 고유 (경로, 64 KiB 블록) 수.
     private static long DistinctBlocks(IEnumerable<TraceEvent> events)
@@ -970,7 +970,7 @@ public sealed class AutoRelocator
                 return false;
             }
 
-            long zoneMib = Math.Min(ZoneSize.ZoneMib(hot), MaxZoneMib(s));
+            long zoneMib = Math.Min(ZoneSize.ZoneMib(hot), MaxZoneMib(s, g));
             bool extending = IsExtending(g);
             if (extending && hot > zoneMib << 20)
             {

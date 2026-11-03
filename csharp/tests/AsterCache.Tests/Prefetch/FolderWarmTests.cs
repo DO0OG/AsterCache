@@ -164,6 +164,30 @@ public sealed class FolderWarmTests
     }
 
     [Fact]
+    public void RiotFolderMatchesTheRiotProfileAndSkipsTheRest()
+    {
+        using var dir = new TempDir();
+        foreach (string f in new[] { "Game/DATA/FINAL/Global.wad.client", "Game/DATA/FINAL/Maps/Map11/Map11.wad.client", "Game/DATA/FINAL/Champions/Ahri.wad.client", "Game/League of Legends.exe", "Game/d3d.dll", "LeagueClient/LeagueClient.exe", "LeagueClient/Plugins/x.txt" })
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(dir.Path, f))!);
+            File.WriteAllBytes(Path.Combine(dir.Path, f), new byte[10]);
+        }
+
+        ColdPlan plan = FolderWarm.Plan(dir.Path, ["League of Legends.exe"], 0, 100 * Mib, Profiles);
+
+        Assert.Equal("profile Riot", plan.Label);
+        string[] rel = Rel(dir.Path, plan);
+        Assert.Contains("Game/DATA/FINAL/Global.wad.client", rel);
+        Assert.Contains("Game/DATA/FINAL/Maps/Map11/Map11.wad.client", rel);
+        Assert.Contains("Game/League of Legends.exe", rel);
+        Assert.Contains("Game/d3d.dll", rel);
+        Assert.Contains("LeagueClient/LeagueClient.exe", rel);
+        Assert.Contains("Game/DATA/FINAL/Champions/Ahri.wad.client", rel);
+        Assert.DoesNotContain("LeagueClient/Plugins/x.txt", rel);
+        Assert.Equal(rel.Length, rel.Distinct().Count());
+    }
+
+    [Fact]
     public void ProfileTotalIsCutToTheBudgetFromTheFront()
     {
         string root = Fixture("unity");

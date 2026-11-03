@@ -1373,7 +1373,7 @@ public sealed class AutoRelocatorTests : ApplyTestBase
 
         _w.Now += Step;
         Tick();
-        Assert.Equal(2, plans);
+        Assert.Equal(1, plans); // 프로필 미일치는 폴더 mtime 이 같으면 주기가 돌아도 다시 열거하지 않음 (캐시)
     }
 
     [Fact]

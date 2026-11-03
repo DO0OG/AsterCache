@@ -2,6 +2,7 @@ using System.ComponentModel;
 using AsterCache.Core;
 using AsterCache.Core.Apply;
 using AsterCache.Core.Json;
+using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
 using Xunit;
 
@@ -346,6 +347,32 @@ public sealed class ApplyPortTests : ApplyTestBase
         Assert.Equal(1, v.OrderedRuns);
         Assert.True(v.Ascending);
         Assert.Equal(v.HotClusters, v.InZoneClusters);
+    }
+
+    [Fact]
+    public void VerifyLayoutLeavesVolatileFilesOfAnOldPlanOutOfTheZoneAndRunCount()
+    {
+        // 옛 계획 (excluded_files 키 없음): 게임이 다시 쓴 설정 파일이 존 밖에 있어도 나머지가 이어져 있으면 계속 흐트러진 것으로 보지 않음
+        var stats = new JObject { { "expected_runs", 1L }, { "current_runs", 3L } };
+        PlanFile p = Make() with
+        {
+            Zone = new PlanZone(100, 20),
+            Order = [new(@"D:\g.bin", 0, 10), new(@"D:\g\settings.json", 0, 10), new(@"D:\g.bin", 0, 10)],
+            Stats = stats,
+        };
+        var layout = new Dictionary<string, IReadOnlyList<Extent>?>
+        {
+            [@"D:\g.bin"] = [new Extent(0, 100, 10)],
+            [@"D:\g\settings.json"] = [new Extent(0, 9000, 10)],
+            [@"D:\g.bin"] = [new Extent(0, 110, 10)],
+        };
+
+        LayoutReport v = LayoutVerifier.Verify(p, f => layout[f]);
+
+        Assert.True(v.Contiguous);
+        Assert.Equal(20, v.HotClusters);
+        Assert.Equal(20, v.InZoneClusters);
+        Assert.Equal(0, v.MissingFiles);
     }
 
     [Fact]

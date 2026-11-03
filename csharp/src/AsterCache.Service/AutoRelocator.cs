@@ -108,6 +108,7 @@ public sealed class AutoRelocator
     private readonly HashSet<string> _delayLogged = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 업데이트 지연을 이미 로그한 게임
     private readonly Dictionary<string, DateTimeOffset> _prefetchTried = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 프리페치 기록으로 boot 를 만들어 본 게임과 그 시각
     private readonly Dictionary<string, long> _needBytes = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 하루 쓰기 예산 때문에 보류한 게임의 마지막 이동 예정 바이트
+    private readonly HashSet<string> _volatileChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 옛 계획의 가변 파일을 이미 따져 본 게임 (서비스 실행당 한 번)
     private readonly HashSet<string> _seeded = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 이전 존 시작에 맞춰 계획을 만든 게임
     private readonly Dictionary<string, DateTimeOffset> _extTried = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 존 확장을 이미 따져 본 (또는 막힌) 게임과 그때의 트레이스 수정 시각 (다음 플레이가 쌓여 트레이스가 바뀔 때까지 다시 보지 않음)
     private readonly ConcurrentDictionary<string, DateTimeOffset> _planFailedAt = new(StringComparer.Ordinal); // 계획 (또는 재배치) 이 마지막으로 실패한 시각: 그 뒤 트레이스가 새로 쓰이기 전에는 같은 실패를 되풀이하지 않음
@@ -215,6 +216,7 @@ public sealed class AutoRelocator
         RecoverReplan(s);
         ReplanChanged(s);
         ReplanExtended(s);
+        ReplanLegacyVolatile(s);
         PrefetchBootstrap(s);
         WarmCold(s, warms);
         bool relocateOn = s.Auto.Relocate && s.Auto.MaxRelocationsPerDay > 0;
@@ -751,6 +753,39 @@ public sealed class AutoRelocator
             catch (Exception e) when (e is not OperationCanceledException)
             {
                 _log.Warn($"{g.Name}: zone extension check failed, will retry on the next trace ({e.GetType().Name})");
+            }
+        }
+    }
+
+    // 가변 파일을 빼기 전에 만든 옛 계획 (stats 에 excluded_files 키가 없고 핫 순서에 가변 파일이 듦): 게임이 그 파일을 다시 써서 존이 흐트러져 보이므로
+    // 서비스 실행당 한 번 가변 파일을 뺀 계획으로 다시 만듭니다. 확장 재계획과 같은 길 (.extend): 같은 존 시작에 맞추고, 유휴·일일 상한·바이트 예산 같은 재배치 게이트를 그대로 지납니다.
+    private void ReplanLegacyVolatile(AsterSettings s)
+    {
+        foreach (GameSettings g in s.Games)
+        {
+            if (_status.Get(g.Name)?.RelocatedAt is null || !_env.FileExists(g.Plan) || IsExtending(g) || AnyGameRunning(g)
+                || AutoTracer.PlanTracePath(g, _env.FileExists) is null || !_volatileChecked.Add(g.Name))
+            {
+                continue;
+            }
+
+            try
+            {
+                PlanFile plan = _env.LoadPlan(g.Plan);
+                if (plan.Zone.StartLcn is null || plan.Stats.ContainsKey(VolatileFiles.StatsKey) || !plan.Order.Any(o => VolatileFiles.Ignored(o.Path)))
+                {
+                    continue;
+                }
+
+                _tier?.RevertGame(g.Name, "volatile files left out"); // 링크는 새 재배치 전에 되돌림
+                _ = _env.ArchiveJournal(g);
+                _env.MoveAside(g.Plan, g.Plan + ExtendSuffix);
+                _status.ResetForReplan(g.Name, ExtendDetail);
+                _log.Info($"{g.Name}: plan holds files the game rewrites by itself, plan set aside as {ExtendSuffix}, will plan again without them (same zone)");
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                _log.Warn($"{g.Name}: volatile file check failed ({e.GetType().Name})");
             }
         }
     }

@@ -228,4 +228,32 @@ public sealed partial class AutoRelocatorTests
         Assert.True(_w.Files.Contains(trace) || File.Exists(trace)); // 트레이스는 그대로
         Assert.Contains(_log.Lines, l => l.Contains("trace updated after a failed replan", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void OldPlanWithAVolatileFileInItsOrderIsPlannedAgainOncePerRunWithoutItInTheSameZone()
+    {
+        long start = DoneAndReadyToReplan(out _);
+        PlanFile old = PlanFile.Load(_game.Plan);
+        (old with { Order = [.. old.Order, new PlanRange(Path.Combine(Root, "settings.json"), 0, 4)] }).Save(_game.Plan); // 옛 계획: excluded_files 키가 없고 핫 순서에 가변 파일이 들어 있음
+        Assert.False(PlanFile.Load(_game.Plan).Stats.ContainsKey(VolatileFiles.StatsKey));
+        _relocator = null; // 서비스 재시작 (이번 실행의 확인은 한 번)
+
+        Tick(); // 같은 틱에 다시 계획해 유휴를 기다림
+
+        Assert.Equal(AutoStage.WaitingIdle, Entry.Stage);
+        Assert.Null(Entry.RelocatedAt);
+        Assert.True(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix));
+        Assert.Contains(_log.Lines, l => l.Contains("plan holds files the game rewrites by itself", StringComparison.Ordinal));
+
+        RunUntilDone();
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        PlanFile fresh = PlanFile.Load(_game.Plan);
+        Assert.DoesNotContain(fresh.Order, o => VolatileFiles.Ignored(o.Path));
+        Assert.Equal(start, fresh.Zone.StartLcn); // 존 시작 유지
+        _relocator = null; // 서비스 재시작
+        Tick();
+        Assert.Equal(AutoStage.Done, Entry.Stage); // 새 계획에는 가변 파일이 없어 되풀이하지 않음
+        Assert.Single(_log.Lines, l => l.Contains("plan holds files the game rewrites by itself", StringComparison.Ordinal));
+    }
 }

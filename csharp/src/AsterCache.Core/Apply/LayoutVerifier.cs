@@ -33,8 +33,15 @@ public static class LayoutVerifier
         var ext = new Dictionary<string, IReadOnlyList<Extent>?>(StringComparer.Ordinal);
         var seq = new List<(long Lcn, long N)>();
         long missing = 0;
+        long leftOut = 0;
         foreach (PlanRange o in plan.Order)
         {
+            if (VolatileFiles.Ignored(o.Path))
+            {
+                leftOut++; // 옛 계획 (excluded_files 키 없음) 에 든 가변 파일은 게임이 스스로 다시 써 존 밖으로 나가므로 존 소속·구간 수 판정에서 뺌
+                continue;
+            }
+
             if (!ext.TryGetValue(o.Path, out IReadOnlyList<Extent>? e))
             {
                 ext[o.Path] = e = extents(o.Path);
@@ -50,7 +57,7 @@ public static class LayoutVerifier
         }
 
         long runs = ZoneAllocator.CountRuns(seq);
-        long expected = (long)plan.Stats["expected_runs"]!;
+        long expected = (long)plan.Stats["expected_runs"]! + leftOut; // shortcut: 뺀 범위 하나가 이어진 구간을 둘로 가를 수 있어 그만큼 여유를 줌, 계획 시점에 가변 파일을 뺀 새 계획에는 해당 없음
         long? inZone = null;
         if (plan.Zone.StartLcn is { } start)
         {

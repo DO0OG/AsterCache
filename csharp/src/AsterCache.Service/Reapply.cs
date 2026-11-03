@@ -92,7 +92,7 @@ public sealed class ReapplyEnv
     public Func<GameSettings, bool> TierActive { get; init; } = _ => false;
 
     /// 실제 구현. 재적용은 관리자이고 폴더 권한이 안전할 때만 (canApply). 저널은 게임마다 journalDir\이름.jsonl 하나를 계속 씁니다 (같은 저널 규칙: 이어하기·되돌리기).
-    public static ReapplyEnv Create(bool canApply, string journalDir, ILog? log = null, Func<string>? relocateOrder = null, Func<int>? relocateParallel = null) => new()
+    public static ReapplyEnv Create(bool canApply, string journalDir, ILog? log = null, Func<string>? relocateOrder = null, Func<GameSettings, int>? relocateParallel = null) => new()
     {
         CanApply = canApply,
         GameRunning = g => ProcessSnapshot.IsRunning(g.ExeNames),
@@ -101,9 +101,12 @@ public sealed class ReapplyEnv
         Extents = FileLayout.Extents,
         Stat = PlanFile.FingerprintOf,
         RealPath = RealPaths.Real,
-        Apply = (g, plan, ct) => Run(journalDir, g, plan, OptionsFor(g, relocateOrder?.Invoke() ?? RelocateOrder.Target, relocateParallel?.Invoke() ?? 1), ct, log), // 존을 다시 정하면 계획에 남김
+        Apply = (g, plan, ct) => Run(journalDir, g, plan, OptionsFor(g, relocateOrder?.Invoke() ?? RelocateOrder.Target, relocateParallel?.Invoke(g) ?? 1), ct, log), // 존을 다시 정하면 계획에 남김
         TierActive = g => TierEngine.HasActive(Path.Combine(Path.GetDirectoryName(journalDir) ?? journalDir, "tier"), g.Name),
     };
+
+    /// 이 게임이 놓인 디스크 종류를 모르거나 USB 버스인가 (실패하면 모름으로 침).
+    public static bool IsSlowBus(GameSettings g) => DiskInfo.Query(PlanFile.SplitDrive(g.OriginRoot)) is var d && (d.IncursSeekPenalty is null || d.BusType == DiskInfo.BusTypeUsb);
 
     /// 재적용의 옵션: 실행 순서는 설정 auto.relocate_order 를 따름 (자동 재배치와 같은 규칙).
     public static ApplyOptions OptionsFor(GameSettings g, string orderSetting, int parallel = 1) =>

@@ -948,7 +948,7 @@ public sealed class AutoRelocator
             plan = _env.LoadPlan(g.Plan);
             ReapplyChecker.CheckPaths(plan, g, _env.RealPath);
             string order = RelocateOrder.Resolve(s.Auto.RelocateOrder);
-            var run = new ApplyOptions(Execute: true, ChunkBytes: (long)s.Auto.RelocateChunkMib << 20, LowIoPriority: s.Auto.RelocateIoPriority == AutoSettings.IoLow, Verify: s.Auto.RelocateVerify, Order: order, Parallel: s.Auto.RelocateParallel);
+            var run = new ApplyOptions(Execute: true, ChunkBytes: (long)s.Auto.RelocateChunkMib << 20, LowIoPriority: s.Auto.RelocateIoPriority == AutoSettings.IoLow, Verify: s.Auto.RelocateVerify, Order: order, Parallel: s.Auto.ParallelFor(_env.IsSlowBus(DriveOf(g))));
             long bytes = Math.Min(dry.BytesTodo, run.WriteCap); // 한 번의 적용은 WriteCap 까지만 쓰고 나머지는 이어하기가 다시 셈
             long budget = (long)s.Auto.MaxRelocateGibPerDay << 30;
             long usedToday = budget > 0 ? _status.RelocationBytesWithin(DailyWindow) : 0;

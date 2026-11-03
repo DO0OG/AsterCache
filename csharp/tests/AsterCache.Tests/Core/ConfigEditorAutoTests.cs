@@ -22,13 +22,13 @@ public sealed class ConfigEditorAutoTests : IDisposable
     };
 
     [Fact]
-    public void SetAutoRoundTripsAndWritesEveryKeyEvenAtDefault()
+    public void SetAutoRoundTripsAndWritesEveryKeyEvenAtDefaultExceptUnsetParallel()
     {
         var editor = new ConfigEditor(_dir);
         editor.Add(Game("a"));
         editor.SetAuto(AutoSettings.Default);
 
-        Assert.Equal(28, CountKeys(File.ReadAllText(editor.ConfigPath), "auto"));
+        Assert.Equal(27, CountKeys(File.ReadAllText(editor.ConfigPath), "auto"));
         Assert.Equal(Plain(AutoSettings.Default), Plain(editor.Load()!.Auto));
 
         var custom = new AutoSettings(false, false, true, false, 3, 7, 90, 128, 5, ["a.exe", "b.exe"])
@@ -43,6 +43,7 @@ public sealed class ConfigEditorAutoTests : IDisposable
             PostRelocateRecovery = AutoSettings.RecoveryFixed,
             RelocateChunkMib = 64,
             RelocateParallel = 4,
+            RelocateParallelSet = true,
             RelocateIoPriority = AutoSettings.IoNormal,
             RelocateVerify = "off",
             RelocateOrder = "source",

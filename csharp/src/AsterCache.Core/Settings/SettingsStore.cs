@@ -168,6 +168,7 @@ public static class SettingsStore
             EngineProfiles = OptBool(o, "engine_profiles", d.EngineProfiles),
             RelocateChunkMib = OptInt(o, "relocate_chunk_mib", 1, 256, d.RelocateChunkMib),
             RelocateParallel = OptInt(o, "relocate_parallel", 1, 8, d.RelocateParallel),
+            RelocateParallelSet = o.ContainsKey("relocate_parallel"),
             RelocateIoPriority = o.TryGetValue("relocate_io_priority", out object? io) && io is AutoSettings.IoLow or AutoSettings.IoNormal ? (string)io : d.RelocateIoPriority,
             RelocateVerify = o.TryGetValue("relocate_verify", out object? rv) && rv is string rvs && VerifyMode.IsValid(rvs) ? rvs : d.RelocateVerify,
             RelocateOrder = o.TryGetValue("relocate_order", out object? ro) && ro is string ros && RelocateOrder.IsValidSetting(ros) ? ros : d.RelocateOrder,

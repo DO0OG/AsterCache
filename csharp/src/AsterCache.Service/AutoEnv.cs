@@ -69,6 +69,9 @@ public sealed class AutoEnv
     /// 'X:' 가 HDD 인가 (true), SSD (false), 모르면 null.
     public required Func<string, bool?> IsHdd { get; init; }
 
+    /// 'X:' 의 디스크 종류를 모르거나 USB 버스인가 (자동 재배치 동시 수 규칙). 시험 기본값은 참.
+    public Func<string, bool> IsSlowBus { get; init; } = _ => true;
+
     public required Func<IReadOnlyList<int>> Pids { get; init; }
 
     public required Func<int, string?> ImagePath { get; init; }
@@ -185,6 +188,7 @@ public sealed class AutoEnv
             ExeFiles = dir => LauncherScan.InstalledExes(dir),
             VolumeLabel = VolumeInfo.Label,
             IsHdd = letter => DiskInfo.Query(letter).IncursSeekPenalty,
+            IsSlowBus = letter => DiskInfo.Query(letter) is var d && (d.IncursSeekPenalty is null || d.BusType == DiskInfo.BusTypeUsb),
             Pids = ProcessSnapshot.Pids,
             ImagePath = ProcessSnapshot.ImagePath,
             ReadBytes = ProcessSnapshot.ReadBytes,

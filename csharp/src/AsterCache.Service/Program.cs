@@ -41,7 +41,7 @@ bool canApply = Worker.CanApply(admin, [dataDir, plansDir], log, [configPath]);
 settings = Worker.ForApply(settings, canApply, log, canApply ? new ConfigEditor(dataDir) : null);
 (IProcessWatcher primary, IProcessWatcher? fallback) = Worker.ChooseWatchers(settings, admin);
 string journalDir = Path.Combine(dataDir, "journals");
-var checker = new ReapplyChecker(ReapplyEnv.Create(canApply, journalDir, log, () => settings.Auto.RelocateOrder, () => settings.Auto.RelocateParallel), log);
+var checker = new ReapplyChecker(ReapplyEnv.Create(canApply, journalDir, log, () => settings.Auto.RelocateOrder, g => settings.Auto.ParallelFor(ReapplyEnv.IsSlowBus(g))), log);
 
 HostApplicationBuilder builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { ContentRootPath = AppContext.BaseDirectory });
 if (!console)

@@ -1,6 +1,5 @@
 using AsterCache.Core.Json;
 using AsterCache.Core.Model;
-using AsterCache.Core.Plan;
 using Xunit;
 
 namespace AsterCache.Tests.Core;

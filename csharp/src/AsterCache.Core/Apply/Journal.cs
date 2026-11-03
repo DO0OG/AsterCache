@@ -9,6 +9,7 @@ public sealed class Journal : IDisposable
 {
     private readonly bool _fixNewline;
     private readonly List<JObject> _rows = [];
+    private readonly object _gate = new(); // 동시 실행의 작업자들이 한 줄씩 차례로 쓰도록 모든 접근을 직렬화
     private FileStream? _file;
     private int _pending;
     private long _lastFlush;
@@ -57,19 +58,27 @@ public sealed class Journal : IDisposable
     public IReadOnlyList<JObject> Rows => _rows;
 
     /// type 이 kind 이고 key 값이 val 인 첫 행. val 은 long/string/null 로 비교합니다.
-    public JObject? First(string kind, string key, object? val) =>
-        _rows.FirstOrDefault(r => r.TryGetValue("type", out object? t) && Equals(t, kind) && r.TryGetValue(key, out object? v) && Equals(v, val));
+    public JObject? First(string kind, string key, object? val)
+    {
+        lock (_gate)
+        {
+            return _rows.FirstOrDefault(r => r.TryGetValue("type", out object? t) && Equals(t, kind) && r.TryGetValue(key, out object? v) && Equals(v, val));
+        }
+    }
 
     /// idx 단계에 마지막으로 기록된 state, 없으면 null.
     public string? LastState(long idx)
     {
         string? state = null;
-        foreach (JObject r in _rows)
+        lock (_gate)
         {
-            if (r.TryGetValue("type", out object? t) && Equals(t, "step") && r.TryGetValue("idx", out object? i) && Equals(i, idx)
-                && r.TryGetValue("state", out object? s))
+            foreach (JObject r in _rows)
             {
-                state = s as string;
+                if (r.TryGetValue("type", out object? t) && Equals(t, "step") && r.TryGetValue("idx", out object? i) && Equals(i, idx)
+                    && r.TryGetValue("state", out object? s))
+                {
+                    state = s as string;
+                }
             }
         }
 
@@ -79,33 +88,42 @@ public sealed class Journal : IDisposable
     /// 한 줄 쓰고 디스크까지 내립니다 (앞서 묶어 둔 줄도 함께).
     public void Add(JObject row)
     {
-        Write(row);
-        Flush();
+        lock (_gate)
+        {
+            Write(row);
+            Flush();
+        }
     }
 
     /// 한 줄 쓰되 디스크까지는 BatchRows 줄이 쌓이거나 BatchInterval 이 지났을 때만 내립니다. 꼬리가 유실돼도 진실은 파일의 extent 라 이어하기가 다시 정함:
     /// 되돌리기에 필요한 줄 (planned 의 from) 은 이동 전에 <see cref="Flush"/> 로 확정해야 합니다.
     public void AddBatched(JObject row)
     {
-        Write(row);
-        if (_pending >= BatchRows || Timestamp() - _lastFlush >= BatchInterval.TotalSeconds * System.Diagnostics.Stopwatch.Frequency)
+        lock (_gate)
         {
-            Flush();
+            Write(row);
+            if (_pending >= BatchRows || Timestamp() - _lastFlush >= BatchInterval.TotalSeconds * System.Diagnostics.Stopwatch.Frequency)
+            {
+                Flush();
+            }
         }
     }
 
     /// 쓴 줄을 모두 디스크까지 내립니다 (아무것도 안 쌓였으면 아무것도 안 함).
     public void Flush()
     {
-        if (_file is null || _pending == 0)
+        lock (_gate)
         {
-            return;
-        }
+            if (_file is null || _pending == 0)
+            {
+                return;
+            }
 
-        _file.Flush(true);
-        Flushes++;
-        _pending = 0;
-        _lastFlush = Timestamp();
+            _file.Flush(true);
+            Flushes++;
+            _pending = 0;
+            _lastFlush = Timestamp();
+        }
     }
 
     private void Write(JObject row)
@@ -130,9 +148,12 @@ public sealed class Journal : IDisposable
 
     public void Close()
     {
-        Flush();
-        _file?.Dispose();
-        _file = null;
+        lock (_gate)
+        {
+            Flush();
+            _file?.Dispose();
+            _file = null;
+        }
     }
 
     public void Dispose() => Close();

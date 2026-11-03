@@ -92,7 +92,7 @@ public sealed class ReapplyEnv
     public Func<GameSettings, bool> TierActive { get; init; } = _ => false;
 
     /// 실제 구현. 재적용은 관리자이고 폴더 권한이 안전할 때만 (canApply). 저널은 게임마다 journalDir\이름.jsonl 하나를 계속 씁니다 (같은 저널 규칙: 이어하기·되돌리기).
-    public static ReapplyEnv Create(bool canApply, string journalDir, ILog? log = null, Func<string>? relocateOrder = null) => new()
+    public static ReapplyEnv Create(bool canApply, string journalDir, ILog? log = null, Func<string>? relocateOrder = null, Func<int>? relocateParallel = null) => new()
     {
         CanApply = canApply,
         GameRunning = g => ProcessSnapshot.IsRunning(g.ExeNames),
@@ -101,13 +101,13 @@ public sealed class ReapplyEnv
         Extents = FileLayout.Extents,
         Stat = PlanFile.FingerprintOf,
         RealPath = RealPaths.Real,
-        Apply = (g, plan, ct) => Run(journalDir, g, plan, OptionsFor(g, relocateOrder?.Invoke() ?? RelocateOrder.Target), ct, log), // 존을 다시 정하면 계획에 남김
+        Apply = (g, plan, ct) => Run(journalDir, g, plan, OptionsFor(g, relocateOrder?.Invoke() ?? RelocateOrder.Target, relocateParallel?.Invoke() ?? 1), ct, log), // 존을 다시 정하면 계획에 남김
         TierActive = g => TierEngine.HasActive(Path.Combine(Path.GetDirectoryName(journalDir) ?? journalDir, "tier"), g.Name),
     };
 
     /// 재적용의 옵션: 실행 순서는 설정 auto.relocate_order 를 따름 (자동 재배치와 같은 규칙).
-    public static ApplyOptions OptionsFor(GameSettings g, string orderSetting) =>
-        new(Execute: true, SaveTo: g.Plan, Order: RelocateOrder.Resolve(orderSetting));
+    public static ApplyOptions OptionsFor(GameSettings g, string orderSetting, int parallel = 1) =>
+        new(Execute: true, SaveTo: g.Plan, Order: RelocateOrder.Resolve(orderSetting), Parallel: parallel);
 
     /// 레이블 확인 → 볼륨 열기 → Applier. 재적용과 자동 모드의 첫 재배치가 같은 길을 씁니다 (DryRun 은 존 시작만 계획에 저장).
     /// lowIoLog 가 있으면 이동과 SHA 표본 읽기에 낮은 I/O 우선순위 힌트를 붙이고 (서비스의 백그라운드 경로), 힌트가 실패하면 거기에 한 번 남깁니다. null 이면 보통 우선순위.

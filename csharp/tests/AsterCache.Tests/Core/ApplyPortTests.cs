@@ -502,7 +502,7 @@ public sealed class ApplyPortTests : ApplyTestBase
         Assert.Equal(2, t.Files);
         Assert.Equal(rep.TasksTodo, t.Tasks);
         var j = (JObject)rep.ToJson()["timings"]!;
-        Assert.Equal(["open_s", "digest_before_s", "move_s", "digest_after_s", "journal_s", "other_s", "total_s", "tasks", "files"], j.Select(kv => kv.Key).ToArray());
+        Assert.Equal(["open_s", "digest_before_s", "move_s", "move_wall_s", "digest_after_s", "journal_s", "other_s", "total_s", "tasks", "files"], j.Select(kv => kv.Key).ToArray());
         Assert.False(Apply(Make().Resolve(20000), new ApplyOptions(DryRun: true)).ToJson().ContainsKey("timings"));
     }
 

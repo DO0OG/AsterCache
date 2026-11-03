@@ -122,6 +122,10 @@ public sealed class ApplyTimings
     internal long OpenTicks;
     internal long DigestBeforeTicks;
     internal long MoveTicks;
+    internal long MoveWallTicks;
+    private readonly object _moveGate = new();
+    private int _moving;
+    private long _movingSince;
     internal long DigestAfterTicks;
     internal long JournalTicks;
 
@@ -136,7 +140,11 @@ public sealed class ApplyTimings
 
     public double DigestBeforeS => Seconds(DigestBeforeTicks);
 
+    /// 모든 작업자의 이동 호출 시간을 더한 값 (동시 실행이면 벽시계보다 큼).
     public double MoveS => Seconds(MoveTicks);
+
+    /// 이동 호출이 하나라도 진행 중이던 벽시계 시간 (순차면 MoveS 와 같음).
+    public double MoveWallS => Seconds(MoveWallTicks);
 
     public double DigestAfterS => Seconds(DigestAfterTicks);
 
@@ -149,6 +157,30 @@ public sealed class ApplyTimings
     /// 사람이 읽는 한 줄 꼬리: " (open X s, digest Y s, move Z s)".
     public string Summary => string.Create(CultureInfo.InvariantCulture, $" (open {OpenS:0.0} s, digest {DigestBeforeS + DigestAfterS:0.0} s, move {MoveS:0.0} s)");
 
+    internal void MoveBegin()
+    {
+        lock (_moveGate)
+        {
+            if (_moving++ == 0)
+            {
+                _movingSince = Stopwatch.GetTimestamp();
+            }
+        }
+    }
+
+    internal void MoveEnd(long startTicks)
+    {
+        long now = Stopwatch.GetTimestamp();
+        _ = Interlocked.Add(ref MoveTicks, now - startTicks);
+        lock (_moveGate)
+        {
+            if (--_moving == 0)
+            {
+                MoveWallTicks += now - _movingSince;
+            }
+        }
+    }
+
     internal void Stop() => _totalTicks = Stopwatch.GetTimestamp() - _start;
 
     internal static T Time<T>(ref long ticks, Func<T> f)
@@ -160,7 +192,7 @@ public sealed class ApplyTimings
         }
         finally
         {
-            ticks += Stopwatch.GetTimestamp() - s;
+            _ = Interlocked.Add(ref ticks, Stopwatch.GetTimestamp() - s);
         }
     }
 
@@ -175,6 +207,7 @@ public sealed class ApplyTimings
         { "open_s", Math.Round(OpenS, 3) },
         { "digest_before_s", Math.Round(DigestBeforeS, 3) },
         { "move_s", Math.Round(MoveS, 3) },
+        { "move_wall_s", Math.Round(MoveWallS, 3) },
         { "digest_after_s", Math.Round(DigestAfterS, 3) },
         { "journal_s", Math.Round(JournalS, 3) },
         { "other_s", Math.Round(OtherS, 3) },

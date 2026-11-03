@@ -1,6 +1,8 @@
+using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.ExceptionServices;
 using AsterCache.Core.Json;
 using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
@@ -36,6 +38,9 @@ public static class Applier
 
     /// planned 행을 미리 기록하는 작업 수: 이만큼의 from 을 한 번에 쓰고 fsync 한 뒤 이동합니다.
     public const int PlanAhead = 32;
+
+    /// 동시에 옮기는 파일 수의 상한 (ApplyOptions.Parallel 은 이 범위로 맞춤).
+    public const int MaxParallel = 8;
 
     /// 새 규칙: 파일당 표본 합계 상한.
     public const long DigestCapBytes = 1 << 20;
@@ -129,7 +134,7 @@ public static class Applier
         rep.DryRun = options.DryRun;
         rep.PlanSaved = persist;
         return options.Execute ? Execute(plan, vol, todo, rep, journalPath, chunk, options.WriteCap, hooks, digest, Math.Max(1, options.PlanAhead),
-            VerifyMode.IsValid(options.Verify) ? options.Verify : VerifyMode.Sample, cancellationToken) : rep;
+            VerifyMode.IsValid(options.Verify) ? options.Verify : VerifyMode.Sample, Math.Clamp(options.Parallel, 1, MaxParallel), cancellationToken) : rep;
     }
 
     /// order=source 를 요청했는데 target 순서로 실행한 이유 (보고서의 order_fallback_reason).
@@ -270,7 +275,7 @@ public static class Applier
 
     private static ApplyReport Execute(PlanFile plan, IVolume vol, List<(int Idx, PlanTask Task, long Done)> todo, ApplyReport rep,
         string journalPath, long chunk, long writeCap, ApplyHooks hooks, Func<string, long, IReadOnlyList<(long Offset, long Length)>, string> digestFn,
-        int planAhead, string verify, CancellationToken ct)
+        int planAhead, string verify, int parallel, CancellationToken ct)
     {
         ApplyTimings tm = rep.Timings;
         using var jr = new Journal(journalPath);
@@ -294,8 +299,8 @@ public static class Applier
         string? SampledDigest(int idx, PlanTask t) =>
             verify == VerifyMode.Sample && sampling && idx % SampleEvery != 0 && firstOf[t.Path] != idx ? null : TaskDigest(idx, t);
         var edgeFn = hooks.EdgeDigest ?? digestFn;
-        var sizes = new Dictionary<string, long>(StringComparer.Ordinal);
-        var capped = new Dictionary<string, HashSet<(long, long)>>(StringComparer.Ordinal);
+        var sizes = new ConcurrentDictionary<string, long>(StringComparer.Ordinal); // 동시 실행의 작업자들이 서로 다른 파일을 조회
+        var capped = new ConcurrentDictionary<string, HashSet<(long, long)>>(StringComparer.Ordinal);
         long SizeOf(string p) => sizes.TryGetValue(p, out long z) ? z : sizes[p] = hooks.FileSize(p);
         IReadOnlyList<(long Offset, long Length)> RangesOf(string p) => ranges.TryGetValue(p, out List<(long, long)>? x) ? x : [];
         string Digest(string p)
@@ -309,10 +314,7 @@ public static class Applier
         {
             string p = t.Path;
             long size = SizeOf(p);
-            if (!capped.TryGetValue(p, out HashSet<(long, long)>? keep))
-            {
-                capped[p] = keep = EdgeRanges(RangesOf(p), size).ToHashSet();
-            }
+            HashSet<(long, long)> keep = capped.GetOrAdd(p, _ => EdgeRanges(RangesOf(p), size).ToHashSet());
 
             long cb0 = vol.ClusterBytes;
             long lo = t.Vcn * cb0;
@@ -338,7 +340,7 @@ public static class Applier
 
         try
         {
-            RunTasks(vol, todo, rep, jr, before, chunk, writeCap, hooks, Digest, perTask ? SampledDigest : null, planAhead, verify == VerifyMode.Off, ct);
+            RunTasks(vol, todo, rep, jr, before, chunk, writeCap, hooks, Digest, perTask ? SampledDigest : null, planAhead, verify == VerifyMode.Off, parallel, ct);
         }
         catch (Exception)
         {
@@ -365,32 +367,128 @@ public static class Applier
     private static int TaskOf(string key) => int.Parse(key.AsSpan(1), CultureInfo.InvariantCulture);
 
     // 쓴 양은 예외가 나도 end 행에 남도록 rep.MovedBytes 에 계속 누적합니다.
+    // parallel > 1 이면 작업자 스레드 여러 개가 같은 대기열에서 작업을 가져갑니다: 가져가는 규칙은 "준비된 (지금 진행 중이 아닌) 파일 중 다음 작업 위치가 가장 앞선 것"
+    // 이라 같은 파일의 작업은 항상 계획 순서로 한 번에 하나, 작업자가 하나면 todo 순서 그대로입니다. 보고서·표본 맵·대기열 같은 공유 상태는 gate 로, 저널 쓰기는 Journal 안의 잠금으로 직렬화.
+    // 한 작업자가 멈춤 사유를 정하면 (취소·쓰기 상한·존 점유·예외) 다른 작업자는 진행 중인 조각만 끝내고 단계 행 없이 멈춥니다 (planned 행이 재개 지점).
     private static void RunTasks(IVolume vol, List<(int Idx, PlanTask Task, long Done)> todo, ApplyReport rep, Journal jr,
         OrderedDictionary<string, string?> before, long chunk, long writeCap, ApplyHooks hooks, Func<string, string> digest,
-        Func<int, PlanTask, string?>? taskDigest, int planAhead, bool noVerify, CancellationToken ct)
+        Func<int, PlanTask, string?>? taskDigest, int planAhead, bool noVerify, int parallel, CancellationToken ct)
     {
         long cb = vol.ClusterBytes;
         ApplyTimings tm = rep.Timings;
+        var gate = new object();
+        int stopped = 0;
         int busyInARow = 0;
-        int plannedUpTo = 0;
         var fresh = new HashSet<int>(); // 이번 실행이 planned 행을 쓴 작업
+        var windowed = new bool[todo.Count]; // planned 행 쓰기를 이미 시도한 todo 위치
+        var queues = new Dictionary<string, Queue<int>>(StringComparer.Ordinal);
+        var ready = new SortedSet<(int N, string Path)>();
         for (int n = 0; n < todo.Count; n++)
         {
+            string tp = todo[n].Task.Path;
+            if (!queues.TryGetValue(tp, out Queue<int>? q))
+            {
+                queues[tp] = q = new Queue<int>();
+                _ = ready.Add((n, tp));
+            }
+
+            q.Enqueue(n);
+        }
+
+        int remaining = todo.Count;
+
+        void Stop(string? why)
+        {
+            lock (gate)
+            {
+                rep.Stopped ??= why;
+                Volatile.Write(ref stopped, 1);
+                Monitor.PulseAll(gate);
+            }
+        }
+
+        bool Halted() => Volatile.Read(ref stopped) != 0;
+
+        // 다음 작업을 가져옴. 더 할 일이 없거나 멈춰야 하면 null.
+        (int N, string Path)? Take()
+        {
+            lock (gate)
+            {
+                while (true)
+                {
+                    if (Halted() || remaining == 0)
+                    {
+                        return null;
+                    }
+
+                    if (ct.IsCancellationRequested) // 다음 작업으로 넘어가기 전에도 확인: 취소된 뒤에는 새 단계의 planned 행을 남기지 않음
+                    {
+                        Stop("cancelled");
+                        return null;
+                    }
+
+                    if (ready.Count > 0)
+                    {
+                        break;
+                    }
+
+                    _ = Monitor.Wait(gate); // 남은 작업이 전부 진행 중인 파일의 뒷 작업
+                }
+
+                (int n, string path) = ready.Min;
+                _ = ready.Remove(ready.Min);
+                _ = queues[path].Dequeue();
+                remaining--;
+                if (!windowed[n])
+                {
+                    PlanRows(todo, n, jr, hooks, tm, fresh, planAhead, windowed); // 되돌리기의 근거 (from) 는 이동 전에 디스크에 있어야 함: PlanAhead 개를 한 번에 쓰고 fsync
+                }
+
+                return (n, path);
+            }
+        }
+
+        void Release(string path)
+        {
+            lock (gate)
+            {
+                Queue<int> q = queues[path];
+                if (q.Count > 0)
+                {
+                    _ = ready.Add((q.Peek(), path));
+                }
+
+                Monitor.PulseAll(gate);
+            }
+        }
+
+        bool HasBefore(string key)
+        {
+            lock (gate)
+            {
+                return before.ContainsKey(key);
+            }
+        }
+
+        void SetBefore(string key, string? sha)
+        {
+            lock (gate)
+            {
+                before[key] = sha;
+            }
+        }
+
+        void RunOne(int n)
+        {
             (int i, PlanTask t, long d) = todo[n];
-            if (ct.IsCancellationRequested) // 다음 작업으로 넘어가기 전에도 확인: 취소된 뒤에는 새 단계의 planned 행을 남기지 않음
-            {
-                rep.Stopped = "cancelled";
-                return;
-            }
-
             string p = t.Path;
-            if (n >= plannedUpTo)
+            bool wasFresh;
+            lock (gate)
             {
-                PlanRows(todo, n, jr, hooks, tm, fresh, planAhead); // 되돌리기의 근거 (from) 는 이동 전에 디스크에 있어야 함: PlanAhead 개를 한 번에 쓰고 fsync
-                plannedUpTo = n + planAhead;
+                wasFresh = fresh.Contains(i);
             }
 
-            if (d == 0 && !fresh.Contains(i) && jr.First("step", "idx", (long)i) is { } planned)
+            if (d == 0 && !wasFresh && jr.First("step", "idx", (long)i) is { } planned)
             {
                 // 앞선 실행이 미리 기록만 하고 시작하지 않은 작업: 이번 실행의 단계로 세도록 같은 from 을 새로 남김 (자동 재배치의 되돌리기는 이번 실행이 쓴 줄만 봄)
                 ApplyTimings.Time(ref tm.JournalTicks, () => jr.AddBatched(new JObject
@@ -406,23 +504,25 @@ public static class Applier
                 }));
             }
 
-            if (!noVerify && taskDigest is null && !before.ContainsKey(p))
+            if (!noVerify && taskDigest is null && !HasBefore(p))
             {
                 JObject? row = jr.First("file", "path", p);
-                before[p] = row is null ? ApplyTimings.Time(ref tm.DigestBeforeTicks, () => digest(p)) : row["sha_before"] as string;
+                string? sha = row is null ? ApplyTimings.Time(ref tm.DigestBeforeTicks, () => digest(p)) : row["sha_before"] as string;
+                SetBefore(p, sha);
                 if (row is null)
                 {
-                    ApplyTimings.Time(ref tm.JournalTicks, () => jr.AddBatched(new JObject { { "type", "file" }, { "path", p }, { "sha_before", before[p] } }));
+                    ApplyTimings.Time(ref tm.JournalTicks, () => jr.AddBatched(new JObject { { "type", "file" }, { "path", p }, { "sha_before", sha } }));
                 }
             }
-            if (!noVerify && taskDigest is not null && !before.ContainsKey(TaskKey(i)))
+
+            if (!noVerify && taskDigest is not null && !HasBefore(TaskKey(i)))
             {
                 // 이 작업의 이동 직전에 그 범위의 가장자리만 읽음 (헤드가 원본 위치에 한 번만 감). 이어하기는 저널에 적힌 값을 씀.
                 JObject? row = jr.First("sha", "idx", (long)i);
                 string? sha = row is null ? ApplyTimings.Time(ref tm.DigestBeforeTicks, () => taskDigest(i, t)) : row["sha_before"] as string;
                 if (sha is not null)
                 {
-                    before[TaskKey(i)] = sha;
+                    SetBefore(TaskKey(i), sha);
                     if (row is null)
                     {
                         ApplyTimings.Time(ref tm.JournalTicks, () => jr.AddBatched(new JObject { { "type", "sha" }, { "idx", (long)i }, { "sha_before", sha } }));
@@ -437,51 +537,126 @@ public static class Applier
             {
                 if (ct.IsCancellationRequested) // 진행 중이던 조각은 이미 끝났음: 저널의 planned 행이 재개 지점 (DonePrefix 가 실제 extent 로 다시 계산)
                 {
-                    rep.Stopped = "cancelled";
+                    Stop("cancelled");
+                    return;
+                }
+
+                if (Halted())
+                {
                     return;
                 }
 
                 long c = Math.Min(chunk, t.Clusters - off);
-                if (rep.MovedBytes + (c * cb) > writeCap)
+                bool capHit;
+                lock (gate)
                 {
-                    rep.Stopped = "write_cap";
+                    capHit = rep.MovedBytes + (c * cb) > writeCap;
+                    if (!capHit)
+                    {
+                        rep.MovedBytes += c * cb; // 상한은 동시 실행에서도 지키도록 이동 전에 잡고, 실패하면 돌려놓음
+                    }
+                }
+
+                if (capHit)
+                {
+                    Stop("write_cap");
                     return;
                 }
 
                 long t0 = Stopwatch.GetTimestamp();
-                err = MoveChunk(vol, p, t.Vcn, t.TargetLcn, off, c, hooks.Sleep, out busy);
-                tm.MoveTicks += Stopwatch.GetTimestamp() - t0;
-                if (err is null)
+                tm.MoveBegin();
+                bool moved = false;
+                try
                 {
-                    off += c;
-                    rep.MovedBytes += c * cb;
+                    err = MoveChunk(vol, p, t.Vcn, t.TargetLcn, off, c, hooks.Sleep, out busy);
+                    moved = err is null;
                 }
+                finally
+                {
+                    tm.MoveEnd(t0);
+                    if (!moved)
+                    {
+                        lock (gate)
+                        {
+                            rep.MovedBytes -= c * cb;
+                        }
+                    }
+                }
+
+                off += c;
             }
 
             bool ok = err is null && PlanGuards.DonePrefix(ApplyTimings.Time(ref tm.OpenTicks, () => hooks.Extents(p)), t.Vcn, t.Clusters, t.TargetLcn) == t.Clusters;
             bool isBusy = err is not null && busy;
             string? reason = ok ? null : isBusy ? TargetBusy : err ?? "extent_mismatch";
             ApplyTimings.Time(ref tm.JournalTicks, () => jr.AddBatched(new JObject { { "type", "step" }, { "idx", (long)i }, { "state", ok ? "done" : "failed" }, { "reason", reason } }));
-            tm.Tasks++;
-            if (!ok)
+            lock (gate)
             {
-                rep.Failed.Add(new FailedStep(i, p, reason!));
-            }
+                tm.Tasks++;
+                if (!ok)
+                {
+                    rep.Failed.Add(new FailedStep(i, p, reason!));
+                }
 
-            busyInARow = isBusy ? busyInARow + 1 : 0;
-            if (busyInARow > MaxBusyInARow)
-            {
-                rep.Stopped = ZoneOccupied;
-                return;
+                busyInARow = isBusy ? busyInARow + 1 : 0; // 동시 실행의 실패도 합산: 연속 판단은 끝난 순서 기준
+                if (busyInARow > MaxBusyInARow)
+                {
+                    Stop(ZoneOccupied);
+                }
             }
+        }
+
+        void Worker()
+        {
+            while (Take() is { } job)
+            {
+                try
+                {
+                    RunOne(job.N);
+                }
+                finally
+                {
+                    Release(job.Path);
+                }
+            }
+        }
+
+        if (parallel <= 1)
+        {
+            Worker();
+            return;
+        }
+
+        var errors = new List<Exception>();
+        Task[] workers = Enumerable.Range(0, Math.Min(parallel, queues.Count)).Select(_ => Task.Factory.StartNew(() =>
+        {
+            try
+            {
+                Worker();
+            }
+            catch (Exception e)
+            {
+                lock (gate)
+                {
+                    errors.Add(e);
+                }
+
+                Stop(null);
+            }
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)).ToArray();
+        Task.WaitAll(workers);
+        if (errors.Count > 0)
+        {
+            ExceptionDispatchInfo.Capture(errors[0]).Throw();
         }
     }
 
     // todo[from..] 의 PlanAhead 개 중 planned 행이 없는 것을 쓰고 fsync. 맨 처음 from 을 지킴: 이어하기가 덮어쓰면 안 됨.
-    private static void PlanRows(List<(int Idx, PlanTask Task, long Done)> todo, int from, Journal jr, ApplyHooks hooks, ApplyTimings tm, HashSet<int> fresh, int planAhead)
+    private static void PlanRows(List<(int Idx, PlanTask Task, long Done)> todo, int from, Journal jr, ApplyHooks hooks, ApplyTimings tm, HashSet<int> fresh, int planAhead, bool[] windowed)
     {
         for (int n = from; n < Math.Min(todo.Count, from + planAhead); n++)
         {
+            windowed[n] = true;
             (int i, PlanTask t, _) = todo[n];
             if (jr.First("step", "idx", (long)i) is not null)
             {

@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -13,7 +14,14 @@ namespace AsterCache.Windows;
 public class NtfsVolume : IVolume
 {
     private readonly SafeFileHandle? _handle;
+    private readonly ConcurrentBag<SafeFileHandle> _spare = [];
+    private readonly List<SafeFileHandle> _spareAll = [];
+    private int _mainBusy;
     private IoPriorityHint? _hint;
+
+    // 이 스레드의 Move 가 쓸 볼륨 핸들 (Ioctl 이 _handle 대신 봄).
+    [ThreadStatic]
+    private static SafeFileHandle? t_device;
 
     protected NtfsVolume(SafeFileHandle? handle, string letter)
     {
@@ -22,6 +30,8 @@ public class NtfsVolume : IVolume
     }
 
     public string Letter { get; }
+
+    private string? _drive;
 
     public int ClusterBytes { get; private set; }
 
@@ -44,7 +54,7 @@ public class NtfsVolume : IVolume
             throw new Win32Exception(err);
         }
 
-        var v = new NtfsVolume(h, drive.ToUpperInvariant() + ":");
+        var v = new NtfsVolume(h, drive.ToUpperInvariant() + ":") { _drive = drive };
         try
         {
             v.Refresh();
@@ -137,6 +147,66 @@ public class NtfsVolume : IVolume
     /// FSCTL_MOVE_FILE: path 의 clusters 개 클러스터(VCN vcn 부터)를 물리 lcn 으로 다시 매핑합니다. 실패하면 Win32Exception.
     public void Move(string path, long vcn, long lcn, uint clusters)
     {
+        // 동기 핸들 (FILE_FLAG_OVERLAPPED 없음) 의 DeviceIoControl 은 파일 객체 잠금으로 직렬화되므로, 같은 볼륨 핸들을 여러 스레드가 쓰면 호출이 겹치지 않음.
+        // 그래서 동시에 부르는 스레드마다 볼륨 핸들을 따로 씁니다: 기본 핸들이 비어 있으면 그것을 (순차 실행은 항상 이 길), 아니면 여분 핸들을 꺼내거나 새로 엽니다.
+        // OVERLAPPED 로 한 핸들을 공유하는 길은 입출력 완료 대기와 핸들 우선순위 힌트가 복잡해져 택하지 않음.
+        bool main = Interlocked.CompareExchange(ref _mainBusy, 1, 0) == 0;
+        SafeFileHandle? spare = main ? null : RentSpare();
+        t_device = spare;
+        try
+        {
+            MoveOn(path, vcn, lcn, clusters);
+        }
+        finally
+        {
+            t_device = null;
+            if (spare is not null)
+            {
+                _spare.Add(spare);
+            }
+
+            if (main)
+            {
+                _ = Interlocked.Exchange(ref _mainBusy, 0);
+            }
+        }
+    }
+
+    // 쓰던 여분 핸들이 있으면 그것을, 없으면 새로 엽니다. 열 수 없거나 시험용 볼륨 (핸들 없음) 이면 null = 기본 핸들을 공유 (이 경우 호출은 직렬화될 뿐 틀리지 않음).
+    private SafeFileHandle? RentSpare()
+    {
+        if (_spare.TryTake(out SafeFileHandle? h))
+        {
+            return h;
+        }
+
+        if (_drive is null)
+        {
+            return null;
+        }
+
+        h = NativeMethods.CreateFileW(@"\\.\" + _drive + ":", Win32.GenericRead, Win32.ShareAll, 0, Win32.OpenExisting, 0, 0);
+        if (h.IsInvalid)
+        {
+            h.Dispose();
+            return null;
+        }
+
+        if (_hint is { } hint)
+        {
+            hint.SetLow(h);
+        }
+
+        lock (_spareAll)
+        {
+            _spareAll.Add(h);
+        }
+
+        return h;
+    }
+
+    private void MoveOn(string path, long vcn, long lcn, uint clusters)
+    {
         using SafeFileHandle h = NativeMethods.CreateFileW(path, Win32.FileReadAttributes, Win32.ShareAll, 0, Win32.OpenExisting, 0, 0);
         if (h.IsInvalid)
         {
@@ -155,6 +225,14 @@ public class NtfsVolume : IVolume
     public void Dispose()
     {
         _handle?.Dispose();
+        lock (_spareAll)
+        {
+            foreach (SafeFileHandle h in _spareAll)
+            {
+                h.Dispose();
+            }
+        }
+
         GC.SuppressFinalize(this);
     }
 
@@ -168,7 +246,7 @@ public class NtfsVolume : IVolume
         fixed (byte* pin = input)
         fixed (byte* pout = output)
         {
-            ok = NativeMethods.DeviceIoControl(_handle!, code, input.IsEmpty ? null : pin, (uint)input.Length, outputLength == 0 ? null : pout, (uint)outputLength, out got, 0);
+            ok = NativeMethods.DeviceIoControl(t_device ?? _handle!, code, input.IsEmpty ? null : pin, (uint)input.Length, outputLength == 0 ? null : pout, (uint)outputLength, out got, 0);
             if (!ok)
             {
                 err = Marshal.GetLastPInvokeError();

@@ -156,6 +156,9 @@ public sealed class AutoEnv
     /// (원본, 새 이름) 파일 이동, 이미 있으면 덮어씀. 낡은 트레이스·계획을 .stale 로 치우는 데 씁니다.
     public Action<string, string> MoveAside { get; init; } = (_, _) => { };
 
+    /// 파일의 수정 시각을 지금으로 바꿉니다 (되살린 계획이 트레이스보다 새롭게 보이도록).
+    public Action<string> Touch { get; init; } = _ => { };
+
     /// (게임, 건너뛸 앞쪽 저널 줄 수, 취소) → 저널의 그 뒤 줄만 되돌린 결과, 저널이 없으면 null.
     public required Func<GameSettings, int, CancellationToken, RevertReport?> Revert { get; init; }
 
@@ -240,6 +243,7 @@ public sealed class AutoEnv
             JournalRows = g => ReapplyEnv.JournalRows(journalDir, g),
             ArchiveJournal = g => ReapplyEnv.ArchiveJournal(journalDir, g),
             MoveAside = (src, dst) => File.Move(src, dst, true),
+            Touch = path => File.SetLastWriteTimeUtc(path, DateTime.UtcNow),
             Revert = (g, skipRows, ct) => ReapplyEnv.Revert(journalDir, g, skipRows, ct),
             Extents = FileLayout.Extents,
             DiskBytesPerSecond = letter => DiskActivity.BytesPerSecond(letter),

@@ -73,6 +73,9 @@ public sealed class AutoRelocator
     public const string ExtendSuffix = ".extend";
     private const string ExtendDetail = "trace grew, extending zone";
 
+    /// 읽을 수 없는 (잘린) 계획을 옆으로 치운 파일의 접미사.
+    public const string BadSuffix = ".bad";
+
     /// 업데이트 뒤 재계획 검사 간격: 배치까지 끝낸 게임마다 이 주기로만 계획의 지문을 봅니다 (ReapplyChecker 의 주기보다 짧게: 게임을 다시 켜기 전에 잡으려고).
     public static readonly TimeSpan StaleCheckEvery = TimeSpan.FromMinutes(10);
 
@@ -109,6 +112,7 @@ public sealed class AutoRelocator
     private readonly Dictionary<string, DateTimeOffset> _prefetchTried = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 프리페치 기록으로 boot 를 만들어 본 게임과 그 시각
     private readonly HashSet<string> _volatileChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 옛 계획의 가변 파일을 이미 따져 본 게임 (서비스 실행당 한 번)
     private readonly HashSet<string> _seeded = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 이전 존 시작에 맞춰 계획을 만든 게임
+    private readonly ConcurrentDictionary<string, byte> _smrBudgetLogged = new(StringComparer.Ordinal); // 명시한 하루 쓰기 예산이 SMR 기본값보다 큰 게임 (한 번만 로그)
     private readonly Dictionary<string, DateTimeOffset> _extTried = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 존 확장을 이미 따져 본 (또는 막힌) 게임과 그때의 트레이스 수정 시각 (다음 플레이가 쌓여 트레이스가 바뀔 때까지 다시 보지 않음)
     private readonly ConcurrentDictionary<string, DateTimeOffset> _planFailedAt = new(StringComparer.Ordinal); // 계획 (또는 재배치) 이 마지막으로 실패한 시각: 그 뒤 트레이스가 새로 쓰이기 전에는 같은 실패를 되풀이하지 않음
     private readonly ConcurrentDictionary<string, DateTimeOffset> _traceWarmTried = new(StringComparer.Ordinal); // 게임별로 예열을 시도한 트레이스 파일 시각
@@ -694,10 +698,38 @@ public sealed class AutoRelocator
         }
 
         _recovered = true;
-        // 계획이 없고 .stale 만 있는 failed 게임 (재계획이 실패한 채 꺼짐): 낡은 계획을 되살려 done (stale plan) 으로 돌립니다.
-        foreach (GameSettings g in s.Games.Where(g => _status.Get(g.Name) is { Stage: AutoStage.Failed, RelocatedAt: null } && !_env.FileExists(g.Plan) && _env.FileExists(g.Plan + StaleSuffix)))
+        // 계획이 있어도 쓰다가 꺼져 잘렸으면 (읽을 수 없음) .bad 로 치워 없는 것으로 다룹니다: 되살릴 이전 계획 (.stale·.extend) 이 있는 게임만.
+        foreach (GameSettings g in s.Games.Where(g => _env.FileExists(g.Plan) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
         {
-            _ = RestoreStalePlan(g, "failed before the service restarted");
+            try
+            {
+                _ = _env.LoadPlan(g.Plan);
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                try
+                {
+                    _env.MoveAside(g.Plan, g.Plan + BadSuffix);
+                    _log.Warn($"{g.Name}: plan unreadable ({e.GetType().Name}), set aside as {BadSuffix}");
+                }
+                catch (Exception m) when (m is IOException or UnauthorizedAccessException)
+                {
+                    _log.Warn($"{g.Name}: unreadable plan could not be set aside ({m.GetType().Name})");
+                }
+            }
+        }
+
+        // 계획이 없고 .stale 이나 .extend 만 있는 failed 게임 (재계획·확장이 실패한 채 꺼짐): 이전 계획을 되살려 done 으로 돌립니다.
+        foreach (GameSettings g in s.Games.Where(g => _status.Get(g.Name) is { Stage: AutoStage.Failed, RelocatedAt: null } && !_env.FileExists(g.Plan) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
+        {
+            if (IsExtending(g))
+            {
+                BlockExtension(g, "failed before the service restarted");
+            }
+            else
+            {
+                _ = RestoreStalePlan(g, "failed before the service restarted");
+            }
         }
 
         foreach (GameSettings g in s.Games.Where(g => _status.Get(g.Name)?.RelocatedAt is not null && !_env.FileExists(g.Plan) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
@@ -707,9 +739,9 @@ public sealed class AutoRelocator
         }
     }
 
-    // 확장 중인가: 확장 재계획이 이전 계획을 .extend 로 치운 뒤 끝나거나 막히기 전까지 (파일이라 서비스를 다시 시작해도 이어짐).
     private const string WriteLimitDetail = "write limit reached, will continue";
 
+    // 확장 중인가: 확장 재계획이 이전 계획을 .extend 로 치운 뒤 끝나거나 막히기 전까지 (파일이라 서비스를 다시 시작해도 이어짐).
     private bool IsExtending(GameSettings g) => _env.FileExists(g.Plan + ExtendSuffix);
 
     // 존 확장 재계획: 배치까지 끝낸 게임의 병합 트레이스 (플레이를 더 모아 합집합이 된 trace.json) 가 계획보다 새롭고, 핫 집합이 TraceMergeMinMib 이상 커졌으면
@@ -792,7 +824,15 @@ public sealed class AutoRelocator
     }
 
     // 하루 쓰기 예산 (바이트, 0 = 무제한): 명시하지 않았으면 SMR 로 보이는 디스크는 더 낮은 기본값.
-    private long BudgetBytes(AsterSettings s, GameSettings g) => (long)(s.Auto.MaxRelocateGibPerDaySet ? s.Auto.MaxRelocateGibPerDay : s.Auto.MaxRelocateGibFor(IsSmr(g))) << 30;
+    private long BudgetBytes(AsterSettings s, GameSettings g)
+    {
+        if (s.Auto is { MaxRelocateGibPerDaySet: true } a && a.MaxRelocateGibPerDay > AutoSettings.SmrMaxRelocateGibPerDay && IsSmr(g) && _smrBudgetLogged.TryAdd(g.Name, 0))
+        {
+            _log.Info($"{g.Name}: max_relocate_gib_per_day {a.MaxRelocateGibPerDay} is above the SMR default {AutoSettings.SmrMaxRelocateGibPerDay}; using the explicit value");
+        }
+
+        return (long)(s.Auto.MaxRelocateGibPerDaySet ? s.Auto.MaxRelocateGibPerDay : s.Auto.MaxRelocateGibFor(IsSmr(g))) << 30;
+    }
 
     private bool IsSmr(GameSettings g)
     {
@@ -828,9 +868,24 @@ public sealed class AutoRelocator
     private void BlockExtension(GameSettings g, string reason)
     {
         _env.MoveAside(g.Plan + ExtendSuffix, g.Plan); // 새 계획이 이미 만들어졌으면 덮어씀
+        _env.Touch(g.Plan); // 옛 수정 시각이면 재시작마다 트레이스가 계획보다 새롭다고 보고 확장을 되풀이함
         _ = _seeded.Remove(g.Name);
         _status.Complete(g.Name, g.Source, _env.Now(), counted: false, null);
         _log.Info($"{g.Name}: zone extension blocked: {reason}");
+    }
+
+    // 확장 중 재배치가 실패함 (이동 실패·데이터 검사 실패·예외): 실패로 두지 않고 쓴 줄을 되돌린 뒤 이전 계획을 되살립니다. 확장 중이 아니면 거짓.
+    private bool BlockFailedExtension(GameSettings g, string detail, Exception? e, int mark, CancellationToken token)
+    {
+        if (!IsExtending(g))
+        {
+            return false;
+        }
+
+        _log.Warn($"{g.Name}: zone extension failed ({detail}{(e is null ? string.Empty : ": " + e.GetType().Name)})");
+        Undo(g, mark, token);
+        BlockExtension(g, detail);
+        return true;
     }
 
     // 확장 재배치가 끝남: 이전 계획을 일반 .stale 자리로 옮겨 확장 중 표시를 지우고, 늘어난 크기를 남깁니다.
@@ -921,6 +976,12 @@ public sealed class AutoRelocator
 
     private ReapplyVerdict? ReapplyBlockedBy(GameSettings g, AsterSettings s)
     {
+        // 재배치를 끝내지 못했거나 확장 중인 게임의 계획에는 Zone.StartLcn 이 있어 재적용 검사가 적용됨으로 보므로, 여기서 막아 AutoRelocator 가 이어서 맡게 함.
+        if (_status.Get(g.Name)?.RelocatedAt is null || IsExtending(g))
+        {
+            return ReapplyVerdict.NotApplied;
+        }
+
         if (_env.AnyRunning([.. SameDriveGames(s.Games, [g], _env.SameDisk).SelectMany(x => x.ExeNames).Concat(g.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)]))
         {
             return ReapplyVerdict.GameRunning;
@@ -1101,7 +1162,7 @@ public sealed class AutoRelocator
                 (start, plan) = (null, _env.MakePlan(sessions, g.OriginRoot, zoneMib));
             }
 
-            if (start is not null && ZoneBlockedByOwnData(plan))
+            if (start is not null && ZoneBlockedByOwnData(plan, extending ? usedClusters : 0))
             {
                 if (extending)
                 {
@@ -1254,13 +1315,15 @@ public sealed class AutoRelocator
 
     // 같은 존을 다시 쓰는 계획의 목표 자리에 이 계획이 옮기지 않는 자기 파일 데이터 (예: 이전 계획이 존에 모은, 이번 기록에서는 핫이 아닌 부분) 가 있는가.
     // 그런 목표로는 이동이 늘 실패하므로 (사용 중인 클러스터) 새 존을 찾아야 합니다. 핫 범위(Order) 밖의 조각이 존의 쓰는 구간과 겹치는지 봅니다.
-    private bool ZoneBlockedByOwnData(PlanFile plan)
+    // pinned: 확장 중이면 존 앞의 이만큼 (이전 계획이 쓰던 고정 구간, 이동하지 않음) 은 보지 않습니다.
+    private bool ZoneBlockedByOwnData(PlanFile plan, long pinned)
     {
         if (plan.Zone.StartLcn is not { } zoneStart || !plan.Stats.TryGetValue("zone_used_clusters", out object? u) || u is not long used)
         {
             return false;
         }
 
+        long from = zoneStart + pinned;
         foreach (IGrouping<string, PlanRange> file in plan.Order.GroupBy(o => o.Path, StringComparer.Ordinal))
         {
             if (_env.Extents(file.Key) is not { } extents)
@@ -1269,9 +1332,9 @@ public sealed class AutoRelocator
             }
 
             List<(long A, long B)> hot = [.. file.Select(o => (A: o.Vcn, B: o.Vcn + o.Clusters)).OrderBy(r => r.A)];
-            foreach (Extent e in extents.Where(e => e.Lcn < zoneStart + used && zoneStart < e.Lcn + e.Clusters))
+            foreach (Extent e in extents.Where(e => e.Lcn < zoneStart + used && from < e.Lcn + e.Clusters))
             {
-                long cur = e.Vcn + Math.Max(0, zoneStart - e.Lcn); // 존과 겹치는 VCN 구간 [cur, end)
+                long cur = e.Vcn + Math.Max(0, from - e.Lcn); // 존과 겹치는 VCN 구간 [cur, end)
                 long end = e.Vcn + Math.Min(e.Clusters, zoneStart + used - e.Lcn);
                 foreach ((long a, long b) in hot.Where(r => r.B > cur && r.A < end))
                 {
@@ -1449,7 +1512,10 @@ public sealed class AutoRelocator
             }
             else if (rep.Failed.Count > 0)
             {
-                Fail(g, $"{rep.Failed.Count} step(s) failed", null); // 데이터는 그대로이고 남은 이동은 기존 재적용 검사가 이어감
+                if (!BlockFailedExtension(g, $"{rep.Failed.Count} step(s) failed", null, mark, token))
+                {
+                    Fail(g, $"{rep.Failed.Count} step(s) failed", null); // 데이터는 그대로이고 남은 이동은 기존 재적용 검사가 이어감
+                }
             }
             else
             {
@@ -1465,13 +1531,19 @@ public sealed class AutoRelocator
         }
         catch (ShaMismatchException e)
         {
-            Fail(g, "data check failed", e);
-            Undo(g, mark, token);
+            if (!BlockFailedExtension(g, "data check failed", e, mark, token))
+            {
+                Fail(g, "data check failed", e);
+                Undo(g, mark, token);
+            }
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
-            Fail(g, "relocation failed: " + e.GetType().Name, e);
-            Undo(g, mark, token);
+            if (!BlockFailedExtension(g, "relocation failed: " + e.GetType().Name, e, mark, token))
+            {
+                Fail(g, "relocation failed: " + e.GetType().Name, e);
+                Undo(g, mark, token);
+            }
         }
     }
 

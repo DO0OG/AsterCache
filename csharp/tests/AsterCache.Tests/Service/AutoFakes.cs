@@ -239,6 +239,7 @@ internal sealed class FakeWorld
                 File.Move(src, dst, true);
             }
         },
+        Touch = p => FileTimes[p] = Now,
         Revert = (g, skipRows, ct) => Revert(g, skipRows, ct),
         Extents = p => Extents(p),
         DiskBytesPerSecond = _ => Disk,

@@ -214,3 +214,9 @@ bounded 와 같되, 최근 500 ms 의 게임 읽기 처리량이 80 MiB/s 이상
 - Microsoft, Filter Manager concepts: https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/filter-manager-concepts
 - SQLite WAL: https://sqlite.org/wal.html
 - SQLite `synchronous` pragma: https://sqlite.org/pragma.html#pragma_synchronous
+
+## E8 HDD 일반 I/O (2026-11-03)
+
+- 파일 3000 개를 콜드로 열면 30 s 가 걸렸습니다(파일당 10 ms, MFT 탐색). 기존 예열이 핫 파일을 열어 읽으므로 그 파일들의 메타데이터도 함께 웜이 됩니다.
+- 흩어진 쓰기 3 GB 직후 첫 콜드 읽기는 58.8 s 였습니다(평소 24 s). DM-SMR 디스크의 쓰기 뒤 정리 영향으로 보이며, 재배치(순차 쓰기) 직후 예열은 154 MB/s 로 정상이었습니다.
+- 노트: [research_hdd_general.md](research_hdd_general.md)

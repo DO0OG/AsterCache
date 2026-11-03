@@ -214,3 +214,9 @@ Same as bounded, plus a pause while the game's reads over the last 500 ms run at
 - Microsoft, Filter Manager concepts: https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/filter-manager-concepts
 - SQLite WAL: https://sqlite.org/wal.html
 - SQLite `synchronous` pragma: https://sqlite.org/pragma.html#pragma_synchronous
+
+## E8 general HDD I/O (2026-11-03)
+
+- Cold-opening 3,000 files took 30 s (10 ms per file, MFT lookup). Existing prewarm opens and reads the hot files, so their metadata is also warmed as a side effect.
+- The first cold read right after 3 GB of scattered writes took 58.8 s (normally 24 s). This looks like post-write cleanup on the DM-SMR drive. Prewarm right after the sequential-write relocation ran at 154 MB/s, which is normal.
+- Notes: [research_hdd_general.md](research_hdd_general.md)

@@ -132,6 +132,7 @@ The figures are replay times of traced read patterns, not total load times of a 
 - For prewarm to beat an SSD cold read, prewarm must finish at least 15 s before the game starts. Memory pressure reduces the effect.
 - The 11.93 s value is from the E6 experiment: the relocation now moves all hot data into one zone by default (preservation off), instead of keeping segments of 8 MiB or more in place. The earlier value was 15.1 s. See [docs/research_cold_limit.md](docs/research_cold_limit.md).
 - More tables and interpretation are in [docs/RESULTS_SUMMARY.md](docs/RESULTS_SUMMARY.md) and [VALIDATION_REPORT.md](VALIDATION_REPORT.md).
+- Research note on general HDD I/O (outside the game): [docs/research_hdd_general.md](docs/research_hdd_general.md).
 
 ## Screenshots
 

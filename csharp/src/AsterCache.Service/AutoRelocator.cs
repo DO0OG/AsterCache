@@ -42,6 +42,8 @@ public sealed class AutoRelocator
 {
     public static readonly TimeSpan DailyWindow = TimeSpan.FromHours(24);
     public const string RelocateOff = "auto relocate off";
+    public const string DailyLimit = "daily limit reached";
+    public const string DailyBudget = "daily write budget reached";
 
     /// 예열이 끝났다는 표시 (auto_status 의 detail). 관리 창이 "예열됨" 으로 보입니다.
     public const string Prewarmed = "prewarmed";
@@ -90,6 +92,7 @@ public sealed class AutoRelocator
     private readonly Dictionary<string, DateTimeOffset> _staleChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀
     private readonly HashSet<string> _delayLogged = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 업데이트 지연을 이미 로그한 게임
     private readonly Dictionary<string, DateTimeOffset> _prefetchTried = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 프리페치 기록으로 boot 를 만들어 본 게임과 그 시각
+    private readonly Dictionary<string, long> _needBytes = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 하루 쓰기 예산 때문에 보류한 게임의 마지막 이동 예정 바이트
     private readonly HashSet<string> _seeded = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 이전 존 시작에 맞춰 계획을 만든 게임
     private readonly ConcurrentDictionary<string, DateTimeOffset> _traceWarmTried = new(StringComparer.Ordinal); // 게임별로 예열을 시도한 트레이스 파일 시각
     private readonly object _warmLock = new(); // 아래 예열 큐 상태
@@ -196,6 +199,8 @@ public sealed class AutoRelocator
         List<GameSettings> work = s.Games.Where(g => !PostUpdateDelayed(g, s) && NeedsWork(g, relocateOn))
             .OrderByDescending(g => played.GetValueOrDefault(g.Name, DateTimeOffset.MinValue)).ThenBy(g => g.Name, StringComparer.Ordinal).ToList();
         bool limitReached = relocateOn && _status.RelocationsWithin(DailyWindow) >= s.Auto.MaxRelocationsPerDay; // Note 보다 먼저 정해 같은 상태 로그가 오락가락하며 쌓이지 않게
+        long budget = (long)s.Auto.MaxRelocateGibPerDay << 30; // 0 = 무제한
+        long used = budget > 0 ? _status.RelocationBytesWithin(DailyWindow) : 0;
         var ready = new List<GameSettings>();
         foreach (GameSettings g in work)
         {
@@ -211,12 +216,16 @@ public sealed class AutoRelocator
                 continue;
             }
 
+            bool budgetHeld = budget > 0 && used + _needBytes.GetValueOrDefault(g.Name, 1) > budget; // 아직 모르면 1 바이트라도 남아야 함
             lock (_noteLock)
             {
-                Note(g, AutoStage.WaitingIdle, WaitDetail(g, limitReached));
+                Note(g, AutoStage.WaitingIdle, WaitDetail(g, limitReached ? DailyLimit : budgetHeld ? DailyBudget : null));
             }
 
-            ready.Add(g);
+            if (!budgetHeld)
+            {
+                ready.Add(g);
+            }
         }
 
         if (ready.Count == 0 || limitReached)
@@ -498,9 +507,8 @@ public sealed class AutoRelocator
         }
     }
 
-    private string? WaitDetail(GameSettings g, bool limitReached)
+    private string? WaitDetail(GameSettings g, string? d)
     {
-        string? d = limitReached ? "daily limit reached" : null;
         return _prewarm?.LastWarmed(g.Name) is null ? d : WithPrewarmed(d);
     }
 
@@ -900,8 +908,19 @@ public sealed class AutoRelocator
 
             plan = _env.LoadPlan(g.Plan);
             ReapplyChecker.CheckPaths(plan, g, _env.RealPath);
-            _status.BeginRelocation(_env.Now()); // 하루 상한은 끝이 아니라 시작 (이어하기 포함) 으로 셈
-            ApplyReport rep = _env.Apply(g, plan, new ApplyOptions(Execute: true), token);
+            var run = new ApplyOptions(Execute: true, ChunkBytes: (long)s.Auto.RelocateChunkMib << 20, LowIoPriority: s.Auto.RelocateIoPriority == AutoSettings.IoLow);
+            long bytes = Math.Min(dry.BytesTodo, run.WriteCap); // 한 번의 적용은 WriteCap 까지만 쓰고 나머지는 이어하기가 다시 셈
+            long budget = (long)s.Auto.MaxRelocateGibPerDay << 30;
+            if (budget > 0 && _status.RelocationBytesWithin(DailyWindow) + bytes > budget)
+            {
+                _needBytes[g.Name] = bytes;
+                Note(g, AutoStage.WaitingIdle, WaitDetail(g, DailyBudget));
+                return;
+            }
+
+            _ = _needBytes.Remove(g.Name);
+            _status.BeginRelocation(_env.Now(), bytes); // 하루 상한은 끝이 아니라 시작 (이어하기 포함) 으로 셈
+            ApplyReport rep = _env.Apply(g, plan, run, token);
             _log.Info($"{g.Name}: auto relocation moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed" + (rep.Stopped is { } why ? $", stopped: {why}" : string.Empty));
             if (rep.Stopped == "cancelled")
             {

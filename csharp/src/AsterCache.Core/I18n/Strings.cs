@@ -109,6 +109,8 @@ public static partial class L
         ["Auto_SsdTier"] = ("SSD 보조 저장 (선택)", "SSD assist storage (optional)"),
         ["Auto_SsdTierBudget"] = ("SSD 예산 (GiB, 1..4096)", "SSD budget (GiB, 1..4096)"),
         ["Err_TierBudget"] = ("SSD 예산은 1 이상 4096 이하의 숫자 (GiB) 여야 합니다", "The SSD budget must be a number of GiB from 1 to 4096"),
+        ["Auto_RelocateGib"] = ("하루 재배치 쓰기 상한 (GiB, 0 = 무제한)", "Daily relocation write limit (GiB, 0 = unlimited)"),
+        ["Err_RelocateGib"] = ("하루 재배치 쓰기 상한은 0 이상 1048576 이하의 숫자 (GiB) 여야 합니다", "The daily relocation write limit must be a number of GiB from 0 to 1048576"),
         ["Auto_Rewarm"] = ("예열 유지 주기 (분, 0 = 끔)", "Keep-warm interval (minutes, 0 = off)"),
         ["Set_PinNote"] = ("상주 고정은 게임별 설정입니다: config.json 의 prewarm.pin 을 true 로 (RAM 16 GiB 이상일 때만 동작, 게임·런처가 뜨면 풀림).", "Pinning is a per-game setting: set prewarm.pin to true in config.json (only on 16 GiB RAM or more; released when the game or a launcher starts)."),
         ["Err_SpeedInput"] = ("존 상한은 숫자 (MiB) 또는 auto, 예열 유지 주기는 0 이상의 숫자 (분) 여야 합니다", "The zone limit must be a number (MiB) or auto, and the keep-warm interval a number of minutes (0 or more)"),

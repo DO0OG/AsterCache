@@ -64,6 +64,7 @@ internal sealed class MainWindow : Window
     private readonly CheckBox _autoRelocate = new() { Content = L.T("Auto_Relocate") };
     private readonly CheckBox _tierEnabled = new() { Content = L.T("Auto_SsdTier") };
     private readonly TextBox _tierBudget = new() { MinWidth = 70 };
+    private readonly TextBox _relocateGib = new() { MinWidth = 70 };
     private readonly ComboBox _autoPrewarm = new() { ItemsSource = Enumerable.Range(-1, 34).Select(n => n == -1 ? L.T("Auto_PrewarmOff") : n == 0 ? L.T("Auto_PrewarmAuto") : n.ToString(CultureInfo.InvariantCulture)).ToList(), MinWidth = 70 };
     private readonly TextBox _autoIgnore = new() { MinWidth = 320 };
     private readonly TextBox _zoneLimit = new() { MinWidth = 90 };
@@ -309,6 +310,7 @@ internal sealed class MainWindow : Window
                 new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { new TextBlock { Text = L.T("Auto_Ignore"), VerticalAlignment = VerticalAlignment.Center }, _autoIgnore } },
                 new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { new TextBlock { Text = L.T("Auto_ZoneLimit"), VerticalAlignment = VerticalAlignment.Center }, _zoneLimit } },
                 new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { new TextBlock { Text = L.T("Auto_Rewarm"), VerticalAlignment = VerticalAlignment.Center }, _rewarmMinutes } },
+                new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { new TextBlock { Text = L.T("Auto_RelocateGib"), VerticalAlignment = VerticalAlignment.Center }, _relocateGib } },
                 new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { _tierEnabled, new TextBlock { Text = L.T("Auto_SsdTierBudget"), VerticalAlignment = VerticalAlignment.Center }, _tierBudget } },
                 new TextBlock { Text = L.T("Set_PinNote"), TextWrapping = TextWrapping.Wrap },
                 applyAuto,
@@ -350,6 +352,7 @@ internal sealed class MainWindow : Window
         {
             TierEnabled = _tierEnabled.IsChecked == true,
             TierBudget = _tierBudget.Text ?? string.Empty,
+            RelocateGib = _relocateGib.Text ?? string.Empty,
         };
         return RunAsync(L.T("Op_AutoChange"), () => _tray.ApplyAuto(form));
     }
@@ -533,6 +536,7 @@ internal sealed class MainWindow : Window
             _rewarmMinutes.Text = auto.RewarmMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture);
             _tierEnabled.IsChecked = auto.SsdTier.Enabled;
             _tierBudget.Text = auto.SsdTier.BudgetGib.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            _relocateGib.Text = auto.MaxRelocateGibPerDay.ToString(System.Globalization.CultureInfo.InvariantCulture);
             _zoneLimit.Text = _tray.Settings?.MaxZoneAuto == true ? "auto" : (_tray.Settings?.MaxZoneMib ?? SettingsStore.DefaultMaxZoneMib).ToString(System.Globalization.CultureInfo.InvariantCulture);
             _watcher.SelectedIndex = Math.Max(0, Array.IndexOf(WatcherValues, _tray.Settings?.Watcher));
             _language.SelectedIndex = Math.Max(0, Array.IndexOf(LanguageValues, _tray.Settings?.Language));

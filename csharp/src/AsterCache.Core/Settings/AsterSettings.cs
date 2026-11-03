@@ -68,7 +68,7 @@ public sealed record AutoSettings(
     public const int HeuristicReadMib = 256;
 
     /// 기본 prewarm_recent 0 = RAM 예산 안에서 최근 순으로 가능한 만큼 (1 이상이면 그 개수 상한, -1 = 최근순 예열 끔).
-    public static AutoSettings Default { get; } = new(true, true, true, true, 0, 3, 600, 6144, 2, []);
+    public static AutoSettings Default { get; } = new(true, true, true, true, 0, 3, 600, 6144, 4, []);
 
     /// 게임을 하는 동안 이 간격 (분) 으로 핫 집합을 다시 데움, 0 = 끔. 식었는지는 핫 집합 8 곳 (앞쪽 4 + 균등 4) 을 읽어 보고, 2 곳 이상이 2 ms 를 넘으면 식은 것으로 봅니다.
     public int RewarmMinutes { get; init; } = 10;
@@ -105,6 +105,19 @@ public sealed record AutoSettings(
 
     /// SSD 보조 저장 (선택 기능, 기본 꺼짐).
     public SsdTierSettings SsdTier { get; init; } = SsdTierSettings.Default;
+
+    public const int DefaultRelocateChunkMib = 16;
+    public const string IoLow = "low";
+    public const string IoNormal = "normal";
+
+    /// 자동 재배치가 한 번에 옮기는 조각 크기 (MiB, 1..256).
+    public int RelocateChunkMib { get; init; } = DefaultRelocateChunkMib;
+
+    /// 자동 재배치의 I/O 우선순위: "low" (기본, 낮은 I/O 힌트) 또는 "normal" (힌트 없음).
+    public string RelocateIoPriority { get; init; } = IoLow;
+
+    /// 하루 (24 시간) 에 자동 재배치가 쓸 수 있는 총량 (GiB, 0..1048576). 0 = 무제한.
+    public int MaxRelocateGibPerDay { get; init; } = 8;
 
     /// 유휴 대기 시간: idle_seconds 가 명시됐거나 둘 다 없으면 IdleSeconds 초, idle_minutes 만 명시됐으면 IdleMinutes 분.
     public TimeSpan IdleWindow => IdleSecondsSet || !IdleMinutesSet ? TimeSpan.FromSeconds(IdleSeconds) : TimeSpan.FromMinutes(IdleMinutes);

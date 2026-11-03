@@ -4,8 +4,9 @@ using AsterCache.Core.Plan;
 namespace AsterCache.Core.Apply;
 
 /// 실행 옵션. Execute 가 false 면 아무것도 옮기지 않고 저널도 쓰지 않습니다. DryRun 은 자동 존을 정해 SaveTo 에 저장만 합니다.
+/// LowIoPriority 는 서비스의 백그라운드 경로 (ReapplyEnv.Run) 가 읽고, false 면 낮은 I/O 우선순위 힌트를 붙이지 않습니다.
 public sealed record ApplyOptions(
-    bool Execute = false, long ChunkBytes = 4L << 20, long WriteCap = 2L << 30, string? SaveTo = null, bool DryRun = false);
+    bool Execute = false, long ChunkBytes = 4L << 20, long WriteCap = 2L << 30, string? SaveTo = null, bool DryRun = false, bool LowIoPriority = true);
 
 /// 바깥 세계 접근 (extent 조회, 해시, 속성, realpath, 지문, sleep) 을 전부 주입하는 자리. 시험은 가짜로 바꿉니다.
 public sealed class ApplyHooks

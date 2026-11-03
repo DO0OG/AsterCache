@@ -35,7 +35,7 @@ public sealed class AutoStatusTests : IDisposable
         s.Set("kr", "manual", null, AutoStage.Failed, "한글 detail");
 
         var root = (JObject)JsonRead.ReadFile(StatusPath)!;
-        Assert.Equal(["updated", "relocations", "games", "events"], root.Select(kv => kv.Key));
+        Assert.Equal(["updated", "relocations", "relocation_bytes", "games", "events"], root.Select(kv => kv.Key));
         var game = (JObject)((JObject)root["games"]!)["mw4"]!;
         Assert.Equal(["source", "launcher", "stage", "detail", "at", "last_played", "relocated_at"], game.Select(kv => kv.Key));
         Assert.Equal(("auto", "steam", "done", null), (game["source"], game["launcher"], game["stage"], game["detail"]));
@@ -121,6 +121,50 @@ public sealed class AutoStatusTests : IDisposable
         _now = _now.AddHours(19); // old 는 49 시간 전
         s.AddEvent("x", "discovered");
         var saved = (JObject)JsonRead.ReadFile(StatusPath)!;
+        Assert.Single((List<object?>)saved["relocations"]!);
+    }
+
+    [Fact]
+    public void RelocationBytesAreSummedWithinTheWindowAndRoundTrip()
+    {
+        AutoStatus s = Make();
+        s.BeginRelocation(_now, 5L << 30);
+        _now = _now.AddHours(30);
+        s.BeginRelocation(_now, 3L << 30);
+
+        Assert.Equal(3L << 30, s.RelocationBytesWithin(TimeSpan.FromHours(24)));
+        Assert.Equal(8L << 30, s.RelocationBytesWithin(TimeSpan.FromHours(48)));
+        var root = (JObject)JsonRead.ReadFile(StatusPath)!;
+        Assert.Equal([5L << 30, 3L << 30], ((List<object?>)root["relocation_bytes"]!).Cast<long>());
+        Assert.Equal(3L << 30, Make().RelocationBytesWithin(TimeSpan.FromHours(24)));
+    }
+
+    [Fact]
+    public void OldFileWithoutRelocationBytesReadsAsZeroAndShortListFillsWithZero()
+    {
+        string t1 = _now.AddHours(-3).ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        string t2 = _now.AddHours(-2).ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        File.WriteAllText(StatusPath, "{\"relocations\": [\"" + t1 + "\", \"" + t2 + "\"]}");
+        AutoStatus old = Make();
+        Assert.Equal((2, 0L), (old.RelocationsWithin(TimeSpan.FromHours(24)), old.RelocationBytesWithin(TimeSpan.FromHours(24))));
+
+        File.WriteAllText(StatusPath, "{\"relocations\": [\"" + t1 + "\", \"" + t2 + "\"], \"relocation_bytes\": [7]}");
+        AutoStatus shortList = Make();
+        Assert.Equal((2, 7L), (shortList.RelocationsWithin(TimeSpan.FromHours(24)), shortList.RelocationBytesWithin(TimeSpan.FromHours(24))));
+    }
+
+    [Fact]
+    public void ExpiringRelocationsTrimsTheByteListAlongWithTheTimes()
+    {
+        AutoStatus s = Make();
+        s.BeginRelocation(_now, 100);
+        _now = _now.AddHours(30);
+        s.BeginRelocation(_now, 200);
+        _now = _now.AddHours(19); // 첫 항목은 49 시간 전
+        s.AddEvent("x", "discovered");
+
+        var saved = (JObject)JsonRead.ReadFile(StatusPath)!;
+        Assert.Equal([200L], ((List<object?>)saved["relocation_bytes"]!).Cast<long>());
         Assert.Single((List<object?>)saved["relocations"]!);
     }
 

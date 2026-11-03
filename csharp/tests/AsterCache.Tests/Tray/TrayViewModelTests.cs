@@ -123,6 +123,31 @@ public sealed class TrayViewModelTests : IDisposable
     }
 
     [Fact]
+    public void ApplyAutoSavesTheDailyRelocateGibKeepingTheRest()
+    {
+        Assert.True(_vm.AddGame(Game()).Ok);
+        var form = new AutoForm(true, true, true, true, 0, string.Empty, "2048", "10") { RelocateGib = " 0 " };
+
+        Assert.True(_vm.ApplyAuto(form).Ok);
+
+        Assert.Equal(0, new ConfigEditor(_dir).Load()!.Auto.MaxRelocateGibPerDay);
+    }
+
+    [Theory]
+    [InlineData("x")]
+    [InlineData("-1")]
+    [InlineData("")]
+    [InlineData("1048577")]
+    public void RelocateGibOutOfRangeIsRejectedWithoutWriting(string gib)
+    {
+        Assert.True(_vm.AddGame(Game()).Ok);
+        byte[] before = File.ReadAllBytes(Path.Combine(_dir, "config.json"));
+
+        Assert.False(_vm.SetRelocateGib(gib).Ok);
+        Assert.Equal(before, File.ReadAllBytes(Path.Combine(_dir, "config.json")));
+    }
+
+    [Fact]
     public void SpeedSettingsOutOfRangeAreRefusedByTheConfigCheck()
     {
         Assert.True(_vm.AddGame(Game()).Ok);

@@ -36,7 +36,8 @@ public sealed class AutoSettingsTests
 
         Assert.Equal(AutoSettings.Default, s.Auto);
         Assert.Equal(2048, s.MaxZoneMib);
-        Assert.Equal((true, true, true, true, 0, 3, 600, 6144, 2), (s.Auto.Enabled, s.Auto.Discover, s.Auto.Trace, s.Auto.Relocate, s.Auto.PrewarmRecent, s.Auto.IdleMinutes, s.Auto.TraceCapSeconds, s.Auto.TraceCapMib, s.Auto.MaxRelocationsPerDay));
+        Assert.Equal((true, true, true, true, 0, 3, 600, 6144, 4), (s.Auto.Enabled, s.Auto.Discover, s.Auto.Trace, s.Auto.Relocate, s.Auto.PrewarmRecent, s.Auto.IdleMinutes, s.Auto.TraceCapSeconds, s.Auto.TraceCapMib, s.Auto.MaxRelocationsPerDay));
+        Assert.Equal((16, "low", 8), (s.Auto.RelocateChunkMib, s.Auto.RelocateIoPriority, s.Auto.MaxRelocateGibPerDay));
         Assert.Empty(s.Auto.IgnoreExes);
         Assert.Equal((20, 256), (AutoSettings.HeuristicWindowSeconds, AutoSettings.HeuristicReadMib));
     }
@@ -77,6 +78,10 @@ public sealed class AutoSettingsTests
     [InlineData("trace_cap_mib", 65537)]
     [InlineData("max_relocations_per_day", -1)]
     [InlineData("max_relocations_per_day", 25)]
+    [InlineData("relocate_chunk_mib", 0)]
+    [InlineData("relocate_chunk_mib", 257)]
+    [InlineData("max_relocate_gib_per_day", -1)]
+    [InlineData("max_relocate_gib_per_day", 1048577)]
     public void OutOfRangeAutoNumberIsRejected(string key, int value)
     {
         var e = Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { [key] = value }));
@@ -91,7 +96,30 @@ public sealed class AutoSettingsTests
     [InlineData("trace_cap_seconds", 30)]
     [InlineData("trace_cap_mib", 65536)]
     [InlineData("max_relocations_per_day", 0)]
+    [InlineData("relocate_chunk_mib", 1)]
+    [InlineData("relocate_chunk_mib", 256)]
+    [InlineData("max_relocate_gib_per_day", 0)]
+    [InlineData("max_relocate_gib_per_day", 1048576)]
     public void BoundaryAutoNumbersAreAccepted(string key, int value) => ParseAuto(new JsonObject { [key] = value });
+
+    [Fact]
+    public void RelocateThroughputKeysAreParsed()
+    {
+        AutoSettings a = ParseAuto(new JsonObject { ["relocate_chunk_mib"] = 64, ["relocate_io_priority"] = "normal", ["max_relocate_gib_per_day"] = 0 }).Auto;
+
+        Assert.Equal((64, "normal", 0), (a.RelocateChunkMib, a.RelocateIoPriority, a.MaxRelocateGibPerDay));
+    }
+
+    [Theory]
+    [InlineData("high")]
+    [InlineData("")]
+    [InlineData("LOW")]
+    public void UnknownRelocateIoPriorityFallsBackToLow(string value) =>
+        Assert.Equal("low", ParseAuto(new JsonObject { ["relocate_io_priority"] = value }).Auto.RelocateIoPriority);
+
+    [Fact]
+    public void NonStringRelocateIoPriorityFallsBackToLow() =>
+        Assert.Equal("low", ParseAuto(new JsonObject { ["relocate_io_priority"] = 3 }).Auto.RelocateIoPriority);
 
     [Theory]
     [InlineData("enabled")]

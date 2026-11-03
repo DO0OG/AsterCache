@@ -109,7 +109,7 @@ public sealed class ReapplyEnv
     /// lowIoLog 가 있으면 이동과 SHA 표본 읽기에 낮은 I/O 우선순위 힌트를 붙이고 (서비스의 백그라운드 경로), 힌트가 실패하면 거기에 한 번 남깁니다. null 이면 보통 우선순위.
     public static ApplyReport Run(string journalDir, GameSettings g, PlanFile plan, ApplyOptions options, CancellationToken ct, ILog? lowIoLog = null)
     {
-        IoPriorityHint? hint = lowIoLog is null ? null : new IoPriorityHint(err => lowIoLog.Warn($"{g.Name}: low I/O priority hint not applied (Win32 error {err}), continuing at normal priority"));
+        IoPriorityHint? hint = lowIoLog is null || !options.LowIoPriority ? null : new IoPriorityHint(err => lowIoLog.Warn($"{g.Name}: low I/O priority hint not applied (Win32 error {err}), continuing at normal priority"));
         using NtfsVolume vol = OpenChecked(g);
         if (hint is not null)
         {

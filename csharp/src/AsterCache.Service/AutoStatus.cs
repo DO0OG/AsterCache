@@ -40,7 +40,7 @@ public sealed class AutoStatus
     private readonly Func<DateTimeOffset> _now;
     private readonly Action<TimeSpan> _sleep;
     private readonly Dictionary<string, AutoGameEntry> _games = new(StringComparer.Ordinal);
-    private readonly List<DateTimeOffset> _relocations = [];
+    private readonly List<(DateTimeOffset At, long Bytes)> _relocations = [];
     private readonly List<AutoEvent> _events = [];
 
     /// sleep 은 파일 교체를 다시 시도하기 전의 대기 (시험이 바꿈, 기본은 MoveRetryDelay 만큼 실제로 잠).
@@ -110,12 +110,12 @@ public sealed class AutoStatus
         }
     }
 
-    /// 자동 적용을 시작함 (이어하기 포함): 일일 상한 목록 (relocations) 에 시작 시각을 남깁니다. 끝났을 때 다시 남기지 않습니다.
-    public void BeginRelocation(DateTimeOffset at)
+    /// 자동 적용을 시작함 (이어하기 포함): 일일 상한 목록 (relocations) 에 시작 시각과 이동 예정 바이트 (relocation_bytes) 를 남깁니다. 끝났을 때 다시 남기지 않습니다.
+    public void BeginRelocation(DateTimeOffset at, long bytes = 0)
     {
         lock (_lock)
         {
-            _relocations.Add(at);
+            _relocations.Add((at, bytes));
             Save();
         }
     }
@@ -190,7 +190,17 @@ public sealed class AutoStatus
         lock (_lock)
         {
             DateTimeOffset since = _now() - window;
-            return _relocations.Count(t => t > since);
+            return _relocations.Count(r => r.At > since);
+        }
+    }
+
+    /// 최근 window 안에 시작한 자동 적용의 이동 예정 바이트 합.
+    public long RelocationBytesWithin(TimeSpan window)
+    {
+        lock (_lock)
+        {
+            DateTimeOffset since = _now() - window;
+            return _relocations.Where(r => r.At > since).Sum(r => r.Bytes);
         }
     }
 
@@ -226,7 +236,7 @@ public sealed class AutoStatus
     private void Save()
     {
         DateTimeOffset now = _now();
-        _relocations.RemoveAll(t => now - t > RelocationKeep);
+        _relocations.RemoveAll(r => now - r.At > RelocationKeep);
         if (_path is null)
         {
             return;
@@ -262,7 +272,8 @@ public sealed class AutoStatus
         var root = new JObject
         {
             { "updated", Iso(now) },
-            { "relocations", _relocations.Select(t => (object?)Iso(t)).ToList() },
+            { "relocations", _relocations.Select(r => (object?)Iso(r.At)).ToList() },
+            { "relocation_bytes", _relocations.Select(r => (object?)r.Bytes).ToList() },
             { "games", games },
             { "events", _events.Select(e => (object?)new JObject { { "at", Iso(e.At) }, { "game", e.Game }, { "kind", e.Kind } }).ToList() },
         };
@@ -311,7 +322,8 @@ public sealed class AutoStatus
 
             if (root.TryGetValue("relocations", out object? rel) && rel is List<object?> times)
             {
-                _relocations.AddRange(times.Select(Time).OfType<DateTimeOffset>());
+                List<object?> sizes = root.TryGetValue("relocation_bytes", out object? rb) && rb is List<object?> bl ? bl : []; // 옛 파일은 없음: 빠진 항목은 0
+                _relocations.AddRange(times.Select((v, i) => (At: Time(v), Bytes: i < sizes.Count && sizes[i] is long n && n > 0 ? n : 0L)).Where(r => r.At is not null).Select(r => (r.At!.Value, r.Bytes)));
             }
 
             if (root.TryGetValue("games", out object? g) && g is JObject games)

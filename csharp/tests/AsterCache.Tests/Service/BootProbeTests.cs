@@ -335,4 +335,25 @@ public sealed class BootProbeTests : IDisposable
 
         Assert.Contains("auto.post_update_delay_min", e.Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void PostRelocateRecoveryDefaultsToProbeAndAcceptsTheThreeModes()
+    {
+        Assert.Equal("probe", AutoSettings.Default.PostRelocateRecovery);
+        Assert.Equal("probe", ParseAuto([]).PostRelocateRecovery);
+        Assert.Equal("fixed", ParseAuto(new JsonObject { ["post_relocate_recovery"] = "fixed" }).PostRelocateRecovery);
+        Assert.Equal("off", ParseAuto(new JsonObject { ["post_relocate_recovery"] = "off" }).PostRelocateRecovery);
+        Assert.Equal("probe", ParseAuto(new JsonObject { ["post_relocate_recovery"] = "probe" }).PostRelocateRecovery);
+    }
+
+    [Theory]
+    [InlineData("Probe")]
+    [InlineData("later")]
+    [InlineData("")]
+    [InlineData(5)]
+    [InlineData(true)]
+    public void PostRelocateRecoveryFallsBackToTheDefaultForOtherValues(object value)
+    {
+        Assert.Equal("probe", ParseAuto(new JsonObject { ["post_relocate_recovery"] = JsonValue.Create(value) }).PostRelocateRecovery);
+    }
 }

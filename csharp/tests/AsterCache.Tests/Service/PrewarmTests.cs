@@ -1,5 +1,7 @@
 using AsterCache.Core.Json;
+using AsterCache.Core.Prefetch;
 using AsterCache.Core.Settings;
+using AsterCache.Prefetch;
 using AsterCache.Service;
 using Xunit;
 
@@ -189,6 +191,43 @@ public sealed class PrewarmTests : IDisposable
         Assert.StartsWith("failed", r.SkipReason, StringComparison.Ordinal);
         Assert.Contains(_log.Lines, l => l.StartsWith("Error: a: prewarm failed", StringComparison.Ordinal));
         Assert.True(again.Ran);
+    }
+
+    [Theory]
+    [InlineData("trigger X.exe", "X.exe")]
+    [InlineData("service start", "service start")]
+    [InlineData("auto after relocation", "after relocation")]
+    [InlineData("rewarm", "rewarm")]
+    [InlineData("auto cold start", "cold start")]
+    public void PrewarmLogNamesTheTriggerCause(string why, string cause)
+    {
+        GameSettings g = Game("a");
+
+        PrewarmResult r = Make(g).Run(g, why);
+
+        Assert.Equal(cause, Prewarmer.TriggerCause(why));
+        Assert.True(r.Ran);
+        Assert.Contains(_log.Lines, l => l.StartsWith($"Info: a: prewarm triggered by {cause}", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ColdPrewarmLogsTheTriggerCauseBeforeReading()
+    {
+        GameSettings g = Game("a");
+        var p = new Prewarmer([g], _streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => AvailableMib,
+            GameRunning = _ => false,
+            ZoneBytes = _ => null,
+            TraceExists = _ => false,
+            ColdPlanner = (_, _, _, _) => new ColdPlan("full", [new ReadOp(Path.Combine(_dir, "a.bin"), 0, 1 << 20)], 1 << 20, null),
+            ColdRead = (_, _) => (new AsterCache.Prefetch.StreamStats(1 << 20, 1, 0, 0.01), true),
+        }, _log, null, () => _now);
+
+        PrewarmResult r = p.Run(g, "auto cold start");
+
+        Assert.True(r.Ran);
+        Assert.Contains(_log.Lines, l => l.StartsWith("Info: a: prewarm triggered by cold start", StringComparison.Ordinal));
     }
 
     [Fact]

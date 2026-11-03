@@ -645,6 +645,7 @@ public static class Applier
             }
         }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)).ToArray();
         Task.WaitAll(workers);
+        rep.Failed.Sort((a, b) => a.Idx.CompareTo(b.Idx)); // 끝난 순서가 실행마다 다르므로 작업 인덱스로 정렬해 보고서를 결정적으로
         if (errors.Count > 0)
         {
             ExceptionDispatchInfo.Capture(errors[0]).Throw();

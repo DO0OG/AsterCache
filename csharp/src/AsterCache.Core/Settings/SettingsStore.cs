@@ -29,7 +29,7 @@ public static class SettingsStore
     [
         "enabled", "discover", "trace", "relocate", "prewarm_recent", "idle_minutes", "trace_cap_seconds", "trace_cap_mib",
         "max_relocations_per_day", "ignore_exes", "rewarm_minutes", "idle_seconds", "learn", "full_prewarm", "full_prewarm_max_mib", "engine_profiles", "shared_profiles",
-        "ssd_tier", "post_update_delay_min", "relocate_chunk_mib", "relocate_parallel", "relocate_io_priority", "relocate_verify", "relocate_order", "max_relocate_gib_per_day",
+        "ssd_tier", "post_update_delay_min", "relocate_chunk_mib", "relocate_parallel", "relocate_io_priority", "relocate_verify", "relocate_order", "max_relocate_gib_per_day", "post_relocate_recovery",
     ];
     private static readonly string[] PrewarmKeys = ["on_service_start", "trigger_exes", "min_free_ram_mib", "cooldown_min", "pin"];
     private static readonly string[] LearnKeys = ["enabled", "window_mib", "max_total_mib", "mode", "saturation_mbps"];
@@ -154,6 +154,7 @@ public static class SettingsStore
         {
             RewarmMinutes = OptInt(o, "rewarm_minutes", 0, 1440, d.RewarmMinutes),
             PostUpdateDelayMin = OptInt(o, "post_update_delay_min", 0, 1440, d.PostUpdateDelayMin),
+            PostRelocateRecovery = o.TryGetValue("post_relocate_recovery", out object? prr) && prr is AutoSettings.RecoveryProbe or AutoSettings.RecoveryFixed or AutoSettings.RecoveryOff ? (string)prr : d.PostRelocateRecovery,
             IdleSeconds = OptInt(o, "idle_seconds", 10, 86400, d.IdleSeconds),
             IdleSecondsSet = o.ContainsKey("idle_seconds"),
             IdleMinutesSet = o.ContainsKey("idle_minutes") && !migrated,

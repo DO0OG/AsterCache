@@ -206,7 +206,13 @@ public abstract class ApplyTestBase : IDisposable
         Extents = p => Vol.Ext[p],
         Digest = digest ?? ((p, size, extra) => SampleHasher.Compute(p, size, extra, null)),
         SkipReason = skip ?? (_ => null),
-        Sleep = Sleeps.Add,
+        Sleep = t =>
+        {
+            lock (Sleeps) // 동시 실행의 작업자들이 부름
+            {
+                Sleeps.Add(t);
+            }
+        },
     };
 
     protected ApplyReport Apply(PlanFile plan, ApplyOptions? options = null, ApplyHooks? hooks = null) =>

@@ -8,7 +8,7 @@ namespace AsterCache.Service;
 /// 각 동작은 예외를 삼켜 로그로 남깁니다 (자동 동작이 서비스를 죽이지 않게). 설정은 다시 읽을 때마다 SetSettings 로 바꿉니다.
 public sealed class AutoMode
 {
-    public static readonly TimeSpan FirstDiscoveryDelay = TimeSpan.FromMinutes(1);
+    public static readonly TimeSpan FirstDiscoveryDelay = TimeSpan.FromSeconds(10);
     public static readonly TimeSpan DiscoveryEvery = TimeSpan.FromHours(6);
     public static readonly TimeSpan HeuristicEvery = TimeSpan.FromSeconds(2);
     public static readonly TimeSpan TraceEvery = TimeSpan.FromSeconds(1);
@@ -37,6 +37,7 @@ public sealed class AutoMode
         _relocator = new AutoRelocator(env, status, log, () => _settings, prewarm);
         if (prewarm is not null)
         {
+            prewarm.Recovery = _relocator.Recovery; // 재배치 직후 예열을 드라이브 회복까지 고정
             prewarm.ColdWarmed += (g, label) => Guard("cold prewarm note", () => _relocator.NoteColdWarmed(g, label)); // 서비스 시작·트리거·틱 어디서 예열하든 같은 표시
             prewarm.Progress += (g, done, total) => Guard("prewarm progress", () => _relocator.NoteProgress(g, done, total));
             prewarm.StreamEnded += (g, complete) => Guard("prewarm end", () => _relocator.NoteStreamEnded(g, complete));
@@ -84,6 +85,8 @@ public sealed class AutoMode
             {
                 Status.RecordHit(g.Name, hit, _env.Now());
             }
+
+            LoadBoundaryWatch.Run(g, Status, _log, now: _env.Now);
         });
     }
 
@@ -153,7 +156,7 @@ public sealed class AutoMode
         Guard("shared profiles", () => _feed.Run(_settings, _registry.LastScan));
     }
 
-    /// 발견 (처음 1 분 뒤, 이후 6 시간마다), 휴리스틱 (2 초마다), 트레이스 감시 (1 초마다) 를 취소될 때까지 돌립니다.
+    /// 발견 (처음 10 초 뒤, 이후 6 시간마다), 휴리스틱 (2 초마다), 트레이스 감시 (1 초마다) 를 취소될 때까지 돌립니다.
     public Task RunAsync(CancellationToken ct) => Task.WhenAll(
         Loop(FirstDiscoveryDelay, DiscoveryEvery, "discovery", DiscoverAndFeed, ct),
         Loop(HeuristicEvery, HeuristicEvery, "heuristic", _registry.HeuristicTick, ct),

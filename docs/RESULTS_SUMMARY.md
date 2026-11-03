@@ -221,3 +221,10 @@ Same as bounded, plus a pause while the game's reads over the last 500 ms run at
 - The first cold read right after 3 GB of scattered writes took 58.8 s (normally 24 s). This looks like post-write cleanup on the DM-SMR drive. Prewarm right after the sequential-write relocation ran at 154 MB/s, which is normal.
 - E9: after 2 GB of scattered writes, cold replay took up to 4.45× the baseline (26.3 s) and recovered after about 10 min, so the post-update delay defaults to 15 min.
 - Notes: [research_hdd_general.md](research_hdd_general.md)
+
+## E10–E16 HDD general I/O (2026-11-03)
+
+- E10–E11: 4→16 MiB chunks made no difference (2.0 MB/s); per-file fixed cost dominates. Sample reduction, journal batching and a pre-job sample cut the time from 186 s to 88 s.
+- E12–E14: original-order relocation was slower (88 → 110 s), so auto uses plan order. Eight parallel reads took the HDD to 41 s (4.5×) and NVMe to 10.6 s, which sets the default concurrency to 8.
+- E15–E16: outer-zone raw bandwidth is non-monotonic and unrepresentative, so outer zones are held back. After a 2 GB move, cold reads went 19.5 → 33 s and still took 30 s 15 min after reverting (SMR slowdown).
+- Notes: [research_hdd_general.md](research_hdd_general.md)

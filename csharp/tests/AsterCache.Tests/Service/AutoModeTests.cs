@@ -50,6 +50,24 @@ public sealed class AutoModeTests : IDisposable
         Assert.Equal((AutoStage.Discovered, expected), (_rig.Status.Get("g")!.Stage, _rig.Status.Get("g")!.Detail));
     }
 
+    [Fact]
+    public void AutoModeHandsItsRelocatorRecoveryToThePrewarmer()
+    {
+        var prewarm = new Prewarmer(_rig.Settings.Games, new FakeStreamer(), new PrewarmEnv
+        {
+            AvailableRamMib = () => 99999,
+            GameRunning = _ => false,
+            ZoneBytes = _ => null,
+            TraceExists = _ => false,
+            ColdPlanner = (_, _, _, _) => new AsterCache.Prefetch.ColdPlan("full", [], 0, null),
+            ColdRead = (ops, _) => (new AsterCache.Prefetch.StreamStats(0, 0, 0, 0.1), true),
+        }, _rig.Log, null, () => T0);
+
+        _ = new AutoMode(_rig.Editor, _rig.World.Env(), _rig.Status, _rig.Log, _rig.Settings, prewarm);
+
+        Assert.NotNull(prewarm.Recovery);
+    }
+
     // ---- 최근 게임 선택 ----
 
     [Fact]

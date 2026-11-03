@@ -125,6 +125,12 @@ public sealed class AutoEnv
     /// 'X:' 디스크 처리량 (바이트/초), 읽지 못하면 null.
     public required Func<string, double?> DiskBytesPerSecond { get; init; }
 
+    /// ('X:', LCN) → 그 자리의 비버퍼드 순차 읽기 속도 (MB/s, 1 MiB x 64 의 3 회 중앙값), 못 재면 null. 서비스 전용, 시험은 가짜 (기본: 못 잼).
+    public Func<string, long, double?> ProbeMbps { get; init; } = (_, _) => null;
+
+    /// ('X:', 존 시작 LCN) → (그 존 앞쪽이 이미 할당됐는가, 존에서 4 GiB 뒤에 가장 가까운 할당된 기준 구간의 LCN), 비트맵을 못 읽으면 null. 시험 기본값은 null.
+    public Func<string, long, (bool ZoneAllocated, long? ReferenceLcn)?> LocateProbeSpots { get; init; } = (_, _) => null;
+
     /// 직전 호출 뒤의 전체 CPU 사용률 (%), 처음이거나 읽지 못하면 null.
     public required Func<double?> CpuPercent { get; init; }
 
@@ -195,6 +201,8 @@ public sealed class AutoEnv
             Revert = (g, skipRows, ct) => ReapplyEnv.Revert(journalDir, g, skipRows, ct),
             Extents = FileLayout.Extents,
             DiskBytesPerSecond = letter => DiskActivity.BytesPerSecond(letter),
+            ProbeMbps = DiskProbe.Mbps,
+            LocateProbeSpots = DiskProbe.Locate,
             CpuPercent = cpu.Percent,
             PowerOk = () => PowerProbe.PowerOk(MinBatteryPercent),
             Tier = log is null ? null : new TierEngine(new TierFs(new IoPriorityHint(err => log.Warn($"ssd tier: low I/O priority hint not applied (Win32 error {err})"))), log, Path.Combine(Path.GetDirectoryName(journalDir) ?? journalDir, "tier")),

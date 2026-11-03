@@ -70,7 +70,7 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         Directory.CreateDirectory(plans);
         string plan = Path.Combine(plans, "bench.plan.json");
         _game = new GameSettings("bench", ["bench.exe"], plan + ".prefetch.json", plan, Root, [Root], "GAMES", 1440) { Source = "auto" };
-        _settings = new AsterSettings(50, [_game]) with { Auto = AutoSettings.Default with { IdleMinutesSet = true, RelocateParallel = 1 } }; // 기존 시험은 idle_minutes (3 분) 만 명시된 설정
+        _settings = new AsterSettings(50, [_game]) with { Auto = AutoSettings.Default with { IdleMinutesSet = true, RelocateParallel = 1, PostRelocateRecovery = AutoSettings.RecoveryOff } }; // 기존 시험은 idle_minutes (3 분) 만 명시된 설정, 쓰기 뒤 회복 대기는 아래 별도 시험
         _status = new AutoStatus(Path.Combine(Root, "auto_status.json"), _log, () => _w.Now);
         _w.Files.Add(AutoTracer.RawTracePath(_game));
         _w.LoadSessions = () => Sessions;
@@ -2079,5 +2079,223 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         Assert.Equal(AutoStage.Discovered, Entry.Stage);
         Assert.Equal(1 + fps.Count, stats.Count); // 대표 (exe) 1 번 + 전체 비교
         Assert.Contains(biggestOutsideSample, stats);
+    }
+
+    // ---- 쓰기 뒤 회복 (auto.post_relocate_recovery) ----
+
+    private string Drive => Path.GetPathRoot(Root)!;
+
+    private readonly List<(string Drive, long Lcn)> _probed = [];
+    private double _zoneMbps = 98;
+    private double _refMbps = 72;
+    private const long RefLcn = 777_000;
+
+    // 표본을 가짜로: 기준 구간은 RefLcn, 존이 이미 할당돼 있으면 (zoneAllocated) 존도 잼. 속도는 _zoneMbps/_refMbps 를 시험이 바꿈.
+    private void UseProbe(string mode, bool zoneAllocated)
+    {
+        SetAuto(a => a with { PostRelocateRecovery = mode });
+        _w.LocateProbeSpots = (_, _) => (zoneAllocated, RefLcn);
+        _w.ProbeMbps = (drive, lcn) =>
+        {
+            _probed.Add((drive, lcn));
+            return lcn == RefLcn ? _refMbps : _zoneMbps;
+        };
+    }
+
+    // 쓰기 도중 상한에 걸려 멈춘 것으로 만듦 (재배치는 끝나지 않고 다음 유휴에 이어짐, 쓴 바이트는 있음).
+    private void StopAfterWriting()
+    {
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> inner = _w.Apply;
+        int executed = 0;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            ApplyReport rep = inner(g, plan, options, ct);
+            if (options.Execute && executed++ == 0)
+            {
+                rep.Stopped = "write cap";
+                (_zoneMbps, _refMbps) = (10, 10); // 기준은 이미 쟀음: 쓴 뒤라 느려짐
+            }
+
+            return rep;
+        };
+    }
+
+    [Fact]
+    public void ProbeModeMeasuresTheBaselineJustBeforeTheMoveAndOnlyTheReferenceWhenTheZoneIsStillEmpty()
+    {
+        UseProbe(AutoSettings.RecoveryProbe, zoneAllocated: false);
+        int probedAtMove = -1;
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> inner = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            probedAtMove = options.Execute ? _probed.Count : probedAtMove;
+            return inner(g, plan, options, ct);
+        };
+
+        Tick();
+        _w.Now += Step;
+        RunUntilDone();
+
+        Assert.Equal(1, probedAtMove); // 이동 직전에 한 번
+        Assert.Equal([(PlanFile.SplitDrive(Root).ToUpperInvariant(), RefLcn)], _probed.Take(1).ToList()); // 빈 존은 기준에서 뺌
+        Assert.True(Relocator.Recovery.IsRecovering(Drive));
+    }
+
+    [Fact]
+    public void RecoveringAfterRelocationLogsValuesThenRecoversOnTwoGoodSamples()
+    {
+        UseProbe(AutoSettings.RecoveryProbe, zoneAllocated: true);
+        Tick();
+        _w.Now += Step;
+        RunUntilDone();
+        Assert.True(Relocator.Recovery.IsRecovering(Drive));
+
+        (_zoneMbps, _refMbps) = (61, 70);
+        Run(TimeSpan.FromMinutes(5));
+        Assert.True(Relocator.Recovery.IsRecovering(Drive));
+        Assert.Single(_log.Lines, l => l.Contains("recovering after relocation (zone 61 MB/s / 98 baseline, ref 70/72)", StringComparison.Ordinal));
+
+        (_zoneMbps, _refMbps) = (95, 70);
+        Run(TimeSpan.FromMinutes(5));
+
+        Assert.False(Relocator.Recovery.IsRecovering(Drive));
+        Assert.Contains(_log.Lines, l => l.Contains(": recovered after ", StringComparison.Ordinal) && l.Contains(" min", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RecoveryGivesUpAtFourTimesThePostUpdateDelay()
+    {
+        UseProbe(AutoSettings.RecoveryProbe, zoneAllocated: true);
+        Tick();
+        _w.Now += Step;
+        RunUntilDone();
+        (_zoneMbps, _refMbps) = (10, 10);
+
+        Run(TimeSpan.FromMinutes(59));
+        Assert.True(Relocator.Recovery.IsRecovering(Drive));
+
+        Run(TimeSpan.FromMinutes(2));
+        Assert.False(Relocator.Recovery.IsRecovering(Drive)); // 15 x 4 = 60 분
+    }
+
+    [Fact]
+    public void FixedModeWaitsPostUpdateDelayMinutesWithoutSampling()
+    {
+        UseProbe(AutoSettings.RecoveryFixed, zoneAllocated: true);
+        Tick();
+        _w.Now += Step;
+        RunUntilDone();
+        _probed.Clear();
+
+        Run(TimeSpan.FromMinutes(14));
+        Assert.True(Relocator.Recovery.IsRecovering(Drive));
+        Run(TimeSpan.FromMinutes(2));
+
+        Assert.False(Relocator.Recovery.IsRecovering(Drive));
+        Assert.Empty(_probed);
+    }
+
+    [Fact]
+    public void OffModeDoesNotWaitOrSample()
+    {
+        UseProbe(AutoSettings.RecoveryOff, zoneAllocated: true);
+        Tick();
+        _w.Now += Step;
+        RunUntilDone();
+
+        Assert.False(Relocator.Recovery.IsRecovering(Drive));
+        Assert.Empty(_probed);
+    }
+
+    [Fact]
+    public void ProbeModeThatCannotMeasureABaselineFallsBackToTheFixedMinutes()
+    {
+        SetAuto(a => a with { PostRelocateRecovery = AutoSettings.RecoveryProbe }); // 기준 구간을 못 찾는 환경 (기본 가짜)
+        Tick();
+        _w.Now += Step;
+        RunUntilDone();
+
+        Run(TimeSpan.FromMinutes(14));
+        Assert.True(Relocator.Recovery.IsRecovering(Drive));
+        Run(TimeSpan.FromMinutes(2));
+        Assert.False(Relocator.Recovery.IsRecovering(Drive));
+    }
+
+    [Fact]
+    public void RecoveringDriveBlocksTheNextMoveButNotPrewarm()
+    {
+        UsePrewarm();
+        UseProbe(AutoSettings.RecoveryProbe, zoneAllocated: true);
+        StopAfterWriting();
+        for (int i = 0; i < 40 && _status.Get("bench")?.Detail?.Contains("write limit reached", StringComparison.Ordinal) != true; i++)
+        {
+            Tick();
+            _w.Now += Step;
+        }
+
+        Assert.Equal(AutoStage.WaitingIdle, Entry.Stage);
+        int applies = ApplyCalls;
+        int streams = Streams;
+
+        Run(TimeSpan.FromMinutes(10));
+        Assert.Equal(applies, ApplyCalls); // 회복 전에는 이어하기도 시작하지 않음
+        Assert.Contains(AutoRelocator.DriveRecovering, Entry.Detail);
+
+        _w.FileTimes[AutoTracer.RawTracePath(_game)] = _w.Now; // 새 트레이스는 회복 중에도 예열함
+        Tick();
+        Assert.Equal(streams + 1, Streams);
+
+        (_zoneMbps, _refMbps) = (98, 72);
+        Run(TimeSpan.FromMinutes(6));
+        RunUntilDone();
+
+        Assert.Equal(AutoStage.Done, Entry.Stage); // 회복되면 이어서 끝냄
+        Assert.True(ApplyCalls > applies);
+    }
+
+    [Fact]
+    public void UpdateDelayWithoutAnyEarlierBaselineStaysTheFixedMinutesEvenInProbeMode()
+    {
+        SetAuto(a => a with { PostRelocateRecovery = AutoSettings.RecoveryProbe });
+        DoneAndReadyToReplan(out _);
+        Run(TimeSpan.FromMinutes(20)); // 첫 재배치의 고정 대기가 끝나게
+        Update();
+        _w.Now += AutoRelocator.StaleCheckEvery;
+        Tick();
+        _w.Files.Add(AutoTracer.BootTracePath(_game));
+
+        for (int i = 0; i < 29; i++)
+        {
+            _w.Now += Step;
+            Tick();
+        }
+
+        Assert.False(File.Exists(_game.Plan)); // 14 분 30 초: 기준이 없으니 고정 15 분
+        _w.Now += Step;
+        RunUntilDone();
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+    }
+
+    [Fact]
+    public void UpdateDelayWithABaselineFollowsTheProbeInsteadOfTheFixedMinutes()
+    {
+        UseProbe(AutoSettings.RecoveryProbe, zoneAllocated: true);
+        DoneAndReadyToReplan(out _);
+        Run(TimeSpan.FromMinutes(6)); // 첫 재배치 뒤 회복
+        Assert.False(Relocator.Recovery.IsRecovering(Drive));
+        Update();
+        _w.Now += AutoRelocator.StaleCheckEvery;
+        _zoneMbps = 30; // 업데이트가 흩어 쓴 뒤 느림
+        Tick();
+        _w.Files.Add(AutoTracer.BootTracePath(_game));
+
+        Run(TimeSpan.FromMinutes(20)); // 고정 15 분이 지나도 기다림
+        Assert.False(File.Exists(_game.Plan));
+
+        _zoneMbps = 98;
+        Run(TimeSpan.FromMinutes(6));
+        Tick();
+
+        Assert.True(File.Exists(_game.Plan));
     }
 }

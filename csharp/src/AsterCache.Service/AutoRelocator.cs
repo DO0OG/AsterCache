@@ -44,6 +44,7 @@ public sealed class AutoRelocator
     public const string RelocateOff = "auto relocate off";
     public const string DailyLimit = "daily limit reached";
     public const string DailyBudget = "daily write budget reached";
+    public const string DriveRecovering = "drive recovering after relocation";
 
     /// 예열이 끝났다는 표시 (auto_status 의 detail). 관리 창이 "예열됨" 으로 보입니다.
     public const string Prewarmed = "prewarmed";
@@ -87,6 +88,7 @@ public sealed class AutoRelocator
     private bool _waitNoted; // 틱 스레드에서만 씀: 이번 대기 구간에 긴 대기를 이미 남겼는지
     private static readonly TimeSpan LongWait = TimeSpan.FromHours(6);
     private readonly Prewarmer? _prewarm;
+    private readonly DriveRecovery _recovery;
     private readonly AutoTier? _tier; // SSD 보조 저장 (선택 기능): 환경이 엔진을 주지 않으면 (시험) 없음
     private readonly ConcurrentDictionary<string, DateTimeOffset> _coldTried = new(StringComparer.Ordinal); // 이번 서비스 실행 중 기록 없는 예열을 요청한 게임과 그 시각 (영구 건너뜀은 발견 주기마다 다시 시도)
     private (bool, int, bool) _coldKey; // 틱 스레드에서만 씀: 설정이 바뀌면 _coldTried 를 비움
@@ -113,8 +115,12 @@ public sealed class AutoRelocator
         _log = log;
         _settings = settings;
         _prewarm = prewarm;
+        _recovery = new DriveRecovery(env, log);
         _tier = tier ?? (env.Tier is { } engine ? new AutoTier(env, status, log, engine) : null);
     }
+
+    /// 쓰기(재배치) 뒤 드라이브 회복 상태: 회복 전에는 같은 드라이브의 다음 재배치·재계획을 시작하지 않습니다 (예열은 막지 않음).
+    public IDriveRecovery Recovery => _recovery;
 
     /// 게임이 떴을 때 (감시기 스레드에서 바로): 돌고 있거나 기다리는 예열을 취소합니다. 핫 집합 스트림은 묶음 경계에서 멈춥니다 (그 게임을 읽던 스트림은 Prewarmer.NoteGameStart 가 끝까지 읽게 함).
     public void CancelWarm()
@@ -191,6 +197,7 @@ public sealed class AutoRelocator
             return;
         }
 
+        _recovery.Poll();
         RecoverReplan(s);
         ReplanChanged(s);
         PrefetchBootstrap(s);
@@ -205,6 +212,13 @@ public sealed class AutoRelocator
         var ready = new List<GameSettings>();
         foreach (GameSettings g in work)
         {
+            if (_recovery.IsRecovering(DriveOf(g)))
+            {
+                WarmNewTrace(g, warms); // 예열은 막지 않음
+                Note(g, AutoStage.WaitingIdle, WaitDetail(g, DriveRecovering));
+                continue;
+            }
+
             if (!_env.FileExists(g.Plan) && (_env.AnyRunning(g.ExeNames) || !Plan(g, s)))
             {
                 continue; // 게임이 도는 중이면 디스크를 건드리지 않고, 계획이 실패했으면 failed 로 기록됨
@@ -636,7 +650,7 @@ public sealed class AutoRelocator
     /// 기준 시각은 그 단계에 들어간 때 (auto_status 의 at) 라 서비스를 다시 시작해도 이어집니다. post_update_delay_min 이 0 이면 지연 없음.
     public static TimeSpan? PostUpdateWait(AutoStatus status, AutoSettings auto, string game, DateTimeOffset now)
     {
-        if (auto.PostUpdateDelayMin <= 0 || status.Get(game) is not { Stage: AutoStage.Discovered, Detail: { } detail } e || !detail.StartsWith(ReplanDetail, StringComparison.Ordinal))
+        if (auto.PostUpdateDelayMin <= 0 || Replanning(status, game) is not { } e)
         {
             return null;
         }
@@ -645,12 +659,20 @@ public sealed class AutoRelocator
         return left > TimeSpan.Zero ? left : null;
     }
 
+    private static AutoGameEntry? Replanning(AutoStatus status, string game) =>
+        status.Get(game) is { Stage: AutoStage.Discovered, Detail: { } detail } e && detail.StartsWith(ReplanDetail, StringComparison.Ordinal) ? e : null;
+
+    private static string DriveOf(GameSettings g) => PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant();
+
     public static string PostUpdateLine(string game, int minutes) => $"{game}: waiting {minutes} min after update (drive may still be reorganizing)";
 
     // 틱 스레드에서: 지연 중이면 true (지연 한 번에 로그는 한 줄, 끝나면 다음 지연 때 다시).
     private bool PostUpdateDelayed(GameSettings g, AsterSettings s)
     {
-        if (PostUpdateWait(_status, s.Auto, g.Name, _env.Now()) is null)
+        // probe 모드이고 이 드라이브에 쓰기 전 기준값이 있으면 같은 회복 판정을, 없으면 (업데이트는 우리가 쓴 게 아님) 고정 분을 씀.
+        bool? probed = s.Auto.PostRelocateRecovery == AutoSettings.RecoveryProbe && s.Auto.PostUpdateDelayMin > 0 && Replanning(_status, g.Name) is { } e
+            ? _recovery.WatchUpdate(DriveOf(g), e.At, TimeSpan.FromMinutes(s.Auto.PostUpdateDelayMin * 4)) : null;
+        if (!(probed ?? PostUpdateWait(_status, s.Auto, g.Name, _env.Now()) is not null))
         {
             _delayLogged.Remove(g.Name);
             return false;
@@ -932,8 +954,10 @@ public sealed class AutoRelocator
 
             _ = _needBytes.Remove(g.Name);
             _status.BeginRelocation(_env.Now(), bytes); // 하루 상한은 끝이 아니라 시작 (이어하기 포함) 으로 셈
+            DriveBaseline? baseline = s.Auto.PostRelocateRecovery == AutoSettings.RecoveryProbe ? MeasureBaseline(g, plan) : null;
             ApplyReport rep = _env.Apply(g, plan, run, token);
             _log.Info($"{g.Name}: auto relocation moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed, order {rep.OrderUsed ?? order}" + (rep.OrderFallbackReason is not null ? " (fallback)" : string.Empty) + (rep.Stopped is { } why ? $", stopped: {why}" : string.Empty) + rep.Timings.Summary);
+            BeginRecovery(g, s.Auto, rep.MovedBytes, baseline);
             if (rep.Stopped == "cancelled")
             {
                 Note(g, AutoStage.WaitingIdle, "cancelled by game start"); // 저널이 재개 지점이고 이어하기는 기존 재적용 검사가 합니다
@@ -968,6 +992,42 @@ public sealed class AutoRelocator
             Fail(g, "relocation failed: " + e.GetType().Name, e);
             Undo(g, mark, token);
         }
+    }
+
+    // 쓰기 직전 기준 속도: 대상 존 (이미 할당돼 있을 때만: 빈 영역은 SMR 이 0 을 즉시 돌려 과대) 과 존에서 4 GiB 뒤의 할당된 기준 구간. 못 재면 null (고정 분으로 떨어짐).
+    private DriveBaseline? MeasureBaseline(GameSettings g, PlanFile plan)
+    {
+        try
+        {
+            string drive = DriveOf(g);
+            if (plan.Zone.StartLcn is not { } zone || _env.LocateProbeSpots(drive, zone) is not { } spots)
+            {
+                return null;
+            }
+
+            ProbeSpot? zoneSpot = spots.ZoneAllocated ? Spot(drive, zone) : null;
+            ProbeSpot? refSpot = spots.ReferenceLcn is { } r ? Spot(drive, r) : null;
+            return zoneSpot is null && refSpot is null ? null : new DriveBaseline(zoneSpot, refSpot);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _log.Warn($"{g.Name}: baseline read speed not measured ({e.GetType().Name})");
+            return null;
+        }
+    }
+
+    private ProbeSpot? Spot(string drive, long lcn) => _env.ProbeMbps(drive, lcn) is > 0 and double mbps ? new ProbeSpot(lcn, mbps) : null;
+
+    // 쓴 바이트가 있으면 회복 추적을 시작: probe 는 기준이 있을 때 최대 post_update_delay_min x4 분, 기준이 없거나 fixed 면 post_update_delay_min 분 고정, off 는 기다리지 않음.
+    private void BeginRecovery(GameSettings g, AutoSettings auto, long movedBytes, DriveBaseline? baseline)
+    {
+        if (movedBytes <= 0 || auto.PostRelocateRecovery == AutoSettings.RecoveryOff)
+        {
+            return;
+        }
+
+        bool probe = auto.PostRelocateRecovery == AutoSettings.RecoveryProbe && baseline is not null;
+        _recovery.Begin(DriveOf(g), probe ? baseline : null, TimeSpan.FromMinutes(auto.PostUpdateDelayMin * (probe ? 4 : 1)));
     }
 
     // 게임이 안 돌 때만, 이번 자동 적용이 저널에 쓴 줄 (mark 줄 뒤) 만 되돌립니다 (최선 노력). 앞선 적용의 줄은 이어하기·수동 되돌리기의 몫이라 건드리지 않음.

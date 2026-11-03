@@ -1641,6 +1641,24 @@ public sealed class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
+    public void PreviousZoneThatCannotBePlannedInPlaceBecauseOfACycleFallsBackToTheNormalZoneSearch()
+    {
+        long start = DoneAndReadyToReplan(out _);
+        Update();
+        _w.Now += AutoRelocator.StaleCheckEvery;
+        Tick();
+        NewTraceFromNextRun();
+        _w.MakePlanAt = (_, _, _, _) => throw new PyValueException("zone overlaps hot data in a cycle; choose another zone");
+
+        RunUntilDone();
+
+        Assert.Equal([start], _w.PlanStarts);
+        Assert.Contains(_log.Lines, l => l.Contains("previous zone cannot be planned in place (zone overlaps hot data in a cycle; choose another zone), looking for a new one", StringComparison.Ordinal));
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.NotNull(PlanFile.Load(_game.Plan).Zone.StartLcn);
+    }
+
+    [Fact]
     public void RunningGameOrUnchangedFilesAreLeftAlone()
     {
         DoneAndReadyToReplan(out string trace);

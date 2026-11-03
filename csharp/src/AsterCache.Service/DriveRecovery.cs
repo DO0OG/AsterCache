@@ -26,7 +26,9 @@ public sealed class DriveRecovery : IDriveRecovery
     public const double RecoveredFraction = 0.9;
     public const int RecoveredStreak = 2;
     public const double CeilingMbps = 250; // 비버퍼드 참조 기준값이 없을 때의 디스크 순차 상한이자 유효한 기준값의 한계 (넘으면 캐시 적중 의심)
-    public const double CeilingFactor = 1.5; // 비버퍼드 참조 기준값이 있으면 그 값 × 이 배수
+    public const double CeilingFactor = 1.25; // 비버퍼드 참조 기준값이 있으면 (존 기준이 더 크면 그 값) × 이 배수 (CeilingMbps 를 넘지 않음)
+    public const double SuspectFactor = 1.1; // 쓰기 직후 SuspectWindow 안의 표본이 기준의 이 배수를 넘으면 디스크 캐시 의심
+    public static readonly TimeSpan SuspectWindow = TimeSpan.FromMinutes(10);
     public static readonly TimeSpan SampleEvery = TimeSpan.FromMinutes(2);
 
     private readonly AutoEnv _env;
@@ -56,12 +58,12 @@ public sealed class DriveRecovery : IDriveRecovery
         }
     }
 
-    /// 그 드라이브의 순차 읽기 상한 (MB/s): 비버퍼드 참조 기준값의 1.5 배, 참조 기준이 없으면 CeilingMbps.
+    /// 그 드라이브의 순차 읽기 상한 (MB/s): 기준값 (참조와 존 중 큰 쪽, 존이 참조보다 빠른 디스크가 있어서) 의 1.25 배 (최대 CeilingMbps), 참조 기준이 없으면 CeilingMbps.
     public double CeilingFor(string drive)
     {
         lock (_lock)
         {
-            return _baselines.TryGetValue(Key(drive), out DriveBaseline? b) && b.Ref is { } r ? r.Mbps * CeilingFactor : CeilingMbps;
+            return _baselines.TryGetValue(Key(drive), out DriveBaseline? b) && b.Ref is { } r ? Math.Min(Math.Max(r.Mbps, b.Zone?.Mbps ?? 0) * CeilingFactor, CeilingMbps) : CeilingMbps;
         }
     }
 
@@ -200,6 +202,18 @@ public sealed class DriveRecovery : IDriveRecovery
                 return;
             }
 
+            if (now - t.Started < SuspectWindow && (Suspect(t.Baseline!.Zone, got.Value.zone) || Suspect(t.Baseline.Ref, got.Value.reference)))
+            {
+                if (!t.CacheLogged)
+                {
+                    t.CacheLogged = true;
+                    _log.Info($"drive {key} recovery sample (zone {Show(got.Value.zone)}, ref {Show(got.Value.reference)} MB/s) is over {SuspectFactor}x the baseline right after the write (disk cache suspected), not counted");
+                }
+
+                Note(key, t, RecoveryVerdict.Unknown); // 쓰기 직후 기준보다 빠름: 캐시 의심, 판정에서 빼고 연속 횟수는 그대로
+                return;
+            }
+
             bool ok = Meets(t.Baseline!.Zone, got.Value.zone) && Meets(t.Baseline.Ref, got.Value.reference);
             t.Streak = ok ? t.Streak + 1 : 0;
             if (t.Streak >= RecoveredStreak)
@@ -284,6 +298,8 @@ public sealed class DriveRecovery : IDriveRecovery
 
     // 디스크 활동을 못 읽거나 임계 이상이면 바쁨 (기준 측정도 같은 판정을 씀).
     internal static bool Busy(AutoEnv env, string key) => env.DiskBytesPerSecond(key) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond;
+
+    private static bool Suspect(ProbeSpot? baseline, double? now) => baseline is { } b && now > b.Mbps * SuspectFactor;
 
     private static bool Meets(ProbeSpot? baseline, double? now) => baseline is not { } b || now >= b.Mbps * RecoveredFraction;
 

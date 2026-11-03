@@ -25,7 +25,7 @@ public sealed record PlanFile(
 
     public static PlanFile Make(IReadOnlyList<IReadOnlyList<TraceEvent>> sessions, string originRoot, long zoneBytes, long clusterBytes,
         Func<string, IReadOnlyList<Extent>?> extentsFn, Func<string, long>? sizeFn = null, Func<string, Fingerprint>? fingerprintFn = null,
-        long? zoneStartLcn = null, long block = HotSet.Block, int minSessions = 1, long preserveBytes = 0, long alignClusters = 4)
+        long? zoneStartLcn = null, long block = HotSet.Block, int minSessions = 1, long preserveBytes = 0, long alignClusters = 4, long fixedClusters = 0)
     {
         sizeFn ??= p => new FileInfo(p).Length;
         fingerprintFn ??= FingerprintOf;
@@ -36,7 +36,7 @@ public sealed record PlanFile(
         var ext = paths.ToDictionary(p => p, extentsFn, StringComparer.Ordinal);
         var sizes = paths.ToDictionary(p => p, sizeFn, StringComparer.Ordinal);
         long zc = zoneBytes / clusterBytes;
-        AllocResult alloc = ZoneAllocator.Allocate(units, ext, zoneStartLcn, zc, clusterBytes, block, sizes, preserveBytes, alignClusters);
+        AllocResult alloc = ZoneAllocator.Allocate(units, ext, zoneStartLcn, zc, clusterBytes, block, sizes, preserveBytes, alignClusters, fixedClusters);
         JObject stats = alloc.Stats.ToJson();
         stats.Add("hot_blocks", (long)hot.Count);
         stats.Add("units", (long)units.Count);

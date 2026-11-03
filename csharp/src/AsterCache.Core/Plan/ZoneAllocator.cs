@@ -240,7 +240,7 @@ public static class ZoneAllocator
     /// zoneStartLcn 이 null 이면 존을 아직 못 정한 것: 목표는 존 시작 기준 오프셋으로 돌려주고, 제자리·존 겹침은 없다고 봅니다.
     public static AllocResult Allocate(IReadOnlyList<Unit> units, IReadOnlyDictionary<string, IReadOnlyList<Extent>?> extentsByFile,
         long? zoneStartLcn, long zoneClusters, long clusterBytes, long block = HotSet.Block,
-        IReadOnlyDictionary<string, long>? sizes = null, long preserveBytes = 0, long alignClusters = 4)
+        IReadOnlyDictionary<string, long>? sizes = null, long preserveBytes = 0, long alignClusters = 4, long fixedClusters = 0)
     {
         long cb = clusterBytes;
         bool rel = zoneStartLcn is null;
@@ -273,6 +273,10 @@ public static class ZoneAllocator
         var sources = new List<List<(long Lcn, long N)>>();
         var final = new List<(long Lcn, long N)>();
         long curOff = 0;
+        long fixedEnd = zoneStart + (rel ? 0 : Math.Min(fixedClusters, zoneClusters));
+        bool InZone(Piece p) => p.Lcn >= zoneStart && p.Lcn + p.N <= fixedEnd;
+        curOff = fixedEnd - zoneStart; // 같은 존을 이어 쓰는 계획: 이미 쓰던 구간 [시작, 시작 + fixedClusters) 안의 조각은 지금 물리 순서 그대로 두고 (접근 순서와 달라도 순환이 아님) 새 조각은 그 뒤에 덧붙임
+
         bool full = false;
         long preservedSegments = 0, preservedBytes = 0, inPlaceBytes = 0, overflowBytes = 0, misaligned = 0;
         foreach (List<Piece> g in groups)
@@ -288,6 +292,13 @@ public static class ZoneAllocator
 
             foreach (Piece p in g)
             {
+                if (InZone(p))
+                {
+                    inPlaceBytes += p.N * cb;
+                    final.Add((p.Lcn, p.N));
+                    continue;
+                }
+
                 if (full || curOff + p.N > zoneClusters)
                 {
                     full = true; // 접근 순서의 앞부분만 유지하고 나머지는 제자리

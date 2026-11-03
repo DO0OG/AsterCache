@@ -60,7 +60,7 @@ public sealed partial class AutoRelocatorTests
         NewTraceFromNextRun();
         int planAttempts = 0;
         Func<IReadOnlyList<IReadOnlyList<TraceEvent>>, string, long, PlanFile> working = _w.MakePlan;
-        _w.MakePlanAt = (_, _, _, _) => throw new PyValueException("zone overlaps hot data in a cycle; choose another zone");
+        _w.MakePlanAt = (_, _, _, _, _) => throw new PyValueException("zone overlaps hot data in a cycle; choose another zone");
         _w.MakePlan = (sessions, origin, zoneMib) =>
         {
             if (zoneMib == ZoneSize.ProbeMib)
@@ -93,7 +93,7 @@ public sealed partial class AutoRelocatorTests
         // 트레이스가 새로 쓰이면 (다음 플레이) 그 트레이스를 지우지 않고 다시 계획함
         _w.FileTimes[trace] = _w.Now + TimeSpan.FromMinutes(1);
         _w.MakePlan = working;
-        _w.MakePlanAt = (sessions, origin, zoneMib, lcn) => PlanFile.Make(sessions, origin, zoneMib << 20, Cb, p => Vol.Ext[p], zoneStartLcn: lcn, preserveBytes: 64 << 20);
+        _w.MakePlanAt = (sessions, origin, zoneMib, lcn, used) => PlanFile.Make(sessions, origin, zoneMib << 20, Cb, p => Vol.Ext[p], zoneStartLcn: lcn, preserveBytes: 64 << 20, fixedClusters: used);
         _w.Now += AutoRelocator.StaleCheckEvery;
         Tick();
         Assert.True(_w.Files.Contains(trace) || File.Exists(trace)); // 새 버전의 트레이스라 치우지 않음
@@ -213,7 +213,7 @@ public sealed partial class AutoRelocatorTests
         _w.Now += AutoRelocator.StaleCheckEvery;
         Tick();
         NewTraceFromNextRun();
-        _w.MakePlanAt = (_, _, _, _) => throw new PyValueException("zone overlaps hot data in a cycle; choose another zone");
+        _w.MakePlanAt = (_, _, _, _, _) => throw new PyValueException("zone overlaps hot data in a cycle; choose another zone");
         Func<IReadOnlyList<IReadOnlyList<TraceEvent>>, string, long, PlanFile> working = _w.MakePlan;
         _w.MakePlan = (sessions, origin, zoneMib) => zoneMib == ZoneSize.ProbeMib ? working(sessions, origin, zoneMib) : throw new PyValueException("zone overlaps hot data in a cycle; choose another zone");
         Tick();
@@ -233,6 +233,7 @@ public sealed partial class AutoRelocatorTests
     public void OldPlanWithAVolatileFileInItsOrderIsPlannedAgainOncePerRunWithoutItInTheSameZone()
     {
         long start = DoneAndReadyToReplan(out _);
+        Vol.Moves.Clear();
         PlanFile old = PlanFile.Load(_game.Plan);
         (old with { Order = [.. old.Order, new PlanRange(Path.Combine(Root, "settings.json"), 0, 4)] }).Save(_game.Plan); // 옛 계획: excluded_files 키가 없고 핫 순서에 가변 파일이 들어 있음
         Assert.False(PlanFile.Load(_game.Plan).Stats.ContainsKey(VolatileFiles.StatsKey));
@@ -251,6 +252,8 @@ public sealed partial class AutoRelocatorTests
         PlanFile fresh = PlanFile.Load(_game.Plan);
         Assert.DoesNotContain(fresh.Order, o => VolatileFiles.Ignored(o.Path));
         Assert.Equal(start, fresh.Zone.StartLcn); // 존 시작 유지
+        Assert.Empty(fresh.Tasks); // 남은 블록은 순서 그대로 제자리, 제거된 파일의 자리는 비워 둠
+        Assert.Empty(Vol.Moves);
         _relocator = null; // 서비스 재시작
         Tick();
         Assert.Equal(AutoStage.Done, Entry.Stage); // 새 계획에는 가변 파일이 없어 되풀이하지 않음

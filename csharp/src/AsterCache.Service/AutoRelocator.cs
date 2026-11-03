@@ -1056,7 +1056,7 @@ public sealed class AutoRelocator
                 _log.Info($"{g.Name}: zone extension overflow {(hot >> 20) - zoneMib} MiB dropped (max zone {zoneMib} MiB), the latest blocks of the merged trace are left out");
             }
 
-            long? start = reuseZone && _env.MakePlanAt is not null ? PreviousZoneStart(g) : null;
+            (long? start, long usedClusters) = reuseZone && _env.MakePlanAt is not null ? PreviousZone(g) : (null, 0);
             if (extending && start is null)
             {
                 BlockExtension(g, "previous zone start unknown");
@@ -1066,7 +1066,7 @@ public sealed class AutoRelocator
             PlanFile plan;
             try
             {
-                plan = start is { } lcn ? _env.MakePlanAt!(sessions, g.OriginRoot, zoneMib, lcn) : _env.MakePlan(sessions, g.OriginRoot, zoneMib);
+                plan = start is { } lcn ? _env.MakePlanAt!(sessions, g.OriginRoot, zoneMib, lcn, usedClusters) : _env.MakePlan(sessions, g.OriginRoot, zoneMib);
             }
             catch (PyValueException e) when (start is not null && !extending)
             {
@@ -1267,16 +1267,23 @@ public sealed class AutoRelocator
         return false;
     }
 
-    private long? PreviousZoneStart(GameSettings g)
+    // 이전 계획의 존 시작과 이미 쓰던 클러스터 수 (새 계획이 그 구간의 조각을 제자리에 고정함).
+    private (long? Start, long Used) PreviousZone(GameSettings g)
     {
         try
         {
             string previous = IsExtending(g) ? g.Plan + ExtendSuffix : g.Plan + StaleSuffix; // 확장 중이면 확장 전 계획의 존 시작
-            return _env.FileExists(previous) ? _env.LoadPlan(previous).Zone.StartLcn : null;
+            if (!_env.FileExists(previous))
+            {
+                return (null, 0);
+            }
+
+            PlanFile old = _env.LoadPlan(previous);
+            return (old.Zone.StartLcn, old.Stats.TryGetValue("zone_used_clusters", out object? u) && u is long used ? used : 0);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
-            return null; // 읽을 수 없는 옛 계획은 힌트일 뿐
+            return (null, 0); // 읽을 수 없는 옛 계획은 힌트일 뿐
         }
     }
 

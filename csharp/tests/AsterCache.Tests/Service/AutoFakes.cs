@@ -122,7 +122,7 @@ internal sealed class FakeWorld
     public List<long> PlanZones { get; } = [];
 
     /// 존 시작을 지정한 계획 (업데이트 뒤 재계획의 이전 존 시작 시도). 시험이 필요하면 바꿔 끼움.
-    public Func<IReadOnlyList<IReadOnlyList<TraceEvent>>, string, long, long, PlanFile> MakePlanAt { get; set; } = (_, _, _, _) => throw new InvalidOperationException("MakePlanAt");
+    public Func<IReadOnlyList<IReadOnlyList<TraceEvent>>, string, long, long, long, PlanFile> MakePlanAt { get; set; } = (_, _, _, _, _) => throw new InvalidOperationException("MakePlanAt");
 
     public List<long> PlanStarts { get; } = [];
 
@@ -212,10 +212,10 @@ internal sealed class FakeWorld
             PlanZones.Add(zoneMib);
             return MakePlan(sessions, origin, zoneMib);
         },
-        MakePlanAt = (sessions, origin, zoneMib, start) =>
+        MakePlanAt = (sessions, origin, zoneMib, start, used) =>
         {
             PlanStarts.Add(start);
-            return MakePlanAt(sessions, origin, zoneMib, start);
+            return MakePlanAt(sessions, origin, zoneMib, start, used);
         },
         SavePlan = (plan, sessions, path) => PlanOutput.Save(plan, sessions, path),
         LoadPlan = PlanFile.Load,

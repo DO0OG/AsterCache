@@ -21,7 +21,10 @@ public sealed class TierSelectorTests
     {
         var sizes = new Dictionary<string, long>
         {
-            [@"D:\Games\g\a.bin"] = 100 * Mib, [@"D:\Games\g\b.bin"] = 10 * Mib, [@"D:\Games\g\c.bin"] = 50 * Mib, [@"D:\Games\g\d.bin"] = 20 * Mib,
+            [@"D:\Games\g\a.bin"] = 100 * Mib,
+            [@"D:\Games\g\b.bin"] = 10 * Mib,
+            [@"D:\Games\g\c.bin"] = 50 * Mib,
+            [@"D:\Games\g\d.bin"] = 20 * Mib,
         };
         TraceEvent[] events =
         [

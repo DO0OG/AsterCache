@@ -1,4 +1,3 @@
-using AsterCache.Core.Logging;
 using AsterCache.Core.Settings;
 using AsterCache.Core.Tier;
 using AsterCache.Tests.Service;

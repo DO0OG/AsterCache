@@ -76,8 +76,14 @@ public sealed class TierJournal
                 string state = Str(e, "state");
                 j.Entries.Add(new TierEntry
                 {
-                    Path = Str(e, "path"), Target = Str(e, "target"), Orig = Str(e, "orig"), Size = Num(e, "size"), Sha = Str(e, "sha"), MtimeTicks = Num(e, "mtime_ticks"),
-                    At = Time(Str(e, "at")), State = state is TierState.Active or TierState.Stale or TierState.Reverted ? state : throw new TierJournalException("bad state"),
+                    Path = Str(e, "path"),
+                    Target = Str(e, "target"),
+                    Orig = Str(e, "orig"),
+                    Size = Num(e, "size"),
+                    Sha = Str(e, "sha"),
+                    MtimeTicks = Num(e, "mtime_ticks"),
+                    At = Time(Str(e, "at")),
+                    State = state is TierState.Active or TierState.Stale or TierState.Reverted ? state : throw new TierJournalException("bad state"),
                 });
             }
 

@@ -225,7 +225,12 @@ public sealed class TierEngine
 
             entry = new TierEntry
             {
-                Path = path, Target = dst, Orig = orig, Size = src.Length, Sha = sha, At = _now(),
+                Path = path,
+                Target = dst,
+                Orig = orig,
+                Size = src.Length,
+                Sha = sha,
+                At = _now(),
                 MtimeTicks = (_fs.Stat(dst) ?? throw new IOException("copy missing")).MtimeTicks,
             };
             j.Entries.Add(entry);

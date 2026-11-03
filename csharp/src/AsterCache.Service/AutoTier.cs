@@ -1,11 +1,9 @@
 using System.Collections.Concurrent;
 using System.Globalization;
-using AsterCache.Core;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
 using AsterCache.Core.Tier;
-using AsterCache.Core.Trace;
 
 namespace AsterCache.Service;
 

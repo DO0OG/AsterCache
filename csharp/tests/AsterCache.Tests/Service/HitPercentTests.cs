@@ -1,5 +1,4 @@
 using AsterCache.Core.Json;
-using AsterCache.Core.Settings;
 using AsterCache.Service;
 using AsterCache.Tray;
 using AsterCache.Windows;

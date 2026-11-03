@@ -497,7 +497,7 @@ public sealed class ApplyPortTests : ApplyTestBase
         ApplyReport rep = Apply(Make().Resolve(20000), Exec());
 
         ApplyTimings t = rep.Timings;
-        Assert.Equal(t.OpenS + t.DigestBeforeS + t.MoveS + t.DigestAfterS + t.JournalS + t.OtherS, t.TotalS, 6);
+        Assert.Equal(t.OpenS + t.DigestBeforeS + t.MoveS + t.DigestAfterS + t.JournalS + t.OtherS, t.TotalS, 3); // 각 항은 소수 3 자리로 반올림돼 있어 합도 그 자릿수에서만 같음
         Assert.True(t.OtherS >= 0 && t.TotalS > 0);
         Assert.Equal(2, t.Files);
         Assert.Equal(rep.TasksTodo, t.Tasks);

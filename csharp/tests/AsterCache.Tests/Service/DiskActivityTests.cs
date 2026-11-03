@@ -65,4 +65,23 @@ public sealed class DiskActivityTests
         var sampler = new DiskActivity.PhysicalSampler(() => null, () => 0);
         Assert.Null(sampler.BytesPerSecond("D:"));
     }
+
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(-1.0)]
+    public void InvalidValueMakesTheVolumeUnknownAndSaysSo(double value)
+    {
+        var bad = new Dictionary<string, double> { ["0 D:"] = value, ["1 E:"] = 0 };
+        Assert.Null(DiskActivity.Sum("D:", bad, out string? reason));
+        Assert.Equal(DiskActivity.ValueInvalid, reason);
+        Assert.True(Busy("D:", bad));
+    }
+
+    [Fact]
+    public void OnlyAnUnnumberedInstanceIsUnmapped()
+    {
+        Assert.Null(DiskActivity.Sum("D:", new Dictionary<string, double> { ["0"] = 0 }, out string? reason));
+        Assert.Equal(DiskActivity.InstanceUnmapped, reason);
+    }
 }

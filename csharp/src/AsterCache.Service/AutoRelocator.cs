@@ -898,6 +898,7 @@ public sealed class AutoRelocator
         _tier?.RevertGame(g.Name, "relocation starting");
         Note(g, AutoStage.Relocating, null);
         _log.Info($"{g.Name}: auto relocation starting");
+        VolumeDisks.Shared.Forget(PlanFile.SplitDrive(g.OriginRoot)); // 재배치 직전 매핑 재조회 (드라이브 문자 재할당 반영)
         int mark = int.MaxValue; // 이번 적용 전의 저널 줄 수 (모르면 아무것도 되돌리지 않음)
         try
         {

@@ -363,6 +363,9 @@ public sealed class Prewarmer
         _rewarm.Tick(auto, ct);
     }
 
+    /// 게임이 끝났을 때 (Worker 가 부름): 재예열 점검을 앞당깁니다.
+    public void NoteGameExit() => _rewarm.PullIn(_auto);
+
     /// 예열에 성공한 적이 있는 게임 (최근 순, 설정에 아직 있는 것만).
     internal IReadOnlyList<GameSettings> Warmed()
     {

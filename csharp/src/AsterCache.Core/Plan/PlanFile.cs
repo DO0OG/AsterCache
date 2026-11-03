@@ -9,7 +9,11 @@ namespace AsterCache.Core.Plan;
 public sealed record PlanZone(long? StartLcn, long Clusters);
 
 /// 계획 시점의 파일 지문 [size, mtime_ns]. MOVE_FILE 은 둘 다 바꾸지 않으므로 계획 뒤 다시 쓴 파일을 알아챕니다.
-public sealed record Fingerprint(string Path, long Size, long MtimeNs);
+public sealed record Fingerprint(string Path, long Size, long MtimeNs)
+{
+    /// 1970-01-01 UTC 의 .NET Ticks (MtimeNs 를 시각으로 되돌릴 때).
+    public const long UnixEpochTicks = 621355968000000000L;
+}
 
 /// plan.json 한 벌. 키 순서와 바이트 표기는 Python 과 같습니다 (<see cref="Dumps"/>, <see cref="Save"/>).
 /// Python 과 다른 점: block 과 지문 값 ([size, mtime_ns] 정수 둘) 도 읽을 때 검사하고, 알려진 키 밖의 키는 버립니다.
@@ -18,8 +22,6 @@ public sealed record PlanFile(
     IReadOnlyList<PlanTask> Tasks, IReadOnlyList<PlanRange> Order, IReadOnlyList<Fingerprint> Fingerprints, JObject Stats)
 {
     public const long CurrentVersion = 1;
-
-    private const long UnixEpochTicks = 621355968000000000L;
 
     public static PlanFile Make(IReadOnlyList<IReadOnlyList<TraceEvent>> sessions, string originRoot, long zoneBytes, long clusterBytes,
         Func<string, IReadOnlyList<Extent>?> extentsFn, Func<string, long>? sizeFn = null, Func<string, Fingerprint>? fingerprintFn = null,
@@ -53,7 +55,7 @@ public sealed record PlanFile(
             info = target;
         }
 
-        return new Fingerprint(path, info.Length, (info.LastWriteTimeUtc.Ticks - UnixEpochTicks) * 100);
+        return new Fingerprint(path, info.Length, (info.LastWriteTimeUtc.Ticks - Fingerprint.UnixEpochTicks) * 100);
     }
 
     /// ntpath.splitdrive 의 드라이브 부분 ("D:" 또는 "\\host\share", 없으면 빈 문자열).

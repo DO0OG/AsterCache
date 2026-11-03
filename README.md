@@ -261,7 +261,7 @@ Automatic mode is on by default. In the usual case you do not need to register g
 A game with no trace takes its first layout data from the first source below that applies. When the first real run records a trace, the plan made from it replaces the earlier one (the old plan is kept as `.stale`).
 
 1. **Shared profile** (`auto.shared_profiles`, on by default). Once a week the service downloads one zip of shared profiles over HTTPS and looks each game up in its index by Steam app ID and depot manifest IDs, Epic app name and version, or exe size and sample SHA-256. A profile is used only when the file size and sample hash on this PC match. Offline or 404 responses are skipped silently. The download is capped at 64 MiB. The shared repository is still being prepared.
-2. **Windows prefetch record** (`C:\Windows\Prefetch\*.pf`). Used when the SysMain service runs and the application bit of `EnablePrefetcher` is on. The service only reads the game's `.pf` files and builds a boot trace from the files in the install folder, skipping files flagged "do not prefetch". Only files of 64 MiB or less are moved into the zone, in physical order; larger files are left in place. The management window shows this as "relocated (prefetch)".
+2. **Windows prefetch record** (`C:\Windows\Prefetch\*.pf`). Used when the SysMain service runs and the application bit of `EnablePrefetcher` is on. The service only reads the game's `.pf` files and builds a boot trace from the files in the install folder, skipping files flagged "do not prefetch". The ranges the record refers to, plus 64 MiB before and after each (merged where they overlap, with no file size limit), are moved into the zone in physical order. If the zone covers less than 30 % of what a play reads, the status detail shows `partial (N%)`. The management window shows this as "relocated (prefetch)".
 3. **Engine profile** (Unity, Unreal, or Source), prewarmed without a trace.
 4. **Whole folder**, prewarmed without a trace when the folder fits the RAM budget.
 
@@ -396,7 +396,7 @@ The configuration file is `%ProgramData%\AsterCache\config.json`. Editing it in 
 | `prewarm.min_free_ram_mib` | Available RAM to leave free even after prewarm (default 4096) |
 | `prewarm.cooldown_min` | Minimum interval between prewarms (default 30 minutes) |
 | `auto` | Automatic mode settings. Omitted keys take their defaults. See [Automatic mode](#automatic-mode). |
-| `max_zone_mib` | Upper limit of the zone size for automatic planning, in MiB (default 2048), or `"auto"` (physical RAM ÷ 4, between 2048 and 8192 MiB; capped at 2048 when the disk type is unknown or the disk is on USB) |
+| `max_zone_mib` | Upper limit of the zone size for automatic planning, in MiB (default 2048), or `"auto"` (physical RAM ÷ 4, between 2048 and 8192 MiB; capped at 2048 when the disk type is unknown or the disk is on USB). On a 32 GB PC, `"auto"` is recommended over a fixed 2048. |
 | `games[].source` | `auto` for a game found automatically, `manual` for a game you registered |
 | `games[].anticheat` | Anti-cheat folders found in the install folder, for example `EasyAntiCheat`. Shown in the Games tab; it does not change behavior |
 | `auto.ssd_tier` | Optional SSD assist storage: `enabled` (default `false`), `budget_gib` (default 8), `root` (default `"auto"`). See [SSD assist storage](#ssd-assist-storage-optional) |

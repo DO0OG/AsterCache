@@ -55,7 +55,7 @@ public sealed class IdleTrackerTests
 }
 
 /// 자동 계획·첫 재배치의 상태 기계. 가짜 볼륨과 실제 임시 파일, 가짜 시계·디스크·CPU·전원을 씁니다.
-public sealed class AutoRelocatorTests : ApplyTestBase
+public sealed partial class AutoRelocatorTests : ApplyTestBase
 {
     private static readonly TimeSpan Step = Worker.CheckTick;
     private readonly FakeWorld _w = new();
@@ -2082,7 +2082,7 @@ public sealed class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
-    public void PrefetchPlanTakesWholeSmallFilesInPhysicalOrderAndLeavesBigFilesAlone()
+    public void PrefetchPlanTakesWholeSmallFilesInPhysicalOrder()
     {
         UsePrefetchRecord();
         _w.LoadSessions = () => [[new TraceEvent(F2, 0, 1 << 20), new TraceEvent(F1, 0, 1 << 20)]]; // 프리페치 순서는 F2 가 먼저지만 물리 위치는 F1 (LCN 1000) 이 앞
@@ -2093,26 +2093,51 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         Assert.Equal(256, small.Order.Where(o => o.Path == F1).Sum(o => o.Clusters)); // 파일 통째 (1 MiB / 4 KiB)
         Assert.Equal(256, small.Order.Where(o => o.Path == F2).Sum(o => o.Clusters));
         Assert.Equal(0, small.Order.Where(o => o.Path == F1).Min(o => o.Vcn));
+    }
 
-        File.Delete(_game.Plan);
-        _w.Stat = p => p == F2 ? new Fingerprint(p, (64L << 20) + 1, 0) : PlanFile.FingerprintOf(p); // F2 는 64 MiB 를 넘음
-        _status.Set("bench", "auto", null, AutoStage.Discovered, null);
-        Tick();
+    // F2 를 1 GiB 짜리 파일 하나로: 실제 파일은 SetLength 로 늘림 (내용을 쓰지 않음), 볼륨의 extent 는 가짜.
+    private void MakeBigF2(long bytes)
+    {
+        using (var f = new FileStream(F2, FileMode.Open, FileAccess.Write))
+        {
+            f.SetLength(bytes);
+        }
 
-        PlanFile big = PlanFile.Load(_game.Plan);
-        Assert.Equal([F1], big.Order.Select(o => o.Path).Distinct());
-        Assert.DoesNotContain(big.Tasks, t => t.Path == F2);
+        Files[F2] = [new Extent(0, 100000, bytes / Cb)];
+        _w.Extents = p => p == F2 ? Files[F2] : Vol.Ext[p];
     }
 
     [Fact]
-    public void FileExactlyAtTheLimitIsStillIncluded()
+    public void PrefetchPlanOfABigFileTakesEachReferencedRangeWithPadding()
     {
+        const long gib = 1L << 30;
+        const long mib = 1L << 20;
         UsePrefetchRecord();
-        _w.Stat = p => p == F2 ? new Fingerprint(p, AutoRelocator.PrefetchMaxFileBytes, 0) : PlanFile.FingerprintOf(p);
+        MakeBigF2(gib);
+        _w.LoadSessions = () => [[new TraceEvent(F2, 100 * mib, mib), new TraceEvent(F2, 800 * mib, mib)]];
 
         Tick();
 
-        Assert.Contains(PlanFile.Load(_game.Plan).Order, o => o.Path == F2);
+        List<PlanRange> ranges = [.. PlanFile.Load(_game.Plan).Order.Where(o => o.Path == F2)];
+        Assert.Equal(2, ranges.Count); // 큰 파일도 참조한 두 범위만 (앞뒤 64 MiB 포함)
+        Assert.Equal((36 * mib / Cb, 129 * mib / Cb), (ranges[0].Vcn, ranges[0].Clusters));
+        Assert.Equal((736 * mib / Cb, 129 * mib / Cb), (ranges[1].Vcn, ranges[1].Clusters));
+    }
+
+    [Fact]
+    public void PrefetchRangesThatTouchAfterPaddingAreMerged()
+    {
+        const long gib = 1L << 30;
+        const long mib = 1L << 20;
+        UsePrefetchRecord();
+        MakeBigF2(gib);
+        _w.LoadSessions = () => [[new TraceEvent(F2, 100 * mib, mib), new TraceEvent(F2, 200 * mib, mib)]]; // 패딩 뒤 100 MiB 간격이 겹침
+
+        Tick();
+
+        List<PlanRange> ranges = [.. PlanFile.Load(_game.Plan).Order.Where(o => o.Path == F2)];
+        Assert.Single(ranges);
+        Assert.Equal(229 * mib / Cb, ranges[0].Clusters); // 36 .. 265 MiB
     }
 
     [Fact]

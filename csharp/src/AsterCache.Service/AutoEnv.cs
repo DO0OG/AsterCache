@@ -131,6 +131,9 @@ public sealed class AutoEnv
 
     public required Func<string, string, IReadOnlyList<TraceEvent>> LoadTrace { get; init; }
 
+    /// 트레이스에서 알게 된 가변 파일 (경로 → 사유) 표시 파일을 읽음, 없으면 빈 목록. 시험 기본값은 빈 목록.
+    public Func<string, IReadOnlyDictionary<string, string>> LoadVolatile { get; init; } = _ => new Dictionary<string, string>();
+
     /// (세션, 원점 루트, 존 MiB) → 계획 (존 시작 미정).
     public required Func<IReadOnlyList<IReadOnlyList<TraceEvent>>, string, long, PlanFile> MakePlan { get; init; }
 
@@ -231,6 +234,7 @@ public sealed class AutoEnv
             PrefetchBoot = g => AutoTracer.BootFromPrefetch(g),
             TraceSource = AutoTracer.TraceSourceOf,
             LoadTrace = (raw, origin) => TraceLoader.LoadRanges(raw, origin, RealPaths.Resolve),
+            LoadVolatile = AutoTracer.ReadVolatile,
             MakePlan = (sessions, origin, zoneMib) => MakePlanAtLcn(sessions, origin, zoneMib, null),
             MakePlanAt = (sessions, origin, zoneMib, start) => MakePlanAtLcn(sessions, origin, zoneMib, start),
             SavePlan = (plan, sessions, path) => PlanOutput.Save(plan, sessions, path),

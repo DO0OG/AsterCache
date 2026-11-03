@@ -28,6 +28,8 @@ Check the CLI commands (`aster plan`, `probe`, `apply`, `verify`, `revert`, `tra
 
 `aster discover [--json]` lists the games found in the supported launchers' libraries, read only, with the anticheat marker. The `launcher` value of each entry can also be `riot`, `uninstall`, or `xbox`. `aster status --auto-status` prints the automatic mode state (`auto_status.json`).
 
+`aster tier status [--data-dir <folder>]` prints the optional SSD assist storage (`auto.ssd_tier`) state as one JSON line: the enabled flag, budget, chosen root (or the reason none was found), and per-game active links, bytes, and corrupt journal flags. `aster tier apply --game <name>`, `aster tier revert --game <name>` or `--all`, and `aster tier clean` need administrator rights (the service does the same things automatically). `apply` copies the selected hot files to the SSD, checks size and a sampled SHA-256, and replaces each original with a link, keeping the original as `<name>.aster-orig`. It refuses (with an `error` such as `ssd_tier_disabled`, `system_volume`, `not_an_hdd`, `game_running`, `anti_cheat`, `no_ssd_root`, or `no_trace`) when the feature is off or the game does not qualify. `revert` removes the links and restores the originals. `clean` deletes only copies that no link uses. The journal is `tier\<game>.json` in the data folder.
+
 `aster learn --exe <name>... --root <folder> [--seconds N] [--window-mib M] [--max-mib M] [--mode stream|gap|bounded|adaptive] [--saturation-mbps N] [--gap-ms N] [--seq-runs N] [--out trace.json] [--json]` runs the first-run learning (trace plus read-ahead) without the service, for measurement and debugging. It needs administrator rights. Its output includes `read_ahead_bytes`, `game_read_bytes`, `hit_ratio`, `events`, and `events_lost`. The new JSON keys are `resolved_reads`, `late_reads`, `unresolved_reads`, `sequential_files`, `hit_bytes`, `gap_count`, `yielded_requests`, and `read_ahead_while_idle_bytes`.
 
 - `--gap-ms` (default 100): read-ahead starts only after this much time has passed since the game's last read (gap-only).
@@ -59,9 +61,9 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <folder>]
 | Area | Content |
 |---|---|
 | Drive list on the left | For each fixed volume: letter, label, file system, total/free capacity, disk model, HDD/SSD (`IncursSeekPenalty` from `IOCTL_STORAGE_QUERY_PROPERTY`; "unknown" on failure), and the number of registered games. Selecting one shows only that drive's games on the right ("All drives" is at the top). |
-| Status tab | Whether the service is installed and running, watcher type, last prewarm (time, MiB, seconds), per-game layout verdict (`verdict` of `aster status --plan`), zone hit rate (`in_zone_clusters / hot_clusters`), last relocation time (journal file time), and per-game prewarm results. Refresh button. |
+| Status tab | Whether the service is installed and running, watcher type, last prewarm (time, MiB, seconds), per-game layout verdict (`verdict` of `aster status --plan`), zone hit rate (`in_zone_clusters / hot_clusters`), last relocation time (journal file time), and per-game prewarm results, and per-game `prewarm hit N%` (the hit rate measured at the last game start) and `SSD assist N GB` (the size of its SSD copies). Refresh button. |
 | Games tab | List: name, exe, origin root, plan/trace present or not, layout verdict, prewarm settings. The buttons are in the table below. |
-| Settings tab | Service install, uninstall, start, and stop; watcher poll/etw; display of prewarm defaults; the **Automatic mode** group (on, discover, trace, relocate, prewarm count, zone cap, rewarm interval, excluded exes); open the data folder and log folder; tray and service versions; **language** (auto / Korean / English). |
+| Settings tab | Service install, uninstall, start, and stop; watcher poll/etw; display of prewarm defaults; the **Automatic mode** group (on, discover, trace, relocate, prewarm count, zone cap, rewarm interval, excluded exes, and the SSD assist storage checkbox and budget in GiB); open the data folder and log folder; tray and service versions; **language** (auto / Korean / English). |
 | Log tab | The last 200 lines of `service.log` and `tray.log`, with refresh. |
 | Top banner | Without administrator rights: "No administrator rights: saving settings, trace, relocation, and service control require relaunching as administrator", with a [Relaunch as administrator] button. |
 
@@ -82,7 +84,7 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <folder>]
 - Relocation and revert are refused while a game is running, and the amount written at one time is limited to 2 GiB (`--write-cap-mib`), so a large move may need several runs with the note "Run again and it continues". Trace capture lasts at most 3600 seconds, and when the app exits or relaunches as administrator while a capture is in progress, it waits up to 10 seconds for the save.
 - Images for documentation: `AsterCache.Tray.exe --smoke --screenshot <png> [--tab <0..3>] --data-dir <folder>` saves the main window at 1100x720 and exits (`docs\images\main-window.png`; the drive list is sample values). Adding `--lang en` or the environment variable `ASTER_LANG=en` renders the English UI (this is how `docs\images\main-window.en.png` is made).
 - The service re-reads the whole `config.json` every 5 seconds, so registering or removing games and changing the watcher take effect without a restart. If the new configuration fails validation or the folder permission check, the previous settings stay in force and the reason is logged.
-- Prewarm pinning (`prewarm.pin`) is not on the Settings tab. Set it per game in `config.json` (off by default; 16 GiB of RAM or more only; a prewarm started by a trigger program is not pinned). Off by default, effect unverified (needs an experiment).
+- Prewarm pinning (`prewarm.pin`) is not on the Settings tab. Set it per game in `config.json`. When the key is not written, it is on automatically with 24 GiB of RAM or more; `false` turns it off; an explicit `true` works with 16 GiB of RAM or more. A prewarm started by a trigger program is not pinned. Effect unverified (needs an experiment).
 - Not done yet: editing prewarm defaults (display only), window screen tests (only view-model and command-assembly tests exist; `Avalonia.Headless` is not used), and an actual UAC test of the elevation path.
 
 ## Administrator scripts (run by the user)
@@ -148,6 +150,8 @@ The shared profile zip holds `index.json` and the profile files:
 
 Prewarm runs only if all of these hold: available RAM ≥ zone size + `min_free_ram_mib`, the game is not running, the cooldown has passed, and the plan and trace files exist. Otherwise it is skipped and the reason is written to `service.log`. The result (bytes, seconds, MB/s, skip reason) is recorded in `service.log` and `%ProgramData%\AsterCache\prewarm_status.json` and appears as `prewarm` in `aster status`.
 
+When a batch holds more than one game, each game's loading head (tier0) is read first, in recent order, and then each game's whole zone is read.
+
 ```json
 {
   "language": "auto",
@@ -186,7 +190,7 @@ An installer install puts the tray, `aster.exe`, and the service in `Program Fil
 
 ## Installer
 
-`packaging\windows\aster.iss` (Inno Setup 6) installs the management window, `aster.exe`, the service, and the runtime into `Program Files\AsterCache`. It registers the `AsterCache` service (LocalSystem, automatic start) and sets the ACL of the whole data folder. It allows administrator installs only. The setup asks for the language (English or Korean, saved as `"language"` in `config.json`), desktop and Start menu shortcuts, opening the management window and keeping the tray icon at sign-in (the shortcut is in the all-users Startup folder), installing and starting the service, and starting the management window at the end. All of them are checked by default. Uninstalling stops and removes the service, quits the tray, and leaves the data folder.
+`packaging\windows\aster.iss` (Inno Setup 6) installs the management window, `aster.exe`, the service, and the runtime into `Program Files\AsterCache`. It registers the `AsterCache` service (LocalSystem, automatic start) and sets the ACL of the whole data folder. It allows administrator installs only. The setup asks for the language (English or Korean, saved as `"language"` in `config.json`), desktop and Start menu shortcuts, opening the management window and keeping the tray icon at sign-in (the shortcut is in the all-users Startup folder), installing and starting the service, and starting the management window at the end. All of them are checked by default. Uninstalling first runs `aster tier revert --all` to remove the SSD assist links (the copies stay in the tier folder), then stops and removes the service, quits the tray, and leaves the data folder.
 
 Defines: `/DAppDir` (folder with the management window, `aster.exe`, and the runtime), `/DAppVersion` (version shown to the user), `/DAppNumVersion` (numeric version), and `/DOutputDir` (folder for the setup `.exe`). Compile it with `ISCC.exe /DAppDir=<gui publish path> /DAppVersion=<version> aster.iss`; the release workflow does the same.
 

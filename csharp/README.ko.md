@@ -28,6 +28,8 @@ CLI 명령(`aster plan`, `probe`, `apply`, `verify`, `revert`, `trace`, `prefetc
 
 `aster discover [--json]` 은 지원 런처 라이브러리에서 찾은 게임 목록을 읽기 전용으로 보여 주며, 안티치트 표시를 함께 냅니다. 각 항목의 `launcher` 값에 `riot`, `uninstall`, `xbox` 가 추가됐습니다(Riot 라이브러리, Windows 제거 목록, Xbox 폴더). `aster status --auto-status` 는 자동 모드 상태(`auto_status.json`)를 보여 줍니다.
 
+`aster tier status [--data-dir <폴더>]` 는 선택 기능인 SSD 보조 저장(`auto.ssd_tier`)의 상태를 한 줄 JSON 으로 보여 줍니다. 켜짐 여부, 예산, 고른 사본 폴더(또는 찾지 못한 이유), 게임별 활성 링크·바이트·손상 저널 표시를 냅니다. `aster tier apply --game <이름>`, `aster tier revert --game <이름>` 또는 `--all`, `aster tier clean` 은 관리자 권한이 필요합니다(서비스가 같은 일을 자동으로 합니다). `apply` 는 고른 핫 파일을 SSD 로 복사하고 크기와 표본 SHA-256 을 확인한 뒤, 원본을 `<이름>.aster-orig` 로 남기고 링크로 바꿉니다. 기능이 꺼져 있거나 게임이 조건에 맞지 않으면 `error`(예: `ssd_tier_disabled`, `system_volume`, `not_an_hdd`, `game_running`, `anti_cheat`, `no_ssd_root`, `no_trace`)와 함께 실패합니다. `revert` 는 링크를 지우고 원본을 복구합니다. `clean` 은 어떤 링크도 쓰지 않는 사본만 지웁니다. 저널은 데이터 폴더의 `tier\<게임>.json` 입니다.
+
 `aster learn --exe <이름>... --root <폴더> [--seconds N] [--window-mib M] [--max-mib M] [--mode stream|gap|bounded|adaptive] [--saturation-mbps N] [--gap-ms N] [--seq-runs N] [--out trace.json] [--json]` 은 서비스 없이 첫 실행 학습(트레이스 + 선행 읽기)을 돌리는 측정·디버그용 명령입니다. 관리자 권한이 필요합니다. 출력에는 `read_ahead_bytes`, `game_read_bytes`, `hit_ratio`, `events`, `events_lost` 가 나옵니다. JSON 새 키는 `resolved_reads`, `late_reads`, `unresolved_reads`, `sequential_files`, `hit_bytes`, `gap_count`, `yielded_requests`, `read_ahead_while_idle_bytes` 입니다.
 
 - `--gap-ms` (기본 100): 게임의 마지막 읽기 뒤 이 시간이 지나야 선행 읽기를 합니다 (틈 전용).
@@ -59,9 +61,9 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 | 화면 | 내용 |
 |---|---|
 | 왼쪽 드라이브 목록 | 고정 볼륨마다 문자·레이블·파일시스템·전체/여유 용량·디스크 모델·HDD/SSD(`IOCTL_STORAGE_QUERY_PROPERTY` 의 `IncursSeekPenalty`, 실패하면 "알 수 없음")·등록된 게임 수. 선택하면 오른쪽에 그 드라이브의 게임만 보입니다 ("전체 드라이브" 가 맨 위). |
-| 상태 탭 | 서비스 설치·실행 여부, 감시기 종류, 마지막 예열(시각·MiB·초), 게임별 배치 판정(`aster status --plan` 의 `verdict`), 존 적중률(`in_zone_clusters / hot_clusters`), 마지막 재배치 시각(저널 파일 시각), 게임별 예열 결과. 새로 고침 버튼. |
+| 상태 탭 | 서비스 설치·실행 여부, 감시기 종류, 마지막 예열(시각·MiB·초), 게임별 배치 판정(`aster status --plan` 의 `verdict`), 존 적중률(`in_zone_clusters / hot_clusters`), 마지막 재배치 시각(저널 파일 시각), 게임별 예열 결과, 게임별 `예열 적중 N%`(마지막 게임 시작 때 잰 적중률)과 `SSD 보조 N GB`(SSD 사본 크기). 새로 고침 버튼. |
 | 게임 탭 | 목록: 이름·exe·원점 루트·계획/트레이스 유무·배치 verdict·예열 설정. 버튼은 아래 표. |
-| 설정 탭 | 서비스 설치·제거·시작·정지, 감시기 poll/etw, 예열 기본값 표시, **자동 모드** 묶음(켬·발견·트레이스·재배치·예열 개수·존 상한·예열 유지 주기·제외 exe), 데이터 폴더·로그 폴더 열기, 트레이·서비스 버전, **언어**(자동 / 한국어 / English). |
+| 설정 탭 | 서비스 설치·제거·시작·정지, 감시기 poll/etw, 예열 기본값 표시, **자동 모드** 묶음(켬·발견·트레이스·재배치·예열 개수·존 상한·예열 유지 주기·제외 exe, SSD 보조 저장 체크박스와 예산(GiB)), 데이터 폴더·로그 폴더 열기, 트레이·서비스 버전, **언어**(자동 / 한국어 / English). |
 | 로그 탭 | `service.log` 와 `tray.log` 의 끝 200줄, 새로 고침. |
 | 위쪽 띠 | 관리자 권한이 없으면 "관리자 권한 없음: 설정 저장·트레이스·재배치·서비스 제어는 관리자 재실행 필요" 와 [관리자로 다시 실행] 버튼. |
 
@@ -82,7 +84,7 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 - 재배치·되돌리기는 게임이 실행 중이면 거부하고, 한 번에 쓰는 양이 2 GiB (`--write-cap-mib`) 로 제한되어 큰 이동은 "다시 실행하면 이어서 합니다" 안내와 함께 여러 번 실행해야 할 수 있습니다. 트레이스 수집은 최대 3600 초이고, 앱 종료·관리자 재실행 때 진행 중이면 저장을 최대 10 초 기다립니다.
 - 문서용 그림: `AsterCache.Tray.exe --smoke --screenshot <png> [--tab <0..3>] --data-dir <폴더>` 는 메인 창을 1100x720 으로 저장하고 끝납니다 (`docs\images\main-window.png`, 드라이브 목록은 예시 값). `--lang en` 또는 환경변수 `ASTER_LANG=en` 을 함께 주면 영어 UI 로 그립니다 (`docs\images\main-window.en.png` 가 이렇게 만든 것).
 - 서비스는 `config.json` 전체를 5초마다 다시 읽으므로 게임 등록·제거와 감시기 변경은 다시 시작하지 않아도 반영됩니다. 새 설정이 검증이나 폴더 권한 검사에 실패하면 옛 설정을 유지하고 그 이유를 로그에 남깁니다.
-- 예열 고정(`prewarm.pin`)은 설정 탭에 없고 게임별로 `config.json` 에서 정합니다 (기본 꺼짐, RAM 16 GiB 이상에서만 동작, 트리거 프로그램으로 뜬 예열은 고정하지 않음). 기본 꺼짐, 효과 미확인(실험 필요).
+- 예열 고정(`prewarm.pin`)은 설정 탭에 없고 게임별로 `config.json` 에서 정합니다. 설정에 적지 않으면 물리 RAM 24 GiB 이상에서 자동으로 켜지고, `false` 는 끕니다. 명시한 `true` 는 RAM 16 GiB 이상에서 동작합니다. 트리거 프로그램으로 뜬 예열은 고정하지 않습니다. 효과 미확인(실험 필요).
 - 아직 안 한 것: 예열 기본값 편집 (표시만), 창 화면 시험 (뷰모델·명령 조립 시험만 있고 `Avalonia.Headless` 는 쓰지 않음), 관리자 승격 경로의 실제 UAC 실행 시험.
 
 ## 관리자 스크립트 (사용자가 직접 실행)
@@ -148,6 +150,8 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 
 예열은 가용 RAM ≥ 존 크기 + `min_free_ram_mib`, 게임이 실행 중이 아님, 쿨다운이 지남, 계획·추적 파일이 있음, 이 조건을 모두 만족할 때만 합니다. 아니면 건너뛰고 이유를 `service.log` 에 남깁니다. 결과(바이트·초·MB/s·건너뜀 이유)는 `service.log` 와 `%ProgramData%\AsterCache\prewarm_status.json` 에 남고 `aster status` 의 `prewarm` 로 보입니다.
 
+묶음에 게임이 둘 이상이면 각 게임의 로딩 앞부분(tier0)을 최근 순서로 먼저 읽고, 그다음 게임별 구역 전체를 읽습니다.
+
 ```json
 {
   "language": "auto",
@@ -186,7 +190,7 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 
 ## 설치 프로그램
 
-`packaging\windows\aster.iss` (Inno Setup 6) 는 관리 창, `aster.exe`, 서비스, 런타임 전체를 `Program Files\AsterCache` 에 설치하고, `AsterCache` 서비스를 등록하며(LocalSystem, 자동 시작), 데이터 폴더 전체의 ACL 을 설정합니다. 관리자 설치만 허용합니다. 설치 중 언어(English 또는 한국어, `config.json` 의 `"language"` 에 기록), 바탕화면·시작 메뉴 바로가기, 로그인 때 관리 창 실행과 트레이 아이콘 상주(바로가기는 모든 사용자 시작 프로그램 폴더), 서비스 설치와 시작, 마지막 화면의 관리 창 실행을 고를 수 있으며 모두 기본으로 켜져 있습니다. 제거하면 서비스를 멈추고 지우며 트레이를 종료하고, 데이터 폴더는 남깁니다.
+`packaging\windows\aster.iss` (Inno Setup 6) 는 관리 창, `aster.exe`, 서비스, 런타임 전체를 `Program Files\AsterCache` 에 설치하고, `AsterCache` 서비스를 등록하며(LocalSystem, 자동 시작), 데이터 폴더 전체의 ACL 을 설정합니다. 관리자 설치만 허용합니다. 설치 중 언어(English 또는 한국어, `config.json` 의 `"language"` 에 기록), 바탕화면·시작 메뉴 바로가기, 로그인 때 관리 창 실행과 트레이 아이콘 상주(바로가기는 모든 사용자 시작 프로그램 폴더), 서비스 설치와 시작, 마지막 화면의 관리 창 실행을 고를 수 있으며 모두 기본으로 켜져 있습니다. 제거하면 먼저 `aster tier revert --all` 로 SSD 보조 저장의 링크를 되돌리고(사본은 tier 폴더에 남음), 서비스를 멈추고 지우며 트레이를 종료합니다. 데이터 폴더는 남깁니다.
 
 정의(`/D`): `/DAppDir`(관리 창·`aster.exe`·런타임이 든 폴더), `/DAppVersion`(사용자에게 보이는 버전), `/DAppNumVersion`(숫자 버전), `/DOutputDir`(설치본 `.exe` 를 쓸 폴더). 컴파일은 `ISCC.exe /DAppDir=<관리 창 publish 경로> /DAppVersion=<버전> aster.iss` 로 합니다. 릴리스 워크플로도 같은 방식으로 컴파일합니다.
 

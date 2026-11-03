@@ -73,6 +73,7 @@ public sealed class AutoRelocator
     private const string ReplanDetail = "game updated, will trace again on next run";
     private static readonly Regex PrewarmedTag = new(@"(, )?prewarmed( \([^)]*\))?", RegexOptions.None, TimeSpan.FromSeconds(1));
     private static readonly Regex ProgressTag = new(@"(, )?prewarming \d+/\d+ MiB", RegexOptions.None, TimeSpan.FromSeconds(1));
+    private static readonly Regex TierTag = new(@"(, )?ssd tier [\d.]+ GB", RegexOptions.None, TimeSpan.FromSeconds(1));
 
     private readonly AutoEnv _env;
     private readonly AutoStatus _status;
@@ -83,6 +84,7 @@ public sealed class AutoRelocator
     private bool _waitNoted; // 틱 스레드에서만 씀: 이번 대기 구간에 긴 대기를 이미 남겼는지
     private static readonly TimeSpan LongWait = TimeSpan.FromHours(6);
     private readonly Prewarmer? _prewarm;
+    private readonly AutoTier? _tier; // SSD 보조 저장 (선택 기능): 환경이 엔진을 주지 않으면 (시험) 없음
     private readonly ConcurrentDictionary<string, DateTimeOffset> _coldTried = new(StringComparer.Ordinal); // 이번 서비스 실행 중 기록 없는 예열을 요청한 게임과 그 시각 (영구 건너뜀은 발견 주기마다 다시 시도)
     private (bool, int, bool) _coldKey; // 틱 스레드에서만 씀: 설정이 바뀌면 _coldTried 를 비움
     private readonly Dictionary<string, DateTimeOffset> _staleChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀
@@ -99,13 +101,14 @@ public sealed class AutoRelocator
     private bool _recovered; // 틱 스레드에서만 씀: 중단된 재계획 복구는 서비스 실행당 첫 틱에 한 번
     private string? _warming;
 
-    public AutoRelocator(AutoEnv env, AutoStatus status, ILog log, Func<AsterSettings> settings, Prewarmer? prewarm = null)
+    public AutoRelocator(AutoEnv env, AutoStatus status, ILog log, Func<AsterSettings> settings, Prewarmer? prewarm = null, AutoTier? tier = null)
     {
         _env = env;
         _status = status;
         _log = log;
         _settings = settings;
         _prewarm = prewarm;
+        _tier = tier ?? (env.Tier is { } engine ? new AutoTier(env, status, log, engine) : null);
     }
 
     /// 게임이 떴을 때 (감시기 스레드에서 바로): 돌고 있거나 기다리는 예열을 취소합니다. 핫 집합 스트림은 묶음 경계에서 멈춥니다 (그 게임을 읽던 스트림은 Prewarmer.NoteGameStart 가 끝까지 읽게 함).
@@ -147,10 +150,30 @@ public sealed class AutoRelocator
         try
         {
             TickCore(gate, ct, warms);
+            TierTick(gate, ct);
         }
         finally
         {
             warms.ForEach(w => QueueWarm(w.Game, w.Why));
+        }
+    }
+
+    // SSD 보조 저장: 재배치가 끝난 (또는 재배치가 꺼진) 게임을 유휴일 때 적용하고, 저널을 유지하고, 꺼졌으면 되돌립니다. 상태 열 표시도 새로 붙입니다.
+    private void TierTick(ReapplyGate gate, CancellationToken ct)
+    {
+        if (_tier is null)
+        {
+            return;
+        }
+
+        AsterSettings s = _settings();
+        _tier.Tick(s, s.Auto.Relocate && s.Auto.MaxRelocationsPerDay > 0, gate, ct);
+        foreach (GameSettings g in s.Games)
+        {
+            lock (_noteLock)
+            {
+                Retag(g);
+            }
         }
     }
 
@@ -336,8 +359,13 @@ public sealed class AutoRelocator
     // detail 에서 옛 진행 표시를 지우고, 지금 진행 중이면 새 표시를 붙입니다.
     private string? Tagged(string game, string stage, string? detail)
     {
-        string? rest = detail is null ? null : ProgressTag.Replace(detail, string.Empty).Trim(' ', ',');
+        string? rest = detail is null ? null : TierTag.Replace(ProgressTag.Replace(detail, string.Empty), string.Empty).Trim(' ', ',');
         rest = string.IsNullOrEmpty(rest) ? null : rest;
+        if (ShowsProgress(stage) && _tier?.Tag(game) is { } tier)
+        {
+            rest = rest is null ? tier : rest + ", " + tier;
+        }
+
         return ShowsProgress(stage) && _progress.TryGetValue(game, out string? tag) ? (rest is null ? tag : rest + ", " + tag) : rest;
     }
 
@@ -514,6 +542,7 @@ public sealed class AutoRelocator
                     continue;
                 }
 
+                _tier?.RevertGame(g.Name, "game updated"); // 링크는 새 재배치 전에 되돌림 (심볼릭 링크가 낀 계획은 재적용·재배치가 거부함)
                 _ = _env.ArchiveJournal(g); // 새 계획은 다른 저널 header 를 쓰므로 끝난 저널은 옆으로 보관
                 string trace = AutoTracer.RawTracePath(g);
                 if (!recorded && _env.FileExists(trace))
@@ -776,6 +805,7 @@ public sealed class AutoRelocator
             return;
         }
 
+        _tier?.RevertGame(g.Name, "relocation starting");
         Note(g, AutoStage.Relocating, null);
         _log.Info($"{g.Name}: auto relocation starting");
         int mark = int.MaxValue; // 이번 적용 전의 저널 줄 수 (모르면 아무것도 되돌리지 않음)

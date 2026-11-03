@@ -6,6 +6,7 @@ using AsterCache.Core.Logging;
 using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
+using AsterCache.Core.Tier;
 using AsterCache.Windows;
 
 namespace AsterCache.Service;
@@ -87,6 +88,9 @@ public sealed class ReapplyEnv
 
     public required Func<GameSettings, PlanFile, CancellationToken, ApplyReport> Apply { get; init; }
 
+    /// 이 게임에 SSD 보조 저장 링크가 살아 있는가: 링크가 낀 파일은 배치를 읽을 수 없고 허용 루트 밖으로 풀리므로 그동안 배치 검사를 건너뜁니다 (링크는 재배치 전·업데이트 때 되돌려짐).
+    public Func<GameSettings, bool> TierActive { get; init; } = _ => false;
+
     /// 실제 구현. 재적용은 관리자이고 폴더 권한이 안전할 때만 (canApply). 저널은 게임마다 journalDir\이름.jsonl 하나를 계속 씁니다 (같은 저널 규칙: 이어하기·되돌리기).
     public static ReapplyEnv Create(bool canApply, string journalDir, ILog? log = null) => new()
     {
@@ -98,6 +102,7 @@ public sealed class ReapplyEnv
         Stat = PlanFile.FingerprintOf,
         RealPath = RealPaths.Real,
         Apply = (g, plan, ct) => Run(journalDir, g, plan, new ApplyOptions(Execute: true, SaveTo: g.Plan), ct, log), // 존을 다시 정하면 계획에 남김
+        TierActive = g => TierEngine.HasActive(Path.Combine(Path.GetDirectoryName(journalDir) ?? journalDir, "tier"), g.Name),
     };
 
     /// 레이블 확인 → 볼륨 열기 → Applier. 재적용과 자동 모드의 첫 재배치가 같은 길을 씁니다 (DryRun 은 존 시작만 계획에 저장).
@@ -241,6 +246,12 @@ public sealed class ReapplyChecker
             {
                 _log.Info($"{game.Name}: no plan file yet, nothing to check"); // 아직 계획을 만들지 않은 게임은 오류가 아님
                 return ReapplyVerdict.NotApplied;
+            }
+
+            if (_env.TierActive(game))
+            {
+                _log.Info($"{game.Name}: layout check skipped, ssd tier links are active");
+                return ReapplyVerdict.Healthy;
             }
 
             CheckPaths(plan, game, _env.RealPath);

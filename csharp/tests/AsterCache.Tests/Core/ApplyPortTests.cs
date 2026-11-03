@@ -43,7 +43,7 @@ public sealed class ApplyPortTests : ApplyTestBase
         Assert.Equal(0L, rep.ZoneStartLcn); // 가짜 볼륨에서 가장 낮은 빈 구간
         Assert.Equal(Vol.Moves.OrderBy(m => m.Lcn).ToList(), Vol.Moves); // 목표는 엄격히 위로 씀 (SMR 친화)
         List<JObject> rows = JournalRows();
-        Assert.Equal(["end", "header", "sha", "step"], rows.Select(r => (string)r["type"]!).Distinct().Order().ToList());
+        Assert.Equal(["end", "header", "sha", "sha_verified", "step"], rows.Select(r => (string)r["type"]!).Distinct().Order().ToList());
         Assert.All(rows.Where(r => Equals(r["type"], "step") && Equals(r["state"], "planned")), r => Assert.NotEmpty((List<object?>)r["from"]!));
         Assert.Equal("done", new Journal(JournalPath).LastState(0));
         Assert.Equal(rep.ZoneStartLcn, PlanFile.Load(saved).Zone.StartLcn);
@@ -743,7 +743,7 @@ public sealed class ApplyPortTests : ApplyTestBase
         Assert.True(tasks > 16);
         int planBatches = (int)((tasks + 8 - 1) / 8);
         Assert.True(rep.Timings.JournalFlushes >= planBatches);
-        Assert.True(rep.Timings.JournalFlushes <= planBatches + ((3 * tasks) / Journal.BatchRows) + 2, $"flushes {rep.Timings.JournalFlushes} tasks {tasks}"); // 행 수에 따른 묶음 + 끝
+        Assert.True(rep.Timings.JournalFlushes <= planBatches + ((3 * tasks) / Journal.BatchRows) + 2 + SampledTaskIdx().Count, $"flushes {rep.Timings.JournalFlushes} tasks {tasks}"); // 행 수에 따른 묶음 + 끝 + 표본 작업마다 이동 전 sha_before fsync
         Assert.True(rep.Timings.JournalFlushes < tasks / 2);
         // 모든 planned 행은 첫 이동보다 앞서 있음 (최초 묶음)
         List<JObject> rows = JournalRows();
@@ -920,6 +920,76 @@ public sealed class ApplyPortTests : ApplyTestBase
         Assert.Empty(rep.Failed);
         Assert.Equal(plan.Tasks.Count, SampledTaskIdx().Count);
         Assert.Equal(Applier.EdgeTaskRule, JournalRows().Single(r => Equals(r["type"], "header"))["digest_rule"]);
+    }
+
+    // ---- 감사 반영: 이동 전 sha_before fsync, 강제 종료 뒤 이어하기의 after 검증, verify=all 의 작업별 최소 표본
+
+    [Fact]
+    public void ShaRowIsOnDiskBeforeTheFirstMove()
+    {
+        string? atFirstMove = null;
+        Vol.BeforeMove = _ =>
+        {
+            using var fs = new FileStream(JournalPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var sr = new StreamReader(fs);
+            atFirstMove ??= sr.ReadToEnd();
+        };
+
+        Apply(ManyTasks(), Exec(8 * Cb) with { Verify = VerifyMode.All });
+
+        Assert.Contains("\"type\": \"sha\"", atFirstMove);
+    }
+
+    // 강제 종료 흉내: 이동은 끝났고 verified 표시와 end 행은 쓰이지 못한 저널.
+    private void RewriteJournalAsKilledAfterMoves()
+    {
+        List<JObject> keep = JournalRows().Where(r => !Equals(r["type"], "sha_verified") && !Equals(r["type"], "end")).ToList();
+        File.Delete(JournalPath);
+        using var jr = new Journal(JournalPath);
+        foreach (JObject r in keep)
+        {
+            jr.Add(r);
+        }
+    }
+
+    [Fact]
+    public void ResumeAfterAForcedStopVerifiesTasksThatAlreadyMoved()
+    {
+        PlanFile plan = ManyTasks();
+        ApplyOptions opt = Exec(8 * Cb) with { Verify = VerifyMode.All };
+        (ApplyHooks hooks, _) = CallCounter();
+        Apply(plan, opt, hooks);
+        RewriteJournalAsKilledAfterMoves();
+        DateTime stamp = File.GetLastWriteTimeUtc(F1);
+        byte[] f1 = File.ReadAllBytes(F1);
+        f1[0] ^= 0xFF; // 이동 뒤 내용이 달라짐: 검증이 돌아야 잡힘 (크기·수정 시각은 그대로라 계획 지문은 통과)
+        File.WriteAllBytes(F1, f1);
+        File.SetLastWriteTimeUtc(F1, stamp);
+
+        var ex = Assert.Throws<ShaMismatchException>(() => Apply(plan, opt, hooks));
+
+        Assert.Contains(F1, ex.Paths);
+    }
+
+    [Fact]
+    public void ResumeAfterAForcedStopMarksTasksVerifiedAndDoesNotCheckThemAgain()
+    {
+        PlanFile plan = ManyTasks();
+        ApplyOptions opt = Exec(8 * Cb) with { Verify = VerifyMode.All };
+        (ApplyHooks hooks, List<int> calls) = CallCounter();
+        Apply(plan, opt, hooks);
+        RewriteJournalAsKilledAfterMoves();
+        long sampled = SampledTaskIdx().Count;
+        calls.Clear();
+
+        ApplyReport r2 = Apply(plan, opt, hooks);
+
+        Assert.Empty(r2.ShaMismatch!);
+        Assert.Equal(sampled, calls.Count); // 이동은 없고 after 검증만
+        Assert.Equal(sampled, JournalRows().Count(r => Equals(r["type"], "sha_verified")));
+        calls.Clear();
+        Apply(plan, opt, hooks);
+        Assert.Empty(calls); // 검증을 마친 작업은 다시 읽지 않음
     }
 
     // ---- PlanGuards 단위

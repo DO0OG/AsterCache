@@ -127,6 +127,58 @@ public sealed class DriveRecoveryTests
     }
 
     [Fact]
+    public void SamplesRotateBy64MibAndNeverRepeatAPlaceWithinEightSamples()
+    {
+        _w.ProbeStepLcn = _ => 64; // 가짜 클러스터 1 MiB: 64 MiB = 64 LCN
+        _zone = 50; // 회복 못 함: 계속 잼
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(120));
+
+        for (int i = 0; i < 8; i++)
+        {
+            Pass(2);
+        }
+
+        long[] zoneLcns = [.. _probed.Where(l => l is >= 10 and < 10 + 512 && (l - 10) % 64 == 0)];
+        Assert.Equal(8, zoneLcns.Length);
+        Assert.Equal(8, zoneLcns.Distinct().Count());
+        Assert.All(zoneLcns, l => Assert.Equal(0, (l - 10) % 64));
+        Assert.Equal(512 - 64, zoneLcns.Max() - zoneLcns.Min()); // 512 MiB 영역 전체를 돎
+    }
+
+    [Fact]
+    public void SamplesAboveTheSequentialCeilingAreCacheHitsAndDoNotCount()
+    {
+        _zone = 400; // 고정 순차 상한 250 을 넘음
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        Pass(2);
+        Pass(2);
+        Pass(2);
+        Assert.True(_r.IsRecovering(Drive)); // 400 은 90% 이상이지만 캐시 적중이라 회복으로 세지 않음
+        Assert.Single(_log.Lines, l => l.Contains("sequential ceiling (disk cache hit)", StringComparison.Ordinal));
+
+        _zone = 100;
+        Pass(2);
+        Assert.True(_r.IsRecovering(Drive)); // 제외된 회차는 연속에 안 들어감: 좋음 1 회
+        Pass(2);
+        Assert.False(_r.IsRecovering(Drive));
+    }
+
+    [Fact]
+    public void HighBaselineDoesNotRaiseTheFixedCeiling()
+    {
+        _zone = 300; // 기준 400 의 90% 는 넘지만 고정 상한 250 을 넘는 캐시 적중
+        _ref = 380;
+        _r.Begin(Drive, new DriveBaseline(new ProbeSpot(10, 400), new ProbeSpot(20, 380)), TimeSpan.FromMinutes(60));
+
+        Pass(2);
+        Pass(2);
+
+        Assert.True(_r.IsRecovering(Drive));
+        Assert.Single(_log.Lines, l => l.Contains("250 MB/s sequential ceiling (disk cache hit)", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void WithoutAZoneBaselineOnlyTheReferenceIsSampledAndJudged()
     {
         _zone = 1; // 존 값은 무시됨
@@ -237,8 +289,8 @@ public sealed class DriveRecoveryTests
         return new VolumeBitmap(0, bits.Count, data);
     }
 
-    // 1 MiB 클러스터: 표본 64 클러스터, 존에서 4 GiB = 4096 클러스터 뒤.
-    private static readonly VolumeBitmap Map = Bits((true, 500), (false, 2500), (true, 200), (false, 1800), (true, 5000));
+    // 1 MiB 클러스터: 표본 영역 512 클러스터 (64 x 8), 존에서 4 GiB = 4096 클러스터 뒤.
+    private static readonly VolumeBitmap Map = Bits((true, 600), (false, 2400), (true, 200), (false, 1800), (true, 5000));
 
     [Fact]
     public void ReferenceIsTheAllocatedRunNearestToFourGibAfterTheZone()
@@ -259,9 +311,30 @@ public sealed class DriveRecoveryTests
     }
 
     [Fact]
+    public void ZoneAllocatedButNotWrittenIsNotABaseline()
+    {
+        // 할당만 되고 첫 4 KiB 가 전부 0 (SMR 이 즉시 0 을 돌려주는 영역): 존도 기준도 무효
+        (bool zoneAllocated, long? reference) = DiskProbe.Locate(Map, 1 << 20, 0, _ => false);
+
+        Assert.False(zoneAllocated);
+        Assert.Null(reference);
+    }
+
+    [Fact]
+    public void EveryRotationWindowMustHoldData()
+    {
+        // 존의 64 MiB 칸 중 하나라도 비어 있으면 (3 번째 칸 = LCN 128) 존 기준 없음, 기준 구간은 그 칸을 안 지나므로 유지
+        (bool zoneAllocated, long? reference) = DiskProbe.Locate(Map, 1 << 20, 0, lcn => lcn != 128);
+
+        Assert.False(zoneAllocated);
+        Assert.Equal(5000, reference);
+    }
+
+    [Fact]
     public void ReferenceIsNullWhenNoRunIsLongEnough()
     {
         Assert.Null(DiskProbe.FindReference(Bits((true, 60), (false, 100), (true, 63)), 0, 64));
+        Assert.Null(DiskProbe.FindReference(Bits((true, 1000)), 0, 64, _ => false));
     }
 
     [Fact]

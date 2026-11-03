@@ -114,6 +114,8 @@ internal sealed class FakeWorld
     /// 회복 표본: (드라이브, LCN) → MB/s, 못 재면 null (기본).
     public Func<string, long, double?> ProbeMbps { get; set; } = (_, _) => null;
 
+    public Func<string, long> ProbeStepLcn { get; set; } = _ => 0;
+
     /// 회복 기준 구간 찾기: (드라이브, 존 시작 LCN) → (존 할당 여부, 기준 LCN), 모르면 null (기본).
     public Func<string, long, (bool ZoneAllocated, long? ReferenceLcn)?> LocateProbeSpots { get; set; } = (_, _) => null;
 
@@ -239,6 +241,7 @@ internal sealed class FakeWorld
         Extents = p => Extents(p),
         DiskBytesPerSecond = _ => Disk,
         ProbeMbps = (drive, lcn) => ProbeMbps(drive, lcn),
+        ProbeStepLcn = drive => ProbeStepLcn(drive),
         LocateProbeSpots = (drive, lcn) => LocateProbeSpots(drive, lcn),
         CpuPercent = () => Cpu,
         PowerOk = () => Power,

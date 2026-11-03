@@ -226,6 +226,7 @@ Defines: `/DAppDir` (folder with the management window, `aster.exe`, and the run
 - Known limit: names of FileKeys that disappeared through file deletion (`FileIOFileDelete`) are not handled.
 - File names prefer the FileKey (the cleanup event arrives at the end of the session) and use the FileObject name at read time as a fallback, because FileObject addresses are reused. In a real .etl from the WPR FileIO profile, large event loss (3.8M in one capture) drops some reads, so the recall of this .etl conversion cannot be evaluated separately from capture loss.
 - The effect of ETW capture and a resident service on anti-cheat games (Ricochet, Vanguard) has not been verified. Check first with a game that has no anti-cheat.
+- Since 0.9.0-beta.14 the service never starts an automatic ETW trace for a game with Vanguard, EAC or BattlEye (or when detection fails). Prewarming, start streams and relocation are unchanged (a real Vanguard client was closed twice after a trace started).
 - A Velopack update changes only a tray installed with Velopack, and an installer install is updated by running the new installer (see "Tray updates and the service" above). An actual Velopack install update test has not been done.
 - The WDK install size and the winget package ID were not checked.
 - The kernel minifilter (AsterFlt) is at the source stage and is not loaded on the test PC. Load verification is covered only by the VM procedure.

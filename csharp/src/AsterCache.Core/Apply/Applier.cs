@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using AsterCache.Core.Json;
 using AsterCache.Core.Model;
@@ -12,6 +13,18 @@ namespace AsterCache.Core.Apply;
 public static class Applier
 {
     public const int MoveRetries = 3;
+
+    /// 대상 클러스터가 이미 쓰이는 중이라 이동이 거부된 작업의 이유 (작업별 실패로 기록하고 다음 작업을 계속).
+    public const string TargetBusy = "target busy";
+
+    /// 이 횟수를 넘겨 연속으로 TargetBusy 면 존이 점유됐다고 보고 멈춥니다 (남은 작업을 하나씩 실패시키지 않음).
+    public const int MaxBusyInARow = 20;
+
+    /// 위 경우 report.Stopped 에 넣는 이유. 서비스는 이 문자열을 보면 계획을 다시 세웁니다.
+    public const string ZoneOccupied = "zone region appears occupied, stopping";
+
+    private const int ErrorAccessDenied = 5;
+    private const int StatusAlreadyCommitted = unchecked((int)0xC0000021); // 때로 Win32 오류 5 로 보이지만 NTSTATUS 그대로 오기도 함
 
     /// 옮긴 범위마다 앞뒤 이만큼의 바이트를 SHA 표본에 넣습니다.
     public const long TaskSpan = 64 << 10;
@@ -47,7 +60,7 @@ public static class Applier
         for (int i = 0; i < plan.Tasks.Count; i++)
         {
             PlanTask t = plan.Tasks[i];
-            long d = PlanGuards.DonePrefix(hooks.Extents(t.Path), t.Vcn, t.Clusters, t.TargetLcn);
+            long d = PlanGuards.DonePrefix(ApplyTimings.Time(ref rep.Timings.OpenTicks, () => hooks.Extents(t.Path)), t.Vcn, t.Clusters, t.TargetLcn);
             if (!skipped.Contains(t.Path) && d < t.Clusters)
             {
                 todo.Add((i, t, d));
@@ -113,9 +126,14 @@ public static class Applier
     }
 
     /// 한 번에 옮기는 조각. 실패하면 MoveRetries 번까지 다시 시도하고, 끝내 실패하면 마지막 오류 문구를 돌려줍니다 (성공이면 null).
-    internal static string? MoveChunk(IVolume vol, string path, long vcn, long targetLcn, long off, long clusters, Action<TimeSpan> sleep)
+    internal static string? MoveChunk(IVolume vol, string path, long vcn, long targetLcn, long off, long clusters, Action<TimeSpan> sleep) =>
+        MoveChunk(vol, path, vcn, targetLcn, off, clusters, sleep, out _);
+
+    /// busy: 마지막 실패가 대상 클러스터가 이미 쓰이는 중이라는 오류 (ERROR_ACCESS_DENIED / STATUS_ALREADY_COMMITTED) 였는가.
+    internal static string? MoveChunk(IVolume vol, string path, long vcn, long targetLcn, long off, long clusters, Action<TimeSpan> sleep, out bool busy)
     {
         string? err = null;
+        busy = false;
         for (int attempt = 0; attempt < MoveRetries; attempt++)
         {
             try
@@ -126,6 +144,7 @@ public static class Applier
             catch (Exception e) when (e is Win32Exception or IOException)
             {
                 err = e.Message;
+                busy = e is Win32Exception { NativeErrorCode: ErrorAccessDenied or StatusAlreadyCommitted };
                 if (attempt + 1 < MoveRetries)
                 {
                     sleep(TimeSpan.FromSeconds(0.2));
@@ -140,6 +159,7 @@ public static class Applier
         string journalPath, long chunk, long writeCap, ApplyHooks hooks, Func<string, long, IReadOnlyList<(long Offset, long Length)>, string> digestFn,
         CancellationToken ct)
     {
+        ApplyTimings tm = rep.Timings;
         using var jr = new Journal(journalPath);
         var before = new OrderedDictionary<string, string?>(StringComparer.Ordinal);
         Dictionary<string, List<(long Offset, long Length)>> ranges = MovedRanges(plan);
@@ -155,14 +175,14 @@ public static class Applier
 
         if (jr.Rows.Count == 0)
         {
-            jr.Add(new JObject
+            ApplyTimings.Time(ref tm.JournalTicks, () => jr.Add(new JObject
             {
                 { "type", "header" },
                 { "plan_sha", psha },
                 { "zone_start_lcn", plan.Zone.StartLcn },
                 { "cluster_bytes", (long)vol.ClusterBytes },
                 { "started", hooks.Clock() },
-            });
+            }));
         }
 
         try
@@ -183,7 +203,9 @@ public static class Applier
             throw;
         }
 
-        return Finish(rep, jr, before, Digest, strict: true);
+        ApplyReport done = Finish(rep, jr, before, Digest, strict: true);
+        tm.Stop();
+        return done;
     }
 
     // 쓴 양은 예외가 나도 end 행에 남도록 rep.MovedBytes 에 계속 누적합니다.
@@ -191,6 +213,8 @@ public static class Applier
         OrderedDictionary<string, string?> before, long chunk, long writeCap, ApplyHooks hooks, Func<string, string> digest, CancellationToken ct)
     {
         long cb = vol.ClusterBytes;
+        ApplyTimings tm = rep.Timings;
+        int busyInARow = 0;
         foreach ((int i, PlanTask t, long d) in todo)
         {
             if (ct.IsCancellationRequested) // 다음 작업으로 넘어가기 전에도 확인: 취소된 뒤에는 새 단계의 planned 행을 남기지 않음
@@ -203,18 +227,18 @@ public static class Applier
             if (!before.ContainsKey(p))
             {
                 JObject? row = jr.First("file", "path", p);
-                before[p] = row is null ? digest(p) : row["sha_before"] as string;
+                before[p] = row is null ? ApplyTimings.Time(ref tm.DigestBeforeTicks, () => digest(p)) : row["sha_before"] as string;
                 if (row is null)
                 {
-                    jr.Add(new JObject { { "type", "file" }, { "path", p }, { "sha_before", before[p] } });
+                    ApplyTimings.Time(ref tm.JournalTicks, () => jr.Add(new JObject { { "type", "file" }, { "path", p }, { "sha_before", before[p] } }));
                 }
             }
 
             if (jr.First("step", "idx", (long)i) is null) // 맨 처음 from 을 지킴: 이어하기가 덮어쓰면 안 됨
             {
-                var src = ZoneAllocator.Pieces(hooks.Extents(p) ?? [], t.Vcn, t.Vcn + t.Clusters)
+                var src = ZoneAllocator.Pieces(ApplyTimings.Time(ref tm.OpenTicks, () => hooks.Extents(p)) ?? [], t.Vcn, t.Vcn + t.Clusters)
                     .Select(x => (object?)new List<object?> { x.Vcn, x.Lcn, x.N }).ToList();
-                jr.Add(new JObject
+                ApplyTimings.Time(ref tm.JournalTicks, () => jr.Add(new JObject
                 {
                     { "type", "step" },
                     { "idx", (long)i },
@@ -224,11 +248,12 @@ public static class Applier
                     { "clusters", t.Clusters },
                     { "target_lcn", t.TargetLcn },
                     { "from", src },
-                });
+                }));
             }
 
             long off = d;
             string? err = null;
+            bool busy = false;
             while (off < t.Clusters && err is null)
             {
                 if (ct.IsCancellationRequested) // 진행 중이던 조각은 이미 끝났음: 저널의 planned 행이 재개 지점 (DonePrefix 가 실제 extent 로 다시 계산)
@@ -244,7 +269,9 @@ public static class Applier
                     return;
                 }
 
-                err = MoveChunk(vol, p, t.Vcn, t.TargetLcn, off, c, hooks.Sleep);
+                long t0 = Stopwatch.GetTimestamp();
+                err = MoveChunk(vol, p, t.Vcn, t.TargetLcn, off, c, hooks.Sleep, out busy);
+                tm.MoveTicks += Stopwatch.GetTimestamp() - t0;
                 if (err is null)
                 {
                     off += c;
@@ -252,12 +279,21 @@ public static class Applier
                 }
             }
 
-            bool ok = err is null && PlanGuards.DonePrefix(hooks.Extents(p), t.Vcn, t.Clusters, t.TargetLcn) == t.Clusters;
-            string? reason = ok ? null : err ?? "extent_mismatch";
-            jr.Add(new JObject { { "type", "step" }, { "idx", (long)i }, { "state", ok ? "done" : "failed" }, { "reason", reason } });
+            bool ok = err is null && PlanGuards.DonePrefix(ApplyTimings.Time(ref tm.OpenTicks, () => hooks.Extents(p)), t.Vcn, t.Clusters, t.TargetLcn) == t.Clusters;
+            bool isBusy = err is not null && busy;
+            string? reason = ok ? null : isBusy ? TargetBusy : err ?? "extent_mismatch";
+            ApplyTimings.Time(ref tm.JournalTicks, () => jr.Add(new JObject { { "type", "step" }, { "idx", (long)i }, { "state", ok ? "done" : "failed" }, { "reason", reason } }));
+            tm.Tasks++;
             if (!ok)
             {
                 rep.Failed.Add(new FailedStep(i, p, reason!));
+            }
+
+            busyInARow = isBusy ? busyInARow + 1 : 0;
+            if (busyInARow > MaxBusyInARow)
+            {
+                rep.Stopped = ZoneOccupied;
+                return;
             }
         }
     }
@@ -265,17 +301,22 @@ public static class Applier
     /// 건드린 모든 파일의 SHA 표본을 다시 비교합니다. 달라졌으면 크게 알리고 (strict) 절대 삼키지 않습니다. end 행은 어느 경우든 기록.
     private static ApplyReport Finish(ApplyReport rep, Journal jr, OrderedDictionary<string, string?> before, Func<string, string> digest, bool strict)
     {
-        var bad = before.Where(kv => digest(kv.Key) != kv.Value).Select(kv => kv.Key).ToList();
+        ApplyTimings tm = rep.Timings;
+        var bad = before.Where(kv => ApplyTimings.Time(ref tm.DigestAfterTicks, () => digest(kv.Key)) != kv.Value).Select(kv => kv.Key).ToList();
         rep.ShaChecked = before.Count;
+        tm.Files = before.Count;
         rep.ShaMismatch = bad;
-        jr.Add(new JObject
+        ApplyTimings.Time(ref tm.JournalTicks, () =>
         {
-            { "type", "end" },
-            { "stopped", rep.Stopped },
-            { "written_bytes", rep.MovedBytes },
-            { "sha_mismatch", bad.Cast<object?>().ToList() },
+            jr.Add(new JObject
+            {
+                { "type", "end" },
+                { "stopped", rep.Stopped },
+                { "written_bytes", rep.MovedBytes },
+                { "sha_mismatch", bad.Cast<object?>().ToList() },
+            });
+            jr.Close();
         });
-        jr.Close();
         return bad.Count > 0 && strict ? throw new ShaMismatchException(bad) : rep;
     }
 }

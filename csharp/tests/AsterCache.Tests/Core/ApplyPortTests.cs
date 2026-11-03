@@ -472,11 +472,66 @@ public sealed class ApplyPortTests : ApplyTestBase
     [Fact]
     public void ErrorStringOfWin32ExceptionIsKept()
     {
+        Vol.FailCode = 87;
         Vol.FailNext = 3;
 
         ApplyReport rep = Apply(Make().Resolve(20000), Exec());
 
-        Assert.Equal(new Win32Exception(5).Message, rep.Failed[0].Reason);
+        Assert.Equal(new Win32Exception(87).Message, rep.Failed[0].Reason);
+    }
+
+    // ---- 단계별 시간과 대상 충돌 내성
+
+    private PlanFile ManyTasks()
+    {
+        Sessions = [Run(Enumerable.Range(0, 16).SelectMany(b => new[] { (F1, (long)b), (F2, (long)b) }).ToArray())];
+        PlanFile plan = Make().Resolve(20000);
+        Assert.True(plan.Tasks.Count > 22, $"tasks {plan.Tasks.Count}");
+        return plan;
+    }
+
+    [Fact]
+    public void TimingsAreInTheReportAndAddUpToTotal()
+    {
+        ApplyReport rep = Apply(Make().Resolve(20000), Exec());
+
+        ApplyTimings t = rep.Timings;
+        Assert.Equal(t.OpenS + t.DigestBeforeS + t.MoveS + t.DigestAfterS + t.JournalS + t.OtherS, t.TotalS, 6);
+        Assert.True(t.OtherS >= 0 && t.TotalS > 0);
+        Assert.Equal(2, t.Files);
+        Assert.Equal(rep.TasksTodo, t.Tasks);
+        var j = (JObject)rep.ToJson()["timings"]!;
+        Assert.Equal(["open_s", "digest_before_s", "move_s", "digest_after_s", "journal_s", "other_s", "total_s", "tasks", "files"], j.Select(kv => kv.Key).ToArray());
+        Assert.False(Apply(Make().Resolve(20000), new ApplyOptions(DryRun: true)).ToJson().ContainsKey("timings"));
+    }
+
+    [Fact]
+    public void AccessDeniedFailsOnlyThatTaskAndContinuesUntilMoreThanTwentyInARow()
+    {
+        PlanFile plan = ManyTasks();
+        Vol.FailNext = 3 * 21;
+
+        ApplyReport rep = Apply(plan, Exec(8 * Cb));
+
+        Assert.Equal(Applier.ZoneOccupied, rep.Stopped);
+        Assert.Equal(21, rep.Failed.Count);
+        Assert.All(rep.Failed, f => Assert.Equal(Applier.TargetBusy, f.Reason));
+        Assert.Equal(Enumerable.Range(0, 21).Select(i => (long)rep.Failed[0].Idx + i), rep.Failed.Select(f => f.Idx)); // 연속, 다음 작업으로 계속
+        Assert.Empty(Vol.Moves); // 중단했으므로 22 번째 작업은 시도하지 않음
+        Assert.Equal(Applier.ZoneOccupied, JournalRows()[^1]["stopped"]);
+    }
+
+    [Fact]
+    public void ABusyRunOfTwentyThenSuccessDoesNotStop()
+    {
+        PlanFile plan = ManyTasks();
+        Vol.FailNext = 3 * 20;
+
+        ApplyReport rep = Apply(plan, Exec(8 * Cb));
+
+        Assert.Null(rep.Stopped);
+        Assert.Equal(20, rep.Failed.Count);
+        Assert.NotEmpty(Vol.Moves); // 21 번째 작업부터 정상으로 이어서 옮김
     }
 
     // ---- PlanGuards 단위

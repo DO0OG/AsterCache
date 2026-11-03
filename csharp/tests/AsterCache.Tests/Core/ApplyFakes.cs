@@ -26,6 +26,9 @@ public sealed class FakeVolume : IVolume
     /// 이 횟수만큼 Move 호출이 (이동 없이) 실패한 뒤 정상으로 돌아옵니다.
     public int FailNext { get; set; }
 
+    /// FailNext 로 던지는 Win32 오류 코드 (기본 5 = 액세스 거부).
+    public int FailCode { get; set; } = 5;
+
     /// 이 번째 (0 부터) 이동 호출에서 IOException 이 아닌 예외를 던집니다.
     public int? CrashAt { get; set; }
 
@@ -81,7 +84,7 @@ public sealed class FakeVolume : IVolume
         if (FailNext > 0)
         {
             FailNext--;
-            throw new Win32Exception(5);
+            throw new Win32Exception(FailCode);
         }
 
         if (Strict && Ext.Values.SelectMany(x => x).Any(e => e.Lcn < lcn + clusters && lcn < e.Lcn + e.Clusters))

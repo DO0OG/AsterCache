@@ -59,12 +59,13 @@ public sealed class DriveRecovery : IDriveRecovery
         }
     }
 
-    /// 그 드라이브의 순차 읽기 상한 (MB/s): 기준값 (참조와 존 중 큰 쪽, 존이 참조보다 빠른 디스크가 있어서) 의 1.25 배 (최대 CeilingMbps), 참조 기준이 없으면 CeilingMbps.
+    /// 그 드라이브의 순차 읽기 상한 (MB/s): 유효한 기준값 (존과 참조 중 큰 쪽, 존이 참조보다 빠른 디스크가 있어서) 의 1.25 배 (최대 CeilingMbps), 유효한 기준이 하나도 없으면 CeilingMbps (그때는 판정하지 않고 고정 대기).
     public double CeilingFor(string drive)
     {
         lock (_lock)
         {
-            return _baselines.TryGetValue(Key(drive), out DriveBaseline? b) && b.Ref is { } r ? Math.Min(Math.Max(r.Mbps, b.Zone?.Mbps ?? 0) * CeilingFactor, CeilingMbps) : CeilingMbps;
+            double top = _baselines.TryGetValue(Key(drive), out DriveBaseline? b) ? Math.Max(Valid(b.Zone), Valid(b.Ref)) : 0;
+            return top > 0 ? Math.Min(top * CeilingFactor, CeilingMbps) : CeilingMbps;
         }
     }
 
@@ -356,7 +357,10 @@ public sealed class DriveRecovery : IDriveRecovery
     private static bool ValidBaseline(DriveBaseline b) =>
         (b.Zone is not null || b.Ref is not null) && Positive(b.Zone) && Positive(b.Ref);
 
-    private static bool Positive(ProbeSpot? s) => s is not { } v || (double.IsFinite(v.Mbps) && v.Mbps > 0 && v.Mbps <= CeilingMbps);
+    private static bool Positive(ProbeSpot? s) => s is null || Valid(s) > 0;
+
+    // 유효한 기준 구간의 MB/s, 없거나 무효이면 0.
+    private static double Valid(ProbeSpot? s) => s is { } v && double.IsFinite(v.Mbps) && v.Mbps > 0 && v.Mbps <= CeilingMbps ? v.Mbps : 0;
 
     // 서비스 시작: 저장된 추적 중 아직 안 끝난 것을 되살립니다 (상한이 지난 것은 지움). 남은 시간은 저장된 종료 시각 (Until) 기준이고, 원래 상한보다 크면 상한으로 자릅니다 (시계가 뒤로 간 경우). 기준이 없거나 무효이면 고정 대기.
     private void Restore()

@@ -222,7 +222,7 @@ public sealed class AutoEnv
             GameProcesses = exes => ProcessSnapshot.ReadCounters(exes),
             AnyRunning = exes => ProcessSnapshot.IsRunning(exes),
             StartTrace = (exes, listener) => new LiveAutoTrace(LiveSession.Start(
-                exes, TraceSessionName, restartExisting: true, listener: listener, flushInterval: listener is null ? null : EtwProcessWatcher.FlushInterval, log: log)),
+                exes, TraceSessionName, restartExisting: true, listener: listener, flushInterval: listener is null ? null : EtwProcessWatcher.FlushInterval, log: log), log),
             Canonicalize = events => TraceBuilder.CanonicalizeCase(events),
             PrefetchBoot = g => AutoTracer.BootFromPrefetch(g),
             TraceSource = AutoTracer.TraceSourceOf,
@@ -289,9 +289,14 @@ public sealed class AutoEnv
         }
     }
 
-    private sealed class LiveAutoTrace(LiveSession session) : IAutoTrace
+    private sealed class LiveAutoTrace(LiveSession session, ILog? log) : IAutoTrace
     {
-        public IReadOnlyList<TraceRecord> Stop() => session.Stop();
+        public IReadOnlyList<TraceRecord> Stop()
+        {
+            List<TraceRecord> records = session.Stop();
+            log?.Info($"trace session stopped: {session.EventsLost} events lost");
+            return records;
+        }
 
         public void Dispose() => session.Dispose();
     }

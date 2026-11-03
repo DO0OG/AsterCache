@@ -39,30 +39,15 @@ public sealed class ClockAndStateFileTests : IDisposable
     }
 
     [Fact]
-    public void MonotonicClockIgnoresASystemClockJump()
-    {
-        DateTimeOffset wall = Start;
-        long ticks = 0;
-        var clock = new MonotonicClock(() => wall, () => ticks);
-
-        ticks += System.Diagnostics.Stopwatch.Frequency * 60; // 1 분 경과
-        wall = wall.AddHours(2); // 시스템 시계가 2 시간 앞으로 튐
-
-        Assert.Equal(Start.AddMinutes(1), clock.Now());
-    }
-
-    [Fact]
     public void RecoveryWaitSurvivesAClockJumpDuringTheRun()
     {
-        DateTimeOffset wall = Start;
         long ticks = 0;
-        var clock = new MonotonicClock(() => wall, () => ticks);
-        var world = new FakeWorld { Clock = clock.Now };
+        var world = new FakeWorld { Now = Start, Ticks = () => ticks };
         var recovery = new DriveRecovery(world.Env(), new ListLog());
         recovery.Begin(@"E:\", null, TimeSpan.FromMinutes(30));
 
         ticks += System.Diagnostics.Stopwatch.Frequency * 60;
-        wall = wall.AddHours(2); // 시계가 2 시간 튀어도 회복 대기는 1 분만 지남
+        world.Now = world.Now.AddHours(2); // 시계가 2 시간 튀어도 회복 대기는 1 분만 지남
         Assert.True(recovery.IsRecovering(@"E:\"));
 
         ticks += System.Diagnostics.Stopwatch.Frequency * 60 * 30;

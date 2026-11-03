@@ -207,7 +207,8 @@ public sealed class AutoRelocator
         IReadOnlyDictionary<string, DateTimeOffset> played = _status.LastPlayed();
         List<GameSettings> work = s.Games.Where(g => !PostUpdateDelayed(g, s) && NeedsWork(g, relocateOn))
             .OrderByDescending(g => played.GetValueOrDefault(g.Name, DateTimeOffset.MinValue)).ThenBy(g => g.Name, StringComparer.Ordinal).ToList();
-        bool limitReached = relocateOn && _status.RelocationsWithin(DailyWindow) >= s.Auto.MaxRelocationsPerDay; // Note 보다 먼저 정해 같은 상태 로그가 오락가락하며 쌓이지 않게
+        DateTimeOffset? held = relocateOn ? _status.RelocationHeldUntil() : null; // 상태 파일을 못 읽어 막는 중
+        bool limitReached = relocateOn && (held is not null || _status.RelocationsWithin(DailyWindow) >= s.Auto.MaxRelocationsPerDay); // Note 보다 먼저 정해 같은 상태 로그가 오락가락하며 쌓이지 않게
         long budget = (long)s.Auto.MaxRelocateGibPerDay << 30; // 0 = 무제한
         long used = budget > 0 ? _status.RelocationBytesWithin(DailyWindow) : 0;
         var ready = new List<GameSettings>();
@@ -241,7 +242,7 @@ public sealed class AutoRelocator
             bool budgetHeld = budget > 0 && used > 0 && used + _needBytes.GetValueOrDefault(g.Name, 1) > budget; // 아직 모르면 1 바이트라도 남아야 함, 그날 첫 이동은 한 번 이동량이 상한보다 커도 허용
             lock (_noteLock)
             {
-                Note(g, AutoStage.WaitingIdle, WaitDetail(g, limitReached ? DailyLimit : budgetHeld ? DailyBudget : null));
+                Note(g, AutoStage.WaitingIdle, WaitDetail(g, held is { } until ? AutoStatus.HoldDetail(until) : limitReached ? DailyLimit : budgetHeld ? DailyBudget : null));
             }
 
             if (!budgetHeld)
@@ -756,7 +757,7 @@ public sealed class AutoRelocator
         }
 
         long budget = (long)s.Auto.MaxRelocateGibPerDay << 30; // 0 = 무제한
-        bool countHeld = s.Auto.MaxRelocationsPerDay > 0 && _status.RelocationsWithin(DailyWindow) >= s.Auto.MaxRelocationsPerDay;
+        bool countHeld = _status.RelocationHeldUntil() is not null || (s.Auto.MaxRelocationsPerDay > 0 && _status.RelocationsWithin(DailyWindow) >= s.Auto.MaxRelocationsPerDay);
         bool bytesHeld = budget > 0 && _status.RelocationBytesWithin(DailyWindow) is > 0 and long used && used >= budget;
         return countHeld || bytesHeld ? ReapplyVerdict.DailyLimit : null;
     }
@@ -1026,6 +1027,12 @@ public sealed class AutoRelocator
             string order = RelocateOrder.Resolve(s.Auto.RelocateOrder);
             var run = new ApplyOptions(Execute: true, ChunkBytes: (long)s.Auto.RelocateChunkMib << 20, LowIoPriority: s.Auto.RelocateIoPriority == AutoSettings.IoLow, Verify: s.Auto.RelocateVerify, Order: order, Parallel: s.Auto.ParallelFor(_env.IsSlowBus(DriveOf(g))));
             long bytes = Math.Min(dry.BytesTodo, run.WriteCap); // 한 번의 적용은 WriteCap 까지만 쓰고 나머지는 이어하기가 다시 셈
+            if (_status.RelocationHeldUntil() is { } held)
+            {
+                Note(g, AutoStage.WaitingIdle, WaitDetail(g, AutoStatus.HoldDetail(held)));
+                return;
+            }
+
             long budget = (long)s.Auto.MaxRelocateGibPerDay << 30;
             long usedToday = budget > 0 ? _status.RelocationBytesWithin(DailyWindow) : 0;
             if (usedToday > 0 && usedToday + bytes > budget) // 빈 창의 첫 이동은 상한보다 커도 허용 (아니면 영원히 대기)

@@ -74,15 +74,20 @@ public sealed class DriveRecovery : IDriveRecovery
     private readonly Dictionary<string, DriveBaseline> _baselines = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DateTimeOffset> _finished = new(StringComparer.Ordinal);
 
-    private sealed class Track(DriveBaseline? baseline, DateTimeOffset started, TimeSpan limit)
+    // 추적의 세션 안 경과는 Stopwatch 로 잰다 (실행 중 시스템 시계가 튀어도 회복 대기가 일찍 끝나거나 늘어나지 않게). offset 은 만들 때 이미 지난 시간 (업데이트 시각 기준 추적).
+    private sealed class Track(DriveBaseline? baseline, DateTimeOffset started, TimeSpan limit, TimeSpan offset, long startTicks)
     {
+        public TimeSpan Offset { get; } = offset;
+
+        public long StartTicks { get; } = startTicks;
+
         public DriveBaseline? Baseline { get; } = baseline;
 
         public DateTimeOffset Started { get; } = started;
 
         public TimeSpan Limit { get; } = limit;
 
-        public DateTimeOffset Next { get; set; } = started + SampleEvery;
+        public TimeSpan Next { get; set; } = SampleEvery; // 추적 경과 기준
 
         public int Streak { get; set; }
 
@@ -95,12 +100,17 @@ public sealed class DriveRecovery : IDriveRecovery
         public RecoveryVerdict? Verdict { get; set; }
     }
 
+    private Track NewTrack(DriveBaseline? baseline, DateTimeOffset started, TimeSpan limit) =>
+        new(baseline, started, limit, TimeSpan.FromTicks(Math.Max(0, (_env.Now() - started).Ticks)), _env.Ticks());
+
+    private TimeSpan Elapsed(Track t) => t.Offset + System.Diagnostics.Stopwatch.GetElapsedTime(t.StartTicks, _env.Ticks());
+
     public bool IsRecovering(string drive)
     {
         lock (_lock)
         {
             string key = Key(drive);
-            return _active.Any(a => (a.Key == key || _env.SameDisk(a.Key, key)) && _env.Now() - a.Value.Started < a.Value.Limit); // 같은 물리 디스크의 다른 볼륨 쓰기도 이 드라이브를 느리게 함
+            return _active.Any(a => (a.Key == key || _env.SameDisk(a.Key, key)) && Elapsed(a.Value) < a.Value.Limit); // 같은 물리 디스크의 다른 볼륨 쓰기도 이 드라이브를 느리게 함
         }
     }
 
@@ -120,7 +130,7 @@ public sealed class DriveRecovery : IDriveRecovery
                 _baselines[key] = baseline;
             }
 
-            Add(key, new Track(baseline, _env.Now(), limit));
+            Add(key, NewTrack(baseline, _env.Now(), limit));
         }
     }
 
@@ -137,23 +147,23 @@ public sealed class DriveRecovery : IDriveRecovery
 
             if (!_active.ContainsKey(key) && _env.Now() - updatedAt < limit && !(_finished.TryGetValue(key, out DateTimeOffset done) && updatedAt <= done))
             {
-                Add(key, new Track(baseline, updatedAt, limit));
+                Add(key, NewTrack(baseline, updatedAt, limit));
             }
 
-            return _active.TryGetValue(key, out Track? t) && _env.Now() - t.Started < t.Limit;
+            return _active.TryGetValue(key, out Track? t) && Elapsed(t) < t.Limit;
         }
     }
 
     /// 틱마다: 상한이 지난 추적을 끝내고, 표본 차례가 된 추적을 잽니다 (표본 1~2 초, 2 분마다).
     public void Poll()
     {
-        DateTimeOffset now = _env.Now();
         List<(string Key, Track Track)> due = [];
         lock (_lock)
         {
             foreach ((string key, Track t) in _active.ToList())
             {
-                if (now - t.Started >= t.Limit)
+                TimeSpan elapsed = Elapsed(t);
+                if (elapsed >= t.Limit)
                 {
                     Finish(key);
                     if (t.Baseline is not null)
@@ -161,7 +171,7 @@ public sealed class DriveRecovery : IDriveRecovery
                         _log.Info($"drive {key} recovery wait ended at the {(int)t.Limit.TotalMinutes} min limit");
                     }
                 }
-                else if (t.Baseline is not null && now >= t.Next)
+                else if (t.Baseline is not null && elapsed >= t.Next)
                 {
                     due.Add((key, t));
                 }
@@ -170,15 +180,16 @@ public sealed class DriveRecovery : IDriveRecovery
 
         foreach ((string key, Track t) in due)
         {
-            Step(key, t, now);
+            Step(key, t);
         }
     }
 
-    private void Step(string key, Track t, DateTimeOffset now)
+    private void Step(string key, Track t)
     {
         (double? zone, double? reference)? got = Sample(key, t.Baseline!, t.Rotation++);
         lock (_lock)
         {
+            TimeSpan now = Elapsed(t);
             t.Next = now + SampleEvery;
             if (!_active.TryGetValue(key, out Track? cur) || cur != t)
             {
@@ -204,7 +215,7 @@ public sealed class DriveRecovery : IDriveRecovery
                 return;
             }
 
-            if (now - t.Started < SuspectWindow && (Suspect(t.Baseline!.Zone, got.Value.zone) || Suspect(t.Baseline.Ref, got.Value.reference)))
+            if (now < SuspectWindow && (Suspect(t.Baseline!.Zone, got.Value.zone) || Suspect(t.Baseline.Ref, got.Value.reference)))
             {
                 if (!t.CacheLogged)
                 {
@@ -221,7 +232,7 @@ public sealed class DriveRecovery : IDriveRecovery
             if (t.Streak >= RecoveredStreak)
             {
                 Finish(key);
-                _log.Info($"drive {key} recovered after {(int)(now - t.Started).TotalMinutes} min");
+                _log.Info($"drive {key} recovered after {(int)now.TotalMinutes} min");
                 return;
             }
 
@@ -390,8 +401,9 @@ public sealed class DriveRecovery : IDriveRecovery
                 _baselines[key] = baseline;
             }
 
-            var t = new Track(baseline, now, left) { Verdict = Enum.TryParse(r.Verdict, true, out RecoveryVerdict v) ? v : null };
-            t.Next = now; // 시작 직후 한 번 바로 잼 (바쁘면 건너뜀)
+            Track t = NewTrack(baseline, now, left);
+            t.Verdict = Enum.TryParse(r.Verdict, true, out RecoveryVerdict v) ? v : null;
+            t.Next = TimeSpan.Zero; // 시작 직후 한 번 바로 잼 (바쁘면 건너뜀)
             _active[key] = t;
             Save(key, t); // Started = now, Until = now + left 로 저장값을 맞춤
             _log.Info($"drive {key} recovery restored, {(int)left.TotalMinutes} min left ({(baseline is null ? "fixed wait" : "probe")})");

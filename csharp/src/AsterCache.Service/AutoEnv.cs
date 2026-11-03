@@ -55,6 +55,9 @@ public sealed class AutoEnv
 
     public required Func<DateTimeOffset> Now { get; init; }
 
+    /// Stopwatch 틱: 세션 안 경과 판정 (회복 대기) 이 시스템 시계가 튀어도 흔들리지 않게 씀. 시험은 가짜.
+    public Func<long> Ticks { get; init; } = System.Diagnostics.Stopwatch.GetTimestamp;
+
     public required Func<IReadOnlyList<DiscoveredGame>> Scan { get; init; }
 
     /// 폴더가 게임처럼 보이는가 (휴리스틱 등록 전 확인: 큰 파일이나 런처 매니페스트 흔적). 시험 기본값은 항상 참.
@@ -191,7 +194,7 @@ public sealed class AutoEnv
         var cpu = new CpuLoad();
         return new AutoEnv
         {
-            Now = MonotonicClock.Shared.Now, // 실행 중 시계가 튀어도 경과 시간이 변하지 않게
+            Now = () => DateTimeOffset.UtcNow,
             Scan = () => LauncherScan.Scan(),
             LooksLikeGame = dir => LauncherScan.LooksLikeGame(dir),
             ExeFiles = dir => LauncherScan.InstalledExes(dir),

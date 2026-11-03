@@ -9,6 +9,14 @@ using AsterCache.Windows;
 
 namespace AsterCache.Tests.Service;
 
+/// Stopwatch 틱을 가짜 시계에서 따옴: 시계를 건너뛰면 틱도 같이 가서, 시계만 튀는 시험이 아니면 벽시계 판정과 같아집니다.
+internal static class FakeClock
+{
+    private static readonly DateTimeOffset Epoch = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+    public static Func<long> Ticks(Func<DateTimeOffset> now) => () => (long)((decimal)(now() - Epoch).Ticks * System.Diagnostics.Stopwatch.Frequency / TimeSpan.TicksPerSecond);
+}
+
 internal sealed class FakeTrace : IAutoTrace
 {
     public List<TraceRecord> Records { get; } = [];
@@ -163,12 +171,13 @@ internal sealed class FakeWorld
 
     public Func<string, string, bool> SameDisk { get; set; } = AutoEnv.SameLetter;
 
-    /// 있으면 Now 대신 이 시계를 씀 (MonotonicClock 시험).
-    public Func<DateTimeOffset>? Clock { get; set; }
+    /// 있으면 Now 에서 따온 틱 대신 이 틱을 씀 (시스템 시계가 튀어도 세션 경과가 유지되는지 보는 시험).
+    public Func<long>? Ticks { get; set; }
 
     public AutoEnv Env() => new()
     {
-        Now = () => Clock?.Invoke() ?? Now,
+        Now = () => Now,
+        Ticks = Ticks ?? FakeClock.Ticks(() => Now),
         SameDisk = (a, b) => SameDisk(a, b),
         Scan = () => Skipped.Count == 0 ? Found : new ScanResult([.. Found], [.. Skipped]),
         VolumeLabel = l => Labels.GetValueOrDefault(l, "GAMES"),
@@ -262,7 +271,7 @@ internal sealed class AutoRig : IDisposable
         Dir = Path.Combine(Path.GetTempPath(), "aster_autorig_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Dir);
         Editor = new ConfigEditor(Dir);
-        Status = new AutoStatus(Path.Combine(Dir, "auto_status.json"), Log, () => World.Now);
+        Status = new AutoStatus(Path.Combine(Dir, "auto_status.json"), Log, () => World.Now, ticks: FakeClock.Ticks(() => World.Now));
         Settings = new AsterSettings(50, []);
     }
 

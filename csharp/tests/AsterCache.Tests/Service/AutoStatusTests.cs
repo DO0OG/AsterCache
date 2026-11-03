@@ -17,7 +17,7 @@ public sealed class AutoStatusTests : IDisposable
 
     private string StatusPath => Path.Combine(_dir, "auto_status.json");
 
-    private AutoStatus Make(string? path = "", Action<TimeSpan>? sleep = null) => new(path == string.Empty ? StatusPath : path, _log, () => _now, sleep ?? (_ => { }));
+    private AutoStatus Make(string? path = "", Action<TimeSpan>? sleep = null) => new(path == string.Empty ? StatusPath : path, _log, () => _now, sleep ?? (_ => { }), FakeClock.Ticks(() => _now));
 
     [Fact]
     public void FileHasTheAgreedShapeAndRoundTrips()
@@ -74,18 +74,42 @@ public sealed class AutoStatusTests : IDisposable
     [Theory]
     [InlineData("")]
     [InlineData("not json")]
-    public void UnreadableFileIsKeptAsBadAndCountsAsTheDailyLimitReachedFor24Hours(string text)
+    public void UnreadableFileIsKeptAsBadAndHoldsRelocationFor24Hours(string text)
     {
         File.WriteAllText(StatusPath, text);
+        DateTimeOffset until = _now.AddHours(24);
 
         AutoStatus s = Make();
 
         Assert.True(File.Exists(StatusPath + ".bad"));
-        Assert.True(s.RelocationsWithin(TimeSpan.FromHours(24)) >= 24); // 일일 횟수 상한의 최댓값
-        Assert.True(s.RelocationBytesWithin(TimeSpan.FromHours(24)) >= 1L << 40); // 일일 바이트 상한의 최댓값
-        Assert.Equal(s.RelocationsWithin(TimeSpan.FromHours(24)), Make().RelocationsWithin(TimeSpan.FromHours(24))); // 다시 시작해도 유지 (저장되지 않았다면 새 파일 없음 = 0 이 되지 않게)
+        Assert.Equal(until, s.RelocationHeldUntil());
+        Assert.Contains("status file was unreadable; relocation held until " + until.ToString("u"), _log.Lines.Single(l => l.Contains("unreadable", StringComparison.Ordinal)), StringComparison.Ordinal);
+        Assert.Equal((0, 0L), (s.RelocationsWithin(TimeSpan.FromHours(24)), s.RelocationBytesWithin(TimeSpan.FromHours(24)))); // 실제 이동 집계는 건드리지 않음
+        Assert.Equal(until, Make().RelocationHeldUntil()); // 다시 시작해도 유지
         _now = _now.AddHours(24).AddMinutes(1);
+        Assert.Null(s.RelocationHeldUntil());
+    }
+
+    [Fact]
+    public void DailyWindowKeepsTheLaterEndOfWallClockAndSessionElapsed()
+    {
+        DateTimeOffset wall = _now;
+        long ticks = 0;
+        var s = new AutoStatus(StatusPath, _log, () => wall, _ => { }, () => ticks);
+        s.BeginRelocation(wall, 5);
+
+        ticks += System.Diagnostics.Stopwatch.Frequency * 60;
+        wall = wall.AddHours(25); // 시계가 앞으로 튀어도 세션 경과는 1 분
+        Assert.Equal((1, 5L), (s.RelocationsWithin(TimeSpan.FromHours(24)), s.RelocationBytesWithin(TimeSpan.FromHours(24))));
+
+        ticks += System.Diagnostics.Stopwatch.Frequency * 3600 * 24;
         Assert.Equal(0, s.RelocationsWithin(TimeSpan.FromHours(24)));
+
+        var back = new AutoStatus(null, _log, () => wall, _ => { }, () => ticks);
+        back.BeginRelocation(wall);
+        wall = wall.AddHours(-3); // 시계가 뒤로 가면 벽시계 시각 쪽이 더 늦게 끝남
+        ticks += System.Diagnostics.Stopwatch.Frequency * 3600 * 25;
+        Assert.Equal(1, back.RelocationsWithin(TimeSpan.FromHours(24)));
     }
 
     [Fact]

@@ -150,6 +150,9 @@ public sealed class Prewarmer
     /// 게임 시작으로 취소돼 스트림을 시작하지 않았다는 표시 (PrewarmResult.SkipReason).
     public const string Cancelled = "cancelled";
 
+    /// 업데이트 직후 지연으로 시작하지 않았다는 표시 (PrewarmResult.SkipReason).
+    public const string PostUpdateDelay = "post-update delay";
+
     private volatile IReadOnlyList<GameSettings> _games;
     private readonly IGameStreamer _streamer;
     private readonly PrewarmEnv _env;
@@ -165,6 +168,7 @@ public sealed class Prewarmer
     private readonly Dictionary<string, long> _coldMib = new(StringComparer.OrdinalIgnoreCase); // 기록 없이 예열해 RAM 에 올려 둔 양 (MiB), _gate 로 보호
     private readonly Dictionary<string, IReadOnlyList<(string Path, long Offset, int Bytes)>> _coldSamples = new(StringComparer.OrdinalIgnoreCase); // 기록 없이 예열한 파일 목록에서 고른 재예열 점검 표본, _gate 로 보호
     private readonly HashSet<string> _refusedLogged = new(StringComparer.OrdinalIgnoreCase); // 드라이브 거부를 이미 로그한 게임, _gate 로 보호
+    private readonly HashSet<string> _delayLogged = new(StringComparer.OrdinalIgnoreCase); // 업데이트 지연을 이미 로그한 게임, _gate 로 보호
     private volatile AutoSettings _auto = AutoSettings.Default;
     private volatile string? _streaming; // 핫 집합 스트림이 도는 게임
     private volatile bool _keepStream; // 그 게임이 시작돼 (같은 데이터를 동시에 읽으므로) 취소 신호에도 끝까지 읽기로 한 표시
@@ -191,6 +195,28 @@ public sealed class Prewarmer
     public event Action<GameSettings, bool>? StreamEnded;
 
     public static readonly TimeSpan ProgressEvery = TimeSpan.FromSeconds(10);
+
+    /// 게임 업데이트 직후의 지연 (auto.post_update_delay_min): 그 게임이 아직 기다려야 하면 남은 시간, 아니면 null. 기본은 지연 없음 (서비스가 자동 상태를 보고 정함).
+    public Func<GameSettings, TimeSpan?> PostUpdateWait { get; set; } = _ => null;
+
+    /// 업데이트 지연으로 미뤄야 하는 게임이면 true (지연 한 번에 로그는 한 줄). 지연이 끝난 게임은 다음 지연 때 다시 로그를 남깁니다.
+    private bool Deferred(GameSettings game)
+    {
+        bool wait = PostUpdateWait(game) is not null;
+        lock (_gate)
+        {
+            if (!wait)
+            {
+                _delayLogged.Remove(game.Name);
+            }
+            else if (_delayLogged.Add(game.Name))
+            {
+                _log.Info(AutoRelocator.PostUpdateLine(game.Name, _auto.PostUpdateDelayMin));
+            }
+        }
+
+        return wait;
+    }
 
     /// 게임 exe 가 떴을 때 (스트림 취소보다 먼저): 그 게임의 예열 스트림이 도는 중이면 취소하지 않고 끝까지 읽게 하고 (게임과 같은 데이터를 동시에 읽는 효과),
     /// 기록 없는 예열이 잡아 둔 예산은 풉니다 (게임이 돌면 RAM 이 달라지므로 다음 예산 계산에 쓰지 않음).
@@ -327,6 +353,12 @@ public sealed class Prewarmer
         bool cut = false;
         foreach (GameSettings g in list)
         {
+            if (Deferred(g))
+            {
+                results.Add(new PrewarmResult(g.Name, false, PostUpdateDelay, null, _now()));
+                continue;
+            }
+
             long zoneMib = ((_env.ZoneBytes(g) ?? 0) + (1 << 20) - 1) >> 20;
             long held = used + ColdMib(null); // 이미 올린 양 (기록 없는 예열 포함)
             if (cut || held + zoneMib > physCap || (held > 0 && held + zoneMib > avail - g.Prewarm.MinFreeRamMib))
@@ -362,6 +394,11 @@ public sealed class Prewarmer
             if (ct.IsCancellationRequested)
             {
                 return;
+            }
+
+            if (Deferred(g))
+            {
+                continue;
             }
 
             long zoneMib = ((_env.ZoneBytes(g) ?? 0) + (1 << 20) - 1) >> 20;
@@ -467,6 +504,11 @@ public sealed class Prewarmer
             {
                 _log.Info($"{game.Name}: prewarm cancelled ({why})");
                 return new PrewarmResult(game.Name, false, Cancelled, null, now);
+            }
+
+            if (Deferred(game))
+            {
+                return new PrewarmResult(game.Name, false, PostUpdateDelay, null, now);
             }
 
             if (IsCold(game) && !(_env.ColdRefusal(game) is null && _env.PrefetchBoot(game))) // S2 가 먼저: boot 트레이스가 생기면 더는 기록 없는 게임이 아님

@@ -18,7 +18,10 @@ public static class AutoStage
 }
 
 public sealed record AutoGameEntry(
-    string Source, string? Launcher, string Stage, string? Detail, DateTimeOffset At, DateTimeOffset? LastPlayed, DateTimeOffset? RelocatedAt, int? HitPercent = null, DateTimeOffset? HitAt = null);
+    string Source, string? Launcher, string Stage, string? Detail, DateTimeOffset At, DateTimeOffset? LastPlayed, DateTimeOffset? RelocatedAt, int? HitPercent = null, DateTimeOffset? HitAt = null, AutoBootProbe? BootProbe = null);
+
+/// 부팅 뒤 첫 서비스 시작에서 잰 메타데이터 콜드 비용 (auto_status.json 의 boot_probe): 측정 시각, 연 파일 수, 파일당 평균 열기 시간 (ms).
+public sealed record AutoBootProbe(DateTimeOffset At, int Files, double OpenMsPerFile);
 
 public sealed record AutoEvent(DateTimeOffset At, string Game, string Kind);
 
@@ -146,6 +149,19 @@ public sealed class AutoStatus
         }
     }
 
+    /// 부팅 뒤 콜드 비용 진단 결과를 남깁니다 (덮어씀). 항목이 없으면 남기지 않습니다.
+    public void RecordBootProbe(string name, AutoBootProbe probe)
+    {
+        lock (_lock)
+        {
+            if (_games.TryGetValue(name, out AutoGameEntry? old))
+            {
+                _games[name] = old with { BootProbe = probe };
+                Save();
+            }
+        }
+    }
+
     public void AddEvent(string game, string kind)
     {
         lock (_lock)
@@ -235,6 +251,11 @@ public sealed class AutoStatus
                 game.Add("hit_at", e.HitAt is { } ha ? Iso(ha) : null);
             }
 
+            if (e.BootProbe is { } bp)
+            {
+                game.Add("boot_probe", new JObject { { "at", Iso(bp.At) }, { "files", (long)bp.Files }, { "open_ms_per_file", bp.OpenMsPerFile } });
+            }
+
             games.Add(name, game);
         }
 
@@ -299,7 +320,7 @@ public sealed class AutoStatus
                 {
                     if (value is JObject o && Str(o, "stage") is { } stage)
                     {
-                        _games[name] = new AutoGameEntry(Str(o, "source") ?? "manual", Str(o, "launcher"), stage, Str(o, "detail"), Time(o, "at") ?? _now(), Time(o, "last_played"), Time(o, "relocated_at"), o.TryGetValue("hit_percent", out object? hp) && hp is long h ? (int)Math.Clamp(h, 0, 100) : null, Time(o, "hit_at"));
+                        _games[name] = new AutoGameEntry(Str(o, "source") ?? "manual", Str(o, "launcher"), stage, Str(o, "detail"), Time(o, "at") ?? _now(), Time(o, "last_played"), Time(o, "relocated_at"), o.TryGetValue("hit_percent", out object? hp) && hp is long h ? (int)Math.Clamp(h, 0, 100) : null, Time(o, "hit_at"), ReadBootProbe(o));
                     }
                 }
             }
@@ -325,6 +346,11 @@ public sealed class AutoStatus
             _events.Clear();
         }
     }
+
+    private static AutoBootProbe? ReadBootProbe(JObject o) =>
+        o.TryGetValue("boot_probe", out object? v) && v is JObject b && Time(b, "at") is { } at && b.TryGetValue("files", out object? f) && f is long files
+            && b.TryGetValue("open_ms_per_file", out object? ms) && (ms as double? ?? ms as long?) is { } openMs
+            ? new AutoBootProbe(at, (int)Math.Clamp(files, 0, int.MaxValue), openMs) : null;
 
     private static string Iso(DateTimeOffset t) => t.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
 

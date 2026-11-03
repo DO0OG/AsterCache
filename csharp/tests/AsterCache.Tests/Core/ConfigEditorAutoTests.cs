@@ -28,7 +28,7 @@ public sealed class ConfigEditorAutoTests : IDisposable
         editor.Add(Game("a"));
         editor.SetAuto(AutoSettings.Default);
 
-        Assert.Equal(18, CountKeys(File.ReadAllText(editor.ConfigPath), "auto"));
+        Assert.Equal(19, CountKeys(File.ReadAllText(editor.ConfigPath), "auto"));
         Assert.Equal(Plain(AutoSettings.Default), Plain(editor.Load()!.Auto));
 
         var custom = new AutoSettings(false, false, true, false, 3, 7, 90, 128, 5, ["a.exe", "b.exe"])
@@ -39,6 +39,7 @@ public sealed class ConfigEditorAutoTests : IDisposable
             FullPrewarm = false,
             FullPrewarmMaxMib = 2048,
             EngineProfiles = false,
+            PostUpdateDelayMin = 25,
         };
         editor.SetAuto(custom);
         AutoSettings read = editor.Load()!.Auto;
@@ -48,6 +49,7 @@ public sealed class ConfigEditorAutoTests : IDisposable
         Assert.Equal((false, 2048, false), (read.FullPrewarm, read.FullPrewarmMaxMib, read.EngineProfiles));
         Assert.Equal((LearnSettings.AdaptiveMode, false, "https://example.com/profiles.zip"), (read.Learn.Mode, read.SharedProfiles.Enabled, read.SharedProfiles.Url));
         Assert.Equal(120, read.Learn.SaturationMbps);
+        Assert.Equal(25, read.PostUpdateDelayMin);
 
         editor.SetAuto(AutoSettings.Default with { RewarmMinutes = 0 });
         Assert.Equal(0, editor.Load()!.Auto.RewarmMinutes);

@@ -29,7 +29,7 @@ public static class SettingsStore
     [
         "enabled", "discover", "trace", "relocate", "prewarm_recent", "idle_minutes", "trace_cap_seconds", "trace_cap_mib",
         "max_relocations_per_day", "ignore_exes", "rewarm_minutes", "idle_seconds", "learn", "full_prewarm", "full_prewarm_max_mib", "engine_profiles", "shared_profiles",
-        "ssd_tier",
+        "ssd_tier", "post_update_delay_min",
     ];
     private static readonly string[] PrewarmKeys = ["on_service_start", "trigger_exes", "min_free_ram_mib", "cooldown_min", "pin"];
     private static readonly string[] LearnKeys = ["enabled", "window_mib", "max_total_mib", "mode", "saturation_mbps"];
@@ -153,6 +153,7 @@ public static class SettingsStore
             OptInt(o, "max_relocations_per_day", 0, 24, d.MaxRelocationsPerDay), ignore)
         {
             RewarmMinutes = OptInt(o, "rewarm_minutes", 0, 1440, d.RewarmMinutes),
+            PostUpdateDelayMin = OptInt(o, "post_update_delay_min", 0, 1440, d.PostUpdateDelayMin),
             IdleSeconds = OptInt(o, "idle_seconds", 10, 86400, d.IdleSeconds),
             IdleSecondsSet = o.ContainsKey("idle_seconds"),
             IdleMinutesSet = o.ContainsKey("idle_minutes") && !migrated,

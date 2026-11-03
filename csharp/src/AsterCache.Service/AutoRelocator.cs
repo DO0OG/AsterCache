@@ -14,7 +14,7 @@ namespace AsterCache.Service;
 /// 유휴 판정: 모든 조건이 필요한 시간 동안 끊김 없이 참이어야 유휴입니다. 하나라도 거짓이면 처음부터 다시 잽니다.
 public sealed class IdleTracker
 {
-    /// 이 이상 CPU 를 쓰는 중이면 다른 일을 하는 PC 로 봄 (백그라운드 작업 정도는 허용).
+    /// 이 이상 CPU 를 쓰는 중이면 다른 일을 하는 PC 로 봄 (백그라운드 작업 정도는 허용). 예열·재배치 판정에서는 쓰지 않음.
     public const double CpuBusyPercent = 20;
 
     private DateTimeOffset? _since;
@@ -88,6 +88,7 @@ public sealed class AutoRelocator
     private readonly ConcurrentDictionary<string, DateTimeOffset> _coldTried = new(StringComparer.Ordinal); // 이번 서비스 실행 중 기록 없는 예열을 요청한 게임과 그 시각 (영구 건너뜀은 발견 주기마다 다시 시도)
     private (bool, int, bool) _coldKey; // 틱 스레드에서만 씀: 설정이 바뀌면 _coldTried 를 비움
     private readonly Dictionary<string, DateTimeOffset> _staleChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀
+    private readonly HashSet<string> _delayLogged = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 업데이트 지연을 이미 로그한 게임
     private readonly Dictionary<string, DateTimeOffset> _prefetchTried = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 프리페치 기록으로 boot 를 만들어 본 게임과 그 시각
     private readonly HashSet<string> _seeded = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 이전 존 시작에 맞춰 계획을 만든 게임
     private readonly ConcurrentDictionary<string, DateTimeOffset> _traceWarmTried = new(StringComparer.Ordinal); // 게임별로 예열을 시도한 트레이스 파일 시각
@@ -192,7 +193,7 @@ public sealed class AutoRelocator
         WarmCold(s, warms);
         bool relocateOn = s.Auto.Relocate && s.Auto.MaxRelocationsPerDay > 0;
         IReadOnlyDictionary<string, DateTimeOffset> played = _status.LastPlayed();
-        List<GameSettings> work = s.Games.Where(g => NeedsWork(g, relocateOn))
+        List<GameSettings> work = s.Games.Where(g => !PostUpdateDelayed(g, s) && NeedsWork(g, relocateOn))
             .OrderByDescending(g => played.GetValueOrDefault(g.Name, DateTimeOffset.MinValue)).ThenBy(g => g.Name, StringComparer.Ordinal).ToList();
         bool limitReached = relocateOn && _status.RelocationsWithin(DailyWindow) >= s.Auto.MaxRelocationsPerDay; // Note 보다 먼저 정해 같은 상태 로그가 오락가락하며 쌓이지 않게
         var ready = new List<GameSettings>();
@@ -294,7 +295,7 @@ public sealed class AutoRelocator
         IReadOnlyDictionary<string, DateTimeOffset> played = _status.LastPlayed();
         foreach (GameSettings g in s.Games.OrderByDescending(g => played.GetValueOrDefault(g.Name, DateTimeOffset.MinValue)).ThenBy(g => g.Name, StringComparer.Ordinal))
         {
-            if ((!_coldTried.TryGetValue(g.Name, out DateTimeOffset triedAt) || _env.Now() - triedAt >= AutoMode.DiscoveryEvery) && _prewarm.IsCold(g) && _prewarm.LastWarmed(g.Name) is null && _env.DriveRefusal(g.OriginRoot) is null && !AnyGameRunning(g))
+            if ((!_coldTried.TryGetValue(g.Name, out DateTimeOffset triedAt) || _env.Now() - triedAt >= AutoMode.DiscoveryEvery) && !PostUpdateDelayed(g, s) && _prewarm.IsCold(g) && _prewarm.LastWarmed(g.Name) is null && _env.DriveRefusal(g.OriginRoot) is null && !AnyGameRunning(g))
             {
                 _coldTried[g.Name] = _env.Now();
                 warms.Add((g, ColdWhy));
@@ -611,6 +612,38 @@ public sealed class AutoRelocator
             _status.ResetForReplan(g.Name, ReplanDetail);
             _log.Info($"{g.Name}: an earlier replan was interrupted, state reset to trace and plan again");
         }
+    }
+
+    /// 업데이트를 감지해 재계획 상태 (discovered, detail 이 ReplanDetail) 로 되돌린 게임이 아직 기다려야 하면 남은 시간, 아니면 null.
+    /// 기준 시각은 그 단계에 들어간 때 (auto_status 의 at) 라 서비스를 다시 시작해도 이어집니다. post_update_delay_min 이 0 이면 지연 없음.
+    public static TimeSpan? PostUpdateWait(AutoStatus status, AutoSettings auto, string game, DateTimeOffset now)
+    {
+        if (auto.PostUpdateDelayMin <= 0 || status.Get(game) is not { Stage: AutoStage.Discovered, Detail: { } detail } e || !detail.StartsWith(ReplanDetail, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        TimeSpan left = e.At + TimeSpan.FromMinutes(auto.PostUpdateDelayMin) - now;
+        return left > TimeSpan.Zero ? left : null;
+    }
+
+    public static string PostUpdateLine(string game, int minutes) => $"{game}: waiting {minutes} min after update (drive may still be reorganizing)";
+
+    // 틱 스레드에서: 지연 중이면 true (지연 한 번에 로그는 한 줄, 끝나면 다음 지연 때 다시).
+    private bool PostUpdateDelayed(GameSettings g, AsterSettings s)
+    {
+        if (PostUpdateWait(_status, s.Auto, g.Name, _env.Now()) is null)
+        {
+            _delayLogged.Remove(g.Name);
+            return false;
+        }
+
+        if (_delayLogged.Add(g.Name))
+        {
+            _log.Info(PostUpdateLine(g.Name, s.Auto.PostUpdateDelayMin));
+        }
+
+        return true;
     }
 
     private bool NeedsWork(GameSettings g, bool relocateOn)

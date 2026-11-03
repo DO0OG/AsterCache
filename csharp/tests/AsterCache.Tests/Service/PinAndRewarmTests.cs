@@ -393,8 +393,6 @@ public sealed class PinAndRewarmTests
     }
 
     [Theory]
-    [InlineData("cpu")]
-    [InlineData("cpu-unknown")]
     [InlineData("disk")]
     [InlineData("disk-unknown")]
     public void BusyCpuOrGameDriveSkipsTheCheckAndUnknownCountsAsBusy(string busy)
@@ -404,8 +402,6 @@ public sealed class PinAndRewarmTests
         _probe = 5.0;
         switch (busy)
         {
-            case "cpu": _cpu = IdleTracker.CpuBusyPercent; break; // 20 % 이상이면 바쁨
-            case "cpu-unknown": _cpu = null; break;
             case "disk": _disk = DiskActivity.BusyBytesPerSecond; break;
             default: _disk = null; break;
         }
@@ -415,6 +411,22 @@ public sealed class PinAndRewarmTests
         Assert.Equal(0, _probeCalls);
         Assert.Single(_streamer.Calls);
         Assert.Contains(_log.Lines, l => l.Contains("rewarm check skipped", StringComparison.Ordinal) && l.Contains("busy", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(90.0)]
+    [InlineData(null)]
+    public void BusyOrUnknownCpuDoesNotSkipTheRewarmWhenTheDiskIsQuiet(double? cpu)
+    {
+        Prewarmer p = WarmedGame();
+        TickAt(p, TimeSpan.Zero);
+        _probe = 5.0;
+        _cpu = cpu;
+
+        TickAt(p, TimeSpan.FromMinutes(10));
+
+        Assert.Equal(1, _probeCalls);
+        Assert.Equal(2, _streamer.Calls.Count);
     }
 
     [Fact]

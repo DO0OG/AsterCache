@@ -81,6 +81,8 @@ public sealed class TierFs(IoPriorityHint? hint = null) : ITierFs
 
     public long FreeBytes(string path) => new DriveInfo(Path.GetPathRoot(Path.GetFullPath(path))!).AvailableFreeSpace;
 
+    public long TotalBytes(string path) => new DriveInfo(Path.GetPathRoot(Path.GetFullPath(path))!).TotalSize;
+
     public IReadOnlyList<string> FixedDrives() =>
         [.. DriveInfo.GetDrives().Where(d => d.DriveType == DriveType.Fixed && d.IsReady).Select(d => d.Name[..2].ToUpperInvariant())];
 

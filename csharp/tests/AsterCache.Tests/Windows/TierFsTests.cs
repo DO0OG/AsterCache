@@ -32,6 +32,7 @@ public sealed class TierFsTests(ITestOutputHelper output) : IDisposable
         Assert.Equal(data.Length - 5, fs.ReadRange(dst, 5, data.Length).Length);
         Assert.Null(fs.Stat(_dir.Combine("none.bin")));
         Assert.True(fs.FreeBytes(_dir.Path) > 0);
+        Assert.True(fs.TotalBytes(_dir.Path) >= fs.FreeBytes(_dir.Path));
         Assert.NotEmpty(fs.FixedDrives());
     }
 

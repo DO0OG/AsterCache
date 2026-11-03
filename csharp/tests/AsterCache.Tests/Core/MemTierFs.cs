@@ -18,6 +18,8 @@ internal sealed class MemTierFs : ITierFs
 
     public long Free { get; set; } = 100L << 30;
 
+    public long Total { get; set; } = 256L << 30;
+
     public List<string> Drives { get; } = [];
 
     public bool SymlinkDenied { get; set; }
@@ -118,6 +120,8 @@ internal sealed class MemTierFs : ITierFs
     }
 
     public long FreeBytes(string path) => Free;
+
+    public long TotalBytes(string path) => Total;
 
     public IReadOnlyList<string> FixedDrives() => Drives;
 

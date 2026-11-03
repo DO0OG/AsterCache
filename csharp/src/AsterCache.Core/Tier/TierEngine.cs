@@ -22,8 +22,8 @@ public sealed class TierEngine
     public const string OrigSuffix = ".aster-orig";
     public const string PartSuffix = ".part";
 
-    /// SSD 여유가 이 아래면 새로 옮기지 않고, 가장 오래된 게임부터 되돌립니다.
-    public const long MinFreeBytes = 1L << 30;
+    /// SSD 여유가 이 아래면 새로 옮기지 않고, 가장 오래된 게임부터 되돌립니다. 16 GiB 와 용량의 2% 중 큰 값.
+    public static long MinFreeFor(long totalBytes) => Math.Max(16L << 30, totalBytes / 50);
 
     private readonly ITierFs _fs;
     private readonly ILog _log;
@@ -134,6 +134,7 @@ public sealed class TierEngine
             return new TierApplyReport(0, 0, skipped, "root_unavailable");
         }
 
+        long minFree = MinFreeFor(_fs.TotalBytes(root));
         foreach (TierPick pick in selection.Files)
         {
             if (ct.IsCancellationRequested)
@@ -142,7 +143,7 @@ public sealed class TierEngine
                 break;
             }
 
-            if (_fs.FreeBytes(root) - pick.Size < MinFreeBytes)
+            if (_fs.FreeBytes(root) - pick.Size < minFree)
             {
                 stopped = "ssd_free_low";
                 break;

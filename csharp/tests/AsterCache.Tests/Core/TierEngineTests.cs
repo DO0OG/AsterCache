@@ -258,12 +258,20 @@ public sealed class TierEngineTests : IDisposable
     [Fact]
     public void LowFreeSpaceStopsBeforeCopying()
     {
-        _fs.Free = TierEngine.MinFreeBytes + 4000; // 첫 파일 (3000) 만 들어감
+        _fs.Free = TierEngine.MinFreeFor(_fs.Total) + 4000; // 첫 파일 (3000) 만 들어감
 
         TierApplyReport rep = ApplyBoth();
 
         Assert.Equal((1, "ssd_free_low"), (rep.Applied, rep.Stopped));
         Assert.Equal(_b, _fs.Files[MemTierFs.N(B)]);
+    }
+
+    [Theory]
+    [InlineData(256_000_000_000L, 16L << 30)] // 작은 SSD: 16 GiB
+    [InlineData(2_000_000_000_000L, 40_000_000_000L)] // 2 TB: 용량의 2%
+    public void MinFreeIsTheLargerOf16GiBAndTwoPercentOfTheVolume(long total, long expected)
+    {
+        Assert.Equal(expected, TierEngine.MinFreeFor(total));
     }
 
     [Fact]

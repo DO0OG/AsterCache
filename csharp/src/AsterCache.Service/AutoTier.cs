@@ -97,11 +97,12 @@ public sealed class AutoTier
             Maintain(g, root, t);
         }
 
-        if (_engine.Fs.FreeBytes(root) < TierEngine.MinFreeBytes)
+        long minFree = TierEngine.MinFreeFor(_engine.Fs.TotalBytes(root));
+        if (_engine.Fs.FreeBytes(root) < minFree)
         {
             if (_engine.OldestActive(root) is { } oldest)
             {
-                _log.Warn($"{oldest}: ssd tier folder has less than 1 GiB free, reverting the oldest game (copies stay until `aster tier clean`)");
+                _log.Warn($"{oldest}: ssd tier folder has less than {minFree >> 30} GiB free, reverting the oldest game (copies stay until `aster tier clean`)");
                 _ = _engine.Revert(oldest, "ssd free space low");
                 _tried.Remove(oldest);
                 RefreshBytes(oldest);

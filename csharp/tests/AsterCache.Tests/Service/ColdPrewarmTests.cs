@@ -114,6 +114,7 @@ public sealed class ColdPrewarmTests : IDisposable
         Assert.Empty(_streamer.Calls); // 핫 집합 스트림은 부르지 않음
         Assert.NotNull(p.LastWarmed("g"));
         Assert.Contains(_log.Lines, l => l.Contains("prewarm done (service start, full)", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("prewarm done (service start, full)", StringComparison.Ordinal) && l.Contains(" hint MB/s,", StringComparison.Ordinal));
         var g = (JObject)((JObject)((JObject)JsonRead.ReadFile(Path.Combine(_dir, "status.json"))!)["games"]!)["g"]!;
         Assert.Equal(("ok", "full"), (g["result"], g["mode"]));
     }

@@ -622,7 +622,7 @@ public sealed class Prewarmer
                     }
 
                     double mbps = s.Seconds > 0 ? s.Bytes / 1048576.0 / s.Seconds : 0;
-                    _log.Info($"{game.Name}: prewarm done ({why}): {s.Bytes >> 20} MiB in {s.Seconds:F2} s = {mbps:F0} MB/s, {s.Requests} requests, {s.Errors} errors");
+                    _log.Info($"{game.Name}: prewarm done ({why}): {s.Bytes >> 20} MiB in {s.Seconds:F2} s = {mbps:F0} hint MB/s, {s.Requests} requests, {s.Errors} errors");
                     PrewarmResult done = Record(game, now, new PrewarmResult(game.Name, true, null, s, now), mbps);
                     WarmMeasured?.Invoke(game, mbps);
                     if (pin && !ct.IsCancellationRequested)
@@ -785,7 +785,7 @@ public sealed class Prewarmer
         }
 
         double mbps = stats.Seconds > 0 ? stats.Bytes / 1048576.0 / stats.Seconds : 0;
-        _log.Info($"{game.Name}: prewarm done ({why}, {label}): {stats.Bytes >> 20} MiB in {stats.Seconds:F2} s = {mbps:F0} MB/s, {stats.Requests} requests, {stats.Errors} errors");
+        _log.Info($"{game.Name}: prewarm done ({why}, {label}): {stats.Bytes >> 20} MiB in {stats.Seconds:F2} s = {mbps:F0} hint MB/s, {stats.Requests} requests, {stats.Errors} errors");
         PrewarmResult done = Record(game, now, new PrewarmResult(game.Name, true, null, stats, now) { Mode = label }, mbps);
         WarmMeasured?.Invoke(game, mbps);
         ColdWarmed?.Invoke(game, label!);
@@ -800,8 +800,9 @@ public sealed class Prewarmer
             { "result", r.Ran ? "ok" : r.SkipReason!.StartsWith("failed", StringComparison.Ordinal) ? "failed" : "skipped" },
             { "reason", r.SkipReason },
             { "bytes", r.Stats?.Bytes },
+            { "hint_accepted_bytes", r.Stats?.HintAcceptedBytes },
             { "seconds", r.Stats?.Seconds },
-            { "mb_per_s", r.Stats is null ? null : Math.Round(mbps, 1) },
+            { "hint_mb_per_s", r.Stats is null ? null : Math.Round(mbps, 1) },
         };
         if (r.Ran && r.Mode is null && _streamer.LoadHeadBytes(game) is { } head)
         {

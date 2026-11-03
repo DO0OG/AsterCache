@@ -68,6 +68,7 @@ internal static class PrefetchCommand
                 method.StartsWith("ovl", StringComparison.Ordinal) ? method[3] - '0' : (int)threads);
             json["fallback"] = false; // Python 은 읽기 쪽 fallback (SEQUENTIAL_SCAN 열기 실패) 값으로 덮어씀
             json.Add("bytes", s.Bytes);
+            json.Add("hint_accepted_bytes", s.HintAcceptedBytes);
             json.Add("requests", s.Requests);
             json.Add("errors", s.Errors);
             json.Add("seconds", s.Seconds);

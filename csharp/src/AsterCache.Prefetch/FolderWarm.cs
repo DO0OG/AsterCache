@@ -62,12 +62,15 @@ public static class FolderWarm
         long requests = 0;
         long errors = 0;
         double seconds = 0;
+        long hint = 0;
+        long requested = 0;
+        bool aborted = false;
         int at = 0;
         while (at < ops.Count)
         {
             if (ct.IsCancellationRequested)
             {
-                return (new StreamStats(bytes, requests, errors, seconds), false);
+                return (new StreamStats(bytes, requests, errors, seconds, true, requested, hint), false);
             }
 
             int from = at;
@@ -80,13 +83,14 @@ public static class FolderWarm
             ReadOp[] batch = [.. ops.Skip(from).Take(at - from)];
             StreamStats s = read(batch);
             (bytes, requests, errors, seconds) = (bytes + s.Bytes, requests + s.Requests, errors + s.Errors, seconds + s.Seconds);
+            (hint, requested, aborted) = (hint + s.HintAcceptedBytes, requested + s.RequestedBytes, aborted || s.Aborted);
             if (ct.IsCancellationRequested && s.Bytes < batch.Sum(o => o.Length))
             {
-                return (new StreamStats(bytes, requests, errors, seconds), false); // 묶음 도중 멈춤 (마지막 묶음이어도 끝까지 읽은 것이 아님)
+                return (new StreamStats(bytes, requests, errors, seconds, true, requested, hint), false); // 묶음 도중 멈춤 (마지막 묶음이어도 끝까지 읽은 것이 아님)
             }
         }
 
-        return (new StreamStats(bytes, requests, errors, seconds), true);
+        return (new StreamStats(bytes, requests, errors, seconds, aborted, requested, hint), true);
     }
 
     private sealed record Entry(string Rel, string Full, long Size);

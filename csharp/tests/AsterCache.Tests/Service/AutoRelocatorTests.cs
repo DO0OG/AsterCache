@@ -1222,9 +1222,14 @@ public sealed class AutoRelocatorTests : ApplyTestBase
     private Prewarmer? _cold;
 
     // 원시 트레이스도 prefetch 기록도 없는 게임: 가짜 계획기·읽기를 쓰는 진짜 Prewarmer (AutoMode 가 하는 대로 ColdWarmed 를 재배치기에 연결).
-    private void UseCold()
+    private void UseCold(bool played = true)
     {
         _w.Files.Remove(AutoTracer.RawTracePath(_game));
+        if (played)
+        {
+            _settings.Games.ToList().ForEach(g => _status.MarkPlayed(g.Name, "auto", AutoStage.Discovered, _w.Now)); // 기록 없는 예열은 플레이한 적 있는 게임만
+        }
+
         _cold = new Prewarmer(_settings.Games, _streamer, new PrewarmEnv
         {
             AvailableRamMib = () => _avail,
@@ -1297,6 +1302,19 @@ public sealed class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
+    public void ColdWarmSkipsAGameThatWasNeverPlayed()
+    {
+        UseCold(played: false);
+        _status.Set("bench", "auto", null, AutoStage.Discovered, null);
+
+        Tick();
+        _w.Now += TimeSpan.FromHours(1);
+        Tick();
+
+        Assert.Empty(_coldReads); // 미플레이 게임은 첫 실행 때 트리거 예열만
+    }
+
+    [Fact]
     public void ColdWarmIsOncePerServiceRunAndTransientSkipsAreRetried()
     {
         UseCold();
@@ -1309,7 +1327,11 @@ public sealed class AutoRelocatorTests : ApplyTestBase
 
         _coldDiskBusy = false;
         _w.Now += Step;
-        Tick(); // 다음 틱에 다시
+        Tick();
+        Assert.Empty(_coldReads); // 디스크 바쁨은 다음 틱이 아니라 BusyRetry 뒤에 다시
+
+        _w.Now += AutoRelocator.BusyRetry;
+        Tick();
         Assert.Single(_coldReads);
 
         _w.Now += Step;

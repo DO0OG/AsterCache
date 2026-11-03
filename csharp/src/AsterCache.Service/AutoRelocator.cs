@@ -93,6 +93,7 @@ public sealed class AutoRelocator
     private readonly IdleTracker _idle = new();
     private DateTimeOffset? _waitSince; // 틱 스레드에서만 씀: 유휴가 아닌 채로 기다리기 시작한 때
     private bool _waitNoted; // 틱 스레드에서만 씀: 이번 대기 구간에 긴 대기를 이미 남겼는지
+    public static readonly TimeSpan BusyRetry = TimeSpan.FromMinutes(5); // 기록 없는 예열이 "drive busy" 로 밀렸을 때 다시 시도하는 간격 (틱마다 30 초가 아님)
     public static readonly TimeSpan RetryEvery = TimeSpan.FromHours(6); // 프리페치·콜드 예열 재시도 간격 (발견 주기와 별개)
     private static readonly TimeSpan LongWait = TimeSpan.FromHours(6);
     private readonly Prewarmer? _prewarm;
@@ -321,7 +322,7 @@ public sealed class AutoRelocator
     // 자동 모드의 재배치 대상 (HDD) 에서만 합니다. 서비스 시작·런처 트리거 때의 예열은 Prewarmer 가 직접 합니다.
     private void WarmCold(AsterSettings s, List<(GameSettings Game, string Why)> warms)
     {
-        if (_prewarm is null)
+        if (_prewarm is null || !_prewarm.BootSettled()) // 부팅 직후에는 디스크 경쟁을 피해 미룸
         {
             return;
         }
@@ -334,7 +335,7 @@ public sealed class AutoRelocator
         }
 
         IReadOnlyDictionary<string, DateTimeOffset> played = _status.LastPlayed();
-        foreach (GameSettings g in s.Games.OrderByDescending(g => played.GetValueOrDefault(g.Name, DateTimeOffset.MinValue)).ThenBy(g => g.Name, StringComparer.Ordinal))
+        foreach (GameSettings g in AutoMode.Recent(s.Games, played, s.Auto.PrewarmRecent)) // 플레이한 적 있는 게임만 (prewarm_recent 안, 미플레이는 첫 실행 때 트리거 예열만)
         {
             if ((!_coldTried.TryGetValue(g.Name, out DateTimeOffset triedAt) || _env.Now() - triedAt >= RetryEvery) && !PostUpdateDelayed(g, s) && _prewarm.IsCold(g) && _prewarm.LastWarmed(g.Name) is null && _env.Capabilities(g.OriginRoot).CanPrewarm && !AnyGameRunning(g))
             {
@@ -524,8 +525,12 @@ public sealed class AutoRelocator
         PrewarmResult r = _prewarm!.Guarded(g, "auto " + why, pin: true, ignoreCooldown: true, token);
         if (why == ColdWhy)
         {
-            // 일시적인 이유 (디스크 바쁨, 메모리 부족, 게임 실행 중, 취소) 로 못 했으면 다음 틱에 다시. 폴더가 크고 맞는 엔진이 없는 것 같은 결과는 다시 열거하지 않음.
-            if (!r.Ran && r.SkipReason is { } why2 && (why2 == Prewarmer.Cancelled || why2 is "game is running" or "drive busy" || why2.StartsWith("low memory", StringComparison.Ordinal)
+            // 일시적인 이유 (메모리 부족, 게임 실행 중, 취소) 로 못 했으면 다음 틱에 다시, 디스크 바쁨은 BusyRetry 뒤에. 폴더가 크고 맞는 엔진이 없는 것 같은 결과는 다시 열거하지 않음.
+            if (!r.Ran && r.SkipReason == "drive busy")
+            {
+                _coldTried[g.Name] = _env.Now() - RetryEvery + BusyRetry;
+            }
+            else if (!r.Ran && r.SkipReason is { } why2 && (why2 == Prewarmer.Cancelled || why2 == "game is running" || why2.StartsWith("low memory", StringComparison.Ordinal)
                 || why2.StartsWith("cooldown", StringComparison.Ordinal) || why2.StartsWith("failed", StringComparison.Ordinal)))
             {
                 _coldTried.TryRemove(g.Name, out _);

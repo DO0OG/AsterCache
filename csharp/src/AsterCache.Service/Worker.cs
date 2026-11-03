@@ -46,6 +46,7 @@ public sealed class Worker : BackgroundService
             AutoStatus status = auto.Status;
             prewarm.PostUpdateWait = g => AutoRelocator.PostUpdateWait(status, _settings.Auto, g.Name, DateTimeOffset.UtcNow);
             prewarm.ReplanStart = g => AutoRelocator.Replanning(status, g.Name)?.At;
+            prewarm.HasPlayed = auto.HasPlayed;
         }
 
         _log = log;
@@ -104,7 +105,7 @@ public sealed class Worker : BackgroundService
                     BootProbe.RunReal(_settings, _auto.Status, _log, _auto.WarmToken); // 서비스 시작 예열이 파일을 데우기 전의 콜드 비용 (부팅 뒤 첫 시작일 때만)
                 }
 
-                _prewarm.RunServiceStart(_auto?.StartupRecent(), _auto?.WarmToken ?? default);
+                _prewarm.RunServiceStart(_auto?.StartupRecent(), _auto?.WarmToken ?? default, _auto is { } am ? g => am.HasPlayed(g.Name) : null);
             }), CancellationToken.None);
         }
 

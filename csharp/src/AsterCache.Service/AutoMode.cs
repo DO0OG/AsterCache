@@ -184,6 +184,9 @@ public sealed class AutoMode
             : [];
     }
 
+    /// 이 게임을 플레이한 적이 있는가 (자동 모드가 꺼져 있으면 항상 참): 서비스 시작 예열과 재예열 점검은 플레이한 게임만 합니다. 미플레이 게임은 첫 실행 때 트리거 예열만.
+    public bool HasPlayed(string name) => !_settings.Auto.Enabled || Status.LastPlayed().ContainsKey(name);
+
     /// 트리거 프로그램에 걸린 게임 중 예열할 것: 수동 게임은 전부, 자동 등록 게임은 최근 순 상위 prewarm_recent 개 (0 이면 전부, -1 이면 자동 등록 게임은 없음, 자동 모드가 꺼져 있으면 전부).
     public IEnumerable<GameSettings> NarrowTriggered(IReadOnlyList<GameSettings> hit)
     {

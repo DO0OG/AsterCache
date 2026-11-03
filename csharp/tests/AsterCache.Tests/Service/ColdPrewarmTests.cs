@@ -50,6 +50,8 @@ public sealed class ColdPrewarmTests : IDisposable
 
     private int _bootAsked;
 
+    private int _made;
+
     private double? ProbeMs { get; set; } = 0.5;
 
     private readonly List<IReadOnlyList<(string Path, long Offset, int Bytes)>> _probed = [];
@@ -89,7 +91,7 @@ public sealed class ColdPrewarmTests : IDisposable
                 _reads.Add(ops);
                 return (new StreamStats(ReadBytes ?? ops.Sum(o => o.Length), ops.Count, 0, 0.5), ReadCompletes);
             },
-        }, _log, Path.Combine(_dir, "status.json"), () => _now);
+        }, _log, Path.Combine(_dir, _made++ == 0 ? "status.json" : $"status{_made}.json"), () => _now); // 처음 것만 status.json: 같은 파일을 쓰면 다음 Prewarmer 가 이전 예열 기록을 이어받음 (재시작 시험은 따로 있음)
         p.SetAuto(auto ?? AutoSettings.Default);
         return p;
     }
@@ -203,7 +205,7 @@ public sealed class ColdPrewarmTests : IDisposable
     {
         GameSettings a = Game("a");
         GameSettings b = Game("b");
-        Prewarmer p = Make(null, a, b);
+        Prewarmer p = Make(AutoSettings.Default with { FullPrewarmMaxMib = 100000 }, a, b);
         ReadBytes = 3000 * Mib;
         Assert.Equal("full", p.Run(a, "first").Mode);
         _caps.Clear();
@@ -292,12 +294,12 @@ public sealed class ColdPrewarmTests : IDisposable
     {
         (AvailableMib, PhysicalBytes) = (3000, 64L << 30); // 가용 - 여유 = 2000 < 16384
         MakeOne(minFree: 1000).Run(Game("g"), "t");
-        Assert.Equal([(2000 * Mib, 2000 * Mib)], _caps);
+        Assert.Equal([(1024 * Mib, 2000 * Mib)], _caps); // 통째 상한 기본 1024 MiB, 프로필은 RAM 예산
 
         _caps.Clear();
         (AvailableMib, PhysicalBytes) = (60000, 16L << 30); // 물리 RAM / 4 = 4096 < 59000
         MakeOne(minFree: 1000).Run(Game("g"), "t");
-        Assert.Equal([(4096 * Mib, 4096 * Mib)], _caps);
+        Assert.Equal([(1024 * Mib, 4096 * Mib)], _caps);
     }
 
     [Fact]
@@ -317,7 +319,7 @@ public sealed class ColdPrewarmTests : IDisposable
         MakeOne(AutoSettings.Default with { FullPrewarm = false }).Run(Game("g"), "t");
         MakeOne(AutoSettings.Default with { EngineProfiles = false }).Run(Game("g"), "t");
 
-        Assert.Equal([(0L, 2000 * Mib), (2000 * Mib, 0L)], _caps);
+        Assert.Equal([(0L, 2000 * Mib), (1024 * Mib, 0L)], _caps);
     }
 
     [Fact]
@@ -332,7 +334,7 @@ public sealed class ColdPrewarmTests : IDisposable
 
         IReadOnlyList<PrewarmResult> r = p.RunAll([a, b, c], "batch");
 
-        Assert.Equal([(2000 * Mib, 2000 * Mib), (500 * Mib, 500 * Mib)], _caps); // c 는 예산이 없어 계획까지 가지 않음
+        Assert.Equal([(1024 * Mib, 2000 * Mib), (500 * Mib, 500 * Mib)], _caps); // 통째 상한 기본 1024 MiB. c 는 예산이 없어 계획까지 가지 않음
         Assert.Equal([true, true, false], r.Select(x => x.Ran));
         Assert.Equal("batch memory budget", r[2].SkipReason);
     }
@@ -594,7 +596,7 @@ public sealed class ColdPrewarmTests : IDisposable
     {
         GameSettings a = Game("a");
         GameSettings b = Game("b");
-        Prewarmer p = Make(null, a, b);
+        Prewarmer p = Make(AutoSettings.Default with { FullPrewarmMaxMib = 100000 }, a, b);
         ReadBytes = 1000 * Mib;
         p.Run(a, "t");
         p.SetGames([b]);
@@ -602,6 +604,6 @@ public sealed class ColdPrewarmTests : IDisposable
 
         p.Run(b, "t");
 
-        Assert.Equal(Math.Min(AvailableMib - 1000, 16384) * Mib, _caps.Single().Full); // a 의 1000 MiB 는 더 이상 세지 않음
+        Assert.Equal((AvailableMib - 1000) * Mib, _caps.Single().Full); // a 의 1000 MiB 는 더 이상 세지 않음
     }
 }

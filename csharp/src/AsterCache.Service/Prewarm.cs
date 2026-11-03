@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using AsterCache.Core;
 using AsterCache.Core.Apply;
@@ -108,8 +109,16 @@ public sealed class PrewarmEnv
     /// 기록 없이 예열한 게임의 표본 (경로, 오프셋, 길이) 들을 읽어 잰 결과 (CacheProbe), 읽을 수 없으면 null.
     public Func<IReadOnlyList<(string Path, long Offset, int Bytes)>, ProbeResult?> ProbeSamples { get; init; } = s => CacheProbe.Probe(s);
 
+    /// 부팅 뒤 경과 시간 (ms). 서비스 시작 예열은 부팅 직후의 디스크 경쟁을 피해 BootDelay 가 지난 뒤에 시작합니다. 시험 기본값은 하루 (이미 지남).
+    public Func<long> UptimeMs { get; init; } = () => (long)TimeSpan.FromDays(1).TotalMilliseconds;
+
+    /// 서비스 시작 예열의 대기 (취소되면 일찍 돌아옴). 시험 기본값은 기다리지 않음.
+    public Action<TimeSpan, CancellationToken> Sleep { get; init; } = (_, _) => { };
+
     public static PrewarmEnv Create() => new()
     {
+        UptimeMs = () => Environment.TickCount64,
+        Sleep = (t, ct) => ct.WaitHandle.WaitOne(t),
         SameDisk = VolumeDisks.SameDisk,
         PrefetchBoot = g => AutoTracer.BootFromPrefetch(g) > 0,
         ColdRefusal = g => DriveCapabilities.Of(g.OriginRoot, Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.Windows))![..2].ToUpperInvariant(), letter => DiskInfo.Query(letter).IncursSeekPenalty).PrewarmRefusal,
@@ -198,6 +207,44 @@ public sealed class Prewarmer
         _now = now ?? (() => DateTimeOffset.UtcNow);
         _pins = new PinKeeper(env, log, _now);
         _rewarm = new Rewarmer(this, env, log, _now);
+        LoadStatus();
+    }
+
+    // 이전 실행의 상태 파일: 항목은 그대로 이어 쓰고, 부팅 뒤에 성공한 예열만 _last 로 되살려 서비스만 다시 시작했을 때 같은 게임을 또 읽지 않게 합니다 (부팅 전 것은 파일 캐시가 비었으므로 제외).
+    private void LoadStatus()
+    {
+        if (_statusPath is null || !File.Exists(_statusPath))
+        {
+            return;
+        }
+
+        try
+        {
+            if (JsonRead.ReadFile(_statusPath) is not JObject root || !root.TryGetValue("games", out object? games) || games is not JObject all)
+            {
+                return;
+            }
+
+            DateTimeOffset boot = _now() - TimeSpan.FromMilliseconds(_env.UptimeMs());
+            foreach ((string name, object? value) in all)
+            {
+                if (value is not JObject o)
+                {
+                    continue;
+                }
+
+                _status[name] = o;
+                if (o.TryGetValue("result", out object? result) && result as string == "ok" && o.TryGetValue("at", out object? at)
+                    && at is string text && DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset when) && when > boot)
+                {
+                    _last[name] = when;
+                }
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            _log.Warn("prewarm status file not read: " + e.GetType().Name);
+        }
     }
 
     /// 기록 없이 (통째·프로필) 예열에 성공했을 때: 게임과 방식 이름표.
@@ -213,6 +260,17 @@ public sealed class Prewarmer
     public event Action<GameSettings, bool>? StreamEnded;
 
     public static readonly TimeSpan ProgressEvery = TimeSpan.FromSeconds(10);
+
+    /// 서비스 시작 예열은 부팅 뒤 이만큼 지나고, 게임 드라이브가 IdleNeeded 동안 한가해진 뒤에 시작합니다 (부팅 직후 디스크 경쟁 방지).
+    public static readonly TimeSpan BootDelay = TimeSpan.FromMinutes(5);
+    public static readonly TimeSpan IdleNeeded = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan GateStep = TimeSpan.FromSeconds(5);
+
+    /// 기록 없는 예열의 통째 상한 기본값 (MiB, full_prewarm_max_mib 가 0 일 때).
+    public const int DefaultFullPrewarmMib = 1024;
+
+    /// 이 게임을 플레이한 적이 있는가 (자동 모드의 last_played). 재예열 점검은 플레이한 게임만 봅니다. 기본은 모두 참 (서비스가 자동 상태를 보고 정함).
+    public Func<string, bool> HasPlayed { get; set; } = _ => true;
 
     /// 게임 업데이트 직후의 지연 (auto.post_update_delay_min): 그 게임이 아직 기다려야 하면 남은 시간, 아니면 null. 기본은 지연 없음 (서비스가 자동 상태를 보고 정함).
     public Func<GameSettings, TimeSpan?> PostUpdateWait { get; set; } = _ => null;
@@ -372,7 +430,7 @@ public sealed class Prewarmer
     {
         lock (_gate)
         {
-            return [.. _games.Where(g => _last.ContainsKey(g.Name)).OrderByDescending(g => _last[g.Name]).ThenBy(g => g.Name, StringComparer.Ordinal)];
+            return [.. _games.Where(g => _last.ContainsKey(g.Name) && HasPlayed(g.Name)).OrderByDescending(g => _last[g.Name]).ThenBy(g => g.Name, StringComparer.Ordinal)];
         }
     }
 
@@ -402,13 +460,77 @@ public sealed class Prewarmer
     /// 로그용 예열 원인: "trigger X.exe" → "X.exe", "auto cold start" → "cold start", 그 밖은 앞의 "auto " 만 뗌.
     public static string TriggerCause(string why) => why.StartsWith("trigger ", StringComparison.Ordinal) ? why["trigger ".Length..] : why.StartsWith("auto ", StringComparison.Ordinal) ? why["auto ".Length..] : why;
 
-    /// 서비스 시작 뒤: on_service_start 인 게임을 차례로.
+    /// 서비스 시작 뒤: on_service_start 인 게임을 차례로 (started 를 주면 그 조건을 만족하는 게임만: 자동 모드의 플레이한 게임).
     /// recent (최근순) 를 주면 한 묶음으로 합칩니다: on_service_start 게임 먼저, 그다음 최근순 (중복 제거) — RAM 예산을 한 번만 씁니다.
-    public IReadOnlyList<PrewarmResult> RunServiceStart(IEnumerable<GameSettings>? recent = null, CancellationToken ct = default)
+    /// 부팅 BootDelay 뒤 + 게임 드라이브 IdleNeeded 유휴까지 기다린 다음 (그동안 ct 가 취소되면 아무것도 하지 않음), 핫 집합이 이미 파일 캐시에 있는 게임은 읽지 않고 건너뜁니다.
+    public IReadOnlyList<PrewarmResult> RunServiceStart(IEnumerable<GameSettings>? recent = null, CancellationToken ct = default, Func<GameSettings, bool>? started = null)
     {
-        GameSettings[] first = _games.Where(g => g.Prewarm.OnServiceStart).ToArray();
-        IEnumerable<GameSettings> rest = (recent ?? []).Where(g => !first.Any(f => string.Equals(f.Name, g.Name, StringComparison.OrdinalIgnoreCase)));
-        return RunBatch(first.Concat(rest), "service start", ct: ct);
+        GameSettings[] first = _games.Where(g => g.Prewarm.OnServiceStart && (started?.Invoke(g) ?? true)).ToArray();
+        GameSettings[] list = [.. first.Concat((recent ?? []).Where(g => !first.Any(f => string.Equals(f.Name, g.Name, StringComparison.OrdinalIgnoreCase))))];
+        if (list.Length == 0 || !WaitStartupGate(list, ct))
+        {
+            return [];
+        }
+
+        var skipped = new List<PrewarmResult>();
+        var cold = new List<GameSettings>();
+        foreach (GameSettings g in list)
+        {
+            if (AlreadyWarm(g))
+            {
+                LogSkipped(g.Name, "already warm", $"{g.Name}: prewarm skipped (already warm) [service start]");
+                skipped.Add(new PrewarmResult(g.Name, false, "already warm", null, _now()));
+            }
+            else
+            {
+                cold.Add(g);
+            }
+        }
+
+        return [.. skipped, .. RunBatch(cold, "service start", ct: ct)];
+    }
+
+    /// 서비스 시작 예열을 시작해도 되는 시점인가 (부팅 BootDelay 경과). 자동 모드의 기록 없는 예열 (cold start) 도 같은 조건을 봅니다.
+    public bool BootSettled() => _env.UptimeMs() >= BootDelay.TotalMilliseconds;
+
+    // 부팅 5 분 경과 + 게임 드라이브 60 초 유휴를 기다립니다. 취소되면 false. 드라이브 처리량을 못 읽으면 (null) 바쁜 것으로 봅니다.
+    private bool WaitStartupGate(IReadOnlyList<GameSettings> games, CancellationToken ct)
+    {
+        TimeSpan idle = TimeSpan.Zero;
+        bool logged = false;
+        while (!ct.IsCancellationRequested)
+        {
+            bool busy = !BootSettled() || games.Any(g => _env.DiskBytesPerSecond(g) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond);
+            idle = busy ? TimeSpan.Zero : idle + GateStep;
+            if (idle >= IdleNeeded)
+            {
+                return true;
+            }
+
+            if (!logged)
+            {
+                logged = true;
+                _log.Info($"service start prewarm waits for {BootDelay.TotalMinutes:F0} min after boot and {IdleNeeded.TotalSeconds:F0} s of idle disk");
+            }
+
+            _env.Sleep(GateStep, ct);
+        }
+
+        return false;
+    }
+
+    // 핫 집합 몇 곳을 읽어 이미 파일 캐시에 있으면 (CacheProbe) 다시 읽지 않습니다. 표본을 못 읽으면 (null) 예열합니다.
+    private bool AlreadyWarm(GameSettings g)
+    {
+        try
+        {
+            ProbeResult? p = ColdSamples(g) is { } samples ? _env.ProbeSamples(samples) : _env.ProbeReadMs(g);
+            return p is { Samples: > 0, Cold: false };
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
+        {
+            return false;
+        }
     }
 
     /// 트리거 프로그램이 떴을 때: 그 프로그램을 trigger_exes 에 둔 게임을 차례로. narrow 가 있으면 그 목록에서 예열할 게임만 고릅니다.
@@ -762,7 +884,7 @@ public sealed class Prewarmer
         long avail = _env.AvailableRamMib();
         long availBudget = avail - game.Prewarm.MinFreeRamMib - held; // MiB
         long ram = Math.Min(availBudget, (_env.PhysicalRamBytes() is > 0 and long phys ? phys >> 22 : long.MaxValue) - held); // min(물리 RAM / 4, 가용 RAM - 여유) - 이미 올린 양
-        long fullMib = !a.FullPrewarm ? 0 : a.FullPrewarmMaxMib > 0 ? Math.Min(a.FullPrewarmMaxMib, availBudget) : ram;
+        long fullMib = !a.FullPrewarm ? 0 : Math.Min(a.FullPrewarmMaxMib > 0 ? a.FullPrewarmMaxMib : DefaultFullPrewarmMib, availBudget);
         long profileMib = !a.EngineProfiles ? 0 : a.FullPrewarm && a.FullPrewarmMaxMib > 0 ? Math.Min(ram, fullMib) : ram;
         if (skip is null && Math.Max(fullMib, profileMib) <= 0)
         {

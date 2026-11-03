@@ -119,7 +119,7 @@ public sealed record AutoSettings(
     /// 기록 (trace) 이 없는 게임: 설치 폴더 합이 상한 이하면 폴더 전체를 예열.
     public bool FullPrewarm { get; init; } = true;
 
-    /// 통째 예열의 폴더 크기 상한 (MiB, 0..1048576). 0 = RAM 예산 (물리 RAM 의 1/4 과 가용 RAM - 여유 중 작은 값).
+    /// 통째 예열의 폴더 크기 상한 (MiB, 0..1048576). 0 = 기본 1024 MiB (RAM 예산, 즉 물리 RAM 의 1/4 과 가용 RAM - 여유 중 작은 값 안에서).
     public int FullPrewarmMaxMib { get; init; }
 
     /// 기록이 없고 폴더가 상한보다 크면: 엔진 (Unity·Unreal·Source) 을 감지해 로딩 초반 파일 집합만 예열.

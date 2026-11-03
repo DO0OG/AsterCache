@@ -858,6 +858,36 @@ public sealed class ApplyPortTests : ApplyTestBase
     }
 
     [Fact]
+    public void CancelledRunReadsNoAfterSamplesAndTheResumeVerifiesThem()
+    {
+        PlanFile plan = ManyTasks();
+        (ApplyHooks hooks, List<int> calls) = CallCounter();
+        using var cts = new CancellationTokenSource();
+        Vol.AfterMove = n =>
+        {
+            if (n == 3)
+            {
+                cts.Cancel();
+            }
+        };
+
+        ApplyReport r1 = Applier.Apply(plan, Vol, [Root], JournalPath, hooks, Exec(8 * Cb) with { Verify = VerifyMode.All }, cts.Token);
+
+        Assert.Equal("cancelled", r1.Stopped);
+        int beforeReads = calls.Count;
+        Assert.Equal(SampledTaskIdx().Count, beforeReads); // 이동 전 읽기만 있고 취소 뒤 after 읽기는 0
+        Assert.Equal(0, r1.ShaChecked);
+        Assert.Equal(true, JournalRows().Last(r => Equals(r["type"], "end"))["after_deferred"]);
+
+        Vol.AfterMove = null;
+        calls.Clear();
+        ApplyReport r2 = Applier.Apply(plan, Vol, [Root], JournalPath, hooks, Exec(8 * Cb) with { Verify = VerifyMode.All }, CancellationToken.None);
+
+        Assert.Null(r2.Stopped);
+        Assert.True(calls.Count >= SampledTaskIdx().Count); // 이어하기가 앞 실행이 미룬 작업까지 after 검증
+    }
+
+    [Fact]
     public void SampleModeStillDetectsChangedContentOfASampledTask()
     {
         var seen = new HashSet<string>();

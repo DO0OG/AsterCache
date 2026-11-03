@@ -211,6 +211,35 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         Assert.Empty(Vol.Moves);
     }
 
+    // 다른 게임 하나를 추가합니다 (originRoot 로 드라이브를 정함, 트레이스가 없어 재배치 후보는 아님).
+    private void AddOtherGame(string originRoot)
+    {
+        GameSettings other = _game with { Name = "other", ExeNames = ["other.exe"], Plan = Path.Combine(Root, "plans", "other.plan.json"), OriginRoot = originRoot };
+        _settings = _settings with { Auto = AutoSettings.Default, Games = [_game, other] };
+    }
+
+    [Fact]
+    public void GameRunningOnAnotherDriveDoesNotBlockRelocation()
+    {
+        AddOtherGame(@"Q:\Other");
+        _w.RunningExes.Add("other.exe");
+        Tick();
+        _w.Now += TimeSpan.FromSeconds(30);
+        Tick();
+        Assert.NotEmpty(Vol.Moves);
+    }
+
+    [Fact]
+    public void GameRunningOnTheSameDriveBlocksRelocation()
+    {
+        AddOtherGame(Path.Combine(Root, "other"));
+        _w.RunningExes.Add("other.exe");
+        Tick();
+        _w.Now += TimeSpan.FromMinutes(5);
+        Tick();
+        Assert.Empty(Vol.Moves);
+    }
+
     [Fact]
     public void ExplicitIdleMinutesStillWinsOverTheShortDefault()
     {

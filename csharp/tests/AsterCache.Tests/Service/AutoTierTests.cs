@@ -143,6 +143,18 @@ public sealed class AutoTierTests : IDisposable
     }
 
     [Fact]
+    public void GameRunningOnAnotherDriveDoesNotBlockTiering()
+    {
+        SetTrace();
+        AddGame("Qux", @"E:\Games\Qux");
+        _world.RunningExes.Add("qux.exe");
+
+        IdleTicks(Settings());
+
+        Assert.True(Linked(@"D:\Games\Foo\a.bin"));
+    }
+
+    [Fact]
     public void NoSsdFoundSkipsQuietlyWithTheReasonLoggedOnce()
     {
         SetTrace();

@@ -3,6 +3,7 @@
 	"appid"		"480"
 	"name"		"Space Wars: Ultimate Edition!"
 	"StateFlags"		"4"
+	"SizeOnDisk"		"5368709120"
 	"installdir"		"Space Wars"
 	"InstalledDepots"
 	{

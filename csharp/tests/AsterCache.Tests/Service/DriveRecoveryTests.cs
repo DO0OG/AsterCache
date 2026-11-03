@@ -17,6 +17,7 @@ public sealed class DriveRecoveryTests
     private readonly List<long> _probed = [];
     private double? _zone = 100;
     private double? _ref = 80;
+    private readonly List<string> _gameRoots = [];
 
     public DriveRecoveryTests()
     {
@@ -25,7 +26,9 @@ public sealed class DriveRecoveryTests
             _probed.Add(lcn);
             return lcn == 10 ? _zone : _ref;
         };
-        _r = new DriveRecovery(_w.Env(), _log);
+        AutoEnv env = _w.Env();
+        env.GameRunningOnDisk = drive => _gameRoots.Any(root => _w.SameDisk(drive, root));
+        _r = new DriveRecovery(env, _log);
     }
 
     private void Pass(int minutes)
@@ -474,7 +477,7 @@ public sealed class DriveRecoveryTests
     }
 
     [Fact]
-    public void CeilingIsOnePointTwoFiveTimesTheReferenceBaselineCappedAtTwoFifty()
+    public void CeilingIsOnePointTwoFiveTimesTheLargestValidBaselineCappedAtTwoFifty()
     {
         Assert.Equal(250, _r.CeilingFor(Drive));
         _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
@@ -483,7 +486,47 @@ public sealed class DriveRecoveryTests
         Assert.Equal(100 * DriveRecovery.CeilingFactor, _r.CeilingFor("E:"), 3); // 참조 80·존 100 중 큰 쪽
         Assert.Equal(250, _r.CeilingFor(@"D:\"));
         _r.Begin("F:", new DriveBaseline(new ProbeSpot(10, 100), null), TimeSpan.FromMinutes(60));
-        Assert.Equal(250, _r.CeilingFor("F:")); // 참조 기준이 없으면 고정 상한
+        Assert.Equal(100 * DriveRecovery.CeilingFactor, _r.CeilingFor("F:"), 3); // 존만 있어도 참조만 있는 때와 같은 상한
+    }
+
+    [Theory]
+    [InlineData(true)] // 존 기준만
+    [InlineData(false)] // 참조 기준만
+    public void ASingleBaselineBoundsTheCeilingSymmetricallyAndACacheHitIsUnknown(bool zoneOnly)
+    {
+        var baseline = zoneOnly ? new DriveBaseline(new ProbeSpot(10, 50), null) : new DriveBaseline(null, new ProbeSpot(20, 50));
+        (_zone, _ref) = (180, 180); // 기준 50 인데 캐시 적중 180
+        _r.Begin(Drive, baseline, TimeSpan.FromMinutes(60));
+        Assert.Equal(62.5, _r.CeilingFor(Drive), 3);
+
+        Pass(12); // SuspectWindow (10 분) 밖
+        Pass(2);
+        Pass(2);
+
+        Assert.True(_r.IsRecovering(Drive)); // 상한 250 이었다면 PASS 2 회로 회복됐을 값
+        Assert.Contains(_log.Lines, l => l.Contains("62 MB/s sequential ceiling (disk cache hit)", StringComparison.Ordinal));
+
+        (_zone, _ref) = (50, 50);
+        Pass(2);
+        Pass(2);
+
+        Assert.False(_r.IsRecovering(Drive));
+    }
+
+    [Fact]
+    public void WithoutAnyValidBaselineThereIsNoEarlyRecoveryAndTheFixedWaitRuns()
+    {
+        _r.Begin(Drive, new DriveBaseline(null, null), TimeSpan.FromMinutes(60));
+        Assert.Equal(DriveRecovery.CeilingMbps, _r.CeilingFor(Drive));
+
+        for (int i = 0; i < 10; i++)
+        {
+            Pass(2);
+        }
+
+        Assert.True(_r.IsRecovering(Drive)); // 표본이 몇 번을 좋아도 판정하지 않음
+        Pass(60);
+        Assert.False(_r.IsRecovering(Drive)); // 상한 (고정 지연) 에서 끝남
     }
 
     [Fact]
@@ -699,6 +742,59 @@ public sealed class DriveRecoveryTests
 
         Assert.Equal(cancelled, !_probed.Contains(20));
         Assert.Equal(cancelled, _r.IsRecovering(Drive)); // 취소된 회차는 판정 불가라 회복으로 세지 않음
+    }
+
+    [Fact]
+    public void ARunningGameOnTheDiskKeepsTheSampleFromStartingEvenWhenTheDiskIsIdle()
+    {
+        _gameRoots.Add(@"E:\Games\X"); // 메뉴·일시정지라 처리량은 0
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        Pass(2);
+        Pass(2);
+        Pass(2);
+
+        Assert.Empty(_probed); // 읽기 0 바이트
+        Assert.True(_r.IsRecovering(Drive));
+        Assert.Single(_log.Lines, l => l.Contains("aborted (game running)", StringComparison.Ordinal)); // 게임이 끝날 때까지 로그는 한 번
+
+        _gameRoots.Clear();
+        Pass(2);
+        Pass(2);
+
+        Assert.Contains(10L, _probed);
+        Assert.False(_r.IsRecovering(Drive));
+    }
+
+    [Fact]
+    public void AGameOnAnotherPhysicalDiskDoesNotBlockTheSample()
+    {
+        _gameRoots.Add(@"D:\Games\X");
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        Pass(2);
+        Pass(2);
+
+        Assert.Contains(20L, _probed);
+        Assert.False(_r.IsRecovering(Drive));
+    }
+
+    [Fact]
+    public void AGameStartingAfterTheZoneKeepsTheReferenceUnread()
+    {
+        _w.ProbeMbps = (_, lcn, _) =>
+        {
+            _probed.Add(lcn);
+            _gameRoots.Add(@"E:\Games\X"); // 존을 잰 직후 게임이 시작됨
+            return _zone;
+        };
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        Pass(2);
+
+        Assert.Equal([10L], _probed);
+        Assert.True(_r.IsRecovering(Drive));
+        Assert.Contains(_log.Lines, l => l.Contains("aborted (game running)", StringComparison.Ordinal));
     }
 
     private static VolumeBitmap Bits(params (bool Used, int Length)[] runs)

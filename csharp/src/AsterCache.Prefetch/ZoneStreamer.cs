@@ -52,6 +52,12 @@ public static class ZoneStreamer
     private static (long, long, long) RunRead(IReadOnlyList<ReadOp> ops, int chunk, CancellationToken ct, out bool aborted)
     {
         aborted = false;
+        if (ct.IsCancellationRequested)
+        {
+            aborted = ops.Count > 0;
+            return (0, 0, 0); // 이미 취소됨: 아무것도 읽지 않음
+        }
+
         long sinceCheck = 0;
         long bytes = 0;
         long requests = 0;
@@ -62,6 +68,12 @@ public static class ZoneStreamer
         {
             foreach (ReadOp op in ops)
             {
+                if (ct.IsCancellationRequested)
+                {
+                    aborted = true;
+                    return (bytes, requests, errors);
+                }
+
                 try
                 {
                     if (!handles.TryGetValue(op.Path, out SafeFileHandle? h))
@@ -74,6 +86,12 @@ public static class ZoneStreamer
                     long pos = op.Offset;
                     while (left > 0)
                     {
+                        if (ct.IsCancellationRequested)
+                        {
+                            aborted = true;
+                            return (bytes, requests, errors);
+                        }
+
                         int got = RandomAccess.Read(h, buf.AsSpan(0, (int)Math.Min(left, chunk)), pos);
                         if (got == 0)
                         {
@@ -143,6 +161,12 @@ public static class ZoneStreamer
             long need = 0;
             foreach (ReadOp op in ops)
             {
+                if (ct.IsCancellationRequested)
+                {
+                    aborted = true; // 열거 도중 취소: 이후 파일은 매핑하지 않음
+                    break;
+                }
+
                 if (failed.Contains(op.Path))
                 {
                     continue;
@@ -161,9 +185,21 @@ public static class ZoneStreamer
                         continue;
                     }
 
+                    if (ct.IsCancellationRequested)
+                    {
+                        aborted = true;
+                        break;
+                    }
+
                     if (!views.TryGetValue(op.Path, out FileMapping? view))
                     {
                         views[op.Path] = view = FileMapping.Open(op.Path);
+                    }
+
+                    if (ct.IsCancellationRequested)
+                    {
+                        aborted = true;
+                        break;
                     }
 
                     long a = op.Offset - (op.Offset % Page);
@@ -181,7 +217,7 @@ public static class ZoneStreamer
             // 범위를 CancelCheckBytes 크기 조각으로 나눠 조각마다 한 번씩 부르고 (순서 그대로), 열거 직전과 모든 호출의 직전·직후에 취소를 확인합니다.
             if (ct.IsCancellationRequested)
             {
-                aborted = ranges.Count > 0;
+                aborted |= ranges.Count > 0;
                 return (bytes, requests, errors);
             }
 

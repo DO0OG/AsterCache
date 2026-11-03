@@ -50,7 +50,7 @@ public sealed class ZoneStreamerTests
     }
 
     [Fact]
-    public void CancelledTokenStopsReadMethodAtTheNext8MibBoundary()
+    public void CancelledTokenReadsNothingInReadMethod()
     {
         using var tmp = new TempDir();
         tmp.WriteRandom("f.bin", (int)(20 * Mib));
@@ -61,8 +61,82 @@ public sealed class ZoneStreamerTests
         StreamStats cut = ZoneStreamer.Run(ops, StreamMethod.Read, ct: cts.Token);
         StreamStats full = ZoneStreamer.Run(ops, StreamMethod.Read);
 
-        Assert.Equal((ZoneStreamer.CancelCheckBytes, true), (cut.Bytes, cut.Aborted));
+        Assert.Equal((0L, 0L, true), (cut.Bytes, cut.Requests, cut.Aborted));
         Assert.Equal((20 * Mib, false, 20 * Mib), (full.Bytes, full.Aborted, full.RequestedBytes));
+    }
+
+    [Fact]
+    public void CancelledTokenReadsNothingFromASingleSmallFile()
+    {
+        using var tmp = new TempDir();
+        tmp.WriteRandom("f.bin", (int)Mib);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        StreamStats cut = ZoneStreamer.Run([new(tmp.Combine("f.bin"), 0, Mib)], StreamMethod.Read, ct: cts.Token);
+
+        Assert.Equal((0L, true), (cut.Bytes, cut.Aborted));
+    }
+
+    [Theory]
+    [InlineData(0, 0)] // 첫 파일 시작 시점에 취소
+    [InlineData(1, 1)] // 둘째 파일 시작 시점에 취소: 첫 파일만 읽음
+    [InlineData(3, 3)] // 마지막 묶음 시작 시점에 취소
+    public void ReadStopsBeforeTheNextFileWhenCancelledDuringOpEnumeration(int cancelAtIndex, int expectedMib)
+    {
+        using var tmp = new TempDir();
+        var ops = new List<ReadOp>();
+        for (int i = 0; i < 4; i++)
+        {
+            tmp.WriteRandom($"f{i}.bin", (int)Mib);
+            ops.Add(new ReadOp(tmp.Combine($"f{i}.bin"), 0, Mib));
+        }
+
+        using var cts = new CancellationTokenSource();
+        StreamStats r = ZoneStreamer.Run(new CancelAt(ops, cancelAtIndex, cts), StreamMethod.Read, ct: cts.Token);
+
+        Assert.Equal((expectedMib * Mib, expectedMib, true), (r.Bytes, r.Requests, r.Aborted));
+    }
+
+    [Fact]
+    public void PvmStopsMappingAndCallsNothingWhenCancelledDuringOpEnumeration()
+    {
+        using var tmp = new TempDir();
+        var ops = new List<ReadOp>();
+        for (int i = 0; i < 6; i++)
+        {
+            tmp.WriteRandom($"f{i}.bin", 8192);
+            ops.Add(new ReadOp(tmp.Combine($"f{i}.bin"), 0, 8192));
+        }
+
+        using var cts = new CancellationTokenSource();
+        int calls = 0;
+        (long bytes, _, _) = ZoneStreamer.RunPvm(new CancelAt(ops, 2, cts), cts.Token, out bool aborted, out _, _ => { calls++; return true; });
+
+        Assert.Equal((0, 0L, true), (calls, bytes, aborted));
+    }
+
+    // index 번째 op 를 꺼내는 순간 취소하는 목록 (op 열거 도중 게임이 뜨는 상황).
+    private sealed class CancelAt(List<ReadOp> ops, int index, CancellationTokenSource cts) : IReadOnlyList<ReadOp>
+    {
+        public int Count => ops.Count;
+
+        public ReadOp this[int i] => ops[i];
+
+        public IEnumerator<ReadOp> GetEnumerator()
+        {
+            for (int i = 0; i < ops.Count; i++)
+            {
+                if (i == index)
+                {
+                    cts.Cancel();
+                }
+
+                yield return ops[i];
+            }
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
     [Fact]

@@ -25,6 +25,15 @@ public sealed class VolumeDisks(Func<string, IReadOnlySet<uint>?> query, Func<lo
 
     public bool AreSame(string a, string b) => Overlap(DisksOf(a), DisksOf(b));
 
+    /// 이 드라이브의 캐시를 버려 다음 판정이 다시 조회하게 합니다 (재배치 직전, 문자 재할당 반영).
+    public void Forget(string path)
+    {
+        if (path.Length >= 2 && path[1] == ':' && char.IsAsciiLetter(path[0]))
+        {
+            _cache.TryRemove(char.ToUpperInvariant(path[0]) + ":", out _);
+        }
+    }
+
     /// 둘 중 하나라도 모르면 (null) 같은 디스크, 아니면 번호가 겹치는가.
     internal static bool Overlap(IReadOnlySet<uint>? a, IReadOnlySet<uint>? b) => a is null || b is null || a.Overlaps(b);
 

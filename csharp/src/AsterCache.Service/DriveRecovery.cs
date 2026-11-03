@@ -35,6 +35,7 @@ public sealed class DriveRecovery : IDriveRecovery
     private readonly ILog _log;
     private readonly AutoStatus? _status;
     private readonly Dictionary<string, double> _warmMax = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _gameLogged = new(StringComparer.Ordinal); // "game running" 로 표본을 미룬 드라이브 (게임이 끝날 때까지 로그는 한 번)
     private readonly Dictionary<string, CancellationTokenSource> _samples = new(StringComparer.Ordinal); // 표본을 재는 중인 드라이브별 취소 (게임 시작이 같은 디스크의 표본을 멈춤)
 
     public DriveRecovery(AutoEnv env, ILog log, AutoStatus? status = null)
@@ -58,12 +59,13 @@ public sealed class DriveRecovery : IDriveRecovery
         }
     }
 
-    /// 그 드라이브의 순차 읽기 상한 (MB/s): 기준값 (참조와 존 중 큰 쪽, 존이 참조보다 빠른 디스크가 있어서) 의 1.25 배 (최대 CeilingMbps), 참조 기준이 없으면 CeilingMbps.
+    /// 그 드라이브의 순차 읽기 상한 (MB/s): 유효한 기준값 (존과 참조 중 큰 쪽, 존이 참조보다 빠른 디스크가 있어서) 의 1.25 배 (최대 CeilingMbps), 유효한 기준이 하나도 없으면 CeilingMbps (그때는 판정하지 않고 고정 대기).
     public double CeilingFor(string drive)
     {
         lock (_lock)
         {
-            return _baselines.TryGetValue(Key(drive), out DriveBaseline? b) && b.Ref is { } r ? Math.Min(Math.Max(r.Mbps, b.Zone?.Mbps ?? 0) * CeilingFactor, CeilingMbps) : CeilingMbps;
+            double top = _baselines.TryGetValue(Key(drive), out DriveBaseline? b) ? Math.Max(Valid(b.Zone), Valid(b.Ref)) : 0;
+            return top > 0 ? Math.Min(top * CeilingFactor, CeilingMbps) : CeilingMbps;
         }
     }
 
@@ -261,6 +263,21 @@ public sealed class DriveRecovery : IDriveRecovery
         string? reason = null;
         try
         {
+            if (GameRunning(key))
+            {
+                lock (_lock)
+                {
+                    reason = _gameLogged.Add(key) ? "game running" : null; // 게임이 도는 동안은 표본을 시작하지 않음 (처리량이 0 이어도)
+                }
+
+                return null;
+            }
+
+            lock (_lock)
+            {
+                _ = _gameLogged.Remove(key);
+            }
+
             if (Busy(_env, key))
             {
                 return null;
@@ -268,9 +285,9 @@ public sealed class DriveRecovery : IDriveRecovery
 
             long step = _env.ProbeStepLcn(key) * (rotation % DiskProbe.RotationSteps);
             double? zone = b.Zone is { } z ? _env.ProbeMbps(key, z.Lcn + step, round) : null;
-            if (b.Zone is not null && b.Ref is not null && zone is not null && (cts.IsCancellationRequested || Busy(_env, key)))
+            if (b.Zone is not null && b.Ref is not null && zone is not null && (cts.IsCancellationRequested || GameRunning(key) || Busy(_env, key)))
             {
-                reason = cts.IsCancellationRequested ? "game started" : "disk busy between samples";
+                reason = cts.IsCancellationRequested ? "game started" : GameRunning(key) ? "game running" : "disk busy between samples";
                 return null;
             }
 
@@ -298,6 +315,9 @@ public sealed class DriveRecovery : IDriveRecovery
 
     // 디스크 활동을 못 읽거나 임계 이상이면 바쁨 (기준 측정도 같은 판정을 씀).
     internal static bool Busy(AutoEnv env, string key) => env.DiskBytesPerSecond(key) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond;
+
+    // 같은 물리 디스크에서 등록 게임이 도는 중인가 (AutoEnv.GameRunningOnDisk 가 연결되지 않았으면 아님).
+    private bool GameRunning(string key) => _env.GameRunningOnDisk?.Invoke(key) == true;
 
     private static bool Suspect(ProbeSpot? baseline, double? now) => baseline is { } b && now > b.Mbps * SuspectFactor;
 
@@ -337,7 +357,10 @@ public sealed class DriveRecovery : IDriveRecovery
     private static bool ValidBaseline(DriveBaseline b) =>
         (b.Zone is not null || b.Ref is not null) && Positive(b.Zone) && Positive(b.Ref);
 
-    private static bool Positive(ProbeSpot? s) => s is not { } v || (double.IsFinite(v.Mbps) && v.Mbps > 0 && v.Mbps <= CeilingMbps);
+    private static bool Positive(ProbeSpot? s) => s is null || Valid(s) > 0;
+
+    // 유효한 기준 구간의 MB/s, 없거나 무효이면 0.
+    private static double Valid(ProbeSpot? s) => s is { } v && double.IsFinite(v.Mbps) && v.Mbps > 0 && v.Mbps <= CeilingMbps ? v.Mbps : 0;
 
     // 서비스 시작: 저장된 추적 중 아직 안 끝난 것을 되살립니다 (상한이 지난 것은 지움). 남은 시간은 저장된 종료 시각 (Until) 기준이고, 원래 상한보다 크면 상한으로 자릅니다 (시계가 뒤로 간 경우). 기준이 없거나 무효이면 고정 대기.
     private void Restore()

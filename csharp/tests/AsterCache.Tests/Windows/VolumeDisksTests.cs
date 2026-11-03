@@ -84,6 +84,18 @@ public sealed class VolumeDisksTests
     }
 
     [Fact]
+    public void ForgetMakesTheNextLookupAskAgainBeforeFiveMinutesEnd()
+    {
+        VolumeDisks v = Make();
+        Assert.False(v.AreSame("D:", "E:"));
+
+        _disks["D:"] = new HashSet<uint> { 1 }; // 같은 시각에 다른 디스크로 재할당
+        v.Forget("D:");
+        Assert.True(v.AreSame("D:", "E:"));
+        Assert.Equal(["D:", "E:", "D:"], _queried);
+    }
+
+    [Fact]
     public void AFailedLookupIsNotCachedAndDropsTheEarlierMapping()
     {
         VolumeDisks v = Make();

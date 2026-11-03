@@ -276,7 +276,7 @@ public sealed class DriveRecovery : IDriveRecovery
 
     private static bool Positive(ProbeSpot? s) => s is not { } v || (double.IsFinite(v.Mbps) && v.Mbps > 0 && v.Mbps <= CeilingMbps);
 
-    // 서비스 시작: 저장된 추적 중 아직 안 끝난 것을 되살립니다 (상한이 지난 것은 지움). 기준이 없거나 무효이면 고정 대기.
+    // 서비스 시작: 저장된 추적 중 아직 안 끝난 것을 되살립니다 (상한이 지난 것은 지움). 남은 시간은 저장된 종료 시각 (Until) 기준이고, 원래 상한보다 크면 상한으로 자릅니다 (시계가 뒤로 간 경우). 기준이 없거나 무효이면 고정 대기.
     private void Restore()
     {
         if (_status is null)
@@ -289,23 +289,26 @@ public sealed class DriveRecovery : IDriveRecovery
         {
             string key = Key(r.Drive);
             TimeSpan limit = r.Until - r.Started;
+            TimeSpan left = r.Until - now;
             DriveBaseline? baseline = new DriveBaseline(r.Zone, r.Ref) is var b && ValidBaseline(b) ? b : null;
-            if (limit <= TimeSpan.Zero || now >= r.Until)
+            if (limit <= TimeSpan.Zero || left <= TimeSpan.Zero)
             {
                 _finished[key] = now;
                 _status.ClearDriveRecovery(r.Drive);
                 continue;
             }
 
+            left = left > limit ? limit : left; // 시계가 뒤로 가 남은 시간이 원래 상한보다 크면 상한으로 자름
             if (baseline is not null)
             {
                 _baselines[key] = baseline;
             }
 
-            var t = new Track(baseline, r.Started > now ? now : r.Started, limit) { Verdict = Enum.TryParse(r.Verdict, true, out RecoveryVerdict v) ? v : null };
+            var t = new Track(baseline, now, left) { Verdict = Enum.TryParse(r.Verdict, true, out RecoveryVerdict v) ? v : null };
             t.Next = now; // 시작 직후 한 번 바로 잼 (바쁘면 건너뜀)
             _active[key] = t;
-            _log.Info($"drive {key} recovery restored, {(int)(r.Until - now).TotalMinutes} min left ({(baseline is null ? "fixed wait" : "probe")})");
+            Save(key, t); // Started = now, Until = now + left 로 저장값을 맞춤
+            _log.Info($"drive {key} recovery restored, {(int)left.TotalMinutes} min left ({(baseline is null ? "fixed wait" : "probe")})");
         }
     }
 

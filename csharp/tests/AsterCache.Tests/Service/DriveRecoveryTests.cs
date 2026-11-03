@@ -352,6 +352,59 @@ public sealed class DriveRecoveryTests
     }
 
     [Fact]
+    public void RestoreAfterTheClockJumpedTwoHoursForwardExpiresTheTrack()
+    {
+        using var dir = new TempDir();
+        (DriveRecovery first, _) = Open(StatusPath(dir));
+        first.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        _w.Now += TimeSpan.FromHours(2);
+
+        (DriveRecovery second, AutoStatus status) = Open(StatusPath(dir));
+
+        Assert.False(second.IsRecovering(Drive));
+        Assert.Empty(status.DriveRecoveries());
+    }
+
+    [Fact]
+    public void RestoreAfterTheClockJumpedTwoHoursBackCapsTheRemainingTimeAtTheLimit()
+    {
+        using var dir = new TempDir();
+        (DriveRecovery first, _) = Open(StatusPath(dir));
+        first.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        _w.Now -= TimeSpan.FromHours(2);
+
+        (DriveRecovery second, AutoStatus status) = Open(StatusPath(dir));
+
+        DriveRecoveryRecord saved = Assert.Single(status.DriveRecoveries());
+        Assert.Equal(_w.Now, saved.Started);
+        Assert.Equal(TimeSpan.FromMinutes(60), saved.Until - saved.Started);
+        _w.Now += TimeSpan.FromMinutes(59);
+        Assert.True(second.IsRecovering(Drive));
+        _w.Now += TimeSpan.FromMinutes(1);
+        Assert.False(second.IsRecovering(Drive));
+    }
+
+    [Fact]
+    public void RestoreInsideTheWindowKeepsTheSavedUntil()
+    {
+        using var dir = new TempDir();
+        (DriveRecovery first, _) = Open(StatusPath(dir));
+        first.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        DateTimeOffset until = _w.Now + TimeSpan.FromMinutes(60);
+        _w.Now += TimeSpan.FromMinutes(10);
+
+        (DriveRecovery second, AutoStatus status) = Open(StatusPath(dir));
+
+        DriveRecoveryRecord saved = Assert.Single(status.DriveRecoveries());
+        Assert.Equal(until, saved.Until);
+        Assert.Equal(_w.Now, saved.Started);
+        _w.Now += TimeSpan.FromMinutes(49);
+        Assert.True(second.IsRecovering(Drive));
+        _w.Now += TimeSpan.FromMinutes(1);
+        Assert.False(second.IsRecovering(Drive));
+    }
+
+    [Fact]
     public void InvalidSavedBaselineFallsBackToAFixedWaitWithoutProbing()
     {
         using var dir = new TempDir();

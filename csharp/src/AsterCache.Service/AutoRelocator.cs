@@ -79,6 +79,9 @@ public sealed class AutoRelocator
     private readonly ILog _log;
     private readonly Func<AsterSettings> _settings;
     private readonly IdleTracker _idle = new();
+    private DateTimeOffset? _waitSince; // 틱 스레드에서만 씀: 유휴가 아닌 채로 기다리기 시작한 때
+    private bool _waitNoted; // 틱 스레드에서만 씀: 이번 대기 구간에 긴 대기를 이미 남겼는지
+    private static readonly TimeSpan LongWait = TimeSpan.FromHours(6);
     private readonly Prewarmer? _prewarm;
     private readonly ConcurrentDictionary<string, DateTimeOffset> _coldTried = new(StringComparer.Ordinal); // 이번 서비스 실행 중 기록 없는 예열을 요청한 게임과 그 시각 (영구 건너뜀은 발견 주기마다 다시 시도)
     private (bool, int, bool) _coldKey; // 틱 스레드에서만 씀: 설정이 바뀌면 _coldTried 를 비움
@@ -154,7 +157,7 @@ public sealed class AutoRelocator
     private void TickCore(ReapplyGate gate, CancellationToken ct, List<(GameSettings Game, string Why)> warms)
     {
         AsterSettings s = _settings();
-        double? cpu = _env.CpuPercent(); // 틱마다 불러 두 표본 사이가 한 틱이 되게 함
+        _env.CpuPercent(); // 틱마다 불러 두 표본 사이가 한 틱이 되게 함 (재배치 유휴 판정에는 쓰지 않음)
         if (!s.Auto.Enabled)
         {
             return;
@@ -195,10 +198,13 @@ public sealed class AutoRelocator
         if (ready.Count == 0 || limitReached)
         {
             _idle.Reset();
+            ResetWait();
             return;
         }
 
-        if (!_idle.Sample(_env.Now(), Quiet(s, ready, cpu), s.Auto.IdleWindow))
+        string? busy = BusyReason(s, ready);
+        NoteWait(busy);
+        if (!_idle.Sample(_env.Now(), busy is null, s.Auto.IdleWindow))
         {
             return;
         }
@@ -350,7 +356,7 @@ public sealed class AutoRelocator
         Warm(g, "new trace", warms);
     }
 
-    // 등록된 게임 중 어느 것이든 (g 포함) 도는 중인지: 예열은 다른 게임의 디스크 읽기와 겹치지 않게 Quiet 처럼 전체 exe 로 봅니다.
+    // 등록된 게임 중 어느 것이든 (g 포함) 도는 중인지: 예열은 다른 게임의 디스크 읽기와 겹치지 않게 재배치 유휴 판정처럼 전체 exe 로 봅니다.
     private bool AnyGameRunning(GameSettings g) =>
         _env.AnyRunning([.. _settings().Games.SelectMany(x => x.ExeNames).Concat(g.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)]);
 
@@ -591,17 +597,47 @@ public sealed class AutoRelocator
         return true;
     }
 
-    // 유휴: 게임이 하나도 안 돌고, 게임 드라이브 처리량이 낮고, CPU 가 한가하고, AC 전원이거나 배터리가 충분함.
-    // CPU·전원 조건은 대기 시간이 짧아져도 남겨 둡니다: 사용자가 PC 를 쓰는 중이거나 배터리일 때 큰 디스크 쓰기로 방해하지 않기 위해서입니다.
-    private bool Quiet(AsterSettings s, List<GameSettings> ready, double? cpu)
+    // 유휴가 아닌 이유 (유휴면 null): 등록 게임이 돌거나, 배터리이거나, 대상 드라이브에 디스크 활동이 있음.
+    // CPU 사용률은 보지 않습니다: HDD 이동은 Low I/O 우선순위로 대상 드라이브에만 영향을 주므로 백그라운드 작업이 있는 PC 도 재배치해야 합니다.
+    private string? BusyReason(AsterSettings s, List<GameSettings> ready)
     {
-        if (_env.AnyRunning([.. s.Games.SelectMany(g => g.ExeNames)]) || cpu is not < IdleTracker.CpuBusyPercent || !_env.PowerOk())
+        if (_env.AnyRunning([.. s.Games.SelectMany(g => g.ExeNames)]))
         {
-            return false;
+            return "game running";
         }
 
-        return ready.Select(g => PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant()).Distinct()
-            .All(letter => _env.DiskBytesPerSecond(letter) is { } bps && bps < DiskActivity.BusyBytesPerSecond);
+        if (!_env.PowerOk())
+        {
+            return "on battery";
+        }
+
+        bool diskBusy = ready.Select(g => PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant()).Distinct()
+            .Any(letter => _env.DiskBytesPerSecond(letter) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond);
+        return diskBusy ? "disk busy" : null;
+    }
+
+    // 유휴가 아닌 채로 6 시간을 넘게 기다리면 그때 거짓이던 이유를 한 번 남깁니다. 유휴가 되면 다시 셉니다.
+    private void NoteWait(string? busy)
+    {
+        if (busy is null)
+        {
+            ResetWait();
+            return;
+        }
+
+        DateTimeOffset now = _env.Now();
+        _waitSince ??= now;
+        if (!_waitNoted && now - _waitSince.Value >= LongWait)
+        {
+            _waitNoted = true;
+            _log.Info($"auto waiting for idle for {(int)(now - _waitSince.Value).TotalHours} h ({busy})");
+        }
+    }
+
+    private void ResetWait()
+    {
+        _waitSince = null;
+        _waitNoted = false;
     }
 
     // 계획 만들기: 탐색용 큰 존으로 핫 바이트를 재고, 그 크기에 맞는 존으로 다시 계획해 계획과 선읽기 파일을 저장합니다.

@@ -112,6 +112,10 @@ public sealed class ReapplyTests
 
         public bool PlanMissing { get; set; }
 
+        public ReapplyVerdict? GateBlock { get; set; }
+
+        public List<long> Spent { get; } = [];
+
         public CancellationToken LastToken { get; private set; }
 
         public int ApplyCalls { get; private set; }
@@ -164,6 +168,8 @@ public sealed class ReapplyTests
                 },
                 Stat = p => SourceMissing ? throw new FileNotFoundException() : SourceChanged ? fps[p] with { Size = fps[p].Size + 1 } : fps[p],
                 RealPath = Path.GetFullPath,
+                Gate = _ => GateBlock,
+                Spent = (_, bytes) => Spent.Add(bytes),
                 Apply = (_, _, token) =>
                 {
                     ApplyCalls++;
@@ -221,6 +227,41 @@ public sealed class ReapplyTests
 
         Assert.Equal(expected, rig.Check(Bench));
         Assert.Equal(0, rig.ApplyCalls);
+    }
+
+    [Theory]
+    [InlineData(ReapplyVerdict.Recovering)]
+    [InlineData(ReapplyVerdict.DailyLimit)]
+    [InlineData(ReapplyVerdict.GameRunning)]
+    [InlineData(ReapplyVerdict.OnBattery)]
+    [InlineData(ReapplyVerdict.NotRelocatable)]
+    [InlineData(ReapplyVerdict.PostUpdateDelay)]
+    [InlineData(ReapplyVerdict.NotIdle)]
+    public void DegradedLayoutIsDeferredWhenTheAutoGateBlocks(ReapplyVerdict block)
+    {
+        var rig = new Rig { Moved = false, GateBlock = block };
+
+        Assert.Equal(block, rig.Check(Bench));
+        Assert.Equal(0, rig.ApplyCalls);
+        Assert.Empty(rig.Spent);
+    }
+
+    [Fact]
+    public void ReapplyReportsTheMovedBytesToTheDailyBudget()
+    {
+        var rig = new Rig { Moved = false };
+
+        Assert.Equal(ReapplyVerdict.Reapply, rig.Check(Bench));
+        Assert.Equal([4096L], rig.Spent);
+    }
+
+    [Fact]
+    public void ReapplyThatThrowsStillCountsAsAnAttemptWithZeroBytes()
+    {
+        var rig = new Rig { Moved = false, ApplyThrows = new IOException("x") };
+
+        Assert.Equal(ReapplyVerdict.Failed, rig.Check(Bench));
+        Assert.Equal([0L], rig.Spent);
     }
 
     [Theory]

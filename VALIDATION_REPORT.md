@@ -226,6 +226,11 @@ The v0.7 cache is not connected to a real game's path, so games do not use the c
 
 Windows validation must compare the same game at least 5 times across HDD alone / RAM-prewarmed HDD / HDD with a transparent cache (not implemented) / direct SSD install, and report p50/p95 including prewarm time, and the physical read volume and wait time.
 
+## Decision record (second deep review)
+
+- A failed anti-cheat scan is reported as unknown; the tier is rejected and the result is not cached. Relocation does not change file contents or paths, so anti-cheat games stay allowed as before.
+- The "system HDD" scope stays volume-based. Relocation to another partition on the same physical disk is allowed; contention is blocked by the physical-disk idle check.
+
 ## Original evidence files
 
 - `results/repeat10.json`

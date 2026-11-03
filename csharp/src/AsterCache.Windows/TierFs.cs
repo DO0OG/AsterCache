@@ -42,28 +42,50 @@ public sealed class TierFs(IoPriorityHint? hint = null) : ITierFs
         return got == buf.Length ? buf : buf[..got];
     }
 
-    public void Copy(string source, string destination)
+    public void Copy(string source, string destination, CancellationToken ct = default)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-        using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan))
-        using (var output = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None, 1, FileOptions.SequentialScan))
+        try
         {
-            hint?.SetLow(input.SafeFileHandle);
-            hint?.SetLow(output.SafeFileHandle);
-            byte[] buf = new byte[BufferBytes];
-            int n;
-            while ((n = input.Read(buf, 0, buf.Length)) > 0)
+            using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan))
+            using (var output = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None, 1, FileOptions.SequentialScan))
             {
-                output.Write(buf, 0, n);
-            }
+                hint?.SetLow(input.SafeFileHandle);
+                hint?.SetLow(output.SafeFileHandle);
+                byte[] buf = new byte[BufferBytes];
+                int n;
+                while ((n = input.Read(buf, 0, buf.Length)) > 0)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    output.Write(buf, 0, n);
+                }
 
-            output.Flush(true);
+                ct.ThrowIfCancellationRequested();
+                output.Flush(true);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            File.Delete(destination); // 만들던 .part 를 남기지 않음
+            throw;
         }
 
-        File.SetLastWriteTimeUtc(destination, File.GetLastWriteTimeUtc(source));
+        // 시각을 먼저 맞추고 속성은 마지막에 (읽기 전용이 되면 시각을 못 고침): 원본이 읽기 전용이면 사본도 읽기 전용
+        var info = new FileInfo(source);
+        File.SetLastWriteTimeUtc(destination, info.LastWriteTimeUtc);
+        File.SetCreationTimeUtc(destination, info.CreationTimeUtc);
+        File.SetAttributes(destination, (info.Attributes & FileAttributes.ReadOnly) | FileAttributes.Archive);
     }
 
-    public void Move(string from, string to, bool overwrite) => File.Move(from, to, overwrite);
+    public void Move(string from, string to, bool overwrite)
+    {
+        if (overwrite && File.Exists(to))
+        {
+            ClearReadOnly(to); // 읽기 전용 사본도 새 사본으로 바꿀 수 있게
+        }
+
+        File.Move(from, to, overwrite);
+    }
 
     public void CreateSymlink(string link, string target) => File.CreateSymbolicLink(link, target);
 
@@ -77,7 +99,19 @@ public sealed class TierFs(IoPriorityHint? hint = null) : ITierFs
         File.Delete(link);
     }
 
-    public void DeleteFile(string path) => File.Delete(path);
+    public void DeleteFile(string path)
+    {
+        ClearReadOnly(path);
+        File.Delete(path);
+    }
+
+    private static void ClearReadOnly(string path)
+    {
+        if (File.Exists(path) && File.GetAttributes(path) is var a && (a & FileAttributes.ReadOnly) != 0)
+        {
+            File.SetAttributes(path, a & ~FileAttributes.ReadOnly);
+        }
+    }
 
     public long FreeBytes(string path) => new DriveInfo(Path.GetPathRoot(Path.GetFullPath(path))!).AvailableFreeSpace;
 

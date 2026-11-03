@@ -72,7 +72,7 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         string plan = Path.Combine(plans, "bench.plan.json");
         _game = new GameSettings("bench", ["bench.exe"], plan + ".prefetch.json", plan, Root, [Root], "GAMES", 1440) { Source = "auto" };
         _settings = new AsterSettings(50, [_game]) with { Auto = AutoSettings.Default with { IdleMinutesSet = true, RelocateParallel = 1, RelocateParallelSet = true, PostRelocateRecovery = AutoSettings.RecoveryOff } }; // 기존 시험은 idle_minutes (3 분) 만 명시된 설정, 쓰기 뒤 회복 대기는 아래 별도 시험
-        _status = new AutoStatus(Path.Combine(Root, "auto_status.json"), _log, () => _w.Now);
+        _status = new AutoStatus(Path.Combine(Root, "auto_status.json"), _log, () => _w.Now, ticks: FakeClock.Ticks(() => _w.Now));
         _w.Files.Add(AutoTracer.RawTracePath(_game));
         _w.LoadSessions = () => Sessions;
         _w.MakePlan = (sessions, origin, zoneMib) => PlanFile.Make(sessions, origin, zoneMib << 20, Cb, p => Files[p], preserveBytes: 64 << 20);
@@ -564,6 +564,27 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         _w.Now += TimeSpan.FromHours(24);
         Run(TimeSpan.FromMinutes(3));
         Assert.Equal(AutoStage.Done, Entry.Stage);
+    }
+
+    [Fact]
+    public void UnreadableStatusFileHoldsRelocationAndTheReapplyGateFor24HoursThenReleases()
+    {
+        string path = Path.Combine(Root, "bad_status.json");
+        File.WriteAllText(path, string.Empty);
+        var status = new AutoStatus(path, _log, () => _w.Now, ticks: FakeClock.Ticks(() => _w.Now));
+        _relocator = new AutoRelocator(_w.Env(), status, _log, () => _settings);
+
+        Assert.Equal(ReapplyVerdict.DailyLimit, GateAfterIdle());
+        Run(TimeSpan.FromMinutes(10));
+        Assert.Equal(AutoStage.WaitingIdle, status.Get("bench")!.Stage);
+        Assert.Contains("status file was unreadable; relocation held until", status.Get("bench")!.Detail, StringComparison.Ordinal);
+        Assert.Empty(Vol.Moves);
+        Assert.Equal(0L, status.RelocationBytesWithin(AutoRelocator.DailyWindow)); // 실제 이동 바이트 집계는 건드리지 않음
+
+        _w.Now += TimeSpan.FromHours(24);
+        Assert.Null(GateAfterIdle());
+        Run(TimeSpan.FromMinutes(3));
+        Assert.Equal(AutoStage.Done, status.Get("bench")!.Stage);
     }
 
     [Fact]
@@ -1185,7 +1206,7 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         Run(TimeSpan.FromMinutes(3));
         Assert.Equal(AutoStage.Done, Entry.Stage);
 
-        var restarted = new AutoStatus(Path.Combine(Root, "auto_status.json"), _log, () => _w.Now);
+        var restarted = new AutoStatus(Path.Combine(Root, "auto_status.json"), _log, () => _w.Now, ticks: FakeClock.Ticks(() => _w.Now));
 
         Assert.Equal(Entry, restarted.Get("bench"));
         var saved = (JObject)JsonRead.ReadFile(Path.Combine(Root, "auto_status.json"))!;
@@ -2435,5 +2456,97 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         Tick();
 
         Assert.True(File.Exists(_game.Plan));
+    }
+    // ---- 정기 재적용 게이트: 자동 재배치와 같은 조건 ----
+
+    private ReapplyVerdict? GateAfterIdle()
+    {
+        _ = Relocator.ReapplyBlock(_game); // 첫 표본이 유휴 시작
+        _w.Now += AutoSettings.Default.IdleWindow + TimeSpan.FromMinutes(3);
+        return Relocator.ReapplyBlock(_game);
+    }
+
+    [Fact]
+    public void ReapplyGateNeedsTheIdleWindowThenPasses()
+    {
+        Assert.Equal(ReapplyVerdict.NotIdle, Relocator.ReapplyBlock(_game));
+        _w.Now += TimeSpan.FromMinutes(3);
+
+        Assert.Null(Relocator.ReapplyBlock(_game));
+    }
+
+    [Fact]
+    public void ReapplyGateDefersWhileAnotherRegisteredGameOnTheSameDiskRuns()
+    {
+        var other = new GameSettings("other", ["other.exe"], "t.json", "p.json", Root, [Root], "GAMES", 1440);
+        _settings = _settings with { Games = [_game, other] };
+        _w.RunningExes.Add("other.exe");
+
+        Assert.Equal(ReapplyVerdict.GameRunning, GateAfterIdle());
+    }
+
+    [Fact]
+    public void ReapplyGateDefersWhileTheDriveIsRecovering()
+    {
+        SetAuto(a => a with { PostRelocateRecovery = AutoSettings.RecoveryFixed });
+        Relocator.NoteReapplied(_game, 1 << 20);
+
+        Assert.Equal(ReapplyVerdict.Recovering, GateAfterIdle());
+    }
+
+    [Fact]
+    public void ReapplyGateDefersWhenTheDailyBytesBudgetIsUsed()
+    {
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 8L << 30);
+
+        Assert.Equal(ReapplyVerdict.DailyLimit, GateAfterIdle());
+    }
+
+    [Fact]
+    public void ReapplyGateDefersWhenTheDailyCountLimitIsReached()
+    {
+        SetAuto(a => a with { MaxRelocateGibPerDay = 0 });
+        for (int i = 0; i < _settings.Auto.MaxRelocationsPerDay; i++)
+        {
+            _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1));
+        }
+
+        Assert.Equal(ReapplyVerdict.DailyLimit, GateAfterIdle());
+    }
+
+    [Fact]
+    public void ReapplyGateDefersOnBattery()
+    {
+        _w.Power = false;
+
+        Assert.Equal(ReapplyVerdict.OnBattery, GateAfterIdle());
+    }
+
+    [Fact]
+    public void ReapplyGateDefersOnASystemHdd()
+    {
+        (_w.SystemDrive, _w.Hdd[Letter]) = (Letter, true);
+
+        Assert.Equal(ReapplyVerdict.NotRelocatable, GateAfterIdle());
+    }
+
+    [Fact]
+    public void ReapplyGateDefersRightAfterAGameUpdate()
+    {
+        SetAuto(a => a with { PostRelocateRecovery = AutoSettings.RecoveryOff });
+        _status.Set("bench", "auto", null, AutoStage.Discovered, "game updated, will trace again on next run");
+
+        Assert.Equal(ReapplyVerdict.PostUpdateDelay, GateAfterIdle());
+    }
+
+    [Fact]
+    public void ReappliedBytesCountAgainstTheDailyBudgetAndStartRecovery()
+    {
+        SetAuto(a => a with { PostRelocateRecovery = AutoSettings.RecoveryFixed });
+
+        Relocator.NoteReapplied(_game, 123);
+
+        Assert.Equal((1, 123L), (_status.RelocationsWithin(AutoRelocator.DailyWindow), _status.RelocationBytesWithin(AutoRelocator.DailyWindow)));
+        Assert.True(Relocator.Recovery.IsRecovering(Letter));
     }
 }

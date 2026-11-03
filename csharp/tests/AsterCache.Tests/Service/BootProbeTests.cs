@@ -337,6 +337,15 @@ public sealed class BootProbeTests : IDisposable
         Assert.Equal(1440, ParseAuto(new JsonObject { ["post_update_delay_min"] = 1440 }).PostUpdateDelayMin);
     }
 
+    [Fact]
+    public void RecoveryMaxMinIsSeparateFromPostUpdateDelay()
+    {
+        Assert.Equal(60, AutoSettings.Default.RecoveryMaxMin);
+        Assert.Equal(60, ParseAuto(new JsonObject { ["post_update_delay_min"] = 0 }).RecoveryMaxMin); // 지연이 0 이어도 회복 상한은 그대로
+        Assert.Equal(90, ParseAuto(new JsonObject { ["recovery_max_min"] = 90 }).RecoveryMaxMin);
+        Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["recovery_max_min"] = 0 }));
+    }
+
     [Theory]
     [InlineData(-1)]
     [InlineData(1441)]
@@ -370,5 +379,27 @@ public sealed class BootProbeTests : IDisposable
     public void PostRelocateRecoveryFallsBackToTheDefaultForOtherValues(object value)
     {
         Assert.Equal("probe", ParseAuto(new JsonObject { ["post_relocate_recovery"] = JsonValue.Create(value) }).PostRelocateRecovery);
+    }
+
+    [Fact]
+    public void CancelledTokenStopsOpeningFilesBetweenFiles()
+    {
+        using var cts = new CancellationTokenSource();
+        var s = Settings(Games.Make("a", "a.exe"));
+
+        AutoBootProbe? probe = BootProbe.Run(s, WithPlayed(("a", 1)), _log, T0, 1000, g => Files(g, 50), p =>
+        {
+            _opened.Add(p);
+            _clock += TimeSpan.FromMilliseconds(5);
+            if (_opened.Count == 3)
+            {
+                cts.Cancel(); // 게임 시작 알림
+            }
+
+            return true;
+        }, () => _clock, null, cts.Token);
+
+        Assert.Equal(3, _opened.Count);
+        Assert.Equal(3, probe!.Files);
     }
 }

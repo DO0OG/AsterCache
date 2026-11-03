@@ -76,6 +76,9 @@ public sealed record AutoSettings(
     /// 게임 업데이트를 감지한 뒤 그 게임의 재계획·재배치·예열을 이만큼 (분, 0..1440) 미룸, 0 = 지연 없음. 업데이트 직후에는 드라이브가 파일을 흩어 쓰는 중일 수 있습니다.
     public int PostUpdateDelayMin { get; init; } = 15;
 
+    /// probe 회복 대기의 상한 (분, 1..1440). post_update_delay_min 과 따로 두어, 그 값이 0 이어도 회복 대기는 꺼지지 않습니다. 기본 60 (예전 15 x 4).
+    public int RecoveryMaxMin { get; init; } = 60;
+
     public const string RecoveryProbe = "probe";
     public const string RecoveryFixed = "fixed";
     public const string RecoveryOff = "off";

@@ -15,8 +15,9 @@ public static class CacheProbe
 {
     public const int SampleBytes = 1 << 20;
 
-    /// 한 표본이 이 값을 넘으면 느린 것으로 봅니다: 파일 캐시 적중은 1 MiB 에 1 ms 미만, HDD 는 10 ms 이상이라 그 사이로 잡음.
-    public const double ColdThresholdMs = 2.0;
+    /// 한 표본이 이 값을 넘으면 느린 것으로 봅니다: 파일 캐시 적중은 1 MiB 에 1 ms 미만 (보통 0.3 ms 안팎), HDD 는 10 ms 이상이라 그 사이로 잡음.
+    /// SATA 디스크 자체 캐시 적중 (1 MiB 에 약 1.7 ms) 이 RAM 적중으로 세어지지 않도록 2 ms 보다 낮춤.
+    public const double ColdThresholdMs = 0.8;
 
     /// 느린 표본이 이만큼 (표본 8 곳 중) 이상이면 캐시에서 빠진 것으로 봅니다: 한두 곳의 일시적 지연으로 다시 예열하지 않게.
     public const int ColdSlowSamples = 2;
@@ -26,13 +27,19 @@ public static class CacheProbe
     public const int SpreadSamples = 4;
 
     /// 순서 목록에서 앞쪽 head 곳 (고정) + 나머지에서 고르게 spread 곳 (목록이 더 짧으면 전부) 의 시작 위치와 읽을 길이 (그 op 길이, 최대 SampleBytes: 짧은 op 는 이웃 데이터를 읽지 않게).
-    public static List<(string Path, long Offset, int Bytes)> PickSamples(IReadOnlyList<ReadOp> ordered, int head = HeadSamples, int spread = SpreadSamples)
+    /// round 가 0 보다 크면 (같은 목록을 되풀이해 재는 점검) 위치를 결정적으로 옮깁니다: 앞쪽 표본은 앞쪽 head x4 곳 안에서, 나머지 표본은 각자의 구간 안에서. 앞 회차의 읽기가 그 위치를 파일 캐시에 올려 다음 회차가 따뜻하게 나오는 것을 피함.
+    public static List<(string Path, long Offset, int Bytes)> PickSamples(IReadOnlyList<ReadOp> ordered, int head = HeadSamples, int spread = SpreadSamples, int round = 0)
     {
         var picked = new List<(string, long, int)>();
         int h = Math.Min(head, ordered.Count);
         int rest = ordered.Count - h;
         int k = Math.Min(spread, rest);
-        IEnumerable<int> idx = Enumerable.Range(0, h).Concat(Enumerable.Range(0, k).Select(i => h + (int)((long)i * rest / k)));
+        int front = Math.Min(ordered.Count, Math.Max(h, head * 4));
+        int gap = k > 0 ? Math.Max(1, rest / k) : 1;
+        var rng = new Random(unchecked(ordered.Count * 31 + round)); // 결정적 시드 + 회차
+        int headShift = round > 0 && front > 0 ? rng.Next(front) : 0;
+        int spreadShift = round > 0 ? rng.Next(gap) : 0;
+        IEnumerable<int> idx = Enumerable.Range(0, h).Select(i => (i + headShift) % front).Concat(Enumerable.Range(0, k).Select(i => h + (int)((long)i * rest / k) + spreadShift));
         foreach (int i in idx)
         {
             ReadOp op = ordered[i];
@@ -42,8 +49,13 @@ public static class CacheProbe
         return picked;
     }
 
-    /// 표본마다 읽어 걸린 시간 (ms) 을 재고 판정합니다. 열 수 없거나 읽을 것이 없는 표본은 뺍니다. 모두 빠지면 null.
-    public static ProbeResult? Probe(IReadOnlyList<(string Path, long Offset, int Bytes)> samples)
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> Rounds = new(StringComparer.OrdinalIgnoreCase);
+
+    /// key (게임 이름) 별 점검 회차 번호 (0 부터): PickSamples 의 round 로 넘겨 점검마다 다른 위치를 읽게 합니다.
+    public static int NextRound(string key) => Rounds.AddOrUpdate(key, 0, (_, n) => n + 1);
+
+    /// 표본마다 읽어 걸린 시간 (ms) 을 재고 slowMs 를 넘으면 느린 것으로 판정합니다 (기본은 1 MiB 용 기준). 열 수 없거나 읽을 것이 없는 표본은 뺍니다. 모두 빠지면 null.
+    public static ProbeResult? Probe(IReadOnlyList<(string Path, long Offset, int Bytes)> samples, double slowMs = ColdThresholdMs)
     {
         byte[] buf = new byte[SampleBytes];
         double total = 0;
@@ -63,7 +75,7 @@ public static class CacheProbe
                     double ms = watch.Elapsed.TotalMilliseconds;
                     total += ms;
                     ok++;
-                    slow += ms > ColdThresholdMs ? 1 : 0;
+                    slow += ms > slowMs ? 1 : 0;
                 }
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)

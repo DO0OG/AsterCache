@@ -28,7 +28,7 @@ public sealed class ConfigEditorAutoTests : IDisposable
         editor.Add(Game("a"));
         editor.SetAuto(AutoSettings.Default);
 
-        Assert.Equal(27, CountKeys(File.ReadAllText(editor.ConfigPath), "auto"));
+        Assert.Equal(28, CountKeys(File.ReadAllText(editor.ConfigPath), "auto"));
         Assert.Equal(Plain(AutoSettings.Default), Plain(editor.Load()!.Auto));
 
         var custom = new AutoSettings(false, false, true, false, 3, 7, 90, 128, 5, ["a.exe", "b.exe"])

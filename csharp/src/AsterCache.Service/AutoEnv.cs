@@ -55,6 +55,9 @@ public sealed class AutoEnv
 
     public required Func<DateTimeOffset> Now { get; init; }
 
+    /// Stopwatch 틱: 세션 안 경과 판정 (회복 대기) 이 시스템 시계가 튀어도 흔들리지 않게 씀. 시험은 가짜.
+    public Func<long> Ticks { get; init; } = System.Diagnostics.Stopwatch.GetTimestamp;
+
     public required Func<IReadOnlyList<DiscoveredGame>> Scan { get; init; }
 
     /// 폴더가 게임처럼 보이는가 (휴리스틱 등록 전 확인: 큰 파일이나 런처 매니페스트 흔적). 시험 기본값은 항상 참.
@@ -162,7 +165,7 @@ public sealed class AutoEnv
     public Func<string, long> ProbeStepLcn { get; init; } = _ => 0;
 
     /// ('X:', 존 시작 LCN) → (그 존 앞쪽이 이미 할당됐는가, 존에서 4 GiB 뒤에 가장 가까운 할당된 기준 구간의 LCN), 비트맵을 못 읽으면 null. 시험 기본값은 null.
-    public Func<string, long, (bool ZoneAllocated, long? ReferenceLcn)?> LocateProbeSpots { get; init; } = (_, _) => null;
+    public Func<string, long, CancellationToken, (bool ZoneAllocated, long? ReferenceLcn)?> LocateProbeSpots { get; init; } = (_, _, _) => null;
 
     /// 두 드라이브 ('X:' 또는 그 아래 경로) 가 같은 물리 디스크인가. 모르면 참 (보수적). 시험 기본값은 드라이브 문자 비교.
     public Func<string, string, bool> SameDisk { get; init; } = SameLetter;
@@ -234,7 +237,7 @@ public sealed class AutoEnv
             DiskBytesPerSecond = letter => DiskActivity.BytesPerSecond(letter),
             ProbeMbps = DiskProbe.Mbps,
             ProbeStepLcn = DiskProbe.StepLcn,
-            LocateProbeSpots = DiskProbe.Locate,
+            LocateProbeSpots = (letter, zone, ct) => DiskProbe.Locate(letter, zone, ct, () => DiskActivity.IsBusy(letter)),
             CpuPercent = cpu.Percent,
             PowerOk = () => PowerProbe.PowerOk(MinBatteryPercent),
             Tier = log is null ? null : new TierEngine(new TierFs(new IoPriorityHint(err => log.Warn($"ssd tier: low I/O priority hint not applied (Win32 error {err})"))), log, Path.Combine(Path.GetDirectoryName(journalDir) ?? journalDir, "tier")),
@@ -247,6 +250,12 @@ public sealed class AutoEnv
         return PlanFile.Make(sessions, origin, zoneMib << 20, cb, FileLayout.Extents, zoneStartLcn: start);
     }
 
+    /// 탐지를 못 한 결과 (I/O 실패): 없음이 아니라 모름. 티어는 거절하고 캐시하지 않으며, 등록에는 저장하지 않습니다.
+    public const string AntiCheatUnknown = "unknown";
+
+    /// 등록에 저장해도 되는 탐지 결과 (모름은 null).
+    public static string? KnownAntiCheat(string? found) => found == AntiCheatUnknown ? null : found;
+
     // 발견 때와 같은 이름 열거 (LauncherScan 과 같은 깊이, 읽기 전용).
     private static string? DetectAntiCheat(string dir)
     {
@@ -256,7 +265,7 @@ public sealed class AutoEnv
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            return null;
+            return AntiCheatUnknown;
         }
     }
 

@@ -90,7 +90,8 @@ public class NtfsVolume : IVolume
     /// 입력 STARTING_LCN_INPUT_BUFFER (https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-starting_lcn_input_buffer): LARGE_INTEGER StartingLcn.
     public VolumeBitmap Bitmap() => Bitmap(1 << 20);
 
-    public VolumeBitmap Bitmap(int chunkBytes)
+    /// maxBytes: 비트맵 전체가 이보다 크면 (큰 볼륨) 읽지 않고 IOException 으로 포기합니다 (측정용 호출이 메모리·읽기를 무한히 쓰지 않게).
+    public VolumeBitmap Bitmap(int chunkBytes, long maxBytes = long.MaxValue)
     {
         long start = 0;
         long? total = null;
@@ -119,6 +120,11 @@ public class NtfsVolume : IVolume
             }
 
             total ??= start + size;
+            if ((total.Value + 7) / 8 > maxBytes)
+            {
+                throw new IOException("bitmap too large");
+            }
+
             if (ok)
             {
                 payload = payload[..(int)Math.Min(payload.Length, (size + 7) / 8)];

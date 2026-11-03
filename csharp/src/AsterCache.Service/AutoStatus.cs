@@ -1,4 +1,5 @@
 using System.Globalization;
+using AsterCache.Core;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 
@@ -35,6 +36,7 @@ public sealed class AutoStatus
     public const int MaxEvents = 20;
     public static readonly TimeSpan RelocationKeep = TimeSpan.FromHours(48);
     public const int MaxPlays = 30;
+    public static readonly TimeSpan RelocationHold = TimeSpan.FromHours(24);
     public const int MoveRetries = 5;
     public static readonly TimeSpan MoveRetryDelay = TimeSpan.FromMilliseconds(100);
 
@@ -42,18 +44,21 @@ public sealed class AutoStatus
     private readonly string? _path;
     private readonly ILog _log;
     private readonly Func<DateTimeOffset> _now;
+    private readonly Func<long> _ticks;
     private readonly Action<TimeSpan> _sleep;
     private readonly Dictionary<string, AutoGameEntry> _games = new(StringComparer.Ordinal);
-    private readonly List<(DateTimeOffset At, long Bytes)> _relocations = [];
+    private readonly List<(DateTimeOffset At, long Bytes, long? Ticks)> _relocations = []; // Ticks: 이번 실행에서 시작한 기록의 Stopwatch 시작값 (파일에서 읽은 기록은 null)
+    private DateTimeOffset? _holdUntil; // 상태 파일을 못 읽었을 때 재배치를 막는 벽시계 시각 (relocation_hold_until)
     private readonly List<AutoEvent> _events = [];
     private readonly Dictionary<string, DriveRecoveryRecord> _driveRecovery = new(StringComparer.Ordinal);
 
-    /// sleep 은 파일 교체를 다시 시도하기 전의 대기 (시험이 바꿈, 기본은 MoveRetryDelay 만큼 실제로 잠).
-    public AutoStatus(string? path, ILog log, Func<DateTimeOffset>? now = null, Action<TimeSpan>? sleep = null)
+    /// sleep 은 파일 교체를 다시 시도하기 전의 대기 (시험이 바꿈, 기본은 MoveRetryDelay 만큼 실제로 잠). ticks 는 세션 안 경과 판정용 Stopwatch 틱 (시험이 바꿈).
+    public AutoStatus(string? path, ILog log, Func<DateTimeOffset>? now = null, Action<TimeSpan>? sleep = null, Func<long>? ticks = null)
     {
         _path = path;
         _log = log;
         _now = now ?? (() => DateTimeOffset.UtcNow);
+        _ticks = ticks ?? System.Diagnostics.Stopwatch.GetTimestamp;
         _sleep = sleep ?? Thread.Sleep;
         Load();
     }
@@ -120,7 +125,7 @@ public sealed class AutoStatus
     {
         lock (_lock)
         {
-            _relocations.Add((at, bytes));
+            _relocations.Add((at, bytes, _ticks() - (long)(Math.Max(0, (_now() - at).Ticks) * (decimal)System.Diagnostics.Stopwatch.Frequency / TimeSpan.TicksPerSecond))); // 시작값은 at 이 지금보다 앞이면 그만큼 거슬러 잡음
             Save();
         }
     }
@@ -234,15 +239,31 @@ public sealed class AutoStatus
         }
     }
 
+    // 창 안인가: 기록의 벽시계 시각과 이번 실행의 Stopwatch 경과 중 더 늦게 끝나는 쪽을 따릅니다 (실행 중 시계가 앞으로 튀어도 창이 일찍 끝나지 않음).
+    private bool InWindow((DateTimeOffset At, long Bytes, long? Ticks) r, TimeSpan window, DateTimeOffset since) =>
+        r.At > since || (r.Ticks is { } t && System.Diagnostics.Stopwatch.GetElapsedTime(t, _ticks()) < window);
+
     /// 최근 window 안에 시작한 자동 적용 수.
     public int RelocationsWithin(TimeSpan window)
     {
         lock (_lock)
         {
             DateTimeOffset since = _now() - window;
-            return _relocations.Count(r => r.At > since);
+            return _relocations.Count(r => InWindow(r, window, since));
         }
     }
+
+    /// 상태 파일을 못 읽어 재배치를 막고 있으면 그 해제 시각 (벽시계), 아니면 null.
+    public DateTimeOffset? RelocationHeldUntil()
+    {
+        lock (_lock)
+        {
+            return _holdUntil is { } h && h > _now() ? h : null;
+        }
+    }
+
+    /// 상태 화면·로그에 보이는 막힘 문구.
+    public static string HoldDetail(DateTimeOffset until) => $"status file was unreadable; relocation held until {until.ToUniversalTime():u}";
 
     /// 최근 window 안에 시작한 자동 적용의 이동 예정 바이트 합.
     public long RelocationBytesWithin(TimeSpan window)
@@ -250,7 +271,7 @@ public sealed class AutoStatus
         lock (_lock)
         {
             DateTimeOffset since = _now() - window;
-            return _relocations.Where(r => r.At > since).Sum(r => r.Bytes);
+            return _relocations.Where(r => InWindow(r, window, since)).Sum(r => r.Bytes);
         }
     }
 
@@ -348,6 +369,11 @@ public sealed class AutoStatus
             { "games", games },
             { "events", _events.Select(e => (object?)new JObject { { "at", Iso(e.At) }, { "game", e.Game }, { "kind", e.Kind } }).ToList() },
         };
+        if (_holdUntil is { } hold && hold > now)
+        {
+            root.Add("relocation_hold_until", Iso(hold)); // 막힘이 없으면 키를 만들지 않음 (기존 파일 모양 유지)
+        }
+
         if (_driveRecovery.Count > 0)
         {
             var recovery = new JObject();
@@ -373,7 +399,7 @@ public sealed class AutoStatus
         try
         {
             string tmp = _path + ".tmp";
-            File.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(PyJson.Dumps(root, indent: 2, ensureAscii: false) + "\n"));
+            DurableFile.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(PyJson.Dumps(root, indent: 2, ensureAscii: false) + "\n"));
             MoveOver(tmp, _path);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
@@ -416,7 +442,8 @@ public sealed class AutoStatus
             if (root.TryGetValue("relocations", out object? rel) && rel is List<object?> times)
             {
                 List<object?> sizes = root.TryGetValue("relocation_bytes", out object? rb) && rb is List<object?> bl ? bl : []; // 옛 파일은 없음: 빠진 항목은 0
-                _relocations.AddRange(times.Select((v, i) => (At: Time(v), Bytes: i < sizes.Count && sizes[i] is long n && n > 0 ? n : 0L)).Where(r => r.At is not null).Select(r => (r.At!.Value, r.Bytes)));
+                _relocations.AddRange(times.Select((v, i) => (At: Time(v), Bytes: i < sizes.Count && sizes[i] is long n && n > 0 ? n : 0L)).Where(r => r.At is not null).Select(r => (r.At!.Value, r.Bytes, (long?)null)));
+                _holdUntil = Time(root, "relocation_hold_until");
             }
 
             if (root.TryGetValue("games", out object? g) && g is JObject games)
@@ -456,11 +483,28 @@ public sealed class AutoStatus
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
         {
-            _log.Warn("auto status file unreadable, starting empty: " + e.GetType().Name);
             _games.Clear();
             _relocations.Clear();
             _events.Clear();
             _driveRecovery.Clear();
+            KeepBad();
+            // 일일 상한 기록이 사라졌으므로 24 시간 동안 재배치를 막음 (보수). 이동 바이트 집계는 건드리지 않음.
+            _holdUntil = _now() + RelocationHold;
+            _log.Warn($"auto status file unreadable ({e.GetType().Name}), starting empty; {HoldDetail(_holdUntil.Value)}");
+            Save(); // 다시 시작해도 24 시간은 유지되도록 바로 남김
+        }
+    }
+
+    // 읽을 수 없는 파일은 .bad 로 보관 (조사용), 못 옮기면 그대로 둠: 다음 저장이 덮어씀
+    private void KeepBad()
+    {
+        try
+        {
+            File.Move(_path!, _path + ".bad", true);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn("auto status file not kept as .bad: " + e.GetType().Name);
         }
     }
 

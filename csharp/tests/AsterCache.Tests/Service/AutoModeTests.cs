@@ -262,12 +262,12 @@ public sealed class AutoModeTests : IDisposable
         }, _rig.Log);
         var emitted = new TaskCompletionSource();
         _rig.World.Files.Add(AutoTracer.RawTracePath(Game("warm")));
-        var worker = new Worker(_rig.Settings, _rig.Log, new OneShotStart(new ProcessStart(7, "warm.exe", 0), emitted), null, new FakeStreamer(),
+        var worker = new Worker(_rig.Settings, _rig.Log, new OneShotStart(new ProcessStart(7, "warm.exe", 0), emitted, () => streamer.Calls.Count >= 2), null, new FakeStreamer(),
             new ReapplyChecker(ReapplyTests.NoIoEnv(), _rig.Log), prewarm: prewarm, auto: Mode());
 
         await worker.StartAsync(CancellationToken.None);
-        await emitted.Task;
-        for (int i = 0; i < 300 && (streamer.Calls.Count < 2 || _rig.Status.Get("warm")!.LastPlayed < T0); i++)
+        await emitted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        for (int i = 0; i < 3000 && _rig.Status.Get("warm")!.LastPlayed < T0; i++)
         {
             await Task.Delay(10);
         }
@@ -278,14 +278,20 @@ public sealed class AutoModeTests : IDisposable
         Assert.Equal(T0, _rig.Status.Get("warm")!.LastPlayed); // 게임 시작 알림이 last_played 를 기록함 (가짜 시계)
     }
 
-    private sealed class OneShotStart(ProcessStart start, TaskCompletionSource emitted) : IProcessWatcher
+    // warmDone 이 참이 된 뒤에 시작을 알립니다: 게임 시작은 예열을 취소하므로, 서비스 시작 예열이 끝나기 전에 알리면 순서가 시간에 달림.
+    private sealed class OneShotStart(ProcessStart start, TaskCompletionSource emitted, Func<bool> warmDone) : IProcessWatcher
     {
         public async Task RunAsync(Action<ProcessStart> onStart, CancellationToken cancellationToken)
         {
-            onStart(start);
-            emitted.TrySetResult();
             try
             {
+                while (!warmDone())
+                {
+                    await Task.Delay(1, cancellationToken);
+                }
+
+                onStart(start);
+                emitted.TrySetResult();
                 await Task.Delay(Timeout.Infinite, cancellationToken);
             }
             catch (OperationCanceledException)

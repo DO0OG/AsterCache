@@ -238,7 +238,7 @@ public sealed class PrewarmTests : IDisposable
         var worker = new Worker(new AsterSettings(50, [g]), _log, new IdleWatcher(), null, new FakeStreamer(), new ReapplyChecker(ReapplyTests.NoIoEnv(), _log), prewarm: p);
 
         await worker.StartAsync(CancellationToken.None);
-        for (int i = 0; i < 300 && _streamer.Calls.IsEmpty; i++)
+        for (int i = 0; i < 300 && (_streamer.Calls.IsEmpty || !File.Exists(StatusPath)); i++) // 상태 파일 쓰기까지 기다림: 정리가 쓰는 중인 임시 파일과 겹치지 않게
         {
             await Task.Delay(10);
         }

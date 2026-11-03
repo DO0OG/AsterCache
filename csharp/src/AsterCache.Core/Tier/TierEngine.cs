@@ -21,6 +21,7 @@ public sealed class TierEngine
 {
     public const string OrigSuffix = ".aster-orig";
     public const string PartSuffix = ".part";
+    private const string CancelledReason = "cancelled";
 
     /// SSD 여유가 이 아래면 새로 옮기지 않고, 가장 오래된 게임부터 되돌립니다. 16 GiB 와 용량의 2% 중 큰 값.
     public static long MinFreeFor(long totalBytes) => Math.Max(16L << 30, totalBytes / 50);
@@ -149,8 +150,14 @@ public sealed class TierEngine
                 break;
             }
 
-            if (ApplyOne(g, root, pick, j) is { } why)
+            if (ApplyOne(g, root, pick, j, ct) is { } why)
             {
+                if (why == CancelledReason)
+                {
+                    stopped = "cancelled";
+                    break;
+                }
+
                 skipped.Add(new TierSkip(pick.Path, why));
             }
             else
@@ -165,7 +172,7 @@ public sealed class TierEngine
     }
 
     // 성공이면 null, 아니면 이유 (이 파일은 원래대로).
-    private string? ApplyOne(GameSettings g, string root, TierPick pick, TierJournal j)
+    private string? ApplyOne(GameSettings g, string root, TierPick pick, TierJournal j, CancellationToken ct)
     {
         string path = pick.Path;
         if (!PlanGuards.Inside(path, g.AllowedRoots, System.IO.Path.GetFullPath))
@@ -214,7 +221,7 @@ public sealed class TierEngine
             string sha = Sha(path, src.Length);
             if (!(_fs.Stat(dst) is { } old && old.Length == src.Length && old.MtimeTicks == src.MtimeTicks && Sha(dst, old.Length) == sha)) // 되돌린 뒤 남은 사본이 같으면 다시 쓰지 않음
             {
-                _fs.Copy(path, part);
+                _fs.Copy(path, part, ct);
                 if (_fs.Stat(part) is not { } copy || copy.Length != src.Length || Sha(part, copy.Length) != sha)
                 {
                     _fs.DeleteFile(part);
@@ -245,6 +252,11 @@ public sealed class TierEngine
             }
 
             return null;
+        }
+        catch (OperationCanceledException)
+        {
+            Rollback(g.Name, path, orig, part, j, entry, renamed); // 복사 중 취소: .part 를 남기지 않음
+            return CancelledReason;
         }
         catch (Exception e) when (Io(e))
         {

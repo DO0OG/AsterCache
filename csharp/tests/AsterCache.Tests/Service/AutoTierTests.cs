@@ -143,6 +143,20 @@ public sealed class AutoTierTests : IDisposable
     }
 
     [Fact]
+    public void AnUnknownAntiCheatScanRejectsTheTierAndIsNotCached()
+    {
+        SetTrace();
+        AsterSettings s = Settings();
+        _world.AntiCheats[@"D:\Games\Foo"] = AutoEnv.AntiCheatUnknown;
+        IdleTicks(s);
+        Assert.False(Linked(@"D:\Games\Foo\a.bin"));
+
+        _world.AntiCheats[@"D:\Games\Foo"] = null; // 다음 탐지는 없음으로 나옴: 앞의 모름이 캐시되지 않았어야 함
+        IdleTicks(s);
+        Assert.True(Linked(@"D:\Games\Foo\a.bin"));
+    }
+
+    [Fact]
     public void GameRunningOnAnotherDriveDoesNotBlockTiering()
     {
         SetTrace();
@@ -200,6 +214,46 @@ public sealed class AutoTierTests : IDisposable
         int mutations = _fs.Mutations;
         _tier.Tick(Settings(on: false), false, _gate, default);
         Assert.Equal(mutations, _fs.Mutations); // 이미 되돌렸으면 조용
+    }
+
+    [Fact]
+    public void RevertIsDeferredWhileAGameOnTheSameDiskRunsAndLogsTheReasonOnce()
+    {
+        SetTrace();
+        IdleTicks(Settings());
+        Assert.True(Linked(@"D:\Games\Foo\a.bin"));
+        _world.RunningExes.Add("bar.exe"); // Foo 와 같은 D: 의 다른 등록 게임
+
+        _tier.Tick(Settings(on: false), false, _gate, default); // 꺼짐
+        _tier.Tick(Settings(on: false), false, _gate, default);
+
+        Assert.True(Linked(@"D:\Games\Foo\a.bin")); // 링크로 열린 파일이 있을 수 있어 미룸
+        Assert.Single(_log.Lines, l => l.Contains("Foo: ssd tier revert deferred (disabled)"));
+
+        AsterSettings withoutFoo = new(50, [_games[1]]) { Auto = Settings(on: false).Auto };
+        _tier.Tick(withoutFoo, false, _gate, default); // 게임 제거도 마찬가지
+        Assert.True(Linked(@"D:\Games\Foo\a.bin"));
+
+        _world.RunningExes.Clear();
+        _tier.Tick(Settings(on: false), false, _gate, default);
+        Assert.Empty(_fs.Links);
+    }
+
+    [Fact]
+    public void RevertForLowFreeSpaceIsDeferredWhileASameDiskGameRuns()
+    {
+        SetTrace();
+        AsterSettings s = Settings();
+        IdleTicks(s);
+        _fs.Free = TierEngine.MinFreeFor(_fs.Total) - 1;
+        _world.RunningExes.Add("bar.exe");
+
+        _tier.Tick(s, false, _gate, default);
+
+        Assert.True(Linked(@"D:\Games\Foo\a.bin"));
+        _world.RunningExes.Clear();
+        _tier.Tick(s, false, _gate, default);
+        Assert.False(Linked(@"D:\Games\Foo\a.bin"));
     }
 
     [Fact]

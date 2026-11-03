@@ -1,9 +1,9 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.ServiceProcess;
+using AsterCache.Core.Logging;
 using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 
@@ -109,7 +109,7 @@ public static partial class DiskActivity
     public static double? BytesPerSecond(string letter) => Shared.BytesPerSecond(letter);
 
     /// 읽지 못하면 바쁜 것으로 간주 (보수적: 재적용을 미룸).
-    public static bool IsBusy(string letter) => BytesPerSecond(letter) is not { } bps || bps > BusyBytesPerSecond;
+    public static bool IsBusy(string letter) => BytesPerSecond(letter) is not { } bps || bps >= BusyBytesPerSecond;
 
     /// 실패 사유 (로그 문구이자 판정 기준).
     public const string CounterUnavailable = "counter_unavailable";
@@ -149,12 +149,15 @@ public static partial class DiskActivity
     private static readonly ConcurrentDictionary<string, byte> Reported = new(StringComparer.Ordinal);
     private static bool _namesLogged;
 
+    /// 서비스 시작에서 꽂는 서비스 로그 (없으면 기록하지 않음 — 시험·CLI).
+    public static ILog? Log { get; set; }
+
     /// 드라이브별 1 회만 기록 (반복 로그 방지).
     private static void Report(string letter, string reason)
     {
         if (Reported.TryAdd(letter, 0))
         {
-            Trace.WriteLine($"DiskActivity: {letter} {StatusText} ({reason})");
+            Log?.Info($"DiskActivity: {letter} {StatusText} ({reason})");
         }
     }
 
@@ -240,7 +243,7 @@ public static partial class DiskActivity
                 if (!_namesLogged)
                 {
                     _namesLogged = true;
-                    Trace.WriteLine("DiskActivity: PhysicalDisk 인스턴스 " + string.Join(", ", result.Keys));
+                    Log?.Info("DiskActivity: PhysicalDisk 인스턴스 " + string.Join(", ", result.Keys));
                 }
 
                 return result;
@@ -362,15 +365,24 @@ public static partial class PowerProbe
         public uint BatteryFullLifeTime;
     }
 
-    /// AC 연결, 배터리 없음, 알 수 없음은 true (방해될 일이 없음). 배터리면 남은 비율이 minBatteryPercent 이상일 때만 true.
-    public static bool PowerOk(int minBatteryPercent)
+    /// AC 연결, 배터리 없음, 알 수 없음은 true (방해될 일이 없음). 배터리면 남은 비율이 minBatteryPercent 이상일 때만 true. 조회 자체가 실패하면 false (보수).
+    public static bool PowerOk(int minBatteryPercent) =>
+        Decide(GetSystemPowerStatus(out PowerStatus s), s.AcLineStatus, s.BatteryFlag, s.BatteryLifePercent, minBatteryPercent);
+
+    /// PowerOk 의 판정 (시험용으로 분리): queried 는 GetSystemPowerStatus 가 성공했는가.
+    public static bool Decide(bool queried, byte acLineStatus, byte batteryFlag, byte batteryLifePercent, int minBatteryPercent)
     {
-        if (!GetSystemPowerStatus(out PowerStatus s) || s.AcLineStatus is AcOnline or Unknown || (s.BatteryFlag & NoBattery) != 0)
+        if (!queried)
+        {
+            return false;
+        }
+
+        if (acLineStatus is AcOnline or Unknown || (batteryFlag & NoBattery) != 0)
         {
             return true;
         }
 
-        return s.BatteryLifePercent != Unknown && s.BatteryLifePercent >= minBatteryPercent;
+        return batteryLifePercent != Unknown && batteryLifePercent >= minBatteryPercent;
     }
 
     [LibraryImport("kernel32.dll", SetLastError = true)]

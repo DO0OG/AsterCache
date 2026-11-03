@@ -207,7 +207,8 @@ public sealed class AutoRelocator
         IReadOnlyDictionary<string, DateTimeOffset> played = _status.LastPlayed();
         List<GameSettings> work = s.Games.Where(g => !PostUpdateDelayed(g, s) && NeedsWork(g, relocateOn))
             .OrderByDescending(g => played.GetValueOrDefault(g.Name, DateTimeOffset.MinValue)).ThenBy(g => g.Name, StringComparer.Ordinal).ToList();
-        bool limitReached = relocateOn && _status.RelocationsWithin(DailyWindow) >= s.Auto.MaxRelocationsPerDay; // Note 보다 먼저 정해 같은 상태 로그가 오락가락하며 쌓이지 않게
+        DateTimeOffset? held = relocateOn ? _status.RelocationHeldUntil() : null; // 상태 파일을 못 읽어 막는 중
+        bool limitReached = relocateOn && (held is not null || _status.RelocationsWithin(DailyWindow) >= s.Auto.MaxRelocationsPerDay); // Note 보다 먼저 정해 같은 상태 로그가 오락가락하며 쌓이지 않게
         long budget = (long)s.Auto.MaxRelocateGibPerDay << 30; // 0 = 무제한
         long used = budget > 0 ? _status.RelocationBytesWithin(DailyWindow) : 0;
         var ready = new List<GameSettings>();
@@ -220,7 +221,7 @@ public sealed class AutoRelocator
                 continue;
             }
 
-            if (!_env.FileExists(g.Plan) && (_env.AnyRunning(g.ExeNames) || !Plan(g, s)))
+            if (!_env.FileExists(g.Plan) && (AnyGameRunning(g) || !Plan(g, s)))
             {
                 continue; // 게임이 도는 중이면 디스크를 건드리지 않고, 계획이 실패했으면 failed 로 기록됨
             }
@@ -241,7 +242,7 @@ public sealed class AutoRelocator
             bool budgetHeld = budget > 0 && used > 0 && used + _needBytes.GetValueOrDefault(g.Name, 1) > budget; // 아직 모르면 1 바이트라도 남아야 함, 그날 첫 이동은 한 번 이동량이 상한보다 커도 허용
             lock (_noteLock)
             {
-                Note(g, AutoStage.WaitingIdle, WaitDetail(g, limitReached ? DailyLimit : budgetHeld ? DailyBudget : null));
+                Note(g, AutoStage.WaitingIdle, WaitDetail(g, held is { } until ? AutoStatus.HoldDetail(until) : limitReached ? DailyLimit : budgetHeld ? DailyBudget : null));
             }
 
             if (!budgetHeld)
@@ -570,7 +571,7 @@ public sealed class AutoRelocator
     {
         foreach (GameSettings g in s.Games)
         {
-            if (_status.Get(g.Name)?.RelocatedAt is null || !_env.FileExists(g.Plan) || _env.AnyRunning(g.ExeNames)
+            if (_status.Get(g.Name)?.RelocatedAt is null || !_env.FileExists(g.Plan) || AnyGameRunning(g)
                 || _staleChecked.TryGetValue(g.Name, out DateTimeOffset at) && _env.Now() - at < StaleCheckEvery)
             {
                 continue;
@@ -680,8 +681,8 @@ public sealed class AutoRelocator
     private bool PostUpdateDelayed(GameSettings g, AsterSettings s)
     {
         // probe 모드이고 이 드라이브에 쓰기 전 기준값이 있으면 같은 회복 판정을, 없으면 (업데이트는 우리가 쓴 게 아님) 고정 분을 씀.
-        bool? probed = s.Auto.PostRelocateRecovery == AutoSettings.RecoveryProbe && s.Auto.PostUpdateDelayMin > 0 && Replanning(_status, g.Name) is { } e
-            ? _recovery.WatchUpdate(DriveOf(g), e.At, TimeSpan.FromMinutes(s.Auto.PostUpdateDelayMin * 4)) : null;
+        bool? probed = s.Auto.PostRelocateRecovery == AutoSettings.RecoveryProbe && Replanning(_status, g.Name) is { } e
+            ? _recovery.WatchUpdate(DriveOf(g), e.At, TimeSpan.FromMinutes(s.Auto.RecoveryMaxMin)) : null;
         if (!(probed ?? PostUpdateWait(_status, s.Auto, g.Name, _env.Now()) is not null))
         {
             _delayLogged.Remove(g.Name);
@@ -694,6 +695,78 @@ public sealed class AutoRelocator
         }
 
         return true;
+    }
+
+    /// 이 안에 다시 검사되지 않으면 유휴 연속 기록을 버립니다 (재적용 검사는 몇 분마다라 연속을 보장하지 못함: 같은 막힘 없이 두 번 연달아 통과해야 유휴).
+    private static readonly TimeSpan ReapplyIdleGap = TimeSpan.FromMinutes(30);
+
+    private readonly Dictionary<string, (IdleTracker Tracker, DateTimeOffset Last)> _reapplyIdle = new(StringComparer.Ordinal); // 재적용 틱 스레드에서만 씀
+
+    /// 정기 재적용이 자동 재배치와 같은 게이트를 지나는지: 막는 이유 (같은 디스크 등록 게임 실행, 회복 중, 시스템 HDD, 업데이트 직후, 배터리, 디스크 바쁨, 일일 상한·예산, 유휴 시간) 또는 null.
+    /// 재적용 루프 스레드에서만 부릅니다 (재배치 틱과 같은 스레드). 하루 예산은 이동 예정 바이트를 모르므로 한 바이트라도 남아야 통과 (그날 첫 이동은 허용).
+    public ReapplyVerdict? ReapplyBlock(GameSettings g)
+    {
+        AsterSettings s = _settings();
+        DateTimeOffset now = _env.Now();
+        if (!_reapplyIdle.TryGetValue(g.Name, out (IdleTracker Tracker, DateTimeOffset Last) idle) || now - idle.Last > ReapplyIdleGap)
+        {
+            idle = (new IdleTracker(), now);
+        }
+
+        _reapplyIdle[g.Name] = (idle.Tracker, now);
+        ReapplyVerdict? why = ReapplyBlockedBy(g, s);
+        if (why is not null)
+        {
+            idle.Tracker.Reset();
+            return why;
+        }
+
+        return idle.Tracker.Sample(now, true, s.Auto.IdleWindow) ? null : ReapplyVerdict.NotIdle;
+    }
+
+    private ReapplyVerdict? ReapplyBlockedBy(GameSettings g, AsterSettings s)
+    {
+        if (_env.AnyRunning([.. SameDriveGames(s.Games, [g], _env.SameDisk).SelectMany(x => x.ExeNames).Concat(g.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)]))
+        {
+            return ReapplyVerdict.GameRunning;
+        }
+
+        if (_recovery.IsRecovering(DriveOf(g)))
+        {
+            return ReapplyVerdict.Recovering;
+        }
+
+        if (!_env.Capabilities(g.OriginRoot).CanRelocate)
+        {
+            return ReapplyVerdict.NotRelocatable;
+        }
+
+        if (PostUpdateDelayed(g, s))
+        {
+            return ReapplyVerdict.PostUpdateDelay;
+        }
+
+        if (!_env.PowerOk())
+        {
+            return ReapplyVerdict.OnBattery;
+        }
+
+        if (_env.DiskBytesPerSecond(DriveOf(g)) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond)
+        {
+            return ReapplyVerdict.DiskBusy;
+        }
+
+        long budget = (long)s.Auto.MaxRelocateGibPerDay << 30; // 0 = 무제한
+        bool countHeld = _status.RelocationHeldUntil() is not null || (s.Auto.MaxRelocationsPerDay > 0 && _status.RelocationsWithin(DailyWindow) >= s.Auto.MaxRelocationsPerDay);
+        bool bytesHeld = budget > 0 && _status.RelocationBytesWithin(DailyWindow) is > 0 and long used && used >= budget;
+        return countHeld || bytesHeld ? ReapplyVerdict.DailyLimit : null;
+    }
+
+    /// 정기 재적용이 끝났음 (예외로 끝났으면 0 바이트): 일일 상한·예산 집계에 시작으로 넣고, 쓴 바이트가 있으면 자동 재배치와 같이 드라이브 회복 추적을 시작합니다.
+    public void NoteReapplied(GameSettings g, long movedBytes)
+    {
+        _status.BeginRelocation(_env.Now(), movedBytes);
+        BeginRecovery(g, _settings().Auto, movedBytes, null);
     }
 
     private bool NeedsWork(GameSettings g, bool relocateOn)
@@ -954,6 +1027,12 @@ public sealed class AutoRelocator
             string order = RelocateOrder.Resolve(s.Auto.RelocateOrder);
             var run = new ApplyOptions(Execute: true, ChunkBytes: (long)s.Auto.RelocateChunkMib << 20, LowIoPriority: s.Auto.RelocateIoPriority == AutoSettings.IoLow, Verify: s.Auto.RelocateVerify, Order: order, Parallel: s.Auto.ParallelFor(_env.IsSlowBus(DriveOf(g))));
             long bytes = Math.Min(dry.BytesTodo, run.WriteCap); // 한 번의 적용은 WriteCap 까지만 쓰고 나머지는 이어하기가 다시 셈
+            if (_status.RelocationHeldUntil() is { } held)
+            {
+                Note(g, AutoStage.WaitingIdle, WaitDetail(g, AutoStatus.HoldDetail(held)));
+                return;
+            }
+
             long budget = (long)s.Auto.MaxRelocateGibPerDay << 30;
             long usedToday = budget > 0 ? _status.RelocationBytesWithin(DailyWindow) : 0;
             if (usedToday > 0 && usedToday + bytes > budget) // 빈 창의 첫 이동은 상한보다 커도 허용 (아니면 영원히 대기)
@@ -1018,9 +1097,9 @@ public sealed class AutoRelocator
         try
         {
             string drive = DriveOf(g);
-            if (plan.Zone.StartLcn is not { } zone || _env.LocateProbeSpots(drive, zone) is not { } spots || (!spots.ZoneAllocated && spots.ReferenceLcn is null))
+            if (plan.Zone.StartLcn is not { } zone || _env.LocateProbeSpots(drive, zone, token) is not { } spots || (!spots.ZoneAllocated && spots.ReferenceLcn is null))
             {
-                return (null, false);
+                return (null, token.IsCancellationRequested); // 찾는 중 게임이 떠 취소됐으면 기준 없이 강행하지 않음
             }
 
             var round = new ProbeRound(token, (spots.ZoneAllocated ? 1 : 0) + (spots.ReferenceLcn is null ? 0 : 1));
@@ -1052,7 +1131,7 @@ public sealed class AutoRelocator
 
     private ProbeSpot? Spot(string drive, long lcn, ProbeRound round) => _env.ProbeMbps(drive, lcn, round) is > 0 and double mbps ? new ProbeSpot(lcn, mbps) : null;
 
-    // 쓴 바이트가 있으면 회복 추적을 시작: probe 는 기준이 있을 때 최대 post_update_delay_min x4 분, 기준이 없거나 fixed 면 post_update_delay_min 분 고정, off 는 기다리지 않음.
+    // 쓴 바이트가 있으면 회복 추적을 시작: probe 는 기준이 있을 때 최대 recovery_max_min 분, 기준이 없거나 fixed 면 post_update_delay_min 분 고정, off 는 기다리지 않음.
     private void BeginRecovery(GameSettings g, AutoSettings auto, long movedBytes, DriveBaseline? baseline)
     {
         if (movedBytes <= 0 || auto.PostRelocateRecovery == AutoSettings.RecoveryOff)
@@ -1061,7 +1140,7 @@ public sealed class AutoRelocator
         }
 
         bool probe = auto.PostRelocateRecovery == AutoSettings.RecoveryProbe && baseline is not null;
-        _recovery.Begin(DriveOf(g), probe ? baseline : null, TimeSpan.FromMinutes(auto.PostUpdateDelayMin * (probe ? 4 : 1)));
+        _recovery.Begin(DriveOf(g), probe ? baseline : null, TimeSpan.FromMinutes(probe ? auto.RecoveryMaxMin : auto.PostUpdateDelayMin));
     }
 
     // 게임이 안 돌 때만, 이번 자동 적용이 저널에 쓴 줄 (mark 줄 뒤) 만 되돌립니다 (최선 노력). 앞선 적용의 줄은 이어하기·수동 되돌리기의 몫이라 건드리지 않음.

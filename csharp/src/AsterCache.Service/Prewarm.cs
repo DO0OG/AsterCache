@@ -541,7 +541,8 @@ public sealed class Prewarmer
 
         foreach ((string name, var samples) in held)
         {
-            if (samples is not null && _env.ProbeSamples(samples) is { Cold: true })
+            bool busy = _games.FirstOrDefault(x => string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase)) is { } gm && DriveHasRunningGame(gm); // 같은 디스크에서 게임이 도는 동안은 표본을 읽지 않음
+            if (!busy && samples is not null && _env.ProbeSamples(samples) is { Cold: true })
             {
                 lock (_gate)
                 {

@@ -220,7 +220,7 @@ public sealed class AutoRelocator
                 continue;
             }
 
-            if (!_env.FileExists(g.Plan) && (_env.AnyRunning(g.ExeNames) || !Plan(g, s)))
+            if (!_env.FileExists(g.Plan) && (AnyGameRunning(g) || !Plan(g, s)))
             {
                 continue; // 게임이 도는 중이면 디스크를 건드리지 않고, 계획이 실패했으면 failed 로 기록됨
             }
@@ -570,7 +570,7 @@ public sealed class AutoRelocator
     {
         foreach (GameSettings g in s.Games)
         {
-            if (_status.Get(g.Name)?.RelocatedAt is null || !_env.FileExists(g.Plan) || _env.AnyRunning(g.ExeNames)
+            if (_status.Get(g.Name)?.RelocatedAt is null || !_env.FileExists(g.Plan) || AnyGameRunning(g)
                 || _staleChecked.TryGetValue(g.Name, out DateTimeOffset at) && _env.Now() - at < StaleCheckEvery)
             {
                 continue;

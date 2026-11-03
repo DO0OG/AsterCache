@@ -531,7 +531,7 @@ public sealed class Prewarmer
     /// 서비스 시작 예열을 시작해도 되는 시점인가 (부팅 BootDelay 경과). 자동 모드의 기록 없는 예열 (cold start) 도 같은 조건을 봅니다.
     public bool BootSettled() => _env.UptimeMs() >= BootDelay.TotalMilliseconds;
 
-    // 부팅 5 분 경과 + 게임 드라이브 60 초 유휴를 기다립니다. 취소되면 false. 모든 드라이브의 처리량을 못 읽으면 (null) 유휴를 확인할 수 없으므로 읽지 않고 보류합니다.
+    // 부팅 5 분 경과 + 게임 드라이브 60 초 유휴를 기다립니다. 취소되면 false. 대상 드라이브 중 하나라도 처리량을 못 읽으면 (null) 유휴를 확인할 수 없으므로 읽지 않고 보류합니다.
     private bool WaitStartupGate(IReadOnlyList<GameSettings> games, CancellationToken ct)
     {
         TimeSpan idle = TimeSpan.Zero;

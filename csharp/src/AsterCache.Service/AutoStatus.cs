@@ -333,8 +333,8 @@ public sealed class AutoStatus
 
             if (e.LoadBoundaryMs is { } lb)
             {
-                game.Add("load_boundary_ms", (long)lb); // 재지 않은 게임의 항목 모양은 그대로
-                game.Add("load_boundary_at", e.LoadBoundaryAt is { } la ? Iso(la) : null);
+                game.Add("tier0_probe_ready_ms", (long)lb); // 재지 않은 게임의 항목 모양은 그대로
+                game.Add("tier0_probe_ready_at", e.LoadBoundaryAt is { } la ? Iso(la) : null);
             }
 
             games.Add(name, game);
@@ -425,7 +425,7 @@ public sealed class AutoStatus
                 {
                     if (value is JObject o && Str(o, "stage") is { } stage)
                     {
-                        _games[name] = new AutoGameEntry(Str(o, "source") ?? "manual", Str(o, "launcher"), stage, Str(o, "detail"), Time(o, "at") ?? _now(), Time(o, "last_played"), Time(o, "relocated_at"), o.TryGetValue("hit_percent", out object? hp) && hp is long h ? (int)Math.Clamp(h, 0, 100) : null, Time(o, "hit_at"), ReadBootProbe(o), ReadPlays(o), o.TryGetValue("load_boundary_ms", out object? lb) && lb is long l ? (int)Math.Clamp(l, 0, int.MaxValue) : null, Time(o, "load_boundary_at"));
+                        _games[name] = new AutoGameEntry(Str(o, "source") ?? "manual", Str(o, "launcher"), stage, Str(o, "detail"), Time(o, "at") ?? _now(), Time(o, "last_played"), Time(o, "relocated_at"), o.TryGetValue("hit_percent", out object? hp) && hp is long h ? (int)Math.Clamp(h, 0, 100) : null, Time(o, "hit_at"), ReadBootProbe(o), ReadPlays(o), TryGetEither(o, "tier0_probe_ready_ms", "load_boundary_ms", out object? lb) && lb is long l ? (int)Math.Clamp(l, 0, int.MaxValue) : null, Time(o, "tier0_probe_ready_at") ?? Time(o, "load_boundary_at"));
                     }
                 }
             }
@@ -483,6 +483,9 @@ public sealed class AutoStatus
     private static string? Str(JObject o, string key) => o.TryGetValue(key, out object? v) ? v as string : null;
 
     private static DateTimeOffset? Time(JObject o, string key) => o.TryGetValue(key, out object? v) ? Time(v) : null;
+
+    // 새 키를 먼저 보고, 없으면 옛 키 (tier0_probe_ready 이름 바꾸기 전 파일)를 봅니다.
+    private static bool TryGetEither(JObject o, string key, string oldKey, out object? value) => o.TryGetValue(key, out value) || o.TryGetValue(oldKey, out value);
 
     private static DateTimeOffset? Time(object? v) =>
         v is string s && DateTimeOffset.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset t) ? t : null;

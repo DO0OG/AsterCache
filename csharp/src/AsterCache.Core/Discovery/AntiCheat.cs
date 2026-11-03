@@ -1,3 +1,5 @@
+using AsterCache.Core.Settings;
+
 namespace AsterCache.Core.Discovery;
 
 /// 설치 폴더에 남은 안티치트 흔적 이름으로 종류를 짐작합니다. 이름만 보고 (파일을 열지 않음) 모르면 null.
@@ -39,6 +41,13 @@ public static class AntiCheat
     /// 시스템에 Vanguard (vgk/vgc 서비스 또는 폴더) 가 있으면 "vanguard", 아니면 null.
     public static string? RiotVanguard(string originRoot, IEnumerable<string> exeNames, bool vanguardInstalled) =>
         vanguardInstalled && (originRoot.Split('\\', '/').Any(s => Same(s, "Riot Games")) || exeNames.Any(e => RiotExes.Any(r => Same(e, r)))) ? "vanguard" : null;
+
+    /// 설정을 읽을 때: anticheat 가 비어 있는 항목 (수동 등록한 리그 등) 에 Riot 규칙을 적용해 채웁니다. 트레이스·고정·티어가 모두 이 값을 봅니다. Vanguard 확인은 한 번만 합니다.
+    public static AsterSettings WithRiotRule(AsterSettings s, Func<bool> vanguardInstalled)
+    {
+        bool? installed = null;
+        return s with { Games = [.. s.Games.Select(g => g.AntiCheat is null && RiotVanguard(g.OriginRoot, g.ExeNames, installed ??= vanguardInstalled()) is { } kind ? g with { AntiCheat = kind } : g)] };
+    }
 
     /// ETW 트레이스를 걸면 안 되는 종류인가: 커널 수준 안티치트 (eac·battleye·vanguard) 와 탐지 실패 (unknown). 등록 정보에 쓰인 값도 같은 규칙입니다.
     public static bool ForbidsTrace(string? kind) => kind is "eac" or "battleye" or "vanguard" or "unknown";

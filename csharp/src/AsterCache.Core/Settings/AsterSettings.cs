@@ -104,6 +104,9 @@ public sealed record AutoSettings(
     /// 게임이 시작될 때 그 게임을 읽던 예열 스트림을 끝까지 읽게 할지 (기본 꺼짐, 실험용): 꺼져 있으면 다음 64 MiB 묶음 경계에서 멈춰 게임에 디스크를 양보함.
     public bool KeepStreamOnGameStart { get; init; }
 
+    /// 게임 시작 때 로딩 경계 (tier0) 가 RAM 에 들어온 시각을 재는 감시 (기본 꺼짐): 디스크를 읽으므로 게임이 끝나면 바로 멈춤.
+    public bool LoadBoundary { get; init; }
+
     /// beta.3 형식 설정 (learn 키 없음, prewarm_recent 1 + idle_minutes 3) 을 새 기본으로 해석했는지 (파싱 때만 설정, 서비스가 시작 때 로그 한 줄).
     public bool Migrated { get; init; }
 

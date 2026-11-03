@@ -1,3 +1,4 @@
+using AsterCache.Core.Discovery;
 using AsterCache.Core.Json;
 using AsterCache.Core.Settings;
 using AsterCache.Service;
@@ -170,7 +171,7 @@ public sealed class AutoTracerTests : IDisposable
         {
             case "registered": g = _game with { AntiCheat = kind }; break;
             case "folder": _rig.World.AntiCheats[g.OriginRoot] = kind; break;
-            case "riot": (g, _rig.World.Vanguard) = (_game with { OriginRoot = @"D:\Riot Games\League of Legends" }, true); break;
+            case "riot": g = AntiCheat.WithRiotRule(new AsterSettings(50, [_game with { OriginRoot = @"D:\Riot Games\League of Legends" }]), () => true).Games[0]; break;
             default: _rig.World.AntiCheats[g.OriginRoot] = AutoEnv.AntiCheatUnknown; break;
         }
 

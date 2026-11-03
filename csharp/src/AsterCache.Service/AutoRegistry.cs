@@ -45,9 +45,6 @@ public sealed class AutoRegistry
     private readonly Dictionary<string, bool?> _hdd = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _refusedLogged = new(StringComparer.OrdinalIgnoreCase); // 거부 이유를 이미 남긴 대상 (같은 줄이 반복되지 않게)
     private readonly Dictionary<int, DateTimeOffset> _pending = [];
-    private readonly HashSet<int> _noCounter = []; // 읽기량을 못 연 PID: 수명 동안 다시 열지 않음
-    private readonly Dictionary<int, DateTimeOffset> _etwWait = []; // ETW 로 읽기량을 기다리는 후보 (대기 시작 시각)
-    private IReadWatch? _watch;
     private bool _exesReviewed; // 제거 목록 게임의 exe 재평가는 서비스 시작 뒤 첫 발견 때 한 번
     private readonly object _lock = new(); // 발견 루프와 휴리스틱 루프가 아래 두 목록을 함께 씀
     private readonly List<GameSettings> _added = []; // 방금 쓴 등록 (설정을 다시 읽기 전까지 겹침 검사에 포함)
@@ -205,12 +202,6 @@ public sealed class AutoRegistry
             _pending.Remove(gone);
         }
 
-        _noCounter.RemoveWhere(p => !current.Contains(p));
-        foreach (int gone in _etwWait.Keys.Where(p => !current.Contains(p)).ToList())
-        {
-            _etwWait.Remove(gone);
-        }
-
         AsterSettings s = _settings();
         bool on = s.Auto.Enabled && s.Auto.Discover;
         foreach (int pid in _pending.Where(kv => now - kv.Value >= TimeSpan.FromSeconds(AutoSettings.HeuristicWindowSeconds)).Select(kv => kv.Key).ToList())
@@ -221,86 +212,12 @@ public sealed class AutoRegistry
                 continue;
             }
 
+            // 프로세스를 열 수 없으면 (보호된 프로세스) 건너뜀: 커널 ETW 세션을 걸지 않음 (안티치트 드라이버가 세션을 보고 클라이언트를 끊음), 다시 열지도 않음
             if (_env.ReadBytes(pid) is { } read)
             {
                 Evaluate(pid, s.Auto, read);
             }
-            else if (_noCounter.Add(pid))
-            {
-                _etwWait[pid] = now; // 프로세스를 열 수 없음 (보호된 프로세스): 다시 열지 않고 ETW 로 센다
-            }
         }
-
-        EtwStep(now, s.Auto, on);
-    }
-
-    /// 서비스 종료: 돌고 있는 ETW 세션을 정리합니다.
-    public void Shutdown()
-    {
-        _etwWait.Clear();
-        StopWatch("service stopping");
-    }
-
-    // 대체가 필요한 후보가 있을 때만 세션을 켜고, 후보가 모두 없어지면 끕니다. 대기는 HeuristicWindowSeconds 까지.
-    private void EtwStep(DateTimeOffset now, AutoSettings a, bool on)
-    {
-        if (!on)
-        {
-            _etwWait.Clear();
-        }
-
-        if (_etwWait.Count > 0 && _watch is null)
-        {
-            try
-            {
-                _watch = _env.StartReadWatch();
-                _log.Info("auto heuristic: read-count session started for processes that cannot be opened");
-            }
-            catch (Exception e) when (e is not OperationCanceledException)
-            {
-                _log.Warn("auto heuristic: read-count session could not start: " + e.GetType().Name);
-                _etwWait.Clear();
-            }
-        }
-
-        foreach ((int pid, DateTimeOffset since) in _etwWait.ToList())
-        {
-            long read = _watch?.ReadBytes(pid) ?? 0;
-            if (read >= (long)AutoSettings.HeuristicReadMib << 20)
-            {
-                _etwWait.Remove(pid);
-                Evaluate(pid, a, read);
-            }
-            else if (now - since >= TimeSpan.FromSeconds(AutoSettings.HeuristicWindowSeconds))
-            {
-                _etwWait.Remove(pid);
-            }
-        }
-
-        if (_etwWait.Count == 0)
-        {
-            StopWatch("no candidates left");
-        }
-    }
-
-    private void StopWatch(string why)
-    {
-        if (_watch is null)
-        {
-            return;
-        }
-
-        try
-        {
-            _watch.Dispose();
-        }
-        catch (Exception e) when (e is not OperationCanceledException)
-        {
-            _log.Warn("auto heuristic: read-count session did not stop cleanly: " + e.GetType().Name);
-        }
-
-        _watch = null;
-        _log.Info($"auto heuristic: read-count session stopped ({why})");
     }
 
     /// 설정을 다시 읽어 방금 쓴 등록이 설정에 들어왔으면 임시 기록에서 뺍니다.
@@ -315,8 +232,7 @@ public sealed class AutoRegistry
     // 트레이스는 다음 실행부터 잡힘: 이번 실행은 이미 시작 부분의 읽기를 놓쳤고 정확한 게임인지도 이제야 알았기 때문.
     private void Evaluate(int pid, AutoSettings a, long read)
     {
-        // 열 수 없는 PID 는 ETW 가 본 이미지 경로를 먼저 씁니다 (다시 열지 않음).
-        string? image = _noCounter.Contains(pid) ? _watch?.ImagePath(pid) ?? _env.ImagePath(pid) : _env.ImagePath(pid) ?? _watch?.ImagePath(pid);
+        string? image = _env.ImagePath(pid);
         if (read < (long)AutoSettings.HeuristicReadMib << 20 || image is null)
         {
             return;

@@ -266,14 +266,49 @@ public sealed class ColdPrewarmTests : IDisposable
     [Fact]
     public void PlannerSkipReasonIsPassedThrough()
     {
-        Planner = (_, _, _, _) => ColdPlan.None("no engine profile matched");
+        Planner = (_, _, _, _) => ColdPlan.None("folder has no files");
         Prewarmer p = MakeOne();
 
         PrewarmResult r = p.Run(Game("g"), "t");
 
-        Assert.Equal((false, "no engine profile matched"), (r.Ran, r.SkipReason));
+        Assert.Equal((false, "folder has no files"), (r.Ran, r.SkipReason));
         Assert.Null(p.LastWarmed("g"));
         Assert.Empty(_reads);
+    }
+
+    [Fact]
+    public void ProfileMissSaysTraceNeededAndIsNotEnumeratedAgain()
+    {
+        Planner = (_, _, _, _) => ColdPlan.None(FolderWarm.NoEngineProfile);
+        Prewarmer p = MakeOne();
+
+        PrewarmResult first = p.Run(Game("g"), "t");
+        PrewarmResult again = p.Run(Game("g"), "t");
+
+        Assert.Equal(("no profile; trace needed", "no profile; trace needed"), (first.SkipReason, again.SkipReason));
+        Assert.Single(_caps); // 폴더 mtime 이 같으면 두 번째는 열거하지 않음
+    }
+
+    [Fact]
+    public void ProfileMissSurvivesARestartThroughTheStatusFile()
+    {
+        Planner = (_, _, _, _) => ColdPlan.None(FolderWarm.NoEngineProfile);
+        MakeOne().Run(Game("g"), "t");
+
+        _made = 0; // 재시작: 같은 상태 파일 (status.json) 을 이어받음
+        PrewarmResult restarted = MakeOne().Run(Game("g"), "t");
+
+        Assert.Equal("no profile; trace needed", restarted.SkipReason);
+        Assert.Single(_caps);
+    }
+
+    [Fact]
+    public void AntiCheatGameProfileMissSaysNoProfileOnly()
+    {
+        Planner = (_, _, _, _) => ColdPlan.None(FolderWarm.NoEngineProfile);
+        Prewarmer p = Make(null, Game("g") with { AntiCheat = "vanguard" });
+
+        Assert.Equal("no profile", p.Run(Game("g") with { AntiCheat = "vanguard" }, "t").SkipReason);
     }
 
     [Fact]

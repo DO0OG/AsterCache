@@ -89,9 +89,6 @@ public sealed class AutoEnv
     /// 폴더 이름들로 짐작한 안티치트 ("eac" 등), 모르면 null.
     public required Func<string, string?> AntiCheatOf { get; init; }
 
-    /// 이 시스템에 Vanguard (vgk/vgc 서비스 또는 Riot Vanguard 폴더) 가 있는가. 시험 기본값은 거짓.
-    public Func<bool> VanguardInstalled { get; init; } = () => false;
-
     /// 이 게임 폴더 아래에서 도는 프로세스의 PID (게임 exe 가 자식 프로세스를 띄우는 경우를 포함, 이 서비스는 제외). 시험 기본값은 없음.
     public Func<GameSettings, IReadOnlyList<int>> RootPids { get; init; } = _ => [];
 
@@ -214,7 +211,6 @@ public sealed class AutoEnv
             ReadBytes = ProcessSnapshot.ReadBytes,
             StartReadWatch = () => EtwReadWatch.Start(),
             AntiCheatOf = DetectAntiCheat,
-            VanguardInstalled = IsVanguardInstalled,
             RootPids = g => [.. ProcessSnapshot.Take().Where(p => p.Pid != Environment.ProcessId && DispatchEnv.UnderRoot(g, ProcessSnapshot.ImagePath(p.Pid))).Select(p => p.Pid)],
             PhysicalRamBytes = SystemMemory.TotalBytes,
             WindowsDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows),
@@ -226,7 +222,7 @@ public sealed class AutoEnv
             GameProcesses = exes => ProcessSnapshot.ReadCounters(exes),
             AnyRunning = exes => ProcessSnapshot.IsRunning(exes),
             StartTrace = (exes, listener) => new LiveAutoTrace(LiveSession.Start(
-                exes, TraceSessionName, restartExisting: true, listener: listener, flushInterval: listener is null ? null : EtwProcessWatcher.FlushInterval)),
+                exes, TraceSessionName, restartExisting: true, listener: listener, flushInterval: listener is null ? null : EtwProcessWatcher.FlushInterval, log: log)),
             Canonicalize = events => TraceBuilder.CanonicalizeCase(events),
             PrefetchBoot = g => AutoTracer.BootFromPrefetch(g),
             TraceSource = AutoTracer.TraceSourceOf,
@@ -265,7 +261,8 @@ public sealed class AutoEnv
     /// 등록에 저장해도 되는 탐지 결과 (모름은 null).
     public static string? KnownAntiCheat(string? found) => found == AntiCheatUnknown ? null : found;
 
-    private static bool IsVanguardInstalled()
+    /// 이 시스템에 Vanguard (vgk/vgc 서비스 또는 Riot Vanguard 폴더) 가 있는가.
+    internal static bool IsVanguardInstalled()
     {
         foreach (string service in new[] { "vgk", "vgc" })
         {
@@ -280,7 +277,7 @@ public sealed class AutoEnv
     }
 
     // 발견 때와 같은 이름 열거 (LauncherScan 과 같은 깊이, 읽기 전용).
-    private static string? DetectAntiCheat(string dir)
+    internal static string? DetectAntiCheat(string dir)
     {
         try
         {

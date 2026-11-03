@@ -117,7 +117,7 @@ public sealed class AutoTracer
         }
     }
 
-    // 안티치트 게임은 ETW 커널 트레이스를 걸지 않음 (보호 드라이버가 세션을 보고 클라이언트를 끊음). 등록 정보, Riot 규칙 (Vanguard 는 게임 폴더 밖), 폴더 이름 순으로 보고 (폴더 열거는 한 번만) 탐지 실패도 막음.
+    // 안티치트 게임은 ETW 커널 트레이스를 걸지 않음 (보호 드라이버가 세션을 보고 클라이언트를 끊음). 등록 정보 (설정을 읽을 때 Riot 규칙으로 채워짐), 폴더 이름 순으로 보고 (폴더 열거는 한 번만) 탐지 실패도 막음.
     private string? TraceBlocker(GameSettings g)
     {
         lock (_lock)
@@ -128,8 +128,7 @@ public sealed class AutoTracer
             }
         }
 
-        string? cheat = AntiCheat.ForbidsTrace(g.AntiCheat) ? g.AntiCheat
-            : AntiCheat.RiotVanguard(g.OriginRoot, g.ExeNames, _env.VanguardInstalled());
+        string? cheat = AntiCheat.ForbidsTrace(g.AntiCheat) ? g.AntiCheat : null;
         if (cheat is null)
         {
             string? found = _env.AntiCheatOf(g.OriginRoot);
@@ -298,14 +297,18 @@ public sealed class AutoTracer
                 return;
             }
 
-            if (run.Number == 1)
+            // 기록·병합은 게임과 디스크를 다투지 않게 낮은 우선순위 스레드에서 돌림 (끝날 때까지 기다림)
+            RunBelowNormal(() =>
             {
-                TraceWriter.Write([canonical], RawTracePath(g));
-            }
-            else
-            {
-                Merge(g, canonical, run.Number);
-            }
+                if (run.Number == 1)
+                {
+                    TraceWriter.Write([canonical], RawTracePath(g));
+                }
+                else
+                {
+                    Merge(g, canonical, run.Number);
+                }
+            });
 
             _log.Info($"{g.Name}: auto trace ended ({why}), {canonical.Count} read events saved" + (run.Number == 1 ? string.Empty : $" (run {run.Number}, merged)"));
             if (run.Number == 1)
@@ -329,6 +332,30 @@ public sealed class AutoTracer
             {
                 _run = null;
             }
+        }
+    }
+
+    // 작업을 BelowNormal 스레드에서 돌리고 끝날 때까지 기다립니다. 예외는 호출한 쪽으로 다시 던집니다.
+    private static void RunBelowNormal(Action work)
+    {
+        Exception? error = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                work();
+            }
+            catch (Exception e)
+            {
+                error = e;
+            }
+        })
+        { Priority = ThreadPriority.BelowNormal, IsBackground = true };
+        thread.Start();
+        thread.Join();
+        if (error is not null)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(error);
         }
     }
 

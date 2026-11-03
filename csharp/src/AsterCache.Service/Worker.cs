@@ -418,6 +418,7 @@ public sealed class Worker : BackgroundService
     {
         _log.Info($"{game.Name}: exited");
         _prewarm?.NoteGameExit();
+        _auto?.NoteGameExit(game);
         NoteCoverage(game);
     }
 

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using AsterCache.Core;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Plan;
@@ -50,6 +51,7 @@ public sealed class AutoMode
     }
 
     private readonly CancellationTokenSource _stop = new(); // 서비스 종료: 게임 시작 때 도는 로딩 경계 감시를 멈춤
+    private readonly ConcurrentDictionary<string, CancellationTokenSource> _boundaryWatch = new(StringComparer.OrdinalIgnoreCase); // 게임별 로딩 경계 감시 (게임 종료 때 취소)
 
     // 예열이 방금 끝났으면 핫 집합 표본 몇 곳의 적중률을 잼. 같은 물리 디스크에서 게임이 도는 중이면 게임 디스크를 건드리지 않으려고 건너뜀.
     private void RecordHitAfterWarm(Prewarmer prewarm, GameSettings g)
@@ -106,8 +108,30 @@ public sealed class AutoMode
                 _tracer.Start(g);
             }
 
-            LoadBoundaryWatch.Run(g, Status, _log, _stop.Token, _env.Now); // 적중률은 여기서 재지 않음 (게임 디스크 읽기): 예열 직후 값이 auto_status 에 남아 있음
+            if (a.LoadBoundary)
+            {
+                // 적중률은 여기서 재지 않음 (게임 디스크 읽기): 예열 직후 값이 auto_status 에 남아 있음. 게임이 끝나면 NoteGameExit 가 멈춤
+                var watch = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
+                _boundaryWatch[g.Name] = watch;
+                try
+                {
+                    LoadBoundaryWatch.Run(g, Status, _log, watch.Token, _env.Now);
+                }
+                finally
+                {
+                    _ = _boundaryWatch.TryRemove(new KeyValuePair<string, CancellationTokenSource>(g.Name, watch));
+                }
+            }
         });
+    }
+
+    /// 게임 종료 때 (Worker 의 종료 감지에서 부름): 그 게임의 로딩 경계 감시를 멈춥니다.
+    public void NoteGameExit(GameSettings g)
+    {
+        if (_boundaryWatch.TryRemove(g.Name, out CancellationTokenSource? watch))
+        {
+            watch.Cancel();
+        }
     }
 
     /// 정기 재적용이 지나야 하는 자동 모드와 같은 게이트 (재적용 루프 스레드에서 부름). 게이트 자체가 실패하면 보수적으로 미룸.
@@ -229,7 +253,6 @@ public sealed class AutoMode
     {
         _stop.Cancel();
         _tracer.Shutdown();
-        _registry.Shutdown();
     }
 
     private async Task Loop(TimeSpan first, TimeSpan every, string what, Action work, CancellationToken ct)

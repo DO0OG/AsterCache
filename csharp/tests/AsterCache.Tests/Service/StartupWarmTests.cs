@@ -16,6 +16,7 @@ public sealed class StartupWarmTests : IDisposable
     private int _callsBefore;
     private TimeSpan _waited;
     private Func<bool> _diskBusy = () => false;
+    private bool _diskUnreadable;
     private ProbeResult? _probe;
 
     public StartupWarmTests() => Directory.CreateDirectory(_dir);
@@ -36,7 +37,7 @@ public sealed class StartupWarmTests : IDisposable
             Assert.Equal(_callsBefore, _streamer.Calls.Count); // 기다리는 동안은 읽지 않음
             (_uptimeMs, _waited) = (_uptimeMs + (long)t.TotalMilliseconds, _waited + t);
         },
-        DiskBytesPerSecond = _ => _diskBusy() ? 50 << 20 : 0,
+        DiskBytesPerSecond = _ => _diskUnreadable ? null : _diskBusy() ? 50 << 20 : 0,
         ProbeReadMs = _ => _probe,
     }, _log, StatusPath, () => _now);
 
@@ -66,6 +67,17 @@ public sealed class StartupWarmTests : IDisposable
         Assert.True(_uptimeMs >= 6 * 60_000 + 55_000, $"started too early: {_uptimeMs} ms"); // 바쁨이 끝난 뒤 60 초 유휴
         Assert.Contains(_log.Lines, l => l.Contains("waits for 5 min after boot and 60 s of idle disk", StringComparison.Ordinal));
         Assert.Single(_streamer.Calls);
+    }
+
+    [Fact]
+    public void UnreadableDiskThroughputNeedsOnlyTheBootDelay()
+    {
+        Prewarmer p = Make(Game("a"));
+        _diskUnreadable = true;
+
+        Assert.True(Assert.Single(p.RunServiceStart()).Ran);
+
+        Assert.InRange(_uptimeMs, 5 * 60_000, 5 * 60_000 + 10_000); // 유휴 60 초를 더 기다리지 않음
     }
 
     [Fact]

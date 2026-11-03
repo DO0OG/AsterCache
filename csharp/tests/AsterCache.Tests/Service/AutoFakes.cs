@@ -73,9 +73,6 @@ internal sealed class FakeWorld
     /// ReadBytes (IoCounters) 를 연 PID 기록: 열 수 없는 PID 는 Reads 에 없음 (ACCESS_DENIED 와 같음).
     public List<int> ReadOpens { get; } = [];
 
-    /// 시스템에 Vanguard (vgk/vgc 서비스 또는 폴더) 가 있는가.
-    public bool Vanguard { get; set; }
-
     /// 게임 폴더 아래에서 도는 프로세스의 PID (등록 exe 가 아닌 자식 프로세스).
     public List<int> RootPids { get; set; } = [];
 
@@ -201,7 +198,6 @@ internal sealed class FakeWorld
             return Watch ?? throw new InvalidOperationException("Watch");
         },
         AntiCheatOf = d => AntiCheats.GetValueOrDefault(d),
-        VanguardInstalled = () => Vanguard,
         RootPids = _ => RootPids,
         PhysicalRamBytes = () => PhysicalRam,
         WindowsDir = WindowsDir,

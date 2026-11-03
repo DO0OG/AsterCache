@@ -110,6 +110,25 @@ public sealed class PinAndRewarmTests
     }
 
     [Theory]
+    [InlineData("vanguard")]
+    [InlineData("eac")]
+    [InlineData("battleye")]
+    [InlineData("unknown")]
+    public void AntiCheatGamesAreNeverPinnedEvenWhenPinIsOnAndRamIsPlentiful(string kind)
+    {
+        _ram = 64 * Gib;
+        GameSettings g = Game("a") with { AntiCheat = kind };
+        Prewarmer p = Make(g);
+
+        Assert.True(p.Run(g, "service start").Ran); // 읽기 전용 예열은 그대로
+        Assert.True(p.Run(g, "again", ignoreCooldown: true).Ran);
+
+        Assert.Empty(p.Pinned);
+        Assert.Empty(_pins);
+        Assert.Single(_log.Lines, l => l.Contains($"a: pin skipped (anti-cheat: {kind})", StringComparison.Ordinal));
+    }
+
+    [Theory]
     [InlineData(23, false)]
     [InlineData(24, true)]
     [InlineData(64, true)]

@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using AsterCache.Core;
+using AsterCache.Core.Discovery;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Plan;
@@ -31,6 +32,8 @@ public sealed class PinKeeper
     private readonly object _lock = new();
     private readonly Dictionary<string, IDisposable> _held = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, RecoveryPin> _recovery = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string?> _cheat = new(StringComparer.OrdinalIgnoreCase); // 게임별 고정 금지 판정 (없음 포함, 탐지 실패는 넣지 않음)
+    private readonly HashSet<string> _cheatLogged = new(StringComparer.OrdinalIgnoreCase);
 
     public PinKeeper(PrewarmEnv env, ILog log, Func<DateTimeOffset>? now = null)
     {
@@ -86,6 +89,22 @@ public sealed class PinKeeper
                 _log.Info($"{game.Name}: pin held back (a launcher is running; its updates may change the files)");
                 return;
             }
+        }
+
+        if (PinBlocker(game) is { } cheat)
+        {
+            bool first;
+            lock (_lock)
+            {
+                first = _cheatLogged.Add(game.Name);
+            }
+
+            if (first)
+            {
+                _log.Info($"{game.Name}: pin skipped (anti-cheat: {cheat})");
+            }
+
+            return;
         }
 
         lock (_lock)
@@ -159,6 +178,35 @@ public sealed class PinKeeper
         {
             return _recovery.ContainsKey(game);
         }
+    }
+
+    // 안티치트 게임은 파일을 고정하지 않음 (보호 드라이버가 열린 핸들을 문제 삼을 수 있음): 등록 값 (설정을 읽을 때 Riot 규칙으로 채워짐), 없으면 폴더 이름 (한 번만 봄), 탐지 실패도 막음.
+    private string? PinBlocker(GameSettings game)
+    {
+        if (AntiCheat.ForbidsTrace(game.AntiCheat))
+        {
+            return game.AntiCheat;
+        }
+
+        lock (_lock)
+        {
+            if (_cheat.TryGetValue(game.Name, out string? known))
+            {
+                return known;
+            }
+        }
+
+        string? found = _env.AntiCheatOf(game);
+        string? cheat = AntiCheat.ForbidsTrace(found) ? found : null;
+        if (found != AutoEnv.AntiCheatUnknown)
+        {
+            lock (_lock)
+            {
+                _cheat[game.Name] = cheat;
+            }
+        }
+
+        return cheat;
     }
 
     /// 설정을 다시 읽었을 때: pin 이 꺼졌거나 게임이 빠졌으면 풉니다.

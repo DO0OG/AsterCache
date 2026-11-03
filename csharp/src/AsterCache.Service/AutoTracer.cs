@@ -117,7 +117,7 @@ public sealed class AutoTracer
         }
     }
 
-    // 안티치트 게임은 ETW 커널 트레이스를 걸지 않음 (보호 드라이버가 세션을 보고 클라이언트를 끊음). 등록 정보, Riot 규칙 (Vanguard 는 게임 폴더 밖), 폴더 이름 순으로 보고 (폴더 열거는 한 번만) 탐지 실패도 막음.
+    // 안티치트 게임은 ETW 커널 트레이스를 걸지 않음 (보호 드라이버가 세션을 보고 클라이언트를 끊음). 등록 정보 (설정을 읽을 때 Riot 규칙으로 채워짐), 폴더 이름 순으로 보고 (폴더 열거는 한 번만) 탐지 실패도 막음.
     private string? TraceBlocker(GameSettings g)
     {
         lock (_lock)
@@ -128,8 +128,7 @@ public sealed class AutoTracer
             }
         }
 
-        string? cheat = AntiCheat.ForbidsTrace(g.AntiCheat) ? g.AntiCheat
-            : AntiCheat.RiotVanguard(g.OriginRoot, g.ExeNames, _env.VanguardInstalled());
+        string? cheat = AntiCheat.ForbidsTrace(g.AntiCheat) ? g.AntiCheat : null;
         if (cheat is null)
         {
             string? found = _env.AntiCheatOf(g.OriginRoot);

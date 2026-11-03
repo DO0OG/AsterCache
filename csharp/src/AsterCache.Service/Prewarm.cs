@@ -72,6 +72,9 @@ public sealed class PrewarmEnv
     /// 고정할 파일 경로 (예열 순서 목록의 파일 중 허용 루트 안인 것).
     public Func<GameSettings, IReadOnlyList<string>> PinPaths { get; init; } = _ => [];
 
+    /// 게임 폴더 이름으로 짐작한 안티치트 ("unknown" 은 탐지 실패): 안티치트 게임은 고정하지 않음. 기본은 없음.
+    public Func<GameSettings, string?> AntiCheatOf { get; init; } = _ => null;
+
     /// 런처 (LauncherExes) 가 하나라도 실행 중인가: 그동안은 고정하지 않음.
     public Func<bool> LauncherRunning { get; init; } = () => false;
 
@@ -120,6 +123,7 @@ public sealed class PrewarmEnv
         PhysicalRamBytes = SystemMemory.TotalBytes,
         FileStamp = PlanFile.FingerprintOf,
         PinPaths = g => PrefetchStreamer.PinPaths(g, PrefetchStreamer.PinCapBytes(PrefetchStreamer.ZoneBytes(g), SystemMemory.TotalBytes(), SystemMemory.AvailableMib(), g.Prewarm.MinFreeRamMib)),
+        AntiCheatOf = g => AutoEnv.DetectAntiCheat(g.OriginRoot),
         LauncherRunning = () => ProcessSnapshot.IsRunning(LauncherExes.All),
         CpuPercent = new CpuLoad().Percent,
         DiskBytesPerSecond = g => DiskActivity.BytesPerSecond(PlanFile.SplitDrive(g.OriginRoot)),

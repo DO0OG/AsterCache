@@ -1,4 +1,5 @@
 using AsterCache.Core.Discovery;
+using AsterCache.Core.Settings;
 using AsterCache.Windows;
 using Xunit;
 
@@ -65,6 +66,30 @@ public sealed class AntiCheatTests
     [InlineData(@"D:\Call of Duty", "cod.exe", true, null)]
     public void RiotGamesAreVanguardOnlyWhenVanguardIsInstalled(string root, string exe, bool installed, string? expected) =>
         Assert.Equal(expected, AntiCheat.RiotVanguard(root, [exe], installed));
+
+    [Fact]
+    public void ManualRiotEntriesWithoutAnAntiCheatGetVanguardWhenReadAndOthersStayAsTheyAre()
+    {
+        GameSettings Make(string name, string root, string exe, string? cheat) =>
+            new(name, [exe], "t", "p", root, [root], "GAMES", 1440) { AntiCheat = cheat };
+        var s = new AsterSettings(50,
+        [
+            Make("lol", @"D:\Riot Games\League of Legends", "LeagueClient.exe", null),
+            Make("cod", @"D:\Call of Duty", "cod.exe", null),
+            Make("ric", @"D:\Riot Games\Other", "game.exe", "ricochet"),
+        ]);
+        int checks = 0;
+
+        AsterSettings read = AntiCheat.WithRiotRule(s, () =>
+        {
+            checks++;
+            return true;
+        });
+
+        Assert.Equal(["vanguard", null, "ricochet"], read.Games.Select(g => g.AntiCheat));
+        Assert.Equal(1, checks);
+        Assert.Equal([null, null, "ricochet"], AntiCheat.WithRiotRule(s, () => false).Games.Select(g => g.AntiCheat));
+    }
 
     [Theory]
     [InlineData("eac", true)]

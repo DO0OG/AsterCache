@@ -226,7 +226,6 @@ public sealed class AutoMode
     {
         _stop.Cancel();
         _tracer.Shutdown();
-        _registry.Shutdown();
     }
 
     private async Task Loop(TimeSpan first, TimeSpan every, string what, Action work, CancellationToken ct)

@@ -172,6 +172,7 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             { "post_relocate_recovery", a.PostRelocateRecovery },
             { "keep_awake", a.KeepAwake },
             { "keep_stream_on_game_start", a.KeepStreamOnGameStart },
+            { "load_boundary", a.LoadBoundary },
             { "full_prewarm", a.FullPrewarm },
             { "full_prewarm_max_mib", (long)a.FullPrewarmMaxMib },
             { "engine_profiles", a.EngineProfiles },

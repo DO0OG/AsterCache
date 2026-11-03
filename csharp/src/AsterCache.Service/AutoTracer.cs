@@ -297,14 +297,18 @@ public sealed class AutoTracer
                 return;
             }
 
-            if (run.Number == 1)
+            // 기록·병합은 게임과 디스크를 다투지 않게 낮은 우선순위 스레드에서 돌림 (끝날 때까지 기다림)
+            RunBelowNormal(() =>
             {
-                TraceWriter.Write([canonical], RawTracePath(g));
-            }
-            else
-            {
-                Merge(g, canonical, run.Number);
-            }
+                if (run.Number == 1)
+                {
+                    TraceWriter.Write([canonical], RawTracePath(g));
+                }
+                else
+                {
+                    Merge(g, canonical, run.Number);
+                }
+            });
 
             _log.Info($"{g.Name}: auto trace ended ({why}), {canonical.Count} read events saved" + (run.Number == 1 ? string.Empty : $" (run {run.Number}, merged)"));
             if (run.Number == 1)
@@ -328,6 +332,30 @@ public sealed class AutoTracer
             {
                 _run = null;
             }
+        }
+    }
+
+    // 작업을 BelowNormal 스레드에서 돌리고 끝날 때까지 기다립니다. 예외는 호출한 쪽으로 다시 던집니다.
+    private static void RunBelowNormal(Action work)
+    {
+        Exception? error = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                work();
+            }
+            catch (Exception e)
+            {
+                error = e;
+            }
+        })
+        { Priority = ThreadPriority.BelowNormal, IsBackground = true };
+        thread.Start();
+        thread.Join();
+        if (error is not null)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(error);
         }
     }
 

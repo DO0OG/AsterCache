@@ -223,8 +223,8 @@ public sealed class Prewarmer
     private bool Deferred(GameSettings game)
     {
         // AutoRelocator.PostUpdateDelayed 와 같은 판정: probe 모드이고 이 드라이브에 회복 추적이 있으면 그 판정, 없으면 고정 분.
-        bool? probed = _auto.PostRelocateRecovery == AutoSettings.RecoveryProbe && _auto.PostUpdateDelayMin > 0 && Recovery is { } recovery && ReplanStart(game) is { } at
-            ? recovery.WatchUpdate(PlanFile.SplitDrive(game.OriginRoot).ToUpperInvariant(), at, TimeSpan.FromMinutes(_auto.PostUpdateDelayMin * 4)) : null;
+        bool? probed = _auto.PostRelocateRecovery == AutoSettings.RecoveryProbe && Recovery is { } recovery && ReplanStart(game) is { } at
+            ? recovery.WatchUpdate(PlanFile.SplitDrive(game.OriginRoot).ToUpperInvariant(), at, TimeSpan.FromMinutes(_auto.RecoveryMaxMin)) : null;
         bool wait = probed ?? PostUpdateWait(game) is not null;
         lock (_gate)
         {
@@ -541,7 +541,8 @@ public sealed class Prewarmer
 
         foreach ((string name, var samples) in held)
         {
-            if (samples is not null && _env.ProbeSamples(samples) is { Cold: true })
+            bool busy = _games.FirstOrDefault(x => string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase)) is { } gm && DriveHasRunningGame(gm); // 같은 디스크에서 게임이 도는 동안은 표본을 읽지 않음
+            if (!busy && samples is not null && _env.ProbeSamples(samples) is { Cold: true })
             {
                 lock (_gate)
                 {
@@ -622,7 +623,7 @@ public sealed class Prewarmer
                     }
 
                     double mbps = s.Seconds > 0 ? s.Bytes / 1048576.0 / s.Seconds : 0;
-                    _log.Info($"{game.Name}: prewarm done ({why}): {s.Bytes >> 20} MiB in {s.Seconds:F2} s = {mbps:F0} hint MB/s, {s.Requests} requests, {s.Errors} errors");
+                    _log.Info($"{game.Name}: prewarm done ({why}): {s.Bytes >> 20} MiB requested in {s.Seconds:F2} s = {mbps:F0} hint MB/s, {s.Requests} requests, {s.Errors} errors");
                     PrewarmResult done = Record(game, now, new PrewarmResult(game.Name, true, null, s, now), mbps);
                     WarmMeasured?.Invoke(game, mbps);
                     if (pin && !ct.IsCancellationRequested)
@@ -785,7 +786,7 @@ public sealed class Prewarmer
         }
 
         double mbps = stats.Seconds > 0 ? stats.Bytes / 1048576.0 / stats.Seconds : 0;
-        _log.Info($"{game.Name}: prewarm done ({why}, {label}): {stats.Bytes >> 20} MiB in {stats.Seconds:F2} s = {mbps:F0} hint MB/s, {stats.Requests} requests, {stats.Errors} errors");
+        _log.Info($"{game.Name}: prewarm done ({why}, {label}): {stats.Bytes >> 20} MiB requested in {stats.Seconds:F2} s = {mbps:F0} hint MB/s, {stats.Requests} requests, {stats.Errors} errors");
         PrewarmResult done = Record(game, now, new PrewarmResult(game.Name, true, null, stats, now) { Mode = label }, mbps);
         WarmMeasured?.Invoke(game, mbps);
         ColdWarmed?.Invoke(game, label!);

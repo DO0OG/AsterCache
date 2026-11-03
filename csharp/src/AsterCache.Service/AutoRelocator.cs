@@ -220,7 +220,7 @@ public sealed class AutoRelocator
                 continue;
             }
 
-            if (!_env.FileExists(g.Plan) && (_env.AnyRunning(g.ExeNames) || !Plan(g, s)))
+            if (!_env.FileExists(g.Plan) && (AnyGameRunning(g) || !Plan(g, s)))
             {
                 continue; // 게임이 도는 중이면 디스크를 건드리지 않고, 계획이 실패했으면 failed 로 기록됨
             }
@@ -570,7 +570,7 @@ public sealed class AutoRelocator
     {
         foreach (GameSettings g in s.Games)
         {
-            if (_status.Get(g.Name)?.RelocatedAt is null || !_env.FileExists(g.Plan) || _env.AnyRunning(g.ExeNames)
+            if (_status.Get(g.Name)?.RelocatedAt is null || !_env.FileExists(g.Plan) || AnyGameRunning(g)
                 || _staleChecked.TryGetValue(g.Name, out DateTimeOffset at) && _env.Now() - at < StaleCheckEvery)
             {
                 continue;
@@ -680,8 +680,8 @@ public sealed class AutoRelocator
     private bool PostUpdateDelayed(GameSettings g, AsterSettings s)
     {
         // probe 모드이고 이 드라이브에 쓰기 전 기준값이 있으면 같은 회복 판정을, 없으면 (업데이트는 우리가 쓴 게 아님) 고정 분을 씀.
-        bool? probed = s.Auto.PostRelocateRecovery == AutoSettings.RecoveryProbe && s.Auto.PostUpdateDelayMin > 0 && Replanning(_status, g.Name) is { } e
-            ? _recovery.WatchUpdate(DriveOf(g), e.At, TimeSpan.FromMinutes(s.Auto.PostUpdateDelayMin * 4)) : null;
+        bool? probed = s.Auto.PostRelocateRecovery == AutoSettings.RecoveryProbe && Replanning(_status, g.Name) is { } e
+            ? _recovery.WatchUpdate(DriveOf(g), e.At, TimeSpan.FromMinutes(s.Auto.RecoveryMaxMin)) : null;
         if (!(probed ?? PostUpdateWait(_status, s.Auto, g.Name, _env.Now()) is not null))
         {
             _delayLogged.Remove(g.Name);
@@ -1124,7 +1124,7 @@ public sealed class AutoRelocator
 
     private ProbeSpot? Spot(string drive, long lcn, ProbeRound round) => _env.ProbeMbps(drive, lcn, round) is > 0 and double mbps ? new ProbeSpot(lcn, mbps) : null;
 
-    // 쓴 바이트가 있으면 회복 추적을 시작: probe 는 기준이 있을 때 최대 post_update_delay_min x4 분, 기준이 없거나 fixed 면 post_update_delay_min 분 고정, off 는 기다리지 않음.
+    // 쓴 바이트가 있으면 회복 추적을 시작: probe 는 기준이 있을 때 최대 recovery_max_min 분, 기준이 없거나 fixed 면 post_update_delay_min 분 고정, off 는 기다리지 않음.
     private void BeginRecovery(GameSettings g, AutoSettings auto, long movedBytes, DriveBaseline? baseline)
     {
         if (movedBytes <= 0 || auto.PostRelocateRecovery == AutoSettings.RecoveryOff)
@@ -1133,7 +1133,7 @@ public sealed class AutoRelocator
         }
 
         bool probe = auto.PostRelocateRecovery == AutoSettings.RecoveryProbe && baseline is not null;
-        _recovery.Begin(DriveOf(g), probe ? baseline : null, TimeSpan.FromMinutes(auto.PostUpdateDelayMin * (probe ? 4 : 1)));
+        _recovery.Begin(DriveOf(g), probe ? baseline : null, TimeSpan.FromMinutes(probe ? auto.RecoveryMaxMin : auto.PostUpdateDelayMin));
     }
 
     // 게임이 안 돌 때만, 이번 자동 적용이 저널에 쓴 줄 (mark 줄 뒤) 만 되돌립니다 (최선 노력). 앞선 적용의 줄은 이어하기·수동 되돌리기의 몫이라 건드리지 않음.

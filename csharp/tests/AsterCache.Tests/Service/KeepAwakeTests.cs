@@ -22,13 +22,14 @@ public sealed class KeepAwakeTests
 
     private static GameSettings Game() => Games.Make("g", "g.exe") with { Prewarm = PrewarmSettings.Default with { TriggerExes = ["steam.exe"] } };
 
-    private KeepAwake Make(Case c, AutoSettings? auto = null, Action<string>? read = null)
+    private KeepAwake Make(Case c, AutoSettings? auto = null, Action<string>? read = null, Func<TimeSpan>? elapsed = null, IReadOnlyList<GameSettings>? games = null, Func<IEnumerable<string>, bool>? running = null)
     {
         var env = new KeepAwakeEnv
         {
             Now = () => _now,
+            Elapsed = elapsed ?? (() => _now - T0),
             IsHdd = _ => c.Hdd,
-            AnyRunning = exes => c.Launcher && exes.Contains("steam.exe"),
+            AnyRunning = running ?? (exes => c.Launcher && exes.Contains("steam.exe")),
             PowerOk = () => c.Power,
             Plays = () => c.Habit
                 ? new Dictionary<string, IReadOnlyList<DateTimeOffset>> { ["g"] = [T0.AddDays(-7).AddMinutes(30), T0.AddDays(-14)] }
@@ -41,7 +42,7 @@ public sealed class KeepAwakeTests
                 return _idleOverride ?? c.IdleSeconds;
             },
         };
-        return new KeepAwake(env, _log, () => new AsterSettings(50, [Game()]) { Auto = auto ?? AutoSettings.Default });
+        return new KeepAwake(env, _log, () => new AsterSettings(50, games ?? [Game()]) { Auto = auto ?? AutoSettings.Default });
     }
 
     [Theory]
@@ -127,6 +128,31 @@ public sealed class KeepAwakeTests
         k.Tick();
         Assert.Single(_reads);
         _now += TimeSpan.FromMinutes(1);
+        k.Tick();
+
+        Assert.Equal(2, _reads.Count);
+    }
+
+    [Fact]
+    public void AGameRunningOnTheSameDiskSkipsKeepAwake()
+    {
+        GameSettings other = Games.Make("h", "h.exe");
+        KeepAwake k = Make(new Case(true, true, false, true, 600), games: [Game(), other], running: exes => exes.Contains("steam.exe") || exes.Contains("h.exe"));
+
+        k.Tick();
+
+        Assert.Empty(_reads); // h.exe 가 D: 에서 도는 중이라 깨울 필요 없음
+    }
+
+    [Fact]
+    public void BackwardWallClockDoesNotStallTheInterval()
+    {
+        TimeSpan mono = TimeSpan.Zero;
+        KeepAwake k = Make(new Case(true, true, false, true, 1800), elapsed: () => mono);
+
+        k.Tick();
+        _now -= TimeSpan.FromHours(2); // 벽시계가 뒤로 감
+        mono += KeepAwake.Every;
         k.Tick();
 
         Assert.Equal(2, _reads.Count);

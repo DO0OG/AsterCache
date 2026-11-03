@@ -370,7 +370,7 @@ public sealed class AutoRegistry
                 return;
             }
 
-            Register(Path.GetFileName(origin), "heuristic", exe, origin, LauncherExes.ForOrigin(origin), _env.AntiCheatOf(origin), evict: true);
+            Register(Path.GetFileName(origin), "heuristic", exe, origin, LauncherExes.ForOrigin(origin), AutoEnv.KnownAntiCheat(_env.AntiCheatOf(origin)), evict: true);
         }
     }
 

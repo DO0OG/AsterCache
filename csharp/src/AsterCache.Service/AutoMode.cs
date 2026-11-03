@@ -23,6 +23,7 @@ public sealed class AutoMode
     private readonly ProfileFeed _feed;
     private volatile AsterSettings _settings;
     private DateTimeOffset? _summaryNext; // 재적용 틱 스레드에서만 씀
+    private readonly SemaphoreSlim _tickRequest = new(0, 1); // 발견이 새 게임을 등록했을 때 30 초 틱을 기다리지 않게 깨움 (요청은 하나로 합쳐짐)
 
     public AutoMode(ConfigEditor editor, AutoEnv env, AutoStatus status, ILog log, AsterSettings settings, Prewarmer? prewarm = null, IFeedHttp? feedHttp = null)
     {
@@ -57,6 +58,10 @@ public sealed class AutoMode
         AsterSettings old = _settings;
         _settings = s;
         _registry.SettingsReloaded(s);
+        if (s.Games.Any(g => g.Source == "auto" && old.Games.All(o => o.Name != g.Name)))
+        {
+            RequestTick(); // 새로 등록된 자동 게임 (설정에 들어온 뒤라야 틱이 봄): 부트스트랩·콜드 예열을 다음 30 초 틱까지 미루지 않음
+        }
         foreach (string gone in old.Games.Select(g => g.Name).Except(s.Games.Select(g => g.Name)))
         {
             Status.Remove(gone); // 설정에서 빠진 게임의 상태는 버림 (같은 이름으로 다시 등록되면 새로 시작)
@@ -96,6 +101,22 @@ public sealed class AutoMode
         Guard("relocation", () => _relocator.Tick(gate, ct));
         Guard("summary", LogSummaryIfDue);
     }
+
+    /// 재적용 루프가 다음 틱을 지금 한 번 돌게 요청합니다. 틱은 재적용 루프 한 곳에서만 돌아 (재배치기는 한 번에 한 틱) 겹쳐 실행되지 않습니다.
+    public void RequestTick()
+    {
+        try
+        {
+            _tickRequest.Release();
+        }
+        catch (SemaphoreFullException)
+        {
+            // 이미 요청됨
+        }
+    }
+
+    /// 다음 틱까지 기다립니다: delay 가 지나면 false, 그 전에 RequestTick 이 불리면 true.
+    public Task<bool> WaitForTickAsync(TimeSpan delay, CancellationToken ct) => _tickRequest.WaitAsync(delay, ct);
 
     /// 게임 exe 가 떴을 때 (감시기 스레드에서 바로): 자동 모드의 예열 작업을 취소합니다.
     public void CancelWarm() => _relocator.CancelWarm();

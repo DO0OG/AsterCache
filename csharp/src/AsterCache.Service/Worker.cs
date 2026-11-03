@@ -87,6 +87,7 @@ public sealed class Worker : BackgroundService
         _log.Info(_settings.Games.Count == 0
             ? "service started: no games registered yet, waiting for auto discovery or a config change"
             : $"service started: {_settings.Games.Count} game(s), watcher {_watchers.Primary.GetType().Name}");
+        DiskKinds.LogAtStart(_settings.Games, _log); // 게임 드라이브별 디스크 종류 (진단용 로그)
         if (_prewarm is not null)
         {
             _ = Task.Run(() => RunPrewarm(() =>

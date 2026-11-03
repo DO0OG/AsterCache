@@ -29,7 +29,7 @@ public sealed class LoadBoundaryWatchTests : IDisposable
     }
 
     private static LoadBoundary Boundary(int files) =>
-        new(5000, [.. Enumerable.Range(0, files).Select(i => new TraceEvent($"f{i}.bin", 0, 1 << 20))], files << 20, 0);
+        new(5000, [.. Enumerable.Range(0, files).Select(i => new TraceEvent($"f{i}.bin", 0, 64 << 20))], (long)files << 26, 0);
 
     // slowUntil 번째 표본 (1 부터) 전까지는 느린 표본이 있고 그 뒤로 모두 빠름.
     private int? Run(AutoStatus status, int slowUntil, LoadBoundary? b)
@@ -54,7 +54,7 @@ public sealed class LoadBoundaryWatchTests : IDisposable
     }
 
     [Fact]
-    public void SamplesTheLastRangesOfTier0()
+    public void SamplesTheLastRangeOfTier0First()
     {
         IReadOnlyList<(string Path, long Offset, int Bytes)>? seen = null;
         LoadBoundaryWatch.Run(_game, Status(), _log, default, () => _clock, d => _clock += d, _ => Boundary(20), s =>
@@ -63,7 +63,7 @@ public sealed class LoadBoundaryWatchTests : IDisposable
             return new ProbeResult(s.Count, 0, 1.0);
         });
 
-        Assert.Equal(Enumerable.Range(12, 8).Select(i => $"f{i}.bin"), seen!.Select(s => s.Path));
+        Assert.All(seen!, s => Assert.Equal(("f19.bin", 4096), (s.Path, s.Bytes)));
     }
 
     [Fact]
@@ -71,10 +71,54 @@ public sealed class LoadBoundaryWatchTests : IDisposable
     {
         AutoStatus status = Status();
 
-        Assert.Null(Run(status, int.MaxValue, Boundary(3)));
+        Assert.Null(Run(status, int.MaxValue, Boundary(6)));
         Assert.Equal(41, _probes); // 0, 3, ... 120 초
         Assert.Null(status.Get("a")!.LoadBoundaryMs);
         Assert.Contains(_log.Lines, l => l.Contains("a: load boundary not reached within 120 s", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RoundsNeverReuseOrNeighbourEarlierPositions()
+    {
+        var rounds = new List<IReadOnlyList<(string Path, long Offset, int Bytes)>>();
+        LoadBoundaryWatch.Run(_game, Status(), _log, default, () => _clock, d => _clock += d, _ => Boundary(20), s =>
+        {
+            rounds.Add(s);
+            return new ProbeResult(s.Count, rounds.Count < 5 ? 1 : 0, 1.0);
+        });
+
+        var all = rounds.SelectMany(r => r).ToList();
+        Assert.Equal(40, all.Count);
+        Assert.All(all.Select((a, i) => (a, i)), x => Assert.DoesNotContain(all.Skip(x.i + 1), b => b.Path == x.a.Path && Math.Abs(b.Offset - x.a.Offset) < LoadBoundaryWatch.MinGap));
+    }
+
+    [Fact]
+    public void RunningOutOfFreshPositionsStopsWithoutRecord()
+    {
+        AutoStatus status = Status();
+
+        Assert.Null(Run(status, int.MaxValue, Boundary(1))); // 64 곳 = 8 회차 뒤 소진
+        Assert.Equal(8, _probes);
+        Assert.Null(status.Get("a")!.LoadBoundaryMs);
+        Assert.Contains(_log.Lines, l => l.Contains("a: load boundary not measurable (no unread sample positions left)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ProbeReadsDoNotMakeTheNextRoundLookReached()
+    {
+        var cached = new HashSet<(string, long)>();
+        int? ms = LoadBoundaryWatch.Run(_game, Status(), _log, default, () => _clock, d => _clock += d, _ => Boundary(20), s =>
+        {
+            int slow = s.Count(x => !cached.Contains((x.Path, x.Offset)));
+            foreach (var x in s)
+            {
+                cached.Add((x.Path, x.Offset));
+            }
+
+            return new ProbeResult(s.Count, slow, 1.0); // 안 읽은 위치는 느림
+        });
+
+        Assert.Null(ms); // 매 회차 새 위치라 계속 느림 → 상한까지 도달 못 함
     }
 
     [Fact]

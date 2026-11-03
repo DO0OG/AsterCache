@@ -13,6 +13,28 @@ public static class LoadBoundaryWatch
     public const int SampleCount = 8;
     public static readonly TimeSpan Interval = TimeSpan.FromSeconds(3);
     public static readonly TimeSpan Limit = TimeSpan.FromSeconds(120);
+    public const int SampleBytes = 4096;
+    public const long MinGap = 1L << 20; // 캐시 미리 읽기가 이웃 위치를 올리지 않도록 표본끼리·이전 회차와 이만큼 띄움
+
+    /// tier0 (시간순) 의 끝 쪽 범위부터 거슬러 올라가며, used 와 서로 MinGap 이상 떨어진 새 위치를 count 곳까지 고릅니다 (고른 위치는 used 에 더함). 모자라면 있는 만큼만 돌려줍니다.
+    public static List<(string Path, long Offset, int Bytes)> PickFresh(IReadOnlyList<ReadOp> tier0, List<(string Path, long Offset)> used, int count)
+    {
+        var picked = new List<(string Path, long Offset, int Bytes)>();
+        for (int i = tier0.Count - 1; i >= 0 && picked.Count < count; i--)
+        {
+            ReadOp op = tier0[i];
+            for (long pos = op.Offset; pos + SampleBytes <= op.Offset + op.Length && picked.Count < count; pos += MinGap)
+            {
+                if (!used.Exists(u => u.Path == op.Path && Math.Abs(u.Offset - pos) < MinGap))
+                {
+                    used.Add((op.Path, pos));
+                    picked.Add((op.Path, pos, SampleBytes));
+                }
+            }
+        }
+
+        return picked;
+    }
 
     /// 경계 도달 시간 (ms), 상한 안에 못 닿았거나 잴 수 없으면 null. 시계·대기·경계·표본 읽기는 시험이 바꿉니다 (기본은 실제 값, 대기는 ct 취소 시 바로 깨어남).
     public static int? Run(GameSettings game, AutoStatus status, ILog log, CancellationToken ct = default, Func<DateTimeOffset>? now = null, Action<TimeSpan>? sleep = null,
@@ -26,12 +48,19 @@ public static class LoadBoundaryWatch
             return null;
         }
 
-        var ops = b.Tier0.TakeLast(SampleCount).Select(e => new ReadOp(e.Path, e.Offset, e.Length)).ToList(); // 시간상 끝 쪽
-        var samples = CacheProbe.PickSamples(ops, SampleCount, 0);
+        var ops = b.Tier0.Select(e => new ReadOp(e.Path, e.Offset, e.Length)).ToList();
+        var used = new List<(string Path, long Offset)>();
         DateTimeOffset start = now();
         while (!ct.IsCancellationRequested)
         {
             TimeSpan elapsed = now() - start;
+            var samples = PickFresh(ops, used, SampleCount); // 회차마다 새 위치: 앞 회차 읽기가 캐시를 채워 도달로 오판하지 않게
+            if (samples.Count < SampleCount)
+            {
+                log.Info($"{game.Name}: load boundary not measurable (no unread sample positions left)");
+                return null;
+            }
+
             if (probe(samples) is { Samples: > 0, Slow: 0 })
             {
                 int ms = (int)Math.Min(int.MaxValue, (now() - start).TotalMilliseconds);

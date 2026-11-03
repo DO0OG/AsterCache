@@ -659,7 +659,7 @@ public sealed class AutoRelocator
         return left > TimeSpan.Zero ? left : null;
     }
 
-    private static AutoGameEntry? Replanning(AutoStatus status, string game) =>
+    internal static AutoGameEntry? Replanning(AutoStatus status, string game) =>
         status.Get(game) is { Stage: AutoStage.Discovered, Detail: { } detail } e && detail.StartsWith(ReplanDetail, StringComparison.Ordinal) ? e : null;
 
     private static string DriveOf(GameSettings g) => PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant();

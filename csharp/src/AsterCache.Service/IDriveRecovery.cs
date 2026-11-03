@@ -4,4 +4,7 @@ namespace AsterCache.Service;
 public interface IDriveRecovery
 {
     bool IsRecovering(string drive);
+
+    /// 업데이트 뒤 지연 (업데이트 시각 updatedAt 기준): 이 드라이브에 회복 추적이 있으면 아직 회복 중인지, 없으면 null (호출하는 쪽이 고정 분을 씀).
+    bool? WatchUpdate(string drive, DateTimeOffset updatedAt, TimeSpan limit);
 }

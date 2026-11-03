@@ -20,6 +20,7 @@ public sealed class Worker : BackgroundService
     private readonly Prewarmer? _prewarm;
     private readonly AutoMode? _auto;
     private readonly SettingsReloader? _reload;
+    private readonly KeepAwake? _keepAwake;
     private readonly object _watchLock = new();
     private volatile AsterSettings _settings;
     private (IProcessWatcher Primary, IProcessWatcher? Fallback) _watchers;
@@ -29,17 +30,19 @@ public sealed class Worker : BackgroundService
     private int _maintaining;
 
     public Worker(AsterSettings settings, ILog log, IProcessWatcher primary, IProcessWatcher? fallback, IGameStreamer streamer, ReapplyChecker checker,
-        ReapplyGate? gate = null, Prewarmer? prewarm = null, AutoMode? auto = null, SettingsReloader? reload = null)
+        ReapplyGate? gate = null, Prewarmer? prewarm = null, AutoMode? auto = null, SettingsReloader? reload = null, KeepAwake? keepAwake = null)
     {
         _prewarm = prewarm;
         _prewarm?.SetAuto(settings.Auto);
         _auto = auto;
         _reload = reload;
         _settings = settings;
+        _keepAwake = keepAwake ?? (auto is null ? null : new KeepAwake(KeepAwakeEnv.Create(auto.Status.Plays), log, () => _settings)); // 자동 모드가 있는 진짜 서비스에서만 기본으로 켬
         if (prewarm is not null && auto is not null)
         {
             AutoStatus status = auto.Status;
             prewarm.PostUpdateWait = g => AutoRelocator.PostUpdateWait(status, _settings.Auto, g.Name, DateTimeOffset.UtcNow);
+            prewarm.ReplanStart = g => AutoRelocator.Replanning(status, g.Name)?.At;
         }
 
         _log = log;
@@ -106,8 +109,9 @@ public sealed class Worker : BackgroundService
         Task consume = Task.Run(() => ConsumeAsync(channel.Reader, stoppingToken), CancellationToken.None);
         Task reapply = Task.Run(() => ReapplyLoopAsync(stoppingToken), CancellationToken.None);
         Task reload = Task.Run(() => ReloadLoopAsync(stoppingToken), CancellationToken.None);
+        Task keep = Task.Run(() => KeepAwakeLoopAsync(stoppingToken), CancellationToken.None);
         Task auto = _auto is null ? Task.CompletedTask : Task.Run(() => _auto.RunAsync(stoppingToken), CancellationToken.None);
-        await Task.WhenAll(watch, consume, reapply, reload, auto);
+        await Task.WhenAll(watch, consume, reapply, reload, auto, keep);
         _auto?.Shutdown();
         _prewarm?.Shutdown();
         _log.Info("service stopped");
@@ -275,6 +279,39 @@ public sealed class Worker : BackgroundService
         {
             // 종료
         }
+    }
+
+    // HDD 깨워 두기: 서비스가 뜨고 FirstCheckDelay 뒤부터 틱마다 (KeepAwake 가 10 분 주기를 스스로 지킴). 스핀업을 기다릴 수 있어 재적용 루프와 따로 돌림.
+    private async Task KeepAwakeLoopAsync(CancellationToken ct)
+    {
+        if (_keepAwake is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await Task.Delay(FirstCheckDelay, ct);
+            using var timer = new PeriodicTimer(CheckTick);
+            do
+            {
+                try
+                {
+                    _keepAwake.Tick();
+                }
+                catch (Exception e) when (e is not OperationCanceledException)
+                {
+                    _log.Error("keep-awake failed", e);
+                }
+            }
+            while (await timer.WaitForNextTickAsync(ct));
+        }
+        catch (OperationCanceledException)
+        {
+            // 종료
+        }
+
+        _keepAwake.Stop();
     }
 
     // 새 설정으로 감시기·디스패처·예열 대상·자동 모드를 바꿉니다. 쿨다운 같은 상태는 유지하고, 감시할 이름이 달라졌을 때만 감시기를 다시 만듭니다.

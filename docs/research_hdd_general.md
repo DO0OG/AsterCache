@@ -186,6 +186,8 @@ E8b(깊은 비움: 시스템 파일 캐시 크기 설정 + 작업 집합 비움 
 - 상한 250 MB/s 는 실측 물리 상한 (약 140) 에 여유를 둔 상수. 예열 MB/s 는 게임별 기록이라 드라이브 단위 상한에 쓰지 않음.
 - 검증: 가짜 시계·표본 시험 (회전 순서, 상한 초과 제외, 빈 존 기준 무효). 실제 디스크 재측정은 하지 않음.
 
+재부팅 뒤 실측: Call of Duty 파일 200 개 콜드 열기 4.94 ms/파일 (boot_probe)
+
 ## 출처
 
 - https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/fsutil-behavior

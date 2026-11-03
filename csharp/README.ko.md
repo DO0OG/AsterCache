@@ -154,7 +154,7 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 
 예열은 가용 RAM ≥ 존 크기 + `min_free_ram_mib`, 게임이 실행 중이 아님, 쿨다운이 지남, 계획·추적 파일이 있음, 이 조건을 모두 만족할 때만 합니다. 아니면 건너뛰고 이유를 `service.log` 에 남깁니다. 결과(바이트·초·MB/s·건너뜀 이유)는 `service.log` 와 `%ProgramData%\AsterCache\prewarm_status.json` 에 남고 `aster status` 의 `prewarm` 로 보입니다.
 
-묶음에 게임이 둘 이상이면 각 게임의 로딩 앞부분(tier0)을 최근 순서로 먼저 읽고, 그다음 게임별 구역 전체를 읽습니다.
+묶음에 게임이 둘 이상이면 각 게임의 로딩 앞부분(tier0)을 최근 순서로 먼저 읽고, 그다음 게임별 구역 전체를 읽습니다. 묶음 중에 게임이 시작되면 `auto.keep_stream_on_game_start` 가 `true` 가 아닌 한 다음 64 MiB 경계에서 멈춥니다.
 
 ```json
 {

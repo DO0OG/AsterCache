@@ -699,6 +699,7 @@ public sealed class AutoRelocator
 
         _recovered = true;
         // 계획이 있어도 쓰다가 꺼져 잘렸으면 (읽을 수 없음) .bad 로 치워 없는 것으로 다룹니다: 되살릴 이전 계획 (.stale·.extend) 이 있는 게임만.
+        HashSet<string> truncated = new(StringComparer.Ordinal);
         foreach (GameSettings g in s.Games.Where(g => _env.FileExists(g.Plan) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
         {
             try
@@ -710,6 +711,7 @@ public sealed class AutoRelocator
                 try
                 {
                     _env.MoveAside(g.Plan, g.Plan + BadSuffix);
+                    _ = truncated.Add(g.Name);
                     _log.Warn($"{g.Name}: plan unreadable ({e.GetType().Name}), set aside as {BadSuffix}");
                 }
                 catch (Exception m) when (m is IOException or UnauthorizedAccessException)
@@ -719,8 +721,8 @@ public sealed class AutoRelocator
             }
         }
 
-        // 계획이 없고 .stale 이나 .extend 만 있는 failed 게임 (재계획·확장이 실패한 채 꺼짐): 이전 계획을 되살려 done 으로 돌립니다.
-        foreach (GameSettings g in s.Games.Where(g => _status.Get(g.Name) is { Stage: AutoStage.Failed, RelocatedAt: null } && !_env.FileExists(g.Plan) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
+        // 계획이 없고 .stale 이나 .extend 만 있는 failed 게임 (재계획·확장이 실패한 채 꺼짐) 또는 방금 잘린 계획을 치운 게임 (상태 무관): 이전 계획을 되살려 done 으로 돌립니다.
+        foreach (GameSettings g in s.Games.Where(g => (_status.Get(g.Name) is { Stage: AutoStage.Failed, RelocatedAt: null } || truncated.Contains(g.Name)) && !_env.FileExists(g.Plan) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
         {
             if (IsExtending(g))
             {
@@ -884,6 +886,15 @@ public sealed class AutoRelocator
 
         _log.Warn($"{g.Name}: zone extension failed ({detail}{(e is null ? string.Empty : ": " + e.GetType().Name)})");
         Undo(g, mark, token);
+        try
+        {
+            _ = _env.ArchiveJournal(g); // 확장 계획의 저널이 남으면 복원한 이전 계획의 다음 적용이 다른 계획의 저널이라며 거부하므로 옆으로 보관
+        }
+        catch (Exception a) when (a is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"{g.Name}: extension journal could not be archived ({a.GetType().Name})");
+        }
+
         BlockExtension(g, detail);
         return true;
     }
@@ -976,8 +987,8 @@ public sealed class AutoRelocator
 
     private ReapplyVerdict? ReapplyBlockedBy(GameSettings g, AsterSettings s)
     {
-        // 확장 중이거나 자동 재배치를 끝내지 못한 게임의 계획에는 Zone.StartLcn 이 있어 적용됨으로 보이므로 막음 (항목 없음·Skipped 는 제외).
-        if (IsExtending(g) || _status.Get(g.Name) is { RelocatedAt: null, Stage: not AutoStage.Skipped })
+        // 확장 중이거나 자동 재배치를 끝내지 못한 게임의 계획에는 Zone.StartLcn 이 있어 적용됨으로 보이므로 막음 (항목 없음·Skipped 는 제외, 자동 재배치를 끈 설정이면 남은 상태가 있어도 기다릴 일이 없어 제외).
+        if (IsExtending(g) || (s.Auto.Relocate && s.Auto.MaxRelocationsPerDay > 0 && _status.Get(g.Name) is { RelocatedAt: null, Stage: not AutoStage.Skipped }))
         {
             return ReapplyVerdict.NotApplied;
         }

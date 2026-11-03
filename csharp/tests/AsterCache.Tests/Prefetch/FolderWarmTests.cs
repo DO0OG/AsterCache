@@ -268,6 +268,18 @@ public sealed class FolderWarmTests
     }
 
     [Fact]
+    public void ReadSumsHintAcceptedAndRequestedBytesAndKeepsAborted()
+    {
+        ReadOp[] ops = [.. Enumerable.Range(0, 4).Select(i => new ReadOp($@"C:\g{i}", 0, 40 * Mib))];
+
+        (StreamStats stats, _) = FolderWarm.Read(ops, CancellationToken.None, b => new StreamStats(b.Sum(o => o.Length), b.Count, 0, 0.5, b.Count == 1, b.Sum(o => o.Length), 7));
+
+        Assert.Equal((2 * 7L, 160 * Mib, false), (stats.HintAcceptedBytes, stats.RequestedBytes, stats.Aborted));
+        (StreamStats one, _) = FolderWarm.Read(ops[..1], CancellationToken.None, b => new StreamStats(0, 0, 0, 0.5, true));
+        Assert.True(one.Aborted);
+    }
+
+    [Fact]
     public void CancelStopsAtTheNextFileBoundaryAndReportsIncomplete()
     {
         ReadOp[] ops = [.. Enumerable.Range(0, 5).Select(i => new ReadOp($@"C:\g\f{i}", 0, 40 * Mib))];

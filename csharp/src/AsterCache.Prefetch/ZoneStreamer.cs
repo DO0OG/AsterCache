@@ -21,8 +21,9 @@ public enum StreamMethod
     Overlapped,
 }
 
-/// 읽기 결과 (Python read_ops 의 stats).
-public sealed record StreamStats(long Bytes, long Requests, long Errors, double Seconds);
+/// 읽기 결과 (Python read_ops 의 stats). Aborted: 취소로 일부를 건너뜀. RequestedBytes: 요청한 길이 합 (파일 크기로 자르기 전).
+/// HintAcceptedBytes: Pvm 에서 PrefetchVirtualMemory 가 받아들인 바이트일 뿐 실제로 상주한다는 뜻이 아님 (Bytes 에도 같은 값이 들어감, 상주 추정은 CacheProbe 로).
+public sealed record StreamStats(long Bytes, long Requests, long Errors, double Seconds, bool Aborted = false, long RequestedBytes = 0, long HintAcceptedBytes = 0);
 
 /// ops 를 파일 캐시로 가져옵니다. 쓰기 없음. Python prefetch/reader.py read_ops (method read | pvm).
 public static class ZoneStreamer
@@ -36,18 +37,21 @@ public static class ZoneStreamer
     public static StreamStats Run(IReadOnlyList<ReadOp> ops, StreamMethod method = StreamMethod.Pvm, int chunkBytes = DefaultChunkBytes, int queueDepth = 2, CancellationToken ct = default)
     {
         var watch = Stopwatch.StartNew();
+        bool aborted = false;
+        long hint = 0;
         (long bytes, long requests, long errors) = method switch
         {
-            StreamMethod.Pvm => RunPvm(ops, ct),
-            StreamMethod.Overlapped => OverlappedReader.Run(ops, queueDepth, chunkBytes),
-            _ => RunRead(ops, chunkBytes, ct),
+            StreamMethod.Pvm => RunPvm(ops, ct, out aborted, out hint, static slice => MemoryPrefetch.Prefetch(slice)),
+            StreamMethod.Overlapped => OverlappedReader.Run(ops, queueDepth, chunkBytes, ct, out aborted),
+            _ => RunRead(ops, chunkBytes, ct, out aborted),
         };
-        return new StreamStats(bytes, requests, errors, Math.Round(watch.Elapsed.TotalSeconds, 4));
+        return new StreamStats(bytes, requests, errors, Math.Round(watch.Elapsed.TotalSeconds, 4), aborted, ops.Sum(o => o.Length), hint);
     }
 
     // Python _worker(reuse=True, threads=1): 한 줄씩 순서대로, 파일 핸들 유지, 오류가 나면 그 핸들을 버리고 계속.
-    private static (long, long, long) RunRead(IReadOnlyList<ReadOp> ops, int chunk, CancellationToken ct)
+    private static (long, long, long) RunRead(IReadOnlyList<ReadOp> ops, int chunk, CancellationToken ct, out bool aborted)
     {
+        aborted = false;
         long sinceCheck = 0;
         long bytes = 0;
         long requests = 0;
@@ -85,6 +89,7 @@ public static class ZoneStreamer
                             sinceCheck = 0;
                             if (ct.IsCancellationRequested)
                             {
+                                aborted = true;
                                 return (bytes, requests, errors);
                             }
                         }
@@ -114,8 +119,17 @@ public static class ZoneStreamer
     }
 
     // Python _read_pvm 과 달리 파일 하나의 열기·매핑 실패 (게임이 배타적으로 연 파일 등) 는 그 파일만 오류 1 로 건너뛰고 나머지는 계속합니다 (바이트·요청은 호출이 성공했을 때만 셈).
-    private static (long, long, long) RunPvm(IReadOnlyList<ReadOp> ops, CancellationToken ct)
+    // prefetch: 조각 한 번의 PrefetchVirtualMemory 호출 (시험에서 가짜로 바꿔 호출 수와 취소 시점을 확인).
+    internal static (long, long, long) RunPvm(IReadOnlyList<ReadOp> ops, CancellationToken ct, out bool aborted, out long hintAccepted, Func<Win32MemoryRangeEntry[], bool> prefetch)
     {
+        aborted = false;
+        hintAccepted = 0;
+        if (ct.IsCancellationRequested)
+        {
+            aborted = ops.Count > 0;
+            return (0, 0, 0); // 이미 취소됨: 매핑도 PVM 호출도 하지 않음
+        }
+
         var views = new Dictionary<string, FileMapping>();
         var sizes = new Dictionary<string, long>();
         var ranges = new List<Win32MemoryRangeEntry>();
@@ -164,13 +178,26 @@ public static class ZoneStreamer
                 }
             }
 
-            // 범위를 CancelCheckBytes 크기 조각으로 나눠 조각마다 한 번씩 부르고 (순서 그대로), 조각 사이에서 취소를 확인합니다.
+            // 범위를 CancelCheckBytes 크기 조각으로 나눠 조각마다 한 번씩 부르고 (순서 그대로), 열거 직전과 모든 호출의 직전·직후에 취소를 확인합니다.
+            if (ct.IsCancellationRequested)
+            {
+                aborted = ranges.Count > 0;
+                return (bytes, requests, errors);
+            }
+
             List<(Win32MemoryRangeEntry[] Slice, long Bytes, int Ranges)> slices = Slices(ranges, pads);
             for (int i = 0; i < slices.Count; i++)
             {
-                if (MemoryPrefetch.Prefetch(slices[i].Slice))
+                if (ct.IsCancellationRequested)
+                {
+                    aborted = true;
+                    break;
+                }
+
+                if (prefetch(slices[i].Slice))
                 {
                     bytes += slices[i].Bytes;
+                    hintAccepted += slices[i].Bytes;
                     requests += slices[i].Ranges;
                 }
                 else
@@ -180,6 +207,7 @@ public static class ZoneStreamer
 
                 if (i < slices.Count - 1 && ct.IsCancellationRequested)
                 {
+                    aborted = true;
                     break;
                 }
             }

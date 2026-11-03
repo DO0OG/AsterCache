@@ -12,8 +12,13 @@ public static class OverlappedReader
     private readonly record struct Piece(Task<int> Task, int Buffer, string Path, long Offset);
 
     /// 바이트·요청(성공한 조각 수)·오류. 파일 크기로 자르고, 열기 실패는 op 당 오류 1, 조각 읽기 실패는 조각당 오류 1.
-    public static (long Bytes, long Requests, long Errors) Run(IReadOnlyList<ReadOp> ops, int depth, int chunkBytes, PieceSink? sink = null)
+    public static (long Bytes, long Requests, long Errors) Run(IReadOnlyList<ReadOp> ops, int depth, int chunkBytes, PieceSink? sink = null) =>
+        Run(ops, depth, chunkBytes, CancellationToken.None, out _, sink);
+
+    /// ct 가 취소되면 새 조각을 더 내지 않고 (이미 낸 읽기는 끝까지 기다림) aborted 를 참으로 돌려줍니다. 제출 전마다 확인합니다.
+    public static (long Bytes, long Requests, long Errors) Run(IReadOnlyList<ReadOp> ops, int depth, int chunkBytes, CancellationToken ct, out bool aborted, PieceSink? sink = null)
     {
+        aborted = false;
         depth = Math.Clamp(depth, 1, 64);
         long bytes = 0;
         long requests = 0;
@@ -54,6 +59,12 @@ public static class OverlappedReader
         {
             foreach (ReadOp op in ops)
             {
+                if (ct.IsCancellationRequested)
+                {
+                    aborted = true;
+                    break;
+                }
+
                 if (!handles.TryGetValue(op.Path, out SafeFileHandle? h))
                 {
                     try
@@ -84,6 +95,12 @@ public static class OverlappedReader
                         Finish();
                     }
 
+                    if (ct.IsCancellationRequested)
+                    {
+                        aborted = true;
+                        break;
+                    }
+
                     int b = free.Pop();
                     try
                     {
@@ -97,6 +114,11 @@ public static class OverlappedReader
 
                     pos += m;
                     left -= m;
+                }
+
+                if (aborted)
+                {
+                    break;
                 }
             }
 

@@ -81,9 +81,10 @@ internal static partial class LaunchCommand
             { "stream_wall_seconds", Math.Round(wall, 2) },
             { "seconds", s.Seconds },
             { "bytes", s.Bytes },
+            { "hint_accepted_bytes", s.HintAcceptedBytes },
             { "requests", s.Requests },
             { "errors", s.Errors },
-            { "mib_per_second", Math.Round(s.Bytes / 1048576.0 / Math.Max(s.Seconds, 0.001), 1) },
+            { "hint_mib_per_second", Math.Round(s.Bytes / 1048576.0 / Math.Max(s.Seconds, 0.001), 1) },
         });
     }
 

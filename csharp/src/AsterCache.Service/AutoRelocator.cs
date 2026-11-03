@@ -116,7 +116,7 @@ public sealed class AutoRelocator
         _log = log;
         _settings = settings;
         _prewarm = prewarm;
-        _recovery = new DriveRecovery(env, log);
+        _recovery = new DriveRecovery(env, log, status); // 재시작 때 저장된 회복 추적을 되살림
         _tier = tier ?? (env.Tier is { } engine ? new AutoTier(env, status, log, engine) : null);
     }
 

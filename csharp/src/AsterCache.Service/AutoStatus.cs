@@ -23,6 +23,9 @@ public sealed record AutoGameEntry(
 /// 부팅 뒤 첫 서비스 시작에서 잰 메타데이터 콜드 비용 (auto_status.json 의 boot_probe): 측정 시각, 연 파일 수, 파일당 평균 열기 시간 (ms).
 public sealed record AutoBootProbe(DateTimeOffset At, int Files, double OpenMsPerFile);
 
+/// 쓰기 뒤 회복 추적 한 건 (auto_status.json 의 drive_recovery): 드라이브, 시작·상한 시각, 쓰기 직전 기준 (없으면 고정 대기), 마지막 판정 ("pass"/"unknown"/"bad", 아직 없으면 null).
+public sealed record DriveRecoveryRecord(string Drive, DateTimeOffset Started, DateTimeOffset Until, ProbeSpot? Zone, ProbeSpot? Ref, string? Verdict);
+
 public sealed record AutoEvent(DateTimeOffset At, string Game, string Kind);
 
 /// 자동 모드 상태 (<데이터 폴더>\auto_status.json). 서비스만 쓰고 트레이가 읽습니다. 파일이 없거나 깨졌으면 빈 상태로 시작합니다.
@@ -43,6 +46,7 @@ public sealed class AutoStatus
     private readonly Dictionary<string, AutoGameEntry> _games = new(StringComparer.Ordinal);
     private readonly List<(DateTimeOffset At, long Bytes)> _relocations = [];
     private readonly List<AutoEvent> _events = [];
+    private readonly Dictionary<string, DriveRecoveryRecord> _driveRecovery = new(StringComparer.Ordinal);
 
     /// sleep 은 파일 교체를 다시 시도하기 전의 대기 (시험이 바꿈, 기본은 MoveRetryDelay 만큼 실제로 잠).
     public AutoStatus(string? path, ILog log, Func<DateTimeOffset>? now = null, Action<TimeSpan>? sleep = null)
@@ -171,6 +175,38 @@ public sealed class AutoStatus
             if (_games.TryGetValue(name, out AutoGameEntry? old))
             {
                 _games[name] = old with { BootProbe = probe };
+                Save();
+            }
+        }
+    }
+
+    /// 드라이브별 회복 추적 저장본 (서비스 재시작 뒤 복원용).
+    public IReadOnlyList<DriveRecoveryRecord> DriveRecoveries()
+    {
+        lock (_lock)
+        {
+            return [.. _driveRecovery.Values];
+        }
+    }
+
+    public void SetDriveRecovery(DriveRecoveryRecord record)
+    {
+        lock (_lock)
+        {
+            if (!_driveRecovery.TryGetValue(record.Drive, out DriveRecoveryRecord? old) || old != record)
+            {
+                _driveRecovery[record.Drive] = record;
+                Save();
+            }
+        }
+    }
+
+    public void ClearDriveRecovery(string drive)
+    {
+        lock (_lock)
+        {
+            if (_driveRecovery.Remove(drive))
+            {
                 Save();
             }
         }
@@ -312,6 +348,28 @@ public sealed class AutoStatus
             { "games", games },
             { "events", _events.Select(e => (object?)new JObject { { "at", Iso(e.At) }, { "game", e.Game }, { "kind", e.Kind } }).ToList() },
         };
+        if (_driveRecovery.Count > 0)
+        {
+            var recovery = new JObject();
+            foreach ((string drive, DriveRecoveryRecord r) in _driveRecovery.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+            {
+                var o = new JObject { { "started", Iso(r.Started) }, { "until", Iso(r.Until) }, { "verdict", r.Verdict } };
+                if (r.Zone is { } z)
+                {
+                    o.Add("zone", Spot(z));
+                }
+
+                if (r.Ref is { } f)
+                {
+                    o.Add("ref", Spot(f));
+                }
+
+                recovery.Add(drive, o);
+            }
+
+            root.Add("drive_recovery", recovery); // 추적이 없으면 키를 만들지 않음 (기존 파일 모양 유지)
+        }
+
         try
         {
             string tmp = _path + ".tmp";
@@ -372,6 +430,17 @@ public sealed class AutoStatus
                 }
             }
 
+            if (root.TryGetValue("drive_recovery", out object? dr) && dr is JObject recoveries)
+            {
+                foreach ((string drive, object? value) in recoveries)
+                {
+                    if (value is JObject o && Time(o, "started") is { } started && Time(o, "until") is { } until)
+                    {
+                        _driveRecovery[drive] = new DriveRecoveryRecord(drive, started, until, ReadSpot(o, "zone"), ReadSpot(o, "ref"), Str(o, "verdict"));
+                    }
+                }
+            }
+
             if (root.TryGetValue("events", out object? ev) && ev is List<object?> list)
             {
                 foreach (JObject o in list.OfType<JObject>())
@@ -391,8 +460,15 @@ public sealed class AutoStatus
             _games.Clear();
             _relocations.Clear();
             _events.Clear();
+            _driveRecovery.Clear();
         }
     }
+
+    private static JObject Spot(ProbeSpot s) => new() { { "lcn", s.Lcn }, { "mbps", s.Mbps } };
+
+    private static ProbeSpot? ReadSpot(JObject o, string key) =>
+        o.TryGetValue(key, out object? v) && v is JObject b && b.TryGetValue("lcn", out object? l) && l is long lcn
+            && b.TryGetValue("mbps", out object? m) && (m as double? ?? m as long?) is { } mbps ? new ProbeSpot(lcn, mbps) : null;
 
     private static AutoBootProbe? ReadBootProbe(JObject o) =>
         o.TryGetValue("boot_probe", out object? v) && v is JObject b && Time(b, "at") is { } at && b.TryGetValue("files", out object? f) && f is long files

@@ -115,22 +115,42 @@ public sealed class ReapplyEnv
     /// 자동 모드와 같은 재적용 게이트 (서비스가 자동 모드를 만든 뒤 연결): 막는 이유 또는 null. 연결 전·시험 기본값은 막지 않음.
     public Func<GameSettings, ReapplyVerdict?> Gate { get; set; } = _ => null;
 
-    /// 재적용이 끝난 뒤 (예외로 끝나도) 쓴 바이트를 일일 예산·회복 추적에 알림.
+    /// 재적용을 시작하기 전에 예정 바이트를 일일 상한·예산 집계에 알림 (자동 재배치와 같이 실행 전에 셈).
+    public Action<GameSettings, long> Started { get; set; } = (_, _) => { };
+
+    /// 재적용이 끝난 뒤 (예외로 끝나도) 실제로 쓴 바이트를 일일 예산·회복 추적에 알림.
     public Action<GameSettings, long> Spent { get; set; } = (_, _) => { };
 
+    /// 서비스가 정한 재적용 옵션 (회당 쓰기 상한·하루 잔여 예산 반영, 서비스가 자동 모드를 만든 뒤 연결): null 이면 OptionsFor 의 기본.
+    public Func<GameSettings, ApplyOptions?> Options { get; set; } = _ => null;
+
+    /// 배치 풀림 경고를 낼 만한 때인가 (연결 전·시험 기본값은 허용).
+    public Func<GameSettings, bool> WarnDegraded { get; set; } = _ => true;
+
+    public Func<DateTimeOffset> Now { get; set; } = () => DateTimeOffset.UtcNow;
+
     /// 실제 구현. 재적용은 관리자이고 폴더 권한이 안전할 때만 (canApply). 저널은 게임마다 journalDir\이름.jsonl 하나를 계속 씁니다 (같은 저널 규칙: 이어하기·되돌리기).
-    public static ReapplyEnv Create(bool canApply, string journalDir, ILog? log = null, Func<string>? relocateOrder = null, Func<GameSettings, int>? relocateParallel = null) => new()
+    public static ReapplyEnv Create(bool canApply, string journalDir, ILog? log = null, Func<string>? relocateOrder = null, Func<GameSettings, int>? relocateParallel = null)
     {
-        CanApply = canApply,
-        GameRunning = g => ProcessSnapshot.IsRunning(g.ExeNames),
-        DiskBusy = g => DiskActivity.IsBusy(PlanFile.SplitDrive(g.OriginRoot)),
-        LoadPlan = PlanFile.Load,
-        Extents = FileLayout.Extents,
-        Stat = PlanFile.FingerprintOf,
-        RealPath = RealPaths.Real,
-        Apply = (g, plan, ct) => Run(journalDir, g, plan, OptionsFor(g, relocateOrder?.Invoke() ?? RelocateOrder.Target, relocateParallel?.Invoke(g) ?? 1), ct, log), // 존을 다시 정하면 계획에 남김
-        TierActive = g => TierEngine.HasActive(Path.Combine(Path.GetDirectoryName(journalDir) ?? journalDir, "tier"), g.Name),
-    };
+        ReapplyEnv env = null!;
+        env = new()
+        {
+            CanApply = canApply,
+            GameRunning = g => ProcessSnapshot.IsRunning(g.ExeNames),
+            DiskBusy = g => DiskActivity.IsBusy(PlanFile.SplitDrive(g.OriginRoot)),
+            LoadPlan = PlanFile.Load,
+            Extents = FileLayout.Extents,
+            Stat = PlanFile.FingerprintOf,
+            RealPath = RealPaths.Real,
+            Apply = (g, plan, ct) => Run(journalDir, g, plan, ChooseOptions(g, env.Options(g), relocateOrder?.Invoke() ?? RelocateOrder.Target, relocateParallel?.Invoke(g) ?? 1), ct, log), // 존을 다시 정하면 계획에 남김
+            TierActive = g => TierEngine.HasActive(Path.Combine(Path.GetDirectoryName(journalDir) ?? journalDir, "tier"), g.Name),
+        };
+        return env;
+    }
+
+    /// 서비스가 정한 옵션 (회당 쓰기 상한 포함) 이 있으면 그것, 없으면 OptionsFor 의 기본.
+    public static ApplyOptions ChooseOptions(GameSettings g, ApplyOptions? injected, string orderSetting, int parallel) =>
+        injected is null ? OptionsFor(g, orderSetting, parallel) : injected with { SaveTo = g.Plan };
 
     /// 이 게임이 놓인 디스크 종류를 모르거나 USB 버스인가 (실패하면 모름으로 침).
     public static bool IsSlowBus(GameSettings g) => DiskInfo.Query(PlanFile.SplitDrive(g.OriginRoot)) is var d && (d.IncursSeekPenalty is null || d.BusType == DiskInfo.BusTypeUsb);
@@ -268,6 +288,7 @@ public sealed class ReapplyChecker
     private readonly ReapplyEnv _env;
     private readonly ILog _log;
     private readonly HashSet<string> _noPlanLogged = new(StringComparer.OrdinalIgnoreCase); // "계획 없음"은 게임당 한 번만
+    private readonly Dictionary<string, DateTimeOffset> _warnedAt = new(StringComparer.Ordinal); // 배치 풀림 경고를 낸 시각 (게임당 하루 한 번)
     private readonly HashSet<string> _cancelled = new(StringComparer.Ordinal); // 취소로 반쯤 적용된 게임
 
     public ReapplyChecker(ReapplyEnv env, ILog log)
@@ -316,21 +337,28 @@ public sealed class ReapplyChecker
             }
             else if (contiguous == false)
             {
-                // 설계 2.3-6: 원본이 그대로인데 배치가 풀렸으면 정기 드라이브 최적화가 되돌렸을 수 있음. 자동으로 해제하지 않고 알리기만 함.
-                _log.Warn($"{game.Name}: layout degraded while source files are unchanged; scheduled drive optimization may be undoing it (not changed automatically)");
+                // 설계 2.3-6: 원본이 그대로인데 배치가 풀렸으면 정기 드라이브 최적화가 되돌렸을 수 있음. 자동으로 해제하지 않고 알리기만 함 (지문이 확실하고 경고할 만한 때만, 게임당 하루 한 번).
+                DateTimeOffset now = _env.Now();
+                if (!unknown && _env.WarnDegraded(game) && (!_warnedAt.TryGetValue(game.Name, out DateTimeOffset last) || now - last >= TimeSpan.FromDays(1)))
+                {
+                    _warnedAt[game.Name] = now;
+                    _log.Warn($"{game.Name}: layout degraded while source files are unchanged (cause unknown; a scheduled drive optimization or another tool may have moved files; not changed automatically)");
+                }
             }
 
             if (v == ReapplyVerdict.Reapply)
             {
                 ApplyReport? done = null;
                 ApplyReport rep;
+                long cap = (_env.Options(game) ?? new ApplyOptions()).WriteCap;
+                _env.Started(game, Math.Min(plan.Tasks.Sum(t => t.Clusters) * plan.ClusterBytes, cap)); // 예정 바이트 (근사: 계획 전체, 회당 상한까지)
                 try
                 {
                     rep = done = _env.Apply(game, plan, cancellationToken);
                 }
                 finally
                 {
-                    _env.Spent(game, done?.MovedBytes ?? 0); // 하루 예산은 시작 기준: 실패해도 한 번으로 셈
+                    _env.Spent(game, done?.MovedBytes ?? 0); // 예외로 끝나면 0 바이트로 바로잡음 (시작 횟수는 Started 가 이미 셈)
                 }
 
                 if (rep.ZoneRetargeted)

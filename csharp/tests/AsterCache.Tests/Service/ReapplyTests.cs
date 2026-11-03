@@ -122,6 +122,17 @@ public sealed class ReapplyTests
 
         public List<long> Spent { get; } = [];
 
+        public List<long> Started { get; } = [];
+
+        /// Started·Apply·Spent 가 불린 순서.
+        public List<string> Calls { get; } = [];
+
+        public ApplyOptions? Options { get; set; }
+
+        public bool WarnAllowed { get; set; } = true;
+
+        public DateTimeOffset Now { get; set; } = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
         public CancellationToken LastToken { get; private set; }
 
         public int ApplyCalls { get; private set; }
@@ -175,9 +186,22 @@ public sealed class ReapplyTests
                 Stat = p => SourceMissing ? throw new FileNotFoundException() : p == LockedPath ? throw new IOException("locked") : SourceChanged || ChangedPaths.Contains(p) ? fps[p] with { Size = fps[p].Size + 1 } : fps[p],
                 RealPath = Path.GetFullPath,
                 Gate = _ => GateBlock,
-                Spent = (_, bytes) => Spent.Add(bytes),
+                Started = (_, bytes) =>
+                {
+                    Started.Add(bytes);
+                    Calls.Add("started");
+                },
+                Spent = (_, bytes) =>
+                {
+                    Spent.Add(bytes);
+                    Calls.Add("spent");
+                },
+                Options = _ => Options,
+                WarnDegraded = _ => WarnAllowed,
+                Now = () => Now,
                 Apply = (_, _, token) =>
                 {
+                    Calls.Add("apply");
                     ApplyCalls++;
                     LastToken = token;
                     return ApplyThrows is null ? new ApplyReport { MovedBytes = 4096, Stopped = ApplyCancelled ? "cancelled" : null } : throw ApplyThrows;
@@ -268,6 +292,70 @@ public sealed class ReapplyTests
 
         Assert.Equal(ReapplyVerdict.Failed, rig.Check(Bench));
         Assert.Equal([0L], rig.Spent);
+    }
+
+    [Fact]
+    public void ReapplyThatThrowsStillCallsStartedBeforeApplyAndSpentWithZero()
+    {
+        var rig = new Rig { Moved = false, ApplyThrows = new IOException("x") };
+
+        Assert.Equal(ReapplyVerdict.Failed, rig.Check(Bench));
+        Assert.Equal(["started", "apply", "spent"], rig.Calls);
+        Assert.Equal([0L], rig.Spent);
+    }
+
+    [Fact]
+    public void PlannedBytesAreCappedByTheServiceWriteCap()
+    {
+        var rig = new Rig { Moved = false, Options = new ApplyOptions(WriteCap: 4096) };
+
+        Assert.Equal(ReapplyVerdict.Reapply, rig.Check(Bench));
+        Assert.Equal([4096L], rig.Started);
+    }
+
+    [Fact]
+    public void ServiceOptionsReplaceTheDefaultsButKeepSavingToThePlan()
+    {
+        var g = new GameSettings("g", ["g.exe"], "t.json", "p.json", @"D:\g", [@"D:\g"], "GAMES", 1440);
+
+        ApplyOptions o = ReapplyEnv.ChooseOptions(g, new ApplyOptions(Execute: true, WriteCap: 123), "target", 1);
+
+        Assert.Equal((123L, "p.json"), (o.WriteCap, o.SaveTo));
+        Assert.Equal(2L << 30, ReapplyEnv.ChooseOptions(g, null, "target", 1).WriteCap); // 연결 전에는 기본 옵션
+    }
+
+    [Fact]
+    public void DegradedLayoutWarnsOncePerDayWhenAllowed()
+    {
+        var rig = new Rig { Moved = false, CanApply = false };
+
+        rig.Check(Bench);
+        rig.Check(Bench);
+        Assert.Single(rig.Log.Lines, l => l.StartsWith("Warn", StringComparison.Ordinal));
+
+        rig.Now += TimeSpan.FromHours(25);
+        rig.Check(Bench);
+        Assert.Equal(2, rig.Log.Lines.Count(l => l.StartsWith("Warn", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void DegradedLayoutDoesNotWarnWhenTheServiceSaysNo()
+    {
+        var rig = new Rig { Moved = false, WarnAllowed = false };
+
+        rig.Check(Bench);
+
+        Assert.DoesNotContain(rig.Log.Lines, l => l.StartsWith("Warn", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void DegradedLayoutDoesNotWarnWhenFilesAreUnreadable()
+    {
+        var rig = new Rig { Moved = false };
+        rig.LockedPath = rig.Plan.Fingerprints.First(f => !VolatileFiles.Ignored(f.Path)).Path;
+
+        Assert.Equal(ReapplyVerdict.FilesUnreadable, rig.Check(Bench));
+        Assert.DoesNotContain(rig.Log.Lines, l => l.StartsWith("Warn", StringComparison.Ordinal));
     }
 
     [Theory]

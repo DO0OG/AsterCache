@@ -581,7 +581,8 @@ public static class Applier
                 bool capHit;
                 lock (gate)
                 {
-                    capHit = rep.MovedBytes + (c * cb) > writeCap;
+                    c = Math.Min(c, Math.Max(0, writeCap - rep.MovedBytes) / cb); // 남은 예산이 한 조각보다 작으면 줄여서 옮김 (1 클러스터 미만이면 소진)
+                    capHit = c < 1;
                     if (!capHit)
                     {
                         rep.MovedBytes += c * cb; // 상한은 동시 실행에서도 지키도록 이동 전에 잡고, 실패하면 돌려놓음

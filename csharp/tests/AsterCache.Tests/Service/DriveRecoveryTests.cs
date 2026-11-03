@@ -167,17 +167,18 @@ public sealed class DriveRecoveryTests
     }
 
     [Fact]
-    public void HighBaselineDoesNotRaiseTheFixedCeiling()
+    public void BaselineAboveTheSequentialCeilingIsInvalidSoEverySampleIsUnknown()
     {
-        _zone = 300; // 기준 400 의 90% 는 넘지만 고정 상한 250 을 넘는 캐시 적중
+        _zone = 400; // 기준 400 은 디스크 순차 상한 250 을 넘는 캐시 적중 의심: 기준 무효
         _ref = 380;
         _r.Begin(Drive, new DriveBaseline(new ProbeSpot(10, 400), new ProbeSpot(20, 380)), TimeSpan.FromMinutes(60));
 
         Pass(2);
         Pass(2);
+        Pass(2);
 
-        Assert.True(_r.IsRecovering(Drive));
-        Assert.Single(_log.Lines, l => l.Contains("250 MB/s sequential ceiling (disk cache hit)", StringComparison.Ordinal));
+        Assert.True(_r.IsRecovering(Drive)); // 통과로 세지 않음: 상한 시각까지 계속
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("recovered after", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -408,25 +409,42 @@ public sealed class DriveRecoveryTests
     }
 
     [Fact]
-    public void CeilingIsOnePointFiveTimesTheDrivesWarmMaximumElseTwoFifty()
+    public void CeilingIsOnePointFiveTimesTheReferenceBaselineElseTwoFifty()
     {
         Assert.Equal(250, _r.CeilingFor(Drive));
-        _r.NoteWarmMbps(Drive, 200);
-        _r.NoteWarmMbps("e:", 150); // 더 작은 값은 최대를 낮추지 않음
-        _r.NoteWarmMbps(Drive, double.NaN);
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        _r.NoteWarmMbps(Drive, 1000); // 예열 속도는 상한에 영향이 없음
 
-        Assert.Equal(300, _r.CeilingFor("E:"));
+        Assert.Equal(80 * DriveRecovery.CeilingFactor, _r.CeilingFor("E:"), 3);
         Assert.Equal(250, _r.CeilingFor(@"D:\"));
+        _r.Begin("F:", new DriveBaseline(new ProbeSpot(10, 100), null), TimeSpan.FromMinutes(60));
+        Assert.Equal(250, _r.CeilingFor("F:")); // 참조 기준이 없으면 고정 상한
     }
 
     [Fact]
-    public void WarmMeasuredCeilingLetsAFastDriveRecover()
+    public void FastPrewarmDoesNotLetADiskCacheHitCountAsRecovered()
     {
-        _zone = 290; // 고정 상한 250 이면 캐시 적중으로 빠지지만 예열이 200 MB/s 를 냈던 드라이브라면 상한 300
-        _r.NoteWarmMbps(Drive, 200);
+        _r.NoteWarmMbps(Drive, 1000);
+        _zone = 400; // 디스크 100 인데 표본 400: 참조 기준 80 × 1.5 = 120 초과 → 캐시 적중, UNKNOWN
         _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
 
         Pass(2);
+        Pass(2);
+
+        Assert.True(_r.IsRecovering(Drive));
+        Assert.Single(_log.Lines, l => l.Contains("120 MB/s sequential ceiling (disk cache hit)", StringComparison.Ordinal) && l.Contains("prewarm peak 1000 MB/s", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RisingSamplesAgainstTheReferenceCeilingRecover()
+    {
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        _zone = 70;
+        Pass(2);
+        _zone = 95;
+        Pass(2);
+        Assert.True(_r.IsRecovering(Drive)); // 95 는 좋음 1 회
+        _zone = 100;
         Pass(2);
 
         Assert.False(_r.IsRecovering(Drive));

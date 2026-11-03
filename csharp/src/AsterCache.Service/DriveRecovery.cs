@@ -25,8 +25,8 @@ public sealed class DriveRecovery : IDriveRecovery
 {
     public const double RecoveredFraction = 0.9;
     public const int RecoveredStreak = 2;
-    public const double CeilingMbps = 250; // 드라이브별 예열 측정값이 없을 때의 디스크 순차 상한
-    public const double CeilingFactor = 1.5; // 예열 측정 최대 MB/s 가 있으면 그 값 × 이 배수
+    public const double CeilingMbps = 250; // 비버퍼드 참조 기준값이 없을 때의 디스크 순차 상한이자 유효한 기준값의 한계 (넘으면 캐시 적중 의심)
+    public const double CeilingFactor = 1.5; // 비버퍼드 참조 기준값이 있으면 그 값 × 이 배수
     public static readonly TimeSpan SampleEvery = TimeSpan.FromMinutes(2);
 
     private readonly AutoEnv _env;
@@ -42,7 +42,7 @@ public sealed class DriveRecovery : IDriveRecovery
         Restore();
     }
 
-    /// 드라이브에서 예열이 실제로 낸 MB/s 를 알림: 가장 큰 값이 그 드라이브의 캐시 적중 상한 (× CeilingFactor) 이 됩니다.
+    /// 드라이브에서 예열이 실제로 낸 MB/s 를 알림: 진단 로그용일 뿐 판정에는 쓰이지 않습니다 (OS 캐시 적중이 섞여 있음).
     public void NoteWarmMbps(string drive, double mbps)
     {
         if (double.IsFinite(mbps) && mbps > 0)
@@ -55,12 +55,12 @@ public sealed class DriveRecovery : IDriveRecovery
         }
     }
 
-    /// 그 드라이브의 순차 읽기 상한 (MB/s): 예열 실측 최대의 1.5 배, 없으면 CeilingMbps.
+    /// 그 드라이브의 순차 읽기 상한 (MB/s): 비버퍼드 참조 기준값의 1.5 배, 참조 기준이 없으면 CeilingMbps.
     public double CeilingFor(string drive)
     {
         lock (_lock)
         {
-            return _warmMax.TryGetValue(Key(drive), out double max) ? max * CeilingFactor : CeilingMbps;
+            return _baselines.TryGetValue(Key(drive), out DriveBaseline? b) && b.Ref is { } r ? r.Mbps * CeilingFactor : CeilingMbps;
         }
     }
 
@@ -191,7 +191,7 @@ public sealed class DriveRecovery : IDriveRecovery
                 if (!t.CacheLogged)
                 {
                     t.CacheLogged = true;
-                    _log.Info($"drive {key} recovery sample {Show(Math.Max(got.Value.zone ?? 0, got.Value.reference ?? 0))} MB/s is above the {Show(ceiling)} MB/s sequential ceiling (disk cache hit), not counted");
+                    _log.Info($"drive {key} recovery sample {Show(Math.Max(got.Value.zone ?? 0, got.Value.reference ?? 0))} MB/s is above the {Show(ceiling)} MB/s sequential ceiling (disk cache hit), not counted{WarmNote(key)}");
                 }
 
                 Note(key, t, RecoveryVerdict.Unknown); // 캐시 적중: 판정에서 빼고 연속 횟수는 그대로
@@ -239,6 +239,8 @@ public sealed class DriveRecovery : IDriveRecovery
 
     private static bool Meets(ProbeSpot? baseline, double? now) => baseline is not { } b || now >= b.Mbps * RecoveredFraction;
 
+    private string WarmNote(string key) => _warmMax.TryGetValue(key, out double w) ? $" (prewarm peak {Show(w)} MB/s)" : string.Empty;
+
     private static string Show(double? v) => v is { } x ? Math.Round(x).ToString(System.Globalization.CultureInfo.InvariantCulture) : "-";
 
     private void Finish(string key)
@@ -267,11 +269,11 @@ public sealed class DriveRecovery : IDriveRecovery
     private void Save(string key, Track t) =>
         _status?.SetDriveRecovery(new DriveRecoveryRecord(key, t.Started, t.Started + t.Limit, t.Baseline?.Zone, t.Baseline?.Ref, t.Verdict?.ToString().ToLowerInvariant()));
 
-    // 기준값이 있고 전부 유한한 양수인가 (아니면 판정할 수 없음).
+    // 기준값이 있고 전부 유한한 양수이며 디스크 순차 상한 이하인가 (아니면 판정할 수 없음: 상한 초과 기준은 캐시 적중 의심).
     private static bool ValidBaseline(DriveBaseline b) =>
         (b.Zone is not null || b.Ref is not null) && Positive(b.Zone) && Positive(b.Ref);
 
-    private static bool Positive(ProbeSpot? s) => s is not { } v || (double.IsFinite(v.Mbps) && v.Mbps > 0);
+    private static bool Positive(ProbeSpot? s) => s is not { } v || (double.IsFinite(v.Mbps) && v.Mbps > 0 && v.Mbps <= CeilingMbps);
 
     // 서비스 시작: 저장된 추적 중 아직 안 끝난 것을 되살립니다 (상한이 지난 것은 지움). 기준이 없거나 무효이면 고정 대기.
     private void Restore()

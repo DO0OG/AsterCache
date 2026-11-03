@@ -1237,7 +1237,7 @@ public sealed class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
-    public void MeasuredPrewarmSpeedRaisesTheRecoveryCeilingToOnePointFiveTimes()
+    public void MeasuredPrewarmSpeedDoesNotChangeTheRecoveryCeiling()
     {
         UseCold();
         _cold!.WarmMeasured += (g, mbps) => Relocator.NoteWarmMbps(g, mbps); // AutoMode 의 연결과 같음
@@ -1247,7 +1247,7 @@ public sealed class AutoRelocatorTests : ApplyTestBase
 
         Tick(); // 10 MiB / 0.1 s = 100 MB/s
 
-        Assert.Equal(100 * DriveRecovery.CeilingFactor, ((DriveRecovery)Relocator.Recovery).CeilingFor(drive), 3);
+        Assert.Equal(DriveRecovery.CeilingMbps, ((DriveRecovery)Relocator.Recovery).CeilingFor(drive));
     }
 
     [Fact]

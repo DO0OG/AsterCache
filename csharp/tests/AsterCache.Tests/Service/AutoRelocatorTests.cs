@@ -2710,6 +2710,21 @@ public sealed class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
+    public void ExtensionPlanFailureLogsTheExceptionMessageFirstLineAndStillRestoresThePreviousPlan()
+    {
+        DoneThenMergedTrace(Merged(RestOfTheBlocks()));
+        PlanFile before = PlanFile.Load(_game.Plan);
+        _w.MakePlanAt = (_, _, _, _) => throw new PyValueException("expect 1..32 sessions\nsecond line");
+
+        Tick();
+        RunUntilDone();
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.Single(_log.Lines, l => l.Contains("zone extension blocked: plan failed: PyValueException: expect 1..32 sessions", StringComparison.Ordinal) && !l.Contains("second line", StringComparison.Ordinal));
+        Assert.Equal(before.Sha(), PlanFile.Load(_game.Plan).Sha());
+    }
+
+    [Fact]
     public void ExtensionBiggerThanTheDailyWriteBudgetIsBlockedBecauseItGetsNoFirstMoveException()
     {
         DoneThenMergedTrace(Merged(RestOfTheBlocks()));

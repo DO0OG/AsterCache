@@ -1025,13 +1025,15 @@ public sealed class AutoRelocator
     {
         if (IsExtending(g))
         {
-            BlockExtension(g, detail);
+            BlockExtension(g, e is null ? detail : $"{detail}: {FirstLine(e.Message)}"); // 예외 형식만으로는 원인을 알 수 없음
         }
         else
         {
             Fail(g, detail, e);
         }
     }
+
+    private static string FirstLine(string message) => message.Split('\n', 2)[0].Trim();
 
     // boot 트레이스 (가져온 프로필 또는 프리페치 기록) 로 만든 계획인가.
     private static bool IsBootPlan(PlanFile plan) => plan.Stats.TryGetValue("source", out object? v) && v is PlanSourceBoot or PlanSourcePrefetch;

@@ -1,5 +1,6 @@
 using AsterCache.Core.Volume;
 using AsterCache.Service;
+using AsterCache.Tests.Windows;
 using AsterCache.Windows;
 using Xunit;
 
@@ -127,7 +128,7 @@ public sealed class DriveRecoveryTests
     }
 
     [Fact]
-    public void SamplesRotateBy64MibAndNeverRepeatAPlaceWithinEightSamples()
+    public void SamplesRotateBy64MibAndNeverRepeatAPlaceWithinFourSamples()
     {
         _w.ProbeStepLcn = _ => 64; // 가짜 클러스터 1 MiB: 64 MiB = 64 LCN
         _zone = 50; // 회복 못 함: 계속 잼
@@ -140,9 +141,10 @@ public sealed class DriveRecoveryTests
 
         long[] zoneLcns = [.. _probed.Where(l => l is >= 10 and < 10 + 512 && (l - 10) % 64 == 0)];
         Assert.Equal(8, zoneLcns.Length);
-        Assert.Equal(8, zoneLcns.Distinct().Count());
+        Assert.Equal(4, zoneLcns.Distinct().Count());
+        Assert.Equal(4, zoneLcns.Take(4).Distinct().Count()); // 4 번 안에는 같은 시작점이 없음
         Assert.All(zoneLcns, l => Assert.Equal(0, (l - 10) % 64));
-        Assert.Equal(512 - 64, zoneLcns.Max() - zoneLcns.Min()); // 512 MiB 영역 전체를 돎
+        Assert.Equal(3 * 64, zoneLcns.Max() - zoneLcns.Min()); // 시작점이 64 MiB 씩 4 칸 (표본 안의 3 곳이 12 칸을 채움)
     }
 
     [Fact]
@@ -267,7 +269,217 @@ public sealed class DriveRecoveryTests
         Assert.False(_r.WatchUpdate(Drive, _w.Now - TimeSpan.FromMinutes(90), TimeSpan.FromMinutes(60)));
     }
 
+    // ---- 재시작 복원 (임시 폴더의 auto_status.json) ----
+
+    private (DriveRecovery Recovery, AutoStatus Status) Open(string path)
+    {
+        var status = new AutoStatus(path, _log, () => _w.Now);
+        return (new DriveRecovery(_w.Env(), _log, status), status);
+    }
+
+    private static string StatusPath(TempDir dir) => dir.Combine("auto_status.json");
+
+    [Fact]
+    public void ProbeTrackSurvivesARestartAndNeedsTwoFreshGoodSamples()
+    {
+        using var dir = new TempDir();
+        (DriveRecovery first, _) = Open(StatusPath(dir));
+        first.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        _w.Now += TimeSpan.FromMinutes(2);
+        first.Poll(); // 좋음 1 회 (연속 횟수는 저장하지 않음)
+
+        (DriveRecovery second, AutoStatus status) = Open(StatusPath(dir));
+        _probed.Clear();
+
+        Assert.True(second.IsRecovering(Drive));
+        DriveRecoveryRecord saved = Assert.Single(status.DriveRecoveries());
+        Assert.Equal(("E:", "pass", 100.0, 80.0), (saved.Drive, saved.Verdict, saved.Zone!.Value.Mbps, saved.Ref!.Value.Mbps));
+        second.Poll(); // 복원 직후 한 번 바로 잼
+        Assert.Equal(2, _probed.Count);
+        Assert.True(second.IsRecovering(Drive));
+        _w.Now += TimeSpan.FromMinutes(2);
+        second.Poll();
+        Assert.False(second.IsRecovering(Drive));
+        Assert.Contains(_log.Lines, l => l.Contains("recovery restored", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ExpiredTrackIsDroppedOnRestartAndTheFileKeyDisappears()
+    {
+        using var dir = new TempDir();
+        (DriveRecovery first, _) = Open(StatusPath(dir));
+        first.Begin(Drive, Both, TimeSpan.FromMinutes(10));
+        Assert.Contains("drive_recovery", File.ReadAllText(StatusPath(dir)), StringComparison.Ordinal);
+        _w.Now += TimeSpan.FromMinutes(11);
+
+        (DriveRecovery second, AutoStatus status) = Open(StatusPath(dir));
+
+        Assert.False(second.IsRecovering(Drive));
+        Assert.Empty(status.DriveRecoveries());
+        Assert.DoesNotContain("drive_recovery", File.ReadAllText(StatusPath(dir)), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FixedWaitWithoutBaselineIsRestoredForTheRemainingTime()
+    {
+        using var dir = new TempDir();
+        (DriveRecovery first, _) = Open(StatusPath(dir));
+        first.Begin(Drive, null, TimeSpan.FromMinutes(15));
+        _w.Now += TimeSpan.FromMinutes(5);
+
+        (DriveRecovery second, _) = Open(StatusPath(dir));
+        _w.Now += TimeSpan.FromMinutes(9);
+        second.Poll();
+        Assert.True(second.IsRecovering(Drive));
+        _w.Now += TimeSpan.FromMinutes(1);
+        second.Poll();
+
+        Assert.False(second.IsRecovering(Drive)); // 시작 15 분 뒤
+        Assert.Empty(_probed);
+    }
+
+    [Fact]
+    public void InvalidSavedBaselineFallsBackToAFixedWaitWithoutProbing()
+    {
+        using var dir = new TempDir();
+        (_, AutoStatus status) = Open(StatusPath(dir));
+        status.SetDriveRecovery(new DriveRecoveryRecord("E:", _w.Now, _w.Now + TimeSpan.FromMinutes(30), new ProbeSpot(10, 0), null, null));
+
+        (DriveRecovery restored, _) = Open(StatusPath(dir));
+        _w.Now += TimeSpan.FromMinutes(20);
+        restored.Poll();
+
+        Assert.True(restored.IsRecovering(Drive));
+        Assert.Empty(_probed);
+        _w.Now += TimeSpan.FromMinutes(10);
+        Assert.False(restored.IsRecovering(Drive));
+    }
+
+    [Fact]
+    public void RecoveredTrackIsRemovedFromTheFile()
+    {
+        using var dir = new TempDir();
+        (DriveRecovery first, AutoStatus status) = Open(StatusPath(dir));
+        first.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        _w.Now += TimeSpan.FromMinutes(2);
+        first.Poll();
+        _w.Now += TimeSpan.FromMinutes(2);
+        first.Poll();
+
+        Assert.Empty(status.DriveRecoveries());
+        (DriveRecovery second, _) = Open(StatusPath(dir));
+        Assert.False(second.IsRecovering(Drive));
+    }
+
+    [Fact]
+    public void UnknownSamplesAreNeverPassAndTheLimitStillEndsTheWait()
+    {
+        using var dir = new TempDir();
+        (DriveRecovery r, AutoStatus status) = Open(StatusPath(dir));
+        _w.Disk = 100.0 * (1 << 20); // 바쁨: 표본 못 잼
+        r.Begin(Drive, Both, TimeSpan.FromMinutes(10));
+
+        for (int i = 0; i < 4; i++)
+        {
+            _w.Now += TimeSpan.FromMinutes(2);
+            r.Poll();
+        }
+
+        Assert.True(r.IsRecovering(Drive));
+        Assert.Equal("unknown", Assert.Single(status.DriveRecoveries()).Verdict);
+        _w.Now += TimeSpan.FromMinutes(2);
+        r.Poll();
+        Assert.False(r.IsRecovering(Drive)); // 상한 시간이 되면 고정 지연 규칙으로 끝
+        Assert.Empty(_probed);
+        Assert.Contains(_log.Lines, l => l.Contains("recovery wait ended at the 10 min limit", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void BadSampleIsRecordedAsBad()
+    {
+        using var dir = new TempDir();
+        (DriveRecovery r, AutoStatus status) = Open(StatusPath(dir));
+        _zone = 50;
+        r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        _w.Now += TimeSpan.FromMinutes(2);
+        r.Poll();
+
+        Assert.Equal("bad", Assert.Single(status.DriveRecoveries()).Verdict);
+    }
+
+    [Fact]
+    public void CeilingIsOnePointFiveTimesTheDrivesWarmMaximumElseTwoFifty()
+    {
+        Assert.Equal(250, _r.CeilingFor(Drive));
+        _r.NoteWarmMbps(Drive, 200);
+        _r.NoteWarmMbps("e:", 150); // 더 작은 값은 최대를 낮추지 않음
+        _r.NoteWarmMbps(Drive, double.NaN);
+
+        Assert.Equal(300, _r.CeilingFor("E:"));
+        Assert.Equal(250, _r.CeilingFor(@"D:\"));
+    }
+
+    [Fact]
+    public void WarmMeasuredCeilingLetsAFastDriveRecover()
+    {
+        _zone = 290; // 고정 상한 250 이면 캐시 적중으로 빠지지만 예열이 200 MB/s 를 냈던 드라이브라면 상한 300
+        _r.NoteWarmMbps(Drive, 200);
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        Pass(2);
+        Pass(2);
+
+        Assert.False(_r.IsRecovering(Drive));
+    }
+
     // ---- DiskProbe 의 순수 부분 (실제 볼륨을 열지 않음) ----
+
+    [Fact]
+    public void SampleReadsThreeSeparatedSpotsOf64MibWithin192Mib()
+    {
+        const long mib = 1L << 20;
+        long[] spots = DiskProbe.SpotOffsets(1000 * mib);
+
+        Assert.Equal(3, spots.Distinct().Count());
+        Assert.All(spots.Zip(spots.Skip(1)), p => Assert.True(p.Second - p.First - DiskProbe.Blocks * mib >= 128 * mib)); // 구간 사이 간격 128 MiB 이상
+        Assert.Equal(192, DiskProbe.Spots * DiskProbe.Blocks * DiskProbe.BlockMib);
+        foreach (int step in Enumerable.Range(0, DiskProbe.RotationSteps))
+        {
+            long end = DiskProbe.SpotOffsets(step * DiskProbe.Blocks * mib)[^1] + DiskProbe.Blocks * mib;
+            Assert.True(end <= DiskProbe.RotationWindows * DiskProbe.Blocks * mib); // 할당·기록을 확인한 영역 안
+        }
+    }
+
+    [Fact]
+    public void RunReadsExactly192BlocksAndReturnsTheMedianRate()
+    {
+        long clock = 0;
+        var reads = new List<long>();
+        double? mbps = DiskProbe.Run(0, off =>
+        {
+            reads.Add(off);
+            clock += System.Diagnostics.Stopwatch.Frequency / 640; // 블록마다 1/640 초
+            return true;
+        }, () => clock, DiskProbe.WallLimit);
+
+        Assert.Equal(192, reads.Count);
+        Assert.Equal(192, reads.Distinct().Count());
+        Assert.Equal(1048576.0 * 640 / 1e6, mbps!.Value, 3);
+    }
+
+    [Fact]
+    public void RunGivesUpPastTheWallClockLimitOrOnAFailedRead()
+    {
+        long clock = 0;
+        Assert.Null(DiskProbe.Run(0, _ =>
+        {
+            clock += System.Diagnostics.Stopwatch.Frequency / 10; // 블록당 0.1 초: 192 블록이면 19 초
+            return true;
+        }, () => clock, DiskProbe.WallLimit));
+
+        int n = 0;
+        Assert.Null(DiskProbe.Run(0, _ => ++n < 70, () => 0, DiskProbe.WallLimit)); // 두 번째 구간 중간에서 읽기 실패
+    }
 
     private static VolumeBitmap Bits(params (bool Used, int Length)[] runs)
     {
@@ -289,8 +501,8 @@ public sealed class DriveRecoveryTests
         return new VolumeBitmap(0, bits.Count, data);
     }
 
-    // 1 MiB 클러스터: 표본 영역 512 클러스터 (64 x 8), 존에서 4 GiB = 4096 클러스터 뒤.
-    private static readonly VolumeBitmap Map = Bits((true, 600), (false, 2400), (true, 200), (false, 1800), (true, 5000));
+    // 1 MiB 클러스터: 표본 영역 768 클러스터 (64 x 12), 존에서 4 GiB = 4096 클러스터 뒤.
+    private static readonly VolumeBitmap Map = Bits((true, 800), (false, 2200), (true, 200), (false, 1800), (true, 5000));
 
     [Fact]
     public void ReferenceIsTheAllocatedRunNearestToFourGibAfterTheZone()

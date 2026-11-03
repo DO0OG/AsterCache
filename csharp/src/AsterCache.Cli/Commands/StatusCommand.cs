@@ -89,7 +89,7 @@ internal static class StatusCommand
         try
         {
             return File.Exists(path) && JsonRead.ReadFile(path) is JObject root
-                ? new JObject { { "games", root.TryGetValue("games", out object? g) ? WithScores(g) : null }, { "relocations", root.TryGetValue("relocations", out object? r) ? r : null }, { "progress", Progress(root) } }
+                ? new JObject { { "games", root.TryGetValue("games", out object? g) ? WithScores(g) : null }, { "relocations", root.TryGetValue("relocations", out object? r) ? r : null }, { "progress", Progress(root, Path.Combine(Path.GetDirectoryName(Path.GetFullPath(path))!, "plans")) } }
                 : null;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
@@ -99,15 +99,18 @@ internal static class StatusCommand
     }
 
     // 설치 뒤 자동 진행 집계 (games 가 없으면 null).
-    private static object? Progress(JObject root)
+    private static object? Progress(JObject root, string plansDir)
     {
         if (!root.TryGetValue("games", out object? g) || g is not JObject games)
         {
             return null;
         }
 
-        AutoProgress p = AutoProgress.From(games.Select(kv => kv.Value).OfType<JObject>().Select(o =>
-            (o.TryGetValue("stage", out object? s) ? s as string ?? string.Empty : string.Empty, o.TryGetValue("detail", out object? d) ? d as string : null, o.TryGetValue("hit_percent", out object? h) && h is long hp ? (int?)Math.Clamp(hp, 0, 100) : null)));
+        AutoProgress p = AutoProgress.From(games.Where(kv => kv.Value is JObject).Select(kv =>
+        {
+            JObject o = (JObject)kv.Value!;
+            return (kv.Key, o.TryGetValue("stage", out object? s) ? s as string ?? string.Empty : string.Empty, o.TryGetValue("detail", out object? d) ? d as string : null, o.TryGetValue("hit_percent", out object? h) && h is long hp ? (int?)Math.Clamp(hp, 0, 100) : null);
+        }), plansDir);
         return new JObject { { "discovered", (long)p.Discovered }, { "planned", (long)p.Planned }, { "relocated", (long)p.Relocated }, { "prewarmed", (long)p.Prewarmed }, { "hit_average", p.HitAverage is { } avg ? (long)avg : null }, { "line", p.Line(L.Current) } };
     }
 

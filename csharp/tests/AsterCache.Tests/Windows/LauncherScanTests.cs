@@ -418,7 +418,7 @@ public sealed class LauncherScanTests
     private static FakeEnv UninstallEnv(params (string Name, string Publisher, string Dir, long Size, long ExeSize)[] items)
     {
         var env = new FakeEnv();
-        env.Hdd["C:"] = true; // 시스템 볼륨이 HDD 여도 제외
+        env.Hdd["C:"] = true; // 시스템 볼륨이 HDD 면 시스템 폴더만 제외
         env.Hdd["D:"] = true;
         env.Hdd["E:"] = false;
         foreach ((string name, string publisher, string dir, long size, long exeSize) in items)
@@ -438,7 +438,7 @@ public sealed class LauncherScanTests
     }
 
     [Fact]
-    public void UninstallListFindsBigGamesOnHddsOutsideTheSystemVolume()
+    public void UninstallListFindsBigGamesOnHddsExceptSystemFolders()
     {
         FakeEnv env = UninstallEnv(
             ("Big Game", "Some Studio", @"D:\Apps\Big Game", 2 * Gib, 7),
@@ -452,6 +452,8 @@ public sealed class LauncherScanTests
             ("Small", "Studio", @"D:\Apps\Small", Gib - 1, 7),
             ("OnSsd", "Studio", @"E:\Apps\OnSsd", 2 * Gib, 7),
             ("OnSystem", "Studio", @"C:\Apps\OnSystem", 2 * Gib, 7),
+            ("SysFolder", "Studio", @"C:\Windows\Big", 2 * Gib, 7),
+            ("AppData", "Studio", @"C:\Users\me\AppData\Local\G", 2 * Gib, 7),
             ("NoExe", "Studio", @"D:\Apps\NoExe", 2 * Gib, 0),
             ("Missing", "Studio", @"D:\Apps\Missing", 2 * Gib, 7),
             ("Root", "Studio", @"D:\", 2 * Gib, 7),
@@ -461,7 +463,7 @@ public sealed class LauncherScanTests
 
         IReadOnlyList<DiscoveredGame> games = LauncherScan.Scan(env);
 
-        Assert.Equal(["Big_Game", "Quoted", "Twin", "Intelligent_Games"], games.Select(g => g.Name));
+        Assert.Equal(["Big_Game", "Quoted", "Twin", "Intelligent_Games", "OnSystem"], games.Select(g => g.Name));
         Assert.All(games, g => Assert.Equal(("uninstall", true, null), (g.Launcher, g.OnHdd, g.TriggerExe)));
         Assert.Equal(@"D:\Apps\Big Game\game.exe", games[0].ExePath);
         Assert.Equal(@"D:\Apps\Quoted", games[1].InstallDir);

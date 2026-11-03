@@ -210,7 +210,7 @@ public sealed class AutoTierTests : IDisposable
         IdleTicks(s); // Foo
         _world.Now += TimeSpan.FromHours(1);
         IdleTicks(s); // Bar (더 나중)
-        _fs.Free = TierEngine.MinFreeBytes - 1;
+        _fs.Free = TierEngine.MinFreeFor(_fs.Total) - 1;
 
         _tier.Tick(s, false, _gate, default);
 

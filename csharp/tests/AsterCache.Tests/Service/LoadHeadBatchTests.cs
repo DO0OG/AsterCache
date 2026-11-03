@@ -36,9 +36,10 @@ public sealed class LoadHeadBatchTests
     public void GamesThatWillBeSkippedAndSingleGamesGetNoSeparateHeadPass()
     {
         _bRunning = true;
-        Prewarmer p = Make(null, Game("a"), Game("b"), Game("c"));
+        GameSettings a = Game("a") with { OriginRoot = @"E:\Games" }, c = Game("c") with { OriginRoot = @"E:\Games\c" }; // b 와 같은 드라이브의 게임은 b 가 도는 동안 읽지 않으므로 다른 드라이브에 둠
+        Prewarmer p = Make(null, a, Game("b"), c);
 
-        p.RunAll([Game("a"), Game("b"), Game("c")], "t");
+        p.RunAll([a, Game("b"), c], "t");
 
         Assert.Equal(["head a", "head c", "full a", "full c"], _streamer.Calls);
 

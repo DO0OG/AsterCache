@@ -154,7 +154,7 @@ The shared profile zip holds `index.json` and the profile files:
 
 Prewarm runs only if all of these hold: available RAM ≥ zone size + `min_free_ram_mib`, the game is not running, the cooldown has passed, and the plan and trace files exist. Otherwise it is skipped and the reason is written to `service.log`. The result (bytes, seconds, MB/s, skip reason) is recorded in `service.log` and `%ProgramData%\AsterCache\prewarm_status.json` and appears as `prewarm` in `aster status`.
 
-When a batch holds more than one game, each game's loading head (tier0) is read first, in recent order, and then each game's whole zone is read.
+When a batch holds more than one game, each game's loading head (tier0) is read first, in recent order, and then each game's whole zone is read. If a game starts during a batch, the read stops at the next 64 MiB boundary unless `auto.keep_stream_on_game_start` is `true`.
 
 ```json
 {

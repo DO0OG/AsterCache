@@ -38,6 +38,9 @@ public interface ITierFs
     /// 사용 가능한 여유 바이트 (path 가 있는 볼륨).
     long FreeBytes(string path);
 
+    /// 볼륨의 전체 용량 바이트 (path 가 있는 볼륨).
+    long TotalBytes(string path);
+
     /// 고정 디스크의 드라이브 ("C:").
     IReadOnlyList<string> FixedDrives();
 

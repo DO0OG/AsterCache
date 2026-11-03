@@ -22,6 +22,10 @@ public sealed class AutoRegistry
     // 휴리스틱 후보에서 제외하는 이미지 경로의 폴더 (빌드 산출물, 저장소, 사용자 데이터)와 개발·시스템 도구 exe (끝의 * 는 접두). auto.ignore_exes 와 별도의 고정 목록.
     private static readonly string[] NonGameFolders = ["\\bin\\Debug\\", "\\bin\\Release\\", "\\obj\\", "\\.git\\", "\\node_modules\\", "\\AppData\\Local\\Temp\\"];
 
+    // 시스템 볼륨에서만 더 거르는 폴더: Windows 구성요소·앱 데이터·마이크로소프트 앱. Program Files 의 나머지는 게임처럼 보일 때 (LooksLikeGame) 만 받음.
+    private static readonly string[] SystemFolders =
+        ["\\AppData\\", "\\ProgramData\\", "\\$Recycle.Bin\\", "\\Windows\\", "\\WindowsApps\\", "\\Common Files\\", "\\Program Files\\Microsoft", "\\Program Files (x86)\\Microsoft", "\\Program Files\\Windows", "\\Program Files (x86)\\Windows"];
+
     private static readonly string[] ToolExes =
     [
         "testhost*", "dotnet", "msbuild", "vstest*", "python*", "node", "java*", "powershell", "pwsh", "cmd", "conhost", "explorer", "7z*", "winrar",
@@ -86,7 +90,8 @@ public sealed class AutoRegistry
                 continue; // exe 를 모르면 감시할 수 없음
             }
 
-            string? refused = _env.DriveRefusal(d.InstallDir) ?? (d.OnHdd == true ? null : "not an HDD"); // 시스템 볼륨·SSD·종류를 모르는 드라이브는 재배치할 이유가 없거나 건드리면 안 됨
+            DriveCapabilities caps = _env.Capabilities(d.InstallDir);
+            string? refused = caps.CanDiscover ? (d.OnHdd == true ? null : "not an HDD") : caps.Reason; // 시스템 SSD·SSD·종류를 모르는 드라이브는 재배치할 이유가 없거나 건드리면 안 됨 (시스템 HDD 는 예열만)
             if (refused is not null)
             {
                 LogRefusedOnce(d.InstallDir, $"auto {d.Launcher}: skipped {d.Name} ({refused})");
@@ -326,10 +331,16 @@ public sealed class AutoRegistry
             return;
         }
 
-        if (string.Equals(letter, _env.SystemDrive, StringComparison.OrdinalIgnoreCase) || !IsHdd(letter))
+        DriveCapabilities caps = _env.Capabilities(letter);
+        if (!caps.CanDiscover)
         {
-            LogRefusedOnce(letter, $"auto heuristic: ignoring programs on {letter} (system volume, SSD or unknown drive type)");
+            LogRefusedOnce(letter, $"auto heuristic: ignoring programs on {letter} (system SSD, SSD or unknown drive type)");
             return;
+        }
+
+        if (caps.IsSystem && SystemFolders.Any(p => (folder + "\\").Contains(p, StringComparison.OrdinalIgnoreCase)))
+        {
+            return; // 시스템 HDD 의 Windows·앱 데이터·마이크로소프트 앱 폴더는 게임 후보가 아님
         }
 
         IReadOnlyList<GameSettings> games = AllGames();
@@ -444,7 +455,7 @@ public sealed class AutoRegistry
             _addedExes.UnionWith(exes);
         }
 
-        _status.Set(name, "auto", launcher, AutoStage.Discovered, null);
+        _status.Set(name, "auto", launcher, AutoStage.Discovered, _env.Capabilities(installDir).CanRelocate ? null : DriveCapabilities.PrewarmOnly);
         _status.AddEvent(name, "discovered");
         _log.Info($"auto {launcher}: registered {name} ({exe})");
         if (antiCheat is not null)

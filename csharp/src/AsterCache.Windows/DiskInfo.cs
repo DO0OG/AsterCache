@@ -6,7 +6,7 @@ using Microsoft.Win32.SafeHandles;
 namespace AsterCache.Windows;
 
 /// 볼륨이 놓인 디스크의 모델과 탐색 지연 유무. IncursSeekPenalty 가 true 면 HDD, false 면 SSD, 알 수 없으면 null. Trim 은 TRIM 지원 (알 수 없으면 null).
-public sealed record DiskDetails(string Model, bool? IncursSeekPenalty, bool? Trim = null);
+public sealed record DiskDetails(string Model, bool? IncursSeekPenalty, bool? Trim = null, uint BusType = 0);
 
 /// IOCTL_STORAGE_QUERY_PROPERTY (StorageDeviceProperty, StorageDeviceSeekPenaltyProperty, StorageDeviceTrimProperty). 접근 권한 0 으로 볼륨을 열므로 관리자가 필요 없습니다.
 public static unsafe class DiskInfo
@@ -28,8 +28,11 @@ public static unsafe class DiskInfo
         byte[]? device = Property(h, StorageDeviceProperty, 1024);
         byte[]? seek = Property(h, StorageDeviceSeekPenaltyProperty, 12);
         byte[]? trim = Property(h, StorageDeviceTrimProperty, 12);
-        return new DiskDetails(device is null ? string.Empty : ParseModel(device), ParseSeekPenalty(seek), ParseTrim(trim));
+        return new DiskDetails(device is null ? string.Empty : ParseModel(device), ParseSeekPenalty(seek), ParseTrim(trim), device is { Length: >= 32 } ? BinaryPrimitives.ReadUInt32LittleEndian(device.AsSpan(28)) : 0);
     }
+
+    /// STORAGE_BUS_TYPE 의 USB.
+    public const uint BusTypeUsb = 7;
 
     /// 디스크 종류 문구 (로그·status 용). HDD 가 TRIM 을 받으면 SMR 로 보는 것은 추정일 뿐입니다.
     public static string Kind(bool? seekPenalty, bool? trim) => seekPenalty switch

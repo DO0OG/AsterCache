@@ -97,11 +97,12 @@ public sealed class AutoTier
             Maintain(g, root, t);
         }
 
-        if (_engine.Fs.FreeBytes(root) < TierEngine.MinFreeBytes)
+        long minFree = TierEngine.MinFreeFor(_engine.Fs.TotalBytes(root));
+        if (_engine.Fs.FreeBytes(root) < minFree)
         {
             if (_engine.OldestActive(root) is { } oldest)
             {
-                _log.Warn($"{oldest}: ssd tier folder has less than 1 GiB free, reverting the oldest game (copies stay until `aster tier clean`)");
+                _log.Warn($"{oldest}: ssd tier folder has less than {minFree >> 30} GiB free, reverting the oldest game (copies stay until `aster tier clean`)");
                 _ = _engine.Revert(oldest, "ssd free space low");
                 _tried.Remove(oldest);
                 RefreshBytes(oldest);
@@ -166,7 +167,7 @@ public sealed class AutoTier
     // 게임이 안 돌고, HDD (시스템 볼륨·SSD 아님) 이고, 안티치트가 없고, 재배치가 끝났거나 (재배치가 꺼졌으면 해당 없음) 아직 링크가 없고 최근에 시도하지 않은 게임.
     private bool Eligible(GameSettings g, bool relocateOn)
     {
-        if (_env.AnyRunning(g.ExeNames) || _env.DriveRefusal(g.OriginRoot) is not null || _engine.Read(g.Name) is { Journal: { } j } && j.Live.Any() || _engine.Read(g.Name).Corrupt
+        if (_env.AnyRunning(g.ExeNames) || !_env.Capabilities(g.OriginRoot).CanTier || _engine.Read(g.Name) is { Journal: { } j } && j.Live.Any() || _engine.Read(g.Name).Corrupt
             || _tried.TryGetValue(g.Name, out DateTimeOffset at) && _env.Now() - at < RetryEvery
             || relocateOn && _status.Get(g.Name)?.RelocatedAt is null)
         {

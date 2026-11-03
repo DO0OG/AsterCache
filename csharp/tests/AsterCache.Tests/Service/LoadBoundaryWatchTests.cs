@@ -7,7 +7,7 @@ using Xunit;
 
 namespace AsterCache.Tests.Service;
 
-/// 게임 시작 때 로딩 경계 도달 시간 (load_boundary_ms): 도달 판정, 120 초 상한, 경계 없는 게임, auto_status.json 왕복.
+/// 게임 시작 때 로딩 경계 도달 시간 (tier0_probe_ready_ms): 도달 판정, 120 초 상한, 경계 없는 게임, auto_status.json 왕복.
 public sealed class LoadBoundaryWatchTests : IDisposable
 {
     private static readonly DateTimeOffset T0 = new(2026, 11, 3, 9, 0, 0, TimeSpan.Zero);
@@ -50,7 +50,7 @@ public sealed class LoadBoundaryWatchTests : IDisposable
         Assert.Equal(9000, Run(status, 4, Boundary(20))); // 4 번째 표본 = 3 초 간격 3 번 뒤
         Assert.Equal(4, _probes);
         Assert.Equal(9000, status.Get("a")!.LoadBoundaryMs);
-        Assert.Contains(_log.Lines, l => l.Contains("a: load boundary reached in 9000 ms", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("a: tier0 probe ready in 9000 ms", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -74,7 +74,7 @@ public sealed class LoadBoundaryWatchTests : IDisposable
         Assert.Null(Run(status, int.MaxValue, Boundary(6)));
         Assert.Equal(41, _probes); // 0, 3, ... 120 초
         Assert.Null(status.Get("a")!.LoadBoundaryMs);
-        Assert.Contains(_log.Lines, l => l.Contains("a: load boundary not reached within 120 s", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("a: tier0 probe not ready within 120 s", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -100,7 +100,7 @@ public sealed class LoadBoundaryWatchTests : IDisposable
         Assert.Null(Run(status, int.MaxValue, Boundary(1))); // 64 곳 = 8 회차 뒤 소진
         Assert.Equal(8, _probes);
         Assert.Null(status.Get("a")!.LoadBoundaryMs);
-        Assert.Contains(_log.Lines, l => l.Contains("a: load boundary not measurable (no unread sample positions left)", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("a: tier0 probe not measurable (no unread sample positions left)", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -139,13 +139,24 @@ public sealed class LoadBoundaryWatchTests : IDisposable
         status.RecordLoadBoundary("a", 9000, T0);
 
         var game = (JObject)((JObject)((JObject)JsonRead.ReadFile(StatusPath)!)["games"]!)["a"]!;
-        Assert.Equal((9000L, "2026-11-03T09:00:00.0000000+00:00"), (game["load_boundary_ms"], game["load_boundary_at"]));
+        Assert.Equal((9000L, "2026-11-03T09:00:00.0000000+00:00"), (game["tier0_probe_ready_ms"], game["tier0_probe_ready_at"]));
+        Assert.DoesNotContain("load_boundary_ms", game.Select(kv => kv.Key));
         Assert.Equal((9000, T0), (new AutoStatus(StatusPath, _log, () => T0).Get("a")!.LoadBoundaryMs, new AutoStatus(StatusPath, _log, () => T0).Get("a")!.LoadBoundaryAt));
 
         AutoStatus plain = Status();
         plain.Set("b", "manual", null, AutoStage.Done, null);
         var b = (JObject)((JObject)((JObject)JsonRead.ReadFile(StatusPath)!)["games"]!)["b"]!;
-        Assert.DoesNotContain("load_boundary_ms", b.Select(kv => kv.Key)); // 재지 않은 게임은 키 없음
+        Assert.DoesNotContain("tier0_probe_ready_ms", b.Select(kv => kv.Key)); // 재지 않은 게임은 키 없음
         Assert.Null(new AutoStatus(StatusPath, _log, () => T0).Get("b")!.LoadBoundaryMs);
+    }
+
+    [Fact]
+    public void OldLoadBoundaryKeysAreReadAsTier0ProbeReady()
+    {
+        File.WriteAllText(StatusPath, """{"games": {"a": {"stage": "done", "source": "manual", "load_boundary_ms": 9000, "load_boundary_at": "2026-11-03T09:00:00.0000000+00:00"}}}""");
+
+        AutoGameEntry? a = new AutoStatus(StatusPath, _log, () => T0).Get("a");
+
+        Assert.Equal((9000, T0), (a!.LoadBoundaryMs, a.LoadBoundaryAt));
     }
 }

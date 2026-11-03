@@ -111,6 +111,19 @@ public sealed class AutoSettingsTests
     public void RelocateParallelIsParsed() =>
         Assert.Equal(4, ParseAuto(new JsonObject { ["relocate_parallel"] = 4 }).Auto.RelocateParallel);
 
+    [Theory]
+    [InlineData(false, true, 2)] // 미명시 + USB 또는 종류 모름
+    [InlineData(false, false, 8)] // 미명시 + 내장 SATA/NVMe
+    [InlineData(true, true, 4)] // 명시값은 그대로
+    [InlineData(true, false, 4)]
+    public void ParallelFollowsDiskBusUnlessExplicit(bool explicitly, bool slowBus, int expected)
+    {
+        AutoSettings a = ParseAuto(explicitly ? new JsonObject { ["relocate_parallel"] = 4 } : new JsonObject()).Auto;
+
+        Assert.Equal(explicitly, a.RelocateParallelSet);
+        Assert.Equal(expected, a.ParallelFor(slowBus));
+    }
+
     [Fact]
     public void RelocateThroughputKeysAreParsed()
     {

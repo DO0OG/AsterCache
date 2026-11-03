@@ -116,7 +116,7 @@ public sealed class AutoRelocator
         _log = log;
         _settings = settings;
         _prewarm = prewarm;
-        _recovery = new DriveRecovery(env, log);
+        _recovery = new DriveRecovery(env, log, status); // 재시작 때 저장된 회복 추적을 되살림
         _tier = tier ?? (env.Tier is { } engine ? new AutoTier(env, status, log, engine) : null);
     }
 
@@ -226,6 +226,12 @@ public sealed class AutoRelocator
             }
 
             WarmNewTrace(g, warms); // 재배치를 못 하거나 기다리는 동안에도 트레이스가 있으면 바로 체감할 수 있게
+            if (!_env.Capabilities(g.OriginRoot).CanRelocate)
+            {
+                Note(g, AutoStage.Skipped, DriveCapabilities.PrewarmOnly); // 시스템 HDD: 읽기 전용 예열만, 재배치 없음
+                continue;
+            }
+
             if (!relocateOn)
             {
                 Note(g, AutoStage.Skipped, RelocateOff);
@@ -281,7 +287,7 @@ public sealed class AutoRelocator
         foreach (GameSettings g in s.Games.OrderByDescending(g => played.GetValueOrDefault(g.Name, DateTimeOffset.MinValue)).ThenBy(g => g.Name, StringComparer.Ordinal))
         {
             if (AutoTracer.PlanTracePath(g, _env.FileExists) is not null || _prefetchTried.TryGetValue(g.Name, out DateTimeOffset at) && _env.Now() - at < RetryEvery
-                || _env.DriveRefusal(g.OriginRoot) is not null || AnyGameRunning(g))
+                || !_env.Capabilities(g.OriginRoot).CanPrewarm || AnyGameRunning(g))
             {
                 continue;
             }
@@ -320,13 +326,16 @@ public sealed class AutoRelocator
         IReadOnlyDictionary<string, DateTimeOffset> played = _status.LastPlayed();
         foreach (GameSettings g in s.Games.OrderByDescending(g => played.GetValueOrDefault(g.Name, DateTimeOffset.MinValue)).ThenBy(g => g.Name, StringComparer.Ordinal))
         {
-            if ((!_coldTried.TryGetValue(g.Name, out DateTimeOffset triedAt) || _env.Now() - triedAt >= RetryEvery) && !PostUpdateDelayed(g, s) && _prewarm.IsCold(g) && _prewarm.LastWarmed(g.Name) is null && _env.DriveRefusal(g.OriginRoot) is null && !AnyGameRunning(g))
+            if ((!_coldTried.TryGetValue(g.Name, out DateTimeOffset triedAt) || _env.Now() - triedAt >= RetryEvery) && !PostUpdateDelayed(g, s) && _prewarm.IsCold(g) && _prewarm.LastWarmed(g.Name) is null && _env.Capabilities(g.OriginRoot).CanPrewarm && !AnyGameRunning(g))
             {
                 _coldTried[g.Name] = _env.Now();
                 warms.Add((g, ColdWhy));
             }
         }
     }
+
+    /// 예열 실측 MB/s (Prewarmer.WarmMeasured): 그 드라이브의 회복 판정 상한이 됨.
+    public void NoteWarmMbps(GameSettings g, double mbps) => _recovery.NoteWarmMbps(DriveOf(g), mbps);
 
     /// 기록 없이 예열에 성공했을 때 (Prewarmer.ColdWarmed): auto_status 의 detail 을 "prewarmed (full)" 같은 표시로. 실패·건너뜀·재배치 중인 게임은 그대로 둡니다.
     public void NoteColdWarmed(GameSettings g, string label)
@@ -698,9 +707,9 @@ public sealed class AutoRelocator
             return false;
         }
 
-        if (_env.DriveRefusal(g.OriginRoot) is { } why) // 시스템 볼륨·SSD·종류를 모르는 드라이브는 옮기지 않음 (수동 등록 게임도 같음)
+        if (_env.Capabilities(g.OriginRoot) is { CanPrewarm: false } caps) // 시스템 SSD·SSD·종류를 모르는 드라이브는 건드리지 않음 (수동 등록 게임도 같음). 시스템 HDD 는 계획·예열까지만 (TickCore 가 재배치 앞에서 거름)
         {
-            Note(g, AutoStage.Skipped, why);
+            Note(g, AutoStage.Skipped, caps.Reason!);
             return false;
         }
 
@@ -942,7 +951,7 @@ public sealed class AutoRelocator
             plan = _env.LoadPlan(g.Plan);
             ReapplyChecker.CheckPaths(plan, g, _env.RealPath);
             string order = RelocateOrder.Resolve(s.Auto.RelocateOrder);
-            var run = new ApplyOptions(Execute: true, ChunkBytes: (long)s.Auto.RelocateChunkMib << 20, LowIoPriority: s.Auto.RelocateIoPriority == AutoSettings.IoLow, Verify: s.Auto.RelocateVerify, Order: order, Parallel: s.Auto.RelocateParallel);
+            var run = new ApplyOptions(Execute: true, ChunkBytes: (long)s.Auto.RelocateChunkMib << 20, LowIoPriority: s.Auto.RelocateIoPriority == AutoSettings.IoLow, Verify: s.Auto.RelocateVerify, Order: order, Parallel: s.Auto.ParallelFor(_env.IsSlowBus(DriveOf(g))));
             long bytes = Math.Min(dry.BytesTodo, run.WriteCap); // 한 번의 적용은 WriteCap 까지만 쓰고 나머지는 이어하기가 다시 셈
             long budget = (long)s.Auto.MaxRelocateGibPerDay << 30;
             long usedToday = budget > 0 ? _status.RelocationBytesWithin(DailyWindow) : 0;

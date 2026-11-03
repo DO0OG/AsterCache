@@ -158,7 +158,6 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             { "max_relocations_per_day", (long)a.MaxRelocationsPerDay },
             { "max_relocate_gib_per_day", (long)a.MaxRelocateGibPerDay },
             { "relocate_chunk_mib", (long)a.RelocateChunkMib },
-            { "relocate_parallel", (long)a.RelocateParallel },
             { "relocate_io_priority", a.RelocateIoPriority },
             { "relocate_verify", a.RelocateVerify },
             { "relocate_order", a.RelocateOrder },
@@ -167,6 +166,7 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             { "post_update_delay_min", (long)a.PostUpdateDelayMin },
             { "post_relocate_recovery", a.PostRelocateRecovery },
             { "keep_awake", a.KeepAwake },
+            { "keep_stream_on_game_start", a.KeepStreamOnGameStart },
             { "full_prewarm", a.FullPrewarm },
             { "full_prewarm_max_mib", (long)a.FullPrewarmMaxMib },
             { "engine_profiles", a.EngineProfiles },
@@ -174,6 +174,11 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             { "shared_profiles", new JObject { { "enabled", a.SharedProfiles.Enabled }, { "url", a.SharedProfiles.Url } } },
             { "ssd_tier", new JObject { { "enabled", a.SsdTier.Enabled }, { "budget_gib", (long)a.SsdTier.BudgetGib }, { "root", a.SsdTier.Root } } },
         };
+        if (a.RelocateParallelSet) // 명시되지 않은 값은 쓰지 않음 (자동 규칙 유지)
+        {
+            auto["relocate_parallel"] = (long)a.RelocateParallel;
+        }
+
         if (a.IdleSecondsSet || !a.IdleMinutesSet) // idle_minutes 만 명시된 설정은 그 값이 이기도록 idle_seconds 를 쓰지 않음
         {
             auto.Add("idle_seconds", (long)a.IdleSeconds);

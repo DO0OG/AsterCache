@@ -107,7 +107,7 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
     }
 
     /// 설치 뒤 자동 진행 집계 (발견·계획·재배치·예열·적중률 평균).
-    public static AutoProgress Progress(AutoStatusFile status) => AutoProgress.From(status.Games.Values.Select(g => (g.Stage, g.Detail, g.HitPercent)));
+    public static AutoProgress Progress(AutoStatusFile status, string plansDir) => AutoProgress.From(status.Games.Select(kv => (kv.Key, kv.Value.Stage, kv.Value.Detail, kv.Value.HitPercent)), plansDir);
 
     public static string Notice(AutoNotice e, string lang) => L.Get(lang, e.Kind == "relocated" ? "Toast_Relocated" : "Toast_Discovered", e.Game);
 

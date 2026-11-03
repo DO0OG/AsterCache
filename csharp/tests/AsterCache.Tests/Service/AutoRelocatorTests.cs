@@ -70,7 +70,7 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         Directory.CreateDirectory(plans);
         string plan = Path.Combine(plans, "bench.plan.json");
         _game = new GameSettings("bench", ["bench.exe"], plan + ".prefetch.json", plan, Root, [Root], "GAMES", 1440) { Source = "auto" };
-        _settings = new AsterSettings(50, [_game]) with { Auto = AutoSettings.Default with { IdleMinutesSet = true, RelocateParallel = 1, PostRelocateRecovery = AutoSettings.RecoveryOff } }; // 기존 시험은 idle_minutes (3 분) 만 명시된 설정, 쓰기 뒤 회복 대기는 아래 별도 시험
+        _settings = new AsterSettings(50, [_game]) with { Auto = AutoSettings.Default with { IdleMinutesSet = true, RelocateParallel = 1, RelocateParallelSet = true, PostRelocateRecovery = AutoSettings.RecoveryOff } }; // 기존 시험은 idle_minutes (3 분) 만 명시된 설정, 쓰기 뒤 회복 대기는 아래 별도 시험
         _status = new AutoStatus(Path.Combine(Root, "auto_status.json"), _log, () => _w.Now);
         _w.Files.Add(AutoTracer.RawTracePath(_game));
         _w.LoadSessions = () => Sessions;
@@ -1009,7 +1009,7 @@ public sealed class AutoRelocatorTests : ApplyTestBase
     {
         switch (kind)
         {
-            case "system": _w.SystemDrive = Letter; break;
+            case "system": (_w.SystemDrive, _w.Hdd[Letter]) = (Letter, false); break; // 시스템 SSD
             case "ssd": _w.Hdd[Letter] = false; break;
             default: _w.Hdd[Letter] = null; break;
         }
@@ -1023,6 +1023,21 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         Assert.Equal(AutoStage.Skipped, Entry.Stage);
         Assert.Single(_log.Lines, l => l.Contains("auto skipped", StringComparison.Ordinal)); // 틱마다 반복해서 남기지 않음
         Assert.DoesNotContain(_log.Lines, l => l.StartsWith("Error", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void SystemHddGamesAreOnlyPlannedAndPrewarmedNeverMoved()
+    {
+        (_w.SystemDrive, _w.Hdd[Letter]) = (Letter, true); // 시스템 볼륨이 회전 디스크
+        UsePrewarm();
+
+        Run(TimeSpan.FromMinutes(10));
+
+        Assert.True(File.Exists(_game.Plan)); // 계획은 만들어 두어 핫 집합 예열이 쓸 수 있음
+        Assert.Equal(1, Streams); // 새 트레이스로 한 번 예열
+        Assert.Equal(0, ApplyCalls);
+        Assert.Empty(Vol.Moves);
+        Assert.Equal((AutoStage.Skipped, DriveCapabilities.PrewarmOnly), (Entry.Stage, Entry.Detail));
     }
 
     [Fact]
@@ -1219,6 +1234,20 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         Assert.Equal((AutoStage.Discovered, "prewarmed (full)"), (Entry.Stage, Entry.Detail));
         Assert.Equal("prewarmed (full)", AutoRelocator.PrewarmedBy("full"));
         Assert.Empty(Vol.Moves);
+    }
+
+    [Fact]
+    public void MeasuredPrewarmSpeedRaisesTheRecoveryCeilingToOnePointFiveTimes()
+    {
+        UseCold();
+        _cold!.WarmMeasured += (g, mbps) => Relocator.NoteWarmMbps(g, mbps); // AutoMode 의 연결과 같음
+        string drive = PlanFile.SplitDrive(_game.OriginRoot);
+        _status.Set("bench", "auto", null, AutoStage.Discovered, null);
+        Assert.Equal(DriveRecovery.CeilingMbps, ((DriveRecovery)Relocator.Recovery).CeilingFor(drive));
+
+        Tick(); // 10 MiB / 0.1 s = 100 MB/s
+
+        Assert.Equal(100 * DriveRecovery.CeilingFactor, ((DriveRecovery)Relocator.Recovery).CeilingFor(drive), 3);
     }
 
     [Fact]
@@ -1936,7 +1965,7 @@ public sealed class AutoRelocatorTests : ApplyTestBase
                 _w.Hdd[Letter] = null;
                 break;
             case "system":
-                _w.SystemDrive = Letter;
+                (_w.SystemDrive, _w.Hdd[Letter]) = (Letter, false); // 시스템 SSD
                 break;
             default:
                 _w.Running = true;

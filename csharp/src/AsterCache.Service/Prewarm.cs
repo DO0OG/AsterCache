@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using AsterCache.Core;
 using AsterCache.Core.Apply;
@@ -95,7 +96,7 @@ public sealed class PrewarmEnv
     /// 계획을 읽습니다 (묶음 사이에서 취소를 봄): (통계, 끝까지 읽었는가).
     public Func<IReadOnlyList<ReadOp>, CancellationToken, (StreamStats Stats, bool Complete)> ColdRead { get; init; } = (ops, ct) => FolderWarm.Read(ops, ct);
 
-    /// 기록 없는 예열이 건드리면 안 되는 드라이브면 이유 (시스템 볼륨·SSD·판정 불가), 아니면 null. 기본은 거부 없음 (시험용), Create 는 진짜 판정.
+    /// 기록 없는 예열이 건드리면 안 되는 드라이브면 이유 (시스템 SSD·SSD·판정 불가), 아니면 null. 기본은 거부 없음 (시험용), Create 는 진짜 판정.
     public Func<GameSettings, string?> ColdRefusal { get; init; } = _ => null;
 
     /// 부트스트랩 S2: 기록 없는 게임의 boot 트레이스를 프리페치 기록 (.pf) 으로 만들어 봅니다 (ColdRefusal 이 없을 때만 부름). 만들었으면 true: 그러면 더는 기록 없는 게임이 아니라 통째·프로필 예열 (S3) 을 하지 않습니다. 기본 false.
@@ -107,7 +108,7 @@ public sealed class PrewarmEnv
     public static PrewarmEnv Create() => new()
     {
         PrefetchBoot = g => AutoTracer.BootFromPrefetch(g) > 0,
-        ColdRefusal = g => AutoEnv.DriveRefusal(g.OriginRoot, Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.Windows))![..2].ToUpperInvariant(), letter => DiskInfo.Query(letter).IncursSeekPenalty),
+        ColdRefusal = g => DriveCapabilities.Of(g.OriginRoot, Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.Windows))![..2].ToUpperInvariant(), letter => DiskInfo.Query(letter).IncursSeekPenalty).PrewarmRefusal,
         RawTraceExists = g => AutoTracer.PlanTracePath(g, File.Exists) is not null,
         ColdPlanner = (g, full, profile, ct) => PlanGuards.Inside(g.OriginRoot, g.AllowedRoots, RealPaths.Real)
             ? FolderWarm.Plan(g.OriginRoot, g.ExeNames, full, profile, EngineProfiles.Builtin, ct)
@@ -178,7 +179,9 @@ public sealed class Prewarmer
     private readonly HashSet<string> _delayLogged = new(StringComparer.OrdinalIgnoreCase); // 업데이트 지연을 이미 로그한 게임, _gate 로 보호
     private volatile AutoSettings _auto = AutoSettings.Default;
     private volatile string? _streaming; // 핫 집합 스트림이 도는 게임
-    private volatile bool _keepStream; // 그 게임이 시작돼 (같은 데이터를 동시에 읽으므로) 취소 신호에도 끝까지 읽기로 한 표시
+    private volatile bool _keepStream; // auto.keep_stream_on_game_start 가 켜진 채 그 게임이 시작돼 (같은 데이터를 동시에 읽으므로) 취소 신호에도 끝까지 읽기로 한 표시
+    private volatile CancellationTokenSource? _streamStop; // 도는 스트림을 멈추는 신호 (게임 시작이 같은 디스크 읽기를 바로 끊음)
+    private (string Game, long At)? _yield; // 게임 시작으로 스트림 양보를 요청한 게임과 시각 (Stopwatch 틱), _gate 로 보호
 
     public Prewarmer(IReadOnlyList<GameSettings> games, IGameStreamer streamer, PrewarmEnv env, ILog log, string? statusPath = null, Func<DateTimeOffset>? now = null)
     {
@@ -194,6 +197,9 @@ public sealed class Prewarmer
 
     /// 기록 없이 (통째·프로필) 예열에 성공했을 때: 게임과 방식 이름표.
     public event Action<GameSettings, string>? ColdWarmed;
+
+    /// 예열이 끝났을 때의 실측 MB/s (드라이브 회복 판정의 캐시 적중 상한용).
+    public event Action<GameSettings, double>? WarmMeasured;
 
     /// 핫 집합 예열의 진행 (묶음마다, ProgressEvery 에 한 번 이하): 게임, 읽은 MiB, 총 MiB.
     public event Action<GameSettings, long, long>? Progress;
@@ -231,18 +237,61 @@ public sealed class Prewarmer
         return wait;
     }
 
-    /// 게임 exe 가 떴을 때 (스트림 취소보다 먼저): 그 게임의 예열 스트림이 도는 중이면 취소하지 않고 끝까지 읽게 하고 (게임과 같은 데이터를 동시에 읽는 효과),
-    /// 기록 없는 예열이 잡아 둔 예산은 풉니다 (게임이 돌면 RAM 이 달라지므로 다음 예산 계산에 쓰지 않음).
+    /// 게임 exe 가 떴을 때 (스트림 취소보다 먼저): 도는 예열 스트림이 그 게임의 것이거나 같은 디스크의 것이면 다음 묶음 경계에서 멈추게 해 디스크를 양보하고 (같은 HDD 동시 읽기는 게임을 느리게 함),
+    /// 단 auto.keep_stream_on_game_start (실험용) 가 켜져 있으면 그 게임의 스트림은 끝까지 읽습니다. 기록 없는 예열이 잡아 둔 예산은 풉니다 (게임이 돌면 RAM 이 달라지므로 다음 예산 계산에 쓰지 않음).
     public void NoteGameStart(string game)
     {
-        if (string.Equals(_streaming, game, StringComparison.OrdinalIgnoreCase))
+        if (_streaming is { } reading)
         {
-            _keepStream = true;
+            bool same = string.Equals(reading, game, StringComparison.OrdinalIgnoreCase);
+            if (same && _auto.KeepStreamOnGameStart)
+            {
+                _keepStream = true;
+            }
+            else if (same || SameDisk(reading, game))
+            {
+                lock (_gate)
+                {
+                    _yield ??= (game, Stopwatch.GetTimestamp());
+                }
+
+                try
+                {
+                    _streamStop?.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // 스트림이 방금 끝남
+                }
+            }
         }
 
         lock (_gate)
         {
             _coldMib.Remove(game);
+        }
+    }
+
+    // 두 게임이 같은 디스크에 있는가 (shortcut: 디스크 번호 대신 드라이브 문자로 비교, 한 디스크에 볼륨이 둘이면 놓침).
+    private bool SameDisk(string a, string b) =>
+        _games.FirstOrDefault(g => string.Equals(g.Name, a, StringComparison.OrdinalIgnoreCase)) is { } x && _games.FirstOrDefault(g => string.Equals(g.Name, b, StringComparison.OrdinalIgnoreCase)) is { } y
+        && string.Equals(PlanFile.SplitDrive(x.OriginRoot), PlanFile.SplitDrive(y.OriginRoot), StringComparison.OrdinalIgnoreCase);
+
+    // 이 게임이나 같은 드라이브의 등록 게임이 돌고 있는가: 돌면 그 디스크에 새 읽기를 내지 않습니다.
+    private bool DriveHasRunningGame(GameSettings game) => _env.GameRunning(game) || AutoRelocator.SameDriveGames(_games, [game]).Any(_env.GameRunning);
+
+    // 게임 시작으로 멈춘 스트림이면 양보 시간과 읽은 양을 로그에 남기고 표시를 지웁니다.
+    private void LogYield(string streamGame, long bytes)
+    {
+        (string Game, long At)? y;
+        lock (_gate)
+        {
+            (y, _yield) = (_yield, null);
+        }
+
+        if (y is { } v)
+        {
+            _log.Info($"{streamGame}: yielded to {v.Game} after {(long)Stopwatch.GetElapsedTime(v.At).TotalMilliseconds} ms, {bytes >> 20} MiB");
         }
     }
 
@@ -432,7 +481,7 @@ public sealed class Prewarmer
             }
 
             TimeSpan? since = LastWarmed(g.Name) is { } prev ? _now() - prev : null;
-            if (IsCold(g) || PrewarmPolicy.SkipReason(_env.ZoneBytes(g), _env.TraceExists(g), _env.GameRunning(g), avail, g.Prewarm.MinFreeRamMib, since, TimeSpan.FromMinutes(g.Prewarm.CooldownMin)) is not null)
+            if (IsCold(g) || PrewarmPolicy.SkipReason(_env.ZoneBytes(g), _env.TraceExists(g), DriveHasRunningGame(g), avail, g.Prewarm.MinFreeRamMib, since, TimeSpan.FromMinutes(g.Prewarm.CooldownMin)) is not null)
             {
                 continue;
             }
@@ -448,7 +497,12 @@ public sealed class Prewarmer
     private void StreamHead(GameSettings game, CancellationToken ct)
     {
         using var stop = new CancellationTokenSource();
-        (_keepStream, _streaming) = (false, game.Name);
+        (_keepStream, _streaming, _streamStop) = (false, game.Name, stop);
+        lock (_gate)
+        {
+            _yield = null;
+        }
+
         using CancellationTokenRegistration reg = ct.Register(() =>
         {
             if (!_keepStream)
@@ -466,7 +520,8 @@ public sealed class Prewarmer
         }
         finally
         {
-            _streaming = null;
+            (_streaming, _streamStop) = (null, null);
+            LogYield(game.Name, 0);
         }
     }
 
@@ -517,7 +572,7 @@ public sealed class Prewarmer
     }
 
     /// 한 게임을 지금 예열 (조건을 만족할 때만). 동시에 하나만 돕니다.
-    /// ct 는 스트림을 시작하기 전 (차례를 기다린 뒤) 과 핫 집합 스트림의 묶음 사이에서 확인합니다. 단 지금 읽는 그 게임이 시작됐으면 (NoteGameStart) 멈추지 않고 끝까지 읽습니다.
+    /// ct 는 스트림을 시작하기 전 (차례를 기다린 뒤) 과 핫 집합 스트림의 묶음 사이에서 확인합니다. 단 지금 읽는 그 게임이 시작되면 (NoteGameStart) 이 스트림도 다음 묶음 경계에서 멈춥니다 (keep_stream_on_game_start 가 켜졌을 때만 끝까지 읽음).
     /// usedMib: 같은 묶음에서 앞서 올린 핫 집합의 양 (기록 없는 예열의 예산에서 뺌).
     public PrewarmResult Run(GameSettings game, string why, bool pin = true, bool ignoreCooldown = false, CancellationToken ct = default, long usedMib = 0)
     {
@@ -541,7 +596,7 @@ public sealed class Prewarmer
             }
 
             TimeSpan? since = !ignoreCooldown && LastWarmed(game.Name) is { } prev ? now - prev : null;
-            string? skip = PrewarmPolicy.SkipReason(_env.ZoneBytes(game), _env.TraceExists(game), _env.GameRunning(game), _env.AvailableRamMib(),
+            string? skip = PrewarmPolicy.SkipReason(_env.ZoneBytes(game), _env.TraceExists(game), DriveHasRunningGame(game), _env.AvailableRamMib(),
                 game.Prewarm.MinFreeRamMib, since, TimeSpan.FromMinutes(game.Prewarm.CooldownMin));
             if (skip is null)
             {
@@ -565,6 +620,7 @@ public sealed class Prewarmer
                     double mbps = s.Seconds > 0 ? s.Bytes / 1048576.0 / s.Seconds : 0;
                     _log.Info($"{game.Name}: prewarm done ({why}): {s.Bytes >> 20} MiB in {s.Seconds:F2} s = {mbps:F0} MB/s, {s.Requests} requests, {s.Errors} errors");
                     PrewarmResult done = Record(game, now, new PrewarmResult(game.Name, true, null, s, now), mbps);
+                    WarmMeasured?.Invoke(game, mbps);
                     if (pin && !ct.IsCancellationRequested)
                     {
                         _pins.TryPin(game, why == AfterRelocation);
@@ -588,11 +644,16 @@ public sealed class Prewarmer
         }
     }
 
-    // 핫 집합 스트림 한 번. ct 가 취소돼도 이 게임이 시작된 경우 (_keepStream) 에는 스트림을 멈추지 않습니다.
+    // 핫 집합 스트림 한 번. 게임이 시작되면 (NoteGameStart) 다음 묶음 경계에서 멈춥니다. 단 keep_stream_on_game_start 가 켜졌고 그 게임의 스트림이면 ct 가 취소돼도 끝까지 읽습니다.
     private (StreamStats Stats, bool Complete) StreamHot(GameSettings game, CancellationToken ct)
     {
         using var stop = new CancellationTokenSource();
-        (_keepStream, _streaming) = (false, game.Name);
+        (_keepStream, _streaming, _streamStop) = (false, game.Name, stop);
+        lock (_gate)
+        {
+            _yield = null;
+        }
+
         using CancellationTokenRegistration reg = ct.Register(() =>
         {
             if (!_keepStream)
@@ -614,17 +675,18 @@ public sealed class Prewarmer
                 }
             });
             complete = r.Item2;
+            LogYield(game.Name, r.Item1.Bytes);
             return r;
         }
         finally
         {
-            _streaming = null;
+            (_streaming, _streamStop) = (null, null);
             StreamEnded?.Invoke(game, complete);
         }
     }
 
     // 기록 (원시 트레이스·prefetch 기록) 이 없는 게임: 설치 폴더가 예산 이하면 통째로, 크면 엔진 프로필로. 쿨다운은 항상 지킵니다 (같은 폴더를 연달아 두 번 읽지 않게): 재예열도 쿨다운 안이면 다음 점검으로 미룸.
-    // 순서: 드라이브 거부 (시스템 볼륨·SSD·판정 불가) → 게임 실행 중 → 쿨다운 → 디스크 유휴 → RAM 예산 → 폴더 열거 (비싼 일은 마지막).
+    // 순서: 드라이브 거부 (시스템 SSD·SSD·판정 불가) → 게임 실행 중 → 쿨다운 → 디스크 유휴 → RAM 예산 → 폴더 열거 (비싼 일은 마지막).
     private PrewarmResult RunCold(GameSettings game, string why, DateTimeOffset now, CancellationToken ct, long usedMib)
     {
         AutoSettings a = _auto;
@@ -646,7 +708,7 @@ public sealed class Prewarmer
         }
 
         string? skip = null;
-        if (_env.GameRunning(game))
+        if (DriveHasRunningGame(game))
         {
             skip = "game is running";
         }
@@ -721,6 +783,7 @@ public sealed class Prewarmer
         double mbps = stats.Seconds > 0 ? stats.Bytes / 1048576.0 / stats.Seconds : 0;
         _log.Info($"{game.Name}: prewarm done ({why}, {label}): {stats.Bytes >> 20} MiB in {stats.Seconds:F2} s = {mbps:F0} MB/s, {stats.Requests} requests, {stats.Errors} errors");
         PrewarmResult done = Record(game, now, new PrewarmResult(game.Name, true, null, stats, now) { Mode = label }, mbps);
+        WarmMeasured?.Invoke(game, mbps);
         ColdWarmed?.Invoke(game, label!);
         return done;
     }

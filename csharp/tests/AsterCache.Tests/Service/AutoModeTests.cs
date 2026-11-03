@@ -25,6 +25,20 @@ public sealed class AutoModeTests : IDisposable
 
     private static IEnumerable<string> Names(IEnumerable<GameSettings> games) => games.Select(g => g.Name);
 
+    [Fact]
+    public async Task RegisteringANewAutoGameWakesTheTickAtOnceButOtherReloadsDoNot()
+    {
+        AutoMode mode = Mode();
+        mode.SetSettings(_rig.Reload()); // 새 게임 없음
+        Assert.False(await mode.WaitForTickAsync(TimeSpan.FromMilliseconds(50), CancellationToken.None));
+
+        _rig.Editor.Add(_rig.Input("g", "g.exe", @"D:\Games\g", "auto", null));
+        mode.SetSettings(_rig.Reload());
+
+        Assert.True(await mode.WaitForTickAsync(TimeSpan.FromSeconds(30), CancellationToken.None));
+        Assert.False(await mode.WaitForTickAsync(TimeSpan.FromMilliseconds(50), CancellationToken.None)); // 요청은 한 번에 하나로 합쳐짐
+    }
+
     // ---- 기록 없는 예열의 상태 표시 ----
 
     [Theory]

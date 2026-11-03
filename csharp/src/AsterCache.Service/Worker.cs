@@ -361,7 +361,7 @@ public sealed class Worker : BackgroundService
 
                 _auto?.RelocateTick(_gate, ct);
                 MaintainPrewarm();
-                await Task.Delay(CheckTick, ct);
+                await (_auto is null ? Task.Delay(CheckTick, ct) : _auto.WaitForTickAsync(CheckTick, ct)); // 발견이 새 게임을 등록하면 일찍 깨움
             }
         }
         catch (OperationCanceledException)

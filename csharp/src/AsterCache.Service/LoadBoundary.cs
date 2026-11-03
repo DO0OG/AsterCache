@@ -57,7 +57,7 @@ public static class LoadBoundaryWatch
             var samples = PickFresh(ops, used, SampleCount); // 회차마다 새 위치: 앞 회차 읽기가 캐시를 채워 도달로 오판하지 않게
             if (samples.Count < SampleCount)
             {
-                log.Info($"{game.Name}: load boundary not measurable (no unread sample positions left)");
+                log.Info($"{game.Name}: tier0 probe not measurable (no unread sample positions left)");
                 return null;
             }
 
@@ -65,13 +65,13 @@ public static class LoadBoundaryWatch
             {
                 int ms = (int)Math.Min(int.MaxValue, (now() - start).TotalMilliseconds);
                 status.RecordLoadBoundary(game.Name, ms, now());
-                log.Info($"{game.Name}: load boundary reached in {ms} ms");
+                log.Info($"{game.Name}: tier0 probe ready in {ms} ms");
                 return ms;
             }
 
             if (elapsed >= Limit)
             {
-                log.Info($"{game.Name}: load boundary not reached within {(int)Limit.TotalSeconds} s");
+                log.Info($"{game.Name}: tier0 probe not ready within {(int)Limit.TotalSeconds} s");
                 return null;
             }
 

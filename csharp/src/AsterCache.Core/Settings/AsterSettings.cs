@@ -86,6 +86,9 @@ public sealed record AutoSettings(
     /// HDD 게임 드라이브가 디스크 끄기 시간 뒤 잠들지 않게, 런처가 떠 있거나 지금이 플레이하던 시간대면 10 분마다 4 KiB 를 읽음 (기본 켜짐, 전원 설정은 바꾸지 않음).
     public bool KeepAwake { get; init; } = true;
 
+    /// 게임이 시작될 때 그 게임을 읽던 예열 스트림을 끝까지 읽게 할지 (기본 꺼짐, 실험용): 꺼져 있으면 다음 64 MiB 묶음 경계에서 멈춰 게임에 디스크를 양보함.
+    public bool KeepStreamOnGameStart { get; init; }
+
     /// beta.3 형식 설정 (learn 키 없음, prewarm_recent 1 + idle_minutes 3) 을 새 기본으로 해석했는지 (파싱 때만 설정, 서비스가 시작 때 로그 한 줄).
     public bool Migrated { get; init; }
 
@@ -118,14 +121,21 @@ public sealed record AutoSettings(
 
     public const int DefaultRelocateChunkMib = 4;
     public const int DefaultRelocateParallel = 8;
+    public const int SlowBusRelocateParallel = 2;
     public const string IoLow = "low";
     public const string IoNormal = "normal";
 
     /// 자동 재배치가 한 번에 옮기는 조각 크기 (MiB, 1..256).
     public int RelocateChunkMib { get; init; } = DefaultRelocateChunkMib;
 
-    /// 자동 재배치가 동시에 옮기는 파일 수 (1..8, 기본 8, 1 = 순차). 같은 파일의 작업은 계획 순서대로 하나씩.
+    /// 자동 재배치가 동시에 옮기는 파일 수 (1..8, 1 = 순차). 같은 파일의 작업은 계획 순서대로 하나씩. 명시하지 않으면 ParallelFor 가 디스크에 맞춰 정함.
     public int RelocateParallel { get; init; } = DefaultRelocateParallel;
+
+    /// config 에 relocate_parallel 이 명시돼 있는가 (명시값은 그대로, 아니면 자동 규칙).
+    public bool RelocateParallelSet { get; init; }
+
+    /// 실제 동시 수: 명시값, 아니면 대상 디스크 종류를 모르거나 USB 버스면 2, 그 밖에는 8.
+    public int ParallelFor(bool slowBus) => RelocateParallelSet ? RelocateParallel : slowBus ? SlowBusRelocateParallel : DefaultRelocateParallel;
 
     /// 자동 재배치의 I/O 우선순위: "low" (기본, 낮은 I/O 힌트) 또는 "normal" (힌트 없음).
     public string RelocateIoPriority { get; init; } = IoLow;

@@ -166,6 +166,7 @@ public sealed class ReapplyEnv
     {
         Extents = FileLayout.Extents,
         Digest = (p, size, extra) => SampleDigest.Compute(p, size, extra, hint: hint),
+        EdgeDigest = (p, size, extra) => SampleDigest.Compute(p, size, extra, span: 0, hint: hint),
         SkipReason = p => FileGuards.SkipReason(p),
         RealPath = RealPaths.Real,
     };

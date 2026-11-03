@@ -23,6 +23,12 @@ public static class Applier
     /// 위 경우 report.Stopped 에 넣는 이유. 서비스는 이 문자열을 보면 계획을 다시 세웁니다.
     public const string ZoneOccupied = "zone region appears occupied, stopping";
 
+    /// 이동 전후 비교 표본 규칙의 이름. 저널 header 의 digest_rule 이 없으면 옛 규칙 (처음·가운데·끝 1 MiB + 옮긴 범위) 입니다.
+    public const string EdgeRule = "edge64k-v1";
+
+    /// 새 규칙: 파일당 표본 합계 상한.
+    public const long DigestCapBytes = 1 << 20;
+
     private const int ErrorAccessDenied = 5;
     private const int StatusAlreadyCommitted = unchecked((int)0xC0000021); // 때로 Win32 오류 5 로 보이지만 NTSTATUS 그대로 오기도 함
 
@@ -87,6 +93,20 @@ public static class Applier
         rep.DryRun = options.DryRun;
         rep.PlanSaved = persist;
         return options.Execute ? Execute(plan, vol, todo, rep, journalPath, chunk, options.WriteCap, hooks, digest, cancellationToken) : rep;
+    }
+
+    /// 새 규칙의 표본: 범위 (이미 각 작업의 처음·끝 TaskSpan 바이트) 를 파일 안으로 자르고 정렬해, 합계가 DigestCapBytes 를 넘으면 고르게 솎습니다. 같은 입력이면 항상 같은 결과.
+    public static List<(long Offset, long Length)> EdgeRanges(IReadOnlyList<(long Offset, long Length)> ranges, long size)
+    {
+        List<(long Offset, long Length)> all = ranges.Where(r => r.Offset >= 0 && r.Offset < size && r.Length > 0)
+            .Select(r => (r.Offset, Math.Min(r.Length, size - r.Offset))).Distinct().OrderBy(r => r.Item1).ThenBy(r => r.Item2).ToList();
+        if (all.Count == 0 || all.Sum(r => r.Length) <= DigestCapBytes)
+        {
+            return all;
+        }
+
+        long keep = Math.Max(1, DigestCapBytes / all.Max(r => r.Length));
+        return keep >= all.Count ? all : Enumerable.Range(0, (int)keep).Select(i => all[(int)(i * (long)all.Count / keep)]).ToList();
     }
 
     // 끝난 저널을 <이름>.<UTC 시각> 으로 옮깁니다. 저널이 없으면 null.
@@ -164,24 +184,33 @@ public static class Applier
         var before = new OrderedDictionary<string, string?>(StringComparer.Ordinal);
         Dictionary<string, List<(long Offset, long Length)>> ranges = MovedRanges(plan);
 
-        // 매 실행이 같은 범위를 보므로 이어하기 실행은 저널에 적힌 before 값을 그대로 쓸 수 있음
-        string Digest(string p) => digestFn(p, hooks.FileSize(p), ranges.TryGetValue(p, out List<(long, long)>? r) ? r : []);
-
         string psha = plan.Sha();
-        if (jr.Rows.Count > 0 && jr.First("header", "plan_sha", psha) is null)
+        JObject? header = jr.Rows.Count > 0 ? jr.First("header", "plan_sha", psha) : null;
+        if (jr.Rows.Count > 0 && header is null)
         {
             throw new PlanRejectedException("journal belongs to a different plan");
         }
 
+        // 표본 규칙은 저널을 처음 만든 실행이 정함: 이어하기는 저널의 sha_before 와 같은 규칙으로 다시 계산해야 비교가 유효 (digest_rule 이 없는 옛 저널 = 옛 규칙)
+        bool edge = jr.Rows.Count == 0 || header!.TryGetValue("digest_rule", out object? rule) && Equals(rule, EdgeRule);
+        var edgeFn = hooks.EdgeDigest ?? digestFn;
+        string Digest(string p)
+        {
+            long size = hooks.FileSize(p);
+            IReadOnlyList<(long Offset, long Length)> r = ranges.TryGetValue(p, out List<(long, long)>? x) ? x : [];
+            return edge ? edgeFn(p, size, EdgeRanges(r, size)) : digestFn(p, size, r);
+        }
+
         if (jr.Rows.Count == 0)
         {
-            ApplyTimings.Time(ref tm.JournalTicks, () => jr.Add(new JObject
+            ApplyTimings.Time(ref tm.JournalTicks, () => jr.AddBatched(new JObject
             {
                 { "type", "header" },
                 { "plan_sha", psha },
                 { "zone_start_lcn", plan.Zone.StartLcn },
                 { "cluster_bytes", (long)vol.ClusterBytes },
                 { "started", hooks.Clock() },
+                { "digest_rule", EdgeRule },
             }));
         }
 
@@ -230,7 +259,7 @@ public static class Applier
                 before[p] = row is null ? ApplyTimings.Time(ref tm.DigestBeforeTicks, () => digest(p)) : row["sha_before"] as string;
                 if (row is null)
                 {
-                    ApplyTimings.Time(ref tm.JournalTicks, () => jr.Add(new JObject { { "type", "file" }, { "path", p }, { "sha_before", before[p] } }));
+                    ApplyTimings.Time(ref tm.JournalTicks, () => jr.AddBatched(new JObject { { "type", "file" }, { "path", p }, { "sha_before", before[p] } }));
                 }
             }
 
@@ -238,8 +267,10 @@ public static class Applier
             {
                 var src = ZoneAllocator.Pieces(ApplyTimings.Time(ref tm.OpenTicks, () => hooks.Extents(p)) ?? [], t.Vcn, t.Vcn + t.Clusters)
                     .Select(x => (object?)new List<object?> { x.Vcn, x.Lcn, x.N }).ToList();
-                ApplyTimings.Time(ref tm.JournalTicks, () => jr.Add(new JObject
+                ApplyTimings.Time(ref tm.JournalTicks, () =>
                 {
+                    jr.AddBatched(new JObject
+                    {
                     { "type", "step" },
                     { "idx", (long)i },
                     { "state", "planned" },
@@ -248,7 +279,9 @@ public static class Applier
                     { "clusters", t.Clusters },
                     { "target_lcn", t.TargetLcn },
                     { "from", src },
-                }));
+                    });
+                    jr.Flush(); // 되돌리기의 근거 (from) 는 이동 전에 디스크에 있어야 함
+                });
             }
 
             long off = d;
@@ -282,7 +315,7 @@ public static class Applier
             bool ok = err is null && PlanGuards.DonePrefix(ApplyTimings.Time(ref tm.OpenTicks, () => hooks.Extents(p)), t.Vcn, t.Clusters, t.TargetLcn) == t.Clusters;
             bool isBusy = err is not null && busy;
             string? reason = ok ? null : isBusy ? TargetBusy : err ?? "extent_mismatch";
-            ApplyTimings.Time(ref tm.JournalTicks, () => jr.Add(new JObject { { "type", "step" }, { "idx", (long)i }, { "state", ok ? "done" : "failed" }, { "reason", reason } }));
+            ApplyTimings.Time(ref tm.JournalTicks, () => jr.AddBatched(new JObject { { "type", "step" }, { "idx", (long)i }, { "state", ok ? "done" : "failed" }, { "reason", reason } }));
             tm.Tasks++;
             if (!ok)
             {

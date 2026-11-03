@@ -134,6 +134,7 @@ internal static class VolumeCommands
     {
         Extents = FileLayout.Extents,
         Digest = (path, size, ranges) => SampleDigest.Compute(path, size, ranges),
+        EdgeDigest = (path, size, ranges) => SampleDigest.Compute(path, size, ranges, span: 0),
         SkipReason = path => FileGuards.SkipReason(path),
         RealPath = RealPaths.Real,
     };

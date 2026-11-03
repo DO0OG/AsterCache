@@ -19,6 +19,10 @@ public sealed class ApplyHooks
     /// (경로, 파일 크기, 옮긴 범위) → SHA-256 표본. apply 에 필요 (Windows SampleDigest.Compute 또는 <see cref="SampleHasher"/>).
     public Func<string, long, IReadOnlyList<(long Offset, long Length)>, string>? Digest { get; init; }
 
+    /// 새 저널 (digest_rule edge64k-v1) 의 이동 전후 비교용: 처음·가운데·끝 표본 없이 주어진 범위 + 크기만 해시합니다 (Windows SampleDigest.Compute 의 span: 0).
+    /// 없으면 Digest 를 그대로 씁니다. 프로필 지문 같은 호환 규칙과는 무관합니다.
+    public Func<string, long, IReadOnlyList<(long Offset, long Length)>, string>? EdgeDigest { get; init; }
+
     /// 건너뛸 이유 (압축·스파스·암호화 …), 옮겨도 되면 null. apply 에 필요 (Windows FileGuards.SkipReason).
     public Func<string, string?>? SkipReason { get; init; }
 

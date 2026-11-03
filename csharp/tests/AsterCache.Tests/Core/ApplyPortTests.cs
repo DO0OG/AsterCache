@@ -534,6 +534,153 @@ public sealed class ApplyPortTests : ApplyTestBase
         Assert.NotEmpty(Vol.Moves); // 21 번째 작업부터 정상으로 이어서 옮김
     }
 
+    // ---- 표본 규칙 (edge64k-v1) 과 저널 묶음 쓰기
+
+    private const long K64 = 64 << 10;
+
+    [Fact]
+    public void EdgeRangesKeepSmallSetsAndBoundaryRangesWhole()
+    {
+        // 범위 128 KiB 는 처음 64 KiB + 끝 64 KiB 가 맞붙어 전체, 64 KiB 는 두 끝이 같아 하나
+        var r128 = Applier.EdgeRanges([(0, K64), (K64, K64)], 10 << 20);
+        Assert.Equal(new[] { (0L, K64), (K64, K64) }, r128);
+        Assert.Equal(new[] { (0L, K64) }, Applier.EdgeRanges([(0, K64), (0, K64)], 10 << 20));
+        Assert.Equal(new[] { (0L, 1000L) }, Applier.EdgeRanges([(0, K64), (5 << 20, K64)], 1000)); // 파일 밖은 버리고 끝은 자름
+    }
+
+    [Fact]
+    public void EdgeRangesCapTheTotalAtOneMiBAndAreDeterministic()
+    {
+        var many = Enumerable.Range(0, 100).Select(i => (Offset: i * 4 * K64, Length: K64)).ToList();
+
+        var a = Applier.EdgeRanges(many, 1L << 40);
+        var b = Applier.EdgeRanges(many.AsEnumerable().Reverse().ToList(), 1L << 40);
+
+        Assert.Equal(16, a.Count);
+        Assert.True(a.Sum(x => x.Length) <= Applier.DigestCapBytes);
+        Assert.Equal(a, b);
+        Assert.Equal(many[0], a[0]); // 고르게 솎되 처음은 남음
+        Assert.True(a[^1].Offset > many[80].Offset);
+        Assert.Equal(16, Applier.EdgeRanges(many.Take(16).ToList(), 1L << 40).Count); // 상한 이하면 그대로
+    }
+
+    private ApplyHooks CountingHooks(List<IReadOnlyList<(long Offset, long Length)>> legacy, List<IReadOnlyList<(long Offset, long Length)>> edge)
+    {
+        ApplyHooks h = Hooks();
+        return new ApplyHooks
+        {
+            Extents = h.Extents,
+            SkipReason = h.SkipReason,
+            Sleep = h.Sleep,
+            Digest = (p, size, extra) =>
+            {
+                legacy.Add(extra);
+                return SampleHasher.Compute(p, size, extra, null);
+            },
+            EdgeDigest = (p, size, extra) =>
+            {
+                edge.Add(extra);
+                return SampleHasher.Compute(p, size, extra, null, span: 0);
+            },
+        };
+    }
+
+    [Fact]
+    public void NewJournalRecordsTheRuleAndHashesOnlyTheEdgeRanges()
+    {
+        var legacy = new List<IReadOnlyList<(long Offset, long Length)>>();
+        var edge = new List<IReadOnlyList<(long Offset, long Length)>>();
+
+        ApplyReport rep = Apply(Make().Resolve(20000), Exec(), CountingHooks(legacy, edge));
+
+        Assert.Empty(rep.Failed);
+        Assert.Equal(Applier.EdgeRule, JournalRows().Single(r => Equals(r["type"], "header"))["digest_rule"]);
+        Assert.Empty(legacy);
+        Assert.Equal(4, edge.Count); // 파일 2개 x (전, 후)
+        Assert.All(edge, c => Assert.True(c.Sum(x => x.Length) <= Applier.DigestCapBytes));
+    }
+
+    [Fact]
+    public void JournalWithoutDigestRuleKeepsTheLegacyRuleOnResume()
+    {
+        PlanFile p = Make().Resolve(20000);
+        using (var jr = new Journal(JournalPath))
+        {
+            jr.Add(new JObject { { "type", "header" }, { "plan_sha", p.Sha() }, { "zone_start_lcn", p.Zone.StartLcn }, { "cluster_bytes", Cb }, { "started", 1.0 } }); // 규칙 없음 = 옛 저널
+        }
+
+        var legacy = new List<IReadOnlyList<(long Offset, long Length)>>();
+        var edge = new List<IReadOnlyList<(long Offset, long Length)>>();
+
+        ApplyReport rep = Apply(p, Exec(), CountingHooks(legacy, edge));
+
+        Assert.Empty(rep.Failed);
+        Assert.Empty(rep.ShaMismatch!);
+        Assert.Empty(edge);
+        Assert.Equal(4, legacy.Count);
+        Assert.False(JournalRows().Single(r => Equals(r["type"], "header")).ContainsKey("digest_rule")); // 옛 저널에 규칙을 덧쓰지 않음
+        Assert.True(Verify(p).Contiguous);
+        Assert.Empty(Reverter.Revert(JournalPath, Vol, [Root], Hooks(), new ApplyOptions(Execute: true)).Skipped); // 되돌리기는 표본 규칙과 무관
+    }
+
+    [Fact]
+    public void BatchedJournalFlushesEveryThirtyTwoRowsEverySecondAndOnClose()
+    {
+        long now = 0;
+        using (var jr = new Journal(JournalPath) { Timestamp = () => now })
+        {
+            for (int i = 0; i < 100; i++)
+            {
+                jr.AddBatched(new JObject { { "type", "x" }, { "i", (long)i } });
+            }
+
+            Assert.Equal(3, jr.Flushes); // 32, 64, 96
+            now += System.Diagnostics.Stopwatch.Frequency + 1;
+            jr.AddBatched(new JObject { { "type", "x" } });
+            Assert.Equal(4, jr.Flushes); // 1 초 경과
+            jr.AddBatched(new JObject { { "type", "x" } });
+            Assert.Equal(4, jr.Flushes);
+            jr.Add(new JObject { { "type", "end" } });
+            Assert.Equal(5, jr.Flushes); // 일반 Add 는 즉시
+            jr.Flush();
+            Assert.Equal(5, jr.Flushes); // 쌓인 것이 없으면 안 내림
+            jr.AddBatched(new JObject { { "type", "x" } });
+        }
+
+        Assert.Equal(104, new Journal(JournalPath).Rows.Count); // 닫을 때 남은 줄도 기록
+    }
+
+    [Fact]
+    public void LostJournalTailResumesWithoutMovingAnythingTwiceAndStillReverts()
+    {
+        PlanFile p = Make().Resolve(20000);
+        using var cts = new CancellationTokenSource();
+        Vol.AfterMove = n =>
+        {
+            if (n == 4)
+            {
+                cts.Cancel();
+            }
+        };
+        _ = Applier.Apply(p, Vol, [Root], JournalPath, Hooks(), Exec(8 * Cb), cts.Token);
+        Vol.AfterMove = null;
+        int moved = Vol.Moves.Count;
+        // 꼬리 유실: 묶음 쓰기라 마지막 done 과 end 가 디스크에 없는 상태. planned 는 이동 전에 확정되므로 남음.
+        List<JObject> kept = JournalRows().Where(r => !Equals(r["type"], "end") && !(Equals(r["type"], "step") && Equals(r["state"], "done"))).ToList();
+        File.WriteAllText(JournalPath, string.Concat(kept.Select(r => PyJson.Dumps(r) + "\r\n")));
+
+        ApplyReport rep = Apply(p, Exec(8 * Cb));
+
+        Assert.Null(rep.Stopped);
+        Assert.Empty(rep.Failed);
+        Assert.Equal(Vol.Moves.Count, Vol.Moves.Select(m => (m.Path, m.Vcn)).Distinct().Count()); // 이미 옮긴 작업을 다시 옮기지 않음
+        Assert.True(Vol.Moves.Count > moved);
+        Assert.True(Verify(p).Contiguous);
+        RevertReport rv = Reverter.Revert(JournalPath, Vol, [Root], Hooks(), new ApplyOptions(Execute: true));
+        Assert.Empty(rv.Skipped);
+        Assert.True(SameExtents(Files, Vol.Ext));
+    }
+
     // ---- PlanGuards 단위
 
     [Theory]

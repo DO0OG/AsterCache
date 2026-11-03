@@ -3,13 +3,15 @@ using AsterCache.Core.Json;
 
 namespace AsterCache.Core.Apply;
 
-/// 실행 기록 (JSON Lines, 줄마다 fsync). 이어하기와 되돌리기의 힌트일 뿐이고, 진실은 항상 파일의 현재 extent 와 SHA 표본입니다.
+/// 실행 기록 (JSON Lines, <see cref="Add"/> 는 줄마다 fsync, <see cref="AddBatched"/> 는 묶어서 fsync). 이어하기와 되돌리기의 힌트일 뿐이고, 진실은 항상 파일의 현재 extent 와 SHA 표본입니다.
 /// 줄바꿈은 Windows 텍스트 모드 Python 과 같은 CRLF 입니다. 읽을 때는 LF 도 받습니다.
 public sealed class Journal : IDisposable
 {
     private readonly bool _fixNewline;
     private readonly List<JObject> _rows = [];
     private FileStream? _file;
+    private int _pending;
+    private long _lastFlush;
 
     /// 파일이 있으면 읽습니다. 빈 줄은 무시하고, 마지막 줄만 깨졌으면 (쓰다 멈춤) 버리며, 중간 줄이 깨졌으면 PyValueException.
     public Journal(string path)
@@ -41,6 +43,17 @@ public sealed class Journal : IDisposable
 
     public string Path { get; }
 
+    /// 묶음 쓰기가 이만큼 쌓이거나 이만큼 시간이 지나면 디스크까지 내립니다.
+    public const int BatchRows = 32;
+
+    public static readonly TimeSpan BatchInterval = TimeSpan.FromSeconds(1);
+
+    /// 디스크까지 내린 횟수 (시험과 진단용).
+    public int Flushes { get; private set; }
+
+    /// 시각 원천 (Stopwatch 틱), 시험이 바꿈.
+    public Func<long> Timestamp { get; init; } = System.Diagnostics.Stopwatch.GetTimestamp;
+
     public IReadOnlyList<JObject> Rows => _rows;
 
     /// type 이 kind 이고 key 값이 val 인 첫 행. val 은 long/string/null 로 비교합니다.
@@ -63,8 +76,39 @@ public sealed class Journal : IDisposable
         return state;
     }
 
-    /// 한 줄 쓰고 디스크까지 내립니다 (Flush(true)).
+    /// 한 줄 쓰고 디스크까지 내립니다 (앞서 묶어 둔 줄도 함께).
     public void Add(JObject row)
+    {
+        Write(row);
+        Flush();
+    }
+
+    /// 한 줄 쓰되 디스크까지는 BatchRows 줄이 쌓이거나 BatchInterval 이 지났을 때만 내립니다. 꼬리가 유실돼도 진실은 파일의 extent 라 이어하기가 다시 정함:
+    /// 되돌리기에 필요한 줄 (planned 의 from) 은 이동 전에 <see cref="Flush"/> 로 확정해야 합니다.
+    public void AddBatched(JObject row)
+    {
+        Write(row);
+        if (_pending >= BatchRows || Timestamp() - _lastFlush >= BatchInterval.TotalSeconds * System.Diagnostics.Stopwatch.Frequency)
+        {
+            Flush();
+        }
+    }
+
+    /// 쓴 줄을 모두 디스크까지 내립니다 (아무것도 안 쌓였으면 아무것도 안 함).
+    public void Flush()
+    {
+        if (_file is null || _pending == 0)
+        {
+            return;
+        }
+
+        _file.Flush(true);
+        Flushes++;
+        _pending = 0;
+        _lastFlush = Timestamp();
+    }
+
+    private void Write(JObject row)
     {
         if (_file is null)
         {
@@ -75,16 +119,18 @@ public sealed class Journal : IDisposable
             }
 
             _file = new FileStream(Path, FileMode.Append, FileAccess.Write, FileShare.Read);
+            _lastFlush = Timestamp();
         }
 
         byte[] line = PyJson.Utf8.GetBytes(Line(row));
         _file.Write(line);
-        _file.Flush(true);
         _rows.Add(row);
+        _pending++;
     }
 
     public void Close()
     {
+        Flush();
         _file?.Dispose();
         _file = null;
     }

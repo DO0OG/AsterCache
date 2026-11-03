@@ -8,14 +8,14 @@ namespace AsterCache.Windows;
 
 /// 드라이브 문자 → 그 볼륨이 놓인 물리 디스크 번호들 (IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, 접근 권한 0 이라 관리자 불필요).
 /// 같은 물리 디스크는 SameDisk(a, b) = 두 집합이 겹침. 조회에 실패한 (모르는) 쪽은 보수적으로 같은 디스크로 칩니다.
-/// 결과는 세션 안에서 1 시간 캐시하고, 실패는 1 분만 캐시합니다 (막 마운트된 볼륨을 곧 다시 시도).
+/// 결과는 5 분 캐시하고, 조회 실패(예외 포함)는 캐시하지 않고 그 드라이브 항목을 지웁니다 (분리·재연결·문자 재할당 반영).
 public sealed class VolumeDisks(Func<string, IReadOnlySet<uint>?> query, Func<long> nowMs)
 {
     private const uint IoctlVolumeGetVolumeDiskExtents = 0x00560000; // CTL_CODE(IOCTL_VOLUME_BASE = 0x56, 0, METHOD_BUFFERED, FILE_ANY_ACCESS)
     private const int MaxExtents = 16;
-    private static readonly long CacheMs = (long)TimeSpan.FromHours(1).TotalMilliseconds;
-    private static readonly long FailureCacheMs = (long)TimeSpan.FromMinutes(1).TotalMilliseconds;
+    private static readonly long CacheMs = (long)TimeSpan.FromMinutes(5).TotalMilliseconds;
     private readonly ConcurrentDictionary<string, (long At, IReadOnlySet<uint>? Disks)> _cache = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _reported = new(StringComparer.Ordinal);
 
     /// 실제 IOCTL 을 쓰는 서비스 공용 인스턴스.
     public static VolumeDisks Shared { get; } = new(QueryDisks, () => Stopwatch.GetTimestamp() * 1000 / Stopwatch.Frequency);
@@ -60,7 +60,7 @@ public sealed class VolumeDisks(Func<string, IReadOnlySet<uint>?> query, Func<lo
 
         string letter = char.ToUpperInvariant(path[0]) + ":";
         long now = nowMs();
-        if (_cache.TryGetValue(letter, out (long At, IReadOnlySet<uint>? Disks) hit) && now - hit.At < (hit.Disks is null ? FailureCacheMs : CacheMs))
+        if (_cache.TryGetValue(letter, out (long At, IReadOnlySet<uint>? Disks) hit) && now - hit.At < CacheMs)
         {
             return hit.Disks;
         }
@@ -73,6 +73,17 @@ public sealed class VolumeDisks(Func<string, IReadOnlySet<uint>?> query, Func<lo
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             disks = null;
+        }
+
+        if (disks is null)
+        {
+            _cache.TryRemove(letter, out _);
+            if (_reported.TryAdd(letter, 0))
+            {
+                Trace.WriteLine($"VolumeDisks: {letter} 물리 디스크를 판정하지 못해 같은 디스크로 봅니다.");
+            }
+
+            return null;
         }
 
         _cache[letter] = (now, disks);

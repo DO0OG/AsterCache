@@ -66,19 +66,35 @@ public sealed class VolumeDisksTests
     }
 
     [Fact]
-    public void ResultsAreCachedForAnHourAndFailuresForAMinute()
+    public void ResultsAreCachedForFiveMinutesThenReadAgain()
     {
         VolumeDisks v = Make();
-        v.AreSame("D:", "G:");
-        v.AreSame("D:", "G:");
-        Assert.Equal(["D:", "G:"], _queried);
+        Assert.True(v.AreSame("C:", "D:"));
+        Assert.True(v.AreSame("D:", "C:"));
+        Assert.Equal(["C:", "D:"], _queried);
 
-        _ms += (long)TimeSpan.FromSeconds(61).TotalMilliseconds;
-        v.AreSame("D:", "G:");
-        Assert.Equal(["D:", "G:", "G:"], _queried); // 실패만 다시 조회
+        _disks["D:"] = new HashSet<uint> { 1 }; // 재연결된 다른 디스크
+        _ms += (long)TimeSpan.FromSeconds(299).TotalMilliseconds;
+        Assert.True(v.AreSame("C:", "D:")); // 5 분 안: 옛 매핑 유지
+        Assert.Equal(["C:", "D:"], _queried);
 
-        _ms += (long)TimeSpan.FromMinutes(60).TotalMilliseconds;
-        v.AreSame("D:", "G:");
-        Assert.Equal(["D:", "G:", "G:", "D:", "G:"], _queried);
+        _ms += (long)TimeSpan.FromSeconds(1).TotalMilliseconds;
+        Assert.False(v.AreSame("C:", "D:")); // 5 분 만료: 새 매핑 반영
+        Assert.Equal(["C:", "D:", "C:", "D:"], _queried);
+    }
+
+    [Fact]
+    public void AFailedLookupIsNotCachedAndDropsTheEarlierMapping()
+    {
+        VolumeDisks v = Make();
+        Assert.False(v.AreSame("D:", "E:"));
+
+        _disks.Remove("D:"); // 분리: 다음 조회 실패
+        _ms += (long)TimeSpan.FromMinutes(5).TotalMilliseconds;
+        Assert.True(v.AreSame("D:", "E:")); // 판정 불가 = 같은 디스크
+
+        _disks["D:"] = new HashSet<uint> { 2 }; // 다시 붙음, 시각은 그대로
+        Assert.False(v.AreSame("D:", "E:")); // 실패가 캐시되지 않아 바로 새 매핑
+        Assert.Equal(["D:", "E:", "D:", "E:", "D:"], _queried);
     }
 }

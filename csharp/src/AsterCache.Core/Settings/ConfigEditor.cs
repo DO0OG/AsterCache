@@ -167,6 +167,8 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             { "rewarm_minutes", (long)a.RewarmMinutes },
             { "restream_cooldown_min", (long)a.RestreamCooldownMin },
             { "rewarm_after_exit_min", (long)a.RewarmAfterExitMin },
+            { "startup_warm_games", (long)a.StartupWarmGames },
+            { "startup_warm_max_mib", (long)a.StartupWarmMaxMib },
             { "post_update_delay_min", (long)a.PostUpdateDelayMin },
             { "recovery_max_min", (long)a.RecoveryMaxMin },
             { "post_relocate_recovery", a.PostRelocateRecovery },

@@ -97,6 +97,7 @@ public sealed class PrewarmTests : IDisposable
     {
         GameSettings a = Game("a"), b = Game("b", PrewarmSettings.Default with { OnServiceStart = false }), c = Game("c", PrewarmSettings.Default with { OnServiceStart = false });
         Prewarmer p = Make(a, b, c);
+        p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 1 << 20 }); // 이 시험은 병합과 중복 제거만 봄
 
         p.RunServiceStart([b, a, c]);
 

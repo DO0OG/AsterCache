@@ -118,7 +118,8 @@ public sealed class Worker : BackgroundService
                     BootProbe.RunReal(_settings, _auto.Status, _log, _auto.WarmToken); // 서비스 시작 예열이 파일을 데우기 전의 콜드 비용 (부팅 뒤 첫 시작일 때만)
                 }
 
-                _prewarm.RunServiceStart(_auto?.StartupRecent(), _auto?.WarmToken ?? default, _auto is { } am ? g => am.HasPlayed(g.Name) : null);
+                _prewarm.RunServiceStart(_auto?.StartupRecent(), _auto?.WarmToken ?? default, _auto is { } am ? g => am.HasPlayed(g.Name) : null,
+                    _auto is { } am2 && _settings.Auto.Enabled ? name => am2.Status.LastPlayed().TryGetValue(name, out DateTimeOffset at) ? at : null : null);
             }), CancellationToken.None);
         }
 
@@ -351,8 +352,8 @@ public sealed class Worker : BackgroundService
             }
 
             (_watchKey, _watchers, _restart) = (key, _reload!.Watchers(s), true);
-            _generation?.Cancel();
             LogWatcherOverride(s);
+            _generation?.Cancel();
         }
     }
 

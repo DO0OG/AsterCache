@@ -243,7 +243,7 @@ public static partial class DiskActivity
                 if (!_namesLogged)
                 {
                     _namesLogged = true;
-                    Log?.Info("DiskActivity: PhysicalDisk 인스턴스 " + string.Join(", ", result.Keys));
+                    Log?.Info("DiskActivity: PhysicalDisk instances " + string.Join(", ", result.Keys));
                 }
 
                 return result;

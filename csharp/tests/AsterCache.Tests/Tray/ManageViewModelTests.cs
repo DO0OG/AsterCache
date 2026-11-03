@@ -293,6 +293,18 @@ public sealed class ManageViewModelTests : IDisposable
     }
 
     [Fact]
+    public void TraceOfAnAntiCheatGameShowsTheCliRefusalOnScreen()
+    {
+        Register();
+        _cli.On("trace", (_, _) => CliResult.Parse("{\"error\":\"anti_cheat\",\"detail\":\"anti-cheat protected game; tracing disabled (vanguard)\"}", 1));
+
+        ActionResult r = _vm.CollectTrace("mw4", _ => { }, CancellationToken.None);
+
+        Assert.False(r.Ok);
+        Assert.Contains("anti_cheat: anti-cheat protected game; tracing disabled (vanguard)", r.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PlanSizesTheZoneFromTheHotBytesThenWritesElevated()
     {
         Register();

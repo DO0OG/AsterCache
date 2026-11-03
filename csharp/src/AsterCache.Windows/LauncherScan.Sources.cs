@@ -77,15 +77,18 @@ public static partial class LauncherScan
         }
     }
 
-    // 프로그램 제거 목록: HDD 의 시스템 볼륨 밖에서 1 GiB 이상이고 exe 가 있으며 일반 소프트웨어 게시자나 런처가 아닌 설치 폴더. 앞선 결과와 겹치는 폴더는 뺌.
+    // 프로그램 제거 목록: HDD 에서 (시스템 볼륨이어도 Windows·AppData 등 시스템 폴더는 제외, 재배치 가능 여부는 DriveCapabilities 가 판정) 1 GiB 이상이고 exe 가 있으며 일반 소프트웨어 게시자나 런처가 아닌 설치 폴더. 앞선 결과와 겹치는 폴더는 뺌.
     // 런처형 폴더 (exe 가 런처형 이름뿐이거나, 256 MiB 이상 파일과 큰 하위 게임 폴더가 모두 없음) 는 등록하지 않고 skipped 에 남깁니다.
+    private static readonly string[] UninstallSystemFolders =
+        ["\\Windows\\", "\\AppData\\", "\\ProgramData\\", "\\WindowsApps\\", "\\Common Files\\", "\\Program Files\\Microsoft", "\\Program Files (x86)\\Microsoft", "\\Program Files\\Windows", "\\Program Files (x86)\\Windows"];
+
     private static IEnumerable<Raw> Uninstall(ILauncherEnv env, IReadOnlyCollection<string> known, Func<string, bool?> isHdd, List<SkippedFolder> skipped)
     {
         var taken = new List<string>(known);
         foreach (UninstallEntry e in env.UninstallEntries())
         {
             string? dir = Normalize(e.InstallLocation.Trim().Trim('"'));
-            if (dir is null || dir.Length <= 3 || dir[..2].Equals(env.SystemDrive, StringComparison.OrdinalIgnoreCase)
+            if (dir is null || dir.Length <= 3 || (dir[..2].Equals(env.SystemDrive, StringComparison.OrdinalIgnoreCase) && UninstallSystemFolders.Any(f => (dir + "\\").Contains(f, StringComparison.OrdinalIgnoreCase)))
                 || SoftwarePublishers.Any(p => HasWord(e.Publisher, p)) || taken.Any(t => Overlaps(t, dir))
                 || isHdd(dir[..2].ToUpperInvariant()) != true || !env.DirectoryExists(dir) || !env.FolderAtLeast(dir, MinUninstallBytes)
                 || ExeList(env, dir) is not { } files || files.Count == 0 || files.Any(f => LauncherPrograms.Contains(Path.GetFileName(f.Path), StringComparer.OrdinalIgnoreCase)))

@@ -18,7 +18,7 @@ public static class AutoStage
 }
 
 public sealed record AutoGameEntry(
-    string Source, string? Launcher, string Stage, string? Detail, DateTimeOffset At, DateTimeOffset? LastPlayed, DateTimeOffset? RelocatedAt, int? HitPercent = null, DateTimeOffset? HitAt = null, AutoBootProbe? BootProbe = null);
+    string Source, string? Launcher, string Stage, string? Detail, DateTimeOffset At, DateTimeOffset? LastPlayed, DateTimeOffset? RelocatedAt, int? HitPercent = null, DateTimeOffset? HitAt = null, AutoBootProbe? BootProbe = null, IReadOnlyList<DateTimeOffset>? Plays = null);
 
 /// 부팅 뒤 첫 서비스 시작에서 잰 메타데이터 콜드 비용 (auto_status.json 의 boot_probe): 측정 시각, 연 파일 수, 파일당 평균 열기 시간 (ms).
 public sealed record AutoBootProbe(DateTimeOffset At, int Files, double OpenMsPerFile);
@@ -31,6 +31,7 @@ public sealed class AutoStatus
 {
     public const int MaxEvents = 20;
     public static readonly TimeSpan RelocationKeep = TimeSpan.FromHours(48);
+    public const int MaxPlays = 30;
     public const int MoveRetries = 5;
     public static readonly TimeSpan MoveRetryDelay = TimeSpan.FromMilliseconds(100);
 
@@ -104,8 +105,8 @@ public sealed class AutoStatus
         lock (_lock)
         {
             _games[name] = _games.TryGetValue(name, out AutoGameEntry? old)
-                ? old with { LastPlayed = at }
-                : new AutoGameEntry(source, null, initialStage, null, at, at, null);
+                ? old with { LastPlayed = at, Plays = [.. (old.Plays ?? (old.LastPlayed is { } l ? [l] : [])).Append(at).TakeLast(MaxPlays)] }
+                : new AutoGameEntry(source, null, initialStage, null, at, at, null, Plays: [at]);
             Save();
         }
     }
@@ -212,6 +213,16 @@ public sealed class AutoStatus
         }
     }
 
+    /// 게임별 플레이 이력 (오래된 순, 최대 MaxPlays 개). 이력이 없고 last_played 만 있는 옛 항목은 그 하나가 이력입니다.
+    public IReadOnlyDictionary<string, IReadOnlyList<DateTimeOffset>> Plays()
+    {
+        lock (_lock)
+        {
+            return _games.Where(kv => kv.Value.LastPlayed is not null)
+                .ToDictionary(kv => kv.Key, kv => kv.Value.Plays is { Count: > 0 } p ? p : [kv.Value.LastPlayed!.Value], StringComparer.Ordinal);
+        }
+    }
+
     public void Remove(string name)
     {
         lock (_lock)
@@ -255,6 +266,11 @@ public sealed class AutoStatus
                 { "last_played", e.LastPlayed is { } p ? Iso(p) : null },
                 { "relocated_at", e.RelocatedAt is { } r ? Iso(r) : null },
             };
+            if (e.Plays is { Count: > 0 } plays)
+            {
+                game.Add("plays", plays.Select(t => (object?)Iso(t)).ToList());
+            }
+
             if (e.HitPercent is { } hp)
             {
                 game.Add("hit_percent", (long)hp); // 재지 않은 게임의 항목 모양은 그대로
@@ -332,7 +348,7 @@ public sealed class AutoStatus
                 {
                     if (value is JObject o && Str(o, "stage") is { } stage)
                     {
-                        _games[name] = new AutoGameEntry(Str(o, "source") ?? "manual", Str(o, "launcher"), stage, Str(o, "detail"), Time(o, "at") ?? _now(), Time(o, "last_played"), Time(o, "relocated_at"), o.TryGetValue("hit_percent", out object? hp) && hp is long h ? (int)Math.Clamp(h, 0, 100) : null, Time(o, "hit_at"), ReadBootProbe(o));
+                        _games[name] = new AutoGameEntry(Str(o, "source") ?? "manual", Str(o, "launcher"), stage, Str(o, "detail"), Time(o, "at") ?? _now(), Time(o, "last_played"), Time(o, "relocated_at"), o.TryGetValue("hit_percent", out object? hp) && hp is long h ? (int)Math.Clamp(h, 0, 100) : null, Time(o, "hit_at"), ReadBootProbe(o), ReadPlays(o));
                     }
                 }
             }
@@ -363,6 +379,9 @@ public sealed class AutoStatus
         o.TryGetValue("boot_probe", out object? v) && v is JObject b && Time(b, "at") is { } at && b.TryGetValue("files", out object? f) && f is long files
             && b.TryGetValue("open_ms_per_file", out object? ms) && (ms as double? ?? ms as long?) is { } openMs
             ? new AutoBootProbe(at, (int)Math.Clamp(files, 0, int.MaxValue), openMs) : null;
+
+    private static List<DateTimeOffset>? ReadPlays(JObject o) =>
+        o.TryGetValue("plays", out object? v) && v is List<object?> list ? [.. list.Select(Time).OfType<DateTimeOffset>().TakeLast(MaxPlays)] : null;
 
     private static string Iso(DateTimeOffset t) => t.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
 

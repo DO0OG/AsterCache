@@ -1,3 +1,4 @@
+using AsterCache.Core;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Settings;
 
@@ -123,7 +124,7 @@ public sealed class AutoMode
     {
         AsterSettings s = _settings;
         return s.Auto.Enabled
-            ? Recent(s.Games.Where(g => !g.Prewarm.OnServiceStart), Status.LastPlayed(), s.Auto.PrewarmRecent)
+            ? Recent(s.Games.Where(g => !g.Prewarm.OnServiceStart), Status.LastPlayed(), s.Auto.PrewarmRecent, Status.Plays(), _env.Now().ToLocalTime())
             : [];
     }
 
@@ -132,14 +133,16 @@ public sealed class AutoMode
     {
         AsterSettings s = _settings;
         return s.Auto.Enabled
-            ? hit.Where(g => g.Source != "auto").Concat(Recent(hit.Where(g => g.Source == "auto"), Status.LastPlayed(), s.Auto.PrewarmRecent))
+            ? hit.Where(g => g.Source != "auto").Concat(Recent(hit.Where(g => g.Source == "auto"), Status.LastPlayed(), s.Auto.PrewarmRecent, Status.Plays(), _env.Now().ToLocalTime()))
             : hit;
     }
 
-    /// last_played 가 있는 게임을 최근 순으로 n 개 (n 이 0 이면 전부, 음수면 없음).
-    public static IReadOnlyList<GameSettings> Recent(IEnumerable<GameSettings> games, IReadOnlyDictionary<string, DateTimeOffset> lastPlayed, int n)
+    /// last_played 가 있는 게임을 예열 점수 (최근성 + 시간대 습관) 순으로 n 개 (n 이 0 이면 전부, 음수면 없음), 동점이면 최근순. plays 를 안 주면 최근순입니다.
+    public static IReadOnlyList<GameSettings> Recent(IEnumerable<GameSettings> games, IReadOnlyDictionary<string, DateTimeOffset> lastPlayed, int n,
+        IReadOnlyDictionary<string, IReadOnlyList<DateTimeOffset>>? plays = null, DateTimeOffset now = default)
     {
-        IEnumerable<GameSettings> ordered = games.Where(g => lastPlayed.ContainsKey(g.Name)).OrderByDescending(g => lastPlayed[g.Name]).ThenBy(g => g.Name, StringComparer.Ordinal);
+        double Score(GameSettings g) => plays is not null && plays.TryGetValue(g.Name, out IReadOnlyList<DateTimeOffset>? p) ? PrewarmScore.Compute(p, now) : 0;
+        IEnumerable<GameSettings> ordered = games.Where(g => lastPlayed.ContainsKey(g.Name)).OrderByDescending(Score).ThenByDescending(g => lastPlayed[g.Name]).ThenBy(g => g.Name, StringComparer.Ordinal);
         return [.. n < 0 ? [] : n > 0 ? ordered.Take(n) : ordered];
     }
 

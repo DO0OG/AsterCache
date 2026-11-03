@@ -1,3 +1,5 @@
+using System.Globalization;
+using AsterCache.Core;
 using AsterCache.Core.Apply;
 using AsterCache.Core.Json;
 using AsterCache.Core.Plan;
@@ -80,19 +82,38 @@ internal static class StatusCommand
         }
     }
 
-    // 서비스가 남긴 자동 모드 상태 중 games·relocations 만, 없거나 읽지 못하면 null.
+    // 서비스가 남긴 자동 모드 상태 중 games·relocations 만 (games 각 항목에 prewarm_score 를 덧붙임), 없거나 읽지 못하면 null.
     private static object? AutoStatus(string path)
     {
         try
         {
             return File.Exists(path) && JsonRead.ReadFile(path) is JObject root
-                ? new JObject { { "games", root.TryGetValue("games", out object? g) ? g : null }, { "relocations", root.TryGetValue("relocations", out object? r) ? r : null } }
+                ? new JObject { { "games", root.TryGetValue("games", out object? g) ? WithScores(g) : null }, { "relocations", root.TryGetValue("relocations", out object? r) ? r : null } }
                 : null;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
         {
             return null;
         }
+    }
+
+    // 게임마다 plays (없으면 last_played 하나) 로 예열 점수를 덧붙임. 이력이 없는 게임은 null.
+    private static object? WithScores(object? games)
+    {
+        if (games is not JObject all)
+        {
+            return games;
+        }
+
+        DateTimeOffset now = DateTimeOffset.Now;
+        foreach (JObject game in all.Select(kv => kv.Value).OfType<JObject>().ToList())
+        {
+            List<DateTimeOffset> plays = [.. (game.TryGetValue("plays", out object? p) && p is List<object?> list ? list : [game.TryGetValue("last_played", out object? lp) ? lp : null])
+                .Select(v => DateTimeOffset.TryParse(v as string, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset t) ? t : (DateTimeOffset?)null).OfType<DateTimeOffset>()];
+            game["prewarm_score"] = plays.Count == 0 ? null : Math.Round(PrewarmScore.Compute(plays, now), 4);
+        }
+
+        return all;
     }
 
     private static JObject Summarize(Journal jr)

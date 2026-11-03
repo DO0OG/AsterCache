@@ -37,7 +37,7 @@ public sealed class AutoStatusTests : IDisposable
         var root = (JObject)JsonRead.ReadFile(StatusPath)!;
         Assert.Equal(["updated", "relocations", "relocation_bytes", "games", "events"], root.Select(kv => kv.Key));
         var game = (JObject)((JObject)root["games"]!)["mw4"]!;
-        Assert.Equal(["source", "launcher", "stage", "detail", "at", "last_played", "relocated_at"], game.Select(kv => kv.Key));
+        Assert.Equal(["source", "launcher", "stage", "detail", "at", "last_played", "relocated_at", "plays"], game.Select(kv => kv.Key));
         Assert.Equal(("auto", "steam", "done", null), (game["source"], game["launcher"], game["stage"], game["detail"]));
         Assert.Equal("2026-11-02T12:15:00.0000000+00:00", game["relocated_at"]);
         Assert.Equal("2026-11-02T12:05:00.0000000+00:00", game["last_played"]);
@@ -47,7 +47,8 @@ public sealed class AutoStatusTests : IDisposable
         Assert.Equal(["at", "game", "kind"], events[0].Select(kv => kv.Key));
 
         AutoStatus again = Make();
-        Assert.Equal(s.Get("mw4"), again.Get("mw4"));
+        Assert.Equal(s.Get("mw4")! with { Plays = null }, again.Get("mw4")! with { Plays = null }); // 목록은 참조 비교라 따로 견줌
+        Assert.Equal(s.Get("mw4")!.Plays, again.Get("mw4")!.Plays);
         Assert.Equal(s.Events, again.Events);
         Assert.Equal(1, again.RelocationsWithin(TimeSpan.FromHours(24)));
         Assert.StartsWith("{\n  \"updated\"", File.ReadAllText(StatusPath), StringComparison.Ordinal); // indent 2, ensure_ascii 거짓

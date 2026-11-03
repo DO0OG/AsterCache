@@ -34,6 +34,7 @@ public sealed record AutoEvent(DateTimeOffset At, string Game, string Kind);
 public sealed class AutoStatus
 {
     public const int MaxEvents = 20;
+    public const int PartialBelowPercent = 30;
     public static readonly TimeSpan RelocationKeep = TimeSpan.FromHours(48);
     public const int MaxPlays = 30;
     public static readonly TimeSpan RelocationHold = TimeSpan.FromHours(24);
@@ -172,14 +173,18 @@ public sealed class AutoStatus
         }
     }
 
-    /// 게임 종료 때 잰 존 커버리지 (%). 항목이 없으면 남기지 않습니다.
+    /// 게임 종료 때 잰 존 커버리지 (%). 항목이 없으면 남기지 않습니다. 완료 단계에서 PartialBelowPercent 미만이면 detail 에 "partial (N%)", 넘으면 그 표시를 지움.
     public void RecordCoverage(string name, int percent)
     {
         lock (_lock)
         {
             if (_games.TryGetValue(name, out AutoGameEntry? old))
             {
-                _games[name] = old with { CoveragePercent = Math.Clamp(percent, 0, 100) };
+                int clamped = Math.Clamp(percent, 0, 100);
+                string? detail = old.Stage != AutoStage.Done ? old.Detail
+                    : clamped < PartialBelowPercent ? $"partial ({clamped}%)"
+                    : old.Detail?.StartsWith("partial (", StringComparison.Ordinal) == true ? null : old.Detail;
+                _games[name] = old with { CoveragePercent = clamped, Detail = detail };
                 Save();
             }
         }

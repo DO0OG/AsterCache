@@ -64,8 +64,8 @@ public sealed class AutoRelocator
     public const string PlanSourcePrefetch = PrefetchFiles.BootSource;
     public const string RelocatedPrefetch = "relocated (prefetch)";
 
-    /// 프리페치 계획은 이 크기 이하의 파일만 통째로 존에 모읍니다 (더 큰 파일은 옮기지 않고 예열 때만 읽음).
-    public const long PrefetchMaxFileBytes = 64L << 20;
+    /// 프리페치 계획은 트레이스가 참조한 범위의 앞뒤로 이만큼을 더해 존에 모읍니다 (파일 크기 상한 없음).
+    public const long PrefetchPadBytes = 64L << 20;
     private const string FirstRunDetail = "first run recorded, planning again";
     private const string BusyDetail = "target region busy, planning again";
 
@@ -981,7 +981,7 @@ public sealed class AutoRelocator
             bool boot = tracePath == AutoTracer.BootTracePath(g);
             bool prefetch = boot && _env.TraceSource(tracePath) == PlanSourcePrefetch;
             (IReadOnlyList<TraceEvent> trace, JObject excluded) = DropVolatile(g, _env.LoadTrace(tracePath, g.OriginRoot));
-            IReadOnlyList<IReadOnlyList<TraceEvent>> sessions = [prefetch ? WholeFilesByLcn(trace) : trace];
+            IReadOnlyList<IReadOnlyList<TraceEvent>> sessions = [prefetch ? RangesByLcn(trace) : trace];
             PlanFile probe = _env.MakePlan(sessions, g.OriginRoot, ZoneSize.ProbeMib);
             long hot = probe.Stats.TryGetValue("hot_bytes", out object? h) && h is long bytes ? bytes : 0;
             if (hot == 0)
@@ -1118,21 +1118,53 @@ public sealed class AutoRelocator
         : e.Detail?.Contains(RelocatedPrefetch, StringComparison.Ordinal) == true ? RelocatedPrefetch
         : e.Detail?.Contains(RelocatedProfile, StringComparison.Ordinal) == true ? RelocatedProfile : null;
 
-    // 프리페치 계획의 입력: 트레이스에 나온 파일 중 크기가 PrefetchMaxFileBytes 이하인 것을 통째로, 물리 순서 (첫 extent 의 LCN, 오름차순) 로.
+    // 프리페치 계획의 입력: 트레이스가 참조한 범위의 앞뒤로 PrefetchPadBytes 를 더해 (겹치면 합치고 파일 크기로 자름), 파일의 물리 순서 (첫 extent 의 LCN, 오름차순) 와 오프셋 순으로.
     // shortcut: 프리페치 순서가 실제 접근 순서와 얼마나 맞는지 아직 재지 않아서 (τ 검증 전) 접근 순서를 따르지 않고 물리 순서로 보수적으로 정렬함, 검증되면 프리페치 순서로 바꿈.
-    private List<TraceEvent> WholeFilesByLcn(IReadOnlyList<TraceEvent> trace)
+    private List<TraceEvent> RangesByLcn(IReadOnlyList<TraceEvent> trace)
     {
-        var rows = new List<(string Path, long Size, long Lcn)>();
-        foreach (string path in trace.Select(e => e.Path).Distinct(StringComparer.OrdinalIgnoreCase))
+        var rows = new List<(string Path, long Lcn, long Start, long End)>();
+        foreach (IGrouping<string, TraceEvent> file in trace.GroupBy(e => e.Path, StringComparer.OrdinalIgnoreCase))
         {
-            long size = _env.Stat(path).Size;
-            if (size > 0 && size <= PrefetchMaxFileBytes && _env.Extents(path) is { Count: > 0 } extents)
+            long size = _env.Stat(file.Key).Size;
+            if (size <= 0 || _env.Extents(file.Key) is not { Count: > 0 } extents)
             {
-                rows.Add((path, size, extents.Min(x => x.Lcn)));
+                continue;
+            }
+
+            long lcn = extents.Min(x => x.Lcn);
+            (long Start, long End)? open = null;
+            foreach ((long Start, long End) r in file.Select(e => (Start: Math.Max(0, e.Offset - PrefetchPadBytes), End: Math.Min(size, e.Offset + e.Length + PrefetchPadBytes))).Where(r => r.Start < r.End).OrderBy(r => r.Start))
+            {
+                if (open is { } o && r.Start <= o.End)
+                {
+                    open = (o.Start, Math.Max(o.End, r.End));
+                    continue;
+                }
+
+                if (open is { } done)
+                {
+                    rows.Add((file.Key, lcn, done.Start, done.End));
+                }
+
+                open = r;
+            }
+
+            if (open is { } last)
+            {
+                rows.Add((file.Key, lcn, last.Start, last.End));
             }
         }
 
-        return rows.OrderBy(r => r.Lcn).ThenBy(r => r.Path, StringComparer.Ordinal).Select(r => new TraceEvent(r.Path, 0, r.Size)).ToList();
+        return rows.OrderBy(r => r.Lcn).ThenBy(r => r.Path, StringComparer.Ordinal).ThenBy(r => r.Start).SelectMany(r => Chunks(r.Path, r.Start, r.End)).ToList();
+    }
+
+    // 트레이스 이벤트 한 개의 길이는 TraceEvents.MaxLength 이하여야 하므로 큰 범위는 그 길이로 잘라 이어 붙입니다.
+    private static IEnumerable<TraceEvent> Chunks(string path, long start, long end)
+    {
+        for (long at = start; at < end; at += TraceEvents.MaxLength)
+        {
+            yield return new TraceEvent(path, at, Math.Min(TraceEvents.MaxLength, end - at));
+        }
     }
 
     // 같은 존을 다시 쓰는 계획의 목표 자리에 이 계획이 옮기지 않는 자기 파일 데이터 (예: 이전 계획이 존에 모은, 이번 기록에서는 핫이 아닌 부분) 가 있는가.

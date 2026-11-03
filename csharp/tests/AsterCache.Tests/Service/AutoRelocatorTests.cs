@@ -626,6 +626,25 @@ public sealed class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
+    public void DailyWriteBudgetSmallerThanOneRunStillAllowsTheFirstMoveOfTheDay()
+    {
+        SetAuto(a => a with { MaxRelocateGibPerDay = 1 });
+        string plan2 = Path.Combine(Root, "plans", "second.plan.json");
+        GameSettings second = _game with { Name = "second", ExeNames = ["second.exe"], Plan = plan2, Trace = plan2 + ".prefetch.json" };
+        _settings = _settings with { Games = [_game, second] };
+        _w.Files.Add(AutoTracer.RawTracePath(second));
+        _status.MarkPlayed("bench", "auto", AutoStage.WaitingIdle, _w.Now - TimeSpan.FromDays(2));
+        _status.MarkPlayed("second", "auto", AutoStage.WaitingIdle, _w.Now - TimeSpan.FromDays(1));
+        List<ApplyOptions> executed = FakeBytesTodo(2L << 30);
+
+        Run(TimeSpan.FromMinutes(10));
+
+        Assert.Single(executed); // 빈 창에서는 상한(1 GiB)보다 큰 2 GiB 도 한 번 허용
+        Assert.Equal(AutoStage.Done, _status.Get("second")!.Stage);
+        Assert.Equal((AutoStage.WaitingIdle, "daily write budget reached"), (Entry.Stage, Entry.Detail)); // 그 직후에는 다시 대기
+    }
+
+    [Fact]
     public void ZeroDailyWriteBudgetMeansUnlimited()
     {
         SetAuto(a => a with { MaxRelocateGibPerDay = 0 });

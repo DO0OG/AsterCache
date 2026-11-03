@@ -216,7 +216,7 @@ public sealed class AutoRelocator
                 continue;
             }
 
-            bool budgetHeld = budget > 0 && used + _needBytes.GetValueOrDefault(g.Name, 1) > budget; // 아직 모르면 1 바이트라도 남아야 함
+            bool budgetHeld = budget > 0 && used > 0 && used + _needBytes.GetValueOrDefault(g.Name, 1) > budget; // 아직 모르면 1 바이트라도 남아야 함, 그날 첫 이동은 한 번 이동량이 상한보다 커도 허용
             lock (_noteLock)
             {
                 Note(g, AutoStage.WaitingIdle, WaitDetail(g, limitReached ? DailyLimit : budgetHeld ? DailyBudget : null));
@@ -911,7 +911,8 @@ public sealed class AutoRelocator
             var run = new ApplyOptions(Execute: true, ChunkBytes: (long)s.Auto.RelocateChunkMib << 20, LowIoPriority: s.Auto.RelocateIoPriority == AutoSettings.IoLow);
             long bytes = Math.Min(dry.BytesTodo, run.WriteCap); // 한 번의 적용은 WriteCap 까지만 쓰고 나머지는 이어하기가 다시 셈
             long budget = (long)s.Auto.MaxRelocateGibPerDay << 30;
-            if (budget > 0 && _status.RelocationBytesWithin(DailyWindow) + bytes > budget)
+            long usedToday = budget > 0 ? _status.RelocationBytesWithin(DailyWindow) : 0;
+            if (usedToday > 0 && usedToday + bytes > budget) // 빈 창의 첫 이동은 상한보다 커도 허용 (아니면 영원히 대기)
             {
                 _needBytes[g.Name] = bytes;
                 Note(g, AutoStage.WaitingIdle, WaitDetail(g, DailyBudget));

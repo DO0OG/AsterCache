@@ -166,6 +166,18 @@ public sealed class DriveRecoveryTests
         Assert.False(_r.IsRecovering(Drive));
     }
 
+    [Theory]
+    [InlineData(true, true)] // 같은 물리 디스크의 다른 볼륨 (조회 실패도 같은 취급)
+    [InlineData(false, false)]
+    public void ARecoveringVolumeMakesAnotherVolumeOnTheSameDiskRecoveringToo(bool sameDisk, bool recovering)
+    {
+        _w.SameDisk = (_, _) => sameDisk;
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        Assert.True(_r.IsRecovering(Drive));
+        Assert.Equal(recovering, _r.IsRecovering("F:"));
+    }
+
     [Fact]
     public void BaselineAboveTheSequentialCeilingIsInvalidSoEverySampleIsUnknown()
     {

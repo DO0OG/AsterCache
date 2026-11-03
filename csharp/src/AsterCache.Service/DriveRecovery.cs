@@ -94,7 +94,8 @@ public sealed class DriveRecovery : IDriveRecovery
     {
         lock (_lock)
         {
-            return _active.TryGetValue(Key(drive), out Track? t) && _env.Now() - t.Started < t.Limit;
+            string key = Key(drive);
+            return _active.Any(a => (a.Key == key || _env.SameDisk(a.Key, key)) && _env.Now() - a.Value.Started < a.Value.Limit); // 같은 물리 디스크의 다른 볼륨 쓰기도 이 드라이브를 느리게 함
         }
     }
 

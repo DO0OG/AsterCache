@@ -58,6 +58,9 @@ public sealed class PrewarmEnv
 
     public required Func<GameSettings, bool> GameRunning { get; init; }
 
+    /// 두 설치 루트가 같은 물리 디스크인가 (모르면 참). 시험 기본값은 드라이브 문자 비교.
+    public Func<string, string, bool> SameDisk { get; init; } = AutoEnv.SameLetter;
+
     /// 이번에 읽을 바이트 (계획의 존 크기를 max_stream_mib 로 자른 값), 계획 파일이 없으면 null, 존이 비어 있으면 0.
     public required Func<GameSettings, long?> ZoneBytes { get; init; }
 
@@ -107,6 +110,7 @@ public sealed class PrewarmEnv
 
     public static PrewarmEnv Create() => new()
     {
+        SameDisk = VolumeDisks.SameDisk,
         PrefetchBoot = g => AutoTracer.BootFromPrefetch(g) > 0,
         ColdRefusal = g => DriveCapabilities.Of(g.OriginRoot, Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.Windows))![..2].ToUpperInvariant(), letter => DiskInfo.Query(letter).IncursSeekPenalty).PrewarmRefusal,
         RawTraceExists = g => AutoTracer.PlanTracePath(g, File.Exists) is not null,
@@ -272,13 +276,13 @@ public sealed class Prewarmer
         }
     }
 
-    // 두 게임이 같은 디스크에 있는가 (shortcut: 디스크 번호 대신 드라이브 문자로 비교, 한 디스크에 볼륨이 둘이면 놓침).
+    // 두 게임이 같은 물리 디스크에 있는가 (env.SameDisk: 한 디스크에 볼륨이 둘이어도 같다고 봄).
     private bool SameDisk(string a, string b) =>
         _games.FirstOrDefault(g => string.Equals(g.Name, a, StringComparison.OrdinalIgnoreCase)) is { } x && _games.FirstOrDefault(g => string.Equals(g.Name, b, StringComparison.OrdinalIgnoreCase)) is { } y
-        && string.Equals(PlanFile.SplitDrive(x.OriginRoot), PlanFile.SplitDrive(y.OriginRoot), StringComparison.OrdinalIgnoreCase);
+        && _env.SameDisk(x.OriginRoot, y.OriginRoot);
 
     // 이 게임이나 같은 드라이브의 등록 게임이 돌고 있는가: 돌면 그 디스크에 새 읽기를 내지 않습니다.
-    private bool DriveHasRunningGame(GameSettings game) => _env.GameRunning(game) || AutoRelocator.SameDriveGames(_games, [game]).Any(_env.GameRunning);
+    private bool DriveHasRunningGame(GameSettings game) => _env.GameRunning(game) || AutoRelocator.SameDriveGames(_games, [game], _env.SameDisk).Any(_env.GameRunning);
 
     // 게임 시작으로 멈춘 스트림이면 양보 시간과 읽은 양을 로그에 남기고 표시를 지웁니다.
     private void LogYield(string streamGame, long bytes)

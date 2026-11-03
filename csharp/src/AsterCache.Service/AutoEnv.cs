@@ -165,7 +165,10 @@ public sealed class AutoEnv
     public Func<string, long, (bool ZoneAllocated, long? ReferenceLcn)?> LocateProbeSpots { get; init; } = (_, _) => null;
 
     /// 두 드라이브 ('X:' 또는 그 아래 경로) 가 같은 물리 디스크인가. 모르면 참 (보수적). 시험 기본값은 드라이브 문자 비교.
-    public Func<string, string, bool> SameDisk { get; init; } = (a, b) => string.Equals(PlanFile.SplitDrive(a), PlanFile.SplitDrive(b), StringComparison.OrdinalIgnoreCase);
+    public Func<string, string, bool> SameDisk { get; init; } = SameLetter;
+
+    /// SameDisk 의 시험·기본 구현: 드라이브 문자가 같은가.
+    public static bool SameLetter(string a, string b) => string.Equals(PlanFile.SplitDrive(a), PlanFile.SplitDrive(b), StringComparison.OrdinalIgnoreCase);
 
     /// 직전 호출 뒤의 전체 CPU 사용률 (%), 처음이거나 읽지 못하면 null.
     public required Func<double?> CpuPercent { get; init; }
@@ -191,6 +194,7 @@ public sealed class AutoEnv
             ExeFiles = dir => LauncherScan.InstalledExes(dir),
             VolumeLabel = VolumeInfo.Label,
             IsHdd = letter => DiskInfo.Query(letter).IncursSeekPenalty,
+            SameDisk = VolumeDisks.SameDisk,
             IsSlowBus = letter => DiskInfo.Query(letter) is var d && (d.IncursSeekPenalty is null || d.BusType == DiskInfo.BusTypeUsb),
             Pids = ProcessSnapshot.Pids,
             ImagePath = ProcessSnapshot.ImagePath,

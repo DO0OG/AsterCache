@@ -195,7 +195,7 @@ public sealed class AutoTier
     // 유휴가 아닌 이유 (유휴면 null): 대상 게임과 같은 드라이브의 등록 게임이 돌거나, 배터리이거나, 대상 드라이브에 디스크 활동이 있음.
     private string? BusyReason(AsterSettings s, GameSettings g)
     {
-        if (_env.AnyRunning([.. AutoRelocator.SameDriveGames(s.Games, [g]).Concat([g]).SelectMany(x => x.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)]))
+        if (_env.AnyRunning([.. AutoRelocator.SameDriveGames(s.Games, [g], _env.SameDisk).Concat([g]).SelectMany(x => x.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)]))
         {
             return "game running";
         }

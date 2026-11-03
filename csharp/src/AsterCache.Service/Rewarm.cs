@@ -48,7 +48,7 @@ public sealed class Rewarmer
 
         _next = now + TimeSpan.FromMinutes(auto.RewarmMinutes);
         IReadOnlyList<GameSettings> warmed = _prewarm.Warmed();
-        if (AutoRelocator.SameDriveGames(_prewarm.Games, warmed).Any(_env.GameRunning))
+        if (AutoRelocator.SameDriveGames(_prewarm.Games, warmed, _env.SameDisk).Any(_env.GameRunning))
         {
             _log.Info("rewarm check skipped: a game is running");
             return;

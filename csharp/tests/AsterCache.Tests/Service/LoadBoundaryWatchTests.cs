@@ -78,6 +78,67 @@ public sealed class LoadBoundaryWatchTests : IDisposable
     }
 
     [Fact]
+    public void ProbeWithFewerReadableSamplesThanRequestedIsNeverReached()
+    {
+        AutoStatus status = Status();
+        int? ms = LoadBoundaryWatch.Run(_game, status, _log, default, () => _clock, d => _clock += d, _ => Boundary(20), s =>
+        {
+            _probes++;
+            return new ProbeResult(LoadBoundaryWatch.SampleCount - 1, 0, 1.0); // 한 표본을 읽지 못했지만 나머지는 빠름
+        });
+
+        Assert.Null(ms);
+        Assert.Equal(41, _probes);
+        Assert.Null(status.Get("a")!.LoadBoundaryMs);
+    }
+
+    [Fact]
+    public void ServiceStopTokenEndsTheWatchBeforeAnyProbe()
+    {
+        using var stop = new CancellationTokenSource();
+        stop.Cancel();
+        int probes = 0;
+
+        int? ms = LoadBoundaryWatch.Run(_game, Status(), _log, stop.Token, () => _clock, d => _clock += d, _ => Boundary(20), _ =>
+        {
+            probes++;
+            return new ProbeResult(8, 0, 1.0);
+        });
+
+        Assert.Null(ms);
+        Assert.Equal(0, probes);
+    }
+
+    [Fact]
+    public void StopTokenCancelledBetweenRoundsStopsTheWatch()
+    {
+        using var stop = new CancellationTokenSource();
+        int probes = 0;
+
+        int? ms = LoadBoundaryWatch.Run(_game, Status(), _log, stop.Token, () => _clock, d => _clock += d, _ => Boundary(20), _ =>
+        {
+            probes++;
+            stop.Cancel();
+            return new ProbeResult(8, 1, 1.0);
+        });
+
+        Assert.Null(ms);
+        Assert.Equal(1, probes);
+    }
+
+    [Fact]
+    public void SmallReadThresholdIsHalfAMillisecondAndAppliedToTheProbe()
+    {
+        string file = Path.Combine(_dir, "f.bin");
+        File.WriteAllBytes(file, new byte[8192]);
+        var samples = new List<(string, long, int)> { (file, 0, LoadBoundaryWatch.SampleBytes) };
+
+        Assert.Equal(0.5, LoadBoundaryWatch.SlowMs);
+        Assert.Equal(1, CacheProbe.Probe(samples, -1)!.Slow); // 기준보다 느리면 느림
+        Assert.Equal(0, CacheProbe.Probe(samples, 1e9)!.Slow);
+    }
+
+    [Fact]
     public void RoundsNeverReuseOrNeighbourEarlierPositions()
     {
         var rounds = new List<IReadOnlyList<(string Path, long Offset, int Bytes)>>();

@@ -42,8 +42,8 @@ public static class CacheProbe
         return picked;
     }
 
-    /// 표본마다 읽어 걸린 시간 (ms) 을 재고 판정합니다. 열 수 없거나 읽을 것이 없는 표본은 뺍니다. 모두 빠지면 null.
-    public static ProbeResult? Probe(IReadOnlyList<(string Path, long Offset, int Bytes)> samples)
+    /// 표본마다 읽어 걸린 시간 (ms) 을 재고 slowMs 를 넘으면 느린 것으로 판정합니다 (기본은 1 MiB 용 기준). 열 수 없거나 읽을 것이 없는 표본은 뺍니다. 모두 빠지면 null.
+    public static ProbeResult? Probe(IReadOnlyList<(string Path, long Offset, int Bytes)> samples, double slowMs = ColdThresholdMs)
     {
         byte[] buf = new byte[SampleBytes];
         double total = 0;
@@ -63,7 +63,7 @@ public static class CacheProbe
                     double ms = watch.Elapsed.TotalMilliseconds;
                     total += ms;
                     ok++;
-                    slow += ms > ColdThresholdMs ? 1 : 0;
+                    slow += ms > slowMs ? 1 : 0;
                 }
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)

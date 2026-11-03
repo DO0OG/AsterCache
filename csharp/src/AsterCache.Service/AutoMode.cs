@@ -1,5 +1,6 @@
 using AsterCache.Core;
 using AsterCache.Core.Logging;
+using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
 
 namespace AsterCache.Service;
@@ -41,9 +42,26 @@ public sealed class AutoMode
         {
             prewarm.Recovery = _relocator.Recovery; // 재배치 직후 예열을 드라이브 회복까지 고정
             prewarm.WarmMeasured += (g, mbps) => Guard("warm mbps note", () => _relocator.NoteWarmMbps(g, mbps));
+            prewarm.WarmMeasured += (g, _) => Guard("hit percent", () => RecordHitAfterWarm(prewarm, g)); // 예열 직후 (게임 시작 전) 에만 잼
             prewarm.ColdWarmed += (g, label) => Guard("cold prewarm note", () => _relocator.NoteColdWarmed(g, label)); // 서비스 시작·트리거·틱 어디서 예열하든 같은 표시
             prewarm.Progress += (g, done, total) => Guard("prewarm progress", () => _relocator.NoteProgress(g, done, total));
             prewarm.StreamEnded += (g, complete) => Guard("prewarm end", () => _relocator.NoteStreamEnded(g, complete));
+        }
+    }
+
+    private readonly CancellationTokenSource _stop = new(); // 서비스 종료: 게임 시작 때 도는 로딩 경계 감시를 멈춤
+
+    // 예열이 방금 끝났으면 핫 집합 표본 몇 곳의 적중률을 잼. 같은 물리 디스크에서 게임이 도는 중이면 게임 디스크를 건드리지 않으려고 건너뜀.
+    private void RecordHitAfterWarm(Prewarmer prewarm, GameSettings g)
+    {
+        if (!_settings.Auto.Enabled || _env.GameRunningOnDisk?.Invoke(PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant()) == true)
+        {
+            return;
+        }
+
+        if (prewarm.HitPercent(g) is { } hit)
+        {
+            Status.RecordHit(g.Name, hit, _env.Now());
         }
     }
 
@@ -88,12 +106,7 @@ public sealed class AutoMode
                 _tracer.Start(g);
             }
 
-            if (_prewarm?.HitPercent(g) is { } hit) // 게임 로딩을 늦추지 않게 트레이스를 시작한 뒤, 이 Task.Run 스레드에서 표본 몇 곳만
-            {
-                Status.RecordHit(g.Name, hit, _env.Now());
-            }
-
-            LoadBoundaryWatch.Run(g, Status, _log, now: _env.Now);
+            LoadBoundaryWatch.Run(g, Status, _log, _stop.Token, _env.Now); // 적중률은 여기서 재지 않음 (게임 디스크 읽기): 예열 직후 값이 auto_status 에 남아 있음
         });
     }
 
@@ -197,7 +210,13 @@ public sealed class AutoMode
     }
 
     /// 발견 (처음 10 초 뒤, 이후 1 시간마다), 휴리스틱 (2 초마다), 트레이스 감시 (1 초마다) 를 취소될 때까지 돌립니다.
-    public Task RunAsync(CancellationToken ct) => Task.WhenAll(
+    public Task RunAsync(CancellationToken ct)
+    {
+        _ = ct.Register(_stop.Cancel);
+        return RunLoops(ct);
+    }
+
+    private Task RunLoops(CancellationToken ct) => Task.WhenAll(
         Loop(FirstDiscoveryDelay, DiscoveryEvery, "discovery", DiscoverAndFeed, ct),
         Loop(HeuristicEvery, HeuristicEvery, "heuristic", _registry.HeuristicTick, ct),
         Loop(TraceEvery, TraceEvery, "trace", _tracer.Step, ct));
@@ -205,6 +224,7 @@ public sealed class AutoMode
     /// 서비스 종료: 돌고 있는 ETW 세션을 정리합니다.
     public void Shutdown()
     {
+        _stop.Cancel();
         _tracer.Shutdown();
         _registry.Shutdown();
     }

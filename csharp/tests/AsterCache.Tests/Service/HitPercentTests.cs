@@ -14,13 +14,19 @@ public sealed class HitPercentTests : IDisposable
 
     public void Dispose() => _rig.Dispose();
 
+    private int _probes;
+
     private Prewarmer MakePrewarm(ProbeResult? probe) => new(_rig.Settings.Games, new FakeStreamer(), new PrewarmEnv
     {
         AvailableRamMib = () => 99999,
         GameRunning = _ => false,
-        ZoneBytes = _ => null,
+        ZoneBytes = _ => 1L << 20,
         TraceExists = _ => true,
-        ProbeReadMs = _ => probe,
+        ProbeReadMs = _ =>
+        {
+            _probes++;
+            return probe;
+        },
     }, _rig.Log, null, () => T0);
 
     [Theory]
@@ -38,15 +44,51 @@ public sealed class HitPercentTests : IDisposable
     }
 
     [Fact]
-    public void GameStartRecordsHitPercentAndItIsSerialized()
+    public void WarmRecordsHitPercentOnceAndGameStartDoesNotProbeTheGameDisk()
+    {
+        _rig.Editor.Add(_rig.Input("foo", "foo.exe", @"D:\Gamesoo", "auto", null));
+        _rig.Reload();
+        _rig.World.Now = T0;
+        _rig.World.Files.Add(AutoTracer.RawTracePath(_rig.Settings.Games[0]));
+        Prewarmer prewarm = MakePrewarm(new ProbeResult(8, 2, 3.0));
+        var mode = new AutoMode(_rig.Editor, _rig.World.Env(), _rig.Status, _rig.Log, _rig.Settings, prewarm);
+        _rig.Status.Set("foo", "auto", null, AutoStage.Done, null);
+
+        PrewarmResult r = prewarm.Run(_rig.Settings.Games[0], "test");
+        Assert.True(r.Ran, r.SkipReason);
+        Assert.Equal((75, 1), (_rig.Status.Get("foo")!.HitPercent, _probes)); // 예열 직후 한 번
+
+        mode.OnGameStart(_rig.Settings.Games[0]);
+
+        Assert.Equal((75, 1), (_rig.Status.Get("foo")!.HitPercent, _probes)); // 게임 시작 때는 CacheProbe 를 부르지 않음
+    }
+
+    [Fact]
+    public void WarmDuringARunningGameOnTheSameDiskDoesNotProbe()
+    {
+        _rig.Editor.Add(_rig.Input("foo", "foo.exe", @"D:\Gamesoo", "auto", null));
+        _rig.Reload();
+        _rig.World.Now = T0;
+        _rig.World.Files.Add(AutoTracer.RawTracePath(_rig.Settings.Games[0]));
+        Prewarmer prewarm = MakePrewarm(new ProbeResult(8, 0, 1.0));
+        _ = new AutoMode(_rig.Editor, _rig.World.Env(), _rig.Status, _rig.Log, _rig.Settings, prewarm);
+        _rig.Status.Set("foo", "auto", null, AutoStage.Done, null);
+        _rig.World.Running = true;
+
+        prewarm.Run(_rig.Settings.Games[0], "test");
+
+        Assert.Equal((null, 0), (_rig.Status.Get("foo")!.HitPercent, _probes));
+    }
+
+    [Fact]
+    public void RecordedHitPercentIsSerialized()
     {
         _rig.Editor.Add(_rig.Input("foo", "foo.exe", @"D:\Games\foo", "auto", null));
         _rig.Reload();
         _rig.World.Now = T0;
         _rig.World.Files.Add(AutoTracer.RawTracePath(_rig.Settings.Games[0]));
-        var mode = new AutoMode(_rig.Editor, _rig.World.Env(), _rig.Status, _rig.Log, _rig.Settings, MakePrewarm(new ProbeResult(8, 2, 3.0)));
-
-        mode.OnGameStart(_rig.Settings.Games[0]);
+        _rig.Status.Set("foo", "auto", null, AutoStage.Done, null);
+        _rig.Status.RecordHit("foo", 75, T0);
 
         AutoGameEntry e = _rig.Status.Get("foo")!;
         Assert.Equal((75, T0), (e.HitPercent, e.HitAt));

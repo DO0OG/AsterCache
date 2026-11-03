@@ -134,7 +134,7 @@ public sealed class AutoEnv
     public required Func<IReadOnlyList<IReadOnlyList<TraceEvent>>, string, long, PlanFile> MakePlan { get; init; }
 
     /// (세션, 원점 루트, 존 MiB, 존 시작 LCN) → 그 자리에 존을 두고 만든 계획 (제자리·겹침을 계산에 넣음). 없으면 이전 존 시작을 쓰지 않고 MakePlan 만 씁니다.
-    public Func<IReadOnlyList<IReadOnlyList<TraceEvent>>, string, long, long, PlanFile>? MakePlanAt { get; init; }
+    public Func<IReadOnlyList<IReadOnlyList<TraceEvent>>, string, long, long, long, PlanFile>? MakePlanAt { get; init; }
 
     public required Action<PlanFile, IReadOnlyList<IReadOnlyList<TraceEvent>>, string> SavePlan { get; init; }
 
@@ -230,8 +230,8 @@ public sealed class AutoEnv
             TraceSource = AutoTracer.TraceSourceOf,
             LoadTrace = (raw, origin) => TraceLoader.LoadRanges(raw, origin, RealPaths.Resolve),
             LoadVolatile = AutoTracer.ReadVolatile,
-            MakePlan = (sessions, origin, zoneMib) => MakePlanAtLcn(sessions, origin, zoneMib, null),
-            MakePlanAt = (sessions, origin, zoneMib, start) => MakePlanAtLcn(sessions, origin, zoneMib, start),
+            MakePlan = (sessions, origin, zoneMib) => MakePlanAtLcn(sessions, origin, zoneMib, null, 0),
+            MakePlanAt = (sessions, origin, zoneMib, start, used) => MakePlanAtLcn(sessions, origin, zoneMib, start, used),
             SavePlan = (plan, sessions, path) => PlanOutput.Save(plan, sessions, path),
             LoadPlan = PlanFile.Load,
             RealPath = RealPaths.Real,
@@ -252,10 +252,10 @@ public sealed class AutoEnv
         };
     }
 
-    private static PlanFile MakePlanAtLcn(IReadOnlyList<IReadOnlyList<TraceEvent>> sessions, string origin, long zoneMib, long? start)
+    private static PlanFile MakePlanAtLcn(IReadOnlyList<IReadOnlyList<TraceEvent>> sessions, string origin, long zoneMib, long? start, long usedClusters)
     {
         int cb = FileLayout.ClusterBytes(origin) is > 0 and int c ? c : throw new PlanRejectedException("cluster size unknown");
-        return PlanFile.Make(sessions, origin, zoneMib << 20, cb, FileLayout.Extents, zoneStartLcn: start);
+        return PlanFile.Make(sessions, origin, zoneMib << 20, cb, FileLayout.Extents, zoneStartLcn: start, fixedClusters: usedClusters);
     }
 
     /// 탐지를 못 한 결과 (I/O 실패): 없음이 아니라 모름. 티어는 거절하고 캐시하지 않으며, 등록에는 저장하지 않습니다.

@@ -969,7 +969,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     {
         Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
         int busy = 0;
-        _w.MakePlanAt = (sessions, origin, zoneMib, lcn) => PlanFile.Make(sessions, origin, zoneMib << 20, Cb, p => Vol.Ext[p], zoneStartLcn: lcn, preserveBytes: 64 << 20);
+        _w.MakePlanAt = (sessions, origin, zoneMib, lcn, used) => PlanFile.Make(sessions, origin, zoneMib << 20, Cb, p => Vol.Ext[p], zoneStartLcn: lcn, preserveBytes: 64 << 20, fixedClusters: used);
         _w.ArchiveJournal = _ => null; // 가짜 적용은 저널을 쓰지 않음
         _w.Apply = (g, plan, options, ct) => options.Execute && busy++ == 0 ? new ApplyReport { Executed = true, Stopped = Applier.ZoneOccupied } : real(g, plan, options, ct);
 
@@ -1578,7 +1578,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         trace = AutoTracer.RawTracePath(_game);
         long start = PlanFile.Load(_game.Plan).Zone.StartLcn!.Value;
         _w.MakePlan = (sessions, origin, zoneMib) => PlanFile.Make(sessions, origin, zoneMib << 20, Cb, p => Vol.Ext[p], preserveBytes: 64 << 20);
-        _w.MakePlanAt = (sessions, origin, zoneMib, lcn) => PlanFile.Make(sessions, origin, zoneMib << 20, Cb, p => Vol.Ext[p], zoneStartLcn: lcn, preserveBytes: 64 << 20);
+        _w.MakePlanAt = (sessions, origin, zoneMib, lcn, used) => PlanFile.Make(sessions, origin, zoneMib << 20, Cb, p => Vol.Ext[p], zoneStartLcn: lcn, preserveBytes: 64 << 20, fixedClusters: used);
         _w.ArchiveJournal = _ =>
         {
             if (!File.Exists(JournalPath))
@@ -1715,7 +1715,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         _w.Now += AutoRelocator.StaleCheckEvery;
         Tick();
         NewTraceFromNextRun();
-        _w.MakePlanAt = (_, _, _, _) => throw new PyValueException("zone overlaps hot data in a cycle; choose another zone");
+        _w.MakePlanAt = (_, _, _, _, _) => throw new PyValueException("zone overlaps hot data in a cycle; choose another zone");
 
         RunUntilDone();
 
@@ -2820,11 +2820,49 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
+    public void ExtensionKeepsTheBlocksAlreadyInTheZoneInTheirPhysicalOrderEvenWhenTheNewAccessOrderIsReversed()
+    {
+        // 실제 로그 시나리오: 병합된 트레이스에서 존 안의 기존 블록 순서가 새 접근 순서와 반대 (예전에는 순환으로 확장이 차단됨)
+        long start = DoneThenMergedTrace(Run([.. OldBlocks(F1, F2).Reverse(), .. RestOfTheBlocks()]));
+        long usedBefore = (long)PlanFile.Load(_game.Plan).Stats["zone_used_clusters"]!;
+
+        Tick();
+
+        Assert.True(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("zone extension blocked", StringComparison.Ordinal));
+        Assert.All(PlanFile.Load(_game.Plan).Tasks, t => Assert.True(t.TargetLcn >= start + usedBefore)); // 기존 블록 이동 작업 0, 새 블록만 뒤에
+
+        RunUntilDone();
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.NotEmpty(Vol.Moves);
+        Assert.All(Vol.Moves, m => Assert.True(m.Lcn >= start + usedBefore));
+        Assert.Contains(_log.Lines, l => l.Contains("zone extended by 1 MiB (run 2)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ExtensionThatAlsoDropsAVolatileFileFromTheOldPlanKeepsTheRemainingBlocksInPlace()
+    {
+        long start = DoneThenMergedTrace(Run([.. OldBlocks(F1, F2).Reverse(), .. RestOfTheBlocks(), (Path.Combine(Root, "settings.json"), 0L)]));
+        long usedBefore = (long)PlanFile.Load(_game.Plan).Stats["zone_used_clusters"]!;
+
+        Tick();
+        RunUntilDone();
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        PlanFile fresh = PlanFile.Load(_game.Plan);
+        Assert.DoesNotContain(fresh.Order, o => VolatileFiles.Ignored(o.Path));
+        Assert.Equal(start, fresh.Zone.StartLcn);
+        Assert.All(Vol.Moves, m => Assert.True(m.Lcn >= start + usedBefore));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("zone extension blocked", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void ExtensionPlanFailureLogsTheExceptionMessageFirstLineAndStillRestoresThePreviousPlan()
     {
         DoneThenMergedTrace(Merged(RestOfTheBlocks()));
         PlanFile before = PlanFile.Load(_game.Plan);
-        _w.MakePlanAt = (_, _, _, _) => throw new PyValueException("expect 1..32 sessions\nsecond line");
+        _w.MakePlanAt = (_, _, _, _, _) => throw new PyValueException("expect 1..32 sessions\nsecond line");
 
         Tick();
         RunUntilDone();

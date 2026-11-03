@@ -166,6 +166,19 @@ public sealed class PinAndRewarmTests
     }
 
     [Fact]
+    public void HeldPinIsLoggedOncePerGameWhileTheReasonStaysTheSame()
+    {
+        _launcherRunning = true;
+        GameSettings g = Game("a");
+        Prewarmer p = Make(g);
+
+        _ = p.Run(g, "service start");
+        _ = p.Run(g, "service start");
+
+        Assert.Equal(1, _log.Lines.Count(l => l.Contains("a: pin held back", StringComparison.Ordinal)));
+    }
+
+    [Fact]
     public void AnyRunningLauncherHoldsThePinBackAndALaterRewarmPinsOnce()
     {
         _launcherRunning = true;
@@ -481,6 +494,19 @@ public sealed class PinAndRewarmTests
         Assert.Equal(1, _probeCalls);
         Assert.Single(_streamer.Calls);
         Assert.Contains(_log.Lines, l => l.Contains("a: rewarm check: warm", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RewarmCheckLogsOnlyWhenTheResultChanges()
+    {
+        Prewarmer p = WarmedGame();
+        TickAt(p, TimeSpan.Zero);
+        _probe = 0.5;
+
+        TickAt(p, TimeSpan.FromMinutes(10));
+        TickAt(p, TimeSpan.FromMinutes(10)); // 같은 결과 (warm) 는 다시 남기지 않음
+
+        Assert.Equal(1, _log.Lines.Count(l => l.Contains("a: rewarm check: warm", StringComparison.Ordinal)));
     }
 
     [Fact]

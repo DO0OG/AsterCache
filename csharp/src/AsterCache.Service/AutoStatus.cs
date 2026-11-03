@@ -130,6 +130,22 @@ public sealed class AutoStatus
         }
     }
 
+    /// 끝난 자동 적용의 실제 이동 바이트로 마지막 시작 기록의 예정 바이트를 바꿉니다 (하루 예산 집계가 실제 쓴 양을 따르게).
+    public void SetLastRelocationBytes(long moved)
+    {
+        lock (_lock)
+        {
+            if (_relocations.Count == 0)
+            {
+                return;
+            }
+
+            (DateTimeOffset At, long Bytes, long? Ticks) last = _relocations[^1];
+            _relocations[^1] = last with { Bytes = Math.Max(0, moved) };
+            Save();
+        }
+    }
+
     /// 자동 재배치 끝: done, relocated_at 기록. counted 면 events 에도 남깁니다 (이미 제자리인 게임은 세지 않음). 일일 상한은 시작 때 센 BeginRelocation 이 맡습니다.
     public void Complete(string name, string source, DateTimeOffset at, bool counted, string? detail)
     {

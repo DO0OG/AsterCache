@@ -76,6 +76,9 @@ public sealed class AutoEnv
     /// 'X:' 의 디스크 종류를 모르거나 USB 버스인가 (자동 재배치 동시 수 규칙). 시험 기본값은 참.
     public Func<string, bool> IsSlowBus { get; init; } = _ => true;
 
+    /// 'X:' 가 SMR 로 보이는 HDD 인가 (TRIM 을 받는 HDD 는 추정일 뿐). 시험 기본값은 거짓.
+    public Func<string, bool> IsSmr { get; init; } = _ => false;
+
     public required Func<IReadOnlyList<int>> Pids { get; init; }
 
     public required Func<int, string?> ImagePath { get; init; }
@@ -206,6 +209,7 @@ public sealed class AutoEnv
             IsHdd = letter => DiskInfo.Query(letter).IncursSeekPenalty,
             SameDisk = VolumeDisks.SameDisk,
             IsSlowBus = letter => DiskInfo.Query(letter) is var d && (d.IncursSeekPenalty is null || d.BusType == DiskInfo.BusTypeUsb),
+            IsSmr = letter => DiskInfo.Query(letter) is var d && DiskInfo.Kind(d.IncursSeekPenalty, d.Trim) == "HDD (looks like SMR)",
             Pids = ProcessSnapshot.Pids,
             ImagePath = ProcessSnapshot.ImagePath,
             ReadBytes = ProcessSnapshot.ReadBytes,
@@ -222,7 +226,7 @@ public sealed class AutoEnv
             GameProcesses = exes => ProcessSnapshot.ReadCounters(exes),
             AnyRunning = exes => ProcessSnapshot.IsRunning(exes),
             StartTrace = (exes, listener) => new LiveAutoTrace(LiveSession.Start(
-                exes, TraceSessionName, restartExisting: true, listener: listener, flushInterval: listener is null ? null : EtwProcessWatcher.FlushInterval, log: log)),
+                exes, TraceSessionName, restartExisting: true, listener: listener, flushInterval: listener is null ? null : EtwProcessWatcher.FlushInterval, log: log), log),
             Canonicalize = events => TraceBuilder.CanonicalizeCase(events),
             PrefetchBoot = g => AutoTracer.BootFromPrefetch(g),
             TraceSource = AutoTracer.TraceSourceOf,
@@ -289,9 +293,14 @@ public sealed class AutoEnv
         }
     }
 
-    private sealed class LiveAutoTrace(LiveSession session) : IAutoTrace
+    private sealed class LiveAutoTrace(LiveSession session, ILog? log) : IAutoTrace
     {
-        public IReadOnlyList<TraceRecord> Stop() => session.Stop();
+        public IReadOnlyList<TraceRecord> Stop()
+        {
+            List<TraceRecord> records = session.Stop();
+            log?.Info($"trace session stopped: {session.EventsLost} events lost");
+            return records;
+        }
 
         public void Dispose() => session.Dispose();
     }

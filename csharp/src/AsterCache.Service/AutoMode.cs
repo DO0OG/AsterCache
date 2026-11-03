@@ -53,6 +53,9 @@ public sealed class AutoMode
     private readonly CancellationTokenSource _stop = new(); // 서비스 종료: 게임 시작 때 도는 로딩 경계 감시를 멈춤
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _boundaryWatch = new(StringComparer.OrdinalIgnoreCase); // 게임별 로딩 경계 감시 (게임 종료 때 취소)
 
+    /// 시험용 seam: 로딩 경계 감시 본체 (비우면 LoadBoundaryWatch.Run).
+    public Action<GameSettings, CancellationToken>? BoundaryRunner { get; set; }
+
     // 예열이 방금 끝났으면 핫 집합 표본 몇 곳의 적중률을 잼. 같은 물리 디스크에서 게임이 도는 중이면 게임 디스크를 건드리지 않으려고 건너뜀.
     private void RecordHitAfterWarm(Prewarmer prewarm, GameSettings g)
     {
@@ -115,7 +118,20 @@ public sealed class AutoMode
                 _boundaryWatch[g.Name] = watch;
                 try
                 {
-                    LoadBoundaryWatch.Run(g, Status, _log, watch.Token, _env.Now);
+                    // 등록 전에 게임이 끝났으면 NoteGameExit 가 놓치므로 등록 직후 확인 (등록 뒤의 종료는 NoteGameExit 가 취소)
+                    if (!_env.AnyRunning(g.ExeNames))
+                    {
+                        watch.Cancel();
+                    }
+
+                    if (BoundaryRunner is { } run)
+                    {
+                        run(g, watch.Token);
+                    }
+                    else
+                    {
+                        LoadBoundaryWatch.Run(g, Status, _log, watch.Token, _env.Now);
+                    }
                 }
                 finally
                 {

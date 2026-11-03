@@ -111,7 +111,8 @@ internal static class StatusCommand
             JObject o = (JObject)kv.Value!;
             return (kv.Key, o.TryGetValue("stage", out object? s) ? s as string ?? string.Empty : string.Empty, o.TryGetValue("detail", out object? d) ? d as string : null, o.TryGetValue("hit_percent", out object? h) && h is long hp ? (int?)Math.Clamp(hp, 0, 100) : null);
         }), plansDir);
-        return new JObject { { "discovered", (long)p.Discovered }, { "planned", (long)p.Planned }, { "relocated", (long)p.Relocated }, { "prewarmed", (long)p.Prewarmed }, { "hit_average", p.HitAverage is { } avg ? (long)avg : null }, { "line", p.Line(L.Current) } };
+        List<long> covers = [.. games.Select(kv => kv.Value).OfType<JObject>().Select(o => o.TryGetValue("coverage_percent", out object? c) && c is long cv ? (long?)cv : null).OfType<long>()];
+        return new JObject { { "discovered", (long)p.Discovered }, { "planned", (long)p.Planned }, { "relocated", (long)p.Relocated }, { "prewarmed", (long)p.Prewarmed }, { "hit_average", p.HitAverage is { } avg ? (long)avg : null }, { "coverage_average", covers.Count == 0 ? null : (long)covers.Average() }, { "line", p.Line(L.Current) } };
     }
 
     // 게임마다 plays (없으면 last_played 하나) 로 예열 점수를 덧붙임. 이력이 없는 게임은 null.

@@ -286,6 +286,17 @@ public sealed class ReapplyTests
     }
 
     [Fact]
+    public void MissingPlanIsLoggedOncePerGame()
+    {
+        var rig = new Rig { PlanMissing = true };
+
+        _ = rig.Check(Bench);
+        _ = rig.Check(Bench);
+
+        Assert.Equal(1, rig.Log.Lines.Count(l => l.Contains("no plan file yet", StringComparison.Ordinal)));
+    }
+
+    [Fact]
     public void PlanThatWasNeverAppliedIsLeftToTheUser()
     {
         var rig = new Rig("fresh/plan.json") { Moved = false };

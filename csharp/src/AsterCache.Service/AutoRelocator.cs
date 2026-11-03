@@ -1217,7 +1217,7 @@ public sealed class AutoRelocator
             plan = _env.LoadPlan(g.Plan);
             ReapplyChecker.CheckPaths(plan, g, _env.RealPath);
             string order = RelocateOrder.Resolve(s.Auto.RelocateOrder);
-            var run = new ApplyOptions(Execute: true, ChunkBytes: (long)s.Auto.RelocateChunkMib << 20, LowIoPriority: s.Auto.RelocateIoPriority == AutoSettings.IoLow, Verify: s.Auto.RelocateVerify, Order: order, Parallel: s.Auto.ParallelFor(_env.IsSlowBus(DriveOf(g))));
+            var run = new ApplyOptions(Execute: true, ChunkBytes: (long)s.Auto.RelocateChunkMib << 20, LowIoPriority: s.Auto.RelocateIoPriority == AutoSettings.IoLow, Verify: s.Auto.RelocateVerify, Order: order, Parallel: s.Auto.ParallelFor(_env.IsSlowBus(DriveOf(g)), _env.IsSmr(DriveOf(g))));
             long bytes = Math.Min(dry.BytesTodo, run.WriteCap); // 한 번의 적용은 WriteCap 까지만 쓰고 나머지는 이어하기가 다시 셈
             if (_status.RelocationHeldUntil() is { } held)
             {
@@ -1250,6 +1250,7 @@ public sealed class AutoRelocator
 
             _status.BeginRelocation(_env.Now(), bytes); // 하루 상한은 끝이 아니라 시작 (이어하기 포함) 으로 셈
             ApplyReport rep = _env.Apply(g, plan, run, token);
+            _status.SetLastRelocationBytes(rep.MovedBytes); // 시작 때 넣은 예정 바이트 대신 실제로 옮긴 양
             _log.Info($"{g.Name}: auto relocation moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed, order {rep.OrderUsed ?? order}" + (rep.OrderFallbackReason is not null ? " (fallback)" : string.Empty) + (rep.Stopped is { } why ? $", stopped: {why}" : string.Empty) + rep.Timings.Summary);
             BeginRecovery(g, s.Auto, rep.MovedBytes, baseline);
             if (rep.Stopped == "cancelled")

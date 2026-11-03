@@ -49,6 +49,11 @@ public sealed class ApplyReport
 
     public string? JournalArchivedTo { get; set; }
 
+    /// order=source 를 요청했을 때만 채움: 실제로 쓴 순서와, target 으로 바꿨다면 그 이유.
+    public string? OrderUsed { get; set; }
+
+    public string? OrderFallbackReason { get; set; }
+
     public long? ShaChecked { get; set; }
 
     public List<string>? ShaMismatch { get; set; }
@@ -82,6 +87,15 @@ public sealed class ApplyReport
         {
             o.Add("zone_retargeted", true);
             o.Add("journal_archived_to", JournalArchivedTo);
+        }
+
+        if (OrderUsed is not null)
+        {
+            o.Add("order_used", OrderUsed);
+            if (OrderFallbackReason is not null)
+            {
+                o.Add("order_fallback_reason", OrderFallbackReason);
+            }
         }
 
         if (ShaChecked is not null)

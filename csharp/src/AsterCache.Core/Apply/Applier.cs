@@ -74,13 +74,38 @@ public static class Applier
 
         var skipped = rep.SkippedFiles.Select(s => s.Key).ToHashSet(StringComparer.Ordinal);
         var todo = new List<(int Idx, PlanTask Task, long Done)>();
+        var sourceLcn = new Dictionary<int, long>();
+        var sources = new List<(long A, long B, int Owner)>();
+        bool bySource = options.Order == RelocateOrder.Source;
         for (int i = 0; i < plan.Tasks.Count; i++)
         {
             PlanTask t = plan.Tasks[i];
-            long d = PlanGuards.DonePrefix(ApplyTimings.Time(ref rep.Timings.OpenTicks, () => hooks.Extents(t.Path)), t.Vcn, t.Clusters, t.TargetLcn);
+            IReadOnlyList<Extent>? ext = ApplyTimings.Time(ref rep.Timings.OpenTicks, () => hooks.Extents(t.Path));
+            long d = PlanGuards.DonePrefix(ext, t.Vcn, t.Clusters, t.TargetLcn);
             if (!skipped.Contains(t.Path) && d < t.Clusters)
             {
                 todo.Add((i, t, d));
+                if (bySource)
+                {
+                    // 실행 순서만 바꿈: 대상 LCN 은 계획에 고정이고 저널·되돌리기는 작업 인덱스로 찾음. 원본을 모르면 맨 뒤.
+                    var pieces = ZoneAllocator.Pieces(ext ?? [], t.Vcn + d, t.Vcn + t.Clusters);
+                    sourceLcn[i] = pieces.Select(x => x.Lcn).DefaultIfEmpty(long.MaxValue).First();
+                    sources.AddRange(pieces.Select(x => (x.Lcn, x.Lcn + x.N, i)));
+                }
+            }
+        }
+
+        if (bySource)
+        {
+            if (TargetsOverlapSources(todo, sources))
+            {
+                rep.OrderUsed = RelocateOrder.Target; // 어떤 작업의 대상이 다른 작업의 현재 원본이면 원본 순서가 이동을 막을 수 있음: 계획 순서 그대로
+                rep.OrderFallbackReason = OverlapReason;
+            }
+            else
+            {
+                rep.OrderUsed = RelocateOrder.Source;
+                todo = todo.OrderBy(x => sourceLcn[x.Idx]).ThenBy(x => x.Idx).ToList();
             }
         }
 
@@ -105,6 +130,62 @@ public static class Applier
         rep.PlanSaved = persist;
         return options.Execute ? Execute(plan, vol, todo, rep, journalPath, chunk, options.WriteCap, hooks, digest, Math.Max(1, options.PlanAhead),
             VerifyMode.IsValid(options.Verify) ? options.Verify : VerifyMode.Sample, cancellationToken) : rep;
+    }
+
+    /// order=source 를 요청했는데 target 순서로 실행한 이유 (보고서의 order_fallback_reason).
+    public const string OverlapReason = "zone overlaps current extents";
+
+    /// 어떤 작업의 남은 대상 범위가 다른 작업의 현재 원본 조각과 겹치는가. 원본 조각을 시작순으로 정렬해 접두 최대 끝 (서로 다른 소유자 둘까지) 로 훑음: O(n log n).
+    internal static bool TargetsOverlapSources(List<(int Idx, PlanTask Task, long Done)> todo, List<(long A, long B, int Owner)> sources)
+    {
+        sources.Sort((x, y) => x.A.CompareTo(y.A));
+        long[] starts = sources.Select(s => s.A).ToArray();
+        var best1 = new (long End, int Owner)[sources.Count + 1]; // [k]: 앞 k 개 중 가장 먼 끝과 그 소유자
+        var best2 = new long[sources.Count + 1]; // [k]: best1 과 소유자가 다른 조각 중 가장 먼 끝
+        best1[0] = (long.MinValue, -1);
+        best2[0] = long.MinValue;
+        for (int k = 0; k < sources.Count; k++)
+        {
+            (long end, int owner) = (sources[k].B, sources[k].Owner);
+            (long End, int Owner) b1 = best1[k];
+            long b2 = best2[k];
+            if (owner == b1.Owner)
+            {
+                b1 = (Math.Max(b1.End, end), owner);
+            }
+            else if (end > b1.End)
+            {
+                b2 = b1.End;
+                b1 = (end, owner);
+            }
+            else
+            {
+                b2 = Math.Max(b2, end);
+            }
+
+            best1[k + 1] = b1;
+            best2[k + 1] = b2;
+        }
+
+        foreach ((int idx, PlanTask t, long done) in todo)
+        {
+            long lo = t.TargetLcn + done;
+            long hi = t.TargetLcn + t.Clusters;
+            int k = Array.BinarySearch(starts, hi);
+            k = k < 0 ? ~k : k;
+            while (k > 0 && starts[k - 1] >= hi) // 시작이 hi 이상인 조각은 후보가 아님 (같은 시작이 여럿일 때 BinarySearch 의 위치가 임의)
+            {
+                k--;
+            }
+
+            (long End, int Owner) b = best1[k];
+            if ((b.Owner != idx ? b.End : best2[k]) > lo)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// 새 규칙의 표본: 범위 (이미 각 작업의 처음·끝 TaskSpan 바이트) 를 파일 안으로 자르고 정렬해, 합계가 DigestCapBytes 를 넘으면 고르게 솎습니다. 같은 입력이면 항상 같은 결과.

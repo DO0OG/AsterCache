@@ -57,6 +57,19 @@ public sealed class ReapplyTests
 
     private static readonly GameSettings Bench = new("bench", ["bench.exe"], @"C:\p\t.json", @"C:\p\plan.json", @"D:\AsterBench", [@"D:\AsterBench"], "BENCH", 60);
 
+    [Theory]
+    [InlineData("auto", "target")]
+    [InlineData("target", "target")]
+    [InlineData("source", "source")]
+    public void ReapplyFollowsTheRelocateOrderSetting(string setting, string expected)
+    {
+        var g = new GameSettings("g", ["g.exe"], "t.json", "p.json", @"D:\g", [@"D:\g"], "GAMES", 1440);
+
+        ApplyOptions o = ReapplyEnv.OptionsFor(g, setting);
+
+        Assert.Equal((true, "p.json", expected), (o.Execute, o.SaveTo, o.Order));
+    }
+
     internal static ReapplyEnv NoIoEnv() => new()
     {
         CanApply = false,

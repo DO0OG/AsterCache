@@ -114,6 +114,7 @@ public sealed class PinAndRewarmTests
     [InlineData("eac")]
     [InlineData("battleye")]
     [InlineData("unknown")]
+    [InlineData("ricochet")]
     public void AntiCheatGamesAreNeverPinnedEvenWhenPinIsOnAndRamIsPlentiful(string kind)
     {
         _ram = 64 * Gib;

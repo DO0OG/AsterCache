@@ -99,4 +99,13 @@ public sealed class AntiCheatTests
     [InlineData("ricochet", false)]
     [InlineData(null, false)]
     public void OnlyKernelAntiCheatsAndFailedDetectionForbidATrace(string? kind, bool expected) => Assert.Equal(expected, AntiCheat.ForbidsTrace(kind));
+
+    [Theory]
+    [InlineData("eac", true)]
+    [InlineData("battleye", true)]
+    [InlineData("vanguard", true)]
+    [InlineData("unknown", true)]
+    [InlineData("ricochet", true)]
+    [InlineData(null, false)]
+    public void RicochetForbidsPinningButNotATrace(string? kind, bool expected) => Assert.Equal(expected, AntiCheat.ForbidsPin(kind));
 }

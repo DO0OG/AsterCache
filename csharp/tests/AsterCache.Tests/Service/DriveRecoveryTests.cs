@@ -131,7 +131,7 @@ public sealed class DriveRecoveryTests
     }
 
     [Fact]
-    public void SamplesRotateBy64MibAndNeverRepeatAPlaceWithinFourSamples()
+    public void SamplesRotateBy64MibAndNeverReadTheBaselinePlaceAgain()
     {
         _w.ProbeStepLcn = _ => 64; // 가짜 클러스터 1 MiB: 64 MiB = 64 LCN
         _zone = 50; // 회복 못 함: 계속 잼
@@ -144,10 +144,11 @@ public sealed class DriveRecoveryTests
 
         long[] zoneLcns = [.. _probed.Where(l => l is >= 10 and < 10 + 512 && (l - 10) % 64 == 0)];
         Assert.Equal(8, zoneLcns.Length);
-        Assert.Equal(4, zoneLcns.Distinct().Count());
-        Assert.Equal(4, zoneLcns.Take(4).Distinct().Count()); // 4 번 안에는 같은 시작점이 없음
+        Assert.Equal(3, zoneLcns.Distinct().Count());
+        Assert.Equal(3, zoneLcns.Take(3).Distinct().Count()); // 3 번 안에는 같은 시작점이 없음
+        Assert.DoesNotContain(10L, zoneLcns); // 기준을 쟀던 0 번 칸 (존 시작) 은 다시 읽지 않음
         Assert.All(zoneLcns, l => Assert.Equal(0, (l - 10) % 64));
-        Assert.Equal(3 * 64, zoneLcns.Max() - zoneLcns.Min()); // 시작점이 64 MiB 씩 4 칸 (표본 안의 3 곳이 12 칸을 채움)
+        Assert.Equal(2 * 64, zoneLcns.Max() - zoneLcns.Min()); // 시작점이 64 MiB 씩 1..3 칸 (표본 안의 3 곳이 12 칸 안)
     }
 
     [Fact]
@@ -880,5 +881,57 @@ public sealed class DriveRecoveryTests
     {
         Assert.Equal(2, DiskProbe.Median([3, 1, 2]));
         Assert.Equal(100, DiskProbe.Rate(100_000_000, TimeSpan.FromSeconds(1)), 6);
+    }
+
+    // 64 클러스터 할당 구간 20 개가 100 클러스터 빈 구간으로 갈라진 맵 (구간 i 의 시작 = 164 x i).
+    private static VolumeBitmap ManyRuns() => Bits([.. Enumerable.Range(0, 20).SelectMany(_ => new (bool, int)[] { (true, 64), (false, 100) })]);
+
+    [Fact]
+    public void ReferenceChecksAtMostEightCandidatesNearestFirst()
+    {
+        var asked = new List<long>();
+
+        long? found = DiskProbe.FindReference(ManyRuns(), 164 * 10, 64, lcn =>
+        {
+            asked.Add(lcn);
+            return false;
+        });
+
+        Assert.Null(found);
+        Assert.Equal(DiskProbe.MaxReferenceCandidates, asked.Count);
+        Assert.Equal(164 * 10, asked[0]); // 목표에 가장 가까운 후보부터
+        Assert.True(asked.Zip(asked.Skip(1)).All(p => Math.Abs(p.First - 164 * 10) <= Math.Abs(p.Second - 164 * 10)));
+    }
+
+    [Fact]
+    public void ReferenceSearchStopsOnCancelAndOnBusyDisk()
+    {
+        using var cts = new CancellationTokenSource();
+        int reads = 0;
+
+        Assert.Throws<OperationCanceledException>(() => DiskProbe.FindReference(ManyRuns(), 0, 64, _ =>
+        {
+            reads++;
+            cts.Cancel();
+            return false;
+        }, cts.Token));
+        Assert.Equal(1, reads); // 취소 뒤에는 다음 후보를 읽지 않음
+
+        int busyReads = 0;
+        Assert.Null(DiskProbe.FindReference(ManyRuns(), 0, 64, _ =>
+        {
+            busyReads++;
+            return true;
+        }, default, () => true));
+        Assert.Equal(0, busyReads); // 바쁘면 읽지 않고 포기
+    }
+
+    [Fact]
+    public void RecoverySampleRotationNeverReturnsToTheBaselineWindow()
+    {
+        int[] seq = [.. Enumerable.Range(1, 9).Select(DiskProbe.RotationIndex)];
+
+        Assert.Equal([1, 2, 3, 1, 2, 3, 1, 2, 3], seq);
+        Assert.All(seq, i => Assert.InRange(i, 1, DiskProbe.RotationSteps - 1)); // 0 번 칸 = 기준이 읽은 곳
     }
 }

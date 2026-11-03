@@ -245,7 +245,7 @@ internal sealed class FakeWorld
         DiskBytesPerSecond = _ => Disk,
         ProbeMbps = (drive, lcn, round) => ProbeMbps(drive, lcn, round),
         ProbeStepLcn = drive => ProbeStepLcn(drive),
-        LocateProbeSpots = (drive, lcn) => LocateProbeSpots(drive, lcn),
+        LocateProbeSpots = (drive, lcn, _) => LocateProbeSpots(drive, lcn),
         CpuPercent = () => Cpu,
         PowerOk = () => Power,
     };

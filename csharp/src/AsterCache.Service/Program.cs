@@ -41,7 +41,8 @@ bool canApply = Worker.CanApply(admin, [dataDir, plansDir], log, [configPath]);
 settings = Worker.ForApply(settings, canApply, log, canApply ? new ConfigEditor(dataDir) : null);
 (IProcessWatcher primary, IProcessWatcher? fallback) = Worker.ChooseWatchers(settings, admin);
 string journalDir = Path.Combine(dataDir, "journals");
-var checker = new ReapplyChecker(ReapplyEnv.Create(canApply, journalDir, log, () => settings.Auto.RelocateOrder, g => settings.Auto.ParallelFor(ReapplyEnv.IsSlowBus(g))), log);
+ReapplyEnv reapplyEnv = ReapplyEnv.Create(canApply, journalDir, log, () => settings.Auto.RelocateOrder, g => settings.Auto.ParallelFor(ReapplyEnv.IsSlowBus(g)));
+var checker = new ReapplyChecker(reapplyEnv, log);
 
 HostApplicationBuilder builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { ContentRootPath = AppContext.BaseDirectory });
 if (!console)
@@ -53,6 +54,12 @@ var streamer = new PrefetchStreamer();
 var prewarm = new Prewarmer(settings.Games, streamer, PrewarmEnv.Create(), log, canApply ? Path.Combine(dataDir, "prewarm_status.json") : null); // 데이터 폴더를 믿을 수 없으면 (SYSTEM 이 일반 사용자가 쓸 수 있는 곳에 쓰지 않도록) 상태 파일을 쓰지 않음
 // 자동 모드는 설정·이동을 쓰므로 canApply 일 때만 (상태 파일도 같은 이유로)
 var auto = canApply ? new AutoMode(new ConfigEditor(dataDir), AutoEnv.Create(journalDir, log), new AutoStatus(Path.Combine(dataDir, "auto_status.json"), log), log, settings, prewarm) : null;
+if (auto is not null)
+{
+    reapplyEnv.Gate = auto.ReapplyBlock; // 정기 재적용도 자동 재배치와 같은 게이트를 지남
+    reapplyEnv.Spent = auto.ReapplySpent;
+}
+
 var reloader = new SettingsReloader(() => SettingsReloader.StampOf(configPath), LoadChecked, s => Worker.ChooseWatchers(s, admin), log, configStamp);
 builder.Services.AddHostedService(_ => new Worker(settings, log, primary, fallback, streamer, checker, prewarm: prewarm, auto: auto, reload: reloader));
 await builder.Build().RunAsync();

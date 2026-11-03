@@ -162,7 +162,7 @@ public sealed class AutoEnv
     public Func<string, long> ProbeStepLcn { get; init; } = _ => 0;
 
     /// ('X:', 존 시작 LCN) → (그 존 앞쪽이 이미 할당됐는가, 존에서 4 GiB 뒤에 가장 가까운 할당된 기준 구간의 LCN), 비트맵을 못 읽으면 null. 시험 기본값은 null.
-    public Func<string, long, (bool ZoneAllocated, long? ReferenceLcn)?> LocateProbeSpots { get; init; } = (_, _) => null;
+    public Func<string, long, CancellationToken, (bool ZoneAllocated, long? ReferenceLcn)?> LocateProbeSpots { get; init; } = (_, _, _) => null;
 
     /// 두 드라이브 ('X:' 또는 그 아래 경로) 가 같은 물리 디스크인가. 모르면 참 (보수적). 시험 기본값은 드라이브 문자 비교.
     public Func<string, string, bool> SameDisk { get; init; } = SameLetter;
@@ -234,7 +234,7 @@ public sealed class AutoEnv
             DiskBytesPerSecond = letter => DiskActivity.BytesPerSecond(letter),
             ProbeMbps = DiskProbe.Mbps,
             ProbeStepLcn = DiskProbe.StepLcn,
-            LocateProbeSpots = DiskProbe.Locate,
+            LocateProbeSpots = (letter, zone, ct) => DiskProbe.Locate(letter, zone, ct, () => DiskActivity.IsBusy(letter)),
             CpuPercent = cpu.Percent,
             PowerOk = () => PowerProbe.PowerOk(MinBatteryPercent),
             Tier = log is null ? null : new TierEngine(new TierFs(new IoPriorityHint(err => log.Warn($"ssd tier: low I/O priority hint not applied (Win32 error {err})"))), log, Path.Combine(Path.GetDirectoryName(journalDir) ?? journalDir, "tier")),

@@ -97,7 +97,7 @@ public sealed class Worker : BackgroundService
             {
                 if (_auto is not null)
                 {
-                    BootProbe.RunReal(_settings, _auto.Status, _log); // 서비스 시작 예열이 파일을 데우기 전의 콜드 비용 (부팅 뒤 첫 시작일 때만)
+                    BootProbe.RunReal(_settings, _auto.Status, _log, _auto.WarmToken); // 서비스 시작 예열이 파일을 데우기 전의 콜드 비용 (부팅 뒤 첫 시작일 때만)
                 }
 
                 _prewarm.RunServiceStart(_auto?.StartupRecent(), _auto?.WarmToken ?? default);
@@ -355,7 +355,7 @@ public sealed class Worker : BackgroundService
                     }
 
                     ReapplyVerdict v = _gate.Run(ct, token => _checker.Check(g, token));
-                    bool waiting = v == ReapplyVerdict.Cancelled || (resuming.Contains(g.Name) && v is ReapplyVerdict.GameRunning or ReapplyVerdict.DiskBusy);
+                    bool waiting = v == ReapplyVerdict.Cancelled || (resuming.Contains(g.Name) && v is ReapplyVerdict.GameRunning or ReapplyVerdict.DiskBusy or ReapplyVerdict.Recovering or ReapplyVerdict.OnBattery or ReapplyVerdict.NotIdle or ReapplyVerdict.PostUpdateDelay);
                     _ = waiting ? resuming.Add(g.Name) : resuming.Remove(g.Name);
                     due[g.Name] = DateTimeOffset.UtcNow + (waiting ? ResumeRetry : TimeSpan.FromMinutes(g.ReapplyMinutes));
                 }

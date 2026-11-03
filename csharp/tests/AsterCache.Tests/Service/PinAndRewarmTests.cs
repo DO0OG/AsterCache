@@ -483,7 +483,7 @@ public sealed class PinAndRewarmTests
     {
         Prewarmer p = WarmedGame();
         TickAt(p, TimeSpan.Zero);
-        _probe = 2.0; // ColdThresholdMs 와 같으면 아직 따뜻함
+        _probe = 0.8; // ColdThresholdMs 와 같으면 아직 따뜻함
 
         TickAt(p, TimeSpan.FromMinutes(10));
 

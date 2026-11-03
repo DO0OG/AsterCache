@@ -371,4 +371,26 @@ public sealed class BootProbeTests : IDisposable
     {
         Assert.Equal("probe", ParseAuto(new JsonObject { ["post_relocate_recovery"] = JsonValue.Create(value) }).PostRelocateRecovery);
     }
+
+    [Fact]
+    public void CancelledTokenStopsOpeningFilesBetweenFiles()
+    {
+        using var cts = new CancellationTokenSource();
+        var s = Settings(Games.Make("a", "a.exe"));
+
+        AutoBootProbe? probe = BootProbe.Run(s, WithPlayed(("a", 1)), _log, T0, 1000, g => Files(g, 50), p =>
+        {
+            _opened.Add(p);
+            _clock += TimeSpan.FromMilliseconds(5);
+            if (_opened.Count == 3)
+            {
+                cts.Cancel(); // 게임 시작 알림
+            }
+
+            return true;
+        }, () => _clock, null, cts.Token);
+
+        Assert.Equal(3, _opened.Count);
+        Assert.Equal(3, probe!.Files);
+    }
 }

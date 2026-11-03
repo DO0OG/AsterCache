@@ -14,6 +14,9 @@ public static class LoadBoundaryWatch
     public static readonly TimeSpan Interval = TimeSpan.FromSeconds(3);
     public static readonly TimeSpan Limit = TimeSpan.FromSeconds(120);
     public const int SampleBytes = 4096;
+
+    /// 4 KiB 표본이 이 시간을 넘으면 느린 것으로 봅니다 (1 MiB 용 CacheProbe.ColdThresholdMs 는 이 크기에 너무 느슨함: 4 KiB 캐시 적중은 마이크로초, HDD 는 수 ms).
+    public const double SlowMs = 0.5;
     public const long MinGap = 1L << 20; // 캐시 미리 읽기가 이웃 위치를 올리지 않도록 표본끼리·이전 회차와 이만큼 띄움
 
     /// tier0 (시간순) 의 끝 쪽 범위부터 거슬러 올라가며, used 와 서로 MinGap 이상 떨어진 새 위치를 count 곳까지 고릅니다 (고른 위치는 used 에 더함). 모자라면 있는 만큼만 돌려줍니다.
@@ -42,7 +45,7 @@ public static class LoadBoundaryWatch
     {
         now ??= () => DateTimeOffset.UtcNow;
         sleep ??= d => ct.WaitHandle.WaitOne(d);
-        probe ??= CacheProbe.Probe;
+        probe ??= s => CacheProbe.Probe(s, SlowMs);
         if ((boundary ?? LoadTiers.For)(game) is not { Tier0.Count: > 0 } b)
         {
             return null;
@@ -61,7 +64,7 @@ public static class LoadBoundaryWatch
                 return null;
             }
 
-            if (probe(samples) is { Samples: > 0, Slow: 0 })
+            if (probe(samples) is { Slow: 0 } r && r.Samples == SampleCount) // 읽지 못한 표본이 있으면 도달로 보지 않음
             {
                 int ms = (int)Math.Min(int.MaxValue, (now() - start).TotalMilliseconds);
                 status.RecordLoadBoundary(game.Name, ms, now());

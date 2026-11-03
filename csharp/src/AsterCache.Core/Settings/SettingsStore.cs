@@ -179,6 +179,7 @@ public static class SettingsStore
             RelocateVerify = o.TryGetValue("relocate_verify", out object? rv) && rv is string rvs && VerifyMode.IsValid(rvs) ? rvs : d.RelocateVerify,
             RelocateOrder = o.TryGetValue("relocate_order", out object? ro) && ro is string ros && RelocateOrder.IsValidSetting(ros) ? ros : d.RelocateOrder,
             MaxRelocateGibPerDay = OptInt(o, "max_relocate_gib_per_day", 0, 1048576, d.MaxRelocateGibPerDay),
+            MaxRelocateGibPerDaySet = o.ContainsKey("max_relocate_gib_per_day"),
             SsdTier = o.TryGetValue("ssd_tier", out object? tier) ? ParseSsdTier(tier) : SsdTierSettings.Default,
         };
     }

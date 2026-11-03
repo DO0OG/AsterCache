@@ -652,10 +652,10 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
-    public void DailyWriteBudgetHoldsWhenTheSumExceedsTheLimitAndReleasesAfter24Hours()
+    public void DailyWriteBudgetHoldsOnceTheLimitIsUsedUpAndReleasesAfter24Hours()
     {
         List<ApplyOptions> executed = FakeBytesTodo(2L << 30);
-        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), (6L << 30) + 1);
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 8L << 30);
 
         Run(TimeSpan.FromMinutes(10));
 
@@ -673,22 +673,53 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
-    public void DailyWriteBudgetSmallerThanOneRunStillAllowsTheFirstMoveOfTheDay()
+    public void DailyWriteBudgetSmallerThanOneRunCapsTheWriteCapAtTheBudgetInsteadOfAllowingAFirstMove()
     {
         SetAuto(a => a with { MaxRelocateGibPerDay = 1 });
-        string plan2 = Path.Combine(Root, "plans", "second.plan.json");
-        GameSettings second = _game with { Name = "second", ExeNames = ["second.exe"], Plan = plan2, Trace = plan2 + ".prefetch.json" };
-        _settings = _settings with { Games = [_game, second] };
-        _w.Files.Add(AutoTracer.RawTracePath(second));
-        _status.MarkPlayed("bench", "auto", AutoStage.WaitingIdle, _w.Now - TimeSpan.FromDays(2));
-        _status.MarkPlayed("second", "auto", AutoStage.WaitingIdle, _w.Now - TimeSpan.FromDays(1));
         List<ApplyOptions> executed = FakeBytesTodo(2L << 30);
 
         Run(TimeSpan.FromMinutes(10));
 
-        Assert.Single(executed); // 빈 창에서는 상한(1 GiB)보다 큰 2 GiB 도 한 번 허용
-        Assert.Equal(AutoStage.Done, _status.Get("second")!.Stage);
-        Assert.Equal((AutoStage.WaitingIdle, "daily write budget reached"), (Entry.Stage, Entry.Detail)); // 그 직후에는 다시 대기
+        Assert.Equal(1L << 30, Assert.Single(executed).WriteCap); // 상한(1 GiB)보다 큰 2 GiB 도 1 GiB 까지만 쓰고 나머지는 이어하기
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+    }
+
+    [Fact]
+    public void WriteCapIsTheSmallerOfTheRunCapAndWhatIsLeftOfTheDay()
+    {
+        List<ApplyOptions> executed = FakeBytesTodo(2L << 30);
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), (8L << 30) - (300L << 20)); // 하루 8 GiB 중 300 MiB 남음
+
+        Run(TimeSpan.FromMinutes(10));
+
+        Assert.Equal(300L << 20, Assert.Single(executed).WriteCap);
+    }
+
+    [Theory]
+    [InlineData(false, 8, 2)] // 비 SMR: 일일 8 GiB, 회당 2 GiB
+    [InlineData(true, 2, 1)] // SMR: 일일 2 GiB, 회당 1 GiB
+    public void SmrDisksLowerTheDefaultDailyBudgetAndRunCap(bool smr, int dailyGib, int runGib)
+    {
+        _w.IsSmr = _ => smr;
+        List<ApplyOptions> executed = FakeBytesTodo(4L << 30);
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), ((long)dailyGib << 30) - (3L << 30 >> 1)); // 하루 상한 중 1.5 GiB 남음
+
+        Run(TimeSpan.FromMinutes(10));
+
+        Assert.Equal(Math.Min((long)runGib << 30, 3L << 30 >> 1), Assert.Single(executed).WriteCap);
+    }
+
+    [Fact]
+    public void ExplicitDailyBudgetIsKeptOnSmrDisks()
+    {
+        _w.IsSmr = _ => true;
+        SetAuto(a => a with { MaxRelocateGibPerDay = 8, MaxRelocateGibPerDaySet = true });
+        List<ApplyOptions> executed = FakeBytesTodo(4L << 30);
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 3L << 30); // 기본값 (2 GiB) 이었다면 이미 넘음
+
+        Run(TimeSpan.FromMinutes(10));
+
+        Assert.Equal(1L << 30, Assert.Single(executed).WriteCap); // 회당 상한만 SMR 값
     }
 
     [Fact]
@@ -2791,21 +2822,28 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
-    public void ExtensionBiggerThanTheDailyWriteBudgetIsBlockedBecauseItGetsNoFirstMoveException()
+    public void ExtensionBiggerThanTheDailyWriteBudgetIsAppliedInCappedSteps()
     {
         DoneThenMergedTrace(Merged(RestOfTheBlocks()));
         SetAuto(a => a with { MaxRelocateGibPerDay = 1 });
         _w.Now += AutoRelocator.DailyWindow + TimeSpan.FromHours(1); // 하루 창이 비어 있음
+        var executed = new List<ApplyOptions>();
         Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
-        _w.Apply = (g, plan, options, ct) => options.DryRun ? new ApplyReport { TasksTotal = 1, TasksTodo = 1, BytesTodo = 3L << 30 } : real(g, plan, options, ct);
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            if (!options.DryRun)
+            {
+                executed.Add(options);
+            }
+
+            return options.DryRun ? new ApplyReport { TasksTotal = 1, TasksTodo = 1, BytesTodo = 3L << 30 } : real(g, plan, options, ct);
+        };
 
         Tick();
         RunUntilDone();
 
-        Assert.Equal(AutoStage.Done, Entry.Stage);
-        Assert.Empty(Vol.Moves);
-        Assert.Contains(_log.Lines, l => l.Contains("zone extension blocked: the extension is larger than the daily write budget", StringComparison.Ordinal));
-        Assert.Equal(5L, PlanFile.Load(_game.Plan).Stats["hot_blocks"]);
+        Assert.Equal(1L << 30, Assert.Single(executed).WriteCap); // 막지 않고 하루 상한까지만 씀
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("zone extension blocked", StringComparison.Ordinal));
     }
 
     [Fact]

@@ -64,6 +64,9 @@ internal sealed class FakeWorld
 
     public Dictionary<string, bool?> Hdd { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+    /// SMR 로 보이는 HDD 인가 (기본: 아님).
+    public Func<string, bool> IsSmr { get; set; } = _ => false;
+
     public List<int> Pids { get; set; } = [];
 
     public Dictionary<int, string> Images { get; } = [];
@@ -188,6 +191,7 @@ internal sealed class FakeWorld
         Scan = () => Skipped.Count == 0 ? Found : new ScanResult([.. Found], [.. Skipped]),
         VolumeLabel = l => Labels.GetValueOrDefault(l, "GAMES"),
         IsHdd = l => Hdd.TryGetValue(l, out bool? v) ? v : true,
+        IsSmr = l => IsSmr(l),
         Pids = () => Pids,
         ImagePath = p => Images.GetValueOrDefault(p),
         ReadBytes = p =>

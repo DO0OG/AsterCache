@@ -172,7 +172,7 @@ public sealed class TrayViewModel(
             return Report(false, L.T("Err_RelocateGib"));
         }
 
-        return Edit(() => config.UpdateAuto(a => a with { MaxRelocateGibPerDay = n }), L.T("Msg_AutoSet"));
+        return Edit(() => config.UpdateAuto(a => n == a.MaxRelocateGibPerDay && !a.MaxRelocateGibPerDaySet ? a : a with { MaxRelocateGibPerDay = n, MaxRelocateGibPerDaySet = true }), L.T("Msg_AutoSet")); // 표시된 기본값 그대로면 명시하지 않음 (SMR 기본값 규칙 유지)
     }
 
     /// SSD 보조 저장 (선택 기능) 의 켬과 예산 (GiB) 을 기록합니다. 폴더(root) 와 나머지 auto 값은 그대로 보존합니다. 링크는 서비스가 만듭니다 (트레이는 설정만 바꿈).

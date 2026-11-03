@@ -22,13 +22,13 @@ public sealed class ConfigEditorAutoTests : IDisposable
     };
 
     [Fact]
-    public void SetAutoRoundTripsAndWritesEveryKeyEvenAtDefaultExceptUnsetParallel()
+    public void SetAutoRoundTripsAndWritesEveryKeyEvenAtDefaultExceptUnsetParallelAndDailyGib()
     {
         var editor = new ConfigEditor(_dir);
         editor.Add(Game("a"));
         editor.SetAuto(AutoSettings.Default);
 
-        Assert.Equal(33, CountKeys(File.ReadAllText(editor.ConfigPath), "auto"));
+        Assert.Equal(32, CountKeys(File.ReadAllText(editor.ConfigPath), "auto"));
         Assert.Equal(Plain(AutoSettings.Default), Plain(editor.Load()!.Auto));
 
         var custom = new AutoSettings(false, false, true, false, 3, 7, 90, 128, 5, ["a.exe", "b.exe"])
@@ -48,6 +48,7 @@ public sealed class ConfigEditorAutoTests : IDisposable
             RelocateVerify = "off",
             RelocateOrder = "source",
             MaxRelocateGibPerDay = 0,
+            MaxRelocateGibPerDaySet = true,
             KeepAwake = false,
             KeepStreamOnGameStart = true,
             TraceRuns = 5,

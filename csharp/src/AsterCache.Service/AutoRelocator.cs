@@ -107,7 +107,6 @@ public sealed class AutoRelocator
     private readonly Dictionary<string, DateTimeOffset> _staleChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀
     private readonly HashSet<string> _delayLogged = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 업데이트 지연을 이미 로그한 게임
     private readonly Dictionary<string, DateTimeOffset> _prefetchTried = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 프리페치 기록으로 boot 를 만들어 본 게임과 그 시각
-    private readonly Dictionary<string, long> _needBytes = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 하루 쓰기 예산 때문에 보류한 게임의 마지막 이동 예정 바이트
     private readonly HashSet<string> _volatileChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 옛 계획의 가변 파일을 이미 따져 본 게임 (서비스 실행당 한 번)
     private readonly HashSet<string> _seeded = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 이전 존 시작에 맞춰 계획을 만든 게임
     private readonly Dictionary<string, DateTimeOffset> _extTried = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 존 확장을 이미 따져 본 (또는 막힌) 게임과 그때의 트레이스 수정 시각 (다음 플레이가 쌓여 트레이스가 바뀔 때까지 다시 보지 않음)
@@ -225,8 +224,7 @@ public sealed class AutoRelocator
             .OrderByDescending(g => played.GetValueOrDefault(g.Name, DateTimeOffset.MinValue)).ThenBy(g => g.Name, StringComparer.Ordinal).ToList();
         DateTimeOffset? held = relocateOn ? _status.RelocationHeldUntil() : null; // 상태 파일을 못 읽어 막는 중
         bool limitReached = relocateOn && (held is not null || _status.RelocationsWithin(DailyWindow) >= s.Auto.MaxRelocationsPerDay); // Note 보다 먼저 정해 같은 상태 로그가 오락가락하며 쌓이지 않게
-        long budget = (long)s.Auto.MaxRelocateGibPerDay << 30; // 0 = 무제한
-        long used = budget > 0 ? _status.RelocationBytesWithin(DailyWindow) : 0;
+        long used = _status.RelocationBytesWithin(DailyWindow);
         var ready = new List<GameSettings>();
         foreach (GameSettings g in work)
         {
@@ -255,7 +253,8 @@ public sealed class AutoRelocator
                 continue;
             }
 
-            bool budgetHeld = budget > 0 && used > 0 && used + _needBytes.GetValueOrDefault(g.Name, 1) > budget; // 아직 모르면 1 바이트라도 남아야 함, 그날 첫 이동은 한 번 이동량이 상한보다 커도 허용
+            long budget = BudgetBytes(s, g); // 0 = 무제한
+            bool budgetHeld = budget > 0 && used >= budget; // 1 바이트라도 남아야 함: 남은 만큼만 쓰도록 적용의 쓰기 상한을 줄이므로 첫 이동 예외는 없음
             lock (_noteLock)
             {
                 Note(g, AutoStage.WaitingIdle, WaitDetail(g, held is { } until ? AutoStatus.HoldDetail(until) : limitReached ? DailyLimit : budgetHeld ? DailyBudget : null));
@@ -790,6 +789,15 @@ public sealed class AutoRelocator
         }
     }
 
+    // 하루 쓰기 예산 (바이트, 0 = 무제한): 명시하지 않았으면 SMR 로 보이는 디스크는 더 낮은 기본값.
+    private long BudgetBytes(AsterSettings s, GameSettings g) => (long)(s.Auto.MaxRelocateGibPerDaySet ? s.Auto.MaxRelocateGibPerDay : s.Auto.MaxRelocateGibFor(IsSmr(g))) << 30;
+
+    private bool IsSmr(GameSettings g)
+    {
+        try { return _env.IsSmr(DriveOf(g)); }
+        catch (Exception) { return false; } // 질의 실패는 SMR 아님으로 본다
+    }
+
     private long MaxZoneMib(AsterSettings s, GameSettings g) => s.MaxZoneAuto ? ZoneSize.AutoMaxMib(_env.PhysicalRamBytes(), SlowBus(g)) : s.MaxZoneMib;
 
     private bool SlowBus(GameSettings g)
@@ -941,7 +949,7 @@ public sealed class AutoRelocator
             return ReapplyVerdict.DiskBusy;
         }
 
-        long budget = (long)s.Auto.MaxRelocateGibPerDay << 30; // 0 = 무제한
+        long budget = BudgetBytes(s, g); // 0 = 무제한
         bool countHeld = _status.RelocationHeldUntil() is not null || (s.Auto.MaxRelocationsPerDay > 0 && _status.RelocationsWithin(DailyWindow) >= s.Auto.MaxRelocationsPerDay);
         bool bytesHeld = budget > 0 && _status.RelocationBytesWithin(DailyWindow) is > 0 and long used && used >= budget;
         return countHeld || bytesHeld ? ReapplyVerdict.DailyLimit : null;
@@ -1361,30 +1369,29 @@ public sealed class AutoRelocator
             plan = _env.LoadPlan(g.Plan);
             ReapplyChecker.CheckPaths(plan, g, _env.RealPath);
             string order = RelocateOrder.Resolve(s.Auto.RelocateOrder);
-            var run = new ApplyOptions(Execute: true, ChunkBytes: (long)s.Auto.RelocateChunkMib << 20, LowIoPriority: s.Auto.RelocateIoPriority == AutoSettings.IoLow, Verify: s.Auto.RelocateVerify, Order: order, Parallel: s.Auto.ParallelFor(_env.IsSlowBus(DriveOf(g)), _env.IsSmr(DriveOf(g))));
-            long bytes = Math.Min(dry.BytesTodo, run.WriteCap); // 한 번의 적용은 WriteCap 까지만 쓰고 나머지는 이어하기가 다시 셈
+            bool smr = IsSmr(g);
+            var run = new ApplyOptions(Execute: true, ChunkBytes: (long)s.Auto.RelocateChunkMib << 20, LowIoPriority: s.Auto.RelocateIoPriority == AutoSettings.IoLow, Verify: s.Auto.RelocateVerify, Order: order, Parallel: s.Auto.ParallelFor(_env.IsSlowBus(DriveOf(g)), smr),
+                WriteCap: AutoSettings.WriteCapFor(smr));
             if (_status.RelocationHeldUntil() is { } held)
             {
                 Note(g, AutoStage.WaitingIdle, WaitDetail(g, AutoStatus.HoldDetail(held)));
                 return;
             }
 
-            long budget = (long)s.Auto.MaxRelocateGibPerDay << 30;
-            long usedToday = budget > 0 ? _status.RelocationBytesWithin(DailyWindow) : 0;
-            if (extending && budget > 0 && usedToday == 0 && bytes > budget)
+            long budget = BudgetBytes(s, g); // 0 = 무제한
+            if (budget > 0)
             {
-                BlockExtension(g, "the extension is larger than the daily write budget"); // 확장분은 첫 이동 예외를 받지 않으므로 영원히 대기하게 됨
-                return;
+                long left = budget - _status.RelocationBytesWithin(DailyWindow);
+                if (left <= 0)
+                {
+                    Note(g, AutoStage.WaitingIdle, WaitDetail(g, DailyBudget));
+                    return;
+                }
+
+                run = run with { WriteCap = Math.Min(run.WriteCap, left) }; // 한 번의 적용은 회당 상한과 하루 남은 양 중 작은 쪽까지만 쓰고 나머지는 이어하기가 다시 셈
             }
 
-            if ((usedToday > 0 || extending) && usedToday + bytes > budget && budget > 0) // 빈 창의 첫 이동은 상한보다 커도 허용 (아니면 영원히 대기), 존 확장은 예외 없음
-            {
-                _needBytes[g.Name] = bytes;
-                Note(g, AutoStage.WaitingIdle, WaitDetail(g, DailyBudget));
-                return;
-            }
-
-            _ = _needBytes.Remove(g.Name);
+            long bytes = Math.Min(dry.BytesTodo, run.WriteCap);
             (DriveBaseline? baseline, bool interrupted) = s.Auto.PostRelocateRecovery == AutoSettings.RecoveryProbe ? MeasureBaseline(g, plan, token) : (null, false);
             if (interrupted)
             {

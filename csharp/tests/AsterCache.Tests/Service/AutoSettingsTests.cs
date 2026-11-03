@@ -597,4 +597,17 @@ public sealed class AutoSettingsTests
         Assert.Equal(8, ReapplyEnv.ParallelFor(AutoSettings.Default, game, _ => false, _ => false));
         Assert.Equal(4, ReapplyEnv.ParallelFor(AutoSettings.Default with { RelocateParallel = 4, RelocateParallelSet = true }, game, _ => false, _ => true)); // 명시값은 그대로
     }
+
+    [Fact]
+    public void SmrLowersOnlyTheUnsetDailyWriteLimitAndTheRunCap()
+    {
+        AutoSettings unset = ParseAuto(new JsonObject()).Auto;
+        AutoSettings set = ParseAuto(new JsonObject { ["max_relocate_gib_per_day"] = 8 }).Auto;
+
+        Assert.False(unset.MaxRelocateGibPerDaySet);
+        Assert.True(set.MaxRelocateGibPerDaySet);
+        Assert.Equal((8, 2), (unset.MaxRelocateGibFor(smr: false), unset.MaxRelocateGibFor(smr: true)));
+        Assert.Equal((8, 8), (set.MaxRelocateGibFor(smr: false), set.MaxRelocateGibFor(smr: true)));
+        Assert.Equal((2L << 30, 1L << 30), (AutoSettings.WriteCapFor(false), AutoSettings.WriteCapFor(true)));
+    }
 }

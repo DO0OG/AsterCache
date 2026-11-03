@@ -167,6 +167,17 @@ public sealed record AutoSettings(
     /// 하루 (24 시간) 에 자동 재배치가 쓸 수 있는 총량 (GiB, 0..1048576). 0 = 무제한.
     public int MaxRelocateGibPerDay { get; init; } = 8;
 
+    /// max_relocate_gib_per_day 가 설정에 명시됐는가 (아니면 SMR 디스크는 더 낮은 기본값을 씀).
+    public bool MaxRelocateGibPerDaySet { get; init; }
+
+    public const int SmrMaxRelocateGibPerDay = 2;
+
+    /// 실제 일일 상한 (GiB): 명시값, 아니면 SMR 로 보이는 HDD 면 2, 그 밖에는 8 (순차 쓰기가 느린 SMR 은 하루에 덜 씀).
+    public int MaxRelocateGibFor(bool smr) => MaxRelocateGibPerDaySet || !smr ? MaxRelocateGibPerDay : SmrMaxRelocateGibPerDay;
+
+    /// 한 번의 적용이 쓰는 상한 (바이트): SMR 로 보이는 HDD 는 1 GiB, 그 밖에는 2 GiB.
+    public static long WriteCapFor(bool smr) => smr ? 1L << 30 : 2L << 30;
+
     /// 유휴 대기 시간: idle_seconds 가 명시됐거나 둘 다 없으면 IdleSeconds 초, idle_minutes 만 명시됐으면 IdleMinutes 분.
     public TimeSpan IdleWindow => IdleSecondsSet || !IdleMinutesSet ? TimeSpan.FromSeconds(IdleSeconds) : TimeSpan.FromMinutes(IdleMinutes);
 }

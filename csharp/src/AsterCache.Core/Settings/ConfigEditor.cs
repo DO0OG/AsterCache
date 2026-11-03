@@ -158,7 +158,6 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             { "max_relocations_per_day", (long)a.MaxRelocationsPerDay },
             { "trace_runs", (long)a.TraceRuns },
             { "trace_merge_min_mib", (long)a.TraceMergeMinMib },
-            { "max_relocate_gib_per_day", (long)a.MaxRelocateGibPerDay },
             { "relocate_chunk_mib", (long)a.RelocateChunkMib },
             { "relocate_io_priority", a.RelocateIoPriority },
             { "relocate_verify", a.RelocateVerify },
@@ -180,6 +179,11 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             { "shared_profiles", new JObject { { "enabled", a.SharedProfiles.Enabled }, { "url", a.SharedProfiles.Url } } },
             { "ssd_tier", new JObject { { "enabled", a.SsdTier.Enabled }, { "budget_gib", (long)a.SsdTier.BudgetGib }, { "root", a.SsdTier.Root } } },
         };
+        if (a.MaxRelocateGibPerDaySet) // 명시되지 않은 값은 쓰지 않음 (SMR 기본값 규칙 유지)
+        {
+            auto["max_relocate_gib_per_day"] = (long)a.MaxRelocateGibPerDay;
+        }
+
         if (a.RelocateParallelSet) // 명시되지 않은 값은 쓰지 않음 (자동 규칙 유지)
         {
             auto["relocate_parallel"] = (long)a.RelocateParallel;

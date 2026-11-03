@@ -258,6 +258,33 @@ public sealed class DispatcherTests
         Assert.Contains(log.Lines, l => l.Contains("start stream skipped (drive busy)", StringComparison.Ordinal));
     }
 
+    private static GameDispatcher JustStarted(FakeStreamer streamer, ListLog log, bool warm) =>
+        new([Mw4], streamer, log, () => DateTimeOffset.UnixEpoch, new DispatchEnv { DiskBusy = _ => true, Age = _ => TimeSpan.FromSeconds(1), IsWarm = _ => warm });
+
+    [Fact]
+    public void GameStartedJustNowStreamsEvenThoughItsOwnReadsMakeTheDriveBusy()
+    {
+        var streamer = new FakeStreamer();
+        var d = JustStarted(streamer, new ListLog(), warm: false);
+
+        Assert.True(d.Handle(Start("game.exe")));
+
+        Assert.Single(streamer.Calls);
+    }
+
+    [Fact]
+    public void GameStartedJustNowSkipsTheStreamWhenItsHotSetIsAlreadyWarm()
+    {
+        var streamer = new FakeStreamer();
+        var log = new ListLog();
+        var d = JustStarted(streamer, log, warm: true);
+
+        Assert.False(d.Handle(Start("game.exe")));
+
+        Assert.Empty(streamer.Calls);
+        Assert.Contains(log.Lines, l => l.Contains("start stream skipped (already warm)", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void LauncherStartKeepsTheOldRulesEvenWhenTheGuardsWouldSkip()
     {

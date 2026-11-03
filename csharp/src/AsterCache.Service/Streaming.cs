@@ -174,6 +174,12 @@ public sealed record DispatchEnv
     /// 그 게임의 물리 디스크가 바쁜가 (읽지 못하면 바쁘지 않은 것으로 봄: 지표 없이 첫 시작 스트림까지 막지 않게).
     public Func<GameSettings, bool> DiskBusy { get; init; } = _ => false;
 
+    /// 이 프로세스가 감지된 지 얼마나 됐는가 (Settle 안이면 막 시작한 게임: 그 게임 자신의 읽기를 디스크 바쁨으로 세지 않음).
+    public Func<ProcessStart, TimeSpan> Age { get; init; } = s => System.Diagnostics.Stopwatch.GetElapsedTime(s.Timestamp);
+
+    /// 그 게임의 핫 집합이 이미 파일 캐시에 있는가 (Prewarmer.AlreadyWarm). 기본은 모른다 (스트림).
+    public Func<GameSettings, bool> IsWarm { get; init; } = _ => false;
+
     /// 같은 게임의 시작 스트림 사이 최소 간격 (분), 0 = 끔.
     public Func<int> RestreamCooldownMin { get; init; } = () => 0;
 
@@ -260,6 +266,11 @@ public sealed class GameDispatcher
         if (_env.OtherRunning(g, start))
         {
             return "game already running";
+        }
+
+        if (_env.Age(start) < DispatchEnv.Settle)
+        {
+            return _env.IsWarm(g) ? "already warm" : null; // 막 시작한 게임: 바쁨 검사 대신 캐시 점검, 차가우면 스트림
         }
 
         return _env.DiskBusy(g) ? "drive busy" : null;

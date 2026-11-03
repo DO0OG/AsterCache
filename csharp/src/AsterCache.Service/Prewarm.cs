@@ -539,7 +539,7 @@ public sealed class Prewarmer
     }
 
     // 핫 집합 몇 곳을 읽어 이미 파일 캐시에 있으면 (CacheProbe) 다시 읽지 않습니다. 표본을 못 읽으면 (null) 예열합니다.
-    private bool AlreadyWarm(GameSettings g)
+    internal bool AlreadyWarm(GameSettings g)
     {
         try
         {

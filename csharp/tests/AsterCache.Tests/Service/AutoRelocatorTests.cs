@@ -734,14 +734,27 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
-    public void RelocationBytesRecordedForTheBudgetAreCappedAtOneRunsWriteCap()
+    public void RelocationBytesRecordedForTheBudgetAreTheBytesActuallyMovedNotTheEstimate()
     {
-        FakeBytesTodo(3L << 30);
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            ApplyReport r = real(g, plan, options, ct);
+            if (options.DryRun)
+            {
+                r.BytesTodo = 3L << 30; // 예정은 3 GiB
+            }
+            else
+            {
+                r.MovedBytes = 1500L << 20; // 실제로 옮긴 양
+            }
+
+            return r;
+        };
 
         Run(TimeSpan.FromMinutes(10));
 
-        long moved = _status.RelocationBytesWithin(AutoRelocator.DailyWindow); // 실제로 옮긴 양 (시험 볼륨 기준 작음), 쓰기 상한을 넘지 않음
-        Assert.InRange(moved, 1L, 2L << 30);
+        Assert.Equal(1500L << 20, _status.RelocationBytesWithin(AutoRelocator.DailyWindow));
     }
 
     [Theory]

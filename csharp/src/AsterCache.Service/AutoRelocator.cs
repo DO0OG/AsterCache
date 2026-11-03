@@ -1090,9 +1090,9 @@ public sealed class AutoRelocator
         try
         {
             string drive = DriveOf(g);
-            if (plan.Zone.StartLcn is not { } zone || _env.LocateProbeSpots(drive, zone) is not { } spots || (!spots.ZoneAllocated && spots.ReferenceLcn is null))
+            if (plan.Zone.StartLcn is not { } zone || _env.LocateProbeSpots(drive, zone, token) is not { } spots || (!spots.ZoneAllocated && spots.ReferenceLcn is null))
             {
-                return (null, false);
+                return (null, token.IsCancellationRequested); // 찾는 중 게임이 떠 취소됐으면 기준 없이 강행하지 않음
             }
 
             var round = new ProbeRound(token, (spots.ZoneAllocated ? 1 : 0) + (spots.ReferenceLcn is null ? 0 : 1));

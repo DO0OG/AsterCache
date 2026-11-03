@@ -19,6 +19,8 @@ public static class DiskProbe
     public const int SpotStrideWindows = 4; // 구간 사이 시작점 간격 (64 MiB 칸): 256 MiB, 구간 사이가 192 MiB 비어 있어 연속이 아님
     public const int RotationSteps = 4; // 표본마다 64 MiB 씩 옮기는 횟수: 4 번 만에 12 칸 (768 MiB) 이 모두 한 번씩 쓰여 HDD 자체 캐시 (256 MB) 에 같은 곳이 다시 맞지 않음
     public const int RotationWindows = SpotStrideWindows * Spots; // 존·기준 구간이 할당·기록돼 있어야 하는 64 MiB 칸 수
+    public const int MaxReferenceCandidates = 8; // 기준 구간 후보는 목표에 가까운 순으로 이만큼만 확인 (후보마다 4 KiB 원시 읽기 최대 RotationWindows 번)
+    public const long MaxBitmapBytes = 64L << 20; // 이보다 큰 비트맵 (4 KiB 클러스터 약 2 TiB 초과) 은 기준 구간 찾기를 포기
     public const int ReferenceOffsetGib = 4; // 존에서 이만큼 뒤의 할당된 영역을 쓰지 않을 기준으로 삼음
     public static readonly TimeSpan WallLimit = TimeSpan.FromSeconds(10);
     private const uint FileFlagSequentialScan = 0x08000000;
@@ -109,22 +111,22 @@ public static class DiskProbe
 
     /// 존 시작 lcn 의 앞쪽 표본 구간 (512 MiB) 이 할당되고 기록돼 있는지와, 존에서 4 GiB 뒤에 가장 가까운 같은 조건의 기준 구간의 LCN. 비트맵을 못 읽으면 (관리자 아님 포함) null.
     /// 기록됨 = 각 64 MiB 칸의 첫 4 KiB 가 전부 0 이 아님 (할당만 되고 안 쓴 영역은 SMR 이 0 을 즉시 돌려 과대).
-    public static (bool ZoneAllocated, long? ReferenceLcn)? Locate(string letter, long zoneLcn)
+    public static (bool ZoneAllocated, long? ReferenceLcn)? Locate(string letter, long zoneLcn, CancellationToken ct = default, Func<bool>? busy = null)
     {
         try
         {
             using NtfsVolume v = NtfsVolume.Open(letter);
             using SafeFileHandle h = NativeMethods.CreateFileW(@"\\.\" + letter.TrimEnd(':', '\\') + ":", Win32.GenericRead, Win32.ShareAll, 0, Win32.OpenExisting, Win32.FileFlagNoBuffering, 0);
-            return h.IsInvalid ? null : Locate(v.Bitmap(), v.ClusterBytes, zoneLcn, lcn => HasData(h, lcn * v.ClusterBytes));
+            return h.IsInvalid ? null : Locate(v.Bitmap(1 << 20, MaxBitmapBytes), v.ClusterBytes, zoneLcn, lcn => HasData(h, lcn * v.ClusterBytes), ct, busy);
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or NotAdminException or System.ComponentModel.Win32Exception)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or NotAdminException or OperationCanceledException or System.ComponentModel.Win32Exception)
         {
             return null;
         }
     }
 
     // written: LCN 의 첫 4 KiB 가 0 이 아닌가 (null 이면 확인 안 함).
-    internal static (bool ZoneAllocated, long? ReferenceLcn) Locate(VolumeBitmap bitmap, int clusterBytes, long zoneLcn, Func<long, bool>? written = null)
+    internal static (bool ZoneAllocated, long? ReferenceLcn) Locate(VolumeBitmap bitmap, int clusterBytes, long zoneLcn, Func<long, bool>? written = null, CancellationToken ct = default, Func<bool>? busy = null)
     {
         long step = (BlockMib * Blocks * Mib + clusterBytes - 1) / clusterBytes;
         long need = step * RotationWindows;
@@ -135,7 +137,7 @@ public static class DiskProbe
         }
 
         zoneAllocated = zoneAllocated && Written(written, zoneLcn, step);
-        return (zoneAllocated, FindReference(bitmap, zoneLcn + ReferenceOffsetGib * (1L << 30) / clusterBytes, need, lcn => Written(written, lcn, step)));
+        return (zoneAllocated, FindReference(bitmap, zoneLcn + ReferenceOffsetGib * (1L << 30) / clusterBytes, need, lcn => Written(written, lcn, step), ct, busy));
     }
 
     private static bool Written(Func<long, bool>? written, long lcn, long step)
@@ -166,26 +168,40 @@ public static class DiskProbe
     }
 
     // 모두 할당된 need 클러스터 이상의 구간 중 target 에 가장 가까운 (ok 인) 시작 LCN, 없으면 null (할당 구간 = 빈 구간 사이).
-    internal static long? FindReference(VolumeBitmap bitmap, long target, long need, Func<long, bool>? ok = null)
+    // 후보는 목표에 가까운 순으로 maxCandidates 개까지만 ok (원시 읽기) 로 확인하고, 매 후보 앞에서 취소 (OperationCanceledException) 와 디스크 바쁨 (busy, 바쁘면 null) 을 봅니다.
+    internal static long? FindReference(VolumeBitmap bitmap, long target, long need, Func<long, bool>? ok = null, CancellationToken ct = default, Func<bool>? busy = null, int maxCandidates = MaxReferenceCandidates)
     {
-        long? best = null;
+        var candidates = new List<long>();
         long prevEnd = bitmap.Start;
         foreach ((long lcn, long length) in bitmap.FreeRuns().Append((bitmap.Start + bitmap.NBits, 0)))
         {
             if (lcn - prevEnd >= need)
             {
-                long at = Math.Clamp(target, prevEnd, lcn - need);
-                if (ok is null || ok(at))
-                {
-                    best = best is { } b && Math.Abs(b - target) <= Math.Abs(at - target) ? best : at;
-                }
+                candidates.Add(Math.Clamp(target, prevEnd, lcn - need));
             }
 
             prevEnd = lcn + length;
         }
 
-        return best;
+        foreach (long at in candidates.OrderBy(c => Math.Abs(c - target)).Take(maxCandidates))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (busy?.Invoke() == true)
+            {
+                return null;
+            }
+
+            if (ok is null || ok(at))
+            {
+                return at; // 거리순이라 처음 통과한 것이 가장 가까움
+            }
+        }
+
+        return null;
     }
+
+    /// 회복 표본의 회전 칸 (기준 측정이 쓴 0 번 칸을 건너뛰고 1..RotationSteps-1 을 되풀이): 몇 번째 표본이든 기준과 같은 LBA 를 다시 읽지 않음. rotation 은 1 부터.
+    public static int RotationIndex(int rotation) => 1 + Math.Max(rotation - 1, 0) % (RotationSteps - 1);
 
     internal static double Rate(long bytes, TimeSpan elapsed) => bytes / 1e6 / Math.Max(elapsed.TotalSeconds, 1e-9);
 

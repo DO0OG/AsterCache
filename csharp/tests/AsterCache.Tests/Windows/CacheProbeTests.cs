@@ -97,6 +97,33 @@ public sealed class CacheProbeTests
         Assert.Null(CacheProbe.Probe([(tmp.Combine("locked.bin"), 0, 1 << 20), (tmp.Combine("a.bin"), 5 << 20, 1 << 20)]));
     }
 
+
     [Fact]
-    public void ThresholdBetweenCachedAndSpinningDiskTimes() => Assert.InRange(CacheProbe.ColdThresholdMs, 1.0, 10.0);
+    public void RoundsMoveEverySampleAndAreDeterministic()
+    {
+        List<ReadOp> zone = Zone(200);
+        var rounds = Enumerable.Range(0, 4).Select(r => CacheProbe.PickSamples(zone, round: r).Select(p => p.Path).ToList()).ToList();
+
+        Assert.Equal(rounds[1], CacheProbe.PickSamples(zone, round: 1).Select(p => p.Path)); // 같은 회차는 같은 위치
+        Assert.All(rounds, r => Assert.Equal(8, r.Distinct().Count()));
+        Assert.Equal(rounds.Count, rounds.Select(r => string.Join(',', r)).Distinct().Count()); // 회차마다 다른 묶음
+        Assert.True(rounds.Skip(1).All(r => r.Count(p => rounds[0].Contains(p)) < 8));
+        Assert.All(rounds.Skip(1), r => Assert.All(r.Take(4), p => Assert.True(int.Parse(p[1..]) < 16))); // 앞쪽 표본은 앞쪽 16 곳 안
+    }
+
+    [Fact]
+    public void NextRoundCountsPerKeyFromZero()
+    {
+        string key = "k" + Guid.NewGuid().ToString("N");
+
+        Assert.Equal([0, 1, 2], [CacheProbe.NextRound(key), CacheProbe.NextRound(key), CacheProbe.NextRound(key)]);
+        Assert.Equal(0, CacheProbe.NextRound(key + "x"));
+    }
+
+    [Fact]
+    public void SlowThresholdIsBelowASataDiskCacheHitAndAboveARamHit()
+    {
+        Assert.Equal(0.8, CacheProbe.ColdThresholdMs);
+        Assert.InRange(CacheProbe.ColdThresholdMs, 0.5, 1.7);
+    }
 }

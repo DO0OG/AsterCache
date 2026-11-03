@@ -97,7 +97,7 @@ public sealed class Worker : BackgroundService
             {
                 if (_auto is not null)
                 {
-                    BootProbe.RunReal(_settings, _auto.Status, _log); // 서비스 시작 예열이 파일을 데우기 전의 콜드 비용 (부팅 뒤 첫 시작일 때만)
+                    BootProbe.RunReal(_settings, _auto.Status, _log, _auto.WarmToken); // 서비스 시작 예열이 파일을 데우기 전의 콜드 비용 (부팅 뒤 첫 시작일 때만)
                 }
 
                 _prewarm.RunServiceStart(_auto?.StartupRecent(), _auto?.WarmToken ?? default);

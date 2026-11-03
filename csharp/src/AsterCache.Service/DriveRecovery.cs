@@ -283,7 +283,7 @@ public sealed class DriveRecovery : IDriveRecovery
                 return null;
             }
 
-            long step = _env.ProbeStepLcn(key) * (rotation % DiskProbe.RotationSteps);
+            long step = _env.ProbeStepLcn(key) * DiskProbe.RotationIndex(rotation); // 0 번 칸은 기준 측정이 읽은 곳이라 건너뜀
             double? zone = b.Zone is { } z ? _env.ProbeMbps(key, z.Lcn + step, round) : null;
             if (b.Zone is not null && b.Ref is not null && zone is not null && (cts.IsCancellationRequested || GameRunning(key) || Busy(_env, key)))
             {

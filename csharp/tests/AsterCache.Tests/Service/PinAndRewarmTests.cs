@@ -318,6 +318,20 @@ public sealed class PinAndRewarmTests
     }
 
     [Fact]
+    public void SettingAnAntiCheatKindOnAPinnedGameReleasesTheExistingPin()
+    {
+        GameSettings a = Game("a");
+        Prewarmer p = Make(a);
+        p.RunAll([a], "x");
+        Assert.Equal(["a"], p.Pinned);
+
+        p.SetGames([a with { AntiCheat = "vanguard" }]);
+
+        Assert.Empty(p.Pinned);
+        Assert.Contains(_log.Lines, l => l.Contains("a: pin released (anti-cheat set in settings", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void ServiceShutdownReleasesEverything()
     {
         GameSettings g = Game("a");

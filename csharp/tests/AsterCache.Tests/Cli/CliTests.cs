@@ -186,6 +186,8 @@ public sealed class CliTests
         Assert.Equal((3, notAdmin), Pair(Run("apply", "--plan", plan, "--allowed-root", @"D:\AsterBench", "--execute")));
         Assert.Equal((3, notAdmin), Pair(Run("revert", "--journal", journal, "--allowed-root", @"D:\AsterBench")));
         Func<string, string?> folderKind = AntiCheatGuard.FolderKind;
+        Func<string, string?> registeredKind = AntiCheatGuard.RegisteredKind;
+        AntiCheatGuard.RegisteredKind = _ => null; // 실제 ProgramData 설정을 읽지 않음
         AntiCheatGuard.FolderKind = _ => null; // 실제 D:\ 를 열거하지 않음
         try
         {
@@ -194,6 +196,7 @@ public sealed class CliTests
         finally
         {
             AntiCheatGuard.FolderKind = folderKind;
+            AntiCheatGuard.RegisteredKind = registeredKind;
         }
     }
 

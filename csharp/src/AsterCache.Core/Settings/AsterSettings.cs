@@ -70,6 +70,12 @@ public sealed record AutoSettings(
     /// 기본 prewarm_recent 0 = RAM 예산 안에서 최근 순으로 가능한 만큼 (1 이상이면 그 개수 상한, -1 = 최근순 예열 끔).
     public static AutoSettings Default { get; } = new(true, true, true, true, 0, 3, 600, 6144, 4, []);
 
+    /// 한 게임이 모을 트레이스 플레이 횟수 (1..32): 이보다 적게 모았으면 원시 트레이스가 있어도 다음 플레이를 다시 기록해 합집합으로 병합합니다. 1 = 첫 플레이만.
+    public int TraceRuns { get; init; } = 3;
+
+    /// 병합한 트레이스의 핫 집합이 지금 계획보다 이만큼 (MiB, 1..65536) 이상 늘었을 때만 존을 확장해 다시 계획합니다.
+    public int TraceMergeMinMib { get; init; } = 64;
+
     /// 게임을 하는 동안 이 간격 (분) 으로 핫 집합을 다시 데움, 0 = 끔. 식었는지는 핫 집합 8 곳 (앞쪽 4 + 균등 4) 을 읽어 보고, 2 곳 이상이 2 ms 를 넘으면 식은 것으로 봅니다.
     public int RewarmMinutes { get; init; } = 10;
 

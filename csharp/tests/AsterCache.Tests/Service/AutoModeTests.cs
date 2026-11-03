@@ -188,6 +188,7 @@ public sealed class AutoModeTests : IDisposable
     public void GameStartWithATraceAlreadyOnDiskOnlyRecordsThePlay()
     {
         AddGame("foo", "manual");
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { TraceRuns = 1 } };
         _rig.World.Files.Add(AutoTracer.RawTracePath(Game()));
 
         Mode().OnGameStart(Game());
@@ -299,5 +300,20 @@ public sealed class AutoModeTests : IDisposable
                 // 취소는 정상 종료
             }
         }
+    }
+
+    [Fact]
+    public void GameStartKeepsRecordingExtraRunsUntilTraceRunsIsReachedAndLeavesTheStageAlone()
+    {
+        AddGame("foo", "manual");
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { TraceRuns = 3 } };
+        _rig.World.Files.Add(AutoTracer.RawTracePath(Game())); // 첫 기록 1 회
+        _rig.World.Session = new FakeTrace();
+        _rig.Status.Complete("foo", "manual", T0, counted: false, null);
+
+        Mode().OnGameStart(Game());
+
+        Assert.Equal(1, _rig.World.TraceStarts);
+        Assert.Equal(AutoStage.Done, _rig.Status.Get("foo")!.Stage);
     }
 }

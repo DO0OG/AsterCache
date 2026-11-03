@@ -38,6 +38,7 @@ public sealed class AutoSettingsTests
         Assert.Equal(2048, s.MaxZoneMib);
         Assert.Equal((true, true, true, true, 0, 3, 600, 6144, 4), (s.Auto.Enabled, s.Auto.Discover, s.Auto.Trace, s.Auto.Relocate, s.Auto.PrewarmRecent, s.Auto.IdleMinutes, s.Auto.TraceCapSeconds, s.Auto.TraceCapMib, s.Auto.MaxRelocationsPerDay));
         Assert.Equal((4, "low", 8), (s.Auto.RelocateChunkMib, s.Auto.RelocateIoPriority, s.Auto.MaxRelocateGibPerDay));
+        Assert.Equal((3, 64), (s.Auto.TraceRuns, s.Auto.TraceMergeMinMib));
         Assert.Equal(8, s.Auto.RelocateParallel);
         Assert.Empty(s.Auto.IgnoreExes);
         Assert.Equal((20, 256), (AutoSettings.HeuristicWindowSeconds, AutoSettings.HeuristicReadMib));
@@ -77,6 +78,10 @@ public sealed class AutoSettingsTests
     [InlineData("trace_cap_seconds", 7201)]
     [InlineData("trace_cap_mib", 63)]
     [InlineData("trace_cap_mib", 65537)]
+    [InlineData("trace_runs", 0)]
+    [InlineData("trace_runs", 33)]
+    [InlineData("trace_merge_min_mib", 0)]
+    [InlineData("trace_merge_min_mib", 65537)]
     [InlineData("max_relocations_per_day", -1)]
     [InlineData("max_relocations_per_day", 25)]
     [InlineData("relocate_chunk_mib", 0)]
@@ -98,6 +103,10 @@ public sealed class AutoSettingsTests
     [InlineData("idle_minutes", 1440)]
     [InlineData("trace_cap_seconds", 30)]
     [InlineData("trace_cap_mib", 65536)]
+    [InlineData("trace_runs", 1)]
+    [InlineData("trace_runs", 32)]
+    [InlineData("trace_merge_min_mib", 1)]
+    [InlineData("trace_merge_min_mib", 65536)]
     [InlineData("max_relocations_per_day", 0)]
     [InlineData("relocate_chunk_mib", 1)]
     [InlineData("relocate_chunk_mib", 256)]

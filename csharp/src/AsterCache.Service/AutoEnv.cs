@@ -42,6 +42,9 @@ public sealed class AutoEnv
     /// 'X:' 가 HDD 인가 (true), SSD (false), 모르면 null.
     public required Func<string, bool?> IsHdd { get; init; }
 
+    /// 드라이브의 디스크 종류 문구 (DiskInfo.Kind, 예: "HDD (looks like SMR)"). 재배치 순서 auto 규칙이 봅니다.
+    public Func<string, string> DiskKind { get; init; } = _ => "unknown";
+
     public required Func<IReadOnlyList<int>> Pids { get; init; }
 
     public required Func<int, string?> ImagePath { get; init; }
@@ -162,6 +165,7 @@ public sealed class AutoEnv
             ExeFiles = dir => LauncherScan.InstalledExes(dir),
             VolumeLabel = VolumeInfo.Label,
             IsHdd = letter => DiskInfo.Query(letter).IncursSeekPenalty,
+            DiskKind = letter => { DiskDetails d = DiskInfo.Query(letter); return DiskInfo.Kind(d.IncursSeekPenalty, d.Trim); },
             Pids = ProcessSnapshot.Pids,
             ImagePath = ProcessSnapshot.ImagePath,
             ReadBytes = ProcessSnapshot.ReadBytes,

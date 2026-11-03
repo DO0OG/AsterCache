@@ -135,6 +135,24 @@ public sealed class AutoSettingsTests
         Assert.Equal("sample", ParseAuto(new JsonObject()).Auto.RelocateVerify);
     }
 
+    [Theory]
+    [InlineData("auto")]
+    [InlineData("target")]
+    [InlineData("source")]
+    public void RelocateOrderIsParsed(string value) =>
+        Assert.Equal(value, ParseAuto(new JsonObject { ["relocate_order"] = value }).Auto.RelocateOrder);
+
+    [Theory]
+    [InlineData("SOURCE")]
+    [InlineData("")]
+    [InlineData("none")]
+    public void UnknownOrMissingRelocateOrderFallsBackToAuto(string value)
+    {
+        Assert.Equal("auto", ParseAuto(new JsonObject { ["relocate_order"] = value }).Auto.RelocateOrder);
+        Assert.Equal("auto", ParseAuto(new JsonObject { ["relocate_order"] = 3 }).Auto.RelocateOrder);
+        Assert.Equal("auto", ParseAuto(new JsonObject()).Auto.RelocateOrder);
+    }
+
     [Fact]
     public void NonStringRelocateIoPriorityFallsBackToLow() =>
         Assert.Equal("low", ParseAuto(new JsonObject { ["relocate_io_priority"] = 3 }).Auto.RelocateIoPriority);

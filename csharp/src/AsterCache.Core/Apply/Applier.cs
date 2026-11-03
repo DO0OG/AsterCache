@@ -74,14 +74,27 @@ public static class Applier
 
         var skipped = rep.SkippedFiles.Select(s => s.Key).ToHashSet(StringComparer.Ordinal);
         var todo = new List<(int Idx, PlanTask Task, long Done)>();
+        var sourceLcn = new Dictionary<int, long>();
+        bool bySource = options.Order == RelocateOrder.Source;
         for (int i = 0; i < plan.Tasks.Count; i++)
         {
             PlanTask t = plan.Tasks[i];
-            long d = PlanGuards.DonePrefix(ApplyTimings.Time(ref rep.Timings.OpenTicks, () => hooks.Extents(t.Path)), t.Vcn, t.Clusters, t.TargetLcn);
+            IReadOnlyList<Extent>? ext = ApplyTimings.Time(ref rep.Timings.OpenTicks, () => hooks.Extents(t.Path));
+            long d = PlanGuards.DonePrefix(ext, t.Vcn, t.Clusters, t.TargetLcn);
             if (!skipped.Contains(t.Path) && d < t.Clusters)
             {
                 todo.Add((i, t, d));
+                if (bySource)
+                {
+                    // 실행 순서만 바꿈: 대상 LCN 은 계획에 고정이고 저널·되돌리기는 작업 인덱스로 찾음. 원본을 모르면 맨 뒤.
+                    sourceLcn[i] = ZoneAllocator.Pieces(ext ?? [], t.Vcn + d, t.Vcn + t.Clusters).Select(x => x.Lcn).DefaultIfEmpty(long.MaxValue).First();
+                }
             }
+        }
+
+        if (bySource)
+        {
+            todo = todo.OrderBy(x => sourceLcn[x.Idx]).ThenBy(x => x.Idx).ToList();
         }
 
         rep.ZoneStartLcn = plan.Zone.StartLcn;

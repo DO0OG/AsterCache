@@ -7,7 +7,24 @@ namespace AsterCache.Core.Apply;
 /// LowIoPriority 는 서비스의 백그라운드 경로 (ReapplyEnv.Run) 가 읽고, false 면 낮은 I/O 우선순위 힌트를 붙이지 않습니다.
 public sealed record ApplyOptions(
     bool Execute = false, long ChunkBytes = 4L << 20, long WriteCap = 2L << 30, string? SaveTo = null, bool DryRun = false, bool LowIoPriority = true, int PlanAhead = Applier.PlanAhead,
-    string Verify = VerifyMode.Sample);
+    string Verify = VerifyMode.Sample, string Order = RelocateOrder.Target);
+
+/// 재배치 작업의 실행 순서. target: 계획의 대상(존) 순서, source: 현재 원본 첫 extent 의 LCN 오름차순 (결과 배치는 같음, 읽기 탐색이 줄 수 있으나 존 쓰기가 흩어짐).
+/// 설정 auto.relocate_order 는 여기에 "auto" 를 더함: 대상 디스크가 SMR 로 보이면 target, 그 밖이면 source.
+public static class RelocateOrder
+{
+    public const string Target = "target";
+    public const string Source = "source";
+    public const string Auto = "auto";
+    public const string SmrKind = "HDD (looks like SMR)";
+
+    public static bool IsValid(string? v) => v is Target or Source;
+
+    public static bool IsValidSetting(string? v) => v is Auto || IsValid(v);
+
+    /// 설정값과 디스크 종류 문구 (DiskInfo.Kind) 로 실제 순서를 정함.
+    public static string Resolve(string setting, string diskKind) => setting is Auto ? (diskKind == SmrKind ? Target : Source) : setting;
+}
 
 /// 이동 전후 내용 비교의 범위. all: 모든 작업, sample: 각 파일의 첫 작업과 작업 인덱스가 4 의 배수인 작업만 (나머지는 이동 결과와 extent 일치만 확인), off: 표본을 읽지 않음.
 public static class VerifyMode

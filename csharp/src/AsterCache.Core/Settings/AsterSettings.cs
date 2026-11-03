@@ -85,6 +85,12 @@ public sealed record AutoSettings(
     /// 게임 종료를 감지하면 그 게임의 재예열 점검을 이만큼 (분, 0..1440) 뒤로 당김, 0 = 끔 (rewarm_minutes 가 0 이면 재예열 자체가 꺼져 있음). 점검은 식었을 때만 다시 읽습니다.
     public int RewarmAfterExitMin { get; init; } = 2;
 
+    /// 서비스 시작 (부팅) 예열 대상: 최근 14 일 안에 플레이한 게임 중 마지막 플레이 순 상위 이 개수 (0..32), 0 = 서비스 시작 예열 끔. 플레이 기록이 없는 (자동 모드 꺼짐) 설정에는 적용하지 않음.
+    public int StartupWarmGames { get; init; } = 2;
+
+    /// 서비스 시작 예열이 한 번에 읽는 양의 합계 상한 (MiB, 1..1048576). 넘는 게임은 건너뜀.
+    public int StartupWarmMaxMib { get; init; } = 1024;
+
     /// 게임 업데이트를 감지한 뒤 그 게임의 재계획·재배치·예열을 이만큼 (분, 0..1440) 미룸, 0 = 지연 없음. 업데이트 직후에는 드라이브가 파일을 흩어 쓰는 중일 수 있습니다.
     public int PostUpdateDelayMin { get; init; } = 15;
 

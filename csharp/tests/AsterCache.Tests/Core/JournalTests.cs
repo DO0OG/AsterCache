@@ -32,6 +32,49 @@ public sealed class JournalTests : IDisposable
             .Select(e => ((JObject)JsonRead.Parse(e.GetProperty("row").GetRawText())!, e.GetProperty("line").GetString()!)).ToList();
     }
 
+    // ---- 잘린 꼬리 복구는 원본을 지우지 않는다
+
+    private static string WriteTruncatedJournal(string path)
+    {
+        string good = PyJson.Dumps(new JObject { { "type", "header" } }) + "\r\n" + PyJson.Dumps(new JObject { { "type", "step" }, { "idx", 0L } }) + "\r\n";
+        File.WriteAllText(path, good + "{\"type\": \"step\", \"idx\"");
+        return good;
+    }
+
+    [Fact]
+    public void TailRecoveryFailureLeavesTheOriginalJournalIntact()
+    {
+        string path = Tmp("trunc.jsonl");
+        WriteTruncatedJournal(path);
+        byte[] original = File.ReadAllBytes(path);
+        Directory.CreateDirectory(path + ".tmp"); // 교체용 임시 파일을 만들 수 없게 해 복구 도중 실패를 흉내
+
+        using (var jr = new Journal(path))
+        {
+            Assert.ThrowsAny<Exception>(() => jr.Add(new JObject { { "type", "end" } }));
+        }
+
+        Assert.Equal(original, File.ReadAllBytes(path));
+    }
+
+    [Fact]
+    public void TailRecoveryKeepsTheOriginalAsBakAndReplacesTheJournal()
+    {
+        string path = Tmp("trunc2.jsonl");
+        string good = WriteTruncatedJournal(path);
+        byte[] original = File.ReadAllBytes(path);
+
+        using (var jr = new Journal(path))
+        {
+            jr.Add(new JObject { { "type", "end" } });
+        }
+
+        Assert.Equal(original, File.ReadAllBytes(path + ".bak"));
+        Assert.False(File.Exists(path + ".tmp"));
+        Assert.Equal(3, new Journal(path).Rows.Count);
+        Assert.StartsWith(good, File.ReadAllText(path), StringComparison.Ordinal);
+    }
+
     // ---- F8
 
     [Fact]

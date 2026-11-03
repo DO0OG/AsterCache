@@ -25,7 +25,7 @@ public sealed class LiveSession : IDisposable
     /// 세션 버퍼 총량 (MB). 256 MB 는 세션 메모리 비용이 커서 TraceEvent 기본 64 MB 로 되돌림 (유실 수는 EventsLost 로 기록).
     public const int DefaultBufferMB = 64;
 
-    /// Stop 이 처리 스레드를 기다리는 상한. 넘으면 경고를 남기고 진행합니다 (멈춘 처리 스레드가 서비스 종료를 붙잡지 않게).
+    /// Stop 이 처리 스레드를 기다리는 상한. 넘으면 트레이스를 버리고 TraceIncompleteException 으로 실패합니다 (멈춘 처리 스레드가 서비스 종료를 붙잡지 않게).
     public static readonly TimeSpan PumpWaitLimit = TimeSpan.FromSeconds(10);
 
     /// DefaultBufferMB 로 세션을 열지 못할 때 쓰는 TraceEvent 기본 크기.
@@ -102,12 +102,20 @@ public sealed class LiveSession : IDisposable
         _flusher?.Dispose();
         EventsLost = _session.EventsLost;
         _session.Stop();
-        if (!WaitPump(_pump, PumpWaitLimit))
+        return FinishAfterPump(_pump, PumpWaitLimit, _collector.Finish, _log);
+    }
+
+    /// 처리 스레드가 끝났음이 확인된 뒤에만 수집기를 정리합니다. 시간 초과면 이벤트 콜백이 아직 수집기를 고치고 있을 수 있어 (같은 목록을 동시에 건드림)
+    /// 결과를 버리고 불완전 트레이스로 실패시킵니다.
+    internal static List<TraceRecord> FinishAfterPump(Task pump, TimeSpan limit, Func<List<TraceRecord>> finish, ILog? log)
+    {
+        if (!WaitPump(pump, limit))
         {
-            _log?.Warn($"trace pump did not stop within {PumpWaitLimit.TotalSeconds:0} s; continuing without it");
+            log?.Error($"trace pump did not stop within {limit.TotalSeconds:0} s; trace discarded as incomplete");
+            throw new TraceIncompleteException($"trace pump did not stop within {limit.TotalSeconds:0} s");
         }
 
-        return _collector.Finish();
+        return finish();
     }
 
     /// 처리 스레드가 limit 안에 끝나면 true, 넘으면 false (그 뒤로는 기다리지 않음).
@@ -116,6 +124,18 @@ public sealed class LiveSession : IDisposable
     public void Dispose()
     {
         _flusher?.Dispose();
-        _session.Dispose();
+        if (_pump.IsCompleted)
+        {
+            _session.Dispose();
+        }
+        else
+        {
+            // 처리 스레드가 아직 세션을 쓰는 중: 끝난 뒤에 정리
+            _log?.Warn("trace pump still running; session disposal deferred until it ends");
+            _ = _pump.ContinueWith(_ => _session.Dispose(), TaskScheduler.Default);
+        }
     }
 }
+
+/// 트레이스 처리 스레드가 제때 끝나지 않아 기록이 불완전함.
+public sealed class TraceIncompleteException(string message) : InvalidOperationException(message);

@@ -18,6 +18,7 @@ public sealed class StartupWarmTests : IDisposable
     private Func<bool> _diskBusy = () => false;
     private bool _diskUnreadable;
     private ProbeResult? _probe;
+    private Action? _onSleep;
 
     public StartupWarmTests() => Directory.CreateDirectory(_dir);
 
@@ -36,6 +37,7 @@ public sealed class StartupWarmTests : IDisposable
         {
             Assert.Equal(_callsBefore, _streamer.Calls.Count); // 기다리는 동안은 읽지 않음
             (_uptimeMs, _waited) = (_uptimeMs + (long)t.TotalMilliseconds, _waited + t);
+            _onSleep?.Invoke();
         },
         DiskBytesPerSecond = _ => _diskUnreadable ? null : _diskBusy() ? 50 << 20 : 0,
         ProbeReadMs = _ => _probe,
@@ -70,14 +72,66 @@ public sealed class StartupWarmTests : IDisposable
     }
 
     [Fact]
-    public void UnreadableDiskThroughputNeedsOnlyTheBootDelay()
+    public void UnreadableDiskThroughputHoldsTheStartupWarmAndLogsOnce()
     {
         Prewarmer p = Make(Game("a"));
         _diskUnreadable = true;
+        using var cts = new CancellationTokenSource();
+        int sleeps = 0;
+        _onSleep = () =>
+        {
+            if (++sleeps > 100)
+            {
+                cts.Cancel();
+            }
+        };
 
-        Assert.True(Assert.Single(p.RunServiceStart()).Ran);
+        IReadOnlyList<PrewarmResult> results = p.RunServiceStart(null, cts.Token);
 
-        Assert.InRange(_uptimeMs, 5 * 60_000, 5 * 60_000 + 10_000); // 유휴 60 초를 더 기다리지 않음
+        Assert.Empty(results);
+        Assert.Empty(_streamer.Calls);
+        Assert.True(_uptimeMs > 5 * 60_000); // 부팅 조건이 지난 뒤에도 읽지 않고 기다림
+        Assert.Single(_log.Lines, l => l.Contains("held: disk activity cannot be measured", StringComparison.Ordinal));
+    }
+
+    private static Func<string, DateTimeOffset?> PlayedDaysAgo(DateTimeOffset now, params (string Name, int Days)[] plays) =>
+        name => plays.Where(x => x.Name == name).Select(x => (DateTimeOffset?)(now - TimeSpan.FromDays(x.Days))).FirstOrDefault();
+
+    [Fact]
+    public void OnlyTheTwoMostRecentlyPlayedOfFiveGamesAreWarmedAtStart()
+    {
+        GameSettings[] games = [.. Enumerable.Range(1, 5).Select(i => Game("g" + i))];
+        Prewarmer p = Make(games);
+
+        IReadOnlyList<PrewarmResult> results = p.RunServiceStart(games, default, null, PlayedDaysAgo(_now, ("g1", 5), ("g2", 4), ("g3", 3), ("g4", 2), ("g5", 1)));
+
+        Assert.Equal(["g5", "g4"], _streamer.Calls.Select(c => c.Game));
+        Assert.Equal(["g5", "g4"], results.Where(r => r.Ran).Select(r => r.Game));
+    }
+
+    [Fact]
+    public void GamesNotPlayedWithinFourteenDaysAreNotWarmedAtStart()
+    {
+        GameSettings[] games = [Game("new"), Game("old")];
+        Prewarmer p = Make(games);
+
+        p.RunServiceStart(games, default, null, PlayedDaysAgo(_now, ("new", 1), ("old", 20)));
+
+        Assert.Equal(["new"], _streamer.Calls.Select(c => c.Game));
+    }
+
+    [Fact]
+    public void StartupWarmBeyondTheByteCapIsNotWarmed()
+    {
+        GameSettings[] games = [Game("a"), Game("b"), Game("c")];
+        Prewarmer p = Make(games);
+        p.SetAuto(AutoSettings.Default with { StartupWarmGames = 3, StartupWarmMaxMib = 150 }); // 게임마다 100 MiB
+
+        IReadOnlyList<PrewarmResult> results = p.RunServiceStart(games, default, null, PlayedDaysAgo(_now, ("a", 1), ("b", 2), ("c", 3)));
+
+        Assert.Equal(["a", "b"], _streamer.Calls.Select(c => c.Game)); // c 는 상한을 다 쓴 뒤
+        Assert.Equal([games[0].MaxStreamMib, 50], _streamer.Seen.Select(g => g.MaxStreamMib)); // b 는 남은 50 MiB 만
+        Assert.Contains(results, r => r is { Game: "c", Ran: false, SkipReason: "startup byte cap" });
     }
 
     [Fact]

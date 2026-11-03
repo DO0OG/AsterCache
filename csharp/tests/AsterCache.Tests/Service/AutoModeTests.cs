@@ -275,7 +275,7 @@ public sealed class AutoModeTests : IDisposable
 
         await worker.StopAsync(CancellationToken.None);
 
-        Assert.Equal(["warm", "recent"], streamer.Calls.Select(c => c.Game));
+        Assert.Equal(["recent", "warm"], streamer.Calls.Select(c => c.Game)); // 시작 예열도 마지막 플레이 순 (on_service_start 라고 앞서지 않음)
         Assert.Equal(T0, _rig.Status.Get("warm")!.LastPlayed); // 게임 시작 알림이 last_played 를 기록함 (가짜 시계)
     }
 

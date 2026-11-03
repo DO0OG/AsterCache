@@ -57,6 +57,22 @@ public sealed class LiveSessionTests
     }
 
     [Fact]
+    public void PumpTimeoutDiscardsTraceInsteadOfFinishingCollector()
+    {
+        var never = new TaskCompletionSource();
+        bool finished = false;
+
+        Assert.Throws<TraceIncompleteException>(() => LiveSession.FinishAfterPump(never.Task, TimeSpan.FromMilliseconds(50), () =>
+        {
+            finished = true;
+            return [];
+        }, null));
+
+        Assert.False(finished);
+        Assert.Empty(LiveSession.FinishAfterPump(Task.CompletedTask, TimeSpan.FromMilliseconds(50), () => [], null));
+    }
+
+    [Fact]
     public void EtlReaderRejectsMissingFile()
     {
         string missing = Path.Combine(Path.GetTempPath(), "astercache-missing-" + Guid.NewGuid().ToString("N") + ".etl");

@@ -25,11 +25,14 @@ internal sealed class FakeStreamer : IGameStreamer
 {
     public ConcurrentQueue<(string Game, long At)> Calls { get; } = new();
 
+    public ConcurrentQueue<GameSettings> Seen { get; } = new();
+
     public Exception? Throw { get; set; }
 
     public StreamStats Stream(GameSettings game)
     {
         Calls.Enqueue((game.Name, System.Diagnostics.Stopwatch.GetTimestamp()));
+        Seen.Enqueue(game);
         return Throw is null ? new StreamStats(100, 2, 0, 0.01) : throw Throw;
     }
 }
@@ -140,6 +143,18 @@ public sealed class EtwWatcherTests
         Assert.Null(f1);
         Assert.IsType<EtwProcessWatcher>(p2);
         Assert.IsType<PollingProcessWatcher>(f2);
+    }
+
+    [Fact]
+    public void WorkerForcesPollingWhenAnAntiCheatGameIsRegistered()
+    {
+        var s = new AsterSettings(250, [Games.Make("g", "game.exe"), Games.Make("h", "h.exe") with { AntiCheat = "eac" }], "etw");
+
+        (IProcessWatcher p, IProcessWatcher? f) = Worker.ChooseWatchers(s, admin: true);
+
+        Assert.Equal("poll", Worker.EffectiveWatcher(s));
+        Assert.IsType<PollingProcessWatcher>(p);
+        Assert.Null(f);
     }
 
     [Fact]

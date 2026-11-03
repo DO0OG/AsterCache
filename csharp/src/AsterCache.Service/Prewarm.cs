@@ -475,10 +475,22 @@ public sealed class Prewarmer
     /// 서비스 시작 뒤: on_service_start 인 게임을 차례로 (started 를 주면 그 조건을 만족하는 게임만: 자동 모드의 플레이한 게임).
     /// recent (최근순) 를 주면 한 묶음으로 합칩니다: on_service_start 게임 먼저, 그다음 최근순 (중복 제거) — RAM 예산을 한 번만 씁니다.
     /// 부팅 BootDelay 뒤 + 게임 드라이브 IdleNeeded 유휴까지 기다린 다음 (그동안 ct 가 취소되면 아무것도 하지 않음), 핫 집합이 이미 파일 캐시에 있는 게임은 읽지 않고 건너뜁니다.
-    public IReadOnlyList<PrewarmResult> RunServiceStart(IEnumerable<GameSettings>? recent = null, CancellationToken ct = default, Func<GameSettings, bool>? started = null)
+    /// lastPlayed (게임 이름 → 마지막 플레이) 를 주면 (자동 모드가 켜진 경우) 대상을 최근 <see cref="StartupPlayedWithin"/> 안에 플레이한 게임으로 좁혀 마지막 플레이 순 상위 auto.startup_warm_games 개만 남기고
+    /// (on_service_start 게임도 같은 순위), 합계 읽기량이 auto.startup_warm_max_mib 를 넘는 부분은 읽지 않습니다 (넘는 게임은 앞부분만, 이미 다 쓴 뒤의 게임은 건너뜀). 합계 상한은 기록이 없는 게임 (통째 예열) 도 포함해 항상 적용합니다.
+    public IReadOnlyList<PrewarmResult> RunServiceStart(IEnumerable<GameSettings>? recent = null, CancellationToken ct = default, Func<GameSettings, bool>? started = null,
+        Func<string, DateTimeOffset?>? lastPlayed = null)
     {
+        AutoSettings a = _auto;
         GameSettings[] first = _games.Where(g => g.Prewarm.OnServiceStart && (started?.Invoke(g) ?? true)).ToArray();
-        GameSettings[] list = [.. first.Concat((recent ?? []).Where(g => !first.Any(f => string.Equals(f.Name, g.Name, StringComparison.OrdinalIgnoreCase))))];
+        IEnumerable<GameSettings> merged = first.Concat((recent ?? []).Where(g => !first.Any(f => string.Equals(f.Name, g.Name, StringComparison.OrdinalIgnoreCase))));
+        if (lastPlayed is not null)
+        {
+            DateTimeOffset cutoff = _now() - StartupPlayedWithin;
+            merged = merged.Select(g => (Game: g, At: lastPlayed(g.Name))).Where(x => x.At is { } at && at >= cutoff)
+                .OrderByDescending(x => x.At).ThenBy(x => x.Game.Name, StringComparer.Ordinal).Take(a.StartupWarmGames).Select(x => x.Game);
+        }
+
+        GameSettings[] list = [.. merged];
         if (list.Length == 0 || !WaitStartupGate(list, ct))
         {
             return [];
@@ -486,37 +498,60 @@ public sealed class Prewarmer
 
         var skipped = new List<PrewarmResult>();
         var cold = new List<GameSettings>();
+        long plannedMib = 0;
         foreach (GameSettings g in list)
         {
+            long? zone = _env.ZoneBytes(g);
+            long mib = ((zone ?? (long)DefaultFullPrewarmMib << 20) + (1 << 20) - 1) >> 20; // 기록이 없으면 통째 예열의 기본 상한만큼으로 셈
+            long room = a.StartupWarmMaxMib - plannedMib;
             if (AlreadyWarm(g))
             {
                 LogSkipped(g.Name, "already warm", $"{g.Name}: prewarm skipped (already warm) [service start]");
                 skipped.Add(new PrewarmResult(g.Name, false, "already warm", null, _now()));
             }
+            else if (room <= 0 || (zone is null && mib > room))
+            {
+                LogSkipped(g.Name, "startup byte cap", $"{g.Name}: prewarm skipped (the service-start cap of {a.StartupWarmMaxMib} MiB is used up) [service start]");
+                skipped.Add(new PrewarmResult(g.Name, false, "startup byte cap", null, _now()));
+            }
             else
             {
-                cold.Add(g);
+                // 상한을 넘는 만큼은 읽지 않음: 핫 집합의 앞부분만 (max_stream_mib 를 남은 양으로 줄인 사본)
+                plannedMib += Math.Min(mib, room);
+                cold.Add(zone is not null && mib > room ? g with { MaxStreamMib = (int)room } : g);
             }
         }
 
         return [.. skipped, .. RunBatch(cold, "service start", ct: ct)];
     }
 
+    /// 서비스 시작 예열 대상이 되는 마지막 플레이의 최대 경과.
+    public static readonly TimeSpan StartupPlayedWithin = TimeSpan.FromDays(14);
+
     /// 서비스 시작 예열을 시작해도 되는 시점인가 (부팅 BootDelay 경과). 자동 모드의 기록 없는 예열 (cold start) 도 같은 조건을 봅니다.
     public bool BootSettled() => _env.UptimeMs() >= BootDelay.TotalMilliseconds;
 
-    // 부팅 5 분 경과 + 게임 드라이브 60 초 유휴를 기다립니다. 취소되면 false. 모든 드라이브의 처리량을 못 읽으면 (null) 유휴를 확인할 수 없으므로 부팅 조건만으로 진행합니다.
+    // 부팅 5 분 경과 + 게임 드라이브 60 초 유휴를 기다립니다. 취소되면 false. 모든 드라이브의 처리량을 못 읽으면 (null) 유휴를 확인할 수 없으므로 읽지 않고 보류합니다.
     private bool WaitStartupGate(IReadOnlyList<GameSettings> games, CancellationToken ct)
     {
         TimeSpan idle = TimeSpan.Zero;
         bool logged = false;
+        bool heldLogged = false;
         while (!ct.IsCancellationRequested)
         {
             double?[] rates = [.. games.Select(g => _env.DiskBytesPerSecond(g))];
             bool settled = BootSettled();
             if (settled && rates.All(r => r is null))
             {
-                return true;
+                // 디스크 유휴를 확인할 수 없음: 읽지 않고 계측값이 생길 때까지 (또는 취소될 때까지) 보류
+                if (!heldLogged)
+                {
+                    heldLogged = true;
+                    _log.Info("service start prewarm held: disk activity cannot be measured");
+                }
+
+                _env.Sleep(GateStep, ct);
+                continue;
             }
 
             bool busy = !settled || rates.Any(r => r >= DiskActivity.BusyBytesPerSecond);

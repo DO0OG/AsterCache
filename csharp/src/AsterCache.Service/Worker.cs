@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using AsterCache.Core.Discovery;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
@@ -53,6 +54,7 @@ public sealed class Worker : BackgroundService
         DiskActivity.Log = log;
         _watchers = (primary, fallback);
         _watchKey = WatchKey(settings);
+        LogWatcherOverride(settings);
         _dispatcher = new GameDispatcher(settings.Games, streamer, log, env: dispatchEnv is null ? null : dispatchEnv with { RestreamCooldownMin = () => _settings.Auto.RestreamCooldownMin, IsWarm = prewarm is null ? dispatchEnv.IsWarm : prewarm.AlreadyWarm }); // 설정을 다시 읽어도 최신 값
         _checker = checker;
         _gate = gate ?? new ReapplyGate();
@@ -63,7 +65,18 @@ public sealed class Worker : BackgroundService
     {
         IEnumerable<string> names = WatchNames(s, SystemMemory.TotalBytes()).Distinct(StringComparer.OrdinalIgnoreCase);
         var polling = new PollingProcessWatcher(names, TimeSpan.FromMilliseconds(s.PollMs));
-        return admin && s.Watcher == "etw" ? (new EtwProcessWatcher(names), polling) : (polling, null);
+        return admin && EffectiveWatcher(s) == "etw" ? (new EtwProcessWatcher(names), polling) : (polling, null);
+    }
+
+    /// 등록된 게임 중 안티치트 (트레이스 금지) 게임이 하나라도 있으면 설정과 무관하게 poll: ETW 커널 세션을 안티치트 게임 옆에 열지 않음.
+    public static string EffectiveWatcher(AsterSettings s) => s.Watcher == "etw" && s.Games.Any(g => AntiCheat.ForbidsTrace(g.AntiCheat)) ? "poll" : s.Watcher;
+
+    private void LogWatcherOverride(AsterSettings s)
+    {
+        if (s.Watcher != EffectiveWatcher(s))
+        {
+            _log.Info("process watcher: poll (anti-cheat game registered)");
+        }
     }
 
     // 감시할 이름: 게임 exe 와 트리거, 그리고 고정을 켠 게임이 있으면 런처 전체 (런처가 뜨면 고정을 풀기 위해).
@@ -72,7 +85,7 @@ public sealed class Worker : BackgroundService
 
     // 감시기를 다시 만들어야 하는지 가리는 열쇠: 감시할 이름, 폴링 간격, 감시기 종류.
     private static string WatchKey(AsterSettings s) =>
-        $"{s.Watcher}|{s.PollMs}|" + string.Join('|', WatchNames(s, SystemMemory.TotalBytes()).Select(n => n.ToUpperInvariant()).Distinct().Order(StringComparer.Ordinal));
+        $"{EffectiveWatcher(s)}|{s.PollMs}|" + string.Join('|', WatchNames(s, SystemMemory.TotalBytes()).Select(n => n.ToUpperInvariant()).Distinct().Order(StringComparer.Ordinal));
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -106,7 +119,8 @@ public sealed class Worker : BackgroundService
                 }
 
                 using var startup = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _auto?.WarmToken ?? default); // 서비스 종료에도 시작 게이트 대기가 끝나게 (자동 모드가 없으면 WarmToken 이 취소되지 않음)
-                _prewarm.RunServiceStart(_auto?.StartupRecent(), startup.Token, _auto is { } am ? g => am.HasPlayed(g.Name) : null);
+                _prewarm.RunServiceStart(_auto?.StartupRecent(), startup.Token, _auto is { } am ? g => am.HasPlayed(g.Name) : null,
+                    _auto is { } am2 && _settings.Auto.Enabled ? name => am2.Status.LastPlayed().TryGetValue(name, out DateTimeOffset at) ? at : null : null);
             }), CancellationToken.None);
         }
 
@@ -339,6 +353,7 @@ public sealed class Worker : BackgroundService
             }
 
             (_watchKey, _watchers, _restart) = (key, _reload!.Watchers(s), true);
+            LogWatcherOverride(s);
             _generation?.Cancel();
         }
     }

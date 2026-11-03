@@ -113,7 +113,7 @@ Filename: "{sys}\net.exe"; Parameters: "stop {#ServiceName}"; Flags: runhidden w
 Filename: "{sys}\sc.exe"; Parameters: "delete {#ServiceName}"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteAsterCacheService"
 
 [Code]
-// Exit codes of sc.exe and icacls.exe are checked here; Inno's [Run] section ignores them.
+// Exit codes of sc.exe and icacls.exe are checked here; Inno's [Run] section ignores them. MustSucceed only shows the message; callers that cannot go on use RunRequired.
 function RunTool(const Exe, Args: String; const MustSucceed: Boolean): Boolean;
 var
   ResultCode: Integer;
@@ -123,11 +123,61 @@ begin
     MsgBox('Command failed (exit ' + IntToStr(ResultCode) + '): ' + Exe + ' ' + Args, mbCriticalError, MB_OK);
 end;
 
-// Before file copy: an earlier install's service must not hold the old files. Failure here is expected on a first install.
-procedure StopAndDeleteOldService();
+// A step the install cannot go on without: the reason was shown by RunTool, so stop Setup here (Abort is silent).
+procedure RunRequired(const Exe, Args: String);
 begin
+  if not RunTool(Exe, Args, True) then Abort;
+end;
+
+function ServiceExists(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  // sc query exits with 1060 when no such service is installed.
+  Result := not (Exec(ExpandConstant('{sys}\sc.exe'), 'query {#ServiceName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 1060));
+end;
+
+function ServiceStopped(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := (not ServiceExists()) or
+    (Exec(ExpandConstant('{cmd}'), '/C sc.exe query {#ServiceName} | find "STOPPED" >nul', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0));
+end;
+
+// Polls up to 30 s. Want = True waits until the service is stopped, False until it is gone.
+function WaitService(const Want: Boolean): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to 30 do
+  begin
+    if (Want and ServiceStopped()) or ((not Want) and (not ServiceExists())) then
+    begin
+      Result := True;
+      Exit;
+    end;
+    Sleep(1000);
+  end;
+end;
+
+// Before file copy: an earlier install's service must not hold the old files. A non-empty result stops Setup with that message (nothing has been copied yet).
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  // The running tray keeps its files locked, so it is closed before the copy. It may not be running.
+  RunTool(ExpandConstant('{sys}\taskkill.exe'), '/IM {#TrayExe} /F', False);
+  if not ServiceExists() then Exit;
   RunTool(ExpandConstant('{sys}\net.exe'), 'stop {#ServiceName}', False);
+  if not WaitService(True) then
+  begin
+    Result := 'The existing {#ServiceName} service did not stop. Stop it (net stop {#ServiceName}) and run Setup again.';
+    Exit;
+  end;
   RunTool(ExpandConstant('{sys}\sc.exe'), 'delete {#ServiceName}', False);
+  if not WaitService(False) then
+    Result := 'The existing {#ServiceName} service could not be deleted. Close programs that use it (for example Services or Task Manager) and run Setup again.';
 end;
 
 procedure ReplaceToken(var Text: AnsiString; const OldTok, NewTok: String);
@@ -180,7 +230,7 @@ begin
   Common := ExpandConstant('{commonappdata}');
   // binPath= "\"<exe>\" --data-dir \"<ProgramData>\AsterCache\""  (sc.exe quoting; LocalSystem, automatic start)
   Args := 'create {#ServiceName} binPath= "\"' + App + '\{#ServiceExe}\" --data-dir \"' + Common + '\{#AppName}\"" start= auto obj= LocalSystem DisplayName= {#AppName}';
-  RunTool(ExpandConstant('{sys}\sc.exe'), Args, True);
+  RunRequired(ExpandConstant('{sys}\sc.exe'), Args);
   RunTool(ExpandConstant('{sys}\sc.exe'), 'description {#ServiceName} "AsterCache game detection, prefetch and layout maintenance"', False);
 end;
 
@@ -197,20 +247,14 @@ begin
   // so a user who could write them could escalate. SYSTEM and Administrators: full. Users: read only (the service also refuses to reapply otherwise).
   // Owner first: a user who created the folder or config.json earlier would own it and could rewrite its ACL (and AclCheck flags a non-admin owner, which would disable reapply for good).
   // /reset drops any ACL the user set on existing children so they inherit the locked one.
-  RunTool(ExpandConstant('{sys}\icacls.exe'), '"' + Data + '" /setowner *S-1-5-32-544 /T /C', True);
-  RunTool(ExpandConstant('{sys}\icacls.exe'), '"' + Data + '" /reset /T /C', True);
-  RunTool(ExpandConstant('{sys}\icacls.exe'),
-    '"' + Data + '" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX', True);
+  RunRequired(ExpandConstant('{sys}\icacls.exe'), '"' + Data + '" /setowner *S-1-5-32-544 /T /C');
+  RunRequired(ExpandConstant('{sys}\icacls.exe'), '"' + Data + '" /reset /T /C');
+  RunRequired(ExpandConstant('{sys}\icacls.exe'),
+    '"' + Data + '" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if CurStep = ssInstall then
-  begin
-    // The running tray keeps its files locked, so it is closed before the copy.
-    RunTool(ExpandConstant('{sys}\taskkill.exe'), '/IM {#TrayExe} /F', False);
-    StopAndDeleteOldService();
-  end;
   if CurStep = ssPostInstall then
   begin
     WriteLanguageConfig();

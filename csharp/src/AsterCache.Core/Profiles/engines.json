@@ -34,6 +34,20 @@
         { "glob": "**/*_dir.vpk" },
         { "glob": "bin/*.dll" }
       ]
+    },
+    {
+      "name": "Riot",
+      "detect": ["Game/DATA/FINAL/*.wad.client"],
+      "include": [
+        { "glob": "Game/DATA/FINAL/Global*.wad.client" },
+        { "glob": "Game/DATA/FINAL/UI*.wad.client" },
+        { "glob": "Game/DATA/FINAL/Maps/**/*.wad.client", "head_mib": 64 },
+        { "glob": "Game/League of Legends.exe" },
+        { "glob": "Game/*.dll" },
+        { "glob": "LeagueClient/*.exe" },
+        { "glob": "LeagueClient/*.dll" },
+        { "glob": "Game/DATA/FINAL/Champions/**/*.wad.client", "head_mib": 64 }
+      ]
     }
   ],
   "common": [

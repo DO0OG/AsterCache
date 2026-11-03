@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using AsterCache.Core;
 using AsterCache.Core.Apply;
+using AsterCache.Core.Discovery;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Plan;
@@ -183,6 +184,7 @@ public sealed class Prewarmer
     private readonly Rewarmer _rewarm;
     private readonly Dictionary<string, long> _coldMib = new(StringComparer.OrdinalIgnoreCase); // 기록 없이 예열해 RAM 에 올려 둔 양 (MiB), _gate 로 보호
     private readonly Dictionary<string, IReadOnlyList<(string Path, long Offset, int Bytes)>> _coldSamples = new(StringComparer.OrdinalIgnoreCase); // 기록 없이 예열한 파일 목록에서 고른 재예열 점검 표본, _gate 로 보호
+    private readonly Dictionary<string, string> _profileMiss = new(StringComparer.OrdinalIgnoreCase); // 엔진 프로필이 없다는 판정과 그때의 설치 폴더 mtime 키 (prewarm_status.json 의 profile_miss_key), _gate 로 보호
     private readonly HashSet<string> _refusedLogged = new(StringComparer.OrdinalIgnoreCase); // 드라이브 거부를 이미 로그한 게임, _gate 로 보호
     private readonly HashSet<string> _delayLogged = new(StringComparer.OrdinalIgnoreCase); // 업데이트 지연을 이미 로그한 게임, _gate 로 보호
     private readonly Dictionary<string, (DateTimeOffset At, int Count)> _skipLogged = new(StringComparer.OrdinalIgnoreCase); // 게임|사유별 마지막으로 남긴 시각과 그 뒤 억제한 횟수, _gate 로 보호
@@ -202,6 +204,7 @@ public sealed class Prewarmer
         _now = now ?? (() => DateTimeOffset.UtcNow);
         _pins = new PinKeeper(env, log, _now);
         _rewarm = new Rewarmer(this, env, log, _now);
+        LoadProfileMiss(statusPath);
     }
 
     /// 기록 없이 (통째·프로필) 예열에 성공했을 때: 게임과 방식 이름표.
@@ -780,13 +783,24 @@ public sealed class Prewarmer
         {
             try
             {
-                ColdPlan plan = _env.ColdPlanner!(game, Math.Max(0, fullMib) << 20, Math.Max(0, profileMib) << 20, ct);
-                if (plan.Skip is not null)
+                string key = Directory.GetLastWriteTimeUtc(game.OriginRoot).Ticks.ToString(); // shortcut: 설치 폴더 자신의 mtime 만 봄 (하위 변경은 놓칠 수 있음), 폴더 mtime 이 바뀌면 다시 열거
+                ColdPlan? plan = ProfileMissed(game.Name, key) ? null : _env.ColdPlanner!(game, Math.Max(0, fullMib) << 20, Math.Max(0, profileMib) << 20, ct);
+                if (plan is null)
+                {
+                    skip = ProfileSkip(game);
+                }
+                else if (plan.Skip == FolderWarm.NoEngineProfile)
+                {
+                    RememberProfileMiss(game.Name, key);
+                    skip = ProfileSkip(game);
+                }
+                else if (plan.Skip is not null)
                 {
                     skip = plan.Skip;
                 }
                 else
                 {
+                    ForgetProfileMiss(game.Name);
                     _log.Info($"{game.Name}: prewarm triggered by {TriggerCause(why)}");
                     (StreamStats s, bool complete) = _env.ColdRead(plan.Ops, ct);
                     (stats, label, skip) = (s, plan.Label, complete ? null : Cancelled);
@@ -829,6 +843,60 @@ public sealed class Prewarmer
         return done;
     }
 
+    // 프로필 미일치 판정은 설치 폴더 mtime 이 같은 동안 다시 열거하지 않습니다 (재시작 뒤에도 상태 파일의 profile_miss_key 로 이어짐).
+    private void LoadProfileMiss(string? statusPath)
+    {
+        if (statusPath is null || !File.Exists(statusPath))
+        {
+            return;
+        }
+
+        try
+        {
+            if (JsonRead.ReadFile(statusPath) is JObject root && root.TryGetValue("games", out object? games) && games is JObject list)
+            {
+                foreach (KeyValuePair<string, object?> item in list)
+                {
+                    if (item.Value is JObject o && o.TryGetValue("profile_miss_key", out object? key) && key is string k)
+                    {
+                        _profileMiss[item.Key] = k;
+                    }
+                }
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            _log.Warn("prewarm status file not read for profile misses: " + e.GetType().Name);
+        }
+    }
+
+    private bool ProfileMissed(string game, string key)
+    {
+        lock (_gate)
+        {
+            return _profileMiss.TryGetValue(game, out string? known) && known == key;
+        }
+    }
+
+    private void RememberProfileMiss(string game, string key)
+    {
+        lock (_gate)
+        {
+            _profileMiss[game] = key;
+        }
+    }
+
+    private void ForgetProfileMiss(string game)
+    {
+        lock (_gate)
+        {
+            _profileMiss.Remove(game);
+        }
+    }
+
+    // 안티치트 게임은 기록 (트레이스) 을 만들지 않으므로 "trace needed" 라고 하지 않습니다.
+    private static string ProfileSkip(GameSettings game) => AntiCheat.ForbidsTrace(game.AntiCheat) ? "no profile" : "no profile; trace needed";
+
     private PrewarmResult Record(GameSettings game, DateTimeOffset now, PrewarmResult r, double mbps)
     {
         _status[game.Name] = new JObject
@@ -841,6 +909,13 @@ public sealed class Prewarmer
             { "seconds", r.Stats?.Seconds },
             { "hint_mb_per_s", r.Stats is null ? null : Math.Round(mbps, 1) },
         };
+        lock (_gate)
+        {
+            if (_profileMiss.TryGetValue(game.Name, out string? miss))
+            {
+                ((JObject)_status[game.Name]!)["profile_miss_key"] = miss;
+            }
+        }
         if (r.Ran && r.Mode is null && _streamer.LoadHeadBytes(game) is { } head)
         {
             ((JObject)_status[game.Name]!)["head_mib"] = head >> 20; // 로딩 앞부분 (관리 창 상태 탭)

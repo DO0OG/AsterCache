@@ -37,7 +37,7 @@ public sealed class EngineProfilesTests
     {
         EngineProfiles p = EngineProfiles.Builtin;
 
-        Assert.Equal(["Unity", "Unreal", "Source"], p.Engines.Select(e => e.Name));
+        Assert.Equal(["Unity", "Unreal", "Source", "Riot"], p.Engines.Select(e => e.Name));
         Assert.Contains(p.Engines[1].Include, i => i.Glob.EndsWith("*.pak", StringComparison.Ordinal) && i is { HeadMib: 64, TailMib: 64 }); // 인덱스·푸터가 파일 끝에 있음
         Assert.Contains(p.Engines[1].Include, i => i.Glob.EndsWith("*.utoc", StringComparison.Ordinal) && i is { HeadMib: 0, TailMib: 0 }); // .utoc 는 전체
         Assert.Contains(p.Engines[1].Include, i => i.Glob.EndsWith("*.ucas", StringComparison.Ordinal) && i is { HeadMib: 64, TailMib: 0 });

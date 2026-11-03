@@ -41,7 +41,7 @@ public sealed class PrewarmUpdateRecoveryTests
             PostUpdateWait = _ => fixedWait,
             ReplanStart = _ => T0,
         };
-        prewarm.SetAuto(AutoSettings.Default with { PostUpdateDelayMin = 10, PostRelocateRecovery = mode });
+        prewarm.SetAuto(AutoSettings.Default with { PostUpdateDelayMin = 10, RecoveryMaxMin = 40, PostRelocateRecovery = mode });
         return prewarm;
     }
 

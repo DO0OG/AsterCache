@@ -179,6 +179,22 @@ public sealed class AutoStatusTests : IDisposable
     }
 
     [Fact]
+    public void RelocationsThatMovedNothingAreNotCountedTowardsTheDailyLimit()
+    {
+        AutoStatus s = Make();
+        for (int i = 0; i < 3; i++)
+        {
+            s.BeginRelocation(_now, 5L << 30);
+            s.SetLastRelocationBytes(0);
+        }
+
+        s.BeginRelocation(_now, 5L << 30);
+        s.SetLastRelocationBytes(1L << 30);
+
+        Assert.Equal((1, 1L << 30), (s.RelocationsWithin(TimeSpan.FromHours(24)), s.RelocationBytesWithin(TimeSpan.FromHours(24))));
+    }
+
+    [Fact]
     public void RelocationBytesAreSummedWithinTheWindowAndRoundTrip()
     {
         AutoStatus s = Make();

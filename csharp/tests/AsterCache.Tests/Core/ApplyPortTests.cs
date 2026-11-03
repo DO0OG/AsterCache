@@ -86,6 +86,18 @@ public sealed class ApplyPortTests : ApplyTestBase
     }
 
     [Fact]
+    public void RemainingBudgetSmallerThanAChunkMovesTheRemainderInsteadOfRefusingTheWholeChunk()
+    {
+        PlanFile p = Make().Resolve(20000);
+
+        ApplyReport r = Apply(p, Exec(8 * Cb, 12 * Cb)); // 한 조각 하나 반 만큼의 예산
+
+        Assert.Equal("write_cap", r.Stopped);
+        Assert.Equal(12 * Cb, r.MovedBytes);
+        Assert.Equal(12 * Cb, Vol.Moves.Sum(m => m.N) * Cb);
+    }
+
+    [Fact]
     public void CancelAfterKthChunkStopsWithResumePointAndNextRunContinuesAfterIt()
     {
         PlanFile p = Make().Resolve(20000);

@@ -58,7 +58,10 @@ var auto = canApply ? new AutoMode(new ConfigEditor(dataDir), AutoEnv.Create(jou
 if (auto is not null)
 {
     reapplyEnv.Gate = auto.ReapplyBlock; // 정기 재적용도 자동 재배치와 같은 게이트를 지남
+    reapplyEnv.Started = auto.ReapplyStarted;
     reapplyEnv.Spent = auto.ReapplySpent;
+    reapplyEnv.Options = auto.ReapplyOptions;
+    reapplyEnv.WarnDegraded = auto.ReapplyWarnAllowed;
 }
 
 var reloader = new SettingsReloader(() => SettingsReloader.StampOf(configPath), LoadChecked, s => Worker.ChooseWatchers(s, admin), log, configStamp);
@@ -80,7 +83,8 @@ AsterSettings LoadChecked()
         Worker.RewriteMigrated(new ConfigEditor(dataDir), log);
     }
 
-    return canApply || !loaded.Auto.Enabled ? loaded : loaded with { Auto = loaded.Auto with { Enabled = false } }; // 시작 때와 같이 자동 모드 끔
+    settings = canApply || !loaded.Auto.Enabled ? loaded : loaded with { Auto = loaded.Auto with { Enabled = false } }; // 시작 때와 같이 자동 모드 끔. 재적용 옵션 공급자가 최신 설정을 보도록 지역 변수도 갱신
+    return settings;
 }
 
 /// 콘솔 모드: 파일 로그와 같은 줄을 화면에도 냅니다.

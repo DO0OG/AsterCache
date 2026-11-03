@@ -145,6 +145,18 @@ public sealed class EtwWatcherTests
     [Fact]
     public void PollingIsTheDefaultEvenForAdministrators()
     {
+    [Fact]
+    public void WorkerForcesPollingWhenAnAntiCheatGameIsRegistered()
+    {
+        var s = new AsterSettings(250, [Games.Make("g", "game.exe"), Games.Make("h", "h.exe") with { AntiCheat = "eac" }], "etw");
+
+        (IProcessWatcher p, IProcessWatcher? f) = Worker.ChooseWatchers(s, admin: true);
+
+        Assert.Equal("poll", Worker.EffectiveWatcher(s));
+        Assert.IsType<PollingProcessWatcher>(p);
+        Assert.Null(f);
+    }
+
         var s = new AsterSettings(250, [Games.Make("g", "game.exe")]);
 
         (IProcessWatcher p, IProcessWatcher? f) = Worker.ChooseWatchers(s, admin: true);

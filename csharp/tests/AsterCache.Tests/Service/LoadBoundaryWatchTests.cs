@@ -50,7 +50,7 @@ public sealed class LoadBoundaryWatchTests : IDisposable
         Assert.Equal(9000, Run(status, 4, Boundary(20))); // 4 번째 표본 = 3 초 간격 3 번 뒤
         Assert.Equal(4, _probes);
         Assert.Equal(9000, status.Get("a")!.LoadBoundaryMs);
-        Assert.Contains(_log.Lines, l => l.Contains("a: load boundary reached in 9000 ms", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("a: tier0 probe ready in 9000 ms", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -74,7 +74,7 @@ public sealed class LoadBoundaryWatchTests : IDisposable
         Assert.Null(Run(status, int.MaxValue, Boundary(6)));
         Assert.Equal(41, _probes); // 0, 3, ... 120 초
         Assert.Null(status.Get("a")!.LoadBoundaryMs);
-        Assert.Contains(_log.Lines, l => l.Contains("a: load boundary not reached within 120 s", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("a: tier0 probe not ready within 120 s", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -100,7 +100,7 @@ public sealed class LoadBoundaryWatchTests : IDisposable
         Assert.Null(Run(status, int.MaxValue, Boundary(1))); // 64 곳 = 8 회차 뒤 소진
         Assert.Equal(8, _probes);
         Assert.Null(status.Get("a")!.LoadBoundaryMs);
-        Assert.Contains(_log.Lines, l => l.Contains("a: load boundary not measurable (no unread sample positions left)", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("a: tier0 probe not measurable (no unread sample positions left)", StringComparison.Ordinal));
     }
 
     [Fact]

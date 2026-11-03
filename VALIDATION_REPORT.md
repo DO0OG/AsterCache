@@ -222,6 +222,7 @@ The v0.7 cache is not connected to a real game's path, so games do not use the c
 - External write detection depends on `stat`/`ChangeTime`, so not every file mutation may be detected.
 - Separately from the logical payload limit, the SQLite DB/WAL/page fragmentation takes up storage. A 256MiB limit does not mean the file on disk stays at 256MiB.
 - The overhead benchmark includes the cost of Python execution, `fsync`, SQLite, and cache writes, but **it is not a comparison of physical HDD/SSD load**.
+- Real-game load wall-clock A/B and KeepAwake on-device validation are still incomplete as of 0.9.0-beta.12.
 
 Windows validation must compare the same game at least 5 times across HDD alone / RAM-prewarmed HDD / HDD with a transparent cache (not implemented) / direct SSD install, and report p50/p95 including prewarm time, and the physical read volume and wait time.
 

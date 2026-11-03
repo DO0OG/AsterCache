@@ -200,6 +200,8 @@ public sealed class CliTests
     [InlineData("plan", "--trace", "t.json", "--origin-root", "R", "--zone-mib", "0", "--dry-run")]
     [InlineData("plan", "--trace", "t.json", "--origin-root", "R", "--zone-mib", "5", "--min-sessions", "-1")]
     [InlineData("apply", "--plan", "p.json", "--allowed-root", "R", "--chunk-mib", "-4")]
+    [InlineData("apply", "--plan", "p.json", "--allowed-root", "R", "--parallel", "0")]
+    [InlineData("apply", "--plan", "p.json", "--allowed-root", "R", "--parallel", "9")]
     [InlineData("revert", "--journal", "j.jsonl", "--allowed-root", "R", "--write-cap-mib", "0")]
     public void NonPositiveNumbersAreInvalidArgument(params string[] args)
     {

@@ -28,7 +28,7 @@ public sealed class ConfigEditorAutoTests : IDisposable
         editor.Add(Game("a"));
         editor.SetAuto(AutoSettings.Default);
 
-        Assert.Equal(24, CountKeys(File.ReadAllText(editor.ConfigPath), "auto"));
+        Assert.Equal(25, CountKeys(File.ReadAllText(editor.ConfigPath), "auto"));
         Assert.Equal(Plain(AutoSettings.Default), Plain(editor.Load()!.Auto));
 
         var custom = new AutoSettings(false, false, true, false, 3, 7, 90, 128, 5, ["a.exe", "b.exe"])
@@ -41,6 +41,7 @@ public sealed class ConfigEditorAutoTests : IDisposable
             EngineProfiles = false,
             PostUpdateDelayMin = 25,
             RelocateChunkMib = 64,
+            RelocateParallel = 4,
             RelocateIoPriority = AutoSettings.IoNormal,
             RelocateVerify = "off",
             RelocateOrder = "source",
@@ -58,6 +59,7 @@ public sealed class ConfigEditorAutoTests : IDisposable
         Assert.Equal((64, "normal", 0), (read.RelocateChunkMib, read.RelocateIoPriority, read.MaxRelocateGibPerDay));
         Assert.Equal("off", read.RelocateVerify);
         Assert.Equal("source", read.RelocateOrder);
+        Assert.Equal(4, read.RelocateParallel);
 
         editor.SetAuto(AutoSettings.Default with { RewarmMinutes = 0 });
         Assert.Equal(0, editor.Load()!.Auto.RewarmMinutes);

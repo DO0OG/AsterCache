@@ -69,7 +69,21 @@ public sealed class FakeVolume : IVolume
         return new VolumeBitmap(0, TotalClusters, data);
     }
 
+    /// 이동 호출이 잠금 밖에서 먼저 부르는 자리 (동시 실행 시험이 지연·겹침 측정에 씀).
+    public Action<string>? BeforeMove { get; set; }
+
+    private readonly object _gate = new();
+
     public void Move(string path, long vcn, long lcn, uint clusters)
+    {
+        BeforeMove?.Invoke(path);
+        lock (_gate)
+        {
+            MoveCore(path, vcn, lcn, clusters);
+        }
+    }
+
+    private void MoveCore(string path, long vcn, long lcn, uint clusters)
     {
         if (CrashAt == Moves.Count)
         {

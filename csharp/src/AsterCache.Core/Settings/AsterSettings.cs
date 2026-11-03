@@ -107,11 +107,15 @@ public sealed record AutoSettings(
     public SsdTierSettings SsdTier { get; init; } = SsdTierSettings.Default;
 
     public const int DefaultRelocateChunkMib = 4;
+    public const int DefaultRelocateParallel = 8;
     public const string IoLow = "low";
     public const string IoNormal = "normal";
 
     /// 자동 재배치가 한 번에 옮기는 조각 크기 (MiB, 1..256).
     public int RelocateChunkMib { get; init; } = DefaultRelocateChunkMib;
+
+    /// 자동 재배치가 동시에 옮기는 파일 수 (1..8, 기본 8, 1 = 순차). 같은 파일의 작업은 계획 순서대로 하나씩.
+    public int RelocateParallel { get; init; } = DefaultRelocateParallel;
 
     /// 자동 재배치의 I/O 우선순위: "low" (기본, 낮은 I/O 힌트) 또는 "normal" (힌트 없음).
     public string RelocateIoPriority { get; init; } = IoLow;

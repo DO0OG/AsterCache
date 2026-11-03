@@ -38,6 +38,7 @@ public sealed class AutoSettingsTests
         Assert.Equal(2048, s.MaxZoneMib);
         Assert.Equal((true, true, true, true, 0, 3, 600, 6144, 4), (s.Auto.Enabled, s.Auto.Discover, s.Auto.Trace, s.Auto.Relocate, s.Auto.PrewarmRecent, s.Auto.IdleMinutes, s.Auto.TraceCapSeconds, s.Auto.TraceCapMib, s.Auto.MaxRelocationsPerDay));
         Assert.Equal((4, "low", 8), (s.Auto.RelocateChunkMib, s.Auto.RelocateIoPriority, s.Auto.MaxRelocateGibPerDay));
+        Assert.Equal(8, s.Auto.RelocateParallel);
         Assert.Empty(s.Auto.IgnoreExes);
         Assert.Equal((20, 256), (AutoSettings.HeuristicWindowSeconds, AutoSettings.HeuristicReadMib));
     }
@@ -80,6 +81,8 @@ public sealed class AutoSettingsTests
     [InlineData("max_relocations_per_day", 25)]
     [InlineData("relocate_chunk_mib", 0)]
     [InlineData("relocate_chunk_mib", 257)]
+    [InlineData("relocate_parallel", 0)]
+    [InlineData("relocate_parallel", 9)]
     [InlineData("max_relocate_gib_per_day", -1)]
     [InlineData("max_relocate_gib_per_day", 1048577)]
     public void OutOfRangeAutoNumberIsRejected(string key, int value)
@@ -98,9 +101,15 @@ public sealed class AutoSettingsTests
     [InlineData("max_relocations_per_day", 0)]
     [InlineData("relocate_chunk_mib", 1)]
     [InlineData("relocate_chunk_mib", 256)]
+    [InlineData("relocate_parallel", 1)]
+    [InlineData("relocate_parallel", 8)]
     [InlineData("max_relocate_gib_per_day", 0)]
     [InlineData("max_relocate_gib_per_day", 1048576)]
     public void BoundaryAutoNumbersAreAccepted(string key, int value) => ParseAuto(new JsonObject { [key] = value });
+
+    [Fact]
+    public void RelocateParallelIsParsed() =>
+        Assert.Equal(4, ParseAuto(new JsonObject { ["relocate_parallel"] = 4 }).Auto.RelocateParallel);
 
     [Fact]
     public void RelocateThroughputKeysAreParsed()

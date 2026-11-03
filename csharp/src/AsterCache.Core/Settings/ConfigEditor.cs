@@ -158,6 +158,7 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             { "max_relocations_per_day", (long)a.MaxRelocationsPerDay },
             { "max_relocate_gib_per_day", (long)a.MaxRelocateGibPerDay },
             { "relocate_chunk_mib", (long)a.RelocateChunkMib },
+            { "relocate_parallel", (long)a.RelocateParallel },
             { "relocate_io_priority", a.RelocateIoPriority },
             { "relocate_verify", a.RelocateVerify },
             { "relocate_order", a.RelocateOrder },

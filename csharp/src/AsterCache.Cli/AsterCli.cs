@@ -118,11 +118,11 @@ public static class AsterCli
         return code;
     }
 
-    // relayout/cli.py main: zone_mib, min_sessions, chunk_mib, write_cap_mib 가 1 미만이면 invalid_argument (min_sessions 0 은 기본값).
+    // relayout/cli.py main: zone_mib, min_sessions, chunk_mib, write_cap_mib 가 1 미만이거나 parallel 이 1..8 밖이면 invalid_argument (min_sessions 0 은 기본값).
     private static bool ValidRelayoutNumbers(ParsedArgs a)
     {
         long? ms = a.Int("min-sessions");
-        return (a.Int("zone-mib") ?? 1) >= 1 && (ms is null or 0 ? 1 : ms) >= 1 && (a.Int("chunk-mib") ?? 1) >= 1 && (a.Int("write-cap-mib") ?? 1) >= 1;
+        return (a.Int("zone-mib") ?? 1) >= 1 && (ms is null or 0 ? 1 : ms) >= 1 && (a.Int("chunk-mib") ?? 1) >= 1 && (a.Int("write-cap-mib") ?? 1) >= 1 && (a.Int("parallel") ?? 1) is >= 1 and <= Applier.MaxParallel;
     }
 
     // Python open() 의 문구. 현재 폴더 아래 경로는 입력한 대로 보이게 상대 경로로 보여 줍니다.

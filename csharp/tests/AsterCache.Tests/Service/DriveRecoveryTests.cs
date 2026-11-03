@@ -17,6 +17,7 @@ public sealed class DriveRecoveryTests
     private readonly List<long> _probed = [];
     private double? _zone = 100;
     private double? _ref = 80;
+    private readonly List<string> _gameRoots = [];
 
     public DriveRecoveryTests()
     {
@@ -25,7 +26,9 @@ public sealed class DriveRecoveryTests
             _probed.Add(lcn);
             return lcn == 10 ? _zone : _ref;
         };
-        _r = new DriveRecovery(_w.Env(), _log);
+        AutoEnv env = _w.Env();
+        env.GameRunningOnDisk = drive => _gameRoots.Any(root => _w.SameDisk(drive, root));
+        _r = new DriveRecovery(env, _log);
     }
 
     private void Pass(int minutes)
@@ -699,6 +702,59 @@ public sealed class DriveRecoveryTests
 
         Assert.Equal(cancelled, !_probed.Contains(20));
         Assert.Equal(cancelled, _r.IsRecovering(Drive)); // 취소된 회차는 판정 불가라 회복으로 세지 않음
+    }
+
+    [Fact]
+    public void ARunningGameOnTheDiskKeepsTheSampleFromStartingEvenWhenTheDiskIsIdle()
+    {
+        _gameRoots.Add(@"E:\Games\X"); // 메뉴·일시정지라 처리량은 0
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        Pass(2);
+        Pass(2);
+        Pass(2);
+
+        Assert.Empty(_probed); // 읽기 0 바이트
+        Assert.True(_r.IsRecovering(Drive));
+        Assert.Single(_log.Lines, l => l.Contains("aborted (game running)", StringComparison.Ordinal)); // 게임이 끝날 때까지 로그는 한 번
+
+        _gameRoots.Clear();
+        Pass(2);
+        Pass(2);
+
+        Assert.Contains(10L, _probed);
+        Assert.False(_r.IsRecovering(Drive));
+    }
+
+    [Fact]
+    public void AGameOnAnotherPhysicalDiskDoesNotBlockTheSample()
+    {
+        _gameRoots.Add(@"D:\Games\X");
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        Pass(2);
+        Pass(2);
+
+        Assert.Contains(20L, _probed);
+        Assert.False(_r.IsRecovering(Drive));
+    }
+
+    [Fact]
+    public void AGameStartingAfterTheZoneKeepsTheReferenceUnread()
+    {
+        _w.ProbeMbps = (_, lcn, _) =>
+        {
+            _probed.Add(lcn);
+            _gameRoots.Add(@"E:\Games\X"); // 존을 잰 직후 게임이 시작됨
+            return _zone;
+        };
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        Pass(2);
+
+        Assert.Equal([10L], _probed);
+        Assert.True(_r.IsRecovering(Drive));
+        Assert.Contains(_log.Lines, l => l.Contains("aborted (game running)", StringComparison.Ordinal));
     }
 
     private static VolumeBitmap Bits(params (bool Used, int Length)[] runs)

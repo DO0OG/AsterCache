@@ -35,6 +35,7 @@ public sealed class DriveRecovery : IDriveRecovery
     private readonly ILog _log;
     private readonly AutoStatus? _status;
     private readonly Dictionary<string, double> _warmMax = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _gameLogged = new(StringComparer.Ordinal); // "game running" 로 표본을 미룬 드라이브 (게임이 끝날 때까지 로그는 한 번)
     private readonly Dictionary<string, CancellationTokenSource> _samples = new(StringComparer.Ordinal); // 표본을 재는 중인 드라이브별 취소 (게임 시작이 같은 디스크의 표본을 멈춤)
 
     public DriveRecovery(AutoEnv env, ILog log, AutoStatus? status = null)
@@ -261,6 +262,21 @@ public sealed class DriveRecovery : IDriveRecovery
         string? reason = null;
         try
         {
+            if (GameRunning(key))
+            {
+                lock (_lock)
+                {
+                    reason = _gameLogged.Add(key) ? "game running" : null; // 게임이 도는 동안은 표본을 시작하지 않음 (처리량이 0 이어도)
+                }
+
+                return null;
+            }
+
+            lock (_lock)
+            {
+                _ = _gameLogged.Remove(key);
+            }
+
             if (Busy(_env, key))
             {
                 return null;
@@ -268,9 +284,9 @@ public sealed class DriveRecovery : IDriveRecovery
 
             long step = _env.ProbeStepLcn(key) * (rotation % DiskProbe.RotationSteps);
             double? zone = b.Zone is { } z ? _env.ProbeMbps(key, z.Lcn + step, round) : null;
-            if (b.Zone is not null && b.Ref is not null && zone is not null && (cts.IsCancellationRequested || Busy(_env, key)))
+            if (b.Zone is not null && b.Ref is not null && zone is not null && (cts.IsCancellationRequested || GameRunning(key) || Busy(_env, key)))
             {
-                reason = cts.IsCancellationRequested ? "game started" : "disk busy between samples";
+                reason = cts.IsCancellationRequested ? "game started" : GameRunning(key) ? "game running" : "disk busy between samples";
                 return null;
             }
 
@@ -298,6 +314,9 @@ public sealed class DriveRecovery : IDriveRecovery
 
     // 디스크 활동을 못 읽거나 임계 이상이면 바쁨 (기준 측정도 같은 판정을 씀).
     internal static bool Busy(AutoEnv env, string key) => env.DiskBytesPerSecond(key) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond;
+
+    // 같은 물리 디스크에서 등록 게임이 도는 중인가 (AutoEnv.GameRunningOnDisk 가 연결되지 않았으면 아님).
+    private bool GameRunning(string key) => _env.GameRunningOnDisk?.Invoke(key) == true;
 
     private static bool Suspect(ProbeSpot? baseline, double? now) => baseline is { } b && now > b.Mbps * SuspectFactor;
 

@@ -170,6 +170,9 @@ public sealed class AutoEnv
     /// SameDisk 의 시험·기본 구현: 드라이브 문자가 같은가.
     public static bool SameLetter(string a, string b) => string.Equals(PlanFile.SplitDrive(a), PlanFile.SplitDrive(b), StringComparison.OrdinalIgnoreCase);
 
+    /// 'X:' 와 같은 물리 디스크 (SameDisk) 에 설치된 등록 게임이 지금 실행 중인가. 설정을 아는 AutoMode 가 연결하며, 연결 전·시험 기본값은 null (게임 없음으로 봄).
+    public Func<string, bool>? GameRunningOnDisk { get; set; }
+
     /// 직전 호출 뒤의 전체 CPU 사용률 (%), 처음이거나 읽지 못하면 null.
     public required Func<double?> CpuPercent { get; init; }
 

@@ -82,22 +82,79 @@ public static partial class RealPaths
     private static partial uint GetFinalPathNameByHandleW(SafeFileHandle file, [Out] char[] filePath, uint filePathSize, uint flags);
 }
 
-/// 볼륨의 디스크 처리량 (LogicalDisk(X:)\Disk Bytes/sec, PDH 영어 카운터 이름이라 한국어 Windows 에서도 동작).
+/// 볼륨이 놓인 물리 디스크의 처리량 (PhysicalDisk(N 문자들)\Disk Bytes/sec, PDH 영어 카운터 이름이라 한국어 Windows 에서도 동작).
+/// 같은 물리 디스크의 다른 볼륨 활동도 보도록 인스턴스 이름의 "N C: D:" 에서 볼륨 문자가 속한 디스크를 찾아 합칩니다.
 public static partial class DiskActivity
 {
     /// 이보다 많이 읽고 쓰는 중이면 바쁜 것으로 봅니다 (바이트/초).
     public const double BusyBytesPerSecond = 4 << 20;
     private const uint FormatDouble = 0x200;
+    private const uint MoreData = 0x800007D2;
+    private const int SampleMs = 1000;
+    private const long CacheMs = 2000;
+    private static readonly PhysicalSampler Shared = new(SampleAll, () => Environment.TickCount64);
 
+    // PDH_FMT_COUNTERVALUE_ITEM_W: 이름 포인터, 값 (상태 4 바이트, 정렬 4 바이트 더, double).
     [StructLayout(LayoutKind.Sequential)]
-    private struct CounterValue
+    private struct CounterItem
     {
+        public nint Name;
         public uint Status;
         public double Value;
     }
 
-    /// letter ("D:") 의 처리량을 sampleMs 동안 재서 바이트/초로. 읽지 못하면 null.
-    public static double? BytesPerSecond(string letter, int sampleMs = 1000)
+    /// letter ("D:") 가 놓인 물리 디스크(들)의 처리량 합 (바이트/초). 디스크를 찾지 못하거나 읽지 못하면 null.
+    public static double? BytesPerSecond(string letter) => Shared.BytesPerSecond(letter);
+
+    /// 읽지 못하면 바쁜 것으로 간주 (보수적: 재적용을 미룸).
+    public static bool IsBusy(string letter) => BytesPerSecond(letter) is not { } bps || bps > BusyBytesPerSecond;
+
+    /// 인스턴스 이름 ("0", "0 C: D:") → 값. letter 가 이름에 들어 있는 인스턴스의 합, 하나도 없으면 null.
+    public static double? Sum(string letter, IReadOnlyDictionary<string, double> instances)
+    {
+        string key = letter.TrimEnd(':', '\\').ToUpperInvariant() + ":";
+        double sum = 0;
+        bool found = false;
+        foreach ((string name, double value) in instances)
+        {
+            string[] parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length > 1 && uint.TryParse(parts[0], out _) && parts.Skip(1).Contains(key, StringComparer.OrdinalIgnoreCase))
+            {
+                sum += value;
+                found = true;
+            }
+        }
+
+        return found ? sum : null;
+    }
+
+    /// 모든 물리 디스크 인스턴스의 표본을 2 초 캐시해 같은 디스크를 묻는 여러 호출이 한 번만 잽니다.
+    public sealed class PhysicalSampler(Func<IReadOnlyDictionary<string, double>?> sample, Func<long> nowMs)
+    {
+        private readonly object _gate = new();
+        private long _at = long.MinValue;
+        private IReadOnlyDictionary<string, double>? _last;
+
+        public double? BytesPerSecond(string letter)
+        {
+            IReadOnlyDictionary<string, double>? instances;
+            lock (_gate)
+            {
+                long now = nowMs();
+                if (_at == long.MinValue || now - _at >= CacheMs)
+                {
+                    _last = sample();
+                    _at = nowMs();
+                }
+
+                instances = _last;
+            }
+
+            return instances is null ? null : Sum(letter, instances);
+        }
+    }
+
+    private static unsafe Dictionary<string, double>? SampleAll()
     {
         if (PdhOpenQueryW(null, 0, out nint query) != 0)
         {
@@ -106,19 +163,44 @@ public static partial class DiskActivity
 
         try
         {
-            string path = $@"\LogicalDisk({letter.TrimEnd(':', '\\')}:)\Disk Bytes/sec";
-            if (PdhAddEnglishCounterW(query, path, 0, out nint counter) != 0 || PdhCollectQueryData(query) != 0)
+            if (PdhAddEnglishCounterW(query, @"\PhysicalDisk(*)\Disk Bytes/sec", 0, out nint counter) != 0 || PdhCollectQueryData(query) != 0)
             {
                 return null;
             }
 
-            Thread.Sleep(sampleMs);
-            if (PdhCollectQueryData(query) != 0 || PdhGetFormattedCounterValue(counter, FormatDouble, out _, out CounterValue v) != 0 || v.Status != 0)
+            Thread.Sleep(SampleMs);
+            uint size = 0;
+            if (PdhCollectQueryData(query) != 0 || PdhGetFormattedCounterArrayW(counter, FormatDouble, ref size, out _, 0) != MoreData)
             {
                 return null;
             }
 
-            return v.Value;
+            nint buffer = Marshal.AllocHGlobal((nint)size);
+            try
+            {
+                if (PdhGetFormattedCounterArrayW(counter, FormatDouble, ref size, out uint count, buffer) != 0)
+                {
+                    return null;
+                }
+
+                var result = new Dictionary<string, double>(StringComparer.Ordinal);
+                for (int i = 0; i < count; i++)
+                {
+                    CounterItem item = *((CounterItem*)buffer + i);
+                    if (item.Status != 0)
+                    {
+                        return null; // 한 인스턴스라도 읽지 못하면 전체를 믿지 않음 (보수적)
+                    }
+
+                    result[Marshal.PtrToStringUni(item.Name) ?? string.Empty] = item.Value;
+                }
+
+                return result;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
         }
         finally
         {
@@ -126,8 +208,8 @@ public static partial class DiskActivity
         }
     }
 
-    /// 읽지 못하면 바쁜 것으로 간주 (보수적: 재적용을 미룸).
-    public static bool IsBusy(string letter) => BytesPerSecond(letter) is not { } bps || bps > BusyBytesPerSecond;
+    [LibraryImport("pdh.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial uint PdhGetFormattedCounterArrayW(nint counter, uint format, ref uint bufferSize, out uint itemCount, nint buffer);
 
     [LibraryImport("pdh.dll", StringMarshalling = StringMarshalling.Utf16)]
     private static partial uint PdhOpenQueryW(string? dataSource, nint userData, out nint query);
@@ -137,9 +219,6 @@ public static partial class DiskActivity
 
     [LibraryImport("pdh.dll")]
     private static partial uint PdhCollectQueryData(nint query);
-
-    [LibraryImport("pdh.dll")]
-    private static partial uint PdhGetFormattedCounterValue(nint counter, uint format, out uint type, out CounterValue value);
 
     [LibraryImport("pdh.dll")]
     private static partial uint PdhCloseQuery(nint query);

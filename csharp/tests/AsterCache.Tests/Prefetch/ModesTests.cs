@@ -54,6 +54,36 @@ public sealed class ModesTests
         Assert.Equal((0L, 0L, 0L), OverlappedReader.Run(Array.Empty<ReadOp>(), 3, 4096));
     }
 
+    [Fact]
+    public void OverlappedCancelledBeforeSubmitIssuesNothing()
+    {
+        using var tmp = new TempDir();
+        tmp.WriteRandom("f.bin", (int)(3 * Mib));
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        int pieces = 0;
+
+        (long bytes, long requests, long errors) = OverlappedReader.Run([new(tmp.Combine("f.bin"), 0, 3 * Mib)], 2, 4096, cts.Token, out bool aborted, (_, _, _) => pieces++);
+        StreamStats r = ZoneStreamer.Run([new(tmp.Combine("f.bin"), 0, 3 * Mib)], StreamMethod.Overlapped, 4096, 2, cts.Token);
+
+        Assert.Equal((0L, 0L, 0L, 0, true), (bytes, requests, errors, pieces, aborted));
+        Assert.Equal((0L, 0L, true), (r.Bytes, r.Requests, r.Aborted));
+    }
+
+    [Fact]
+    public void OverlappedStopsSubmittingWhenCancelledMidwayAndDrainsWhatWasIssued()
+    {
+        using var tmp = new TempDir();
+        tmp.WriteRandom("f.bin", (int)(3 * Mib));
+        using var cts = new CancellationTokenSource();
+
+        (long bytes, long requests, _) = OverlappedReader.Run([new(tmp.Combine("f.bin"), 0, 3 * Mib)], 2, 4096, cts.Token, out bool aborted, (_, _, _) => cts.Cancel());
+
+        Assert.True(aborted);
+        Assert.InRange(requests, 1, 6); // 내보낸 몇 조각만 끝나고 나머지(768 조각)는 내지 않음
+        Assert.Equal(requests * 4096, bytes);
+    }
+
     [Theory]
     [InlineData(2)]
     [InlineData(4)]

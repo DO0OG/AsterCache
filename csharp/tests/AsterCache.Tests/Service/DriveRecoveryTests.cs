@@ -20,7 +20,7 @@ public sealed class DriveRecoveryTests
 
     public DriveRecoveryTests()
     {
-        _w.ProbeMbps = (_, lcn) =>
+        _w.ProbeMbps = (_, lcn, _) =>
         {
             _probed.Add(lcn);
             return lcn == 10 ? _zone : _ref;
@@ -474,30 +474,77 @@ public sealed class DriveRecoveryTests
     }
 
     [Fact]
-    public void CeilingIsOnePointFiveTimesTheReferenceBaselineElseTwoFifty()
+    public void CeilingIsOnePointTwoFiveTimesTheReferenceBaselineCappedAtTwoFifty()
     {
         Assert.Equal(250, _r.CeilingFor(Drive));
         _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
         _r.NoteWarmMbps(Drive, 1000); // 예열 속도는 상한에 영향이 없음
 
-        Assert.Equal(80 * DriveRecovery.CeilingFactor, _r.CeilingFor("E:"), 3);
+        Assert.Equal(100 * DriveRecovery.CeilingFactor, _r.CeilingFor("E:"), 3); // 참조 80·존 100 중 큰 쪽
         Assert.Equal(250, _r.CeilingFor(@"D:\"));
         _r.Begin("F:", new DriveBaseline(new ProbeSpot(10, 100), null), TimeSpan.FromMinutes(60));
         Assert.Equal(250, _r.CeilingFor("F:")); // 참조 기준이 없으면 고정 상한
     }
 
     [Fact]
+    public void HighBaselineCeilingIsCappedAtTwoFiftyAndAboveItIsUnknown()
+    {
+        var high = new DriveBaseline(null, new ProbeSpot(20, 230));
+        _r.Begin(Drive, high, TimeSpan.FromMinutes(60));
+        Assert.Equal(250, _r.CeilingFor(Drive)); // 230 × 1.25 = 287.5 가 아니라 250
+
+        _ref = 300;
+        Pass(2);
+        Pass(2);
+
+        Assert.True(_r.IsRecovering(Drive)); // 300 은 상한 초과: UNKNOWN 이라 회복으로 세지 않음
+    }
+
+    [Fact]
+    public void SameSpeedAsTheBaselinePasses()
+    {
+        _r.Begin(Drive, new DriveBaseline(null, new ProbeSpot(20, 100)), TimeSpan.FromMinutes(60));
+        _ref = 100;
+        Pass(2);
+        Pass(2);
+
+        Assert.False(_r.IsRecovering(Drive));
+    }
+
+    [Fact]
+    public void SampleAboveOnePointOneTimesTheBaselineRightAfterTheWriteIsSuspectedCache()
+    {
+        _r.Begin(Drive, new DriveBaseline(null, new ProbeSpot(20, 100)), TimeSpan.FromMinutes(60));
+        _ref = 120; // 상한 (125) 아래지만 쓰기 직후 10 분 안에 기준의 1.1 배 초과
+        Pass(2);
+        Pass(2);
+        Assert.True(_r.IsRecovering(Drive)); // UNKNOWN 두 번: 회복 아님
+        Assert.Contains(_log.Lines, l => l.Contains("disk cache suspected", StringComparison.Ordinal));
+
+        _ref = 135; // 상한 (125) 초과도 UNKNOWN
+        Pass(2);
+        Assert.True(_r.IsRecovering(Drive));
+
+        _w.Now += TimeSpan.FromMinutes(6); // 쓴 지 10 분이 지나면 1.1 배 규칙은 끝: 120 은 기준 이상으로 PASS
+        _ref = 120;
+        _r.Poll();
+        _w.Now += TimeSpan.FromMinutes(2);
+        _r.Poll();
+        Assert.False(_r.IsRecovering(Drive));
+    }
+
+    [Fact]
     public void FastPrewarmDoesNotLetADiskCacheHitCountAsRecovered()
     {
         _r.NoteWarmMbps(Drive, 1000);
-        _zone = 400; // 디스크 100 인데 표본 400: 참조 기준 80 × 1.5 = 120 초과 → 캐시 적중, UNKNOWN
+        _zone = 400; // 디스크 100 인데 표본 400: 기준 100 × 1.25 = 125 초과 → 캐시 적중, UNKNOWN
         _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
 
         Pass(2);
         Pass(2);
 
         Assert.True(_r.IsRecovering(Drive));
-        Assert.Single(_log.Lines, l => l.Contains("120 MB/s sequential ceiling (disk cache hit)", StringComparison.Ordinal) && l.Contains("prewarm peak 1000 MB/s", StringComparison.Ordinal));
+        Assert.Single(_log.Lines, l => l.Contains("125 MB/s sequential ceiling (disk cache hit)", StringComparison.Ordinal) && l.Contains("prewarm peak 1000 MB/s", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -619,7 +666,7 @@ public sealed class DriveRecoveryTests
     [Fact]
     public void DiskActivityBetweenZoneAndReferenceSamplesAbortsTheRound()
     {
-        _w.ProbeMbps = (_, lcn) =>
+        _w.ProbeMbps = (_, lcn, _) =>
         {
             _probed.Add(lcn);
             _w.Disk = 10L << 20; // 존을 재는 사이에 다른 읽기가 시작됨
@@ -639,7 +686,7 @@ public sealed class DriveRecoveryTests
     [InlineData(@"D:\Games\X", false)]
     public void GameStartCancelsOnlySamplesOnTheSameDisk(string gameRoot, bool cancelled)
     {
-        _w.ProbeMbps = (_, lcn) =>
+        _w.ProbeMbps = (_, lcn, _) =>
         {
             _probed.Add(lcn);
             _r.YieldTo(gameRoot); // 존을 재는 중에 게임이 시작됨

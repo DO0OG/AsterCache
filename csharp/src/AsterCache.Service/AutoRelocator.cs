@@ -334,7 +334,7 @@ public sealed class AutoRelocator
         }
     }
 
-    /// 예열 실측 MB/s (Prewarmer.WarmMeasured): 그 드라이브의 회복 판정 상한이 됨.
+    /// 예열 실측 MB/s (Prewarmer.WarmMeasured): 진단 로그용일 뿐 회복 판정에는 쓰이지 않음.
     public void NoteWarmMbps(GameSettings g, double mbps) => _recovery.NoteWarmMbps(DriveOf(g), mbps);
 
     /// 기록 없이 예열에 성공했을 때 (Prewarmer.ColdWarmed): auto_status 의 detail 을 "prewarmed (full)" 같은 표시로. 실패·건너뜀·재배치 중인 게임은 그대로 둡니다.
@@ -963,8 +963,14 @@ public sealed class AutoRelocator
             }
 
             _ = _needBytes.Remove(g.Name);
+            (DriveBaseline? baseline, bool interrupted) = s.Auto.PostRelocateRecovery == AutoSettings.RecoveryProbe ? MeasureBaseline(g, plan, token) : (null, false);
+            if (interrupted)
+            {
+                Note(g, AutoStage.WaitingIdle, "baseline interrupted (game start or disk busy), will retry"); // 기준 없이 강행하지 않음: 이번 틱에는 쓰지 않음
+                return;
+            }
+
             _status.BeginRelocation(_env.Now(), bytes); // 하루 상한은 끝이 아니라 시작 (이어하기 포함) 으로 셈
-            DriveBaseline? baseline = s.Auto.PostRelocateRecovery == AutoSettings.RecoveryProbe ? MeasureBaseline(g, plan) : null;
             ApplyReport rep = _env.Apply(g, plan, run, token);
             _log.Info($"{g.Name}: auto relocation moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed, order {rep.OrderUsed ?? order}" + (rep.OrderFallbackReason is not null ? " (fallback)" : string.Empty) + (rep.Stopped is { } why ? $", stopped: {why}" : string.Empty) + rep.Timings.Summary);
             BeginRecovery(g, s.Auto, rep.MovedBytes, baseline);
@@ -1004,29 +1010,46 @@ public sealed class AutoRelocator
         }
     }
 
-    // 쓰기 직전 기준 속도: 대상 존 (이미 할당돼 있을 때만: 빈 영역은 SMR 이 0 을 즉시 돌려 과대) 과 존에서 4 GiB 뒤의 할당된 기준 구간. 못 재면 null (고정 분으로 떨어짐).
-    private DriveBaseline? MeasureBaseline(GameSettings g, PlanFile plan)
+    // 쓰기 직전 기준 속도: 대상 존 (이미 할당돼 있을 때만: 빈 영역은 SMR 이 0 을 즉시 돌려 과대) 과 존에서 4 GiB 뒤의 할당된 기준 구간.
+    // 존·참조는 한 회차 (192 MiB·10 s, token 취소) 를 나눠 쓰고 그 사이에 디스크 활동을 다시 봅니다. 못 재면 Baseline null (고정 분으로 떨어짐), 게임 시작·바쁨으로 끊기면 Interrupted (이번 틱에는 재배치하지 않음).
+    private (DriveBaseline? Baseline, bool Interrupted) MeasureBaseline(GameSettings g, PlanFile plan, CancellationToken token)
     {
         try
         {
             string drive = DriveOf(g);
-            if (plan.Zone.StartLcn is not { } zone || _env.LocateProbeSpots(drive, zone) is not { } spots)
+            if (plan.Zone.StartLcn is not { } zone || _env.LocateProbeSpots(drive, zone) is not { } spots || (!spots.ZoneAllocated && spots.ReferenceLcn is null))
             {
-                return null;
+                return (null, false);
             }
 
-            ProbeSpot? zoneSpot = spots.ZoneAllocated ? Spot(drive, zone) : null;
-            ProbeSpot? refSpot = spots.ReferenceLcn is { } r ? Spot(drive, r) : null;
-            return zoneSpot is null && refSpot is null ? null : new DriveBaseline(zoneSpot, refSpot);
+            var round = new ProbeRound(token, (spots.ZoneAllocated ? 1 : 0) + (spots.ReferenceLcn is null ? 0 : 1));
+            if (token.IsCancellationRequested || DriveRecovery.Busy(_env, drive))
+            {
+                return (null, true);
+            }
+
+            ProbeSpot? zoneSpot = spots.ZoneAllocated ? Spot(drive, zone, round) : null;
+            if (token.IsCancellationRequested || (spots.ZoneAllocated && spots.ReferenceLcn is not null && zoneSpot is not null && DriveRecovery.Busy(_env, drive)))
+            {
+                return (null, true);
+            }
+
+            ProbeSpot? refSpot = spots.ReferenceLcn is { } r ? Spot(drive, r, round) : null;
+            if (token.IsCancellationRequested)
+            {
+                return (null, true);
+            }
+
+            return (zoneSpot is null && refSpot is null ? null : new DriveBaseline(zoneSpot, refSpot), false);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
             _log.Warn($"{g.Name}: baseline read speed not measured ({e.GetType().Name})");
-            return null;
+            return (null, false);
         }
     }
 
-    private ProbeSpot? Spot(string drive, long lcn) => _env.ProbeMbps(drive, lcn) is > 0 and double mbps ? new ProbeSpot(lcn, mbps) : null;
+    private ProbeSpot? Spot(string drive, long lcn, ProbeRound round) => _env.ProbeMbps(drive, lcn, round) is > 0 and double mbps ? new ProbeSpot(lcn, mbps) : null;
 
     // 쓴 바이트가 있으면 회복 추적을 시작: probe 는 기준이 있을 때 최대 post_update_delay_min x4 분, 기준이 없거나 fixed 면 post_update_delay_min 분 고정, off 는 기다리지 않음.
     private void BeginRecovery(GameSettings g, AutoSettings auto, long movedBytes, DriveBaseline? baseline)

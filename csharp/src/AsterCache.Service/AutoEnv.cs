@@ -155,8 +155,8 @@ public sealed class AutoEnv
     /// 'X:' 디스크 처리량 (바이트/초), 읽지 못하면 null.
     public required Func<string, double?> DiskBytesPerSecond { get; init; }
 
-    /// ('X:', LCN) → 그 자리의 비버퍼드 순차 읽기 속도 (MB/s, 1 MiB x 64 의 3 회 중앙값), 못 재면 null. 서비스 전용, 시험은 가짜 (기본: 못 잼).
-    public Func<string, long, double?> ProbeMbps { get; init; } = (_, _) => null;
+    /// ('X:', LCN, 회차 세션) → 그 자리의 비버퍼드 순차 읽기 속도 (MB/s, 서로 떨어진 3 구간의 중앙값), 못 재면 null. 읽기량·시간·취소는 세션이 정함 (회차 192 MiB·10 s, 존 + 참조면 구간당 32 MiB). 서비스 전용, 시험은 가짜 (기본: 못 잼).
+    public Func<string, long, ProbeRound, double?> ProbeMbps { get; init; } = (_, _, _) => null;
 
     /// 'X:' → 표본 한 칸 (64 MiB) 의 LCN 수. 회복 표본이 이만큼씩 옮겨 읽음 (0 이면 회전 없음, 시험 기본값).
     public Func<string, long> ProbeStepLcn { get; init; } = _ => 0;

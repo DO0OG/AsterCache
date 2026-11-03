@@ -8,15 +8,11 @@ using Microsoft.Win32.SafeHandles;
 namespace AsterCache.Windows;
 
 /// 볼륨 원시 핸들로 지정 LCN 에서 비버퍼드 순차 읽기 속도를 재는 표본 (서비스 전용, 쓰기 뒤 디스크 회복 확인용).
-/// 서로 떨어진 64 MiB 구간 3 곳을 1 MiB x 64 씩 한 번씩 읽은 중앙값 MB/s (decimal): 같은 곳을 되풀이해 읽으면 2·3 회는 디스크 캐시라서. 총 192 MiB, 벽시계 WallLimit 안에 못 끝내면 null.
-/// 한 회차 (존 + 참조 표본) 는 ProbeRound 로 총 읽기 192 MiB·벽시계 10 s 를 함께 쓰고, 1 MiB 읽을 때마다 취소를 확인합니다 (취소·상한 초과는 null = 판정 불가).
+/// 서로 떨어진 3 구간을 1 MiB 블록으로 한 번씩 읽은 중앙값 MB/s (decimal): 같은 곳을 되풀이해 읽으면 2·3 회는 디스크 캐시라서. 한 표본만 재면 구간당 64 MiB, 존 + 참조면 구간당 32 MiB (회차 합계 192 MiB).
+/// 한 회차 (존 + 참조 표본, 기준 측정 포함) 는 호출하는 쪽이 만든 ProbeRound 세션으로 총 읽기 192 MiB·벽시계 10 s 를 함께 쓰고, 1 MiB 읽을 때마다 취소를 확인합니다 (취소·상한 초과는 null = 판정 불가).
 /// 비어 있는 영역은 SMR 이 0 을 즉시 돌려 과대하게 나오므로 호출하는 쪽이 할당된 곳만 고릅니다.
 public static class DiskProbe
 {
-    /// 지금 스레드의 회차 (DriveRecovery 의 표본 실행이 Mbps 호출 동안 지정, shortcut: AutoEnv.ProbeMbps 시그니처를 바꾸지 않으려고 스레드 로컬로 넘김). null 이면 취소 없는 한 표본.
-    [ThreadStatic]
-    public static ProbeRound? Current;
-
     public const int BlockMib = 1;
     public const int Blocks = 64;
     public const int Spots = 3; // 한 표본이 읽는 서로 다른 64 MiB 구간 수
@@ -29,8 +25,8 @@ public static class DiskProbe
     private const int Sector = 4096;
     private const long Mib = 1L << 20;
 
-    /// letter ("E:") 볼륨의 lcn 에서 읽은 속도 (MB/s), 열거나 읽지 못하거나 WallLimit 을 넘기면 null.
-    public static unsafe double? Mbps(string letter, long lcn)
+    /// letter ("E:") 볼륨의 lcn 에서 round 세션으로 읽은 속도 (MB/s), 열거나 읽지 못하거나 WallLimit 을 넘기면 null.
+    public static unsafe double? Mbps(string letter, long lcn, ProbeRound round)
     {
         try
         {
@@ -50,7 +46,7 @@ public static class DiskProbe
             nint buffer = (nint)NativeMemory.AlignedAlloc((nuint)block, Sector);
             try
             {
-                return Run(lcn * cluster, offset => RandomAccess.Read(h, new Span<byte>((void*)buffer, block), offset) == block, Stopwatch.GetTimestamp, WallLimit, Current); // 읽기 실패 = 볼륨 끝을 넘음
+                return Run(lcn * cluster, offset => RandomAccess.Read(h, new Span<byte>((void*)buffer, block), offset) == block, Stopwatch.GetTimestamp, WallLimit, round); // 읽기 실패 = 볼륨 끝을 넘음
             }
             finally
             {

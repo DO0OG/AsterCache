@@ -79,6 +79,12 @@ public sealed record AutoSettings(
     /// 게임을 하는 동안 이 간격 (분) 으로 핫 집합을 다시 데움, 0 = 끔. 식었는지는 핫 집합 8 곳 (앞쪽 4 + 균등 4) 을 읽어 보고, 2 곳 이상이 2 ms 를 넘으면 식은 것으로 봅니다.
     public int RewarmMinutes { get; init; } = 10;
 
+    /// 같은 게임의 시작 스트림 사이 최소 간격 (분, 0..1440), 0 = 끔. 게임이 이미 돌거나 그 디스크가 바쁠 때도 건너뜁니다 (같은 데이터를 디스크에서 또 읽어 게임이 끊기지 않게).
+    public int RestreamCooldownMin { get; init; } = 10;
+
+    /// 게임 종료를 감지하면 그 게임의 재예열 점검을 이만큼 (분, 0..1440) 뒤로 당김, 0 = 끔 (rewarm_minutes 가 0 이면 재예열 자체가 꺼져 있음). 점검은 식었을 때만 다시 읽습니다.
+    public int RewarmAfterExitMin { get; init; } = 2;
+
     /// 게임 업데이트를 감지한 뒤 그 게임의 재계획·재배치·예열을 이만큼 (분, 0..1440) 미룸, 0 = 지연 없음. 업데이트 직후에는 드라이브가 파일을 흩어 쓰는 중일 수 있습니다.
     public int PostUpdateDelayMin { get; init; } = 15;
 

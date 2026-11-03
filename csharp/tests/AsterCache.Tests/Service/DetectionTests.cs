@@ -197,6 +197,90 @@ public sealed class DispatcherTests
         Assert.Equal(2, streamer.Calls.Count);
     }
 
+    private static GameDispatcher Guarded(FakeStreamer streamer, ListLog log, Func<DateTimeOffset> now, Func<GameSettings, ProcessStart, bool>? running = null, bool busy = false) =>
+        new([Mw4], streamer, log, now, new DispatchEnv { OtherRunning = running ?? ((_, _) => false), DiskBusy = _ => busy, RestreamCooldownMin = () => 10 });
+
+    [Fact]
+    public void FirstStartStreamsOnce()
+    {
+        var streamer = new FakeStreamer();
+        var d = Guarded(streamer, new ListLog(), () => DateTimeOffset.UnixEpoch);
+
+        Assert.True(d.Handle(new ProcessStart(5, "game.exe", 0)));
+
+        Assert.Single(streamer.Calls);
+    }
+
+    [Fact]
+    public void RestartWhileTheGameIsAlreadyRunningDoesNotStream()
+    {
+        var streamer = new FakeStreamer();
+        var log = new ListLog();
+        var seen = new List<int>();
+        var d = Guarded(streamer, log, () => DateTimeOffset.UnixEpoch, (_, s) => { seen.Add(s.Pid); return true; });
+
+        Assert.False(d.Handle(new ProcessStart(77, "game.exe", 0)));
+
+        Assert.Empty(streamer.Calls);
+        Assert.Equal([77], seen); // 판정에 이번 시작의 pid 를 넘겨 자기 자신을 뺄 수 있게
+        Assert.Contains(log.Lines, l => l.Contains("start stream skipped (game already running)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RestartWithinRestreamCooldownDoesNotStreamButAfterItDoes()
+    {
+        var streamer = new FakeStreamer();
+        var log = new ListLog();
+        DateTimeOffset now = DateTimeOffset.UnixEpoch;
+        var d = Guarded(streamer, log, () => now);
+
+        Assert.True(d.Handle(Start("game.exe")));
+        now += TimeSpan.FromMinutes(3);
+        Assert.False(d.Handle(Start("game.exe")));
+        Assert.Single(streamer.Calls);
+        Assert.Contains(log.Lines, l => l.Contains("within restream cooldown of 10 min", StringComparison.Ordinal));
+
+        now += TimeSpan.FromMinutes(8);
+        Assert.True(d.Handle(Start("game.exe")));
+        Assert.Equal(2, streamer.Calls.Count);
+    }
+
+    [Fact]
+    public void BusyDriveSkipsTheStreamAndLogsIt()
+    {
+        var streamer = new FakeStreamer();
+        var log = new ListLog();
+        var d = Guarded(streamer, log, () => DateTimeOffset.UnixEpoch, busy: true);
+
+        Assert.False(d.Handle(Start("game.exe")));
+
+        Assert.Empty(streamer.Calls);
+        Assert.Contains(log.Lines, l => l.Contains("start stream skipped (drive busy)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void LauncherStartKeepsTheOldRulesEvenWhenTheGuardsWouldSkip()
+    {
+        var streamer = new FakeStreamer();
+        var d = new GameDispatcher([Games.Make("steamgame", "game.exe", "steam.exe")], streamer, new ListLog(), () => DateTimeOffset.UnixEpoch,
+            new DispatchEnv { OtherRunning = (_, _) => true, DiskBusy = _ => true, RestreamCooldownMin = () => 10 });
+
+        Assert.True(LauncherExes.Is("steam.exe"));
+        Assert.True(d.Handle(Start("steam.exe")));
+    }
+
+    [Fact]
+    public void ZeroRestreamCooldownTurnsOffOnlyTheCooldownGuard()
+    {
+        var streamer = new FakeStreamer();
+        DateTimeOffset now = DateTimeOffset.UnixEpoch;
+        var d = new GameDispatcher([Mw4], streamer, new ListLog(), () => now, new DispatchEnv { RestreamCooldownMin = () => 0 });
+
+        Assert.True(d.Handle(Start("game.exe")));
+        now += GameDispatcher.Cooldown;
+        Assert.True(d.Handle(Start("game.exe")));
+    }
+
     [Fact]
     public void EveryDetectionIsLoggedWithPidEvenWithinCooldownAndMissingTraceIsNotAnError()
     {

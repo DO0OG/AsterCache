@@ -1,5 +1,6 @@
 using System.Threading.Channels;
 using AsterCache.Core.Logging;
+using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
 using Microsoft.Extensions.Hosting;
 
@@ -28,9 +29,11 @@ public sealed class Worker : BackgroundService
     private CancellationTokenSource? _generation;
     private bool _restart;
     private int _maintaining;
+    private readonly GameExitTracker _exits = new();
+    private readonly SessionReads _reads = new();
 
     public Worker(AsterSettings settings, ILog log, IProcessWatcher primary, IProcessWatcher? fallback, IGameStreamer streamer, ReapplyChecker checker,
-        ReapplyGate? gate = null, Prewarmer? prewarm = null, AutoMode? auto = null, SettingsReloader? reload = null, KeepAwake? keepAwake = null)
+        ReapplyGate? gate = null, Prewarmer? prewarm = null, AutoMode? auto = null, SettingsReloader? reload = null, KeepAwake? keepAwake = null, DispatchEnv? dispatchEnv = null)
     {
         _prewarm = prewarm;
         _prewarm?.SetAuto(settings.Auto);
@@ -49,7 +52,7 @@ public sealed class Worker : BackgroundService
         DiskActivity.Log = log;
         _watchers = (primary, fallback);
         _watchKey = WatchKey(settings);
-        _dispatcher = new GameDispatcher(settings.Games, streamer, log);
+        _dispatcher = new GameDispatcher(settings.Games, streamer, log, env: dispatchEnv is null ? null : dispatchEnv with { RestreamCooldownMin = () => _settings.Auto.RestreamCooldownMin }); // 설정을 다시 읽어도 최신 값
         _checker = checker;
         _gate = gate ?? new ReapplyGate();
     }
@@ -362,6 +365,7 @@ public sealed class Worker : BackgroundService
                 }
 
                 _auto?.RelocateTick(_gate, ct);
+                NoteGameExits();
                 MaintainPrewarm();
                 await (_auto is null ? Task.Delay(CheckTick, ct) : _auto.WaitForTickAsync(CheckTick, ct)); // 발견이 새 게임을 등록하면 일찍 깨움
             }
@@ -369,6 +373,79 @@ public sealed class Worker : BackgroundService
         catch (OperationCanceledException)
         {
             // 종료
+        }
+    }
+
+    // 폴링·ETW 어느 쪽이든 재적용 틱마다 (30 초) 프로세스 이름을 한 번 읽어 실행 중이던 게임이 사라졌는지 봅니다.
+    private void NoteGameExits()
+    {
+        if (_settings.Games.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            IReadOnlyList<(int Pid, string Exe)> procs = ProcessSnapshot.Take();
+            NoteReads(procs);
+            HashSet<string> names = new(procs.Select(p => p.Exe), StringComparer.OrdinalIgnoreCase);
+            foreach (GameSettings g in _exits.Poll(_settings.Games, names))
+            {
+                OnGameExit(g);
+            }
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _log.Error("game exit check failed", e);
+        }
+    }
+
+    // 게임 종료가 한 곳으로 모이는 자리: 로그와 재예열 앞당김 (종료 시 읽은 양 집계 같은 후속 작업도 여기에 붙임).
+    private void OnGameExit(GameSettings game)
+    {
+        _log.Info($"{game.Name}: exited");
+        _prewarm?.NoteGameExit();
+        NoteCoverage(game);
+    }
+
+    // 실행 중인 게임 프로세스가 읽은 누적 바이트를 pid 별로 기억합니다 (종료 뒤에는 열 수 없음). 이 틱의 스냅샷만 씁니다.
+    private void NoteReads(IReadOnlyList<(int Pid, string Exe)> procs)
+    {
+        foreach (GameSettings g in _settings.Games)
+        {
+            foreach ((int pid, string exe) in procs)
+            {
+                if (g.ExeNames.Contains(exe, StringComparer.OrdinalIgnoreCase) && ProcessSnapshot.ReadBytes(pid) is { } bytes)
+                {
+                    _reads.Observe(g.Name, pid, bytes);
+                }
+            }
+        }
+    }
+
+    // 존 커버리지 진단: 종료 뒤 계획 파일을 한 번 읽어 핫 바이트를 세션 읽기량과 맞춥니다. 읽기량을 못 열었거나 계획이 없으면 생략.
+    private void NoteCoverage(GameSettings game)
+    {
+        long? read = _reads.Take(game.Name);
+        if (read is null || !File.Exists(game.Plan))
+        {
+            return;
+        }
+
+        try
+        {
+            long hot = PlanFile.Load(game.Plan).Stats.TryGetValue("hot_bytes", out object? h) && h is long bytes ? bytes : 0;
+            if (SessionCoverage.Percent(read, hot) is not { } percent)
+            {
+                return;
+            }
+
+            _log.Info(SessionCoverage.Line(game.Name, read.Value, hot, percent));
+            _auto?.Status.RecordCoverage(game.Name, percent);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _log.Warn($"{game.Name}: zone coverage not recorded: {e.GetType().Name}");
         }
     }
 

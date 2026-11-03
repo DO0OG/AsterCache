@@ -317,6 +317,42 @@ public sealed class AutoSettingsTests
         }
     }
 
+    [Theory]
+    [InlineData(0, true)]
+    [InlineData(1440, true)]
+    [InlineData(-1, false)]
+    [InlineData(1441, false)]
+    public void RestreamCooldownMinRange(int value, bool ok)
+    {
+        Assert.Equal(10, ParseAuto(new JsonObject()).Auto.RestreamCooldownMin);
+        if (ok)
+        {
+            Assert.Equal(value, ParseAuto(new JsonObject { ["restream_cooldown_min"] = value }).Auto.RestreamCooldownMin);
+        }
+        else
+        {
+            Assert.Contains("auto.restream_cooldown_min", Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["restream_cooldown_min"] = value })).Message);
+        }
+    }
+
+    [Theory]
+    [InlineData(0, true)]
+    [InlineData(1440, true)]
+    [InlineData(-1, false)]
+    [InlineData(1441, false)]
+    public void RewarmAfterExitMinRange(int value, bool ok)
+    {
+        Assert.Equal(2, ParseAuto(new JsonObject()).Auto.RewarmAfterExitMin);
+        if (ok)
+        {
+            Assert.Equal(value, ParseAuto(new JsonObject { ["rewarm_after_exit_min"] = value }).Auto.RewarmAfterExitMin);
+        }
+        else
+        {
+            Assert.Contains("auto.rewarm_after_exit_min", Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["rewarm_after_exit_min"] = value })).Message);
+        }
+    }
+
     [Fact]
     public void MaxZoneAutoStringIsAcceptedOthersAreNot()
     {

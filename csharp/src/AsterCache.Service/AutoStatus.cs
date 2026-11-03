@@ -19,7 +19,7 @@ public static class AutoStage
 }
 
 public sealed record AutoGameEntry(
-    string Source, string? Launcher, string Stage, string? Detail, DateTimeOffset At, DateTimeOffset? LastPlayed, DateTimeOffset? RelocatedAt, int? HitPercent = null, DateTimeOffset? HitAt = null, AutoBootProbe? BootProbe = null, IReadOnlyList<DateTimeOffset>? Plays = null, int? LoadBoundaryMs = null, DateTimeOffset? LoadBoundaryAt = null);
+    string Source, string? Launcher, string Stage, string? Detail, DateTimeOffset At, DateTimeOffset? LastPlayed, DateTimeOffset? RelocatedAt, int? HitPercent = null, DateTimeOffset? HitAt = null, AutoBootProbe? BootProbe = null, IReadOnlyList<DateTimeOffset>? Plays = null, int? LoadBoundaryMs = null, DateTimeOffset? LoadBoundaryAt = null, int? CoveragePercent = null);
 
 /// 부팅 뒤 첫 서비스 시작에서 잰 메타데이터 콜드 비용 (auto_status.json 의 boot_probe): 측정 시각, 연 파일 수, 파일당 평균 열기 시간 (ms).
 public sealed record AutoBootProbe(DateTimeOffset At, int Files, double OpenMsPerFile);
@@ -167,6 +167,19 @@ public sealed class AutoStatus
             if (_games.TryGetValue(name, out AutoGameEntry? old))
             {
                 _games[name] = old with { LoadBoundaryMs = Math.Max(0, ms), LoadBoundaryAt = at };
+                Save();
+            }
+        }
+    }
+
+    /// 게임 종료 때 잰 존 커버리지 (%). 항목이 없으면 남기지 않습니다.
+    public void RecordCoverage(string name, int percent)
+    {
+        lock (_lock)
+        {
+            if (_games.TryGetValue(name, out AutoGameEntry? old))
+            {
+                _games[name] = old with { CoveragePercent = Math.Clamp(percent, 0, 100) };
                 Save();
             }
         }
@@ -358,6 +371,11 @@ public sealed class AutoStatus
                 game.Add("tier0_probe_ready_at", e.LoadBoundaryAt is { } la ? Iso(la) : null);
             }
 
+            if (e.CoveragePercent is { } cp)
+            {
+                game.Add("coverage_percent", (long)cp); // 재지 않은 게임의 항목 모양은 그대로
+            }
+
             games.Add(name, game);
         }
 
@@ -452,7 +470,7 @@ public sealed class AutoStatus
                 {
                     if (value is JObject o && Str(o, "stage") is { } stage)
                     {
-                        _games[name] = new AutoGameEntry(Str(o, "source") ?? "manual", Str(o, "launcher"), stage, Str(o, "detail"), Time(o, "at") ?? _now(), Time(o, "last_played"), Time(o, "relocated_at"), o.TryGetValue("hit_percent", out object? hp) && hp is long h ? (int)Math.Clamp(h, 0, 100) : null, Time(o, "hit_at"), ReadBootProbe(o), ReadPlays(o), TryGetEither(o, "tier0_probe_ready_ms", "load_boundary_ms", out object? lb) && lb is long l ? (int)Math.Clamp(l, 0, int.MaxValue) : null, Time(o, "tier0_probe_ready_at") ?? Time(o, "load_boundary_at"));
+                        _games[name] = new AutoGameEntry(Str(o, "source") ?? "manual", Str(o, "launcher"), stage, Str(o, "detail"), Time(o, "at") ?? _now(), Time(o, "last_played"), Time(o, "relocated_at"), o.TryGetValue("hit_percent", out object? hp) && hp is long h ? (int)Math.Clamp(h, 0, 100) : null, Time(o, "hit_at"), ReadBootProbe(o), ReadPlays(o), TryGetEither(o, "tier0_probe_ready_ms", "load_boundary_ms", out object? lb) && lb is long l ? (int)Math.Clamp(l, 0, int.MaxValue) : null, Time(o, "tier0_probe_ready_at") ?? Time(o, "load_boundary_at"), o.TryGetValue("coverage_percent", out object? cv) && cv is long cp ? (int)Math.Clamp(cp, 0, 100) : null);
                     }
                 }
             }

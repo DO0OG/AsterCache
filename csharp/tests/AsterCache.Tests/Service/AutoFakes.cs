@@ -112,7 +112,7 @@ internal sealed class FakeWorld
     public double? Disk { get; set; } = 0;
 
     /// 회복 표본: (드라이브, LCN) → MB/s, 못 재면 null (기본).
-    public Func<string, long, double?> ProbeMbps { get; set; } = (_, _) => null;
+    public Func<string, long, ProbeRound, double?> ProbeMbps { get; set; } = (_, _, _) => null;
 
     public Func<string, long> ProbeStepLcn { get; set; } = _ => 0;
 
@@ -243,7 +243,7 @@ internal sealed class FakeWorld
         Revert = (g, skipRows, ct) => Revert(g, skipRows, ct),
         Extents = p => Extents(p),
         DiskBytesPerSecond = _ => Disk,
-        ProbeMbps = (drive, lcn) => ProbeMbps(drive, lcn),
+        ProbeMbps = (drive, lcn, round) => ProbeMbps(drive, lcn, round),
         ProbeStepLcn = drive => ProbeStepLcn(drive),
         LocateProbeSpots = (drive, lcn) => LocateProbeSpots(drive, lcn),
         CpuPercent = () => Cpu,

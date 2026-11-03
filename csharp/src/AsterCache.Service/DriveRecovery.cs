@@ -245,23 +245,22 @@ public sealed class DriveRecovery : IDriveRecovery
         var round = new ProbeRound(cts.Token, (b.Zone is null ? 0 : 1) + (b.Ref is null ? 0 : 1));
         long begin = System.Diagnostics.Stopwatch.GetTimestamp();
         string? reason = null;
-        DiskProbe.Current = round;
         try
         {
-            if (Busy(key))
+            if (Busy(_env, key))
             {
                 return null;
             }
 
             long step = _env.ProbeStepLcn(key) * (rotation % DiskProbe.RotationSteps);
-            double? zone = b.Zone is { } z ? _env.ProbeMbps(key, z.Lcn + step) : null;
-            if (b.Zone is not null && b.Ref is not null && zone is not null && (cts.IsCancellationRequested || Busy(key)))
+            double? zone = b.Zone is { } z ? _env.ProbeMbps(key, z.Lcn + step, round) : null;
+            if (b.Zone is not null && b.Ref is not null && zone is not null && (cts.IsCancellationRequested || Busy(_env, key)))
             {
                 reason = cts.IsCancellationRequested ? "game started" : "disk busy between samples";
                 return null;
             }
 
-            double? reference = b.Ref is { } r ? _env.ProbeMbps(key, r.Lcn + step) : null;
+            double? reference = b.Ref is { } r ? _env.ProbeMbps(key, r.Lcn + step, round) : null;
             return (b.Zone is not null && zone is null) || (b.Ref is not null && reference is null) ? null : (zone, reference);
         }
         catch (Exception e) when (e is not OperationCanceledException)
@@ -270,7 +269,6 @@ public sealed class DriveRecovery : IDriveRecovery
         }
         finally
         {
-            DiskProbe.Current = null;
             lock (_lock)
             {
                 _ = _samples.Remove(key);
@@ -284,7 +282,8 @@ public sealed class DriveRecovery : IDriveRecovery
         }
     }
 
-    private bool Busy(string key) => _env.DiskBytesPerSecond(key) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond;
+    // 디스크 활동을 못 읽거나 임계 이상이면 바쁨 (기준 측정도 같은 판정을 씀).
+    internal static bool Busy(AutoEnv env, string key) => env.DiskBytesPerSecond(key) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond;
 
     private static bool Meets(ProbeSpot? baseline, double? now) => baseline is not { } b || now >= b.Mbps * RecoveredFraction;
 

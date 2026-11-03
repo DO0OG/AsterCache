@@ -8,6 +8,7 @@ using AsterCache.Core.Trace;
 using AsterCache.Prefetch;
 using AsterCache.Service;
 using AsterCache.Tests.Core;
+using AsterCache.Windows;
 using Xunit;
 
 namespace AsterCache.Tests.Service;
@@ -2135,7 +2136,7 @@ public sealed class AutoRelocatorTests : ApplyTestBase
     {
         SetAuto(a => a with { PostRelocateRecovery = mode });
         _w.LocateProbeSpots = (_, _) => (zoneAllocated, RefLcn);
-        _w.ProbeMbps = (drive, lcn) =>
+        _w.ProbeMbps = (drive, lcn, _) =>
         {
             _probed.Add((drive, lcn));
             return lcn == RefLcn ? _refMbps : _zoneMbps;
@@ -2245,6 +2246,103 @@ public sealed class AutoRelocatorTests : ApplyTestBase
 
         Assert.False(Relocator.Recovery.IsRecovering(Drive));
         Assert.Empty(_probed);
+    }
+
+    [Fact]
+    public void GameStartAfterTheBaselineZoneSampleReadsNothingMoreAndDoesNotRelocateThisTick()
+    {
+        UseProbe(AutoSettings.RecoveryProbe, zoneAllocated: true);
+        int executes = 0;
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> inner = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            executes += options.Execute ? 1 : 0;
+            return inner(g, plan, options, ct);
+        };
+        _w.ProbeMbps = (drive, lcn, round) =>
+        {
+            _probed.Add((drive, lcn));
+            round.BytesRead += 1L << 20; // 존을 1 MiB 읽은 뒤
+            _gate.Cancel(); // 게임 시작
+            return _zoneMbps;
+        };
+
+        Run(TimeSpan.FromMinutes(3));
+
+        Assert.Single(_probed); // 참조는 읽지 않음
+        Assert.Equal(0, executes);
+        Assert.Equal((AutoStage.WaitingIdle, "baseline interrupted (game start or disk busy), will retry"), (Entry.Stage, Entry.Detail));
+        Assert.False(Relocator.Recovery.IsRecovering(Drive)); // 기준 없이 고정 대기로 강행하지 않음
+        Assert.Equal(0, _status.RelocationsWithin(AutoRelocator.DailyWindow));
+    }
+
+    [Fact]
+    public void DiskActivityBetweenTheBaselineZoneAndReferenceSamplesStopsTheRound()
+    {
+        UseProbe(AutoSettings.RecoveryProbe, zoneAllocated: true);
+        int executes = 0;
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> inner = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            executes += options.Execute ? 1 : 0;
+            return inner(g, plan, options, ct);
+        };
+        _w.ProbeMbps = (drive, lcn, _) =>
+        {
+            _probed.Add((drive, lcn));
+            _w.Disk = 10L << 20; // 존을 재는 사이에 다른 읽기가 시작됨
+            return _zoneMbps;
+        };
+
+        Run(TimeSpan.FromMinutes(3));
+
+        Assert.Single(_probed);
+        Assert.Equal(0, executes);
+    }
+
+    [Fact]
+    public void BaselineZoneAndReferenceShareOneRoundWithinTheByteBudget()
+    {
+        UseProbe(AutoSettings.RecoveryProbe, zoneAllocated: true);
+        var rounds = new List<ProbeRound>();
+        _w.ProbeMbps = (drive, lcn, round) =>
+        {
+            _probed.Add((drive, lcn));
+            rounds.Add(round);
+            return DiskProbe.Run(0, _ => true, () => 0, DiskProbe.WallLimit, round);
+        };
+
+        Tick();
+        _w.Now += Step;
+        RunUntilDone();
+
+        Assert.Equal(2, rounds.Count);
+        Assert.Same(rounds[0], rounds[1]);
+        Assert.Equal((2, ProbeRound.MaxBytes, null), (rounds[0].Parts, rounds[0].BytesRead, rounds[0].Aborted));
+        Assert.True(Relocator.Recovery.IsRecovering(Drive));
+    }
+
+    [Fact]
+    public void UnreadableBaselineStillRelocatesWithTheFixedDelay()
+    {
+        UseProbe(AutoSettings.RecoveryProbe, zoneAllocated: true);
+        _w.ProbeMbps = (drive, lcn, _) =>
+        {
+            _probed.Add((drive, lcn));
+            return null; // 읽기 실패 (취소·바쁨 아님)
+        };
+
+        Tick();
+        _w.Now += Step;
+        RunUntilDone();
+        _probed.Clear();
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Run(TimeSpan.FromMinutes(14));
+        Assert.True(Relocator.Recovery.IsRecovering(Drive));
+        Run(TimeSpan.FromMinutes(2));
+        Assert.False(Relocator.Recovery.IsRecovering(Drive));
+        Assert.Empty(_probed); // 기준이 없으니 표본 없이 고정 대기
     }
 
     [Fact]

@@ -20,7 +20,7 @@ public sealed class DriveRecoveryTests
 
     public DriveRecoveryTests()
     {
-        _w.ProbeMbps = (_, lcn) =>
+        _w.ProbeMbps = (_, lcn, _) =>
         {
             _probed.Add(lcn);
             return lcn == 10 ? _zone : _ref;
@@ -619,7 +619,7 @@ public sealed class DriveRecoveryTests
     [Fact]
     public void DiskActivityBetweenZoneAndReferenceSamplesAbortsTheRound()
     {
-        _w.ProbeMbps = (_, lcn) =>
+        _w.ProbeMbps = (_, lcn, _) =>
         {
             _probed.Add(lcn);
             _w.Disk = 10L << 20; // 존을 재는 사이에 다른 읽기가 시작됨
@@ -639,7 +639,7 @@ public sealed class DriveRecoveryTests
     [InlineData(@"D:\Games\X", false)]
     public void GameStartCancelsOnlySamplesOnTheSameDisk(string gameRoot, bool cancelled)
     {
-        _w.ProbeMbps = (_, lcn) =>
+        _w.ProbeMbps = (_, lcn, _) =>
         {
             _probed.Add(lcn);
             _r.YieldTo(gameRoot); // 존을 재는 중에 게임이 시작됨

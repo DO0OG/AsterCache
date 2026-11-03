@@ -66,6 +66,24 @@ public sealed class LauncherManifestsTests
         Assert.Equal(string.Empty, LauncherManifests.ParseEpicItem(Fixture("epic_game.item"))!.AppVersionString);
     }
 
+    [Theory]
+    [InlineData("\"SizeOnDisk\" \"1073741823\"", false)]
+    [InlineData("\"SizeOnDisk\" \"1073741824\"", true)]
+    [InlineData("", true)]
+    public void SteamAppUnderOneGiBOnDiskIsNotAGame(string extra, bool registered)
+    {
+        SteamApp? app = LauncherManifests.ParseAppManifest("\"AppState\" { \"appid\" \"1\" \"name\" \"n\" \"installdir\" \"d\" " + extra + " }");
+
+        Assert.Equal(registered, app is not null);
+    }
+
+    [Fact]
+    public void SmallFixtureAppIsNotAGameAndTheBigOneKeepsItsSize()
+    {
+        Assert.Null(LauncherManifests.ParseAppManifest(Fixture("appmanifest_5678.acf")));
+        Assert.NotNull(LauncherManifests.ParseAppManifest(Fixture("appmanifest_480.acf")));
+    }
+
     [Fact]
     public void SteamworksRedistributableIsNotAGame() => Assert.Null(LauncherManifests.ParseAppManifest(Fixture("appmanifest_228980.acf")));
 

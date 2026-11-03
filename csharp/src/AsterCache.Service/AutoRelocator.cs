@@ -384,9 +384,16 @@ public sealed class AutoRelocator
         Warm(g, "new trace", warms);
     }
 
-    // 등록된 게임 중 어느 것이든 (g 포함) 도는 중인지: 예열은 다른 게임의 디스크 읽기와 겹치지 않게 재배치 유휴 판정처럼 전체 exe 로 봅니다.
+    // g 와 같은 드라이브에 설치된 등록 게임 (g 포함) 이 도는 중인지: 다른 드라이브의 게임은 g 의 디스크 읽기와 겹치지 않으므로 보지 않습니다.
     private bool AnyGameRunning(GameSettings g) =>
-        _env.AnyRunning([.. _settings().Games.SelectMany(x => x.ExeNames).Concat(g.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)]);
+        _env.AnyRunning([.. SameDriveGames(_settings().Games, [g]).SelectMany(x => x.ExeNames).Concat(g.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)]);
+
+    // targets 와 같은 드라이브 문자에 설치된 games.
+    internal static IEnumerable<GameSettings> SameDriveGames(IEnumerable<GameSettings> games, IEnumerable<GameSettings> targets)
+    {
+        HashSet<string> drives = targets.Select(t => PlanFile.SplitDrive(t.OriginRoot).ToUpperInvariant()).ToHashSet();
+        return games.Where(x => drives.Contains(PlanFile.SplitDrive(x.OriginRoot).ToUpperInvariant()));
+    }
 
     // 게임이 도는 중이면 디스크를 건드리지 않습니다. 쿨다운은 무시합니다 (트레이스나 배치가 새로 바뀐 뒤의 예열이므로).
     private void Warm(GameSettings g, string why, List<(GameSettings Game, string Why)> warms)
@@ -626,11 +633,11 @@ public sealed class AutoRelocator
         return true;
     }
 
-    // 유휴가 아닌 이유 (유휴면 null): 등록 게임이 돌거나, 배터리이거나, 대상 드라이브에 디스크 활동이 있음.
+    // 유휴가 아닌 이유 (유휴면 null): 재배치 대상 드라이브의 등록 게임이 돌거나, 배터리이거나, 대상 드라이브에 디스크 활동이 있음.
     // CPU 사용률은 보지 않습니다: HDD 이동은 Low I/O 우선순위로 대상 드라이브에만 영향을 주므로 백그라운드 작업이 있는 PC 도 재배치해야 합니다.
     private string? BusyReason(AsterSettings s, List<GameSettings> ready)
     {
-        if (_env.AnyRunning([.. s.Games.SelectMany(g => g.ExeNames)]))
+        if (_env.AnyRunning([.. SameDriveGames(s.Games, ready).SelectMany(g => g.ExeNames)]))
         {
             return "game running";
         }

@@ -28,6 +28,7 @@ public static partial class LauncherManifests
     private const int MaxNameLength = 64;
 
     // 게임이 아닌 Steam 항목 (공용 재배포 패키지, 호환 계층).
+    private const long MinSteamAppBytes = 1L << 30;
     private static readonly string[] NonGameNamePrefixes = ["Steamworks", "Proton", "Steam Linux Runtime"];
 
     /// Valve KeyValues 텍스트 (vdf/acf): 따옴표 문자열 (\\ \" \n \t 이스케이프), 따옴표 없는 낱말, { }, // 주석.
@@ -77,6 +78,11 @@ public static partial class LauncherManifests
         if (id == "228980" || NonGameNamePrefixes.Any(p => name.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
         {
             return null;
+        }
+
+        if (s.GetValueOrDefault("SizeOnDisk") is string sz && long.TryParse(sz, NumberStyles.None, CultureInfo.InvariantCulture, out long bytes) && bytes < MinSteamAppBytes)
+        {
+            return null; // 1 GiB 미만의 작은 도구 (커서 유틸리티 등). 값이 없으면 등록
         }
 
         var app = new SteamApp(id, name, dir);

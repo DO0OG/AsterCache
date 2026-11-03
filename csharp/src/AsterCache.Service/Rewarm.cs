@@ -7,7 +7,7 @@ using AsterCache.Windows;
 
 namespace AsterCache.Service;
 
-/// 예열 유지: rewarm_minutes 마다, 등록 게임이 하나도 안 돌고 PC 가 한가할 때 (CPU 와 그 게임 드라이브 처리량이 자동 재배치의 유휴 기준 아래), 예열한 적 있는 게임의 핫 집합 몇 곳을 읽어 보고 식었으면 (CacheProbe.Cold: 표본 8 곳 중 2 곳 이상이 CacheProbe.ColdThresholdMs 초과) 다시 예열합니다.
+/// 예열 유지: rewarm_minutes 마다, 예열한 게임과 같은 드라이브의 등록 게임이 하나도 안 돌고 PC 가 한가할 때 (CPU 와 그 게임 드라이브 처리량이 자동 재배치의 유휴 기준 아래), 예열한 적 있는 게임의 핫 집합 몇 곳을 읽어 보고 식었으면 (CacheProbe.Cold: 표본 8 곳 중 2 곳 이상이 CacheProbe.ColdThresholdMs 초과) 다시 예열합니다.
 public sealed class Rewarmer
 {
     private readonly Prewarmer _prewarm;
@@ -47,7 +47,8 @@ public sealed class Rewarmer
         }
 
         _next = now + TimeSpan.FromMinutes(auto.RewarmMinutes);
-        if (_prewarm.Games.Any(_env.GameRunning))
+        IReadOnlyList<GameSettings> warmed = _prewarm.Warmed();
+        if (AutoRelocator.SameDriveGames(_prewarm.Games, warmed).Any(_env.GameRunning))
         {
             _log.Info("rewarm check skipped: a game is running");
             return;
@@ -59,7 +60,7 @@ public sealed class Rewarmer
             return;
         }
 
-        foreach (GameSettings g in _prewarm.Warmed())
+        foreach (GameSettings g in warmed)
         {
             if (ct.IsCancellationRequested)
             {

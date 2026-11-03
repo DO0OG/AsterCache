@@ -183,9 +183,15 @@ public sealed record DispatchEnv
         DiskBusy = g => DiskActivity.BytesPerSecond(PlanFile.SplitDrive(g.OriginRoot)) is { } bps && bps >= DiskActivity.BusyBytesPerSecond,
     };
 
-    private static bool IsOtherRunning(GameSettings g, ProcessStart start)
+    /// 이미지 경로가 게임 폴더 아래인가 (다른 프로세스 판정과 종료 판정이 함께 씁니다).
+    internal static bool UnderRoot(GameSettings g, string? imagePath)
     {
         string root = g.OriginRoot.TrimEnd('\\', '/') + "\\";
+        return imagePath?.StartsWith(root, StringComparison.OrdinalIgnoreCase) == true;
+    }
+
+    private static bool IsOtherRunning(GameSettings g, ProcessStart start)
+    {
         foreach ((int pid, string exe) in ProcessSnapshot.Take())
         {
             if (pid == start.Pid || pid == Environment.ProcessId)
@@ -194,7 +200,7 @@ public sealed record DispatchEnv
             }
 
             bool named = g.ExeNames.Contains(exe, StringComparer.OrdinalIgnoreCase);
-            if ((named || ProcessSnapshot.ImagePath(pid)?.StartsWith(root, StringComparison.OrdinalIgnoreCase) == true) && StartedBeforeSettle(pid))
+            if ((named || UnderRoot(g, ProcessSnapshot.ImagePath(pid))) && StartedBeforeSettle(pid))
             {
                 return true;
             }

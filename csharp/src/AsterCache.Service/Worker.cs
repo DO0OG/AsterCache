@@ -389,7 +389,19 @@ public sealed class Worker : BackgroundService
             IReadOnlyList<(int Pid, string Exe)> procs = ProcessSnapshot.Take();
             NoteReads(procs);
             HashSet<string> names = new(procs.Select(p => p.Exe), StringComparer.OrdinalIgnoreCase);
-            foreach (GameSettings g in _exits.Poll(_settings.Games, names))
+            Dictionary<int, string?> images = [];
+            string? Image(int pid)
+            {
+                if (!images.ContainsKey(pid))
+                {
+                    images[pid] = ProcessSnapshot.ImagePath(pid);
+                }
+
+                return images[pid];
+            }
+
+            bool UnderRoot(GameSettings g) => procs.Any(p => p.Pid != Environment.ProcessId && DispatchEnv.UnderRoot(g, Image(p.Pid)));
+            foreach (GameSettings g in _exits.Poll(_settings.Games, names, UnderRoot))
             {
                 OnGameExit(g);
             }

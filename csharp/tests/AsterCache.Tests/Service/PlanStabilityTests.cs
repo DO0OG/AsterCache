@@ -204,4 +204,28 @@ public sealed partial class AutoRelocatorTests
 
         Assert.Equal(AutoStage.Done, Entry.Stage);
     }
+
+    [Fact]
+    public void RestoredStalePlanIsReplannedAfterRestartFromTheSameTraceWithoutSettingItAside()
+    {
+        DoneAndReadyToReplan(out string trace);
+        Update();
+        _w.Now += AutoRelocator.StaleCheckEvery;
+        Tick();
+        NewTraceFromNextRun();
+        _w.MakePlanAt = (_, _, _, _) => throw new PyValueException("zone overlaps hot data in a cycle; choose another zone");
+        Func<IReadOnlyList<IReadOnlyList<TraceEvent>>, string, long, PlanFile> working = _w.MakePlan;
+        _w.MakePlan = (sessions, origin, zoneMib) => zoneMib == ZoneSize.ProbeMib ? working(sessions, origin, zoneMib) : throw new PyValueException("zone overlaps hot data in a cycle; choose another zone");
+        Tick();
+        Assert.Equal((AutoStage.Done, AutoRelocator.StalePlanDetail), (Entry.Stage, Entry.Detail));
+        _w.FileTimes.Remove(trace);
+        _w.Files.Add(trace);
+        _relocator = null; // 서비스 재시작: 실패 시각 기억이 없음
+
+        _w.Now += AutoRelocator.StaleCheckEvery;
+        Tick();
+
+        Assert.True(_w.Files.Contains(trace) || File.Exists(trace)); // 트레이스는 그대로
+        Assert.Contains(_log.Lines, l => l.Contains("trace updated after a failed replan", StringComparison.Ordinal));
+    }
 }

@@ -622,6 +622,10 @@ public sealed class AutoRelocator
                     retry = true;
                     _ = _planFailedAt.TryRemove(g.Name, out _);
                 }
+                else if (_status.Get(g.Name)?.Detail?.StartsWith(StalePlanDetail, StringComparison.Ordinal) == true)
+                {
+                    retry = true; // 되살린 낡은 계획을 재시작 뒤 보면 같은 취급: 트레이스를 치우지 않고 그 트레이스로 다시 계획 (실패하면 다시 되살리고 실패 시각이 남음)
+                }
 
                 // boot 트레이스로 배치한 게임이 첫 실행을 기록했으면 (원시 트레이스가 생김) 그 기록으로 계획을 바꿉니다: 원시 트레이스는 치우지 않음.
                 bool recorded = retry || IsBootPlan(plan) && _env.FileExists(AutoTracer.RawTracePath(g));

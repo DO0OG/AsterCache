@@ -67,6 +67,21 @@ public sealed class BootProbeTests : IDisposable
     }
 
     [Fact]
+    public void ARunningGameOnTheSameDriveMeansNoNewReads()
+    {
+        GameSettings g = Games.Make("a", "a.exe");
+
+        AutoBootProbe? probe = BootProbe.Run(Settings(g), WithPlayed(("a", 1)), _log, T0, 1000, x => Files(x, 10), p =>
+        {
+            _opened.Add(p);
+            return true;
+        }, () => _clock, driveBusy: _ => true);
+
+        Assert.Null(probe);
+        Assert.Empty(_opened);
+    }
+
+    [Fact]
     public void NoRecentGameMeansNoProbe()
     {
         AutoBootProbe? probe = Run(Settings(Games.Make("a", "a.exe")), Status(), 1000, 10);

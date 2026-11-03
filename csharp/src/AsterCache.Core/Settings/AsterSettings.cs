@@ -86,6 +86,9 @@ public sealed record AutoSettings(
     /// HDD 게임 드라이브가 디스크 끄기 시간 뒤 잠들지 않게, 런처가 떠 있거나 지금이 플레이하던 시간대면 10 분마다 4 KiB 를 읽음 (기본 켜짐, 전원 설정은 바꾸지 않음).
     public bool KeepAwake { get; init; } = true;
 
+    /// 게임이 시작될 때 그 게임을 읽던 예열 스트림을 끝까지 읽게 할지 (기본 꺼짐, 실험용): 꺼져 있으면 다음 64 MiB 묶음 경계에서 멈춰 게임에 디스크를 양보함.
+    public bool KeepStreamOnGameStart { get; init; }
+
     /// beta.3 형식 설정 (learn 키 없음, prewarm_recent 1 + idle_minutes 3) 을 새 기본으로 해석했는지 (파싱 때만 설정, 서비스가 시작 때 로그 한 줄).
     public bool Migrated { get; init; }
 

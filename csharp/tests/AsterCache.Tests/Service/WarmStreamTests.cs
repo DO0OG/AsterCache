@@ -79,7 +79,7 @@ public sealed class WarmStreamTests
     }
 
     [Fact]
-    public void TheGameBeingPrewarmedStartingLetsTheStreamFinish()
+    public void TheGameBeingPrewarmedStartingStopsTheStreamAtTheNextBatchAndLogsTheYield()
     {
         GameSettings a = Game("a");
         using var cts = new CancellationTokenSource();
@@ -95,9 +95,98 @@ public sealed class WarmStreamTests
 
         PrewarmResult r = _p.Run(a, "test", ct: cts.Token);
 
+        Assert.False(r.Ran);
+        Assert.Equal(2, streamer.Read);
+        Assert.Null(_p.LastWarmed("a"));
+        Assert.Contains(_log.Lines, l => l.Contains("a: yielded to A after ", StringComparison.Ordinal) && l.EndsWith(" ms, 128 MiB", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void GameStartStopsTheStreamEvenWhenNoCancelTokenWasPassed()
+    {
+        GameSettings a = Game("a");
+        var streamer = new BatchStreamer(6, n =>
+        {
+            if (n == 3)
+            {
+                _p!.NoteGameStart("a");
+            }
+        });
+        _p = Make(streamer, a);
+
+        PrewarmResult r = _p.Run(a, "test");
+
+        Assert.Equal(Prewarmer.Cancelled, r.SkipReason);
+        Assert.Equal(3, streamer.Read);
+    }
+
+    [Fact]
+    public void KeepStreamOnGameStartLetsTheStreamFinish()
+    {
+        GameSettings a = Game("a");
+        using var cts = new CancellationTokenSource();
+        var streamer = new BatchStreamer(6, n =>
+        {
+            if (n == 2)
+            {
+                _p!.NoteGameStart("A");
+                cts.Cancel();
+            }
+        });
+        _p = Make(streamer, a);
+        _p.SetAuto(AutoSettings.Default with { KeepStreamOnGameStart = true });
+
+        PrewarmResult r = _p.Run(a, "test", ct: cts.Token);
+
         Assert.True(r.Ran);
         Assert.Equal(6, streamer.Read);
         Assert.NotNull(_p.LastWarmed("a"));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("yielded to", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AGameOnTheSameDriveStopsTheStreamButOneOnAnotherDriveDoesNot()
+    {
+        GameSettings a = Game("a");
+        GameSettings same = Game("b");
+        GameSettings other = Game("c") with { OriginRoot = @"E:\Games\c" };
+        string started = "b";
+        var streamer = new BatchStreamer(6, n =>
+        {
+            if (n == 2)
+            {
+                _p!.NoteGameStart(started);
+            }
+        });
+        _p = Make(streamer, a, same, other);
+
+        Assert.False(_p.Run(a, "test").Ran);
+        Assert.Equal(2, streamer.Read);
+        Assert.Contains(_log.Lines, l => l.Contains("a: yielded to b after ", StringComparison.Ordinal));
+
+        started = "c";
+        Assert.True(_p.Run(a, "test", ignoreCooldown: true).Ran);
+        Assert.Equal(6, streamer.Read);
+    }
+
+    [Fact]
+    public void ARunningGameOnTheSameDriveBlocksANewStream()
+    {
+        GameSettings a = Game("a");
+        GameSettings b = Game("b");
+        var streamer = new BatchStreamer(3);
+        _p = new Prewarmer([a, b], streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => 16000,
+            GameRunning = g => g.Name == "b",
+            ZoneBytes = _ => 1610 * Mib,
+            TraceExists = _ => true,
+        }, _log, null, () => _now);
+
+        PrewarmResult r = _p.Run(a, "test");
+
+        Assert.False(r.Ran);
+        Assert.Equal(0, streamer.Read);
     }
 
     [Fact]

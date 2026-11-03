@@ -21,13 +21,13 @@ public static partial class BootProbe
     private const uint BackupSemantics = 0x02000000; // 디렉터리·읽기 접근 없는 열기
 
     /// 진단을 하고 결과를 auto_status 에 남깁니다. 하지 않았거나 열린 파일이 없으면 null (실패한 열기는 개수에 넣지 않고 시간도 평균에 넣지 않음).
-    /// uptimeMs: 시스템 가동 시간 (ms). files: 게임의 선읽기 목록 (파일을 열지 않고 경로만). open: 파일 하나를 열었다 닫음 (열었으면 true). elapsed: 단조 증가 시계.
+    /// driveBusy: 그 게임의 드라이브에서 게임이 도는 중이면 true (그러면 새 읽기를 내지 않고 건너뜀). uptimeMs: 시스템 가동 시간 (ms). files: 게임의 선읽기 목록 (파일을 열지 않고 경로만). open: 파일 하나를 열었다 닫음 (열었으면 true). elapsed: 단조 증가 시계.
     public static AutoBootProbe? Run(
-        AsterSettings settings, AutoStatus status, ILog log, DateTimeOffset now, long uptimeMs, Func<GameSettings, IReadOnlyList<string>> files, Func<string, bool> open, Func<TimeSpan> elapsed)
+        AsterSettings settings, AutoStatus status, ILog log, DateTimeOffset now, long uptimeMs, Func<GameSettings, IReadOnlyList<string>> files, Func<string, bool> open, Func<TimeSpan> elapsed, Func<GameSettings, bool>? driveBusy = null)
     {
         IReadOnlyDictionary<string, DateTimeOffset> played = status.LastPlayed();
         GameSettings? game = settings.Games.Where(g => played.ContainsKey(g.Name)).OrderByDescending(g => played[g.Name]).ThenBy(g => g.Name, StringComparer.Ordinal).FirstOrDefault();
-        if (!settings.Auto.Enabled || game is null || TimeSpan.FromMilliseconds(uptimeMs) >= MaxUptime)
+        if (!settings.Auto.Enabled || game is null || TimeSpan.FromMilliseconds(uptimeMs) >= MaxUptime || driveBusy?.Invoke(game) == true)
         {
             return null;
         }
@@ -80,7 +80,8 @@ public static partial class BootProbe
     public static AutoBootProbe? RunReal(AsterSettings settings, AutoStatus status, ILog log)
     {
         var sw = Stopwatch.StartNew();
-        return Run(settings, status, log, DateTimeOffset.UtcNow, Environment.TickCount64, TracePaths, OpenClose, () => sw.Elapsed);
+        return Run(settings, status, log, DateTimeOffset.UtcNow, Environment.TickCount64, TracePaths, OpenClose, () => sw.Elapsed,
+            g => ProcessSnapshot.IsRunning([.. AutoRelocator.SameDriveGames(settings.Games, [g]).SelectMany(x => x.ExeNames).Concat(g.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)]));
     }
 
     [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]

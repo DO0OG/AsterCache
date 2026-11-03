@@ -41,11 +41,15 @@
       "include": [
         { "glob": "Game/DATA/FINAL/Global*.wad.client" },
         { "glob": "Game/DATA/FINAL/UI*.wad.client" },
+        { "glob": "Game/DATA/FINAL/Bootstrap*.wad.client" },
+        { "glob": "Game/DATA/FINAL/DATA.wad.client" },
+        { "glob": "Game/DATA/FINAL/ShaderCache*.wad.client" },
+        { "glob": "Game/DATA/FINAL/Scripts*.wad.client" },
         { "glob": "Game/DATA/FINAL/Maps/**/*.wad.client", "head_mib": 64 },
         { "glob": "Game/League of Legends.exe" },
         { "glob": "Game/*.dll" },
-        { "glob": "LeagueClient/*.exe" },
-        { "glob": "LeagueClient/*.dll" },
+        { "glob": "*.exe" },
+        { "glob": "*.dll" },
         { "glob": "Game/DATA/FINAL/Champions/**/*.wad.client", "head_mib": 64 }
       ]
     }

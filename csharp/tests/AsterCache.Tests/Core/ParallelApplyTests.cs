@@ -20,9 +20,9 @@ public sealed class ParallelApplyTests : ApplyTestBase
         for (int k = 0; k < ExtraFiles; k++)
         {
             string p = Path.Combine(Root, $"x{k}.bin");
-            File.WriteAllBytes(p, System.Security.Cryptography.RandomNumberGenerator.GetBytes(1 << 19));
+            File.WriteAllBytes(p, System.Security.Cryptography.RandomNumberGenerator.GetBytes(1 << 20));
             long baseLcn = 30000 + (k * 1000);
-            List<Extent> ext = [new(0, baseLcn, 32), new(32, baseLcn + 200, 32), new(64, baseLcn + 100, 32), new(96, baseLcn + 300, 32)];
+            List<Extent> ext = [.. Enumerable.Range(0, 32).Select(i => new Extent(i * 8, baseLcn + (i * 20), 8))]; // 8 클러스터씩 32 조각으로 흩어 작업 수를 늘림
             Files[p] = ext;
             Vol.Ext[p] = [.. ext];
             _paths.Add(p);
@@ -33,7 +33,7 @@ public sealed class ParallelApplyTests : ApplyTestBase
 
     private static ApplyOptions Exec(int parallel, long writeCap = 2L << 30) => new(Execute: true, ChunkBytes: 4 * Cb, WriteCap: writeCap, Parallel: parallel);
 
-    private PlanFile Plan() => Make().Resolve(60000);
+    private PlanFile Plan() => PlanFile.Make(Sessions, Root, 8 << 20, Cb, p => Files[p], preserveBytes: 64 << 20).Resolve(60000);
 
     private FakeVolume Fresh() => new(Files.ToDictionary(kv => kv.Key, kv => kv.Value.ToList(), StringComparer.Ordinal), Letter);
 
@@ -46,7 +46,7 @@ public sealed class ParallelApplyTests : ApplyTestBase
     {
         PlanFile p = Plan();
         FakeVolume seq = Fresh();
-        ApplyReport r1 = Applier.Apply(p, seq, [Root], Path.Combine(Root, "seq.jsonl"), new ApplyHooks { Extents = x => seq.Ext[x], Digest = Hooks().Digest, SkipReason = _ => null, Sleep = Sleeps.Add }, Exec(1));
+        ApplyReport r1 = Applier.Apply(p, seq, [Root], Path.Combine(Root, "seq.jsonl"), new ApplyHooks { Extents = x => seq.Ext[x], Digest = Hooks().Digest, SkipReason = _ => null, Sleep = Hooks().Sleep }, Exec(1));
 
         ApplyReport r4 = Apply(p, Exec(4));
 
@@ -189,6 +189,30 @@ public sealed class ParallelApplyTests : ApplyTestBase
         Assert.All(rep.Failed, f => Assert.Equal(Applier.TargetBusy, f.Reason));
         Assert.Equal(0, rep.MovedBytes);
         Assert.Empty(Vol.Moves);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    public void AllBusyWithManyTasksAndEightWorkersIsRaceFree(int round)
+    {
+        Sessions = [Enumerable.Range(0, 64).SelectMany(b => _paths.Select(f => new TraceEvent(f, b * 16384L, 16384, 8.0))).ToList()];
+        PlanFile p = Plan();
+        Assert.True(p.Tasks.Count >= 64, $"round {round} tasks {p.Tasks.Count}");
+        Vol.FailNext = int.MaxValue;
+
+        ApplyReport rep = Apply(p, Exec(8));
+
+        Assert.Equal(Applier.ZoneOccupied, rep.Stopped);
+        Assert.InRange(rep.Failed.Count, Applier.MaxBusyInARow + 1, Applier.MaxBusyInARow + 8);
+        Assert.Equal(rep.Failed.Select(f => f.Idx).Order().ToArray(), rep.Failed.Select(f => f.Idx).ToArray()); // 작업 인덱스 순
+        Assert.Equal(rep.Failed.Count, rep.Failed.Select(f => f.Idx).Distinct().Count());
+        Assert.Equal(rep.Failed.Count * 2, Sleeps.Count); // 실패한 작업마다 재시도 사이 대기 2번
+        Assert.Equal(rep.Failed.Count, rep.Timings.Tasks);
+        Assert.Equal(0, rep.MovedBytes);
     }
 
     [Fact]

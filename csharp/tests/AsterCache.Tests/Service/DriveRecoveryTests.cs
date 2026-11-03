@@ -564,6 +564,96 @@ public sealed class DriveRecoveryTests
         Assert.Null(DiskProbe.Run(0, _ => ++n < 70, () => 0, DiskProbe.WallLimit)); // 두 번째 구간 중간에서 읽기 실패
     }
 
+    [Fact]
+    public void CancelMidSampleGivesUpAfterTheBlockInFlight()
+    {
+        using var cts = new CancellationTokenSource();
+        var round = new ProbeRound(cts.Token);
+        int reads = 0;
+
+        double? mbps = DiskProbe.Run(0, _ =>
+        {
+            if (++reads == 10)
+            {
+                cts.Cancel();
+            }
+
+            return true;
+        }, () => 0, DiskProbe.WallLimit, round);
+
+        Assert.Null(mbps);
+        Assert.Equal((10, "cancelled"), (reads, round.Aborted));
+        Assert.Equal(10L << 20, round.BytesRead);
+    }
+
+    [Fact]
+    public void ARoundStopsAt192MibAndZoneAndRefShareIt()
+    {
+        var spent = new ProbeRound(default) { BytesRead = 190L << 20 };
+        int reads = 0;
+        Assert.Null(DiskProbe.Run(0, _ => ++reads > 0, () => 0, DiskProbe.WallLimit, spent));
+        Assert.Equal((2, "byte limit"), (reads, spent.Aborted));
+
+        var shared = new ProbeRound(default, 2); // 존 + 참조: 구간마다 32 블록씩
+        Assert.NotNull(DiskProbe.Run(0, _ => true, () => 0, DiskProbe.WallLimit, shared));
+        Assert.NotNull(DiskProbe.Run(0, _ => true, () => 0, DiskProbe.WallLimit, shared));
+        Assert.Equal((192L << 20, null), (shared.BytesRead, shared.Aborted));
+    }
+
+    [Fact]
+    public void RoundWallClockIsSharedAcrossSamples()
+    {
+        long clock = 0;
+        var round = new ProbeRound(default, 2);
+        Func<long, bool> read = _ =>
+        {
+            clock += System.Diagnostics.Stopwatch.Frequency / 1000 * 60; // 블록당 60 ms: 96 블록 = 5.76 s
+            return true;
+        };
+
+        Assert.NotNull(DiskProbe.Run(0, read, () => clock, DiskProbe.WallLimit, round));
+        Assert.Null(DiskProbe.Run(0, read, () => clock, DiskProbe.WallLimit, round)); // 두 번째는 합쳐 10 s 를 넘김 (11.5 s)
+        Assert.Equal("wall limit", round.Aborted);
+    }
+
+    [Fact]
+    public void DiskActivityBetweenZoneAndReferenceSamplesAbortsTheRound()
+    {
+        _w.ProbeMbps = (_, lcn) =>
+        {
+            _probed.Add(lcn);
+            _w.Disk = 10L << 20; // 존을 재는 사이에 다른 읽기가 시작됨
+            return _zone;
+        };
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        Pass(2);
+
+        Assert.Equal([10L], _probed); // 참조 표본은 재지 않음
+        Assert.True(_r.IsRecovering(Drive));
+        Assert.Contains(_log.Lines, l => l.Contains("aborted (disk busy between samples)", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(@"E:\Games\X", true)]
+    [InlineData(@"D:\Games\X", false)]
+    public void GameStartCancelsOnlySamplesOnTheSameDisk(string gameRoot, bool cancelled)
+    {
+        _w.ProbeMbps = (_, lcn) =>
+        {
+            _probed.Add(lcn);
+            _r.YieldTo(gameRoot); // 존을 재는 중에 게임이 시작됨
+            return lcn == 10 ? _zone : _ref;
+        };
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        Pass(2);
+        Pass(2);
+
+        Assert.Equal(cancelled, !_probed.Contains(20));
+        Assert.Equal(cancelled, _r.IsRecovering(Drive)); // 취소된 회차는 판정 불가라 회복으로 세지 않음
+    }
+
     private static VolumeBitmap Bits(params (bool Used, int Length)[] runs)
     {
         var bits = new List<bool>();

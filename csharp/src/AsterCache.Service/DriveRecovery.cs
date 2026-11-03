@@ -33,6 +33,7 @@ public sealed class DriveRecovery : IDriveRecovery
     private readonly ILog _log;
     private readonly AutoStatus? _status;
     private readonly Dictionary<string, double> _warmMax = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, CancellationTokenSource> _samples = new(StringComparer.Ordinal); // 표본을 재는 중인 드라이브별 취소 (게임 시작이 같은 디스크의 표본을 멈춤)
 
     public DriveRecovery(AutoEnv env, ILog log, AutoStatus? status = null)
     {
@@ -217,18 +218,49 @@ public sealed class DriveRecovery : IDriveRecovery
         }
     }
 
-    // 디스크가 바쁘거나 (읽을 수 없어도) 표본이 실패하면 null.
+    /// 게임이 gameDrive 에서 시작했다: 같은 물리 디스크 (AutoEnv.SameDisk) 에서 재는 중인 표본을 취소합니다 (그 표본은 판정 불가).
+    public void YieldTo(string gameDrive)
+    {
+        lock (_lock)
+        {
+            foreach ((string key, CancellationTokenSource cts) in _samples)
+            {
+                if (_env.SameDisk(gameDrive, key))
+                {
+                    cts.Cancel();
+                }
+            }
+        }
+    }
+
+    // 디스크가 바쁘거나 (읽을 수 없어도) 표본이 실패하거나 취소되면 null. 존과 참조 사이에 디스크 활동을 다시 봅니다.
     private (double? Zone, double? Ref)? Sample(string key, DriveBaseline b, int rotation)
     {
+        using var cts = new CancellationTokenSource();
+        lock (_lock)
+        {
+            _samples[key] = cts;
+        }
+
+        var round = new ProbeRound(cts.Token, (b.Zone is null ? 0 : 1) + (b.Ref is null ? 0 : 1));
+        long begin = System.Diagnostics.Stopwatch.GetTimestamp();
+        string? reason = null;
+        DiskProbe.Current = round;
         try
         {
-            if (_env.DiskBytesPerSecond(key) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond)
+            if (Busy(key))
             {
                 return null;
             }
 
             long step = _env.ProbeStepLcn(key) * (rotation % DiskProbe.RotationSteps);
             double? zone = b.Zone is { } z ? _env.ProbeMbps(key, z.Lcn + step) : null;
+            if (b.Zone is not null && b.Ref is not null && zone is not null && (cts.IsCancellationRequested || Busy(key)))
+            {
+                reason = cts.IsCancellationRequested ? "game started" : "disk busy between samples";
+                return null;
+            }
+
             double? reference = b.Ref is { } r ? _env.ProbeMbps(key, r.Lcn + step) : null;
             return (b.Zone is not null && zone is null) || (b.Ref is not null && reference is null) ? null : (zone, reference);
         }
@@ -236,7 +268,23 @@ public sealed class DriveRecovery : IDriveRecovery
         {
             return null;
         }
+        finally
+        {
+            DiskProbe.Current = null;
+            lock (_lock)
+            {
+                _ = _samples.Remove(key);
+            }
+
+            reason ??= round.Aborted;
+            if (round.BytesRead > 0 || reason is not null)
+            {
+                _log.Info($"drive {key} recovery sample read {round.BytesRead >> 20} MiB in {(long)System.Diagnostics.Stopwatch.GetElapsedTime(begin).TotalMilliseconds} ms" + (reason is null ? string.Empty : $", aborted ({reason})"));
+            }
+        }
     }
+
+    private bool Busy(string key) => _env.DiskBytesPerSecond(key) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond;
 
     private static bool Meets(ProbeSpot? baseline, double? now) => baseline is not { } b || now >= b.Mbps * RecoveredFraction;
 

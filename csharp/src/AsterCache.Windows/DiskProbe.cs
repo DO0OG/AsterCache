@@ -9,9 +9,14 @@ namespace AsterCache.Windows;
 
 /// 볼륨 원시 핸들로 지정 LCN 에서 비버퍼드 순차 읽기 속도를 재는 표본 (서비스 전용, 쓰기 뒤 디스크 회복 확인용).
 /// 서로 떨어진 64 MiB 구간 3 곳을 1 MiB x 64 씩 한 번씩 읽은 중앙값 MB/s (decimal): 같은 곳을 되풀이해 읽으면 2·3 회는 디스크 캐시라서. 총 192 MiB, 벽시계 WallLimit 안에 못 끝내면 null.
+/// 한 회차 (존 + 참조 표본) 는 ProbeRound 로 총 읽기 192 MiB·벽시계 10 s 를 함께 쓰고, 1 MiB 읽을 때마다 취소를 확인합니다 (취소·상한 초과는 null = 판정 불가).
 /// 비어 있는 영역은 SMR 이 0 을 즉시 돌려 과대하게 나오므로 호출하는 쪽이 할당된 곳만 고릅니다.
 public static class DiskProbe
 {
+    /// 지금 스레드의 회차 (DriveRecovery 의 표본 실행이 Mbps 호출 동안 지정, shortcut: AutoEnv.ProbeMbps 시그니처를 바꾸지 않으려고 스레드 로컬로 넘김). null 이면 취소 없는 한 표본.
+    [ThreadStatic]
+    public static ProbeRound? Current;
+
     public const int BlockMib = 1;
     public const int Blocks = 64;
     public const int Spots = 3; // 한 표본이 읽는 서로 다른 64 MiB 구간 수
@@ -45,7 +50,7 @@ public static class DiskProbe
             nint buffer = (nint)NativeMemory.AlignedAlloc((nuint)block, Sector);
             try
             {
-                return Run(lcn * cluster, offset => RandomAccess.Read(h, new Span<byte>((void*)buffer, block), offset) == block, Stopwatch.GetTimestamp, WallLimit); // 읽기 실패 = 볼륨 끝을 넘음
+                return Run(lcn * cluster, offset => RandomAccess.Read(h, new Span<byte>((void*)buffer, block), offset) == block, Stopwatch.GetTimestamp, WallLimit, Current); // 읽기 실패 = 볼륨 끝을 넘음
             }
             finally
             {
@@ -61,24 +66,43 @@ public static class DiskProbe
     /// 한 표본이 읽는 3 곳의 시작 바이트 오프셋 (서로 SpotStrideWindows x 64 MiB 떨어짐).
     internal static long[] SpotOffsets(long startOffset) => [.. Enumerable.Range(0, Spots).Select(i => startOffset + i * SpotStrideWindows * Blocks * BlockMib * Mib)];
 
-    // readBlock(offset): 1 MiB 한 블록을 읽었는가. 벽시계 (now 는 Stopwatch 타임스탬프) 가 limit 을 넘으면 null.
-    internal static double? Run(long startOffset, Func<long, bool> readBlock, Func<long> now, TimeSpan limit)
+    // readBlock(offset): 1 MiB 한 블록을 읽었는가. 취소됐거나, 회차 총량 (ProbeRound.MaxBytes) 을 넘기거나, 회차 시작부터의 벽시계가 limit 을 넘으면 null (round.Aborted 에 이유).
+    // 회차를 존·참조가 나눠 쓰면 (round.Parts) 구간마다 블록을 그만큼 줄여 읽습니다.
+    internal static double? Run(long startOffset, Func<long, bool> readBlock, Func<long> now, TimeSpan limit, ProbeRound? round = null)
     {
-        long begin = now();
+        round ??= new ProbeRound(default);
+        round.Begin ??= now();
+        int blocks = Blocks / round.Parts;
         var rates = new double[Spots];
         long[] offsets = SpotOffsets(startOffset);
         for (int i = 0; i < offsets.Length; i++)
         {
             long spotStart = now();
-            for (int b = 0; b < Blocks; b++)
+            for (int b = 0; b < blocks; b++)
             {
-                if (!readBlock(offsets[i] + b * (BlockMib * Mib)) || Stopwatch.GetElapsedTime(begin, now()) > limit)
+                if (round.Token.IsCancellationRequested)
+                {
+                    return round.Abort("cancelled");
+                }
+
+                if (round.BytesRead + (BlockMib * Mib) > ProbeRound.MaxBytes)
+                {
+                    return round.Abort("byte limit");
+                }
+
+                if (!readBlock(offsets[i] + b * (BlockMib * Mib)))
                 {
                     return null;
                 }
+
+                round.BytesRead += BlockMib * Mib;
+                if (Stopwatch.GetElapsedTime(round.Begin.Value, now()) > limit)
+                {
+                    return round.Abort("wall limit");
+                }
             }
 
-            rates[i] = Rate(Blocks * BlockMib * Mib, Stopwatch.GetElapsedTime(spotStart, now()));
+            rates[i] = Rate(blocks * BlockMib * Mib, Stopwatch.GetElapsedTime(spotStart, now()));
         }
 
         return Median(rates);
@@ -173,5 +197,28 @@ public static class DiskProbe
     {
         double[] sorted = [.. values.Order()];
         return sorted[sorted.Length / 2];
+    }
+}
+
+/// 한 회차 (존 + 참조 표본) 의 읽기 예산과 취소: 총 192 MiB, 읽은 바이트, 시작 시각 (Stopwatch 타임스탬프), 중단 이유.
+/// parts: 이 회차에서 잴 표본 수 (존·참조 모두면 2): 구간마다 읽는 블록을 1/parts 로 줄여 총량을 지킵니다.
+public sealed class ProbeRound(CancellationToken token, int parts = 1)
+{
+    public const long MaxBytes = 192L << 20;
+
+    public CancellationToken Token { get; } = token;
+
+    public int Parts { get; } = Math.Max(1, parts);
+
+    public long BytesRead { get; set; }
+
+    public long? Begin { get; set; }
+
+    public string? Aborted { get; private set; }
+
+    internal double? Abort(string reason)
+    {
+        Aborted ??= reason;
+        return null;
     }
 }

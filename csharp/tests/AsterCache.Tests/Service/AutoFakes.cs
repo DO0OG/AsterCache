@@ -34,22 +34,6 @@ internal sealed class FakeTrace : IAutoTrace
     public void Dispose() => Disposed = true;
 }
 
-/// 휴리스틱의 ETW 대체 공급자 가짜: 시험이 읽기량과 이미지 경로를 채웁니다.
-internal sealed class FakeReadWatch : IReadWatch
-{
-    public Dictionary<int, long> Reads { get; } = [];
-
-    public Dictionary<int, string> Images { get; } = [];
-
-    public bool Disposed { get; private set; }
-
-    public long ReadBytes(int pid) => Reads.GetValueOrDefault(pid);
-
-    public string? ImagePath(int pid) => Images.GetValueOrDefault(pid);
-
-    public void Dispose() => Disposed = true;
-}
-
 /// 자동 모드가 닿는 바깥 세계의 가짜 (시계, 런처 목록, 프로세스, 디스크·CPU·전원, 트레이스 세션). 계획·이동은 시험이 필요한 만큼만 바꿔 끼웁니다.
 internal sealed class FakeWorld
 {
@@ -82,10 +66,6 @@ internal sealed class FakeWorld
     public Dictionary<string, string?> AntiCheats { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public long PhysicalRam { get; set; } = 16L << 30;
-
-    public FakeReadWatch? Watch { get; set; }
-
-    public int WatchStarts { get; private set; }
 
     public string WindowsDir { get; set; } = @"C:\Windows";
 
@@ -198,11 +178,6 @@ internal sealed class FakeWorld
         {
             ReadOpens.Add(p);
             return Reads.TryGetValue(p, out long v) ? v : null;
-        },
-        StartReadWatch = () =>
-        {
-            WatchStarts++;
-            return Watch ?? throw new InvalidOperationException("Watch");
         },
         AntiCheatOf = d => AntiCheats.GetValueOrDefault(d),
         RootPids = _ => RootPids,

@@ -85,9 +85,6 @@ public sealed class AutoEnv
     /// 프로세스가 읽은 누적 바이트, 열 수 없으면 null.
     public required Func<int, long?> ReadBytes { get; init; }
 
-    /// 읽기량을 프로세스에서 얻지 못할 때 쓰는 ETW 세션 (켜면 세션이 시작되고 Dispose 하면 꺼짐).
-    public required Func<IReadWatch> StartReadWatch { get; init; }
-
     /// 폴더 이름들로 짐작한 안티치트 ("eac" 등), 모르면 null.
     public required Func<string, string?> AntiCheatOf { get; init; }
 
@@ -215,7 +212,6 @@ public sealed class AutoEnv
             Pids = ProcessSnapshot.Pids,
             ImagePath = ProcessSnapshot.ImagePath,
             ReadBytes = ProcessSnapshot.ReadBytes,
-            StartReadWatch = () => EtwReadWatch.Start(),
             AntiCheatOf = DetectAntiCheat,
             RootPids = g => [.. ProcessSnapshot.Take().Where(p => p.Pid != Environment.ProcessId && DispatchEnv.UnderRoot(g, ProcessSnapshot.ImagePath(p.Pid))).Select(p => p.Pid)],
             PhysicalRamBytes = SystemMemory.TotalBytes,

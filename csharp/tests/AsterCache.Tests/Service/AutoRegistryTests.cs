@@ -740,7 +740,7 @@ public sealed class AutoRegistryTests : IDisposable
     }
 
     [Fact]
-    public void DeniedProcessIsSkippedWithoutStartingAnEtwSessionAndOpenedExactlyOnce()
+    public void DeniedProcessIsSkippedAndOpenedExactlyOnce()
     {
         World.Images[10] = @"D:\Games\Foooo.exe";
         AutoRegistry reg = DeniedProcess();
@@ -750,7 +750,6 @@ public sealed class AutoRegistryTests : IDisposable
         reg.HeuristicTick();
         reg.HeuristicTick();
 
-        Assert.Equal(0, World.WatchStarts); // 열 수 없는 (보호된) 프로세스에는 커널 세션을 걸지 않음
         Assert.Empty(Registered());
         Assert.Equal([10], World.ReadOpens); // 수명 동안 다시 열지 않음
     }

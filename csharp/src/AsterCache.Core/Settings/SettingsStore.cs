@@ -29,7 +29,7 @@ public static class SettingsStore
     [
         "enabled", "discover", "trace", "relocate", "prewarm_recent", "idle_minutes", "trace_cap_seconds", "trace_cap_mib",
         "max_relocations_per_day", "ignore_exes", "rewarm_minutes", "idle_seconds", "learn", "full_prewarm", "full_prewarm_max_mib", "engine_profiles", "shared_profiles",
-        "ssd_tier", "post_update_delay_min", "relocate_chunk_mib", "relocate_io_priority", "max_relocate_gib_per_day",
+        "ssd_tier", "post_update_delay_min", "relocate_chunk_mib", "relocate_io_priority", "relocate_verify", "max_relocate_gib_per_day",
     ];
     private static readonly string[] PrewarmKeys = ["on_service_start", "trigger_exes", "min_free_ram_mib", "cooldown_min", "pin"];
     private static readonly string[] LearnKeys = ["enabled", "window_mib", "max_total_mib", "mode", "saturation_mbps"];
@@ -165,6 +165,7 @@ public static class SettingsStore
             EngineProfiles = OptBool(o, "engine_profiles", d.EngineProfiles),
             RelocateChunkMib = OptInt(o, "relocate_chunk_mib", 1, 256, d.RelocateChunkMib),
             RelocateIoPriority = o.TryGetValue("relocate_io_priority", out object? io) && io is AutoSettings.IoLow or AutoSettings.IoNormal ? (string)io : d.RelocateIoPriority,
+            RelocateVerify = o.TryGetValue("relocate_verify", out object? rv) && rv is string rvs && VerifyMode.IsValid(rvs) ? rvs : d.RelocateVerify,
             MaxRelocateGibPerDay = OptInt(o, "max_relocate_gib_per_day", 0, 1048576, d.MaxRelocateGibPerDay),
             SsdTier = o.TryGetValue("ssd_tier", out object? tier) ? ParseSsdTier(tier) : SsdTierSettings.Default,
         };

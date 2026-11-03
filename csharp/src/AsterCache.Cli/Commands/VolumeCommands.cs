@@ -29,6 +29,7 @@ internal static class VolumeCommands
         new("execute", ArgKind.Flag),
         new("chunk-mib", Type: ArgType.Int, Default: "4"),
         new("write-cap-mib", Type: ArgType.Int, Default: "2048"),
+        new("verify", Default: VerifyMode.Sample, Choices: [VerifyMode.All, VerifyMode.Sample, VerifyMode.Off]),
     ];
 
     public static readonly ArgOption[] VerifyOptions = [new("plan", Required: true)];
@@ -81,7 +82,7 @@ internal static class VolumeCommands
         PlanFile plan = PlanFile.Load(planPath);
         using NtfsVolume vol = OpenChecked(plan.Volume, a.Text("require-volume-label"));
         string journal = a.Text("journal") is { } j ? PathText.Str(j) : PathText.Str(planPath) + ".journal.jsonl";
-        var options = new ApplyOptions(execute, a.Int("chunk-mib")!.Value * Mib, a.Int("write-cap-mib")!.Value * Mib, planPath, dry);
+        var options = new ApplyOptions(execute, a.Int("chunk-mib")!.Value * Mib, a.Int("write-cap-mib")!.Value * Mib, planPath, dry, Verify: a.Text("verify") ?? VerifyMode.Sample);
         return AsterCli.Emit(o, Applier.Apply(plan, vol, Roots(a), journal, Hooks(), options).ToJson());
     }
 

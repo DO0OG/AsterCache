@@ -592,7 +592,7 @@ public sealed class ApplyPortTests : ApplyTestBase
         var legacy = new List<IReadOnlyList<(long Offset, long Length)>>();
         var edge = new List<IReadOnlyList<(long Offset, long Length)>>();
 
-        ApplyReport rep = Apply(Make().Resolve(20000), Exec(), CountingHooks(legacy, edge));
+        ApplyReport rep = Apply(Make().Resolve(20000), Exec() with { Verify = VerifyMode.All }, CountingHooks(legacy, edge));
 
         Assert.Empty(rep.Failed);
         Assert.Equal(Applier.EdgeRule, JournalRows().Single(r => Equals(r["type"], "header"))["digest_rule"]);
@@ -781,6 +781,115 @@ public sealed class ApplyPortTests : ApplyTestBase
         Assert.Contains(JournalRows(), r => Equals(r["type"], "step") && Equals(r["state"], "resumed")); // 시작 안 한 작업은 이번 실행의 단계로 다시 남김
         Assert.Empty(Reverter.Revert(JournalPath, Vol, [Root], Hooks(), new ApplyOptions(Execute: true)).Skipped);
         Assert.True(SameExtents(Files, Vol.Ext));
+    }
+
+    // ---- 이동 전후 비교 범위 (verify: sample / all / off), 표본 규칙 edge64k-v3
+
+    private (ApplyHooks Hooks, List<int> Calls) CallCounter()
+    {
+        var calls = new List<int>();
+        ApplyHooks h = Hooks();
+        return (new ApplyHooks
+        {
+            Extents = h.Extents,
+            SkipReason = h.SkipReason,
+            Sleep = h.Sleep,
+            Digest = (p, size, extra) =>
+            {
+                calls.Add(0);
+                return SampleHasher.Compute(p, size, extra, null);
+            },
+            EdgeDigest = (p, size, extra) =>
+            {
+                calls.Add(1);
+                return SampleHasher.Compute(p, size, extra, null, span: 0);
+            },
+        }, calls);
+    }
+
+    private HashSet<long> SampledTaskIdx() => JournalRows().Where(r => Equals(r["type"], "sha")).Select(r => (long)r["idx"]!).ToHashSet();
+
+    [Fact]
+    public void SampleModeReadsOnlyTheFirstTaskOfEachFileAndEveryFourthTask()
+    {
+        PlanFile plan = ManyTasks();
+        (ApplyHooks hooks, List<int> calls) = CallCounter();
+
+        ApplyReport rep = Apply(plan, Exec(8 * Cb), hooks);
+
+        Assert.Empty(rep.Failed);
+        Assert.Equal(Applier.EdgeRule, JournalRows().Single(r => Equals(r["type"], "header"))["digest_rule"]);
+        var expected = Enumerable.Range(0, plan.Tasks.Count)
+            .Where(i => i % 4 == 0 || plan.Tasks.Select((t, k) => (t.Path, k)).First(x => x.Path == plan.Tasks[i].Path).k == i).Select(i => (long)i).ToHashSet();
+        Assert.Equal(expected, SampledTaskIdx());
+        Assert.True(expected.Count < plan.Tasks.Count);
+        Assert.Equal(2 * expected.Count, calls.Count); // 전과 후
+        Assert.All(calls, c => Assert.Equal(1, c));
+        Assert.True(Verify(plan).Contiguous); // 나머지 작업도 이동 뒤 extent 가 target 과 맞아야 done
+        Assert.Equal(plan.Tasks.Count, JournalRows().Count(r => Equals(r["type"], "step") && Equals(r["state"], "done")));
+    }
+
+    [Fact]
+    public void AllModeReadsEveryTask()
+    {
+        PlanFile plan = ManyTasks();
+        (ApplyHooks hooks, List<int> calls) = CallCounter();
+
+        ApplyReport rep = Apply(plan, Exec(8 * Cb) with { Verify = VerifyMode.All }, hooks);
+
+        Assert.Empty(rep.Failed);
+        Assert.Equal(plan.Tasks.Count, SampledTaskIdx().Count);
+        Assert.Equal(2 * plan.Tasks.Count, calls.Count);
+    }
+
+    [Fact]
+    public void OffModeCallsNoDigestAtAll()
+    {
+        PlanFile plan = ManyTasks();
+        (ApplyHooks hooks, List<int> calls) = CallCounter();
+
+        ApplyReport rep = Apply(plan, Exec(8 * Cb) with { Verify = VerifyMode.Off }, hooks);
+
+        Assert.Empty(rep.Failed);
+        Assert.Empty(calls);
+        Assert.Empty(SampledTaskIdx());
+        Assert.Equal(0, rep.ShaChecked);
+        Assert.True(Verify(plan).Contiguous);
+    }
+
+    [Fact]
+    public void SampleModeStillDetectsChangedContentOfASampledTask()
+    {
+        var seen = new HashSet<string>();
+        ApplyHooks h = Hooks();
+        var hooks = new ApplyHooks
+        {
+            Extents = h.Extents,
+            SkipReason = h.SkipReason,
+            Sleep = h.Sleep,
+            Digest = (p, size, extra) => "legacy",
+            EdgeDigest = (p, size, extra) => seen.Add(p + string.Join(',', extra)) ? "before" : "after",
+        };
+
+        var ex = Assert.Throws<ShaMismatchException>(() => Apply(ManyTasks(), Exec(8 * Cb), hooks));
+
+        Assert.NotEmpty(ex.Paths);
+    }
+
+    [Fact]
+    public void JournalWithRuleV2KeepsReadingEveryTaskEvenInSampleMode()
+    {
+        PlanFile plan = ManyTasks();
+        using (var jr = new Journal(JournalPath))
+        {
+            jr.Add(new JObject { { "type", "header" }, { "plan_sha", plan.Sha() }, { "zone_start_lcn", plan.Zone.StartLcn }, { "cluster_bytes", Cb }, { "started", 1.0 }, { "digest_rule", Applier.EdgeTaskRule } });
+        }
+
+        ApplyReport rep = Apply(plan, Exec(8 * Cb));
+
+        Assert.Empty(rep.Failed);
+        Assert.Equal(plan.Tasks.Count, SampledTaskIdx().Count);
+        Assert.Equal(Applier.EdgeTaskRule, JournalRows().Single(r => Equals(r["type"], "header"))["digest_rule"]);
     }
 
     // ---- PlanGuards 단위

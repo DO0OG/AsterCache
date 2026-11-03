@@ -24,9 +24,15 @@ public static class Applier
     public const string ZoneOccupied = "zone region appears occupied, stopping";
 
     /// 이동 전후 비교 표본 규칙의 이름. 저널 header 의 digest_rule 이 없으면 옛 규칙 (파일 단위: 처음·가운데·끝 1 MiB + 옮긴 범위) 입니다.
-    /// edge64k-v2 (새 저널): 작업 단위 표본 (그 작업 범위의 앞뒤 64 KiB, 파일당 합계 1 MiB 상한) 을 그 작업의 이동 직전과 직후에 읽음. edge64k-v1: 파일 단위 같은 표본 (이어하기만 지원).
-    public const string EdgeRule = "edge64k-v2";
+    /// edge64k-v3 (새 저널): v2 와 같은 작업 단위 표본인데 verify=sample 이면 각 파일의 첫 작업과 인덱스가 4 의 배수인 작업만 읽음.
+    /// edge64k-v2: 작업 단위 표본 (그 작업 범위의 앞뒤 64 KiB, 파일당 합계 1 MiB 상한) 을 모든 작업의 이동 직전과 직후에 읽음 (이어하기만 지원, verify=sample 이어도 전부).
+    /// edge64k-v1: 파일 단위 같은 표본 (이어하기만 지원).
+    public const string EdgeRule = "edge64k-v3";
+    public const string EdgeTaskRule = "edge64k-v2";
     public const string EdgeFileRule = "edge64k-v1";
+
+    /// verify=sample 에서 표본을 읽는 작업: 각 파일의 첫 작업과 작업 인덱스가 이 수의 배수인 작업.
+    public const int SampleEvery = 4;
 
     /// planned 행을 미리 기록하는 작업 수: 이만큼의 from 을 한 번에 쓰고 fsync 한 뒤 이동합니다.
     public const int PlanAhead = 32;
@@ -97,7 +103,8 @@ public static class Applier
 
         rep.DryRun = options.DryRun;
         rep.PlanSaved = persist;
-        return options.Execute ? Execute(plan, vol, todo, rep, journalPath, chunk, options.WriteCap, hooks, digest, Math.Max(1, options.PlanAhead), cancellationToken) : rep;
+        return options.Execute ? Execute(plan, vol, todo, rep, journalPath, chunk, options.WriteCap, hooks, digest, Math.Max(1, options.PlanAhead),
+            VerifyMode.IsValid(options.Verify) ? options.Verify : VerifyMode.Sample, cancellationToken) : rep;
     }
 
     /// 새 규칙의 표본: 범위 (이미 각 작업의 처음·끝 TaskSpan 바이트) 를 파일 안으로 자르고 정렬해, 합계가 DigestCapBytes 를 넘으면 고르게 솎습니다. 같은 입력이면 항상 같은 결과.
@@ -182,7 +189,7 @@ public static class Applier
 
     private static ApplyReport Execute(PlanFile plan, IVolume vol, List<(int Idx, PlanTask Task, long Done)> todo, ApplyReport rep,
         string journalPath, long chunk, long writeCap, ApplyHooks hooks, Func<string, long, IReadOnlyList<(long Offset, long Length)>, string> digestFn,
-        int planAhead, CancellationToken ct)
+        int planAhead, string verify, CancellationToken ct)
     {
         ApplyTimings tm = rep.Timings;
         using var jr = new Journal(journalPath);
@@ -199,8 +206,12 @@ public static class Applier
         // 표본 규칙은 저널을 처음 만든 실행이 정함: 이어하기는 저널의 sha_before 와 같은 규칙으로 다시 계산해야 비교가 유효 (digest_rule 이 없는 옛 저널 = 옛 규칙)
         object? rule = null;
         _ = header?.TryGetValue("digest_rule", out rule);
-        bool perTask = jr.Rows.Count == 0 || Equals(rule, EdgeRule);
+        bool sampling = jr.Rows.Count == 0 || Equals(rule, EdgeRule); // v3: 일부 작업만 읽을 수 있음
+        bool perTask = sampling || Equals(rule, EdgeTaskRule);
         bool edge = perTask || Equals(rule, EdgeFileRule);
+        var firstOf = plan.Tasks.Select((t, i) => (t.Path, i)).GroupBy(x => x.Path, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Min(x => x.i), StringComparer.Ordinal);
+        string? SampledDigest(int idx, PlanTask t) =>
+            verify == VerifyMode.Sample && sampling && idx % SampleEvery != 0 && firstOf[t.Path] != idx ? null : TaskDigest(idx, t);
         var edgeFn = hooks.EdgeDigest ?? digestFn;
         var sizes = new Dictionary<string, long>(StringComparer.Ordinal);
         var capped = new Dictionary<string, HashSet<(long, long)>>(StringComparer.Ordinal);
@@ -246,7 +257,7 @@ public static class Applier
 
         try
         {
-            RunTasks(vol, todo, rep, jr, before, chunk, writeCap, hooks, Digest, perTask ? TaskDigest : null, planAhead, ct);
+            RunTasks(vol, todo, rep, jr, before, chunk, writeCap, hooks, Digest, perTask ? SampledDigest : null, planAhead, verify == VerifyMode.Off, ct);
         }
         catch (Exception)
         {
@@ -275,7 +286,7 @@ public static class Applier
     // 쓴 양은 예외가 나도 end 행에 남도록 rep.MovedBytes 에 계속 누적합니다.
     private static void RunTasks(IVolume vol, List<(int Idx, PlanTask Task, long Done)> todo, ApplyReport rep, Journal jr,
         OrderedDictionary<string, string?> before, long chunk, long writeCap, ApplyHooks hooks, Func<string, string> digest,
-        Func<int, PlanTask, string?>? taskDigest, int planAhead, CancellationToken ct)
+        Func<int, PlanTask, string?>? taskDigest, int planAhead, bool noVerify, CancellationToken ct)
     {
         long cb = vol.ClusterBytes;
         ApplyTimings tm = rep.Timings;
@@ -314,7 +325,7 @@ public static class Applier
                 }));
             }
 
-            if (taskDigest is null && !before.ContainsKey(p))
+            if (!noVerify && taskDigest is null && !before.ContainsKey(p))
             {
                 JObject? row = jr.First("file", "path", p);
                 before[p] = row is null ? ApplyTimings.Time(ref tm.DigestBeforeTicks, () => digest(p)) : row["sha_before"] as string;
@@ -323,7 +334,7 @@ public static class Applier
                     ApplyTimings.Time(ref tm.JournalTicks, () => jr.AddBatched(new JObject { { "type", "file" }, { "path", p }, { "sha_before", before[p] } }));
                 }
             }
-            else if (taskDigest is not null && !before.ContainsKey(TaskKey(i)))
+            if (!noVerify && taskDigest is not null && !before.ContainsKey(TaskKey(i)))
             {
                 // 이 작업의 이동 직전에 그 범위의 가장자리만 읽음 (헤드가 원본 위치에 한 번만 감). 이어하기는 저널에 적힌 값을 씀.
                 JObject? row = jr.First("sha", "idx", (long)i);

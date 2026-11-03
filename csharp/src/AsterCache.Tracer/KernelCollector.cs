@@ -16,6 +16,7 @@ internal sealed class KernelCollector
     private readonly List<TraceRecord> _records = [];
     private readonly List<(int Index, ulong Key, string? ObjName)> _pending = [];
     private readonly LiveListener? _listener;
+    private readonly HashSet<ulong> _written = []; // 이미 쓰기로 기록한 FileKey (쓰기 이벤트는 많아서 파일마다 한 번만)
     private volatile int _active;
     private volatile bool _sawTarget;
 
@@ -46,6 +47,7 @@ internal sealed class KernelCollector
         };
         kernel.FileIOClose += d => _names.CloseObject(d.FileObject);
         kernel.FileIORead += OnRead;
+        kernel.FileIOWrite += OnWrite;
     }
 
     /// 이름을 끝내 못 찾은 읽기 수 (Finish 뒤에 읽음).
@@ -87,7 +89,7 @@ internal sealed class KernelCollector
             }
 
             TraceRecord r = _records[i];
-            result.Add(r.Kind == RecordKind.Read ? r with { Path = _devices.ToDosPath(r.Path) } : r);
+            result.Add(r.Kind is RecordKind.Read or RecordKind.Write ? r with { Path = _devices.ToDosPath(r.Path) } : r);
         }
 
         return result;
@@ -127,6 +129,22 @@ internal sealed class KernelCollector
         }
 
         _records.Add(TraceRecord.Read(d.TimeStamp, d.ProcessID, name ?? "", d.Offset, d.IoSize));
+    }
+
+    private void OnWrite(FileIOReadWriteTraceData d)
+    {
+        if (!_tree.IsTarget(d.ProcessID) || !_written.Add(d.FileKey))
+        {
+            return;
+        }
+
+        (string? name, string? fallback) = _names.AtRead(d.FileKey, d.FileObject);
+        if (name is null)
+        {
+            _pending.Add((_records.Count, d.FileKey, fallback));
+        }
+
+        _records.Add(TraceRecord.Write(d.TimeStamp, d.ProcessID, name ?? ""));
     }
 
     private static string FirstToken(string commandLine)

@@ -55,7 +55,7 @@ public sealed class IdleTrackerTests
 }
 
 /// 자동 계획·첫 재배치의 상태 기계. 가짜 볼륨과 실제 임시 파일, 가짜 시계·디스크·CPU·전원을 씁니다.
-public sealed class AutoRelocatorTests : ApplyTestBase
+public sealed partial class AutoRelocatorTests : ApplyTestBase
 {
     private static readonly TimeSpan Step = Worker.CheckTick;
     private readonly FakeWorld _w = new();
@@ -648,14 +648,14 @@ public sealed class AutoRelocatorTests : ApplyTestBase
 
         Assert.Equal(AutoStage.Done, Entry.Stage);
         Assert.Single(executed);
-        Assert.Equal(8L << 30, _status.RelocationBytesWithin(AutoRelocator.DailyWindow));
+        Assert.InRange(_status.RelocationBytesWithin(AutoRelocator.DailyWindow), 6L << 30, 8L << 30); // 앞 기록 6 GiB + 이번 실행의 실제 이동 바이트 (시험 볼륨에서는 예정보다 작음)
     }
 
     [Fact]
-    public void DailyWriteBudgetHoldsWhenTheSumExceedsTheLimitAndReleasesAfter24Hours()
+    public void DailyWriteBudgetHoldsOnceTheLimitIsUsedUpAndReleasesAfter24Hours()
     {
         List<ApplyOptions> executed = FakeBytesTodo(2L << 30);
-        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), (6L << 30) + 1);
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 8L << 30);
 
         Run(TimeSpan.FromMinutes(10));
 
@@ -673,22 +673,53 @@ public sealed class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
-    public void DailyWriteBudgetSmallerThanOneRunStillAllowsTheFirstMoveOfTheDay()
+    public void DailyWriteBudgetSmallerThanOneRunCapsTheWriteCapAtTheBudgetInsteadOfAllowingAFirstMove()
     {
         SetAuto(a => a with { MaxRelocateGibPerDay = 1 });
-        string plan2 = Path.Combine(Root, "plans", "second.plan.json");
-        GameSettings second = _game with { Name = "second", ExeNames = ["second.exe"], Plan = plan2, Trace = plan2 + ".prefetch.json" };
-        _settings = _settings with { Games = [_game, second] };
-        _w.Files.Add(AutoTracer.RawTracePath(second));
-        _status.MarkPlayed("bench", "auto", AutoStage.WaitingIdle, _w.Now - TimeSpan.FromDays(2));
-        _status.MarkPlayed("second", "auto", AutoStage.WaitingIdle, _w.Now - TimeSpan.FromDays(1));
         List<ApplyOptions> executed = FakeBytesTodo(2L << 30);
 
         Run(TimeSpan.FromMinutes(10));
 
-        Assert.Single(executed); // 빈 창에서는 상한(1 GiB)보다 큰 2 GiB 도 한 번 허용
-        Assert.Equal(AutoStage.Done, _status.Get("second")!.Stage);
-        Assert.Equal((AutoStage.WaitingIdle, "daily write budget reached"), (Entry.Stage, Entry.Detail)); // 그 직후에는 다시 대기
+        Assert.Equal(1L << 30, Assert.Single(executed).WriteCap); // 상한(1 GiB)보다 큰 2 GiB 도 1 GiB 까지만 쓰고 나머지는 이어하기
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+    }
+
+    [Fact]
+    public void WriteCapIsTheSmallerOfTheRunCapAndWhatIsLeftOfTheDay()
+    {
+        List<ApplyOptions> executed = FakeBytesTodo(2L << 30);
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), (8L << 30) - (300L << 20)); // 하루 8 GiB 중 300 MiB 남음
+
+        Run(TimeSpan.FromMinutes(10));
+
+        Assert.Equal(300L << 20, Assert.Single(executed).WriteCap);
+    }
+
+    [Theory]
+    [InlineData(false, 8, 2)] // 비 SMR: 일일 8 GiB, 회당 2 GiB
+    [InlineData(true, 2, 1)] // SMR: 일일 2 GiB, 회당 1 GiB
+    public void SmrDisksLowerTheDefaultDailyBudgetAndRunCap(bool smr, int dailyGib, int runGib)
+    {
+        _w.IsSmr = _ => smr;
+        List<ApplyOptions> executed = FakeBytesTodo(4L << 30);
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), ((long)dailyGib << 30) - (3L << 30 >> 1)); // 하루 상한 중 1.5 GiB 남음
+
+        Run(TimeSpan.FromMinutes(10));
+
+        Assert.Equal(Math.Min((long)runGib << 30, 3L << 30 >> 1), Assert.Single(executed).WriteCap);
+    }
+
+    [Fact]
+    public void ExplicitDailyBudgetIsKeptOnSmrDisks()
+    {
+        _w.IsSmr = _ => true;
+        SetAuto(a => a with { MaxRelocateGibPerDay = 8, MaxRelocateGibPerDaySet = true });
+        List<ApplyOptions> executed = FakeBytesTodo(4L << 30);
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 3L << 30); // 기본값 (2 GiB) 이었다면 이미 넘음
+
+        Run(TimeSpan.FromMinutes(10));
+
+        Assert.Equal(1L << 30, Assert.Single(executed).WriteCap); // 회당 상한만 SMR 값
     }
 
     [Fact]
@@ -703,13 +734,27 @@ public sealed class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
-    public void RelocationBytesRecordedForTheBudgetAreCappedAtOneRunsWriteCap()
+    public void RelocationBytesRecordedForTheBudgetAreTheBytesActuallyMovedNotTheEstimate()
     {
-        FakeBytesTodo(3L << 30);
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            ApplyReport r = real(g, plan, options, ct);
+            if (options.DryRun)
+            {
+                r.BytesTodo = 3L << 30; // 예정은 3 GiB
+            }
+            else
+            {
+                r.MovedBytes = 1500L << 20; // 실제로 옮긴 양
+            }
+
+            return r;
+        };
 
         Run(TimeSpan.FromMinutes(10));
 
-        Assert.Equal(2L << 30, _status.RelocationBytesWithin(AutoRelocator.DailyWindow));
+        Assert.Equal(1500L << 20, _status.RelocationBytesWithin(AutoRelocator.DailyWindow));
     }
 
     [Theory]
@@ -1222,9 +1267,14 @@ public sealed class AutoRelocatorTests : ApplyTestBase
     private Prewarmer? _cold;
 
     // 원시 트레이스도 prefetch 기록도 없는 게임: 가짜 계획기·읽기를 쓰는 진짜 Prewarmer (AutoMode 가 하는 대로 ColdWarmed 를 재배치기에 연결).
-    private void UseCold()
+    private void UseCold(bool played = true)
     {
         _w.Files.Remove(AutoTracer.RawTracePath(_game));
+        if (played)
+        {
+            _settings.Games.ToList().ForEach(g => _status.MarkPlayed(g.Name, "auto", AutoStage.Discovered, _w.Now)); // 기록 없는 예열은 플레이한 적 있는 게임만
+        }
+
         _cold = new Prewarmer(_settings.Games, _streamer, new PrewarmEnv
         {
             AvailableRamMib = () => _avail,
@@ -1297,6 +1347,19 @@ public sealed class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
+    public void ColdWarmSkipsAGameThatWasNeverPlayed()
+    {
+        UseCold(played: false);
+        _status.Set("bench", "auto", null, AutoStage.Discovered, null);
+
+        Tick();
+        _w.Now += TimeSpan.FromHours(1);
+        Tick();
+
+        Assert.Empty(_coldReads); // 미플레이 게임은 첫 실행 때 트리거 예열만
+    }
+
+    [Fact]
     public void ColdWarmIsOncePerServiceRunAndTransientSkipsAreRetried()
     {
         UseCold();
@@ -1309,7 +1372,11 @@ public sealed class AutoRelocatorTests : ApplyTestBase
 
         _coldDiskBusy = false;
         _w.Now += Step;
-        Tick(); // 다음 틱에 다시
+        Tick();
+        Assert.Empty(_coldReads); // 디스크 바쁨은 다음 틱이 아니라 BusyRetry 뒤에 다시
+
+        _w.Now += AutoRelocator.BusyRetry;
+        Tick();
         Assert.Single(_coldReads);
 
         _w.Now += Step;
@@ -1373,7 +1440,7 @@ public sealed class AutoRelocatorTests : ApplyTestBase
 
         _w.Now += Step;
         Tick();
-        Assert.Equal(2, plans);
+        Assert.Equal(1, plans); // 프로필 미일치는 폴더 mtime 이 같으면 주기가 돌아도 다시 열거하지 않음 (캐시)
     }
 
     [Fact]
@@ -1636,6 +1703,24 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         Assert.Equal(1, rejected);
         Assert.Equal([start], _w.PlanStarts); // 시작을 지정한 계획은 한 번, 그다음은 시작을 정하지 않은 계획
         Assert.Contains(_log.Lines, l => l.Contains("previous zone is not free, looking for a new one", StringComparison.Ordinal));
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.NotNull(PlanFile.Load(_game.Plan).Zone.StartLcn);
+    }
+
+    [Fact]
+    public void PreviousZoneThatCannotBePlannedInPlaceBecauseOfACycleFallsBackToTheNormalZoneSearch()
+    {
+        long start = DoneAndReadyToReplan(out _);
+        Update();
+        _w.Now += AutoRelocator.StaleCheckEvery;
+        Tick();
+        NewTraceFromNextRun();
+        _w.MakePlanAt = (_, _, _, _) => throw new PyValueException("zone overlaps hot data in a cycle; choose another zone");
+
+        RunUntilDone();
+
+        Assert.Equal([start], _w.PlanStarts);
+        Assert.Contains(_log.Lines, l => l.Contains("previous zone cannot be planned in place (zone overlaps hot data in a cycle; choose another zone), looking for a new one", StringComparison.Ordinal));
         Assert.Equal(AutoStage.Done, Entry.Stage);
         Assert.NotNull(PlanFile.Load(_game.Plan).Zone.StartLcn);
     }
@@ -2041,7 +2126,7 @@ public sealed class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
-    public void PrefetchPlanTakesWholeSmallFilesInPhysicalOrderAndLeavesBigFilesAlone()
+    public void PrefetchPlanTakesWholeSmallFilesInPhysicalOrder()
     {
         UsePrefetchRecord();
         _w.LoadSessions = () => [[new TraceEvent(F2, 0, 1 << 20), new TraceEvent(F1, 0, 1 << 20)]]; // 프리페치 순서는 F2 가 먼저지만 물리 위치는 F1 (LCN 1000) 이 앞
@@ -2052,26 +2137,51 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         Assert.Equal(256, small.Order.Where(o => o.Path == F1).Sum(o => o.Clusters)); // 파일 통째 (1 MiB / 4 KiB)
         Assert.Equal(256, small.Order.Where(o => o.Path == F2).Sum(o => o.Clusters));
         Assert.Equal(0, small.Order.Where(o => o.Path == F1).Min(o => o.Vcn));
+    }
 
-        File.Delete(_game.Plan);
-        _w.Stat = p => p == F2 ? new Fingerprint(p, (64L << 20) + 1, 0) : PlanFile.FingerprintOf(p); // F2 는 64 MiB 를 넘음
-        _status.Set("bench", "auto", null, AutoStage.Discovered, null);
-        Tick();
+    // F2 를 1 GiB 짜리 파일 하나로: 실제 파일은 SetLength 로 늘림 (내용을 쓰지 않음), 볼륨의 extent 는 가짜.
+    private void MakeBigF2(long bytes)
+    {
+        using (var f = new FileStream(F2, FileMode.Open, FileAccess.Write))
+        {
+            f.SetLength(bytes);
+        }
 
-        PlanFile big = PlanFile.Load(_game.Plan);
-        Assert.Equal([F1], big.Order.Select(o => o.Path).Distinct());
-        Assert.DoesNotContain(big.Tasks, t => t.Path == F2);
+        Files[F2] = [new Extent(0, 100000, bytes / Cb)];
+        _w.Extents = p => p == F2 ? Files[F2] : Vol.Ext[p];
     }
 
     [Fact]
-    public void FileExactlyAtTheLimitIsStillIncluded()
+    public void PrefetchPlanOfABigFileTakesEachReferencedRangeWithPadding()
     {
+        const long gib = 1L << 30;
+        const long mib = 1L << 20;
         UsePrefetchRecord();
-        _w.Stat = p => p == F2 ? new Fingerprint(p, AutoRelocator.PrefetchMaxFileBytes, 0) : PlanFile.FingerprintOf(p);
+        MakeBigF2(gib);
+        _w.LoadSessions = () => [[new TraceEvent(F2, 100 * mib, mib), new TraceEvent(F2, 800 * mib, mib)]];
 
         Tick();
 
-        Assert.Contains(PlanFile.Load(_game.Plan).Order, o => o.Path == F2);
+        List<PlanRange> ranges = [.. PlanFile.Load(_game.Plan).Order.Where(o => o.Path == F2)];
+        Assert.Equal(2, ranges.Count); // 큰 파일도 참조한 두 범위만 (앞뒤 64 MiB 포함)
+        Assert.Equal((36 * mib / Cb, 129 * mib / Cb), (ranges[0].Vcn, ranges[0].Clusters));
+        Assert.Equal((736 * mib / Cb, 129 * mib / Cb), (ranges[1].Vcn, ranges[1].Clusters));
+    }
+
+    [Fact]
+    public void PrefetchRangesThatTouchAfterPaddingAreMerged()
+    {
+        const long gib = 1L << 30;
+        const long mib = 1L << 20;
+        UsePrefetchRecord();
+        MakeBigF2(gib);
+        _w.LoadSessions = () => [[new TraceEvent(F2, 100 * mib, mib), new TraceEvent(F2, 200 * mib, mib)]]; // 패딩 뒤 100 MiB 간격이 겹침
+
+        Tick();
+
+        List<PlanRange> ranges = [.. PlanFile.Load(_game.Plan).Order.Where(o => o.Path == F2)];
+        Assert.Single(ranges);
+        Assert.Equal(229 * mib / Cb, ranges[0].Clusters); // 36 .. 265 MiB
     }
 
     [Fact]
@@ -2710,21 +2820,43 @@ public sealed class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
-    public void ExtensionBiggerThanTheDailyWriteBudgetIsBlockedBecauseItGetsNoFirstMoveException()
+    public void ExtensionPlanFailureLogsTheExceptionMessageFirstLineAndStillRestoresThePreviousPlan()
     {
         DoneThenMergedTrace(Merged(RestOfTheBlocks()));
-        SetAuto(a => a with { MaxRelocateGibPerDay = 1 });
-        _w.Now += AutoRelocator.DailyWindow + TimeSpan.FromHours(1); // 하루 창이 비어 있음
-        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
-        _w.Apply = (g, plan, options, ct) => options.DryRun ? new ApplyReport { TasksTotal = 1, TasksTodo = 1, BytesTodo = 3L << 30 } : real(g, plan, options, ct);
+        PlanFile before = PlanFile.Load(_game.Plan);
+        _w.MakePlanAt = (_, _, _, _) => throw new PyValueException("expect 1..32 sessions\nsecond line");
 
         Tick();
         RunUntilDone();
 
         Assert.Equal(AutoStage.Done, Entry.Stage);
-        Assert.Empty(Vol.Moves);
-        Assert.Contains(_log.Lines, l => l.Contains("zone extension blocked: the extension is larger than the daily write budget", StringComparison.Ordinal));
-        Assert.Equal(5L, PlanFile.Load(_game.Plan).Stats["hot_blocks"]);
+        Assert.Single(_log.Lines, l => l.Contains("zone extension blocked: plan failed: PyValueException: expect 1..32 sessions", StringComparison.Ordinal) && !l.Contains("second line", StringComparison.Ordinal));
+        Assert.Equal(before.Sha(), PlanFile.Load(_game.Plan).Sha());
+    }
+
+    [Fact]
+    public void ExtensionBiggerThanTheDailyWriteBudgetIsAppliedInCappedSteps()
+    {
+        DoneThenMergedTrace(Merged(RestOfTheBlocks()));
+        SetAuto(a => a with { MaxRelocateGibPerDay = 1 });
+        _w.Now += AutoRelocator.DailyWindow + TimeSpan.FromHours(1); // 하루 창이 비어 있음
+        var executed = new List<ApplyOptions>();
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            if (!options.DryRun)
+            {
+                executed.Add(options);
+            }
+
+            return options.DryRun ? new ApplyReport { TasksTotal = 1, TasksTodo = 1, BytesTodo = 3L << 30 } : real(g, plan, options, ct);
+        };
+
+        Tick();
+        RunUntilDone();
+
+        Assert.Equal(1L << 30, Assert.Single(executed).WriteCap); // 막지 않고 하루 상한까지만 씀
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("zone extension blocked", StringComparison.Ordinal));
     }
 
     [Fact]

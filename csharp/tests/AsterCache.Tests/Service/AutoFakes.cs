@@ -34,22 +34,6 @@ internal sealed class FakeTrace : IAutoTrace
     public void Dispose() => Disposed = true;
 }
 
-/// 휴리스틱의 ETW 대체 공급자 가짜: 시험이 읽기량과 이미지 경로를 채웁니다.
-internal sealed class FakeReadWatch : IReadWatch
-{
-    public Dictionary<int, long> Reads { get; } = [];
-
-    public Dictionary<int, string> Images { get; } = [];
-
-    public bool Disposed { get; private set; }
-
-    public long ReadBytes(int pid) => Reads.GetValueOrDefault(pid);
-
-    public string? ImagePath(int pid) => Images.GetValueOrDefault(pid);
-
-    public void Dispose() => Disposed = true;
-}
-
 /// 자동 모드가 닿는 바깥 세계의 가짜 (시계, 런처 목록, 프로세스, 디스크·CPU·전원, 트레이스 세션). 계획·이동은 시험이 필요한 만큼만 바꿔 끼웁니다.
 internal sealed class FakeWorld
 {
@@ -64,6 +48,9 @@ internal sealed class FakeWorld
 
     public Dictionary<string, bool?> Hdd { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+    /// SMR 로 보이는 HDD 인가 (기본: 아님).
+    public Func<string, bool> IsSmr { get; set; } = _ => false;
+
     public List<int> Pids { get; set; } = [];
 
     public Dictionary<int, string> Images { get; } = [];
@@ -73,13 +60,12 @@ internal sealed class FakeWorld
     /// ReadBytes (IoCounters) 를 연 PID 기록: 열 수 없는 PID 는 Reads 에 없음 (ACCESS_DENIED 와 같음).
     public List<int> ReadOpens { get; } = [];
 
+    /// 게임 폴더 아래에서 도는 프로세스의 PID (등록 exe 가 아닌 자식 프로세스).
+    public List<int> RootPids { get; set; } = [];
+
     public Dictionary<string, string?> AntiCheats { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public long PhysicalRam { get; set; } = 16L << 30;
-
-    public FakeReadWatch? Watch { get; set; }
-
-    public int WatchStarts { get; private set; }
 
     public string WindowsDir { get; set; } = @"C:\Windows";
 
@@ -149,6 +135,9 @@ internal sealed class FakeWorld
     /// boot 트레이스 파일의 "source" 표시 (프리페치 기록으로 만든 것이면 "prefetch").
     public Dictionary<string, string> TraceSources { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+    /// 트레이스에서 알게 된 가변 파일 표시 (경로 → 사유).
+    public Dictionary<string, string> Volatile { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     public Func<GameSettings, string?> ArchiveJournal { get; set; } = _ => null;
 
     /// MoveAside 로 옮긴 (원본, 새 이름) 기록. 파일 집합 (Files) 도 따라 바뀝니다.
@@ -182,6 +171,7 @@ internal sealed class FakeWorld
         Scan = () => Skipped.Count == 0 ? Found : new ScanResult([.. Found], [.. Skipped]),
         VolumeLabel = l => Labels.GetValueOrDefault(l, "GAMES"),
         IsHdd = l => Hdd.TryGetValue(l, out bool? v) ? v : true,
+        IsSmr = l => IsSmr(l),
         Pids = () => Pids,
         ImagePath = p => Images.GetValueOrDefault(p),
         ReadBytes = p =>
@@ -189,12 +179,8 @@ internal sealed class FakeWorld
             ReadOpens.Add(p);
             return Reads.TryGetValue(p, out long v) ? v : null;
         },
-        StartReadWatch = () =>
-        {
-            WatchStarts++;
-            return Watch ?? throw new InvalidOperationException("Watch");
-        },
         AntiCheatOf = d => AntiCheats.GetValueOrDefault(d),
+        RootPids = _ => RootPids,
         PhysicalRamBytes = () => PhysicalRam,
         WindowsDir = WindowsDir,
         SystemDrive = SystemDrive,
@@ -220,6 +206,7 @@ internal sealed class FakeWorld
         },
         TraceSource = p => TraceSources.GetValueOrDefault(p),
         LoadTrace = (_, _) => LoadSessions()[0],
+        LoadVolatile = _ => Volatile,
         MakePlan = (sessions, origin, zoneMib) =>
         {
             PlanZones.Add(zoneMib);

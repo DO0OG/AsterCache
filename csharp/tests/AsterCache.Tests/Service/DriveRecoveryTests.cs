@@ -465,6 +465,90 @@ public sealed class DriveRecoveryTests
     }
 
     [Fact]
+    public void UnconfirmedRecoveryKeepsHoldingRelocationPastTheLimitUntilTheHardLimit()
+    {
+        using var dir = new TempDir();
+        (DriveRecovery r, AutoStatus status) = Open(StatusPath(dir));
+        _zone = 10; // 회복하지 않는 디스크
+        r.Begin(Drive, Both, TimeSpan.FromMinutes(60), TimeSpan.FromMinutes(180));
+
+        for (int i = 0; i < 31; i++) // 62 분
+        {
+            Step2(r);
+        }
+
+        Assert.False(r.IsRecovering(Drive)); // 예열·고정이 보는 값은 60 분에 풀림
+        Assert.True(r.IsRelocationHeld(Drive)); // 재배치는 계속 보류
+        Assert.Equal("unknown", Assert.Single(status.DriveRecoveries()).Verdict);
+        Assert.Contains(_log.Lines, l => l.Contains("recovery not confirmed at the 60 min limit", StringComparison.Ordinal));
+
+        for (int i = 0; i < 58; i++) // 178 분
+        {
+            Step2(r);
+        }
+
+        Assert.True(r.IsRelocationHeld(Drive));
+        Assert.Equal("unknown", Assert.Single(status.DriveRecoveries()).Verdict); // 만료 뒤 표본이 나빠도 unknown 으로 남음
+        Step2(r); // 180 분
+
+        Assert.False(r.IsRelocationHeld(Drive));
+        Assert.Empty(status.DriveRecoveries());
+        Assert.Contains(_log.Lines, l => l.Contains("recovery not confirmed after the 180 min hard limit, relocation hold released", StringComparison.Ordinal));
+    }
+
+    private void Step2(DriveRecovery r)
+    {
+        _w.Now += TimeSpan.FromMinutes(2);
+        r.Poll();
+    }
+
+    [Fact]
+    public void RecoveryConfirmedAfterTheLimitReleasesTheHoldEarly()
+    {
+        _zone = 10;
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60), TimeSpan.FromMinutes(180));
+        for (int i = 0; i < 31; i++)
+        {
+            Pass(2);
+        }
+
+        Assert.True(_r.IsRelocationHeld(Drive));
+        _zone = 100;
+        Pass(2);
+        Pass(2); // 연속 2 회 통과
+
+        Assert.False(_r.IsRelocationHeld(Drive));
+    }
+
+    [Fact]
+    public void HoldPastTheLimitSurvivesARestartUntilTheHardLimit()
+    {
+        using var dir = new TempDir();
+        (DriveRecovery first, _) = Open(StatusPath(dir));
+        first.Begin(Drive, Both, TimeSpan.FromMinutes(60), TimeSpan.FromMinutes(180));
+        _w.Now += TimeSpan.FromMinutes(90);
+
+        (DriveRecovery second, AutoStatus status) = Open(StatusPath(dir));
+
+        Assert.False(second.IsRecovering(Drive));
+        Assert.True(second.IsRelocationHeld(Drive));
+        Assert.Single(status.DriveRecoveries());
+        _w.Now += TimeSpan.FromMinutes(89);
+        Assert.True(second.IsRelocationHeld(Drive));
+        _w.Now += TimeSpan.FromMinutes(1);
+        Assert.False(second.IsRelocationHeld(Drive)); // 시작 180 분 뒤
+    }
+
+    [Fact]
+    public void FixedWaitIsNotExtendedByTheHardLimit()
+    {
+        _r.Begin(Drive, null, TimeSpan.FromMinutes(15), TimeSpan.FromMinutes(180));
+        _w.Now += TimeSpan.FromMinutes(15);
+
+        Assert.False(_r.IsRelocationHeld(Drive));
+    }
+
+    [Fact]
     public void BadSampleIsRecordedAsBad()
     {
         using var dir = new TempDir();

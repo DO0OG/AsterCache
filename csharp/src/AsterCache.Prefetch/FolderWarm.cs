@@ -20,6 +20,9 @@ public static class FolderWarm
     public const int MaxDepth = 12;
     public const int MaxEntries = 1_000_000;
 
+    /// 엔진 프로필이 하나도 안 맞을 때의 이유 (Prewarmer 가 이 값을 보고 폴더 mtime 키로 판정을 기억합니다).
+    public const string NoEngineProfile = "no engine profile matched";
+
     /// fullCapBytes 가 0 보다 크고 폴더 합이 그 이하면 폴더 전체, 아니면 profileBudgetBytes 가 0 보다 크면 엔진 프로필. 합 계산은 상한을 넘는 즉시 멈춥니다.
     /// 폴더 전체는 파일의 물리 배치 (layout, 기본 FileLayout.Get: 파일마다 FSCTL 한 번) 순서로 읽습니다: HDD 에서 탐색을 줄임. 배치를 모르는 파일은 맨 뒤.
     public static ColdPlan Plan(string root, IReadOnlyCollection<string> exeNames, long fullCapBytes, long profileBudgetBytes, EngineProfiles profiles, CancellationToken ct = default,
@@ -46,7 +49,7 @@ public static class FolderWarm
         ProfileSelection pick = profiles.Select([.. files.Select(f => (f.Rel, f.Size))], ExeDir(files, exeNames), profileBudgetBytes);
         if (pick.Engines.Count == 0)
         {
-            return ColdPlan.None("no engine profile matched");
+            return ColdPlan.None(NoEngineProfile);
         }
 
         Dictionary<string, Entry> byRel = files.ToDictionary(f => f.Rel, StringComparer.OrdinalIgnoreCase);

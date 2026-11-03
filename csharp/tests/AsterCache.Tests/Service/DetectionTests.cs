@@ -25,11 +25,14 @@ internal sealed class FakeStreamer : IGameStreamer
 {
     public ConcurrentQueue<(string Game, long At)> Calls { get; } = new();
 
+    public ConcurrentQueue<GameSettings> Seen { get; } = new();
+
     public Exception? Throw { get; set; }
 
     public StreamStats Stream(GameSettings game)
     {
         Calls.Enqueue((game.Name, System.Diagnostics.Stopwatch.GetTimestamp()));
+        Seen.Enqueue(game);
         return Throw is null ? new StreamStats(100, 2, 0, 0.01) : throw Throw;
     }
 }
@@ -140,6 +143,18 @@ public sealed class EtwWatcherTests
         Assert.Null(f1);
         Assert.IsType<EtwProcessWatcher>(p2);
         Assert.IsType<PollingProcessWatcher>(f2);
+    }
+
+    [Fact]
+    public void WorkerForcesPollingWhenAnAntiCheatGameIsRegistered()
+    {
+        var s = new AsterSettings(250, [Games.Make("g", "game.exe"), Games.Make("h", "h.exe") with { AntiCheat = "eac" }], "etw");
+
+        (IProcessWatcher p, IProcessWatcher? f) = Worker.ChooseWatchers(s, admin: true);
+
+        Assert.Equal("poll", Worker.EffectiveWatcher(s));
+        Assert.IsType<PollingProcessWatcher>(p);
+        Assert.Null(f);
     }
 
     [Fact]
@@ -256,6 +271,33 @@ public sealed class DispatcherTests
 
         Assert.Empty(streamer.Calls);
         Assert.Contains(log.Lines, l => l.Contains("start stream skipped (drive busy)", StringComparison.Ordinal));
+    }
+
+    private static GameDispatcher JustStarted(FakeStreamer streamer, ListLog log, bool warm) =>
+        new([Mw4], streamer, log, () => DateTimeOffset.UnixEpoch, new DispatchEnv { DiskBusy = _ => true, Age = _ => TimeSpan.FromSeconds(1), IsWarm = _ => warm });
+
+    [Fact]
+    public void GameStartedJustNowStreamsEvenThoughItsOwnReadsMakeTheDriveBusy()
+    {
+        var streamer = new FakeStreamer();
+        var d = JustStarted(streamer, new ListLog(), warm: false);
+
+        Assert.True(d.Handle(Start("game.exe")));
+
+        Assert.Single(streamer.Calls);
+    }
+
+    [Fact]
+    public void GameStartedJustNowSkipsTheStreamWhenItsHotSetIsAlreadyWarm()
+    {
+        var streamer = new FakeStreamer();
+        var log = new ListLog();
+        var d = JustStarted(streamer, log, warm: true);
+
+        Assert.False(d.Handle(Start("game.exe")));
+
+        Assert.Empty(streamer.Calls);
+        Assert.Contains(log.Lines, l => l.Contains("start stream skipped (already warm)", StringComparison.Ordinal));
     }
 
     [Fact]

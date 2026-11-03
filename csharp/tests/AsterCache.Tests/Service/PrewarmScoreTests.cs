@@ -101,6 +101,7 @@ public sealed class PrewarmScoreTests : IDisposable
             ZoneBytes = _ => 1000L << 20,
             TraceExists = _ => true,
         }, new ListLog(), null, () => Now);
+        prewarm.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 1 << 20 }); // 이 시험은 점수 순서와 RAM 예산만 봄
         IReadOnlyDictionary<string, IReadOnlyList<DateTimeOffset>> plays = Plays(
             ("a", [Now.AddDays(-1)]), // 최근성 0.9
             ("b", [Now.AddDays(-14), Now.AddDays(-7)]), // 0.5 + 습관 1

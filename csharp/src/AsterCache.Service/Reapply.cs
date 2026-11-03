@@ -37,12 +37,15 @@ public enum ReapplyVerdict
     NotRelocatable,
     PostUpdateDelay,
     NotIdle,
+
+    /// 계획 파일 중 읽을 수 없는 것이 있어 (잠김·권한) 바뀌었는지 모름: 재적용을 보류하고 재계획도 하지 않습니다.
+    FilesUnreadable,
 }
 
 /// 재적용 판단 입력. GameRunning·DiskBusy 는 비싸므로 필요할 때만 부르는 지연 값입니다.
 /// Contiguous 는 LayoutVerifier 와 같은 판정 (null = 알 수 없음, 건강으로 봄). 존 안 비율이 아니라 이 판정이 기준인 이유: 계획이 이미 연속인 구간을 제자리에 보존하면
 /// 존 안 비율이 낮아도 배치는 연속입니다 (실제 게임 계획에서 10.5% 인데 verify 는 contiguous 였음).
-public sealed record ReapplyInputs(bool PlanApplied, bool FingerprintsChanged, bool? Contiguous, Func<bool> GameRunning, Func<bool> DiskBusy, bool CanApply, Func<ReapplyVerdict?>? Gate = null);
+public sealed record ReapplyInputs(bool PlanApplied, bool FingerprintsChanged, bool? Contiguous, Func<bool> GameRunning, Func<bool> DiskBusy, bool CanApply, Func<ReapplyVerdict?>? Gate = null, bool FingerprintsUnknown = false);
 
 public static class ReapplyPolicy
 {
@@ -61,6 +64,11 @@ public static class ReapplyPolicy
         if (i.Contiguous is null or true)
         {
             return ReapplyVerdict.Healthy;
+        }
+
+        if (i.FingerprintsUnknown)
+        {
+            return ReapplyVerdict.FilesUnreadable;
         }
 
         if (i.Gate?.Invoke() is { } blocked)
@@ -126,6 +134,13 @@ public sealed class ReapplyEnv
 
     /// 이 게임이 놓인 디스크 종류를 모르거나 USB 버스인가 (실패하면 모름으로 침).
     public static bool IsSlowBus(GameSettings g) => DiskInfo.Query(PlanFile.SplitDrive(g.OriginRoot)) is var d && (d.IncursSeekPenalty is null || d.BusType == DiskInfo.BusTypeUsb);
+
+    /// 이 게임이 놓인 디스크가 SMR 로 보이는 HDD 인가 (자동 재배치와 같은 판정, 실패하면 아님).
+    public static bool IsSmr(GameSettings g) => DiskInfo.Query(PlanFile.SplitDrive(g.OriginRoot)) is var d && DiskInfo.Kind(d.IncursSeekPenalty, d.Trim) == "HDD (looks like SMR)";
+
+    /// 재적용의 동시 수: 자동 재배치와 같은 규칙 (명시값, SMR 이면 1, 느린 버스 2, 그 밖에 8). 디스크 질의는 시험이 바꿔 끼울 수 있음.
+    public static int ParallelFor(AutoSettings auto, GameSettings g, Func<GameSettings, bool>? slowBus = null, Func<GameSettings, bool>? smr = null) =>
+        auto.ParallelFor((slowBus ?? IsSlowBus)(g), (smr ?? IsSmr)(g));
 
     /// 재적용의 옵션: 실행 순서는 설정 auto.relocate_order 를 따름 (자동 재배치와 같은 규칙).
     public static ApplyOptions OptionsFor(GameSettings g, string orderSetting, int parallel = 1) =>
@@ -252,6 +267,7 @@ public sealed class ReapplyChecker
 {
     private readonly ReapplyEnv _env;
     private readonly ILog _log;
+    private readonly HashSet<string> _noPlanLogged = new(StringComparer.OrdinalIgnoreCase); // "계획 없음"은 게임당 한 번만
     private readonly HashSet<string> _cancelled = new(StringComparer.Ordinal); // 취소로 반쯤 적용된 게임
 
     public ReapplyChecker(ReapplyEnv env, ILog log)
@@ -271,7 +287,10 @@ public sealed class ReapplyChecker
             }
             catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
             {
-                _log.Info($"{game.Name}: no plan file yet, nothing to check"); // 아직 계획을 만들지 않은 게임은 오류가 아님
+                if (_noPlanLogged.Add(game.Name))
+                {
+                    _log.Info($"{game.Name}: no plan file yet, nothing to check"); // 아직 계획을 만들지 않은 게임은 오류가 아님
+                }
                 return ReapplyVerdict.NotApplied;
             }
 
@@ -283,11 +302,13 @@ public sealed class ReapplyChecker
 
             CheckPaths(plan, game, _env.RealPath);
             bool applied = plan.Zone.StartLcn is not null;
-            bool changed = applied && plan.Fingerprints.Any(Changed);
+            List<bool?> stamps = applied ? [.. plan.Fingerprints.Where(f => !VolatileFiles.Ignored(f.Path)).Select(f => Compare(f, _env.Stat))] : [];
+            bool changed = stamps.Contains(true);
+            bool unknown = !changed && stamps.Contains(null);
             LayoutReport? layout = applied && !changed ? LayoutVerifier.Verify(plan, _env.Extents) : null;
             // 파일 배치를 못 읽은 항목이 있으면 (희소 파일 등) 판단할 수 없으므로 건강으로 봅니다: 같은 이유로 매 주기 재적용하며 0 바이트를 옮기는 일을 피함.
             bool? contiguous = layout is null || layout.HotClusters == 0 || layout.MissingFiles > 0 ? null : layout.Contiguous;
-            ReapplyVerdict v = ReapplyPolicy.Decide(new ReapplyInputs(applied, changed, contiguous, () => _env.GameRunning(game), () => _env.DiskBusy(game), _env.CanApply, () => _env.Gate(game)));
+            ReapplyVerdict v = ReapplyPolicy.Decide(new ReapplyInputs(applied, changed, contiguous, () => _env.GameRunning(game), () => _env.DiskBusy(game), _env.CanApply, () => _env.Gate(game), unknown));
             _log.Info($"{game.Name}: layout check {v}" + (layout is null ? string.Empty : $" ({LayoutState(layout)}{ZoneHit(layout)})"));
             if (contiguous == false && _cancelled.Contains(game.Name))
             {
@@ -353,21 +374,27 @@ public sealed class ReapplyChecker
         }
     }
 
-    private bool Changed(Fingerprint fp) => Changed(fp, _env.Stat);
-
-    /// 계획 뒤 파일이 바뀌었거나 (크기·수정 시각) 읽을 수 없게 됐는가. 자동 재배치도 같은 기준으로 계획을 다시 만들지 정합니다.
-    public static bool Changed(Fingerprint fp, Func<string, Fingerprint> stat)
+    /// 계획 뒤 파일이 바뀌었는가 (크기·수정 시각, 없어짐 포함): true 바뀜, false 같음, null 읽을 수 없어 모름 (잠김·권한).
+    /// 자동 재배치와 재적용 검사가 같은 기준을 씁니다: 모름은 재적용만 미루고 재계획은 하지 않습니다.
+    public static bool? Compare(Fingerprint fp, Func<string, Fingerprint> stat)
     {
         try
         {
             Fingerprint now = stat(fp.Path);
             return now.Size != fp.Size || now.MtimeNs != fp.MtimeNs;
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
         {
             return true;
         }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
+
+    /// 모름을 바뀜으로 치는 판정 (핀 해제처럼 확실할 때만 유지하는 곳).
+    public static bool Changed(Fingerprint fp, Func<string, Fingerprint> stat) => Compare(fp, stat) != false;
 
     private static string LayoutState(LayoutReport r) =>
         r.MissingFiles > 0 ? "layout unreadable for some files" : r.Contiguous ? "contiguous" : r.ResumeNeeded ? "resume-needed" : "non-contiguous";

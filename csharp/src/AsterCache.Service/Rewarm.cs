@@ -16,6 +16,7 @@ public sealed class Rewarmer
     private readonly Func<DateTimeOffset> _now;
     private readonly object _nextLock = new(); // Tick (유지 점검 스레드) 와 PullIn (재적용 틱 스레드) 이 같이 쓰는 _next 보호
     private DateTimeOffset? _next;
+    private readonly Dictionary<string, string> _checkState = new(StringComparer.OrdinalIgnoreCase); // 게임별 마지막 재확인 결과 (로그를 바뀔 때만 남김)
 
     public Rewarmer(Prewarmer prewarm, PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
     {
@@ -91,11 +92,21 @@ public sealed class Rewarmer
 
             if (_env.DiskBytesPerSecond(g) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond)
             {
-                _log.Info($"{g.Name}: rewarm check skipped (the game drive is busy or its load is unknown)");
+                NoteCheck(g, "busy", $"{g.Name}: rewarm check skipped (the game drive is busy or its load is unknown)");
                 continue;
             }
 
             Check(g, ct);
+        }
+    }
+
+    /// 결과(상태)가 바뀔 때만 남김: 틱마다 같은 결과를 반복해 쓰지 않음 (예열 동작은 그대로).
+    private void NoteCheck(GameSettings g, string state, string message)
+    {
+        if (!_checkState.TryGetValue(g.Name, out string? last) || last != state)
+        {
+            _checkState[g.Name] = state;
+            _log.Info(message);
         }
     }
 
@@ -114,15 +125,15 @@ public sealed class Rewarmer
 
         if (probe is null)
         {
-            _log.Info($"{g.Name}: rewarm check skipped (no readable samples)");
+            NoteCheck(g, "nosamples", $"{g.Name}: rewarm check skipped (no readable samples)");
         }
         else if (!probe.Cold)
         {
-            _log.Info($"{g.Name}: rewarm check: warm ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms, average {probe.AverageMs:F2} ms)");
+            NoteCheck(g, "warm", $"{g.Name}: rewarm check: warm ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms, average {probe.AverageMs:F2} ms)");
         }
         else
         {
-            _log.Info($"{g.Name}: rewarm check: cold ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms, average {probe.AverageMs:F2} ms), prewarming again (cooldown ignored)");
+            NoteCheck(g, "cold", $"{g.Name}: rewarm check: cold ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms, average {probe.AverageMs:F2} ms), prewarming again (cooldown ignored)");
             _prewarm.RewarmGame(g, ct);
         }
     }

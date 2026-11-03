@@ -75,6 +75,9 @@ public sealed class AutoEnv
     /// 'X:' 의 디스크 종류를 모르거나 USB 버스인가 (자동 재배치 동시 수 규칙). 시험 기본값은 참.
     public Func<string, bool> IsSlowBus { get; init; } = _ => true;
 
+    /// 'X:' 가 SMR 로 보이는 HDD 인가 (TRIM 을 받는 HDD 는 추정일 뿐). 시험 기본값은 거짓.
+    public Func<string, bool> IsSmr { get; init; } = _ => false;
+
     public required Func<IReadOnlyList<int>> Pids { get; init; }
 
     public required Func<int, string?> ImagePath { get; init; }
@@ -82,11 +85,11 @@ public sealed class AutoEnv
     /// 프로세스가 읽은 누적 바이트, 열 수 없으면 null.
     public required Func<int, long?> ReadBytes { get; init; }
 
-    /// 읽기량을 프로세스에서 얻지 못할 때 쓰는 ETW 세션 (켜면 세션이 시작되고 Dispose 하면 꺼짐).
-    public required Func<IReadWatch> StartReadWatch { get; init; }
-
     /// 폴더 이름들로 짐작한 안티치트 ("eac" 등), 모르면 null.
     public required Func<string, string?> AntiCheatOf { get; init; }
+
+    /// 이 게임 폴더 아래에서 도는 프로세스의 PID (게임 exe 가 자식 프로세스를 띄우는 경우를 포함, 이 서비스는 제외). 시험 기본값은 없음.
+    public Func<GameSettings, IReadOnlyList<int>> RootPids { get; init; } = _ => [];
 
     /// 물리 RAM 전체 (바이트).
     public required Func<long> PhysicalRamBytes { get; init; }
@@ -123,6 +126,9 @@ public sealed class AutoEnv
     public required Func<IEnumerable<TraceEvent>, List<TraceEvent>> Canonicalize { get; init; }
 
     public required Func<string, string, IReadOnlyList<TraceEvent>> LoadTrace { get; init; }
+
+    /// 트레이스에서 알게 된 가변 파일 (경로 → 사유) 표시 파일을 읽음, 없으면 빈 목록. 시험 기본값은 빈 목록.
+    public Func<string, IReadOnlyDictionary<string, string>> LoadVolatile { get; init; } = _ => new Dictionary<string, string>();
 
     /// (세션, 원점 루트, 존 MiB) → 계획 (존 시작 미정).
     public required Func<IReadOnlyList<IReadOnlyList<TraceEvent>>, string, long, PlanFile> MakePlan { get; init; }
@@ -202,11 +208,12 @@ public sealed class AutoEnv
             IsHdd = letter => DiskInfo.Query(letter).IncursSeekPenalty,
             SameDisk = VolumeDisks.SameDisk,
             IsSlowBus = letter => DiskInfo.Query(letter) is var d && (d.IncursSeekPenalty is null || d.BusType == DiskInfo.BusTypeUsb),
+            IsSmr = letter => DiskInfo.Query(letter) is var d && DiskInfo.Kind(d.IncursSeekPenalty, d.Trim) == "HDD (looks like SMR)",
             Pids = ProcessSnapshot.Pids,
             ImagePath = ProcessSnapshot.ImagePath,
             ReadBytes = ProcessSnapshot.ReadBytes,
-            StartReadWatch = () => EtwReadWatch.Start(),
             AntiCheatOf = DetectAntiCheat,
+            RootPids = g => [.. ProcessSnapshot.Take().Where(p => p.Pid != Environment.ProcessId && DispatchEnv.UnderRoot(g, ProcessSnapshot.ImagePath(p.Pid))).Select(p => p.Pid)],
             PhysicalRamBytes = SystemMemory.TotalBytes,
             WindowsDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows),
             SystemDrive = Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.Windows))![..2].ToUpperInvariant(),
@@ -217,11 +224,12 @@ public sealed class AutoEnv
             GameProcesses = exes => ProcessSnapshot.ReadCounters(exes),
             AnyRunning = exes => ProcessSnapshot.IsRunning(exes),
             StartTrace = (exes, listener) => new LiveAutoTrace(LiveSession.Start(
-                exes, TraceSessionName, restartExisting: true, listener: listener, flushInterval: listener is null ? null : EtwProcessWatcher.FlushInterval)),
+                exes, TraceSessionName, restartExisting: true, listener: listener, flushInterval: listener is null ? null : EtwProcessWatcher.FlushInterval, log: log), log),
             Canonicalize = events => TraceBuilder.CanonicalizeCase(events),
             PrefetchBoot = g => AutoTracer.BootFromPrefetch(g),
             TraceSource = AutoTracer.TraceSourceOf,
             LoadTrace = (raw, origin) => TraceLoader.LoadRanges(raw, origin, RealPaths.Resolve),
+            LoadVolatile = AutoTracer.ReadVolatile,
             MakePlan = (sessions, origin, zoneMib) => MakePlanAtLcn(sessions, origin, zoneMib, null),
             MakePlanAt = (sessions, origin, zoneMib, start) => MakePlanAtLcn(sessions, origin, zoneMib, start),
             SavePlan = (plan, sessions, path) => PlanOutput.Save(plan, sessions, path),
@@ -257,7 +265,7 @@ public sealed class AutoEnv
     public static string? KnownAntiCheat(string? found) => found == AntiCheatUnknown ? null : found;
 
     // 발견 때와 같은 이름 열거 (LauncherScan 과 같은 깊이, 읽기 전용).
-    private static string? DetectAntiCheat(string dir)
+    internal static string? DetectAntiCheat(string dir)
     {
         try
         {
@@ -269,9 +277,14 @@ public sealed class AutoEnv
         }
     }
 
-    private sealed class LiveAutoTrace(LiveSession session) : IAutoTrace
+    private sealed class LiveAutoTrace(LiveSession session, ILog? log) : IAutoTrace
     {
-        public IReadOnlyList<TraceRecord> Stop() => session.Stop();
+        public IReadOnlyList<TraceRecord> Stop()
+        {
+            List<TraceRecord> records = session.Stop();
+            log?.Info($"trace session stopped: {session.EventsLost} events lost");
+            return records;
+        }
 
         public void Dispose() => session.Dispose();
     }

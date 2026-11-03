@@ -121,6 +121,7 @@ The scripts in `csharp\scripts\` are each run once by the user from an administr
 - Automatic mode (see [Automatic mode](../README.md#automatic-mode)) runs inside the service. The service re-reads the whole `config.json` every 5 seconds, so changes take effect without a restart. Its state is written to `%ProgramData%\AsterCache\auto_status.json`, which only the service writes.
 - The read-ahead engine (`Prefetch\ReadAhead`) runs first-run learning inside the service. `Tracer`'s real-time callback feeds it, and it flushes every 50 ms. See [Automatic mode](../README.md#automatic-mode).
 - Full prewarm of games with no record (`auto.full_prewarm`).
+- Boot and service-start prewarm (0.9.0-beta.14): only recently played games (`prewarm_recent`), 5 minutes after boot, and only while the disk is idle. Full prewarm is capped at 1024 MiB by default (`auto.full_prewarm_max_mib`; 0 means 1024 MiB, not a quarter of RAM). `auto.load_boundary` is off by default and stops when the game exits.
 - Engine-profile prewarm (`auto.engine_profiles`, embedded `Core\Profiles\engines.json`).
 
 ## Automatic boot sources: components and shared profile index
@@ -226,6 +227,8 @@ Defines: `/DAppDir` (folder with the management window, `aster.exe`, and the run
 - Known limit: names of FileKeys that disappeared through file deletion (`FileIOFileDelete`) are not handled.
 - File names prefer the FileKey (the cleanup event arrives at the end of the session) and use the FileObject name at read time as a fallback, because FileObject addresses are reused. In a real .etl from the WPR FileIO profile, large event loss (3.8M in one capture) drops some reads, so the recall of this .etl conversion cannot be evaluated separately from capture loss.
 - The effect of ETW capture and a resident service on anti-cheat games (Ricochet, Vanguard) has not been verified. Check first with a game that has no anti-cheat.
+- For anti-cheat games (eac, battleye, vanguard, or detection failed; Riot games get vanguard when Vanguard is installed, even for manual entries) the service starts no ETW trace and does not pin files. It still prewarms read-only and relocates while the game is not running. The heuristic never starts a kernel ETW session for a process it cannot open (it skips it).
+- Since 0.9.0-beta.14 the service never starts an automatic ETW trace for a game with Vanguard, EAC or BattlEye (or when detection fails). Prewarming, start streams and relocation are unchanged (a real Vanguard client was closed twice after a trace started).
 - A Velopack update changes only a tray installed with Velopack, and an installer install is updated by running the new installer (see "Tray updates and the service" above). An actual Velopack install update test has not been done.
 - The WDK install size and the winget package ID were not checked.
 - The kernel minifilter (AsterFlt) is at the source stage and is not loaded on the test PC. Load verification is covered only by the VM procedure.

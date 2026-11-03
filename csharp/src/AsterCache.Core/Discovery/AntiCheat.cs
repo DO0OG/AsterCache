@@ -1,3 +1,5 @@
+using AsterCache.Core.Settings;
+
 namespace AsterCache.Core.Discovery;
 
 /// 설치 폴더에 남은 안티치트 흔적 이름으로 종류를 짐작합니다. 이름만 보고 (파일을 열지 않음) 모르면 null.
@@ -29,6 +31,29 @@ public static class AntiCheat
 
         return leaves.Any(n => new[] { "anticheat", "anti-cheat", "xigncode", "nprotect", "gameguard" }.Any(p => Has(n, p))) ? "unknown" : null;
     }
+
+    private static readonly string[] RiotExes =
+    [
+        "RiotClientServices.exe", "Riot Client.exe", "LeagueClient.exe", "League of Legends.exe", "VALORANT.exe", "VALORANT-Win64-Shipping.exe", "TFTClient-Win64-Shipping.exe",
+    ];
+
+    /// Vanguard 는 게임 폴더 밖 (Program Files\Riot Vanguard) 에 있어 폴더 이름으로는 안 잡힘: Riot 게임 (설치 경로가 "Riot Games" 폴더 아래이거나 exe 가 Riot 클라이언트·리그·발로란트) 이고
+    /// 시스템에 Vanguard (vgk/vgc 서비스 또는 폴더) 가 있으면 "vanguard", 아니면 null.
+    public static string? RiotVanguard(string originRoot, IEnumerable<string> exeNames, bool vanguardInstalled) =>
+        vanguardInstalled && (originRoot.Split('\\', '/').Any(s => Same(s, "Riot Games")) || exeNames.Any(e => RiotExes.Any(r => Same(e, r)))) ? "vanguard" : null;
+
+    /// 설정을 읽을 때: anticheat 가 비어 있는 항목 (수동 등록한 리그 등) 에 Riot 규칙을 적용해 채웁니다. 트레이스·고정·티어가 모두 이 값을 봅니다. Vanguard 확인은 한 번만 합니다.
+    public static AsterSettings WithRiotRule(AsterSettings s, Func<bool> vanguardInstalled)
+    {
+        bool? installed = null;
+        return s with { Games = [.. s.Games.Select(g => g.AntiCheat is null && RiotVanguard(g.OriginRoot, g.ExeNames, installed ??= vanguardInstalled()) is { } kind ? g with { AntiCheat = kind } : g)] };
+    }
+
+    /// ETW 트레이스를 걸면 안 되는 종류인가: 커널 수준 안티치트 (eac·battleye·vanguard) 와 탐지 실패 (unknown). 등록 정보에 쓰인 값도 같은 규칙입니다.
+    public static bool ForbidsTrace(string? kind) => kind is "eac" or "battleye" or "vanguard" or "unknown";
+
+    /// 파일 고정 (pin) 을 하면 안 되는 종류: 트레이스 금지 종류 전부와 리코셰 (보호 드라이버가 열린 핸들을 문제 삼을 수 있음). 리코셰는 실측에서 트레이스가 문제없어 트레이스는 허용합니다. SSD 티어는 안티치트가 있으면 종류와 상관없이 거절.
+    public static bool ForbidsPin(string? kind) => ForbidsTrace(kind) || kind == "ricochet";
 
     private static bool IsEac(string n) =>
         Same(n, "EasyAntiCheat") || Starts(n, "EasyAntiCheat_EOS") || (Starts(n, "EasyAntiCheat") && Ends(n, ".exe")) || Same(n, "start_protected_game.exe");

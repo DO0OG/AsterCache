@@ -1,3 +1,4 @@
+using AsterCache.Core.Discovery;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Settings;
 using AsterCache.Service;
@@ -20,7 +21,7 @@ try
 {
     ILog file = new FileLog(Path.Combine(dataDir, "logs", "service.log"));
     log = console ? new TeeLog(file) : file;
-    settings = SettingsStore.Load(configPath, plansDir);
+    settings = AntiCheat.WithRiotRule(SettingsStore.Load(configPath, plansDir), LauncherScan.IsVanguardInstalled);
 }
 catch (Exception e) when (e is SettingsException or IOException or UnauthorizedAccessException)
 {
@@ -41,7 +42,7 @@ bool canApply = Worker.CanApply(admin, [dataDir, plansDir], log, [configPath]);
 settings = Worker.ForApply(settings, canApply, log, canApply ? new ConfigEditor(dataDir) : null);
 (IProcessWatcher primary, IProcessWatcher? fallback) = Worker.ChooseWatchers(settings, admin);
 string journalDir = Path.Combine(dataDir, "journals");
-ReapplyEnv reapplyEnv = ReapplyEnv.Create(canApply, journalDir, log, () => settings.Auto.RelocateOrder, g => settings.Auto.ParallelFor(ReapplyEnv.IsSlowBus(g)));
+ReapplyEnv reapplyEnv = ReapplyEnv.Create(canApply, journalDir, log, () => settings.Auto.RelocateOrder, g => ReapplyEnv.ParallelFor(settings.Auto, g));
 var checker = new ReapplyChecker(reapplyEnv, log);
 
 HostApplicationBuilder builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { ContentRootPath = AppContext.BaseDirectory });
@@ -73,7 +74,7 @@ AsterSettings LoadChecked()
         throw new SettingsException("config: data folder or file is writable by non-admin principals");
     }
 
-    AsterSettings loaded = SettingsStore.Load(configPath, plansDir);
+    AsterSettings loaded = AntiCheat.WithRiotRule(SettingsStore.Load(configPath, plansDir), LauncherScan.IsVanguardInstalled);
     if (canApply && loaded.Auto.Migrated)
     {
         Worker.RewriteMigrated(new ConfigEditor(dataDir), log);

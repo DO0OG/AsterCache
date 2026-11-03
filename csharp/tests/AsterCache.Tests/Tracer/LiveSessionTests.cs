@@ -37,6 +37,42 @@ public sealed class LiveSessionTests
     }
 
     [Fact]
+    public void DefaultBufferIs64MB()
+    {
+        Assert.Equal(64, LiveSession.DefaultBufferMB);
+    }
+
+    [Fact]
+    public void WaitPumpReturnsWithinLimitWhenPumpNeverStops()
+    {
+        var never = new TaskCompletionSource();
+
+        DateTime start = DateTime.UtcNow;
+        bool done = LiveSession.WaitPump(never.Task, TimeSpan.FromMilliseconds(100));
+
+        Assert.False(done);
+        Assert.True(DateTime.UtcNow - start < TimeSpan.FromSeconds(5));
+        Assert.True(LiveSession.WaitPump(Task.CompletedTask, TimeSpan.FromMilliseconds(100)));
+        Assert.Equal(10, LiveSession.PumpWaitLimit.TotalSeconds);
+    }
+
+    [Fact]
+    public void PumpTimeoutDiscardsTraceInsteadOfFinishingCollector()
+    {
+        var never = new TaskCompletionSource();
+        bool finished = false;
+
+        Assert.Throws<TraceIncompleteException>(() => LiveSession.FinishAfterPump(never.Task, TimeSpan.FromMilliseconds(50), () =>
+        {
+            finished = true;
+            return [];
+        }, null));
+
+        Assert.False(finished);
+        Assert.Empty(LiveSession.FinishAfterPump(Task.CompletedTask, TimeSpan.FromMilliseconds(50), () => [], null));
+    }
+
+    [Fact]
     public void EtlReaderRejectsMissingFile()
     {
         string missing = Path.Combine(Path.GetTempPath(), "astercache-missing-" + Guid.NewGuid().ToString("N") + ".etl");

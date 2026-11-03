@@ -65,4 +65,23 @@ public sealed class SessionCoverageTests : IDisposable
         File.WriteAllText(_path, "{\"games\": {\"foo\": {\"stage\": \"done\", \"at\": \"2026-11-04T09:00:00+00:00\"}}}");
         Assert.Null(new AutoStatus(_path, _rig.Log).Get("foo")!.CoveragePercent);
     }
+
+    [Fact]
+    public void LowCoverageShowsPartialInTheDetailOfADoneGameAndHigherCoverageClearsIt()
+    {
+        var s = new AutoStatus(_path, _rig.Log, () => T0);
+        s.Set("foo", "auto", null, AutoStage.Done, AutoRelocator.RelocatedProfile);
+        s.Set("bar", "auto", null, AutoStage.WaitingIdle, "trace 1/3");
+
+        s.RecordCoverage("foo", 12);
+        s.RecordCoverage("bar", 12);
+
+        Assert.Equal("partial (12%)", s.Get("foo")!.Detail);
+        Assert.Equal(AutoStage.Done, s.Get("foo")!.Stage);
+        Assert.Equal("trace 1/3", s.Get("bar")!.Detail); // 완료 전 게임의 표시는 그대로
+
+        s.RecordCoverage("foo", AutoStatus.PartialBelowPercent);
+
+        Assert.Null(s.Get("foo")!.Detail);
+    }
 }

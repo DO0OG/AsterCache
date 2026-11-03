@@ -1,8 +1,10 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using AsterCache.Core;
 using AsterCache.Core.Apply;
+using AsterCache.Core.Discovery;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Plan;
@@ -72,6 +74,9 @@ public sealed class PrewarmEnv
     /// 고정할 파일 경로 (예열 순서 목록의 파일 중 허용 루트 안인 것).
     public Func<GameSettings, IReadOnlyList<string>> PinPaths { get; init; } = _ => [];
 
+    /// 게임 폴더 이름으로 짐작한 안티치트 ("unknown" 은 탐지 실패): 안티치트 게임은 고정하지 않음. 기본은 없음.
+    public Func<GameSettings, string?> AntiCheatOf { get; init; } = _ => null;
+
     /// 런처 (LauncherExes) 가 하나라도 실행 중인가: 그동안은 고정하지 않음.
     public Func<bool> LauncherRunning { get; init; } = () => false;
 
@@ -108,8 +113,16 @@ public sealed class PrewarmEnv
     /// 기록 없이 예열한 게임의 표본 (경로, 오프셋, 길이) 들을 읽어 잰 결과 (CacheProbe), 읽을 수 없으면 null.
     public Func<IReadOnlyList<(string Path, long Offset, int Bytes)>, ProbeResult?> ProbeSamples { get; init; } = s => CacheProbe.Probe(s);
 
+    /// 부팅 뒤 경과 시간 (ms). 서비스 시작 예열은 부팅 직후의 디스크 경쟁을 피해 BootDelay 가 지난 뒤에 시작합니다. 시험 기본값은 하루 (이미 지남).
+    public Func<long> UptimeMs { get; init; } = () => (long)TimeSpan.FromDays(1).TotalMilliseconds;
+
+    /// 서비스 시작 예열의 대기 (취소되면 일찍 돌아옴). 시험 기본값은 기다리지 않음.
+    public Action<TimeSpan, CancellationToken> Sleep { get; init; } = (_, _) => { };
+
     public static PrewarmEnv Create() => new()
     {
+        UptimeMs = () => Environment.TickCount64,
+        Sleep = (t, ct) => ct.WaitHandle.WaitOne(t),
         SameDisk = VolumeDisks.SameDisk,
         PrefetchBoot = g => AutoTracer.BootFromPrefetch(g) > 0,
         ColdRefusal = g => DriveCapabilities.Of(g.OriginRoot, Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.Windows))![..2].ToUpperInvariant(), letter => DiskInfo.Query(letter).IncursSeekPenalty).PrewarmRefusal,
@@ -120,6 +133,7 @@ public sealed class PrewarmEnv
         PhysicalRamBytes = SystemMemory.TotalBytes,
         FileStamp = PlanFile.FingerprintOf,
         PinPaths = g => PrefetchStreamer.PinPaths(g, PrefetchStreamer.PinCapBytes(PrefetchStreamer.ZoneBytes(g), SystemMemory.TotalBytes(), SystemMemory.AvailableMib(), g.Prewarm.MinFreeRamMib)),
+        AntiCheatOf = g => AutoEnv.DetectAntiCheat(g.OriginRoot),
         LauncherRunning = () => ProcessSnapshot.IsRunning(LauncherExes.All),
         CpuPercent = new CpuLoad().Percent,
         DiskBytesPerSecond = g => DiskActivity.BytesPerSecond(PlanFile.SplitDrive(g.OriginRoot)),
@@ -179,8 +193,11 @@ public sealed class Prewarmer
     private readonly Rewarmer _rewarm;
     private readonly Dictionary<string, long> _coldMib = new(StringComparer.OrdinalIgnoreCase); // 기록 없이 예열해 RAM 에 올려 둔 양 (MiB), _gate 로 보호
     private readonly Dictionary<string, IReadOnlyList<(string Path, long Offset, int Bytes)>> _coldSamples = new(StringComparer.OrdinalIgnoreCase); // 기록 없이 예열한 파일 목록에서 고른 재예열 점검 표본, _gate 로 보호
+    private readonly Dictionary<string, string> _profileMiss = new(StringComparer.OrdinalIgnoreCase); // 엔진 프로필이 없다는 판정과 그때의 설치 폴더 mtime 키 (prewarm_status.json 의 profile_miss_key), _gate 로 보호
     private readonly HashSet<string> _refusedLogged = new(StringComparer.OrdinalIgnoreCase); // 드라이브 거부를 이미 로그한 게임, _gate 로 보호
     private readonly HashSet<string> _delayLogged = new(StringComparer.OrdinalIgnoreCase); // 업데이트 지연을 이미 로그한 게임, _gate 로 보호
+    private readonly Dictionary<string, (DateTimeOffset At, int Count)> _skipLogged = new(StringComparer.OrdinalIgnoreCase); // 게임|사유별 마지막으로 남긴 시각과 그 뒤 억제한 횟수, _gate 로 보호
+    private readonly Dictionary<string, (DateTimeOffset At, int Count)> _triggerSeen = new(StringComparer.OrdinalIgnoreCase); // 트리거 exe 별 마지막 처리 시각과 그 뒤 억제한 횟수, _gate 로 보호
     private volatile AutoSettings _auto = AutoSettings.Default;
     private volatile string? _streaming; // 핫 집합 스트림이 도는 게임
     private volatile bool _keepStream; // auto.keep_stream_on_game_start 가 켜진 채 그 게임이 시작돼 (같은 데이터를 동시에 읽으므로) 취소 신호에도 끝까지 읽기로 한 표시
@@ -197,6 +214,49 @@ public sealed class Prewarmer
         _now = now ?? (() => DateTimeOffset.UtcNow);
         _pins = new PinKeeper(env, log, _now);
         _rewarm = new Rewarmer(this, env, log, _now);
+        LoadStatus();
+    }
+
+    // 이전 실행의 상태 파일: 항목은 그대로 이어 쓰고, 부팅 뒤에 성공한 예열만 _last 로 되살려 서비스만 다시 시작했을 때 같은 게임을 또 읽지 않게 합니다 (부팅 전 것은 파일 캐시가 비었으므로 제외).
+    private void LoadStatus()
+    {
+        if (_statusPath is null || !File.Exists(_statusPath))
+        {
+            return;
+        }
+
+        try
+        {
+            if (JsonRead.ReadFile(_statusPath) is not JObject root || !root.TryGetValue("games", out object? games) || games is not JObject all)
+            {
+                return;
+            }
+
+            DateTimeOffset boot = _now() - TimeSpan.FromMilliseconds(_env.UptimeMs());
+            foreach ((string name, object? value) in all)
+            {
+                if (value is not JObject o)
+                {
+                    continue;
+                }
+
+                _status[name] = o;
+                if (o.TryGetValue("profile_miss_key", out object? miss) && miss is string missKey)
+                {
+                    _profileMiss[name] = missKey; // 프로필 미일치 판정은 설치 폴더 mtime 이 같은 동안 다시 열거하지 않음 (재시작 뒤에도 이어짐)
+                }
+
+                if (o.TryGetValue("result", out object? result) && result as string == "ok" && o.TryGetValue("at", out object? at)
+                    && at is string text && DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset when) && when > boot)
+                {
+                    _last[name] = when;
+                }
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            _log.Warn("prewarm status file not read: " + e.GetType().Name);
+        }
     }
 
     /// 기록 없이 (통째·프로필) 예열에 성공했을 때: 게임과 방식 이름표.
@@ -212,6 +272,17 @@ public sealed class Prewarmer
     public event Action<GameSettings, bool>? StreamEnded;
 
     public static readonly TimeSpan ProgressEvery = TimeSpan.FromSeconds(10);
+
+    /// 서비스 시작 예열은 부팅 뒤 이만큼 지나고, 게임 드라이브가 IdleNeeded 동안 한가해진 뒤에 시작합니다 (부팅 직후 디스크 경쟁 방지).
+    public static readonly TimeSpan BootDelay = TimeSpan.FromMinutes(5);
+    public static readonly TimeSpan IdleNeeded = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan GateStep = TimeSpan.FromSeconds(5);
+
+    /// 기록 없는 예열의 통째 상한 기본값 (MiB, full_prewarm_max_mib 가 0 일 때).
+    public const int DefaultFullPrewarmMib = 1024;
+
+    /// 이 게임을 플레이한 적이 있는가 (자동 모드의 last_played). 재예열 점검은 플레이한 게임만 봅니다. 기본은 모두 참 (서비스가 자동 상태를 보고 정함).
+    public Func<string, bool> HasPlayed { get; set; } = _ => true;
 
     /// 게임 업데이트 직후의 지연 (auto.post_update_delay_min): 그 게임이 아직 기다려야 하면 남은 시간, 아니면 null. 기본은 지연 없음 (서비스가 자동 상태를 보고 정함).
     public Func<GameSettings, TimeSpan?> PostUpdateWait { get; set; } = _ => null;
@@ -371,7 +442,7 @@ public sealed class Prewarmer
     {
         lock (_gate)
         {
-            return [.. _games.Where(g => _last.ContainsKey(g.Name)).OrderByDescending(g => _last[g.Name]).ThenBy(g => g.Name, StringComparer.Ordinal)];
+            return [.. _games.Where(g => _last.ContainsKey(g.Name) && HasPlayed(g.Name)).OrderByDescending(g => _last[g.Name]).ThenBy(g => g.Name, StringComparer.Ordinal)];
         }
     }
 
@@ -401,24 +472,188 @@ public sealed class Prewarmer
     /// 로그용 예열 원인: "trigger X.exe" → "X.exe", "auto cold start" → "cold start", 그 밖은 앞의 "auto " 만 뗌.
     public static string TriggerCause(string why) => why.StartsWith("trigger ", StringComparison.Ordinal) ? why["trigger ".Length..] : why.StartsWith("auto ", StringComparison.Ordinal) ? why["auto ".Length..] : why;
 
-    /// 서비스 시작 뒤: on_service_start 인 게임을 차례로.
+    /// 서비스 시작 뒤: on_service_start 인 게임을 차례로 (started 를 주면 그 조건을 만족하는 게임만: 자동 모드의 플레이한 게임).
     /// recent (최근순) 를 주면 한 묶음으로 합칩니다: on_service_start 게임 먼저, 그다음 최근순 (중복 제거) — RAM 예산을 한 번만 씁니다.
-    public IReadOnlyList<PrewarmResult> RunServiceStart(IEnumerable<GameSettings>? recent = null, CancellationToken ct = default)
+    /// 부팅 BootDelay 뒤 + 게임 드라이브 IdleNeeded 유휴까지 기다린 다음 (그동안 ct 가 취소되면 아무것도 하지 않음), 핫 집합이 이미 파일 캐시에 있는 게임은 읽지 않고 건너뜁니다.
+    /// lastPlayed (게임 이름 → 마지막 플레이) 를 주면 (자동 모드가 켜진 경우) 대상을 최근 <see cref="StartupPlayedWithin"/> 안에 플레이한 게임으로 좁혀 마지막 플레이 순 상위 auto.startup_warm_games 개만 남기고
+    /// (on_service_start 게임도 같은 순위), 합계 읽기량이 auto.startup_warm_max_mib 를 넘는 부분은 읽지 않습니다 (넘는 게임은 앞부분만, 이미 다 쓴 뒤의 게임은 건너뜀). 합계 상한은 기록이 없는 게임 (통째 예열) 도 포함해 항상 적용합니다.
+    public IReadOnlyList<PrewarmResult> RunServiceStart(IEnumerable<GameSettings>? recent = null, CancellationToken ct = default, Func<GameSettings, bool>? started = null,
+        Func<string, DateTimeOffset?>? lastPlayed = null)
     {
-        GameSettings[] first = _games.Where(g => g.Prewarm.OnServiceStart).ToArray();
-        IEnumerable<GameSettings> rest = (recent ?? []).Where(g => !first.Any(f => string.Equals(f.Name, g.Name, StringComparison.OrdinalIgnoreCase)));
-        return RunBatch(first.Concat(rest), "service start", ct: ct);
+        AutoSettings a = _auto;
+        GameSettings[] first = _games.Where(g => g.Prewarm.OnServiceStart && (started?.Invoke(g) ?? true)).ToArray();
+        IEnumerable<GameSettings> merged = first.Concat((recent ?? []).Where(g => !first.Any(f => string.Equals(f.Name, g.Name, StringComparison.OrdinalIgnoreCase))));
+        if (lastPlayed is not null)
+        {
+            DateTimeOffset cutoff = _now() - StartupPlayedWithin;
+            merged = merged.Select(g => (Game: g, At: lastPlayed(g.Name))).Where(x => x.At is { } at && at >= cutoff)
+                .OrderByDescending(x => x.At).ThenBy(x => x.Game.Name, StringComparer.Ordinal).Take(a.StartupWarmGames).Select(x => x.Game);
+        }
+
+        GameSettings[] list = [.. merged];
+        if (list.Length == 0 || !WaitStartupGate(list, ct))
+        {
+            return [];
+        }
+
+        var skipped = new List<PrewarmResult>();
+        var cold = new List<GameSettings>();
+        long plannedMib = 0;
+        foreach (GameSettings g in list)
+        {
+            long? zone = _env.ZoneBytes(g);
+            long mib = ((zone ?? (long)DefaultFullPrewarmMib << 20) + (1 << 20) - 1) >> 20; // 기록이 없으면 통째 예열의 기본 상한만큼으로 셈
+            long room = a.StartupWarmMaxMib - plannedMib;
+            if (AlreadyWarm(g))
+            {
+                LogSkipped(g.Name, "already warm", $"{g.Name}: prewarm skipped (already warm) [service start]");
+                skipped.Add(new PrewarmResult(g.Name, false, "already warm", null, _now()));
+            }
+            else if (room <= 0 || (zone is null && mib > room))
+            {
+                LogSkipped(g.Name, "startup byte cap", $"{g.Name}: prewarm skipped (the service-start cap of {a.StartupWarmMaxMib} MiB is used up) [service start]");
+                skipped.Add(new PrewarmResult(g.Name, false, "startup byte cap", null, _now()));
+            }
+            else
+            {
+                // 상한을 넘는 만큼은 읽지 않음: 핫 집합의 앞부분만 (max_stream_mib 를 남은 양으로 줄인 사본)
+                plannedMib += Math.Min(mib, room);
+                cold.Add(zone is not null && mib > room ? g with { MaxStreamMib = (int)room } : g);
+            }
+        }
+
+        return [.. skipped, .. RunBatch(cold, "service start", ct: ct)];
+    }
+
+    /// 서비스 시작 예열 대상이 되는 마지막 플레이의 최대 경과.
+    public static readonly TimeSpan StartupPlayedWithin = TimeSpan.FromDays(14);
+
+    /// 서비스 시작 예열을 시작해도 되는 시점인가 (부팅 BootDelay 경과). 자동 모드의 기록 없는 예열 (cold start) 도 같은 조건을 봅니다.
+    public bool BootSettled() => _env.UptimeMs() >= BootDelay.TotalMilliseconds;
+
+    // 부팅 5 분 경과 + 게임 드라이브 60 초 유휴를 기다립니다. 취소되면 false. 모든 드라이브의 처리량을 못 읽으면 (null) 유휴를 확인할 수 없으므로 읽지 않고 보류합니다.
+    private bool WaitStartupGate(IReadOnlyList<GameSettings> games, CancellationToken ct)
+    {
+        TimeSpan idle = TimeSpan.Zero;
+        bool logged = false;
+        bool heldLogged = false;
+        while (!ct.IsCancellationRequested)
+        {
+            double?[] rates = [.. games.Select(g => _env.DiskBytesPerSecond(g))];
+            bool settled = BootSettled();
+            if (settled && rates.All(r => r is null))
+            {
+                // 디스크 유휴를 확인할 수 없음: 읽지 않고 계측값이 생길 때까지 (또는 취소될 때까지) 보류
+                if (!heldLogged)
+                {
+                    heldLogged = true;
+                    _log.Info("service start prewarm held: disk activity cannot be measured");
+                }
+
+                _env.Sleep(GateStep, ct);
+                continue;
+            }
+
+            bool busy = !settled || rates.Any(r => r >= DiskActivity.BusyBytesPerSecond);
+            idle = busy ? TimeSpan.Zero : idle + GateStep;
+            if (idle >= IdleNeeded)
+            {
+                return true;
+            }
+
+            if (!logged)
+            {
+                logged = true;
+                _log.Info($"service start prewarm waits for {BootDelay.TotalMinutes:F0} min after boot and {IdleNeeded.TotalSeconds:F0} s of idle disk");
+            }
+
+            _env.Sleep(GateStep, ct);
+        }
+
+        return false;
+    }
+
+    // 핫 집합 몇 곳을 읽어 이미 파일 캐시에 있으면 (CacheProbe) 다시 읽지 않습니다. 표본을 못 읽으면 (null) 예열합니다.
+    internal bool AlreadyWarm(GameSettings g)
+    {
+        try
+        {
+            ProbeResult? p = ColdSamples(g) is { } samples ? _env.ProbeSamples(samples) : _env.ProbeReadMs(g);
+            return p is { Samples: > 0, Cold: false };
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
+        {
+            return false;
+        }
     }
 
     /// 트리거 프로그램이 떴을 때: 그 프로그램을 trigger_exes 에 둔 게임을 차례로. narrow 가 있으면 그 목록에서 예열할 게임만 고릅니다.
     public IReadOnlyList<PrewarmResult> OnProcessStart(ProcessStart start, Func<IReadOnlyList<GameSettings>, IEnumerable<GameSettings>>? narrow = null, CancellationToken ct = default)
     {
+        if (DuplicateTrigger(start.ExeName))
+        {
+            return [];
+        }
+
         IReadOnlyList<GameSettings> hit = _games.Where(g => IsTrigger(g, start.ExeName)).ToList();
         return RunBatch(narrow?.Invoke(hit) ?? hit, $"trigger {start.ExeName}", pin: !LauncherExes.Is(start.ExeName), ct: ct); // 런처가 뜰 때는 고정하지 않음 (런처 업데이트가 파일을 고칠 수 있게)
     }
 
+    // 같은 exe 의 트리거는 SkipLogEvery 안에 한 번만 처리하고 나머지는 세어 두었다가, 다음에 처리하는 때 한 줄로 남깁니다.
+    private bool DuplicateTrigger(string exe)
+    {
+        int suppressed;
+        lock (_gate)
+        {
+            DateTimeOffset now = _now();
+            if (_triggerSeen.TryGetValue(exe, out (DateTimeOffset At, int Count) last) && now - last.At < SkipLogEvery)
+            {
+                _triggerSeen[exe] = last with { Count = last.Count + 1 };
+                return true;
+            }
+
+            suppressed = last.Count;
+            _triggerSeen[exe] = (now, 0);
+        }
+
+        if (suppressed > 0)
+        {
+            _log.Info($"{exe}: trigger handled again ({suppressed} duplicate triggers suppressed)");
+        }
+
+        return false;
+    }
+
     /// 주어진 게임을 차례로 (한 게임의 실패가 나머지를 막지 않음).
     public IReadOnlyList<PrewarmResult> RunAll(IEnumerable<GameSettings> games, string why) => RunBatch(games, why);
+
+    /// 같은 게임·같은 사유의 "prewarm skipped" 를 남기는 최소 간격 (트리거 프로그램이 연달아 떠도 줄이 쌓이지 않게).
+    public static readonly TimeSpan SkipLogEvery = TimeSpan.FromSeconds(60);
+
+    // 간격 안에 같은 줄이 또 나오면 남기지 않고 세어 두었다가, 다음에 남기는 줄에 "(suppressed N)" 로 붙입니다.
+    private void LogSkipped(string game, string reason, string line)
+    {
+        int suppressed = 0;
+        lock (_gate)
+        {
+            string key = game + "|" + reason;
+            DateTimeOffset now = _now();
+            if (_skipLogged.TryGetValue(key, out (DateTimeOffset At, int Count) last))
+            {
+                if (now - last.At < SkipLogEvery)
+                {
+                    _skipLogged[key] = last with { Count = last.Count + 1 };
+                    return;
+                }
+
+                suppressed = last.Count;
+            }
+
+            _skipLogged[key] = (now, 0);
+        }
+
+        _log.Info(suppressed > 0 ? $"{line} (suppressed {suppressed})" : line);
+    }
 
     // 한 묶음의 예산 = min(물리 RAM / 4, 가용 RAM - 여유). 존 크기 합이 예산을 넘으면 그 뒤 게임은 건너뜁니다 (앞쪽 = 최근 순서가 우선).
     // 서비스 시작·런처 시작이 같은 규칙입니다. 첫 게임의 가용 RAM 쪽 판단은 Run 의 자체 판단에 맡깁니다.
@@ -444,7 +679,7 @@ public sealed class Prewarmer
             if (cut || held + zoneMib > physCap || (held > 0 && held + zoneMib > avail - g.Prewarm.MinFreeRamMib))
             {
                 cut = true;
-                _log.Info($"{g.Name}: prewarm skipped (batch zones {held + zoneMib} MiB exceed the budget: min(1/4 of RAM, available {avail} MiB - reserve {g.Prewarm.MinFreeRamMib} MiB)) [{why}]");
+                LogSkipped(g.Name, "batch memory budget", $"{g.Name}: prewarm skipped (batch zones {held + zoneMib} MiB exceed the budget: min(1/4 of RAM, available {avail} MiB - reserve {g.Prewarm.MinFreeRamMib} MiB)) [{why}]");
                 results.Add(new PrewarmResult(g.Name, false, "batch memory budget", null, _now()));
                 continue;
             }
@@ -532,6 +767,7 @@ public sealed class Prewarmer
         }
     }
 
+    // 미플레이 게임은 예산에도 표본 읽기에도 넣지 않습니다 (플레이한 게임이 우선, 미플레이 표본을 HDD 에서 읽지 않음).
     // 기록 없이 예열한 게임들이 지금도 RAM 에 있다고 보는 양 (MiB): 기록한 양이되, 표본을 다시 읽어 식었으면 (CacheProbe) 0 으로 바꿉니다. 영구히 예산을 막지 않게.
     // 표본을 읽을 수 없으면 (null) 기록한 양을 그대로 씁니다. 표본 읽기는 잠금 밖에서.
     private long ColdMib(string? except)
@@ -539,7 +775,7 @@ public sealed class Prewarmer
         List<(string Name, IReadOnlyList<(string Path, long Offset, int Bytes)>? Samples)> held;
         lock (_gate)
         {
-            held = [.. _coldMib.Where(kv => kv.Value > 0 && !string.Equals(kv.Key, except, StringComparison.OrdinalIgnoreCase)).Select(kv => (kv.Key, _coldSamples.GetValueOrDefault(kv.Key)))];
+            held = [.. _coldMib.Where(kv => kv.Value > 0 && HasPlayed(kv.Key) && !string.Equals(kv.Key, except, StringComparison.OrdinalIgnoreCase)).Select(kv => (kv.Key, _coldSamples.GetValueOrDefault(kv.Key)))];
         }
 
         foreach ((string name, var samples) in held)
@@ -561,7 +797,7 @@ public sealed class Prewarmer
 
         lock (_gate)
         {
-            return _coldMib.Where(kv => !string.Equals(kv.Key, except, StringComparison.OrdinalIgnoreCase)).Sum(kv => kv.Value);
+            return _coldMib.Where(kv => HasPlayed(kv.Key) && !string.Equals(kv.Key, except, StringComparison.OrdinalIgnoreCase)).Sum(kv => kv.Value);
         }
     }
 
@@ -647,7 +883,7 @@ public sealed class Prewarmer
                 }
             }
 
-            _log.Info($"{game.Name}: prewarm skipped ({skip}) [{why}]");
+            LogSkipped(game.Name, skip, $"{game.Name}: prewarm skipped ({skip}) [{why}]");
             return Record(game, now, new PrewarmResult(game.Name, false, skip, null, now), 0);
         }
     }
@@ -733,7 +969,7 @@ public sealed class Prewarmer
         long avail = _env.AvailableRamMib();
         long availBudget = avail - game.Prewarm.MinFreeRamMib - held; // MiB
         long ram = Math.Min(availBudget, (_env.PhysicalRamBytes() is > 0 and long phys ? phys >> 22 : long.MaxValue) - held); // min(물리 RAM / 4, 가용 RAM - 여유) - 이미 올린 양
-        long fullMib = !a.FullPrewarm ? 0 : a.FullPrewarmMaxMib > 0 ? Math.Min(a.FullPrewarmMaxMib, availBudget) : ram;
+        long fullMib = !a.FullPrewarm ? 0 : Math.Min(a.FullPrewarmMaxMib > 0 ? a.FullPrewarmMaxMib : DefaultFullPrewarmMib, availBudget);
         long profileMib = !a.EngineProfiles ? 0 : a.FullPrewarm && a.FullPrewarmMaxMib > 0 ? Math.Min(ram, fullMib) : ram;
         if (skip is null && Math.Max(fullMib, profileMib) <= 0)
         {
@@ -747,13 +983,24 @@ public sealed class Prewarmer
         {
             try
             {
-                ColdPlan plan = _env.ColdPlanner!(game, Math.Max(0, fullMib) << 20, Math.Max(0, profileMib) << 20, ct);
-                if (plan.Skip is not null)
+                string key = Directory.GetLastWriteTimeUtc(game.OriginRoot).Ticks.ToString(); // shortcut: 설치 폴더 자신의 mtime 만 봄 (하위 변경은 놓칠 수 있음), 폴더 mtime 이 바뀌면 다시 열거
+                ColdPlan? plan = ProfileMissed(game.Name, key) ? null : _env.ColdPlanner!(game, Math.Max(0, fullMib) << 20, Math.Max(0, profileMib) << 20, ct);
+                if (plan is null)
+                {
+                    skip = ProfileSkip(game);
+                }
+                else if (plan.Skip == FolderWarm.NoEngineProfile)
+                {
+                    RememberProfileMiss(game.Name, key);
+                    skip = ProfileSkip(game);
+                }
+                else if (plan.Skip is not null)
                 {
                     skip = plan.Skip;
                 }
                 else
                 {
+                    ForgetProfileMiss(game.Name);
                     _log.Info($"{game.Name}: prewarm triggered by {TriggerCause(why)}");
                     (StreamStats s, bool complete) = _env.ColdRead(plan.Ops, ct);
                     (stats, label, skip) = (s, plan.Label, complete ? null : Cancelled);
@@ -796,6 +1043,33 @@ public sealed class Prewarmer
         return done;
     }
 
+    private bool ProfileMissed(string game, string key)
+    {
+        lock (_gate)
+        {
+            return _profileMiss.TryGetValue(game, out string? known) && known == key;
+        }
+    }
+
+    private void RememberProfileMiss(string game, string key)
+    {
+        lock (_gate)
+        {
+            _profileMiss[game] = key;
+        }
+    }
+
+    private void ForgetProfileMiss(string game)
+    {
+        lock (_gate)
+        {
+            _profileMiss.Remove(game);
+        }
+    }
+
+    // 안티치트 게임은 기록 (트레이스) 을 만들지 않으므로 "trace needed" 라고 하지 않습니다.
+    private static string ProfileSkip(GameSettings game) => AntiCheat.ForbidsTrace(game.AntiCheat) ? "no profile" : "no profile; trace needed";
+
     private PrewarmResult Record(GameSettings game, DateTimeOffset now, PrewarmResult r, double mbps)
     {
         _status[game.Name] = new JObject
@@ -808,6 +1082,13 @@ public sealed class Prewarmer
             { "seconds", r.Stats?.Seconds },
             { "hint_mb_per_s", r.Stats is null ? null : Math.Round(mbps, 1) },
         };
+        lock (_gate)
+        {
+            if (_profileMiss.TryGetValue(game.Name, out string? miss))
+            {
+                ((JObject)_status[game.Name]!)["profile_miss_key"] = miss;
+            }
+        }
         if (r.Ran && r.Mode is null && _streamer.LoadHeadBytes(game) is { } head)
         {
             ((JObject)_status[game.Name]!)["head_mib"] = head >> 20; // 로딩 앞부분 (관리 창 상태 탭)

@@ -7,7 +7,7 @@ namespace AsterCache.Core.Apply;
 /// 줄바꿈은 Windows 텍스트 모드 Python 과 같은 CRLF 입니다. 읽을 때는 LF 도 받습니다.
 public sealed class Journal : IDisposable
 {
-    private readonly bool _fixNewline;
+    private bool _fixNewline;
     private readonly List<JObject> _rows = [];
     private readonly object _gate = new(); // 동시 실행의 작업자들이 한 줄씩 차례로 쓰도록 모든 접근을 직렬화
     private FileStream? _file;
@@ -132,8 +132,13 @@ public sealed class Journal : IDisposable
         {
             if (_fixNewline)
             {
-                // 잘린 조각을 먼저 지움. 아니면 그것이 깨진 중간 줄이 됩니다.
-                File.WriteAllBytes(Path, PyJson.Utf8.GetBytes(string.Concat(_rows.Select(Line))));
+                // 잘린 조각을 먼저 지움. 아니면 그것이 깨진 중간 줄이 됩니다. 원본은 .bak 로 남기고, 임시 파일을 디스크까지 내린 뒤 이름을 바꿔 교체:
+                // 도중에 다시 멈춰도 정상 접두부 (되돌리기의 원래 LCN 기록) 가 사라지지 않습니다.
+                File.Copy(Path, Path + ".bak", true);
+                string tmp = Path + ".tmp";
+                DurableFile.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(string.Concat(_rows.Select(Line))));
+                File.Move(tmp, Path, true);
+                _fixNewline = false;
             }
 
             _file = new FileStream(Path, FileMode.Append, FileAccess.Write, FileShare.Read);

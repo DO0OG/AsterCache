@@ -110,6 +110,26 @@ public sealed class PinAndRewarmTests
     }
 
     [Theory]
+    [InlineData("vanguard")]
+    [InlineData("eac")]
+    [InlineData("battleye")]
+    [InlineData("unknown")]
+    [InlineData("ricochet")]
+    public void AntiCheatGamesAreNeverPinnedEvenWhenPinIsOnAndRamIsPlentiful(string kind)
+    {
+        _ram = 64 * Gib;
+        GameSettings g = Game("a") with { AntiCheat = kind };
+        Prewarmer p = Make(g);
+
+        Assert.True(p.Run(g, "service start").Ran); // 읽기 전용 예열은 그대로
+        Assert.True(p.Run(g, "again", ignoreCooldown: true).Ran);
+
+        Assert.Empty(p.Pinned);
+        Assert.Empty(_pins);
+        Assert.Single(_log.Lines, l => l.Contains($"a: pin skipped (anti-cheat: {kind})", StringComparison.Ordinal));
+    }
+
+    [Theory]
     [InlineData(23, false)]
     [InlineData(24, true)]
     [InlineData(64, true)]
@@ -144,6 +164,19 @@ public sealed class PinAndRewarmTests
         Assert.False(PinKeeper.Wanted(PrewarmSettings.Default, 16 * Gib));
         Assert.True(PinKeeper.Wanted(PrewarmSettings.Default, 24 * Gib));
         Assert.False(PinKeeper.Wanted(PrewarmSettings.Default with { PinSet = true }, 64 * Gib));
+    }
+
+    [Fact]
+    public void HeldPinIsLoggedOncePerGameWhileTheReasonStaysTheSame()
+    {
+        _launcherRunning = true;
+        GameSettings g = Game("a");
+        Prewarmer p = Make(g);
+
+        _ = p.Run(g, "service start");
+        _ = p.Run(g, "service start");
+
+        Assert.Equal(1, _log.Lines.Count(l => l.Contains("a: pin held back", StringComparison.Ordinal)));
     }
 
     [Fact]
@@ -465,6 +498,19 @@ public sealed class PinAndRewarmTests
     }
 
     [Fact]
+    public void RewarmCheckLogsOnlyWhenTheResultChanges()
+    {
+        Prewarmer p = WarmedGame();
+        TickAt(p, TimeSpan.Zero);
+        _probe = 0.5;
+
+        TickAt(p, TimeSpan.FromMinutes(10));
+        TickAt(p, TimeSpan.FromMinutes(10)); // 같은 결과 (warm) 는 다시 남기지 않음
+
+        Assert.Equal(1, _log.Lines.Count(l => l.Contains("a: rewarm check: warm", StringComparison.Ordinal)));
+    }
+
+    [Fact]
     public void ColdHotSetIsPrewarmedAgainEvenInsideTheCooldown()
     {
         Prewarmer p = WarmedGame();
@@ -699,6 +745,28 @@ public sealed class PinAndRewarmTests
         Assert.Equal("batch memory budget", results[2].SkipReason);
         Assert.Contains(_log.Lines, l => l.Contains("c: prewarm skipped (batch zones", StringComparison.Ordinal));
         Assert.Contains(_log.Lines, l => l.Contains("d: prewarm skipped (batch zones", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RepeatedBatchSkipOfTheSameGameIsLoggedOncePerMinuteWithTheSuppressedCount()
+    {
+        GameSettings[] games = [Game("a", false), Game("b", false)];
+        Prewarmer p = Make(games);
+        _ram = 4 * Gib; // 1/4 = 1024 MiB: 존 1610 은 처음부터 자름
+
+        for (int i = 0; i < 9; i++)
+        {
+            p.RunAll(games, "trigger Riot Client.exe");
+            _now += TimeSpan.FromSeconds(4);
+        }
+
+        Assert.Single(_log.Lines, l => l.StartsWith("Info: a: prewarm skipped (batch zones", StringComparison.Ordinal));
+
+        _now += Prewarmer.SkipLogEvery; // 60 초 뒤 다시 남기고 억제된 횟수를 붙임
+        p.RunAll(games, "trigger Riot Client.exe");
+        string[] lines = [.. _log.Lines.Where(l => l.StartsWith("Info: a: prewarm skipped (batch zones", StringComparison.Ordinal))];
+        Assert.Equal(2, lines.Length);
+        Assert.EndsWith("(suppressed 8)", lines[1], StringComparison.Ordinal);
     }
 
     [Fact]

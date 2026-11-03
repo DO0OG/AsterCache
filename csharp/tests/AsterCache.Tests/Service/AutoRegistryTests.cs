@@ -725,9 +725,7 @@ public sealed class AutoRegistryTests : IDisposable
         Assert.Equal(launcher, _rig.Status.Get("G")!.Launcher);
     }
 
-    // ---- 읽기량을 못 여는 프로세스: ETW 대체 ----
-
-    private FakeReadWatch UseWatch() => World.Watch = new FakeReadWatch();
+    // ---- 읽기량을 못 여는 프로세스: 건너뜀 (ETW 세션을 걸지 않음) ----
 
     // 새 PID 하나를 띄우고 20 초가 지난 틱까지 (읽기량을 열 수 없는 PID 는 Reads 에 넣지 않음).
     private AutoRegistry DeniedProcess(int pid = 10)
@@ -742,99 +740,18 @@ public sealed class AutoRegistryTests : IDisposable
     }
 
     [Fact]
-    public void DeniedProcessSwitchesToTheEtwCountAndIsOpenedExactlyOnce()
+    public void DeniedProcessIsSkippedAndOpenedExactlyOnce()
     {
-        FakeReadWatch watch = UseWatch();
-        watch.Images[10] = @"D:\Games\Foo\foo.exe"; // 열기 실패라 이미지 경로도 세션이 본 것을 씀
+        World.Images[10] = @"D:\Games\Foooo.exe";
         AutoRegistry reg = DeniedProcess();
 
-        Assert.Equal(1, World.WatchStarts);
-        Assert.Empty(Registered());
-
-        watch.Reads[10] = 300L << 20;
         World.Now += TimeSpan.FromSeconds(2);
         reg.HeuristicTick();
         reg.HeuristicTick();
         reg.HeuristicTick();
 
-        Assert.Equal(["Foo"], Registered());
+        Assert.Empty(Registered());
         Assert.Equal([10], World.ReadOpens); // 수명 동안 다시 열지 않음
-        Assert.True(watch.Disposed);
-        Assert.Equal(1, World.WatchStarts);
-        Assert.Contains(_rig.Log.Lines, l => l.Contains("read-count session stopped (no candidates left)", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public void EtwCountBelowTheThresholdNeverRegistersAndTheWaitEnds()
-    {
-        FakeReadWatch watch = UseWatch();
-        watch.Images[10] = @"D:\Games\Foo\foo.exe";
-        watch.Reads[10] = 255L << 20;
-        AutoRegistry reg = DeniedProcess();
-
-        World.Now += TimeSpan.FromSeconds(AutoSettings.HeuristicWindowSeconds);
-        reg.HeuristicTick();
-        watch.Reads[10] = 900L << 20; // 대기가 끝난 뒤의 읽기는 보지 않음
-        reg.HeuristicTick();
-
-        Assert.Empty(Registered());
-        Assert.True(watch.Disposed);
-        Assert.Equal([10], World.ReadOpens);
-    }
-
-    [Fact]
-    public void SessionStartsOnlyWhenACandidateNeedsIt()
-    {
-        UseWatch();
-        World.Reads[10] = 300L << 20; // 열 수 있는 프로세스
-        World.Images[10] = @"D:\Games\Foo\foo.exe";
-        AutoRegistry reg = _rig.Registry();
-        reg.HeuristicTick();
-        World.Pids = [10];
-        reg.HeuristicTick();
-        World.Now += TimeSpan.FromSeconds(AutoSettings.HeuristicWindowSeconds);
-        reg.HeuristicTick();
-
-        Assert.Equal(["Foo"], Registered());
-        Assert.Equal(0, World.WatchStarts);
-    }
-
-    [Fact]
-    public void SessionStopsWhenTheWaitingProcessExits()
-    {
-        FakeReadWatch watch = UseWatch();
-        AutoRegistry reg = DeniedProcess();
-        Assert.False(watch.Disposed);
-
-        World.Pids = [];
-        reg.HeuristicTick();
-
-        Assert.True(watch.Disposed);
-        Assert.Empty(Registered());
-    }
-
-    [Fact]
-    public void ShutdownStopsARunningSession()
-    {
-        FakeReadWatch watch = UseWatch();
-        AutoRegistry reg = DeniedProcess();
-
-        reg.Shutdown();
-
-        Assert.True(watch.Disposed);
-    }
-
-    [Fact]
-    public void FailureToStartTheSessionIsLoggedAndNotRetriedForTheSameProcess()
-    {
-        AutoRegistry reg = DeniedProcess(); // Watch 가 없어 StartReadWatch 가 던짐
-
-        reg.HeuristicTick();
-        reg.HeuristicTick();
-
-        Assert.Equal(1, World.WatchStarts);
-        Assert.Equal([10], World.ReadOpens);
-        Assert.Contains(_rig.Log.Lines, l => l.Contains("read-count session could not start", StringComparison.Ordinal));
     }
 
     [Fact]

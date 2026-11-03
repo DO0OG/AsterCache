@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using AsterCache.Core.Settings;
+using AsterCache.Service;
 using Xunit;
 
 namespace AsterCache.Tests.Service;
@@ -576,5 +577,37 @@ public sealed class AutoSettingsTests
         JsonObject bad = Game();
         bad["prewarm"] = new JsonObject { ["pin"] = "yes" };
         Assert.Throws<SettingsException>(() => SettingsStore.Parse(new JsonObject { ["games"] = new JsonArray(bad) }.ToJsonString(), Plans));
+    }
+
+    [Fact]
+    public void AutoParallelIsOneOnSmrAndKeepsTheBusRules()
+    {
+        Assert.Equal(1, AutoSettings.Default.ParallelFor(slowBus: false, smr: true));
+        Assert.Equal(2, AutoSettings.Default.ParallelFor(slowBus: true));
+        Assert.Equal(8, AutoSettings.Default.ParallelFor(slowBus: false));
+    }
+
+    [Fact]
+    public void ReapplyParallelFollowsTheSameRuleAsTheAutomaticRelocation()
+    {
+        var game = new GameSettings("g", ["g.exe"], "t", "p", @"D:\g", [@"D:\g"], "L", 1440);
+
+        Assert.Equal(1, ReapplyEnv.ParallelFor(AutoSettings.Default, game, _ => false, _ => true));
+        Assert.Equal(2, ReapplyEnv.ParallelFor(AutoSettings.Default, game, _ => true, _ => false));
+        Assert.Equal(8, ReapplyEnv.ParallelFor(AutoSettings.Default, game, _ => false, _ => false));
+        Assert.Equal(4, ReapplyEnv.ParallelFor(AutoSettings.Default with { RelocateParallel = 4, RelocateParallelSet = true }, game, _ => false, _ => true)); // 명시값은 그대로
+    }
+
+    [Fact]
+    public void SmrLowersOnlyTheUnsetDailyWriteLimitAndTheRunCap()
+    {
+        AutoSettings unset = ParseAuto(new JsonObject()).Auto;
+        AutoSettings set = ParseAuto(new JsonObject { ["max_relocate_gib_per_day"] = 8 }).Auto;
+
+        Assert.False(unset.MaxRelocateGibPerDaySet);
+        Assert.True(set.MaxRelocateGibPerDaySet);
+        Assert.Equal((8, 2), (unset.MaxRelocateGibFor(smr: false), unset.MaxRelocateGibFor(smr: true)));
+        Assert.Equal((8, 8), (set.MaxRelocateGibFor(smr: false), set.MaxRelocateGibFor(smr: true)));
+        Assert.Equal((2L << 30, 1L << 30), (AutoSettings.WriteCapFor(false), AutoSettings.WriteCapFor(true)));
     }
 }

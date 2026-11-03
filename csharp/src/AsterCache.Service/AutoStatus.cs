@@ -25,7 +25,7 @@ public sealed record AutoGameEntry(
 public sealed record AutoBootProbe(DateTimeOffset At, int Files, double OpenMsPerFile);
 
 /// 쓰기 뒤 회복 추적 한 건 (auto_status.json 의 drive_recovery): 드라이브, 시작·상한 시각, 쓰기 직전 기준 (없으면 고정 대기), 마지막 판정 ("pass"/"unknown"/"bad", 아직 없으면 null).
-public sealed record DriveRecoveryRecord(string Drive, DateTimeOffset Started, DateTimeOffset Until, ProbeSpot? Zone, ProbeSpot? Ref, string? Verdict);
+public sealed record DriveRecoveryRecord(string Drive, DateTimeOffset Started, DateTimeOffset Until, ProbeSpot? Zone, ProbeSpot? Ref, string? Verdict, DateTimeOffset? HardUntil = null);
 
 public sealed record AutoEvent(DateTimeOffset At, string Game, string Kind);
 
@@ -34,6 +34,7 @@ public sealed record AutoEvent(DateTimeOffset At, string Game, string Kind);
 public sealed class AutoStatus
 {
     public const int MaxEvents = 20;
+    public const int PartialBelowPercent = 30;
     public static readonly TimeSpan RelocationKeep = TimeSpan.FromHours(48);
     public const int MaxPlays = 30;
     public static readonly TimeSpan RelocationHold = TimeSpan.FromHours(24);
@@ -130,6 +131,22 @@ public sealed class AutoStatus
         }
     }
 
+    /// 끝난 자동 적용의 실제 이동 바이트로 마지막 시작 기록의 예정 바이트를 바꿉니다 (하루 예산 집계가 실제 쓴 양을 따르게).
+    public void SetLastRelocationBytes(long moved)
+    {
+        lock (_lock)
+        {
+            if (_relocations.Count == 0)
+            {
+                return;
+            }
+
+            (DateTimeOffset At, long Bytes, long? Ticks) last = _relocations[^1];
+            _relocations[^1] = last with { Bytes = Math.Max(0, moved) };
+            Save();
+        }
+    }
+
     /// 자동 재배치 끝: done, relocated_at 기록. counted 면 events 에도 남깁니다 (이미 제자리인 게임은 세지 않음). 일일 상한은 시작 때 센 BeginRelocation 이 맡습니다.
     public void Complete(string name, string source, DateTimeOffset at, bool counted, string? detail)
     {
@@ -172,14 +189,18 @@ public sealed class AutoStatus
         }
     }
 
-    /// 게임 종료 때 잰 존 커버리지 (%). 항목이 없으면 남기지 않습니다.
+    /// 게임 종료 때 잰 존 커버리지 (%). 항목이 없으면 남기지 않습니다. 완료 단계에서 PartialBelowPercent 미만이면 detail 에 "partial (N%)", 넘으면 그 표시를 지움.
     public void RecordCoverage(string name, int percent)
     {
         lock (_lock)
         {
             if (_games.TryGetValue(name, out AutoGameEntry? old))
             {
-                _games[name] = old with { CoveragePercent = Math.Clamp(percent, 0, 100) };
+                int clamped = Math.Clamp(percent, 0, 100);
+                string? detail = old.Stage != AutoStage.Done ? old.Detail
+                    : clamped < PartialBelowPercent ? $"partial ({clamped}%)"
+                    : old.Detail?.StartsWith("partial (", StringComparison.Ordinal) == true ? null : old.Detail;
+                _games[name] = old with { CoveragePercent = clamped, Detail = detail };
                 Save();
             }
         }
@@ -398,6 +419,11 @@ public sealed class AutoStatus
             foreach ((string drive, DriveRecoveryRecord r) in _driveRecovery.OrderBy(kv => kv.Key, StringComparer.Ordinal))
             {
                 var o = new JObject { { "started", Iso(r.Started) }, { "until", Iso(r.Until) }, { "verdict", r.Verdict } };
+                if (r.HardUntil is { } hard && hard > r.Until)
+                {
+                    o.Add("hard_until", Iso(hard)); // 상한 뒤에도 보류하는 추적만 (기존 파일 모양 유지)
+                }
+
                 if (r.Zone is { } z)
                 {
                     o.Add("zone", Spot(z));
@@ -481,7 +507,7 @@ public sealed class AutoStatus
                 {
                     if (value is JObject o && Time(o, "started") is { } started && Time(o, "until") is { } until)
                     {
-                        _driveRecovery[drive] = new DriveRecoveryRecord(drive, started, until, ReadSpot(o, "zone"), ReadSpot(o, "ref"), Str(o, "verdict"));
+                        _driveRecovery[drive] = new DriveRecoveryRecord(drive, started, until, ReadSpot(o, "zone"), ReadSpot(o, "ref"), Str(o, "verdict"), Time(o, "hard_until"));
                     }
                 }
             }

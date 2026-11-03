@@ -5,6 +5,9 @@ public enum RecordKind
     ProcessStart,
     ProcessStop,
     Read,
+
+    /// 쓰기: Path 만 사용 (파일마다 한 번만 기록, 쓰기로 열린 파일을 알아내는 용도).
+    Write,
 }
 
 /// ETW 에서 모은 한 건. ProcessStart: Path = 실행 파일 경로 (또는 이름), ParentPid 사용.
@@ -16,4 +19,6 @@ public readonly record struct TraceRecord(RecordKind Kind, DateTime Time, int Pi
     public static TraceRecord Stop(DateTime time, int pid) => new(RecordKind.ProcessStop, time, pid, 0, "", 0, 0);
 
     public static TraceRecord Read(DateTime time, int pid, string path, long offset, long length) => new(RecordKind.Read, time, pid, 0, path, offset, length);
+
+    public static TraceRecord Write(DateTime time, int pid, string path) => new(RecordKind.Write, time, pid, 0, path, 0, 0);
 }

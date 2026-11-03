@@ -29,7 +29,7 @@ public static class SettingsStore
     [
         "enabled", "discover", "trace", "relocate", "prewarm_recent", "idle_minutes", "trace_cap_seconds", "trace_cap_mib",
         "max_relocations_per_day", "trace_runs", "trace_merge_min_mib", "ignore_exes", "rewarm_minutes", "idle_seconds", "learn", "full_prewarm", "full_prewarm_max_mib", "engine_profiles", "shared_profiles",
-        "ssd_tier", "post_update_delay_min", "recovery_max_min","relocate_chunk_mib", "relocate_parallel", "relocate_io_priority", "relocate_verify", "relocate_order", "max_relocate_gib_per_day", "post_relocate_recovery", "keep_awake", "keep_stream_on_game_start", "restream_cooldown_min", "rewarm_after_exit_min",
+        "ssd_tier", "post_update_delay_min", "recovery_max_min", "recovery_hard_max_min", "relocate_chunk_mib", "relocate_parallel", "relocate_io_priority", "relocate_verify", "relocate_order", "max_relocate_gib_per_day", "post_relocate_recovery", "keep_awake", "keep_stream_on_game_start", "load_boundary", "restream_cooldown_min", "rewarm_after_exit_min", "startup_warm_games", "startup_warm_max_mib",
     ];
     private static readonly string[] PrewarmKeys = ["on_service_start", "trigger_exes", "min_free_ram_mib", "cooldown_min", "pin"];
     private static readonly string[] LearnKeys = ["enabled", "window_mib", "max_total_mib", "mode", "saturation_mbps"];
@@ -157,11 +157,15 @@ public static class SettingsStore
             RewarmMinutes = OptInt(o, "rewarm_minutes", 0, 1440, d.RewarmMinutes),
             RestreamCooldownMin = OptInt(o, "restream_cooldown_min", 0, 1440, d.RestreamCooldownMin),
             RewarmAfterExitMin = OptInt(o, "rewarm_after_exit_min", 0, 1440, d.RewarmAfterExitMin),
+            StartupWarmGames = OptInt(o, "startup_warm_games", 0, 32, d.StartupWarmGames),
+            StartupWarmMaxMib = OptInt(o, "startup_warm_max_mib", 1, 1048576, d.StartupWarmMaxMib),
             PostUpdateDelayMin = OptInt(o, "post_update_delay_min", 0, 1440, d.PostUpdateDelayMin),
             RecoveryMaxMin = OptInt(o, "recovery_max_min", 1, 1440, d.RecoveryMaxMin),
+            RecoveryHardMaxMin = OptInt(o, "recovery_hard_max_min", 1, 1440, d.RecoveryHardMaxMin),
             PostRelocateRecovery = o.TryGetValue("post_relocate_recovery", out object? prr) && prr is AutoSettings.RecoveryProbe or AutoSettings.RecoveryFixed or AutoSettings.RecoveryOff ? (string)prr : d.PostRelocateRecovery,
             KeepAwake = OptBool(o, "keep_awake", d.KeepAwake),
             KeepStreamOnGameStart = OptBool(o, "keep_stream_on_game_start", d.KeepStreamOnGameStart),
+            LoadBoundary = OptBool(o, "load_boundary", d.LoadBoundary),
             IdleSeconds = OptInt(o, "idle_seconds", 10, 86400, d.IdleSeconds),
             IdleSecondsSet = o.ContainsKey("idle_seconds"),
             IdleMinutesSet = o.ContainsKey("idle_minutes") && !migrated,
@@ -178,6 +182,7 @@ public static class SettingsStore
             RelocateVerify = o.TryGetValue("relocate_verify", out object? rv) && rv is string rvs && VerifyMode.IsValid(rvs) ? rvs : d.RelocateVerify,
             RelocateOrder = o.TryGetValue("relocate_order", out object? ro) && ro is string ros && RelocateOrder.IsValidSetting(ros) ? ros : d.RelocateOrder,
             MaxRelocateGibPerDay = OptInt(o, "max_relocate_gib_per_day", 0, 1048576, d.MaxRelocateGibPerDay),
+            MaxRelocateGibPerDaySet = o.ContainsKey("max_relocate_gib_per_day"),
             SsdTier = o.TryGetValue("ssd_tier", out object? tier) ? ParseSsdTier(tier) : SsdTierSettings.Default,
         };
     }

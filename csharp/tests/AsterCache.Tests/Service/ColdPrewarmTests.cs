@@ -50,6 +50,8 @@ public sealed class ColdPrewarmTests : IDisposable
 
     private int _bootAsked;
 
+    private int _made;
+
     private double? ProbeMs { get; set; } = 0.5;
 
     private readonly List<IReadOnlyList<(string Path, long Offset, int Bytes)>> _probed = [];
@@ -89,7 +91,7 @@ public sealed class ColdPrewarmTests : IDisposable
                 _reads.Add(ops);
                 return (new StreamStats(ReadBytes ?? ops.Sum(o => o.Length), ops.Count, 0, 0.5), ReadCompletes);
             },
-        }, _log, Path.Combine(_dir, "status.json"), () => _now);
+        }, _log, Path.Combine(_dir, _made++ == 0 ? "status.json" : $"status{_made}.json"), () => _now); // 처음 것만 status.json: 같은 파일을 쓰면 다음 Prewarmer 가 이전 예열 기록을 이어받음 (재시작 시험은 따로 있음)
         p.SetAuto(auto ?? AutoSettings.Default);
         return p;
     }
@@ -203,7 +205,7 @@ public sealed class ColdPrewarmTests : IDisposable
     {
         GameSettings a = Game("a");
         GameSettings b = Game("b");
-        Prewarmer p = Make(null, a, b);
+        Prewarmer p = Make(AutoSettings.Default with { FullPrewarmMaxMib = 100000 }, a, b);
         ReadBytes = 3000 * Mib;
         Assert.Equal("full", p.Run(a, "first").Mode);
         _caps.Clear();
@@ -264,14 +266,49 @@ public sealed class ColdPrewarmTests : IDisposable
     [Fact]
     public void PlannerSkipReasonIsPassedThrough()
     {
-        Planner = (_, _, _, _) => ColdPlan.None("no engine profile matched");
+        Planner = (_, _, _, _) => ColdPlan.None("folder has no files");
         Prewarmer p = MakeOne();
 
         PrewarmResult r = p.Run(Game("g"), "t");
 
-        Assert.Equal((false, "no engine profile matched"), (r.Ran, r.SkipReason));
+        Assert.Equal((false, "folder has no files"), (r.Ran, r.SkipReason));
         Assert.Null(p.LastWarmed("g"));
         Assert.Empty(_reads);
+    }
+
+    [Fact]
+    public void ProfileMissSaysTraceNeededAndIsNotEnumeratedAgain()
+    {
+        Planner = (_, _, _, _) => ColdPlan.None(FolderWarm.NoEngineProfile);
+        Prewarmer p = MakeOne();
+
+        PrewarmResult first = p.Run(Game("g"), "t");
+        PrewarmResult again = p.Run(Game("g"), "t");
+
+        Assert.Equal(("no profile; trace needed", "no profile; trace needed"), (first.SkipReason, again.SkipReason));
+        Assert.Single(_caps); // 폴더 mtime 이 같으면 두 번째는 열거하지 않음
+    }
+
+    [Fact]
+    public void ProfileMissSurvivesARestartThroughTheStatusFile()
+    {
+        Planner = (_, _, _, _) => ColdPlan.None(FolderWarm.NoEngineProfile);
+        MakeOne().Run(Game("g"), "t");
+
+        _made = 0; // 재시작: 같은 상태 파일 (status.json) 을 이어받음
+        PrewarmResult restarted = MakeOne().Run(Game("g"), "t");
+
+        Assert.Equal("no profile; trace needed", restarted.SkipReason);
+        Assert.Single(_caps);
+    }
+
+    [Fact]
+    public void AntiCheatGameProfileMissSaysNoProfileOnly()
+    {
+        Planner = (_, _, _, _) => ColdPlan.None(FolderWarm.NoEngineProfile);
+        Prewarmer p = Make(null, Game("g") with { AntiCheat = "vanguard" });
+
+        Assert.Equal("no profile", p.Run(Game("g") with { AntiCheat = "vanguard" }, "t").SkipReason);
     }
 
     [Fact]
@@ -292,12 +329,12 @@ public sealed class ColdPrewarmTests : IDisposable
     {
         (AvailableMib, PhysicalBytes) = (3000, 64L << 30); // 가용 - 여유 = 2000 < 16384
         MakeOne(minFree: 1000).Run(Game("g"), "t");
-        Assert.Equal([(2000 * Mib, 2000 * Mib)], _caps);
+        Assert.Equal([(1024 * Mib, 2000 * Mib)], _caps); // 통째 상한 기본 1024 MiB, 프로필은 RAM 예산
 
         _caps.Clear();
         (AvailableMib, PhysicalBytes) = (60000, 16L << 30); // 물리 RAM / 4 = 4096 < 59000
         MakeOne(minFree: 1000).Run(Game("g"), "t");
-        Assert.Equal([(4096 * Mib, 4096 * Mib)], _caps);
+        Assert.Equal([(1024 * Mib, 4096 * Mib)], _caps);
     }
 
     [Fact]
@@ -317,7 +354,7 @@ public sealed class ColdPrewarmTests : IDisposable
         MakeOne(AutoSettings.Default with { FullPrewarm = false }).Run(Game("g"), "t");
         MakeOne(AutoSettings.Default with { EngineProfiles = false }).Run(Game("g"), "t");
 
-        Assert.Equal([(0L, 2000 * Mib), (2000 * Mib, 0L)], _caps);
+        Assert.Equal([(0L, 2000 * Mib), (1024 * Mib, 0L)], _caps);
     }
 
     [Fact]
@@ -332,7 +369,7 @@ public sealed class ColdPrewarmTests : IDisposable
 
         IReadOnlyList<PrewarmResult> r = p.RunAll([a, b, c], "batch");
 
-        Assert.Equal([(2000 * Mib, 2000 * Mib), (500 * Mib, 500 * Mib)], _caps); // c 는 예산이 없어 계획까지 가지 않음
+        Assert.Equal([(1024 * Mib, 2000 * Mib), (500 * Mib, 500 * Mib)], _caps); // 통째 상한 기본 1024 MiB. c 는 예산이 없어 계획까지 가지 않음
         Assert.Equal([true, true, false], r.Select(x => x.Ran));
         Assert.Equal("batch memory budget", r[2].SkipReason);
     }
@@ -359,6 +396,56 @@ public sealed class ColdPrewarmTests : IDisposable
 
         Assert.Equal([true, false], r.Select(x => x.Ran)); // 2000 + 3000 > 4096
         Assert.Equal("batch memory budget", r[1].SkipReason);
+    }
+
+    [Fact]
+    public void UnplayedColdGameDoesNotCountAgainstTheBudgetNorGetItsSamplesRead()
+    {
+        AvailableMib = 20000;
+        PhysicalBytes = 16L << 30; // 4096 MiB
+        GameSettings cold = Game("cold");
+        GameSettings hot = Game("hot");
+        int probes = 0;
+        var p = new Prewarmer([cold, hot], _streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => AvailableMib,
+            PhysicalRamBytes = () => PhysicalBytes,
+            GameRunning = _ => false,
+            ZoneBytes = g => g.Name == "hot" ? 3000 * Mib : null,
+            TraceExists = g => g.Name == "hot",
+            ProbeSamples = _ =>
+            {
+                probes++;
+                return new ProbeResult(8, 0, 0.3);
+            },
+            ColdPlanner = (_, _, _, _) => new ColdPlan("full", [new ReadOp(@"D:\g.bin", 0, 2000 * Mib)], 2000 * Mib, null),
+            ColdRead = (ops, _) => (new StreamStats(2000 * Mib, 1, 0, 1), true),
+        }, _log, null, () => _now)
+        {
+            HasPlayed = name => name != "cold",
+        };
+
+        IReadOnlyList<PrewarmResult> r = p.RunAll([cold, hot], "batch");
+
+        Assert.Equal([true, true], r.Select(x => x.Ran)); // 미플레이 cold 의 2000 MiB 는 예산에 넣지 않음
+        Assert.Equal(0, probes);
+    }
+
+    [Fact]
+    public void SameTriggerExeWithinAMinuteIsHandledOnceAndTheRestAreCounted()
+    {
+        GameSettings g = Game("g") with { Prewarm = PrewarmSettings.Default with { TriggerExes = ["steam.exe"] } };
+        Prewarmer p = Make(null, g);
+        var start = new ProcessStart(1, "steam.exe", 0);
+
+        Assert.Single(p.OnProcessStart(start));
+        Assert.Empty(p.OnProcessStart(start));
+        _now += TimeSpan.FromSeconds(30);
+        Assert.Empty(p.OnProcessStart(start));
+        _now += TimeSpan.FromSeconds(31);
+        Assert.Single(p.OnProcessStart(start));
+
+        Assert.Contains(_log.Lines, l => l.Contains("2 duplicate triggers suppressed", StringComparison.Ordinal));
     }
 
     // ---- 실제 열거로 상한 판정 (Windows 임시 폴더, 가짜 읽기) ----
@@ -594,7 +681,7 @@ public sealed class ColdPrewarmTests : IDisposable
     {
         GameSettings a = Game("a");
         GameSettings b = Game("b");
-        Prewarmer p = Make(null, a, b);
+        Prewarmer p = Make(AutoSettings.Default with { FullPrewarmMaxMib = 100000 }, a, b);
         ReadBytes = 1000 * Mib;
         p.Run(a, "t");
         p.SetGames([b]);
@@ -602,6 +689,6 @@ public sealed class ColdPrewarmTests : IDisposable
 
         p.Run(b, "t");
 
-        Assert.Equal(Math.Min(AvailableMib - 1000, 16384) * Mib, _caps.Single().Full); // a 의 1000 MiB 는 더 이상 세지 않음
+        Assert.Equal((AvailableMib - 1000) * Mib, _caps.Single().Full); // a 의 1000 MiB 는 더 이상 세지 않음
     }
 }

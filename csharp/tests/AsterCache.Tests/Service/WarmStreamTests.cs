@@ -376,6 +376,7 @@ public sealed class WarmStreamTests
         Assert.Equal("batch memory budget", blocked.SkipReason); // X 가 상주한 양 때문에
 
         p.NoteGameStart("x"); // 게임이 시작되면 그 게임의 콜드 몫을 풂
+        _now += Prewarmer.SkipLogEvery; // 같은 트리거는 1 분 안에 한 번만 처리
         PrewarmResult ran = p.OnProcessStart(Launcher()).Single();
         Assert.True(ran.Ran);
     }
@@ -392,6 +393,7 @@ public sealed class WarmStreamTests
         Assert.Equal("batch memory budget", p.OnProcessStart(Launcher()).Single().SkipReason);
         Assert.True(w.Probes > 0);
 
+        _now += Prewarmer.SkipLogEvery; // 같은 트리거는 1 분 안에 한 번만 처리
         w.Probe = new ProbeResult(8, 5, 12); // 식음
         Assert.True(p.OnProcessStart(Launcher()).Single().Ran);
         Assert.Contains(_log.Lines, l => l.Contains("x: cold prewarm no longer counts against the budget", StringComparison.Ordinal));

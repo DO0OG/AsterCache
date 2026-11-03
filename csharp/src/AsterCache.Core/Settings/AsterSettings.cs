@@ -85,11 +85,20 @@ public sealed record AutoSettings(
     /// 게임 종료를 감지하면 그 게임의 재예열 점검을 이만큼 (분, 0..1440) 뒤로 당김, 0 = 끔 (rewarm_minutes 가 0 이면 재예열 자체가 꺼져 있음). 점검은 식었을 때만 다시 읽습니다.
     public int RewarmAfterExitMin { get; init; } = 2;
 
+    /// 서비스 시작 (부팅) 예열 대상: 최근 14 일 안에 플레이한 게임 중 마지막 플레이 순 상위 이 개수 (0..32), 0 = 서비스 시작 예열 끔. 플레이 기록이 없는 (자동 모드 꺼짐) 설정에는 적용하지 않음.
+    public int StartupWarmGames { get; init; } = 2;
+
+    /// 서비스 시작 예열이 한 번에 읽는 양의 합계 상한 (MiB, 1..1048576). 넘는 게임은 건너뜀.
+    public int StartupWarmMaxMib { get; init; } = 1024;
+
     /// 게임 업데이트를 감지한 뒤 그 게임의 재계획·재배치·예열을 이만큼 (분, 0..1440) 미룸, 0 = 지연 없음. 업데이트 직후에는 드라이브가 파일을 흩어 쓰는 중일 수 있습니다.
     public int PostUpdateDelayMin { get; init; } = 15;
 
     /// probe 회복 대기의 상한 (분, 1..1440). post_update_delay_min 과 따로 두어, 그 값이 0 이어도 회복 대기는 꺼지지 않습니다. 기본 60 (예전 15 x 4).
     public int RecoveryMaxMin { get; init; } = 60;
+
+    /// probe 회복이 recovery_max_min 에 이르러도 회복을 확인하지 못했을 때 (판정은 unknown) 추가 재배치를 계속 보류하는 절대 상한 (분, 1..1440). recovery_max_min 보다 작으면 그 값을 씀. 기본 180. 예열에는 영향 없음.
+    public int RecoveryHardMaxMin { get; init; } = 180;
 
     public const string RecoveryProbe = "probe";
     public const string RecoveryFixed = "fixed";
@@ -103,6 +112,9 @@ public sealed record AutoSettings(
 
     /// 게임이 시작될 때 그 게임을 읽던 예열 스트림을 끝까지 읽게 할지 (기본 꺼짐, 실험용): 꺼져 있으면 다음 64 MiB 묶음 경계에서 멈춰 게임에 디스크를 양보함.
     public bool KeepStreamOnGameStart { get; init; }
+
+    /// 게임 시작 때 로딩 경계 (tier0) 가 RAM 에 들어온 시각을 재는 감시 (기본 꺼짐): 디스크를 읽으므로 게임이 끝나면 바로 멈춤.
+    public bool LoadBoundary { get; init; }
 
     /// beta.3 형식 설정 (learn 키 없음, prewarm_recent 1 + idle_minutes 3) 을 새 기본으로 해석했는지 (파싱 때만 설정, 서비스가 시작 때 로그 한 줄).
     public bool Migrated { get; init; }
@@ -119,7 +131,7 @@ public sealed record AutoSettings(
     /// 기록 (trace) 이 없는 게임: 설치 폴더 합이 상한 이하면 폴더 전체를 예열.
     public bool FullPrewarm { get; init; } = true;
 
-    /// 통째 예열의 폴더 크기 상한 (MiB, 0..1048576). 0 = RAM 예산 (물리 RAM 의 1/4 과 가용 RAM - 여유 중 작은 값).
+    /// 통째 예열의 폴더 크기 상한 (MiB, 0..1048576). 0 = 기본 1024 MiB (RAM 예산, 즉 물리 RAM 의 1/4 과 가용 RAM - 여유 중 작은 값 안에서).
     public int FullPrewarmMaxMib { get; init; }
 
     /// 기록이 없고 폴더가 상한보다 크면: 엔진 (Unity·Unreal·Source) 을 감지해 로딩 초반 파일 집합만 예열.
@@ -149,8 +161,8 @@ public sealed record AutoSettings(
     /// config 에 relocate_parallel 이 명시돼 있는가 (명시값은 그대로, 아니면 자동 규칙).
     public bool RelocateParallelSet { get; init; }
 
-    /// 실제 동시 수: 명시값, 아니면 대상 디스크 종류를 모르거나 USB 버스면 2, 그 밖에는 8.
-    public int ParallelFor(bool slowBus) => RelocateParallelSet ? RelocateParallel : slowBus ? SlowBusRelocateParallel : DefaultRelocateParallel;
+    /// 실제 동시 수: 명시값, 아니면 SMR 로 보이는 HDD 면 1 (순차 쓰기가 느려짐), 종류를 모르거나 USB 버스면 2, 그 밖에는 8.
+    public int ParallelFor(bool slowBus, bool smr = false) => RelocateParallelSet ? RelocateParallel : smr ? 1 : slowBus ? SlowBusRelocateParallel : DefaultRelocateParallel;
 
     /// 자동 재배치의 I/O 우선순위: "low" (기본, 낮은 I/O 힌트) 또는 "normal" (힌트 없음).
     public string RelocateIoPriority { get; init; } = IoLow;
@@ -163,6 +175,17 @@ public sealed record AutoSettings(
 
     /// 하루 (24 시간) 에 자동 재배치가 쓸 수 있는 총량 (GiB, 0..1048576). 0 = 무제한.
     public int MaxRelocateGibPerDay { get; init; } = 8;
+
+    /// max_relocate_gib_per_day 가 설정에 명시됐는가 (아니면 SMR 디스크는 더 낮은 기본값을 씀).
+    public bool MaxRelocateGibPerDaySet { get; init; }
+
+    public const int SmrMaxRelocateGibPerDay = 2;
+
+    /// 실제 일일 상한 (GiB): 명시값, 아니면 SMR 로 보이는 HDD 면 2, 그 밖에는 8 (순차 쓰기가 느린 SMR 은 하루에 덜 씀).
+    public int MaxRelocateGibFor(bool smr) => MaxRelocateGibPerDaySet || !smr ? MaxRelocateGibPerDay : SmrMaxRelocateGibPerDay;
+
+    /// 한 번의 적용이 쓰는 상한 (바이트): SMR 로 보이는 HDD 는 1 GiB, 그 밖에는 2 GiB.
+    public static long WriteCapFor(bool smr) => smr ? 1L << 30 : 2L << 30;
 
     /// 유휴 대기 시간: idle_seconds 가 명시됐거나 둘 다 없으면 IdleSeconds 초, idle_minutes 만 명시됐으면 IdleMinutes 분.
     public TimeSpan IdleWindow => IdleSecondsSet || !IdleMinutesSet ? TimeSpan.FromSeconds(IdleSeconds) : TimeSpan.FromMinutes(IdleMinutes);

@@ -322,6 +322,12 @@ public static class Applier
             long n = Math.Min(TaskSpan, hi - lo);
             var mine = new[] { (lo, n), (hi - n, n) }.Where(r => r.Item1 >= 0 && r.Item1 < size).Select(r => (r.Item1, Math.Min(r.Item2, size - r.Item1)))
                 .Where(keep.Contains).Distinct().ToList();
+            if (mine.Count == 0)
+            {
+                // 파일당 상한 (DigestCapBytes) 에 가려진 작업도 최소 한 곳은 검사: verify=all 이 일부 작업을 빠뜨리지 않게. 이전·이후 계산이 같은 규칙이라 모드가 달라도 일치.
+                mine = new[] { (lo, n), (hi - n, n) }.Where(r => r.Item1 >= 0 && r.Item1 < size).Select(r => (r.Item1, Math.Min(r.Item2, size - r.Item1))).Take(1).ToList();
+            }
+
             return mine.Count == 0 ? null : edgeFn(p, size, mine);
         }
 
@@ -338,19 +344,22 @@ public static class Applier
             }));
         }
 
-        if (jr.Rows.LastOrDefault(r => Equals(r["type"], "end")) is { } prevEnd && prevEnd.TryGetValue("after_deferred", out object? deferredAfter) && Equals(deferredAfter, true))
+        // 앞선 실행이 after 검증을 못 마쳤음 (취소로 미룸, 또는 강제 종료로 end 행이 없음): 마지막으로 검증을 마친 end 행 뒤의 sha_before 중
+        // verified 표시가 없는 것을 이번 실행의 비교 대상에 올림 (이미 옮긴 작업도 포함: 이어하기가 대신 검증).
+        List<JObject> allRows = jr.Rows.ToList();
+        int finalEnd = allRows.FindLastIndex(r => Equals(r["type"], "end") && !(r.TryGetValue("after_deferred", out object? def) && Equals(def, true)));
+        List<JObject> unsettled = allRows.Skip(finalEnd + 1).ToList();
+        string verifiedType = perTask ? "sha_verified" : "file_verified";
+        var verifiedKeys = unsettled.Where(r => Equals(r["type"], verifiedType)).Select(r => perTask ? TaskKey((int)(long)r["idx"]!) : (string)r["path"]!).ToHashSet(StringComparer.Ordinal);
+        foreach (JObject r in unsettled)
         {
-            // 앞선 실행이 취소돼 after 검증을 미뤘음: 저널의 sha_before 를 이번 실행의 비교 대상에 올림 (이어하기가 대신 검증)
-            foreach (JObject r in jr.Rows.ToList())
+            if (perTask && Equals(r["type"], "sha") && !verifiedKeys.Contains(TaskKey((int)(long)r["idx"]!)))
             {
-                if (perTask && Equals(r["type"], "sha"))
-                {
-                    before[TaskKey((int)(long)r["idx"]!)] = r["sha_before"] as string;
-                }
-                else if (!perTask && Equals(r["type"], "file"))
-                {
-                    before[(string)r["path"]!] = r["sha_before"] as string;
-                }
+                before[TaskKey((int)(long)r["idx"]!)] = r["sha_before"] as string;
+            }
+            else if (!perTask && Equals(r["type"], "file") && !verifiedKeys.Contains((string)r["path"]!))
+            {
+                before[(string)r["path"]!] = r["sha_before"] as string;
             }
         }
 
@@ -362,7 +371,7 @@ public static class Applier
         {
             try
             {
-                Finish(rep, jr, before, perTask ? k => TaskDigest(TaskOf(k), plan.Tasks[TaskOf(k)]) : Digest, perTask ? k => plan.Tasks[TaskOf(k)].Path : k => k, strict: false);
+                Finish(rep, jr, before, perTask ? k => TaskDigest(TaskOf(k), plan.Tasks[TaskOf(k)]) : Digest, perTask ? k => plan.Tasks[TaskOf(k)].Path : k => k, perTask, strict: false);
             }
             catch (Exception)
             {
@@ -372,7 +381,7 @@ public static class Applier
             throw;
         }
 
-        ApplyReport done = Finish(rep, jr, before, perTask ? k => TaskDigest(TaskOf(k), plan.Tasks[TaskOf(k)]) : Digest, perTask ? k => plan.Tasks[TaskOf(k)].Path : k => k, strict: true);
+        ApplyReport done = Finish(rep, jr, before, perTask ? k => TaskDigest(TaskOf(k), plan.Tasks[TaskOf(k)]) : Digest, perTask ? k => plan.Tasks[TaskOf(k)].Path : k => k, perTask, strict: true);
         tm.Stop();
         return done;
     }
@@ -533,7 +542,7 @@ public static class Applier
                 SetBefore(p, sha);
                 if (row is null)
                 {
-                    ApplyTimings.Time(ref tm.JournalTicks, () => jr.AddBatched(new JObject { { "type", "file" }, { "path", p }, { "sha_before", sha } }));
+                    ApplyTimings.Time(ref tm.JournalTicks, () => jr.Add(new JObject { { "type", "file" }, { "path", p }, { "sha_before", sha } })); // 이동 전에 fsync: 강제 종료 뒤 이어하기가 이동 후 검증을 하도록
                 }
             }
 
@@ -547,7 +556,7 @@ public static class Applier
                     SetBefore(TaskKey(i), sha);
                     if (row is null)
                     {
-                        ApplyTimings.Time(ref tm.JournalTicks, () => jr.AddBatched(new JObject { { "type", "sha" }, { "idx", (long)i }, { "sha_before", sha } }));
+                        ApplyTimings.Time(ref tm.JournalTicks, () => jr.Add(new JObject { { "type", "sha" }, { "idx", (long)i }, { "sha_before", sha } })); // 이동 전에 fsync: 강제 종료 뒤 이어하기가 이동 후 검증을 하도록 (verified 표시가 있어야 끝난 것)
                     }
                 }
             }
@@ -706,17 +715,29 @@ public static class Applier
     }
 
     /// 건드린 모든 파일의 SHA 표본을 다시 비교합니다. 달라졌으면 크게 알리고 (strict) 절대 삼키지 않습니다. end 행은 어느 경우든 기록.
-    private static ApplyReport Finish(ApplyReport rep, Journal jr, OrderedDictionary<string, string?> before, Func<string, string?> digest, Func<string, string> pathOf, bool strict)
+    /// 일치한 키마다 verified 행 (perTask: sha_verified idx, 아니면 file_verified path) 을 end 행 앞에 남깁니다: 없는 sha_before 는 다음 실행이 다시 검증.
+    private static ApplyReport Finish(ApplyReport rep, Journal jr, OrderedDictionary<string, string?> before, Func<string, string?> digest, Func<string, string> pathOf, bool perTask, bool strict)
     {
         ApplyTimings tm = rep.Timings;
         bool deferred = rep.Stopped == "cancelled"; // 취소 뒤에는 표본을 다시 읽지 않음: 이어하기가 저널의 sha_before 로 검증
-        var bad = deferred ? [] : before.Where(kv => ApplyTimings.Time(ref tm.DigestAfterTicks, () => digest(kv.Key)) != kv.Value).Select(kv => pathOf(kv.Key)).Distinct().ToList();
+        List<(string Key, bool Same)> checkedKeys = deferred ? [] : before.Select(kv => (kv.Key, Same: ApplyTimings.Time(ref tm.DigestAfterTicks, () => digest(kv.Key)) == kv.Value)).ToList();
+        var bad = checkedKeys.Where(x => !x.Same).Select(x => pathOf(x.Key)).Distinct().ToList();
         int files = before.Select(kv => pathOf(kv.Key)).Distinct().Count();
         rep.ShaChecked = deferred ? 0 : files;
         tm.Files = files;
         rep.ShaMismatch = bad;
         ApplyTimings.Time(ref tm.JournalTicks, () =>
         {
+            foreach ((string key, bool same) in checkedKeys)
+            {
+                if (same)
+                {
+                    jr.AddBatched(perTask
+                        ? new JObject { { "type", "sha_verified" }, { "idx", (long)TaskOf(key) } }
+                        : new JObject { { "type", "file_verified" }, { "path", key } });
+                }
+            }
+
             var end = new JObject
             {
                 { "type", "end" },

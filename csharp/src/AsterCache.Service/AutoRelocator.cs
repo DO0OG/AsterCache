@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using AsterCache.Core;
 using AsterCache.Core.Apply;
+using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
@@ -63,8 +64,8 @@ public sealed class AutoRelocator
     public const string PlanSourcePrefetch = PrefetchFiles.BootSource;
     public const string RelocatedPrefetch = "relocated (prefetch)";
 
-    /// 프리페치 계획은 이 크기 이하의 파일만 통째로 존에 모읍니다 (더 큰 파일은 옮기지 않고 예열 때만 읽음).
-    public const long PrefetchMaxFileBytes = 64L << 20;
+    /// 프리페치 계획은 트레이스가 참조한 범위의 앞뒤로 이만큼을 더해 존에 모읍니다 (파일 크기 상한 없음).
+    public const long PrefetchPadBytes = 64L << 20;
     private const string FirstRunDetail = "first run recorded, planning again";
     private const string BusyDetail = "target region busy, planning again";
 
@@ -80,6 +81,9 @@ public sealed class AutoRelocator
     /// 지문 검사의 대표 파일: 게임 exe 와 계획에서 가장 큰 파일 몇 개. 이 중 하나라도 바뀌었을 때만 전체 지문을 비교합니다.
     private const int LargestSampled = 3;
     private const string ReplanDetail = "game updated, will trace again on next run";
+
+    /// 새 계획이 실패해 낡은 계획을 되살린 게임의 detail 표시 (done 상태는 유지: 예열·스트림은 계속).
+    public const string StalePlanDetail = "stale plan";
     private static readonly Regex PrewarmedTag = new(@"(, )?prewarmed( \([^)]*\))?", RegexOptions.None, TimeSpan.FromSeconds(1));
     private static readonly Regex ProgressTag = new(@"(, )?prewarming \d+/\d+ MiB", RegexOptions.None, TimeSpan.FromSeconds(1));
     private static readonly Regex TraceTag = new(@"(, )?trace \d+/\d+", RegexOptions.None, TimeSpan.FromSeconds(1));
@@ -92,6 +96,7 @@ public sealed class AutoRelocator
     private readonly IdleTracker _idle = new();
     private DateTimeOffset? _waitSince; // 틱 스레드에서만 씀: 유휴가 아닌 채로 기다리기 시작한 때
     private bool _waitNoted; // 틱 스레드에서만 씀: 이번 대기 구간에 긴 대기를 이미 남겼는지
+    public static readonly TimeSpan BusyRetry = TimeSpan.FromMinutes(5); // 기록 없는 예열이 "drive busy" 로 밀렸을 때 다시 시도하는 간격 (틱마다 30 초가 아님)
     public static readonly TimeSpan RetryEvery = TimeSpan.FromHours(6); // 프리페치·콜드 예열 재시도 간격 (발견 주기와 별개)
     private static readonly TimeSpan LongWait = TimeSpan.FromHours(6);
     private readonly Prewarmer? _prewarm;
@@ -102,9 +107,10 @@ public sealed class AutoRelocator
     private readonly Dictionary<string, DateTimeOffset> _staleChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀
     private readonly HashSet<string> _delayLogged = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 업데이트 지연을 이미 로그한 게임
     private readonly Dictionary<string, DateTimeOffset> _prefetchTried = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 프리페치 기록으로 boot 를 만들어 본 게임과 그 시각
-    private readonly Dictionary<string, long> _needBytes = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 하루 쓰기 예산 때문에 보류한 게임의 마지막 이동 예정 바이트
+    private readonly HashSet<string> _volatileChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 옛 계획의 가변 파일을 이미 따져 본 게임 (서비스 실행당 한 번)
     private readonly HashSet<string> _seeded = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 이전 존 시작에 맞춰 계획을 만든 게임
     private readonly Dictionary<string, DateTimeOffset> _extTried = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 존 확장을 이미 따져 본 (또는 막힌) 게임과 그때의 트레이스 수정 시각 (다음 플레이가 쌓여 트레이스가 바뀔 때까지 다시 보지 않음)
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _planFailedAt = new(StringComparer.Ordinal); // 계획 (또는 재배치) 이 마지막으로 실패한 시각: 그 뒤 트레이스가 새로 쓰이기 전에는 같은 실패를 되풀이하지 않음
     private readonly ConcurrentDictionary<string, DateTimeOffset> _traceWarmTried = new(StringComparer.Ordinal); // 게임별로 예열을 시도한 트레이스 파일 시각
     private readonly object _warmLock = new(); // 아래 예열 큐 상태
     private readonly object _noteLock = new(); // 대기 표시 갱신과 예열 완료 표시가 서로의 detail 을 덮지 않게
@@ -209,6 +215,7 @@ public sealed class AutoRelocator
         RecoverReplan(s);
         ReplanChanged(s);
         ReplanExtended(s);
+        ReplanLegacyVolatile(s);
         PrefetchBootstrap(s);
         WarmCold(s, warms);
         bool relocateOn = s.Auto.Relocate && s.Auto.MaxRelocationsPerDay > 0;
@@ -217,12 +224,11 @@ public sealed class AutoRelocator
             .OrderByDescending(g => played.GetValueOrDefault(g.Name, DateTimeOffset.MinValue)).ThenBy(g => g.Name, StringComparer.Ordinal).ToList();
         DateTimeOffset? held = relocateOn ? _status.RelocationHeldUntil() : null; // 상태 파일을 못 읽어 막는 중
         bool limitReached = relocateOn && (held is not null || _status.RelocationsWithin(DailyWindow) >= s.Auto.MaxRelocationsPerDay); // Note 보다 먼저 정해 같은 상태 로그가 오락가락하며 쌓이지 않게
-        long budget = (long)s.Auto.MaxRelocateGibPerDay << 30; // 0 = 무제한
-        long used = budget > 0 ? _status.RelocationBytesWithin(DailyWindow) : 0;
+        long used = _status.RelocationBytesWithin(DailyWindow);
         var ready = new List<GameSettings>();
         foreach (GameSettings g in work)
         {
-            if (_recovery.IsRecovering(DriveOf(g)))
+            if (_recovery.IsRelocationHeld(DriveOf(g)))
             {
                 WarmNewTrace(g, warms); // 예열은 막지 않음
                 Note(g, AutoStage.WaitingIdle, WaitDetail(g, DriveRecovering));
@@ -247,7 +253,8 @@ public sealed class AutoRelocator
                 continue;
             }
 
-            bool budgetHeld = budget > 0 && used > 0 && used + _needBytes.GetValueOrDefault(g.Name, 1) > budget; // 아직 모르면 1 바이트라도 남아야 함, 그날 첫 이동은 한 번 이동량이 상한보다 커도 허용
+            long budget = BudgetBytes(s, g); // 0 = 무제한
+            bool budgetHeld = budget > 0 && used >= budget; // 1 바이트라도 남아야 함: 남은 만큼만 쓰도록 적용의 쓰기 상한을 줄이므로 첫 이동 예외는 없음
             lock (_noteLock)
             {
                 Note(g, AutoStage.WaitingIdle, WaitDetail(g, held is { } until ? AutoStatus.HoldDetail(until) : limitReached ? DailyLimit : budgetHeld ? DailyBudget : null));
@@ -320,7 +327,7 @@ public sealed class AutoRelocator
     // 자동 모드의 재배치 대상 (HDD) 에서만 합니다. 서비스 시작·런처 트리거 때의 예열은 Prewarmer 가 직접 합니다.
     private void WarmCold(AsterSettings s, List<(GameSettings Game, string Why)> warms)
     {
-        if (_prewarm is null)
+        if (_prewarm is null || !_prewarm.BootSettled()) // 부팅 직후에는 디스크 경쟁을 피해 미룸
         {
             return;
         }
@@ -333,7 +340,7 @@ public sealed class AutoRelocator
         }
 
         IReadOnlyDictionary<string, DateTimeOffset> played = _status.LastPlayed();
-        foreach (GameSettings g in s.Games.OrderByDescending(g => played.GetValueOrDefault(g.Name, DateTimeOffset.MinValue)).ThenBy(g => g.Name, StringComparer.Ordinal))
+        foreach (GameSettings g in AutoMode.Recent(s.Games, played, s.Auto.PrewarmRecent)) // 플레이한 적 있는 게임만 (prewarm_recent 안, 미플레이는 첫 실행 때 트리거 예열만)
         {
             if ((!_coldTried.TryGetValue(g.Name, out DateTimeOffset triedAt) || _env.Now() - triedAt >= RetryEvery) && !PostUpdateDelayed(g, s) && _prewarm.IsCold(g) && _prewarm.LastWarmed(g.Name) is null && _env.Capabilities(g.OriginRoot).CanPrewarm && !AnyGameRunning(g))
             {
@@ -523,8 +530,12 @@ public sealed class AutoRelocator
         PrewarmResult r = _prewarm!.Guarded(g, "auto " + why, pin: true, ignoreCooldown: true, token);
         if (why == ColdWhy)
         {
-            // 일시적인 이유 (디스크 바쁨, 메모리 부족, 게임 실행 중, 취소) 로 못 했으면 다음 틱에 다시. 폴더가 크고 맞는 엔진이 없는 것 같은 결과는 다시 열거하지 않음.
-            if (!r.Ran && r.SkipReason is { } why2 && (why2 == Prewarmer.Cancelled || why2 is "game is running" or "drive busy" || why2.StartsWith("low memory", StringComparison.Ordinal)
+            // 일시적인 이유 (메모리 부족, 게임 실행 중, 취소) 로 못 했으면 다음 틱에 다시, 디스크 바쁨은 BusyRetry 뒤에. 폴더가 크고 맞는 엔진이 없는 것 같은 결과는 다시 열거하지 않음.
+            if (!r.Ran && r.SkipReason == "drive busy")
+            {
+                _coldTried[g.Name] = _env.Now() - RetryEvery + BusyRetry;
+            }
+            else if (!r.Ran && r.SkipReason is { } why2 && (why2 == Prewarmer.Cancelled || why2 == "game is running" || why2.StartsWith("low memory", StringComparison.Ordinal)
                 || why2.StartsWith("cooldown", StringComparison.Ordinal) || why2.StartsWith("failed", StringComparison.Ordinal)))
             {
                 _coldTried.TryRemove(g.Name, out _);
@@ -600,8 +611,25 @@ public sealed class AutoRelocator
                     continue;
                 }
 
+                // 새 트레이스로도 계획이 실패해 낡은 계획을 되살린 게임: 같은 트레이스로는 같은 실패라 그 뒤 트레이스가 새로 쓰였을 때만 다시 계획합니다 (그 트레이스는 새 버전의 것이라 치우지 않음).
+                bool retry = false;
+                if (_planFailedAt.TryGetValue(g.Name, out DateTimeOffset failed))
+                {
+                    if (_env.FileWriteTime(AutoTracer.RawTracePath(g)) is not { } written || written <= failed)
+                    {
+                        continue;
+                    }
+
+                    retry = true;
+                    _ = _planFailedAt.TryRemove(g.Name, out _);
+                }
+                else if (_status.Get(g.Name)?.Detail?.StartsWith(StalePlanDetail, StringComparison.Ordinal) == true)
+                {
+                    retry = true; // 되살린 낡은 계획을 재시작 뒤 보면 같은 취급: 트레이스를 치우지 않고 그 트레이스로 다시 계획 (실패하면 다시 되살리고 실패 시각이 남음)
+                }
+
                 // boot 트레이스로 배치한 게임이 첫 실행을 기록했으면 (원시 트레이스가 생김) 그 기록으로 계획을 바꿉니다: 원시 트레이스는 치우지 않음.
-                bool recorded = IsBootPlan(plan) && _env.FileExists(AutoTracer.RawTracePath(g));
+                bool recorded = retry || IsBootPlan(plan) && _env.FileExists(AutoTracer.RawTracePath(g));
                 if (!recorded && !ReplanStale(g, plan))
                 {
                     continue;
@@ -622,13 +650,20 @@ public sealed class AutoRelocator
                     }
 
                     _env.MoveAside(trace, trace + StaleSuffix);
+                    string marks = AutoTracer.VolatilePath(g); // 옛 트레이스에서 알게 된 가변 파일 표시도 같이 치움
+                    if (_env.FileExists(marks))
+                    {
+                        _env.MoveAside(marks, marks + StaleSuffix);
+                    }
                 }
 
                 _env.MoveAside(g.Plan, g.Plan + StaleSuffix);
                 _status.ResetForReplan(g.Name, recorded ? FirstRunDetail : ReplanDetail);
-                _log.Info(recorded
-                    ? $"{g.Name}: first run recorded, profile plan set aside as {StaleSuffix}, will plan again from the recording (same zone first)"
-                    : $"{g.Name}: source files changed since the plan (game update), trace and plan set aside as {StaleSuffix}, will trace and plan again on the next run");
+                _log.Info(retry
+                    ? $"{g.Name}: trace updated after a failed replan, stale plan set aside as {StaleSuffix}, will plan again from it"
+                    : recorded
+                        ? $"{g.Name}: first run recorded, profile plan set aside as {StaleSuffix}, will plan again from the recording (same zone first)"
+                        : $"{g.Name}: source files changed since the plan (game update), trace and plan set aside as {StaleSuffix}, will trace and plan again on the next run");
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
@@ -641,28 +676,14 @@ public sealed class AutoRelocator
     // 바뀐 경우에만 전체 지문을 비교합니다 (shortcut: 대표가 아닌 파일만 바뀐 업데이트는 대표가 바뀔 때까지 못 잡음, 재배치 직전 검사가 잡음).
     private bool ReplanStale(GameSettings g, PlanFile plan)
     {
-        IEnumerable<Fingerprint> sample = plan.Fingerprints.Where(f => g.ExeNames.Contains(Path.GetFileName(f.Path), StringComparer.OrdinalIgnoreCase))
-            .Concat(plan.Fingerprints.OrderByDescending(f => f.Size).Take(LargestSampled));
-        return sample.Any(Differs) && plan.Fingerprints.Any(Differs);
+        List<Fingerprint> prints = [.. plan.Fingerprints.Where(f => !VolatileFiles.Ignored(f.Path))]; // 게임이 스스로 다시 쓰는 파일 (캐시·설정·로그·세이브) 은 업데이트 증거가 아님
+        IEnumerable<Fingerprint> sample = prints.Where(f => g.ExeNames.Contains(Path.GetFileName(f.Path), StringComparer.OrdinalIgnoreCase))
+            .Concat(prints.OrderByDescending(f => f.Size).Take(LargestSampled));
+        return sample.Any(Differs) && prints.Any(Differs);
     }
 
-    // 지문과 다른가. 파일이 없어짐 (업데이트가 지움) 은 바뀜, 그 밖의 읽기 실패 (잠김·권한) 는 판단 불가라 같은 것으로 침.
-    private bool Differs(Fingerprint fp)
-    {
-        try
-        {
-            Fingerprint now = _env.Stat(fp.Path);
-            return now.Size != fp.Size || now.MtimeNs != fp.MtimeNs;
-        }
-        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
-        {
-            return true;
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-        {
-            return false;
-        }
-    }
+    // 지문과 다른가. 파일이 없어짐 (업데이트가 지움) 은 바뀜, 그 밖의 읽기 실패 (잠김·권한) 는 판단 불가라 재계획하지 않음 (재적용 검사와 같은 기준).
+    private bool Differs(Fingerprint fp) => ReapplyChecker.Compare(fp, _env.Stat) == true;
 
     // 재계획 도중 서비스가 꺼진 경우 (계획은 .stale 로 옮겼는데 상태를 되돌리기 전): 배치됨 표시는 남았고 계획은 없고 .stale 만 있으면 상태를 마저 되돌립니다.
     private void RecoverReplan(AsterSettings s)
@@ -673,6 +694,12 @@ public sealed class AutoRelocator
         }
 
         _recovered = true;
+        // 계획이 없고 .stale 만 있는 failed 게임 (재계획이 실패한 채 꺼짐): 낡은 계획을 되살려 done (stale plan) 으로 돌립니다.
+        foreach (GameSettings g in s.Games.Where(g => _status.Get(g.Name) is { Stage: AutoStage.Failed, RelocatedAt: null } && !_env.FileExists(g.Plan) && _env.FileExists(g.Plan + StaleSuffix)))
+        {
+            _ = RestoreStalePlan(g, "failed before the service restarted");
+        }
+
         foreach (GameSettings g in s.Games.Where(g => _status.Get(g.Name)?.RelocatedAt is not null && !_env.FileExists(g.Plan) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
         {
             _status.ResetForReplan(g.Name, IsExtending(g) ? ExtendDetail : ReplanDetail);
@@ -727,6 +754,48 @@ public sealed class AutoRelocator
                 _log.Warn($"{g.Name}: zone extension check failed, will retry on the next trace ({e.GetType().Name})");
             }
         }
+    }
+
+    // 가변 파일을 빼기 전에 만든 옛 계획 (stats 에 excluded_files 키가 없고 핫 순서에 가변 파일이 듦): 게임이 그 파일을 다시 써서 존이 흐트러져 보이므로
+    // 서비스 실행당 한 번 가변 파일을 뺀 계획으로 다시 만듭니다. 확장 재계획과 같은 길 (.extend): 같은 존 시작에 맞추고, 유휴·일일 상한·바이트 예산 같은 재배치 게이트를 그대로 지납니다.
+    private void ReplanLegacyVolatile(AsterSettings s)
+    {
+        foreach (GameSettings g in s.Games)
+        {
+            if (_status.Get(g.Name)?.RelocatedAt is null || !_env.FileExists(g.Plan) || IsExtending(g) || AnyGameRunning(g)
+                || AutoTracer.PlanTracePath(g, _env.FileExists) is null || !_volatileChecked.Add(g.Name))
+            {
+                continue;
+            }
+
+            try
+            {
+                PlanFile plan = _env.LoadPlan(g.Plan);
+                if (plan.Zone.StartLcn is null || plan.Stats.ContainsKey(VolatileFiles.StatsKey) || !plan.Order.Any(o => VolatileFiles.Ignored(o.Path)))
+                {
+                    continue;
+                }
+
+                _tier?.RevertGame(g.Name, "volatile files left out"); // 링크는 새 재배치 전에 되돌림
+                _ = _env.ArchiveJournal(g);
+                _env.MoveAside(g.Plan, g.Plan + ExtendSuffix);
+                _status.ResetForReplan(g.Name, ExtendDetail);
+                _log.Info($"{g.Name}: plan holds files the game rewrites by itself, plan set aside as {ExtendSuffix}, will plan again without them (same zone)");
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                _log.Warn($"{g.Name}: volatile file check failed ({e.GetType().Name})");
+            }
+        }
+    }
+
+    // 하루 쓰기 예산 (바이트, 0 = 무제한): 명시하지 않았으면 SMR 로 보이는 디스크는 더 낮은 기본값.
+    private long BudgetBytes(AsterSettings s, GameSettings g) => (long)(s.Auto.MaxRelocateGibPerDaySet ? s.Auto.MaxRelocateGibPerDay : s.Auto.MaxRelocateGibFor(IsSmr(g))) << 30;
+
+    private bool IsSmr(GameSettings g)
+    {
+        try { return _env.IsSmr(DriveOf(g)); }
+        catch (Exception) { return false; } // 질의 실패는 SMR 아님으로 본다
     }
 
     private long MaxZoneMib(AsterSettings s, GameSettings g) => s.MaxZoneAuto ? ZoneSize.AutoMaxMib(_env.PhysicalRamBytes(), SlowBus(g)) : s.MaxZoneMib;
@@ -855,7 +924,7 @@ public sealed class AutoRelocator
             return ReapplyVerdict.GameRunning;
         }
 
-        if (_recovery.IsRecovering(DriveOf(g)))
+        if (_recovery.IsRelocationHeld(DriveOf(g)))
         {
             return ReapplyVerdict.Recovering;
         }
@@ -880,7 +949,7 @@ public sealed class AutoRelocator
             return ReapplyVerdict.DiskBusy;
         }
 
-        long budget = (long)s.Auto.MaxRelocateGibPerDay << 30; // 0 = 무제한
+        long budget = BudgetBytes(s, g); // 0 = 무제한
         bool countHeld = _status.RelocationHeldUntil() is not null || (s.Auto.MaxRelocationsPerDay > 0 && _status.RelocationsWithin(DailyWindow) >= s.Auto.MaxRelocationsPerDay);
         bool bytesHeld = budget > 0 && _status.RelocationBytesWithin(DailyWindow) is > 0 and long used && used >= budget;
         return countHeld || bytesHeld ? ReapplyVerdict.DailyLimit : null;
@@ -896,7 +965,11 @@ public sealed class AutoRelocator
     private bool NeedsWork(GameSettings g, bool relocateOn)
     {
         AutoGameEntry? e = _status.Get(g.Name);
-        bool stageOpen = e is null || e.Stage is not (AutoStage.Done or AutoStage.Failed)
+        // 실패한 게임은 서비스 실행당 한 번 다시 시도하고 (저장된 실패 시각 e.At 은 트레이스가 먼저 쓰여 있으면 영영 못 넘으므로 쓰지 않음), 그 뒤로는 트레이스가 새로 쓰였을 때만 다시 시도합니다.
+        // 이번 실행의 실패 시각은 Fail 이 남김 (같은 트레이스로는 되풀이하지 않음).
+        bool reopened = e is { Stage: AutoStage.Failed, RelocatedAt: null } && AutoTracer.PlanTracePath(g, _env.FileExists) is { } latest
+            && _env.FileWriteTime(latest) is { } written && written > _planFailedAt.GetValueOrDefault(g.Name, DateTimeOffset.MinValue);
+        bool stageOpen = reopened || e is null || e.Stage is not (AutoStage.Done or AutoStage.Failed)
             && !(e.Stage == AutoStage.Skipped && !relocateOn)
             && e.RelocatedAt is null;
         if (!stageOpen || AutoTracer.PlanTracePath(g, _env.FileExists) is null)
@@ -966,8 +1039,8 @@ public sealed class AutoRelocator
             string tracePath = AutoTracer.PlanTracePath(g, _env.FileExists) ?? AutoTracer.RawTracePath(g);
             bool boot = tracePath == AutoTracer.BootTracePath(g);
             bool prefetch = boot && _env.TraceSource(tracePath) == PlanSourcePrefetch;
-            IReadOnlyList<TraceEvent> trace = _env.LoadTrace(tracePath, g.OriginRoot);
-            IReadOnlyList<IReadOnlyList<TraceEvent>> sessions = [prefetch ? WholeFilesByLcn(trace) : trace];
+            (IReadOnlyList<TraceEvent> trace, JObject excluded) = DropVolatile(g, _env.LoadTrace(tracePath, g.OriginRoot));
+            IReadOnlyList<IReadOnlyList<TraceEvent>> sessions = [prefetch ? RangesByLcn(trace) : trace];
             PlanFile probe = _env.MakePlan(sessions, g.OriginRoot, ZoneSize.ProbeMib);
             long hot = probe.Stats.TryGetValue("hot_bytes", out object? h) && h is long bytes ? bytes : 0;
             if (hot == 0)
@@ -990,7 +1063,18 @@ public sealed class AutoRelocator
                 return false;
             }
 
-            PlanFile plan = start is { } lcn ? _env.MakePlanAt!(sessions, g.OriginRoot, zoneMib, lcn) : _env.MakePlan(sessions, g.OriginRoot, zoneMib);
+            PlanFile plan;
+            try
+            {
+                plan = start is { } lcn ? _env.MakePlanAt!(sessions, g.OriginRoot, zoneMib, lcn) : _env.MakePlan(sessions, g.OriginRoot, zoneMib);
+            }
+            catch (PyValueException e) when (start is not null && !extending)
+            {
+                // 존 안의 핫 파일이 접근 순서와 반대로 놓이면 (zone overlaps hot data in a cycle) 그 자리에서는 계획할 수 없음: 확장이 아니면 새 존을 찾음
+                _log.Info($"{g.Name}: previous zone cannot be planned in place ({FirstLine(e.Message)}), looking for a new one");
+                (start, plan) = (null, _env.MakePlan(sessions, g.OriginRoot, zoneMib));
+            }
+
             if (start is not null && ZoneBlockedByOwnData(plan))
             {
                 if (extending)
@@ -1009,6 +1093,12 @@ public sealed class AutoRelocator
                 plan.Stats.Add("source", prefetch ? PlanSourcePrefetch : PlanSourceBoot);
             }
 
+            if (excluded.Count > 0)
+            {
+                plan.Stats.Add(VolatileFiles.StatsKey, excluded);
+                _log.Info($"{g.Name}: {excluded.Count} volatile file(s) left out of the plan");
+            }
+
             _env.SavePlan(plan, sessions, g.Plan);
             _log.Info($"{g.Name}: auto plan made, hot {hot >> 20} MiB, zone {zoneMib} MiB");
             return true;
@@ -1020,18 +1110,60 @@ public sealed class AutoRelocator
         }
     }
 
-    // 확장 중에 계획이 실패하면 실패 상태로 두지 않고 이전 계획을 되살립니다.
+    // 가변 파일 (이름 규칙, 트레이스에서 run 사이에 바뀌었거나 쓰기로 열렸다고 표시된 파일) 을 계획 입력에서 뺍니다. 뺀 파일과 사유는 계획 stats 에 남김.
+    private (IReadOnlyList<TraceEvent> Kept, JObject Excluded) DropVolatile(GameSettings g, IReadOnlyList<TraceEvent> trace)
+    {
+        IReadOnlyDictionary<string, string> marked = _env.LoadVolatile(AutoTracer.VolatilePath(g));
+        var excluded = new JObject();
+        foreach (string path in trace.Select(t => t.Path).Distinct(StringComparer.Ordinal))
+        {
+            if ((VolatileFiles.NameReason(path) ?? (marked.TryGetValue(path, out string? why) ? why : null)) is { } reason)
+            {
+                excluded.Add(path, reason);
+            }
+        }
+
+        return excluded.Count == 0 ? (trace, excluded) : ([.. trace.Where(t => !excluded.ContainsKey(t.Path))], excluded);
+    }
+
+    // 확장 중에 계획이 실패하면 실패 상태로 두지 않고 이전 계획을 되살립니다. 확장이 아니어도 낡은 계획 (.stale) 이 있으면 같은 규칙: 되살리고 done (stale plan) 을 유지합니다.
     private void PlanFailed(GameSettings g, string detail, Exception? e)
     {
         if (IsExtending(g))
         {
-            BlockExtension(g, detail);
+            BlockExtension(g, e is null ? detail : $"{detail}: {FirstLine(e.Message)}"); // 예외 형식만으로는 원인을 알 수 없음
         }
-        else
+        else if (!RestoreStalePlan(g, e is null ? detail : $"{detail}: {FirstLine(e.Message)}"))
         {
             Fail(g, detail, e);
         }
     }
+
+    private bool RestoreStalePlan(GameSettings g, string why)
+    {
+        string stale = g.Plan + StaleSuffix;
+        if (_env.FileExists(g.Plan) || !_env.FileExists(stale))
+        {
+            return false;
+        }
+
+        try
+        {
+            _env.MoveAside(stale, g.Plan);
+        }
+        catch (Exception m) when (m is IOException or UnauthorizedAccessException)
+        {
+            return false; // 되살리지 못하면 기존처럼 실패로 기록
+        }
+
+        _planFailedAt[g.Name] = _env.Now();
+        _ = _seeded.Remove(g.Name);
+        _status.Complete(g.Name, g.Source, _env.Now(), counted: false, StalePlanDetail);
+        _log.Warn($"{g.Name}: replan failed ({why}), previous plan restored, state stays done ({StalePlanDetail})");
+        return true;
+    }
+
+    private static string FirstLine(string message) => message.Split('\n', 2)[0].Trim();
 
     // boot 트레이스 (가져온 프로필 또는 프리페치 기록) 로 만든 계획인가.
     private static bool IsBootPlan(PlanFile plan) => plan.Stats.TryGetValue("source", out object? v) && v is PlanSourceBoot or PlanSourcePrefetch;
@@ -1045,21 +1177,53 @@ public sealed class AutoRelocator
         : e.Detail?.Contains(RelocatedPrefetch, StringComparison.Ordinal) == true ? RelocatedPrefetch
         : e.Detail?.Contains(RelocatedProfile, StringComparison.Ordinal) == true ? RelocatedProfile : null;
 
-    // 프리페치 계획의 입력: 트레이스에 나온 파일 중 크기가 PrefetchMaxFileBytes 이하인 것을 통째로, 물리 순서 (첫 extent 의 LCN, 오름차순) 로.
+    // 프리페치 계획의 입력: 트레이스가 참조한 범위의 앞뒤로 PrefetchPadBytes 를 더해 (겹치면 합치고 파일 크기로 자름), 파일의 물리 순서 (첫 extent 의 LCN, 오름차순) 와 오프셋 순으로.
     // shortcut: 프리페치 순서가 실제 접근 순서와 얼마나 맞는지 아직 재지 않아서 (τ 검증 전) 접근 순서를 따르지 않고 물리 순서로 보수적으로 정렬함, 검증되면 프리페치 순서로 바꿈.
-    private List<TraceEvent> WholeFilesByLcn(IReadOnlyList<TraceEvent> trace)
+    private List<TraceEvent> RangesByLcn(IReadOnlyList<TraceEvent> trace)
     {
-        var rows = new List<(string Path, long Size, long Lcn)>();
-        foreach (string path in trace.Select(e => e.Path).Distinct(StringComparer.OrdinalIgnoreCase))
+        var rows = new List<(string Path, long Lcn, long Start, long End)>();
+        foreach (IGrouping<string, TraceEvent> file in trace.GroupBy(e => e.Path, StringComparer.OrdinalIgnoreCase))
         {
-            long size = _env.Stat(path).Size;
-            if (size > 0 && size <= PrefetchMaxFileBytes && _env.Extents(path) is { Count: > 0 } extents)
+            long size = _env.Stat(file.Key).Size;
+            if (size <= 0 || _env.Extents(file.Key) is not { Count: > 0 } extents)
             {
-                rows.Add((path, size, extents.Min(x => x.Lcn)));
+                continue;
+            }
+
+            long lcn = extents.Min(x => x.Lcn);
+            (long Start, long End)? open = null;
+            foreach ((long Start, long End) r in file.Select(e => (Start: Math.Max(0, e.Offset - PrefetchPadBytes), End: Math.Min(size, e.Offset + e.Length + PrefetchPadBytes))).Where(r => r.Start < r.End).OrderBy(r => r.Start))
+            {
+                if (open is { } o && r.Start <= o.End)
+                {
+                    open = (o.Start, Math.Max(o.End, r.End));
+                    continue;
+                }
+
+                if (open is { } done)
+                {
+                    rows.Add((file.Key, lcn, done.Start, done.End));
+                }
+
+                open = r;
+            }
+
+            if (open is { } last)
+            {
+                rows.Add((file.Key, lcn, last.Start, last.End));
             }
         }
 
-        return rows.OrderBy(r => r.Lcn).ThenBy(r => r.Path, StringComparer.Ordinal).Select(r => new TraceEvent(r.Path, 0, r.Size)).ToList();
+        return rows.OrderBy(r => r.Lcn).ThenBy(r => r.Path, StringComparer.Ordinal).ThenBy(r => r.Start).SelectMany(r => Chunks(r.Path, r.Start, r.End)).ToList();
+    }
+
+    // 트레이스 이벤트 한 개의 길이는 TraceEvents.MaxLength 이하여야 하므로 큰 범위는 그 길이로 잘라 이어 붙입니다.
+    private static IEnumerable<TraceEvent> Chunks(string path, long start, long end)
+    {
+        for (long at = start; at < end; at += TraceEvents.MaxLength)
+        {
+            yield return new TraceEvent(path, at, Math.Min(TraceEvents.MaxLength, end - at));
+        }
     }
 
     // 같은 존을 다시 쓰는 계획의 목표 자리에 이 계획이 옮기지 않는 자기 파일 데이터 (예: 이전 계획이 존에 모은, 이번 기록에서는 핫이 아닌 부분) 가 있는가.
@@ -1133,7 +1297,14 @@ public sealed class AutoRelocator
         {
             PlanFile plan = _env.LoadPlan(g.Plan);
             ReapplyChecker.CheckPaths(plan, g, _env.RealPath);
-            if (plan.Fingerprints.Any(f => ReapplyChecker.Changed(f, _env.Stat)))
+            List<bool?> stamps = [.. plan.Fingerprints.Where(f => !VolatileFiles.Ignored(f.Path)).Select(f => ReapplyChecker.Compare(f, _env.Stat))];
+            if (!stamps.Contains(true) && stamps.Contains(null))
+            {
+                Note(g, AutoStage.WaitingIdle, "plan files unreadable, will retry"); // 잠김·권한으로 바뀌었는지 모름: 재적용만 미루고 재계획은 하지 않음
+                return;
+            }
+
+            if (stamps.Contains(true))
             {
                 _log.Info($"{g.Name}: source files changed since the plan, planning again"); // 없어진 파일은 새 계획에서 빠짐
                 if (!Plan(g, s))
@@ -1198,30 +1369,29 @@ public sealed class AutoRelocator
             plan = _env.LoadPlan(g.Plan);
             ReapplyChecker.CheckPaths(plan, g, _env.RealPath);
             string order = RelocateOrder.Resolve(s.Auto.RelocateOrder);
-            var run = new ApplyOptions(Execute: true, ChunkBytes: (long)s.Auto.RelocateChunkMib << 20, LowIoPriority: s.Auto.RelocateIoPriority == AutoSettings.IoLow, Verify: s.Auto.RelocateVerify, Order: order, Parallel: s.Auto.ParallelFor(_env.IsSlowBus(DriveOf(g))));
-            long bytes = Math.Min(dry.BytesTodo, run.WriteCap); // 한 번의 적용은 WriteCap 까지만 쓰고 나머지는 이어하기가 다시 셈
+            bool smr = IsSmr(g);
+            var run = new ApplyOptions(Execute: true, ChunkBytes: (long)s.Auto.RelocateChunkMib << 20, LowIoPriority: s.Auto.RelocateIoPriority == AutoSettings.IoLow, Verify: s.Auto.RelocateVerify, Order: order, Parallel: s.Auto.ParallelFor(_env.IsSlowBus(DriveOf(g)), smr),
+                WriteCap: AutoSettings.WriteCapFor(smr));
             if (_status.RelocationHeldUntil() is { } held)
             {
                 Note(g, AutoStage.WaitingIdle, WaitDetail(g, AutoStatus.HoldDetail(held)));
                 return;
             }
 
-            long budget = (long)s.Auto.MaxRelocateGibPerDay << 30;
-            long usedToday = budget > 0 ? _status.RelocationBytesWithin(DailyWindow) : 0;
-            if (extending && budget > 0 && usedToday == 0 && bytes > budget)
+            long budget = BudgetBytes(s, g); // 0 = 무제한
+            if (budget > 0)
             {
-                BlockExtension(g, "the extension is larger than the daily write budget"); // 확장분은 첫 이동 예외를 받지 않으므로 영원히 대기하게 됨
-                return;
+                long left = budget - _status.RelocationBytesWithin(DailyWindow);
+                if (left <= 0)
+                {
+                    Note(g, AutoStage.WaitingIdle, WaitDetail(g, DailyBudget));
+                    return;
+                }
+
+                run = run with { WriteCap = Math.Min(run.WriteCap, left) }; // 한 번의 적용은 회당 상한과 하루 남은 양 중 작은 쪽까지만 쓰고 나머지는 이어하기가 다시 셈
             }
 
-            if ((usedToday > 0 || extending) && usedToday + bytes > budget && budget > 0) // 빈 창의 첫 이동은 상한보다 커도 허용 (아니면 영원히 대기), 존 확장은 예외 없음
-            {
-                _needBytes[g.Name] = bytes;
-                Note(g, AutoStage.WaitingIdle, WaitDetail(g, DailyBudget));
-                return;
-            }
-
-            _ = _needBytes.Remove(g.Name);
+            long bytes = Math.Min(dry.BytesTodo, run.WriteCap);
             (DriveBaseline? baseline, bool interrupted) = s.Auto.PostRelocateRecovery == AutoSettings.RecoveryProbe ? MeasureBaseline(g, plan, token) : (null, false);
             if (interrupted)
             {
@@ -1231,6 +1401,7 @@ public sealed class AutoRelocator
 
             _status.BeginRelocation(_env.Now(), bytes); // 하루 상한은 끝이 아니라 시작 (이어하기 포함) 으로 셈
             ApplyReport rep = _env.Apply(g, plan, run, token);
+            _status.SetLastRelocationBytes(rep.MovedBytes); // 시작 때 넣은 예정 바이트 대신 실제로 옮긴 양
             _log.Info($"{g.Name}: auto relocation moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed, order {rep.OrderUsed ?? order}" + (rep.OrderFallbackReason is not null ? " (fallback)" : string.Empty) + (rep.Stopped is { } why ? $", stopped: {why}" : string.Empty) + rep.Timings.Summary);
             BeginRecovery(g, s.Auto, rep.MovedBytes, baseline);
             if (rep.Stopped == "cancelled")
@@ -1314,7 +1485,7 @@ public sealed class AutoRelocator
 
     private ProbeSpot? Spot(string drive, long lcn, ProbeRound round) => _env.ProbeMbps(drive, lcn, round) is > 0 and double mbps ? new ProbeSpot(lcn, mbps) : null;
 
-    // 쓴 바이트가 있으면 회복 추적을 시작: probe 는 기준이 있을 때 최대 recovery_max_min 분, 기준이 없거나 fixed 면 post_update_delay_min 분 고정, off 는 기다리지 않음.
+    // 쓴 바이트가 있으면 회복 추적을 시작: probe 는 기준이 있을 때 최대 recovery_max_min 분 (그때까지 회복을 확인하지 못하면 recovery_hard_max_min 분까지 재배치만 계속 보류), 기준이 없거나 fixed 면 post_update_delay_min 분 고정, off 는 기다리지 않음.
     private void BeginRecovery(GameSettings g, AutoSettings auto, long movedBytes, DriveBaseline? baseline)
     {
         if (movedBytes <= 0 || auto.PostRelocateRecovery == AutoSettings.RecoveryOff)
@@ -1323,7 +1494,7 @@ public sealed class AutoRelocator
         }
 
         bool probe = auto.PostRelocateRecovery == AutoSettings.RecoveryProbe && baseline is not null;
-        _recovery.Begin(DriveOf(g), probe ? baseline : null, TimeSpan.FromMinutes(probe ? auto.RecoveryMaxMin : auto.PostUpdateDelayMin));
+        _recovery.Begin(DriveOf(g), probe ? baseline : null, TimeSpan.FromMinutes(probe ? auto.RecoveryMaxMin : auto.PostUpdateDelayMin), TimeSpan.FromMinutes(auto.RecoveryHardMaxMin));
     }
 
     // 게임이 안 돌 때만, 이번 자동 적용이 저널에 쓴 줄 (mark 줄 뒤) 만 되돌립니다 (최선 노력). 앞선 적용의 줄은 이어하기·수동 되돌리기의 몫이라 건드리지 않음.
@@ -1348,6 +1519,7 @@ public sealed class AutoRelocator
 
     private void Fail(GameSettings g, string detail, Exception? e)
     {
+        _planFailedAt[g.Name] = _env.Now();
         _status.Set(g.Name, g.Source, null, AutoStage.Failed, detail);
         _log.Error($"{g.Name}: auto relocation stopped: {detail}", e);
     }

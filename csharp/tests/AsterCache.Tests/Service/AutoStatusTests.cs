@@ -167,6 +167,18 @@ public sealed class AutoStatusTests : IDisposable
     }
 
     [Fact]
+    public void FinishedRelocationKeepsTheActualMovedBytesNotThePlannedOnes()
+    {
+        AutoStatus s = Make();
+        s.BeginRelocation(_now, 5L << 30); // 시작 때의 예정 바이트
+        s.SetLastRelocationBytes(3L << 30); // 실제로 옮긴 양
+
+        Assert.Equal(3L << 30, s.RelocationBytesWithin(TimeSpan.FromHours(24)));
+        var root = (JObject)JsonRead.ReadFile(StatusPath)!;
+        Assert.Equal([3L << 30], ((List<object?>)root["relocation_bytes"]!).Cast<long>());
+    }
+
+    [Fact]
     public void RelocationBytesAreSummedWithinTheWindowAndRoundTrip()
     {
         AutoStatus s = Make();

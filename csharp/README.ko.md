@@ -121,6 +121,7 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 - 자동 모드([자동 모드](../README.ko.md#자동-모드))는 서비스 안에서 돕니다. 서비스는 `config.json` 전체를 5초마다 다시 읽으므로 바꾼 값이 다시 시작하지 않아도 적용됩니다. 상태는 `%ProgramData%\AsterCache\auto_status.json` 에 쓰며, 이 파일은 서비스만 씁니다.
 - 선행 읽기 엔진(`Prefetch\ReadAhead`)은 서비스 안에서 첫 실행 학습을 맡습니다. `Tracer` 의 실시간 콜백을 받아 50 ms 마다 플러시합니다. [자동 모드](../README.ko.md#자동-모드)를 보십시오.
 - 기록 없는 게임의 통째 예열 (`auto.full_prewarm`).
+- 부팅·서비스 시작 예열 (0.9.0-beta.14): 최근에 플레이한 게임만(`prewarm_recent`), 부팅 5분 뒤, 디스크가 유휴일 때만 합니다. 통째 예열 상한은 기본 1024 MiB입니다(`auto.full_prewarm_max_mib`; 0이면 RAM의 4분의 1 대신 1024 MiB). `auto.load_boundary`는 기본 꺼짐이며 게임이 끝나면 멈춥니다.
 - 엔진 프로필 예열 (`auto.engine_profiles`, 임베디드 `Core\Profiles\engines.json`).
 
 ## 자동 부트 자료: 구성 요소와 공유 프로필 index
@@ -226,6 +227,8 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 - 알려진 한계: 파일 삭제(`FileIOFileDelete`)로 사라진 FileKey 이름은 처리하지 않습니다.
 - 파일 이름은 FileKey(정리 이벤트는 세션 끝에 옴)를 우선하고 읽을 때의 FileObject 이름을 보조로 씁니다. FileObject 주소는 재사용되기 때문입니다. WPR FileIO 프로필의 실제 .etl 에서 이벤트 유실이 크면 (한 번의 수집에서 3.8M건) 읽기 일부가 빠지므로, 이 .etl 변환의 재현율은 수집 손실과 분리해 평가할 수 없습니다.
 - 안티치트 게임(Ricochet, Vanguard)에서 ETW 수집과 서비스 상주의 영향은 검증하지 않았습니다. 안티치트가 없는 게임으로 먼저 확인합니다.
+- 안티치트 게임(eac, battleye, vanguard, 탐지 실패; Vanguard 가 설치된 시스템의 Riot 게임은 수동 등록도 vanguard)에서는 서비스가 ETW 트레이스를 시작하지 않고 파일을 고정(pin)하지도 않습니다. 읽기 전용 예열과, 게임이 실행 중이 아닐 때의 재배치는 그대로입니다. 휴리스틱은 열 수 없는 프로세스에 커널 ETW 세션을 걸지 않고 건너뜁니다.
+- 0.9.0-beta.14 부터 서비스는 Vanguard·EAC·BattlEye 게임(탐지 실패 포함)에는 자동 ETW 트레이스를 시작하지 않습니다. 예열·시작 스트림·재배치는 그대로입니다 (실제 Vanguard 클라이언트가 트레이스 시작 뒤 두 번 종료되었습니다).
 - Velopack 갱신은 Velopack 으로 설치한 트레이에만 해당합니다. 설치본은 새 설치 프로그램을 실행해 갱신합니다 (위 "트레이 갱신과 서비스"). 실제 Velopack 설치 갱신 시험은 하지 않았습니다.
 - WDK 설치 크기와 winget 패키지 ID 는 확인하지 않았습니다.
 - 커널 미니필터(AsterFlt)는 소스 단계이며, 이 PC 에 적재하지 않습니다. 적재 검증은 VM 절차로만 다룹니다.

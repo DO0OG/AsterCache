@@ -1,5 +1,7 @@
+using AsterCache.Core.Discovery;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
+using AsterCache.Core.Plan;
 using AsterCache.Core.Profiles;
 using AsterCache.Core.Settings;
 using AsterCache.Core.Trace;
@@ -20,6 +22,13 @@ public sealed class AutoTracer
     private readonly LearnEnv _learn;
     private readonly object _lock = new();
     private Run? _run;
+    private readonly Dictionary<string, string?> _cheat = new(StringComparer.OrdinalIgnoreCase); // 게임별 트레이스 금지 판정 (없음 포함), _lock 으로 보호
+    private readonly HashSet<string> _cheatLogged = new(StringComparer.OrdinalIgnoreCase);
+
+    /// 두 번째 이후 플레이가 이보다 적게 읽었거나 (바이트) 첫 플레이의 1 % 보다 이벤트가 적으면 (메뉴만 켠 플레이 등) 저장하지 않고 회차로 세지 않습니다.
+    public const long MinExtraRunBytes = 64L << 20;
+
+    public long MinRunBytes { get; init; } = MinExtraRunBytes;
 
     public AutoTracer(AutoEnv env, AutoStatus status, ILog log, Func<AsterSettings> settings, LearnEnv? learn = null)
     {
@@ -42,6 +51,31 @@ public sealed class AutoTracer
     }
 
     public static string RawTracePath(GameSettings g) => Path.Combine(Path.GetDirectoryName(g.Plan) ?? string.Empty, g.Name + ".trace.json");
+
+    /// 트레이스에서 알게 된 가변 파일 (경로 → 사유) 표시 파일: 계획에서 뺄 파일. 낡은 트레이스를 치울 때 같이 치웁니다.
+    public static string VolatilePath(GameSettings g) => Path.Combine(Path.GetDirectoryName(g.Plan) ?? string.Empty, g.Name + ".trace.volatile.json");
+
+    /// 표시 파일을 읽음. 없거나 읽을 수 없으면 빈 목록 (표시는 힌트일 뿐).
+    public static IReadOnlyDictionary<string, string> ReadVolatile(string path)
+    {
+        var marks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            if (File.Exists(path) && JsonRead.ReadFile(path) is JObject o)
+            {
+                foreach ((string file, object? why) in o)
+                {
+                    marks[file] = why as string ?? string.Empty;
+                }
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            marks.Clear();
+        }
+
+        return marks;
+    }
 
     /// 지금까지 모은 플레이 수: 원시 트레이스가 있을 때 trace.run1.json, run2.json ... 이 이어서 있는 개수, 그런 파일 없이 원시 트레이스만 있으면 1, 원시 트레이스가 없으면 0. 따로 저장하는 상태 없음.
     public static int RunCount(GameSettings g, Func<string, bool> exists)
@@ -114,8 +148,54 @@ public sealed class AutoTracer
         }
     }
 
+    // 안티치트 게임은 ETW 커널 트레이스를 걸지 않음 (보호 드라이버가 세션을 보고 클라이언트를 끊음). 등록 정보 (설정을 읽을 때 Riot 규칙으로 채워짐), 폴더 이름 순으로 보고 (폴더 열거는 한 번만) 탐지 실패도 막음.
+    private string? TraceBlocker(GameSettings g)
+    {
+        lock (_lock)
+        {
+            if (_cheat.TryGetValue(g.Name, out string? known))
+            {
+                return known;
+            }
+        }
+
+        string? cheat = AntiCheat.ForbidsTrace(g.AntiCheat) ? g.AntiCheat : null;
+        if (cheat is null)
+        {
+            string? found = _env.AntiCheatOf(g.OriginRoot);
+            cheat = AntiCheat.ForbidsTrace(found) ? found : null;
+            if (found == AutoEnv.AntiCheatUnknown)
+            {
+                return cheat; // 탐지 실패는 캐시하지 않음 (다음 시작에 다시 봄)
+            }
+        }
+
+        lock (_lock)
+        {
+            _cheat[g.Name] = cheat;
+        }
+
+        return cheat;
+    }
+
     public void Start(GameSettings g)
     {
+        if (TraceBlocker(g) is { } cheat)
+        {
+            bool first;
+            lock (_lock)
+            {
+                first = _cheatLogged.Add(g.Name);
+            }
+
+            if (first)
+            {
+                _log.Info($"{g.Name}: trace skipped (anti-cheat: {cheat})");
+            }
+
+            return;
+        }
+
         string? refused;
         ReadAhead? learn = null;
         int done; // 이미 모은 플레이 수: 0 이면 첫 기록, 1 이상이면 병합용 추가 기록 (상태·선행 읽기를 건드리지 않음)
@@ -187,6 +267,8 @@ public sealed class AutoTracer
 
         AutoSettings a = _settings().Auto;
         IReadOnlyList<(int Pid, long ReadBytes)> procs = _env.GameProcesses(run.Game.ExeNames);
+        IReadOnlyList<int> rooted = _env.RootPids(run.Game); // 게임 폴더 아래의 실제 게임 프로세스 (등록 exe 의 자식인 경우도 포함)
+        procs = [.. procs, .. rooted.Where(p => procs.All(x => x.Pid != p)).Select(p => (Pid: p, Bytes: _env.ReadBytes(p))).Where(x => x.Bytes is not null).Select(x => (x.Pid, x.Bytes!.Value))];
         foreach ((int pid, long bytes) in procs)
         {
             // 첫 표본의 프로세스는 지금 값이 기준, 그 뒤에 나타난 프로세스는 세션이 열린 뒤에 시작했으므로 0 이 기준
@@ -203,7 +285,7 @@ public sealed class AutoTracer
         }
 
         TimeSpan elapsed = _env.Now() - run.StartedAt;
-        string? why = !_env.AnyRunning(run.Game.ExeNames) ? "game exited" // 읽기량을 못 연 (보호된) 게임 프로세스도 실행 중으로 셈
+        string? why = !_env.AnyRunning(run.Game.ExeNames) && rooted.Count == 0 ? "game exited" // 읽기량을 못 연 (보호된) 게임 프로세스도 실행 중으로 셈, 등록 exe 가 먼저 끝나도 폴더 아래 프로세스가 남았으면 실행 중
             : elapsed >= TimeSpan.FromSeconds(a.TraceCapSeconds) ? "time cap"
             : run.Read >= (long)a.TraceCapMib << 20 ? "read cap"
             : null;
@@ -246,15 +328,27 @@ public sealed class AutoTracer
                 return;
             }
 
-            if (run.Number == 1)
+            if (run.Number > 1 && TooSmall(g, canonical) is { } small)
             {
-                TraceWriter.Write([canonical], RawTracePath(g));
-            }
-            else
-            {
-                Merge(g, canonical, run.Number);
+                _log.Info($"{g.Name}: auto trace ended ({why}), run {run.Number} too small ({small}), not saved and not counted");
+                return;
             }
 
+            Dictionary<string, string> marks = VolatileOfRun(run, records, canonical); // 이전 플레이 파일을 덮기 전에 (그 수정 시각이 기준)
+            // 기록·병합은 게임과 디스크를 다투지 않게 낮은 우선순위 스레드에서 돌림 (끝날 때까지 기다림)
+            RunBelowNormal(() =>
+            {
+                if (run.Number == 1)
+                {
+                    TraceWriter.Write([canonical], RawTracePath(g));
+                }
+                else
+                {
+                    Merge(g, canonical, run.Number);
+                }
+            });
+
+            SaveVolatile(g, marks);
             _log.Info($"{g.Name}: auto trace ended ({why}), {canonical.Count} read events saved" + (run.Number == 1 ? string.Empty : $" (run {run.Number}, merged)"));
             if (run.Number == 1)
             {
@@ -277,6 +371,120 @@ public sealed class AutoTracer
             {
                 _run = null;
             }
+        }
+    }
+
+    // 첫 플레이보다 훨씬 작은 (이벤트 수가 1 % 미만) 또는 읽은 양이 MinRunBytes 미만인 플레이의 사유, 아니면 null. 첫 플레이 크기를 못 읽으면 바이트 기준만 봄.
+    private string? TooSmall(GameSettings g, List<TraceEvent> canonical)
+    {
+        long bytes = canonical.Sum(e => e.Length);
+        if (bytes < MinRunBytes)
+        {
+            return $"{canonical.Count} events, {bytes >> 20} MiB read";
+        }
+
+        string raw = RawTracePath(g);
+        string first = _env.FileExists(TraceWriter.RunPath(raw, 1)) ? TraceWriter.RunPath(raw, 1) : raw;
+        try
+        {
+            return JsonRead.ReadFile(first) is List<object?> rows && canonical.Count * 100L < rows.Count ? $"{canonical.Count} events against {rows.Count} in run 1" : null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            return null;
+        }
+    }
+
+    // 이 플레이에서 가변 파일로 볼 것: 쓰기로 열린 파일, 그리고 (두 번째 이후) 이전 플레이를 저장한 뒤 수정된 파일. 읽을 수 없는 파일은 건너뜀.
+    private Dictionary<string, string> VolatileOfRun(Run run, IReadOnlyList<TraceRecord> records, List<TraceEvent> canonical)
+    {
+        GameSettings g = run.Game;
+        var marks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        HashSet<string> written = TraceBuilder.WrittenPaths(records, g.ExeNames, g.OriginRoot);
+        string raw = RawTracePath(g);
+        DateTimeOffset? since = run.Number > 1 ? _env.FileWriteTime(TraceWriter.RunPath(raw, run.Number - 1)) ?? _env.FileWriteTime(raw) : null;
+        foreach (string path in canonical.Select(e => e.Path).Distinct(StringComparer.Ordinal))
+        {
+            if (written.Contains(path))
+            {
+                marks[path] = "opened for write";
+            }
+            else if (since is { } at && ModifiedAfter(path, at))
+            {
+                marks[path] = "changed between runs";
+            }
+        }
+
+        return marks;
+    }
+
+    private bool ModifiedAfter(string path, DateTimeOffset at)
+    {
+        try
+        {
+            return new DateTimeOffset(Fingerprint.UnixEpochTicks + _env.Stat(path).MtimeNs / 100, TimeSpan.Zero) > at;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    // 표시 파일에 합칩니다 (임시 파일을 거쳐 한 번에 바꿔 씀). 실패해도 이미 저장한 트레이스는 그대로: 표시는 힌트일 뿐.
+    private void SaveVolatile(GameSettings g, Dictionary<string, string> marks)
+    {
+        if (marks.Count == 0)
+        {
+            return;
+        }
+
+        string path = VolatilePath(g);
+        try
+        {
+            var all = new Dictionary<string, string>(ReadVolatile(path), StringComparer.OrdinalIgnoreCase);
+            foreach ((string file, string why) in marks)
+            {
+                all[file] = why;
+            }
+
+            var o = new JObject();
+            foreach ((string file, string why) in all.OrderBy(k => k.Key, StringComparer.Ordinal))
+            {
+                o.Add(file, why);
+            }
+
+            string temp = path + ".tmp";
+            File.WriteAllBytes(temp, PyJson.Utf8.GetBytes(PyJson.Dumps(o, indent: 1)));
+            File.Move(temp, path, true);
+            _log.Info($"{g.Name}: {marks.Count} volatile file(s) marked from the trace ({all.Count} in total)");
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"{g.Name}: volatile file marks not saved ({e.GetType().Name})");
+        }
+    }
+
+    // 작업을 BelowNormal 스레드에서 돌리고 끝날 때까지 기다립니다. 예외는 호출한 쪽으로 다시 던집니다.
+    private static void RunBelowNormal(Action work)
+    {
+        Exception? error = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                work();
+            }
+            catch (Exception e)
+            {
+                error = e;
+            }
+        })
+        { Priority = ThreadPriority.BelowNormal, IsBackground = true };
+        thread.Start();
+        thread.Join();
+        if (error is not null)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(error);
         }
     }
 

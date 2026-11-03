@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using AsterCache.Core;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Plan;
@@ -50,6 +51,10 @@ public sealed class AutoMode
     }
 
     private readonly CancellationTokenSource _stop = new(); // 서비스 종료: 게임 시작 때 도는 로딩 경계 감시를 멈춤
+    private readonly ConcurrentDictionary<string, CancellationTokenSource> _boundaryWatch = new(StringComparer.OrdinalIgnoreCase); // 게임별 로딩 경계 감시 (게임 종료 때 취소)
+
+    /// 시험용 seam: 로딩 경계 감시 본체 (비우면 LoadBoundaryWatch.Run).
+    public Action<GameSettings, CancellationToken>? BoundaryRunner { get; set; }
 
     // 예열이 방금 끝났으면 핫 집합 표본 몇 곳의 적중률을 잼. 같은 물리 디스크에서 게임이 도는 중이면 게임 디스크를 건드리지 않으려고 건너뜀.
     private void RecordHitAfterWarm(Prewarmer prewarm, GameSettings g)
@@ -106,8 +111,52 @@ public sealed class AutoMode
                 _tracer.Start(g);
             }
 
-            LoadBoundaryWatch.Run(g, Status, _log, _stop.Token, _env.Now); // 적중률은 여기서 재지 않음 (게임 디스크 읽기): 예열 직후 값이 auto_status 에 남아 있음
+            if (a.LoadBoundary)
+            {
+                // 적중률은 여기서 재지 않음 (게임 디스크 읽기): 예열 직후 값이 auto_status 에 남아 있음. 게임이 끝나면 NoteGameExit 가 멈춤
+                var watch = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
+                CancellationTokenSource? previous = null;
+                _ = _boundaryWatch.AddOrUpdate(g.Name, watch, (_, old) =>
+                {
+                    previous = old;
+                    return watch;
+                });
+                Release(previous); // 같은 게임이 다시 뜬 경우 이전 감시를 멈추고 치움
+                try
+                {
+                    // 등록 전에 게임이 끝났으면 NoteGameExit 가 놓치므로 등록 직후 확인 (등록 뒤의 종료는 NoteGameExit 가 취소)
+                    if (!_env.AnyRunning(g.ExeNames))
+                    {
+                        Release(watch, dispose: false);
+                    }
+
+                    if (BoundaryRunner is { } run)
+                    {
+                        run(g, watch.Token);
+                    }
+                    else
+                    {
+                        LoadBoundaryWatch.Run(g, Status, _log, watch.Token, _env.Now);
+                    }
+                }
+                finally
+                {
+                    if (_boundaryWatch.TryRemove(new KeyValuePair<string, CancellationTokenSource>(g.Name, watch)))
+                    {
+                        watch.Dispose(); // 맵에서 뺀 쪽이 치움 (종료 통지가 이미 뺐다면 그쪽이 치움)
+                    }
+                }
+            }
         });
+    }
+
+    /// 게임 종료 때 (Worker 의 종료 감지에서 부름): 그 게임의 로딩 경계 감시를 멈춥니다.
+    public void NoteGameExit(GameSettings g)
+    {
+        if (_boundaryWatch.TryRemove(g.Name, out CancellationTokenSource? watch))
+        {
+            Release(watch);
+        }
     }
 
     /// 정기 재적용이 지나야 하는 자동 모드와 같은 게이트 (재적용 루프 스레드에서 부름). 게이트 자체가 실패하면 보수적으로 미룸.
@@ -184,6 +233,9 @@ public sealed class AutoMode
             : [];
     }
 
+    /// 이 게임을 플레이한 적이 있는가 (자동 모드가 꺼져 있으면 항상 참): 서비스 시작 예열과 재예열 점검은 플레이한 게임만 합니다. 미플레이 게임은 첫 실행 때 트리거 예열만.
+    public bool HasPlayed(string name) => !_settings.Auto.Enabled || Status.LastPlayed().ContainsKey(name);
+
     /// 트리거 프로그램에 걸린 게임 중 예열할 것: 수동 게임은 전부, 자동 등록 게임은 최근 순 상위 prewarm_recent 개 (0 이면 전부, -1 이면 자동 등록 게임은 없음, 자동 모드가 꺼져 있으면 전부).
     public IEnumerable<GameSettings> NarrowTriggered(IReadOnlyList<GameSettings> hit)
     {
@@ -226,7 +278,6 @@ public sealed class AutoMode
     {
         _stop.Cancel();
         _tracer.Shutdown();
-        _registry.Shutdown();
     }
 
     private async Task Loop(TimeSpan first, TimeSpan every, string what, Action work, CancellationToken ct)
@@ -243,6 +294,23 @@ public sealed class AutoMode
         catch (OperationCanceledException)
         {
             // 종료
+        }
+    }
+
+    // 감시를 멈추고 치웁니다. 감시하던 쪽은 이미 가져간 토큰만 쓰므로 치운 뒤에도 취소 상태를 볼 수 있음.
+    private static void Release(CancellationTokenSource? watch, bool dispose = true)
+    {
+        try
+        {
+            watch?.Cancel();
+            if (dispose)
+            {
+                watch?.Dispose();
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            // 다른 쪽이 이미 치움
         }
     }
 

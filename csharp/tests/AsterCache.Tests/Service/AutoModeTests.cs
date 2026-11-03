@@ -275,7 +275,7 @@ public sealed class AutoModeTests : IDisposable
 
         await worker.StopAsync(CancellationToken.None);
 
-        Assert.Equal(["warm", "recent"], streamer.Calls.Select(c => c.Game));
+        Assert.Equal(["recent", "warm"], streamer.Calls.Select(c => c.Game)); // 시작 예열도 마지막 플레이 순 (on_service_start 라고 앞서지 않음)
         Assert.Equal(T0, _rig.Status.Get("warm")!.LastPlayed); // 게임 시작 알림이 last_played 를 기록함 (가짜 시계)
     }
 
@@ -315,5 +315,82 @@ public sealed class AutoModeTests : IDisposable
 
         Assert.Equal(1, _rig.World.TraceStarts);
         Assert.Equal(AutoStage.Done, _rig.Status.Get("foo")!.Stage);
+    }
+
+    [Fact]
+    public async Task LoadBoundaryWatchStopsWhenTheGameExits()
+    {
+        AddGame("foo", "auto");
+        _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { LoadBoundary = true } };
+        _rig.World.Session = new FakeTrace();
+        _rig.World.Running = true;
+        AutoMode mode = Mode();
+        var started = new TaskCompletionSource();
+        CancellationToken watched = default;
+        mode.BoundaryRunner = (_, ct) =>
+        {
+            watched = ct;
+            started.TrySetResult();
+            ct.WaitHandle.WaitOne();
+        };
+
+        Task run = Task.Run(() => mode.OnGameStart(Game()));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.False(watched.IsCancellationRequested);
+
+        mode.NoteGameExit(Game());
+        await run.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.True(watched.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task RestartingTheSameGameCancelsAndDisposesThePreviousLoadBoundaryWatch()
+    {
+        AddGame("foo", "auto");
+        _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { LoadBoundary = true } };
+        _rig.World.Session = new FakeTrace();
+        _rig.World.Running = true;
+        AutoMode mode = Mode();
+        var tokens = new List<CancellationToken>();
+        var started = new SemaphoreSlim(0);
+        mode.BoundaryRunner = (_, ct) =>
+        {
+            lock (tokens)
+            {
+                tokens.Add(ct);
+            }
+
+            started.Release();
+            ct.WaitHandle.WaitOne();
+        };
+
+        Task first = Task.Run(() => mode.OnGameStart(Game()));
+        await started.WaitAsync(TimeSpan.FromSeconds(30));
+        Task second = Task.Run(() => mode.OnGameStart(Game())); // 같은 게임이 다시 뜸
+        await started.WaitAsync(TimeSpan.FromSeconds(30));
+        await first.WaitAsync(TimeSpan.FromSeconds(30)); // 이전 감시는 멈춤
+
+        Assert.True(tokens[0].IsCancellationRequested);
+        Assert.Throws<ObjectDisposedException>(() => _ = tokens[0].WaitHandle); // 치워짐
+        Assert.False(tokens[1].IsCancellationRequested);
+
+        mode.NoteGameExit(Game());
+        await second.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.True(tokens[1].IsCancellationRequested);
+    }
+
+    [Fact]
+    public void LoadBoundaryWatchIsCancelledWhenTheGameExitedBeforeItRegistered()
+    {
+        AddGame("foo", "auto");
+        _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { LoadBoundary = true } };
+        _rig.World.Session = new FakeTrace();
+        AutoMode mode = Mode();
+        bool cancelledOnEntry = false;
+        mode.BoundaryRunner = (_, ct) => cancelledOnEntry = ct.IsCancellationRequested;
+
+        mode.OnGameStart(Game()); // 게임은 이미 꺼져 있음 (Running = false): 등록 뒤 확인이 취소해야 함
+
+        Assert.True(cancelledOnEntry);
     }
 }

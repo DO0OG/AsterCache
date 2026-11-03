@@ -1,3 +1,4 @@
+using AsterCache.Core.Discovery;
 using AsterCache.Core.Json;
 using AsterCache.Core.Settings;
 using AsterCache.Service;
@@ -21,7 +22,7 @@ public sealed class AutoTracerTests : IDisposable
         _game = new GameSettings("foo", ["foo.exe"], plan + ".prefetch.json", plan, @"D:\Games\Foo", [@"D:\Games\Foo"], "GAMES", 1440) { Source = "auto" };
         _rig.Settings = new AsterSettings(50, [_game]) { Auto = AutoSettings.Default with { TraceRuns = 1, TraceCapSeconds = 30, TraceCapMib = 64, Learn = LearnSettings.Default with { Enabled = false } } };
         _rig.World.Session = _trace;
-        _tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings);
+        _tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings) { MinRunBytes = 0 };
     }
 
     public void Dispose() => _rig.Dispose();
@@ -159,6 +160,83 @@ public sealed class AutoTracerTests : IDisposable
     }
 
     [Theory]
+    [InlineData("registered", "vanguard")]
+    [InlineData("folder", "eac")]
+    [InlineData("riot", "vanguard")]
+    [InlineData("detect-failed", "unknown")]
+    public void AntiCheatGamesNeverStartATraceInAnyRunAndTheReasonIsLoggedOnce(string how, string kind)
+    {
+        GameSettings g = _game;
+        switch (how)
+        {
+            case "registered": g = _game with { AntiCheat = kind }; break;
+            case "folder": _rig.World.AntiCheats[g.OriginRoot] = kind; break;
+            case "riot": g = AntiCheat.WithRiotRule(new AsterSettings(50, [_game with { OriginRoot = @"D:\Riot Games\League of Legends" }]), () => true).Games[0]; break;
+            default: _rig.World.AntiCheats[g.OriginRoot] = AutoEnv.AntiCheatUnknown; break;
+        }
+
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { TraceRuns = 3 } };
+        _tracer.Start(g);
+        _rig.World.Files.Add(Raw); // run 2 도 막힘
+        _tracer.Start(g);
+
+        Assert.False(_tracer.Active);
+        Assert.Equal(0, _rig.World.TraceStarts);
+        Assert.Single(_rig.Log.Lines, l => l.Contains($"foo: trace skipped (anti-cheat: {kind})", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RicochetAndPlainGamesAreStillTracedAndRiotNeedsVanguardOnTheSystem()
+    {
+        _rig.World.AntiCheats[_game.OriginRoot] = "ricochet";
+        _tracer.Start(_game);
+        Assert.True(_tracer.Active);
+        _tracer.Shutdown();
+
+        _tracer.Start(_game with { OriginRoot = @"D:\Riot Games\League of Legends" });
+        Assert.True(_tracer.Active); // Vanguard 가 없는 시스템의 Riot 폴더
+    }
+
+    [Fact]
+    public void ARegisteredExeThatLeftButWhoseChildStillRunsUnderTheGameFolderKeepsTheTraceGoingAndItsReadsCount()
+    {
+        Reads((0, 65536));
+        _tracer.Start(_game);
+        _rig.World.Procs = [(100, 1L << 20)];
+        _rig.World.Running = true;
+        _tracer.Step();
+
+        _rig.World.Running = false; // cod.exe 가 빠짐
+        _rig.World.Procs = [];
+        _rig.World.RootPids = [200]; // sp26-cod.exe 는 폴더 아래
+        _rig.World.Reads[200] = 40L << 20;
+        _tracer.Step();
+        Assert.True(_tracer.Active);
+        _rig.World.Reads[200] = 105L << 20; // 세션 뒤에 시작한 프로세스는 0 에서 세므로 64 MiB 를 넘음
+        _tracer.Step();
+        Assert.False(_tracer.Active);
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("(read cap)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TheTraceEndsAsGameExitedOnlyWhenNeitherTheRegisteredExeNorAnyProcessUnderTheFolderRemains()
+    {
+        Reads((0, 65536));
+        _tracer.Start(_game);
+        _rig.World.Procs = [];
+        _rig.World.Running = false;
+        _rig.World.RootPids = [200];
+        _rig.World.Reads[200] = 1L << 20;
+        _tracer.Step();
+        Assert.True(_tracer.Active);
+
+        _rig.World.RootPids = [];
+        _tracer.Step();
+        Assert.False(_tracer.Active);
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("auto trace ended (game exited)", StringComparison.Ordinal));
+    }
+
+    [Theory]
     [InlineData("system")]
     [InlineData("ssd")]
     [InlineData("unknown")]
@@ -171,7 +249,7 @@ public sealed class AutoTracerTests : IDisposable
             default: _rig.World.Hdd["D:"] = null; break;
         }
 
-        var tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings); // 시스템 드라이브는 만들 때 정해짐
+        var tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings) { MinRunBytes = 0 }; // 시스템 드라이브는 만들 때 정해짐
         tracer.Start(_game);
         tracer.Start(_game);
 
@@ -276,6 +354,68 @@ public sealed class AutoTracerTests : IDisposable
         Assert.Equal([0L, 65536L, 131072L], merged.Select(r => ((JObject)r!)["offset"])); // run1 의 순서 뒤에 새 블록
         Assert.False(File.Exists(Raw + ".tmp"));
         Assert.Contains(_rig.Log.Lines, l => l.Contains("(run 2, merged)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ARunThatReadsLessThanTheMinimumIsNotSavedAndDoesNotUseUpARun()
+    {
+        SetRuns(3);
+        var tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings); // 기본 최소량 64 MiB
+        _trace.Records.Clear();
+        Reads((0, 40L << 20), (40L << 20, 40L << 20)); // 한 이벤트는 64 MiB 까지
+        tracer.Start(_game);
+        tracer.Step();
+        Assert.Equal(1, AutoTracer.RunCount(_game, File.Exists));
+        _trace.Records.Clear();
+
+        Reads((131072, 65536)); // 메뉴만 켠 정도
+        tracer.Start(_game);
+        tracer.Step();
+
+        Assert.Equal(1, AutoTracer.RunCount(_game, File.Exists));
+        Assert.False(File.Exists(TraceWriter.RunPath(Raw, 2)));
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("run 2 too small", StringComparison.Ordinal) && l.Contains("not saved and not counted", StringComparison.Ordinal));
+        tracer.Start(_game); // 회차가 남아 있으니 다음 플레이도 기록함
+        Assert.True(tracer.Active);
+        tracer.Shutdown();
+    }
+
+    [Fact]
+    public void ARunWithUnderOnePercentOfTheFirstRunsEventsIsNotSaved()
+    {
+        SetRuns(3);
+        Directory.CreateDirectory(Path.GetDirectoryName(Raw)!);
+        TraceWriter.Write([[.. Enumerable.Range(0, 200).Select(i => new AsterCache.Core.Trace.TraceEvent(@"D:\Games\Foo\a.bin", i * 65536L, 65536))]], Raw);
+        Reads((131072L * 1000, 65536)); // 이벤트 1 건 < 200 건의 1 %
+
+        _tracer.Start(_game);
+        _tracer.Step();
+
+        Assert.Equal(1, AutoTracer.RunCount(_game, File.Exists));
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("1 events against 200 in run 1", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void FilesWrittenByTheGameOrChangedSinceThePreviousRunAreMarkedVolatile()
+    {
+        SetRuns(3);
+        FirstRunOfTwoBlocks();
+        DateTimeOffset firstRunSaved = new(2026, 11, 2, 12, 0, 0, TimeSpan.Zero);
+        _rig.World.FileTimes[TraceWriter.RunPath(Raw, 1)] = firstRunSaved;
+        _rig.World.Stat = p => new AsterCache.Core.Plan.Fingerprint(p, 1, ((firstRunSaved.UtcTicks - AsterCache.Core.Plan.Fingerprint.UnixEpochTicks) + (p.EndsWith("c.bin", StringComparison.Ordinal) ? TimeSpan.TicksPerHour : -TimeSpan.TicksPerHour)) * 100);
+        _trace.Records.Add(TraceRecord.Start(DateTime.UtcNow, 100, 1, "foo.exe"));
+        _trace.Records.Add(TraceRecord.Read(DateTime.UtcNow, 100, @"D:\Games\Foo\a.bin", 0, 65536));
+        _trace.Records.Add(TraceRecord.Read(DateTime.UtcNow, 100, @"D:\Games\Foo\b.bin", 0, 65536));
+        _trace.Records.Add(TraceRecord.Read(DateTime.UtcNow, 100, @"D:\Games\Foo\c.bin", 0, 65536));
+        _trace.Records.Add(TraceRecord.Write(DateTime.UtcNow, 100, @"D:\Games\Foo\b.bin"));
+        _trace.Records.Add(TraceRecord.Write(DateTime.UtcNow, 999, @"D:\Games\Foo\a.bin")); // 게임 프로세스가 아님
+
+        _tracer.Start(_game);
+        _tracer.Step();
+
+        IReadOnlyDictionary<string, string> marks = AutoTracer.ReadVolatile(AutoTracer.VolatilePath(_game));
+        Assert.Equal(["opened for write", "changed between runs"], [marks[@"D:\Games\Foo\b.bin"], marks[@"D:\Games\Foo\c.bin"]]);
+        Assert.False(marks.ContainsKey(@"D:\Games\Foo\a.bin"));
     }
 
     [Fact]

@@ -158,7 +158,6 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             { "max_relocations_per_day", (long)a.MaxRelocationsPerDay },
             { "trace_runs", (long)a.TraceRuns },
             { "trace_merge_min_mib", (long)a.TraceMergeMinMib },
-            { "max_relocate_gib_per_day", (long)a.MaxRelocateGibPerDay },
             { "relocate_chunk_mib", (long)a.RelocateChunkMib },
             { "relocate_io_priority", a.RelocateIoPriority },
             { "relocate_verify", a.RelocateVerify },
@@ -167,11 +166,15 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             { "rewarm_minutes", (long)a.RewarmMinutes },
             { "restream_cooldown_min", (long)a.RestreamCooldownMin },
             { "rewarm_after_exit_min", (long)a.RewarmAfterExitMin },
+            { "startup_warm_games", (long)a.StartupWarmGames },
+            { "startup_warm_max_mib", (long)a.StartupWarmMaxMib },
             { "post_update_delay_min", (long)a.PostUpdateDelayMin },
             { "recovery_max_min", (long)a.RecoveryMaxMin },
+            { "recovery_hard_max_min", (long)a.RecoveryHardMaxMin },
             { "post_relocate_recovery", a.PostRelocateRecovery },
             { "keep_awake", a.KeepAwake },
             { "keep_stream_on_game_start", a.KeepStreamOnGameStart },
+            { "load_boundary", a.LoadBoundary },
             { "full_prewarm", a.FullPrewarm },
             { "full_prewarm_max_mib", (long)a.FullPrewarmMaxMib },
             { "engine_profiles", a.EngineProfiles },
@@ -179,6 +182,11 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             { "shared_profiles", new JObject { { "enabled", a.SharedProfiles.Enabled }, { "url", a.SharedProfiles.Url } } },
             { "ssd_tier", new JObject { { "enabled", a.SsdTier.Enabled }, { "budget_gib", (long)a.SsdTier.BudgetGib }, { "root", a.SsdTier.Root } } },
         };
+        if (a.MaxRelocateGibPerDaySet) // 명시되지 않은 값은 쓰지 않음 (SMR 기본값 규칙 유지)
+        {
+            auto["max_relocate_gib_per_day"] = (long)a.MaxRelocateGibPerDay;
+        }
+
         if (a.RelocateParallelSet) // 명시되지 않은 값은 쓰지 않음 (자동 규칙 유지)
         {
             auto["relocate_parallel"] = (long)a.RelocateParallel;

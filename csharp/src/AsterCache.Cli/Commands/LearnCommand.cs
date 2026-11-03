@@ -144,6 +144,11 @@ internal static class LearnCommand
         LearnDeps deps = Deps;
         IReadOnlyList<string> exes = a.List("exe");
         string root = PathText.Str(a.Text("root")!);
+        if (AntiCheatGuard.RefuseTrace(o, root, exes) is { } refused)
+        {
+            return refused;
+        }
+
         string? outPath = a.Text("out") is { } p ? PathText.Str(p) : null;
         long maxBytes = ReadAhead.ResolveMaxBytes((int)Math.Min(maxMib ?? 0, int.MaxValue), deps.PhysicalRamBytes());
         string mode = a.Text("mode")!;

@@ -143,6 +143,11 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
             parts.Add(L.Get(lang, "Stage_RelocatedPrefetch")); // boot 트레이스 (Windows 프리페치 기록) 로 재배치함
         }
 
+        if (SsdTierTag.Match(g.Detail ?? string.Empty) is { Success: true } tier)
+        {
+            parts.Add(L.Get(lang, "Stage_SsdTier", tier.Groups[1].Value)); // 핫 파일 일부를 SSD 사본으로 두었음
+        }
+
         Match now = Prewarming().Match(g.Detail ?? string.Empty);
         Match p = PrewarmTag().Match(g.Detail ?? string.Empty);
         if (now.Success)
@@ -164,6 +169,8 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
 
     [GeneratedRegex(@"^(\d+) MiB read ahead$")]
     private static partial Regex ReadAhead();
+
+    private static readonly Regex SsdTierTag = new(@"ssd tier (\d+(?:\.\d+)?) GB", RegexOptions.None, TimeSpan.FromSeconds(1));
 
     [GeneratedRegex(@"prewarming (\d+)/(\d+) MiB")]
     private static partial Regex Prewarming();

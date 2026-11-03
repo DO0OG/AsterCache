@@ -5,6 +5,9 @@ public interface IDriveRecovery
 {
     bool IsRecovering(string drive);
 
+    /// 추가 재배치를 보류해야 하는가: 기본은 IsRecovering 과 같고, 회복을 확인하지 못한 probe 추적은 절대 상한까지 계속 보류합니다. 예열·고정은 IsRecovering 만 봄.
+    bool IsRelocationHeld(string drive) => IsRecovering(drive);
+
     /// 업데이트 뒤 지연 (업데이트 시각 updatedAt 기준): 이 드라이브에 회복 추적이 있으면 아직 회복 중인지, 없으면 null (호출하는 쪽이 고정 분을 씀).
     bool? WatchUpdate(string drive, DateTimeOffset updatedAt, TimeSpan limit);
 

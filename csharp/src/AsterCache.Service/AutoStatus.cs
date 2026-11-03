@@ -25,7 +25,7 @@ public sealed record AutoGameEntry(
 public sealed record AutoBootProbe(DateTimeOffset At, int Files, double OpenMsPerFile);
 
 /// 쓰기 뒤 회복 추적 한 건 (auto_status.json 의 drive_recovery): 드라이브, 시작·상한 시각, 쓰기 직전 기준 (없으면 고정 대기), 마지막 판정 ("pass"/"unknown"/"bad", 아직 없으면 null).
-public sealed record DriveRecoveryRecord(string Drive, DateTimeOffset Started, DateTimeOffset Until, ProbeSpot? Zone, ProbeSpot? Ref, string? Verdict);
+public sealed record DriveRecoveryRecord(string Drive, DateTimeOffset Started, DateTimeOffset Until, ProbeSpot? Zone, ProbeSpot? Ref, string? Verdict, DateTimeOffset? HardUntil = null);
 
 public sealed record AutoEvent(DateTimeOffset At, string Game, string Kind);
 
@@ -419,6 +419,11 @@ public sealed class AutoStatus
             foreach ((string drive, DriveRecoveryRecord r) in _driveRecovery.OrderBy(kv => kv.Key, StringComparer.Ordinal))
             {
                 var o = new JObject { { "started", Iso(r.Started) }, { "until", Iso(r.Until) }, { "verdict", r.Verdict } };
+                if (r.HardUntil is { } hard && hard > r.Until)
+                {
+                    o.Add("hard_until", Iso(hard)); // 상한 뒤에도 보류하는 추적만 (기존 파일 모양 유지)
+                }
+
                 if (r.Zone is { } z)
                 {
                     o.Add("zone", Spot(z));
@@ -502,7 +507,7 @@ public sealed class AutoStatus
                 {
                     if (value is JObject o && Time(o, "started") is { } started && Time(o, "until") is { } until)
                     {
-                        _driveRecovery[drive] = new DriveRecoveryRecord(drive, started, until, ReadSpot(o, "zone"), ReadSpot(o, "ref"), Str(o, "verdict"));
+                        _driveRecovery[drive] = new DriveRecoveryRecord(drive, started, until, ReadSpot(o, "zone"), ReadSpot(o, "ref"), Str(o, "verdict"), Time(o, "hard_until"));
                     }
                 }
             }

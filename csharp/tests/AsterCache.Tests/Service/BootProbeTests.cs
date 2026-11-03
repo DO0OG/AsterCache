@@ -344,6 +344,9 @@ public sealed class BootProbeTests : IDisposable
         Assert.Equal(60, ParseAuto(new JsonObject { ["post_update_delay_min"] = 0 }).RecoveryMaxMin); // 지연이 0 이어도 회복 상한은 그대로
         Assert.Equal(90, ParseAuto(new JsonObject { ["recovery_max_min"] = 90 }).RecoveryMaxMin);
         Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["recovery_max_min"] = 0 }));
+        Assert.Equal(180, AutoSettings.Default.RecoveryHardMaxMin);
+        Assert.Equal(240, ParseAuto(new JsonObject { ["recovery_hard_max_min"] = 240 }).RecoveryHardMaxMin);
+        Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["recovery_hard_max_min"] = 0 }));
     }
 
     [Theory]

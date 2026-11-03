@@ -75,8 +75,14 @@ public sealed class DriveRecovery : IDriveRecovery
     private readonly Dictionary<string, DateTimeOffset> _finished = new(StringComparer.Ordinal);
 
     // 추적의 세션 안 경과는 Stopwatch 로 잰다 (실행 중 시스템 시계가 튀어도 회복 대기가 일찍 끝나거나 늘어나지 않게). offset 은 만들 때 이미 지난 시간 (업데이트 시각 기준 추적).
-    private sealed class Track(DriveBaseline? baseline, DateTimeOffset started, TimeSpan limit, TimeSpan offset, long startTicks)
+    private sealed class Track(DriveBaseline? baseline, DateTimeOffset started, TimeSpan limit, TimeSpan offset, long startTicks, TimeSpan hardLimit)
     {
+        /// 추가 재배치를 보류하는 절대 상한 (Limit 이상). 기준이 없는 고정 대기는 Limit 과 같음.
+        public TimeSpan HardLimit { get; } = hardLimit > limit ? hardLimit : limit;
+
+        /// Limit 에 이르렀지만 회복을 확인하지 못해 판정을 unknown 으로 남기고 HardLimit 까지 계속 보류 중.
+        public bool Expired { get; set; }
+
         public TimeSpan Offset { get; } = offset;
 
         public long StartTicks { get; } = startTicks;
@@ -100,8 +106,8 @@ public sealed class DriveRecovery : IDriveRecovery
         public RecoveryVerdict? Verdict { get; set; }
     }
 
-    private Track NewTrack(DriveBaseline? baseline, DateTimeOffset started, TimeSpan limit) =>
-        new(baseline, started, limit, TimeSpan.FromTicks(Math.Max(0, (_env.Now() - started).Ticks)), _env.Ticks());
+    private Track NewTrack(DriveBaseline? baseline, DateTimeOffset started, TimeSpan limit, TimeSpan? hardLimit = null) =>
+        new(baseline, started, limit, TimeSpan.FromTicks(Math.Max(0, (_env.Now() - started).Ticks)), _env.Ticks(), baseline is null ? limit : hardLimit ?? limit);
 
     private TimeSpan Elapsed(Track t) => t.Offset + System.Diagnostics.Stopwatch.GetElapsedTime(t.StartTicks, _env.Ticks());
 
@@ -114,8 +120,18 @@ public sealed class DriveRecovery : IDriveRecovery
         }
     }
 
+    public bool IsRelocationHeld(string drive)
+    {
+        lock (_lock)
+        {
+            string key = Key(drive);
+            return _active.Any(a => (a.Key == key || _env.SameDisk(a.Key, key)) && Elapsed(a.Value) < a.Value.HardLimit);
+        }
+    }
+
     /// 쓰기를 마친 직후: baseline 이 있으면 probe, 없으면 limit 만큼 고정 대기. limit 이 0 이하면 기다리지 않음.
-    public void Begin(string drive, DriveBaseline? baseline, TimeSpan limit)
+    /// hardLimit (probe 만): limit 에 이르러도 회복을 확인하지 못하면 판정을 unknown 으로 남기고 이 시간까지 추가 재배치를 계속 보류합니다 (IsRelocationHeld). 생략하면 limit 과 같음.
+    public void Begin(string drive, DriveBaseline? baseline, TimeSpan limit, TimeSpan? hardLimit = null)
     {
         if (limit <= TimeSpan.Zero)
         {
@@ -130,7 +146,7 @@ public sealed class DriveRecovery : IDriveRecovery
                 _baselines[key] = baseline;
             }
 
-            Add(key, NewTrack(baseline, _env.Now(), limit));
+            Add(key, NewTrack(baseline, _env.Now(), limit, hardLimit));
         }
     }
 
@@ -163,15 +179,28 @@ public sealed class DriveRecovery : IDriveRecovery
             foreach ((string key, Track t) in _active.ToList())
             {
                 TimeSpan elapsed = Elapsed(t);
-                if (elapsed >= t.Limit)
+                if (elapsed >= t.HardLimit)
                 {
                     Finish(key);
                     if (t.Baseline is not null)
                     {
-                        _log.Info($"drive {key} recovery wait ended at the {(int)t.Limit.TotalMinutes} min limit");
+                        _log.Info(t.HardLimit > t.Limit
+                            ? $"drive {key} recovery not confirmed after the {(int)t.HardLimit.TotalMinutes} min hard limit, relocation hold released"
+                            : $"drive {key} recovery wait ended at the {(int)t.Limit.TotalMinutes} min limit");
                     }
+
+                    continue;
                 }
-                else if (t.Baseline is not null && elapsed >= t.Next)
+
+                if (elapsed >= t.Limit && !t.Expired)
+                {
+                    t.Expired = true;
+                    t.Verdict = RecoveryVerdict.Unknown; // 회복을 확인하지 못한 채 상한: 판정은 unknown, 표본은 계속 재서 회복하면 풀림
+                    Save(key, t);
+                    _log.Info($"drive {key} recovery not confirmed at the {(int)t.Limit.TotalMinutes} min limit, relocation stays on hold until recovered or {(int)t.HardLimit.TotalMinutes} min");
+                }
+
+                if (t.Baseline is not null && elapsed >= t.Next)
                 {
                     due.Add((key, t));
                 }
@@ -354,6 +383,11 @@ public sealed class DriveRecovery : IDriveRecovery
 
     private void Note(string key, Track t, RecoveryVerdict verdict)
     {
+        if (t.Expired)
+        {
+            return; // 상한 뒤에는 판정을 unknown 으로 남김
+        }
+
         if (t.Verdict != verdict)
         {
             t.Verdict = verdict;
@@ -362,7 +396,7 @@ public sealed class DriveRecovery : IDriveRecovery
     }
 
     private void Save(string key, Track t) =>
-        _status?.SetDriveRecovery(new DriveRecoveryRecord(key, t.Started, t.Started + t.Limit, t.Baseline?.Zone, t.Baseline?.Ref, t.Verdict?.ToString().ToLowerInvariant()));
+        _status?.SetDriveRecovery(new DriveRecoveryRecord(key, t.Started, t.Started + t.Limit, t.Baseline?.Zone, t.Baseline?.Ref, t.Verdict?.ToString().ToLowerInvariant(), t.HardLimit > t.Limit ? t.Started + t.HardLimit : null));
 
     // 기준값이 있고 전부 유한한 양수이며 디스크 순차 상한 이하인가 (아니면 판정할 수 없음: 상한 초과 기준은 캐시 적중 의심).
     private static bool ValidBaseline(DriveBaseline b) =>
@@ -388,7 +422,9 @@ public sealed class DriveRecovery : IDriveRecovery
             TimeSpan limit = r.Until - r.Started;
             TimeSpan left = r.Until - now;
             DriveBaseline? baseline = new DriveBaseline(r.Zone, r.Ref) is var b && ValidBaseline(b) ? b : null;
-            if (limit <= TimeSpan.Zero || left <= TimeSpan.Zero)
+            TimeSpan hardLimit = baseline is not null && r.HardUntil is { } hardUntil ? hardUntil - r.Started : limit; // 상한 뒤에도 보류 중이던 추적은 절대 상한까지 되살림
+            TimeSpan hardLeft = baseline is not null && r.HardUntil is { } hu ? hu - now : left;
+            if (limit <= TimeSpan.Zero || hardLeft <= TimeSpan.Zero)
             {
                 _finished[key] = now;
                 _status.ClearDriveRecovery(r.Drive);
@@ -396,17 +432,20 @@ public sealed class DriveRecovery : IDriveRecovery
             }
 
             left = left > limit ? limit : left; // 시계가 뒤로 가 남은 시간이 원래 상한보다 크면 상한으로 자름
+            hardLeft = hardLeft > hardLimit ? hardLimit : hardLeft;
+            left = left < TimeSpan.Zero ? TimeSpan.Zero : left; // 상한은 지났지만 절대 상한 전: 이미 만료된 추적
             if (baseline is not null)
             {
                 _baselines[key] = baseline;
             }
 
-            Track t = NewTrack(baseline, now, left);
+            Track t = NewTrack(baseline, now, left, hardLeft);
             t.Verdict = Enum.TryParse(r.Verdict, true, out RecoveryVerdict v) ? v : null;
+            t.Expired = left == TimeSpan.Zero && baseline is not null;
             t.Next = TimeSpan.Zero; // 시작 직후 한 번 바로 잼 (바쁘면 건너뜀)
             _active[key] = t;
             Save(key, t); // Started = now, Until = now + left 로 저장값을 맞춤
-            _log.Info($"drive {key} recovery restored, {(int)left.TotalMinutes} min left ({(baseline is null ? "fixed wait" : "probe")})");
+            _log.Info($"drive {key} recovery restored, {(int)hardLeft.TotalMinutes} min left ({(baseline is null ? "fixed wait" : "probe")})");
         }
     }
 

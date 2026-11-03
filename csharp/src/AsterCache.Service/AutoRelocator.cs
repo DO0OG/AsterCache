@@ -228,7 +228,7 @@ public sealed class AutoRelocator
         var ready = new List<GameSettings>();
         foreach (GameSettings g in work)
         {
-            if (_recovery.IsRecovering(DriveOf(g)))
+            if (_recovery.IsRelocationHeld(DriveOf(g)))
             {
                 WarmNewTrace(g, warms); // 예열은 막지 않음
                 Note(g, AutoStage.WaitingIdle, WaitDetail(g, DriveRecovering));
@@ -924,7 +924,7 @@ public sealed class AutoRelocator
             return ReapplyVerdict.GameRunning;
         }
 
-        if (_recovery.IsRecovering(DriveOf(g)))
+        if (_recovery.IsRelocationHeld(DriveOf(g)))
         {
             return ReapplyVerdict.Recovering;
         }
@@ -1485,7 +1485,7 @@ public sealed class AutoRelocator
 
     private ProbeSpot? Spot(string drive, long lcn, ProbeRound round) => _env.ProbeMbps(drive, lcn, round) is > 0 and double mbps ? new ProbeSpot(lcn, mbps) : null;
 
-    // 쓴 바이트가 있으면 회복 추적을 시작: probe 는 기준이 있을 때 최대 recovery_max_min 분, 기준이 없거나 fixed 면 post_update_delay_min 분 고정, off 는 기다리지 않음.
+    // 쓴 바이트가 있으면 회복 추적을 시작: probe 는 기준이 있을 때 최대 recovery_max_min 분 (그때까지 회복을 확인하지 못하면 recovery_hard_max_min 분까지 재배치만 계속 보류), 기준이 없거나 fixed 면 post_update_delay_min 분 고정, off 는 기다리지 않음.
     private void BeginRecovery(GameSettings g, AutoSettings auto, long movedBytes, DriveBaseline? baseline)
     {
         if (movedBytes <= 0 || auto.PostRelocateRecovery == AutoSettings.RecoveryOff)
@@ -1494,7 +1494,7 @@ public sealed class AutoRelocator
         }
 
         bool probe = auto.PostRelocateRecovery == AutoSettings.RecoveryProbe && baseline is not null;
-        _recovery.Begin(DriveOf(g), probe ? baseline : null, TimeSpan.FromMinutes(probe ? auto.RecoveryMaxMin : auto.PostUpdateDelayMin));
+        _recovery.Begin(DriveOf(g), probe ? baseline : null, TimeSpan.FromMinutes(probe ? auto.RecoveryMaxMin : auto.PostUpdateDelayMin), TimeSpan.FromMinutes(auto.RecoveryHardMaxMin));
     }
 
     // 게임이 안 돌 때만, 이번 자동 적용이 저널에 쓴 줄 (mark 줄 뒤) 만 되돌립니다 (최선 노력). 앞선 적용의 줄은 이어하기·수동 되돌리기의 몫이라 건드리지 않음.

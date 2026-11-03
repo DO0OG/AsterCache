@@ -91,6 +91,9 @@ public sealed record AutoSettings(
     /// probe 회복 대기의 상한 (분, 1..1440). post_update_delay_min 과 따로 두어, 그 값이 0 이어도 회복 대기는 꺼지지 않습니다. 기본 60 (예전 15 x 4).
     public int RecoveryMaxMin { get; init; } = 60;
 
+    /// probe 회복이 recovery_max_min 에 이르러도 회복을 확인하지 못했을 때 (판정은 unknown) 추가 재배치를 계속 보류하는 절대 상한 (분, 1..1440). recovery_max_min 보다 작으면 그 값을 씀. 기본 180. 예열에는 영향 없음.
+    public int RecoveryHardMaxMin { get; init; } = 180;
+
     public const string RecoveryProbe = "probe";
     public const string RecoveryFixed = "fixed";
     public const string RecoveryOff = "off";

@@ -1,5 +1,6 @@
 using System.Threading.Channels;
 using AsterCache.Core.Logging;
+using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
 using Microsoft.Extensions.Hosting;
 
@@ -29,6 +30,7 @@ public sealed class Worker : BackgroundService
     private bool _restart;
     private int _maintaining;
     private readonly GameExitTracker _exits = new();
+    private readonly SessionReads _reads = new();
 
     public Worker(AsterSettings settings, ILog log, IProcessWatcher primary, IProcessWatcher? fallback, IGameStreamer streamer, ReapplyChecker checker,
         ReapplyGate? gate = null, Prewarmer? prewarm = null, AutoMode? auto = null, SettingsReloader? reload = null, KeepAwake? keepAwake = null, DispatchEnv? dispatchEnv = null)
@@ -384,7 +386,9 @@ public sealed class Worker : BackgroundService
 
         try
         {
-            HashSet<string> names = new(ProcessSnapshot.Take().Select(p => p.Exe), StringComparer.OrdinalIgnoreCase);
+            IReadOnlyList<(int Pid, string Exe)> procs = ProcessSnapshot.Take();
+            NoteReads(procs);
+            HashSet<string> names = new(procs.Select(p => p.Exe), StringComparer.OrdinalIgnoreCase);
             foreach (GameSettings g in _exits.Poll(_settings.Games, names))
             {
                 OnGameExit(g);
@@ -401,6 +405,48 @@ public sealed class Worker : BackgroundService
     {
         _log.Info($"{game.Name}: exited");
         _prewarm?.NoteGameExit();
+        NoteCoverage(game);
+    }
+
+    // 실행 중인 게임 프로세스가 읽은 누적 바이트를 pid 별로 기억합니다 (종료 뒤에는 열 수 없음). 이 틱의 스냅샷만 씁니다.
+    private void NoteReads(IReadOnlyList<(int Pid, string Exe)> procs)
+    {
+        foreach (GameSettings g in _settings.Games)
+        {
+            foreach ((int pid, string exe) in procs)
+            {
+                if (g.ExeNames.Contains(exe, StringComparer.OrdinalIgnoreCase) && ProcessSnapshot.ReadBytes(pid) is { } bytes)
+                {
+                    _reads.Observe(g.Name, pid, bytes);
+                }
+            }
+        }
+    }
+
+    // 존 커버리지 진단: 종료 뒤 계획 파일을 한 번 읽어 핫 바이트를 세션 읽기량과 맞춥니다. 읽기량을 못 열었거나 계획이 없으면 생략.
+    private void NoteCoverage(GameSettings game)
+    {
+        long? read = _reads.Take(game.Name);
+        if (read is null || !File.Exists(game.Plan))
+        {
+            return;
+        }
+
+        try
+        {
+            long hot = PlanFile.Load(game.Plan).Stats.TryGetValue("hot_bytes", out object? h) && h is long bytes ? bytes : 0;
+            if (SessionCoverage.Percent(read, hot) is not { } percent)
+            {
+                return;
+            }
+
+            _log.Info(SessionCoverage.Line(game.Name, read.Value, hot, percent));
+            _auto?.Status.RecordCoverage(game.Name, percent);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _log.Warn($"{game.Name}: zone coverage not recorded: {e.GetType().Name}");
+        }
     }
 
     // 고정의 RAM 확인과 예열 유지 점검: 다시 예열은 수 초 걸리므로 재적용 틱을 막지 않게 따로, 겹치지 않게 하나씩.

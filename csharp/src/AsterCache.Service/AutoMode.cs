@@ -37,6 +37,7 @@ public sealed class AutoMode
         _relocator = new AutoRelocator(env, status, log, () => _settings, prewarm);
         if (prewarm is not null)
         {
+            prewarm.Recovery = _relocator.Recovery; // 재배치 직후 예열을 드라이브 회복까지 고정
             prewarm.ColdWarmed += (g, label) => Guard("cold prewarm note", () => _relocator.NoteColdWarmed(g, label)); // 서비스 시작·트리거·틱 어디서 예열하든 같은 표시
             prewarm.Progress += (g, done, total) => Guard("prewarm progress", () => _relocator.NoteProgress(g, done, total));
             prewarm.StreamEnded += (g, complete) => Guard("prewarm end", () => _relocator.NoteStreamEnded(g, complete));
@@ -84,6 +85,8 @@ public sealed class AutoMode
             {
                 Status.RecordHit(g.Name, hit, _env.Now());
             }
+
+            LoadBoundaryWatch.Run(g, Status, _log, now: _env.Now);
         });
     }
 

@@ -992,6 +992,23 @@ public sealed class ApplyPortTests : ApplyTestBase
         Assert.Empty(calls); // 검증을 마친 작업은 다시 읽지 않음
     }
 
+    [Fact]
+    public void AllModeSamplesEveryTaskEvenWhenThePerFileCapWouldHideSome()
+    {
+        string f3 = Path.Combine(Root, "f3.bin");
+        File.WriteAllBytes(f3, System.Security.Cryptography.RandomNumberGenerator.GetBytes(4 << 20));
+        Files[f3] = [new(0, 30000, (4 << 20) / Cb)];
+        Vol.Ext[f3] = [new(0, 30000, (4 << 20) / Cb)];
+        Sessions = [Enumerable.Range(0, 24).Select(b => new AsterCache.Core.Trace.TraceEvent(f3, b * 131072L, 65536, 8.0)).ToList()];
+        PlanFile plan = Make().Resolve(60000);
+        Assert.True(plan.Tasks.Count >= 20, $"tasks {plan.Tasks.Count}");
+
+        ApplyReport rep = Apply(plan, Exec(8 * Cb) with { Verify = VerifyMode.All });
+
+        Assert.Empty(rep.Failed);
+        Assert.Equal(plan.Tasks.Count, SampledTaskIdx().Count);
+    }
+
     // ---- PlanGuards 단위
 
     [Theory]

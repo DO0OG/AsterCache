@@ -322,6 +322,12 @@ public static class Applier
             long n = Math.Min(TaskSpan, hi - lo);
             var mine = new[] { (lo, n), (hi - n, n) }.Where(r => r.Item1 >= 0 && r.Item1 < size).Select(r => (r.Item1, Math.Min(r.Item2, size - r.Item1)))
                 .Where(keep.Contains).Distinct().ToList();
+            if (mine.Count == 0)
+            {
+                // 파일당 상한 (DigestCapBytes) 에 가려진 작업도 최소 한 곳은 검사: verify=all 이 일부 작업을 빠뜨리지 않게. 이전·이후 계산이 같은 규칙이라 모드가 달라도 일치.
+                mine = new[] { (lo, n), (hi - n, n) }.Where(r => r.Item1 >= 0 && r.Item1 < size).Select(r => (r.Item1, Math.Min(r.Item2, size - r.Item1))).Take(1).ToList();
+            }
+
             return mine.Count == 0 ? null : edgeFn(p, size, mine);
         }
 
@@ -722,12 +728,6 @@ public static class Applier
         rep.ShaMismatch = bad;
         ApplyTimings.Time(ref tm.JournalTicks, () =>
         {
-            var end = new JObject
-            {
-                { "type", "end" },
-                { "stopped", rep.Stopped },
-                { "written_bytes", rep.MovedBytes },
-                { "sha_mismatch", bad.Cast<object?>().ToList() },
             foreach ((string key, bool same) in checkedKeys)
             {
                 if (same)
@@ -738,6 +738,12 @@ public static class Applier
                 }
             }
 
+            var end = new JObject
+            {
+                { "type", "end" },
+                { "stopped", rep.Stopped },
+                { "written_bytes", rep.MovedBytes },
+                { "sha_mismatch", bad.Cast<object?>().ToList() },
             };
             if (deferred)
             {

@@ -56,9 +56,6 @@ internal sealed class FakeWorld
 
     public Dictionary<string, bool?> Hdd { get; } = new(StringComparer.OrdinalIgnoreCase);
 
-    /// 드라이브별 디스크 종류 문구 (DiskInfo.Kind). 없으면 "unknown".
-    public Dictionary<string, string> Kinds { get; } = new(StringComparer.OrdinalIgnoreCase);
-
     public List<int> Pids { get; set; } = [];
 
     public Dictionary<int, string> Images { get; } = [];
@@ -162,7 +159,6 @@ internal sealed class FakeWorld
         Scan = () => Skipped.Count == 0 ? Found : new ScanResult([.. Found], [.. Skipped]),
         VolumeLabel = l => Labels.GetValueOrDefault(l, "GAMES"),
         IsHdd = l => Hdd.TryGetValue(l, out bool? v) ? v : true,
-        DiskKind = l => Kinds.GetValueOrDefault(l, "unknown"),
         Pids = () => Pids,
         ImagePath = p => Images.GetValueOrDefault(p),
         ReadBytes = p =>

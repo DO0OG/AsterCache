@@ -101,19 +101,13 @@ public sealed class ReapplyEnv
         Extents = FileLayout.Extents,
         Stat = PlanFile.FingerprintOf,
         RealPath = RealPaths.Real,
-        Apply = (g, plan, ct) => Run(journalDir, g, plan, OptionsFor(g, relocateOrder?.Invoke() ?? RelocateOrder.Target, DiskKindOf), ct, log), // 존을 다시 정하면 계획에 남김
+        Apply = (g, plan, ct) => Run(journalDir, g, plan, OptionsFor(g, relocateOrder?.Invoke() ?? RelocateOrder.Target), ct, log), // 존을 다시 정하면 계획에 남김
         TierActive = g => TierEngine.HasActive(Path.Combine(Path.GetDirectoryName(journalDir) ?? journalDir, "tier"), g.Name),
     };
 
-    /// 재적용의 옵션: 실행 순서는 설정 auto.relocate_order 와 대상 디스크 종류로 정함 (자동 재배치와 같은 규칙).
-    public static ApplyOptions OptionsFor(GameSettings g, string orderSetting, Func<string, string> diskKind) =>
-        new(Execute: true, SaveTo: g.Plan, Order: RelocateOrder.Resolve(orderSetting, diskKind(PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant())));
-
-    private static string DiskKindOf(string letter)
-    {
-        DiskDetails d = DiskInfo.Query(letter);
-        return DiskInfo.Kind(d.IncursSeekPenalty, d.Trim);
-    }
+    /// 재적용의 옵션: 실행 순서는 설정 auto.relocate_order 를 따름 (자동 재배치와 같은 규칙).
+    public static ApplyOptions OptionsFor(GameSettings g, string orderSetting) =>
+        new(Execute: true, SaveTo: g.Plan, Order: RelocateOrder.Resolve(orderSetting));
 
     /// 레이블 확인 → 볼륨 열기 → Applier. 재적용과 자동 모드의 첫 재배치가 같은 길을 씁니다 (DryRun 은 존 시작만 계획에 저장).
     /// lowIoLog 가 있으면 이동과 SHA 표본 읽기에 낮은 I/O 우선순위 힌트를 붙이고 (서비스의 백그라운드 경로), 힌트가 실패하면 거기에 한 번 남깁니다. null 이면 보통 우선순위.

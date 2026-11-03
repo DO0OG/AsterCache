@@ -273,14 +273,11 @@ public sealed class AutoRelocatorTests : ApplyTestBase
     }
 
     [Theory]
-    [InlineData("auto", "HDD (looks like SMR)", "target")]
-    [InlineData("auto", "HDD (probably CMR)", "source")]
-    [InlineData("auto", "unknown", "source")]
-    [InlineData("target", "HDD (probably CMR)", "target")]
-    [InlineData("source", "HDD (looks like SMR)", "source")]
-    public void RelocateOrderFollowsTheSettingAndDiskKindAndIsLogged(string setting, string kind, string expected)
+    [InlineData("auto", "target")]
+    [InlineData("target", "target")]
+    [InlineData("source", "source")]
+    public void RelocateOrderFollowsTheSettingAndIsLogged(string setting, string expected)
     {
-        _w.Kinds[Letter] = kind;
         _settings = _settings with { Auto = _settings.Auto with { RelocateOrder = setting } };
         string? order = null;
         Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> inner = _w.Apply;

@@ -17,15 +17,11 @@ public sealed class RelocateOrderTests : ApplyTestBase
         moves.GroupBy(m => (m.Path, m.Vcn)).Select(g => g.First());
 
     [Theory]
-    [InlineData("auto", "HDD (looks like SMR)", "target")]
-    [InlineData("auto", "HDD (probably CMR)", "source")]
-    [InlineData("auto", "HDD", "source")]
-    [InlineData("auto", "SSD", "source")]
-    [InlineData("auto", "unknown", "source")]
-    [InlineData("target", "SSD", "target")]
-    [InlineData("source", "HDD (looks like SMR)", "source")]
-    public void ResolveFollowsSettingAndDiskKind(string setting, string kind, string expected) =>
-        Assert.Equal(expected, RelocateOrder.Resolve(setting, kind));
+    [InlineData("auto", "target")]
+    [InlineData("target", "target")]
+    [InlineData("source", "source")]
+    public void AutoResolvesToTargetAndExplicitSettingsAreKept(string setting, string expected) =>
+        Assert.Equal(expected, RelocateOrder.Resolve(setting));
 
     [Fact]
     public void SourceOrderRunsTasksByAscendingSourceLcn()

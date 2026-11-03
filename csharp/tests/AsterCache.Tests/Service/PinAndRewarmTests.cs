@@ -702,6 +702,28 @@ public sealed class PinAndRewarmTests
     }
 
     [Fact]
+    public void RepeatedBatchSkipOfTheSameGameIsLoggedOncePerMinuteWithTheSuppressedCount()
+    {
+        GameSettings[] games = [Game("a", false), Game("b", false)];
+        Prewarmer p = Make(games);
+        _ram = 4 * Gib; // 1/4 = 1024 MiB: 존 1610 은 처음부터 자름
+
+        for (int i = 0; i < 9; i++)
+        {
+            p.RunAll(games, "trigger Riot Client.exe");
+            _now += TimeSpan.FromSeconds(4);
+        }
+
+        Assert.Single(_log.Lines, l => l.StartsWith("Info: a: prewarm skipped (batch zones", StringComparison.Ordinal));
+
+        _now += Prewarmer.SkipLogEvery; // 60 초 뒤 다시 남기고 억제된 횟수를 붙임
+        p.RunAll(games, "trigger Riot Client.exe");
+        string[] lines = [.. _log.Lines.Where(l => l.StartsWith("Info: a: prewarm skipped (batch zones", StringComparison.Ordinal))];
+        Assert.Equal(2, lines.Length);
+        Assert.EndsWith("(suppressed 8)", lines[1], StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BatchWithEnoughRamWarmsEveryGame()
     {
         GameSettings[] games = [Game("a", false), Game("b", false), Game("c", false)];

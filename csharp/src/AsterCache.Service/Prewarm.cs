@@ -181,6 +181,7 @@ public sealed class Prewarmer
     private readonly Dictionary<string, IReadOnlyList<(string Path, long Offset, int Bytes)>> _coldSamples = new(StringComparer.OrdinalIgnoreCase); // 기록 없이 예열한 파일 목록에서 고른 재예열 점검 표본, _gate 로 보호
     private readonly HashSet<string> _refusedLogged = new(StringComparer.OrdinalIgnoreCase); // 드라이브 거부를 이미 로그한 게임, _gate 로 보호
     private readonly HashSet<string> _delayLogged = new(StringComparer.OrdinalIgnoreCase); // 업데이트 지연을 이미 로그한 게임, _gate 로 보호
+    private readonly Dictionary<string, (DateTimeOffset At, int Count)> _skipLogged = new(StringComparer.OrdinalIgnoreCase); // 게임|사유별 마지막으로 남긴 시각과 그 뒤 억제한 횟수, _gate 로 보호
     private volatile AutoSettings _auto = AutoSettings.Default;
     private volatile string? _streaming; // 핫 집합 스트림이 도는 게임
     private volatile bool _keepStream; // auto.keep_stream_on_game_start 가 켜진 채 그 게임이 시작돼 (같은 데이터를 동시에 읽으므로) 취소 신호에도 끝까지 읽기로 한 표시
@@ -420,6 +421,34 @@ public sealed class Prewarmer
     /// 주어진 게임을 차례로 (한 게임의 실패가 나머지를 막지 않음).
     public IReadOnlyList<PrewarmResult> RunAll(IEnumerable<GameSettings> games, string why) => RunBatch(games, why);
 
+    /// 같은 게임·같은 사유의 "prewarm skipped" 를 남기는 최소 간격 (트리거 프로그램이 연달아 떠도 줄이 쌓이지 않게).
+    public static readonly TimeSpan SkipLogEvery = TimeSpan.FromSeconds(60);
+
+    // 간격 안에 같은 줄이 또 나오면 남기지 않고 세어 두었다가, 다음에 남기는 줄에 "(suppressed N)" 로 붙입니다.
+    private void LogSkipped(string game, string reason, string line)
+    {
+        int suppressed = 0;
+        lock (_gate)
+        {
+            string key = game + "|" + reason;
+            DateTimeOffset now = _now();
+            if (_skipLogged.TryGetValue(key, out (DateTimeOffset At, int Count) last))
+            {
+                if (now - last.At < SkipLogEvery)
+                {
+                    _skipLogged[key] = last with { Count = last.Count + 1 };
+                    return;
+                }
+
+                suppressed = last.Count;
+            }
+
+            _skipLogged[key] = (now, 0);
+        }
+
+        _log.Info(suppressed > 0 ? $"{line} (suppressed {suppressed})" : line);
+    }
+
     // 한 묶음의 예산 = min(물리 RAM / 4, 가용 RAM - 여유). 존 크기 합이 예산을 넘으면 그 뒤 게임은 건너뜁니다 (앞쪽 = 최근 순서가 우선).
     // 서비스 시작·런처 시작이 같은 규칙입니다. 첫 게임의 가용 RAM 쪽 판단은 Run 의 자체 판단에 맡깁니다.
     private IReadOnlyList<PrewarmResult> RunBatch(IEnumerable<GameSettings> games, string why, bool pin = true, CancellationToken ct = default)
@@ -444,7 +473,7 @@ public sealed class Prewarmer
             if (cut || held + zoneMib > physCap || (held > 0 && held + zoneMib > avail - g.Prewarm.MinFreeRamMib))
             {
                 cut = true;
-                _log.Info($"{g.Name}: prewarm skipped (batch zones {held + zoneMib} MiB exceed the budget: min(1/4 of RAM, available {avail} MiB - reserve {g.Prewarm.MinFreeRamMib} MiB)) [{why}]");
+                LogSkipped(g.Name, "batch memory budget", $"{g.Name}: prewarm skipped (batch zones {held + zoneMib} MiB exceed the budget: min(1/4 of RAM, available {avail} MiB - reserve {g.Prewarm.MinFreeRamMib} MiB)) [{why}]");
                 results.Add(new PrewarmResult(g.Name, false, "batch memory budget", null, _now()));
                 continue;
             }
@@ -647,7 +676,7 @@ public sealed class Prewarmer
                 }
             }
 
-            _log.Info($"{game.Name}: prewarm skipped ({skip}) [{why}]");
+            LogSkipped(game.Name, skip, $"{game.Name}: prewarm skipped ({skip}) [{why}]");
             return Record(game, now, new PrewarmResult(game.Name, false, skip, null, now), 0);
         }
     }

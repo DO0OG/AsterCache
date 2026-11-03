@@ -163,6 +163,7 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             { "relocate_order", a.RelocateOrder },
             { "ignore_exes", a.IgnoreExes.Cast<object?>().ToList() },
             { "rewarm_minutes", (long)a.RewarmMinutes },
+            { "restream_cooldown_min", (long)a.RestreamCooldownMin },
             { "post_update_delay_min", (long)a.PostUpdateDelayMin },
             { "recovery_max_min", (long)a.RecoveryMaxMin },
             { "post_relocate_recovery", a.PostRelocateRecovery },

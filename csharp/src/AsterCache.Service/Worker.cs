@@ -30,7 +30,7 @@ public sealed class Worker : BackgroundService
     private int _maintaining;
 
     public Worker(AsterSettings settings, ILog log, IProcessWatcher primary, IProcessWatcher? fallback, IGameStreamer streamer, ReapplyChecker checker,
-        ReapplyGate? gate = null, Prewarmer? prewarm = null, AutoMode? auto = null, SettingsReloader? reload = null, KeepAwake? keepAwake = null)
+        ReapplyGate? gate = null, Prewarmer? prewarm = null, AutoMode? auto = null, SettingsReloader? reload = null, KeepAwake? keepAwake = null, DispatchEnv? dispatchEnv = null)
     {
         _prewarm = prewarm;
         _prewarm?.SetAuto(settings.Auto);
@@ -49,7 +49,7 @@ public sealed class Worker : BackgroundService
         DiskActivity.Log = log;
         _watchers = (primary, fallback);
         _watchKey = WatchKey(settings);
-        _dispatcher = new GameDispatcher(settings.Games, streamer, log);
+        _dispatcher = new GameDispatcher(settings.Games, streamer, log, env: dispatchEnv is null ? null : dispatchEnv with { RestreamCooldownMin = () => _settings.Auto.RestreamCooldownMin }); // 설정을 다시 읽어도 최신 값
         _checker = checker;
         _gate = gate ?? new ReapplyGate();
     }

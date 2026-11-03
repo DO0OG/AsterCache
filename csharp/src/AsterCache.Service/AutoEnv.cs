@@ -5,6 +5,7 @@ using AsterCache.Core.Logging;
 using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
+using AsterCache.Core.Tier;
 using AsterCache.Core.Trace;
 using AsterCache.Tracer;
 using AsterCache.Windows;
@@ -130,6 +131,9 @@ public sealed class AutoEnv
     /// 전원이 AC 이거나 배터리가 충분한가.
     public required Func<bool> PowerOk { get; init; }
 
+    /// SSD 보조 저장 (선택 기능) 의 엔진. 시험 기본값은 null (건드리지 않음).
+    public TierEngine? Tier { get; init; }
+
     /// 자동 모드가 이 설치 루트를 건드리면 안 되는 이유, 건드려도 되면 (HDD 로 확인된 시스템 볼륨 밖) null.
     public string? DriveRefusal(string originRoot) => DriveRefusal(originRoot, SystemDrive, IsHdd);
 
@@ -193,6 +197,7 @@ public sealed class AutoEnv
             DiskBytesPerSecond = letter => DiskActivity.BytesPerSecond(letter),
             CpuPercent = cpu.Percent,
             PowerOk = () => PowerProbe.PowerOk(MinBatteryPercent),
+            Tier = log is null ? null : new TierEngine(new TierFs(new IoPriorityHint(err => log.Warn($"ssd tier: low I/O priority hint not applied (Win32 error {err})"))), log, Path.Combine(Path.GetDirectoryName(journalDir) ?? journalDir, "tier")),
         };
     }
 

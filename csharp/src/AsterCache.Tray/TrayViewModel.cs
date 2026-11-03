@@ -12,7 +12,13 @@ public readonly record struct ActionResult(bool Ok, string Message);
 
 /// 설정 탭의 자동 모드 입력값 (UI 스레드에서 읽어 배경 작업에 넘기는 값 묶음).
 public sealed record AutoForm(
-    bool Enabled, bool Discover, bool Trace, bool Relocate, int PrewarmRecent, string IgnoreExes, string ZoneLimit, string RewarmMinutes);
+    bool Enabled, bool Discover, bool Trace, bool Relocate, int PrewarmRecent, string IgnoreExes, string ZoneLimit, string RewarmMinutes)
+{
+    /// SSD 보조 저장 (선택 기능): 켬과 예산 (GiB 숫자).
+    public bool TierEnabled { get; init; }
+
+    public string TierBudget { get; init; } = "8";
+}
 
 /// 파일·폴더를 기본 프로그램으로 엽니다. 시험은 가짜로 바꿉니다.
 public interface IShell
@@ -150,7 +156,19 @@ public sealed class TrayViewModel(
     public ActionResult ApplyAuto(AutoForm f)
     {
         ActionResult saved = SetAuto(f.Enabled, f.Discover, f.Trace, f.Relocate, f.PrewarmRecent, f.IgnoreExes);
-        return saved.Ok ? SetSpeed(f.ZoneLimit, f.RewarmMinutes) : saved;
+        ActionResult speed = saved.Ok ? SetSpeed(f.ZoneLimit, f.RewarmMinutes) : saved;
+        return speed.Ok ? SetSsdTier(f.TierEnabled, f.TierBudget) : speed;
+    }
+
+    /// SSD 보조 저장 (선택 기능) 의 켬과 예산 (GiB) 을 기록합니다. 폴더(root) 와 나머지 auto 값은 그대로 보존합니다. 링크는 서비스가 만듭니다 (트레이는 설정만 바꿈).
+    public ActionResult SetSsdTier(bool enabled, string budgetGib)
+    {
+        if (!int.TryParse(budgetGib.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int gib) || gib is < 1 or > 4096)
+        {
+            return Report(false, L.T("Err_TierBudget"));
+        }
+
+        return Edit(() => config.UpdateAuto(a => a with { SsdTier = a.SsdTier with { Enabled = enabled, BudgetGib = gib } }), L.T("Msg_AutoSet"));
     }
 
     /// 오류 알림용 한 줄: 예외 형식과 메시지 첫 줄 (사용자 폴더 경로는 가림).

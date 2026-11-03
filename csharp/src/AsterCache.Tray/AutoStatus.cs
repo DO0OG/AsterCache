@@ -6,7 +6,7 @@ using AsterCache.Core.Json;
 namespace AsterCache.Tray;
 
 /// 서비스가 auto_status.json 에 적은 게임 하나의 자동 단계.
-public sealed record AutoGame(string Source, string? Launcher, string Stage, string? Detail);
+public sealed record AutoGame(string Source, string? Launcher, string Stage, string? Detail, int? HitPercent = null);
 
 /// 알림 대상 사건 (kind: discovered, relocated).
 public sealed record AutoNotice(DateTimeOffset At, string Game, string Kind)
@@ -37,7 +37,7 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
                 {
                     if (kv.Value is JObject g && Get(g, "stage") is string stage)
                     {
-                        games[kv.Key] = new AutoGame(Get(g, "source") as string ?? "auto", Get(g, "launcher") as string, stage, Get(g, "detail") as string);
+                        games[kv.Key] = new AutoGame(Get(g, "source") as string ?? "auto", Get(g, "launcher") as string, stage, Get(g, "detail") as string, Get(g, "hit_percent") is long hp ? (int)Math.Clamp(hp, 0, 100) : null);
                     }
                 }
             }
@@ -143,6 +143,11 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
             parts.Add(L.Get(lang, "Stage_RelocatedPrefetch")); // boot 트레이스 (Windows 프리페치 기록) 로 재배치함
         }
 
+        if (SsdTierTag.Match(g.Detail ?? string.Empty) is { Success: true } tier)
+        {
+            parts.Add(L.Get(lang, "Stage_SsdTier", tier.Groups[1].Value)); // 핫 파일 일부를 SSD 사본으로 두었음
+        }
+
         Match now = Prewarming().Match(g.Detail ?? string.Empty);
         Match p = PrewarmTag().Match(g.Detail ?? string.Empty);
         if (now.Success)
@@ -155,6 +160,11 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
                 : p.Groups[1].Value == "full" ? L.Get(lang, "Stage_PrewarmedFull") : L.Get(lang, "Stage_Prewarmed"));
         }
 
+        if (g.HitPercent is { } hit)
+        {
+            parts.Add(L.Get(lang, "Stage_HitPercent", hit.ToString(CultureInfo.InvariantCulture)));
+        }
+
         return parts.Count == 0 ? null : string.Join(", ", parts);
     }
 
@@ -164,6 +174,8 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
 
     [GeneratedRegex(@"^(\d+) MiB read ahead$")]
     private static partial Regex ReadAhead();
+
+    private static readonly Regex SsdTierTag = new(@"ssd tier (\d+(?:\.\d+)?) GB", RegexOptions.None, TimeSpan.FromSeconds(1));
 
     [GeneratedRegex(@"prewarming (\d+)/(\d+) MiB")]
     private static partial Regex Prewarming();

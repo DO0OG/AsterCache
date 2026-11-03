@@ -25,6 +25,9 @@ public sealed record PrewarmSettings(bool OnServiceStart, IReadOnlyList<string> 
 
     /// 예열한 파일을 읽기 전용 매핑으로 계속 들고 있어 파일 캐시에서 밀려나지 않게 함 (기본 꺼짐, 실측 전).
     public bool Pin { get; init; }
+
+    /// config 에 pin 키가 있었는지 (파싱 때만 설정). 없으면 물리 RAM 이 충분할 때 서비스가 자동으로 켭니다 (PinKeeper.Wanted).
+    public bool PinSet { get; init; }
 }
 
 /// 첫 실행 학습·선행 읽기 설정 (auto.learn). max_total_mib 0 = 자동 (계산은 서비스가 함).
@@ -96,6 +99,9 @@ public sealed record AutoSettings(
 
     /// 공유 프로필 (다른 PC 에서 만든 기록) 묶음 내려받기.
     public SharedProfilesSettings SharedProfiles { get; init; } = SharedProfilesSettings.Default;
+
+    /// SSD 보조 저장 (선택 기능, 기본 꺼짐).
+    public SsdTierSettings SsdTier { get; init; } = SsdTierSettings.Default;
 
     /// 유휴 대기 시간: idle_seconds 가 명시됐거나 둘 다 없으면 IdleSeconds 초, idle_minutes 만 명시됐으면 IdleMinutes 분.
     public TimeSpan IdleWindow => IdleSecondsSet || !IdleMinutesSet ? TimeSpan.FromSeconds(IdleSeconds) : TimeSpan.FromMinutes(IdleMinutes);

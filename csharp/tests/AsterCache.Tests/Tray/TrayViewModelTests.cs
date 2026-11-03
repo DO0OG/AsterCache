@@ -73,6 +73,32 @@ public sealed class TrayViewModelTests : IDisposable
     }
 
     [Fact]
+    public void ApplyAutoAlsoSavesTheSsdTierSwitchAndBudgetKeepingTheFolder()
+    {
+        new ConfigEditor(_dir).SetAuto(AutoSettings.Default with { SsdTier = new SsdTierSettings(false, 8, "E:/Tier") });
+        var form = new AutoForm(true, true, true, true, 0, string.Empty, "2048", "10") { TierEnabled = true, TierBudget = " 16 " };
+
+        Assert.True(_vm.ApplyAuto(form).Ok);
+
+        Assert.Equal(new SsdTierSettings(true, 16, @"E:\Tier"), new ConfigEditor(_dir).Load()!.Auto.SsdTier);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("4097")]
+    [InlineData("-1")]
+    [InlineData("x")]
+    [InlineData("")]
+    public void SsdTierBudgetOutsideOneTo4096IsRejectedWithoutWriting(string budget)
+    {
+        Assert.True(_vm.AddGame(Game()).Ok);
+
+        Assert.False(_vm.SetSsdTier(true, budget).Ok);
+
+        Assert.False(new ConfigEditor(_dir).Load()!.Auto.SsdTier.Enabled);
+    }
+
+    [Fact]
     public void BriefShowsTheExceptionTypeAndTheFirstMessageLine()
     {
         Assert.Equal("InvalidOperationException: first", TrayViewModel.Brief(new InvalidOperationException("first\nsecond")));

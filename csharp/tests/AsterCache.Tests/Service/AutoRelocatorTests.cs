@@ -423,8 +423,6 @@ public sealed class AutoRelocatorTests : ApplyTestBase
 
     [Theory]
     [InlineData("disk")]
-    [InlineData("cpu")]
-    [InlineData("cpu-unknown")]
     [InlineData("power")]
     [InlineData("game")]
     public void AnyBusyConditionRestartsTheIdleWindow(string busy)
@@ -435,8 +433,6 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         switch (busy)
         {
             case "disk": _w.Disk = DiskActivityBytes() + 1; break;
-            case "cpu": _w.Cpu = 20; break; // 20 % 이상이면 바쁨
-            case "cpu-unknown": _w.Cpu = null; break;
             case "power": _w.Power = false; break;
             default: _w.Running = true; break;
         }
@@ -466,6 +462,39 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         Run(TimeSpan.FromMinutes(3));
 
         Assert.NotEmpty(Vol.Moves);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(87.0)]
+    public void HighOrUnknownCpuDoesNotBlockRelocationWhenTheDiskIsQuiet(double? cpu)
+    {
+        SetAuto(_ => AutoSettings.Default); // 유휴 창 30 초
+        _w.Cpu = cpu;
+        DateTimeOffset t0 = _w.Now;
+
+        Run(TimeSpan.FromMinutes(1));
+
+        Assert.Equal(t0 + TimeSpan.FromSeconds(30), Entry.RelocatedAt); // CPU 가 바빠도 디스크가 조용하면 첫 유휴 표본에서 30 초 뒤
+        Assert.NotEmpty(Vol.Moves);
+    }
+
+    [Fact]
+    public void LongWaitForIdleIsNotedOnceWithTheReasonAndCountedAgainAfterIdle()
+    {
+        _w.Disk = DiskActivityBytes() + 1;
+
+        Run(TimeSpan.FromHours(6.5));
+
+        Assert.Single(_log.Lines, l => l.Contains("auto waiting for idle for 6 h (disk busy)", StringComparison.Ordinal));
+        Assert.Empty(Vol.Moves);
+
+        _w.Disk = 0;
+        Run(TimeSpan.FromMinutes(1)); // 유휴 표본이 잡혀 대기 구간이 끝남 (창 3 분은 아직 안 참)
+        _w.Disk = DiskActivityBytes() + 1;
+        Run(TimeSpan.FromHours(6.5));
+
+        Assert.Equal(2, _log.Lines.Count(l => l.Contains("auto waiting for idle for 6 h (disk busy)", StringComparison.Ordinal)));
     }
 
     [Fact]

@@ -115,13 +115,19 @@ public sealed class AutoMode
             {
                 // 적중률은 여기서 재지 않음 (게임 디스크 읽기): 예열 직후 값이 auto_status 에 남아 있음. 게임이 끝나면 NoteGameExit 가 멈춤
                 var watch = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
-                _boundaryWatch[g.Name] = watch;
+                CancellationTokenSource? previous = null;
+                _ = _boundaryWatch.AddOrUpdate(g.Name, watch, (_, old) =>
+                {
+                    previous = old;
+                    return watch;
+                });
+                Release(previous); // 같은 게임이 다시 뜬 경우 이전 감시를 멈추고 치움
                 try
                 {
                     // 등록 전에 게임이 끝났으면 NoteGameExit 가 놓치므로 등록 직후 확인 (등록 뒤의 종료는 NoteGameExit 가 취소)
                     if (!_env.AnyRunning(g.ExeNames))
                     {
-                        watch.Cancel();
+                        Release(watch, dispose: false);
                     }
 
                     if (BoundaryRunner is { } run)
@@ -135,7 +141,10 @@ public sealed class AutoMode
                 }
                 finally
                 {
-                    _ = _boundaryWatch.TryRemove(new KeyValuePair<string, CancellationTokenSource>(g.Name, watch));
+                    if (_boundaryWatch.TryRemove(new KeyValuePair<string, CancellationTokenSource>(g.Name, watch)))
+                    {
+                        watch.Dispose(); // 맵에서 뺀 쪽이 치움 (종료 통지가 이미 뺐다면 그쪽이 치움)
+                    }
                 }
             }
         });
@@ -146,7 +155,7 @@ public sealed class AutoMode
     {
         if (_boundaryWatch.TryRemove(g.Name, out CancellationTokenSource? watch))
         {
-            watch.Cancel();
+            Release(watch);
         }
     }
 
@@ -285,6 +294,23 @@ public sealed class AutoMode
         catch (OperationCanceledException)
         {
             // 종료
+        }
+    }
+
+    // 감시를 멈추고 치웁니다. 감시하던 쪽은 이미 가져간 토큰만 쓰므로 치운 뒤에도 취소 상태를 볼 수 있음.
+    private static void Release(CancellationTokenSource? watch, bool dispose = true)
+    {
+        try
+        {
+            watch?.Cancel();
+            if (dispose)
+            {
+                watch?.Dispose();
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            // 다른 쪽이 이미 치움
         }
     }
 

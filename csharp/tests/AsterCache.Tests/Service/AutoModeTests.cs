@@ -344,6 +344,42 @@ public sealed class AutoModeTests : IDisposable
     }
 
     [Fact]
+    public async Task RestartingTheSameGameCancelsAndDisposesThePreviousLoadBoundaryWatch()
+    {
+        AddGame("foo", "auto");
+        _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { LoadBoundary = true } };
+        _rig.World.Session = new FakeTrace();
+        _rig.World.Running = true;
+        AutoMode mode = Mode();
+        var tokens = new List<CancellationToken>();
+        var started = new SemaphoreSlim(0);
+        mode.BoundaryRunner = (_, ct) =>
+        {
+            lock (tokens)
+            {
+                tokens.Add(ct);
+            }
+
+            started.Release();
+            ct.WaitHandle.WaitOne();
+        };
+
+        Task first = Task.Run(() => mode.OnGameStart(Game()));
+        await started.WaitAsync(TimeSpan.FromSeconds(30));
+        Task second = Task.Run(() => mode.OnGameStart(Game())); // 같은 게임이 다시 뜸
+        await started.WaitAsync(TimeSpan.FromSeconds(30));
+        await first.WaitAsync(TimeSpan.FromSeconds(30)); // 이전 감시는 멈춤
+
+        Assert.True(tokens[0].IsCancellationRequested);
+        Assert.Throws<ObjectDisposedException>(() => _ = tokens[0].WaitHandle); // 치워짐
+        Assert.False(tokens[1].IsCancellationRequested);
+
+        mode.NoteGameExit(Game());
+        await second.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.True(tokens[1].IsCancellationRequested);
+    }
+
+    [Fact]
     public void LoadBoundaryWatchIsCancelledWhenTheGameExitedBeforeItRegistered()
     {
         AddGame("foo", "auto");

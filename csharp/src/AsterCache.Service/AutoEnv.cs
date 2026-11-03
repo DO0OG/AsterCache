@@ -128,6 +128,9 @@ public sealed class AutoEnv
     /// ('X:', LCN) → 그 자리의 비버퍼드 순차 읽기 속도 (MB/s, 1 MiB x 64 의 3 회 중앙값), 못 재면 null. 서비스 전용, 시험은 가짜 (기본: 못 잼).
     public Func<string, long, double?> ProbeMbps { get; init; } = (_, _) => null;
 
+    /// 'X:' → 표본 한 칸 (64 MiB) 의 LCN 수. 회복 표본이 이만큼씩 옮겨 읽음 (0 이면 회전 없음, 시험 기본값).
+    public Func<string, long> ProbeStepLcn { get; init; } = _ => 0;
+
     /// ('X:', 존 시작 LCN) → (그 존 앞쪽이 이미 할당됐는가, 존에서 4 GiB 뒤에 가장 가까운 할당된 기준 구간의 LCN), 비트맵을 못 읽으면 null. 시험 기본값은 null.
     public Func<string, long, (bool ZoneAllocated, long? ReferenceLcn)?> LocateProbeSpots { get; init; } = (_, _) => null;
 
@@ -202,6 +205,7 @@ public sealed class AutoEnv
             Extents = FileLayout.Extents,
             DiskBytesPerSecond = letter => DiskActivity.BytesPerSecond(letter),
             ProbeMbps = DiskProbe.Mbps,
+            ProbeStepLcn = DiskProbe.StepLcn,
             LocateProbeSpots = DiskProbe.Locate,
             CpuPercent = cpu.Percent,
             PowerOk = () => PowerProbe.PowerOk(MinBatteryPercent),

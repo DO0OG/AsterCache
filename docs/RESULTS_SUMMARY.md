@@ -227,4 +227,5 @@ Same as bounded, plus a pause while the game's reads over the last 500 ms run at
 - E10–E11: 4→16 MiB chunks made no difference (2.0 MB/s); per-file fixed cost dominates. Sample reduction, journal batching and a pre-job sample cut the time from 186 s to 88 s.
 - E12–E14: original-order relocation was slower (88 → 110 s), so auto uses plan order. Eight parallel reads took the HDD to 41 s (4.5×) and NVMe to 10.6 s, which sets the default concurrency to 8.
 - E15–E16: outer-zone raw bandwidth is non-monotonic and unrepresentative, so outer zones are held back. After a 2 GB move, cold reads went 19.5 → 33 s and still took 30 s 15 min after reverting (SMR slowdown).
+- E16c recovery curve: after a 2 GB move, SMR recovery took 25 min to 1.5 h.
 - Notes: [research_hdd_general.md](research_hdd_general.md)

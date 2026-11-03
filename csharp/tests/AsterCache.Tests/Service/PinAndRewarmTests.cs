@@ -34,6 +34,8 @@ public sealed class PinAndRewarmTests
         public bool Recovering { get; set; } = true;
 
         public bool IsRecovering(string drive) => Recovering;
+
+        public bool? WatchUpdate(string drive, DateTimeOffset updatedAt, TimeSpan limit) => null;
     }
 
     private sealed class FakePin(IReadOnlyList<string> paths) : IDisposable

@@ -206,10 +206,16 @@ public sealed class Prewarmer
     /// 게임 업데이트 직후의 지연 (auto.post_update_delay_min): 그 게임이 아직 기다려야 하면 남은 시간, 아니면 null. 기본은 지연 없음 (서비스가 자동 상태를 보고 정함).
     public Func<GameSettings, TimeSpan?> PostUpdateWait { get; set; } = _ => null;
 
+    /// 업데이트를 감지해 재계획 상태가 된 때 (없으면 null): probe 모드에서 이 드라이브의 회복 판정 (Recovery) 의 기준 시각. 기본 null (고정 분만 씀).
+    public Func<GameSettings, DateTimeOffset?> ReplanStart { get; set; } = _ => null;
+
     /// 업데이트 지연으로 미뤄야 하는 게임이면 true (지연 한 번에 로그는 한 줄). 지연이 끝난 게임은 다음 지연 때 다시 로그를 남깁니다.
     private bool Deferred(GameSettings game)
     {
-        bool wait = PostUpdateWait(game) is not null;
+        // AutoRelocator.PostUpdateDelayed 와 같은 판정: probe 모드이고 이 드라이브에 회복 추적이 있으면 그 판정, 없으면 고정 분.
+        bool? probed = _auto.PostRelocateRecovery == AutoSettings.RecoveryProbe && _auto.PostUpdateDelayMin > 0 && Recovery is { } recovery && ReplanStart(game) is { } at
+            ? recovery.WatchUpdate(PlanFile.SplitDrive(game.OriginRoot).ToUpperInvariant(), at, TimeSpan.FromMinutes(_auto.PostUpdateDelayMin * 4)) : null;
+        bool wait = probed ?? PostUpdateWait(game) is not null;
         lock (_gate)
         {
             if (!wait)

@@ -1,6 +1,7 @@
 using System.Globalization;
 using AsterCache.Core;
 using AsterCache.Core.Apply;
+using AsterCache.Core.I18n;
 using AsterCache.Core.Json;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
@@ -88,13 +89,26 @@ internal static class StatusCommand
         try
         {
             return File.Exists(path) && JsonRead.ReadFile(path) is JObject root
-                ? new JObject { { "games", root.TryGetValue("games", out object? g) ? WithScores(g) : null }, { "relocations", root.TryGetValue("relocations", out object? r) ? r : null } }
+                ? new JObject { { "games", root.TryGetValue("games", out object? g) ? WithScores(g) : null }, { "relocations", root.TryGetValue("relocations", out object? r) ? r : null }, { "progress", Progress(root) } }
                 : null;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
         {
             return null;
         }
+    }
+
+    // 설치 뒤 자동 진행 집계 (games 가 없으면 null).
+    private static object? Progress(JObject root)
+    {
+        if (!root.TryGetValue("games", out object? g) || g is not JObject games)
+        {
+            return null;
+        }
+
+        AutoProgress p = AutoProgress.From(games.Select(kv => kv.Value).OfType<JObject>().Select(o =>
+            (o.TryGetValue("stage", out object? s) ? s as string ?? string.Empty : string.Empty, o.TryGetValue("detail", out object? d) ? d as string : null, o.TryGetValue("hit_percent", out object? h) && h is long hp ? (int?)Math.Clamp(hp, 0, 100) : null)));
+        return new JObject { { "discovered", (long)p.Discovered }, { "planned", (long)p.Planned }, { "relocated", (long)p.Relocated }, { "prewarmed", (long)p.Prewarmed }, { "hit_average", p.HitAverage is { } avg ? (long)avg : null }, { "line", p.Line(L.Current) } };
     }
 
     // 게임마다 plays (없으면 last_played 하나) 로 예열 점수를 덧붙임. 이력이 없는 게임은 null.

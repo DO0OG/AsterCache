@@ -1,4 +1,5 @@
 using AsterCache.Core.Logging;
+using AsterCache.Windows;
 
 namespace AsterCache.Service;
 
@@ -9,11 +10,13 @@ public readonly record struct ProbeSpot(long Lcn, double Mbps);
 public sealed record DriveBaseline(ProbeSpot? Zone, ProbeSpot? Ref);
 
 /// 쓰기 (재배치) 뒤 드라이브가 회복할 때까지의 상태. probe 는 2 분마다 기준 속도와 견줘 연속 2 회 90% 이상이면 회복으로 보고, 상한 (limit) 이 지나면 회복으로 칩니다.
+/// 표본은 매번 64 MiB 씩 옮겨 읽고 (HDD 자체 캐시 적중 방지), 디스크 순차 상한을 넘는 값은 캐시 적중으로 보고 판정에서 뺍니다.
 /// 기준이 없는 추적 (고정 대기) 은 limit 이 지나야 끝납니다. 시각은 AutoEnv.Now, 표본은 AutoEnv.ProbeMbps (시험은 가짜). Poll 은 틱 스레드에서, IsRecovering 은 아무 스레드에서 부릅니다.
 public sealed class DriveRecovery(AutoEnv env, ILog log) : IDriveRecovery
 {
     public const double RecoveredFraction = 0.9;
     public const int RecoveredStreak = 2;
+    public const double CeilingMbps = 250; // 디스크 순차 상한 (드라이브별 예열 측정값이 없어 고정; 생기면 그 값 × 1.5)
     public static readonly TimeSpan SampleEvery = TimeSpan.FromMinutes(2);
 
     private readonly object _lock = new();
@@ -34,6 +37,10 @@ public sealed class DriveRecovery(AutoEnv env, ILog log) : IDriveRecovery
         public int Streak { get; set; }
 
         public bool Logged { get; set; }
+
+        public bool CacheLogged { get; set; }
+
+        public int Rotation { get; set; } = 1; // 기준은 0 번 칸에서 쟀음
     }
 
     public bool IsRecovering(string drive)
@@ -116,13 +123,25 @@ public sealed class DriveRecovery(AutoEnv env, ILog log) : IDriveRecovery
 
     private void Step(string key, Track t, DateTimeOffset now)
     {
-        (double? zone, double? reference)? got = Sample(key, t.Baseline!);
+        (double? zone, double? reference)? got = Sample(key, t.Baseline!, t.Rotation++);
         lock (_lock)
         {
             t.Next = now + SampleEvery;
             if (got is null || !_active.TryGetValue(key, out Track? cur) || cur != t)
             {
                 return; // 바쁘거나 못 잼: 연속 횟수는 그대로 (단순하게 건너뛴 회차는 세지 않음)
+            }
+
+            double ceiling = CeilingMbps;
+            if (got.Value.zone > ceiling || got.Value.reference > ceiling)
+            {
+                if (!t.CacheLogged)
+                {
+                    t.CacheLogged = true;
+                    log.Info($"drive {key} recovery sample {Show(Math.Max(got.Value.zone ?? 0, got.Value.reference ?? 0))} MB/s is above the {Show(ceiling)} MB/s sequential ceiling (disk cache hit), not counted");
+                }
+
+                return; // 캐시 적중: 판정에서 빼고 연속 횟수는 그대로
             }
 
             bool ok = Meets(t.Baseline!.Zone, got.Value.zone) && Meets(t.Baseline.Ref, got.Value.reference);
@@ -141,7 +160,7 @@ public sealed class DriveRecovery(AutoEnv env, ILog log) : IDriveRecovery
     }
 
     // 디스크가 바쁘거나 (읽을 수 없어도) 표본이 실패하면 null.
-    private (double? Zone, double? Ref)? Sample(string key, DriveBaseline b)
+    private (double? Zone, double? Ref)? Sample(string key, DriveBaseline b, int rotation)
     {
         try
         {
@@ -150,8 +169,9 @@ public sealed class DriveRecovery(AutoEnv env, ILog log) : IDriveRecovery
                 return null;
             }
 
-            double? zone = b.Zone is { } z ? env.ProbeMbps(key, z.Lcn) : null;
-            double? reference = b.Ref is { } r ? env.ProbeMbps(key, r.Lcn) : null;
+            long step = env.ProbeStepLcn(key) * (rotation % DiskProbe.RotationWindows);
+            double? zone = b.Zone is { } z ? env.ProbeMbps(key, z.Lcn + step) : null;
+            double? reference = b.Ref is { } r ? env.ProbeMbps(key, r.Lcn + step) : null;
             return (b.Zone is not null && zone is null) || (b.Ref is not null && reference is null) ? null : (zone, reference);
         }
         catch (Exception e) when (e is not OperationCanceledException)

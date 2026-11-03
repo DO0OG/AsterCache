@@ -6,7 +6,7 @@ using AsterCache.Windows;
 
 namespace AsterCache.Service;
 
-/// 게임 자동 등록: 런처 목록 발견 (6 시간마다) 과 실행 중 읽기량 휴리스틱 (2 초마다). 등록은 ConfigEditor 로 config.json 에 쓰고, 서비스는 그 변경을 다시 읽습니다.
+/// 게임 자동 등록: 런처 목록 발견 (1 시간마다) 과 실행 중 읽기량 휴리스틱 (2 초마다). 등록은 ConfigEditor 로 config.json 에 쓰고, 서비스는 그 변경을 다시 읽습니다.
 public sealed class AutoRegistry
 {
     public const int MaxExeNames = 16;

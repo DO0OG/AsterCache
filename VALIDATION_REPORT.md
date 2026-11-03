@@ -2,7 +2,29 @@
 
 # AsterCache v0.7 validation report — named checks 86~120
 
+## Summary as of 2026-11-03
+
+The figures below are the current state. The sections after this one are the record from 2026-11-01 and 2026-11-02.
+
+| Item | Value | Source |
+|---|---:|---|
+| Game loading, cold (HDD, Frostpunk 1.9 GB loading read) | 12.9 s | [README.md](README.md) measured results table |
+| Game loading, after prewarm | 0.48 s | README.md measured results table; section 2026-11-02, B |
+| Game loading, NVMe SSD cold | 3.8 s | section 2026-11-02, B |
+| Zone prefetch after the full move (E6, median of 3) | 11.93 s | section E6 below |
+| SSD assist storage, cold (warm) | 2.81 s (0.48 s) | README.md measured results table; not measured in this document |
+| Relocation work, 8 parallel reads (E12–E14) | 186 s → 41 s (4.5×) | [docs/RESULTS_SUMMARY.md](docs/RESULTS_SUMMARY.md), E10–E16 |
+| Automatic relocation of real games | Call of Duty 1.3 GB; Frostpunk 2 GB (profile); MapleStory 63 MB, 3.9 s; LoL 76 MB, 4.1 s | run record not yet in this repository |
+| SMR recovery after a 2 GB move (E16, E16c) | 25 min to 1.5 h | [docs/RESULTS_SUMMARY.md](docs/RESULTS_SUMMARY.md), E10–E16 |
+
+Held back or not adopted:
+
+- Raw bandwidth of the outer zones is non-monotonic (E15), and the outer-zone benefit is not proven, so outer zones are held back.
+- First-run read-ahead (E7 to E7f) gave no proven gain. It stays off by default, and the stream, bounded, and adaptive modes are not adopted.
+
 ## Windows hardware validation (2026-11-01)
+
+The sections below are the record from 2026-11-01 and 2026-11-02, not the current state.
 
 ### Environment
 

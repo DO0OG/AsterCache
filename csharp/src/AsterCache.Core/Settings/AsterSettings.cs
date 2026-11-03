@@ -83,6 +83,9 @@ public sealed record AutoSettings(
     /// 재배치(쓰기) 뒤 같은 드라이브의 다음 작업을 미루는 방식: "probe" (기본, 읽기 속도를 재서 회복을 확인, 최대 post_update_delay_min x4 분), "fixed" (post_update_delay_min 분 고정) 또는 "off" (기다리지 않음).
     public string PostRelocateRecovery { get; init; } = RecoveryProbe;
 
+    /// HDD 게임 드라이브가 디스크 끄기 시간 뒤 잠들지 않게, 런처가 떠 있거나 지금이 플레이하던 시간대면 10 분마다 4 KiB 를 읽음 (기본 켜짐, 전원 설정은 바꾸지 않음).
+    public bool KeepAwake { get; init; } = true;
+
     /// beta.3 형식 설정 (learn 키 없음, prewarm_recent 1 + idle_minutes 3) 을 새 기본으로 해석했는지 (파싱 때만 설정, 서비스가 시작 때 로그 한 줄).
     public bool Migrated { get; init; }
 

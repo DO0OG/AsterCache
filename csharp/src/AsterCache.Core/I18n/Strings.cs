@@ -82,6 +82,8 @@ public static partial class L
         ["Stage_RelocatedProfile"] = ("재배치됨(프로필)", "relocated (profile)"),
         ["Stage_RelocatedPrefetch"] = ("재배치됨(프리페치)", "relocated (prefetch)"),
         ["Stage_SsdTier"] = ("SSD 보조 {0} GB", "SSD tier {0} GB"),
+        ["Auto_Progress"] = ("자동 진행: 발견 {0} 게임 → 부트스트랩 계획 {1} → 재배치 완료 {2} → 예열 완료 {3}", "Auto progress: {0} games found → {1} bootstrap planned → {2} relocated → {3} prewarmed"),
+        ["Auto_ProgressHit"] = (" → 적중률 평균 {0}%", " → avg hit rate {0}%"),
         ["Stage_HitPercent"] = ("예열 적중 {0}%", "prewarm hit {0}%"),
         ["Stage_PrewarmedFull"] = ("예열됨(전체)", "prewarmed (full folder)"),
         ["Stage_PrewarmedProfile"] = ("예열됨(프로필 {0})", "prewarmed (profile {0})"),

@@ -196,6 +196,11 @@ public sealed class ManageViewModel(
     public IReadOnlyList<string> StatusLines(string? letter)
     {
         var lines = new List<string> { tray.StatusText, L.T("Status_Watcher", tray.Settings?.Watcher ?? L.T("Word_Unknown")), LastPrewarm() };
+        if (_auto is not null && AutoStatusFile.Progress(_auto).Line(L.Current) is { } progress)
+        {
+            lines.Add(progress);
+        }
+
         foreach (GameSettings g in Games.Where(g => letter is null || OnDrive(g, letter)))
         {
             string layout = !File.Exists(g.Plan) ? L.T("Layout_NoPlan")

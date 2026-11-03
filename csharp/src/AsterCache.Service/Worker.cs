@@ -36,6 +36,12 @@ public sealed class Worker : BackgroundService
         _auto = auto;
         _reload = reload;
         _settings = settings;
+        if (prewarm is not null && auto is not null)
+        {
+            AutoStatus status = auto.Status;
+            prewarm.PostUpdateWait = g => AutoRelocator.PostUpdateWait(status, _settings.Auto, g.Name, DateTimeOffset.UtcNow);
+        }
+
         _log = log;
         _watchers = (primary, fallback);
         _watchKey = WatchKey(settings);
@@ -83,7 +89,15 @@ public sealed class Worker : BackgroundService
             : $"service started: {_settings.Games.Count} game(s), watcher {_watchers.Primary.GetType().Name}");
         if (_prewarm is not null)
         {
-            _ = Task.Run(() => RunPrewarm(() => _prewarm.RunServiceStart(_auto?.StartupRecent(), _auto?.WarmToken ?? default)), CancellationToken.None);
+            _ = Task.Run(() => RunPrewarm(() =>
+            {
+                if (_auto is not null)
+                {
+                    BootProbe.RunReal(_settings, _auto.Status, _log); // 서비스 시작 예열이 파일을 데우기 전의 콜드 비용 (부팅 뒤 첫 시작일 때만)
+                }
+
+                _prewarm.RunServiceStart(_auto?.StartupRecent(), _auto?.WarmToken ?? default);
+            }), CancellationToken.None);
         }
 
         var channel = Channel.CreateUnbounded<ProcessStart>();

@@ -1317,6 +1317,50 @@ public sealed class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
+    public void GameUpdateDelaysPlanningByPostUpdateDelayMinThenProceeds()
+    {
+        DoneAndReadyToReplan(out _);
+        Update();
+        _w.Now += AutoRelocator.StaleCheckEvery;
+        Tick(); // 업데이트 감지
+        Assert.Equal(AutoStage.Discovered, Entry.Stage);
+        _w.Files.Add(AutoTracer.BootTracePath(_game)); // 다시 계획할 기록이 생김
+
+        for (int i = 0; i < 19; i++)
+        {
+            _w.Now += Step;
+            Tick();
+        }
+
+        Assert.False(File.Exists(_game.Plan)); // 9 분 30 초: 아직 기다림
+        Assert.Equal(AutoStage.Discovered, Entry.Stage);
+        Assert.Single(_log.Lines, l => l.Contains("bench: waiting 10 min after update (drive may still be reorganizing)", StringComparison.Ordinal)); // 매 틱 찍지 않음
+
+        _w.Now += Step;
+        RunUntilDone();
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.True(File.Exists(_game.Plan));
+        Assert.Single(_log.Lines, l => l.Contains("waiting 10 min after update", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ZeroPostUpdateDelayPlansAtOnce()
+    {
+        SetAuto(a => a with { PostUpdateDelayMin = 0 });
+        DoneAndReadyToReplan(out _);
+        Update();
+        _w.Now += AutoRelocator.StaleCheckEvery;
+        Tick();
+        _w.Files.Add(AutoTracer.BootTracePath(_game));
+
+        Tick();
+
+        Assert.True(File.Exists(_game.Plan));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("after update", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void PreviousZoneThatIsNoLongerFreeFallsBackToTheNormalZoneSearch()
     {
         long start = DoneAndReadyToReplan(out _);

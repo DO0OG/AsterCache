@@ -164,6 +164,7 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             { "ignore_exes", a.IgnoreExes.Cast<object?>().ToList() },
             { "rewarm_minutes", (long)a.RewarmMinutes },
             { "post_update_delay_min", (long)a.PostUpdateDelayMin },
+            { "recovery_max_min", (long)a.RecoveryMaxMin },
             { "post_relocate_recovery", a.PostRelocateRecovery },
             { "keep_awake", a.KeepAwake },
             { "keep_stream_on_game_start", a.KeepStreamOnGameStart },

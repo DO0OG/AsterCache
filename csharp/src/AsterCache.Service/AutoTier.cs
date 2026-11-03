@@ -176,7 +176,13 @@ public sealed class AutoTier
 
         if (!_cheat.TryGetValue(g.Name, out string? cheat))
         {
-            _cheat[g.Name] = cheat = g.AntiCheat ?? _env.AntiCheatOf(g.OriginRoot);
+            cheat = g.AntiCheat ?? _env.AntiCheatOf(g.OriginRoot);
+            if (cheat == AutoEnv.AntiCheatUnknown)
+            {
+                return false; // 탐지 실패는 모름: 티어 거절, 캐시하지 않음 (다음 주기에 다시 봄)
+            }
+
+            _cheat[g.Name] = cheat;
         }
 
         if (cheat is not null)
@@ -205,7 +211,7 @@ public sealed class AutoTier
             return "on battery";
         }
 
-        return _env.DiskBytesPerSecond(PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant()) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond ? "disk busy" : null;
+        return _env.DiskBytesPerSecond(PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant()) is not { } bps ? DiskActivity.StatusText : bps >= DiskActivity.BusyBytesPerSecond ? "disk busy" : null;
     }
 
     private void RefreshBytes(string game)

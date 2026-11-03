@@ -46,6 +46,7 @@ public sealed class Worker : BackgroundService
         }
 
         _log = log;
+        DiskActivity.Log = log;
         _watchers = (primary, fallback);
         _watchKey = WatchKey(settings);
         _dispatcher = new GameDispatcher(settings.Games, streamer, log);

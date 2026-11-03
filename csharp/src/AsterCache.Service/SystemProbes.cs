@@ -1,9 +1,9 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.ServiceProcess;
+using AsterCache.Core.Logging;
 using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 
@@ -109,7 +109,7 @@ public static partial class DiskActivity
     public static double? BytesPerSecond(string letter) => Shared.BytesPerSecond(letter);
 
     /// 읽지 못하면 바쁜 것으로 간주 (보수적: 재적용을 미룸).
-    public static bool IsBusy(string letter) => BytesPerSecond(letter) is not { } bps || bps > BusyBytesPerSecond;
+    public static bool IsBusy(string letter) => BytesPerSecond(letter) is not { } bps || bps >= BusyBytesPerSecond;
 
     /// 실패 사유 (로그 문구이자 판정 기준).
     public const string CounterUnavailable = "counter_unavailable";
@@ -149,12 +149,15 @@ public static partial class DiskActivity
     private static readonly ConcurrentDictionary<string, byte> Reported = new(StringComparer.Ordinal);
     private static bool _namesLogged;
 
+    /// 서비스 시작에서 꽂는 서비스 로그 (없으면 기록하지 않음 — 시험·CLI).
+    public static ILog? Log { get; set; }
+
     /// 드라이브별 1 회만 기록 (반복 로그 방지).
     private static void Report(string letter, string reason)
     {
         if (Reported.TryAdd(letter, 0))
         {
-            Trace.WriteLine($"DiskActivity: {letter} {StatusText} ({reason})");
+            Log?.Info($"DiskActivity: {letter} {StatusText} ({reason})");
         }
     }
 
@@ -240,7 +243,7 @@ public static partial class DiskActivity
                 if (!_namesLogged)
                 {
                     _namesLogged = true;
-                    Trace.WriteLine("DiskActivity: PhysicalDisk 인스턴스 " + string.Join(", ", result.Keys));
+                    Log?.Info("DiskActivity: PhysicalDisk 인스턴스 " + string.Join(", ", result.Keys));
                 }
 
                 return result;

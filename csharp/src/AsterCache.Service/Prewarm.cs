@@ -223,8 +223,8 @@ public sealed class Prewarmer
     private bool Deferred(GameSettings game)
     {
         // AutoRelocator.PostUpdateDelayed 와 같은 판정: probe 모드이고 이 드라이브에 회복 추적이 있으면 그 판정, 없으면 고정 분.
-        bool? probed = _auto.PostRelocateRecovery == AutoSettings.RecoveryProbe && _auto.PostUpdateDelayMin > 0 && Recovery is { } recovery && ReplanStart(game) is { } at
-            ? recovery.WatchUpdate(PlanFile.SplitDrive(game.OriginRoot).ToUpperInvariant(), at, TimeSpan.FromMinutes(_auto.PostUpdateDelayMin * 4)) : null;
+        bool? probed = _auto.PostRelocateRecovery == AutoSettings.RecoveryProbe && Recovery is { } recovery && ReplanStart(game) is { } at
+            ? recovery.WatchUpdate(PlanFile.SplitDrive(game.OriginRoot).ToUpperInvariant(), at, TimeSpan.FromMinutes(_auto.RecoveryMaxMin)) : null;
         bool wait = probed ?? PostUpdateWait(game) is not null;
         lock (_gate)
         {

@@ -143,6 +143,20 @@ public sealed class AutoTierTests : IDisposable
     }
 
     [Fact]
+    public void AnUnknownAntiCheatScanRejectsTheTierAndIsNotCached()
+    {
+        SetTrace();
+        AsterSettings s = Settings();
+        _world.AntiCheats[@"D:\Games\Foo"] = AutoEnv.AntiCheatUnknown;
+        IdleTicks(s);
+        Assert.False(Linked(@"D:\Games\Foo\a.bin"));
+
+        _world.AntiCheats[@"D:\Games\Foo"] = null; // 다음 탐지는 없음으로 나옴: 앞의 모름이 캐시되지 않았어야 함
+        IdleTicks(s);
+        Assert.True(Linked(@"D:\Games\Foo\a.bin"));
+    }
+
+    [Fact]
     public void GameRunningOnAnotherDriveDoesNotBlockTiering()
     {
         SetTrace();

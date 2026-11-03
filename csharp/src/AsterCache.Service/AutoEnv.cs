@@ -247,6 +247,12 @@ public sealed class AutoEnv
         return PlanFile.Make(sessions, origin, zoneMib << 20, cb, FileLayout.Extents, zoneStartLcn: start);
     }
 
+    /// 탐지를 못 한 결과 (I/O 실패): 없음이 아니라 모름. 티어는 거절하고 캐시하지 않으며, 등록에는 저장하지 않습니다.
+    public const string AntiCheatUnknown = "unknown";
+
+    /// 등록에 저장해도 되는 탐지 결과 (모름은 null).
+    public static string? KnownAntiCheat(string? found) => found == AntiCheatUnknown ? null : found;
+
     // 발견 때와 같은 이름 열거 (LauncherScan 과 같은 깊이, 읽기 전용).
     private static string? DetectAntiCheat(string dir)
     {
@@ -256,7 +262,7 @@ public sealed class AutoEnv
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            return null;
+            return AntiCheatUnknown;
         }
     }
 

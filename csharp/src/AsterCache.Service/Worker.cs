@@ -105,7 +105,8 @@ public sealed class Worker : BackgroundService
                     BootProbe.RunReal(_settings, _auto.Status, _log, _auto.WarmToken); // 서비스 시작 예열이 파일을 데우기 전의 콜드 비용 (부팅 뒤 첫 시작일 때만)
                 }
 
-                _prewarm.RunServiceStart(_auto?.StartupRecent(), _auto?.WarmToken ?? default, _auto is { } am ? g => am.HasPlayed(g.Name) : null);
+                using var startup = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _auto?.WarmToken ?? default); // 서비스 종료에도 시작 게이트 대기가 끝나게 (자동 모드가 없으면 WarmToken 이 취소되지 않음)
+                _prewarm.RunServiceStart(_auto?.StartupRecent(), startup.Token, _auto is { } am ? g => am.HasPlayed(g.Name) : null);
             }), CancellationToken.None);
         }
 

@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using AsterCache.Core.Settings;
+using AsterCache.Service;
 using Xunit;
 
 namespace AsterCache.Tests.Service;
@@ -584,5 +585,16 @@ public sealed class AutoSettingsTests
         Assert.Equal(1, AutoSettings.Default.ParallelFor(slowBus: false, smr: true));
         Assert.Equal(2, AutoSettings.Default.ParallelFor(slowBus: true));
         Assert.Equal(8, AutoSettings.Default.ParallelFor(slowBus: false));
+    }
+
+    [Fact]
+    public void ReapplyParallelFollowsTheSameRuleAsTheAutomaticRelocation()
+    {
+        var game = new GameSettings("g", ["g.exe"], "t", "p", @"D:\g", [@"D:\g"], "L", 1440);
+
+        Assert.Equal(1, ReapplyEnv.ParallelFor(AutoSettings.Default, game, _ => false, _ => true));
+        Assert.Equal(2, ReapplyEnv.ParallelFor(AutoSettings.Default, game, _ => true, _ => false));
+        Assert.Equal(8, ReapplyEnv.ParallelFor(AutoSettings.Default, game, _ => false, _ => false));
+        Assert.Equal(4, ReapplyEnv.ParallelFor(AutoSettings.Default with { RelocateParallel = 4, RelocateParallelSet = true }, game, _ => false, _ => true)); // 명시값은 그대로
     }
 }

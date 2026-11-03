@@ -135,6 +135,13 @@ public sealed class ReapplyEnv
     /// 이 게임이 놓인 디스크 종류를 모르거나 USB 버스인가 (실패하면 모름으로 침).
     public static bool IsSlowBus(GameSettings g) => DiskInfo.Query(PlanFile.SplitDrive(g.OriginRoot)) is var d && (d.IncursSeekPenalty is null || d.BusType == DiskInfo.BusTypeUsb);
 
+    /// 이 게임이 놓인 디스크가 SMR 로 보이는 HDD 인가 (자동 재배치와 같은 판정, 실패하면 아님).
+    public static bool IsSmr(GameSettings g) => DiskInfo.Query(PlanFile.SplitDrive(g.OriginRoot)) is var d && DiskInfo.Kind(d.IncursSeekPenalty, d.Trim) == "HDD (looks like SMR)";
+
+    /// 재적용의 동시 수: 자동 재배치와 같은 규칙 (명시값, SMR 이면 1, 느린 버스 2, 그 밖에 8). 디스크 질의는 시험이 바꿔 끼울 수 있음.
+    public static int ParallelFor(AutoSettings auto, GameSettings g, Func<GameSettings, bool>? slowBus = null, Func<GameSettings, bool>? smr = null) =>
+        auto.ParallelFor((slowBus ?? IsSlowBus)(g), (smr ?? IsSmr)(g));
+
     /// 재적용의 옵션: 실행 순서는 설정 auto.relocate_order 를 따름 (자동 재배치와 같은 규칙).
     public static ApplyOptions OptionsFor(GameSettings g, string orderSetting, int parallel = 1) =>
         new(Execute: true, SaveTo: g.Plan, Order: RelocateOrder.Resolve(orderSetting), Parallel: parallel);

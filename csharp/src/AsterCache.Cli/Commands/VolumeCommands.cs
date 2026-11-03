@@ -31,7 +31,7 @@ internal static class VolumeCommands
         new("write-cap-mib", Type: ArgType.Int, Default: "2048"),
         new("verify", Default: VerifyMode.Sample, Choices: [VerifyMode.All, VerifyMode.Sample, VerifyMode.Off]),
         new("order", Default: RelocateOrder.Target, Choices: [RelocateOrder.Target, RelocateOrder.Source]),
-        new("parallel", Type: ArgType.Int, Default: "1"),
+        new("parallel", Type: ArgType.Int, Default: AsterCache.Core.Settings.AutoSettings.DefaultRelocateParallel.ToString(System.Globalization.CultureInfo.InvariantCulture)),
     ];
 
     public static readonly ArgOption[] VerifyOptions = [new("plan", Required: true)];

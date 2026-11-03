@@ -313,10 +313,10 @@ public sealed class BootProbeTests : IDisposable
     }
 
     [Fact]
-    public void PostUpdateDelayDefaultsToTenAndZeroIsAccepted()
+    public void PostUpdateDelayDefaultsToFifteenAndZeroIsAccepted()
     {
-        Assert.Equal(10, AutoSettings.Default.PostUpdateDelayMin);
-        Assert.Equal(10, ParseAuto([]).PostUpdateDelayMin);
+        Assert.Equal(15, AutoSettings.Default.PostUpdateDelayMin);
+        Assert.Equal(15, ParseAuto([]).PostUpdateDelayMin);
         Assert.Equal(0, ParseAuto(new JsonObject { ["post_update_delay_min"] = 0 }).PostUpdateDelayMin);
         Assert.Equal(25, ParseAuto(new JsonObject { ["post_update_delay_min"] = 25 }).PostUpdateDelayMin);
         Assert.Equal(1440, ParseAuto(new JsonObject { ["post_update_delay_min"] = 1440 }).PostUpdateDelayMin);

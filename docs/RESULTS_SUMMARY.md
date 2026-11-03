@@ -219,4 +219,5 @@ Same as bounded, plus a pause while the game's reads over the last 500 ms run at
 
 - Cold-opening 3,000 files took 30 s (10 ms per file, MFT lookup). Existing prewarm opens and reads the hot files, so their metadata is also warmed as a side effect.
 - The first cold read right after 3 GB of scattered writes took 58.8 s (normally 24 s). This looks like post-write cleanup on the DM-SMR drive. Prewarm right after the sequential-write relocation ran at 154 MB/s, which is normal.
+- E9: after 2 GB of scattered writes, cold replay took up to 4.45× the baseline (26.3 s) and recovered after about 10 min, so the post-update delay defaults to 15 min.
 - Notes: [research_hdd_general.md](research_hdd_general.md)

@@ -1326,22 +1326,22 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         Assert.Equal(AutoStage.Discovered, Entry.Stage);
         _w.Files.Add(AutoTracer.BootTracePath(_game)); // 다시 계획할 기록이 생김
 
-        for (int i = 0; i < 19; i++)
+        for (int i = 0; i < 29; i++)
         {
             _w.Now += Step;
             Tick();
         }
 
-        Assert.False(File.Exists(_game.Plan)); // 9 분 30 초: 아직 기다림
+        Assert.False(File.Exists(_game.Plan)); // 14 분 30 초: 아직 기다림
         Assert.Equal(AutoStage.Discovered, Entry.Stage);
-        Assert.Single(_log.Lines, l => l.Contains("bench: waiting 10 min after update (drive may still be reorganizing)", StringComparison.Ordinal)); // 매 틱 찍지 않음
+        Assert.Single(_log.Lines, l => l.Contains("bench: waiting 15 min after update (drive may still be reorganizing)", StringComparison.Ordinal)); // 매 틱 찍지 않음
 
         _w.Now += Step;
         RunUntilDone();
 
         Assert.Equal(AutoStage.Done, Entry.Stage);
         Assert.True(File.Exists(_game.Plan));
-        Assert.Single(_log.Lines, l => l.Contains("waiting 10 min after update", StringComparison.Ordinal));
+        Assert.Single(_log.Lines, l => l.Contains("waiting 15 min after update", StringComparison.Ordinal));
     }
 
     [Fact]

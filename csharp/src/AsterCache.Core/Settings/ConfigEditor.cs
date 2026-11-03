@@ -163,6 +163,7 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             { "engine_profiles", a.EngineProfiles },
             { "learn", new JObject { { "enabled", a.Learn.Enabled }, { "window_mib", (long)a.Learn.WindowMib }, { "max_total_mib", (long)a.Learn.MaxTotalMib }, { "mode", a.Learn.Mode }, { "saturation_mbps", (long)a.Learn.SaturationMbps } } },
             { "shared_profiles", new JObject { { "enabled", a.SharedProfiles.Enabled }, { "url", a.SharedProfiles.Url } } },
+            { "ssd_tier", new JObject { { "enabled", a.SsdTier.Enabled }, { "budget_gib", (long)a.SsdTier.BudgetGib }, { "root", a.SsdTier.Root } } },
         };
         if (a.IdleSecondsSet || !a.IdleMinutesSet) // idle_minutes 만 명시된 설정은 그 값이 이기도록 idle_seconds 를 쓰지 않음
         {

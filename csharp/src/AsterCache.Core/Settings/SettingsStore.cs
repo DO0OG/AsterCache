@@ -29,10 +29,12 @@ public static class SettingsStore
     [
         "enabled", "discover", "trace", "relocate", "prewarm_recent", "idle_minutes", "trace_cap_seconds", "trace_cap_mib",
         "max_relocations_per_day", "ignore_exes", "rewarm_minutes", "idle_seconds", "learn", "full_prewarm", "full_prewarm_max_mib", "engine_profiles", "shared_profiles",
+        "ssd_tier",
     ];
     private static readonly string[] PrewarmKeys = ["on_service_start", "trigger_exes", "min_free_ram_mib", "cooldown_min", "pin"];
     private static readonly string[] LearnKeys = ["enabled", "window_mib", "max_total_mib", "mode", "saturation_mbps"];
     private static readonly string[] SharedProfilesKeys = ["enabled", "url"];
+    private static readonly string[] SsdTierKeys = ["enabled", "budget_gib", "root"];
     private const int MaxUrlChars = 2048;
 
     public static string DefaultDataDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "AsterCache");
@@ -160,6 +162,7 @@ public static class SettingsStore
             FullPrewarm = OptBool(o, "full_prewarm", d.FullPrewarm),
             FullPrewarmMaxMib = OptInt(o, "full_prewarm_max_mib", 0, 1048576, d.FullPrewarmMaxMib),
             EngineProfiles = OptBool(o, "engine_profiles", d.EngineProfiles),
+            SsdTier = o.TryGetValue("ssd_tier", out object? tier) ? ParseSsdTier(tier) : SsdTierSettings.Default,
         };
     }
 
@@ -188,6 +191,26 @@ public static class SettingsStore
                 : throw new SettingsException("auto.shared_profiles.url: https URL expected")
             : d.Url;
         return new SharedProfilesSettings(enabled, url);
+    }
+
+    private static SsdTierSettings ParseSsdTier(object? v)
+    {
+        JObject o = v as JObject ?? throw new SettingsException("auto.ssd_tier: object expected");
+        Unknown(o, SsdTierKeys, "auto.ssd_tier");
+        SsdTierSettings d = SsdTierSettings.Default;
+        bool enabled = o.TryGetValue("enabled", out object? b) ? b as bool? ?? throw new SettingsException("auto.ssd_tier.enabled: true or false expected") : d.Enabled;
+        int budget = o.TryGetValue("budget_gib", out object? g) ? Int(g, "auto.ssd_tier.budget_gib", 1, 4096) : d.BudgetGib;
+        string root = d.Root;
+        if (o.TryGetValue("root", out object? r) && r is not SsdTierSettings.AutoRoot)
+        {
+            root = FullPath(r, "auto.ssd_tier.root");
+            if (SamePath(root, Path.GetPathRoot(root)!))
+            {
+                throw new SettingsException("auto.ssd_tier.root: a whole drive is too broad");
+            }
+        }
+
+        return new SsdTierSettings(enabled, budget, root);
     }
 
     private static bool OptBool(JObject o, string key, bool dflt) =>

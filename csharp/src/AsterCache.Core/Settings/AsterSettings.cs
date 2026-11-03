@@ -97,6 +97,9 @@ public sealed record AutoSettings(
     /// 공유 프로필 (다른 PC 에서 만든 기록) 묶음 내려받기.
     public SharedProfilesSettings SharedProfiles { get; init; } = SharedProfilesSettings.Default;
 
+    /// SSD 보조 저장 (선택 기능, 기본 꺼짐).
+    public SsdTierSettings SsdTier { get; init; } = SsdTierSettings.Default;
+
     /// 유휴 대기 시간: idle_seconds 가 명시됐거나 둘 다 없으면 IdleSeconds 초, idle_minutes 만 명시됐으면 IdleMinutes 분.
     public TimeSpan IdleWindow => IdleSecondsSet || !IdleMinutesSet ? TimeSpan.FromSeconds(IdleSeconds) : TimeSpan.FromMinutes(IdleMinutes);
 }

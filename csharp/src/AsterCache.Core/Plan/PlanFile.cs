@@ -44,10 +44,15 @@ public sealed record PlanFile(
             new PlanZone(zoneStartLcn, zc), alloc.Tasks, alloc.Order, orderPaths.Select(fingerprintFn).ToList(), stats);
     }
 
-    /// size 와 mtime_ns. Windows 의 Python st_mtime_ns 는 FILETIME x 100 이라 Ticks 로 정확히 같습니다.
+    /// size 와 mtime_ns. Windows 의 Python st_mtime_ns 는 FILETIME x 100 이라 Ticks 로 정확히 같습니다. 심볼릭 링크 (SSD 보조 저장) 는 대상의 값을 봅니다.
     public static Fingerprint FingerprintOf(string path)
     {
         var info = new FileInfo(path);
+        if (info.LinkTarget is not null && info.ResolveLinkTarget(true) is FileInfo target)
+        {
+            info = target;
+        }
+
         return new Fingerprint(path, info.Length, (info.LastWriteTimeUtc.Ticks - UnixEpochTicks) * 100);
     }
 

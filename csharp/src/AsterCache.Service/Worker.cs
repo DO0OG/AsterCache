@@ -356,11 +356,11 @@ public sealed class Worker : BackgroundService
     }
 
     /// 시작·다시 읽을 때 설정 보정: 이관 로그 한 줄, canApply 가 거짓이면 자동 모드를 꺼서 (취소 토큰 없는 통째 예열 등이 돌지 않게) 넘김.
-    public static AsterSettings ForApply(AsterSettings s, bool canApply, ILog log)
+    public static AsterSettings ForApply(AsterSettings s, bool canApply, ILog log, ConfigEditor? editor = null)
     {
         if (s.Auto.Migrated)
         {
-            log.Info("config: beta.3 auto settings (prewarm_recent 1, idle_minutes 3) read as the new defaults (prewarm_recent 0, idle_seconds 30); the file is rewritten on the next save");
+            RewriteMigrated(editor, log);
         }
 
         if (!canApply && s.Auto.Enabled)
@@ -370,6 +370,27 @@ public sealed class Worker : BackgroundService
         }
 
         return s;
+    }
+
+    /// beta.3 설정을 config 잠금 아래 새 키로 한 번 다시 씁니다 (다음 시작부터 이관 로그가 나오지 않음). 실패하면 경고 한 줄만 남기고 계속합니다.
+    public static void RewriteMigrated(ConfigEditor? editor, ILog log)
+    {
+        const string From = "config: beta.3 auto settings (prewarm_recent 1, idle_minutes 3) read as the new defaults (prewarm_recent 0, idle_seconds 30)";
+        if (editor is null)
+        {
+            log.Info(From + "; the file is kept because the data folder is not trusted");
+            return;
+        }
+
+        try
+        {
+            editor.UpdateAuto(a => a);
+            log.Info(From + "; rewrote the file with the new keys");
+        }
+        catch (Exception e) when (e is SettingsException or IOException or UnauthorizedAccessException)
+        {
+            log.Warn(From + "; the file could not be rewritten, will retry on the next start: " + e.Message);
+        }
     }
 
     /// 시작 때 설정·계획 폴더 권한을 확인해 재적용 허용 여부를 정합니다 (관리자 + 두 폴더 모두 신뢰 밖 쓰기 권한 없음).

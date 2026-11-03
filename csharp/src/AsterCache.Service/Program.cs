@@ -38,7 +38,7 @@ if (console && watchAt >= 0)
 
 bool admin = Elevation.IsAdmin();
 bool canApply = Worker.CanApply(admin, [dataDir, plansDir], log, [configPath]);
-settings = Worker.ForApply(settings, canApply, log);
+settings = Worker.ForApply(settings, canApply, log, canApply ? new ConfigEditor(dataDir) : null);
 (IProcessWatcher primary, IProcessWatcher? fallback) = Worker.ChooseWatchers(settings, admin);
 string journalDir = Path.Combine(dataDir, "journals");
 var checker = new ReapplyChecker(ReapplyEnv.Create(canApply, journalDir, log), log);
@@ -67,6 +67,11 @@ AsterSettings LoadChecked()
     }
 
     AsterSettings loaded = SettingsStore.Load(configPath, plansDir);
+    if (canApply && loaded.Auto.Migrated)
+    {
+        Worker.RewriteMigrated(new ConfigEditor(dataDir), log);
+    }
+
     return canApply || !loaded.Auto.Enabled ? loaded : loaded with { Auto = loaded.Auto with { Enabled = false } }; // 시작 때와 같이 자동 모드 끔
 }
 

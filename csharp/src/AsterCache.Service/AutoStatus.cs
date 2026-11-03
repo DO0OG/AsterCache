@@ -285,13 +285,13 @@ public sealed class AutoStatus
     private bool InWindow((DateTimeOffset At, long Bytes, long? Ticks) r, TimeSpan window, DateTimeOffset since) =>
         r.At > since || (r.Ticks is { } t && System.Diagnostics.Stopwatch.GetElapsedTime(t, _ticks()) < window);
 
-    /// 최근 window 안에 시작한 자동 적용 수.
+    /// 최근 window 안에 시작한 자동 적용 수 (0 바이트 기록은 옛 버전이 남긴 것이라 세지 않음).
     public int RelocationsWithin(TimeSpan window)
     {
         lock (_lock)
         {
             DateTimeOffset since = _now() - window;
-            return _relocations.Count(r => InWindow(r, window, since));
+            return _relocations.Count(r => r.Bytes > 0 && InWindow(r, window, since));
         }
     }
 

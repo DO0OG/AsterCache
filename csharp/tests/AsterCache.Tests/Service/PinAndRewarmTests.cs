@@ -64,7 +64,7 @@ public sealed class PinAndRewarmTests
     }, _log, null, () => _now);
 
     private static GameSettings Game(string name, bool pin = true, params string[] triggers) =>
-        Games.Make(name, name + ".exe") with { Prewarm = PrewarmSettings.Default with { Pin = pin, TriggerExes = triggers } };
+        Games.Make(name, name + ".exe") with { Prewarm = PrewarmSettings.Default with { Pin = pin, PinSet = true, TriggerExes = triggers } };
 
     private static AutoSettings Auto(int rewarmMinutes = 10) => AutoSettings.Default with { RewarmMinutes = rewarmMinutes };
 
@@ -90,6 +90,43 @@ public sealed class PinAndRewarmTests
             Assert.Equal([@"D:\Games\a\a.bin", @"D:\Games\a\b.bin"], _pins[0].Paths);
             Assert.Contains(_log.Lines, l => l.Contains("a: pinned 2 file(s), 0 skipped", StringComparison.Ordinal));
         }
+    }
+
+    [Theory]
+    [InlineData(23, false)]
+    [InlineData(24, true)]
+    [InlineData(64, true)]
+    public void UnsetPinTurnsOnAutomaticallyFrom24GiB(long ramGib, bool expected)
+    {
+        _ram = ramGib * Gib;
+        GameSettings g = Game("a") with { Prewarm = PrewarmSettings.Default }; // pin 키 없음
+        Prewarmer p = Make(g);
+
+        Assert.True(p.Run(g, "service start").Ran);
+
+        Assert.Equal(expected ? ["a"] : [], p.Pinned);
+    }
+
+    [Theory]
+    [InlineData(64, false)] // 명시한 false 는 RAM 이 커도 그대로
+    [InlineData(16, true)] // 명시한 true 는 16 GiB 이상이면 (자동 하한 24 GiB 와 무관)
+    public void ExplicitPinIsNeverOverriddenByTheAutomaticRule(long ramGib, bool pin)
+    {
+        _ram = ramGib * Gib;
+        GameSettings g = Game("a", pin);
+        Prewarmer p = Make(g);
+
+        Assert.True(p.Run(g, "service start").Ran);
+
+        Assert.Equal(pin ? ["a"] : [], p.Pinned);
+    }
+
+    [Fact]
+    public void ParsedPinRemembersWhetherTheKeyWasWritten()
+    {
+        Assert.False(PinKeeper.Wanted(PrewarmSettings.Default, 16 * Gib));
+        Assert.True(PinKeeper.Wanted(PrewarmSettings.Default, 24 * Gib));
+        Assert.False(PinKeeper.Wanted(PrewarmSettings.Default with { PinSet = true }, 64 * Gib));
     }
 
     [Fact]
@@ -275,10 +312,13 @@ public sealed class PinAndRewarmTests
     public void WatcherNamesIncludeEveryLauncherOnlyWhenSomeGamePins()
     {
         var withPin = new AsterSettings(50, [Game("a", true)]);
+        var autoPin = new AsterSettings(50, [Game("a", true) with { Prewarm = PrewarmSettings.Default }]);
         var withoutPin = new AsterSettings(50, [Game("a", false)]);
 
         Assert.All(LauncherExes.All, e => Assert.Contains(e, Worker.WatchNames(withPin)));
         Assert.DoesNotContain("steam.exe", Worker.WatchNames(withoutPin));
+        Assert.DoesNotContain("steam.exe", Worker.WatchNames(autoPin, 23 * Gib)); // pin 을 적지 않은 자동 기본은 RAM 24 GiB 부터
+        Assert.Contains("steam.exe", Worker.WatchNames(autoPin, 24 * Gib));
     }
 
     // ---- 예열 유지 ----

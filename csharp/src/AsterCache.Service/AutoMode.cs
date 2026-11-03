@@ -78,6 +78,11 @@ public sealed class AutoMode
             {
                 _tracer.Start(g);
             }
+
+            if (_prewarm?.HitPercent(g) is { } hit) // 게임 로딩을 늦추지 않게 트레이스를 시작한 뒤, 이 Task.Run 스레드에서 표본 몇 곳만
+            {
+                Status.RecordHit(g.Name, hit, _env.Now());
+            }
         });
     }
 

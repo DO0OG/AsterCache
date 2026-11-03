@@ -326,7 +326,7 @@ public static class SettingsStore
         int minFree = o.TryGetValue("min_free_ram_mib", out object? m) ? Int(m, $"{at}.min_free_ram_mib", 0, 1 << 20) : d.MinFreeRamMib;
         int cooldown = o.TryGetValue("cooldown_min", out object? c) ? Int(c, $"{at}.cooldown_min", 0, 10080) : d.CooldownMin;
         bool pin = o.TryGetValue("pin", out object? pn) ? pn as bool? ?? throw new SettingsException($"{at}.pin: true or false expected") : d.Pin;
-        return new PrewarmSettings(onStart, triggers, minFree, cooldown) { Pin = pin };
+        return new PrewarmSettings(onStart, triggers, minFree, cooldown) { Pin = pin, PinSet = o.ContainsKey("pin") };
     }
 
     private static object? Need(JObject o, string key, string at) =>

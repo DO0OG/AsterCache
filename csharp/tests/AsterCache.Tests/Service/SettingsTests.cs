@@ -32,6 +32,18 @@ public sealed class SettingsTests
     private static AsterSettings Parse(JsonObject game) => SettingsStore.Parse(Cfg(game), Plans);
 
     [Fact]
+    public void PrewarmPinKeyPresenceIsRemembered()
+    {
+        Assert.False(Assert.Single(Parse(Game()).Games).Prewarm.PinSet);
+
+        JsonObject g = Game();
+        g["prewarm"] = new JsonObject { ["pin"] = false };
+        PrewarmSettings p = Assert.Single(Parse(g).Games).Prewarm;
+        Assert.True(p.PinSet);
+        Assert.False(p.Pin);
+    }
+
+    [Fact]
     public void ValidConfigGetsDefaultsAndNormalizedPaths()
     {
         JsonObject g = Game();

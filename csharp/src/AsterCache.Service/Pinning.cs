@@ -12,6 +12,12 @@ public sealed class PinKeeper
 {
     public const long MinPhysicalRamBytes = 16L << 30;
 
+    /// pin 을 설정에 적지 않았을 때 자동으로 켜는 물리 RAM 하한.
+    public const long AutoPinRamBytes = 24L << 30;
+
+    /// 이 게임을 고정할 것인가: pin 이 명시되면 그 값, 아니면 물리 RAM 이 AutoPinRamBytes 이상일 때.
+    public static bool Wanted(PrewarmSettings p, long physicalRamBytes) => p.PinSet ? p.Pin : physicalRamBytes >= AutoPinRamBytes;
+
     private readonly PrewarmEnv _env;
     private readonly ILog _log;
     private readonly object _lock = new();
@@ -37,12 +43,12 @@ public sealed class PinKeeper
     /// 예열 성공 직후: 조건이 맞으면 그 게임의 존 파일을 고정합니다.
     public void TryPin(GameSettings game)
     {
-        if (!game.Prewarm.Pin)
+        long ram = _env.PhysicalRamBytes();
+        if (!Wanted(game.Prewarm, ram))
         {
             return;
         }
 
-        long ram = _env.PhysicalRamBytes();
         if (ram < MinPhysicalRamBytes)
         {
             _log.Info($"{game.Name}: pin skipped (physical RAM {ram >> 30} GiB is below 16 GiB)");
@@ -112,7 +118,8 @@ public sealed class PinKeeper
     /// 설정을 다시 읽었을 때: pin 이 꺼졌거나 게임이 빠졌으면 풉니다.
     public void Reconcile(IReadOnlyList<GameSettings> games)
     {
-        foreach (string name in Held.Where(n => !games.Any(g => string.Equals(g.Name, n, StringComparison.OrdinalIgnoreCase) && g.Prewarm.Pin)))
+        long ram = _env.PhysicalRamBytes();
+        foreach (string name in Held.Where(n => !games.Any(g => string.Equals(g.Name, n, StringComparison.OrdinalIgnoreCase) && Wanted(g.Prewarm, ram))))
         {
             Release(name, "pin turned off or game removed in settings");
         }

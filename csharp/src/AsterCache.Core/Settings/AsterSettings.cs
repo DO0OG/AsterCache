@@ -25,6 +25,9 @@ public sealed record PrewarmSettings(bool OnServiceStart, IReadOnlyList<string> 
 
     /// 예열한 파일을 읽기 전용 매핑으로 계속 들고 있어 파일 캐시에서 밀려나지 않게 함 (기본 꺼짐, 실측 전).
     public bool Pin { get; init; }
+
+    /// config 에 pin 키가 있었는지 (파싱 때만 설정). 없으면 물리 RAM 이 충분할 때 서비스가 자동으로 켭니다 (PinKeeper.Wanted).
+    public bool PinSet { get; init; }
 }
 
 /// 첫 실행 학습·선행 읽기 설정 (auto.learn). max_total_mib 0 = 자동 (계산은 서비스가 함).

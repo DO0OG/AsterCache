@@ -47,18 +47,18 @@ public sealed class Worker : BackgroundService
     /// 설정이 etw 이고 관리자면 ETW (실패하면 폴링으로 내려감), 아니면 폴링 (기본).
     public static (IProcessWatcher Primary, IProcessWatcher? Fallback) ChooseWatchers(AsterSettings s, bool admin)
     {
-        IEnumerable<string> names = WatchNames(s).Distinct(StringComparer.OrdinalIgnoreCase);
+        IEnumerable<string> names = WatchNames(s, SystemMemory.TotalBytes()).Distinct(StringComparer.OrdinalIgnoreCase);
         var polling = new PollingProcessWatcher(names, TimeSpan.FromMilliseconds(s.PollMs));
         return admin && s.Watcher == "etw" ? (new EtwProcessWatcher(names), polling) : (polling, null);
     }
 
     // 감시할 이름: 게임 exe 와 트리거, 그리고 고정을 켠 게임이 있으면 런처 전체 (런처가 뜨면 고정을 풀기 위해).
-    public static IEnumerable<string> WatchNames(AsterSettings s) =>
-        s.Games.SelectMany(g => g.ExeNames.Concat(g.Prewarm.TriggerExes)).Concat(s.Games.Any(g => g.Prewarm.Pin) ? LauncherExes.All : []);
+    public static IEnumerable<string> WatchNames(AsterSettings s, long physicalRamBytes = 0) =>
+        s.Games.SelectMany(g => g.ExeNames.Concat(g.Prewarm.TriggerExes)).Concat(s.Games.Any(g => PinKeeper.Wanted(g.Prewarm, physicalRamBytes)) ? LauncherExes.All : []);
 
     // 감시기를 다시 만들어야 하는지 가리는 열쇠: 감시할 이름, 폴링 간격, 감시기 종류.
     private static string WatchKey(AsterSettings s) =>
-        $"{s.Watcher}|{s.PollMs}|" + string.Join('|', WatchNames(s).Select(n => n.ToUpperInvariant()).Distinct().Order(StringComparer.Ordinal));
+        $"{s.Watcher}|{s.PollMs}|" + string.Join('|', WatchNames(s, SystemMemory.TotalBytes()).Select(n => n.ToUpperInvariant()).Distinct().Order(StringComparer.Ordinal));
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {

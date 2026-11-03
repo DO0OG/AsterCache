@@ -873,6 +873,26 @@ public sealed class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
+    public void OccupiedZoneStopSetsThePlanAsideAndPlansAgainOnTheNextTicks()
+    {
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
+        int busy = 0;
+        _w.MakePlanAt = (sessions, origin, zoneMib, lcn) => PlanFile.Make(sessions, origin, zoneMib << 20, Cb, p => Vol.Ext[p], zoneStartLcn: lcn, preserveBytes: 64 << 20);
+        _w.ArchiveJournal = _ => null; // 가짜 적용은 저널을 쓰지 않음
+        _w.Apply = (g, plan, options, ct) => options.Execute && busy++ == 0 ? new ApplyReport { Executed = true, Stopped = Applier.ZoneOccupied } : real(g, plan, options, ct);
+
+        Run(TimeSpan.FromMinutes(3));
+        RunUntilDone();
+
+        Assert.Equal(2, busy); // 한 번 막혀 멈춘 뒤 다시 계획해 끝까지 감
+        Assert.True(File.Exists(_game.Plan + ".stale"));
+        Assert.Contains(_log.Lines, l => l.Contains("zone region appears occupied", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("stopped: " + Applier.ZoneOccupied, StringComparison.Ordinal) && l.Contains("(open ", StringComparison.Ordinal));
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.True(Verify(PlanFile.Load(_game.Plan)).Contiguous);
+    }
+
+    [Fact]
     public void RejectedPlanFailsBeforeAnyMoveAndHasNothingOfItsOwnToRevert()
     {
         _w.Apply = (_, _, _, _) =>
@@ -1068,7 +1088,8 @@ public sealed class AutoRelocatorTests : ApplyTestBase
         Vol.AfterMove = null;
         int rowsBefore = JournalRowCount();
         long firstStep = JournalRows().Where(r => Equals(r["type"], "step") && r.ContainsKey("from")).Select(r => (long)r["idx"]!).Min();
-        _w.Apply = (_, plan, options, ct) => Applier.Apply(plan, Vol, [Root], JournalPath, Hooks((_, _, _) => "changed"), options, ct);
+        int changed = 0;
+        _w.Apply = (_, plan, options, ct) => Applier.Apply(plan, Vol, [Root], JournalPath, Hooks((_, _, _) => "c" + changed++), options, ct);
 
         Run(TimeSpan.FromMinutes(3.5));
 

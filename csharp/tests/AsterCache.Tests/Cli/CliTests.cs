@@ -213,6 +213,7 @@ public sealed class CliTests
     [InlineData("plan", "--trace", "t.json", "--zone-mib", "5")]
     [InlineData("plan", "--trace", "t.json", "--origin-root", "R", "--zone-mib", "abc")]
     [InlineData("verify", "--plan", "p.json", "--bogus")]
+    [InlineData("apply", "--plan", "p.json", "--allowed-root", "R", "--verify", "some")]
     [InlineData("verify")]
     [InlineData("prewarm")]
     [InlineData("trace", "--csv", "x.csv", "--prefix", "D:/Games", "--out", "o.json", "--dump-first", "20")] // --dump-first 는 --etl 에서만

@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Globalization;
 using AsterCache.Core.Json;
 
 namespace AsterCache.Core.Apply;
@@ -51,6 +53,9 @@ public sealed class ApplyReport
 
     public List<string>? ShaMismatch { get; set; }
 
+    /// 실행했을 때만 JSON 에 나오는 단계별 누적 시간.
+    public ApplyTimings Timings { get; } = new();
+
     public JObject ToJson()
     {
         var skipped = new JObject();
@@ -85,8 +90,86 @@ public sealed class ApplyReport
             o.Add("sha_mismatch", ShaMismatch!.Cast<object?>().ToList());
         }
 
+        if (Executed)
+        {
+            o.Add("timings", Timings.ToJson());
+        }
+
         return o;
     }
+}
+
+/// 실행 경로의 단계별 누적 시간 (Stopwatch 틱). open = 파일 열기·extent 조회, move = FSCTL_MOVE_FILE 호출 합, other = total 에서 나머지를 뺀 값.
+public sealed class ApplyTimings
+{
+    private readonly long _start = Stopwatch.GetTimestamp();
+    private long _totalTicks;
+
+    internal long OpenTicks;
+    internal long DigestBeforeTicks;
+    internal long MoveTicks;
+    internal long DigestAfterTicks;
+    internal long JournalTicks;
+
+    public long Tasks { get; internal set; }
+
+    public long Files { get; internal set; }
+
+    /// 저널을 디스크까지 내린 횟수 (진단용, JSON 에는 넣지 않음).
+    public int JournalFlushes { get; internal set; }
+
+    public double OpenS => Seconds(OpenTicks);
+
+    public double DigestBeforeS => Seconds(DigestBeforeTicks);
+
+    public double MoveS => Seconds(MoveTicks);
+
+    public double DigestAfterS => Seconds(DigestAfterTicks);
+
+    public double JournalS => Seconds(JournalTicks);
+
+    public double TotalS => Seconds(_totalTicks);
+
+    public double OtherS => Seconds(_totalTicks - OpenTicks - DigestBeforeTicks - MoveTicks - DigestAfterTicks - JournalTicks);
+
+    /// 사람이 읽는 한 줄 꼬리: " (open X s, digest Y s, move Z s)".
+    public string Summary => string.Create(CultureInfo.InvariantCulture, $" (open {OpenS:0.0} s, digest {DigestBeforeS + DigestAfterS:0.0} s, move {MoveS:0.0} s)");
+
+    internal void Stop() => _totalTicks = Stopwatch.GetTimestamp() - _start;
+
+    internal static T Time<T>(ref long ticks, Func<T> f)
+    {
+        long s = Stopwatch.GetTimestamp();
+        try
+        {
+            return f();
+        }
+        finally
+        {
+            ticks += Stopwatch.GetTimestamp() - s;
+        }
+    }
+
+    internal static void Time(ref long ticks, Action f) => Time(ref ticks, () =>
+    {
+        f();
+        return 0;
+    });
+
+    public JObject ToJson() => new()
+    {
+        { "open_s", Math.Round(OpenS, 3) },
+        { "digest_before_s", Math.Round(DigestBeforeS, 3) },
+        { "move_s", Math.Round(MoveS, 3) },
+        { "digest_after_s", Math.Round(DigestAfterS, 3) },
+        { "journal_s", Math.Round(JournalS, 3) },
+        { "other_s", Math.Round(OtherS, 3) },
+        { "total_s", Math.Round(TotalS, 3) },
+        { "tasks", Tasks },
+        { "files", Files },
+    };
+
+    private static double Seconds(long ticks) => (double)ticks / Stopwatch.Frequency;
 }
 
 public sealed record SkippedStep(long Idx, string Reason);

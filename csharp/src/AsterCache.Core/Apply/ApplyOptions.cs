@@ -6,7 +6,18 @@ namespace AsterCache.Core.Apply;
 /// 실행 옵션. Execute 가 false 면 아무것도 옮기지 않고 저널도 쓰지 않습니다. DryRun 은 자동 존을 정해 SaveTo 에 저장만 합니다.
 /// LowIoPriority 는 서비스의 백그라운드 경로 (ReapplyEnv.Run) 가 읽고, false 면 낮은 I/O 우선순위 힌트를 붙이지 않습니다.
 public sealed record ApplyOptions(
-    bool Execute = false, long ChunkBytes = 4L << 20, long WriteCap = 2L << 30, string? SaveTo = null, bool DryRun = false, bool LowIoPriority = true);
+    bool Execute = false, long ChunkBytes = 4L << 20, long WriteCap = 2L << 30, string? SaveTo = null, bool DryRun = false, bool LowIoPriority = true, int PlanAhead = Applier.PlanAhead,
+    string Verify = VerifyMode.Sample);
+
+/// 이동 전후 내용 비교의 범위. all: 모든 작업, sample: 각 파일의 첫 작업과 작업 인덱스가 4 의 배수인 작업만 (나머지는 이동 결과와 extent 일치만 확인), off: 표본을 읽지 않음.
+public static class VerifyMode
+{
+    public const string All = "all";
+    public const string Sample = "sample";
+    public const string Off = "off";
+
+    public static bool IsValid(string? v) => v is All or Sample or Off;
+}
 
 /// 바깥 세계 접근 (extent 조회, 해시, 속성, realpath, 지문, sleep) 을 전부 주입하는 자리. 시험은 가짜로 바꿉니다.
 public sealed class ApplyHooks
@@ -18,6 +29,10 @@ public sealed class ApplyHooks
 
     /// (경로, 파일 크기, 옮긴 범위) → SHA-256 표본. apply 에 필요 (Windows SampleDigest.Compute 또는 <see cref="SampleHasher"/>).
     public Func<string, long, IReadOnlyList<(long Offset, long Length)>, string>? Digest { get; init; }
+
+    /// 새 저널 (digest_rule edge64k-v1) 의 이동 전후 비교용: 처음·가운데·끝 표본 없이 주어진 범위 + 크기만 해시합니다 (Windows SampleDigest.Compute 의 span: 0).
+    /// 없으면 Digest 를 그대로 씁니다. 프로필 지문 같은 호환 규칙과는 무관합니다.
+    public Func<string, long, IReadOnlyList<(long Offset, long Length)>, string>? EdgeDigest { get; init; }
 
     /// 건너뛸 이유 (압축·스파스·암호화 …), 옮겨도 되면 null. apply 에 필요 (Windows FileGuards.SkipReason).
     public Func<string, string?>? SkipReason { get; init; }

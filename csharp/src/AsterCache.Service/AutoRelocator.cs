@@ -64,6 +64,7 @@ public sealed class AutoRelocator
     /// 프리페치 계획은 이 크기 이하의 파일만 통째로 존에 모읍니다 (더 큰 파일은 옮기지 않고 예열 때만 읽음).
     public const long PrefetchMaxFileBytes = 64L << 20;
     private const string FirstRunDetail = "first run recorded, planning again";
+    private const string BusyDetail = "target region busy, planning again";
 
     /// 업데이트 뒤 재계획 검사 간격: 배치까지 끝낸 게임마다 이 주기로만 계획의 지문을 봅니다 (ReapplyChecker 의 주기보다 짧게: 게임을 다시 켜기 전에 잡으려고).
     public static readonly TimeSpan StaleCheckEvery = TimeSpan.FromMinutes(10);
@@ -529,6 +530,15 @@ public sealed class AutoRelocator
         }
     }
 
+    // 재배치 도중 목표 존이 막혀 멈춘 경우: 업데이트 재계획과 같은 방식으로 저널·계획을 옆으로 치우고 (트레이스는 그대로) 처음 단계로 되돌립니다.
+    private void SetAsideForReplan(GameSettings g)
+    {
+        _ = _env.ArchiveJournal(g);
+        _env.MoveAside(g.Plan, g.Plan + StaleSuffix);
+        _status.ResetForReplan(g.Name, BusyDetail);
+        _log.Info($"{g.Name}: zone region appears occupied, plan set aside as {StaleSuffix}, will plan again");
+    }
+
     // 업데이트 뒤 재계획: 배치까지 끝낸 게임의 원본이 계획 뒤 바뀌었으면 (ReapplyChecker 의 PlanChanged 와 같은 기준) 낡은 트레이스·계획을 .stale 로 치우고
     // 처음 단계로 되돌립니다. 다음 실행에서 다시 트레이스·학습하고 새 계획으로 다시 배치합니다 (이전 존 시작을 먼저 시도). 일일 상한과 다른 안전장치는 그대로.
     // 마지막에 옮기는 계획이 남아 있어야 중간에 실패해도 다음 검사가 이어서 처리합니다.
@@ -908,7 +918,7 @@ public sealed class AutoRelocator
 
             plan = _env.LoadPlan(g.Plan);
             ReapplyChecker.CheckPaths(plan, g, _env.RealPath);
-            var run = new ApplyOptions(Execute: true, ChunkBytes: (long)s.Auto.RelocateChunkMib << 20, LowIoPriority: s.Auto.RelocateIoPriority == AutoSettings.IoLow);
+            var run = new ApplyOptions(Execute: true, ChunkBytes: (long)s.Auto.RelocateChunkMib << 20, LowIoPriority: s.Auto.RelocateIoPriority == AutoSettings.IoLow, Verify: s.Auto.RelocateVerify);
             long bytes = Math.Min(dry.BytesTodo, run.WriteCap); // 한 번의 적용은 WriteCap 까지만 쓰고 나머지는 이어하기가 다시 셈
             long budget = (long)s.Auto.MaxRelocateGibPerDay << 30;
             long usedToday = budget > 0 ? _status.RelocationBytesWithin(DailyWindow) : 0;
@@ -922,10 +932,14 @@ public sealed class AutoRelocator
             _ = _needBytes.Remove(g.Name);
             _status.BeginRelocation(_env.Now(), bytes); // 하루 상한은 끝이 아니라 시작 (이어하기 포함) 으로 셈
             ApplyReport rep = _env.Apply(g, plan, run, token);
-            _log.Info($"{g.Name}: auto relocation moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed" + (rep.Stopped is { } why ? $", stopped: {why}" : string.Empty));
+            _log.Info($"{g.Name}: auto relocation moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed" + (rep.Stopped is { } why ? $", stopped: {why}" : string.Empty) + rep.Timings.Summary);
             if (rep.Stopped == "cancelled")
             {
                 Note(g, AutoStage.WaitingIdle, "cancelled by game start"); // 저널이 재개 지점이고 이어하기는 기존 재적용 검사가 합니다
+            }
+            else if (rep.Stopped == Applier.ZoneOccupied)
+            {
+                SetAsideForReplan(g); // 존이 막혔으니 계획을 낡은 것으로 치워 다음 틱에 같은 트레이스로 (새 존을 찾아) 다시 계획
             }
             else if (rep.Stopped is not null)
             {

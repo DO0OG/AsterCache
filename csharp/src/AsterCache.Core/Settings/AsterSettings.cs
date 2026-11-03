@@ -116,6 +116,9 @@ public sealed record AutoSettings(
     /// 자동 재배치의 I/O 우선순위: "low" (기본, 낮은 I/O 힌트) 또는 "normal" (힌트 없음).
     public string RelocateIoPriority { get; init; } = IoLow;
 
+    /// 자동 재배치의 이동 전후 내용 비교: "sample" (기본, 각 파일의 첫 작업과 4 번째마다), "all" (모든 작업) 또는 "off" (표본을 읽지 않음).
+    public string RelocateVerify { get; init; } = Apply.VerifyMode.Sample;
+
     /// 하루 (24 시간) 에 자동 재배치가 쓸 수 있는 총량 (GiB, 0..1048576). 0 = 무제한.
     public int MaxRelocateGibPerDay { get; init; } = 8;
 

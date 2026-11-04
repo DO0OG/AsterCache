@@ -351,7 +351,7 @@ public sealed class AutoTracerTests : IDisposable
     }
 
     [Fact]
-    public void SecondRunIsSavedAsRun2AndMergedIntoTheRawTraceInTheFirstRunsOrderWithoutTouchingTheStage()
+    public void SecondRunIsSavedAsRun2AndMergedIntoTheRawTraceNewestRunFirstWithoutTouchingTheStage()
     {
         SetRuns(3);
         FirstRunOfTwoBlocks();
@@ -369,7 +369,7 @@ public sealed class AutoTracerTests : IDisposable
         var run2 = (List<object?>)JsonRead.ReadFile(TraceWriter.RunPath(Raw, 2))!;
         Assert.Equal([131072L, 0L], run2.Select(r => ((JObject)r!)["offset"]));
         var merged = (List<object?>)JsonRead.ReadFile(Raw)!;
-        Assert.Equal([0L, 65536L, 131072L], merged.Select(r => ((JObject)r!)["offset"])); // run1 의 순서 뒤에 새 블록
+        Assert.Equal([131072L, 0L, 65536L], merged.Select(r => ((JObject)r!)["offset"])); // 최신 run2 의 순서가 앞, run1 에서만 본 블록은 뒤
         Assert.False(File.Exists(Raw + ".tmp"));
         Assert.Contains(_rig.Log.Lines, l => l.Contains("(run 2, merged)", StringComparison.Ordinal));
     }
@@ -487,5 +487,224 @@ public sealed class AutoTracerTests : IDisposable
         Assert.False(File.Exists(TraceWriter.RunPath(Raw, 2)));
         Assert.Equal(1, AutoTracer.RunCount(_game, File.Exists));
         Assert.Equal(AutoStage.Done, _rig.Status.Get("foo")!.Stage);
+    }
+
+    // ---- 유효 회차 (읽기량 64 MiB 이상), 다음 저장 번호, 추가 수집 (auto.trace_target_coverage / trace_runs_max) ----
+
+    private const long MiB = 1L << 20;
+
+    // 유효한 run 파일 count 개 (각 100 MiB 를 읽고 서로 다른 블록) 와 그 합집합 원시 트레이스를 씀.
+    private void SeedRuns(int count, params (int Run, long Mib)[] sizes)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(Raw)!);
+        var sessions = new List<IReadOnlyList<AsterCache.Core.Trace.TraceEvent>>();
+        for (int i = 0; i < count; i++)
+        {
+            long mib = sizes.Where(s => s.Run == i + 1).Select(s => s.Mib).DefaultIfEmpty(100).First();
+            sessions.Add([new AsterCache.Core.Trace.TraceEvent(@"D:\Games\Foo\a.bin", i * 200 * MiB, mib * MiB)]);
+        }
+
+        TraceWriter.Write(sessions, Raw);
+        _rig.World.RunReadBytes = AutoTracer.RunReadBytes;
+    }
+
+    private void Extra(int runs = 3, int max = 8, int target = 70, int mergeMin = 64) =>
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { TraceRuns = runs, TraceRunsMax = max, TraceTargetCoverage = target, TraceMergeMinMib = mergeMin } };
+
+    private void Coverage(int percent)
+    {
+        _rig.Status.Set("foo", "auto", null, AutoStage.Done, null);
+        _rig.Status.RecordCoverage("foo", percent);
+    }
+
+    private void Gain(int run, long newMib) => File.WriteAllText(AutoTracer.MergeMetaPath(_game), $"{{\"run\": {run}, \"new_mib\": {newMib}}}");
+
+    [Fact]
+    public void RunCountSkipsRunFilesBelowTheMinimumReadButKeepsRun1AndTheNextNumberAfterTheLastFile()
+    {
+        var files = new HashSet<string> { Raw, TraceWriter.RunPath(Raw, 1), TraceWriter.RunPath(Raw, 2), TraceWriter.RunPath(Raw, 3) };
+        var reads = new Dictionary<string, long?>
+        {
+            [TraceWriter.RunPath(Raw, 1)] = 1 * MiB, // 첫 회차는 작아도 셈
+            [TraceWriter.RunPath(Raw, 2)] = 2270 * MiB,
+            [TraceWriter.RunPath(Raw, 3)] = 6 * MiB, // 크래시 회차
+        };
+
+        Assert.Equal(2, AutoTracer.RunCount(_game, files.Contains, p => reads[p]));
+        Assert.Equal(3, AutoTracer.LastRunNumber(_game, files.Contains)); // 다음 저장 번호는 4
+        Assert.Equal(3, AutoTracer.RunCount(_game, files.Contains)); // 읽기량을 안 주면 파일 수
+        Assert.Equal(3, AutoTracer.RunCount(_game, files.Contains, _ => null)); // 못 읽으면 셈
+        Assert.Equal(0, AutoTracer.LastRunNumber(_game, new HashSet<string>().Contains));
+        Assert.Equal(1, AutoTracer.LastRunNumber(_game, new HashSet<string> { Raw }.Contains));
+        Assert.Equal(4, AutoTracer.LastRunNumber(_game, new HashSet<string> { Raw, TraceWriter.RunPath(Raw, 1), TraceWriter.RunPath(Raw, 4) }.Contains)); // 끊겨도 가장 큰 번호
+    }
+
+    [Fact]
+    public void RunReadBytesSumsTheRowLengthsAndFollowsTheFileWhenItChanges()
+    {
+        SeedRuns(2, (1, 10), (2, 20));
+        string run1 = TraceWriter.RunPath(Raw, 1);
+
+        Assert.Equal<long?>(10 * MiB, AutoTracer.RunReadBytes(run1));
+        Assert.Equal<long?>(10 * MiB, AutoTracer.RunReadBytes(run1)); // 캐시
+        TraceWriter.WriteFile(run1, [new AsterCache.Core.Trace.TraceEvent(@"D:\Games\Foo\a.bin", 0, 30 * MiB), new AsterCache.Core.Trace.TraceEvent(@"D:\Games\Foo\a.bin", 0, 2 * MiB)]);
+        Assert.Equal<long?>(32 * MiB, AutoTracer.RunReadBytes(run1));
+        Assert.Null(AutoTracer.RunReadBytes(Path.Combine(_rig.Dir, "plans", "none.json")));
+    }
+
+    [Fact]
+    public void ASixMiBRun3IsNotAValidRunSoTheNextRunIsSavedAsRun4WithoutOverwritingIt()
+    {
+        SetRuns(3);
+        SeedRuns(3, (3, 6)); // beta.17 의 콜옵: run1 100, run2 100, run3 6 MiB
+        var tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings); // 최소 읽기량 64 MiB
+        string run3 = TraceWriter.RunPath(Raw, 3);
+        string run3Text = File.ReadAllText(run3);
+        Assert.Equal(2, AutoTracer.RunCount(_game, File.Exists, AutoTracer.RunReadBytes));
+
+        Reads((0, 40L << 20), (40L << 20, 40L << 20));
+        tracer.Start(_game);
+        Assert.True(tracer.Active); // 유효 회차 2 < trace_runs 3
+        tracer.Step();
+
+        Assert.True(File.Exists(TraceWriter.RunPath(Raw, 4)));
+        Assert.Equal(run3Text, File.ReadAllText(run3)); // 덮어쓰지 않음
+        Assert.Equal(3, AutoTracer.RunCount(_game, File.Exists, AutoTracer.RunReadBytes)); // run1 + run2 + run4
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("(run 4, merged)", StringComparison.Ordinal));
+        Assert.DoesNotContain(_rig.Log.Lines, l => l.Contains("run 3 ", StringComparison.Ordinal) && l.Contains("saved", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void MergeLeavesOutRunsBelowTheMinimumReadAndNotesTheNewBlocksOfThisRun()
+    {
+        SetRuns(5);
+        SeedRuns(3, (3, 6));
+        File.WriteAllText(Raw, "[]"); // 합집합을 비워 두고 병합이 run 파일에서 다시 만드는지 봄
+        var tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings);
+
+        Reads((1000L * MiB, 35L << 20), (1035L * MiB, 35L << 20));
+        tracer.Start(_game);
+        tracer.Step();
+
+        var merged = (List<object?>)JsonRead.ReadFile(Raw)!;
+        long firstOffset = (long)((JObject)merged[0]!)["offset"]!;
+        Assert.Equal(1000L * MiB, firstOffset); // 최신 회차가 앞
+        // run3 (6 MiB, 오프셋 400 MiB 부터) 의 블록은 합집합에서 빠짐: 처음 100 MiB 두 덩어리 + 새 70 MiB
+        Assert.Equal((100 + 100 + 70) * 16, merged.Count);
+        Assert.Contains("\"new_mib\": 70", File.ReadAllText(AutoTracer.MergeMetaPath(_game)), StringComparison.Ordinal);
+        Assert.Contains("\"run\": 4", File.ReadAllText(AutoTracer.MergeMetaPath(_game)), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ExtraRunsAreRecordedOnlyWhileCoverageIsLowAndTheLastMergeAddedEnoughNewBlocks()
+    {
+        Extra();
+        SeedRuns(3);
+        Coverage(22);
+        Gain(3, 200);
+
+        Assert.True(_tracer.WantsRun(_game)); // 22 % < 70, 새 블록 200 MiB >= 64, 3 < 8
+        _tracer.Start(_game);
+        Assert.True(_tracer.Active);
+        _tracer.Shutdown();
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("auto trace started (run 4/8, coverage 22%)", StringComparison.Ordinal));
+
+        Gain(3, 10); // 새 블록이 64 MiB 미만
+        Assert.False(_tracer.WantsRun(_game));
+        Gain(3, 64); // 경계는 포함
+        Assert.True(_tracer.WantsRun(_game));
+        Coverage(70); // 목표 이상
+        Assert.False(_tracer.WantsRun(_game));
+        Coverage(69);
+        Assert.True(_tracer.WantsRun(_game));
+        Gain(2, 500); // 다른 병합의 메타는 믿지 않음
+        Assert.False(_tracer.WantsRun(_game));
+        File.Delete(AutoTracer.MergeMetaPath(_game)); // 값이 없으면 기존 정책
+        Assert.False(_tracer.WantsRun(_game));
+        Gain(3, 200);
+        File.WriteAllText(AutoTracer.MergeMetaPath(_game), "not json");
+        Assert.False(_tracer.WantsRun(_game));
+    }
+
+    [Fact]
+    public void ExtraRunsStopAtTraceRunsMaxAndWithoutACoverageValue()
+    {
+        Extra(max: 4);
+        SeedRuns(4);
+        Coverage(22);
+        Gain(4, 200);
+        Assert.False(_tracer.WantsRun(_game)); // 유효 회차 4 = 상한
+
+        Extra(max: 5);
+        Assert.True(_tracer.WantsRun(_game));
+        Extra(max: 2); // 상한이 trace_runs 보다 작으면 trace_runs 가 기준
+        Assert.Equal(3, AutoTracer.NextTrace(_game, _rig.Settings.Auto, _rig.World.Env(), _rig.Status).Limit);
+        Assert.False(_tracer.WantsRun(_game));
+
+        Extra(max: 8);
+        _rig.Status.Remove("foo"); // 커버리지 값이 없음
+        Assert.False(_tracer.WantsRun(_game));
+    }
+
+    [Fact]
+    public void ExtraRunsFallBackToTheOldPolicyWithoutCoverageOrMergeNotes()
+    {
+        Extra();
+        SeedRuns(3);
+        Gain(3, 500);
+        Assert.False(_tracer.WantsRun(_game)); // 상태 항목 없음
+        Coverage(10);
+        File.Delete(AutoTracer.MergeMetaPath(_game));
+        Assert.False(_tracer.WantsRun(_game)); // 병합 메타 없음 (옛 설치)
+    }
+
+    [Fact]
+    public void AnAntiCheatGameIsNeverTracedEvenWhenTheExtraRunConditionsHold()
+    {
+        Extra();
+        SeedRuns(3);
+        Coverage(22);
+        Gain(3, 500);
+        GameSettings vanguard = _game with { AntiCheat = "vanguard" };
+
+        Assert.True(_tracer.WantsRun(_game));
+        _tracer.Start(vanguard);
+
+        Assert.False(_tracer.Active);
+        Assert.Equal(0, _rig.World.TraceStarts);
+    }
+
+    [Fact]
+    public void ExtraRunsAreNotStartedOnceRun32Exists()
+    {
+        Extra(runs: 3, max: 32);
+        SeedRuns(32);
+        Coverage(22);
+        Gain(32, 500);
+
+        Assert.False(_tracer.WantsRun(_game));
+    }
+
+    [Theory]
+    [InlineData(2048, 3000, 3000)] // 명시한 읽기 캡이 이김
+    [InlineData(2048, 6144, 6144)] // 기본값 (6144): 존 상한 x 2 = 4096 보다 크므로 6144
+    [InlineData(4096, 6144, 8192)] // 기본값: max(6144, 4096 x 2)
+    public void ReadCapDefaultFollowsTheZoneLimitAndAnExplicitValueWins(int zoneMib, int capMib, int stopAtMib)
+    {
+        _rig.Settings = _rig.Settings with { MaxZoneMib = zoneMib, Auto = _rig.Settings.Auto with { TraceCapSeconds = 7200, TraceCapMib = capMib } };
+        Reads((0, 65536));
+        _tracer.Start(_game);
+        _rig.World.Running = true;
+        _rig.World.Procs = [(100, 0)];
+        _tracer.Step();
+
+        _rig.World.Procs = [(100, (stopAtMib - 1L) << 20)];
+        _tracer.Step();
+        Assert.True(_tracer.Active);
+
+        _rig.World.Procs = [(100, (long)stopAtMib << 20)];
+        _tracer.Step();
+        Assert.False(_tracer.Active);
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("(read cap)", StringComparison.Ordinal));
     }
 }

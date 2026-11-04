@@ -79,6 +79,12 @@ internal sealed class FakeWorld
     /// 파일의 마지막 수정 시각: 원시 트레이스가 마지막 예열보다 새로운지 보는 시험이 채웁니다.
     public Dictionary<string, DateTimeOffset> FileTimes { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+    /// run 파일의 읽기량 (기본: 모름 = 유효 회차로 셈).
+    public Func<string, long?> RunReadBytes { get; set; } = _ => null;
+
+    /// 원시 트레이스의 병합 결과 지문 (기본: 읽을 수 없음).
+    public Func<string, string?> TraceFingerprint { get; set; } = _ => null;
+
     public List<(int Pid, long ReadBytes)> Procs { get; set; } = [];
 
     public bool Running { get; set; }
@@ -194,6 +200,8 @@ internal sealed class FakeWorld
         ServiceDir = ServiceDir,
         FileExists = p => Files.Contains(p) || File.Exists(p),
         FileWriteTime = p => FileTimes.TryGetValue(p, out DateTimeOffset t) ? t : null,
+        RunReadBytes = p => RunReadBytes(p),
+        TraceFingerprint = p => TraceFingerprint(p),
         GameProcesses = _ => Procs,
         AnyRunning = exes => Running || exes.Any(RunningExes.Contains),
         DirectoryExists = p => DirectoryExists(p),

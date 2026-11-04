@@ -318,6 +318,29 @@ public sealed class AutoModeTests : IDisposable
     }
 
     [Fact]
+    public void GameStartTracesAnExtraRunOnlyWhileCoverageIsLowAndTheLastMergeAddedNewBlocks()
+    {
+        AddGame("foo", "auto");
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { TraceRuns = 2 } };
+        string raw = AutoTracer.RawTracePath(Game());
+        Directory.CreateDirectory(Path.GetDirectoryName(raw)!);
+        _rig.World.Files.UnionWith([raw, AsterCache.Tracer.TraceWriter.RunPath(raw, 1), AsterCache.Tracer.TraceWriter.RunPath(raw, 2)]);
+        File.WriteAllText(AutoTracer.MergeMetaPath(Game()), "{\"run\": 2, \"new_mib\": 100}");
+        _rig.World.Session = new FakeTrace();
+        _rig.Status.Set("foo", "auto", null, AutoStage.Done, null);
+        _rig.Status.RecordCoverage("foo", 90);
+
+        Mode().OnGameStart(Game());
+        Assert.Equal(0, _rig.World.TraceStarts); // 커버리지 90 % >= 70
+
+        _rig.Status.RecordCoverage("foo", 22);
+        Mode().OnGameStart(Game());
+
+        Assert.Equal(1, _rig.World.TraceStarts);
+        Assert.Equal(AutoStage.Done, _rig.Status.Get("foo")!.Stage);
+    }
+
+    [Fact]
     public async Task LoadBoundaryWatchStopsWhenTheGameExits()
     {
         AddGame("foo", "auto");

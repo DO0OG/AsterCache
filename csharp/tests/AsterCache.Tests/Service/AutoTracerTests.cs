@@ -576,6 +576,32 @@ public sealed class AutoTracerTests : IDisposable
     }
 
     [Fact]
+    public void ASmallLegacyRun1StaysValidAfterTheMigrationAndIsMergedIntoRun3AfterARestart()
+    {
+        SetRuns(5);
+        Directory.CreateDirectory(Path.GetDirectoryName(Raw)!);
+        TraceWriter.WriteFile(Raw, [new AsterCache.Core.Trace.TraceEvent(@"D:\Games\Foo.bin", 0, 1 * MiB)]); // 옛 형식: run 파일 없이 1 MiB 원시 트레이스
+        _rig.World.RunReadBytes = AutoTracer.RunReadBytes;
+        var tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings);
+
+        Reads((1000L * MiB, 35L << 20), (1035L * MiB, 35L << 20));
+        tracer.Start(_game);
+        tracer.Step();
+        Assert.True(File.Exists(AutoTracer.LegacyRun1Path(_game)));
+        Assert.Equal(2, AutoTracer.RunCount(_game, File.Exists, AutoTracer.RunReadBytes)); // 옛 run1 + run2
+
+        var restarted = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings);
+        Reads((2000L * MiB, 35L << 20), (2035L * MiB, 35L << 20));
+        restarted.Start(_game);
+        restarted.Step();
+
+        Assert.True(File.Exists(TraceWriter.RunPath(Raw, 3)));
+        Assert.Equal(3, AutoTracer.RunCount(_game, File.Exists, AutoTracer.RunReadBytes));
+        var merged = (List<object?>)JsonRead.ReadFile(Raw)!;
+        Assert.Contains(merged, r => (long)((JObject)r!)["offset"]! == 0L); // 옛 run1 의 블록이 병합 raw 에 남음
+    }
+
+    [Fact]
     public void RunReadBytesSumsTheRowLengthsAndFollowsTheFileWhenItChanges()
     {
         SeedRuns(2, (1, 10), (2, 20));

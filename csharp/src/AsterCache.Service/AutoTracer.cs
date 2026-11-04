@@ -84,6 +84,9 @@ public sealed class AutoTracer
     /// 병합 직후 남기는 작은 메타 (이번 병합이 더한 새 고유 블록): plans\<이름>.trace.merge.json. run 번호가 마지막 run 파일과 같을 때만 믿습니다.
     public static string MergeMetaPath(GameSettings g) => Path.Combine(Path.GetDirectoryName(g.Plan) ?? string.Empty, g.Name + ".trace.merge.json");
 
+    /// 옛 형식에서 옮긴 run1 이 크기와 무관하게 유효하다는 표지: plans\<이름>.trace.legacy-run1.
+    public static string LegacyRun1Path(GameSettings g) => Path.Combine(Path.GetDirectoryName(g.Plan) ?? string.Empty, g.Name + ".trace.legacy-run1");
+
     /// 지금까지 모은 유효 플레이 수: 원시 트레이스가 없으면 0, run 파일 없는 원시 트레이스 하나 (옛 형식) 는 1 로 셈하고 (호환),
     /// 이어서 있는 run1, run2 ... 는 읽기량이 minBytes 이상인 것만 셈 (읽기량을 못 얻으면 셈). readBytes 가 없으면 이어서 있는 run 파일을 모두 셈. 따로 저장하는 상태 없음.
     public static int RunCount(GameSettings g, Func<string, bool> exists, Func<string, long?>? readBytes = null, long minBytes = MinExtraRunBytes)
@@ -102,7 +105,7 @@ public sealed class AutoTracer
         int valid = 0;
         for (int n = 1; n <= MaxRunFiles && exists(TraceWriter.RunPath(raw, n)); n++)
         {
-            if (readBytes?.Invoke(TraceWriter.RunPath(raw, n)) is not { } bytes || bytes >= minBytes)
+            if (n == 1 && exists(LegacyRun1Path(g)) || readBytes?.Invoke(TraceWriter.RunPath(raw, n)) is not { } bytes || bytes >= minBytes)
             {
                 valid++;
             }
@@ -623,7 +626,10 @@ public sealed class AutoTracer
         if (legacy)
         {
             File.Copy(raw, first, true);
+            SaveLegacyRun1Mark(g);
         }
+
+        bool run1Valid = legacy || _env.FileExists(LegacyRun1Path(g));
 
         TraceWriter.WriteFile(TraceWriter.RunPath(raw, number), canonical);
         var previous = new List<IReadOnlyList<TraceEvent>>();
@@ -636,7 +642,7 @@ public sealed class AutoTracer
             }
 
             List<TraceEvent> events = JsonRead.ReadFile(file) is List<object?> rows ? [.. rows.Select(TraceEvents.FromJson)] : throw new PyValueException("bad trace file");
-            if (legacy && i == 1 || events.Sum(e => e.Length) >= MinRunBytes)
+            if (run1Valid && i == 1 || events.Sum(e => e.Length) >= MinRunBytes)
             {
                 previous.Add(events);
             }
@@ -647,6 +653,22 @@ public sealed class AutoTracer
         TraceWriter.WriteFile(temp, union);
         File.Move(temp, raw, true);
         SaveMergeMeta(g, number, (union.Count - TraceWriter.Union(previous).Count) * TraceWriter.Block >> 20);
+    }
+
+    // 못 쓰면 이번 병합만 run1 을 유효로 보고, 이후에는 기존 동작 (64 MiB 미만이면 무효) 으로 돌아감.
+    private void SaveLegacyRun1Mark(GameSettings g)
+    {
+        try
+        {
+            string path = LegacyRun1Path(g);
+            string temp = path + ".tmp";
+            File.WriteAllText(temp, "1");
+            File.Move(temp, path, true);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"{g.Name}: legacy run1 mark not saved ({e.GetType().Name})");
+        }
     }
 
     // 힌트일 뿐: 못 써도 병합은 그대로 (메타가 없으면 추가 수집은 기존 정책으로 돌아감).

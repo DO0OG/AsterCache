@@ -863,4 +863,30 @@ public sealed class PinAndRewarmTests
             }
         }
     }
+
+    [Fact]
+    public void RewarmCheckStopsWhenARelocationStartsBetweenGamesAndTheRestIsCheckedNextPeriod()
+    {
+        GameSettings a = Game("a", pin: false);
+        GameSettings b = Game("b", pin: false);
+        Prewarmer p = Make(a, b);
+        p.Run(a, "service start");
+        p.Run(b, "service start");
+        int before = _streamer.Calls.Count;
+        _probe = 5.0; // 식음
+        p.Relocating = _ => _streamer.Calls.Count > before; // 첫 게임을 다시 예열한 직후 재배치가 시작됨
+
+        p.Tick(Auto(10));
+        _now += TimeSpan.FromMinutes(10);
+        p.Tick(Auto(10));
+
+        Assert.Equal(before + 1, _streamer.Calls.Count); // 두 번째 게임은 읽지 않음
+        Assert.Single(_log.Lines, l => l.Contains("rewarm check stopped: a relocation started", StringComparison.Ordinal));
+
+        p.Relocating = _ => false; // 재배치가 끝남
+        _now += TimeSpan.FromMinutes(10);
+        p.Tick(Auto(10));
+
+        Assert.Contains("b", _streamer.Calls.Skip(before + 1).Select(c => c.Game)); // 다음 주기에 이어서 점검·재예열
+    }
 }

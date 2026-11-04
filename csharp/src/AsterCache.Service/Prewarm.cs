@@ -316,6 +316,12 @@ public sealed class Prewarmer
         return wait;
     }
 
+    /// 이 게임이나 같은 디스크의 게임을 읽는 예열 스트림이 지금 도는가. 재배치가 시작하기 전에 보고 양보합니다 (같은 디스크에서 읽기와 쓰기가 겹치지 않게).
+    public bool StreamingOnDisk(string game) => _streaming is { } reading && (string.Equals(reading, game, StringComparison.OrdinalIgnoreCase) || SameDisk(reading, game));
+
+    // 묶음 경계 (게임 사이) 에서 재배치가 돌고 있으면 끝나고 디스크가 다시 한가해질 때까지 기다립니다 (시작 게이트와 같은 조건). 기다리는 중 취소되면 false.
+    private bool WaitOutRelocation(GameSettings game, CancellationToken ct) => !RelocationHeld() || WaitStartupGate([game], ct);
+
     // 재배치 중인 게임이 있으면 (어느 게임이든) true. 보류 로그는 게임당 한 번, 재배치가 끝나면 다음에 다시 로그를 남깁니다.
     private bool RelocationHeld()
     {
@@ -551,7 +557,7 @@ public sealed class Prewarmer
             }
         }
 
-        return [.. skipped, .. RunBatch(cold, "service start", ct: ct)];
+        return [.. skipped, .. RunBatch(cold, "service start", ct: ct, yieldToRelocation: true)];
     }
 
     /// 서비스 시작 예열 대상이 되는 마지막 플레이의 최대 경과.
@@ -694,17 +700,24 @@ public sealed class Prewarmer
 
     // 한 묶음의 예산 = min(물리 RAM / 4, 가용 RAM - 여유). 존 크기 합이 예산을 넘으면 그 뒤 게임은 건너뜁니다 (앞쪽 = 최근 순서가 우선).
     // 서비스 시작·런처 시작이 같은 규칙입니다. 첫 게임의 가용 RAM 쪽 판단은 Run 의 자체 판단에 맡깁니다.
-    private IReadOnlyList<PrewarmResult> RunBatch(IEnumerable<GameSettings> games, string why, bool pin = true, CancellationToken ct = default)
+    // yieldToRelocation: 게임 사이마다 재배치가 시작됐는지 다시 보고, 돌고 있으면 끝날 때까지 기다린 뒤 이어서 읽습니다 (서비스 시작 예열: 게이트를 지난 직후나 예열 도중 시작된 재배치와 겹치지 않게).
+    private IReadOnlyList<PrewarmResult> RunBatch(IEnumerable<GameSettings> games, string why, bool pin = true, CancellationToken ct = default, bool yieldToRelocation = false)
     {
         var results = new List<PrewarmResult>();
         IReadOnlyList<GameSettings> list = games as IReadOnlyList<GameSettings> ?? [.. games];
-        WarmHeads(list, ct);
+        WarmHeads(list, ct, yieldToRelocation);
         long avail = _env.AvailableRamMib();
         long physCap = _env.PhysicalRamBytes() is > 0 and long phys ? phys >> 22 : long.MaxValue; // MiB, 물리 RAM 의 1/4
         long used = 0; // 핫 집합 예열의 MiB (기록 없는 예열은 _coldMib 가 셈)
         bool cut = false;
         foreach (GameSettings g in list)
         {
+            if (yieldToRelocation && !WaitOutRelocation(g, ct))
+            {
+                results.Add(new PrewarmResult(g.Name, false, Cancelled, null, _now())); // 기다리는 동안 취소됨 (읽지 않았으므로 기록하지 않음)
+                continue;
+            }
+
             if (Deferred(g))
             {
                 results.Add(new PrewarmResult(g.Name, false, PostUpdateDelay, null, _now()));
@@ -731,7 +744,7 @@ public sealed class Prewarmer
 
     // 묶음에 게임이 둘 이상이면 각 게임의 로딩 앞부분 (tier0) 을 최근 순서로 먼저 모두 올리고, 그 뒤 게임별 전체 (tier1 포함) 를 읽습니다 (앞부분은 이미 올라와 있어 다시 읽어도 빠름).
     // 올릴 게임은 RunBatch 와 같은 예산과 Run 과 같은 건너뜀 조건으로 고릅니다. 취소는 앞부분 묶음 사이에서 보고, 읽던 게임이 시작되면 끝까지 읽습니다 (StreamHot 과 같음).
-    private void WarmHeads(IReadOnlyList<GameSettings> games, CancellationToken ct)
+    private void WarmHeads(IReadOnlyList<GameSettings> games, CancellationToken ct, bool yieldToRelocation)
     {
         if (games.Count < 2)
         {
@@ -743,7 +756,7 @@ public sealed class Prewarmer
         long planned = ColdMib(null);
         foreach (GameSettings g in games)
         {
-            if (ct.IsCancellationRequested)
+            if (ct.IsCancellationRequested || (yieldToRelocation && !WaitOutRelocation(g, ct)))
             {
                 return;
             }

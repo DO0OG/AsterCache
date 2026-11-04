@@ -1,4 +1,5 @@
 using AsterCache.Core.Settings;
+using AsterCache.Prefetch;
 using AsterCache.Service;
 using AsterCache.Windows;
 using Xunit;
@@ -220,5 +221,105 @@ public sealed class StartupWarmTests : IDisposable
         _uptimeMs = 60_000;
         Assert.True(Assert.Single(Make(Game("a")).RunServiceStart()).Ran);
         Assert.Equal(2, _streamer.Calls.Count);
+    }
+
+    [Fact]
+    public void StartupPrewarmWaitsBetweenGamesWhenARelocationStartsMidBatchThenContinues()
+    {
+        Prewarmer p = Make(Game("a"), Game("b"));
+        bool relocating = false;
+        bool freed = false;
+        int held = 0;
+        TimeSpan freedAt = TimeSpan.Zero;
+        p.Relocating = _ =>
+        {
+            if (!freed && _streamer.Calls.Count == 1)
+            {
+                (relocating, _callsBefore) = (true, 1); // 첫 게임을 읽은 직후 재배치가 시작됨
+            }
+
+            return relocating && !freed;
+        };
+        _onSleep = () =>
+        {
+            if (relocating && !freed && ++held == 100)
+            {
+                Assert.Equal(["a"], _streamer.Calls.Select(c => c.Game)); // 재배치 중에는 다음 게임을 읽지 않음
+                (freed, freedAt) = (true, _waited);
+            }
+        };
+
+        IReadOnlyList<PrewarmResult> results = p.RunServiceStart();
+
+        Assert.Equal(["a", "b"], results.Where(r => r.Ran).Select(r => r.Game));
+        Assert.Equal(["a", "b"], _streamer.Calls.Select(c => c.Game));
+        Assert.True(held >= 100);
+        Assert.True(_waited - freedAt >= TimeSpan.FromSeconds(55)); // 재배치가 끝난 뒤 유휴를 다시 기다림
+    }
+
+    [Fact]
+    public void StartupPrewarmCancelledWhileWaitingOutARelocationIsNotRecordedAndRunsAgainLater()
+    {
+        Prewarmer p = Make(Game("a"), Game("b"));
+        bool relocating = false;
+        bool over = false;
+        p.Relocating = _ =>
+        {
+            if (!over && _streamer.Calls.Count == 1)
+            {
+                (relocating, _callsBefore) = (true, 1);
+            }
+
+            return relocating;
+        };
+        using var cts = new CancellationTokenSource();
+        int held = 0;
+        _onSleep = () =>
+        {
+            if (relocating && ++held == 20)
+            {
+                cts.Cancel(); // 게임 시작 등으로 취소
+            }
+        };
+
+        IReadOnlyList<PrewarmResult> first = p.RunServiceStart(null, cts.Token);
+
+        Assert.Equal(["a"], first.Where(r => r.Ran).Select(r => r.Game));
+        Assert.Equal(Prewarmer.Cancelled, first.Single(r => r.Game == "b").SkipReason);
+        Assert.Null(p.LastWarmed("b")); // 끝난 것으로 기록되지 않음: 다음 기회에 다시 읽음
+
+        (relocating, over) = (false, true);
+        _onSleep = null;
+        IReadOnlyList<PrewarmResult> second = p.RunServiceStart();
+
+        Assert.True(second.Single(r => r.Game == "b").Ran);
+        Assert.Equal(["a", "b"], _streamer.Calls.Select(c => c.Game).Distinct());
+        Assert.NotNull(p.LastWarmed("b"));
+    }
+
+    [Fact]
+    public void StreamingOnDiskIsTrueOnlyWhileAStreamReadsTheSameDisk()
+    {
+        bool during = false;
+        bool other = true;
+        Prewarmer q = null!;
+        var streamer = new ProbeStreamer(() => (during, other) = (q.StreamingOnDisk("a"), q.StreamingOnDisk("zzz")));
+        q = new([Game("a")], streamer, new PrewarmEnv { AvailableRamMib = () => 16000, GameRunning = _ => false, ZoneBytes = _ => 1 << 20, TraceExists = _ => true }, _log, null, () => _now);
+
+        Assert.False(q.StreamingOnDisk("a"));
+        Assert.True(q.Run(Game("a"), "t").Ran);
+
+        Assert.True(during);
+        Assert.False(other); // 모르는 이름은 같은 디스크로 치지 않음
+        Assert.False(q.StreamingOnDisk("a")); // 끝나면 풀림
+    }
+
+    private sealed class ProbeStreamer(Action onStream) : IGameStreamer
+    {
+        public StreamStats Stream(GameSettings game)
+        {
+            onStream();
+            return new StreamStats(100, 2, 0, 0.01);
+        }
     }
 }

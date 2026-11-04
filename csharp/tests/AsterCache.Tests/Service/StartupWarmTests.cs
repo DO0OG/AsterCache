@@ -69,6 +69,37 @@ public sealed class StartupWarmTests : IDisposable
     private static GameSettings Game(string name) => Games.Make(name, name + ".exe");
 
     [Fact]
+    public void StartupPrewarmIsHeldWhileTheGameIsRelocatingAndWaitsForIdleAfterwards()
+    {
+        Prewarmer p = Make(Game("a"));
+        bool relocating = true;
+        p.Relocating = _ => relocating;
+        using var cts = new CancellationTokenSource();
+        int sleeps = 0;
+        TimeSpan freedAt = TimeSpan.Zero;
+        _onSleep = () =>
+        {
+            if (++sleeps == 200)
+            {
+                Assert.Empty(_streamer.Calls); // 재배치 중에는 한 번도 읽지 않음
+                relocating = false;
+                freedAt = _waited;
+            }
+
+            if (sleeps > 400)
+            {
+                cts.Cancel();
+            }
+        };
+
+        IReadOnlyList<PrewarmResult> results = p.RunServiceStart(null, cts.Token);
+
+        Assert.True(Assert.Single(results).Ran); // 재배치가 끝난 뒤 예열이 다시 실행됨
+        Assert.True(_waited - freedAt >= TimeSpan.FromSeconds(55)); // 보류 동안 유휴 시간이 초기화됨 (IdleNeeded 는 5 초 칸 11 번 기다린 뒤 통과)
+        Assert.Equal(1, _log.Lines.Count(l => l.Contains("startup prewarm held while relocation is running", StringComparison.Ordinal)));
+    }
+
+    [Fact]
     public void OnlyThePlayedGameIsWarmedAtServiceStartAmongSix()
     {
         GameSettings[] games = [.. Enumerable.Range(1, 6).Select(i => Game("g" + i))];

@@ -47,6 +47,7 @@ public sealed class Worker : BackgroundService
             AutoStatus status = auto.Status;
             prewarm.PostUpdateWait = g => AutoRelocator.PostUpdateWait(status, _settings.Auto, g.Name, DateTimeOffset.UtcNow);
             prewarm.ReplanStart = g => AutoRelocator.Replanning(status, g.Name)?.At;
+            prewarm.Relocating = name => status.Get(name)?.Stage == AutoStage.Relocating;
             prewarm.HasPlayed = auto.HasPlayed;
         }
 

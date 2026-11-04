@@ -82,6 +82,12 @@ public sealed class Rewarmer
             return;
         }
 
+        if (_prewarm.Games.Any(g => _prewarm.Relocating(g.Name)))
+        {
+            _log.Info("rewarm check skipped: a relocation is running");
+            return;
+        }
+
         foreach (GameSettings g in warmed)
         {
             if (ct.IsCancellationRequested)

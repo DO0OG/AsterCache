@@ -17,6 +17,9 @@ public sealed class WarmFilesTests : IDisposable
     private readonly HashSet<string> _cached = new(StringComparer.OrdinalIgnoreCase);
     private long _avail = 64000;
     private Action? _onRead;
+    private Action? _onProbe;
+    private int _probes;
+    private readonly HashSet<string> _running = new(StringComparer.OrdinalIgnoreCase);
 
     public WarmFilesTests()
     {
@@ -34,13 +37,19 @@ public sealed class WarmFilesTests : IDisposable
 
     private Prewarmer Make()
     {
-        return new Prewarmer([Settings()], new FakeStreamer(), new PrewarmEnv
+        // 같은 드라이브의 다른 게임 "h" 도 등록 (시험의 SameDisk 기본은 드라이브 문자 비교)
+        return new Prewarmer([Settings(), Games.Make("h", "h.exe") with { OriginRoot = Other, AllowedRoots = [_root] }], new FakeStreamer(), new PrewarmEnv
         {
             AvailableRamMib = () => _avail,
-            GameRunning = _ => false,
+            GameRunning = g => _running.Contains(g.Name),
             ZoneBytes = _ => null,
             TraceExists = _ => false,
-            ProbeSamples = s => new ProbeResult(s.Count, s.All(x => _cached.Contains(x.Path)) ? 0 : s.Count, 0.1),
+            ProbeFileSamples = (s, ct) =>
+            {
+                _probes++;
+                _onProbe?.Invoke();
+                return ct.IsCancellationRequested ? null : new ProbeResult(s.Count, s.All(x => _cached.Contains(x.Path)) ? 0 : s.Count, 0.1);
+            },
             FileRead = (ops, ct) =>
             {
                 _reads.Add(ops);
@@ -179,6 +188,79 @@ public sealed class WarmFilesTests : IDisposable
         Assert.Single(_reads);
         p.EndRelocation("g");
         Assert.Equal(2 * Mib, p.WarmFiles(Settings(), [a], 1L << 40, default));
+    }
+
+    [Fact]
+    public void NothingIsProbedOrReadWhileARelocationIsRunning()
+    {
+        Prewarmer p = Make();
+        string a = File(Game, "a.wad", 2);
+        Assert.True(p.TryBeginRelocation("g"));
+
+        Assert.Equal(0, p.WarmFiles(Settings(), [a], 1L << 40, default));
+
+        Assert.Equal(0, _probes); // 표본 읽기도 재배치 배제 안에서만
+        Assert.Empty(_reads);
+    }
+
+    [Fact]
+    public void ProbingRunsInsideTheReadMarkSoARelocationCannotStartDuringIt()
+    {
+        Prewarmer p = Make();
+        string a = File(Game, "a.wad", 2);
+        bool blocked = false;
+        _onProbe = () => blocked = p.StreamingOnDisk("g") && !p.TryBeginRelocation("g");
+
+        Assert.Equal(2 * Mib, p.WarmFiles(Settings(), [a], 1L << 40, default));
+
+        Assert.True(blocked);
+    }
+
+    [Fact]
+    public void ACancelledTokenStopsTheProbeAndReadsNothing()
+    {
+        Prewarmer p = Make();
+        string a = File(Game, "a.wad", 2);
+        string b = File(Game, "b.wad", 2);
+        using var cts = new CancellationTokenSource();
+        _onProbe = cts.Cancel; // 첫 파일 점검 중 취소
+
+        Assert.Equal(0, p.WarmFiles(Settings(), [a, b], 1L << 40, cts.Token));
+
+        Assert.Empty(_reads);
+        Assert.False(p.StreamingOnDisk("g"));
+    }
+
+    [Fact]
+    public void NothingIsReadWhileAnotherGameRunsOnTheSameDrive()
+    {
+        Prewarmer p = Make();
+        string a = File(Game, "a.wad", 2);
+        _running.Add("h");
+
+        Assert.Equal(0, p.WarmFiles(Settings(), [a], 1L << 40, default));
+
+        Assert.Equal(0, _probes);
+        Assert.Empty(_reads);
+        Assert.Contains(_log.Lines, l => l.Contains("warm files skipped (a game is running", StringComparison.Ordinal));
+
+        _running.Clear();
+        Assert.Equal(2 * Mib, p.WarmFiles(Settings(), [a], 1L << 40, default));
+    }
+
+    [Fact]
+    public void ASameDriveGameStartingMidReadCancelsTheRead()
+    {
+        Prewarmer p = Make();
+        string a = File(Game, "a.wad", 2);
+        _onRead = () => p.NoteGameStart("h"); // 읽는 중 같은 드라이브의 다른 게임이 뜸
+
+        p.WarmFiles(Settings(), [a], 1L << 40, default);
+
+        Assert.Contains(_log.Lines, l => l.Contains("warm files cancelled", StringComparison.Ordinal));
+        Assert.False(p.StreamingOnDisk("g"));
+        _onRead = null;
+        Assert.Equal(2 * Mib, p.WarmFiles(Settings(), [a], 1L << 40, default)); // 다음 읽기는 영향 없음
     }
 
     [Fact]

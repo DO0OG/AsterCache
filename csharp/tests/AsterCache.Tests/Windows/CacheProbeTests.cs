@@ -76,6 +76,20 @@ public sealed class CacheProbeTests
     }
 
     [Fact]
+    public void ACancelledTokenStopsBetweenSamplesAndGivesNoPartialResult()
+    {
+        using var tmp = new TempDir();
+        tmp.WriteRandom("a.bin", 1 << 20);
+        tmp.WriteRandom("b.bin", 1 << 20);
+        (string, long, int)[] samples = [(tmp.Combine("a.bin"), 0, 1 << 20), (tmp.Combine("b.bin"), 0, 1 << 20)];
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        Assert.Null(CacheProbe.Probe(samples, ct: cts.Token));
+        Assert.Equal(2, CacheProbe.Probe(samples)!.Samples); // 기본값은 이전과 같음
+    }
+
+    [Fact]
     public void ReadsOnlyTheSampleLengthSoAShortOpDoesNotTouchItsNeighbour()
     {
         using var tmp = new TempDir();

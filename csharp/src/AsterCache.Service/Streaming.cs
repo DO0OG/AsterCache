@@ -47,9 +47,9 @@ public sealed class PrefetchStreamer : IGameStreamer
         }
     }
 
-    /// 이번에 읽을 바이트의 예산: 존 크기 (없거나 0 이면 추적 총 바이트) 를 max_stream_mib 로 자른 값.
+    /// 이번에 읽을 바이트의 예산: 존 크기 (없거나 0 이면 추적 총 바이트) 를 max_stream_mib 로 자른 값. max_stream_mib 를 명시하지 않았으면 존 전체 (GameSettings.StreamCapBytes).
     public static long Budget(GameSettings game, long? zoneBytes, long traceBytes) =>
-        Math.Min((long)game.MaxStreamMib << 20, zoneBytes is > 0 ? zoneBytes.Value : traceBytes);
+        zoneBytes is > 0 ? Math.Min(game.StreamCapBytes(zoneBytes.Value), zoneBytes.Value) : Math.Min((long)game.MaxStreamMib << 20, traceBytes);
 
     /// 접근 순서 앞쪽 이만큼 (게임 시작에 먼저 필요한 부분) 을 먼저 읽고 나머지는 물리 순서로. 원시 트레이스에 t_ms 가 없을 때의 값 (있으면 로딩 경계 전 tier0 바이트).
     public const long HeadBytes = 256L << 20;

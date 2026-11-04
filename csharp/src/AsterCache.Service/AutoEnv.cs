@@ -112,6 +112,9 @@ public sealed class AutoEnv
     /// 원시 트레이스의 병합 결과 지문 (블록 집합·순서 해시), 읽을 수 없으면 null. 시험 기본값은 null.
     public Func<string, string?> TraceFingerprint { get; init; } = _ => null;
 
+    /// 트레이스를 만들 수 없는 게임의 엔진 프로필 구간 (게임, 예산 바이트 → 우선순위 순 이벤트), 프로필이 없으면 빈 목록. 계획이 트레이스 뒤에 보충으로 더합니다. 시험 기본값은 빈 목록.
+    public Func<GameSettings, long, IReadOnlyList<TraceEvent>> ProfileEvents { get; init; } = (_, _) => [];
+
     /// 파일의 마지막 수정 시각 (UTC), 없으면 null. 원시 트레이스가 마지막 예열보다 새로운지 보는 데 씁니다.
     public Func<string, DateTimeOffset?> FileWriteTime { get; init; } = _ => null;
 
@@ -233,6 +236,7 @@ public sealed class AutoEnv
             FileExists = File.Exists,
             RunReadBytes = AutoTracer.RunReadBytes,
             TraceFingerprint = AutoTracer.TraceFingerprint,
+            ProfileEvents = (g, budget) => PlanGuards.Inside(g.OriginRoot, g.AllowedRoots, RealPaths.Real) ? ProfileSupplement.EventsFor(g.OriginRoot, g.ExeNames, budget, RealPaths.Resolve) : [],
             DirectoryExists = Directory.Exists,
             FileWriteTime = path => File.Exists(path) ? File.GetLastWriteTimeUtc(path) : null,
             GameProcesses = exes => ProcessSnapshot.ReadCounters(exes),

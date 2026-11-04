@@ -24,6 +24,17 @@ internal sealed class MemTierFs : ITierFs
 
     public bool SymlinkDenied { get; set; }
 
+    /// LinkTarget·Stat 가 IOException 으로 실패할 경로.
+    public HashSet<string> Faulty { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    private void Fault(string path)
+    {
+        if (Faulty.Contains(N(path)))
+        {
+            throw new IOException("injected");
+        }
+    }
+
     /// 파일 시스템을 바꾸는 호출 수 (아무것도 건드리지 않았음을 확인하는 데 씀).
     public int Mutations { get; private set; }
 
@@ -47,9 +58,17 @@ internal sealed class MemTierFs : ITierFs
 
     public bool IsReparsePoint(string path) => Links.ContainsKey(N(path)) || Reparse.Contains(N(path));
 
-    public string? LinkTarget(string path) => Links.GetValueOrDefault(N(path));
+    public string? LinkTarget(string path)
+    {
+        Fault(path);
+        return Links.GetValueOrDefault(N(path));
+    }
 
-    public FileStamp? Stat(string path) => Files.TryGetValue(Resolve(path), out byte[]? d) ? new FileStamp(d.Length, Mtimes[Resolve(path)]) : null;
+    public FileStamp? Stat(string path)
+    {
+        Fault(path);
+        return Files.TryGetValue(Resolve(path), out byte[]? d) ? new FileStamp(d.Length, Mtimes[Resolve(path)]) : null;
+    }
 
     public byte[] ReadRange(string path, long offset, long length)
     {

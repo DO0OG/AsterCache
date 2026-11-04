@@ -227,6 +227,54 @@ public sealed class AutoTierTests : IDisposable
     }
 
     [Fact]
+    public void ARevertKeepsWhatTheGameWroteEvenWhenTheJournalCannotBeSaved()
+    {
+        SetTrace();
+        AsterSettings s = Settings();
+        IdleTicks(s);
+        string game = @"D:\Games\Foo\a.bin";
+        byte[] written = new byte[_a.Length];
+        new Random(9).NextBytes(written);
+        _fs.Put(_fs.Links[MemTierFs.N(game)], written);
+        string journal = _engine.JournalPath("Foo");
+        File.SetAttributes(journal, FileAttributes.ReadOnly); // 저널 저장이 실패하도록 함
+        try
+        {
+            _ = _engine.Revert("Foo", "test");
+        }
+        finally
+        {
+            File.SetAttributes(journal, FileAttributes.Normal);
+        }
+
+        Assert.False(Linked(game));
+        Assert.Equal(written, _fs.Files[MemTierFs.N(game)]); // 변경분 보존
+        Assert.Equal(_a, _fs.Files[Orig(game)]);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AFailingCheckKeepsThatFileAndStillRevertsTheRest(bool statFails)
+    {
+        SetTrace();
+        AsterSettings s = Settings();
+        IdleTicks(s);
+        string bad = @"D:\Games\Foo\a.bin", good = @"D:\Games\Foo\b.bin";
+        string target = _fs.Links[MemTierFs.N(bad)];
+        _fs.Faulty.Add(MemTierFs.N(statFails ? target : bad));
+
+        TierRevertReport r = _engine.Revert("Foo", "test");
+
+        Assert.Equal(1, r.Failed);
+        Assert.Equal(1, r.Reverted);
+        Assert.True(Linked(bad)); // 검사에 실패한 항목은 링크·사본 그대로
+        Assert.Equal(_a, _fs.Files[Orig(bad)]);
+        Assert.False(Linked(good));
+        Assert.Equal(_b, _fs.Files[MemTierFs.N(good)]);
+    }
+
+    [Fact]
     public void GameRunningOnAnotherDriveDoesNotBlockTiering()
     {
         SetTrace();

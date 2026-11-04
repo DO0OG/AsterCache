@@ -75,9 +75,9 @@ public sealed class Worker : BackgroundService
     private static readonly TraceBlockCache Detected = new(dir => AutoEnv.DetectAntiCheat(dir)); // 폴더 탐지는 etw 일 때만, 게임당 한 번 (캐시)
 
     /// 등록된 게임 중 안티치트 (트레이스 금지) 게임이 하나라도 있으면 설정과 무관하게 poll: ETW 커널 세션을 안티치트 게임 옆에 열지 않음.
-    /// 등록값이 없는 게임은 폴더 이름으로 탐지한 결과를 봄 (탐지 실패 "unknown" 은 ETW 를 막는 근거로 삼지 않음). blocker 는 시험이 탐지를 바꿔 끼움.
+    /// 등록값이 없는 게임은 폴더 이름으로 탐지한 결과를 봄 (트레이스 금지 판정과 같은 규칙: 탐지 실패 "unknown" 도 금지). blocker 는 시험이 탐지를 바꿔 끼움.
     public static string EffectiveWatcher(AsterSettings s, Func<GameSettings, string?>? blocker = null) =>
-        s.Watcher == "etw" && s.Games.Any(g => AntiCheat.ForbidsTrace(g.AntiCheat) || (blocker ?? Detected.Of)(g) is { } kind && kind != AutoEnv.AntiCheatUnknown) ? "poll" : s.Watcher;
+        s.Watcher == "etw" && s.Games.Any(g => AntiCheat.ForbidsTrace(g.AntiCheat) || AntiCheat.ForbidsTrace((blocker ?? Detected.Of)(g))) ? "poll" : s.Watcher;
 
     private void LogWatcherOverride(AsterSettings s)
     {

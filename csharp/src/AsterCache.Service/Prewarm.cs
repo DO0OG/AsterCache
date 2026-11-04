@@ -176,6 +176,9 @@ public sealed class Prewarmer
     /// 업데이트 직후 지연으로 시작하지 않았다는 표시 (PrewarmResult.SkipReason).
     public const string PostUpdateDelay = "post-update delay";
 
+    /// 같은 디스크에서 재배치가 시작했거나 도는 중이라 읽기를 시작하지 않았다는 표시 (PrewarmResult.SkipReason).
+    public const string RelocationRunning = "relocation running";
+
     // 재배치 직후 예열의 이유 (AutoRelocator 가 "auto " + "after relocation" 으로 넘김): 회복 기간 고정의 조건.
     private const string AfterRelocation = "auto after relocation";
 
@@ -196,10 +199,13 @@ public sealed class Prewarmer
     private readonly Dictionary<string, string> _profileMiss = new(StringComparer.OrdinalIgnoreCase); // 엔진 프로필이 없다는 판정과 그때의 설치 폴더 mtime 키 (prewarm_status.json 의 profile_miss_key), _gate 로 보호
     private readonly HashSet<string> _refusedLogged = new(StringComparer.OrdinalIgnoreCase); // 드라이브 거부를 이미 로그한 게임, _gate 로 보호
     private readonly HashSet<string> _delayLogged = new(StringComparer.OrdinalIgnoreCase); // 업데이트 지연을 이미 로그한 게임, _gate 로 보호
+    private readonly HashSet<string> _relocHoldLogged = new(StringComparer.OrdinalIgnoreCase); // 재배치 중이라 시작 예열을 보류한 것을 이미 로그한 게임, _gate 로 보호
     private readonly Dictionary<string, (DateTimeOffset At, int Count)> _skipLogged = new(StringComparer.OrdinalIgnoreCase); // 게임|사유별 마지막으로 남긴 시각과 그 뒤 억제한 횟수, _gate 로 보호
     private readonly Dictionary<string, (DateTimeOffset At, int Count)> _triggerSeen = new(StringComparer.OrdinalIgnoreCase); // 트리거 exe 별 마지막 처리 시각과 그 뒤 억제한 횟수, _gate 로 보호
     private volatile AutoSettings _auto = AutoSettings.Default;
     private volatile string? _streaming; // 핫 집합 스트림이 도는 게임
+    private volatile string? _coldReading; // 기록 없는 (통째·프로필) 예열의 읽기가 도는 게임: _streaming 과 달리 게임 시작 양보 신호는 받지 않음 (ct 로만 멈춤)
+    private readonly HashSet<string> _relocStarted = new(StringComparer.OrdinalIgnoreCase); // 재배치가 시작한 (아직 끝나지 않은) 게임, _gate 로 보호
     private volatile bool _keepStream; // auto.keep_stream_on_game_start 가 켜진 채 그 게임이 시작돼 (같은 데이터를 동시에 읽으므로) 취소 신호에도 끝까지 읽기로 한 표시
     private volatile CancellationTokenSource? _streamStop; // 도는 스트림을 멈추는 신호 (게임 시작이 같은 디스크 읽기를 바로 끊음)
     private (string Game, long At)? _yield; // 게임 시작으로 스트림 양보를 요청한 게임과 시각 (Stopwatch 틱), _gate 로 보호
@@ -290,6 +296,9 @@ public sealed class Prewarmer
     /// 업데이트를 감지해 재계획 상태가 된 때 (없으면 null): probe 모드에서 이 드라이브의 회복 판정 (Recovery) 의 기준 시각. 기본 null (고정 분만 씀).
     public Func<GameSettings, DateTimeOffset?> ReplanStart { get; set; } = _ => null;
 
+    /// 재배치 단계 (auto_status 의 relocating) 인 게임인가. 하나라도 있으면 서비스 시작 예열을 보류합니다.
+    public Func<string, bool> Relocating { get; set; } = _ => false;
+
     /// 업데이트 지연으로 미뤄야 하는 게임이면 true (지연 한 번에 로그는 한 줄). 지연이 끝난 게임은 다음 지연 때 다시 로그를 남깁니다.
     private bool Deferred(GameSettings game)
     {
@@ -310,6 +319,85 @@ public sealed class Prewarmer
         }
 
         return wait;
+    }
+
+    /// 이 게임이나 같은 디스크의 게임을 읽는 예열 (핫 집합 스트림, 기록 없는 통째·프로필 읽기) 이 지금 도는가. 재배치가 시작하기 전에 보고 양보합니다 (같은 디스크에서 읽기와 쓰기가 겹치지 않게).
+    public bool StreamingOnDisk(string game) => ReadingOnDisk(_streaming, game) || ReadingOnDisk(_coldReading, game);
+
+    private bool ReadingOnDisk(string? reading, string game) => reading is not null && (string.Equals(reading, game, StringComparison.OrdinalIgnoreCase) || SameDisk(reading, game));
+
+    // 이 게임과 같은 디스크의 등록 게임 이름들 (자신 포함). 디스크 조회는 잠금 밖에서 하고 잠금 안에서는 이름만 비교합니다.
+    private HashSet<string> DiskMates(string game) =>
+        new([game, .. _games.Where(g => !string.Equals(g.Name, game, StringComparison.OrdinalIgnoreCase) && SameDisk(g.Name, game)).Select(g => g.Name)], StringComparer.OrdinalIgnoreCase);
+
+    /// 재배치 쪽: 같은 디스크의 예열 읽기가 없을 때만 재배치 시작 표시를 세우고 true (읽는 중이면 표시 없이 false). 확인과 표시가 _gate 아래에서 한 번에 이뤄져,
+    /// 이 호출이 true 를 돌려준 뒤에는 같은 디스크의 예열이 읽기 표시를 세우지 못합니다 (TryMarkReading). 끝나면 (성공·실패·예외 모두) EndRelocation 을 불러야 합니다.
+    public bool TryBeginRelocation(string game)
+    {
+        HashSet<string> mates = DiskMates(game);
+        lock (_gate)
+        {
+            if ((_streaming is { } streaming && mates.Contains(streaming)) || (_coldReading is { } cold && mates.Contains(cold)))
+            {
+                return false;
+            }
+
+            _relocStarted.Add(game);
+            return true;
+        }
+    }
+
+    /// 재배치 시작 표시를 내립니다.
+    public void EndRelocation(string game)
+    {
+        lock (_gate)
+        {
+            _relocStarted.Remove(game);
+        }
+    }
+
+    // 예열 쪽: 같은 디스크에서 재배치가 시작했으면 false (표시를 세우지 않음), 아니면 mark 로 읽기 표시를 세우고 true. 확인과 표시가 _gate 아래에서 한 번에 이뤄집니다 (mark 는 필드 대입만).
+    private bool TryMarkReading(string game, Action mark)
+    {
+        HashSet<string> mates = DiskMates(game);
+        lock (_gate)
+        {
+            if (_relocStarted.Overlaps(mates))
+            {
+                return false;
+            }
+
+            mark();
+            return true;
+        }
+    }
+
+    // 묶음 경계 (게임 사이) 에서 재배치가 돌고 있으면 끝나고 디스크가 다시 한가해질 때까지 기다립니다 (시작 게이트와 같은 조건). 기다리는 중 취소되면 false.
+    private bool WaitOutRelocation(GameSettings game, CancellationToken ct) => !RelocationHeld() || WaitStartupGate([game], ct);
+
+    // 재배치 중인 게임이 있으면 (어느 게임이든) true. 보류 로그는 게임당 한 번, 재배치가 끝나면 다음에 다시 로그를 남깁니다.
+    private bool RelocationHeld()
+    {
+        bool any = false;
+        lock (_gate)
+        {
+            foreach (GameSettings g in _games)
+            {
+                if (!Relocating(g.Name))
+                {
+                    _relocHoldLogged.Remove(g.Name);
+                    continue;
+                }
+
+                any = true;
+                if (_relocHoldLogged.Add(g.Name))
+                {
+                    _log.Info($"{g.Name}: startup prewarm held while relocation is running");
+                }
+            }
+        }
+
+        return any;
     }
 
     /// 게임 exe 가 떴을 때 (스트림 취소보다 먼저): 도는 예열 스트림이 그 게임의 것이거나 같은 디스크의 것이면 다음 묶음 경계에서 멈추게 해 디스크를 양보하고 (같은 HDD 동시 읽기는 게임을 느리게 함),
@@ -522,7 +610,7 @@ public sealed class Prewarmer
             }
         }
 
-        return [.. skipped, .. RunBatch(cold, "service start", ct: ct)];
+        return [.. skipped, .. RunBatch(cold, "service start", ct: ct, yieldToRelocation: true)];
     }
 
     /// 서비스 시작 예열 대상이 되는 마지막 플레이의 최대 경과.
@@ -539,6 +627,13 @@ public sealed class Prewarmer
         bool heldLogged = false;
         while (!ct.IsCancellationRequested)
         {
+            if (RelocationHeld())
+            {
+                idle = TimeSpan.Zero; // 재배치가 끝난 뒤 유휴를 처음부터 다시 셉니다
+                _env.Sleep(GateStep, ct);
+                continue;
+            }
+
             double?[] rates = [.. games.Select(g => _env.DiskBytesPerSecond(g))];
             bool settled = BootSettled();
             if (settled && rates.Any(r => r is null))
@@ -658,17 +753,24 @@ public sealed class Prewarmer
 
     // 한 묶음의 예산 = min(물리 RAM / 4, 가용 RAM - 여유). 존 크기 합이 예산을 넘으면 그 뒤 게임은 건너뜁니다 (앞쪽 = 최근 순서가 우선).
     // 서비스 시작·런처 시작이 같은 규칙입니다. 첫 게임의 가용 RAM 쪽 판단은 Run 의 자체 판단에 맡깁니다.
-    private IReadOnlyList<PrewarmResult> RunBatch(IEnumerable<GameSettings> games, string why, bool pin = true, CancellationToken ct = default)
+    // yieldToRelocation: 게임 사이마다 재배치가 시작됐는지 다시 보고, 돌고 있으면 끝날 때까지 기다린 뒤 이어서 읽습니다 (서비스 시작 예열: 게이트를 지난 직후나 예열 도중 시작된 재배치와 겹치지 않게).
+    private IReadOnlyList<PrewarmResult> RunBatch(IEnumerable<GameSettings> games, string why, bool pin = true, CancellationToken ct = default, bool yieldToRelocation = false)
     {
         var results = new List<PrewarmResult>();
         IReadOnlyList<GameSettings> list = games as IReadOnlyList<GameSettings> ?? [.. games];
-        WarmHeads(list, ct);
+        WarmHeads(list, ct, yieldToRelocation);
         long avail = _env.AvailableRamMib();
         long physCap = _env.PhysicalRamBytes() is > 0 and long phys ? phys >> 22 : long.MaxValue; // MiB, 물리 RAM 의 1/4
         long used = 0; // 핫 집합 예열의 MiB (기록 없는 예열은 _coldMib 가 셈)
         bool cut = false;
         foreach (GameSettings g in list)
         {
+            if (yieldToRelocation && !WaitOutRelocation(g, ct))
+            {
+                results.Add(new PrewarmResult(g.Name, false, Cancelled, null, _now())); // 기다리는 동안 취소됨 (읽지 않았으므로 기록하지 않음)
+                continue;
+            }
+
             if (Deferred(g))
             {
                 results.Add(new PrewarmResult(g.Name, false, PostUpdateDelay, null, _now()));
@@ -695,7 +797,7 @@ public sealed class Prewarmer
 
     // 묶음에 게임이 둘 이상이면 각 게임의 로딩 앞부분 (tier0) 을 최근 순서로 먼저 모두 올리고, 그 뒤 게임별 전체 (tier1 포함) 를 읽습니다 (앞부분은 이미 올라와 있어 다시 읽어도 빠름).
     // 올릴 게임은 RunBatch 와 같은 예산과 Run 과 같은 건너뜀 조건으로 고릅니다. 취소는 앞부분 묶음 사이에서 보고, 읽던 게임이 시작되면 끝까지 읽습니다 (StreamHot 과 같음).
-    private void WarmHeads(IReadOnlyList<GameSettings> games, CancellationToken ct)
+    private void WarmHeads(IReadOnlyList<GameSettings> games, CancellationToken ct, bool yieldToRelocation)
     {
         if (games.Count < 2)
         {
@@ -707,7 +809,7 @@ public sealed class Prewarmer
         long planned = ColdMib(null);
         foreach (GameSettings g in games)
         {
-            if (ct.IsCancellationRequested)
+            if (ct.IsCancellationRequested || (yieldToRelocation && !WaitOutRelocation(g, ct)))
             {
                 return;
             }
@@ -740,21 +842,24 @@ public sealed class Prewarmer
     private void StreamHead(GameSettings game, CancellationToken ct)
     {
         using var stop = new CancellationTokenSource();
-        (_keepStream, _streaming, _streamStop) = (false, game.Name, stop);
-        lock (_gate)
+        if (!TryMarkReading(game.Name, () =>
         {
+            (_keepStream, _streaming, _streamStop) = (false, game.Name, stop);
             _yield = null;
+        }))
+        {
+            return; // 같은 디스크에서 재배치가 시작함: 앞부분은 읽지 않음 (전체 예열 Run 이 같은 이유로 건너뜀을 남김)
         }
 
-        using CancellationTokenRegistration reg = ct.Register(() =>
-        {
-            if (!_keepStream)
-            {
-                stop.Cancel();
-            }
-        });
         try
         {
+            using CancellationTokenRegistration reg = ct.Register(() => // 표시를 세운 뒤의 모든 예외에서 finally 가 표시를 내리도록 try 안
+            {
+                if (!_keepStream)
+                {
+                    stop.Cancel();
+                }
+            });
             _streamer.StreamHead(game, stop.Token);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
@@ -848,7 +953,13 @@ public sealed class Prewarmer
                 _log.Info($"{game.Name}: prewarm triggered by {TriggerCause(why)}");
                 try
                 {
-                    (StreamStats s, bool complete) = StreamHot(game, ct);
+                    if (StreamHot(game, ct) is not { } hot)
+                    {
+                        LogSkipped(game.Name, RelocationRunning, $"{game.Name}: prewarm skipped ({RelocationRunning}) [{why}]");
+                        return Record(game, now, new PrewarmResult(game.Name, false, RelocationRunning, null, now), 0);
+                    }
+
+                    (StreamStats s, bool complete) = hot;
                     if (!complete)
                     {
                         _log.Info($"{game.Name}: prewarm cancelled ({why}) after {s.Bytes >> 20} MiB");
@@ -890,26 +1001,30 @@ public sealed class Prewarmer
     }
 
     // 핫 집합 스트림 한 번. 게임이 시작되면 (NoteGameStart) 다음 묶음 경계에서 멈춥니다. 단 keep_stream_on_game_start 가 켜졌고 그 게임의 스트림이면 ct 가 취소돼도 끝까지 읽습니다.
-    private (StreamStats Stats, bool Complete) StreamHot(GameSettings game, CancellationToken ct)
+    // 같은 디스크에서 재배치가 시작했으면 읽지 않고 null.
+    private (StreamStats Stats, bool Complete)? StreamHot(GameSettings game, CancellationToken ct)
     {
         using var stop = new CancellationTokenSource();
-        (_keepStream, _streaming, _streamStop) = (false, game.Name, stop);
-        lock (_gate)
+        if (!TryMarkReading(game.Name, () =>
         {
+            (_keepStream, _streaming, _streamStop) = (false, game.Name, stop);
             _yield = null;
+        }))
+        {
+            return null;
         }
 
-        using CancellationTokenRegistration reg = ct.Register(() =>
-        {
-            if (!_keepStream)
-            {
-                stop.Cancel();
-            }
-        });
         DateTimeOffset? last = null;
         bool complete = false;
         try
         {
+            using CancellationTokenRegistration reg = ct.Register(() => // 표시를 세운 뒤의 모든 예외에서 finally 가 표시를 내리도록 try 안
+            {
+                if (!_keepStream)
+                {
+                    stop.Cancel();
+                }
+            });
             (StreamStats, bool) r = _streamer.Stream(game, stop.Token, (done, total) =>
             {
                 DateTimeOffset at = _now();
@@ -1003,9 +1118,15 @@ public sealed class Prewarmer
                 {
                     ForgetProfileMiss(game.Name);
                     _log.Info($"{game.Name}: prewarm triggered by {TriggerCause(why)}");
-                    (StreamStats s, bool complete) = _env.ColdRead(plan.Ops, ct);
-                    (stats, label, skip) = (s, plan.Label, complete ? null : Cancelled);
-                    samples = CacheProbe.PickSamples(plan.Ops);
+                    if (ColdReadMarked(game, plan.Ops, ct) is not { } cold)
+                    {
+                        skip = RelocationRunning;
+                    }
+                    else
+                    {
+                        (stats, label, skip) = (cold.Stats, plan.Label, cold.Complete ? null : Cancelled);
+                        samples = CacheProbe.PickSamples(plan.Ops);
+                    }
                 }
             }
             catch (OperationCanceledException)
@@ -1042,6 +1163,24 @@ public sealed class Prewarmer
         WarmMeasured?.Invoke(game, mbps);
         ColdWarmed?.Invoke(game, label!);
         return done;
+    }
+
+    // 기록 없는 읽기 한 번: 읽는 동안 _coldReading 표시를 세우고 (예외·취소로 끝나도 내림), 같은 디스크에서 재배치가 시작했으면 읽지 않고 null.
+    private (StreamStats Stats, bool Complete)? ColdReadMarked(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken ct)
+    {
+        if (!TryMarkReading(game.Name, () => _coldReading = game.Name))
+        {
+            return null;
+        }
+
+        try
+        {
+            return _env.ColdRead(ops, ct);
+        }
+        finally
+        {
+            _coldReading = null;
+        }
     }
 
     private bool ProfileMissed(string game, string key)

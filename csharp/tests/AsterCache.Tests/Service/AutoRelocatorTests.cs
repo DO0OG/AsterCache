@@ -343,7 +343,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     public void DailyLimitKeepsBothTheLimitNoteAndPrewarmed()
     {
         SetAuto(a => a with { MaxRelocationsPerDay = 1 });
-        _status.BeginRelocation(_w.Now, 1L << 20);
+        _status.BeginRelocation(_w.Now, 64L << 20);
         UsePrewarm();
 
         Tick();
@@ -447,6 +447,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     [Fact]
     public void WholeFlowPlansWaitsForIdleMovesAndRecordsTheFirstRelocation()
     {
+        ReportFullMoves();
         DateTimeOffset t0 = _w.Now;
         Tick();
 
@@ -556,7 +557,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     public void DailyLimitHoldsTheNextRelocationUntilThe24HourWindowPasses()
     {
         SetAuto(a => a with { MaxRelocationsPerDay = 1 });
-        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 1L << 20);
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 64L << 20);
 
         Run(TimeSpan.FromMinutes(10));
         Assert.Equal((AutoStage.WaitingIdle, "daily limit reached"), (Entry.Stage, Entry.Detail));
@@ -590,9 +591,10 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     [Fact]
     public void DailyCountLimitOf4AllowsTheFourthRelocation()
     {
+        ReportFullMoves();
         for (int i = 0; i < 3; i++)
         {
-            _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1 + i), 1L << 20);
+            _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1 + i), 64L << 20);
         }
 
         Run(TimeSpan.FromMinutes(10));
@@ -606,13 +608,29 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     {
         for (int i = 0; i < 4; i++)
         {
-            _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1 + i), 1L << 20);
+            _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1 + i), 64L << 20);
         }
 
         Run(TimeSpan.FromMinutes(10));
 
         Assert.Equal((AutoStage.WaitingIdle, "daily limit reached"), (Entry.Stage, Entry.Detail));
         Assert.Empty(Vol.Moves);
+    }
+
+    // 가짜 볼륨의 실제 이동 양은 상한(64 MiB) 보다 작아 횟수로 세지 않으므로, 실제 적용의 보고만 상한 이상으로 올립니다.
+    private void ReportFullMoves()
+    {
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            ApplyReport r = real(g, plan, options, ct);
+            if (!options.DryRun)
+            {
+                r.MovedBytes = Math.Max(r.MovedBytes, AutoStatus.CountedRelocationMinBytes);
+            }
+
+            return r;
+        };
     }
 
     // 예행이 말하는 이동 예정 바이트를 bytes 로 바꾸고, 실행 때 받은 옵션을 모아 돌려줍니다.
@@ -862,6 +880,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     [Fact]
     public void GameStartDuringTheMoveCancelsItAndTheNextIdleWindowResumesFromTheJournal()
     {
+        ReportFullMoves();
         Vol.AfterMove = n =>
         {
             if (n == 1)
@@ -1111,7 +1130,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     public void DailyLimitStateIsLoggedOnceNotOnEveryTick()
     {
         SetAuto(a => a with { MaxRelocationsPerDay = 1 });
-        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 1L << 20);
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 64L << 20);
 
         Run(TimeSpan.FromMinutes(10));
 
@@ -2622,7 +2641,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         SetAuto(a => a with { MaxRelocateGibPerDay = 0 });
         for (int i = 0; i < _settings.Auto.MaxRelocationsPerDay; i++)
         {
-            _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 1L << 20);
+            _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 64L << 20);
         }
 
         Assert.Equal(ReapplyVerdict.DailyLimit, GateAfterIdle());
@@ -2660,9 +2679,9 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         SetAuto(a => a with { PostRelocateRecovery = AutoSettings.RecoveryFixed });
 
         Relocator.NoteReapplyStarted(_game, 500);
-        Relocator.NoteReapplied(_game, 123);
+        Relocator.NoteReapplied(_game, (64L << 20) + 123);
 
-        Assert.Equal((1, 123L), (_status.RelocationsWithin(AutoRelocator.DailyWindow), _status.RelocationBytesWithin(AutoRelocator.DailyWindow)));
+        Assert.Equal((1, (64L << 20) + 123), (_status.RelocationsWithin(AutoRelocator.DailyWindow), _status.RelocationBytesWithin(AutoRelocator.DailyWindow)));
         Assert.True(Relocator.Recovery.IsRecovering(Letter));
     }
 
@@ -2683,10 +2702,10 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     [Fact]
     public void ReappliedReplacesThePlannedBytesWithTheActualMovedBytes()
     {
-        Relocator.NoteReapplyStarted(_game, 100L << 20);
-        Relocator.NoteReapplied(_game, 30L << 20);
+        Relocator.NoteReapplyStarted(_game, 200L << 20);
+        Relocator.NoteReapplied(_game, 64L << 20);
 
-        Assert.Equal((1, 30L << 20), (_status.RelocationsWithin(AutoRelocator.DailyWindow), _status.RelocationBytesWithin(AutoRelocator.DailyWindow)));
+        Assert.Equal((1, 64L << 20), (_status.RelocationsWithin(AutoRelocator.DailyWindow), _status.RelocationBytesWithin(AutoRelocator.DailyWindow)));
     }
 
     [Fact]
@@ -2750,6 +2769,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     [Fact]
     public void MergedTraceGrowthExtendsTheZoneByAppendingOnlyNewBlocksAfterTheExistingOnes()
     {
+        ReportFullMoves();
         long start = DoneThenMergedTrace(Merged(RestOfTheBlocks()));
         PlanFile before = PlanFile.Load(_game.Plan);
         long usedBefore = (long)before.Stats["zone_used_clusters"]!;
@@ -2804,6 +2824,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     [Fact]
     public void ExtensionWaitsForTheGameToStopAndPassesTheSameGatesAsAnyRelocation()
     {
+        ReportFullMoves();
         DoneThenMergedTrace(Merged(RestOfTheBlocks()));
         _w.Running = true;
         Tick();
@@ -2831,8 +2852,11 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     public void BlockedExtensionRestoresThePreviousPlanKeepsDoneAndDoesNotRetryTheSameTrace()
     {
         long start = DoneThenMergedTrace(Merged(RestOfTheBlocks()));
-        Vol.Ext[Path.Combine(Root, "other.bin")] = [new Extent(0, start + 100, 8)]; // 존 바로 뒤에 다른 파일
         PlanFile before = PlanFile.Load(_game.Plan);
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> inner = _w.Apply;
+        _w.Apply = (g, plan, options, ct) => options.DryRun && plan.Zone.StartLcn is not null
+            ? throw new PlanRejectedException("source_changed: " + F1) // 존 뒤가 비어 있지 않은 것 (zone_not_free) 은 새 존으로 가므로 그 밖의 거부
+            : inner(g, plan, options, ct);
 
         Tick();
         RunUntilDone();
@@ -2842,7 +2866,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         Assert.Empty(Vol.Moves); // 아무것도 옮기지 않음
         Assert.Equal(before.Sha(), PlanFile.Load(_game.Plan).Sha()); // 이전 계획이 되살아남
         Assert.False(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix) || _w.Files.Contains(_game.Plan + AutoRelocator.ExtendSuffix));
-        Assert.Single(_log.Lines, l => l.Contains("zone extension blocked: zone_not_free", StringComparison.Ordinal));
+        Assert.Single(_log.Lines, l => l.Contains("zone extension blocked: source_changed", StringComparison.Ordinal));
         Assert.DoesNotContain(_log.Lines, l => l.Contains("looking for a new one", StringComparison.Ordinal)); // 전체 재배치로 떨어지지 않음
         Assert.Equal([start], _w.PlanStarts);
 

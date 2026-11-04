@@ -82,11 +82,23 @@ public sealed class Rewarmer
             return;
         }
 
+        if (_prewarm.Games.Any(g => _prewarm.Relocating(g.Name)))
+        {
+            _log.Info("rewarm check skipped: a relocation is running");
+            return;
+        }
+
         foreach (GameSettings g in warmed)
         {
             if (ct.IsCancellationRequested)
             {
                 _log.Info("rewarm check stopped: a game started");
+                return;
+            }
+
+            if (_prewarm.Games.Any(x => _prewarm.Relocating(x.Name)))
+            {
+                _log.Info("rewarm check stopped: a relocation started"); // 점검 주기는 이미 넘어가 있어 다음 주기에 다시 봄
                 return;
             }
 

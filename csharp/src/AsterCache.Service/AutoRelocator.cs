@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using AsterCache.Core;
 using AsterCache.Core.Apply;
+using AsterCache.Core.Discovery;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Model;
@@ -47,6 +48,7 @@ public sealed class AutoRelocator
     public const string DailyLimit = "daily limit reached";
     public const string DailyBudget = "daily write budget reached";
     public const string DriveRecovering = "drive recovering after relocation";
+    public const string StartupPrewarmBusy = "startup prewarm in progress";
 
     /// 예열이 끝났다는 표시 (auto_status 의 detail). 관리 창이 "예열됨" 으로 보입니다.
     public const string Prewarmed = "prewarmed";
@@ -85,6 +87,10 @@ public sealed class AutoRelocator
     private const int LargestSampled = 3;
     private const string ReplanDetail = "game updated, will trace again on next run";
 
+    /// 트레이스 금지 게임의 업데이트: 트레이스를 유지한 채 다시 계획하는 동안의 detail (ReplanDetail 접두라 업데이트 뒤 지연 규칙도 같이 지킴).
+    private const string KeptDetail = ReplanDetail + "; trace kept, planning again";
+    private const string BootPlanSuffix = ".boot";
+
     /// 새 계획이 실패해 낡은 계획을 되살린 게임의 detail 표시 (done 상태는 유지: 예열·스트림은 계속).
     public const string StalePlanDetail = "stale plan";
     private static readonly Regex PrewarmedTag = new(@"(, )?prewarmed( \([^)]*\))?", RegexOptions.None, TimeSpan.FromSeconds(1));
@@ -99,6 +105,7 @@ public sealed class AutoRelocator
     private readonly IdleTracker _idle = new();
     private DateTimeOffset? _waitSince; // 틱 스레드에서만 씀: 유휴가 아닌 채로 기다리기 시작한 때
     private bool _waitNoted; // 틱 스레드에서만 씀: 이번 대기 구간에 긴 대기를 이미 남겼는지
+    private bool _prewarmHeld; // 틱 스레드에서만 씀: 예열 스트림 때문에 재배치를 미루는 중 (로그는 시작 때 한 번)
     public static readonly TimeSpan BusyRetry = TimeSpan.FromMinutes(5); // 기록 없는 예열이 "drive busy" 로 밀렸을 때 다시 시도하는 간격 (틱마다 30 초가 아님)
     public static readonly TimeSpan RetryEvery = TimeSpan.FromHours(6); // 프리페치·콜드 예열 재시도 간격 (발견 주기와 별개)
     private static readonly TimeSpan LongWait = TimeSpan.FromHours(6);
@@ -642,7 +649,8 @@ public sealed class AutoRelocator
                 _tier?.RevertGame(g.Name, "game updated"); // 링크는 새 재배치 전에 되돌림 (심볼릭 링크가 낀 계획은 재적용·재배치가 거부함)
                 _ = _env.ArchiveJournal(g); // 새 계획은 다른 저널 header 를 쓰므로 끝난 저널은 옆으로 보관
                 string trace = AutoTracer.RawTracePath(g);
-                if (!recorded && _env.FileExists(trace))
+                bool keep = !recorded && AntiCheat.ForbidsTrace(g.AntiCheat) && TraceHasUsableBlocks(trace, g); // 다시 트레이스할 수 없는 게임은 옛 트레이스를 유지 (없어진 파일·줄어든 범위는 읽을 때 걸러짐)
+                if (!recorded && !keep && _env.FileExists(trace))
                 {
                     for (int run = AutoTracer.RunCount(g, _env.FileExists); run >= 1; run--)
                     {
@@ -662,18 +670,96 @@ public sealed class AutoRelocator
                 }
 
                 _env.MoveAside(g.Plan, g.Plan + StaleSuffix);
-                _status.ResetForReplan(g.Name, recorded ? FirstRunDetail : ReplanDetail);
+                _status.ResetForReplan(g.Name, recorded ? FirstRunDetail : keep ? KeptDetail : ReplanDetail);
                 _log.Info(retry
                     ? $"{g.Name}: trace updated after a failed replan, stale plan set aside as {StaleSuffix}, will plan again from it"
                     : recorded
                         ? $"{g.Name}: first run recorded, profile plan set aside as {StaleSuffix}, will plan again from the recording (same zone first)"
-                        : $"{g.Name}: source files changed since the plan (game update), trace and plan set aside as {StaleSuffix}, will trace and plan again on the next run");
+                        : keep
+                            ? $"{g.Name}: game updated; trace kept (tracing is not allowed for this game), re-planning"
+                            : $"{g.Name}: source files changed since the plan (game update), trace and plan set aside as {StaleSuffix}, will trace and plan again on the next run");
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
                 _log.Warn($"{g.Name}: update check failed, will retry ({e.GetType().Name})");
             }
         }
+    }
+
+    // 트레이스를 읽었을 때 (없는 파일·범위 밖 행은 걸러지고 줄어든 파일은 새 크기로 잘림) 남는 블록이 있는가. 읽을 수 없어도 거짓: 유지하지 않고 기존대로 치움.
+    private bool TraceHasUsableBlocks(string trace, GameSettings g)
+    {
+        try
+        {
+            return _env.FileExists(trace) && _env.LoadTrace(trace, g.OriginRoot).Count > 0;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            return false;
+        }
+    }
+
+    // 서비스 시작 때 한 번: 트레이스 금지 게임인데 업데이트 재계획이 트레이스를 .stale 로 치워 사장시켰으면 (다시 트레이스할 수 없어 영영 재계획 불가) 되살립니다.
+    // 그 사이 만들어진 boot 계획 (프리페치·프로필) 은 옆으로 치워 이미 옮긴 존 자리에 맞춰 다시 계획하게 합니다: 이전 .stale 계획이 있으면 그 존 시작을 지키려고 .boot 로, 없으면 .stale 로.
+    // 순서: 계획 → 상태 → 트레이스. 마지막 단계 (원시 트레이스 복원) 전에 꺼져도 조건이 그대로라 다음 시작에 이어집니다.
+    // 반환: 트레이스를 되살려 다시 계획하게 둔 게임 이름 (호출자가 같은 회차의 이전 계획 복원에서 뺌).
+    private HashSet<string> RestoreStaleTraces(AsterSettings s)
+    {
+        var restored = new HashSet<string>(StringComparer.Ordinal);
+        foreach (GameSettings g in s.Games.Where(g => AntiCheat.ForbidsTrace(g.AntiCheat)))
+        {
+            string raw = AutoTracer.RawTracePath(g);
+            if (_env.FileExists(raw) || !_env.FileExists(raw + StaleSuffix))
+            {
+                continue;
+            }
+
+            try
+            {
+                if (!TraceHasUsableBlocks(raw + StaleSuffix, g))
+                {
+                    continue; // 파일이 다 없어졌거나 읽을 수 없는 옛 트레이스는 되살려도 계획할 수 없음
+                }
+
+                if (_env.FileExists(g.Plan))
+                {
+                    if (!IsBootPlan(_env.LoadPlan(g.Plan)))
+                    {
+                        continue; // 이미 트레이스로 만든 계획이 있음
+                    }
+
+                    _tier?.RevertGame(g.Name, "trace restored");
+                    _ = _env.ArchiveJournal(g);
+                    _env.MoveAside(g.Plan, g.Plan + (_env.FileExists(g.Plan + StaleSuffix) ? BootPlanSuffix : StaleSuffix));
+                }
+
+                _status.ResetForReplan(g.Name, FirstRunDetail); // 계획이 없던 게임도 다시 계획 상태로 (이전 계획 복원으로 done 이 되지 않게)
+                for (int run = 1; run <= 32; run++)
+                {
+                    string runFile = TraceWriter.RunPath(raw, run);
+                    if (_env.FileExists(runFile + StaleSuffix))
+                    {
+                        _env.MoveAside(runFile + StaleSuffix, runFile);
+                    }
+                }
+
+                string marks = AutoTracer.VolatilePath(g);
+                if (_env.FileExists(marks + StaleSuffix) && !_env.FileExists(marks))
+                {
+                    _env.MoveAside(marks + StaleSuffix, marks);
+                }
+
+                _env.MoveAside(raw + StaleSuffix, raw);
+                _ = restored.Add(g.Name);
+                _log.Info($"{g.Name}: trace set aside by an earlier update restored (tracing is not allowed for this game), re-planning");
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                _log.Warn($"{g.Name}: stale trace could not be restored ({e.GetType().Name})");
+            }
+        }
+
+        return restored;
     }
 
     // 드라이브가 분리됐거나 (폴더 없음) 파일을 읽을 수 없으면 (잠김 등) "변경" 이 아니라 건너뜀: 다음 검사에 다시 봅니다. 대표 파일 (게임 exe, 가장 큰 파일 몇 개) 이
@@ -719,8 +805,29 @@ public sealed class AutoRelocator
             }
         }
 
-        // 계획이 없고 .stale 이나 .extend 만 있는 failed 게임 (재계획·확장이 실패한 채 꺼짐) 또는 잘린 계획을 .bad 로 치운 게임 (상태 무관, 치운 직후 꺼져도 파일로 알 수 있음; 업데이트 뒤 재계획 대기 중이면 제외): 이전 계획을 되살려 done 으로 돌립니다.
-        foreach (GameSettings g in s.Games.Where(g => (_status.Get(g.Name) is { Stage: AutoStage.Failed, RelocatedAt: null } || _env.FileExists(g.Plan + BadSuffix) && Replanning(_status, g.Name) is null) && !_env.FileExists(g.Plan) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
+        // 새 존 전환 중 꺼짐: Plan 은 새 존 계획 (Zone.StartLcn 없음) 을 저장한 뒤에 .extend 를 .stale 로 치웁니다. 확장 계획은 MakePlanAt 로 존 시작이 항상 들어 있으므로
+        // (BlockExtension 으로 떨어지지 않는 확장 계획은 Zone.StartLcn 이 있음), .extend 가 있는데 저장된 계획에 존 시작이 없으면 전환이 끝났고 치우기만 남은 것입니다.
+        // 저널 보관은 Plan 이 저장 전에 이미 했으므로 여기서 하지 않음. 이미 .stale 이 있으면 Plan 과 같이 덮어씀.
+        foreach (GameSettings g in s.Games.Where(g => _env.FileExists(g.Plan) && IsExtending(g)))
+        {
+            try
+            {
+                if (_env.LoadPlan(g.Plan).Zone.StartLcn is null)
+                {
+                    _env.MoveAside(g.Plan + ExtendSuffix, g.Plan + StaleSuffix);
+                    _log.Info($"{g.Name}: zone switch to a new zone was interrupted, finished (previous plan kept as {StaleSuffix})");
+                }
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                _log.Warn($"{g.Name}: interrupted zone switch could not be finished ({e.GetType().Name})");
+            }
+        }
+
+        HashSet<string> restored = RestoreStaleTraces(s); // 손상 계획을 치운 뒤에야 부트 계획 읽기가 실패하지 않아 복원이 건너뛰어지지 않음
+
+        // 계획이 없고 .stale 이나 .extend 만 있는 failed 게임 (재계획·확장이 실패한 채 꺼짐) 또는 잘린 계획을 .bad 로 치운 게임 (상태 무관, 치운 직후 꺼져도 파일로 알 수 있음; 업데이트 뒤 재계획 대기 중이거나 되살린 트레이스로 다시 계획하는 중 (FirstRunDetail) 이면 제외): 이전 계획을 되살려 done 으로 돌립니다.
+        foreach (GameSettings g in s.Games.Where(g => (_status.Get(g.Name) is { Stage: AutoStage.Failed, RelocatedAt: null } || _env.FileExists(g.Plan + BadSuffix) && Replanning(_status, g.Name) is null && _status.Get(g.Name) is not { Stage: AutoStage.Discovered, Detail: FirstRunDetail }) && !_env.FileExists(g.Plan) && !restored.Contains(g.Name) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
         {
             if (IsExtending(g))
             {
@@ -732,7 +839,7 @@ public sealed class AutoRelocator
             }
         }
 
-        foreach (GameSettings g in s.Games.Where(g => _status.Get(g.Name)?.RelocatedAt is not null && !_env.FileExists(g.Plan) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
+        foreach (GameSettings g in s.Games.Where(g => _status.Get(g.Name)?.RelocatedAt is not null && !_env.FileExists(g.Plan) && !restored.Contains(g.Name) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
         {
             _status.ResetForReplan(g.Name, IsExtending(g) ? ExtendDetail : ReplanDetail);
             _log.Info($"{g.Name}: an earlier replan was interrupted, state reset to trace and plan again");
@@ -1102,6 +1209,21 @@ public sealed class AutoRelocator
             return "on battery";
         }
 
+        bool prewarming = _prewarm is { } warm && ready.Any(g => warm.StreamingOnDisk(g.Name)); // 같은 디스크의 예열 스트림과 재배치 쓰기가 겹치지 않게
+        if (prewarming != _prewarmHeld)
+        {
+            _prewarmHeld = prewarming;
+            if (prewarming)
+            {
+                _log.Info($"auto relocation waits: {StartupPrewarmBusy}"); // 한 번만: 읽는 동안 틱마다 남기지 않음
+            }
+        }
+
+        if (prewarming)
+        {
+            return StartupPrewarmBusy;
+        }
+
         bool diskBusy = ready.Select(g => PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant()).Distinct()
             .Any(letter => _env.DiskBytesPerSecond(letter) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond);
         return diskBusy ? "disk busy" : null;
@@ -1159,7 +1281,7 @@ public sealed class AutoRelocator
             }
 
             (long? start, long usedClusters) = reuseZone && _env.MakePlanAt is not null ? PreviousZone(g) : (null, 0);
-            if (extending && start is null)
+            if (extending && start is null && reuseZone)
             {
                 BlockExtension(g, "previous zone start unknown");
                 return false;
@@ -1189,6 +1311,12 @@ public sealed class AutoRelocator
                 (start, plan) = (null, _env.MakePlan(sessions, g.OriginRoot, zoneMib));
             }
 
+            if (extending && start is not null && ExtensionRegionInUse(g, plan))
+            {
+                _log.Info($"{g.Name}: the region after the zone is in use, looking for a new one");
+                (start, plan) = (null, _env.MakePlan(sessions, g.OriginRoot, zoneMib));
+            }
+
             _ = start is null ? _seeded.Remove(g.Name) : _seeded.Add(g.Name);
             if (boot)
             {
@@ -1201,7 +1329,17 @@ public sealed class AutoRelocator
                 _log.Info($"{g.Name}: {excluded.Count} volatile file(s) left out of the plan");
             }
 
+            if (extending && start is null)
+            {
+                _ = _env.ArchiveJournal(g); // 새 존 계획은 확장 계획의 저널과 맞지 않음
+            }
+
             _env.SavePlan(plan, sessions, g.Plan);
+            if (extending && start is null)
+            {
+                _env.MoveAside(g.Plan + ExtendSuffix, g.Plan + StaleSuffix); // 마지막에 치움: 앞에서 실패하면 확장 중 표시가 남아 BlockExtension 이 이전 계획을 되살림
+            }
+
             _log.Info($"{g.Name}: auto plan made, hot {hot >> 20} MiB, zone {zoneMib} MiB");
             return true;
         }
@@ -1328,6 +1466,31 @@ public sealed class AutoRelocator
         }
     }
 
+    // 확장 계획이 덧붙일 구간 (옮길 목표) 이 다른 파일에 쓰이고 있는가: 적용 때의 zone_not_free 검사를 미리 합니다.
+    // 비트맵을 못 읽거나 판정에 실패하면 거짓: 확장을 시도하고, 적용 때 zone_not_free 로 거부되면 Relocate 가 새 존으로 다시 계획합니다.
+    private bool ExtensionRegionInUse(GameSettings g, PlanFile plan)
+    {
+        try
+        {
+            if (_env.Bitmap(DriveOf(g)) is { } bitmap)
+            {
+                PlanGuards.CheckZoneFree(plan, bitmap, _env.Extents);
+            }
+
+            return false;
+        }
+        catch (PlanRejectedException e) when (IsZoneNotFree(e))
+        {
+            return true;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsZoneNotFree(PlanRejectedException e) => e.Message.StartsWith("zone_not_free", StringComparison.Ordinal);
+
     // 같은 존을 다시 쓰는 계획의 목표 자리에 이 계획이 옮기지 않는 자기 파일 데이터 (예: 이전 계획이 존에 모은, 이번 기록에서는 핫이 아닌 부분) 가 있는가.
     // 그런 목표로는 이동이 늘 실패하므로 (사용 중인 클러스터) 새 존을 찾아야 합니다. 핫 범위(Order) 밖의 조각이 존의 쓰는 구간과 겹치는지 봅니다.
     // pinned: 확장 중이면 존 앞의 이만큼 (이전 계획이 쓰던 고정 구간, 이동하지 않음) 은 보지 않습니다.
@@ -1399,6 +1562,24 @@ public sealed class AutoRelocator
             return;
         }
 
+        if (_prewarm is { } warm && !warm.TryBeginRelocation(g.Name)) // 예열 읽기가 없음을 확인하면서 재배치 시작 표시를 세움 (한 번에): 이후 같은 디스크의 예열은 읽기를 시작하지 못함
+        {
+            Note(g, AutoStage.WaitingIdle, WaitDetail(g, StartupPrewarmBusy)); // 유휴 판정 뒤에 예열이 읽기 시작했음: 쓰기를 시작하지 않고 다음 틱에
+            return;
+        }
+
+        try
+        {
+            RelocateMarked(g, s, token);
+        }
+        finally
+        {
+            _prewarm?.EndRelocation(g.Name); // 성공·실패·예외 모두 표시를 내림
+        }
+    }
+
+    private void RelocateMarked(GameSettings g, AsterSettings s, CancellationToken token)
+    {
         _tier?.RevertGame(g.Name, "relocation starting");
         Note(g, AutoStage.Relocating, null);
         _log.Info($"{g.Name}: auto relocation starting");
@@ -1441,19 +1622,20 @@ public sealed class AutoRelocator
             {
                 dry = _env.Apply(g, plan, dryRun, token); // 존 시작을 정해 계획에 저장 (이어하기를 위해 남김)
             }
-            catch (PlanRejectedException e) when (extending)
+            catch (PlanRejectedException e) when (extending && !IsZoneNotFree(e))
             {
-                BlockExtension(g, e.Message); // 존 뒤가 비어 있지 않음 (zone_not_free) 등: 새 존을 찾지 않음
+                BlockExtension(g, e.Message); // 존 뒤가 비어 있는 것과 무관한 거부: 새 존을 찾지 않음
                 return;
             }
-            catch (PlanRejectedException e) when (_seeded.Contains(g.Name) && e.Message.StartsWith("zone_not_free", StringComparison.Ordinal))
+            catch (PlanRejectedException e) when ((extending || _seeded.Contains(g.Name)) && IsZoneNotFree(e))
             {
-                _log.Info($"{g.Name}: previous zone is not free, looking for a new one");
+                _log.Info(extending ? $"{g.Name}: the region after the zone is in use, looking for a new one" : $"{g.Name}: previous zone is not free, looking for a new one");
                 if (!Plan(g, s, reuseZone: false))
                 {
                     return;
                 }
 
+                extending = IsExtending(g); // 새 존 계획으로 바뀌었으면 확장 중이 아님 (.extend 는 Plan 이 .stale 로 치움)
                 plan = _env.LoadPlan(g.Plan);
                 ReapplyChecker.CheckPaths(plan, g, _env.RealPath);
                 dry = _env.Apply(g, plan, dryRun, token);

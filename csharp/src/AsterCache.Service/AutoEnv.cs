@@ -6,6 +6,7 @@ using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
 using AsterCache.Core.Tier;
 using AsterCache.Core.Trace;
+using AsterCache.Core.Volume;
 using AsterCache.Tracer;
 using AsterCache.Windows;
 
@@ -163,6 +164,9 @@ public sealed class AutoEnv
 
     public required Func<string, IReadOnlyList<Extent>?> Extents { get; init; }
 
+    /// 'X:' → 볼륨 할당 비트맵, 읽지 못하면 (관리자 아님·I/O 오류) null. 존 확장 계획이 덧붙일 구간이 비어 있는지 미리 보는 데 씁니다. 시험 기본값은 null (확인 불가).
+    public Func<string, VolumeBitmap?> Bitmap { get; init; } = _ => null;
+
     /// 'X:' 디스크 처리량 (바이트/초), 읽지 못하면 null.
     public required Func<string, double?> DiskBytesPerSecond { get; init; }
 
@@ -245,6 +249,7 @@ public sealed class AutoEnv
             Touch = path => File.SetLastWriteTimeUtc(path, DateTime.UtcNow),
             Revert = (g, skipRows, ct) => ReapplyEnv.Revert(journalDir, g, skipRows, ct),
             Extents = FileLayout.Extents,
+            Bitmap = ReadBitmap,
             DiskBytesPerSecond = letter => DiskActivity.BytesPerSecond(letter),
             ProbeMbps = DiskProbe.Mbps,
             ProbeStepLcn = DiskProbe.StepLcn,
@@ -253,6 +258,19 @@ public sealed class AutoEnv
             PowerOk = () => PowerProbe.PowerOk(MinBatteryPercent),
             Tier = log is null ? null : new TierEngine(new TierFs(new IoPriorityHint(err => log.Warn($"ssd tier: low I/O priority hint not applied (Win32 error {err})"))), log, Path.Combine(Path.GetDirectoryName(journalDir) ?? journalDir, "tier")),
         };
+    }
+
+    private static VolumeBitmap? ReadBitmap(string letter)
+    {
+        try
+        {
+            using NtfsVolume v = NtfsVolume.Open(letter);
+            return v.Bitmap();
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or NotAdminException or System.ComponentModel.Win32Exception)
+        {
+            return null;
+        }
     }
 
     private static PlanFile MakePlanAtLcn(IReadOnlyList<IReadOnlyList<TraceEvent>> sessions, string origin, long zoneMib, long? start, long usedClusters)

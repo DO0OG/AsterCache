@@ -633,6 +633,26 @@ public sealed class ColdPrewarmTests : IDisposable
     }
 
     [Fact]
+    public void ColdRewarmWaitsWhileAGameIsRelocating()
+    {
+        Planner = (_, _, _, _) => new ColdPlan("full", [.. Enumerable.Range(0, 20).Select(i => new ReadOp($@"D:\g{i}.bin", 0, Mib))], 20 * Mib, null);
+        Prewarmer p = MakeOne();
+        p.Run(Game("g"), "t");
+        _reads.Clear();
+        _caps.Clear();
+        p.Relocating = _ => true;
+
+        p.Tick(RewarmAuto);
+        _now += TimeSpan.FromMinutes(10);
+        ProbeMs = 9; // 식음
+        p.Tick(RewarmAuto);
+
+        Assert.Empty(_probed);
+        Assert.Empty(_reads);
+        Assert.Single(_log.Lines, l => l.Contains("rewarm check skipped: a relocation is running", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void ColdRewarmKeepsTheSafetyRules()
     {
         Prewarmer p = MakeOne();

@@ -24,6 +24,11 @@ public static class AntiCheat
             return "vanguard";
         }
 
+        if (leaves.Any(IsKernel))
+        {
+            return "kernel";
+        }
+
         if (leaves.Any(n => Has(n, "ricochet") || Same(n, "randgrid.sys")))
         {
             return "ricochet";
@@ -49,8 +54,8 @@ public static class AntiCheat
         return s with { Games = [.. s.Games.Select(g => g.AntiCheat is null && RiotVanguard(g.OriginRoot, g.ExeNames, installed ??= vanguardInstalled()) is { } kind ? g with { AntiCheat = kind } : g)] };
     }
 
-    /// ETW 트레이스를 걸면 안 되는 종류인가: 커널 수준 안티치트 (eac·battleye·vanguard) 와 탐지 실패 (unknown). 등록 정보에 쓰인 값도 같은 규칙입니다.
-    public static bool ForbidsTrace(string? kind) => kind is "eac" or "battleye" or "vanguard" or "unknown";
+    /// ETW 트레이스를 걸면 안 되는 종류인가: 커널 수준 안티치트 (eac·battleye·vanguard·kernel) 와 탐지 실패 (unknown). 등록 정보에 쓰인 값도 같은 규칙입니다.
+    public static bool ForbidsTrace(string? kind) => kind is "eac" or "battleye" or "vanguard" or "kernel" or "unknown";
 
     /// 파일 고정 (pin) 을 하면 안 되는 종류: 트레이스 금지 종류 전부와 리코셰 (보호 드라이버가 열린 핸들을 문제 삼을 수 있음). 리코셰는 실측에서 트레이스가 문제없어 트레이스는 허용합니다. SSD 티어는 안티치트가 있으면 종류와 상관없이 거절.
     public static bool ForbidsPin(string? kind) => ForbidsTrace(kind) || kind == "ricochet";
@@ -64,6 +69,16 @@ public static class AntiCheat
     // vgc/vgk 는 짧아서 파일 이름이 그 글자로 시작하는 .exe/.sys 만 인정 (다른 이름 속 우연한 일치를 피함)
     private static bool IsVanguard(string n) =>
         ((Starts(n, "vgc") || Starts(n, "vgk")) && (Ends(n, ".exe") || Ends(n, ".sys"))) || Has(n, "Riot Vanguard");
+
+    // 그 밖의 커널·상시 보호 안티치트 (BlackCipher, GameGuard, XIGNCODE3, Wellbia, HackShield, mhyprot, Denuvo, FACEIT): 종류를 따로 가리지 않고 "kernel" 하나로 묶음. 정확한 이름만 인정해 우연한 일치를 피함
+    private static bool IsKernel(string n) =>
+        Same(n, "BlackCipher") || (Starts(n, "BlackCall") && Ends(n, ".aes"))
+        || Same(n, "GameGuard") || (Starts(n, "npgg") && Ends(n, ".dll")) || Same(n, "GameMon.des")
+        || Same(n, "xigncode") || Same(n, "XIGNCODE3") || Same(n, "x3.xem") || Starts(n, "xcorona")
+        || Same(n, "uncheater.exe") || Same(n, "wellbia")
+        || Same(n, "HShield")
+        || (Starts(n, "mhyprot") && Ends(n, ".sys"))
+        || Starts(n, "denuvo-anti-cheat") || Starts(n, "faceit");
 
     private static bool Same(string n, string v) => n.Equals(v, StringComparison.OrdinalIgnoreCase);
 

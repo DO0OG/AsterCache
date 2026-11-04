@@ -19,7 +19,8 @@ public sealed class AntiCheatTests
     [InlineData("battleye", "battleye")]
     [InlineData("vanguard", "vanguard")]
     [InlineData("ricochet", "ricochet")]
-    [InlineData("unknown", "unknown")]
+    [InlineData("kernel", "kernel")]
+    [InlineData("generic", "unknown")]
     [InlineData("none", null)]
     public void FixtureFoldersAreClassified(string fixture, string? expected) => Assert.Equal(expected, Detect(fixture));
 
@@ -31,9 +32,62 @@ public sealed class AntiCheatTests
     {
         Assert.Equal("battleye", AntiCheat.Detect(["BEService.exe", "vgk.sys", "ricochet.dll", "xigncode"]));
         Assert.Equal("vanguard", AntiCheat.Detect(["vgk.sys", "ricochet.dll", "xigncode"]));
-        Assert.Equal("ricochet", AntiCheat.Detect(["RICOCHET.dll", "xigncode"]));
+        Assert.Equal("ricochet", AntiCheat.Detect(["RICOCHET.dll", "Anti-Cheat"]));
+        Assert.Equal("kernel", AntiCheat.Detect(["ricochet.dll", "xigncode"]));
         Assert.Equal("unknown", AntiCheat.Detect(["nProtect GameGuard", "Game.exe"]));
     }
+
+    [Theory]
+    [InlineData("BlackCipher")]
+    [InlineData("blackcall64.aes")]
+    [InlineData("GameGuard")]
+    [InlineData("npgg64.dll")]
+    [InlineData("GameMon.des")]
+    [InlineData("xigncode")]
+    [InlineData("XIGNCODE3")]
+    [InlineData("x3.xem")]
+    [InlineData("xcorona64.xem")]
+    [InlineData("uncheater.exe")]
+    [InlineData("Wellbia")]
+    [InlineData("HShield")]
+    [InlineData("mhyprot2.sys")]
+    [InlineData("mhyprot3.sys")]
+    [InlineData("denuvo-anti-cheat.sys")]
+    [InlineData("faceit.exe")]
+    [InlineData(@"Game\BlackCipher")]
+    public void KernelAntiCheatMarkersAreDetectedByLeafIgnoringCase(string name) => Assert.Equal("kernel", AntiCheat.Detect(["Game.exe", name]));
+
+    [Theory]
+    [InlineData("BlackCipherNotes.txt")]
+    [InlineData("npgg.txt")]
+    [InlineData("mhyprot.txt")]
+    [InlineData("hshield.txt")]
+    [InlineData("Faceless.exe")]
+    public void NamesThatOnlyLookLikeAKernelMarkerGiveNull(string name) => Assert.Null(AntiCheat.Detect([name]));
+
+    [Fact]
+    public void KernelMarkerInTheRootOrOneLevelDownIsFoundByTheRealListing()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "aster-kc-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(root, "BlackCipher"));
+        Directory.CreateDirectory(Path.Combine(root, "bin", "sub"));
+        File.WriteAllBytes(Path.Combine(root, "bin", "sub", "GameMon.des"), []);
+        try
+        {
+            Assert.Equal("kernel", LauncherScan.DetectAntiCheat(root));
+            Directory.Delete(Path.Combine(root, "BlackCipher"));
+            Assert.Equal("kernel", LauncherScan.DetectAntiCheat(root));
+            File.Delete(Path.Combine(root, "bin", "sub", "GameMon.des"));
+            Assert.Null(LauncherScan.DetectAntiCheat(root));
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public void IncompleteListingThatFoundAKernelMarkerKeepsIt() => Assert.Equal("kernel", LauncherScan.DetectAntiCheat("X", Lister(false, "Game.exe", "BlackCipher")));
 
     [Theory]
     [InlineData("EasyAntiCheat_EOS", "eac")]
@@ -150,6 +204,7 @@ public sealed class AntiCheatTests
     [InlineData("eac", true)]
     [InlineData("battleye", true)]
     [InlineData("vanguard", true)]
+    [InlineData("kernel", true)]
     [InlineData("unknown", true)]
     [InlineData("ricochet", false)]
     [InlineData(null, false)]
@@ -159,6 +214,7 @@ public sealed class AntiCheatTests
     [InlineData("eac", true)]
     [InlineData("battleye", true)]
     [InlineData("vanguard", true)]
+    [InlineData("kernel", true)]
     [InlineData("unknown", true)]
     [InlineData("ricochet", true)]
     [InlineData(null, false)]

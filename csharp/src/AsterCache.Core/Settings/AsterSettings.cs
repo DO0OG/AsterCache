@@ -14,7 +14,7 @@ public sealed record GameSettings(
     /// 등록 출처: "manual" (사용자가 직접, 기본) 또는 "auto" (발견·감지로 자동 등록, 항목이 꽉 차면 밀려날 수 있음).
     public string Source { get; init; } = SettingsStore.DefaultSource;
 
-    /// 설치 폴더에서 알아낸 안티치트: "eac" | "battleye" | "vanguard" | "ricochet" | "unknown", 모르면 null.
+    /// 설치 폴더에서 알아낸 안티치트: "eac" | "battleye" | "vanguard" | "kernel" | "ricochet" | "unknown", 모르면 null.
     public string? AntiCheat { get; init; }
 }
 

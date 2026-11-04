@@ -293,6 +293,21 @@ GOG 와 Ubisoft 읽기는 아직 실제 PC 에서 확인하지 않았습니다. 
 
 등록되지 않은 프로세스가 HDD 볼륨의 exe 로 시작해 20초 안에 256 MiB 이상을 읽으면 게임으로 보고 등록합니다. 제외 대상은 Windows 폴더, AsterCache 자신, 런처와 도구 프로그램, `auto.ignore_exes` 의 exe 입니다. 또 경로에 `\bin\Debug\`, `\bin\Release\`, `\obj\`, `\.git\`, `\node_modules\`, `\AppData\Local\Temp\` 가 있는 exe 와 내장 도구 exe(`testhost*`, `dotnet`, `msbuild`, `vstest*`, `python*`, `node`, `java*`, `powershell`, `pwsh`, `cmd`, `conhost`, `explorer`, `7z*`, `winrar`)도 제외합니다. 이 고정 목록은 `auto.ignore_exes` 와 별개입니다. 폴더도 게임처럼 보여야 합니다. 256 MiB 이상 파일이 있거나 런처 흔적(`steam_appid.txt`, `.egstore`, `goggame-*.info`, Steam 매니페스트)이 있어야 합니다. 그래서 `AppData\Local\Temp` 아래 설치된 게임은 이 휴리스틱으로 잡히지 않습니다. 시작 부분은 이미 놓쳤으므로 트레이스는 다음 실행부터 기록합니다.
 
+### 엔진 기본 프로필
+
+게임 폴더 안의 파일 이름으로 엔진을 감지하고, 로딩 초반에 읽을 파일을 고릅니다. 맞는 프로필이 여럿이면 규칙을 모두 합치고 먼저 맞은 규칙이 이기며, 예산을 넘는 뒤쪽은 자릅니다. TFT 설치(`Engine`·`TFT` 폴더)는 Unreal 구조로 감지됩니다.
+
+| 프로필 | 감지 마커 | 주요 읽기 규칙 |
+|---|---|---|
+| Unity | `UnityPlayer.dll`, `<이름>_Data/globalgamemanagers` | globalgamemanagers·resources.assets·sharedassets0·level0~9 전체, Managed dll, StreamingAssets 앞 256 MiB, il2cpp·MonoBleedingEdge dll |
+| Unreal | `<게임>/Content/Paks/*.pak`, `*.utoc` | pakchunk0 전체, Binaries 와 Engine/Binaries dll, 나머지 pak 은 앞 256 MiB 와 끝 64 MiB, utoc 전체 |
+| Source | `**/*_dir.vpk` | `*_dir.vpk` 전체, pak01 청크 앞 256 MiB, bin dll |
+| Riot | `Game/DATA/FINAL/*.wad.client` | Global·UI·Bootstrap·DATA·ShaderCache·Scripts, 맵 11·12·30·453 전체, 루트 exe·dll, 챔피언 앞 64 MiB, 맵 22(TFT)·Companions 전체, 그 밖의 맵 앞 64 MiB |
+| MapleStory | 루트 `*.wz`, `Data/*.wz` | `Data.wz` 전체, 나머지 wz·img 앞 1 GiB, 루트 exe·dll |
+| CASC (Overwatch, StarCraft) | `data/casc/data/*.idx` | 인덱스 전체, `data.###` 각 앞 256 MiB, 루트 exe·dll |
+| SCS (ETS2) | 루트 `base.scs` | base·def·core·effect·locale.scs 각 앞 512 MiB |
+| EA FC Online | 루트 `fczf.exe`, `data/*.big` | `data_default.big` 전체, 루트 exe·dll, 나머지 `*.big` 각 앞 256 MiB |
+
 ### 설정
 
 ```json
@@ -459,6 +474,21 @@ GOG 와 Ubisoft 읽기는 아직 실제 PC 에서 확인하지 않았습니다. 
 
 - 게임이 배타적으로 연 파일은 건너뜁니다.
 - 자동 발견 때 설치 폴더 아래 깊이 4까지의 파일·폴더 이름만 봅니다. EasyAntiCheat, BattlEye, Vanguard(`vgc`, `vgk`), Ricochet 는 인식하고, 그 밖에 anticheat, xigncode, nprotect, gameguard 가 들어간 이름은 `unknown` 으로 표시합니다. 그런 이름이 있는 게임은 게임 탭과 `anticheat` 설정에 표시되고 로그 한 줄이 남습니다. 동작은 달라지지 않습니다. 이 PC 의 `aster discover` 에서는 Steam 게임 The Outlast Trials 가 `eac` 로 표시되었습니다.
+
+| 안티치트 | 마커 | 정책 |
+|---|---|---|
+| EasyAntiCheat | `EasyAntiCheat` 로 시작하는 `.exe`, `EasyAntiCheat_EOS`, `start_protected_game.exe` | 자동 트레이스·고정 금지, 예열·재배치 허용 |
+| BattlEye | `BattlEye`, `BEService*.exe`, `BEClient*.dll` | 자동 트레이스·고정 금지, 예열·재배치 허용 |
+| Vanguard | `vgc*`, `vgk*` (`.exe`·`.sys`), `Riot Vanguard` | 자동 트레이스·고정 금지, 예열·재배치 허용 |
+| Ricochet | `ricochet` 이름, `randgrid.sys` | 기존 동작 유지(자동 트레이스 허용, 실기기 미검증) |
+| BlackCipher | `BlackCipher` 폴더, `BlackCall64.aes` | ETW 트레이스·고정·tier 금지, 예열·재배치 허용 |
+| nProtect GameGuard | `GameGuard` 폴더, `npgg*.dll`, `GameMon.des` | ETW 트레이스·고정·tier 금지, 예열·재배치 허용 |
+| XIGNCODE3 | `xigncode`·`XIGNCODE3` 폴더, `x3.xem`, `xcorona*` | ETW 트레이스·고정·tier 금지, 예열·재배치 허용 |
+| Wellbia | `uncheater.exe`, `wellbia` | ETW 트레이스·고정·tier 금지, 예열·재배치 허용 |
+| HackShield | `HShield` 폴더 | ETW 트레이스·고정·tier 금지, 예열·재배치 허용 |
+| HoYoverse mhyprot | `mhyprot2.sys`, `mhyprot3.sys` | ETW 트레이스·고정·tier 금지, 예열·재배치 허용 |
+| Denuvo Anti-Cheat | `denuvo-anti-cheat*` | ETW 트레이스·고정·tier 금지, 예열·재배치 허용 |
+| FACEIT | `faceit*` | ETW 트레이스·고정·tier 금지, 예열·재배치 허용 |
 
 ### 속도 기능별로 안전하다고 보는 이유
 

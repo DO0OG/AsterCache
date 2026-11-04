@@ -40,6 +40,21 @@
 - 게임이 배타적으로 연 파일은 건너뜁니다.
 - 자동 발견 때 설치 폴더 아래 깊이 4까지의 파일·폴더 이름만 봅니다. EasyAntiCheat, BattlEye, Vanguard(`vgc`, `vgk`), Ricochet 는 인식하고, 그 밖에 anticheat, xigncode, nprotect, gameguard 가 들어간 이름은 `unknown` 으로 표시합니다. 흔적이 있는 게임은 게임 탭과 `anticheat` 설정에 표시되고 로그 한 줄이 남습니다. 동작은 달라지지 않습니다.
 
+| 안티치트 | 마커 | 정책 |
+|---|---|---|
+| EasyAntiCheat | `EasyAntiCheat` 로 시작하는 `.exe`, `EasyAntiCheat_EOS`, `start_protected_game.exe` | 자동 트레이스·고정 금지, 예열·재배치 허용 |
+| BattlEye | `BattlEye`, `BEService*.exe`, `BEClient*.dll` | 자동 트레이스·고정 금지, 예열·재배치 허용 |
+| Vanguard | `vgc*`, `vgk*` (`.exe`·`.sys`), `Riot Vanguard` | 자동 트레이스·고정 금지, 예열·재배치 허용 |
+| Ricochet | `ricochet` 이름, `randgrid.sys` | 기존 동작 유지(자동 트레이스 허용, 실기기 미검증) |
+| BlackCipher | `BlackCipher` 폴더, `BlackCall64.aes` | ETW 트레이스·고정·tier 금지, 예열·재배치 허용 |
+| nProtect GameGuard | `GameGuard` 폴더, `npgg*.dll`, `GameMon.des` | ETW 트레이스·고정·tier 금지, 예열·재배치 허용 |
+| XIGNCODE3 | `xigncode`·`XIGNCODE3` 폴더, `x3.xem`, `xcorona*` | ETW 트레이스·고정·tier 금지, 예열·재배치 허용 |
+| Wellbia | `uncheater.exe`, `wellbia` | ETW 트레이스·고정·tier 금지, 예열·재배치 허용 |
+| HackShield | `HShield` 폴더 | ETW 트레이스·고정·tier 금지, 예열·재배치 허용 |
+| HoYoverse mhyprot | `mhyprot2.sys`, `mhyprot3.sys` | ETW 트레이스·고정·tier 금지, 예열·재배치 허용 |
+| Denuvo Anti-Cheat | `denuvo-anti-cheat*` | ETW 트레이스·고정·tier 금지, 예열·재배치 허용 |
+| FACEIT | `faceit*` | ETW 트레이스·고정·tier 금지, 예열·재배치 허용 |
+
 ### 속도 기능별로 안전하다고 보는 이유
 
 아래는 각 기능을 안전하다고 보는 이유이며, 검증된 결과가 아닙니다.
@@ -87,6 +102,21 @@
 - 재배치는 게임을 끈 상태에서만 합니다(스크립트가 실행 중이면 멈춥니다). 런처도 끄는 것을 권합니다. 재배치 뒤에는 5단계의 자동 최적화 제외를 확인하십시오.
 
 결과와 한계는 `VALIDATION_REPORT.md`의 2026-11-02 절에 있습니다. 측정값은 추적한 읽기 패턴의 재생 시간이며, 게임을 실행한 전체 로딩 시간이 아닙니다. 24시간 지속성, CMR 드라이브, 안티치트 게임은 미검증입니다.
+
+## 엔진 기본 프로필
+
+게임 폴더 안의 파일 이름으로 엔진을 감지하고, 로딩 초반에 읽을 파일을 고릅니다. 맞는 프로필이 여럿이면 규칙을 모두 합치고 먼저 맞은 규칙이 이기며, 예산을 넘는 뒤쪽은 자릅니다. TFT 설치(`Engine`·`TFT` 폴더)는 Unreal 구조로 감지됩니다.
+
+| 프로필 | 감지 마커 | 주요 읽기 규칙 |
+|---|---|---|
+| Unity | `UnityPlayer.dll`, `<이름>_Data/globalgamemanagers` | globalgamemanagers·resources.assets·sharedassets0·level0~9 전체, Managed dll, StreamingAssets 앞 256 MiB, il2cpp·MonoBleedingEdge dll |
+| Unreal | `<게임>/Content/Paks/*.pak`, `*.utoc` | pakchunk0 전체, Binaries 와 Engine/Binaries dll, 나머지 pak 은 앞 256 MiB 와 끝 64 MiB, utoc 전체 |
+| Source | `**/*_dir.vpk` | `*_dir.vpk` 전체, pak01 청크 앞 256 MiB, bin dll |
+| Riot | `Game/DATA/FINAL/*.wad.client` | Global·UI·Bootstrap·DATA·ShaderCache·Scripts, 맵 11·12·30·453 전체, 루트 exe·dll, 챔피언 앞 64 MiB, 맵 22(TFT)·Companions 전체, 그 밖의 맵 앞 64 MiB |
+| MapleStory | 루트 `*.wz`, `Data/*.wz` | `Data.wz` 전체, 나머지 wz·img 앞 1 GiB, 루트 exe·dll |
+| CASC (Overwatch, StarCraft) | `data/casc/data/*.idx` | 인덱스 전체, `data.###` 각 앞 256 MiB, 루트 exe·dll |
+| SCS (ETS2) | 루트 `base.scs` | base·def·core·effect·locale.scs 각 앞 512 MiB |
+| EA FC Online | 루트 `fczf.exe`, `data/*.big` | `data_default.big` 전체, 루트 exe·dll, 나머지 `*.big` 각 앞 256 MiB |
 
 ## 요구 사항
 
@@ -367,6 +397,6 @@ stream done: 0.46 s since launch (read time 0.06 s), 195.7 MiB, 2169 requests, e
 4. 패치 뒤 재배치가 유지되는지 확인합니다. 계정 위험이 없다고 확인된 범위에서만 다음 단계로 넘어갑니다.
 
 **추정 핫셋과 LCU 선읽기**
-- Riot 프로필 기준 리그 추정 핫셋은 약 5.3 GiB입니다(Global·UI·Common·Map11·Map12 전체 합계, 이 PC 실측 기준).
-- `riot.champ_select_prewarm`(기본 꺼짐)을 켜면 챔피언 선택 중 로컬 리그 클라이언트 API(`127.0.0.1`)로 고른 챔피언과 맵 파일을 미리 RAM에 읽습니다. 게임 안 파일은 건드리지 않습니다.
+- 리그 추정 핫셋은 전 모드 기준 약 9 GiB입니다(Global·UI·Common·맵 11·12 기본 규칙 약 5.3 GiB에 맵 30·453·22 약 3.6 GiB를 더한 이 PC 실측 합계, Companions 제외). 이 PC 의 존 상한 8 GiB 에서는 뒤쪽(맵 22·TFT, Companions)이 잘릴 수 있습니다.
+- `riot.champ_select_prewarm`(기본 꺼짐, disabled by default)을 켜면 챔피언 선택 중 로컬 리그 클라이언트 API(`127.0.0.1`)로 고른 챔피언과 맵 파일을 미리 RAM에 읽습니다. 게임 안 파일은 건드리지 않습니다.
 - 한국 계정의 LCU 사용 정책은 미확인입니다. 이 기능을 켜기 전에 직접 확인하십시오.

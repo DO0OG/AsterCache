@@ -293,6 +293,21 @@ Not read for discovery: Battle.net and EA app. Games from these, and games insta
 
 A process that is not registered, starts from an exe on an HDD volume, and reads 256 MiB or more within 20 seconds is treated as a game and registered. Excluded: the Windows folder, AsterCache itself, launchers and tool programs, and the exes in `auto.ignore_exes`. Also excluded are exes whose path contains `\bin\Debug\`, `\bin\Release\`, `\obj\`, `\.git\`, `\node_modules\`, or `\AppData\Local\Temp\`, and the built-in tool exes `testhost*`, `dotnet`, `msbuild`, `vstest*`, `python*`, `node`, `java*`, `powershell`, `pwsh`, `cmd`, `conhost`, `explorer`, `7z*`, and `winrar` (this fixed list is separate from `auto.ignore_exes`). The folder must also look like a game: it holds a file of 256 MiB or more, or a launcher mark (`steam_appid.txt`, `.egstore`, `goggame-*.info`, or a Steam manifest). Games installed under `AppData\Local\Temp` are therefore not found by this heuristic. Because the start was already missed, the first trace is recorded from the next run.
 
+### Engine profiles
+
+The engine is detected from file names in the game folder, and the files to read during loading are chosen from it. If several profiles match, their rules are merged and the rule that matched first wins; the tail beyond the budget is cut. A TFT install (`Engine` and `TFT` folders) is detected as Unreal.
+
+| Profile | Detection markers | Main read rules |
+|---|---|---|
+| Unity | `UnityPlayer.dll`, `<name>_Data/globalgamemanagers` | globalgamemanagers, resources.assets, sharedassets0, level0~9 whole; Managed dll; StreamingAssets first 256 MiB; il2cpp and MonoBleedingEdge dll |
+| Unreal | `<Game>/Content/Paks/*.pak`, `*.utoc` | pakchunk0 whole; Binaries and Engine/Binaries dll; other pak first 256 MiB and last 64 MiB; utoc whole |
+| Source | `**/*_dir.vpk` | `*_dir.vpk` whole; pak01 chunks first 256 MiB; bin dll |
+| Riot | `Game/DATA/FINAL/*.wad.client` | Global, UI, Bootstrap, DATA, ShaderCache, Scripts; maps 11, 12, 30, 453 whole; root exe and dll; champions first 64 MiB; maps 22 (TFT) and Companions whole; other maps first 64 MiB |
+| MapleStory | Root `*.wz`, `Data/*.wz` | `Data.wz` whole; other wz and img first 1 GiB; root exe and dll |
+| CASC (Overwatch, StarCraft) | `data/casc/data/*.idx` | Indexes whole; each `data.###` first 256 MiB; root exe and dll |
+| SCS (ETS2) | Root `base.scs` | base, def, core, effect, locale `.scs` each first 512 MiB |
+| EA FC Online | Root `fczf.exe`, `data/*.big` | `data_default.big` whole; root exe and dll; other `*.big` each first 256 MiB |
+
 ### Settings
 
 ```json
@@ -459,6 +474,21 @@ Many current games run kernel-level anti-cheat. This section says what AsterCach
 
 - Files that the game has opened exclusively are skipped.
 - During automatic discovery, the service looks at file and folder names up to 4 levels deep in the install folder. It recognizes EasyAntiCheat, BattlEye, Vanguard (`vgc`, `vgk`), and Ricochet; other names containing anticheat, xigncode, nprotect, or gameguard are marked `unknown`. A game with such a name is marked in the Games tab and in the `anticheat` setting, and one log line is written. The behavior does not change. On the test PC, `aster discover` marked The Outlast Trials (Steam) with `eac`.
+
+| Anti-cheat | Markers | Policy |
+|---|---|---|
+| EasyAntiCheat | `.exe` starting with `EasyAntiCheat`, `EasyAntiCheat_EOS`, `start_protected_game.exe` | No automatic trace or pin; prewarm and relocation allowed |
+| BattlEye | `BattlEye`, `BEService*.exe`, `BEClient*.dll` | No automatic trace or pin; prewarm and relocation allowed |
+| Vanguard | `vgc*`, `vgk*` (`.exe`, `.sys`), `Riot Vanguard` | No automatic trace or pin; prewarm and relocation allowed |
+| Ricochet | Names containing `ricochet`, `randgrid.sys` | Unchanged (automatic trace allowed; not tested on a real machine) |
+| BlackCipher | `BlackCipher` folder, `BlackCall64.aes` | No ETW trace, pin, or tier; prewarm and relocation allowed |
+| nProtect GameGuard | `GameGuard` folder, `npgg*.dll`, `GameMon.des` | No ETW trace, pin, or tier; prewarm and relocation allowed |
+| XIGNCODE3 | `xigncode` or `XIGNCODE3` folder, `x3.xem`, `xcorona*` | No ETW trace, pin, or tier; prewarm and relocation allowed |
+| Wellbia | `uncheater.exe`, `wellbia` | No ETW trace, pin, or tier; prewarm and relocation allowed |
+| HackShield | `HShield` folder | No ETW trace, pin, or tier; prewarm and relocation allowed |
+| HoYoverse mhyprot | `mhyprot2.sys`, `mhyprot3.sys` | No ETW trace, pin, or tier; prewarm and relocation allowed |
+| Denuvo Anti-Cheat | `denuvo-anti-cheat*` | No ETW trace, pin, or tier; prewarm and relocation allowed |
+| FACEIT | `faceit*` | No ETW trace, pin, or tier; prewarm and relocation allowed |
 
 ### Why each speed feature is considered safe
 

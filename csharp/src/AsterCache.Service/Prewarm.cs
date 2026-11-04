@@ -104,6 +104,9 @@ public sealed class PrewarmEnv
     /// 계획을 읽습니다 (묶음 사이에서 취소를 봄): (통계, 끝까지 읽었는가).
     public Func<IReadOnlyList<ReadOp>, CancellationToken, (StreamStats Stats, bool Complete)> ColdRead { get; init; } = (ops, ct) => FolderWarm.Read(ops, ct);
 
+    /// 파일 목록 예열 (Prewarmer.WarmFiles) 의 읽기: 파일마다 낮은 I/O 우선순위 힌트를 붙인 버퍼드 읽기 (묶음 사이에서 취소를 봄). 시험은 가짜로 바꿉니다.
+    public Func<IReadOnlyList<ReadOp>, CancellationToken, (StreamStats Stats, bool Complete)> FileRead { get; init; } = FileWarm.Read;
+
     /// 기록 없는 예열이 건드리면 안 되는 드라이브면 이유 (시스템 SSD·SSD·판정 불가), 아니면 null. 기본은 거부 없음 (시험용), Create 는 진짜 판정.
     public Func<GameSettings, string?> ColdRefusal { get; init; } = _ => null;
 
@@ -905,6 +908,110 @@ public sealed class Prewarmer
 
     /// 주어진 게임을 차례로 (한 게임의 실패가 나머지를 막지 않음).
     public IReadOnlyList<PrewarmResult> RunAll(IEnumerable<GameSettings> games, string why) => RunBatch(games, why);
+
+    /// 게임 설치 폴더 (origin_root) 아래의 지정한 파일들을 순서대로 파일 캐시로 읽습니다 (챔피언 선택 선읽기 같은 임의 목록). 읽은 바이트를 돌려주고, 읽지 않았으면 0.
+    /// 경로는 정규화한 뒤 origin_root 아래의 것만 (".."·다른 드라이브·루트 밖 링크는 건너뜀), 이미 파일 캐시에 있는 파일은 예산을 쓰지 않고 건너뜁니다.
+    /// 예산은 budgetBytes 와 공유 RAM 예산 (물리 RAM/4, 가용 RAM - 여유 - 이미 올린 양) 중 작은 쪽. 다른 예열이 돌고 있거나 같은 디스크에서 재배치가 시작했으면 읽지 않습니다. ct 로 멈춥니다 (예외를 내지 않음).
+    public long WarmFiles(GameSettings g, IReadOnlyList<string> paths, long budgetBytes, CancellationToken ct)
+    {
+        if (budgetBytes <= 0 || paths.Count == 0 || ct.IsCancellationRequested)
+        {
+            return 0;
+        }
+
+        if (!PlanGuards.Inside(g.OriginRoot, g.AllowedRoots, RealPaths.Real))
+        {
+            LogSkipped(g.Name, "outside allowed roots", $"{g.Name}: warm files skipped (origin_root resolves outside allowed roots)");
+            return 0;
+        }
+
+        var ops = new List<ReadOp>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string path in paths)
+        {
+            if (ct.IsCancellationRequested)
+            {
+                return 0;
+            }
+
+            if (FileWarm.Allowed(g.OriginRoot, path, RealPaths.Real) is not { } full || !seen.Add(full))
+            {
+                continue;
+            }
+
+            try
+            {
+                var file = new FileInfo(full);
+                ReadOp op = new(full, 0, file.Exists ? file.Length : 0);
+                if (op.Length > 0 && (file.Attributes & FileAttributes.ReparsePoint) == 0 && !FileCached(op))
+                {
+                    ops.Add(op);
+                }
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                // 열 수 없는 파일은 건너뜀
+            }
+        }
+
+        long held = ColdMib(null);
+        long physMib = _env.PhysicalRamBytes() is > 0 and long phys ? phys >> 22 : long.MaxValue;
+        long ramMib = Math.Min(_env.AvailableRamMib() - g.Prewarm.MinFreeRamMib - held, physMib - held);
+        long budget = Math.Min(budgetBytes, Math.Max(0, ramMib) << 20);
+        ops = PrefetchStreamer.Head(ops, budget);
+        if (ops.Count == 0)
+        {
+            return 0;
+        }
+
+        if (!Monitor.TryEnter(_run))
+        {
+            LogSkipped(g.Name, "another prewarm", $"{g.Name}: warm files skipped (another prewarm is running)");
+            return 0;
+        }
+
+        try
+        {
+            if (!TryMarkReading(g.Name, () => _coldReading = g.Name))
+            {
+                LogSkipped(g.Name, RelocationRunning, $"{g.Name}: warm files skipped ({RelocationRunning})");
+                return 0;
+            }
+
+            try
+            {
+                (StreamStats s, bool complete) = _env.FileRead(ops, ct);
+                _log.Info($"{g.Name}: warm files {(complete ? "done" : "cancelled")}: {s.Bytes >> 20} MiB of {ops.Sum(o => o.Length) >> 20} MiB ({ops.Count} files) in {s.Seconds:F2} s, {s.Errors} errors");
+                return s.Bytes;
+            }
+            catch (Exception e) when (e is OperationCanceledException or IOException or UnauthorizedAccessException or Win32Exception)
+            {
+                _log.Warn($"{g.Name}: warm files stopped: {e.GetType().Name}");
+                return 0;
+            }
+            finally
+            {
+                _coldReading = null;
+            }
+        }
+        finally
+        {
+            Monitor.Exit(_run);
+        }
+    }
+
+    // 파일 한 개의 표본 (큰 파일은 조각마다 고르게) 이 모두 파일 캐시에 있으면 true. 표본을 못 읽으면 false.
+    private bool FileCached(ReadOp op)
+    {
+        try
+        {
+            return _env.ProbeSamples(CacheProbe.PickSamples(FileWarm.Pieces(op))) is { Samples: > 0, Cold: false };
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
 
     /// 같은 게임·같은 사유의 "prewarm skipped" 를 남기는 최소 간격 (트리거 프로그램이 연달아 떠도 줄이 쌓이지 않게).
     public static readonly TimeSpan SkipLogEvery = TimeSpan.FromSeconds(60);

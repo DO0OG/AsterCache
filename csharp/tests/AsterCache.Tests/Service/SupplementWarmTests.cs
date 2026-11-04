@@ -208,7 +208,7 @@ public sealed class SupplementWarmTests : IDisposable
 
         Assert.Single(_streamer.Seen);
         Assert.True(p.SupplementPending("g"));
-        Assert.Contains(_log.Lines, l => l.Contains("rewarm check: samples are warm but the rest", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("rewarm check: the rest of the hot set", StringComparison.Ordinal));
 
         Ticks(p, 1, on); // 30 초 뒤: 아직 모자람
         Assert.Single(_streamer.Seen);
@@ -220,6 +220,30 @@ public sealed class SupplementWarmTests : IDisposable
         Ticks(p, 1, on); // 보충이 끝난 뒤에는 따뜻하면 건너뜀
         Assert.Equal(2, _streamer.Seen.Count);
         Assert.Contains(_log.Lines, l => l.Contains("rewarm check: warm", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ColdSamplesWhileSupplementPendingWaitForTheIdleSupplementNotAFullRewarm()
+    {
+        Prewarmer p = Make(Game());
+        p.RunServiceStart();
+        _probe = new ProbeResult(8, 8, 120.0); // 표본은 cold
+        AutoSettings on = AutoSettings.Default with { Enabled = true, RewarmMinutes = 10 };
+
+        _disk = 50 << 20;
+        Ticks(p, 1, on);
+        _now += TimeSpan.FromMinutes(11);
+        _disk = 0; // 유휴가 막 시작됨: 전체 재예열 대신 보충 대기
+        Ticks(p, 1, on);
+
+        Assert.Single(_streamer.Seen);
+        Assert.True(p.SupplementPending("g"));
+
+        Ticks(p, 1, on); // 30 초 뒤: 아직 모자람
+        Assert.Single(_streamer.Seen);
+        Ticks(p, 1, on); // 60 초 뒤: 보충
+        Assert.Equal(2, _streamer.Seen.Count);
+        Assert.False(p.SupplementPending("g"));
     }
 
     [Fact]

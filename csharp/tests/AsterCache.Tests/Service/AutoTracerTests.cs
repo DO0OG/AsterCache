@@ -522,23 +522,57 @@ public sealed class AutoTracerTests : IDisposable
     private void Gain(int run, long newMib) => File.WriteAllText(AutoTracer.MergeMetaPath(_game), $"{{\"run\": {run}, \"new_mib\": {newMib}}}");
 
     [Fact]
-    public void RunCountSkipsRunFilesBelowTheMinimumReadButKeepsRun1AndTheNextNumberAfterTheLastFile()
+    public void RunCountSkipsRunFilesBelowTheMinimumReadIncludingRun1AndKeepsTheNextNumberAfterTheLastFile()
     {
         var files = new HashSet<string> { Raw, TraceWriter.RunPath(Raw, 1), TraceWriter.RunPath(Raw, 2), TraceWriter.RunPath(Raw, 3) };
         var reads = new Dictionary<string, long?>
         {
-            [TraceWriter.RunPath(Raw, 1)] = 1 * MiB, // 첫 회차는 작아도 셈
+            [TraceWriter.RunPath(Raw, 1)] = 1 * MiB, // 첫 회차도 기준 미만이면 세지 않음
             [TraceWriter.RunPath(Raw, 2)] = 2270 * MiB,
             [TraceWriter.RunPath(Raw, 3)] = 6 * MiB, // 크래시 회차
         };
 
-        Assert.Equal(2, AutoTracer.RunCount(_game, files.Contains, p => reads[p]));
+        Assert.Equal(1, AutoTracer.RunCount(_game, files.Contains, p => reads[p])); // run2 만 유효
         Assert.Equal(3, AutoTracer.LastRunNumber(_game, files.Contains)); // 다음 저장 번호는 4
         Assert.Equal(3, AutoTracer.RunCount(_game, files.Contains)); // 읽기량을 안 주면 파일 수
         Assert.Equal(3, AutoTracer.RunCount(_game, files.Contains, _ => null)); // 못 읽으면 셈
         Assert.Equal(0, AutoTracer.LastRunNumber(_game, new HashSet<string>().Contains));
         Assert.Equal(1, AutoTracer.LastRunNumber(_game, new HashSet<string> { Raw }.Contains));
         Assert.Equal(4, AutoTracer.LastRunNumber(_game, new HashSet<string> { Raw, TraceWriter.RunPath(Raw, 1), TraceWriter.RunPath(Raw, 4) }.Contains)); // 끊겨도 가장 큰 번호
+    }
+
+    [Fact]
+    public void ALoneRawTraceWithoutRunFilesStillCountsAsOneRunWhateverItsSize()
+    {
+        var files = new HashSet<string> { Raw };
+
+        Assert.Equal(1, AutoTracer.RunCount(_game, files.Contains, _ => 1 * MiB)); // 옛 형식: 읽기량을 따지지 않음 (호환)
+        Assert.Equal(1, AutoTracer.RunCount(_game, files.Contains, _ => throw new InvalidOperationException("must not be read")));
+    }
+
+    [Fact]
+    public void ASmallRun1IsNotValidSoTheNextRunIsStillAnAdditionalRecordSavedAsRun2AndMergedWithoutRun1()
+    {
+        SetRuns(3);
+        SeedRuns(1, (1, 1)); // run1 이 1 MiB 뿐
+        var tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings); // 최소 읽기량 64 MiB
+        string run1 = TraceWriter.RunPath(Raw, 1);
+        Assert.Equal(0, AutoTracer.RunCount(_game, File.Exists, AutoTracer.RunReadBytes));
+        _rig.Status.Complete("foo", "auto", _rig.World.Now, counted: false, null);
+
+        Reads((100L * MiB, 40L << 20), (140L * MiB, 40L << 20));
+        tracer.Start(_game);
+        Assert.True(tracer.Active);
+        Assert.Equal(AutoStage.Done, _rig.Status.Get("foo")?.Stage); // 첫 기록 경로 (Tracing·Learning 상태, 선행 읽기) 와 섞이지 않음
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("auto trace started (run 1/3", StringComparison.Ordinal));
+        tracer.Step();
+
+        Assert.True(File.Exists(TraceWriter.RunPath(Raw, 2))); // 번호는 최대 번호 + 1: run1 을 덮어쓰지 않음
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("(run 2, merged)", StringComparison.Ordinal));
+        Assert.Equal(1, AutoTracer.RunCount(_game, File.Exists, AutoTracer.RunReadBytes)); // run2 만 유효
+        Assert.Equal(AutoStage.Done, _rig.Status.Get("foo")?.Stage);
+        Assert.True(File.Exists(run1));
+        Assert.Equal(80 * 16, ((List<object?>)JsonRead.ReadFile(Raw)!).Count); // 합집합에 1 MiB run1 (오프셋 0) 의 블록은 없음
     }
 
     [Fact]

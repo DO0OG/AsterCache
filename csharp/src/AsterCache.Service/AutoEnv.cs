@@ -1,6 +1,5 @@
 using AsterCache.Core;
 using AsterCache.Core.Apply;
-using AsterCache.Core.Discovery;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
@@ -156,6 +155,9 @@ public sealed class AutoEnv
     /// (원본, 새 이름) 파일 이동, 이미 있으면 덮어씀. 낡은 트레이스·계획을 .stale 로 치우는 데 씁니다.
     public Action<string, string> MoveAside { get; init; } = (_, _) => { };
 
+    /// 파일의 수정 시각을 지금으로 바꿉니다 (되살린 계획이 트레이스보다 새롭게 보이도록).
+    public Action<string> Touch { get; init; } = _ => { };
+
     /// (게임, 건너뛸 앞쪽 저널 줄 수, 취소) → 저널의 그 뒤 줄만 되돌린 결과, 저널이 없으면 null.
     public required Func<GameSettings, int, CancellationToken, RevertReport?> Revert { get; init; }
 
@@ -212,7 +214,7 @@ public sealed class AutoEnv
             Pids = ProcessSnapshot.Pids,
             ImagePath = ProcessSnapshot.ImagePath,
             ReadBytes = ProcessSnapshot.ReadBytes,
-            AntiCheatOf = DetectAntiCheat,
+            AntiCheatOf = dir => DetectAntiCheat(dir, log: log),
             RootPids = g => [.. ProcessSnapshot.Take().Where(p => p.Pid != Environment.ProcessId && DispatchEnv.UnderRoot(g, ProcessSnapshot.ImagePath(p.Pid))).Select(p => p.Pid)],
             PhysicalRamBytes = SystemMemory.TotalBytes,
             WindowsDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows),
@@ -240,6 +242,7 @@ public sealed class AutoEnv
             JournalRows = g => ReapplyEnv.JournalRows(journalDir, g),
             ArchiveJournal = g => ReapplyEnv.ArchiveJournal(journalDir, g),
             MoveAside = (src, dst) => File.Move(src, dst, true),
+            Touch = path => File.SetLastWriteTimeUtc(path, DateTime.UtcNow),
             Revert = (g, skipRows, ct) => ReapplyEnv.Revert(journalDir, g, skipRows, ct),
             Extents = FileLayout.Extents,
             DiskBytesPerSecond = letter => DiskActivity.BytesPerSecond(letter),
@@ -258,18 +261,24 @@ public sealed class AutoEnv
         return PlanFile.Make(sessions, origin, zoneMib << 20, cb, FileLayout.Extents, zoneStartLcn: start, fixedClusters: usedClusters);
     }
 
-    /// 탐지를 못 한 결과 (I/O 실패): 없음이 아니라 모름. 티어는 거절하고 캐시하지 않으며, 등록에는 저장하지 않습니다.
-    public const string AntiCheatUnknown = "unknown";
+    /// 탐지를 못 한 결과 (I/O 실패 또는 열거 불완전): 없음이 아니라 모름. 티어는 거절하고 캐시하지 않으며, 등록에는 저장하지 않습니다.
+    public const string AntiCheatUnknown = LauncherScan.AntiCheatUnknown;
 
     /// 등록에 저장해도 되는 탐지 결과 (모름은 null).
     public static string? KnownAntiCheat(string? found) => found == AntiCheatUnknown ? null : found;
 
-    // 발견 때와 같은 이름 열거 (LauncherScan 과 같은 깊이, 읽기 전용).
-    internal static string? DetectAntiCheat(string dir)
+    // 발견 때와 같은 이름 열거 (LauncherScan 과 같은 깊이, 읽기 전용). 접근 못 한 하위 폴더가 있어 못 찾았으면 모름.
+    public static string? DetectAntiCheat(string dir, Func<string, int, (List<string> Names, bool Complete)>? lister = null, ILog? log = null)
     {
         try
         {
-            return AntiCheat.Detect(LauncherScan.ListNames(dir, LauncherScan.AntiCheatDepth));
+            string? found = LauncherScan.DetectAntiCheat(dir, lister);
+            if (found == AntiCheatUnknown)
+            {
+                log?.Info($"anti-cheat check incomplete (inaccessible folders under {dir}), treated as unknown");
+            }
+
+            return found;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {

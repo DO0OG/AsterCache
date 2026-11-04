@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using AsterCache.Core;
+using AsterCache.Core.Apply;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
@@ -172,6 +173,37 @@ public sealed class AutoMode
             return ReapplyVerdict.NotIdle;
         }
     }
+
+    /// 정기 재적용이 쓸 옵션 (회당 쓰기 상한·하루 잔여 예산 반영). 실패하면 null: 재적용은 기본 옵션을 씀.
+    public ApplyOptions? ReapplyOptions(GameSettings g)
+    {
+        try
+        {
+            return _relocator.ReapplyOptionsFor(g);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _log.Error("auto reapply options failed", e);
+            return null;
+        }
+    }
+
+    /// 배치 풀림 경고를 낼 만한가 (실패하면 경고하지 않음).
+    public bool ReapplyWarnAllowed(GameSettings g)
+    {
+        try
+        {
+            return _relocator.LayoutWarnAllowed(g);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _log.Error("auto reapply warn check failed", e);
+            return false;
+        }
+    }
+
+    /// 정기 재적용이 시작됨: 예정 바이트를 일일 상한·예산에 먼저 넣음 (재적용 루프 스레드에서 부름).
+    public void ReapplyStarted(GameSettings g, long plannedBytes) => Guard("reapply start note", () => _relocator.NoteReapplyStarted(g, plannedBytes));
 
     /// 정기 재적용이 쓴 바이트를 일일 예산·회복 추적에 알림 (재적용 루프 스레드에서 부름).
     public void ReapplySpent(GameSettings g, long movedBytes) => Guard("reapply note", () => _relocator.NoteReapplied(g, movedBytes));

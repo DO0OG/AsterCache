@@ -30,7 +30,7 @@ public sealed class AutoStatusTests : IDisposable
         _now = _now.AddMinutes(5);
         s.Set("mw4", "auto", null, AutoStage.WaitingIdle, "한글 detail");
         _now = _now.AddMinutes(5);
-        s.BeginRelocation(_now);
+        s.BeginRelocation(_now, 1);
         s.Complete("mw4", "auto", _now, counted: true, null);
         s.Set("kr", "manual", null, AutoStage.Failed, "한글 detail");
 
@@ -106,7 +106,7 @@ public sealed class AutoStatusTests : IDisposable
         Assert.Equal(0, s.RelocationsWithin(TimeSpan.FromHours(24)));
 
         var back = new AutoStatus(null, _log, () => wall, _ => { }, () => ticks);
-        back.BeginRelocation(wall);
+        back.BeginRelocation(wall, 1);
         wall = wall.AddHours(-3); // 시계가 뒤로 가면 벽시계 시각 쪽이 더 늦게 끝남
         ticks += System.Diagnostics.Stopwatch.Frequency * 3600 * 25;
         Assert.Equal(1, back.RelocationsWithin(TimeSpan.FromHours(24)));
@@ -152,10 +152,10 @@ public sealed class AutoStatusTests : IDisposable
         Assert.Equal(20, s.Events.Count);
         Assert.Equal("g5", s.Events[0].Game);
 
-        s.BeginRelocation(_now);
+        s.BeginRelocation(_now, 1);
         s.Complete("old", "auto", _now, counted: true, null);
         _now = _now.AddHours(30);
-        s.BeginRelocation(_now);
+        s.BeginRelocation(_now, 1);
         s.Complete("mid", "auto", _now, counted: true, null);
         Assert.Equal(1, s.RelocationsWithin(TimeSpan.FromHours(24)));
         Assert.Equal(2, s.RelocationsWithin(TimeSpan.FromHours(48)));
@@ -179,6 +179,22 @@ public sealed class AutoStatusTests : IDisposable
     }
 
     [Fact]
+    public void RelocationsThatMovedNothingAreNotCountedTowardsTheDailyLimit()
+    {
+        AutoStatus s = Make();
+        for (int i = 0; i < 3; i++)
+        {
+            s.BeginRelocation(_now, 5L << 30);
+            s.SetLastRelocationBytes(0);
+        }
+
+        s.BeginRelocation(_now, 5L << 30);
+        s.SetLastRelocationBytes(1L << 30);
+
+        Assert.Equal((1, 1L << 30), (s.RelocationsWithin(TimeSpan.FromHours(24)), s.RelocationBytesWithin(TimeSpan.FromHours(24))));
+    }
+
+    [Fact]
     public void RelocationBytesAreSummedWithinTheWindowAndRoundTrip()
     {
         AutoStatus s = Make();
@@ -194,17 +210,17 @@ public sealed class AutoStatusTests : IDisposable
     }
 
     [Fact]
-    public void OldFileWithoutRelocationBytesReadsAsZeroAndShortListFillsWithZero()
+    public void ZeroByteRecordsFromAnOldStatusFileAreNotCountedTowardsTheDailyLimit()
     {
         string t1 = _now.AddHours(-3).ToString("O", System.Globalization.CultureInfo.InvariantCulture);
         string t2 = _now.AddHours(-2).ToString("O", System.Globalization.CultureInfo.InvariantCulture);
         File.WriteAllText(StatusPath, "{\"relocations\": [\"" + t1 + "\", \"" + t2 + "\"]}");
         AutoStatus old = Make();
-        Assert.Equal((2, 0L), (old.RelocationsWithin(TimeSpan.FromHours(24)), old.RelocationBytesWithin(TimeSpan.FromHours(24))));
+        Assert.Equal((0, 0L), (old.RelocationsWithin(TimeSpan.FromHours(24)), old.RelocationBytesWithin(TimeSpan.FromHours(24))));
 
         File.WriteAllText(StatusPath, "{\"relocations\": [\"" + t1 + "\", \"" + t2 + "\"], \"relocation_bytes\": [7]}");
         AutoStatus shortList = Make();
-        Assert.Equal((2, 7L), (shortList.RelocationsWithin(TimeSpan.FromHours(24)), shortList.RelocationBytesWithin(TimeSpan.FromHours(24))));
+        Assert.Equal((1, 7L), (shortList.RelocationsWithin(TimeSpan.FromHours(24)), shortList.RelocationBytesWithin(TimeSpan.FromHours(24))));
     }
 
     [Fact]
@@ -227,7 +243,7 @@ public sealed class AutoStatusTests : IDisposable
     {
         AutoStatus s = Make();
 
-        s.BeginRelocation(_now);
+        s.BeginRelocation(_now, 1);
         s.Complete("g", "auto", _now, counted: true, null);
 
         Assert.Equal(1, s.RelocationsWithin(TimeSpan.FromHours(24)));
@@ -238,7 +254,7 @@ public sealed class AutoStatusTests : IDisposable
     public void ResetForReplanClearsRelocatedAtAndGoesBackToDiscoveredButKeepsTheDailyCount()
     {
         AutoStatus s = Make();
-        s.BeginRelocation(_now);
+        s.BeginRelocation(_now, 1);
         s.Complete("g", "auto", _now, counted: true, null);
         _now = _now.AddMinutes(5);
 

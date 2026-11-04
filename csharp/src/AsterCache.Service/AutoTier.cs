@@ -25,7 +25,7 @@ public sealed class AutoTier
     private readonly ConcurrentDictionary<string, long> _bytes = new(StringComparer.Ordinal); // 게임별 지금 SSD 로 옮겨 둔 바이트 (상태 열 표시용)
     private readonly Dictionary<string, DateTimeOffset> _tried = new(StringComparer.Ordinal); // 틱 스레드에서만 씀
     private readonly HashSet<string> _noted = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 이미 이유를 남긴 건너뜀
-    private readonly Dictionary<string, string?> _cheat = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 폴더 이름으로 짐작한 안티치트 (서비스 실행당 게임마다 한 번)
+    private readonly Dictionary<string, (string Root, string? Cheat)> _cheat = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 폴더 이름으로 짐작한 안티치트 (게임 루트가 바뀌면 무효)
     private readonly HashSet<string> _deferNoted = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 되돌림을 미룬다고 이미 남긴 게임
     private string? _rootWhy; // 틱 스레드에서만 씀
 
@@ -69,11 +69,12 @@ public sealed class AutoTier
         foreach (string name in journals)
         {
             GameSettings? g = s.Games.FirstOrDefault(x => x.Name == name);
-            if (!on || g is null)
+            if (!on || g is null || g.AntiCheat is not null)
             {
-                if (!RevertDeferred(s, name, g, on ? "game removed" : "disabled"))
+                string why = !on ? "disabled" : g is null ? "game removed" : "anti-cheat";
+                if (!RevertDeferred(s, name, g, why))
                 {
-                    _ = _engine.Revert(name, on ? "game removed" : "disabled");
+                    _ = _engine.Revert(name, why);
                     _tried.Remove(name);
                     RefreshBytes(name);
                 }
@@ -175,15 +176,23 @@ public sealed class AutoTier
             return false;
         }
 
-        if (!_cheat.TryGetValue(g.Name, out string? cheat))
+        string? cheat = g.AntiCheat; // 등록된 값은 캐시보다 먼저 (설정이 나중에 바뀌어도 바로 반영)
+        if (cheat is null)
         {
-            cheat = g.AntiCheat ?? _env.AntiCheatOf(g.OriginRoot);
-            if (cheat == AutoEnv.AntiCheatUnknown)
+            if (_cheat.TryGetValue(g.Name, out var known) && known.Root == g.OriginRoot)
             {
-                return false; // 탐지 실패는 모름: 티어 거절, 캐시하지 않음 (다음 주기에 다시 봄)
+                cheat = known.Cheat;
             }
+            else
+            {
+                cheat = _env.AntiCheatOf(g.OriginRoot);
+                if (cheat == AutoEnv.AntiCheatUnknown)
+                {
+                    return false; // 탐지 실패는 모름: 티어 거절, 캐시하지 않음 (다음 주기에 다시 봄)
+                }
 
-            _cheat[g.Name] = cheat;
+                _cheat[g.Name] = (g.OriginRoot, cheat);
+            }
         }
 
         if (cheat is not null)

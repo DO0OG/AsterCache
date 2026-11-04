@@ -143,6 +143,20 @@ public sealed class AutoTierTests : IDisposable
     }
 
     [Fact]
+    public void ASettingsChangeToAntiCheatBeatsTheCachedNoneAndRevertsTheActiveTier()
+    {
+        SetTrace();
+        IdleTicks(Settings());
+        Assert.True(Linked(@"D:\Games\Foo\a.bin")); // 안티치트 없음으로 캐시된 상태에서 적용됨
+
+        _games[0] = _games[0] with { AntiCheat = "vanguard" };
+        IdleTicks(Settings());
+
+        Assert.False(Linked(@"D:\Games\Foo\a.bin"));
+        Assert.Equal(_a, _fs.Files[MemTierFs.N(@"D:\Games\Foo\a.bin")]); // 원본으로 복원
+    }
+
+    [Fact]
     public void AnUnknownAntiCheatScanRejectsTheTierAndIsNotCached()
     {
         SetTrace();

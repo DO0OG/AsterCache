@@ -261,20 +261,45 @@ public static partial class LauncherScan
     }
 
     // 폴더 아래 maxDepth 단계까지의 항목 이름 (접근 못 하는 하위는 건너뜀).
-    public static List<string> ListNames(string dir, int maxDepth)
+    public static List<string> ListNames(string dir, int maxDepth) => ListNames(dir, maxDepth, out _);
+
+    /// ListNames 와 같되, 접근 못 해 건너뛴 폴더가 있으면 complete 가 false (그 안에 무엇이 있는지 모름).
+    public static List<string> ListNames(string dir, int maxDepth, out bool complete)
     {
         var names = new List<string>();
-        var options = new EnumerationOptions { IgnoreInaccessible = true };
-        foreach (string entry in Directory.EnumerateFileSystemEntries(dir, "*", options))
+        complete = true;
+        Collect(dir, maxDepth, names, ref complete);
+        return names;
+    }
+
+    private static void Collect(string dir, int maxDepth, List<string> names, ref bool complete)
+    {
+        try
         {
-            names.Add(Path.GetFileName(entry));
-            if (maxDepth > 1 && Directory.Exists(entry))
+            foreach (string entry in Directory.EnumerateFileSystemEntries(dir, "*", new EnumerationOptions { IgnoreInaccessible = false, AttributesToSkip = FileAttributes.None }))
             {
-                names.AddRange(ListNames(entry, maxDepth - 1));
+                names.Add(Path.GetFileName(entry));
+                if (maxDepth > 1 && Directory.Exists(entry))
+                {
+                    Collect(entry, maxDepth - 1, names, ref complete);
+                }
             }
         }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            complete = false;
+        }
+    }
 
-        return names;
+    /// 탐지를 못 한 결과 (열거가 불완전하고 아무것도 못 찾음): 없음이 아니라 모름.
+    public const string AntiCheatUnknown = "unknown";
+
+    /// 설치 폴더의 안티치트 종류. 트레이스를 금지하는 값을 찾았으면 그 값, 열거가 불완전한데 그 밖이면 AntiCheatUnknown, 완전하게 훑고도 없으면 null. lister 는 시험이 접근 거부를 흉내 내려고 바꿔 끼움.
+    public static string? DetectAntiCheat(string dir, Func<string, int, (List<string> Names, bool Complete)>? lister = null)
+    {
+        (List<string> names, bool complete) = lister is null ? (ListNames(dir, AntiCheatDepth, out bool c), c) : lister(dir, AntiCheatDepth);
+        string? found = AntiCheat.Detect(names);
+        return complete || AntiCheat.ForbidsTrace(found) ? found : AntiCheatUnknown; // 불완전하면 트레이스를 금지하는 판정만 유지: 리코셰·없음은 안 보인 폴더에 더 센 안티치트가 있을 수 있어 모름
     }
 
     // 드라이브 문자 절대 경로만, 끝 역슬래시 없음 (루트 X:\ 는 그대로). UNC·상대 경로·잘못된 경로는 null.

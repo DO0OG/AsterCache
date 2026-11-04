@@ -131,7 +131,7 @@ public sealed class AutoStatus
         }
     }
 
-    /// 끝난 자동 적용의 실제 이동 바이트로 마지막 시작 기록의 예정 바이트를 바꿉니다 (하루 예산 집계가 실제 쓴 양을 따르게).
+    /// 끝난 자동 적용의 실제 이동 바이트로 마지막 시작 기록의 예정 바이트를 바꿉니다 (하루 예산 집계가 실제 쓴 양을 따르게). 0 바이트면 기록을 지워 일일 횟수에 세지 않습니다.
     public void SetLastRelocationBytes(long moved)
     {
         lock (_lock)
@@ -142,7 +142,15 @@ public sealed class AutoStatus
             }
 
             (DateTimeOffset At, long Bytes, long? Ticks) last = _relocations[^1];
-            _relocations[^1] = last with { Bytes = Math.Max(0, moved) };
+            if (moved <= 0)
+            {
+                _relocations.RemoveAt(_relocations.Count - 1);
+            }
+            else
+            {
+                _relocations[^1] = last with { Bytes = moved };
+            }
+
             Save();
         }
     }
@@ -277,13 +285,13 @@ public sealed class AutoStatus
     private bool InWindow((DateTimeOffset At, long Bytes, long? Ticks) r, TimeSpan window, DateTimeOffset since) =>
         r.At > since || (r.Ticks is { } t && System.Diagnostics.Stopwatch.GetElapsedTime(t, _ticks()) < window);
 
-    /// 최근 window 안에 시작한 자동 적용 수.
+    /// 최근 window 안에 시작한 자동 적용 수 (0 바이트 기록은 옛 버전이 남긴 것이라 세지 않음).
     public int RelocationsWithin(TimeSpan window)
     {
         lock (_lock)
         {
             DateTimeOffset since = _now() - window;
-            return _relocations.Count(r => InWindow(r, window, since));
+            return _relocations.Count(r => r.Bytes > 0 && InWindow(r, window, since));
         }
     }
 

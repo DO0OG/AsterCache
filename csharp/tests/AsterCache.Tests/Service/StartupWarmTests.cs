@@ -17,6 +17,7 @@ public sealed class StartupWarmTests : IDisposable
     private TimeSpan _waited;
     private Func<bool> _diskBusy = () => false;
     private bool _diskUnreadable;
+    private string? _unreadableGame;
     private ProbeResult? _probe;
     private Action? _onSleep;
 
@@ -39,9 +40,31 @@ public sealed class StartupWarmTests : IDisposable
             (_uptimeMs, _waited) = (_uptimeMs + (long)t.TotalMilliseconds, _waited + t);
             _onSleep?.Invoke();
         },
-        DiskBytesPerSecond = _ => _diskUnreadable ? null : _diskBusy() ? 50 << 20 : 0,
+        DiskBytesPerSecond = g => _diskUnreadable || g.Name == _unreadableGame ? null : _diskBusy() ? 50 << 20 : 0,
         ProbeReadMs = _ => _probe,
     }, _log, StatusPath, () => _now);
+
+    [Fact]
+    public void OneUnreadableDriveHoldsTheStartupWarmEvenIfTheOtherIsIdle()
+    {
+        Prewarmer p = Make(Game("a"), Game("b"));
+        _unreadableGame = "b";
+        using var cts = new CancellationTokenSource();
+        int sleeps = 0;
+        _onSleep = () =>
+        {
+            if (++sleeps > 100)
+            {
+                cts.Cancel();
+            }
+        };
+
+        IReadOnlyList<PrewarmResult> results = p.RunServiceStart(null, cts.Token);
+
+        Assert.Empty(results);
+        Assert.Empty(_streamer.Calls);
+        Assert.Single(_log.Lines, l => l.Contains("held: disk activity cannot be measured", StringComparison.Ordinal));
+    }
 
     private static GameSettings Game(string name) => Games.Make(name, name + ".exe");
 

@@ -186,6 +186,24 @@ public sealed class AutoTracerTests : IDisposable
     }
 
     [Fact]
+    public void AntiCheatSetAfterACachedNoneIsRefusedAndStopsARunningTrace()
+    {
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { TraceRuns = 3 } };
+        _tracer.Start(_game); // 없음으로 캐시됨
+        Assert.True(_tracer.Active);
+        GameSettings vanguard = _game with { AntiCheat = "vanguard" };
+        _rig.Settings = _rig.Settings with { Games = [vanguard] };
+
+        _tracer.Step(); // 돌던 트레이스도 새 금지 상태를 봄
+
+        Assert.False(_tracer.Active);
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("foo: trace stopped (anti-cheat: vanguard)", StringComparison.Ordinal));
+        _rig.World.Files.Add(Raw);
+        _tracer.Start(vanguard);
+        Assert.Equal(1, _rig.World.TraceStarts);
+    }
+
+    [Fact]
     public void RicochetAndPlainGamesAreStillTracedAndRiotNeedsVanguardOnTheSystem()
     {
         _rig.World.AntiCheats[_game.OriginRoot] = "ricochet";

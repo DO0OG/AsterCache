@@ -404,6 +404,7 @@ The configuration file is `%ProgramData%\AsterCache\config.json`. Editing it in 
 | `auto.restream_cooldown_min` | Default 10. The start-up stream of the same game is not run again within this many minutes. It is also skipped while the game process is already running or the disk is busy. |
 | `auto.rewarm_after_exit_min` | Default 2. When a game exit is detected, the rewarm check is pulled forward to this many minutes later. |
 | `auto.load_boundary` | Default `false`. When `true`, the service measures when the loading head (tier0) is in RAM at each game start. It reads the disk, so it stops when the game exits. |
+| `auto.max_relocate_gib_per_day` | Default 8. The most GiB a day that relocation may write (0 = unlimited, range 0 to 1048576). An explicit 8 is treated as the default, so SMR disks still use 2 GiB. |
 | `prewarm.pin` | Keep prewarmed data open as read-only mappings in the service. When not written, it is on automatically with 24 GiB of RAM or more; `false` turns it off; an explicit `true` works with 16 GiB of RAM or more. Effect unverified (needs an experiment). See [Anti-cheat compatibility](#anti-cheat-compatibility) |
 
 The service re-reads the whole `config.json` every 5 seconds (when its size or modified time changes), so adding, removing, or changing games and the watcher takes effect without a restart. If the new configuration fails validation or the folder permission check, the previous settings stay in force and the reason is written to the log.

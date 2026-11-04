@@ -343,7 +343,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     public void DailyLimitKeepsBothTheLimitNoteAndPrewarmed()
     {
         SetAuto(a => a with { MaxRelocationsPerDay = 1 });
-        _status.BeginRelocation(_w.Now);
+        _status.BeginRelocation(_w.Now, 1L << 20);
         UsePrewarm();
 
         Tick();
@@ -556,7 +556,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     public void DailyLimitHoldsTheNextRelocationUntilThe24HourWindowPasses()
     {
         SetAuto(a => a with { MaxRelocationsPerDay = 1 });
-        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1));
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 1L << 20);
 
         Run(TimeSpan.FromMinutes(10));
         Assert.Equal((AutoStage.WaitingIdle, "daily limit reached"), (Entry.Stage, Entry.Detail));
@@ -583,9 +583,8 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         Assert.Equal(0L, status.RelocationBytesWithin(AutoRelocator.DailyWindow)); // 실제 이동 바이트 집계는 건드리지 않음
 
         _w.Now += TimeSpan.FromHours(24);
+        status.Complete(_game.Name, _game.Source, _w.Now, counted: false, "done"); // 자동 상태 항목이 있으면 재배치를 끝낸 게임만 게이트를 지남
         Assert.Null(GateAfterIdle());
-        Run(TimeSpan.FromMinutes(3));
-        Assert.Equal(AutoStage.Done, status.Get("bench")!.Stage);
     }
 
     [Fact]
@@ -593,7 +592,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     {
         for (int i = 0; i < 3; i++)
         {
-            _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1 + i));
+            _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1 + i), 1L << 20);
         }
 
         Run(TimeSpan.FromMinutes(10));
@@ -607,7 +606,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     {
         for (int i = 0; i < 4; i++)
         {
-            _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1 + i));
+            _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1 + i), 1L << 20);
         }
 
         Run(TimeSpan.FromMinutes(10));
@@ -1112,7 +1111,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     public void DailyLimitStateIsLoggedOnceNotOnEveryTick()
     {
         SetAuto(a => a with { MaxRelocationsPerDay = 1 });
-        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1));
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 1L << 20);
 
         Run(TimeSpan.FromMinutes(10));
 
@@ -2570,6 +2569,9 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     }
     // ---- 정기 재적용 게이트: 자동 재배치와 같은 조건 ----
 
+    // 자동 상태 항목이 있는 게임을 재배치를 끝낸 게임으로 만듭니다.
+    private void MarkRelocated() => _status.Complete(_game.Name, _game.Source, _w.Now, counted: false, "done");
+
     private ReapplyVerdict? GateAfterIdle()
     {
         _ = Relocator.ReapplyBlock(_game); // 첫 표본이 유휴 시작
@@ -2600,6 +2602,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     public void ReapplyGateDefersWhileTheDriveIsRecovering()
     {
         SetAuto(a => a with { PostRelocateRecovery = AutoSettings.RecoveryFixed });
+        Relocator.NoteReapplyStarted(_game, 1 << 20);
         Relocator.NoteReapplied(_game, 1 << 20);
 
         Assert.Equal(ReapplyVerdict.Recovering, GateAfterIdle());
@@ -2619,7 +2622,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         SetAuto(a => a with { MaxRelocateGibPerDay = 0 });
         for (int i = 0; i < _settings.Auto.MaxRelocationsPerDay; i++)
         {
-            _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1));
+            _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 1L << 20);
         }
 
         Assert.Equal(ReapplyVerdict.DailyLimit, GateAfterIdle());
@@ -2645,6 +2648,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     public void ReapplyGateDefersRightAfterAGameUpdate()
     {
         SetAuto(a => a with { PostRelocateRecovery = AutoSettings.RecoveryOff });
+        MarkRelocated();
         _status.Set("bench", "auto", null, AutoStage.Discovered, "game updated, will trace again on next run");
 
         Assert.Equal(ReapplyVerdict.PostUpdateDelay, GateAfterIdle());
@@ -2655,10 +2659,50 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     {
         SetAuto(a => a with { PostRelocateRecovery = AutoSettings.RecoveryFixed });
 
+        Relocator.NoteReapplyStarted(_game, 500);
         Relocator.NoteReapplied(_game, 123);
 
         Assert.Equal((1, 123L), (_status.RelocationsWithin(AutoRelocator.DailyWindow), _status.RelocationBytesWithin(AutoRelocator.DailyWindow)));
         Assert.True(Relocator.Recovery.IsRecovering(Letter));
+    }
+
+    [Fact]
+    public void ReapplyOptionsUseTheSmallerOfTheRunCapAndTheRemainingBudgetOnSmr()
+    {
+        _w.IsSmr = _ => true;
+        Assert.Equal(1L << 30, Relocator.ReapplyOptionsFor(_game).WriteCap); // 회당 1 GiB (예산 2 GiB 가 남음)
+
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), (2L << 30) - (1L << 29));
+        Assert.Equal(1L << 29, Relocator.ReapplyOptionsFor(_game).WriteCap);
+
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 1L << 30);
+        Assert.Equal(0, Relocator.ReapplyOptionsFor(_game).WriteCap);
+        Assert.Equal(_game.Plan, Relocator.ReapplyOptionsFor(_game).SaveTo);
+    }
+
+    [Fact]
+    public void ReappliedReplacesThePlannedBytesWithTheActualMovedBytes()
+    {
+        Relocator.NoteReapplyStarted(_game, 100L << 20);
+        Relocator.NoteReapplied(_game, 30L << 20);
+
+        Assert.Equal((1, 30L << 20), (_status.RelocationsWithin(AutoRelocator.DailyWindow), _status.RelocationBytesWithin(AutoRelocator.DailyWindow)));
+    }
+
+    [Fact]
+    public void LayoutWarnIsAllowedOnlyAfterACompleteRelocationOutsideExtension()
+    {
+        Assert.False(Relocator.LayoutWarnAllowed(_game)); // 재배치 기록 없음
+
+        _status.Complete(_game.Name, _game.Source, _w.Now, counted: false, "done");
+        Assert.True(Relocator.LayoutWarnAllowed(_game));
+
+        _w.Files.Add(_game.Plan + AutoRelocator.ExtendSuffix);
+        Assert.False(Relocator.LayoutWarnAllowed(_game)); // 확장 중
+        _w.Files.Remove(_game.Plan + AutoRelocator.ExtendSuffix);
+
+        _status.Set(_game.Name, _game.Source, null, AutoStage.WaitingIdle, "write limit reached, will continue");
+        Assert.False(Relocator.LayoutWarnAllowed(_game)); // 쓰기 상한으로 멈춘 부분 적용
     }
 
     // ---- 존 확장 재계획 (플레이를 더 모아 병합한 트레이스) ----
@@ -2929,5 +2973,328 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         Assert.Contains(TraceWriter.RunPath(raw, 2) + ".stale", _w.Files);
         Assert.DoesNotContain(TraceWriter.RunPath(raw, 1), _w.Files);
         Assert.Equal(0, AutoTracer.RunCount(_game, _w.Env().FileExists));
+    }
+
+    [Fact]
+    public void ReapplyIsBlockedAsNotAppliedOnlyForAnUnfinishedAutoRelocationOrWhileExtending()
+    {
+        Assert.NotEqual(ReapplyVerdict.NotApplied, Relocator.ReapplyBlock(_game)); // 자동 상태 항목 없음 (수동 적용 게임)
+
+        _status.Set(_game.Name, "auto", null, AutoStage.Discovered, "d");
+        Assert.Equal(ReapplyVerdict.NotApplied, Relocator.ReapplyBlock(_game)); // 재배치 기록 없음 (확장 계획도 StartLcn 이 있어 적용됨으로 보일 수 있음)
+
+        _status.Set(_game.Name, "auto", null, AutoStage.Skipped, "off");
+        Assert.NotEqual(ReapplyVerdict.NotApplied, Relocator.ReapplyBlock(_game)); // 자동 재배치를 끈 게임
+
+        MarkRelocated();
+        Assert.NotEqual(ReapplyVerdict.NotApplied, Relocator.ReapplyBlock(_game)); // 적용 완료는 기존 게이트대로
+
+        _w.Files.Add(_game.Plan + AutoRelocator.ExtendSuffix);
+        Assert.Equal(ReapplyVerdict.NotApplied, Relocator.ReapplyBlock(_game)); // 확장 중
+    }
+
+    [Fact]
+    public void ExtensionThatFailsTheDataCheckRestoresThePreviousPlanAndIsNotRetriedAfterARestart()
+    {
+        long start = DoneThenMergedTrace(Merged(RestOfTheBlocks()));
+        PlanFile before = PlanFile.Load(_game.Plan);
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
+        _w.Apply = (g, plan, options, ct) => options.DryRun ? real(g, plan, options, ct) : throw new ShaMismatchException([F1]);
+
+        Tick();
+        RunUntilDone();
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.NotNull(Entry.RelocatedAt);
+        Assert.Equal(before.Sha(), PlanFile.Load(_game.Plan).Sha());
+        Assert.False(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix) || _w.Files.Contains(_game.Plan + AutoRelocator.ExtendSuffix));
+        Assert.Contains(_log.Lines, l => l.Contains("zone extension blocked: data check failed", StringComparison.Ordinal));
+
+        _relocator = null; // 서비스 재시작
+        for (int i = 0; i < 3; i++)
+        {
+            _w.Now += AutoRelocator.StaleCheckEvery;
+            Tick();
+        }
+
+        Assert.Equal([start], _w.PlanStarts); // 복원한 계획의 수정 시각이 트레이스보다 새로워 다시 확장하지 않음
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+    }
+
+    [Fact]
+    public void ExtensionWithFailedStepsRestoresThePreviousPlanInsteadOfFailing()
+    {
+        DoneThenMergedTrace(Merged(RestOfTheBlocks()));
+        PlanFile before = PlanFile.Load(_game.Plan);
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            if (options.DryRun)
+            {
+                return real(g, plan, options, ct);
+            }
+
+            var rep = new ApplyReport { Executed = true };
+            rep.Failed.Add(new FailedStep(0, F1, "locked"));
+            return rep;
+        };
+
+        Tick();
+        RunUntilDone();
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.Equal(before.Sha(), PlanFile.Load(_game.Plan).Sha());
+        Assert.False(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix) || _w.Files.Contains(_game.Plan + AutoRelocator.ExtendSuffix));
+    }
+
+    [Fact]
+    public void RelocationThatThrowsAfterTheMoveStillStartsTheRecoveryWait()
+    {
+        SetAuto(a => a with { PostRelocateRecovery = AutoSettings.RecoveryFixed });
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
+        _w.Apply = (g, plan, options, ct) => options.Execute ? throw new IOException("disk gone") : real(g, plan, options, ct);
+
+        Run(TimeSpan.FromMinutes(3.5));
+
+        Assert.Equal((AutoStage.Failed, "relocation failed: IOException"), (Entry.Stage, Entry.Detail));
+        Assert.True(Relocator.Recovery.IsRecovering(Drive)); // 예외 경로에서도 예정 바이트로 회복 대기를 시작
+    }
+
+    // 확장 재배치가 데이터 검사 실패로 끝난 상태에서 되돌리기·저널 보관을 가짜로 바꿔 돌립니다. 보관은 실제 적용 이후 호출만 셈.
+    private void FailExtensionWith(Func<GameSettings, int, CancellationToken, RevertReport?>? revert, Func<GameSettings, string?>? archive, out int archived)
+    {
+        DoneThenMergedTrace(Merged(RestOfTheBlocks()));
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
+        bool armed = false;
+        int archives = 0;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            if (!options.DryRun)
+            {
+                armed = true;
+                throw new ShaMismatchException([F1]);
+            }
+
+            return real(g, plan, options, ct);
+        };
+        Func<GameSettings, string?> inner = _w.ArchiveJournal;
+        _w.ArchiveJournal = g =>
+        {
+            archives += armed ? 1 : 0;
+            return armed && archive is not null ? archive(g) : inner(g);
+        };
+        if (revert is not null)
+        {
+            Func<GameSettings, int> rows = _w.JournalRows;
+            _w.JournalRows = g => armed ? int.MaxValue - 1 : rows(g); // 이번 적용이 쓴 줄이 있는 것으로 만들어 되돌리기가 불리게 함
+            _w.Revert = revert;
+        }
+
+        Tick();
+        RunUntilDone();
+        archived = archives;
+    }
+
+    [Fact]
+    public void ExtensionWhoseJournalCannotBeArchivedStaysFailedInsteadOfRestoring()
+    {
+        FailExtensionWith(null, _ => throw new IOException("locked"), out int archived);
+
+        Assert.True(archived >= 1);
+        Assert.Equal(AutoStage.Failed, Entry.Stage);
+        Assert.Contains("journal could not be archived", Entry.Detail, StringComparison.Ordinal);
+        Assert.True(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix) || _w.Files.Contains(_game.Plan + AutoRelocator.ExtendSuffix)); // 이전 계획을 되살리지 않음
+    }
+
+    [Fact]
+    public void ExtensionWhoseRevertIsCancelledKeepsTheJournalAndIsNotDone()
+    {
+        FailExtensionWith((_, _, _) => new RevertReport { Stopped = "cancelled" }, null, out int archived);
+
+        Assert.Equal(0, archived); // 되돌리기를 끝내지 못했으니 저널을 보관하지 않음
+        Assert.Equal(AutoStage.Failed, Entry.Stage);
+        Assert.Contains("revert incomplete", Entry.Detail, StringComparison.Ordinal);
+        Assert.True(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix) || _w.Files.Contains(_game.Plan + AutoRelocator.ExtendSuffix));
+    }
+
+    [Fact]
+    public void ExtensionIgnoresOldPiecesInsideThePinnedPartOfTheZone()
+    {
+        long start = DoneThenMergedTrace(Merged([(F1, 1), (F1, 2)]), minMib: 0);
+        _w.Extents = p => p == F1 ? [.. Vol.Ext[p], new Extent(9 * (Blk / Cb), start, 4)] : Vol.Ext[p]; // 핫이 아닌 F1 의 9 번 블록 조각이 이전 존 (고정 구간) 안에 있음
+
+        Tick();
+
+        Assert.True(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("zone extension blocked", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TruncatedPlanWithAnExtendFileIsSetAsideAndThePreviousPlanIsRestored()
+    {
+        DoneAndReadyToReplan(out _);
+        PlanFile good = PlanFile.Load(_game.Plan);
+        File.Copy(_game.Plan, _game.Plan + AutoRelocator.ExtendSuffix);
+        File.WriteAllText(_game.Plan, "{\"truncat");
+        _status.ResetForReplan(_game.Name, "trace grew, extending zone"); // 재배치 기록을 지움 (확장·재계획이 시작된 상태)
+        _status.Set(_game.Name, _game.Source, null, AutoStage.Failed, "relocation failed: JsonException");
+        _relocator = null; // 서비스 재시작
+
+        Tick();
+
+        Assert.True(File.Exists(_game.Plan + AutoRelocator.BadSuffix));
+        Assert.Equal(good.Sha(), PlanFile.Load(_game.Plan).Sha());
+        Assert.False(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix) || _w.Files.Contains(_game.Plan + AutoRelocator.ExtendSuffix));
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+    }
+
+    [Fact]
+    public void TruncatedPlanWithOnlyAStaleFileIsSetAsideAndTheStalePlanIsRestored()
+    {
+        DoneAndReadyToReplan(out _);
+        PlanFile good = PlanFile.Load(_game.Plan);
+        File.Copy(_game.Plan, _game.Plan + AutoRelocator.StaleSuffix);
+        File.WriteAllText(_game.Plan, "{\"truncat");
+        _status.ResetForReplan(_game.Name, "trace grew, extending zone"); // 재배치 기록을 지움 (확장·재계획이 시작된 상태)
+        _status.Set(_game.Name, _game.Source, null, AutoStage.Failed, "relocation failed: JsonException");
+        _relocator = null; // 서비스 재시작
+
+        Tick();
+
+        Assert.True(File.Exists(_game.Plan + AutoRelocator.BadSuffix));
+        Assert.Equal(good.Sha(), PlanFile.Load(_game.Plan).Sha());
+        Assert.Equal((AutoStage.Done, AutoRelocator.StalePlanDetail), (Entry.Stage, Entry.Detail));
+    }
+
+    [Fact]
+    public void BadPlanSetAsideBeforeARestartIsReplacedByTheStalePlanWithoutTheInMemoryMark()
+    {
+        DoneAndReadyToReplan(out _);
+        PlanFile good = PlanFile.Load(_game.Plan);
+        File.Move(_game.Plan, _game.Plan + AutoRelocator.StaleSuffix);
+        File.WriteAllText(_game.Plan + AutoRelocator.BadSuffix, "{\"truncat"); // 잘린 계획을 .bad 로 치운 직후 꺼진 상태
+        _status.ResetForReplan(_game.Name, "trace grew, extending zone");
+        _status.Set(_game.Name, _game.Source, null, AutoStage.WaitingIdle, "x");
+        _relocator = null; // 서비스 재시작
+
+        Tick();
+
+        Assert.Equal(good.Sha(), PlanFile.Load(_game.Plan).Sha());
+        Assert.Equal((AutoStage.Done, AutoRelocator.StalePlanDetail), (Entry.Stage, Entry.Detail));
+    }
+
+    [Theory]
+    [InlineData(AutoStage.WaitingIdle)]
+    [InlineData(AutoStage.Done)]
+    [InlineData(AutoStage.Failed)]
+    public void TruncatedPlanIsReplacedByTheStalePlanWhateverTheStateWas(string stage)
+    {
+        DoneAndReadyToReplan(out _);
+        PlanFile good = PlanFile.Load(_game.Plan);
+        File.Copy(_game.Plan, _game.Plan + AutoRelocator.StaleSuffix);
+        File.WriteAllText(_game.Plan, "{\"truncat");
+        if (stage != AutoStage.Done)
+        {
+            _status.ResetForReplan(_game.Name, "trace grew, extending zone");
+            _status.Set(_game.Name, _game.Source, null, stage, "x");
+        }
+
+        _relocator = null; // 서비스 재시작
+
+        Tick();
+
+        Assert.True(File.Exists(_game.Plan + AutoRelocator.BadSuffix));
+        Assert.Equal(good.Sha(), PlanFile.Load(_game.Plan).Sha()); // 계획 없는 상태로 남지 않음
+        Assert.Equal((AutoStage.Done, AutoRelocator.StalePlanDetail), (Entry.Stage, Entry.Detail));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("an earlier replan was interrupted", StringComparison.Ordinal)); // 기존 복원 루프와 겹치지 않음
+    }
+
+    [Fact]
+    public void ReapplyIsNotBlockedAsNotAppliedWhenAutoRelocationIsOff()
+    {
+        SetAuto(a => a with { Relocate = false });
+        foreach (string stage in new[] { AutoStage.Discovered, AutoStage.WaitingIdle })
+        {
+            _status.Set(_game.Name, "auto", null, stage, "d");
+            Assert.NotEqual(ReapplyVerdict.NotApplied, Relocator.ReapplyBlock(_game));
+        }
+
+        _w.Files.Add(_game.Plan + AutoRelocator.ExtendSuffix);
+        Assert.Equal(ReapplyVerdict.NotApplied, Relocator.ReapplyBlock(_game)); // 확장 중은 그대로 막음
+    }
+
+    [Fact]
+    public void ReapplyIsNotBlockedAsNotAppliedWhenAutoModeIsOff()
+    {
+        SetAuto(a => a with { Enabled = false });
+        foreach (string stage in new[] { AutoStage.Discovered, AutoStage.WaitingIdle })
+        {
+            _status.Set(_game.Name, "auto", null, stage, "d");
+            Assert.NotEqual(ReapplyVerdict.NotApplied, Relocator.ReapplyBlock(_game));
+        }
+
+        _w.Files.Add(_game.Plan + AutoRelocator.ExtendSuffix);
+        Assert.Equal(ReapplyVerdict.NotApplied, Relocator.ReapplyBlock(_game)); // 확장 중은 그대로 막음
+    }
+
+    [Fact]
+    public void FailedExtensionArchivesItsJournalSoTheRestoredPlanCanBeAppliedAgain()
+    {
+        DoneThenMergedTrace(Merged(RestOfTheBlocks()));
+        PlanFile before = PlanFile.Load(_game.Plan);
+        int archived = 0;
+        _w.ArchiveJournal = _ => File.Exists(JournalPath) ? Archive(JournalPath + ".old" + archived++) : null; // 확장 시작 때 보관한 .old 와 이름이 겹치지 않게
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            ApplyReport rep = real(g, plan, options, ct); // 확장 계획의 저널을 남김
+            if (options.Execute)
+            {
+                rep.Failed.Add(new FailedStep(0, F1, "locked"));
+            }
+
+            return rep;
+        };
+
+        Tick();
+        RunUntilDone();
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.Equal(before.Sha(), PlanFile.Load(_game.Plan).Sha());
+        Assert.False(File.Exists(JournalPath)); // 확장 계획의 저널은 옆으로 보관됨
+        Assert.True(File.Exists(JournalPath + ".old1")); // 0 은 확장 시작 때, 1 은 확장 실패 때
+        ApplyReport again = Applier.Apply(before, Vol, [Root], JournalPath, Hooks(), new ApplyOptions(Execute: true), default); // 저널 불일치로 거부되지 않음
+        Assert.Empty(again.Failed);
+    }
+
+    private string Archive(string dest)
+    {
+        File.Move(JournalPath, dest);
+        return dest;
+    }
+
+    [Fact]
+    public void ThrownRelocationKeepsThePlannedBytesInTheDailyBudget()
+    {
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> inner = _w.Apply;
+        _w.Apply = (g, plan, options, ct) => options.DryRun ? inner(g, plan, options, ct) : throw new IOException("disk");
+
+        Run(TimeSpan.FromMinutes(3.5));
+
+        Assert.Equal(AutoStage.Failed, Entry.Stage);
+        Assert.True(_status.RelocationBytesWithin(AutoRelocator.DailyWindow) > 0); // 시작 때 넣은 예정 바이트가 지워지지 않음
+    }
+
+    [Fact]
+    public void ExplicitBudgetAboveTheSmrDefaultIsLoggedOncePerGame()
+    {
+        _w.IsSmr = _ => true;
+        SetAuto(a => a with { MaxRelocateGibPerDay = 8, MaxRelocateGibPerDaySet = true });
+
+        Tick();
+        RunUntilDone();
+        Tick();
+
+        Assert.Single(_log.Lines, l => l.Contains("bench: max_relocate_gib_per_day 8 is above the SMR default 2; using the explicit value", StringComparison.Ordinal));
     }
 }

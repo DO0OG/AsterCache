@@ -79,7 +79,7 @@ public sealed class ReapplyTests
         Extents = _ => throw new InvalidOperationException(),
         Stat = _ => throw new InvalidOperationException(),
         RealPath = Path.GetFullPath,
-        Apply = (_, _, _) => throw new InvalidOperationException(),
+        Apply = (_, _, _, _) => throw new InvalidOperationException(),
     };
 
     private sealed class Rig
@@ -121,6 +121,23 @@ public sealed class ReapplyTests
         public ReapplyVerdict? GateBlock { get; set; }
 
         public List<long> Spent { get; } = [];
+
+        public List<long> Started { get; } = [];
+
+        /// Started·Apply·Spent 가 불린 순서.
+        public List<string> Calls { get; } = [];
+
+        public ApplyOptions? Options { get; set; }
+
+        public Func<ApplyOptions?>? OptionsFn { get; set; }
+
+        public Action<long>? OnStarted { get; set; }
+
+        public ApplyOptions? AppliedOptions { get; private set; }
+
+        public bool WarnAllowed { get; set; } = true;
+
+        public DateTimeOffset Now { get; set; } = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
         public CancellationToken LastToken { get; private set; }
 
@@ -175,9 +192,24 @@ public sealed class ReapplyTests
                 Stat = p => SourceMissing ? throw new FileNotFoundException() : p == LockedPath ? throw new IOException("locked") : SourceChanged || ChangedPaths.Contains(p) ? fps[p] with { Size = fps[p].Size + 1 } : fps[p],
                 RealPath = Path.GetFullPath,
                 Gate = _ => GateBlock,
-                Spent = (_, bytes) => Spent.Add(bytes),
-                Apply = (_, _, token) =>
+                Started = (_, bytes) =>
                 {
+                    Started.Add(bytes);
+                    OnStarted?.Invoke(bytes);
+                    Calls.Add("started");
+                },
+                Spent = (_, bytes) =>
+                {
+                    Spent.Add(bytes);
+                    Calls.Add("spent");
+                },
+                Options = _ => OptionsFn is { } f ? f() : Options,
+                WarnDegraded = _ => WarnAllowed,
+                Now = () => Now,
+                Apply = (_, _, opts, token) =>
+                {
+                    Calls.Add("apply");
+                    AppliedOptions = opts;
                     ApplyCalls++;
                     LastToken = token;
                     return ApplyThrows is null ? new ApplyReport { MovedBytes = 4096, Stopped = ApplyCancelled ? "cancelled" : null } : throw ApplyThrows;
@@ -262,12 +294,97 @@ public sealed class ReapplyTests
     }
 
     [Fact]
-    public void ReapplyThatThrowsStillCountsAsAnAttemptWithZeroBytes()
+    public void ReapplyThatThrowsKeepsThePlannedBytesInTheBudget()
     {
         var rig = new Rig { Moved = false, ApplyThrows = new IOException("x") };
 
         Assert.Equal(ReapplyVerdict.Failed, rig.Check(Bench));
-        Assert.Equal([0L], rig.Spent);
+        Assert.Single(rig.Started);
+        Assert.Equal(rig.Started, rig.Spent);
+    }
+
+    [Fact]
+    public void ReapplyThatThrowsCallsStartedBeforeApplyThenSpent()
+    {
+        var rig = new Rig { Moved = false, ApplyThrows = new IOException("x") };
+
+        Assert.Equal(ReapplyVerdict.Failed, rig.Check(Bench));
+        Assert.Equal(["started", "apply", "spent"], rig.Calls);
+    }
+
+    [Fact]
+    public void ReapplyThatThrowsStillCallsSpentWithThePlannedBytesToStartRecovery()
+    {
+        var rig = new Rig { Moved = false, ApplyThrows = new IOException("x"), Options = new ApplyOptions(WriteCap: 4096) };
+
+        Assert.Equal(ReapplyVerdict.Failed, rig.Check(Bench));
+        Assert.Equal([4096L], rig.Spent); // 예정 바이트로 Spent 가 불려야 AutoRelocator 가 회복 대기를 시작함
+    }
+
+    [Fact]
+    public void PlannedBytesAreCappedByTheServiceWriteCap()
+    {
+        var rig = new Rig { Moved = false, Options = new ApplyOptions(WriteCap: 4096) };
+
+        Assert.Equal(ReapplyVerdict.Reapply, rig.Check(Bench));
+        Assert.Equal([4096L], rig.Started);
+    }
+
+    [Fact]
+    public void ApplyReceivesTheOptionsComputedBeforeStartedCountedTheBytes()
+    {
+        var rig = new Rig { Moved = false };
+        long used = 0;
+        rig.OptionsFn = () => new ApplyOptions(WriteCap: (1L << 30) - used); // 실제 ReapplyOptionsFor 처럼 Started 로 늘어난 사용량만큼 상한이 줄어듦
+        rig.OnStarted = b => used += b;
+
+        Assert.Equal(ReapplyVerdict.Reapply, rig.Check(Bench));
+        Assert.Equal(1L << 30, rig.AppliedOptions!.WriteCap);
+    }
+
+    [Fact]
+    public void ServiceOptionsReplaceTheDefaultsButKeepSavingToThePlan()
+    {
+        var g = new GameSettings("g", ["g.exe"], "t.json", "p.json", @"D:\g", [@"D:\g"], "GAMES", 1440);
+
+        ApplyOptions o = ReapplyEnv.ChooseOptions(g, new ApplyOptions(Execute: true, WriteCap: 123), "target", 1);
+
+        Assert.Equal((123L, "p.json"), (o.WriteCap, o.SaveTo));
+        Assert.Equal(2L << 30, ReapplyEnv.ChooseOptions(g, null, "target", 1).WriteCap); // 연결 전에는 기본 옵션
+    }
+
+    [Fact]
+    public void DegradedLayoutWarnsOncePerDayWhenAllowed()
+    {
+        var rig = new Rig { Moved = false, CanApply = false };
+
+        rig.Check(Bench);
+        rig.Check(Bench);
+        Assert.Single(rig.Log.Lines, l => l.StartsWith("Warn", StringComparison.Ordinal));
+
+        rig.Now += TimeSpan.FromHours(25);
+        rig.Check(Bench);
+        Assert.Equal(2, rig.Log.Lines.Count(l => l.StartsWith("Warn", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void DegradedLayoutDoesNotWarnWhenTheServiceSaysNo()
+    {
+        var rig = new Rig { Moved = false, WarnAllowed = false };
+
+        rig.Check(Bench);
+
+        Assert.DoesNotContain(rig.Log.Lines, l => l.StartsWith("Warn", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void DegradedLayoutDoesNotWarnWhenFilesAreUnreadable()
+    {
+        var rig = new Rig { Moved = false };
+        rig.LockedPath = rig.Plan.Fingerprints.First(f => !VolatileFiles.Ignored(f.Path)).Path;
+
+        Assert.Equal(ReapplyVerdict.FilesUnreadable, rig.Check(Bench));
+        Assert.DoesNotContain(rig.Log.Lines, l => l.StartsWith("Warn", StringComparison.Ordinal));
     }
 
     [Theory]

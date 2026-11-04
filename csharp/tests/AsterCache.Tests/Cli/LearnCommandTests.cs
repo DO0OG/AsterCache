@@ -14,20 +14,21 @@ public sealed class LearnCommandTests : IDisposable
     private const long Mib = 1L << 20;
     private const string GameFile = @"D:\Games\Foo\a.bin";
     private readonly LearnDeps _saved = LearnCommand.Deps;
-    private readonly (Func<string, string?> Folder, Func<bool> Vanguard) _savedGuard = (AntiCheatGuard.FolderKind, AntiCheatGuard.VanguardInstalled);
+    private readonly (Func<string, string?> Folder, Func<bool> Vanguard, Func<string, string?> Registered) _savedGuard = (AntiCheatGuard.FolderKind, AntiCheatGuard.VanguardInstalled, AntiCheatGuard.RegisteredKind);
     private readonly FakeReadIo _io = new();
     private FakeLearnSession? _session;
 
     public LearnCommandTests()
     {
         _io.Sizes[GameFile] = 20 * Mib;
+        AntiCheatGuard.RegisteredKind = _ => null; // 실제 ProgramData 설정을 읽지 않음
         LearnCommand.Deps = Deps(waitForReadAhead: 3 * Mib, neverSeen: false);
     }
 
     public void Dispose()
     {
         LearnCommand.Deps = _saved;
-        (AntiCheatGuard.FolderKind, AntiCheatGuard.VanguardInstalled) = _savedGuard;
+        (AntiCheatGuard.FolderKind, AntiCheatGuard.VanguardInstalled, AntiCheatGuard.RegisteredKind) = _savedGuard;
     }
 
     private LearnDeps Deps(long waitForReadAhead, bool neverSeen) => new()
@@ -84,6 +85,21 @@ public sealed class LearnCommandTests : IDisposable
 
         Assert.Equal(1, code);
         Assert.Contains("anti-cheat protected game; tracing disabled", text, StringComparison.Ordinal);
+        Assert.Null(_session);
+    }
+
+    [Fact]
+    public void LearnRefusesWhenTheFolderCannotBeEnumeratedOrTheRegisteredGameForbidsTracing()
+    {
+        AntiCheatGuard.FolderKind = _ => "unknown"; // 열거 실패
+        Assert.Equal(1, CliTests.Run("learn", "--exe", "foo.exe", "--root", @"D:\Games\Foo").Item1);
+
+        AntiCheatGuard.FolderKind = _ => null;
+        AntiCheatGuard.RegisteredKind = _ => "vanguard"; // 폴더에는 흔적이 없지만 등록된 값이 금지
+        (int code, string text, _) = CliTests.Run("learn", "--exe", "foo.exe", "--root", @"D:\Games\Foo");
+
+        Assert.Equal(1, code);
+        Assert.Contains("(vanguard)", text, StringComparison.Ordinal);
         Assert.Null(_session);
     }
 

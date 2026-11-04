@@ -32,7 +32,7 @@ public sealed class PinKeeper
     private readonly object _lock = new();
     private readonly Dictionary<string, IDisposable> _held = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, RecoveryPin> _recovery = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, string?> _cheat = new(StringComparer.OrdinalIgnoreCase); // 게임별 고정 금지 판정 (없음 포함, 탐지 실패는 넣지 않음)
+    private readonly Dictionary<string, (string Root, string? Cheat)> _cheat = new(StringComparer.OrdinalIgnoreCase); // 게임별 고정 금지 판정 (없음 포함, 탐지 실패는 넣지 않음): 게임 루트가 바뀌면 무효
     private readonly HashSet<string> _cheatLogged = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _holdLogged = new(StringComparer.OrdinalIgnoreCase); // 런처 보류 사유는 하나뿐이라 게임당 한 번만 남김
 
@@ -194,9 +194,9 @@ public sealed class PinKeeper
 
         lock (_lock)
         {
-            if (_cheat.TryGetValue(game.Name, out string? known))
+            if (_cheat.TryGetValue(game.Name, out var known) && known.Root == game.OriginRoot)
             {
-                return known;
+                return known.Cheat;
             }
         }
 
@@ -206,7 +206,7 @@ public sealed class PinKeeper
         {
             lock (_lock)
             {
-                _cheat[game.Name] = cheat;
+                _cheat[game.Name] = (game.OriginRoot, cheat);
             }
         }
 
@@ -217,9 +217,9 @@ public sealed class PinKeeper
     public void Reconcile(IReadOnlyList<GameSettings> games)
     {
         long ram = _env.PhysicalRamBytes();
-        foreach (string name in Held.Where(n => !games.Any(g => string.Equals(g.Name, n, StringComparison.OrdinalIgnoreCase) && (Wanted(g.Prewarm, ram) || (IsRecoveryPin(n) && !(g.Prewarm.PinSet && !g.Prewarm.Pin))))))
+        foreach (string name in Held.Where(n => !games.Any(g => string.Equals(g.Name, n, StringComparison.OrdinalIgnoreCase) && !AntiCheat.ForbidsPin(g.AntiCheat) && (Wanted(g.Prewarm, ram) || (IsRecoveryPin(n) && !(g.Prewarm.PinSet && !g.Prewarm.Pin))))))
         {
-            Release(name, "pin turned off or game removed in settings");
+            Release(name, games.Any(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase) && AntiCheat.ForbidsPin(g.AntiCheat)) ? "anti-cheat set in settings" : "pin turned off or game removed in settings");
         }
     }
 

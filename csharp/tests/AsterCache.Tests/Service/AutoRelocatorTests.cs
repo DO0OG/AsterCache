@@ -2981,6 +2981,290 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         Assert.Equal("prewarming 1/2 MiB", Entry.Detail);
     }
 
+    // ---- 병합 지문·존 상한 변경 재계획 (계획 stats: effective_zone_mib, merge_policy, trace_fingerprint) ----
+
+    private static readonly string[] NoteKeys = ["effective_zone_mib", "merge_policy", "trace_fingerprint"];
+
+    // 계획에서 메타 키를 지워 (옛 계획) 다시 저장: 계획 지문 (Sha) 은 그대로.
+    private void StripNotes(params string[] keys)
+    {
+        PlanFile plan = PlanFile.Load(_game.Plan);
+        var stats = new JObject();
+        foreach ((string key, object? value) in plan.Stats.Where(kv => !keys.Contains(kv.Key)))
+        {
+            stats.Add(key, value);
+        }
+
+        (plan with { Stats = stats }).Save(_game.Plan);
+    }
+
+    // 트레이스는 계획보다 오래된 상태 (새 플레이가 병합된 것이 아님): 존 상한·정책 검사만 가능.
+    private void TraceOlderThanThePlan(string raw)
+    {
+        _w.FileTimes[_game.Plan] = _w.Now;
+        _w.FileTimes[raw] = _w.Now - TimeSpan.FromHours(1);
+    }
+
+    private int ExtendLogs() => _log.Lines.Count(l => l.Contains("set aside as .extend", StringComparison.Ordinal));
+
+    [Fact]
+    public void PlansRecordTheZoneLimitMergePolicyAndFingerprintOfTheirTrace()
+    {
+        _w.TraceFingerprint = _ => "fp-1";
+
+        DoneAndReadyToReplan(out _);
+
+        PlanFile plan = PlanFile.Load(_game.Plan);
+        Assert.Equal(2048L, plan.Stats["effective_zone_mib"]);
+        Assert.Equal(AutoTracer.MergePolicy, plan.Stats["merge_policy"]);
+        Assert.Equal("fp-1", plan.Stats["trace_fingerprint"]);
+    }
+
+    [Fact]
+    public void RaisingTheZoneLimitReplansOnceWhenTheTraceOutgrewThePlanAndNeverRepeats()
+    {
+        _settings = _settings with { MaxZoneMib = 1 };
+        ReportFullMoves();
+        long start = DoneAndReadyToReplan(out string raw); // 상한 1 MiB 로 만든 계획 (핫 5 블록)
+        Assert.Equal(1L, PlanFile.Load(_game.Plan).Stats["effective_zone_mib"]);
+        Sessions = [Merged(RestOfTheBlocks())]; // 트레이스는 이미 32 블록 (2 MiB)
+        SetAuto(a => a with { TraceMergeMinMib = 1 });
+        TraceOlderThanThePlan(raw);
+        Tick();
+        Assert.False(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix)); // 상한이 그대로면 아무 일도 없음
+        _settings = _settings with { MaxZoneMib = 2 };
+
+        Tick();
+
+        Assert.True(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix));
+        Assert.Equal(AutoStage.WaitingIdle, Entry.Stage);
+        Assert.Contains(_log.Lines, l => l.Contains("zone limit 2 MiB", StringComparison.Ordinal));
+        RunUntilDone();
+        PlanFile after = PlanFile.Load(_game.Plan);
+        Assert.Equal((32L, 2L), ((long)after.Stats["hot_blocks"]!, after.Stats["effective_zone_mib"]));
+        Assert.Equal([start], _w.PlanStarts);
+        Assert.Equal(1, ExtendLogs());
+
+        for (int i = 0; i < 3; i++)
+        {
+            _w.Now += AutoRelocator.StaleCheckEvery;
+            Tick();
+        }
+
+        _relocator = null; // 서비스 재시작
+        Tick();
+        Assert.Equal(1, ExtendLogs()); // 같은 값이면 반복하지 않음
+        Assert.False(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix));
+        Assert.Equal([start], _w.PlanStarts);
+    }
+
+    [Fact]
+    public void LoweringTheZoneLimitBelowThePlansHotSetReplansOnceIntoTheSameZoneAndNeverRepeats()
+    {
+        _settings = _settings with { MaxZoneMib = 2 };
+        Sessions = [Merged(RestOfTheBlocks())]; // 32 블록 (2 MiB) 을 그대로 담은 계획
+        ReportFullMoves();
+        long start = DoneAndReadyToReplan(out string raw);
+        Assert.Equal((32L, 2L), ((long)PlanFile.Load(_game.Plan).Stats["hot_blocks"]!, PlanFile.Load(_game.Plan).Stats["effective_zone_mib"]));
+        SetAuto(a => a with { TraceMergeMinMib = 1 });
+        TraceOlderThanThePlan(raw);
+        _settings = _settings with { MaxZoneMib = 1 }; // 계획의 핫셋이 새 상한을 넘음
+
+        Tick();
+
+        Assert.True(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix));
+        Assert.Equal(AutoStage.WaitingIdle, Entry.Stage);
+        Assert.Equal(2L, PlanFile.Load(_game.Plan + AutoRelocator.ExtendSuffix).Stats["effective_zone_mib"]); // 메타만 새 상한으로 적지 않음
+        Assert.Contains(_log.Lines, l => l.Contains("above the zone limit 1 MiB", StringComparison.Ordinal));
+
+        RunUntilDone();
+
+        PlanFile after = PlanFile.Load(_game.Plan);
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.Equal((16L, 1L), ((long)after.Stats["hot_blocks"]!, after.Stats["effective_zone_mib"])); // 새 상한 안의 계획이 메타를 가짐
+        Assert.Equal(start, after.Zone.StartLcn);
+        Assert.Equal([start], _w.PlanStarts);
+        Assert.Equal(1, ExtendLogs());
+        Assert.False(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix));
+
+        for (int i = 0; i < 3; i++)
+        {
+            _w.Now += AutoRelocator.StaleCheckEvery;
+            Tick();
+        }
+
+        _relocator = null; // 서비스 재시작
+        Tick();
+
+        Assert.Equal(1, ExtendLogs()); // 다음 틱에도 되풀이하지 않음
+        Assert.Equal([start], _w.PlanStarts);
+        Assert.False(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix));
+    }
+
+    [Fact]
+    public void ALoweredOrUnchangedZoneLimitOrAPlanThatIsNotOutgrownNeverReplans()
+    {
+        DoneAndReadyToReplan(out string raw);
+        Sessions = [Merged(RestOfTheBlocks())];
+        SetAuto(a => a with { TraceMergeMinMib = 1 });
+        TraceOlderThanThePlan(raw);
+        _relocator = null;
+
+        Tick(); // 상한·정책이 계획과 같음: 트레이스가 더 커도 새 플레이가 병합되기 전에는 다시 보지 않음
+        _settings = _settings with { MaxZoneMib = 1 }; // 낮춤: 늘어날 일이 없음
+        Tick();
+
+        Assert.False(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix));
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.Equal(1L, PlanFile.Load(_game.Plan).Stats["effective_zone_mib"]); // 지금 상한을 계획에 적어 둠
+        Assert.Empty(_w.PlanStarts);
+    }
+
+    [Fact]
+    public void APlanWithoutNotesIsOnlyNotedWhenTheTraceDidNotOutgrowItAndKeepsItsPlanHash()
+    {
+        _w.TraceFingerprint = _ => "fp-now";
+        DoneAndReadyToReplan(out string raw);
+        string sha = PlanFile.Load(_game.Plan).Sha();
+        StripNotes(NoteKeys);
+        TraceOlderThanThePlan(raw);
+        _relocator = null;
+
+        Tick();
+
+        Assert.False(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix));
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        PlanFile plan = PlanFile.Load(_game.Plan);
+        Assert.Equal((2048L, AutoTracer.MergePolicy, "fp-now"), (plan.Stats["effective_zone_mib"], plan.Stats["merge_policy"], plan.Stats["trace_fingerprint"]));
+        Assert.Equal(sha, plan.Sha());
+        Assert.Empty(_w.Moved);
+        Assert.Contains(_log.Lines, l => l.Contains("plan notes recorded", StringComparison.Ordinal));
+        Tick();
+        Assert.Single(_log.Lines, l => l.Contains("plan notes recorded", StringComparison.Ordinal)); // 한 번만
+    }
+
+    [Fact]
+    public void APlanWithoutNotesIsReplannedOnceWhenTheTraceOutgrewIt()
+    {
+        ReportFullMoves();
+        long start = DoneAndReadyToReplan(out string raw);
+        StripNotes(NoteKeys);
+        Sessions = [Merged(RestOfTheBlocks())];
+        SetAuto(a => a with { TraceMergeMinMib = 1 });
+        TraceOlderThanThePlan(raw);
+        _relocator = null;
+
+        Tick();
+        RunUntilDone();
+
+        Assert.Equal(32L, PlanFile.Load(_game.Plan).Stats["hot_blocks"]);
+        Assert.Equal(2048L, PlanFile.Load(_game.Plan).Stats["effective_zone_mib"]);
+        Assert.Equal([start], _w.PlanStarts);
+        _relocator = null;
+        Tick();
+        Assert.Equal(1, ExtendLogs());
+    }
+
+    [Fact]
+    public void AChangedMergeFingerprintReplansEvenWhenTheTraceDidNotGrow()
+    {
+        _w.TraceFingerprint = _ => "fp-a";
+        ReportFullMoves();
+        long start = DoneThenMergedTrace(Merged([])); // 같은 5 블록, 크기 증가 없음
+        _w.TraceFingerprint = _ => "fp-b";
+
+        Tick();
+
+        Assert.True(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix));
+        Assert.Contains(_log.Lines, l => l.Contains("blocks or order changed", StringComparison.Ordinal));
+        RunUntilDone();
+        Assert.Equal("fp-b", PlanFile.Load(_game.Plan).Stats["trace_fingerprint"]);
+        Assert.Equal([start], _w.PlanStarts);
+        TraceOlderThanThePlan(AutoTracer.RawTracePath(_game)); // 같은 트레이스
+        _relocator = null;
+        Tick();
+        Assert.Equal(1, ExtendLogs());
+    }
+
+    [Fact]
+    public void ASameMergeFingerprintDoesNotReplanWithoutGrowth()
+    {
+        _w.TraceFingerprint = _ => "fp-a";
+        DoneThenMergedTrace(Merged([]));
+
+        Tick();
+        _w.Now += AutoRelocator.StaleCheckEvery;
+        Tick();
+
+        Assert.False(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix));
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.Equal(0, ExtendLogs());
+    }
+
+    [Fact]
+    public void AnOldPlanWithoutAFingerprintOnlyRecordsTheCurrentOneAndDoesNotReplan()
+    {
+        _w.TraceFingerprint = _ => "fp-a";
+        DoneThenMergedTrace(Merged([]));
+        StripNotes("trace_fingerprint");
+        _w.TraceFingerprint = _ => "fp-b";
+
+        Tick();
+
+        Assert.False(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix));
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.Equal("fp-b", PlanFile.Load(_game.Plan).Stats["trace_fingerprint"]);
+        Assert.Equal(0, ExtendLogs());
+    }
+
+    [Fact]
+    public void ABlockedExtensionNotesTheLimitOnTheRestoredPlanSoARestartDoesNotTryAgain()
+    {
+        _settings = _settings with { MaxZoneMib = 1 };
+        long start = DoneAndReadyToReplan(out string raw);
+        Sessions = [Merged(RestOfTheBlocks())];
+        SetAuto(a => a with { TraceMergeMinMib = 1 });
+        TraceOlderThanThePlan(raw);
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> inner = _w.Apply;
+        _w.Apply = (g, plan, options, ct) => options.DryRun && plan.Zone.StartLcn is not null
+            ? throw new PlanRejectedException("source_changed: " + F1)
+            : inner(g, plan, options, ct);
+        _settings = _settings with { MaxZoneMib = 2 };
+
+        Tick();
+        RunUntilDone();
+
+        Assert.Equal([start], _w.PlanStarts);
+        Assert.Single(_log.Lines, l => l.Contains("zone extension blocked", StringComparison.Ordinal));
+        Assert.Equal(2L, PlanFile.Load(_game.Plan).Stats["effective_zone_mib"]);
+        _relocator = null; // 서비스 재시작
+        Tick();
+        RunUntilDone();
+        Assert.Equal([start], _w.PlanStarts);
+        Assert.Single(_log.Lines, l => l.Contains("zone extension blocked", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void StatusShowsExtraTraceRunsWithTheCoverageWhileTheyAreStillWanted()
+    {
+        DoneAndReadyToReplan(out string raw);
+        SetAuto(a => a with { TraceRuns = 3 });
+        _w.Files.Add(TraceWriter.RunPath(raw, 1));
+        _w.Files.Add(TraceWriter.RunPath(raw, 2));
+        _w.Files.Add(TraceWriter.RunPath(raw, 3));
+        File.WriteAllText(AutoTracer.MergeMetaPath(_game), "{\"run\": 3, \"new_mib\": 200}");
+        _status.RecordCoverage("bench", 22);
+
+        Relocator.NoteProgress(_game, 1, 2);
+        Assert.Contains("trace 3/8 (coverage 22%)", Entry.Detail, StringComparison.Ordinal);
+        Relocator.NoteProgress(_game, 2, 2); // 다시 붙일 때 옛 표시를 지움
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(Entry.Detail!, "trace 3/8"));
+
+        _status.RecordCoverage("bench", 90);
+        Relocator.NoteProgress(_game, 1, 2);
+        Assert.DoesNotContain("trace", Entry.Detail!, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void GameUpdateSetsTheRunFilesAsideToo()
     {

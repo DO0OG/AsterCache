@@ -1,4 +1,3 @@
-using AsterCache.Core.Discovery;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Plan;
@@ -22,7 +21,6 @@ public sealed class AutoTracer
     private readonly LearnEnv _learn;
     private readonly object _lock = new();
     private Run? _run;
-    private readonly Dictionary<string, (string Root, string? Registered, string? Cheat)> _cheat = new(StringComparer.OrdinalIgnoreCase); // 게임별 트레이스 금지 판정 (없음 포함): 루트·등록 값이 바뀌면 무효, _lock 으로 보호
     private readonly HashSet<string> _cheatLogged = new(StringComparer.OrdinalIgnoreCase);
 
     /// 두 번째 이후 플레이가 이보다 적게 읽었거나 (바이트) 첫 플레이의 1 % 보다 이벤트가 적으면 (메뉴만 켠 플레이 등) 저장하지 않고 회차로 세지 않습니다.
@@ -77,8 +75,21 @@ public sealed class AutoTracer
         return marks;
     }
 
-    /// 지금까지 모은 플레이 수: 원시 트레이스가 있을 때 trace.run1.json, run2.json ... 이 이어서 있는 개수, 그런 파일 없이 원시 트레이스만 있으면 1, 원시 트레이스가 없으면 0. 따로 저장하는 상태 없음.
-    public static int RunCount(GameSettings g, Func<string, bool> exists)
+    /// 병합 정책 표지 (계획 메타 merge_policy): 최신 유효 회차의 블록이 앞, 옛 회차는 뒤. 바뀌면 계획을 한 번 다시 봅니다.
+    public const string MergePolicy = "newest-first-v1";
+
+    /// run 파일 번호의 상한 (run1..run32).
+    public const int MaxRunFiles = 32;
+
+    /// 병합 직후 남기는 작은 메타 (이번 병합이 더한 새 고유 블록): plans\<이름>.trace.merge.json. run 번호가 마지막 run 파일과 같을 때만 믿습니다.
+    public static string MergeMetaPath(GameSettings g) => Path.Combine(Path.GetDirectoryName(g.Plan) ?? string.Empty, g.Name + ".trace.merge.json");
+
+    /// 옛 형식에서 옮긴 run1 이 크기와 무관하게 유효하다는 표지: plans\<이름>.trace.legacy-run1.
+    public static string LegacyRun1Path(GameSettings g) => Path.Combine(Path.GetDirectoryName(g.Plan) ?? string.Empty, g.Name + ".trace.legacy-run1");
+
+    /// 지금까지 모은 유효 플레이 수: 원시 트레이스가 없으면 0, run 파일 없는 원시 트레이스 하나 (옛 형식) 는 1 로 셈하고 (호환),
+    /// 이어서 있는 run1, run2 ... 는 읽기량이 minBytes 이상인 것만 셈 (읽기량을 못 얻으면 셈). readBytes 가 없으면 이어서 있는 run 파일을 모두 셈. 따로 저장하는 상태 없음.
+    public static int RunCount(GameSettings g, Func<string, bool> exists, Func<string, long?>? readBytes = null, long minBytes = MinExtraRunBytes)
     {
         string raw = RawTracePath(g);
         if (!exists(raw))
@@ -86,13 +97,135 @@ public sealed class AutoTracer
             return 0;
         }
 
-        int n = 0;
-        while (n < 32 && exists(TraceWriter.RunPath(raw, n + 1)))
+        if (!exists(TraceWriter.RunPath(raw, 1)))
         {
-            n++;
+            return 1;
         }
 
-        return Math.Max(1, n);
+        int valid = 0;
+        for (int n = 1; n <= MaxRunFiles && exists(TraceWriter.RunPath(raw, n)); n++)
+        {
+            if (n == 1 && exists(LegacyRun1Path(g)) || readBytes?.Invoke(TraceWriter.RunPath(raw, n)) is not { } bytes || bytes >= minBytes)
+            {
+                valid++;
+            }
+        }
+
+        return valid;
+    }
+
+    /// 있는 run 파일 중 가장 큰 번호 (끊겨 있어도 가장 큰 것), run 파일 없이 원시 트레이스만 있으면 1, 원시 트레이스가 없으면 0. 다음 저장 번호는 이 값 + 1 (유효 회차 수가 아님: 덮어쓰기 금지).
+    public static int LastRunNumber(GameSettings g, Func<string, bool> exists)
+    {
+        string raw = RawTracePath(g);
+        if (!exists(raw))
+        {
+            return 0;
+        }
+
+        for (int n = MaxRunFiles; n >= 1; n--)
+        {
+            if (exists(TraceWriter.RunPath(raw, n)))
+            {
+                return n;
+            }
+        }
+
+        return 1;
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (long Length, long Ticks, long? Bytes)> RunBytesCache = new(StringComparer.OrdinalIgnoreCase);
+
+    /// run 파일 하나가 읽은 양 (행 길이 합). 파일 크기·수정 시각이 같으면 캐시 값을 써서 큰 JSON 을 매번 읽지 않습니다. 없거나 읽을 수 없으면 null.
+    public static long? RunReadBytes(string path)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            if (!info.Exists)
+            {
+                return null;
+            }
+
+            long ticks = info.LastWriteTimeUtc.Ticks;
+            if (RunBytesCache.TryGetValue(path, out var hit) && hit.Length == info.Length && hit.Ticks == ticks)
+            {
+                return hit.Bytes;
+            }
+
+            long? bytes = JsonRead.ReadFile(path) is List<object?> rows ? rows.Sum(r => TraceEvents.FromJson(r).Length) : null;
+            RunBytesCache[path] = (info.Length, ticks, bytes);
+            return bytes;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            return null;
+        }
+    }
+
+    /// 다음 플레이를 트레이스할지의 공통 판정 (게임 시작 두 곳이 같이 씀). Valid = 유효 회차 수, Limit = 지금 단계의 회차 상한.
+    public readonly record struct TraceNext(int Valid, int Limit, bool Wanted, int? Coverage);
+
+    /// 유효 회차가 trace_runs 에 못 미치면 기존 정책대로 한 번 더. 채운 뒤에는 (a) 마지막 세션 커버리지가 trace_target_coverage 미만이고 (b) 직전 병합이 새 고유 블록을
+    /// trace_merge_min_mib 이상 더했고 (c) 유효 회차가 trace_runs_max 미만일 때만 한 번 더. 값이 없으면 기존 정책 (거절). 안티치트 판정은 호출한 쪽 (Start) 이 먼저 합니다.
+    public static TraceNext NextTrace(GameSettings g, AutoSettings a, AutoEnv env, AutoStatus status, long minBytes = MinExtraRunBytes)
+    {
+        int valid = RunCount(g, env.FileExists, env.RunReadBytes, minBytes);
+        int last = LastRunNumber(g, env.FileExists);
+        bool room = last < MaxRunFiles;
+        if (valid < a.TraceRuns)
+        {
+            return new TraceNext(valid, a.TraceRuns, room, null);
+        }
+
+        int limit = Math.Max(a.TraceRuns, a.TraceRunsMax);
+        int? coverage = status.Get(g.Name)?.CoveragePercent;
+        bool more = room && valid < limit && coverage is { } c && c < a.TraceTargetCoverage
+            && ReadMergeGainMib(g, last) is { } gain && gain >= a.TraceMergeMinMib;
+        return new TraceNext(valid, limit, more, coverage);
+    }
+
+    /// 병합 결과의 지문: 행 순서대로 (경로, 오프셋, 길이) 의 SHA-256 (소문자 hex). 블록 집합이나 순서가 바뀌면 달라지고 t_ms·cost 는 보지 않습니다. 읽을 수 없으면 null.
+    public static string? TraceFingerprint(string path)
+    {
+        try
+        {
+            if (JsonRead.ReadFile(path) is not List<object?> rows)
+            {
+                return null;
+            }
+
+            using var sha = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
+            foreach (object? row in rows)
+            {
+                TraceEvent e = TraceEvents.FromJson(row);
+                sha.AppendData(System.Text.Encoding.UTF8.GetBytes($"{e.Path}\n{e.Offset}\n{e.Length}\n"));
+            }
+
+            return Convert.ToHexString(sha.GetHashAndReset()).ToLowerInvariant();
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            return null;
+        }
+    }
+
+    /// 이 게임의 다음 플레이를 트레이스할지 (게임 시작 판정과 Start 가 같은 NextTrace 를 씀).
+    public bool WantsRun(GameSettings g) => NextTrace(g, _settings().Auto, _env, _status, MinRunBytes).Wanted;
+
+    // 직전 병합 (run lastRun) 이 더한 새 고유 블록 (MiB). 메타가 없거나 다른 병합의 것이거나 읽을 수 없으면 null.
+    private static long? ReadMergeGainMib(GameSettings g, int lastRun)
+    {
+        try
+        {
+            string path = MergeMetaPath(g);
+            return File.Exists(path) && JsonRead.ReadFile(path) is JObject o && o.TryGetValue("run", out object? r) && r is long run && run == lastRun
+                && o.TryGetValue("new_mib", out object? n) && n is long mib ? mib : null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            return null;
+        }
     }
 
     /// 가져온 프로필·합성 트레이스 (plans\<이름>.boot.trace.json). 원시 트레이스가 없을 때만 계획·예열의 입력이 되고, 첫 실행 기록은 막지 않습니다.
@@ -149,35 +282,7 @@ public sealed class AutoTracer
     }
 
     // 안티치트 게임은 ETW 커널 트레이스를 걸지 않음 (보호 드라이버가 세션을 보고 클라이언트를 끊음). 등록 정보 (설정을 읽을 때 Riot 규칙으로 채워짐), 폴더 이름 순으로 보고 (폴더 열거는 한 번만) 탐지 실패도 막음.
-    private string? TraceBlocker(GameSettings g)
-    {
-        if (AntiCheat.ForbidsTrace(g.AntiCheat))
-        {
-            return g.AntiCheat; // 명시된 금지값은 캐시보다 먼저 (설정이 나중에 바뀌어도 바로 반영)
-        }
-
-        lock (_lock)
-        {
-            if (_cheat.TryGetValue(g.Name, out var known) && known.Root == g.OriginRoot && known.Registered == g.AntiCheat)
-            {
-                return known.Cheat;
-            }
-        }
-
-        string? found = _env.AntiCheatOf(g.OriginRoot);
-        string? cheat = AntiCheat.ForbidsTrace(found) ? found : null;
-        if (found == AutoEnv.AntiCheatUnknown)
-        {
-            return cheat; // 탐지 실패는 캐시하지 않음 (다음 시작에 다시 봄)
-        }
-
-        lock (_lock)
-        {
-            _cheat[g.Name] = (g.OriginRoot, g.AntiCheat, cheat);
-        }
-
-        return cheat;
-    }
+    private string? TraceBlocker(GameSettings g) => _env.TraceBlocker(g);
 
     public void Start(GameSettings g)
     {
@@ -199,11 +304,15 @@ public sealed class AutoTracer
 
         string? refused;
         ReadAhead? learn = null;
-        int done; // 이미 모은 플레이 수: 0 이면 첫 기록, 1 이상이면 병합용 추가 기록 (상태·선행 읽기를 건드리지 않음)
+        int done; // 이미 모은 유효 플레이 수
+        bool firstRun; // 원시 트레이스가 아직 없는 첫 기록 (아니면 병합용 추가 기록: 상태·선행 읽기를 건드리지 않음). 유효 회차가 0 이어도 run1 이 있으면 추가 기록
+        TraceNext next;
         lock (_lock)
         {
-            done = RunCount(g, _env.FileExists);
-            if (_run is not null || done >= _settings().Auto.TraceRuns)
+            next = NextTrace(g, _settings().Auto, _env, _status, MinRunBytes);
+            done = next.Valid;
+            firstRun = !_env.FileExists(RawTracePath(g));
+            if (_run is not null || !next.Wanted)
             {
                 return;
             }
@@ -214,15 +323,15 @@ public sealed class AutoTracer
                 try
                 {
                     LearnSettings ls = _settings().Auto.Learn;
-                    learn = ls.Enabled && done == 0 ? AutoLearn.Create(g, ls, _env.PhysicalRamBytes(), _learn) : null; // 시스템 SSD·SSD 는 위에서 이미 걸러짐
-                    _run = new Run(g, _env.StartTrace(g.ExeNames, learn is null ? null : AutoLearn.Listener(learn)), _env.Now()) { Learn = learn, Number = done + 1 };
+                    learn = ls.Enabled && firstRun ? AutoLearn.Create(g, ls, _env.PhysicalRamBytes(), _learn) : null; // 시스템 SSD·SSD 는 위에서 이미 걸러짐
+                    _run = new Run(g, _env.StartTrace(g.ExeNames, learn is null ? null : AutoLearn.Listener(learn)), _env.Now()) { Learn = learn, Number = LastRunNumber(g, _env.FileExists) + 1 }; // 번호는 유효 회차 수가 아니라 있는 run 파일 기준 (덮어쓰기 금지)
                     learn?.Start();
                 }
                 catch (Exception e) when (e is not OperationCanceledException)
                 {
                     learn?.Dispose();
                     _log.Error($"{g.Name}: auto trace could not start", e);
-                    if (done == 0)
+                    if (firstRun)
                     {
                         _status.Set(g.Name, g.Source, null, AutoStage.Failed, "trace session failed to start");
                     }
@@ -234,7 +343,7 @@ public sealed class AutoTracer
 
         if (refused is not null)
         {
-            if (done == 0 && _status.Set(g.Name, g.Source, null, AutoStage.Skipped, refused))
+            if (firstRun && _status.Set(g.Name, g.Source, null, AutoStage.Skipped, refused))
             {
                 _log.Info($"{g.Name}: auto trace and relocation skipped ({refused})"); // 같은 이유면 매번 남기지 않음
             }
@@ -242,9 +351,9 @@ public sealed class AutoTracer
             return;
         }
 
-        if (done > 0)
+        if (!firstRun)
         {
-            _log.Info($"{g.Name}: auto trace started (run {done + 1}/{_settings().Auto.TraceRuns})");
+            _log.Info($"{g.Name}: auto trace started (run {done + 1}/{next.Limit}" + (next.Coverage is { } cov && done >= _settings().Auto.TraceRuns ? $", coverage {cov}%" : string.Empty) + ")");
             return;
         }
 
@@ -279,7 +388,8 @@ public sealed class AutoTracer
             return;
         }
 
-        AutoSettings a = _settings().Auto;
+        AsterSettings all = _settings();
+        AutoSettings a = all.Auto;
         IReadOnlyList<(int Pid, long ReadBytes)> procs = _env.GameProcesses(run.Game.ExeNames);
         IReadOnlyList<int> rooted = _env.RootPids(run.Game); // 게임 폴더 아래의 실제 게임 프로세스 (등록 exe 의 자식인 경우도 포함)
         procs = [.. procs, .. rooted.Where(p => procs.All(x => x.Pid != p)).Select(p => (Pid: p, Bytes: _env.ReadBytes(p))).Where(x => x.Bytes is not null).Select(x => (x.Pid, x.Bytes!.Value))];
@@ -301,13 +411,17 @@ public sealed class AutoTracer
         TimeSpan elapsed = _env.Now() - run.StartedAt;
         string? why = !_env.AnyRunning(run.Game.ExeNames) && rooted.Count == 0 ? "game exited" // 읽기량을 못 연 (보호된) 게임 프로세스도 실행 중으로 셈, 등록 exe 가 먼저 끝나도 폴더 아래 프로세스가 남았으면 실행 중
             : elapsed >= TimeSpan.FromSeconds(a.TraceCapSeconds) ? "time cap"
-            : run.Read >= (long)a.TraceCapMib << 20 ? "read cap"
+            : run.Read >= (long)ReadCapMib(run, all) << 20 ? "read cap"
             : null;
         if (why is not null)
         {
             Finish(run, why);
         }
     }
+
+    // 읽기 캡 (MiB): 명시한 trace_cap_mib 는 그대로, 기본값이면 max(6144, 유효 존 상한 x 2) 를 플레이당 한 번만 계산함 (매초 디스크 종류를 묻지 않게).
+    private int ReadCapMib(Run run, AsterSettings all) =>
+        all.Auto.TraceCapMib != AutoSettings.DefaultTraceCapMib ? all.Auto.TraceCapMib : run.AutoCapMib ??= all.Auto.EffectiveTraceCapMib(AutoRelocator.EffectiveZoneMib(all, run.Game, _env));
 
     /// 서비스 종료: 돌고 있는 세션만 정리합니다 (기록은 버림).
     public void Shutdown()
@@ -345,6 +459,12 @@ public sealed class AutoTracer
             if (run.Number > 1 && TooSmall(g, canonical) is { } small)
             {
                 _log.Info($"{g.Name}: auto trace ended ({why}), run {run.Number} too small ({small}), not saved and not counted");
+                return;
+            }
+
+            if (run.Number == 1 && !ClearLegacyRun1Mark(g)) // 업데이트로 옛 트레이스를 치운 뒤의 새 첫 기록: 남은 옛 표지가 새 run1 을 유효로 만들면 안 되므로 표지를 먼저 지우고, 못 지우면 저장하지 않음
+            {
+                _status.Set(g.Name, g.Source, null, AutoStage.Failed, "trace failed: legacy mark");
                 return;
             }
 
@@ -502,27 +622,95 @@ public sealed class AutoTracer
         }
     }
 
-    // 두 번째 이후 플레이: runN.json 으로 저장하고, run1..N 의 블록 합집합 (run1 의 접근 순서 뒤에 새 run 에서 처음 본 블록) 을 임시 파일을 거쳐 원시 트레이스로 한 번에 바꿔 씁니다.
+    // 두 번째 이후 플레이: runN.json 으로 저장하고, 유효한 run 들의 블록 합집합 (최신 회차의 접근 순서가 앞, 옛 회차에서만 본 블록은 뒤) 을 임시 파일을 거쳐 원시 트레이스로 한 번에 바꿔 씁니다.
+    // 읽기량이 MinRunBytes 미만인 옛 run (옛 형식에서 옮긴 run1 제외) 은 합집합에 넣지 않습니다. 이번 병합이 더한 새 고유 블록은 작은 메타로 남김.
     private void Merge(GameSettings g, List<TraceEvent> canonical, int number)
     {
         string raw = RawTracePath(g);
         string first = TraceWriter.RunPath(raw, 1);
-        if (number == 2 && !_env.FileExists(first))
+        bool legacy = number == 2 && !_env.FileExists(first); // run 파일 없이 원시 트레이스만 있던 게임: 그 트레이스가 run1 (호환: 크기와 무관하게 유효)
+        if (legacy)
         {
-            File.Copy(raw, first, true); // run 파일 없이 원시 트레이스만 있던 게임: 그 트레이스가 run1
+            File.Copy(raw, first, true);
+            SaveLegacyRun1Mark(g);
         }
+
+        bool run1Valid = legacy || _env.FileExists(LegacyRun1Path(g));
 
         TraceWriter.WriteFile(TraceWriter.RunPath(raw, number), canonical);
-        var sessions = new List<IReadOnlyList<TraceEvent>>();
-        for (int i = 1; i < number; i++)
+        var previous = new List<IReadOnlyList<TraceEvent>>();
+        for (int i = number - 1; i >= 1; i--)
         {
-            sessions.Add(JsonRead.ReadFile(TraceWriter.RunPath(raw, i)) is List<object?> rows ? [.. rows.Select(TraceEvents.FromJson)] : throw new PyValueException("bad trace file"));
+            string file = TraceWriter.RunPath(raw, i);
+            if (!_env.FileExists(file))
+            {
+                continue; // 끊긴 번호
+            }
+
+            List<TraceEvent> events = JsonRead.ReadFile(file) is List<object?> rows ? [.. rows.Select(TraceEvents.FromJson)] : throw new PyValueException("bad trace file");
+            if (run1Valid && i == 1 || events.Sum(e => e.Length) >= MinRunBytes)
+            {
+                previous.Add(events);
+            }
         }
 
-        sessions.Add(canonical);
+        List<TraceEvent> union = TraceWriter.Union([canonical, .. previous]);
         string temp = raw + ".tmp";
-        TraceWriter.WriteFile(temp, TraceWriter.Union(sessions));
+        TraceWriter.WriteFile(temp, union);
         File.Move(temp, raw, true);
+        SaveMergeMeta(g, number, (union.Count - TraceWriter.Union(previous).Count) * TraceWriter.Block >> 20);
+    }
+
+    private bool ClearLegacyRun1Mark(GameSettings g)
+    {
+        try
+        {
+            string path = LegacyRun1Path(g);
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+
+            return true;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"{g.Name}: legacy run1 mark not removed ({e.GetType().Name}), first trace not saved");
+            return false;
+        }
+    }
+
+    // 못 쓰면 이번 병합만 run1 을 유효로 보고, 이후에는 기존 동작 (64 MiB 미만이면 무효) 으로 돌아감.
+    private void SaveLegacyRun1Mark(GameSettings g)
+    {
+        try
+        {
+            string path = LegacyRun1Path(g);
+            string temp = path + ".tmp";
+            File.WriteAllText(temp, "1");
+            File.Move(temp, path, true);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"{g.Name}: legacy run1 mark not saved ({e.GetType().Name})");
+        }
+    }
+
+    // 힌트일 뿐: 못 써도 병합은 그대로 (메타가 없으면 추가 수집은 기존 정책으로 돌아감).
+    private void SaveMergeMeta(GameSettings g, int number, long newMib)
+    {
+        try
+        {
+            var o = new JObject { { "run", (long)number }, { "new_mib", newMib } };
+            string path = MergeMetaPath(g);
+            string temp = path + ".tmp";
+            File.WriteAllBytes(temp, PyJson.Utf8.GetBytes(PyJson.Dumps(o, indent: 1)));
+            File.Move(temp, path, true);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"{g.Name}: merge note not saved ({e.GetType().Name})");
+        }
     }
 
     // 세션이 멈춘 뒤 선행 읽기를 끝내고 결과를 남깁니다 (Dispose 는 작업자 스레드를 기다림).
@@ -550,6 +738,9 @@ public sealed class AutoTracer
         public bool Primed { get; set; }
 
         public long Read { get; set; }
+
+        /// 기본 읽기 캡의 계산값 (MiB), 아직 안 구했으면 null.
+        public int? AutoCapMib { get; set; }
 
         /// 첫 실행 선행 읽기 (auto.learn 이 켜졌을 때).
         public ReadAhead? Learn { get; init; }

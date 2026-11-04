@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using AsterCache.Core;
 using AsterCache.Core.Apply;
+using AsterCache.Core.Discovery;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
@@ -43,6 +45,34 @@ public sealed record DriveCapabilities(bool CanDiscover, bool CanPrewarm, bool C
             : system ? (rotational ? PrewarmOnly : "system volume")
             : hdd is false ? "not an HDD" : "drive type unknown";
         return new DriveCapabilities(rotational, rotational, all, all, system, rotational) { Reason = reason };
+    }
+}
+
+/// 트레이스를 금지하는 유효 안티치트 판정 (등록값 우선, 없으면 폴더 탐지 결과를 게임 이름별로 캐시: 루트·등록값이 바뀌면 무효). 탐지 실패 ("unknown") 는 캐시하지 않음.
+public sealed class TraceBlockCache(Func<string, string?> detect)
+{
+    private readonly ConcurrentDictionary<string, (string Root, string? Registered, string? Cheat)> _known = new(StringComparer.OrdinalIgnoreCase);
+
+    public string? Of(GameSettings g)
+    {
+        if (AntiCheat.ForbidsTrace(g.AntiCheat))
+        {
+            return g.AntiCheat; // 명시된 금지값은 캐시보다 먼저 (설정이 나중에 바뀌어도 바로 반영)
+        }
+
+        if (_known.TryGetValue(g.Name, out var known) && known.Root == g.OriginRoot && known.Registered == g.AntiCheat)
+        {
+            return known.Cheat;
+        }
+
+        string? found = detect(g.OriginRoot);
+        string? cheat = AntiCheat.ForbidsTrace(found) ? found : null;
+        if (found != AutoEnv.AntiCheatUnknown)
+        {
+            _known[g.Name] = (g.OriginRoot, g.AntiCheat, cheat);
+        }
+
+        return cheat;
     }
 }
 
@@ -105,6 +135,15 @@ public sealed class AutoEnv
 
     /// 폴더가 있는가 (드라이브가 분리되면 거짓). 시험 기본값은 항상 참.
     public Func<string, bool> DirectoryExists { get; init; } = _ => true;
+
+    /// run 파일 하나의 읽기량 (바이트, 행 길이 합), 읽을 수 없으면 null (유효 회차로 셈). 시험 기본값은 null.
+    public Func<string, long?> RunReadBytes { get; init; } = _ => null;
+
+    /// 원시 트레이스의 병합 결과 지문 (블록 집합·순서 해시), 읽을 수 없으면 null. 시험 기본값은 null.
+    public Func<string, string?> TraceFingerprint { get; init; } = _ => null;
+
+    /// 트레이스를 만들 수 없는 게임의 엔진 프로필 구간 (게임, 예산 바이트 → 우선순위 순 이벤트), 프로필이 없으면 빈 목록. 계획이 트레이스 뒤에 보충으로 더합니다. 시험 기본값은 빈 목록.
+    public Func<GameSettings, long, IReadOnlyList<TraceEvent>> ProfileEvents { get; init; } = (_, _) => [];
 
     /// 파일의 마지막 수정 시각 (UTC), 없으면 null. 원시 트레이스가 마지막 예열보다 새로운지 보는 데 씁니다.
     public Func<string, DateTimeOffset?> FileWriteTime { get; init; } = _ => null;
@@ -197,6 +236,11 @@ public sealed class AutoEnv
     /// SSD 보조 저장 (선택 기능) 의 엔진. 시험 기본값은 null (건드리지 않음).
     public TierEngine? Tier { get; init; }
 
+    private TraceBlockCache? _traceBlocks;
+
+    /// 게임의 유효 트레이스 금지 안티치트 (없으면 null): 등록값이 금지값이면 그것, 아니면 폴더 이름으로 탐지한 결과 (AntiCheatOf, 루트·등록값 키로 캐시, 모름은 캐시하지 않고 "unknown" 으로 돌려줌).
+    public string? TraceBlocker(GameSettings g) => LazyInitializer.EnsureInitialized(ref _traceBlocks, () => new TraceBlockCache(AntiCheatOf)).Of(g);
+
     /// 자동 모드가 이 설치 루트에 할 수 있는 일 (HDD 로 확인된 시스템 볼륨 밖은 전부, 회전 디스크인 시스템 볼륨은 발견·예열만).
     public DriveCapabilities Capabilities(string originRoot) => DriveCapabilities.Of(originRoot, SystemDrive, IsHdd);
 
@@ -225,6 +269,9 @@ public sealed class AutoEnv
             SystemDrive = Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.Windows))![..2].ToUpperInvariant(),
             ServiceDir = AppContext.BaseDirectory,
             FileExists = File.Exists,
+            RunReadBytes = AutoTracer.RunReadBytes,
+            TraceFingerprint = AutoTracer.TraceFingerprint,
+            ProfileEvents = (g, budget) => PlanGuards.Inside(g.OriginRoot, g.AllowedRoots, RealPaths.Real) ? ProfileSupplement.EventsFor(g.OriginRoot, g.ExeNames, budget, RealPaths.Resolve) : [],
             DirectoryExists = Directory.Exists,
             FileWriteTime = path => File.Exists(path) ? File.GetLastWriteTimeUtc(path) : null,
             GameProcesses = exes => ProcessSnapshot.ReadCounters(exes),

@@ -77,7 +77,7 @@ public sealed class PrewarmTests : IDisposable
     [InlineData(-1, 64, 1500, 64)]
     public void StreamBudgetIsTheZoneCappedByMaxStream(int zoneMib, int maxMib, int traceMib, int expectedMib)
     {
-        GameSettings g = Game("a") with { MaxStreamMib = maxMib };
+        GameSettings g = Game("a") with { MaxStreamMib = maxMib, MaxStreamSet = true };
 
         Assert.Equal((long)expectedMib << 20, PrefetchStreamer.Budget(g, zoneMib < 0 ? null : (long)zoneMib << 20, (long)traceMib << 20));
     }

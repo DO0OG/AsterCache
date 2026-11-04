@@ -502,8 +502,8 @@ public sealed class ColdPrewarmTests : IDisposable
 
         Assert.Equal(("full", 152 * Mib + 1), (whole.Mode, whole.Stats!.Bytes));
         Assert.Equal("profile Unity", profile.Mode);
-        Assert.Equal(102 * Mib, profile.Stats!.Bytes); // movie.bin 은 빠짐, exe 는 공통 규칙 아님
-        Assert.DoesNotContain(_reads[1], o => o.Path.EndsWith("movie.bin", StringComparison.Ordinal));
+        Assert.Equal(110 * Mib, profile.Stats!.Bytes); // 합 152 MiB 를 예산 110 MiB 에서 자름 (movie.bin 은 StreamingAssets 머리 256 MiB 규칙으로 앞부분만), exe 는 공통 규칙 아님
+        Assert.Contains(_reads[1], o => o.Path.EndsWith("movie.bin", StringComparison.Ordinal));
         Assert.False(noProfile.Ran);
         Assert.Contains("larger", noProfile.SkipReason, StringComparison.Ordinal);
     }
@@ -516,6 +516,23 @@ public sealed class ColdPrewarmTests : IDisposable
         PrewarmResult r = MakeReal(AutoSettings.Default with { FullPrewarmMaxMib = 10 }, root).Run(RealGame(root), "t");
 
         Assert.Equal(("profile Unity", 10 * Mib), (r.Mode, r.Stats!.Bytes));
+    }
+
+    [Fact]
+    public void FirstRunOfAnUnplayedGameIsWarmedByTheEngineProfileAndLeavesTheTraceRunsUntouched()
+    {
+        string root = UnityFolder();
+        string plans = Path.Combine(_dir, "plans");
+        Directory.CreateDirectory(plans);
+        GameSettings game = RealGame(root) with { Plan = Path.Combine(plans, "g.plan.json"), Trace = Path.Combine(plans, "g.plan.json.prefetch.json") };
+
+        PrewarmResult r = MakeReal(AutoSettings.Default with { FullPrewarmMaxMib = 110 }, root).Run(game, "t");
+
+        Assert.Equal("profile Unity", r.Mode); // 계획·트레이스가 없어 엔진 프로필로 예열
+        Assert.Empty(Directory.GetFiles(plans)); // 예열은 트레이스·boot 파일을 만들지 않음
+        Assert.Equal(0, AutoTracer.RunCount(game, File.Exists)); // 첫 실행 트레이스 회차 (trace_runs) 는 그대로 0 회
+        Assert.Null(AutoTracer.PlanTracePath(game, File.Exists)); // 그래서 첫 실행은 여전히 트레이스를 시작함
+        Assert.True(AutoTracer.RunCount(game, File.Exists) < AutoSettings.Default.TraceRuns);
     }
 
     // ---- 취소 ----

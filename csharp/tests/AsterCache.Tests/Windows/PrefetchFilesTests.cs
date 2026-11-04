@@ -211,6 +211,17 @@ public sealed class PrefetchFilesTests : IDisposable
     }
 
     [Fact]
+    public void BootTraceKeepsFilesLargerThanSixtyFourMibWhole()
+    {
+        PfInfo info = PfParser.Parse(PfFixture.Build("BENCH.EXE", [(PfFixture.Volume + @"\GAMES\BENCH\A.BIN", 0, 3), (PfFixture.Volume + @"\GAMES\BENCH\B.BIN", 0, 3)]))!;
+        var sizes = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase) { [@"D:\GAMES\BENCH\A.BIN"] = (64L << 20) + 1, [@"D:\GAMES\BENCH\B.BIN"] = 5L << 30 };
+
+        List<TraceEvent> rows = PrefetchFiles.ToBootTrace(info, Game, Letters, Sizes(sizes));
+
+        Assert.Equal([(64L << 20) + 1, 5L << 30], rows.Select(r => r.Length)); // 64 MiB 를 넘는 파일도 빠지지 않고 길이는 파일 크기 전체
+    }
+
+    [Fact]
     public void BootTraceFileLoadsThroughTheNormalTraceLoaderAndKeepsTheSourceMark()
     {
         byte[] data = _dir.WriteRandom("a.bin", 5000);

@@ -22,13 +22,14 @@ public static class SettingsStore
     public const long MaxFileBytes = 1 << 20;
     public const int MaxGames = 32;
 
-    private static readonly string[] TopKeys = ["games", "poll_ms", "watcher", "language", "auto", "max_zone_mib"];
+    private static readonly string[] TopKeys = ["games", "poll_ms", "watcher", "language", "auto", "max_zone_mib", "riot"];
+    private static readonly string[] RiotKeys = ["champ_select_prewarm", "champ_select_budget_mib"];
     private static readonly string[] GameKeys =
         ["name", "exe_names", "trace", "plan", "origin_root", "allowed_roots", "volume_label", "reapply_interval_minutes", "prewarm", "max_stream_mib", "source", "anticheat"];
     private static readonly string[] AutoKeys =
     [
         "enabled", "discover", "trace", "relocate", "prewarm_recent", "idle_minutes", "trace_cap_seconds", "trace_cap_mib",
-        "max_relocations_per_day", "trace_runs", "trace_merge_min_mib", "ignore_exes", "rewarm_minutes", "idle_seconds", "learn", "full_prewarm", "full_prewarm_max_mib", "engine_profiles", "shared_profiles",
+        "max_relocations_per_day", "trace_runs", "trace_merge_min_mib", "trace_target_coverage", "trace_runs_max", "ignore_exes", "rewarm_minutes", "idle_seconds", "learn", "full_prewarm", "full_prewarm_max_mib", "engine_profiles", "shared_profiles",
         "ssd_tier", "post_update_delay_min", "recovery_max_min", "recovery_hard_max_min", "relocate_chunk_mib", "relocate_parallel", "relocate_io_priority", "relocate_verify", "relocate_order", "max_relocate_gib_per_day", "post_relocate_recovery", "keep_awake", "keep_stream_on_game_start", "load_boundary", "restream_cooldown_min", "rewarm_after_exit_min", "startup_warm_games", "startup_warm_max_mib",
     ];
     private static readonly string[] PrewarmKeys = ["on_service_start", "trigger_exes", "min_free_ram_mib", "cooldown_min", "pin"];
@@ -99,6 +100,7 @@ public static class SettingsStore
         }
 
         AutoSettings auto = top.TryGetValue("auto", out object? au) ? ParseAuto(au) : AutoSettings.Default;
+        RiotSettings riot = top.TryGetValue("riot", out object? rt) ? ParseRiot(rt) : RiotSettings.Default;
         bool zoneAuto = top.TryGetValue("max_zone_mib", out object? mz) && mz is "auto";
         int maxZone = top.ContainsKey("max_zone_mib") && !zoneAuto ? Int(top["max_zone_mib"], "max_zone_mib", 64, 65536) : DefaultMaxZoneMib;
         int poll = top.ContainsKey("poll_ms") ? Int(top["poll_ms"], "poll_ms", 50, 5000) : DefaultPollMs;
@@ -116,7 +118,17 @@ public static class SettingsStore
 
         CheckUnique(result.Select(x => x.Name), "games: duplicate name");
         CheckUnique(result.SelectMany(x => x.ExeNames), "games: exe name used twice");
-        return new AsterSettings(poll, result, watcher, language) { Auto = auto, MaxZoneMib = maxZone, MaxZoneAuto = zoneAuto };
+        return new AsterSettings(poll, result, watcher, language) { Auto = auto, Riot = riot, MaxZoneMib = maxZone, MaxZoneAuto = zoneAuto };
+    }
+
+    private static RiotSettings ParseRiot(object? v)
+    {
+        JObject o = v as JObject ?? throw new SettingsException("riot: object expected");
+        Unknown(o, RiotKeys, "riot");
+        RiotSettings d = RiotSettings.Default;
+        bool prewarm = o.TryGetValue("champ_select_prewarm", out object? p) ? p as bool? ?? throw new SettingsException("riot.champ_select_prewarm: true or false expected") : d.ChampSelectPrewarm;
+        int budget = o.TryGetValue("champ_select_budget_mib", out object? b) ? Int(b, "riot.champ_select_budget_mib", 64, 16384) : d.ChampSelectBudgetMib;
+        return new RiotSettings(prewarm, budget);
     }
 
     private static AutoSettings ParseAuto(object? v)
@@ -155,6 +167,8 @@ public static class SettingsStore
         {
             TraceRuns = OptInt(o, "trace_runs", 1, 32, d.TraceRuns),
             TraceMergeMinMib = OptInt(o, "trace_merge_min_mib", 1, 65536, d.TraceMergeMinMib),
+            TraceTargetCoverage = OptInt(o, "trace_target_coverage", 1, 100, d.TraceTargetCoverage),
+            TraceRunsMax = OptInt(o, "trace_runs_max", 1, 32, d.TraceRunsMax),
             RewarmMinutes = OptInt(o, "rewarm_minutes", 0, 1440, d.RewarmMinutes),
             RestreamCooldownMin = OptInt(o, "restream_cooldown_min", 0, 1440, d.RestreamCooldownMin),
             RewarmAfterExitMin = OptInt(o, "rewarm_after_exit_min", 0, 1440, d.RewarmAfterExitMin),
@@ -314,14 +328,15 @@ public static class SettingsStore
         string? antiCheat = null;
         if (g.TryGetValue("anticheat", out object? ac))
         {
-            antiCheat = ac is "eac" or "battleye" or "vanguard" or "ricochet" or "unknown"
-                ? (string)ac : throw new SettingsException($"{at}.anticheat: \"eac\", \"battleye\", \"vanguard\", \"ricochet\" or \"unknown\" expected");
+            antiCheat = ac is "eac" or "battleye" or "vanguard" or "kernel" or "ricochet" or "unknown"
+                ? (string)ac : throw new SettingsException($"{at}.anticheat: \"eac\", \"battleye\", \"vanguard\", \"kernel\", \"ricochet\" or \"unknown\" expected");
         }
 
         return new GameSettings(name, exeNames, trace, plan, origin, allowed, label, minutes)
         {
             Prewarm = prewarm,
             MaxStreamMib = maxStream,
+            MaxStreamSet = g.ContainsKey("max_stream_mib"),
             Source = source,
             AntiCheat = antiCheat,
         };

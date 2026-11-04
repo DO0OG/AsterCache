@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using AsterCache.Core;
 using AsterCache.Core.Apply;
-using AsterCache.Core.Discovery;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Model;
@@ -73,7 +72,13 @@ public sealed class AutoRelocator
 
     /// 존 확장 재계획 (병합한 트레이스가 핫 집합을 키웠을 때): 이전 계획을 옆으로 치운 파일 (이 파일이 있는 동안이 확장 중), 그동안의 detail 표시. ReplanDetail 접두는 쓰지 않음 (업데이트 지연 판정과 섞이지 않게).
     public const string ExtendSuffix = ".extend";
+    private const string EffectiveZoneKey = "effective_zone_mib"; // 계획 stats: 계획을 만들 때의 유효 존 상한 (MiB)
+    private const string MergePolicyKey = "merge_policy"; // 계획 stats: 계획을 만들 때의 트레이스 병합 정책 (AutoTracer.MergePolicy)
+    private const string FingerprintKey = "trace_fingerprint"; // 계획 stats: 계획을 만들 때의 원시 트레이스 지문 (블록 집합·순서)
     private const string ExtendDetail = "trace grew, extending zone";
+    private const string SupplementKey = "profile_supplement_mib"; // 계획 stats: 트레이스 금지 게임의 계획에 엔진 프로필에서 보탠 양 (MiB)
+    private const string SupplementCheckedKey = "profile_supplement_checked"; // 계획 stats: 프로필 보충을 이미 따져 본 계획 (보충이 없거나 작았음)
+    private const string SupplementReplanKey = "profile_supplement_replan"; // 이전 계획 (.extend) 의 stats: 프로필 보충 재계획 중 (뒤 공간이 쓰이면 새 존 대신 보류)
 
     /// 읽을 수 없는 (잘린) 계획을 옆으로 치운 파일의 접미사.
     public const string BadSuffix = ".bad";
@@ -95,7 +100,7 @@ public sealed class AutoRelocator
     public const string StalePlanDetail = "stale plan";
     private static readonly Regex PrewarmedTag = new(@"(, )?prewarmed( \([^)]*\))?", RegexOptions.None, TimeSpan.FromSeconds(1));
     private static readonly Regex ProgressTag = new(@"(, )?prewarming \d+/\d+ MiB", RegexOptions.None, TimeSpan.FromSeconds(1));
-    private static readonly Regex TraceTag = new(@"(, )?trace \d+/\d+", RegexOptions.None, TimeSpan.FromSeconds(1));
+    private static readonly Regex TraceTag = new(@"(, )?trace \d+/\d+( \(coverage \d+%\))?", RegexOptions.None, TimeSpan.FromSeconds(1));
     private static readonly Regex TierTag = new(@"(, )?ssd tier [\d.]+ GB", RegexOptions.None, TimeSpan.FromSeconds(1));
 
     private readonly AutoEnv _env;
@@ -117,9 +122,11 @@ public sealed class AutoRelocator
     private readonly Dictionary<string, DateTimeOffset> _staleChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀
     private readonly HashSet<string> _delayLogged = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 업데이트 지연을 이미 로그한 게임
     private readonly Dictionary<string, DateTimeOffset> _prefetchTried = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 프리페치 기록으로 boot 를 만들어 본 게임과 그 시각
+    private readonly HashSet<string> _supplementChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 프로필 보충 재계획을 이미 따져 본 게임 (서비스 실행당 한 번)
     private readonly HashSet<string> _volatileChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 옛 계획의 가변 파일을 이미 따져 본 게임 (서비스 실행당 한 번)
     private readonly HashSet<string> _seeded = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 이전 존 시작에 맞춰 계획을 만든 게임
     private readonly ConcurrentDictionary<string, byte> _smrBudgetLogged = new(StringComparer.Ordinal); // 명시한 하루 쓰기 예산이 SMR 기본값보다 큰 게임 (한 번만 로그)
+    private readonly Dictionary<string, (bool Auto, int Mib)> _limitSeen = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 존 상한 설정 (auto 여부·값) 을 이미 따져 본 게임과 그때의 설정 (설정이 바뀌거나 서비스를 다시 시작하기 전에는 계획을 다시 읽지 않음)
     private readonly Dictionary<string, DateTimeOffset> _extTried = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 존 확장을 이미 따져 본 (또는 막힌) 게임과 그때의 트레이스 수정 시각 (다음 플레이가 쌓여 트레이스가 바뀔 때까지 다시 보지 않음)
     private readonly ConcurrentDictionary<string, DateTimeOffset> _planFailedAt = new(StringComparer.Ordinal); // 계획 (또는 재배치) 이 마지막으로 실패한 시각: 그 뒤 트레이스가 새로 쓰이기 전에는 같은 실패를 되풀이하지 않음
     private readonly ConcurrentDictionary<string, DateTimeOffset> _traceWarmTried = new(StringComparer.Ordinal); // 게임별로 예열을 시도한 트레이스 파일 시각
@@ -227,6 +234,7 @@ public sealed class AutoRelocator
         ReplanChanged(s);
         ReplanExtended(s);
         ReplanLegacyVolatile(s);
+        ReplanProfileSupplement(s);
         PrefetchBootstrap(s);
         WarmCold(s, warms);
         bool relocateOn = s.Auto.Relocate && s.Auto.MaxRelocationsPerDay > 0;
@@ -424,9 +432,10 @@ public sealed class AutoRelocator
         string game = g.Name;
         string? rest = detail is null ? null : TraceTag.Replace(TierTag.Replace(ProgressTag.Replace(detail, string.Empty), string.Empty), string.Empty).Trim(' ', ',');
         rest = string.IsNullOrEmpty(rest) ? null : rest;
-        if (ShowsProgress(stage) && AutoTracer.RunCount(g, _env.FileExists) is > 0 and int runs && runs < _settings().Auto.TraceRuns) // 플레이를 더 모으는 중: "trace 2/3"
+        if (ShowsProgress(stage) && AutoTracer.NextTrace(g, _settings().Auto, _env, _status) is { Valid: > 0, Wanted: true } next) // 플레이를 더 모으는 중: "trace 2/3", 추가 수집이면 "trace 4/8 (coverage 22%)"
         {
-            rest = rest is null ? $"trace {runs}/{_settings().Auto.TraceRuns}" : rest + $", trace {runs}/{_settings().Auto.TraceRuns}";
+            string traceTag = $"trace {next.Valid}/{next.Limit}" + (next.Valid >= _settings().Auto.TraceRuns && next.Coverage is { } cov ? $" (coverage {cov}%)" : string.Empty);
+            rest = rest is null ? traceTag : rest + ", " + traceTag;
         }
 
         if (ShowsProgress(stage) && _tier?.Tag(game) is { } tier)
@@ -649,10 +658,10 @@ public sealed class AutoRelocator
                 _tier?.RevertGame(g.Name, "game updated"); // 링크는 새 재배치 전에 되돌림 (심볼릭 링크가 낀 계획은 재적용·재배치가 거부함)
                 _ = _env.ArchiveJournal(g); // 새 계획은 다른 저널 header 를 쓰므로 끝난 저널은 옆으로 보관
                 string trace = AutoTracer.RawTracePath(g);
-                bool keep = !recorded && AntiCheat.ForbidsTrace(g.AntiCheat) && TraceHasUsableBlocks(trace, g); // 다시 트레이스할 수 없는 게임은 옛 트레이스를 유지 (없어진 파일·줄어든 범위는 읽을 때 걸러짐)
+                bool keep = !recorded && _env.TraceBlocker(g) is not null && TraceHasUsableBlocks(trace, g); // 다시 트레이스할 수 없는 게임은 옛 트레이스를 유지 (없어진 파일·줄어든 범위는 읽을 때 걸러짐)
                 if (!recorded && !keep && _env.FileExists(trace))
                 {
-                    for (int run = AutoTracer.RunCount(g, _env.FileExists); run >= 1; run--)
+                    for (int run = AutoTracer.LastRunNumber(g, _env.FileExists); run >= 1; run--)
                     {
                         string runFile = TraceWriter.RunPath(trace, run); // 플레이 수는 run 파일로 세므로 옛 버전의 run 파일이 남지 않게 함
                         if (_env.FileExists(runFile))
@@ -706,10 +715,10 @@ public sealed class AutoRelocator
     private HashSet<string> RestoreStaleTraces(AsterSettings s)
     {
         var restored = new HashSet<string>(StringComparer.Ordinal);
-        foreach (GameSettings g in s.Games.Where(g => AntiCheat.ForbidsTrace(g.AntiCheat)))
+        foreach (GameSettings g in s.Games)
         {
             string raw = AutoTracer.RawTracePath(g);
-            if (_env.FileExists(raw) || !_env.FileExists(raw + StaleSuffix))
+            if (_env.FileExists(raw) || !_env.FileExists(raw + StaleSuffix) || _env.TraceBlocker(g) is null)
             {
                 continue;
             }
@@ -851,6 +860,19 @@ public sealed class AutoRelocator
     // 확장 중인가: 확장 재계획이 이전 계획을 .extend 로 치운 뒤 끝나거나 막히기 전까지 (파일이라 서비스를 다시 시작해도 이어짐).
     private bool IsExtending(GameSettings g) => _env.FileExists(g.Plan + ExtendSuffix);
 
+    // 프로필 보충 재계획인가: 이전 계획 (.extend) 에 표지가 있음. 보충은 이미 옮긴 존을 지키려는 것이라 뒤 공간이 쓰이면 새 존으로 가지 않고 보류합니다.
+    private bool IsSupplementExtension(GameSettings g)
+    {
+        try
+        {
+            return IsExtending(g) && _env.LoadPlan(g.Plan + ExtendSuffix).Stats.TryGetValue(SupplementReplanKey, out object? marked) && marked is 1L;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            return false;
+        }
+    }
+
     // 존 확장 재계획: 배치까지 끝낸 게임의 병합 트레이스 (플레이를 더 모아 합집합이 된 trace.json) 가 계획보다 새롭고, 핫 집합이 TraceMergeMinMib 이상 커졌으면
     // 이전 계획을 .extend 로 치우고 처음 단계로 되돌립니다. 이후는 일반 흐름 (계획 → 재배치): 같은 존 시작에 맞춰 계획하므로 이미 존에 있는 블록은 제자리이고 새 블록만 존 뒤에 붙으며,
     // 유휴·일일 상한·바이트 예산·회복·전원·같은 디스크 게임 같은 안전장치를 그대로 지납니다. 존 뒤가 비어 있지 않은 등 확장할 수 없으면 BlockExtension 이 이전 계획을 되살립니다.
@@ -860,14 +882,26 @@ public sealed class AutoRelocator
         {
             string raw = AutoTracer.RawTracePath(g);
             if (_status.Get(g.Name)?.RelocatedAt is null || !_env.FileExists(g.Plan) || IsExtending(g) || AnyGameRunning(g)
-                || _env.FileWriteTime(raw) is not { } traced || _env.FileWriteTime(g.Plan) is not { } planned || traced <= planned
-                || _extTried.TryGetValue(g.Name, out DateTimeOffset seen) && seen >= traced
-                || AutoTracer.RunCount(g, _env.FileExists) < 2)
+                || _env.FileWriteTime(raw) is not { } traced || _env.FileWriteTime(g.Plan) is not { } planned)
             {
                 continue;
             }
 
-            _extTried[g.Name] = traced;
+            // 새 트레이스: 계획보다 새롭고 아직 따져 보지 않았고 두 번째 이후 플레이가 병합된 것. 존 상한 설정이 바뀌었거나 처음 보는 게임도 한 번 따져 봄 (상한을 올려도 트레이스는 안 바뀌므로).
+            bool newTrace = traced > planned && !(_extTried.TryGetValue(g.Name, out DateTimeOffset seen) && seen >= traced) && AutoTracer.RunCount(g, _env.FileExists) >= 2;
+            (bool, int) limitKey = (s.MaxZoneAuto, s.MaxZoneMib);
+            bool limitDue = !_limitSeen.TryGetValue(g.Name, out (bool, int) seenKey) || seenKey != limitKey;
+            if (!newTrace && !limitDue)
+            {
+                continue;
+            }
+
+            _limitSeen[g.Name] = limitKey;
+            if (newTrace)
+            {
+                _extTried[g.Name] = traced;
+            }
+
             try
             {
                 PlanFile plan = _env.LoadPlan(g.Plan);
@@ -876,19 +910,49 @@ public sealed class AutoRelocator
                     continue; // boot 계획은 첫 기록 재계획 (ReplanChanged) 의 몫
                 }
 
-                long cap = MaxZoneMib(s, g) << 20;
+                long limit = MaxZoneMib(s, g);
+                bool metaSame = plan.Stats.TryGetValue(EffectiveZoneKey, out object? ez) && ez is long zoneMib && zoneMib == limit
+                    && plan.Stats.TryGetValue(MergePolicyKey, out object? mp) && mp as string == AutoTracer.MergePolicy;
+                if (!newTrace && metaSame)
+                {
+                    continue; // 상한·병합 정책이 계획을 만들 때와 같음: 반복하지 않음
+                }
+
+                string? stored = plan.Stats.TryGetValue(FingerprintKey, out object? fo) ? fo as string : null;
+                string? fingerprint = _env.TraceFingerprint(raw);
+                long cap = limit << 20;
                 long merged = Math.Min(DistinctBlocks(_env.LoadTrace(raw, g.OriginRoot)) * HotSet.Block, cap);
                 long grew = merged - hotBlocks * HotSet.Block;
-                if (grew < (long)s.Auto.TraceMergeMinMib << 20)
+                bool reordered = newTrace && stored is not null && fingerprint is not null && fingerprint != stored; // 크기가 그대로여도 블록 집합·순서가 바뀜
+                bool shrink = hotBlocks * HotSet.Block > cap; // 상한을 낮춰 계획의 핫셋이 새 상한을 넘음: 메타만 적지 않고 같은 존 시작으로 줄여 다시 계획
+                if (grew >= (long)s.Auto.TraceMergeMinMib << 20 || reordered || shrink)
                 {
+                    _tier?.RevertGame(g.Name, "trace grew"); // 링크는 새 재배치 전에 되돌림
+                    _ = _env.ArchiveJournal(g); // 새 계획은 다른 저널 header 를 쓰므로 끝난 저널은 옆으로 보관
+                    _env.MoveAside(g.Plan, g.Plan + ExtendSuffix);
+                    _status.ResetForReplan(g.Name, ExtendDetail);
+                    _log.Info(shrink
+                        ? $"{g.Name}: plan holds {hotBlocks * HotSet.Block >> 20} MiB, above the zone limit {limit} MiB, plan set aside as {ExtendSuffix}, will plan again within the limit (same zone)"
+                        : grew >= (long)s.Auto.TraceMergeMinMib << 20
+                        ? $"{g.Name}: merged trace holds {grew >> 20} MiB more than the plan (run {AutoTracer.RunCount(g, _env.FileExists)}, zone limit {limit} MiB), plan set aside as {ExtendSuffix}, will extend the zone"
+                        : $"{g.Name}: merged trace blocks or order changed since the plan (run {AutoTracer.RunCount(g, _env.FileExists)}), plan set aside as {ExtendSuffix}, will extend the zone");
                     continue;
                 }
 
-                _tier?.RevertGame(g.Name, "trace grew"); // 링크는 새 재배치 전에 되돌림
-                _ = _env.ArchiveJournal(g); // 새 계획은 다른 저널 header 를 쓰므로 끝난 저널은 옆으로 보관
-                _env.MoveAside(g.Plan, g.Plan + ExtendSuffix);
-                _status.ResetForReplan(g.Name, ExtendDetail);
-                _log.Info($"{g.Name}: merged trace holds {grew >> 20} MiB more than the plan (run {AutoTracer.RunCount(g, _env.FileExists)}), plan set aside as {ExtendSuffix}, will extend the zone");
+                // 다시 계획할 일은 아님: 옛 계획 (메타 없음) 이거나 상한이 바뀌었으면 지금 값을 계획에 적어 둠 (지문은 없을 때만: 옛 계획은 처음 한 번 기록만 하고 재계획하지 않음)
+                bool stamp = !metaSame || stored is null && fingerprint is not null;
+                if (stamp)
+                {
+                    plan.Stats[EffectiveZoneKey] = limit;
+                    plan.Stats[MergePolicyKey] = AutoTracer.MergePolicy;
+                    if (stored is null && fingerprint is not null)
+                    {
+                        plan.Stats[FingerprintKey] = fingerprint;
+                    }
+
+                    plan.Save(g.Plan);
+                    _log.Info($"{g.Name}: plan notes recorded (zone limit {limit} MiB, merge {AutoTracer.MergePolicy}), no replan needed");
+                }
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
@@ -930,6 +994,65 @@ public sealed class AutoRelocator
         }
     }
 
+    // 트레이스 금지 게임은 트레이스를 다시 만들 수 없어, 프로필 보충 (Plan) 이 들어가기 전에 만든 계획은 스스로 다시 계획될 계기가 없습니다. 서비스 실행당 한 번 따져,
+    // 계획에 보충 표지가 없고 트레이스가 덮지 못한 프로필 구간이 trace_merge_min_mib 이상이면 존 확장과 같은 길 (.extend) 로 다시 계획합니다: 같은 존 시작에 맞추고 이미 옮긴 블록은 제자리,
+    // 유휴·일일 상한·바이트 예산 같은 재배치 게이트를 그대로 지납니다. 더 작으면 계획에 표지만 남깁니다. 표지는 재계획 직전에 이전 계획에도 적어, 확장이 막혀 되살려도 되풀이하지 않습니다.
+    private void ReplanProfileSupplement(AsterSettings s)
+    {
+        if (!(s.Auto.Relocate && s.Auto.MaxRelocationsPerDay > 0))
+        {
+            return;
+        }
+
+        foreach (GameSettings g in s.Games)
+        {
+            if (_status.Get(g.Name) is not { Stage: AutoStage.Done, RelocatedAt: not null } || !_env.FileExists(g.Plan) || IsExtending(g) || AnyGameRunning(g)
+                || !_supplementChecked.Add(g.Name))
+            {
+                continue;
+            }
+
+            try
+            {
+                if (_env.TraceBlocker(g) is not { } cheat || cheat == AutoEnv.AntiCheatUnknown || AutoTracer.PlanTracePath(g, _env.FileExists) is not { } tracePath)
+                {
+                    continue; // 탐지 실패는 확정이 아님: 이 실행에서는 건드리지 않음
+                }
+
+                PlanFile plan = _env.LoadPlan(g.Plan);
+                if (plan.Zone.StartLcn is null || plan.Stats.ContainsKey(SupplementKey) || plan.Stats.ContainsKey(SupplementCheckedKey) || !_env.DirectoryExists(plan.OriginRoot))
+                {
+                    continue;
+                }
+
+                (IReadOnlyList<TraceEvent> trace, _) = DropVolatile(g, _env.LoadTrace(tracePath, g.OriginRoot));
+                (_, long bytes) = ProfileSupplement.Union(trace, MaxZoneMib(s, g) << 20, budget => _env.ProfileEvents(g, budget));
+                plan.Stats[SupplementCheckedKey] = 1L;
+                bool replan = bytes >= (long)s.Auto.TraceMergeMinMib << 20;
+                if (replan)
+                {
+                    plan.Stats[SupplementReplanKey] = 1L; // 확장이 막혀 되살리면 NoteBlocked 가 0 으로 돌림
+                }
+
+                plan.Save(g.Plan);
+                if (!replan)
+                {
+                    continue;
+                }
+
+                _tier?.RevertGame(g.Name, "engine profile added"); // 링크는 새 재배치 전에 되돌림
+                _ = _env.ArchiveJournal(g);
+                _env.MoveAside(g.Plan, g.Plan + ExtendSuffix);
+                _status.ResetForReplan(g.Name, ExtendDetail);
+                _log.Info($"{g.Name}: plan lacks {(bytes + (1 << 20) - 1) >> 20} MiB of the engine profile (tracing is not allowed for this game), plan set aside as {ExtendSuffix}, will plan again with it (same zone)");
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                _log.Warn($"{g.Name}: engine profile supplement check failed ({e.GetType().Name})");
+            }
+        }
+    }
+
     // 하루 쓰기 예산 (바이트, 0 = 무제한): 명시하지 않았으면 SMR 로 보이는 디스크는 더 낮은 기본값.
     private long BudgetBytes(AsterSettings s, GameSettings g)
     {
@@ -947,11 +1070,14 @@ public sealed class AutoRelocator
         catch (Exception) { return false; } // 질의 실패는 SMR 아님으로 본다
     }
 
-    private long MaxZoneMib(AsterSettings s, GameSettings g) => s.MaxZoneAuto ? ZoneSize.AutoMaxMib(_env.PhysicalRamBytes(), SlowBus(g)) : s.MaxZoneMib;
+    private long MaxZoneMib(AsterSettings s, GameSettings g) => EffectiveZoneMib(s, g, _env);
 
-    private bool SlowBus(GameSettings g)
+    /// 유효 존 상한 (MiB): max_zone_mib 가 auto 면 RAM·디스크 종류에 맞춘 값, 아니면 설정값. 트레이스 읽기 캡의 기본값도 이 값을 따릅니다.
+    public static long EffectiveZoneMib(AsterSettings s, GameSettings g, AutoEnv env) => s.MaxZoneAuto ? ZoneSize.AutoMaxMib(env.PhysicalRamBytes(), SlowBus(g, env)) : s.MaxZoneMib;
+
+    private static bool SlowBus(GameSettings g, AutoEnv env)
     {
-        try { return _env.IsSlowBus(DriveOf(g)); }
+        try { return env.IsSlowBus(DriveOf(g)); }
         catch (Exception) { return true; } // 질의 실패는 종류 미확인으로 본다
     }
 
@@ -975,10 +1101,32 @@ public sealed class AutoRelocator
     private void BlockExtension(GameSettings g, string reason)
     {
         _env.MoveAside(g.Plan + ExtendSuffix, g.Plan); // 새 계획이 이미 만들어졌으면 덮어씀
+        NoteBlocked(g);
         _env.Touch(g.Plan); // 옛 수정 시각이면 재시작마다 트레이스가 계획보다 새롭다고 보고 확장을 되풀이함
         _ = _seeded.Remove(g.Name);
         _status.Complete(g.Name, g.Source, _env.Now(), counted: false, null);
         _log.Info($"{g.Name}: zone extension blocked: {reason}");
+    }
+
+    // 막힌 확장이 서비스를 다시 시작할 때마다 되풀이되지 않게, 되살린 계획에 지금의 존 상한·병합 정책을 적어 둡니다 (새 트레이스가 쌓이면 다시 따져 봄). 적지 못해도 막힘 처리는 그대로.
+    private void NoteBlocked(GameSettings g)
+    {
+        try
+        {
+            PlanFile plan = _env.LoadPlan(g.Plan);
+            plan.Stats[EffectiveZoneKey] = MaxZoneMib(_settings(), g);
+            plan.Stats[MergePolicyKey] = AutoTracer.MergePolicy;
+            if (plan.Stats.ContainsKey(SupplementReplanKey))
+            {
+                plan.Stats[SupplementReplanKey] = 0L; // 되살린 계획이 이후 일반 확장에서 보충 재계획으로 오인되지 않게
+            }
+
+            plan.Save(g.Plan);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            // 계획 파일을 읽거나 쓸 수 없음: 다음 시작에 한 번 더 따져 볼 뿐
+        }
     }
 
     // 확장 중 재배치가 실패함 (이동 실패·데이터 검사 실패·예외): 실패로 두지 않고 쓴 줄을 되돌린 뒤 이전 계획을 되살립니다. 확장 중이 아니면 거짓.
@@ -1264,6 +1412,13 @@ public sealed class AutoRelocator
             bool boot = tracePath == AutoTracer.BootTracePath(g);
             bool prefetch = boot && _env.TraceSource(tracePath) == PlanSourcePrefetch;
             (IReadOnlyList<TraceEvent> trace, JObject excluded) = DropVolatile(g, _env.LoadTrace(tracePath, g.OriginRoot));
+            long supplementBytes = 0;
+            string? cheat = _env.TraceBlocker(g);
+            if (cheat is not null)
+            {
+                (trace, supplementBytes) = ProfileSupplement.Union(trace, MaxZoneMib(s, g) << 20, budget => _env.ProfileEvents(g, budget)); // 트레이스를 만들 수 없는 게임: 트레이스가 덮지 못한 엔진 프로필 구간을 존 상한 안에서 보충
+            }
+
             IReadOnlyList<IReadOnlyList<TraceEvent>> sessions = [prefetch ? RangesByLcn(trace) : trace];
             PlanFile probe = _env.MakePlan(sessions, g.OriginRoot, ZoneSize.ProbeMib);
             long hot = probe.Stats.TryGetValue("hot_bytes", out object? h) && h is long bytes ? bytes : 0;
@@ -1313,6 +1468,12 @@ public sealed class AutoRelocator
 
             if (extending && start is not null && ExtensionRegionInUse(g, plan))
             {
+                if (IsSupplementExtension(g))
+                {
+                    BlockExtension(g, "the region after the zone is in use, engine profile not added"); // 이미 옮긴 블록을 다시 옮기는 전체 재배치로 가지 않음
+                    return false;
+                }
+
                 _log.Info($"{g.Name}: the region after the zone is in use, looking for a new one");
                 (start, plan) = (null, _env.MakePlan(sessions, g.OriginRoot, zoneMib));
             }
@@ -1321,6 +1482,27 @@ public sealed class AutoRelocator
             if (boot)
             {
                 plan.Stats.Add("source", prefetch ? PlanSourcePrefetch : PlanSourceBoot);
+            }
+
+            if (!boot)
+            {
+                plan.Stats[EffectiveZoneKey] = MaxZoneMib(s, g);
+                plan.Stats[MergePolicyKey] = AutoTracer.MergePolicy;
+                if (_env.TraceFingerprint(tracePath) is { } fp)
+                {
+                    plan.Stats[FingerprintKey] = fp;
+                }
+            }
+
+            if (supplementBytes > 0)
+            {
+                long supplementMib = (supplementBytes + (1 << 20) - 1) >> 20;
+                plan.Stats[SupplementKey] = supplementMib;
+                _log.Info($"{g.Name}: engine profile added {supplementMib} MiB the trace did not cover");
+            }
+            else if (cheat is not null && cheat != AutoEnv.AntiCheatUnknown)
+            {
+                plan.Stats[SupplementCheckedKey] = 1L; // 보충할 것이 없었음: 나중에 다시 따지지 않게 표지
             }
 
             if (excluded.Count > 0)
@@ -1622,9 +1804,9 @@ public sealed class AutoRelocator
             {
                 dry = _env.Apply(g, plan, dryRun, token); // 존 시작을 정해 계획에 저장 (이어하기를 위해 남김)
             }
-            catch (PlanRejectedException e) when (extending && !IsZoneNotFree(e))
+            catch (PlanRejectedException e) when (extending && (!IsZoneNotFree(e) || IsSupplementExtension(g)))
             {
-                BlockExtension(g, e.Message); // 존 뒤가 비어 있는 것과 무관한 거부: 새 존을 찾지 않음
+                BlockExtension(g, e.Message); // 존 뒤가 비어 있는 것과 무관한 거부 (프로필 보충은 비어 있지 않아도): 새 존을 찾지 않음
                 return;
             }
             catch (PlanRejectedException e) when ((extending || _seeded.Contains(g.Name)) && IsZoneNotFree(e))

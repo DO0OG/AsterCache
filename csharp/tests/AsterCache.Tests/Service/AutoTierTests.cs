@@ -157,6 +157,21 @@ public sealed class AutoTierTests : IDisposable
     }
 
     [Fact]
+    public void AKernelAntiCheatScanRejectsTheTierAndIsCached()
+    {
+        SetTrace();
+        AsterSettings s = Settings();
+        _world.AntiCheats[@"D:\Games\Foo"] = "kernel";
+        IdleTicks(s);
+        Assert.False(Linked(@"D:\Games\Foo.bin"));
+        Assert.Contains(_log.Lines, l => l.Contains("Foo: ssd tier skipped, anti-cheat found (kernel)"));
+
+        _world.AntiCheats[@"D:\Games\Foo"] = null; // 찾은 값은 캐시돼 다시 열거하지 않음 (모름과 달리)
+        IdleTicks(s);
+        Assert.False(Linked(@"D:\Games\Foo.bin"));
+    }
+
+    [Fact]
     public void AnUnknownAntiCheatScanRejectsTheTierAndIsNotCached()
     {
         SetTrace();
@@ -168,6 +183,95 @@ public sealed class AutoTierTests : IDisposable
         _world.AntiCheats[@"D:\Games\Foo"] = null; // 다음 탐지는 없음으로 나옴: 앞의 모름이 캐시되지 않았어야 함
         IdleTicks(s);
         Assert.True(Linked(@"D:\Games\Foo\a.bin"));
+    }
+
+    [Theory]
+    [InlineData("kernel")]
+    [InlineData("ricochet")]
+    [InlineData(AutoEnv.AntiCheatUnknown)]
+    public void AnActiveTierWithoutARegisteredValueIsRevertedWhenTheFolderShowsAnAntiCheat(string cheat)
+    {
+        SetTrace();
+        AsterSettings s = Settings();
+        IdleTicks(s);
+        Assert.True(Linked(@"D:\Games\Foo\a.bin")); // 저장값 없이, 탐지 없음으로 적용됨
+
+        _world.AntiCheats[@"D:\Games\Foo"] = cheat; // 적용 뒤 폴더에 마커가 생김
+        _tier.Tick(s, false, _gate, default);
+
+        Assert.False(Linked(@"D:\Games\Foo\a.bin"));
+        Assert.Equal(_a, _fs.Files[MemTierFs.N(@"D:\Games\Foo\a.bin")]); // 원본으로 복원
+
+        IdleTicks(s);
+        Assert.False(Linked(@"D:\Games\Foo\a.bin")); // 다시 적용하지 않음
+    }
+
+    [Fact]
+    public void ADetectedAntiCheatKeepsWhatTheGameWroteThroughTheLinkBeforeRestoring()
+    {
+        SetTrace();
+        AsterSettings s = Settings();
+        IdleTicks(s);
+        string game = @"D:\Games\Foo\a.bin";
+        Assert.True(Linked(game));
+        byte[] written = new byte[_a.Length]; // 게임이 같은 크기로 링크 대상을 수정하고 종료함
+        new Random(9).NextBytes(written);
+        _fs.Put(_fs.Links[MemTierFs.N(game)], written);
+
+        _world.AntiCheats[@"D:\Games\Foo"] = "kernel";
+        _tier.Tick(s, false, _gate, default);
+
+        Assert.False(Linked(game));
+        Assert.Equal(written, _fs.Files[MemTierFs.N(game)]); // 변경분 보존
+        Assert.Equal(_a, _fs.Files[Orig(game)]); // 옛 원본은 지우지 않음
+    }
+
+    [Fact]
+    public void ARevertKeepsWhatTheGameWroteEvenWhenTheJournalCannotBeSaved()
+    {
+        SetTrace();
+        AsterSettings s = Settings();
+        IdleTicks(s);
+        string game = @"D:\Games\Foo\a.bin";
+        byte[] written = new byte[_a.Length];
+        new Random(9).NextBytes(written);
+        _fs.Put(_fs.Links[MemTierFs.N(game)], written);
+        string journal = _engine.JournalPath("Foo");
+        File.SetAttributes(journal, FileAttributes.ReadOnly); // 저널 저장이 실패하도록 함
+        try
+        {
+            _ = _engine.Revert("Foo", "test");
+        }
+        finally
+        {
+            File.SetAttributes(journal, FileAttributes.Normal);
+        }
+
+        Assert.False(Linked(game));
+        Assert.Equal(written, _fs.Files[MemTierFs.N(game)]); // 변경분 보존
+        Assert.Equal(_a, _fs.Files[Orig(game)]);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AFailingCheckKeepsThatFileAndStillRevertsTheRest(bool statFails)
+    {
+        SetTrace();
+        AsterSettings s = Settings();
+        IdleTicks(s);
+        string bad = @"D:\Games\Foo\a.bin", good = @"D:\Games\Foo\b.bin";
+        string target = _fs.Links[MemTierFs.N(bad)];
+        _fs.Faulty.Add(MemTierFs.N(statFails ? target : bad));
+
+        TierRevertReport r = _engine.Revert("Foo", "test");
+
+        Assert.Equal(1, r.Failed);
+        Assert.Equal(1, r.Reverted);
+        Assert.True(Linked(bad)); // 검사에 실패한 항목은 링크·사본 그대로
+        Assert.Equal(_a, _fs.Files[Orig(bad)]);
+        Assert.False(Linked(good));
+        Assert.Equal(_b, _fs.Files[MemTierFs.N(good)]);
     }
 
     [Fact]

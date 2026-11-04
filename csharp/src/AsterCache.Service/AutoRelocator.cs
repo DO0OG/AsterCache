@@ -1633,8 +1633,9 @@ public sealed class AutoRelocator
         try
         {
             RevertReport? r = _env.JournalRows(g) <= mark ? null : _env.Revert(g, mark, token);
-            _log.Info(r is null ? $"{g.Name}: nothing to revert" : $"{g.Name}: reverted {r.Restored} piece(s), {r.Skipped.Count} skipped" + (r.Stopped is { } why ? $", stopped: {why}, journal kept" : string.Empty));
-            return r?.Stopped is null;
+            bool complete = r is null || (r.Stopped is null && r.Skipped.Count == 0); // 옮기지 못한 조각이 하나라도 있으면 미완료 (저널을 보관하면 되돌릴 길이 없어짐)
+            _log.Info(r is null ? $"{g.Name}: nothing to revert" : $"{g.Name}: reverted {r.Restored} piece(s), {r.Skipped.Count} skipped" + (r.Stopped is { } why ? $", stopped: {why}" : string.Empty) + (complete ? string.Empty : ", journal kept"));
+            return complete;
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {

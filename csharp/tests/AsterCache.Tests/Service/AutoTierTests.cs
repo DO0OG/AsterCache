@@ -185,6 +185,27 @@ public sealed class AutoTierTests : IDisposable
         Assert.True(Linked(@"D:\Games\Foo\a.bin"));
     }
 
+    [Theory]
+    [InlineData("kernel")]
+    [InlineData("ricochet")]
+    [InlineData(AutoEnv.AntiCheatUnknown)]
+    public void AnActiveTierWithoutARegisteredValueIsRevertedWhenTheFolderShowsAnAntiCheat(string cheat)
+    {
+        SetTrace();
+        AsterSettings s = Settings();
+        IdleTicks(s);
+        Assert.True(Linked(@"D:\Games\Foo\a.bin")); // 저장값 없이, 탐지 없음으로 적용됨
+
+        _world.AntiCheats[@"D:\Games\Foo"] = cheat; // 적용 뒤 폴더에 마커가 생김
+        _tier.Tick(s, false, _gate, default);
+
+        Assert.False(Linked(@"D:\Games\Foo\a.bin"));
+        Assert.Equal(_a, _fs.Files[MemTierFs.N(@"D:\Games\Foo\a.bin")]); // 원본으로 복원
+
+        IdleTicks(s);
+        Assert.False(Linked(@"D:\Games\Foo\a.bin")); // 다시 적용하지 않음
+    }
+
     [Fact]
     public void GameRunningOnAnotherDriveDoesNotBlockTiering()
     {

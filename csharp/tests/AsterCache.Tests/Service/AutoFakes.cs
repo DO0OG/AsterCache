@@ -3,6 +3,7 @@ using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
 using AsterCache.Core.Trace;
+using AsterCache.Core.Volume;
 using AsterCache.Service;
 using AsterCache.Tracer;
 using AsterCache.Windows;
@@ -156,6 +157,9 @@ internal sealed class FakeWorld
 
     public Func<string, IReadOnlyList<Extent>?> Extents { get; set; } = _ => throw new InvalidOperationException("Extents");
 
+    /// 볼륨 할당 비트맵: 존 확장 계획이 덧붙일 구간이 비었는지 미리 보는 데 씀. 기본은 읽지 못함 (null).
+    public Func<string, VolumeBitmap?> Bitmap { get; set; } = _ => null;
+
     public Func<IReadOnlyList<IReadOnlyList<TraceEvent>>> LoadSessions { get; set; } = () => [[new TraceEvent(@"D:\g\a.bin", 0, 65536)]];
 
     public Func<string, string, bool> SameDisk { get; set; } = AutoEnv.SameLetter;
@@ -242,6 +246,7 @@ internal sealed class FakeWorld
         Touch = p => FileTimes[p] = Now,
         Revert = (g, skipRows, ct) => Revert(g, skipRows, ct),
         Extents = p => Extents(p),
+        Bitmap = d => Bitmap(d),
         DiskBytesPerSecond = _ => Disk,
         ProbeMbps = (drive, lcn, round) => ProbeMbps(drive, lcn, round),
         ProbeStepLcn = drive => ProbeStepLcn(drive),

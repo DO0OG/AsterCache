@@ -1159,7 +1159,7 @@ public sealed class AutoRelocator
             }
 
             (long? start, long usedClusters) = reuseZone && _env.MakePlanAt is not null ? PreviousZone(g) : (null, 0);
-            if (extending && start is null)
+            if (extending && start is null && reuseZone)
             {
                 BlockExtension(g, "previous zone start unknown");
                 return false;
@@ -1189,6 +1189,12 @@ public sealed class AutoRelocator
                 (start, plan) = (null, _env.MakePlan(sessions, g.OriginRoot, zoneMib));
             }
 
+            if (extending && start is not null && ExtensionRegionInUse(g, plan))
+            {
+                _log.Info($"{g.Name}: the region after the zone is in use, looking for a new one");
+                (start, plan) = (null, _env.MakePlan(sessions, g.OriginRoot, zoneMib));
+            }
+
             _ = start is null ? _seeded.Remove(g.Name) : _seeded.Add(g.Name);
             if (boot)
             {
@@ -1201,7 +1207,17 @@ public sealed class AutoRelocator
                 _log.Info($"{g.Name}: {excluded.Count} volatile file(s) left out of the plan");
             }
 
+            if (extending && start is null)
+            {
+                _ = _env.ArchiveJournal(g); // 새 존 계획은 확장 계획의 저널과 맞지 않음
+            }
+
             _env.SavePlan(plan, sessions, g.Plan);
+            if (extending && start is null)
+            {
+                _env.MoveAside(g.Plan + ExtendSuffix, g.Plan + StaleSuffix); // 마지막에 치움: 앞에서 실패하면 확장 중 표시가 남아 BlockExtension 이 이전 계획을 되살림
+            }
+
             _log.Info($"{g.Name}: auto plan made, hot {hot >> 20} MiB, zone {zoneMib} MiB");
             return true;
         }
@@ -1328,6 +1344,31 @@ public sealed class AutoRelocator
         }
     }
 
+    // 확장 계획이 덧붙일 구간 (옮길 목표) 이 다른 파일에 쓰이고 있는가: 적용 때의 zone_not_free 검사를 미리 합니다.
+    // 비트맵을 못 읽거나 판정에 실패하면 거짓: 확장을 시도하고, 적용 때 zone_not_free 로 거부되면 Relocate 가 새 존으로 다시 계획합니다.
+    private bool ExtensionRegionInUse(GameSettings g, PlanFile plan)
+    {
+        try
+        {
+            if (_env.Bitmap(DriveOf(g)) is { } bitmap)
+            {
+                PlanGuards.CheckZoneFree(plan, bitmap, _env.Extents);
+            }
+
+            return false;
+        }
+        catch (PlanRejectedException e) when (IsZoneNotFree(e))
+        {
+            return true;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsZoneNotFree(PlanRejectedException e) => e.Message.StartsWith("zone_not_free", StringComparison.Ordinal);
+
     // 같은 존을 다시 쓰는 계획의 목표 자리에 이 계획이 옮기지 않는 자기 파일 데이터 (예: 이전 계획이 존에 모은, 이번 기록에서는 핫이 아닌 부분) 가 있는가.
     // 그런 목표로는 이동이 늘 실패하므로 (사용 중인 클러스터) 새 존을 찾아야 합니다. 핫 범위(Order) 밖의 조각이 존의 쓰는 구간과 겹치는지 봅니다.
     // pinned: 확장 중이면 존 앞의 이만큼 (이전 계획이 쓰던 고정 구간, 이동하지 않음) 은 보지 않습니다.
@@ -1441,19 +1482,20 @@ public sealed class AutoRelocator
             {
                 dry = _env.Apply(g, plan, dryRun, token); // 존 시작을 정해 계획에 저장 (이어하기를 위해 남김)
             }
-            catch (PlanRejectedException e) when (extending)
+            catch (PlanRejectedException e) when (extending && !IsZoneNotFree(e))
             {
-                BlockExtension(g, e.Message); // 존 뒤가 비어 있지 않음 (zone_not_free) 등: 새 존을 찾지 않음
+                BlockExtension(g, e.Message); // 존 뒤가 비어 있는 것과 무관한 거부: 새 존을 찾지 않음
                 return;
             }
-            catch (PlanRejectedException e) when (_seeded.Contains(g.Name) && e.Message.StartsWith("zone_not_free", StringComparison.Ordinal))
+            catch (PlanRejectedException e) when ((extending || _seeded.Contains(g.Name)) && IsZoneNotFree(e))
             {
-                _log.Info($"{g.Name}: previous zone is not free, looking for a new one");
+                _log.Info(extending ? $"{g.Name}: the region after the zone is in use, looking for a new one" : $"{g.Name}: previous zone is not free, looking for a new one");
                 if (!Plan(g, s, reuseZone: false))
                 {
                     return;
                 }
 
+                extending = IsExtending(g); // 새 존 계획으로 바뀌었으면 확장 중이 아님 (.extend 는 Plan 이 .stale 로 치움)
                 plan = _env.LoadPlan(g.Plan);
                 ReapplyChecker.CheckPaths(plan, g, _env.RealPath);
                 dry = _env.Apply(g, plan, dryRun, token);

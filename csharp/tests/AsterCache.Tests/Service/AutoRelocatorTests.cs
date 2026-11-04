@@ -2831,8 +2831,11 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     public void BlockedExtensionRestoresThePreviousPlanKeepsDoneAndDoesNotRetryTheSameTrace()
     {
         long start = DoneThenMergedTrace(Merged(RestOfTheBlocks()));
-        Vol.Ext[Path.Combine(Root, "other.bin")] = [new Extent(0, start + 100, 8)]; // 존 바로 뒤에 다른 파일
         PlanFile before = PlanFile.Load(_game.Plan);
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> inner = _w.Apply;
+        _w.Apply = (g, plan, options, ct) => options.DryRun && plan.Zone.StartLcn is not null
+            ? throw new PlanRejectedException("source_changed: " + F1) // 존 뒤가 비어 있지 않은 것 (zone_not_free) 은 새 존으로 가므로 그 밖의 거부
+            : inner(g, plan, options, ct);
 
         Tick();
         RunUntilDone();
@@ -2842,7 +2845,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         Assert.Empty(Vol.Moves); // 아무것도 옮기지 않음
         Assert.Equal(before.Sha(), PlanFile.Load(_game.Plan).Sha()); // 이전 계획이 되살아남
         Assert.False(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix) || _w.Files.Contains(_game.Plan + AutoRelocator.ExtendSuffix));
-        Assert.Single(_log.Lines, l => l.Contains("zone extension blocked: zone_not_free", StringComparison.Ordinal));
+        Assert.Single(_log.Lines, l => l.Contains("zone extension blocked: source_changed", StringComparison.Ordinal));
         Assert.DoesNotContain(_log.Lines, l => l.Contains("looking for a new one", StringComparison.Ordinal)); // 전체 재배치로 떨어지지 않음
         Assert.Equal([start], _w.PlanStarts);
 

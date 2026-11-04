@@ -699,7 +699,6 @@ public sealed class AutoRelocator
 
         _recovered = true;
         // 계획이 있어도 쓰다가 꺼져 잘렸으면 (읽을 수 없음) .bad 로 치워 없는 것으로 다룹니다: 되살릴 이전 계획 (.stale·.extend) 이 있는 게임만.
-        HashSet<string> truncated = new(StringComparer.Ordinal);
         foreach (GameSettings g in s.Games.Where(g => _env.FileExists(g.Plan) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
         {
             try
@@ -711,7 +710,6 @@ public sealed class AutoRelocator
                 try
                 {
                     _env.MoveAside(g.Plan, g.Plan + BadSuffix);
-                    _ = truncated.Add(g.Name);
                     _log.Warn($"{g.Name}: plan unreadable ({e.GetType().Name}), set aside as {BadSuffix}");
                 }
                 catch (Exception m) when (m is IOException or UnauthorizedAccessException)
@@ -721,8 +719,8 @@ public sealed class AutoRelocator
             }
         }
 
-        // 계획이 없고 .stale 이나 .extend 만 있는 failed 게임 (재계획·확장이 실패한 채 꺼짐) 또는 방금 잘린 계획을 치운 게임 (상태 무관): 이전 계획을 되살려 done 으로 돌립니다.
-        foreach (GameSettings g in s.Games.Where(g => (_status.Get(g.Name) is { Stage: AutoStage.Failed, RelocatedAt: null } || truncated.Contains(g.Name)) && !_env.FileExists(g.Plan) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
+        // 계획이 없고 .stale 이나 .extend 만 있는 failed 게임 (재계획·확장이 실패한 채 꺼짐) 또는 잘린 계획을 .bad 로 치운 게임 (상태 무관, 치운 직후 꺼져도 파일로 알 수 있음; 업데이트 뒤 재계획 대기 중이면 제외): 이전 계획을 되살려 done 으로 돌립니다.
+        foreach (GameSettings g in s.Games.Where(g => (_status.Get(g.Name) is { Stage: AutoStage.Failed, RelocatedAt: null } || _env.FileExists(g.Plan + BadSuffix) && Replanning(_status, g.Name) is null) && !_env.FileExists(g.Plan) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
         {
             if (IsExtending(g))
             {
@@ -885,14 +883,20 @@ public sealed class AutoRelocator
         }
 
         _log.Warn($"{g.Name}: zone extension failed ({detail}{(e is null ? string.Empty : ": " + e.GetType().Name)})");
-        Undo(g, mark, token);
+        if (!Undo(g, mark, token))
+        {
+            Fail(g, $"extension revert incomplete ({detail})", e); // 되돌리기를 끝내지 못했으니 저널을 두고 실패로: 다음 실행이 되돌리기부터 다시 함
+            return true;
+        }
+
         try
         {
             _ = _env.ArchiveJournal(g); // 확장 계획의 저널이 남으면 복원한 이전 계획의 다음 적용이 다른 계획의 저널이라며 거부하므로 옆으로 보관
         }
         catch (Exception a) when (a is IOException or UnauthorizedAccessException)
         {
-            _log.Warn($"{g.Name}: extension journal could not be archived ({a.GetType().Name})");
+            Fail(g, $"extension journal could not be archived ({a.GetType().Name}; {detail})", a); // 보관 못 한 채 이전 계획을 되살리면 다음 적용이 거절되므로 실패로 두고 다시 시도
+            return true;
         }
 
         BlockExtension(g, detail);
@@ -1400,6 +1404,7 @@ public sealed class AutoRelocator
         _log.Info($"{g.Name}: auto relocation starting");
         VolumeDisks.Shared.Forget(PlanFile.SplitDrive(g.OriginRoot)); // 재배치 직전 매핑 재조회 (드라이브 문자 재할당 반영)
         int mark = int.MaxValue; // 이번 적용 전의 저널 줄 수 (모르면 아무것도 되돌리지 않음)
+        long pendingRecovery = 0; // 쓰기를 시작했으나 BeginRecovery 를 못 지난 예정 바이트: 예외로 빠져도 SMR 회복 대기를 시작하려고
         try
         {
             PlanFile plan = _env.LoadPlan(g.Plan);
@@ -1505,9 +1510,11 @@ public sealed class AutoRelocator
             }
 
             _status.BeginRelocation(_env.Now(), bytes); // 하루 상한은 끝이 아니라 시작 (이어하기 포함) 으로 셈
+            pendingRecovery = bytes;
             ApplyReport rep = _env.Apply(g, plan, run, token);
             _status.SetLastRelocationBytes(rep.MovedBytes); // 시작 때 넣은 예정 바이트 대신 실제로 옮긴 양
             _log.Info($"{g.Name}: auto relocation moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed, order {rep.OrderUsed ?? order}" + (rep.OrderFallbackReason is not null ? " (fallback)" : string.Empty) + (rep.Stopped is { } why ? $", stopped: {why}" : string.Empty) + rep.Timings.Summary);
+            pendingRecovery = 0;
             BeginRecovery(g, s.Auto, rep.MovedBytes, baseline);
             if (rep.Stopped == "cancelled")
             {
@@ -1542,6 +1549,7 @@ public sealed class AutoRelocator
         }
         catch (ShaMismatchException e)
         {
+            BeginRecovery(g, s.Auto, pendingRecovery, null); // 예외로 끝나도 옮기던 중이었을 수 있으니 예정 바이트로 보수적으로 회복 대기
             if (!BlockFailedExtension(g, "data check failed", e, mark, token))
             {
                 Fail(g, "data check failed", e);
@@ -1550,6 +1558,7 @@ public sealed class AutoRelocator
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
+            BeginRecovery(g, s.Auto, pendingRecovery, null);
             if (!BlockFailedExtension(g, "relocation failed: " + e.GetType().Name, e, mark, token))
             {
                 Fail(g, "relocation failed: " + e.GetType().Name, e);
@@ -1612,22 +1621,25 @@ public sealed class AutoRelocator
     }
 
     // 게임이 안 돌 때만, 이번 자동 적용이 저널에 쓴 줄 (mark 줄 뒤) 만 되돌립니다 (최선 노력). 앞선 적용의 줄은 이어하기·수동 되돌리기의 몫이라 건드리지 않음.
-    private void Undo(GameSettings g, int mark, CancellationToken token)
+    // 되돌리기를 끝냈으면 참 (되돌릴 것이 없었던 경우 포함), 게임 실행·중단·실패로 못 끝냈으면 거짓.
+    private bool Undo(GameSettings g, int mark, CancellationToken token)
     {
         if (_env.AnyRunning(g.ExeNames))
         {
             _log.Warn($"{g.Name}: game is running, revert skipped (journal kept)");
-            return;
+            return false;
         }
 
         try
         {
             RevertReport? r = _env.JournalRows(g) <= mark ? null : _env.Revert(g, mark, token);
             _log.Info(r is null ? $"{g.Name}: nothing to revert" : $"{g.Name}: reverted {r.Restored} piece(s), {r.Skipped.Count} skipped" + (r.Stopped is { } why ? $", stopped: {why}, journal kept" : string.Empty));
+            return r?.Stopped is null;
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
             _log.Error($"{g.Name}: revert failed, journal kept", e);
+            return false;
         }
     }
 

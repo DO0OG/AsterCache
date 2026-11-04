@@ -332,7 +332,7 @@ A process that is not registered, starts from an exe on an HDD volume, and reads
 - A game you registered by hand is also relocated automatically when `auto.relocate` is on, once its trace exists and the PC is idle. To prevent this, turn off `auto.relocate` (in the Settings tab of the management window, clear the Relocate box) or add the game's exe to `auto.ignore_exes`.
 - Games on an SSD are not automatically registered, traced, or relocated. On an HDD that is the Windows system drive, games are only discovered and prewarmed (status "prewarm only (system drive)"); they are not relocated or tiered.
 - A game you removed in the management window has its exe added to `auto.ignore_exes`, so it is not registered automatically again. The list holds up to 64 exes; when it is full, the oldest entries are dropped.
-- The daily limit `max_relocations_per_day` counts 24 hours from the start of each relocation.
+- The daily limit `max_relocations_per_day` counts 24 hours from the start of each relocation. Relocations under 64 MiB are not counted (they still count toward the byte budget).
 - If an automatic relocation fails, its journal reverts only that automatic change.
 
 ### Effect

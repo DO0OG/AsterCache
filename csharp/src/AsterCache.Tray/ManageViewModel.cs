@@ -465,7 +465,7 @@ public sealed class ManageViewModel(
         }
 
         long? zone = PrefetchStreamer.ZoneBytes(g);
-        long budget = Math.Min(g.MaxStreamMib, zone is > 0 ? (zone.Value + Mib - 1) / Mib : g.MaxStreamMib);
+        long budget = zone is > 0 ? (Math.Min(g.StreamCapBytes(zone.Value), zone.Value) + Mib - 1) / Mib : g.MaxStreamMib;
         CliResult r = cli.Run(AsterArgs.Timing(g.Trace, g.OriginRoot, budget));
         if (!r.Ok)
         {

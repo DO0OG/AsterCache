@@ -175,4 +175,41 @@ public sealed class EngineProfilesTests
 
         Assert.Equal(["X_Data/level0"], sel.Picks.Select(x => x.Path));
     }
+
+    [Fact]
+    public void RiotCommonUiMap11AndMap12AreReadWholeBeforeTheOtherMapsGetAHead()
+    {
+        IReadOnlyList<(string, long)> files = Files(
+            ("Game/DATA/FINAL/Global.wad.client", 1 * Mib),
+            ("Game/DATA/FINAL/UI.wad.client", 431 * Mib),
+            ("Game/DATA/FINAL/Maps/Shipping/Map30.wad.client", 617 * Mib),
+            ("Game/DATA/FINAL/Maps/Shipping/Map11.wad.client", 2412 * Mib),
+            ("Game/DATA/FINAL/Maps/Shipping/Map11.ko_KR.wad.client", 61 * Mib),
+            ("Game/DATA/FINAL/Maps/Shipping/Map12.wad.client", 1328 * Mib),
+            ("Game/DATA/FINAL/Maps/Shipping/Map12.ko_KR.wad.client", 138 * Mib),
+            ("Game/DATA/FINAL/Maps/Shipping/Common.wad.client", 106 * Mib),
+            ("Game/DATA/FINAL/Champions/Ahri.wad.client", 174 * Mib));
+
+        ProfileSelection sel = EngineProfiles.Builtin.Select(files, null, 100L * 1024 * Mib);
+
+        Assert.Equal(["Riot"], sel.Engines);
+        long[] whole = [1 * Mib, 431 * Mib, 106 * Mib, 1328 * Mib, 138 * Mib, 2412 * Mib, 61 * Mib];
+        Assert.Equal(whole, sel.Picks.Where(p => p.Path != "Game/DATA/FINAL/Maps/Shipping/Map30.wad.client" && p.Path != "Game/DATA/FINAL/Champions/Ahri.wad.client").Select(p => p.Bytes));
+        Assert.Equal(64 * Mib, sel.Picks.Single(p => p.Path == "Game/DATA/FINAL/Maps/Shipping/Map30.wad.client").Bytes);
+        Assert.Equal(64 * Mib, sel.Picks.Single(p => p.Path == "Game/DATA/FINAL/Champions/Ahri.wad.client").Bytes);
+    }
+
+    [Fact]
+    public void RiotCommonAndMap11ComeBeforeTheMapsHeadRule()
+    {
+        IReadOnlyList<(string, long)> files = Files(
+            ("Game/DATA/FINAL/Global.wad.client", 1 * Mib),
+            ("Game/DATA/FINAL/Maps/Shipping/Map30.wad.client", 617 * Mib),
+            ("Game/DATA/FINAL/Maps/Shipping/Map11.wad.client", 2412 * Mib),
+            ("Game/DATA/FINAL/Maps/Shipping/Common.wad.client", 106 * Mib));
+
+        ProfileSelection sel = EngineProfiles.Builtin.Select(files, null, 100L * 1024 * Mib);
+
+        Assert.Equal(["Game/DATA/FINAL/Global.wad.client", "Game/DATA/FINAL/Maps/Shipping/Common.wad.client", "Game/DATA/FINAL/Maps/Shipping/Map11.wad.client", "Game/DATA/FINAL/Maps/Shipping/Map30.wad.client"], sel.Picks.Select(p => p.Path));
+    }
 }

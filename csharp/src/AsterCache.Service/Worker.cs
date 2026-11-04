@@ -23,6 +23,7 @@ public sealed class Worker : BackgroundService
     private readonly AutoMode? _auto;
     private readonly SettingsReloader? _reload;
     private readonly KeepAwake? _keepAwake;
+    private readonly RiotPhaseWatcher? _riot;
     private readonly object _watchLock = new();
     private volatile AsterSettings _settings;
     private (IProcessWatcher Primary, IProcessWatcher? Fallback) _watchers;
@@ -34,7 +35,8 @@ public sealed class Worker : BackgroundService
     private readonly SessionReads _reads = new();
 
     public Worker(AsterSettings settings, ILog log, IProcessWatcher primary, IProcessWatcher? fallback, IGameStreamer streamer, ReapplyChecker checker,
-        ReapplyGate? gate = null, Prewarmer? prewarm = null, AutoMode? auto = null, SettingsReloader? reload = null, KeepAwake? keepAwake = null, DispatchEnv? dispatchEnv = null)
+        ReapplyGate? gate = null, Prewarmer? prewarm = null, AutoMode? auto = null, SettingsReloader? reload = null, KeepAwake? keepAwake = null, DispatchEnv? dispatchEnv = null,
+        RiotPhaseWatcher? riot = null)
     {
         _prewarm = prewarm;
         _prewarm?.SetAuto(settings.Auto);
@@ -52,6 +54,7 @@ public sealed class Worker : BackgroundService
         }
 
         _log = log;
+        _riot = riot ?? (prewarm is null ? null : new RiotPhaseWatcher(() => _settings, RiotWatchEnv.Create(prewarm), log)); // 설정 riot.champ_select_prewarm 이 꺼져 있으면 아무것도 부르지 않고 기다림
         DiskActivity.Log = log;
         _watchers = (primary, fallback);
         _watchKey = WatchKey(settings);
@@ -132,7 +135,8 @@ public sealed class Worker : BackgroundService
         Task reload = Task.Run(() => ReloadLoopAsync(stoppingToken), CancellationToken.None);
         Task keep = Task.Run(() => KeepAwakeLoopAsync(stoppingToken), CancellationToken.None);
         Task auto = _auto is null ? Task.CompletedTask : Task.Run(() => _auto.RunAsync(stoppingToken), CancellationToken.None);
-        await Task.WhenAll(watch, consume, reapply, reload, auto, keep);
+        Task riotWatch = _riot is null ? Task.CompletedTask : Task.Run(() => _riot.RunAsync(stoppingToken), CancellationToken.None); // 챔피언 선택 선읽기는 재배치 루프·게임 시작 처리와 따로
+        await Task.WhenAll(watch, consume, reapply, reload, auto, keep, riotWatch);
         _auto?.Shutdown();
         _prewarm?.Shutdown();
         _log.Info("service stopped");
@@ -219,6 +223,7 @@ public sealed class Worker : BackgroundService
     // 게임이 뜨면 돌고 있는 재적용을 먼저 멈춥니다 (읽기 큐 처리보다 앞서, 감시 스레드에서 바로).
     private Action<ProcessStart> OnStart(ChannelWriter<ProcessStart> writer) => s =>
     {
+        _riot?.NoteProcessStart(s.ExeName); // 리그 게임 exe 가 뜨면 챔피언 선택 선읽기를 바로 멈춤
         if (_settings.Games.FirstOrDefault(g => g.ExeNames.Contains(s.ExeName, StringComparer.OrdinalIgnoreCase)) is { } game)
         {
             _prewarm?.NoteGameStart(game.Name); // 그 게임을 예열하던 스트림은 아래 취소에도 끝까지 (다른 게임의 예열은 묶음 경계에서 멈춤), 기록 없는 예열의 예산은 풂

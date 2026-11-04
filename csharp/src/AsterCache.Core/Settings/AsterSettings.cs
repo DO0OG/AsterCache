@@ -11,6 +11,12 @@ public sealed record GameSettings(
     /// 한 번의 스트림·예열이 읽는 바이트의 상한 (MiB). 예산은 계획의 존 크기이고 이 값이 위에서 자릅니다.
     public int MaxStreamMib { get; init; } = SettingsStore.DefaultMaxStreamMib;
 
+    /// config 에 max_stream_mib 가 명시됐는가 (파싱 때만 설정). 명시하지 않으면 상한은 StreamCapBytes 의 자동 규칙입니다.
+    public bool MaxStreamSet { get; init; }
+
+    /// 이번에 읽을 바이트의 상한: 명시값은 그대로, 명시하지 않았으면 max(기본 4096 MiB, 존 크기). 존은 계획 때 이미 존 상한 (max_zone_mib, auto 는 RAM 규칙) 안으로 잘려 있어 존 전체를 읽습니다.
+    public long StreamCapBytes(long zoneBytes) => MaxStreamSet ? (long)MaxStreamMib << 20 : Math.Max((long)MaxStreamMib << 20, zoneBytes);
+
     /// 등록 출처: "manual" (사용자가 직접, 기본) 또는 "auto" (발견·감지로 자동 등록, 항목이 꽉 차면 밀려날 수 있음).
     public string Source { get; init; } = SettingsStore.DefaultSource;
 
@@ -204,10 +210,21 @@ public sealed record AutoSettings(
     public TimeSpan IdleWindow => IdleSecondsSet || !IdleMinutesSet ? TimeSpan.FromSeconds(IdleSeconds) : TimeSpan.FromMinutes(IdleMinutes);
 }
 
+/// 리그 오브 레전드 챔피언 선택 선읽기 (config 의 riot 객체): 기본 꺼짐. 켜면 챔피언 선택 중 잠긴 챔피언·맵의 데이터 파일을 예산 (MiB) 안에서 미리 읽음.
+public sealed record RiotSettings(bool ChampSelectPrewarm = false, int ChampSelectBudgetMib = RiotSettings.DefaultBudgetMib)
+{
+    public const int DefaultBudgetMib = 2048;
+
+    public static RiotSettings Default { get; } = new();
+}
+
 /// config.json 한 벌 (검증을 통과한 값만 존재).
 public sealed record AsterSettings(int PollMs, IReadOnlyList<GameSettings> Games, string Watcher = SettingsStore.DefaultWatcher, string Language = SettingsStore.DefaultLanguage)
 {
     public AutoSettings Auto { get; init; } = AutoSettings.Default;
+
+    /// 리그 챔피언 선택 선읽기 설정.
+    public RiotSettings Riot { get; init; } = RiotSettings.Default;
 
     /// 자동 재배치가 한 존에 쓰는 크기의 상한 (MiB).
     public int MaxZoneMib { get; init; } = SettingsStore.DefaultMaxZoneMib;

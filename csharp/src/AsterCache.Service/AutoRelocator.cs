@@ -1328,6 +1328,12 @@ public sealed class AutoRelocator
             bool boot = tracePath == AutoTracer.BootTracePath(g);
             bool prefetch = boot && _env.TraceSource(tracePath) == PlanSourcePrefetch;
             (IReadOnlyList<TraceEvent> trace, JObject excluded) = DropVolatile(g, _env.LoadTrace(tracePath, g.OriginRoot));
+            long supplementBytes = 0;
+            if (AntiCheat.ForbidsTrace(g.AntiCheat))
+            {
+                (trace, supplementBytes) = ProfileSupplement.Union(trace, MaxZoneMib(s, g) << 20, budget => _env.ProfileEvents(g, budget)); // 트레이스를 만들 수 없는 게임: 트레이스가 덮지 못한 엔진 프로필 구간을 존 상한 안에서 보충
+            }
+
             IReadOnlyList<IReadOnlyList<TraceEvent>> sessions = [prefetch ? RangesByLcn(trace) : trace];
             PlanFile probe = _env.MakePlan(sessions, g.OriginRoot, ZoneSize.ProbeMib);
             long hot = probe.Stats.TryGetValue("hot_bytes", out object? h) && h is long bytes ? bytes : 0;
@@ -1395,6 +1401,13 @@ public sealed class AutoRelocator
                 {
                     plan.Stats[FingerprintKey] = fp;
                 }
+            }
+
+            if (supplementBytes > 0)
+            {
+                long supplementMib = (supplementBytes + (1 << 20) - 1) >> 20;
+                plan.Stats["profile_supplement_mib"] = supplementMib;
+                _log.Info($"{g.Name}: engine profile added {supplementMib} MiB the trace did not cover");
             }
 
             if (excluded.Count > 0)

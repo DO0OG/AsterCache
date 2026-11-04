@@ -169,6 +169,9 @@ internal sealed class FakeWorld
     /// 볼륨 할당 비트맵: 존 확장 계획이 덧붙일 구간이 비었는지 미리 보는 데 씀. 기본은 읽지 못함 (null).
     public Func<string, VolumeBitmap?> Bitmap { get; set; } = _ => null;
 
+    /// 트레이스 금지 게임의 엔진 프로필 구간 (게임, 예산 -> 우선순위 순 이벤트). 기본은 없음.
+    public Func<GameSettings, long, IReadOnlyList<TraceEvent>> ProfileEvents { get; set; } = (_, _) => [];
+
     public Func<IReadOnlyList<IReadOnlyList<TraceEvent>>> LoadSessions { get; set; } = () => [[new TraceEvent(@"D:\g\a.bin", 0, 65536)]];
 
     public Func<string, string, bool> SameDisk { get; set; } = AutoEnv.SameLetter;
@@ -221,6 +224,7 @@ internal sealed class FakeWorld
         },
         TraceSource = p => TraceSources.GetValueOrDefault(p),
         LoadTrace = (_, _) => LoadSessions()[0],
+        ProfileEvents = (g, budget) => ProfileEvents(g, budget),
         LoadVolatile = _ => Volatile,
         MakePlan = (sessions, origin, zoneMib) =>
         {

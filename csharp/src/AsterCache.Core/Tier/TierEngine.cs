@@ -373,7 +373,6 @@ public sealed class TierEngine
     /// 게임 하나를 되돌립니다: 링크 삭제 + 이름 복구. 사본은 그대로 두고 저널에 reverted 로 표시합니다.
     public TierRevertReport Revert(string game, string reason)
     {
-        _ = Maintain(game); // 되돌리기 전에 링크로 바뀐 사본을 stale 로 판정해 변경분을 일반 파일로 남김 (옛 원본으로 덮어쓰지 않음)
         (TierJournal? j, bool corrupt) = Read(game);
         if (j is null)
         {
@@ -389,8 +388,22 @@ public sealed class TierEngine
 
         foreach (TierEntry e in todo)
         {
+            try
+            {
+                if (e.State == TierState.Active)
+                {
+                    _ = Check(e); // 링크로 바뀐 사본은 이 인스턴스의 메모리에서 stale 로 판정: 저널 저장 실패와 무관하게 변경분을 일반 파일로 남김 (옛 원본으로 덮어쓰지 않음)
+                }
+            }
+            catch (Exception ex) when (Io(ex))
+            {
+                _log.Warn($"{e.Path}: check before revert failed, link and copy left as they are ({ex.GetType().Name}: {ex.Message})");
+                failed++;
+                continue;
+            }
+
             string before = e.State;
-            if (!RevertOne(e))
+            if (before != TierState.Reverted && !RevertOne(e))
             {
                 failed++;
                 continue;

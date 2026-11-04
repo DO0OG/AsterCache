@@ -78,6 +78,7 @@ public sealed class AutoRelocator
     private const string ExtendDetail = "trace grew, extending zone";
     private const string SupplementKey = "profile_supplement_mib"; // 계획 stats: 트레이스 금지 게임의 계획에 엔진 프로필에서 보탠 양 (MiB)
     private const string SupplementCheckedKey = "profile_supplement_checked"; // 계획 stats: 프로필 보충을 이미 따져 본 계획 (보충이 없거나 작았음)
+    private const string SupplementReplanKey = "profile_supplement_replan"; // 이전 계획 (.extend) 의 stats: 프로필 보충 재계획 중 (뒤 공간이 쓰이면 새 존 대신 보류)
 
     /// 읽을 수 없는 (잘린) 계획을 옆으로 치운 파일의 접미사.
     public const string BadSuffix = ".bad";
@@ -859,6 +860,19 @@ public sealed class AutoRelocator
     // 확장 중인가: 확장 재계획이 이전 계획을 .extend 로 치운 뒤 끝나거나 막히기 전까지 (파일이라 서비스를 다시 시작해도 이어짐).
     private bool IsExtending(GameSettings g) => _env.FileExists(g.Plan + ExtendSuffix);
 
+    // 프로필 보충 재계획인가: 이전 계획 (.extend) 에 표지가 있음. 보충은 이미 옮긴 존을 지키려는 것이라 뒤 공간이 쓰이면 새 존으로 가지 않고 보류합니다.
+    private bool IsSupplementExtension(GameSettings g)
+    {
+        try
+        {
+            return IsExtending(g) && _env.LoadPlan(g.Plan + ExtendSuffix).Stats.TryGetValue(SupplementReplanKey, out object? marked) && marked is 1L;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            return false;
+        }
+    }
+
     // 존 확장 재계획: 배치까지 끝낸 게임의 병합 트레이스 (플레이를 더 모아 합집합이 된 trace.json) 가 계획보다 새롭고, 핫 집합이 TraceMergeMinMib 이상 커졌으면
     // 이전 계획을 .extend 로 치우고 처음 단계로 되돌립니다. 이후는 일반 흐름 (계획 → 재배치): 같은 존 시작에 맞춰 계획하므로 이미 존에 있는 블록은 제자리이고 새 블록만 존 뒤에 붙으며,
     // 유휴·일일 상한·바이트 예산·회복·전원·같은 디스크 게임 같은 안전장치를 그대로 지납니다. 존 뒤가 비어 있지 않은 등 확장할 수 없으면 BlockExtension 이 이전 계획을 되살립니다.
@@ -910,13 +924,16 @@ public sealed class AutoRelocator
                 long merged = Math.Min(DistinctBlocks(_env.LoadTrace(raw, g.OriginRoot)) * HotSet.Block, cap);
                 long grew = merged - hotBlocks * HotSet.Block;
                 bool reordered = newTrace && stored is not null && fingerprint is not null && fingerprint != stored; // 크기가 그대로여도 블록 집합·순서가 바뀜
-                if (grew >= (long)s.Auto.TraceMergeMinMib << 20 || reordered)
+                bool shrink = hotBlocks * HotSet.Block > cap; // 상한을 낮춰 계획의 핫셋이 새 상한을 넘음: 메타만 적지 않고 같은 존 시작으로 줄여 다시 계획
+                if (grew >= (long)s.Auto.TraceMergeMinMib << 20 || reordered || shrink)
                 {
                     _tier?.RevertGame(g.Name, "trace grew"); // 링크는 새 재배치 전에 되돌림
                     _ = _env.ArchiveJournal(g); // 새 계획은 다른 저널 header 를 쓰므로 끝난 저널은 옆으로 보관
                     _env.MoveAside(g.Plan, g.Plan + ExtendSuffix);
                     _status.ResetForReplan(g.Name, ExtendDetail);
-                    _log.Info(grew >= (long)s.Auto.TraceMergeMinMib << 20
+                    _log.Info(shrink
+                        ? $"{g.Name}: plan holds {hotBlocks * HotSet.Block >> 20} MiB, above the zone limit {limit} MiB, plan set aside as {ExtendSuffix}, will plan again within the limit (same zone)"
+                        : grew >= (long)s.Auto.TraceMergeMinMib << 20
                         ? $"{g.Name}: merged trace holds {grew >> 20} MiB more than the plan (run {AutoTracer.RunCount(g, _env.FileExists)}, zone limit {limit} MiB), plan set aside as {ExtendSuffix}, will extend the zone"
                         : $"{g.Name}: merged trace blocks or order changed since the plan (run {AutoTracer.RunCount(g, _env.FileExists)}), plan set aside as {ExtendSuffix}, will extend the zone");
                     continue;
@@ -1011,8 +1028,14 @@ public sealed class AutoRelocator
                 (IReadOnlyList<TraceEvent> trace, _) = DropVolatile(g, _env.LoadTrace(tracePath, g.OriginRoot));
                 (_, long bytes) = ProfileSupplement.Union(trace, MaxZoneMib(s, g) << 20, budget => _env.ProfileEvents(g, budget));
                 plan.Stats[SupplementCheckedKey] = 1L;
+                bool replan = bytes >= (long)s.Auto.TraceMergeMinMib << 20;
+                if (replan)
+                {
+                    plan.Stats[SupplementReplanKey] = 1L; // 확장이 막혀 되살리면 NoteBlocked 가 0 으로 돌림
+                }
+
                 plan.Save(g.Plan);
-                if (bytes < (long)s.Auto.TraceMergeMinMib << 20)
+                if (!replan)
                 {
                     continue;
                 }
@@ -1093,6 +1116,11 @@ public sealed class AutoRelocator
             PlanFile plan = _env.LoadPlan(g.Plan);
             plan.Stats[EffectiveZoneKey] = MaxZoneMib(_settings(), g);
             plan.Stats[MergePolicyKey] = AutoTracer.MergePolicy;
+            if (plan.Stats.ContainsKey(SupplementReplanKey))
+            {
+                plan.Stats[SupplementReplanKey] = 0L; // 되살린 계획이 이후 일반 확장에서 보충 재계획으로 오인되지 않게
+            }
+
             plan.Save(g.Plan);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
@@ -1440,6 +1468,12 @@ public sealed class AutoRelocator
 
             if (extending && start is not null && ExtensionRegionInUse(g, plan))
             {
+                if (IsSupplementExtension(g))
+                {
+                    BlockExtension(g, "the region after the zone is in use, engine profile not added"); // 이미 옮긴 블록을 다시 옮기는 전체 재배치로 가지 않음
+                    return false;
+                }
+
                 _log.Info($"{g.Name}: the region after the zone is in use, looking for a new one");
                 (start, plan) = (null, _env.MakePlan(sessions, g.OriginRoot, zoneMib));
             }
@@ -1770,9 +1804,9 @@ public sealed class AutoRelocator
             {
                 dry = _env.Apply(g, plan, dryRun, token); // 존 시작을 정해 계획에 저장 (이어하기를 위해 남김)
             }
-            catch (PlanRejectedException e) when (extending && !IsZoneNotFree(e))
+            catch (PlanRejectedException e) when (extending && (!IsZoneNotFree(e) || IsSupplementExtension(g)))
             {
-                BlockExtension(g, e.Message); // 존 뒤가 비어 있는 것과 무관한 거부: 새 존을 찾지 않음
+                BlockExtension(g, e.Message); // 존 뒤가 비어 있는 것과 무관한 거부 (프로필 보충은 비어 있지 않아도): 새 존을 찾지 않음
                 return;
             }
             catch (PlanRejectedException e) when ((extending || _seeded.Contains(g.Name)) && IsZoneNotFree(e))

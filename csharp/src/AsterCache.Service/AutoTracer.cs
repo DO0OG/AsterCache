@@ -84,8 +84,8 @@ public sealed class AutoTracer
     /// 병합 직후 남기는 작은 메타 (이번 병합이 더한 새 고유 블록): plans\<이름>.trace.merge.json. run 번호가 마지막 run 파일과 같을 때만 믿습니다.
     public static string MergeMetaPath(GameSettings g) => Path.Combine(Path.GetDirectoryName(g.Plan) ?? string.Empty, g.Name + ".trace.merge.json");
 
-    /// 지금까지 모은 유효 플레이 수: 원시 트레이스가 없으면 0, 있으면 run1 (또는 run 파일 없는 원시 트레이스 하나) 은 언제나 1 로 셈하고,
-    /// 이어서 있는 run2, run3 ... 는 읽기량이 minBytes 이상인 것만 셈 (읽기량을 못 얻으면 셈). readBytes 가 없으면 이어서 있는 run 파일을 모두 셈. 따로 저장하는 상태 없음.
+    /// 지금까지 모은 유효 플레이 수: 원시 트레이스가 없으면 0, run 파일 없는 원시 트레이스 하나 (옛 형식) 는 1 로 셈하고 (호환),
+    /// 이어서 있는 run1, run2 ... 는 읽기량이 minBytes 이상인 것만 셈 (읽기량을 못 얻으면 셈). readBytes 가 없으면 이어서 있는 run 파일을 모두 셈. 따로 저장하는 상태 없음.
     public static int RunCount(GameSettings g, Func<string, bool> exists, Func<string, long?>? readBytes = null, long minBytes = MinExtraRunBytes)
     {
         string raw = RawTracePath(g);
@@ -99,8 +99,8 @@ public sealed class AutoTracer
             return 1;
         }
 
-        int valid = 1;
-        for (int n = 2; n <= MaxRunFiles && exists(TraceWriter.RunPath(raw, n)); n++)
+        int valid = 0;
+        for (int n = 1; n <= MaxRunFiles && exists(TraceWriter.RunPath(raw, n)); n++)
         {
             if (readBytes?.Invoke(TraceWriter.RunPath(raw, n)) is not { } bytes || bytes >= minBytes)
             {
@@ -301,12 +301,14 @@ public sealed class AutoTracer
 
         string? refused;
         ReadAhead? learn = null;
-        int done; // 이미 모은 유효 플레이 수: 0 이면 첫 기록, 1 이상이면 병합용 추가 기록 (상태·선행 읽기를 건드리지 않음)
+        int done; // 이미 모은 유효 플레이 수
+        bool firstRun; // 원시 트레이스가 아직 없는 첫 기록 (아니면 병합용 추가 기록: 상태·선행 읽기를 건드리지 않음). 유효 회차가 0 이어도 run1 이 있으면 추가 기록
         TraceNext next;
         lock (_lock)
         {
             next = NextTrace(g, _settings().Auto, _env, _status, MinRunBytes);
             done = next.Valid;
+            firstRun = !_env.FileExists(RawTracePath(g));
             if (_run is not null || !next.Wanted)
             {
                 return;
@@ -318,7 +320,7 @@ public sealed class AutoTracer
                 try
                 {
                     LearnSettings ls = _settings().Auto.Learn;
-                    learn = ls.Enabled && done == 0 ? AutoLearn.Create(g, ls, _env.PhysicalRamBytes(), _learn) : null; // 시스템 SSD·SSD 는 위에서 이미 걸러짐
+                    learn = ls.Enabled && firstRun ? AutoLearn.Create(g, ls, _env.PhysicalRamBytes(), _learn) : null; // 시스템 SSD·SSD 는 위에서 이미 걸러짐
                     _run = new Run(g, _env.StartTrace(g.ExeNames, learn is null ? null : AutoLearn.Listener(learn)), _env.Now()) { Learn = learn, Number = LastRunNumber(g, _env.FileExists) + 1 }; // 번호는 유효 회차 수가 아니라 있는 run 파일 기준 (덮어쓰기 금지)
                     learn?.Start();
                 }
@@ -326,7 +328,7 @@ public sealed class AutoTracer
                 {
                     learn?.Dispose();
                     _log.Error($"{g.Name}: auto trace could not start", e);
-                    if (done == 0)
+                    if (firstRun)
                     {
                         _status.Set(g.Name, g.Source, null, AutoStage.Failed, "trace session failed to start");
                     }
@@ -338,7 +340,7 @@ public sealed class AutoTracer
 
         if (refused is not null)
         {
-            if (done == 0 && _status.Set(g.Name, g.Source, null, AutoStage.Skipped, refused))
+            if (firstRun && _status.Set(g.Name, g.Source, null, AutoStage.Skipped, refused))
             {
                 _log.Info($"{g.Name}: auto trace and relocation skipped ({refused})"); // 같은 이유면 매번 남기지 않음
             }
@@ -346,7 +348,7 @@ public sealed class AutoTracer
             return;
         }
 
-        if (done > 0)
+        if (!firstRun)
         {
             _log.Info($"{g.Name}: auto trace started (run {done + 1}/{next.Limit}" + (next.Coverage is { } cov && done >= _settings().Auto.TraceRuns ? $", coverage {cov}%" : string.Empty) + ")");
             return;
@@ -612,14 +614,15 @@ public sealed class AutoTracer
     }
 
     // 두 번째 이후 플레이: runN.json 으로 저장하고, 유효한 run 들의 블록 합집합 (최신 회차의 접근 순서가 앞, 옛 회차에서만 본 블록은 뒤) 을 임시 파일을 거쳐 원시 트레이스로 한 번에 바꿔 씁니다.
-    // 읽기량이 MinRunBytes 미만인 옛 run (run1 제외) 은 합집합에 넣지 않습니다. 이번 병합이 더한 새 고유 블록은 작은 메타로 남김.
+    // 읽기량이 MinRunBytes 미만인 옛 run (옛 형식에서 옮긴 run1 제외) 은 합집합에 넣지 않습니다. 이번 병합이 더한 새 고유 블록은 작은 메타로 남김.
     private void Merge(GameSettings g, List<TraceEvent> canonical, int number)
     {
         string raw = RawTracePath(g);
         string first = TraceWriter.RunPath(raw, 1);
-        if (number == 2 && !_env.FileExists(first))
+        bool legacy = number == 2 && !_env.FileExists(first); // run 파일 없이 원시 트레이스만 있던 게임: 그 트레이스가 run1 (호환: 크기와 무관하게 유효)
+        if (legacy)
         {
-            File.Copy(raw, first, true); // run 파일 없이 원시 트레이스만 있던 게임: 그 트레이스가 run1
+            File.Copy(raw, first, true);
         }
 
         TraceWriter.WriteFile(TraceWriter.RunPath(raw, number), canonical);
@@ -633,7 +636,7 @@ public sealed class AutoTracer
             }
 
             List<TraceEvent> events = JsonRead.ReadFile(file) is List<object?> rows ? [.. rows.Select(TraceEvents.FromJson)] : throw new PyValueException("bad trace file");
-            if (i == 1 || events.Sum(e => e.Length) >= MinRunBytes)
+            if (legacy && i == 1 || events.Sum(e => e.Length) >= MinRunBytes)
             {
                 previous.Add(events);
             }

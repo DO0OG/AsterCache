@@ -37,9 +37,10 @@ public sealed class AutoSettingsTests
 
         Assert.Equal(AutoSettings.Default, s.Auto);
         Assert.Equal(2048, s.MaxZoneMib);
-        Assert.Equal((true, true, true, true, 0, 3, 600, 6144, 4), (s.Auto.Enabled, s.Auto.Discover, s.Auto.Trace, s.Auto.Relocate, s.Auto.PrewarmRecent, s.Auto.IdleMinutes, s.Auto.TraceCapSeconds, s.Auto.TraceCapMib, s.Auto.MaxRelocationsPerDay));
+        Assert.Equal((true, true, true, true, 0, 3, 1800, 6144, 4), (s.Auto.Enabled, s.Auto.Discover, s.Auto.Trace, s.Auto.Relocate, s.Auto.PrewarmRecent, s.Auto.IdleMinutes, s.Auto.TraceCapSeconds, s.Auto.TraceCapMib, s.Auto.MaxRelocationsPerDay));
         Assert.Equal((4, "low", 8), (s.Auto.RelocateChunkMib, s.Auto.RelocateIoPriority, s.Auto.MaxRelocateGibPerDay));
         Assert.Equal((3, 64), (s.Auto.TraceRuns, s.Auto.TraceMergeMinMib));
+        Assert.Equal((70, 8), (s.Auto.TraceTargetCoverage, s.Auto.TraceRunsMax));
         Assert.Equal(8, s.Auto.RelocateParallel);
         Assert.Empty(s.Auto.IgnoreExes);
         Assert.Equal((20, 256), (AutoSettings.HeuristicWindowSeconds, AutoSettings.HeuristicReadMib));
@@ -83,6 +84,10 @@ public sealed class AutoSettingsTests
     [InlineData("trace_runs", 33)]
     [InlineData("trace_merge_min_mib", 0)]
     [InlineData("trace_merge_min_mib", 65537)]
+    [InlineData("trace_target_coverage", 0)]
+    [InlineData("trace_target_coverage", 101)]
+    [InlineData("trace_runs_max", 0)]
+    [InlineData("trace_runs_max", 33)]
     [InlineData("max_relocations_per_day", -1)]
     [InlineData("max_relocations_per_day", 25)]
     [InlineData("relocate_chunk_mib", 0)]
@@ -108,6 +113,10 @@ public sealed class AutoSettingsTests
     [InlineData("trace_runs", 32)]
     [InlineData("trace_merge_min_mib", 1)]
     [InlineData("trace_merge_min_mib", 65536)]
+    [InlineData("trace_target_coverage", 1)]
+    [InlineData("trace_target_coverage", 100)]
+    [InlineData("trace_runs_max", 1)]
+    [InlineData("trace_runs_max", 32)]
     [InlineData("max_relocations_per_day", 0)]
     [InlineData("relocate_chunk_mib", 1)]
     [InlineData("relocate_chunk_mib", 256)]
@@ -116,6 +125,31 @@ public sealed class AutoSettingsTests
     [InlineData("max_relocate_gib_per_day", 0)]
     [InlineData("max_relocate_gib_per_day", 1048576)]
     public void BoundaryAutoNumbersAreAccepted(string key, int value) => ParseAuto(new JsonObject { [key] = value });
+
+    [Theory]
+    [InlineData(2048, 6144)] // 미명시 (기본값): max(6144, 존 x 2)
+    [InlineData(8192, 16384)]
+    [InlineData(1024, 6144)]
+    [InlineData(65536, 65536)] // 허용 상한을 넘지 않음
+    public void TraceCapDefaultFollowsTheZoneLimit(int zoneMib, int expected) =>
+        Assert.Equal(expected, AutoSettings.Default.EffectiveTraceCapMib(zoneMib));
+
+    [Fact]
+    public void ExplicitTraceCapWinsOverTheZoneLimit()
+    {
+        AutoSettings a = ParseAuto(new JsonObject { ["trace_cap_mib"] = 3000 }).Auto;
+
+        Assert.Equal(3000, a.EffectiveTraceCapMib(8192));
+        Assert.Equal(1800, a.TraceCapSeconds);
+    }
+
+    [Fact]
+    public void TraceCoverageKeysAreParsed()
+    {
+        AutoSettings a = ParseAuto(new JsonObject { ["trace_target_coverage"] = 50, ["trace_runs_max"] = 5 }).Auto;
+
+        Assert.Equal((50, 5), (a.TraceTargetCoverage, a.TraceRunsMax));
+    }
 
     [Fact]
     public void RelocateParallelIsParsed() =>

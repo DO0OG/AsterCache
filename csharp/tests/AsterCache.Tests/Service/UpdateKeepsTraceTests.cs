@@ -201,6 +201,33 @@ public sealed partial class AutoRelocatorTests
         AssertTraceRestoredAndReplanned(trace, start);
     }
 
+    // 트레이스를 되살린 직후 (새 계획을 저장하기 전) 또 꺼졌다 켜져도: .bad 와 .stale 계획이 있다고 이전 계획을 done 으로 되살리지 않고 다시 계획해야 함.
+    [Fact]
+    public void RestartRightAfterTheTraceWasRestoredStillPlansAgainInsteadOfRestoringTheStalePlan()
+    {
+        long start = CorruptBootPlanWithTheTraceSetAside(out string trace);
+        File.Move(_game.Plan, _game.Plan + AutoRelocator.BadSuffix); // 첫 시작이 한 일: 손상 계획 치움, 트레이스 복원, 상태를 다시 계획으로
+        _ = _w.Files.Remove(trace + ".stale");
+        _ = _w.Files.Add(trace);
+        _status.Set(_game.Name, _game.Source, null, AutoStage.Discovered, "first run recorded, planning again");
+
+        _relocator = null; // 새 계획을 저장하기 전에 꺼졌다 다시 시작
+        Tick();
+
+        Assert.Contains(trace, _w.Files);
+        Assert.True(File.Exists(_game.Plan + AutoRelocator.BadSuffix));
+        Assert.True(File.Exists(_game.Plan + AutoRelocator.StaleSuffix));
+        Assert.NotEqual(AutoStage.Done, Entry.Stage);
+        Assert.Null(Entry.RelocatedAt);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("previous plan restored", StringComparison.Ordinal));
+
+        Run(TimeSpan.FromMinutes(20));
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.Equal([start], _w.PlanStarts);
+        Assert.Equal(start, PlanFile.Load(_game.Plan).Zone.StartLcn);
+    }
+
     [Fact]
     public void RestartWithoutAPlanRestoresTheTraceAndPlansAgainEvenWhenTheStateWasFailed()
     {

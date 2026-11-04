@@ -7,9 +7,14 @@
         { "glob": "<name>_Data/globalgamemanagers*" },
         { "glob": "<name>_Data/resources.assets" },
         { "glob": "<name>_Data/sharedassets0.assets*" },
+        { "glob": "<name>_Data/sharedassets0.resS" },
         { "glob": "<name>_Data/level0*" },
+        { "glob": "<name>_Data/level?" },
+        { "glob": "<name>_Data/level?.resS" },
         { "glob": "<name>_Data/Managed/*.dll" },
         { "glob": "<name>_Data/il2cpp_data/Metadata/global-metadata.dat" },
+        { "glob": "<name>_Data/StreamingAssets/**", "head_mib": 256 },
+        { "glob": "<name>_Data/il2cpp_data/**/*.dll" },
         { "glob": "MonoBleedingEdge/**/*.dll" },
         { "glob": "UnityPlayer.dll" }
       ]
@@ -22,7 +27,8 @@
         { "glob": "<Game>/Content/Paks/pakchunk0*.utoc" },
         { "glob": "<Game>/Content/Paks/pakchunk0*.ucas" },
         { "glob": "<Game>/Binaries/Win64/*.dll" },
-        { "glob": "<Game>/Content/Paks/*.pak", "head_mib": 64, "tail_mib": 64 },
+        { "glob": "Engine/Binaries/**/*.dll" },
+        { "glob": "<Game>/Content/Paks/*.pak", "head_mib": 256, "tail_mib": 64 },
         { "glob": "<Game>/Content/Paks/*.utoc" },
         { "glob": "<Game>/Content/Paks/*.ucas", "head_mib": 64 }
       ]
@@ -32,6 +38,7 @@
       "detect": ["**/*_dir.vpk"],
       "include": [
         { "glob": "**/*_dir.vpk" },
+        { "glob": "**/pak01_*.vpk", "head_mib": 256 },
         { "glob": "bin/*.dll" }
       ]
     },
@@ -45,12 +52,67 @@
         { "glob": "Game/DATA/FINAL/DATA.wad.client" },
         { "glob": "Game/DATA/FINAL/ShaderCache*.wad.client" },
         { "glob": "Game/DATA/FINAL/Scripts*.wad.client" },
-        { "glob": "Game/DATA/FINAL/Maps/**/*.wad.client", "head_mib": 64 },
+        { "glob": "Game/DATA/FINAL/Maps/Shipping/Common.wad.client" },
+        { "glob": "Game/DATA/FINAL/Maps/Shipping/Map12.wad.client" },
+        { "glob": "Game/DATA/FINAL/Maps/Shipping/Map12.*.wad.client" },
+        { "glob": "Game/DATA/FINAL/Maps/Shipping/Map11.wad.client" },
+        { "glob": "Game/DATA/FINAL/Maps/Shipping/Map11.*.wad.client" },
+        { "glob": "Game/DATA/FINAL/Maps/Shipping/Map30.wad.client" },
+        { "glob": "Game/DATA/FINAL/Maps/Shipping/Map30.*.wad.client" },
+        { "glob": "Game/DATA/FINAL/Maps/Shipping/Map453.wad.client" },
+        { "glob": "Game/DATA/FINAL/Maps/Shipping/Map453.*.wad.client" },
         { "glob": "Game/League of Legends.exe" },
         { "glob": "Game/*.dll" },
         { "glob": "*.exe" },
         { "glob": "*.dll" },
-        { "glob": "Game/DATA/FINAL/Champions/**/*.wad.client", "head_mib": 64 }
+        { "glob": "Game/DATA/FINAL/Champions/**/*.wad.client", "head_mib": 64 },
+        { "glob": "Game/DATA/FINAL/Maps/Shipping/Map22.wad.client" },
+        { "glob": "Game/DATA/FINAL/Maps/Shipping/Map22.*.wad.client" },
+        { "glob": "Game/DATA/FINAL/Companions*.wad.client" },
+        { "glob": "Game/DATA/FINAL/Maps/**/*.wad.client", "head_mib": 64 }
+      ]
+    },
+    {
+      "name": "MapleStory",
+      "detect": ["*.wz", "Data/*.wz"],
+      "include": [
+        { "glob": "Data.wz" },
+        { "glob": "*.wz", "head_mib": 1024 },
+        { "glob": "Data/*.wz", "head_mib": 1024 },
+        { "glob": "Data/*.img", "head_mib": 1024 },
+        { "glob": "*.exe" },
+        { "glob": "*.dll" }
+      ]
+    },
+    {
+      "name": "CASC",
+      "detect": ["data/casc/data/*.idx"],
+      "include": [
+        { "glob": "data/casc/data/*.idx" },
+        { "glob": "data/casc/data/data.???", "head_mib": 256 },
+        { "glob": "*.exe" },
+        { "glob": "*.dll" }
+      ]
+    },
+    {
+      "name": "SCS",
+      "detect": ["base.scs"],
+      "include": [
+        { "glob": "base.scs", "head_mib": 512 },
+        { "glob": "def.scs", "head_mib": 512 },
+        { "glob": "core.scs", "head_mib": 512 },
+        { "glob": "effect.scs", "head_mib": 512 },
+        { "glob": "locale.scs", "head_mib": 512 }
+      ]
+    },
+    {
+      "name": "EA FC Online",
+      "detect": ["fczf.exe", "data/*.big"],
+      "include": [
+        { "glob": "data/data_default.big" },
+        { "glob": "*.exe" },
+        { "glob": "*.dll" },
+        { "glob": "data/*.big", "head_mib": 256 }
       ]
     }
   ],

@@ -101,11 +101,11 @@ public sealed class FolderWarmTests
         Assert.Equal(
             ["Helper.dll", "UnityPlayer.dll", // 공통 규칙: exe 와 같은 폴더의 *.dll
                 "Game_Data/globalgamemanagers", "Game_Data/globalgamemanagers.assets", "Game_Data/resources.assets",
-                "Game_Data/sharedassets0.assets", "Game_Data/sharedassets0.assets.resS", "Game_Data/level0",
+                "Game_Data/sharedassets0.assets", "Game_Data/sharedassets0.assets.resS", "Game_Data/level0", "Game_Data/level1",
                 "Game_Data/Managed/Assembly-CSharp.dll", "Game_Data/Managed/UnityEngine.dll", "Game_Data/il2cpp_data/Metadata/global-metadata.dat",
-                "MonoBleedingEdge/EmbedRuntime/mono-2.0-bdwgc.dll"],
+                "Game_Data/StreamingAssets/movie.mp4", "MonoBleedingEdge/EmbedRuntime/mono-2.0-bdwgc.dll"],
             rel);
-        Assert.DoesNotContain(rel, r => r.Contains("movie", StringComparison.Ordinal) || r.EndsWith("level1", StringComparison.Ordinal) || r.EndsWith("sharedassets1.assets", StringComparison.Ordinal) || r == "notes.txt");
+        Assert.DoesNotContain(rel, r => r.EndsWith("sharedassets1.assets", StringComparison.Ordinal) || r == "notes.txt");
     }
 
     [Fact]
@@ -183,8 +183,8 @@ public sealed class FolderWarmTests
         Assert.Contains("Game/d3d.dll", rel);
         Assert.Contains("LeagueClient.exe", rel);
         Assert.Contains("libcef.dll", rel);
-        // 우선순위: Global → UI → Bootstrap/DATA/ShaderCache/Scripts → Maps → 게임 exe·dll → 루트 exe·dll → Champions
-        string[] order = ["Game/d3d.dll", "Game/DATA/FINAL/Global.wad.client", "Game/DATA/FINAL/UI.wad.client", "Game/DATA/FINAL/Bootstrap.windows.wad.client", "Game/DATA/FINAL/DATA.wad.client", "Game/DATA/FINAL/ShaderCache.dx11.wad.client", "Game/DATA/FINAL/Scripts.wad.client", "Game/DATA/FINAL/Maps/Map11/Map11.wad.client", "Game/League of Legends.exe", "LeagueClient.exe", "libcef.dll", "Game/DATA/FINAL/Champions/Ahri.wad.client"]; // 공통 규칙 (exe 폴더의 dll) 이 맨 앞
+        // 우선순위: Global → UI → Bootstrap/DATA/ShaderCache/Scripts → 게임 exe·dll → 루트 exe·dll → Champions → 그 밖의 Maps (head)
+        string[] order = ["Game/d3d.dll", "Game/DATA/FINAL/Global.wad.client", "Game/DATA/FINAL/UI.wad.client", "Game/DATA/FINAL/Bootstrap.windows.wad.client", "Game/DATA/FINAL/DATA.wad.client", "Game/DATA/FINAL/ShaderCache.dx11.wad.client", "Game/DATA/FINAL/Scripts.wad.client", "Game/League of Legends.exe", "LeagueClient.exe", "libcef.dll", "Game/DATA/FINAL/Champions/Ahri.wad.client", "Game/DATA/FINAL/Maps/Map11/Map11.wad.client"]; // 공통 규칙 (exe 폴더의 dll) 이 맨 앞
         Assert.Equal(order, rel);
         Assert.Contains("Game/DATA/FINAL/Champions/Ahri.wad.client", rel);
         Assert.DoesNotContain("LeagueClient/Plugins/x.txt", rel);
@@ -212,7 +212,7 @@ public sealed class FolderWarmTests
         string paks = Path.Combine(dir.Path, "G", "Content", "Paks");
         Directory.CreateDirectory(paks);
         Directory.CreateDirectory(Path.Combine(dir.Path, "G", "Binaries", "Win64"));
-        foreach ((string name, long size) in new[] { ("pakchunk0-Win.pak", 100 * Mib), ("pakchunk1-Win.pak", 300 * Mib), ("pakchunk2-Win.pak", 10 * Mib), ("pakchunk3-Win.pak", 120 * Mib), ("other.utoc", 70 * Mib), ("other.ucas", 100 * Mib) })
+        foreach ((string name, long size) in new[] { ("pakchunk0-Win.pak", 100 * Mib), ("pakchunk1-Win.pak", 400 * Mib), ("pakchunk2-Win.pak", 10 * Mib), ("pakchunk3-Win.pak", 120 * Mib), ("other.utoc", 70 * Mib), ("other.ucas", 100 * Mib) })
         {
             using FileStream fs = File.Create(Path.Combine(paks, name));
             fs.SetLength(size);
@@ -222,9 +222,9 @@ public sealed class FolderWarmTests
 
         List<(long Offset, long Length)> Of(string name) => [.. plan.Ops.Where(o => Path.GetFileName(o.Path) == name).Select(o => (o.Offset, o.Length)).OrderBy(x => x.Offset)];
         Assert.Equal([(0L, 100 * Mib)], Of("pakchunk0-Win.pak"));
-        Assert.Equal([(0L, 64 * Mib), (236 * Mib, 64 * Mib)], Of("pakchunk1-Win.pak")); // 앞 64 + 끝 64 MiB (인덱스·푸터)
+        Assert.Equal([(0L, 256 * Mib), (336 * Mib, 64 * Mib)], Of("pakchunk1-Win.pak")); // 앞 256 + 끝 64 MiB (인덱스·푸터)
         Assert.Equal([(0L, 10 * Mib)], Of("pakchunk2-Win.pak"));
-        Assert.Equal([(0L, 120 * Mib)], Of("pakchunk3-Win.pak")); // 앞+뒤 (128) 이하면 겹치지 않게 한 번
+        Assert.Equal([(0L, 120 * Mib)], Of("pakchunk3-Win.pak")); // 앞+뒤 (320) 이하면 겹치지 않게 한 번
         Assert.Equal([(0L, 70 * Mib)], Of("other.utoc")); // .utoc 는 전체
         Assert.Equal([(0L, 64 * Mib)], Of("other.ucas")); // .ucas 는 앞 64 MiB 만
     }

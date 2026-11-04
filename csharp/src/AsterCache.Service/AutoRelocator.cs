@@ -1562,12 +1562,24 @@ public sealed class AutoRelocator
             return;
         }
 
-        if (_prewarm?.StreamingOnDisk(g.Name) == true)
+        if (_prewarm is { } warm && !warm.TryBeginRelocation(g.Name)) // 예열 읽기가 없음을 확인하면서 재배치 시작 표시를 세움 (한 번에): 이후 같은 디스크의 예열은 읽기를 시작하지 못함
         {
-            Note(g, AutoStage.WaitingIdle, WaitDetail(g, StartupPrewarmBusy)); // 유휴 판정 뒤에 예열 스트림이 시작됐음: 쓰기를 시작하지 않고 다음 틱에
+            Note(g, AutoStage.WaitingIdle, WaitDetail(g, StartupPrewarmBusy)); // 유휴 판정 뒤에 예열이 읽기 시작했음: 쓰기를 시작하지 않고 다음 틱에
             return;
         }
 
+        try
+        {
+            RelocateMarked(g, s, token);
+        }
+        finally
+        {
+            _prewarm?.EndRelocation(g.Name); // 성공·실패·예외 모두 표시를 내림
+        }
+    }
+
+    private void RelocateMarked(GameSettings g, AsterSettings s, CancellationToken token)
+    {
         _tier?.RevertGame(g.Name, "relocation starting");
         Note(g, AutoStage.Relocating, null);
         _log.Info($"{g.Name}: auto relocation starting");

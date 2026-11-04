@@ -826,8 +826,8 @@ public sealed class AutoRelocator
 
         HashSet<string> restored = RestoreStaleTraces(s); // 손상 계획을 치운 뒤에야 부트 계획 읽기가 실패하지 않아 복원이 건너뛰어지지 않음
 
-        // 계획이 없고 .stale 이나 .extend 만 있는 failed 게임 (재계획·확장이 실패한 채 꺼짐) 또는 잘린 계획을 .bad 로 치운 게임 (상태 무관, 치운 직후 꺼져도 파일로 알 수 있음; 업데이트 뒤 재계획 대기 중이면 제외): 이전 계획을 되살려 done 으로 돌립니다.
-        foreach (GameSettings g in s.Games.Where(g => (_status.Get(g.Name) is { Stage: AutoStage.Failed, RelocatedAt: null } || _env.FileExists(g.Plan + BadSuffix) && Replanning(_status, g.Name) is null) && !_env.FileExists(g.Plan) && !restored.Contains(g.Name) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
+        // 계획이 없고 .stale 이나 .extend 만 있는 failed 게임 (재계획·확장이 실패한 채 꺼짐) 또는 잘린 계획을 .bad 로 치운 게임 (상태 무관, 치운 직후 꺼져도 파일로 알 수 있음; 업데이트 뒤 재계획 대기 중이거나 되살린 트레이스로 다시 계획하는 중 (FirstRunDetail) 이면 제외): 이전 계획을 되살려 done 으로 돌립니다.
+        foreach (GameSettings g in s.Games.Where(g => (_status.Get(g.Name) is { Stage: AutoStage.Failed, RelocatedAt: null } || _env.FileExists(g.Plan + BadSuffix) && Replanning(_status, g.Name) is null && _status.Get(g.Name) is not { Stage: AutoStage.Discovered, Detail: FirstRunDetail }) && !_env.FileExists(g.Plan) && !restored.Contains(g.Name) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
         {
             if (IsExtending(g))
             {

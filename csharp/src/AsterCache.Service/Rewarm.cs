@@ -139,6 +139,11 @@ public sealed class Rewarmer
         {
             NoteCheck(g, "nosamples", $"{g.Name}: rewarm check skipped (no readable samples)");
         }
+        else if (!probe.Cold && _prewarm.SupplementPending(g.Name))
+        {
+            NoteCheck(g, "supplement", $"{g.Name}: rewarm check: samples are warm but the rest of the hot set is not read yet, supplementing"); // 부분 예열 뒤에는 표본이 따뜻해도 건너뛰지 않음
+            _prewarm.Supplement(g, ct);
+        }
         else if (!probe.Cold)
         {
             NoteCheck(g, "warm", $"{g.Name}: rewarm check: warm ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms, average {probe.AverageMs:F2} ms)");

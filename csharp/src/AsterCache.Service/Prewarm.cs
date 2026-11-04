@@ -116,6 +116,9 @@ public sealed class PrewarmEnv
     /// 기록 없이 예열한 게임의 표본 (경로, 오프셋, 길이) 들을 읽어 잰 결과 (CacheProbe), 읽을 수 없으면 null.
     public Func<IReadOnlyList<(string Path, long Offset, int Bytes)>, ProbeResult?> ProbeSamples { get; init; } = s => CacheProbe.Probe(s);
 
+    /// 파일 목록 예열 (Prewarmer.WarmFiles) 의 이미 캐시됐는가 점검용 표본 읽기: 표본 사이에서 취소를 봅니다 (취소되면 null).
+    public Func<IReadOnlyList<(string Path, long Offset, int Bytes)>, CancellationToken, ProbeResult?> ProbeFileSamples { get; init; } = (s, ct) => CacheProbe.Probe(s, ct: ct);
+
     /// 부팅 뒤 경과 시간 (ms). 서비스 시작 예열은 부팅 직후의 디스크 경쟁을 피해 BootDelay 가 지난 뒤에 시작합니다. 시험 기본값은 하루 (이미 지남).
     public Func<long> UptimeMs { get; init; } = () => (long)TimeSpan.FromDays(1).TotalMilliseconds;
 
@@ -211,6 +214,7 @@ public sealed class Prewarmer
     private readonly HashSet<string> _relocStarted = new(StringComparer.OrdinalIgnoreCase); // 재배치가 시작한 (아직 끝나지 않은) 게임, _gate 로 보호
     private volatile bool _keepStream; // auto.keep_stream_on_game_start 가 켜진 채 그 게임이 시작돼 (같은 데이터를 동시에 읽으므로) 취소 신호에도 끝까지 읽기로 한 표시
     private volatile CancellationTokenSource? _streamStop; // 도는 스트림을 멈추는 신호 (게임 시작이 같은 디스크 읽기를 바로 끊음)
+    private volatile CancellationTokenSource? _warmStop; // WarmFiles 읽기를 멈추는 신호 (호출자 ct 와 연결, 같은 디스크 게임 시작이 끊음), 읽는 게임은 _coldReading
     private (string Game, long At)? _yield; // 게임 시작으로 스트림 양보를 요청한 게임과 시각 (Stopwatch 틱), _gate 로 보호
     private readonly Dictionary<string, (long WarmedMib, long HotMib)> _partial = new(StringComparer.OrdinalIgnoreCase); // 서비스 시작 상한으로 핫 집합의 앞부분만 읽은 게임 (읽은 양, 전체), 보충 예열이 끝나면 지움, _gate 로 보호
     private readonly Dictionary<string, (long WarmedMib, long HotMib)> _startupTrim = new(StringComparer.OrdinalIgnoreCase); // 서비스 시작 예열이 상한으로 줄여 읽는 중인 게임 (Record 가 같은 상태 쓰기에 warmed_mib/hot_mib 를 넣음), _gate 로 보호
@@ -414,6 +418,18 @@ public sealed class Prewarmer
     /// 단 auto.keep_stream_on_game_start (실험용) 가 켜져 있으면 그 게임의 스트림은 끝까지 읽습니다. 기록 없는 예열이 잡아 둔 예산은 풉니다 (게임이 돌면 RAM 이 달라지므로 다음 예산 계산에 쓰지 않음).
     public void NoteGameStart(string game)
     {
+        if (_warmStop is { } warm && _coldReading is { } warming && (string.Equals(warming, game, StringComparison.OrdinalIgnoreCase) || SameDisk(warming, game)))
+        {
+            try
+            {
+                warm.Cancel(); // 챔피언 선읽기 (WarmFiles) 도 같은 디스크 게임 시작에 바로 멈춤
+            }
+            catch (ObjectDisposedException)
+            {
+                // 읽기가 방금 끝남
+            }
+        }
+
         if (_streaming is { } reading)
         {
             bool same = string.Equals(reading, game, StringComparison.OrdinalIgnoreCase);
@@ -719,32 +735,42 @@ public sealed class Prewarmer
                 continue;
             }
 
-            bool idle = !DriveHasRunningGame(g) && !_games.Any(x => Relocating(x.Name)) && _env.DiskBytesPerSecond(g) is { } bps && bps < DiskActivity.BusyBytesPerSecond;
-            DateTimeOffset now = _now();
-            DateTimeOffset since;
-            lock (_gate)
-            {
-                if (!idle)
-                {
-                    _idleSince.Remove(name);
-                    continue;
-                }
+            SupplementWhenIdle(g, ct);
+        }
+    }
 
-                if (!_idleSince.TryGetValue(name, out since))
-                {
-                    _idleSince[name] = since = now;
-                }
+    /// 보충 예열 대기 게임이 IdleNeeded 동안 연속으로 한가했을 때만 Supplement 를 부릅니다 (SupplementTick 과 재예열 점검이 같은 판정을 씀). 유휴가 막 시작됐거나 아직 모자라면 읽지 않고 false.
+    public bool SupplementWhenIdle(GameSettings g, CancellationToken ct)
+    {
+        bool idle = !DriveHasRunningGame(g) && !_games.Any(x => Relocating(x.Name)) && _env.DiskBytesPerSecond(g) is { } bps && bps < DiskActivity.BusyBytesPerSecond;
+        DateTimeOffset now = _now();
+        DateTimeOffset since;
+        lock (_gate)
+        {
+            if (!idle)
+            {
+                _idleSince.Remove(g.Name);
+                return false;
             }
 
-            if (now - since >= IdleNeeded)
+            if (!_idleSince.TryGetValue(g.Name, out since))
             {
-                Supplement(g, ct);
-                lock (_gate)
-                {
-                    _idleSince.Remove(name); // 취소돼 남았으면 다음에 다시 IdleNeeded 를 셈
-                }
+                _idleSince[g.Name] = since = now;
             }
         }
+
+        if (now - since < IdleNeeded)
+        {
+            return false;
+        }
+
+        bool done = Supplement(g, ct);
+        lock (_gate)
+        {
+            _idleSince.Remove(g.Name); // 취소돼 남았으면 다음에 다시 IdleNeeded 를 셈
+        }
+
+        return done;
     }
 
     /// 남은 핫 집합 구간을 읽는 보충 예열 한 번 (한 번 끝나면 다시 하지 않음). 다른 예열이 돌고 있거나, 게임·재배치가 있거나, RAM 예산 (물리 RAM/4, 가용 RAM - 여유) 을 넘으면 읽지 않고 false.
@@ -951,6 +977,12 @@ public sealed class Prewarmer
             return 0;
         }
 
+        if (DriveHasRunningGame(g))
+        {
+            LogSkipped(g.Name, "game running", $"{g.Name}: warm files skipped (a game is running on this drive)");
+            return 0;
+        }
+
         var ops = new List<ReadOp>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (string path in paths)
@@ -969,7 +1001,7 @@ public sealed class Prewarmer
             {
                 var file = new FileInfo(full);
                 ReadOp op = new(full, 0, file.Exists ? file.Length : 0);
-                if (op.Length > 0 && (file.Attributes & FileAttributes.ReparsePoint) == 0 && !FileCached(op))
+                if (op.Length > 0 && (file.Attributes & FileAttributes.ReparsePoint) == 0)
                 {
                     ops.Add(op);
                 }
@@ -980,11 +1012,6 @@ public sealed class Prewarmer
             }
         }
 
-        long held = ColdMib(null);
-        long physMib = _env.PhysicalRamBytes() is > 0 and long phys ? phys >> 22 : long.MaxValue;
-        long ramMib = Math.Min(_env.AvailableRamMib() - g.Prewarm.MinFreeRamMib - held, physMib - held);
-        long budget = Math.Min(budgetBytes, Math.Max(0, ramMib) << 20);
-        ops = PrefetchStreamer.Head(ops, budget);
         if (ops.Count == 0)
         {
             return 0;
@@ -998,7 +1025,8 @@ public sealed class Prewarmer
 
         try
         {
-            if (!TryMarkReading(g.Name, () => _coldReading = g.Name))
+            using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct); // 같은 디스크 게임 시작 (NoteGameStart) 이 끊을 수 있게 호출자 ct 와 연결
+            if (!TryMarkReading(g.Name, () => (_coldReading, _warmStop) = (g.Name, stop)))
             {
                 LogSkipped(g.Name, RelocationRunning, $"{g.Name}: warm files skipped ({RelocationRunning})");
                 return 0;
@@ -1006,7 +1034,25 @@ public sealed class Prewarmer
 
             try
             {
-                (StreamStats s, bool complete) = _env.FileRead(ops, ct);
+                // 표본 읽기도 읽기 표시 안에서 (재배치가 시작했으면 위에서 이미 막힘). 표시를 세운 뒤 게임이 떴으면 NoteGameStart 와 겹쳐도 놓치지 않게 다시 봄.
+                if (DriveHasRunningGame(g))
+                {
+                    LogSkipped(g.Name, "game running", $"{g.Name}: warm files skipped (a game is running on this drive)");
+                    return 0;
+                }
+
+                ops = [.. ops.Where(op => !FileCached(op, stop.Token))];
+                long held = ColdMib(null);
+                long physMib = _env.PhysicalRamBytes() is > 0 and long phys ? phys >> 22 : long.MaxValue;
+                long ramMib = Math.Min(_env.AvailableRamMib() - g.Prewarm.MinFreeRamMib - held, physMib - held);
+                long budget = Math.Min(budgetBytes, Math.Max(0, ramMib) << 20);
+                ops = PrefetchStreamer.Head(ops, budget);
+                if (ops.Count == 0 || stop.IsCancellationRequested)
+                {
+                    return 0;
+                }
+
+                (StreamStats s, bool complete) = _env.FileRead(ops, stop.Token);
                 _log.Info($"{g.Name}: warm files {(complete ? "done" : "cancelled")}: {s.Bytes >> 20} MiB of {ops.Sum(o => o.Length) >> 20} MiB ({ops.Count} files) in {s.Seconds:F2} s, {s.Errors} errors");
                 return s.Bytes;
             }
@@ -1017,7 +1063,7 @@ public sealed class Prewarmer
             }
             finally
             {
-                _coldReading = null;
+                (_coldReading, _warmStop) = (null, null);
             }
         }
         finally
@@ -1026,12 +1072,12 @@ public sealed class Prewarmer
         }
     }
 
-    // 파일 한 개의 표본 (큰 파일은 조각마다 고르게) 이 모두 파일 캐시에 있으면 true. 표본을 못 읽으면 false.
-    private bool FileCached(ReadOp op)
+    // 파일 한 개의 표본 (큰 파일은 조각마다 고르게) 이 모두 파일 캐시에 있으면 true. 표본을 못 읽거나 취소되면 false.
+    private bool FileCached(ReadOp op, CancellationToken ct)
     {
         try
         {
-            return _env.ProbeSamples(CacheProbe.PickSamples(FileWarm.Pieces(op))) is { Samples: > 0, Cold: false };
+            return _env.ProbeFileSamples(CacheProbe.PickSamples(FileWarm.Pieces(op)), ct) is { Samples: > 0, Cold: false };
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {

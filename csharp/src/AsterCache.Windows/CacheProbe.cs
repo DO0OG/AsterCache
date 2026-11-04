@@ -55,7 +55,8 @@ public static class CacheProbe
     public static int NextRound(string key) => Rounds.AddOrUpdate(key, 0, (_, n) => n + 1);
 
     /// 표본마다 읽어 걸린 시간 (ms) 을 재고 slowMs 를 넘으면 느린 것으로 판정합니다 (기본은 1 MiB 용 기준). 열 수 없거나 읽을 것이 없는 표본은 뺍니다. 모두 빠지면 null.
-    public static ProbeResult? Probe(IReadOnlyList<(string Path, long Offset, int Bytes)> samples, double slowMs = ColdThresholdMs)
+    /// ct 가 취소되면 표본 사이에서 멈추고 null (부분 결과로 판정하지 않음).
+    public static ProbeResult? Probe(IReadOnlyList<(string Path, long Offset, int Bytes)> samples, double slowMs = ColdThresholdMs, CancellationToken ct = default)
     {
         byte[] buf = new byte[SampleBytes];
         double total = 0;
@@ -63,6 +64,11 @@ public static class CacheProbe
         int slow = 0;
         foreach ((string path, long offset, int bytes) in samples)
         {
+            if (ct.IsCancellationRequested)
+            {
+                return null;
+            }
+
             try
             {
                 using var f = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.None);

@@ -92,7 +92,8 @@ public sealed class EffectiveWatcherDetectionTests
     [Theory]
     [InlineData("kernel", "poll")]
     [InlineData("eac", "poll")]
-    [InlineData(AutoEnv.AntiCheatUnknown, "etw")] // 탐지 실패는 ETW 를 막는 근거가 아님
+    [InlineData(AutoEnv.AntiCheatUnknown, "poll")] // 탐지 실패도 트레이스 금지 판정과 같아 ETW 를 막음
+    [InlineData("ricochet", "etw")] // 리코셰는 트레이스 허용 (실측)
     [InlineData(null, "etw")]
     public void DetectedAntiCheatForcesPollingOnlyWhenItForbidsTracing(string? kind, string expected) =>
         Assert.Equal(expected, Worker.EffectiveWatcher(Settings("etw"), _ => kind));

@@ -69,7 +69,7 @@ public sealed class AutoTier
         foreach (string name in journals)
         {
             GameSettings? g = s.Games.FirstOrDefault(x => x.Name == name);
-            if (!on || g is null || g.AntiCheat is not null)
+            if (!on || g is null || (g.AntiCheat ?? FreshCheat(g)) is not null)
             {
                 string why = !on ? "disabled" : g is null ? "game removed" : "anti-cheat";
                 if (!RevertDeferred(s, name, g, why))
@@ -114,6 +114,22 @@ public sealed class AutoTier
         }
 
         ApplyNext(s, relocateOn, root, t, gate, ct);
+    }
+
+    // 적용 뒤 생긴 마커도 잡도록 저장값이 없으면 폴더를 다시 봄 (캐시된 "없음"에 가리지 않음). 모름은 캐시하지 않고 옛 캐시를 지움 (신규 적용 때 다시 봄).
+    private string? FreshCheat(GameSettings g)
+    {
+        string? cheat = _env.AntiCheatOf(g.OriginRoot);
+        if (cheat == AutoEnv.AntiCheatUnknown)
+        {
+            _cheat.Remove(g.Name);
+        }
+        else
+        {
+            _cheat[g.Name] = (g.OriginRoot, cheat);
+        }
+
+        return cheat;
     }
 
     // 링크·사본 확인. 설정(예산·폴더)이 저널과 다르면 (사용자가 바꿈) 되돌려서 다음에 새 설정으로 다시 적용합니다.

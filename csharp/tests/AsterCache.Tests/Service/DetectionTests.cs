@@ -134,7 +134,8 @@ public sealed class EtwWatcherTests
     [Fact]
     public void WorkerChoosesEtwOnlyForAdministratorsAndKeepsPollingAsFallback()
     {
-        var s = new AsterSettings(250, [Games.Make("g", "game.exe")], "etw");
+        using var dir = new TempDir(); // 빈 설치 폴더 (없는 폴더는 탐지 모름이라 ETW 를 막음)
+        var s = new AsterSettings(250, [Games.Make("g", "game.exe") with { OriginRoot = dir.Path }], "etw");
 
         (IProcessWatcher p1, IProcessWatcher? f1) = Worker.ChooseWatchers(s, admin: false);
         (IProcessWatcher p2, IProcessWatcher? f2) = Worker.ChooseWatchers(s, admin: true);

@@ -427,6 +427,30 @@ public sealed class ManageViewModelTests : IDisposable
     }
 
     [Fact]
+    public void MeasureBudgetFollowsTheStreamCapForTheZone()
+    {
+        Register();
+        string fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "fresh", "plan.json"));
+        File.WriteAllText(Path.Combine(Plans, "mw4.plan.json"), fixture.Replace("\"clusters\": 76800", "\"clusters\": 2097152")); // 4096 바이트 클러스터 x 2097152 = 8192 MiB
+        _cli.On("prefetch", (_, _) => CliResult.Parse("{\"bytes\":0,\"seconds\":1.0,\"timing_ms\":{}}"));
+
+        Assert.True(_vm.Measure("mw4").Ok);
+        Assert.Equal("8192", _cli.Calls.Single().Args[^3]); // max_stream_mib 미명시: max(4096, 존 8192 MiB)
+
+        string config = Path.Combine(_dir, "config.json");
+        File.WriteAllText(config, File.ReadAllText(config).Replace("\"volume_label\"", "\"max_stream_mib\": 100, \"volume_label\""));
+        var tray = new TrayViewModel(new ConfigEditor(_dir), _service, new NoStream(), new NoShell(), new NullLog(), null, "1.0.0.0");
+        tray.Refresh();
+        var vm = new ManageViewModel(tray, new ConfigEditor(_dir), _cli, new Drives(_drive), _elevator, new NoShell(), new NullLog(), () => false, _ => false,
+            "--data-dir x", TimeSpan.FromMilliseconds(1), _dir, _ => _untrusted, Path.Combine(_dir, "svc", "AsterCache.Service.exe"));
+        _cli.Calls.Clear();
+
+        ActionResult r = vm.Measure("mw4");
+        Assert.True(r.Ok, r.Message);
+        Assert.Equal("100", _cli.Calls.Single().Args[^3]); // max_stream_mib 명시: 명시값 그대로 (존보다 작음)
+    }
+
+    [Fact]
     public void ExportAndImportProfileRunAsterProfileElevatedAndReportTheResult()
     {
         Register();

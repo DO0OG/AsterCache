@@ -256,4 +256,21 @@ public sealed class SupplementWarmTests : IDisposable
 
         Assert.False(p.SupplementPending("g"));
     }
+
+    [Fact]
+    public void AFailedSupplementReadIsGivenUpAndNotRetried()
+    {
+        Prewarmer p = Make(Game());
+        p.RunServiceStart();
+        _streamer.OnStream = g => g.MaxStreamMib == 40 ? true : throw new IOException("supplement read failed");
+
+        Ticks(p, 3);
+
+        Assert.Equal(2, _streamer.Seen.Count);
+        Assert.False(p.SupplementPending("g"));
+        Assert.Contains(_log.Lines, l => l.Contains("supplement given up", StringComparison.Ordinal));
+
+        Ticks(p, 6);
+        Assert.Equal(2, _streamer.Seen.Count); // 다음 틱에서 다시 읽지 않음
+    }
 }

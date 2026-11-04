@@ -789,6 +789,12 @@ public sealed class Prewarmer
             catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
             {
                 _log.Warn($"{game.Name}: supplement prewarm failed: {e.GetType().Name}");
+                lock (_gate)
+                {
+                    _partial.Remove(game.Name); // 실패한 읽기는 되풀이하지 않음 (유휴마다 같은 실패를 반복하지 않게)
+                }
+
+                _log.Warn($"{game.Name}: supplement given up after the failure");
                 return false;
             }
 

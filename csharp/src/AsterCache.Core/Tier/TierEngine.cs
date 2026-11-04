@@ -373,6 +373,7 @@ public sealed class TierEngine
     /// 게임 하나를 되돌립니다: 링크 삭제 + 이름 복구. 사본은 그대로 두고 저널에 reverted 로 표시합니다.
     public TierRevertReport Revert(string game, string reason)
     {
+        _ = Maintain(game); // 되돌리기 전에 링크로 바뀐 사본을 stale 로 판정해 변경분을 일반 파일로 남김 (옛 원본으로 덮어쓰지 않음)
         (TierJournal? j, bool corrupt) = Read(game);
         if (j is null)
         {

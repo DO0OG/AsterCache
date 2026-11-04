@@ -207,6 +207,26 @@ public sealed class AutoTierTests : IDisposable
     }
 
     [Fact]
+    public void ADetectedAntiCheatKeepsWhatTheGameWroteThroughTheLinkBeforeRestoring()
+    {
+        SetTrace();
+        AsterSettings s = Settings();
+        IdleTicks(s);
+        string game = @"D:\Games\Foo\a.bin";
+        Assert.True(Linked(game));
+        byte[] written = new byte[_a.Length]; // 게임이 같은 크기로 링크 대상을 수정하고 종료함
+        new Random(9).NextBytes(written);
+        _fs.Put(_fs.Links[MemTierFs.N(game)], written);
+
+        _world.AntiCheats[@"D:\Games\Foo"] = "kernel";
+        _tier.Tick(s, false, _gate, default);
+
+        Assert.False(Linked(game));
+        Assert.Equal(written, _fs.Files[MemTierFs.N(game)]); // 변경분 보존
+        Assert.Equal(_a, _fs.Files[Orig(game)]); // 옛 원본은 지우지 않음
+    }
+
+    [Fact]
     public void GameRunningOnAnotherDriveDoesNotBlockTiering()
     {
         SetTrace();

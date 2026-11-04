@@ -462,6 +462,12 @@ public sealed class AutoTracer
                 return;
             }
 
+            if (run.Number == 1 && !ClearLegacyRun1Mark(g)) // 업데이트로 옛 트레이스를 치운 뒤의 새 첫 기록: 남은 옛 표지가 새 run1 을 유효로 만들면 안 되므로 표지를 먼저 지우고, 못 지우면 저장하지 않음
+            {
+                _status.Set(g.Name, g.Source, null, AutoStage.Failed, "trace failed: legacy mark");
+                return;
+            }
+
             Dictionary<string, string> marks = VolatileOfRun(run, records, canonical); // 이전 플레이 파일을 덮기 전에 (그 수정 시각이 기준)
             // 기록·병합은 게임과 디스크를 다투지 않게 낮은 우선순위 스레드에서 돌림 (끝날 때까지 기다림)
             RunBelowNormal(() =>
@@ -469,7 +475,6 @@ public sealed class AutoTracer
                 if (run.Number == 1)
                 {
                     TraceWriter.Write([canonical], RawTracePath(g));
-                    ClearLegacyRun1Mark(g); // 업데이트로 옛 트레이스를 치운 뒤의 새 첫 기록: 남은 옛 표지가 새 run1 을 유효로 만들면 안 됨
                 }
                 else
                 {
@@ -656,15 +661,22 @@ public sealed class AutoTracer
         SaveMergeMeta(g, number, (union.Count - TraceWriter.Union(previous).Count) * TraceWriter.Block >> 20);
     }
 
-    private void ClearLegacyRun1Mark(GameSettings g)
+    private bool ClearLegacyRun1Mark(GameSettings g)
     {
         try
         {
-            File.Delete(LegacyRun1Path(g));
+            string path = LegacyRun1Path(g);
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+
+            return true;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            _log.Warn($"{g.Name}: legacy run1 mark not removed ({e.GetType().Name})");
+            _log.Warn($"{g.Name}: legacy run1 mark not removed ({e.GetType().Name}), first trace not saved");
+            return false;
         }
     }
 

@@ -358,4 +358,32 @@ public sealed class AutoStatusTests : IDisposable
         Assert.Null(s.Get("played"));
         Assert.Empty(s.LastPlayed());
     }
+
+    [Fact]
+    public void InterruptedRelocationLoadsAsWaitingIdleAndOtherStagesStayAsTheyWere()
+    {
+        AutoStatus s = Make();
+        s.MarkPlayed("re", "auto", AutoStage.Relocating, _now);
+        s.Complete("dn", "auto", _now, counted: true, null);
+        AutoGameEntry before = s.Get("re")!;
+
+        AutoStatus again = Make();
+
+        AutoGameEntry e = again.Get("re")!;
+        Assert.Equal((AutoStage.WaitingIdle, "relocation interrupted, will resume"), (e.Stage, e.Detail));
+        Assert.Equal((before.At, before.LastPlayed), (e.At, e.LastPlayed));
+        Assert.Equal(before.Plays, e.Plays); // 목록은 참조 비교라 따로 견줌
+        Assert.Equal((AutoStage.Done, (string?)null, _now), (again.Get("dn")!.Stage, again.Get("dn")!.Detail, again.Get("dn")!.RelocatedAt));
+    }
+
+    [Fact]
+    public void StartPrewarmIsNotHeldByRelocationLeftByAnInterruptedRun()
+    {
+        Make().MarkPlayed("g", "auto", AutoStage.Relocating, _now);
+
+        AutoStatus again = Make();
+        Func<string, bool> relocating = name => again.Get(name)?.Stage == AutoStage.Relocating; // Worker.cs 의 판정과 같음
+
+        Assert.False(relocating("g"));
+    }
 }

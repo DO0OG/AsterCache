@@ -148,7 +148,7 @@ public sealed class PrewarmEnv
         ProbeReadMs = g => File.Exists(g.Trace) ? PrefetchStreamer.ProbeReadMs(g) : null, // 기록 없이 예열한 게임은 비교할 핫 집합이 없음
         AvailableRamMib = SystemMemory.AvailableMib,
         GameRunning = g => ProcessSnapshot.IsRunning(g.ExeNames),
-        ZoneBytes = g => PrefetchStreamer.ZoneBytes(g) is { } z ? Math.Min(z, (long)g.MaxStreamMib << 20) : null,
+        ZoneBytes = g => PrefetchStreamer.ZoneBytes(g) is { } z ? Math.Min(z, g.StreamCapBytes(z)) : null,
         TraceExists = g => File.Exists(g.Trace),
     };
 }
@@ -213,6 +213,7 @@ public sealed class Prewarmer
     private volatile CancellationTokenSource? _streamStop; // 도는 스트림을 멈추는 신호 (게임 시작이 같은 디스크 읽기를 바로 끊음)
     private (string Game, long At)? _yield; // 게임 시작으로 스트림 양보를 요청한 게임과 시각 (Stopwatch 틱), _gate 로 보호
     private readonly Dictionary<string, (long WarmedMib, long HotMib)> _partial = new(StringComparer.OrdinalIgnoreCase); // 서비스 시작 상한으로 핫 집합의 앞부분만 읽은 게임 (읽은 양, 전체), 보충 예열이 끝나면 지움, _gate 로 보호
+    private readonly Dictionary<string, (long WarmedMib, long HotMib)> _startupTrim = new(StringComparer.OrdinalIgnoreCase); // 서비스 시작 예열이 상한으로 줄여 읽는 중인 게임 (Record 가 같은 상태 쓰기에 warmed_mib/hot_mib 를 넣음), _gate 로 보호
     private readonly Dictionary<string, DateTimeOffset> _idleSince = new(StringComparer.OrdinalIgnoreCase); // 보충 예열을 기다리는 게임이 한가해지기 시작한 시각, _gate 로 보호
 
     public Prewarmer(IReadOnlyList<GameSettings> games, IGameStreamer streamer, PrewarmEnv env, ILog log, string? statusPath = null, Func<DateTimeOffset>? now = null)
@@ -622,16 +623,36 @@ public sealed class Prewarmer
                     trimmed[g.Name] = (room, mib);
                 }
 
-                cold.Add(zone is not null && mib > room ? g with { MaxStreamMib = (int)room } : g);
+                cold.Add(zone is not null && mib > room ? g with { MaxStreamMib = (int)room, MaxStreamSet = true } : g);
             }
         }
 
-        IReadOnlyList<PrewarmResult> ran = RunBatch(cold, "service start", ct: ct, yieldToRelocation: true);
+        IReadOnlyList<PrewarmResult> ran;
+        lock (_gate)
+        {
+            foreach (KeyValuePair<string, (long, long)> t in trimmed)
+            {
+                _startupTrim[t.Key] = t.Value;
+            }
+        }
+
+        try
+        {
+            ran = RunBatch(cold, "service start", ct: ct, yieldToRelocation: true);
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                _startupTrim.Clear();
+            }
+        }
+
         foreach (PrewarmResult r in ran.Where(r => r is { Ran: true, Mode: null }))
         {
             if (trimmed.TryGetValue(r.Game, out (long WarmedMib, long HotMib) t))
             {
-                NotePartial(r.Game, t.WarmedMib, t.HotMib); // 상한으로 앞부분만 읽음: 상태에 남기고 유휴 때 나머지를 보충
+                NotePartial(r.Game, t.WarmedMib, t.HotMib); // 상한으로 앞부분만 읽음: 유휴 때 나머지를 보충 (상태 파일에는 Record 가 이미 남김)
             }
         }
 
@@ -655,7 +676,6 @@ public sealed class Prewarmer
         }
 
         _log.Info($"{game}: startup prewarm read {warmedMib} of {hotMib} MiB, the rest is read when the drive is idle");
-        PatchStatus(game, warmedMib, hotMib);
     }
 
     // 상태 파일의 그 게임 항목에 warmed_mib/hot_mib 를 남깁니다 (항목이 없으면 아무것도 안 함).
@@ -1531,6 +1551,15 @@ public sealed class Prewarmer
         if (r.Mode is not null)
         {
             ((JObject)_status[game.Name]!)["mode"] = r.Mode;
+        }
+
+        lock (_gate)
+        {
+            if (r.Ran && r.Mode is null && _startupTrim.TryGetValue(game.Name, out (long WarmedMib, long HotMib) trim) && game.MaxStreamMib == trim.WarmedMib)
+            {
+                ((JObject)_status[game.Name]!)["warmed_mib"] = trim.WarmedMib; // 서비스 시작 상한으로 앞부분만 읽음 (보충 예열이 끝나면 둘이 같아짐)
+                ((JObject)_status[game.Name]!)["hot_mib"] = trim.HotMib;
+            }
         }
 
         FlushStatus();

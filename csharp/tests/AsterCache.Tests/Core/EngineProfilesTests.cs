@@ -193,9 +193,8 @@ public sealed class EngineProfilesTests
         ProfileSelection sel = EngineProfiles.Builtin.Select(files, null, 100L * 1024 * Mib);
 
         Assert.Equal(["Riot"], sel.Engines);
-        long[] whole = [1 * Mib, 431 * Mib, 106 * Mib, 1328 * Mib, 138 * Mib, 2412 * Mib, 61 * Mib];
-        Assert.Equal(whole, sel.Picks.Where(p => p.Path != "Game/DATA/FINAL/Maps/Shipping/Map30.wad.client" && p.Path != "Game/DATA/FINAL/Champions/Ahri.wad.client").Select(p => p.Bytes));
-        Assert.Equal(64 * Mib, sel.Picks.Single(p => p.Path == "Game/DATA/FINAL/Maps/Shipping/Map30.wad.client").Bytes);
+        long[] whole = [1 * Mib, 431 * Mib, 106 * Mib, 1328 * Mib, 138 * Mib, 2412 * Mib, 61 * Mib, 617 * Mib];
+        Assert.Equal(whole, sel.Picks.Where(p => p.Path != "Game/DATA/FINAL/Champions/Ahri.wad.client").Select(p => p.Bytes));
         Assert.Equal(64 * Mib, sel.Picks.Single(p => p.Path == "Game/DATA/FINAL/Champions/Ahri.wad.client").Bytes);
     }
 
@@ -211,5 +210,28 @@ public sealed class EngineProfilesTests
         ProfileSelection sel = EngineProfiles.Builtin.Select(files, null, 100L * 1024 * Mib);
 
         Assert.Equal(["Game/DATA/FINAL/Global.wad.client", "Game/DATA/FINAL/Maps/Shipping/Common.wad.client", "Game/DATA/FINAL/Maps/Shipping/Map11.wad.client", "Game/DATA/FINAL/Maps/Shipping/Map30.wad.client"], sel.Picks.Select(p => p.Path));
+    }
+
+    [Fact]
+    public void RiotFullMapRulesComeAfterChampionsAndTheOtherMapsGetAHead()
+    {
+        IReadOnlyList<(string, long)> files = Files(
+            ("Game/DATA/FINAL/Global.wad.client", 1 * Mib),
+            ("Game/DATA/FINAL/Maps/Shipping/Map21.wad.client", 300 * Mib),
+            ("Game/DATA/FINAL/Maps/Shipping/Map22.wad.client", 2625 * Mib),
+            ("Game/DATA/FINAL/Maps/Shipping/Map453.wad.client", 470 * Mib),
+            ("Game/DATA/FINAL/Companions.wad.client", 50 * Mib),
+            ("Game/DATA/FINAL/Champions/Ahri.wad.client", 174 * Mib),
+            ("Game/League of Legends.exe", 50 * Mib));
+
+        ProfileSelection sel = EngineProfiles.Builtin.Select(files, null, 100L * 1024 * Mib);
+
+        Assert.Equal(
+            ["Game/DATA/FINAL/Global.wad.client", "Game/DATA/FINAL/Maps/Shipping/Map453.wad.client", "Game/League of Legends.exe", "Game/DATA/FINAL/Champions/Ahri.wad.client", "Game/DATA/FINAL/Maps/Shipping/Map22.wad.client", "Game/DATA/FINAL/Companions.wad.client", "Game/DATA/FINAL/Maps/Shipping/Map21.wad.client"],
+            sel.Picks.Select(p => p.Path));
+        Assert.Equal(2625 * Mib, sel.Picks.Single(p => p.Path.EndsWith("Map22.wad.client", StringComparison.Ordinal)).Bytes);
+        Assert.Equal(470 * Mib, sel.Picks.Single(p => p.Path.EndsWith("Map453.wad.client", StringComparison.Ordinal)).Bytes);
+        Assert.Equal(50 * Mib, sel.Picks.Single(p => p.Path.EndsWith("Companions.wad.client", StringComparison.Ordinal)).Bytes);
+        Assert.Equal(64 * Mib, sel.Picks.Single(p => p.Path.EndsWith("Map21.wad.client", StringComparison.Ordinal)).Bytes); // 그 밖의 맵은 64 MiB 머리
     }
 }

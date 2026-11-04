@@ -50,12 +50,19 @@
         { "glob": "Game/DATA/FINAL/Maps/Shipping/Map12.*.wad.client" },
         { "glob": "Game/DATA/FINAL/Maps/Shipping/Map11.wad.client" },
         { "glob": "Game/DATA/FINAL/Maps/Shipping/Map11.*.wad.client" },
-        { "glob": "Game/DATA/FINAL/Maps/**/*.wad.client", "head_mib": 64 },
+        { "glob": "Game/DATA/FINAL/Maps/Shipping/Map30.wad.client" },
+        { "glob": "Game/DATA/FINAL/Maps/Shipping/Map30.*.wad.client" },
+        { "glob": "Game/DATA/FINAL/Maps/Shipping/Map453.wad.client" },
+        { "glob": "Game/DATA/FINAL/Maps/Shipping/Map453.*.wad.client" },
         { "glob": "Game/League of Legends.exe" },
         { "glob": "Game/*.dll" },
         { "glob": "*.exe" },
         { "glob": "*.dll" },
-        { "glob": "Game/DATA/FINAL/Champions/**/*.wad.client", "head_mib": 64 }
+        { "glob": "Game/DATA/FINAL/Champions/**/*.wad.client", "head_mib": 64 },
+        { "glob": "Game/DATA/FINAL/Maps/Shipping/Map22.wad.client" },
+        { "glob": "Game/DATA/FINAL/Maps/Shipping/Map22.*.wad.client" },
+        { "glob": "Game/DATA/FINAL/Companions*.wad.client" },
+        { "glob": "Game/DATA/FINAL/Maps/**/*.wad.client", "head_mib": 64 }
       ]
     }
   ],

@@ -183,8 +183,8 @@ public sealed class FolderWarmTests
         Assert.Contains("Game/d3d.dll", rel);
         Assert.Contains("LeagueClient.exe", rel);
         Assert.Contains("libcef.dll", rel);
-        // 우선순위: Global → UI → Bootstrap/DATA/ShaderCache/Scripts → Maps → 게임 exe·dll → 루트 exe·dll → Champions
-        string[] order = ["Game/d3d.dll", "Game/DATA/FINAL/Global.wad.client", "Game/DATA/FINAL/UI.wad.client", "Game/DATA/FINAL/Bootstrap.windows.wad.client", "Game/DATA/FINAL/DATA.wad.client", "Game/DATA/FINAL/ShaderCache.dx11.wad.client", "Game/DATA/FINAL/Scripts.wad.client", "Game/DATA/FINAL/Maps/Map11/Map11.wad.client", "Game/League of Legends.exe", "LeagueClient.exe", "libcef.dll", "Game/DATA/FINAL/Champions/Ahri.wad.client"]; // 공통 규칙 (exe 폴더의 dll) 이 맨 앞
+        // 우선순위: Global → UI → Bootstrap/DATA/ShaderCache/Scripts → 게임 exe·dll → 루트 exe·dll → Champions → 그 밖의 Maps (head)
+        string[] order = ["Game/d3d.dll", "Game/DATA/FINAL/Global.wad.client", "Game/DATA/FINAL/UI.wad.client", "Game/DATA/FINAL/Bootstrap.windows.wad.client", "Game/DATA/FINAL/DATA.wad.client", "Game/DATA/FINAL/ShaderCache.dx11.wad.client", "Game/DATA/FINAL/Scripts.wad.client", "Game/League of Legends.exe", "LeagueClient.exe", "libcef.dll", "Game/DATA/FINAL/Champions/Ahri.wad.client", "Game/DATA/FINAL/Maps/Map11/Map11.wad.client"]; // 공통 규칙 (exe 폴더의 dll) 이 맨 앞
         Assert.Equal(order, rel);
         Assert.Contains("Game/DATA/FINAL/Champions/Ahri.wad.client", rel);
         Assert.DoesNotContain("LeagueClient/Plugins/x.txt", rel);

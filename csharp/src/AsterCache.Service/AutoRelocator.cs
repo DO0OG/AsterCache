@@ -924,13 +924,16 @@ public sealed class AutoRelocator
                 long merged = Math.Min(DistinctBlocks(_env.LoadTrace(raw, g.OriginRoot)) * HotSet.Block, cap);
                 long grew = merged - hotBlocks * HotSet.Block;
                 bool reordered = newTrace && stored is not null && fingerprint is not null && fingerprint != stored; // 크기가 그대로여도 블록 집합·순서가 바뀜
-                if (grew >= (long)s.Auto.TraceMergeMinMib << 20 || reordered)
+                bool shrink = hotBlocks * HotSet.Block > cap; // 상한을 낮춰 계획의 핫셋이 새 상한을 넘음: 메타만 적지 않고 같은 존 시작으로 줄여 다시 계획
+                if (grew >= (long)s.Auto.TraceMergeMinMib << 20 || reordered || shrink)
                 {
                     _tier?.RevertGame(g.Name, "trace grew"); // 링크는 새 재배치 전에 되돌림
                     _ = _env.ArchiveJournal(g); // 새 계획은 다른 저널 header 를 쓰므로 끝난 저널은 옆으로 보관
                     _env.MoveAside(g.Plan, g.Plan + ExtendSuffix);
                     _status.ResetForReplan(g.Name, ExtendDetail);
-                    _log.Info(grew >= (long)s.Auto.TraceMergeMinMib << 20
+                    _log.Info(shrink
+                        ? $"{g.Name}: plan holds {hotBlocks * HotSet.Block >> 20} MiB, above the zone limit {limit} MiB, plan set aside as {ExtendSuffix}, will plan again within the limit (same zone)"
+                        : grew >= (long)s.Auto.TraceMergeMinMib << 20
                         ? $"{g.Name}: merged trace holds {grew >> 20} MiB more than the plan (run {AutoTracer.RunCount(g, _env.FileExists)}, zone limit {limit} MiB), plan set aside as {ExtendSuffix}, will extend the zone"
                         : $"{g.Name}: merged trace blocks or order changed since the plan (run {AutoTracer.RunCount(g, _env.FileExists)}), plan set aside as {ExtendSuffix}, will extend the zone");
                     continue;

@@ -3059,6 +3059,49 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
+    public void LoweringTheZoneLimitBelowThePlansHotSetReplansOnceIntoTheSameZoneAndNeverRepeats()
+    {
+        _settings = _settings with { MaxZoneMib = 2 };
+        Sessions = [Merged(RestOfTheBlocks())]; // 32 블록 (2 MiB) 을 그대로 담은 계획
+        ReportFullMoves();
+        long start = DoneAndReadyToReplan(out string raw);
+        Assert.Equal((32L, 2L), ((long)PlanFile.Load(_game.Plan).Stats["hot_blocks"]!, PlanFile.Load(_game.Plan).Stats["effective_zone_mib"]));
+        SetAuto(a => a with { TraceMergeMinMib = 1 });
+        TraceOlderThanThePlan(raw);
+        _settings = _settings with { MaxZoneMib = 1 }; // 계획의 핫셋이 새 상한을 넘음
+
+        Tick();
+
+        Assert.True(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix));
+        Assert.Equal(AutoStage.WaitingIdle, Entry.Stage);
+        Assert.Equal(2L, PlanFile.Load(_game.Plan + AutoRelocator.ExtendSuffix).Stats["effective_zone_mib"]); // 메타만 새 상한으로 적지 않음
+        Assert.Contains(_log.Lines, l => l.Contains("above the zone limit 1 MiB", StringComparison.Ordinal));
+
+        RunUntilDone();
+
+        PlanFile after = PlanFile.Load(_game.Plan);
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.Equal((16L, 1L), ((long)after.Stats["hot_blocks"]!, after.Stats["effective_zone_mib"])); // 새 상한 안의 계획이 메타를 가짐
+        Assert.Equal(start, after.Zone.StartLcn);
+        Assert.Equal([start], _w.PlanStarts);
+        Assert.Equal(1, ExtendLogs());
+        Assert.False(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix));
+
+        for (int i = 0; i < 3; i++)
+        {
+            _w.Now += AutoRelocator.StaleCheckEvery;
+            Tick();
+        }
+
+        _relocator = null; // 서비스 재시작
+        Tick();
+
+        Assert.Equal(1, ExtendLogs()); // 다음 틱에도 되풀이하지 않음
+        Assert.Equal([start], _w.PlanStarts);
+        Assert.False(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix));
+    }
+
+    [Fact]
     public void ALoweredOrUnchangedZoneLimitOrAPlanThatIsNotOutgrownNeverReplans()
     {
         DoneAndReadyToReplan(out string raw);

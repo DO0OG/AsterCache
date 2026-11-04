@@ -106,6 +106,9 @@ internal sealed class FakeWorld
 
     public double? Disk { get; set; } = 0;
 
+    /// 디스크 처리량을 읽을 때마다 부르는 훅 (유휴 판정과 재배치 시작 사이에 일이 끼어드는 경쟁을 만들 때).
+    public Action? OnDiskSample { get; set; }
+
     /// 회복 표본: (드라이브, LCN) → MB/s, 못 재면 null (기본).
     public Func<string, long, ProbeRound, double?> ProbeMbps { get; set; } = (_, _, _) => null;
 
@@ -247,7 +250,11 @@ internal sealed class FakeWorld
         Revert = (g, skipRows, ct) => Revert(g, skipRows, ct),
         Extents = p => Extents(p),
         Bitmap = d => Bitmap(d),
-        DiskBytesPerSecond = _ => Disk,
+        DiskBytesPerSecond = _ =>
+        {
+            OnDiskSample?.Invoke();
+            return Disk;
+        },
         ProbeMbps = (drive, lcn, round) => ProbeMbps(drive, lcn, round),
         ProbeStepLcn = drive => ProbeStepLcn(drive),
         LocateProbeSpots = (drive, lcn, _) => LocateProbeSpots(drive, lcn),

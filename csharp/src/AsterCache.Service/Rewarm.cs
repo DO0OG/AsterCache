@@ -96,6 +96,12 @@ public sealed class Rewarmer
                 return;
             }
 
+            if (_prewarm.Games.Any(x => _prewarm.Relocating(x.Name)))
+            {
+                _log.Info("rewarm check stopped: a relocation started"); // 점검 주기는 이미 넘어가 있어 다음 주기에 다시 봄
+                return;
+            }
+
             if (_env.DiskBytesPerSecond(g) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond)
             {
                 NoteCheck(g, "busy", $"{g.Name}: rewarm check skipped (the game drive is busy or its load is unknown)");

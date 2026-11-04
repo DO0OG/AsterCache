@@ -48,6 +48,7 @@ public sealed class AutoRelocator
     public const string DailyLimit = "daily limit reached";
     public const string DailyBudget = "daily write budget reached";
     public const string DriveRecovering = "drive recovering after relocation";
+    public const string StartupPrewarmBusy = "startup prewarm in progress";
 
     /// 예열이 끝났다는 표시 (auto_status 의 detail). 관리 창이 "예열됨" 으로 보입니다.
     public const string Prewarmed = "prewarmed";
@@ -104,6 +105,7 @@ public sealed class AutoRelocator
     private readonly IdleTracker _idle = new();
     private DateTimeOffset? _waitSince; // 틱 스레드에서만 씀: 유휴가 아닌 채로 기다리기 시작한 때
     private bool _waitNoted; // 틱 스레드에서만 씀: 이번 대기 구간에 긴 대기를 이미 남겼는지
+    private bool _prewarmHeld; // 틱 스레드에서만 씀: 예열 스트림 때문에 재배치를 미루는 중 (로그는 시작 때 한 번)
     public static readonly TimeSpan BusyRetry = TimeSpan.FromMinutes(5); // 기록 없는 예열이 "drive busy" 로 밀렸을 때 다시 시도하는 간격 (틱마다 30 초가 아님)
     public static readonly TimeSpan RetryEvery = TimeSpan.FromHours(6); // 프리페치·콜드 예열 재시도 간격 (발견 주기와 별개)
     private static readonly TimeSpan LongWait = TimeSpan.FromHours(6);
@@ -1182,6 +1184,21 @@ public sealed class AutoRelocator
             return "on battery";
         }
 
+        bool prewarming = _prewarm is { } warm && ready.Any(g => warm.StreamingOnDisk(g.Name)); // 같은 디스크의 예열 스트림과 재배치 쓰기가 겹치지 않게
+        if (prewarming != _prewarmHeld)
+        {
+            _prewarmHeld = prewarming;
+            if (prewarming)
+            {
+                _log.Info($"auto relocation waits: {StartupPrewarmBusy}"); // 한 번만: 읽는 동안 틱마다 남기지 않음
+            }
+        }
+
+        if (prewarming)
+        {
+            return StartupPrewarmBusy;
+        }
+
         bool diskBusy = ready.Select(g => PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant()).Distinct()
             .Any(letter => _env.DiskBytesPerSecond(letter) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond);
         return diskBusy ? "disk busy" : null;
@@ -1517,6 +1534,12 @@ public sealed class AutoRelocator
         if (_env.AnyRunning(g.ExeNames))
         {
             Note(g, AutoStage.WaitingIdle, "game is running");
+            return;
+        }
+
+        if (_prewarm?.StreamingOnDisk(g.Name) == true)
+        {
+            Note(g, AutoStage.WaitingIdle, WaitDetail(g, StartupPrewarmBusy)); // 유휴 판정 뒤에 예열 스트림이 시작됐음: 쓰기를 시작하지 않고 다음 틱에
             return;
         }
 

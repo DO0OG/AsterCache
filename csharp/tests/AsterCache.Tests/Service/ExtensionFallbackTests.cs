@@ -147,6 +147,71 @@ public sealed partial class AutoRelocatorTests
         Assert.Equal(2, _archiveCalls);
     }
 
+    // 새 존 계획을 저장한 직후, .extend 를 .stale 로 치우기 전에 꺼진 디스크 상태를 만든 뒤 서비스를 다시 시작함.
+    private long NewZonePlanSavedThenRestartedBeforeTheExtendMarkMoved(out List<Extent> other, out PlanFile before)
+    {
+        long start = DoneMergedWithAFileAfterTheZone(out other);
+        before = PlanFile.Load(_game.Plan);
+        _w.Bitmap = _ => Vol.Bitmap();
+        Tick();
+        Assert.False(HasExtendMark());
+        string stale = _game.Plan + AutoRelocator.StaleSuffix;
+        string extend = _game.Plan + AutoRelocator.ExtendSuffix;
+        File.Move(stale, extend);
+        _ = _w.Files.Remove(stale);
+        _ = _w.Files.Add(extend);
+        _relocator = null; // 서비스 재시작
+        return start;
+    }
+
+    [Fact]
+    public void RestartRightAfterTheNewZonePlanWasSavedFinishesTheSwitchInsteadOfRestoringThePreviousPlan()
+    {
+        long start = NewZonePlanSavedThenRestartedBeforeTheExtendMarkMoved(out List<Extent> other, out PlanFile before);
+        string saved = PlanFile.Load(_game.Plan).Sha();
+
+        Tick();
+
+        Assert.False(HasExtendMark());
+        Assert.Equal(saved, PlanFile.Load(_game.Plan).Sha()); // 새 존 계획이 그대로 남음 (이전 계획으로 되돌아가지 않음)
+        Assert.Null(PlanFile.Load(_game.Plan).Zone.StartLcn);
+        Assert.Equal(before.Sha(), PlanFile.Load(_game.Plan + AutoRelocator.StaleSuffix).Sha());
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("zone extension blocked", StringComparison.Ordinal));
+        Assert.Single(_log.Lines, l => l.Contains("zone switch to a new zone was interrupted", StringComparison.Ordinal));
+
+        RunUntilDone();
+
+        AssertSwitchedToANewZone(start, other, before);
+    }
+
+    [Fact]
+    public void FinishingAnInterruptedZoneSwitchOverwritesAnEarlierStaleFile()
+    {
+        NewZonePlanSavedThenRestartedBeforeTheExtendMarkMoved(out _, out PlanFile before);
+        File.WriteAllText(_game.Plan + AutoRelocator.StaleSuffix, "older stale");
+
+        Tick();
+
+        Assert.False(HasExtendMark());
+        Assert.Equal(before.Sha(), PlanFile.Load(_game.Plan + AutoRelocator.StaleSuffix).Sha());
+    }
+
+    [Fact]
+    public void RestartDuringARealExtensionKeepsTheExtendMarkAndThePlanWithTheZoneStart()
+    {
+        long start = DoneThenMergedTrace(Merged(RestOfTheBlocks()));
+        Tick();
+        Assert.True(HasExtendMark());
+        Assert.Equal(start, PlanFile.Load(_game.Plan).Zone.StartLcn);
+        _relocator = null; // 서비스 재시작
+
+        Tick();
+
+        Assert.True(HasExtendMark()); // 존 시작이 있는 확장 계획은 확장 중 그대로
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("interrupted", StringComparison.Ordinal));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("zone extension blocked", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void FailingToPlanTheNewZoneRestoresThePreviousPlanAndKeepsDone()
     {

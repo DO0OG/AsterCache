@@ -700,8 +700,10 @@ public sealed class AutoRelocator
     // 서비스 시작 때 한 번: 트레이스 금지 게임인데 업데이트 재계획이 트레이스를 .stale 로 치워 사장시켰으면 (다시 트레이스할 수 없어 영영 재계획 불가) 되살립니다.
     // 그 사이 만들어진 boot 계획 (프리페치·프로필) 은 옆으로 치워 이미 옮긴 존 자리에 맞춰 다시 계획하게 합니다: 이전 .stale 계획이 있으면 그 존 시작을 지키려고 .boot 로, 없으면 .stale 로.
     // 순서: 계획 → 상태 → 트레이스. 마지막 단계 (원시 트레이스 복원) 전에 꺼져도 조건이 그대로라 다음 시작에 이어집니다.
-    private void RestoreStaleTraces(AsterSettings s)
+    // 반환: 트레이스를 되살려 다시 계획하게 둔 게임 이름 (호출자가 같은 회차의 이전 계획 복원에서 뺌).
+    private HashSet<string> RestoreStaleTraces(AsterSettings s)
     {
+        var restored = new HashSet<string>(StringComparer.Ordinal);
         foreach (GameSettings g in s.Games.Where(g => AntiCheat.ForbidsTrace(g.AntiCheat)))
         {
             string raw = AutoTracer.RawTracePath(g);
@@ -727,9 +729,9 @@ public sealed class AutoRelocator
                     _tier?.RevertGame(g.Name, "trace restored");
                     _ = _env.ArchiveJournal(g);
                     _env.MoveAside(g.Plan, g.Plan + (_env.FileExists(g.Plan + StaleSuffix) ? BootPlanSuffix : StaleSuffix));
-                    _status.ResetForReplan(g.Name, FirstRunDetail);
                 }
 
+                _status.ResetForReplan(g.Name, FirstRunDetail); // 계획이 없던 게임도 다시 계획 상태로 (이전 계획 복원으로 done 이 되지 않게)
                 for (int run = 1; run <= 32; run++)
                 {
                     string runFile = TraceWriter.RunPath(raw, run);
@@ -746,6 +748,7 @@ public sealed class AutoRelocator
                 }
 
                 _env.MoveAside(raw + StaleSuffix, raw);
+                _ = restored.Add(g.Name);
                 _log.Info($"{g.Name}: trace set aside by an earlier update restored (tracing is not allowed for this game), re-planning");
             }
             catch (Exception e) when (e is not OperationCanceledException)
@@ -753,6 +756,8 @@ public sealed class AutoRelocator
                 _log.Warn($"{g.Name}: stale trace could not be restored ({e.GetType().Name})");
             }
         }
+
+        return restored;
     }
 
     // 드라이브가 분리됐거나 (폴더 없음) 파일을 읽을 수 없으면 (잠김 등) "변경" 이 아니라 건너뜀: 다음 검사에 다시 봅니다. 대표 파일 (게임 exe, 가장 큰 파일 몇 개) 이
@@ -777,7 +782,6 @@ public sealed class AutoRelocator
         }
 
         _recovered = true;
-        RestoreStaleTraces(s);
         // 계획이 있어도 쓰다가 꺼져 잘렸으면 (읽을 수 없음) .bad 로 치워 없는 것으로 다룹니다: 되살릴 이전 계획 (.stale·.extend) 이 있는 게임만.
         foreach (GameSettings g in s.Games.Where(g => _env.FileExists(g.Plan) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
         {
@@ -799,8 +803,29 @@ public sealed class AutoRelocator
             }
         }
 
+        // 새 존 전환 중 꺼짐: Plan 은 새 존 계획 (Zone.StartLcn 없음) 을 저장한 뒤에 .extend 를 .stale 로 치웁니다. 확장 계획은 MakePlanAt 로 존 시작이 항상 들어 있으므로
+        // (BlockExtension 으로 떨어지지 않는 확장 계획은 Zone.StartLcn 이 있음), .extend 가 있는데 저장된 계획에 존 시작이 없으면 전환이 끝났고 치우기만 남은 것입니다.
+        // 저널 보관은 Plan 이 저장 전에 이미 했으므로 여기서 하지 않음. 이미 .stale 이 있으면 Plan 과 같이 덮어씀.
+        foreach (GameSettings g in s.Games.Where(g => _env.FileExists(g.Plan) && IsExtending(g)))
+        {
+            try
+            {
+                if (_env.LoadPlan(g.Plan).Zone.StartLcn is null)
+                {
+                    _env.MoveAside(g.Plan + ExtendSuffix, g.Plan + StaleSuffix);
+                    _log.Info($"{g.Name}: zone switch to a new zone was interrupted, finished (previous plan kept as {StaleSuffix})");
+                }
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                _log.Warn($"{g.Name}: interrupted zone switch could not be finished ({e.GetType().Name})");
+            }
+        }
+
+        HashSet<string> restored = RestoreStaleTraces(s); // 손상 계획을 치운 뒤에야 부트 계획 읽기가 실패하지 않아 복원이 건너뛰어지지 않음
+
         // 계획이 없고 .stale 이나 .extend 만 있는 failed 게임 (재계획·확장이 실패한 채 꺼짐) 또는 잘린 계획을 .bad 로 치운 게임 (상태 무관, 치운 직후 꺼져도 파일로 알 수 있음; 업데이트 뒤 재계획 대기 중이면 제외): 이전 계획을 되살려 done 으로 돌립니다.
-        foreach (GameSettings g in s.Games.Where(g => (_status.Get(g.Name) is { Stage: AutoStage.Failed, RelocatedAt: null } || _env.FileExists(g.Plan + BadSuffix) && Replanning(_status, g.Name) is null) && !_env.FileExists(g.Plan) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
+        foreach (GameSettings g in s.Games.Where(g => (_status.Get(g.Name) is { Stage: AutoStage.Failed, RelocatedAt: null } || _env.FileExists(g.Plan + BadSuffix) && Replanning(_status, g.Name) is null) && !_env.FileExists(g.Plan) && !restored.Contains(g.Name) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
         {
             if (IsExtending(g))
             {
@@ -812,7 +837,7 @@ public sealed class AutoRelocator
             }
         }
 
-        foreach (GameSettings g in s.Games.Where(g => _status.Get(g.Name)?.RelocatedAt is not null && !_env.FileExists(g.Plan) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
+        foreach (GameSettings g in s.Games.Where(g => _status.Get(g.Name)?.RelocatedAt is not null && !_env.FileExists(g.Plan) && !restored.Contains(g.Name) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
         {
             _status.ResetForReplan(g.Name, IsExtending(g) ? ExtendDetail : ReplanDetail);
             _log.Info($"{g.Name}: an earlier replan was interrupted, state reset to trace and plan again");

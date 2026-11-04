@@ -153,6 +153,72 @@ public sealed partial class AutoRelocatorTests
         Assert.Equal([start], _w.PlanStarts);
     }
 
+    // 손상된 boot 계획 + 유효한 .stale 계획 + .stale 트레이스: 부트 계획 읽기가 실패해도 트레이스 복원이 건너뛰어지지 않고, 이전 계획이 done 으로 되살아나지도 않아야 함.
+    private long CorruptBootPlanWithTheTraceSetAside(out string trace)
+    {
+        long start = TraceSetAsideByAnOlderBuild(out trace, withBootPlan: true);
+        File.WriteAllText(_game.Plan, "{\"truncat");
+        return start;
+    }
+
+    private void AssertTraceRestoredAndReplanned(string trace, long start)
+    {
+        Assert.True(File.Exists(_game.Plan + AutoRelocator.BadSuffix)); // 손상 계획은 치움
+        Assert.Contains(trace, _w.Files);
+        Assert.DoesNotContain(trace + ".stale", _w.Files);
+        Assert.True(File.Exists(_game.Plan + AutoRelocator.StaleSuffix)); // 이전 계획은 done 으로 되살리지 않고 존 시작 힌트로 둠
+        Assert.NotEqual(AutoStage.Done, Entry.Stage);
+        Assert.Null(Entry.RelocatedAt);
+        Assert.Equal(1, _log.Lines.Count(l => l.Contains("trace set aside by an earlier update restored", StringComparison.Ordinal)));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("previous plan restored", StringComparison.Ordinal));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("an earlier replan was interrupted", StringComparison.Ordinal));
+
+        Run(TimeSpan.FromMinutes(20));
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.Equal([start], _w.PlanStarts); // 복원한 트레이스로 이미 옮긴 존 자리에 맞춰 다시 계획
+        Assert.Equal(start, PlanFile.Load(_game.Plan).Zone.StartLcn);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(AutoStage.Failed)]
+    [InlineData(AutoStage.Done)]
+    public void RestartRestoresTheTraceEvenWhenTheBootPlanIsUnreadableAndReplansInsteadOfRestoringTheStalePlan(string? stage)
+    {
+        long start = CorruptBootPlanWithTheTraceSetAside(out string trace);
+        if (stage == AutoStage.Done)
+        {
+            _status.Complete(_game.Name, _game.Source, _w.Now, counted: false, null); // 재배치 기록이 남은 상태 (옛 빌드가 .stale 로 치우다 꺼짐)
+        }
+        else if (stage is not null)
+        {
+            _status.Set(_game.Name, _game.Source, null, stage, "plan failed");
+        }
+
+        Tick();
+
+        AssertTraceRestoredAndReplanned(trace, start);
+    }
+
+    [Fact]
+    public void RestartWithoutAPlanRestoresTheTraceAndPlansAgainEvenWhenTheStateWasFailed()
+    {
+        long start = TraceSetAsideByAnOlderBuild(out string trace, withBootPlan: false);
+        _status.Set(_game.Name, _game.Source, null, AutoStage.Failed, "plan failed");
+
+        Tick();
+
+        Assert.Contains(trace, _w.Files);
+        Assert.NotEqual(AutoStage.Done, Entry.Stage); // 이전 계획 복원 (done) 이 아니라 다시 계획
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("previous plan restored", StringComparison.Ordinal));
+
+        Run(TimeSpan.FromMinutes(20));
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.Equal([start], _w.PlanStarts);
+    }
+
     [Fact]
     public void RestartKeepsAStaleTraceThatHasNothingLeftOrBelongsToATraceAllowedGame()
     {

@@ -469,6 +469,7 @@ public sealed class AutoTracer
                 if (run.Number == 1)
                 {
                     TraceWriter.Write([canonical], RawTracePath(g));
+                    ClearLegacyRun1Mark(g); // 업데이트로 옛 트레이스를 치운 뒤의 새 첫 기록: 남은 옛 표지가 새 run1 을 유효로 만들면 안 됨
                 }
                 else
                 {
@@ -653,6 +654,18 @@ public sealed class AutoTracer
         TraceWriter.WriteFile(temp, union);
         File.Move(temp, raw, true);
         SaveMergeMeta(g, number, (union.Count - TraceWriter.Union(previous).Count) * TraceWriter.Block >> 20);
+    }
+
+    private void ClearLegacyRun1Mark(GameSettings g)
+    {
+        try
+        {
+            File.Delete(LegacyRun1Path(g));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"{g.Name}: legacy run1 mark not removed ({e.GetType().Name})");
+        }
     }
 
     // 못 쓰면 이번 병합만 run1 을 유효로 보고, 이후에는 기존 동작 (64 MiB 미만이면 무효) 으로 돌아감.

@@ -285,13 +285,16 @@ public sealed class AutoStatus
     private bool InWindow((DateTimeOffset At, long Bytes, long? Ticks) r, TimeSpan window, DateTimeOffset since) =>
         r.At > since || (r.Ticks is { } t && System.Diagnostics.Stopwatch.GetElapsedTime(t, _ticks()) < window);
 
-    /// 최근 window 안에 시작한 자동 적용 수 (0 바이트 기록은 옛 버전이 남긴 것이라 세지 않음).
+    /// 횟수로 세는 최소 바이트. 이보다 작은 회차(손질 회차 등)는 일일 횟수에서 세지 않으며, 바이트 예산 합산에는 그대로 듭니다.
+    public const long CountedRelocationMinBytes = 64L << 20;
+
+    /// 최근 window 안에 시작한 자동 적용 수 (CountedRelocationMinBytes 미만 회차는 세지 않음, 0 바이트 기록은 옛 버전이 남긴 것이라 포함되지 않음).
     public int RelocationsWithin(TimeSpan window)
     {
         lock (_lock)
         {
             DateTimeOffset since = _now() - window;
-            return _relocations.Count(r => r.Bytes > 0 && InWindow(r, window, since));
+            return _relocations.Count(r => r.Bytes >= CountedRelocationMinBytes && InWindow(r, window, since));
         }
     }
 
@@ -504,7 +507,8 @@ public sealed class AutoStatus
                 {
                     if (value is JObject o && Str(o, "stage") is { } stage)
                     {
-                        _games[name] = new AutoGameEntry(Str(o, "source") ?? "manual", Str(o, "launcher"), stage, Str(o, "detail"), Time(o, "at") ?? _now(), Time(o, "last_played"), Time(o, "relocated_at"), o.TryGetValue("hit_percent", out object? hp) && hp is long h ? (int)Math.Clamp(h, 0, 100) : null, Time(o, "hit_at"), ReadBootProbe(o), ReadPlays(o), TryGetEither(o, "tier0_probe_ready_ms", "load_boundary_ms", out object? lb) && lb is long l ? (int)Math.Clamp(l, 0, int.MaxValue) : null, Time(o, "tier0_probe_ready_at") ?? Time(o, "load_boundary_at"), o.TryGetValue("coverage_percent", out object? cv) && cv is long cp ? (int)Math.Clamp(cp, 0, 100) : null);
+                        bool interrupted = stage == AutoStage.Relocating; // 재배치 도중 꺼짐: 실제로 돌지 않으므로 시작 예열 보류를 풀음
+                        _games[name] = new AutoGameEntry(Str(o, "source") ?? "manual", Str(o, "launcher"), interrupted ? AutoStage.WaitingIdle : stage, interrupted ? "relocation interrupted, will resume" : Str(o, "detail"), Time(o, "at") ?? _now(), Time(o, "last_played"), Time(o, "relocated_at"), o.TryGetValue("hit_percent", out object? hp) && hp is long h ? (int)Math.Clamp(h, 0, 100) : null, Time(o, "hit_at"), ReadBootProbe(o), ReadPlays(o), TryGetEither(o, "tier0_probe_ready_ms", "load_boundary_ms", out object? lb) && lb is long l ? (int)Math.Clamp(l, 0, int.MaxValue) : null, Time(o, "tier0_probe_ready_at") ?? Time(o, "load_boundary_at"), o.TryGetValue("coverage_percent", out object? cv) && cv is long cp ? (int)Math.Clamp(cp, 0, 100) : null);
                     }
                 }
             }

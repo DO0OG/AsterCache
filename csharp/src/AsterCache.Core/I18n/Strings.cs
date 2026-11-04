@@ -246,6 +246,8 @@ public static partial class L
         ["Err_GameRunningRevert"] = ("{0}: 게임이 실행 중이라 되돌리지 않음 (게임을 끝낸 뒤 다시 시도)", "{0}: the game is running, so the revert was skipped (quit the game and try again)"),
         ["Apply_Dry"] = ("재배치 검사 (dry-run)", "Checking relocation (dry-run)"),
         ["Fail_Dry"] = ("{0}: 재배치 검사 실패: {1}", "{0}: relocation check failed: {1}"),
+        ["Plan_ZoneNotFree"] = ("존 뒤 공간을 다른 파일이 쓰고 있어 확장할 수 없습니다. 서비스가 새 위치를 찾아 다시 계획합니다.", "The space after the zone is used by another file, so it cannot be extended. The service will find a new location and plan again."),
+        ["Plan_Rejected"] = ("계획을 적용할 수 없습니다(사유: {0}). 서비스가 다음 유휴 시간에 다시 계획합니다.", "The plan cannot be applied (reason: {0}). The service will plan again in the next idle period."),
         ["Apply_Nothing"] = ("{0}: 옮길 작업이 없음 (이미 배치됨)", "{0}: nothing to move (already in place)"),
         ["Apply_Progress"] = ("재배치 중: 저널 {0}줄 (작업 {1}개)", "Relocating: {0} journal lines (tasks: {1})"),
         ["Fail_Apply"] = ("{0}: 재배치 실패: {1}", "{0}: relocation failed: {1}"),

@@ -196,6 +196,7 @@ public sealed class Prewarmer
     private readonly Dictionary<string, string> _profileMiss = new(StringComparer.OrdinalIgnoreCase); // 엔진 프로필이 없다는 판정과 그때의 설치 폴더 mtime 키 (prewarm_status.json 의 profile_miss_key), _gate 로 보호
     private readonly HashSet<string> _refusedLogged = new(StringComparer.OrdinalIgnoreCase); // 드라이브 거부를 이미 로그한 게임, _gate 로 보호
     private readonly HashSet<string> _delayLogged = new(StringComparer.OrdinalIgnoreCase); // 업데이트 지연을 이미 로그한 게임, _gate 로 보호
+    private readonly HashSet<string> _relocHoldLogged = new(StringComparer.OrdinalIgnoreCase); // 재배치 중이라 시작 예열을 보류한 것을 이미 로그한 게임, _gate 로 보호
     private readonly Dictionary<string, (DateTimeOffset At, int Count)> _skipLogged = new(StringComparer.OrdinalIgnoreCase); // 게임|사유별 마지막으로 남긴 시각과 그 뒤 억제한 횟수, _gate 로 보호
     private readonly Dictionary<string, (DateTimeOffset At, int Count)> _triggerSeen = new(StringComparer.OrdinalIgnoreCase); // 트리거 exe 별 마지막 처리 시각과 그 뒤 억제한 횟수, _gate 로 보호
     private volatile AutoSettings _auto = AutoSettings.Default;
@@ -290,6 +291,9 @@ public sealed class Prewarmer
     /// 업데이트를 감지해 재계획 상태가 된 때 (없으면 null): probe 모드에서 이 드라이브의 회복 판정 (Recovery) 의 기준 시각. 기본 null (고정 분만 씀).
     public Func<GameSettings, DateTimeOffset?> ReplanStart { get; set; } = _ => null;
 
+    /// 재배치 단계 (auto_status 의 relocating) 인 게임인가. 하나라도 있으면 서비스 시작 예열을 보류합니다.
+    public Func<string, bool> Relocating { get; set; } = _ => false;
+
     /// 업데이트 지연으로 미뤄야 하는 게임이면 true (지연 한 번에 로그는 한 줄). 지연이 끝난 게임은 다음 지연 때 다시 로그를 남깁니다.
     private bool Deferred(GameSettings game)
     {
@@ -310,6 +314,31 @@ public sealed class Prewarmer
         }
 
         return wait;
+    }
+
+    // 재배치 중인 게임이 있으면 (어느 게임이든) true. 보류 로그는 게임당 한 번, 재배치가 끝나면 다음에 다시 로그를 남깁니다.
+    private bool RelocationHeld()
+    {
+        bool any = false;
+        lock (_gate)
+        {
+            foreach (GameSettings g in _games)
+            {
+                if (!Relocating(g.Name))
+                {
+                    _relocHoldLogged.Remove(g.Name);
+                    continue;
+                }
+
+                any = true;
+                if (_relocHoldLogged.Add(g.Name))
+                {
+                    _log.Info($"{g.Name}: startup prewarm held while relocation is running");
+                }
+            }
+        }
+
+        return any;
     }
 
     /// 게임 exe 가 떴을 때 (스트림 취소보다 먼저): 도는 예열 스트림이 그 게임의 것이거나 같은 디스크의 것이면 다음 묶음 경계에서 멈추게 해 디스크를 양보하고 (같은 HDD 동시 읽기는 게임을 느리게 함),
@@ -539,6 +568,13 @@ public sealed class Prewarmer
         bool heldLogged = false;
         while (!ct.IsCancellationRequested)
         {
+            if (RelocationHeld())
+            {
+                idle = TimeSpan.Zero; // 재배치가 끝난 뒤 유휴를 처음부터 다시 셉니다
+                _env.Sleep(GateStep, ct);
+                continue;
+            }
+
             double?[] rates = [.. games.Select(g => _env.DiskBytesPerSecond(g))];
             bool settled = BootSettled();
             if (settled && rates.Any(r => r is null))

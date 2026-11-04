@@ -337,6 +337,15 @@ public sealed class ManageViewModelTests : IDisposable
     }
 
     [Fact]
+    public void PlanRejectedReasonMapsToAZoneNotFreeOrGenericExplanation()
+    {
+        Assert.Equal(L.T("Plan_ZoneNotFree"), ManageViewModel.PlanRejectedHint("zone_not_free: LCN 265872734 is in use by another file"));
+        Assert.Equal(L.T("Plan_Rejected", "no free run of 5 clusters"), ManageViewModel.PlanRejectedHint("no free run of 5 clusters"));
+        Assert.Contains("다른 파일", L.Get("ko", "Plan_ZoneNotFree"), StringComparison.Ordinal);
+        Assert.Contains("another file", L.Get("en", "Plan_ZoneNotFree"), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ApplyDryRunsThenExecutesElevatedWithVolumeLabelAndVerifies()
     {
         Register();

@@ -623,8 +623,13 @@ public sealed class ManageViewModel(
     private ActionResult Failed(CliResult r, string failKey, string name)
     {
         string why = Get(r.Json, "error") is string e ? e + (Get(r.Json, "detail") is string d ? ": " + d : string.Empty) : r.Output.Trim();
-        return Report(false, L.T(failKey, name, why.Length > 300 ? why[..300] + "..." : why));
+        string hint = Get(r.Json, "error") as string == "PlanRejected" && Get(r.Json, "detail") as string is { } reason ? " " + PlanRejectedHint(reason) : string.Empty;
+        return Report(false, L.T(failKey, name, why.Length > 300 ? why[..300] + "..." : why) + hint);
     }
+
+    /// PlanRejected 사유를 안내 문구로 바꿉니다 (영어 원문은 호출자가 메시지에 그대로 둡니다). zone_not_free 는 존 뒤 공간이 다른 파일 소유라는 뜻입니다.
+    public static string PlanRejectedHint(string reason) =>
+        reason.StartsWith("zone_not_free", StringComparison.Ordinal) ? L.T("Plan_ZoneNotFree") : L.T("Plan_Rejected", reason);
 
     private ActionResult Report(bool ok, string message)
     {

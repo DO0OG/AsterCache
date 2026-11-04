@@ -106,6 +106,12 @@ public sealed class AutoEnv
     /// 폴더가 있는가 (드라이브가 분리되면 거짓). 시험 기본값은 항상 참.
     public Func<string, bool> DirectoryExists { get; init; } = _ => true;
 
+    /// run 파일 하나의 읽기량 (바이트, 행 길이 합), 읽을 수 없으면 null (유효 회차로 셈). 시험 기본값은 null.
+    public Func<string, long?> RunReadBytes { get; init; } = _ => null;
+
+    /// 원시 트레이스의 병합 결과 지문 (블록 집합·순서 해시), 읽을 수 없으면 null. 시험 기본값은 null.
+    public Func<string, string?> TraceFingerprint { get; init; } = _ => null;
+
     /// 파일의 마지막 수정 시각 (UTC), 없으면 null. 원시 트레이스가 마지막 예열보다 새로운지 보는 데 씁니다.
     public Func<string, DateTimeOffset?> FileWriteTime { get; init; } = _ => null;
 
@@ -225,6 +231,8 @@ public sealed class AutoEnv
             SystemDrive = Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.Windows))![..2].ToUpperInvariant(),
             ServiceDir = AppContext.BaseDirectory,
             FileExists = File.Exists,
+            RunReadBytes = AutoTracer.RunReadBytes,
+            TraceFingerprint = AutoTracer.TraceFingerprint,
             DirectoryExists = Directory.Exists,
             FileWriteTime = path => File.Exists(path) ? File.GetLastWriteTimeUtc(path) : null,
             GameProcesses = exes => ProcessSnapshot.ReadCounters(exes),

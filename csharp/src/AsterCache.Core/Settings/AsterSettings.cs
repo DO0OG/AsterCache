@@ -67,11 +67,24 @@ public sealed record AutoSettings(
     public const int HeuristicWindowSeconds = 20;
     public const int HeuristicReadMib = 256;
 
+    /// trace_cap_mib 기본값: 이 값이면 명시하지 않은 것으로 보고 존 상한에 맞춰 자동 해석 (EffectiveTraceCapMib).
+    public const int DefaultTraceCapMib = 6144;
+
     /// 기본 prewarm_recent 0 = RAM 예산 안에서 최근 순으로 가능한 만큼 (1 이상이면 그 개수 상한, -1 = 최근순 예열 끔).
-    public static AutoSettings Default { get; } = new(true, true, true, true, 0, 3, 600, 6144, 4, []);
+    public static AutoSettings Default { get; } = new(true, true, true, true, 0, 3, 1800, DefaultTraceCapMib, 4, []);
 
     /// 한 게임이 모을 트레이스 플레이 횟수 (1..32): 이보다 적게 모았으면 원시 트레이스가 있어도 다음 플레이를 다시 기록해 합집합으로 병합합니다. 1 = 첫 플레이만.
     public int TraceRuns { get; init; } = 3;
+
+    /// 트레이스 읽기 캡 (MiB): 기본값 (6144) 이면 max(6144, 유효 존 상한 x 2) (최대 65536), 다른 값이면 명시한 값 그대로.
+    public int EffectiveTraceCapMib(long zoneMib) =>
+        TraceCapMib != DefaultTraceCapMib ? TraceCapMib : (int)Math.Min(65536, Math.Max(DefaultTraceCapMib, zoneMib * 2));
+
+    /// 마지막 세션 커버리지 (%, 1..100) 가 이 값 미만이면 trace_runs 를 채운 뒤에도 추가 회차를 수집할 수 있음 (새 고유 블록이 trace_merge_min_mib 이상 늘 때만).
+    public int TraceTargetCoverage { get; init; } = 70;
+
+    /// 추가 수집을 포함한 유효 트레이스 회차 상한 (1..32).
+    public int TraceRunsMax { get; init; } = 8;
 
     /// 병합한 트레이스의 핫 집합이 지금 계획보다 이만큼 (MiB, 1..65536) 이상 늘었을 때만 존을 확장해 다시 계획합니다.
     public int TraceMergeMinMib { get; init; } = 64;

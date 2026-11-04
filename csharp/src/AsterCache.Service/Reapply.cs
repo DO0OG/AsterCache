@@ -350,9 +350,20 @@ public sealed class ReapplyChecker
             {
                 ApplyOptions? injected = _env.Options(game); // Started 가 집계를 늘리기 전에 한 번만 계산해 Apply 에도 그대로 넘김
                 long cap = (injected ?? new ApplyOptions()).WriteCap;
-                _env.Started(game, Math.Min(plan.Tasks.Sum(t => t.Clusters) * plan.ClusterBytes, cap)); // 예정 바이트 (근사: 계획 전체, 회당 상한까지)
-                ApplyReport rep = _env.Apply(game, plan, injected, cancellationToken);
-                _env.Spent(game, rep.MovedBytes); // 예외로 끝나면 Spent 를 부르지 않아 Started 의 예정 바이트가 예산에 남음 (과대 집계가 안전)
+                long planned = Math.Min(plan.Tasks.Sum(t => t.Clusters) * plan.ClusterBytes, cap);
+                _env.Started(game, planned); // 예정 바이트 (근사: 계획 전체, 회당 상한까지)
+                ApplyReport rep;
+                try
+                {
+                    rep = _env.Apply(game, plan, injected, cancellationToken);
+                }
+                catch
+                {
+                    _env.Spent(game, planned); // 예외로 끝나도 예정 바이트로 Spent 를 불러 예산에 남기고 SMR 회복 대기를 시작시킴 (과대 집계가 안전)
+                    throw;
+                }
+
+                _env.Spent(game, rep.MovedBytes);
 
                 if (rep.ZoneRetargeted)
                 {

@@ -300,17 +300,25 @@ public sealed class ReapplyTests
 
         Assert.Equal(ReapplyVerdict.Failed, rig.Check(Bench));
         Assert.Single(rig.Started);
-        Assert.Empty(rig.Spent);
+        Assert.Equal(rig.Started, rig.Spent);
     }
 
     [Fact]
-    public void ReapplyThatThrowsCallsStartedBeforeApplyAndNeverSpent()
+    public void ReapplyThatThrowsCallsStartedBeforeApplyThenSpent()
     {
         var rig = new Rig { Moved = false, ApplyThrows = new IOException("x") };
 
         Assert.Equal(ReapplyVerdict.Failed, rig.Check(Bench));
-        Assert.Equal(["started", "apply"], rig.Calls);
-        Assert.Empty(rig.Spent);
+        Assert.Equal(["started", "apply", "spent"], rig.Calls);
+    }
+
+    [Fact]
+    public void ReapplyThatThrowsStillCallsSpentWithThePlannedBytesToStartRecovery()
+    {
+        var rig = new Rig { Moved = false, ApplyThrows = new IOException("x"), Options = new ApplyOptions(WriteCap: 4096) };
+
+        Assert.Equal(ReapplyVerdict.Failed, rig.Check(Bench));
+        Assert.Equal([4096L], rig.Spent); // 예정 바이트로 Spent 가 불려야 AutoRelocator 가 회복 대기를 시작함
     }
 
     [Fact]

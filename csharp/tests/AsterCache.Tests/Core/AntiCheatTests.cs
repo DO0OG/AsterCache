@@ -65,6 +65,30 @@ public sealed class AntiCheatTests
     public void IncompleteListingThatFoundSomethingKeepsThatValue() => Assert.Equal("eac", LauncherScan.DetectAntiCheat("X", Lister(false, "Game.exe", "EasyAntiCheat")));
 
     [Fact]
+    public void IncompleteListingWithOnlyRicochetIsUnknown() => Assert.Equal(LauncherScan.AntiCheatUnknown, LauncherScan.DetectAntiCheat("X", Lister(false, "Game.exe", "ricochet.dll")));
+
+    [Fact]
+    public void CompleteListingWithRicochetKeepsRicochet() => Assert.Equal("ricochet", LauncherScan.DetectAntiCheat("X", Lister(true, "Game.exe", "ricochet.dll")));
+
+    [Fact]
+    public void MarkerInsideAHiddenFolderIsDetected()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "aster-ac-" + Guid.NewGuid().ToString("N"));
+        string hidden = Path.Combine(root, "hid");
+        Directory.CreateDirectory(Path.Combine(hidden, "EasyAntiCheat"));
+        File.SetAttributes(hidden, FileAttributes.Hidden);
+        try
+        {
+            Assert.Equal("eac", LauncherScan.DetectAntiCheat(root));
+        }
+        finally
+        {
+            File.SetAttributes(hidden, FileAttributes.Normal);
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
     public void CompleteListingWithNothingFoundIsNull() => Assert.Null(LauncherScan.DetectAntiCheat("X", Lister(true, "Game.exe")));
 
     [Fact]

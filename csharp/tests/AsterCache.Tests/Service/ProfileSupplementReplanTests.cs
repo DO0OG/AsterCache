@@ -1,3 +1,4 @@
+using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
 using AsterCache.Core.Trace;
@@ -24,6 +25,65 @@ public sealed partial class AutoRelocatorTests
         _relocator = null;
         Vol.Moves.Clear();
         return start;
+    }
+
+    // 프로필 보충 재계획인데 존 바로 뒤 (덧붙일 구간) 를 다른 파일이 쓰고 있음: 새 존으로 전체를 옮기지 않고 이전 계획을 되살려 보충을 보류.
+    private void AssertSupplementDeferredAndNeverRepeated(long start)
+    {
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.NotNull(Entry.RelocatedAt);
+        Assert.False(HasExtendMark());
+        PlanFile restored = PlanFile.Load(_game.Plan);
+        Assert.Equal(start, restored.Zone.StartLcn); // 새 존이 아님
+        Assert.Equal(5L, restored.Stats["hot_blocks"]); // 이전 계획이 되살아남
+        Assert.False(restored.Stats.ContainsKey("profile_supplement_mib"));
+        Assert.True(restored.Stats.ContainsKey("profile_supplement_checked")); // 되풀이하지 않게 표지는 남음
+        Assert.NotEqual(1L, restored.Stats.TryGetValue("profile_supplement_replan", out object? mark) ? mark : null); // 이후 일반 확장이 보충 재계획으로 오인되지 않음
+        Assert.Empty(Vol.Moves);
+        Assert.Single(_log.Lines, l => l.Contains("zone extension blocked: ", StringComparison.Ordinal));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("looking for a new one", StringComparison.Ordinal));
+
+        int calls = _profileCalls;
+        Run(TimeSpan.FromHours(1));
+        _relocator = null; // 서비스 재시작
+        Tick();
+        Run(TimeSpan.FromHours(1));
+
+        Assert.Equal(1, ExtendLogs());
+        Assert.Single(_log.Lines, l => l.Contains("zone extension blocked: ", StringComparison.Ordinal));
+        Assert.Equal(calls, _profileCalls); // 보충을 다시 따지지 않음
+        Assert.Empty(Vol.Moves);
+        Assert.Equal(start, PlanFile.Load(_game.Plan).Zone.StartLcn);
+    }
+
+    [Fact]
+    public void ProfileSupplementWhoseRegionAfterTheZoneIsInUseIsDeferredAtPlanTimeInsteadOfTakingANewZone()
+    {
+        long start = DoneWithoutSupplementThenRestart("kernel", (_, _) => WholeFiles());
+        List<Extent> other = [new(0, start + 100, 8)];
+        Vol.Ext[Path.Combine(Root, "other.bin")] = other;
+        _w.Bitmap = _ => Vol.Bitmap();
+
+        Tick();
+        RunUntilDone();
+
+        AssertSupplementDeferredAndNeverRepeated(start);
+        Assert.Equal(other, Vol.Ext[Path.Combine(Root, "other.bin")]);
+    }
+
+    [Fact]
+    public void ProfileSupplementRejectedAsZoneNotFreeAtApplyTimeIsDeferredInsteadOfTakingANewZone()
+    {
+        long start = DoneWithoutSupplementThenRestart("kernel", (_, _) => WholeFiles());
+        List<Extent> other = [new(0, start + 100, 8)];
+        Vol.Ext[Path.Combine(Root, "other.bin")] = other; // 비트맵을 읽지 못함 → 계획 시점에는 모르고 확장 계획을 만들고 적용 때 거부됨
+
+        Tick();
+        Assert.True(HasExtendMark());
+        RunUntilDone();
+
+        AssertSupplementDeferredAndNeverRepeated(start);
+        Assert.Equal(other, Vol.Ext[Path.Combine(Root, "other.bin")]);
     }
 
     [Fact]

@@ -78,6 +78,7 @@ public sealed class AutoRelocator
     private const string ExtendDetail = "trace grew, extending zone";
     private const string SupplementKey = "profile_supplement_mib"; // 계획 stats: 트레이스 금지 게임의 계획에 엔진 프로필에서 보탠 양 (MiB)
     private const string SupplementCheckedKey = "profile_supplement_checked"; // 계획 stats: 프로필 보충을 이미 따져 본 계획 (보충이 없거나 작았음)
+    private const string SupplementReplanKey = "profile_supplement_replan"; // 이전 계획 (.extend) 의 stats: 프로필 보충 재계획 중 (뒤 공간이 쓰이면 새 존 대신 보류)
 
     /// 읽을 수 없는 (잘린) 계획을 옆으로 치운 파일의 접미사.
     public const string BadSuffix = ".bad";
@@ -859,6 +860,19 @@ public sealed class AutoRelocator
     // 확장 중인가: 확장 재계획이 이전 계획을 .extend 로 치운 뒤 끝나거나 막히기 전까지 (파일이라 서비스를 다시 시작해도 이어짐).
     private bool IsExtending(GameSettings g) => _env.FileExists(g.Plan + ExtendSuffix);
 
+    // 프로필 보충 재계획인가: 이전 계획 (.extend) 에 표지가 있음. 보충은 이미 옮긴 존을 지키려는 것이라 뒤 공간이 쓰이면 새 존으로 가지 않고 보류합니다.
+    private bool IsSupplementExtension(GameSettings g)
+    {
+        try
+        {
+            return IsExtending(g) && _env.LoadPlan(g.Plan + ExtendSuffix).Stats.TryGetValue(SupplementReplanKey, out object? marked) && marked is 1L;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            return false;
+        }
+    }
+
     // 존 확장 재계획: 배치까지 끝낸 게임의 병합 트레이스 (플레이를 더 모아 합집합이 된 trace.json) 가 계획보다 새롭고, 핫 집합이 TraceMergeMinMib 이상 커졌으면
     // 이전 계획을 .extend 로 치우고 처음 단계로 되돌립니다. 이후는 일반 흐름 (계획 → 재배치): 같은 존 시작에 맞춰 계획하므로 이미 존에 있는 블록은 제자리이고 새 블록만 존 뒤에 붙으며,
     // 유휴·일일 상한·바이트 예산·회복·전원·같은 디스크 게임 같은 안전장치를 그대로 지납니다. 존 뒤가 비어 있지 않은 등 확장할 수 없으면 BlockExtension 이 이전 계획을 되살립니다.
@@ -1011,8 +1025,14 @@ public sealed class AutoRelocator
                 (IReadOnlyList<TraceEvent> trace, _) = DropVolatile(g, _env.LoadTrace(tracePath, g.OriginRoot));
                 (_, long bytes) = ProfileSupplement.Union(trace, MaxZoneMib(s, g) << 20, budget => _env.ProfileEvents(g, budget));
                 plan.Stats[SupplementCheckedKey] = 1L;
+                bool replan = bytes >= (long)s.Auto.TraceMergeMinMib << 20;
+                if (replan)
+                {
+                    plan.Stats[SupplementReplanKey] = 1L; // 확장이 막혀 되살리면 NoteBlocked 가 0 으로 돌림
+                }
+
                 plan.Save(g.Plan);
-                if (bytes < (long)s.Auto.TraceMergeMinMib << 20)
+                if (!replan)
                 {
                     continue;
                 }
@@ -1093,6 +1113,11 @@ public sealed class AutoRelocator
             PlanFile plan = _env.LoadPlan(g.Plan);
             plan.Stats[EffectiveZoneKey] = MaxZoneMib(_settings(), g);
             plan.Stats[MergePolicyKey] = AutoTracer.MergePolicy;
+            if (plan.Stats.ContainsKey(SupplementReplanKey))
+            {
+                plan.Stats[SupplementReplanKey] = 0L; // 되살린 계획이 이후 일반 확장에서 보충 재계획으로 오인되지 않게
+            }
+
             plan.Save(g.Plan);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
@@ -1440,6 +1465,12 @@ public sealed class AutoRelocator
 
             if (extending && start is not null && ExtensionRegionInUse(g, plan))
             {
+                if (IsSupplementExtension(g))
+                {
+                    BlockExtension(g, "the region after the zone is in use, engine profile not added"); // 이미 옮긴 블록을 다시 옮기는 전체 재배치로 가지 않음
+                    return false;
+                }
+
                 _log.Info($"{g.Name}: the region after the zone is in use, looking for a new one");
                 (start, plan) = (null, _env.MakePlan(sessions, g.OriginRoot, zoneMib));
             }
@@ -1770,9 +1801,9 @@ public sealed class AutoRelocator
             {
                 dry = _env.Apply(g, plan, dryRun, token); // 존 시작을 정해 계획에 저장 (이어하기를 위해 남김)
             }
-            catch (PlanRejectedException e) when (extending && !IsZoneNotFree(e))
+            catch (PlanRejectedException e) when (extending && (!IsZoneNotFree(e) || IsSupplementExtension(g)))
             {
-                BlockExtension(g, e.Message); // 존 뒤가 비어 있는 것과 무관한 거부: 새 존을 찾지 않음
+                BlockExtension(g, e.Message); // 존 뒤가 비어 있는 것과 무관한 거부 (프로필 보충은 비어 있지 않아도): 새 존을 찾지 않음
                 return;
             }
             catch (PlanRejectedException e) when ((extending || _seeded.Contains(g.Name)) && IsZoneNotFree(e))

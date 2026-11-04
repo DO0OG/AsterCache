@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using AsterCache.Core;
 using AsterCache.Core.Apply;
+using AsterCache.Core.Discovery;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
@@ -43,6 +45,34 @@ public sealed record DriveCapabilities(bool CanDiscover, bool CanPrewarm, bool C
             : system ? (rotational ? PrewarmOnly : "system volume")
             : hdd is false ? "not an HDD" : "drive type unknown";
         return new DriveCapabilities(rotational, rotational, all, all, system, rotational) { Reason = reason };
+    }
+}
+
+/// 트레이스를 금지하는 유효 안티치트 판정 (등록값 우선, 없으면 폴더 탐지 결과를 게임 이름별로 캐시: 루트·등록값이 바뀌면 무효). 탐지 실패 ("unknown") 는 캐시하지 않음.
+public sealed class TraceBlockCache(Func<string, string?> detect)
+{
+    private readonly ConcurrentDictionary<string, (string Root, string? Registered, string? Cheat)> _known = new(StringComparer.OrdinalIgnoreCase);
+
+    public string? Of(GameSettings g)
+    {
+        if (AntiCheat.ForbidsTrace(g.AntiCheat))
+        {
+            return g.AntiCheat; // 명시된 금지값은 캐시보다 먼저 (설정이 나중에 바뀌어도 바로 반영)
+        }
+
+        if (_known.TryGetValue(g.Name, out var known) && known.Root == g.OriginRoot && known.Registered == g.AntiCheat)
+        {
+            return known.Cheat;
+        }
+
+        string? found = detect(g.OriginRoot);
+        string? cheat = AntiCheat.ForbidsTrace(found) ? found : null;
+        if (found != AutoEnv.AntiCheatUnknown)
+        {
+            _known[g.Name] = (g.OriginRoot, g.AntiCheat, cheat);
+        }
+
+        return cheat;
     }
 }
 
@@ -205,6 +235,11 @@ public sealed class AutoEnv
 
     /// SSD 보조 저장 (선택 기능) 의 엔진. 시험 기본값은 null (건드리지 않음).
     public TierEngine? Tier { get; init; }
+
+    private TraceBlockCache? _traceBlocks;
+
+    /// 게임의 유효 트레이스 금지 안티치트 (없으면 null): 등록값이 금지값이면 그것, 아니면 폴더 이름으로 탐지한 결과 (AntiCheatOf, 루트·등록값 키로 캐시, 모름은 캐시하지 않고 "unknown" 으로 돌려줌).
+    public string? TraceBlocker(GameSettings g) => LazyInitializer.EnsureInitialized(ref _traceBlocks, () => new TraceBlockCache(AntiCheatOf)).Of(g);
 
     /// 자동 모드가 이 설치 루트에 할 수 있는 일 (HDD 로 확인된 시스템 볼륨 밖은 전부, 회전 디스크인 시스템 볼륨은 발견·예열만).
     public DriveCapabilities Capabilities(string originRoot) => DriveCapabilities.Of(originRoot, SystemDrive, IsHdd);

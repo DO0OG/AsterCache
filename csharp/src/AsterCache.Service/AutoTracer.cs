@@ -1,4 +1,3 @@
-using AsterCache.Core.Discovery;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Plan;
@@ -22,7 +21,6 @@ public sealed class AutoTracer
     private readonly LearnEnv _learn;
     private readonly object _lock = new();
     private Run? _run;
-    private readonly Dictionary<string, (string Root, string? Registered, string? Cheat)> _cheat = new(StringComparer.OrdinalIgnoreCase); // 게임별 트레이스 금지 판정 (없음 포함): 루트·등록 값이 바뀌면 무효, _lock 으로 보호
     private readonly HashSet<string> _cheatLogged = new(StringComparer.OrdinalIgnoreCase);
 
     /// 두 번째 이후 플레이가 이보다 적게 읽었거나 (바이트) 첫 플레이의 1 % 보다 이벤트가 적으면 (메뉴만 켠 플레이 등) 저장하지 않고 회차로 세지 않습니다.
@@ -281,35 +279,7 @@ public sealed class AutoTracer
     }
 
     // 안티치트 게임은 ETW 커널 트레이스를 걸지 않음 (보호 드라이버가 세션을 보고 클라이언트를 끊음). 등록 정보 (설정을 읽을 때 Riot 규칙으로 채워짐), 폴더 이름 순으로 보고 (폴더 열거는 한 번만) 탐지 실패도 막음.
-    private string? TraceBlocker(GameSettings g)
-    {
-        if (AntiCheat.ForbidsTrace(g.AntiCheat))
-        {
-            return g.AntiCheat; // 명시된 금지값은 캐시보다 먼저 (설정이 나중에 바뀌어도 바로 반영)
-        }
-
-        lock (_lock)
-        {
-            if (_cheat.TryGetValue(g.Name, out var known) && known.Root == g.OriginRoot && known.Registered == g.AntiCheat)
-            {
-                return known.Cheat;
-            }
-        }
-
-        string? found = _env.AntiCheatOf(g.OriginRoot);
-        string? cheat = AntiCheat.ForbidsTrace(found) ? found : null;
-        if (found == AutoEnv.AntiCheatUnknown)
-        {
-            return cheat; // 탐지 실패는 캐시하지 않음 (다음 시작에 다시 봄)
-        }
-
-        lock (_lock)
-        {
-            _cheat[g.Name] = (g.OriginRoot, g.AntiCheat, cheat);
-        }
-
-        return cheat;
-    }
+    private string? TraceBlocker(GameSettings g) => _env.TraceBlocker(g);
 
     public void Start(GameSettings g)
     {

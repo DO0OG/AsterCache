@@ -637,6 +637,36 @@ public sealed class AutoTracerTests : IDisposable
     }
 
     [Fact]
+    public void AFirstRecordIsNotSavedWhenTheStaleLegacyMarkCannotBeRemovedAndIsSavedAfterARestart()
+    {
+        SetRuns(3);
+        _rig.World.RunReadBytes = AutoTracer.RunReadBytes;
+        string mark = AutoTracer.LegacyRun1Path(_game);
+        File.WriteAllText(mark, "1");
+        var tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings);
+        Reads((0, 1 * MiB));
+        using (new FileStream(mark, FileMode.Open, FileAccess.Read, FileShare.None)) // 삭제를 막는 잠금
+        {
+            tracer.Start(_game);
+            tracer.Step();
+        }
+
+        Assert.False(File.Exists(Raw));
+        Assert.False(File.Exists(TraceWriter.RunPath(Raw, 1)));
+        Assert.Equal(1, _rig.Log.Lines.Count(l => l.Contains("legacy run1 mark not removed", StringComparison.Ordinal)));
+        Assert.Equal(AutoStage.Failed, _rig.Status.Get("foo")?.Stage);
+
+        var restarted = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings);
+        Reads((0, 1 * MiB));
+        restarted.Start(_game);
+        restarted.Step();
+
+        Assert.False(File.Exists(mark));
+        Assert.True(File.Exists(TraceWriter.RunPath(Raw, 1)));
+        Assert.Equal(0, AutoTracer.RunCount(_game, File.Exists, AutoTracer.RunReadBytes));
+    }
+
+    [Fact]
     public void RunReadBytesSumsTheRowLengthsAndFollowsTheFileWhenItChanges()
     {
         SeedRuns(2, (1, 10), (2, 20));

@@ -1522,7 +1522,7 @@ public sealed class Prewarmer
     }
 
     // 안티치트 게임은 기록 (트레이스) 을 만들지 않으므로 "trace needed" 라고 하지 않습니다.
-    private static string ProfileSkip(GameSettings game) => AntiCheat.ForbidsTrace(game.AntiCheat) ? "no profile" : "no profile; trace needed";
+    private string ProfileSkip(GameSettings game) => AntiCheat.ForbidsTrace(game.AntiCheat) || AntiCheat.ForbidsTrace(_env.AntiCheatOf(game)) ? "no profile" : "no profile; trace needed";
 
     private PrewarmResult Record(GameSettings game, DateTimeOffset now, PrewarmResult r, double mbps)
     {

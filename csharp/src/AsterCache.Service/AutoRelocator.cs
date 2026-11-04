@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using AsterCache.Core;
 using AsterCache.Core.Apply;
-using AsterCache.Core.Discovery;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Model;
@@ -77,6 +76,7 @@ public sealed class AutoRelocator
     private const string MergePolicyKey = "merge_policy"; // 계획 stats: 계획을 만들 때의 트레이스 병합 정책 (AutoTracer.MergePolicy)
     private const string FingerprintKey = "trace_fingerprint"; // 계획 stats: 계획을 만들 때의 원시 트레이스 지문 (블록 집합·순서)
     private const string ExtendDetail = "trace grew, extending zone";
+    private const string SupplementKey = "profile_supplement_mib"; // 계획 stats: 트레이스 금지 게임의 계획에 엔진 프로필에서 보탠 양 (MiB)
 
     /// 읽을 수 없는 (잘린) 계획을 옆으로 치운 파일의 접미사.
     public const string BadSuffix = ".bad";
@@ -654,7 +654,7 @@ public sealed class AutoRelocator
                 _tier?.RevertGame(g.Name, "game updated"); // 링크는 새 재배치 전에 되돌림 (심볼릭 링크가 낀 계획은 재적용·재배치가 거부함)
                 _ = _env.ArchiveJournal(g); // 새 계획은 다른 저널 header 를 쓰므로 끝난 저널은 옆으로 보관
                 string trace = AutoTracer.RawTracePath(g);
-                bool keep = !recorded && AntiCheat.ForbidsTrace(g.AntiCheat) && TraceHasUsableBlocks(trace, g); // 다시 트레이스할 수 없는 게임은 옛 트레이스를 유지 (없어진 파일·줄어든 범위는 읽을 때 걸러짐)
+                bool keep = !recorded && _env.TraceBlocker(g) is not null && TraceHasUsableBlocks(trace, g); // 다시 트레이스할 수 없는 게임은 옛 트레이스를 유지 (없어진 파일·줄어든 범위는 읽을 때 걸러짐)
                 if (!recorded && !keep && _env.FileExists(trace))
                 {
                     for (int run = AutoTracer.LastRunNumber(g, _env.FileExists); run >= 1; run--)
@@ -711,10 +711,10 @@ public sealed class AutoRelocator
     private HashSet<string> RestoreStaleTraces(AsterSettings s)
     {
         var restored = new HashSet<string>(StringComparer.Ordinal);
-        foreach (GameSettings g in s.Games.Where(g => AntiCheat.ForbidsTrace(g.AntiCheat)))
+        foreach (GameSettings g in s.Games)
         {
             string raw = AutoTracer.RawTracePath(g);
-            if (_env.FileExists(raw) || !_env.FileExists(raw + StaleSuffix))
+            if (_env.FileExists(raw) || !_env.FileExists(raw + StaleSuffix) || _env.TraceBlocker(g) is null)
             {
                 continue;
             }
@@ -1329,7 +1329,8 @@ public sealed class AutoRelocator
             bool prefetch = boot && _env.TraceSource(tracePath) == PlanSourcePrefetch;
             (IReadOnlyList<TraceEvent> trace, JObject excluded) = DropVolatile(g, _env.LoadTrace(tracePath, g.OriginRoot));
             long supplementBytes = 0;
-            if (AntiCheat.ForbidsTrace(g.AntiCheat))
+            string? cheat = _env.TraceBlocker(g);
+            if (cheat is not null)
             {
                 (trace, supplementBytes) = ProfileSupplement.Union(trace, MaxZoneMib(s, g) << 20, budget => _env.ProfileEvents(g, budget)); // 트레이스를 만들 수 없는 게임: 트레이스가 덮지 못한 엔진 프로필 구간을 존 상한 안에서 보충
             }
@@ -1406,7 +1407,7 @@ public sealed class AutoRelocator
             if (supplementBytes > 0)
             {
                 long supplementMib = (supplementBytes + (1 << 20) - 1) >> 20;
-                plan.Stats["profile_supplement_mib"] = supplementMib;
+                plan.Stats[SupplementKey] = supplementMib;
                 _log.Info($"{g.Name}: engine profile added {supplementMib} MiB the trace did not cover");
             }
 

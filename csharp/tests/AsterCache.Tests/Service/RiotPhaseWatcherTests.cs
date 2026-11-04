@@ -356,7 +356,8 @@ public sealed class RiotPhaseWatcherTests : IAsyncDisposable
         await Until(() => _warm.Count >= 2, "first session");
 
         _client.Phase = () => "None";
-        await Task.Delay(50);
+        int calls = _client.PhaseCalls;
+        await Until(() => _client.PhaseCalls >= calls + 2, "old session ended"); // None 을 읽은 감시 단계가 세션을 정리한 뒤 다음 단계까지 끝남
         int before = _warm.Count;
         _client.Phase = () => "ChampSelect";
         await Until(() => _warm.Count >= before + 2, "second session");

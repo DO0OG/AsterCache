@@ -54,7 +54,7 @@ public sealed class ColdPrewarmLiveTests(ITestOutputHelper output) : IDisposable
 
         // 폴더 합 81 MiB 가 상한 (200 MiB) 이하: 통째
         PrewarmResult whole = new Prewarmer([game], new FakeStreamer(), env, log).Also(p => p.SetAuto(AutoSettings.Default with { FullPrewarmMaxMib = 200 })).Run(game, "live");
-        // 상한 60 MiB 보다 크면 프로필: movie.bin 은 빠짐 (5 + 2 + 40 + 3 = 50 MiB, Game.exe 는 .dll 이 아니라 공통 규칙 밖)
+        // 상한 60 MiB 보다 크면 프로필: 합 80 MiB 를 60 MiB 에서 자름 (movie.bin 은 StreamingAssets 규칙으로 뒤에 읽힘, Game.exe 는 .dll 이 아니라 공통 규칙 밖)
         PrewarmResult profile = new Prewarmer([game], new FakeStreamer(), env, log).Also(p => p.SetAuto(AutoSettings.Default with { FullPrewarmMaxMib = 60 })).Run(game, "live");
 
         output.WriteLine($"whole: {whole.Mode} {whole.Stats}");
@@ -68,7 +68,7 @@ public sealed class ColdPrewarmLiveTests(ITestOutputHelper output) : IDisposable
         Assert.Equal(("full", 81 * Mib, 0L), (whole.Mode, whole.Stats!.Bytes, whole.Stats.Errors));
         Assert.True(whole.Stats.Requests > 0);
         Assert.True(profile.Ran, profile.SkipReason);
-        Assert.Equal(("profile Unity", 50 * Mib, 0L), (profile.Mode, profile.Stats!.Bytes, profile.Stats.Errors));
+        Assert.Equal(("profile Unity", 60 * Mib, 0L), (profile.Mode, profile.Stats!.Bytes, profile.Stats.Errors));
     }
 }
 

@@ -502,8 +502,8 @@ public sealed class ColdPrewarmTests : IDisposable
 
         Assert.Equal(("full", 152 * Mib + 1), (whole.Mode, whole.Stats!.Bytes));
         Assert.Equal("profile Unity", profile.Mode);
-        Assert.Equal(102 * Mib, profile.Stats!.Bytes); // movie.bin 은 빠짐, exe 는 공통 규칙 아님
-        Assert.DoesNotContain(_reads[1], o => o.Path.EndsWith("movie.bin", StringComparison.Ordinal));
+        Assert.Equal(110 * Mib, profile.Stats!.Bytes); // 합 152 MiB 를 예산 110 MiB 에서 자름 (movie.bin 은 StreamingAssets 머리 256 MiB 규칙으로 앞부분만), exe 는 공통 규칙 아님
+        Assert.Contains(_reads[1], o => o.Path.EndsWith("movie.bin", StringComparison.Ordinal));
         Assert.False(noProfile.Ran);
         Assert.Contains("larger", noProfile.SkipReason, StringComparison.Ordinal);
     }

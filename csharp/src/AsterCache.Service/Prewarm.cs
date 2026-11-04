@@ -719,32 +719,42 @@ public sealed class Prewarmer
                 continue;
             }
 
-            bool idle = !DriveHasRunningGame(g) && !_games.Any(x => Relocating(x.Name)) && _env.DiskBytesPerSecond(g) is { } bps && bps < DiskActivity.BusyBytesPerSecond;
-            DateTimeOffset now = _now();
-            DateTimeOffset since;
-            lock (_gate)
-            {
-                if (!idle)
-                {
-                    _idleSince.Remove(name);
-                    continue;
-                }
+            SupplementWhenIdle(g, ct);
+        }
+    }
 
-                if (!_idleSince.TryGetValue(name, out since))
-                {
-                    _idleSince[name] = since = now;
-                }
+    /// 보충 예열 대기 게임이 IdleNeeded 동안 연속으로 한가했을 때만 Supplement 를 부릅니다 (SupplementTick 과 재예열 점검이 같은 판정을 씀). 유휴가 막 시작됐거나 아직 모자라면 읽지 않고 false.
+    public bool SupplementWhenIdle(GameSettings g, CancellationToken ct)
+    {
+        bool idle = !DriveHasRunningGame(g) && !_games.Any(x => Relocating(x.Name)) && _env.DiskBytesPerSecond(g) is { } bps && bps < DiskActivity.BusyBytesPerSecond;
+        DateTimeOffset now = _now();
+        DateTimeOffset since;
+        lock (_gate)
+        {
+            if (!idle)
+            {
+                _idleSince.Remove(g.Name);
+                return false;
             }
 
-            if (now - since >= IdleNeeded)
+            if (!_idleSince.TryGetValue(g.Name, out since))
             {
-                Supplement(g, ct);
-                lock (_gate)
-                {
-                    _idleSince.Remove(name); // 취소돼 남았으면 다음에 다시 IdleNeeded 를 셈
-                }
+                _idleSince[g.Name] = since = now;
             }
         }
+
+        if (now - since < IdleNeeded)
+        {
+            return false;
+        }
+
+        bool done = Supplement(g, ct);
+        lock (_gate)
+        {
+            _idleSince.Remove(g.Name); // 취소돼 남았으면 다음에 다시 IdleNeeded 를 셈
+        }
+
+        return done;
     }
 
     /// 남은 핫 집합 구간을 읽는 보충 예열 한 번 (한 번 끝나면 다시 하지 않음). 다른 예열이 돌고 있거나, 게임·재배치가 있거나, RAM 예산 (물리 RAM/4, 가용 RAM - 여유) 을 넘으면 읽지 않고 false.

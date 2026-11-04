@@ -203,17 +203,48 @@ public sealed class SupplementWarmTests : IDisposable
         _disk = 50 << 20; // 첫 틱: 재예열 주기만 시작, 보충은 바쁨 때문에 대기 안 함
         Ticks(p, 1, on);
         _now += TimeSpan.FromMinutes(11);
-        _disk = 0; // 주기가 되면 한가함: 유휴 60 초를 아직 못 채웠어도 재예열 점검이 보충함
+        _disk = 0; // 주기가 되면 한가함: 유휴가 막 시작됐으므로 재예열 점검도 보충하지 않음 (60 초 연속 유휴 판정을 거침)
         Ticks(p, 1, on);
 
+        Assert.Single(_streamer.Seen);
+        Assert.True(p.SupplementPending("g"));
+        Assert.Contains(_log.Lines, l => l.Contains("rewarm check: samples are warm but the rest", StringComparison.Ordinal));
+
+        Ticks(p, 1, on); // 30 초 뒤: 아직 모자람
+        Assert.Single(_streamer.Seen);
+        Ticks(p, 1, on); // 60 초 뒤: 보충
         Assert.Equal(2, _streamer.Seen.Count);
         Assert.False(p.SupplementPending("g"));
-        Assert.Contains(_log.Lines, l => l.Contains("rewarm check: samples are warm but the rest", StringComparison.Ordinal));
 
         _now += TimeSpan.FromMinutes(11);
         Ticks(p, 1, on); // 보충이 끝난 뒤에는 따뜻하면 건너뜀
         Assert.Equal(2, _streamer.Seen.Count);
         Assert.Contains(_log.Lines, l => l.Contains("rewarm check: warm", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void SupplementWhenIdleWaitsForSixtySecondsOfContinuousIdleAndBusyResetsIt()
+    {
+        GameSettings g = Game();
+        Prewarmer p = Make(g);
+        p.RunServiceStart();
+        Assert.Single(_streamer.Seen);
+
+        Assert.False(p.SupplementWhenIdle(g, default)); // 유휴 첫 호출: 읽지 않고 시각만 기록
+        _now += TimeSpan.FromSeconds(59);
+        Assert.False(p.SupplementWhenIdle(g, default));
+        _disk = 50 << 20; // 바빠지면 유휴 시각을 지움
+        _now += TimeSpan.FromSeconds(30);
+        Assert.False(p.SupplementWhenIdle(g, default));
+        _disk = 0;
+        Assert.False(p.SupplementWhenIdle(g, default)); // 다시 처음부터
+        _now += TimeSpan.FromSeconds(59);
+        Assert.False(p.SupplementWhenIdle(g, default));
+        Assert.Single(_streamer.Seen);
+
+        _now += TimeSpan.FromSeconds(1);
+        Assert.True(p.SupplementWhenIdle(g, default));
+        Assert.Equal(2, _streamer.Seen.Count);
     }
 
     [Fact]

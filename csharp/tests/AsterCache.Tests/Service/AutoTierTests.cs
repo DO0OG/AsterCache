@@ -157,6 +157,21 @@ public sealed class AutoTierTests : IDisposable
     }
 
     [Fact]
+    public void AKernelAntiCheatScanRejectsTheTierAndIsCached()
+    {
+        SetTrace();
+        AsterSettings s = Settings();
+        _world.AntiCheats[@"D:\Games\Foo"] = "kernel";
+        IdleTicks(s);
+        Assert.False(Linked(@"D:\Games\Foo.bin"));
+        Assert.Contains(_log.Lines, l => l.Contains("Foo: ssd tier skipped, anti-cheat found (kernel)"));
+
+        _world.AntiCheats[@"D:\Games\Foo"] = null; // 찾은 값은 캐시돼 다시 열거하지 않음 (모름과 달리)
+        IdleTicks(s);
+        Assert.False(Linked(@"D:\Games\Foo.bin"));
+    }
+
+    [Fact]
     public void AnUnknownAntiCheatScanRejectsTheTierAndIsNotCached()
     {
         SetTrace();

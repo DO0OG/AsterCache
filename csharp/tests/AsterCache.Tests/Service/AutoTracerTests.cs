@@ -163,6 +163,8 @@ public sealed class AutoTracerTests : IDisposable
     [InlineData("registered", "vanguard")]
     [InlineData("folder", "eac")]
     [InlineData("riot", "vanguard")]
+    [InlineData("registered", "kernel")]
+    [InlineData("folder", "kernel")]
     [InlineData("detect-failed", "unknown")]
     public void AntiCheatGamesNeverStartATraceInAnyRunAndTheReasonIsLoggedOnce(string how, string kind)
     {

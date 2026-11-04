@@ -11,7 +11,7 @@ public sealed record DiscoveredGame(string Name, string Launcher, string Install
     /// ExePath 말고 같은 게임이 실행하는 다른 exe 이름 (폴더 안에 실제로 있는 것만, 이름만).
     public IReadOnlyList<string> ExtraExes { get; init; } = [];
 
-    /// 설치 폴더 이름에서 알아낸 안티치트 ("eac" | "battleye" | "vanguard" | "ricochet" | "unknown"), 흔적이 없으면 null.
+    /// 설치 폴더 이름에서 알아낸 안티치트 ("eac" | "battleye" | "vanguard" | "kernel" | "ricochet" | "unknown"), 흔적이 없으면 null.
     public string? AntiCheat { get; init; }
 
     /// Steam / Epic 매니페스트에서 읽은 값 (공유 프로필 지문), 그 런처가 아니면 null.

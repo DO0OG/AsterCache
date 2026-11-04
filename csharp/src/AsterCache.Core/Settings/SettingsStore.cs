@@ -328,8 +328,8 @@ public static class SettingsStore
         string? antiCheat = null;
         if (g.TryGetValue("anticheat", out object? ac))
         {
-            antiCheat = ac is "eac" or "battleye" or "vanguard" or "ricochet" or "unknown"
-                ? (string)ac : throw new SettingsException($"{at}.anticheat: \"eac\", \"battleye\", \"vanguard\", \"ricochet\" or \"unknown\" expected");
+            antiCheat = ac is "eac" or "battleye" or "vanguard" or "kernel" or "ricochet" or "unknown"
+                ? (string)ac : throw new SettingsException($"{at}.anticheat: \"eac\", \"battleye\", \"vanguard\", \"kernel\", \"ricochet\" or \"unknown\" expected");
         }
 
         return new GameSettings(name, exeNames, trace, plan, origin, allowed, label, minutes)

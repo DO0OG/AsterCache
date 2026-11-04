@@ -518,6 +518,23 @@ public sealed class ColdPrewarmTests : IDisposable
         Assert.Equal(("profile Unity", 10 * Mib), (r.Mode, r.Stats!.Bytes));
     }
 
+    [Fact]
+    public void FirstRunOfAnUnplayedGameIsWarmedByTheEngineProfileAndLeavesTheTraceRunsUntouched()
+    {
+        string root = UnityFolder();
+        string plans = Path.Combine(_dir, "plans");
+        Directory.CreateDirectory(plans);
+        GameSettings game = RealGame(root) with { Plan = Path.Combine(plans, "g.plan.json"), Trace = Path.Combine(plans, "g.plan.json.prefetch.json") };
+
+        PrewarmResult r = MakeReal(AutoSettings.Default with { FullPrewarmMaxMib = 110 }, root).Run(game, "t");
+
+        Assert.Equal("profile Unity", r.Mode); // 계획·트레이스가 없어 엔진 프로필로 예열
+        Assert.Empty(Directory.GetFiles(plans)); // 예열은 트레이스·boot 파일을 만들지 않음
+        Assert.Equal(0, AutoTracer.RunCount(game, File.Exists)); // 첫 실행 트레이스 회차 (trace_runs) 는 그대로 0 회
+        Assert.Null(AutoTracer.PlanTracePath(game, File.Exists)); // 그래서 첫 실행은 여전히 트레이스를 시작함
+        Assert.True(AutoTracer.RunCount(game, File.Exists) < AutoSettings.Default.TraceRuns);
+    }
+
     // ---- 취소 ----
 
     [Fact]

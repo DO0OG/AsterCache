@@ -151,6 +151,7 @@ public sealed class RiotPhaseWatcherTests : IAsyncDisposable
 
         Assert.Equal((0, 0, 0, 0), (_created, _lockReads, _client.PhaseCalls, _clientCalls));
         Assert.Empty(_warm);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("champion select", StringComparison.Ordinal)); // 꺼져 있으면 로그도 없음
     }
 
     [Fact]
@@ -207,6 +208,7 @@ public sealed class RiotPhaseWatcherTests : IAsyncDisposable
 
         Assert.Equal([ChampFiles("Ahri"), ChampFiles("Aatrox"), ChampFiles("Annie"), MapFiles(11)], _warm.Take(4).Select(w => w.Files));
         Assert.Equal(1, _client.AliasCalls);
+        Assert.Contains(_log.Lines, l => l.Contains("champion select prewarm enabled (disabled by default), started", StringComparison.Ordinal));
     }
 
     [Fact]

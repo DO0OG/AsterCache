@@ -317,7 +317,7 @@ public sealed class RiotPhaseWatcher
             IReadOnlyDictionary<int, string> aliases = await AliasesAsync(game, client, ct);
             var champions = new HashSet<int>();
             bool mapDone = false;
-            _log.Info($"{game.Name}: champion select prewarm started (budget {budget >> 20} MiB)");
+            _log.Info($"{game.Name}: champion select prewarm enabled (disabled by default), started (budget {budget >> 20} MiB)");
             while (!ct.IsCancellationRequested && remaining > 0)
             {
                 if (await client.GetChampSelectAsync(ct) is not { } state)

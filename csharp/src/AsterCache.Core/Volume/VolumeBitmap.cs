@@ -93,11 +93,11 @@ public sealed class VolumeBitmap
         }
     }
 
-    /// 첫 LCN (align 의 배수), 없으면 null. preferLowLcn 이 false 면 가장 높은 맞는 구간.
-    public long? FindFreeRun(long clustersNeeded, bool preferLowLcn = true, long minLcn = 0, long align = 1)
+    /// 첫 LCN (align 의 배수), 없으면 null. preferLowLcn 이 false 면 가장 높은 맞는 구간. excluded 의 범위 (다른 계획이 예약한 존) 는 빈 구간에서 뺍니다.
+    public long? FindFreeRun(long clustersNeeded, bool preferLowLcn = true, long minLcn = 0, long align = 1, IReadOnlyList<(long Lcn, long Clusters)>? excluded = null)
     {
         long? found = null;
-        foreach ((long lcn, long n) in FreeRuns())
+        foreach ((long lcn, long n) in Without(FreeRuns(), excluded))
         {
             long start = AlignUp(Math.Max(lcn, minLcn), align);
             if (lcn + n - start >= clustersNeeded)
@@ -112,6 +112,42 @@ public sealed class VolumeBitmap
         }
 
         return found;
+    }
+
+    private static IEnumerable<(long Lcn, long Length)> Without(IEnumerable<(long Lcn, long Length)> runs, IReadOnlyList<(long Lcn, long Clusters)>? excluded)
+    {
+        if (excluded is null or { Count: 0 })
+        {
+            return runs;
+        }
+
+        var sorted = excluded.Where(x => x.Clusters > 0).OrderBy(x => x.Lcn).ToList();
+        return runs.SelectMany(run => Split(run, sorted));
+    }
+
+    private static IEnumerable<(long Lcn, long Length)> Split((long Lcn, long Length) run, List<(long Lcn, long Clusters)> sorted)
+    {
+        long cursor = run.Lcn;
+        long end = run.Lcn + run.Length;
+        foreach ((long a, long n) in sorted)
+        {
+            if (a >= end || a + n <= cursor)
+            {
+                continue;
+            }
+
+            if (a > cursor)
+            {
+                yield return (cursor, a - cursor);
+            }
+
+            cursor = Math.Max(cursor, a + n);
+        }
+
+        if (cursor < end)
+        {
+            yield return (cursor, end - cursor);
+        }
     }
 
     private (long Lcn, long Length)? Clip(long a, long b, long endBit)

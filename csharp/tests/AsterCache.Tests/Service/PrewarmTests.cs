@@ -155,6 +155,20 @@ public sealed class PrewarmTests : IDisposable
         Assert.Equal(2, _streamer.Calls.Count);
     }
 
+    [Fact]
+    public void LastSuccessSurvivesASkipAndAServiceRestart()
+    {
+        GameSettings g = Game("a", PrewarmSettings.Default with { TriggerExes = ["Steam.exe"], CooldownMin = 30 });
+        Prewarmer p = Make(g);
+        Assert.True(p.Run(g, "first").Ran);
+        DateTimeOffset warmedAt = _now;
+        _now += TimeSpan.FromMinutes(5);
+        Assert.False(p.Run(g, "second").Ran); // 쿨다운으로 건너뜀: 마지막 시도 결과는 skipped
+
+        Prewarmer restarted = Make(g); // 서비스 재시작: 상태 파일만 남음
+        Assert.Equal(warmedAt, restarted.LastWarmed("a"));
+    }
+
     [Theory]
     [InlineData("running")]
     [InlineData("memory")]

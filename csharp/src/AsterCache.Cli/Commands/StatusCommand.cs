@@ -138,13 +138,22 @@ internal static class StatusCommand
     {
         var steps = jr.Rows.Where(r => Equals(r.TryGetValue("type", out object? t) ? t : null, "step") && r.ContainsKey("from")).Select(r => (long)r["idx"]!).Distinct().ToList();
         List<string?> states = steps.Select(jr.LastState).ToList();
+        long done = states.Count(s => s == "done");
+        long unverified = Unverified(jr.Rows);
         return new JObject
         {
             { "rows", (long)jr.Rows.Count },
             { "steps", (long)steps.Count },
-            { "done", (long)states.Count(s => s == "done") },
+            { "done", done },
             { "failed", (long)states.Count(s => s == "failed") },
-            { "ended", jr.Rows.Any(r => Equals(r.TryGetValue("type", out object? t) ? t : null, "end")) },
+            { "unverified", unverified },
+            // end 행은 실행이 마쳤다는 표시일 뿐: 실패·미완 단계나 검증하지 못한 sha_before 가 남았으면 끝난 저널로 보지 않음
+            { "ended", jr.Rows.Any(r => Equals(Of(r, "type"), "end")) && done == steps.Count && unverified == 0 },
         };
     }
+
+    private static object? Of(JObject r, string key) => r.TryGetValue(key, out object? v) ? v : null;
+
+    // 검증을 마치지 못한 sha_before 의 수. 규칙은 Applier.VerifyPending 과 같음: sha_mismatch 가 남은 end 는 경계가 아니고, verified·보류 (sha_held) 표시가 있는 것만 처리된 것.
+    private static long Unverified(IReadOnlyList<JObject> rows) => Applier.PendingBefore(rows).Count;
 }

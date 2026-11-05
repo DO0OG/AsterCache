@@ -192,6 +192,21 @@ public sealed class AutoEnv
     /// 끝난 게임 저널을 옆으로 옮겨 보관하고 그 경로를 돌려줍니다 (저널이 없으면 null). 새 계획은 다른 저널 header 를 쓰기 때문입니다.
     public Func<GameSettings, string?> ArchiveJournal { get; init; } = _ => null;
 
+    /// 이 게임의 계획 폴더·저널 폴더 잠금을 잡아 돌려줍니다 (활성 계획·그 형제 파일·저널을 바꾸는 한 게임 단위 구간 전체를 감쌈, 같은 스레드의 안쪽 호출은 재진입). 못 잡으면 null (보류). 시험 기본값은 항상 잡힘.
+    public Func<GameSettings, IDisposable?> Lock { get; init; } = _ => NoGate.Instance;
+
+    /// 같은 볼륨의 다른 게임 계획이 아직 쓸 존 범위 (ZoneReservations.Collect). 자동 존과 존 재사용은 이 범위를 피함. 시험 기본값은 없음.
+    public Func<GameSettings, IReadOnlyList<(long Lcn, long Clusters)>> Reserved { get; init; } = _ => [];
+
+    /// (게임, 후보 계획, 옛 계획들, 선읽기 파일을 다시 쓸 세션 또는 null) → 부분 적용된 이전 목표를 지키는 잔여 재계획으로 활성 계획을 바꾼 결과 (저널은 보관, 삭제하지 않음). 없으면 (시험 기본값) 기존 흐름.
+    public Func<GameSettings, PlanFile, IReadOnlyList<PlanFile>, IReadOnlyList<IReadOnlyList<TraceEvent>>?, PlanFile>? ReplanResidual { get; init; }
+
+    /// 중단된 계획 교체가 있으면 끝까지 진행합니다 (없으면 null). 읽기·보관 실패는 예외로 올라옴.
+    public Func<GameSettings, SwitchResult?> ResumeSwitch { get; init; } = _ => null;
+
+    /// 게임 저널 header 의 plan_sha (저널에 행이 없으면 null). 활성 계획과 맞는지 시작 복구가 대조합니다.
+    public Func<GameSettings, string?> JournalPlanSha { get; init; } = _ => null;
+
     /// (원본, 새 이름) 파일 이동, 이미 있으면 덮어씀. 낡은 트레이스·계획을 .stale 로 치우는 데 씁니다.
     public Action<string, string> MoveAside { get; init; } = (_, _) => { };
 
@@ -235,6 +250,15 @@ public sealed class AutoEnv
 
     /// SSD 보조 저장 (선택 기능) 의 엔진. 시험 기본값은 null (건드리지 않음).
     public TierEngine? Tier { get; init; }
+
+    private sealed class NoGate : IDisposable
+    {
+        public static readonly NoGate Instance = new();
+
+        public void Dispose()
+        {
+        }
+    }
 
     private TraceBlockCache? _traceBlocks;
 
@@ -285,15 +309,32 @@ public sealed class AutoEnv
             LoadVolatile = AutoTracer.ReadVolatile,
             MakePlan = (sessions, origin, zoneMib) => MakePlanAtLcn(sessions, origin, zoneMib, null, 0),
             MakePlanAt = (sessions, origin, zoneMib, start, used) => MakePlanAtLcn(sessions, origin, zoneMib, start, used),
-            SavePlan = (plan, sessions, path) => PlanOutput.Save(plan, sessions, path),
+            SavePlan = (plan, sessions, path) =>
+            {
+                DataLock.RequireHeld(path); // 잠금 증표 없이는 활성 계획을 쓰지 않음
+                _ = PlanOutput.Save(plan, sessions, path);
+            },
             LoadPlan = PlanFile.Load,
             RealPath = RealPaths.Real,
             Stat = PlanFile.FingerprintOf,
-            Apply = (g, plan, options, ct) => ReapplyEnv.Run(journalDir, g, plan, options, ct, log),
+            Apply = (g, plan, options, ct) => ReapplyEnv.RunLocked(journalDir, g, plan, options, ct, log),
             JournalRows = g => ReapplyEnv.JournalRows(journalDir, g),
+            Lock = g => ReapplyEnv.Lock(journalDir, g),
+            Reserved = ReapplyEnv.ReservedFor,
+            ReplanResidual = (g, candidate, olds, sessions) => ReapplyEnv.ReplanResidual(journalDir, g, candidate, olds, sessions),
+            ResumeSwitch = g => ReapplyEnv.ResumeSwitch(journalDir, g),
+            JournalPlanSha = g => ReapplyEnv.JournalPlanSha(journalDir, g),
             ArchiveJournal = g => ReapplyEnv.ArchiveJournal(journalDir, g),
-            MoveAside = (src, dst) => File.Move(src, dst, true),
-            Touch = path => File.SetLastWriteTimeUtc(path, DateTime.UtcNow),
+            MoveAside = (src, dst) =>
+            {
+                DataLock.RequireHeld(src);
+                File.Move(src, dst, true);
+            },
+            Touch = path =>
+            {
+                DataLock.RequireHeld(path);
+                File.SetLastWriteTimeUtc(path, DateTime.UtcNow);
+            },
             Revert = (g, skipRows, ct) => ReapplyEnv.Revert(journalDir, g, skipRows, ct),
             Extents = FileLayout.Extents,
             Bitmap = ReadBitmap,

@@ -397,6 +397,6 @@ stream done: 0.46 s since launch (read time 0.06 s), 195.7 MiB, 2169 requests, e
 4. 패치 뒤 재배치가 유지되는지 확인합니다. 계정 위험이 없다고 확인된 범위에서만 다음 단계로 넘어갑니다.
 
 **추정 핫셋과 LCU 선읽기**
-- 리그 추정 핫셋은 전 모드 기준 약 9 GiB입니다(Global·UI·Common·맵 11·12 기본 규칙 약 5.3 GiB에 맵 30·453·22 약 3.6 GiB를 더한 이 PC 실측 합계, Companions 제외). 이 PC 의 존 상한 8 GiB 에서는 뒤쪽(맵 22·TFT, Companions)이 잘릴 수 있습니다.
-- `riot.champ_select_prewarm`(기본 꺼짐, disabled by default)을 켜면 챔피언 선택 중 로컬 리그 클라이언트 API(`127.0.0.1`)로 고른 챔피언과 맵 파일을 미리 RAM에 읽습니다. 게임 안 파일은 건드리지 않습니다.
+- 리그 오브 레전드 추정 핫셋은 전 모드 기준 약 9 GiB입니다(Global·UI·Common·맵 11·12 기본 규칙 약 5.3 GiB에 맵 30·453·22 약 3.6 GiB를 더한 이 PC 실측 합계, Companions 제외). 이 PC 의 존 상한 8 GiB 에서는 뒤쪽(맵 22·TFT, Companions)이 잘릴 수 있습니다.
+- `riot.champ_select_prewarm`(기본 꺼짐, disabled by default)을 켜면 챔피언 선택 중 로컬 리그 오브 레전드 클라이언트 API(`127.0.0.1`)로 고른 챔피언과 맵 파일을 미리 RAM에 읽습니다. 게임 안 파일은 건드리지 않습니다.
 - 한국 계정의 LCU 사용 정책은 미확인입니다. 이 기능을 켜기 전에 직접 확인하십시오.

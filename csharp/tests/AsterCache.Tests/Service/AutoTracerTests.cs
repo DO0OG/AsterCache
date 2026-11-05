@@ -683,7 +683,7 @@ public sealed class AutoTracerTests : IDisposable
     public void ASixMiBRun3IsNotAValidRunSoTheNextRunIsSavedAsRun4WithoutOverwritingIt()
     {
         SetRuns(3);
-        SeedRuns(3, (3, 6)); // beta.17 의 콜옵: run1 100, run2 100, run3 6 MiB
+        SeedRuns(3, (3, 6)); // beta.17 의 콜 오브 듀티: run1 100, run2 100, run3 6 MiB
         var tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings); // 최소 읽기량 64 MiB
         string run3 = TraceWriter.RunPath(Raw, 3);
         string run3Text = File.ReadAllText(run3);

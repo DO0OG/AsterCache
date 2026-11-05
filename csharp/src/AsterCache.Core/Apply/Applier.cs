@@ -66,7 +66,7 @@ public static class Applier
         }
 
         bool autoZone = plan.Zone.StartLcn is null;
-        plan = PlanGuards.ResolveZone(plan, vol, hooks.Extents, journalPath, out bool rezoned);
+        plan = PlanGuards.ResolveZone(plan, vol, hooks.Extents, journalPath, out bool rezoned, options.Reserved);
         long chunk = Math.Max(1, options.ChunkBytes / cb);
         var rep = new ApplyReport();
         foreach (string p in plan.Tasks.Select(t => t.Path).Distinct(StringComparer.Ordinal).OrderBy(p => p, CodePointComparer.Instance))
@@ -128,6 +128,7 @@ public static class Applier
 
         if (persist)
         {
+            CheckJournalBelongs(plan, journalPath); // 계획 파일을 바꾸기 전에: 다른 계획의 저널이 남았는데 저장하면 이후 실행이 모두 거절됨 (dry-run 포함)
             plan.Save(options.SaveTo!);
         }
 
@@ -215,10 +216,241 @@ public static class Applier
             return null;
         }
 
-        string stamp = DateTime.UnixEpoch.AddSeconds(hooks.Clock()).ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
-        string dest = $"{journalPath}.{stamp}";
+        string dest = PlanSwitch.ArchiveName(journalPath, DateTime.UnixEpoch.AddSeconds(hooks.Clock()));
         File.Move(journalPath, dest);
         return dest;
+    }
+
+    // 저널에 행이 있는데 이 계획의 header 가 없으면 거절 (Execute 의 검사와 같은 문구). 저널이 없거나 비었으면 통과.
+    private static void CheckJournalBelongs(PlanFile plan, string journalPath)
+    {
+        if (!File.Exists(journalPath))
+        {
+            return;
+        }
+
+        using var jr = new Journal(journalPath);
+        if (jr.Rows.Count > 0 && jr.First("header", "plan_sha", plan.Sha()) is null)
+        {
+            throw new PlanRejectedException("journal belongs to a different plan");
+        }
+    }
+
+    /// 원본이 이동 뒤 바뀌어 검증할 수 없는 항목을 보류하는 저널 행의 type (reason = <see cref="SourceChangedReason"/>). 옛 sha_before 는 그대로 두고, 이 행이 있으면 그 키는 처리된 것으로 봅니다.
+    public const string HeldType = "sha_held";
+
+    public const string SourceChangedReason = "source_changed";
+
+    /// 미검증 항목의 파일을 읽지 못한 거절의 문구 앞부분 (일시 사유: 검증 오류 "unverified journal entry changed" 와 구분해 호출자가 다시 시도함).
+    public const string UnverifiedUnreadable = "unverified journal entry unreadable";
+
+    /// VerifyPending 의 결과: Verified = 이번에 검증해 verified 행을 남긴 수, SourceChanged = 원본이 바뀌어 보류된 경로 (이전에 보류된 것 포함, 중복 없음).
+    public sealed record PendingVerification(int Verified, IReadOnlyList<string> SourceChanged);
+
+    /// 마지막 "검증을 마친" end 행 뒤의 행들. 지연 검증 (after_deferred) 이거나 sha_mismatch 가 남은 end 는 경계가 아닙니다: 그 앞의 미검증 SHA 는 계속 대상.
+    public static List<JObject> UnsettledRows(IReadOnlyList<JObject> rows)
+    {
+        for (int i = rows.Count - 1; i >= 0; i--)
+        {
+            JObject r = rows[i];
+            if (r.TryGetValue("type", out object? t) && Equals(t, "end") && !(r.TryGetValue("after_deferred", out object? def) && Equals(def, true))
+                && !(r.TryGetValue("sha_mismatch", out object? bad) && bad is System.Collections.IList { Count: > 0 }))
+            {
+                return rows.Skip(i + 1).ToList();
+            }
+        }
+
+        return rows.ToList();
+    }
+
+    /// UnsettledRows 안에서 이미 처리된 키: verified 행이거나 보류 (sha_held) 행. 작업 단위는 "t<idx>", 파일 단위는 경로.
+    private static HashSet<string> SettledKeys(IEnumerable<JObject> unsettled, bool perTask) =>
+        unsettled.Where(r => Equals(r["type"], perTask ? "sha_verified" : "file_verified") || Equals(r["type"], HeldType))
+            .Select(r => perTask ? (r.TryGetValue("idx", out object? i) && i is long idx ? TaskKey((int)idx) : null) : r["path"] as string)
+            .OfType<string>().ToHashSet(StringComparer.Ordinal);
+
+    /// 아직 검증하지 못한 sha_before 행 (작업 단위는 sha, 파일 단위는 file): UnsettledRows 중 verified·보류 표시가 없는 것. 저널 규칙은 header 의 digest_rule 로 정함.
+    public static List<JObject> PendingBefore(IReadOnlyList<JObject> rows)
+    {
+        object? rule = null;
+        _ = rows.FirstOrDefault(r => Equals(r["type"], "header"))?.TryGetValue("digest_rule", out rule);
+        bool perTask = Equals(rule, EdgeRule) || Equals(rule, EdgeTaskRule);
+        List<JObject> unsettled = UnsettledRows(rows);
+        HashSet<string> settled = SettledKeys(unsettled, perTask);
+        string KeyOf(JObject r) => perTask ? TaskKey((int)(long)r["idx"]!) : (string)r["path"]!;
+        return unsettled.Where(r => Equals(r["type"], perTask ? "sha" : "file") && r["sha_before"] is string && !settled.Contains(KeyOf(r))).ToList();
+    }
+
+    /// 저널 교체 전 검증 (VerifyPendingDetailed 의 검증한 수만).
+    public static int VerifyPending(string journalPath, ApplyHooks hooks, IReadOnlyList<PlanFile>? oldPlans = null) =>
+        VerifyPendingDetailed(journalPath, hooks, oldPlans).Verified;
+
+    /// 저널 교체 전 검증: 앞선 실행이 after 검증을 못 마친 sha_before (Execute 의 unsettled 규칙) 를 같은 표본 규칙으로 다시 읽어 비교합니다.
+    /// 표본 구간은 sha 행의 ranges 를 쓰고, 없는 옛 저널은 header 의 plan_sha 와 같은 옛 계획 (oldPlans) 의 전체 task 로 정확히 다시 계산하며,
+    /// 그것도 없으면 저널의 planned 행만으로 가능한 후보 (상한 적용·미적용·앞만·끝만) 중 하나라도 맞으면 일치로 봅니다.
+    /// 일치하는 항목은 sha_verified / file_verified 행을 남깁니다. 불일치하면 이동 당시 파일 지문 (sha 행의 fp, 없으면 옛 계획의 지문) 과 지금을 비교해
+    /// 다르거나 파일이 없으면 원본 변경: 거절하지 않고 sha_held 행 (옛 sha_before 는 그대로) 을 남기고 결과의 SourceChanged 로 알립니다.
+    /// 지문이 같거나 기준이 없으면 검증 오류, 읽기 불가는 PlanRejectedException ("unverified journal entry changed" / "unreadable", 저널은 그대로).
+    public static PendingVerification VerifyPendingDetailed(string journalPath, ApplyHooks hooks, IReadOnlyList<PlanFile>? oldPlans = null)
+    {
+        Func<string, long, IReadOnlyList<(long Offset, long Length)>, string> digestFn = hooks.Digest ?? throw new ArgumentException("hooks.Digest is required");
+        var edgeFn = hooks.EdgeDigest ?? digestFn;
+        if (!File.Exists(journalPath))
+        {
+            return new PendingVerification(0, []);
+        }
+
+        using var jr = new Journal(journalPath);
+        List<JObject> rows = jr.Rows.ToList();
+        object? rule = null;
+        JObject? header = rows.FirstOrDefault(r => Equals(r["type"], "header"));
+        _ = header?.TryGetValue("digest_rule", out rule);
+        bool perTask = Equals(rule, EdgeRule) || Equals(rule, EdgeTaskRule);
+        List<JObject> unsettled = UnsettledRows(rows);
+        List<JObject> pending = PendingBefore(rows);
+        List<string> held = unsettled.Where(r => Equals(r["type"], HeldType) && r["path"] is string).Select(r => (string)r["path"]!).ToList();
+        if (pending.Count == 0)
+        {
+            return new PendingVerification(0, held.Distinct(StringComparer.Ordinal).ToList());
+        }
+
+        string? headerSha = header is not null && header.TryGetValue("plan_sha", out object? hs) ? hs as string : null;
+        PlanFile? origin = headerSha is null ? null : oldPlans?.FirstOrDefault(p => p.Sha() == headerSha);
+
+        long cb = rows.Select(r => r.TryGetValue("cluster_bytes", out object? c) ? c as long? : null).FirstOrDefault(c => c is not null)
+            ?? throw new PlanRejectedException("journal header has no cluster_bytes");
+        var steps = new Dictionary<long, JObject>();
+        foreach (JObject r in rows.Where(r => Equals(r["type"], "step") && r.ContainsKey("path") && r["idx"] is long))
+        {
+            _ = steps.TryAdd((long)r["idx"]!, r);
+        }
+
+        (long Offset, long Length)[] Edges(JObject st)
+        {
+            long lo = (long)st["vcn"]! * cb;
+            long hi = ((long)st["vcn"]! + (long)st["clusters"]!) * cb;
+            long n = Math.Min(TaskSpan, hi - lo);
+            return [(lo, n), (hi - n, n)];
+        }
+
+        List<(long Offset, long Length)> Known(string path) => steps.Values.Where(st => Equals(st["path"], path)).SelectMany(Edges).ToList();
+
+        var sourceChanged = new HashSet<string>(StringComparer.Ordinal);
+        var outcomes = new List<(JObject Row, string Path, bool Held)>();
+        foreach (JObject r in pending)
+        {
+            string path = perTask
+                ? (steps.TryGetValue((long)r["idx"]!, out JObject? st) ? (string)st["path"]! : throw new PlanRejectedException("journal has no planned row for an unverified entry"))
+                : (string)r["path"]!;
+            if (sourceChanged.Contains(path))
+            {
+                outcomes.Add((r, path, true)); // 같은 파일의 앞선 항목이 원본 변경으로 판정됨: 다시 읽지 않음
+                continue;
+            }
+
+            try
+            {
+                long size = hooks.FileSize(path);
+                bool same;
+                if (perTask)
+                {
+                    List<(long Offset, long Length)> stored = StoredRanges(r);
+                    var task = origin is not null && (long)r["idx"]! < origin.Tasks.Count && origin.Tasks[(int)(long)r["idx"]!] is { } ot && ot.Path == path ? ot : null;
+                    var mine = Edges(steps[(long)r["idx"]!]).Where(x => x.Offset >= 0 && x.Offset < size).Select(x => (x.Offset, Math.Min(x.Length, size - x.Offset))).ToList();
+                    List<List<(long, long)>> variants;
+                    if (stored.Count > 0)
+                    {
+                        variants = [stored];
+                    }
+                    else if (task is not null)
+                    {
+                        HashSet<(long, long)> all = EdgeRanges(MovedRanges(origin!).GetValueOrDefault(path) ?? [], size).ToHashSet();
+                        variants = [TaskRanges(task.Vcn, task.Clusters, cb, size, all)];
+                    }
+                    else
+                    {
+                        HashSet<(long, long)> keep = EdgeRanges(Known(path), size).ToHashSet();
+                        List<(long, long)> capped = mine.Where(keep.Contains).Distinct().ToList();
+                        variants = [capped.Count > 0 ? capped : mine.Take(1).ToList(), mine.Distinct().ToList(), mine.Take(1).ToList(), mine.Skip(1).Take(1).ToList()];
+                    }
+
+                    same = variants.All(v => v.Count == 0) || variants.Where(v => v.Count > 0).DistinctBy(v => string.Join(',', v)).Any(v => edgeFn(path, size, v) == (string)r["sha_before"]!);
+                }
+                else
+                {
+                    List<(long Offset, long Length)> all = Known(path);
+                    same = (Equals(rule, EdgeFileRule) ? edgeFn(path, size, EdgeRanges(all, size)) : digestFn(path, size, all)) == (string)r["sha_before"]!;
+                }
+
+                if (!same)
+                {
+                    if (!ChangedSinceMove(r, path, origin, hooks))
+                    {
+                        throw new PlanRejectedException("unverified journal entry changed: " + path);
+                    }
+
+                    _ = sourceChanged.Add(path);
+                }
+
+                outcomes.Add((r, path, !same));
+            }
+            catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
+            {
+                _ = sourceChanged.Add(path); // 파일이 없어짐 (게임 업데이트 등): 검증할 원본이 없음
+                outcomes.Add((r, path, true));
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or Win32Exception)
+            {
+                throw new PlanRejectedException($"{UnverifiedUnreadable}: {path}: {e.Message}");
+            }
+        }
+
+        foreach ((JObject r, string path, bool isHeld) in outcomes)
+        {
+            JObject row = isHeld
+                ? new JObject { { "type", HeldType }, { "path", path }, { "reason", SourceChangedReason } }
+                : perTask ? new JObject { { "type", "sha_verified" }, { "idx", r["idx"] } } : new JObject { { "type", "file_verified" }, { "path", r["path"] } };
+            if (isHeld && perTask)
+            {
+                row["idx"] = r["idx"];
+            }
+
+            jr.AddBatched(row);
+        }
+
+        jr.Close();
+        return new PendingVerification(outcomes.Count(o => !o.Held), held.Concat(outcomes.Where(o => o.Held).Select(o => o.Path)).Distinct(StringComparer.Ordinal).ToList());
+    }
+
+    // sha 행의 ranges ([[offset, length], ...]), 없으면 빈 목록.
+    private static List<(long Offset, long Length)> StoredRanges(JObject r) =>
+        r.TryGetValue("ranges", out object? v) && v is List<object?> list
+            ? list.OfType<List<object?>>().Where(p => p is [long, long]).Select(p => ((long)p[0]!, (long)p[1]!)).ToList()
+            : [];
+
+    // 불일치 항목의 파일이 그 이동 당시와 달라졌는가 (크기·수정 시각): 기준은 sha 행의 fp, 없으면 header 와 같은 옛 계획의 지문. 기준이 없으면 false (검증 오류로 다룸).
+    private static bool ChangedSinceMove(JObject row, string path, PlanFile? origin, ApplyHooks hooks)
+    {
+        (long Size, long MtimeNs)? reference = row.TryGetValue("fp", out object? v) && v is List<object?> { Count: 2 } stamp && stamp[0] is long size && stamp[1] is long mtime ? (size, mtime)
+            : origin?.Fingerprints.FirstOrDefault(f => f.Path == path) is { } fp ? (fp.Size, fp.MtimeNs) : null;
+        if (reference is not { } expected)
+        {
+            return false;
+        }
+
+        Fingerprint now = hooks.Stat(path);
+        return now.Size != expected.Size || now.MtimeNs != expected.MtimeNs;
+    }
+
+    // 한 작업의 SHA 표본 구간: 그 작업 범위의 앞뒤 TaskSpan 바이트를 파일 안으로 자른 것 중 상한 적용된 표본 (keep) 에 든 것, 없으면 첫 구간 하나.
+    private static List<(long Offset, long Length)> TaskRanges(long vcn, long clusters, long cb, long size, HashSet<(long, long)> keep)
+    {
+        long lo = vcn * cb;
+        long hi = (vcn + clusters) * cb;
+        long n = Math.Min(TaskSpan, hi - lo);
+        List<(long, long)> clipped = new[] { (lo, n), (hi - n, n) }.Where(r => r.Item1 >= 0 && r.Item1 < size).Select(r => (r.Item1, Math.Min(r.Item2, size - r.Item1))).ToList();
+        List<(long, long)> mine = clipped.Where(keep.Contains).Distinct().ToList();
+        return mine.Count > 0 ? mine : clipped.Take(1).ToList();
     }
 
     /// path → [(바이트 오프셋, 길이)]: 모든 작업의 VCN 범위 앞뒤 TaskSpan 바이트. SHA 표본에 들어갑니다.
@@ -296,8 +528,8 @@ public static class Applier
         bool perTask = sampling || Equals(rule, EdgeTaskRule);
         bool edge = perTask || Equals(rule, EdgeFileRule);
         var firstOf = plan.Tasks.Select((t, i) => (t.Path, i)).GroupBy(x => x.Path, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Min(x => x.i), StringComparer.Ordinal);
-        string? SampledDigest(int idx, PlanTask t) =>
-            verify == VerifyMode.Sample && sampling && idx % SampleEvery != 0 && firstOf[t.Path] != idx ? null : TaskDigest(idx, t);
+        (string Sha, List<(long Offset, long Length)> Ranges)? SampledDigest(int idx, PlanTask t) =>
+            verify == VerifyMode.Sample && sampling && idx % SampleEvery != 0 && firstOf[t.Path] != idx ? null : TaskSample(idx, t);
         var edgeFn = hooks.EdgeDigest ?? digestFn;
         var sizes = new ConcurrentDictionary<string, long>(StringComparer.Ordinal); // 동시 실행의 작업자들이 서로 다른 파일을 조회
         var capped = new ConcurrentDictionary<string, HashSet<(long, long)>>(StringComparer.Ordinal);
@@ -309,27 +541,18 @@ public static class Applier
             return edge ? edgeFn(p, size, EdgeRanges(RangesOf(p), size)) : digestFn(p, size, RangesOf(p));
         }
 
-        // 작업 단위: 파일의 상한 적용된 표본 중 이 작업의 앞뒤 구간에 해당하는 것만. 없으면 null (읽을 것이 없음).
-        string? TaskDigest(int idx, PlanTask t)
+        // 작업 단위: 파일의 상한 적용된 표본 중 이 작업의 앞뒤 구간에 해당하는 것만 (상한에 가려진 작업도 최소 한 곳은 검사: verify=all 이 일부 작업을 빠뜨리지 않게).
+        // 없으면 null (읽을 것이 없음). 구간도 함께 돌려줘 저널에 남김 (이어하기가 같은 구간을 그대로 다시 읽음).
+        (string Sha, List<(long Offset, long Length)> Ranges)? TaskSample(int idx, PlanTask t)
         {
             string p = t.Path;
             long size = SizeOf(p);
             HashSet<(long, long)> keep = capped.GetOrAdd(p, _ => EdgeRanges(RangesOf(p), size).ToHashSet());
-
-            long cb0 = vol.ClusterBytes;
-            long lo = t.Vcn * cb0;
-            long hi = (t.Vcn + t.Clusters) * cb0;
-            long n = Math.Min(TaskSpan, hi - lo);
-            var mine = new[] { (lo, n), (hi - n, n) }.Where(r => r.Item1 >= 0 && r.Item1 < size).Select(r => (r.Item1, Math.Min(r.Item2, size - r.Item1)))
-                .Where(keep.Contains).Distinct().ToList();
-            if (mine.Count == 0)
-            {
-                // 파일당 상한 (DigestCapBytes) 에 가려진 작업도 최소 한 곳은 검사: verify=all 이 일부 작업을 빠뜨리지 않게. 이전·이후 계산이 같은 규칙이라 모드가 달라도 일치.
-                mine = new[] { (lo, n), (hi - n, n) }.Where(r => r.Item1 >= 0 && r.Item1 < size).Select(r => (r.Item1, Math.Min(r.Item2, size - r.Item1))).Take(1).ToList();
-            }
-
-            return mine.Count == 0 ? null : edgeFn(p, size, mine);
+            List<(long Offset, long Length)> mine = TaskRanges(t.Vcn, t.Clusters, vol.ClusterBytes, size, keep);
+            return mine.Count == 0 ? null : (edgeFn(p, size, mine), mine);
         }
+
+        string? TaskDigest(int idx, PlanTask t) => TaskSample(idx, t)?.Sha;
 
         if (jr.Rows.Count == 0)
         {
@@ -347,10 +570,8 @@ public static class Applier
         // 앞선 실행이 after 검증을 못 마쳤음 (취소로 미룸, 또는 강제 종료로 end 행이 없음): 마지막으로 검증을 마친 end 행 뒤의 sha_before 중
         // verified 표시가 없는 것을 이번 실행의 비교 대상에 올림 (이미 옮긴 작업도 포함: 이어하기가 대신 검증).
         List<JObject> allRows = jr.Rows.ToList();
-        int finalEnd = allRows.FindLastIndex(r => Equals(r["type"], "end") && !(r.TryGetValue("after_deferred", out object? def) && Equals(def, true)));
-        List<JObject> unsettled = allRows.Skip(finalEnd + 1).ToList();
-        string verifiedType = perTask ? "sha_verified" : "file_verified";
-        var verifiedKeys = unsettled.Where(r => Equals(r["type"], verifiedType)).Select(r => perTask ? TaskKey((int)(long)r["idx"]!) : (string)r["path"]!).ToHashSet(StringComparer.Ordinal);
+        List<JObject> unsettled = UnsettledRows(allRows);
+        HashSet<string> verifiedKeys = SettledKeys(unsettled, perTask);
         foreach (JObject r in unsettled)
         {
             if (perTask && Equals(r["type"], "sha") && !verifiedKeys.Contains(TaskKey((int)(long)r["idx"]!)))
@@ -397,7 +618,7 @@ public static class Applier
     // 한 작업자가 멈춤 사유를 정하면 (취소·쓰기 상한·존 점유·예외) 다른 작업자는 진행 중인 조각만 끝내고 단계 행 없이 멈춥니다 (planned 행이 재개 지점).
     private static void RunTasks(IVolume vol, List<(int Idx, PlanTask Task, long Done)> todo, ApplyReport rep, Journal jr,
         OrderedDictionary<string, string?> before, long chunk, long writeCap, ApplyHooks hooks, Func<string, string> digest,
-        Func<int, PlanTask, string?>? taskDigest, int planAhead, bool noVerify, int parallel, CancellationToken ct)
+        Func<int, PlanTask, (string Sha, List<(long Offset, long Length)> Ranges)?>? taskDigest, int planAhead, bool noVerify, int parallel, CancellationToken ct)
     {
         long cb = vol.ClusterBytes;
         ApplyTimings tm = rep.Timings;
@@ -550,13 +771,21 @@ public static class Applier
             {
                 // 이 작업의 이동 직전에 그 범위의 가장자리만 읽음 (헤드가 원본 위치에 한 번만 감). 이어하기는 저널에 적힌 값을 씀.
                 JObject? row = jr.First("sha", "idx", (long)i);
-                string? sha = row is null ? ApplyTimings.Time(ref tm.DigestBeforeTicks, () => taskDigest(i, t)) : row["sha_before"] as string;
+                (string Sha, List<(long Offset, long Length)> Ranges)? sample = row is null ? ApplyTimings.Time(ref tm.DigestBeforeTicks, () => taskDigest(i, t)) : null;
+                string? sha = row is null ? sample?.Sha : row["sha_before"] as string;
                 if (sha is not null)
                 {
                     SetBefore(TaskKey(i), sha);
                     if (row is null)
                     {
-                        ApplyTimings.Time(ref tm.JournalTicks, () => jr.Add(new JObject { { "type", "sha" }, { "idx", (long)i }, { "sha_before", sha } })); // 이동 전에 fsync: 강제 종료 뒤 이어하기가 이동 후 검증을 하도록 (verified 표시가 있어야 끝난 것)
+                        // 표본 구간 (ranges) 과 이동 당시 파일 지문 (fp) 도 남김: 이어하기·저널 교체 검증이 같은 구간을 읽고, 불일치가 원본 변경인지 가려냄
+                        var sampleRow = new JObject { { "type", "sha" }, { "idx", (long)i }, { "sha_before", sha }, { "ranges", sample!.Value.Ranges.Select(x => (object?)new List<object?> { x.Offset, x.Length }).ToList() } };
+                        if (FingerprintOrNull(hooks, p) is { } stamp)
+                        {
+                            sampleRow["fp"] = new List<object?> { stamp.Size, stamp.MtimeNs };
+                        }
+
+                        ApplyTimings.Time(ref tm.JournalTicks, () => jr.Add(sampleRow)); // 이동 전에 fsync: 강제 종료 뒤 이어하기가 이동 후 검증을 하도록 (verified 표시가 있어야 끝난 것)
                     }
                 }
             }
@@ -681,6 +910,19 @@ public static class Applier
         if (errors.Count > 0)
         {
             ExceptionDispatchInfo.Capture(errors[0]).Throw();
+        }
+    }
+
+    // 지문을 읽지 못하면 (잠김·권한) null: 그 항목은 기준 지문 없이 기록됨.
+    private static Fingerprint? FingerprintOrNull(ApplyHooks hooks, string path)
+    {
+        try
+        {
+            return hooks.Stat(path);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return null;
         }
     }
 

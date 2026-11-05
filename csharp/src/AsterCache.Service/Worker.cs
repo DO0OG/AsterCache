@@ -33,10 +33,13 @@ public sealed class Worker : BackgroundService
     private int _maintaining;
     private readonly GameExitTracker _exits = new();
     private readonly SessionReads _reads = new();
+    private readonly BootQuiet _quiet;
+    private readonly object _heldLock = new();
+    private readonly List<ProcessStart> _heldTriggers = []; // 부팅 조용 구간에 보류한 계기 (게임 exe 가 아닌 트리거), _heldLock 으로 보호
 
     public Worker(AsterSettings settings, ILog log, IProcessWatcher primary, IProcessWatcher? fallback, IGameStreamer streamer, ReapplyChecker checker,
         ReapplyGate? gate = null, Prewarmer? prewarm = null, AutoMode? auto = null, SettingsReloader? reload = null, KeepAwake? keepAwake = null, DispatchEnv? dispatchEnv = null,
-        RiotPhaseWatcher? riot = null)
+        RiotPhaseWatcher? riot = null, BootQuiet? quiet = null)
     {
         _prewarm = prewarm;
         _prewarm?.SetAuto(settings.Auto);
@@ -62,6 +65,7 @@ public sealed class Worker : BackgroundService
         _dispatcher = new GameDispatcher(settings.Games, streamer, log, env: dispatchEnv is null ? null : dispatchEnv with { RestreamCooldownMin = () => _settings.Auto.RestreamCooldownMin, IsWarm = prewarm is null ? dispatchEnv.IsWarm : prewarm.AlreadyWarm }); // 설정을 다시 읽어도 최신 값
         _checker = checker;
         _gate = gate ?? new ReapplyGate();
+        _quiet = quiet ?? BootQuiet.Real(log, () => _settings.Games, () => prewarm?.UptimeMs() ?? Environment.TickCount64); // 부팅 조용 구간 (시험은 주입)
     }
 
     /// 설정이 etw 이고 관리자면 ETW (실패하면 폴링으로 내려감), 아니면 폴링 (기본).
@@ -227,7 +231,7 @@ public sealed class Worker : BackgroundService
     // 게임이 뜨면 돌고 있는 재적용을 먼저 멈춥니다 (읽기 큐 처리보다 앞서, 감시 스레드에서 바로).
     private Action<ProcessStart> OnStart(ChannelWriter<ProcessStart> writer) => s =>
     {
-        _riot?.NoteProcessStart(s.ExeName); // 리그 게임 exe 가 뜨면 챔피언 선택 선읽기를 바로 멈춤
+        _riot?.NoteProcessStart(s.ExeName); // 리그 오브 레전드 게임 exe 가 뜨면 챔피언 선택 선읽기를 바로 멈춤
         if (_settings.Games.FirstOrDefault(g => g.ExeNames.Contains(s.ExeName, StringComparer.OrdinalIgnoreCase)) is { } game)
         {
             _prewarm?.NoteGameStart(game.Name); // 그 게임을 예열하던 스트림은 아래 취소에도 끝까지 (다른 게임의 예열은 묶음 경계에서 멈춤), 기록 없는 예열의 예산은 풂
@@ -247,11 +251,57 @@ public sealed class Worker : BackgroundService
         }
 
         writer.TryWrite(s);
-        if (_prewarm?.IsTrigger(s.ExeName) == true)
+        if (_prewarm?.IsTrigger(s.ExeName) == true && (IsGameExe(s.ExeName) || !HoldTrigger(s)))
         {
-            _ = Task.Run(() => RunPrewarm(() => _prewarm.OnProcessStart(s, _auto is null ? null : _auto.NarrowTriggered, _auto?.WarmToken ?? default)), CancellationToken.None);
+            RunTrigger(s);
         }
     };
+
+    private bool IsGameExe(string exe) => _settings.Games.Any(g => g.ExeNames.Contains(exe, StringComparer.OrdinalIgnoreCase));
+
+    // 부팅 조용 구간에는 게임 exe 가 아닌 계기 예열 (런처 등) 을 쌓아 둡니다. 구간이 끝나면 RunHeldTriggers 가 돌립니다. 쌓았으면 true.
+    private bool HoldTrigger(ProcessStart s)
+    {
+        if (!_quiet.Defers($"prewarm {s.ExeName}"))
+        {
+            return false;
+        }
+
+        lock (_heldLock)
+        {
+            _heldTriggers.Add(s);
+        }
+
+        return true;
+    }
+
+    private void RunHeldTriggers()
+    {
+        if (_quiet.Active)
+        {
+            return;
+        }
+
+        ProcessStart[] held;
+        lock (_heldLock)
+        {
+            held = [.. _heldTriggers];
+            _heldTriggers.Clear();
+        }
+
+        foreach (ProcessStart s in held)
+        {
+            RunTrigger(s);
+        }
+    }
+
+    private void RunTrigger(ProcessStart s)
+    {
+        if (_prewarm is { } prewarm)
+        {
+            _ = Task.Run(() => RunPrewarm(() => prewarm.OnProcessStart(s, _auto is null ? null : _auto.NarrowTriggered, _auto?.WarmToken ?? default)), CancellationToken.None);
+        }
+    }
 
     // 예열은 스트림 한 번이 수 초라 감시기 스레드를 막지 않게 따로 돌립니다. 알 수 없는 예외도 서비스를 죽이지 않음.
     private void RunPrewarm(Action run)
@@ -328,7 +378,10 @@ public sealed class Worker : BackgroundService
             {
                 try
                 {
-                    _keepAwake.Tick();
+                    if (!_quiet.Defers("keep-awake read"))
+                    {
+                        _keepAwake.Tick();
+                    }
                 }
                 catch (Exception e) when (e is not OperationCanceledException)
                 {
@@ -377,23 +430,7 @@ public sealed class Worker : BackgroundService
         {
             while (!ct.IsCancellationRequested)
             {
-                foreach (GameSettings g in _settings.Games)
-                {
-                    due.TryAdd(g.Name, start + FirstCheckDelay);
-                    if (DateTimeOffset.UtcNow < due[g.Name])
-                    {
-                        continue;
-                    }
-
-                    ReapplyVerdict v = _gate.Run(ct, token => _checker.Check(g, token));
-                    bool waiting = v == ReapplyVerdict.Cancelled || (resuming.Contains(g.Name) && v is ReapplyVerdict.GameRunning or ReapplyVerdict.DiskBusy or ReapplyVerdict.Recovering or ReapplyVerdict.OnBattery or ReapplyVerdict.NotIdle or ReapplyVerdict.PostUpdateDelay);
-                    _ = waiting ? resuming.Add(g.Name) : resuming.Remove(g.Name);
-                    due[g.Name] = DateTimeOffset.UtcNow + (waiting ? ResumeRetry : TimeSpan.FromMinutes(g.ReapplyMinutes));
-                }
-
-                _auto?.RelocateTick(_gate, ct);
-                NoteGameExits();
-                MaintainPrewarm();
+                ReapplyTick(start, due, resuming, ct);
                 await (_auto is null ? Task.Delay(CheckTick, ct) : _auto.WaitForTickAsync(CheckTick, ct)); // 발견이 새 게임을 등록하면 일찍 깨움
             }
         }
@@ -402,6 +439,37 @@ public sealed class Worker : BackgroundService
             // 종료
         }
     }
+
+    /// 재적용 틱 하나: 재적용 루프가 부르고, 시험도 같은 틱을 직접 부릅니다. 부팅 조용 구간이면 배치 검사와 자동 재배치를 보류하고 기한을 그대로 둬서 구간이 끝난 다음 틱에 합니다. 보류한 계기는 구간이 끝나면 돌립니다.
+    public void ReapplyTick(DateTimeOffset start, Dictionary<string, DateTimeOffset> due, HashSet<string> resuming, CancellationToken ct)
+    {
+        _quiet.Refresh();
+        RunHeldTriggers();
+        foreach (GameSettings g in _settings.Games)
+        {
+            due.TryAdd(g.Name, start + FirstCheckDelay);
+            if (DateTimeOffset.UtcNow < due[g.Name] || _quiet.Defers("layout check and reapply"))
+            {
+                continue; // 부팅 조용 구간의 검사는 기한을 그대로 둬서 구간이 끝난 다음 틱에 함
+            }
+
+            ReapplyVerdict v = _gate.Run(ct, token => _checker.Check(g, token));
+            bool waiting = v == ReapplyVerdict.Cancelled || (resuming.Contains(g.Name) && v is ReapplyVerdict.GameRunning or ReapplyVerdict.DiskBusy or ReapplyVerdict.Recovering or ReapplyVerdict.OnBattery or ReapplyVerdict.NotIdle or ReapplyVerdict.PostUpdateDelay);
+            _ = waiting ? resuming.Add(g.Name) : resuming.Remove(g.Name);
+            due[g.Name] = DateTimeOffset.UtcNow + (waiting ? ResumeRetry : TimeSpan.FromMinutes(g.ReapplyMinutes));
+        }
+
+        if (_auto is not null && RelocationAllowed(_quiet))
+        {
+            _auto.RelocateTick(_gate, ct);
+        }
+
+        NoteGameExits();
+        MaintainPrewarm();
+    }
+
+    /// 이번 틱에 자동 재배치를 불러도 되는가: 부팅 조용 구간이 아니어야 합니다 (구간이면 보류 로그를 남김).
+    public static bool RelocationAllowed(BootQuiet quiet) => !quiet.Defers("auto relocation and new trace prewarm");
 
     // 폴링·ETW 어느 쪽이든 재적용 틱마다 (30 초) 프로세스 이름을 한 번 읽어 실행 중이던 게임이 사라졌는지 봅니다.
     private void NoteGameExits()
@@ -492,7 +560,7 @@ public sealed class Worker : BackgroundService
     // 고정의 RAM 확인과 예열 유지 점검: 다시 예열은 수 초 걸리므로 재적용 틱을 막지 않게 따로, 겹치지 않게 하나씩.
     private void MaintainPrewarm()
     {
-        if (_prewarm is null || Interlocked.CompareExchange(ref _maintaining, 1, 0) != 0)
+        if (_prewarm is null || _quiet.Defers("prewarm maintenance") || Interlocked.CompareExchange(ref _maintaining, 1, 0) != 0)
         {
             return;
         }

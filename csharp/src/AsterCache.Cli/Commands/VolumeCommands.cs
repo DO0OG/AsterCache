@@ -2,6 +2,7 @@ using System.Text;
 using AsterCache.Core;
 using AsterCache.Core.Apply;
 using AsterCache.Core.Json;
+using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Volume;
 using AsterCache.Windows;
@@ -33,6 +34,9 @@ internal static class VolumeCommands
         new("order", Default: RelocateOrder.Target, Choices: [RelocateOrder.Target, RelocateOrder.Source]),
         new("parallel", Type: ArgType.Int, Default: AsterCache.Core.Settings.AutoSettings.DefaultRelocateParallel.ToString(System.Globalization.CultureInfo.InvariantCulture)),
     ];
+
+    /// 볼륨과 훅을 얻는 방법 (apply 와 잔여 재계획이 씀, 시험에서 바꿈).
+    internal static Func<string, string?, (IVolume Volume, ApplyHooks Hooks)> Open { get; set; } = (letter, label) => (OpenChecked(letter, label), Hooks());
 
     public static readonly ArgOption[] VerifyOptions = [new("plan", Required: true)];
 
@@ -81,11 +85,29 @@ internal static class VolumeCommands
         }
 
         string planPath = a.Text("plan")!;
-        PlanFile plan = PlanFile.Load(planPath);
-        using NtfsVolume vol = OpenChecked(plan.Volume, a.Text("require-volume-label"));
         string journal = a.Text("journal") is { } j ? PathText.Str(j) : PathText.Str(planPath) + ".journal.jsonl";
-        var options = new ApplyOptions(execute, a.Int("chunk-mib")!.Value * Mib, a.Int("write-cap-mib")!.Value * Mib, planPath, dry, Verify: a.Text("verify") ?? VerifyMode.Sample, Order: a.Text("order") ?? RelocateOrder.Target, Parallel: (int)a.Int("parallel")!.Value);
-        return AsterCli.Emit(o, Applier.Apply(plan, vol, Roots(a), journal, Hooks(), options).ToJson());
+
+        // 서비스와 같은 잠금: 계획 읽기와 예약 조회부터 적용까지 한 번에 (다른 쪽이 계획을 바꾸거나 같은 존을 고르지 못하게). 못 잡으면 아무것도 하지 않고 busy.
+        using DataLock? gate = DataLock.TryAcquire(planPath, journalPath: journal);
+        if (gate is null)
+        {
+            return AsterCli.Emit(o, new JObject { { "error", "busy" }, { "detail", DataLock.BusyMessage } }, 4);
+        }
+
+        PlanFile plan = PlanFile.Load(planPath); // 잠금을 잡은 뒤에 읽음: 기다리는 동안 서비스가 바꾼 계획이 아니라 지금 활성 계획
+        if (dry && plan.Zone.StartLcn is not null)
+        {
+            CheckJournalBelongs(plan, journal); // 정한 존의 계획은 저장하지 않아 Applier 가 보지 않음: 다른 계획의 저널이면 볼륨을 열기 전에 dry-run 에서 거절
+        }
+
+        (IVolume vol, ApplyHooks hooks) = Open(plan.Volume, a.Text("require-volume-label"));
+        using IVolume volume = vol;
+
+        // 존 시작이 있든 없든 같은 볼륨의 다른 게임 계획이 예약한 범위를 모아 넘김: 없으면 그 범위를 피해 새 존을 고르고, 있으면 겹칠 때 zone_not_free 로 거절 (점유 fallback 의 새 존 선택도 포함)
+        IReadOnlyList<(long Lcn, long Clusters)>? reserved = ZoneReservations.Collect(Path.GetDirectoryName(Path.GetFullPath(planPath)) ?? string.Empty, plan.Volume, planPath);
+        var options = new ApplyOptions(execute, a.Int("chunk-mib")!.Value * Mib, a.Int("write-cap-mib")!.Value * Mib, planPath, dry, Verify: a.Text("verify") ?? VerifyMode.Sample, Order: a.Text("order") ?? RelocateOrder.Target, Parallel: (int)a.Int("parallel")!.Value,
+            Reserved: reserved);
+        return AsterCli.Emit(o, Applier.Apply(plan, volume, Roots(a), journal, hooks, options).ToJson());
     }
 
     public static int Verify(ParsedArgs a, TextWriter o)
@@ -97,6 +119,12 @@ internal static class VolumeCommands
     public static int Revert(ParsedArgs a, TextWriter o)
     {
         string journal = a.Text("journal")!;
+        using DataLock? gate = DataLock.TryAcquire(journal, journalPath: journal); // 저널을 읽고 고치는 구간: 서비스의 저널 폴더 잠금과 같음
+        if (gate is null)
+        {
+            return AsterCli.Emit(o, new JObject { { "error", "busy" }, { "detail", DataLock.BusyMessage } }, 4);
+        }
+
         string text = new UTF8Encoding(false, true).GetString(File.ReadAllBytes(journal));
         string firstStep = text.ReplaceLineEndings("\n").Split('\n').FirstOrDefault(x => x.Contains("\"type\": \"step\"", StringComparison.Ordinal))
             ?? throw new PyValueException("journal has no steps");
@@ -114,8 +142,23 @@ internal static class VolumeCommands
         return r;
     }
 
+    // 저널에 행이 있는데 이 계획의 header 가 없으면 거절 (Applier 의 실행 검사와 같은 문구).
+    private static void CheckJournalBelongs(PlanFile plan, string journalPath)
+    {
+        if (!File.Exists(journalPath))
+        {
+            return;
+        }
+
+        using var jr = new Journal(journalPath);
+        if (jr.Rows.Count > 0 && jr.First("header", "plan_sha", plan.Sha()) is null)
+        {
+            throw new PlanRejectedException("journal belongs to a different plan");
+        }
+    }
+
     // 볼륨을 열고 (관리자만), 요구한 라벨과 다르면 아무것도 건드리지 않고 거부합니다.
-    private static NtfsVolume OpenChecked(string letter, string? label)
+    internal static NtfsVolume OpenChecked(string letter, string? label)
     {
         NtfsVolume vol = NtfsVolume.Open(letter);
         if (label is not null)
@@ -133,7 +176,7 @@ internal static class VolumeCommands
 
     private static List<string> Roots(ParsedArgs a) => a.List("allowed-root").Select(PathText.Str).ToList();
 
-    private static ApplyHooks Hooks() => new()
+    internal static ApplyHooks Hooks() => new()
     {
         Extents = FileLayout.Extents,
         Digest = (path, size, ranges) => SampleDigest.Compute(path, size, ranges),

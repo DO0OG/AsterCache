@@ -128,7 +128,10 @@ public sealed class AutoRelocator
     private readonly ConcurrentDictionary<string, byte> _smrBudgetLogged = new(StringComparer.Ordinal); // 명시한 하루 쓰기 예산이 SMR 기본값보다 큰 게임 (한 번만 로그)
     private readonly Dictionary<string, (bool Auto, int Mib)> _limitSeen = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 존 상한 설정 (auto 여부·값) 을 이미 따져 본 게임과 그때의 설정 (설정이 바뀌거나 서비스를 다시 시작하기 전에는 계획을 다시 읽지 않음)
     private readonly Dictionary<string, DateTimeOffset> _extTried = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 존 확장을 이미 따져 본 (또는 막힌) 게임과 그때의 트레이스 수정 시각 (다음 플레이가 쌓여 트레이스가 바뀔 때까지 다시 보지 않음)
+    private readonly ConcurrentDictionary<string, byte> _extensionRecovery = new(StringComparer.Ordinal); // 확장 되돌리기·저널 보관에 실패했다가 다시 열려 그 복구부터 해야 하는 게임 (서비스를 다시 시작하면 사라짐)
     private readonly ConcurrentDictionary<string, DateTimeOffset> _planFailedAt = new(StringComparer.Ordinal); // 계획 (또는 재배치) 이 마지막으로 실패한 시각: 그 뒤 트레이스가 새로 쓰이기 전에는 같은 실패를 되풀이하지 않음
+    private readonly ConcurrentDictionary<string, (DateTimeOffset Until, string Text)> _transientHold = new(StringComparer.Ordinal); // 잠금 같은 일시 오류로 잔여 재계획을 못 한 게임과 다시 시도할 시각 (같은 서비스 실행 안에서 자동 재시도, 실패로 기록하지 않음)
+    private readonly ConcurrentDictionary<string, (DateTimeOffset Until, string Text)> _unreadableHold = new(StringComparer.Ordinal); // 읽지 못한 파일이 계획에 보류로 남아 완료로 확정하지 못한 게임과 다시 계획할 시각
     private readonly ConcurrentDictionary<string, DateTimeOffset> _traceWarmTried = new(StringComparer.Ordinal); // 게임별로 예열을 시도한 트레이스 파일 시각
     private readonly object _warmLock = new(); // 아래 예열 큐 상태
     private readonly object _noteLock = new(); // 대기 표시 갱신과 예열 완료 표시가 서로의 detail 을 덮지 않게
@@ -247,6 +250,11 @@ public sealed class AutoRelocator
         var ready = new List<GameSettings>();
         foreach (GameSettings g in work)
         {
+            if (_status.Get(g.Name) is { Stage: AutoStage.Failed, Detail: { } failedDetail } && IsExtensionFailure(failedDetail))
+            {
+                _extensionRecovery[g.Name] = 0; // 아래 Note 가 실패 문구를 덮기 전에 표시: 재개 때 새 이동보다 남은 되돌리기와 보관부터
+            }
+
             if (_recovery.IsRelocationHeld(DriveOf(g)))
             {
                 WarmNewTrace(g, warms); // 예열은 막지 않음
@@ -254,7 +262,42 @@ public sealed class AutoRelocator
                 continue;
             }
 
-            if (!_env.FileExists(g.Plan) && (AnyGameRunning(g) || !Plan(g, s)))
+            if (RecoveryHeldUntil(g) is { } heldUntil)
+            {
+                WarmNewTrace(g, warms); // 예열은 막지 않음
+                Note(g, AutoStage.WaitingIdle, HoldText(heldUntil)); // 점유 충돌 보류: 재시작해도 풀리지 않음 (auto_status 에 저장)
+                continue;
+            }
+
+            if (_transientHold.TryGetValue(g.Name, out (DateTimeOffset Until, string Text) transient))
+            {
+                if (transient.Until > _env.Now())
+                {
+                    WarmNewTrace(g, warms);
+                    Note(g, AutoStage.WaitingIdle, transient.Text);
+                    continue;
+                }
+
+                _ = _transientHold.TryRemove(g.Name, out _);
+            }
+
+            if (_unreadableHold.TryGetValue(g.Name, out (DateTimeOffset Until, string Text) unreadable))
+            {
+                if (unreadable.Until > _env.Now())
+                {
+                    WarmNewTrace(g, warms);
+                    Note(g, AutoStage.WaitingIdle, unreadable.Text);
+                    continue;
+                }
+
+                _ = _unreadableHold.TryRemove(g.Name, out _);
+                if (!AnyGameRunning(g) && !RetryUnreadable(g))
+                {
+                    continue;
+                }
+            }
+
+            if (!_env.FileExists(g.Plan) && (AnyGameRunning(g) || !PlanIfMissing(g, s)))
             {
                 continue; // 게임이 도는 중이면 디스크를 건드리지 않고, 계획이 실패했으면 failed 로 기록됨
             }
@@ -603,11 +646,31 @@ public sealed class AutoRelocator
     // 재배치 도중 목표 존이 막혀 멈춘 경우: 업데이트 재계획과 같은 방식으로 저널·계획을 옆으로 치우고 (트레이스는 그대로) 처음 단계로 되돌립니다.
     private void SetAsideForReplan(GameSettings g)
     {
-        _ = _env.ArchiveJournal(g);
+        if (_env.ReplanResidual is null || _env.JournalRows(g) == 0)
+        {
+            _ = _env.ArchiveJournal(g); // 이미 옮긴 기록이 없거나 잔여 재계획이 없으면 처음부터 다시 계획
+        }
+        // 저널에 행이 있으면 그대로 둠: 다음 Plan 이 저널과 .stale 로 잔여 재계획하고 교체 때 저널을 보관 (보관부터 하면 이미 옮긴 데이터를 다시 옮김)
         _env.MoveAside(g.Plan, g.Plan + StaleSuffix);
         _status.ResetForReplan(g.Name, BusyDetail);
         _log.Info($"{g.Name}: zone region appears occupied, plan set aside as {StaleSuffix}, will plan again");
     }
+
+    // 활성 계획이 없을 때만 계획을 만듭니다: 잠금을 잡은 뒤 다시 확인해 (기다리는 동안 CLI 가 계획을 만들었으면 덮지 않음) 못 잡으면 보류합니다 (거짓, 실패로 기록하지 않음).
+    private bool PlanIfMissing(GameSettings g, AsterSettings s)
+    {
+        using IDisposable? gate = _env.Lock(g);
+        if (gate is null)
+        {
+            Note(g, AutoStage.WaitingIdle, ZoneLockBusyDetail);
+            return false;
+        }
+
+        return _env.FileExists(g.Plan) || Plan(g, s);
+    }
+
+    // 잠금 안에서 디스크의 활성 계획이 판단할 때 읽은 계획과 같은가 (기다리는 동안 CLI 가 바꿨으면 옛 계획을 저장·이동·되돌리지 않음).
+    private bool PlanUnchanged(GameSettings g, PlanFile read) => _env.FileExists(g.Plan) && _env.LoadPlan(g.Plan).Sha() == read.Sha();
 
     // 업데이트 뒤 재계획: 배치까지 끝낸 게임의 원본이 계획 뒤 바뀌었으면 (ReapplyChecker 의 PlanChanged 와 같은 기준) 낡은 트레이스·계획을 .stale 로 치우고
     // 처음 단계로 되돌립니다. 다음 실행에서 다시 트레이스·학습하고 새 계획으로 다시 배치합니다 (이전 존 시작을 먼저 시도). 일일 상한과 다른 안전장치는 그대로.
@@ -633,6 +696,7 @@ public sealed class AutoRelocator
 
                 // 새 트레이스로도 계획이 실패해 낡은 계획을 되살린 게임: 같은 트레이스로는 같은 실패라 그 뒤 트레이스가 새로 쓰였을 때만 다시 계획합니다 (그 트레이스는 새 버전의 것이라 치우지 않음).
                 bool retry = false;
+                bool failedRetry = false;
                 if (_planFailedAt.TryGetValue(g.Name, out DateTimeOffset failed))
                 {
                     if (_env.FileWriteTime(AutoTracer.RawTracePath(g)) is not { } written || written <= failed)
@@ -641,7 +705,7 @@ public sealed class AutoRelocator
                     }
 
                     retry = true;
-                    _ = _planFailedAt.TryRemove(g.Name, out _);
+                    failedRetry = true; // 표시는 잠금을 잡은 뒤에 지움 (못 잡으면 다음 틱에 다시 이 경로)
                 }
                 else if (_status.Get(g.Name)?.Detail?.StartsWith(StalePlanDetail, StringComparison.Ordinal) == true)
                 {
@@ -653,6 +717,18 @@ public sealed class AutoRelocator
                 if (!recorded && !ReplanStale(g, plan))
                 {
                     continue;
+                }
+
+                using IDisposable? gate = _env.Lock(g); // 저널 보관과 계획·트레이스를 치우는 구간
+                if (gate is null || !PlanUnchanged(g, plan))
+                {
+                    _ = _staleChecked.Remove(g.Name); // 못 잡았거나 기다리는 동안 계획이 바뀜: 아무것도 바꾸지 않고 다음 틱에 다시 따짐
+                    continue;
+                }
+
+                if (failedRetry)
+                {
+                    _ = _planFailedAt.TryRemove(g.Name, out _);
                 }
 
                 _tier?.RevertGame(g.Name, "game updated"); // 링크는 새 재배치 전에 되돌림 (심볼릭 링크가 낀 계획은 재적용·재배치가 거부함)
@@ -730,6 +806,19 @@ public sealed class AutoRelocator
                     continue; // 파일이 다 없어졌거나 읽을 수 없는 옛 트레이스는 되살려도 계획할 수 없음
                 }
 
+                using IDisposable? gate = _env.Lock(g);
+                if (gate is null)
+                {
+                    _recoverBusy = true; // 시작 복구를 다음 틱에 다시 (이 게임의 이전 계획 복원은 그동안 건너뜀)
+                    _ = restored.Add(g.Name);
+                    continue;
+                }
+
+                if (_env.FileExists(raw) || !_env.FileExists(raw + StaleSuffix))
+                {
+                    continue; // 기다리는 동안 상태가 바뀜
+                }
+
                 if (_env.FileExists(g.Plan))
                 {
                     if (!IsBootPlan(_env.LoadPlan(g.Plan)))
@@ -789,13 +878,31 @@ public sealed class AutoRelocator
     {
         if (_recovered)
         {
+            RetryPartialRecovery(s);
             return;
         }
 
         _recovered = true;
+        foreach (GameSettings g in s.Games)
+        {
+            ResumeSwitch(g); // 중단된 계획 교체를 먼저 끝냄 (모든 게임: 계획·저널 파일만 만지므로 게임이 돌아도 됨)
+        }
+
         // 계획이 있어도 쓰다가 꺼져 잘렸으면 (읽을 수 없음) .bad 로 치워 없는 것으로 다룹니다: 되살릴 이전 계획 (.stale·.extend) 이 있는 게임만.
         foreach (GameSettings g in s.Games.Where(g => _env.FileExists(g.Plan) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
         {
+            using IDisposable? gate = _env.Lock(g);
+            if (gate is null)
+            {
+                _recoverBusy = true;
+                continue;
+            }
+
+            if (!_env.FileExists(g.Plan))
+            {
+                continue; // 기다리는 동안 계획이 없어짐
+            }
+
             try
             {
                 _ = _env.LoadPlan(g.Plan);
@@ -819,9 +926,16 @@ public sealed class AutoRelocator
         // 저널 보관은 Plan 이 저장 전에 이미 했으므로 여기서 하지 않음. 이미 .stale 이 있으면 Plan 과 같이 덮어씀.
         foreach (GameSettings g in s.Games.Where(g => _env.FileExists(g.Plan) && IsExtending(g)))
         {
+            using IDisposable? gate = _env.Lock(g);
+            if (gate is null)
+            {
+                _recoverBusy = true;
+                continue;
+            }
+
             try
             {
-                if (_env.LoadPlan(g.Plan).Zone.StartLcn is null)
+                if (_env.FileExists(g.Plan) && IsExtending(g) && _env.LoadPlan(g.Plan).Zone.StartLcn is null)
                 {
                     _env.MoveAside(g.Plan + ExtendSuffix, g.Plan + StaleSuffix);
                     _log.Info($"{g.Name}: zone switch to a new zone was interrupted, finished (previous plan kept as {StaleSuffix})");
@@ -838,6 +952,18 @@ public sealed class AutoRelocator
         // 계획이 없고 .stale 이나 .extend 만 있는 failed 게임 (재계획·확장이 실패한 채 꺼짐) 또는 잘린 계획을 .bad 로 치운 게임 (상태 무관, 치운 직후 꺼져도 파일로 알 수 있음; 업데이트 뒤 재계획 대기 중이거나 되살린 트레이스로 다시 계획하는 중 (FirstRunDetail) 이면 제외): 이전 계획을 되살려 done 으로 돌립니다.
         foreach (GameSettings g in s.Games.Where(g => (_status.Get(g.Name) is { Stage: AutoStage.Failed, RelocatedAt: null } || _env.FileExists(g.Plan + BadSuffix) && Replanning(_status, g.Name) is null && _status.Get(g.Name) is not { Stage: AutoStage.Discovered, Detail: FirstRunDetail }) && !_env.FileExists(g.Plan) && !restored.Contains(g.Name) && (_env.FileExists(g.Plan + StaleSuffix) || IsExtending(g))))
         {
+            using IDisposable? gate = _env.Lock(g);
+            if (gate is null)
+            {
+                _recoverBusy = true;
+                continue;
+            }
+
+            if (_env.FileExists(g.Plan))
+            {
+                continue; // 기다리는 동안 계획이 생김: 되살리지 않음
+            }
+
             if (IsExtending(g))
             {
                 BlockExtension(g, "failed before the service restarted");
@@ -852,6 +978,118 @@ public sealed class AutoRelocator
         {
             _status.ResetForReplan(g.Name, IsExtending(g) ? ExtendDetail : ReplanDetail);
             _log.Info($"{g.Name}: an earlier replan was interrupted, state reset to trace and plan again");
+        }
+
+        foreach (GameSettings g in s.Games.Where(g => !_recoverRetry.Contains(g.Name)))
+        {
+            RegisterPartial(g); // 활성 계획과 저널 header 대조: 어긋난 게임은 다음 틱의 일반 흐름에서 잔여 재계획
+        }
+
+        if (_recoverBusy)
+        {
+            _recoverBusy = false;
+            _recovered = false; // 잠금을 못 잡아 건너뛴 게임이 있음: 다음 틱에 시작 복구를 처음부터 다시 (각 단계는 조건을 보고 하므로 반복해도 안전)
+        }
+    }
+
+    private bool _recoverBusy; // 틱 스레드에서만 씀: 이번 시작 복구에서 잠금을 못 잡아 건너뛴 게임이 있음
+
+    private readonly Dictionary<string, DateTimeOffset> _recoverNextTry = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 배치를 읽지 못해 재시도 목록에 남은 게임의 다음 확인 시각 (매 틱 모든 파일을 다시 읽지 않게)
+    private readonly HashSet<string> _recoverRetry = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 시작 복구가 파일을 읽지 못한 게임 (복구 완료로 치지 않고 다음 틱에 다시)
+
+    private const string PartialDetail = "plan and journal differ, will replan the remaining part";
+
+    private void ResumeSwitch(GameSettings g)
+    {
+        try
+        {
+            if (_env.ResumeSwitch(g) is { } r)
+            {
+                _log.Info($"{g.Name}: interrupted plan switch finished" + (r.ArchivedJournal is { } a ? $", earlier journal kept as {a}" : string.Empty));
+            }
+
+            _ = _recoverRetry.Remove(g.Name);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or PyValueException)
+        {
+            _ = _recoverRetry.Add(g.Name);
+            _log.Warn($"{g.Name}: interrupted plan switch could not be finished, will retry ({e.GetType().Name})");
+        }
+        catch (PlanRejectedException e)
+        {
+            // 잠금 busy 는 다음 틱에, 세대 거절 (활성 계획·저널이 기록과 어긋남) 은 BusyRetry 뒤에 다시: 그 게임에 한정해 재시도 목록에 올리고 뒤 게임의 복구는 계속함
+            _ = _recoverRetry.Add(g.Name);
+            if (!IsLockBusy(e))
+            {
+                _recoverNextTry[g.Name] = _env.Now() + BusyRetry;
+            }
+
+            _log.Warn($"{g.Name}: interrupted plan switch could not be finished, will retry ({FirstLine(e.Message)})");
+        }
+    }
+
+    // 활성 계획의 SHA 가 저널 header 와 다르면 복구 대기로 등록: 배치됨으로 보이던 게임은 처음 단계로 돌려 일반 재배치 흐름 (유휴·게임 실행·SMR 예산 게이트) 을 타게 함.
+    // 파일을 읽지 못하면 복구 완료로 치지 않고 다음 틱에 다시 봅니다.
+    private void RegisterPartial(GameSettings g)
+    {
+        try
+        {
+            PlanFile? plan = _env.FileExists(g.Plan) ? _env.LoadPlan(g.Plan) : null;
+            if (plan is null || _env.JournalPlanSha(g) is not { } journalSha || journalSha == plan.Sha())
+            {
+                _ = _recoverRetry.Remove(g.Name);
+                return;
+            }
+
+            if (_status.Get(g.Name) is { RelocatedAt: not null })
+            {
+                switch (LayoutInPlace(plan))
+                {
+                    case false:
+                        _status.ResetForReplan(g.Name, PartialDetail); // 배치됨으로 보이지만 계획의 배치가 아님: 이미 제자리인 게임은 건드리지 않음
+                        break;
+                    case null: // 읽지 못한 파일이 있어 배치를 모름: 이미 배치됨으로 치지 않고 재시도 목록에 남김
+                        _ = _recoverRetry.Add(g.Name);
+                        _recoverNextTry[g.Name] = _env.Now() + BusyRetry;
+                        _log.Warn($"{g.Name}: layout of the active plan could not be read at startup, will retry");
+                        return;
+                }
+            }
+
+            _log.Warn($"{g.Name}: active plan and journal belong to different plans, the remaining part will be replanned");
+            _ = _recoverRetry.Remove(g.Name);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or PyValueException)
+        {
+            _ = _recoverRetry.Add(g.Name);
+            _log.Warn($"{g.Name}: plan or journal could not be read at startup, will retry ({e.GetType().Name})");
+        }
+    }
+
+    // 계획의 배치가 이미 이뤄졌는가. 읽지 못한 파일이 있거나 조회가 실패하면 모름 (null): 이미 배치됨으로 치지도, 재계획하지도 않고 호출자가 다시 확인합니다.
+    private bool? LayoutInPlace(PlanFile plan)
+    {
+        try
+        {
+            LayoutReport r = LayoutVerifier.Verify(plan, _env.Extents);
+            return r.MissingFiles > 0 ? null : r.Contiguous;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    private void RetryPartialRecovery(AsterSettings s)
+    {
+        foreach (GameSettings g in s.Games.Where(g => _recoverRetry.Contains(g.Name) && !(_recoverNextTry.TryGetValue(g.Name, out DateTimeOffset next) && next > _env.Now())))
+        {
+            _ = _recoverNextTry.Remove(g.Name);
+            ResumeSwitch(g);
+            if (!_recoverRetry.Contains(g.Name))
+            {
+                RegisterPartial(g);
+            }
         }
     }
 
@@ -925,7 +1163,17 @@ public sealed class AutoRelocator
                 long grew = merged - hotBlocks * HotSet.Block;
                 bool reordered = newTrace && stored is not null && fingerprint is not null && fingerprint != stored; // 크기가 그대로여도 블록 집합·순서가 바뀜
                 bool shrink = hotBlocks * HotSet.Block > cap; // 상한을 낮춰 계획의 핫셋이 새 상한을 넘음: 메타만 적지 않고 같은 존 시작으로 줄여 다시 계획
-                if (grew >= (long)s.Auto.TraceMergeMinMib << 20 || reordered || shrink)
+                bool replan = grew >= (long)s.Auto.TraceMergeMinMib << 20 || reordered || shrink;
+                bool stamp = !metaSame || stored is null && fingerprint is not null;
+                using IDisposable? gate = replan || stamp ? _env.Lock(g) : null; // 계획을 치우거나 다시 쓰는 구간
+                if ((replan || stamp) && (gate is null || !PlanUnchanged(g, plan)))
+                {
+                    _ = _extTried.Remove(g.Name); // 못 잡았거나 기다리는 동안 계획이 바뀜: 아무것도 바꾸지 않고 다음 틱에 다시 따짐
+                    _ = _limitSeen.Remove(g.Name);
+                    continue;
+                }
+
+                if (replan)
                 {
                     _tier?.RevertGame(g.Name, "trace grew"); // 링크는 새 재배치 전에 되돌림
                     _ = _env.ArchiveJournal(g); // 새 계획은 다른 저널 header 를 쓰므로 끝난 저널은 옆으로 보관
@@ -940,7 +1188,6 @@ public sealed class AutoRelocator
                 }
 
                 // 다시 계획할 일은 아님: 옛 계획 (메타 없음) 이거나 상한이 바뀌었으면 지금 값을 계획에 적어 둠 (지문은 없을 때만: 옛 계획은 처음 한 번 기록만 하고 재계획하지 않음)
-                bool stamp = !metaSame || stored is null && fingerprint is not null;
                 if (stamp)
                 {
                     plan.Stats[EffectiveZoneKey] = limit;
@@ -978,6 +1225,13 @@ public sealed class AutoRelocator
                 PlanFile plan = _env.LoadPlan(g.Plan);
                 if (plan.Zone.StartLcn is null || plan.Stats.ContainsKey(VolatileFiles.StatsKey) || !plan.Order.Any(o => VolatileFiles.Ignored(o.Path)))
                 {
+                    continue;
+                }
+
+                using IDisposable? gate = _env.Lock(g);
+                if (gate is null || !PlanUnchanged(g, plan))
+                {
+                    _ = _volatileChecked.Remove(g.Name); // 못 잡았거나 기다리는 동안 계획이 바뀜: 아무것도 바꾸지 않고 다음 틱에 다시
                     continue;
                 }
 
@@ -1022,6 +1276,13 @@ public sealed class AutoRelocator
                 PlanFile plan = _env.LoadPlan(g.Plan);
                 if (plan.Zone.StartLcn is null || plan.Stats.ContainsKey(SupplementKey) || plan.Stats.ContainsKey(SupplementCheckedKey) || !_env.DirectoryExists(plan.OriginRoot))
                 {
+                    continue;
+                }
+
+                using IDisposable? gate = _env.Lock(g); // 표지를 쓰거나 계획을 치우는 구간 (아래 plan 을 수정하기 전에 확인)
+                if (gate is null || !PlanUnchanged(g, plan))
+                {
+                    _ = _supplementChecked.Remove(g.Name); // 못 잡았거나 기다리는 동안 계획이 바뀜: 아무것도 바꾸지 않고 다음 틱에 다시
                     continue;
                 }
 
@@ -1130,7 +1391,8 @@ public sealed class AutoRelocator
     }
 
     // 확장 중 재배치가 실패함 (이동 실패·데이터 검사 실패·예외): 실패로 두지 않고 쓴 줄을 되돌린 뒤 이전 계획을 되살립니다. 확장 중이 아니면 거짓.
-    private bool BlockFailedExtension(GameSettings g, string detail, Exception? e, int mark, CancellationToken token)
+    // newRound: 실패한 회차가 아니라 나중에 복구 재개로 부름 (되돌리기 쓰기를 새 집계 기록으로 셈).
+    private bool BlockFailedExtension(GameSettings g, string detail, Exception? e, int mark, CancellationToken token, bool newRound = false)
     {
         if (!IsExtending(g))
         {
@@ -1138,9 +1400,9 @@ public sealed class AutoRelocator
         }
 
         _log.Warn($"{g.Name}: zone extension failed ({detail}{(e is null ? string.Empty : ": " + e.GetType().Name)})");
-        if (!Undo(g, mark, token))
+        if (!Undo(g, mark, token, newRound))
         {
-            Fail(g, $"extension revert incomplete ({detail})", e); // 되돌리기를 끝내지 못했으니 저널을 두고 실패로: 다음 실행이 되돌리기부터 다시 함
+            Fail(g, $"{ExtensionRevertDetail} ({detail})", e); // 되돌리기를 끝내지 못했으니 저널을 두고 실패로: 다음 실행이 되돌리기부터 다시 함
             return true;
         }
 
@@ -1150,7 +1412,7 @@ public sealed class AutoRelocator
         }
         catch (Exception a) when (a is IOException or UnauthorizedAccessException)
         {
-            Fail(g, $"extension journal could not be archived ({a.GetType().Name}; {detail})", a); // 보관 못 한 채 이전 계획을 되살리면 다음 적용이 거절되므로 실패로 두고 다시 시도
+            Fail(g, $"{ExtensionArchiveDetail} ({a.GetType().Name}; {detail})", a); // 보관 못 한 채 이전 계획을 되살리면 다음 적용이 거절되므로 실패로 두고 다시 시도
             return true;
         }
 
@@ -1302,7 +1564,7 @@ public sealed class AutoRelocator
     {
         bool smr = IsSmr(g);
         return new ApplyOptions(Execute: true, ChunkBytes: (long)s.Auto.RelocateChunkMib << 20, LowIoPriority: s.Auto.RelocateIoPriority == AutoSettings.IoLow, Verify: s.Auto.RelocateVerify, Order: RelocateOrder.Resolve(s.Auto.RelocateOrder), Parallel: s.Auto.ParallelFor(_env.IsSlowBus(DriveOf(g)), smr),
-            WriteCap: AutoSettings.WriteCapFor(smr));
+            WriteCap: AutoSettings.WriteCapFor(smr), Reserved: _env.Reserved(g));
     }
 
     /// 정기 재적용이 시작됨: 자동 재배치처럼 실행 전에 예정 바이트로 일일 상한·예산 집계에 넣습니다.
@@ -1324,8 +1586,10 @@ public sealed class AutoRelocator
         AutoGameEntry? e = _status.Get(g.Name);
         // 실패한 게임은 서비스 실행당 한 번 다시 시도하고 (저장된 실패 시각 e.At 은 트레이스가 먼저 쓰여 있으면 영영 못 넘으므로 쓰지 않음), 그 뒤로는 트레이스가 새로 쓰였을 때만 다시 시도합니다.
         // 이번 실행의 실패 시각은 Fail 이 남김 (같은 트레이스로는 되풀이하지 않음).
-        bool reopened = e is { Stage: AutoStage.Failed, RelocatedAt: null } && AutoTracer.PlanTracePath(g, _env.FileExists) is { } latest
-            && _env.FileWriteTime(latest) is { } written && written > _planFailedAt.GetValueOrDefault(g.Name, DateTimeOffset.MinValue);
+        DateTimeOffset failedAt = _planFailedAt.GetValueOrDefault(g.Name, DateTimeOffset.MinValue);
+        bool reopened = e is { Stage: AutoStage.Failed, RelocatedAt: null }
+            && (AutoTracer.PlanTracePath(g, _env.FileExists) is { } latest && _env.FileWriteTime(latest) is { } written && written > failedAt
+                || IsRetriedHourly(e.Detail) && _env.Now() - failedAt >= StoppedRecheck); // 무결성 실패 (data check failed) 가 아닌 모든 실패는 새 트레이스가 없어도 (트레이스 금지 게임) StoppedRecheck 마다 다시 평가
         bool stageOpen = reopened || e is null || e.Stage is not (AutoStage.Done or AutoStage.Failed)
             && !(e.Stage == AutoStage.Skipped && !relocateOn)
             && e.RelocatedAt is null;
@@ -1435,8 +1699,9 @@ public sealed class AutoRelocator
                 _log.Info($"{g.Name}: zone extension overflow {(hot >> 20) - zoneMib} MiB dropped (max zone {zoneMib} MiB), the latest blocks of the merged trace are left out");
             }
 
-            (long? start, long usedClusters) = reuseZone && _env.MakePlanAt is not null ? PreviousZone(g) : (null, 0);
-            if (extending && start is null && reuseZone)
+            bool followResidual = _env.ReplanResidual is not null && PreviousIsResidual(g); // 이전 계획 (.extend 또는 .stale) 이 잔여 계획이면 단일 존 접두부로 가지 않고 모든 이전 task 를 승계
+            (long? start, long usedClusters) = reuseZone && !followResidual && _env.MakePlanAt is not null ? PreviousZone(g) : (null, 0);
+            if (extending && start is null && reuseZone && !followResidual)
             {
                 BlockExtension(g, "previous zone start unknown");
                 return false;
@@ -1463,6 +1728,18 @@ public sealed class AutoRelocator
                 }
 
                 _log.Info($"{g.Name}: previous zone holds data this plan does not move, looking for a new one");
+                (start, plan) = (null, _env.MakePlan(sessions, g.OriginRoot, zoneMib));
+            }
+
+            if (start is not null && ZoneReserved(g, plan, extending ? usedClusters : 0))
+            {
+                if (extending)
+                {
+                    BlockExtension(g, "the region after the zone is reserved by another game plan");
+                    return false;
+                }
+
+                _log.Info($"{g.Name}: previous zone overlaps another game plan, looking for a new one");
                 (start, plan) = (null, _env.MakePlan(sessions, g.OriginRoot, zoneMib));
             }
 
@@ -1511,12 +1788,48 @@ public sealed class AutoRelocator
                 _log.Info($"{g.Name}: {excluded.Count} volatile file(s) left out of the plan");
             }
 
-            if (extending && start is null)
+            if (extending && start is null && !followResidual)
             {
                 _ = _env.ArchiveJournal(g); // 새 존 계획은 확장 계획의 저널과 맞지 않음
             }
 
-            _env.SavePlan(plan, sessions, g.Plan);
+            if ((followResidual || !extending && _env.JournalRows(g) > 0) && _env.ReplanResidual is { } residual)
+            {
+                // 저널에 행이 있음 (부분 적용) 이거나 이전 계획이 잔여 계획인 확장: 활성 계획을 새 계획으로 바로 덮지 않고, 이미 옮긴 조각을 지키는 잔여 재계획으로 저널 보관과 함께 바꿈
+                plan = InheritHeld(g, plan); // 아직 읽지 못하는 보류 파일은 후보에서 빠졌어도 계속 보류로 남김
+                try
+                {
+                    _ = residual(g, plan, ResidualOlds(g), sessions);
+                }
+                catch (PlanRejectedException e) when (IsTemporaryRejection(e))
+                {
+                    HoldTemporary(g, e); // 아무것도 바꾸지 않았음: 일시 보류 뒤 같은 입력으로 다시
+                    return false;
+                }
+                catch (PlanRejectedException e) when (followResidual && extending)
+                {
+                    BlockExtension(g, "residual replan rejected: " + FirstLine(e.Message)); // 이미 옮긴 조각을 다시 옮기는 계획으로 가지 않고 이전 계획을 되살림
+                    return false;
+                }
+                catch (PlanRejectedException e)
+                {
+                    HoldRecovery(g, e.Message);
+                    return false;
+                }
+                catch (Exception e) when (IsTransient(e))
+                {
+                    HoldTransient(g, e); // 저널 잠금·읽기 실패: 아무것도 바꾸지 않았음, 곧 다시
+                    return false;
+                }
+
+                _ = _seeded.Remove(g.Name);
+                _log.Info($"{g.Name}: partially applied plan replanned, the parts already moved are kept (earlier journal archived)");
+            }
+            else
+            {
+                _env.SavePlan(plan, sessions, g.Plan);
+            }
+
             if (extending && start is null)
             {
                 _env.MoveAside(g.Plan + ExtendSuffix, g.Plan + StaleSuffix); // 마지막에 치움: 앞에서 실패하면 확장 중 표시가 남아 BlockExtension 이 이전 계획을 되살림
@@ -1548,6 +1861,40 @@ public sealed class AutoRelocator
         return excluded.Count == 0 ? (trace, excluded) : ([.. trace.Where(t => !excluded.ContainsKey(t.Path))], excluded);
     }
 
+    // 이전 계획들 (옛 계획과 읽히는 활성 계획) 에 보류로 남은 파일 중 지금도 extent 를 읽지 못하는 파일의 핫 범위와 지문을 새 후보에 승계합니다:
+    // 후보 생성은 읽지 못하는 파일을 Order 에서 빼므로, 그대로 두면 잔여 재계획이 그 파일을 보지 못해 held_files·held_targets (이미 옮긴 조각의 이전 목표) 가 사라짐.
+    // 조회가 성공한 파일은 승계하지 않음 (후보에 없으면 트레이스가 더는 원하지 않는 파일, 있으면 보류가 아니라 정상 처리).
+    private PlanFile InheritHeld(GameSettings g, PlanFile candidate)
+    {
+        List<PlanFile> previous = ResidualOlds(g);
+        try
+        {
+            if (_env.FileExists(g.Plan))
+            {
+                previous.Add(_env.LoadPlan(g.Plan));
+            }
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            // 읽히지 않는 활성 계획은 승계 근거에서만 빠짐
+        }
+
+        var have = candidate.Order.Select(o => o.Path).ToHashSet(StringComparer.Ordinal);
+        var order = candidate.Order.ToList();
+        var prints = candidate.Fingerprints.ToList();
+        foreach (PlanFile old in previous.Where(p => p.Stats.TryGetValue(ResidualPlanner.HeldKey, out object? h) && h is JObject))
+        {
+            foreach (string path in ((JObject)old.Stats[ResidualPlanner.HeldKey]!).Select(kv => kv.Key).Where(p => !have.Contains(p) && _env.Extents(p) is null))
+            {
+                order.AddRange(old.Order.Where(o => o.Path == path));
+                prints.AddRange(old.Fingerprints.Where(f => f.Path == path));
+                _ = have.Add(path);
+            }
+        }
+
+        return order.Count == candidate.Order.Count ? candidate : candidate with { Order = order, Fingerprints = prints };
+    }
+
     // 확장 중에 계획이 실패하면 실패 상태로 두지 않고 이전 계획을 되살립니다. 확장이 아니어도 낡은 계획 (.stale) 이 있으면 같은 규칙: 되살리고 done (stale plan) 을 유지합니다.
     private void PlanFailed(GameSettings g, string detail, Exception? e)
     {
@@ -1558,6 +1905,20 @@ public sealed class AutoRelocator
         else if (!RestoreStalePlan(g, e is null ? detail : $"{detail}: {FirstLine(e.Message)}"))
         {
             Fail(g, detail, e);
+        }
+    }
+
+    // 활성 계획을 읽어 보류 파일이 있으면 그 계획, 없거나 읽지 못하면 null.
+    private PlanFile? LoadHeldPlan(GameSettings g)
+    {
+        try
+        {
+            PlanFile plan = _env.LoadPlan(g.Plan);
+            return HeldFiles(plan) > 0 ? plan : null;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            return null;
         }
     }
 
@@ -1580,6 +1941,12 @@ public sealed class AutoRelocator
 
         _planFailedAt[g.Name] = _env.Now();
         _ = _seeded.Remove(g.Name);
+        if (LoadHeldPlan(g) is { } held && HoldUnreadable(g, held))
+        {
+            _log.Warn($"{g.Name}: replan failed ({why}), previous plan restored with held files, not marked done");
+            return true; // 읽지 못한 파일이 보류로 남은 미완료 계획은 완료로 복원하지 않음: UnreadableRetry 뒤 다시 계획
+        }
+
         _status.Complete(g.Name, g.Source, _env.Now(), counted: false, StalePlanDetail);
         _log.Warn($"{g.Name}: replan failed ({why}), previous plan restored, state stays done ({StalePlanDetail})");
         return true;
@@ -1671,7 +2038,308 @@ public sealed class AutoRelocator
         }
     }
 
+    private const string RecoveryStoppedDetail = "recovery stopped, rejected again for the same reason";
+
     private static bool IsZoneNotFree(PlanRejectedException e) => e.Message.StartsWith("zone_not_free", StringComparison.Ordinal);
+
+    private const string PlanChangedWhileWaiting = "plan changed while waiting for the zone lock";
+
+    private const string ZoneLockBusyDetail = "another apply or plan switch holds the zone lock, will retry";
+
+    private static bool IsLockBusy(PlanRejectedException e) => e.Message.StartsWith(DataLock.BusyMessage, StringComparison.Ordinal);
+
+    // 시간이 지나거나 환경이 바뀌면 풀리는 거절: 잠금 busy, 잠금 대기 중 계획 변경, 미검증 파일 읽기 불가, 빈 구간 부족. 검증 오류 ("unverified journal entry changed" 등) 와 달리 실패로 멈추지 않고 일시 보류 뒤 다시 시도합니다.
+    private static bool IsTemporaryRejection(PlanRejectedException e) =>
+        IsLockBusy(e) || e.Message.StartsWith(PlanChangedWhileWaiting, StringComparison.Ordinal)
+        || e.Message.StartsWith(Applier.UnverifiedUnreadable, StringComparison.Ordinal) || e.Message.StartsWith(NoFreeRun, StringComparison.Ordinal);
+
+    private const string NoFreeRun = "no free run of";
+
+    /// 빈 구간이 모자라 다시 시도하기까지 쉬는 시간 (읽기 불가·잠금보다 길게: 비트맵과 미검증 표본을 매번 다시 읽지 않게).
+    public static readonly TimeSpan ResourceRetry = TimeSpan.FromMinutes(10);
+
+    /// 재개 조건 없이 멈춘 복구 (같은 사유 거절의 반복) 를 다시 평가하기까지 쉬는 시간.
+    public static readonly TimeSpan StoppedRecheck = TimeSpan.FromHours(1);
+
+    // 서비스 적용 함수: 잠금을 못 잡으면 busy 보고서 (Stopped = zone_lock_busy) 이고, 잠금을 기다리는 사이 활성 계획이 바뀌어 거절돼도 같은 보고서로 돌려줍니다: 둘 다 실패가 아니라 다음 틱에 다시.
+    private ApplyReport ApplyOrDefer(GameSettings g, PlanFile plan, ApplyOptions options, CancellationToken token)
+    {
+        try
+        {
+            return _env.Apply(g, plan, options, token);
+        }
+        catch (PlanRejectedException e) when (e.Message.StartsWith(PlanChangedWhileWaiting, StringComparison.Ordinal))
+        {
+            return new ApplyReport { Stopped = DataLock.BusyReason };
+        }
+    }
+
+    private void HoldTemporary(GameSettings g, PlanRejectedException e)
+    {
+        DateTimeOffset until = _env.Now() + (e.Message.StartsWith(NoFreeRun, StringComparison.Ordinal) ? ResourceRetry : TransientRetry);
+        string text = $"temporarily blocked ({FirstLine(e.Message)}), retrying after {until.ToUniversalTime():HH:mm} UTC";
+        _transientHold[g.Name] = (until, text);
+        Note(g, AutoStage.WaitingIdle, text);
+        _log.Warn($"{g.Name}: {FirstLine(e.Message)}; nothing was changed, will retry");
+    }
+
+    // 잠금·권한·일시 읽기 실패처럼 시간이 지나면 풀릴 수 있는 오류 (계획 거절과 달리 다시 시도하면 됨).
+    private static bool IsTransient(Exception e) => e is IOException or UnauthorizedAccessException or InvalidDataException or PyValueException;
+
+    /// 일시 오류 뒤 다시 시도하기까지 쉬는 시간.
+    public static readonly TimeSpan TransientRetry = TimeSpan.FromMinutes(2);
+
+    /// 읽지 못한 파일이 보류로 남은 계획을 다시 계획해 보기까지 쉬는 시간.
+    public static readonly TimeSpan UnreadableRetry = TimeSpan.FromHours(1);
+
+    private void HoldTransient(GameSettings g, Exception e)
+    {
+        DateTimeOffset until = _env.Now() + TransientRetry;
+        string text = $"temporary {e.GetType().Name}, retrying after {until.ToUniversalTime():HH:mm} UTC";
+        _transientHold[g.Name] = (until, text);
+        Note(g, AutoStage.WaitingIdle, text);
+        _log.Warn($"{g.Name}: {FirstLine(e.Message)} ({e.GetType().Name}); nothing was changed, will retry");
+    }
+
+    // 계획에 보류로 남은 (task 가 없는) 파일 수.
+    private static int HeldFiles(PlanFile plan) => plan.Stats.TryGetValue(ResidualPlanner.HeldKey, out object? h) && h is JObject held ? held.Count : 0;
+
+    // 읽지 못한 파일이 보류로 남았으면 완료로 확정하지 않고 UnreadableRetry 뒤 다시 계획합니다 (그때 읽히면 task 가 생김). 보류가 없으면 거짓.
+    private bool HoldUnreadable(GameSettings g, PlanFile plan)
+    {
+        int count = HeldFiles(plan);
+        if (count == 0)
+        {
+            return false;
+        }
+
+        DateTimeOffset until = _env.Now() + UnreadableRetry;
+        string text = $"{count} file(s) unreadable, planning again after {until.ToUniversalTime():HH:mm} UTC";
+        _unreadableHold[g.Name] = (until, text);
+        Note(g, AutoStage.WaitingIdle, text);
+        _log.Warn($"{g.Name}: {count} file(s) could not be read, the layout is not confirmed, will plan again later");
+        return true;
+    }
+
+    // 보류가 끝나 계획을 낡은 것으로 치우고 다시 계획 (이미 옮긴 조각은 잔여 재계획이 지킴). 계획을 치우지 못하면 거짓 (일시 오류로 보류 다시).
+    private bool RetryUnreadable(GameSettings g)
+    {
+        try
+        {
+            if (_env.FileExists(g.Plan))
+            {
+                using IDisposable? gate = _env.Lock(g);
+                if (gate is null)
+                {
+                    DateTimeOffset until = _env.Now() + TransientRetry;
+                    _unreadableHold[g.Name] = (until, ZoneLockBusyDetail); // 보류를 이어서 다시 시도
+                    Note(g, AutoStage.WaitingIdle, ZoneLockBusyDetail);
+                    return false;
+                }
+
+                if (_env.FileExists(g.Plan))
+                {
+                    SetAsideForReplan(g);
+                }
+            }
+
+            return true;
+        }
+        catch (Exception e) when (IsTransient(e))
+        {
+            HoldTransient(g, e);
+            return false;
+        }
+    }
+
+    // 이전 계획 (확장 중이면 .extend, 아니면 .stale) 이 잔여 계획인가: 잔여 재계획이 만든 표지가 있거나, 존 밖에 고정된 task 가 있음.
+    private bool PreviousIsResidual(GameSettings g)
+    {
+        try
+        {
+            string previous = g.Plan + (IsExtending(g) ? ExtendSuffix : StaleSuffix);
+            if (!_env.FileExists(previous))
+            {
+                return false;
+            }
+
+            PlanFile old = _env.LoadPlan(previous);
+            return old.Stats.TryGetValue("residual", out object? r) && r is 1L
+                || old.Zone.StartLcn is { } zone && old.Stats.TryGetValue("zone_used_clusters", out object? u) && u is long used && old.Tasks.Any(t => t.TargetLcn < zone || t.TargetLcn + t.Clusters > zone + used);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            return false; // 읽을 수 없는 옛 계획은 힌트일 뿐
+        }
+    }
+
+    private static bool IsJournalMismatch(PlanRejectedException e) => e.Message.StartsWith("journal belongs to a different plan", StringComparison.Ordinal);
+
+    /// 점유 충돌 뒤 잔여 재계획이 다시 막혔을 때 쉬는 시간 (재시작해도 풀리지 않음).
+    public static readonly TimeSpan RecoveryHold = TimeSpan.FromMinutes(30);
+
+    private static readonly Regex RejectedLcn = new(@"LCN (\d+)", RegexOptions.None, TimeSpan.FromSeconds(1));
+
+    private static long? LcnIn(string message) => RejectedLcn.Match(message) is { Success: true } m ? long.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) : null;
+
+    private DateTimeOffset? RecoveryHeldUntil(GameSettings g) => _status.Recovery(g.Name) is { NextAllowed: { } until } && until > _env.Now() ? until : null;
+
+    private static string HoldText(DateTimeOffset until) => $"zone occupied by another file, retrying after {until.ToUniversalTime():HH:mm} UTC";
+
+    // 복구를 RecoveryHold 동안 보류: 거절된 LCN 과 이번 주기의 재계획 수는 그대로 남기고 다음 허용 시각만 정함.
+    private void HoldRecovery(GameSettings g, string why)
+    {
+        RecoveryAttempt prior = _status.Recovery(g.Name) ?? new RecoveryAttempt(null, null, 0, null);
+        string reason = FirstLine(why);
+        string stamp = RecoveryStamp(g);
+        if (prior.NextAllowed is not null && prior.Reason == reason && prior.Stamp == stamp)
+        {
+            // 보류가 끝난 뒤 같은 계획·저널·트레이스로 같은 사유로 다시 거절됨: 30 분마다 되풀이하지 않고 멈춤 (입력이 바뀌면 다시 평가)
+            Fail(g, RecoveryStoppedDetail + ": " + reason, null);
+            return;
+        }
+
+        DateTimeOffset until = _env.Now() + RecoveryHold;
+        _status.SetRecovery(g.Name, prior with { RejectedLcn = LcnIn(why) ?? prior.RejectedLcn, NextAllowed = until, Reason = reason, Stamp = stamp });
+        Note(g, AutoStage.WaitingIdle, HoldText(until));
+        _log.Warn($"{g.Name}: recovery held until {until.ToUniversalTime():u} ({FirstLine(why)})");
+    }
+
+    // 거절된 입력의 표식: 활성 계획 SHA, 저널 header SHA·줄 수, 트레이스 수정 시각. 읽을 수 없는 부분은 "?" (그 사이 읽히게 되면 표식이 달라져 다시 평가).
+    private string RecoveryStamp(GameSettings g)
+    {
+        string plan = "?", journal = "?", trace = "?";
+        try
+        {
+            plan = _env.LoadPlan(g.Plan).Sha();
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            // 표식에서 "?" 로 남김
+        }
+
+        try
+        {
+            journal = $"{_env.JournalPlanSha(g)}:{_env.JournalRows(g)}";
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            // 표식에서 "?" 로 남김
+        }
+
+        if (AutoTracer.PlanTracePath(g, _env.FileExists) is { } path && _env.FileWriteTime(path) is { } written)
+        {
+            trace = written.UtcTicks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        return $"{plan}|{journal}|{trace}";
+    }
+
+    // 점유 충돌·저널 불일치의 첫 복구: 활성 계획을 후보로 잔여 재계획 (옮긴 조각은 지킴, 저널은 보관). 이미 한 번 썼거나 보류 중이면 하지 않음.
+    // 반환: 활성 계획이 새 계획으로 바뀌었는가 (거짓이면 보류했거나 재계획이 거절됨: 호출자는 이번 틱을 끝냄).
+    private bool ReplanRemainder(GameSettings g, PlanFile active, PlanRejectedException cause)
+    {
+        RecoveryAttempt prior = _status.Recovery(g.Name) ?? new RecoveryAttempt(null, null, 0, null);
+        if (prior.NextAllowed is { } until && until > _env.Now())
+        {
+            Note(g, AutoStage.WaitingIdle, HoldText(until));
+            return false;
+        }
+
+        if (prior.NextAllowed is null && prior.Replans >= 1)
+        {
+            HoldRecovery(g, cause.Message); // 잔여 재계획 뒤에 다시 막힘
+            return false;
+        }
+
+        _log.Info($"{g.Name}: {FirstLine(cause.Message)}; replanning only the remaining part (moved parts kept)");
+        using IDisposable? gate = _env.Lock(g); // 활성 계획을 후보로 쓰므로 잠금 안에서 디스크의 활성 계획이 후보와 같은지 대조 (호출자가 이미 잡았으면 재진입)
+        try
+        {
+            if (gate is null)
+            {
+                throw new PlanRejectedException(DataLock.BusyMessage);
+            }
+
+            if (!PlanUnchanged(g, active))
+            {
+                throw new PlanRejectedException(DataLock.PlanChangedMessage); // 기다리는 동안 활성 계획이 바뀜: 옛 계획으로 되돌리지 않고 일시 보류 뒤 새 활성 계획으로 다시
+            }
+
+            PlanFile built = _env.ReplanResidual!(g, active, ResidualOlds(g), SessionsFor(g, active));
+            _status.SetRecovery(g.Name, new RecoveryAttempt(built.Sha(), LcnIn(cause.Message), 1, null, prior.Reason, prior.Stamp));
+            _ = _seeded.Remove(g.Name);
+            return true;
+        }
+        catch (PlanRejectedException e) when (IsTemporaryRejection(e))
+        {
+            HoldTemporary(g, e); // 잠금 busy·읽기 불가·빈 구간 부족: 검증 오류가 아니라 일시 사유 (재계획 횟수에 세지 않고 곧 다시)
+            return false;
+        }
+        catch (PlanRejectedException e)
+        {
+            HoldRecovery(g, e.Message); // 저널의 미검증 항목이 바뀌었음 (게임 업데이트 등): 같은 사유로 되풀이되면 멈추되 StoppedRecheck 마다 다시 평가
+            return false;
+        }
+        catch (Exception e) when (IsTransient(e))
+        {
+            HoldTransient(g, e); // 저널 잠금·읽기 실패: 아무것도 바꾸지 않았음. 실패로 기록하지 않고 같은 서비스 실행 안에서 다시 시도
+            return false;
+        }
+    }
+
+    // 잔여 재계획이 .prefetch.json 도 다시 쓰도록 하는 세션: 트레이스를 읽을 수 있으면 계획할 때와 같은 입력, 없으면 계획의 핫 범위 (Order) 자체.
+    private IReadOnlyList<IReadOnlyList<TraceEvent>> SessionsFor(GameSettings g, PlanFile plan)
+    {
+        try
+        {
+            if (AutoTracer.PlanTracePath(g, _env.FileExists) is { } tracePath)
+            {
+                IReadOnlyList<TraceEvent> trace = DropVolatile(g, _env.LoadTrace(tracePath, g.OriginRoot)).Kept;
+                bool prefetch = tracePath == AutoTracer.BootTracePath(g) && _env.TraceSource(tracePath) == PlanSourcePrefetch;
+                return [prefetch ? RangesByLcn(trace) : trace];
+            }
+        }
+        catch (Exception e) when (IsTransient(e) || e is PlanRejectedException)
+        {
+            // 트레이스를 읽지 못하면 계획의 Order 로 선읽기 파일을 만듦
+        }
+
+        return [[.. plan.Order.SelectMany(o => Chunks(o.Path, o.Vcn * plan.ClusterBytes, (o.Vcn + o.Clusters) * plan.ClusterBytes))]];
+    }
+
+    // 이전 목표를 알려 주는 옛 계획들 (읽히는 것만, .stale·.boot·.extend). 현재 활성 계획은 ResidualReplan 이 스스로 더함.
+    private List<PlanFile> ResidualOlds(GameSettings g)
+    {
+        var olds = new List<PlanFile>();
+        foreach (string suffix in new[] { StaleSuffix, BootPlanSuffix, ExtendSuffix })
+        {
+            try
+            {
+                if (_env.FileExists(g.Plan + suffix))
+                {
+                    olds.Add(_env.LoadPlan(g.Plan + suffix));
+                }
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                // 읽을 수 없는 옛 계획은 힌트일 뿐
+            }
+        }
+
+        return olds;
+    }
+
+    // 계획의 존 (확장이면 이미 쓰던 앞부분 pinned 제외) 이 다른 게임 계획이 예약한 범위와 겹치는가.
+    private bool ZoneReserved(GameSettings g, PlanFile plan, long pinned)
+    {
+        if (plan.Zone.StartLcn is not { } zoneStart || !plan.Stats.TryGetValue("zone_used_clusters", out object? u) || u is not long used)
+        {
+            return false;
+        }
+
+        return _env.Reserved(g).Any(r => r.Lcn < zoneStart + used && zoneStart + pinned < r.Lcn + r.Clusters);
+    }
 
     // 같은 존을 다시 쓰는 계획의 목표 자리에 이 계획이 옮기지 않는 자기 파일 데이터 (예: 이전 계획이 존에 모은, 이번 기록에서는 핫이 아닌 부분) 가 있는가.
     // 그런 목표로는 이동이 늘 실패하므로 (사용 중인 클러스터) 새 존을 찾아야 합니다. 핫 범위(Order) 밖의 조각이 존의 쓰는 구간과 겹치는지 봅니다.
@@ -1752,6 +2420,13 @@ public sealed class AutoRelocator
 
         try
         {
+            using IDisposable? zone = _env.Lock(g); // 계획 만들기·적용·되돌리기·보관 전체를 한 번의 잠금으로 감쌈 (안쪽 호출은 재진입): CLI 가 끼어들어 계획을 바꾸지 못함
+            if (zone is null)
+            {
+                Note(g, AutoStage.WaitingIdle, ZoneLockBusyDetail); // 아무것도 바꾸지 않음: 다음 틱에 다시
+                return;
+            }
+
             RelocateMarked(g, s, token);
         }
         finally
@@ -1762,6 +2437,13 @@ public sealed class AutoRelocator
 
     private void RelocateMarked(GameSettings g, AsterSettings s, CancellationToken token)
     {
+        if (_extensionRecovery.TryRemove(g.Name, out _) && IsExtending(g))
+        {
+            Note(g, AutoStage.Relocating, null);
+            _ = BlockFailedExtension(g, "resumed extension recovery", null, 0, token, newRound: true); // 새 이동보다 먼저 남은 되돌리기와 저널 보관을 마저 끝냄 (되돌리기는 이미 옮겨진 조각을 건너뛰어 다시 해도 안전)
+            return;
+        }
+
         _tier?.RevertGame(g.Name, "relocation starting");
         Note(g, AutoStage.Relocating, null);
         _log.Info($"{g.Name}: auto relocation starting");
@@ -1798,16 +2480,43 @@ public sealed class AutoRelocator
                 return;
             }
 
-            var dryRun = new ApplyOptions(DryRun: true, SaveTo: g.Plan);
+            var dryRun = new ApplyOptions(DryRun: true, SaveTo: g.Plan, Reserved: _env.Reserved(g));
             ApplyReport dry;
             try
             {
-                dry = _env.Apply(g, plan, dryRun, token); // 존 시작을 정해 계획에 저장 (이어하기를 위해 남김)
+                if (!extending && _env.JournalPlanSha(g) is { } journalSha && journalSha != plan.Sha())
+                {
+                    throw new PlanRejectedException("journal belongs to a different plan"); // 존이 정해진 계획은 dry-run 이 저널을 보지 않으므로 여기서 미리 (실행 때 거절되기 전에)
+                }
+
+                dry = ApplyOrDefer(g, plan, dryRun, token); // 존 시작을 정해 계획에 저장 (이어하기를 위해 남김)
             }
             catch (PlanRejectedException e) when (extending && (!IsZoneNotFree(e) || IsSupplementExtension(g)))
             {
                 BlockExtension(g, e.Message); // 존 뒤가 비어 있는 것과 무관한 거부 (프로필 보충은 비어 있지 않아도): 새 존을 찾지 않음
                 return;
+            }
+            catch (PlanRejectedException e) when (!extending && _env.ReplanResidual is not null
+                && (IsJournalMismatch(e) || IsZoneNotFree(e) && !(_seeded.Contains(g.Name) && _env.JournalRows(g) == 0)))
+            {
+                // 부분 적용된 계획이 막혔거나 (점유) 저널이 다른 계획의 것: 이미 옮긴 조각은 지키고 남은 부분만 다시 계획
+                if (!ReplanRemainder(g, plan, e))
+                {
+                    return;
+                }
+
+                extending = false;
+                plan = _env.LoadPlan(g.Plan);
+                ReapplyChecker.CheckPaths(plan, g, _env.RealPath);
+                try
+                {
+                    dry = ApplyOrDefer(g, plan, dryRun, token);
+                }
+                catch (PlanRejectedException again) when (IsZoneNotFree(again) || IsJournalMismatch(again))
+                {
+                    HoldRecovery(g, again.Message); // 잔여 재계획 뒤에도 막힘: 30 분 보류
+                    return;
+                }
             }
             catch (PlanRejectedException e) when ((extending || _seeded.Contains(g.Name)) && IsZoneNotFree(e))
             {
@@ -1820,7 +2529,13 @@ public sealed class AutoRelocator
                 extending = IsExtending(g); // 새 존 계획으로 바뀌었으면 확장 중이 아님 (.extend 는 Plan 이 .stale 로 치움)
                 plan = _env.LoadPlan(g.Plan);
                 ReapplyChecker.CheckPaths(plan, g, _env.RealPath);
-                dry = _env.Apply(g, plan, dryRun, token);
+                dry = ApplyOrDefer(g, plan, dryRun, token);
+            }
+
+            if (dry.Stopped == DataLock.BusyReason)
+            {
+                Note(g, AutoStage.WaitingIdle, ZoneLockBusyDetail); // 잠금을 못 잡은 dry-run 은 아무것도 보지 못한 빈 보고서: "이미 제자리" 로 확정하지 않고 다음 틱에 다시
+                return;
             }
 
             _ = _seeded.Remove(g.Name);
@@ -1832,6 +2547,12 @@ public sealed class AutoRelocator
             mark = _env.JournalRows(g); // 저널을 옮겨 보관했을 수 있으므로 계획을 저장한 뒤의 줄 수
             if (dry.TasksTodo == 0)
             {
+                if (HoldUnreadable(g, plan))
+                {
+                    return; // 읽지 못한 파일이 보류로 남음: 배치됨으로 확정하지 않음
+                }
+
+                _status.ClearRecovery(g.Name);
                 _status.Complete(g.Name, g.Source, _env.Now(), counted: false, "already in place");
                 if (extending)
                 {
@@ -1875,17 +2596,27 @@ public sealed class AutoRelocator
 
             _status.BeginRelocation(_env.Now(), bytes); // 하루 상한은 끝이 아니라 시작 (이어하기 포함) 으로 셈
             pendingRecovery = bytes;
-            ApplyReport rep = _env.Apply(g, plan, run, token);
+            ApplyReport rep = ApplyOrDefer(g, plan, run, token);
             _status.SetLastRelocationBytes(rep.MovedBytes); // 시작 때 넣은 예정 바이트 대신 실제로 옮긴 양
             _log.Info($"{g.Name}: auto relocation moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed, order {rep.OrderUsed ?? order}" + (rep.OrderFallbackReason is not null ? " (fallback)" : string.Empty) + (rep.Stopped is { } why ? $", stopped: {why}" : string.Empty) + rep.Timings.Summary);
             pendingRecovery = 0;
             BeginRecovery(g, s.Auto, rep.MovedBytes, baseline);
-            if (rep.Stopped == "cancelled")
+            if (rep.Stopped == DataLock.BusyReason)
+            {
+                Note(g, AutoStage.WaitingIdle, ZoneLockBusyDetail); // 아무것도 옮기지 않음 (SetLastRelocationBytes(0) 이 일일 횟수 기록도 지움): 다음 틱에 다시
+            }
+            else if (rep.Stopped == "cancelled")
             {
                 Note(g, AutoStage.WaitingIdle, "cancelled by game start"); // 저널이 재개 지점이고 이어하기는 기존 재적용 검사가 합니다
             }
             else if (rep.Stopped == Applier.ZoneOccupied)
             {
+                if (_status.Recovery(g.Name) is { Replans: >= 1 })
+                {
+                    HoldRecovery(g, rep.Stopped); // 잔여 재계획을 이미 썼음: 처음부터 다시 계획하지 않고 보류
+                    return;
+                }
+
                 SetAsideForReplan(g); // 존이 막혔으니 계획을 낡은 것으로 치워 다음 틱에 같은 트레이스로 (새 존을 찾아) 다시 계획
             }
             else if (rep.Stopped is not null)
@@ -1896,13 +2627,19 @@ public sealed class AutoRelocator
             {
                 if (!BlockFailedExtension(g, $"{rep.Failed.Count} step(s) failed", null, mark, token))
                 {
-                    Fail(g, $"{rep.Failed.Count} step(s) failed", null); // 데이터는 그대로이고 남은 이동은 기존 재적용 검사가 이어감
+                    Fail(g, $"{rep.Failed.Count} step(s) failed", null); // 데이터는 그대로: StoppedRecheck 뒤 자동 재개가 저널을 이어 남은 이동을 함
                 }
             }
             else
             {
                 LayoutReport layout = LayoutVerifier.Verify(_env.LoadPlan(g.Plan), _env.Extents);
                 _log.Info($"{g.Name}: auto relocation verified: " + (layout.Contiguous ? "contiguous" : layout.ResumeNeeded ? "resume-needed" : "non-contiguous"));
+                if (HoldUnreadable(g, plan))
+                {
+                    return; // 옮길 것은 옮겼으나 읽지 못한 파일이 보류로 남음: 완료로 확정하지 않음
+                }
+
+                _status.ClearRecovery(g.Name);
                 _status.Complete(g.Name, g.Source, _env.Now(), counted: true, RelocatedTag(plan));
                 _log.Info($"{g.Name}: auto relocation done");
                 if (extending)
@@ -1914,11 +2651,20 @@ public sealed class AutoRelocator
         catch (ShaMismatchException e)
         {
             BeginRecovery(g, s.Auto, pendingRecovery, null); // 예외로 끝나도 옮기던 중이었을 수 있으니 예정 바이트로 보수적으로 회복 대기
-            if (!BlockFailedExtension(g, "data check failed", e, mark, token))
+            if (!BlockFailedExtension(g, DataCheckDetail, e, mark, token))
             {
-                Fail(g, "data check failed", e);
+                Fail(g, DataCheckDetail, e);
                 Undo(g, mark, token);
             }
+        }
+        catch (PlanRejectedException e) when (IsTemporaryRejection(e))
+        {
+            if (pendingRecovery > 0)
+            {
+                _status.SetLastRelocationBytes(0); // 시작은 셌지만 아무것도 옮기기 전에 거절됨: 일일 횟수·예산에서 뺌
+            }
+
+            HoldTemporary(g, e); // 실패로 기록하지 않음: 빈 구간 부족·읽기 불가는 시간이 지나면 풀릴 수 있어 일시 보류 뒤 다시
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
@@ -1986,7 +2732,7 @@ public sealed class AutoRelocator
 
     // 게임이 안 돌 때만, 이번 자동 적용이 저널에 쓴 줄 (mark 줄 뒤) 만 되돌립니다 (최선 노력). 앞선 적용의 줄은 이어하기·수동 되돌리기의 몫이라 건드리지 않음.
     // 되돌리기를 끝냈으면 참 (되돌릴 것이 없었던 경우 포함), 게임 실행·중단·실패로 못 끝냈으면 거짓.
-    private bool Undo(GameSettings g, int mark, CancellationToken token)
+    private bool Undo(GameSettings g, int mark, CancellationToken token, bool newRound = false)
     {
         if (_env.AnyRunning(g.ExeNames))
         {
@@ -1994,19 +2740,51 @@ public sealed class AutoRelocator
             return false;
         }
 
+        void Count(long bytes)
+        {
+            if (bytes <= 0)
+            {
+                return;
+            }
+
+            if (newRound)
+            {
+                _status.BeginRelocation(_env.Now(), bytes);
+            }
+            else
+            {
+                _status.AddToLastRelocationBytes(bytes); // 되돌리기도 쓰기: 그 회차 집계에 합산
+            }
+        }
+
         try
         {
             RevertReport? r = _env.JournalRows(g) <= mark ? null : _env.Revert(g, mark, token);
+            Count(r?.MovedBytes ?? 0);
+
             bool complete = r is null || (r.Stopped is null && r.Skipped.Count == 0); // 옮기지 못한 조각이 하나라도 있으면 미완료 (저널을 보관하면 되돌릴 길이 없어짐)
             _log.Info(r is null ? $"{g.Name}: nothing to revert" : $"{g.Name}: reverted {r.Restored} piece(s), {r.Skipped.Count} skipped" + (r.Stopped is { } why ? $", stopped: {why}" : string.Empty) + (complete ? string.Empty : ", journal kept"));
             return complete;
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
+            Count(e.Data[Reverter.MovedBytesDataKey] is long moved ? moved : 0); // 이동 뒤 저널 쓰기 등에서 예외로 끝나도 이미 쓴 바이트는 집계에 넣음
             _log.Error($"{g.Name}: revert failed, journal kept", e);
             return false;
         }
     }
+
+    private const string DataCheckDetail = "data check failed";
+
+    private const string ExtensionRevertDetail = "extension revert incomplete";
+
+    private const string ExtensionArchiveDetail = "extension journal could not be archived";
+
+    // 실패 분류: 무결성 실패 (data check failed, SHA 불일치) 만 사용자 확인이 필요해 계속 멈추고, 그 밖 (이동 실패·예외·계획 실패·멈춘 복구·확장 정리 실패) 은 StoppedRecheck 마다 자동으로 다시 열림.
+    private static bool IsRetriedHourly(string? detail) => detail is not null && !detail.StartsWith(DataCheckDetail, StringComparison.Ordinal);
+
+    private static bool IsExtensionFailure(string detail)
+        => detail.StartsWith(ExtensionRevertDetail, StringComparison.Ordinal) || detail.StartsWith(ExtensionArchiveDetail, StringComparison.Ordinal);
 
     private void Fail(GameSettings g, string detail, Exception? e)
     {

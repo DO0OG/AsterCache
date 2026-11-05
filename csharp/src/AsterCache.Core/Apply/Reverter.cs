@@ -9,8 +9,26 @@ namespace AsterCache.Core.Apply;
 /// skipRows: 저널 앞쪽 이만큼의 줄은 없는 것으로 봅니다 (이번 실행이 쓴 줄만 되돌릴 때).
 public static class Reverter
 {
+    /// 예외로 끝나도 (예: 이동 뒤 저널 쓰기 실패) 그때까지 옮긴 바이트를 예외의 Data 에 싣습니다 (호출자의 쓰기 집계용).
+    public const string MovedBytesDataKey = "MovedBytes";
+
     public static RevertReport Revert(string journalPath, IVolume vol, IReadOnlyList<string> roots, ApplyHooks hooks, ApplyOptions? options = null,
         CancellationToken cancellationToken = default, int skipRows = 0)
+    {
+        long written = 0;
+        try
+        {
+            return RevertCore(journalPath, vol, roots, hooks, options, cancellationToken, skipRows, ref written);
+        }
+        catch (Exception e) when (written > 0)
+        {
+            e.Data[MovedBytesDataKey] = written;
+            throw;
+        }
+    }
+
+    private static RevertReport RevertCore(string journalPath, IVolume vol, IReadOnlyList<string> roots, ApplyHooks hooks, ApplyOptions? options,
+        CancellationToken cancellationToken, int skipRows, ref long written)
     {
         options ??= new ApplyOptions();
         using var jr = new Journal(journalPath);
@@ -28,7 +46,6 @@ public static class Reverter
         long cb = vol.ClusterBytes;
         long chunk = Math.Max(1, options.ChunkBytes / cb);
         var rep = new RevertReport { Executed = options.Execute };
-        long written = 0;
         foreach (JObject r in steps.Values)
         {
             string path = (string)r["path"]!;
@@ -48,7 +65,8 @@ public static class Reverter
                 long v = (long)p[0]!;
                 long lcn = (long)p[1]!;
                 long n = (long)p[2]!;
-                if (PlanGuards.DonePrefix(cur, v, n, lcn) == n)
+                long done = PlanGuards.DonePrefix(cur, v, n, lcn); // 앞에서부터 이미 원래 자리에 있는 클러스터 (이전 되돌리기가 상한 등으로 멈춘 자리): 그 뒤부터 이어 이동량·상한에서 뺌
+                if (done == n)
                 {
                     continue;
                 }
@@ -60,7 +78,7 @@ public static class Reverter
                 }
 
                 bool failed = false;
-                for (long off = 0; off < n; off += chunk)
+                for (long off = done; off < n; off += chunk)
                 {
                     if (cancellationToken.IsCancellationRequested)
                     {

@@ -42,12 +42,12 @@ public static class AntiCheat
         "RiotClientServices.exe", "Riot Client.exe", "LeagueClient.exe", "League of Legends.exe", "VALORANT.exe", "VALORANT-Win64-Shipping.exe", "TFTClient-Win64-Shipping.exe",
     ];
 
-    /// Vanguard 는 게임 폴더 밖 (Program Files\Riot Vanguard) 에 있어 폴더 이름으로는 안 잡힘: Riot 게임 (설치 경로가 "Riot Games" 폴더 아래이거나 exe 가 Riot 클라이언트·리그·발로란트) 이고
+    /// Vanguard 는 게임 폴더 밖 (Program Files\Riot Vanguard) 에 있어 폴더 이름으로는 안 잡힘: Riot 게임 (설치 경로가 "Riot Games" 폴더 아래이거나 exe 가 Riot 클라이언트·리그 오브 레전드·발로란트) 이고
     /// 시스템에 Vanguard (vgk/vgc 서비스 또는 폴더) 가 있으면 "vanguard", 아니면 null.
     public static string? RiotVanguard(string originRoot, IEnumerable<string> exeNames, bool vanguardInstalled) =>
         vanguardInstalled && (originRoot.Split('\\', '/').Any(s => Same(s, "Riot Games")) || exeNames.Any(e => RiotExes.Any(r => Same(e, r)))) ? "vanguard" : null;
 
-    /// 설정을 읽을 때: anticheat 가 비어 있는 항목 (수동 등록한 리그 등) 에 Riot 규칙을 적용해 채웁니다. 트레이스·고정·티어가 모두 이 값을 봅니다. Vanguard 확인은 한 번만 합니다.
+    /// 설정을 읽을 때: anticheat 가 비어 있는 항목 (수동 등록한 리그 오브 레전드 등) 에 Riot 규칙을 적용해 채웁니다. 트레이스·고정·티어가 모두 이 값을 봅니다. Vanguard 확인은 한 번만 합니다.
     public static AsterSettings WithRiotRule(AsterSettings s, Func<bool> vanguardInstalled)
     {
         bool? installed = null;

@@ -87,6 +87,8 @@ internal static class PlanCommand
                 throw new PyValueException("--out is required unless --dry-run");
             }
 
+            // 활성 계획을 저장·교체하는 구간 전체 (저널 행 확인 포함) 를 서비스와 같은 잠금 안에서: 안쪽 Replan 의 잠금은 재진입
+            using DataLock gate = DataLock.TryAcquire(outPath, journalPath: journal ?? outPath + ".journal.jsonl") ?? throw new PlanRejectedException(DataLock.BusyMessage);
             if (fromPlan is not null || (journal is not null && HasRows(journal)))
             {
                 (plan, replaced) = Replan(plan, fromPlan, outPath, journal ?? outPath + ".journal.jsonl", sessions);

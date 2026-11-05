@@ -101,7 +101,7 @@ public sealed class PlanReplanCliTests : ApplyTestBase
     {
         PlanFile plan = Make().Resolve(20000);
         plan.Save(PlanPath);
-        using DataLock service = DataLock.TryAcquire(Path.Combine(Root, "elsewhere", "x.plan.json"), journalPath: JournalPath)!; // 서비스: 저널 폴더 기준
+        using var service = new ForeignLock(Path.Combine(Root, "elsewhere", "x.plan.json"), JournalPath); // 서비스: 저널 폴더 기준
         TimeSpan previous = DataLock.DefaultWait;
         DataLock.DefaultWait = TimeSpan.Zero;
         try
@@ -126,7 +126,7 @@ public sealed class PlanReplanCliTests : ApplyTestBase
         PlanFile oldPlan = Make(); // 존 시작 미정: 옛 계획으로 dry-run 하면 존을 정해 다시 저장함
         PlanFile newPlan = Make().Resolve(30000);
         oldPlan.Save(PlanPath);
-        DataLock holder = DataLock.TryAcquire(PlanPath, journalPath: JournalPath)!;
+        var holder = new ForeignLock(PlanPath, JournalPath);
         TimeSpan previous = DataLock.DefaultWait;
         DataLock.DefaultWait = TimeSpan.FromSeconds(20);
         try
@@ -293,7 +293,7 @@ public sealed class PlanReplanCliTests : ApplyTestBase
         PlanFile plan = Make().Resolve(20000);
         plan.Save(PlanPath);
         byte[] before = File.ReadAllBytes(PlanPath);
-        using DataLock holder = DataLock.TryAcquire(PlanPath)!;
+        using var holder = new ForeignLock(PlanPath);
         TimeSpan previous = DataLock.DefaultWait;
         DataLock.DefaultWait = TimeSpan.Zero;
         try
@@ -315,12 +315,37 @@ public sealed class PlanReplanCliTests : ApplyTestBase
     }
 
     [Fact]
+    public void RevertReportsBusyWhileAnotherHoldsTheLockAndLeavesTheJournalAlone()
+    {
+        _ = PartialA();
+        byte[] journal = File.ReadAllBytes(JournalPath);
+        using var holder = new ForeignLock(PlanPath, JournalPath);
+        TimeSpan previous = DataLock.DefaultWait;
+        DataLock.DefaultWait = TimeSpan.Zero;
+        try
+        {
+            using IDisposable scope = UseVolume();
+
+            (int code, string text, _) = CliTests.Run("revert", "--journal", JournalPath, "--allowed-root", Root, "--execute");
+
+            Assert.Equal(4, code);
+            Assert.Contains("\"error\":\"busy\"", text, StringComparison.Ordinal);
+            Assert.Empty(Vol.Moves);
+            Assert.Equal(journal, File.ReadAllBytes(JournalPath));
+        }
+        finally
+        {
+            DataLock.DefaultWait = previous;
+        }
+    }
+
+    [Fact]
     public void FromPlanReplanIsRefusedWithoutChangingAnythingWhileAnotherHoldsTheLock()
     {
         _ = PartialA();
         byte[] plan = File.ReadAllBytes(PlanPath);
         byte[] journal = File.ReadAllBytes(JournalPath);
-        using DataLock holder = DataLock.TryAcquire(PlanPath)!;
+        using var holder = new ForeignLock(PlanPath);
         TimeSpan previous = DataLock.DefaultWait;
         DataLock.DefaultWait = TimeSpan.Zero;
         try

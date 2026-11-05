@@ -18,6 +18,7 @@ public sealed class BootQuietWorkerTests : IDisposable
     private readonly GameSettings _game = Games.Make("a", "a.exe") with { Prewarm = Launcher };
     private DateTimeOffset _now = T0;
     private long _uptimeMs = Minute;
+    private long _sleptMs; // 절전 중 흐른 시간: 가동 시간에는 들어가고 절전 제외 시계에는 빠짐
     private bool _idle;
     private int _layoutChecks;
 
@@ -25,7 +26,21 @@ public sealed class BootQuietWorkerTests : IDisposable
 
     public void Dispose() => Directory.Delete(_dir, true);
 
-    private BootQuiet Quiet() => new(() => _uptimeMs, () => _idle, _log, () => _now);
+    private BootQuiet Quiet() => new(() => _uptimeMs, () => _idle, _log, () => _now, () => _uptimeMs - _sleptMs);
+
+    // 시간만 흐름 (절전 없음): 벽시계와 가동 시간이 함께 흐름
+    private void Elapse(TimeSpan span)
+    {
+        _now += span;
+        _uptimeMs += (long)span.TotalMilliseconds;
+    }
+
+    // 절전: 벽시계와 가동 시간은 흐르고 절전 제외 시계는 멈춤
+    private void Sleep(TimeSpan span)
+    {
+        Elapse(span);
+        _sleptMs += (long)span.TotalMilliseconds;
+    }
 
     private Prewarmer MakePrewarm() => new([_game], _streamer, new PrewarmEnv
     {
@@ -64,7 +79,7 @@ public sealed class BootQuietWorkerTests : IDisposable
         _uptimeMs = 5 * Minute;
         _idle = true;
         q.Refresh();
-        _now = _now.AddSeconds(60);
+        Elapse(TimeSpan.FromSeconds(60));
         q.Refresh();
     }
 
@@ -192,17 +207,17 @@ public sealed class BootQuietWorkerTests : IDisposable
         Tick(w, start, new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal));
         Assert.Equal(1, _layoutChecks);
 
-        _now = _now.AddHours(1); // 절전: 벽시계만 감
+        Sleep(TimeSpan.FromHours(1)); // 절전: 벽시계와 가동 시간은 흐르고 절전 제외 시계는 멈춤
         Tick(w, start, new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal));
         Assert.Equal(1, _layoutChecks);
         Assert.Single(_log.Lines, line => line.Contains("layout check and reapply deferred: boot quiet period", StringComparison.Ordinal));
 
-        _uptimeMs = 11 * Minute; // BootDelay 가 지났지만 유휴 시작 (아직 구간)
+        _uptimeMs += 5 * Minute; // BootDelay 가 지났지만 유휴 시작 (아직 구간)
         _idle = true;
         Tick(w, start, new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal));
         Assert.Equal(1, _layoutChecks);
 
-        _now = _now.AddSeconds(60); // 60 초 유휴 → 구간 끝, 이번 틱에 실행
+        Elapse(TimeSpan.FromSeconds(60)); // 60 초 유휴 → 구간 끝, 이번 틱에 실행
         Tick(w, start, new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal));
         Assert.Equal(2, _layoutChecks);
     }

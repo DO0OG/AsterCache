@@ -1,4 +1,5 @@
 using System.Globalization;
+using AsterCache.Core;
 using AsterCache.Core.Apply;
 using AsterCache.Core.I18n;
 using AsterCache.Core.Json;
@@ -129,6 +130,7 @@ internal static class PlanCommand
     // 후보를 잔여 재계획해 활성 계획으로 승격 (저장은 PlanOutput.Save 와 같음, 트레이스가 없으면 계획만). 예약은 같은 폴더의 다른 게임 계획.
     private static (PlanFile Plan, SwitchResult Switch) Replan(PlanFile candidate, string outPath, string journal, IReadOnlyList<List<TraceEvent>> sessions)
     {
+        using DataLock gate = DataLock.TryAcquire(outPath) ?? throw new PlanRejectedException(DataLock.BusyMessage); // 예약 조회부터 전환까지 서비스와 같은 잠금
         (IVolume vol, ApplyHooks hooks) = VolumeCommands.Open(candidate.Volume, null);
         using IVolume volume = vol;
         IReadOnlyList<(long Lcn, long Clusters)> reserved = ZoneReservations.Collect(Path.GetDirectoryName(Path.GetFullPath(outPath))!, candidate.Volume, outPath);

@@ -370,6 +370,49 @@ public sealed class ApplyPortTests : ApplyTestBase
         Assert.Equal(8 * Cb, rep.MovedBytes);
     }
 
+    // F1 의 [0, n) 이 존 (20000) 으로 옮겨진 뒤 원래 자리 (1000) 로 되돌려야 하는 한 조각짜리 저널을 만듭니다.
+    private void WriteOnePieceStep(long n)
+    {
+        using var jr = new Journal(JournalPath);
+        jr.Add(new JObject { { "type", "step" }, { "idx", 0L }, { "path", F1 }, { "from", new List<object?> { new List<object?> { 0L, 1000L, n } } }, { "state", "planned" } });
+        Vol.Ext[F1] = [new(0, 20000, n)];
+    }
+
+    [Fact]
+    public void RevertOfAPieceBiggerThanTheWriteCapResumesAfterItsRestoredPrefixEachRound()
+    {
+        WriteOnePieceStep(40);
+        var rounds = new List<(string? Stopped, long Moved, long Restored)>();
+
+        for (int i = 0; i < 4; i++)
+        {
+            RevertReport rep = Reverter.Revert(JournalPath, Vol, [Root], Hooks(), Exec(8 * Cb, 16 * Cb));
+            rounds.Add((rep.Stopped, rep.MovedBytes, rep.Restored));
+        }
+
+        Assert.Equal([("write_cap", 16 * Cb, 0L), ("write_cap", 16 * Cb, 0L), (null, 8 * Cb, 1L), (null, 0L, 0L)], rounds); // 마지막 회차는 이미 복원된 조각이라 Move 0
+        Assert.Equal([0L, 8, 16, 24, 32], Vol.Moves.Select(m => m.Vcn)); // 회차마다 앞으로 나아가고 이미 복원된 범위는 다시 옮기지 않음
+        Assert.Equal([new Extent(0, 1000, 40)], Vol.Ext[F1]);
+    }
+
+    [Fact]
+    public void RevertThatFailsToWriteTheJournalAfterAMoveCarriesTheMovedBytesOnTheException()
+    {
+        WriteOnePieceStep(8);
+        File.SetAttributes(JournalPath, FileAttributes.ReadOnly); // 이동은 되지만 revert 행을 쓸 수 없음
+        try
+        {
+            Exception e = Assert.ThrowsAny<Exception>(() => Reverter.Revert(JournalPath, Vol, [Root], Hooks(), Exec()));
+
+            Assert.Equal(8 * Cb, e.Data[Reverter.MovedBytesDataKey]);
+            Assert.Single(Vol.Moves);
+        }
+        finally
+        {
+            File.SetAttributes(JournalPath, FileAttributes.Normal);
+        }
+    }
+
     // ---- verify_layout
 
     [Fact]

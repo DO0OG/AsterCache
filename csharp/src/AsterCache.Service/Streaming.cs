@@ -34,12 +34,13 @@ public interface IGameStreamer
 public sealed class PrefetchStreamer : IGameStreamer
 {
     /// 계획의 존 크기 (바이트). 계획 파일이 없거나 읽을 수 없으면 null, 존이 비어 있으면 0.
+    /// 잔여 재계획은 Zone 이 새로 옮길 구간뿐이라 (전부 제자리면 0), 핫셋 전체인 task 합계를 돌려줍니다.
     public static long? ZoneBytes(GameSettings game)
     {
         try
         {
             PlanFile plan = PlanFile.Load(game.Plan);
-            return plan.Zone.Clusters * plan.ClusterBytes;
+            return (plan.IsResidual ? plan.Tasks.Sum(t => t.Clusters) : plan.Zone.Clusters) * plan.ClusterBytes;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
         {

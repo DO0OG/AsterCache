@@ -32,6 +32,17 @@ public sealed partial class AutoRelocatorTests
         return other;
     }
 
+    // 복구 뒤 잔여 계획의 예열 예산: 새로 옮긴 구간이 아니라 핫셋 전체 (80 클러스터), 존 길이가 0 이어도 "no zone" 으로 건너뛰지 않음.
+    private void AssertPrewarmBudgetIsTheWholeHotSet()
+    {
+        PlanFile plan = PlanFile.Load(_game.Plan);
+        Assert.True(plan.IsResidual);
+        long? zone = PrefetchStreamer.ZoneBytes(_game);
+        Assert.Equal(80 * Cb, zone);
+        Assert.Equal(80 * Cb, PrewarmEnv.Create().ZoneBytes(_game));
+        Assert.Null(PrewarmPolicy.SkipReason(zone, true, false, 16000, 0, null, TimeSpan.Zero));
+    }
+
     private void AssertStableAfterRestart(long movesBefore)
     {
         _relocator = null;
@@ -65,6 +76,7 @@ public sealed partial class AutoRelocatorTests
         Assert.DoesNotContain(Vol.Moves, m => m.Lcn < 20000 + moved && m.Lcn + m.N > 20000); // 이미 목표에 있는 범위로는 이동 0
         Assert.Equal([new Extent(0, 20000 + moved, 16)], Vol.Ext[otherFile]);
         Assert.Equal(0, Remaining(PlanFile.Load(_game.Plan)));
+        AssertPrewarmBudgetIsTheWholeHotSet();
         Assert.Equal(rowsBefore, new Journal(Assert.Single(JournalArchives())).Rows.Count); // 첫 저널은 지워지지 않고 보관
         Assert.Contains(_log.Lines, l => l.Contains("replanning only the remaining part", StringComparison.Ordinal));
         AssertStableAfterRestart(Vol.Moves.Count);
@@ -96,6 +108,7 @@ public sealed partial class AutoRelocatorTests
         Assert.Equal(left, Vol.Moves.Sum(m => m.N));
         Assert.All(Vol.Moves, m => Assert.False(m.Lcn < 40080 && m.Lcn + m.N > 40000)); // 다른 게임이 쓸 구간은 피함
         Assert.Equal(0, Remaining(PlanFile.Load(_game.Plan)));
+        AssertPrewarmBudgetIsTheWholeHotSet();
         Assert.Contains(rowsOfB, JournalArchives().Select(f => new Journal(f).Rows.Count)); // B 의 저널도 지워지지 않고 보관 (A 의 저널은 시험이 미리 보관)
         AssertStableAfterRestart(Vol.Moves.Count);
     }

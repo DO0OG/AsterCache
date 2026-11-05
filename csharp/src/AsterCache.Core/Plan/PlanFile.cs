@@ -132,6 +132,9 @@ public sealed record PlanFile(
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(PyJson.Dumps(keep, sortKeys: true))));
     }
 
+    /// 잔여 재계획이 만든 계획인가 (ResidualPlanner 가 stats.residual = 1 을 적음): 이때 Zone 은 새로 옮길 구간뿐 (전부 제자리면 길이 0) 이고 핫셋은 task 전체입니다.
+    public bool IsResidual => Stats.TryGetValue("residual", out object? r) && r is 1L;
+
     /// 존 시작이 아직 없으면 baseLcn 으로 정하고 목표를 그만큼 옮긴 계획. 이미 있으면 같은 객체.
     public PlanFile Resolve(long baseLcn) => Zone.StartLcn is not null
         ? this

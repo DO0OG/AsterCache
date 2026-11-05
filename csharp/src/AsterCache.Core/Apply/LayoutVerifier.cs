@@ -62,7 +62,7 @@ public static class LayoutVerifier
         if (plan.Zone.StartLcn is { } start)
         {
             long end = start + plan.Zone.Clusters;
-            inZone = seq.Sum(x => Math.Max(0, Math.Min(x.Lcn + x.N, end) - Math.Max(x.Lcn, start)));
+            inZone = plan.IsResidual ? InTargets(plan, seq) : seq.Sum(x => Math.Max(0, Math.Min(x.Lcn + x.N, end) - Math.Max(x.Lcn, start)));
         }
 
         var starts = new List<long>();
@@ -77,5 +77,23 @@ public static class LayoutVerifier
         bool ascending = starts.Zip(starts.Skip(1), (a, b) => a <= b).All(x => x);
         return new LayoutReport(seq.Sum(x => x.N), runs, expected, (long)plan.Stats["current_runs"]!, ascending, inZone, missing,
             missing == 0 && runs <= expected);
+    }
+
+    // 잔여 재계획: 존은 새 구간뿐이므로, 목표 자리 (task 의 목표 범위, 서로 겹치지 않음) 에 놓인 클러스터를 존 소속으로 셈.
+    private static long InTargets(PlanFile plan, List<(long Lcn, long N)> seq)
+    {
+        List<PlanTask> targets = [.. plan.Tasks.Where(t => t.Clusters > 0).OrderBy(t => t.TargetLcn)];
+        List<long> starts = [.. targets.Select(t => t.TargetLcn)];
+        long hit = 0;
+        foreach ((long lcn, long n) in seq)
+        {
+            int i = starts.BinarySearch(lcn);
+            for (i = i < 0 ? Math.Max(0, ~i - 1) : i; i < targets.Count && targets[i].TargetLcn < lcn + n; i++)
+            {
+                hit += Math.Max(0, Math.Min(lcn + n, targets[i].TargetLcn + targets[i].Clusters) - Math.Max(lcn, targets[i].TargetLcn));
+            }
+        }
+
+        return hit;
     }
 }

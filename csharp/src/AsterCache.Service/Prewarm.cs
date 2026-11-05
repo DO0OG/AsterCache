@@ -263,14 +263,13 @@ public sealed class Prewarmer
                     _profileMiss[name] = missKey; // 프로필 미일치 판정은 설치 폴더 mtime 이 같은 동안 다시 열거하지 않음 (재시작 뒤에도 이어짐)
                 }
 
-                if (o.TryGetValue("result", out object? before) && before as string == "ok" && o.TryGetValue("at", out object? beforeAt)
-                    && beforeAt is string beforeText && DateTimeOffset.TryParse(beforeText, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset earlier) && earlier <= boot)
+                DateTimeOffset? okAt = LastOkAt(o);
+                if (okAt is { } earlier && earlier <= boot)
                 {
                     _lastBeforeBoot[name] = earlier; // 부팅 전 예열: _last 로는 되살리지 않음 (캐시가 비었음), 새 트레이스로 다시 치지 않도록 LastWarmed 만 돌려줌
                 }
 
-                if (o.TryGetValue("result", out object? result) && result as string == "ok" && o.TryGetValue("at", out object? at)
-                    && at is string text && DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset when) && when > boot)
+                if (okAt is { } when && when > boot)
                 {
                     _last[name] = when;
                     if (o.TryGetValue("warmed_mib", out object? warmed) && warmed is long w && o.TryGetValue("hot_mib", out object? hot) && hot is long h && w < h)
@@ -285,6 +284,25 @@ public sealed class Prewarmer
             _log.Warn("prewarm status file not read: " + e.GetType().Name);
         }
     }
+
+    // 마지막 성공 시각: last_ok_at 은 마지막 시도가 건너뜀·실패여도 남습니다 (재시작 뒤 같은 트레이스를 새 트레이스로 다시 치지 않게). 옛 파일은 result ok 의 at.
+    private static DateTimeOffset? LastOkAt(JObject o)
+    {
+        string? text = null;
+        if (o.TryGetValue("last_ok_at", out object? kept))
+        {
+            text = kept as string;
+        }
+        else if (o.TryGetValue("result", out object? result) && result as string == "ok" && o.TryGetValue("at", out object? at))
+        {
+            text = at as string;
+        }
+
+        return text is not null && DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset when) ? when : null;
+    }
+
+    // 이번 시도가 성공이 아니면 이전 항목의 마지막 성공 시각을 그대로 이어 씁니다.
+    private string? KeptOkAt(string game) => _status.TryGetValue(game, out object? prior) && prior is JObject po && LastOkAt(po) is { } ok ? ok.ToString("O") : null;
 
     /// 기록 없이 (통째·프로필) 예열에 성공했을 때: 게임과 방식 이름표.
     public event Action<GameSettings, string>? ColdWarmed;
@@ -1596,6 +1614,7 @@ public sealed class Prewarmer
 
     private PrewarmResult Record(GameSettings game, DateTimeOffset now, PrewarmResult r, double mbps)
     {
+        string? okAt = r.Ran ? now.ToString("O") : KeptOkAt(game.Name);
         _status[game.Name] = new JObject
         {
             { "at", now.ToString("O") },
@@ -1605,6 +1624,7 @@ public sealed class Prewarmer
             { "hint_accepted_bytes", r.Stats?.HintAcceptedBytes },
             { "seconds", r.Stats?.Seconds },
             { "hint_mb_per_s", r.Stats is null ? null : Math.Round(mbps, 1) },
+            { "last_ok_at", okAt },
         };
         lock (_gate)
         {

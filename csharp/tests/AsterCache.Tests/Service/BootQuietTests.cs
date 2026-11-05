@@ -165,4 +165,44 @@ public sealed class BootQuietTests : IDisposable
         Assert.False(q.Active);
         Assert.Single(_log.Lines, line => line.Contains("boot quiet period ended: uptime cap", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void ServiceRunningAfterBootDelayWithoutAClockJumpIsNotQuiet()
+    {
+        _uptimeMs = 6 * Minute;
+        BootQuiet q = Make();
+        q.Refresh();
+        _now = _now.AddSeconds(30);
+        _uptimeMs += 30_000;
+        q.Refresh();
+
+        Assert.False(q.Active);
+        Assert.DoesNotContain(_log.Lines, line => line.Contains("resume from sleep", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ResumeFromSleepRestartsTheQuietWindowAtTheResumePoint()
+    {
+        _idle = true;
+        _uptimeMs = 6 * Minute; // 절전 복귀: 가동 시간은 이미 5 분을 넘음
+        BootQuiet q = Make();
+        q.Refresh();
+
+        _now = _now.AddHours(1); // 절전 중에는 가동 시간이 멈추고 벽시계만 감
+        q.Refresh();
+        Assert.True(q.Active);
+        Assert.True(q.Defers("prewarm steam.exe")); // 런처 계기는 구간 동안 보류
+        Assert.Single(_log.Lines, line => line.Contains("resume from sleep detected", StringComparison.Ordinal));
+
+        _uptimeMs = 11 * Minute; // 복귀 뒤 BootDelay 가 지남
+        q.Refresh();
+        _now = _now.AddSeconds(59);
+        q.Refresh();
+        Assert.True(q.Active);
+
+        _now = _now.AddSeconds(1); // 60 초 유휴
+        q.Refresh();
+        Assert.False(q.Active);
+        Assert.False(q.Defers("prewarm steam.exe"));
+    }
 }

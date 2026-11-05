@@ -351,7 +351,7 @@ public sealed class ManageViewModel(
 
         long zone = ZoneMib(hot);
         progress(L.T("Plan_Making", hot / Mib, zone));
-        CliResult made = cli.Run(AsterArgs.Plan(raw, g.OriginRoot, zone, g.Plan), elevate: true);
+        CliResult made = cli.Run(AsterArgs.Plan(raw, g.OriginRoot, zone, g.Plan, JournalPath(g.Name)), elevate: true); // 저널에 행이 있으면 CLI 가 활성 계획을 덮어쓰지 않고 잔여 재계획
         if (!made.Ok)
         {
             return Failed(made, "Fail_Plan", g.Name);
@@ -378,6 +378,7 @@ public sealed class ManageViewModel(
     }
 
     /// 재배치 실행: 승격 apply --dry-run (존 시작을 정해 계획에 저장) 뒤 --execute. 진행률은 저널 줄 수. 끝나면 verify.
+    /// 저장된 계획과 저널이 서로 다른 계획이면 (dry-run 이 "journal belongs to a different plan" 으로 거절) 활성 계획으로 잔여 재계획을 한 번 하고 dry-run 부터 한 번만 다시 시도합니다.
     public ActionResult Apply(string name, Action<string> progress)
     {
         if (Find(name) is not { } g || !File.Exists(g.Plan))
@@ -393,6 +394,20 @@ public sealed class ManageViewModel(
         string journal = JournalPath(g.Name);
         progress(L.T("Apply_Dry"));
         CliResult dry = cli.Run(AsterArgs.Apply(g.Plan, journal, g.AllowedRoots, g.VolumeLabel, execute: false), elevate: true);
+        if (!dry.Ok && Get(dry.Json, "error") as string == "PlanRejected" && Get(dry.Json, "detail") as string is { } why
+            && why.Contains("journal belongs to a different plan", StringComparison.Ordinal))
+        {
+            progress(L.T("Apply_JournalOtherPlan", g.Name));
+            CliResult again = cli.Run(AsterArgs.Replan(g.Plan, journal), elevate: true);
+            if (!again.Ok)
+            {
+                return Failed(again, "Fail_Plan", g.Name);
+            }
+
+            progress(L.T("Apply_Dry"));
+            dry = cli.Run(AsterArgs.Apply(g.Plan, journal, g.AllowedRoots, g.VolumeLabel, execute: false), elevate: true);
+        }
+
         if (!dry.Ok)
         {
             return Failed(dry, "Fail_Dry", g.Name);
@@ -657,9 +672,13 @@ public static class AsterArgs
     public static string[] Trace(IEnumerable<string> exes, string originRoot, string output, string stopFile) =>
         ["trace", "--live", "--exe", .. exes, "--origin-root", originRoot, "--out", output, "--stop-file", stopFile, "--seconds", MaxTraceSeconds];
 
-    /// output 이 null 이면 --dry-run (아무것도 쓰지 않고 통계만).
-    public static string[] Plan(string trace, string originRoot, long zoneMib, string? output) =>
-        ["plan", "--trace", trace, "--origin-root", originRoot, "--zone-mib", zoneMib.ToString(CultureInfo.InvariantCulture), .. output is null ? ["--dry-run"] : new[] { "--out", output }];
+    /// output 이 null 이면 --dry-run (아무것도 쓰지 않고 통계만). journal 을 주면 그 저널에 행이 있을 때 활성 계획을 덮어쓰지 않고 잔여 재계획.
+    public static string[] Plan(string trace, string originRoot, long zoneMib, string? output, string? journal = null) =>
+        ["plan", "--trace", trace, "--origin-root", originRoot, "--zone-mib", zoneMib.ToString(CultureInfo.InvariantCulture), .. output is null ? ["--dry-run"] : new[] { "--out", output },
+            .. output is null || journal is null ? [] : new[] { "--journal", journal }];
+
+    /// 트레이스 없이 활성 계획의 Order 를 후보로 잔여 재계획 (이미 옮긴 범위는 고정, 저널은 보관).
+    public static string[] Replan(string plan, string journal) => ["plan", "--from-plan", plan, "--out", plan, "--journal", journal];
 
     public static string[] Apply(string plan, string journal, IEnumerable<string> allowedRoots, string label, bool execute) =>
         ["apply", "--plan", plan, "--journal", journal, .. Roots(allowedRoots), "--require-volume-label", label, execute ? "--execute" : "--dry-run"];

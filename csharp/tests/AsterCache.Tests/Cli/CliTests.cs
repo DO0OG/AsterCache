@@ -7,8 +7,11 @@ using Xunit;
 
 namespace AsterCache.Tests.Cli;
 
+[Collection(VolumeSeam)]
 public sealed class CliTests
 {
+    internal const string VolumeSeam = "VolumeCommands.Open";
+
     internal static (int Code, string Out, string Err) Run(params string[] args)
     {
         var o = new StringWriter();
@@ -288,6 +291,52 @@ public sealed class CliTests
         Assert.Equal(1048L, journal["steps"]);
         Assert.Equal(1048L, journal["done"]);
         Assert.Equal(true, journal["ended"]);
+    }
+
+    private static JObject StatusOfJournal(params string[] rows)
+    {
+        using var dir = new TempDir();
+        string journal = dir.Combine("j.jsonl");
+        File.WriteAllLines(journal, rows);
+        (int code, string text, _) = Run("status", "--journal", journal);
+        Assert.Equal(0, code);
+        return (JObject)Json(text)["journal"]!;
+    }
+
+    private const string Header = "{\"type\":\"header\",\"plan_sha\":\"x\",\"digest_rule\":\"edge64k-v3\",\"cluster_bytes\":4096}";
+    private const string Planned = "{\"type\":\"step\",\"idx\":0,\"state\":\"planned\",\"path\":\"D:\\\\a.bin\",\"vcn\":0,\"clusters\":4,\"target_lcn\":9,\"from\":[[0,1,4]]}";
+    private const string Done = "{\"type\":\"step\",\"idx\":0,\"state\":\"done\"}";
+    private const string Failed = "{\"type\":\"step\",\"idx\":0,\"state\":\"failed\"}";
+    private const string End = "{\"type\":\"end\",\"stopped\":null,\"written_bytes\":0,\"sha_mismatch\":[]}";
+
+    [Fact]
+    public void StatusDoesNotCallAJournalWithFailedOrUnfinishedStepsEnded()
+    {
+        JObject finished = StatusOfJournal(Header, Planned, Done, End);
+        Assert.Equal(true, finished["ended"]);
+        Assert.Equal(0L, finished["unverified"]);
+
+        JObject failed = StatusOfJournal(Header, Planned, Failed, End); // end.stopped 가 null 이어도 실패가 남음
+        Assert.Equal(false, failed["ended"]);
+        Assert.Equal(1L, failed["failed"]);
+
+        Assert.Equal(false, StatusOfJournal(Header, Planned, End)["ended"]); // 시작만 하고 못 옮긴 단계
+        Assert.Equal(false, StatusOfJournal(Header, Planned, Done)["ended"]); // end 행 없음
+    }
+
+    [Fact]
+    public void StatusCountsUnverifiedShaRowsAfterTheLastEnd()
+    {
+        JObject open = StatusOfJournal(Header, Planned, "{\"type\":\"sha\",\"idx\":0,\"sha_before\":\"abc\"}", Done, End);
+        Assert.Equal(true, open["ended"]); // end 앞의 행은 이미 정리된 것
+
+        JObject later = StatusOfJournal(Header, Planned, Done, End, "{\"type\":\"sha\",\"idx\":0,\"sha_before\":\"abc\"}");
+        Assert.Equal(1L, later["unverified"]);
+        Assert.Equal(false, later["ended"]);
+
+        JObject verified = StatusOfJournal(Header, Planned, Done, End, "{\"type\":\"sha\",\"idx\":0,\"sha_before\":\"abc\"}", "{\"type\":\"sha_verified\",\"idx\":0}");
+        Assert.Equal(0L, verified["unverified"]);
+        Assert.Equal(true, verified["ended"]);
     }
 
     [Fact]

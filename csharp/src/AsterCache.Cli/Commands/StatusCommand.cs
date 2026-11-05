@@ -138,13 +138,30 @@ internal static class StatusCommand
     {
         var steps = jr.Rows.Where(r => Equals(r.TryGetValue("type", out object? t) ? t : null, "step") && r.ContainsKey("from")).Select(r => (long)r["idx"]!).Distinct().ToList();
         List<string?> states = steps.Select(jr.LastState).ToList();
+        long done = states.Count(s => s == "done");
+        long unverified = Unverified(jr.Rows);
         return new JObject
         {
             { "rows", (long)jr.Rows.Count },
             { "steps", (long)steps.Count },
-            { "done", (long)states.Count(s => s == "done") },
+            { "done", done },
             { "failed", (long)states.Count(s => s == "failed") },
-            { "ended", jr.Rows.Any(r => Equals(r.TryGetValue("type", out object? t) ? t : null, "end")) },
+            { "unverified", unverified },
+            // end 행은 실행이 마쳤다는 표시일 뿐: 실패·미완 단계나 검증하지 못한 sha_before 가 남았으면 끝난 저널로 보지 않음
+            { "ended", jr.Rows.Any(r => Equals(Of(r, "type"), "end")) && done == steps.Count && unverified == 0 },
         };
+    }
+
+    private static object? Of(JObject r, string key) => r.TryGetValue(key, out object? v) ? v : null;
+
+    // 마지막 end 행 (지연 검증이 아닌 것) 뒤에 sha_before 가 있는데 같은 키의 verified 행이 없는 수. 규칙은 Applier.VerifyPending 과 같음 (작업 단위는 idx, 파일 단위는 path).
+    private static long Unverified(IReadOnlyList<JObject> rows)
+    {
+        object? rule = rows.Where(r => Equals(Of(r, "type"), "header")).Select(r => Of(r, "digest_rule")).FirstOrDefault();
+        bool perTask = Equals(rule, Applier.EdgeRule) || Equals(rule, Applier.EdgeTaskRule);
+        List<JObject> unsettled = rows.Skip(rows.ToList().FindLastIndex(r => Equals(Of(r, "type"), "end") && !Equals(Of(r, "after_deferred"), true)) + 1).ToList();
+        object? Key(JObject r) => Of(r, perTask ? "idx" : "path");
+        List<object?> verified = unsettled.Where(r => Equals(Of(r, "type"), perTask ? "sha_verified" : "file_verified")).Select(Key).ToList();
+        return unsettled.Count(r => Equals(Of(r, "type"), perTask ? "sha" : "file") && Of(r, "sha_before") is string && !verified.Contains(Key(r)));
     }
 }

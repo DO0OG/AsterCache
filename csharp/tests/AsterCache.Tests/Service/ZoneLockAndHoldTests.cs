@@ -304,4 +304,69 @@ public sealed partial class AutoRelocatorTests
         Assert.True(Entry.Stage == AutoStage.Done, Why()); // 원인이 사라지면 자동으로 재개되어 끝남
         Assert.Equal(0, Remaining(PlanFile.Load(_game.Plan)));
     }
+
+    [Fact]
+    public void ARelocationIOExceptionOnATraceForbiddenGameIsRetriedAnHourLaterAndFinishesOnceTheLockIsGone()
+    {
+        _w.AntiCheats[Root] = "eac"; // 트레이스를 다시 만들 수 없는 게임: 새 트레이스가 오지 않음
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
+        bool locked = true;
+        int executes = 0;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            if (options.Execute)
+            {
+                executes++;
+                if (locked)
+                {
+                    throw new IOException("locked");
+                }
+            }
+
+            return real(g, plan, options, ct);
+        };
+
+        Run(TimeSpan.FromMinutes(3.5));
+        Assert.Equal((AutoStage.Failed, "relocation failed: IOException"), (Entry.Stage, Entry.Detail));
+        int failedAttempts = executes;
+        Assert.True(failedAttempts > 0, Why());
+
+        _w.Now += TimeSpan.FromMinutes(40);
+        Run(TimeSpan.FromMinutes(4));
+        Assert.Equal((failedAttempts, AutoStage.Failed), (executes, Entry.Stage)); // 한 시간 전에는 다시 시도하지 않음
+
+        locked = false;
+        _w.Now += TimeSpan.FromMinutes(30);
+        RunUntilDone();
+
+        Assert.True(Entry.Stage == AutoStage.Done, Why()); // 한 시간 뒤 다시 시도해 잠금이 풀린 뒤 끝남
+        Assert.Equal(0, Remaining(PlanFile.Load(_game.Plan)));
+    }
+
+    [Fact]
+    public void ADataCheckFailureOnATraceForbiddenGameIsNotReopenedByTheHourlyRecheck()
+    {
+        _w.AntiCheats[Root] = "eac";
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
+        int executes = 0;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            if (options.Execute)
+            {
+                executes++;
+                throw new ShaMismatchException([F1]);
+            }
+
+            return real(g, plan, options, ct);
+        };
+
+        Run(TimeSpan.FromMinutes(3.5));
+        Assert.Equal((AutoStage.Failed, "data check failed"), (Entry.Stage, Entry.Detail));
+        int failedAttempts = executes;
+
+        _w.Now += TimeSpan.FromHours(2);
+        Run(TimeSpan.FromMinutes(4));
+
+        Assert.Equal((failedAttempts, AutoStage.Failed, "data check failed"), (executes, Entry.Stage, Entry.Detail)); // 무결성 정지는 시간이 지나도 저절로 다시 열지 않음
+    }
 }

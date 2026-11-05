@@ -153,6 +153,24 @@ internal sealed class FakeWorld
     /// 게임 단위 잠금 (기본: 항상 잡힘). 못 잡는 상황이나 잠금을 기다리는 동안 계획이 바뀌는 상황은 시험이 바꿔 끼움.
     public Func<GameSettings, IDisposable?> Lock { get; set; } = _ => new FakeGate();
 
+    private readonly ThreadLocal<int> _held = new();
+
+    /// 운영 DataLock.RequireHeld 와 같은 규칙: 이 스레드에서 Lock 이 돌려준 게이트가 열려 있을 때만 쓰기가 허용됩니다.
+    private void RequireHeld(string what)
+    {
+        if (_held.Value <= 0)
+        {
+            throw new InvalidOperationException($"zone lock is not held ({what})");
+        }
+    }
+
+    /// 시험 준비 코드가 잠금 없이 env 의 쓰기를 직접 부를 때만 씁니다 (운영 코드 경로에는 쓰지 않음).
+    public IDisposable AllowUnlockedWrites()
+    {
+        _held.Value++;
+        return new FakeGate(() => _held.Value--);
+    }
+
     /// MoveAside 로 옮긴 (원본, 새 이름) 기록. 파일 집합 (Files) 도 따라 바뀝니다.
     public List<(string From, string To)> Moved { get; } = [];
 
@@ -249,20 +267,43 @@ internal sealed class FakeWorld
             PlanStarts.Add(start);
             return MakePlanAt(sessions, origin, zoneMib, start, used);
         },
-        SavePlan = (plan, sessions, path) => PlanOutput.Save(plan, sessions, path),
+        SavePlan = (plan, sessions, path) =>
+        {
+            RequireHeld($"SavePlan {path}");
+            PlanOutput.Save(plan, sessions, path);
+        },
         LoadPlan = PlanFile.Load,
         RealPath = Path.GetFullPath,
         Apply = (g, plan, options, ct) => Apply(g, plan, options, ct),
         Stat = p => Stat(p),
         JournalRows = g => JournalRows(g),
-        Lock = g => Lock(g),
+        Lock = g =>
+        {
+            IDisposable? gate = Lock(g);
+            if (gate is null)
+            {
+                return null;
+            }
+
+            _held.Value++;
+            return new FakeGate(() =>
+            {
+                _held.Value--;
+                gate.Dispose();
+            });
+        },
         Reserved = g => Reserved(g),
         ReplanResidual = ReplanResidual,
         ResumeSwitch = g => ResumeSwitch(g),
         JournalPlanSha = g => JournalPlanSha(g),
-        ArchiveJournal = g => ArchiveJournal(g),
+        ArchiveJournal = g =>
+        {
+            RequireHeld($"ArchiveJournal {g.Name}");
+            return ArchiveJournal(g);
+        },
         MoveAside = (src, dst) =>
         {
+            RequireHeld($"MoveAside {src}");
             if (MoveFails)
             {
                 throw new IOException("locked");
@@ -276,7 +317,11 @@ internal sealed class FakeWorld
                 File.Move(src, dst, true);
             }
         },
-        Touch = p => FileTimes[p] = Now,
+        Touch = p =>
+        {
+            RequireHeld($"Touch {p}");
+            FileTimes[p] = Now;
+        },
         Revert = (g, skipRows, ct) => Revert(g, skipRows, ct),
         Extents = p => Extents(p),
         Bitmap = d => Bitmap(d),

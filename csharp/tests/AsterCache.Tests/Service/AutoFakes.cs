@@ -150,6 +150,9 @@ internal sealed class FakeWorld
 
     public Func<GameSettings, string?> ArchiveJournal { get; set; } = _ => null;
 
+    /// 게임 단위 잠금 (기본: 항상 잡힘). 못 잡는 상황이나 잠금을 기다리는 동안 계획이 바뀌는 상황은 시험이 바꿔 끼움.
+    public Func<GameSettings, IDisposable?> Lock { get; set; } = _ => new FakeGate();
+
     /// MoveAside 로 옮긴 (원본, 새 이름) 기록. 파일 집합 (Files) 도 따라 바뀝니다.
     public List<(string From, string To)> Moved { get; } = [];
 
@@ -252,6 +255,7 @@ internal sealed class FakeWorld
         Apply = (g, plan, options, ct) => Apply(g, plan, options, ct),
         Stat = p => Stat(p),
         JournalRows = g => JournalRows(g),
+        Lock = g => Lock(g),
         Reserved = g => Reserved(g),
         ReplanResidual = ReplanResidual,
         ResumeSwitch = g => ResumeSwitch(g),

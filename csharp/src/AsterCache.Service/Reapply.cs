@@ -158,7 +158,7 @@ public sealed class ReapplyEnv
     /// 위 RunLocked 의 실행 부분을 바꿔 끼울 수 있는 형태 (run 은 잠금 안에서 예약을 다시 채운 옵션을 받음). 시험이 씁니다.
     public static ApplyReport RunLocked(string journalDir, GameSettings g, PlanFile plan, ApplyOptions options, Func<ApplyOptions, ApplyReport> run)
     {
-        using DataLock? gate = DataLock.TryAcquire(g.Plan, journalPath: JournalPath(journalDir, g));
+        using DataLock? gate = Lock(journalDir, g);
         if (gate is null)
         {
             return new ApplyReport { Stopped = DataLock.BusyReason };
@@ -218,9 +218,14 @@ public sealed class ReapplyEnv
         return Reverter.Revert(journal, vol, g.AllowedRoots, Hooks(null), new ApplyOptions(Execute: true), ct, skipRows);
     }
 
+    /// 이 게임의 계획 폴더·저널 폴더 잠금을 잡습니다 (서비스의 게임 단위 변경 구간용, 이미 이 스레드가 잡았으면 재진입). 못 잡으면 null (보류).
+    public static DataLock? Lock(string journalDir, GameSettings g) => DataLock.TryAcquire(g.Plan, journalPath: JournalPath(journalDir, g));
+
     /// 끝난 저널을 <이름>.jsonl.<UTC 시각> 으로 옮겨 둡니다 (Applier 가 존을 옮길 때 보관하는 것과 같은 이름). 저널이 없으면 null.
+    /// DataLock 안에서 실행하며 (이미 잡은 구간이면 재진입), 못 잡으면 PlanRejectedException (DataLock.BusyMessage).
     public static string? ArchiveJournal(string journalDir, GameSettings g)
     {
+        using DataLock gate = Lock(journalDir, g) ?? throw new PlanRejectedException(DataLock.BusyMessage);
         string journal = JournalPath(journalDir, g);
         if (!File.Exists(journal))
         {
@@ -240,7 +245,7 @@ public sealed class ReapplyEnv
     /// DataLock 안에서 실행하며, 잠금을 못 잡으면 PlanRejectedException (DataLock.BusyMessage) 으로 알려 호출자의 기존 보류 처리를 탑니다.
     public static PlanFile ReplanResidual(string journalDir, GameSettings g, PlanFile candidate, IReadOnlyList<PlanFile> olds, IReadOnlyList<IReadOnlyList<TraceEvent>>? sessions)
     {
-        using DataLock gate = DataLock.TryAcquire(g.Plan, journalPath: JournalPath(journalDir, g)) ?? throw new PlanRejectedException(DataLock.BusyMessage);
+        using DataLock gate = Lock(journalDir, g) ?? throw new PlanRejectedException(DataLock.BusyMessage);
         using NtfsVolume vol = OpenChecked(g);
         Directory.CreateDirectory(journalDir);
         Action<PlanFile, string>? save = sessions is null ? null : (p, path) => PlanOutput.Save(p, sessions, path);
@@ -251,7 +256,7 @@ public sealed class ReapplyEnv
     /// 활성 계획이나 저널이 기록과 어긋나면 PlanRejectedException 으로 거절하고 기록은 그대로 둡니다.
     public static SwitchResult? ResumeSwitch(string journalDir, GameSettings g)
     {
-        using DataLock gate = DataLock.TryAcquire(g.Plan, journalPath: JournalPath(journalDir, g)) ?? throw new PlanRejectedException(DataLock.BusyMessage);
+        using DataLock gate = Lock(journalDir, g) ?? throw new PlanRejectedException(DataLock.BusyMessage);
         return PlanSwitch.Resume(g.Plan, JournalPath(journalDir, g));
     }
 

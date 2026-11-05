@@ -119,6 +119,12 @@ internal static class VolumeCommands
     public static int Revert(ParsedArgs a, TextWriter o)
     {
         string journal = a.Text("journal")!;
+        using DataLock? gate = DataLock.TryAcquire(journal, journalPath: journal); // 저널을 읽고 고치는 구간: 서비스의 저널 폴더 잠금과 같음
+        if (gate is null)
+        {
+            return AsterCli.Emit(o, new JObject { { "error", "busy" }, { "detail", DataLock.BusyMessage } }, 4);
+        }
+
         string text = new UTF8Encoding(false, true).GetString(File.ReadAllBytes(journal));
         string firstStep = text.ReplaceLineEndings("\n").Split('\n').FirstOrDefault(x => x.Contains("\"type\": \"step\"", StringComparison.Ordinal))
             ?? throw new PyValueException("journal has no steps");

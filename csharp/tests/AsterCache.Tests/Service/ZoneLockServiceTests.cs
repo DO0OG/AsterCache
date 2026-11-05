@@ -35,7 +35,7 @@ public sealed class ZoneLockServiceTests : ApplyTestBase
     }
 
     // CLI 가 잡는 것과 같은 잠금 (계획 폴더와 저널 폴더).
-    private DataLock CliHolds() => DataLock.TryAcquire(PlanPath, journalPath: Path.Combine(JournalDir, "g.jsonl"))!;
+    private ForeignLock CliHolds() => new(PlanPath, Path.Combine(JournalDir, "g.jsonl"));
 
     [Fact]
     public void AutoRelocationDryRunAndExecuteReportBusyWhileAnotherHoldsTheLock()
@@ -44,7 +44,7 @@ public sealed class ZoneLockServiceTests : ApplyTestBase
         plan.Save(PlanPath);
         byte[] before = File.ReadAllBytes(PlanPath);
         AutoEnv env = AutoEnv.Create(JournalDir);
-        using DataLock holder = CliHolds();
+        using ForeignLock holder = CliHolds();
         using IDisposable wait = ShortWait();
 
         ApplyReport dry = env.Apply(Game, plan, new ApplyOptions(DryRun: true, SaveTo: PlanPath), default);
@@ -57,12 +57,55 @@ public sealed class ZoneLockServiceTests : ApplyTestBase
     }
 
     [Fact]
+    public void ServiceWritesToTheActivePlanAndItsSiblingsAreRefusedWithoutTheLockToken()
+    {
+        PlanFile plan = Make().Resolve(20000);
+        plan.Save(PlanPath);
+        AutoEnv env = AutoEnv.Create(JournalDir);
+
+        _ = Assert.Throws<InvalidOperationException>(() => env.SavePlan(plan, [], PlanPath));
+        _ = Assert.Throws<InvalidOperationException>(() => env.MoveAside(PlanPath, PlanPath + ".stale"));
+        _ = Assert.Throws<InvalidOperationException>(() => env.Touch(PlanPath));
+        Assert.True(File.Exists(PlanPath));
+        Assert.False(File.Exists(PlanPath + ".stale"));
+    }
+
+    [Fact]
+    public void WithTheGameLockHeldTheWritesPassAndTheInnerLockedCallsReenterInsteadOfWaiting()
+    {
+        PlanFile plan = Make().Resolve(20000);
+        plan.Save(PlanPath);
+        AutoEnv env = AutoEnv.Create(JournalDir);
+        using IDisposable wait = ShortWait(); // 안쪽 호출이 재진입하지 않으면 바로 busy
+
+        using IDisposable? gate = env.Lock(Game);
+        Assert.NotNull(gate);
+        ApplyReport inner = ReapplyEnv.RunLocked(JournalDir, Game, plan, new ApplyOptions(DryRun: true), _ => new ApplyReport()); // 볼륨은 열지 않고 잠금만 확인
+        Assert.Null(inner.Stopped); // busy 아님
+        Assert.Null(env.ArchiveJournal(Game)); // 저널이 없음: 잠금은 재진입
+        env.Touch(PlanPath);
+        env.MoveAside(PlanPath, PlanPath + ".stale");
+
+        Assert.True(File.Exists(PlanPath + ".stale"));
+    }
+
+    [Fact]
+    public void AnotherThreadHoldingTheGameLockMakesTheServiceLockBusyNotAnException()
+    {
+        AutoEnv env = AutoEnv.Create(JournalDir);
+        using ForeignLock holder = CliHolds();
+        using IDisposable wait = ShortWait();
+
+        Assert.Null(env.Lock(Game));
+    }
+
+    [Fact]
     public void PeriodicReapplyReportsBusyWhileAnotherHoldsTheLock()
     {
         PlanFile plan = Make().Resolve(20000);
         plan.Save(PlanPath);
         ReapplyEnv env = ReapplyEnv.Create(canApply: true, JournalDir);
-        using DataLock holder = CliHolds();
+        using ForeignLock holder = CliHolds();
         using IDisposable wait = ShortWait();
 
         ApplyReport rep = env.Apply(Game, plan, null, default);
@@ -75,7 +118,7 @@ public sealed class ZoneLockServiceTests : ApplyTestBase
     {
         string otherPlan = Path.Combine(Root, "elsewhere", "x.plan.json");
         string journal = Path.Combine(JournalDir, "g.jsonl");
-        using DataLock cli = DataLock.TryAcquire(otherPlan, journalPath: journal)!; // 다른 --out 폴더에서 같은 저널을 쓰는 호출
+        using var cli = new ForeignLock(otherPlan, journal); // 다른 --out 폴더에서 같은 저널을 쓰는 호출
         Make().Resolve(20000).Save(PlanPath);
         using IDisposable wait = ShortWait();
 
@@ -90,7 +133,7 @@ public sealed class ZoneLockServiceTests : ApplyTestBase
         PlanFile oldPlan = Make();
         PlanFile newPlan = Make().Resolve(30000);
         oldPlan.Save(PlanPath);
-        DataLock holder = CliHolds();
+        ForeignLock holder = CliHolds();
         bool ran = false;
 
         Task<ApplyReport> waiting = Task.Run(() => ReapplyEnv.RunLocked(JournalDir, Game, oldPlan, new ApplyOptions(DryRun: true, SaveTo: PlanPath), _ =>
@@ -113,7 +156,7 @@ public sealed class ZoneLockServiceTests : ApplyTestBase
     {
         PlanFile plan = Make();
         plan.Save(PlanPath);
-        DataLock holder = CliHolds();
+        ForeignLock holder = CliHolds();
         IReadOnlyList<(long Lcn, long Clusters)>? seen = null;
         var stale = new ApplyOptions(DryRun: true, Reserved: [(1L, 1L)]); // 잠금 전에 읽은 옛 스냅샷
 

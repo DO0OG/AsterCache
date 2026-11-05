@@ -610,7 +610,11 @@ public sealed class AutoRelocator
     // 재배치 도중 목표 존이 막혀 멈춘 경우: 업데이트 재계획과 같은 방식으로 저널·계획을 옆으로 치우고 (트레이스는 그대로) 처음 단계로 되돌립니다.
     private void SetAsideForReplan(GameSettings g)
     {
-        _ = _env.ArchiveJournal(g);
+        if (_env.ReplanResidual is null || _env.JournalRows(g) == 0)
+        {
+            _ = _env.ArchiveJournal(g); // 이미 옮긴 기록이 없거나 잔여 재계획이 없으면 처음부터 다시 계획
+        }
+        // 저널에 행이 있으면 그대로 둠: 다음 Plan 이 저널과 .stale 로 잔여 재계획하고 교체 때 저널을 보관 (보관부터 하면 이미 옮긴 데이터를 다시 옮김)
         _env.MoveAside(g.Plan, g.Plan + StaleSuffix);
         _status.ResetForReplan(g.Name, BusyDetail);
         _log.Info($"{g.Name}: zone region appears occupied, plan set aside as {StaleSuffix}, will plan again");

@@ -1,5 +1,6 @@
 using AsterCache.Core;
 using AsterCache.Core.Apply;
+using AsterCache.Core.Json;
 using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
@@ -236,6 +237,97 @@ public sealed partial class AutoRelocatorTests
         Assert.Equal(next.Sha(), PlanFile.Load(_game.Plan).Sha());
         Assert.Equal(rows, new Journal(Assert.Single(JournalArchives())).Rows.Count);
         Assert.Contains(_log.Lines, l => l.Contains("interrupted plan switch finished", StringComparison.Ordinal));
+    }
+
+    private sealed class Midway
+    {
+        public long Moved { get; set; }
+
+        public int Rows { get; set; }
+
+        public List<(string Path, long Vcn, long Lcn, long N)> Done { get; set; } = [];
+    }
+
+    // 실행 도중 존이 막혀 멈춘 상태: 첫 적용이 일부만 옮기고 막힘으로 멈추고, 다음 계획은 새 존에서 처음부터 만들어짐 (가짜 볼륨의 Move 기록과 저널은 진짜).
+    private Midway ZoneBlockedMidway()
+    {
+        _w.MakePlanAt = (_, _, _, _, _) => throw new PyValueException("zone overlaps hot data in a cycle; choose another zone"); // 이전 존 자리에서는 계획할 수 없어 새 존을 찾음
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
+        var midway = new Midway();
+        _w.ArchiveJournal = _ => // 서비스 환경의 저널 보관과 같게
+        {
+            if (!File.Exists(JournalPath))
+            {
+                return null;
+            }
+
+            string dest = PlanSwitch.ArchiveName(JournalPath, _w.Now.UtcDateTime);
+            File.Move(JournalPath, dest);
+            return dest;
+        };
+        int executes = 0;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            if (!options.Execute || executes++ > 0)
+            {
+                return real(g, plan, options, ct);
+            }
+
+            ApplyReport rep = real(g, plan, options with { ChunkBytes = 8 * Cb, WriteCap = 32 * Cb }, ct);
+            midway.Moved = Vol.Moves.Sum(m => m.N);
+            midway.Rows = JournalRowCount();
+            midway.Done = [.. Vol.Moves];
+            Vol.Ext[Path.Combine(Root, "other.bin")] = [new(0, midway.Done.Max(m => m.Lcn + m.N), 16)]; // 막힌 까닭: 존의 다음 구간을 다른 파일이 점유
+            _w.MakePlan = (_, _, _) => Make().Resolve(30000); // 막혀서 다음 계획은 다른 존에서 처음부터 (이미 옮긴 부분도 새 존으로 가는 계획)
+            rep.Stopped = Applier.ZoneOccupied;
+            return rep;
+        };
+        return midway;
+    }
+
+    private void AssertOnlyTheRemainderMovedAndTheEarlierJournalIsKept(Midway midway)
+    {
+        Assert.True(Entry.Stage == AutoStage.Done, Why());
+        Assert.InRange(midway.Moved, 1, 79);
+        Assert.Equal(80, Vol.Moves.Sum(m => m.N)); // 처음 옮긴 양 + 실제 잔여량 = 전체, 다시 옮긴 것 없음
+        Assert.DoesNotContain(Vol.Moves.Skip(midway.Done.Count), m => midway.Done.Any(d => d.Path == m.Path && m.Vcn < d.Vcn + d.N && d.Vcn < m.Vcn + m.N)); // 이미 옮긴 범위로는 Move 0
+        Assert.Equal(midway.Rows, new Journal(Assert.Single(JournalArchives())).Rows.Count); // 이전 저널은 보관 파일로 남음
+        Assert.True(File.Exists(_game.Plan + ".stale"));
+        Assert.Contains(_log.Lines, l => l.Contains("partially applied plan replanned", StringComparison.Ordinal));
+        Assert.Equal(0, Remaining(PlanFile.Load(_game.Plan)));
+    }
+
+    [Fact]
+    public void ZoneBlockedMidwayKeepsTheJournalSoTheNextReplanMovesOnlyTheRemainder()
+    {
+        Midway midway = ZoneBlockedMidway();
+
+        Run(TimeSpan.FromMinutes(3));
+        RunUntilDone();
+
+        AssertOnlyTheRemainderMovedAndTheEarlierJournalIsKept(midway);
+    }
+
+    [Fact]
+    public void ZoneBlockedMidwayThenAServiceRestartBeforeTheReplanStillMovesOnlyTheRemainder()
+    {
+        Midway midway = ZoneBlockedMidway();
+        for (int i = 0; i < 40 && midway.Moved == 0; i++)
+        {
+            Tick();
+            _w.Now += Step;
+        }
+
+        Assert.True(midway.Moved > 0, Why());
+        Assert.False(File.Exists(_game.Plan)); // 계획은 치워졌고
+        Assert.Equal(midway.Rows, JournalRowCount()); // 저널은 그대로 (보관은 다음 계획이 교체할 때)
+        _relocator = null; // 서비스 재시작
+        _w.Now += TimeSpan.FromMinutes(5);
+
+        Run(TimeSpan.FromMinutes(3));
+        RunUntilDone();
+
+        AssertOnlyTheRemainderMovedAndTheEarlierJournalIsKept(midway);
     }
 
     [Fact]

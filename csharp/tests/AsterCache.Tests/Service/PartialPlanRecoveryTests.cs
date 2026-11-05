@@ -258,14 +258,14 @@ public sealed partial class AutoRelocatorTests
         _w.ReplanResidual = (_, _, _, _) =>
         {
             residuals++;
-            throw new PlanRejectedException("no free run of 48 clusters");
+            throw new PlanRejectedException("unverified journal entry changed: f1.bin");
         };
 
         Run(TimeSpan.FromMinutes(4));
 
         Assert.Equal((1, AutoStage.WaitingIdle), (residuals, Entry.Stage)); // 첫 거절은 30 분 보류
         RecoveryAttempt held = _status.Recovery("bench")!;
-        Assert.Equal("no free run of 48 clusters", held.Reason);
+        Assert.Equal("unverified journal entry changed: f1.bin", held.Reason);
 
         _w.Now = held.NextAllowed!.Value + TimeSpan.FromMinutes(1); // 보류가 끝난 뒤 같은 입력, 같은 사유
         Run(TimeSpan.FromMinutes(4));
@@ -273,11 +273,11 @@ public sealed partial class AutoRelocatorTests
         Assert.Equal(2, residuals);
         Assert.Equal(AutoStage.Failed, Entry.Stage);
         Assert.Contains("recovery stopped", Entry.Detail, StringComparison.Ordinal);
-        Assert.Contains("no free run of 48 clusters", Entry.Detail, StringComparison.Ordinal);
+        Assert.Contains("unverified journal entry changed", Entry.Detail, StringComparison.Ordinal);
 
         for (int i = 0; i < 8; i++)
         {
-            _w.Now += TimeSpan.FromMinutes(31); // 30 분마다 되풀이하지 않음
+            _w.Now += TimeSpan.FromMinutes(5); // 30 분마다 되풀이하지 않음 (다시 평가는 한 시간 뒤: 별도 시험)
             Tick();
         }
 

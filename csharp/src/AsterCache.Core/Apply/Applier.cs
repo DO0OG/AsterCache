@@ -241,6 +241,9 @@ public static class Applier
 
     public const string SourceChangedReason = "source_changed";
 
+    /// 미검증 항목의 파일을 읽지 못한 거절의 문구 앞부분 (일시 사유: 검증 오류 "unverified journal entry changed" 와 구분해 호출자가 다시 시도함).
+    public const string UnverifiedUnreadable = "unverified journal entry unreadable";
+
     /// VerifyPending 의 결과: Verified = 이번에 검증해 verified 행을 남긴 수, SourceChanged = 원본이 바뀌어 보류된 경로 (이전에 보류된 것 포함, 중복 없음).
     public sealed record PendingVerification(int Verified, IReadOnlyList<string> SourceChanged);
 
@@ -398,7 +401,7 @@ public static class Applier
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException or Win32Exception)
             {
-                throw new PlanRejectedException($"unverified journal entry unreadable: {path}: {e.Message}");
+                throw new PlanRejectedException($"{UnverifiedUnreadable}: {path}: {e.Message}");
             }
         }
 

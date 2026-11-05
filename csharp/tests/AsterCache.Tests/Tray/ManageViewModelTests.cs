@@ -107,6 +107,9 @@ public sealed class ManageViewModelTests : IDisposable
             AsterArgs.Trace(["a.exe", "b.exe"], @"D:\G", @"C:\p\x.trace.json", @"C:\t\s"));
         Assert.Equal(["plan", "--trace", "t", "--origin-root", "r", "--zone-mib", "112", "--out", "p"], AsterArgs.Plan("t", "r", 112, "p"));
         Assert.Equal(["plan", "--trace", "t", "--origin-root", "r", "--zone-mib", "16384", "--dry-run"], AsterArgs.Plan("t", "r", 16384, null));
+        Assert.Equal(["plan", "--trace", "t", "--origin-root", "r", "--zone-mib", "112", "--out", "p", "--journal", "j"], AsterArgs.Plan("t", "r", 112, "p", "j"));
+        Assert.DoesNotContain("--journal", AsterArgs.Plan("t", "r", 112, null, "j")); // dry-run 은 저널을 보지 않음
+        Assert.Equal(["plan", "--from-plan", "p", "--out", "p", "--journal", "j"], AsterArgs.Replan("p", "j"));
         Assert.Equal(["apply", "--plan", "p", "--journal", "j", "--allowed-root", "r1", "--allowed-root", "r2", "--require-volume-label", "L", "--dry-run"],
             AsterArgs.Apply("p", "j", ["r1", "r2"], "L", execute: false));
         Assert.Equal("--execute", AsterArgs.Apply("p", "j", ["r1"], "L", execute: true)[^1]);
@@ -322,7 +325,8 @@ public sealed class ManageViewModelTests : IDisposable
         Assert.False(_cli.Calls[0].Elevate);
         Assert.Equal("16384", _cli.Calls[0].Args[_cli.Calls[0].Args.ToList().IndexOf("--zone-mib") + 1]);
         Assert.True(_cli.Calls[1].Elevate);
-        Assert.Equal(AsterArgs.Plan(_vm.RawTracePath("mw4"), Path.Combine(_dir, "Games", "mw4"), 112, Path.Combine(Plans, "mw4.plan.json")), _cli.Calls[1].Args);
+        Assert.Equal(AsterArgs.Plan(_vm.RawTracePath("mw4"), Path.Combine(_dir, "Games", "mw4"), 112, Path.Combine(Plans, "mw4.plan.json"), _vm.JournalPath("mw4")), _cli.Calls[1].Args);
+        Assert.DoesNotContain("--journal", _cli.Calls[0].Args);
     }
 
     [Fact]
@@ -366,6 +370,62 @@ public sealed class ManageViewModelTests : IDisposable
         string root = Path.Combine(_dir, "Games");
         Assert.Equal(AsterArgs.Apply(plan, _vm.JournalPath("mw4"), [root], "GAMES", execute: true), _cli.Calls[1].Args);
         Assert.Contains("--require-volume-label", _cli.Calls[1].Args);
+    }
+
+    private const string OtherPlanReply = "{\"error\":\"PlanRejected\",\"detail\":\"journal belongs to a different plan\"}";
+
+    [Fact]
+    public void ApplyReplansTheRestOnceWhenTheJournalBelongsToAnotherPlanThenRetries()
+    {
+        Register();
+        string plan = Path.Combine(Plans, "mw4.plan.json");
+        File.WriteAllText(plan, "{}");
+        int dryRuns = 0;
+        _cli.On("apply", (args, _) => args.Contains("--dry-run")
+            ? ++dryRuns == 1 ? CliResult.Parse(OtherPlanReply, 1) : CliResult.Parse("{\"tasks_todo\":2,\"dry_run\":true}")
+            : CliResult.Parse("{\"executed\":true,\"moved_bytes\":2097152,\"failed\":[],\"stopped\":null}"));
+        _cli.On("plan", (_, _) => CliResult.Parse("{\"stats\":{\"fixed_clusters\":5}}"));
+        _cli.On("verify", (_, _) => CliResult.Parse("{\"verdict\":\"contiguous\"}"));
+        var shown = new List<string>();
+
+        ActionResult r = _vm.Apply("mw4", shown.Add);
+
+        Assert.True(r.Ok);
+        Assert.Equal(["apply", "plan", "apply", "apply", "verify"], _cli.Calls.Select(c => c.Args[0]));
+        Assert.Equal(AsterArgs.Replan(plan, _vm.JournalPath("mw4")), _cli.Calls[1].Args);
+        Assert.True(_cli.Calls[1].Elevate);
+        Assert.Contains(L.T("Apply_JournalOtherPlan", "mw4"), shown);
+        Assert.Contains("이미 옮긴 부분은 유지하고 남은 부분만 다시 계획합니다", L.Get("ko", "Apply_JournalOtherPlan"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ApplyDoesNotReplanASecondTimeWhenTheRetryIsRejectedAgain()
+    {
+        Register();
+        File.WriteAllText(Path.Combine(Plans, "mw4.plan.json"), "{}");
+        _cli.On("apply", (_, _) => CliResult.Parse(OtherPlanReply, 1));
+        _cli.On("plan", (_, _) => CliResult.Parse("{\"stats\":{}}"));
+
+        ActionResult r = _vm.Apply("mw4", _ => { });
+
+        Assert.False(r.Ok);
+        Assert.Equal(["apply", "plan", "apply"], _cli.Calls.Select(c => c.Args[0]));
+        Assert.Contains("journal belongs to a different plan", r.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ApplyStopsWhenTheResidualReplanFails()
+    {
+        Register();
+        File.WriteAllText(Path.Combine(Plans, "mw4.plan.json"), "{}");
+        _cli.On("apply", (_, _) => CliResult.Parse(OtherPlanReply, 1));
+        _cli.On("plan", (_, _) => CliResult.Parse("{\"error\":\"PlanRejected\",\"detail\":\"no free run of 9 clusters\"}", 1));
+
+        ActionResult r = _vm.Apply("mw4", _ => { });
+
+        Assert.False(r.Ok);
+        Assert.Equal(["apply", "plan"], _cli.Calls.Select(c => c.Args[0]));
+        Assert.Contains("no free run of 9 clusters", r.Message, StringComparison.Ordinal);
     }
 
     [Fact]

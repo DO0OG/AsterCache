@@ -1,3 +1,4 @@
+using AsterCache.Core.Settings;
 using AsterCache.Service;
 using Xunit;
 
@@ -128,5 +129,40 @@ public sealed class BootQuietTests : IDisposable
         Prewarmer p = MakePrewarm(rawTrace: false);
 
         Assert.Equal(new DateTimeOffset(2026, 11, 5, 9, 59, 30, TimeSpan.Zero), p.LastWarmed("a"));
+    }
+
+    [Fact]
+    public void BusyGameDriveEndsQuietAtTheUptimeCapWithoutIdle()
+    {
+        _idle = false; // 게임 드라이브가 계속 바쁨
+        BootQuiet q = Make();
+        _uptimeMs = 5 * Minute;
+        q.Refresh();
+        _now = _now.AddMinutes(9);
+        _uptimeMs = 15 * Minute - 1;
+        q.Refresh();
+        Assert.True(q.Active);
+
+        _uptimeMs = 15 * Minute; // BootDelay + MaxQuiet
+        q.Refresh();
+
+        Assert.False(q.Active);
+        Assert.Single(_log.Lines, line => line.Contains("boot quiet period ended: uptime cap", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void UnreadableGameDriveEndsQuietAtTheUptimeCap()
+    {
+        GameSettings g = Games.Make("a", "a.exe") with { OriginRoot = @"Q:\games" }; // 처리량을 못 읽는 드라이브: 유휴 아님
+        BootQuiet q = BootQuiet.Real(_log, () => [g], () => _uptimeMs);
+        _uptimeMs = 5 * Minute;
+        q.Refresh();
+        Assert.True(q.Active);
+
+        _uptimeMs = 15 * Minute;
+        q.Refresh();
+
+        Assert.False(q.Active);
+        Assert.Single(_log.Lines, line => line.Contains("boot quiet period ended: uptime cap", StringComparison.Ordinal));
     }
 }

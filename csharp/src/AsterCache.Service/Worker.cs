@@ -430,29 +430,7 @@ public sealed class Worker : BackgroundService
         {
             while (!ct.IsCancellationRequested)
             {
-                _quiet.Refresh();
-                RunHeldTriggers();
-                foreach (GameSettings g in _settings.Games)
-                {
-                    due.TryAdd(g.Name, start + FirstCheckDelay);
-                    if (DateTimeOffset.UtcNow < due[g.Name] || _quiet.Defers("layout check and reapply"))
-                    {
-                        continue; // 부팅 조용 구간의 검사는 기한을 그대로 둬서 구간이 끝난 다음 틱에 함
-                    }
-
-                    ReapplyVerdict v = _gate.Run(ct, token => _checker.Check(g, token));
-                    bool waiting = v == ReapplyVerdict.Cancelled || (resuming.Contains(g.Name) && v is ReapplyVerdict.GameRunning or ReapplyVerdict.DiskBusy or ReapplyVerdict.Recovering or ReapplyVerdict.OnBattery or ReapplyVerdict.NotIdle or ReapplyVerdict.PostUpdateDelay);
-                    _ = waiting ? resuming.Add(g.Name) : resuming.Remove(g.Name);
-                    due[g.Name] = DateTimeOffset.UtcNow + (waiting ? ResumeRetry : TimeSpan.FromMinutes(g.ReapplyMinutes));
-                }
-
-                if (_auto is not null && !_quiet.Defers("auto relocation and new trace prewarm"))
-                {
-                    _auto.RelocateTick(_gate, ct);
-                }
-
-                NoteGameExits();
-                MaintainPrewarm();
+                ReapplyTick(start, due, resuming, ct);
                 await (_auto is null ? Task.Delay(CheckTick, ct) : _auto.WaitForTickAsync(CheckTick, ct)); // 발견이 새 게임을 등록하면 일찍 깨움
             }
         }
@@ -460,6 +438,34 @@ public sealed class Worker : BackgroundService
         {
             // 종료
         }
+    }
+
+    /// 재적용 틱 하나: 재적용 루프가 부르고, 시험도 같은 틱을 직접 부릅니다. 부팅 조용 구간이면 배치 검사와 자동 재배치를 보류하고 기한을 그대로 둬서 구간이 끝난 다음 틱에 합니다. 보류한 계기는 구간이 끝나면 돌립니다.
+    public void ReapplyTick(DateTimeOffset start, Dictionary<string, DateTimeOffset> due, HashSet<string> resuming, CancellationToken ct)
+    {
+        _quiet.Refresh();
+        RunHeldTriggers();
+        foreach (GameSettings g in _settings.Games)
+        {
+            due.TryAdd(g.Name, start + FirstCheckDelay);
+            if (DateTimeOffset.UtcNow < due[g.Name] || _quiet.Defers("layout check and reapply"))
+            {
+                continue; // 부팅 조용 구간의 검사는 기한을 그대로 둬서 구간이 끝난 다음 틱에 함
+            }
+
+            ReapplyVerdict v = _gate.Run(ct, token => _checker.Check(g, token));
+            bool waiting = v == ReapplyVerdict.Cancelled || (resuming.Contains(g.Name) && v is ReapplyVerdict.GameRunning or ReapplyVerdict.DiskBusy or ReapplyVerdict.Recovering or ReapplyVerdict.OnBattery or ReapplyVerdict.NotIdle or ReapplyVerdict.PostUpdateDelay);
+            _ = waiting ? resuming.Add(g.Name) : resuming.Remove(g.Name);
+            due[g.Name] = DateTimeOffset.UtcNow + (waiting ? ResumeRetry : TimeSpan.FromMinutes(g.ReapplyMinutes));
+        }
+
+        if (_auto is not null && !_quiet.Defers("auto relocation and new trace prewarm"))
+        {
+            _auto.RelocateTick(_gate, ct);
+        }
+
+        NoteGameExits();
+        MaintainPrewarm();
     }
 
     // 폴링·ETW 어느 쪽이든 재적용 틱마다 (30 초) 프로세스 이름을 한 번 읽어 실행 중이던 게임이 사라졌는지 봅니다.

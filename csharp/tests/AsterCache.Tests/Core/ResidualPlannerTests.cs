@@ -199,18 +199,93 @@ public sealed class ResidualPlannerTests : ApplyTestBase
     }
 
     [Fact]
-    public void AFileWhoseExtentsCannotBeReadIsHeldBackFromOrderFingerprintsAndTasks()
+    public void AFileWhoseExtentsCannotBeReadStaysInOrderAndFingerprintsWithoutTasksAndIsRecordedAsHeld()
     {
         PlanFile cand = Candidate();
 
         PlanFile plan = ResidualPlanner.Build(cand, [], p => p == F2 ? null : Vol.Ext[p], FindRun);
 
-        Assert.All(plan.Order, o => Assert.Equal(F1, o.Path));
-        Assert.Equal(3, plan.Order.Count);
+        Assert.Equal(cand.Order, plan.Order); // 보류도 계획에서 빠지지 않음
+        Assert.Equal(cand.Fingerprints, plan.Fingerprints);
         Assert.All(plan.Tasks, t => Assert.Equal(F1, t.Path));
+        JObject held = Assert.IsType<JObject>(plan.Stats["held_files"]);
+        Assert.Equal([new KeyValuePair<string, object?>(F2, "unreadable")], held.ToList());
+        Assert.Equal(0L, plan.Stats["skipped_files"]);
+        Assert.Equal(3 * 16L, plan.Zone.Clusters);
+        PlanFile reloaded = PlanFile.FromJson(JsonRead.Parse(plan.Dumps()));
+        Assert.Equal(plan.Sha(), reloaded.Sha()); // 저장해 다시 읽어도 같은 계획
+        Assert.Equal(1, Assert.IsType<JObject>(reloaded.Stats["held_files"]).Count);
+    }
+
+    [Fact]
+    public void APlanWithHeldFilesIsAcceptedByTheApplierAndTheHeldFileIsNotMoved()
+    {
+        PlanFile plan = ResidualPlanner.Build(Candidate(), [], p => p == F2 ? null : Vol.Ext[p], FindRun);
+
+        ApplyReport dry = Apply(plan, new ApplyOptions(DryRun: true));
+        Vol.Moves.Clear();
+        ApplyReport rep = Apply(plan, new ApplyOptions(Execute: true));
+
+        Assert.Equal(plan.Tasks.Count, dry.TasksTodo);
+        Assert.Empty(rep.Failed);
+        Assert.DoesNotContain(Vol.Moves, m => m.Path == F2); // 보류 파일은 옮기지 않음
+        LayoutReport layout = Verify(plan);
+        Assert.Equal(0, layout.MissingFiles); // 이 시험의 조회는 정상 (보류는 계획을 만들 때의 판정)
+    }
+
+    [Fact]
+    public void APlanWhoseEveryFileIsUnreadableHasNoTasksButEveryFileIsHeld()
+    {
+        PlanFile cand = Candidate();
+
+        PlanFile plan = ResidualPlanner.Build(cand, [], _ => null, FindRun);
+
+        Assert.Empty(plan.Tasks);
+        Assert.Equal(cand.Order, plan.Order);
+        Assert.Equal(2, Assert.IsType<JObject>(plan.Stats["held_files"]).Count);
+        LayoutReport layout = LayoutVerifier.Verify(plan, _ => null);
+        Assert.False(layout.Contiguous); // 읽지 못한 파일이 있으면 배치됨으로 보지 않음
+        Assert.Equal(cand.Order.Count, layout.MissingFiles);
+    }
+
+    [Fact]
+    public void HeldFilesOfThePreviousPlanAreNotInheritedWhenTheFileIsReadableAgain()
+    {
+        PlanFile held = ResidualPlanner.Build(Candidate(), [], p => p == F2 ? null : Vol.Ext[p], FindRun);
+
+        PlanFile next = ResidualPlanner.Build(held, held.Tasks, p => Vol.Ext[p], FindRun);
+
+        Assert.False(next.Stats.ContainsKey("held_files"));
+        Assert.Contains(next.Tasks, t => t.Path == F2); // 읽히게 되면 task 가 생김
+    }
+
+    [Fact]
+    public void WhatWasAlreadyMovedOfAHeldFileIsRememberedSoTheNextPlanDoesNotMoveItAgain()
+    {
+        PlanFile cand = Candidate();
+        Vol.Move(F2, 0, 20000, 16); // F2 의 한 범위는 이미 이전 목표에 있음
+        PlanTask moved = new(F2, 0, 16, 20000);
+        PlanFile held = ResidualPlanner.Build(cand, [moved], p => p == F2 ? null : Vol.Ext[p], FindRun); // 그때 F2 는 읽지 못함 (저널은 보관되어 사라짐)
+        PlanFile reloaded = PlanFile.FromJson(JsonRead.Parse(held.Dumps()));
+
+        IReadOnlyList<PlanTask> previous = ResidualPlanner.PreviousTargets(null, [reloaded]);
+        PlanFile next = ResidualPlanner.Build(reloaded, previous, p => Vol.Ext[p], FindRun); // 읽히게 된 뒤
+
+        Assert.Contains(moved, previous);
+        Assert.Contains(new PlanTask(F2, 0, 16, 20000), next.Tasks); // 고정 task (이동 0)
+        Assert.False(next.Stats.ContainsKey("held_files") || next.Stats.ContainsKey("held_targets"));
+        Assert.Equal((HotTotal - 16) * Cb, Apply(next, new ApplyOptions(DryRun: true)).BytesTodo);
+    }
+
+    [Fact]
+    public void AFileWithNoDiskExtentsIsStillDroppedAndCountedAsSkipped()
+    {
+        PlanFile plan = ResidualPlanner.Build(Candidate(), [], p => p == F2 ? [] : Vol.Ext[p], FindRun);
+
+        Assert.All(plan.Order, o => Assert.Equal(F1, o.Path));
         Assert.Equal([F1], plan.Fingerprints.Select(f => f.Path));
         Assert.Equal(1L, plan.Stats["skipped_files"]);
-        Assert.Equal(3 * 16L, plan.Zone.Clusters);
+        Assert.False(plan.Stats.ContainsKey("held_files"));
     }
 
     [Fact]

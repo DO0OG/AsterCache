@@ -5,6 +5,7 @@ using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
 using AsterCache.Service;
+using AsterCache.Tracer;
 using Xunit;
 
 namespace AsterCache.Tests.Service;
@@ -180,37 +181,215 @@ public sealed partial class AutoRelocatorTests
     }
 
     [Fact]
-    public void ALockedJournalStopsTheReplanWithoutLosingAnythingAndALaterRunFinishesIt()
+    public void ALockedJournalDefersTheReplanWithoutLosingAnythingAndTheSameRunFinishesItOnceUnlocked()
     {
         PlanFile first = Make().Resolve(20000);
         Assert.Equal("write_cap", Apply(first, Partial(32)).Stopped);
         long moved = Vol.Moves.Sum(m => m.N);
         Make().Resolve(30000).Save(_game.Plan);
-        string planBytes = PlanFile.Load(_game.Plan).Sha();
+        string planSha = PlanFile.Load(_game.Plan).Sha();
         byte[] journalBytes = File.ReadAllBytes(JournalPath);
         WaitingForTheRest();
         Vol.Moves.Clear();
 
         using (new FileStream(JournalPath, FileMode.Open, FileAccess.Read, FileShare.Read)) // 열려 있어 보관할 수 없음
         {
-            Run(TimeSpan.FromMinutes(4));
+            Run(TimeSpan.FromMinutes(6));
 
-            Assert.Equal(AutoStage.Failed, Entry.Stage);
+            Assert.Equal(AutoStage.WaitingIdle, Entry.Stage); // 실패로 기록하지 않고 기다림
+            Assert.Contains(_log.Lines, l => l.Contains("nothing was changed, will retry", StringComparison.Ordinal));
             Assert.Empty(Vol.Moves); // 아무것도 더 옮기지 않음
-            Assert.Equal(planBytes, PlanFile.Load(_game.Plan).Sha()); // 새 계획은 승격되지 않음
+            Assert.Equal(planSha, PlanFile.Load(_game.Plan).Sha()); // 새 계획은 승격되지 않음
             Assert.Equal(journalBytes, File.ReadAllBytes(JournalPath)); // 저널은 그대로
             Assert.Empty(JournalArchives());
         }
 
-        _relocator = null; // 재시작 (실패한 게임은 실행당 한 번 다시 시도)
-        _w.FileTimes[AutoTracer.RawTracePath(_game)] = _w.Now; // 실패한 게임을 다시 시도하는 조건 (트레이스 시각을 아는 환경)
-        _w.Now += TimeSpan.FromMinutes(5);
+        _w.Now += AutoRelocator.TransientRetry; // 서비스를 다시 시작하지 않음: 잠금이 풀린 뒤 다음 틱들에서 이어짐
         Run(TimeSpan.FromMinutes(4));
         RunUntilDone();
 
         Assert.True(Entry.Stage == AutoStage.Done, Why());
-        Assert.Equal(80 - moved, Vol.Moves.Sum(m => m.N));
+        Assert.Equal(80 - moved, Vol.Moves.Sum(m => m.N)); // 이미 옮긴 것은 다시 옮기지 않고 잔여만
         Assert.Equal(journalBytes.Length, new FileInfo(Assert.Single(JournalArchives())).Length);
+    }
+
+    [Fact]
+    public void ATemporaryErrorWhileFinishingAnInterruptedSwitchAtStartupIsRetriedInTheSameRun()
+    {
+        PlanFile first = Make().Resolve(20000);
+        Assert.Equal("write_cap", Apply(first, Partial(32)).Stopped);
+        first.Save(_game.Plan);
+        PlanFile next = Make().Resolve(30000);
+        Assert.Throws<InvalidOperationException>(() => PlanSwitch.Commit(next, _game.Plan, JournalPath, () => _w.Now.UtcDateTime, hooks: Hooks(), checkpoint: p =>
+        {
+            if (p == "recorded")
+            {
+                throw new InvalidOperationException("crash");
+            }
+        }));
+        WaitingForTheRest();
+        Func<GameSettings, SwitchResult?> real = _w.ResumeSwitch;
+        int failures = 2;
+        _w.ResumeSwitch = g => failures-- > 0 ? throw new IOException("locked") : real(g);
+
+        Tick();
+
+        Assert.True(File.Exists(_game.Plan + PlanSwitch.RecordSuffix)); // 아직 끝내지 못함
+        Assert.NotEqual(AutoStage.Failed, Entry.Stage);
+
+        for (int i = 0; i < 4; i++)
+        {
+            _w.Now += Step;
+            Tick(); // 서비스를 다시 시작하지 않고 다음 틱들에서 재개
+        }
+
+        Assert.False(File.Exists(_game.Plan + PlanSwitch.RecordSuffix));
+        Assert.Equal(next.Sha(), PlanFile.Load(_game.Plan).Sha());
+        Assert.Single(JournalArchives());
+    }
+
+    [Fact]
+    public void ARejectionRepeatedAfterTheHoldForTheSamePlanJournalAndReasonStopsInsteadOfRetryingEvery30Minutes()
+    {
+        Assert.Equal("write_cap", Apply(Make().Resolve(20000), Partial(32)).Stopped);
+        Make().Resolve(30000).Save(_game.Plan);
+        WaitingForTheRest();
+        int residuals = 0;
+        _w.ReplanResidual = (_, _, _, _) =>
+        {
+            residuals++;
+            throw new PlanRejectedException("no free run of 48 clusters");
+        };
+
+        Run(TimeSpan.FromMinutes(4));
+
+        Assert.Equal((1, AutoStage.WaitingIdle), (residuals, Entry.Stage)); // 첫 거절은 30 분 보류
+        RecoveryAttempt held = _status.Recovery("bench")!;
+        Assert.Equal("no free run of 48 clusters", held.Reason);
+
+        _w.Now = held.NextAllowed!.Value + TimeSpan.FromMinutes(1); // 보류가 끝난 뒤 같은 입력, 같은 사유
+        Run(TimeSpan.FromMinutes(4));
+
+        Assert.Equal(2, residuals);
+        Assert.Equal(AutoStage.Failed, Entry.Stage);
+        Assert.Contains("recovery stopped", Entry.Detail, StringComparison.Ordinal);
+        Assert.Contains("no free run of 48 clusters", Entry.Detail, StringComparison.Ordinal);
+
+        for (int i = 0; i < 8; i++)
+        {
+            _w.Now += TimeSpan.FromMinutes(31); // 30 분마다 되풀이하지 않음
+            Tick();
+        }
+
+        Assert.Equal((2, AutoStage.Failed), (residuals, Entry.Stage));
+
+        _w.FileTimes[AutoTracer.RawTracePath(_game)] = _w.Now; // 새 트레이스가 쓰이면 다시 평가
+        Run(TimeSpan.FromMinutes(4));
+
+        Assert.Equal(3, residuals);
+        Assert.Equal(AutoStage.WaitingIdle, Entry.Stage);
+        Assert.NotEqual(held.Stamp, _status.Recovery("bench")!.Stamp);
+    }
+
+    [Fact]
+    public void AResidualPlanThatLeavesEveryFileUnreadableIsNeverCompletedAndIsPlannedAgainLaterKeepingWhatWasMoved()
+    {
+        PlanFile first = Make().Resolve(20000);
+        Assert.Equal("write_cap", Apply(first, Partial(32)).Stopped);
+        long moved = Vol.Moves.Sum(m => m.N);
+        Make().Resolve(30000).Save(_game.Plan);
+        WaitingForTheRest();
+        Vol.Moves.Clear();
+        bool readable = false;
+        var unreadable = new ApplyHooks { Extents = p => readable ? Vol.Ext[p] : null, Digest = (p, size, extra) => SampleHasher.Compute(p, size, extra, null), SkipReason = _ => null };
+        _w.ReplanResidual = (g, c, o, sessions) => ResidualReplan.Run(c, g.Plan, JournalPath, Vol, _w.Reserved(g), unreadable, () => _w.Now.UtcDateTime,
+            sessions is null ? null : (p, path) => PlanOutput.Save(p, sessions, path), o).Plan;
+        _w.MakePlanAt = (sessions, origin, zoneMib, lcn, used) => PlanFile.Make(sessions, origin, zoneMib << 20, Cb, p => Vol.Ext[p], zoneStartLcn: lcn, preserveBytes: 64 << 20, fixedClusters: used);
+
+        Run(TimeSpan.FromMinutes(6));
+
+        Assert.Equal(AutoStage.WaitingIdle, Entry.Stage); // 조회 불가를 "이미 배치됨" 으로 확정하지 않음
+        Assert.Null(Entry.RelocatedAt);
+        Assert.Contains("unreadable", Entry.Detail, StringComparison.Ordinal);
+        Assert.Empty(Vol.Moves);
+        Assert.Equal(2, Assert.IsType<AsterCache.Core.Json.JObject>(PlanFile.Load(_game.Plan).Stats["held_files"]).Count);
+
+        readable = true; // 읽히게 된 뒤
+        _w.Now += AutoRelocator.UnreadableRetry;
+        Run(TimeSpan.FromMinutes(4));
+        RunUntilDone();
+
+        Assert.True(Entry.Stage == AutoStage.Done, Why());
+        Assert.Equal(80 - moved, Vol.Moves.Sum(m => m.N)); // 다시 계획해도 이미 옮긴 조각은 그대로, 잔여만
+        Assert.Equal(0, Remaining(PlanFile.Load(_game.Plan)));
+        Assert.False(PlanFile.Load(_game.Plan).Stats.ContainsKey("held_files"));
+    }
+
+    [Fact]
+    public void ARemainderReplanWritesThePrefetchFileAgainFromTheTraceOrThePlanOrder()
+    {
+        Assert.Equal("write_cap", Apply(Make().Resolve(20000), Partial(32)).Stopped);
+        Make().Resolve(30000).Save(_game.Plan);
+        WaitingForTheRest();
+        string prefetch = _game.Plan + PlanOutput.PrefetchSuffix;
+        File.WriteAllText(prefetch, "[]"); // 옛 선읽기 파일
+
+        Run(TimeSpan.FromMinutes(4));
+        RunUntilDone();
+
+        Assert.True(Entry.Stage == AutoStage.Done, Why());
+        Assert.NotEqual("[]", File.ReadAllText(prefetch)); // 새 계획에 맞게 다시 씀
+        Assert.NotEmpty(JsonRead.Parse(File.ReadAllText(prefetch)) as List<object?> ?? []);
+    }
+
+    [Fact]
+    public void AnExtensionOfAResidualPlanKeepsEveryPieceAlreadyFixedInTheOldZonesAndMovesOnlyNewBlocks()
+    {
+        PlanFile first = Make().Resolve(20000);
+        Assert.Equal("write_cap", Apply(first, Partial(32)).Stopped);
+        Make().Resolve(30000).Save(_game.Plan);
+        WaitingForTheRest();
+        Run(TimeSpan.FromMinutes(4));
+        RunUntilDone();
+        Assert.True(Entry.Stage == AutoStage.Done, Why());
+        PlanFile residual = PlanFile.Load(_game.Plan);
+        Assert.Equal(1L, residual.Stats["residual"]);
+        Assert.Contains(residual.Tasks, t => t.TargetLcn < residual.Zone.StartLcn || t.TargetLcn >= residual.Zone.StartLcn + residual.Zone.Clusters); // 존 밖 (옛 존) 에 고정된 조각이 있음
+        var before = residual.Order.Select(o => (o, Pieces: ZoneAllocator.Pieces(Vol.Ext[o.Path], o.Vcn, o.Vcn + o.Clusters).ToList())).ToList();
+
+        SetAuto(a => a with { TraceRuns = 3, TraceMergeMinMib = 1, PostRelocateRecovery = AutoSettings.RecoveryOff });
+        Sessions = [Merged(RestOfTheBlocks())];
+        string raw = AutoTracer.RawTracePath(_game);
+        _w.Files.Add(TraceWriter.RunPath(raw, 1));
+        _w.Files.Add(TraceWriter.RunPath(raw, 2));
+        _w.FileTimes[_game.Plan] = _w.Now - TimeSpan.FromHours(1);
+        _w.FileTimes[raw] = _w.Now;
+        _w.MakePlan = (sessions, origin, zoneMib) => PlanFile.Make(sessions, origin, zoneMib << 20, Cb, p => Vol.Ext[p], preserveBytes: 64 << 20);
+        _w.MakePlanAt = (sessions, origin, zoneMib, lcn, used) => PlanFile.Make(sessions, origin, zoneMib << 20, Cb, p => Vol.Ext[p], zoneStartLcn: lcn, preserveBytes: 64 << 20, fixedClusters: used);
+        _w.ArchiveJournal = _ => File.Exists(JournalPath) ? Archive() : null;
+        Vol.Moves.Clear();
+
+        Tick();
+        Assert.True(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix) || File.Exists(_game.Plan + ".stale"), Why());
+        RunUntilDone();
+
+        Assert.True(Entry.Stage == AutoStage.Done, Why());
+        Assert.NotEmpty(Vol.Moves); // 새 블록은 옮김
+        Assert.Equal(32L, PlanFile.Load(_game.Plan).Stats["hot_blocks"]);
+        foreach ((PlanRange o, List<(long Vcn, long Lcn, long N)> pieces) in before)
+        {
+            Assert.Equal(pieces, ZoneAllocator.Pieces(Vol.Ext[o.Path], o.Vcn, o.Vcn + o.Clusters).ToList()); // 옛 핫 범위는 그 자리 그대로
+        }
+
+        Assert.DoesNotContain(Vol.Moves, m => before.Any(b => b.o.Path == m.Path && m.Vcn < b.o.Vcn + b.o.Clusters && b.o.Vcn < m.Vcn + m.N)); // 옛 존 고정 조각에 Move 0
+        Assert.Equal(0, Remaining(PlanFile.Load(_game.Plan)));
+    }
+
+    private string Archive()
+    {
+        string dest = JournalPath + ".old";
+        File.Move(JournalPath, dest);
+        return dest;
     }
 
     [Fact]

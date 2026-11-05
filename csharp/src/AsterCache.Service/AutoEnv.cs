@@ -301,7 +301,7 @@ public sealed class AutoEnv
             LoadPlan = PlanFile.Load,
             RealPath = RealPaths.Real,
             Stat = PlanFile.FingerprintOf,
-            Apply = (g, plan, options, ct) => ReapplyEnv.Run(journalDir, g, plan, options, ct, log),
+            Apply = (g, plan, options, ct) => ReapplyEnv.RunLocked(journalDir, g, plan, options, ct, log),
             JournalRows = g => ReapplyEnv.JournalRows(journalDir, g),
             Reserved = ReapplyEnv.ReservedFor,
             ReplanResidual = (g, candidate, olds, sessions) => ReapplyEnv.ReplanResidual(journalDir, g, candidate, olds, sessions),

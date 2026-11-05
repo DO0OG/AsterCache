@@ -143,17 +143,33 @@ public sealed class ReapplyEnv
             Extents = FileLayout.Extents,
             Stat = PlanFile.FingerprintOf,
             RealPath = RealPaths.Real,
-            Apply = (g, plan, injected, ct) => RunLocked(g, () => Run(journalDir, g, plan, ChooseOptions(g, injected, relocateOrder?.Invoke() ?? RelocateOrder.Target, relocateParallel?.Invoke(g) ?? 1), ct, log)), // 존을 다시 정하면 계획에 남김
+            Apply = (g, plan, injected, ct) => RunLocked(journalDir, g, plan, ChooseOptions(g, injected, relocateOrder?.Invoke() ?? RelocateOrder.Target, relocateParallel?.Invoke(g) ?? 1), ct, log), // 존을 다시 정하면 계획에 남김
             TierActive = g => TierEngine.HasActive(Path.Combine(Path.GetDirectoryName(journalDir) ?? journalDir, "tier"), g.Name),
         };
         return env;
     }
 
-    /// 적용 전체를 CLI 와 같은 DataLock 안에서 실행합니다. 잠금을 못 잡으면 아무것도 옮기지 않고 Stopped = DataLock.BusyReason 인 빈 보고서를 돌려줍니다 (오류가 아니라 다음 검사에서 다시).
-    public static ApplyReport RunLocked(GameSettings g, Func<ApplyReport> work)
+    /// 적용 (dry-run 포함) 전체를 CLI 와 같은 DataLock 안에서 실행합니다. 잠금을 못 잡으면 아무것도 옮기지 않고 Stopped = DataLock.BusyReason 인 빈 보고서를 돌려줍니다 (오류가 아니라 다음 검사에서 다시).
+    /// 잠금을 잡은 뒤 디스크의 활성 계획이 넘겨받은 plan 과 다르면 (기다리는 동안 계획이 바뀜) PlanRejectedException (DataLock.PlanChangedMessage) 으로 거절해 옛 계획을 되살리지 않고,
+    /// 존 예약은 잠금 안에서 다시 조회해 options.Reserved 를 덮어씁니다 (잠금 전 스냅샷을 쓰지 않음).
+    public static ApplyReport RunLocked(string journalDir, GameSettings g, PlanFile plan, ApplyOptions options, CancellationToken ct, ILog? log = null) =>
+        RunLocked(journalDir, g, plan, options, o => Run(journalDir, g, plan, o, ct, log));
+
+    /// 위 RunLocked 의 실행 부분을 바꿔 끼울 수 있는 형태 (run 은 잠금 안에서 예약을 다시 채운 옵션을 받음). 시험이 씁니다.
+    public static ApplyReport RunLocked(string journalDir, GameSettings g, PlanFile plan, ApplyOptions options, Func<ApplyOptions, ApplyReport> run)
     {
-        using DataLock? gate = DataLock.TryAcquire(g.Plan);
-        return gate is null ? new ApplyReport { Stopped = DataLock.BusyReason } : work();
+        using DataLock? gate = DataLock.TryAcquire(g.Plan, journalPath: JournalPath(journalDir, g));
+        if (gate is null)
+        {
+            return new ApplyReport { Stopped = DataLock.BusyReason };
+        }
+
+        if (!File.Exists(g.Plan) || PlanFile.Load(g.Plan).Sha() != plan.Sha())
+        {
+            throw new PlanRejectedException(DataLock.PlanChangedMessage);
+        }
+
+        return run(options with { Reserved = ReservedFor(g) });
     }
 
     /// 서비스가 정한 옵션 (회당 쓰기 상한 포함) 이 있으면 그것, 없으면 OptionsFor 의 기본.
@@ -224,7 +240,7 @@ public sealed class ReapplyEnv
     /// DataLock 안에서 실행하며, 잠금을 못 잡으면 PlanRejectedException (DataLock.BusyMessage) 으로 알려 호출자의 기존 보류 처리를 탑니다.
     public static PlanFile ReplanResidual(string journalDir, GameSettings g, PlanFile candidate, IReadOnlyList<PlanFile> olds, IReadOnlyList<IReadOnlyList<TraceEvent>>? sessions)
     {
-        using DataLock gate = DataLock.TryAcquire(g.Plan) ?? throw new PlanRejectedException(DataLock.BusyMessage);
+        using DataLock gate = DataLock.TryAcquire(g.Plan, journalPath: JournalPath(journalDir, g)) ?? throw new PlanRejectedException(DataLock.BusyMessage);
         using NtfsVolume vol = OpenChecked(g);
         Directory.CreateDirectory(journalDir);
         Action<PlanFile, string>? save = sessions is null ? null : (p, path) => PlanOutput.Save(p, sessions, path);
@@ -235,7 +251,7 @@ public sealed class ReapplyEnv
     /// 활성 계획이나 저널이 기록과 어긋나면 PlanRejectedException 으로 거절하고 기록은 그대로 둡니다.
     public static SwitchResult? ResumeSwitch(string journalDir, GameSettings g)
     {
-        using DataLock gate = DataLock.TryAcquire(g.Plan) ?? throw new PlanRejectedException(DataLock.BusyMessage);
+        using DataLock gate = DataLock.TryAcquire(g.Plan, journalPath: JournalPath(journalDir, g)) ?? throw new PlanRejectedException(DataLock.BusyMessage);
         return PlanSwitch.Resume(g.Plan, JournalPath(journalDir, g));
     }
 
@@ -400,6 +416,12 @@ public sealed class ReapplyChecker
                 try
                 {
                     rep = _env.Apply(game, plan, injected, cancellationToken);
+                }
+                catch (PlanRejectedException e) when (e.Message == DataLock.PlanChangedMessage)
+                {
+                    _env.Spent(game, 0); // 잠금을 기다리는 동안 계획이 바뀜: 아무것도 옮기지 않았으니 다음 검사에서 새 계획으로 다시
+                    _log.Info($"{game.Name}: reapply deferred, the plan changed while waiting for the zone lock");
+                    return ReapplyVerdict.DiskBusy;
                 }
                 catch
                 {

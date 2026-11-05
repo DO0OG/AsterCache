@@ -26,6 +26,26 @@ public sealed class DataLockTests : ApplyTestBase
     }
 
     [Fact]
+    public void CallsInDifferentPlanFoldersThatShareAJournalFolderAreSerialized()
+    {
+        string journal = Path.Combine(Root, "journals", "g.jsonl");
+        string planA = Path.Combine(Root, "a", "g.plan.json");
+        string planB = Path.Combine(Root, "b", "g.plan.json");
+
+        DataLock? first = DataLock.TryAcquire(planA, TimeSpan.Zero, journalPath: journal);
+        Assert.NotNull(first);
+        Assert.Null(DataLock.TryAcquire(planB, TimeSpan.Zero, journalPath: journal)); // 저널 폴더 잠금이 겹침
+        Assert.Null(DataLock.TryAcquire(Path.Combine(Root, "journals", "x.plan.json"), TimeSpan.Zero)); // 저널 폴더에서 계획만 잡아도 같은 파일
+        using DataLock? unrelated = DataLock.TryAcquire(Path.Combine(Root, "c", "g.plan.json"), TimeSpan.Zero, journalPath: Path.Combine(Root, "c", "g.jsonl"));
+        Assert.NotNull(unrelated); // 겹치지 않는 호출은 막지 않음
+
+        first!.Dispose();
+        using DataLock? second = DataLock.TryAcquire(planB, TimeSpan.Zero, journalPath: journal);
+        Assert.NotNull(second);
+        Assert.Null(DataLock.TryAcquire(Path.Combine(Root, "b", "y.plan.json"), TimeSpan.Zero)); // 둘째가 계획 폴더 쪽도 잡고 있음
+    }
+
+    [Fact]
     public void AWaitingAcquireGetsTheLockOnceTheHolderReleases()
     {
         DataLock holder = DataLock.TryAcquire(PlanPath)!;

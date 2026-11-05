@@ -85,18 +85,19 @@ internal static class VolumeCommands
         }
 
         string planPath = a.Text("plan")!;
-        PlanFile plan = PlanFile.Load(planPath);
         string journal = a.Text("journal") is { } j ? PathText.Str(j) : PathText.Str(planPath) + ".journal.jsonl";
-        if (dry && plan.Zone.StartLcn is not null)
-        {
-            CheckJournalBelongs(plan, journal); // 정한 존의 계획은 저장하지 않아 Applier 가 보지 않음: 다른 계획의 저널이면 볼륨을 열기 전에 dry-run 에서 거절
-        }
 
-        // 서비스와 같은 잠금: 예약 조회부터 적용까지 한 번에 (다른 쪽이 계획을 바꾸거나 같은 존을 고르지 못하게). 못 잡으면 아무것도 하지 않고 busy.
-        using DataLock? gate = DataLock.TryAcquire(planPath);
+        // 서비스와 같은 잠금: 계획 읽기와 예약 조회부터 적용까지 한 번에 (다른 쪽이 계획을 바꾸거나 같은 존을 고르지 못하게). 못 잡으면 아무것도 하지 않고 busy.
+        using DataLock? gate = DataLock.TryAcquire(planPath, journalPath: journal);
         if (gate is null)
         {
             return AsterCli.Emit(o, new JObject { { "error", "busy" }, { "detail", DataLock.BusyMessage } }, 4);
+        }
+
+        PlanFile plan = PlanFile.Load(planPath); // 잠금을 잡은 뒤에 읽음: 기다리는 동안 서비스가 바꾼 계획이 아니라 지금 활성 계획
+        if (dry && plan.Zone.StartLcn is not null)
+        {
+            CheckJournalBelongs(plan, journal); // 정한 존의 계획은 저장하지 않아 Applier 가 보지 않음: 다른 계획의 저널이면 볼륨을 열기 전에 dry-run 에서 거절
         }
 
         (IVolume vol, ApplyHooks hooks) = Open(plan.Volume, a.Text("require-volume-label"));

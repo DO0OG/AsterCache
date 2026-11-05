@@ -91,6 +91,11 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
             return File.Exists(JournalPath) ? Reverter.Revert(JournalPath, Vol, [Root], Hooks(), new ApplyOptions(Execute: true), ct, skipRows) : null;
         };
         _w.Extents = p => Vol.Ext[p];
+        _w.Reserved = g => ZoneReservations.Collect(Path.GetDirectoryName(g.Plan)!, Letter, g.Plan);
+        _w.ReplanResidual = (g, candidate, olds, sessions) => ResidualReplan.Run(candidate, g.Plan, JournalPath, Vol, _w.Reserved(g), Hooks(), () => _w.Now.UtcDateTime,
+            sessions is null ? null : (p, path) => PlanOutput.Save(p, sessions, path), olds).Plan;
+        _w.ResumeSwitch = g => PlanSwitch.Resume(g.Plan, JournalPath);
+        _w.JournalPlanSha = g => g.Name == "bench" && File.Exists(JournalPath) ? new Journal(JournalPath).Rows.FirstOrDefault(r => Equals(r["type"], "header"))?["plan_sha"] as string : null;
     }
 
     private int ApplyCalls { get; set; }
@@ -1185,6 +1190,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     [Fact]
     public void FailureOnlyRevertsWhatThisAutoApplyWroteNotAnEarlierManualApply()
     {
+        _w.ReplanResidual = null; // 이 시험은 실패 뒤 되돌리기 범위를 봄: 다른 계획의 저널은 잔여 재계획이 이어받지 않는 경로로 둠 (이어받는 경로는 PartialPlanRecoveryTests)
         Apply(Make().Resolve(20000), new ApplyOptions(Execute: true)); // 예전 수동 적용이 남긴 저널
         Dictionary<string, List<Extent>> afterManual = Vol.Ext.ToDictionary(kv => kv.Key, kv => kv.Value.ToList(), StringComparer.Ordinal);
         int rowsBefore = JournalRowCount();

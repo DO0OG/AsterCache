@@ -162,6 +162,16 @@ internal sealed class FakeWorld
 
     public Func<GameSettings, int> JournalRows { get; set; } = _ => 0;
 
+    /// 같은 볼륨의 다른 게임 계획이 예약한 존 범위 (기본: 없음).
+    public Func<GameSettings, IReadOnlyList<(long Lcn, long Clusters)>> Reserved { get; set; } = _ => [];
+
+    /// 잔여 재계획으로 활성 계획 바꾸기 (기본: 연결 안 함 = 기존 흐름).
+    public Func<GameSettings, PlanFile, IReadOnlyList<PlanFile>, IReadOnlyList<IReadOnlyList<TraceEvent>>?, PlanFile>? ReplanResidual { get; set; }
+
+    public Func<GameSettings, SwitchResult?> ResumeSwitch { get; set; } = _ => null;
+
+    public Func<GameSettings, string?> JournalPlanSha { get; set; } = _ => null;
+
     public Func<GameSettings, int, CancellationToken, RevertReport?> Revert { get; set; } = (_, _, _) => throw new InvalidOperationException("Revert");
 
     public Func<string, IReadOnlyList<Extent>?> Extents { get; set; } = _ => throw new InvalidOperationException("Extents");
@@ -242,6 +252,10 @@ internal sealed class FakeWorld
         Apply = (g, plan, options, ct) => Apply(g, plan, options, ct),
         Stat = p => Stat(p),
         JournalRows = g => JournalRows(g),
+        Reserved = g => Reserved(g),
+        ReplanResidual = ReplanResidual,
+        ResumeSwitch = g => ResumeSwitch(g),
+        JournalPlanSha = g => JournalPlanSha(g),
         ArchiveJournal = g => ArchiveJournal(g),
         MoveAside = (src, dst) =>
         {

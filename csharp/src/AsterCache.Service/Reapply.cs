@@ -143,10 +143,17 @@ public sealed class ReapplyEnv
             Extents = FileLayout.Extents,
             Stat = PlanFile.FingerprintOf,
             RealPath = RealPaths.Real,
-            Apply = (g, plan, injected, ct) => Run(journalDir, g, plan, ChooseOptions(g, injected, relocateOrder?.Invoke() ?? RelocateOrder.Target, relocateParallel?.Invoke(g) ?? 1), ct, log), // 존을 다시 정하면 계획에 남김
+            Apply = (g, plan, injected, ct) => RunLocked(g, () => Run(journalDir, g, plan, ChooseOptions(g, injected, relocateOrder?.Invoke() ?? RelocateOrder.Target, relocateParallel?.Invoke(g) ?? 1), ct, log)), // 존을 다시 정하면 계획에 남김
             TierActive = g => TierEngine.HasActive(Path.Combine(Path.GetDirectoryName(journalDir) ?? journalDir, "tier"), g.Name),
         };
         return env;
+    }
+
+    /// 적용 전체를 CLI 와 같은 DataLock 안에서 실행합니다. 잠금을 못 잡으면 아무것도 옮기지 않고 Stopped = DataLock.BusyReason 인 빈 보고서를 돌려줍니다 (오류가 아니라 다음 검사에서 다시).
+    public static ApplyReport RunLocked(GameSettings g, Func<ApplyReport> work)
+    {
+        using DataLock? gate = DataLock.TryAcquire(g.Plan);
+        return gate is null ? new ApplyReport { Stopped = DataLock.BusyReason } : work();
     }
 
     /// 서비스가 정한 옵션 (회당 쓰기 상한 포함) 이 있으면 그것, 없으면 OptionsFor 의 기본.
@@ -214,16 +221,23 @@ public sealed class ReapplyEnv
         ZoneReservations.Collect(Path.GetDirectoryName(Path.GetFullPath(g.Plan)) ?? ".", PlanFile.SplitDrive(g.OriginRoot), g.Plan);
 
     /// 부분 적용된 이전 목표를 지키는 잔여 재계획 (ResidualReplan) 으로 활성 계획을 바꿉니다. sessions 가 있으면 선읽기 파일도 같이 다시 씁니다.
+    /// DataLock 안에서 실행하며, 잠금을 못 잡으면 PlanRejectedException (DataLock.BusyMessage) 으로 알려 호출자의 기존 보류 처리를 탑니다.
     public static PlanFile ReplanResidual(string journalDir, GameSettings g, PlanFile candidate, IReadOnlyList<PlanFile> olds, IReadOnlyList<IReadOnlyList<TraceEvent>>? sessions)
     {
+        using DataLock gate = DataLock.TryAcquire(g.Plan) ?? throw new PlanRejectedException(DataLock.BusyMessage);
         using NtfsVolume vol = OpenChecked(g);
         Directory.CreateDirectory(journalDir);
         Action<PlanFile, string>? save = sessions is null ? null : (p, path) => PlanOutput.Save(p, sessions, path);
         return ResidualReplan.Run(candidate, g.Plan, JournalPath(journalDir, g), vol, ReservedFor(g), Hooks(null), () => DateTime.UtcNow, save, olds).Plan;
     }
 
-    /// 중단된 계획 교체를 끝까지 진행합니다 (없으면 null).
-    public static SwitchResult? ResumeSwitch(string journalDir, GameSettings g) => PlanSwitch.Resume(g.Plan, JournalPath(journalDir, g));
+    /// 중단된 계획 교체를 끝까지 진행합니다 (없으면 null). DataLock 안에서 실행하고, 못 잡으면 PlanRejectedException (DataLock.BusyMessage).
+    /// 활성 계획이나 저널이 기록과 어긋나면 PlanRejectedException 으로 거절하고 기록은 그대로 둡니다.
+    public static SwitchResult? ResumeSwitch(string journalDir, GameSettings g)
+    {
+        using DataLock gate = DataLock.TryAcquire(g.Plan) ?? throw new PlanRejectedException(DataLock.BusyMessage);
+        return PlanSwitch.Resume(g.Plan, JournalPath(journalDir, g));
+    }
 
     /// 게임 저널 header 의 plan_sha (저널이 없거나 행이 없으면 null).
     public static string? JournalPlanSha(string journalDir, GameSettings g)
@@ -394,6 +408,12 @@ public sealed class ReapplyChecker
                 }
 
                 _env.Spent(game, rep.MovedBytes);
+
+                if (rep.Stopped == DataLock.BusyReason)
+                {
+                    _log.Info($"{game.Name}: reapply deferred, another apply or plan switch holds the zone lock");
+                    return ReapplyVerdict.DiskBusy;
+                }
 
                 if (rep.ZoneRetargeted)
                 {

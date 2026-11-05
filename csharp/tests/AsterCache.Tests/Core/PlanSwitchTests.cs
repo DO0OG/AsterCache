@@ -189,7 +189,7 @@ public sealed class PlanSwitchTests : ApplyTestBase
     }
 
     [Fact]
-    public void SavePlanCallbackWritesThePromotedPlan()
+    public void SavePlanCallbackWritesThePreparedCandidateAndItIsPromoted()
     {
         (_, PlanFile b, string planPath, _) = Partial();
         var written = new List<string>();
@@ -200,7 +200,78 @@ public sealed class PlanSwitchTests : ApplyTestBase
             p.Save(path);
         }, Hooks());
 
-        Assert.Equal([planPath], written);
+        Assert.Equal([planPath + PlanSwitch.NextSuffix, planPath], written); // 준비 때 .next 에 쓰고, 선읽기 파일이 따로 없으면 승격 때 한 번 더
+        Assert.Equal(b.Sha(), PlanFile.Load(planPath).Sha());
+    }
+
+    // ---- 선읽기 파일 (.prefetch.json) 은 준비 때 .next 옆에 저장돼 승격 때 함께 옮겨짐
+
+    [Theory]
+    [InlineData("recorded")]
+    [InlineData("archived")]
+    [InlineData("promoted")]
+    public void AnInterruptedSwitchStillPromotesThePreparedPrefetchFile(string point)
+    {
+        (_, PlanFile b, string planPath, _) = Partial();
+        string prefetch = planPath + PlanOutput.PrefetchSuffix;
+        File.WriteAllText(prefetch, "[]\n"); // 옛 계획의 선읽기
+        string expected = Path.Combine(Root, "expected.plan.json");
+        _ = PlanOutput.Save(b, Sessions, expected);
+
+        Assert.Throws<InvalidOperationException>(() => PlanSwitch.Commit(b, planPath, JournalPath, () => Now, (p, path) => _ = PlanOutput.Save(p, Sessions, path), Hooks(), CrashAt(point)));
+        Assert.True(PlanSwitch.Resume(planPath, JournalPath)!.Resumed); // 재개는 세션을 모름: 준비 때 저장한 파일을 옮김
+
+        Assert.Equal(File.ReadAllBytes(expected + PlanOutput.PrefetchSuffix), File.ReadAllBytes(prefetch));
+        Assert.False(File.Exists(planPath + PlanSwitch.NextSuffix + PlanOutput.PrefetchSuffix));
+    }
+
+    // ---- 재개 때 기록의 세대 확인
+
+    [Fact]
+    public void ResumeRefusesWhenTheActivePlanChangedAfterTheRecordAndKeepsEverything()
+    {
+        (_, PlanFile b, string planPath, _) = Partial();
+        Assert.Throws<InvalidOperationException>(() => PlanSwitch.Commit(b, planPath, JournalPath, () => Now, hooks: Hooks(), checkpoint: CrashAt("recorded")));
+        Make().Resolve(40000).Save(planPath); // 다른 쪽이 그 사이 활성 계획을 바꿈
+        byte[] journal = File.ReadAllBytes(JournalPath);
+
+        _ = Assert.Throws<PlanRejectedException>(() => PlanSwitch.Resume(planPath, JournalPath));
+
+        Assert.True(File.Exists(planPath + PlanSwitch.RecordSuffix));
+        Assert.True(File.Exists(planPath + PlanSwitch.NextSuffix));
+        Assert.Equal(journal, File.ReadAllBytes(JournalPath));
+        Assert.Empty(Archives());
+    }
+
+    [Fact]
+    public void ResumeRefusesToArchiveAJournalOfADifferentGeneration()
+    {
+        (_, PlanFile b, string planPath, _) = Partial();
+        Assert.Throws<InvalidOperationException>(() => PlanSwitch.Commit(b, planPath, JournalPath, () => Now, hooks: Hooks(), checkpoint: CrashAt("recorded")));
+        File.WriteAllText(JournalPath, "{\"type\": \"header\", \"plan_sha\": \"other\", \"cluster_bytes\": 4096}\r\n"); // 보관 대상 저널이 기록 당시의 것이 아님
+        byte[] journal = File.ReadAllBytes(JournalPath);
+
+        _ = Assert.Throws<PlanRejectedException>(() => PlanSwitch.Resume(planPath, JournalPath));
+
+        Assert.Equal(journal, File.ReadAllBytes(JournalPath));
+        Assert.True(File.Exists(planPath + PlanSwitch.RecordSuffix));
+        Assert.Empty(Archives());
+    }
+
+    [Fact]
+    public void ResumeAfterPromotionOnlyCleansUpAndLeavesTheNewJournalAlone()
+    {
+        (_, PlanFile b, string planPath, int rows) = Partial();
+        Assert.Throws<InvalidOperationException>(() => PlanSwitch.Commit(b, planPath, JournalPath, () => Now, hooks: Hooks(), checkpoint: CrashAt("promoted")));
+        Assert.Equal("write_cap", Apply(b, Exec(64 * Cb)).Stopped); // 승격된 새 계획의 새 저널
+        byte[] fresh = File.ReadAllBytes(JournalPath);
+
+        Assert.True(PlanSwitch.Resume(planPath, JournalPath)!.Resumed);
+
+        Assert.Equal(fresh, File.ReadAllBytes(JournalPath));
+        Assert.Equal(rows, new Journal(Assert.Single(Archives())).Rows.Count);
+        Assert.False(File.Exists(planPath + PlanSwitch.RecordSuffix));
+        Assert.Equal(b.Sha(), PlanFile.Load(planPath).Sha());
     }
 
     // ---- 미검증 sha_before: 취소로 after 검증을 미룬 저널
@@ -256,10 +327,13 @@ public sealed class PlanSwitchTests : ApplyTestBase
         byte[] journalBytes = File.ReadAllBytes(JournalPath);
         foreach (string f in new[] { F1, F2 })
         {
+            DateTime stamp = File.GetLastWriteTimeUtc(f);
             File.WriteAllBytes(f, System.Security.Cryptography.RandomNumberGenerator.GetBytes(1 << 20));
+            File.SetLastWriteTimeUtc(f, stamp); // 지문이 같은 채 내용만 다름 = 검증 오류 (지문이 달라지면 원본 변경으로 보류됨)
         }
 
-        _ = Assert.Throws<PlanRejectedException>(() => PlanSwitch.Commit(b, planPath, JournalPath, () => Now, hooks: Hooks()));
+        PlanRejectedException e = Assert.Throws<PlanRejectedException>(() => PlanSwitch.Commit(b, planPath, JournalPath, () => Now, hooks: Hooks()));
+        Assert.StartsWith("unverified journal entry changed", e.Message, StringComparison.Ordinal);
 
         Assert.Equal(journalBytes, File.ReadAllBytes(JournalPath));
         Assert.Equal(a.Sha(), PlanFile.Load(planPath).Sha());

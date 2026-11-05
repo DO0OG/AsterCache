@@ -1,3 +1,4 @@
+using AsterCache.Core;
 using AsterCache.Core.Apply;
 using AsterCache.Core.Plan;
 using Xunit;
@@ -82,5 +83,75 @@ public sealed class ResidualReplanTests : ApplyTestBase
         Assert.Equal(a.Sha(), PlanFile.Load(PlanPath).Sha());
         Assert.Equal(bytes, File.ReadAllBytes(JournalPath));
         Assert.Empty(Archives());
+    }
+
+    [Fact]
+    public void ASourceChangedFileIsHeldAndTheRestIsStillRecovered()
+    {
+        PlanFile a = Make().Resolve(20000);
+        using var cts = new CancellationTokenSource();
+        Vol.AfterMove = n =>
+        {
+            if (n == 3)
+            {
+                cts.Cancel();
+            }
+        };
+        Assert.Equal("cancelled", Applier.Apply(a, Vol, [Root], JournalPath, Hooks(), Exec(2L << 30) with { Verify = VerifyMode.All }, cts.Token).Stopped);
+        Vol.AfterMove = null;
+        a.Save(PlanPath);
+        var jr = new Journal(JournalPath);
+        long idx = (long)Applier.PendingBefore(jr.Rows)[0]["idx"]!;
+        string held = (string)jr.Rows.First(r => Equals(r["type"], "step") && Equals(r["idx"], idx))["path"]!;
+        string other = held == F1 ? F2 : F1;
+        File.WriteAllBytes(held, System.Security.Cryptography.RandomNumberGenerator.GetBytes((int)new FileInfo(held).Length));
+        File.SetLastWriteTimeUtc(held, DateTime.UtcNow.AddDays(1)); // 게임 업데이트가 덮어씀
+        Vol.Moves.Clear();
+
+        (PlanFile plan, SwitchResult sw) = ResidualReplan.Run(Make(), PlanPath, JournalPath, Vol, null, Hooks(), () => Now, null, []);
+
+        Assert.DoesNotContain(plan.Order, o => o.Path == held);
+        Assert.DoesNotContain(plan.Tasks, t => t.Path == held);
+        Assert.Contains(plan.Order, o => o.Path == other);
+        Assert.DoesNotContain(plan.Fingerprints, f => f.Path == held);
+        var heldFiles = Assert.IsType<AsterCache.Core.Json.JObject>(plan.Stats["held_files"]);
+        Assert.Equal("source_changed", heldFiles[held]);
+        Assert.Equal([held], sw.SourceChanged);
+        Assert.Equal(plan.Sha(), PlanFile.Load(PlanPath).Sha());
+        List<AsterCache.Core.Json.JObject> archived = new Journal(sw.ArchivedJournal!).Rows.ToList();
+        Assert.Contains(archived, r => Equals(r["type"], Applier.HeldType) && Equals(r["path"], held));
+        Assert.Contains(archived, r => Equals(r["type"], "sha")); // 옛 sha_before 는 그대로
+        _ = Apply(plan, Exec(2L << 30));
+        Assert.DoesNotContain(Vol.Moves, m => m.Path == held); // 보류한 파일은 건드리지 않고 나머지만 복구
+    }
+
+    [Fact]
+    public void AHeldFileStaysHeldWhenTheFirstReplanAttemptFailsAndIsRetried()
+    {
+        PlanFile a = Make().Resolve(20000);
+        using var cts = new CancellationTokenSource();
+        Vol.AfterMove = n =>
+        {
+            if (n == 3)
+            {
+                cts.Cancel();
+            }
+        };
+        _ = Applier.Apply(a, Vol, [Root], JournalPath, Hooks(), Exec(2L << 30) with { Verify = VerifyMode.All }, cts.Token);
+        Vol.AfterMove = null;
+        a.Save(PlanPath);
+        var jr = new Journal(JournalPath);
+        long idx = (long)Applier.PendingBefore(jr.Rows)[0]["idx"]!;
+        string held = (string)jr.Rows.First(r => Equals(r["type"], "step") && Equals(r["idx"], idx))["path"]!;
+        File.WriteAllBytes(held, System.Security.Cryptography.RandomNumberGenerator.GetBytes((int)new FileInfo(held).Length));
+        File.SetLastWriteTimeUtc(held, DateTime.UtcNow.AddDays(1));
+
+        // 첫 시도는 빈 구간이 없어 거절 (보류 행은 이미 저널에 남음), 다시 시도해도 같은 파일이 보류로 빠지고 거절하지 않음
+        _ = Assert.Throws<PlanRejectedException>(() => ResidualReplan.Run(Make(), PlanPath, JournalPath, Vol, [(0, 200000)], Hooks(), () => Now, null, []));
+        Assert.True(File.Exists(JournalPath));
+        (PlanFile plan, _) = ResidualReplan.Run(Make(), PlanPath, JournalPath, Vol, null, Hooks(), () => Now, null, []);
+
+        Assert.DoesNotContain(plan.Order, o => o.Path == held);
+        Assert.Equal("source_changed", ((AsterCache.Core.Json.JObject)plan.Stats["held_files"]!)[held]);
     }
 }

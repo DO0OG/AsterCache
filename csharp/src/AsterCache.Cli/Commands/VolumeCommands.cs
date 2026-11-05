@@ -92,13 +92,18 @@ internal static class VolumeCommands
             CheckJournalBelongs(plan, journal); // 정한 존의 계획은 저장하지 않아 Applier 가 보지 않음: 다른 계획의 저널이면 볼륨을 열기 전에 dry-run 에서 거절
         }
 
+        // 서비스와 같은 잠금: 예약 조회부터 적용까지 한 번에 (다른 쪽이 계획을 바꾸거나 같은 존을 고르지 못하게). 못 잡으면 아무것도 하지 않고 busy.
+        using DataLock? gate = DataLock.TryAcquire(planPath);
+        if (gate is null)
+        {
+            return AsterCli.Emit(o, new JObject { { "error", "busy" }, { "detail", DataLock.BusyMessage } }, 4);
+        }
+
         (IVolume vol, ApplyHooks hooks) = Open(plan.Volume, a.Text("require-volume-label"));
         using IVolume volume = vol;
 
-        // 존 시작이 없으면 빈 구간을 새로 고르므로, 같은 볼륨의 다른 게임 계획이 예약한 범위를 피함
-        IReadOnlyList<(long Lcn, long Clusters)>? reserved = plan.Zone.StartLcn is null
-            ? ZoneReservations.Collect(Path.GetDirectoryName(Path.GetFullPath(planPath)) ?? string.Empty, plan.Volume, planPath)
-            : null;
+        // 존 시작이 있든 없든 같은 볼륨의 다른 게임 계획이 예약한 범위를 모아 넘김: 없으면 그 범위를 피해 새 존을 고르고, 있으면 겹칠 때 zone_not_free 로 거절 (점유 fallback 의 새 존 선택도 포함)
+        IReadOnlyList<(long Lcn, long Clusters)>? reserved = ZoneReservations.Collect(Path.GetDirectoryName(Path.GetFullPath(planPath)) ?? string.Empty, plan.Volume, planPath);
         var options = new ApplyOptions(execute, a.Int("chunk-mib")!.Value * Mib, a.Int("write-cap-mib")!.Value * Mib, planPath, dry, Verify: a.Text("verify") ?? VerifyMode.Sample, Order: a.Text("order") ?? RelocateOrder.Target, Parallel: (int)a.Int("parallel")!.Value,
             Reserved: reserved);
         return AsterCli.Emit(o, Applier.Apply(plan, volume, Roots(a), journal, hooks, options).ToJson());

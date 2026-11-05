@@ -154,14 +154,6 @@ internal static class StatusCommand
 
     private static object? Of(JObject r, string key) => r.TryGetValue(key, out object? v) ? v : null;
 
-    // 마지막 end 행 (지연 검증이 아닌 것) 뒤에 sha_before 가 있는데 같은 키의 verified 행이 없는 수. 규칙은 Applier.VerifyPending 과 같음 (작업 단위는 idx, 파일 단위는 path).
-    private static long Unverified(IReadOnlyList<JObject> rows)
-    {
-        object? rule = rows.Where(r => Equals(Of(r, "type"), "header")).Select(r => Of(r, "digest_rule")).FirstOrDefault();
-        bool perTask = Equals(rule, Applier.EdgeRule) || Equals(rule, Applier.EdgeTaskRule);
-        List<JObject> unsettled = rows.Skip(rows.ToList().FindLastIndex(r => Equals(Of(r, "type"), "end") && !Equals(Of(r, "after_deferred"), true)) + 1).ToList();
-        object? Key(JObject r) => Of(r, perTask ? "idx" : "path");
-        List<object?> verified = unsettled.Where(r => Equals(Of(r, "type"), perTask ? "sha_verified" : "file_verified")).Select(Key).ToList();
-        return unsettled.Count(r => Equals(Of(r, "type"), perTask ? "sha" : "file") && Of(r, "sha_before") is string && !verified.Contains(Key(r)));
-    }
+    // 검증을 마치지 못한 sha_before 의 수. 규칙은 Applier.VerifyPending 과 같음: sha_mismatch 가 남은 end 는 경계가 아니고, verified·보류 (sha_held) 표시가 있는 것만 처리된 것.
+    private static long Unverified(IReadOnlyList<JObject> rows) => Applier.PendingBefore(rows).Count;
 }

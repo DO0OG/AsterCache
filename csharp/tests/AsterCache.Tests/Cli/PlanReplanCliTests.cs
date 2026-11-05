@@ -200,4 +200,75 @@ public sealed class PlanReplanCliTests : ApplyTestBase
         Assert.All(a.Tasks, ta => Assert.All(b.Tasks, tb => Assert.True(
             ta.TargetLcn + ta.Clusters <= tb.TargetLcn || tb.TargetLcn + tb.Clusters <= ta.TargetLcn, $"{ta.TargetLcn} overlaps {tb.TargetLcn}")));
     }
+
+    [Fact]
+    public void ApplyWithAFixedZoneStillAvoidsARangeAnotherGamePlanReserves()
+    {
+        string mine = Path.Combine(Root, "mine.plan.json");
+        Make().Resolve(20000).Save(mine);
+        PlanFile other = Make().Resolve(20010); // 아직 비어 있지만 다른 게임이 쓸 구간과 겹침
+        other.Save(Path.Combine(Root, "other.plan.json"));
+        using IDisposable scope = UseVolume();
+
+        (int code, string text, _) = CliTests.Run("apply", "--plan", mine, "--journal", Path.Combine(Root, "mine.jsonl"), "--allowed-root", Root, "--dry-run");
+
+        Assert.Equal(0, code);
+        Assert.Equal(true, Json(text)["zone_retargeted"]); // 예약을 모르면 20000 을 그대로 써서 이 점유 fallback 도 일어나지 않음
+        PlanFile moved = PlanFile.Load(mine);
+        Assert.All(moved.Tasks, t => Assert.All(other.Tasks, o => Assert.True(
+            t.TargetLcn + t.Clusters <= o.TargetLcn || o.TargetLcn + o.Clusters <= t.TargetLcn, $"{t.TargetLcn} overlaps {o.TargetLcn}")));
+    }
+
+    [Fact]
+    public void ApplyReportsBusyWithoutDoingAnythingWhileAnotherHoldsTheLock()
+    {
+        PlanFile plan = Make().Resolve(20000);
+        plan.Save(PlanPath);
+        byte[] before = File.ReadAllBytes(PlanPath);
+        using DataLock holder = DataLock.TryAcquire(PlanPath)!;
+        TimeSpan previous = DataLock.DefaultWait;
+        DataLock.DefaultWait = TimeSpan.Zero;
+        try
+        {
+            using IDisposable scope = UseVolume();
+
+            (int code, string text, _) = CliTests.Run("apply", "--plan", PlanPath, "--journal", JournalPath, "--allowed-root", Root, "--execute");
+
+            Assert.Equal(4, code);
+            Assert.Contains("\"error\":\"busy\"", text, StringComparison.Ordinal);
+            Assert.Empty(Vol.Moves);
+            Assert.False(File.Exists(JournalPath));
+            Assert.Equal(before, File.ReadAllBytes(PlanPath));
+        }
+        finally
+        {
+            DataLock.DefaultWait = previous;
+        }
+    }
+
+    [Fact]
+    public void FromPlanReplanIsRefusedWithoutChangingAnythingWhileAnotherHoldsTheLock()
+    {
+        _ = PartialA();
+        byte[] plan = File.ReadAllBytes(PlanPath);
+        byte[] journal = File.ReadAllBytes(JournalPath);
+        using DataLock holder = DataLock.TryAcquire(PlanPath)!;
+        TimeSpan previous = DataLock.DefaultWait;
+        DataLock.DefaultWait = TimeSpan.Zero;
+        try
+        {
+            using IDisposable scope = UseVolume();
+
+            (int code, string text, _) = CliTests.Run("plan", "--from-plan", PlanPath, "--journal", JournalPath);
+
+            Assert.Equal(1, code);
+            Assert.Contains("zone lock busy", text, StringComparison.Ordinal);
+            Assert.Equal(plan, File.ReadAllBytes(PlanPath));
+            Assert.Equal(journal, File.ReadAllBytes(JournalPath));
+        }
+        finally
+        {
+            DataLock.DefaultWait = previous;
+        }
+    }
 }

@@ -1478,7 +1478,7 @@ public sealed class AutoRelocator
         DateTimeOffset failedAt = _planFailedAt.GetValueOrDefault(g.Name, DateTimeOffset.MinValue);
         bool reopened = e is { Stage: AutoStage.Failed, RelocatedAt: null }
             && (AutoTracer.PlanTracePath(g, _env.FileExists) is { } latest && _env.FileWriteTime(latest) is { } written && written > failedAt
-                || e.Detail?.StartsWith(RecoveryStoppedDetail, StringComparison.Ordinal) == true && _env.Now() - failedAt >= StoppedRecheck); // 같은 사유로 멈춘 복구는 새 트레이스가 없어도 (트레이스 금지 게임) StoppedRecheck 마다 다시 평가
+                || IsRetriedHourly(e.Detail) && _env.Now() - failedAt >= StoppedRecheck); // 같은 사유로 멈춘 복구와 일시 원인으로 실패한 재배치·계획은 새 트레이스가 없어도 (트레이스 금지 게임) StoppedRecheck 마다 다시 평가
         bool stageOpen = reopened || e is null || e.Stage is not (AutoStage.Done or AutoStage.Failed)
             && !(e.Stage == AutoStage.Skipped && !relocateOn)
             && e.RelocatedAt is null;
@@ -2605,6 +2605,12 @@ public sealed class AutoRelocator
             return false;
         }
     }
+
+    // 같은 사유로 멈춘 복구와 일시 원인 (잠금·권한·디스크) 으로 실패한 재배치·계획. 데이터 검사 실패 (SHA 불일치) 는 제외.
+    private static bool IsRetriedHourly(string? detail)
+        => detail?.StartsWith(RecoveryStoppedDetail, StringComparison.Ordinal) == true
+            || detail?.StartsWith("relocation failed: ", StringComparison.Ordinal) == true
+            || detail?.StartsWith("plan failed: ", StringComparison.Ordinal) == true;
 
     private void Fail(GameSettings g, string detail, Exception? e)
     {

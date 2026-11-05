@@ -31,6 +31,13 @@ public sealed class BootQuietTests : IDisposable
         _sleptMs += (long)span.TotalMilliseconds;
     }
 
+    // 시간만 흐름 (절전 없음): 벽시계와 가동 시간이 함께 흐름
+    private void Elapse(TimeSpan span)
+    {
+        _now += span;
+        _uptimeMs += (long)span.TotalMilliseconds;
+    }
+
     private string StatusPath => Path.Combine(_dir, "prewarm_status.json");
 
     private Prewarmer MakePrewarm(bool rawTrace) => new([Games.Make("a", "a.exe")], new FakeStreamer(), new PrewarmEnv
@@ -76,11 +83,11 @@ public sealed class BootQuietTests : IDisposable
 
         _uptimeMs = 5 * Minute;
         q.Refresh(); // 유휴 시작
-        _now = _now.AddSeconds(30);
+        Elapse(TimeSpan.FromSeconds(30));
         q.Refresh();
         Assert.True(q.Active);
 
-        _now = _now.AddSeconds(30);
+        Elapse(TimeSpan.FromSeconds(30));
         q.Refresh(); // 60 초 유휴
         Assert.False(q.Active);
         Assert.False(q.Defers("layout check and reapply"));
@@ -94,18 +101,18 @@ public sealed class BootQuietTests : IDisposable
         _uptimeMs = 5 * Minute;
         q.Refresh();
 
-        _now = _now.AddSeconds(50);
+        Elapse(TimeSpan.FromSeconds(50));
         _idle = false;
         q.Refresh();
 
         _idle = true;
-        _now = _now.AddSeconds(20);
+        Elapse(TimeSpan.FromSeconds(20));
         q.Refresh();
-        _now = _now.AddSeconds(59);
+        Elapse(TimeSpan.FromSeconds(59));
         q.Refresh();
         Assert.True(q.Active);
 
-        _now = _now.AddSeconds(1);
+        Elapse(TimeSpan.FromSeconds(1));
         q.Refresh();
         Assert.False(q.Active);
     }
@@ -147,7 +154,6 @@ public sealed class BootQuietTests : IDisposable
         BootQuiet q = Make();
         _uptimeMs = 5 * Minute;
         q.Refresh();
-        _now = _now.AddMinutes(9);
         _uptimeMs = 15 * Minute - 1;
         q.Refresh();
         Assert.True(q.Active);
@@ -163,7 +169,7 @@ public sealed class BootQuietTests : IDisposable
     public void UnreadableGameDriveEndsQuietAtTheUptimeCap()
     {
         GameSettings g = Games.Make("a", "a.exe") with { OriginRoot = @"Q:\games" }; // 처리량을 못 읽는 드라이브: 유휴 아님
-        BootQuiet q = BootQuiet.Real(_log, () => [g], () => _uptimeMs);
+        BootQuiet q = BootQuiet.Real(_log, () => [g], () => _uptimeMs, () => _uptimeMs);
         _uptimeMs = 5 * Minute;
         q.Refresh();
         Assert.True(q.Active);
@@ -181,8 +187,7 @@ public sealed class BootQuietTests : IDisposable
         _uptimeMs = 6 * Minute;
         BootQuiet q = Make();
         q.Refresh();
-        _now = _now.AddSeconds(30);
-        _uptimeMs += 30_000;
+        Elapse(TimeSpan.FromSeconds(30));
         q.Refresh();
 
         Assert.False(q.Active);
@@ -205,11 +210,11 @@ public sealed class BootQuietTests : IDisposable
 
         _uptimeMs += 5 * Minute; // 복귀 뒤 BootDelay 가 지남
         q.Refresh();
-        _now = _now.AddSeconds(59);
+        Elapse(TimeSpan.FromSeconds(59));
         q.Refresh();
         Assert.True(q.Active);
 
-        _now = _now.AddSeconds(1); // 60 초 유휴
+        Elapse(TimeSpan.FromSeconds(1)); // 60 초 유휴
         q.Refresh();
         Assert.False(q.Active);
         Assert.False(q.Defers("prewarm steam.exe"));
@@ -227,5 +232,49 @@ public sealed class BootQuietTests : IDisposable
 
         Assert.True(q.Active);
         Assert.Single(_log.Lines, line => line.Contains("resume from sleep detected", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ThirtySecondSleepIsDetectedAsResume()
+    {
+        _idle = true;
+        BootQuiet q = Make();
+        q.Refresh();
+        _uptimeMs = 5 * Minute;
+        q.Refresh(); // 유휴 시작
+        Assert.True(q.Active);
+
+        Sleep(TimeSpan.FromSeconds(30)); // 벽시계 차이는 2 분보다 훨씬 작은 절전
+        q.Refresh();
+        Assert.Single(_log.Lines, line => line.Contains("resume from sleep detected", StringComparison.Ordinal));
+
+        _uptimeMs += 5 * Minute; // 복귀 뒤 BootDelay 가 지남
+        q.Refresh();
+        Elapse(TimeSpan.FromSeconds(59));
+        q.Refresh();
+        Assert.True(q.Active);
+
+        Elapse(TimeSpan.FromSeconds(1)); // 60 초 유휴
+        q.Refresh();
+        Assert.False(q.Active);
+    }
+
+    [Fact]
+    public void ClockCorrectionWithoutSleepDoesNotReopenTheQuietWindow()
+    {
+        _idle = true;
+        BootQuiet q = Make();
+        q.Refresh();
+        _uptimeMs = 5 * Minute;
+        q.Refresh(); // 유휴 시작
+        Elapse(TimeSpan.FromSeconds(60));
+        q.Refresh();
+        Assert.False(q.Active); // 60 초 유휴로 구간 끝
+
+        _now += TimeSpan.FromMinutes(3); // UTC 가 3 분 앞으로 보정 (절전 없음): 가동 시간은 그대로
+        q.Refresh();
+
+        Assert.False(q.Active);
+        Assert.DoesNotContain(_log.Lines, line => line.Contains("resume from sleep", StringComparison.Ordinal));
     }
 }

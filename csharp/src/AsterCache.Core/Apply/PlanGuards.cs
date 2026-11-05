@@ -104,7 +104,8 @@ public static class PlanGuards
     }
 
     /// 남은 목표 클러스터는 비어 있거나 계획 자신의 파일이 차지해야 합니다 (이동이 먼저 비웁니다).
-    public static void CheckZoneFree(PlanFile plan, VolumeBitmap bitmap, Func<string, IReadOnlyList<Extent>?> extents)
+    /// reserved: 다른 게임 계획이 예약한 존 범위. 남은 목표가 겹치면 같은 zone_not_free 로 거절합니다.
+    public static void CheckZoneFree(PlanFile plan, VolumeBitmap bitmap, Func<string, IReadOnlyList<Extent>?> extents, IReadOnlyList<(long Lcn, long Clusters)>? reserved = null)
     {
         var own = plan.Tasks.Select(t => t.Path).Distinct(StringComparer.Ordinal)
             .SelectMany(p => (extents(p) ?? []).Select(e => (A: e.Lcn, B: e.Lcn + e.Clusters)))
@@ -112,6 +113,14 @@ public static class PlanGuards
         foreach (PlanTask t in plan.Tasks)
         {
             long done = DonePrefix(extents(t.Path), t.Vcn, t.Clusters, t.TargetLcn);
+            foreach ((long a, long n) in done < t.Clusters ? reserved ?? [] : [])
+            {
+                if (a < t.TargetLcn + t.Clusters && t.TargetLcn + done < a + n)
+                {
+                    throw new PlanRejectedException($"zone_not_free: LCN {Math.Max(a, t.TargetLcn + done)} is reserved by another plan");
+                }
+            }
+
             for (long lcn = t.TargetLcn + done; lcn < t.TargetLcn + t.Clusters; lcn++)
             {
                 int j = LastStartAtOrBefore(own, lcn);
@@ -129,25 +138,26 @@ public static class PlanGuards
 
     /// journalPath 를 주면, 이미 정한 존이 다른 파일에 막혔고 (zone_not_free) 그 저널에 끝나지 않은 단계가 없으며 계획이 제자리 조각 없이
     /// 존 오프셋만으로 된 것이면 (in_place_bytes == 0) 새 빈 구간을 찾아 목표를 옮깁니다 (rezoned = true). 이어할 단계가 있으면 기존처럼 거부합니다.
-    public static PlanFile ResolveZone(PlanFile plan, IVolume vol, Func<string, IReadOnlyList<Extent>?> extents, string? journalPath, out bool rezoned)
+    public static PlanFile ResolveZone(PlanFile plan, IVolume vol, Func<string, IReadOnlyList<Extent>?> extents, string? journalPath, out bool rezoned,
+        IReadOnlyList<(long Lcn, long Clusters)>? reserved = null)
     {
         rezoned = false;
         VolumeBitmap bm = vol.Bitmap();
         if (plan.Zone.StartLcn is null)
         {
-            return plan.Resolve(FindZone(plan, bm));
+            return plan.Resolve(FindZone(plan, bm, reserved));
         }
 
         try
         {
-            CheckZoneFree(plan, bm, extents);
+            CheckZoneFree(plan, bm, extents, reserved);
             return plan;
         }
         catch (PlanRejectedException e) when (journalPath is not null && e.Message.StartsWith("zone_not_free", StringComparison.Ordinal)
             && plan.Stats.TryGetValue("in_place_bytes", out object? inPlace) && inPlace is 0L && !HasUnfinishedStep(journalPath))
         {
             long oldStart = plan.Zone.StartLcn.Value;
-            long start = FindZone(plan, bm);
+            long start = FindZone(plan, bm, reserved);
             rezoned = true;
             return plan with { Zone = plan.Zone with { StartLcn = start }, Tasks = plan.Tasks.Select(t => t with { TargetLcn = t.TargetLcn - oldStart + start }).ToList() };
         }
@@ -174,10 +184,10 @@ public static class PlanGuards
         return last.Values.Any(s => s != "done");
     }
 
-    private static long FindZone(PlanFile plan, VolumeBitmap bm)
+    private static long FindZone(PlanFile plan, VolumeBitmap bm, IReadOnlyList<(long Lcn, long Clusters)>? reserved)
     {
         long need = (long)plan.Stats["zone_used_clusters"]!;
-        return bm.FindFreeRun(need, preferLowLcn: true, align: ZoneAlign) ?? throw new PlanRejectedException($"no free run of {need} clusters");
+        return bm.FindFreeRun(need, preferLowLcn: true, align: ZoneAlign, excluded: reserved) ?? throw new PlanRejectedException($"no free run of {need} clusters");
     }
 
     // bisect_right(starts, lcn) - 1

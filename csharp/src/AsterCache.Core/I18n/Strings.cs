@@ -255,6 +255,7 @@ public static partial class L
         ["Apply_Done"] = ("{0}: 재배치 끝 · 이동 {1} MiB · 실패 {2}건{3} · 배치 {4}", "{0}: relocation finished · moved {1} MiB · failed: {2}{3} · layout {4}"),
         ["Apply_Undoable"] = (" (되돌리기 가능: 저널 {0})", " (can be reverted: journal {0})"),
         ["Apply_Resume"] = (" · 다시 실행하면 이어서 합니다", " · run again to continue"),
+        ["Apply_JournalOtherPlan"] = ("{0}: 저장된 계획과 저널이 서로 다른 계획입니다. 이미 옮긴 부분은 유지하고 남은 부분만 다시 계획합니다.", "{0}: The saved plan and the journal belong to different plans. Already moved parts are kept and only the remaining part is planned again."),
         ["Revert_NoJournal"] = ("{0}: 되돌릴 저널이 없음", "{0}: no journal to revert"),
         ["Revert_Running"] = ("되돌리는 중", "Reverting"),
         ["Fail_Revert"] = ("{0}: 되돌리기 실패: {1}", "{0}: revert failed: {1}"),

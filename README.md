@@ -449,6 +449,9 @@ The management window and the `aster` CLI are available in Korean and English.
 - **Journal and revert.** A journal (JSON Lines) is written for every moved fragment, and `revert` returns to the previous physical layout. The data content does not change.
 - **Allowed folders and volume pinning.** Files outside `allowed_roots` and volumes whose label differs from `volume_label` are not touched.
 - **Interruption handling.** If a game starts during relocation, only the fragment currently being moved is finished and then it stops. A resume point is left in the journal, and the same plan continues after the game exits.
+- **Splitting relocation over several days.** If another file takes the zone still to be moved, or the plan changes, the parts already moved are not moved again. Only the remaining part is planned again into a new free area.
+- The earlier journal is not deleted. It is kept as `<game>.jsonl.<UTC time>`.
+- Games on the same disk do not claim the same free area.
 - **Data folder permissions.** Only SYSTEM and Administrators can write to `%ProgramData%\AsterCache`; ordinary users can only read. Uninstalling the service leaves the data folder; it is deleted only when you explicitly pass `cs_service.ps1 -Action uninstall -PurgeData`.
 - **Permission check.** Without administrator rights, relocation and revert change nothing and end with `not_admin`.
 

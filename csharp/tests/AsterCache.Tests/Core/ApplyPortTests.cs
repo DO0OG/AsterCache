@@ -66,6 +66,34 @@ public sealed class ApplyPortTests : ApplyTestBase
     }
 
     [Fact]
+    public void DryRunWithAJournalOfAnotherPlanIsRejectedAndLeavesThePlanFileUntouched()
+    {
+        Apply(Make().Resolve(20000), Exec(8 * Cb, 64 * Cb)); // 저널은 다른 존의 계획 것
+        string saved = Path.Combine(Root, "plan.json");
+        Make().Save(saved); // 존 시작 없는 계획: dry-run 이 존을 정해 저장하려는 경우
+        byte[] before = File.ReadAllBytes(saved);
+
+        PlanRejectedException e = Assert.Throws<PlanRejectedException>(() => Apply(PlanFile.Load(saved), new ApplyOptions(DryRun: true, SaveTo: saved)));
+
+        Assert.Equal("journal belongs to a different plan", e.Message);
+        Assert.Equal(before, File.ReadAllBytes(saved));
+        Assert.False(File.Exists(saved + ".tmp"));
+    }
+
+    [Fact]
+    public void DryRunWithTheJournalOfTheSamePlanStillSavesTheZone()
+    {
+        Assert.Equal("write_cap", Apply(Make().Resolve(0), Exec(8 * Cb, 0)).Stopped); // 아무것도 안 옮겼지만 저널은 이 계획의 것
+        string saved = Path.Combine(Root, "plan.json");
+        Make().Save(saved);
+
+        ApplyReport rep = Apply(PlanFile.Load(saved), new ApplyOptions(DryRun: true, SaveTo: saved));
+
+        Assert.True(rep.PlanSaved);
+        Assert.Equal(0, PlanFile.Load(saved).Zone.StartLcn);
+    }
+
+    [Fact]
     public void WriteCapStopsAndSecondRunFinishes()
     {
         PlanFile p = Make().Resolve(20000);

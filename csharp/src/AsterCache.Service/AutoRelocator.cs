@@ -2740,20 +2740,27 @@ public sealed class AutoRelocator
             return false;
         }
 
+        void Count(long bytes)
+        {
+            if (bytes <= 0)
+            {
+                return;
+            }
+
+            if (newRound)
+            {
+                _status.BeginRelocation(_env.Now(), bytes);
+            }
+            else
+            {
+                _status.AddToLastRelocationBytes(bytes); // 되돌리기도 쓰기: 그 회차 집계에 합산
+            }
+        }
+
         try
         {
             RevertReport? r = _env.JournalRows(g) <= mark ? null : _env.Revert(g, mark, token);
-            if (r is { MovedBytes: > 0 })
-            {
-                if (newRound)
-                {
-                    _status.BeginRelocation(_env.Now(), r.MovedBytes);
-                }
-                else
-                {
-                    _status.AddToLastRelocationBytes(r.MovedBytes); // 되돌리기도 쓰기: 그 회차 집계에 합산
-                }
-            }
+            Count(r?.MovedBytes ?? 0);
 
             bool complete = r is null || (r.Stopped is null && r.Skipped.Count == 0); // 옮기지 못한 조각이 하나라도 있으면 미완료 (저널을 보관하면 되돌릴 길이 없어짐)
             _log.Info(r is null ? $"{g.Name}: nothing to revert" : $"{g.Name}: reverted {r.Restored} piece(s), {r.Skipped.Count} skipped" + (r.Stopped is { } why ? $", stopped: {why}" : string.Empty) + (complete ? string.Empty : ", journal kept"));
@@ -2761,6 +2768,7 @@ public sealed class AutoRelocator
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
+            Count(e.Data[Reverter.MovedBytesDataKey] is long moved ? moved : 0); // 이동 뒤 저널 쓰기 등에서 예외로 끝나도 이미 쓴 바이트는 집계에 넣음
             _log.Error($"{g.Name}: revert failed, journal kept", e);
             return false;
         }

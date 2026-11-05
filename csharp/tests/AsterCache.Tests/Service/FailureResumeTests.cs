@@ -1,4 +1,5 @@
 using AsterCache.Core.Apply;
+using AsterCache.Core.Json;
 using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
@@ -183,5 +184,115 @@ public sealed partial class AutoRelocatorTests
         Assert.True(movedBytes > 0 && reverted > 0, Why());
         Assert.Equal(movedBytes, countedBeforeRevert);
         Assert.Equal(movedBytes + reverted, _status.RelocationBytesWithin(TimeSpan.FromDays(1))); // 이동 + 되돌리기
+    }
+
+    [Fact]
+    public void UndoThatThrowsAfterAMoveStillAddsTheRevertedBytesToTheDailyByteCount()
+    {
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
+        bool moved = false;
+        long movedBytes = 0;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            ApplyReport rep = real(g, plan, options, ct);
+            if (options.Execute)
+            {
+                moved = true;
+                movedBytes = rep.MovedBytes;
+            }
+
+            return rep;
+        };
+        Func<string, IReadOnlyList<Extent>?> extents = _w.Extents;
+        _w.Extents = p => moved ? throw new IOException("disk gone") : extents(p);
+        int movesBefore = 0;
+        Func<GameSettings, int, CancellationToken, RevertReport?> inner = _w.Revert;
+        _w.Revert = (g, skip, ct) =>
+        {
+            movesBefore = Vol.Moves.Count;
+            File.SetAttributes(JournalPath, FileAttributes.ReadOnly); // 되돌리기는 한 조각을 옮긴 뒤 revert 행을 쓰다 예외
+            try
+            {
+                return inner(g, skip, ct);
+            }
+            finally
+            {
+                File.SetAttributes(JournalPath, FileAttributes.Normal);
+            }
+        };
+
+        Run(TimeSpan.FromMinutes(3.5));
+
+        long reverted = Vol.Moves.Skip(movesBefore).Sum(m => m.N) * Cb;
+        Assert.Equal((AutoStage.Failed, "relocation failed: IOException"), (Entry.Stage, Entry.Detail));
+        Assert.True(movedBytes > 0 && reverted > 0, Why());
+        Assert.Equal(movedBytes + reverted, _status.RelocationBytesWithin(TimeSpan.FromDays(1)));
+    }
+
+    [Fact]
+    public void ExtensionRecoveryRevertThatThrowsAfterMovingCountsTheMovedBytesInTheNewRound()
+    {
+        int reverts = 0;
+        long before = -1;
+        long after = -1;
+        FailExtensionWith((_, _, _) =>
+        {
+            if (++reverts == 1)
+            {
+                return new RevertReport { Stopped = "cancelled" };
+            }
+
+            if (reverts == 2)
+            {
+                before = _status.RelocationBytesWithin(TimeSpan.FromDays(1));
+                var e = new IOException("journal disk full");
+                e.Data[Reverter.MovedBytesDataKey] = 4096L;
+                throw e;
+            }
+
+            after = _status.RelocationBytesWithin(TimeSpan.FromDays(1));
+            return new RevertReport();
+        }, null, out _);
+
+        AfterAnHour();
+        RunUntilDone(24);
+        Assert.Equal((2, AutoStage.Failed), (reverts, Entry.Stage));
+        AfterAnHour();
+        RunUntilDone();
+
+        Assert.True(Entry.Stage == AutoStage.Done, Why());
+        Assert.Equal(before + 4096, after);
+    }
+
+    [Fact]
+    public void ExtensionWithABigPieceHittingTheRevertWriteCapEachHourFinishesArchivesAndRestoresThePlan()
+    {
+        string big = Path.Combine(Root, "big.bin");
+        File.WriteAllBytes(big, [1]);
+        Vol.Ext[big] = [new(0, 150000, 40)]; // 상한 (16 클러스터) 보다 큰 한 조각이 존으로 옮겨진 상태
+        string journal = Path.Combine(Root, "big.jsonl");
+        using (var jr = new Journal(journal))
+        {
+            jr.Add(new JObject { { "type", "step" }, { "idx", 0L }, { "path", big }, { "from", new List<object?> { new List<object?> { 0L, 100000L, 40L } } }, { "state", "planned" } });
+        }
+
+        var stops = new List<string?>();
+        FailExtensionWith((_, _, ct) =>
+        {
+            RevertReport r = Reverter.Revert(journal, Vol, [Root], Hooks(), new ApplyOptions(Execute: true, ChunkBytes: 8 * Cb, WriteCap: 16 * Cb), ct);
+            stops.Add(r.Stopped);
+            return r;
+        }, null, out _);
+        AfterAnHour();
+        RunUntilDone(24);
+        Assert.Equal((2, AutoStage.Failed), (stops.Count, Entry.Stage));
+        AfterAnHour();
+        RunUntilDone();
+
+        Assert.True(Entry.Stage == AutoStage.Done, Why());
+        Assert.Equal(["write_cap", "write_cap", null], stops);
+        Assert.Equal([0L, 8, 16, 24, 32], Vol.Moves.Where(m => m.Path == big).Select(m => m.Vcn)); // 회차마다 앞으로 나아감
+        Assert.Equal([new Extent(0, 100000, 40)], Vol.Ext[big]);
+        Assert.False(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix) || _w.Files.Contains(_game.Plan + AutoRelocator.ExtendSuffix));
     }
 }

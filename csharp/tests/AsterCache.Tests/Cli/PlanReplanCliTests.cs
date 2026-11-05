@@ -73,11 +73,79 @@ public sealed class PlanReplanCliTests : ApplyTestBase
         string archived = Assert.IsType<string>(json["archived_journal"]);
         Assert.Equal(oldJournal, File.ReadAllBytes(archived));
         Assert.False(File.Exists(JournalPath));
-        Assert.Null(json["prefetch_trace"]);
         PlanFile plan = PlanFile.Load(PlanPath);
+        Assert.Equal(PlanPath + PlanOutput.PrefetchSuffix, json["prefetch_trace"]); // 세션이 없어도 승격한 계획의 Order 로 선읽기 파일을 새로 씀
         Assert.Equal(moved * Cb, (long)plan.Stats["fixed_clusters"]! * Cb);
         Apply(plan, Exec(2L << 30));
         Assert.Equal(80 - moved, Vol.Moves.Sum(m => m.N)); // 이미 옮긴 범위는 다시 옮기지 않음
+    }
+
+    [Fact]
+    public void FromPlanRewritesTheStalePrefetchFileFromThePromotedOrder()
+    {
+        _ = PartialA();
+        File.WriteAllText(PlanPath + PlanOutput.PrefetchSuffix, "[]\n"); // 옛 계획의 선읽기
+        using IDisposable scope = UseVolume();
+
+        (int code, _, _) = CliTests.Run("plan", "--from-plan", PlanPath, "--journal", JournalPath);
+
+        Assert.Equal(0, code);
+        string expected = Path.Combine(Root, "expected.plan.json");
+        _ = PlanOutput.Save(PlanFile.Load(PlanPath), [], expected);
+        Assert.Equal(File.ReadAllBytes(expected + PlanOutput.PrefetchSuffix), File.ReadAllBytes(PlanPath + PlanOutput.PrefetchSuffix));
+        Assert.NotEqual("[]", File.ReadAllText(PlanPath + PlanOutput.PrefetchSuffix).Trim());
+    }
+
+    [Fact]
+    public void ApplyReportsBusyWhenTheServiceHoldsTheLockFromAnotherPlanFolder()
+    {
+        PlanFile plan = Make().Resolve(20000);
+        plan.Save(PlanPath);
+        using DataLock service = DataLock.TryAcquire(Path.Combine(Root, "elsewhere", "x.plan.json"), journalPath: JournalPath)!; // 서비스: 저널 폴더 기준
+        TimeSpan previous = DataLock.DefaultWait;
+        DataLock.DefaultWait = TimeSpan.Zero;
+        try
+        {
+            using IDisposable scope = UseVolume();
+
+            (int code, string text, _) = CliTests.Run("apply", "--plan", PlanPath, "--journal", JournalPath, "--allowed-root", Root, "--execute");
+
+            Assert.Equal(4, code);
+            Assert.Contains("\"error\":\"busy\"", text, StringComparison.Ordinal);
+            Assert.Empty(Vol.Moves);
+        }
+        finally
+        {
+            DataLock.DefaultWait = previous;
+        }
+    }
+
+    [Fact]
+    public async Task ApplyReadsThePlanOnlyAfterGettingTheLockSoAPlanChangedWhileWaitingIsNotOverwritten()
+    {
+        PlanFile oldPlan = Make(); // 존 시작 미정: 옛 계획으로 dry-run 하면 존을 정해 다시 저장함
+        PlanFile newPlan = Make().Resolve(30000);
+        oldPlan.Save(PlanPath);
+        DataLock holder = DataLock.TryAcquire(PlanPath, journalPath: JournalPath)!;
+        TimeSpan previous = DataLock.DefaultWait;
+        DataLock.DefaultWait = TimeSpan.FromSeconds(20);
+        try
+        {
+            using IDisposable scope = UseVolume();
+
+            Task<(int Code, string Text, string Err)> waiting = Task.Run(() => CliTests.Run("apply", "--plan", PlanPath, "--journal", JournalPath, "--allowed-root", Root, "--dry-run"));
+            await Task.Delay(300);
+            newPlan.Save(PlanPath); // 서비스가 새 계획을 승격하고 잠금을 풂
+            holder.Dispose();
+
+            Assert.Equal(0, (await waiting).Code);
+            Assert.Equal(newPlan.Sha(), PlanFile.Load(PlanPath).Sha());
+            Assert.Equal(30000, PlanFile.Load(PlanPath).Zone.StartLcn);
+        }
+        finally
+        {
+            DataLock.DefaultWait = previous;
+        }
     }
 
     [Fact]

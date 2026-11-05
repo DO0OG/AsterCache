@@ -89,8 +89,8 @@ internal static class PlanCommand
 
             if (fromPlan is not null || (journal is not null && HasRows(journal)))
             {
-                (plan, replaced) = Replan(plan, outPath, journal ?? outPath + ".journal.jsonl", sessions);
-                prefetchPath = fromPlan is null ? outPath + PlanOutput.PrefetchSuffix : null;
+                (plan, replaced) = Replan(plan, fromPlan, outPath, journal ?? outPath + ".journal.jsonl", sessions);
+                prefetchPath = outPath + PlanOutput.PrefetchSuffix;
             }
             else
             {
@@ -128,13 +128,19 @@ internal static class PlanCommand
     }
 
     // 후보를 잔여 재계획해 활성 계획으로 승격 (저장은 PlanOutput.Save 와 같음, 트레이스가 없으면 계획만). 예약은 같은 폴더의 다른 게임 계획.
-    private static (PlanFile Plan, SwitchResult Switch) Replan(PlanFile candidate, string outPath, string journal, IReadOnlyList<List<TraceEvent>> sessions)
+    // fromPlan 이 있으면 후보는 그 파일이라 잠금을 잡은 뒤 다시 읽음 (기다리는 동안 바뀐 계획을 옛 후보로 덮어쓰지 않음). 선읽기 파일은 세션이 없어도 승격할 계획의 Order 로 새로 씀.
+    private static (PlanFile Plan, SwitchResult Switch) Replan(PlanFile candidate, string? fromPlan, string outPath, string journal, IReadOnlyList<List<TraceEvent>> sessions)
     {
-        using DataLock gate = DataLock.TryAcquire(outPath) ?? throw new PlanRejectedException(DataLock.BusyMessage); // 예약 조회부터 전환까지 서비스와 같은 잠금
+        using DataLock gate = DataLock.TryAcquire(outPath, journalPath: journal) ?? throw new PlanRejectedException(DataLock.BusyMessage); // 예약 조회부터 전환까지 서비스와 같은 잠금
+        if (fromPlan is not null)
+        {
+            candidate = PlanFile.Load(fromPlan);
+        }
+
         (IVolume vol, ApplyHooks hooks) = VolumeCommands.Open(candidate.Volume, null);
         using IVolume volume = vol;
         IReadOnlyList<(long Lcn, long Clusters)> reserved = ZoneReservations.Collect(Path.GetDirectoryName(Path.GetFullPath(outPath))!, candidate.Volume, outPath);
-        Action<PlanFile, string>? save = sessions.Count == 0 ? null : (p, path) => _ = PlanOutput.Save(p, sessions, path);
+        Action<PlanFile, string> save = (p, path) => _ = PlanOutput.Save(p, sessions, path);
         return ResidualReplan.Run(candidate, outPath, journal, volume, reserved, hooks, () => DateTime.UtcNow, save, []);
     }
 }

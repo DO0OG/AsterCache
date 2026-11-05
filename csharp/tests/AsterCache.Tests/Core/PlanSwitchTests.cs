@@ -225,6 +225,22 @@ public sealed class PlanSwitchTests : ApplyTestBase
         Assert.False(File.Exists(planPath + PlanSwitch.NextSuffix + PlanOutput.PrefetchSuffix));
     }
 
+    [Fact]
+    public void WithoutSessionsThePromotedPlanGetsAPrefetchFileFromItsOrderAlsoOnResume()
+    {
+        (_, PlanFile b, string planPath, _) = Partial();
+        string prefetch = planPath + PlanOutput.PrefetchSuffix;
+        File.WriteAllText(prefetch, "[]\n"); // 옛 계획의 선읽기
+        string expected = Path.Combine(Root, "expected.plan.json");
+        _ = PlanOutput.Save(b, [], expected);
+
+        Assert.Throws<InvalidOperationException>(() => PlanSwitch.Commit(b, planPath, JournalPath, () => Now, hooks: Hooks(), checkpoint: CrashAt("recorded")));
+        File.Delete(planPath + PlanSwitch.NextSuffix + PlanOutput.PrefetchSuffix); // 예열 후보가 없는 옛 .switch
+        Assert.True(PlanSwitch.Resume(planPath, JournalPath)!.Resumed);
+
+        Assert.Equal(File.ReadAllBytes(expected + PlanOutput.PrefetchSuffix), File.ReadAllBytes(prefetch));
+    }
+
     // ---- 재개 때 기록의 세대 확인
 
     [Fact]

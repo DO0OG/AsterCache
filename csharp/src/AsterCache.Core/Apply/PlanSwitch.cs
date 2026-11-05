@@ -136,6 +136,10 @@ public static class PlanSwitch
                 candidate.Save(planPath);
                 File.Move(nextPrefetch, planPath + PlanOutput.PrefetchSuffix, true); // 준비 때 저장해 둔 선읽기 후보가 새 계획과 함께 활성이 됨
             }
+            else if (savePlan is null && ShaOf(planPath) == sha)
+            {
+                candidate.Save(planPath); // 이미 승격돼 선읽기 파일도 옮겨진 뒤의 재개: 그 파일을 세션 없이 다시 쓰지 않음
+            }
             else
             {
                 (savePlan ?? DefaultSave)(candidate, planPath);
@@ -154,7 +158,8 @@ public static class PlanSwitch
         return new SwitchResult(archived, sha, resumed);
     }
 
-    private static void DefaultSave(PlanFile plan, string path) => plan.Save(path);
+    // 세션이 없어도 선읽기 파일을 승격할 계획의 최종 Order 로 새로 씀 (이전 계획의 목록이 남지 않게).
+    private static void DefaultSave(PlanFile plan, string path) => _ = PlanOutput.Save(plan, [], path);
 
     // 저널에 행이 있는가와 그 header 의 plan_sha.
     private static (bool HasRows, string? Sha) ReadJournal(string journalPath)

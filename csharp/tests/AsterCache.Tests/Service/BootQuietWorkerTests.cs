@@ -180,4 +180,42 @@ public sealed class BootQuietWorkerTests : IDisposable
     {
         public Task RunAsync(Action<ProcessStart> onStart, CancellationToken cancellationToken) => Task.CompletedTask;
     }
+
+    [Fact]
+    public void LayoutCheckWaitsForAQuietWindowStartedByResumeFromSleep()
+    {
+        _uptimeMs = 6 * Minute; // 절전 복귀 뒤 가동 시간은 이미 5 분을 넘음
+        BootQuiet q = Quiet();
+        Worker w = MakeWorker(new Silent(), null, q);
+        DateTimeOffset start = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(2);
+
+        Tick(w, start, new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal));
+        Assert.Equal(1, _layoutChecks);
+
+        _now = _now.AddHours(1); // 절전: 벽시계만 감
+        Tick(w, start, new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal));
+        Assert.Equal(1, _layoutChecks);
+        Assert.Single(_log.Lines, line => line.Contains("layout check and reapply deferred: boot quiet period", StringComparison.Ordinal));
+
+        _uptimeMs = 11 * Minute; // BootDelay 가 지났지만 유휴 시작 (아직 구간)
+        _idle = true;
+        Tick(w, start, new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal));
+        Assert.Equal(1, _layoutChecks);
+
+        _now = _now.AddSeconds(60); // 60 초 유휴 → 구간 끝, 이번 틱에 실행
+        Tick(w, start, new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal));
+        Assert.Equal(2, _layoutChecks);
+    }
+
+    [Fact]
+    public void AutoRelocationIsHeldWhileQuietAndAllowedAfterIt()
+    {
+        BootQuiet q = Quiet();
+
+        Assert.False(Worker.RelocationAllowed(q));
+        Assert.Single(_log.Lines, line => line.Contains("auto relocation and new trace prewarm deferred: boot quiet period", StringComparison.Ordinal));
+
+        EndQuiet(q);
+        Assert.True(Worker.RelocationAllowed(q));
+    }
 }

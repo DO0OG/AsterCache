@@ -459,7 +459,7 @@ public sealed class Worker : BackgroundService
             due[g.Name] = DateTimeOffset.UtcNow + (waiting ? ResumeRetry : TimeSpan.FromMinutes(g.ReapplyMinutes));
         }
 
-        if (_auto is not null && !_quiet.Defers("auto relocation and new trace prewarm"))
+        if (_auto is not null && RelocationAllowed(_quiet))
         {
             _auto.RelocateTick(_gate, ct);
         }
@@ -467,6 +467,9 @@ public sealed class Worker : BackgroundService
         NoteGameExits();
         MaintainPrewarm();
     }
+
+    /// 이번 틱에 자동 재배치를 불러도 되는가: 부팅 조용 구간이 아니어야 합니다 (구간이면 보류 로그를 남김).
+    public static bool RelocationAllowed(BootQuiet quiet) => !quiet.Defers("auto relocation and new trace prewarm");
 
     // 폴링·ETW 어느 쪽이든 재적용 틱마다 (30 초) 프로세스 이름을 한 번 읽어 실행 중이던 게임이 사라졌는지 봅니다.
     private void NoteGameExits()

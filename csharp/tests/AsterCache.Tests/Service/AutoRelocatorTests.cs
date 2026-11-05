@@ -134,9 +134,9 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     private int Streams => _streamer.Calls.Count;
 
     // 예열은 따로 돌므로 틱이 돌아온 뒤 그 작업이 끝나기를 기다려 결과를 봅니다 (틱 자체가 안 막히는지는 아래 별도 시험).
-    private void Tick()
+    private void Tick(ReapplyGate? gate = null)
     {
-        Relocator.Tick(_gate, CancellationToken.None);
+        Relocator.Tick(gate ?? _gate, CancellationToken.None);
         WarmDone();
     }
 
@@ -170,14 +170,14 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     private void SetAuto(Func<AutoSettings, AutoSettings> change) => _settings = _settings with { Auto = change(_settings.Auto) };
 
     // 30 초 틱을 span 만큼 돌립니다 (첫 틱은 현재 시각).
-    private void Run(TimeSpan span)
+    private void Run(TimeSpan span, ReapplyGate? gate = null)
     {
         DateTimeOffset end = _w.Now + span;
-        Tick();
+        Tick(gate);
         while (_w.Now < end)
         {
             _w.Now += Step;
-            Tick();
+            Tick(gate);
         }
     }
 
@@ -216,6 +216,65 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         _w.Now += TimeSpan.FromMinutes(5);
         Tick();
         Assert.Empty(Vol.Moves);
+    }
+
+    [Fact]
+    public void UnregisteredProcessUnderInstallRootBlocksPlanningUntilItExits()
+    {
+        _w.RootPids.Add(77);
+        _w.Images[77] = Path.Combine(Root, "helper.exe");
+
+        Tick();
+
+        Assert.Empty(_w.PlanZones);
+        Assert.False(File.Exists(_game.Plan));
+        Assert.Empty(Vol.Moves);
+
+        _w.RootPids.Clear();
+        _w.Images.Clear();
+        _w.Now += Step;
+        Tick();
+
+        Assert.NotEmpty(_w.PlanZones);
+        Assert.True(File.Exists(_game.Plan));
+
+        _w.RootPids.Add(77);
+        _w.Images[77] = Path.Combine(Root, "helper.exe");
+        _w.Now += Step;
+        Tick();
+        Assert.Empty(Vol.Moves);
+
+        _w.RootPids.Clear();
+        _w.Images.Clear();
+        RunUntilDone();
+        Assert.NotEmpty(Vol.Moves);
+    }
+
+    [Fact]
+    public void ABlockingProcessIsLoggedOncePerRunningSpellAndAgainAfterItEndsAndReturns()
+    {
+        _w.RootPids.Add(77);
+        _w.Images[77] = Path.Combine(Root, "helper.exe");
+        _w.DescribeBlockers = g => g.Name == _game.Name ? $"helper.exe(77) {Path.Combine(Root, "helper.exe")}" : null;
+        string expected = $"{_game.Name}: auto skipped while a game on the same disk is running; blocking processes: {_game.Name}: helper.exe(77) {Path.Combine(Root, "helper.exe")}";
+
+        for (int i = 0; i < 3; i++)
+        {
+            Tick();
+            _w.Now += Step;
+        }
+
+        Assert.Single(_log.Lines, l => l.EndsWith(expected, StringComparison.Ordinal)); // 틱마다 반복하지 않음
+
+        _w.RootPids.Clear();
+        _w.Images.Clear();
+        Tick();
+        _w.Now += Step;
+        _w.RootPids.Add(77);
+        _w.Images[77] = Path.Combine(Root, "helper.exe");
+        Tick();
+
+        Assert.Equal(2, _log.Lines.Count(l => l.EndsWith(expected, StringComparison.Ordinal))); // 사라졌다 다시 나타나면 다시 남김
     }
 
     // 다른 게임 하나를 추가합니다 (originRoot 로 드라이브를 정함, 트레이스가 없어 재배치 후보는 아님).
@@ -910,6 +969,48 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         Assert.True(Verify(PlanFile.Load(_game.Plan)).Contiguous);
         Assert.Equal(2, _status.RelocationsWithin(AutoRelocator.DailyWindow)); // 이어하기도 한 번 더 시작으로 셈, 끝날 때 또 세지 않음
         Assert.Equal(["relocated"], _status.Events.Select(e => e.Kind));
+    }
+
+    [Fact]
+    public void UnregisteredProcessUnderTheInstallRootStartingDuringTheMoveStopsItAtTheNextPieceAndTheJournalResumes()
+    {
+        ReportFullMoves();
+        using var observed = new ManualResetEventSlim();
+        bool seen = false;
+        Vol.AfterMove = n =>
+        {
+            if (n == 1)
+            {
+                _w.RootPids.Add(77); // 등록 exe 가 아닌 루트 아래 프로세스가 뜸: 시작 알림은 오지 않음
+                int moveThread = Environment.CurrentManagedThreadId;
+                int polls = 0;
+                _w.RootPidsOf = _ =>
+                {
+                    if (Environment.CurrentManagedThreadId != moveThread && Interlocked.Increment(ref polls) >= 2) // 점검 타이머의 첫 판정이 취소를 건 뒤의 다음 판정까지 기다림
+                    {
+                        observed.Set();
+                    }
+
+                    return true;
+                };
+                seen = observed.Wait(TimeSpan.FromSeconds(5));
+            }
+        };
+
+        Run(TimeSpan.FromMinutes(3), new ReapplyGate { RunningPoll = TimeSpan.FromMilliseconds(10) });
+
+        Assert.True(seen);
+        Assert.Equal((AutoStage.WaitingIdle, "cancelled by game start"), (Entry.Stage, Entry.Detail));
+        Assert.Null(Entry.RelocatedAt);
+        Assert.Single(Vol.Moves);
+        Assert.True(File.Exists(JournalPath));
+
+        Vol.AfterMove = null;
+        _w.RootPids.Clear();
+        Run(TimeSpan.FromMinutes(3.5)); // 프로세스가 끝난 뒤 저널에서 이어 옮김
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.True(Verify(PlanFile.Load(_game.Plan)).Contiguous);
     }
 
     [Fact]
@@ -3224,6 +3325,29 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
+    public void AnOldPlanWithVolatileHistoryButNoStableFingerprintStillReplansOnAChangedRawFingerprint()
+    {
+        _w.TraceFingerprint = _ => "fp-a";
+        ReportFullMoves();
+        DoneThenMergedTrace(Merged([])); // 같은 5 블록, 크기 증가 없음
+        PlanFile plan = PlanFile.Load(_game.Plan);
+        var stats = new JObject();
+        foreach ((string key, object? value) in plan.Stats.Where(kv => kv.Key != "relocation_trace_fingerprint"))
+        {
+            stats.Add(key, value);
+        }
+
+        stats.Add(VolatileFiles.StatsKey, new JObject { { Path.Combine(Root, "cache_1_2.xpakdata"), "volatile file name" } });
+        (plan with { Stats = stats }).Save(_game.Plan); // 가변 파일 이력이 있고 안정 지문이 없는 옛 계획
+        _w.TraceFingerprint = _ => "fp-b";
+
+        Tick();
+
+        Assert.True(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix));
+        Assert.Contains(_log.Lines, l => l.Contains("blocks or order changed", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void ABlockedExtensionNotesTheLimitOnTheRestoredPlanSoARestartDoesNotTryAgain()
     {
         _settings = _settings with { MaxZoneMib = 1 };
@@ -3266,7 +3390,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         Relocator.NoteProgress(_game, 2, 2); // 다시 붙일 때 옛 표시를 지움
         Assert.Single(System.Text.RegularExpressions.Regex.Matches(Entry.Detail!, "trace 3/8"));
 
-        _status.RecordCoverage("bench", 90);
+        File.WriteAllText(AutoTracer.MergeMetaPath(_game), "{\"run\": 3, \"new_mib\": 10}");
         Relocator.NoteProgress(_game, 1, 2);
         Assert.DoesNotContain("trace", Entry.Detail!, StringComparison.Ordinal);
     }

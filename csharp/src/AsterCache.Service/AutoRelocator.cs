@@ -75,6 +75,7 @@ public sealed class AutoRelocator
     private const string EffectiveZoneKey = "effective_zone_mib"; // 계획 stats: 계획을 만들 때의 유효 존 상한 (MiB)
     private const string MergePolicyKey = "merge_policy"; // 계획 stats: 계획을 만들 때의 트레이스 병합 정책 (AutoTracer.MergePolicy)
     private const string FingerprintKey = "trace_fingerprint"; // 계획 stats: 계획을 만들 때의 원시 트레이스 지문 (블록 집합·순서)
+    private const string StableFingerprintKey = "relocation_trace_fingerprint";
     private const string ExtendDetail = "trace grew, extending zone";
     private const string SupplementKey = "profile_supplement_mib"; // 계획 stats: 트레이스 금지 게임의 계획에 엔진 프로필에서 보탠 양 (MiB)
     private const string SupplementCheckedKey = "profile_supplement_checked"; // 계획 stats: 프로필 보충을 이미 따져 본 계획 (보충이 없거나 작았음)
@@ -107,6 +108,7 @@ public sealed class AutoRelocator
     private readonly AutoStatus _status;
     private readonly ILog _log;
     private readonly Func<AsterSettings> _settings;
+    private readonly BlockerNotes _blockers; // 게임 실행 중이라 건너뛸 때 막고 있는 프로세스를 남김 (사유가 바뀔 때만)
     private readonly IdleTracker _idle = new();
     private DateTimeOffset? _waitSince; // 틱 스레드에서만 씀: 유휴가 아닌 채로 기다리기 시작한 때
     private bool _waitNoted; // 틱 스레드에서만 씀: 이번 대기 구간에 긴 대기를 이미 남겼는지
@@ -127,6 +129,7 @@ public sealed class AutoRelocator
     private readonly HashSet<string> _seeded = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 이전 존 시작에 맞춰 계획을 만든 게임
     private readonly ConcurrentDictionary<string, byte> _smrBudgetLogged = new(StringComparer.Ordinal); // 명시한 하루 쓰기 예산이 SMR 기본값보다 큰 게임 (한 번만 로그)
     private readonly Dictionary<string, (bool Auto, int Mib)> _limitSeen = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 존 상한 설정 (auto 여부·값) 을 이미 따져 본 게임과 그때의 설정 (설정이 바뀌거나 서비스를 다시 시작하기 전에는 계획을 다시 읽지 않음)
+    private readonly HashSet<string> _warmRestorePending = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 잔여 재계획 뒤 예열 목록 복원에 실패한 게임 (복원에 성공할 때까지 존 확장 점검 앞에서 다시 시도)
     private readonly Dictionary<string, DateTimeOffset> _extTried = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 존 확장을 이미 따져 본 (또는 막힌) 게임과 그때의 트레이스 수정 시각 (다음 플레이가 쌓여 트레이스가 바뀔 때까지 다시 보지 않음)
     private readonly ConcurrentDictionary<string, byte> _extensionRecovery = new(StringComparer.Ordinal); // 확장 되돌리기·저널 보관에 실패했다가 다시 열려 그 복구부터 해야 하는 게임 (서비스를 다시 시작하면 사라짐)
     private readonly ConcurrentDictionary<string, DateTimeOffset> _planFailedAt = new(StringComparer.Ordinal); // 계획 (또는 재배치) 이 마지막으로 실패한 시각: 그 뒤 트레이스가 새로 쓰이기 전에는 같은 실패를 되풀이하지 않음
@@ -149,6 +152,7 @@ public sealed class AutoRelocator
         _status = status;
         _log = log;
         _settings = settings;
+        _blockers = new BlockerNotes(env, log);
         _prewarm = prewarm;
         _recovery = new DriveRecovery(env, log, status); // 재시작 때 저장된 회복 추적을 되살림
         _tier = tier ?? (env.Tier is { } engine ? new AutoTier(env, status, log, engine) : null);
@@ -352,7 +356,7 @@ public sealed class AutoRelocator
         {
             Relocate(next, s, token);
             return true;
-        });
+        }, () => AnyGameRunning(next));
         _idle.Reset(); // 다음 재배치도 다시 유휴를 기다림
         Warm(next, "after relocation", warms); // 끝났든 보류·실패했든 트레이스가 있으면 그 범위로 바로 예열 (새 배치가 RAM 에 오르게)
     }
@@ -505,8 +509,24 @@ public sealed class AutoRelocator
     }
 
     // g 와 같은 드라이브에 설치된 등록 게임 (g 포함) 이 도는 중인지: 다른 드라이브의 게임은 g 의 디스크 읽기와 겹치지 않으므로 보지 않습니다.
-    private bool AnyGameRunning(GameSettings g) =>
-        _env.AnyRunning([.. SameDriveGames(_settings().Games, [g], _env.SameDisk).SelectMany(x => x.ExeNames).Concat(g.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)]);
+    private bool AnyGameRunning(GameSettings g)
+    {
+        List<GameSettings> games = [.. SameDriveGames(_settings().Games, [g], _env.SameDisk)];
+        if (!games.Any(x => string.Equals(x.Name, g.Name, StringComparison.OrdinalIgnoreCase)))
+        {
+            games.Add(g);
+        }
+
+        string[] names = [.. games.SelectMany(x => x.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)];
+        if (_env.AnyRunning(names) || games.Any(x => _env.RootPids(x).Count > 0))
+        {
+            _blockers.Note(g.Name, $"{g.Name}: auto skipped", games);
+            return true;
+        }
+
+        _blockers.Clear(g.Name);
+        return false;
+    }
 
     // targets 와 같은 물리 디스크 (sameDisk 판정) 에 설치된 games.
     public static IEnumerable<GameSettings> SameDriveGames(IEnumerable<GameSettings> games, IEnumerable<GameSettings> targets, Func<string, string, bool> sameDisk)
@@ -1119,10 +1139,16 @@ public sealed class AutoRelocator
         foreach (GameSettings g in s.Games)
         {
             string raw = AutoTracer.RawTracePath(g);
-            if (_status.Get(g.Name)?.RelocatedAt is null || !_env.FileExists(g.Plan) || IsExtending(g) || AnyGameRunning(g)
+            bool relocated = _status.Get(g.Name)?.RelocatedAt is not null;
+            if (!_env.FileExists(g.Plan) || IsExtending(g) || AnyGameRunning(g)
                 || _env.FileWriteTime(raw) is not { } traced || _env.FileWriteTime(g.Plan) is not { } planned)
             {
                 continue;
+            }
+
+            if (_warmRestorePending.Contains(g.Name))
+            {
+                RetryWarmRestore(g); // 계획이 트레이스보다 새로워져 아래 점검이 조기 종료해도 목록 복원은 다시 시도
             }
 
             // 새 트레이스: 계획보다 새롭고 아직 따져 보지 않았고 두 번째 이후 플레이가 병합된 것. 존 상한 설정이 바뀌었거나 처음 보는 게임도 한 번 따져 봄 (상한을 올려도 트레이스는 안 바뀌므로).
@@ -1157,16 +1183,40 @@ public sealed class AutoRelocator
                 }
 
                 string? stored = plan.Stats.TryGetValue(FingerprintKey, out object? fo) ? fo as string : null;
-                string? fingerprint = _env.TraceFingerprint(raw);
+                string? storedStable = plan.Stats.TryGetValue(StableFingerprintKey, out object? sf) ? sf as string : null;
+                string? rawFingerprint = _env.TraceFingerprint(raw);
+                IReadOnlyList<TraceEvent> mergedTrace = _env.LoadTrace(raw, g.OriginRoot);
+                (IReadOnlyList<TraceEvent> stableTrace, JObject excluded, IReadOnlyList<TraceEvent> warmOnly) = DropVolatile(g, mergedTrace);
+                string fingerprint = PlanFile.TraceFingerprint(stableTrace);
                 long cap = limit << 20;
-                long merged = Math.Min(DistinctBlocks(_env.LoadTrace(raw, g.OriginRoot)) * HotSet.Block, cap);
+                long merged = Math.Min(DistinctBlocks(stableTrace) * HotSet.Block, cap);
                 long grew = merged - hotBlocks * HotSet.Block;
-                bool reordered = newTrace && stored is not null && fingerprint is not null && fingerprint != stored; // 크기가 그대로여도 블록 집합·순서가 바뀜
+                bool volatileHistory = excluded.Count > 0 || plan.Stats.ContainsKey(VolatileFiles.StatsKey);
+                bool reordered = newTrace && (volatileHistory && storedStable is not null
+                    ? fingerprint != storedStable // 가변 파일은 안정 지문 비교에서 제외
+                    : stored is not null && rawFingerprint is not null && rawFingerprint != stored); // 안정 지문이 없는 옛 계획은 원시 지문으로 비교한 뒤 새 지문을 기록
                 bool shrink = hotBlocks * HotSet.Block > cap; // 상한을 낮춰 계획의 핫셋이 새 상한을 넘음: 메타만 적지 않고 같은 존 시작으로 줄여 다시 계획
                 bool replan = grew >= (long)s.Auto.TraceMergeMinMib << 20 || reordered || shrink;
-                bool stamp = !metaSame || stored is null && fingerprint is not null;
-                using IDisposable? gate = replan || stamp ? _env.Lock(g) : null; // 계획을 치우거나 다시 쓰는 구간
-                if ((replan || stamp) && (gate is null || !PlanUnchanged(g, plan)))
+                bool stamp = !metaSame || stored is null && rawFingerprint is not null || relocated && storedStable is null;
+                bool refreshWarm = relocated && newTrace && !replan;
+
+                if (!relocated)
+                {
+                    using IDisposable? warmGate = _env.Lock(g);
+                    if (warmGate is null || !PlanUnchanged(g, plan))
+                    {
+                        _ = _extTried.Remove(g.Name);
+                        _ = _limitSeen.Remove(g.Name);
+                        continue;
+                    }
+
+                    long refreshedMib = SavePartialWarm(g, limit, stableTrace, warmOnly);
+                    _log.Info($"{g.Name}: partial plan prewarm trace refreshed ({refreshedMib} MiB hot set, zone limit {limit} MiB); relocation plan and journal kept");
+                    continue;
+                }
+
+                using IDisposable? gate = replan || stamp || refreshWarm ? _env.Lock(g) : null; // 계획을 치우거나 다시 쓰는 구간
+                if ((replan || stamp || refreshWarm) && (gate is null || !PlanUnchanged(g, plan)))
                 {
                     _ = _extTried.Remove(g.Name); // 못 잡았거나 기다리는 동안 계획이 바뀜: 아무것도 바꾸지 않고 다음 틱에 다시 따짐
                     _ = _limitSeen.Remove(g.Name);
@@ -1192,17 +1242,43 @@ public sealed class AutoRelocator
                 {
                     plan.Stats[EffectiveZoneKey] = limit;
                     plan.Stats[MergePolicyKey] = AutoTracer.MergePolicy;
-                    if (stored is null && fingerprint is not null)
+                    if (stored is null && rawFingerprint is not null)
                     {
-                        plan.Stats[FingerprintKey] = fingerprint;
+                        plan.Stats[FingerprintKey] = rawFingerprint;
+                    }
+
+                    if (storedStable is null)
+                    {
+                        plan.Stats[StableFingerprintKey] = fingerprint;
                     }
 
                     plan.Save(g.Plan);
                     _log.Info($"{g.Name}: plan notes recorded (zone limit {limit} MiB, merge {AutoTracer.MergePolicy}), no replan needed");
                 }
+
+                if (refreshWarm)
+                {
+                    try
+                    {
+                        PlanOutput.SavePrefetch(g.Trace, plan.PrefetchTrace([stableTrace]), warmOnly);
+                        _log.Info($"{g.Name}: prewarm trace refreshed from the merged trace; relocation plan and journal kept");
+                    }
+                    catch (Exception e) when (IsTransient(e))
+                    {
+                        // 이 트레이스는 이미 따져 본 것으로 기록됐으므로, 복원 대기에 넣어 다음 틱부터 같은 병합 트레이스로 다시 씀
+                        _ = _warmRestorePending.Add(g.Name);
+                        _log.Warn($"{g.Name}: prewarm trace not refreshed ({e.GetType().Name}), will retry");
+                    }
+                }
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
+                if (!relocated)
+                {
+                    _ = _extTried.Remove(g.Name);
+                    _ = _limitSeen.Remove(g.Name);
+                }
+
                 _log.Warn($"{g.Name}: zone extension check failed, will retry on the next trace ({e.GetType().Name})");
             }
         }
@@ -1286,7 +1362,7 @@ public sealed class AutoRelocator
                     continue;
                 }
 
-                (IReadOnlyList<TraceEvent> trace, _) = DropVolatile(g, _env.LoadTrace(tracePath, g.OriginRoot));
+                (IReadOnlyList<TraceEvent> trace, _, _) = DropVolatile(g, _env.LoadTrace(tracePath, g.OriginRoot));
                 (_, long bytes) = ProfileSupplement.Union(trace, MaxZoneMib(s, g) << 20, budget => _env.ProfileEvents(g, budget));
                 plan.Stats[SupplementCheckedKey] = 1L;
                 bool replan = bytes >= (long)s.Auto.TraceMergeMinMib << 20;
@@ -1514,7 +1590,7 @@ public sealed class AutoRelocator
             return ReapplyVerdict.NotApplied;
         }
 
-        if (_env.AnyRunning([.. SameDriveGames(s.Games, [g], _env.SameDisk).SelectMany(x => x.ExeNames).Concat(g.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)]))
+        if (AnyGameRunning(g))
         {
             return ReapplyVerdict.GameRunning;
         }
@@ -1611,7 +1687,7 @@ public sealed class AutoRelocator
     // CPU 사용률은 보지 않습니다: HDD 이동은 Low I/O 우선순위로 대상 드라이브에만 영향을 주므로 백그라운드 작업이 있는 PC 도 재배치해야 합니다.
     private string? BusyReason(AsterSettings s, List<GameSettings> ready)
     {
-        if (_env.AnyRunning([.. SameDriveGames(s.Games, ready, _env.SameDisk).SelectMany(g => g.ExeNames)]))
+        if (ready.Any(AnyGameRunning))
         {
             return "game running";
         }
@@ -1675,7 +1751,8 @@ public sealed class AutoRelocator
             string tracePath = AutoTracer.PlanTracePath(g, _env.FileExists) ?? AutoTracer.RawTracePath(g);
             bool boot = tracePath == AutoTracer.BootTracePath(g);
             bool prefetch = boot && _env.TraceSource(tracePath) == PlanSourcePrefetch;
-            (IReadOnlyList<TraceEvent> trace, JObject excluded) = DropVolatile(g, _env.LoadTrace(tracePath, g.OriginRoot));
+            (IReadOnlyList<TraceEvent> trace, JObject excluded, IReadOnlyList<TraceEvent> warmOnly) = DropVolatile(g, _env.LoadTrace(tracePath, g.OriginRoot));
+            IReadOnlyList<TraceEvent> fingerprintTrace = trace;
             long supplementBytes = 0;
             string? cheat = _env.TraceBlocker(g);
             if (cheat is not null)
@@ -1769,6 +1846,8 @@ public sealed class AutoRelocator
                 {
                     plan.Stats[FingerprintKey] = fp;
                 }
+
+                plan.Stats[StableFingerprintKey] = PlanFile.TraceFingerprint(fingerprintTrace);
             }
 
             if (supplementBytes > 0)
@@ -1799,7 +1878,7 @@ public sealed class AutoRelocator
                 plan = InheritHeld(g, plan); // 아직 읽지 못하는 보류 파일은 후보에서 빠졌어도 계속 보류로 남김
                 try
                 {
-                    _ = residual(g, plan, ResidualOlds(g), sessions);
+                    plan = residual(g, plan, ResidualOlds(g), sessions);
                 }
                 catch (PlanRejectedException e) when (IsTemporaryRejection(e))
                 {
@@ -1830,6 +1909,8 @@ public sealed class AutoRelocator
                 _env.SavePlan(plan, sessions, g.Plan);
             }
 
+            PlanOutput.SavePrefetch(g.Trace, plan.PrefetchTrace(sessions), warmOnly);
+
             if (extending && start is null)
             {
                 _env.MoveAside(g.Plan + ExtendSuffix, g.Plan + StaleSuffix); // 마지막에 치움: 앞에서 실패하면 확장 중 표시가 남아 BlockExtension 이 이전 계획을 되살림
@@ -1846,7 +1927,7 @@ public sealed class AutoRelocator
     }
 
     // 가변 파일 (이름 규칙, 트레이스에서 run 사이에 바뀌었거나 쓰기로 열렸다고 표시된 파일) 을 계획 입력에서 뺍니다. 뺀 파일과 사유는 계획 stats 에 남김.
-    private (IReadOnlyList<TraceEvent> Kept, JObject Excluded) DropVolatile(GameSettings g, IReadOnlyList<TraceEvent> trace)
+    private (IReadOnlyList<TraceEvent> Kept, JObject Excluded, IReadOnlyList<TraceEvent> WarmOnly) DropVolatile(GameSettings g, IReadOnlyList<TraceEvent> trace)
     {
         IReadOnlyDictionary<string, string> marked = _env.LoadVolatile(AutoTracer.VolatilePath(g));
         var excluded = new JObject();
@@ -1858,7 +1939,9 @@ public sealed class AutoRelocator
             }
         }
 
-        return excluded.Count == 0 ? (trace, excluded) : ([.. trace.Where(t => !excluded.ContainsKey(t.Path))], excluded);
+        return excluded.Count == 0
+            ? (trace, excluded, [])
+            : ([.. trace.Where(t => !excluded.ContainsKey(t.Path))], excluded, [.. trace.Where(t => excluded.ContainsKey(t.Path))]);
     }
 
     // 이전 계획들 (옛 계획과 읽히는 활성 계획) 에 보류로 남은 파일 중 지금도 extent 를 읽지 못하는 파일의 핫 범위와 지문을 새 후보에 승계합니다:
@@ -2269,6 +2352,7 @@ public sealed class AutoRelocator
             PlanFile built = _env.ReplanResidual!(g, active, ResidualOlds(g), SessionsFor(g, active));
             _status.SetRecovery(g.Name, new RecoveryAttempt(built.Sha(), LcnIn(cause.Message), 1, null, prior.Reason, prior.Stamp));
             _ = _seeded.Remove(g.Name);
+            _ = RestoreWarmList(g);
             return true;
         }
         catch (PlanRejectedException e) when (IsTemporaryRejection(e))
@@ -2285,6 +2369,58 @@ public sealed class AutoRelocator
         {
             HoldTransient(g, e); // 저널 잠금·읽기 실패: 아무것도 바꾸지 않았음. 실패로 기록하지 않고 같은 서비스 실행 안에서 다시 시도
             return false;
+        }
+    }
+
+    // 부분 적용 계획의 예열 목록: 계획 Order 가 아니라 병합 트레이스 기준 핫셋 (유효 존·스트림 상한 이내) 에 가변 파일 범위를 더해 씀. 반환: 핫셋 MiB.
+    private long SavePartialWarm(GameSettings g, long limit, IReadOnlyList<TraceEvent> stable, IReadOnlyList<TraceEvent> warmOnly)
+    {
+        long cap = limit << 20;
+        List<TraceEvent> hot = PlanFile.PrefetchHotSetTrace([stable], Math.Min(cap, g.StreamCapBytes(cap)));
+        PlanOutput.SavePrefetch(g.Trace, hot, warmOnly);
+        return hot.Sum(r => r.Length) >> 20;
+    }
+
+    // 잔여 재계획의 PlanOutput.Save 가 예열 목록을 계획 Order 만으로 덮으므로, 병합 트레이스 기준 목록 (확대한 범위와 가변 범위) 으로 다시 씀. 실패해도 이미 바뀐 계획은 그대로 둠.
+    private bool RestoreWarmList(GameSettings g)
+    {
+        try
+        {
+            if (AutoTracer.PlanTracePath(g, _env.FileExists) is not { } tracePath || tracePath != AutoTracer.RawTracePath(g))
+            {
+                return true;
+            }
+
+            (IReadOnlyList<TraceEvent> stable, _, IReadOnlyList<TraceEvent> warmOnly) = DropVolatile(g, _env.LoadTrace(tracePath, g.OriginRoot));
+            _ = SavePartialWarm(g, MaxZoneMib(_settings(), g), stable, warmOnly); // 재배치 완료 여부와 무관하게 병합 트레이스 핫셋 (확대한 범위) 을 보존
+            return true;
+        }
+        catch (Exception e) when (IsTransient(e) || e is PlanRejectedException)
+        {
+            if (_warmRestorePending.Add(g.Name)) // 다음 틱부터 RetryWarmRestore 가 다시 씀 (경고는 처음 한 번만)
+            {
+                _log.Warn($"{g.Name}: prewarm list not restored after the remainder replan ({e.GetType().Name}), will retry");
+            }
+
+            return false;
+        }
+    }
+
+    // 복원 대기 게임의 예열 목록을 잠금 안에서 다시 씀. 성공하면 대기에서 뺌, 실패하면 대기를 유지해 다음 틱에 다시.
+    private void RetryWarmRestore(GameSettings g)
+    {
+        try
+        {
+            using IDisposable? gate = _env.Lock(g);
+            if (gate is not null && RestoreWarmList(g))
+            {
+                _ = _warmRestorePending.Remove(g.Name);
+                _log.Info($"{g.Name}: prewarm list restored on retry after the remainder replan");
+            }
+        }
+        catch (Exception e) when (IsTransient(e) || e is PlanRejectedException)
+        {
+            // 계획을 읽지 못함: 대기를 유지해 다음 틱에 다시
         }
     }
 
@@ -2406,7 +2542,7 @@ public sealed class AutoRelocator
 
     private void Relocate(GameSettings g, AsterSettings s, CancellationToken token)
     {
-        if (_env.AnyRunning(g.ExeNames))
+        if (AnyGameRunning(g))
         {
             Note(g, AutoStage.WaitingIdle, "game is running");
             return;
@@ -2734,7 +2870,7 @@ public sealed class AutoRelocator
     // 되돌리기를 끝냈으면 참 (되돌릴 것이 없었던 경우 포함), 게임 실행·중단·실패로 못 끝냈으면 거짓.
     private bool Undo(GameSettings g, int mark, CancellationToken token, bool newRound = false)
     {
-        if (_env.AnyRunning(g.ExeNames))
+        if (AnyGameRunning(g))
         {
             _log.Warn($"{g.Name}: game is running, revert skipped (journal kept)");
             return false;

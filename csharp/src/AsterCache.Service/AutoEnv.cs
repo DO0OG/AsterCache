@@ -121,6 +121,9 @@ public sealed class AutoEnv
     /// 이 게임 폴더 아래에서 도는 프로세스의 PID (게임 exe 가 자식 프로세스를 띄우는 경우를 포함, 이 서비스는 제외). 시험 기본값은 없음.
     public Func<GameSettings, IReadOnlyList<int>> RootPids { get; init; } = _ => [];
 
+    /// 이 게임이 돌고 있다고 판정한 프로세스를 "이름(pid) 경로" 로 최대 3개 ("; " 로 이음), 없으면 null (건너뜀 사유 로그용). 시험 기본값은 없음.
+    public Func<GameSettings, string?> DescribeBlockers { get; init; } = _ => null;
+
     /// 물리 RAM 전체 (바이트).
     public required Func<long> PhysicalRamBytes { get; init; }
 
@@ -287,7 +290,8 @@ public sealed class AutoEnv
             ImagePath = ProcessSnapshot.ImagePath,
             ReadBytes = ProcessSnapshot.ReadBytes,
             AntiCheatOf = dir => DetectAntiCheat(dir, log: log),
-            RootPids = g => [.. ProcessSnapshot.Take().Where(p => p.Pid != Environment.ProcessId && DispatchEnv.UnderRoot(g, ProcessSnapshot.ImagePath(p.Pid))).Select(p => p.Pid)],
+            RootPids = g => DispatchEnv.RootPids(g, ProcessSnapshot.Take(), ProcessSnapshot.ImagePath),
+            DescribeBlockers = DispatchEnv.DescribeBlockers,
             PhysicalRamBytes = SystemMemory.TotalBytes,
             WindowsDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows),
             SystemDrive = Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.Windows))![..2].ToUpperInvariant(),
@@ -402,5 +406,33 @@ public sealed class AutoEnv
         }
 
         public void Dispose() => session.Dispose();
+    }
+}
+
+/// "game running" 으로 건너뛸 때 막고 있는 프로세스를 로그에 남깁니다. 프로세스 목록이 바뀔 때만 남기고, 스냅샷은 키마다 RecheckEvery 간격으로만 다시 뜹니다 (틱마다 반복하지 않음).
+internal sealed class BlockerNotes(AutoEnv env, ILog log)
+{
+    public static readonly TimeSpan RecheckEvery = TimeSpan.FromMinutes(10);
+
+    private readonly ConcurrentDictionary<string, (DateTimeOffset At, string? Text)> _last = new(StringComparer.Ordinal);
+
+    /// 판정이 거짓이 되면 지워 다음 실행 구간에 다시 남깁니다.
+    public void Clear(string key) => _ = _last.TryRemove(key, out _);
+
+    public void Note(string key, string what, IEnumerable<GameSettings> games)
+    {
+        DateTimeOffset now = env.Now();
+        _ = _last.TryGetValue(key, out (DateTimeOffset At, string? Text) last);
+        if (last.Text is not null && now - last.At < RecheckEvery)
+        {
+            return;
+        }
+
+        string text = string.Join(" | ", games.Select(g => env.DescribeBlockers(g) is { } d ? $"{g.Name}: {d}" : null).OfType<string>());
+        _last[key] = (now, text);
+        if (text.Length > 0 && text != last.Text)
+        {
+            log.Info($"{what} while a game on the same disk is running; blocking processes: {text}");
+        }
     }
 }

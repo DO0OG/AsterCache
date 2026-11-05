@@ -166,8 +166,9 @@ public sealed class AutoTracer
     /// 다음 플레이를 트레이스할지의 공통 판정 (게임 시작 두 곳이 같이 씀). Valid = 유효 회차 수, Limit = 지금 단계의 회차 상한.
     public readonly record struct TraceNext(int Valid, int Limit, bool Wanted, int? Coverage);
 
-    /// 유효 회차가 trace_runs 에 못 미치면 기존 정책대로 한 번 더. 채운 뒤에는 (a) 마지막 세션 커버리지가 trace_target_coverage 미만이고 (b) 직전 병합이 새 고유 블록을
-    /// trace_merge_min_mib 이상 더했고 (c) 유효 회차가 trace_runs_max 미만일 때만 한 번 더. 값이 없으면 기존 정책 (거절). 안티치트 판정은 호출한 쪽 (Start) 이 먼저 합니다.
+    /// 유효 회차가 trace_runs 에 못 미치면 기존 정책대로 한 번 더. 채운 뒤에는 (a) 직전 병합이 새 고유 블록을
+    /// trace_merge_min_mib 이상 더했고 (b) 유효 회차가 trace_runs_max 미만일 때만 한 번 더. 병합 메타가 없으면 기존 정책 (거절).
+    /// 커버리지 (핫셋 ÷ 프로세스 누적 읽기량) 는 세션이 짧으면 100% 로 쏠려 판단 근거가 못 되므로 표시에만 씁니다. 안티치트 판정은 호출한 쪽 (Start) 이 먼저 합니다.
     public static TraceNext NextTrace(GameSettings g, AutoSettings a, AutoEnv env, AutoStatus status, long minBytes = MinExtraRunBytes)
     {
         int valid = RunCount(g, env.FileExists, env.RunReadBytes, minBytes);
@@ -180,8 +181,7 @@ public sealed class AutoTracer
 
         int limit = Math.Max(a.TraceRuns, a.TraceRunsMax);
         int? coverage = status.Get(g.Name)?.CoveragePercent;
-        bool more = room && valid < limit && coverage is { } c && c < a.TraceTargetCoverage
-            && ReadMergeGainMib(g, last) is { } gain && gain >= a.TraceMergeMinMib;
+        bool more = room && valid < limit && ReadMergeGainMib(g, last) is { } gain && gain >= a.TraceMergeMinMib; // 커버리지는 표시용: 짧은 재실행이 100% 로 덮어써도 멈추지 않게 병합 증가량만 봄
         return new TraceNext(valid, limit, more, coverage);
     }
 
@@ -409,7 +409,8 @@ public sealed class AutoTracer
         }
 
         TimeSpan elapsed = _env.Now() - run.StartedAt;
-        string? why = !_env.AnyRunning(run.Game.ExeNames) && rooted.Count == 0 ? "game exited" // 읽기량을 못 연 (보호된) 게임 프로세스도 실행 중으로 셈, 등록 exe 가 먼저 끝나도 폴더 아래 프로세스가 남았으면 실행 중
+        bool named = _env.AnyRunning(run.Game.ExeNames);
+        string? why = !named && rooted.Count == 0 ? "game exited" // 읽기량을 못 연 (보호된) 게임 프로세스도 실행 중으로 셈, 등록 exe 가 먼저 끝나도 폴더 아래 프로세스가 남았으면 실행 중
             : elapsed >= TimeSpan.FromSeconds(a.TraceCapSeconds) ? "time cap"
             : run.Read >= (long)ReadCapMib(run, all) << 20 ? "read cap"
             : null;

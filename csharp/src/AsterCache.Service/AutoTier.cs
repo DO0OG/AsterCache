@@ -20,6 +20,7 @@ public sealed class AutoTier
     private readonly AutoEnv _env;
     private readonly AutoStatus _status;
     private readonly ILog _log;
+    private readonly BlockerNotes _blockers; // 게임 실행 중이라 건너뛸 때 막고 있는 프로세스를 남김 (사유가 바뀔 때만)
     private readonly TierEngine _engine;
     private readonly IdleTracker _idle = new();
     private readonly ConcurrentDictionary<string, long> _bytes = new(StringComparer.Ordinal); // 게임별 지금 SSD 로 옮겨 둔 바이트 (상태 열 표시용)
@@ -34,6 +35,7 @@ public sealed class AutoTier
         _env = env;
         _status = status;
         _log = log;
+        _blockers = new BlockerNotes(env, log);
         _engine = engine;
     }
 
@@ -94,7 +96,7 @@ public sealed class AutoTier
         }
 
         _rootWhy = null;
-        foreach (GameSettings g in s.Games.Where(g => !_env.AnyRunning(g.ExeNames)))
+        foreach (GameSettings g in s.Games.Where(g => !AnyGameRunning([g])))
         {
             Maintain(g, root, t, () => RevertDeferred(s, g.Name, g, "ssd_tier settings changed"));
         }
@@ -167,7 +169,7 @@ public sealed class AutoTier
             _log.Info($"{next.Name}: ssd tier picked {pick.Files.Count} file(s), {pick.MovedBytes} bytes, covering {pick.CoveredHotBytes} of {pick.TotalHotBytes} hot bytes");
             if (pick.Files.Count > 0)
             {
-                TierApplyReport rep = gate.Run(ct, token => _engine.Apply(next, root, t.BudgetGib, pick, token));
+                TierApplyReport rep = gate.Run(ct, token => _engine.Apply(next, root, t.BudgetGib, pick, token), () => SameDiskRunning(s, next)); // 진입 게이트와 같게 같은 물리 디스크의 등록 게임 전체를 봄
                 foreach (TierSkip skip in rep.Skipped.Take(5))
                 {
                     _log.Info($"{next.Name}: ssd tier skipped {skip.Path} ({skip.Reason})");
@@ -182,10 +184,26 @@ public sealed class AutoTier
         RefreshBytes(next.Name);
     }
 
+    // 등록 exe 가 돌거나 게임 설치 루트 아래 프로세스가 도는 게임이 있는지 (AutoRelocator.AnyGameRunning 과 같은 판정).
+    private bool AnyGameRunning(IReadOnlyList<GameSettings> games)
+    {
+        string key = string.Join(",", games.Select(x => x.Name));
+        if (_env.AnyRunning([.. games.SelectMany(x => x.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)]) || games.Any(x => _env.RootPids(x).Count > 0))
+        {
+            _blockers.Note(key, "ssd tier skipped", games);
+            return true;
+        }
+
+        _blockers.Clear(key);
+        return false;
+    }
+
+    private bool SameDiskRunning(AsterSettings s, GameSettings g) => AnyGameRunning([.. AutoRelocator.SameDriveGames(s.Games, [g], _env.SameDisk).Concat([g])]);
+
     // 게임이 안 돌고, HDD (시스템 볼륨·SSD 아님) 이고, 안티치트가 없고, 재배치가 끝났거나 (재배치가 꺼졌으면 해당 없음) 아직 링크가 없고 최근에 시도하지 않은 게임.
     private bool Eligible(GameSettings g, bool relocateOn)
     {
-        if (_env.AnyRunning(g.ExeNames) || !_env.Capabilities(g.OriginRoot).CanTier || _engine.Read(g.Name) is { Journal: { } j } && j.Live.Any() || _engine.Read(g.Name).Corrupt
+        if (AnyGameRunning([g]) || !_env.Capabilities(g.OriginRoot).CanTier || _engine.Read(g.Name) is { Journal: { } j } && j.Live.Any() || _engine.Read(g.Name).Corrupt
             || _tried.TryGetValue(g.Name, out DateTimeOffset at) && _env.Now() - at < RetryEvery
             || relocateOn && _status.Get(g.Name)?.RelocatedAt is null)
         {
@@ -227,7 +245,7 @@ public sealed class AutoTier
     // 유휴가 아닌 이유 (유휴면 null): 대상 게임과 같은 드라이브의 등록 게임이 돌거나, 배터리이거나, 대상 드라이브에 디스크 활동이 있음.
     private string? BusyReason(AsterSettings s, GameSettings g)
     {
-        if (_env.AnyRunning([.. AutoRelocator.SameDriveGames(s.Games, [g], _env.SameDisk).Concat([g]).SelectMany(x => x.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)]))
+        if (SameDiskRunning(s, g))
         {
             return "game running";
         }
@@ -249,8 +267,8 @@ public sealed class AutoTier
         }
 
         List<string> roots = [.. (g is null ? [] : new[] { g.OriginRoot }).Concat(_engine.Read(game).Journal?.Entries.Select(e => e.Path) ?? [])];
-        string[] exes = [.. s.Games.Where(x => roots.Any(r => _env.SameDisk(r, x.OriginRoot))).Concat(g is null ? [] : [g]).SelectMany(x => x.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)];
-        if (exes.Length == 0 || !_env.AnyRunning(exes))
+        List<GameSettings> games = [.. s.Games.Where(x => roots.Any(r => _env.SameDisk(r, x.OriginRoot))).Concat(g is null ? [] : [g])];
+        if (!AnyGameRunning(games))
         {
             _deferNoted.Remove(game);
             return false;

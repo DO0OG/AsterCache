@@ -416,7 +416,7 @@ GOG 와 Ubisoft 읽기는 아직 실제 PC 에서 확인하지 않았습니다. 
 | `games[].anticheat` | 설치 폴더에서 찾은 안티치트 흔적(예: `EasyAntiCheat`). 게임 탭에 표시되며 동작은 바꾸지 않습니다. |
 | `auto.ssd_tier` | 선택 기능인 SSD 보조 저장: `enabled`(기본 `false`), `budget_gib`(기본 8), `root`(기본 `"auto"`). [SSD 보조 저장 (선택)](#ssd-보조-저장-선택)을 보십시오. |
 | `auto.trace_runs` | 기본 3. 플레이 횟수가 이 값 미만이면 다시 트레이스해 핫셋을 누적하고 존을 확장합니다. |
-| `auto.trace_target_coverage` | 기본 70. `trace_runs` 뒤에도, 마지막 세션 커버리지가 이 값(%) 미만이고 직전 회차가 병합에 `trace_merge_min_mib` 이상 새 블록을 더했으며 유효 회차가 `trace_runs_max` 미만이면 다음 실행도 트레이스합니다. |
+| `auto.trace_target_coverage` | 기본 70. 더 이상 추가 수집 판단에 쓰지 않으며 호환을 위해 남은 키입니다. `trace_runs` 뒤에도, 직전 병합이 새 블록을 `trace_merge_min_mib` 이상 더했고 유효 회차가 `trace_runs_max` 미만이면 추가 수집합니다. |
 | `auto.trace_runs_max` | 기본 8. 추가 수집 규칙으로 모을 수 있는 유효 트레이스 회차 상한(회차당 64 MiB 이상 읽은 것만 셈). |
 | `auto.restream_cooldown_min` | 기본 10. 같은 게임의 시작 스트림을 이 시간(분) 안에는 다시 돌리지 않습니다. 게임 프로세스가 이미 실행 중이거나 디스크가 바쁠 때도 건너뜁니다. |
 | `auto.rewarm_after_exit_min` | 기본 2. 게임 종료를 감지하면 재예열 점검을 이 시간(분) 뒤로 당깁니다. |

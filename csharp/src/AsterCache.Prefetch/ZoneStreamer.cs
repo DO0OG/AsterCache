@@ -23,7 +23,10 @@ public enum StreamMethod
 
 /// 읽기 결과 (Python read_ops 의 stats). Aborted: 취소로 일부를 건너뜀. RequestedBytes: 요청한 길이 합 (파일 크기로 자르기 전).
 /// HintAcceptedBytes: Pvm 에서 PrefetchVirtualMemory 가 받아들인 바이트일 뿐 실제로 상주한다는 뜻이 아님 (Bytes 에도 같은 값이 들어감, 상주 추정은 CacheProbe 로).
-public sealed record StreamStats(long Bytes, long Requests, long Errors, double Seconds, bool Aborted = false, long RequestedBytes = 0, long HintAcceptedBytes = 0);
+public sealed record StreamStats(long Bytes, long Requests, long Errors, double Seconds, bool Aborted = false, long RequestedBytes = 0, long HintAcceptedBytes = 0)
+{
+    public long GapBytes { get; init; }
+}
 
 /// ops 를 파일 캐시로 가져옵니다. 쓰기 없음. Python prefetch/reader.py read_ops (method read | pvm).
 public static class ZoneStreamer

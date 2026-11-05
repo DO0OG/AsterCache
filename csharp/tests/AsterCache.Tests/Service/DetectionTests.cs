@@ -356,6 +356,37 @@ public sealed class DispatcherTests
     }
 
     [Fact]
+    public async Task GameStartStreamReceivesTheCallerCancellationToken()
+    {
+        using var started = new ManualResetEventSlim();
+        var streamer = new CancellationTokenStreamer(started);
+        var d = new GameDispatcher([Mw4], streamer, new ListLog());
+        using var cts = new CancellationTokenSource();
+        Task<bool> handle = Task.Run(() => d.Handle(Start("game.exe"), cts.Token));
+
+        Assert.True(started.Wait(TimeSpan.FromSeconds(5)));
+        cts.Cancel();
+
+        Assert.False(await handle.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.True(streamer.ObservedToken.IsCancellationRequested);
+    }
+
+    private sealed class CancellationTokenStreamer(ManualResetEventSlim started) : IGameStreamer
+    {
+        public CancellationToken ObservedToken { get; private set; }
+
+        public StreamStats Stream(GameSettings game) => throw new InvalidOperationException("The cancellable overload should be used");
+
+        public StreamStats Stream(GameSettings game, CancellationToken stop)
+        {
+            ObservedToken = stop;
+            started.Set();
+            stop.WaitHandle.WaitOne(TimeSpan.FromSeconds(5));
+            return new StreamStats(1, 1, 0, 0.01, Aborted: stop.IsCancellationRequested);
+        }
+    }
+
+    [Fact]
     public async Task WorkerTurnsAWatcherEventIntoAStreamCall()
     {
         var streamer = new FakeStreamer();

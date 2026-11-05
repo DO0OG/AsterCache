@@ -1,5 +1,6 @@
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
+using AsterCache.Prefetch;
 using AsterCache.Service;
 using AsterCache.Windows;
 using Xunit;
@@ -536,6 +537,177 @@ public sealed class PinAndRewarmTests
         Assert.Equal(2, _streamer.Calls.Count);
         Assert.Contains(_log.Lines, l => l.Contains("a: rewarm check: cold", StringComparison.Ordinal) && l.Contains("cooldown ignored", StringComparison.Ordinal));
         Assert.Contains(_log.Lines, l => l.Contains("a: prewarm done (rewarm)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RewarmIsSkippedWhenTheSameGameWasJustWarmed()
+    {
+        Prewarmer p = WarmedGame();
+        GameSettings g = Game("a", pin: false);
+        TickAt(p, TimeSpan.Zero);
+        _probe = 5.0;
+
+        _now += TimeSpan.FromMinutes(9.5);
+        Assert.True(p.Run(g, "auto new trace", ignoreCooldown: true).Ran);
+        int streams = _streamer.Calls.Count;
+        _now += TimeSpan.FromSeconds(30);
+        TickAt(p, TimeSpan.Zero);
+
+        Assert.Equal(streams, _streamer.Calls.Count);
+        Assert.Equal(0, _probeCalls);
+    }
+
+    [Fact]
+    public async Task RewarmCheckSkipsWhileTheSameGameIsBeingPrewarmed()
+    {
+        GameSettings g = Game("a", pin: false);
+        var started = new ManualResetEventSlim();
+        var release = new ManualResetEventSlim();
+        using var tickStarted = new ManualResetEventSlim();
+        int calls = 0;
+        var streamer = new BlockingSecondStreamer(started, release, () => Interlocked.Increment(ref calls));
+        Prewarmer p = new([g], streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => _avail,
+            GameRunning = _ => _running,
+            ZoneBytes = _ => _zoneMib << 20,
+            TraceExists = _ => true,
+            ProbeReadMs = _ =>
+            {
+                _probeCalls++;
+                return new ProbeResult(8, 8, 5.0);
+            },
+            CpuPercent = () =>
+            {
+                tickStarted.Set();
+                return 0;
+            },
+        }, _log, null, () => _now);
+        Assert.True(p.Run(g, "service start").Ran);
+        p.Tick(Auto()); // 첫 재확인을 예약
+        tickStarted.Reset();
+        _probeCalls = 0;
+        _probe = 5.0;
+
+        _now += TimeSpan.FromMinutes(9);
+        Task<PrewarmResult> warm = Task.Run(() => p.Run(g, "auto new trace", ignoreCooldown: true));
+        Task? tick = null;
+        bool entered = false;
+        bool returnedWhileWarmWasRunning = false;
+        try
+        {
+            Assert.True(started.Wait(TimeSpan.FromSeconds(5)));
+            _now += TimeSpan.FromMinutes(1);
+            tick = Task.Factory.StartNew(() => p.Tick(Auto()), CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            entered = tickStarted.Wait(TimeSpan.FromSeconds(5));
+            if (entered)
+            {
+                try
+                {
+                    await tick.WaitAsync(TimeSpan.FromSeconds(5));
+                    returnedWhileWarmWasRunning = true;
+                }
+                catch (TimeoutException)
+                {
+                }
+            }
+        }
+        finally
+        {
+            release.Set(); // 차단 스트리머는 이 신호가 있어야만 풀림: 실패해도 작업을 회수
+            _ = await warm.WaitAsync(TimeSpan.FromSeconds(5));
+            if (tick is not null)
+            {
+                await tick.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+        }
+
+        Assert.True(entered);
+        Assert.True(returnedWhileWarmWasRunning);
+        Assert.Equal(0, _probeCalls);
+        Assert.Equal(2, calls);
+    }
+
+    [Fact]
+    public void RewarmWaitsForAnUnregisteredProcessUnderTheGameRootToExit()
+    {
+        GameSettings g = Game("a", pin: false) with { OriginRoot = @"D:\Games\a" };
+        bool helperRunning = false;
+        IReadOnlyList<(int Pid, string Exe)> processes = [(1234, "helper.exe")];
+        int probes = 0;
+        Prewarmer p = new([g], _streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => _avail,
+            GameRunning = game => helperRunning && DispatchEnv.IsGameRunning(game, processes, _ => @"D:\Games\a\bin\helper.exe"),
+            ZoneBytes = _ => _zoneMib << 20,
+            TraceExists = _ => true,
+            ProbeReadMs = _ =>
+            {
+                probes++;
+                return new ProbeResult(8, 8, 5.0);
+            },
+        }, _log, null, () => _now);
+        Assert.True(p.Run(g, "service start").Ran);
+        p.Tick(Auto());
+        helperRunning = true;
+        _now += TimeSpan.FromMinutes(10);
+
+        p.Tick(Auto());
+
+        Assert.Single(_streamer.Calls);
+        Assert.Equal(0, probes);
+        Assert.Contains(_log.Lines, l => l.Contains("rewarm check skipped: a game is running", StringComparison.Ordinal));
+
+        helperRunning = false;
+        _now += TimeSpan.FromMinutes(10);
+        p.Tick(Auto());
+
+        Assert.Equal(2, _streamer.Calls.Count);
+        Assert.Equal(1, probes);
+    }
+
+    [Fact]
+    public void RewarmSkipNamesTheBlockingProcessAndDoesNotRepeatItEveryCheck()
+    {
+        GameSettings g = Game("a", pin: false);
+        bool running = false;
+        Prewarmer p = new([g], _streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => _avail,
+            GameRunning = _ => running,
+            DescribeBlockers = _ => @"helper.exe(1234) D:/Games/a/bin/helper.exe",
+            ZoneBytes = _ => _zoneMib << 20,
+            TraceExists = _ => true,
+            ProbeReadMs = _ => new ProbeResult(8, 8, 5.0),
+        }, _log, null, () => _now);
+        Assert.True(p.Run(g, "service start").Ran);
+        p.Tick(Auto());
+        running = true;
+
+        for (int i = 0; i < 3; i++)
+        {
+            _now += TimeSpan.FromMinutes(10);
+            p.Tick(Auto());
+        }
+
+        Assert.Single(_log.Lines, l => l.Contains("rewarm check skipped: a game is running (blocked by helper.exe(1234) ", StringComparison.Ordinal));
+    }
+
+    private sealed class BlockingSecondStreamer(ManualResetEventSlim started, ManualResetEventSlim release, Action count) : IGameStreamer
+    {
+        private int _calls;
+
+        public StreamStats Stream(GameSettings game)
+        {
+            count();
+            if (Interlocked.Increment(ref _calls) == 2)
+            {
+                started.Set();
+                release.Wait();
+            }
+
+            return new StreamStats(100, 2, 0, 0.01);
+        }
     }
 
     [Fact]

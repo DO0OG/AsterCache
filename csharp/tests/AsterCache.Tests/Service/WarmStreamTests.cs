@@ -1,7 +1,11 @@
+using AsterCache.Core.Json;
+using AsterCache.Core.Plan;
 using AsterCache.Core.Prefetch;
 using AsterCache.Core.Settings;
+using AsterCache.Core.Trace;
 using AsterCache.Prefetch;
 using AsterCache.Service;
+using AsterCache.Tracer;
 using AsterCache.Windows;
 using Xunit;
 
@@ -14,15 +18,18 @@ public sealed class WarmStreamTests
     private const long Batch = 64 * Mib;
     private readonly ListLog _log = new();
     private DateTimeOffset _now = DateTimeOffset.UnixEpoch;
+    private long _availableMib = 16000;
     private Prewarmer? _p;
 
     private static GameSettings Game(string name, params string[] triggers) =>
         Games.Make(name, name + ".exe") with { Prewarm = PrewarmSettings.Default with { TriggerExes = triggers } };
 
-    private Prewarmer Make(IGameStreamer streamer, params GameSettings[] games) => new(games, streamer, new PrewarmEnv
+    private Prewarmer Make(IGameStreamer streamer, params GameSettings[] games) => Make(streamer, _ => false, games);
+
+    private Prewarmer Make(IGameStreamer streamer, Func<GameSettings, bool> gameRunning, params GameSettings[] games) => new(games, streamer, new PrewarmEnv
     {
-        AvailableRamMib = () => 16000,
-        GameRunning = _ => false,
+        AvailableRamMib = () => _availableMib,
+        GameRunning = gameRunning,
         ZoneBytes = _ => 1610 * Mib,
         TraceExists = _ => true,
     }, _log, null, () => _now);
@@ -45,12 +52,46 @@ public sealed class WarmStreamTests
                 }
 
                 Read++;
-                progress?.Invoke(Read * Batch, batches * Batch);
                 afterBatch?.Invoke(Read);
+                progress?.Invoke(Read * Batch, batches * Batch);
             }
 
             return (new StreamStats(batches * Batch, batches, 0, 0.01), true);
         }
+    }
+
+    private sealed class HeadBatchStreamer(Action afterFirstBatch) : IGameStreamer
+    {
+        private readonly Dictionary<string, int> _reads = new(StringComparer.OrdinalIgnoreCase);
+
+        public int ReadFor(string game) => _reads.GetValueOrDefault(game);
+
+        public StreamStats Stream(GameSettings game) => new(0, 0, 0, 0.01);
+
+        public void StreamHead(GameSettings game, CancellationToken stop, Action<long, long>? progress)
+        {
+            long total = 3 * Batch;
+            for (int read = 1; read <= 3 && !stop.IsCancellationRequested; read++)
+            {
+                _reads[game.Name] = read;
+                if (read == 1)
+                {
+                    afterFirstBatch();
+                }
+
+                progress?.Invoke(read * Batch, total);
+            }
+        }
+    }
+
+    private sealed class GapStatsStreamer : IGameStreamer
+    {
+        public StreamStats Stream(GameSettings game) => new(64 * Mib, 1, 0, 0.01);
+
+        public (StreamStats Stats, bool Complete) Stream(GameSettings game, CancellationToken stop, Action<long, long>? progress) => (Stream(game), true);
+
+        public (StreamStats Stats, bool Complete) StreamPrewarm(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes) =>
+            (new StreamStats(64 * Mib, 1, 0, 0.01) { GapBytes = 256 * 1024 }, true);
     }
 
     [Fact]
@@ -142,6 +183,23 @@ public sealed class WarmStreamTests
         Assert.Equal(6, streamer.Read);
         Assert.NotNull(_p.LastWarmed("a"));
         Assert.DoesNotContain(_log.Lines, l => l.Contains("yielded to", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(true, 6, true)] // 게임 시작 때 스트림을 멈추지 않는 설정: 묶음 검사의 실행 판정으로도 취소하지 않음
+    [InlineData(false, 2, false)]
+    public void TheBatchRunningCheckCancelsTheStreamOnlyWhenKeepStreamOnGameStartIsOff(bool keep, int read, bool ran)
+    {
+        GameSettings a = Game("a");
+        bool running = false;
+        var streamer = new BatchStreamer(6, n => running = running || n == 2); // 알림 없이 둘째 묶음 뒤 실행 판정만 참으로 바뀜
+        _p = Make(streamer, _ => running, a);
+        _p.SetAuto(AutoSettings.Default with { KeepStreamOnGameStart = keep });
+
+        PrewarmResult r = _p.Run(a, "test");
+
+        Assert.Equal(ran, r.Ran);
+        Assert.Equal(read, streamer.Read);
     }
 
     [Fact]
@@ -278,6 +336,308 @@ public sealed class WarmStreamTests
 
         Assert.Equal(Prewarmer.Cancelled, r.SkipReason);
         Assert.Equal(0, streamer.Read);
+    }
+
+    [Fact]
+    public void MemoryPressureAfterABatchStopsBeforeTheNextBatchAndDoesNotMarkTheWarmupSuccessful()
+    {
+        GameSettings a = Game("a");
+        var streamer = new BatchStreamer(3, n =>
+        {
+            if (n == 1)
+            {
+                _availableMib = 4200;
+            }
+        });
+        _p = Make(streamer, a);
+
+        PrewarmResult r = _p.Run(a, "test");
+
+        Assert.False(r.Ran);
+        Assert.Equal(Prewarmer.Cancelled, r.SkipReason);
+        Assert.Equal(1, streamer.Read);
+        Assert.Null(_p.LastWarmed("a"));
+    }
+
+    [Fact]
+    public void UnregisteredGameProcessStartingDuringPrewarmStopsBeforeTheNextBatch()
+    {
+        bool helperRunning = false;
+        GameSettings a = Game("a");
+        var streamer = new BatchStreamer(3, n =>
+        {
+            if (n == 1)
+            {
+                helperRunning = true;
+            }
+        });
+        _p = Make(streamer, _ => helperRunning, a);
+
+        PrewarmResult r = _p.Run(a, "test");
+
+        Assert.False(r.Ran);
+        Assert.Equal(Prewarmer.Cancelled, r.SkipReason);
+        Assert.Equal(1, streamer.Read);
+        Assert.Null(_p.LastWarmed("a"));
+    }
+
+    [Fact]
+    public void MemoryPressureAfterAHeadBatchStopsBeforeTheNextHeadBatch()
+    {
+        GameSettings a = Game("a");
+        GameSettings b = Game("b");
+        var streamer = new HeadBatchStreamer(() => _availableMib = 4200);
+        _p = Make(streamer, a, b);
+
+        IReadOnlyList<PrewarmResult> results = _p.RunAll([a, b], "test");
+
+        Assert.Equal(1, streamer.ReadFor("a"));
+        Assert.All(results, result => Assert.False(result.Ran));
+        Assert.All(results, result => Assert.Equal("low memory (available 4200 MiB < zone 1610 MiB + reserve 4096 MiB)", result.SkipReason));
+    }
+
+    [Fact]
+    public void DenseGapFillingJoinsSubMiBGapsForVariableFileRangesWithoutChangingTheOriginalOps()
+    {
+        const long gap = 512 * 1024;
+        string path = @"D:\Games\xpak_cache\cache_0_2.xpakdata";
+        ReadOp[] original = [new(path, 0, 100), new(path, 100 + gap, 100)];
+
+        (List<ReadOp> ops, long added, bool fits) = PrefetchStreamer.FillPrewarmGaps(original, 200 + gap, _ => 3 * Mib);
+
+        Assert.True(fits);
+        Assert.Equal(gap, added);
+        Assert.Equal([new ReadOp(path, 0, 200 + gap)], ops);
+        Assert.Equal([new ReadOp(path, 0, 100), new ReadOp(path, 100 + gap, 100)], original);
+    }
+
+    [Fact]
+    public void DenseGapFillingFallsBackTo256KiBWhenTheMiBPlanExceedsTheBudget()
+    {
+        const long largeGap = 512 * 1024;
+        const long smallGap = 128 * 1024;
+        string path = @"D:\Games\cache.bin";
+        ReadOp[] original =
+        [
+            new(path, 0, 100),
+            new(path, 100 + largeGap, 100),
+            new(path, 200 + largeGap + smallGap, 100),
+        ];
+
+        (List<ReadOp> ops, long added, bool fits) = PrefetchStreamer.FillPrewarmGaps(original, 300 + smallGap, _ => 3 * Mib);
+
+        Assert.True(fits);
+        Assert.Equal(smallGap, added);
+        Assert.Equal([new ReadOp(path, 0, 100), new ReadOp(path, 100 + largeGap, 200 + smallGap)], ops);
+    }
+
+    [Fact]
+    public void DenseGapFillingSkipsGapsWhenThe256KiBBudgetStillDoesNotFit()
+    {
+        const long gap = 128 * 1024;
+        string path = @"D:\Games\cache.bin";
+        ReadOp[] original =
+        [
+            new(path, 0, 100),
+            new(path, 100 + gap, 100),
+            new(path, 200 + 2 * gap, 100),
+        ];
+
+        (List<ReadOp> ops, long added, bool fits) = PrefetchStreamer.FillPrewarmGaps(original, 300 + gap, _ => 3 * Mib);
+
+        Assert.True(fits);
+        Assert.Equal(0, added);
+        Assert.Equal(original, ops);
+    }
+
+    [Fact]
+    public void DenseGapFillingPreservesOriginalRangesWhenTheyExceedTheGapBudget()
+    {
+        string path = @"D:\Games\cache.bin";
+        ReadOp[] original = [new(path, 0, 100), new(path, 100 + 512 * 1024, 100)];
+
+        (List<ReadOp> ops, long added, bool fits) = PrefetchStreamer.FillPrewarmGaps(original, 100, _ => Mib);
+
+        Assert.True(fits);
+        Assert.Equal(0, added);
+        Assert.Equal(original, ops);
+    }
+
+    [Fact]
+    public void DenseGapFillingDoesNotJoinAnExactMiBGapOrExtendPastTheFileEnd()
+    {
+        string path = @"D:\Games\cache.bin";
+        ReadOp[] exactMiBGap = [new(path, 0, 100), new(path, 100 + Mib, 100)];
+        (List<ReadOp> unchanged, long exactAdded, bool exactFits) = PrefetchStreamer.FillPrewarmGaps(exactMiBGap, 1000 * Mib, _ => 2 * Mib);
+        Assert.True(exactFits);
+        Assert.Equal(0, exactAdded);
+        Assert.Equal(exactMiBGap, unchanged);
+
+        ReadOp[] toEnd = [new(path, 0, 100), new(path, 900, 100)];
+        (List<ReadOp> joined, long endAdded, bool endFits) = PrefetchStreamer.FillPrewarmGaps(toEnd, 1000, _ => 1000);
+        Assert.True(endFits);
+        Assert.Equal(800, endAdded);
+        Assert.All(joined, op => Assert.True(op.Offset + op.Length <= 1000));
+    }
+
+    [Fact]
+    public void GapFillBudgetUsesStreamCapQuarterRamAndAvailableRamAfterTheFixedReserve()
+    {
+        GameSettings a = Game("a") with { MaxStreamMib = 5000, MaxStreamSet = true };
+
+        Assert.Equal(4096 * Mib, Prewarmer.GapFillBudgetBytes(a, 8000 * Mib, null, 16L << 30, 10000));
+        Assert.Equal(904 * Mib, Prewarmer.GapFillBudgetBytes(a, 8000 * Mib, null, 64L << 30, 5000));
+    }
+
+    [Fact]
+    public void GapFillBudgetUsesTheEffectiveZoneLimitInsteadOfTheSmallCurrentZone()
+    {
+        GameSettings a = Game("a");
+
+        Assert.Equal(1000 * Mib, Prewarmer.GapFillBudgetBytes(a, 1000 * Mib, null, 64L << 30, 20000)); // 유효 상한을 모르면 현재 존
+        Assert.Equal(8173 * Mib, Prewarmer.GapFillBudgetBytes(a, 1000 * Mib, 8173 * Mib, 64L << 30, 20000));
+        Assert.Equal(2904 * Mib, Prewarmer.GapFillBudgetBytes(a, 1000 * Mib, 8173 * Mib, 64L << 30, 7000)); // 가용 RAM - 4096 MiB 가 더 작음
+    }
+
+    [Fact]
+    public void PrewarmGapExpansionUsesTheGapBudgetEvenWhenTheZoneOnlyCoversTheOriginalRanges()
+    {
+        string temp = Directory.CreateTempSubdirectory("aster-gap-budget-").FullName;
+        try
+        {
+            string root = Path.Combine(temp, "game");
+            Directory.CreateDirectory(root);
+            string path = Path.Combine(root, "asset.bin");
+            File.WriteAllBytes(path, new byte[2 * Mib]);
+            string trace = Path.Combine(temp, "game.prefetch.json");
+            string planPath = Path.Combine(temp, "game.plan.json");
+            const long span = 64 * 1024;
+            const long gap = 512 * 1024;
+            GameSettings game = Game("a") with { OriginRoot = root, AllowedRoots = [root], Trace = trace, Plan = planPath };
+            new PlanFile(PlanFile.CurrentVersion, root, PlanFile.SplitDrive(root), 4096, 65536,
+                new PlanZone(0, 1), [], [], [], new JObject()).Save(planPath);
+            TraceWriter.Write([[new TraceEvent(path, 0, span), new TraceEvent(path, span + gap, span)]], trace);
+
+            Assert.Equal(2 * span, PrefetchStreamer.ZoneBytes(game)); // 존 예산이 원래 범위로 이미 소진됨
+            (List<ReadOp> expanded, long added, bool fits) = PrefetchStreamer.PrewarmOps(game, Mib);
+
+            Assert.True(fits);
+            Assert.Equal(gap, added);
+            Assert.Equal([new ReadOp(path, 0, 2 * span + gap)], expanded);
+        }
+        finally
+        {
+            Directory.Delete(temp, true);
+        }
+    }
+
+    private sealed class ReadSetStreamer(long? readBytes) : IGameStreamer
+    {
+        public StreamStats Stream(GameSettings game) => new(64 * Mib, 1, 0, 0.01);
+
+        public long? PrewarmReadBytes(GameSettings game) => readBytes;
+    }
+
+    [Theory]
+    [InlineData(3000L, true)]
+    [InlineData(3200L, false)]
+    [InlineData(null, false)]
+    public void InitialMemoryGateUsesTheActualReadSetInsteadOfTheZoneSize(long? readMib, bool ran)
+    {
+        GameSettings a = Game("a");
+        var p = new Prewarmer([a], new ReadSetStreamer(readMib is { } m ? m * Mib : null), new PrewarmEnv
+        {
+            AvailableRamMib = () => 7200,
+            GameRunning = _ => false,
+            ZoneBytes = _ => 3312 * Mib,
+            TraceExists = _ => true,
+        }, _log, null, () => _now);
+
+        PrewarmResult r = p.Run(a, "test");
+
+        Assert.Equal(ran, r.Ran);
+        Assert.Equal(ran, r.SkipReason is null);
+    }
+
+    [Fact]
+    public void PrewarmCompletionReportsTheAdditionalGapMiB()
+    {
+        GameSettings a = Game("a");
+        _p = Make(new GapStatsStreamer(), a);
+
+        Assert.True(_p.Run(a, "test").Ran);
+
+        Assert.Contains(_log.Lines, line => line.Contains("0.25 MiB gaps filled", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void PrewarmGapExpansionUsesVolatileRowsWithoutChangingSharedOpsOrPinnedPaths()
+    {
+        string temp = Directory.CreateTempSubdirectory("aster-gap-warm-").FullName;
+        try
+        {
+            string root = Path.Combine(temp, "game");
+            Directory.CreateDirectory(root);
+            string path = Path.Combine(root, "asset.bin");
+            string variablePath = Path.Combine(root, "cache_0_2.xpakdata");
+            File.WriteAllBytes(path, new byte[2 * Mib]);
+            File.WriteAllBytes(variablePath, new byte[2 * Mib]);
+            string trace = Path.Combine(temp, "game.prefetch.json");
+            string planPath = Path.Combine(temp, "game.plan.json");
+            const long span = 64 * 1024;
+            const long gap = 512 * 1024;
+            GameSettings game = Game("a") with
+            {
+                OriginRoot = root,
+                AllowedRoots = [root],
+                Trace = trace,
+                Plan = planPath,
+                MaxStreamMib = 4,
+                MaxStreamSet = true,
+            };
+            new PlanFile(PlanFile.CurrentVersion, root, PlanFile.SplitDrive(root), 4096, 65536,
+                new PlanZone(0, 1024), [], [], [], new JObject()).Save(planPath);
+            PlanOutput.SavePrefetch(trace, [new TraceEvent(path, 0, span)], [new TraceEvent(variablePath, 0, span), new TraceEvent(variablePath, span + gap, span)]);
+            File.WriteAllText(AutoTracer.VolatilePath(game), PyJson.Dumps(new JObject { { variablePath, "changed between runs" } }));
+
+            List<ReadOp> original = PrefetchStreamer.Ops(game);
+            (List<ReadOp> expanded, long added, bool fits) = PrefetchStreamer.PrewarmOps(game, Mib);
+
+            Assert.True(fits);
+            Assert.Equal(gap, added);
+            Assert.DoesNotContain(original, op => op.Path == variablePath); // 시작 스트림·표본·고정이 쓰는 공용 목록에는 가변 범위가 없음
+            Assert.Equal(3 * span, new PrefetchStreamer().PrewarmReadBytes(game)); // 시작 전 예열의 읽기량에는 있음
+            Assert.Equal(new ReadOp(variablePath, 0, 2 * span + gap), Assert.Single(expanded, op => op.Path == variablePath));
+            Assert.Contains(new ReadOp(path, 0, span), original);
+            Assert.Contains(new ReadOp(path, 0, span), expanded);
+            Assert.Equal(original, PrefetchStreamer.Ops(game));
+            Assert.Equal([path], PrefetchStreamer.PinPaths(game));
+        }
+        finally
+        {
+            Directory.Delete(temp, true);
+        }
+    }
+
+    [Fact]
+    public void RefreshReadHonorsCancellationBeforeReading()
+    {
+        string path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllBytes(path, new byte[4096]);
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+
+            StreamStats r = PrefetchStreamer.Refresh([new ReadOp(path, 0, 4096)], cts.Token);
+
+            Assert.True(r.Aborted);
+            Assert.Equal(0, r.Bytes);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [Fact]

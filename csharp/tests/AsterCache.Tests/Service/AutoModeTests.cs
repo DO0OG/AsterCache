@@ -328,12 +328,14 @@ public sealed class AutoModeTests : IDisposable
         File.WriteAllText(AutoTracer.MergeMetaPath(Game()), "{\"run\": 2, \"new_mib\": 100}");
         _rig.World.Session = new FakeTrace();
         _rig.Status.Set("foo", "auto", null, AutoStage.Done, null);
-        _rig.Status.RecordCoverage("foo", 90);
+        File.WriteAllText(AutoTracer.MergeMetaPath(Game()), "{\"run\": 2, \"new_mib\": 10}");
+        _rig.Status.RecordCoverage("foo", 22);
 
         Mode().OnGameStart(Game());
-        Assert.Equal(0, _rig.World.TraceStarts); // 커버리지 90 % >= 70
+        Assert.Equal(0, _rig.World.TraceStarts); // 새 블록 10 MiB < 64
 
-        _rig.Status.RecordCoverage("foo", 22);
+        File.WriteAllText(AutoTracer.MergeMetaPath(Game()), "{\"run\": 2, \"new_mib\": 100}");
+        _rig.Status.RecordCoverage("foo", 100); // 짧은 재실행이 덮어쓴 값
         Mode().OnGameStart(Game());
 
         Assert.Equal(1, _rig.World.TraceStarts);

@@ -137,7 +137,7 @@ public sealed class ReapplyEnv
         env = new()
         {
             CanApply = canApply,
-            GameRunning = g => ProcessSnapshot.IsRunning(g.ExeNames),
+            GameRunning = DispatchEnv.IsGameRunning,
             DiskBusy = g => DiskActivity.IsBusy(PlanFile.SplitDrive(g.OriginRoot)),
             LoadPlan = PlanFile.Load,
             Extents = FileLayout.Extents,
@@ -315,7 +315,11 @@ public sealed class ReapplyGate
     private readonly object _lock = new();
     private CancellationTokenSource? _current;
 
-    public T Run<T>(CancellationToken stop, Func<CancellationToken, T> work)
+    /// gameRunning 판정을 다시 보는 간격 (기본 2 초): 시험이 줄임.
+    public TimeSpan RunningPoll { get; init; } = TimeSpan.FromSeconds(2);
+
+    /// 이름 기반 시작 알림이 놓치는 미등록 하위 exe 를 잡으려고, gameRunning 을 주면 RunningPoll 마다 불러 참이면 같은 취소를 겁니다 (한 조각을 끝낸 뒤 멈춤, 저널은 그대로).
+    public T Run<T>(CancellationToken stop, Func<CancellationToken, T> work, Func<bool>? gameRunning = null)
     {
         CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(stop);
         lock (_lock)
@@ -323,12 +327,15 @@ public sealed class ReapplyGate
             _current = cts;
         }
 
+        Timer? watch = null;
         try
         {
+            watch = gameRunning is null ? null : new Timer(_ => CancelIfRunning(cts, gameRunning), null, RunningPoll, RunningPoll);
             return work(cts.Token);
         }
         finally
         {
+            watch?.Dispose();
             lock (_lock)
             {
                 _current = null; // Cancel 이 잠금 안에서만 _current 를 건드리므로 이 뒤에 Dispose 해도 안전
@@ -343,6 +350,27 @@ public sealed class ReapplyGate
         lock (_lock)
         {
             _current?.Cancel();
+        }
+    }
+
+    private void CancelIfRunning(CancellationTokenSource cts, Func<bool> gameRunning)
+    {
+        try
+        {
+            if (gameRunning())
+            {
+                lock (_lock)
+                {
+                    if (_current == cts) // 창이 끝나 Dispose 되기 전에만 취소
+                    {
+                        cts.Cancel();
+                    }
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // 판정 실패는 건너뜀: 이름 기반 시작 알림과 다음 점검이 그대로 맡음 (타이머 스레드에서 예외가 새면 프로세스가 죽음)
         }
     }
 }

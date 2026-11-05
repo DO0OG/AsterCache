@@ -86,7 +86,7 @@ public sealed record AutoSettings(
     public int EffectiveTraceCapMib(long zoneMib) =>
         TraceCapMib != DefaultTraceCapMib ? TraceCapMib : (int)Math.Min(65536, Math.Max(DefaultTraceCapMib, zoneMib * 2));
 
-    /// 마지막 세션 커버리지 (%, 1..100) 가 이 값 미만이면 trace_runs 를 채운 뒤에도 추가 회차를 수집할 수 있음 (새 고유 블록이 trace_merge_min_mib 이상 늘 때만).
+    /// 추가 트레이스 판단에 더 이상 쓰지 않는 호환용 키. 추가 수집은 직전 병합 증가량(trace_merge_min_mib)과 trace_runs_max 로 정함. 커버리지는 표시 전용.
     public int TraceTargetCoverage { get; init; } = 70;
 
     /// 추가 수집을 포함한 유효 트레이스 회차 상한 (1..32).

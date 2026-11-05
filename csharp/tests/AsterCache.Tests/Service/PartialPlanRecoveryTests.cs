@@ -4,6 +4,7 @@ using AsterCache.Core.Json;
 using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
+using AsterCache.Core.Trace;
 using AsterCache.Service;
 using AsterCache.Tracer;
 using Xunit;
@@ -18,6 +19,12 @@ public sealed partial class AutoRelocatorTests
     private string[] JournalArchives() => Directory.GetFiles(Root).Where(f => Path.GetFileName(f).StartsWith("j.jsonl.", StringComparison.Ordinal)).Order().ToArray();
 
     private void WaitingForTheRest() => _status.Set("bench", "auto", null, AutoStage.WaitingIdle, "write limit reached, will continue");
+
+    private static List<TraceEvent> ReadWarmRows(string path) =>
+        ((List<object?>)JsonRead.ReadFile(path)!).Select(TraceEvents.FromJson).ToList();
+
+    // 예열 목록의 정규화된 (경로 소문자, 시작, 길이) 집합 (정렬)
+    private static string[] WarmSet(string path) => ReadWarmRows(path).Select(r => $"{r.Path.ToLowerInvariant()}|{r.Offset}|{r.Length}").Order().ToArray();
 
     // 목표 자리에 이미 놓인 클러스터를 뺀 남은 양
     private long Remaining(PlanFile plan) => plan.Tasks.Sum(t => t.Clusters - PlanGuards.DonePrefix(Vol.Ext[t.Path], t.Vcn, t.Clusters, t.TargetLcn));
@@ -52,6 +59,151 @@ public sealed partial class AutoRelocatorTests
         Assert.Equal(AutoStage.Done, Entry.Stage);
         Assert.Equal(movesBefore, Vol.Moves.Count);
         Assert.Null(_status.Recovery("bench"));
+    }
+
+    [Fact]
+    public void NewMergedTraceRefreshesWarmRangesWithoutChangingAPartialPlanOrJournalAndResumeContinues()
+    {
+        PlanFile plan = Make().Resolve(20000);
+        PlanOutput.Save(plan, Sessions, _game.Plan);
+        Assert.Equal("write_cap", Apply(plan, Partial(32)).Stopped);
+
+        byte[] planBefore = File.ReadAllBytes(_game.Plan);
+        byte[] journalBefore = File.ReadAllBytes(JournalPath);
+        int movesBefore = Vol.Moves.Count;
+        long warmBytesBefore = ReadWarmRows(_game.Trace).Sum(r => r.Length);
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 8L << 30);
+        WaitingForTheRest();
+
+        string raw = AutoTracer.RawTracePath(_game);
+        SetAuto(a => a with { TraceRuns = 3, TraceMergeMinMib = 1 });
+        Sessions = [Merged(RestOfTheBlocks())];
+        _w.Files.Add(TraceWriter.RunPath(raw, 1));
+        _w.Files.Add(TraceWriter.RunPath(raw, 2));
+        _w.FileTimes[_game.Plan] = _w.Now - TimeSpan.FromHours(1);
+        _w.FileTimes[raw] = _w.Now;
+
+        Tick();
+
+        Assert.True(ReadWarmRows(_game.Trace).Sum(r => r.Length) > warmBytesBefore);
+        Assert.Equal(planBefore, File.ReadAllBytes(_game.Plan));
+        Assert.Equal(journalBefore, File.ReadAllBytes(JournalPath));
+        Assert.Equal(movesBefore, Vol.Moves.Count);
+        _w.Now += TimeSpan.FromHours(24);
+        RunUntilDone();
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.True(Vol.Moves.Count > movesBefore);
+        Assert.Equal(0, Remaining(PlanFile.Load(_game.Plan)));
+    }
+
+    [Fact]
+    public void AnEnlargedWarmRangeSurvivesARemainderReplanOfThePartialPlan()
+    {
+        Assert.Equal("write_cap", Apply(Make().Resolve(20000), Partial(32)).Stopped);
+        long moved = Vol.Moves.Sum(m => m.N);
+        PlanOutput.Save(Make().Resolve(30000), Sessions, _game.Plan); // 활성 계획이 다른 존의 새 계획으로 덮어써짐, 저널은 첫 계획의 것
+        long warmBytesBefore = ReadWarmRows(_game.Trace).Sum(r => r.Length);
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 8L << 30);
+        WaitingForTheRest();
+
+        string raw = AutoTracer.RawTracePath(_game);
+        SetAuto(a => a with { TraceRuns = 3, TraceMergeMinMib = 1 });
+        Sessions = [Merged(RestOfTheBlocks())];
+        _w.Files.Add(TraceWriter.RunPath(raw, 1));
+        _w.Files.Add(TraceWriter.RunPath(raw, 2));
+        _w.FileTimes[_game.Plan] = _w.Now - TimeSpan.FromHours(1);
+        _w.FileTimes[raw] = _w.Now;
+        Tick();
+        long enlarged = ReadWarmRows(_game.Trace).Sum(r => r.Length);
+        string[] enlargedSet = WarmSet(_game.Trace);
+        Assert.True(enlarged > warmBytesBefore);
+
+        Vol.Ext[Path.Combine(Root, "other.bin")] = [new(0, 20000 + moved, 16)]; // 옛 존의 다음 구간은 다른 파일이 점유
+        _w.Now += TimeSpan.FromHours(24);
+        RunUntilDone();
+
+        Assert.True(Entry.Stage == AutoStage.Done, Why());
+        Assert.Contains(_log.Lines, l => l.Contains("replanning only the remaining part", StringComparison.Ordinal));
+        Assert.Equal(enlargedSet, WarmSet(_game.Trace)); // 확대한 예열 범위가 잔여 재계획 뒤에도 그대로
+    }
+
+    [Fact]
+    public void AFailedWarmListRestoreAfterARemainderReplanIsRetriedByTheNextCheckEvenWhenThePlanIsNewerThanTheTrace()
+    {
+        Assert.Equal("write_cap", Apply(Make().Resolve(20000), Partial(32)).Stopped);
+        long moved = Vol.Moves.Sum(m => m.N);
+        PlanOutput.Save(Make().Resolve(30000), Sessions, _game.Plan);
+        _status.BeginRelocation(_w.Now - TimeSpan.FromHours(1), 8L << 30);
+        WaitingForTheRest();
+
+        string raw = AutoTracer.RawTracePath(_game);
+        SetAuto(a => a with { TraceRuns = 3, TraceMergeMinMib = 1 });
+        Sessions = [Merged(RestOfTheBlocks())];
+        _w.Files.Add(TraceWriter.RunPath(raw, 1));
+        _w.Files.Add(TraceWriter.RunPath(raw, 2));
+        _w.FileTimes[_game.Plan] = _w.Now - TimeSpan.FromHours(1);
+        _w.FileTimes[raw] = _w.Now;
+        Tick();
+        long enlarged = ReadWarmRows(_game.Trace).Sum(r => r.Length);
+        string[] enlargedSet = WarmSet(_game.Trace);
+
+        Func<IReadOnlyList<IReadOnlyList<TraceEvent>>> sessions = _w.LoadSessions;
+        int failures = 2; // 잔여 재계획의 세션 읽기와 목록 복원의 트레이스 읽기, 두 번만 실패
+        _w.LoadSessions = () =>
+        {
+            if (failures > 0 && _log.Lines.Any(l => l.Contains("replanning only the remaining part", StringComparison.Ordinal)))
+            {
+                failures--;
+                throw new IOException("locked");
+            }
+
+            return sessions();
+        };
+        Vol.Ext[Path.Combine(Root, "other.bin")] = [new(0, 20000 + moved, 16)]; // 옛 존의 다음 구간은 다른 파일이 점유
+        _w.Now += TimeSpan.FromHours(24);
+        RunUntilDone();
+        Assert.True(_log.Lines.Any(l => l.Contains("prewarm list not restored", StringComparison.Ordinal)), Why());
+        Assert.True(ReadWarmRows(_game.Trace).Sum(r => r.Length) < enlarged); // 복원 실패: 잔여 계획 Order 기준의 작은 목록
+        File.Delete(_game.Trace); // 다시 쓰였는지 구별하려고 목록을 지움
+        _w.Now += Step;
+        _w.FileTimes[_game.Plan] = _w.Now; // 저장된 잔여 계획이 트레이스보다 새로움: 새 트레이스 점검은 조기 종료하는 상황
+        Tick(); // 다음 점검
+
+        Assert.Equal(enlargedSet, WarmSet(_game.Trace)); // 복원 대기 재시도가 재배치 완료 뒤에도 실패 전 확대한 범위를 그대로 되살림
+        Assert.Contains(_log.Lines, l => l.Contains("prewarm list restored on retry", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AFailedWarmRefreshOfACompletedPlanIsRetriedWithTheSameMergedTrace()
+    {
+        string cache = Path.Combine(Root, "cache_1_2.xpakdata");
+        File.WriteAllBytes(cache, new byte[100]);
+        _w.LoadSessions = () => [[.. Sessions[0], new TraceEvent(cache, 80, 10)]];
+        Tick();
+        RunUntilDone();
+        byte[] planBefore = File.ReadAllBytes(_game.Plan);
+        string raw = AutoTracer.RawTracePath(_game);
+        SetAuto(a => a with { TraceRuns = 3, TraceMergeMinMib = 1 });
+        _w.Files.Add(TraceWriter.RunPath(raw, 1));
+        _w.Files.Add(TraceWriter.RunPath(raw, 2));
+        _w.FileTimes[_game.Plan] = _w.Now - TimeSpan.FromHours(1);
+        _w.FileTimes[raw] = _w.Now;
+        _w.LoadSessions = () => [[.. Sessions[0], new TraceEvent(cache, 80, 10), new TraceEvent(cache, 10, 10)]];
+
+        using (new FileStream(_game.Trace, FileMode.Open, FileAccess.Read, FileShare.None)) // 목록을 바꿔 쓰지 못하게 잠금
+        {
+            Tick();
+        }
+
+        Assert.Contains(_log.Lines, l => l.Contains("prewarm trace not refreshed", StringComparison.Ordinal));
+        Assert.DoesNotContain(ReadWarmRows(PlanOutput.WarmOnlyPath(_game.Trace)), row => row.Path == cache && row.Offset == 10);
+
+        _w.Now += Step;
+        Tick(); // 같은 트레이스로 복원 대기가 다시 씀
+
+        Assert.Contains(ReadWarmRows(PlanOutput.WarmOnlyPath(_game.Trace)), row => row.Path == cache && row.Offset == 10 && row.Length == 10);
+        Assert.Equal(planBefore, File.ReadAllBytes(_game.Plan));
     }
 
     [Fact]

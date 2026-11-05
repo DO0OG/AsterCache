@@ -2,6 +2,7 @@ using AsterCache.Core.Json;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Trace;
 using AsterCache.Service;
+using AsterCache.Tracer;
 using Xunit;
 
 namespace AsterCache.Tests.Service;
@@ -34,18 +35,64 @@ public sealed partial class AutoRelocatorTests
     public void VolatileFilesAreLeftOutOfThePlanAndTheirReasonsAreKeptInTheStats()
     {
         _w.Volatile[F2] = "changed between runs";
-        _w.LoadSessions = () => [[.. Sessions[0], new TraceEvent(Path.Combine(Root, "settings.json"), 0, 65536)]];
+        string cache = Path.Combine(Root, "cache_1_2.xpakdata");
+        File.WriteAllBytes(cache, new byte[100]);
+        _w.LoadSessions = () => [[.. Sessions[0], new TraceEvent(Path.Combine(Root, "settings.json"), 0, 65536),
+            new TraceEvent(cache, 90, 20), new TraceEvent(cache, 100, 10)]];
 
         Tick();
         RunUntilDone();
 
         PlanFile plan = PlanFile.Load(_game.Plan);
         Assert.DoesNotContain(plan.Fingerprints, f => f.Path == F2 || f.Path.EndsWith("settings.json", StringComparison.Ordinal));
+        Assert.DoesNotContain(plan.Fingerprints, f => f.Path == cache);
         Assert.DoesNotContain(plan.Order, o => o.Path == F2);
+        Assert.DoesNotContain(plan.Order, o => o.Path == cache);
+        Assert.DoesNotContain(plan.Tasks, task => task.Path == cache);
         var excluded = (JObject)plan.Stats[VolatileFiles.StatsKey]!;
         Assert.Equal("changed between runs", excluded[F2]);
         Assert.Equal("volatile file name", excluded[Path.Combine(Root, "settings.json")]);
-        Assert.Contains(_log.Lines, l => l.Contains("2 volatile file(s) left out of the plan", StringComparison.Ordinal));
+        Assert.Equal("volatile file name", excluded[cache]);
+        string warmOnly = PlanOutput.WarmOnlyPath(_game.Trace);
+        Assert.Contains(ReadWarmRows(warmOnly), row => row.Path == cache && row.Offset == 90 && row.Length == 20);
+        Assert.DoesNotContain(ReadWarmRows(_game.Trace), row => row.Path == cache); // 가변 범위는 공용 선읽기 목록에 없음
+
+        using FileStream shared = new(cache, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete);
+        Assert.Contains(TraceLoader.LoadRanges(warmOnly, Root), row => row.Path == cache && row.Offset == 90 && row.Length == 10);
+        Assert.DoesNotContain(TraceLoader.LoadRanges(warmOnly, Root), row => row.Path == cache && row.Offset >= 100);
+        Assert.Contains(_log.Lines, l => l.Contains("3 volatile file(s) left out of the plan", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void NewVolatileTraceRowsRefreshPrewarmWithoutChangingACompletedPlanOrJournal()
+    {
+        string cache = Path.Combine(Root, "cache_1_2.xpakdata");
+        File.WriteAllBytes(cache, new byte[100]);
+        _w.LoadSessions = () => [[.. Sessions[0], new TraceEvent(cache, 80, 10)]];
+
+        Tick();
+        RunUntilDone();
+
+        PlanFile plan = PlanFile.Load(_game.Plan);
+        Assert.DoesNotContain(plan.Tasks, task => task.Path == cache);
+        byte[] planBefore = File.ReadAllBytes(_game.Plan);
+        byte[] journalBefore = File.ReadAllBytes(JournalPath);
+        int movesBefore = Vol.Moves.Count;
+        string raw = AutoTracer.RawTracePath(_game);
+        SetAuto(a => a with { TraceRuns = 3, TraceMergeMinMib = 1 });
+        _w.Files.Add(TraceWriter.RunPath(raw, 1));
+        _w.Files.Add(TraceWriter.RunPath(raw, 2));
+        _w.FileTimes[_game.Plan] = _w.Now - TimeSpan.FromHours(1);
+        _w.FileTimes[raw] = _w.Now;
+        _w.LoadSessions = () => [[.. Sessions[0], new TraceEvent(cache, 80, 10), new TraceEvent(cache, 10, 10)]];
+
+        Tick();
+
+        Assert.Contains(ReadWarmRows(PlanOutput.WarmOnlyPath(_game.Trace)), row => row.Path == cache && row.Offset == 10 && row.Length == 10);
+        Assert.DoesNotContain(ReadWarmRows(_game.Trace), row => row.Path == cache);
+        Assert.Equal(planBefore, File.ReadAllBytes(_game.Plan));
+        Assert.Equal(journalBefore, File.ReadAllBytes(JournalPath));
+        Assert.Equal(movesBefore, Vol.Moves.Count);
     }
 
     [Fact]

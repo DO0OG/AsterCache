@@ -740,10 +740,11 @@ public sealed class AutoTracerTests : IDisposable
         Assert.False(_tracer.WantsRun(_game));
         Gain(3, 64); // 경계는 포함
         Assert.True(_tracer.WantsRun(_game));
-        Coverage(70); // 목표 이상
-        Assert.False(_tracer.WantsRun(_game));
-        Coverage(69);
+        Coverage(100); // 짧은 재실행이 덮어쓴 값: 병합 증가량이 충분하면 계속 수집
         Assert.True(_tracer.WantsRun(_game));
+        Gain(3, 63);
+        Assert.False(_tracer.WantsRun(_game));
+        Gain(3, 200);
         Gain(2, 500); // 다른 병합의 메타는 믿지 않음
         Assert.False(_tracer.WantsRun(_game));
         File.Delete(AutoTracer.MergeMetaPath(_game)); // 값이 없으면 기존 정책
@@ -769,8 +770,26 @@ public sealed class AutoTracerTests : IDisposable
         Assert.False(_tracer.WantsRun(_game));
 
         Extra(max: 8);
-        _rig.Status.Remove("foo"); // 커버리지 값이 없음
+        _rig.Status.Remove("foo"); // 커버리지 값이 없어도 병합 증가량이 충분하면 수집
+        Assert.True(_tracer.WantsRun(_game));
+    }
+
+    [Fact]
+    public void ExtraRunsContinueAfterAShortRerunSetCoverageTo100UntilTheMaximum()
+    {
+        Extra(max: 5);
+        SeedRuns(4);
+        Coverage(100);
+        Gain(4, 200);
+        Assert.True(_tracer.WantsRun(_game)); // 유효 4 < 5, 증가량 200 >= 64
+
+        Gain(4, 17); // 짧은 회차의 작은 증가량
         Assert.False(_tracer.WantsRun(_game));
+
+        Gain(4, 200);
+        SeedRuns(5);
+        Gain(5, 200);
+        Assert.False(_tracer.WantsRun(_game)); // 최대 회수
     }
 
     [Fact]
@@ -778,8 +797,6 @@ public sealed class AutoTracerTests : IDisposable
     {
         Extra();
         SeedRuns(3);
-        Gain(3, 500);
-        Assert.False(_tracer.WantsRun(_game)); // 상태 항목 없음
         Coverage(10);
         File.Delete(AutoTracer.MergeMetaPath(_game));
         Assert.False(_tracer.WantsRun(_game)); // 병합 메타 없음 (옛 설치)

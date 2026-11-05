@@ -11,6 +11,7 @@ namespace AsterCache.Tests.Service;
 public sealed class WarmFilesTests : IDisposable
 {
     private const long Mib = 1L << 20;
+    private bool _completeEvenIfCancelled; // 마지막 묶음을 다 읽고 나서 취소된 경우를 흉내 (읽기 쪽이 Complete 를 참으로 돌려줌)
     private readonly string _root = Path.Combine(Path.GetTempPath(), "aster_wf_" + Guid.NewGuid().ToString("N"));
     private readonly ListLog _log = new();
     private readonly List<IReadOnlyList<ReadOp>> _reads = [];
@@ -54,7 +55,7 @@ public sealed class WarmFilesTests : IDisposable
             {
                 _reads.Add(ops);
                 _onRead?.Invoke();
-                return (new StreamStats(ops.Sum(o => o.Length), ops.Count, 0, 0.01), !ct.IsCancellationRequested);
+                return (new StreamStats(ops.Sum(o => o.Length), ops.Count, 0, 0.01), _completeEvenIfCancelled || !ct.IsCancellationRequested);
             },
         }, _log);
     }
@@ -246,6 +247,55 @@ public sealed class WarmFilesTests : IDisposable
 
         _running.Clear();
         Assert.Equal(2 * Mib, p.WarmFiles(Settings(), [a], 1L << 40, default));
+    }
+
+    [Theory]
+    [InlineData(false, "h", 1)] // 읽는 중 같은 디스크의 다른 등록 게임이 알림 없이 뜸: 다음 묶음 앞에서 취소
+    [InlineData(true, "h", 1)] // keep_stream_on_game_start 여도 다른 게임은 봄
+    [InlineData(true, "g", 2)] // 읽던 게임 자신의 실행만 예외
+    [InlineData(false, "g", 1)]
+    public void ARunningGameDetectedBetweenBatchesCancelsTheRead(bool keep, string runner, int reads)
+    {
+        Prewarmer p = Make();
+        p.SetAuto(AutoSettings.Default with { KeepStreamOnGameStart = keep });
+        string a = File(Game, "a.wad", 64);
+        string b = File(Game, "b.wad", 64);
+        _onRead = () => _running.Add(runner); // 첫 묶음을 읽는 동안 뜸 (NoteGameStart 는 부르지 않음)
+
+        long read = p.WarmFiles(Settings(), [a, b], 1L << 40, default);
+
+        Assert.Equal(reads, _reads.Count);
+        Assert.Equal(reads * 64 * Mib, read);
+        Assert.Equal(reads == 1, _log.Lines.Any(l => l.Contains("warm files cancelled", StringComparison.Ordinal)));
+        Assert.False(p.StreamingOnDisk("g"));
+    }
+
+    [Fact]
+    public void AGameStartingDuringOneHugeFileStopsAtTheNextBatchBoundary()
+    {
+        Prewarmer p = Make();
+        string a = File(Game, "a.wad", 200);
+        _onRead = () => _running.Add("g"); // 첫 64 MiB 를 읽는 동안 뜸
+
+        long read = p.WarmFiles(Settings(), [a], 1L << 40, default);
+
+        Assert.Single(_reads);
+        Assert.Equal(64 * Mib, read);
+        Assert.Contains(_log.Lines, l => l.Contains("warm files cancelled", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ACancelAfterTheLastBatchIsNotRecordedAsDone()
+    {
+        Prewarmer p = Make();
+        string a = File(Game, "a.wad", 2);
+        using var cts = new CancellationTokenSource();
+        _completeEvenIfCancelled = true;
+        _onRead = cts.Cancel;
+
+        Assert.Equal(2 * Mib, p.WarmFiles(Settings(), [a], 1L << 40, cts.Token));
+        Assert.Contains(_log.Lines, l => l.Contains("warm files cancelled", StringComparison.Ordinal));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("warm files done", StringComparison.Ordinal));
     }
 
     [Fact]

@@ -8,6 +8,14 @@ namespace AsterCache.Core.Plan;
 /// 판정은 저널의 done 표시가 아니라 파일의 현재 extent 로 합니다 (저널·옛 계획은 이전 목표의 힌트일 뿐).
 public static class ResidualPlanner
 {
+    /// 계획 stats 의 보류 파일 {경로: 사유}: task 가 없고 옮기지 않으며 계획에 남음.
+    public const string HeldKey = "held_files";
+
+    public const string UnreadableReason = "unreadable";
+
+    /// 계획 stats 의 보류 파일의 이전 목표 목록 (task 와 같은 모양의 행): 다음 잔여 재계획이 이전 목표로 읽음.
+    public const string HeldTargetsKey = "held_targets";
+
     private readonly record struct Part(string Path, long Vcn, long Lcn, long N, bool Fixed);
 
     /// 저널의 planned 행 (path, vcn, clusters, target_lcn) 과 옛 계획들의 tasks 에서 이전 목표 목록 (중복 제거, 저널 먼저).
@@ -38,7 +46,7 @@ public static class ResidualPlanner
 
         foreach (PlanFile plan in oldPlans.Where(x => x.Zone.StartLcn is not null))
         {
-            foreach (PlanTask task in plan.Tasks.Where(x => seen.Add(x)))
+            foreach (PlanTask task in plan.Tasks.Concat(HeldTargets(plan)).Where(x => seen.Add(x)))
             {
                 result.Add(task);
             }
@@ -47,10 +55,27 @@ public static class ResidualPlanner
         return result;
     }
 
+    // 보류 파일의 이전 목표: 읽지 못한 동안 task 가 없어도, 읽히게 된 뒤 다시 계획할 때 이미 옮긴 조각을 알아보게 계획에 남겨 둠.
+    private static IEnumerable<PlanTask> HeldTargets(PlanFile plan)
+    {
+        if (plan.Stats.TryGetValue(HeldTargetsKey, out object? raw) && raw is List<object?> rows)
+        {
+            foreach (JObject r in rows.OfType<JObject>())
+            {
+                if (r.TryGetValue("path", out object? p) && p is string path && r.TryGetValue("vcn", out object? v) && v is long vcn && vcn >= 0
+                    && r.TryGetValue("clusters", out object? c) && c is long clusters && clusters > 0 && r.TryGetValue("target_lcn", out object? g) && g is long target && target >= 0)
+                {
+                    yield return new PlanTask(path, vcn, clusters, target);
+                }
+            }
+        }
+    }
+
     /// candidate 의 Order (현재 핫 범위), Fingerprints, 기타 stats 를 그대로 쓰고 tasks·zone·stats 만 다시 만듭니다.
     /// 반환: 고정 task (현재 LCN == 이전 목표, TargetLcn = 현재 LCN) + 잔여 task (findRun 이 준 새 구간에 접근 순서대로 연속 배치), 접근 순서대로 섞여 있음.
-    /// 잔여가 없으면 findRun 을 부르지 않습니다. extents 를 읽을 수 없는 (null·빈) 파일은 기존 계획 규칙대로 order·지문·task 에서 빼고 skipped_files 에 셉니다:
-    /// 고정할 근거도 옮길 근거도 없어 보류이고, 다음 계획 때 다시 평가됩니다.
+    /// 잔여가 없으면 findRun 을 부르지 않습니다. extents 를 읽을 수 없는 (null) 파일은 order·지문에 남기고 task 만 만들지 않은 채 stats.held_files 에 "unreadable" 로 적습니다:
+    /// 고정할 근거도 옮길 근거도 없는 보류이고, 호출자는 held_files 가 비어 있지 않은 동안 완료로 확정하지 말고 다시 계획해야 합니다. 조회 API 가 일시 실패와 희소·압축 같은 영구 사유를 구분하지 못해 둘 다 같은 보류입니다.
+    /// 디스크 extent 가 없는 (빈 목록: 파일 크기 0 이나 MFT 상주) 파일은 옮길 것이 없어 기존 계획 규칙대로 order·지문·task 에서 빼고 skipped_files 에 셉니다.
     public static PlanFile Build(PlanFile candidate, IReadOnlyList<PlanTask> previous, Func<string, IReadOnlyList<Extent>?> extents, Func<long, long?> findRun)
     {
         long cb = candidate.ClusterBytes;
@@ -59,6 +84,7 @@ public static class ResidualPlanner
         var order = new List<PlanRange>();
         var parts = new List<Part>();
         var dropped = new HashSet<string>(StringComparer.Ordinal);
+        var held = new JObject();
         foreach (PlanRange o in candidate.Order)
         {
             if (!ext.TryGetValue(o.Path, out IReadOnlyList<Extent>? e))
@@ -66,7 +92,18 @@ public static class ResidualPlanner
                 ext[o.Path] = e = extents(o.Path);
             }
 
-            if (e is null || e.Count == 0)
+            if (e is null)
+            {
+                if (!held.ContainsKey(o.Path))
+                {
+                    held.Add(o.Path, UnreadableReason);
+                }
+
+                order.Add(o);
+                continue;
+            }
+
+            if (e.Count == 0)
             {
                 _ = dropped.Add(o.Path);
                 continue;
@@ -121,9 +158,15 @@ public static class ResidualPlanner
         JObject stats = new ZoneStats(0, 0, fixedClusters * cb, 0, misaligned, parts.Sum(p => p.N) * cb, moved * cb, moving,
             moving == 0 ? 0 : PyFloat.Round2((double)moved / moving), residual, skipped, ZoneAllocator.CountRuns(parts.Select(p => (p.Lcn, p.N)).ToList()),
             ZoneAllocator.CountRuns(final)).ToJson();
-        foreach ((string key, object? value) in candidate.Stats.Where(kv => !stats.ContainsKey(kv.Key)))
+        foreach ((string key, object? value) in candidate.Stats.Where(kv => !stats.ContainsKey(kv.Key) && kv.Key != HeldKey && kv.Key != HeldTargetsKey)) // 이전 계획의 보류는 이번 판정으로 다시 정함
         {
             stats.Add(key, value); // hot_blocks, units 와 호출자가 덧붙인 표지는 그대로
+        }
+
+        if (held.Count > 0)
+        {
+            stats.Add(HeldKey, held);
+            stats.Add(HeldTargetsKey, previous.Where(t => held.ContainsKey(t.Path)).Distinct().Select(t => (object?)new JObject { { "path", t.Path }, { "vcn", t.Vcn }, { "clusters", t.Clusters }, { "target_lcn", t.TargetLcn } }).ToList());
         }
 
         stats.Add("fixed_clusters", fixedClusters);

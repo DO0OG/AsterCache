@@ -29,7 +29,7 @@ public sealed record DriveRecoveryRecord(string Drive, DateTimeOffset Started, D
 
 /// 게임별 점유 충돌 복구 시도 (auto_status.json 의 replan_attempts): 마지막 계획 SHA, 거절된 LCN, 이번 주기에 쓴 잔여 재계획 수, 다음 시도를 허용하는 시각 (보류 중일 때만).
 /// 계획 SHA 가 바뀌어도 이 기록은 지우지 않습니다 (재시작·새 계획이 횟수 제한을 풀지 못하게). 완료하면 지움.
-public sealed record RecoveryAttempt(string? PlanSha, long? RejectedLcn, int Replans, DateTimeOffset? NextAllowed);
+public sealed record RecoveryAttempt(string? PlanSha, long? RejectedLcn, int Replans, DateTimeOffset? NextAllowed, string? Reason = null, string? Stamp = null);
 
 public sealed record AutoEvent(DateTimeOffset At, string Game, string Kind);
 
@@ -499,6 +499,12 @@ public sealed class AutoStatus
                     o.Add("next_allowed", Iso(next)); // 보류 중일 때만 (기존 파일 모양 유지)
                 }
 
+                if (a.Reason is not null)
+                {
+                    o.Add("reason", a.Reason); // 마지막 거절 사유와 그때의 입력 표식 (계획·저널·트레이스): 같은 입력으로 같은 사유가 되풀이되면 멈추려고
+                    o.Add("stamp", a.Stamp);
+                }
+
                 attempts.Add(name, o);
             }
 
@@ -585,7 +591,7 @@ public sealed class AutoStatus
                     if (value is JObject o)
                     {
                         _attempts[name] = new RecoveryAttempt(Str(o, "plan_sha"), o.TryGetValue("rejected_lcn", out object? lcn) && lcn is long l ? l : null,
-                            o.TryGetValue("replans", out object? n) && n is long count ? (int)Math.Clamp(count, 0, int.MaxValue) : 0, Time(o, "next_allowed"));
+                            o.TryGetValue("replans", out object? n) && n is long count ? (int)Math.Clamp(count, 0, int.MaxValue) : 0, Time(o, "next_allowed"), Str(o, "reason"), Str(o, "stamp"));
                     }
                 }
             }

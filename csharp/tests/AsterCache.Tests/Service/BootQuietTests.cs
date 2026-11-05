@@ -14,13 +14,22 @@ public sealed class BootQuietTests : IDisposable
     private readonly ListLog _log = new();
     private DateTimeOffset _now = T0;
     private long _uptimeMs = Minute;
+    private long _sleptMs; // 절전 중 흐른 시간: 가동 시간 (TickCount) 에는 들어가고 절전 제외 시계에는 빠짐
     private bool _idle;
 
     public BootQuietTests() => Directory.CreateDirectory(_dir);
 
     public void Dispose() => Directory.Delete(_dir, true);
 
-    private BootQuiet Make() => new(() => _uptimeMs, () => _idle, _log, () => _now);
+    private BootQuiet Make() => new(() => _uptimeMs, () => _idle, _log, () => _now, () => _uptimeMs - _sleptMs);
+
+    // 절전: 벽시계와 가동 시간 (TickCount) 은 흐르고 절전 제외 시계는 멈춤
+    private void Sleep(TimeSpan span)
+    {
+        _now += span;
+        _uptimeMs += (long)span.TotalMilliseconds;
+        _sleptMs += (long)span.TotalMilliseconds;
+    }
 
     private string StatusPath => Path.Combine(_dir, "prewarm_status.json");
 
@@ -188,13 +197,13 @@ public sealed class BootQuietTests : IDisposable
         BootQuiet q = Make();
         q.Refresh();
 
-        _now = _now.AddHours(1); // 절전 중에는 가동 시간이 멈추고 벽시계만 감
+        Sleep(TimeSpan.FromHours(1));
         q.Refresh();
         Assert.True(q.Active);
         Assert.True(q.Defers("prewarm steam.exe")); // 런처 계기는 구간 동안 보류
         Assert.Single(_log.Lines, line => line.Contains("resume from sleep detected", StringComparison.Ordinal));
 
-        _uptimeMs = 11 * Minute; // 복귀 뒤 BootDelay 가 지남
+        _uptimeMs += 5 * Minute; // 복귀 뒤 BootDelay 가 지남
         q.Refresh();
         _now = _now.AddSeconds(59);
         q.Refresh();
@@ -204,5 +213,19 @@ public sealed class BootQuietTests : IDisposable
         q.Refresh();
         Assert.False(q.Active);
         Assert.False(q.Defers("prewarm steam.exe"));
+    }
+
+    [Fact]
+    public void TickCountKeepsRunningWhileUnbiasedClockStopsIsDetectedAsResume()
+    {
+        _uptimeMs = 6 * Minute; // 부팅 5 분 뒤 뜬 서비스 (빠른 시작 복귀 상황)
+        BootQuiet q = Make();
+        q.Refresh();
+
+        Sleep(TimeSpan.FromMinutes(30));
+        q.Refresh();
+
+        Assert.True(q.Active);
+        Assert.Single(_log.Lines, line => line.Contains("resume from sleep detected", StringComparison.Ordinal));
     }
 }

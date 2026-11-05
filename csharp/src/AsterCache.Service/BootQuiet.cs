@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
@@ -12,11 +13,12 @@ public sealed class BootQuiet
 {
     // 상한 10 분: 부팅 뒤 5 분 + 10 분이면 시작 직후 경쟁은 지나고, 드라이브가 끝내 한가해지지 않아도 배치 검사와 재배치가 멈춰 있는 시간을 제한합니다.
     public static readonly TimeSpan MaxQuiet = TimeSpan.FromMinutes(10);
-    // 벽시계가 가동 시간보다 이만큼 더 앞서면 절전·최대 절전에서 복귀한 것으로 봅니다 (틱 사이의 정상 차이는 이보다 훨씬 작음).
+    // 벽시계가 절전을 뺀 가동 시간보다 이만큼 더 앞서면 절전·최대 절전에서 복귀한 것으로 봅니다 (틱 사이의 정상 차이는 이보다 훨씬 작음).
     private static readonly TimeSpan ResumeJump = TimeSpan.FromMinutes(2);
 
     private bool _applies; // 구간 중인가 (절전 복귀 때 다시 켬), _gate 로 보호
     private readonly Func<long> _uptimeMs;
+    private readonly Func<long> _unbiasedMs; // 절전 시간을 뺀 가동 시간 (복귀 판정 전용)
     private readonly Func<bool> _idle;
     private readonly Func<DateTimeOffset> _now;
     private readonly ILog _log;
@@ -25,12 +27,14 @@ public sealed class BootQuiet
     private bool _ended; // 구간이 끝났음 (되돌아가지 않음), _gate 로 보호
     private DateTimeOffset? _idleSince; // 부팅 BootDelay 뒤 게임 드라이브가 한가해지기 시작한 시각, _gate 로 보호
     private long _origin; // 구간이 시작한 가동 시간 (복귀 때 그 시점으로 다시 맞춤), _gate 로 보호
-    private (long Uptime, DateTimeOffset Now)? _prev; // 직전 Refresh 의 가동 시간과 벽시계 (복귀 판정), _gate 로 보호
+    private (long Unbiased, DateTimeOffset Now)? _prev; // 직전 Refresh 의 절전 제외 가동 시간과 벽시계 (복귀 판정), _gate 로 보호
 
     /// uptimeMs: 시스템 가동 시간 (ms). idle: 게임 드라이브가 지금 모두 한가한가 (읽을 수 없으면 false). now: 시계 (IdleNeeded 를 잼).
-    public BootQuiet(Func<long> uptimeMs, Func<bool> idle, ILog log, Func<DateTimeOffset>? now = null)
+    /// unbiasedMs: 절전 시간을 뺀 가동 시간 (ms, 복귀 판정 전용). 없으면 QueryUnbiasedInterruptTime.
+    public BootQuiet(Func<long> uptimeMs, Func<bool> idle, ILog log, Func<DateTimeOffset>? now = null, Func<long>? unbiasedMs = null)
     {
         _uptimeMs = uptimeMs;
+        _unbiasedMs = unbiasedMs ?? BootQuietNative.UnbiasedMs;
         _idle = idle;
         _log = log;
         _now = now ?? (() => DateTimeOffset.UtcNow);
@@ -55,16 +59,18 @@ public sealed class BootQuiet
         }
     }
 
-    /// 구간 상태를 한 번 갱신합니다 (재적용 틱마다). 벽시계가 가동 시간보다 ResumeJump 이상 앞서면 절전 복귀로 보고 그 시점부터 구간을 다시 시작합니다.
+    /// 구간 상태를 한 번 갱신합니다 (재적용 틱마다). 벽시계가 절전을 뺀 가동 시간보다 ResumeJump 이상 앞서면 절전 복귀로 보고 그 시점부터 구간을 다시 시작합니다.
     /// BootDelay 가 지나고 게임 드라이브가 IdleNeeded 동안 한가하면 구간을 끝냅니다. 구간의 가동 시간이 BootDelay + MaxQuiet 에 이르면 유휴와 무관하게 끝냅니다.
     public void Refresh()
     {
         long uptime = _uptimeMs();
+        // 빠른 시작(Fast Startup): 세션 0 이 최대 절전되었다가 깨어나 서비스 프로세스가 이어지므로 이 판정으로 잡힙니다.
+        long unbiased = _unbiasedMs();
         DateTimeOffset now = _now();
         long origin;
         lock (_gate)
         {
-            if (_prev is { } prev && now - prev.Now - TimeSpan.FromMilliseconds(uptime - prev.Uptime) >= ResumeJump)
+            if (_prev is { } prev && now - prev.Now - TimeSpan.FromMilliseconds(unbiased - prev.Unbiased) >= ResumeJump)
             {
                 _applies = true;
                 _ended = false;
@@ -74,7 +80,7 @@ public sealed class BootQuiet
                 _log.Info("boot quiet period restarted: resume from sleep detected");
             }
 
-            _prev = (uptime, now);
+            _prev = (unbiased, now);
             if (!_applies || _ended)
             {
                 return;
@@ -119,5 +125,25 @@ public sealed class BootQuiet
 
             return true;
         }
+    }
+}
+
+/// 절전을 뺀 단조 시계. Environment.TickCount64 는 절전 시간도 포함해 흐르므로 복귀 판정에 쓰지 않습니다.
+internal static partial class BootQuietNative
+{
+    // https://learn.microsoft.com/en-us/windows/win32/api/realtimeapiset/nf-realtimeapiset-queryunbiasedinterrupttime
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool QueryUnbiasedInterruptTime(out ulong unbiasedTime);
+
+    /// 절전을 뺀 가동 시간 (ms, 100ns 단위를 나눔). 호출이 실패하면 예외를 던집니다.
+    public static long UnbiasedMs()
+    {
+        if (!QueryUnbiasedInterruptTime(out ulong time))
+        {
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastPInvokeError());
+        }
+
+        return (long)(time / 10_000);
     }
 }

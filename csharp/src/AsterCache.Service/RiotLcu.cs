@@ -8,7 +8,7 @@ using System.Text.Json;
 
 namespace AsterCache.Service;
 
-/// 리그 클라이언트 lockfile 의 접속 정보 (이름:PID:포트:비밀번호:https). 비밀번호는 메모리에만 두고 ToString 에 찍지 않습니다.
+/// 리그 오브 레전드 클라이언트 lockfile 의 접속 정보 (이름:PID:포트:비밀번호:https). 비밀번호는 메모리에만 두고 ToString 에 찍지 않습니다.
 public sealed record Lockfile(int Pid, int Port, string Password)
 {
     private const int MaxPasswordChars = 256;
@@ -74,7 +74,7 @@ public sealed record ChampSelectState(IReadOnlyList<int> Locked, IReadOnlyList<i
         o.TryGetProperty("championId", out JsonElement c) && c.ValueKind == JsonValueKind.Number && c.TryGetInt32(out int id) && id > 0 ? id : null;
 }
 
-/// 리그 클라이언트 로컬 API (GET 만). 실패 (연결·인증·형식·시간 초과) 는 예외로, 챔피언 선택이 아니면 (404) null.
+/// 리그 오브 레전드 클라이언트 로컬 API (GET 만). 실패 (연결·인증·형식·시간 초과) 는 예외로, 챔피언 선택이 아니면 (404) null.
 public interface ILcuClient : IDisposable
 {
     /// 게임 흐름 단계 ("None", "Lobby", "ChampSelect", "GameStart", "InProgress" ...).

@@ -227,7 +227,7 @@ public sealed class Worker : BackgroundService
     // 게임이 뜨면 돌고 있는 재적용을 먼저 멈춥니다 (읽기 큐 처리보다 앞서, 감시 스레드에서 바로).
     private Action<ProcessStart> OnStart(ChannelWriter<ProcessStart> writer) => s =>
     {
-        _riot?.NoteProcessStart(s.ExeName); // 리그 게임 exe 가 뜨면 챔피언 선택 선읽기를 바로 멈춤
+        _riot?.NoteProcessStart(s.ExeName); // 리그 오브 레전드 게임 exe 가 뜨면 챔피언 선택 선읽기를 바로 멈춤
         if (_settings.Games.FirstOrDefault(g => g.ExeNames.Contains(s.ExeName, StringComparer.OrdinalIgnoreCase)) is { } game)
         {
             _prewarm?.NoteGameStart(game.Name); // 그 게임을 예열하던 스트림은 아래 취소에도 끝까지 (다른 게임의 예열은 묶음 경계에서 멈춤), 기록 없는 예열의 예산은 풂

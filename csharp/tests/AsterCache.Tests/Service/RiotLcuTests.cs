@@ -12,7 +12,7 @@ using Xunit;
 
 namespace AsterCache.Tests.Service;
 
-/// 자체 서명 인증서의 HTTPS 로컬 서버 (리그 클라이언트 흉내): 진짜 클라이언트·인터넷에는 접속하지 않고 127.0.0.1 의 시험이 고른 포트만 씁니다.
+/// 자체 서명 인증서의 HTTPS 로컬 서버 (리그 오브 레전드 클라이언트 흉내): 진짜 클라이언트·인터넷에는 접속하지 않고 127.0.0.1 의 시험이 고른 포트만 씁니다.
 internal sealed class FakeLcuServer : IDisposable
 {
     private readonly TcpListener _listener = new(IPAddress.Loopback, 0);

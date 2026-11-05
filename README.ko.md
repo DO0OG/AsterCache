@@ -422,7 +422,7 @@ GOG 와 Ubisoft 읽기는 아직 실제 PC 에서 확인하지 않았습니다. 
 | `auto.rewarm_after_exit_min` | 기본 2. 게임 종료를 감지하면 재예열 점검을 이 시간(분) 뒤로 당깁니다. |
 | `auto.load_boundary` | 기본 `false`. `true` 면 게임 시작 때 로딩 앞부분(tier0)이 RAM 에 들어온 시각을 잽니다. 디스크를 읽으므로 게임이 끝나면 멈춥니다. |
 | `auto.max_relocate_gib_per_day` | 기본 8. 하루에 재배치로 쓸 수 있는 최대 GiB(0 = 무제한, 0~1048576). 8 은 기본값으로 취급되어 SMR 디스크는 여전히 2 GiB 를 씁니다. |
-| `riot.champ_select_prewarm` | 기본 `false`. Riot 게임의 챔피언 선택 중 로컬 리그 클라이언트 API로 고른 챔피언·맵 파일을 미리 RAM에 읽습니다. 한국 계정 LCU 정책은 미확인입니다. |
+| `riot.champ_select_prewarm` | 기본 `false`. Riot 게임의 챔피언 선택 중 로컬 리그 오브 레전드 클라이언트 API로 고른 챔피언·맵 파일을 미리 RAM에 읽습니다. 한국 계정 LCU 정책은 미확인입니다. |
 | `riot.champ_select_budget_mib` | 기본 2048. 챔피언 선택 선읽기가 읽을 수 있는 최대 MiB. |
 | `prewarm.pin` | 예열한 데이터를 서비스가 읽기 전용 매핑으로 열어 둡니다. 설정에 적지 않으면 물리 RAM 24 GiB 이상에서 자동으로 켜지고, `false` 는 끕니다. 명시한 `true` 는 RAM 16 GiB 이상에서 동작합니다. 효과 미확인(실험 필요). [안티치트 호환](#안티치트-호환) 을 보십시오. |
 

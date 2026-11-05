@@ -15,7 +15,7 @@ public static partial class LauncherScan
     ];
 
     // Riot 제품 (Metadata 폴더 이름의 .live 앞부분) 별 표시 이름과 실행 exe 이름. 이름이 없으면 폴더에서 가장 큰 exe.
-    // 전략 롤체스(teamfighttactics)는 리그 클라이언트로 실행하므로 같은 폴더면 하나로 합쳐지고, 따로 설치돼 있으면 같은 exe 이름을 씁니다.
+    // 전략적 팀 전투(teamfighttactics)는 리그 오브 레전드 클라이언트로 실행하므로 같은 폴더면 하나로 합쳐지고, 따로 설치돼 있으면 같은 exe 이름을 씁니다.
     private static readonly string[] LeagueExes = ["LeagueClient.exe", "League of Legends.exe"];
 
     private static readonly Dictionary<string, (string Display, string[] Exes)> RiotProducts = new(StringComparer.OrdinalIgnoreCase)
@@ -38,7 +38,7 @@ public static partial class LauncherScan
     private static IEnumerable<Raw> Riot(ILauncherEnv env)
     {
         string meta = Path.Combine(env.ProgramData, "Riot Games", "Metadata");
-        foreach (string sub in env.SubDirs(meta).OrderBy(p => p, StringComparer.OrdinalIgnoreCase)) // 리그가 전략 롤체스보다 먼저
+        foreach (string sub in env.SubDirs(meta).OrderBy(p => p, StringComparer.OrdinalIgnoreCase)) // 리그 오브 레전드가 전략적 팀 전투보다 먼저
         {
             string id = Path.GetFileName(sub);
             if (!id.EndsWith(".live", StringComparison.OrdinalIgnoreCase)

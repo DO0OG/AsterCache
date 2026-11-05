@@ -31,7 +31,7 @@ public sealed class RiotWatchEnv
     /// LeagueClient.exe 가 실행 중인가.
     public Func<bool> ClientRunning { get; init; } = () => ProcessSnapshot.IsRunning([RiotPhaseWatcher.ClientExe]);
 
-    /// 리그 게임 exe (클라이언트 제외) 가 실행 중인가.
+    /// 리그 오브 레전드 게임 exe (클라이언트 제외) 가 실행 중인가.
     public Func<GameSettings, bool> GameExeRunning { get; init; } = g => ProcessSnapshot.IsRunning([.. g.ExeNames.Where(e => !RiotPhaseWatcher.IsClientExe(e))]);
 
     /// lockfile 의 PID 가 지금도 LeagueClient.exe 인가 (남은 옛 lockfile 이나 재사용된 PID 를 거름).
@@ -52,7 +52,7 @@ public sealed class RiotWatchEnv
     public static RiotWatchEnv Create(Prewarmer prewarm) => new() { WarmFiles = prewarm.WarmFiles };
 }
 
-/// 리그 챔피언 선택 선읽기 (설정 riot.champ_select_prewarm, 기본 꺼짐). Worker 가 별도 비동기 루프로 돌립니다 (30 초 재배치 루프·게임 시작 처리와 따로).
+/// 리그 오브 레전드 챔피언 선택 선읽기 (설정 riot.champ_select_prewarm, 기본 꺼짐). Worker 가 별도 비동기 루프로 돌립니다 (30 초 재배치 루프·게임 시작 처리와 따로).
 /// 켜져 있고, 등록 게임 중 안티치트가 vanguard 이고 LeagueClient.exe 가 있는 게임이 있고, 클라이언트 실행 중일 때만 lockfile 로 로컬 API 에 접속해 단계를 봅니다.
 /// ChampSelect 동안 잠긴 챔피언 → 호버 챔피언 → 맵 순서로 데이터 파일을 WarmFiles 로 읽고, ChampSelect 를 벗어나거나 게임 exe 가 뜨면 즉시 취소합니다.
 public sealed class RiotPhaseWatcher
@@ -84,7 +84,7 @@ public sealed class RiotPhaseWatcher
 
     public static bool IsClientExe(string? exe) => string.Equals(exe, ClientExe, StringComparison.OrdinalIgnoreCase);
 
-    /// 등록 게임 중 안티치트가 vanguard 이고 LeagueClient.exe 를 가진 게임 (리그).
+    /// 등록 게임 중 안티치트가 vanguard 이고 LeagueClient.exe 를 가진 게임 (리그 오브 레전드).
     public static GameSettings? FindGame(AsterSettings s) => s.Games.FirstOrDefault(g => g.AntiCheat == "vanguard" && g.ExeNames.Any(IsClientExe));
 
     public static string? ReadLockfileText(string path)
@@ -128,7 +128,7 @@ public sealed class RiotPhaseWatcher
     private static List<string> Names(string dir, string stem, IReadOnlyList<string> locales) =>
         [Path.Combine(dir, stem + ".wad.client"), .. locales.Select(l => Path.Combine(dir, stem + "." + l + ".wad.client"))];
 
-    /// 게임 exe 가 떴을 때 (감시기 스레드): 리그 게임 exe 이면 도는 선읽기를 바로 취소하고, 단계가 ChampSelect 를 벗어날 때까지 새로 열지 않습니다.
+    /// 게임 exe 가 떴을 때 (감시기 스레드): 리그 오브 레전드 게임 exe 이면 도는 선읽기를 바로 취소하고, 단계가 ChampSelect 를 벗어날 때까지 새로 열지 않습니다.
     public void NoteProcessStart(string exe)
     {
         if (FindGame(_settings()) is not { } g || IsClientExe(exe) || !g.ExeNames.Contains(exe, StringComparer.OrdinalIgnoreCase))

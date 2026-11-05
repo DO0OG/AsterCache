@@ -164,7 +164,7 @@ public sealed class TierCommandTests : IDisposable
     {
         WriteTrace(Path.Combine(_root, "a.bin"));
         string config = Path.Combine(_data, "config.json");
-        File.WriteAllText(config, File.ReadAllText(config).Replace("foo.exe", "LeagueClient.exe", StringComparison.Ordinal)); // 수동 등록한 리그: anticheat 값이 비어 있음
+        File.WriteAllText(config, File.ReadAllText(config).Replace("foo.exe", "LeagueClient.exe", StringComparison.Ordinal)); // 수동 등록한 리그 오브 레전드: anticheat 값이 비어 있음
         TierCommand.AntiCheatOf = g => g.AntiCheat; // 설정에서 채운 값만 봄
         AntiCheatGuard.VanguardInstalled = () => true;
 

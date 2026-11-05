@@ -223,7 +223,7 @@ public sealed record AsterSettings(int PollMs, IReadOnlyList<GameSettings> Games
 {
     public AutoSettings Auto { get; init; } = AutoSettings.Default;
 
-    /// 리그 챔피언 선택 선읽기 설정.
+    /// 리그 오브 레전드 챔피언 선택 선읽기 설정.
     public RiotSettings Riot { get; init; } = RiotSettings.Default;
 
     /// 자동 재배치가 한 존에 쓰는 크기의 상한 (MiB).

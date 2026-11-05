@@ -7,6 +7,7 @@ using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
 using AsterCache.Core.Tier;
+using AsterCache.Core.Trace;
 using AsterCache.Windows;
 
 namespace AsterCache.Service;
@@ -203,9 +204,38 @@ public sealed class ReapplyEnv
             return null;
         }
 
-        string dest = $"{journal}.{DateTime.UtcNow:yyyyMMdd'T'HHmmss'Z'}";
+        string dest = PlanSwitch.ArchiveName(journal, DateTime.UtcNow); // 같은 초에 두 번 보관해도 이름이 겹치지 않음
         File.Move(journal, dest);
         return dest;
+    }
+
+    /// 같은 볼륨의 다른 게임 계획이 아직 쓸 존 범위 (계획 폴더의 활성 계획과 진행 중 교체 기록).
+    public static IReadOnlyList<(long Lcn, long Clusters)> ReservedFor(GameSettings g) =>
+        ZoneReservations.Collect(Path.GetDirectoryName(Path.GetFullPath(g.Plan)) ?? ".", PlanFile.SplitDrive(g.OriginRoot), g.Plan);
+
+    /// 부분 적용된 이전 목표를 지키는 잔여 재계획 (ResidualReplan) 으로 활성 계획을 바꿉니다. sessions 가 있으면 선읽기 파일도 같이 다시 씁니다.
+    public static PlanFile ReplanResidual(string journalDir, GameSettings g, PlanFile candidate, IReadOnlyList<PlanFile> olds, IReadOnlyList<IReadOnlyList<TraceEvent>>? sessions)
+    {
+        using NtfsVolume vol = OpenChecked(g);
+        Directory.CreateDirectory(journalDir);
+        Action<PlanFile, string>? save = sessions is null ? null : (p, path) => PlanOutput.Save(p, sessions, path);
+        return ResidualReplan.Run(candidate, g.Plan, JournalPath(journalDir, g), vol, ReservedFor(g), Hooks(null), () => DateTime.UtcNow, save, olds).Plan;
+    }
+
+    /// 중단된 계획 교체를 끝까지 진행합니다 (없으면 null).
+    public static SwitchResult? ResumeSwitch(string journalDir, GameSettings g) => PlanSwitch.Resume(g.Plan, JournalPath(journalDir, g));
+
+    /// 게임 저널 header 의 plan_sha (저널이 없거나 행이 없으면 null).
+    public static string? JournalPlanSha(string journalDir, GameSettings g)
+    {
+        string journal = JournalPath(journalDir, g);
+        if (!File.Exists(journal))
+        {
+            return null;
+        }
+
+        using var jr = new Journal(journal);
+        return jr.Rows.FirstOrDefault(r => Equals(r["type"], "header")) is { } h && h.TryGetValue("plan_sha", out object? sha) ? sha as string : null;
     }
 
     /// 저널의 현재 줄 수 (없으면 0).

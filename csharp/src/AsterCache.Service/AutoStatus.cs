@@ -27,6 +27,10 @@ public sealed record AutoBootProbe(DateTimeOffset At, int Files, double OpenMsPe
 /// 쓰기 뒤 회복 추적 한 건 (auto_status.json 의 drive_recovery): 드라이브, 시작·상한 시각, 쓰기 직전 기준 (없으면 고정 대기), 마지막 판정 ("pass"/"unknown"/"bad", 아직 없으면 null).
 public sealed record DriveRecoveryRecord(string Drive, DateTimeOffset Started, DateTimeOffset Until, ProbeSpot? Zone, ProbeSpot? Ref, string? Verdict, DateTimeOffset? HardUntil = null);
 
+/// 게임별 점유 충돌 복구 시도 (auto_status.json 의 replan_attempts): 마지막 계획 SHA, 거절된 LCN, 이번 주기에 쓴 잔여 재계획 수, 다음 시도를 허용하는 시각 (보류 중일 때만).
+/// 계획 SHA 가 바뀌어도 이 기록은 지우지 않습니다 (재시작·새 계획이 횟수 제한을 풀지 못하게). 완료하면 지움.
+public sealed record RecoveryAttempt(string? PlanSha, long? RejectedLcn, int Replans, DateTimeOffset? NextAllowed);
+
 public sealed record AutoEvent(DateTimeOffset At, string Game, string Kind);
 
 /// 자동 모드 상태 (<데이터 폴더>\auto_status.json). 서비스만 쓰고 트레이가 읽습니다. 파일이 없거나 깨졌으면 빈 상태로 시작합니다.
@@ -52,6 +56,7 @@ public sealed class AutoStatus
     private DateTimeOffset? _holdUntil; // 상태 파일을 못 읽었을 때 재배치를 막는 벽시계 시각 (relocation_hold_until)
     private readonly List<AutoEvent> _events = [];
     private readonly Dictionary<string, DriveRecoveryRecord> _driveRecovery = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, RecoveryAttempt> _attempts = new(StringComparer.Ordinal);
 
     /// sleep 은 파일 교체를 다시 시도하기 전의 대기 (시험이 바꿈, 기본은 MoveRetryDelay 만큼 실제로 잠). ticks 는 세션 안 경과 판정용 Stopwatch 틱 (시험이 바꿈).
     public AutoStatus(string? path, ILog log, Func<DateTimeOffset>? now = null, Action<TimeSpan>? sleep = null, Func<long>? ticks = null)
@@ -259,6 +264,38 @@ public sealed class AutoStatus
         }
     }
 
+    /// 게임의 점유 충돌 복구 시도 기록 (없으면 null).
+    public RecoveryAttempt? Recovery(string name)
+    {
+        lock (_lock)
+        {
+            return _attempts.GetValueOrDefault(name);
+        }
+    }
+
+    public void SetRecovery(string name, RecoveryAttempt attempt)
+    {
+        lock (_lock)
+        {
+            if (!_attempts.TryGetValue(name, out RecoveryAttempt? old) || old != attempt)
+            {
+                _attempts[name] = attempt;
+                Save();
+            }
+        }
+    }
+
+    public void ClearRecovery(string name)
+    {
+        lock (_lock)
+        {
+            if (_attempts.Remove(name))
+            {
+                Save();
+            }
+        }
+    }
+
     public void AddEvent(string game, string kind)
     {
         lock (_lock)
@@ -342,7 +379,7 @@ public sealed class AutoStatus
     {
         lock (_lock)
         {
-            if (_games.Remove(name))
+            if (_games.Remove(name) | _attempts.Remove(name))
             {
                 Save();
             }
@@ -451,6 +488,23 @@ public sealed class AutoStatus
             root.Add("drive_recovery", recovery); // 추적이 없으면 키를 만들지 않음 (기존 파일 모양 유지)
         }
 
+        if (_attempts.Count > 0)
+        {
+            var attempts = new JObject();
+            foreach ((string name, RecoveryAttempt a) in _attempts.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+            {
+                var o = new JObject { { "plan_sha", a.PlanSha }, { "rejected_lcn", a.RejectedLcn }, { "replans", (long)a.Replans } };
+                if (a.NextAllowed is { } next)
+                {
+                    o.Add("next_allowed", Iso(next)); // 보류 중일 때만 (기존 파일 모양 유지)
+                }
+
+                attempts.Add(name, o);
+            }
+
+            root.Add("replan_attempts", attempts); // 기록이 없으면 키를 만들지 않음
+        }
+
         try
         {
             string tmp = _path + ".tmp";
@@ -524,6 +578,18 @@ public sealed class AutoStatus
                 }
             }
 
+            if (root.TryGetValue("replan_attempts", out object? ra) && ra is JObject attempts)
+            {
+                foreach ((string name, object? value) in attempts)
+                {
+                    if (value is JObject o)
+                    {
+                        _attempts[name] = new RecoveryAttempt(Str(o, "plan_sha"), o.TryGetValue("rejected_lcn", out object? lcn) && lcn is long l ? l : null,
+                            o.TryGetValue("replans", out object? n) && n is long count ? (int)Math.Clamp(count, 0, int.MaxValue) : 0, Time(o, "next_allowed"));
+                    }
+                }
+            }
+
             if (root.TryGetValue("events", out object? ev) && ev is List<object?> list)
             {
                 foreach (JObject o in list.OfType<JObject>())
@@ -543,6 +609,7 @@ public sealed class AutoStatus
             _relocations.Clear();
             _events.Clear();
             _driveRecovery.Clear();
+            _attempts.Clear();
             KeepBad();
             // 일일 상한 기록이 사라졌으므로 24 시간 동안 재배치를 막음 (보수). 이동 바이트 집계는 건드리지 않음.
             _holdUntil = _now() + RelocationHold;

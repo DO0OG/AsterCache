@@ -160,6 +160,21 @@ public sealed class AutoStatus
         }
     }
 
+    /// 이번 회차가 되돌리기로 쓴 바이트를 마지막 시작 기록에 더합니다 (이동 뒤 예외로 되돌려도 하루 예산 집계가 이동과 되돌리기 쓰기를 모두 셈).
+    public void AddToLastRelocationBytes(long extra)
+    {
+        lock (_lock)
+        {
+            if (extra <= 0 || _relocations.Count == 0)
+            {
+                return;
+            }
+
+            _relocations[^1] = _relocations[^1] with { Bytes = _relocations[^1].Bytes + extra };
+            Save();
+        }
+    }
+
     /// 자동 재배치 끝: done, relocated_at 기록. counted 면 events 에도 남깁니다 (이미 제자리인 게임은 세지 않음). 일일 상한은 시작 때 센 BeginRelocation 이 맡습니다.
     public void Complete(string name, string source, DateTimeOffset at, bool counted, string? detail)
     {

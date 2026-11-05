@@ -416,7 +416,7 @@ The configuration file is `%ProgramData%\AsterCache\config.json`. Editing it in 
 | `games[].anticheat` | Anti-cheat folders found in the install folder, for example `EasyAntiCheat`. Shown in the Games tab; it does not change behavior |
 | `auto.ssd_tier` | Optional SSD assist storage: `enabled` (default `false`), `budget_gib` (default 8), `root` (default `"auto"`). See [SSD assist storage](#ssd-assist-storage-optional) |
 | `auto.trace_runs` | Default 3. If the number of plays is below this value, the service traces again to accumulate the hot set and widen the zone. |
-| `auto.trace_target_coverage` | Default 70. After `trace_runs`, another trace runs at the next start only if the last session's coverage is below this value (%), the previous run added at least `trace_merge_min_mib` of new blocks, and fewer than `trace_runs_max` valid runs exist. |
+| `auto.trace_target_coverage` | Default 70. No longer used to decide additional trace runs; kept only for compatibility. After `trace_runs`, extra collection is decided by the previous merge adding at least `trace_merge_min_mib` of new blocks and fewer than `trace_runs_max` valid runs existing. |
 | `auto.trace_runs_max` | Default 8. The most valid trace runs (at least 64 MiB read each) collected by the additional-run rule. |
 | `auto.restream_cooldown_min` | Default 10. The start-up stream of the same game is not run again within this many minutes. It is also skipped while the game process is already running or the disk is busy. |
 | `auto.rewarm_after_exit_min` | Default 2. When a game exit is detected, the rewarm check is pulled forward to this many minutes later. |

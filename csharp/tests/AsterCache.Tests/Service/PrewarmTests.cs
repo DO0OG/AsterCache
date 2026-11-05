@@ -90,6 +90,82 @@ public sealed class PrewarmTests : IDisposable
         Assert.Null(PrewarmPolicy.SkipReason(1 << 20, true, false, 99999, 0, TimeSpan.Zero, TimeSpan.Zero));
     }
 
+    private sealed class BatchesStreamer(int batches, Action<int> afterBatch) : IGameStreamer
+    {
+        private const long Batch = 64L << 20;
+
+        public int Read { get; private set; }
+
+        public StreamStats Stream(GameSettings game) => new(batches * Batch, batches, 0, 0.01);
+
+        public (StreamStats Stats, bool Complete) Stream(GameSettings game, CancellationToken stop, Action<long, long>? progress)
+        {
+            Read = 0;
+            while (Read < batches)
+            {
+                if (stop.IsCancellationRequested)
+                {
+                    return (new StreamStats(Read * Batch, Read, 0, 0.01), false);
+                }
+
+                Read++;
+                afterBatch(Read);
+                progress?.Invoke(Read * Batch, batches * Batch);
+            }
+
+            return (new StreamStats(batches * Batch, batches, 0, 0.01), true);
+        }
+    }
+
+    [Theory]
+    [InlineData("b", 2, false)] // 같은 디스크의 다른 등록 게임이 알림 없이 뜸 (미등록 exe 로 시작해 NoteGameStart 가 오지 않는 경우): 설정과 무관하게 취소
+    [InlineData("a", 6, true)] // 읽던 게임 자신의 실행만 예외
+    public void KeepStreamOnGameStartStillCancelsWhenAnotherGameOnTheDriveRuns(string runner, int read, bool ran)
+    {
+        GameSettings a = Game("a"), b = Game("b");
+        bool running = false;
+        var streamer = new BatchesStreamer(6, n => running = running || n == 2);
+        Prewarmer p = new([a, b], streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => AvailableMib,
+            GameRunning = g => running && g.Name == runner,
+            ZoneBytes = _ => ZoneBytes,
+            TraceExists = _ => TraceExists,
+        }, _log, StatusPath, () => _now);
+        p.SetAuto(AutoSettings.Default with { KeepStreamOnGameStart = true });
+
+        PrewarmResult r = p.Run(a, "test");
+
+        Assert.Equal(ran, r.Ran);
+        Assert.Equal(read, streamer.Read);
+    }
+
+    [Fact]
+    public void ASkipBecauseAGameIsRunningNamesTheBlockingProcessOnceUntilTheLogIntervalPasses()
+    {
+        GameSettings a = Game("a");
+        int described = 0;
+        GameRunning = true;
+        Prewarmer p = new([a], _streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => AvailableMib,
+            GameRunning = _ => GameRunning,
+            ZoneBytes = _ => ZoneBytes,
+            TraceExists = _ => TraceExists,
+            DescribeBlockers = _ =>
+            {
+                described++;
+                return @"helper.exe(1234) D:/Games/a/bin/helper.exe";
+            },
+        }, _log, StatusPath, () => _now);
+
+        Assert.Equal("game is running", p.Run(a, "test").SkipReason);
+        Assert.Equal("game is running", p.Run(a, "test").SkipReason);
+
+        Assert.Single(_log.Lines, l => l.Contains("a: prewarm skipped (game is running) [test] [blocked by helper.exe(1234) ", StringComparison.Ordinal));
+        Assert.Equal(1, described); // 억제된 틱은 프로세스 스냅샷을 부르지 않음
+    }
+
     // ---- 서비스 시작과 트리거 ----
 
     [Fact]
@@ -277,6 +353,50 @@ public sealed class PrewarmTests : IDisposable
         Assert.Empty(_streamer.Calls);
         Assert.Null(p.LastWarmed("a"));
         Assert.False(File.Exists(StatusPath));
+    }
+
+    [Fact]
+    public void CancellationAfterTheLastBatchIsRecordedAsSkippedNotOk()
+    {
+        GameSettings g = Game("a");
+        using var cts = new CancellationTokenSource();
+        var streamer = new CancelOnProgressStreamer(cts);
+        var p = new Prewarmer([g], streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => AvailableMib,
+            GameRunning = _ => false,
+            ZoneBytes = _ => 1 << 20,
+            TraceExists = _ => true,
+        }, _log, StatusPath, () => _now);
+
+        PrewarmResult result = p.Run(g, "test", ct: cts.Token);
+        var root = (JObject)JsonRead.ReadFile(StatusPath)!;
+        var games = (JObject)root["games"]!;
+        var status = (JObject)games["a"]!;
+
+        Assert.Equal(1, streamer.Calls);
+        Assert.True(streamer.StopObserved);
+        Assert.False(result.Ran);
+        Assert.Equal(Prewarmer.Cancelled, result.SkipReason);
+        Assert.Equal("skipped", status["result"]);
+        Assert.Null(p.LastWarmed("a"));
+    }
+
+    private sealed class CancelOnProgressStreamer(CancellationTokenSource cancel) : IGameStreamer
+    {
+        public int Calls { get; private set; }
+        public bool StopObserved { get; private set; }
+
+        public StreamStats Stream(GameSettings game) => throw new NotSupportedException();
+
+        public (StreamStats Stats, bool Complete) Stream(GameSettings game, CancellationToken stop, Action<long, long>? progress)
+        {
+            Calls++;
+            progress?.Invoke(1, 1);
+            cancel.Cancel();
+            StopObserved = stop.IsCancellationRequested;
+            return (new StreamStats(1, 1, 0, 0.01), true);
+        }
     }
 
     [Fact]

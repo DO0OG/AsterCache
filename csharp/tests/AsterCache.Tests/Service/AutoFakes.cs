@@ -64,6 +64,12 @@ internal sealed class FakeWorld
     /// 게임 폴더 아래에서 도는 프로세스의 PID (등록 exe 가 아닌 자식 프로세스).
     public List<int> RootPids { get; set; } = [];
 
+    /// RootPids 가 어느 게임의 설치 폴더 아래 프로세스인가 (기본: 모든 게임).
+    public Func<GameSettings, bool> RootPidsOf { get; set; } = _ => true;
+
+    /// 건너뜀 사유 로그에 남는 막고 있는 프로세스 설명 (기본: 없음, 실제 스냅샷을 뜨지 않음).
+    public Func<GameSettings, string?> DescribeBlockers { get; set; } = _ => null;
+
     public Dictionary<string, string?> AntiCheats { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public long PhysicalRam { get; set; } = 16L << 30;
@@ -227,7 +233,8 @@ internal sealed class FakeWorld
             return Reads.TryGetValue(p, out long v) ? v : null;
         },
         AntiCheatOf = d => AntiCheats.GetValueOrDefault(d),
-        RootPids = _ => RootPids,
+        RootPids = g => RootPidsOf(g) ? RootPids : [],
+        DescribeBlockers = g => DescribeBlockers(g),
         PhysicalRamBytes = () => PhysicalRam,
         WindowsDir = WindowsDir,
         SystemDrive = SystemDrive,

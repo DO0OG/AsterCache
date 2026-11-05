@@ -86,7 +86,7 @@ public static partial class BootProbe
     {
         var sw = Stopwatch.StartNew();
         return Run(settings, status, log, DateTimeOffset.UtcNow, Environment.TickCount64, TracePaths, OpenClose, () => sw.Elapsed,
-            g => ProcessSnapshot.IsRunning([.. AutoRelocator.SameDriveGames(settings.Games, [g], AsterCache.Windows.VolumeDisks.SameDisk).SelectMany(x => x.ExeNames).Concat(g.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)]), ct);
+            g => AutoRelocator.SameDriveGames(settings.Games, [g], AsterCache.Windows.VolumeDisks.SameDisk).Concat([g]).Any(DispatchEnv.IsGameRunning), ct);
     }
 
     [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]

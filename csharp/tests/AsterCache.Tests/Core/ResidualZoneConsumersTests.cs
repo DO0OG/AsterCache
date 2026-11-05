@@ -2,6 +2,7 @@ using AsterCache.Core.Apply;
 using AsterCache.Core.Json;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
+using AsterCache.Core.Trace;
 using AsterCache.Service;
 using AsterCache.Tests.Service;
 using AsterCache.Windows;
@@ -215,5 +216,33 @@ public sealed class ResidualZoneConsumersTests : ApplyTestBase
         }
 
         Assert.Equal(HotClusters, reserved.Sum(r => r.Clusters));
+    }
+
+    [Fact]
+    public void VolatileWarmRangesAreBudgetedAndClipToShrunkFileSize()
+    {
+        PlanFile plan = Make().Resolve(20000);
+        GameSettings game = GameOf(plan);
+        long planBytes = PrefetchStreamer.ZoneBytes(game)!.Value;
+        string cache = Path.Combine(Root, "cache_1_2.xpakdata");
+        int fileBytes = (1 << 20) + 100;
+        int tracedBytes = fileBytes + 100;
+        File.WriteAllBytes(cache, new byte[tracedBytes]);
+        PlanOutput.SavePrefetch(game.Trace, [.. plan.PrefetchTrace(Sessions), new TraceEvent(cache, 0, tracedBytes), new TraceEvent(cache, tracedBytes, 10)]);
+        using (FileStream shrinking = new(cache, FileMode.Open, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
+        {
+            shrinking.SetLength(fileBytes);
+        }
+
+        long? warmBytes = PrewarmEnv.Create().ZoneBytes(game);
+        int available = (int)((planBytes + Mib - 1) / Mib);
+        Assert.Equal(Math.Max(planBytes, plan.PrefetchTrace(Sessions).Sum(r => r.Length)) + fileBytes, warmBytes);
+        Assert.Null(PrewarmPolicy.SkipReason(planBytes, true, false, available, 0, null, TimeSpan.Zero));
+        Assert.StartsWith("low memory", PrewarmPolicy.SkipReason(warmBytes, true, false, available, 0, null, TimeSpan.Zero));
+
+        using FileStream shared = new(cache, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete);
+        List<TraceEvent> loaded = TraceLoader.LoadRanges(game.Trace, Root);
+        Assert.Contains(loaded, row => row.Path == cache && row.Offset == 0 && row.Length == fileBytes);
+        Assert.DoesNotContain(loaded, row => row.Path == cache && row.Offset >= fileBytes);
     }
 }

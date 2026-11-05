@@ -81,6 +81,24 @@ public sealed class HitPercentTests : IDisposable
     }
 
     [Fact]
+    public void WarmWithAnUnregisteredProcessUnderTheGameRootDoesNotProbe()
+    {
+        _rig.Editor.Add(_rig.Input("foo", "foo.exe", @"D:\Gamesoo", "auto", null));
+        _rig.Reload();
+        _rig.World.Now = T0;
+        _rig.World.Files.Add(AutoTracer.RawTracePath(_rig.Settings.Games[0]));
+        Prewarmer prewarm = MakePrewarm(new ProbeResult(8, 0, 1.0));
+        _ = new AutoMode(_rig.Editor, _rig.World.Env(), _rig.Status, _rig.Log, _rig.Settings, prewarm);
+        _rig.Status.Set("foo", "auto", null, AutoStage.Done, null);
+        _rig.World.RootPids.Add(77); // 등록 exe 가 아닌 게임 폴더 아래 프로세스
+
+        PrewarmResult r = prewarm.Run(_rig.Settings.Games[0], "test");
+
+        Assert.True(r.Ran, r.SkipReason);
+        Assert.Equal((null, 0), (_rig.Status.Get("foo")!.HitPercent, _probes));
+    }
+
+    [Fact]
     public void RecordedHitPercentIsSerialized()
     {
         _rig.Editor.Add(_rig.Input("foo", "foo.exe", @"D:\Games\foo", "auto", null));
@@ -123,6 +141,7 @@ public sealed class HitPercentTests : IDisposable
         Assert.Equal("완료 (예열 직후 적중 40%)", AutoStatusFile.StageText(g, "ko"));
         Assert.Equal("done (hit right after prewarm 40%)", AutoStatusFile.StageText(g, "en"));
         Assert.Equal("완료", AutoStatusFile.StageText(g with { HitPercent = null }, "ko"));
-        Assert.Contains("존 커버리지 18%", AutoStatusFile.StageText(g with { CoveragePercent = 18 }, "ko"));
+        Assert.Contains("계획 핫셋/읽은 양 18% (적중률 아님)", AutoStatusFile.StageText(g with { CoveragePercent = 18 }, "ko"));
+        Assert.Contains("plan hot set / bytes read 18% (not hit rate)", AutoStatusFile.StageText(g with { CoveragePercent = 18 }, "en"));
     }
 }

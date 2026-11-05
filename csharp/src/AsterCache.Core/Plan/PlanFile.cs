@@ -184,6 +184,80 @@ public sealed record PlanFile(
         return rows;
     }
 
+    /// 트레이스에서 뽑은 읽기 전용 예열 범위: 계획과 같은 핫셋 예산으로 고릅니다.
+    public static List<TraceEvent> PrefetchHotSetTrace(IReadOnlyList<IReadOnlyList<TraceEvent>> sessions, long budgetBytes)
+    {
+        List<BlockKey> selected = HotSet.Select(sessions, budgetBytes, HotSet.Block).Blocks;
+        if (selected.Count == 0)
+        {
+            return [];
+        }
+
+        var keep = selected.ToHashSet();
+        var costs = new Dictionary<BlockKey, double>();
+        foreach (IReadOnlyList<TraceEvent> session in sessions)
+        {
+            foreach (BlockEvent e in TraceEvents.Validated(session, HotSet.Block))
+            {
+                for (long b = e.First; b <= e.Last; b++)
+                {
+                    var key = new BlockKey(e.Path, b);
+                    if (keep.Contains(key))
+                    {
+                        costs[key] = Math.Max(costs.GetValueOrDefault(key, 0.0), e.Cost);
+                    }
+                }
+            }
+        }
+
+        selected.Sort();
+        var rows = new List<TraceEvent>();
+        string? path = null;
+        long first = 0;
+        long last = -1;
+        double cost = 0;
+
+        void Flush()
+        {
+            if (path is not null)
+            {
+                rows.Add(new TraceEvent(path, checked(first * HotSet.Block), checked((last - first + 1) * HotSet.Block), cost));
+            }
+        }
+
+        foreach (BlockKey key in selected)
+        {
+            if (path != key.Path || key.Block != last + 1 || last - first + 1 >= TraceEvents.MaxBlocksPerRequest)
+            {
+                Flush();
+                path = key.Path;
+                first = key.Block;
+                cost = costs.GetValueOrDefault(key, 0.0);
+            }
+            else
+            {
+                cost = Math.Max(cost, costs.GetValueOrDefault(key, 0.0));
+            }
+
+            last = key.Block;
+        }
+
+        Flush();
+        return rows;
+    }
+
+    /// 가변 파일이 재배치 판단에 영향을 주지 않도록 쓰는 안정 트레이스 지문입니다.
+    public static string TraceFingerprint(IReadOnlyList<TraceEvent> trace)
+    {
+        using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        foreach (TraceEvent e in trace)
+        {
+            sha.AppendData(Encoding.UTF8.GetBytes($"{e.Path}\n{e.Offset}\n{e.Length}\n"));
+        }
+
+        return Convert.ToHexString(sha.GetHashAndReset()).ToLowerInvariant();
+    }
+
     private static long FloorDiv(long a, long b) => a / b - (a % b < 0 ? 1 : 0);
 
     /// Python validate_plan: 계획 파일은 믿을 수 없는 입력이라 모양과 형을 검사합니다. 틀리면 PyValueException("malformed plan").

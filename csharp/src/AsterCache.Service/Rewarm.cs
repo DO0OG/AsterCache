@@ -76,11 +76,15 @@ public sealed class Rewarmer
         }
 
         IReadOnlyList<GameSettings> warmed = _prewarm.Warmed();
-        if (AutoRelocator.SameDriveGames(_prewarm.Games, warmed, _env.SameDisk).Any(_env.GameRunning))
+        List<GameSettings> running = [.. AutoRelocator.SameDriveGames(_prewarm.Games, warmed, _env.SameDisk).Where(_env.GameRunning)];
+        if (running.Count > 0)
         {
-            _log.Info("rewarm check skipped: a game is running");
+            string blockers = string.Join("; ", running.Select(_env.DescribeBlockers).Where(b => b is not null));
+            NoteGlobal("game-running|" + blockers, "rewarm check skipped: a game is running" + (blockers.Length == 0 ? string.Empty : $" (blocked by {blockers})")); // 같은 사유·같은 프로세스면 점검 주기마다 반복하지 않음
             return;
         }
+
+        _checkState.Remove(GlobalKey);
 
         if (_prewarm.Games.Any(g => _prewarm.Relocating(g.Name)))
         {
@@ -122,8 +126,26 @@ public sealed class Rewarmer
         }
     }
 
+    private const string GlobalKey = "*";
+
+    // 게임 단위가 아닌 점검 전체의 건너뜀 사유: NoteCheck 와 같이 바뀔 때만 남김.
+    private void NoteGlobal(string state, string message)
+    {
+        if (!_checkState.TryGetValue(GlobalKey, out string? last) || last != state)
+        {
+            _checkState[GlobalKey] = state;
+            _log.Info(message);
+        }
+    }
+
     private void Check(GameSettings g, CancellationToken ct)
     {
+        if (_prewarm.RewarmAlreadyCovered(g))
+        {
+            NoteCheck(g, "recent-warm", $"{g.Name}: rewarm check skipped (prewarm is running or recently completed)");
+            return;
+        }
+
         ProbeResult? probe;
         try
         {

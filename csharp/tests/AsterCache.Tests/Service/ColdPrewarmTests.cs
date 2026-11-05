@@ -122,6 +122,82 @@ public sealed class ColdPrewarmTests : IDisposable
     }
 
     [Fact]
+    public void CancellationAfterTheLastColdBatchIsRecordedAsSkippedNotOk()
+    {
+        GameSettings g = Game("g");
+        using var cts = new CancellationTokenSource();
+        string statusPath = Path.Combine(_dir, "cold-cancel.json");
+        var p = new Prewarmer([g], _streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => AvailableMib,
+            PhysicalRamBytes = () => PhysicalBytes,
+            GameRunning = _ => false,
+            ZoneBytes = _ => null,
+            TraceExists = _ => false,
+            ColdPlanner = (_, _, _, _) => new ColdPlan("full", [new ReadOp(@"D:\g\a.bin", 0, 10 * Mib)], 10 * Mib, null),
+            ColdRead = (ops, _) =>
+            {
+                cts.Cancel();
+                return (new StreamStats(ops.Sum(op => op.Length), ops.Count, 0, 0.5), true);
+            },
+        }, _log, statusPath, () => _now);
+        p.SetAuto(AutoSettings.Default);
+
+        PrewarmResult result = p.Run(g, "test", ct: cts.Token);
+        var status = (JObject)((JObject)((JObject)JsonRead.ReadFile(statusPath)!)["games"]!)["g"]!;
+
+        Assert.False(result.Ran);
+        Assert.Equal(Prewarmer.Cancelled, result.SkipReason);
+        Assert.True(result.Stats?.Aborted);
+        Assert.Equal("skipped", status["result"]);
+        Assert.Null(p.LastWarmed("g"));
+    }
+
+    [Fact]
+    public void MemoryPressureAfterAColdBatchStopsAndDoesNotMarkTheWarmupSuccessful()
+    {
+        GameSettings g = Game("g", minFree: 4096);
+        long available = 16000;
+        int batches = 0;
+        ReadOp[] ops = Enumerable.Range(0, 3).Select(i => new ReadOp(Path.Combine(_dir, $"cold{i}.bin"), 0, 64 * Mib)).ToArray();
+        var p = new Prewarmer([g], _streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => available,
+            PhysicalRamBytes = () => PhysicalBytes,
+            GameRunning = _ => false,
+            ZoneBytes = _ => null,
+            TraceExists = _ => false,
+            DiskBytesPerSecond = _ => 0,
+            ColdPlanner = (_, _, _, _) => new ColdPlan("full", ops, ops.Sum(op => op.Length), null),
+            ColdReadWithProgress = (readOps, ct, progress) =>
+            {
+                long total = readOps.Sum(op => op.Length);
+                long done = 0;
+                return FolderWarm.Read(readOps, ct, batch =>
+                {
+                    StreamStats stats = new(batch.Sum(op => op.Length), batch.Count, 0, 0.01);
+                    done += stats.Bytes;
+                    if (++batches == 1)
+                    {
+                        available = 4200;
+                    }
+
+                    progress(done, total);
+                    return stats;
+                });
+            },
+        }, _log, Path.Combine(_dir, "cold-memory.json"), () => _now);
+        p.SetAuto(AutoSettings.Default);
+
+        PrewarmResult result = p.Run(g, "test");
+
+        Assert.False(result.Ran);
+        Assert.Equal(Prewarmer.Cancelled, result.SkipReason);
+        Assert.Equal(1, batches);
+        Assert.Null(p.LastWarmed("g"));
+    }
+
+    [Fact]
     public void PrefetchRecordIsTriedBeforeTheColdWarmAndWinsWhenItMakesABootTrace()
     {
         PrefetchMakesBoot = true;

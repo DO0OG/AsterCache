@@ -85,7 +85,7 @@ public static partial class L
         ["Auto_Progress"] = ("자동 진행: 발견 {0} 게임 → 부트스트랩 계획 {1} → 재배치 완료 {2} → 예열 완료 {3}", "Auto progress: {0} games found → {1} bootstrap planned → {2} relocated → {3} prewarmed"),
         ["Auto_ProgressHit"] = (" → 적중률 평균 {0}%", " → avg hit rate {0}%"),
         ["Stage_HitPercent"] = ("예열 직후 적중 {0}%", "hit right after prewarm {0}%"),
-        ["Stage_CoveragePercent"] = ("존 커버리지 {0}%", "zone coverage {0}%"),
+        ["Stage_CoveragePercent"] = ("계획 핫셋/읽은 양 {0}% (적중률 아님)", "plan hot set / bytes read {0}% (not hit rate)"),
         ["Stage_PrewarmedFull"] = ("예열됨(전체)", "prewarmed (full folder)"),
         ["Stage_PrewarmedProfile"] = ("예열됨(프로필 {0})", "prewarmed (profile {0})"),
         ["Stage_Prewarming"] = ("예열 중 {0}/{1} MB", "prewarming {0}/{1} MB"),

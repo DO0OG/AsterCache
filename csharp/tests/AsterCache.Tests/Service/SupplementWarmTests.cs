@@ -16,6 +16,7 @@ public sealed class SupplementWarmTests : IDisposable
     private readonly CapStreamer _streamer = new();
     private DateTimeOffset _now = new(2026, 11, 4, 12, 0, 0, TimeSpan.Zero);
     private bool _running;
+    private bool _helperRunning;
     private bool _relocating;
     private double? _disk = 0;
     private long _avail = 16000;
@@ -49,7 +50,7 @@ public sealed class SupplementWarmTests : IDisposable
         var p = new Prewarmer([game], _streamer, new PrewarmEnv
         {
             AvailableRamMib = () => _avail,
-            GameRunning = _ => _running,
+            GameRunning = g => _running || (_helperRunning && DispatchEnv.IsGameRunning(g, [(1234, "helper.exe")], _ => Path.Combine(g.OriginRoot, "bin", "helper.exe"))),
             ZoneBytes = g => Math.Min(100L, g.MaxStreamMib) * Mib,
             TraceExists = _ => true,
             DiskBytesPerSecond = _ => _disk,
@@ -121,6 +122,24 @@ public sealed class SupplementWarmTests : IDisposable
 
         Ticks(p, 6);
         Assert.Equal(2, _streamer.Seen.Count); // 한 번뿐
+    }
+
+    [Fact]
+    public void SupplementWaitsForAnUnregisteredProcessUnderTheGameRootToExit()
+    {
+        GameSettings g = Game() with { OriginRoot = @"D:\Games\g" };
+        Prewarmer p = Make(g);
+        Assert.True(Assert.Single(p.RunServiceStart()).Ran);
+        Assert.True(p.SupplementPending("g"));
+        _helperRunning = true;
+
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        Assert.Single(_streamer.Seen);
+
+        _helperRunning = false;
+        Assert.True(p.Supplement(g, CancellationToken.None));
+        Assert.Equal(2, _streamer.Seen.Count);
+        Assert.False(p.SupplementPending("g"));
     }
 
     [Theory]

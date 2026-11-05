@@ -39,5 +39,5 @@ public static class SessionCoverage
         read is > 0 and var r ? (int)Math.Min(100, Math.Max(0, hot) * 100 / r) : null;
 
     public static string Line(string game, long read, long hot, int percent) =>
-        $"{game}: session read {read / Mib} MiB, zone covers {hot / Mib} MiB ({percent}%)";
+        $"{game}: session read {read / Mib} MiB, plan hot set {hot / Mib} MiB = {percent}% of the bytes the process read (not the cache hit rate)";
 }

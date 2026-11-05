@@ -33,7 +33,7 @@ public sealed class SessionCoverageTests : IDisposable
     [Fact]
     public void LineUsesWholeMebibytes()
     {
-        Assert.Equal("foo: session read 1024 MiB, zone covers 256 MiB (25%)", SessionCoverage.Line("foo", 1024L << 20, 256L << 20, 25));
+        Assert.Equal("foo: session read 1024 MiB, plan hot set 256 MiB = 25% of the bytes the process read (not the cache hit rate)", SessionCoverage.Line("foo", 1024L << 20, 256L << 20, 25));
     }
 
     [Fact]

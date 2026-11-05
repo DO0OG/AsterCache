@@ -322,7 +322,7 @@ public sealed class Worker : BackgroundService
         {
             await foreach (ProcessStart s in reader.ReadAllAsync(ct))
             {
-                _dispatcher.Handle(s);
+                _dispatcher.Handle(s, ct);
             }
         }
         catch (OperationCanceledException)
@@ -453,7 +453,7 @@ public sealed class Worker : BackgroundService
                 continue; // 부팅 조용 구간의 검사는 기한을 그대로 둬서 구간이 끝난 다음 틱에 함
             }
 
-            ReapplyVerdict v = _gate.Run(ct, token => _checker.Check(g, token));
+            ReapplyVerdict v = _gate.Run(ct, token => _checker.Check(g, token), () => AutoRelocator.SameDriveGames(_settings.Games, [g], AsterCache.Windows.VolumeDisks.SameDisk).Concat([g]).Any(DispatchEnv.IsGameRunning)); // 진입 게이트와 같게 같은 물리 디스크의 등록 게임 전체를 봄
             bool waiting = v == ReapplyVerdict.Cancelled || (resuming.Contains(g.Name) && v is ReapplyVerdict.GameRunning or ReapplyVerdict.DiskBusy or ReapplyVerdict.Recovering or ReapplyVerdict.OnBattery or ReapplyVerdict.NotIdle or ReapplyVerdict.PostUpdateDelay);
             _ = waiting ? resuming.Add(g.Name) : resuming.Remove(g.Name);
             due[g.Name] = DateTimeOffset.UtcNow + (waiting ? ResumeRetry : TimeSpan.FromMinutes(g.ReapplyMinutes));
@@ -495,8 +495,8 @@ public sealed class Worker : BackgroundService
                 return images[pid];
             }
 
-            bool UnderRoot(GameSettings g) => procs.Any(p => p.Pid != Environment.ProcessId && DispatchEnv.UnderRoot(g, Image(p.Pid)));
-            foreach (GameSettings g in _exits.Poll(_settings.Games, names, UnderRoot))
+            bool IsRunning(GameSettings g) => DispatchEnv.IsGameRunning(g, procs, Image);
+            foreach (GameSettings g in _exits.Poll(_settings.Games, names, IsRunning))
             {
                 OnGameExit(g);
             }

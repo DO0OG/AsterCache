@@ -128,6 +128,7 @@ public sealed class AutoRelocator
     private readonly ConcurrentDictionary<string, byte> _smrBudgetLogged = new(StringComparer.Ordinal); // 명시한 하루 쓰기 예산이 SMR 기본값보다 큰 게임 (한 번만 로그)
     private readonly Dictionary<string, (bool Auto, int Mib)> _limitSeen = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 존 상한 설정 (auto 여부·값) 을 이미 따져 본 게임과 그때의 설정 (설정이 바뀌거나 서비스를 다시 시작하기 전에는 계획을 다시 읽지 않음)
     private readonly Dictionary<string, DateTimeOffset> _extTried = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 존 확장을 이미 따져 본 (또는 막힌) 게임과 그때의 트레이스 수정 시각 (다음 플레이가 쌓여 트레이스가 바뀔 때까지 다시 보지 않음)
+    private readonly ConcurrentDictionary<string, byte> _extensionRecovery = new(StringComparer.Ordinal); // 확장 되돌리기·저널 보관에 실패했다가 다시 열려 그 복구부터 해야 하는 게임 (서비스를 다시 시작하면 사라짐)
     private readonly ConcurrentDictionary<string, DateTimeOffset> _planFailedAt = new(StringComparer.Ordinal); // 계획 (또는 재배치) 이 마지막으로 실패한 시각: 그 뒤 트레이스가 새로 쓰이기 전에는 같은 실패를 되풀이하지 않음
     private readonly ConcurrentDictionary<string, (DateTimeOffset Until, string Text)> _transientHold = new(StringComparer.Ordinal); // 잠금 같은 일시 오류로 잔여 재계획을 못 한 게임과 다시 시도할 시각 (같은 서비스 실행 안에서 자동 재시도, 실패로 기록하지 않음)
     private readonly ConcurrentDictionary<string, (DateTimeOffset Until, string Text)> _unreadableHold = new(StringComparer.Ordinal); // 읽지 못한 파일이 계획에 보류로 남아 완료로 확정하지 못한 게임과 다시 계획할 시각
@@ -249,6 +250,11 @@ public sealed class AutoRelocator
         var ready = new List<GameSettings>();
         foreach (GameSettings g in work)
         {
+            if (_status.Get(g.Name) is { Stage: AutoStage.Failed, Detail: { } failedDetail } && IsExtensionFailure(failedDetail))
+            {
+                _extensionRecovery[g.Name] = 0; // 아래 Note 가 실패 문구를 덮기 전에 표시: 재개 때 새 이동보다 남은 되돌리기와 보관부터
+            }
+
             if (_recovery.IsRelocationHeld(DriveOf(g)))
             {
                 WarmNewTrace(g, warms); // 예열은 막지 않음
@@ -1281,7 +1287,8 @@ public sealed class AutoRelocator
     }
 
     // 확장 중 재배치가 실패함 (이동 실패·데이터 검사 실패·예외): 실패로 두지 않고 쓴 줄을 되돌린 뒤 이전 계획을 되살립니다. 확장 중이 아니면 거짓.
-    private bool BlockFailedExtension(GameSettings g, string detail, Exception? e, int mark, CancellationToken token)
+    // newRound: 실패한 회차가 아니라 나중에 복구 재개로 부름 (되돌리기 쓰기를 새 집계 기록으로 셈).
+    private bool BlockFailedExtension(GameSettings g, string detail, Exception? e, int mark, CancellationToken token, bool newRound = false)
     {
         if (!IsExtending(g))
         {
@@ -1289,9 +1296,9 @@ public sealed class AutoRelocator
         }
 
         _log.Warn($"{g.Name}: zone extension failed ({detail}{(e is null ? string.Empty : ": " + e.GetType().Name)})");
-        if (!Undo(g, mark, token))
+        if (!Undo(g, mark, token, newRound))
         {
-            Fail(g, $"extension revert incomplete ({detail})", e); // 되돌리기를 끝내지 못했으니 저널을 두고 실패로: 다음 실행이 되돌리기부터 다시 함
+            Fail(g, $"{ExtensionRevertDetail} ({detail})", e); // 되돌리기를 끝내지 못했으니 저널을 두고 실패로: 다음 실행이 되돌리기부터 다시 함
             return true;
         }
 
@@ -1301,7 +1308,7 @@ public sealed class AutoRelocator
         }
         catch (Exception a) when (a is IOException or UnauthorizedAccessException)
         {
-            Fail(g, $"extension journal could not be archived ({a.GetType().Name}; {detail})", a); // 보관 못 한 채 이전 계획을 되살리면 다음 적용이 거절되므로 실패로 두고 다시 시도
+            Fail(g, $"{ExtensionArchiveDetail} ({a.GetType().Name}; {detail})", a); // 보관 못 한 채 이전 계획을 되살리면 다음 적용이 거절되므로 실패로 두고 다시 시도
             return true;
         }
 
@@ -1478,7 +1485,7 @@ public sealed class AutoRelocator
         DateTimeOffset failedAt = _planFailedAt.GetValueOrDefault(g.Name, DateTimeOffset.MinValue);
         bool reopened = e is { Stage: AutoStage.Failed, RelocatedAt: null }
             && (AutoTracer.PlanTracePath(g, _env.FileExists) is { } latest && _env.FileWriteTime(latest) is { } written && written > failedAt
-                || IsRetriedHourly(e.Detail) && _env.Now() - failedAt >= StoppedRecheck); // 같은 사유로 멈춘 복구와 일시 원인으로 실패한 재배치·계획은 새 트레이스가 없어도 (트레이스 금지 게임) StoppedRecheck 마다 다시 평가
+                || IsRetriedHourly(e.Detail) && _env.Now() - failedAt >= StoppedRecheck); // 무결성 실패 (data check failed) 가 아닌 모든 실패는 새 트레이스가 없어도 (트레이스 금지 게임) StoppedRecheck 마다 다시 평가
         bool stageOpen = reopened || e is null || e.Stage is not (AutoStage.Done or AutoStage.Failed)
             && !(e.Stage == AutoStage.Skipped && !relocateOn)
             && e.RelocatedAt is null;
@@ -2296,6 +2303,13 @@ public sealed class AutoRelocator
 
     private void RelocateMarked(GameSettings g, AsterSettings s, CancellationToken token)
     {
+        if (_extensionRecovery.TryRemove(g.Name, out _) && IsExtending(g))
+        {
+            Note(g, AutoStage.Relocating, null);
+            _ = BlockFailedExtension(g, "resumed extension recovery", null, 0, token, newRound: true); // 새 이동보다 먼저 남은 되돌리기와 저널 보관을 마저 끝냄 (되돌리기는 이미 옮겨진 조각을 건너뛰어 다시 해도 안전)
+            return;
+        }
+
         _tier?.RevertGame(g.Name, "relocation starting");
         Note(g, AutoStage.Relocating, null);
         _log.Info($"{g.Name}: auto relocation starting");
@@ -2479,7 +2493,7 @@ public sealed class AutoRelocator
             {
                 if (!BlockFailedExtension(g, $"{rep.Failed.Count} step(s) failed", null, mark, token))
                 {
-                    Fail(g, $"{rep.Failed.Count} step(s) failed", null); // 데이터는 그대로이고 남은 이동은 기존 재적용 검사가 이어감
+                    Fail(g, $"{rep.Failed.Count} step(s) failed", null); // 데이터는 그대로: StoppedRecheck 뒤 자동 재개가 저널을 이어 남은 이동을 함
                 }
             }
             else
@@ -2503,9 +2517,9 @@ public sealed class AutoRelocator
         catch (ShaMismatchException e)
         {
             BeginRecovery(g, s.Auto, pendingRecovery, null); // 예외로 끝나도 옮기던 중이었을 수 있으니 예정 바이트로 보수적으로 회복 대기
-            if (!BlockFailedExtension(g, "data check failed", e, mark, token))
+            if (!BlockFailedExtension(g, DataCheckDetail, e, mark, token))
             {
-                Fail(g, "data check failed", e);
+                Fail(g, DataCheckDetail, e);
                 Undo(g, mark, token);
             }
         }
@@ -2584,7 +2598,7 @@ public sealed class AutoRelocator
 
     // 게임이 안 돌 때만, 이번 자동 적용이 저널에 쓴 줄 (mark 줄 뒤) 만 되돌립니다 (최선 노력). 앞선 적용의 줄은 이어하기·수동 되돌리기의 몫이라 건드리지 않음.
     // 되돌리기를 끝냈으면 참 (되돌릴 것이 없었던 경우 포함), 게임 실행·중단·실패로 못 끝냈으면 거짓.
-    private bool Undo(GameSettings g, int mark, CancellationToken token)
+    private bool Undo(GameSettings g, int mark, CancellationToken token, bool newRound = false)
     {
         if (_env.AnyRunning(g.ExeNames))
         {
@@ -2595,6 +2609,18 @@ public sealed class AutoRelocator
         try
         {
             RevertReport? r = _env.JournalRows(g) <= mark ? null : _env.Revert(g, mark, token);
+            if (r is { MovedBytes: > 0 })
+            {
+                if (newRound)
+                {
+                    _status.BeginRelocation(_env.Now(), r.MovedBytes);
+                }
+                else
+                {
+                    _status.AddToLastRelocationBytes(r.MovedBytes); // 되돌리기도 쓰기: 그 회차 집계에 합산
+                }
+            }
+
             bool complete = r is null || (r.Stopped is null && r.Skipped.Count == 0); // 옮기지 못한 조각이 하나라도 있으면 미완료 (저널을 보관하면 되돌릴 길이 없어짐)
             _log.Info(r is null ? $"{g.Name}: nothing to revert" : $"{g.Name}: reverted {r.Restored} piece(s), {r.Skipped.Count} skipped" + (r.Stopped is { } why ? $", stopped: {why}" : string.Empty) + (complete ? string.Empty : ", journal kept"));
             return complete;
@@ -2606,11 +2632,17 @@ public sealed class AutoRelocator
         }
     }
 
-    // 같은 사유로 멈춘 복구와 일시 원인 (잠금·권한·디스크) 으로 실패한 재배치·계획. 데이터 검사 실패 (SHA 불일치) 는 제외.
-    private static bool IsRetriedHourly(string? detail)
-        => detail?.StartsWith(RecoveryStoppedDetail, StringComparison.Ordinal) == true
-            || detail?.StartsWith("relocation failed: ", StringComparison.Ordinal) == true
-            || detail?.StartsWith("plan failed: ", StringComparison.Ordinal) == true;
+    private const string DataCheckDetail = "data check failed";
+
+    private const string ExtensionRevertDetail = "extension revert incomplete";
+
+    private const string ExtensionArchiveDetail = "extension journal could not be archived";
+
+    // 실패 분류: 무결성 실패 (data check failed, SHA 불일치) 만 사용자 확인이 필요해 계속 멈추고, 그 밖 (이동 실패·예외·계획 실패·멈춘 복구·확장 정리 실패) 은 StoppedRecheck 마다 자동으로 다시 열림.
+    private static bool IsRetriedHourly(string? detail) => detail is not null && !detail.StartsWith(DataCheckDetail, StringComparison.Ordinal);
+
+    private static bool IsExtensionFailure(string detail)
+        => detail.StartsWith(ExtensionRevertDetail, StringComparison.Ordinal) || detail.StartsWith(ExtensionArchiveDetail, StringComparison.Ordinal);
 
     private void Fail(GameSettings g, string detail, Exception? e)
     {

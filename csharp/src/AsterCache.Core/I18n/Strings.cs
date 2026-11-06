@@ -249,6 +249,8 @@ public static partial class L
         ["Err_GameRunningRevert"] = ("{0}: 게임이 실행 중이라 되돌리지 않음 (게임을 끝낸 뒤 다시 시도)", "{0}: the game is running, so the revert was skipped (quit the game and try again)"),
         ["Apply_Dry"] = ("재배치 검사 (dry-run)", "Checking relocation (dry-run)"),
         ["Fail_Dry"] = ("{0}: 재배치 검사 실패: {1}", "{0}: relocation check failed: {1}"),
+        ["Dry_Deferred"] = ("{0}: 재배치 보류: 계획한 대상 공간을 지금 쓸 수 없습니다. 이번 검사에서는 파일을 옮기지 않았습니다. 자동 재배치가 켜져 있으면 서비스가 조건이 맞을 때 남은 부분의 새 위치를 찾습니다.{1} ({2})", "{0}: Relocation deferred: the planned destination is currently unavailable. No files were moved during this check. If automatic relocation is enabled, the service will look for a new location for the remaining data when its run conditions are met.{1} ({2})"),
+        ["Dry_DeferredReserved"] = (" 다른 AsterCache 계획이 쓸 공간과 겹칩니다.", " The destination overlaps space assigned to another AsterCache plan."),
         ["Plan_ZoneNotFree"] = ("존 뒤 공간을 다른 파일이 쓰고 있어 확장할 수 없습니다. 서비스가 새 위치를 찾아 다시 계획합니다.", "The space after the zone is used by another file, so it cannot be extended. The service will find a new location and plan again."),
         ["Plan_Rejected"] = ("계획을 적용할 수 없습니다(사유: {0}). 서비스가 다음 유휴 시간에 다시 계획합니다.", "The plan cannot be applied (reason: {0}). The service will plan again in the next idle period."),
         ["Apply_Nothing"] = ("{0}: 옮길 작업이 없음 (이미 배치됨)", "{0}: nothing to move (already in place)"),

@@ -1,5 +1,6 @@
 using AsterCache.Core;
 using AsterCache.Core.Apply;
+using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
 using Xunit;
 
@@ -69,6 +70,144 @@ public sealed class ResidualReplanTests : ApplyTestBase
         Assert.Null(sw.ArchivedJournal);
         Assert.True(plan.Zone.StartLcn >= 21000);
         Assert.Equal(plan.Sha(), PlanFile.Load(PlanPath).Sha());
+    }
+
+    // 부분 적용 계획 A (존 20000) 를 잔여 재계획한 결과. 이미 옮긴 조각은 20000 부터 이어지므로 그 끝은 20000 + 고정 클러스터.
+    private (PlanFile Plan, long End) ReplanAfterPartialA(long? reservedOffset = null, long? blockOffset = null)
+    {
+        _ = PartialA();
+        long end = 20000 + Vol.Moves.Sum(m => m.N);
+        if (blockOffset is { } at)
+        {
+            Vol.Ext["other.bin"] = [new Extent(0, end + at, 4)];
+        }
+
+        (long, long)[]? reserved = reservedOffset is { } r ? [(end + r, 5)] : null;
+        PlanFile plan = ResidualReplan.Run(Make(), PlanPath, JournalPath, Vol, reserved, Hooks(), () => Now, null, []).Plan;
+        return (plan, end);
+    }
+
+    [Fact]
+    public void TheRestIsPlacedRightAfterTheMovedPartWhenTheSpaceThereIsFree()
+    {
+        (PlanFile plan, long end) = ReplanAfterPartialA();
+
+        Assert.Equal(end, plan.Zone.StartLcn); // 되돌리면 낮은 LCN 의 빈 구간 (0) 으로 감
+        Assert.Equal(1L, plan.Stats[ResidualPlanner.AdjacentKey]);
+        _ = Apply(plan, Exec(2L << 30));
+        Assert.Equal(0, LayoutVerifier.Verify(plan, p => Vol.Ext[p]).MissingFiles);
+    }
+
+    [Fact]
+    public void ASpaceOccupiedInTheMiddleByAnotherFileFallsBackToTheGeneralSearch()
+    {
+        (PlanFile plan, long end) = ReplanAfterPartialA(blockOffset: 10);
+
+        Assert.NotEqual(end, plan.Zone.StartLcn);
+        Assert.True(plan.Zone.StartLcn < 1000);
+        Assert.Equal(0L, plan.Stats[ResidualPlanner.AdjacentKey]);
+    }
+
+    [Fact]
+    public void ASpaceOverlappingAnotherPlansReservationFallsBackToTheGeneralSearch()
+    {
+        (PlanFile plan, long end) = ReplanAfterPartialA(reservedOffset: 10);
+
+        Assert.NotEqual(end, plan.Zone.StartLcn);
+        Assert.Equal(0L, plan.Stats[ResidualPlanner.AdjacentKey]);
+    }
+
+    // 부분 이동 뒤 원본 내용·mtime 이 바뀐 상태에서, 인접 공간이 비어 같은 task 의 계획이 다시 나와도 세대 표지로 SHA 가 달라 옛 저널은 보관되고 새 Apply 가 sha_mismatch 없이 끝나야 함.
+    // moveActiveAside: 활성 계획을 .stale 로 옮기고 oldPlans 로 넘김.
+    private void AssertSamePlanWithChangedSourcesArchivesTheJournal(bool moveActiveAside)
+    {
+        PlanFile a = PartialA();
+        string journalBefore = File.ReadAllText(JournalPath);
+        foreach (string f in new[] { F1, F2 })
+        {
+            File.WriteAllBytes(f, System.Security.Cryptography.RandomNumberGenerator.GetBytes((int)new FileInfo(f).Length)); // 같은 크기의 다른 내용 (게임 업데이트)
+            File.SetLastWriteTimeUtc(f, DateTime.UtcNow.AddDays(1));
+        }
+
+        PlanFile[] olds = [];
+        if (moveActiveAside)
+        {
+            File.Move(PlanPath, PlanPath + ".stale");
+            olds = [PlanFile.Load(PlanPath + ".stale")];
+        }
+
+        (PlanFile plan, SwitchResult sw) = ResidualReplan.Run(Make(), PlanPath, JournalPath, Vol, null, Hooks(), () => Now, null, olds);
+
+        Assert.Equal(a.Tasks, plan.Tasks); // 인접 공간이 비어 같은 위치로 재계획
+        Assert.NotEqual(a.Sha(), plan.Sha()); // 그래도 SHA 는 달라 저널 교체 (검증 후 보관) 를 거침
+        Assert.Equal(1L, plan.Stats[ResidualPlanner.AdjacentKey]);
+        Assert.NotNull(sw.ArchivedJournal);
+        Assert.Equal(journalBefore, File.ReadAllText(sw.ArchivedJournal!));
+        Assert.False(File.Exists(JournalPath));
+        ApplyReport rep = Apply(plan, Exec(2L << 30) with { Verify = VerifyMode.All });
+        Assert.Empty(rep.Failed);
+        Assert.Null(rep.Stopped);
+    }
+
+    [Fact]
+    public void ASamePlaceReplanStillArchivesTheJournalSoOldShaSamplesAreNotReused() =>
+        AssertSamePlanWithChangedSourcesArchivesTheJournal(moveActiveAside: false);
+
+    [Fact]
+    public void ASamePlaceReplanStillArchivesTheJournalWhenTheActivePlanWasSetAside() =>
+        AssertSamePlanWithChangedSourcesArchivesTheJournal(moveActiveAside: true);
+
+    [Fact]
+    public void TheResidualGenerationIsThePreviousOnePlusOneAndDeterministic()
+    {
+        PlanFile a = PartialA();
+        Assert.False(a.Stats.ContainsKey(ResidualPlanner.GenerationKey));
+
+        (PlanFile first, _) = ResidualReplan.Run(Make(), PlanPath, JournalPath, Vol, null, Hooks(), () => Now, null, []);
+        Assert.Equal(1L, first.Stats[ResidualPlanner.GenerationKey]);
+        Assert.Equal(1L, PlanFile.Load(PlanPath).Stats[ResidualPlanner.GenerationKey]);
+
+        (PlanFile second, _) = ResidualReplan.Run(Make(), PlanPath, JournalPath, Vol, null, Hooks(), () => Now.AddMinutes(1), null, []);
+        Assert.Equal(2L, second.Stats[ResidualPlanner.GenerationKey]);
+        Assert.NotEqual(first.Sha(), second.Sha());
+        Assert.Equal(first.Tasks, second.Tasks);
+    }
+
+    [Fact]
+    public void WithNoPreviousPlanToReadTheGenerationIsRaisedUntilTheShaDiffersFromTheJournalPlan()
+    {
+        (PlanFile first, _) = ResidualReplan.Run(Make(), PlanPath, JournalPath, Vol, null, Hooks(), () => Now, null, []); // 옮긴 것이 없는 상태의 세대 1 계획
+        Assert.Equal(1L, first.Stats[ResidualPlanner.GenerationKey]);
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        _ = Applier.Apply(first, Vol, [Root], JournalPath, Hooks(), Exec(2L << 30), cancelled.Token); // 아무것도 옮기기 전에 멈춘 세대 1 계획의 저널
+        Assert.True(File.Exists(JournalPath));
+        File.Delete(PlanPath); // 활성 계획도 oldPlans 도 없어 세대를 알 수 없음
+        string journalSha = (string)new Journal(JournalPath).Rows.First(r => Equals(r["type"], "header"))["plan_sha"]!;
+        Assert.Equal(first.Sha(), journalSha);
+
+        (PlanFile plan, SwitchResult sw) = ResidualReplan.Run(Make(), PlanPath, JournalPath, Vol, null, Hooks(), () => Now.AddMinutes(1), null, []);
+
+        Assert.Equal(first.Tasks, plan.Tasks);
+        Assert.NotEqual(journalSha, plan.Sha());
+        Assert.Equal(2L, plan.Stats[ResidualPlanner.GenerationKey]);
+        Assert.NotNull(sw.ArchivedJournal);
+        Assert.False(File.Exists(JournalPath));
+    }
+
+    [Fact]
+    public void AnActivePlanThatExistsButCannotBeReadIsRetriedNotIgnored()
+    {
+        _ = PartialA();
+        byte[] journal = File.ReadAllBytes(JournalPath);
+
+        using (new FileStream(PlanPath, FileMode.Open, FileAccess.Read, FileShare.None)) // 다른 프로세스가 잠금
+        {
+            _ = Assert.ThrowsAny<IOException>(() => ResidualReplan.Run(Make(), PlanPath, JournalPath, Vol, null, Hooks(), () => Now, null, []));
+        }
+
+        Assert.Equal(journal, File.ReadAllBytes(JournalPath));
+        Assert.Empty(Archives());
     }
 
     [Fact]

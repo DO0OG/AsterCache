@@ -458,6 +458,48 @@ public sealed class ManageViewModelTests : IDisposable
         Assert.Contains("PlanRejected: volume label", bad.Message);
     }
 
+    private ActionResult DryRunRejected(string detail)
+    {
+        Register();
+        File.WriteAllText(Path.Combine(Plans, "mw4.plan.json"), "{}");
+        _cli.On("apply", (_, _) => CliResult.Parse("{\"error\":\"PlanRejected\",\"detail\":\"" + detail + "\"}", 1));
+        ActionResult r = _vm.Apply("mw4", _ => { });
+        Assert.Single(_cli.Calls); // 미실행: 실행 단계로 가지 않음
+        Assert.False(r.Ok);
+        return r;
+    }
+
+    [Fact]
+    public void DryRunZoneNotFreeIsReportedAsDeferredNotAsAFailure()
+    {
+        ActionResult r = DryRunRejected("zone_not_free: LCN 82964732 is in use by another file");
+
+        Assert.Contains("재배치 보류: 계획한 대상 공간을 지금 쓸 수 없습니다. 이번 검사에서는 파일을 옮기지 않았습니다.", r.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("실패", r.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("겹칩니다", r.Message, StringComparison.Ordinal);
+        Assert.Contains("zone_not_free: LCN 82964732", r.Message, StringComparison.Ordinal);
+        Assert.Contains("Relocation deferred: the planned destination is currently unavailable. No files were moved during this check.", L.Get("en", "Dry_Deferred"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DryRunReservedByAnotherPlanAddsTheOverlapNote()
+    {
+        ActionResult r = DryRunRejected("zone_not_free: LCN 100 is reserved by another plan");
+
+        Assert.Contains("재배치 보류", r.Message, StringComparison.Ordinal);
+        Assert.Contains("다른 AsterCache 계획이 쓸 공간과 겹칩니다.", r.Message, StringComparison.Ordinal);
+        Assert.Contains("overlaps space assigned to another AsterCache plan", L.Get("en", "Dry_DeferredReserved"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DryRunOtherPlanRejectionsKeepTheFailureWording()
+    {
+        ActionResult r = DryRunRejected("volume label");
+
+        Assert.Contains("재배치 검사 실패", r.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("재배치 보류", r.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void RevertUsesTheJournalAndNeedsIt()
     {

@@ -413,6 +413,14 @@ public sealed class ManageViewModel(
             dry = cli.Run(AsterArgs.Apply(g.Plan, journal, g.AllowedRoots, g.VolumeLabel, execute: false), elevate: true);
         }
 
+        if (!dry.Ok && Get(dry.Json, "error") as string == "PlanRejected" && Get(dry.Json, "detail") as string is { } blocked
+            && blocked.StartsWith("zone_not_free", StringComparison.Ordinal))
+        {
+            // 점유·예약 충돌은 이 검사의 오류가 아니라 계획한 대상 공간을 지금 못 쓴다는 뜻: 아무것도 옮기지 않았고 서비스가 남은 부분의 새 위치를 찾음 (미실행으로 반환)
+            string overlap = blocked.Contains("is reserved by another plan", StringComparison.Ordinal) ? L.T("Dry_DeferredReserved") : string.Empty;
+            return Report(false, L.T("Dry_Deferred", g.Name, overlap, blocked.Length > 300 ? blocked[..300] + "..." : blocked));
+        }
+
         if (!dry.Ok)
         {
             return Failed(dry, "Fail_Dry", g.Name);

@@ -16,6 +16,12 @@ public static class ResidualPlanner
     /// 계획 stats 의 보류 파일의 이전 목표 목록 (task 와 같은 모양의 행): 다음 잔여 재계획이 이전 목표로 읽음.
     public const string HeldTargetsKey = "held_targets";
 
+    /// 계획 stats 의 표지: 1 이면 잔여를 이미 옮긴 조각 바로 뒤에 배치, 0 이면 인접 공간이 없어 새 빈 구간을 씀 (고정 조각과 잔여가 모두 있을 때만 기록).
+    public const string AdjacentKey = "adjacent_to_moved";
+
+    /// 계획 stats 의 잔여 재계획 세대 (이전 계획의 세대 + 1, 없으면 1): 계획 SHA 에 들어가 재계획 결과가 이전 계획과 같은 task 여도 다른 계획이 되게 함.
+    public const string GenerationKey = "residual_gen";
+
     private readonly record struct Part(string Path, long Vcn, long Lcn, long N, bool Fixed);
 
     /// 저널의 planned 행 (path, vcn, clusters, target_lcn) 과 옛 계획들의 tasks 에서 이전 목표 목록 (중복 제거, 저널 먼저).
@@ -76,7 +82,9 @@ public static class ResidualPlanner
     /// 잔여가 없으면 findRun 을 부르지 않습니다. extents 를 읽을 수 없는 (null) 파일은 order·지문에 남기고 task 만 만들지 않은 채 stats.held_files 에 "unreadable" 로 적습니다:
     /// 고정할 근거도 옮길 근거도 없는 보류이고, 호출자는 held_files 가 비어 있지 않은 동안 완료로 확정하지 말고 다시 계획해야 합니다. 조회 API 가 일시 실패와 희소·압축 같은 영구 사유를 구분하지 못해 둘 다 같은 보류입니다.
     /// 디스크 extent 가 없는 (빈 목록: 파일 크기 0 이나 MFT 상주) 파일은 옮길 것이 없어 기존 계획 규칙대로 order·지문·task 에서 빼고 skipped_files 에 셉니다.
-    public static PlanFile Build(PlanFile candidate, IReadOnlyList<PlanTask> previous, Func<string, IReadOnlyList<Extent>?> extents, Func<long, long?> findRun)
+    /// findAdjacent (선택): (잔여 클러스터 수, 고정 구간 끝 LCN 후보 — 우선순위 순) 를 받아 그 끝에서 정확히 시작하는 연속 빈 공간의 첫 LCN 을 돌려줌. 없으면 (null) findRun 으로 대체.
+    public static PlanFile Build(PlanFile candidate, IReadOnlyList<PlanTask> previous, Func<string, IReadOnlyList<Extent>?> extents, Func<long, long?> findRun,
+        Func<long, IReadOnlyList<long>, long?>? findAdjacent = null)
     {
         long cb = candidate.ClusterBytes;
         Dictionary<(string Path, long Delta), List<(long A, long B)>> prior = Prior(previous);
@@ -117,7 +125,9 @@ public static class ResidualPlanner
         }
 
         long residual = parts.Where(p => !p.Fixed).Sum(p => p.N);
-        long? run = residual > 0 ? findRun(residual) ?? throw new PlanRejectedException($"no free run of {residual} clusters") : null;
+        IReadOnlyList<long> ends = residual > 0 && findAdjacent is not null ? FixedEnds(parts) : [];
+        long? near = ends.Count > 0 ? findAdjacent!(residual, ends) : null;
+        long? run = near ?? (residual > 0 ? findRun(residual) ?? throw new PlanRejectedException($"no free run of {residual} clusters") : null);
 
         var tasks = new List<PlanTask>();
         var lastFixed = new List<bool>();
@@ -158,7 +168,7 @@ public static class ResidualPlanner
         JObject stats = new ZoneStats(0, 0, fixedClusters * cb, 0, misaligned, parts.Sum(p => p.N) * cb, moved * cb, moving,
             moving == 0 ? 0 : PyFloat.Round2((double)moved / moving), residual, skipped, ZoneAllocator.CountRuns(parts.Select(p => (p.Lcn, p.N)).ToList()),
             ZoneAllocator.CountRuns(final)).ToJson();
-        foreach ((string key, object? value) in candidate.Stats.Where(kv => !stats.ContainsKey(kv.Key) && kv.Key != HeldKey && kv.Key != HeldTargetsKey)) // 이전 계획의 보류는 이번 판정으로 다시 정함
+        foreach ((string key, object? value) in candidate.Stats.Where(kv => !stats.ContainsKey(kv.Key) && kv.Key != HeldKey && kv.Key != HeldTargetsKey && kv.Key != AdjacentKey && kv.Key != GenerationKey)) // 이전 계획의 보류와 인접 배치 표지는 이번 판정으로 다시 정함
         {
             stats.Add(key, value); // hot_blocks, units 와 호출자가 덧붙인 표지는 그대로
         }
@@ -171,6 +181,11 @@ public static class ResidualPlanner
 
         stats.Add("fixed_clusters", fixedClusters);
         stats.Add("residual", 1L);
+        stats.Add(GenerationKey, (candidate.Stats.TryGetValue(GenerationKey, out object? prevGen) && prevGen is long pg ? pg : 0L) + 1); // 호출자가 후보 stats 에 이전 세대를 적어 둠
+        if (ends.Count > 0)
+        {
+            stats.Add(AdjacentKey, near is null ? 0L : 1L);
+        }
         // 존 시작은 null 이면 안 됨: ResolveZone 이 빈 구간을 다시 찾고 모든 목표를 밀어 고정 task 를 망가뜨림. 잔여가 없으면 첫 task 의 목표 (없으면 0) 로 정한 값일 뿐 의미 없음.
         long start = run ?? (tasks.Count > 0 ? tasks[0].TargetLcn : 0);
         return candidate with
@@ -181,6 +196,25 @@ public static class ResidualPlanner
             Fingerprints = candidate.Fingerprints.Where(f => !dropped.Contains(f.Path)).ToList(),
             Stats = stats,
         };
+    }
+
+    // 고정 조각을 LCN 이 맞닿는 덩어리로 합쳐 그 끝 LCN 목록을 냄. 순서(결정적): 고정 클러스터가 많은 덩어리 먼저, 같으면 낮은 LCN.
+    private static IReadOnlyList<long> FixedEnds(List<Part> parts)
+    {
+        var runs = new List<(long A, long B)>();
+        foreach (Part p in parts.Where(x => x.Fixed).OrderBy(x => x.Lcn))
+        {
+            if (runs.Count > 0 && p.Lcn <= runs[^1].B)
+            {
+                runs[^1] = (runs[^1].A, Math.Max(runs[^1].B, p.Lcn + p.N));
+            }
+            else
+            {
+                runs.Add((p.Lcn, p.Lcn + p.N));
+            }
+        }
+
+        return runs.OrderByDescending(r => r.B - r.A).ThenBy(r => r.A).Select(r => r.B).ToList();
     }
 
     // (path, 목표 - vcn) 별로 합친 VCN 구간: 같은 오프셋 (delta) 이면 조각의 현재 LCN 이 이전 목표와 같은 것.

@@ -1,6 +1,7 @@
 using AsterCache.Core.Json;
 using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
+using AsterCache.Core.Volume;
 
 namespace AsterCache.Core.Apply;
 
@@ -11,6 +12,21 @@ namespace AsterCache.Core.Apply;
 /// 호출자는 DataLock 으로 예약 조회부터 이 호출과 적용까지를 직렬화해야 합니다.
 public static class ResidualReplan
 {
+    private const int MaxGenerationBumps = 8;
+
+    // 저널 header 의 plan_sha (저널이 없거나 header 가 없으면 null). 읽지 못하면 예외가 그대로 올라감 (PreviousTargets 와 같은 재시도 처리).
+    private static string? JournalPlanSha(string journalPath)
+    {
+        if (!File.Exists(journalPath))
+        {
+            return null;
+        }
+
+        using var jr = new Journal(journalPath);
+        JObject? header = jr.Rows.FirstOrDefault(r => Equals(r["type"], "header"));
+        return header is not null && header.TryGetValue("plan_sha", out object? v) ? v as string : null;
+    }
+
     public static (PlanFile Plan, SwitchResult Switch) Run(PlanFile candidate, string planPath, string journalPath, IVolume vol, IReadOnlyList<(long Lcn, long Clusters)>? reserved,
         ApplyHooks hooks, Func<DateTime> utcNow, Action<PlanFile, string>? savePlan, IEnumerable<PlanFile> oldPlans)
     {
@@ -22,9 +38,10 @@ public static class ResidualReplan
             {
                 olds.Add(PlanFile.Load(planPath));
             }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+            catch (PyValueException)
             {
-                // 읽히지 않는 활성 계획은 이전 목표의 힌트에서만 빠짐 (저널이 기준이므로 데이터는 잃지 않음)
+                // 손상된 활성 계획은 이전 목표의 힌트에서만 빠짐 (저널이 기준이므로 데이터는 잃지 않고, 아래 저널 SHA 대조가 세대를 보장).
+                // 있는데 읽지 못한 경우 (IOException·UnauthorizedAccessException: 잠김 등) 는 그대로 올려 호출자가 일시 오류로 다시 시도.
             }
         }
 
@@ -40,8 +57,35 @@ public static class ResidualReplan
             };
         }
 
+        long prevGen = olds.Append(candidate).Max(p => p.Stats.TryGetValue(ResidualPlanner.GenerationKey, out object? gv) && gv is long g ? g : 0L); // 알려진 계획 중 가장 높은 세대 (결정적)
+        var candidateStats = new JObject();
+        foreach ((string key, object? value) in candidate.Stats)
+        {
+            candidateStats.Add(key, value);
+        }
+
+        candidateStats[ResidualPlanner.GenerationKey] = prevGen;
+        candidate = candidate with { Stats = candidateStats };
+        // 잔여는 이미 옮긴 조각 바로 뒤의 빈 공간을 먼저 쓰고 (분산 방지), 없으면 예약 제외 빈 구간 중 낮은 LCN
         PlanFile built = ResidualPlanner.Build(candidate, previous, hooks.Extents,
-            need => vol.Bitmap().FindFreeRun(need, preferLowLcn: true, align: PlanGuards.ZoneAlign, excluded: reserved));
+            need => vol.Bitmap().FindFreeRun(need, preferLowLcn: true, align: PlanGuards.ZoneAlign, excluded: reserved),
+            (need, ends) =>
+            {
+                VolumeBitmap bm = vol.Bitmap();
+                return ends.Where(e => bm.RangeFree(e, need) && !(reserved ?? []).Any(r => r.Lcn < e + need && e < r.Lcn + r.Clusters)).Select(e => (long?)e).FirstOrDefault();
+            });
+        // 최종 방어선: 이전 계획 파일을 못 읽어 세대를 모르더라도 새 계획의 SHA 가 현재 저널의 계획 SHA 와 같을 수 없게 세대를 올림 (같으면 옛 검증 표본을 재사용함)
+        string? journalSha = JournalPlanSha(journalPath);
+        for (int bumps = 0; journalSha is not null && built.Sha() == journalSha; bumps++)
+        {
+            if (bumps >= MaxGenerationBumps)
+            {
+                throw new PlanRejectedException("residual generation could not be made different from the journal plan");
+            }
+
+            built.Stats[ResidualPlanner.GenerationKey] = (built.Stats[ResidualPlanner.GenerationKey] as long? ?? 0L) + 1;
+        }
+
         if (held.Count > 0)
         {
             JObject heldFiles = built.Stats.TryGetValue("held_files", out object? hf) && hf is JObject existing ? existing : new JObject();

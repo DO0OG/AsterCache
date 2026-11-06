@@ -27,7 +27,7 @@ public static partial class BootProbe
     {
         IReadOnlyDictionary<string, DateTimeOffset> played = status.LastPlayed();
         GameSettings? game = settings.Games.Where(g => played.ContainsKey(g.Name)).OrderByDescending(g => played[g.Name]).ThenBy(g => g.Name, StringComparer.Ordinal).FirstOrDefault();
-        if (!settings.Auto.Enabled || game is null || TimeSpan.FromMilliseconds(uptimeMs) >= MaxUptime || driveBusy?.Invoke(game) == true)
+        if (!settings.Auto.Enabled || game is null || TimeSpan.FromMilliseconds(uptimeMs) >= MaxUptime || GameRunning(driveBusy, game))
         {
             return null;
         }
@@ -36,9 +36,9 @@ public static partial class BootProbe
         TimeSpan total = TimeSpan.Zero;
         foreach (string path in files(game).Take(MaxFiles))
         {
-            if (ct.IsCancellationRequested)
+            if (ct.IsCancellationRequested || GameRunning(driveBusy, game))
             {
-                break; // 게임이 떠서 예열이 취소되면 지금까지 연 것만으로 마무리
+                break; // 게임이 떠서 예열이 취소되면 (또는 파일 사이에 같은 디스크 게임이 떴으면) 지금까지 연 것만으로 마무리
             }
 
             TimeSpan t0 = elapsed();
@@ -59,6 +59,19 @@ public static partial class BootProbe
         status.RecordBootProbe(game.Name, probe);
         log.Info($"{game.Name}: boot probe opened {probe.Files} files, {probe.OpenMsPerFile:F2} ms per file (cold metadata, uptime {(int)(uptimeMs / 60000)} min)");
         return probe;
+    }
+
+    // 연결되지 않았거나 (null) 판정이 예외로 실패하면 게임이 도는 것으로 봄 (게임 디스크를 열지 않는 쪽).
+    private static bool GameRunning(Func<GameSettings, bool>? driveBusy, GameSettings game)
+    {
+        try
+        {
+            return driveBusy?.Invoke(game) ?? true;
+        }
+        catch (Exception)
+        {
+            return true;
+        }
     }
 
     /// 선읽기 목록 (game.Trace) 의 경로를 나온 순서대로, 중복 없이 MaxFiles 개까지. 파일 크기를 재거나 경로를 풀지 않습니다 (재면 그 파일이 먼저 데워짐). 기록이 없거나 읽을 수 없으면 빈 목록.

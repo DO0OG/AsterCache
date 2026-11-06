@@ -140,7 +140,7 @@ public sealed class KeepAwake
             }
 
             // 같은 물리 디스크에서 게임이 이미 돌고 있으면 디스크는 깨어 있으므로 건너뜀
-            if (s.Games.Any(o => o.ExeNames.Count > 0 && _env.SameDisk(PlanFile.SplitDrive(o.OriginRoot).ToUpperInvariant(), letter) && _env.AnyRunning(o.ExeNames)))
+            if (GameOnDisk(s, letter))
             {
                 continue;
             }
@@ -163,7 +163,13 @@ public sealed class KeepAwake
                 continue;
             }
 
-            if (PickCached(g) is { } file && TryRead(file))
+            string? file = PickCached(g);
+            if (file is not null && GameOnDisk(s, letter))
+            {
+                continue; // 파일 탐색 뒤 읽기 직전에 한 번 더 (탐색 중에 게임이 떴을 수 있음): 읽지 않고 고른 파일은 유지
+            }
+
+            if (file is not null && TryRead(file))
             {
                 awake.Add(letter);
             }
@@ -175,6 +181,9 @@ public sealed class KeepAwake
 
         Update(awake);
     }
+
+    private bool GameOnDisk(AsterSettings s, string letter) =>
+        s.Games.Any(o => o.ExeNames.Count > 0 && _env.SameDisk(PlanFile.SplitDrive(o.OriginRoot).ToUpperInvariant(), letter) && _env.AnyRunning(o.ExeNames));
 
     // 전원 설정을 읽어 주기를 정함. 상태가 바뀔 때만 로그.
     private void ReadPower()

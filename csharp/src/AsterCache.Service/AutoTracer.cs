@@ -21,6 +21,7 @@ public sealed class AutoTracer
     private readonly LearnEnv _learn;
     private readonly object _lock = new();
     private Run? _run;
+    private readonly List<Run> _stopped = []; // 상한에 닿아 세션을 멈췄지만 게임이 끝나길 기다리는 기록 (저장 전)
     private readonly HashSet<string> _cheatLogged = new(StringComparer.OrdinalIgnoreCase);
 
     /// 두 번째 이후 플레이가 이보다 적게 읽었거나 (바이트) 첫 플레이의 1 % 보다 이벤트가 적으면 (메뉴만 켠 플레이 등) 저장하지 않고 회차로 세지 않습니다.
@@ -81,8 +82,15 @@ public sealed class AutoTracer
     /// run 파일 번호의 상한 (run1..run32).
     public const int MaxRunFiles = 32;
 
+    // 병합 증가가 작아도 플레이 5회 또는 7일마다 새 콘텐츠를 다시 배울 기회를 줍니다.
+    private const int RelearnAfterPlays = 5;
+    private const int RelearnAfterDays = 7;
+
     /// 병합 직후 남기는 작은 메타 (이번 병합이 더한 새 고유 블록): plans\<이름>.trace.merge.json. run 번호가 마지막 run 파일과 같을 때만 믿습니다.
     public static string MergeMetaPath(GameSettings g) => Path.Combine(Path.GetDirectoryName(g.Plan) ?? string.Empty, g.Name + ".trace.merge.json");
+
+    /// run 파일 한도 때문에 가장 오래된 회차를 지운 적이 있다는 표지: plans\<이름>.trace.rotated. 있으면 병합이 기존 병합본의 블록도 합집합에 넣어 지운 회차의 블록을 지킵니다.
+    public static string RotatedMarkPath(GameSettings g) => Path.Combine(Path.GetDirectoryName(g.Plan) ?? string.Empty, g.Name + ".trace.rotated");
 
     /// 옛 형식에서 옮긴 run1 이 크기와 무관하게 유효하다는 표지: plans\<이름>.trace.legacy-run1.
     public static string LegacyRun1Path(GameSettings g) => Path.Combine(Path.GetDirectoryName(g.Plan) ?? string.Empty, g.Name + ".trace.legacy-run1");
@@ -166,23 +174,72 @@ public sealed class AutoTracer
     /// 다음 플레이를 트레이스할지의 공통 판정 (게임 시작 두 곳이 같이 씀). Valid = 유효 회차 수, Limit = 지금 단계의 회차 상한.
     public readonly record struct TraceNext(int Valid, int Limit, bool Wanted, int? Coverage);
 
-    /// 유효 회차가 trace_runs 에 못 미치면 기존 정책대로 한 번 더. 채운 뒤에는 (a) 직전 병합이 새 고유 블록을
-    /// trace_merge_min_mib 이상 더했고 (b) 유효 회차가 trace_runs_max 미만일 때만 한 번 더. 병합 메타가 없으면 기존 정책 (거절).
+    /// 유효 회차가 trace_runs 에 못 미치면 기존 정책대로 한 번 더. 채운 뒤에는 병합 증가가 충분하거나 주기·업데이트 재학습이 필요할 때 한 번 더.
     /// 커버리지 (핫셋 ÷ 프로세스 누적 읽기량) 는 세션이 짧으면 100% 로 쏠려 판단 근거가 못 되므로 표시에만 씁니다. 안티치트 판정은 호출한 쪽 (Start) 이 먼저 합니다.
     public static TraceNext NextTrace(GameSettings g, AutoSettings a, AutoEnv env, AutoStatus status, long minBytes = MinExtraRunBytes)
     {
         int valid = RunCount(g, env.FileExists, env.RunReadBytes, minBytes);
         int last = LastRunNumber(g, env.FileExists);
         bool room = last < MaxRunFiles;
+        bool relearn = RelearnDue(g, env, status, minBytes);
         if (valid < a.TraceRuns)
         {
-            return new TraceNext(valid, a.TraceRuns, room, null);
+            return new TraceNext(valid, a.TraceRuns, room || relearn, null);
         }
 
-        int limit = Math.Max(a.TraceRuns, a.TraceRunsMax);
+        int limit = Math.Max(Math.Max(a.TraceRuns, a.TraceRunsMax), relearn ? valid + 1 : 0);
         int? coverage = status.Get(g.Name)?.CoveragePercent;
-        bool more = room && valid < limit && ReadMergeGainMib(g, last) is { } gain && gain >= a.TraceMergeMinMib; // 커버리지는 표시용: 짧은 재실행이 100% 로 덮어써도 멈추지 않게 병합 증가량만 봄
+        bool more = relearn || room && valid < limit && ReadMergeGainMib(g, last) is { } gain && gain >= a.TraceMergeMinMib; // 커버리지는 표시용: 짧은 재실행이 100% 로 덮어써도 멈추지 않게 병합 증가량만 봄
         return new TraceNext(valid, limit, more, coverage);
+    }
+
+    private static bool RelearnDue(GameSettings g, AutoEnv env, AutoStatus status, long minBytes)
+    {
+        AutoGameEntry? entry = status.Get(g.Name);
+        DateTimeOffset? lastTrace = LastValidRunTime(g, env, minBytes);
+        if (entry?.Detail?.StartsWith(AutoRelocator.ReplanDetail, StringComparison.Ordinal) == true && (lastTrace is null || lastTrace.Value <= entry.At))
+        {
+            return true;
+        }
+
+        if (lastTrace is not { } last)
+        {
+            return false;
+        }
+
+        return env.Now() - last >= TimeSpan.FromDays(RelearnAfterDays)
+            || status.Plays().TryGetValue(g.Name, out IReadOnlyList<DateTimeOffset>? plays) && plays.Count(at => at > last) >= RelearnAfterPlays;
+    }
+
+    private static DateTimeOffset? LastValidRunTime(GameSettings g, AutoEnv env, long minBytes)
+    {
+        string raw = RawTracePath(g);
+        if (!env.FileExists(raw))
+        {
+            return null;
+        }
+
+        int last = LastRunNumber(g, env.FileExists);
+        if (!env.FileExists(TraceWriter.RunPath(raw, 1)))
+        {
+            return env.FileWriteTime(raw); // 옛 형식은 원시 트레이스 자체가 첫 유효 회차
+        }
+
+        for (int number = last; number >= 1; number--)
+        {
+            string path = TraceWriter.RunPath(raw, number);
+            if (!env.FileExists(path))
+            {
+                continue;
+            }
+
+            if (number == 1 && env.FileExists(LegacyRun1Path(g)) || env.RunReadBytes(path) is not { } bytes || bytes >= minBytes)
+            {
+                return env.FileWriteTime(path);
+            }
+        }
+
+        return null;
     }
 
     /// 병합 결과의 지문: 행 순서대로 (경로, 오프셋, 길이) 의 SHA-256 (소문자 hex). 블록 집합이나 순서가 바뀌면 달라지고 t_ms·cost 는 보지 않습니다. 읽을 수 없으면 null.
@@ -312,7 +369,7 @@ public sealed class AutoTracer
             next = NextTrace(g, _settings().Auto, _env, _status, MinRunBytes);
             done = next.Valid;
             firstRun = !_env.FileExists(RawTracePath(g));
-            if (_run is not null || !next.Wanted)
+            if (_run is not null || !next.Wanted || _stopped.Any(r => string.Equals(r.Game.Name, g.Name, StringComparison.OrdinalIgnoreCase)))
             {
                 return;
             }
@@ -322,6 +379,15 @@ public sealed class AutoTracer
             {
                 try
                 {
+                    if (LastRunNumber(g, _env.FileExists) >= MaxRunFiles)
+                    {
+                        CompactRunsForRelearn(g);
+                        done = RunCount(g, _env.FileExists, _env.RunReadBytes, MinRunBytes);
+                        AutoSettings current = _settings().Auto;
+                        int configuredLimit = Math.Max(current.TraceRuns, current.TraceRunsMax);
+                        next = next with { Valid = done, Limit = Math.Max(configuredLimit, done + 1) };
+                    }
+
                     LearnSettings ls = _settings().Auto.Learn;
                     learn = ls.Enabled && firstRun ? AutoLearn.Create(g, ls, _env.PhysicalRamBytes(), _learn) : null; // 시스템 SSD·SSD 는 위에서 이미 걸러짐
                     _run = new Run(g, _env.StartTrace(g.ExeNames, learn is null ? null : AutoLearn.Listener(learn)), _env.Now()) { Learn = learn, Number = LastRunNumber(g, _env.FileExists) + 1 }; // 번호는 유효 회차 수가 아니라 있는 run 파일 기준 (덮어쓰기 금지)
@@ -364,6 +430,7 @@ public sealed class AutoTracer
     /// 1 초마다 부릅니다. 끝내야 하면 세션을 멈추고 트레이스를 씁니다.
     public void Step()
     {
+        FinishStopped(false);
         Run? run;
         lock (_lock)
         {
@@ -410,15 +477,60 @@ public sealed class AutoTracer
 
         TimeSpan elapsed = _env.Now() - run.StartedAt;
         bool named = _env.AnyRunning(run.Game.ExeNames);
-        string? why = !named && rooted.Count == 0 ? "game exited" // 읽기량을 못 연 (보호된) 게임 프로세스도 실행 중으로 셈, 등록 exe 가 먼저 끝나도 폴더 아래 프로세스가 남았으면 실행 중
+        string? why = !named && rooted.Count == 0 ? GameExited // 읽기량을 못 연 (보호된) 게임 프로세스도 실행 중으로 셈, 등록 exe 가 먼저 끝나도 폴더 아래 프로세스가 남았으면 실행 중
             : elapsed >= TimeSpan.FromSeconds(a.TraceCapSeconds) ? "time cap"
             : run.Read >= (long)ReadCapMib(run, all) << 20 ? "read cap"
             : null;
         if (why is not null)
         {
-            Finish(run, why);
+            Finish(run, why, why != GameExited); // 상한에 닿은 기록은 게임이 끝난 뒤에 저장 (경로 해석·저장·병합이 게임 디스크를 건드리지 않게)
         }
     }
+
+    private const string GameExited = "game exited";
+
+    // 멈춰 둔 기록 중 게임 (같은 물리 디스크의 등록 게임 포함) 이 끝난 것을 저장합니다. force 는 서비스 종료: 기다리지 않고 바로 저장해 잃지 않게.
+    private void FinishStopped(bool force)
+    {
+        Run[] held;
+        lock (_lock)
+        {
+            held = [.. _stopped];
+        }
+
+        foreach (Run r in held.Where(r => force || !StillRunning(r.Game)))
+        {
+            bool mine;
+            lock (_lock)
+            {
+                mine = !r.Saving && _stopped.Contains(r);
+                if (mine)
+                {
+                    r.Saving = true; // 선점한 호출만 표시 (이미 저장 중이면 다시 쓰지 않음). 저장이 끝날 때까지 _stopped 에 남겨 같은 게임의 Start 가 같은 회차 번호를 받지 못하게 함
+                }
+            }
+
+            if (!mine)
+            {
+                continue;
+            }
+
+            try
+            {
+                Finish(r, r.Why);
+            }
+            finally
+            {
+                lock (_lock)
+                {
+                    _stopped.Remove(r);
+                }
+            }
+        }
+    }
+
+    private bool StillRunning(GameSettings g) =>
+        _env.AnyRunning(g.ExeNames) || _env.GameRunningOnDisk?.Invoke(PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant()) == true;
 
     // 읽기 캡 (MiB): 명시한 trace_cap_mib 는 그대로, 기본값이면 max(6144, 유효 존 상한 x 2) 를 플레이당 한 번만 계산함 (매초 디스크 종류를 묻지 않게).
     private int ReadCapMib(Run run, AsterSettings all) =>
@@ -435,15 +547,34 @@ public sealed class AutoTracer
 
         run?.Session.Dispose();
         run?.Learn?.Dispose();
+        FinishStopped(true);
     }
 
-    private void Finish(Run run, string why)
+    private void Finish(Run run, string why, bool defer = false)
     {
         GameSettings g = run.Game;
+        bool stoppedBefore = run.Held is not null; // 이미 멈춰 둔 기록의 저장: 세션은 멈출 때 정리했음
         try
         {
-            IReadOnlyList<TraceRecord> records = run.Session.Stop();
-            EndLearn(run);
+            IReadOnlyList<TraceRecord> records = run.Held ?? run.Session.Stop();
+            if (!stoppedBefore)
+            {
+                EndLearn(run);
+            }
+
+            if (defer)
+            {
+                run.Held = records;
+                run.Why = why;
+                lock (_lock)
+                {
+                    _stopped.Add(run);
+                }
+
+                _log.Info($"{g.Name}: auto trace stopped ({why}), saving after the game exits");
+                return;
+            }
+
             (List<TraceEvent> events, _) = TraceBuilder.Build(records, g.ExeNames, g.OriginRoot);
             List<TraceEvent> canonical = _env.Canonicalize(events);
             if (canonical.Count == 0)
@@ -500,11 +631,15 @@ public sealed class AutoTracer
         }
         finally
         {
-            run.Session.Dispose();
+            if (!stoppedBefore)
+            {
+                run.Session.Dispose();
+            }
+
             run.Learn?.Dispose();
             lock (_lock)
             {
-                _run = null;
+                _run = _run == run ? null : _run;
             }
         }
     }
@@ -623,7 +758,7 @@ public sealed class AutoTracer
         }
     }
 
-    // 두 번째 이후 플레이: runN.json 으로 저장하고, 유효한 run 들의 블록 합집합 (최신 회차의 접근 순서가 앞, 옛 회차에서만 본 블록은 뒤) 을 임시 파일을 거쳐 원시 트레이스로 한 번에 바꿔 씁니다.
+    // 두 번째 이후 플레이: runN.json 으로 저장하고, 유효한 run 과 기존 원시 병합본의 블록 합집합 (최신 회차가 앞) 을 임시 파일로 바꿔 씁니다.
     // 읽기량이 MinRunBytes 미만인 옛 run (옛 형식에서 옮긴 run1 제외) 은 합집합에 넣지 않습니다. 이번 병합이 더한 새 고유 블록은 작은 메타로 남김.
     private void Merge(GameSettings g, List<TraceEvent> canonical, int number)
     {
@@ -655,6 +790,12 @@ public sealed class AutoTracer
             }
         }
 
+        if (_env.FileExists(raw) && _env.FileExists(RotatedMarkPath(g))) // 지운 회차가 있을 때만 병합본을 기준으로 유지 (아니면 옛 버전의 블록·짧은 무효 회차가 병합본에서 빠질 수 있게 run 들로만 만듦)
+        {
+            List<TraceEvent> merged = JsonRead.ReadFile(raw) is List<object?> rows ? [.. rows.Select(TraceEvents.FromJson)] : throw new PyValueException("bad trace file");
+            previous.Add(merged);
+        }
+
         List<TraceEvent> union = TraceWriter.Union([canonical, .. previous]);
         string temp = raw + ".tmp";
         TraceWriter.WriteFile(temp, union);
@@ -662,14 +803,57 @@ public sealed class AutoTracer
         SaveMergeMeta(g, number, (union.Count - TraceWriter.Union(previous).Count) * TraceWriter.Block >> 20);
     }
 
+    // run 파일 한도에 닿으면 병합본에 이미 든 가장 오래된 회차를 지우고 나머지 번호를 당깁니다.
+    private void CompactRunsForRelearn(GameSettings g)
+    {
+        string raw = RawTracePath(g);
+        if (TraceFingerprint(raw) is null)
+        {
+            throw new PyValueException("bad merged trace file");
+        }
+
+        if (!ClearLegacyRun1Mark(g))
+        {
+            throw new IOException("could not clear legacy trace marker before run rotation");
+        }
+
+        int oldest = Enumerable.Range(1, MaxRunFiles).FirstOrDefault(number => _env.FileExists(TraceWriter.RunPath(raw, number)));
+        if (oldest == 0)
+        {
+            throw new IOException("no run file to replace");
+        }
+
+        File.WriteAllText(RotatedMarkPath(g), "1"); // 지우기 전에 표지부터: 못 쓰면 예외로 지우지 않음
+        File.Delete(TraceWriter.RunPath(raw, oldest)); // 기존 원시 병합본이 이 회차의 블록을 보존
+        int target = 1;
+        for (int number = 1; number <= MaxRunFiles; number++)
+        {
+            string source = TraceWriter.RunPath(raw, number);
+            if (!_env.FileExists(source))
+            {
+                continue;
+            }
+
+            string destination = TraceWriter.RunPath(raw, target++);
+            if (!string.Equals(source, destination, StringComparison.OrdinalIgnoreCase))
+            {
+                File.Move(source, destination, true);
+            }
+        }
+
+        _log.Info($"{g.Name}: rotated trace run files to keep the merged base and allow relearning");
+    }
+
     private bool ClearLegacyRun1Mark(GameSettings g)
     {
         try
         {
-            string path = LegacyRun1Path(g);
-            if (File.Exists(path))
+            foreach (string path in new[] { LegacyRun1Path(g), RotatedMarkPath(g) }) // 새 첫 기록은 회차 교체 표지도 함께 지움 (교체 쪽은 지운 뒤 다시 씀)
             {
-                File.Delete(path);
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
             }
 
             return true;
@@ -750,5 +934,13 @@ public sealed class AutoTracer
         public int Number { get; init; } = 1;
 
         public DateTimeOffset LastStatusAt { get; set; } = startedAt;
+
+        /// 상한에 닿아 세션을 멈춘 뒤 아직 저장하지 않은 기록과 멈춘 사유 (게임이 끝난 뒤 저장).
+        public IReadOnlyList<TraceRecord>? Held { get; set; }
+
+        public string Why { get; set; } = string.Empty;
+
+        /// 저장 중이면 true (다른 스레드가 같은 기록을 두 번 저장하지 않게).
+        public bool Saving { get; set; }
     }
 }

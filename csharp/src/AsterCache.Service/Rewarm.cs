@@ -7,7 +7,7 @@ using AsterCache.Windows;
 
 namespace AsterCache.Service;
 
-/// 예열 유지: rewarm_minutes 마다, 예열한 게임과 같은 드라이브의 등록 게임이 하나도 안 돌고 그 게임 드라이브 처리량이 자동 재배치의 유휴 기준 아래일 때 (CPU 부하는 보지 않음), 예열한 적 있는 게임의 핫 집합 몇 곳을 읽어 보고 식었으면 (CacheProbe.Cold: 표본 8 곳 중 2 곳 이상이 CacheProbe.ColdThresholdMs 초과) 다시 예열합니다.
+/// 예열 유지: rewarm_minutes 마다, 예열한 게임 자신이 안 돌고 같은 디스크의 다른 등록 게임이 안 돌거나 돌아도 한가하고 (Prewarmer.BusyOthers) 그 게임 드라이브 처리량이 자동 재배치의 유휴 기준 아래일 때 (CPU 부하는 보지 않음), 예열한 적 있는 게임의 핫 집합 몇 곳을 읽어 보고 식었으면 (CacheProbe.Cold: 표본 8 곳 중 2 곳 이상이 CacheProbe.ColdThresholdMs 초과) 다시 예열합니다.
 public sealed class Rewarmer
 {
     private readonly Prewarmer _prewarm;
@@ -76,15 +76,6 @@ public sealed class Rewarmer
         }
 
         IReadOnlyList<GameSettings> warmed = _prewarm.Warmed();
-        List<GameSettings> running = [.. AutoRelocator.SameDriveGames(_prewarm.Games, warmed, _env.SameDisk).Where(_env.GameRunning)];
-        if (running.Count > 0)
-        {
-            string blockers = string.Join("; ", running.Select(_env.DescribeBlockers).Where(b => b is not null));
-            NoteGlobal("game-running|" + blockers, "rewarm check skipped: a game is running" + (blockers.Length == 0 ? string.Empty : $" (blocked by {blockers})")); // 같은 사유·같은 프로세스면 점검 주기마다 반복하지 않음
-            return;
-        }
-
-        _checkState.Remove(GlobalKey);
 
         if (_prewarm.Games.Any(g => _prewarm.Relocating(g.Name)))
         {
@@ -92,6 +83,7 @@ public sealed class Rewarmer
             return;
         }
 
+        var budget = _prewarm.WarmBudget(); // 순위가 있으면 예산 안에 드는 게임만 점검 (순위가 바뀌면 다음 점검에서 대상도 바뀜)
         foreach (GameSettings g in warmed)
         {
             if (ct.IsCancellationRequested)
@@ -106,13 +98,32 @@ public sealed class Rewarmer
                 return;
             }
 
+            if (budget is { } b && !b.In.Contains(g.Name))
+            {
+                NoteCheck(g, "budget", $"{g.Name}: rewarm check skipped (the cache budget of {b.CapMib} MiB is used by higher-ranked games: {b.UsedMib} MiB)");
+                continue;
+            }
+
+            if (_env.GameRunning(g))
+            {
+                string blockers = Blockers(g);
+                NoteCheck(g, "game-running|" + blockers, $"{g.Name}: rewarm check skipped: a game is running" + blockers); // 실행 중인 게임 자신은 건드리지 않음 (같은 사유·같은 프로세스면 점검 주기마다 반복하지 않음)
+                continue;
+            }
+
+            if (_prewarm.BusyOthers(g) is { Count: > 0 } busy)
+            {
+                NoteCheck(g, "drive-game-running|" + string.Join(",", busy.Select(x => x.Name)), $"{g.Name}: rewarm check skipped: a game is running on the same drive and is not idle" + Blockers(busy.ToArray())); // 한가한 다른 게임은 막지 않음
+                continue;
+            }
+
             if (_env.DiskBytesPerSecond(g) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond)
             {
                 NoteCheck(g, "busy", $"{g.Name}: rewarm check skipped (the game drive is busy or its load is unknown)");
                 continue;
             }
 
-            Check(g, ct);
+            Check(g, ct, budget is { } bg && bg.AllocMib.GetValueOrDefault(g.Name) is > 0 and long room ? room : null);
         }
     }
 
@@ -126,19 +137,14 @@ public sealed class Rewarmer
         }
     }
 
-    private const string GlobalKey = "*";
-
-    // 게임 단위가 아닌 점검 전체의 건너뜀 사유: NoteCheck 와 같이 바뀔 때만 남김.
-    private void NoteGlobal(string state, string message)
+    // 건너뛴 사유에 붙일 차단 프로세스 설명 (없으면 빈 문자열).
+    private string Blockers(params GameSettings[] games)
     {
-        if (!_checkState.TryGetValue(GlobalKey, out string? last) || last != state)
-        {
-            _checkState[GlobalKey] = state;
-            _log.Info(message);
-        }
+        string blockers = string.Join("; ", games.Select(_env.DescribeBlockers).Where(b => b is not null));
+        return blockers.Length == 0 ? string.Empty : $" (blocked by {blockers})";
     }
 
-    private void Check(GameSettings g, CancellationToken ct)
+    private void Check(GameSettings g, CancellationToken ct, long? roomMib)
     {
         if (_prewarm.RewarmAlreadyCovered(g))
         {
@@ -167,7 +173,7 @@ public sealed class Rewarmer
             if (!_prewarm.SupplementWhenIdle(g, ct) && probe.Cold && _prewarm.MemoryPartialPending(g.Name))
             {
                 NoteCheck(g, "partial-cold", $"{g.Name}: rewarm check: the part read into memory went cold ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms), reading it again (cooldown ignored)"); // 메모리가 모자라 앞부분만 읽은 게임: 읽은 구간이 밀려났을 때만 다시 (남은 구간은 표본에 넣지 않음)
-                _prewarm.RewarmGame(g, ct);
+                _prewarm.RewarmGame(g, ct, roomMib);
             }
         }
         else if (!probe.Cold)
@@ -177,7 +183,7 @@ public sealed class Rewarmer
         else
         {
             NoteCheck(g, "cold", $"{g.Name}: rewarm check: cold ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms, average {probe.AverageMs:F2} ms), prewarming again (cooldown ignored)");
-            _prewarm.RewarmGame(g, ct);
+            _prewarm.RewarmGame(g, ct, roomMib);
         }
     }
 }

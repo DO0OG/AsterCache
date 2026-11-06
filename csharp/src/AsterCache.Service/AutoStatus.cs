@@ -25,7 +25,7 @@ public sealed record AutoGameEntry(
 public sealed record AutoBootProbe(DateTimeOffset At, int Files, double OpenMsPerFile);
 
 /// 쓰기 뒤 회복 추적 한 건 (auto_status.json 의 drive_recovery): 드라이브, 시작·상한 시각, 쓰기 직전 기준 (없으면 고정 대기), 마지막 판정 ("pass"/"unknown"/"bad", 아직 없으면 null).
-public sealed record DriveRecoveryRecord(string Drive, DateTimeOffset Started, DateTimeOffset Until, ProbeSpot? Zone, ProbeSpot? Ref, string? Verdict, DateTimeOffset? HardUntil = null);
+public sealed record DriveRecoveryRecord(string Drive, DateTimeOffset Started, DateTimeOffset Until, ProbeSpot? Zone, ProbeSpot? Ref, string? Verdict, DateTimeOffset? HardUntil = null, DateTimeOffset? PausedSince = null);
 
 /// 게임별 점유 충돌 복구 시도 (auto_status.json 의 replan_attempts): 마지막 계획 SHA, 거절된 LCN, 이번 주기에 쓴 잔여 재계획 수, 다음 시도를 허용하는 시각 (보류 중일 때만).
 /// 계획 SHA 가 바뀌어도 이 기록은 지우지 않습니다 (재시작·새 계획이 횟수 제한을 풀지 못하게). 완료하면 지움.
@@ -487,6 +487,11 @@ public sealed class AutoStatus
                     o.Add("hard_until", Iso(hard)); // 상한 뒤에도 보류하는 추적만 (기존 파일 모양 유지)
                 }
 
+                if (r.PausedSince is { } paused)
+                {
+                    o.Add("paused_since", Iso(paused)); // 게임이 도는 동안 경과를 멈춘 추적만: until·hard_until 은 이 시점 기준의 잔여
+                }
+
                 if (r.Zone is { } z)
                 {
                     o.Add("zone", Spot(z));
@@ -594,7 +599,7 @@ public sealed class AutoStatus
                 {
                     if (value is JObject o && Time(o, "started") is { } started && Time(o, "until") is { } until)
                     {
-                        _driveRecovery[drive] = new DriveRecoveryRecord(drive, started, until, ReadSpot(o, "zone"), ReadSpot(o, "ref"), Str(o, "verdict"), Time(o, "hard_until"));
+                        _driveRecovery[drive] = new DriveRecoveryRecord(drive, started, until, ReadSpot(o, "zone"), ReadSpot(o, "ref"), Str(o, "verdict"), Time(o, "hard_until"), Time(o, "paused_since"));
                     }
                 }
             }

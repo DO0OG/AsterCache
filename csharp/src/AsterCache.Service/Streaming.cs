@@ -26,6 +26,9 @@ public interface IGameStreamer
     /// 예열 전용 스트림. maxBytes 는 메모리·스트림 예산 안에서 읽을 전체 바이트 상한입니다.
     (StreamStats Stats, bool Complete) StreamPrewarm(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes) => Stream(game, stop, progress);
 
+    /// 끊긴 부분 예열을 이어 읽는 예열 스트림: 읽기 목록 앞쪽 skipBytes 는 이미 읽었으니 건너뜁니다 (통계 바이트는 새로 읽은 것만). 건너뛰기를 모르는 스트리머는 처음부터 읽습니다.
+    (StreamStats Stats, bool Complete) StreamPrewarm(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes) => StreamPrewarm(game, stop, progress, maxBytes);
+
     /// 예열이 실제로 읽을 원래 범위의 바이트 (틈 제외), 모르면 null. 최초 메모리 게이트가 존 크기 대신 씁니다.
     long? PrewarmReadBytes(GameSettings game) => null;
 
@@ -135,13 +138,18 @@ public sealed class PrefetchStreamer : IGameStreamer
     }
 
     /// 예열 전용 범위에 작은 논리 틈을 예산 안에서 더해 읽습니다. 시작 스트림·표본·고정은 Ops 의 원래 범위를 씁니다.
-    public (StreamStats Stats, bool Complete) StreamPrewarm(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes)
+    public (StreamStats Stats, bool Complete) StreamPrewarm(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes) =>
+        StreamPrewarm(game, stop, progress, maxBytes, 0);
+
+    public (StreamStats Stats, bool Complete) StreamPrewarm(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes)
     {
-        (List<ReadOp> ops, long gapBytes, bool fitsBudget) = PrewarmOps(game, maxBytes);
+        (List<ReadOp> all, long gapBytes, bool fitsBudget) = PrewarmOps(game, maxBytes);
         if (!fitsBudget || stop.IsCancellationRequested)
         {
             return (new StreamStats(0, 0, 0, 0, Aborted: true), false);
         }
+
+        List<ReadOp> ops = skipBytes > 0 ? Tail(all, skipBytes) : all; // 갱신 읽기 (Refresh) 는 건너뛴 앞부분이 아니라 목록 전체의 앞쪽을 씀
 
         progress?.Invoke(0, ops.Sum(op => op.Length));
         if (stop.IsCancellationRequested)
@@ -152,7 +160,7 @@ public sealed class PrefetchStreamer : IGameStreamer
         (StreamStats Stats, bool Complete) r = Batches(ops, stop, progress);
         if (r.Complete)
         {
-            StreamStats refresh = Refresh(ops, stop);
+            StreamStats refresh = Refresh(all, stop);
             if (stop.IsCancellationRequested || refresh.Aborted)
             {
                 return (r.Stats with { Aborted = true, GapBytes = gapBytes }, false);
@@ -199,6 +207,26 @@ public sealed class PrefetchStreamer : IGameStreamer
         }
 
         return head;
+    }
+
+    /// 순서 목록에서 앞의 bytes 를 뺀 나머지 (걸친 op 는 잘라서).
+    public static List<ReadOp> Tail(IReadOnlyList<ReadOp> ops, long bytes)
+    {
+        var tail = new List<ReadOp>();
+        long skip = Math.Max(0, bytes);
+        foreach (ReadOp op in ops)
+        {
+            if (skip >= op.Length)
+            {
+                skip -= op.Length;
+                continue;
+            }
+
+            tail.Add(skip > 0 ? new ReadOp(op.Path, op.Offset + skip, op.Length - skip) : op);
+            skip = 0;
+        }
+
+        return tail;
     }
 
     /// 게임의 선읽기 순서 목록 (허용 루트 검사 포함). 스트림·식음 확인·고정이 같은 목록을 씁니다.
@@ -443,6 +471,10 @@ public sealed class PrefetchStreamer : IGameStreamer
 
     public static ProbeResult? ProbePartialReadMs(GameSettings game) => CacheProbe.Probe(PartialProbeSamples(game, CacheProbe.NextRound(game.Name)));
 
+    /// 끊긴 부분 예열 (game 의 MaxStreamMib 로 잘린 목록) 이 스케줄 순서로 앞에서 bytes 만큼 읽은 구간의 표본을 읽어 잰 결과: 이어 읽기 전에 그 구간이 아직 따뜻한지 봅니다.
+    public static ProbeResult? ProbeScheduledHead(GameSettings game, long bytes) =>
+        CacheProbe.Probe(CacheProbe.PickSamples(Head(ScheduleOps(game, true, trimLast: true).Ops, bytes), round: CacheProbe.NextRound(game.Name)));
+
     /// 선읽기 목록의 앞쪽과 고르게 고른 몇 곳을 읽어 잰 결과 (CacheProbe).
     public static ProbeResult? ProbeReadMs(GameSettings game) => CacheProbe.Probe(CacheProbe.PickSamples(Ops(game), round: CacheProbe.NextRound(game.Name))); // 점검마다 다른 위치 (앞 점검의 읽기가 캐시를 데우지 않게)
 }
@@ -455,6 +487,9 @@ public sealed record DispatchEnv
 
     /// 이 프로세스가 시작되기 전에 이미 돌던 이 게임의 다른 프로세스가 있는가.
     public Func<GameSettings, ProcessStart, bool> OtherRunning { get; init; } = (_, _) => false;
+
+    /// 지금 떠 있는 이 게임의 등록 이름 프로세스 (시작한 pid 와 서비스 자신은 뺌). 나이는 GameDispatcher 가 관측한 시작 시각으로 따집니다.
+    public Func<GameSettings, ProcessStart, IReadOnlyList<(int Pid, string Exe)>> OtherProcesses { get; init; } = (_, _) => [];
 
     /// 그 게임의 물리 디스크가 바쁜가 (읽지 못하면 바쁘지 않은 것으로 봄: 지표 없이 첫 시작 스트림까지 막지 않게).
     public Func<GameSettings, bool> DiskBusy { get; init; } = _ => false;
@@ -470,9 +505,13 @@ public sealed record DispatchEnv
 
     public static DispatchEnv Create() => new()
     {
-        OtherRunning = IsOtherRunning,
+        OtherProcesses = (g, start) => RegisteredOthers(g, ProcessSnapshot.Take(), start.Pid),
         DiskBusy = g => DiskActivity.BytesPerSecond(PlanFile.SplitDrive(g.OriginRoot)) is { } bps && bps >= DiskActivity.BusyBytesPerSecond,
     };
+
+    /// 등록 이름 프로세스만 (설치 폴더 아래 미등록 프로세스는 제외, 시작한 pid 와 서비스 자신도 제외).
+    internal static IReadOnlyList<(int Pid, string Exe)> RegisteredOthers(GameSettings g, IReadOnlyList<(int Pid, string Exe)> processes, int startPid) =>
+        processes.Where(p => p.Pid != startPid && p.Pid != Environment.ProcessId && g.ExeNames.Contains(p.Exe, StringComparer.OrdinalIgnoreCase)).ToList();
 
     /// 이미지 경로가 게임 폴더 아래인가 (다른 프로세스 판정과 종료 판정이 함께 씁니다).
     internal static bool UnderRoot(GameSettings g, string? imagePath)
@@ -530,9 +569,6 @@ public sealed record DispatchEnv
         return found.Count == 0 ? null : string.Join("; ", found);
     }
 
-    private static bool IsGameProcess(GameSettings g, string exeName, string? imagePath) =>
-        g.ExeNames.Contains(exeName, StringComparer.OrdinalIgnoreCase) || UnderRoot(g, imagePath);
-
     private static string? SafeImagePath(int pid, Func<int, string?> imagePath)
     {
         try
@@ -545,37 +581,6 @@ public sealed record DispatchEnv
         }
     }
 
-    private static bool IsOtherRunning(GameSettings g, ProcessStart start)
-    {
-        foreach ((int pid, string exe) in ProcessSnapshot.Take())
-        {
-            if (pid == start.Pid || pid == Environment.ProcessId)
-            {
-                continue;
-            }
-
-            string? path = g.ExeNames.Contains(exe, StringComparer.OrdinalIgnoreCase) ? null : SafeImagePath(pid, ProcessSnapshot.ImagePath);
-            if (IsGameProcess(g, exe, path) && StartedBeforeSettle(pid))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static bool StartedBeforeSettle(int pid)
-    {
-        try
-        {
-            using var p = System.Diagnostics.Process.GetProcessById(pid);
-            return DateTime.Now - p.StartTime > Settle;
-        }
-        catch (Exception e) when (e is ArgumentException or InvalidOperationException or Win32Exception)
-        {
-            return false; // 그 사이 끝났거나 시작 시각을 읽을 수 없음
-        }
-    }
 }
 
 /// 감지된 프로세스를 게임에 대응시켜 스트림을 부릅니다. 같은 게임은 Cooldown 안에 한 번만 (런처·보조 프로세스가 연달아 떠도 중복 읽기 없음).
@@ -590,6 +595,7 @@ public sealed class GameDispatcher
     private readonly Func<DateTimeOffset> _now;
     private readonly DispatchEnv _env;
     private readonly Dictionary<string, DateTimeOffset> _last = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<int, ProcessStart> _seen = []; // pid -> 서비스가 처음 관측한 시작 (Process.StartTime 을 읽지 않고 나이를 셈)
 
     public GameDispatcher(IReadOnlyList<GameSettings> games, IGameStreamer streamer, ILog log, Func<DateTimeOffset>? now = null, DispatchEnv? env = null)
     {
@@ -617,12 +623,37 @@ public sealed class GameDispatcher
             return "game already running";
         }
 
+        if (RunningOther(g, start) is { } who)
+        {
+            return $"game already running: {who}";
+        }
+
         if (_env.Age(start) < DispatchEnv.Settle)
         {
             return _env.IsWarm(g) ? "already warm" : null; // 막 시작한 게임: 바쁨 검사 대신 캐시 점검, 차가우면 스트림
         }
 
         return _env.DiskBusy(g) ? "drive busy" : null;
+    }
+
+    // Settle 보다 오래전에 관측된 (또는 관측 기록이 없는 = 서비스 시작 전부터 돌던) 등록 이름 프로세스를 "이름(pid)" 로, 없으면 null. 끝난 pid 의 기록은 여기서 정리.
+    private string? RunningOther(GameSettings g, ProcessStart start)
+    {
+        IReadOnlyList<(int Pid, string Exe)> others = _env.OtherProcesses(g, start);
+        foreach (int gone in _seen.Where(kv => kv.Key != start.Pid && g.ExeNames.Contains(kv.Value.ExeName, StringComparer.OrdinalIgnoreCase) && !others.Any(o => o.Pid == kv.Key)).Select(kv => kv.Key).ToList())
+        {
+            _ = _seen.Remove(gone);
+        }
+
+        foreach ((int pid, string exe) in others)
+        {
+            if (!_seen.TryGetValue(pid, out ProcessStart? seen) || !seen.ExeName.Equals(exe, StringComparison.OrdinalIgnoreCase) || _env.Age(seen) > DispatchEnv.Settle)
+            {
+                return $"{exe}({pid})";
+            }
+        }
+
+        return null;
     }
 
     /// 스트림을 불렀으면 true. 스트림 실패는 로그만 남기고 서비스를 멈추지 않습니다.
@@ -632,6 +663,11 @@ public sealed class GameDispatcher
         if (g is null)
         {
             return false;
+        }
+
+        if (!_seen.TryGetValue(start.Pid, out ProcessStart? first) || !first.ExeName.Equals(start.ExeName, StringComparison.OrdinalIgnoreCase))
+        {
+            _seen[start.Pid] = start; // 같은 pid 를 다시 감지해도 처음 관측 시각을 지킴 (pid 가 다른 exe 로 재사용되면 새로)
         }
 
         _log.Info($"{g.Name}: {start.ExeName} started (pid {start.Pid})" + (start.Route is { } route ? $" via {route}" : string.Empty)); // 감지 지연 측정 (cs_service.ps1 test) 이 쿨다운과 무관하게 매번 이 줄을 봅니다

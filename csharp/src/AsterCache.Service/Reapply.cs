@@ -319,9 +319,21 @@ public sealed class ReapplyGate
     public TimeSpan RunningPoll { get; init; } = TimeSpan.FromSeconds(2);
 
     /// 시작 알림이 놓친 등록 exe 를 잡으려고, gameRunning 을 주면 RunningPoll 마다 불러 참이면 같은 취소를 겁니다 (한 조각을 끝낸 뒤 멈춤, 저널은 그대로).
-    public T Run<T>(CancellationToken stop, Func<CancellationToken, T> work, Func<bool>? gameRunning = null)
+    /// 시작 전에 이미 gameRunning 이면 (판정 실패도 실행 중으로 봄) onRunning 이 있을 때는 work 를 부르지 않고 그 값을 돌려주고, 없으면 취소된 토큰으로 work 를 부릅니다 (work 가 첫 조각 전에 멈춤).
+    public T Run<T>(CancellationToken stop, Func<CancellationToken, T> work, Func<bool>? gameRunning = null, Func<T>? onRunning = null)
     {
+        bool running = gameRunning is not null && RunningNow(gameRunning);
+        if (running && onRunning is not null)
+        {
+            return onRunning();
+        }
+
         CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(stop);
+        if (running)
+        {
+            cts.Cancel();
+        }
+
         lock (_lock)
         {
             _current = cts;
@@ -353,6 +365,18 @@ public sealed class ReapplyGate
         }
     }
 
+    private static bool RunningNow(Func<bool> gameRunning)
+    {
+        try
+        {
+            return gameRunning();
+        }
+        catch (Exception)
+        {
+            return true; // 판정 실패는 보호 중으로 봄
+        }
+    }
+
     private void CancelIfRunning(CancellationTokenSource cts, Func<bool> gameRunning)
     {
         try
@@ -370,7 +394,13 @@ public sealed class ReapplyGate
         }
         catch (Exception)
         {
-            // 판정 실패는 건너뜀: 이름 기반 시작 알림과 다음 점검이 그대로 맡음 (타이머 스레드에서 예외가 새면 프로세스가 죽음)
+            lock (_lock)
+            {
+                if (_current == cts)
+                {
+                    cts.Cancel(); // 판정 실패는 보호 중으로 봄: 취소 (타이머 스레드에서 예외가 새면 프로세스가 죽으므로 삼킴)
+                }
+            }
         }
     }
 }
@@ -390,8 +420,46 @@ public sealed class ReapplyChecker
         _log = log;
     }
 
-    public ReapplyVerdict Check(GameSettings game, CancellationToken cancellationToken = default)
+    /// 파일 사이에서 게임 실행을 다시 보는 최소 간격 (그 사이는 취소 토큰만): 실행 판정은 프로세스 목록을 읽어 파일마다 부르기엔 비싸고, 1 초면 느린 디스크의 파일 하나 조회 도중에도 놓치지 않음.
+    public static readonly TimeSpan GuardInterval = TimeSpan.FromSeconds(1);
+
+    private sealed class GameStartedException : Exception;
+
+    /// diskRunning: 서비스가 진입 게이트와 같이 쓰는 같은 물리 디스크 전체의 실행 판정 (자기 게임 포함). 없으면 이 게임만 봄. 어느 쪽이든 조회가 실패하면 실행 중으로 봄.
+    public ReapplyVerdict Check(GameSettings game, CancellationToken cancellationToken = default, Func<GameSettings, bool>? diskRunning = null)
     {
+        bool Running()
+        {
+            try
+            {
+                return _env.GameRunning(game) || diskRunning?.Invoke(game) == true;
+            }
+            catch (Exception)
+            {
+                return true; // 판정 실패는 보호 중으로 봄
+            }
+        }
+
+        // 게임이 돌면 경로 해석·지문·extent 를 게임 디스크에서 읽기 전에 멈춤 (맨 앞과 파일 사이). 자기 게임뿐 아니라 같은 디스크 게임과 게이트가 건 취소 토큰도 봄.
+        if (cancellationToken.IsCancellationRequested || Running())
+        {
+            return ReapplyVerdict.GameRunning;
+        }
+
+        DateTimeOffset checkedAt = _env.Now();
+        T Guarded<T>(Func<string, T> read, string path)
+        {
+            DateTimeOffset now = _env.Now();
+            bool recheck = now - checkedAt >= GuardInterval;
+            checkedAt = recheck ? now : checkedAt;
+            if (cancellationToken.IsCancellationRequested || (recheck && Running()))
+            {
+                throw new GameStartedException();
+            }
+
+            return read(path);
+        }
+
         try
         {
             PlanFile plan;
@@ -414,15 +482,15 @@ public sealed class ReapplyChecker
                 return ReapplyVerdict.Healthy;
             }
 
-            CheckPaths(plan, game, _env.RealPath);
+            CheckPaths(plan, game, p => Guarded(_env.RealPath, p));
             bool applied = plan.Zone.StartLcn is not null;
-            List<bool?> stamps = applied ? [.. plan.Fingerprints.Where(f => !VolatileFiles.Ignored(f.Path)).Select(f => Compare(f, _env.Stat))] : [];
+            List<bool?> stamps = applied ? [.. plan.Fingerprints.Where(f => !VolatileFiles.Ignored(f.Path)).Select(f => Compare(f, p => Guarded(_env.Stat, p)))] : [];
             bool changed = stamps.Contains(true);
             bool unknown = !changed && stamps.Contains(null);
-            LayoutReport? layout = applied && !changed ? LayoutVerifier.Verify(plan, _env.Extents) : null;
+            LayoutReport? layout = applied && !changed ? LayoutVerifier.Verify(plan, p => Guarded(_env.Extents, p)) : null;
             // 파일 배치를 못 읽은 항목이 있으면 (희소 파일 등) 판단할 수 없으므로 건강으로 봅니다: 같은 이유로 매 주기 재적용하며 0 바이트를 옮기는 일을 피함.
             bool? contiguous = layout is null || layout.HotClusters == 0 || layout.MissingFiles > 0 ? null : layout.Contiguous;
-            ReapplyVerdict v = ReapplyPolicy.Decide(new ReapplyInputs(applied, changed, contiguous, () => _env.GameRunning(game), () => _env.DiskBusy(game), _env.CanApply, () => _env.Gate(game), unknown));
+            ReapplyVerdict v = ReapplyPolicy.Decide(new ReapplyInputs(applied, changed, contiguous, Running, () => _env.DiskBusy(game), _env.CanApply, () => _env.Gate(game), unknown));
             _log.Info($"{game.Name}: layout check {v}" + (layout is null ? string.Empty : $" ({LayoutState(layout)}{ZoneHit(layout)})"));
             if (contiguous == false && _cancelled.Contains(game.Name))
             {
@@ -486,6 +554,10 @@ public sealed class ReapplyChecker
             }
 
             return v;
+        }
+        catch (GameStartedException)
+        {
+            return ReapplyVerdict.GameRunning; // 조회 중에 게임이 떴음: 나머지는 게임이 끝난 뒤 다음 검사에서
         }
         catch (ShaMismatchException e)
         {

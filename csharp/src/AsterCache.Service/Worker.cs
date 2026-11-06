@@ -43,6 +43,7 @@ public sealed class Worker : BackgroundService
     {
         _prewarm = prewarm;
         _prewarm?.SetAuto(settings.Auto);
+        _prewarm?.SetGames(settings.Games); // 고정이 첫 유지 틱 전에도 같은 디스크의 다른 등록 게임을 알도록
         _auto = auto;
         _reload = reload;
         _settings = settings;
@@ -54,6 +55,7 @@ public sealed class Worker : BackgroundService
             prewarm.ReplanStart = g => AutoRelocator.Replanning(status, g.Name)?.At;
             prewarm.Relocating = name => status.Get(name)?.Stage == AutoStage.Relocating;
             prewarm.HasPlayed = auto.HasPlayed;
+            prewarm.WarmRank = auto.WarmRank;
         }
 
         _log = log;
@@ -453,7 +455,7 @@ public sealed class Worker : BackgroundService
                 continue; // 부팅 조용 구간의 검사는 기한을 그대로 둬서 구간이 끝난 다음 틱에 함
             }
 
-            ReapplyVerdict v = _gate.Run(ct, token => _checker.Check(g, token), () => AutoRelocator.SameDriveGames(_settings.Games, [g], AsterCache.Windows.VolumeDisks.SameDisk).Concat([g]).Any(DispatchEnv.IsGameRunning)); // 진입 게이트와 같게 같은 물리 디스크의 등록 게임 전체를 봄
+            ReapplyVerdict v = _gate.Run(ct, token => _checker.Check(g, token, SameDiskRunning), () => SameDiskRunning(g), () => ReapplyVerdict.GameRunning); // 진입 게이트와 파일 사이 점검이 같은 판정을 씀 (같은 물리 디스크의 등록 게임 전체), 실행 중이면 검사 자체를 부르지 않음
             bool waiting = v == ReapplyVerdict.Cancelled || (resuming.Contains(g.Name) && v is ReapplyVerdict.GameRunning or ReapplyVerdict.DiskBusy or ReapplyVerdict.Recovering or ReapplyVerdict.OnBattery or ReapplyVerdict.NotIdle or ReapplyVerdict.PostUpdateDelay);
             _ = waiting ? resuming.Add(g.Name) : resuming.Remove(g.Name);
             due[g.Name] = DateTimeOffset.UtcNow + (waiting ? ResumeRetry : TimeSpan.FromMinutes(g.ReapplyMinutes));
@@ -467,6 +469,9 @@ public sealed class Worker : BackgroundService
         NoteGameExits();
         MaintainPrewarm();
     }
+
+    // g 와 같은 물리 디스크의 등록 게임 (g 포함) 이 도는가.
+    private bool SameDiskRunning(GameSettings g) => AutoRelocator.SameDriveGames(_settings.Games, [g], AsterCache.Windows.VolumeDisks.SameDisk).Concat([g]).Any(DispatchEnv.IsGameRunning);
 
     /// 이번 틱에 자동 재배치를 불러도 되는가: 부팅 조용 구간이 아니어야 합니다 (구간이면 보류 로그를 남김).
     public static bool RelocationAllowed(BootQuiet quiet) => !quiet.Defers("auto relocation and new trace prewarm");
@@ -484,19 +489,7 @@ public sealed class Worker : BackgroundService
             IReadOnlyList<(int Pid, string Exe)> procs = ProcessSnapshot.Take();
             NoteReads(procs);
             HashSet<string> names = new(procs.Select(p => p.Exe), StringComparer.OrdinalIgnoreCase);
-            Dictionary<int, string?> images = [];
-            string? Image(int pid)
-            {
-                if (!images.ContainsKey(pid))
-                {
-                    images[pid] = ProcessSnapshot.ImagePath(pid);
-                }
-
-                return images[pid];
-            }
-
-            bool UnderRoot(GameSettings g) => procs.Any(p => p.Pid != Environment.ProcessId && DispatchEnv.UnderRoot(g, Image(p.Pid)));
-            foreach (GameSettings g in _exits.Poll(_settings.Games, names, UnderRoot))
+            foreach (GameSettings g in _exits.Poll(_settings.Games, names))
             {
                 OnGameExit(g);
             }

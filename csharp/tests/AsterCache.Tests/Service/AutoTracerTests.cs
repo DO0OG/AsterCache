@@ -1,6 +1,7 @@
 using AsterCache.Core.Discovery;
 using AsterCache.Core.Json;
 using AsterCache.Core.Settings;
+using AsterCache.Core.Trace;
 using AsterCache.Service;
 using AsterCache.Tracer;
 using Xunit;
@@ -521,6 +522,9 @@ public sealed class AutoTracerTests : IDisposable
 
     private void Gain(int run, long newMib) => File.WriteAllText(AutoTracer.MergeMetaPath(_game), $"{{\"run\": {run}, \"new_mib\": {newMib}}}");
 
+    private static HashSet<(string Path, long Offset, long Length)> TraceBlocks(string path) =>
+        ((List<object?>)JsonRead.ReadFile(path)!).Select(row => TraceEvents.FromJson(row)).Select(e => (e.Path, e.Offset, e.Length)).ToHashSet();
+
     [Fact]
     public void RunCountSkipsRunFilesBelowTheMinimumReadIncludingRun1AndKeepsTheNextNumberAfterTheLastFile()
     {
@@ -827,6 +831,215 @@ public sealed class AutoTracerTests : IDisposable
         Gain(32, 500);
 
         Assert.False(_tracer.WantsRun(_game));
+    }
+
+    [Fact]
+    public void SmallMergeGainAllowsAnotherTraceAfterFiveGameStartsSinceTheLastValidRun()
+    {
+        Extra();
+        SeedRuns(8);
+        Gain(8, 17);
+        DateTimeOffset lastTrace = _rig.World.Now;
+        _rig.World.FileTimes[TraceWriter.RunPath(Raw, 8)] = lastTrace;
+
+        Assert.False(_tracer.WantsRun(_game));
+        for (int i = 1; i < 5; i++)
+        {
+            DateTimeOffset played = lastTrace.AddMinutes(i);
+            _rig.World.Now = played;
+            _rig.Status.MarkPlayed(_game.Name, _game.Source, AutoStage.Done, played);
+            Assert.False(_tracer.WantsRun(_game));
+        }
+
+        DateTimeOffset fifth = lastTrace.AddMinutes(5);
+        _rig.World.Now = fifth;
+        _rig.Status.MarkPlayed(_game.Name, _game.Source, AutoStage.Done, fifth);
+
+        Assert.True(_tracer.WantsRun(_game));
+    }
+
+    [Fact]
+    public void SmallMergeGainAllowsAnotherTraceAfterSevenDays()
+    {
+        Extra();
+        SeedRuns(3);
+        Gain(3, 17);
+        DateTimeOffset lastTrace = _rig.World.Now;
+        _rig.World.FileTimes[TraceWriter.RunPath(Raw, 3)] = lastTrace;
+
+        _rig.World.Now = lastTrace.AddDays(7).AddTicks(-1);
+        Assert.False(_tracer.WantsRun(_game));
+
+        _rig.World.Now = lastTrace.AddDays(7);
+        Assert.True(_tracer.WantsRun(_game));
+    }
+
+    [Fact]
+    public void GameUpdateReopensTraceLearningWithoutMergeGrowth()
+    {
+        Extra();
+        SeedRuns(3);
+        Gain(3, 17);
+        _rig.Status.Set(_game.Name, _game.Source, null, AutoStage.Discovered, "game updated, will trace again on next run");
+
+        Assert.True(_tracer.WantsRun(_game));
+    }
+
+    [Fact]
+    public void AnAntiCheatGameIsNeverTracedWhenAnUpdateReopensTraceLearning()
+    {
+        Extra();
+        SeedRuns(3);
+        Gain(3, 17);
+        _rig.Status.Set(_game.Name, _game.Source, null, AutoStage.Discovered, "game updated, will trace again on next run");
+        GameSettings vanguard = _game with { AntiCheat = "vanguard" };
+
+        Assert.True(_tracer.WantsRun(_game));
+        _tracer.Start(vanguard);
+
+        Assert.False(_tracer.Active);
+        Assert.Equal(0, _rig.World.TraceStarts);
+    }
+
+    [Fact]
+    public void RelearningAtTheRunFileLimitCompactsTheMergedTraceAndFreesANewRunNumber()
+    {
+        Extra(runs: 3, max: 8);
+        SeedRuns(AutoTracer.MaxRunFiles);
+        HashSet<(string Path, long Offset, long Length)> before = TraceBlocks(Raw);
+        _rig.World.FileTimes[TraceWriter.RunPath(Raw, AutoTracer.MaxRunFiles)] = _rig.World.Now.AddDays(-7);
+        Reads(Enumerable.Range(0, 20).Select(i => (8000L * MiB + i * 2L * MiB, 65536L)).ToArray());
+
+        _tracer.Start(_game);
+
+        Assert.True(_tracer.Active);
+        Assert.Equal(AutoTracer.MaxRunFiles - 1, AutoTracer.LastRunNumber(_game, File.Exists)); // 병합본을 기준으로 run 파일 번호를 당김
+        _rig.World.Running = false;
+        _tracer.Step();
+
+        Assert.True(File.Exists(TraceWriter.RunPath(Raw, AutoTracer.MaxRunFiles)));
+        Assert.False(File.Exists(TraceWriter.RunPath(Raw, AutoTracer.MaxRunFiles + 1)));
+        Assert.Equal(AutoTracer.MaxRunFiles, AutoTracer.LastRunNumber(_game, File.Exists));
+        HashSet<(string Path, long Offset, long Length)> after = TraceBlocks(Raw);
+        Assert.Subset(after, before); // 기존 병합본의 블록이 모두 남음
+        Assert.Contains((@"D:\Games\Foo\a.bin", 8000L * MiB, 65536L), after);
+    }
+
+    [Fact]
+    public void TheCapStopsTheSessionAtOnceButNormalizingAndSavingWaitForTheGameAndItsDiskNeighboursToExit()
+    {
+        bool neighbour = true;
+        AutoEnv env = _rig.World.Env();
+        env.GameRunningOnDisk = _ => neighbour;
+        var tracer = new AutoTracer(env, _rig.Status, _rig.Log, () => _rig.Settings) { MinRunBytes = 0 };
+        Reads((0, 65536));
+        tracer.Start(_game);
+        _rig.World.Procs = [(100, 1L << 20)];
+        _rig.World.Running = true;
+        tracer.Step();
+
+        _rig.World.Now += TimeSpan.FromSeconds(30);
+        tracer.Step(); // 시간 상한: 게임은 아직 실행 중
+        Assert.False(tracer.Active);
+        Assert.True(_trace.Stopped);
+        Assert.Equal(0, _rig.World.CanonicalizeCalls);
+        Assert.False(File.Exists(Raw));
+
+        tracer.Start(_game); // 저장 대기 중인 게임은 새로 시작하지 않음
+        Assert.Equal(1, _rig.World.TraceStarts);
+
+        _rig.World.Running = false; // 게임은 끝났지만 같은 디스크의 다른 등록 게임이 실행 중
+        tracer.Step();
+        Assert.Equal(0, _rig.World.CanonicalizeCalls);
+        Assert.False(File.Exists(Raw));
+
+        neighbour = false;
+        tracer.Step();
+        Assert.Equal(1, _rig.World.CanonicalizeCalls);
+        Assert.True(File.Exists(Raw));
+        tracer.Step();
+        Assert.Equal(1, _rig.World.CanonicalizeCalls); // 한 번만 저장
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("(time cap)", StringComparison.Ordinal) && l.Contains("read events saved", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AHeldTraceIsSavedOnceTheRegisteredExeEndsEvenIfAnUnregisteredProcessUnderTheFolderRemains()
+    {
+        Reads((0, 65536));
+        _tracer.Start(_game);
+        _rig.World.Procs = [(100, 1L << 20)];
+        _rig.World.Running = true;
+        _tracer.Step();
+        _rig.World.Now += TimeSpan.FromSeconds(30);
+        _tracer.Step(); // 시간 상한: 세션을 멈추고 게임이 끝나길 기다림
+        Assert.False(File.Exists(Raw));
+
+        _rig.World.Running = false;
+        _rig.World.RootPids = [200]; // 설치 폴더 아래 미등록 상주 프로세스는 실행 근거가 아님
+        _tracer.Step();
+
+        Assert.True(File.Exists(Raw));
+    }
+
+    [Fact]
+    public void AStartDuringTheDeferredNormalizationDoesNotOpenASessionAndTakeTheSameRunNumber()
+    {
+        var tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings) { MinRunBytes = 0 };
+        int startsDuringSave = -1;
+        _rig.World.OnCanonicalize = () =>
+        {
+            tracer.Start(_game); // 정규화 도중 같은 게임의 시작
+            startsDuringSave = _rig.World.TraceStarts;
+        };
+        Reads((0, 65536));
+        tracer.Start(_game);
+        _rig.World.Procs = [(100, 1L << 20)];
+        _rig.World.Running = true;
+        tracer.Step();
+        _rig.World.Now += TimeSpan.FromSeconds(30);
+        tracer.Step();
+        _rig.World.Running = false;
+
+        tracer.Step();
+
+        Assert.Equal(1, startsDuringSave);
+        Assert.True(File.Exists(Raw));
+        Assert.False(tracer.Active);
+    }
+
+    [Fact]
+    public void ShutdownSavesATraceHeldAfterTheCapInsteadOfLosingIt()
+    {
+        Reads((0, 65536));
+        _tracer.Start(_game);
+        _rig.World.Procs = [(100, 1L << 20)];
+        _rig.World.Running = true;
+        _tracer.Step();
+        _rig.World.Now += TimeSpan.FromSeconds(30);
+        _tracer.Step();
+        Assert.False(File.Exists(Raw));
+
+        _tracer.Shutdown();
+
+        Assert.True(File.Exists(Raw));
+    }
+
+    [Fact]
+    public void AMergeBuildsFromTheRunsAloneUnlessRunFilesWereRotatedOut()
+    {
+        Extra(runs: 1, max: 8);
+        SeedRuns(2);
+        TraceWriter.WriteFile(Raw, [new AsterCache.Core.Trace.TraceEvent(@"D:\Games\Foo\a.bin", 9000L * MiB, 65536)]); // 병합본에만 있는 옛 블록
+        Gain(2, 100);
+        Reads((8000L * MiB, 65536));
+
+        _tracer.Start(_game);
+        _rig.World.Running = false;
+        _tracer.Step();
+
+        HashSet<(string Path, long Offset, long Length)> merged = TraceBlocks(Raw);
+        Assert.Contains((@"D:\Games\Foo\a.bin", 8000L * MiB, 65536L), merged);
+        Assert.DoesNotContain((@"D:\Games\Foo\a.bin", 9000L * MiB, 65536L), merged);
     }
 
     [Theory]

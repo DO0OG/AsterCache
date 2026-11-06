@@ -34,6 +34,8 @@ public sealed class PinKeeper
     private readonly Dictionary<string, RecoveryPin> _recovery = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (string Root, string? Cheat)> _cheat = new(StringComparer.OrdinalIgnoreCase); // 게임별 고정 금지 판정 (없음 포함, 탐지 실패는 넣지 않음): 게임 루트가 바뀌면 무효
     private readonly HashSet<string> _cheatLogged = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyList<GameSettings> _games = []; // Reconcile·CheckMemory 가 마지막으로 받은 등록 게임 (다른 스레드가 읽으므로 Volatile)
+    private readonly Dictionary<string, bool> _deferred = new(StringComparer.OrdinalIgnoreCase); // 게임이 돌아서 미룬 고정 (afterRelocation 값): 게임이 끝난 뒤 다음 Reconcile·CheckMemory 에서 다시 시도
     private readonly HashSet<string> _holdLogged = new(StringComparer.OrdinalIgnoreCase); // 런처 보류 사유는 하나뿐이라 게임당 한 번만 남김
 
     public PinKeeper(PrewarmEnv env, ILog log, Func<DateTimeOffset>? now = null)
@@ -60,6 +62,13 @@ public sealed class PinKeeper
     /// 예열 성공 직후: 조건이 맞으면 그 게임의 존 파일을 고정합니다. afterRelocation 이고 그 드라이브가 회복 중이면 평소 RAM 하한·런처 보류 없이 회복 기간 고정을 합니다 (pin 을 false 로 명시한 게임 제외).
     public void TryPin(GameSettings game, bool afterRelocation = false)
     {
+        if (DiskHasRunningGame(game))
+        {
+            Defer(game, afterRelocation);
+            _log.Info($"{game.Name}: pin deferred (a game is running on the same disk; retried once it ends)"); // 경로·extent·파일 열기를 게임 디스크에서 하기 전에 멈춤
+            return;
+        }
+
         string drive = Path.GetPathRoot(game.OriginRoot) ?? string.Empty;
         bool recovering = afterRelocation && !(game.Prewarm.PinSet && !game.Prewarm.Pin) && Recovery?.IsRecovering(drive) == true;
         long ram = _env.PhysicalRamBytes();
@@ -123,21 +132,40 @@ public sealed class PinKeeper
         {
             IReadOnlyList<string> paths = _env.PinPaths(game);
             Fingerprint[] files = recovering ? [.. paths.Select(_env.FileStamp)] : []; // 고정 전에 재야 그 사이의 변경도 잡음
-            PinHandle handle = _env.OpenPin(paths);
-            if (_env.GameRunning(game))
+            if (DiskHasRunningGame(game)) // 경로 탐색 중에 같은 디스크 게임이 떴으면 파일을 열지 않음
             {
-                handle.Pin.Dispose(); // 고정하는 사이에 게임이 떴으면 바로 풂
-                _log.Info($"{game.Name}: pin dropped (game started while pinning)");
+                Defer(game, afterRelocation);
+                _log.Info($"{game.Name}: pin deferred (a game started on the same disk while resolving paths; retried once it ends)");
                 return;
             }
 
+            PinHandle handle = _env.OpenPin(paths);
+            if (DiskHasRunningGame(game))
+            {
+                handle.Pin.Dispose(); // 고정하는 사이에 같은 디스크 게임이 떴으면 바로 풀고 끝난 뒤 다시 시도
+                Defer(game, afterRelocation);
+                _log.Info($"{game.Name}: pin dropped (game started while pinning; retried once it ends)");
+                return;
+            }
+
+            bool duplicate;
             lock (_lock)
             {
-                _held[game.Name] = handle.Pin;
-                if (recovering)
+                duplicate = _held.ContainsKey(game.Name); // 다른 호출이 먼저 고정했으면 핸들을 덮어쓰지 않음
+                if (!duplicate)
                 {
-                    _recovery[game.Name] = new RecoveryPin(drive, _now(), files);
+                    _held[game.Name] = handle.Pin;
+                    if (recovering)
+                    {
+                        _recovery[game.Name] = new RecoveryPin(drive, _now(), files);
+                    }
                 }
+            }
+
+            if (duplicate)
+            {
+                handle.Pin.Dispose();
+                return;
             }
 
             _log.Info(recovering ? $"{game.Name}: pinned until drive recovers ({handle.Count} file(s))" : $"{game.Name}: pinned {handle.Count} file(s), {handle.Skipped} skipped");
@@ -145,6 +173,29 @@ public sealed class PinKeeper
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
         {
             _log.Warn($"{game.Name}: pin failed: {e.GetType().Name}");
+        }
+    }
+
+    // 게임이 끝난 뒤 다음 Reconcile·CheckMemory 가 다시 시도하도록 기록.
+    private void Defer(GameSettings game, bool afterRelocation)
+    {
+        lock (_lock)
+        {
+            _deferred[game.Name] = afterRelocation;
+        }
+    }
+
+    // 이 게임이나 같은 물리 디스크의 알려진 등록 게임이 도는가. 조회가 실패하면 보호 중으로 봄. 다른 게임 목록은 Reconcile·CheckMemory 가 받은 것 (서비스는 시작할 때 Worker 가 SetGames 로 먼저 줌).
+    private bool DiskHasRunningGame(GameSettings game)
+    {
+        try
+        {
+            IReadOnlyList<GameSettings> games = Volatile.Read(ref _games);
+            return _env.GameRunning(game) || games.Any(o => !string.Equals(o.Name, game.Name, StringComparison.OrdinalIgnoreCase) && _env.SameDisk(o.OriginRoot, game.OriginRoot) && _env.GameRunning(o));
+        }
+        catch (Exception)
+        {
+            return true;
         }
     }
 
@@ -213,9 +264,41 @@ public sealed class PinKeeper
         return cheat;
     }
 
+    // 게임이 돌아 미룬 고정을 게임이 끝났으면 다시 시도합니다 (설정에서 빠진 게임은 버림). 아직 돌면 그대로 둠.
+    private void RetryDeferred(IReadOnlyList<GameSettings> games)
+    {
+        KeyValuePair<string, bool>[] pending;
+        lock (_lock)
+        {
+            pending = [.. _deferred];
+        }
+
+        foreach ((string name, bool afterRelocation) in pending)
+        {
+            GameSettings? game = games.FirstOrDefault(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (game is not null && DiskHasRunningGame(game))
+            {
+                continue;
+            }
+
+            bool claimed;
+            lock (_lock)
+            {
+                claimed = _deferred.Remove(name); // Reconcile·CheckMemory 가 함께 돌아도 지운 호출 하나만 다시 시도
+            }
+
+            if (claimed && game is not null)
+            {
+                TryPin(game, afterRelocation);
+            }
+        }
+    }
+
     /// 설정을 다시 읽었을 때: pin 이 꺼졌거나 게임이 빠졌으면 풉니다.
     public void Reconcile(IReadOnlyList<GameSettings> games)
     {
+        Volatile.Write(ref _games, games);
+        RetryDeferred(games);
         long ram = _env.PhysicalRamBytes();
         foreach (string name in Held.Where(n => !games.Any(g => string.Equals(g.Name, n, StringComparison.OrdinalIgnoreCase) && !AntiCheat.ForbidsPin(g.AntiCheat) && (Wanted(g.Prewarm, ram) || (IsRecoveryPin(n) && !(g.Prewarm.PinSet && !g.Prewarm.Pin))))))
         {
@@ -226,6 +309,8 @@ public sealed class PinKeeper
     /// 재적용 틱마다: 가용 RAM 이 그 게임의 min_free_ram_mib 아래면 풉니다.
     public void CheckMemory(IReadOnlyList<GameSettings> games)
     {
+        Volatile.Write(ref _games, games);
+        RetryDeferred(games);
         IReadOnlyCollection<string> held = Held;
         if (held.Count == 0)
         {
@@ -249,6 +334,7 @@ public sealed class PinKeeper
         }
 
         DateTimeOffset now = _now();
+        IReadOnlyList<GameSettings> games = Volatile.Read(ref _games);
         foreach ((string name, RecoveryPin pin) in pins)
         {
             if (Recovery?.IsRecovering(pin.Drive) != true)
@@ -259,7 +345,8 @@ public sealed class PinKeeper
             {
                 Release(name, "recovery pin expired");
             }
-            else if (pin.Files.FirstOrDefault(f => ReapplyChecker.Changed(f, _env.FileStamp)) is { } changed)
+            else if (!(games.FirstOrDefault(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase)) is { } owner && DiskHasRunningGame(owner)) // 게임이 도는 동안은 고정 파일을 stat 하지 않음 (변경 점검은 게임이 끝난 뒤 다음 틱에)
+                && pin.Files.FirstOrDefault(f => ReapplyChecker.Changed(f, _env.FileStamp)) is { } changed)
             {
                 Release(name, $"file changed: {Path.GetFileName(changed.Path)}");
             }

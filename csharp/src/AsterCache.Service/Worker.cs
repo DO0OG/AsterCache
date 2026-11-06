@@ -495,8 +495,8 @@ public sealed class Worker : BackgroundService
                 return images[pid];
             }
 
-            bool IsRunning(GameSettings g) => DispatchEnv.IsGameRunning(g, procs, Image);
-            foreach (GameSettings g in _exits.Poll(_settings.Games, names, IsRunning))
+            bool UnderRoot(GameSettings g) => procs.Any(p => p.Pid != Environment.ProcessId && DispatchEnv.UnderRoot(g, Image(p.Pid)));
+            foreach (GameSettings g in _exits.Poll(_settings.Games, names, UnderRoot))
             {
                 OnGameExit(g);
             }

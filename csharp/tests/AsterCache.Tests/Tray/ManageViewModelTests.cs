@@ -211,6 +211,20 @@ public sealed class ManageViewModelTests : IDisposable
     }
 
     [Fact]
+    public void PartialPrewarmIsShownAsPartialAndNotAsPlainOk()
+    {
+        Register();
+        File.WriteAllText(Path.Combine(Plans, "mw4.plan.json"), "{}");
+        _cli.On("status", (args, _) => args.Contains("--plan")
+            ? CliResult.Parse("{\"plan\":{\"hot_clusters\":200,\"in_zone_clusters\":150,\"verdict\":\"contiguous\"}}")
+            : CliResult.Parse("{\"admin\":false,\"prewarm\":{\"games\":{\"mw4\":{\"at\":\"2026-11-02T01:02:03+00:00\",\"result\":\"ok\",\"reason\":null,\"bytes\":1073741824,\"seconds\":5.5,\"warmed_mib\":1904,\"hot_mib\":8000,\"partial\":true}}}}"));
+
+        Assert.True(_vm.RefreshStatus().Ok);
+
+        Assert.Contains("예열 ok · 부분 1904/8000 MiB", _vm.StatusLines(null).ToArray()[3]);
+    }
+
+    [Fact]
     public void GameWithoutPlanShowsDash()
     {
         Register();

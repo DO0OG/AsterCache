@@ -295,6 +295,31 @@ public sealed partial class AutoRelocatorTests
     }
 
     [Fact]
+    public void PartiallyAppliedPlanHoldingEmbeddedBrowserCacheFilesIsPlannedAgainOnceKeepingTheMovedParts()
+    {
+        PlanFile first = Make().Resolve(20000);
+        Assert.Equal("write_cap", Apply(first, Partial(32)).Stopped);
+        long moved = Vol.Moves.Sum(m => m.N);
+        string web = Path.Combine(Root, "Saved", "webcache", "data_0");
+        first.Stats[VolatileFiles.RuleKey] = 1L; // 규칙을 넓히기 전에 만든 계획: 브라우저 캐시 파일이 핫 순서와 지문에 들어 있음
+        (first with { Order = [.. first.Order, new PlanRange(web, 0, 4)], Fingerprints = [.. first.Fingerprints, new Fingerprint(web, 1, 1)] }).Save(_game.Plan);
+        WaitingForTheRest();
+        Vol.Moves.Clear();
+
+        Run(TimeSpan.FromMinutes(4));
+        RunUntilDone();
+
+        Assert.True(Entry.Stage == AutoStage.Done, Why());
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("source files changed since the plan", StringComparison.Ordinal)); // 브라우저 캐시의 지문 차이는 변경이 아님
+        Assert.Contains(_log.Lines, l => l.Contains("plan holds files the game rewrites by itself, planning again", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("partially applied plan replanned", StringComparison.Ordinal));
+        Assert.DoesNotContain(PlanFile.Load(_game.Plan).Order, o => VolatileFiles.Ignored(o.Path));
+        Assert.True(Vol.Moves.Sum(m => m.N) <= 80 - moved); // 이미 옮긴 조각은 다시 옮기지 않음
+        Assert.Single(JournalArchives());
+        AssertStableAfterRestart(Vol.Moves.Count); // 새 계획에는 규칙 버전 표지가 있어 되풀이하지 않음
+    }
+
+    [Fact]
     public void ARepeatedConflictHoldsFor30MinutesAcrossTicksRestartsAndNewPlanShas()
     {
         Assert.Equal("write_cap", Apply(Make().Resolve(20000), Partial(32)).Stopped);

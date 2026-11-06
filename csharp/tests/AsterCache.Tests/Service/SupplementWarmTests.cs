@@ -50,7 +50,7 @@ public sealed class SupplementWarmTests : IDisposable
         var p = new Prewarmer([game], _streamer, new PrewarmEnv
         {
             AvailableRamMib = () => _avail,
-            GameRunning = g => _running || (_helperRunning && DispatchEnv.IsGameRunning(g, [(1234, "helper.exe")], _ => Path.Combine(g.OriginRoot, "bin", "helper.exe"))),
+            GameRunning = g => _running || (_helperRunning && DispatchEnv.IsGameRunning(g, [(1234, "body.exe")])),
             ZoneBytes = g => Math.Min(100L, g.MaxStreamMib) * Mib,
             TraceExists = _ => true,
             DiskBytesPerSecond = _ => _disk,
@@ -125,9 +125,9 @@ public sealed class SupplementWarmTests : IDisposable
     }
 
     [Fact]
-    public void SupplementWaitsForAnUnregisteredProcessUnderTheGameRootToExit()
+    public void SupplementWaitsForTheSecondRegisteredExeToExit()
     {
-        GameSettings g = Game() with { OriginRoot = @"D:\Games\g" };
+        GameSettings g = Game() with { OriginRoot = @"D:\Games\g", ExeNames = ["g.exe", "body.exe"] }; // 런처 + 학습으로 더한 본체 이름, 런처는 이미 끝남
         Prewarmer p = Make(g);
         Assert.True(Assert.Single(p.RunServiceStart()).Ran);
         Assert.True(p.SupplementPending("g"));

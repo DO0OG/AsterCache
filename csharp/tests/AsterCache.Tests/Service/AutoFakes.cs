@@ -98,6 +98,9 @@ internal sealed class FakeWorld
     /// 이 exe 이름이 도는 중인 것으로 침 (Running 은 이름과 상관없이 모두).
     public HashSet<string> RunningExes { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+    /// AnyRunning 을 부를 때마다 (넘긴 이름 목록과 함께) 불리는 관찰용 후크.
+    public Action<IReadOnlyCollection<string>>? OnAnyRunning { get; set; }
+
     /// 폴더가 있는가 (거짓이면 드라이브가 분리된 것과 같음).
     public Func<string, bool> DirectoryExists { get; set; } = _ => true;
 
@@ -244,7 +247,11 @@ internal sealed class FakeWorld
         RunReadBytes = p => RunReadBytes(p),
         TraceFingerprint = p => TraceFingerprint(p),
         GameProcesses = _ => Procs,
-        AnyRunning = exes => Running || exes.Any(RunningExes.Contains),
+        AnyRunning = exes =>
+        {
+            OnAnyRunning?.Invoke(exes);
+            return Running || exes.Any(RunningExes.Contains);
+        },
         DirectoryExists = p => DirectoryExists(p),
         LooksLikeGame = p => LooksLikeGame(p),
         ExeFiles = p => ExeFiles.TryGetValue(p, out List<(string Path, long Size)>? list) ? list : [],

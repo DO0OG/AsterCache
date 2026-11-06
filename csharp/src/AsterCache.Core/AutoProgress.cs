@@ -15,7 +15,7 @@ public sealed record AutoProgress(int Discovered, int Planned, int Relocated, in
             all.Count,
             all.Count(g => File.Exists(Path.Combine(plansDir, g.Name + ".plan.json"))),
             all.Count(g => g.Stage == "done"),
-            all.Count(g => g.Detail?.Contains("prewarmed", StringComparison.Ordinal) == true),
+            all.Count(g => g.Detail?.Contains("prewarmed", StringComparison.Ordinal) == true && !g.Detail.Contains("prewarmed (partial", StringComparison.Ordinal)), // 부분 예열은 예열 완료로 세지 않음
             hits.Count == 0 ? null : (int)Math.Round(hits.Average(), MidpointRounding.AwayFromZero));
     }
 

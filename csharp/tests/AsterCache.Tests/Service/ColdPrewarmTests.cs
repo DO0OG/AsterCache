@@ -457,6 +457,7 @@ public sealed class ColdPrewarmTests : IDisposable
         PhysicalBytes = 16L << 30; // 4096 MiB
         GameSettings cold = Game("cold");
         GameSettings hot = Game("hot");
+        _streamer.BytesOf = g => (g.MaxStreamSet ? g.MaxStreamMib : 3000L) << 20; // 실제로 읽은 양
         var p = new Prewarmer([cold, hot], _streamer, new PrewarmEnv
         {
             AvailableRamMib = () => AvailableMib,
@@ -470,8 +471,8 @@ public sealed class ColdPrewarmTests : IDisposable
 
         IReadOnlyList<PrewarmResult> r = p.RunAll([cold, hot], "batch");
 
-        Assert.Equal([true, false], r.Select(x => x.Ran)); // 2000 + 3000 > 4096
-        Assert.Equal("batch memory budget", r[1].SkipReason);
+        Assert.Equal([true, true], r.Select(x => x.Ran)); // 2000 + 3000 > 4096: 둘째는 남은 2096 MiB 만 읽음 (부분 예열)
+        Assert.Equal((2096L, 3000L), p.PartialInfo("hot"));
     }
 
     [Fact]

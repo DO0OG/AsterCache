@@ -91,12 +91,12 @@ public sealed class PrewarmScoreTests : IDisposable
     [Fact]
     public void BatchTakesGamesInScoreOrderAndStopsAtTheBudget()
     {
-        var streamer = new FakeStreamer();
+        var streamer = new FakeStreamer { BytesOf = g => (g.MaxStreamSet ? g.MaxStreamMib : 1000L) << 20 }; // 실제로 읽은 양
         PrewarmSettings off = PrewarmSettings.Default with { OnServiceStart = false, MinFreeRamMib = 0 };
         GameSettings[] games = [Game("a", off), Game("b", off), Game("c", off)];
         var prewarm = new Prewarmer(games, streamer, new PrewarmEnv
         {
-            AvailableRamMib = () => 2500, // 존 1000 MiB 둘은 들어가고 (2000), 셋째는 3000 > 2500 이라 안 들어감
+            AvailableRamMib = () => 2500, // 존 1000 MiB 둘은 들어가고 (2000), 셋째는 남은 500 MiB 뿐이고 가용 − 예비 4096 이 모자라 부분 예열도 못 함
             GameRunning = _ => false,
             ZoneBytes = _ => 1000L << 20,
             TraceExists = _ => true,

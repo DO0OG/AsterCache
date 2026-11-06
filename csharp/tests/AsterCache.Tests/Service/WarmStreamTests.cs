@@ -539,10 +539,10 @@ public sealed class WarmStreamTests
     }
 
     [Theory]
-    [InlineData(3000L, true)]
-    [InlineData(3200L, false)]
-    [InlineData(null, false)]
-    public void InitialMemoryGateUsesTheActualReadSetInsteadOfTheZoneSize(long? readMib, bool ran)
+    [InlineData(3000L, false)] // 실제 읽을 집합 + 예비가 들어가면 통째로
+    [InlineData(3200L, true)] // 안 들어가면 건너뛰지 않고 들어가는 만큼만 (부분 예열)
+    [InlineData(null, true)]
+    public void InitialMemoryGateUsesTheActualReadSetInsteadOfTheZoneSizeAndOtherwiseReadsOnlyWhatFits(long? readMib, bool partial)
     {
         GameSettings a = Game("a");
         var p = new Prewarmer([a], new ReadSetStreamer(readMib is { } m ? m * Mib : null), new PrewarmEnv
@@ -555,8 +555,9 @@ public sealed class WarmStreamTests
 
         PrewarmResult r = p.Run(a, "test");
 
-        Assert.Equal(ran, r.Ran);
-        Assert.Equal(ran, r.SkipReason is null);
+        Assert.True(r.Ran);
+        Assert.Null(r.SkipReason);
+        Assert.Equal(partial, _log.Lines.Any(l => l.Contains(" partial ", StringComparison.Ordinal)));
     }
 
     [Fact]
@@ -612,6 +613,77 @@ public sealed class WarmStreamTests
             Assert.Contains(new ReadOp(path, 0, span), expanded);
             Assert.Equal(original, PrefetchStreamer.Ops(game));
             Assert.Equal([path], PrefetchStreamer.PinPaths(game));
+        }
+        finally
+        {
+            Directory.Delete(temp, true);
+        }
+    }
+
+    [Fact]
+    public void PartialPrewarmListCutsASingleOversizedRangeToTheCapInsteadOfSkippingIt()
+    {
+        string temp = Directory.CreateTempSubdirectory("aster-partial-cut-").FullName;
+        try
+        {
+            string root = Path.Combine(temp, "game");
+            Directory.CreateDirectory(root);
+            string path = Path.Combine(root, "big.bin");
+            File.WriteAllBytes(path, new byte[8 * (int)Mib]);
+            string trace = Path.Combine(temp, "game.prefetch.json");
+            string planPath = Path.Combine(temp, "game.plan.json");
+            GameSettings game = Game("a") with { OriginRoot = root, AllowedRoots = [root], Trace = trace, Plan = planPath, MaxStreamMib = 2, MaxStreamSet = true }; // 8 MiB 단일 범위, 상한 2 MiB (8000/1904 의 축소판)
+            new PlanFile(PlanFile.CurrentVersion, root, PlanFile.SplitDrive(root), 4096, 65536,
+                new PlanZone(0, 2048), [], [], [], new JObject()).Save(planPath);
+            PlanOutput.SavePrefetch(trace, [new TraceEvent(path, 0, 8 * Mib)], []);
+
+            (List<ReadOp> partial, long gaps, bool fits) = PrefetchStreamer.PrewarmOps(game, 0); // 예산 0 = 부분 예열
+
+            Assert.True(fits);
+            Assert.Equal(0, gaps);
+            Assert.Equal(new ReadOp(path, 0, 2 * Mib), Assert.Single(partial)); // 앞 2 MiB 를 읽음
+            Assert.Empty(PrefetchStreamer.PrewarmOps(game, 1 << 30).Ops); // 부분 예열이 아닌 경로는 그대로 (상한보다 큰 범위는 건너뜀)
+        }
+        finally
+        {
+            Directory.Delete(temp, true);
+        }
+    }
+
+    [Fact]
+    public void PartialRewarmSamplesAreChosenOnlyInsideTheCutFrontThatWasRead()
+    {
+        string temp = Directory.CreateTempSubdirectory("aster-partial-probe-").FullName;
+        try
+        {
+            string root = Path.Combine(temp, "game");
+            Directory.CreateDirectory(root);
+            string big = Path.Combine(root, "big.bin");
+            string a = Path.Combine(root, "a.bin");
+            string b = Path.Combine(root, "b.bin");
+            foreach (string f in new[] { big, a, b })
+            {
+                File.WriteAllBytes(f, new byte[8 * (int)Mib]);
+            }
+
+            string trace = Path.Combine(temp, "game.prefetch.json");
+            string planPath = Path.Combine(temp, "game.plan.json");
+            new PlanFile(PlanFile.CurrentVersion, root, PlanFile.SplitDrive(root), 4096, 65536,
+                new PlanZone(0, 2048), [], [], [], new JObject()).Save(planPath);
+            GameSettings Cap(int mib) => Game("a") with { OriginRoot = root, AllowedRoots = [root], Trace = trace, Plan = planPath, MaxStreamMib = mib, MaxStreamSet = true };
+
+            // 단일 큰 범위 (8 MiB) 를 2 MiB 로 자른 부분 예열: 표본은 앞 2 MiB 안
+            PlanOutput.SavePrefetch(trace, [new TraceEvent(big, 0, 8 * Mib)], []);
+            List<(string Path, long Offset, int Bytes)> single = PrefetchStreamer.PartialProbeSamples(Cap(2));
+            Assert.NotEmpty(single);
+            Assert.All(single, s => Assert.True(s.Path == big && s.Offset + s.Bytes <= 2 * Mib));
+            Assert.Empty(CacheProbe.PickSamples(PrefetchStreamer.Ops(Cap(2)))); // 자르지 않은 목록은 큰 범위를 건너뛰어 표본이 없음
+
+            // 여러 범위 (3 MiB + 3 MiB) 를 4 MiB 로 자른 부분 예열: 첫 범위 전체와 둘째의 앞 1 MiB 안
+            PlanOutput.SavePrefetch(trace, [new TraceEvent(a, 0, 3 * Mib), new TraceEvent(b, 0, 3 * Mib)], []);
+            List<(string Path, long Offset, int Bytes)> multi = PrefetchStreamer.PartialProbeSamples(Cap(4));
+            Assert.NotEmpty(multi);
+            Assert.All(multi, s => Assert.True(s.Path == a && s.Offset + s.Bytes <= 3 * Mib || s.Path == b && s.Offset + s.Bytes <= 1 * Mib));
         }
         finally
         {

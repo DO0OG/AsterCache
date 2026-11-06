@@ -76,7 +76,7 @@ public static class PlanGuards
             }
         }
 
-        foreach (Fingerprint fp in plan.Fingerprints)
+        foreach (Fingerprint fp in plan.Fingerprints.Where(f => !VolatileFiles.Ignored(f.Path))) // 게임이 스스로 다시 쓰는 파일은 지문 비교에서 뺌 (계획 변경 판정과 같은 규칙)
         {
             Fingerprint now = hooks.Stat(fp.Path);
             if (now.Size != fp.Size || now.MtimeNs != fp.MtimeNs)

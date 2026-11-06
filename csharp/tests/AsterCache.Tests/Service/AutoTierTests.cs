@@ -291,31 +291,30 @@ public sealed class AutoTierTests : IDisposable
     {
         SetTrace();
         AsterSettings s = Settings();
-        _world.RootPids.Add(77);
-        _world.DescribeBlockers = g => g.Name == "Foo" ? @"helper.exe(77) D:\Games\Foo\helper.exe" : null;
+        _world.RunningExes.Add("foo.exe");
+        _world.DescribeBlockers = g => g.Name == "Foo" ? @"foo.exe(77) D:\Games\Foo\foo.exe" : null;
 
+        bool Logged(string l) => l.Contains(@"ssd tier skipped while a game on the same disk is running; blocking processes: Foo: foo.exe(77) D:\Games\Foo\foo.exe", StringComparison.Ordinal);
         IdleTicks(s);
+        int first = _log.Lines.Count(Logged);
         IdleTicks(s);
 
-        Assert.Single(_log.Lines, l => l.Contains(@"ssd tier skipped while a game on the same disk is running; blocking processes: Foo: helper.exe(77) D:\Games\Foo\helper.exe", StringComparison.Ordinal));
+        Assert.InRange(first, 1, 2); // 게임별 판정과 같은 디스크 판정이 키마다 한 번씩
+        Assert.Equal(first, _log.Lines.Count(Logged)); // 틱마다 반복하지 않음
     }
 
     [Fact]
-    public void UnregisteredProcessUnderTheGameRootBlocksTieringLikeARunningGame()
+    public void UnregisteredProcessUnderTheGameRootDoesNotBlockTiering()
     {
         SetTrace();
         AsterSettings s = Settings();
-        _world.RootPids.Add(77); // 등록 exe 가 아닌 게임 폴더 아래 프로세스
-        IdleTicks(s);
-        Assert.Empty(_fs.Links);
-
-        _world.RootPids.Clear();
+        _world.RootPids.Add(77); // 등록 exe 가 아닌 게임 폴더 아래 프로세스 (상주 프로그램)
         IdleTicks(s);
         Assert.True(Linked(@"D:\Games\Foo\a.bin"));
     }
 
     [Fact]
-    public void UnregisteredProcessUnderAnotherGamesRootOnTheSameDiskCancelsTheTierMidApply()
+    public void RegisteredExeOfAnotherGameOnTheSameDiskStartingMidApplyCancelsTheTier()
     {
         SetTrace();
         AsterSettings s = Settings();
@@ -325,16 +324,14 @@ public sealed class AutoTierTests : IDisposable
         bool seen = false;
         _fs.AfterCopy = (_, _) =>
         {
-            _world.RootPidsOf = g =>
+            _world.OnAnyRunning = exes =>
             {
-                if (g.Name == "Bar" && Interlocked.Increment(ref polls) >= 2) // 첫 판정이 취소를 건 뒤의 다음 판정까지 기다림
+                if (exes.Contains("bar.exe") && Interlocked.Increment(ref polls) >= 2) // 첫 판정이 취소를 건 뒤의 다음 판정까지 기다림
                 {
                     observed.Set();
                 }
-
-                return g.Name == "Bar";
             };
-            _world.RootPids.Add(77); // 같은 D: 의 다른 게임 Bar 폴더 아래 등록 exe 가 아닌 프로세스: 시작 알림은 오지 않음
+            _world.RunningExes.Add("bar.exe"); // 같은 D: 의 다른 게임 Bar 의 등록 exe 가 떴지만 시작 알림은 오지 않음
             seen = observed.Wait(TimeSpan.FromSeconds(5));
         };
 
@@ -419,19 +416,19 @@ public sealed class AutoTierTests : IDisposable
     }
 
     [Fact]
-    public void RevertIsDeferredWhileAnUnregisteredProcessRunsUnderAGameRootOnTheSameDisk()
+    public void RevertIsDeferredWhileARegisteredExeRunsOnTheSameDisk()
     {
         SetTrace();
         IdleTicks(Settings());
         Assert.True(Linked(@"D:\Games\Foo\a.bin"));
-        _world.RootPids.Add(77); // 등록 exe 가 아닌 게임 폴더 아래 프로세스
+        _world.RunningExes.Add("foo.exe");
 
         _tier.Tick(Settings(on: false), false, _gate, default); // 꺼짐
 
         Assert.True(Linked(@"D:\Games\Foo\a.bin")); // 링크로 열린 파일이 있을 수 있어 미룸
         Assert.Single(_log.Lines, l => l.Contains("Foo: ssd tier revert deferred (disabled)"));
 
-        _world.RootPids.Clear();
+        _world.RunningExes.Clear();
         _tier.Tick(Settings(on: false), false, _gate, default);
         Assert.Empty(_fs.Links);
     }

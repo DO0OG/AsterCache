@@ -35,7 +35,7 @@ public sealed class AutoMode
         Status = status;
         _log = log;
         _settings = settings;
-        env.GameRunningOnDisk ??= drive => env.AnyRunning([.. _settings.Games.Where(g => env.SameDisk(drive, g.OriginRoot)).SelectMany(g => g.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)]) || _settings.Games.Any(g => env.SameDisk(drive, g.OriginRoot) && env.RootPids(g).Count > 0); // 회복 표본은 같은 물리 디스크에서 게임이 도는 동안 시작하지 않음
+        env.GameRunningOnDisk ??= drive => env.AnyRunning([.. _settings.Games.Where(g => env.SameDisk(drive, g.OriginRoot)).SelectMany(g => g.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)]); // 회복 표본은 같은 물리 디스크에서 게임이 도는 동안 시작하지 않음
         _registry = new AutoRegistry(editor, env, status, log, () => _settings);
         _feed = new ProfileFeed(Path.GetDirectoryName(editor.ConfigPath) ?? string.Empty, feedHttp ?? new HttpFeedClient(), log, env.Now, env.ExeFiles);
         _tracer = new AutoTracer(env, status, log, () => _settings);

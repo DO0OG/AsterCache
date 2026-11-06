@@ -184,11 +184,11 @@ public sealed class AutoTier
         RefreshBytes(next.Name);
     }
 
-    // 등록 exe 가 돌거나 게임 설치 루트 아래 프로세스가 도는 게임이 있는지 (AutoRelocator.AnyGameRunning 과 같은 판정).
+    // 등록 exe 가 도는 게임이 있는지 (AutoRelocator.AnyGameRunning 과 같은 판정).
     private bool AnyGameRunning(IReadOnlyList<GameSettings> games)
     {
         string key = string.Join(",", games.Select(x => x.Name));
-        if (_env.AnyRunning([.. games.SelectMany(x => x.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)]) || games.Any(x => _env.RootPids(x).Count > 0))
+        if (_env.AnyRunning([.. games.SelectMany(x => x.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)]))
         {
             _blockers.Note(key, "ssd tier skipped", games);
             return true;

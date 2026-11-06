@@ -149,7 +149,7 @@ public sealed class Rewarmer
         ProbeResult? probe;
         try
         {
-            probe = _prewarm.ColdSamples(g) is { } samples ? _env.ProbeSamples(samples) : _env.ProbeReadMs(g); // 기록 없이 예열한 게임은 그때 읽은 파일 목록에서 고른 표본
+            probe = _prewarm.ColdSamples(g) is { } samples ? _env.ProbeSamples(samples) : _prewarm.ProbeFront(g); // 기록 없이 예열한 게임은 그때 읽은 파일 목록에서 고른 표본
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
         {
@@ -164,7 +164,11 @@ public sealed class Rewarmer
         else if (_prewarm.SupplementPending(g.Name))
         {
             NoteCheck(g, "supplement", $"{g.Name}: rewarm check: the rest of the hot set is not read yet, supplementing once the drive has stayed idle"); // 부분 예열 뒤에는 표본이 cold 든 warm 이든 전체 재예열로 가지 않고, 보충은 SupplementTick 과 같은 연속 유휴 판정을 거침
-            _prewarm.SupplementWhenIdle(g, ct);
+            if (!_prewarm.SupplementWhenIdle(g, ct) && probe.Cold && _prewarm.MemoryPartialPending(g.Name))
+            {
+                NoteCheck(g, "partial-cold", $"{g.Name}: rewarm check: the part read into memory went cold ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms), reading it again (cooldown ignored)"); // 메모리가 모자라 앞부분만 읽은 게임: 읽은 구간이 밀려났을 때만 다시 (남은 구간은 표본에 넣지 않음)
+                _prewarm.RewarmGame(g, ct);
+            }
         }
         else if (!probe.Cold)
         {

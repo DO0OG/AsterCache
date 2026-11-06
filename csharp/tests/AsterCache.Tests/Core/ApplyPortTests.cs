@@ -223,6 +223,16 @@ public sealed class ApplyPortTests : ApplyTestBase
     }
 
     [Fact]
+    public void ChangedEmbeddedBrowserCacheFileDoesNotRejectThePlan()
+    {
+        PlanFile p = Make();
+        string web = Path.Combine(Root, "Saved", "webcache", "data_0");
+        PlanFile withWeb = p with { Fingerprints = [.. p.Fingerprints, new Fingerprint(web, 12345, 678)] }; // 지금은 없는 파일: 지문이 다름
+
+        Assert.Null(Record.Exception(() => Apply(withWeb))); // source_changed 로 거절되지 않음
+    }
+
+    [Fact]
     public void PathOutsideRootAndChangedFileRejected()
     {
         PlanFile p = Make();

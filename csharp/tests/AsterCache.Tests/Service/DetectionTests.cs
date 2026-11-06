@@ -29,11 +29,14 @@ internal sealed class FakeStreamer : IGameStreamer
 
     public Exception? Throw { get; set; }
 
+    /// 읽었다고 알릴 바이트 (기본 100): 예열의 실제 읽은 양 기록·묶음 예산 차감을 시험하려고 현실적인 값을 줄 때 씀.
+    public Func<GameSettings, long>? BytesOf { get; set; }
+
     public StreamStats Stream(GameSettings game)
     {
         Calls.Enqueue((game.Name, System.Diagnostics.Stopwatch.GetTimestamp()));
         Seen.Enqueue(game);
-        return Throw is null ? new StreamStats(100, 2, 0, 0.01) : throw Throw;
+        return Throw is null ? new StreamStats(BytesOf?.Invoke(game) ?? 100, 2, 0, 0.01) : throw Throw;
     }
 }
 

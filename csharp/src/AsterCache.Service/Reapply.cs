@@ -318,7 +318,7 @@ public sealed class ReapplyGate
     /// gameRunning 판정을 다시 보는 간격 (기본 2 초): 시험이 줄임.
     public TimeSpan RunningPoll { get; init; } = TimeSpan.FromSeconds(2);
 
-    /// 이름 기반 시작 알림이 놓치는 미등록 하위 exe 를 잡으려고, gameRunning 을 주면 RunningPoll 마다 불러 참이면 같은 취소를 겁니다 (한 조각을 끝낸 뒤 멈춤, 저널은 그대로).
+    /// 시작 알림이 놓친 등록 exe 를 잡으려고, gameRunning 을 주면 RunningPoll 마다 불러 참이면 같은 취소를 겁니다 (한 조각을 끝낸 뒤 멈춤, 저널은 그대로).
     public T Run<T>(CancellationToken stop, Func<CancellationToken, T> work, Func<bool>? gameRunning = null)
     {
         CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(stop);

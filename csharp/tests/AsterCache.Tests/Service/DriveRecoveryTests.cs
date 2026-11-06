@@ -291,7 +291,9 @@ public sealed class DriveRecoveryTests
     private (DriveRecovery Recovery, AutoStatus Status) Open(string path)
     {
         var status = new AutoStatus(path, _log, () => _w.Now);
-        return (new DriveRecovery(_w.Env(), _log, status), status);
+        AutoEnv env = _w.Env();
+        env.GameRunningOnDisk = drive => _gameRoots.Any(root => _w.SameDisk(drive, root));
+        return (new DriveRecovery(env, _log, status), status);
     }
 
     private static string StatusPath(TempDir dir) => dir.Combine("auto_status.json");
@@ -353,6 +355,36 @@ public sealed class DriveRecoveryTests
 
         Assert.False(second.IsRecovering(Drive)); // 시작 15 분 뒤
         Assert.Empty(_probed);
+    }
+
+    [Fact]
+    public void PausedTrackStaysPausedAcrossRestartsUntilTheFirstPoll()
+    {
+        using var dir = new TempDir();
+        (DriveRecovery first, _) = Open(StatusPath(dir));
+        DateTimeOffset until = _w.Now + TimeSpan.FromMinutes(60);
+        first.Begin(Drive, null, TimeSpan.FromMinutes(60));
+        _gameRoots.Add(@"E:\Games\X");
+        _w.Now += TimeSpan.FromMinutes(2);
+        first.Poll(); // 멈춤 저장 (PausedSince = 2 분 시점)
+        DateTimeOffset pausedAt = _w.Now;
+
+        _w.Now += TimeSpan.FromMinutes(30);
+        (_, AutoStatus status) = Open(StatusPath(dir)); // 첫 Poll 전에 종료·재복원을 두 번 되풀이
+        _w.Now += TimeSpan.FromMinutes(20);
+        (DriveRecovery third, AutoStatus status3) = Open(StatusPath(dir));
+
+        Assert.Equal(pausedAt, Assert.Single(status.DriveRecoveries()).PausedSince);
+        DriveRecoveryRecord saved = Assert.Single(status3.DriveRecoveries());
+        Assert.Equal((pausedAt, until), (saved.PausedSince, saved.Until)); // 실행 상태로 바뀌지 않아 플레이 시간이 차감되지 않음
+
+        _gameRoots.Clear();
+        third.Poll(); // 첫 실행 판정: 이제 이어감 (잔여 58 분)
+        Assert.Null(Assert.Single(status3.DriveRecoveries()).PausedSince);
+        _w.Now += TimeSpan.FromMinutes(57);
+        Assert.True(third.IsRecovering(Drive));
+        _w.Now += TimeSpan.FromMinutes(1);
+        Assert.False(third.IsRecovering(Drive));
     }
 
     [Fact]
@@ -841,7 +873,7 @@ public sealed class DriveRecoveryTests
 
         Assert.Empty(_probed); // 읽기 0 바이트
         Assert.True(_r.IsRecovering(Drive));
-        Assert.Single(_log.Lines, l => l.Contains("aborted (game running)", StringComparison.Ordinal)); // 게임이 끝날 때까지 로그는 한 번
+        Assert.Single(_log.Lines, l => l.Contains("recovery clock paused (game running)", StringComparison.Ordinal)); // 게임이 끝날 때까지 로그는 한 번 (표본을 시작하지도 않음)
 
         _gameRoots.Clear();
         Pass(2);

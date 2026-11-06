@@ -116,6 +116,12 @@ internal sealed class FakeWorld
 
     public int TraceStarts { get; private set; }
 
+    /// 정규화 (경로 해석·stat) 를 부른 횟수.
+    public int CanonicalizeCalls { get; private set; }
+
+    /// 트레이스 정규화 도중 불리는 관찰용 후크 (경쟁 시험용).
+    public Action? OnCanonicalize { get; set; }
+
     /// 마지막 StartTrace 에 넘어온 선행 읽기 알림 (학습이 꺼졌으면 null).
     public LiveListener? Listener { get; private set; }
 
@@ -261,7 +267,12 @@ internal sealed class FakeWorld
             Listener = listener;
             return StartTraceThrows is null ? Session ?? throw new InvalidOperationException("Session") : throw StartTraceThrows;
         },
-        Canonicalize = e => e.ToList(),
+        Canonicalize = e =>
+        {
+            CanonicalizeCalls++;
+            OnCanonicalize?.Invoke();
+            return e.ToList();
+        },
         PrefetchBoot = g =>
         {
             PrefetchCalls.Add(g.Name);

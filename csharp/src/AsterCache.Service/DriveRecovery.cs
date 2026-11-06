@@ -104,12 +104,19 @@ public sealed class DriveRecovery : IDriveRecovery
         public int Rotation { get; set; } = 1; // 기준은 0 번 칸에서 쟀음
 
         public RecoveryVerdict? Verdict { get; set; }
+
+        /// 같은 물리 디스크에서 게임이 도는 동안 경과를 멈춘 시작 시점 (Stopwatch 틱), 멈추지 않았으면 null. 멈춘 시간은 Paused 에 쌓여 경과에서 빠짐.
+        public long? PausedAt { get; set; }
+
+        public TimeSpan Paused { get; set; }
+
+        public DateTimeOffset? PausedSince { get; set; } // 멈춘 시점의 시계 (저장용)
     }
 
     private Track NewTrack(DriveBaseline? baseline, DateTimeOffset started, TimeSpan limit, TimeSpan? hardLimit = null) =>
         new(baseline, started, limit, TimeSpan.FromTicks(Math.Max(0, (_env.Now() - started).Ticks)), _env.Ticks(), baseline is null ? limit : hardLimit ?? limit);
 
-    private TimeSpan Elapsed(Track t) => t.Offset + System.Diagnostics.Stopwatch.GetElapsedTime(t.StartTicks, _env.Ticks());
+    private TimeSpan Elapsed(Track t) => t.Offset + System.Diagnostics.Stopwatch.GetElapsedTime(t.StartTicks, t.PausedAt ?? _env.Ticks()) - t.Paused;
 
     public bool IsRecovering(string drive)
     {
@@ -178,6 +185,8 @@ public sealed class DriveRecovery : IDriveRecovery
         {
             foreach ((string key, Track t) in _active.ToList())
             {
+                bool protectedNow = GameRunning(key);
+                SetPaused(key, t, protectedNow); // 게임이 도는 동안은 플레이 시간이 상한을 깎지 않게 경과를 멈춤
                 TimeSpan elapsed = Elapsed(t);
                 if (elapsed >= t.HardLimit)
                 {
@@ -200,7 +209,7 @@ public sealed class DriveRecovery : IDriveRecovery
                     _log.Info($"drive {key} recovery not confirmed at the {(int)t.Limit.TotalMinutes} min limit, relocation stays on hold until recovered or {(int)t.HardLimit.TotalMinutes} min");
                 }
 
-                if (t.Baseline is not null && elapsed >= t.Next)
+                if (t.Baseline is not null && elapsed >= t.Next && !protectedNow)
                 {
                     due.Add((key, t));
                 }
@@ -215,9 +224,15 @@ public sealed class DriveRecovery : IDriveRecovery
 
     private void Step(string key, Track t)
     {
-        (double? zone, double? reference)? got = Sample(key, t.Baseline!, t.Rotation++);
+        (double? zone, double? reference)? got = Sample(key, t.Baseline!, t.Rotation, out bool deferred);
         lock (_lock)
         {
+            if (deferred)
+            {
+                return; // 게임 때문에 미룬 회차: 다음 시각·칸 순서·연속 횟수를 쓰지 않고 게임이 끝난 뒤 처음부터
+            }
+
+            t.Rotation++;
             TimeSpan now = Elapsed(t);
             t.Next = now + SampleEvery;
             if (!_active.TryGetValue(key, out Track? cur) || cur != t)
@@ -279,6 +294,14 @@ public sealed class DriveRecovery : IDriveRecovery
     {
         lock (_lock)
         {
+            foreach ((string key, Track t) in _active)
+            {
+                if (_env.SameDisk(gameDrive, key))
+                {
+                    SetPaused(key, t, true); // 시작 알림이 감시 주기보다 빠르므로 여기서 먼저 멈춤 (Poll 이 실제 실행 여부로 다시 판정)
+                }
+            }
+
             foreach ((string key, CancellationTokenSource cts) in _samples)
             {
                 if (_env.SameDisk(gameDrive, key))
@@ -290,8 +313,10 @@ public sealed class DriveRecovery : IDriveRecovery
     }
 
     // 디스크가 바쁘거나 (읽을 수 없어도) 표본이 실패하거나 취소되면 null. 존과 참조 사이에 디스크 활동을 다시 봅니다.
-    private (double? Zone, double? Ref)? Sample(string key, DriveBaseline b, int rotation)
+    // deferred: 게임이 돌거나 시작해서 시작하지 않았거나 멈춘 회차 (판정 불가이고 회차를 쓰지 않음).
+    private (double? Zone, double? Ref)? Sample(string key, DriveBaseline b, int rotation, out bool deferred)
     {
+        deferred = false;
         using var cts = new CancellationTokenSource();
         lock (_lock)
         {
@@ -305,6 +330,7 @@ public sealed class DriveRecovery : IDriveRecovery
         {
             if (GameRunning(key))
             {
+                deferred = true;
                 lock (_lock)
                 {
                     reason = _gameLogged.Add(key) ? "game running" : null; // 게임이 도는 동안은 표본을 시작하지 않음 (처리량이 0 이어도)
@@ -328,10 +354,12 @@ public sealed class DriveRecovery : IDriveRecovery
             if (b.Zone is not null && b.Ref is not null && zone is not null && (cts.IsCancellationRequested || GameRunning(key) || Busy(_env, key)))
             {
                 reason = cts.IsCancellationRequested ? "game started" : GameRunning(key) ? "game running" : "disk busy between samples";
+                deferred = reason != "disk busy between samples";
                 return null;
             }
 
             double? reference = b.Ref is { } r ? _env.ProbeMbps(key, r.Lcn + step, round) : null;
+            deferred = cts.IsCancellationRequested;
             return (b.Zone is not null && zone is null) || (b.Ref is not null && reference is null) ? null : (zone, reference);
         }
         catch (Exception e) when (e is not OperationCanceledException)
@@ -356,8 +384,44 @@ public sealed class DriveRecovery : IDriveRecovery
     // 디스크 활동을 못 읽거나 임계 이상이면 바쁨 (기준 측정도 같은 판정을 씀).
     internal static bool Busy(AutoEnv env, string key) => env.DiskBytesPerSecond(key) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond;
 
-    // 같은 물리 디스크에서 등록 게임이 도는 중인가 (AutoEnv.GameRunningOnDisk 가 연결되지 않았으면 아님).
-    private bool GameRunning(string key) => _env.GameRunningOnDisk?.Invoke(key) == true;
+    // 같은 물리 디스크에서 등록 게임이 도는 중인가. 판정 함수가 연결되지 않았거나 조회가 실패하면 보호 중으로 봄 (게임 디스크를 읽지 않는 쪽).
+    private bool GameRunning(string key)
+    {
+        try
+        {
+            return _env.GameRunningOnDisk?.Invoke(key) ?? true;
+        }
+        catch (Exception)
+        {
+            return true;
+        }
+    }
+
+    // 호출하는 쪽이 잠금을 잡고 있어야 합니다. 멈추거나 이어갈 때만 저장 (멈춘 동안 재시작해도 플레이 시간이 다시 깎이지 않게 잔여 기준으로 남김).
+    private void SetPaused(string key, Track t, bool paused)
+    {
+        if (paused == (t.PausedAt is not null))
+        {
+            return;
+        }
+
+        if (paused)
+        {
+            t.PausedAt = _env.Ticks();
+            t.PausedSince = _env.Now();
+            _log.Info($"drive {key} recovery clock paused (game running)");
+        }
+        else
+        {
+            t.Paused += System.Diagnostics.Stopwatch.GetElapsedTime(t.PausedAt!.Value, _env.Ticks());
+            t.PausedAt = null;
+            t.PausedSince = null;
+            _ = _gameLogged.Remove(key);
+            _log.Info($"drive {key} recovery clock resumed, {(int)(t.HardLimit - Elapsed(t)).TotalMinutes} min left");
+        }
+
+        Save(key, t);
+    }
 
     private static bool Suspect(ProbeSpot? baseline, double? now) => baseline is { } b && now > b.Mbps * SuspectFactor;
 
@@ -395,8 +459,12 @@ public sealed class DriveRecovery : IDriveRecovery
         }
     }
 
-    private void Save(string key, Track t) =>
-        _status?.SetDriveRecovery(new DriveRecoveryRecord(key, t.Started, t.Started + t.Limit, t.Baseline?.Zone, t.Baseline?.Ref, t.Verdict?.ToString().ToLowerInvariant(), t.HardLimit > t.Limit ? t.Started + t.HardLimit : null));
+    // Started 는 멈춘 시간을 뺀 가상 시작: 멈춘 동안은 멈춘 시점 (PausedSince) 기준으로 남아 잔여 시간이 시계를 따라 줄지 않음.
+    private void Save(string key, Track t)
+    {
+        DateTimeOffset start = t.PausedSince is { } p ? p - Elapsed(t) : t.Started + t.Paused;
+        _status?.SetDriveRecovery(new DriveRecoveryRecord(key, start, start + t.Limit, t.Baseline?.Zone, t.Baseline?.Ref, t.Verdict?.ToString().ToLowerInvariant(), t.HardLimit > t.Limit ? start + t.HardLimit : null, t.PausedSince));
+    }
 
     // 기준값이 있고 전부 유한한 양수이며 디스크 순차 상한 이하인가 (아니면 판정할 수 없음: 상한 초과 기준은 캐시 적중 의심).
     private static bool ValidBaseline(DriveBaseline b) =>
@@ -419,12 +487,13 @@ public sealed class DriveRecovery : IDriveRecovery
         foreach (DriveRecoveryRecord r in _status.DriveRecoveries())
         {
             string key = Key(r.Drive);
+            DateTimeOffset at = r.PausedSince ?? now; // 멈춘 채 저장됐으면 그 시점의 잔여 시간 (멈춘 동안 지난 시간은 깎지 않음)
             TimeSpan limit = r.Until - r.Started;
-            TimeSpan left = r.Until - now;
+            TimeSpan left = r.Until - at;
             DriveBaseline? baseline = new DriveBaseline(r.Zone, r.Ref) is var b && ValidBaseline(b) ? b : null;
             TimeSpan hardLimit = baseline is not null && r.HardUntil is { } hardUntil ? hardUntil - r.Started : limit; // 상한 뒤에도 보류 중이던 추적은 절대 상한까지 되살림
-            TimeSpan hardLeft = baseline is not null && r.HardUntil is { } hu ? hu - now : left;
-            if (limit <= TimeSpan.Zero || hardLeft <= TimeSpan.Zero)
+            TimeSpan hardLeft = baseline is not null && r.HardUntil is { } hu ? hu - at : left;
+            if (hardLeft <= TimeSpan.Zero) // 상한 잔여가 0 이어도 절대 상한이 남았으면 되살림 (Until == Started 로 저장된 만료 추적 포함)
             {
                 _finished[key] = now;
                 _status.ClearDriveRecovery(r.Drive);
@@ -443,8 +512,13 @@ public sealed class DriveRecovery : IDriveRecovery
             t.Verdict = Enum.TryParse(r.Verdict, true, out RecoveryVerdict v) ? v : null;
             t.Expired = left == TimeSpan.Zero && baseline is not null;
             t.Next = TimeSpan.Zero; // 시작 직후 한 번 바로 잼 (바쁘면 건너뜀)
+            if (r.PausedSince is { } pausedSince)
+            {
+                (t.PausedAt, t.PausedSince) = (_env.Ticks(), pausedSince); // 멈춘 채 저장됐으면 첫 Poll 의 실행 판정까지 멈춤 유지 (그 전에 다시 종료해도 PausedSince 를 잃지 않음)
+            }
+
             _active[key] = t;
-            Save(key, t); // Started = now, Until = now + left 로 저장값을 맞춤
+            Save(key, t); // Started = now, Until = now + left 로 저장값을 맞춤 (멈춘 채면 PausedSince 기준이라 저장값 그대로)
             _log.Info($"drive {key} recovery restored, {(int)hardLeft.TotalMinutes} min left ({(baseline is null ? "fixed wait" : "probe")})");
         }
     }

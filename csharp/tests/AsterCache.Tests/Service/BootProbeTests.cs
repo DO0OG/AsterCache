@@ -38,7 +38,7 @@ public sealed class BootProbeTests : IDisposable
             _opened.Add(p);
             _clock += TimeSpan.FromMilliseconds(5);
             return !failing.Contains(p);
-        }, () => _clock);
+        }, () => _clock, _ => false);
 
     private AutoStatus WithPlayed(params (string Name, int HoursAgo)[] played)
     {
@@ -76,6 +76,21 @@ public sealed class BootProbeTests : IDisposable
             _opened.Add(p);
             return true;
         }, () => _clock, driveBusy: _ => true);
+
+        Assert.Null(probe);
+        Assert.Empty(_opened);
+    }
+
+    [Fact]
+    public void AnUnconnectedRunningCheckIsTreatedAsAGameRunningSoNothingIsOpened()
+    {
+        GameSettings g = Games.Make("a", "a.exe");
+
+        AutoBootProbe? probe = BootProbe.Run(Settings(g), WithPlayed(("a", 1)), _log, T0, 1000, x => Files(x, 10), p =>
+        {
+            _opened.Add(p);
+            return true;
+        }, () => _clock);
 
         Assert.Null(probe);
         Assert.Empty(_opened);
@@ -400,7 +415,7 @@ public sealed class BootProbeTests : IDisposable
             }
 
             return true;
-        }, () => _clock, null, cts.Token);
+        }, () => _clock, _ => false, cts.Token);
 
         Assert.Equal(3, _opened.Count);
         Assert.Equal(3, probe!.Files);

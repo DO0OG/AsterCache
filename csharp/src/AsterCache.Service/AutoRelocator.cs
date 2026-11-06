@@ -91,7 +91,7 @@ public sealed class AutoRelocator
 
     /// 지문 검사의 대표 파일: 게임 exe 와 계획에서 가장 큰 파일 몇 개. 이 중 하나라도 바뀌었을 때만 전체 지문을 비교합니다.
     private const int LargestSampled = 3;
-    private const string ReplanDetail = "game updated, will trace again on next run";
+    internal const string ReplanDetail = "game updated, will trace again on next run";
 
     /// 트레이스 금지 게임의 업데이트: 트레이스를 유지한 채 다시 계획하는 동안의 detail (ReplanDetail 접두라 업데이트 뒤 지연 규칙도 같이 지킴).
     private const string KeptDetail = ReplanDetail + "; trace kept, planning again";

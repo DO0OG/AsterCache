@@ -110,7 +110,15 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         return jr.Rows.Count;
     }
 
-    private AutoRelocator Relocator => _relocator ??= new AutoRelocator(_w.Env(), _status, _log, () => _settings);
+    // 회복 추적은 같은 디스크 게임 판정이 연결돼 있어야 시계가 흐름 (연결 전에는 보호 중으로 봄): 이 시험들은 게임 없음.
+    private AutoEnv WorldEnv()
+    {
+        AutoEnv env = _w.Env();
+        env.GameRunningOnDisk = _ => false;
+        return env;
+    }
+
+    private AutoRelocator Relocator => _relocator ??= new AutoRelocator(WorldEnv(), _status, _log, () => _settings);
 
     private AutoGameEntry Entry => _status.Get("bench")!;
 
@@ -127,7 +135,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
             ZoneBytes = _ => 1 << 20,
             TraceExists = _ => true,
         }, _log, null, () => _w.Now);
-        _relocator = new AutoRelocator(_w.Env(), _status, _log, () => _settings, prewarm);
+        _relocator = new AutoRelocator(WorldEnv(), _status, _log, () => _settings, prewarm);
         _w.FileTimes[AutoTracer.RawTracePath(_game)] = _w.Now - TimeSpan.FromMinutes(1);
     }
 
@@ -625,7 +633,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         string path = Path.Combine(Root, "bad_status.json");
         File.WriteAllText(path, string.Empty);
         var status = new AutoStatus(path, _log, () => _w.Now, ticks: FakeClock.Ticks(() => _w.Now));
-        _relocator = new AutoRelocator(_w.Env(), status, _log, () => _settings);
+        _relocator = new AutoRelocator(WorldEnv(), status, _log, () => _settings);
 
         Assert.Equal(ReapplyVerdict.DailyLimit, GateAfterIdle());
         Run(TimeSpan.FromMinutes(10));
@@ -1403,7 +1411,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         }, _log, null, () => _w.Now);
         _cold.SetAuto(_settings.Auto);
         _cold.ColdWarmed += (g, label) => Relocator.NoteColdWarmed(g, label);
-        _relocator = new AutoRelocator(_w.Env(), _status, _log, () => _settings, _cold);
+        _relocator = new AutoRelocator(WorldEnv(), _status, _log, () => _settings, _cold);
     }
 
     [Fact]
@@ -1515,7 +1523,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
                 return ColdPlan.None("no engine profile matched");
             },
         }, _log, null, () => _w.Now);
-        _relocator = new AutoRelocator(_w.Env(), _status, _log, () => _settings, _cold);
+        _relocator = new AutoRelocator(WorldEnv(), _status, _log, () => _settings, _cold);
 
         Tick();
         _w.Now += Step;
@@ -1542,7 +1550,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
                 return ColdPlan.None("no engine profile matched");
             },
         }, _log, null, () => _w.Now);
-        _relocator = new AutoRelocator(_w.Env(), _status, _log, () => _settings, _cold);
+        _relocator = new AutoRelocator(WorldEnv(), _status, _log, () => _settings, _cold);
 
         Tick();
         _w.Now += AutoRelocator.RetryEvery - Step;
@@ -1609,7 +1617,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
                 return (new StreamStats(1 << 20, 1, 0, 0.1), !ct.IsCancellationRequested && reads > 1);
             },
         }, _log, null, () => _w.Now);
-        _relocator = new AutoRelocator(_w.Env(), _status, _log, () => _settings, _cold);
+        _relocator = new AutoRelocator(WorldEnv(), _status, _log, () => _settings, _cold);
 
         Tick();
         Assert.Null(_cold.LastWarmed("bench")); // 끊긴 예열은 성공으로 치지 않음
@@ -1662,7 +1670,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
             ZoneBytes = _ => 8000L << 20,
             TraceExists = _ => true,
         }, _log, null, () => _w.Now);
-        _relocator = new AutoRelocator(_w.Env(), _status, _log, () => _settings, prewarm);
+        _relocator = new AutoRelocator(WorldEnv(), _status, _log, () => _settings, prewarm);
         prewarm.StreamEnded += (g, complete) => Relocator.NoteStreamEnded(g, complete);
 
         Assert.True(prewarm.Run(_game, "test").Ran);
@@ -1687,7 +1695,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
             ZoneBytes = _ => 1 << 20,
             TraceExists = _ => true,
         }, _log, null, () => _w.Now);
-        _relocator = new AutoRelocator(_w.Env(), _status, _log, () => _settings, prewarm);
+        _relocator = new AutoRelocator(WorldEnv(), _status, _log, () => _settings, prewarm);
         prewarm.StreamEnded += (g, complete) => Relocator.NoteStreamEnded(g, complete);
 
         Assert.False(prewarm.Run(_game, "test").Ran);

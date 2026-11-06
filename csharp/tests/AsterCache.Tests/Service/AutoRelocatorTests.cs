@@ -219,33 +219,22 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
-    public void UnregisteredProcessUnderInstallRootBlocksPlanningUntilItExits()
+    public void UnregisteredProcessUnderInstallRootDoesNotBlockPlanningButARegisteredExeDoes()
     {
-        _w.RootPids.Add(77);
+        _w.RootPids.Add(77); // 등록 exe 가 아닌 루트 아래 프로세스 (상주 프로그램)
         _w.Images[77] = Path.Combine(Root, "helper.exe");
 
-        Tick();
-
-        Assert.Empty(_w.PlanZones);
-        Assert.False(File.Exists(_game.Plan));
-        Assert.Empty(Vol.Moves);
-
-        _w.RootPids.Clear();
-        _w.Images.Clear();
-        _w.Now += Step;
         Tick();
 
         Assert.NotEmpty(_w.PlanZones);
         Assert.True(File.Exists(_game.Plan));
 
-        _w.RootPids.Add(77);
-        _w.Images[77] = Path.Combine(Root, "helper.exe");
+        _w.RunningExes.Add(_game.ExeNames[0]);
         _w.Now += Step;
         Tick();
         Assert.Empty(Vol.Moves);
 
-        _w.RootPids.Clear();
-        _w.Images.Clear();
+        _w.RunningExes.Clear();
         RunUntilDone();
         Assert.NotEmpty(Vol.Moves);
     }
@@ -253,10 +242,10 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     [Fact]
     public void ABlockingProcessIsLoggedOncePerRunningSpellAndAgainAfterItEndsAndReturns()
     {
-        _w.RootPids.Add(77);
-        _w.Images[77] = Path.Combine(Root, "helper.exe");
-        _w.DescribeBlockers = g => g.Name == _game.Name ? $"helper.exe(77) {Path.Combine(Root, "helper.exe")}" : null;
-        string expected = $"{_game.Name}: auto skipped while a game on the same disk is running; blocking processes: {_game.Name}: helper.exe(77) {Path.Combine(Root, "helper.exe")}";
+        string exe = _game.ExeNames[0];
+        _w.RunningExes.Add(exe);
+        _w.DescribeBlockers = g => g.Name == _game.Name ? $"{exe}(77) {Path.Combine(Root, exe)}" : null;
+        string expected = $"{_game.Name}: auto skipped while a game on the same disk is running; blocking processes: {_game.Name}: {exe}(77) {Path.Combine(Root, exe)}";
 
         for (int i = 0; i < 3; i++)
         {
@@ -266,12 +255,10 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
 
         Assert.Single(_log.Lines, l => l.EndsWith(expected, StringComparison.Ordinal)); // 틱마다 반복하지 않음
 
-        _w.RootPids.Clear();
-        _w.Images.Clear();
+        _w.RunningExes.Clear();
         Tick();
         _w.Now += Step;
-        _w.RootPids.Add(77);
-        _w.Images[77] = Path.Combine(Root, "helper.exe");
+        _w.RunningExes.Add(exe);
         Tick();
 
         Assert.Equal(2, _log.Lines.Count(l => l.EndsWith(expected, StringComparison.Ordinal))); // 사라졌다 다시 나타나면 다시 남김
@@ -972,7 +959,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
-    public void UnregisteredProcessUnderTheInstallRootStartingDuringTheMoveStopsItAtTheNextPieceAndTheJournalResumes()
+    public void RegisteredExeStartingDuringTheMoveWithoutAStartNoticeStopsItAtTheNextPieceAndTheJournalResumes()
     {
         ReportFullMoves();
         using var observed = new ManualResetEventSlim();
@@ -981,17 +968,15 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         {
             if (n == 1)
             {
-                _w.RootPids.Add(77); // 등록 exe 가 아닌 루트 아래 프로세스가 뜸: 시작 알림은 오지 않음
+                _w.RunningExes.Add(_game.ExeNames[0]); // 등록 exe 가 떴지만 시작 알림은 오지 않음
                 int moveThread = Environment.CurrentManagedThreadId;
                 int polls = 0;
-                _w.RootPidsOf = _ =>
+                _w.OnAnyRunning = _ =>
                 {
                     if (Environment.CurrentManagedThreadId != moveThread && Interlocked.Increment(ref polls) >= 2) // 점검 타이머의 첫 판정이 취소를 건 뒤의 다음 판정까지 기다림
                     {
                         observed.Set();
                     }
-
-                    return true;
                 };
                 seen = observed.Wait(TimeSpan.FromSeconds(5));
             }
@@ -1006,7 +991,8 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         Assert.True(File.Exists(JournalPath));
 
         Vol.AfterMove = null;
-        _w.RootPids.Clear();
+        _w.OnAnyRunning = null;
+        _w.RunningExes.Clear();
         Run(TimeSpan.FromMinutes(3.5)); // 프로세스가 끝난 뒤 저널에서 이어 옮김
 
         Assert.Equal(AutoStage.Done, Entry.Stage);
@@ -1661,6 +1647,52 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         Relocator.NoteStreamEnded(_game, true);
 
         Assert.Equal("prewarmed", Entry.Detail); // 끝까지 읽었으면 바로 예열됨
+    }
+
+    [Fact]
+    public void APrewarmThatOnlyFitPartlyInMemoryShowsPartialInsteadOfPrewarmed()
+    {
+        _status.Set("bench", "auto", null, AutoStage.Done, null);
+        _streamer.BytesOf = g => (long)g.MaxStreamMib << 20; // 실제로 읽은 양
+        long available = 6000;
+        var prewarm = new Prewarmer(_settings.Games, _streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => available,
+            GameRunning = _ => false,
+            ZoneBytes = _ => 8000L << 20,
+            TraceExists = _ => true,
+        }, _log, null, () => _w.Now);
+        _relocator = new AutoRelocator(_w.Env(), _status, _log, () => _settings, prewarm);
+        prewarm.StreamEnded += (g, complete) => Relocator.NoteStreamEnded(g, complete);
+
+        Assert.True(prewarm.Run(_game, "test").Ran);
+
+        Assert.Equal((AutoStage.Done, "prewarmed (partial 1904/8000 MiB)"), (Entry.Stage, Entry.Detail));
+
+        available = 20000; // 이제 전체가 들어감: 보충이 끝나면 부분 표시가 남지 않음
+        Assert.True(prewarm.Supplement(_game, default));
+
+        Assert.Equal((AutoStage.Done, "prewarmed"), (Entry.Stage, Entry.Detail));
+    }
+
+    [Fact]
+    public void AZeroByteStreamDoesNotMarkTheGameAsPrewarmedInTheAutoStatus()
+    {
+        _status.Set("bench", "auto", null, AutoStage.Done, null);
+        _streamer.BytesOf = _ => 0; // 아무것도 읽지 못함
+        var prewarm = new Prewarmer(_settings.Games, _streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => 99999,
+            GameRunning = _ => false,
+            ZoneBytes = _ => 1 << 20,
+            TraceExists = _ => true,
+        }, _log, null, () => _w.Now);
+        _relocator = new AutoRelocator(_w.Env(), _status, _log, () => _settings, prewarm);
+        prewarm.StreamEnded += (g, complete) => Relocator.NoteStreamEnded(g, complete);
+
+        Assert.False(prewarm.Run(_game, "test").Ran);
+
+        Assert.DoesNotContain("prewarmed", Entry.Detail ?? string.Empty, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -3070,6 +3102,25 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
 
         Assert.Equal(1L << 30, Assert.Single(executed).WriteCap); // 막지 않고 하루 상한까지만 씀
         Assert.DoesNotContain(_log.Lines, l => l.Contains("zone extension blocked", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void StatusSaysTraceIsUnavailableForAnAntiCheatGameInsteadOfWaitingForMorePlays()
+    {
+        DoneAndReadyToReplan(out string raw);
+        SetAuto(a => a with { TraceRuns = 3 });
+        _w.Files.Add(TraceWriter.RunPath(raw, 1));
+        _w.Files.Add(TraceWriter.RunPath(raw, 2));
+
+        Relocator.NoteProgress(_game with { AntiCheat = "vanguard" }, 1, 2);
+
+        Assert.Equal("trace unavailable (vanguard), 2 earlier run(s) used, prewarming 1/2 MiB", Entry.Detail);
+        Assert.Equal("트레이스 불가 (vanguard), 기존 기록 2회 사용", AsterCache.Tray.AutoStatusFile.StageExtra(new AsterCache.Tray.AutoGame("auto", null, Entry.Stage, "trace unavailable (vanguard), 2 earlier run(s) used", null, null), "ko")); // 영어·한국어 문구
+        Assert.Equal("trace unavailable (vanguard), 2 earlier run(s) used", AsterCache.Tray.AutoStatusFile.StageExtra(new AsterCache.Tray.AutoGame("auto", null, Entry.Stage, "trace unavailable (vanguard), 2 earlier run(s) used", null, null), "en"));
+
+        // 금지가 아니면 예전처럼 회차 표시
+        Relocator.NoteProgress(_game, 1, 2);
+        Assert.Equal("trace 2/3, prewarming 1/2 MiB", Entry.Detail);
     }
 
     [Fact]

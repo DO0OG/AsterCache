@@ -629,16 +629,16 @@ public sealed class PinAndRewarmTests
     }
 
     [Fact]
-    public void RewarmWaitsForAnUnregisteredProcessUnderTheGameRootToExit()
+    public void RewarmWaitsForTheSecondRegisteredExeToExit()
     {
-        GameSettings g = Game("a", pin: false) with { OriginRoot = @"D:\Games\a" };
+        GameSettings g = Game("a", pin: false) with { OriginRoot = @"D:\Games\a", ExeNames = ["a.exe", "body.exe"] }; // 런처 + 학습으로 더한 본체 이름, 런처는 이미 끝남
         bool helperRunning = false;
-        IReadOnlyList<(int Pid, string Exe)> processes = [(1234, "helper.exe")];
+        IReadOnlyList<(int Pid, string Exe)> processes = [(1234, "body.exe")];
         int probes = 0;
         Prewarmer p = new([g], _streamer, new PrewarmEnv
         {
             AvailableRamMib = () => _avail,
-            GameRunning = game => helperRunning && DispatchEnv.IsGameRunning(game, processes, _ => @"D:\Games\a\bin\helper.exe"),
+            GameRunning = game => helperRunning && DispatchEnv.IsGameRunning(game, processes),
             ZoneBytes = _ => _zoneMib << 20,
             TraceExists = _ => true,
             ProbeReadMs = _ =>
@@ -922,14 +922,15 @@ public sealed class PinAndRewarmTests
     {
         GameSettings[] games = [Game("a", false), Game("b", false), Game("c", false), Game("d", false)];
         Prewarmer p = Make(games);
-        _avail = 8000; // 가용 − 여유 = 3904 → 존 1610 은 둘까지 (3220), 셋째 (4830) 부터 자름
+        _avail = 8000; // 가용 − 여유 = 3904 → 존 1610 은 둘까지 (3220), 셋째는 남은 684 MiB 만 (부분 예열), 넷째는 남은 예산 없음
+        _streamer.BytesOf = g => (g.MaxStreamSet ? g.MaxStreamMib : _zoneMib) << 20; // 예산 차감은 실제 읽은 양
 
         IReadOnlyList<PrewarmResult> results = p.RunAll(games, "recent");
 
-        Assert.Equal(["a", "b"], _streamer.Calls.Select(c => c.Game));
-        Assert.Equal([true, true, false, false], results.Select(r => r.Ran));
-        Assert.Equal("batch memory budget", results[2].SkipReason);
-        Assert.Contains(_log.Lines, l => l.Contains("c: prewarm skipped (batch zones", StringComparison.Ordinal));
+        Assert.Equal(["a", "b", "c"], _streamer.Calls.Select(c => c.Game));
+        Assert.Equal([true, true, true, false], results.Select(r => r.Ran));
+        Assert.Equal((684L, 1610L), p.PartialInfo("c")); // 실제로 읽은 양만 예산에서 뺌
+        Assert.Equal("batch memory budget", results[3].SkipReason);
         Assert.Contains(_log.Lines, l => l.Contains("d: prewarm skipped (batch zones", StringComparison.Ordinal));
     }
 
@@ -938,7 +939,7 @@ public sealed class PinAndRewarmTests
     {
         GameSettings[] games = [Game("a", false), Game("b", false)];
         Prewarmer p = Make(games);
-        _ram = 4 * Gib; // 1/4 = 1024 MiB: 존 1610 은 처음부터 자름
+        _ram = Gib / 2; // 1/4 = 128 MiB: 부분 예열 최소 (256 MiB) 에도 못 미쳐 처음부터 자름
 
         for (int i = 0; i < 9; i++)
         {
@@ -953,6 +954,20 @@ public sealed class PinAndRewarmTests
         string[] lines = [.. _log.Lines.Where(l => l.StartsWith("Info: a: prewarm skipped (batch zones", StringComparison.Ordinal))];
         Assert.Equal(2, lines.Length);
         Assert.EndsWith("(suppressed 8)", lines[1], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BatchBudgetIsReducedByWhatWasActuallyReadNotByTheConfiguredZone()
+    {
+        GameSettings[] games = [Game("a", false), Game("b", false), Game("c", false), Game("d", false)];
+        Prewarmer p = Make(games);
+        _avail = 8000; // 가용 − 여유 = 3904: 존 1610 으로 치면 셋째부터 모자라지만
+        _streamer.BytesOf = _ => 500L << 20; // 실제로는 게임마다 500 MiB 만 읽음 (겹치는 구간이 이미 캐시에 있었던 경우)
+
+        IReadOnlyList<PrewarmResult> results = p.RunAll(games, "recent");
+
+        Assert.Equal([true, true, true, true], results.Select(r => r.Ran)); // 500 x 4 = 2000 이 모두 들어감
+        Assert.All(games, g => Assert.Null(p.PartialInfo(g.Name)));
     }
 
     [Fact]
@@ -972,14 +987,16 @@ public sealed class PinAndRewarmTests
     {
         GameSettings[] games = [Game("a", false), Game("b", false), Game("c", false)];
         Prewarmer p = Make(games);
-        _ram = 8 * Gib; // 1/4 = 2048 MiB: 존 1610 은 하나만
+        _ram = 8 * Gib; // 1/4 = 2048 MiB: 존 1610 은 하나, 둘째는 남은 438 MiB 만 (부분 예열), 셋째는 남은 예산 없음
+        _streamer.BytesOf = g => (g.MaxStreamSet ? g.MaxStreamMib : _zoneMib) << 20;
         _avail = 40000;
 
         IReadOnlyList<PrewarmResult> results = p.RunAll(games, "recent");
 
-        Assert.Equal(["a"], _streamer.Calls.Select(c => c.Game));
-        Assert.Equal([true, false, false], results.Select(r => r.Ran));
-        Assert.Equal("batch memory budget", results[1].SkipReason);
+        Assert.Equal(["a", "b"], _streamer.Calls.Select(c => c.Game));
+        Assert.Equal([true, true, false], results.Select(r => r.Ran));
+        Assert.Equal((438L, 1610L), p.PartialInfo("b"));
+        Assert.Equal("batch memory budget", results[2].SkipReason);
     }
 
     [Fact]

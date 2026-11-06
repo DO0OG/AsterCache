@@ -414,6 +414,23 @@ public sealed class ReapplyTests
     }
 
     [Fact]
+    public void ChangedEmbeddedBrowserCacheFilesAreIgnoredButARealGameFileStillMeansPlanChanged()
+    {
+        string[] web = [@"D:\AsterBench\Saved\webcache\data_0", @"D:\AsterBench\Saved\webcache\Cookies", @"D:\AsterBench\Saved\webcache\Network Persistent State"];
+        var rig = new Rig { Moved = false };
+        rig.Plan = WithFingerprints(rig.Plan, web);
+        rig.ChangedPaths.UnionWith(web);
+
+        Assert.Equal(ReapplyVerdict.Reapply, rig.Check(Bench));
+
+        var other = new Rig { Moved = false };
+        other.Plan = WithFingerprints(other.Plan, [.. web, @"D:\AsterBench\data\extra.pak"]);
+        other.ChangedPaths.UnionWith([.. web, @"D:\AsterBench\data\extra.pak"]);
+
+        Assert.Equal(ReapplyVerdict.PlanChanged, other.Check(Bench));
+    }
+
+    [Fact]
     public void ChangedNonVolatileFileStillMeansPlanChanged()
     {
         var rig = new Rig { Moved = false };

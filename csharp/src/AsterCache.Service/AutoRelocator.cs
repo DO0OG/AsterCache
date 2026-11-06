@@ -101,7 +101,7 @@ public sealed class AutoRelocator
     public const string StalePlanDetail = "stale plan";
     private static readonly Regex PrewarmedTag = new(@"(, )?prewarmed( \([^)]*\))?", RegexOptions.None, TimeSpan.FromSeconds(1));
     private static readonly Regex ProgressTag = new(@"(, )?prewarming \d+/\d+ MiB", RegexOptions.None, TimeSpan.FromSeconds(1));
-    private static readonly Regex TraceTag = new(@"(, )?trace \d+/\d+( \(coverage \d+%\))?", RegexOptions.None, TimeSpan.FromSeconds(1));
+    private static readonly Regex TraceTag = new(@"(, )?trace (\d+/\d+( \(coverage \d+%\))?|unavailable \([^)]*\), \d+ earlier run\(s\) used)", RegexOptions.None, TimeSpan.FromSeconds(1));
     private static readonly Regex TierTag = new(@"(, )?ssd tier [\d.]+ GB", RegexOptions.None, TimeSpan.FromSeconds(1));
 
     private readonly AutoEnv _env;
@@ -453,7 +453,7 @@ public sealed class AutoRelocator
             AutoGameEntry? e = _status.Get(g.Name);
             if (complete && e?.Stage is AutoStage.Done or AutoStage.WaitingIdle)
             {
-                Note(g, e.Stage, WithPrewarmed(DoneDetail(e)));
+                Note(g, e.Stage, WithPrewarmed(DoneDetail(e), PrewarmedTagOf(g)));
             }
             else
             {
@@ -481,7 +481,9 @@ public sealed class AutoRelocator
         rest = string.IsNullOrEmpty(rest) ? null : rest;
         if (ShowsProgress(stage) && AutoTracer.NextTrace(g, _settings().Auto, _env, _status) is { Valid: > 0, Wanted: true } next) // 플레이를 더 모으는 중: "trace 2/3", 추가 수집이면 "trace 4/8 (coverage 22%)"
         {
-            string traceTag = $"trace {next.Valid}/{next.Limit}" + (next.Valid >= _settings().Auto.TraceRuns && next.Coverage is { } cov ? $" (coverage {cov}%)" : string.Empty);
+            string traceTag = _env.TraceBlocker(g) is { } cheat
+                ? $"trace unavailable ({cheat}), {next.Valid} earlier run(s) used" // 안티치트로 더 모을 수 없는 게임: 회차를 기다리는 것처럼 보이지 않게 (재배치 여부는 바꾸지 않음)
+                : $"trace {next.Valid}/{next.Limit}" + (next.Valid >= _settings().Auto.TraceRuns && next.Coverage is { } cov ? $" (coverage {cov}%)" : string.Empty);
             rest = rest is null ? traceTag : rest + ", " + traceTag;
         }
 
@@ -518,7 +520,7 @@ public sealed class AutoRelocator
         }
 
         string[] names = [.. games.SelectMany(x => x.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase)];
-        if (_env.AnyRunning(names) || games.Any(x => _env.RootPids(x).Count > 0))
+        if (_env.AnyRunning(names))
         {
             _blockers.Note(g.Name, $"{g.Name}: auto skipped", games);
             return true;
@@ -635,7 +637,7 @@ public sealed class AutoRelocator
                 AutoGameEntry? e = _status.Get(g.Name);
                 if (e?.Stage is AutoStage.Done or AutoStage.WaitingIdle)
                 {
-                    Note(g, e.Stage, WithPrewarmed(DoneDetail(e)));
+                    Note(g, e.Stage, WithPrewarmed(DoneDetail(e), PrewarmedTagOf(g)));
                 }
             }
         }
@@ -643,8 +645,11 @@ public sealed class AutoRelocator
 
     private string? WaitDetail(GameSettings g, string? d)
     {
-        return _prewarm?.LastWarmed(g.Name) is null ? d : WithPrewarmed(d);
+        return _prewarm?.LastWarmed(g.Name) is null ? d : WithPrewarmed(d, PrewarmedTagOf(g));
     }
+
+    // 메모리가 모자라 앞부분만 읽은 게임은 "prewarmed (partial N/M MiB)" 로 완료와 구분합니다.
+    private string PrewarmedTagOf(GameSettings g) => _prewarm?.PartialInfo(g.Name) is { } p ? $"{Prewarmed} (partial {p.WarmedMib}/{p.HotMib} MiB)" : Prewarmed;
 
     // 이미 있는 "prewarmed" 표시 (기록 없는 예열의 "(full)" 포함) 는 새 표시로 바꿉니다.
     private static string WithPrewarmed(string? detail, string tag = Prewarmed)
@@ -1284,7 +1289,11 @@ public sealed class AutoRelocator
         }
     }
 
-    // 가변 파일을 빼기 전에 만든 옛 계획 (stats 에 excluded_files 키가 없고 핫 순서에 가변 파일이 듦): 게임이 그 파일을 다시 써서 존이 흐트러져 보이므로
+    // 지금 규칙으로 가변 파일인 파일이 핫 순서에 든 계획 (현재 규칙 버전 표지가 없는 것만: 규칙을 넓히기 전에 만든 계획을 한 번 정리).
+    private static bool HoldsVolatile(PlanFile plan) =>
+        !(plan.Stats.TryGetValue(VolatileFiles.RuleKey, out object? v) && v is long version && version >= VolatileFiles.RuleVersion) && plan.Order.Any(o => VolatileFiles.Ignored(o.Path));
+
+    // 가변 파일을 빼기 전에 만든 옛 계획 (규칙 버전 표지가 없고 핫 순서에 가변 파일이 듦): 게임이 그 파일을 다시 써서 존이 흐트러져 보이므로
     // 서비스 실행당 한 번 가변 파일을 뺀 계획으로 다시 만듭니다. 확장 재계획과 같은 길 (.extend): 같은 존 시작에 맞추고, 유휴·일일 상한·바이트 예산 같은 재배치 게이트를 그대로 지납니다.
     private void ReplanLegacyVolatile(AsterSettings s)
     {
@@ -1299,7 +1308,7 @@ public sealed class AutoRelocator
             try
             {
                 PlanFile plan = _env.LoadPlan(g.Plan);
-                if (plan.Zone.StartLcn is null || plan.Stats.ContainsKey(VolatileFiles.StatsKey) || !plan.Order.Any(o => VolatileFiles.Ignored(o.Path)))
+                if (plan.Zone.StartLcn is null || !HoldsVolatile(plan))
                 {
                     continue;
                 }
@@ -1861,6 +1870,7 @@ public sealed class AutoRelocator
                 plan.Stats[SupplementCheckedKey] = 1L; // 보충할 것이 없었음: 나중에 다시 따지지 않게 표지
             }
 
+            plan.Stats[VolatileFiles.RuleKey] = VolatileFiles.RuleVersion;
             if (excluded.Count > 0)
             {
                 plan.Stats.Add(VolatileFiles.StatsKey, excluded);
@@ -2597,9 +2607,10 @@ public sealed class AutoRelocator
                 return;
             }
 
-            if (stamps.Contains(true))
+            bool changed = stamps.Contains(true);
+            if (changed || HoldsVolatile(plan) && _volatileChecked.Add(g.Name)) // 부분 적용된 계획도 새 규칙의 가변 파일을 들고 있으면 한 번 잔여 재계획 (이미 옮긴 조각은 지킴)
             {
-                _log.Info($"{g.Name}: source files changed since the plan, planning again"); // 없어진 파일은 새 계획에서 빠짐
+                _log.Info(changed ? $"{g.Name}: source files changed since the plan, planning again" : $"{g.Name}: plan holds files the game rewrites by itself, planning again"); // 없어진 파일은 새 계획에서 빠짐
                 if (!Plan(g, s))
                 {
                     return;

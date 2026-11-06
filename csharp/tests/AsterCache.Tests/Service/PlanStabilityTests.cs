@@ -26,6 +26,27 @@ public sealed class VolatileFilesTests
     {
         Assert.Equal(reason, VolatileFiles.NameReason(path));
     }
+
+    [Theory]
+    [InlineData(@"D:\Riot\Saved\webcache\data_0", true)]
+    [InlineData(@"D:\Riot\Saved\WebCache\4\data_1", true)]
+    [InlineData(@"D:/Riot/Saved/webcache/the-real-index", true)]
+    [InlineData(@"D:\g\client\GPUCache\data_2", true)]
+    [InlineData(@"D:\g\client\Code Cache\js\index", true)]
+    [InlineData(@"D:\g\profile\Network Persistent State", true)]
+    [InlineData(@"D:\g\profile\TransportSecurity", true)]
+    [InlineData(@"D:\g\profile\Visited Links", true)]
+    [InlineData(@"D:\g\profile\Cookies", true)]
+    [InlineData(@"D:\g\Shaders\ShaderCache\a.bin", false)] // 게임 데이터의 셰이더 캐시 폴더는 가변 파일이 아님
+    [InlineData(@"D:\g\shadercache\data_0", false)]
+    [InlineData(@"D:\g\data_0", false)] // 브라우저 폴더 밖의 data_N 은 게임 파일일 수 있음
+    [InlineData(@"D:\g\webcache.pak", false)] // 파일 이름이 아니라 폴더 조각만 봄
+    [InlineData(@"D:\g\webcache_assets\a.pak", false)]
+    [InlineData(@"D:\g\Cookies.pak", false)]
+    public void EmbeddedBrowserCacheIsVolatileOnlyByFolderPieceOrBrowserProfileFileName(string path, bool volatileFile)
+    {
+        Assert.Equal(volatileFile ? VolatileFiles.BrowserCacheRule : null, VolatileFiles.NameReason(path));
+    }
 }
 
 /// 계획 안정성: 가변 파일 제외, 재계획 실패 때 낡은 계획 복원, 실패 뒤 새 트레이스로 다시 시도.
@@ -282,6 +303,7 @@ public sealed partial class AutoRelocatorTests
         long start = DoneAndReadyToReplan(out _);
         Vol.Moves.Clear();
         PlanFile old = PlanFile.Load(_game.Plan);
+        old.Stats[VolatileFiles.RuleKey] = 1L; // 이전 규칙 버전으로 만든 옛 계획
         (old with { Order = [.. old.Order, new PlanRange(Path.Combine(Root, "settings.json"), 0, 4)] }).Save(_game.Plan); // 옛 계획: excluded_files 키가 없고 핫 순서에 가변 파일이 들어 있음
         Assert.False(PlanFile.Load(_game.Plan).Stats.ContainsKey(VolatileFiles.StatsKey));
         _relocator = null; // 서비스 재시작 (이번 실행의 확인은 한 번)

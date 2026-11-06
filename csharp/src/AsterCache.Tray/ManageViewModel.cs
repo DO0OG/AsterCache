@@ -267,6 +267,11 @@ public sealed class ManageViewModel(
     {
         object? e = Get(Get(_prewarm, "games"), name);
         string text = e is null ? L.T("Word_NoRecord") : Get(e, "result") as string is { } r && Get(e, "reason") is string why ? $"{r} ({why})" : Get(e, "result") as string ?? "?";
+        if (Get(e, "partial") is true && Get(e, "warmed_mib") is long warmed && Get(e, "hot_mib") is long hot)
+        {
+            text = $"{text} · {L.T("Status_PrewarmPartial", warmed, hot)}"; // 메모리가 모자라 앞부분만 읽음: 완료로 보이지 않게
+        }
+
         return Get(e, "head_mib") is long head ? $"{text} · {L.T("Status_LoadHead", head)}" : text;
     }
 

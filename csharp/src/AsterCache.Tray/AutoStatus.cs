@@ -147,6 +147,11 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
             parts.Add(L.Get(lang, "Stage_RelocatedPrefetch")); // boot 트레이스 (Windows 프리페치 기록) 로 재배치함
         }
 
+        if (TraceUnavailableTag.Match(g.Detail ?? string.Empty) is { Success: true } blocked)
+        {
+            parts.Add(L.Get(lang, "Stage_TraceUnavailable", blocked.Groups[1].Value, blocked.Groups[2].Value)); // 안티치트로 트레이스를 더 모을 수 없음
+        }
+
         if (SsdTierTag.Match(g.Detail ?? string.Empty) is { Success: true } tier)
         {
             parts.Add(L.Get(lang, "Stage_SsdTier", tier.Groups[1].Value)); // 핫 파일 일부를 SSD 사본으로 두었음
@@ -160,7 +165,8 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
         }
         else if (p.Success)
         {
-            parts.Add(p.Groups[2].Success ? L.Get(lang, "Stage_PrewarmedProfile", p.Groups[2].Value)
+            parts.Add(p.Groups[3].Success ? L.Get(lang, "Stage_PrewarmedPartial", p.Groups[3].Value, p.Groups[4].Value)
+                : p.Groups[2].Success ? L.Get(lang, "Stage_PrewarmedProfile", p.Groups[2].Value)
                 : p.Groups[1].Value == "full" ? L.Get(lang, "Stage_PrewarmedFull") : L.Get(lang, "Stage_Prewarmed"));
         }
 
@@ -184,12 +190,14 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
     [GeneratedRegex(@"^(\d+) MiB read ahead$")]
     private static partial Regex ReadAhead();
 
+    private static readonly Regex TraceUnavailableTag = new(@"trace unavailable \(([^)]*)\), (\d+) earlier run\(s\) used", RegexOptions.None, TimeSpan.FromSeconds(1));
+
     private static readonly Regex SsdTierTag = new(@"ssd tier (\d+(?:\.\d+)?) GB", RegexOptions.None, TimeSpan.FromSeconds(1));
 
     [GeneratedRegex(@"prewarming (\d+)/(\d+) MiB")]
     private static partial Regex Prewarming();
 
-    [GeneratedRegex(@"prewarmed(?: \((full|profile ([^)]*))\))?")]
+    [GeneratedRegex(@"prewarmed(?: \((full|profile ([^)]*)|partial (\d+)/(\d+) MiB)\))?")]
     private static partial Regex PrewarmTag();
 
     /// "자동: 이름 발견 → [트레이스 수집 중]" 처럼 현재 단계까지 보이고 현재 단계는 [ ] 로 감쌉니다. 실패·건너뜀은 사유를 덧붙입니다.

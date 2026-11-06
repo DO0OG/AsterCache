@@ -149,6 +149,7 @@ public sealed class ResidualZoneConsumersTests : ApplyTestBase
     {
         GameSettings g = GameOf(Residual(false), Mib); // 핫셋 80 MiB, 새 구간 74 MiB
         string status = Path.Combine(Root, "prewarm_status.json");
+        _streamer.BytesOf = game => (long)game.MaxStreamMib << 20; // 실제로 읽은 양이 상한 그대로
         var p = new Prewarmer([g], _streamer, new PrewarmEnv
         {
             AvailableRamMib = () => 16000,

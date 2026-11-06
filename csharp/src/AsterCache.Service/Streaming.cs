@@ -211,7 +211,7 @@ public sealed class PrefetchStreamer : IGameStreamer
     /// 원래 범위는 존 예산으로 이미 골라졌고, totalBudgetBytes (유효 존 상한·스트림 상한·가용 RAM 중 작은 값) 에서 그 범위를 뺀 나머지만 틈에 씁니다.
     internal static (List<ReadOp> Ops, long GapBytes, bool FitsBudget) PrewarmOps(GameSettings game, long totalBudgetBytes)
     {
-        (List<ReadOp> original, _) = ScheduleOps(game, true);
+        (List<ReadOp> original, _) = ScheduleOps(game, true, trimLast: totalBudgetBytes == 0); // 예산 0 = 부분 예열: 틈 메우기 없이 상한에 맞춰 앞부분만
         (List<ReadOp> expanded, long gapBytes, bool fitsBudget) = FillPrewarmGaps(original, Math.Max(0, totalBudgetBytes),
             p => File.Exists(p) ? new FileInfo(p).Length : 0);
         if (!fitsBudget || gapBytes == 0)
@@ -361,7 +361,32 @@ public sealed class PrefetchStreamer : IGameStreamer
         return rows;
     }
 
-    private static (List<ReadOp> Ops, long BudgetBytes) ScheduleOps(GameSettings game, bool withWarmOnly)
+    // 순서 목록의 앞에서 budget 만큼 (상한보다 큰 범위는 건너뛰지 않고 남은 만큼으로 잘라 마지막으로 넣음). 부분 예열 경로에서만 씁니다.
+    private static List<ReadRange> TrimToBudget(IEnumerable<ReadRange> ranges, long budget)
+    {
+        var kept = new List<ReadRange>();
+        long used = 0;
+        foreach (ReadRange r in ranges)
+        {
+            if (used + r.Length <= budget)
+            {
+                kept.Add(r);
+                used += r.Length;
+                continue;
+            }
+
+            if (budget - used > 0)
+            {
+                kept.Add(new ReadRange(r.Path, r.Offset, budget - used));
+            }
+
+            break;
+        }
+
+        return kept;
+    }
+
+    private static (List<ReadOp> Ops, long BudgetBytes) ScheduleOps(GameSettings game, bool withWarmOnly, bool trimLast = false)
     {
         if (!PlanGuards.Inside(game.OriginRoot, game.AllowedRoots, RealPaths.Real))
         {
@@ -370,7 +395,8 @@ public sealed class PrefetchStreamer : IGameStreamer
 
         List<TraceEvent> rows = LoadRows(game, withWarmOnly);
         long budget = Budget(game, ZoneBytes(game, withWarmOnly), rows.Sum(r => r.Length));
-        (List<ReadOp> ops, _) = Scheduler.Schedule(rows.Select(r => new ReadRange(r.Path, r.Offset, r.Length)), "physical", budget, 0,
+        IEnumerable<ReadRange> ranges = rows.Select(r => new ReadRange(r.Path, r.Offset, r.Length));
+        (List<ReadOp> ops, _) = Scheduler.Schedule(trimLast ? TrimToBudget(ranges, budget) : ranges, "physical", budget, 0,
             FileLayout.Get, p => new FileInfo(p).Length, headBytes: HeadBytesOf(game));
         return (ops, budget);
     }
@@ -411,6 +437,12 @@ public sealed class PrefetchStreamer : IGameStreamer
         return kept;
     }
 
+    /// 부분 예열이 읽은 목록 (예열 전용 범위 포함, 상한에 맞춰 마지막 범위를 자른 것): 재예열 표본은 여기서만 고릅니다.
+    internal static List<(string Path, long Offset, int Bytes)> PartialProbeSamples(GameSettings game, int round = 0) =>
+        CacheProbe.PickSamples(ScheduleOps(game, true, trimLast: true).Ops, round: round);
+
+    public static ProbeResult? ProbePartialReadMs(GameSettings game) => CacheProbe.Probe(PartialProbeSamples(game, CacheProbe.NextRound(game.Name)));
+
     /// 선읽기 목록의 앞쪽과 고르게 고른 몇 곳을 읽어 잰 결과 (CacheProbe).
     public static ProbeResult? ProbeReadMs(GameSettings game) => CacheProbe.Probe(CacheProbe.PickSamples(Ops(game), round: CacheProbe.NextRound(game.Name))); // 점검마다 다른 위치 (앞 점검의 읽기가 캐시를 데우지 않게)
 }
@@ -449,27 +481,11 @@ public sealed record DispatchEnv
         return imagePath?.StartsWith(root, StringComparison.OrdinalIgnoreCase) == true;
     }
 
-    internal static bool IsGameRunning(GameSettings g) => IsGameRunning(g, ProcessSnapshot.Take(), ProcessSnapshot.ImagePath);
+    internal static bool IsGameRunning(GameSettings g) => IsGameRunning(g, ProcessSnapshot.Take());
 
-    internal static bool IsGameRunning(GameSettings g, IReadOnlyList<(int Pid, string Exe)> processes, Func<int, string?> imagePath)
-    {
-        foreach ((int pid, string exe) in processes)
-        {
-            if (pid == Environment.ProcessId)
-            {
-                continue;
-            }
-
-            bool named = g.ExeNames.Contains(exe, StringComparer.OrdinalIgnoreCase);
-            string? path = named ? null : SafeImagePath(pid, imagePath);
-            if (IsGameProcess(g, exe, path))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
+    // shortcut: 등록 이름만 봄. 미등록 본체는 자동 등록 게임이면 많이 읽을 때 이름이 학습되고, 수동 등록 게임은 사용자가 실행 파일을 추가해야 실행으로 셈 (설치 폴더 아래 미등록 상주 프로그램이 모든 게임을 막지 않게).
+    internal static bool IsGameRunning(GameSettings g, IReadOnlyList<(int Pid, string Exe)> processes) =>
+        processes.Any(p => p.Pid != Environment.ProcessId && g.ExeNames.Contains(p.Exe, StringComparer.OrdinalIgnoreCase));
 
     internal static IReadOnlyList<int> RootPids(GameSettings g, IReadOnlyList<(int Pid, string Exe)> processes, Func<int, string?> imagePath)
     {
@@ -498,12 +514,12 @@ public sealed record DispatchEnv
                 continue;
             }
 
-            string? path = SafeImagePath(pid, imagePath);
-            if (!IsGameProcess(g, exe, path))
+            if (!g.ExeNames.Contains(exe, StringComparer.OrdinalIgnoreCase))
             {
                 continue;
             }
 
+            string? path = SafeImagePath(pid, imagePath);
             found.Add(string.IsNullOrEmpty(path) ? $"{exe}({pid})" : $"{exe}({pid}) {path}");
             if (found.Count == 3)
             {

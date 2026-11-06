@@ -120,6 +120,7 @@ public sealed record PlanFile(
     public static PlanFile Load(string path) => FromJson(JsonRead.ReadFile(path));
 
     /// 계획 지문 (journal header 의 plan_sha): origin_root, cluster_bytes, tasks, order 만 키 정렬 json.dumps 한 SHA-256, 소문자 hex.
+    /// 잔여 재계획의 세대 표지 (stats.residual_gen) 가 있는 계획만 그 값도 더함: 같은 task·order 로 다시 계획해도 이전 계획과 SHA 가 달라 저널 교체 (검증 후 보관) 를 거침.
     public string Sha()
     {
         var keep = new JObject
@@ -129,6 +130,11 @@ public sealed record PlanFile(
             { "tasks", Tasks.Select(t => t.ToJson()).ToList() },
             { "order", Order.Select(o => o.ToJson()).ToList() },
         };
+        if (Stats.TryGetValue(ResidualPlanner.GenerationKey, out object? gen) && gen is long)
+        {
+            keep.Add(ResidualPlanner.GenerationKey, gen);
+        }
+
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(PyJson.Dumps(keep, sortKeys: true))));
     }
 

@@ -681,6 +681,15 @@ public sealed class AutoRelocator
         _log.Info($"{g.Name}: zone region appears occupied, plan set aside as {StaleSuffix}, will plan again");
     }
 
+    // 잔여 재계획이 이미 옮긴 조각 바로 뒤에 배치했는지 서비스 로그에 남김 (인접 공간이 없으면 새 빈 구간).
+    private void LogResidualPlacement(GameSettings g, PlanFile plan)
+    {
+        if (plan.Stats.TryGetValue(ResidualPlanner.AdjacentKey, out object? adjacent))
+        {
+            _log.Info($"{g.Name}: " + (adjacent is 1L ? "remainder placed right after the moved part" : "no free space after the moved part, using a new place"));
+        }
+    }
+
     // 활성 계획이 없을 때만 계획을 만듭니다: 잠금을 잡은 뒤 다시 확인해 (기다리는 동안 CLI 가 계획을 만들었으면 덮지 않음) 못 잡으면 보류합니다 (거짓, 실패로 기록하지 않음).
     private bool PlanIfMissing(GameSettings g, AsterSettings s)
     {
@@ -1886,9 +1895,11 @@ public sealed class AutoRelocator
             {
                 // 저널에 행이 있음 (부분 적용) 이거나 이전 계획이 잔여 계획인 확장: 활성 계획을 새 계획으로 바로 덮지 않고, 이미 옮긴 조각을 지키는 잔여 재계획으로 저널 보관과 함께 바꿈
                 plan = InheritHeld(g, plan); // 아직 읽지 못하는 보류 파일은 후보에서 빠졌어도 계속 보류로 남김
+                bool hadJournal = _env.JournalRows(g) > 0;
                 try
                 {
                     plan = residual(g, plan, ResidualOlds(g), sessions);
+                    LogResidualPlacement(g, plan);
                 }
                 catch (PlanRejectedException e) when (IsTemporaryRejection(e))
                 {
@@ -1912,7 +1923,8 @@ public sealed class AutoRelocator
                 }
 
                 _ = _seeded.Remove(g.Name);
-                _log.Info($"{g.Name}: partially applied plan replanned, the parts already moved are kept (earlier journal archived)");
+                bool archived = hadJournal && _env.JournalRows(g) == 0; // 같은 계획이면 저널을 보관하지 않고 그대로 이어감
+                _log.Info($"{g.Name}: partially applied plan replanned, the parts already moved are kept" + (!hadJournal ? " (no earlier journal)" : archived ? " (earlier journal archived)" : " (same plan, journal kept)"));
             }
             else
             {
@@ -2360,6 +2372,7 @@ public sealed class AutoRelocator
             }
 
             PlanFile built = _env.ReplanResidual!(g, active, ResidualOlds(g), SessionsFor(g, active));
+            LogResidualPlacement(g, built);
             _status.SetRecovery(g.Name, new RecoveryAttempt(built.Sha(), LcnIn(cause.Message), 1, null, prior.Reason, prior.Stamp));
             _ = _seeded.Remove(g.Name);
             _ = RestoreWarmList(g);

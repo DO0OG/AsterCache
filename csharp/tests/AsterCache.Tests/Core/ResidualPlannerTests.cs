@@ -160,6 +160,86 @@ public sealed class ResidualPlannerTests : ApplyTestBase
         Assert.True(Verify(plan).Contiguous);
     }
 
+    private PlanFile BuildAdjacent(PlanFile cand, PlanTask[] prev, Func<long, IReadOnlyList<long>, long?> adjacent, Func<long, long?>? findRun = null) =>
+        ResidualPlanner.Build(cand, prev, p => Vol.Ext[p], findRun ?? FindRun, adjacent);
+
+    [Fact]
+    public void AnAdjacentRunRightAfterTheMovedPartIsUsedBeforeTheGeneralFinder()
+    {
+        PlanFile cand = Candidate();
+        Vol.Move(F1, 192, 20000, 6);
+        IReadOnlyList<long>? ends = null;
+
+        PlanFile plan = BuildAdjacent(cand, [new PlanTask(F1, 192, 16, 20000)], (_, e) => { ends = e; return e[0]; }, _ => throw new InvalidOperationException("general finder must not be called"));
+
+        Assert.Equal([20006L], ends);
+        Assert.Equal(20006, plan.Zone.StartLcn);
+        Assert.Equal(1L, plan.Stats[ResidualPlanner.AdjacentKey]);
+        Assert.Equal(20006, Residual(plan).Min(t => t.TargetLcn));
+        AssertDryRunMovesOnlyTheResidual(plan, HotTotal - 6);
+    }
+
+    [Fact]
+    public void WithoutAnAdjacentRunTheGeneralFinderIsUsedAndTheMarkerIsZero()
+    {
+        PlanFile cand = Candidate();
+        Vol.Move(F1, 192, 20000, 6);
+
+        PlanFile plan = BuildAdjacent(cand, [new PlanTask(F1, 192, 16, 20000)], (_, _) => null);
+
+        Assert.Equal(FindRun(HotTotal - 6), plan.Zone.StartLcn);
+        Assert.Equal(0L, plan.Stats[ResidualPlanner.AdjacentKey]);
+    }
+
+    [Fact]
+    public void MovedPartsInSeveralOldZonesGiveEndsLargestFirstThenLowestLcnAndTouchingPartsMerge()
+    {
+        PlanFile cand = Candidate();
+        Vol.Move(F1, 192, 20000, 5); // 옛 존 A: 5
+        Vol.Move(F2, 0, 30000, 9); // 옛 존 B: 9
+        Vol.Move(F1, 0, 40000, 9); // 옛 존 C: 9 (B 와 같은 크기 → 낮은 LCN 인 B 먼저)
+        PlanTask[] prev = [new(F1, 192, 16, 20000), new(F2, 0, 16, 30000), new(F1, 0, 16, 40000)];
+        IReadOnlyList<long>? ends = null;
+
+        _ = BuildAdjacent(cand, prev, (_, e) => { ends = e; return null; });
+
+        Assert.Equal([30009L, 40009L, 20005L], ends);
+
+        Vol.Move(F1, 64, 30009, 9); // B 바로 뒤에 맞닿게 이어 둠 → B 와 합쳐 18 클러스터 한 덩어리
+        _ = BuildAdjacent(cand, [.. prev, new PlanTask(F1, 64, 16, 30009)], (_, e) => { ends = e; return null; });
+
+        Assert.Equal([30018L, 40009L, 20005L], ends);
+    }
+
+    [Fact]
+    public void NoAdjacentSearchWhenNothingIsMovedOrNothingIsLeft()
+    {
+        Func<long, IReadOnlyList<long>, long?> mustNotRun = (_, _) => throw new InvalidOperationException("adjacent finder must not be called");
+        PlanFile none = BuildAdjacent(Candidate(), [], mustNotRun);
+        Assert.False(none.Stats.ContainsKey(ResidualPlanner.AdjacentKey));
+
+        PlanTask[] prev = [new(F1, 192, 16, 20000), new(F2, 0, 16, 20016), new(F1, 0, 16, 20032), new(F1, 64, 16, 20048), new(F2, 128, 16, 20064)];
+        foreach (PlanTask t in prev)
+        {
+            Vol.Move(t.Path, t.Vcn, t.TargetLcn, (uint)t.Clusters);
+        }
+
+        PlanFile all = BuildAdjacent(Candidate(), prev, mustNotRun);
+        Assert.False(all.Stats.ContainsKey(ResidualPlanner.AdjacentKey));
+        Assert.Equal(prev, all.Tasks);
+    }
+
+    [Fact]
+    public void ThePreviousAdjacentMarkerIsNotInheritedWhenNoSearchIsMade()
+    {
+        PlanFile cand = Candidate();
+        cand.Stats[ResidualPlanner.AdjacentKey] = 1L;
+
+        PlanFile plan = BuildAdjacent(cand, [], (_, _) => throw new InvalidOperationException("adjacent finder must not be called"));
+
+        Assert.False(plan.Stats.ContainsKey(ResidualPlanner.AdjacentKey));
+    }
+
     [Fact]
     public void AFinderThatFindsNothingRejectsThePlan()
     {

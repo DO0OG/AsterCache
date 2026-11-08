@@ -51,9 +51,12 @@ public sealed class ProfileFeedTests : IDisposable
 
         public Func<string?, FeedReply> Reply { get; set; } = _ => new FeedReply(404);
 
-        public FeedReply Get(string url, string? etag)
+        public List<CancellationToken> Tokens { get; } = [];
+
+        public FeedReply Get(string url, string? etag, CancellationToken stop = default)
         {
             Calls.Add((url, etag));
+            Tokens.Add(stop);
             return Reply(etag);
         }
     }
@@ -382,7 +385,7 @@ public sealed class ProfileFeedTests : IDisposable
         Assert.True(body.BytesRead <= ProfileFeed.MaxDownloadBytes + 81920, $"read {body.BytesRead}");
         Assert.Contains(_log.Lines, l => l.Contains("download too large", StringComparison.Ordinal));
         Assert.False(File.Exists(Path.Combine(_dir.Path, "profiles", "feed.zip")));
-        Assert.Empty(Directory.GetFiles(Path.Combine(_dir.Path, "profiles"))); // 임시 파일도 남지 않음
+        OnlyTheStateFileRemains(); // ZIP·ETag·임시 파일은 남지 않음
     }
 
     [Fact]
@@ -437,7 +440,8 @@ public sealed class ProfileFeedTests : IDisposable
         Assert.Equal(0, Feed().Run(_settings, [SteamGame(_origin)]));
 
         Assert.Contains(_log.Lines, l => l.Contains("failed", StringComparison.Ordinal));
-        Assert.Empty(Directory.GetFiles(Path.Combine(_dir.Path, "profiles")));
+        OnlyTheStateFileRemains();
+        Assert.Contains("\"failures\": 1", File.ReadAllText(StatePath), StringComparison.Ordinal); // 종료 신호 없이 시간 초과로 끊김: 일시 오류로 셈
     }
 
     [Fact]
@@ -495,6 +499,489 @@ public sealed class ProfileFeedTests : IDisposable
         Assert.Equal(0, Feed().Run(off, []) + Feed().Run(autoOff, []));
         Assert.Empty(_http.Calls);
         Assert.Empty(_log.Lines);
+    }
+
+    // ---- 오류 분류·백오프·영속 상태 ----
+
+    private string StatePath => Path.Combine(_dir.Path, "profiles", "feed.state.json");
+
+    private void OnlyTheStateFileRemains() =>
+        Assert.Equal(["feed.state.json"], Directory.GetFiles(Path.Combine(_dir.Path, "profiles")).Select(f => Path.GetFileName(f)).ToArray());
+
+    private void WriteState(string error, string nextFetch, string extra = "")
+    {
+        Directory.CreateDirectory(Path.Combine(_dir.Path, "profiles"));
+        File.WriteAllText(StatePath, $"{{\"format\":\"astercache-profile-feed-state\",\"version\":1,\"failures\":3,\"error\":\"{error}\",\"next_fetch\":\"{nextFetch}\"{extra}}}");
+    }
+
+    private const string Far = "2099-01-01T00:00:00.0000000+00:00";
+
+    private List<ZeroStream> ServeCorrupt(string etag)
+    {
+        var streams = new List<ZeroStream>();
+        _http.Reply = _ =>
+        {
+            var body = new ZeroStream(9); // zip 이 아닌 내용: 손상
+            streams.Add(body);
+            return new FeedReply(200, etag, body, 9);
+        };
+        return streams;
+    }
+
+    [Fact]
+    public void TransientFailuresBackOffByDoublingUpToTheCap()
+    {
+        _http.Reply = _ => throw new HttpRequestException("offline");
+        ProfileFeed feed = Feed();
+        feed.Run(_settings, []);
+
+        int[] hours = [1, 2, 4, 8, 16, 24, 24]; // 시작 1 시간, 2 배, 상한 24 시간
+        for (int k = 0; k < hours.Length; k++)
+        {
+            _now += TimeSpan.FromHours(hours[k]) - TimeSpan.FromMinutes(1);
+            feed.Run(_settings, []);
+            Assert.Equal(k + 1, _http.Calls.Count); // 아직 이름
+            _now += TimeSpan.FromMinutes(1);
+            feed.Run(_settings, []);
+            Assert.Equal(k + 2, _http.Calls.Count);
+        }
+
+        Assert.Contains("\"error\": \"transient\"", File.ReadAllText(StatePath), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BackoffAndFailureCountSurviveARestartAndSuccessResetsTheCount()
+    {
+        _http.Reply = _ => throw new HttpRequestException("offline");
+        Feed().Run(_settings, []);
+        Assert.True(File.Exists(StatePath));
+
+        _now += TimeSpan.FromMinutes(30);
+        Feed().Run(_settings, []); // 재시작해도 1 시간 안에는 다시 요청하지 않음
+        Assert.Single(_http.Calls);
+
+        _now += TimeSpan.FromMinutes(31);
+        ProfileFeed second = Feed();
+        second.Run(_settings, []);
+        Assert.Equal(2, _http.Calls.Count); // 두 번째 실패: 이제 2 시간
+
+        _now += TimeSpan.FromMinutes(90);
+        Feed().Run(_settings, []); // 실패 횟수가 복원되어 2 시간째
+        Assert.Equal(2, _http.Calls.Count);
+
+        Serve(GoodZip(SteamEntry("p/foo.json")).Zip);
+        _now += TimeSpan.FromMinutes(31);
+        Assert.Equal(1, Feed().Run(_settings, [SteamGame(_origin)]));
+        Assert.Equal(3, _http.Calls.Count);
+        Assert.Contains("\"failures\": 0", File.ReadAllText(StatePath), StringComparison.Ordinal); // 성공: 횟수는 0, 다음 정기 요청 시각은 남음
+    }
+
+    [Fact]
+    public void ACorruptBundleIsNotAskedForDuringExactlyOneWeekThenOnceMoreAndWaitsAnotherWeek()
+    {
+        List<ZeroStream> streams = ServeCorrupt("\"bad\"");
+        Feed().Run(_settings, []);
+        Assert.Equal(9, streams[0].BytesRead);
+        string state = File.ReadAllText(StatePath);
+        Assert.Contains("\"error\": \"corrupt\"", state, StringComparison.Ordinal);
+        Assert.Contains("\"next_fetch\": \"" + (Start + ProfileFeed.CorruptRetryCap).ToString("O") + "\"", state, StringComparison.Ordinal); // 정확히 168 시간 뒤
+
+        _now = Start + ProfileFeed.CorruptRetryCap - TimeSpan.FromTicks(1);
+        Feed().Run(_settings, []); // 재시작해도 그 사이에는 표지 확인용 요청도 없음
+        Assert.Single(_http.Calls);
+
+        _now = Start + ProfileFeed.CorruptRetryCap;
+        Feed().Run(_settings, []);
+        Assert.Equal(2, _http.Calls.Count);
+        Assert.Equal(9, streams[1].BytesRead); // 일주일이 지나면 한 번 더 받아 봄
+
+        _now += ProfileFeed.CorruptRetryCap - TimeSpan.FromTicks(1);
+        Feed().Run(_settings, []);
+        Assert.Equal(2, _http.Calls.Count); // 또 손상: 다시 일주일
+        _now += TimeSpan.FromTicks(1);
+        Feed().Run(_settings, []);
+        Assert.Equal(3, _http.Calls.Count);
+    }
+
+    [Fact]
+    public void ACorruptBundleWithAChangedMarkerIsPickedUpByTheWeeklyRequest()
+    {
+        List<ZeroStream> streams = ServeCorrupt("\"bad\"");
+        ProfileFeed feed = Feed();
+        feed.Run(_settings, []);
+        List<ZeroStream> changed = ServeCorrupt("\"bad2\"");
+        _now += TimeSpan.FromHours(2);
+        feed.Run(_settings, []);
+        Assert.Single(_http.Calls); // 일주일 안에는 표지가 바뀌었어도 묻지 않음
+
+        _now = Start + ProfileFeed.CorruptRetryCap;
+        feed.Run(_settings, []);
+
+        Assert.Equal(2, _http.Calls.Count);
+        Assert.Equal(9, streams[0].BytesRead);
+        Assert.Equal(9, changed[0].BytesRead);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("same bundle", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ARequestBeforeTheCorruptScheduleWithTheSameMarkerReadsNoBodyAndKeepsTheSchedule()
+    {
+        WriteState("corrupt", Start.ToString("O"), ",\"bad_marker\":\"\\\"bad\\\"\",\"bad_since\":\"" + (Start - TimeSpan.FromDays(1)).ToString("O") + "\"");
+        List<ZeroStream> streams = ServeCorrupt("\"bad\"");
+
+        Feed().Run(_settings, []);
+
+        Assert.Equal(0, streams[0].BytesRead);
+        Assert.Contains(_log.Lines, l => l.Contains("same bundle as the rejected one", StringComparison.Ordinal));
+        Assert.Contains("\"next_fetch\": \"" + (Start - TimeSpan.FromDays(1) + ProfileFeed.CorruptRetryCap).ToString("O") + "\"", File.ReadAllText(StatePath), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AnHttpErrorAnswerIsRememberedAcrossARestartForTheUsualWeek()
+    {
+        Feed().Run(_settings, []); // 404
+        _now += TimeSpan.FromDays(3);
+
+        Feed().Run(_settings, []);
+        Assert.Single(_http.Calls);
+
+        _now += TimeSpan.FromDays(5);
+        Feed().Run(_settings, []);
+        Assert.Equal(2, _http.Calls.Count);
+    }
+
+    [Theory]
+    [InlineData("not json")]
+    [InlineData("[]")]
+    [InlineData("{\"format\":\"other\",\"version\":1,\"failures\":3,\"next_fetch\":\"2026-11-03T12:00:00.0000000+00:00\"}")]
+    [InlineData("{\"format\":\"astercache-profile-feed-state\",\"version\":1,\"failures\":3,\"next_fetch\":\"garbage\"}")]
+    public void ABrokenStateFileIsIgnoredAndTheFeedAsksAtOnce(string text)
+    {
+        Directory.CreateDirectory(Path.Combine(_dir.Path, "profiles"));
+        File.WriteAllText(StatePath, text);
+        _http.Reply = _ => throw new HttpRequestException("offline");
+
+        Feed().Run(_settings, []);
+
+        Assert.Single(_http.Calls);
+    }
+
+    [Fact]
+    public void ANextFetchFarInTheFutureIsCappedByItsKindOfFailure()
+    {
+        WriteState("transient", Far);
+        _http.Reply = _ => throw new HttpRequestException("offline");
+        ProfileFeed feed = Feed();
+
+        feed.Run(_settings, []);
+        Assert.Empty(_http.Calls);
+
+        _now += ProfileFeed.MaxBackoff + TimeSpan.FromMinutes(1); // 일시 오류는 24 시간
+        feed.Run(_settings, []);
+        Assert.Single(_http.Calls);
+    }
+
+    [Theory]
+    [InlineData("corrupt", 7)]
+    [InlineData("http", 7)]
+    public void CorruptAndHttpNextFetchesAreCappedAtOneWeek(string error, int days)
+    {
+        WriteState(error, Far);
+        ProfileFeed feed = Feed();
+
+        _now += TimeSpan.FromDays(days) - TimeSpan.FromMinutes(1);
+        feed.Run(_settings, []);
+        Assert.Empty(_http.Calls);
+
+        _now += TimeSpan.FromMinutes(2);
+        feed.Run(_settings, []);
+        Assert.Single(_http.Calls);
+    }
+
+    [Fact]
+    public void ANoMatchRetryTimeFarInTheFutureIsCappedAtOneDay()
+    {
+        Serve(GoodZip(SteamEntry("p/foo.json")).Zip);
+        Feed().Run(_settings, [SteamGame(_origin, gid: "999")]);
+        File.WriteAllText(StatePath, System.Text.RegularExpressions.Regex.Replace(File.ReadAllText(StatePath), "\"Foo\": \"[^\"]*\"", $"\"Foo\": \"{Far}\""));
+
+        ProfileFeed feed = Feed(); // 읽을 때의 지금 기준으로 하루를 넘지 않게 줄임
+        _now += ProfileFeed.RetryAfterNoMatch + TimeSpan.FromMinutes(1);
+
+        Assert.Equal(1, feed.Run(_settings, [SteamGame(_origin)]));
+    }
+
+    [Fact]
+    public void SuccessAndNotModifiedKeepTheNextRegularRequestAcrossRestarts()
+    {
+        Serve(GoodZip(SteamEntry("p/foo.json")).Zip);
+        Feed().Run(_settings, [SteamGame(_origin)]);
+        _now += TimeSpan.FromHours(1);
+        Feed().Run(_settings, [SteamGame(_origin)]); // 재시작해도 일주일 안에는 받지 않음
+        Assert.Single(_http.Calls);
+
+        _now += ProfileFeed.Every;
+        Feed().Run(_settings, [SteamGame(_origin)]); // 304
+        Assert.Equal(2, _http.Calls.Count);
+        _now += TimeSpan.FromHours(1);
+        Feed().Run(_settings, [SteamGame(_origin)]);
+        Assert.Equal(2, _http.Calls.Count);
+    }
+
+    [Fact]
+    public async Task ConcurrentRunsSendOnlyOneRequest()
+    {
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        _http.Reply = _ =>
+        {
+            entered.Set();
+            Assert.True(release.Wait(TimeSpan.FromSeconds(30)));
+            return new FeedReply(404);
+        };
+        ProfileFeed feed = Feed();
+        Task<int> first = Task.Run(() => feed.Run(_settings, []));
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(30)));
+
+        Assert.Equal(0, feed.Run(_settings, [])); // 도는 중: 건너뜀
+        release.Set();
+        await first;
+
+        Assert.Single(_http.Calls);
+        OnlyTheStateFileRemains();
+    }
+
+    [Fact]
+    public void TheBackoffIsSavedBeforeTheRequestSoAKilledProcessKeepsIt()
+    {
+        string? during = null;
+        _http.Reply = _ =>
+        {
+            during = File.ReadAllText(StatePath);
+            throw new InvalidOperationException("process killed"); // 잡히지 않는 예외: 결과를 기록하지 못한 채 끝나는 상황
+        };
+
+        Assert.Throws<InvalidOperationException>(() => Feed().Run(_settings, []));
+
+        Assert.Contains("\"failures\": 1", during, StringComparison.Ordinal); // 요청 중 이미 가정한 백오프가 파일에 있음
+        _now += TimeSpan.FromMinutes(30);
+        Feed().Run(_settings, []);
+        Assert.Single(_http.Calls);
+        _http.Reply = _ => new FeedReply(404);
+        _now += TimeSpan.FromMinutes(31);
+        Feed().Run(_settings, []);
+        Assert.Equal(2, _http.Calls.Count);
+    }
+
+    [Theory]
+    [InlineData("9999-12-31T23:59:59.9999999+00:00")]
+    [InlineData("2099-01-01T00:00:00.0000000+00:00")]
+    [InlineData("2020-01-01T00:00:00.0000000+00:00")]
+    public void ABadSinceOutsideTheValidRangeIsIgnoredWithoutThrowing(string badSince)
+    {
+        WriteState("corrupt", Start.ToString("O"), $",\"bad_marker\":\"\\\"bad\\\"\",\"bad_since\":\"{badSince}\"");
+        List<ZeroStream> streams = ServeCorrupt("\"bad\"");
+
+        Feed().Run(_settings, []);
+
+        Assert.Equal(9, streams[0].BytesRead); // 믿을 수 없는 표지는 버리고 본문을 읽어 봄
+    }
+
+    [Theory]
+    [InlineData(503)]
+    [InlineData(429)]
+    [InlineData(408)]
+    public void AnyHttpAnswerThatIsNot200Or304WaitsTheUsualWeek(int status)
+    {
+        _http.Reply = _ => new FeedReply(status);
+        ProfileFeed feed = Feed();
+        feed.Run(_settings, []);
+
+        _now += ProfileFeed.Every - TimeSpan.FromMinutes(1);
+        feed.Run(_settings, []);
+        Assert.Single(_http.Calls);
+        _now += TimeSpan.FromMinutes(2);
+        feed.Run(_settings, []);
+
+        Assert.Equal(2, _http.Calls.Count);
+        Assert.Contains("\"error\": \"http\"", File.ReadAllText(StatePath), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ACancellationFromServiceShutdownKeepsTheStateAndTheRequestInterval()
+    {
+        _http.Reply = _ => throw new HttpRequestException("offline");
+        ProfileFeed first = Feed();
+        first.Run(_settings, []);
+        _now += TimeSpan.FromMinutes(61);
+        first.Run(_settings, []); // 두 번 실패
+        _now += TimeSpan.FromMinutes(121);
+        using var stop = new CancellationTokenSource();
+        stop.CancelAfter(TimeSpan.FromMilliseconds(100));
+        _http.Reply = _ => new FeedReply(200, Tag, new HangStream(), null); // 시간 초과 토큰은 없고 종료 신호만 끊음
+
+        Assert.Equal(0, Feed().Run(_settings, [SteamGame(_origin)], stop.Token));
+
+        Assert.Equal(stop.Token, _http.Tokens[^1]); // 종료 신호가 요청에 전달됨
+        Assert.Contains(_log.Lines, l => l.Contains("cancelled", StringComparison.Ordinal));
+        OnlyTheStateFileRemains(); // 상태 파일을 지우지 않음
+        string state = File.ReadAllText(StatePath);
+        Assert.Contains("\"failures\": 2", state, StringComparison.Ordinal); // 실패 횟수는 요청 전 값
+        Assert.Contains("\"next_fetch\": \"" + (_now + ProfileFeed.RetryAfterFailure).ToString("O") + "\"", state, StringComparison.Ordinal);
+        _http.Reply = _ => new FeedReply(404);
+        _now += TimeSpan.FromMinutes(59);
+        Feed().Run(_settings, []);
+        Assert.Equal(3, _http.Calls.Count); // 재시작해도 한 시간 안에는 다시 요청하지 않음
+        _now += TimeSpan.FromMinutes(2);
+        Feed().Run(_settings, []);
+        Assert.Equal(4, _http.Calls.Count);
+    }
+
+    [Fact]
+    public void ShutdownDuringTheHeaderWaitIsAlsoNotAFailure()
+    {
+        using var stop = new CancellationTokenSource();
+        _http.Reply = _ =>
+        {
+            stop.Cancel();
+            throw new TaskCanceledException();
+        };
+
+        Feed().Run(_settings, [], stop.Token);
+
+        Assert.Equal(stop.Token, _http.Tokens[0]);
+        Assert.Contains(_log.Lines, l => l.Contains("cancelled", StringComparison.Ordinal));
+        Assert.Contains("\"failures\": 0", File.ReadAllText(StatePath), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LeftoverTempFilesFromAKilledFetchAreDeletedBeforeTheRequestAndOtherFilesStay()
+    {
+        string dir = Path.Combine(_dir.Path, "profiles");
+        Directory.CreateDirectory(dir);
+        string zipTmp = Path.Combine(dir, "feed.zip." + Guid.NewGuid().ToString("N") + ".tmp");
+        string stateTmp = Path.Combine(dir, "feed.state.json." + Guid.NewGuid().ToString("N") + ".tmp");
+        string other = Path.Combine(dir, "feed.zip.keep.tmp");
+        File.WriteAllBytes(zipTmp, new byte[1024]);
+        File.WriteAllBytes(stateTmp, new byte[1]);
+        File.WriteAllBytes(other, new byte[1]);
+        bool tempsWhenRequested = true;
+        _http.Reply = _ =>
+        {
+            tempsWhenRequested = File.Exists(zipTmp) || File.Exists(stateTmp);
+            return new FeedReply(404);
+        };
+
+        Feed().Run(_settings, []);
+
+        Assert.Single(_http.Calls);
+        Assert.False(tempsWhenRequested); // 요청 전에 이미 지워져 있어야 함
+        Assert.False(File.Exists(zipTmp));
+        Assert.False(File.Exists(stateTmp));
+        Assert.True(File.Exists(other)); // 패턴에 맞지 않는 파일은 그대로
+    }
+
+    [Fact]
+    public void AnIoErrorWhileShuttingDownIsNotCountedAsAFailure()
+    {
+        using var stop = new CancellationTokenSource();
+        _http.Reply = _ =>
+        {
+            stop.Cancel();
+            throw new IOException("connection closed");
+        };
+
+        Feed().Run(_settings, [], stop.Token);
+
+        Assert.Contains(_log.Lines, l => l.Contains("cancelled", StringComparison.Ordinal));
+        Assert.Contains("\"failures\": 0", File.ReadAllText(StatePath), StringComparison.Ordinal); // 종료 중 실패는 세지 않음
+    }
+
+    [Fact]
+    public void WhenTheStateCannotBeSavedBeforeTheRequestNothingIsRequestedAndItIsTriedAgainNextRun()
+    {
+        Directory.CreateDirectory(StatePath); // 파일 자리에 폴더: 저장 실패
+        ProfileFeed feed = Feed();
+
+        Assert.Equal(0, feed.Run(_settings, []));
+
+        Assert.Empty(_http.Calls);
+        Assert.Contains(_log.Lines, l => l.Contains("state not saved", StringComparison.Ordinal));
+        Directory.Delete(StatePath);
+        feed.Run(_settings, []);
+        Assert.Single(_http.Calls);
+    }
+
+    [Fact]
+    public void ValuesCappedOnLoadAreWrittenBackToTheFile()
+    {
+        WriteState("transient", Far, ",\"next_try\":{\"Foo\":\"" + Far + "\"}");
+
+        _ = Feed();
+
+        string text = File.ReadAllText(StatePath);
+        Assert.DoesNotContain("2099", text, StringComparison.Ordinal);
+        Assert.Contains("\"next_fetch\": \"" + (Start + ProfileFeed.MaxBackoff).ToString("O") + "\"", text, StringComparison.Ordinal);
+        Assert.Contains("\"Foo\": \"" + (Start + ProfileFeed.RetryAfterNoMatch).ToString("O") + "\"", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AClockThatGoesBackWhileRunningCapsTheWaitLikeALoadedState()
+    {
+        _http.Reply = _ => throw new HttpRequestException("offline");
+        ProfileFeed feed = Feed();
+        feed.Run(_settings, []); // 다음은 한 시간 뒤
+
+        _now = Start - TimeSpan.FromDays(2);
+        feed.Run(_settings, []);
+        Assert.Single(_http.Calls);
+        _now = Start - TimeSpan.FromDays(1) + TimeSpan.FromMinutes(1); // 되감긴 시각 기준 최대 24 시간 뒤
+        feed.Run(_settings, []);
+
+        Assert.Equal(2, _http.Calls.Count);
+    }
+
+    [Fact]
+    public void AFailedFetchKeepsUsingTheLastGoodBundle()
+    {
+        Serve(GoodZip(SteamEntry("p/foo.json")).Zip);
+        Feed().Run(_settings, [SteamGame(_origin)]);
+        byte[] cached = File.ReadAllBytes(Path.Combine(_dir.Path, "profiles", "feed.zip"));
+        File.Delete(BootPath);
+        _http.Reply = _ => throw new HttpRequestException("offline");
+        _now += TimeSpan.FromDays(8);
+
+        Assert.Equal(1, Feed().Run(_settings, [SteamGame(_origin)])); // 받기는 실패해도 이전 묶음으로 맞춤
+
+        Assert.Equal(cached, File.ReadAllBytes(Path.Combine(_dir.Path, "profiles", "feed.zip")));
+        Assert.Equal(ExpectedBoot(), File.ReadAllBytes(BootPath));
+    }
+
+    [Fact]
+    public void NoMatchRetryTimesSurviveARestartAndRemovedGamesAreForgotten()
+    {
+        Serve(GoodZip(SteamEntry("p/foo.json")).Zip);
+        Feed().Run(_settings, [SteamGame(_origin, gid: "999")]); // 맞는 프로필 없음: 하루 뒤에 다시
+        Assert.Contains("\"Foo\"", File.ReadAllText(StatePath), StringComparison.Ordinal);
+
+        _now += TimeSpan.FromHours(1);
+        Assert.Equal(0, Feed().Run(_settings, [SteamGame(_origin)])); // 재시작해도 아직 기다림
+
+        _now += TimeSpan.FromHours(24);
+        Assert.Equal(1, Feed().Run(_settings, [SteamGame(_origin)])); // 하루가 지나면 다시 맞춰 봄
+    }
+
+    [Fact]
+    public void GamesRemovedFromTheSettingsAreDroppedFromTheSavedState()
+    {
+        Serve(GoodZip(SteamEntry("p/foo.json")).Zip);
+        ProfileFeed feed = Feed();
+        feed.Run(_settings, [SteamGame(_origin, gid: "999")]);
+        Assert.True(File.Exists(StatePath));
+
+        feed.Run(new AsterSettings(50, []), []);
+
+        Assert.DoesNotContain("\"Foo\"", File.ReadAllText(StatePath), StringComparison.Ordinal);
     }
 
     // ---- 묶음이 믿을 수 없을 때 ----

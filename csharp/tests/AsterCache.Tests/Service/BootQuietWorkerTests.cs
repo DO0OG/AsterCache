@@ -223,6 +223,27 @@ public sealed class BootQuietWorkerTests : IDisposable
     }
 
     [Fact]
+    public void LayoutCheckReadsNothingWhileTheDiskIsYieldedToAGameEvenIfTheStartEventWasMissed()
+    {
+        _uptimeMs = 6 * Minute;
+        var coordinator = new DiskReadCoordinator(new AsterCache.Windows.VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log, () => 0);
+        Worker w = new(new AsterSettings(50, [_game]), _log, new Silent(), null, _streamer, new ReapplyChecker(CheckerEnv(), _log), quiet: Quiet(), coordinator: coordinator);
+        DateTimeOffset start = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(2);
+        var due = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+        coordinator.Yield(_game.OriginRoot, "game started", _game.Name); // 게임 판정 (GameRunning) 은 모르지만 디스크는 이미 양보 중
+
+        Tick(w, start, due);
+
+        Assert.Equal(0, _layoutChecks); // 계획 읽기·지문·extent 조회 전에 멈춤
+
+        coordinator.Resume(_game.OriginRoot, _game.Name);
+        due.Clear();
+        Tick(w, start, due);
+
+        Assert.Equal(1, _layoutChecks); // 양보가 풀리면 평소대로
+    }
+
+    [Fact]
     public void AutoRelocationIsHeldWhileQuietAndAllowedAfterIt()
     {
         BootQuiet q = Quiet();

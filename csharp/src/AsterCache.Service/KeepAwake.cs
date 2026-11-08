@@ -78,6 +78,7 @@ public sealed class KeepAwake
     private readonly KeepAwakeEnv _env;
     private readonly ILog _log;
     private readonly Func<AsterSettings> _settings;
+    private DiskReadCoordinator? _coordinator;
     private readonly HashSet<string> _active = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _unknownLogged = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _picked = new(StringComparer.OrdinalIgnoreCase); // 게임 폴더 → 고른 파일 (읽기 실패 시 다시 고름)
@@ -87,12 +88,15 @@ public sealed class KeepAwake
     private bool _powerRead;
     private int? _lastIdle;
 
-    public KeepAwake(KeepAwakeEnv env, ILog log, Func<AsterSettings> settings)
+    public KeepAwake(KeepAwakeEnv env, ILog log, Func<AsterSettings> settings, DiskReadCoordinator? coordinator = null)
     {
         _env = env;
         _log = log;
         _settings = settings;
+        _coordinator = coordinator;
     }
+
+    public void SetDiskReadCoordinator(DiskReadCoordinator coordinator) => _coordinator = coordinator;
 
     /// 디스크 끄기 시간 (초) 에서 읽는 주기: min(10 분, 0.6 x 끄기 시간), 끄기 시간이 2 분 미만이거나 (0 = 안 끔 포함) 읽지 못했으면 null (쉼).
     public static TimeSpan? Interval(int? idleSeconds) =>
@@ -169,11 +173,12 @@ public sealed class KeepAwake
                 continue; // 파일 탐색 뒤 읽기 직전에 한 번 더 (탐색 중에 게임이 떴을 수 있음): 읽지 않고 고른 파일은 유지
             }
 
-            if (file is not null && TryRead(file))
+            bool? read = file is null ? false : TryRead(g, file);
+            if (read == true)
             {
                 awake.Add(letter);
             }
-            else
+            else if (read == false)
             {
                 _picked.Remove(g.OriginRoot); // 파일이 사라졌거나 읽기 실패: 다음 주기에 다시 고름
             }
@@ -267,10 +272,16 @@ public sealed class KeepAwake
         return file;
     }
 
-    private bool TryRead(string file)
+    private bool? TryRead(GameSettings game, string file)
     {
         try
         {
+            using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "keep awake");
+            if (_coordinator is not null && (lease is null || !lease.IsValid))
+            {
+                return null;
+            }
+
             _env.ReadSector(file);
             return true;
         }

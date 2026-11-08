@@ -119,7 +119,6 @@ public sealed class AutoEnv
     public required Func<string, string?> AntiCheatOf { get; init; }
 
     /// 이 게임 폴더 아래에서 도는 프로세스의 PID (게임 exe 가 자식 프로세스를 띄우는 경우를 포함, 이 서비스는 제외). 시험 기본값은 없음.
-    public Func<GameSettings, IReadOnlyList<int>> RootPids { get; init; } = _ => [];
 
     /// 이 게임이 돌고 있다고 판정한 프로세스를 "이름(pid) 경로" 로 최대 3개 ("; " 로 이음), 없으면 null (건너뜀 사유 로그용). 시험 기본값은 없음.
     public Func<GameSettings, string?> DescribeBlockers { get; init; } = _ => null;
@@ -150,6 +149,9 @@ public sealed class AutoEnv
 
     /// 파일의 마지막 수정 시각 (UTC), 없으면 null. 원시 트레이스가 마지막 예열보다 새로운지 보는 데 씁니다.
     public Func<string, DateTimeOffset?> FileWriteTime { get; init; } = _ => null;
+
+    /// 파일의 ChangeTime (UTC): 수정 시각을 되돌려도 따라 돌아가지 않는 시각. 열 수 없으면 null (알 수 없음). 시험 기본값은 아주 옛 시각 (바뀌지 않음).
+    public Func<string, DateTimeOffset?> ChangeTime { get; init; } = _ => DateTimeOffset.MinValue;
 
     /// 이름이 맞는 실행 중인 프로세스의 (PID, 읽은 누적 바이트).
     public required Func<IReadOnlyCollection<string>, IReadOnlyList<(int Pid, long ReadBytes)>> GameProcesses { get; init; }
@@ -210,8 +212,20 @@ public sealed class AutoEnv
     /// 게임 저널 header 의 plan_sha (저널에 행이 없으면 null). 활성 계획과 맞는지 시작 복구가 대조합니다.
     public Func<GameSettings, string?> JournalPlanSha { get; init; } = _ => null;
 
+    /// 저널에 아직 검증하지 못한 이동 표본(미룬 SHA 검증)이 남았는가. 이동이 끝난 뒤에도 남을 수 있어, 남았으면 완료로 확정하기 전에 검증을 한 번 더 돌립니다.
+    public Func<GameSettings, bool> HasPendingVerification { get; init; } = _ => false;
+
     /// (원본, 새 이름) 파일 이동, 이미 있으면 덮어씀. 낡은 트레이스·계획을 .stale 로 치우는 데 씁니다.
     public Action<string, string> MoveAside { get; init; } = (_, _) => { };
+
+    /// 트레이스 파일에 나오는 경로 (중복 없이), 읽을 수 없으면 예외. 계획 지문이 없는 경로가 업데이트로 바뀌었는지 보는 데 씁니다. 시험 기본값은 빈 목록.
+    public Func<string, IReadOnlyCollection<string>> TracePaths { get; init; } = _ => [];
+
+    /// 트레이스 파일의 원본 행 (없어진 파일 걸러내기·잘라내기·길이 검사 없음), 읽을 수 없으면 예외. 업데이트로 바뀐 바이트 비율을 원래 길이로 세는 데 씁니다. 시험 기본값은 빈 목록.
+    public Func<string, IReadOnlyList<TraceEvent>> TraceRows { get; init; } = _ => [];
+
+    /// 게임 업데이트로 바뀐 파일(들)의 범위만 트레이스 (병합본·run 파일) 와 예열 목록에서 빼고 다음 플레이를 다시 학습하게 표시합니다 (AutoTracer.DropChanged). 원본은 .stale 로 복사해 둠. 시험 기본값은 아무 일도 하지 않음.
+    public Action<GameSettings, IReadOnlySet<string>> DropChanged { get; init; } = (_, _) => { };
 
     /// 파일의 수정 시각을 지금으로 바꿉니다 (되살린 계획이 트레이스보다 새롭게 보이도록).
     public Action<string> Touch { get; init; } = _ => { };
@@ -290,7 +304,6 @@ public sealed class AutoEnv
             ImagePath = ProcessSnapshot.ImagePath,
             ReadBytes = ProcessSnapshot.ReadBytes,
             AntiCheatOf = dir => DetectAntiCheat(dir, log: log),
-            RootPids = g => DispatchEnv.RootPids(g, ProcessSnapshot.Take(), ProcessSnapshot.ImagePath),
             DescribeBlockers = DispatchEnv.DescribeBlockers,
             PhysicalRamBytes = SystemMemory.TotalBytes,
             WindowsDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows),
@@ -302,6 +315,7 @@ public sealed class AutoEnv
             ProfileEvents = (g, budget) => PlanGuards.Inside(g.OriginRoot, g.AllowedRoots, RealPaths.Real) ? ProfileSupplement.EventsFor(g.OriginRoot, g.ExeNames, budget, RealPaths.Resolve) : [],
             DirectoryExists = Directory.Exists,
             FileWriteTime = path => File.Exists(path) ? File.GetLastWriteTimeUtc(path) : null,
+            ChangeTime = AsterCache.Windows.FileTimes.ChangeTimeOf,
             GameProcesses = exes => ProcessSnapshot.ReadCounters(exes),
             AnyRunning = exes => ProcessSnapshot.IsRunning(exes),
             StartTrace = (exes, listener) => new LiveAutoTrace(LiveSession.Start(
@@ -328,12 +342,16 @@ public sealed class AutoEnv
             ReplanResidual = (g, candidate, olds, sessions) => ReapplyEnv.ReplanResidual(journalDir, g, candidate, olds, sessions),
             ResumeSwitch = g => ReapplyEnv.ResumeSwitch(journalDir, g),
             JournalPlanSha = g => ReapplyEnv.JournalPlanSha(journalDir, g),
+            HasPendingVerification = g => ReapplyEnv.HasPendingVerification(journalDir, g),
             ArchiveJournal = g => ReapplyEnv.ArchiveJournal(journalDir, g),
             MoveAside = (src, dst) =>
             {
                 DataLock.RequireHeld(src);
                 File.Move(src, dst, true);
             },
+            TracePaths = AutoTracer.TracePaths,
+            TraceRows = AutoTracer.TraceRows,
+            DropChanged = AutoTracer.DropChanged,
             Touch = path =>
             {
                 DataLock.RequireHeld(path);

@@ -273,6 +273,19 @@ public sealed class ReapplyEnv
         return jr.Rows.FirstOrDefault(r => Equals(r["type"], "header")) is { } h && h.TryGetValue("plan_sha", out object? sha) ? sha as string : null;
     }
 
+    /// 저널에 검증하지 못한 sha_before 가 남았는가 (저널이 없으면 false).
+    public static bool HasPendingVerification(string journalDir, GameSettings g)
+    {
+        string journal = JournalPath(journalDir, g);
+        if (!File.Exists(journal))
+        {
+            return false;
+        }
+
+        using var jr = new Journal(journal);
+        return Applier.PendingBefore(jr.Rows.ToList()).Count > 0;
+    }
+
     /// 저널의 현재 줄 수 (없으면 0).
     public static int JournalRows(string journalDir, GameSettings g)
     {

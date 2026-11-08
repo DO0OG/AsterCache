@@ -54,6 +54,14 @@ public sealed class AutoLearnTests : IDisposable
         Assert.True(done());
     }
 
+    private void EndAfterExitGrace()
+    {
+        _rig.World.Running = false;
+        _tracer.Step();
+        _rig.World.Now += GameExitTracker.Grace;
+        _tracer.Step();
+    }
+
     [Fact]
     public void LearnEnabledPassesAListenerAndShowsTheLearningStage()
     {
@@ -123,8 +131,7 @@ public sealed class AutoLearnTests : IDisposable
         SequentialReads(_rig.World.Listener!.OnRead);
         WaitFor(() => _io.ReadBytes == 4 * Mib);
 
-        _rig.World.Running = false;
-        _tracer.Step();
+        EndAfterExitGrace();
 
         Assert.False(_tracer.Active);
         Assert.True(_trace.Stopped);
@@ -145,8 +152,7 @@ public sealed class AutoLearnTests : IDisposable
         SequentialReads(_rig.World.Listener!.OnRead); // 8 MiB / 0.5 s 는 기준 1 MiB/s 이상: 창이 비는 약 500 ms 뒤에야 읽음
 
         WaitFor(() => _io.ReadBytes == 4 * Mib);
-        _rig.World.Running = false;
-        _tracer.Step();
+        EndAfterExitGrace();
 
         Assert.Contains(_rig.Log.Lines, l => System.Text.RegularExpressions.Regex.IsMatch(l, @"saturated_ms [1-9]\d*, paused_requests 0$"));
     }
@@ -161,8 +167,7 @@ public sealed class AutoLearnTests : IDisposable
         SequentialReads(_rig.World.Listener!.OnRead); // 읽기 사이에 100 ms 틈이 없어도 읽음
 
         WaitFor(() => _io.ReadBytes == 4 * Mib);
-        _rig.World.Running = false;
-        _tracer.Step();
+        EndAfterExitGrace();
 
         Assert.Contains(_rig.Log.Lines, l => l.EndsWith("gap_count 0, yielded_requests 0, read_ahead_while_idle_bytes 4194304, saturated_ms 0, paused_requests 0", StringComparison.Ordinal));
     }
@@ -176,8 +181,7 @@ public sealed class AutoLearnTests : IDisposable
         SequentialReads(_rig.World.Listener!.OnLateRead!);
         WaitFor(() => _io.ReadBytes == 4 * Mib);
 
-        _rig.World.Running = false;
-        _tracer.Step();
+        EndAfterExitGrace();
 
         Assert.Contains(_rig.Log.Lines, l => l.Contains("0 MiB game reads, 0 resolved reads, 8 late reads, 1 sequential files", StringComparison.Ordinal));
     }

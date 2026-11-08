@@ -7,7 +7,7 @@ using AsterCache.Core.Json;
 namespace AsterCache.Tray;
 
 /// 서비스가 auto_status.json 에 적은 게임 하나의 자동 단계.
-public sealed record AutoGame(string Source, string? Launcher, string Stage, string? Detail, int? HitPercent = null, int? CoveragePercent = null);
+public sealed record AutoGame(string Source, string? Launcher, string Stage, string? Detail, int? HitPercent = null, int? CoveragePercent = null, string? DisplayName = null, DateTimeOffset? HitAt = null);
 
 /// 알림 대상 사건 (kind: discovered, relocated).
 public sealed record AutoNotice(DateTimeOffset At, string Game, string Kind)
@@ -38,7 +38,7 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
                 {
                     if (kv.Value is JObject g && Get(g, "stage") is string stage)
                     {
-                        games[kv.Key] = new AutoGame(Get(g, "source") as string ?? "auto", Get(g, "launcher") as string, stage, Get(g, "detail") as string, Get(g, "hit_percent") is long hp ? (int)Math.Clamp(hp, 0, 100) : null, Get(g, "coverage_percent") is long cp ? (int)Math.Clamp(cp, 0, 100) : null);
+                        games[kv.Key] = new AutoGame(Get(g, "source") as string ?? "auto", Get(g, "launcher") as string, stage, Get(g, "detail") as string, Get(g, "hit_percent") is long hp ? (int)Math.Clamp(hp, 0, 100) : null, Get(g, "coverage_percent") is long cp ? (int)Math.Clamp(cp, 0, 100) : null, Get(g, "display_name") as string, DateTimeOffset.TryParse(Get(g, "hit_at") as string, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out DateTimeOffset ha) ? ha : null);
                     }
                 }
             }
@@ -128,8 +128,38 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
         return key is null ? stage : L.Get(lang, key);
     }
 
+    // 서비스가 detail 에 적는 영어 사유 (일부) → 짧은 설명 키. 먼저 맞는 것을 씁니다.
+    private static readonly (string Needle, string Key)[] Reasons =
+    [
+        ("auto relocate off", "Why_RelocateOff"),
+        ("daily limit reached", "Why_DailyLimit"),
+        ("daily write budget reached", "Why_DailyBudget"),
+        ("drive recovering after relocation", "Why_DriveRecovering"),
+        ("startup prewarm in progress", "Why_StartupPrewarm"),
+        ("status file was unreadable", "Why_StatusHold"),
+        ("write limit reached", "Why_WriteLimit"),
+        ("another apply or plan switch holds the zone lock", "Why_ZoneLockBusy"),
+        ("target region busy", "Why_TargetBusy"),
+        ("trace grew", "Why_TraceGrew"),
+        ("game updated", "Why_GameUpdated"),
+        ("first run recorded", "Why_FirstRunRecorded"),
+        ("plan and journal differ", "Why_PartialPlan"),
+        ("recovery stopped", "Why_RecoveryStopped"),
+        ("data check failed", "Why_DataCheck"),
+        ("stale plan", "Why_StalePlan"),
+        ("dry-run cancelled", "Why_DryRunCancelled"),
+        ("verification deferred", "Why_VerificationDeferred"),
+    ];
+
+    /// detail 안의 알려진 영어 사유를 현재 언어의 짧은 설명으로. 모르면 null (원문은 부르는 쪽이 툴팁·로그로 둠).
+    public static string? ReasonText(string? detail, string lang) =>
+        FindReason(detail) is { } r ? L.Get(lang, r.Key) : null;
+
+    private static (string Needle, string Key)? FindReason(string? detail) =>
+        Reasons.Where(r => (detail ?? string.Empty).Contains(r.Needle, StringComparison.Ordinal)).Select(r => ((string Needle, string Key)?)r).FirstOrDefault();
+
     /// 단계 이름 뒤에 붙일 부가 설명: 학습 중이면 선행 읽기 양 ("<n> MiB read ahead" 를 풀어 보임), detail 에 프로필·프리페치 재배치 표시가 있으면 "재배치됨(프로필)"·"재배치됨(프리페치)", 예열 표시가 있으면 "예열됨" (전체 폴더·엔진 프로필은 그 이름까지). 없으면 null.
-    public static string? StageExtra(AutoGame g, string lang)
+    public static string? StageExtra(AutoGame g, string lang, DateTimeOffset? boot = null)
     {
         if (g.Stage == "learning")
         {
@@ -138,6 +168,11 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
         }
 
         var parts = new List<string>();
+        if (g.Stage is "waiting_idle" or "failed" or "skipped" && ReasonText(g.Detail, lang) is { } why)
+        {
+            parts.Add(why); // 대기·실패 사유를 맨 앞에 (완료 단계의 옛 사유는 붙이지 않음)
+        }
+
         if ((g.Detail ?? string.Empty).Contains("relocated (profile)", StringComparison.Ordinal))
         {
             parts.Add(L.Get(lang, "Stage_RelocatedProfile")); // boot 트레이스 (가져온 프로필) 로 재배치함
@@ -172,7 +207,7 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
 
         if (g.HitPercent is { } hit)
         {
-            parts.Add(L.Get(lang, "Stage_HitPercent", hit.ToString(CultureInfo.InvariantCulture)));
+            parts.Add(L.Get(lang, g.HitAt is { } at && boot is { } b && at <= b ? "Stage_HitPercentOld" : "Stage_HitPercent", hit.ToString(CultureInfo.InvariantCulture))); // 재부팅 전에 잰 값은 지금 적중률처럼 보이지 않게
         }
 
         if (g.CoveragePercent is { } cover)
@@ -183,9 +218,38 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
         return parts.Count == 0 ? null : string.Join(", ", parts);
     }
 
+    /// 기본 화면에 남길 보류·실패 사유: 대기·실패·건너뜀의 사유 (모르는 사유는 실패·건너뜀에서만 원문 그대로)와 안티치트 트레이스 불가. 없으면 null.
+    public static string? HoldReason(AutoGame g, string lang)
+    {
+        var parts = new List<string>();
+        bool replanning = g.Stage == "discovered" && (g.Detail ?? string.Empty).StartsWith("game updated", StringComparison.Ordinal); // 업데이트 뒤 재계획 대기 (알려진 사유만 보임)
+        if (g.Stage is "waiting_idle" or "failed" or "skipped" || replanning)
+        {
+            if (ReasonText(g.Detail, lang) is { } why)
+            {
+                parts.Add(why);
+            }
+            else if (g.Stage is "failed" or "skipped" && !string.IsNullOrEmpty(g.Detail))
+            {
+                parts.Add(g.Detail);
+            }
+        }
+
+        if (TraceUnavailableTag.Match(g.Detail ?? string.Empty) is { Success: true } blocked)
+        {
+            parts.Add(L.Get(lang, "Stage_TraceUnavailable", blocked.Groups[1].Value, blocked.Groups[2].Value));
+        }
+
+        return parts.Count == 0 ? null : string.Join(", ", parts);
+    }
+
+    /// detail 에 지금 예열 중 표시 ("prewarming x/y MiB") 가 있으면 현재 언어의 "예열 중 x/y MB", 없으면 null.
+    public static string? PrewarmingText(AutoGame g, string lang) =>
+        Prewarming().Match(g.Detail ?? string.Empty) is { Success: true } m ? L.Get(lang, "Stage_Prewarming", m.Groups[1].Value, m.Groups[2].Value) : null;
+
     /// 단계 열에 보일 글: 단계 이름 + 부가 설명.
-    public static string StageText(AutoGame g, string lang) =>
-        StageExtra(g, lang) is { } extra ? $"{StageName(g.Stage, lang)} ({extra})" : StageName(g.Stage, lang);
+    public static string StageText(AutoGame g, string lang, DateTimeOffset? boot = null) =>
+        StageExtra(g, lang, boot) is { } extra ? $"{StageName(g.Stage, lang)} ({extra})" : StageName(g.Stage, lang);
 
     [GeneratedRegex(@"^(\d+) MiB read ahead$")]
     private static partial Regex ReadAhead();
@@ -208,7 +272,9 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
         int at = Array.IndexOf(chain, g.Stage);
         if (at < 0)
         {
-            string why = string.IsNullOrEmpty(g.Detail) ? string.Empty : $" ({g.Detail})";
+            string why = string.IsNullOrEmpty(g.Detail) ? string.Empty
+                : FindReason(g.Detail) is { } r ? $" ({L.Get(lang, r.Key)}{(g.Detail == r.Needle ? string.Empty : " — " + g.Detail)})" // 번역 뒤에 원문의 나머지 정보 (파일 이름, 시각)를 남김
+                : $" ({g.Detail})";
             return L.Get(lang, "Auto_Line", name, $"[{StageName(g.Stage, lang)}]{why}");
         }
 

@@ -4,6 +4,7 @@ using System.Text;
 using AsterCache.Core.I18n;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
+using AsterCache.Core.Metrics;
 using AsterCache.Core.Profiles;
 using AsterCache.Core.Settings;
 using AsterCache.Core.Trace;
@@ -54,8 +55,8 @@ public sealed record DriveRow(string Letter, string Label, string FileSystem, lo
         + L.T("Drive_Line", ManageViewModel.Size(FreeBytes), ManageViewModel.Size(TotalBytes), Games);
 }
 
-/// 게임 탭 한 줄. Verdict: aster verify 의 판정 (contiguous, non-contiguous, resume-needed), 계획이 없으면 "-", 아직 확인 전이면 "?".
-public sealed record GameRow(string Name, string Exe, string Origin, bool HasPlan, bool HasTrace, string Verdict, string Prewarm, string Source, string Stage, string AntiCheat, string PrewarmFull);
+/// 게임 탭 한 줄. 기본 열은 DisplayName·State (자동 단계)·PrewarmState (PrewarmKind: ready 이번 부팅 뒤 예열, partial 앞부분만, history 재부팅 전 과거 기록, none 실측 안 됨, warming 예열 중)·Reason·AntiCheat, 나머지는 고급 열. Verdict: aster verify 의 판정 (contiguous, non-contiguous, resume-needed), 계획이 없으면 "-", 아직 확인 전이면 "?".
+public sealed record GameRow(string Name, string Exe, string Origin, bool HasPlan, bool HasTrace, string Verdict, string Prewarm, string Source, string Stage, string AntiCheat, string PrewarmFull, string DisplayName = "", string VerdictRaw = "", string StageRaw = "", string State = "", string PrewarmState = "", string PrewarmKind = "", string Reason = "", string Gate = "");
 
 /// 게임 하나의 배치 상태 (aster status --plan 결과와 저널 파일 시각).
 public sealed record GameStatus(string Verdict, double? ZoneHitPercent, DateTime? LastRelayout);
@@ -65,7 +66,7 @@ public sealed record GameStatus(string Verdict, double? ZoneHitPercent, DateTime
 public sealed class ManageViewModel(
     TrayViewModel tray, ConfigEditor config, IAsterCli cli, IDriveSource drives, IElevator elevator, IShell shell, ILog log, Func<bool> isAdmin,
     Func<IEnumerable<string>, bool> isRunning, string relaunchArgs = "", TimeSpan? poll = null, string? tempDir = null,
-    Func<string, IReadOnlyList<string>>? untrustedWriters = null, string? serviceExe = null)
+    Func<string, IReadOnlyList<string>>? untrustedWriters = null, string? serviceExe = null, DateTimeOffset? bootAt = null)
 {
     public const int LogLines = 200;
     private const long Mib = 1L << 20;
@@ -76,6 +77,7 @@ public sealed class ManageViewModel(
     private readonly TimeSpan _poll = poll ?? TimeSpan.FromMilliseconds(500);
     private JObject? _prewarm;
     private AutoStatusFile? _auto;
+    private IReadOnlyList<LoadSample> _samples = [];
 
     public bool IsAdmin => isAdmin();
 
@@ -135,6 +137,46 @@ public sealed class ManageViewModel(
         return new GameInput(name, [Path.GetFileName(exePath)], plan + ".prefetch.json", plan, folder, [folder], volumeLabel[..Math.Min(volumeLabel.Length, 32)]);
     }
 
+    /// 로딩 표본 기록을 읽습니다. 없으면 빈 목록 (기록 없음으로 보입니다). 읽기 입출력 오류는 호출부에 던져 직전 값을 유지하게 합니다.
+    public static IReadOnlyList<LoadSample> LoadSamples(string path)
+    {
+        try
+        {
+            return File.Exists(path) ? MetricsJson.ParseSamples(ReadText(path)) : [];
+        }
+        catch (PyValueException)
+        {
+            return [];
+        }
+    }
+
+    /// 게임 하나의 성과 판정 한 줄 (V2-09, 읽기 전용). 기록이 없으면 기록 없음, 그 밖에는 ResultGate 의 판정과 사유. 자동 기본값·실행 경로는 이 값을 보지 않습니다.
+    public static string GateText(IReadOnlyList<LoadSample> samples, string game)
+    {
+        List<LoadSample> mine = samples.Where(s => s.GameKey == game).ToList();
+        if (mine.Count == 0)
+        {
+            return L.T("Gate_NoRecord");
+        }
+
+        GateResult r = ResultGate.Evaluate(mine.Where(s => s.Arm == Arm.Baseline).ToList(), mine.Where(s => s.Arm == Arm.Candidate).ToList());
+        string why = GateReason(r);
+        return r.Verdict == ResultGate.Reject ? L.T("Gate_Reject", why) : L.T("Gate_Unverified", why);
+    }
+
+    /// 사유 코드를 현재 언어의 문구로 (로그·JSON 의 한국어 Reason 은 쓰지 않습니다).
+    private static string GateReason(GateResult r) => r.ReasonCode switch
+    {
+        "mixed_conditions" => L.T("Gate_Why_mixed_conditions"),
+        "mixed_arms" => L.T("Gate_Why_mixed_arms"),
+        "too_few_samples" => L.T("Gate_Why_too_few_samples", r.BaselineUsed, r.CandidateUsed, ResultGate.MinSamples),
+        "worse_p50" => L.T("Gate_Why_worse_median"),
+        "worse_p95" => L.T("Gate_Why_worse_tail"),
+        "worse_p50_p95" => L.T("Gate_Why_worse_both"),
+        "not_worse_no_ci" => L.T("Gate_Why_not_worse_no_ci"),
+        _ => r.Reason,
+    };
+
     public static IReadOnlyList<DriveRow> BuildDrives(IEnumerable<DriveFacts> facts, IReadOnlyList<GameSettings> games) =>
         facts.Select(d => new DriveRow(d.Letter, d.Label, d.FileSystem, d.TotalBytes, d.FreeBytes, d.Model, KindOf(d.IncursSeekPenalty),
             games.Count(g => OnDrive(g, d.Letter)))).ToList();
@@ -178,6 +220,13 @@ public sealed class ManageViewModel(
         return lines;
     }
 
+    private static string ReadText(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var reader = new StreamReader(fs, Encoding.UTF8);
+        return reader.ReadToEnd();
+    }
+
     // ---- 목록 ----
 
     public IReadOnlyList<DriveRow> Drives() => BuildDrives(drives.Fixed(), Games);
@@ -187,10 +236,72 @@ public sealed class ManageViewModel(
         Games.Where(g => letter is null || OnDrive(g, letter)).Select(g =>
         {
             bool plan = File.Exists(g.Plan);
-            return new GameRow(g.Name, string.Join(", ", g.ExeNames), g.OriginRoot, plan, File.Exists(g.Trace), plan ? _status.TryGetValue(g.Name, out GameStatus? s) ? s.Verdict : "?" : "-",
+            string verdict = plan ? _status.TryGetValue(g.Name, out GameStatus? s) ? s.Verdict : "?" : "-";
+            AutoGame? a = _auto?.Games.GetValueOrDefault(g.Name);
+            (string kind, string warm) = PrewarmState(g.Name, a);
+            return new GameRow(g.Name, string.Join(", ", g.ExeNames), g.OriginRoot, plan, File.Exists(g.Trace), VerdictText(verdict),
                 DescribePrewarmShort(g.Prewarm), L.T(g.Source == "auto" ? "Source_Auto" : "Source_Manual"),
-                _auto?.Games.TryGetValue(g.Name, out AutoGame? a) == true ? AutoStatusFile.StageText(a, L.Current) : "-", g.AntiCheat ?? "-", DescribePrewarm(g.Prewarm));
+                a is null ? "-" : AutoStatusFile.StageText(a, L.Current, Boot), g.AntiCheat ?? "-", DescribePrewarm(g.Prewarm), tray.DisplayName(g.Name), verdict, a?.Detail ?? string.Empty,
+                a is null ? "-" : AutoStatusFile.StageName(a.Stage, L.Current), warm, kind, HoldReasons(g.Name, a, kind, verdict), GateText(_samples, g.Name));
         }).ToList();
+
+    private DateTimeOffset Boot => bootAt ?? DateTimeOffset.UtcNow - TimeSpan.FromMilliseconds(Environment.TickCount64);
+
+    /// 예열 상태 한 가지로: 지금 예열 중, 이번 부팅 뒤 성공 (전부 / 앞부분만), 재부팅 전 기록 (지금 캐시에는 없음), 기록 없음 (실측 안 됨). 서로 다른 문구로 보입니다.
+    private (string Kind, string Text) PrewarmState(string name, AutoGame? a)
+    {
+        if (a is not null && AutoStatusFile.PrewarmingText(a, L.Current) is { } now)
+        {
+            return ("warming", now);
+        }
+
+        object? e = Get(Get(_prewarm, "games"), name);
+        string? okText = Get(e, "last_ok_at") as string ?? (Get(e, "result") as string == "ok" ? Get(e, "at") as string : null); // 마지막 시도가 건너뜀·실패여도 마지막 성공 시각이 남음
+        if (!DateTimeOffset.TryParse(okText, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset ok))
+        {
+            return ("none", L.T("State_NotMeasured"));
+        }
+
+        if (ok <= Boot)
+        {
+            return ("history", L.T("State_History")); // 부팅하면 파일 캐시가 비므로 예전 성공은 지금 준비 상태가 아님
+        }
+
+        return Get(e, "warmed_mib") is long w && Get(e, "hot_mib") is long h && w < h ? ("partial", L.T("State_Partial", w, h)) : ("ready", L.T("State_Ready"));
+    }
+
+    // 기본 화면에 남길 사유: 자동 단계의 대기·실패 사유, 예열이 준비 상태가 아닌 까닭 (마지막 시도의 건너뜀·실패), 이어 옮기기 필요·확인 오류.
+    private string HoldReasons(string name, AutoGame? a, string prewarmKind, string verdict)
+    {
+        var why = new List<string>();
+        if (a is not null && AutoStatusFile.HoldReason(a, L.Current) is { } stage)
+        {
+            why.Add(stage);
+        }
+
+        object? e = Get(Get(_prewarm, "games"), name);
+        if (Get(e, "result") is "skipped" or "failed" && Get(e, "reason") is string reason && prewarmKind != "ready")
+        {
+            why.Add(L.T("Reason_PrewarmLast", Get(e, "result"), reason));
+        }
+
+        if (verdict is "resume-needed" or "error")
+        {
+            why.Add(L.T("Reason_Layout", VerdictText(verdict)));
+        }
+
+        return string.Join(", ", why);
+    }
+
+    /// aster verify 판정을 현재 언어의 짧은 말로 (모르는 값은 원문 그대로).
+    public static string VerdictText(string verdict) => verdict switch
+    {
+        "contiguous" => L.T("Verdict_Contiguous"),
+        "non-contiguous" => L.T("Verdict_NonContiguous"),
+        "resume-needed" => L.T("Verdict_ResumeNeeded"),
+        "error" => L.T("Verdict_Error"),
+        _ => verdict,
+    };
 
     /// 서비스 상태 + 감시기 + 마지막 예열 + 게임별 배치 상태.
     public IReadOnlyList<string> StatusLines(string? letter)
@@ -205,12 +316,12 @@ public sealed class ManageViewModel(
         {
             string layout = !File.Exists(g.Plan) ? L.T("Layout_NoPlan")
                 : _status.TryGetValue(g.Name, out GameStatus? s)
-                    ? L.T("Layout_Line", s.Verdict, s.ZoneHitPercent is { } p ? p.ToString("F1", CultureInfo.InvariantCulture) + "%" : "-", s.LastRelayout is { } t ? t.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) : L.T("Word_Never"))
+                    ? L.T("Layout_Line", VerdictText(s.Verdict), s.ZoneHitPercent is { } p ? p.ToString("F1", CultureInfo.InvariantCulture) + "%" : "-", s.LastRelayout is { } t ? t.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) : L.T("Word_Never"))
                     : L.T("Layout_Unchecked");
-            lines.Add(L.T("Layout_Game", g.Name, layout, PrewarmText(g.Name)));
+            lines.Add(L.T("Layout_Game", tray.DisplayName(g.Name), layout, PrewarmText(g.Name)));
             if (_auto?.Games.TryGetValue(g.Name, out AutoGame? auto) == true)
             {
-                lines.Add("  " + AutoStatusFile.Line(g.Name, auto, L.Current));
+                lines.Add("  " + AutoStatusFile.Line(tray.DisplayName(g.Name), auto, L.Current));
             }
         }
 
@@ -218,7 +329,21 @@ public sealed class ManageViewModel(
     }
 
     /// auto_status.json 만 다시 읽습니다 (aster 프로세스 없음, 5 초 주기용). 읽은 결과를 돌려줍니다.
-    public AutoStatusFile? ReloadAuto() => _auto = AutoStatusFile.Load(AutoStatusPath);
+    public AutoStatusFile? ReloadAuto()
+    {
+        _auto = AutoStatusFile.Load(AutoStatusPath);
+        tray.LauncherNames = _auto?.Games.Where(kv => kv.Value.DisplayName is not null).ToDictionary(kv => kv.Key, kv => kv.Value.DisplayName!, StringComparer.OrdinalIgnoreCase) ?? new Dictionary<string, string>();
+        try
+        {
+            _samples = LoadSamples(Path.Combine(DataDir, MetricsJson.SamplesFile));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // 서비스가 쓰는 중이거나 잠겨 못 읽으면 직전 값을 그대로 둡니다
+        }
+
+        return _auto;
+    }
 
     /// aster status 로 예열 기록과 게임별 배치 상태를 다시 읽습니다 (게임마다 프로세스 한 번).
     public ActionResult RefreshStatus()
@@ -266,13 +391,14 @@ public sealed class ManageViewModel(
     private string PrewarmText(string name)
     {
         object? e = Get(Get(_prewarm, "games"), name);
-        string text = e is null ? L.T("Word_NoRecord") : Get(e, "result") as string is { } r && Get(e, "reason") is string why ? $"{r} ({why})" : Get(e, "result") as string ?? "?";
+        string text = e is null ? L.T("State_NotMeasured") : Get(e, "result") as string is { } r && Get(e, "reason") is string why ? $"{r} ({why})" : Get(e, "result") as string ?? "?";
         if (Get(e, "partial") is true && Get(e, "warmed_mib") is long warmed && Get(e, "hot_mib") is long hot)
         {
             text = $"{text} · {L.T("Status_PrewarmPartial", warmed, hot)}"; // 메모리가 모자라 앞부분만 읽음: 완료로 보이지 않게
         }
 
-        return Get(e, "head_mib") is long head ? $"{text} · {L.T("Status_LoadHead", head)}" : text;
+        text = Get(e, "head_mib") is long head ? $"{text} · {L.T("Status_LoadHead", head)}" : text;
+        return PrewarmState(name, null) is ("history", { } past) ? $"{text} · {past}" : text; // 재부팅 전 성공은 현재 준비 상태처럼 보이지 않게
     }
 
     // ---- 게임 동작 ----
@@ -318,8 +444,8 @@ public sealed class ManageViewModel(
 
         long events = Get(r.Json, "union_events") as long? ?? 0;
         return Report(events > 0, events > 0
-            ? L.T("Trace_Done", g.Name, events, TraceBytes(raw) / Mib)
-            : L.T("Trace_None", g.Name));
+            ? L.T("Trace_Done", tray.DisplayName(g.Name), events, TraceBytes(raw) / Mib)
+            : L.T("Trace_None", tray.DisplayName(g.Name)));
     }
 
     /// 계획 만들기: 먼저 --dry-run 으로 핫 바이트를 보고 존 크기를 정한 뒤 (ZoneMib) 같은 트레이스로 계획을 씁니다 (계획 폴더는 관리자 전용이라 승격).
@@ -338,7 +464,7 @@ public sealed class ManageViewModel(
 
         if (!File.Exists(raw))
         {
-            return Report(false, L.T("Plan_NoTrace", g.Name));
+            return Report(false, L.T("Plan_NoTrace", tray.DisplayName(g.Name)));
         }
 
         progress(L.T("Plan_Probing"));
@@ -351,7 +477,7 @@ public sealed class ManageViewModel(
         long hot = Get(Get(probe.Json, "stats"), "hot_bytes") as long? ?? 0;
         if (hot == 0)
         {
-            return Report(false, L.T("Plan_NoHot", g.Name));
+            return Report(false, L.T("Plan_NoHot", tray.DisplayName(g.Name)));
         }
 
         long zone = ZoneMib(hot);
@@ -366,7 +492,7 @@ public sealed class ManageViewModel(
         string note = string.Equals(g.Trace, g.Plan + ".prefetch.json", StringComparison.OrdinalIgnoreCase)
             ? string.Empty
             : L.T("Plan_Note", g.Plan);
-        return Report(true, L.T("Plan_Done", g.Name, (Get(stats, "hot_bytes") as long? ?? hot) / Mib, zone, (Get(stats, "moved_bytes") as long? ?? 0) / Mib, Get(stats, "tasks"), note));
+        return Report(true, L.T("Plan_Done", tray.DisplayName(g.Name), (Get(stats, "hot_bytes") as long? ?? hot) / Mib, zone, (Get(stats, "moved_bytes") as long? ?? 0) / Mib, Get(stats, "tasks"), note));
     }
 
     /// 확인창에 보일 이동 바이트 (계획 파일의 stats), 계획이 없거나 읽지 못하면 null.
@@ -388,12 +514,12 @@ public sealed class ManageViewModel(
     {
         if (Find(name) is not { } g || !File.Exists(g.Plan))
         {
-            return Report(false, L.T("Err_NoPlan", name));
+            return Report(false, L.T("Err_NoPlan", tray.DisplayName(name)));
         }
 
         if (IsRunning(g))
         {
-            return Report(false, L.T("Err_GameRunningApply", g.Name));
+            return Report(false, L.T("Err_GameRunningApply", tray.DisplayName(g.Name)));
         }
 
         string journal = JournalPath(g.Name);
@@ -402,7 +528,7 @@ public sealed class ManageViewModel(
         if (!dry.Ok && Get(dry.Json, "error") as string == "PlanRejected" && Get(dry.Json, "detail") as string is { } why
             && why.Contains("journal belongs to a different plan", StringComparison.Ordinal))
         {
-            progress(L.T("Apply_JournalOtherPlan", g.Name));
+            progress(L.T("Apply_JournalOtherPlan", tray.DisplayName(g.Name)));
             CliResult again = cli.Run(AsterArgs.Replan(g.Plan, journal), elevate: true);
             if (!again.Ok)
             {
@@ -418,7 +544,7 @@ public sealed class ManageViewModel(
         {
             // 점유·예약 충돌은 이 검사의 오류가 아니라 계획한 대상 공간을 지금 못 쓴다는 뜻: 아무것도 옮기지 않았고 서비스가 남은 부분의 새 위치를 찾음 (미실행으로 반환)
             string overlap = blocked.Contains("is reserved by another plan", StringComparison.Ordinal) ? L.T("Dry_DeferredReserved") : string.Empty;
-            return Report(false, L.T("Dry_Deferred", g.Name, overlap, blocked.Length > 300 ? blocked[..300] + "..." : blocked));
+            return Report(false, L.T("Dry_Deferred", tray.DisplayName(g.Name), overlap, blocked.Length > 300 ? blocked[..300] + "..." : blocked));
         }
 
         if (!dry.Ok)
@@ -429,7 +555,7 @@ public sealed class ManageViewModel(
         long todo = Get(dry.Json, "tasks_todo") as long? ?? 0;
         if (todo == 0)
         {
-            return Report(true, L.T("Apply_Nothing", g.Name));
+            return Report(true, L.T("Apply_Nothing", tray.DisplayName(g.Name)));
         }
 
         Task<CliResult> run = Task.Run(() => cli.Run(AsterArgs.Apply(g.Plan, journal, g.AllowedRoots, g.VolumeLabel, execute: true), elevate: true));
@@ -448,7 +574,7 @@ public sealed class ManageViewModel(
         long failed = Get(r.Json, "failed") is List<object?> f ? f.Count : 0;
         string stopped = Get(r.Json, "stopped") as string is { } s ? L.T("Apply_Stopped", s) : string.Empty;
         bool done = failed == 0 && stopped.Length == 0;
-        return Report(done, L.T("Apply_Done", g.Name, (Get(r.Json, "moved_bytes") as long? ?? 0) / Mib, failed, stopped, verdict)
+        return Report(done, L.T("Apply_Done", tray.DisplayName(g.Name), (Get(r.Json, "moved_bytes") as long? ?? 0) / Mib, failed, stopped, verdict)
             + (done ? L.T("Apply_Undoable", journal) : L.T("Apply_Resume")));
     }
 
@@ -461,13 +587,13 @@ public sealed class ManageViewModel(
 
         if (IsRunning(g))
         {
-            return Report(false, L.T("Err_GameRunningRevert", g.Name));
+            return Report(false, L.T("Err_GameRunningRevert", tray.DisplayName(g.Name)));
         }
 
         string journal = JournalPath(g.Name);
         if (!File.Exists(journal))
         {
-            return Report(false, L.T("Revert_NoJournal", g.Name));
+            return Report(false, L.T("Revert_NoJournal", tray.DisplayName(g.Name)));
         }
 
         progress(L.T("Revert_Running"));
@@ -480,7 +606,7 @@ public sealed class ManageViewModel(
         string stopped = Get(r.Json, "stopped") as string is { } s ? L.T("Apply_Stopped", s) : string.Empty;
         long skipped = Get(r.Json, "skipped") is List<object?> k ? k.Count : 0;
         bool done = stopped.Length == 0 && skipped == 0;
-        return Report(done, L.T("Revert_Done", g.Name, Get(r.Json, "restored"), (Get(r.Json, "moved_bytes") as long? ?? 0) / Mib, skipped, stopped)
+        return Report(done, L.T("Revert_Done", tray.DisplayName(g.Name), Get(r.Json, "restored"), (Get(r.Json, "moved_bytes") as long? ?? 0) / Mib, skipped, stopped)
             + (done ? string.Empty : L.T("Apply_Resume")));
     }
 
@@ -503,7 +629,7 @@ public sealed class ManageViewModel(
         long bytes = Get(r.Json, "bytes") as long? ?? 0;
         double seconds = Convert.ToDouble(Get(r.Json, "seconds") ?? 0.0, CultureInfo.InvariantCulture);
         object? t = Get(r.Json, "timing_ms");
-        return Report(true, L.T("Measure_Done", g.Name, bytes / Mib, seconds, seconds > 0 ? bytes / (double)Mib / seconds : 0, Get(t, "load_ms"), Get(t, "schedule_ms"), Get(t, "stream_ms")));
+        return Report(true, L.T("Measure_Done", tray.DisplayName(g.Name), bytes / Mib, seconds, seconds > 0 ? bytes / (double)Mib / seconds : 0, Get(t, "load_ms"), Get(t, "schedule_ms"), Get(t, "stream_ms")));
     }
 
     /// 프로필 내보내기: aster profile export (plans 폴더를 읽으므로 승격). 파일은 사용자가 고른 .json 또는 .zip.
@@ -516,7 +642,7 @@ public sealed class ManageViewModel(
 
         CliResult r = cli.Run(AsterArgs.ProfileExport(g.Name, file, DataDir), elevate: true);
         return r.Ok
-            ? Report(true, L.T("Profile_Exported", g.Name, Get(r.Json, "files"), Get(r.Json, "raw_events"), Get(r.Json, "prefetch_events"), file))
+            ? Report(true, L.T("Profile_Exported", tray.DisplayName(g.Name), Get(r.Json, "files"), Get(r.Json, "raw_events"), Get(r.Json, "prefetch_events"), file))
             : Failed(r, "Fail_ProfileExport", g.Name);
     }
 
@@ -532,11 +658,11 @@ public sealed class ManageViewModel(
         if (Get(r.Json, "error") as string == "profile_mismatch")
         {
             string first = Get(r.Json, "mismatches") is List<object?> { Count: > 0 } list ? Get(list[0], "path") as string ?? "?" : "?";
-            return Report(false, L.T("Profile_Mismatch", g.Name, Get(r.Json, "mismatch_count"), first));
+            return Report(false, L.T("Profile_Mismatch", tray.DisplayName(g.Name), Get(r.Json, "mismatch_count"), first));
         }
 
         return r.Ok
-            ? Report(true, L.T("Profile_Imported", g.Name, Get(r.Json, "files"), Get(r.Json, "raw_events"), Get(r.Json, "prefetch_events")))
+            ? Report(true, L.T("Profile_Imported", tray.DisplayName(g.Name), Get(r.Json, "files"), Get(r.Json, "raw_events"), Get(r.Json, "prefetch_events")))
             : Failed(r, "Fail_ProfileImport", g.Name);
     }
 
@@ -652,7 +778,7 @@ public sealed class ManageViewModel(
     {
         string why = Get(r.Json, "error") is string e ? e + (Get(r.Json, "detail") is string d ? ": " + d : string.Empty) : r.Output.Trim();
         string hint = Get(r.Json, "error") as string == "PlanRejected" && Get(r.Json, "detail") as string is { } reason ? " " + PlanRejectedHint(reason) : string.Empty;
-        return Report(false, L.T(failKey, name, why.Length > 300 ? why[..300] + "..." : why) + hint);
+        return Report(false, L.T(failKey, tray.DisplayName(name), why.Length > 300 ? why[..300] + "..." : why) + hint);
     }
 
     /// PlanRejected 사유를 안내 문구로 바꿉니다 (영어 원문은 호출자가 메시지에 그대로 둡니다). zone_not_free 는 존 뒤 공간이 다른 파일 소유라는 뜻입니다.

@@ -351,7 +351,7 @@ public sealed class TrayViewModelTests : IDisposable
         Assert.Contains("비활성", r.Message);
     }
 
-    private sealed class FakeService : IServiceControl
+    internal sealed class FakeService : IServiceControl
     {
         public ServiceState State { get; set; } = ServiceState.Stopped;
 
@@ -405,7 +405,7 @@ public sealed class TrayViewModelTests : IDisposable
         public void ApplyUpdatesAndRestart() => Applied = true;
     }
 
-    private sealed class FakeStreamer : IGameStreamer
+    internal sealed class FakeStreamer : IGameStreamer
     {
         public List<string> Streamed { get; } = [];
 
@@ -423,14 +423,14 @@ public sealed class TrayViewModelTests : IDisposable
         }
     }
 
-    private sealed class FakeShell : IShell
+    internal sealed class FakeShell : IShell
     {
         public string? Opened { get; private set; }
 
         public void Open(string path) => Opened = path;
     }
 
-    private sealed class MemoryLog : ILog
+    internal sealed class MemoryLog : ILog
     {
         public List<string> Lines { get; } = [];
 

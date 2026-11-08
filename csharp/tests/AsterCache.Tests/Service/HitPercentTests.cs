@@ -90,7 +90,6 @@ public sealed class HitPercentTests : IDisposable
         Prewarmer prewarm = MakePrewarm(new ProbeResult(8, 0, 1.0));
         _ = new AutoMode(_rig.Editor, _rig.World.Env(), _rig.Status, _rig.Log, _rig.Settings, prewarm);
         _rig.Status.Set("foo", "auto", null, AutoStage.Done, null);
-        _rig.World.RootPids.Add(77); // 등록 exe 가 아닌 게임 폴더 아래 프로세스 (상주 프로그램): 게임이 도는 것으로 세지 않음
 
         PrewarmResult r = prewarm.Run(_rig.Settings.Games[0], "test");
 

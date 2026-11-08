@@ -238,7 +238,7 @@ AsterCache never touches the game process; it only reads files from its own proc
 About the size of the zone, which is the game's recorded read set (up to 2 GiB by default). Prewarm runs only when at least 4 GB of RAM would still be free afterwards, and Windows can reclaim the cache when your programs need the memory.
 
 **What happens after a game update?**
-A patch can change files, so a saved plan may no longer match them. AsterCache checks the plan before moving anything and skips files that changed, and every 5 minutes (while the game is off) it re-applies the plan if the layout has fallen apart. After a big patch, run Collect trace, Create plan, and Apply relocation again. This has not been tried with a real game update yet.
+A patch can change files, so a saved plan may no longer match them. AsterCache checks the plan before moving anything and skips files that changed, and every 5 minutes (while the game is off) it re-applies the plan if the layout has fallen apart. In automatic mode, when only some files changed (less than half of the planned hot data), only the ranges of those files are dropped from the learned trace and prewarm list (the originals are kept as `.stale`), the plan is made again from the rest, and the next play learns the changed files again. When half or more changed, the whole trace and plan are set aside as `.stale` and learned again. After a big patch, run Collect trace, Create plan, and Apply relocation again. This has not been tried with a real game update yet.
 
 **Does it matter whether my drive is SMR or CMR?**
 Only one SMR drive (WD20EZAZ) has been measured; CMR drives have not. Removing head movement should help both kinds, but that is not verified. SMR drives can write slowly during the one-time move.
@@ -414,6 +414,8 @@ The configuration file is `%ProgramData%\AsterCache\config.json`. Editing it in 
 | `max_zone_mib` | Upper limit of the zone size for automatic planning, in MiB (default 2048), or `"auto"` (physical RAM ÷ 4, between 2048 and 8192 MiB; capped at 2048 when the disk type is unknown or the disk is on USB). On a 32 GB PC, `"auto"` is recommended over a fixed 2048. |
 | `games[].source` | `auto` for a game found automatically, `manual` for a game you registered |
 | `games[].anticheat` | Anti-cheat folders found in the install folder, for example `EasyAntiCheat`. Shown in the Games tab; it does not change behavior |
+| `games[].display_name` | Game name shown on screen (optional). When not set, uses the launcher name the service recorded, or else the key with underscores replaced by spaces. The internal key is unchanged. |
+| `games[].display_names` | Per-language display names (optional). Example: `{"ko": "발로란트", "en": "VALORANT"}`. Only the keys `ko` and `en` are accepted. |
 | `auto.ssd_tier` | Optional SSD assist storage: `enabled` (default `false`), `budget_gib` (default 8), `root` (default `"auto"`). See [SSD assist storage](#ssd-assist-storage-optional) |
 | `auto.trace_runs` | Default 3. If the number of plays is below this value, the service traces again to accumulate the hot set and widen the zone. |
 | `auto.trace_target_coverage` | Default 70. No longer used to decide additional trace runs; kept only for compatibility. After `trace_runs`, extra collection is decided by the previous merge adding at least `trace_merge_min_mib` of new blocks and fewer than `trace_runs_max` valid runs existing. |
@@ -427,6 +429,8 @@ The configuration file is `%ProgramData%\AsterCache\config.json`. Editing it in 
 | `prewarm.pin` | Keep prewarmed data open as read-only mappings in the service. When not written, it is on automatically with 24 GiB of RAM or more; `false` turns it off; an explicit `true` works with 16 GiB of RAM or more. Effect unverified (needs an experiment). See [Anti-cheat compatibility](#anti-cheat-compatibility) |
 
 The service re-reads the whole `config.json` every 5 seconds (when its size or modified time changes), so adding, removing, or changing games and the watcher takes effect without a restart. If the new configuration fails validation or the folder permission check, the previous settings stay in force and the reason is written to the log.
+
+`games[].display_name` and `display_names` are optional keys you can write by hand. If you roll back to beta.24 with these keys in the configuration, that version rejects the settings (exit code 2), so remove both keys before rolling back.
 
 | Watcher | How it works | Permission | Detection latency (S4 measurement) | Load | Recommended |
 |---|---|---|---|---|---|
@@ -606,6 +610,8 @@ py -3.12 -m unittest discover -s tests
 ## License
 
 MIT License. See the [LICENSE](LICENSE) file for details. Copyright (c) 2026 DO0OG.
+
+Third-party notices: THIRD_PARTY_NOTICES.md
 
 ## Disclaimer
 

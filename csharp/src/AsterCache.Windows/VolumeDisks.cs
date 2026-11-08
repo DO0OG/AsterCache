@@ -23,7 +23,14 @@ public sealed class VolumeDisks(Func<string, IReadOnlySet<uint>?> query, Func<lo
     /// 'X:' (또는 그 아래 경로) 두 곳이 같은 물리 디스크인가. 드라이브 문자를 알 수 없거나 조회에 실패하면 참.
     public static bool SameDisk(string a, string b) => Shared.AreSame(a, b);
 
-    public bool AreSame(string a, string b) => Overlap(DisksOf(a), DisksOf(b));
+    public bool AreSame(string a, string b) => KnownAreSame(a, b) ?? true;
+
+    public bool? KnownAreSame(string a, string b)
+    {
+        IReadOnlySet<uint>? left = DisksOf(a);
+        IReadOnlySet<uint>? right = DisksOf(b);
+        return left is null || right is null ? null : left.Overlaps(right);
+    }
 
     /// 이 드라이브의 캐시를 버려 다음 판정이 다시 조회하게 합니다 (재배치 직전, 문자 재할당 반영).
     public void Forget(string path)

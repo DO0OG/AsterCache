@@ -155,7 +155,7 @@ public sealed class Rewarmer
         ProbeResult? probe;
         try
         {
-            probe = _prewarm.ColdSamples(g) is { } samples ? _env.ProbeSamples(samples) : _prewarm.ProbeFront(g); // 기록 없이 예열한 게임은 그때 읽은 파일 목록에서 고른 표본
+            probe = _prewarm.ColdSamples(g) is { } samples ? _prewarm.ProbeSamplesForGame(g, samples, "rewarm sample", ct) : _prewarm.ProbeFront(g, ct); // 기록 없이 예열한 게임은 그때 읽은 파일 목록에서 고른 표본
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
         {

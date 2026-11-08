@@ -247,6 +247,30 @@ public sealed partial class AutoRelocatorTests
     }
 
     [Fact]
+    public void RestartRestoresOneVersionOfTheTraceAndLeavesFilesOfTheOtherSuffixAlone()
+    {
+        _ = TraceSetAsideByAnOlderBuild(out string trace, withBootPlan: false);
+        string run1 = TraceWriter.RunPath(trace, 1);
+        foreach (string f in new[] { trace, run1 })
+        {
+            _w.Files.Add(f + ".stale.update"); // 두 번째 전체 치움의 최신 원본 (.stale 은 첫 치움의 것)
+        }
+
+        Tick();
+
+        Assert.Contains(trace, _w.Files);
+        Assert.Contains(run1, _w.Files);
+        Assert.DoesNotContain(TraceWriter.RunPath(trace, 2), _w.Files); // .update 가 없는 run 은 옛 버전이라 되살리지 않고 .stale 로 남음 (버전이 섞이지 않음)
+        Assert.Contains(TraceWriter.RunPath(trace, 2) + ".stale", _w.Files);
+        Assert.Contains(_w.Moved, m => m.From == trace + ".stale.update" && m.To == trace);
+        Assert.Contains(_w.Moved, m => m.From == run1 + ".stale.update" && m.To == run1);
+        Assert.DoesNotContain(_w.Moved, m => m.From == TraceWriter.RunPath(trace, 2) + ".stale");
+        Assert.DoesNotContain(_w.Moved, m => m.From == trace + ".stale" || m.From == run1 + ".stale"); // 옛 .stale 은 그대로
+        Assert.Contains(trace + ".stale", _w.Files);
+        Assert.Contains(run1 + ".stale", _w.Files);
+    }
+
+    [Fact]
     public void RestartKeepsAStaleTraceThatHasNothingLeftOrBelongsToATraceAllowedGame()
     {
         _ = TraceSetAsideByAnOlderBuild(out string trace, withBootPlan: false);

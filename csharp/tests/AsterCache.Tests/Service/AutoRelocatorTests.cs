@@ -95,6 +95,16 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         _w.ReplanResidual = (g, candidate, olds, sessions) => ResidualReplan.Run(candidate, g.Plan, JournalPath, Vol, _w.Reserved(g), Hooks(), () => _w.Now.UtcDateTime,
             sessions is null ? null : (p, path) => PlanOutput.Save(p, sessions, path), olds).Plan;
         _w.ResumeSwitch = g => PlanSwitch.Resume(g.Plan, JournalPath);
+        _w.HasPendingVerification = _ =>
+        {
+            if (!File.Exists(JournalPath))
+            {
+                return false;
+            }
+
+            using var jr = new Journal(JournalPath);
+            return Applier.PendingBefore(jr.Rows.ToList()).Count > 0;
+        };
         _w.JournalPlanSha = g => g.Name == "bench" && File.Exists(JournalPath) ? new Journal(JournalPath).Rows.FirstOrDefault(r => Equals(r["type"], "header"))?["plan_sha"] as string : null;
     }
 
@@ -229,7 +239,6 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     [Fact]
     public void UnregisteredProcessUnderInstallRootDoesNotBlockPlanningButARegisteredExeDoes()
     {
-        _w.RootPids.Add(77); // 등록 exe 가 아닌 루트 아래 프로세스 (상주 프로그램)
         _w.Images[77] = Path.Combine(Root, "helper.exe");
 
         Tick();
@@ -245,6 +254,22 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         _w.RunningExes.Clear();
         RunUntilDone();
         Assert.NotEmpty(Vol.Moves);
+    }
+
+    // 이 시험은 일반 재배치 경로를 봅니다. Capabilities.Relocate 의 unknown 차단은 아직 호출처가 없어 여기에 영향이 없습니다.
+    [Theory]
+    [InlineData("unknown")]
+    [InlineData("Vanguard")]
+    [InlineData("")]
+    [InlineData("unrecognized-anticheat")]
+    public void UnknownOrUnrecognizedAntiCheatDoesNotBlockTheGeneralPlanPath(string antiCheatKind)
+    {
+        _settings = _settings with { Games = [_game with { AntiCheat = antiCheatKind }] };
+
+        Tick();
+
+        Assert.True(_w.PlanZones.Count >= 2); // 탐색 계획과 일반 재배치 계획
+        Assert.True(File.Exists(_game.Plan));
     }
 
     [Fact]
@@ -298,6 +323,21 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         Tick();
         _w.Now += TimeSpan.FromMinutes(5);
         Tick();
+        Assert.Empty(Vol.Moves);
+    }
+
+    [Fact]
+    public void DryRunLeaseDenialDoesNotMarkRelocationComplete()
+    {
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        coordinator.Yield(_game.OriginRoot, "game started", "other game");
+        Relocator.SetDiskReadCoordinator(coordinator);
+
+        Run(TimeSpan.FromMinutes(3));
+
+        Assert.Equal(AutoStage.WaitingIdle, Entry.Stage);
+        Assert.Contains("dry-run cancelled", Entry.Detail, StringComparison.Ordinal);
+        Assert.Equal(0, _status.RelocationsWithin(AutoRelocator.DailyWindow));
         Assert.Empty(Vol.Moves);
     }
 
@@ -966,6 +1006,178 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         Assert.Equal(["relocated"], _status.Events.Select(e => e.Kind));
     }
 
+    // 이동 실행은 마지막 조각을 옮긴 직후 양보되고 (미룬 검증이 저널에 남음), 검증 전용 실행 (이동할 것 없음) 은 deferVerification 이 true 인 동안 양보됨.
+    private void DeferAfterTheLastMove(Func<bool> deferVerification, Func<bool>? mismatch = null)
+    {
+        int executes = 0;
+        _w.Apply = (_, plan, options, ct) =>
+        {
+            ApplyOptions run = options;
+            if (options.Execute && ++executes == 1)
+            {
+                run = options with { CanIssue = () => !Verify(PlanFile.Load(_game.Plan)).Contiguous };
+            }
+            else if (options.Execute && deferVerification())
+            {
+                run = options with { CanIssue = () => false };
+            }
+
+            string Digest(string path, long size, IReadOnlyList<(long Offset, long Length)> extra) => mismatch?.Invoke() == true ? "changed" : SampleHasher.Compute(path, size, extra, null);
+            return Applier.Apply(plan, Vol, [Root], JournalPath, Hooks(Digest), run, ct);
+        };
+    }
+
+    [Fact]
+    public void ShaVerificationDeferredAfterTheLastMoveRunsOnTheNextTickBeforeCompletion()
+    {
+        bool defer = true;
+        DeferAfterTheLastMove(() => defer);
+
+        Run(TimeSpan.FromMinutes(3));
+
+        Assert.Equal((AutoStage.WaitingIdle, "cancelled by game start"), (Entry.Stage, Entry.Detail));
+        Assert.True(Verify(PlanFile.Load(_game.Plan)).Contiguous); // 이동은 끝남
+        using (var jr = new Journal(JournalPath))
+        {
+            Assert.NotEmpty(Applier.PendingBefore(jr.Rows.ToList())); // 미룬 검증이 남음
+        }
+
+        Run(TimeSpan.FromMinutes(3.5)); // 검증 전용 실행도 양보되면 또 미룸: 완료로 확정하지 않음
+
+        Assert.Equal(AutoStage.WaitingIdle, Entry.Stage);
+        Assert.Contains(_log.Lines, l => l.Contains("verification deferred", StringComparison.Ordinal));
+        Assert.Null(Entry.RelocatedAt);
+
+        defer = false;
+        Run(TimeSpan.FromMinutes(3.5));
+
+        Assert.Equal((AutoStage.Done, "already in place"), (Entry.Stage, Entry.Detail));
+        using var done = new Journal(JournalPath);
+        Assert.Empty(Applier.PendingBefore(done.Rows.ToList()));
+        Assert.DoesNotContain(done.Rows, r => Equals(r["type"], "end") && r.TryGetValue("sha_mismatch", out object? bad) && bad is System.Collections.IList { Count: > 0 });
+    }
+
+    [Fact]
+    public void VerificationRunReadsThePlanFileAsItIsNow()
+    {
+        bool defer = true;
+        DeferAfterTheLastMove(() => defer);
+        Run(TimeSpan.FromMinutes(3));
+        Assert.Equal((AutoStage.WaitingIdle, "cancelled by game start"), (Entry.Stage, Entry.Detail));
+
+        bool rewrite = false;
+        bool sawNewPlan = false;
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> inner = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            if (options.DryRun && rewrite) // 이 틱의 dry-run 뒤에만 계획 파일을 바꿈 (Sha 는 그대로): 검증 실행은 바뀐 파일을 봐야 함
+            {
+                rewrite = false;
+                PlanFile now = PlanFile.Load(_game.Plan);
+                var stats = new JObject();
+                foreach ((string key, object? value) in now.Stats)
+                {
+                    stats.Add(key, value);
+                }
+
+                stats["verify_marker"] = 1L;
+                (now with { Stats = stats }).Save(_game.Plan);
+            }
+
+            sawNewPlan |= options.Execute && plan.Stats.ContainsKey("verify_marker");
+            return inner(g, plan, options, ct);
+        };
+
+        rewrite = true;
+        Run(TimeSpan.FromMinutes(3.5));
+
+        Assert.True(sawNewPlan);
+        Assert.Equal(AutoStage.WaitingIdle, Entry.Stage);
+        Assert.Null(Entry.RelocatedAt);
+    }
+
+    [Fact]
+    public void VerificationRunThatMovesBytesDoesNotCompleteUntilTheNextTick()
+    {
+        bool defer = true;
+        DeferAfterTheLastMove(() => defer);
+        Run(TimeSpan.FromMinutes(3));
+        Assert.Equal((AutoStage.WaitingIdle, "cancelled by game start"), (Entry.Stage, Entry.Detail));
+
+        defer = false;
+        bool armed = true;
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> inner = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            ApplyReport r = inner(g, plan, options, ct);
+            if (armed && options.Execute)
+            {
+                r.MovedBytes = 1; // 검증 전용 실행이 무언가를 옮긴 것처럼 보이게 함
+            }
+
+            return r;
+        };
+
+        Run(TimeSpan.FromMinutes(3.5));
+
+        Assert.NotEqual(AutoStage.Done, Entry.Stage); // 완료로 확정하지 않음
+        Assert.Null(Entry.RelocatedAt);
+
+        armed = false;
+        Run(TimeSpan.FromMinutes(3.5));
+
+        Assert.Equal((AutoStage.Done, "already in place"), (Entry.Stage, Entry.Detail));
+    }
+
+    [Fact]
+    public void VerificationReadIOExceptionHoldsTransientlyInsteadOfFailing()
+    {
+        bool defer = true;
+        DeferAfterTheLastMove(() => defer);
+        Run(TimeSpan.FromMinutes(3));
+        Assert.Equal((AutoStage.WaitingIdle, "cancelled by game start"), (Entry.Stage, Entry.Detail));
+
+        defer = false;
+        bool failVerify = true;
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> inner = _w.Apply;
+        _w.Apply = (g, plan, options, ct) => options.Execute && failVerify ? throw new IOException("locked") : inner(g, plan, options, ct);
+
+        Run(TimeSpan.FromMinutes(3.5));
+
+        Assert.NotEqual(AutoStage.Failed, Entry.Stage);
+        Assert.StartsWith("temporary IOException", Entry.Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("relocation failed", StringComparison.Ordinal));
+        Assert.Null(Entry.RelocatedAt);
+
+        failVerify = false;
+        Run(TimeSpan.FromMinutes(10));
+
+        Assert.Equal((AutoStage.Done, "already in place"), (Entry.Stage, Entry.Detail));
+    }
+
+    [Fact]
+    public void ShaVerificationRunLaterThatMismatchesTakesTheDataCheckFailurePath()
+    {
+        bool mismatch = false;
+        bool defer = false;
+        DeferAfterTheLastMove(() => defer, () => mismatch);
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> inner = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            ApplyReport r = inner(g, plan, options, ct);
+            mismatch |= options.Execute; // 첫 이동 실행이 끝난 뒤의 표본은 달라짐
+            return r;
+        };
+
+        Run(TimeSpan.FromMinutes(3));
+        Assert.Equal("cancelled by game start", Entry.Detail);
+        Run(TimeSpan.FromMinutes(3.5));
+
+        Assert.Equal(AutoStage.Failed, Entry.Stage);
+        Assert.Contains(_log.Lines, l => l.Contains("data check failed", StringComparison.Ordinal));
+        Assert.Null(Entry.RelocatedAt);
+    }
+
     [Fact]
     public void RegisteredExeStartingDuringTheMoveWithoutAStartNoticeStopsItAtTheNextPieceAndTheJournalResumes()
     {
@@ -1080,6 +1292,39 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         Assert.Equal(0, RevertCalls);
         Assert.True(File.Exists(JournalPath));
         Assert.Contains(_log.Lines, l => l.Contains("revert skipped", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RevertDeniedByTheDiskLeaseIsLoggedAndKeepsTheJournalForRetry()
+    {
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        Relocator.SetDiskReadCoordinator(coordinator);
+        var calls = new List<string>();
+        _w.Apply = (_, plan, options, ct) =>
+        {
+            string Digest(string path, long size, IReadOnlyList<(long Offset, long Length)> extra)
+            {
+                calls.Add(path);
+                return calls.Count <= 2 ? "a" : "b";
+            }
+
+            try
+            {
+                return Applier.Apply(plan, Vol, [Root], JournalPath, Hooks(Digest), options, ct);
+            }
+            catch (ShaMismatchException)
+            {
+                coordinator.Yield(_game.OriginRoot, "game started", "other game"); // 데이터 검사 실패 직후 같은 디스크에서 다른 게임이 뜸
+                throw;
+            }
+        };
+
+        Run(TimeSpan.FromMinutes(3));
+
+        Assert.Contains(_log.Lines, l => l.Contains("auto relocation stopped: data check failed", StringComparison.Ordinal)); // 이후 틱은 양보 중이라 단계가 대기로 바뀌므로 실패 로그로 확인
+        Assert.Equal(0, RevertCalls);
+        Assert.True(File.Exists(JournalPath));
+        Assert.Contains(_log.Lines, l => l.Contains("revert deferred", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -2415,7 +2660,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         _w.Now += AutoRelocator.StaleCheckEvery;
         Tick();
         Assert.Equal(AutoStage.Discovered, Entry.Stage);
-        Assert.Equal(1 + fps.Count, stats.Count); // 대표 (exe) 1 번 + 전체 비교
+        Assert.Equal(1 + 2 * fps.Count, stats.Count); // 대표 (exe) 1 번 + 전체 비교 + 잠금 안에서 바뀐 파일을 가리는 전체 비교
         Assert.Contains(biggestOutsideSample, stats);
     }
 
@@ -2574,6 +2819,33 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
+    public void MissingBaselineLeaseStopsBeforeSamplingOrRelocation()
+    {
+        UseProbe(AutoSettings.RecoveryProbe, zoneAllocated: true);
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        Relocator.SetDiskReadCoordinator(coordinator);
+        _w.LocateProbeSpots = (_, _) =>
+        {
+            coordinator.Yield(_game.OriginRoot, "game started", "other game");
+            return (true, RefLcn);
+        };
+        int executes = 0;
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> inner = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            executes += options.Execute ? 1 : 0;
+            return inner(g, plan, options, ct);
+        };
+
+        Run(TimeSpan.FromMinutes(3));
+
+        Assert.Empty(_probed);
+        Assert.Equal(0, executes);
+        Assert.Equal((AutoStage.WaitingIdle, "baseline interrupted (game start or disk busy), will retry"), (Entry.Stage, Entry.Detail));
+        Assert.False(Relocator.Recovery.IsRecovering(Drive));
+    }
+
+    [Fact]
     public void DiskActivityBetweenTheBaselineZoneAndReferenceSamplesStopsTheRound()
     {
         UseProbe(AutoSettings.RecoveryProbe, zoneAllocated: true);
@@ -2706,6 +2978,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         }
 
         Assert.False(File.Exists(_game.Plan)); // 14 분 30 초: 기준이 없으니 고정 15 분
+        Assert.Single(_log.Lines, l => l.Contains("bench: waiting 15 min after update (drive may still be reorganizing)", StringComparison.Ordinal)); // 기준이 없으면 probe 모드여도 고정 분 문구
         _w.Now += Step;
         RunUntilDone();
         Assert.Equal(AutoStage.Done, Entry.Stage);
@@ -2726,6 +2999,8 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
 
         Run(TimeSpan.FromMinutes(20)); // 고정 15 분이 지나도 기다림
         Assert.False(File.Exists(_game.Plan));
+        Assert.Single(_log.Lines, l => l.Contains("bench: waiting after update until the drive has recovered (up to 60 min)", StringComparison.Ordinal)); // probe 판정을 따를 때는 고정 분이 아니라 회복 확인 문구 (상한 recovery_max_min)
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("waiting 15 min after update", StringComparison.Ordinal));
 
         _zoneMbps = 98;
         Run(TimeSpan.FromMinutes(6));

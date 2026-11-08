@@ -58,6 +58,24 @@ public sealed class WarmStreamTests
 
             return (new StreamStats(batches * Batch, batches, 0, 0.01), true);
         }
+
+        public (StreamStats Stats, bool Complete) StreamPrewarmCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool> canIssue)
+        {
+            Read = 0;
+            while (Read < batches)
+            {
+                if (stop.IsCancellationRequested || !canIssue())
+                {
+                    return (new StreamStats(Read * Batch, Read, 0, 0.01, Aborted: true), false);
+                }
+
+                Read++;
+                afterBatch?.Invoke(Read);
+                progress?.Invoke(Read * Batch, batches * Batch);
+            }
+
+            return (new StreamStats(batches * Batch, batches, 0, 0.01), true);
+        }
     }
 
     private sealed class HeadBatchStreamer(Action afterFirstBatch) : IGameStreamer
@@ -72,6 +90,21 @@ public sealed class WarmStreamTests
         {
             long total = 3 * Batch;
             for (int read = 1; read <= 3 && !stop.IsCancellationRequested; read++)
+            {
+                _reads[game.Name] = read;
+                if (read == 1)
+                {
+                    afterFirstBatch();
+                }
+
+                progress?.Invoke(read * Batch, total);
+            }
+        }
+
+        public void StreamHeadCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue)
+        {
+            long total = 3 * Batch;
+            for (int read = 1; read <= 3 && !stop.IsCancellationRequested && canIssue(); read++)
             {
                 _reads[game.Name] = read;
                 if (read == 1)
@@ -183,6 +216,163 @@ public sealed class WarmStreamTests
         Assert.Equal(6, streamer.Read);
         Assert.NotNull(_p.LastWarmed("a"));
         Assert.DoesNotContain(_log.Lines, l => l.Contains("yielded to", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void KeepStreamOnGameStartSurvivesTheWarmCancellationTokenButStopsForAnotherGame()
+    {
+        GameSettings a = Game("a");
+        using var warmCts = new CancellationTokenSource();
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        using var serviceCts = new CancellationTokenSource();
+        coordinator.SetServiceToken(serviceCts.Token);
+        var streamer = new BatchStreamer(6, n =>
+        {
+            if (n == 2)
+            {
+                coordinator.Yield(a.OriginRoot, "game started", a.Name);
+                _p!.NoteGameStart(a.Name);
+                warmCts.Cancel();
+            }
+            else if (n == 3)
+            {
+                coordinator.Yield(@"D:\Games\other", "game started", "other");
+            }
+        });
+        _p = new Prewarmer([a], streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => _availableMib,
+            GameRunning = _ => false,
+            ZoneBytes = _ => 1610 * Mib,
+            TraceExists = _ => true,
+        }, _log, null, () => _now, coordinator);
+        _p.SetAuto(AutoSettings.Default with { KeepStreamOnGameStart = true });
+
+        PrewarmResult result = _p.Run(a, "test", ct: warmCts.Token);
+
+        Assert.False(result.Ran);
+        Assert.Equal(3, streamer.Read);
+        Assert.Equal(3 * Batch, result.Stats!.Bytes);
+    }
+
+    [Fact]
+    public void KeepStreamOnGameStartPreservesTheCurrentHeadsButHonorsServiceCancellation()
+    {
+        GameSettings a = Game("a") with { Prewarm = Game("a").Prewarm with { OnServiceStart = true } };
+        GameSettings b = Game("b") with { Prewarm = Game("b").Prewarm with { OnServiceStart = true } };
+        using var warmCts = new CancellationTokenSource();
+        using var serviceCts = new CancellationTokenSource();
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        coordinator.SetServiceToken(serviceCts.Token);
+        var streamer = new HeadBatchStreamer(() =>
+        {
+            coordinator.Yield(a.OriginRoot, "game started", a.Name);
+            _p!.NoteGameStart(a.Name);
+            warmCts.Cancel();
+        });
+        _p = new Prewarmer([a, b], streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => _availableMib,
+            GameRunning = _ => false,
+            ZoneBytes = _ => 1610 * Mib,
+            TraceExists = _ => true,
+        }, _log, null, () => _now, coordinator);
+        _p.SetAuto(AutoSettings.Default with { KeepStreamOnGameStart = true, StartupWarmMaxMib = 8000 });
+
+        _ = _p.RunServiceStart(ct: warmCts.Token);
+
+        Assert.Equal(3, streamer.ReadFor(a.Name));
+        Assert.Equal(0, streamer.ReadFor(b.Name));
+    }
+
+    // keep_stream_on_game_start 가 꺼져 있으면 읽기 대여는 시작 스트림 보존 대상이 아님: 게임이 시작해 디스크가 양보되면 (취소 신호 없이도) 다음 묶음부터 읽지 않음.
+    [Theory]
+    [InlineData(false, 2)]
+    [InlineData(true, 6)]
+    public void AGameStartingOnTheDiskStopsTheHotStreamAtTheNextBatchUnlessKeepStreamOnGameStartIsOn(bool keep, int read)
+    {
+        GameSettings a = Game("a");
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        var streamer = new BatchStreamer(6, n =>
+        {
+            if (n == 2)
+            {
+                coordinator.Yield(a.OriginRoot, "game started", a.Name); // 대여를 얻은 뒤 게임이 시작함
+            }
+        });
+        _p = new Prewarmer([a], streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => _availableMib,
+            GameRunning = _ => false,
+            ZoneBytes = _ => 1610 * Mib,
+            TraceExists = _ => true,
+        }, _log, null, () => _now, coordinator);
+        _p.SetAuto(AutoSettings.Default with { KeepStreamOnGameStart = keep });
+
+        _ = _p.Run(a, "test");
+
+        Assert.Equal(read, streamer.Read);
+    }
+
+    [Theory]
+    [InlineData(false, 1)]
+    [InlineData(true, 3)]
+    public void AGameStartingOnTheDiskStopsTheHeadStreamAtTheNextBatchUnlessKeepStreamOnGameStartIsOn(bool keep, int read)
+    {
+        GameSettings a = Game("a") with { Prewarm = Game("a").Prewarm with { OnServiceStart = true } };
+        GameSettings b = Game("b") with { Prewarm = Game("b").Prewarm with { OnServiceStart = true } };
+        using var warmCts = new CancellationTokenSource();
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        var streamer = new HeadBatchStreamer(() => coordinator.Yield(a.OriginRoot, "game started", a.Name));
+        _p = new Prewarmer([a, b], streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => _availableMib,
+            GameRunning = _ => false,
+            ZoneBytes = _ => 1610 * Mib,
+            TraceExists = _ => true,
+        }, _log, null, () => _now, coordinator);
+        _p.SetAuto(AutoSettings.Default with { KeepStreamOnGameStart = keep, StartupWarmMaxMib = 8000 });
+
+        _ = _p.RunServiceStart(ct: warmCts.Token);
+
+        Assert.Equal(read, streamer.ReadFor(a.Name));
+    }
+
+    [Fact]
+    public void ServiceCancellationStillStopsAKeptHotStream()
+    {
+        GameSettings a = Game("a");
+        using var warmCts = new CancellationTokenSource();
+        using var serviceCts = new CancellationTokenSource();
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        coordinator.SetServiceToken(serviceCts.Token);
+        var streamer = new BatchStreamer(6, n =>
+        {
+            if (n == 2)
+            {
+                coordinator.Yield(a.OriginRoot, "game started", a.Name);
+                _p!.NoteGameStart(a.Name);
+                warmCts.Cancel();
+            }
+            else if (n == 3)
+            {
+                serviceCts.Cancel();
+            }
+        });
+        _p = new Prewarmer([a], streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => _availableMib,
+            GameRunning = _ => false,
+            ZoneBytes = _ => 1610 * Mib,
+            TraceExists = _ => true,
+        }, _log, null, () => _now, coordinator);
+        _p.SetAuto(AutoSettings.Default with { KeepStreamOnGameStart = true });
+
+        PrewarmResult result = _p.Run(a, "test", ct: warmCts.Token);
+
+        Assert.False(result.Ran);
+        Assert.Equal(3, streamer.Read); // 둘째 묶음의 게임 시작 취소는 무시하고 셋째 묶음의 서비스 취소에서 멈춤
+        Assert.Equal(3 * Batch, result.Stats!.Bytes);
     }
 
     [Theory]

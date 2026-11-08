@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using AsterCache.Core.Settings;
 using AsterCache.Service;
 using AsterCache.Tests.Windows;
+using AsterCache.Windows;
 using Xunit;
 
 namespace AsterCache.Tests.Service;
@@ -17,12 +18,13 @@ public sealed class KeepAwakeTests
     private DateTimeOffset _now = T0;
     private int? _idleOverride; // 설정하면 DiskIdleSeconds 가 Case 의 값 대신 이 값을 돌려줌 (전원 설정이 바뀐 것을 흉내)
     private int _idleCalls;
+    private int _pickCalls;
 
     private sealed record Case(bool? Hdd, bool Launcher, bool Habit, bool Power, int? IdleSeconds);
 
     private static GameSettings Game() => Games.Make("g", "g.exe") with { Prewarm = PrewarmSettings.Default with { TriggerExes = ["steam.exe"] } };
 
-    private KeepAwake Make(Case c, AutoSettings? auto = null, Action<string>? read = null, Func<TimeSpan>? elapsed = null, IReadOnlyList<GameSettings>? games = null, Func<IEnumerable<string>, bool>? running = null)
+    private KeepAwake Make(Case c, AutoSettings? auto = null, Action<string>? read = null, Func<TimeSpan>? elapsed = null, IReadOnlyList<GameSettings>? games = null, Func<IEnumerable<string>, bool>? running = null, DiskReadCoordinator? coordinator = null)
     {
         var env = new KeepAwakeEnv
         {
@@ -34,7 +36,7 @@ public sealed class KeepAwakeTests
             Plays = () => c.Habit
                 ? new Dictionary<string, IReadOnlyList<DateTimeOffset>> { ["g"] = [T0.AddDays(-7).AddMinutes(30), T0.AddDays(-14)] }
                 : new Dictionary<string, IReadOnlyList<DateTimeOffset>>(),
-            PickFile = g => $@"D:\Games\{g.Name}\a.bin",
+            PickFile = g => { _pickCalls++; return $@"D:\Games\{g.Name}\a.bin"; },
             ReadSector = read ?? (p => _reads.Add(p)),
             DiskIdleSeconds = () =>
             {
@@ -42,7 +44,7 @@ public sealed class KeepAwakeTests
                 return _idleOverride ?? c.IdleSeconds;
             },
         };
-        return new KeepAwake(env, _log, () => new AsterSettings(50, games ?? [Game()]) { Auto = auto ?? AutoSettings.Default });
+        return new KeepAwake(env, _log, () => new AsterSettings(50, games ?? [Game()]) { Auto = auto ?? AutoSettings.Default }, coordinator);
     }
 
     [Theory]
@@ -142,6 +144,26 @@ public sealed class KeepAwakeTests
         k.Tick();
 
         Assert.Empty(_reads); // h.exe 가 D: 에서 도는 중이라 깨울 필요 없음
+    }
+
+    [Fact]
+    public void LeaseDenialKeepsThePreviouslyPickedFile()
+    {
+        GameSettings game = Game();
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        KeepAwake k = Make(new Case(true, true, false, true, 600), coordinator: coordinator);
+        k.Tick();
+        coordinator.Yield(game.OriginRoot, "game started", "other");
+        _now += KeepAwake.Every;
+
+        k.Tick();
+
+        coordinator.Resume(game.OriginRoot, "other");
+        _now += KeepAwake.Every;
+        k.Tick();
+
+        Assert.Equal(1, _pickCalls);
+        Assert.Equal(2, _reads.Count);
     }
 
     [Fact]

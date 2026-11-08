@@ -308,7 +308,6 @@ public sealed class AutoTierTests : IDisposable
     {
         SetTrace();
         AsterSettings s = Settings();
-        _world.RootPids.Add(77); // 등록 exe 가 아닌 게임 폴더 아래 프로세스 (상주 프로그램)
         IdleTicks(s);
         Assert.True(Linked(@"D:\Games\Foo\a.bin"));
     }

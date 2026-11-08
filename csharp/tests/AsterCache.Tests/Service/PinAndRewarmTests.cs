@@ -29,6 +29,7 @@ public sealed class PinAndRewarmTests
     private readonly FakeRecovery _recovery = new();
     private Queue<long>? _availSeq;
     private readonly Dictionary<string, long> _sizes = [];
+    private readonly Dictionary<string, FakePin> _activePins = new(StringComparer.OrdinalIgnoreCase);
 
     private sealed class FakeRecovery : IDriveRecovery
     {
@@ -41,11 +42,20 @@ public sealed class PinAndRewarmTests
 
     private sealed class FakePin(IReadOnlyList<string> paths) : IDisposable
     {
-        public IReadOnlyList<string> Paths { get; } = paths;
+        private readonly List<string> _paths = [.. paths];
+
+        public IReadOnlyList<string> Paths => _paths;
 
         public bool Disposed { get; private set; }
 
+        public void AddPaths(IReadOnlyList<string> paths) => _paths.AddRange(paths);
+
         public void Dispose() => Disposed = true;
+    }
+
+    private sealed class ThrowingPin : IDisposable
+    {
+        public void Dispose() => throw new InvalidOperationException("dispose failed");
     }
 
     private Prewarmer Make(params GameSettings[] games) => new(games, _streamer, new PrewarmEnv
@@ -66,8 +76,15 @@ public sealed class PinAndRewarmTests
         PinPaths = g => [$@"D:\Games\{g.Name}\a.bin", $@"D:\Games\{g.Name}\b.bin"],
         OpenPin = paths =>
         {
-            var pin = new FakePin(paths);
-            _pins.Add(pin);
+            string gameName = Path.GetFileName(Path.GetDirectoryName(paths[0]))!;
+            if (!_activePins.TryGetValue(gameName, out FakePin? pin) || pin.Disposed)
+            {
+                pin = new FakePin([]);
+                _activePins[gameName] = pin;
+                _pins.Add(pin);
+            }
+
+            pin.AddPaths(paths);
             _onOpen?.Invoke();
             return new PinHandle(pin, paths.Count, 0);
         },
@@ -80,6 +97,113 @@ public sealed class PinAndRewarmTests
     {
         Recovery = _recovery,
     };
+
+    [Fact]
+    public void PinningStopsBeforeTheNextFileWhenAGameStartsAndReleasesOpenedHandles()
+    {
+        GameSettings game = Game("a");
+        _onOpen = () => // 첫 파일을 연 뒤, 재확인 간격(50 ms)이 지난 뒤 다음 파일 전에 게임 시작
+        {
+            _running = true;
+            _now += TimeSpan.FromMilliseconds(50);
+        };
+        var env = new PrewarmEnv
+        {
+            AvailableRamMib = () => _avail,
+            GameRunning = _ => _running,
+            ZoneBytes = _ => _zoneMib << 20,
+            TraceExists = _ => true,
+            PhysicalRamBytes = () => _ram,
+            PinPaths = _ => [@"D:\Games\a\a.bin", @"D:\Games\a\b.bin"],
+            OpenPin = paths =>
+            {
+                var pin = new FakePin(paths);
+                _pins.Add(pin);
+                _onOpen?.Invoke();
+                return new PinHandle(pin, paths.Count, 0);
+            },
+        };
+        var keeper = new PinKeeper(env, _log, () => _now);
+
+        keeper.TryPin(game);
+
+        Assert.Single(_pins);
+        Assert.True(_pins[0].Disposed);
+        Assert.Empty(keeper.Held);
+        Assert.Contains(_log.Lines, line => line.Contains("a: pin deferred (a game started while pinning", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void StopChecksWithinTheIntervalReuseOneProcessSnapshot()
+    {
+        GameSettings game = Game("a");
+        int gameChecks = 0;
+        var env = new PrewarmEnv
+        {
+            AvailableRamMib = () => _avail,
+            GameRunning = _ =>
+            {
+                gameChecks++;
+                return false;
+            },
+            ZoneBytes = _ => _zoneMib << 20,
+            TraceExists = _ => true,
+            PhysicalRamBytes = () => _ram,
+            PinPaths = _ => [@"D:\Games\a\1.bin", @"D:\Games\a\2.bin", @"D:\Games\a\3.bin", @"D:\Games\a\4.bin", @"D:\Games\a\5.bin"],
+            OpenPin = paths =>
+            {
+                var pin = new FakePin(paths);
+                _pins.Add(pin);
+                return new PinHandle(pin, paths.Count, 0);
+            },
+        };
+        var keeper = new PinKeeper(env, _log, () => _now);
+
+        keeper.TryPin(game);
+
+        Assert.Equal(5, _pins.Count);
+        Assert.Equal(4, gameChecks); // 경로 전 확인 2회 + 파일 다섯 개 사이 재확인 스냅샷 1회 + 열기 뒤 확인 1회
+    }
+
+    [Fact]
+    public void PinningOpensNothingWhileTheDiskIsYieldedToAGameAndRetriesAfterItEnds()
+    {
+        GameSettings g = Game("a");
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log, () => 0);
+        int pathLookups = 0;
+        var env = new PrewarmEnv
+        {
+            AvailableRamMib = () => _avail,
+            ZoneBytes = _ => _zoneMib << 20,
+            TraceExists = _ => true,
+            GameRunning = _ => false, // 시작 이벤트를 놓쳐 게임 판정은 아직 모름
+            PhysicalRamBytes = () => _ram,
+            PinPaths = _ =>
+            {
+                pathLookups++;
+                return [@"D:\Games.bin"];
+            },
+            OpenPin = paths =>
+            {
+                var pin = new FakePin(paths);
+                _pins.Add(pin);
+                return new PinHandle(pin, paths.Count, 0);
+            },
+        };
+        var keeper = new PinKeeper(env, _log, () => _now) { Coordinator = coordinator };
+        coordinator.Yield(g.OriginRoot, "game started", g.Name);
+
+        keeper.TryPin(g);
+
+        Assert.Equal(0, pathLookups); // 경로 해석도 파일 열기도 하지 않음
+        Assert.Empty(_pins);
+        Assert.Contains(_log.Lines, l => l.Contains("a: pin deferred (disk reads are yielded", StringComparison.Ordinal));
+
+        coordinator.Resume(g.OriginRoot, g.Name);
+        keeper.TryPin(g);
+
+        Assert.Single(_pins);
+    }
 
     private static GameSettings Game(string name, bool pin = true, params string[] triggers) =>
         Games.Make(name, name + ".exe") with { Prewarm = PrewarmSettings.Default with { Pin = pin, PinSet = true, TriggerExes = triggers } };
@@ -357,6 +481,65 @@ public sealed class PinAndRewarmTests
 
         Assert.Empty(p.Pinned);
         Assert.True(_pins[0].Disposed);
+    }
+
+    [Fact]
+    public void ReleaseStillFreesTheOtherHandlesWhenAnEarlierDisposeThrows()
+    {
+        GameSettings g = Game("a");
+        var rest = new FakePin([]);
+        int opens = 0;
+        var env = new PrewarmEnv
+        {
+            AvailableRamMib = () => _avail,
+            GameRunning = _ => false,
+            ZoneBytes = _ => _zoneMib << 20,
+            TraceExists = _ => true,
+            PhysicalRamBytes = () => _ram,
+            PinPaths = _ => [@"D:\Games.bin", @"D:\Games.bin"],
+            OpenPin = _ => new PinHandle(++opens == 1 ? new ThrowingPin() : rest, 1, 0),
+        };
+        var keeper = new PinKeeper(env, _log, () => _now);
+        keeper.TryPin(g);
+
+        keeper.Release("a", "test");
+
+        Assert.True(rest.Disposed);
+        Assert.Empty(keeper.Held);
+    }
+
+    [Fact]
+    public void StopMidPinStillFreesTheOpenedHandlesWhenAnEarlierDisposeThrows()
+    {
+        GameSettings g = Game("a");
+        var rest = new FakePin([]);
+        int opens = 0;
+        var env = new PrewarmEnv
+        {
+            AvailableRamMib = () => _avail,
+            GameRunning = _ => _running,
+            ZoneBytes = _ => _zoneMib << 20,
+            TraceExists = _ => true,
+            PhysicalRamBytes = () => _ram,
+            PinPaths = _ => [@"D:\Games.bin", @"D:\Games.bin", @"D:\Games\c.bin"],
+            OpenPin = _ =>
+            {
+                opens++;
+                _now += TimeSpan.FromMilliseconds(50); // 파일 사이 재확인 간격이 지나도록
+                if (opens == 2)
+                {
+                    _running = true; // 두 번째 파일을 연 뒤 게임 시작 → 셋째 파일 전에 멈춤
+                }
+
+                return new PinHandle(opens == 1 ? new ThrowingPin() : rest, 1, 0);
+            },
+        };
+        var keeper = new PinKeeper(env, _log, () => _now);
+
+        keeper.TryPin(g);
+
+        Assert.True(rest.Disposed);
+        Assert.Empty(keeper.Held);
     }
 
     [Fact]

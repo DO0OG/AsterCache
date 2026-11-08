@@ -19,6 +19,7 @@ public sealed class WarmFilesTests : IDisposable
     private long _avail = 64000;
     private Action? _onRead;
     private Action? _onProbe;
+    private DiskActivity.SampleState _sample = DiskActivity.SampleState.Ok; // 디스크 표본 상태 (시험이 읽는 도중 바꿈)
     private int _probes;
     private readonly HashSet<string> _running = new(StringComparer.OrdinalIgnoreCase);
 
@@ -36,13 +37,14 @@ public sealed class WarmFilesTests : IDisposable
 
     private GameSettings Settings() => Games.Make("g", "g.exe") with { OriginRoot = Game, AllowedRoots = [_root] };
 
-    private Prewarmer Make()
+    private Prewarmer Make(DiskReadCoordinator? coordinator = null)
     {
         // 같은 드라이브의 다른 게임 "h" 도 등록 (시험의 SameDisk 기본은 드라이브 문자 비교)
         return new Prewarmer([Settings(), Games.Make("h", "h.exe") with { OriginRoot = Other, AllowedRoots = [_root] }], new FakeStreamer(), new PrewarmEnv
         {
             AvailableRamMib = () => _avail,
             GameRunning = g => _running.Contains(g.Name),
+            DiskSample = _ => (0, _sample),
             ZoneBytes = _ => null,
             TraceExists = _ => false,
             ProbeFileSamples = (s, ct) =>
@@ -57,7 +59,7 @@ public sealed class WarmFilesTests : IDisposable
                 _onRead?.Invoke();
                 return (new StreamStats(ops.Sum(o => o.Length), ops.Count, 0, 0.01), _completeEvenIfCancelled || !ct.IsCancellationRequested);
             },
-        }, _log);
+        }, _log, coordinator: coordinator);
     }
 
     private string File(string dir, string name, long mib)
@@ -218,6 +220,21 @@ public sealed class WarmFilesTests : IDisposable
     }
 
     [Fact]
+    public void YieldDuringFileCacheSamplingStopsBeforeTheNextSampleAndRead()
+    {
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        Prewarmer p = Make(coordinator);
+        string a = File(Game, "a.wad", 64);
+        _onProbe = () => coordinator.Yield(Game, "game started", "other");
+
+        long read = p.WarmFiles(Settings(), [a], 1L << 40, default);
+
+        Assert.Equal(0, read);
+        Assert.Equal(1, _probes);
+        Assert.Empty(_reads);
+    }
+
+    [Fact]
     public void ACancelledTokenStopsTheProbeAndReadsNothing()
     {
         Prewarmer p = Make();
@@ -268,6 +285,23 @@ public sealed class WarmFilesTests : IDisposable
         Assert.Equal(reads * 64 * Mib, read);
         Assert.Equal(reads == 1, _log.Lines.Any(l => l.Contains("warm files cancelled", StringComparison.Ordinal)));
         Assert.False(p.StreamingOnDisk("g"));
+    }
+
+    [Theory]
+    [InlineData(DiskActivity.SampleState.Ok, 2)]
+    [InlineData(DiskActivity.SampleState.Warming, 1)] // 읽는 도중 표본이 없음/낡음으로 바뀌면 다음 묶음은 읽지 않음
+    [InlineData(DiskActivity.SampleState.Stale, 1)]
+    [InlineData(DiskActivity.SampleState.Broken, 2)] // 고장은 기존 동작 (읽기 허용으로 넓히지도 막지도 않음)
+    public void ADiskSampleThatTurnsUnknownBetweenBatchesStopsTheFileRead(DiskActivity.SampleState during, int reads)
+    {
+        Prewarmer p = Make();
+        string a = File(Game, "a.wad", 64);
+        string b = File(Game, "b.wad", 64);
+        _onRead = () => _sample = during;
+
+        p.WarmFiles(Settings(), [a, b], 1L << 40, default);
+
+        Assert.Equal(reads, _reads.Count);
     }
 
     [Fact]
@@ -329,6 +363,22 @@ public sealed class WarmFilesTests : IDisposable
         Assert.Equal(2 * Mib, p.WarmFiles(Settings(), [a], 1L << 40, late.Token));
         Assert.False(p.StreamingOnDisk("g"));
         Assert.Contains(_log.Lines, l => l.Contains("warm files cancelled", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void CoordinatorYieldStopsWarmFilesBeforeTheNextBatch()
+    {
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        Prewarmer p = Make(coordinator);
+        string a = File(Game, "a.wad", 40);
+        string b = File(Game, "b.wad", 40);
+        _onRead = () => coordinator.Yield(Game, "game started");
+
+        long read = p.WarmFiles(Settings(), [a, b], 1L << 40, default);
+
+        Assert.Single(_reads);
+        Assert.Equal(64 * Mib, _reads[0].Sum(op => op.Length));
+        Assert.True(read <= 64 * Mib);
     }
 
     [Fact]

@@ -1,5 +1,6 @@
 using AsterCache.Core.Discovery;
 using AsterCache.Core.Logging;
+using AsterCache.Core.Metrics;
 using AsterCache.Core.Settings;
 using AsterCache.Service;
 using AsterCache.Windows;
@@ -52,7 +53,9 @@ if (!console)
 }
 
 var streamer = new PrefetchStreamer();
+DiskActivity.Start(); // 디스크 처리량 수집을 미리 켬 (첫 호출이 표본 없이 null 을 받는 구간을 줄임)
 var prewarm = new Prewarmer(settings.Games, streamer, PrewarmEnv.Create(), log, canApply ? Path.Combine(dataDir, "prewarm_status.json") : null); // 데이터 폴더를 믿을 수 없으면 (SYSTEM 이 일반 사용자가 쓸 수 있는 곳에 쓰지 않도록) 상태 파일을 쓰지 않음
+LoadBoundaryWatch.Recorder = canApply ? new BenchmarkRecorder(Path.Combine(dataDir, MetricsJson.SamplesFile), log) : null; // 로딩 표본 기록 (상태 파일과 같은 이유로 canApply 일 때만)
 // 자동 모드는 설정·이동을 쓰므로 canApply 일 때만 (상태 파일도 같은 이유로)
 var auto = canApply ? new AutoMode(new ConfigEditor(dataDir), AutoEnv.Create(journalDir, log), new AutoStatus(Path.Combine(dataDir, "auto_status.json"), log), log, settings, prewarm) : null;
 if (auto is not null)

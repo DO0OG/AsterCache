@@ -201,10 +201,11 @@ public abstract class ApplyTestBase : IDisposable
     protected PlanFile Make(long? start = null) =>
         PlanFile.Make(Sessions, Root, 2 << 20, Cb, p => Files[p], zoneStartLcn: start, preserveBytes: 64 << 20);
 
-    protected ApplyHooks Hooks(Func<string, long, IReadOnlyList<(long Offset, long Length)>, string>? digest = null, Func<string, string?>? skip = null) => new()
+    protected ApplyHooks Hooks(Func<string, long, IReadOnlyList<(long Offset, long Length)>, string>? digest = null, Func<string, string?>? skip = null, Func<string, long, IReadOnlyList<(long Offset, long Length)>, string>? edgeDigest = null) => new()
     {
         Extents = p => Vol.Ext[p],
         Digest = digest ?? ((p, size, extra) => SampleHasher.Compute(p, size, extra, null)),
+        EdgeDigest = edgeDigest,
         SkipReason = skip ?? (_ => null),
         Sleep = t =>
         {

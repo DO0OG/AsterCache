@@ -45,6 +45,17 @@ public sealed class TrayViewModel(
 
     public IReadOnlyList<string> Games => _settings?.Games.Select(g => g.Name).ToList() ?? [];
 
+    /// 서비스가 상태 파일에 남긴 런처 표시 이름 (게임 키 → 이름). 관리 창이 상태 파일을 읽을 때마다 채웁니다.
+    public IReadOnlyDictionary<string, string> LauncherNames { get; set; } = new Dictionary<string, string>();
+
+    /// 화면에 보일 게임 이름 (현재 언어). 내부 키는 그대로 두고 표시만 바꿉니다. 이름이 없으면 밑줄만 공백으로.
+    public string DisplayName(string key)
+    {
+        GameSettings? game = _settings?.Games.FirstOrDefault(g => string.Equals(g.Name, key, StringComparison.OrdinalIgnoreCase));
+        LauncherNames.TryGetValue(game?.Name ?? key, out string? launcher);
+        return game?.DisplayFor(L.Current, launcher) ?? launcher ?? key.Replace('_', ' ');
+    }
+
     /// 마지막으로 읽은 설정 (읽지 못했거나 아직 없으면 null).
     public AsterSettings? Settings => _settings;
 
@@ -89,12 +100,12 @@ public sealed class TrayViewModel(
         StatusText = _configError is null ? text : text + " · " + L.T("Status_ConfigError", _configError);
     }
 
-    public ActionResult AddGame(GameInput game) => Edit(() => config.Add(game), L.T("Msg_Registered", game.Name));
+    public ActionResult AddGame(GameInput game) => Edit(() => config.Add(game), L.T("Msg_Registered", DisplayName(game.Name)));
 
     public ActionResult RemoveGame(string name)
     {
         IReadOnlyList<string> dropped = [];
-        ActionResult r = Edit(() => dropped = config.Remove(name), L.T("Msg_Removed", name));
+        ActionResult r = Edit(() => dropped = config.Remove(name), L.T("Msg_Removed", DisplayName(name)));
         if (r.Ok && dropped.Count > 0)
         {
             log.Warn($"auto.ignore_exes full: dropped oldest {string.Join(", ", dropped)}");
@@ -120,12 +131,12 @@ public sealed class TrayViewModel(
         try
         {
             AsterCache.Prefetch.StreamStats r = streamer.Stream(game);
-            return Report(true, L.T("Msg_Streamed", name, r.Bytes >> 20, r.Requests, r.Errors, r.Seconds));
+            return Report(true, L.T("Msg_Streamed", DisplayName(name), r.Bytes >> 20, r.Requests, r.Errors, r.Seconds));
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
         {
             log.Error($"{name}: stream failed", e);
-            return Report(false, L.T("Err_StreamFailed", name, e.GetType().Name));
+            return Report(false, L.T("Err_StreamFailed", DisplayName(name), e.GetType().Name));
         }
         finally
         {

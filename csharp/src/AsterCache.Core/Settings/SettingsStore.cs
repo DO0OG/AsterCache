@@ -1,3 +1,4 @@
+using System.Globalization;
 using AsterCache.Core.Apply;
 using AsterCache.Core.Json;
 using AsterCache.Core.Plan;
@@ -25,7 +26,7 @@ public static class SettingsStore
     private static readonly string[] TopKeys = ["games", "poll_ms", "watcher", "language", "auto", "max_zone_mib", "riot"];
     private static readonly string[] RiotKeys = ["champ_select_prewarm", "champ_select_budget_mib"];
     private static readonly string[] GameKeys =
-        ["name", "exe_names", "trace", "plan", "origin_root", "allowed_roots", "volume_label", "reapply_interval_minutes", "prewarm", "max_stream_mib", "source", "anticheat"];
+        ["name", "exe_names", "trace", "plan", "origin_root", "allowed_roots", "volume_label", "reapply_interval_minutes", "prewarm", "max_stream_mib", "source", "anticheat", "display_name", "display_names"];
     private static readonly string[] AutoKeys =
     [
         "enabled", "discover", "trace", "relocate", "prewarm_recent", "idle_minutes", "trace_cap_seconds", "trace_cap_mib",
@@ -37,6 +38,7 @@ public static class SettingsStore
     private static readonly string[] SharedProfilesKeys = ["enabled", "url"];
     private static readonly string[] SsdTierKeys = ["enabled", "budget_gib", "root"];
     private const int MaxUrlChars = 2048;
+    public const int MaxDisplayChars = 128;
 
     public static string DefaultDataDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "AsterCache");
 
@@ -332,8 +334,19 @@ public static class SettingsStore
                 ? (string)ac : throw new SettingsException($"{at}.anticheat: \"eac\", \"battleye\", \"vanguard\", \"kernel\", \"ricochet\" or \"unknown\" expected");
         }
 
+        string? displayName = g.TryGetValue("display_name", out object? dn) ? DisplayText(dn, $"{at}.display_name") : null;
+        Dictionary<string, string>? displayNames = null;
+        if (g.TryGetValue("display_names", out object? dns))
+        {
+            JObject names = dns as JObject ?? throw new SettingsException($"{at}.display_names: object expected");
+            Unknown(names, ["ko", "en"], $"{at}.display_names");
+            displayNames = names.ToDictionary(kv => kv.Key, kv => DisplayText(kv.Value, $"{at}.display_names.{kv.Key}"));
+        }
+
         return new GameSettings(name, exeNames, trace, plan, origin, allowed, label, minutes)
         {
+            DisplayName = displayName,
+            DisplayNames = displayNames,
             Prewarm = prewarm,
             MaxStreamMib = maxStream,
             MaxStreamSet = g.ContainsKey("max_stream_mib"),
@@ -379,6 +392,10 @@ public static class SettingsStore
             }
         }
     }
+
+    private static string DisplayText(object? v, string field) =>
+        v is string { Length: > 0 and <= MaxDisplayChars } s && !string.IsNullOrWhiteSpace(s) && !s.Any(c => char.IsControl(c) || char.GetUnicodeCategory(c) == UnicodeCategory.Format)
+            ? s : throw new SettingsException($"{field}: 1..{MaxDisplayChars} chars, not blank, without control or format characters expected");
 
     private static string Str(object? v, string field) =>
         v is string s && s.Length > 0 ? s : throw new SettingsException($"{field}: non-empty string expected");

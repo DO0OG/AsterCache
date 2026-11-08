@@ -21,6 +21,9 @@ public sealed class PinKeeper
     /// 이 게임을 고정할 것인가: pin 이 명시되면 그 값, 아니면 물리 RAM 이 AutoPinRamBytes 이상일 때.
     public static bool Wanted(PrewarmSettings p, long physicalRamBytes) => p.PinSet ? p.Pin : physicalRamBytes >= AutoPinRamBytes;
 
+    /// 파일 사이 게임 실행 재확인 간격: 파일 수만큼 프로세스 스냅샷을 찍으면 수 초 늦어짐 (Streaming.cs 의 IsGameRunning 이 스냅샷을 찍음).
+    private static readonly TimeSpan GameCheckInterval = TimeSpan.FromMilliseconds(50);
+
     /// 회복 기간 고정을 들고 있는 최대 시간.
     public static readonly TimeSpan RecoveryPinMax = TimeSpan.FromMinutes(60);
 
@@ -37,6 +40,7 @@ public sealed class PinKeeper
     private IReadOnlyList<GameSettings> _games = []; // Reconcile·CheckMemory 가 마지막으로 받은 등록 게임 (다른 스레드가 읽으므로 Volatile)
     private readonly Dictionary<string, bool> _deferred = new(StringComparer.OrdinalIgnoreCase); // 게임이 돌아서 미룬 고정 (afterRelocation 값): 게임이 끝난 뒤 다음 Reconcile·CheckMemory 에서 다시 시도
     private readonly HashSet<string> _holdLogged = new(StringComparer.OrdinalIgnoreCase); // 런처 보류 사유는 하나뿐이라 게임당 한 번만 남김
+    private readonly HashSet<string> _yieldLogged = new(StringComparer.OrdinalIgnoreCase); // 디스크 양보 사유도 재시도 틱마다 반복하지 않게 게임당 한 번만 남김
 
     public PinKeeper(PrewarmEnv env, ILog log, Func<DateTimeOffset>? now = null)
     {
@@ -44,6 +48,9 @@ public sealed class PinKeeper
         _log = log;
         _now = now ?? (() => DateTimeOffset.UtcNow);
     }
+
+    /// 디스크 읽기 중재: 있으면 양보 중인 디스크의 고정 (경로 해석·파일 열기) 은 미룹니다. 시험 기본값은 없음.
+    public DiskReadCoordinator? Coordinator { get; set; }
 
     /// 드라이브 회복 판정. null 이면 회복 기간 고정은 꺼진 것과 같습니다.
     public IDriveRecovery? Recovery { get; set; }
@@ -130,21 +137,46 @@ public sealed class PinKeeper
 
         try
         {
+            using DiskReadCoordinator.Lease? lease = Coordinator?.TryBegin(game.OriginRoot, "pin");
+            bool Yielded() => Coordinator is not null && lease is not { IsValid: true }; // 시작 이벤트를 놓쳐도 양보 중인 디스크는 열지 않음
+            if (Yielded())
+            {
+                Defer(game, afterRelocation);
+                if (_yieldLogged.Add(game.Name))
+                {
+                    _log.Info($"{game.Name}: pin deferred (disk reads are yielded to a running game; retried once it ends)");
+                }
+                return;
+            }
+
             IReadOnlyList<string> paths = _env.PinPaths(game);
             Fingerprint[] files = recovering ? [.. paths.Select(_env.FileStamp)] : []; // 고정 전에 재야 그 사이의 변경도 잡음
-            if (DiskHasRunningGame(game)) // 경로 탐색 중에 같은 디스크 게임이 떴으면 파일을 열지 않음
+            if (DiskHasRunningGame(game) || Yielded()) // 경로 탐색 중에 같은 디스크 게임이 떴으면 파일을 열지 않음
             {
                 Defer(game, afterRelocation);
                 _log.Info($"{game.Name}: pin deferred (a game started on the same disk while resolving paths; retried once it ends)");
                 return;
             }
 
-            PinHandle handle = _env.OpenPin(paths);
-            if (DiskHasRunningGame(game))
+            bool gameRunning = false;
+            DateTimeOffset? checkedAt = null;
+            Func<bool> stop = () => // 파일마다 프로세스 스냅샷을 새로 찍지 않도록 짧은 간격 안의 재확인은 이전 결과를 씀
+            {
+                DateTimeOffset at = _now();
+                if (checkedAt is null || at - checkedAt.Value >= GameCheckInterval)
+                {
+                    gameRunning = DiskHasRunningGame(game);
+                    checkedAt = at;
+                }
+
+                return gameRunning || Yielded();
+            };
+            PinHandle handle = OpenPin(paths, stop, out bool stopped);
+            if (stopped || DiskHasRunningGame(game) || Yielded()) // 열기 뒤 확인은 재사용하지 않음 (직후에 같은 디스크 게임이 떴으면 바로 풂)
             {
                 handle.Pin.Dispose(); // 고정하는 사이에 같은 디스크 게임이 떴으면 바로 풀고 끝난 뒤 다시 시도
                 Defer(game, afterRelocation);
-                _log.Info($"{game.Name}: pin dropped (game started while pinning; retried once it ends)");
+                _log.Info($"{game.Name}: pin deferred (a game started while pinning; retried once it ends)");
                 return;
             }
 
@@ -173,6 +205,83 @@ public sealed class PinKeeper
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
         {
             _log.Warn($"{game.Name}: pin failed: {e.GetType().Name}");
+        }
+    }
+
+    // 환경 API 를 유지하면서도 파일 사이에 중단 여부를 확인합니다. 한 번의 OpenPin 호출은 한 파일만 열므로 실제 FilePin.Open 도 파일 단위로 진행됩니다.
+    private PinHandle OpenPin(IReadOnlyList<string> paths, Func<bool> stop, out bool stopped)
+    {
+        var pins = new List<IDisposable>();
+        int count = 0;
+        int skipped = 0;
+
+        try
+        {
+            foreach (string path in paths.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (stop())
+                {
+                    stopped = true;
+                    DisposeOpened();
+                    return new PinHandle(new PinCollection([]), 0, 0);
+                }
+
+                PinHandle opened = _env.OpenPin([path]);
+                pins.Add(opened.Pin);
+                count += opened.Count;
+                skipped += opened.Skipped;
+            }
+        }
+        catch
+        {
+            DisposeOpened();
+            throw;
+        }
+
+        stopped = false;
+        return new PinHandle(new PinCollection(pins), count, skipped);
+
+        void DisposeOpened()
+        {
+            foreach (IDisposable pin in pins)
+            {
+                try
+                {
+                    pin.Dispose();
+                }
+                catch (Exception)
+                {
+                    // 한 핸들의 해제 실패가 나머지 고정을 풀지 못하게 막음 (실패한 핸들은 다시 풀 방법이 없음)
+                }
+            }
+
+            pins.Clear();
+        }
+    }
+
+    private sealed class PinCollection(List<IDisposable> pins) : IDisposable
+    {
+        private List<IDisposable>? _pins = pins;
+
+        public void Dispose()
+        {
+            List<IDisposable>? pins = Interlocked.Exchange(ref _pins, null);
+            if (pins is null)
+            {
+                return;
+            }
+
+            foreach (IDisposable pin in pins)
+            {
+                try
+                {
+                    pin.Dispose();
+                }
+                catch (Exception)
+                {
+                    // 한 핸들의 해제 실패가 나머지 고정을 풀지 못하게 막음 (실패한 핸들은 다시 풀 방법이 없음)
+                }
+            }
         }
     }
 

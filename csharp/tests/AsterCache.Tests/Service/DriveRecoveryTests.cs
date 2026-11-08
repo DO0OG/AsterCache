@@ -256,6 +256,26 @@ public sealed class DriveRecoveryTests
     }
 
     [Fact]
+    public void NonNormalizedDriveKeyStillDefersTheSampleWhileAGameRunsOnTheSameDisk()
+    {
+        _gameRoots.Add(@"E:\Games\X");
+        _r.Begin("e:", Both, TimeSpan.FromMinutes(60)); // 정규화 전 키 ('e:') 도 같은 디스크 게임 판정에 같은 키로 쓰임
+
+        Pass(2);
+        Pass(2);
+
+        Assert.Empty(_probed); // 게임이 도는 동안 표본을 시작하지 않음
+        Assert.True(_r.IsRecovering(@"E:\"));
+
+        _gameRoots.Clear();
+        Pass(2);
+        Pass(2);
+
+        Assert.Contains(10L, _probed);
+        Assert.False(_r.IsRecovering(@"E:\"));
+    }
+
+    [Fact]
     public void UpdateWatchNeedsABaselineThenFollowsTheSameJudgement()
     {
         TimeSpan limit = TimeSpan.FromMinutes(60);

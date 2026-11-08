@@ -43,6 +43,41 @@ public sealed class AutoRegistryTests : IDisposable
     }
 
     [Fact]
+    public void LauncherDisplayNameGoesToTheStatusFileNeverToTheConfig()
+    {
+        string emojiTail = new string('a', 127) + "🎮";
+        World.Found.Add(Found("Call of Duty: Modern Warfare", @"D:\Games\Cod", "cod.exe"));
+        World.Found.Add(Found(emojiTail, @"D:\Games\Long", "long.exe"));
+
+        _rig.Registry().DiscoverOnce();
+
+        Assert.DoesNotContain("display_name", File.ReadAllText(_rig.Editor.ConfigPath), StringComparison.Ordinal); // 옛 판이 모르는 키로 설정을 거부하지 않게
+        Assert.Equal("Call of Duty: Modern Warfare", _rig.Status.Get("Call_of_Duty_Modern_Warfare")!.DisplayName);
+        string cut = _rig.Status.Get(Registered()[1])!.DisplayName!;
+        Assert.Equal(new string('a', 127), cut); // 서로게이트 쌍을 가르지 않음
+        AsterCache.Tray.AutoStatusFile loaded = AsterCache.Tray.AutoStatusFile.Load(Path.Combine(_rig.Dir, "auto_status.json"))!;
+        Assert.Equal("Call of Duty: Modern Warfare", loaded.Games["Call_of_Duty_Modern_Warfare"].DisplayName);
+    }
+
+    [Fact]
+    public void AlreadyRegisteredGameGetsTheLauncherNameOnceAndIsNotRewritten()
+    {
+        _rig.Add("old", "old.exe", @"D:\Games\Old", "auto");
+        _rig.Status.Set("old", "auto", "steam", AutoStage.Done, null);
+        World.Found.Add(Found("Old Game: Remastered", @"D:\Games\Old", "old.exe"));
+        AutoRegistry registry = _rig.Registry();
+
+        registry.DiscoverOnce();
+
+        Assert.Equal("Old Game: Remastered", _rig.Status.Get("old")!.DisplayName);
+        Assert.Equal(["old"], Registered());
+        string path = Path.Combine(_rig.Dir, "auto_status.json");
+        File.Delete(path);
+        registry.DiscoverOnce();
+        Assert.False(File.Exists(path)); // 같은 값이면 다시 저장하지 않음
+    }
+
+    [Fact]
     public void LauncherFoldersTheScanSkippedAreLoggedOnceNotRegistered()
     {
         World.Skipped.Add(new SkippedFolder("HoYoPlay", @"D:\HoYoPlay"));

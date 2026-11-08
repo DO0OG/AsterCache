@@ -22,6 +22,16 @@ public sealed record GameSettings(
 
     /// 설치 폴더에서 알아낸 안티치트: "eac" | "battleye" | "vanguard" | "kernel" | "ricochet" | "unknown", 모르면 null.
     public string? AntiCheat { get; init; }
+
+    /// 런처가 준 표시 이름 (선택, 화면에만 씀). 내부 키 Name 은 계획·저널·상태 파일명이라 바꾸지 않습니다.
+    public string? DisplayName { get; init; }
+
+    /// 언어별 표시 이름 (선택, "ko"/"en" → 이름). 있으면 DisplayName 보다 먼저 씁니다.
+    public IReadOnlyDictionary<string, string>? DisplayNames { get; init; }
+
+    /// 화면에 보일 이름: 언어별 이름 → 설정의 표시 이름 → 런처가 상태 파일에 남긴 이름 (launcher) → 내부 키의 밑줄을 공백으로.
+    public string DisplayFor(string lang, string? launcher = null) =>
+        DisplayNames is { } byLang && byLang.TryGetValue(lang, out string? local) ? local : DisplayName ?? launcher ?? Name.Replace('_', ' ');
 }
 
 /// 게임 시작 전에 핫 집합을 RAM (파일 캐시) 에 올려 두는 동작. 기본: 서비스 시작 때 한 번, 트리거 프로그램 없음, 가용 RAM 에 4096 MiB 여유, 쿨다운 30분.

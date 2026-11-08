@@ -61,12 +61,6 @@ internal sealed class FakeWorld
     /// ReadBytes (IoCounters) 를 연 PID 기록: 열 수 없는 PID 는 Reads 에 없음 (ACCESS_DENIED 와 같음).
     public List<int> ReadOpens { get; } = [];
 
-    /// 게임 폴더 아래에서 도는 프로세스의 PID (등록 exe 가 아닌 자식 프로세스).
-    public List<int> RootPids { get; set; } = [];
-
-    /// RootPids 가 어느 게임의 설치 폴더 아래 프로세스인가 (기본: 모든 게임).
-    public Func<GameSettings, bool> RootPidsOf { get; set; } = _ => true;
-
     /// 건너뜀 사유 로그에 남는 막고 있는 프로세스 설명 (기본: 없음, 실제 스냅샷을 뜨지 않음).
     public Func<GameSettings, string?> DescribeBlockers { get; set; } = _ => null;
 
@@ -189,12 +183,23 @@ internal sealed class FakeWorld
     /// MoveAside 로 옮긴 (원본, 새 이름) 기록. 파일 집합 (Files) 도 따라 바뀝니다.
     public List<(string From, string To)> Moved { get; } = [];
 
+    /// 트레이스 파일에 나오는 경로 (기본: LoadSessions 의 경로). 시험이 읽기 실패를 만들 때 바꿈.
+    public Func<string, IReadOnlyCollection<string>>? TracePaths { get; set; }
+
+    /// 트레이스를 읽는 가짜의 대체 (기본: LoadSessions 의 첫 세션 그대로). 시험이 진짜 읽기처럼 없는 파일 행 제외·길이 0 행 예외를 흉내 낼 때 바꿈.
+    public Func<IReadOnlyList<TraceEvent>>? LoadTraceOverride { get; set; }
+
+    /// 업데이트로 바뀐 파일의 범위를 트레이스·예열 목록에서 빼는 가짜 (기본: 아무 일도 하지 않음). 불린 인자는 시험이 기록하고, 필요하면 Sessions 와 파일 시각을 바꿈.
+    public Action<GameSettings, IReadOnlySet<string>> DropChanged { get; set; } = (_, _) => { };
+
     /// true 면 MoveAside 가 (파일이 잠긴 것처럼) IOException 으로 실패합니다.
     public bool MoveFails { get; set; }
 
     public Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> Apply { get; set; } = (_, _, _, _) => throw new InvalidOperationException("Apply");
 
     public Func<string, Fingerprint> Stat { get; set; } = PlanFile.FingerprintOf;
+
+    public Func<string, DateTimeOffset?> ChangeTime { get; set; } = _ => DateTimeOffset.MinValue;
 
     public Func<GameSettings, int> JournalRows { get; set; } = _ => 0;
 
@@ -207,6 +212,8 @@ internal sealed class FakeWorld
     public Func<GameSettings, SwitchResult?> ResumeSwitch { get; set; } = _ => null;
 
     public Func<GameSettings, string?> JournalPlanSha { get; set; } = _ => null;
+
+    public Func<GameSettings, bool> HasPendingVerification { get; set; } = _ => false;
 
     public Func<GameSettings, int, CancellationToken, RevertReport?> Revert { get; set; } = (_, _, _) => throw new InvalidOperationException("Revert");
 
@@ -242,7 +249,6 @@ internal sealed class FakeWorld
             return Reads.TryGetValue(p, out long v) ? v : null;
         },
         AntiCheatOf = d => AntiCheats.GetValueOrDefault(d),
-        RootPids = g => RootPidsOf(g) ? RootPids : [],
         DescribeBlockers = g => DescribeBlockers(g),
         PhysicalRamBytes = () => PhysicalRam,
         WindowsDir = WindowsDir,
@@ -279,7 +285,7 @@ internal sealed class FakeWorld
             return PrefetchBoot(g);
         },
         TraceSource = p => TraceSources.GetValueOrDefault(p),
-        LoadTrace = (_, _) => LoadSessions()[0],
+        LoadTrace = (_, _) => LoadTraceOverride is { } load ? load() : LoadSessions()[0],
         ProfileEvents = (g, budget) => ProfileEvents(g, budget),
         LoadVolatile = _ => Volatile,
         MakePlan = (sessions, origin, zoneMib) =>
@@ -301,6 +307,7 @@ internal sealed class FakeWorld
         RealPath = Path.GetFullPath,
         Apply = (g, plan, options, ct) => Apply(g, plan, options, ct),
         Stat = p => Stat(p),
+        ChangeTime = p => ChangeTime(p),
         JournalRows = g => JournalRows(g),
         Lock = g =>
         {
@@ -321,6 +328,7 @@ internal sealed class FakeWorld
         ReplanResidual = ReplanResidual,
         ResumeSwitch = g => ResumeSwitch(g),
         JournalPlanSha = g => JournalPlanSha(g),
+        HasPendingVerification = g => HasPendingVerification(g),
         ArchiveJournal = g =>
         {
             RequireHeld($"ArchiveJournal {g.Name}");
@@ -341,6 +349,13 @@ internal sealed class FakeWorld
             {
                 File.Move(src, dst, true);
             }
+        },
+        TracePaths = p => TracePaths is { } paths ? paths(p) : [.. LoadSessions().SelectMany(s => s).Select(e => e.Path).Distinct(StringComparer.OrdinalIgnoreCase)],
+        TraceRows = _ => LoadSessions()[0],
+        DropChanged = (g, paths) =>
+        {
+            RequireHeld($"DropChanged {g.Name}");
+            DropChanged(g, paths);
         },
         Touch = p =>
         {

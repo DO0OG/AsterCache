@@ -95,11 +95,50 @@ public static partial class BootProbe
     }
 
     /// 실제 환경으로 한 번: 시계는 Stopwatch, 가동 시간은 Environment.TickCount64.
-    public static AutoBootProbe? RunReal(AsterSettings settings, AutoStatus status, ILog log, CancellationToken ct = default)
+    /// coordinator 가 있으면 디스크 양보 중에는 열지 않고 (대여를 못 얻거나 파일 사이에 무효가 되면 거기서 마무리), 시작 이벤트를 놓친 게임 디스크를 건드리지 않습니다.
+    public static AutoBootProbe? RunReal(AsterSettings settings, AutoStatus status, ILog log, CancellationToken ct = default, DiskReadCoordinator? coordinator = null)
     {
         var sw = Stopwatch.StartNew();
-        return Run(settings, status, log, DateTimeOffset.UtcNow, Environment.TickCount64, TracePaths, OpenClose, () => sw.Elapsed,
-            g => AutoRelocator.SameDriveGames(settings.Games, [g], AsterCache.Windows.VolumeDisks.SameDisk).Concat([g]).Any(DispatchEnv.IsGameRunning), ct);
+        Dictionary<string, DiskReadCoordinator.Lease?> leases = new(StringComparer.OrdinalIgnoreCase); // 볼륨 루트별 대여: 한 디스크의 대여로 다른 디스크 게임을 열지 않음
+        bool Busy(GameSettings g)
+        {
+            if (AutoRelocator.SameDriveGames(settings.Games, [g], AsterCache.Windows.VolumeDisks.SameDisk).Concat([g]).Any(DispatchEnv.IsGameRunning))
+            {
+                return true;
+            }
+
+            return Yielded(coordinator, g.OriginRoot, ct, leases);
+        }
+
+        try
+        {
+            return Run(settings, status, log, DateTimeOffset.UtcNow, Environment.TickCount64, TracePaths, OpenClose, () => sw.Elapsed, Busy, ct);
+        }
+        finally
+        {
+            foreach (DiskReadCoordinator.Lease? lease in leases.Values)
+            {
+                lease?.Dispose();
+            }
+        }
+    }
+
+    /// 디스크 양보 판정: 코디네이터가 있는데 대여를 못 얻었거나 가진 대여가 무효면 true (양보 중). 얻은 대여는 볼륨 루트별로 leases 에 남겨 파일 사이 점검에도 씀 (호출자가 소유하고 끝에 Dispose).
+    internal static bool Yielded(DiskReadCoordinator? coordinator, string path, CancellationToken ct, Dictionary<string, DiskReadCoordinator.Lease?> leases)
+    {
+        if (coordinator is null)
+        {
+            return false;
+        }
+
+        string root = (Path.GetPathRoot(path) ?? path).ToUpperInvariant(); // 코디네이터와 같은 기준으로 볼륨을 나눔 (UNC·마운트 지점도 같은 키)
+        if (!leases.TryGetValue(root, out DiskReadCoordinator.Lease? lease) || lease is null)
+        {
+            lease = coordinator.TryBegin(path, "boot probe", ct);
+            leases[root] = lease;
+        }
+
+        return lease is not { IsValid: true };
     }
 
     [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]

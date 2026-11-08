@@ -185,6 +185,69 @@ public sealed class ApplyPortTests : ApplyTestBase
     }
 
     [Fact]
+    public void InvalidLeaseStopsBeforeTheNextRelocationChunk()
+    {
+        PlanFile plan = Make().Resolve(20000);
+        bool canIssue = true;
+        Vol.AfterMove = _ => canIssue = false;
+
+        ApplyReport report = Apply(plan, Exec(8 * Cb) with { CanIssue = () => canIssue });
+
+        Assert.Equal("cancelled", report.Stopped);
+        Assert.Single(Vol.Moves);
+    }
+
+    [Fact]
+    public void YieldDuringAfterVerificationDefersRemainingSamplesWithoutVerifyingThem()
+    {
+        PlanFile plan = ManyTasks();
+        bool canIssue = true;
+        int digests = 0;
+        int afterDigests = 0;
+        ApplyHooks hooks = Hooks(edgeDigest: (_, _, _) =>
+        {
+            if (Interlocked.Increment(ref digests) > plan.Tasks.Count && ++afterDigests == 1)
+            {
+                canIssue = false;
+            }
+
+            return "same";
+        });
+
+        ApplyReport report = Apply(plan, Exec(8 * Cb) with { Verify = VerifyMode.All, CanIssue = () => canIssue }, hooks);
+
+        Assert.Equal("cancelled", report.Stopped);
+        Assert.Equal(1, afterDigests);
+        Assert.Equal(1, report.ShaChecked);
+        Assert.Single(JournalRows(), row => Equals(row["type"], "sha_verified"));
+        Assert.Equal(true, JournalRows().Last(row => Equals(row["type"], "end"))["after_deferred"]);
+    }
+
+    [Fact]
+    public void CancellationDuringAfterVerificationStopsBeforeTheNextDigest()
+    {
+        PlanFile plan = ManyTasks();
+        using var cts = new CancellationTokenSource();
+        int digests = 0;
+        int afterDigests = 0;
+        ApplyHooks hooks = Hooks(edgeDigest: (_, _, _) =>
+        {
+            if (Interlocked.Increment(ref digests) > plan.Tasks.Count && ++afterDigests == 1)
+            {
+                cts.Cancel();
+            }
+
+            return "same";
+        });
+
+        ApplyReport report = Applier.Apply(plan, Vol, [Root], JournalPath, hooks, Exec(8 * Cb) with { Verify = VerifyMode.All }, cts.Token);
+
+        Assert.Equal("cancelled", report.Stopped);
+        Assert.Equal(1, afterDigests);
+        Assert.Equal(1, report.ShaChecked);
+    }
+
+    [Fact]
     public void ResumeAfterInterruptionKeepsOriginalExtents()
     {
         PlanFile p = Make().Resolve(20000);

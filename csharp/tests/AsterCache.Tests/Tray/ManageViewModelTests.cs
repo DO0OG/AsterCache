@@ -193,7 +193,7 @@ public sealed class ManageViewModelTests : IDisposable
         Assert.True(_vm.RefreshStatus().Ok);
 
         GameRow row = _vm.GameRows(null).Single();
-        Assert.Equal(("mw4", "game.exe", true, false, "contiguous"), (row.Name, row.Exe, row.HasPlan, row.HasTrace, row.Verdict));
+        Assert.Equal(("mw4", "game.exe", true, false, "연속", "contiguous"), (row.Name, row.Exe, row.HasPlan, row.HasTrace, row.Verdict, row.VerdictRaw));
         Assert.Equal("시작 예 · Steam.exe", row.Prewarm);
         Assert.Contains("여유 RAM 4096 MiB", row.PrewarmFull);
         Assert.Empty(_vm.GameRows("Q:"));
@@ -205,7 +205,7 @@ public sealed class ManageViewModelTests : IDisposable
         Assert.Contains("마지막 예열: mw4", lines[2]);
         Assert.Contains("1024 MiB", lines[2]);
         Assert.Contains("5.5 초", lines[2]);
-        Assert.Contains("배치 contiguous · 존 적중 75.0% · 마지막 재배치 20", lines[3]);
+        Assert.Contains("배치 연속 · 존 적중 75.0% · 마지막 재배치 20", lines[3]);
         Assert.Contains("예열 ok · 로딩 앞부분 5 MiB", lines[3]);
         Assert.Contains(_cli.Calls, c => c.Args.SequenceEqual(AsterArgs.Status(_vm.PrewarmStatusPath, _vm.AutoStatusPath, Path.Combine(Plans, "mw4.plan.json"), _vm.JournalPath("mw4"))));
     }
@@ -777,6 +777,95 @@ public sealed class ManageViewModelTests : IDisposable
         Assert.Contains("  자동: frost 발견 → 트레이스 수집 중 → 재배치 대기 → 재배치 중 → [완료]", _vm.StatusLines(null));
     }
 
+    // ---- 기본 화면 가독성 (상태 구분, 기본 열과 고급 열) ----
+
+    private static readonly DateTimeOffset BootAt = DateTimeOffset.Parse("2026-11-08T00:00:00+00:00");
+
+    // 기준 부팅 시각을 준 관리 뷰모델에 게임 이름들을 등록하고 예열·자동 상태 파일을 읽힙니다.
+    private ManageViewModel ReadinessVm(string prewarmGames, string autoGames, params string[] names)
+    {
+        foreach (string n in names)
+        {
+            Assert.True(_tray.AddGame(Game(n) with { ExeNames = [n + ".exe"], TriggerExes = null }).Ok);
+        }
+
+        _cli.On("status", (_, _) => CliResult.Parse("{\"prewarm\":{\"games\":{" + prewarmGames + "}}}"));
+        WriteAuto("{\"games\":{" + autoGames + "}}");
+        var vm = new ManageViewModel(_tray, new ConfigEditor(_dir), _cli, new Drives(_drive), _elevator, new NoShell(), new NullLog(), () => false, _ => false,
+            "--data-dir x", TimeSpan.FromMilliseconds(1), _dir, _ => _untrusted, Path.Combine(_dir, "svc", "AsterCache.Service.exe"), BootAt);
+        Assert.True(vm.RefreshStatus().Ok);
+        return vm;
+    }
+
+    [Fact]
+    public void PartialPastAndNotMeasuredPrewarmAreShownWithDifferentWords()
+    {
+        ManageViewModel vm = ReadinessVm(
+            "\"ready\":{\"at\":\"2026-11-08T02:00:00+00:00\",\"result\":\"ok\",\"last_ok_at\":\"2026-11-08T02:00:00+00:00\"},"
+            + "\"part\":{\"at\":\"2026-11-08T02:00:00+00:00\",\"result\":\"ok\",\"last_ok_at\":\"2026-11-08T02:00:00+00:00\",\"warmed_mib\":1904,\"hot_mib\":8000,\"partial\":true},"
+            + "\"past\":{\"at\":\"2026-11-07T20:00:00+00:00\",\"result\":\"ok\",\"last_ok_at\":\"2026-11-07T20:00:00+00:00\"},"
+            + "\"stale\":{\"at\":\"2026-11-08T03:00:00+00:00\",\"result\":\"skipped\",\"reason\":\"low memory\",\"last_ok_at\":\"2026-11-07T20:00:00+00:00\"}",
+            string.Empty, "ready", "part", "past", "stale", "none");
+
+        IReadOnlyList<GameRow> rows = vm.GameRows(null);
+        GameRow Row(string n) => rows.Single(r => r.Name == n);
+        Assert.Equal(["ready", "partial", "history", "history", "none"], new[] { "ready", "part", "past", "stale", "none" }.Select(n => Row(n).PrewarmKind));
+        Assert.Equal("예열됨 (이번 부팅)", Row("ready").PrewarmState);
+        Assert.Contains("부분 예열 1904/8000 MiB", Row("part").PrewarmState);
+        Assert.Contains("과거 기록", Row("past").PrewarmState);
+        Assert.Contains("지금은 아님", Row("past").PrewarmState);
+        Assert.Equal("실측 안 됨", Row("none").PrewarmState);
+        Assert.Equal(4, new[] { "ready", "part", "past", "none" }.Select(n => Row(n).PrewarmState).Distinct().Count());
+        Assert.Contains("low memory", Row("stale").Reason); // 마지막 시도가 건너뜀이면 왜 준비 상태가 아닌지 기본 화면에 남음
+        Assert.Equal(string.Empty, Row("ready").Reason);
+
+        string line = vm.StatusLines(null).Single(l => l.StartsWith("[past]", StringComparison.Ordinal));
+        Assert.Contains("과거 기록", line); // 상태 탭도 재부팅 전 성공을 현재처럼 보이지 않게
+        Assert.Contains("실측 안 됨", vm.StatusLines(null).Single(l => l.StartsWith("[none]", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void BasicColumnsKeepHoldReasonsAndAdvancedColumnsKeepTheTechnicalDetail()
+    {
+        ManageViewModel vm = ReadinessVm(
+            string.Empty,
+            "\"wait\":{\"source\":\"auto\",\"stage\":\"waiting_idle\",\"detail\":\"daily limit reached, trace unavailable (vanguard), 2 earlier run(s) used\",\"hit_percent\":61,\"coverage_percent\":88,\"hit_at\":\"2026-11-07T20:00:00+00:00\"},"
+            + "\"bad\":{\"source\":\"auto\",\"stage\":\"failed\",\"detail\":\"disk exploded\",\"hit_percent\":40,\"hit_at\":\"2026-11-08T05:00:00+00:00\"}",
+            "wait", "bad");
+
+        GameRow wait = vm.GameRows(null).Single(r => r.Name == "wait");
+        GameRow bad = vm.GameRows(null).Single(r => r.Name == "bad");
+        Assert.Equal("재배치 대기", wait.State); // 기본 열은 짧은 단계 이름만
+        Assert.Contains("오늘 재배치 횟수 다 씀", wait.Reason);
+        Assert.Contains("트레이스 불가 (vanguard)", wait.Reason); // 안티치트 상태는 기본 화면에 남음
+        Assert.DoesNotContain("%", wait.State + wait.PrewarmState + wait.Reason);
+        Assert.Contains("계획 핫셋/읽은 양 88%", wait.Stage); // 점수·비율은 고급 열의 단계 글에
+        Assert.Contains("과거 기록: 예전 회차 적중 61%", wait.Stage); // 재부팅 전에 잰 적중률은 과거 기록으로 표시
+        Assert.Equal("실패", bad.State);
+        Assert.Equal("disk exploded", bad.Reason); // 모르는 실패 사유도 원문 그대로 기본 화면에
+        Assert.Contains("예열 직후 적중 40%", bad.Stage);
+        Assert.DoesNotContain("과거 기록", bad.Stage);
+    }
+
+    [Fact]
+    public void ResumeNeededLayoutStaysInTheBasicReasonAndNewKeysExistInBothLanguages()
+    {
+        Register();
+        File.WriteAllText(Path.Combine(Plans, "mw4.plan.json"), "{}");
+        _cli.On("status", (args, _) => args.Contains("--plan")
+            ? CliResult.Parse("{\"plan\":{\"hot_clusters\":200,\"in_zone_clusters\":150,\"verdict\":\"resume-needed\"}}")
+            : CliResult.Parse("{}"));
+        Assert.True(_vm.RefreshStatus().Ok);
+
+        Assert.Equal("배치 이어 옮기기 필요", _vm.GameRows(null).Single().Reason);
+        foreach (string key in new[] { "Col_State", "Col_PrewarmState", "Col_Reason", "Adv_Show", "State_Ready", "State_Partial", "State_History", "State_NotMeasured", "Reason_PrewarmLast", "Reason_Layout", "Stage_HitPercentOld" })
+        {
+            Assert.False(string.IsNullOrWhiteSpace(L.Get("ko", key)));
+            Assert.False(string.IsNullOrWhiteSpace(L.Get("en", key)));
+            Assert.NotEqual(L.Get("ko", key), L.Get("en", key));
+        }
+    }
+
     [Fact]
     public void AntiCheatColumnShowsTheDetectedKindOrDash()
     {
@@ -828,8 +917,8 @@ public sealed class ManageViewModelTests : IDisposable
         Assert.Equal("done (prewarmed)", AutoStatusFile.StageText(waiting with { Stage = "done" }, "en"));
         Assert.Equal("완료 (예열됨)", AutoStatusFile.StageText(waiting with { Stage = "done" }, "ko"));
         Assert.Equal("자동: g 발견 → 트레이스 수집 중 → [재배치 대기] (예열됨)", AutoStatusFile.Line("g", waiting, "ko"));
-        Assert.Equal("재배치 대기 (예열됨)", AutoStatusFile.StageText(waiting with { Detail = "daily limit reached, prewarmed" }, "ko"));
-        Assert.Equal("재배치 대기", AutoStatusFile.StageText(waiting with { Detail = "daily limit reached" }, "ko"));
+        Assert.Equal("재배치 대기 (오늘 재배치 횟수 다 씀, 예열됨)", AutoStatusFile.StageText(waiting with { Detail = "daily limit reached, prewarmed" }, "ko"));
+        Assert.Equal("재배치 대기 (오늘 재배치 횟수 다 씀)", AutoStatusFile.StageText(waiting with { Detail = "daily limit reached" }, "ko"));
         Assert.Equal("실패 (예열됨)", AutoStatusFile.StageText(waiting with { Stage = "failed" }, "ko"));
     }
 
@@ -873,9 +962,9 @@ public sealed class ManageViewModelTests : IDisposable
     {
         var waiting = new AutoGame("auto", "gog", "waiting_idle", "daily limit reached, prewarming 128/512 MiB");
 
-        Assert.Equal("재배치 대기 (예열 중 128/512 MB)", AutoStatusFile.StageText(waiting, "ko"));
-        Assert.Equal("waiting to relocate (prewarming 128/512 MB)", AutoStatusFile.StageText(waiting, "en"));
-        Assert.Equal("자동: g 발견 → 트레이스 수집 중 → [재배치 대기] (예열 중 128/512 MB)", AutoStatusFile.Line("g", waiting, "ko"));
+        Assert.Equal("재배치 대기 (오늘 재배치 횟수 다 씀, 예열 중 128/512 MB)", AutoStatusFile.StageText(waiting, "ko"));
+        Assert.Equal("waiting to relocate (daily relocation count used up, prewarming 128/512 MB)", AutoStatusFile.StageText(waiting, "en"));
+        Assert.Equal("자동: g 발견 → 트레이스 수집 중 → [재배치 대기] (오늘 재배치 횟수 다 씀, 예열 중 128/512 MB)", AutoStatusFile.Line("g", waiting, "ko"));
         Assert.Equal("done (prewarming 1/2 MB)", AutoStatusFile.StageText(waiting with { Stage = "done", Detail = "prewarming 1/2 MiB" }, "en"));
     }
 

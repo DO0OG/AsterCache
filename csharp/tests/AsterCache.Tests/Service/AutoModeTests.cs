@@ -279,6 +279,28 @@ public sealed class AutoModeTests : IDisposable
         Assert.Equal(T0, _rig.Status.Get("warm")!.LastPlayed); // 게임 시작 알림이 last_played 를 기록함 (가짜 시계)
     }
 
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public void WorkerHoldsNewPrewarmForAKeptReplanOnlyWhileAutoModeIsOn(bool enabled, bool expected)
+    {
+        AddGame("g", "auto");
+        _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { Enabled = enabled } };
+        var prewarm = new Prewarmer(_rig.Settings.Games, new FakeStreamer(), new PrewarmEnv
+        {
+            AvailableRamMib = () => 99999,
+            GameRunning = _ => false,
+            ZoneBytes = _ => 1 << 20,
+            TraceExists = _ => true,
+        }, _rig.Log);
+        _rig.Status.Set("g", "auto", null, AutoStage.Discovered, null);
+        _rig.Status.ResetForReplan("g", AutoRelocator.ReplanDetail + "; trace kept, planning again"); // 트레이스를 유지한 채 곧 다시 계획하는 상태
+
+        _ = new Worker(_rig.Settings, _rig.Log, new OneShotStart(new ProcessStart(7, "g.exe", 0), new TaskCompletionSource(), () => false), null, new FakeStreamer(), new ReapplyChecker(ReapplyTests.NoIoEnv(), _rig.Log), prewarm: prewarm, auto: Mode());
+
+        Assert.Equal(expected, prewarm.ReplanKept(_rig.Settings.Games[0])); // 자동 모드가 꺼지면 재계획이 돌지 않으니 영영 풀리지 않는 보류를 걸지 않음
+    }
+
     // warmDone 이 참이 된 뒤에 시작을 알립니다: 게임 시작은 예열을 취소하므로, 서비스 시작 예열이 끝나기 전에 알리면 순서가 시간에 달림.
     private sealed class OneShotStart(ProcessStart start, TaskCompletionSource emitted, Func<bool> warmDone) : IProcessWatcher
     {

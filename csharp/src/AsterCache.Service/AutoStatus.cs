@@ -19,7 +19,7 @@ public static class AutoStage
 }
 
 public sealed record AutoGameEntry(
-    string Source, string? Launcher, string Stage, string? Detail, DateTimeOffset At, DateTimeOffset? LastPlayed, DateTimeOffset? RelocatedAt, int? HitPercent = null, DateTimeOffset? HitAt = null, AutoBootProbe? BootProbe = null, IReadOnlyList<DateTimeOffset>? Plays = null, int? LoadBoundaryMs = null, DateTimeOffset? LoadBoundaryAt = null, int? CoveragePercent = null);
+    string Source, string? Launcher, string Stage, string? Detail, DateTimeOffset At, DateTimeOffset? LastPlayed, DateTimeOffset? RelocatedAt, int? HitPercent = null, DateTimeOffset? HitAt = null, AutoBootProbe? BootProbe = null, IReadOnlyList<DateTimeOffset>? Plays = null, int? LoadBoundaryMs = null, DateTimeOffset? LoadBoundaryAt = null, int? CoveragePercent = null, string? DisplayName = null, OrbitShadowRecord? OrbitShadow = null);
 
 /// 부팅 뒤 첫 서비스 시작에서 잰 메타데이터 콜드 비용 (auto_status.json 의 boot_probe): 측정 시각, 연 파일 수, 파일당 평균 열기 시간 (ms).
 public sealed record AutoBootProbe(DateTimeOffset At, int Files, double OpenMsPerFile);
@@ -52,6 +52,7 @@ public sealed class AutoStatus
     private readonly Func<long> _ticks;
     private readonly Action<TimeSpan> _sleep;
     private readonly Dictionary<string, AutoGameEntry> _games = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _replanSeq = new(StringComparer.Ordinal); // 게임마다 ResetForReplan 때 올라가는 재계획 세대 번호: 그림자 계산이 시작한 뒤 그 게임이 재계획됐는지 가립니다
     private readonly List<(DateTimeOffset At, long Bytes, long? Ticks)> _relocations = []; // Ticks: 이번 실행에서 시작한 기록의 Stopwatch 시작값 (파일에서 읽은 기록은 null)
     private DateTimeOffset? _holdUntil; // 상태 파일을 못 읽었을 때 재배치를 막는 벽시계 시각 (relocation_hold_until)
     private readonly List<AutoEvent> _events = [];
@@ -111,6 +112,19 @@ public sealed class AutoStatus
             _games[name] = next;
             Save();
             return true;
+        }
+    }
+
+    /// 런처가 준 표시 이름 (화면용). 항목이 없거나 같은 값이면 아무것도 하지 않습니다. 옛 판은 이 키를 무시하고 읽습니다.
+    public void SetDisplayName(string name, string display)
+    {
+        lock (_lock)
+        {
+            if (_games.TryGetValue(name, out AutoGameEntry? old) && old.DisplayName != display)
+            {
+                _games[name] = old with { DisplayName = display };
+                Save();
+            }
         }
     }
 
@@ -212,6 +226,28 @@ public sealed class AutoStatus
             if (_games.TryGetValue(name, out AutoGameEntry? old))
             {
                 _games[name] = old with { LoadBoundaryMs = Math.Max(0, ms), LoadBoundaryAt = at };
+                Save();
+            }
+        }
+    }
+
+    /// 그 게임 그림자 계획의 재계획 세대 (계산을 시작할 때 잡아 두고, 기록할 때 같은지 봅니다).
+    internal string ReplanGeneration(string name)
+    {
+        lock (_lock)
+        {
+            return _replanSeq.GetValueOrDefault(name).ToString(CultureInfo.InvariantCulture);
+        }
+    }
+
+    /// 그림자 계획 결과 (덮어씀). 항목이 없거나 계산을 시작한 뒤 재계획이 있었으면 남기지 않습니다.
+    public void RecordOrbitShadow(string name, OrbitShadowRecord record)
+    {
+        lock (_lock)
+        {
+            if (_games.TryGetValue(name, out AutoGameEntry? old) && record.Fingerprint == ReplanGeneration(name))
+            {
+                _games[name] = old with { OrbitShadow = record };
                 Save();
             }
         }
@@ -325,9 +361,10 @@ public sealed class AutoStatus
     {
         lock (_lock)
         {
+            _replanSeq[name] = _replanSeq.GetValueOrDefault(name) + 1; // 그 게임의 계산 중이던 그림자 결과는 기록하지 않음
             if (_games.TryGetValue(name, out AutoGameEntry? old))
             {
-                _games[name] = old with { Stage = AutoStage.Discovered, Detail = detail, At = _now(), RelocatedAt = null };
+                _games[name] = old with { Stage = AutoStage.Discovered, Detail = detail, At = _now(), RelocatedAt = null, OrbitShadow = null }; // 다시 계획하면 옛 그림자 계획은 폐기
                 Save();
             }
         }
@@ -433,6 +470,11 @@ public sealed class AutoStatus
                 { "last_played", e.LastPlayed is { } p ? Iso(p) : null },
                 { "relocated_at", e.RelocatedAt is { } r ? Iso(r) : null },
             };
+            if (e.DisplayName is { } displayName)
+            {
+                game.Add("display_name", displayName);
+            }
+
             if (e.Plays is { Count: > 0 } plays)
             {
                 game.Add("plays", plays.Select(t => (object?)Iso(t)).ToList());
@@ -458,6 +500,11 @@ public sealed class AutoStatus
             if (e.CoveragePercent is { } cp)
             {
                 game.Add("coverage_percent", (long)cp); // 재지 않은 게임의 항목 모양은 그대로
+            }
+
+            if (e.OrbitShadow is { } os)
+            {
+                game.Add("shadow_orbit", new JObject { { "selected", os.Selected }, { "orbit_selected", os.Selected == "orbit" }, { "reason", os.Reason }, { "uncalibrated", os.Uncalibrated }, { "worst_loss_ms", os.WorstLossMs }, { "candidate_ratio", os.CandidateRatio }, { "blocks", (long)os.Blocks }, { "order", (long)os.Order }, { "ms", os.Ms }, { "alloc_bytes", os.AllocatedBytes }, { "fingerprint", os.Fingerprint }, { "at", Iso(os.At) } });
             }
 
             games.Add(name, game);
@@ -587,8 +634,9 @@ public sealed class AutoStatus
                 {
                     if (value is JObject o && Str(o, "stage") is { } stage)
                     {
+                        // shadow_orbit 는 읽지 않습니다: 그림자 계획 기록은 휘발성이라 재시작 뒤 비워지는 것이 의도입니다.
                         bool interrupted = stage == AutoStage.Relocating; // 재배치 도중 꺼짐: 실제로 돌지 않으므로 시작 예열 보류를 풀음
-                        _games[name] = new AutoGameEntry(Str(o, "source") ?? "manual", Str(o, "launcher"), interrupted ? AutoStage.WaitingIdle : stage, interrupted ? "relocation interrupted, will resume" : Str(o, "detail"), Time(o, "at") ?? _now(), Time(o, "last_played"), Time(o, "relocated_at"), o.TryGetValue("hit_percent", out object? hp) && hp is long h ? (int)Math.Clamp(h, 0, 100) : null, Time(o, "hit_at"), ReadBootProbe(o), ReadPlays(o), TryGetEither(o, "tier0_probe_ready_ms", "load_boundary_ms", out object? lb) && lb is long l ? (int)Math.Clamp(l, 0, int.MaxValue) : null, Time(o, "tier0_probe_ready_at") ?? Time(o, "load_boundary_at"), o.TryGetValue("coverage_percent", out object? cv) && cv is long cp ? (int)Math.Clamp(cp, 0, 100) : null);
+                        _games[name] = new AutoGameEntry(Str(o, "source") ?? "manual", Str(o, "launcher"), interrupted ? AutoStage.WaitingIdle : stage, interrupted ? "relocation interrupted, will resume" : Str(o, "detail"), Time(o, "at") ?? _now(), Time(o, "last_played"), Time(o, "relocated_at"), o.TryGetValue("hit_percent", out object? hp) && hp is long h ? (int)Math.Clamp(h, 0, 100) : null, Time(o, "hit_at"), ReadBootProbe(o), ReadPlays(o), TryGetEither(o, "tier0_probe_ready_ms", "load_boundary_ms", out object? lb) && lb is long l ? (int)Math.Clamp(l, 0, int.MaxValue) : null, Time(o, "tier0_probe_ready_at") ?? Time(o, "load_boundary_at"), o.TryGetValue("coverage_percent", out object? cv) && cv is long cp ? (int)Math.Clamp(cp, 0, 100) : null, Str(o, "display_name"));
                     }
                 }
             }

@@ -34,17 +34,21 @@ public sealed class DriveRecovery : IDriveRecovery
     private readonly AutoEnv _env;
     private readonly ILog _log;
     private readonly AutoStatus? _status;
+    private DiskReadCoordinator? _coordinator;
     private readonly Dictionary<string, double> _warmMax = new(StringComparer.Ordinal);
     private readonly HashSet<string> _gameLogged = new(StringComparer.Ordinal); // "game running" 로 표본을 미룬 드라이브 (게임이 끝날 때까지 로그는 한 번)
     private readonly Dictionary<string, CancellationTokenSource> _samples = new(StringComparer.Ordinal); // 표본을 재는 중인 드라이브별 취소 (게임 시작이 같은 디스크의 표본을 멈춤)
 
-    public DriveRecovery(AutoEnv env, ILog log, AutoStatus? status = null)
+    public DriveRecovery(AutoEnv env, ILog log, AutoStatus? status = null, DiskReadCoordinator? coordinator = null)
     {
         _env = env;
         _log = log;
         _status = status;
+        _coordinator = coordinator;
         Restore();
     }
+
+    public void SetDiskReadCoordinator(DiskReadCoordinator coordinator) => _coordinator = coordinator;
 
     /// 드라이브에서 예열이 실제로 낸 MB/s 를 알림: 진단 로그용일 뿐 판정에는 쓰이지 않습니다 (OS 캐시 적중이 섞여 있음).
     public void NoteWarmMbps(string drive, double mbps)
@@ -323,7 +327,7 @@ public sealed class DriveRecovery : IDriveRecovery
             _samples[key] = cts;
         }
 
-        var round = new ProbeRound(cts.Token, (b.Zone is null ? 0 : 1) + (b.Ref is null ? 0 : 1));
+        ProbeRound? round = null;
         long begin = System.Diagnostics.Stopwatch.GetTimestamp();
         string? reason = null;
         try
@@ -349,17 +353,46 @@ public sealed class DriveRecovery : IDriveRecovery
                 return null;
             }
 
-            long step = _env.ProbeStepLcn(key) * DiskProbe.RotationIndex(rotation); // 0 번 칸은 기준 측정이 읽은 곳이라 건너뜀
-            double? zone = b.Zone is { } z ? _env.ProbeMbps(key, z.Lcn + step, round) : null;
-            if (b.Zone is not null && b.Ref is not null && zone is not null && (cts.IsCancellationRequested || GameRunning(key) || Busy(_env, key)))
+            // 코디네이터는 "D:\" 형식의 볼륨 루트로 디스크를 찾으므로, 키 "D:" 에 "\" 를 붙여 맞춤
+            using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(key + "\\", "drive recovery sample", cts.Token);
+            if (_coordinator is not null && (lease is null || !lease.IsValid))
             {
-                reason = cts.IsCancellationRequested ? "game started" : GameRunning(key) ? "game running" : "disk busy between samples";
+                deferred = true;
+                reason = "game started";
+                return null;
+            }
+
+            round = new ProbeRound(lease?.Token ?? cts.Token, (b.Zone is null ? 0 : 1) + (b.Ref is null ? 0 : 1));
+            long step = _env.ProbeStepLcn(key) * DiskProbe.RotationIndex(rotation); // 0 번 칸은 기준 측정이 읽은 곳이라 건너뜀
+            if (lease is not null && !lease.IsValid)
+            {
+                deferred = true;
+                reason = "game started";
+                return null;
+            }
+
+            double? zone = b.Zone is { } z ? _env.ProbeMbps(key, z.Lcn + step, round) : null;
+            if (b.Zone is not null && b.Ref is not null && zone is not null && (cts.IsCancellationRequested || lease is { IsValid: false } || GameRunning(key) || Busy(_env, key)))
+            {
+                reason = cts.IsCancellationRequested || lease is { IsValid: false } ? "game started" : GameRunning(key) ? "game running" : "disk busy between samples";
                 deferred = reason != "disk busy between samples";
                 return null;
             }
 
+            if (lease is not null && !lease.IsValid)
+            {
+                deferred = true;
+                reason = "game started";
+                return null;
+            }
+
             double? reference = b.Ref is { } r ? _env.ProbeMbps(key, r.Lcn + step, round) : null;
-            deferred = cts.IsCancellationRequested;
+            deferred = cts.IsCancellationRequested || lease is { IsValid: false };
+            if (deferred)
+            {
+                reason = "game started";
+            }
+
             return (b.Zone is not null && zone is null) || (b.Ref is not null && reference is null) ? null : (zone, reference);
         }
         catch (Exception e) when (e is not OperationCanceledException)
@@ -373,10 +406,10 @@ public sealed class DriveRecovery : IDriveRecovery
                 _ = _samples.Remove(key);
             }
 
-            reason ??= round.Aborted;
-            if (round.BytesRead > 0 || reason is not null)
+            reason ??= round?.Aborted;
+            if (round is { } measured && (measured.BytesRead > 0 || reason is not null))
             {
-                _log.Info($"drive {key} recovery sample read {round.BytesRead >> 20} MiB in {(long)System.Diagnostics.Stopwatch.GetElapsedTime(begin).TotalMilliseconds} ms" + (reason is null ? string.Empty : $", aborted ({reason})"));
+                _log.Info($"drive {key} recovery sample read {measured.BytesRead >> 20} MiB in {(long)System.Diagnostics.Stopwatch.GetElapsedTime(begin).TotalMilliseconds} ms" + (reason is null ? string.Empty : $", aborted ({reason})"));
             }
         }
     }

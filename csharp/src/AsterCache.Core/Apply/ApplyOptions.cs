@@ -9,7 +9,11 @@ namespace AsterCache.Core.Apply;
 /// Reserved: 같은 볼륨의 다른 게임 계획이 아직 쓸 존 범위 (ZoneReservations.Collect). 자동 존은 이 범위를 피해 고르고, 정한 존의 남은 목표가 겹치면 zone_not_free 로 거절합니다.
 public sealed record ApplyOptions(
     bool Execute = false, long ChunkBytes = 4L << 20, long WriteCap = 2L << 30, string? SaveTo = null, bool DryRun = false, bool LowIoPriority = true, int PlanAhead = Applier.PlanAhead,
-    string Verify = VerifyMode.Sample, string Order = RelocateOrder.Target, int Parallel = 1, IReadOnlyList<(long Lcn, long Clusters)>? Reserved = null);
+    string Verify = VerifyMode.Sample, string Order = RelocateOrder.Target, int Parallel = 1, IReadOnlyList<(long Lcn, long Clusters)>? Reserved = null)
+{
+    /// 배경 작업이 묶음을 발행하기 직전마다 디스크 대여가 아직 유효한지 다시 확인하는 검사입니다.
+    public Func<bool>? CanIssue { get; init; }
+}
 
 /// 재배치 작업의 실행 순서. target: 계획의 대상(존) 순서, source: 현재 원본 첫 extent 의 LCN 오름차순 (결과 배치는 같음, 읽기 탐색이 줄 수 있으나 존 쓰기가 흩어짐).
 /// source 는 실험용: 실측 (SMR HDD) 에서 존을 무작위 순서로 읽게 돼 target 보다 느렸음. 설정 auto.relocate_order 는 여기에 "auto" 를 더하며 항상 target 으로 해석.

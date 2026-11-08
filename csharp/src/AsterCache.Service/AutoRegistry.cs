@@ -1,3 +1,4 @@
+using System.Globalization;
 using AsterCache.Core.Discovery;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
@@ -97,8 +98,18 @@ public sealed class AutoRegistry
 
             string exe = Path.GetFileName(d.ExePath);
             IReadOnlyList<GameSettings> games = AllGames();
-            if (Ignored(a, exe) || Registered(games, exe))
+            if (Ignored(a, exe))
             {
+                continue;
+            }
+
+            if (Registered(games, exe))
+            {
+                if (games.FirstOrDefault(g => g.ExeNames.Contains(exe, StringComparer.OrdinalIgnoreCase)) is { } registered && Shown(d.Name, registered.Name) is { } known)
+                {
+                    _status.SetDisplayName(registered.Name, known); // 이미 등록된 게임도 런처 이름을 채움 (같은 값이면 다시 쓰지 않음)
+                }
+
                 continue;
             }
 
@@ -341,6 +352,7 @@ public sealed class AutoRegistry
         string name = LauncherManifests.MakeUnique(LauncherManifests.SafeName(display, folderName, Path.GetFileNameWithoutExtension(exe)), taken);
         string plan = Path.Combine(_editor.PlansDir, name + ".plan.json");
         IReadOnlyList<string> exes = [exe, .. extraExes ?? []];
+        string? displayName = Shown(display, name); // 런처가 준 이름은 상태 파일에만 둠 (config.json 에 쓰면 옛 판이 설정을 거부함)
         var input = new GameInput(name, exes, plan + ".prefetch.json", plan, installDir, [installDir], label, null, triggers) { Source = "auto", OnServiceStart = false, AntiCheat = antiCheat };
         string? evicted = null;
         try
@@ -372,6 +384,11 @@ public sealed class AutoRegistry
         }
 
         _status.Set(name, "auto", launcher, AutoStage.Discovered, _env.Capabilities(installDir).CanRelocate ? null : DriveCapabilities.PrewarmOnly);
+        if (displayName is not null)
+        {
+            _status.SetDisplayName(name, displayName);
+        }
+
         _status.AddEvent(name, "discovered");
         _log.Info($"auto {launcher}: registered {name} ({exe})");
         if (antiCheat is not null)
@@ -390,6 +407,18 @@ public sealed class AutoRegistry
         }
 
         return true;
+    }
+
+    /// 런처 표시 이름을 화면용으로 정리: 제어·서식 문자를 빼고 128자 (서로게이트 쌍은 가르지 않음) 로 자름. 비었거나 내부 키와 같으면 null.
+    private static string? Shown(string display, string name)
+    {
+        string shown = new string(display.Where(c => !char.IsControl(c) && CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.Format).ToArray()).Trim();
+        if (shown.Length > SettingsStore.MaxDisplayChars)
+        {
+            shown = shown[..(char.IsHighSurrogate(shown[SettingsStore.MaxDisplayChars - 1]) ? SettingsStore.MaxDisplayChars - 1 : SettingsStore.MaxDisplayChars)];
+        }
+
+        return shown.Length == 0 || shown == name ? null : shown;
     }
 
     private string? FreshOverlap(string root)

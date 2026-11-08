@@ -234,6 +234,8 @@ public sealed class AutoMode
     /// 게임 exe 가 떴을 때 (감시기 스레드에서 바로): 자동 모드의 예열 작업을 취소합니다.
     public void CancelWarm() => _relocator.CancelWarm();
 
+    public void SetDiskReadCoordinator(DiskReadCoordinator coordinator) => _relocator.SetDiskReadCoordinator(coordinator);
+
     /// 예열 유지 같은 다른 예열 작업이 함께 쓰는 취소 신호.
     public CancellationToken WarmToken => _relocator.WarmToken;
 
@@ -293,7 +295,7 @@ public sealed class AutoMode
     public void DiscoverAndFeed()
     {
         Guard("discovery", () => _registry.DiscoverOnce());
-        Guard("shared profiles", () => _feed.Run(_settings, _registry.LastScan));
+        Guard("shared profiles", () => _feed.Run(_settings, _registry.LastScan, _stop.Token));
     }
 
     /// 발견 (처음 10 초 뒤, 이후 1 시간마다), 휴리스틱 (2 초마다), 트레이스 감시 (1 초마다) 를 취소될 때까지 돌립니다.

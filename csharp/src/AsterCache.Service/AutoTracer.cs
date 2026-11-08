@@ -19,6 +19,7 @@ public sealed class AutoTracer
     private readonly ILog _log;
     private readonly Func<AsterSettings> _settings;
     private readonly LearnEnv _learn;
+    private readonly OrbitShadow _shadow;
     private readonly object _lock = new();
     private Run? _run;
     private readonly List<Run> _stopped = []; // 상한에 닿아 세션을 멈췄지만 게임이 끝나길 기다리는 기록 (저장 전)
@@ -29,13 +30,14 @@ public sealed class AutoTracer
 
     public long MinRunBytes { get; init; } = MinExtraRunBytes;
 
-    public AutoTracer(AutoEnv env, AutoStatus status, ILog log, Func<AsterSettings> settings, LearnEnv? learn = null)
+    public AutoTracer(AutoEnv env, AutoStatus status, ILog log, Func<AsterSettings> settings, LearnEnv? learn = null, OrbitShadow? shadow = null)
     {
         _env = env;
         _status = status;
         _log = log;
         _settings = settings;
         _learn = learn ?? LearnEnv.Real;
+        _shadow = shadow ?? new OrbitShadow(status, log, env.Now);
     }
 
     public bool Active
@@ -94,6 +96,86 @@ public sealed class AutoTracer
 
     /// 옛 형식에서 옮긴 run1 이 크기와 무관하게 유효하다는 표지: plans\<이름>.trace.legacy-run1.
     public static string LegacyRun1Path(GameSettings g) => Path.Combine(Path.GetDirectoryName(g.Plan) ?? string.Empty, g.Name + ".trace.legacy-run1");
+
+    /// 업데이트로 바뀐 파일의 범위만 트레이스에서 뺐다는 표지: plans\<이름>.trace.updated. 이 표지보다 새 유효 플레이가 생길 때까지 다음 플레이를 다시 학습합니다 (RelearnDue).
+    public static string UpdatedMarkPath(GameSettings g) => Path.Combine(Path.GetDirectoryName(g.Plan) ?? string.Empty, g.Name + ".trace.updated");
+
+    /// 트레이스 파일에 나오는 경로 (중복 없이). 읽을 수 없으면 예외.
+    public static IReadOnlyCollection<string> TracePaths(string path) =>
+        JsonRead.ReadFile(path) is List<object?> rows ? [.. rows.Select(r => TraceEvents.FromJson(r).Path).Distinct(StringComparer.OrdinalIgnoreCase)] : throw new PyValueException("bad trace file");
+
+    /// 트레이스 파일의 원본 행 (TracePaths 와 같은 읽기, 걸러내기·잘라내기 없음). 읽을 수 없으면 예외.
+    public static IReadOnlyList<TraceEvent> TraceRows(string path) =>
+        JsonRead.ReadFile(path) is List<object?> rows ? [.. rows.Select(TraceEvents.FromJson)] : throw new PyValueException("bad trace file");
+
+    // 이 계획을 만든 시각 (stats.planned_at). 계획이 없거나 읽을 수 없거나 표지가 없으면 null.
+    private static DateTime? PlannedAtUtc(GameSettings g)
+    {
+        try
+        {
+            return PlanFile.Load(g.Plan).Stats.TryGetValue(AutoRelocator.PlannedAtKey, out object? v) && v is long unix ? DateTimeOffset.FromUnixTimeSeconds(unix).UtcDateTime : null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            return null;
+        }
+    }
+
+    /// 업데이트로 바뀐 파일의 행만 트레이스 병합본·run 파일·예열 목록 (선읽기 파일과 예열 전용 옆 파일) 에서 빼고 표지를 남깁니다. 호출하는 쪽이 계획 잠금 안에 있어야 합니다.
+    /// 먼저 모든 파일을 읽어 뺄 행을 정하고 (읽을 수 없는 파일이 있으면 아무것도 바꾸기 전에 예외), 무언가 빠지는 파일만 원본을 .stale 로 복사해 두고 다시 씁니다 (이미 뺀 파일은 건드리지 않아 중간에 멈췄다 다시 불려도 .stale 은 원본 그대로).
+    /// 다시 쓴 run 이 MinRunBytes 아래로 줄어도 다음 병합이 정리된 병합본을 기준으로 유지하도록 rotated 표지를 남깁니다. 다시 학습 표지는 파일을 실제로 다시 썼거나 표지가 없을 때만 (되풀이 호출이 재학습을 다시 켜지 않게), 마지막에: 다시 쓴 파일보다 새로워야 함.
+    public static void DropChanged(GameSettings g, IReadOnlySet<string> paths)
+    {
+        AsterCache.Core.Apply.DataLock.RequireHeld(g.Plan);
+        string raw = RawTracePath(g);
+        var files = new List<string> { raw, g.Trace, PlanOutput.WarmOnlyPath(g.Trace) };
+        for (int run = 1; run <= MaxRunFiles; run++)
+        {
+            files.Add(TraceWriter.RunPath(raw, run));
+        }
+
+        var rewrites = new List<(string File, List<TraceEvent> Kept)>();
+        foreach (string file in files.Where(File.Exists))
+        {
+            List<TraceEvent> rows = JsonRead.ReadFile(file) is List<object?> list ? [.. list.Select(TraceEvents.FromJson)] : throw new PyValueException("bad trace file");
+            List<TraceEvent> kept = [.. rows.Where(e => !paths.Contains(e.Path))];
+            if (kept.Count != rows.Count)
+            {
+                rewrites.Add((file, kept));
+            }
+        }
+
+        DateTime? planned = rewrites.Count > 0 ? PlannedAtUtc(g) : null; // 이 계획을 만든 뒤에 보관한 사본만 이번 업데이트의 것
+        bool ThisUpdate(string copy) => planned is { } at && File.GetLastWriteTimeUtc(copy) >= at.AddSeconds(1); // planned_at 은 초 단위로 잘리므로 같은 초에 보관된 이전 사본은 이번 것으로 치지 않음
+        foreach ((string file, List<TraceEvent> kept) in rewrites)
+        {
+            // 있는 .stale 이 이번 업데이트의 것이면 (중간에 멈췄다 다시 불림) 그대로 두고, 이전 업데이트의 것이면 덮지 않고 이번 원본을 .stale.update 로 따로 보관 (옛 저널·원본 보관 불변 조건). 계획 시각을 모르면 이번 업데이트의 사본으로 확인할 수 없으므로 .stale.update 를 덮어 이번 원본을 보관 (맨 처음 .stale 은 유지).
+            string stale = file + AutoRelocator.StaleSuffix;
+            string update = file + AutoRelocator.UpdateSuffix;
+            string? target = !File.Exists(stale) ? stale : ThisUpdate(stale) ? null : !ThisUpdate(update) ? update : null;
+            if (target is not null)
+            {
+                File.Copy(file, target, true);
+                File.SetLastWriteTimeUtc(target, DateTime.UtcNow); // 복사는 원본의 수정 시각을 따라가므로 보관한 때로 맞춤
+            }
+
+            string temp = file + ".tmp";
+            string text = PyJson.Dumps(kept.Select(e => e.ToJson()).ToList(), ensureAscii: false) + "\n";
+            AsterCache.Core.DurableFile.WriteAllBytes(temp, PyJson.Utf8.GetBytes(PyJson.ToCrlf(text)));
+            File.Move(temp, file, true);
+        }
+
+        if (rewrites.Count > 0)
+        {
+            File.WriteAllText(RotatedMarkPath(g), "1");
+            TracePhases.Recount(g); // 다시 쓴 run 을 반영한 common 구분을 미리 남김
+        }
+
+        if (rewrites.Count > 0 || !File.Exists(UpdatedMarkPath(g)))
+        {
+            File.WriteAllText(UpdatedMarkPath(g), "1");
+        }
+    }
 
     /// 지금까지 모은 유효 플레이 수: 원시 트레이스가 없으면 0, run 파일 없는 원시 트레이스 하나 (옛 형식) 는 1 로 셈하고 (호환),
     /// 이어서 있는 run1, run2 ... 는 읽기량이 minBytes 이상인 것만 셈 (읽기량을 못 얻으면 셈). readBytes 가 없으면 이어서 있는 run 파일을 모두 셈. 따로 저장하는 상태 없음.
@@ -200,6 +282,11 @@ public sealed class AutoTracer
         if (entry?.Detail?.StartsWith(AutoRelocator.ReplanDetail, StringComparison.Ordinal) == true && (lastTrace is null || lastTrace.Value <= entry.At))
         {
             return true;
+        }
+
+        if (env.FileWriteTime(UpdatedMarkPath(g)) is { } updated && (lastTrace is null || lastTrace.Value <= updated))
+        {
+            return true; // 업데이트로 바뀐 파일의 범위를 뺐고 그 뒤 새 플레이가 아직 없음: 다음 플레이로 바뀐 파일을 다시 학습
         }
 
         if (lastTrace is not { } last)
@@ -390,7 +477,9 @@ public sealed class AutoTracer
 
                     LearnSettings ls = _settings().Auto.Learn;
                     learn = ls.Enabled && firstRun ? AutoLearn.Create(g, ls, _env.PhysicalRamBytes(), _learn) : null; // 시스템 SSD·SSD 는 위에서 이미 걸러짐
-                    _run = new Run(g, _env.StartTrace(g.ExeNames, learn is null ? null : AutoLearn.Listener(learn)), _env.Now()) { Learn = learn, Number = LastRunNumber(g, _env.FileExists) + 1 }; // 번호는 유효 회차 수가 아니라 있는 run 파일 기준 (덮어쓰기 금지)
+                    var exits = new GameExitTracker(_env.Now);
+                    exits.ObserveStarted(g);
+                    _run = new Run(g, _env.StartTrace(g.ExeNames, learn is null ? null : AutoLearn.Listener(learn)), _env.Now(), exits) { Learn = learn, Number = LastRunNumber(g, _env.FileExists) + 1, RawWrittenAtStart = _env.FileWriteTime(RawTracePath(g)) }; // 번호는 유효 회차 수가 아니라 있는 run 파일 기준 (덮어쓰기 금지)
                     learn?.Start();
                 }
                 catch (Exception e) when (e is not OperationCanceledException)
@@ -431,6 +520,7 @@ public sealed class AutoTracer
     public void Step()
     {
         FinishStopped(false);
+        _shadow.Flush();
         Run? run;
         lock (_lock)
         {
@@ -458,8 +548,6 @@ public sealed class AutoTracer
         AsterSettings all = _settings();
         AutoSettings a = all.Auto;
         IReadOnlyList<(int Pid, long ReadBytes)> procs = _env.GameProcesses(run.Game.ExeNames);
-        IReadOnlyList<int> rooted = _env.RootPids(run.Game); // 게임 폴더 아래의 실제 게임 프로세스 (등록 exe 의 자식인 경우도 포함)
-        procs = [.. procs, .. rooted.Where(p => procs.All(x => x.Pid != p)).Select(p => (Pid: p, Bytes: _env.ReadBytes(p))).Where(x => x.Bytes is not null).Select(x => (x.Pid, x.Bytes!.Value))];
         foreach ((int pid, long bytes) in procs)
         {
             // 첫 표본의 프로세스는 지금 값이 기준, 그 뒤에 나타난 프로세스는 세션이 열린 뒤에 시작했으므로 0 이 기준
@@ -475,9 +563,10 @@ public sealed class AutoTracer
             _status.Set(run.Game.Name, run.Game.Source, null, AutoStage.Learning, AutoLearn.Detail(learn.Stats));
         }
 
-        TimeSpan elapsed = _env.Now() - run.StartedAt;
         bool named = _env.AnyRunning(run.Game.ExeNames);
-        string? why = !named && rooted.Count == 0 ? GameExited // 읽기량을 못 연 (보호된) 게임 프로세스도 실행 중으로 셈, 등록 exe 가 먼저 끝나도 폴더 아래 프로세스가 남았으면 실행 중
+        bool exited = ExitGraceElapsed(run, named);
+        TimeSpan elapsed = _env.Now() - run.StartedAt;
+        string? why = exited ? GameExited
             : elapsed >= TimeSpan.FromSeconds(a.TraceCapSeconds) ? "time cap"
             : run.Read >= (long)ReadCapMib(run, all) << 20 ? "read cap"
             : null;
@@ -489,6 +578,9 @@ public sealed class AutoTracer
 
     private const string GameExited = "game exited";
 
+    // 멈춘 기록을 다시 저장할 때의 잠금 대기: 0 이면 바쁠 때 다음 Step 으로 미뤄 Step 스레드를 막지 않음
+    private static readonly TimeSpan RetryLockWait = TimeSpan.Zero;
+
     // 멈춰 둔 기록 중 게임 (같은 물리 디스크의 등록 게임 포함) 이 끝난 것을 저장합니다. force 는 서비스 종료: 기다리지 않고 바로 저장해 잃지 않게.
     private void FinishStopped(bool force)
     {
@@ -498,7 +590,7 @@ public sealed class AutoTracer
             held = [.. _stopped];
         }
 
-        foreach (Run r in held.Where(r => force || !StillRunning(r.Game)))
+        foreach (Run r in held.Where(r => force || ExitGraceElapsed(r) && !StillRunning(r.Game)))
         {
             bool mine;
             lock (_lock)
@@ -515,15 +607,24 @@ public sealed class AutoTracer
                 continue;
             }
 
+            bool again = false;
             try
             {
-                Finish(r, r.Why);
+                again = Finish(r, r.Why, lockWait: force ? null : RetryLockWait); // 멈춘 기록을 다시 저장할 때는 잠금을 기다리지 않음
+                if (again && force)
+                {
+                    _log.Warn($"{r.Game.Name}: auto trace not saved at shutdown (zone lock busy)");
+                }
             }
             finally
             {
                 lock (_lock)
                 {
-                    _stopped.Remove(r);
+                    r.Saving = false;
+                    if (!again)
+                    {
+                        _stopped.Remove(r);
+                    }
                 }
             }
         }
@@ -532,13 +633,39 @@ public sealed class AutoTracer
     private bool StillRunning(GameSettings g) =>
         _env.AnyRunning(g.ExeNames) || _env.GameRunningOnDisk?.Invoke(PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant()) == true;
 
+    private bool ExitGraceElapsed(Run run)
+    {
+        bool named = _env.AnyRunning(run.Game.ExeNames);
+        return ExitGraceElapsed(run, named);
+    }
+
+    private static bool ExitGraceElapsed(Run run, bool named)
+    {
+        if (named)
+        {
+            run.Exited = false;
+        }
+        else if (run.Exited)
+        {
+            return true;
+        }
+
+        IReadOnlySet<string> names = named ? new HashSet<string>(run.Game.ExeNames, StringComparer.OrdinalIgnoreCase) : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        run.Exited |= run.Exits.Poll([run.Game], names).Count > 0;
+        return run.Exited;
+    }
+
     // 읽기 캡 (MiB): 명시한 trace_cap_mib 는 그대로, 기본값이면 max(6144, 유효 존 상한 x 2) 를 플레이당 한 번만 계산함 (매초 디스크 종류를 묻지 않게).
     private int ReadCapMib(Run run, AsterSettings all) =>
         all.Auto.TraceCapMib != AutoSettings.DefaultTraceCapMib ? all.Auto.TraceCapMib : run.AutoCapMib ??= all.Auto.EffectiveTraceCapMib(AutoRelocator.EffectiveZoneMib(all, run.Game, _env));
 
+    /// 그 게임이 시작되면 돌고 있는 그림자 계획을 취소합니다 (감시기 스레드에서 부름).
+    public void CancelShadow(string game) => _shadow.CancelGame(game);
+
     /// 서비스 종료: 돌고 있는 세션만 정리합니다 (기록은 버림).
     public void Shutdown()
     {
+        _shadow.Shutdown();
         Run? run;
         lock (_lock)
         {
@@ -550,7 +677,8 @@ public sealed class AutoTracer
         FinishStopped(true);
     }
 
-    private void Finish(Run run, string why, bool defer = false)
+    // 잠금이 바빠 기록을 멈춘 채 남겼으면 true (다음 Step 에서 다시 저장). lockWait 이 null 이면 기본 잠금 대기
+    private bool Finish(Run run, string why, bool defer = false, TimeSpan? lockWait = null)
     {
         GameSettings g = run.Game;
         bool stoppedBefore = run.Held is not null; // 이미 멈춰 둔 기록의 저장: 세션은 멈출 때 정리했음
@@ -572,7 +700,7 @@ public sealed class AutoTracer
                 }
 
                 _log.Info($"{g.Name}: auto trace stopped ({why}), saving after the game exits");
-                return;
+                return false;
             }
 
             (List<TraceEvent> events, _) = TraceBuilder.Build(records, g.ExeNames, g.OriginRoot);
@@ -585,25 +713,43 @@ public sealed class AutoTracer
                     _status.Set(g.Name, g.Source, null, AutoStage.Failed, "no reads captured");
                 }
 
-                return;
+                return false;
             }
 
             if (run.Number > 1 && TooSmall(g, canonical) is { } small)
             {
                 _log.Info($"{g.Name}: auto trace ended ({why}), run {run.Number} too small ({small}), not saved and not counted");
-                return;
+                return false;
             }
 
             if (run.Number == 1 && !ClearLegacyRun1Mark(g)) // 업데이트로 옛 트레이스를 치운 뒤의 새 첫 기록: 남은 옛 표지가 새 run1 을 유효로 만들면 안 되므로 표지를 먼저 지우고, 못 지우면 저장하지 않음
             {
                 _status.Set(g.Name, g.Source, null, AutoStage.Failed, "trace failed: legacy mark");
-                return;
+                return false;
             }
 
             Dictionary<string, string> marks = VolatileOfRun(run, records, canonical); // 이전 플레이 파일을 덮기 전에 (그 수정 시각이 기준)
             // 기록·병합은 게임과 디스크를 다투지 않게 낮은 우선순위 스레드에서 돌림 (끝날 때까지 기다림)
+            bool locked = false;
+            bool changed = false;
+            string? replanGeneration = null;
             RunBelowNormal(() =>
             {
+                // 업데이트 정리 (DropChanged) 가 같은 파일을 읽고-고쳐-쓰므로 같은 폴더 잠금 안에서 씀 (이 스레드가 새로 잡음, 잠금 순서: 이 안에서 AutoStatus 잠금을 잡으며 (ReplanGeneration) 방향은 폴더 잠금 → AutoStatus 한쪽뿐이라 안전). 못 잡으면 버리지 않고 멈춘 채 남김
+                using AsterCache.Core.Apply.DataLock? gate = AsterCache.Core.Apply.DataLock.TryAcquire(g.Plan, lockWait);
+                if (gate is null)
+                {
+                    return;
+                }
+
+                locked = true;
+                // 잠금을 기다리는 사이 정리가 원시 트레이스를 고쳤거나 치웠으면 이 기록은 쓰지 않음: 기록의 오프셋이 옛 파일 기준일 수 있고, 병합하면 정리가 뺀 행이 되살아남. 파일 시각으로 비교 (원본을 옮기면 시각이 그대로라 존재 여부도 봄)
+                if (_env.FileWriteTime(RawTracePath(g)) != run.RawWrittenAtStart)
+                {
+                    changed = true;
+                    return;
+                }
+
                 if (run.Number == 1)
                 {
                     TraceWriter.Write([canonical], RawTracePath(g));
@@ -612,14 +758,52 @@ public sealed class AutoTracer
                 {
                     Merge(g, canonical, run.Number);
                 }
+
+                replanGeneration = _status.ReplanGeneration(g.Name); // 잠금 안에서 병합한 이벤트와 같은 재계획 세대를 넘김
             });
 
-            SaveVolatile(g, marks);
-            _log.Info($"{g.Name}: auto trace ended ({why}), {canonical.Count} read events saved" + (run.Number == 1 ? string.Empty : $" (run {run.Number}, merged)"));
+            if (!locked)
+            {
+                // 잠금이 바쁨 (정리·병합 중): 처음 한 번만 알리고 멈춘 채 남김. 다음 Step 에서 게임이 끝났으면 다시 저장
+                run.Held = records;
+                run.Why = why;
+                if (!stoppedBefore)
+                {
+                    lock (_lock)
+                    {
+                        _stopped.Add(run);
+                    }
+                }
+
+                if (!run.LockWaitLogged)
+                {
+                    run.LockWaitLogged = true;
+                    _log.Info($"{g.Name}: auto trace ({why}) waits for the zone lock, saved once it is free");
+                }
+
+                return true;
+            }
+
+            if (changed)
+            {
+                _log.Info($"{g.Name}: auto trace ({why}) not saved, the trace changed while it waited for the zone lock (game update cleanup)");
+            }
+            else
+            {
+                SaveVolatile(g, marks);
+                if (replanGeneration is { } generation)
+                {
+                    _shadow.Schedule(g.Name, canonical, TraceBlocker(g), generation); // 병합 뒤 메모리의 이번 회차 읽기로 그림자 계획 (트레이스 루프 스레드, 계산은 낮은 우선순위 별도 스레드)
+                }
+                _log.Info($"{g.Name}: auto trace ended ({why}), {canonical.Count} read events saved" + (run.Number == 1 ? string.Empty : $" (run {run.Number}, merged)"));
+            }
+
             if (run.Number == 1)
             {
                 _status.Set(g.Name, g.Source, null, AutoStage.WaitingIdle, null);
             }
+
+            return false;
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
@@ -642,6 +826,8 @@ public sealed class AutoTracer
                 _run = _run == run ? null : _run;
             }
         }
+
+        return false;
     }
 
     // 첫 플레이보다 훨씬 작은 (이벤트 수가 1 % 미만) 또는 읽은 양이 MinRunBytes 미만인 플레이의 사유, 아니면 null. 첫 플레이 크기를 못 읽으면 바이트 기준만 봄.
@@ -801,6 +987,7 @@ public sealed class AutoTracer
         TraceWriter.WriteFile(temp, union);
         File.Move(temp, raw, true);
         SaveMergeMeta(g, number, (union.Count - TraceWriter.Union(previous).Count) * TraceWriter.Block >> 20);
+        TracePhases.Recount(g, MinRunBytes); // 새 회차를 반영한 common 구분을 미리 남김 (예열 때 큰 run 파일을 읽지 않게)
     }
 
     // run 파일 한도에 닿으면 병합본에 이미 든 가장 오래된 회차를 지우고 나머지 번호를 당깁니다.
@@ -910,13 +1097,15 @@ public sealed class AutoTracer
         _log.Info($"{run.Game.Name}: learn ended, {AutoLearn.Summary(learn.Stats)}");
     }
 
-    private sealed class Run(GameSettings game, IAutoTrace session, DateTimeOffset startedAt)
+    private sealed class Run(GameSettings game, IAutoTrace session, DateTimeOffset startedAt, GameExitTracker exits)
     {
         public GameSettings Game { get; } = game;
 
         public IAutoTrace Session { get; } = session;
 
         public DateTimeOffset StartedAt { get; } = startedAt;
+
+        public GameExitTracker Exits { get; } = exits;
 
         public Dictionary<int, long> Last { get; } = [];
 
@@ -933,6 +1122,12 @@ public sealed class AutoTracer
         /// 이 플레이가 몇 번째 기록인가 (1 = 첫 기록).
         public int Number { get; init; } = 1;
 
+        /// 시작할 때 원시 트레이스의 수정 시각 (없으면 null). 저장할 때 달라졌으면 그 사이 정리가 파일을 고친 것이라 이 회차 기록은 쓰지 않습니다.
+        public DateTimeOffset? RawWrittenAtStart { get; init; }
+
+        /// 잠금이 바빠 저장을 미룬 적이 있는지 (알림은 처음 한 번만).
+        public bool LockWaitLogged { get; set; }
+
         public DateTimeOffset LastStatusAt { get; set; } = startedAt;
 
         /// 상한에 닿아 세션을 멈춘 뒤 아직 저장하지 않은 기록과 멈춘 사유 (게임이 끝난 뒤 저장).
@@ -942,5 +1137,7 @@ public sealed class AutoTracer
 
         /// 저장 중이면 true (다른 스레드가 같은 기록을 두 번 저장하지 않게).
         public bool Saving { get; set; }
+
+        public bool Exited { get; set; }
     }
 }

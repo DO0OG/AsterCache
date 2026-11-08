@@ -51,6 +51,49 @@ public sealed class BootProbeTests : IDisposable
         return status;
     }
 
+    [Fact]
+    public void WhileTheDiskIsYieldedToAGameNothingIsOpened()
+    {
+        GameSettings g = Games.Make("a", "a.exe");
+        var coordinator = new DiskReadCoordinator(new AsterCache.Windows.VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log, () => 0);
+        coordinator.Yield(g.OriginRoot, "game started", "other"); // 게임 판정은 모르지만 디스크는 이미 양보 중
+        Dictionary<string, DiskReadCoordinator.Lease?> direct = new(StringComparer.OrdinalIgnoreCase);
+        Assert.True(BootProbe.Yielded(coordinator, g.OriginRoot, CancellationToken.None, direct));
+        Assert.All(direct.Values, Assert.Null);
+
+        var opened = new List<string>();
+        AutoBootProbe? probe = BootProbe.Run(Settings(g), WithPlayed(("a", 1)), _log, T0, 1000, x => Files(x, 10), p =>
+        {
+            opened.Add(p);
+            return true;
+        }, () => TimeSpan.Zero, x =>
+        {
+            return BootProbe.Yielded(coordinator, x.OriginRoot, CancellationToken.None, direct);
+        });
+
+        Assert.Null(probe);
+        Assert.Empty(opened);
+    }
+
+    [Fact]
+    public void ALeaseOnOneDiskIsNotReusedForAGameOnAnotherYieldedDisk()
+    {
+        var coordinator = new DiskReadCoordinator(new AsterCache.Windows.VolumeDisks(letter => new HashSet<uint> { letter == "C:" ? 1u : 2u }, () => 0), _log, () => 0);
+        coordinator.Yield(@"D:\Games", "game started", "b"); // D: 의 디스크는 양보 중, C: 는 한가함
+        Dictionary<string, DiskReadCoordinator.Lease?> leases = new(StringComparer.OrdinalIgnoreCase);
+
+        Assert.False(BootProbe.Yielded(coordinator, @"C:\Games", CancellationToken.None, leases)); // 첫 디스크는 대여를 얻음
+        Assert.True(BootProbe.Yielded(coordinator, @"D:\Games", CancellationToken.None, leases)); // 그 대여를 다른 디스크에 쓰지 않음
+        Assert.Equal(2, leases.Count);
+        Assert.NotNull(leases[@"C:\"]);
+        Assert.Null(leases[@"D:\"]);
+
+        foreach (DiskReadCoordinator.Lease? lease in leases.Values)
+        {
+            lease?.Dispose();
+        }
+    }
+
     [Theory]
     [InlineData(9, 59, true)]
     [InlineData(10, 0, false)]

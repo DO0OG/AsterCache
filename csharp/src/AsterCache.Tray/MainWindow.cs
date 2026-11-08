@@ -53,6 +53,8 @@ internal sealed class MainWindow : Window
     private readonly ListBox _games = new();
     private readonly TextBox _status = ReadOnlyBox();
     private string _stages = string.Empty;
+    private readonly CheckBox _advanced = new() { Content = L.T("Adv_Show"), Margin = new Thickness(0, 0, 0, 4) }; // 펼침 상태는 저장하지 않음 (config.json 에 새 키 없음)
+    private readonly ContentControl _header = new();
     private readonly TextBox _serviceLog = ReadOnlyBox();
     private readonly TextBox _trayLog = ReadOnlyBox();
     private readonly TextBlock _versions = new() { TextWrapping = TextWrapping.Wrap };
@@ -148,7 +150,7 @@ internal sealed class MainWindow : Window
 
         // 단계 열은 값이 바뀐 때만 목록을 다시 채워 선택·스크롤을 지킵니다.
         IReadOnlyList<GameRow> rows = _manage.GameRows(_letter);
-        string stages = string.Join("|", rows.Select(r => r.Stage));
+        string stages = Signature(rows);
         if (stages != _stages)
         {
             _stages = stages;
@@ -239,7 +241,8 @@ internal sealed class MainWindow : Window
     private Control GamesTab()
     {
         _games.ItemTemplate = new FuncDataTemplate<GameRow>((row, _) => row is null ? new Panel() : Cells(
-            [row.Name, row.Exe, row.Origin, L.T(row.HasPlan ? "Cell_Yes" : "Cell_No"), L.T(row.HasTrace ? "Cell_Yes" : "Cell_No"), row.Verdict, row.Prewarm, row.Source, row.AntiCheat, row.Stage], tips: [null, null, null, null, null, null, row.PrewarmFull, null, null, null]));
+            [row.DisplayName.Length == 0 ? row.Name : row.DisplayName, row.State, row.PrewarmState, row.Reason, row.AntiCheat, row.Exe, row.Origin, L.T(row.HasPlan ? "Cell_Yes" : "Cell_No"), L.T(row.HasTrace ? "Cell_Yes" : "Cell_No"), row.Verdict, row.Prewarm, row.Source, row.Stage, row.Gate],
+            tips: [row.Name, null, null, null, null, null, null, null, null, row.VerdictRaw.Length == 0 ? null : row.VerdictRaw, row.PrewarmFull, null, row.StageRaw.Length == 0 ? null : row.StageRaw, null], advanced: _advanced.IsChecked == true));
         _games.Styles.Add(new Style(x => x.OfType<ListBoxItem>())
         {
             Setters = { new Setter(ContentControl.HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch), new Setter(TemplatedControl.PaddingProperty, RowPadding) },
@@ -269,13 +272,28 @@ internal sealed class MainWindow : Window
         var panel = new DockPanel { Margin = new Thickness(4) };
         Grid.SetIsSharedSizeScope(panel, true); // 헤더와 행이 열 폭을 함께 정함
         DockPanel.SetDock(buttons, Dock.Top);
-        var header = Cells([L.T("Col_Name"), L.T("Col_Exe"), L.T("Col_Origin"), L.T("Col_Plan"), L.T("Col_Trace"), L.T("Col_Layout"), L.T("Col_Prewarm"), L.T("Col_Source"), L.T("Col_AntiCheat"), L.T("Col_Stage")], FontWeight.Bold);
-        header.Margin = new Thickness(RowPadding.Left + _games.BorderThickness.Left, 0, 0, 2);
-        DockPanel.SetDock(header, Dock.Top);
+        ShowHeader();
+        _advanced.IsCheckedChanged += (_, _) =>
+        {
+            int selected = _games.SelectedIndex;
+            ShowHeader();
+            ShowRows();
+            _games.SelectedIndex = selected < _games.ItemCount ? selected : -1; // 토글은 행 수를 바꾸지 않으므로 선택을 지킴
+        };
+        DockPanel.SetDock(_advanced, Dock.Top);
+        DockPanel.SetDock(_header, Dock.Top);
         panel.Children.Add(buttons);
-        panel.Children.Add(header);
+        panel.Children.Add(_advanced);
+        panel.Children.Add(_header);
         panel.Children.Add(_games);
         return panel;
+    }
+
+    private void ShowHeader()
+    {
+        Grid header = Cells([L.T("Col_Name"), L.T("Col_State"), L.T("Col_PrewarmState"), L.T("Col_Reason"), L.T("Col_AntiCheat"), L.T("Col_Exe"), L.T("Col_Origin"), L.T("Col_Plan"), L.T("Col_Trace"), L.T("Col_Layout"), L.T("Col_Prewarm"), L.T("Col_Source"), L.T("Col_Stage"), L.T("Col_Gate")], FontWeight.Bold, advanced: _advanced.IsChecked == true);
+        header.Margin = new Thickness(RowPadding.Left + _games.BorderThickness.Left, 0, 0, 2);
+        _header.Content = header;
     }
 
     private Control SettingsTab()
@@ -407,7 +425,7 @@ internal sealed class MainWindow : Window
     private async Task Apply(string name)
     {
         long? moved = await Task.Run(() => _manage.MovedBytes(name));
-        string text = L.T("Confirm_Apply", name, moved is { } m ? ManageViewModel.Size(m) : L.T("Confirm_ApplySizeUnknown"));
+        string text = L.T("Confirm_Apply", _tray.DisplayName(name), moved is { } m ? ManageViewModel.Size(m) : L.T("Confirm_ApplySizeUnknown"));
         if (await ConfirmWindow.Ask(this, text))
         {
             await RunAsync(L.T("Op_Relocate"), () => _manage.Apply(name, Progress));
@@ -416,7 +434,7 @@ internal sealed class MainWindow : Window
 
     private async Task Revert(string name)
     {
-        if (await ConfirmWindow.Ask(this, L.T("Confirm_Revert", name)))
+        if (await ConfirmWindow.Ask(this, L.T("Confirm_Revert", _tray.DisplayName(name))))
         {
             await RunAsync(L.T("Btn_Revert"), () => _manage.Revert(name, Progress));
         }
@@ -559,10 +577,12 @@ internal sealed class MainWindow : Window
         ShowRows();
     }
 
+    private static string Signature(IEnumerable<GameRow> rows) => string.Join("|", rows.Select(r => r.Stage + "/" + r.State + "/" + r.PrewarmState + "/" + r.Reason));
+
     private void ShowRows()
     {
         IReadOnlyList<GameRow> rows = _manage.GameRows(_letter);
-        _stages = string.Join("|", rows.Select(r => r.Stage));
+        _stages = Signature(rows);
         _games.ItemsSource = rows;
         _status.Text = string.Join(Environment.NewLine, _manage.StatusLines(_letter));
     }
@@ -596,29 +616,37 @@ internal sealed class MainWindow : Window
         return box;
     }
 
-    // 게임 표의 열. 이름·exe·원점·예열은 안 내용만큼 (최대 Max) 이고 헤더와 모든 행이 SharedSizeGroup 으로 폭을 함께 정합니다. 짧은 열은 고정 폭, 단계는 남는 폭.
-    private sealed record Col(string? Group, double Fixed, double Max, int Lines);
+    // 게임 표의 열. 앞 다섯 개 (이름·상태·예열 상태·보류 이유·안티치트) 가 기본 열이고 Advanced 열은 "고급 열 보기" 를 켠 때만 보입니다.
+    // 이름·exe·원점·예열 설정·단계는 안 내용만큼 (최대 Max) 이고 헤더와 모든 행이 SharedSizeGroup 으로 폭을 함께 정합니다. 짧은 열은 고정 폭, 보류 이유는 남는 폭.
+    private sealed record Col(string? Group, double Fixed, double Max, int Lines, bool Advanced = false);
 
     private static readonly Col[] GameCols =
     [
-        new("name", 0, 84, 2), new("exe", 0, 104, 1), new("origin", 0, 112, 3), new(null, 34, 0, 1), new(null, 56, 0, 1),
-        new(null, 64, 0, 2), new("prewarm", 0, 94, 3), new(null, 56, 0, 1), new(null, 64, 0, 1), new(null, 0, 0, 3),
+        new("name", 0, 170, 2), new(null, 96, 0, 2), new(null, 150, 0, 3), new(null, 0, 0, 3), new(null, 64, 0, 1),
+        new("exe", 0, 104, 1, true), new("origin", 0, 112, 3, true), new(null, 34, 0, 1, true), new(null, 56, 0, 1, true),
+        new(null, 64, 0, 2, true), new("prewarm", 0, 94, 3, true), new(null, 56, 0, 1, true), new("stage", 0, 200, 3, true), new(null, 0, 220, 2, true),
     ];
 
     private static readonly Thickness RowPadding = new(6, 3);
 
-    private static Grid Cells(IReadOnlyList<string> text, FontWeight? weight = null, IReadOnlyList<string?>? tips = null)
+    private static Grid Cells(IReadOnlyList<string> text, FontWeight? weight = null, IReadOnlyList<string?>? tips = null, bool advanced = false)
     {
         var g = new Grid();
-        foreach (Col c in GameCols)
+        foreach (Col c in GameCols.Where(c => advanced || !c.Advanced))
         {
             g.ColumnDefinitions.Add(c.Group is not null ? new ColumnDefinition(GridLength.Auto) { SharedSizeGroup = c.Group }
                 : c.Fixed > 0 ? new ColumnDefinition(c.Fixed, GridUnitType.Pixel) : new ColumnDefinition(1, GridUnitType.Star) { MinWidth = 96 });
         }
 
+        int at = 0;
         for (int i = 0; i < text.Count; i++)
         {
             Col c = GameCols[i];
+            if (c.Advanced && !advanced)
+            {
+                continue;
+            }
+
             var t = new TextBlock
             {
                 Text = text[i],
@@ -636,7 +664,7 @@ internal sealed class MainWindow : Window
             }
 
             ToolTip.SetTip(t, tips?[i] ?? text[i]);
-            Grid.SetColumn(t, i);
+            Grid.SetColumn(t, at++);
             g.Children.Add(t);
         }
 

@@ -19,6 +19,7 @@ public sealed class SupplementResumeTests : IDisposable
     private long _avail;
     private ProbeResult? _probe;
     private ProbeResult? _doneProbe; // 이어 읽기 전 끊긴 구간 표본의 결과 (null = 확인 못 함 → 처음부터)
+    private int _doneProbeCalls;
     private const long HotMib = 8000;
 
     public SupplementResumeTests() => Directory.CreateDirectory(_dir);
@@ -70,7 +71,11 @@ public sealed class SupplementResumeTests : IDisposable
         ZoneBytes = g => Math.Min(HotMib, g.StreamCapBytes(HotMib * Mib) / Mib) * Mib,
         TraceExists = _ => true,
         ProbeReadMs = _ => _probe,
-        ProbeDone = (_, _) => _doneProbe,
+        ProbeDone = (_, _) =>
+        {
+            _doneProbeCalls++;
+            return _doneProbe;
+        },
     }, _log, StatusPath, () => _now);
 
     private static GameSettings Game() => Games.Make("g", "g.exe");
@@ -116,6 +121,71 @@ public sealed class SupplementResumeTests : IDisposable
 
         Assert.Empty(_streamer.Calls);
         Assert.Contains(_log.Lines, l => l.Contains("supplement prewarm skipped (hot set", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AYieldedDiskDoesNotIssueTheResumeSampleOfASupplement()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmed(g, 8000);
+        (_streamer.ReadMib, _streamer.Complete) = (2500, false);
+        Assert.False(p.Supplement(g, CancellationToken.None)); // 끊긴 위치를 기억함
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        p.SetDiskReadCoordinator(coordinator);
+        coordinator.Yield(@"C:\Games\other", "game started", "other");
+        (_streamer.ReadMib, _streamer.Complete) = (null, true);
+        _streamer.Calls.Clear();
+
+        Assert.False(p.Supplement(g, CancellationToken.None));
+
+        Assert.Equal(0, _doneProbeCalls); // 같은 디스크에서 다른 게임이 도는 동안은 표본도 읽지 않음
+        Assert.Empty(_streamer.Calls);
+    }
+
+    [Fact]
+    public void ADeniedResumeSampleKeepsTheResumePositionForTheNextSupplement()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmed(g, 8000);
+        _doneProbe = new ProbeResult(8, 0, 0.3);
+        (_streamer.ReadMib, _streamer.Complete) = (2500, false);
+        Assert.False(p.Supplement(g, CancellationToken.None)); // 끊긴 위치를 기억함
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        p.SetDiskReadCoordinator(coordinator);
+        coordinator.Yield(@"C:\Games\other", "game started", "other");
+        (_streamer.ReadMib, _streamer.Complete) = (null, true);
+        _streamer.Calls.Clear();
+        _streamer.Skips.Clear();
+
+        Assert.False(p.Supplement(g, CancellationToken.None)); // 표본이 거절됨: 기억을 버리지 않고 조용히 멈춤
+        coordinator.Resume(@"C:\Games\other", "other");
+        Assert.True(p.Supplement(g, CancellationToken.None));
+
+        Assert.Equal([2500 * Mib], _streamer.Skips); // 처음부터가 아니라 끊긴 위치에서 이어 읽음
+    }
+
+    [Fact]
+    public void ADeniedFrontSampleStopsQuietlyInsteadOfReportingNothingNew()
+    {
+        GameSettings g = Game();
+        _avail = 6000;
+        Prewarmer p = Make(g);
+        p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 1000 });
+        Assert.True(Assert.Single(p.RunServiceStart()).Ran);
+        _avail = 8000;
+        Assert.True(p.Supplement(g, CancellationToken.None));
+        _streamer.Calls.Clear();
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        p.SetDiskReadCoordinator(coordinator);
+        coordinator.Yield(@"C:\Games\other", "game started", "other");
+
+        Assert.False(p.Supplement(g, CancellationToken.None));
+
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("supplement prewarm skipped (the", StringComparison.Ordinal)); // 읽지 못했을 뿐 새로 읽을 것이 없다는 뜻이 아님
+        coordinator.Resume(@"C:\Games\other", "other");
+        _probe = new ProbeResult(8, 8, 5.0); // 읽은 앞부분이 식음
+        Assert.True(p.Supplement(g, CancellationToken.None));
+        Assert.Equal(3904, Assert.Single(_streamer.Calls).MaxStreamMib);
     }
 
     [Fact]

@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.IO.Compression;
 using System.Net;
+using System.Text.RegularExpressions;
+using AsterCache.Core;
 using AsterCache.Core.Apply;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
@@ -35,8 +37,8 @@ public sealed class FeedReply(int status, string? etag = null, Stream? body = nu
 /// 묶음 zip 을 받는 곳. 시험은 파일 기반 가짜로 바꿉니다. 실패는 HttpRequestException·IOException·TaskCanceledException 으로 알립니다.
 public interface IFeedHttp
 {
-    /// etag 가 있으면 If-None-Match 로 보냅니다.
-    FeedReply Get(string url, string? etag);
+    /// etag 가 있으면 If-None-Match 로 보냅니다. stop 은 서비스 종료 신호로, 헤더 대기와 본문 읽기 모두를 끊습니다.
+    FeedReply Get(string url, string? etag, CancellationToken stop = default);
 }
 
 /// 실제 HTTP (HttpClient): 헤더는 60 초 안에, 본문까지 전체는 5 분 안에 받아야 합니다. 리디렉션은 따르되 https 에서 http 로는 가지 않습니다 (HttpClient 기본).
@@ -46,9 +48,10 @@ public sealed class HttpFeedClient : IFeedHttp
 
     private static readonly HttpClient Client = new() { Timeout = TimeSpan.FromSeconds(60) }; // 헤더 대기. 본문 포함 전체 상한은 요청마다 취소 토큰으로
 
-    public FeedReply Get(string url, string? etag)
+    public FeedReply Get(string url, string? etag, CancellationToken stop = default)
     {
-        var cts = new CancellationTokenSource(Timeout);
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(stop);
+        cts.CancelAfter(Timeout);
         HttpResponseMessage? response = null;
         try
         {
@@ -95,9 +98,13 @@ public sealed class ProfileFeed
     public const long MaxZipBytes = 256L << 20; // zip 이 말하는 해제 크기의 합, 그리고 한 번에 풀어 읽는 프로필 바이트의 합
     public const long MaxIndexBytes = 4L << 20;
     public const int MaxMatchesTried = 3;
+    public const string StateFormat = "astercache-profile-feed-state";
     public static readonly TimeSpan Every = TimeSpan.FromDays(7);
-    public static readonly TimeSpan RetryAfterFailure = TimeSpan.FromHours(1);
+    public static readonly TimeSpan RetryAfterFailure = TimeSpan.FromHours(1); // 일시 오류 백오프의 시작: 연속 실패마다 2 배
+    public static readonly TimeSpan MaxBackoff = TimeSpan.FromHours(24); // 백오프 상한: 하루 한 번보다 잦지 않고, 복구된 서버를 하루 안에 다시 만남
+    public static readonly TimeSpan CorruptRetryCap = TimeSpan.FromDays(7); // 같은 표지의 손상 묶음을 이 기간이 지나면 한 번 더 받아 봄
     public static readonly TimeSpan RetryAfterNoMatch = TimeSpan.FromDays(1);
+    private static readonly Regex LeftoverTemp = new(@"^feed\.(zip|state\.json)\.[0-9a-f]{32}\.tmp\z", RegexOptions.None, TimeSpan.FromSeconds(1)); // Fetch 가 만드는 GUID 임시 파일 (zip·상태 파일)
 
     private readonly string _dir;
     private readonly IFeedHttp _http;
@@ -105,8 +112,15 @@ public sealed class ProfileFeed
     private readonly Func<DateTimeOffset> _now;
     private readonly Func<string, IReadOnlyList<(string Path, long Size)>> _exeFiles;
     private readonly Dictionary<string, DateTimeOffset> _nextTry = new(StringComparer.OrdinalIgnoreCase); // 게임 이름 → 다시 맞춰 볼 시각
+    private readonly object _gate = new(); // Run 직렬화: 도는 중에 또 불리면 건너뜀
     private DateTimeOffset _nextFetch = DateTimeOffset.MinValue;
+    private bool _persistFetch = true; // https 주소가 아니라 받지 않은 경우의 _nextFetch 는 파일에 남기지 않음 (주소를 고치면 재시작으로 바로 받게)
     private string _stamp = string.Empty;
+    private int _failures; // 연속 실패 횟수 (성공·304 면 0)
+    private string? _error; // 마지막 오류 분류: transient (네트워크·시간 초과·입출력) / corrupt (묶음 내용 손상) / http (200·304 가 아닌 응답)
+    private string? _badMarker; // 손상으로 거부한 묶음의 표지 (ETag, 없으면 헤더 길이)
+    private DateTimeOffset _badSince = DateTimeOffset.MinValue;
+    private string? _savedState; // 마지막으로 파일과 맞춘 상태 문장 (같으면 다시 쓰지 않음)
 
     public ProfileFeed(string dataDir, IFeedHttp http, ILog log, Func<DateTimeOffset> now, Func<string, IReadOnlyList<(string Path, long Size)>> exeFiles)
     {
@@ -115,14 +129,36 @@ public sealed class ProfileFeed
         _log = log;
         _now = now;
         _exeFiles = exeFiles;
+        LoadState();
     }
 
     public string ZipPath => Path.Combine(_dir, "feed.zip");
 
     public string EtagPath => Path.Combine(_dir, "feed.etag");
 
+    /// 받기 백오프와 게임별 재시도 시각 (config.json 이 아니라 여기에 둠). 없거나 깨졌으면 무시합니다.
+    public string StatePath => Path.Combine(_dir, "feed.state.json");
+
     /// 받을 때가 되었으면 받고, 캐시를 아직 맞춰 보지 않은 게임에 맞춰 저장합니다. 저장한 부트 트레이스 수를 돌려줍니다. 한 번에 한 줄만 로그를 남깁니다 (할 일이 없으면 남기지 않음).
-    public int Run(AsterSettings s, IReadOnlyList<DiscoveredGame> scan)
+    /// stop 은 서비스 종료 신호 (호출자가 주지 않으면 none): 종료로 끊긴 받기는 실패로 세지 않고, 시간 초과만 일시 오류로 셉니다.
+    public int Run(AsterSettings s, IReadOnlyList<DiscoveredGame> scan, CancellationToken stop = default)
+    {
+        if (!Monitor.TryEnter(_gate))
+        {
+            return 0; // 이미 도는 중: 같은 요청을 겹쳐 보내지 않음
+        }
+
+        try
+        {
+            return RunLocked(s, scan, stop);
+        }
+        finally
+        {
+            Monitor.Exit(_gate);
+        }
+    }
+
+    private int RunLocked(AsterSettings s, IReadOnlyList<DiscoveredGame> scan, CancellationToken stop)
     {
         SharedProfilesSettings cfg = s.Auto.SharedProfiles;
         if (!s.Auto.Enabled || !cfg.Enabled)
@@ -132,12 +168,20 @@ public sealed class ProfileFeed
 
         var parts = new List<string>();
         DateTimeOffset now = _now();
+        ClampToNow(now); // 실행 중 시계가 되감겨도 분류별 최대 대기를 넘기지 않음
         if (now >= _nextFetch)
         {
-            parts.Add("download " + Fetch(cfg.Url, now));
+            parts.Add("download " + Fetch(cfg.Url, now, stop));
+            SaveState(); // 적용 도중 끝나도 받기 결과 (다음 요청 시각) 는 남김
+        }
+
+        foreach (string gone in _nextTry.Keys.Where(k => !s.Games.Any(g => string.Equals(g.Name, k, StringComparison.OrdinalIgnoreCase))).ToList())
+        {
+            _nextTry.Remove(gone); // 설정에서 빠진 게임
         }
 
         int saved = Apply(s, scan, now, parts);
+        SaveState();
         if (parts.Count > 0)
         {
             _log.Info("shared profiles: " + string.Join(", ", parts));
@@ -147,31 +191,53 @@ public sealed class ProfileFeed
     }
 
     // 묶음을 받아 검증이 끝난 뒤에만 캐시를 바꿉니다. 결과 문구를 돌려줍니다 (예외는 삼킴).
-    private string Fetch(string url, DateTimeOffset now)
+    private string Fetch(string url, DateTimeOffset now, CancellationToken stop)
     {
-        _nextFetch = now + Every;
+        DeleteLeftoverTemps(); // 요청 전: 이전 실행이 받는 도중 죽어 남긴 임시 파일 정리
         if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri) || uri.Scheme != Uri.UriSchemeHttps)
         {
+            _nextFetch = now + Every;
+            _persistFetch = false;
             return "skipped (not an https url)";
         }
 
-        string tmp = ZipPath + ".tmp";
+        _persistFetch = true;
+        (int Failures, string? Error, DateTimeOffset Next) before = (_failures, _error, _nextFetch);
+        Failed("transient", now, before.Failures); // 요청 도중 프로세스가 죽어도 백오프가 남도록, 이번 시도가 실패한 것으로 가정한 다음 시각을 요청 전에 저장. 끝나면 실제 결과로 바꿈
+        if (!SaveState())
+        {
+            (_failures, _error, _nextFetch) = before; // 요청 전 기록을 남기지 못하면 요청하지 않음: 다음 Run 에서 다시 시도
+            return "skipped (state not saved)";
+        }
+
+        string tmp = ZipPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        string? marker = null;
         try
         {
             Directory.CreateDirectory(_dir);
             string? etag = File.Exists(ZipPath) && File.Exists(EtagPath) ? File.ReadAllText(EtagPath).Trim() : null;
-            using FeedReply reply = _http.Get(url, etag is { Length: > 0 } ? etag : null);
+            using FeedReply reply = _http.Get(url, etag is { Length: > 0 } ? etag : null, stop);
             if (reply.Status == 304 && File.Exists(ZipPath))
             {
+                Succeeded(now);
                 return "not modified (cache used)";
             }
 
             if (reply.Status != 200 || reply.Body is null)
             {
+                // 200·304 가 아닌 HTTP 응답은 서버가 답을 한 것이므로 상태 코드와 무관하게 Every 뒤에 다시 (요청 빈도를 늘리지 않음). 1 시간 백오프는 응답이 아예 없는 예외에만
+                Failed("http", now, before.Failures);
                 return "unavailable (HTTP " + reply.Status.ToString(CultureInfo.InvariantCulture) + ")";
             }
 
-            long size = Download(reply, tmp);
+            marker = reply.ETag is { Length: > 0 } etagMark ? etagMark : reply.Length is { } len ? "len:" + len.ToString(CultureInfo.InvariantCulture) : null;
+            if (marker is not null && marker == _badMarker && now < (_badSince < now ? _badSince : now) + CorruptRetryCap)
+            {
+                Failed("corrupt", now, before.Failures); // 이미 거부한 그 묶음: 본문은 읽지 않고 표지가 바뀌거나 상한이 지나길 기다림
+                return "skipped (same bundle as the rejected one)";
+            }
+
+            long size = Download(reply, tmp, stop);
             CheckZip(tmp);
             File.Move(tmp, ZipPath, true);
             if (reply.ETag is { Length: > 0 } tag)
@@ -183,11 +249,26 @@ public sealed class ProfileFeed
                 File.Delete(EtagPath);
             }
 
+            Succeeded(now);
             return "ok (" + (size >> 10).ToString(CultureInfo.InvariantCulture) + " KiB)";
         }
         catch (Exception e) when (e is HttpRequestException or IOException or UnauthorizedAccessException or InvalidDataException or PyValueException or OperationCanceledException)
         {
-            _nextFetch = now + RetryAfterFailure;
+            if (stop.IsCancellationRequested) // 종료 신호가 켜졌으면 예외 종류와 무관하게 종료 (IOException·HttpRequestException 으로 감싸져 올라오는 경우 포함)
+            {
+                (_failures, _error) = (before.Failures, before.Error); // 서비스 종료로 끊김: 실패 횟수는 되돌리되, 재시작 반복으로 요청이 잦아지지 않게 다음 시각은 앞당기지 않음
+                _nextFetch = before.Next > now + RetryAfterFailure ? before.Next : now + RetryAfterFailure;
+                return "cancelled (service stopping)";
+            }
+
+            bool corrupt = e is InvalidDataException or PyValueException; // 내용 손상. 그 밖은 일시 오류
+            if (corrupt)
+            {
+                _badMarker = marker;
+                _badSince = now;
+            }
+
+            Failed(corrupt ? "corrupt" : "transient", now, before.Failures); // 이전 묶음 (ZipPath) 은 그대로 둠: 새 묶음은 검증을 마친 뒤에만 옮김
             return "failed (" + (e is InvalidDataException or PyValueException ? e.Message : e.GetType().Name) + ")";
         }
         finally
@@ -203,19 +284,254 @@ public sealed class ProfileFeed
         }
     }
 
+    // 이전 실행이 받는 도중 죽어 남긴 임시 파일 (zip·상태 파일의 GUID 임시본)만 지움. 패턴이 정확히 맞는 것만, 지우기 실패는 무시.
+    private void DeleteLeftoverTemps()
+    {
+        if (!Directory.Exists(_dir))
+        {
+            return;
+        }
+
+        foreach (string path in Directory.GetFiles(_dir, "*.tmp"))
+        {
+            if (!LeftoverTemp.IsMatch(Path.GetFileName(path)))
+            {
+                continue;
+            }
+
+            try
+            {
+                File.Delete(path);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                // 지우지 못하면 다음 받기 때 다시 시도
+            }
+        }
+    }
+
+    private void Succeeded(DateTimeOffset now)
+    {
+        _failures = 0;
+        _error = null;
+        _badMarker = null;
+        _nextFetch = now + Every;
+    }
+
+    // 이번 시도까지 실패로 세고 (prior = 시도 전 연속 실패 수) 다음 받기 시각을 정함: http 는 Every 뒤, corrupt 는 손상 판정 시각에서 CorruptRetryCap 뒤, 나머지는 1 시간에서 시작해 연속 실패마다 2 배 (상한 MaxBackoff).
+    private void Failed(string kind, DateTimeOffset now, int prior)
+    {
+        _failures = prior < int.MaxValue ? prior + 1 : prior;
+        _error = kind;
+        if (kind == "http")
+        {
+            _nextFetch = now + Every;
+            return;
+        }
+
+        if (kind == "corrupt")
+        {
+            _nextFetch = (_badMarker is null || _badSince > now ? now : _badSince) + CorruptRetryCap; // 그 사이에는 표지 확인용 요청도 보내지 않음. 표지가 없으면 지금부터
+            return;
+        }
+
+        TimeSpan delay = RetryAfterFailure;
+        for (int i = 1; i < _failures && delay < MaxBackoff; i++)
+        {
+            delay *= 2;
+        }
+
+        _nextFetch = now + (delay < MaxBackoff ? delay : MaxBackoff);
+    }
+
+    // 시작할 때 상태 파일을 읽음. 없거나 형식이 어긋나면 통째로 무시 (기본 동작: 바로 받아 볼 수 있음).
+    private void LoadState()
+    {
+        try
+        {
+            if (!File.Exists(StatePath) || JsonRead.ReadFile(StatePath) is not JObject o)
+            {
+                return;
+            }
+
+            string? Str(string key) => o.TryGetValue(key, out object? v) ? v as string : null;
+            DateTimeOffset? Time(string key) => DateTimeOffset.TryParse(Str(key), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset t) ? t : null;
+
+            if (Str("format") != StateFormat || !o.TryGetValue("version", out object? version) || version as long? != 1)
+            {
+                return;
+            }
+
+            DateTimeOffset now = _now();
+            bool clamped = false;
+            if (Time("next_fetch") is { } at)
+            {
+                string? error = Str("error");
+                _error = error is "transient" or "corrupt" or "http" ? error : null;
+                _nextFetch = at;
+                if (o.TryGetValue("failures", out object? n) && n is long count and > 0 and < 100000)
+                {
+                    _failures = (int)count;
+                }
+            }
+
+            // bad_since 는 지금 기준 [-CorruptRetryCap, 0] 안일 때만 믿음 (밖이면 표지째 무시: 그 묶음을 한 번 더 받아 봄)
+            if (Time("bad_since") is { } since && since <= now && since >= now - CorruptRetryCap)
+            {
+                _badMarker = Str("bad_marker");
+                _badSince = since;
+            }
+
+            _stamp = Str("stamp") ?? string.Empty;
+            if (o.TryGetValue("next_try", out object? tries) && tries is JObject map)
+            {
+                foreach ((string name, object? value) in map)
+                {
+                    if (value is string text && DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset parsed))
+                    {
+                        if (parsed > now + RetryAfterNoMatch)
+                        {
+                            parsed = now + RetryAfterNoMatch; // 게임별 상한 (MaxValue 와 같은 값도 여기서 줄임)
+                            clamped = true;
+                        }
+
+                        _nextTry[name] = parsed;
+                    }
+                }
+            }
+
+            _savedState = StateText();
+            if (ClampToNow(now) || clamped)
+            {
+                _savedState = null; // 상한으로 보정한 값은 파일에도 다시 씀
+                SaveState();
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
+        {
+            // 깨진 파일: 무시. 다음 저장이 덮어씀
+        }
+    }
+
+    // 분류별 상한 (시계가 되감겼거나 값이 비정상이어도 그 분류의 최대 대기를 넘지 않게) 과 게임별 상한을 적용. 바뀌었으면 true. 끝난 게임 (MaxValue) 은 건드리지 않음.
+    private bool ClampToNow(DateTimeOffset now)
+    {
+        bool changed = false;
+        TimeSpan cap = _error switch { "transient" => MaxBackoff, "corrupt" => CorruptRetryCap, _ => Every };
+        if (_nextFetch > now + cap)
+        {
+            _nextFetch = now + cap;
+            changed = true;
+        }
+
+        foreach (string name in _nextTry.Where(p => p.Value != DateTimeOffset.MaxValue && p.Value > now + RetryAfterNoMatch).Select(p => p.Key).ToList())
+        {
+            _nextTry[name] = now + RetryAfterNoMatch;
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    // 저장할 상태 문장. 기록할 것이 없으면 null (파일을 두지 않음). 끝난 게임 (MaxValue) 은 재시작하면 다시 맞춰 보므로 저장하지 않음.
+    private string? StateText()
+    {
+        var tries = new JObject();
+        foreach ((string name, DateTimeOffset at) in _nextTry.Where(p => p.Value != DateTimeOffset.MaxValue).OrderBy(p => p.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            tries.Add(name, at.ToString("O", CultureInfo.InvariantCulture));
+        }
+
+        bool hasFetch = _persistFetch && _nextFetch != DateTimeOffset.MinValue; // 성공·304 뒤의 다음 정기 요청 시각도 남김: 재시작마다 받지 않게
+        if (!hasFetch && _failures == 0 && tries.Count == 0)
+        {
+            return null;
+        }
+
+        var root = new JObject { { "format", StateFormat }, { "version", 1L }, { "failures", (long)_failures } };
+        if (hasFetch)
+        {
+            if (_error is not null)
+            {
+                root.Add("error", _error);
+            }
+
+            root.Add("next_fetch", _nextFetch.ToString("O", CultureInfo.InvariantCulture));
+        }
+
+        if (_badMarker is not null)
+        {
+            root.Add("bad_marker", _badMarker);
+            root.Add("bad_since", _badSince.ToString("O", CultureInfo.InvariantCulture));
+        }
+
+        root.Add("stamp", _stamp);
+        root.Add("next_try", tries);
+        return PyJson.Dumps(root, indent: 2, ensureAscii: false) + "\n";
+    }
+
+    // 상태 파일을 임시 파일 → 이동으로 원자적으로 씀. 실패해도 메모리 상태로 계속 (다음 저장 때 다시). 맞춰진 상태면 true, 쓰지 못했으면 false.
+    private bool SaveState()
+    {
+        string? text = StateText();
+        if (text == _savedState)
+        {
+            return true;
+        }
+
+        try
+        {
+            if (text is null)
+            {
+                File.Delete(StatePath);
+            }
+            else
+            {
+                Directory.CreateDirectory(_dir);
+                string tmp = StatePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                try
+                {
+                    DurableFile.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(text));
+                    File.Move(tmp, StatePath, true);
+                }
+                catch
+                {
+                    try
+                    {
+                        File.Delete(tmp);
+                    }
+                    catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                    {
+                        // 임시 파일을 못 지워도 원래 예외를 가리지 않음
+                    }
+
+                    throw;
+                }
+            }
+
+            _savedState = text;
+            return true;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return false; // 상태는 보조 정보: 쓰지 못하면 다음 주기에 다시 시도
+        }
+    }
+
     // 본문을 임시 파일로 받음. 헤더가 큰 길이를 말하거나 읽는 중 상한을 넘으면 곧바로 멈춤.
-    private static long Download(FeedReply reply, string tmp)
+    private static long Download(FeedReply reply, string tmp, CancellationToken stop)
     {
         if (reply.Length > MaxDownloadBytes)
         {
             throw new InvalidDataException("download too large");
         }
 
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(reply.Token, stop);
         long total = 0;
         byte[] buffer = new byte[81920];
         using var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None);
         int n;
-        while ((n = reply.Body!.ReadAsync(buffer, reply.Token).AsTask().GetAwaiter().GetResult()) > 0)
+        while ((n = reply.Body!.ReadAsync(buffer, linked.Token).AsTask().GetAwaiter().GetResult()) > 0)
         {
             total += n;
             if (total > MaxDownloadBytes)

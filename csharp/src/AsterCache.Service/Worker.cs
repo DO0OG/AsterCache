@@ -24,7 +24,9 @@ public sealed class Worker : BackgroundService
     private readonly SettingsReloader? _reload;
     private readonly KeepAwake? _keepAwake;
     private readonly RiotPhaseWatcher? _riot;
+    private readonly DiskReadCoordinator _coordinator;
     private readonly object _watchLock = new();
+    private readonly object _gameStateLock = new();
     private volatile AsterSettings _settings;
     private (IProcessWatcher Primary, IProcessWatcher? Fallback) _watchers;
     private string _watchKey;
@@ -39,20 +41,25 @@ public sealed class Worker : BackgroundService
 
     public Worker(AsterSettings settings, ILog log, IProcessWatcher primary, IProcessWatcher? fallback, IGameStreamer streamer, ReapplyChecker checker,
         ReapplyGate? gate = null, Prewarmer? prewarm = null, AutoMode? auto = null, SettingsReloader? reload = null, KeepAwake? keepAwake = null, DispatchEnv? dispatchEnv = null,
-        RiotPhaseWatcher? riot = null, BootQuiet? quiet = null)
+        RiotPhaseWatcher? riot = null, BootQuiet? quiet = null, DiskReadCoordinator? coordinator = null)
     {
+        _coordinator = coordinator ?? new DiskReadCoordinator(AsterCache.Windows.VolumeDisks.Shared, log);
         _prewarm = prewarm;
+        _prewarm?.SetDiskReadCoordinator(_coordinator);
         _prewarm?.SetAuto(settings.Auto);
         _prewarm?.SetGames(settings.Games); // 고정이 첫 유지 틱 전에도 같은 디스크의 다른 등록 게임을 알도록
         _auto = auto;
+        _auto?.SetDiskReadCoordinator(_coordinator);
         _reload = reload;
         _settings = settings;
-        _keepAwake = keepAwake ?? (auto is null ? null : new KeepAwake(KeepAwakeEnv.Create(auto.Status.Plays), log, () => _settings)); // 자동 모드가 있는 진짜 서비스에서만 기본으로 켬
+        _keepAwake = keepAwake ?? (auto is null ? null : new KeepAwake(KeepAwakeEnv.Create(auto.Status.Plays), log, () => _settings, _coordinator)); // 자동 모드가 있는 진짜 서비스에서만 기본으로 켬
+        _keepAwake?.SetDiskReadCoordinator(_coordinator);
         if (prewarm is not null && auto is not null)
         {
             AutoStatus status = auto.Status;
             prewarm.PostUpdateWait = g => AutoRelocator.PostUpdateWait(status, _settings.Auto, g.Name, DateTimeOffset.UtcNow);
             prewarm.ReplanStart = g => AutoRelocator.Replanning(status, g.Name)?.At;
+            prewarm.ReplanKept = g => _settings.Auto.Enabled && AutoRelocator.ReplanKept(status, g.Name); // 자동 모드가 꺼지면 재계획이 돌지 않으므로 보류하지 않음 (설정을 다시 읽어도 최신 값)
             prewarm.Relocating = name => status.Get(name)?.Stage == AutoStage.Relocating;
             prewarm.HasPlayed = auto.HasPlayed;
             prewarm.WarmRank = auto.WarmRank;
@@ -64,7 +71,7 @@ public sealed class Worker : BackgroundService
         _watchers = (primary, fallback);
         _watchKey = WatchKey(settings);
         LogWatcherOverride(settings);
-        _dispatcher = new GameDispatcher(settings.Games, streamer, log, env: dispatchEnv is null ? null : dispatchEnv with { RestreamCooldownMin = () => _settings.Auto.RestreamCooldownMin, IsWarm = prewarm is null ? dispatchEnv.IsWarm : prewarm.AlreadyWarm }); // 설정을 다시 읽어도 최신 값
+        _dispatcher = new GameDispatcher(settings.Games, streamer, log, env: dispatchEnv is null ? null : dispatchEnv with { RestreamCooldownMin = () => _settings.Auto.RestreamCooldownMin, IsWarm = prewarm is null ? dispatchEnv.IsWarm : prewarm.AlreadyWarm }, coordinator: _coordinator); // 설정을 다시 읽어도 최신 값
         _checker = checker;
         _gate = gate ?? new ReapplyGate();
         _quiet = quiet ?? BootQuiet.Real(log, () => _settings.Games, () => prewarm?.UptimeMs() ?? Environment.TickCount64); // 부팅 조용 구간 (시험은 주입)
@@ -103,6 +110,7 @@ public sealed class Worker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        _coordinator.SetServiceToken(stoppingToken);
         if (_settings.Games.Count == 0 && _auto is null && _reload is null)
         {
             _log.Info("service started: no games registered, idle (nothing is watched or reapplied)");
@@ -122,6 +130,7 @@ public sealed class Worker : BackgroundService
         _log.Info(_settings.Games.Count == 0
             ? "service started: no games registered yet, waiting for auto discovery or a config change"
             : $"service started: {_settings.Games.Count} game(s), watcher {_watchers.Primary.GetType().Name}");
+        NoteGameExits(); // 감시기 시작 전부터 실행 중인 등록 게임도 예열보다 먼저 디스크 양보에 등록
         DiskKinds.LogAtStart(_settings.Games, _log); // 게임 드라이브별 디스크 종류 (진단용 로그)
         if (_prewarm is not null)
         {
@@ -129,7 +138,7 @@ public sealed class Worker : BackgroundService
             {
                 if (_auto is not null)
                 {
-                    BootProbe.RunReal(_settings, _auto.Status, _log, _auto.WarmToken); // 서비스 시작 예열이 파일을 데우기 전의 콜드 비용 (부팅 뒤 첫 시작일 때만)
+                    BootProbe.RunReal(_settings, _auto.Status, _log, _auto.WarmToken, _coordinator); // 서비스 시작 예열이 파일을 데우기 전의 콜드 비용 (부팅 뒤 첫 시작일 때만)
                 }
 
                 using var startup = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _auto?.WarmToken ?? default); // 서비스 종료에도 시작 게이트 대기가 끝나게 (자동 모드가 없으면 WarmToken 이 취소되지 않음)
@@ -139,14 +148,16 @@ public sealed class Worker : BackgroundService
         }
 
         var channel = Channel.CreateUnbounded<ProcessStart>();
+        var dispatch = Channel.CreateUnbounded<ProcessStart>();
         Task watch = WatchAsync(channel.Writer, stoppingToken);
-        Task consume = Task.Run(() => ConsumeAsync(channel.Reader, stoppingToken), CancellationToken.None);
+        Task consume = Task.Run(() => ConsumeAsync(channel.Reader, dispatch.Writer, stoppingToken), CancellationToken.None);
+        Task handle = Task.Run(() => DispatchAsync(dispatch.Reader, stoppingToken), CancellationToken.None);
         Task reapply = Task.Run(() => ReapplyLoopAsync(stoppingToken), CancellationToken.None);
         Task reload = Task.Run(() => ReloadLoopAsync(stoppingToken), CancellationToken.None);
         Task keep = Task.Run(() => KeepAwakeLoopAsync(stoppingToken), CancellationToken.None);
         Task auto = _auto is null ? Task.CompletedTask : Task.Run(() => _auto.RunAsync(stoppingToken), CancellationToken.None);
         Task riotWatch = _riot is null ? Task.CompletedTask : Task.Run(() => _riot.RunAsync(stoppingToken), CancellationToken.None); // 챔피언 선택 선읽기는 재배치 루프·게임 시작 처리와 따로
-        await Task.WhenAll(watch, consume, reapply, reload, auto, keep, riotWatch);
+        await Task.WhenAll(watch, consume, handle, reapply, reload, auto, keep, riotWatch);
         _auto?.Shutdown();
         _prewarm?.Shutdown();
         _log.Info("service stopped");
@@ -236,10 +247,23 @@ public sealed class Worker : BackgroundService
         _riot?.NoteProcessStart(s.ExeName); // 리그 오브 레전드 게임 exe 가 뜨면 챔피언 선택 선읽기를 바로 멈춤
         if (_settings.Games.FirstOrDefault(g => g.ExeNames.Contains(s.ExeName, StringComparer.OrdinalIgnoreCase)) is { } game)
         {
+            IReadOnlySet<string>? names = CurrentNames();
+            lock (_gameStateLock)
+            {
+                if (names is not null)
+                {
+                    _coordinator.MarkExiting(_exits.GoneNames(_settings.Games, names, game.Name)); // 틱 전에 이미 끝난 다른 게임은 시작 스트림 판단에서 뺌 (종료 판정은 틱에서만)
+                }
+
+                _coordinator.Yield(game.OriginRoot, "game started", game.Name);
+                _exits.ObserveStarted(game);
+            }
+
             _prewarm?.NoteGameStart(game.Name); // 그 게임을 예열하던 스트림은 아래 취소에도 끝까지 (다른 게임의 예열은 묶음 경계에서 멈춤), 기록 없는 예열의 예산은 풂
             _prewarm?.ReleasePin(game.Name, "game started"); // 고정은 스트림·재적용 취소보다 먼저 풂
             _gate.Cancel(); // 재적용은 게임 exe 시작에서만 멈춥니다 (런처 같은 트리거 전용 프로그램은 아님)
             _prewarm?.Recovery?.YieldTo(game.OriginRoot); // 같은 디스크에서 재는 중인 회복 표본도 멈춤
+            _auto?.Tracer.CancelShadow(game.Name); // 돌고 있는 그림자 계획은 게임과 CPU 를 다투지 않게 취소
             _auto?.CancelWarm(); // 자동 모드의 예열 작업도 (핫 집합 스트림은 묶음 경계에서 멈추고, 그 뒤 예열은 시작하지 않음)
             if (_auto is not null)
             {
@@ -258,6 +282,25 @@ public sealed class Worker : BackgroundService
             RunTrigger(s);
         }
     };
+
+    // 시작 이벤트 시점의 프로세스 이름만 읽습니다 (프로세스를 열지 않음, 이름 스냅샷 한 번). 실패하면 null 이며 유예 표시는 틱에 맡깁니다.
+    private IReadOnlySet<string>? CurrentNames()
+    {
+        if (_settings.Games.Count < 2)
+        {
+            return null;
+        }
+
+        try
+        {
+            return new HashSet<string>(ProcessSnapshot.Take().Select(p => p.Exe), StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _log.Error("game start process snapshot failed", e);
+            return null;
+        }
+    }
 
     private bool IsGameExe(string exe) => _settings.Games.Any(g => g.ExeNames.Contains(exe, StringComparer.OrdinalIgnoreCase));
 
@@ -318,13 +361,32 @@ public sealed class Worker : BackgroundService
         }
     }
 
-    private async Task ConsumeAsync(ChannelReader<ProcessStart> reader, CancellationToken ct)
+    private async Task ConsumeAsync(ChannelReader<ProcessStart> reader, ChannelWriter<ProcessStart> dispatch, CancellationToken ct)
     {
         try
         {
             await foreach (ProcessStart s in reader.ReadAllAsync(ct))
             {
-                _dispatcher.Handle(s, ct);
+                dispatch.TryWrite(s);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 종료
+        }
+        finally
+        {
+            dispatch.TryComplete();
+        }
+    }
+
+    private async Task DispatchAsync(ChannelReader<ProcessStart> reader, CancellationToken ct)
+    {
+        try
+        {
+            await foreach (ProcessStart s in reader.ReadAllAsync(ct))
+            {
+                _dispatcher.Handle(s, ct); // 순서와 쿨다운 의미를 유지하며 별도 루프에서 처리
             }
         }
         catch (OperationCanceledException)
@@ -401,7 +463,7 @@ public sealed class Worker : BackgroundService
     }
 
     // 새 설정으로 감시기·디스패처·예열 대상·자동 모드를 바꿉니다. 쿨다운 같은 상태는 유지하고, 감시할 이름이 달라졌을 때만 감시기를 다시 만듭니다.
-    private void Apply(AsterSettings s)
+    internal void Apply(AsterSettings s)
     {
         _settings = s;
         _dispatcher.SetGames(s.Games);
@@ -455,7 +517,10 @@ public sealed class Worker : BackgroundService
                 continue; // 부팅 조용 구간의 검사는 기한을 그대로 둬서 구간이 끝난 다음 틱에 함
             }
 
-            ReapplyVerdict v = _gate.Run(ct, token => _checker.Check(g, token, SameDiskRunning), () => SameDiskRunning(g), () => ReapplyVerdict.GameRunning); // 진입 게이트와 파일 사이 점검이 같은 판정을 씀 (같은 물리 디스크의 등록 게임 전체), 실행 중이면 검사 자체를 부르지 않음
+            using DiskReadCoordinator.Lease? lease = _coordinator.TryBegin(g.OriginRoot, "reapply", ct); // 시작 이벤트를 놓쳐도 양보 중인 디스크의 해시 읽기·재적용은 하지 않음 (null 이면 양보 중)
+            ReapplyVerdict v = lease is null
+                ? ReapplyVerdict.GameRunning
+                : _gate.Run(lease.Token, token => _checker.Check(g, token, o => SameDiskRunning(o) || !lease.IsValid), () => SameDiskRunning(g) || !lease.IsValid, () => ReapplyVerdict.GameRunning); // 진입 게이트와 파일 사이 점검이 같은 판정을 씀 (같은 물리 디스크의 등록 게임 전체 + 대여 유효), 실행 중이면 검사 자체를 부르지 않음
             bool waiting = v == ReapplyVerdict.Cancelled || (resuming.Contains(g.Name) && v is ReapplyVerdict.GameRunning or ReapplyVerdict.DiskBusy or ReapplyVerdict.Recovering or ReapplyVerdict.OnBattery or ReapplyVerdict.NotIdle or ReapplyVerdict.PostUpdateDelay);
             _ = waiting ? resuming.Add(g.Name) : resuming.Remove(g.Name);
             due[g.Name] = DateTimeOffset.UtcNow + (waiting ? ResumeRetry : TimeSpan.FromMinutes(g.ReapplyMinutes));
@@ -477,21 +542,50 @@ public sealed class Worker : BackgroundService
     public static bool RelocationAllowed(BootQuiet quiet) => !quiet.Defers("auto relocation and new trace prewarm");
 
     // 폴링·ETW 어느 쪽이든 재적용 틱마다 (30 초) 프로세스 이름을 한 번 읽어 실행 중이던 게임이 사라졌는지 봅니다.
-    private void NoteGameExits()
+    internal void NoteGameExits()
     {
-        if (_settings.Games.Count == 0)
-        {
-            return;
-        }
-
         try
         {
-            IReadOnlyList<(int Pid, string Exe)> procs = ProcessSnapshot.Take();
-            NoteReads(procs);
-            HashSet<string> names = new(procs.Select(p => p.Exe), StringComparer.OrdinalIgnoreCase);
-            foreach (GameSettings g in _exits.Poll(_settings.Games, names))
+            IReadOnlyList<(int Pid, string Exe)> procs = _settings.Games.Count == 0 ? [] : ProcessSnapshot.Take();
+            if (procs.Count > 0)
             {
-                OnGameExit(g);
+                NoteReads(procs);
+            }
+
+            HashSet<string> names = new(procs.Select(p => p.Exe), StringComparer.OrdinalIgnoreCase);
+            GameSettings[] exited;
+            List<GameSettings> unseen = [];
+            lock (_gameStateLock)
+            {
+                exited = [.. _exits.Poll(_settings.Games, names, unseen)]; // 보이지 않은 짧은 실행도 포함 (양보 해제·자동 모드 알림용)
+                Dictionary<string, string> registered = _exits.RunningNames
+                    .Where(name => _settings.Games.Any(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase)))
+                    .ToDictionary(name => name, name => _settings.Games.First(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase)).OriginRoot, StringComparer.OrdinalIgnoreCase);
+                _coordinator.ReconcileRunningGames(registered);
+                IReadOnlySet<string> grace = _exits.GraceNames;
+                foreach (GameSettings game in _settings.Games.Where(g => registered.ContainsKey(g.Name) && (!grace.Contains(g.Name) || !_coordinator.IsRegistered(g.Name))))
+                {
+                    _coordinator.Yield(game.OriginRoot, "registered game running", game.Name); // 시작 이벤트 누락·서비스 재시작에도 실행 중에는 새 배경 I/O 를 예약하지 않음
+                }
+
+                foreach (GameSettings game in exited)
+                {
+                    _coordinator.Resume(game.OriginRoot, game.Name);
+                }
+
+                _coordinator.MarkExiting(grace); // 종료 유예 중 게임은 양보는 유지하되 다른 게임 시작 스트림 판단에서 뺌
+            }
+
+            foreach (GameSettings g in exited)
+            {
+                if (unseen.Contains(g))
+                {
+                    _auto?.NoteGameExit(g); // 보이지 않은 짧은 실행: 상태·트레이서 종료 처리(OnGameExit)는 받지 않음
+                }
+                else
+                {
+                    OnGameExit(g);
+                }
             }
         }
         catch (Exception e) when (e is not OperationCanceledException)

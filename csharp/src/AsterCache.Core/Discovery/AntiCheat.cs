@@ -55,10 +55,10 @@ public static class AntiCheat
     }
 
     /// ETW 트레이스를 걸면 안 되는 종류인가: 커널 수준 안티치트 (eac·battleye·vanguard·kernel) 와 탐지 실패 (unknown). 등록 정보에 쓰인 값도 같은 규칙입니다.
-    public static bool ForbidsTrace(string? kind) => kind is "eac" or "battleye" or "vanguard" or "kernel" or "unknown";
+    public static bool ForbidsTrace(string? kind) => Capabilities.Decide(CapabilityFeature.Trace, kind).Outcome == CapabilityOutcome.Block;
 
     /// 파일 고정 (pin) 을 하면 안 되는 종류: 트레이스 금지 종류 전부와 리코셰 (보호 드라이버가 열린 핸들을 문제 삼을 수 있음). 리코셰는 실측에서 트레이스가 문제없어 트레이스는 허용합니다. SSD 티어는 안티치트가 있으면 종류와 상관없이 거절.
-    public static bool ForbidsPin(string? kind) => ForbidsTrace(kind) || kind == "ricochet";
+    public static bool ForbidsPin(string? kind) => Capabilities.Decide(CapabilityFeature.Pin, kind).Outcome == CapabilityOutcome.Block;
 
     private static bool IsEac(string n) =>
         Same(n, "EasyAntiCheat") || Starts(n, "EasyAntiCheat_EOS") || (Starts(n, "EasyAntiCheat") && Ends(n, ".exe")) || Same(n, "start_protected_game.exe");

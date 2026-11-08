@@ -77,8 +77,8 @@ internal sealed class App : Application
             var poll = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
             poll.Tick += (_, _) =>
             {
+                AutoStatusFile? auto = Manage.ReloadAuto(); // 메뉴를 다시 만들기 전에 런처 이름을 먼저 읽음
                 Update(Model.Refresh);
-                AutoStatusFile? auto = Manage.ReloadAuto();
                 _main.UpdateStatus();
                 if (!Smoke)
                 {
@@ -157,17 +157,17 @@ internal sealed class App : Application
         foreach (AutoNotice e in AutoStatusFile.NewEvents(status.Events, _started, _seenEvents))
         {
             _seenEvents.Add(e.Key);
-            Toast(AutoStatusFile.Notice(e, L.Current));
+            Toast(AutoStatusFile.Notice(e with { Game = Model.DisplayName(e.Game) }, L.Current));
         }
 
         foreach (string game in AutoStatusFile.FirstRunFinished(_stageSeen, status)) // 이벤트로는 알 수 없어 단계 변화로 감지
         {
-            Toast(L.T("Toast_FirstRun", game));
+            Toast(L.T("Toast_FirstRun", Model.DisplayName(game)));
         }
 
         foreach (string game in AutoStatusFile.PrewarmFinished(_prewarmSeen, _prewarmToast, status, DateOnly.FromDateTime(DateTime.Now)))
         {
-            Toast(L.T("Toast_Prewarmed", game));
+            Toast(L.T("Toast_Prewarmed", Model.DisplayName(game)));
         }
     }
 
@@ -200,7 +200,7 @@ internal sealed class App : Application
             var one = new NativeMenu();
             one.Items.Add(Item(L.T("Menu_PrewarmStream"), () => InBackground(() => Model.StreamNow(name))));
             one.Items.Add(Item(L.T("Btn_Remove"), () => Update(() => Model.RemoveGame(name))));
-            games.Items.Add(new NativeMenuItem(name) { Menu = one });
+            games.Items.Add(new NativeMenuItem(Model.DisplayName(name)) { Menu = one });
         }
 
         if (Model.Games.Count == 0)

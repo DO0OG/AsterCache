@@ -1,3 +1,4 @@
+using AsterCache.Core.Apply;
 using AsterCache.Core.Discovery;
 using AsterCache.Core.Json;
 using AsterCache.Core.Settings;
@@ -42,6 +43,15 @@ public sealed class AutoTracerTests : IDisposable
         _trace.Records.Add(TraceRecord.Read(DateTime.UtcNow, 999, @"D:\Games\Foo\c.bin", 0, 4096)); // 게임 프로세스가 아님
     }
 
+    private void EndAfterExitGrace(AutoTracer? tracer = null)
+    {
+        _rig.World.Running = false;
+        AutoTracer target = tracer ?? _tracer;
+        target.Step();
+        _rig.World.Now += GameExitTracker.Grace;
+        target.Step();
+    }
+
     [Fact]
     public void StartOpensOneSessionOnlyWhenTheRawTraceIsMissingAndNoOtherRuns()
     {
@@ -72,6 +82,8 @@ public sealed class AutoTracerTests : IDisposable
         _rig.World.Procs = [];
         _rig.World.Running = false;
         _tracer.Step();
+        _rig.World.Now += GameExitTracker.Grace;
+        _tracer.Step();
         Assert.True(File.Exists(Raw));
         Assert.EndsWith("foo.boot.trace.json", boot, StringComparison.Ordinal);
         bool Exists(string path) => _rig.World.Files.Contains(path) || File.Exists(path);
@@ -95,6 +107,9 @@ public sealed class AutoTracerTests : IDisposable
         _rig.World.Procs = [];
         _rig.World.Running = false;
         _tracer.Step();
+        Assert.True(_tracer.Active);
+        _rig.World.Now += GameExitTracker.Grace;
+        _tracer.Step();
 
         Assert.False(_tracer.Active);
         Assert.True(_trace.Stopped);
@@ -105,6 +120,31 @@ public sealed class AutoTracerTests : IDisposable
         Assert.True(File.Exists(Path.Combine(Path.GetDirectoryName(Raw)!, "foo.trace.run1.json")));
         Assert.Equal(AutoStage.WaitingIdle, _rig.Status.Get("foo")!.Stage);
         Assert.Contains(_rig.Log.Lines, l => l.Contains("auto trace ended (game exited)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ARunEndRecordsTheOrbitShadowPlanAndLeavesTheOtherStatusFieldsAlone()
+    {
+        Reads((0, 65536), (65536, 65536));
+        _tracer.Start(_game);
+        _rig.World.Procs = [(100, 5L << 20)];
+        _rig.World.Running = true;
+        _tracer.Step();
+        EndAfterExitGrace();
+        AutoGameEntry before = _rig.Status.Get("foo")!;
+
+        AutoGameEntry? after = null;
+        for (int i = 0; i < 200 && after?.OrbitShadow is null; i++) // 그림자 계획은 BelowNormal 스레드에서 돌아 잠시 기다림
+        {
+            Thread.Sleep(10);
+            _tracer.Step(); // 트레이스 루프가 끝난 결과를 상태로 옮김
+            after = _rig.Status.Get("foo");
+        }
+
+        Assert.NotNull(after?.OrbitShadow);
+        Assert.Equal("baseline", after!.OrbitShadow!.Selected);
+        Assert.True(after.OrbitShadow.Order > 0);
+        Assert.Equal(before with { OrbitShadow = null }, after with { OrbitShadow = null });
     }
 
     [Fact]
@@ -147,6 +187,7 @@ public sealed class AutoTracerTests : IDisposable
     [Fact]
     public void GameProcessWhoseReadCounterCannotBeOpenedStillCountsAsRunning()
     {
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { TraceCapSeconds = 120 } };
         Reads((0, 65536));
         _tracer.Start(_game);
         _rig.World.Procs = []; // 보호된 프로세스: 읽기량을 못 열어 목록에는 없지만 이름으로는 실행 중
@@ -155,7 +196,13 @@ public sealed class AutoTracerTests : IDisposable
         _tracer.Step();
 
         Assert.True(_tracer.Active);
+        _rig.World.Now += GameExitTracker.Grace + TimeSpan.FromSeconds(1);
+        _tracer.Step(); // 등록된 ExeNames 가 살아 있으면 유예 상한이 지나도 종료가 아님
+        Assert.True(_tracer.Active);
         _rig.World.Running = false;
+        _tracer.Step();
+        Assert.True(_tracer.Active);
+        _rig.World.Now += GameExitTracker.Grace;
         _tracer.Step();
         Assert.False(_tracer.Active);
     }
@@ -219,7 +266,7 @@ public sealed class AutoTracerTests : IDisposable
     }
 
     [Fact]
-    public void ARegisteredExeThatLeftButWhoseChildStillRunsUnderTheGameFolderKeepsTheTraceGoingAndItsReadsCount()
+    public void AnUnregisteredProcessOnlyGetsTheRegisteredNameExitGrace()
     {
         Reads((0, 65536));
         _tracer.Start(_game);
@@ -229,29 +276,32 @@ public sealed class AutoTracerTests : IDisposable
 
         _rig.World.Running = false; // cod.exe 가 빠짐
         _rig.World.Procs = [];
-        _rig.World.RootPids = [200]; // sp26-cod.exe 는 폴더 아래
         _rig.World.Reads[200] = 40L << 20;
         _tracer.Step();
         Assert.True(_tracer.Active);
-        _rig.World.Reads[200] = 105L << 20; // 세션 뒤에 시작한 프로세스는 0 에서 세므로 64 MiB 를 넘음
+        _rig.World.Reads[200] = 105L << 20; // 미등록 helper 의 읽기는 게임 읽기량으로 보지 않음
+        _tracer.Step();
+        Assert.True(_tracer.Active);
+        _rig.World.Now += GameExitTracker.Grace;
         _tracer.Step();
         Assert.False(_tracer.Active);
-        Assert.Contains(_rig.Log.Lines, l => l.Contains("(read cap)", StringComparison.Ordinal));
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("auto trace ended (game exited)", StringComparison.Ordinal));
     }
 
     [Fact]
-    public void TheTraceEndsAsGameExitedOnlyWhenNeitherTheRegisteredExeNorAnyProcessUnderTheFolderRemains()
+    public void RegisteredExeKeepsTheTraceAliveAndThenUsesTheRegisteredNameGrace()
     {
         Reads((0, 65536));
         _tracer.Start(_game);
         _rig.World.Procs = [];
         _rig.World.Running = false;
-        _rig.World.RootPids = [200];
         _rig.World.Reads[200] = 1L << 20;
         _tracer.Step();
         Assert.True(_tracer.Active);
 
-        _rig.World.RootPids = [];
+        _tracer.Step();
+        Assert.True(_tracer.Active); // 등록 이름이 사라진 직후에는 런처 전환 유예
+        _rig.World.Now += GameExitTracker.Grace;
         _tracer.Step();
         Assert.False(_tracer.Active);
         Assert.Contains(_rig.Log.Lines, l => l.Contains("auto trace ended (game exited)", StringComparison.Ordinal));
@@ -286,6 +336,8 @@ public sealed class AutoTracerTests : IDisposable
         _tracer.Start(_game);
         _rig.World.Procs = [];
 
+        _tracer.Step();
+        _rig.World.Now += GameExitTracker.Grace;
         _tracer.Step();
 
         AutoGameEntry e = _rig.Status.Get("foo")!;
@@ -333,6 +385,8 @@ public sealed class AutoTracerTests : IDisposable
         _tracer.Start(_game);
         _rig.World.Running = false;
         _tracer.Step();
+        _rig.World.Now += GameExitTracker.Grace;
+        _tracer.Step();
         Assert.False(_tracer.Active);
         _trace.Records.Clear();
     }
@@ -365,7 +419,7 @@ public sealed class AutoTracerTests : IDisposable
         Assert.True(_tracer.Active);
         Assert.Null(_rig.World.Listener); // 두 번째부터는 선행 읽기를 켜지 않음
         Assert.Equal(AutoStage.Done, _rig.Status.Get("foo")!.Stage);
-        _tracer.Step();
+        EndAfterExitGrace();
 
         Assert.Equal(AutoStage.Done, _rig.Status.Get("foo")!.Stage);
         Assert.Equal(2, AutoTracer.RunCount(_game, File.Exists));
@@ -378,6 +432,58 @@ public sealed class AutoTracerTests : IDisposable
     }
 
     [Fact]
+    public async Task TheMergeWaitsForTheZoneLockAndDropsThePlayWhenACleanupRanMeanwhile()
+    {
+        SetRuns(3);
+        SeedRuns(2);
+        var tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings) { MinRunBytes = 0 };
+        Reads((1000L * MiB, 35L << 20));
+        tracer.Start(_game);
+        string run3 = TraceWriter.RunPath(Raw, 3);
+
+        Task end;
+        using (DataLock? gate = DataLock.TryAcquire(_game.Plan)) // 업데이트 정리 (DropChanged) 가 잠금 안에서 파일을 고치는 중
+        {
+            Assert.NotNull(gate);
+            end = Task.Run(() => EndAfterExitGrace(tracer)); // 두 번째 이후 플레이의 저장·병합은 다른 스레드에서 같은 잠금을 기다림
+            Assert.False(SpinWait.SpinUntil(() => end.IsCompleted, 400));
+            Assert.False(File.Exists(run3)); // 정리가 끝나기 전에는 run·병합본을 쓰지 않음
+            AutoTracer.DropChanged(_game, new HashSet<string>(StringComparer.OrdinalIgnoreCase) { @"D:\Games\Foo\a.bin" });
+            _rig.World.FileTimes[Raw] = _rig.World.Now; // 실제 원시 트레이스를 고쳤으니 가짜 파일 시각도 맞춤
+        }
+
+        await end.WaitAsync(TimeSpan.FromSeconds(20));
+        Assert.False(File.Exists(run3)); // 정리가 있었으므로 이 플레이는 저장하지 않음 (정리 전 오프셋 재유입 방지)
+        Assert.Empty((List<object?>)JsonRead.ReadFile(Raw)!); // 병합본은 정리 결과 그대로: 뺀 행이 다시 들어오지 않음
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("while it waited for the zone lock", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void APlayKeptWhileTheZoneLockIsBusyIsSavedOnALaterStep()
+    {
+        Reads((0, 65536));
+        _tracer.Start(_game);
+        _rig.World.Procs = [(100, 0L)]; // 첫 표본은 기준
+        _tracer.Step();
+        _rig.World.Procs = [(100, 70L << 20)]; // 읽기 상한 (64 MiB) 을 넘김: 세션을 멈추고 게임이 끝날 때까지 보관
+        _tracer.Step();
+
+        using (DataLock? gate = DataLock.TryAcquire(_game.Plan)) // 정리·병합 중이라 잠금이 바쁨
+        {
+            Assert.NotNull(gate);
+            _rig.World.Running = false;
+            _rig.World.Now += GameExitTracker.Grace;
+            _tracer.Step();
+            Assert.False(File.Exists(Raw)); // 버리지 않고 보관
+            Assert.Contains(_rig.Log.Lines, l => l.Contains("waits for the zone lock", StringComparison.Ordinal));
+        }
+
+        _tracer.Step(); // 잠금이 풀린 뒤 다음 Step 에서 저장
+        Assert.True(File.Exists(Raw));
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("read events saved", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void ARunThatReadsLessThanTheMinimumIsNotSavedAndDoesNotUseUpARun()
     {
         SetRuns(3);
@@ -385,13 +491,13 @@ public sealed class AutoTracerTests : IDisposable
         _trace.Records.Clear();
         Reads((0, 40L << 20), (40L << 20, 40L << 20)); // 한 이벤트는 64 MiB 까지
         tracer.Start(_game);
-        tracer.Step();
+        EndAfterExitGrace(tracer);
         Assert.Equal(1, AutoTracer.RunCount(_game, File.Exists));
         _trace.Records.Clear();
 
         Reads((131072, 65536)); // 메뉴만 켠 정도
         tracer.Start(_game);
-        tracer.Step();
+        EndAfterExitGrace(tracer);
 
         Assert.Equal(1, AutoTracer.RunCount(_game, File.Exists));
         Assert.False(File.Exists(TraceWriter.RunPath(Raw, 2)));
@@ -410,7 +516,7 @@ public sealed class AutoTracerTests : IDisposable
         Reads((131072L * 1000, 65536)); // 이벤트 1 건 < 200 건의 1 %
 
         _tracer.Start(_game);
-        _tracer.Step();
+        EndAfterExitGrace();
 
         Assert.Equal(1, AutoTracer.RunCount(_game, File.Exists));
         Assert.Contains(_rig.Log.Lines, l => l.Contains("1 events against 200 in run 1", StringComparison.Ordinal));
@@ -432,7 +538,7 @@ public sealed class AutoTracerTests : IDisposable
         _trace.Records.Add(TraceRecord.Write(DateTime.UtcNow, 999, @"D:\Games\Foo\a.bin")); // 게임 프로세스가 아님
 
         _tracer.Start(_game);
-        _tracer.Step();
+        EndAfterExitGrace();
 
         IReadOnlyDictionary<string, string> marks = AutoTracer.ReadVolatile(AutoTracer.VolatilePath(_game));
         Assert.Equal(["opened for write", "changed between runs"], [marks[@"D:\Games\Foo\b.bin"], marks[@"D:\Games\Foo\c.bin"]]);
@@ -446,7 +552,7 @@ public sealed class AutoTracerTests : IDisposable
         FirstRunOfTwoBlocks();
         Reads((131072, 65536));
         _tracer.Start(_game);
-        _tracer.Step();
+        EndAfterExitGrace();
         Assert.Equal(2, AutoTracer.RunCount(_game, File.Exists));
 
         _tracer.Start(_game);
@@ -465,7 +571,7 @@ public sealed class AutoTracerTests : IDisposable
 
         Reads((131072, 65536));
         _tracer.Start(_game);
-        _tracer.Step();
+        EndAfterExitGrace();
 
         Assert.Equal(2, AutoTracer.RunCount(_game, File.Exists));
         Assert.True(File.Exists(TraceWriter.RunPath(Raw, 1)));
@@ -481,7 +587,7 @@ public sealed class AutoTracerTests : IDisposable
         string before = File.ReadAllText(Raw);
 
         _tracer.Start(_game); // 읽기 0 건
-        _tracer.Step();
+        EndAfterExitGrace();
         _rig.World.StartTraceThrows = new IOException("etw");
         _tracer.Start(_game);
 
@@ -569,7 +675,7 @@ public sealed class AutoTracerTests : IDisposable
         Assert.True(tracer.Active);
         Assert.Equal(AutoStage.Done, _rig.Status.Get("foo")?.Stage); // 첫 기록 경로 (Tracing·Learning 상태, 선행 읽기) 와 섞이지 않음
         Assert.Contains(_rig.Log.Lines, l => l.Contains("auto trace started (run 1/3", StringComparison.Ordinal));
-        tracer.Step();
+        EndAfterExitGrace(tracer);
 
         Assert.True(File.Exists(TraceWriter.RunPath(Raw, 2))); // 번호는 최대 번호 + 1: run1 을 덮어쓰지 않음
         Assert.Contains(_rig.Log.Lines, l => l.Contains("(run 2, merged)", StringComparison.Ordinal));
@@ -590,14 +696,14 @@ public sealed class AutoTracerTests : IDisposable
 
         Reads((1000L * MiB, 35L << 20), (1035L * MiB, 35L << 20));
         tracer.Start(_game);
-        tracer.Step();
+        EndAfterExitGrace(tracer);
         Assert.True(File.Exists(AutoTracer.LegacyRun1Path(_game)));
         Assert.Equal(2, AutoTracer.RunCount(_game, File.Exists, AutoTracer.RunReadBytes)); // 옛 run1 + run2
 
         var restarted = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings);
         Reads((2000L * MiB, 35L << 20), (2035L * MiB, 35L << 20));
         restarted.Start(_game);
-        restarted.Step();
+        EndAfterExitGrace(restarted);
 
         Assert.True(File.Exists(TraceWriter.RunPath(Raw, 3)));
         Assert.Equal(3, AutoTracer.RunCount(_game, File.Exists, AutoTracer.RunReadBytes));
@@ -613,12 +719,12 @@ public sealed class AutoTracerTests : IDisposable
         var tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings); // 최소 읽기량 64 MiB
         Reads((0, 1 * MiB));
         tracer.Start(_game);
-        tracer.Step();
+        EndAfterExitGrace(tracer);
         Assert.True(File.Exists(TraceWriter.RunPath(Raw, 1))); // 새 게임의 첫 기록은 run1 도 같이 씀
 
         Reads((1000L * MiB, 35L << 20), (1035L * MiB, 35L << 20));
         tracer.Start(_game);
-        tracer.Step();
+        EndAfterExitGrace(tracer);
 
         Assert.True(File.Exists(TraceWriter.RunPath(Raw, 2)));
         Assert.False(File.Exists(AutoTracer.LegacyRun1Path(_game)));
@@ -634,7 +740,7 @@ public sealed class AutoTracerTests : IDisposable
         var tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings);
         Reads((0, 1 * MiB));
         tracer.Start(_game);
-        tracer.Step();
+        EndAfterExitGrace(tracer);
 
         Assert.False(File.Exists(AutoTracer.LegacyRun1Path(_game)));
         Assert.Equal(0, AutoTracer.RunCount(_game, File.Exists, AutoTracer.RunReadBytes));
@@ -653,6 +759,8 @@ public sealed class AutoTracerTests : IDisposable
         {
             tracer.Start(_game);
             tracer.Step();
+            _rig.World.Now += GameExitTracker.Grace;
+            tracer.Step();
         }
 
         Assert.False(File.Exists(Raw));
@@ -663,7 +771,7 @@ public sealed class AutoTracerTests : IDisposable
         var restarted = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings);
         Reads((0, 1 * MiB));
         restarted.Start(_game);
-        restarted.Step();
+        EndAfterExitGrace(restarted);
 
         Assert.False(File.Exists(mark));
         Assert.True(File.Exists(TraceWriter.RunPath(Raw, 1)));
@@ -696,7 +804,7 @@ public sealed class AutoTracerTests : IDisposable
         Reads((0, 40L << 20), (40L << 20, 40L << 20));
         tracer.Start(_game);
         Assert.True(tracer.Active); // 유효 회차 2 < trace_runs 3
-        tracer.Step();
+        EndAfterExitGrace(tracer);
 
         Assert.True(File.Exists(TraceWriter.RunPath(Raw, 4)));
         Assert.Equal(run3Text, File.ReadAllText(run3)); // 덮어쓰지 않음
@@ -715,7 +823,7 @@ public sealed class AutoTracerTests : IDisposable
 
         Reads((1000L * MiB, 35L << 20), (1035L * MiB, 35L << 20));
         tracer.Start(_game);
-        tracer.Step();
+        EndAfterExitGrace(tracer);
 
         var merged = (List<object?>)JsonRead.ReadFile(Raw)!;
         long firstOffset = (long)((JObject)merged[0]!)["offset"]!;
@@ -724,6 +832,45 @@ public sealed class AutoTracerTests : IDisposable
         Assert.Equal((100 + 100 + 70) * 16, merged.Count);
         Assert.Contains("\"new_mib\": 70", File.ReadAllText(AutoTracer.MergeMetaPath(_game)), StringComparison.Ordinal);
         Assert.Contains("\"run\": 4", File.ReadAllText(AutoTracer.MergeMetaPath(_game)), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MergeLeavesTheCommonSplitBesideTheTraceWithoutChangingTheMergedTrace()
+    {
+        SetRuns(5);
+        SeedRuns(2);
+        var tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings) { MinRunBytes = 0 };
+
+        Reads((1000L * MiB, 35L << 20));
+        tracer.Start(_game);
+        EndAfterExitGrace(tracer);
+
+        Assert.True(File.Exists(TracePhases.CommonPath(_game)));
+        Assert.Contains("\"runs\": 3", File.ReadAllText(TracePhases.CommonPath(_game)), StringComparison.Ordinal);
+        Assert.Equal(3, AutoTracer.LastRunNumber(_game, File.Exists));
+    }
+
+    [Fact]
+    public void UpdateRewriteRecountsTheSavedCommonSoTheChangedFileLeavesIt()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(Raw)!);
+        var a = new AsterCache.Core.Trace.TraceEvent(@"D:\Games\Foo\a.bin", 0, 100 * MiB);
+        var b = new AsterCache.Core.Trace.TraceEvent(@"D:\Games\Foo\b.bin", 0, 100 * MiB);
+        for (int n = 1; n <= 3; n++)
+        {
+            TraceWriter.WriteFile(TraceWriter.RunPath(Raw, n), [a, b]);
+        }
+
+        TraceWriter.WriteFile(Raw, [a, b]);
+        TracePhases.Recount(_game);
+        Assert.Equal(2, TracePhases.CommonOf(_game)!.Count); // 세 회차 모두 읽은 a, b 가 common
+
+        using DataLock? gate = DataLock.TryAcquire(_game.Plan);
+        Assert.NotNull(gate);
+        AutoTracer.DropChanged(_game, new HashSet<string>(StringComparer.OrdinalIgnoreCase) { b.Path }); // 업데이트로 b.bin 이 바뀜
+
+        var only = Assert.Single(TracePhases.CommonOf(_game)!);
+        Assert.Equal(a.Path, only.Path); // 다시 쓴 run 을 반영해 common 이 갱신되고 b.bin 은 빠짐
     }
 
     [Fact]
@@ -916,6 +1063,8 @@ public sealed class AutoTracerTests : IDisposable
         Assert.Equal(AutoTracer.MaxRunFiles - 1, AutoTracer.LastRunNumber(_game, File.Exists)); // 병합본을 기준으로 run 파일 번호를 당김
         _rig.World.Running = false;
         _tracer.Step();
+        _rig.World.Now += GameExitTracker.Grace;
+        _tracer.Step();
 
         Assert.True(File.Exists(TraceWriter.RunPath(Raw, AutoTracer.MaxRunFiles)));
         Assert.False(File.Exists(TraceWriter.RunPath(Raw, AutoTracer.MaxRunFiles + 1)));
@@ -953,6 +1102,11 @@ public sealed class AutoTracerTests : IDisposable
         Assert.Equal(0, _rig.World.CanonicalizeCalls);
         Assert.False(File.Exists(Raw));
 
+        _rig.World.Now += GameExitTracker.Grace;
+        tracer.Step(); // 게임 종료 유예는 지났지만 같은 디스크 게임이 있어 저장은 보류
+        Assert.Equal(0, _rig.World.CanonicalizeCalls);
+        Assert.False(File.Exists(Raw));
+
         neighbour = false;
         tracer.Step();
         Assert.Equal(1, _rig.World.CanonicalizeCalls);
@@ -963,7 +1117,7 @@ public sealed class AutoTracerTests : IDisposable
     }
 
     [Fact]
-    public void AHeldTraceIsSavedOnceTheRegisteredExeEndsEvenIfAnUnregisteredProcessUnderTheFolderRemains()
+    public void AHeldTraceIsSavedOnceTheRegisteredExeEndsAfterGrace()
     {
         Reads((0, 65536));
         _tracer.Start(_game);
@@ -975,7 +1129,9 @@ public sealed class AutoTracerTests : IDisposable
         Assert.False(File.Exists(Raw));
 
         _rig.World.Running = false;
-        _rig.World.RootPids = [200]; // 설치 폴더 아래 미등록 상주 프로세스는 실행 근거가 아님
+        _tracer.Step();
+        Assert.False(File.Exists(Raw));
+        _rig.World.Now += GameExitTracker.Grace;
         _tracer.Step();
 
         Assert.True(File.Exists(Raw));
@@ -1000,6 +1156,8 @@ public sealed class AutoTracerTests : IDisposable
         tracer.Step();
         _rig.World.Running = false;
 
+        tracer.Step();
+        _rig.World.Now += GameExitTracker.Grace;
         tracer.Step();
 
         Assert.Equal(1, startsDuringSave);
@@ -1035,6 +1193,8 @@ public sealed class AutoTracerTests : IDisposable
 
         _tracer.Start(_game);
         _rig.World.Running = false;
+        _tracer.Step();
+        _rig.World.Now += GameExitTracker.Grace;
         _tracer.Step();
 
         HashSet<(string Path, long Offset, long Length)> merged = TraceBlocks(Raw);

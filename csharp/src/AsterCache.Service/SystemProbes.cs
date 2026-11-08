@@ -108,6 +108,16 @@ public static partial class DiskActivity
     /// letter ("D:") 가 놓인 물리 디스크(들)의 처리량 합 (바이트/초). 디스크를 찾지 못하거나 읽지 못하면 null.
     public static double? BytesPerSecond(string letter) => Shared.BytesPerSecond(letter);
 
+    /// 서비스 시작에서 수집을 미리 켬 (첫 표본이 없는 구간을 시작 직후 몇 초로 줄임). 시험은 부르지 않음.
+    public static void Start() => Shared.Start();
+
+    /// 값과 상태를 한 번에 읽음 (Warming·Stale 과 Broken 을 구분하는 호출자용). 바쁨 판정은 IsBusy(bps, state).
+    /// keepStalled: 게임 보호 판정용. 수집이 GiveUpMs 넘게 멈춘 정체는 Broken 으로 넘기지 않고 Warming·Stale 로 유지 (정체는 고장이 아님).
+    public static (double? Bps, SampleState State) Read(string letter, bool keepStalled = false) => Shared.Read(letter, keepStalled);
+
+    /// 바쁜가, 표본이 아직 없거나 낡았으면 바쁨, 읽지 못하는 고장은 바쁘지 않음 (기존 동작: 고장 때문에 영구히 막지 않음). keepStalled 는 Read 와 같음.
+    public static bool BusyUnlessBroken(string letter, bool keepStalled = false) => Shared.BusyUnlessBroken(letter, keepStalled);
+
     /// 읽지 못하면 바쁜 것으로 간주 (보수적: 재적용을 미룸).
     public static bool IsBusy(string letter) => BytesPerSecond(letter) is not { } bps || bps >= BusyBytesPerSecond;
 
@@ -161,42 +171,159 @@ public static partial class DiskActivity
         }
     }
 
-    /// 모든 물리 디스크 인스턴스의 표본을 2 초 캐시해 같은 디스크를 묻는 여러 호출이 한 번만 잽니다.
-    public sealed class PhysicalSampler(Func<IReadOnlyDictionary<string, double>?> sample, Func<long> nowMs)
+    /// 표본 상태: Ok = 최신 표본이 있음, Warming = 첫 표본 전, Stale = 마지막 성공 표본이 StaleMs 이상 지남, Broken = 수집 실패·카운터 쓸 수 없음·수집이 GiveUpMs 넘게 멈춤.
+    public enum SampleState { Ok, Warming, Stale, Broken }
+
+    /// 상태와 값을 한 번 읽은 결과로 바쁨을 판정: Ok 는 값으로, Warming·Stale 은 바쁨 (보류), Broken 은 바쁘지 않음 (고장 때문에 예열이 영구히 멈추지 않게).
+    public static bool IsBusy(double? bps, SampleState state) => state switch
     {
-        private readonly object _gate = new();
-        private long _at = long.MinValue;
-        private IReadOnlyDictionary<string, double>? _last;
+        SampleState.Ok => bps >= BusyBytesPerSecond,
+        SampleState.Broken => false,
+        _ => true,
+    };
 
-        public double? BytesPerSecond(string letter)
+    /// 표본은 호출자 스레드에서 잡지 않습니다: 처음 부를 때 시작한 백그라운드 스레드가 CacheMs 간격으로 모든 물리 디스크 인스턴스를 잡아 최신 표본만 바꿔 두고, 호출은 그것을 읽기만 합니다 (표본 대기로 막히지 않음).
+    /// start: 수집 루프를 돌리는 방법 (기본 백그라운드 스레드, 시험은 아무것도 안 하고 Refresh·Tick 을 직접 부름). log: 수집 실패 기록 (기본 DiskActivity.Log).
+    public sealed class PhysicalSampler(Func<IReadOnlyDictionary<string, double>?> sample, Func<long> nowMs, Action<Action>? start = null, Func<ILog?>? log = null)
+    {
+        private sealed record Snapshot(long At, IReadOnlyDictionary<string, double>? Data);
+
+        // 표본 간격 (CacheMs) 의 두 배: 한 번 놓쳐도 이어지고, 두 번 연속 놓치면 낡은 값으로 판정하지 않음.
+        private const long StaleMs = CacheMs * 2;
+
+        // 수집이 이만큼 (60 초, 정상 간격의 30 배) 나오지 않으면 스레드가 죽거나 멈춘 것으로 보고 Broken 으로 넘김: 영구 보류 방지.
+        private const long GiveUpMs = 60_000;
+        private const string SampleStalled = "sample_stalled";
+        private volatile Snapshot? _latest;
+        private int _stalledWarned; // 정체 경고를 이미 남겼는가 (0/1)
+        private long _startedAt = long.MinValue; // 수집을 시작한 시각, 시작 전에는 MinValue
+
+        /// 수집을 시작 (한 번만).
+        public void Start()
         {
-            IReadOnlyDictionary<string, double>? instances;
-            lock (_gate)
+            if (Interlocked.CompareExchange(ref _startedAt, nowMs(), long.MinValue) == long.MinValue)
             {
-                long now = nowMs();
-                if (_at == long.MinValue || now - _at >= CacheMs)
-                {
-                    _last = sample();
-                    _at = nowMs();
-                }
+                (start ?? StartThread)(Loop);
+            }
+        }
 
-                instances = _last;
+        public double? BytesPerSecond(string letter) => Read(letter).Bps;
+
+        /// 바쁜가 (IsBusy(bps, state) 규칙), 값과 상태는 같은 한 번의 읽기에서 나옴.
+        public bool BusyUnlessBroken(string letter, bool keepStalled = false)
+        {
+            (double? bps, SampleState state) = Read(letter, keepStalled);
+            return IsBusy(bps, state);
+        }
+
+        /// 최신 스냅샷 하나에서 값과 상태를 함께 돌려줌 (값과 상태를 따로 읽다 사이에 표본이 게시되는 경쟁을 막음).
+        public (double? Bps, SampleState State) Read(string letter, bool keepStalled = false)
+        {
+            Start();
+            long now = nowMs();
+            if (_latest is not { } snap)
+            {
+                return now - Volatile.Read(ref _startedAt) < GiveUpMs ? (null, SampleState.Warming) : Stalled(letter, keepStalled ? SampleState.Warming : SampleState.Broken);
             }
 
-            if (instances is null)
+            if (snap.Data is null)
             {
                 Report(letter, CounterUnavailable);
-                return null;
+                return (null, SampleState.Broken);
             }
 
-            double? bps = Sum(letter, instances, out string? reason);
+            if (now - snap.At >= StaleMs)
+            {
+                return now - snap.At < GiveUpMs ? (null, SampleState.Stale) : Stalled(letter, keepStalled ? SampleState.Stale : SampleState.Broken);
+            }
+
+            double? bps = Sum(letter, snap.Data, out string? reason);
             if (reason is not null)
             {
                 Report(letter, reason);
+                return (null, SampleState.Broken);
             }
 
-            return bps;
+            return (bps, SampleState.Ok);
         }
+
+        // 정체가 GiveUpMs 를 넘음: 경고는 정체 진입마다 한 번 (새 표본이 게시되면 다시 켜짐). state 는 호출자가 정함 (기본 Broken, 게임 보호 판정은 정체 상태 유지).
+        private (double?, SampleState) Stalled(string letter, SampleState state)
+        {
+            Report(letter, SampleStalled);
+            if (Interlocked.Exchange(ref _stalledWarned, 1) == 0)
+            {
+                Note($"DiskActivity: samples stalled for over {GiveUpMs / 1000} s, giving up on {letter} (other callers treat it as broken, game protection gates stay busy)", warn: true);
+            }
+
+            return (null, state);
+        }
+
+        /// 표본을 한 번 잡아 최신으로 교체 (실패·예외는 Data = null 로 기록해 다음 간격에 다시 시도). 로그가 던져도 밖으로 나가지 않음.
+        internal void Refresh()
+        {
+            IReadOnlyDictionary<string, double>? data = null;
+            try
+            {
+                data = sample();
+            }
+            catch (Exception e) when (e is not OutOfMemoryException)
+            {
+                Note($"DiskActivity: sample failed ({e.GetType().Name})");
+            }
+
+            _latest = new Snapshot(nowMs(), data);
+            Volatile.Write(ref _stalledWarned, 0);
+        }
+
+        /// 한 주기: 표본을 잡고, 수집에 걸린 시간을 뺀 다음 대기 시간 (ms) 을 돌려줌 (주기 = CacheMs).
+        internal int Tick()
+        {
+            long t0 = nowMs();
+            Refresh();
+            return (int)Math.Clamp(CacheMs - (nowMs() - t0), 0, CacheMs);
+        }
+
+        private void Note(string message, bool warn = false)
+        {
+            try
+            {
+                ILog? sink = log?.Invoke() ?? Log;
+                if (warn)
+                {
+                    sink?.Warn(message);
+                }
+                else
+                {
+                    sink?.Info(message);
+                }
+            }
+            catch (Exception e) when (e is not OutOfMemoryException)
+            {
+                // 로그 기록 실패는 수집 스레드를 죽이지 않음 (예: 콘솔 출력 파이프가 끊김)
+            }
+        }
+
+        private void Loop()
+        {
+            while (true)
+            {
+                int wait = (int)CacheMs;
+                try
+                {
+                    wait = Tick();
+                }
+                catch (Exception e) when (e is not OutOfMemoryException)
+                {
+                    _latest = new Snapshot(nowMs(), null); // 예상 밖 실패: 고장 표본을 게시하고 계속 재시도
+                    Note($"DiskActivity: sampler loop failed ({e.GetType().Name})");
+                }
+
+                Thread.Sleep(wait);
+            }
+        }
+
+        private static void StartThread(Action loop) => new Thread(() => loop()) { IsBackground = true, Name = "DiskActivity sampler" }.Start(); // 백그라운드라 프로세스 종료를 막지 않음
     }
 
     private static unsafe Dictionary<string, double>? SampleAll()

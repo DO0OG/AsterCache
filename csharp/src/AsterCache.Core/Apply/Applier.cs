@@ -135,7 +135,7 @@ public static class Applier
         rep.DryRun = options.DryRun;
         rep.PlanSaved = persist;
         return options.Execute ? Execute(plan, vol, todo, rep, journalPath, chunk, options.WriteCap, hooks, digest, Math.Max(1, options.PlanAhead),
-            VerifyMode.IsValid(options.Verify) ? options.Verify : VerifyMode.Sample, Math.Clamp(options.Parallel, 1, MaxParallel), cancellationToken) : rep;
+            VerifyMode.IsValid(options.Verify) ? options.Verify : VerifyMode.Sample, Math.Clamp(options.Parallel, 1, MaxParallel), cancellationToken, options.CanIssue) : rep;
     }
 
     /// order=source 를 요청했는데 target 순서로 실행한 이유 (보고서의 order_fallback_reason).
@@ -507,9 +507,10 @@ public static class Applier
 
     private static ApplyReport Execute(PlanFile plan, IVolume vol, List<(int Idx, PlanTask Task, long Done)> todo, ApplyReport rep,
         string journalPath, long chunk, long writeCap, ApplyHooks hooks, Func<string, long, IReadOnlyList<(long Offset, long Length)>, string> digestFn,
-        int planAhead, string verify, int parallel, CancellationToken ct)
+        int planAhead, string verify, int parallel, CancellationToken ct, Func<bool>? canIssue)
     {
         ApplyTimings tm = rep.Timings;
+        bool CanIssue() => !ct.IsCancellationRequested && (canIssue?.Invoke() ?? true);
         using var jr = new Journal(journalPath);
         var before = new OrderedDictionary<string, string?>(StringComparer.Ordinal);
         Dictionary<string, List<(long Offset, long Length)>> ranges = MovedRanges(plan);
@@ -586,13 +587,13 @@ public static class Applier
 
         try
         {
-            RunTasks(vol, todo, rep, jr, before, chunk, writeCap, hooks, Digest, perTask ? SampledDigest : null, planAhead, verify == VerifyMode.Off, parallel, ct);
+            RunTasks(vol, todo, rep, jr, before, chunk, writeCap, hooks, Digest, perTask ? SampledDigest : null, planAhead, verify == VerifyMode.Off, parallel, ct, canIssue);
         }
         catch (Exception)
         {
             try
             {
-                Finish(rep, jr, before, perTask ? k => TaskDigest(TaskOf(k), plan.Tasks[TaskOf(k)]) : Digest, perTask ? k => plan.Tasks[TaskOf(k)].Path : k => k, perTask, strict: false);
+                Finish(rep, jr, before, perTask ? k => TaskDigest(TaskOf(k), plan.Tasks[TaskOf(k)]) : Digest, perTask ? k => plan.Tasks[TaskOf(k)].Path : k => k, perTask, strict: false, canIssue: CanIssue);
             }
             catch (Exception)
             {
@@ -602,7 +603,7 @@ public static class Applier
             throw;
         }
 
-        ApplyReport done = Finish(rep, jr, before, perTask ? k => TaskDigest(TaskOf(k), plan.Tasks[TaskOf(k)]) : Digest, perTask ? k => plan.Tasks[TaskOf(k)].Path : k => k, perTask, strict: true);
+        ApplyReport done = Finish(rep, jr, before, perTask ? k => TaskDigest(TaskOf(k), plan.Tasks[TaskOf(k)]) : Digest, perTask ? k => plan.Tasks[TaskOf(k)].Path : k => k, perTask, strict: true, canIssue: CanIssue);
         tm.Stop();
         return done;
     }
@@ -618,7 +619,7 @@ public static class Applier
     // 한 작업자가 멈춤 사유를 정하면 (취소·쓰기 상한·존 점유·예외) 다른 작업자는 진행 중인 조각만 끝내고 단계 행 없이 멈춥니다 (planned 행이 재개 지점).
     private static void RunTasks(IVolume vol, List<(int Idx, PlanTask Task, long Done)> todo, ApplyReport rep, Journal jr,
         OrderedDictionary<string, string?> before, long chunk, long writeCap, ApplyHooks hooks, Func<string, string> digest,
-        Func<int, PlanTask, (string Sha, List<(long Offset, long Length)> Ranges)?>? taskDigest, int planAhead, bool noVerify, int parallel, CancellationToken ct)
+        Func<int, PlanTask, (string Sha, List<(long Offset, long Length)> Ranges)?>? taskDigest, int planAhead, bool noVerify, int parallel, CancellationToken ct, Func<bool>? canIssue)
     {
         long cb = vol.ClusterBytes;
         ApplyTimings tm = rep.Timings;
@@ -655,6 +656,8 @@ public static class Applier
 
         bool Halted() => Volatile.Read(ref stopped) != 0;
 
+        bool CanIssue() => !ct.IsCancellationRequested && (canIssue?.Invoke() ?? true);
+
         // 다음 작업을 가져옴. 더 할 일이 없거나 멈춰야 하면 null.
         (int N, string Path)? Take()
         {
@@ -667,7 +670,7 @@ public static class Applier
                         return null;
                     }
 
-                    if (ct.IsCancellationRequested) // 다음 작업으로 넘어가기 전에도 확인: 취소된 뒤에는 새 단계의 planned 행을 남기지 않음
+                    if (!CanIssue()) // 다음 작업으로 넘어가기 전에도 확인: 취소된 뒤에는 새 단계의 planned 행을 남기지 않음
                     {
                         Stop("cancelled");
                         return null;
@@ -685,6 +688,12 @@ public static class Applier
                 _ = ready.Remove(ready.Min);
                 _ = queues[path].Dequeue();
                 remaining--;
+                if (!CanIssue())
+                {
+                    Stop("cancelled");
+                    return null;
+                }
+
                 if (!windowed[n])
                 {
                     PlanRows(todo, n, jr, hooks, tm, fresh, planAhead, windowed); // 되돌리기의 근거 (from) 는 이동 전에 디스크에 있어야 함: PlanAhead 개를 한 번에 쓰고 fsync
@@ -728,7 +737,7 @@ public static class Applier
         {
             (int i, PlanTask t, long d) = todo[n];
             string p = t.Path;
-            if (ct.IsCancellationRequested) // 이동 전 표본(파일당 읽기)도 읽지 않음: 취소 뒤에는 디스크를 더 건드리지 않음
+            if (!CanIssue()) // 이동 전 표본(파일당 읽기)도 읽지 않음: 취소 뒤에는 디스크를 더 건드리지 않음
             {
                 Stop("cancelled");
                 return;
@@ -758,8 +767,20 @@ public static class Applier
 
             if (!noVerify && taskDigest is null && !HasBefore(p))
             {
+                if (!CanIssue())
+                {
+                    Stop("cancelled");
+                    return;
+                }
+
                 JObject? row = jr.First("file", "path", p);
                 string? sha = row is null ? ApplyTimings.Time(ref tm.DigestBeforeTicks, () => digest(p)) : row["sha_before"] as string;
+                if (!CanIssue())
+                {
+                    Stop("cancelled");
+                    return;
+                }
+
                 SetBefore(p, sha);
                 if (row is null)
                 {
@@ -770,8 +791,20 @@ public static class Applier
             if (!noVerify && taskDigest is not null && !HasBefore(TaskKey(i)))
             {
                 // 이 작업의 이동 직전에 그 범위의 가장자리만 읽음 (헤드가 원본 위치에 한 번만 감). 이어하기는 저널에 적힌 값을 씀.
+                if (!CanIssue())
+                {
+                    Stop("cancelled");
+                    return;
+                }
+
                 JObject? row = jr.First("sha", "idx", (long)i);
                 (string Sha, List<(long Offset, long Length)> Ranges)? sample = row is null ? ApplyTimings.Time(ref tm.DigestBeforeTicks, () => taskDigest(i, t)) : null;
+                if (!CanIssue())
+                {
+                    Stop("cancelled");
+                    return;
+                }
+
                 string? sha = row is null ? sample?.Sha : row["sha_before"] as string;
                 if (sha is not null)
                 {
@@ -780,6 +813,12 @@ public static class Applier
                     {
                         // 표본 구간 (ranges) 과 이동 당시 파일 지문 (fp) 도 남김: 이어하기·저널 교체 검증이 같은 구간을 읽고, 불일치가 원본 변경인지 가려냄
                         var sampleRow = new JObject { { "type", "sha" }, { "idx", (long)i }, { "sha_before", sha }, { "ranges", sample!.Value.Ranges.Select(x => (object?)new List<object?> { x.Offset, x.Length }).ToList() } };
+                        if (!CanIssue())
+                        {
+                            Stop("cancelled");
+                            return;
+                        }
+
                         if (FingerprintOrNull(hooks, p) is { } stamp)
                         {
                             sampleRow["fp"] = new List<object?> { stamp.Size, stamp.MtimeNs };
@@ -795,7 +834,7 @@ public static class Applier
             bool busy = false;
             while (off < t.Clusters && err is null)
             {
-                if (ct.IsCancellationRequested) // 진행 중이던 조각은 이미 끝났음: 저널의 planned 행이 재개 지점 (DonePrefix 가 실제 extent 로 다시 계산)
+                if (!CanIssue()) // 진행 중이던 조각은 이미 끝났음: 저널의 planned 행이 재개 지점 (DonePrefix 가 실제 extent 로 다시 계산)
                 {
                     Stop("cancelled");
                     return;
@@ -824,6 +863,17 @@ public static class Applier
                     return;
                 }
 
+                if (!CanIssue())
+                {
+                    lock (gate)
+                    {
+                        rep.MovedBytes -= c * cb;
+                    }
+
+                    Stop("cancelled");
+                    return;
+                }
+
                 long t0 = Stopwatch.GetTimestamp();
                 tm.MoveBegin();
                 bool moved = false;
@@ -845,6 +895,12 @@ public static class Applier
                 }
 
                 off += c;
+            }
+
+            if (!CanIssue())
+            {
+                Stop("cancelled");
+                return;
             }
 
             bool ok = err is null && PlanGuards.DonePrefix(ApplyTimings.Time(ref tm.OpenTicks, () => hooks.Extents(p)), t.Vcn, t.Clusters, t.TargetLcn) == t.Clusters;
@@ -959,14 +1015,29 @@ public static class Applier
 
     /// 건드린 모든 파일의 SHA 표본을 다시 비교합니다. 달라졌으면 크게 알리고 (strict) 절대 삼키지 않습니다. end 행은 어느 경우든 기록.
     /// 일치한 키마다 verified 행 (perTask: sha_verified idx, 아니면 file_verified path) 을 end 행 앞에 남깁니다: 없는 sha_before 는 다음 실행이 다시 검증.
-    private static ApplyReport Finish(ApplyReport rep, Journal jr, OrderedDictionary<string, string?> before, Func<string, string?> digest, Func<string, string> pathOf, bool perTask, bool strict)
+    private static ApplyReport Finish(ApplyReport rep, Journal jr, OrderedDictionary<string, string?> before, Func<string, string?> digest, Func<string, string> pathOf, bool perTask, bool strict, Func<bool>? canIssue)
     {
         ApplyTimings tm = rep.Timings;
         bool deferred = rep.Stopped == "cancelled"; // 취소 뒤에는 표본을 다시 읽지 않음: 이어하기가 저널의 sha_before 로 검증
-        List<(string Key, bool Same)> checkedKeys = deferred ? [] : before.Select(kv => (kv.Key, Same: ApplyTimings.Time(ref tm.DigestAfterTicks, () => digest(kv.Key)) == kv.Value)).ToList();
+        List<(string Key, bool Same)> checkedKeys = [];
+        if (!deferred)
+        {
+            foreach (KeyValuePair<string, string?> kv in before)
+            {
+                if (canIssue is not null && !canIssue())
+                {
+                    deferred = true;
+                    rep.Stopped ??= "cancelled";
+                    break;
+                }
+
+                checkedKeys.Add((kv.Key, ApplyTimings.Time(ref tm.DigestAfterTicks, () => digest(kv.Key)) == kv.Value));
+            }
+        }
+
         var bad = checkedKeys.Where(x => !x.Same).Select(x => pathOf(x.Key)).Distinct().ToList();
         int files = before.Select(kv => pathOf(kv.Key)).Distinct().Count();
-        rep.ShaChecked = deferred ? 0 : files;
+        rep.ShaChecked = checkedKeys.Select(x => pathOf(x.Key)).Distinct().Count();
         tm.Files = files;
         rep.ShaMismatch = bad;
         ApplyTimings.Time(ref tm.JournalTicks, () =>

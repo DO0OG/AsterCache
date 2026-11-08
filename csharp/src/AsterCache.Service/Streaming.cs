@@ -21,13 +21,20 @@ public interface IGameStreamer
     StreamStats Stream(GameSettings game, CancellationToken stop) => stop.IsCancellationRequested ? new StreamStats(0, 0, 0, 0, Aborted: true) : Stream(game);
 
     /// 묶음 사이에서 stop 으로 멈출 수 있는 스트림: (읽은 만큼의 통계, 끝까지 읽었는가). progress 는 묶음마다 (읽은 바이트, 총 바이트). 기본 구현은 멈추지 않고 한 번에 읽습니다.
-    (StreamStats Stats, bool Complete) Stream(GameSettings game, CancellationToken stop, Action<long, long>? progress) => (Stream(game), true);
+    (StreamStats Stats, bool Complete) Stream(GameSettings game, CancellationToken stop, Action<long, long>? progress) => (Stream(game, stop), true);
+
+    /// 디스크 대여가 유효한 동안에만 스트림 묶음을 발행합니다.
+    (StreamStats Stats, bool Complete) StreamCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue) =>
+        canIssue() ? Stream(game, stop, progress) : (new StreamStats(0, 0, 0, 0, Aborted: true), false);
 
     /// 예열 전용 스트림. maxBytes 는 메모리·스트림 예산 안에서 읽을 전체 바이트 상한입니다.
     (StreamStats Stats, bool Complete) StreamPrewarm(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes) => Stream(game, stop, progress);
 
     /// 끊긴 부분 예열을 이어 읽는 예열 스트림: 읽기 목록 앞쪽 skipBytes 는 이미 읽었으니 건너뜁니다 (통계 바이트는 새로 읽은 것만). 건너뛰기를 모르는 스트리머는 처음부터 읽습니다.
     (StreamStats Stats, bool Complete) StreamPrewarm(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes) => StreamPrewarm(game, stop, progress, maxBytes);
+
+    (StreamStats Stats, bool Complete) StreamPrewarmCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool> canIssue) =>
+        canIssue() ? StreamPrewarm(game, stop, progress, maxBytes, skipBytes) : (new StreamStats(0, 0, 0, 0, Aborted: true), false);
 
     /// 예열이 실제로 읽을 원래 범위의 바이트 (틈 제외), 모르면 null. 최초 메모리 게이트가 존 크기 대신 씁니다.
     long? PrewarmReadBytes(GameSettings game) => null;
@@ -39,6 +46,14 @@ public interface IGameStreamer
 
     /// 묶음별 진행을 알리는 로딩 앞부분 스트림. 기존 스트리머는 진행 알림 없이 동작합니다.
     void StreamHead(GameSettings game, CancellationToken stop, Action<long, long>? progress) => StreamHead(game, stop);
+
+    void StreamHeadCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue)
+    {
+        if (canIssue())
+        {
+            StreamHead(game, stop, progress);
+        }
+    }
 
     /// 로딩 앞부분의 바이트 (원시 트레이스에 t_ms 가 있어 경계를 계산했을 때), 아니면 null.
     long? LoadHeadBytes(GameSettings game) => null;
@@ -109,22 +124,25 @@ public sealed class PrefetchStreamer : IGameStreamer
     /// 접근 순서 앞쪽 HeadBytesOf 만큼만 읽습니다 (스케줄러가 앞에 둔 부분과 같음).
     public void StreamHead(GameSettings game, CancellationToken stop) => StreamHead(game, stop, null);
 
-    public void StreamHead(GameSettings game, CancellationToken stop, Action<long, long>? progress) => Batches(Head(Ops(game), HeadBytesOf(game)), stop, progress);
+    public void StreamHead(GameSettings game, CancellationToken stop, Action<long, long>? progress) => _ = Batches(Head(Ops(game), HeadBytesOf(game)), stop, progress, null);
+
+    public void StreamHeadCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue) =>
+        _ = Batches(Head(Ops(game), HeadBytesOf(game)), stop, progress, canIssue);
 
     /// 예열이 끝난 뒤 버퍼드로 한 번 더 읽는 앞쪽 양: 스탠바이 목록에서 접근 순서 앞부분이 먼저 밀려나지 않게 최신으로 만듭니다.
     public const long RefreshBytes = 64L << 20;
 
     /// 게임 시작과 함께 도는 동시 스트림: 멈추지 않고 끝까지 (묶음 경로는 예열과 같음).
-    public StreamStats Stream(GameSettings game) => Batches(Ops(game), CancellationToken.None, null).Stats;
+    public StreamStats Stream(GameSettings game) => Batches(Ops(game), CancellationToken.None, null, null).Stats;
 
     /// 게임 시작 스트림은 시작 예열과 겹치지 않게 갱신 읽기를 생략하고, 서비스 취소를 묶음 읽기에 전달합니다.
-    public StreamStats Stream(GameSettings game, CancellationToken stop) => Batches(Ops(game), stop, null).Stats;
+    public StreamStats Stream(GameSettings game, CancellationToken stop) => Batches(Ops(game), stop, null, null).Stats;
 
     /// 예열용: 64 MiB 묶음 (FolderWarm.Read) 마다 stop 을 보고 진행을 알립니다. 끝까지 읽었으면 앞쪽 RefreshBytes 를 버퍼드로 한 번 더 읽습니다.
     public (StreamStats Stats, bool Complete) Stream(GameSettings game, CancellationToken stop, Action<long, long>? progress)
     {
         List<ReadOp> ops = Ops(game);
-        (StreamStats Stats, bool Complete) r = Batches(ops, stop, progress);
+        (StreamStats Stats, bool Complete) r = Batches(ops, stop, progress, null);
         if (r.Complete)
         {
             StreamStats refresh = Refresh(ops, stop);
@@ -137,11 +155,24 @@ public sealed class PrefetchStreamer : IGameStreamer
         return r;
     }
 
+    public (StreamStats Stats, bool Complete) StreamCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue)
+    {
+        List<ReadOp> ops = Ops(game);
+        (StreamStats Stats, bool Complete) r = Batches(ops, stop, progress, canIssue);
+        return r.Complete && !canIssue() ? (r.Stats with { Aborted = true }, false) : r;
+    }
+
     /// 예열 전용 범위에 작은 논리 틈을 예산 안에서 더해 읽습니다. 시작 스트림·표본·고정은 Ops 의 원래 범위를 씁니다.
     public (StreamStats Stats, bool Complete) StreamPrewarm(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes) =>
         StreamPrewarm(game, stop, progress, maxBytes, 0);
 
     public (StreamStats Stats, bool Complete) StreamPrewarm(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes)
+        => StreamPrewarmCore(game, stop, progress, maxBytes, skipBytes, null);
+
+    public (StreamStats Stats, bool Complete) StreamPrewarmCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool> canIssue)
+        => StreamPrewarmCore(game, stop, progress, maxBytes, skipBytes, canIssue);
+
+    private (StreamStats Stats, bool Complete) StreamPrewarmCore(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool>? canIssue)
     {
         (List<ReadOp> all, long gapBytes, bool fitsBudget) = PrewarmOps(game, maxBytes);
         if (!fitsBudget || stop.IsCancellationRequested)
@@ -157,11 +188,16 @@ public sealed class PrefetchStreamer : IGameStreamer
             return (new StreamStats(0, 0, 0, 0, Aborted: true), false);
         }
 
-        (StreamStats Stats, bool Complete) r = Batches(ops, stop, progress);
+        (StreamStats Stats, bool Complete) r = Batches(ops, stop, progress, canIssue);
         if (r.Complete)
         {
+            if (stop.IsCancellationRequested || (canIssue is not null && !canIssue()))
+            {
+                return (r.Stats with { Aborted = true, GapBytes = gapBytes }, false);
+            }
+
             StreamStats refresh = Refresh(all, stop);
-            if (stop.IsCancellationRequested || refresh.Aborted)
+            if (stop.IsCancellationRequested || refresh.Aborted || (canIssue is not null && !canIssue()))
             {
                 return (r.Stats with { Aborted = true, GapBytes = gapBytes }, false);
             }
@@ -172,20 +208,25 @@ public sealed class PrefetchStreamer : IGameStreamer
     }
 
     internal static StreamStats Refresh(IReadOnlyList<ReadOp> ops, CancellationToken stop) =>
-        ZoneStreamer.Run(Head(ops, RefreshBytes), StreamMethod.Read, ct: stop);
+        stop.IsCancellationRequested ? new StreamStats(0, 0, 0, 0, Aborted: true) : ZoneStreamer.Run(Head(ops, RefreshBytes), StreamMethod.Read, ct: stop);
 
-    private static (StreamStats Stats, bool Complete) Batches(List<ReadOp> ops, CancellationToken stop, Action<long, long>? progress)
+    private static (StreamStats Stats, bool Complete) Batches(List<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool>? canIssue)
     {
         long total = ops.Sum(o => o.Length);
         long done = 0;
         (StreamStats Stats, bool Complete) result = FolderWarm.Read(ops, stop, batch =>
         {
+            if (stop.IsCancellationRequested || (canIssue is not null && !canIssue()))
+            {
+                return new StreamStats(0, 0, 0, 0, Aborted: true, RequestedBytes: batch.Sum(op => op.Length));
+            }
+
             StreamStats s = ZoneStreamer.Run(batch, StreamMethod.Pvm, ct: stop);
             done += s.Bytes;
             progress?.Invoke(done, total);
             return s;
         });
-        return stop.IsCancellationRequested
+        return stop.IsCancellationRequested || (canIssue is not null && !canIssue())
             ? (result.Stats with { Aborted = true }, false)
             : result;
     }
@@ -469,14 +510,14 @@ public sealed class PrefetchStreamer : IGameStreamer
     internal static List<(string Path, long Offset, int Bytes)> PartialProbeSamples(GameSettings game, int round = 0) =>
         CacheProbe.PickSamples(ScheduleOps(game, true, trimLast: true).Ops, round: round);
 
-    public static ProbeResult? ProbePartialReadMs(GameSettings game) => CacheProbe.Probe(PartialProbeSamples(game, CacheProbe.NextRound(game.Name)));
+    public static ProbeResult? ProbePartialReadMs(GameSettings game, Func<bool>? canIssue = null) => CacheProbe.Probe(PartialProbeSamples(game, CacheProbe.NextRound(game.Name)), canIssue: canIssue);
 
     /// 끊긴 부분 예열 (game 의 MaxStreamMib 로 잘린 목록) 이 스케줄 순서로 앞에서 bytes 만큼 읽은 구간의 표본을 읽어 잰 결과: 이어 읽기 전에 그 구간이 아직 따뜻한지 봅니다.
-    public static ProbeResult? ProbeScheduledHead(GameSettings game, long bytes) =>
-        CacheProbe.Probe(CacheProbe.PickSamples(Head(ScheduleOps(game, true, trimLast: true).Ops, bytes), round: CacheProbe.NextRound(game.Name)));
+    public static ProbeResult? ProbeScheduledHead(GameSettings game, long bytes, Func<bool>? canIssue = null) =>
+        CacheProbe.Probe(CacheProbe.PickSamples(Head(ScheduleOps(game, true, trimLast: true).Ops, bytes), round: CacheProbe.NextRound(game.Name)), canIssue: canIssue);
 
     /// 선읽기 목록의 앞쪽과 고르게 고른 몇 곳을 읽어 잰 결과 (CacheProbe).
-    public static ProbeResult? ProbeReadMs(GameSettings game) => CacheProbe.Probe(CacheProbe.PickSamples(Ops(game), round: CacheProbe.NextRound(game.Name))); // 점검마다 다른 위치 (앞 점검의 읽기가 캐시를 데우지 않게)
+    public static ProbeResult? ProbeReadMs(GameSettings game, Func<bool>? canIssue = null) => CacheProbe.Probe(CacheProbe.PickSamples(Ops(game), round: CacheProbe.NextRound(game.Name)), canIssue: canIssue); // 점검마다 다른 위치 (앞 점검의 읽기가 캐시를 데우지 않게)
 }
 
 /// 게임 시작 스트림을 건너뛸 조건의 입력 (기본은 모두 건너뛰지 않음, 시험용). Create 는 진짜 판정.
@@ -506,7 +547,7 @@ public sealed record DispatchEnv
     public static DispatchEnv Create() => new()
     {
         OtherProcesses = (g, start) => RegisteredOthers(g, ProcessSnapshot.Take(), start.Pid),
-        DiskBusy = g => DiskActivity.BytesPerSecond(PlanFile.SplitDrive(g.OriginRoot)) is { } bps && bps >= DiskActivity.BusyBytesPerSecond,
+        DiskBusy = g => DiskActivity.BusyUnlessBroken(PlanFile.SplitDrive(g.OriginRoot), keepStalled: true), // 표본이 없거나 낡으면 바쁨 (정체가 60 초를 넘어도 게임 보호는 유지), 카운터 고장은 기존대로 바쁘지 않음
     };
 
     /// 등록 이름 프로세스만 (설치 폴더 아래 미등록 프로세스는 제외, 시작한 pid 와 서비스 자신도 제외).
@@ -594,16 +635,19 @@ public sealed class GameDispatcher
     private readonly ILog _log;
     private readonly Func<DateTimeOffset> _now;
     private readonly DispatchEnv _env;
+    private readonly DiskReadCoordinator? _coordinator;
     private readonly Dictionary<string, DateTimeOffset> _last = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<int, ProcessStart> _seen = []; // pid -> 서비스가 처음 관측한 시작 (Process.StartTime 을 읽지 않고 나이를 셈)
 
-    public GameDispatcher(IReadOnlyList<GameSettings> games, IGameStreamer streamer, ILog log, Func<DateTimeOffset>? now = null, DispatchEnv? env = null)
+    public GameDispatcher(IReadOnlyList<GameSettings> games, IGameStreamer streamer, ILog log, Func<DateTimeOffset>? now = null, DispatchEnv? env = null,
+        DiskReadCoordinator? coordinator = null)
     {
         _env = env ?? new DispatchEnv();
         _games = games;
         _streamer = streamer;
         _log = log;
         _now = now ?? (() => DateTimeOffset.UtcNow);
+        _coordinator = coordinator;
     }
 
     /// 설정을 다시 읽었을 때 게임 목록만 바꿉니다 (쿨다운은 유지).
@@ -683,11 +727,20 @@ public sealed class GameDispatcher
             return false;
         }
 
+        using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(g.OriginRoot, "start stream", stop, g.OriginRoot, allowWhileYielded: true, preserveGameKey: g.Name);
+        if (_coordinator is not null && lease is null)
+        {
+            _log.Info($"{g.Name}: start stream skipped (disk yielded)");
+            return false;
+        }
+
         _last[g.Name] = now;
         try
         {
-            StreamStats r = _streamer.Stream(g, stop);
-            if (r.Aborted || stop.IsCancellationRequested)
+            CancellationToken streamStop = lease?.Token ?? stop;
+            bool CanIssue() => lease?.IsValid ?? !stop.IsCancellationRequested;
+            (StreamStats r, bool complete) = _streamer.StreamCoordinated(g, streamStop, null, CanIssue);
+            if (!complete || r.Aborted || streamStop.IsCancellationRequested || !CanIssue())
             {
                 _log.Info($"{g.Name}: start stream cancelled after {r.Bytes} bytes");
                 return false;

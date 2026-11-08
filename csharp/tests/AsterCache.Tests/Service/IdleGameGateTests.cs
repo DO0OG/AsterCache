@@ -18,6 +18,9 @@ public sealed class IdleGameGateTests
     private double? _disk = 0;
     private double? _observed; // 읽기를 멈춘 관측 구간 (Sleep) 에서 재는 디스크 처리량, null 이면 Sleep 이 바꾸지 않음
     private int _slept;
+    private bool _blindOnPause; // 읽기를 멈춘 구간에서 처리량을 읽지 못함 (null)
+    private bool _giveUp; // 수집이 60 초 넘게 정체해 일반 표본은 Broken 이지만 게임 보호 판정(GameDiskSample)은 낡음 상태를 유지, 읽기를 멈춘 구간부터
+    private bool _warming; // 그 null 이 카운터 고장이 아니라 표본이 아직 없거나 낡음 (Warming), 읽기를 멈춘 구간부터 (진입·묶음 사이 점검은 Ok)
 
     private sealed class GateStreamer : IGameStreamer
     {
@@ -48,10 +51,12 @@ public sealed class IdleGameGateTests
             GameRunning = g => _running.Contains(g.Name),
             GameReadBytes = g => _read.GetValueOrDefault(g.Name),
             DiskBytesPerSecond = _ => _disk,
+            DiskSample = _ => _warming && _slept > 0 ? (null, DiskActivity.SampleState.Warming) : (_disk, _disk is null ? DiskActivity.SampleState.Broken : DiskActivity.SampleState.Ok),
+            GameDiskSample = _ => _giveUp && _slept > 0 ? (null, DiskActivity.SampleState.Stale) : _warming && _slept > 0 ? (null, DiskActivity.SampleState.Warming) : (_disk, _disk is null ? DiskActivity.SampleState.Broken : DiskActivity.SampleState.Ok),
             Sleep = (_, _) =>
             {
                 _slept++;
-                _disk = _observed ?? _disk;
+                _disk = _blindOnPause ? null : _observed ?? _disk;
             },
             ZoneBytes = _ => 100 * Mib,
             TraceExists = _ => true,
@@ -231,6 +236,33 @@ public sealed class IdleGameGateTests
         Assert.False(r.Ran);
         Assert.Equal(Prewarmer.Cancelled, r.SkipReason);
         Assert.Equal(1, _slept);
+    }
+
+    [Fact]
+    public void NoSampleYetWhileTheReadIsPausedStopsTheRead()
+    {
+        _blindOnPause = true;
+        _warming = true;
+        PrewarmResult r = RunWithPausedLoad(WarmedWithQuietClient(out _), 0);
+        Assert.False(r.Ran);
+        Assert.Equal(Prewarmer.Cancelled, r.SkipReason);
+    }
+
+    [Fact]
+    public void ASampleStalledPastTheGiveUpLimitWhileTheReadIsPausedStillStopsTheRead()
+    {
+        _blindOnPause = true; // 일반 판정에서는 Broken (위 시험: 계속 읽음) 이지만
+        _giveUp = true; // 게임 보호 판정에서는 정체가 고장이 아니므로 바쁨 유지
+        PrewarmResult r = RunWithPausedLoad(WarmedWithQuietClient(out _), 0);
+        Assert.False(r.Ran);
+        Assert.Equal(Prewarmer.Cancelled, r.SkipReason);
+    }
+
+    [Fact]
+    public void ABrokenCounterWhileTheReadIsPausedKeepsTheReadGoing()
+    {
+        _blindOnPause = true; // 카운터 고장 (첫 표본 전이 아님): 기존 동작, 예열이 영구히 막히지 않음
+        Assert.True(RunWithPausedLoad(WarmedWithQuietClient(out _), 0).Ran);
     }
 
     [Fact]

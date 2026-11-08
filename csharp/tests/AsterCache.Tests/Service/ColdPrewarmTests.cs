@@ -55,6 +55,7 @@ public sealed class ColdPrewarmTests : IDisposable
     private double? ProbeMs { get; set; } = 0.5;
 
     private readonly List<IReadOnlyList<(string Path, long Offset, int Bytes)>> _probed = [];
+    private Action? _onProbe;
 
     private Func<GameSettings, long, long, CancellationToken, ColdPlan> Planner { get; set; } = (_, _, _, _) => new ColdPlan("full", [new ReadOp(@"D:\g\a.bin", 0, 10 * Mib)], 10 * Mib, null);
 
@@ -79,6 +80,7 @@ public sealed class ColdPrewarmTests : IDisposable
             ProbeSamples = samples =>
             {
                 _probed.Add(samples);
+                _onProbe?.Invoke();
                 return ProbeMs is { } ms ? new ProbeResult(8, ms > CacheProbe.ColdThresholdMs ? 8 : 0, ms) : null;
             },
             ColdPlanner = (g, full, profile, ct) =>
@@ -119,6 +121,45 @@ public sealed class ColdPrewarmTests : IDisposable
         Assert.Contains(_log.Lines, l => l.Contains("prewarm done (service start, full)", StringComparison.Ordinal) && l.Contains(" hint MB/s,", StringComparison.Ordinal));
         var g = (JObject)((JObject)((JObject)JsonRead.ReadFile(Path.Combine(_dir, "status.json"))!)["games"]!)["g"]!;
         Assert.Equal(("ok", "full"), (g["result"], g["mode"]));
+    }
+
+    [Fact]
+    public void AlreadyWarmStopsIssuingSamplesWhenTheDiskIsYielded()
+    {
+        GameSettings g = Game("g");
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        Planner = (game, _, _, _) => new ColdPlan("full", [.. Enumerable.Range(0, 8).Select(i => new ReadOp(Path.Combine(game.OriginRoot, $"f{i}.bin"), 0, Mib))], 8 * Mib, null);
+        Prewarmer p = MakeOne();
+        p.SetDiskReadCoordinator(coordinator);
+
+        Assert.True(p.Run(g, "service start").Ran);
+        _onProbe = () => coordinator.Yield(g.OriginRoot, "game started", "other");
+
+        Assert.False(p.AlreadyWarm(g));
+        Assert.Single(_probed);
+        Assert.Single(_probed[0]);
+    }
+
+    [Fact]
+    public void RewarmRetainedSamplesStopAtTheFirstYieldedSample()
+    {
+        GameSettings g = Game("g");
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        Planner = (game, _, _, _) => new ColdPlan("full", [.. Enumerable.Range(0, 8).Select(i => new ReadOp(Path.Combine(game.OriginRoot, $"f{i}.bin"), 0, Mib))], 8 * Mib, null);
+        Prewarmer p = MakeOne();
+        p.SetDiskReadCoordinator(coordinator);
+        Assert.True(p.Run(g, "service start").Ran);
+        AutoSettings auto = AutoSettings.Default with { RewarmMinutes = 10 };
+        p.SetAuto(auto);
+        p.Tick(auto);
+        _onProbe = () => coordinator.Yield(g.OriginRoot, "game started", "other");
+        _now += TimeSpan.FromMinutes(10);
+
+        p.Tick(auto);
+
+        Assert.Single(_probed);
+        Assert.Single(_probed[0]);
+        Assert.Empty(_streamer.Calls);
     }
 
     [Fact]

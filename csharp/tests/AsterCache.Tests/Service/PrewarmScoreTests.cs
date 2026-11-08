@@ -115,6 +115,32 @@ public sealed class PrewarmScoreTests : IDisposable
     }
 
     [Fact]
+    public void BudgetSkipsOnlyTheGameThatDoesNotFitAndALaterSmallerGameStillRuns()
+    {
+        static long ZoneMib(GameSettings g) => g.Name switch { "pre" => 2308, "big" => 1024, _ => 128 };
+        var streamer = new FakeStreamer { BytesOf = g => ZoneMib(g) << 20 }; // 실제로 읽은 양
+        PrewarmSettings off = PrewarmSettings.Default with { OnServiceStart = false, MinFreeRamMib = 0 };
+        GameSettings[] games = [Game("pre", off), Game("big", off), Game("small", off)];
+        var prewarm = new Prewarmer(games, streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => 2500, // 앞 게임이 2308 MiB 를 올리면 남은 192 MiB: big (1024) 은 최소 부분 예열 (256) 에도 못 미쳐 건너뛰고, small (128) 은 들어감
+            GameRunning = _ => false,
+            ZoneBytes = g => ZoneMib(g) << 20,
+            TraceExists = _ => true,
+        }, new ListLog(), null, () => Now);
+        prewarm.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 1 << 20 });
+        IReadOnlyDictionary<string, IReadOnlyList<DateTimeOffset>> plays = Plays(
+            ("pre", [Now.AddDays(-1)]),
+            ("big", [Now.AddDays(-2)]),
+            ("small", [Now.AddDays(-3)]));
+
+        IReadOnlyList<PrewarmResult> results = prewarm.RunServiceStart(Ordered(games, plays));
+
+        Assert.Equal([("pre", true), ("big", false), ("small", true)], results.Select(r => (r.Game, r.Ran)));
+        Assert.Equal("batch memory budget", results[1].SkipReason);
+    }
+
+    [Fact]
     public void StatusKeepsTheLatestThirtyPlaysAndWritesThemOut()
     {
         string path = Path.Combine(_dir, "auto_status.json");

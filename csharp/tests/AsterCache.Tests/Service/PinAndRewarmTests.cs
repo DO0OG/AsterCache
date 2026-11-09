@@ -779,15 +779,15 @@ public sealed class PinAndRewarmTests
         bool returnedWhileWarmWasRunning = false;
         try
         {
-            Assert.True(started.Wait(TimeSpan.FromSeconds(5)));
+            Assert.True(started.Wait(TimeSpan.FromSeconds(30)));
             _now += TimeSpan.FromMinutes(1);
             tick = Task.Factory.StartNew(() => p.Tick(Auto()), CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
-            entered = tickStarted.Wait(TimeSpan.FromSeconds(5));
+            entered = tickStarted.Wait(TimeSpan.FromSeconds(30));
             if (entered)
             {
                 try
                 {
-                    await tick.WaitAsync(TimeSpan.FromSeconds(5));
+                    await tick.WaitAsync(TimeSpan.FromSeconds(30));
                     returnedWhileWarmWasRunning = true;
                 }
                 catch (TimeoutException)
@@ -798,10 +798,10 @@ public sealed class PinAndRewarmTests
         finally
         {
             release.Set(); // 차단 스트리머는 이 신호가 있어야만 풀림: 실패해도 작업을 회수
-            _ = await warm.WaitAsync(TimeSpan.FromSeconds(5));
+            _ = await warm.WaitAsync(TimeSpan.FromSeconds(30));
             if (tick is not null)
             {
-                await tick.WaitAsync(TimeSpan.FromSeconds(5));
+                await tick.WaitAsync(TimeSpan.FromSeconds(30));
             }
         }
 

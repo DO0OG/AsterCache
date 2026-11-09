@@ -7,11 +7,15 @@ namespace AsterCache.Service;
 /// VolumeDisks 가 알아낸 물리 디스크 단위로 배경 디스크 I/O 를 중재합니다.
 public sealed class DiskReadCoordinator
 {
+    /// 판정 불가 재조회는 볼륨마다 5 초에 한 번만 (기다리지 않고 즉시 다시 조회). 그래도 모르면 기존대로 전체 양보.
+    private const long RetryWindowMs = 5000;
+
     private readonly object _sync = new();
     private readonly List<DiskState> _states = [];
     private readonly VolumeDisks _volumes;
     private readonly ILog _log;
     private readonly Func<long> _nowMs;
+    private readonly Dictionary<string, long> _lastRetryMs = new(StringComparer.OrdinalIgnoreCase); // 볼륨 루트별 마지막 재조회 시각 (_sync 안에서만 씀)
     private CancellationToken _serviceToken;
 
     public DiskReadCoordinator(VolumeDisks volumes, ILog log, Func<long>? nowMs = null)
@@ -336,9 +340,8 @@ public sealed class DiskReadCoordinator
         return $"disk yield: {state.LeasesAtYield} leases drained in {elapsed} ms ({purpose})";
     }
 
-    private DiskState[] StatesFor(string volumeRoot)
+    private bool Classify(string volumeRoot, List<DiskState> matching)
     {
-        var matching = new List<DiskState>();
         bool unknown = false;
         foreach (DiskState state in _states)
         {
@@ -363,6 +366,21 @@ public sealed class DiskReadCoordinator
                     break;
                 }
             }
+        }
+
+        return unknown;
+    }
+
+    private DiskState[] StatesFor(string volumeRoot)
+    {
+        var matching = new List<DiskState>();
+        bool unknown = Classify(volumeRoot, matching);
+        long now = _nowMs();
+        if (unknown && (!_lastRetryMs.TryGetValue(volumeRoot, out long last) || now - last >= RetryWindowMs))
+        {
+            _lastRetryMs[volumeRoot] = now;
+            matching.Clear();
+            unknown = Classify(volumeRoot, matching); // 실패는 VolumeDisks 가 캐시하지 않으므로 다시 조회됨, 성공하면 5 분 캐시
         }
 
         DiskState[] matches = unknown ? [.. _states] : [.. matching];

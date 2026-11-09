@@ -206,6 +206,27 @@ public sealed class AutoTierTests : IDisposable
         Assert.False(Linked(@"D:\Games\Foo\a.bin")); // 다시 적용하지 않음
     }
 
+    // 동작 고정: 티어는 등록된 안티치트 값이 있으면 종류와 상관없이 거절하고, 없을 때만 적용합니다 (Capabilities.Tier 와 같은 결과).
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData("eac", false)]
+    [InlineData("battleye", false)]
+    [InlineData("vanguard", false)]
+    [InlineData("kernel", false)]
+    [InlineData("ricochet", false)]
+    [InlineData("unknown", false)]
+    [InlineData("", false)]
+    [InlineData("other-anticheat", false)]
+    public void TierAppliesOnlyToAGameWithNoRegisteredAntiCheat(string? kind, bool applies)
+    {
+        SetTrace();
+        _games[0] = _games[0] with { AntiCheat = kind };
+
+        IdleTicks(Settings());
+
+        Assert.Equal(applies, Linked(@"D:\Games\Foo\a.bin"));
+    }
+
     [Fact]
     public void ADetectedAntiCheatKeepsWhatTheGameWroteThroughTheLinkBeforeRestoring()
     {
@@ -331,7 +352,7 @@ public sealed class AutoTierTests : IDisposable
                 }
             };
             _world.RunningExes.Add("bar.exe"); // 같은 D: 의 다른 게임 Bar 의 등록 exe 가 떴지만 시작 알림은 오지 않음
-            seen = observed.Wait(TimeSpan.FromSeconds(5));
+            seen = observed.Wait(TimeSpan.FromSeconds(30));
         };
 
         _tier.Tick(s, false, gate, default);

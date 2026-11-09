@@ -91,9 +91,15 @@ if (auto is not null)
     reapplyEnv.WarnDegraded = auto.ReapplyWarnAllowed;
 }
 
+if (auto is not null)
+{
+    auto.BoundaryLease = LoadBoundaryWatch.LeaseFrom(coordinator);
+}
+
 var reloader = new SettingsReloader(() => SettingsReloader.StampOf(configPath), LoadChecked, s => Worker.ChooseWatchers(s, admin), log, configStamp);
 builder.Services.AddHostedService(_ => new Worker(settings, log, primary, fallback, streamer, checker, prewarm: prewarm, auto: auto, reload: reloader, dispatchEnv: DispatchEnv.Create(), coordinator: coordinator));
 await builder.Build().RunAsync();
+DiskActivity.StopSampling();
 return 0;
 
 // 다시 읽을 때도 시작 때와 같은 권한 검사를 합니다 (그 사이 데이터 폴더·설정 파일을 일반 사용자가 쓸 수 있게 바뀌었으면 옛 설정 유지).

@@ -21,6 +21,10 @@ public static class LoadBoundaryWatch
 
     public static Func<string, bool> OrbitApplied { get; set; } = _ => false;
 
+    /// 로딩 경계 감시가 회차마다 얻는 대여: 그 게임의 시작 스트림과 같은 예외만 (다른 등록 게임이 같은 디스크에서 돌면 거절, 도는 중 다른 게임이 시작하면 대여가 취소됨).
+    public static Func<GameSettings, DiskReadCoordinator.Lease?> LeaseFrom(DiskReadCoordinator coordinator) =>
+        g => coordinator.TryBegin(g.OriginRoot, "load boundary", preserveForGameRoot: g.OriginRoot, allowWhileYielded: true, preserveGameKey: g.Name);
+
     /// 4 KiB 표본이 이 시간을 넘으면 느린 것으로 봅니다 (1 MiB 용 CacheProbe.ColdThresholdMs 는 이 크기에 너무 느슨함: 4 KiB 캐시 적중은 마이크로초, HDD 는 수 ms).
     public const double SlowMs = 0.5;
     public const long MinGap = 1L << 20; // 캐시 미리 읽기가 이웃 위치를 올리지 않도록 표본끼리·이전 회차와 이만큼 띄움
@@ -45,13 +49,16 @@ public static class LoadBoundaryWatch
         return picked;
     }
 
+    /// probeWithStop: 대여 토큰 (다른 게임이 시작하면 취소됨) 을 받는 표본 읽기, 비우면 probe 를 쓰고 probe 도 없으면 표본 사이에서 토큰을 확인하며 읽음.
+    /// lease: 회차마다 읽기 전에 얻는 중재 대여 (null 을 돌려주면 이 회차는 읽지 않고 측정 없이 끝냄, 인자를 안 주면 대여를 요구하지 않는 옛 동작).
     /// 경계 도달 시간 (ms), 상한 안에 못 닿았거나 잴 수 없으면 null. 시계·대기·경계·표본 읽기는 시험이 바꿉니다 (기본은 실제 값, 대기는 ct 취소 시 바로 깨어남).
     public static int? Run(GameSettings game, AutoStatus status, ILog log, CancellationToken ct = default, Func<DateTimeOffset>? now = null, Action<TimeSpan>? sleep = null,
-        Func<GameSettings, LoadBoundary?>? boundary = null, Func<IReadOnlyList<(string Path, long Offset, int Bytes)>, ProbeResult?>? probe = null, BenchmarkRecorder? recorder = null)
+        Func<GameSettings, LoadBoundary?>? boundary = null, Func<IReadOnlyList<(string Path, long Offset, int Bytes)>, ProbeResult?>? probe = null, BenchmarkRecorder? recorder = null,
+        Func<DiskReadCoordinator.Lease?>? lease = null, Func<IReadOnlyList<(string Path, long Offset, int Bytes)>, CancellationToken, ProbeResult?>? probeWithStop = null)
     {
         now ??= () => DateTimeOffset.UtcNow;
         sleep ??= d => ct.WaitHandle.WaitOne(d);
-        probe ??= s => CacheProbe.Probe(s, SlowMs);
+        probeWithStop ??= probe is null ? (s, stop) => CacheProbe.Probe(s, SlowMs, stop) : (s, _) => probe(s);
         if ((boundary ?? LoadTiers.For)(game) is not { Tier0.Count: > 0 } b)
         {
             return null;
@@ -78,7 +85,24 @@ public static class LoadBoundaryWatch
                 return Done(null);
             }
 
-            if (probe(samples) is { Slow: 0 } r && r.Samples == SampleCount) // 읽지 못한 표본이 있으면 도달로 보지 않음
+            ProbeResult? result;
+            if (lease is null)
+            {
+                result = probeWithStop(samples, default);
+            }
+            else
+            {
+                using DiskReadCoordinator.Lease? held = lease();
+                if (held is null)
+                {
+                    log.Info($"{game.Name}: tier0 probe skipped (disk read not granted)");
+                    return null; // 읽지 않았으므로 측정 기록도 남기지 않음
+                }
+
+                result = probeWithStop(samples, held.Token);
+            }
+
+            if (result is { Slow: 0 } r && r.Samples == SampleCount) // 읽지 못한 표본이 있으면 도달로 보지 않음
             {
                 int ms = (int)Math.Min(int.MaxValue, (now() - start).TotalMilliseconds);
                 status.RecordLoadBoundary(game.Name, ms, now());

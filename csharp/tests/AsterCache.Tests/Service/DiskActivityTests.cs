@@ -231,6 +231,18 @@ public sealed class DiskActivityTests
         await collector!.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
+    [Fact]
+    public async Task StopEndsTheCollectionLoop()
+    {
+        int taken = 0;
+        Task? loop = null;
+        var sampler = new DiskActivity.PhysicalSampler(() => { taken++; return Instances; }, () => Environment.TickCount64, run => loop = Task.Run(run));
+        sampler.Start();
+        sampler.Stop();
+        await loop!.WaitAsync(TimeSpan.FromSeconds(5)); // 표본 간격 (2 초) 을 기다리지 않고 바로 빠져나옴
+        Assert.True(taken <= 1);
+    }
+
     [Theory]
     [InlineData(double.NaN)]
     [InlineData(double.PositiveInfinity)]

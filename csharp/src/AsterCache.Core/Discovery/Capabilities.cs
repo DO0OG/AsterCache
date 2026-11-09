@@ -60,13 +60,13 @@ public static class Capabilities
         ? Block("current pin policy forbids this anti-cheat kind")
         : Allow("current pin policy allows this anti-cheat kind");
 
-    /// 아직 배선되지 않은 정책 기본값 (시험에서만 확인).
+    /// 아직 배선되지 않은 정책 기본값 (시험에서만 확인): 현재 재배치 경로는 unknown·빈 문자열도 막지 않아 (AutoRelocatorTests 가 고정) 연결하면 결과가 달라짐.
     // AutoRelocator keeps the supplemental profile replan and confirmation marker checks. 설계에 따라 unknown(대소문자 무관)과 빈 문자열만 막습니다.
     private static CapabilityDecision Relocate(string? kind) => kind == "" || string.Equals(kind, "unknown", StringComparison.OrdinalIgnoreCase)
         ? Block("unknown or empty anti-cheat blocks relocation")
         : Allow("existing relocation path; only unknown or empty detection is gated");
 
-    /// 아직 배선되지 않은 정책 기본값 (시험에서만 확인).
+    /// AutoTier 가 적용·되돌림 판단에 씁니다 (안티치트가 있으면 종류와 상관없이 거절).
     private static CapabilityDecision Tier(string? kind) => kind is null
         ? Allow("no anti-cheat is present")
         : Block("tiering is refused when any anti-cheat kind is present");

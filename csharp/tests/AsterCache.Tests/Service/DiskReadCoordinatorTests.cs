@@ -345,6 +345,49 @@ public sealed class DiskReadCoordinatorTests
 
         Assert.Null(coordinator.TryBegin(@"E:\Game", "warm files"));
     }
+
+    // 새 볼륨 C: 의 판정이 실패하는 횟수를 정할 수 있는 코디네이터. 디스크 D:(1), E:(2) 를 먼저 등록해 두면 첫 판정에서 C: 를 상태마다 한 번씩 (2 번) 조회함.
+    private (DiskReadCoordinator Coordinator, Func<int> Queries) WithFlakyC(int failures)
+    {
+        int cQueries = 0;
+        var volumes = new VolumeDisks(letter =>
+        {
+            if (letter != "C:")
+            {
+                return new HashSet<uint> { letter == "D:" ? 1u : 2u };
+            }
+
+            return ++cQueries <= failures ? null : new HashSet<uint> { 1 };
+        }, () => _now);
+        var coordinator = new DiskReadCoordinator(volumes, new ListLog(), () => _now);
+        using (coordinator.TryBegin(@"D:\Game", "warm files")) { }
+        using (coordinator.TryBegin(@"E:\Game", "warm files")) { }
+        return (coordinator, () => cQueries);
+    }
+
+    [Fact]
+    public void UnresolvedVolumeIsRequeriedOnceAndYieldsOnlyTheResolvedDisk()
+    {
+        (DiskReadCoordinator coordinator, Func<int> queries) = WithFlakyC(failures: 2);
+
+        coordinator.Yield(@"C:\Game", "game started");
+
+        Assert.Equal(3, queries()); // 첫 판정 2 번 실패 뒤 재조회 한 번이 성공해 캐시됨
+        Assert.NotNull(coordinator.TryBegin(@"E:\Game", "warm files")); // 디스크 2 는 양보하지 않음
+        Assert.Null(coordinator.TryBegin(@"D:\Other", "warm files"));
+    }
+
+    [Fact]
+    public void VolumeStillUnresolvedAfterTheRequeryKeepsTheConservativeYieldForAllDisks()
+    {
+        (DiskReadCoordinator coordinator, Func<int> queries) = WithFlakyC(failures: int.MaxValue);
+
+        coordinator.Yield(@"C:\Game", "game started");
+
+        Assert.Equal(4, queries()); // 재조회는 한 번뿐
+        Assert.Null(coordinator.TryBegin(@"E:\Game", "warm files"));
+        Assert.Null(coordinator.TryBegin(@"D:\Other", "warm files"));
+    }
 }
 
 public sealed class DiskReadCoordinatorPathTests

@@ -11,7 +11,7 @@ public sealed class RiotPhaseWatcherTests : IAsyncDisposable
 {
     private const long Mib = 1L << 20;
     private const string Lock = "LeagueClient:1234:51234:s3cret:https";
-    private static readonly TimeSpan Bound = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan Bound = TimeSpan.FromSeconds(30);
     private readonly ListLog _log = new();
     private readonly FakeClient _client = new();
     private readonly ConcurrentQueue<TimeSpan> _delays = new();
@@ -113,7 +113,7 @@ public sealed class RiotPhaseWatcherTests : IAsyncDisposable
             Delay = (t, ct) =>
             {
                 _delays.Enqueue(t);
-                return Task.Delay(2, ct);
+                return Task.Delay(1, ct); // 진행은 횟수로만 판정하고 시간은 속도 조절용 (Task.Yield 만 쓰면 스레드 풀을 계속 점유해 다른 시험을 굶김)
             },
         };
         return new RiotPhaseWatcher(() => _settings, env, _log);

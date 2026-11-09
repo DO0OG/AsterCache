@@ -433,22 +433,40 @@ public sealed class DispatcherTests
     [Fact]
     public async Task WorkerWithNoGamesIdlesWithoutWatchingOrReapplying()
     {
-        var log = new ListLog();
+        var log = new SignalLog("service started");
         var watcher = new CountingWatcher();
         var worker = new Worker(new AsterSettings(250, []), log, watcher, watcher, new FakeStreamer(), new ReapplyChecker(ReapplyTests.NoIoEnv(), log));
 
         await worker.StartAsync(CancellationToken.None);
-        for (int i = 0; i < 500 && !log.Lines.Any(l => l.Contains("service started", StringComparison.Ordinal)); i++)
-        {
-            await Task.Delay(10); // 고정 대기 대신 시작 로그가 나올 때까지 (상한 5 초)
-        }
+        await log.Signaled.WaitAsync(TimeSpan.FromSeconds(30)); // 시작 로그가 나오면 바로 이어감 (고정 대기 없음)
 
         await worker.StopAsync(CancellationToken.None);
 
         Assert.Equal(0, watcher.Runs);
         Assert.Contains(log.Lines, l => l.StartsWith("Info: service started: no games registered", StringComparison.Ordinal));
         Assert.Contains(log.Lines, l => l.Equals("Info: service stopped", StringComparison.Ordinal));
-        Assert.DoesNotContain(log.Lines, l => l.StartsWith("Error", StringComparison.Ordinal) || l.StartsWith("Warn", StringComparison.Ordinal));
+        string[] bad = [.. log.Lines.Where(l => l.StartsWith("Error", StringComparison.Ordinal) || l.StartsWith("Warn", StringComparison.Ordinal))];
+        Assert.True(bad.Length == 0, "unexpected log lines: " + string.Join(" || ", bad));
+    }
+
+    // 지정한 문구가 처음 기록되면 Signaled 가 완료되는 로그 (ListLog 에 위임).
+    private sealed class SignalLog(string signal) : ILog
+    {
+        private readonly ListLog _inner = new();
+        private readonly TaskCompletionSource _signaled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IReadOnlyCollection<string> Lines => _inner.Lines;
+
+        public Task Signaled => _signaled.Task;
+
+        public void Write(LogLevel level, string message, Exception? exception = null)
+        {
+            _inner.Write(level, message, exception);
+            if (message.Contains(signal, StringComparison.Ordinal))
+            {
+                _signaled.TrySetResult();
+            }
+        }
     }
 
     [Fact]

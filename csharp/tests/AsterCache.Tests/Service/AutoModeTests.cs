@@ -440,4 +440,25 @@ public sealed class AutoModeTests : IDisposable
 
         Assert.True(cancelledOnEntry);
     }
+
+    [Theory]
+    [InlineData("eac", false)]
+    [InlineData("vanguard", false)]
+    [InlineData(AutoEnv.AntiCheatUnknown, false)]
+    [InlineData(null, true)]
+    public void LoadBoundaryWatchStartsOnlyWhenTheAntiCheatPolicyAllowsIt(string? cheat, bool runs)
+    {
+        AddGame("foo", "auto");
+        _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { LoadBoundary = true } };
+        _rig.World.Session = new FakeTrace();
+        _rig.World.Running = true;
+        _rig.World.AntiCheats[@"D:\Games\foo"] = cheat;
+        AutoMode mode = Mode();
+        int started = 0;
+        mode.BoundaryRunner = (_, _) => started++;
+
+        mode.OnGameStart(Game());
+
+        Assert.Equal(runs ? 1 : 0, started);
+    }
 }

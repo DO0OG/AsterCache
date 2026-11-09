@@ -256,8 +256,12 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         Assert.NotEmpty(Vol.Moves);
     }
 
-    // 이 시험은 일반 재배치 경로를 봅니다. Capabilities.Relocate 의 unknown 차단은 아직 호출처가 없어 여기에 영향이 없습니다.
+    // 동작 고정: 재배치 계획 경로는 안티치트 종류와 상관없이 막지 않습니다. Capabilities.Relocate 는 unknown·빈 문자열을 막으므로 (결과가 달라짐) 이 경로에 연결하지 않았습니다.
     [Theory]
+    [InlineData("eac")]
+    [InlineData("battleye")]
+    [InlineData("kernel")]
+    [InlineData("ricochet")]
     [InlineData("unknown")]
     [InlineData("Vanguard")]
     [InlineData("")]

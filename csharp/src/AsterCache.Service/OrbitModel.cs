@@ -376,6 +376,44 @@ public sealed class OrbitModel : IDisposable
     public static OrbitModelSnapshot Load(GameSettings game, long minRunBytes = AutoTracer.MinExtraRunBytes) =>
         Load(Path.GetDirectoryName(game.Plan) ?? string.Empty, game.Name, minRunBytes);
 
+    /// 오프라인 재채점은 입력 trace 원본이 없어도 저장된 orbit.json 모형을 그대로 평가합니다.
+    public static OrbitModelSnapshot LoadForRescore(string orbitPath)
+    {
+        try
+        {
+            JObject? root = ReadRoot(orbitPath);
+            Hazard? hazard = ReadHazard(root);
+            double? lambdaLow = null;
+            double? lambdaHat = null;
+            double? lambdaHigh = null;
+            if (hazard is { ExposureSeconds: > 0 })
+            {
+                (double low, double high) = OrbitStats.Garwood(hazard.Events, 1 - Orbit3Constants.Alpha);
+                double exposureMs = hazard.ExposureSeconds * 1000;
+                lambdaLow = low / exposureMs;
+                lambdaHat = hazard.Events / exposureMs;
+                lambdaHigh = high / exposureMs;
+            }
+
+            List<StoredEpisode> stored = root is null ? [] : ReadEpisodes(root);
+            double confidence = stored.Count == 0 ? 0 : 1 - Orbit3Constants.Alpha / stored.Count;
+            var episodes = stored.Select(episode =>
+            {
+                (double low, double high) = OrbitStats.ClopperPearson(episode.RunsSeen, episode.RunsTotal, confidence);
+                return new OrbitEpisode([], low, (double)episode.RunsSeen / episode.RunsTotal, high, episode.DMs)
+                {
+                    Ranges = episode.Ranges,
+                };
+            }).ToArray();
+            return new OrbitModelSnapshot(episodes, lambdaLow, lambdaHat, lambdaHigh,
+                stored.Count == 0 ? 0 : stored[0].RunsTotal, root is null ? null : ReadUnmatched(root));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException or ArgumentException or OverflowException)
+        {
+            return new OrbitModelSnapshot([], null, null, null, 0, null);
+        }
+    }
+
     public static void NoteExposure(GameSettings game, double seconds, bool interrupted)
     {
         if (!double.IsFinite(seconds) || seconds < 0)
@@ -408,11 +446,17 @@ public sealed class OrbitModel : IDisposable
         }
     }
 
-    public static void SetDecision(GameSettings game, string id, DateTimeOffset at, string modeApplied)
+    public static void SetDecision(GameSettings game, string id, DateTimeOffset at, string modeApplied,
+        string? reason = null, double? worstEpisodeDelayMs = null)
     {
         if (modeApplied is not ("off" or "shadow" or "active"))
         {
             throw new ArgumentOutOfRangeException(nameof(modeApplied));
+        }
+
+        if (worstEpisodeDelayMs is { } delay && !double.IsFinite(delay))
+        {
+            throw new ArgumentOutOfRangeException(nameof(worstEpisodeDelayMs));
         }
 
         ArgumentNullException.ThrowIfNull(id);
@@ -425,6 +469,8 @@ public sealed class OrbitModel : IDisposable
                 { "id", id },
                 { "at", at.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture) },
                 { "mode_applied", modeApplied },
+                { "reason", reason },
+                { "worst_episode_delay_ms", worstEpisodeDelayMs },
             };
             JObject root = RootWithPreserved(previous, PreserveObject(previous, "hazard", DefaultHazard()), decision);
             WriteAtomic(path, root, null, TimeSpan.MaxValue, CancellationToken.None);
@@ -457,6 +503,8 @@ public sealed class OrbitModel : IDisposable
         { "id", string.Empty },
         { "at", DateTimeOffset.UnixEpoch.ToString("O", CultureInfo.InvariantCulture) },
         { "mode_applied", "off" },
+        { "reason", string.Empty },
+        { "worst_episode_delay_ms", null },
     };
 
     private static JObject PreserveObject(JObject? previous, string key, JObject fallback) =>

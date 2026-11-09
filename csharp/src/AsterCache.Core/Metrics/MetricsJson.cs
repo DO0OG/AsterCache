@@ -21,8 +21,9 @@ public static class MetricsJson
             ["visual"] = r.Visual,
             ["visual_observed_count"] = r.VisualObservedCount,
             ["worst_loss_ms"] = r.WorstLossMs,
-            ["ci"] = null,
-            ["ci_not_computed"] = GateResult.CiNotComputed,
+            ["metric_source"] = r.MetricSource,
+            ["ci"] = Ci(r.Ci),
+            ["ci_not_computed"] = r.Ci is null ? GateResult.CiNotComputed : null,
         };
         return PyJson.Dumps(o, ensureAscii: false);
     }
@@ -43,7 +44,10 @@ public static class MetricsJson
         }
 
         return new GateResult(verdict, Str(o, "reason"), Int(o, "baseline_used"), Int(o, "candidate_used"), Int(o, "excluded"),
-            ReadPair(o, "baseline"), ReadPair(o, "candidate"), visual, NullableLong(o, "worst_loss_ms"), o.TryGetValue("visual_observed_count", out _) ? Int(o, "visual_observed_count") : 0, o.TryGetValue("reason_code", out _) ? Str(o, "reason_code") : string.Empty); // 이 필드가 없던 예전 기록은 0
+            ReadPair(o, "baseline"), ReadPair(o, "candidate"), visual, NullableLong(o, "worst_loss_ms"),
+            o.TryGetValue("visual_observed_count", out _) ? Int(o, "visual_observed_count") : 0,
+            o.TryGetValue("reason_code", out _) ? Str(o, "reason_code") : string.Empty,
+            ReadCi(o), o.TryGetValue("metric_source", out _) ? Str(o, "metric_source") : "t_ready_ms"); // 옛 결과에는 CI 와 관측 개수 키가 없습니다
     }
 
     /// 로딩 표본 기록 파일 이름 (데이터 폴더). 서비스가 쓰고 트레이가 읽습니다.
@@ -129,6 +133,47 @@ public static class MetricsJson
     }
 
     private static JObject? Pair(Percentiles? p) => p is null ? null : new JObject { ["p50"] = p.P50, ["p95"] = p.P95 };
+
+    private static JObject? Ci(BootstrapIntervals? ci) => ci is null ? null : new JObject
+    {
+        ["method"] = "bootstrap",
+        ["level"] = 0.95,
+        ["iterations"] = (long)ResultGate.BootstrapIterations,
+        ["p50_delta_ms"] = new JObject { ["lower"] = ci.P50DeltaMs.Lower, ["upper"] = ci.P50DeltaMs.Upper },
+        ["p95_delta_ms"] = new JObject { ["lower"] = ci.P95DeltaMs.Lower, ["upper"] = ci.P95DeltaMs.Upper },
+    };
+
+    private static BootstrapIntervals? ReadCi(JObject o)
+    {
+        if (!o.TryGetValue("ci", out object? value) || value is null)
+        {
+            return null;
+        }
+
+        if (value is not JObject ci || !ci.TryGetValue("method", out object? method) || method is not "bootstrap")
+        {
+            throw new PyValueException("ci is not a supported bootstrap interval");
+        }
+
+        BootstrapInterval ReadInterval(string key)
+        {
+            if (!ci.TryGetValue(key, out object? intervalValue) || intervalValue is not JObject interval)
+            {
+                throw new PyValueException(key + " is not an interval");
+            }
+
+            double lower = Num(interval, "lower");
+            double upper = Num(interval, "upper");
+            if (!double.IsFinite(lower) || !double.IsFinite(upper) || lower > upper)
+            {
+                throw new PyValueException(key + " is invalid");
+            }
+
+            return new BootstrapInterval(lower, upper);
+        }
+
+        return new BootstrapIntervals(ReadInterval("p50_delta_ms"), ReadInterval("p95_delta_ms"));
+    }
 
     private static Percentiles? ReadPair(JObject o, string key)
     {

@@ -6,18 +6,20 @@ using AsterCache.Core.Metrics;
 
 namespace AsterCache.Service;
 
-/// 로딩 표본 기록기 (<데이터 폴더>\benchmark_samples.json, 최근 MaxSamples 건). ZC-10 기록 틀이며 실측 값은 아직 없습니다.
-/// 게임 시작 때 잰 캐시 표본 도달 시각은 실제 준비 시각이 아니므로 ProbeReadyMs 대리 지표로만 남기고, TReadyMs 는 항상 null (unobserved) 입니다.
+/// 로딩 표본 기록기 (<데이터 폴더>\benchmark_samples.json, 최근 MaxSamples 건). TReadyMs 가 없을 때 ProbeReadyMs 는 강등 전용 대리 지표로 씁니다.
+/// 게임 시작 때 잰 캐시 표본 도달 시각은 실제 준비 시각이 아니므로 대리 지표의 악화만으로 shadow 강등하며 자동 채택은 하지 않습니다.
 /// 경과 구간은 서비스 가동 시간 기준입니다 (설치 후 경과는 알 수 없음). 기록은 LoadBoundary 감시 스레드에서만 부릅니다.
 public sealed class BenchmarkRecorder
 {
     public const int MaxSamples = 200;
+    public const int GateEvaluationBatchSize = 10;
 
     private readonly object _lock = new();
     private readonly string _path;
     private readonly ILog _log;
     private readonly DateTimeOffset _serviceStart;
     private readonly List<LoadSample> _samples;
+    private readonly Dictionary<(string Game, string? Build, bool AfterFiveMinutes), int> _samplesSinceEvaluation = [];
     private readonly bool _persist; // false 면 기존 파일을 읽거나 옮기지 못한 상태라 파일을 덮지 않습니다
 
     private readonly List<(LoadSample Sample, DateTimeOffset At)> _gateSamples = []; // 이번 실행에서 기록한 표본과 시각 (판정용, 파일에는 쓰지 않음)
@@ -25,6 +27,7 @@ public sealed class BenchmarkRecorder
     public Action<string, GateResult>? GateEvaluated { get; set; }
 
     /// 판정에 쓸 표본의 하한 시각 (마지막 모드 변경 시각): 그 이전 표본은 판정에서 빼서, 되돌린 직후 옛 표본으로 다시 강등되지 않게 합니다. null 이면 제한 없음.
+    // null이면 재시작 뒤 삭제 관측이 없으며, 메모리에 있는 현재 표본은 모두 유효합니다.
     public Func<DateTimeOffset?>? GateSince { get; set; }
 
     public BenchmarkRecorder(string path, ILog log, DateTimeOffset? serviceStart = null)
@@ -83,7 +86,18 @@ public sealed class BenchmarkRecorder
                 }
             }
 
-            rejected = EvaluateReadyLocked(sample.GameKey);
+            var group = (sample.GameKey.ToLowerInvariant(), sample.GameBuild, IsAfterFiveMinutes(sample));
+            int count = _samplesSinceEvaluation.GetValueOrDefault(group) + 1;
+            if (count >= GateEvaluationBatchSize)
+            {
+                _samplesSinceEvaluation[group] = 0;
+                rejected = EvaluateReadyLocked(group);
+            }
+            else
+            {
+                _samplesSinceEvaluation[group] = count;
+                rejected = null;
+            }
         }
 
         if (rejected is not null)
@@ -92,20 +106,22 @@ public sealed class BenchmarkRecorder
         }
     }
 
-    // 주의: 실제 준비 시각 관측이 없어 (TReadyMs·GameBuild 가 null) 현재 서비스 표본으로는 판정이 생기지 않습니다. 준비 시각 관측이 붙은 뒤에야 동작합니다.
-    private GateResult? EvaluateReadyLocked(string game)
+    // ProbeReadyMs 는 실제 준비 완료가 아닌 대리 지표이므로 강등에만 사용합니다. 표본은 서비스 실행 중 기록된 값만 비교합니다.
+    private GateResult? EvaluateReadyLocked((string Game, string? Build, bool AfterFiveMinutes) group)
     {
         DateTimeOffset? since = GateSince?.Invoke();
-        foreach (IGrouping<string, LoadSample> build in _gateSamples.Where(g => g.Sample.GameKey == game && g.Sample.GameBuild is not null && (since is null || g.At > since)).Select(g => g.Sample).GroupBy(s => s.GameBuild!, StringComparer.Ordinal))
+        LoadSample[] samples = _gateSamples
+            .Where(g => string.Equals(g.Sample.GameKey, group.Game, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(g.Sample.GameBuild, group.Build, StringComparison.Ordinal)
+                && IsAfterFiveMinutes(g.Sample) == group.AfterFiveMinutes
+                && (since is null || g.At > since))
+            .Select(g => GateComparableSample(g.Sample))
+            .ToArray();
+        LoadSample[] baseline = [.. samples.Where(s => s.Arm == Arm.Baseline)];
+        LoadSample[] candidate = [.. samples.Where(s => s.Arm == Arm.Candidate)];
+        if (baseline.Count(s => s.TReadyMs is >= 0 || s.ProbeReadyMs is >= 0) >= ResultGate.MinSamples
+            && candidate.Count(s => s.TReadyMs is >= 0 || s.ProbeReadyMs is >= 0) >= ResultGate.MinSamples)
         {
-            LoadSample[] samples = [.. build];
-            LoadSample[] baseline = [.. samples.Where(s => s.Arm == Arm.Baseline && s.TReadyMs is >= 0)];
-            LoadSample[] candidate = [.. samples.Where(s => s.Arm == Arm.Candidate && s.TReadyMs is >= 0)];
-            if (baseline.Length < ResultGate.MinSamples || candidate.Length < ResultGate.MinSamples)
-            {
-                continue;
-            }
-
             GateResult result = ResultGate.Evaluate(baseline, candidate);
             if (result.Verdict == ResultGate.Reject)
             {
@@ -115,6 +131,13 @@ public sealed class BenchmarkRecorder
 
         return null;
     }
+
+    private static bool IsAfterFiveMinutes(LoadSample sample) =>
+        sample.ElapsedBasis == "service_uptime" && sample.Elapsed == ElapsedBucket.Min5;
+
+    private static LoadSample GateComparableSample(LoadSample sample) => sample.ElapsedBasis == "service_uptime"
+        ? sample with { Elapsed = IsAfterFiveMinutes(sample) ? ElapsedBucket.Min5 : ElapsedBucket.Sec0 }
+        : sample;
 
     /// 기존 기록을 읽습니다. Persist 가 false 면 읽지 못했거나 깨진 파일을 옮기지 못한 것이라 이번 실행 동안 파일을 덮지 않습니다.
     private static (List<LoadSample> Samples, bool Persist) Load(string path, ILog log)

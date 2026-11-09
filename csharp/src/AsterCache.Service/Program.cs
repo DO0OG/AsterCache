@@ -70,7 +70,7 @@ LoadBoundaryWatch.OrbitApplied = canApply ? streamer.WasPrewarmReordered : _ => 
 LoadBoundaryWatch.Recorder = canApply ? new BenchmarkRecorder(Path.Combine(dataDir, MetricsJson.SamplesFile), log) : null; // 로딩 표본 기록 (상태 파일과 같은 이유로 canApply 일 때만)
 if (LoadBoundaryWatch.Recorder is { } recorder)
 {
-    // 실제 준비 시각 관측이 없어 (TReadyMs·GameBuild 가 null) 현재 서비스 표본으로는 판정이 생기지 않음: 판정이 생기면 모드 변경 이후 표본으로만 강등
+    // ProbeReadyMs 는 대리 지표이므로 고정 시드 bootstrap 신뢰구간에서 유의한 악화가 확인될 때만 모드 변경 이후 표본으로 강등
     recorder.GateSince = () => orbitRuntime.ModeChangedAt;
     recorder.GateEvaluated = (gameName, result) =>
     {

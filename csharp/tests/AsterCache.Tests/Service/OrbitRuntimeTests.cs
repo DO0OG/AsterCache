@@ -105,6 +105,35 @@ public sealed class OrbitRuntimeTests : IDisposable
     }
 
     [Fact]
+    public void EpisodeRegressionReturnsAndRecordsTheOriginalOps()
+    {
+        const long firstBytes = 2_000_000_000;
+        const long secondBytes = 500_000_000;
+        var set = new OrbitSegmentSet(
+            [new ReadOp("file", 0, firstBytes), new ReadOp("file", firstBytes, secondBytes)],
+            0,
+            0,
+            [new OrbitSegment(0, 1, firstBytes, 0, 0), new OrbitSegment(1, 1, secondBytes, firstBytes, 0)]);
+        var input = new Orbit3Input(set,
+        [
+            new Orbit3Episode([(0, firstBytes)], 0.01, 0.01, 0.01),
+            new Orbit3Episode([(1, secondBytes)], 1, 1, 1)
+        ], 0.001, 0.001, 0.001, new Orbit3Device(0, 1_000_000, 1, 1, 1, 1), 0.9);
+        Orbit3Decision decision = Orbit3.Decide(input);
+        OrbitRuntime runtime = Runtime(decide: (_, _) => decision);
+
+        List<ReadOp> result = runtime.Reorder(_game, _ops);
+
+        Assert.Null(decision.Order);
+        Assert.Equal("episode_regression", decision.Reason);
+        Assert.Same(_ops, result);
+        JObject plan = (JObject)JsonRead.ReadFile(OrbitModel.PathFor(_game))!;
+        JObject recorded = (JObject)plan["decision"]!;
+        Assert.Equal("episode_regression", recorded["reason"]);
+        Assert.Equal(decision.WorstEpisodeDelayMs, recorded["worst_episode_delay_ms"]);
+    }
+
+    [Fact]
     public void ForcedCandidateUsesTheFixedLambdaOnlyWhenTheHazardIsMissingOrHasNoEvents()
     {
         OrbitRuntime.ForcedCandidate noHazard = Runtime(snapshot: Snapshot(lambdaLow: null)).ForceCandidate(_game, _ops, 2.0);
@@ -333,6 +362,26 @@ public sealed class OrbitRuntimeTests : IDisposable
     public void ModeChangedAtIsNullWithoutAModeFile()
     {
         Assert.Null(Runtime().ModeChangedAt);
+    }
+
+    [Fact]
+    public void RestartWithoutModeFileHasNoCutoffEvenWhenPlansContainDecisions()
+    {
+        string plans = Path.Combine(_dir, "plans");
+        Directory.CreateDirectory(plans);
+        DateTimeOffset older = new(2026, 11, 8, 20, 0, 0, TimeSpan.Zero);
+        DateTimeOffset latest = new(2026, 11, 9, 3, 0, 0, TimeSpan.Zero);
+        foreach ((string name, DateTimeOffset at) in new[] { ("a", older), ("b", latest) })
+        {
+            File.WriteAllText(Path.Combine(plans, name + ".orbit.json"), PyJson.Dumps(new JObject
+            {
+                ["decision"] = new JObject { ["at"] = at.ToString("O") }
+            }));
+        }
+
+        OrbitRuntime restarted = Runtime();
+
+        Assert.Null(restarted.ModeChangedAt);
     }
 
     [Fact]

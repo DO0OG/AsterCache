@@ -38,7 +38,8 @@ public sealed record Orbit3Decision(
     double? DLow,
     double NominalGain,
     int Candidates,
-    long ElapsedMicros);
+    long ElapsedMicros,
+    double? WorstEpisodeDelayMs = null);
 
 public static class Orbit3
 {
@@ -49,13 +50,29 @@ public static class Orbit3
     private const int EpisodeSafetyLimit = 4096;
     private const long BlockBytes = 64L << 10;
 
-    private sealed record EpisodeData((int Segment, double Weight)[] Parts, double PLow, double PHat, double PHigh, double TotalBytes, int SourceIndex);
+    private sealed record EpisodeData((int Segment, double Weight)[] Parts, double PLow, double PHat, double PHigh,
+        double TotalBytes, int LastSegment, int SourceIndex);
 
-    private sealed record BlockOperation(long Start, long End, int Segment, bool IsHead);
+    private sealed record BlockOperation(long Start, long End, int Segment, bool IsHead, int Priority);
 
-    private sealed record PathOperationIndex(BlockOperation[] Operations, long[] PrefixMaxEnds);
+    private sealed record IncumbentCondition(
+        double CandidateSeek,
+        double CandidateThroughput,
+        double IncumbentSeek,
+        double IncumbentThroughput,
+        double[] IncumbentStarts,
+        double[] IncumbentMatchedEnds);
 
-    private sealed record Candidate(int[] Order, double NominalGain, double DLow);
+    private static readonly IComparer<BlockOperation> PriorityComparer =
+        Comparer<BlockOperation>.Create((left, right) => left.Priority.CompareTo(right.Priority));
+
+    private sealed record PathOperationIndex(
+        BlockOperation[] Operations,
+        long[] PrefixMaxEnds,
+        BlockOperation[] UnmappedOperations,
+        long[] UnmappedPrefixMaxEnds);
+
+    private sealed record Candidate(int[] Order, double NominalGain, double DLow, double WorstEpisodeDelayMs, bool EpisodeRegression);
 
     private sealed record BeamState(int[] Prefix, bool[] Used, double Score);
 
@@ -75,19 +92,29 @@ public static class Orbit3
         public readonly double Value => _sum;
     }
 
-    public static Orbit3Decision Decide(Orbit3Input input, CancellationToken cancel = default) => DecideCore(input, cancel, false, null);
+    public static Orbit3Decision Decide(Orbit3Input input, CancellationToken cancel = default) =>
+        DecideCore(input, cancel, false, null, Orbit3Constants.DecisionBudgetMs, null);
 
     /// 안전 하한과 관계없이 벤치 후보로 쓸 명목 순서를 고릅니다.
-    public static Orbit3Decision DecideCandidate(Orbit3Input input, CancellationToken cancel = default) => DecideCore(input, cancel, true, null);
+    public static Orbit3Decision DecideCandidate(Orbit3Input input, CancellationToken cancel = default) =>
+        DecideCore(input, cancel, true, null, Orbit3Constants.DecisionBudgetMs, null);
 
     internal static Orbit3Decision DecideCandidateMeasured(Orbit3Input input, CancellationToken cancel, Action<string, double> reportStage) =>
-        DecideCore(input, cancel, true, reportStage);
+        DecideCore(input, cancel, true, reportStage, Orbit3Constants.DecisionBudgetMs, null);
 
-    private static Orbit3Decision DecideCore(Orbit3Input input, CancellationToken cancel, bool forceCandidate, Action<string, double>? reportStage)
+    internal static Orbit3Decision DecideMeasured(Orbit3Input input, CancellationToken cancel, int decisionBudgetMs,
+        Action<string, double> reportStage) => DecideCore(input, cancel, false, reportStage, decisionBudgetMs, null);
+
+    internal static Orbit3Decision DecideOrderMeasured(Orbit3Input input, IReadOnlyList<int> order,
+        CancellationToken cancel, int decisionBudgetMs, Action<string, double> reportStage) =>
+        DecideCore(input, cancel, false, reportStage, decisionBudgetMs, [.. order]);
+
+    private static Orbit3Decision DecideCore(Orbit3Input input, CancellationToken cancel, bool forceCandidate,
+        Action<string, double>? reportStage, int decisionBudgetMs, int[]? explicitOrder)
     {
         long started = Stopwatch.GetTimestamp();
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancel);
-        budget.CancelAfter(Orbit3Constants.DecisionBudgetMs);
+        budget.CancelAfter(decisionBudgetMs);
         CancellationToken token = budget.Token;
 
         try
@@ -105,7 +132,7 @@ public static class Orbit3
             {
                 reportStage("input_preparation", Stopwatch.GetElapsedTime(prepareStarted).TotalMilliseconds);
             }
-            EnsureWithinBudget(token, started);
+            EnsureWithinBudget(token, started, decisionBudgetMs);
             if (!valid)
             {
                 return Result(null, "invalid_input", null, 0, 0, started);
@@ -117,28 +144,50 @@ public static class Orbit3
             }
 
             int segmentCount = set!.Segments.Count;
+            if (explicitOrder is not null && !IsPermutation(explicitOrder, segmentCount))
+            {
+                return Result(null, "invalid_candidate_order", null, 0, 0, started);
+            }
+
             int[] incumbent = Enumerable.Range(0, segmentCount).ToArray();
             var orders = new List<int[]>();
             long candidateStarted = reportStage is null ? 0 : Stopwatch.GetTimestamp();
-            AddCandidate(orders, DensityOrder(set, candidateEpisodes!, device!, token));
-            AddCandidate(orders, EpisodeOrder(set, candidateEpisodes!, device!, token));
-            foreach (int[] order in BeamOrders(set, candidateEpisodes!, input!.LambdaHat, device!, token))
+            if (explicitOrder is not null)
             {
-                AddCandidate(orders, order);
+                orders.Add(explicitOrder);
+            }
+            else
+            {
+                AddCandidate(orders, DensityOrder(set, candidateEpisodes!, device!, token));
+                AddCandidate(orders, EpisodeOrder(set, candidateEpisodes!, device!, token));
+                foreach (int[] order in BeamOrders(set, candidateEpisodes!, input!.LambdaHat, device!, token))
+                {
+                    AddCandidate(orders, order);
+                }
             }
             if (reportStage is not null)
             {
                 reportStage("candidate_generation", Stopwatch.GetElapsedTime(candidateStarted).TotalMilliseconds);
             }
 
-            EnsureWithinBudget(token, started);
+            EnsureWithinBudget(token, started, decisionBudgetMs);
+            long incumbentStarted = reportStage is null ? 0 : Stopwatch.GetTimestamp();
+            IncumbentCondition[] incumbentConditions = ComputeIncumbentConditions(set!, device!, token);
+            if (reportStage is not null)
+            {
+                reportStage("incumbent_condition_setup", Stopwatch.GetElapsedTime(incumbentStarted).TotalMilliseconds);
+            }
+
             var evaluated = new List<Candidate>(orders.Count);
             double? bestBound = null;
+            double? worstRejectedEpisodeDelay = null;
+            double? worstEvaluatedEpisodeDelay = null;
+            bool regressionRejected = false;
             double nominalTotalMs = 0;
             double lowerBoundTotalMs = 0;
             foreach (int[] order in orders)
             {
-                EnsureWithinBudget(token, started);
+                EnsureWithinBudget(token, started, decisionBudgetMs);
                 long nominalStarted = reportStage is null ? 0 : Stopwatch.GetTimestamp();
                 double nominalGain = NominalValue(set, episodes, order, input!.LambdaHat, device!, token)
                     - NominalValue(set, episodes, incumbent, input.LambdaHat, device!, token);
@@ -148,18 +197,20 @@ public static class Orbit3
                 }
 
                 long lowerBoundStarted = reportStage is null ? 0 : Stopwatch.GetTimestamp();
-                double dLow = LowerBound(set, episodes!, order, input.LambdaLow, input.LambdaHigh, device!, token);
+                double dLow = LowerBound(set, episodes!, order, input.LambdaLow, input.LambdaHigh, device!, incumbentConditions, token,
+                    out double worstEpisodeDelayMs, out bool episodeRegression, reportStage);
                 if (reportStage is not null)
                 {
                     lowerBoundTotalMs += Stopwatch.GetElapsedTime(lowerBoundStarted).TotalMilliseconds;
                 }
-                EnsureWithinBudget(token, started);
+                EnsureWithinBudget(token, started, decisionBudgetMs);
                 if (!double.IsFinite(nominalGain) || !double.IsFinite(dLow))
                 {
                     throw new ArithmeticException("계산 결과가 유한하지 않습니다.");
                 }
 
-                evaluated.Add(new Candidate(order, nominalGain, dLow));
+                evaluated.Add(new Candidate(order, nominalGain, dLow, worstEpisodeDelayMs, episodeRegression));
+                worstEvaluatedEpisodeDelay = Math.Max(worstEvaluatedEpisodeDelay ?? double.NegativeInfinity, worstEpisodeDelayMs);
                 if (bestBound is null || dLow > bestBound.Value)
                 {
                     bestBound = dLow;
@@ -169,15 +220,29 @@ public static class Orbit3
             if (reportStage is not null)
             {
                 reportStage("nominal_evaluation", nominalTotalMs);
-                reportStage("lower_bound", lowerBoundTotalMs);
+                reportStage("d_low_evaluation", lowerBoundTotalMs);
             }
 
             Candidate? best = null;
             foreach (Candidate candidate in evaluated)
             {
+                if (explicitOrder is not null && candidate.EpisodeRegression)
+                {
+                    regressionRejected = true;
+                    worstRejectedEpisodeDelay = candidate.WorstEpisodeDelayMs;
+                    continue;
+                }
+
                 // 사건이 0회이면 LambdaLow=0이라 D_low<=0이 되어 기준 순서를 유지합니다.
                 if (!forceCandidate && (candidate.DLow <= 0 || candidate.NominalGain <= 0))
                 {
+                    continue;
+                }
+
+                if (!forceCandidate && candidate.EpisodeRegression)
+                {
+                    regressionRejected = true;
+                    worstRejectedEpisodeDelay = Math.Max(worstRejectedEpisodeDelay ?? double.NegativeInfinity, candidate.WorstEpisodeDelayMs);
                     continue;
                 }
 
@@ -189,12 +254,15 @@ public static class Orbit3
 
             if (best is null)
             {
-                EnsureWithinBudget(token, started);
-                return Result(null, "no_safe_gain", bestBound, 0, evaluated.Count, started);
+                EnsureWithinBudget(token, started, decisionBudgetMs);
+                return Result(null, regressionRejected ? "episode_regression" : "no_safe_gain", bestBound, 0,
+                    evaluated.Count, started, worstRejectedEpisodeDelay
+                        ?? (explicitOrder is null ? null : worstEvaluatedEpisodeDelay));
             }
 
-            EnsureWithinBudget(token, started);
-            return Result(Array.AsReadOnly(best.Order), forceCandidate ? "forced_candidate" : "safe_gain", best.DLow, best.NominalGain, evaluated.Count, started);
+            EnsureWithinBudget(token, started, decisionBudgetMs);
+            return Result(Array.AsReadOnly(best.Order), forceCandidate ? "forced_candidate" : "safe_gain", best.DLow,
+                best.NominalGain, evaluated.Count, started, best.WorstEpisodeDelayMs);
         }
         catch (OperationCanceledException)
         {
@@ -203,7 +271,7 @@ public static class Orbit3
         }
         catch (Exception)
         {
-            string reason = IsBudgetExpired(started) ? "timeout" : "calculation_error";
+            string reason = IsBudgetExpired(started, decisionBudgetMs) ? "timeout" : "calculation_error";
             return Result(null, reason, null, 0, 0, started);
         }
     }
@@ -239,71 +307,14 @@ public static class Orbit3
             return (Array.Empty<(int Segment, long Bytes)>(), 0, allBlocks.Count);
         }
 
-        var operationSegments = new int[set.Ops.Count];
-        Array.Fill(operationSegments, -1);
-        for (int segmentIndex = 0; segmentIndex < set.Segments.Count; segmentIndex++)
+        Dictionary<string, PathOperationIndex> pathIndexes;
+        try
         {
-            if (cancel.IsCancellationRequested)
-            {
-                return (Array.Empty<(int Segment, long Bytes)>(), 0, allBlocks.Count);
-            }
-
-            OrbitSegment segment = set.Segments[segmentIndex];
-            int end = Math.Min(set.Ops.Count, segment.Start + segment.Count);
-            for (int operationIndex = Math.Max(0, segment.Start); operationIndex < end; operationIndex++)
-            {
-                operationSegments[operationIndex] = segmentIndex;
-            }
+            pathIndexes = BuildPathIndexes(set, cancel);
         }
-
-        var groupedOperations = new Dictionary<string, List<BlockOperation>>(StringComparer.Ordinal);
-        for (int operationIndex = 0; operationIndex < set.Ops.Count; operationIndex++)
+        catch (OperationCanceledException)
         {
-            if (cancel.IsCancellationRequested)
-            {
-                return (Array.Empty<(int Segment, long Bytes)>(), 0, allBlocks.Count);
-            }
-
-            ReadOp operation = set.Ops[operationIndex];
-            if (string.IsNullOrEmpty(operation.Path) || operation.Offset < 0 || operation.Length <= 0)
-            {
-                continue;
-            }
-
-            bool isHead = operationIndex < set.HeadCount;
-            int segmentIndex = isHead ? -1 : operationSegments[operationIndex];
-            long operationEnd = operation.Offset > long.MaxValue - operation.Length
-                ? long.MaxValue
-                : operation.Offset + operation.Length;
-            if (!groupedOperations.TryGetValue(operation.Path, out List<BlockOperation>? pathOperations))
-            {
-                pathOperations = [];
-                groupedOperations.Add(operation.Path, pathOperations);
-            }
-
-            pathOperations.Add(new BlockOperation(operation.Offset, operationEnd, segmentIndex, isHead));
-        }
-
-        var pathIndexes = new Dictionary<string, PathOperationIndex>(StringComparer.Ordinal);
-        foreach ((string path, List<BlockOperation> pathOperations) in groupedOperations)
-        {
-            if (cancel.IsCancellationRequested)
-            {
-                return (Array.Empty<(int Segment, long Bytes)>(), 0, allBlocks.Count);
-            }
-
-            BlockOperation[] sorted = pathOperations.OrderBy(operation => operation.Start)
-                .ThenBy(operation => operation.End)
-                .ToArray();
-            var prefixMaxEnds = new long[sorted.Length];
-            long maxEnd = long.MinValue;
-            for (int index = 0; index < sorted.Length; index++)
-            {
-                maxEnd = Math.Max(maxEnd, sorted[index].End);
-                prefixMaxEnds[index] = maxEnd;
-            }
-
-            pathIndexes.Add(path, new PathOperationIndex(sorted, prefixMaxEnds));
+            return (Array.Empty<(int Segment, long Bytes)>(), 0, allBlocks.Count);
         }
 
         var segmentBytes = new long[set.Segments.Count];
@@ -338,7 +349,6 @@ public static class Orbit3
             }
 
             bool mapped = false;
-            bool hasUnmappedOperation = false;
             int first = FirstPossibleOverlap(pathIndex.PrefixMaxEnds, blockStart);
             for (int operationIndex = first; operationIndex < pathIndex.Operations.Length; operationIndex++)
             {
@@ -362,20 +372,15 @@ public static class Orbit3
                 mapped = true;
                 if (operation.IsHead)
                 {
-                    mapped = true;
                     headBytes = checked(headBytes + overlap);
                 }
                 else if (operation.Segment >= 0)
                 {
-                    mapped = true;
                     segmentBytes[operation.Segment] = checked(segmentBytes[operation.Segment] + overlap);
-                }
-                else
-                {
-                    hasUnmappedOperation = true;
                 }
             }
 
+            bool hasUnmappedOperation = HasOverlap(pathIndex.UnmappedOperations, pathIndex.UnmappedPrefixMaxEnds, blockStart, blockEnd);
             if (!mapped || hasUnmappedOperation)
             {
                 unmatched++;
@@ -392,7 +397,19 @@ public static class Orbit3
     public static IReadOnlyList<Orbit3BlockMapping> MapBlockRanges(
         OrbitSegmentSet set,
         IReadOnlyList<IReadOnlyList<OrbitBlockRange>> episodes,
-        CancellationToken cancel = default)
+        CancellationToken cancel = default) => MapBlockRangesCore(set, episodes, cancel, null);
+
+    internal static IReadOnlyList<Orbit3BlockMapping> MapBlockRangesMeasured(
+        OrbitSegmentSet set,
+        IReadOnlyList<IReadOnlyList<OrbitBlockRange>> episodes,
+        CancellationToken cancel,
+        Action<string, double> reportStage) => MapBlockRangesCore(set, episodes, cancel, reportStage);
+
+    private static IReadOnlyList<Orbit3BlockMapping> MapBlockRangesCore(
+        OrbitSegmentSet set,
+        IReadOnlyList<IReadOnlyList<OrbitBlockRange>> episodes,
+        CancellationToken cancel,
+        Action<string, double>? reportStage)
     {
         if (set is null || episodes is null)
         {
@@ -400,64 +417,9 @@ public static class Orbit3
         }
 
         cancel.ThrowIfCancellationRequested();
-        var operationSegments = new int[set.Ops.Count];
-        Array.Fill(operationSegments, -1);
-        for (int segmentIndex = 0; segmentIndex < set.Segments.Count; segmentIndex++)
-        {
-            cancel.ThrowIfCancellationRequested();
-            OrbitSegment segment = set.Segments[segmentIndex];
-            int end = Math.Min(set.Ops.Count, segment.Start + segment.Count);
-            for (int operationIndex = Math.Max(0, segment.Start); operationIndex < end; operationIndex++)
-            {
-                operationSegments[operationIndex] = segmentIndex;
-            }
-        }
+        Dictionary<string, PathOperationIndex> pathIndexes = BuildPathIndexes(set, cancel, reportStage);
 
-        var groupedOperations = new Dictionary<string, List<BlockOperation>>(StringComparer.Ordinal);
-        for (int operationIndex = 0; operationIndex < set.Ops.Count; operationIndex++)
-        {
-            if ((operationIndex & 255) == 0)
-            {
-                cancel.ThrowIfCancellationRequested();
-            }
-
-            ReadOp operation = set.Ops[operationIndex];
-            if (string.IsNullOrEmpty(operation.Path) || operation.Offset < 0 || operation.Length <= 0)
-            {
-                continue;
-            }
-
-            long operationEnd = operation.Offset > long.MaxValue - operation.Length
-                ? long.MaxValue
-                : operation.Offset + operation.Length;
-            if (!groupedOperations.TryGetValue(operation.Path, out List<BlockOperation>? pathOperations))
-            {
-                pathOperations = [];
-                groupedOperations.Add(operation.Path, pathOperations);
-            }
-
-            pathOperations.Add(new BlockOperation(operation.Offset, operationEnd,
-                operationIndex < set.HeadCount ? -1 : operationSegments[operationIndex], operationIndex < set.HeadCount));
-        }
-
-        var pathIndexes = new Dictionary<string, PathOperationIndex>(StringComparer.Ordinal);
-        foreach ((string path, List<BlockOperation> pathOperations) in groupedOperations)
-        {
-            cancel.ThrowIfCancellationRequested();
-            BlockOperation[] sorted = pathOperations.OrderBy(operation => operation.Start)
-                .ThenBy(operation => operation.End)
-                .ToArray();
-            var prefixMaxEnds = new long[sorted.Length];
-            long maxEnd = long.MinValue;
-            for (int index = 0; index < sorted.Length; index++)
-            {
-                maxEnd = Math.Max(maxEnd, sorted[index].End);
-                prefixMaxEnds[index] = maxEnd;
-            }
-
-            pathIndexes.Add(path, new PathOperationIndex(sorted, prefixMaxEnds));
-        }
-
+        long mappingStarted = reportStage is null ? 0 : Stopwatch.GetTimestamp();
         var results = new List<Orbit3BlockMapping>(episodes.Count);
         foreach (IReadOnlyList<OrbitBlockRange> ranges in episodes)
         {
@@ -511,11 +473,6 @@ public static class Orbit3
                         break;
                     }
 
-                    if (operation.End <= blockStartBytes)
-                    {
-                        continue;
-                    }
-
                     long overlap = Math.Min(blockEndBytes, operation.End) - Math.Max(blockStartBytes, operation.Start);
                     if (overlap <= 0)
                     {
@@ -529,15 +486,30 @@ public static class Orbit3
                         headBytes = checked(headBytes + overlap);
                         AddMergedCoverage(covered, firstBlock, lastBlockExclusive);
                     }
-                    else if (operation.Segment >= 0)
+                    else
                     {
                         segmentBytes[operation.Segment] = checked(segmentBytes[operation.Segment] + overlap);
                         AddMergedCoverage(covered, firstBlock, lastBlockExclusive);
                     }
-                    else
+                }
+
+                int firstUnmapped = FirstPossibleOverlap(pathIndex.UnmappedPrefixMaxEnds, blockStartBytes);
+                for (int operationIndex = firstUnmapped; operationIndex < pathIndex.UnmappedOperations.Length; operationIndex++)
+                {
+                    if ((operationIndex & 255) == 0)
                     {
-                        AddMergedCoverage(unmapped, firstBlock, lastBlockExclusive);
+                        cancel.ThrowIfCancellationRequested();
                     }
+
+                    BlockOperation operation = pathIndex.UnmappedOperations[operationIndex];
+                    if (operation.Start >= blockEndBytes)
+                    {
+                        break;
+                    }
+
+                    long firstBlock = Math.Max(range.StartBlock, operation.Start / BlockBytes);
+                    long lastBlockExclusive = Math.Min(blockEnd, (operation.End - 1) / BlockBytes + 1);
+                    AddMergedCoverage(unmapped, firstBlock, lastBlockExclusive);
                 }
 
                 long mappedBlocks = CoverageCount(covered);
@@ -556,7 +528,199 @@ public static class Orbit3
             results.Add(new Orbit3BlockMapping(Array.AsReadOnly(parts), headBytes, totalBlocks, notMatched));
         }
 
+        if (reportStage is not null)
+        {
+            reportStage("episode_block_mapping", Stopwatch.GetElapsedTime(mappingStarted).TotalMilliseconds);
+        }
+
         return results;
+    }
+
+    private static Dictionary<string, PathOperationIndex> BuildPathIndexes(
+        OrbitSegmentSet set,
+        CancellationToken cancel,
+        Action<string, double>? reportStage = null)
+    {
+        var operationSegments = new int[set.Ops.Count];
+        Array.Fill(operationSegments, -1);
+        for (int segmentIndex = 0; segmentIndex < set.Segments.Count; segmentIndex++)
+        {
+            cancel.ThrowIfCancellationRequested();
+            OrbitSegment segment = set.Segments[segmentIndex];
+            if (segment.Start < 0 || segment.Count <= 0 || segment.Start >= set.Ops.Count)
+            {
+                continue;
+            }
+
+            int end = segment.Start + Math.Min(segment.Count, set.Ops.Count - segment.Start);
+            for (int operationIndex = segment.Start; operationIndex < end; operationIndex++)
+            {
+                operationSegments[operationIndex] = segmentIndex;
+            }
+        }
+
+        var grouped = new Dictionary<string, List<BlockOperation>>(StringComparer.Ordinal);
+        for (int operationIndex = 0; operationIndex < set.Ops.Count; operationIndex++)
+        {
+            if ((operationIndex & 255) == 0)
+            {
+                cancel.ThrowIfCancellationRequested();
+            }
+
+            ReadOp operation = set.Ops[operationIndex];
+            if (string.IsNullOrEmpty(operation.Path) || operation.Offset < 0 || operation.Length <= 0)
+            {
+                continue;
+            }
+
+            long end = operation.Offset > long.MaxValue - operation.Length
+                ? long.MaxValue
+                : operation.Offset + operation.Length;
+            if (end <= operation.Offset)
+            {
+                continue;
+            }
+
+            bool isHead = operationIndex < set.HeadCount;
+            int segment = isHead ? -1 : operationSegments[operationIndex];
+            if (!grouped.TryGetValue(operation.Path, out List<BlockOperation>? pathOperations))
+            {
+                pathOperations = [];
+                grouped.Add(operation.Path, pathOperations);
+            }
+
+            pathOperations.Add(new BlockOperation(operation.Offset, end, segment, isHead, operationIndex));
+        }
+
+        var indexes = new Dictionary<string, PathOperationIndex>(StringComparer.Ordinal);
+        long uniqueCoverageStarted = reportStage is null ? 0 : Stopwatch.GetTimestamp();
+        foreach ((string path, List<BlockOperation> operations) in grouped)
+        {
+            cancel.ThrowIfCancellationRequested();
+            BlockOperation[] mapped = UniqueCoverage(operations, mapped: true, cancel);
+            BlockOperation[] unmapped = UniqueCoverage(operations, mapped: false, cancel);
+            (BlockOperation[] sortedMapped, long[] mappedEnds) = MakeIndex(mapped);
+            (BlockOperation[] sortedUnmapped, long[] unmappedEnds) = MakeIndex(unmapped);
+            indexes.Add(path, new PathOperationIndex(sortedMapped, mappedEnds, sortedUnmapped, unmappedEnds));
+        }
+
+        if (reportStage is not null)
+        {
+            reportStage("unique_coverage", Stopwatch.GetElapsedTime(uniqueCoverageStarted).TotalMilliseconds);
+        }
+
+        return indexes;
+    }
+
+    /// 겹친 범위는 입력 op 순서에서 먼저 나온 유효 op에 한 번만 배정합니다. head 는 처음부터 그 순서에 있어 우선 보호됩니다.
+    private static BlockOperation[] UniqueCoverage(List<BlockOperation> source, bool mapped, CancellationToken cancel)
+    {
+        int operationCount = 0;
+        foreach (BlockOperation operation in source)
+        {
+            if (mapped ? operation.IsHead || operation.Segment >= 0 : !operation.IsHead && operation.Segment < 0)
+            {
+                operationCount++;
+            }
+        }
+
+        if (operationCount == 0)
+        {
+            return [];
+        }
+
+        var events = new List<(long Position, bool Starting, BlockOperation Operation)>(operationCount * 2);
+        foreach (BlockOperation operation in source)
+        {
+            if (!(mapped ? operation.IsHead || operation.Segment >= 0 : !operation.IsHead && operation.Segment < 0))
+            {
+                continue;
+            }
+
+            cancel.ThrowIfCancellationRequested();
+            events.Add((operation.Start, true, operation));
+            events.Add((operation.End, false, operation));
+        }
+
+        events.Sort((left, right) => left.Position.CompareTo(right.Position));
+        var active = new SortedSet<BlockOperation>(PriorityComparer);
+        var result = new List<BlockOperation>(operationCount);
+        long previous = events[0].Position;
+        int index = 0;
+        while (index < events.Count)
+        {
+            if ((index & 255) == 0)
+            {
+                cancel.ThrowIfCancellationRequested();
+            }
+
+            long position = events[index].Position;
+            if (position > previous && active.Count > 0)
+            {
+                BlockOperation owner = active.Min!;
+                AppendUnique(result, previous, position, owner);
+            }
+
+            int groupEnd = index + 1;
+            while (groupEnd < events.Count && events[groupEnd].Position == position)
+            {
+                groupEnd++;
+            }
+
+            for (int eventIndex = index; eventIndex < groupEnd; eventIndex++)
+            {
+                if (!events[eventIndex].Starting)
+                {
+                    _ = active.Remove(events[eventIndex].Operation);
+                }
+            }
+
+            for (int eventIndex = index; eventIndex < groupEnd; eventIndex++)
+            {
+                if (events[eventIndex].Starting)
+                {
+                    _ = active.Add(events[eventIndex].Operation);
+                }
+            }
+
+            previous = position;
+            index = groupEnd;
+        }
+
+        return [.. result];
+    }
+
+    private static void AppendUnique(List<BlockOperation> ranges, long start, long end, BlockOperation owner)
+    {
+        if (ranges.Count > 0 && ranges[^1].End == start
+            && ranges[^1].Segment == owner.Segment && ranges[^1].IsHead == owner.IsHead)
+        {
+            ranges[^1] = ranges[^1] with { End = end };
+        }
+        else
+        {
+            ranges.Add(owner with { Start = start, End = end });
+        }
+    }
+
+    private static (BlockOperation[] Operations, long[] PrefixMaxEnds) MakeIndex(BlockOperation[] operations)
+    {
+        // UniqueCoverage sweep already emits disjoint ranges in ascending start order.
+        var prefixMaxEnds = new long[operations.Length];
+        long maxEnd = long.MinValue;
+        for (int index = 0; index < operations.Length; index++)
+        {
+            maxEnd = Math.Max(maxEnd, operations[index].End);
+            prefixMaxEnds[index] = maxEnd;
+        }
+
+        return (operations, prefixMaxEnds);
+    }
+
+    private static bool HasOverlap(BlockOperation[] operations, long[] prefixMaxEnds, long start, long end)
+    {
+        int first = FirstPossibleOverlap(prefixMaxEnds, start);
+        return first < operations.Length && operations[first].Start < end;
     }
 
     private static void AddMergedCoverage(List<(long Start, long End)> ranges, long start, long end)
@@ -756,7 +920,8 @@ public static class Orbit3
                 .OrderBy(part => part.Key)
                 .Select(part => (Segment: part.Key, Weight: part.Value / totalBytes))
                 .ToArray();
-            allEpisodes.Add(new EpisodeData(parts, episode.PLow, episode.PHat, episode.PHigh, totalBytes, episodeIndex));
+            allEpisodes.Add(new EpisodeData(parts, episode.PLow, episode.PHat, episode.PHigh, totalBytes,
+                parts[^1].Segment, episodeIndex));
         }
 
         episodes = allEpisodes.OrderBy(item => item.SourceIndex).ToArray();
@@ -947,6 +1112,27 @@ public static class Orbit3
         candidates.Add(order);
     }
 
+    private static bool IsPermutation(IReadOnlyList<int> order, int count)
+    {
+        if (order.Count != count)
+        {
+            return false;
+        }
+
+        var seen = new bool[count];
+        foreach (int segment in order)
+        {
+            if (segment < 0 || segment >= count || seen[segment])
+            {
+                return false;
+            }
+
+            seen[segment] = true;
+        }
+
+        return true;
+    }
+
     private static double NominalValue(
         OrbitSegmentSet set,
         EpisodeData[] episodes,
@@ -977,18 +1163,12 @@ public static class Orbit3
         return total.Value;
     }
 
-    private static double LowerBound(
-        OrbitSegmentSet set,
-        EpisodeData[] episodes,
-        int[] candidateOrder,
-        double lambdaLow,
-        double lambdaHigh,
-        Orbit3Device device,
-        CancellationToken token)
+    private static IncumbentCondition[] ComputeIncumbentConditions(OrbitSegmentSet set, Orbit3Device device, CancellationToken token)
     {
         double[] seekEdges = PartitionEdges(device.SeekMin, device.SeekMax);
         double[] throughputEdges = PartitionEdges(device.ThroughputMin, device.ThroughputMax);
-        double lower = double.PositiveInfinity;
+        int[] incumbentOrder = Enumerable.Range(0, set.Segments.Count).ToArray();
+        var result = new IncumbentCondition[DevicePartitions * DevicePartitions];
 
         for (int seekBox = 0; seekBox < DevicePartitions; seekBox++)
         {
@@ -999,41 +1179,122 @@ public static class Orbit3
                 double candidateThroughput = throughputEdges[throughputBox];
                 double incumbentSeek = seekEdges[seekBox];
                 double incumbentThroughput = throughputEdges[throughputBox + 1];
-                double candidateHead = HeadTime(set, device, candidateSeek, candidateThroughput);
-                double incumbentHead = HeadTime(set, device, incumbentSeek, incumbentThroughput);
-                (_, double[] candidateEnds) = SegmentTimes(set, candidateOrder, candidateHead, device,
+                double matchedHead = HeadTime(set, device, candidateSeek, candidateThroughput);
+                (_, double[] matchedEnds) = SegmentTimes(set, incumbentOrder, matchedHead, device,
                     candidateSeek, candidateThroughput, token);
-                (double[] incumbentStarts, _) = SegmentTimes(set,
-                    Enumerable.Range(0, set.Segments.Count).ToArray(), incumbentHead, device,
+                double incumbentHead = HeadTime(set, device, incumbentSeek, incumbentThroughput);
+                (double[] incumbentStarts, _) = SegmentTimes(set, incumbentOrder, incumbentHead, device,
                     incumbentSeek, incumbentThroughput, token);
-
-                CompensatedSum episodeSum = default;
-                foreach (EpisodeData episode in episodes)
-                {
-                    token.ThrowIfCancellationRequested();
-                    CompensatedSum partial = default;
-                    double candidateLast = 0;
-                    double incumbentLast = 0;
-                    foreach ((int segment, double weight) in episode.Parts)
-                    {
-                        partial.Add(LowerRounded(weight * MinimumExponentialDifference(
-                            lambdaLow, lambdaHigh, candidateEnds[segment], incumbentStarts[segment])));
-                        candidateLast = Math.Max(candidateLast, candidateEnds[segment]);
-                        incumbentLast = Math.Max(incumbentLast, incumbentStarts[segment]);
-                    }
-
-                    double complete = MinimumExponentialDifference(
-                        lambdaLow, lambdaHigh, candidateLast, incumbentLast);
-                    double episodeDelta = Math.Min(partial.Value, complete);
-                    double probability = episodeDelta < 0 ? episode.PHigh : episode.PLow;
-                    episodeSum.Add(LowerRounded(probability * episodeDelta));
-                }
-
-                lower = Math.Min(lower, episodeSum.Value);
+                result[seekBox * DevicePartitions + throughputBox] = new IncumbentCondition(
+                    candidateSeek, candidateThroughput, incumbentSeek, incumbentThroughput, incumbentStarts, matchedEnds);
             }
         }
 
+        return result;
+    }
+
+    private static double LowerBound(
+        OrbitSegmentSet set,
+        EpisodeData[] episodes,
+        int[] candidateOrder,
+        double lambdaLow,
+        double lambdaHigh,
+        Orbit3Device device,
+        IncumbentCondition[] incumbentConditions,
+        CancellationToken token,
+        out double worstEpisodeDelayMs,
+        out bool episodeRegression,
+        Action<string, double>? reportStage)
+    {
+        int[] candidateLastSegments = LastRequiredSegments(episodes, candidateOrder, set.Segments.Count, token);
+        double lower = double.PositiveInfinity;
+        long episodeConstraintTicks = 0;
+        worstEpisodeDelayMs = double.NegativeInfinity;
+        episodeRegression = false;
+
+        foreach (IncumbentCondition condition in incumbentConditions)
+        {
+            token.ThrowIfCancellationRequested();
+            double candidateHead = HeadTime(set, device, condition.CandidateSeek, condition.CandidateThroughput);
+            (_, double[] candidateEnds) = SegmentTimes(set, candidateOrder, candidateHead, device,
+                condition.CandidateSeek, condition.CandidateThroughput, token);
+
+            CompensatedSum episodeSum = default;
+            for (int episodeIndex = 0; episodeIndex < episodes.Length; episodeIndex++)
+            {
+                EpisodeData episode = episodes[episodeIndex];
+                token.ThrowIfCancellationRequested();
+                CompensatedSum partial = default;
+                foreach ((int segment, double weight) in episode.Parts)
+                {
+                    partial.Add(LowerRounded(weight * MinimumExponentialDifference(
+                        lambdaLow, lambdaHigh, candidateEnds[segment], condition.IncumbentStarts[segment])));
+                }
+
+                double candidateLast = candidateEnds[candidateLastSegments[episodeIndex]];
+                double incumbentLast = condition.IncumbentStarts[episode.LastSegment];
+                double incumbentReady = condition.IncumbentMatchedEnds[episode.LastSegment];
+                double complete = MinimumExponentialDifference(lambdaLow, lambdaHigh, candidateLast, incumbentLast);
+                double episodeDelta = Math.Min(partial.Value, complete);
+                double probability = episodeDelta < 0 ? episode.PHigh : episode.PLow;
+                episodeSum.Add(LowerRounded(probability * episodeDelta));
+
+                long constraintStarted = reportStage is null ? 0 : Stopwatch.GetTimestamp();
+                double delay = candidateLast - incumbentReady;
+                worstEpisodeDelayMs = Math.Max(worstEpisodeDelayMs, delay);
+                double allowance = Math.Max(Orbit3Constants.EpisodeRegressionSlackMs,
+                    incumbentReady * Orbit3Constants.EpisodeRegressionFraction);
+                episodeRegression |= delay > allowance;
+                if (reportStage is not null)
+                {
+                    episodeConstraintTicks += Stopwatch.GetTimestamp() - constraintStarted;
+                }
+            }
+
+            lower = Math.Min(lower, episodeSum.Value);
+        }
+
+        if (!double.IsFinite(worstEpisodeDelayMs))
+        {
+            worstEpisodeDelayMs = 0;
+        }
+
+        if (reportStage is not null)
+        {
+            reportStage("episode_constraint", episodeConstraintTicks * 1000d / Stopwatch.Frequency);
+        }
+
         return LowerRounded(lower);
+    }
+
+    private static int[] LastRequiredSegments(EpisodeData[] episodes, int[] order, int segmentCount, CancellationToken token)
+    {
+        var positionBySegment = new int[segmentCount];
+        for (int position = 0; position < order.Length; position++)
+        {
+            positionBySegment[order[position]] = position;
+        }
+
+        var lastSegments = new int[episodes.Length];
+        for (int episodeIndex = 0; episodeIndex < episodes.Length; episodeIndex++)
+        {
+            token.ThrowIfCancellationRequested();
+            EpisodeData episode = episodes[episodeIndex];
+            int lastSegment = episode.Parts[0].Segment;
+            int lastPosition = positionBySegment[lastSegment];
+            foreach ((int segment, _) in episode.Parts.AsSpan(1))
+            {
+                if (positionBySegment[segment] > lastPosition)
+                {
+                    lastSegment = segment;
+                    lastPosition = positionBySegment[segment];
+                }
+            }
+
+            lastSegments[episodeIndex] = lastSegment;
+        }
+
+        return lastSegments;
     }
 
     private static double[] PartitionEdges(double low, double high)
@@ -1197,18 +1458,18 @@ public static class Orbit3
 
     private static bool AllFinite(params double[] values) => values.All(double.IsFinite);
 
-    private static void EnsureWithinBudget(CancellationToken token, long started)
+    private static void EnsureWithinBudget(CancellationToken token, long started, int decisionBudgetMs)
     {
         token.ThrowIfCancellationRequested();
-        if (IsBudgetExpired(started))
+        if (IsBudgetExpired(started, decisionBudgetMs))
         {
             throw new OperationCanceledException();
         }
     }
 
-    private static bool IsBudgetExpired(long started)
+    private static bool IsBudgetExpired(long started, int decisionBudgetMs)
     {
-        long budgetTicks = (long)Orbit3Constants.DecisionBudgetMs * Stopwatch.Frequency / 1000;
+        long budgetTicks = (long)decisionBudgetMs * Stopwatch.Frequency / 1000;
         return Stopwatch.GetTimestamp() - started >= budgetTicks;
     }
 
@@ -1218,10 +1479,11 @@ public static class Orbit3
         double? dLow,
         double nominalGain,
         int candidates,
-        long started)
+        long started,
+        double? worstEpisodeDelayMs = null)
     {
         double elapsed = (Stopwatch.GetTimestamp() - started) * 1_000_000d / Stopwatch.Frequency;
         long elapsedMicros = elapsed >= long.MaxValue ? long.MaxValue : Math.Max(0, (long)elapsed);
-        return new Orbit3Decision(order, reason, dLow, nominalGain, candidates, elapsedMicros);
+        return new Orbit3Decision(order, reason, dLow, nominalGain, candidates, elapsedMicros, worstEpisodeDelayMs);
     }
 }

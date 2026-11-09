@@ -11,8 +11,15 @@ public sealed class ResultGateTests
 
     private static List<LoadSample> Many(Arm arm, params long?[] ready) => [.. ready.Select(r => S(arm, r))];
 
+    private static List<LoadSample> Flat(Arm arm, long ready) =>
+        Enumerable.Range(0, ResultGate.MinSamples).Select(_ => S(arm, ready)).ToList();
+
     private static LoadSample B(Arm arm, long? ready, string basis) =>
         new("game", Scenario.S0, arm, ElapsedBucket.Sec0, ready, GameBuild: "b1", CacheState: CacheState.Warm, ElapsedBasis: basis);
+
+    private static LoadSample Probe(Arm arm, long? ready) =>
+        new("game", Scenario.Unknown, arm, ElapsedBucket.Sec0, null, GameBuild: null, CacheState: CacheState.Unknown,
+            ProbeReadyMs: ready, ElapsedBasis: "service_uptime");
 
     [Fact]
     public void TooFewSamplesAreUnverified()
@@ -87,20 +94,20 @@ public sealed class ResultGateTests
     public void ElapsedBasisMixedOrUnknownIsUnverifiedNotRejected()
     {
         // 기준이 섞이거나 unknown 이면 같은 구간이라도 비교가 아니므로, 악화처럼 보여도 reject 가 아니라 미검증입니다
-        List<LoadSample> baseline = Many(Arm.Baseline, 10, 10, 10, 10, 10);
+        List<LoadSample> baseline = Flat(Arm.Baseline, 10);
         GateResult r = ResultGate.Evaluate(baseline, [.. Many(Arm.Candidate, 100, 100, 100, 100), B(Arm.Candidate, 100, "install")]);
         Assert.Equal(ResultGate.Unverified, r.Verdict);
         Assert.Equal("mixed_conditions", r.ReasonCode);
 
-        r = ResultGate.Evaluate(baseline, Enumerable.Range(0, 5).Select(_ => B(Arm.Candidate, 100, "install")).ToList());
+        r = ResultGate.Evaluate(baseline, Enumerable.Range(0, ResultGate.MinSamples).Select(_ => B(Arm.Candidate, 100, "install")).ToList());
         Assert.Equal(ResultGate.Unverified, r.Verdict);
         Assert.Equal("mixed_conditions", r.ReasonCode);
 
-        r = ResultGate.Evaluate(baseline, Enumerable.Range(0, 5).Select(_ => B(Arm.Candidate, 100, "unknown")).ToList());
+        r = ResultGate.Evaluate(baseline, Enumerable.Range(0, ResultGate.MinSamples).Select(_ => B(Arm.Candidate, 100, "unknown")).ToList());
         Assert.Equal(ResultGate.Unverified, r.Verdict);
         Assert.Equal("mixed_conditions", r.ReasonCode);
 
-        r = ResultGate.Evaluate(baseline, Enumerable.Range(0, 5).Select(_ => B(Arm.Candidate, 100, "service_uptime")).ToList());
+        r = ResultGate.Evaluate(baseline, Enumerable.Range(0, ResultGate.MinSamples).Select(_ => B(Arm.Candidate, 100, "service_uptime")).ToList());
         Assert.Equal(ResultGate.Reject, r.Verdict);
     }
 
@@ -132,16 +139,16 @@ public sealed class ResultGateTests
     [Fact]
     public void P95WithinTheSlackIsNotRejectedButBeyondItIs()
     {
-        // 기준 p95 10 ms 의 여유는 max(5%, 2 ms) = 2 ms: 10.8 ms 는 통과, 12.4 ms 는 reject
-        Assert.Equal(ResultGate.Unverified, ResultGate.Evaluate(Many(Arm.Baseline, 10, 10, 10, 10, 10), Many(Arm.Candidate, 10, 10, 10, 10, 11)).Verdict);
-        Assert.Equal(ResultGate.Reject, ResultGate.Evaluate(Many(Arm.Baseline, 10, 10, 10, 10, 10), Many(Arm.Candidate, 10, 10, 10, 10, 13)).Verdict);
+        // 표본 하나만 달라진 p95 는 기준 여유를 넘더라도 bootstrap 구간에 악화가 확정되지 않습니다.
+        Assert.Equal(ResultGate.Unverified, ResultGate.Evaluate(Flat(Arm.Baseline, 10), Many(Arm.Candidate, 10, 10, 10, 10, 10, 10, 10, 10, 10, 11)).Verdict);
+        Assert.Equal(ResultGate.Unverified, ResultGate.Evaluate(Flat(Arm.Baseline, 10), Many(Arm.Candidate, 10, 10, 10, 10, 10, 10, 10, 10, 10, 13)).Verdict);
     }
 
     [Fact]
     public void VisualObservedCountIsRecordedAndSurvivesJsonWithoutDecidingTheVerdict()
     {
-        List<LoadSample> c = [.. Many(Arm.Candidate, 1, 1, 1, 1), S(Arm.Candidate, 1, visual: 300), S(Arm.Candidate, 1, visual: 400)];
-        GateResult r = ResultGate.Evaluate(Many(Arm.Baseline, 10, 10, 10, 10, 10), c);
+        List<LoadSample> c = [.. Flat(Arm.Candidate, 1).Take(ResultGate.MinSamples - 2), S(Arm.Candidate, 1, visual: 300), S(Arm.Candidate, 1, visual: 400)];
+        GateResult r = ResultGate.Evaluate(Flat(Arm.Baseline, 10), c);
         Assert.Equal(2, r.VisualObservedCount);
         Assert.Equal(ResultGate.Unverified, r.Verdict);
         Assert.Equal(r, MetricsJson.Parse(MetricsJson.Dumps(r)));
@@ -169,43 +176,84 @@ public sealed class ResultGateTests
     public void CandidateWorseOnlyAtP95IsRejected()
     {
         // p50 은 같고 (30) p95 만 baseline 48 -> candidate 88
-        GateResult r = ResultGate.Evaluate(Many(Arm.Baseline, 10, 20, 30, 40, 50), Many(Arm.Candidate, 10, 20, 30, 40, 100));
+        GateResult r = ResultGate.Evaluate(
+            Many(Arm.Baseline, 10, 20, 30, 40, 50, 10, 20, 30, 40, 50),
+            Many(Arm.Candidate, 10, 20, 30, 40, 100, 10, 20, 30, 40, 50));
 
-        Assert.Equal(ResultGate.Reject, r.Verdict);
+        Assert.Equal(ResultGate.Unverified, r.Verdict); // 한 outlier 만으로는 95% bootstrap 구간이 유의한 악화를 확정하지 못합니다.
         Assert.Equal(30, r.Candidate!.P50);
-        Assert.Equal(88, r.Candidate.P95, 9); // 위치 3.8: 40 + 0.8*60
-        Assert.Contains("p95", r.Reason);
+        Assert.Equal(77.5, r.Candidate.P95, 10);
+        Assert.NotNull(r.Ci);
     }
 
     [Fact]
-    public void CandidateWorseOnlyAtP50IsRejected()
+    public void SmallMedianRegressionWithoutSignificantIntervalIsUnverified()
     {
         // p50 만 baseline 30 -> candidate 31, p95 는 48 보다 낮음
-        GateResult r = ResultGate.Evaluate(Many(Arm.Baseline, 10, 20, 30, 40, 50), Many(Arm.Candidate, 31, 31, 31, 31, 31));
+        GateResult r = ResultGate.Evaluate(
+            Many(Arm.Baseline, 10, 20, 30, 40, 50, 10, 20, 30, 40, 50),
+            Many(Arm.Candidate, Enumerable.Repeat<long?>(31, ResultGate.MinSamples).ToArray()));
 
-        Assert.Equal(ResultGate.Reject, r.Verdict);
-        Assert.Contains("p50", r.Reason);
-        Assert.DoesNotContain("p95", r.Reason);
+        Assert.Equal(ResultGate.Unverified, r.Verdict); // 1 ms 차이는 표본 변동보다 작아 자동 강등하지 않습니다.
+        Assert.NotNull(r.Ci);
     }
 
     [Fact]
     public void NotWorseWithEnoughSamplesStaysUnverifiedWithComparison()
     {
-        // 신뢰구간이 없어 adopt 에 도달하지 않습니다. 동률도 나쁘지 않음으로 보아 보류 사유만 남깁니다.
-        GateResult r = ResultGate.Evaluate(Many(Arm.Baseline, 10, 20, 30, 40, 50), Many(Arm.Candidate, 5, 15, 25, 35, 45));
+        // 개선이나 동률은 자동 채택하지 않고 보류합니다.
+        GateResult r = ResultGate.Evaluate(
+            Many(Arm.Baseline, 10, 20, 30, 40, 50, 10, 20, 30, 40, 50),
+            Many(Arm.Candidate, 5, 15, 25, 35, 45, 5, 15, 25, 35, 45));
         Assert.Equal(ResultGate.Unverified, r.Verdict);
-        Assert.Contains("나쁘지 않음", r.Reason);
+        Assert.Contains("유의한 악화가 확인되지 않음", r.Reason);
         Assert.NotNull(r.Candidate);
 
-        r = ResultGate.Evaluate(Many(Arm.Baseline, 10, 20, 30, 40, 50), Many(Arm.Candidate, 10, 20, 30, 40, 50));
+        r = ResultGate.Evaluate(
+            Many(Arm.Baseline, 10, 20, 30, 40, 50, 10, 20, 30, 40, 50),
+            Many(Arm.Candidate, 10, 20, 30, 40, 50, 10, 20, 30, 40, 50));
         Assert.Equal(ResultGate.Unverified, r.Verdict);
-        Assert.Contains("나쁘지 않음", r.Reason);
+        Assert.Contains("유의한 악화가 확인되지 않음", r.Reason);
+    }
+
+    [Fact]
+    public void ProbeReadyBootstrapOnlyRejectsAConsistentProxyRegression()
+    {
+        GateResult r = ResultGate.Evaluate(
+            Enumerable.Repeat(Probe(Arm.Baseline, 100), ResultGate.MinSamples).ToList(),
+            Enumerable.Repeat(Probe(Arm.Candidate, 120), ResultGate.MinSamples).ToList());
+
+        Assert.Equal(ResultGate.Reject, r.Verdict);
+        Assert.Equal("probe_ready_ms", r.MetricSource);
+        Assert.Equal(new BootstrapInterval(20, 20), r.Ci!.P50DeltaMs);
+        Assert.Contains("bootstrap 95%", r.Reason);
+
+        GateResult noisy = ResultGate.Evaluate(
+            Enumerable.Range(0, ResultGate.MinSamples).Select(index => Probe(Arm.Baseline, 100 + index * 20)).ToList(),
+            Enumerable.Range(0, ResultGate.MinSamples).Select(index => Probe(Arm.Candidate, 105 + index * 20)).ToList());
+        Assert.Equal(ResultGate.Unverified, noisy.Verdict);
+    }
+
+    [Fact]
+    public void ReadyComparisonIgnoresUnknownMetadataFromProbeOnlyRows()
+    {
+        List<LoadSample> baseline = [.. Flat(Arm.Baseline, 100), Probe(Arm.Baseline, 120)];
+        List<LoadSample> candidate = [.. Flat(Arm.Candidate, 100), Probe(Arm.Candidate, 140)];
+
+        GateResult result = ResultGate.Evaluate(baseline, candidate);
+
+        Assert.Equal(ResultGate.Unverified, result.Verdict);
+        Assert.Equal("t_ready_ms", result.MetricSource);
+        Assert.Equal(ResultGate.MinSamples, result.BaselineUsed);
+        Assert.Equal(ResultGate.MinSamples, result.CandidateUsed);
     }
 
     [Fact]
     public void WorstLossIsCandidateMaxMinusBaselineMax()
     {
-        GateResult r = ResultGate.Evaluate(Many(Arm.Baseline, 10, 20, 30, 40, 50), Many(Arm.Candidate, 10, 20, 30, 40, 100));
+        GateResult r = ResultGate.Evaluate(
+            Many(Arm.Baseline, 10, 20, 30, 40, 50, 10, 20, 30, 40, 50),
+            Many(Arm.Candidate, 10, 20, 30, 40, 100, 10, 20, 30, 40, 100));
         Assert.Equal(50L, r.WorstLossMs);
 
         Assert.Null(ResultGate.Evaluate(Many(Arm.Baseline, 10, 10, 10, 10), Many(Arm.Candidate, 1, 1, 1, 1, 1)).WorstLossMs);
@@ -226,14 +274,17 @@ public sealed class ResultGateTests
     }
 
     [Fact]
-    public void JsonRoundTripKeepsEverythingAndCiStaysNull()
+    public void JsonRoundTripKeepsBootstrapIntervals()
     {
-        GateResult r = ResultGate.Evaluate(Many(Arm.Baseline, 10, 20, 30, 40, 50), Many(Arm.Candidate, 5, 15, 25, 35, 45));
+        GateResult r = ResultGate.Evaluate(
+            Many(Arm.Baseline, 10, 20, 30, 40, 50, 10, 20, 30, 40, 50),
+            Many(Arm.Candidate, 5, 15, 25, 35, 45, 5, 15, 25, 35, 45));
         string json = MetricsJson.Dumps(r);
 
         Assert.Equal(r, MetricsJson.Parse(json));
-        Assert.Contains("\"ci\": null", json);
-        Assert.Contains("\"ci_not_computed\"", json);
+        Assert.NotNull(r.Ci);
+        Assert.Contains("\"method\": \"bootstrap\"", json);
+        Assert.Contains("\"iterations\": 1000", json);
         Assert.Contains("\"worst_loss_ms\": -5", json);
 
         GateResult u = ResultGate.Evaluate([], []);
@@ -243,11 +294,13 @@ public sealed class ResultGateTests
     [Fact]
     public void ParseRejectsUnknownValuesAndOutOfRangeCounts()
     {
-        string json = MetricsJson.Dumps(ResultGate.Evaluate(Many(Arm.Baseline, 10, 20, 30, 40, 50), Many(Arm.Candidate, 5, 15, 25, 35, 45)));
+        string json = MetricsJson.Dumps(ResultGate.Evaluate(
+            Many(Arm.Baseline, 10, 20, 30, 40, 50, 10, 20, 30, 40, 50),
+            Many(Arm.Candidate, 5, 15, 25, 35, 45, 5, 15, 25, 35, 45)));
 
         Assert.Throws<PyValueException>(() => MetricsJson.Parse(json.Replace("\"performance_unverified\"", "\"maybe\"")));
         Assert.Throws<PyValueException>(() => MetricsJson.Parse(json.Replace("\"visual\": \"unobserved\"", "\"visual\": \"maybe\"")));
-        Assert.Throws<PyValueException>(() => MetricsJson.Parse(json.Replace("\"baseline_used\": 5", "\"baseline_used\": 4294967296")));
+        Assert.Throws<PyValueException>(() => MetricsJson.Parse(json.Replace("\"baseline_used\": 10", "\"baseline_used\": 4294967296")));
         Assert.Throws<PyValueException>(() => MetricsJson.Parse(MetricsJson.Dumps(new GateResult(ResultGate.Unverified, "x", -1, 0, 0, null, null, "unobserved", null, 0))));
     }
 

@@ -32,7 +32,7 @@ public sealed class BenchmarkGateTests
     [Fact]
     public void WorseCandidateIsRejected()
     {
-        List<LoadSample> samples = [.. Enumerable.Range(0, 5).Select(_ => S("Foo", Arm.Baseline, 10)), .. Enumerable.Range(0, 5).Select(_ => S("Foo", Arm.Candidate, 100))];
+        List<LoadSample> samples = [.. Enumerable.Range(0, ResultGate.MinSamples).Select(_ => S("Foo", Arm.Baseline, 10)), .. Enumerable.Range(0, ResultGate.MinSamples).Select(_ => S("Foo", Arm.Candidate, 100))];
 
         Assert.StartsWith(L.T("Gate_Reject", string.Empty), ManageViewModel.GateText(samples, "Foo"));
     }
@@ -44,7 +44,7 @@ public sealed class BenchmarkGateTests
         L.Current = L.En;
         try
         {
-            List<LoadSample> samples = [.. Enumerable.Range(0, 5).Select(_ => S("Foo", Arm.Baseline, 10)), .. Enumerable.Range(0, 5).Select(_ => S("Foo", Arm.Candidate, 100))];
+            List<LoadSample> samples = [.. Enumerable.Range(0, ResultGate.MinSamples).Select(_ => S("Foo", Arm.Baseline, 10)), .. Enumerable.Range(0, ResultGate.MinSamples).Select(_ => S("Foo", Arm.Candidate, 100))];
             string rejected = ManageViewModel.GateText(samples, "Foo");
             string few = ManageViewModel.GateText([S("Foo", Arm.Baseline, 10)], "Foo");
 
@@ -62,8 +62,8 @@ public sealed class BenchmarkGateTests
     [Fact]
     public void UnknownScenarioIsUnverifiedNotRejected()
     {
-        List<LoadSample> baseline = [.. Enumerable.Range(0, 5).Select(_ => new LoadSample("Foo", Scenario.Unknown, Arm.Baseline, ElapsedBucket.Sec0, 10, GameBuild: "b1", CacheState: CacheState.Warm))];
-        List<LoadSample> candidate = [.. Enumerable.Range(0, 5).Select(_ => new LoadSample("Foo", Scenario.Unknown, Arm.Candidate, ElapsedBucket.Sec0, 100, GameBuild: "b1", CacheState: CacheState.Warm))];
+        List<LoadSample> baseline = [.. Enumerable.Range(0, ResultGate.MinSamples).Select(_ => new LoadSample("Foo", Scenario.Unknown, Arm.Baseline, ElapsedBucket.Sec0, 10, GameBuild: "b1", CacheState: CacheState.Warm))];
+        List<LoadSample> candidate = [.. Enumerable.Range(0, ResultGate.MinSamples).Select(_ => new LoadSample("Foo", Scenario.Unknown, Arm.Candidate, ElapsedBucket.Sec0, 100, GameBuild: "b1", CacheState: CacheState.Warm))];
 
         Assert.Equal("mixed_conditions", ResultGate.Evaluate(baseline, candidate).ReasonCode);
         Assert.StartsWith(L.T("Gate_Unverified", string.Empty), ManageViewModel.GateText([.. baseline, .. candidate], "Foo"));

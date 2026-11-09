@@ -183,7 +183,7 @@ public sealed class BenchmarkRecorderTests : IDisposable
     }
 
     [Fact]
-    public void ResultGateRejectsOnlyAfterFiveComparableSamplesPerArmFromTheSameBuild()
+    public void ResultGateRejectsOnlyAfterTenComparableSamplesPerArmFromTheSameBuild()
     {
         var rec = new BenchmarkRecorder(Path_, new ListLog(), _t0);
         GateResult? rejected = null;
@@ -205,7 +205,7 @@ public sealed class BenchmarkRecorderTests : IDisposable
     }
 
     [Fact]
-    public void ResultGateDoesNotCompareDifferentBuildsOrProbeOnlySamples()
+    public void ResultGateDoesNotCompareDifferentBuildsOrTooFewProbeSamples()
     {
         var rec = new BenchmarkRecorder(Path_, new ListLog(), _t0);
         bool rejected = false;
@@ -224,6 +224,74 @@ public sealed class BenchmarkRecorderTests : IDisposable
         rec.Record("Foo", _t0, 500, Arm.Candidate);
 
         Assert.False(rejected);
+    }
+
+    [Fact]
+    public void ResultGateUsesExistingProbeSamplesForDemotionOnly()
+    {
+        var rec = new BenchmarkRecorder(Path_, new ListLog(), _t0);
+        GateResult? rejected = null;
+        rec.GateEvaluated = (_, result) => rejected = result;
+
+        foreach (long ms in Enumerable.Repeat(100L, ResultGate.MinSamples))
+        {
+            rec.Record("Foo", _t0, ms, Arm.Baseline);
+        }
+
+        foreach (long ms in Enumerable.Repeat(120L, ResultGate.MinSamples))
+        {
+            rec.Record("Foo", _t0, ms, Arm.Candidate);
+        }
+
+        Assert.Equal(ResultGate.Reject, rejected?.Verdict);
+        Assert.Equal("probe_ready_ms", rejected?.MetricSource);
+        Assert.Equal(new BootstrapInterval(20, 20), rejected?.Ci?.P50DeltaMs);
+        Assert.NotEqual(ResultGate.Adopt, rejected?.Verdict);
+    }
+
+    [Fact]
+    public void ProbeGateSeparatesSamplesBeforeAndAfterFiveMinutesOfServiceUptime()
+    {
+        var rec = new BenchmarkRecorder(Path_, new ListLog(), _t0);
+        GateResult? rejected = null;
+        rec.GateEvaluated = (_, result) => rejected = result;
+
+        rec.Record(ProbeSample(Arm.Baseline, ElapsedBucket.Sec0, 100));
+        foreach (long ms in Enumerable.Repeat(100L, ResultGate.MinSamples))
+        {
+            rec.Record(ProbeSample(Arm.Baseline, ElapsedBucket.Min5, ms));
+        }
+
+        foreach (long ms in Enumerable.Repeat(120L, ResultGate.MinSamples))
+        {
+            rec.Record(ProbeSample(Arm.Candidate, ElapsedBucket.Min5, ms));
+        }
+
+        Assert.Equal(ResultGate.Reject, rejected?.Verdict);
+        Assert.Equal("probe_ready_ms", rejected?.MetricSource);
+    }
+
+    [Fact]
+    public void ResultGateRunsOnlyOnEachTenthNewSample()
+    {
+        var rec = new BenchmarkRecorder(Path_, new ListLog(), _t0);
+        GateResult? rejected = null;
+        rec.GateEvaluated = (_, result) => rejected = result;
+
+        foreach (long ms in Enumerable.Repeat(100L, ResultGate.MinSamples))
+        {
+            rec.Record(Comparable("build-a", Arm.Baseline, ms));
+        }
+
+        foreach (long ms in Enumerable.Repeat(120L, ResultGate.MinSamples - 1))
+        {
+            rec.Record(Comparable("build-a", Arm.Candidate, ms));
+        }
+
+        Assert.Null(rejected);
+        rec.Record(Comparable("build-a", Arm.Candidate, 120));
+
+        Assert.Equal(ResultGate.Reject, rejected?.Verdict);
     }
 
     [Fact]
@@ -270,4 +338,7 @@ public sealed class BenchmarkRecorderTests : IDisposable
 
     private static LoadSample Comparable(string build, Arm arm, long ms) => new("Foo", Scenario.S0, arm, ElapsedBucket.Min5, ms,
         GameBuild: build, CacheState: CacheState.Warm, ElapsedBasis: "service_uptime");
+
+    private static LoadSample ProbeSample(Arm arm, ElapsedBucket elapsed, long ms) => new("Foo", Scenario.S0, arm, elapsed, null,
+        GameBuild: "build-a", CacheState: CacheState.Warm, ProbeReadyMs: ms, ElapsedBasis: "service_uptime");
 }

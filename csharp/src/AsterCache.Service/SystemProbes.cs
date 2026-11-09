@@ -105,6 +105,9 @@ public static partial class DiskActivity
         public double Value;
     }
 
+    /// 서비스 종료 때 표본 스레드를 멈춥니다.
+    public static void StopSampling() => Shared.Stop();
+
     /// letter ("D:") 가 놓인 물리 디스크(들)의 처리량 합 (바이트/초). 디스크를 찾지 못하거나 읽지 못하면 null.
     public static double? BytesPerSecond(string letter) => Shared.BytesPerSecond(letter);
 
@@ -194,6 +197,7 @@ public static partial class DiskActivity
         // 수집이 이만큼 (60 초, 정상 간격의 30 배) 나오지 않으면 스레드가 죽거나 멈춘 것으로 보고 Broken 으로 넘김: 영구 보류 방지.
         private const long GiveUpMs = 60_000;
         private const string SampleStalled = "sample_stalled";
+        private readonly CancellationTokenSource _stop = new();
         private volatile Snapshot? _latest;
         private int _stalledWarned; // 정체 경고를 이미 남겼는가 (0/1)
         private long _startedAt = long.MinValue; // 수집을 시작한 시각, 시작 전에는 MinValue
@@ -206,6 +210,10 @@ public static partial class DiskActivity
                 (start ?? StartThread)(Loop);
             }
         }
+
+        /// 수집 루프를 끝냅니다 (서비스 종료·시험 정리). 이미 시작한 표본 한 번은 끝까지 가고, 그 뒤 루프가 빠져나옵니다.
+        // shortcut: Stop 뒤에는 같은 인스턴스를 다시 시작할 수 없음 (Start 는 한 번만), 서비스 재시작은 새 프로세스라 필요해지면 새 인스턴스를 만들 것.
+        public void Stop() => _stop.Cancel();
 
         public double? BytesPerSecond(string letter) => Read(letter).Bps;
 
@@ -306,7 +314,7 @@ public static partial class DiskActivity
 
         private void Loop()
         {
-            while (true)
+            while (!_stop.IsCancellationRequested)
             {
                 int wait = (int)CacheMs;
                 try
@@ -319,7 +327,7 @@ public static partial class DiskActivity
                     Note($"DiskActivity: sampler loop failed ({e.GetType().Name})");
                 }
 
-                Thread.Sleep(wait);
+                _ = _stop.Token.WaitHandle.WaitOne(wait);
             }
         }
 

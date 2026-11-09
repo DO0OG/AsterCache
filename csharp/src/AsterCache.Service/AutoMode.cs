@@ -57,6 +57,9 @@ public sealed class AutoMode
     /// 시험용 seam: 로딩 경계 감시 본체 (비우면 LoadBoundaryWatch.Run).
     public Action<GameSettings, CancellationToken>? BoundaryRunner { get; set; }
 
+    /// 로딩 경계 감시가 회차마다 얻는 중재 대여 (Program 이 넣음). 비어 있으면 대여를 얻지 못한 것으로 보고 읽지 않습니다.
+    public Func<GameSettings, DiskReadCoordinator.Lease?>? BoundaryLease { get; set; }
+
     // 예열이 방금 끝났으면 핫 집합 표본 몇 곳의 적중률을 잼. 같은 물리 디스크에서 게임이 도는 중이면 게임 디스크를 건드리지 않으려고 건너뜀.
     private void RecordHitAfterWarm(Prewarmer prewarm, GameSettings g)
     {
@@ -112,7 +115,11 @@ public sealed class AutoMode
                 _tracer.Start(g);
             }
 
-            if (a.LoadBoundary)
+            if (a.LoadBoundary && _env.TraceBlocker(g) is { } cheat) // 게임 중 읽기이므로 트레이스와 같은 안티치트 정책표 결정: 금지 종류와 모름 (unknown) 은 읽지 않음
+            {
+                _log.Info($"{g.Name}: tier0 probe skipped (anti-cheat {cheat})");
+            }
+            else if (a.LoadBoundary)
             {
                 // 적중률은 여기서 재지 않음 (게임 디스크 읽기): 예열 직후 값이 auto_status 에 남아 있음. 게임이 끝나면 NoteGameExit 가 멈춤
                 var watch = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
@@ -137,7 +144,7 @@ public sealed class AutoMode
                     }
                     else
                     {
-                        LoadBoundaryWatch.Run(g, Status, _log, watch.Token, _env.Now);
+                        LoadBoundaryWatch.Run(g, Status, _log, watch.Token, _env.Now, lease: () => BoundaryLease?.Invoke(g));
                     }
                 }
                 finally

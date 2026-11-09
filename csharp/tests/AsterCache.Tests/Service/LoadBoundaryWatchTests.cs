@@ -43,6 +43,76 @@ public sealed class LoadBoundaryWatchTests : IDisposable
     }
 
     [Fact]
+    public void DeniedLeaseMeansNoReadAndNoRecord()
+    {
+        AutoStatus status = Status();
+
+        int? ms = LoadBoundaryWatch.Run(_game, status, _log, default, () => _clock, d => _clock += d, _ => Boundary(20), _ => throw new InvalidOperationException("읽으면 안 됨"), lease: () => null);
+
+        Assert.Null(ms);
+        Assert.Null(status.Get("a")!.LoadBoundaryMs);
+    }
+
+    [Fact]
+    public void GrantedLeaseReadsAsBefore()
+    {
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        int granted = 0;
+
+        int? ms = LoadBoundaryWatch.Run(_game, Status(), _log, default, () => _clock, d => _clock += d, _ => Boundary(20), s => new ProbeResult(s.Count, 0, 1.0), lease: () =>
+        {
+            granted++;
+            return coordinator.TryBegin(@"D:\Games\a", "load boundary");
+        });
+
+        Assert.Equal(0, ms);
+        Assert.Equal(1, granted);
+    }
+
+    [Fact]
+    public void AnotherGameStartingStopsTheRemainingReadsOfTheRound()
+    {
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        coordinator.Yield(_game.OriginRoot, "game started", _game.Name);
+        int reads = 0;
+
+        int? ms = LoadBoundaryWatch.Run(_game, Status(), _log, default, () => _clock, d => _clock += d, _ => Boundary(20), lease: () => LoadBoundaryWatch.LeaseFrom(coordinator)(_game), probeWithStop: (samples, stop) =>
+        {
+            foreach (var _ in samples)
+            {
+                if (stop.IsCancellationRequested)
+                {
+                    return null;
+                }
+
+                if (++reads == 2)
+                {
+                    coordinator.Yield(@"D:\Games\b", "game started", "b"); // 다른 게임이 같은 디스크에서 시작함
+                }
+            }
+
+            return new ProbeResult(samples.Count, 0, 1.0);
+        });
+
+        Assert.Null(ms);
+        Assert.Equal(2, reads); // 8 곳 중 둘만 읽고 멈춤, 다음 회차는 대여가 거절돼 읽지 않음
+    }
+
+    [Fact]
+    public void LeaseIsGrantedForTheGamesOwnStartupYieldButRefusedOnceAnotherGameRuns()
+    {
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        coordinator.Yield(_game.OriginRoot, "game started", _game.Name);
+        using (DiskReadCoordinator.Lease? own = LoadBoundaryWatch.LeaseFrom(coordinator)(_game))
+        {
+            Assert.NotNull(own);
+        }
+
+        coordinator.Yield(@"D:\Games\b", "game started", "b");
+        Assert.Null(LoadBoundaryWatch.LeaseFrom(coordinator)(_game));
+    }
+
+    [Fact]
     public void ReachedAtTheProbeWhereNoSampleIsSlowAndRecorded()
     {
         AutoStatus status = Status();

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using AsterCache.Core.Discovery;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
@@ -71,7 +72,7 @@ public sealed class AutoTier
         foreach (string name in journals)
         {
             GameSettings? g = s.Games.FirstOrDefault(x => x.Name == name);
-            if (!on || g is null || (g.AntiCheat ?? FreshCheat(g)) is not null)
+            if (!on || g is null || TierBlocked(g.AntiCheat ?? FreshCheat(g)))
             {
                 string why = !on ? "disabled" : g is null ? "game removed" : "anti-cheat";
                 if (!RevertDeferred(s, name, g, why))
@@ -117,6 +118,8 @@ public sealed class AutoTier
 
         ApplyNext(s, relocateOn, root, t, gate, ct);
     }
+
+    private static bool TierBlocked(string? cheat) => Capabilities.Decide(CapabilityFeature.Tier, cheat).Outcome != CapabilityOutcome.Allow; // 정책표 결정 (안티치트가 있으면 종류와 상관없이 거절)
 
     // 적용 뒤 생긴 마커도 잡도록 저장값이 없으면 폴더를 다시 봄 (캐시된 "없음"에 가리지 않음). 모름은 캐시하지 않고 옛 캐시를 지움 (신규 적용 때 다시 봄).
     private string? FreshCheat(GameSettings g)
@@ -229,7 +232,7 @@ public sealed class AutoTier
             }
         }
 
-        if (cheat is not null)
+        if (TierBlocked(cheat))
         {
             if (_noted.Add(g.Name))
             {

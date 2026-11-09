@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 using AsterCache.Core.I18n;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
@@ -56,7 +57,7 @@ public sealed record DriveRow(string Letter, string Label, string FileSystem, lo
 }
 
 /// 게임 탭 한 줄. 기본 열은 DisplayName·State (자동 단계)·PrewarmState (PrewarmKind: ready 이번 부팅 뒤 예열, partial 앞부분만, history 재부팅 전 과거 기록, none 실측 안 됨, warming 예열 중)·Reason·AntiCheat, 나머지는 고급 열. Verdict: aster verify 의 판정 (contiguous, non-contiguous, resume-needed), 계획이 없으면 "-", 아직 확인 전이면 "?".
-public sealed record GameRow(string Name, string Exe, string Origin, bool HasPlan, bool HasTrace, string Verdict, string Prewarm, string Source, string Stage, string AntiCheat, string PrewarmFull, string DisplayName = "", string VerdictRaw = "", string StageRaw = "", string State = "", string PrewarmState = "", string PrewarmKind = "", string Reason = "", string Gate = "");
+public sealed record GameRow(string Name, string Exe, string Origin, bool HasPlan, bool HasTrace, string Verdict, string Prewarm, string Source, string Stage, string AntiCheat, string PrewarmFull, string DisplayName = "", string VerdictRaw = "", string StageRaw = "", string State = "", string PrewarmState = "", string PrewarmKind = "", string Reason = "", string Gate = "", string StageFull = "", StatusTone StateTone = StatusTone.Gray, StatusTone PrewarmTone = StatusTone.Gray);
 
 /// 게임 하나의 배치 상태 (aster status --plan 결과와 저널 파일 시각).
 public sealed record GameStatus(string Verdict, double? ZoneHitPercent, DateTime? LastRelayout);
@@ -241,9 +242,21 @@ public sealed class ManageViewModel(
             (string kind, string warm) = PrewarmState(g.Name, a);
             return new GameRow(g.Name, string.Join(", ", g.ExeNames), g.OriginRoot, plan, File.Exists(g.Trace), VerdictText(verdict),
                 DescribePrewarmShort(g.Prewarm), L.T(g.Source == "auto" ? "Source_Auto" : "Source_Manual"),
-                a is null ? "-" : AutoStatusFile.StageText(a, L.Current, Boot), g.AntiCheat ?? "-", DescribePrewarm(g.Prewarm), tray.DisplayName(g.Name), verdict, a?.Detail ?? string.Empty,
-                a is null ? "-" : AutoStatusFile.StageName(a.Stage, L.Current), warm, kind, HoldReasons(g.Name, a, kind, verdict), GateText(_samples, g.Name));
+                a is null ? "-" : AutoStatusFile.StageShort(a, L.Current, Boot), g.AntiCheat ?? "-", DescribePrewarm(g.Prewarm), tray.DisplayName(g.Name), verdict, a?.Detail ?? string.Empty,
+                a is null ? "-" : AutoStatusFile.StageName(a.Stage, L.Current), warm, kind, HoldReasons(g.Name, a, kind, verdict), GateText(_samples, g.Name),
+                a is null ? "-" : AutoStatusFile.StageText(a, L.Current, Boot), a is null ? StatusTone.Gray : TrayStatus.StageTone(a.Stage, a.Detail), TrayStatus.PrewarmTone(kind));
         }).ToList();
+
+    /// 마지막으로 읽은 auto_status.json (아직 못 읽었거나 없으면 null). 트레이 아이콘·툴팁이 5 초마다 씁니다.
+    public AutoStatusFile? Auto => _auto;
+
+    /// 트레이 메뉴의 게임 항목용 짧은 상태: 자동 단계 이름과, 예열 중·예열됨·부분 예열일 때만 짧은 예열 말 (진행량은 넣지 않아 메뉴 글이 자주 바뀌지 않음, 없으면 빈 글).
+    public (string Stage, string Prewarm) GameBrief(string name)
+    {
+        AutoGame? a = _auto?.Games.GetValueOrDefault(name);
+        (string kind, _) = PrewarmState(name, a);
+        return (a is null ? string.Empty : AutoStatusFile.StageName(a.Stage, L.Current), kind switch { "ready" => L.T("Stage_Prewarmed"), "warming" => L.T("Tray_Warming"), "partial" => L.T("Tray_WarmPartial"), _ => string.Empty });
+    }
 
     private DateTimeOffset Boot => bootAt ?? DateTimeOffset.UtcNow - TimeSpan.FromMilliseconds(Environment.TickCount64);
 
@@ -282,7 +295,7 @@ public sealed class ManageViewModel(
         object? e = Get(Get(_prewarm, "games"), name);
         if (Get(e, "result") is "skipped" or "failed" && Get(e, "reason") is string reason && prewarmKind != "ready")
         {
-            why.Add(L.T("Reason_PrewarmLast", Get(e, "result"), reason));
+            why.Add(L.T("Reason_PrewarmLast", PrewarmResultText(Get(e, "result") as string), PrewarmReasonText(reason)));
         }
 
         if (verdict is "resume-needed" or "error")
@@ -292,6 +305,51 @@ public sealed class ManageViewModel(
 
         return string.Join(", ", why);
     }
+
+    // 서비스가 prewarm_status.json 의 reason 에 적는 영어 사유 (앞부분) → 짧은 설명 키. 긴 접두어를 먼저 둡니다.
+    private static readonly (string Prefix, string Key)[] PrewarmReasons =
+    [
+        ("no zone", "Pwhy_NoZone"), ("no trace file", "Pwhy_NoTrace"), ("game is running", "Pwhy_GameRunning"), ("low memory", "Pwhy_LowMemory"),
+        ("already warm", "Pwhy_AlreadyWarm"), ("startup byte cap", "Pwhy_StartupCap"), ("cancelled", "Pwhy_Cancelled"), ("post-update delay", "Pwhy_PostUpdate"),
+        ("relocation running", "Pwhy_Relocating"), ("batch memory budget", "Pwhy_BatchBudget"), ("prewarm already running", "Pwhy_AlreadyRunning"),
+        ("nothing read", "Pwhy_NothingRead"), ("no profile; trace needed", "Pwhy_NoProfileTrace"), ("no profile", "Pwhy_NoProfile"), ("drive busy", "Pwhy_DriveBusy"),
+    ];
+
+    private static readonly Regex CooldownReason = new(@"^cooldown \((\d+) min left\)", RegexOptions.None, TimeSpan.FromSeconds(1));
+
+    /// 예열 사유 영어 원문을 현재 언어의 짧은 설명으로 (모르는 사유는 원문 그대로).
+    public static string PrewarmReasonText(string reason)
+    {
+        if (CooldownReason.Match(reason) is { Success: true } m)
+        {
+            return L.T("Pwhy_Cooldown", m.Groups[1].Value);
+        }
+
+        if (reason.StartsWith("failed: ", StringComparison.Ordinal))
+        {
+            return L.T("Pwhy_Failed", reason[8..]);
+        }
+
+        foreach ((string prefix, string key) in PrewarmReasons)
+        {
+            if (reason.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                return L.T(key);
+            }
+        }
+
+        return reason;
+    }
+
+    /// 예열 결과(ok·skipped·failed)를 현재 언어의 말로 (모르는 값은 원문, 없으면 ?).
+    public static string PrewarmResultText(string? result) => result switch
+    {
+        "ok" => L.T("Word_ResultOk"),
+        "skipped" => L.T("Stage_Skipped"),
+        "failed" => L.T("Stage_Failed"),
+        null => "?",
+        _ => result,
+    };
 
     /// aster verify 판정을 현재 언어의 짧은 말로 (모르는 값은 원문 그대로).
     public static string VerdictText(string verdict) => verdict switch
@@ -384,14 +442,14 @@ public sealed class ManageViewModel(
         }
 
         return best is { } b
-            ? L.T("Prewarm_Last", b.Name, b.At.ToLocalTime(), b.Bytes >> 20, b.Seconds)
+            ? L.T("Prewarm_Last", tray.DisplayName(b.Name), b.At.ToLocalTime(), b.Bytes >> 20, b.Seconds)
             : L.T("Prewarm_LastNone");
     }
 
     private string PrewarmText(string name)
     {
         object? e = Get(Get(_prewarm, "games"), name);
-        string text = e is null ? L.T("State_NotMeasured") : Get(e, "result") as string is { } r && Get(e, "reason") is string why ? $"{r} ({why})" : Get(e, "result") as string ?? "?";
+        string text = e is null ? L.T("State_NotMeasured") : Get(e, "result") as string is { } r && Get(e, "reason") is string why ? $"{PrewarmResultText(r)} ({PrewarmReasonText(why)})" : PrewarmResultText(Get(e, "result") as string);
         if (Get(e, "partial") is true && Get(e, "warmed_mib") is long warmed && Get(e, "hot_mib") is long hot)
         {
             text = $"{text} · {L.T("Status_PrewarmPartial", warmed, hot)}"; // 메모리가 모자라 앞부분만 읽음: 완료로 보이지 않게

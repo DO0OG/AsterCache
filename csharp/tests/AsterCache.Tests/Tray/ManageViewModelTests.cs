@@ -206,7 +206,7 @@ public sealed class ManageViewModelTests : IDisposable
         Assert.Contains("1024 MiB", lines[2]);
         Assert.Contains("5.5 초", lines[2]);
         Assert.Contains("배치 연속 · 존 적중 75.0% · 마지막 재배치 20", lines[3]);
-        Assert.Contains("예열 ok · 로딩 앞부분 5 MiB", lines[3]);
+        Assert.Contains("예열 성공 · 로딩 앞부분 5 MiB", lines[3]);
         Assert.Contains(_cli.Calls, c => c.Args.SequenceEqual(AsterArgs.Status(_vm.PrewarmStatusPath, _vm.AutoStatusPath, Path.Combine(Plans, "mw4.plan.json"), _vm.JournalPath("mw4"))));
     }
 
@@ -221,7 +221,7 @@ public sealed class ManageViewModelTests : IDisposable
 
         Assert.True(_vm.RefreshStatus().Ok);
 
-        Assert.Contains("예열 ok · 부분 1904/8000 MiB", _vm.StatusLines(null).ToArray()[3]);
+        Assert.Contains("예열 성공 · 부분 1904/8000 MiB", _vm.StatusLines(null).ToArray()[3]);
     }
 
     [Fact]
@@ -816,7 +816,7 @@ public sealed class ManageViewModelTests : IDisposable
         Assert.Contains("지금은 아님", Row("past").PrewarmState);
         Assert.Equal("실측 안 됨", Row("none").PrewarmState);
         Assert.Equal(4, new[] { "ready", "part", "past", "none" }.Select(n => Row(n).PrewarmState).Distinct().Count());
-        Assert.Contains("low memory", Row("stale").Reason); // 마지막 시도가 건너뜀이면 왜 준비 상태가 아닌지 기본 화면에 남음
+        Assert.Equal("예열 건너뜀: 여유 메모리 부족", Row("stale").Reason); // 마지막 시도가 건너뜀이면 왜 준비 상태가 아닌지 기본 화면에 남음
         Assert.Equal(string.Empty, Row("ready").Reason);
 
         string line = vm.StatusLines(null).Single(l => l.StartsWith("[past]", StringComparison.Ordinal));
@@ -839,12 +839,13 @@ public sealed class ManageViewModelTests : IDisposable
         Assert.Contains("오늘 재배치 횟수 다 씀", wait.Reason);
         Assert.Contains("트레이스 불가 (vanguard)", wait.Reason); // 안티치트 상태는 기본 화면에 남음
         Assert.DoesNotContain("%", wait.State + wait.PrewarmState + wait.Reason);
-        Assert.Contains("계획 핫셋/읽은 양 88%", wait.Stage); // 점수·비율은 고급 열의 단계 글에
-        Assert.Contains("과거 기록: 예전 회차 적중 61%", wait.Stage); // 재부팅 전에 잰 적중률은 과거 기록으로 표시
+        Assert.Equal("재배치 대기 · 오늘 재배치 횟수 다 씀 +3", wait.Stage); // 고급 열은 주 상태 + 부가 하나, 나머지는 개수
+        Assert.Contains("계획 핫셋/읽은 양 88%", wait.StageFull); // 점수·비율은 고급 열의 단계 글에
+        Assert.Contains("과거 기록: 예전 회차 적중 61%", wait.StageFull); // 재부팅 전에 잰 적중률은 과거 기록으로 표시
         Assert.Equal("실패", bad.State);
         Assert.Equal("disk exploded", bad.Reason); // 모르는 실패 사유도 원문 그대로 기본 화면에
-        Assert.Contains("예열 직후 적중 40%", bad.Stage);
-        Assert.DoesNotContain("과거 기록", bad.Stage);
+        Assert.Contains("예열 직후 적중 40%", bad.StageFull);
+        Assert.DoesNotContain("과거 기록", bad.StageFull);
     }
 
     [Fact]
@@ -930,7 +931,7 @@ public sealed class ManageViewModelTests : IDisposable
         Assert.Equal("완료 (재배치됨(프로필))", AutoStatusFile.StageText(done, "ko"));
         Assert.Equal("done (relocated (profile))", AutoStatusFile.StageText(done, "en"));
         Assert.Equal("완료 (재배치됨(프로필), 예열됨)", AutoStatusFile.StageText(done with { Detail = "relocated (profile), prewarmed" }, "ko"));
-        Assert.Equal("done (relocated (profile), prewarming 3/8 MB)", AutoStatusFile.StageText(done with { Detail = "relocated (profile), prewarming 3/8 MiB" }, "en"));
+        Assert.Equal("done (relocated (profile), prewarming 3/8 MiB)", AutoStatusFile.StageText(done with { Detail = "relocated (profile), prewarming 3/8 MiB" }, "en"));
     }
 
     [Fact]
@@ -941,7 +942,7 @@ public sealed class ManageViewModelTests : IDisposable
         Assert.Equal("완료 (재배치됨(프리페치))", AutoStatusFile.StageText(done, "ko"));
         Assert.Equal("done (relocated (prefetch))", AutoStatusFile.StageText(done, "en"));
         Assert.Equal("완료 (재배치됨(프리페치), 예열됨)", AutoStatusFile.StageText(done with { Detail = "relocated (prefetch), prewarmed" }, "ko"));
-        Assert.Equal("done (relocated (prefetch), prewarming 3/8 MB)", AutoStatusFile.StageText(done with { Detail = "relocated (prefetch), prewarming 3/8 MiB" }, "en"));
+        Assert.Equal("done (relocated (prefetch), prewarming 3/8 MiB)", AutoStatusFile.StageText(done with { Detail = "relocated (prefetch), prewarming 3/8 MiB" }, "en"));
     }
 
     [Fact]
@@ -962,10 +963,10 @@ public sealed class ManageViewModelTests : IDisposable
     {
         var waiting = new AutoGame("auto", "gog", "waiting_idle", "daily limit reached, prewarming 128/512 MiB");
 
-        Assert.Equal("재배치 대기 (오늘 재배치 횟수 다 씀, 예열 중 128/512 MB)", AutoStatusFile.StageText(waiting, "ko"));
-        Assert.Equal("waiting to relocate (daily relocation count used up, prewarming 128/512 MB)", AutoStatusFile.StageText(waiting, "en"));
-        Assert.Equal("자동: g 발견 → 트레이스 수집 중 → [재배치 대기] (오늘 재배치 횟수 다 씀, 예열 중 128/512 MB)", AutoStatusFile.Line("g", waiting, "ko"));
-        Assert.Equal("done (prewarming 1/2 MB)", AutoStatusFile.StageText(waiting with { Stage = "done", Detail = "prewarming 1/2 MiB" }, "en"));
+        Assert.Equal("재배치 대기 (오늘 재배치 횟수 다 씀, 예열 중 128/512 MiB)", AutoStatusFile.StageText(waiting, "ko"));
+        Assert.Equal("waiting to relocate (daily relocation count used up, prewarming 128/512 MiB)", AutoStatusFile.StageText(waiting, "en"));
+        Assert.Equal("자동: g 발견 → 트레이스 수집 중 → [재배치 대기] (오늘 재배치 횟수 다 씀, 예열 중 128/512 MiB)", AutoStatusFile.Line("g", waiting, "ko"));
+        Assert.Equal("done (prewarming 1/2 MiB)", AutoStatusFile.StageText(waiting with { Stage = "done", Detail = "prewarming 1/2 MiB" }, "en"));
     }
 
     [Fact]
@@ -1007,7 +1008,8 @@ public sealed class ManageViewModelTests : IDisposable
         WriteAuto("""{"games": {"mw4": {"source": "auto", "stage": "waiting_idle", "detail": "prewarmed", "at": "2026-11-02T00:00:00Z"}}, "events": []}""");
         _vm.ReloadAuto();
 
-        Assert.Contains("(예열됨)", _vm.GameRows(null).Single().Stage, StringComparison.Ordinal);
+        Assert.Contains("(예열됨)", _vm.GameRows(null).Single().StageFull, StringComparison.Ordinal);
+        Assert.Equal("재배치 대기 · 예열됨", _vm.GameRows(null).Single().Stage);
     }
 
     [Fact]

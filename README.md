@@ -20,6 +20,7 @@
 
 These changes are on `main` since beta.8, including follow-ups from an external review. They are not a release yet.
 
+- **ORBIT prewarm order adjustment.** For games with recorded traces, ORBIT changes the prewarm order in chunks of about 64 MiB and applies the new order only when the gain still holds in the worst case of the calculated range. On 2026-11-09, on the user's PC (WD20EZAZ 2 TB SMR HDD) with Call of Duty, a 20-run ABBA bench cut the median value-weighted prep time by 21.3% (all 10 pairs at 10% or more, sign test p=0.001) and total read time by 0.8%. However, some episodes were up to 18.2 s later, so the per-episode no-regression criterion (flag 4) was not met. This is one game, one drive, and one session, so generalization is premature ([ORBIT: prewarm order adjustment](#orbit-prewarm-order-adjustment)).
 - **Parallel relocation.** Eight parallel reads cut relocation work on the test HDD from 186 s to 41 s (4.5×). See [docs/RESULTS_SUMMARY.md](docs/RESULTS_SUMMARY.md).
 - **Drive recovery check.** After a game update, or after a relocation on an SMR drive, the service judges whether the drive has recovered before it starts the next job (`auto.post_relocate_recovery`).
 - **Hands-off after install.** `aster status` and the manager window summary show one line: "found → bootstrap planned → relocated → prewarmed → average hit rate". While you are likely to play (a launcher is running or it is your usual play hour), the service reads 4 KiB every 10 minutes so the HDD does not spin down (`auto.keep_awake`, on by default; power settings are never changed). The read is skipped while a game on the same disk is running.
@@ -90,6 +91,26 @@ Before you start the game, for example when the PC boots or when your game launc
 flowchart LR
     A["PC or launcher starts"] --> B["Zone read into RAM"] --> C["Game reads from RAM, not the disk"]
 ```
+
+### ORBIT: prewarm order adjustment
+
+For the hot-set prewarm of games with recorded traces, ORBIT calculates whether reordering the prewarm in chunks of about 64 MiB, relative to the current prewarm order, gains anything. The first tier0 chunks stay fixed. The data read and the set read do not change; only the order does.
+
+- It extracts episodes (groups of data read together) and how often each occurs from play records. It also counts how often a game starts during a prewarm and interrupts it.
+- Before its own prewarm, the service measures the disk briefly (about 12 MiB per stream, uncached reads) to calibrate the range of seek latency and transfer rate. It changes the order only when the calculation shows a gain even in the worst case of that range. Otherwise it prewarms exactly as it does now.
+- The method combines standard techniques (beam search, lower confidence bounds, split conformal intervals, exact binomial intervals) for this specific problem. The common blocks and tier0 are already read first, so any gain may be limited to map chunks of games that are often interrupted during prewarm. For games where no interruption has been observed, the current order is always used (by design).
+
+**When it turns on.** Calibration needs 38 prewarm streams (19 for fitting and 19 for calibration, per metric). To turn it on sooner, run `aster orbit calibrate --disk <letter> [--samples N]`. With the service stopped and all registered games closed, it takes up to N samples (default 60) at 10-second intervals and stops as soon as the device envelope exists (usually around 40, about 7 minutes). Calibration skips games that do not yet have a prewarm list and draws samples from the pool of allowed game files on that disk. It stays more than 64 MiB away from the most recent read position to avoid drive cache hits, and keeps sampling until the device envelope exists (default cap 60 samples). These bootstrap samples were collected in one time window, so the coverage claim is weak. They are replaced once 38 samples have accumulated during operation. Episodes need at least 3 valid play records and at least 1 interruption event.
+
+**Modes.** The default is `active`. Change it with `aster orbit mode off|shadow|active`. `off` does no calculation at all. `shadow` calculates and records but keeps the current order. If the settings file is missing, the mode is `active`; if it is corrupt, `shadow`. Two consecutive calibration drift (coverage monitor failure) or calculation exceptions drop it to `shadow` automatically, and it never goes back up automatically.
+
+**Safety.** Calibration reads run only inside a disk read-arbitration lease, and only when no game is running and the disk is idle. They run only for games whose anti-cheat policy allows new prewarm (no anti-cheat, or Vanguard). `config.json` has no new keys.
+
+**Three new files.** `<data folder>\orbit_mode.json` (mode), `<data folder>\disk_model.json` (per-disk calibration samples), and `<plans>\<game>.orbit.json` (episodes, interruption risk, recent decisions). From version 2, `<game>.orbit.json` stores a dictionary of file paths and block ranges per episode (start block, count). On the same input the file dropped from 39 MB to 2.7 MB, and reading takes tens of milliseconds. Version 1 files are converted automatically when read. The decision budget (500 ms) is unchanged. Deleting them makes the build behave as before. The previous build ignores these files and the new keys in `auto_status.json`.
+
+**Measurement.** `aster orbit-bench run|summarize` and `csharp\scripts\cs_orbit_bench.ps1` (service stopped, games closed, administrator rights, standby list cleared before each round, ABBA crossover) compare episode ready times between the baseline order and the ORBIT order. On 2026-11-09, on the user's PC with Call of Duty (ABBA, 10 pairs, 20 runs), the median value-weighted prep time dropped 21.3% and total read time dropped 0.8%. However, some episodes were up to 18.2 s later, so flag 4 was not met. Flag 2 is a value-weighted prep time reduction of 10% or more with p<0.05, flag 3 is no total read time worsening of 5% or more, and flag 4 is no episode delayed by more than max(5% of the baseline, 200 ms) at p95. A flag 4 failure is a design trade-off: pulling frequently read scenes forward pushes rarely read scenes back. A recorded run file can be rescored with the new model using `aster orbit-bench rescore --orbit <orbit.json> --in <run.json>... [--out-dir <folder>]`, so the bench need not be rerun when the model file format changes. The bench needs device calibration and an episode model first. On a fresh install, stop the service and turn off all registered games, then run `aster orbit model --game <name>` to build `<plans>\<game>.orbit.json` from existing play records, and then run `aster orbit calibrate --disk <letter>`. If no prewarm-interruption record exists yet, use `--lambda-per-min` (default 1.0, assuming one interruption per minute) only for the B-arm candidates; it is never used for real service decisions. The result file records `lambda_source` (model or bench_override).
+
+**Status.** `auto_status.json` has a `shadow_orbit` block with the keys `mode`, `applied`, `device_n`, `value_runs`, `lambda`, `d_low`, and `orbit_reason`.
 
 ### With or without an SSD
 
@@ -371,6 +392,8 @@ Off by default (`auto.ssd_tier.enabled`). While it is off, AsterCache does not t
 
 The configuration file is `%ProgramData%\AsterCache\config.json`. Editing it in the management window is recommended. When editing by hand, write JSON backslashes as `\\`.
 
+ORBIT is turned on and off from the CLI, not in `config.json` (`aster orbit mode off|shadow|active`). See [ORBIT: prewarm order adjustment](#orbit-prewarm-order-adjustment).
+
 ```json
 {
   "language": "auto",
@@ -536,6 +559,7 @@ The executables are not code-signed, so Windows SmartScreen may show a warning. 
 - Automatic tracing may miss some of a game's first reads before its session starts. Automatic tracing and automatic relocation have not yet been run with a real game; only tests in a simulated environment have been done.
 - Games installed under `AppData\Local\Temp` are not found by the heuristic.
 - The shared profile repository is still being prepared. The effect of shared profiles, of Windows prefetch boot traces, and of engine and whole-folder prewarm has not been measured.
+- The measured gain of ORBIT is not confirmed yet. The real-game result gate (ResultGate) does not work at present, because there are no actual ready-time observations.
 
 ## Troubleshooting
 

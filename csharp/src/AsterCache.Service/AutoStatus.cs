@@ -19,7 +19,10 @@ public static class AutoStage
 }
 
 public sealed record AutoGameEntry(
-    string Source, string? Launcher, string Stage, string? Detail, DateTimeOffset At, DateTimeOffset? LastPlayed, DateTimeOffset? RelocatedAt, int? HitPercent = null, DateTimeOffset? HitAt = null, AutoBootProbe? BootProbe = null, IReadOnlyList<DateTimeOffset>? Plays = null, int? LoadBoundaryMs = null, DateTimeOffset? LoadBoundaryAt = null, int? CoveragePercent = null, string? DisplayName = null, OrbitShadowRecord? OrbitShadow = null);
+    string Source, string? Launcher, string Stage, string? Detail, DateTimeOffset At, DateTimeOffset? LastPlayed, DateTimeOffset? RelocatedAt, int? HitPercent = null, DateTimeOffset? HitAt = null, AutoBootProbe? BootProbe = null, IReadOnlyList<DateTimeOffset>? Plays = null, int? LoadBoundaryMs = null, DateTimeOffset? LoadBoundaryAt = null, int? CoveragePercent = null, string? DisplayName = null, OrbitShadowRecord? OrbitShadow = null, OrbitRuntimeRecord? OrbitRuntime = null);
+
+/// ORBIT-3 결정 한 건의 요약 (shadow_orbit 의 새 키로만 기록하고 ORBIT-2R-R 그림자 필드는 건드리지 않음).
+public sealed record OrbitRuntimeRecord(string Mode, bool Applied, string Reason, int? DeviceN, int? ValueRuns, double? Lambda, double? DLow, string? Fingerprint);
 
 /// 부팅 뒤 첫 서비스 시작에서 잰 메타데이터 콜드 비용 (auto_status.json 의 boot_probe): 측정 시각, 연 파일 수, 파일당 평균 열기 시간 (ms).
 public sealed record AutoBootProbe(DateTimeOffset At, int Files, double OpenMsPerFile);
@@ -253,6 +256,19 @@ public sealed class AutoStatus
         }
     }
 
+    /// ORBIT-3 결정 요약 (덮어씀, 그림자 계획 기록과 따로 둠). 항목이 없거나 재계획이 있었으면 남기지 않습니다.
+    public void RecordOrbitRuntime(string name, OrbitRuntimeRecord record)
+    {
+        lock (_lock)
+        {
+            if (_games.TryGetValue(name, out AutoGameEntry? old) && record.Fingerprint == ReplanGeneration(name))
+            {
+                _games[name] = old with { OrbitRuntime = record };
+                Save();
+            }
+        }
+    }
+
     /// 게임 종료 때 잰 존 커버리지 (%). 항목이 없으면 남기지 않습니다. 완료 단계에서 PartialBelowPercent 미만이면 detail 에 "partial (N%)", 넘으면 그 표시를 지움.
     public void RecordCoverage(string name, int percent)
     {
@@ -364,7 +380,7 @@ public sealed class AutoStatus
             _replanSeq[name] = _replanSeq.GetValueOrDefault(name) + 1; // 그 게임의 계산 중이던 그림자 결과는 기록하지 않음
             if (_games.TryGetValue(name, out AutoGameEntry? old))
             {
-                _games[name] = old with { Stage = AutoStage.Discovered, Detail = detail, At = _now(), RelocatedAt = null, OrbitShadow = null }; // 다시 계획하면 옛 그림자 계획은 폐기
+                _games[name] = old with { Stage = AutoStage.Discovered, Detail = detail, At = _now(), RelocatedAt = null, OrbitShadow = null, OrbitRuntime = null }; // 다시 계획하면 옛 그림자 계획은 폐기
                 Save();
             }
         }
@@ -502,9 +518,39 @@ public sealed class AutoStatus
                 game.Add("coverage_percent", (long)cp); // 재지 않은 게임의 항목 모양은 그대로
             }
 
-            if (e.OrbitShadow is { } os)
+            if (e.OrbitShadow is not null || e.OrbitRuntime is not null)
             {
-                game.Add("shadow_orbit", new JObject { { "selected", os.Selected }, { "orbit_selected", os.Selected == "orbit" }, { "reason", os.Reason }, { "uncalibrated", os.Uncalibrated }, { "worst_loss_ms", os.WorstLossMs }, { "candidate_ratio", os.CandidateRatio }, { "blocks", (long)os.Blocks }, { "order", (long)os.Order }, { "ms", os.Ms }, { "alloc_bytes", os.AllocatedBytes }, { "fingerprint", os.Fingerprint }, { "at", Iso(os.At) } });
+                // ORBIT-2R-R 필드는 그대로 두고, ORBIT-3 결정 요약은 새 키로만 더합니다 (reason 은 겹쳐서 orbit_reason)
+                var shadow = e.OrbitShadow is { } os
+                    ? new JObject { { "selected", os.Selected }, { "orbit_selected", os.Selected == "orbit" }, { "reason", os.Reason }, { "uncalibrated", os.Uncalibrated }, { "worst_loss_ms", os.WorstLossMs }, { "candidate_ratio", os.CandidateRatio }, { "blocks", (long)os.Blocks }, { "order", (long)os.Order }, { "ms", os.Ms }, { "alloc_bytes", os.AllocatedBytes }, { "fingerprint", os.Fingerprint }, { "at", Iso(os.At) } }
+                    : new JObject();
+                if (e.OrbitRuntime is { } rt)
+                {
+                    shadow.Add("mode", rt.Mode);
+                    shadow.Add("applied", rt.Applied);
+                    shadow.Add("orbit_reason", rt.Reason);
+                    if (rt.DeviceN is { } deviceN)
+                    {
+                        shadow.Add("device_n", (long)deviceN);
+                    }
+
+                    if (rt.ValueRuns is { } valueRuns)
+                    {
+                        shadow.Add("value_runs", (long)valueRuns);
+                    }
+
+                    if (rt.Lambda is { } lambda)
+                    {
+                        shadow.Add("lambda", lambda);
+                    }
+
+                    if (rt.DLow is { } dLow)
+                    {
+                        shadow.Add("d_low", dLow);
+                    }
+                }
+
+                game.Add("shadow_orbit", shadow);
             }
 
             games.Add(name, game);

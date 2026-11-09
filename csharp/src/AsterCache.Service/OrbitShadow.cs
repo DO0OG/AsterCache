@@ -13,7 +13,8 @@ namespace AsterCache.Service;
 /// 상태 파일 (auto_status.json 의 게임 항목 shadow_orbit) 한 건: 선택 라벨, 사유, 계획한 블록 수, 계획 순서 길이, 계산 시간 (ms), 기록 시각,
 /// 보정 없음 여부, 최악 손실 (ms, 플래너가 주지 않으면 null), 후보 선택 비율 (보정이 없어 후보가 없으면 null), 계산 스레드 할당 바이트, 지문 (입력을 확보할 때의 재계획 세대 번호).
 public sealed record OrbitShadowRecord(string Selected, string Reason, int Blocks, int Order, double Ms, DateTimeOffset At,
-    bool Uncalibrated = false, double? WorstLossMs = null, double? CandidateRatio = null, long AllocatedBytes = 0, string? Fingerprint = null);
+    bool Uncalibrated = false, double? WorstLossMs = null, double? CandidateRatio = null, long AllocatedBytes = 0, string? Fingerprint = null,
+    string? Mode = null, bool? Applied = null, int? DeviceN = null, int? ValueRuns = null, double? Lambda = null, double? DLow = null);
 
 /// ORBIT-2R-R 그림자 계획. 트레이스가 끝난 뒤 메모리의 이번 회차 읽기로 핫 블록을 고르고 OrbitPlanner.Choose 를 한 번 돌려 로그와 상태에만 남깁니다.
 /// 파일 읽기·쓰기·후킹이 없고 (상태 파일 기록 제외), 결과는 예열·재배치·스트림 순서 어디에도 넘기지 않습니다.

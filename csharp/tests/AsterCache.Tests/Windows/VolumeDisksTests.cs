@@ -109,4 +109,15 @@ public sealed class VolumeDisksTests
         Assert.False(v.AreSame("D:", "E:")); // 실패가 캐시되지 않아 바로 새 매핑
         Assert.Equal(["D:", "E:", "D:", "E:", "D:"], _queried);
     }
+
+    [Fact]
+    public void PhysicalKeyJoinsTheDiskNumbersAndIsNullWhenUnknown()
+    {
+        VolumeDisks v = Make();
+
+        Assert.Equal("disk0", v.PhysicalKeyOf(@"D:\Games\Foo"));
+        Assert.Equal("disk1+2", v.PhysicalKeyOf("F:"));
+        Assert.Null(v.PhysicalKeyOf("Z:")); // 조회 실패
+        Assert.Null(v.PhysicalKeyOf(@"\\server\share")); // 드라이브 문자 없음
+    }
 }

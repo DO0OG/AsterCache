@@ -54,10 +54,34 @@ if (!console)
 
 var streamer = new PrefetchStreamer();
 DiskActivity.Start(); // 디스크 처리량 수집을 미리 켬 (첫 호출이 표본 없이 null 을 받는 구간을 줄임)
-var prewarm = new Prewarmer(settings.Games, streamer, PrewarmEnv.Create(), log, canApply ? Path.Combine(dataDir, "prewarm_status.json") : null); // 데이터 폴더를 믿을 수 없으면 (SYSTEM 이 일반 사용자가 쓸 수 있는 곳에 쓰지 않도록) 상태 파일을 쓰지 않음
+PrewarmEnv baseEnv = PrewarmEnv.Create();
+AutoStatus? orbitStatus = canApply ? new AutoStatus(Path.Combine(dataDir, "auto_status.json"), log) : null;
+var coordinator = new DiskReadCoordinator(VolumeDisks.Shared, log); // 서비스와 같은 대여 장부: 장치 표본이 게임 실행·종료 유예를 같은 등록으로 판단함
+// 설정을 다시 읽어도 최신 등록 목록으로 판정 (등록된 같은 디스크 게임이 돌거나 종료 유예 중이면 참)
+Func<GameSettings, bool> gameActiveOnDisk = g => PrewarmEnv.GameActiveOnDisk(settings.Games, baseEnv.SameDisk, other => baseEnv.GameRunning(other) || coordinator.IsRegistered(other.Name))(g);
+OrbitCalibration? orbitCalibration = canApply
+    ? new OrbitCalibration(dataDir, log, OrbitCalibration.UnbufferedRead, () => DateTimeOffset.UtcNow, DiskActivity.IsBusy, gameActiveOnDisk, Random.Shared, diskKey: OrbitCalibration.PhysicalDiskKey)
+    : null;
+OrbitRuntime orbitRuntime = new(dataDir, orbitCalibration, orbitStatus, log, enabled: canApply);
+streamer.Reorder = canApply ? orbitRuntime.Reorder : null; // 스트림 중지 신호를 받는 오버로드
+PrewarmEnv prewarmEnv = canApply ? PrewarmEnv.Create(orbitCalibration, orbitRuntime) : baseEnv;
+var prewarm = new Prewarmer(settings.Games, streamer, prewarmEnv, log, canApply ? Path.Combine(dataDir, "prewarm_status.json") : null); // 데이터 폴더를 믿을 수 없으면 (SYSTEM 이 일반 사용자가 쓸 수 있는 곳에 쓰지 않도록) 상태 파일을 쓰지 않음
+LoadBoundaryWatch.OrbitApplied = canApply ? streamer.WasPrewarmReordered : _ => false;
 LoadBoundaryWatch.Recorder = canApply ? new BenchmarkRecorder(Path.Combine(dataDir, MetricsJson.SamplesFile), log) : null; // 로딩 표본 기록 (상태 파일과 같은 이유로 canApply 일 때만)
+if (LoadBoundaryWatch.Recorder is { } recorder)
+{
+    // 실제 준비 시각 관측이 없어 (TReadyMs·GameBuild 가 null) 현재 서비스 표본으로는 판정이 생기지 않음: 판정이 생기면 모드 변경 이후 표본으로만 강등
+    recorder.GateSince = () => orbitRuntime.ModeChangedAt;
+    recorder.GateEvaluated = (gameName, result) =>
+    {
+        if (result.Verdict == ResultGate.Reject)
+        {
+            _ = orbitRuntime.Demote("result_gate_reject");
+        }
+    };
+}
 // 자동 모드는 설정·이동을 쓰므로 canApply 일 때만 (상태 파일도 같은 이유로)
-var auto = canApply ? new AutoMode(new ConfigEditor(dataDir), AutoEnv.Create(journalDir, log), new AutoStatus(Path.Combine(dataDir, "auto_status.json"), log), log, settings, prewarm) : null;
+var auto = canApply ? new AutoMode(new ConfigEditor(dataDir), AutoEnv.Create(journalDir, log), orbitStatus!, log, settings, prewarm) : null;
 if (auto is not null)
 {
     reapplyEnv.Gate = auto.ReapplyBlock; // 정기 재적용도 자동 재배치와 같은 게이트를 지남
@@ -68,7 +92,7 @@ if (auto is not null)
 }
 
 var reloader = new SettingsReloader(() => SettingsReloader.StampOf(configPath), LoadChecked, s => Worker.ChooseWatchers(s, admin), log, configStamp);
-builder.Services.AddHostedService(_ => new Worker(settings, log, primary, fallback, streamer, checker, prewarm: prewarm, auto: auto, reload: reloader, dispatchEnv: DispatchEnv.Create()));
+builder.Services.AddHostedService(_ => new Worker(settings, log, primary, fallback, streamer, checker, prewarm: prewarm, auto: auto, reload: reloader, dispatchEnv: DispatchEnv.Create(), coordinator: coordinator));
 await builder.Build().RunAsync();
 return 0;
 

@@ -419,5 +419,9 @@ internal sealed class AutoRig : IDisposable
         Reload();
     }
 
-    public void Dispose() => Directory.Delete(Dir, true);
+    public void Dispose()
+    {
+        OrbitModel.StopUnder(Dir);
+        Directory.Delete(Dir, true);
+    }
 }

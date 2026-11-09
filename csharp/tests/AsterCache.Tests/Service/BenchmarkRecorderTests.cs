@@ -170,4 +170,104 @@ public sealed class BenchmarkRecorderTests : IDisposable
 
         Assert.Equal(before, File.ReadAllText(Path_));
     }
+
+    [Fact]
+    public void CandidateArmIsRecordedAndReadBack()
+    {
+        var rec = new BenchmarkRecorder(Path_, new ListLog(), _t0);
+        rec.Record("Foo", _t0, 3, Arm.Candidate);
+        rec.Record("Foo", _t0, 4);
+
+        List<LoadSample> saved = MetricsJson.ParseSamples(File.ReadAllText(Path_));
+        Assert.Equal(new[] { Arm.Candidate, Arm.Baseline }, saved.Select(s => s.Arm));
+    }
+
+    [Fact]
+    public void ResultGateRejectsOnlyAfterFiveComparableSamplesPerArmFromTheSameBuild()
+    {
+        var rec = new BenchmarkRecorder(Path_, new ListLog(), _t0);
+        GateResult? rejected = null;
+        rec.GateEvaluated = (_, result) => rejected = result;
+
+        foreach (long ms in Enumerable.Repeat(100L, ResultGate.MinSamples))
+        {
+            rec.Record(Comparable("build-a", Arm.Baseline, ms));
+        }
+
+        foreach (long ms in Enumerable.Repeat(110L, ResultGate.MinSamples))
+        {
+            rec.Record(Comparable("build-a", Arm.Candidate, ms));
+        }
+
+        Assert.Equal(ResultGate.Reject, rejected?.Verdict);
+        Assert.Equal(ResultGate.MinSamples, rejected?.BaselineUsed);
+        Assert.Equal(ResultGate.MinSamples, rejected?.CandidateUsed);
+    }
+
+    [Fact]
+    public void ResultGateDoesNotCompareDifferentBuildsOrProbeOnlySamples()
+    {
+        var rec = new BenchmarkRecorder(Path_, new ListLog(), _t0);
+        bool rejected = false;
+        rec.GateEvaluated = (_, _) => rejected = true;
+
+        foreach (long ms in Enumerable.Repeat(100L, ResultGate.MinSamples))
+        {
+            rec.Record(Comparable("build-a", Arm.Baseline, ms));
+        }
+
+        foreach (long ms in Enumerable.Repeat(110L, ResultGate.MinSamples))
+        {
+            rec.Record(Comparable("build-b", Arm.Candidate, ms));
+        }
+
+        rec.Record("Foo", _t0, 500, Arm.Candidate);
+
+        Assert.False(rejected);
+    }
+
+    [Fact]
+    public void ResultGateIgnoresSamplesRecordedBeforeTheLastModeChange()
+    {
+        var rec = new BenchmarkRecorder(Path_, new ListLog(), _t0);
+        bool rejected = false;
+        rec.GateEvaluated = (_, _) => rejected = true;
+        rec.GateSince = () => DateTimeOffset.UtcNow.AddMinutes(1); // 모드를 방금 바꾼 것처럼 아래 표본은 모두 그 이전
+
+        foreach (long ms in Enumerable.Repeat(100L, ResultGate.MinSamples))
+        {
+            rec.Record(Comparable("build-a", Arm.Baseline, ms));
+        }
+
+        foreach (long ms in Enumerable.Repeat(110L, ResultGate.MinSamples))
+        {
+            rec.Record(Comparable("build-a", Arm.Candidate, ms));
+        }
+
+        Assert.False(rejected);
+    }
+
+    [Fact]
+    public void ResultGateUsesSamplesAfterTheLastModeChange()
+    {
+        var rec = new BenchmarkRecorder(Path_, new ListLog(), _t0);
+        GateResult? rejected = null;
+        rec.GateEvaluated = (_, result) => rejected = result;
+        rec.GateSince = () => DateTimeOffset.UtcNow.AddMinutes(-1);
+
+        foreach (long ms in Enumerable.Repeat(100L, ResultGate.MinSamples))
+        {
+            rec.Record(Comparable("build-a", Arm.Baseline, ms));
+        }
+
+        foreach (long ms in Enumerable.Repeat(110L, ResultGate.MinSamples))
+        {
+            rec.Record(Comparable("build-a", Arm.Candidate, ms));
+        }
+
+        Assert.Equal(ResultGate.Reject, rejected?.Verdict);
+    }
+
+    private static LoadSample Comparable(string build, Arm arm, long ms) => new("Foo", Scenario.S0, arm, ElapsedBucket.Min5, ms,
+        GameBuild: build, CacheState: CacheState.Warm, ElapsedBasis: "service_uptime");
 }

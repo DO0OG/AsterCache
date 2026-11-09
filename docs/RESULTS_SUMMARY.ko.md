@@ -190,6 +190,24 @@ bounded 와 같되, 최근 500 ms 의 게임 읽기 처리량이 80 MiB/s 이상
 - 이 기록은 합성 데이터와 트레이스 재생입니다. Frostpunk 를 실제로 실행한 전체 로딩 시간이 아닙니다.
 - 원자료: [E7](../results/csharp_e7_20261102_203358/README.md), [E7b](../results/csharp_e7b_gen/README.md), [E7c](../results/csharp_e7c_gen/README.md), [E7d](../results/csharp_e7d_gen/README.md), [E7e](../results/csharp_e7e_gen/README.md), [E7f](../results/csharp_e7f_gen/README.md).
 
+## ORBIT 예열 순서 벤치 (2026-11-09)
+
+- **환경.** 사용자 PC, D: WDC WD20EZAZ 2 TB SMR, Call of Duty. 예열 목록은 39,180개 읽기 op·약 9.5 GB, 에피소드는 26개입니다. 회마다 서비스를 멈추고 게임을 끄고 standby 목록을 비웠습니다.
+- **방법.** ABBA 10쌍(20회)으로 기준 순서 A 와 ORBIT 순서 B 를 번갈아 쟀습니다. 에피소드 준비 시각은 그 에피소드 블록을 모두 읽은 시각이고, 가치 가중 평균은 발생 비율로 가중했습니다.
+
+| 지표 | 값 |
+|---|---|
+| 가치 가중 준비 시간 중앙값 단축 (A−B)/A | 21.3% (쌍별 19.5~23.4%) |
+| 10% 이상 단축된 쌍 | 10/10 |
+| 부호 검정 p | 0.001 |
+| 총 읽기 시간 변화 (B−A)/A 중앙값 | −0.8% (A 약 377 s, B 약 372 s) |
+| 에피소드별 p95 최대 지연 | 18.2 s (플래그 4 실패) |
+| 플래그 2 / 3 / 4 | 통과 / 통과 / 실패 |
+
+앞당김의 대가로 일부 에피소드는 늦어졌습니다. 게임 1종·드라이브 1대·한 세션 측정이라 다른 게임이나 드라이브로 일반화하기는 이릅니다.
+
+재현은 `csharp\scripts\cs_orbit_bench.ps1 -Game <이름> -Pairs 10 ...` 로 측정하고 `aster orbit-bench summarize` 로 판정합니다.
+
 ## 결과 해석 (옮긴 내용)
 
 - **드라이브 위치별 속도.** 드라이브 위치별 속도 차이는 없었습니다(`results/zone_curve_20261101`). 그래서 핫 존의 위치를 맞추는 최적화는 설계에서 뺐습니다.

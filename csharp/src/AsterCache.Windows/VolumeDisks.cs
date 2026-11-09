@@ -25,6 +25,11 @@ public sealed class VolumeDisks(Func<string, IReadOnlySet<uint>?> query, Func<lo
 
     public bool AreSame(string a, string b) => KnownAreSame(a, b) ?? true;
 
+    /// 경로가 놓인 물리 디스크 번호로 만든 키 ("disk1", 여럿이면 "disk1+2"), 모르면 null.
+    public static string? PhysicalKey(string path) => Shared.PhysicalKeyOf(path);
+
+    public string? PhysicalKeyOf(string path) => DisksOf(path) is { Count: > 0 } disks ? "disk" + string.Join('+', disks.Order()) : null;
+
     public bool? KnownAreSame(string a, string b)
     {
         IReadOnlySet<uint>? left = DisksOf(a);

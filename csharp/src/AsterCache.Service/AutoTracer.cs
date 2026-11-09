@@ -22,6 +22,7 @@ public sealed class AutoTracer
     private readonly OrbitShadow _shadow;
     private readonly object _lock = new();
     private volatile bool _shutdown;
+    private bool _stopCleanupFailed;
     private OrbitModel _orbitModel = new();
     private Run? _run;
     private readonly List<Run> _stopped = []; // 상한에 닿아 세션을 멈췄지만 게임이 끝나길 기다리는 기록 (저장 전)
@@ -464,7 +465,7 @@ public sealed class AutoTracer
             next = NextTrace(g, _settings().Auto, _env, _status, MinRunBytes);
             done = next.Valid;
             firstRun = !_env.FileExists(RawTracePath(g));
-            if (_run is not null || !next.Wanted || _stopped.Any(r => string.Equals(r.Game.Name, g.Name, StringComparison.OrdinalIgnoreCase)))
+            if (_run is not null || _stopCleanupFailed || !next.Wanted || _stopped.Any(r => string.Equals(r.Game.Name, g.Name, StringComparison.OrdinalIgnoreCase)))
             {
                 return;
             }
@@ -547,7 +548,8 @@ public sealed class AutoTracer
                 _run = null;
             }
 
-            run.Session.Dispose(); // 설정이 바뀌어 지금은 금지된 게임: 기록은 버리고 세션을 닫음
+            run.Session?.Dispose(); // 설정이 바뀌어 지금은 금지된 게임: 기록은 버리고 세션을 닫음
+            run.Session = null;
             run.Learn?.Dispose();
             _log.Info($"{run.Game.Name}: trace stopped (anti-cheat: {cheat})");
             return;
@@ -565,22 +567,92 @@ public sealed class AutoTracer
         }
 
         run.Primed = true;
-        if (run.Learn is { } learn && _env.Now() - run.LastStatusAt >= AutoLearn.StatusEvery)
+        if (run.Learn is { } learn && !run.LearningEnded && _env.Now() - run.LastStatusAt >= AutoLearn.StatusEvery)
         {
             run.LastStatusAt = _env.Now();
             _status.Set(run.Game.Name, run.Game.Source, null, AutoStage.Learning, AutoLearn.Detail(learn.Stats));
         }
 
+        DateTimeOffset now = _env.Now();
         bool named = _env.AnyRunning(run.Game.ExeNames);
         bool exited = ExitGraceElapsed(run, named);
-        TimeSpan elapsed = _env.Now() - run.StartedAt;
-        string? why = exited ? GameExited
-            : elapsed >= TimeSpan.FromSeconds(a.TraceCapSeconds) ? "time cap"
-            : run.Read >= (long)ReadCapMib(run, all) << 20 ? "read cap"
-            : null;
-        if (why is not null)
+        TimeSpan elapsed = now - run.StartedAt;
+        if (exited)
         {
-            Finish(run, why, why != GameExited); // 상한에 닿은 기록은 게임이 끝난 뒤에 저장 (경로 해석·저장·병합이 게임 디스크를 건드리지 않게)
+            Finish(run, GameExited); // 게임 디스크에 불필요한 I/O 를 하지 않도록 정상 종료 때만 바로 저장
+            return;
+        }
+
+        if (run.Read >= (long)ReadCapMib(run, all) << 20)
+        {
+            Finish(run, "read cap", defer: true);
+            return;
+        }
+
+        if (!run.InitialWindowEnded && elapsed >= TimeSpan.FromSeconds(a.TraceCapSeconds))
+        {
+            if (!TryStopWindow(run, endLearning: true))
+            {
+                return;
+            }
+
+            run.InitialWindowEnded = true;
+            run.NextLateWindowAt = run.StartedAt + TimeSpan.FromSeconds(a.TraceCapSeconds) + TimeSpan.FromMinutes(a.TraceLateIntervalMin);
+            _log.Info($"{run.Game.Name}: initial trace window ended at time cap; waiting for late window 1/{a.TraceLateWindows}");
+            if (a.TraceLateWindows <= 0)
+            {
+                Finish(run, "time cap", defer: true);
+            }
+
+            return;
+        }
+
+        if (run.InitialWindowEnded)
+        {
+            if (run.Session is not null && run.LateWindowStartedAt is { } windowStarted
+                && now - windowStarted >= TimeSpan.FromSeconds(a.TraceLateWindowSeconds))
+            {
+                if (!TryStopWindow(run))
+                {
+                    return;
+                }
+
+                run.LateWindowStartedAt = null;
+                if (run.LateWindowsStarted >= a.TraceLateWindows)
+                {
+                    Finish(run, "time cap", defer: true);
+                    return;
+                }
+
+                run.NextLateWindowAt = now + TimeSpan.FromMinutes(a.TraceLateIntervalMin);
+            }
+
+            if (run.Session is null)
+            {
+                if (run.LateWindowsStarted >= a.TraceLateWindows)
+                {
+                    Finish(run, "time cap", defer: true);
+                    return;
+                }
+
+                if (now >= run.NextLateWindowAt)
+                {
+                    try
+                    {
+                        run.Session = _env.StartTrace(run.Game.ExeNames, null);
+                        run.LateWindowsStarted++;
+                        run.LateWindowStartedAt = now;
+                        string detail = $"late window {run.LateWindowsStarted}/{a.TraceLateWindows}";
+                        _status.Set(run.Game.Name, run.Game.Source, null, AutoStage.Tracing, detail);
+                        _log.Info($"{run.Game.Name}: {detail} started");
+                    }
+                    catch (Exception e) when (e is not OperationCanceledException)
+                    {
+                        _log.Error($"{run.Game.Name}: late trace window could not start", e);
+                        Finish(run, "trace session failed to restart", defer: true);
+                    }
+                }
+            }
         }
     }
 
@@ -684,7 +756,11 @@ public sealed class AutoTracer
 
         _shadow.Shutdown();
         orbitModel.Dispose();
-        run?.Session.Dispose();
+        run?.Session?.Dispose();
+        if (run is not null)
+        {
+            run.Session = null;
+        }
         run?.Learn?.Dispose();
         FinishStopped(true);
     }
@@ -696,7 +772,7 @@ public sealed class AutoTracer
         bool stoppedBefore = run.Held is not null; // 이미 멈춰 둔 기록의 저장: 세션은 멈출 때 정리했음
         try
         {
-            IReadOnlyList<TraceRecord> records = run.Held ?? run.Session.Stop();
+            IReadOnlyList<TraceRecord> records = run.Held ?? StopSession(run);
             if (!stoppedBefore)
             {
                 EndLearn(run);
@@ -840,7 +916,8 @@ public sealed class AutoTracer
         {
             if (!stoppedBefore)
             {
-                run.Session.Dispose();
+                run.Session?.Dispose();
+                run.Session = null;
             }
 
             run.Learn?.Dispose();
@@ -1109,8 +1186,94 @@ public sealed class AutoTracer
     }
 
     // 세션이 멈춘 뒤 선행 읽기를 끝내고 결과를 남깁니다 (Dispose 는 작업자 스레드를 기다림).
+    private static IReadOnlyList<TraceRecord> StopSession(Run run)
+    {
+        if (run.Session is not { } session)
+        {
+            return run.Records;
+        }
+
+        IReadOnlyList<TraceRecord> records;
+        try
+        {
+            records = session.Stop();
+        }
+        catch
+        {
+            try
+            {
+                session.Dispose();
+                run.Session = null;
+            }
+            catch
+            {
+                // 정리가 확인되지 않으면 참조를 남겨 다음 트레이스 창을 막습니다.
+            }
+
+            throw;
+        }
+
+        session.Dispose();
+        run.Session = null;
+        run.Records.AddRange(records);
+        return run.Records;
+    }
+
+    private bool TryStopWindow(Run run, bool endLearning = false)
+    {
+        try
+        {
+            _ = StopSession(run);
+            if (endLearning)
+            {
+                EndLearn(run);
+            }
+
+            return true;
+        }
+        catch (Exception e)
+        {
+            bool cleanupUnconfirmed = run.Session is not null;
+            try
+            {
+                run.Learn?.Dispose();
+            }
+            catch (Exception cleanupError)
+            {
+                cleanupUnconfirmed = true;
+                _log.Warn($"{run.Game.Name}: learning cleanup failed after trace window failure ({cleanupError.GetType().Name})");
+            }
+
+            run.LearningEnded = true;
+            lock (_lock)
+            {
+                _stopCleanupFailed |= cleanupUnconfirmed;
+                _run = _run == run ? null : _run;
+            }
+
+            _log.Error($"{run.Game.Name}: auto trace window could not stop; run failed", e);
+            if (cleanupUnconfirmed)
+            {
+                _log.Error($"{run.Game.Name}: trace cleanup could not be confirmed; new trace sessions are blocked");
+            }
+
+            if (run.Number == 1)
+            {
+                _status.Set(run.Game.Name, run.Game.Source, null, AutoStage.Failed, "trace window failed to stop");
+            }
+
+            return false;
+        }
+    }
+
     private void EndLearn(Run run)
     {
+        if (run.LearningEnded)
+        {
+            return;
+        }
+
+        run.LearningEnded = true;
         if (run.Learn is not { } learn)
         {
             return;
@@ -1124,7 +1287,9 @@ public sealed class AutoTracer
     {
         public GameSettings Game { get; } = game;
 
-        public IAutoTrace Session { get; } = session;
+        public IAutoTrace? Session { get; set; } = session;
+
+        public List<TraceRecord> Records { get; } = [];
 
         public DateTimeOffset StartedAt { get; } = startedAt;
 
@@ -1141,6 +1306,16 @@ public sealed class AutoTracer
 
         /// 첫 실행 선행 읽기 (auto.learn 이 켜졌을 때).
         public ReadAhead? Learn { get; init; }
+
+        public bool LearningEnded { get; set; }
+
+        public bool InitialWindowEnded { get; set; }
+
+        public int LateWindowsStarted { get; set; }
+
+        public DateTimeOffset NextLateWindowAt { get; set; }
+
+        public DateTimeOffset? LateWindowStartedAt { get; set; }
 
         /// 이 플레이가 몇 번째 기록인가 (1 = 첫 기록).
         public int Number { get; init; } = 1;

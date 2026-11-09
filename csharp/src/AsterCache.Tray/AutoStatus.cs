@@ -179,6 +179,11 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
         }
 
         var parts = new List<string>();
+        if (TraceLateWindowTag.Match(g.Detail ?? string.Empty) is { Success: true } lateWindow)
+        {
+            parts.Add(L.Get(lang, "Stage_LateWindow", lateWindow.Groups[1].Value, lateWindow.Groups[2].Value));
+        }
+
         if (g.Stage is "waiting_idle" or "failed" or "skipped" && ReasonText(g.Detail, lang) is { } why)
         {
             parts.Add(why); // 대기·실패 사유를 맨 앞에 (완료 단계의 옛 사유는 붙이지 않음)
@@ -266,6 +271,8 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
     private static partial Regex ReadAhead();
 
     private static readonly Regex TraceUnavailableTag = new(@"trace unavailable \(([^)]*)\), (\d+) earlier run\(s\) used", RegexOptions.None, TimeSpan.FromSeconds(1));
+
+    private static readonly Regex TraceLateWindowTag = new(@"late window (\d+)/(\d+)", RegexOptions.None, TimeSpan.FromSeconds(1));
 
     private static readonly Regex SsdTierTag = new(@"ssd tier (\d+(?:\.\d+)?) GB", RegexOptions.None, TimeSpan.FromSeconds(1));
 

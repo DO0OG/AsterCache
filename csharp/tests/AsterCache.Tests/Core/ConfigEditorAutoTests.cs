@@ -28,7 +28,7 @@ public sealed class ConfigEditorAutoTests : IDisposable
         editor.Add(Game("a"));
         editor.SetAuto(AutoSettings.Default);
 
-        Assert.Equal(37, CountKeys(File.ReadAllText(editor.ConfigPath), "auto"));
+        Assert.Equal(41, CountKeys(File.ReadAllText(editor.ConfigPath), "auto"));
         Assert.Equal(Plain(AutoSettings.Default), Plain(editor.Load()!.Auto));
 
         var custom = new AutoSettings(false, false, true, false, 3, 7, 90, 128, 5, ["a.exe", "b.exe"])
@@ -39,6 +39,10 @@ public sealed class ConfigEditorAutoTests : IDisposable
             FullPrewarm = false,
             FullPrewarmMaxMib = 2048,
             EngineProfiles = false,
+            StartStreamCapSeconds = 321,
+            TraceLateIntervalMin = 15,
+            TraceLateWindowSeconds = 120,
+            TraceLateWindows = 4,
             PostUpdateDelayMin = 25,
             PostRelocateRecovery = AutoSettings.RecoveryFixed,
             RelocateChunkMib = 64,
@@ -64,6 +68,7 @@ public sealed class ConfigEditorAutoTests : IDisposable
         Assert.Equal(45, read.IdleSeconds);
         Assert.Equal(["a.exe", "b.exe"], read.IgnoreExes);
         Assert.Equal((false, 2048, false), (read.FullPrewarm, read.FullPrewarmMaxMib, read.EngineProfiles));
+        Assert.Equal((321, 15, 120, 4), (read.StartStreamCapSeconds, read.TraceLateIntervalMin, read.TraceLateWindowSeconds, read.TraceLateWindows));
         Assert.Equal((LearnSettings.AdaptiveMode, false, "https://example.com/profiles.zip"), (read.Learn.Mode, read.SharedProfiles.Enabled, read.SharedProfiles.Url));
         Assert.Equal(120, read.Learn.SaturationMbps);
         Assert.Equal(25, read.PostUpdateDelayMin);

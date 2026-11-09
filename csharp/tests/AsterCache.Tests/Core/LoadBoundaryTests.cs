@@ -79,4 +79,70 @@ public sealed class LoadBoundaryTests
 
         Assert.Equal([new TraceEvent("b", 10 * Mib, Mib), new TraceEvent("a", 0, Mib), new TraceEvent("a", 5 * Mib, Mib)], b.Tier0);
     }
+
+    [Fact]
+    public void RuntimeBoundaryStopsWhenTheMovingWindowFallsBelowTenPercent()
+    {
+        var boundary = new RuntimeLoadBoundary();
+        Assert.False(boundary.Update(0, 0));
+
+        for (int second = 1; second <= 20; second++)
+        {
+            long bytes = second <= 10 ? second * 10 * Mib : 100 * Mib;
+            bool reached = boundary.Update(second * 1000L, bytes);
+            Assert.Equal(second == 20, reached);
+        }
+
+        Assert.Equal(10_000, boundary.BoundaryMs);
+        Assert.False(boundary.ReachedMaximum);
+    }
+
+    [Fact]
+    public void RuntimeBoundaryWaitsForALargeLaterPeakAfterASmallEarlyRead()
+    {
+        var boundary = new RuntimeLoadBoundary();
+        Assert.False(boundary.Update(0, 0));
+
+        for (int second = 1; second <= 20; second++)
+        {
+            long bytes = 4 * Mib;
+            Assert.False(boundary.Update(second * 1000L, bytes)); // 작은 읽기 뒤 19 초 쉬어도 끝내지 않음
+        }
+
+        for (int second = 21; second <= 30; second++)
+        {
+            Assert.False(boundary.Update(second * 1000L, 4 * Mib + (second - 20) * 10 * Mib));
+        }
+
+        for (int second = 31; second <= 40; second++)
+        {
+            Assert.Equal(second == 40, boundary.Update(second * 1000L, 104 * Mib));
+        }
+
+        Assert.Equal(30_000, boundary.BoundaryMs);
+    }
+
+    [Fact]
+    public void RuntimeBoundaryUsesSixtySecondLimitOnlyAfterObservingReads()
+    {
+        var active = new RuntimeLoadBoundary();
+        active.Update(0, 0);
+        for (int second = 1; second <= 60; second++)
+        {
+            active.Update(second * 1000L, second * Mib);
+        }
+
+        Assert.Equal(60_000, active.BoundaryMs);
+        Assert.True(active.ReachedMaximum);
+
+        var idle = new RuntimeLoadBoundary();
+        idle.Update(0, 0);
+        for (int second = 1; second <= 60; second++)
+        {
+            Assert.False(idle.Update(second * 1000L, 0));
+        }
+
+        Assert.Null(idle.BoundaryMs);
+        Assert.False(idle.ReachedMaximum);
+    }
 }

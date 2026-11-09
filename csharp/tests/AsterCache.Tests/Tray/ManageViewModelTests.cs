@@ -946,6 +946,15 @@ public sealed class ManageViewModelTests : IDisposable
     }
 
     [Fact]
+    public void LateTraceWindowDetailIsLocalizedInBothLanguages()
+    {
+        var tracing = new AutoGame("auto", null, "tracing", "late window 2/6");
+
+        Assert.Equal("트레이스 수집 중 (후반 창 2/6)", AutoStatusFile.StageText(tracing, "ko"));
+        Assert.Equal("collecting trace (late window 2/6)", AutoStatusFile.StageText(tracing, "en"));
+    }
+
+    [Fact]
     public void PrewarmedDetailShowsFullFolderOrProfileName()
     {
         var discovered = new AutoGame("manual", null, "discovered", "prewarmed (profile Unity)");

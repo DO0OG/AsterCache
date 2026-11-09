@@ -8,7 +8,7 @@ public static class LoadBoundaries
     public const long WindowSeconds = 10;
     public const long MaxBoundaryMs = 60_000;
     public const long Block = 65536;
-    private const int Percent = 10;
+    public const int Percent = 10;
 
     /// 앞으로 10 초 동안 읽는 양 (1 초 간격 이동 창) 이 최고치의 10% 밑으로 처음 떨어지는 시점 (최고 창 이후), 없으면 60 초 중 이른 쪽이 경계.
     /// 모든 행에 t_ms 가 있어야 하고, 하나라도 없거나 행이 없으면 null (호출부가 옛 방식을 씀). 행 순서는 접근 순서입니다.
@@ -81,5 +81,91 @@ public static class LoadBoundaries
         }
 
         return new LoadBoundary(boundaryMs, tier0, tier0Bytes, (seen.Count - tier0Bytes / Block) * Block);
+    }
+}
+
+/// <summary>실시간 프로세스 읽기 카운터로 로딩 경계를 찾습니다.</summary>
+public sealed class RuntimeLoadBoundary
+{
+    private const long WindowMs = LoadBoundaries.WindowSeconds * 1000;
+    // shortcut: 온라인 판정은 미래 최고치를 모름, 실기 로그로 임계 재조정
+    private const long MinimumObservationMs = 15_000;
+    private const long MinimumPeakBytes = 64L << 20;
+    private readonly List<(long AtMs, long Bytes)> _samples = [];
+    private long? _baseline;
+    private long _peakBytes;
+    private long _peakWindowStartMs = -1;
+
+    public long? BoundaryMs { get; private set; }
+
+    public bool ReachedMaximum { get; private set; }
+
+    /// <summary>읽기량이 계속 줄거나 60초 관찰 한도에 도달하면 true를 반환합니다.</summary>
+    public bool Update(long tMs, long cumulativeBytes)
+    {
+        if (tMs < 0 || cumulativeBytes < 0)
+        {
+            throw new ArgumentOutOfRangeException(tMs < 0 ? nameof(tMs) : nameof(cumulativeBytes));
+        }
+
+        if (BoundaryMs is not null)
+        {
+            return true;
+        }
+
+        if (_samples.Count > 0 && tMs <= _samples[^1].AtMs)
+        {
+            return false;
+        }
+
+        if (tMs > LoadBoundaries.MaxBoundaryMs && _peakBytes == 0)
+        {
+            return false; // 60 초 안에 읽기가 없으면 뒤늦은 읽기를 시작 로딩으로 간주하지 않습니다.
+        }
+
+        _baseline ??= cumulativeBytes;
+        long relativeBytes = Math.Max(0, cumulativeBytes - _baseline.Value);
+        _samples.Add((tMs, relativeBytes));
+
+        if (tMs >= WindowMs)
+        {
+            long windowStartMs = tMs - WindowMs;
+            long windowStartBytes = BytesAtOrBefore(windowStartMs);
+            long windowBytes = Math.Max(0, relativeBytes - windowStartBytes);
+            if (windowStartMs < LoadBoundaries.MaxBoundaryMs && windowBytes > _peakBytes)
+            {
+                _peakBytes = windowBytes;
+                _peakWindowStartMs = windowStartMs;
+            }
+            else if (tMs >= MinimumObservationMs && _peakBytes >= MinimumPeakBytes
+                && windowStartMs > _peakWindowStartMs
+                && (decimal)windowBytes * 100 < (decimal)_peakBytes * LoadBoundaries.Percent)
+            {
+                BoundaryMs = windowStartMs;
+                return true;
+            }
+        }
+
+        if (tMs >= LoadBoundaries.MaxBoundaryMs && _peakBytes > 0)
+        {
+            BoundaryMs = LoadBoundaries.MaxBoundaryMs;
+            ReachedMaximum = true;
+            return true;
+        }
+
+        return false;
+    }
+
+    private long BytesAtOrBefore(long tMs)
+    {
+        for (int i = _samples.Count - 1; i >= 0; i--)
+        {
+            if (_samples[i].AtMs <= tMs)
+            {
+                return _samples[i].Bytes;
+            }
+        }
+
+        return _samples[0].Bytes;
     }
 }

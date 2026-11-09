@@ -23,10 +23,11 @@ public static class TracePhases
     public static string CommonPath(GameSettings g) => Path.Combine(Path.GetDirectoryName(g.Plan) ?? string.Empty, g.Name + ".trace.common.json");
 
     /// 예열 경로: 저장된 common 범위 (경로 순, 서로 겹치지 않음) 만 읽고 run 파일은 읽지 않습니다. 저장본이 없거나 지문이 안 맞거나 깨졌거나 common 이 없으면 null (호출부는 기존 동작).
-    public static IReadOnlyList<TraceEvent>? CommonOf(GameSettings g, long minRunBytes = AutoTracer.MinExtraRunBytes)
+    public static IReadOnlyList<TraceEvent>? CommonOf(GameSettings g, long minRunBytes = AutoTracer.MinExtraRunBytes, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         string path = CommonPath(g);
-        string inputs = Inputs(g, minRunBytes);
+        string inputs = Inputs(g, minRunBytes, cancellationToken);
         if (inputs.Length == 0)
         {
             return null;
@@ -34,7 +35,7 @@ public static class TracePhases
 
         if (!Cache.TryGetValue(path, out var hit) || hit.Inputs != inputs)
         {
-            List<TraceEvent>? loaded = Load(path, inputs);
+            List<TraceEvent>? loaded = Load(path, inputs, cancellationToken);
             if (loaded is null)
             {
                 return null;
@@ -66,13 +67,15 @@ public static class TracePhases
     }
 
     /// ops (이번 예열이 실제로 읽을 범위, 읽는 순서) 중 common 과 겹치는 부분만 그 순서대로: 이번에 읽을 범위의 부분집합이라 읽는 양의 상한이 그대로입니다.
-    public static List<ReadOp> Within(IReadOnlyList<TraceEvent> common, IReadOnlyList<ReadOp> ops)
+    public static List<ReadOp> Within(IReadOnlyList<TraceEvent> common, IReadOnlyList<ReadOp> ops, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         Dictionary<string, (long Start, long End)[]> byPath = common.GroupBy(c => c.Path, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.OrderBy(c => c.Offset).Select(c => (c.Offset, c.Offset + c.Length)).ToArray(), StringComparer.OrdinalIgnoreCase);
         var result = new List<ReadOp>();
         foreach (ReadOp op in ops)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (!byPath.TryGetValue(op.Path, out (long Start, long End)[]? ranges))
             {
                 continue;
@@ -104,12 +107,13 @@ public static class TracePhases
     }
 
     // run 파일들의 (번호, 크기, 수정 시각), 기준 바이트, 옛 형식 표지. run 파일이 하나도 없으면 빈 문자열 (구분 자료 없음).
-    private static string Inputs(GameSettings g, long minRunBytes)
+    private static string Inputs(GameSettings g, long minRunBytes, CancellationToken cancellationToken = default)
     {
         string raw = AutoTracer.RawTracePath(g);
         var sb = new StringBuilder();
         for (int n = 1; n <= AutoTracer.MaxRunFiles; n++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var info = new FileInfo(TraceWriter.RunPath(raw, n));
             if (info.Exists)
             {
@@ -126,15 +130,24 @@ public static class TracePhases
         return File.Exists(AutoTracer.LegacyRun1Path(g)) ? sb.Append("legacy;").ToString() : sb.ToString();
     }
 
-    private static List<TraceEvent>? Load(string path, string inputs)
+    private static List<TraceEvent>? Load(string path, string inputs, CancellationToken cancellationToken = default)
     {
         try
         {
-            if (File.Exists(path) && JsonRead.ReadFile(path) is JObject o && o.TryGetValue("version", out object? v) && v is long ver && ver == FormatVersion
+            cancellationToken.ThrowIfCancellationRequested();
+            object? loaded = File.Exists(path) ? JsonRead.ReadFile(path) : null;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (loaded is JObject o && o.TryGetValue("version", out object? v) && v is long ver && ver == FormatVersion
                 && o.TryGetValue("inputs", out object? i) && i as string == inputs && o.TryGetValue("ranges", out object? r) && r is List<object?> rows)
             {
                 // 형식 오류는 FromJson 이 PyValueException 으로 던짐. 음수·0 길이·범위 넘침 행은 예열 범위로 쓸 수 없어 전체를 버림
-                List<TraceEvent> ranges = [.. rows.Select(TraceEvents.FromJson)];
+                var ranges = new List<TraceEvent>(rows.Count);
+                foreach (object? row in rows)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    ranges.Add(TraceEvents.FromJson(row));
+                }
+
                 return ranges.All(e => e.Path.Length > 0 && e.Offset >= 0 && e.Length > 0 && e.Length <= long.MaxValue - e.Offset) ? ranges : null;
             }
         }
@@ -146,7 +159,7 @@ public static class TracePhases
         return null;
     }
 
-    private static List<TraceEvent> Compute(GameSettings g, long minRunBytes, string path, string inputs)
+    private static List<TraceEvent> Compute(GameSettings g, long minRunBytes, string path, string inputs, CancellationToken cancellationToken = default)
     {
         string raw = AutoTracer.RawTracePath(g);
         bool legacy = File.Exists(AutoTracer.LegacyRun1Path(g));
@@ -154,13 +167,26 @@ public static class TracePhases
         int valid = 0;
         for (int n = 1; n <= AutoTracer.MaxRunFiles; n++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             string file = TraceWriter.RunPath(raw, n);
             if (!File.Exists(file))
             {
                 continue;
             }
 
-            List<TraceEvent> rows = JsonRead.ReadFile(file) is List<object?> list ? [.. list.Select(TraceEvents.FromJson)] : throw new PyValueException("bad trace file");
+            cancellationToken.ThrowIfCancellationRequested();
+            object? loaded = JsonRead.ReadFile(file);
+            if (loaded is not List<object?> sourceRows)
+            {
+                throw new PyValueException("bad trace file");
+            }
+
+            var rows = new List<TraceEvent>(sourceRows.Count);
+            foreach (object? row in sourceRows)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                rows.Add(TraceEvents.FromJson(row));
+            }
             if (!(n == 1 && legacy) && rows.Sum(e => e.Length) < minRunBytes)
             {
                 continue; // 병합과 같은 기준: 읽기량이 모자란 회차는 유효하지 않음
@@ -170,6 +196,7 @@ public static class TracePhases
             var seen = new Dictionary<string, HashSet<long>>(StringComparer.OrdinalIgnoreCase);
             foreach (TraceEvent e in rows.Where(e => e.Offset >= 0 && e.Length > 0))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (!seen.TryGetValue(e.Path, out HashSet<long>? blocks))
                 {
                     seen[e.Path] = blocks = [];
@@ -183,6 +210,7 @@ public static class TracePhases
 
             foreach ((string p, HashSet<long> blocks) in seen)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (!counts.TryGetValue(p, out Dictionary<long, int>? per))
                 {
                     counts[p] = per = [];
@@ -190,6 +218,7 @@ public static class TracePhases
 
                 foreach (long blk in blocks)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     per[blk] = per.GetValueOrDefault(blk) + 1;
                 }
             }
@@ -200,6 +229,7 @@ public static class TracePhases
         {
             foreach ((string p, Dictionary<long, int> per) in counts.OrderBy(c => c.Key, StringComparer.Ordinal))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 long start = -1, next = -1;
                 foreach (long blk in per.Where(b => b.Value == valid).Select(b => b.Key).Order())
                 {
@@ -216,6 +246,7 @@ public static class TracePhases
             }
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         Save(path, inputs, valid, common);
         return common;
     }

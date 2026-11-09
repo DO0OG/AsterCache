@@ -358,6 +358,23 @@ public sealed class DispatcherTests
         Assert.Contains(log.Lines, l => l.StartsWith("Error: mw4: stream failed", StringComparison.Ordinal));
     }
 
+    // 계획 도중 대여가 취소돼도 (서비스 종료 토큰은 살아 있음) Handle 은 예외 없이 false 를 돌려주고 다음 시작 스트림을 막지 않음.
+    [Fact]
+    public void LeaseCancelledWhilePlanningReturnsFalseAndLaterStreamsStillRun()
+    {
+        var streamer = new FakeStreamer { Throw = new OperationCanceledException("lease cancelled while planning") };
+        var log = new ListLog();
+        DateTimeOffset now = DateTimeOffset.UnixEpoch;
+        var d = new GameDispatcher([Mw4], streamer, log, () => now);
+
+        Assert.False(d.Handle(Start("game.exe"), CancellationToken.None));
+        streamer.Throw = null;
+        now += GameDispatcher.Cooldown;
+        Assert.True(d.Handle(Start("game.exe"), CancellationToken.None));
+
+        Assert.Contains(log.Lines, l => l.Contains("mw4: start stream cancelled (planning)", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task GameStartStreamReceivesTheCallerCancellationToken()
     {
@@ -372,6 +389,47 @@ public sealed class DispatcherTests
 
         Assert.False(await handle.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.True(streamer.ObservedToken.IsCancellationRequested);
+    }
+
+    [Fact]
+    public void StartStreamDurationCapStopsIssuingAndLogsItsThroughput()
+    {
+        var streamer = new IssueUntilCancelledStreamer();
+        var log = new ListLog();
+        var dispatcher = new GameDispatcher([Mw4], streamer, log, env: new DispatchEnv
+        {
+            ReadCounters = _ => [],
+            StartStreamCapSeconds = () => 1,
+            RestreamCooldownMin = () => 0,
+        });
+
+        Assert.False(dispatcher.Handle(Start("game.exe")));
+
+        Assert.True(streamer.Requests > 0);
+        Assert.Contains(log.Lines, line => line.Contains("start stream stopped at cap", StringComparison.Ordinal) && line.Contains("MB/s", StringComparison.Ordinal));
+    }
+
+    private sealed class IssueUntilCancelledStreamer : IGameStreamer
+    {
+        private int _requests;
+
+        public int Requests => Volatile.Read(ref _requests);
+
+        public StreamStats Stream(GameSettings game) => throw new InvalidOperationException("coordinated streaming is expected");
+
+        public (StreamStats Stats, bool Complete) StreamCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress,
+            Func<bool> canIssue, Action<string, long, bool>? noteIssue)
+        {
+            while (canIssue() && !stop.IsCancellationRequested)
+            {
+                int requests = Interlocked.Increment(ref _requests);
+                noteIssue?.Invoke("stream batch", 4096, true);
+                progress?.Invoke(requests * 4096L, long.MaxValue);
+                Thread.Sleep(5);
+            }
+
+            return (new StreamStats(Requests * 4096L, Requests, 0, 1, Aborted: true), false);
+        }
     }
 
     private sealed class CancellationTokenStreamer(ManualResetEventSlim started) : IGameStreamer

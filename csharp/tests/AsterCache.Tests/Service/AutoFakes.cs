@@ -22,6 +22,10 @@ internal sealed class FakeTrace : IAutoTrace
 {
     public List<TraceRecord> Records { get; } = [];
 
+    public Exception? StopFailure { get; set; }
+
+    public Exception? DisposeFailure { get; set; }
+
     public bool Stopped { get; private set; }
 
     public bool Disposed { get; private set; }
@@ -29,10 +33,23 @@ internal sealed class FakeTrace : IAutoTrace
     public IReadOnlyList<TraceRecord> Stop()
     {
         Stopped = true;
+        if (StopFailure is { } failure)
+        {
+            throw failure;
+        }
+
         return Records;
     }
 
-    public void Dispose() => Disposed = true;
+    public void Dispose()
+    {
+        if (DisposeFailure is { } failure)
+        {
+            throw failure;
+        }
+
+        Disposed = true;
+    }
 }
 
 /// 자동 모드가 닿는 바깥 세계의 가짜 (시계, 런처 목록, 프로세스, 디스크·CPU·전원, 트레이스 세션). 계획·이동은 시험이 필요한 만큼만 바꿔 끼웁니다.
@@ -105,6 +122,8 @@ internal sealed class FakeWorld
     public Dictionary<string, List<(string Path, long Size)>> ExeFiles { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public FakeTrace? Session { get; set; }
+
+    public Func<int, FakeTrace>? StartTraceFactory { get; set; }
 
     public Exception? StartTraceThrows { get; set; }
 
@@ -271,7 +290,7 @@ internal sealed class FakeWorld
         {
             TraceStarts++;
             Listener = listener;
-            return StartTraceThrows is null ? Session ?? throw new InvalidOperationException("Session") : throw StartTraceThrows;
+            return StartTraceThrows is null ? StartTraceFactory?.Invoke(TraceStarts) ?? Session ?? throw new InvalidOperationException("Session") : throw StartTraceThrows;
         },
         Canonicalize = e =>
         {

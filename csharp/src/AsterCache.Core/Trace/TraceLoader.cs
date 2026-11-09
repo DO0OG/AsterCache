@@ -9,22 +9,27 @@ public static class TraceLoader
     /// resolve: 경로를 실제 경로로 풀어 줍니다 (링크·정션 해석, 없으면 null). 기본은 Path.GetFullPath + 존재 확인.
     /// fileSize: 풀린 경로가 파일이면 크기, 아니면 null. 기본은 FileInfo.
     public static List<TraceEvent> LoadRanges(string tracePath, string originRoot, Func<string, string?>? resolve = null,
-        Func<string, long?>? fileSize = null)
+        Func<string, long?>? fileSize = null, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         resolve ??= DefaultResolve;
         fileSize ??= DefaultFileSize;
         object? data = JsonRead.ReadFile(tracePath);
+        cancellationToken.ThrowIfCancellationRequested();
         object? rows = data is JObject obj ? (obj.TryGetValue("ranges", out object? r) ? r : null) : data;
         if (rows is not List<object?> list)
         {
             throw new PyValueException("bad trace file");
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         string root = resolve(originRoot) ?? throw new DirectoryNotFoundException(originRoot);
+        cancellationToken.ThrowIfCancellationRequested();
         var sizes = new Dictionary<string, long?>(StringComparer.Ordinal);
         var result = new List<TraceEvent>(list.Count);
         foreach (object? row in list)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             TraceEvent e = TraceEvents.FromJson(row);
             if (e.Offset < 0 || e.Length <= 0)
             {
@@ -33,8 +38,11 @@ public static class TraceLoader
 
             if (!sizes.TryGetValue(e.Path, out long? size))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 string? rp = resolve(e.Path);
+                cancellationToken.ThrowIfCancellationRequested();
                 size = rp is not null && IsRelativeTo(rp, root) ? fileSize(rp) : null;
+                cancellationToken.ThrowIfCancellationRequested();
                 sizes[e.Path] = size;
             }
 

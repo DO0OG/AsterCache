@@ -50,6 +50,8 @@ public sealed class Worker : BackgroundService
         _prewarm?.SetGames(settings.Games); // 고정이 첫 유지 틱 전에도 같은 디스크의 다른 등록 게임을 알도록
         _auto = auto;
         _auto?.SetDiskReadCoordinator(_coordinator);
+        _auto?.SetGameExitTracker(_exits);
+        _prewarm?.SetGameExitTracker(_exits);
         _reload = reload;
         _settings = settings;
         _keepAwake = keepAwake ?? (auto is null ? null : new KeepAwake(KeepAwakeEnv.Create(auto.Status.Plays), log, () => _settings, _coordinator)); // 자동 모드가 있는 진짜 서비스에서만 기본으로 켬
@@ -71,7 +73,15 @@ public sealed class Worker : BackgroundService
         _watchers = (primary, fallback);
         _watchKey = WatchKey(settings);
         LogWatcherOverride(settings);
-        _dispatcher = new GameDispatcher(settings.Games, streamer, log, env: dispatchEnv is null ? null : dispatchEnv with { RestreamCooldownMin = () => _settings.Auto.RestreamCooldownMin, IsWarm = prewarm is null ? dispatchEnv.IsWarm : prewarm.AlreadyWarm }, coordinator: _coordinator); // 설정을 다시 읽어도 최신 값
+        DispatchEnv dispatch = dispatchEnv ?? new DispatchEnv();
+        _dispatcher = new GameDispatcher(settings.Games, streamer, log, env: dispatch with
+        {
+            RestreamCooldownMin = () => _settings.Auto.RestreamCooldownMin,
+            StartStreamCapSeconds = () => _settings.Auto.StartStreamCapSeconds,
+            IsWarm = prewarm is null ? dispatch.IsWarm : prewarm.AlreadyWarm,
+            RecentWarmProbeAt = prewarm is null ? dispatch.RecentWarmProbeAt : prewarm.RecentWarmProbeAt,
+            RecentWarmProbeMinutes = () => _settings.Auto.RewarmMinutes,
+        }, coordinator: _coordinator); // 설정을 다시 읽어도 최신 값
         _checker = checker;
         _gate = gate ?? new ReapplyGate();
         _quiet = quiet ?? BootQuiet.Real(log, () => _settings.Games, () => prewarm?.UptimeMs() ?? Environment.TickCount64); // 부팅 조용 구간 (시험은 주입)
@@ -526,12 +536,13 @@ public sealed class Worker : BackgroundService
             due[g.Name] = DateTimeOffset.UtcNow + (waiting ? ResumeRetry : TimeSpan.FromMinutes(g.ReapplyMinutes));
         }
 
+        NoteGameExits();
+
         if (_auto is not null && RelocationAllowed(_quiet))
         {
             _auto.RelocateTick(_gate, ct);
         }
 
-        NoteGameExits();
         MaintainPrewarm();
     }
 
@@ -598,7 +609,7 @@ public sealed class Worker : BackgroundService
     private void OnGameExit(GameSettings game)
     {
         _log.Info($"{game.Name}: exited");
-        _prewarm?.NoteGameExit();
+        _prewarm?.NoteGameExit(_exits.HeavyWorkNotBefore(game.Name, _settings.Auto.RewarmAfterExitMin));
         _auto?.NoteGameExit(game);
         NoteCoverage(game);
     }

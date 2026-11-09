@@ -123,6 +123,28 @@ public sealed class AutoLearnTests : IDisposable
     }
 
     [Fact]
+    public void LearningStatusDoesNotReturnAfterTheInitialWindowEnds()
+    {
+        Configure(LearnSettings.Default with { Enabled = true, Mode = LearnSettings.GapMode });
+        _rig.Settings = _rig.Settings with
+        {
+            Auto = _rig.Settings.Auto with { TraceCapSeconds = 10, TraceLateWindows = 1, TraceLateIntervalMin = 0, TraceLateWindowSeconds = 30 },
+        };
+        _rig.World.Running = true;
+
+        _tracer.Start(_game);
+        _rig.World.Now += TimeSpan.FromSeconds(10);
+        _tracer.Step(); // 첫 창과 학습을 종료
+        _tracer.Step(); // 추가 창 시작
+        Assert.Equal(AutoStage.Tracing, _rig.Status.Get("foo")!.Stage);
+
+        _rig.World.Now += AutoLearn.StatusEvery;
+        _tracer.Step();
+
+        Assert.Equal(AutoStage.Tracing, _rig.Status.Get("foo")!.Stage);
+    }
+
+    [Fact]
     public void GameExitStopsBothSavesTheTraceAndLogsTheLearnSummary()
     {
         _trace.Records.Add(TraceRecord.Start(DateTime.UtcNow, 100, 1, "foo.exe"));

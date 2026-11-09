@@ -243,6 +243,8 @@ public sealed class AutoMode
 
     public void SetDiskReadCoordinator(DiskReadCoordinator coordinator) => _relocator.SetDiskReadCoordinator(coordinator);
 
+    public void SetGameExitTracker(GameExitTracker tracker) => _relocator.SetGameExitTracker(tracker);
+
     /// 예열 유지 같은 다른 예열 작업이 함께 쓰는 취소 신호.
     public CancellationToken WarmToken => _relocator.WarmToken;
 

@@ -1,5 +1,6 @@
 using AsterCache.Core.Settings;
 using AsterCache.Service;
+using AsterCache.Windows;
 using Xunit;
 
 namespace AsterCache.Tests.Service;
@@ -14,11 +15,15 @@ public sealed class StartStreamGateTests
     private long _sec; // 시계 (초): 디스패처 시각과 관측 시각이 같은 값을 씀
     private IReadOnlyList<(int Pid, string Exe)> _processes = [];
 
-    private GameDispatcher Dispatcher() => new([Game], _streamer, _log, () => DateTimeOffset.UnixEpoch.AddSeconds(_sec), new DispatchEnv
-    {
-        OtherProcesses = (g, s) => DispatchEnv.RegisteredOthers(g, _processes, s.Pid),
-        Age = s => TimeSpan.FromSeconds(_sec - s.Timestamp),
-    });
+    private GameDispatcher Dispatcher(Func<GameSettings, bool?>? warm = null, Func<GameSettings, DateTimeOffset?>? recentWarm = null, int recentWarmMinutes = 10) =>
+        new([Game], _streamer, _log, () => DateTimeOffset.UnixEpoch.AddSeconds(_sec), new DispatchEnv
+        {
+            OtherProcesses = (g, s) => DispatchEnv.RegisteredOthers(g, _processes, s.Pid),
+            Age = s => TimeSpan.FromSeconds(_sec - s.Timestamp),
+            IsWarm = warm ?? (_ => null),
+            RecentWarmProbeAt = recentWarm ?? (_ => null),
+            RecentWarmProbeMinutes = () => recentWarmMinutes,
+        });
 
     private ProcessStart Start(int pid, string exe) => new(pid, exe, _sec);
 
@@ -76,6 +81,78 @@ public sealed class StartStreamGateTests
         Assert.True(d.Handle(Start(6, "cod.exe")));
 
         Assert.Equal(2, _streamer.Calls.Count);
+    }
+
+    [Fact]
+    public void ProbeRefusalSkipsTheStartStreamWhenTheRecentProbeWasWarm()
+    {
+        GameDispatcher d = Dispatcher(recentWarm: _ => DateTimeOffset.UnixEpoch.AddSeconds(-37));
+
+        Assert.False(d.Handle(Start(5, "cod.exe")));
+
+        Assert.Empty(_streamer.Calls);
+        Assert.Contains(_log.Lines, l => l.Contains("start stream skipped (recent probe warm 37s ago)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ProbeRefusalWithoutARecentRecordStartsTheStream()
+    {
+        GameDispatcher d = Dispatcher();
+
+        Assert.True(d.Handle(Start(5, "cod.exe")));
+
+        Assert.Single(_streamer.Calls);
+    }
+
+    [Fact]
+    public void ProbeRefusalWithAnExpiredWarmRecordStartsTheStream()
+    {
+        GameDispatcher d = Dispatcher(recentWarm: _ => DateTimeOffset.UnixEpoch.AddMinutes(-11));
+
+        Assert.True(d.Handle(Start(5, "cod.exe")));
+
+        Assert.Single(_streamer.Calls);
+    }
+
+    [Fact]
+    public void ActualColdProbeReplacesTheRecentWarmRecordAndStartsTheStream()
+    {
+        bool cold = false;
+        var prewarm = new Prewarmer([Game], new FakeStreamer(), new PrewarmEnv
+        {
+            AvailableRamMib = () => 16000,
+            GameRunning = _ => false,
+            ZoneBytes = _ => 1L << 20,
+            ProbeReadMs = _ => cold ? new ProbeResult(8, 8, 5.0) : new ProbeResult(8, 0, 0.3),
+            TraceExists = _ => true,
+        }, _log);
+        GameDispatcher d = Dispatcher(prewarm.AlreadyWarm, prewarm.RecentWarmProbeAt);
+
+        Assert.True(prewarm.AlreadyWarm(Game));
+        cold = true;
+        Assert.False(prewarm.AlreadyWarm(Game));
+        Assert.True(d.Handle(Start(5, "cod.exe")));
+
+        Assert.Single(_streamer.Calls);
+    }
+
+    [Fact]
+    public void ActualWarmProbeStillSkipsTheStartStream()
+    {
+        var prewarm = new Prewarmer([Game], new FakeStreamer(), new PrewarmEnv
+        {
+            AvailableRamMib = () => 16000,
+            GameRunning = _ => false,
+            ZoneBytes = _ => 1L << 20,
+            ProbeReadMs = _ => new ProbeResult(8, 0, 0.3),
+            TraceExists = _ => true,
+        }, _log);
+        GameDispatcher d = Dispatcher(prewarm.AlreadyWarm, prewarm.RecentWarmProbeAt);
+
+        Assert.False(d.Handle(Start(5, "cod.exe")));
+
+        Assert.Empty(_streamer.Calls);
+        Assert.Contains(_log.Lines, l => l.Contains("start stream skipped (already warm)", StringComparison.Ordinal));
     }
 
     [Fact]

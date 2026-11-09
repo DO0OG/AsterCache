@@ -22,14 +22,11 @@ internal sealed class AutoToast : Window
         ShowActivated = false;
         Topmost = true;
         SystemDecorations = SystemDecorations.None;
-        Content = new Border
-        {
-            Background = new SolidColorBrush(Color.Parse("#FF2B2B33")),
-            BorderBrush = Brushes.SteelBlue,
-            BorderThickness = new Thickness(1),
-            Padding = new Thickness(12),
-            Child = new TextBlock { Text = text, Foreground = Brushes.White, TextWrapping = TextWrapping.Wrap, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center },
-        };
+        var body = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, MaxLines = 3, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
+        var card = new Border { BorderBrush = Look.Brush(StatusTone.Busy), BorderThickness = new Thickness(1, 1, 1, 1), Padding = new Thickness(12), CornerRadius = new CornerRadius(6), Child = body };
+        Look.Themed(card, Border.BackgroundProperty, "SystemControlBackgroundAltHighBrush"); // 다크·라이트를 따르는 테마 색
+        Look.Themed(body, TextBlock.ForegroundProperty, "SystemControlForegroundBaseHighBrush");
+        Content = card;
         PointerPressed += (_, _) =>
         {
             onClick();

@@ -6,6 +6,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
+using Avalonia.Styling;
 using Avalonia.Themes.Fluent;
 using Avalonia.Threading;
 
@@ -30,6 +31,9 @@ internal sealed class App : Application
     /// --smoke --click <apply-auto|apply-language|apply-watcher>: 해당 버튼의 처리 경로를 실행하고 종료 코드로 결과를 알립니다 (0 정상, 3 실패).
     public static string? SmokeClick { get; set; }
 
+    /// --theme light|dark: 화면 테마를 OS 설정 대신 강제합니다 (그림 찍기용). 없으면 OS 설정을 따릅니다.
+    public static string? ThemeOverride { get; set; }
+
     private static readonly TimeSpan DoubleClick = TimeSpan.FromMilliseconds(500);
 
     private TrayIcon? _icon;
@@ -43,8 +47,19 @@ internal sealed class App : Application
     private readonly Dictionary<string, DateOnly> _prewarmToast = new(StringComparer.OrdinalIgnoreCase); // 게임별로 예열 완료를 알린 날 (게임당 하루 한 번)
     private readonly List<AutoToast> _toasts = [];
     private string _lastNotice = string.Empty;
+    private DateTimeOffset _lastNoticeAt = DateTimeOffset.MinValue;
+    private StatusIcons? _statusIcons;
+    private StatusTone? _tone;
+    private string _menuKey = string.Empty;
+    private readonly List<NativeMenuItem> _statusItems = [];
+    private readonly List<(string Name, NativeMenuItem Item)> _gameItems = [];
 
-    public override void Initialize() => Styles.Add(new FluentTheme());
+    public override void Initialize()
+    {
+        Styles.Add(new FluentTheme());
+        Styles.Add(Look.AppStyles());
+        RequestedThemeVariant = ThemeOverride switch { "light" => ThemeVariant.Light, "dark" => ThemeVariant.Dark, _ => ThemeVariant.Default };
+    }
 
     public override void OnFrameworkInitializationCompleted()
     {
@@ -52,7 +67,8 @@ internal sealed class App : Application
         {
             _desktop = desktop;
             Model.Refresh();
-            _icon = new TrayIcon { Icon = LoadIcon("aster-tray.png") ?? new WindowIcon(MakeIcon()), IsVisible = true };
+            _statusIcons = new StatusIcons(LoadBitmap("aster-tray.png") ?? MakeIcon());
+            _icon = new TrayIcon { IsVisible = true }; // 아이콘은 Rebuild 가 상태 색 점을 합성해 지정
             Rebuild();
             _icon.Clicked += (_, _) => // 트레이 아이콘 더블클릭 (Avalonia 는 클릭만 알려 주므로 시간으로 판정)
             {
@@ -104,6 +120,7 @@ internal sealed class App : Application
                             using var shot = new RenderTargetBitmap(new PixelSize(1100, 720), new Vector(96, 96));
                             shot.Render(_main);
                             shot.Save(ScreenshotPath);
+                            _statusIcons.SaveSheet(Path.ChangeExtension(ScreenshotPath, null) + "-icons.png");
                             Log.Info("smoke: screenshot saved");
                         }
 
@@ -141,9 +158,43 @@ internal sealed class App : Application
 
     private void Rebuild()
     {
-        _icon!.ToolTipText = (Model.LastMessage.Length == 0 ? Model.StatusText : Model.StatusText + "\n" + Model.LastMessage)
-            + (_lastNotice.Length == 0 ? string.Empty : "\n" + _lastNotice);
-        _icon.Menu = BuildMenu();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        TraySummary summary = TrayStatus.Summarize(Model.Service, Model.Games, Manage.Auto, Model.HasProblem);
+        string message = TrayStatus.Recent(Model.LastMessage, Model.LastMessageAt, now);
+        string notice = TrayStatus.Recent(_lastNotice, _lastNoticeAt, now);
+        _icon!.ToolTipText = TrayStatus.Tip(summary, message, notice);
+        if (_tone != summary.Tone)
+        {
+            _tone = summary.Tone;
+            _icon.Icon = _statusIcons!.Icon(summary.Tone); // 상태가 바뀔 때만 교체 (상태별 아이콘은 캐시)
+        }
+
+        string[] lines = [.. new[] { Model.StatusText, summary.Counts, message }.Where(l => l.Length > 0)];
+        string key = $"{Model.Service}|{Model.PendingVersion}|{lines.Length}|{string.Join(",", Model.Games)}";
+        if (key == _menuKey && _icon.Menu is not null)
+        {
+            // 항목 구성이 같으면 메뉴를 새로 만들지 않고 글만 바꿈 (열려 있는 메뉴가 5 초마다 교체되지 않게)
+            for (int i = 0; i < lines.Length; i++)
+            {
+                _statusItems[i].Header = lines[i];
+            }
+
+            foreach ((string name, NativeMenuItem item) in _gameItems)
+            {
+                item.Header = GameHeader(name);
+            }
+
+            return;
+        }
+
+        _menuKey = key;
+        _icon.Menu = BuildMenu(lines);
+    }
+
+    private string GameHeader(string name)
+    {
+        (string stage, string prewarm) = Manage.GameBrief(name);
+        return TrayStatus.GameItem(Model.DisplayName(name), stage, prewarm);
     }
 
     /// 트레이 시작 이후 auto_status.json 에 새로 생긴 발견·재배치를 알림 창으로 한 번씩 띄웁니다.
@@ -174,6 +225,7 @@ internal sealed class App : Application
     private void Toast(string text)
     {
         _lastNotice = text;
+        _lastNoticeAt = DateTimeOffset.UtcNow;
         var toast = new AutoToast(text, _toasts.Count, ShowMain);
         _toasts.Add(toast);
         toast.Closed += (_, _) => _toasts.Remove(toast);
@@ -191,16 +243,20 @@ internal sealed class App : Application
     private void InBackground(Func<ActionResult> work) =>
         Task.Run(work).ContinueWith(_ => Dispatcher.UIThread.Post(() => Update(Model.Refresh)), TaskScheduler.Default);
 
-    private NativeMenu BuildMenu()
+    private NativeMenu BuildMenu(string[] status)
     {
         ServiceState state = Model.Service;
+        _statusItems.Clear();
+        _gameItems.Clear();
         var games = new NativeMenu();
         foreach (string name in Model.Games)
         {
             var one = new NativeMenu();
             one.Items.Add(Item(L.T("Menu_PrewarmStream"), () => InBackground(() => Model.StreamNow(name))));
-            one.Items.Add(Item(L.T("Btn_Remove"), () => Update(() => Model.RemoveGame(name))));
-            games.Items.Add(new NativeMenuItem(Model.DisplayName(name)) { Menu = one });
+            one.Items.Add(Item(L.T("Btn_Remove"), () => ConfirmRemove(name)));
+            var game = new NativeMenuItem(GameHeader(name)) { Menu = one };
+            _gameItems.Add((name, game));
+            games.Items.Add(game);
         }
 
         if (Model.Games.Count == 0)
@@ -212,12 +268,24 @@ internal sealed class App : Application
         games.Items.Add(Item(L.T("Menu_Register"), () => new RegisterWindow(Model, () => Update(Model.Refresh)).Show()));
 
         var menu = new NativeMenu();
-        menu.Items.Add(new NativeMenuItem(Model.StatusText) { IsEnabled = false });
-        menu.Items.Add(Item(L.T("Menu_Open"), ShowMain));
+        foreach (string line in status)
+        {
+            var item = new NativeMenuItem(line) { IsEnabled = false };
+            _statusItems.Add(item);
+            menu.Items.Add(item);
+        }
+
         menu.Items.Add(new NativeMenuItemSeparator());
+        menu.Items.Add(Item(L.T("Menu_Open"), ShowMain));
+        menu.Items.Add(Item(L.T("Menu_Settings"), () =>
+        {
+            ShowMain();
+            _main?.SelectTab(2);
+        }));
         menu.Items.Add(new NativeMenuItem(L.T("Menu_Games")) { Menu = games });
-        menu.Items.Add(Item(L.T("Btn_ServiceStart"), () => InBackground(Model.StartService), state == ServiceState.Stopped));
-        menu.Items.Add(Item(L.T("Btn_ServiceStop"), () => InBackground(Model.StopService), state == ServiceState.Running));
+        (string serviceKey, bool serviceEnabled) = TrayStatus.ServiceAction(state);
+        menu.Items.Add(Item(L.T(serviceKey), () => InBackground(state == ServiceState.Running ? Model.StopService : Model.StartService), serviceEnabled));
+        menu.Items.Add(new NativeMenuItemSeparator());
         menu.Items.Add(Item(L.T("Menu_OpenLogs"), () => Update(() => Model.OpenLogs())));
         menu.Items.Add(Item(L.T("Menu_CheckUpdate"), CheckUpdate));
         if (Model.PendingVersion is not null)
@@ -228,6 +296,16 @@ internal sealed class App : Application
         menu.Items.Add(new NativeMenuItemSeparator());
         menu.Items.Add(Item(L.T("Menu_Exit"), Quit));
         return menu;
+    }
+
+    /// 메뉴에서 게임 제거: 메인 창과 같은 확인 대화상자를 거칩니다.
+    private async void ConfirmRemove(string name)
+    {
+        ShowMain();
+        if (_main is not null && await ConfirmWindow.Ask(_main, L.T("Confirm_Remove", Model.DisplayName(name))))
+        {
+            Update(() => Model.RemoveGame(name));
+        }
     }
 
     /// 진행 중인 트레이스는 저장하도록 기다린 뒤 (최대 10 초) 끝냅니다.
@@ -269,6 +347,21 @@ internal sealed class App : Application
         var item = new NativeMenuItem(header) { IsEnabled = enabled };
         item.Click += (_, _) => click();
         return item;
+    }
+
+    /// 포함 자원 Assets\<파일> 의 그림, 읽지 못하면 null.
+    private static Bitmap? LoadBitmap(string file)
+    {
+        try
+        {
+            using Stream s = AssetLoader.Open(new Uri("avares://AsterCache.Tray/Assets/" + file));
+            return new Bitmap(s);
+        }
+        catch (Exception e) when (e is IOException or FileNotFoundException or ArgumentException or InvalidOperationException)
+        {
+            Log?.Warn($"image {file} not loaded: {e.GetType().Name}");
+            return null;
+        }
     }
 
     /// 포함 자원 Assets\<파일> 의 아이콘, 읽지 못하면 null (트레이는 MakeIcon 으로 대신함).

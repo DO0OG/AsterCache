@@ -92,8 +92,7 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
         var finished = new List<string>();
         foreach ((string name, AutoGame g) in status.Games)
         {
-            string detail = g.Detail ?? string.Empty;
-            string now = Prewarming().IsMatch(detail) ? "warming" : PrewarmTag().IsMatch(detail) ? "warm" : "cold";
+            string now = PrewarmPhase(g);
             if (seen.TryGetValue(name, out string? before) && before != "warm" && now == "warm" && !(notified.TryGetValue(name, out DateOnly day) && day == today))
             {
                 finished.Add(name);
@@ -161,12 +160,22 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
         Reasons.Where(r => (detail ?? string.Empty).Contains(r.Needle, StringComparison.Ordinal)).Select(r => ((string Needle, string Key)?)r).FirstOrDefault();
 
     /// 단계 이름 뒤에 붙일 부가 설명: 학습 중이면 선행 읽기 양 ("<n> MiB read ahead" 를 풀어 보임), detail 에 프로필·프리페치 재배치 표시가 있으면 "재배치됨(프로필)"·"재배치됨(프리페치)", 예열 표시가 있으면 "예열됨" (전체 폴더·엔진 프로필은 그 이름까지). 없으면 null.
-    public static string? StageExtra(AutoGame g, string lang, DateTimeOffset? boot = null)
+    public static string? StageExtra(AutoGame g, string lang, DateTimeOffset? boot = null) =>
+        StageParts(g, lang, boot) is { Count: > 0 } parts ? string.Join(", ", parts) : null;
+
+    /// 단계 열(고급)에 보일 짧은 글: 단계 이름 + 첫 부가 설명 하나 (나머지 개수는 "+N"). 전체 문장은 StageText 로 툴팁에 둡니다.
+    public static string StageShort(AutoGame g, string lang, DateTimeOffset? boot = null) =>
+        StageParts(g, lang, boot) is { Count: > 0 } parts ? $"{StageName(g.Stage, lang)} · {parts[0]}{(parts.Count > 1 ? $" +{parts.Count - 1}" : string.Empty)}" : StageName(g.Stage, lang);
+
+    /// detail 의 예열 표시: "warming" (예열 중), "warm" (예열됨), "cold" (표시 없음).
+    public static string PrewarmPhase(AutoGame g) => Prewarming().IsMatch(g.Detail ?? string.Empty) ? "warming" : PrewarmTag().IsMatch(g.Detail ?? string.Empty) ? "warm" : "cold";
+
+    private static List<string> StageParts(AutoGame g, string lang, DateTimeOffset? boot)
     {
         if (g.Stage == "learning")
         {
             Match m = ReadAhead().Match(g.Detail ?? string.Empty);
-            return m.Success ? L.Get(lang, "Stage_ReadAhead", m.Groups[1].Value) : g.Detail;
+            return m.Success ? [L.Get(lang, "Stage_ReadAhead", m.Groups[1].Value)] : string.IsNullOrEmpty(g.Detail) ? [] : [g.Detail];
         }
 
         var parts = new List<string>();
@@ -217,7 +226,7 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
             parts.Add(L.Get(lang, "Stage_CoveragePercent", cover.ToString(CultureInfo.InvariantCulture)));
         }
 
-        return parts.Count == 0 ? null : string.Join(", ", parts);
+        return parts;
     }
 
     /// 기본 화면에 남길 보류·실패 사유: 대기·실패·건너뜀의 사유 (모르는 사유는 실패·건너뜀에서만 원문 그대로)와 안티치트 트레이스 불가. 없으면 null.

@@ -71,6 +71,12 @@ public sealed class TrayViewModel(
 
     public string LastMessage { get; private set; } = string.Empty;
 
+    /// LastMessage 를 남긴 시각 (툴팁은 오래된 메시지를 빼려고 씁니다).
+    public DateTimeOffset LastMessageAt { get; private set; } = DateTimeOffset.MinValue;
+
+    /// 설정을 못 읽었거나 서비스 재설치가 필요함 (작업표시줄 상태를 주의로).
+    public bool HasProblem => _configError is not null || ServiceReinstallNeeded;
+
     public string StatusText { get; private set; } = string.Empty;
 
     /// 서비스 상태와 설정을 다시 읽어 StatusText 를 만듭니다.
@@ -310,6 +316,7 @@ public sealed class TrayViewModel(
     private ActionResult Report(bool ok, string message)
     {
         LastMessage = message;
+        LastMessageAt = DateTimeOffset.UtcNow;
         log.Info(message);
         return new ActionResult(ok, message);
     }

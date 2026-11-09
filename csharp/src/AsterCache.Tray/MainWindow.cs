@@ -105,7 +105,7 @@ internal sealed class MainWindow : Window
         Opened += (_, _) => Reload();
 
         var driveSide = new DockPanel { Margin = new Thickness(8, 8, 0, 0) };
-        var driveTitle = new TextBlock { Text = L.T("Pane_Drives"), FontWeight = FontWeight.Bold };
+        var driveTitle = new TextBlock { Text = L.T("Pane_Drives"), Classes = { "title" } };
         DockPanel.SetDock(driveTitle, Dock.Top);
         driveSide.Children.Add(driveTitle);
         driveSide.Children.Add(_drives);
@@ -177,7 +177,7 @@ internal sealed class MainWindow : Window
 
     private Control Banner(Action quit)
     {
-        var relaunch = new Button { Content = L.T("Btn_Relaunch"), Margin = new Thickness(12, 0, 0, 0) };
+        var relaunch = new Button { Content = L.T("Btn_Relaunch"), Margin = new Thickness(12, 0, 0, 0), Foreground = Brushes.Black }; // 노랑 배너 위라 다크 테마에서도 글자는 검정
         relaunch.Click += async (_, _) =>
         {
             await StopTraceAsync();
@@ -190,7 +190,7 @@ internal sealed class MainWindow : Window
         };
         var banner = new Border
         {
-            Background = Brushes.Gold,
+            Background = Look.Brush(StatusTone.Warn),
             Padding = new Thickness(10, 6),
             IsVisible = !_manage.IsAdmin,
             Child = new StackPanel
@@ -205,10 +205,10 @@ internal sealed class MainWindow : Window
         };
         var warning = new Border
         {
-            Background = Brushes.OrangeRed,
+            Background = Look.Brush(StatusTone.Warn),
             Padding = new Thickness(10, 4),
             IsVisible = _manage.ElevatedExeWarning is not null && App.ScreenshotPath is null, // 그림 찍기 (예시 모드) 에서는 숨김
-            Child = new TextBlock { Text = _manage.ElevatedExeWarning, Foreground = Brushes.White, TextWrapping = TextWrapping.Wrap },
+            Child = new TextBlock { Text = _manage.ElevatedExeWarning, Foreground = Brushes.Black, TextWrapping = TextWrapping.Wrap },
         };
         return new StackPanel { Children = { banner, warning } };
     }
@@ -242,7 +242,8 @@ internal sealed class MainWindow : Window
     {
         _games.ItemTemplate = new FuncDataTemplate<GameRow>((row, _) => row is null ? new Panel() : Cells(
             [row.DisplayName.Length == 0 ? row.Name : row.DisplayName, row.State, row.PrewarmState, row.Reason, row.AntiCheat, row.Exe, row.Origin, L.T(row.HasPlan ? "Cell_Yes" : "Cell_No"), L.T(row.HasTrace ? "Cell_Yes" : "Cell_No"), row.Verdict, row.Prewarm, row.Source, row.Stage, row.Gate],
-            tips: [row.Name, null, null, null, null, null, null, null, null, row.VerdictRaw.Length == 0 ? null : row.VerdictRaw, row.PrewarmFull, null, row.StageRaw.Length == 0 ? null : row.StageRaw, null], advanced: _advanced.IsChecked == true));
+            tips: [row.Name, null, null, null, null, null, null, null, null, row.VerdictRaw.Length == 0 ? null : row.VerdictRaw, row.PrewarmFull, null, row.StageRaw.Length == 0 ? row.StageFull : row.StageFull + "\n" + row.StageRaw, null],
+            tones: [null, row.StateTone, row.PrewarmTone], advanced: _advanced.IsChecked == true));
         _games.Styles.Add(new Style(x => x.OfType<ListBoxItem>())
         {
             Setters = { new Setter(ContentControl.HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch), new Setter(TemplatedControl.PaddingProperty, RowPadding) },
@@ -321,9 +322,9 @@ internal sealed class MainWindow : Window
             Spacing = 10,
             Children =
             {
-                new TextBlock { Text = L.T("Set_Auto"), FontWeight = FontWeight.Bold },
+                new TextBlock { Text = L.T("Set_Auto"), Classes = { "title" } },
                 new TextBlock { Text = L.T("Set_AutoNote"), TextWrapping = TextWrapping.Wrap },
-                new WrapPanel { Children = { _autoEnabled, _autoDiscover, _autoTrace, _autoRelocate } },
+                new WrapPanel { ItemSpacing = 12, Children = { _autoEnabled, _autoDiscover, _autoTrace, _autoRelocate } },
                 new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { new TextBlock { Text = L.T("Auto_Prewarm"), VerticalAlignment = VerticalAlignment.Center }, _autoPrewarm } },
                 new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { new TextBlock { Text = L.T("Auto_Ignore"), VerticalAlignment = VerticalAlignment.Center }, _autoIgnore } },
                 new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { new TextBlock { Text = L.T("Auto_ZoneLimit"), VerticalAlignment = VerticalAlignment.Center }, _zoneLimit } },
@@ -332,18 +333,18 @@ internal sealed class MainWindow : Window
                 new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { _tierEnabled, new TextBlock { Text = L.T("Auto_SsdTierBudget"), VerticalAlignment = VerticalAlignment.Center }, _tierBudget } },
                 new TextBlock { Text = L.T("Set_PinNote"), TextWrapping = TextWrapping.Wrap },
                 applyAuto,
-                new TextBlock { Text = L.T("Set_Service"), FontWeight = FontWeight.Bold },
+                new TextBlock { Text = L.T("Set_Service"), Classes = { "title" } },
                 service,
-                new TextBlock { Text = L.T("Set_Watcher"), FontWeight = FontWeight.Bold },
+                new TextBlock { Text = L.T("Set_Watcher"), Classes = { "title" } },
                 new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { _watcher, apply } },
                 new TextBlock { Text = L.T("Set_WatcherPoll") + Environment.NewLine + L.T("Set_WatcherEtw"), TextWrapping = TextWrapping.Wrap },
-                new TextBlock { Text = L.T("Set_PrewarmDefaults"), FontWeight = FontWeight.Bold },
+                new TextBlock { Text = L.T("Set_PrewarmDefaults"), Classes = { "title" } },
                 new TextBlock { Text = ManageViewModel.DescribePrewarm(PrewarmSettings.Default), TextWrapping = TextWrapping.Wrap },
-                new TextBlock { Text = L.T("Set_Language"), FontWeight = FontWeight.Bold },
+                new TextBlock { Text = L.T("Set_Language"), Classes = { "title" } },
                 new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { _language, applyLanguage } },
-                new TextBlock { Text = L.T("Set_Folders"), FontWeight = FontWeight.Bold },
+                new TextBlock { Text = L.T("Set_Folders"), Classes = { "title" } },
                 folders,
-                new TextBlock { Text = L.T("Set_Versions"), FontWeight = FontWeight.Bold },
+                new TextBlock { Text = L.T("Set_Versions"), Classes = { "title" } },
                 _versions,
             },
         };
@@ -353,9 +354,9 @@ internal sealed class MainWindow : Window
     {
         var refresh = Btn(L.T("Btn_Refresh"), () => _ = RunAsync(L.T("Btn_Refresh"), () => new ActionResult(true, L.T("Btn_Refresh"))));
         var grid = new Grid { RowDefinitions = new RowDefinitions("Auto,*,Auto,*") };
-        Place(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, Children = { refresh, new TextBlock { Text = L.T("Log_Service"), FontWeight = FontWeight.Bold, VerticalAlignment = VerticalAlignment.Center } } }, grid, 0, true);
+        Place(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, Children = { refresh, new TextBlock { Text = L.T("Log_Service"), Classes = { "title" }, VerticalAlignment = VerticalAlignment.Center } } }, grid, 0, true);
         Place(_serviceLog, grid, 1, true);
-        var trayTitle = new TextBlock { Text = L.T("Log_Tray"), FontWeight = FontWeight.Bold, Margin = new Thickness(0, 6, 0, 0) };
+        var trayTitle = new TextBlock { Text = L.T("Log_Tray"), Classes = { "title" }, Margin = new Thickness(0, 6, 0, 0) };
         Place(trayTitle, grid, 2, true);
         Place(_trayLog, grid, 3, true);
         return grid;
@@ -622,14 +623,14 @@ internal sealed class MainWindow : Window
 
     private static readonly Col[] GameCols =
     [
-        new("name", 0, 170, 2), new(null, 96, 0, 2), new(null, 150, 0, 3), new(null, 0, 0, 3), new(null, 64, 0, 1),
+        new("name", 0, 170, 2), new(null, 120, 0, 2), new(null, 168, 0, 3), new(null, 0, 0, 3), new(null, 64, 0, 1),
         new("exe", 0, 104, 1, true), new("origin", 0, 112, 3, true), new(null, 34, 0, 1, true), new(null, 56, 0, 1, true),
         new(null, 64, 0, 2, true), new("prewarm", 0, 94, 3, true), new(null, 56, 0, 1, true), new("stage", 0, 200, 3, true), new(null, 0, 220, 2, true),
     ];
 
     private static readonly Thickness RowPadding = new(6, 3);
 
-    private static Grid Cells(IReadOnlyList<string> text, FontWeight? weight = null, IReadOnlyList<string?>? tips = null, bool advanced = false)
+    private static Grid Cells(IReadOnlyList<string> text, FontWeight? weight = null, IReadOnlyList<string?>? tips = null, IReadOnlyList<StatusTone?>? tones = null, bool advanced = false)
     {
         var g = new Grid();
         foreach (Col c in GameCols.Where(c => advanced || !c.Advanced))
@@ -651,7 +652,7 @@ internal sealed class MainWindow : Window
             {
                 Text = text[i],
                 FontWeight = weight ?? FontWeight.Normal,
-                FontSize = 12,
+                FontSize = Look.Small,
                 VerticalAlignment = VerticalAlignment.Center,
                 TextWrapping = c.Lines > 1 ? TextWrapping.Wrap : TextWrapping.NoWrap,
                 MaxLines = c.Lines,
@@ -664,8 +665,9 @@ internal sealed class MainWindow : Window
             }
 
             ToolTip.SetTip(t, tips?[i] ?? text[i]);
-            Grid.SetColumn(t, at++);
-            g.Children.Add(t);
+            Control cell = tones is not null && i < tones.Count && tones[i] is { } tone ? Look.Chip(tone, t) : t; // 상태 칩: 색 점 + 글자
+            Grid.SetColumn(cell, at++);
+            g.Children.Add(cell);
         }
 
         return g;

@@ -19,7 +19,7 @@ internal sealed class RegisterWindow : Window
         SizeToContent = SizeToContent.Height;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         string placeholder = L.T("Reg_NamePlaceholder");
-        var panel = new StackPanel { Margin = new Avalonia.Thickness(12), Spacing = 6 };
+        var panel = new StackPanel { Margin = new Avalonia.Thickness(16), Spacing = 4 };
         AddField(panel, "name", L.T("Reg_Name"), prefill?.Name ?? string.Empty);
         AddField(panel, "exe", L.T("Reg_Exe"), string.Join(", ", prefill?.ExeNames ?? []));
         AddField(panel, "origin", L.T("Reg_Origin"), prefill?.OriginRoot ?? string.Empty);
@@ -55,7 +55,7 @@ internal sealed class RegisterWindow : Window
 
     private void AddField(StackPanel panel, string key, string label, string initial)
     {
-        panel.Children.Add(new TextBlock { Text = label });
+        panel.Children.Add(new TextBlock { Text = label, Classes = { "label" }, Margin = new Avalonia.Thickness(0, 6, 0, 0) });
         var box = new TextBox { Text = initial };
         _fields[key] = box;
         panel.Children.Add(box);

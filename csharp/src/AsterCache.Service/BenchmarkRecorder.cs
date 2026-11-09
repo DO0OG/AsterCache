@@ -20,6 +20,13 @@ public sealed class BenchmarkRecorder
     private readonly List<LoadSample> _samples;
     private readonly bool _persist; // false 면 기존 파일을 읽거나 옮기지 못한 상태라 파일을 덮지 않습니다
 
+    private readonly List<(LoadSample Sample, DateTimeOffset At)> _gateSamples = []; // 이번 실행에서 기록한 표본과 시각 (판정용, 파일에는 쓰지 않음)
+
+    public Action<string, GateResult>? GateEvaluated { get; set; }
+
+    /// 판정에 쓸 표본의 하한 시각 (마지막 모드 변경 시각): 그 이전 표본은 판정에서 빼서, 되돌린 직후 옛 표본으로 다시 강등되지 않게 합니다. null 이면 제한 없음.
+    public Func<DateTimeOffset?>? GateSince { get; set; }
+
     public BenchmarkRecorder(string path, ILog log, DateTimeOffset? serviceStart = null)
     {
         _path = path;
@@ -39,34 +46,74 @@ public sealed class BenchmarkRecorder
     };
 
     /// 경계 감시 한 회차가 끝날 때 한 건. probeReadyMs 는 도달했을 때만 값이 있고, 미도달이나 측정 불가면 null.
-    public void Record(string game, DateTimeOffset gameStart, long? probeReadyMs)
+    public void Record(string game, DateTimeOffset gameStart, long? probeReadyMs, Arm arm = Arm.Baseline)
     {
         // 시나리오는 아직 알 수 없으므로 S0 로 고정하지 않고 Unknown 으로 남깁니다
-        var sample = new LoadSample(game, Scenario.Unknown, Arm.Baseline, BucketOf(gameStart - _serviceStart), null, ProbeReadyMs: probeReadyMs, ElapsedBasis: "service_uptime");
+        Record(new LoadSample(game, Scenario.Unknown, arm, BucketOf(gameStart - _serviceStart), null, ProbeReadyMs: probeReadyMs, ElapsedBasis: "service_uptime"));
+    }
+
+    public void Record(LoadSample sample)
+    {
+        GateResult? rejected;
         lock (_lock)
         {
             _samples.Add(sample);
+            _gateSamples.Add((sample, DateTimeOffset.UtcNow));
+            if (_gateSamples.Count > MaxSamples)
+            {
+                _gateSamples.RemoveRange(0, _gateSamples.Count - MaxSamples);
+            }
+
             if (_samples.Count > MaxSamples)
             {
                 _samples.RemoveRange(0, _samples.Count - MaxSamples);
             }
 
-            if (!_persist)
+            if (_persist)
             {
-                return; // 기존 파일을 읽지도 옮기지도 못했으면 덮지 않습니다 (이번 실행은 메모리에만 둡니다)
+                try
+                {
+                    string tmp = _path + ".tmp";
+                    DurableFile.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(MetricsJson.DumpSamples(_samples)));
+                    File.Move(tmp, _path, true);
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    _log.Warn("benchmark samples not written: " + e.GetType().Name);
+                }
             }
 
-            try
+            rejected = EvaluateReadyLocked(sample.GameKey);
+        }
+
+        if (rejected is not null)
+        {
+            GateEvaluated?.Invoke(sample.GameKey, rejected);
+        }
+    }
+
+    // 주의: 실제 준비 시각 관측이 없어 (TReadyMs·GameBuild 가 null) 현재 서비스 표본으로는 판정이 생기지 않습니다. 준비 시각 관측이 붙은 뒤에야 동작합니다.
+    private GateResult? EvaluateReadyLocked(string game)
+    {
+        DateTimeOffset? since = GateSince?.Invoke();
+        foreach (IGrouping<string, LoadSample> build in _gateSamples.Where(g => g.Sample.GameKey == game && g.Sample.GameBuild is not null && (since is null || g.At > since)).Select(g => g.Sample).GroupBy(s => s.GameBuild!, StringComparer.Ordinal))
+        {
+            LoadSample[] samples = [.. build];
+            LoadSample[] baseline = [.. samples.Where(s => s.Arm == Arm.Baseline && s.TReadyMs is >= 0)];
+            LoadSample[] candidate = [.. samples.Where(s => s.Arm == Arm.Candidate && s.TReadyMs is >= 0)];
+            if (baseline.Length < ResultGate.MinSamples || candidate.Length < ResultGate.MinSamples)
             {
-                string tmp = _path + ".tmp";
-                DurableFile.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(MetricsJson.DumpSamples(_samples)));
-                File.Move(tmp, _path, true);
+                continue;
             }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+
+            GateResult result = ResultGate.Evaluate(baseline, candidate);
+            if (result.Verdict == ResultGate.Reject)
             {
-                _log.Warn("benchmark samples not written: " + e.GetType().Name);
+                return result;
             }
         }
+
+        return null;
     }
 
     /// 기존 기록을 읽습니다. Persist 가 false 면 읽지 못했거나 깨진 파일을 옮기지 못한 것이라 이번 실행 동안 파일을 덮지 않습니다.

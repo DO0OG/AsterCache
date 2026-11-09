@@ -21,6 +21,8 @@ public sealed class AutoTracer
     private readonly LearnEnv _learn;
     private readonly OrbitShadow _shadow;
     private readonly object _lock = new();
+    private volatile bool _shutdown;
+    private OrbitModel _orbitModel = new();
     private Run? _run;
     private readonly List<Run> _stopped = []; // 상한에 닿아 세션을 멈췄지만 게임이 끝나길 기다리는 기록 (저장 전)
     private readonly HashSet<string> _cheatLogged = new(StringComparer.OrdinalIgnoreCase);
@@ -453,6 +455,12 @@ public sealed class AutoTracer
         TraceNext next;
         lock (_lock)
         {
+            if (_shutdown)
+            {
+                _shutdown = false;
+                _orbitModel = new OrbitModel();
+            }
+
             next = NextTrace(g, _settings().Auto, _env, _status, MinRunBytes);
             done = next.Valid;
             firstRun = !_env.FileExists(RawTracePath(g));
@@ -665,13 +673,17 @@ public sealed class AutoTracer
     /// 서비스 종료: 돌고 있는 세션만 정리합니다 (기록은 버림).
     public void Shutdown()
     {
-        _shadow.Shutdown();
         Run? run;
+        OrbitModel orbitModel;
         lock (_lock)
         {
+            _shutdown = true;
+            orbitModel = _orbitModel;
             (run, _run) = (_run, null);
         }
 
+        _shadow.Shutdown();
+        orbitModel.Dispose();
         run?.Session.Dispose();
         run?.Learn?.Dispose();
         FinishStopped(true);
@@ -791,6 +803,17 @@ public sealed class AutoTracer
             else
             {
                 SaveVolatile(g, marks);
+                if (run.Number > 1 && TraceBlocker(g) is null)
+                {
+                    lock (_lock)
+                    {
+                        if (!_shutdown)
+                        {
+                            _orbitModel.Schedule(g, _log, MinRunBytes); // 새 회차 병합 뒤 에피소드를 낮은 우선순위로 갱신
+                        }
+                    }
+                }
+
                 if (replanGeneration is { } generation)
                 {
                     _shadow.Schedule(g.Name, canonical, TraceBlocker(g), generation); // 병합 뒤 메모리의 이번 회차 읽기로 그림자 계획 (트레이스 루프 스레드, 계산은 낮은 우선순위 별도 스레드)

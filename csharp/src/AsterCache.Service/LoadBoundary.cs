@@ -1,4 +1,5 @@
 using AsterCache.Core.Logging;
+using AsterCache.Core.Metrics;
 using AsterCache.Core.Prefetch;
 using AsterCache.Core.Settings;
 using AsterCache.Core.Trace;
@@ -17,6 +18,8 @@ public static class LoadBoundaryWatch
 
     /// 게임 시작 때 경계 감시 결과를 남기는 기록기 (Program 이 canApply 일 때 넣음). 비어 있으면 아무것도 쓰지 않습니다.
     public static BenchmarkRecorder? Recorder;
+
+    public static Func<string, bool> OrbitApplied { get; set; } = _ => false;
 
     /// 4 KiB 표본이 이 시간을 넘으면 느린 것으로 봅니다 (1 MiB 용 CacheProbe.ColdThresholdMs 는 이 크기에 너무 느슨함: 4 KiB 캐시 적중은 마이크로초, HDD 는 수 ms).
     public const double SlowMs = 0.5;
@@ -58,9 +61,10 @@ public static class LoadBoundaryWatch
         var used = new List<(string Path, long Offset)>();
         DateTimeOffset start = now();
         BenchmarkRecorder? rec = recorder ?? Recorder;
+        Arm arm = OrbitApplied(game.Name) ? Arm.Candidate : Arm.Baseline;
         int? Done(int? ms) // 끝날 때마다 한 건 기록 (도달은 ProbeReadyMs, 미도달은 null)
         {
-            rec?.Record(game.Name, start, ms);
+            rec?.Record(game.Name, start, ms, arm);
             return ms;
         }
 

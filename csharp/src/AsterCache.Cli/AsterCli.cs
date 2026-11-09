@@ -12,7 +12,8 @@ namespace AsterCache.Cli;
 /// 표준 출력은 Python 과 같이 한 줄 JSON (relayout/prefetch) 입니다.
 public static class AsterCli
 {
-    private sealed record Command(string Name, ArgOption[] Options, Func<ParsedArgs, TextWriter, int> Run, bool Relayout = false);
+    private sealed record Command(string Name, ArgOption[] Options, Func<ParsedArgs, TextWriter, int> Run, bool Relayout = false,
+        Func<IReadOnlyList<string>, TextWriter, TextWriter, int>? RunRaw = null);
 
     private static readonly Command[] Commands =
     [
@@ -27,6 +28,12 @@ public static class AsterCli
         new("launch", LaunchCommand.Options, LaunchCommand.Run),
         new("status", StatusCommand.Options, StatusCommand.Run),
         new("stream-bench", StreamBenchCommand.Options, StreamBenchCommand.Run),
+        new("orbit mode", [], (_, _) => 0, RunRaw: OrbitCommand.Run),
+        new("orbit calibrate", OrbitCommand.CalibrateOptions, OrbitCommand.Calibrate),
+        new("orbit model", OrbitCommand.ModelOptions, OrbitCommand.Model),
+        new("orbit-bench run", OrbitBenchCommand.RunOptions, OrbitBenchCommand.Run),
+        new("orbit-bench rescore", OrbitBenchCommand.RescoreOptions, OrbitBenchCommand.Rescore),
+        new("orbit-bench summarize", OrbitBenchCommand.SummarizeOptions, OrbitBenchCommand.Summarize),
         new("discover", DiscoverCommand.Options, DiscoverCommand.Run),
         new("learn", LearnCommand.Options, LearnCommand.Run),
         new("profile export", ProfileCommand.ExportOptions, ProfileCommand.Export),
@@ -68,7 +75,7 @@ public static class AsterCli
         }
 
         // "profile export" 처럼 두 단어인 명령은 앞 두 인자를 이름으로 봅니다.
-        string cmdName = args[0] is "profile" or "tier" && args.Count > 1 ? args[0] + " " + args[1] : args[0];
+        string cmdName = args[0] is "profile" or "tier" or "orbit" or "orbit-bench" && args.Count > 1 ? args[0] + " " + args[1] : args[0];
         Command? cmd = Commands.FirstOrDefault(c => c.Name == cmdName);
         if (cmd is null)
         {
@@ -78,6 +85,11 @@ public static class AsterCli
 
         try
         {
+            if (cmd.RunRaw is { } runRaw)
+            {
+                return runRaw(args.Skip(2).ToList(), stdout, stderr);
+            }
+
             ParsedArgs a = ArgParser.Parse(cmd.Options, args.Skip(cmd.Name.Contains(' ') ? 2 : 1).ToList(), lang);
             return cmd.Relayout && !ValidRelayoutNumbers(a) ? Emit(stdout, new JObject { { "error", "invalid_argument" } }, 2) : cmd.Run(a, stdout);
         }

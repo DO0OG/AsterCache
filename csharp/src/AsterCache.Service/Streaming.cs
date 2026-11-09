@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.ComponentModel;
 using AsterCache.Core;
 using AsterCache.Core.Apply;
@@ -36,6 +37,11 @@ public interface IGameStreamer
     (StreamStats Stats, bool Complete) StreamPrewarmCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool> canIssue) =>
         canIssue() ? StreamPrewarm(game, stop, progress, maxBytes, skipBytes) : (new StreamStats(0, 0, 0, 0, Aborted: true), false);
 
+    (StreamStats Stats, bool Complete) StreamPrewarmCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool> canIssue, bool allowReorder) =>
+        StreamPrewarmCoordinated(game, stop, progress, maxBytes, skipBytes, canIssue);
+
+    bool WasPrewarmReordered(GameSettings game) => false;
+
     /// 예열이 실제로 읽을 원래 범위의 바이트 (틈 제외), 모르면 null. 최초 메모리 게이트가 존 크기 대신 씁니다.
     long? PrewarmReadBytes(GameSettings game) => null;
 
@@ -63,6 +69,15 @@ public interface IGameStreamer
 /// 예산은 계획의 존 크기 (계획이 없거나 존이 0 이면 추적의 총 바이트) 이고, 게임별 max_stream_mib 가 상한입니다. 고정 1 GiB 는 더 큰 핫 집합을 잘랐습니다.
 public sealed class PrefetchStreamer : IGameStreamer
 {
+    private readonly ConcurrentDictionary<string, bool> _reordered = new(StringComparer.OrdinalIgnoreCase);
+
+    /// 예열 목록을 정한 뒤 원래 순서를 바꿀 수 있습니다 (마지막 인자는 스트림 중지 신호). 기본은 기존 순서입니다.
+    public Func<GameSettings, List<ReadOp>, CancellationToken, List<ReadOp>>? Reorder { get; set; }
+
+    public bool WasPrewarmReordered(GameSettings game) => _reordered.GetValueOrDefault(game.Name);
+
+    public bool WasPrewarmReordered(string game) => _reordered.GetValueOrDefault(game);
+
     /// 계획의 존 크기 (바이트). 계획 파일이 없거나 읽을 수 없으면 null, 존이 비어 있으면 0.
     /// 잔여 재계획은 Zone 이 새로 옮길 구간뿐이라 (전부 제자리면 0), 핫셋 전체인 task 합계를 돌려줍니다.
     public static long? ZoneBytes(GameSettings game) => ZoneBytes(game, true);
@@ -167,20 +182,47 @@ public sealed class PrefetchStreamer : IGameStreamer
         StreamPrewarm(game, stop, progress, maxBytes, 0);
 
     public (StreamStats Stats, bool Complete) StreamPrewarm(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes)
-        => StreamPrewarmCore(game, stop, progress, maxBytes, skipBytes, null);
+        => StreamPrewarmCore(game, stop, progress, maxBytes, skipBytes, null, true);
 
     public (StreamStats Stats, bool Complete) StreamPrewarmCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool> canIssue)
-        => StreamPrewarmCore(game, stop, progress, maxBytes, skipBytes, canIssue);
+        => StreamPrewarmCore(game, stop, progress, maxBytes, skipBytes, canIssue, true);
 
-    private (StreamStats Stats, bool Complete) StreamPrewarmCore(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool>? canIssue)
+    public (StreamStats Stats, bool Complete) StreamPrewarmCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool> canIssue, bool allowReorder)
+        => StreamPrewarmCore(game, stop, progress, maxBytes, skipBytes, canIssue, allowReorder);
+
+    private (StreamStats Stats, bool Complete) StreamPrewarmCore(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool>? canIssue, bool allowReorder)
     {
         (List<ReadOp> all, long gapBytes, bool fitsBudget) = PrewarmOps(game, maxBytes);
+        _reordered[game.Name] = false;
         if (!fitsBudget || stop.IsCancellationRequested)
         {
             return (new StreamStats(0, 0, 0, 0, Aborted: true), false);
         }
 
-        List<ReadOp> ops = skipBytes > 0 ? Tail(all, skipBytes) : all; // 갱신 읽기 (Refresh) 는 건너뛴 앞부분이 아니라 목록 전체의 앞쪽을 씀
+        List<ReadOp> stream = all;
+        if (allowReorder && maxBytes > 0 && skipBytes == 0 && !game.MaxStreamSet && Reorder is { } reorder)
+        {
+            try
+            {
+                List<ReadOp> candidate = reorder(game, all, stop);
+                if (candidate is not null && !ReferenceEquals(candidate, all))
+                {
+                    stream = candidate;
+                    _reordered[game.Name] = true;
+                }
+            }
+            catch (Exception e) when (e is not (OutOfMemoryException or StackOverflowException))
+            {
+                stream = all;
+            }
+
+            if (stop.IsCancellationRequested)
+            {
+                return (new StreamStats(0, 0, 0, 0, Aborted: true), false); // 결정 중 게임이 시작되면 읽기를 내지 않음
+            }
+        }
+
+        List<ReadOp> ops = skipBytes > 0 ? Tail(stream, skipBytes) : stream; // 갱신 읽기 (Refresh) 는 원래 목록 앞쪽을 씁니다
 
         progress?.Invoke(0, ops.Sum(op => op.Length));
         if (stop.IsCancellationRequested)
@@ -275,6 +317,9 @@ public sealed class PrefetchStreamer : IGameStreamer
     {
         return ScheduleOps(game, false).Ops;
     }
+
+    /// 제품 예열이 읽을 원래 순서 목록입니다.
+    public static List<ReadOp> IncumbentPrewarmOps(GameSettings game, long maxBytes) => PrewarmOps(game, maxBytes).Ops;
 
     /// 예열 스트림에만 틈을 더하고, 남은 예산이 없으면 원래 범위만 유지합니다.
     /// 원래 범위는 존 예산으로 이미 골라졌고, totalBudgetBytes (유효 존 상한·스트림 상한·가용 RAM 중 작은 값) 에서 그 범위를 뺀 나머지만 틈에 씁니다.

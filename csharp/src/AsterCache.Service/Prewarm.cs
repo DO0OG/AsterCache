@@ -8,6 +8,7 @@ using AsterCache.Core.Discovery;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Plan;
+using AsterCache.Core.Plan.Orbit;
 using AsterCache.Core.Prefetch;
 using AsterCache.Core.Profiles;
 using AsterCache.Core.Settings;
@@ -165,70 +166,106 @@ public sealed class PrewarmEnv
     /// 시작 예열이 핫 집합보다 먼저 올릴 common (여러 회차에서 반복해 읽힌) 범위: (게임, 이번 스트림의 틈 예산, 건너뛸 앞부분 바이트) → (이번 스트림이 읽을 범위 중 common 인 부분 (읽는 순서), 이번 스트림 전체 바이트 (핫 집합 스트림의 total 과 같음)). 없으면 빈 목록과 0 (기존 동작). 기본은 없음 (시험용), Create 는 진짜 구분.
     public Func<GameSettings, long, long, (IReadOnlyList<ReadOp> Ops, long Total)> CommonFirstOps { get; init; } = (_, _, _) => ([], 0);
 
-    public static PrewarmEnv Create() => new()
-    {
-        CommonFirstOps = (g, maxBytes, skip) =>
-        {
-            if (TracePhases.CommonOf(g) is not { } common)
-            {
-                return ([], 0); // 회차가 부족하거나 트레이스가 없음 (트레이스 금지 게임·공유 프로필만 있는 게임 포함)
-            }
+    /// 핫 집합 스트림 직전에 원래 op 목록으로 장치 표본을 모읍니다.
+    public Action<GameSettings, IReadOnlyList<ReadOp>, string?, DiskReadCoordinator.Lease?, CancellationToken>? DeviceCalibration { get; init; }
 
-            (List<ReadOp> ops, _, bool fits) = PrefetchStreamer.PrewarmOps(g, maxBytes);
-            List<ReadOp> stream = skip > 0 ? PrefetchStreamer.Tail(ops, skip) : ops;
-            return fits ? (TracePhases.Within(common, stream), stream.Sum(o => o.Length)) : (new List<ReadOp>(), 0L);
-        },
-        UptimeMs = () => Environment.TickCount64,
-        Sleep = (t, ct) => ct.WaitHandle.WaitOne(t),
-        SameDisk = VolumeDisks.SameDisk,
-        PrefetchBoot = g => AutoTracer.BootFromPrefetch(g) > 0,
-        ColdRefusal = g => DriveCapabilities.Of(g.OriginRoot, Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.Windows))![..2].ToUpperInvariant(), letter => DiskInfo.Query(letter).IncursSeekPenalty).PrewarmRefusal,
-        RawTraceExists = g => AutoTracer.PlanTracePath(g, File.Exists) is not null,
-        ColdPlanner = (g, full, profile, ct) => PlanGuards.Inside(g.OriginRoot, g.AllowedRoots, RealPaths.Real)
-            ? FolderWarm.Plan(g.OriginRoot, g.ExeNames, full, profile, EngineProfiles.Builtin, ct)
-            : throw new PlanRejectedException("origin_root resolves outside allowed roots"),
-        ColdReadWithProgress = (ops, ct, progress) =>
+    /// 장치 표본 훅을 부를지 (모드가 off 면 거짓): 거짓이면 훅 인자를 만드는 메타데이터 읽기도 하지 않습니다. null 이면 훅이 있을 때 항상 부릅니다.
+    public Func<bool>? DeviceCalibrationEnabled { get; init; }
+
+    /// 스트림 노출과 같은 디스크 게임 시작을 예열 스레드에서 동기로 기록합니다.
+    public Action<GameSettings, double, bool>? OrbitExposure { get; init; }
+
+    public static Func<GameSettings, bool> GameActiveOnDisk(IReadOnlyList<GameSettings> games,
+        Func<string, string, bool> sameDisk, Func<GameSettings, bool> gameRunning) => OrbitRuntime.GameActiveOnDisk(games, sameDisk, gameRunning);
+
+    public static PrewarmEnv Create(OrbitCalibration? orbitCalibration = null, OrbitRuntime? orbitRuntime = null)
+    {
+        Func<GameSettings, bool> gameRunning = DispatchEnv.IsGameRunning;
+        Func<string, string, bool> sameDisk = VolumeDisks.SameDisk;
+
+        return new PrewarmEnv
         {
-            long done = 0;
-            long total = ops.Sum(o => o.Length);
-            return FolderWarm.Read(ops, ct, batch =>
+            GameRunning = gameRunning,
+            SameDisk = sameDisk,
+            DeviceCalibrationEnabled = orbitRuntime is null ? null : () => orbitRuntime.Mode != "off",
+            DeviceCalibration = orbitCalibration is null ? null : (g, ops, antiCheat, lease, ct) =>
             {
-                StreamStats stats = ZoneStreamer.Run(batch, StreamMethod.Pvm, ct: ct);
-                done += stats.Bytes;
-                progress(done, total);
-                return stats;
-            });
-        },
-        PhysicalRamBytes = SystemMemory.TotalBytes,
-        FileStamp = PlanFile.FingerprintOf,
-        PinPaths = g => PrefetchStreamer.PinPaths(g, PrefetchStreamer.PinCapBytes(PrefetchStreamer.ZoneBytes(g), SystemMemory.TotalBytes(), SystemMemory.AvailableMib(), g.Prewarm.MinFreeRamMib)),
-        AntiCheatOf = g => AutoEnv.DetectAntiCheat(g.OriginRoot),
-        LauncherRunning = () => ProcessSnapshot.IsRunning(LauncherExes.All),
-        CpuPercent = new CpuLoad().Percent,
-        DiskBytesPerSecond = g => DiskActivity.BytesPerSecond(PlanFile.SplitDrive(g.OriginRoot)),
-        DiskSample = g => DiskActivity.Read(PlanFile.SplitDrive(g.OriginRoot)),
-        GameDiskSample = g => DiskActivity.Read(PlanFile.SplitDrive(g.OriginRoot), keepStalled: true),
-        GameReadBytes = RegisteredReadBytes,
-        OpenPin = paths =>
-        {
-            FilePin pin = FilePin.Open(paths);
-            return new PinHandle(pin, pin.Count, pin.Skipped);
-        },
-        ProbePartialReadMs = g => File.Exists(g.Trace) ? PrefetchStreamer.ProbePartialReadMs(g) : null,
-        ProbePartialReadMsChecked = (g, canIssue) => File.Exists(g.Trace) ? PrefetchStreamer.ProbePartialReadMs(g, canIssue) : null,
-        ProbeDone = (g, bytes) => File.Exists(g.Trace) ? PrefetchStreamer.ProbeScheduledHead(g, bytes) : null,
-        ProbeDoneChecked = (g, bytes, canIssue) => File.Exists(g.Trace) ? PrefetchStreamer.ProbeScheduledHead(g, bytes, canIssue) : null,
-        ProbeReadMs = g => File.Exists(g.Trace) ? PrefetchStreamer.ProbeReadMs(g) : null, // 기록 없이 예열한 게임은 비교할 핫 집합이 없음
-        ProbeReadMsChecked = (g, canIssue) => File.Exists(g.Trace) ? PrefetchStreamer.ProbeReadMs(g, canIssue) : null,
-        ProbeSamplesChecked = (samples, canIssue) => CacheProbe.Probe(samples, canIssue: canIssue),
-        ProbeFileSamplesChecked = (samples, ct, canIssue) => CacheProbe.Probe(samples, ct: ct, canIssue: canIssue),
-        AvailableRamMib = SystemMemory.AvailableMib,
-        GameRunning = DispatchEnv.IsGameRunning,
-        DescribeBlockers = DispatchEnv.DescribeBlockers,
-        ZoneBytes = g => PrefetchStreamer.ZoneBytes(g) is { } z ? Math.Min(z, g.StreamCapBytes(z)) : null,
-        TraceExists = g => File.Exists(g.Trace),
-        EffectiveZoneBytes = EffectiveZoneFromPlan,
-    };
+                string disk = orbitCalibration.KeyOf(g);
+                DeviceFit? before = orbitCalibration.Envelope(disk);
+                orbitCalibration.Sample(g, ops, antiCheat, lease, ct);
+                if (before is not null && orbitCalibration.Envelope(disk) is null)
+                {
+                    _ = orbitRuntime?.Demote("coverage_invalidated");
+                }
+            },
+            OrbitExposure = orbitRuntime is null ? null : (g, seconds, interrupted) =>
+            {
+                if (orbitRuntime.Mode != "off")
+                {
+                    OrbitModel.NoteExposure(g, seconds, interrupted);
+                }
+            },
+            CommonFirstOps = (g, maxBytes, skip) =>
+            {
+                if (TracePhases.CommonOf(g) is not { } common)
+                {
+                    return ([], 0); // 회차가 부족하거나 트레이스가 없음 (트레이스 금지 게임·공유 프로필만 있는 게임 포함)
+                }
+
+                (List<ReadOp> ops, _, bool fits) = PrefetchStreamer.PrewarmOps(g, maxBytes);
+                List<ReadOp> stream = skip > 0 ? PrefetchStreamer.Tail(ops, skip) : ops;
+                return fits ? (TracePhases.Within(common, stream), stream.Sum(o => o.Length)) : (new List<ReadOp>(), 0L);
+            },
+            UptimeMs = () => Environment.TickCount64,
+            Sleep = (t, ct) => ct.WaitHandle.WaitOne(t),
+            PrefetchBoot = g => AutoTracer.BootFromPrefetch(g) > 0,
+            ColdRefusal = g => DriveCapabilities.Of(g.OriginRoot, Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.Windows))![..2].ToUpperInvariant(), letter => DiskInfo.Query(letter).IncursSeekPenalty).PrewarmRefusal,
+            RawTraceExists = g => AutoTracer.PlanTracePath(g, File.Exists) is not null,
+            ColdPlanner = (g, full, profile, ct) => PlanGuards.Inside(g.OriginRoot, g.AllowedRoots, RealPaths.Real)
+                ? FolderWarm.Plan(g.OriginRoot, g.ExeNames, full, profile, EngineProfiles.Builtin, ct)
+                : throw new PlanRejectedException("origin_root resolves outside allowed roots"),
+            ColdReadWithProgress = (ops, ct, progress) =>
+            {
+                long done = 0;
+                long total = ops.Sum(o => o.Length);
+                return FolderWarm.Read(ops, ct, batch =>
+                {
+                    StreamStats stats = ZoneStreamer.Run(batch, StreamMethod.Pvm, ct: ct);
+                    done += stats.Bytes;
+                    progress(done, total);
+                    return stats;
+                });
+            },
+            PhysicalRamBytes = SystemMemory.TotalBytes,
+            FileStamp = PlanFile.FingerprintOf,
+            PinPaths = g => PrefetchStreamer.PinPaths(g, PrefetchStreamer.PinCapBytes(PrefetchStreamer.ZoneBytes(g), SystemMemory.TotalBytes(), SystemMemory.AvailableMib(), g.Prewarm.MinFreeRamMib)),
+            AntiCheatOf = g => AutoEnv.DetectAntiCheat(g.OriginRoot),
+            LauncherRunning = () => ProcessSnapshot.IsRunning(LauncherExes.All),
+            CpuPercent = new CpuLoad().Percent,
+            DiskBytesPerSecond = g => DiskActivity.BytesPerSecond(PlanFile.SplitDrive(g.OriginRoot)),
+            DiskSample = g => DiskActivity.Read(PlanFile.SplitDrive(g.OriginRoot)),
+            GameDiskSample = g => DiskActivity.Read(PlanFile.SplitDrive(g.OriginRoot), keepStalled: true),
+            GameReadBytes = RegisteredReadBytes,
+            OpenPin = paths =>
+            {
+                FilePin pin = FilePin.Open(paths);
+                return new PinHandle(pin, pin.Count, pin.Skipped);
+            },
+            ProbePartialReadMs = g => File.Exists(g.Trace) ? PrefetchStreamer.ProbePartialReadMs(g) : null,
+            ProbePartialReadMsChecked = (g, canIssue) => File.Exists(g.Trace) ? PrefetchStreamer.ProbePartialReadMs(g, canIssue) : null,
+            ProbeDone = (g, bytes) => File.Exists(g.Trace) ? PrefetchStreamer.ProbeScheduledHead(g, bytes) : null,
+            ProbeDoneChecked = (g, bytes, canIssue) => File.Exists(g.Trace) ? PrefetchStreamer.ProbeScheduledHead(g, bytes, canIssue) : null,
+            ProbeReadMs = g => File.Exists(g.Trace) ? PrefetchStreamer.ProbeReadMs(g) : null, // 기록 없이 예열한 게임은 비교할 핫 집합이 없음
+            ProbeReadMsChecked = (g, canIssue) => File.Exists(g.Trace) ? PrefetchStreamer.ProbeReadMs(g, canIssue) : null,
+            ProbeSamplesChecked = (samples, canIssue) => CacheProbe.Probe(samples, canIssue: canIssue),
+            ProbeFileSamplesChecked = (samples, ct, canIssue) => CacheProbe.Probe(samples, ct: ct, canIssue: canIssue),
+            AvailableRamMib = SystemMemory.AvailableMib,
+            DescribeBlockers = DispatchEnv.DescribeBlockers,
+            ZoneBytes = g => PrefetchStreamer.ZoneBytes(g) is { } z ? Math.Min(z, g.StreamCapBytes(z)) : null,
+            TraceExists = g => File.Exists(g.Trace),
+            EffectiveZoneBytes = EffectiveZoneFromPlan,
+        };
+    }
 
     // 등록 exe 이름 프로세스들의 읽기 카운터 합: 하나라도 못 읽거나 하나도 없으면 null (조회 실패를 0 으로 보지 않음).
     private static long? RegisteredReadBytes(GameSettings g)
@@ -329,7 +366,9 @@ public sealed class Prewarmer
     private volatile string? _coldReading; // 기록 없는 (통째·프로필) 예열의 읽기가 도는 게임: _streaming 과 달리 게임 시작 양보 신호는 받지 않음 (ct 로만 멈춤)
     private readonly HashSet<string> _relocStarted = new(StringComparer.OrdinalIgnoreCase); // 재배치가 시작한 (아직 끝나지 않은) 게임, _gate 로 보호
     private volatile bool _keepStream; // auto.keep_stream_on_game_start 가 켜진 채 그 게임이 시작돼 (같은 데이터를 동시에 읽으므로) 취소 신호에도 끝까지 읽기로 한 표시
+    private volatile bool _streamGameStarted;
     private volatile CancellationTokenSource? _streamStop; // 도는 스트림을 멈추는 신호 (게임 시작이 같은 디스크 읽기를 바로 끊음)
+    private volatile CancellationTokenSource? _calibrationStop;
     private volatile CancellationTokenSource? _warmStop; // WarmFiles 읽기를 멈추는 신호 (호출자 ct 와 연결, 같은 디스크 게임 시작이 끊음), 읽는 게임은 _coldReading
     private (string Game, long At)? _yield; // 게임 시작으로 스트림 양보를 요청한 게임과 시각 (Stopwatch 틱), _gate 로 보호
     private readonly Dictionary<string, (long WarmedMib, long HotMib)> _partial = new(StringComparer.OrdinalIgnoreCase); // 서비스 시작 상한으로 핫 집합의 앞부분만 읽은 게임 (읽은 양, 전체), 보충 예열이 끝나면 지움, _gate 로 보호
@@ -649,6 +688,7 @@ public sealed class Prewarmer
     /// 단 auto.keep_stream_on_game_start (실험용) 가 켜져 있으면 그 게임의 스트림은 끝까지 읽습니다. 기록 없는 예열이 잡아 둔 예산은 풉니다 (게임이 돌면 RAM 이 달라지므로 다음 예산 계산에 쓰지 않음).
     public void NoteGameStart(string game)
     {
+        OrbitModel.CancelInFlightGame(game);
         if (_warmStop is { } warm && _coldReading is { } warming && (string.Equals(warming, game, StringComparison.OrdinalIgnoreCase) || SameDisk(warming, game)))
         {
             try
@@ -664,11 +704,25 @@ public sealed class Prewarmer
         if (_streaming is { } reading)
         {
             bool same = string.Equals(reading, game, StringComparison.OrdinalIgnoreCase);
+            bool sameDisk = same || SameDisk(reading, game);
+            if (sameDisk)
+            {
+                _streamGameStarted = true;
+                try
+                {
+                    _calibrationStop?.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // 표본 읽기가 방금 끝남
+                }
+            }
+
             if (same && _auto.KeepStreamOnGameStart)
             {
                 _keepStream = true;
             }
-            else if (same || SameDisk(reading, game))
+            else if (sameDisk)
             {
                 lock (_gate)
                 {
@@ -1410,7 +1464,7 @@ public sealed class Prewarmer
                     {
                         ClearPartial(game.Name, p.HotMib); // 완료 알림보다 먼저 부분 상태를 지움
                     }
-                });
+                }, allowReorder: false);
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
             {
@@ -1434,12 +1488,13 @@ public sealed class Prewarmer
             if (!r.Complete)
             {
                 NoteProgress(game.Name, ActualMib(r.Stats, windowMib ?? p.HotMib, skipBytes), p.HotMib); // 끊겨도 읽은 양은 버리지 않음: 다음 보충이 이어서 읽음
+                bool reordered = _streamer.WasPrewarmReordered(game);
                 // 위치는 틈을 뺀 스케줄 기준 (틈 메운 순서와 달라도 모자라게 셈: 덜 건너뛰는 쪽). 오류가 있으면 앞이 다 읽혔다고 못 하니 버리고, 목록 끝까지 읽은 뒤의 취소 (갱신 읽기 도중) 는 창 완료.
                 long pos = skipBytes + Math.Max(0, r.Stats.Bytes - r.Stats.GapBytes);
                 bool atEnd = r.Stats.Errors == 0 && tailTotal is { } t && pos >= skipBytes + t - r.Stats.GapBytes;
                 lock (_gate)
                 {
-                    if (r.Stats.Errors > 0 || atEnd || r.Stats.GapBytes > 0) // 틈 메우기가 섞이면 읽은 순서가 스케줄과 달라 위치를 믿을 수 없음: 다음에 처음부터
+                    if (r.Stats.Errors > 0 || atEnd || r.Stats.GapBytes > 0 || reordered) // 순서를 바꿨거나 틈 메우기가 섞이면 위치를 믿을 수 없어 다음에 처음부터
                     {
                         _resume.Remove(game.Name);
                     }
@@ -2304,7 +2359,8 @@ public sealed class Prewarmer
 
                 try
                 {
-                    if (StreamHot(warm, ct, zoneBytes, availableRamMib, memoryPartial is not null, Settle) is not { } hot)
+                    if (StreamHot(warm, ct, zoneBytes, availableRamMib, memoryPartial is not null, Settle,
+                        allowReorder: memoryPartial is null && !HasPartialState(game.Name)) is not { } hot)
                     {
                         LogSkipped(game.Name, RelocationRunning, $"{game.Name}: prewarm skipped ({RelocationRunning}) [{why}]");
                         return Record(game, now, new PrewarmResult(game.Name, false, RelocationRunning, null, now), 0);
@@ -2404,7 +2460,7 @@ public sealed class Prewarmer
     // 같은 디스크에서 재배치가 시작했으면 읽지 않고 null.
     // settle: 끝까지 읽었을 때 StreamEnded 알림보다 먼저 부름 (읽은 통계를 받아 부분 예열 상태를 확정하거나 지움).
     // skipBytes: 읽기 목록 앞쪽 이만큼은 이미 읽었으니 건너뜀 (끊긴 보충을 이어 읽음, 틈 메우기 없는 경로에서만). onTotal: 이번에 읽을 목록의 길이 (건너뛴 앞부분 제외).
-    private (StreamStats Stats, bool Complete)? StreamHot(GameSettings game, CancellationToken ct, long? zoneBytes, long availableRamMib, bool partial = false, Action<StreamStats>? settle = null, long skipBytes = 0, Action<long>? onTotal = null)
+    private (StreamStats Stats, bool Complete)? StreamHot(GameSettings game, CancellationToken ct, long? zoneBytes, long availableRamMib, bool partial = false, Action<StreamStats>? settle = null, long skipBytes = 0, Action<long>? onTotal = null, bool allowReorder = true)
     {
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "prewarm stream", ct, preserveForGameRoot: _auto.KeepStreamOnGameStart ? game.OriginRoot : null, preserveGameKey: game.Name);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
@@ -2413,8 +2469,11 @@ public sealed class Prewarmer
         }
 
         using var stop = new CancellationTokenSource();
+        using var calibration = CancellationTokenSource.CreateLinkedTokenSource(ct, stop.Token);
         if (!TryMarkReading(game.Name, () =>
         {
+            _streamGameStarted = false;
+            _calibrationStop = calibration;
             (_keepStream, _streaming, _streamStop) = (false, game.Name, stop);
             _yield = null;
             _driveObservedAt = _now();
@@ -2426,6 +2485,7 @@ public sealed class Prewarmer
         DateTimeOffset? last = null;
         bool complete = false;
         StreamStats? finalStats = null;
+        long startedAt = Stopwatch.GetTimestamp();
         try
         {
             using CancellationTokenRegistration leaseReg = lease?.Token.Register(stop.Cancel) ?? default;
@@ -2437,6 +2497,12 @@ public sealed class Prewarmer
                 }
             });
             long maxBytes = partial ? 0 : GapFillBudgetBytes(game, zoneBytes, _env.EffectiveZoneBytes(game), _env.PhysicalRamBytes(), availableRamMib); // 부분 예열은 틈 메우기 예산 0
+            if (_env.DeviceCalibration is not null && (_env.DeviceCalibrationEnabled?.Invoke() ?? true)) // 훅이 없거나 off 면 기준선과 같은 호출만 남김
+            {
+                IReadOnlyList<ReadOp> calibrationOps = _streamer is PrefetchStreamer ? PrefetchStreamer.IncumbentPrewarmOps(game, maxBytes) : Array.Empty<ReadOp>();
+                CalibrateDevice(game, calibrationOps, _env.AntiCheatOf(game), lease, calibration.Token);
+            }
+
             WarmCommonFirst(game, stop, maxBytes, skipBytes, lease);
             (StreamStats, bool) r = _streamer.StreamPrewarmCoordinated(game, stop.Token, (done, total) =>
             {
@@ -2453,7 +2519,7 @@ public sealed class Prewarmer
                     last = at;
                     Progress?.Invoke(game, done >> 20, (total + (1 << 20) - 1) >> 20);
                 }
-            }, maxBytes, skipBytes, () => !stop.IsCancellationRequested && (lease?.IsValid ?? true));
+            }, maxBytes, skipBytes, () => !stop.IsCancellationRequested && (lease?.IsValid ?? true), allowReorder);
             complete = r.Item2 && !stop.IsCancellationRequested;
             finalStats = r.Item1;
             LogYield(game.Name, r.Item1.Bytes);
@@ -2461,13 +2527,38 @@ public sealed class Prewarmer
         }
         finally
         {
+            bool interrupted = !complete && _streamGameStarted;
+            _calibrationStop = null;
             (_streaming, _streamStop) = (null, null);
+            // shortcut: 스트림 PDH 는 순차 탐침과 비교할 수 없어 교차 확인을 배선하지 않음, 실측 이탈이 확인되면 끝까지 읽은 스트림의 실제 읽기 바이트/시간으로 다시 연결
+            try
+            {
+                _env.OrbitExposure?.Invoke(game, Stopwatch.GetElapsedTime(startedAt).TotalSeconds, interrupted);
+            }
+            catch (Exception e) when (e is not (OutOfMemoryException or StackOverflowException))
+            {
+                _log.Warn($"{game.Name}: orbit exposure update skipped: {e.GetType().Name}");
+            }
+
             if (complete && finalStats is not null)
             {
                 settle?.Invoke(finalStats);
             }
 
             StreamEnded?.Invoke(game, complete && (finalStats is { Bytes: > 0 } || skipBytes > 0)); // 아무것도 읽지 못했으면 예열 완료로 알리지 않음 (이어 읽기의 0 바이트는 앞에서 이미 읽은 것)
+        }
+    }
+
+    // 장치 표본 훅: 실패해도 스트림은 그대로 진행합니다 (취소는 아래 스트림이 판단).
+    private void CalibrateDevice(GameSettings game, IReadOnlyList<ReadOp> ops, string? antiCheat, DiskReadCoordinator.Lease? lease, CancellationToken ct)
+    {
+        try
+        {
+            _env.DeviceCalibration?.Invoke(game, ops, antiCheat, lease, ct);
+        }
+        catch (Exception e)
+        {
+            _log.Warn($"{game.Name}: device calibration skipped: {e.GetType().Name}");
         }
     }
 
@@ -2788,6 +2879,14 @@ public sealed class Prewarmer
         lock (_gate)
         {
             return _memoryPartial.ContainsKey(game) && _partial.ContainsKey(game);
+        }
+    }
+
+    private bool HasPartialState(string game)
+    {
+        lock (_gate)
+        {
+            return _partial.ContainsKey(game) || _memoryPartial.ContainsKey(game) || _resume.ContainsKey(game);
         }
     }
 

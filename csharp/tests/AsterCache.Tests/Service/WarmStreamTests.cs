@@ -879,6 +879,190 @@ public sealed class WarmStreamTests
     }
 
     [Fact]
+    public void PrewarmPlanIsBuiltOncePerRunForTheSameGameAndBudgetAndNeverOutsideARun()
+    {
+        GameSettings game = Game("a");
+        int builds = 0;
+        (List<ReadOp>, long, bool) Build() { builds++; return ([new ReadOp("x", 0, Mib)], 0L, true); }
+
+        _ = PrewarmRun.Plan(game, 5, default, Build); // 회 밖: 캐시 없음
+        _ = PrewarmRun.Plan(game, 5, default, Build);
+        Assert.Equal(2, builds);
+
+        builds = 0;
+        using (PrewarmRun.Begin())
+        {
+            (List<ReadOp> first, _, _) = PrewarmRun.Plan(game, 5, default, Build);
+            first.Clear(); // 돌려준 목록을 바꿔도 재사용분은 그대로
+            Assert.Single(PrewarmRun.Plan(game, 5, default, Build).Ops);
+            Assert.Equal(1, builds);
+            _ = PrewarmRun.Plan(game, 6, default, Build); // 예산이 다르면 다시 계산
+            Assert.Equal(2, builds);
+            using var cancelled = new CancellationTokenSource(); // 재사용 중에도 취소는 그대로 검사
+            cancelled.Cancel();
+            Assert.Throws<OperationCanceledException>(() => PrewarmRun.Plan(game, 6, cancelled.Token, Build));
+        }
+
+        _ = PrewarmRun.Plan(game, 6, default, Build); // 회가 끝나면 재사용 없음
+        Assert.Equal(3, builds);
+    }
+
+    [Fact]
+    public void PrewarmRunRecomputesTheRealPrewarmOpsWhenTheTraceIsUpdatedDuringTheRun()
+    {
+        string temp = Directory.CreateTempSubdirectory("aster-plan-reuse-").FullName;
+        try
+        {
+            string root = Path.Combine(temp, "game");
+            Directory.CreateDirectory(root);
+            string path = Path.Combine(root, "big.bin");
+            File.WriteAllBytes(path, new byte[8 * (int)Mib]);
+            string trace = Path.Combine(temp, "game.prefetch.json");
+            string planPath = Path.Combine(temp, "game.plan.json");
+            GameSettings game = Game("a") with { OriginRoot = root, AllowedRoots = [root], Trace = trace, Plan = planPath, MaxStreamMib = 2, MaxStreamSet = true };
+            new PlanFile(PlanFile.CurrentVersion, root, PlanFile.SplitDrive(root), 4096, 65536,
+                new PlanZone(0, 2048), [], [], [], new JObject()).Save(planPath);
+            PlanOutput.SavePrefetch(trace, [new TraceEvent(path, 0, 8 * Mib)], []);
+
+            using (PrewarmRun.Begin())
+            {
+                List<ReadOp> first = PrefetchStreamer.PrewarmOps(game, 0).Ops;
+                Assert.Equal(new ReadOp(path, 0, 2 * Mib), Assert.Single(first));
+                PlanOutput.SavePrefetch(trace, [new TraceEvent(path, 0, Mib)], []); // 예열 도중 업데이트 정리가 예열 목록을 줄임
+                Assert.Equal(new ReadOp(path, 0, Mib), Assert.Single(PrefetchStreamer.IncumbentPrewarmOps(game, 0))); // 낡은 목록이 아니라 새로 계산
+            }
+        }
+        finally
+        {
+            Directory.Delete(temp, true);
+        }
+    }
+
+    [Fact]
+    public void PrewarmRunBoundariesKeepReuseInsideNestedRunsAndIsolateTheNextRunAfterEndFailureOrCancel()
+    {
+        GameSettings game = Game("a");
+        int builds = 0;
+        (List<ReadOp>, long, bool) Build() { builds++; return ([new ReadOp("x", 0, Mib)], 0L, true); }
+
+        using (PrewarmRun.Begin())
+        {
+            using (PrewarmRun.Begin()) // 중첩 (보충 등의 안쪽 스트림)
+            {
+                _ = PrewarmRun.Plan(game, 5, default, Build);
+            }
+
+            _ = PrewarmRun.Plan(game, 5, default, Build); // 안쪽이 끝나도 바깥 회의 재사용 유지
+            Assert.Equal(1, builds);
+        }
+
+        _ = PrewarmRun.Plan(game, 5, default, Build); // 최외곽이 끝나면 재계산 (회 밖은 캐시 없음)
+        Assert.Equal(2, builds);
+
+        Assert.Throws<InvalidOperationException>((Action)(() =>
+        {
+            using (PrewarmRun.Begin())
+            {
+                _ = PrewarmRun.Plan(game, 5, default, Build);
+                throw new InvalidOperationException();
+            }
+        }));
+        Assert.Equal(3, builds);
+
+        using (PrewarmRun.Begin()) // 예외 뒤 새 회는 이전 회의 목록을 보지 않음
+        {
+            _ = PrewarmRun.Plan(game, 5, default, Build);
+            Assert.Equal(4, builds);
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+            Assert.Throws<OperationCanceledException>(() => PrewarmRun.Plan(game, 5, cts.Token, Build));
+        }
+
+        using (PrewarmRun.Begin()) // 취소 뒤에도 마찬가지
+        {
+            _ = PrewarmRun.Plan(game, 5, default, Build);
+            Assert.Equal(5, builds);
+        }
+    }
+
+    [Fact]
+    public void PrewarmStreamCoreRecordsRealPlanOrbitAndStreamTimesAsNonZero()
+    {
+        string temp = Directory.CreateTempSubdirectory("aster-phase-core-").FullName;
+        try
+        {
+            string root = Path.Combine(temp, "game");
+            Directory.CreateDirectory(root);
+            string path = Path.Combine(root, "big.bin");
+            File.WriteAllBytes(path, new byte[8 * (int)Mib]);
+            string trace = Path.Combine(temp, "game.prefetch.json");
+            string planPath = Path.Combine(temp, "game.plan.json");
+            GameSettings game = Game("a") with { OriginRoot = root, AllowedRoots = [root], Trace = trace, Plan = planPath };
+            new PlanFile(PlanFile.CurrentVersion, root, PlanFile.SplitDrive(root), 4096, 65536,
+                new PlanZone(0, 2048), [], [], [], new JObject()).Save(planPath);
+            PlanOutput.SavePrefetch(trace, [new TraceEvent(path, 0, 8 * Mib)], []);
+            var streamer = new PrefetchStreamer { Reorder = (_, ops, _) => { Thread.Sleep(30); return [.. ops]; } };
+
+            using PrewarmRun run = PrewarmRun.Begin();
+            (StreamStats stats, bool complete) = streamer.StreamPrewarm(game, CancellationToken.None, null, 1L << 30);
+            var e = run.Elapsed();
+
+            Assert.True(complete);
+            Assert.True(stats.Bytes > 0);
+            Assert.True(e.Plan > 0);
+            Assert.InRange(e.Orbit, 0.025, 5); // 실제 Reorder 호출 시간
+            Assert.True(e.Stream > 0);
+            Assert.Equal(e.Total, e.Plan + e.Calibration + e.Common + e.Orbit + e.Stream + e.Other, 6);
+        }
+        finally
+        {
+            Directory.Delete(temp, true);
+        }
+    }
+
+    [Fact]
+    public void PrewarmPhaseTimesCountPlanOnceAndSumToTheTotalElapsed()
+    {
+        GameSettings game = Game("a");
+        using PrewarmRun run = PrewarmRun.Begin();
+        using (PrewarmRun.Time(PrewarmPhase.Stream))
+        {
+            Thread.Sleep(40);
+        }
+
+        using (PrewarmRun.Time(PrewarmPhase.Common))
+        {
+            _ = PrewarmRun.Plan(game, 1, default, () => { Thread.Sleep(30); return ([], 0L, true); });
+        }
+
+        Thread.Sleep(20); // 어느 단계에도 없는 시간은 Other
+        var e = run.Elapsed();
+
+        Assert.InRange(e.Stream, 0.035, 5);
+        Assert.InRange(e.Plan, 0.025, 5);
+        Assert.InRange(e.Common, 0, e.Plan); // 계획 계산 시간은 Common 에 이중으로 세지 않음
+        Assert.InRange(e.Other, 0.015, 5);
+        Assert.Equal(e.Total, e.Plan + e.Calibration + e.Common + e.Orbit + e.Stream + e.Other, 6);
+    }
+
+    [Fact]
+    public void PrewarmDoneIsFollowedByAPhaseLineWhoseTimesSumToTheElapsed()
+    {
+        GameSettings a = Game("a");
+        _p = Make(new BatchStreamer(1), a);
+
+        Assert.True(_p.Run(a, "test").Ran);
+
+        string line = Assert.Single(_log.Lines, l => l.Contains("prewarm phases", StringComparison.Ordinal));
+        int doneAt = _log.Lines.ToList().FindIndex(l => l.Contains("prewarm done", StringComparison.Ordinal));
+        Assert.True(doneAt >= 0);
+        Assert.Equal(line, _log.Lines.ElementAt(doneAt + 1)); // done 줄 바로 다음
+        double[] s = [.. System.Text.RegularExpressions.Regex.Matches(line, @"(\d+\.\d+) s").Select(m => double.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture))];
+        Assert.Equal(7, s.Length);
+        Assert.InRange(Math.Abs(s[..6].Sum() - s[6]), 0, 0.05); // 반올림 오차 안에서 단계 합 = 전체
+    }
+
+    [Fact]
     public void PartialRewarmSamplesAreChosenOnlyInsideTheCutFrontThatWasRead()
     {
         string temp = Directory.CreateTempSubdirectory("aster-partial-probe-").FullName;

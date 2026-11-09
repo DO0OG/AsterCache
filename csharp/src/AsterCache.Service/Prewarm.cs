@@ -2486,6 +2486,7 @@ public sealed class Prewarmer
 
             if (skip is null)
             {
+                using PrewarmRun run = PrewarmRun.Begin(); // 이 예열 한 회 동안만 계획을 재사용하고 단계 시간을 잼
                 _log.Info($"{game.Name}: prewarm triggered by {TriggerCause(why)}");
                 if (memoryPartial is { } running)
                 {
@@ -2557,6 +2558,7 @@ public sealed class Prewarmer
                     double mbps = s.Seconds > 0 ? s.Bytes / 1048576.0 / s.Seconds : 0;
                     string kind = memoryPartial is { } part ? $"partial {ActualMib(s, part.WarmedMib)}/{part.HotMib} MiB, the rest does not fit in memory: " : string.Empty;
                     _log.Info($"{game.Name}: prewarm done ({why}): {kind}{s.Bytes >> 20} MiB requested, {s.GapBytes / 1048576.0:F2} MiB gaps filled in {s.Seconds:F2} s = {mbps:F0} hint MB/s, {s.Requests} requests, {s.Errors} errors");
+                    _log.Info($"{game.Name}: prewarm phases ({why}): {run.Summary()}");
                     PrewarmResult done = Record(game, warmedAt, new PrewarmResult(game.Name, true, null, s, warmedAt), mbps);
                     WarmMeasured?.Invoke(game, mbps);
                     if (pin && !ct.IsCancellationRequested)
@@ -2650,6 +2652,7 @@ public sealed class Prewarmer
         }
 
         InvalidateResidencyProbe(game.Name);
+        using PrewarmRun run = PrewarmRun.Begin(); // 보충 등 바깥 회가 없는 경로도 이 스트림 한 번 동안은 계획을 재사용
         DateTimeOffset? last = null;
         bool complete = false;
         StreamStats? finalStats = null;
@@ -2668,6 +2671,7 @@ public sealed class Prewarmer
             long maxBytes = partial ? 0 : GapFillBudgetBytes(game, zoneBytes, _env.EffectiveZoneBytes(game), _env.PhysicalRamBytes(), availableRamMib); // 부분 예열은 틈 메우기 예산 0
             if (_env.DeviceCalibration is not null && (_env.DeviceCalibrationEnabled?.Invoke() ?? true)) // 훅이 없거나 off 면 기준선과 같은 호출만 남김
             {
+                using var calibrationTimer = PrewarmRun.Time(PrewarmPhase.Calibration);
                 IReadOnlyList<ReadOp> calibrationOps = _streamer is PrefetchStreamer ? PrefetchStreamer.IncumbentPrewarmOps(game, maxBytes, calibration.Token) : Array.Empty<ReadOp>();
                 calibration.Token.ThrowIfCancellationRequested();
                 lease?.NoteReadIssue("device calibration", calibrationOps.Sum(op => op.Length), true);
@@ -2675,7 +2679,11 @@ public sealed class Prewarmer
             }
 
             calibration.Token.ThrowIfCancellationRequested();
-            WarmCommonFirst(game, stop, maxBytes, skipBytes, lease);
+            using (PrewarmRun.Time(PrewarmPhase.Common))
+            {
+                WarmCommonFirst(game, stop, maxBytes, skipBytes, lease);
+            }
+
             calibration.Token.ThrowIfCancellationRequested();
             (StreamStats, bool) r = _streamer.StreamPrewarmCoordinated(game, stop.Token, (done, total) =>
             {

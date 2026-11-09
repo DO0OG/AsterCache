@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.ComponentModel;
+using System.Diagnostics;
 using AsterCache.Core;
 using AsterCache.Core.Apply;
 using AsterCache.Core.Json;
@@ -246,6 +247,7 @@ public sealed class PrefetchStreamer : IGameStreamer
         {
             try
             {
+                using var orbitTimer = PrewarmRun.Time(PrewarmPhase.Orbit);
                 List<ReadOp> candidate = reorder(game, all, stop);
                 if (candidate is not null && !ReferenceEquals(candidate, all))
                 {
@@ -272,6 +274,7 @@ public sealed class PrefetchStreamer : IGameStreamer
             return (new StreamStats(0, 0, 0, 0, Aborted: true), false);
         }
 
+        using var streamTimer = PrewarmRun.Time(PrewarmPhase.Stream);
         (StreamStats Stats, bool Complete) r = Batches(ops, stop, progress, canIssue, noteIssue);
         if (r.Complete)
         {
@@ -375,7 +378,11 @@ public sealed class PrefetchStreamer : IGameStreamer
 
     /// 예열 스트림에만 틈을 더하고, 남은 예산이 없으면 원래 범위만 유지합니다.
     /// 원래 범위는 존 예산으로 이미 골라졌고, totalBudgetBytes (유효 존 상한·스트림 상한·가용 RAM 중 작은 값) 에서 그 범위를 뺀 나머지만 틈에 씁니다.
-    internal static (List<ReadOp> Ops, long GapBytes, bool FitsBudget) PrewarmOps(GameSettings game, long totalBudgetBytes, CancellationToken cancellationToken = default)
+    /// 예열 한 회 (PrewarmRun) 안에서는 같은 (게임, 예산) 의 목록을 한 번만 계산합니다.
+    internal static (List<ReadOp> Ops, long GapBytes, bool FitsBudget) PrewarmOps(GameSettings game, long totalBudgetBytes, CancellationToken cancellationToken = default) =>
+        PrewarmRun.Plan(game, totalBudgetBytes, cancellationToken, () => BuildPrewarmOps(game, totalBudgetBytes, cancellationToken));
+
+    private static (List<ReadOp> Ops, long GapBytes, bool FitsBudget) BuildPrewarmOps(GameSettings game, long totalBudgetBytes, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         (List<ReadOp> original, _) = ScheduleOps(game, true, trimLast: totalBudgetBytes == 0, cancellationToken: cancellationToken);
@@ -657,6 +664,110 @@ public sealed class PrefetchStreamer : IGameStreamer
 
     /// 선읽기 목록의 앞쪽과 고르게 고른 몇 곳을 읽어 잰 결과 (CacheProbe).
     public static ProbeResult? ProbeReadMs(GameSettings game, Func<bool>? canIssue = null) => CacheProbe.Probe(CacheProbe.PickSamples(Ops(game), round: CacheProbe.NextRound(game.Name)), canIssue: canIssue); // 점검마다 다른 위치 (앞 점검의 읽기가 캐시를 데우지 않게)
+}
+
+internal enum PrewarmPhase { Plan, Calibration, Common, Orbit, Stream }
+
+/// 예열 한 회 동안만 사는 계획 재사용과 단계별 경과 시간. 같은 스레드에서 도는 보정·common·본 스트림이 같은 (게임, 예산) 의 목록을 한 번만 계산하게 하고, 회가 끝나면 사라집니다.
+internal sealed class PrewarmRun : IDisposable
+{
+    [ThreadStatic]
+    private static PrewarmRun? _current;
+
+    private readonly long _started = Stopwatch.GetTimestamp();
+    private readonly long[] _ticks = new long[Enum.GetValues<PrewarmPhase>().Length];
+    private (GameSettings Game, long Budget, List<ReadOp> Ops, long GapBytes, bool Fits, string? Stamp)? _plan;
+    private int _depth;
+
+    // 목록의 입력 (계획·트레이스·예열 전용 옆 파일·가변 표지) 의 (존재, 길이, 수정 시각). 메타데이터 조회뿐이며 읽지 못하면 null (재사용 안 함).
+    private static string? InputStamp(GameSettings game)
+    {
+        try
+        {
+            return string.Join('|', new[] { game.Plan, game.Trace, PlanOutput.WarmOnlyPath(game.Trace), AutoTracer.VolatilePath(game) }.Select(path =>
+            {
+                var info = new FileInfo(path);
+                return info.Exists ? $"{info.Length}:{info.LastWriteTimeUtc.Ticks}" : "-";
+            }));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return null;
+        }
+    }
+
+    public static PrewarmRun Begin()
+    {
+        PrewarmRun run = _current ??= new PrewarmRun();
+        run._depth++;
+        return run;
+    }
+
+    public void Dispose()
+    {
+        if (--_depth == 0)
+        {
+            _current = null;
+        }
+    }
+
+    public static PhaseTimer Time(PrewarmPhase phase) =>
+        _current is { } run ? new PhaseTimer(run, phase, Stopwatch.GetTimestamp(), run._ticks[(int)PrewarmPhase.Plan]) : default;
+
+    /// 이 회에 계산한 목록이 같은 (게임, 예산) 이면 복사본을 돌려주고, 아니면 build 로 계산합니다 (회 밖에서는 항상 build). 취소 검사는 그대로 합니다.
+    public static (List<ReadOp> Ops, long GapBytes, bool FitsBudget) Plan(GameSettings game, long budget, CancellationToken cancellationToken, Func<(List<ReadOp> Ops, long GapBytes, bool FitsBudget)> build)
+    {
+        if (_current is not { } run)
+        {
+            return build();
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        string? stamp = InputStamp(game); // 입력 파일이 회 도중 바뀌었으면 (업데이트 정리 등) 재사용하지 않음. 계산 전에 떠서 계산 중 바뀐 것도 걸림
+        if (run._plan is { } p && ReferenceEquals(p.Game, game) && p.Budget == budget && stamp is not null && p.Stamp == stamp)
+        {
+            return ([.. p.Ops], p.GapBytes, p.Fits);
+        }
+
+        long start = Stopwatch.GetTimestamp();
+        try
+        {
+            (List<ReadOp> ops, long gap, bool fits) = build();
+            run._plan = (game, budget, [.. ops], gap, fits, stamp);
+            return (ops, gap, fits);
+        }
+        finally
+        {
+            run._ticks[(int)PrewarmPhase.Plan] += Stopwatch.GetTimestamp() - start;
+        }
+    }
+
+    /// 각 단계 경과 초와 총 경과 (Begin 부터). Other 는 나머지라 합이 항상 Total 과 같습니다.
+    public (double Plan, double Calibration, double Common, double Orbit, double Stream, double Other, double Total) Elapsed()
+    {
+        double Sec(PrewarmPhase p) => Stopwatch.GetElapsedTime(0, _ticks[(int)p]).TotalSeconds;
+        double total = Stopwatch.GetElapsedTime(_started).TotalSeconds;
+        double known = _ticks.Sum(t => Stopwatch.GetElapsedTime(0, t).TotalSeconds);
+        return (Sec(PrewarmPhase.Plan), Sec(PrewarmPhase.Calibration), Sec(PrewarmPhase.Common), Sec(PrewarmPhase.Orbit), Sec(PrewarmPhase.Stream), total - known, total);
+    }
+
+    public string Summary()
+    {
+        var e = Elapsed();
+        return $"plan {e.Plan:F2} s, calibration {e.Calibration:F2} s, common {e.Common:F2} s, orbit {e.Orbit:F2} s, stream {e.Stream:F2} s, other {e.Other:F2} s = {e.Total:F2} s";
+    }
+
+    /// 단계 시간 (그 안에서 쓴 계획 계산 시간은 Plan 단계로만 셉니다).
+    internal readonly struct PhaseTimer(PrewarmRun? run, PrewarmPhase phase, long start, long planStart) : IDisposable
+    {
+        public void Dispose()
+        {
+            if (run is not null)
+            {
+                run._ticks[(int)phase] += Math.Max(0, Stopwatch.GetTimestamp() - start - (run._ticks[(int)PrewarmPhase.Plan] - planStart));
+            }
+        }
+    }
 }
 
 /// 게임 시작 스트림을 건너뛸 조건의 입력 (기본은 모두 건너뛰지 않음, 시험용). Create 는 진짜 판정.

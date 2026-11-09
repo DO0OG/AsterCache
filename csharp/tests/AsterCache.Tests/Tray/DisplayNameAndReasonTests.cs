@@ -133,6 +133,18 @@ public sealed class DisplayNameAndReasonTests : IDisposable
     }
 
     [Fact]
+    public void KeptTraceReplanReasonsAreNotShownAsTraceAgain()
+    {
+        var kept = new AutoGame("auto", null, "discovered", "game updated, will trace again on next run; trace kept, planning again");
+        Assert.Equal("게임 갱신됨, 학습 유지하고 다시 계획 중", AutoStatusFile.HoldReason(kept, "ko"));
+        Assert.Equal("game updated, learning kept, replanning", AutoStatusFile.HoldReason(kept, "en"));
+
+        var unchanged = new AutoGame("auto", null, "discovered", "game updated, will trace again on next run; unchanged files kept, planning again");
+        Assert.Equal("게임 갱신됨, 바뀌지 않은 파일 학습 유지하고 다시 계획 중", AutoStatusFile.HoldReason(unchanged, "ko"));
+        Assert.Equal("game updated, unchanged files kept, replanning", AutoStatusFile.HoldReason(unchanged, "en"));
+    }
+
+    [Fact]
     public void UnknownReasonsStayVerbatimAndVerdictsAreMapped()
     {
         Assert.Null(AutoStatusFile.ReasonText("something new", "ko"));

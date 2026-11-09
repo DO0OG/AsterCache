@@ -117,6 +117,8 @@ public static partial class L
         ["Why_TargetBusy"] = ("대상 영역 사용 중, 다시 계획", "target area busy, replanning"),
         ["Why_TraceGrew"] = ("트레이스가 늘어 존 확장", "trace grew, extending zone"),
         ["Why_GameUpdated"] = ("게임 갱신됨, 다음 실행에서 다시 수집", "game updated, tracing again next run"),
+        ["Why_TraceKept"] = ("게임 갱신됨, 학습 유지하고 다시 계획 중", "game updated, learning kept, replanning"),
+        ["Why_UnchangedKept"] = ("게임 갱신됨, 바뀌지 않은 파일 학습 유지하고 다시 계획 중", "game updated, unchanged files kept, replanning"),
         ["Why_FirstRunRecorded"] = ("첫 실행 기록됨, 다시 계획", "first run recorded, replanning"),
         ["Why_PartialPlan"] = ("계획과 저널이 달라 남은 부분 재계획", "plan and journal differ, replanning the rest"),
         ["Why_RecoveryStopped"] = ("복구 중단: 같은 사유로 반복 거부", "recovery stopped: rejected again for the same reason"),

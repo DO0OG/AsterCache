@@ -141,6 +141,8 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
         ("another apply or plan switch holds the zone lock", "Why_ZoneLockBusy"),
         ("target region busy", "Why_TargetBusy"),
         ("trace grew", "Why_TraceGrew"),
+        ("trace kept, planning again", "Why_TraceKept"),
+        ("unchanged files kept, planning again", "Why_UnchangedKept"),
         ("game updated", "Why_GameUpdated"),
         ("first run recorded", "Why_FirstRunRecorded"),
         ("plan and journal differ", "Why_PartialPlan"),

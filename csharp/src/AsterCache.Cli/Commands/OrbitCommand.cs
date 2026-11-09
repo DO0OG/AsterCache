@@ -80,7 +80,7 @@ internal static class OrbitCommand
         // 표본마다 게임 하나를 돌려 쓰면 작은 목록이 같은 영역을 되풀이 읽어 드라이브 캐시를 재므로, 그 디스크 허용 게임 전부의 목록을 합친 풀에서 뽑습니다
         List<ReadOp> pool = [.. onDisk.SelectMany(g => opsOf[g.Name])];
         List<(GameSettings Game, string? AntiCheatKind)> gates = [.. onDisk.Select(g => (g, AntiCheatOf(g)))];
-        OrbitCalibration calibration = CalibrationFactory(dataDir, _ => OrbitBenchCommand.Blocker(games) is not null);
+        OrbitCalibration calibration = CalibrationFactory(dataDir, _ => games.Any(OrbitBenchCommand.GameRunning));
 
         using var cts = new CancellationTokenSource();
         void OnCancel(object? sender, ConsoleCancelEventArgs e)
@@ -103,7 +103,7 @@ internal static class OrbitCommand
                     break;
                 }
 
-                OrbitBenchCommand.EnsureIdle(games); // 매 표본 전에 다시 확인
+                OrbitBenchCommand.EnsureIdleBetweenSamples(games); // 시작 때 sc.exe 로 확인한 뒤 표본 직전에는 가벼운 서비스 조회를 유지합니다.
                 long bytes = calibration.SampleBootstrap(gates, pool, cts.Token, out string? reason);
                 read += bytes > 0 ? 1 : 0;
                 var line = new JObject { { "sample", (long)(done + 1) }, { "of", samples }, { "games", (long)onDisk.Count }, { "bytes", bytes } };

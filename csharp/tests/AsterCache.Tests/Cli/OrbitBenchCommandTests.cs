@@ -20,8 +20,11 @@ public sealed class OrbitBenchCommandTests : IDisposable
 {
     private readonly Func<GameSettings, bool> _savedRunning = OrbitBenchCommand.GameRunning;
     private readonly Func<bool> _savedService = OrbitBenchCommand.ServiceRunning;
+    private readonly Func<bool> _savedServiceLight = OrbitBenchCommand.ServiceRunningLight;
     private readonly Func<GameSettings, List<ReadOp>?>? _savedIncumbent = OrbitBenchCommand.IncumbentProvider;
     private readonly Func<GameSettings, List<ReadOp>, double, OrbitRuntime.ForcedCandidate>? _savedCandidate = OrbitBenchCommand.CandidateProvider;
+    private readonly Func<string, string, string, List<ReadOp>, List<ReadOp>?, long?, double, int, Action<string, double>, OrbitRuntime.CandidateAssessment>
+        _savedRescoreAssessment = OrbitBenchCommand.RescoreAssessmentProvider;
     private readonly Func<TimeSpan, CancellationToken, bool> _savedWait = OrbitCommand.Wait;
     private readonly Func<string, Func<GameSettings, bool>, OrbitCalibration> _savedFactory = OrbitCommand.CalibrationFactory;
     private readonly TempDir _dir = new();
@@ -45,6 +48,7 @@ public sealed class OrbitBenchCommandTests : IDisposable
 
         OrbitBenchCommand.GameRunning = _ => false;
         OrbitBenchCommand.ServiceRunning = () => false;
+        OrbitBenchCommand.ServiceRunningLight = () => false;
         OrbitBenchCommand.IncumbentProvider = _ => _ops;
         OrbitBenchCommand.CandidateProvider = (_, inc, _) => new OrbitRuntime.ForcedCandidate([.. inc.Skip(1), inc[0]], "forced_candidate", "model", 0.5); // 같은 op 를 회전한 후보
     }
@@ -53,8 +57,10 @@ public sealed class OrbitBenchCommandTests : IDisposable
     {
         OrbitBenchCommand.GameRunning = _savedRunning;
         OrbitBenchCommand.ServiceRunning = _savedService;
+        OrbitBenchCommand.ServiceRunningLight = _savedServiceLight;
         OrbitBenchCommand.IncumbentProvider = _savedIncumbent;
         OrbitBenchCommand.CandidateProvider = _savedCandidate;
+        OrbitBenchCommand.RescoreAssessmentProvider = _savedRescoreAssessment;
         OrbitCommand.Wait = _savedWait;
         OrbitCommand.CalibrationFactory = _savedFactory;
         _dir.Dispose();
@@ -221,17 +227,51 @@ public sealed class OrbitBenchCommandTests : IDisposable
         };
         File.WriteAllText(runPath, PyJson.Dumps(run));
 
-        (int code, _, string error) = Cli("orbit-bench", "rescore", "--orbit", orbitPath, "--in", runPath);
+        Orbit3Decision decision = Orbit3.Decide(new Orbit3Input(
+            new OrbitSegmentSet(
+                [new ReadOp("file", 0, 2_000_000_000), new ReadOp("file", 2_000_000_000, 500_000_000)],
+                0,
+                0,
+                [new OrbitSegment(0, 1, 2_000_000_000, 0, 0), new OrbitSegment(1, 1, 500_000_000, 2_000_000_000, 0)]),
+            [
+                new Orbit3Episode([(0, 2_000_000_000)], 0.01, 0.01, 0.01),
+                new Orbit3Episode([(1, 500_000_000)], 1, 1, 1)
+            ],
+            0.001,
+            0.001,
+            0.001,
+            new Orbit3Device(0, 1_000_000, 1, 1, 1, 1),
+            0.9));
+        int assessmentCalls = 0;
+        OrbitBenchCommand.RescoreAssessmentProvider = (_, _, _, _, _, _, _, _, _) =>
+        {
+            assessmentCalls++;
+            return new OrbitRuntime.CandidateAssessment(decision.Order is not null, decision.Reason, decision.WorstEpisodeDelayMs);
+        };
+        string outDir = Out("rescored");
+
+        (int code, string output, string error) = Cli("orbit-bench", "rescore", "--orbit", orbitPath, "--in", runPath, "--out-dir", outDir);
 
         Assert.Equal(0, code);
         Assert.Empty(error);
-        var rescored = (JObject)JsonRead.ReadFile(runPath)!;
+        Assert.Equal("episode_regression", decision.Reason);
+        Assert.Equal(2, assessmentCalls);
+        JObject summary = (JObject)JsonRead.Parse(output)!;
+        Assert.Equal(false, summary["new_rule_would_adopt_b"]);
+        Assert.Equal("episode_regression", summary["new_rule_reason"]);
+        Assert.Equal(500L, summary["budget_ms"]);
+        Assert.Equal("episode_regression", ((JObject)summary["warm_decision"]!)["reason"]);
+        Assert.True((double)summary["model_worst_episode_delay_ms"]! > Orbit3Constants.EpisodeRegressionSlackMs);
+        Assert.Null(summary["measured_episode_p95_worse_max_ms"]); // 한 run만으로는 플래그 4의 쌍별 지연을 계산할 수 없습니다.
+
+        var rescored = (JObject)JsonRead.ReadFile(Path.Combine(outDir, Path.GetFileName(runPath)))!;
         Assert.Equal("fp-v2", rescored["inputs"]);
         Assert.Equal(60.0, rescored["value_mean_ms"]);
         Assert.Equal(20.0, rescored["curve_area_ms"]);
         var episode = Assert.Single((List<object?>)rescored["episodes"]!) as JObject;
         Assert.Equal(60.0, episode!["t_ready_ms"]);
         Assert.Equal(0L, episode["blocks_missing"]);
+        Assert.Equal(false, ((JObject)rescored["rescore_decision"]!)["would_adopt"]);
     }
 
     [Fact]
@@ -616,6 +656,33 @@ public sealed class OrbitBenchCommandTests : IDisposable
         Assert.Equal(1, code);
         Assert.Contains("the game is running: Foo", text);
         Assert.Equal(15, reads.Count); // 첫 표본만 읽음
+    }
+
+    [Fact]
+    public void CalibrateRechecksServiceWithTheLightweightQueryBeforeEachSample()
+    {
+        var (reads, waits) = FakeCalibration();
+        int lightChecks = 0;
+        int serviceChecks = 0;
+        OrbitBenchCommand.ServiceRunning = () =>
+        {
+            serviceChecks++;
+            return false;
+        };
+        OrbitBenchCommand.ServiceRunningLight = () => ++lightChecks > 1;
+        OrbitCommand.Wait = (span, _) =>
+        {
+            waits.Add(span);
+            return true;
+        };
+
+        (int code, string text, _) = Calibrate("--samples", "3");
+
+        Assert.Equal(1, code);
+        Assert.Contains("service is running", text);
+        Assert.Equal(1, serviceChecks); // 시작 때 프로세스 조회를 한 번만 합니다.
+        Assert.Equal(2, lightChecks); // 첫 표본 뒤 서비스가 시작된 것을 다음 표본 직전에 감지합니다.
+        Assert.Equal(15, reads.Count);
     }
 
     [Fact]

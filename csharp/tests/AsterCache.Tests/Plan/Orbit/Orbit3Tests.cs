@@ -122,6 +122,48 @@ public sealed class Orbit3Tests
     }
 
     [Fact]
+    public void EpisodeRegressionRejectsAnOtherwiseProfitableOrder()
+    {
+        Orbit3Input input = new(
+            SegmentSet([2_000_000_000, 500_000_000]),
+            [
+                new Orbit3Episode([(0, 2_000_000_000)], 0.01, 0.01, 0.01),
+                new Orbit3Episode([(1, 500_000_000)], 1, 1, 1)
+            ],
+            0.001,
+            0.001,
+            0.001,
+            new Orbit3Device(0, 1_000_000, 1, 1, 1, 1),
+            0.9);
+
+        Orbit3Decision measuredCandidate = Orbit3.DecideCandidate(input);
+        Orbit3Decision decision = Orbit3.Decide(input);
+
+        Assert.Equal(new[] { 1, 0 }, measuredCandidate.Order); // 제약 전 명목 후보는 대용량 에피소드를 500 ms 늦춥니다.
+        Assert.Null(decision.Order);
+        Assert.Equal("episode_regression", decision.Reason);
+        Assert.Equal(500, decision.WorstEpisodeDelayMs);
+    }
+
+    [Fact]
+    public void CandidateThatImprovesEveryEpisodeRemainsEligible()
+    {
+        Orbit3Input input = GainInput() with
+        {
+            Episodes =
+            [
+                new Orbit3Episode([(1, 100)], 0.5, 0.5, 0.5),
+                new Orbit3Episode([(1, 100)], 0.5, 0.5, 0.5)
+            ]
+        };
+
+        Orbit3Decision decision = Orbit3.Decide(input);
+
+        Assert.Equal(new[] { 1, 0 }, decision.Order);
+        Assert.True(decision.WorstEpisodeDelayMs < 0);
+    }
+
+    [Fact]
     public void DeviceEnvelopeUsesSeekAndThroughputCorners()
     {
         Orbit3Input pointInput = GainInput() with
@@ -332,6 +374,125 @@ public sealed class Orbit3Tests
 
         Assert.Equal(new[] { (0, 32L * 1024) }, mapped.Parts);
         Assert.Equal(1, mapped.Unmatched);
+    }
+
+    [Fact]
+    public void OverlappingOperationsCountEachBlockByteOnlyOnce()
+    {
+        const long kib = 1024;
+        ReadOp[] ops =
+        [
+            new("a", 0, 48 * kib),
+            new("a", 32 * kib, 32 * kib),
+            new("a", 16 * kib, 48 * kib)
+        ];
+        OrbitSegmentSet set = new(ops, 1, 48 * kib,
+        [
+            new OrbitSegment(1, 1, 32 * kib, 0, 0),
+            new OrbitSegment(2, 1, 48 * kib, 32 * kib, 0)
+        ]);
+
+        var mapped = Orbit3.MapBlocks(set, [("a", 0)]);
+        Orbit3BlockMapping compressed = Assert.Single(Orbit3.MapBlockRanges(set, [[new OrbitBlockRange("a", 0, 1)]]));
+
+        // Overlapping ops now assign each byte once, so the expected decision input no longer double-counts overlap.
+        Assert.Equal(48 * kib, mapped.HeadBytes);
+        Assert.Equal(new[] { (0, 16L * kib) }, mapped.Parts);
+        Assert.Equal(64 * kib, mapped.HeadBytes + mapped.Parts.Sum(part => part.Bytes));
+        Assert.Equal(mapped.Parts, compressed.Parts);
+        Assert.Equal(mapped.HeadBytes, compressed.HeadBytes);
+    }
+
+    [Fact]
+    public void RandomNonOverlappingOperationsMatchTheLegacySummationReference()
+    {
+        const long blockBytes = 64L * 1024;
+        var random = new Random(0x0B17);
+        for (int sample = 0; sample < 200; sample++)
+        {
+            int blockCount = random.Next(8, 40);
+            ReadOp[] operations = Enumerable.Range(0, blockCount)
+                .Where(_ => random.Next(3) != 0)
+                .Select(block => new ReadOp("a", block * blockBytes, random.NextInt64(1, blockBytes + 1)))
+                .ToArray();
+            int headCount = random.Next(operations.Length + 1);
+            long headBytes = operations.Take(headCount).Sum(op => op.Length);
+            OrbitSegmentSet set = OrbitSegments.Build(operations, headBytes, blockBytes);
+            var blocks = Enumerable.Range(0, blockCount).Select(block => ("a", (long)block)).ToArray();
+            var actual = Orbit3.MapBlocks(set, blocks);
+            var expected = LegacyMapBlocks(set, blocks);
+
+            Assert.Equal(expected.HeadBytes, actual.HeadBytes);
+            Assert.Equal(expected.Parts, actual.Parts);
+            Assert.Equal(expected.Unmatched, actual.Unmatched);
+            Assert.InRange(actual.HeadBytes + actual.Parts.Sum(part => part.Bytes), 0, operations.Sum(op => op.Length));
+        }
+    }
+
+    private static (IReadOnlyList<(int Segment, long Bytes)> Parts, long HeadBytes, int Unmatched) LegacyMapBlocks(
+        OrbitSegmentSet set, IEnumerable<(string Path, long Block)> blocks)
+    {
+        const long blockBytes = 64L * 1024;
+        var segmentBytes = new long[set.Segments.Count];
+        var seen = new HashSet<(string Path, long Block)>();
+        long headBytes = 0;
+        int unmatched = 0;
+        foreach ((string path, long block) in blocks)
+        {
+            if (!seen.Add((path, block)))
+            {
+                continue;
+            }
+
+            long start = block * blockBytes;
+            long end = start + blockBytes;
+            bool mapped = false;
+            for (int operationIndex = 0; operationIndex < set.Ops.Count; operationIndex++)
+            {
+                ReadOp op = set.Ops[operationIndex];
+                if (!string.Equals(path, op.Path, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                long overlap = Math.Min(end, op.Offset + op.Length) - Math.Max(start, op.Offset);
+                if (overlap <= 0)
+                {
+                    continue;
+                }
+
+                mapped = true;
+                if (operationIndex < set.HeadCount)
+                {
+                    headBytes += overlap;
+                }
+                else
+                {
+                    int segmentIndex = -1;
+                    for (int index = 0; index < set.Segments.Count; index++)
+                    {
+                        OrbitSegment segment = set.Segments[index];
+                        if (operationIndex >= segment.Start && operationIndex < segment.Start + segment.Count)
+                        {
+                            segmentIndex = index;
+                            break;
+                        }
+                    }
+                    if (segmentIndex >= 0)
+                    {
+                        segmentBytes[segmentIndex] += overlap;
+                    }
+                }
+            }
+
+            if (!mapped)
+            {
+                unmatched++;
+            }
+        }
+
+        var parts = segmentBytes.Select((bytes, segment) => (Segment: segment, Bytes: bytes)).Where(part => part.Bytes > 0).ToArray();
+        return (parts, headBytes, unmatched);
     }
 
     [Fact]

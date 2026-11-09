@@ -16,7 +16,7 @@ public enum CacheState { Cold, Warm, Unknown }
 /// TVisualMs 는 동의 기반 외부 관찰·수동 입력만 받는 칸입니다 (화면 캡처 코드 없음, 판정에도 쓰지 않음).
 /// TTotalMs 는 준비 포함 총 시간 칸입니다 (null 은 unobserved). 판정에는 아직 쓰지 않습니다.
 /// GameBuild 는 게임 빌드 식별자 (null 이면 모름). 같은 판정 안에서는 빌드·캐시 상태가 모두 같아야 합니다.
-/// ProbeReadyMs 는 로딩 경계의 캐시 표본 도달 시각 (대리 지표, 실제 준비 완료 시각이 아님). 판정에는 쓰지 않습니다.
+/// ProbeReadyMs 는 로딩 경계의 캐시 표본 도달 시각 (대리 지표, 실제 준비 완료 시각이 아님). 신뢰구간을 넘는 악화의 강등에만 씁니다.
 /// ElapsedBasis 는 Elapsed 의 기준 (service_uptime 또는 unknown). 기록 파일에 없으면 unknown 이며, install 로 간주하지 않습니다.
 public sealed record LoadSample(
     string GameKey,

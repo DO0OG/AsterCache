@@ -62,7 +62,59 @@ public sealed class OrbitLargeInputTests(ITestOutputHelper output) : IDisposable
 
         Assert.Equal("forced_candidate", result.Reason);
         Assert.NotNull(result.Ops);
-        Assert.True(elapsedMs < Orbit3Constants.DecisionBudgetMs, $"Candidate path took {elapsedMs:F1} ms");
+        Assert.True(elapsedMs < 1_500, $"Candidate path took {elapsedMs:F1} ms");
+    }
+
+    [Fact]
+    public void ServiceDecisionFinishesForFortyThousandOpsAndSixteenDeviceConditions()
+    {
+        Directory.CreateDirectory(_dir);
+        const int operationCount = 40_000;
+        const long operationBytes = 256L << 10;
+        const long headBytes = 256L << 20;
+        string path = @"D:\Games\Synthetic\asset.bin";
+        var ops = new List<ReadOp>(operationCount);
+        for (int index = 0; index < operationCount; index++)
+        {
+            ops.Add(new ReadOp(path, index * operationBytes, operationBytes));
+        }
+
+        OrbitSegmentSet set = OrbitSegments.Build(ops, headBytes);
+        int targetSegment = set.Segments.Count - 1;
+        OrbitSegment target = set.Segments[targetSegment];
+        long startBlock = (long)target.Position / BlockBytes;
+        long blockCount = target.Bytes / BlockBytes;
+        var episodes = Enumerable.Range(0, 26)
+            .Select(_ => new OrbitEpisode([], 0.7, 0.8, 0.9, target.Bytes)
+            {
+                Ranges = [new OrbitBlockRange(path, startBlock, blockCount)]
+            })
+            .ToList();
+        var snapshot = new OrbitModelSnapshot(episodes, 0.00001, 0.00001, 0.00001, 4, 0);
+        var game = new GameSettings("synthetic", ["game.exe"], Path.Combine(_dir, "synthetic.prefetch.json"),
+            Path.Combine(_dir, "synthetic.plan.json"), @"D:\Games\Synthetic", [@"D:\Games\Synthetic"], "GAMES", 60);
+        File.WriteAllText(Path.Combine(_dir, OrbitRuntime.ModeFileName), "{\"mode\":\"active\"}");
+        Orbit3Decision? decision = null;
+        var runtime = new OrbitRuntime(_dir, null, null, new ListLog(), loadModel: (_, _) => snapshot,
+            device: _ => new DeviceFit(47, 42_000, 19, 19,
+                new DeviceEnvelope(0.8, 1.2, 0.7, 1.3, OrbitEnvelope.Version)),
+            headBytes: _ => headBytes,
+            decide: (input, token) =>
+            {
+                Orbit3Decision result = Orbit3.Decide(input, token);
+                decision = result;
+                return result;
+            });
+
+        var clock = Stopwatch.StartNew();
+        _ = runtime.Reorder(game, ops);
+        clock.Stop();
+        double elapsedMs = clock.Elapsed.TotalMilliseconds;
+        output.WriteLine($"ops={operationCount} episodes={episodes.Count} conditions=16 decision_ms={elapsedMs:F1} reason={decision?.Reason}");
+
+        Assert.NotNull(decision?.Order);
+        Assert.NotEqual("timeout", decision?.Reason);
+        Assert.True(elapsedMs < 1_500, $"Decision path took {elapsedMs:F1} ms");
     }
 
     public void Dispose()

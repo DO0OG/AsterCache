@@ -6,6 +6,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="AsterCache.Tests" />
+    <InternalsVisibleTo Include="AsterCache.Service" />
+    <InternalsVisibleTo Include="aster" />
     <EmbeddedResource Include="Profiles\engines.json" LogicalName="AsterCache.Core.Profiles.engines.json" />
   </ItemGroup>
 

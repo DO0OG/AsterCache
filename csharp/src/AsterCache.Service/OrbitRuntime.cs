@@ -23,6 +23,8 @@ public sealed class OrbitRuntime
     private readonly Func<GameSettings, DeviceFit?> _device;
     private readonly Func<GameSettings, long> _headBytes;
     private readonly Func<Orbit3Input, CancellationToken, Orbit3Decision> _decide;
+    private readonly Func<Orbit3Input, CancellationToken, int, Action<string, double>, Orbit3Decision> _decideMeasured;
+    private readonly Func<Orbit3Input, IReadOnlyList<int>, CancellationToken, int, Action<string, double>, Orbit3Decision> _decideOrderMeasured;
     private readonly Func<DateTimeOffset> _now;
     private readonly ConcurrentDictionary<string, int> _exceptionStreak = new(StringComparer.OrdinalIgnoreCase); // 게임별 연속 계산 예외 횟수
     private readonly object _modeLock = new();
@@ -33,7 +35,9 @@ public sealed class OrbitRuntime
     public OrbitRuntime(string dataDir, OrbitCalibration? calibration, AutoStatus? status, ILog log, bool enabled = true,
         Func<GameSettings, CancellationToken, OrbitModelSnapshot>? loadModel = null, Func<GameSettings, DeviceFit?>? device = null,
         Func<GameSettings, long>? headBytes = null, Func<Orbit3Input, CancellationToken, Orbit3Decision>? decide = null,
-        Func<DateTimeOffset>? now = null)
+        Func<DateTimeOffset>? now = null,
+        Func<Orbit3Input, CancellationToken, int, Action<string, double>, Orbit3Decision>? decideMeasured = null,
+        Func<Orbit3Input, IReadOnlyList<int>, CancellationToken, int, Action<string, double>, Orbit3Decision>? decideOrderMeasured = null)
     {
         _modePath = Path.Combine(dataDir, ModeFileName);
         _calibration = calibration;
@@ -50,6 +54,8 @@ public sealed class OrbitRuntime
         _device = device ?? (game => _calibration?.Envelope(_calibration.KeyOf(game)));
         _headBytes = headBytes ?? PrefetchStreamer.HeadBytesOf;
         _decide = decide ?? Orbit3.Decide;
+        _decideMeasured = decideMeasured ?? Orbit3.DecideMeasured;
+        _decideOrderMeasured = decideOrderMeasured ?? Orbit3.DecideOrderMeasured;
         _now = now ?? (() => DateTimeOffset.UtcNow);
     }
 
@@ -57,8 +63,7 @@ public sealed class OrbitRuntime
 
     public string Mode => ReadMode();
 
-    /// 모드 파일을 마지막으로 바꾼 시각입니다. 결과 판정이 그 이후 표본만 쓰게 하는 기준입니다.
-    /// 파일이 있었다가 사라졌으면 사라진 것을 처음 관측한 시각이고, 처음부터 없으면 null 입니다.
+    /// 모드 파일을 마지막으로 바꾼 시각입니다. null이면 재시작 뒤 삭제 관측이 없고, 현재 프로세스의 표본은 모두 유효합니다.
     public DateTimeOffset? ModeChangedAt => ObserveModeFile(File.Exists(_modePath));
 
     private DateTimeOffset? ObserveModeFile(bool exists)
@@ -75,6 +80,7 @@ public sealed class OrbitRuntime
             if (_modeFileSeen)
             {
                 _modeMissingSince ??= _now();
+                return _modeMissingSince;
             }
 
             return _modeMissingSince;
@@ -157,7 +163,7 @@ public sealed class OrbitRuntime
             List<ReadOp> result = shouldApply ? OrbitApply.Reorder(ops, set, decision.Order) : ops;
             bool applied = !ReferenceEquals(result, ops);
             reason = decision.Reason;
-            if (!PersistDecision(game, mode))
+            if (!PersistDecision(game, mode, decision.Reason, decision.WorstEpisodeDelayMs))
             {
                 result = ops;
                 applied = false;
@@ -233,6 +239,9 @@ public sealed class OrbitRuntime
     /// 벤치 후보 결과: 순서 (없으면 null), 이유 (후보가 없을 때 왜 없는지), 위험률 출처 (model | bench_override | 위험률 단계 전이면 null)와 분당 값.
     public sealed record ForcedCandidate(List<ReadOp>? Ops, string Reason, string? LambdaSource = null, double? LambdaPerMin = null);
 
+    public sealed record CandidateAssessment(bool WouldAdopt, string Reason, double? WorstEpisodeDelayMs,
+        string? LambdaSource = null, double? LambdaPerMin = null);
+
     public static ForcedCandidate ForceCandidateOps(GameSettings game, List<ReadOp> incumbent, double lambdaPerMin)
     {
         string plansDir = Path.GetDirectoryName(game.Plan) ?? string.Empty;
@@ -241,6 +250,26 @@ public sealed class OrbitRuntime
             () => DateTimeOffset.UtcNow, _ => false, _ => false, Random.Shared, diskKey: OrbitCalibration.PhysicalDiskKey);
         var runtime = new OrbitRuntime(dataDir, calibration, null, QuietLog.Instance);
         return runtime.ForceCandidate(game, incumbent, lambdaPerMin);
+    }
+
+    public static CandidateAssessment DecideCandidateOps(GameSettings game, List<ReadOp> incumbent, double lambdaPerMin)
+        => DecideCandidateOpsMeasured(game, incumbent, lambdaPerMin, Orbit3Constants.DecisionBudgetMs, null);
+
+    /// 오프라인 재채점에서만 예산과 단계 계측을 지정합니다. 서비스 판정은 500 ms를 유지합니다.
+    public static CandidateAssessment DecideCandidateOpsMeasured(GameSettings game, List<ReadOp> incumbent,
+        double lambdaPerMin, int decisionBudgetMs, Action<string, double>? reportStage,
+        List<ReadOp>? candidateOps = null,
+        long? headBytesOverride = null,
+        Func<GameSettings, CancellationToken, OrbitModelSnapshot>? loadModelOverride = null)
+    {
+        string plansDir = Path.GetDirectoryName(game.Plan) ?? string.Empty;
+        string dataDir = Path.GetDirectoryName(plansDir) ?? plansDir;
+        var calibration = new OrbitCalibration(dataDir, QuietLog.Instance, (_, _, _, _) => null,
+            () => DateTimeOffset.UtcNow, _ => false, _ => false, Random.Shared, diskKey: OrbitCalibration.PhysicalDiskKey);
+        Func<GameSettings, long>? headBytes = headBytesOverride is { } bytes ? _ => bytes : null;
+        var runtime = new OrbitRuntime(dataDir, calibration, null, QuietLog.Instance,
+            loadModel: loadModelOverride, headBytes: headBytes);
+        return runtime.DecideCandidate(game, incumbent, lambdaPerMin, decisionBudgetMs, reportStage, candidateOps);
     }
 
     // 벤치 후보 전용입니다. 위험률이 없거나 사건이 0이면 고정 값을 쓰며, 서비스 결정 (Reorder) 에는 이 값을 쓰지 않습니다.
@@ -271,10 +300,59 @@ public sealed class OrbitRuntime
         }
     }
 
+    private CandidateAssessment DecideCandidate(GameSettings game, List<ReadOp> incumbent, double lambdaPerMin,
+        int decisionBudgetMs, Action<string, double>? reportStage, IReadOnlyList<ReadOp>? candidateOps = null)
+    {
+        using var budget = new CancellationTokenSource(decisionBudgetMs);
+        try
+        {
+            string? why = BuildInput(game, incumbent, budget.Token, lambdaPerMin, out Orbit3Input? input, out _, out _, out _, out _,
+                out string? source, out double? perMin, reportStage);
+            if (why is not null || input is null)
+            {
+                return new CandidateAssessment(false, why ?? "no_input", null, source, perMin);
+            }
+
+            Orbit3Decision decision;
+            if (candidateOps is not null)
+            {
+                long mappingStarted = reportStage is null ? 0 : Stopwatch.GetTimestamp();
+                if (!OrbitApply.TryGetOrder(input.Set, candidateOps, out int[] candidateOrder, out string mappingReason))
+                {
+                    return new CandidateAssessment(false, $"candidate_order_unmatched:{mappingReason}", null, source, perMin);
+                }
+
+                if (reportStage is not null)
+                {
+                    reportStage("candidate_order_mapping", Stopwatch.GetElapsedTime(mappingStarted).TotalMilliseconds);
+                }
+
+                decision = _decideOrderMeasured(input, candidateOrder, budget.Token, decisionBudgetMs,
+                    reportStage ?? ((_, _) => { }));
+            }
+            else
+            {
+                decision = reportStage is null && decisionBudgetMs == Orbit3Constants.DecisionBudgetMs
+                    ? _decide(input, budget.Token)
+                    : _decideMeasured(input, budget.Token, decisionBudgetMs, reportStage ?? ((_, _) => { }));
+            }
+
+            return new CandidateAssessment(decision.Order is not null, decision.Reason, decision.WorstEpisodeDelayMs, source, perMin);
+        }
+        catch (OperationCanceledException)
+        {
+            return new CandidateAssessment(false, "timeout", null);
+        }
+        catch (Exception e) when (e is not (OutOfMemoryException or StackOverflowException))
+        {
+            return new CandidateAssessment(false, "calculation_error", null);
+        }
+    }
+
     private List<ReadOp> FinishBaseline(GameSettings game, List<ReadOp> ops, string mode, string reason,
         DeviceFit? fit, OrbitModelSnapshot? snapshot, Orbit3Decision? decision, OrbitSegmentSet? set, int blocks, Stopwatch clock)
     {
-        if (mode != "off" && !PersistDecision(game, mode))
+        if (mode != "off" && !PersistDecision(game, mode, reason, decision?.WorstEpisodeDelayMs))
         {
             reason = "decision_record_failed";
         }
@@ -285,12 +363,19 @@ public sealed class OrbitRuntime
 
     private string? BuildInput(GameSettings game, List<ReadOp> ops, CancellationToken token, double lambdaPerMin,
         out Orbit3Input? input, out string reason, out OrbitModelSnapshot? snapshot, out DeviceFit? fit, out OrbitSegmentSet? set,
-        out string? lambdaSource, out double? lambdaPerMinUsed)
+        out string? lambdaSource, out double? lambdaPerMinUsed, Action<string, double>? reportStage = null)
     {
         input = null;
         reason = string.Empty;
         snapshot = null;
+        long stageStarted = reportStage is null ? 0 : Stopwatch.GetTimestamp();
         fit = _device(game);
+        if (reportStage is not null)
+        {
+            reportStage("device_condition", Stopwatch.GetElapsedTime(stageStarted).TotalMilliseconds);
+            stageStarted = Stopwatch.GetTimestamp();
+        }
+
         set = null;
         lambdaSource = null;
         lambdaPerMinUsed = null;
@@ -301,6 +386,12 @@ public sealed class OrbitRuntime
         }
 
         snapshot = _loadModel(game, token);
+        if (reportStage is not null)
+        {
+            reportStage("episode_model_load", Stopwatch.GetElapsedTime(stageStarted).TotalMilliseconds);
+            stageStarted = Stopwatch.GetTimestamp();
+        }
+
         token.ThrowIfCancellationRequested();
         if (snapshot.Episodes.Count == 0)
         {
@@ -325,7 +416,17 @@ public sealed class OrbitRuntime
         }
 
         set = OrbitSegments.Build(ops, _headBytes(game));
-        (List<Orbit3Episode> episodes, _, double confidence) = MapEpisodes(snapshot, set, ops, token);
+        if (reportStage is not null)
+        {
+            reportStage("segmentation", Stopwatch.GetElapsedTime(stageStarted).TotalMilliseconds);
+            stageStarted = Stopwatch.GetTimestamp();
+        }
+
+        (List<Orbit3Episode> episodes, _, double confidence) = MapEpisodes(snapshot, set, ops, token, reportStage);
+        if (reportStage is not null)
+        {
+            reportStage("episode_mapping", Stopwatch.GetElapsedTime(stageStarted).TotalMilliseconds);
+        }
         var device = new Orbit3Device(fit.SeekHatMs, fit.ThroughputHatMBps * 1000,
             fit.Envelope.SeekMin, fit.Envelope.SeekMax, fit.Envelope.ThroughputMin, fit.Envelope.ThroughputMax);
         input = new Orbit3Input(set, episodes, lambdaLow, lambdaHat, lambdaHigh, device, confidence);
@@ -334,7 +435,8 @@ public sealed class OrbitRuntime
 
     // 에피소드 블록 경로를 예열 목록의 표기(대소문자)로 맞춰 사상합니다 (MapBlocks 는 Ordinal 비교).
     private static (List<Orbit3Episode> Episodes, int Blocks, double Confidence) MapEpisodes(
-        OrbitModelSnapshot snapshot, OrbitSegmentSet set, List<ReadOp> ops, CancellationToken token)
+        OrbitModelSnapshot snapshot, OrbitSegmentSet set, List<ReadOp> ops, CancellationToken token,
+        Action<string, double>? reportStage = null)
     {
         var canonical = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (ReadOp op in ops)
@@ -349,7 +451,9 @@ public sealed class OrbitRuntime
             rangesByEpisode.Add(CanonicalRanges(episode, canonical));
         }
 
-        IReadOnlyList<Orbit3BlockMapping> mapped = Orbit3.MapBlockRanges(set, rangesByEpisode, token);
+        IReadOnlyList<Orbit3BlockMapping> mapped = reportStage is null
+            ? Orbit3.MapBlockRanges(set, rangesByEpisode, token)
+            : Orbit3.MapBlockRangesMeasured(set, rangesByEpisode, token, reportStage);
         var episodes = new List<Orbit3Episode>(snapshot.Episodes.Count);
         int totalBlocks = 0;
         int unmatched = 0;
@@ -427,7 +531,7 @@ public sealed class OrbitRuntime
 
     private void ResetExceptionStreak(GameSettings game) => _exceptionStreak.TryRemove(game.Name, out _);
 
-    private bool PersistDecision(GameSettings game, string mode)
+    private bool PersistDecision(GameSettings game, string mode, string reason, double? worstEpisodeDelayMs)
     {
         if (mode == "off")
         {
@@ -436,7 +540,7 @@ public sealed class OrbitRuntime
 
         try
         {
-            OrbitModel.SetDecision(game, Guid.NewGuid().ToString("N"), _now(), mode);
+            OrbitModel.SetDecision(game, Guid.NewGuid().ToString("N"), _now(), mode, reason, worstEpisodeDelayMs);
             return true;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException or ArgumentException)

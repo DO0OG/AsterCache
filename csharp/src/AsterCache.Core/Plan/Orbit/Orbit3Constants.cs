@@ -64,6 +64,10 @@ public static class Orbit3Constants
     public const int DecisionBudgetMs = 500;
     public const int ModelBuildBudgetMs = 2000;
 
+    /// 후보 순서가 한 에피소드의 준비 시각을 늦출 수 있는 기본 한도입니다 (플래그 4 기준과 동일).
+    public const double EpisodeRegressionFraction = 0.05;
+    public const double EpisodeRegressionSlackMs = 200;
+
     /// 연속 예외가 이만큼이면 모드를 shadow 로 강등.
     public const int ExceptionDemoteStreak = 2;
 }

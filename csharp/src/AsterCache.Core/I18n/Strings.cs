@@ -124,6 +124,7 @@ public static partial class L
         ["Source_Manual"] = ("수동", "Manual"),
         ["Stage_Discovered"] = ("발견", "discovered"),
         ["Stage_Tracing"] = ("트레이스 수집 중", "collecting trace"),
+        ["Stage_LateWindow"] = ("후반 창 {0}/{1}", "late window {0}/{1}"),
         ["Stage_WaitingIdle"] = ("재배치 대기", "waiting to relocate"),
         ["Stage_Relocating"] = ("재배치 중", "relocating"),
         ["Stage_Done"] = ("완료", "done"),

@@ -181,6 +181,22 @@ public sealed class ZoneStreamerTests
     }
 
     [Fact]
+    public void PvmReportsRequestSizeAndProgressBeforeAndAfterEachFragment()
+    {
+        using var tmp = new TempDir();
+        tmp.WriteRandom("f.bin", (int)(20 * Mib));
+        var issues = new List<(string Stage, long Bytes, bool IsData)>();
+
+        _ = ZoneStreamer.RunPvm([new(tmp.Combine("f.bin"), 0, 20 * Mib)], CancellationToken.None,
+            out _, out _, _ => true, (stage, bytes, isData) => issues.Add((stage, bytes, isData)));
+
+        Assert.Equal(new long[] { 8 * Mib, 8 * Mib, 8 * Mib, 8 * Mib, 4 * Mib, 4 * Mib }, issues.Select(issue => issue.Bytes));
+        Assert.All(issues, issue => Assert.True(issue.IsData));
+        Assert.Contains(issues, issue => issue.Stage == "pvm fragment 1/3 started, progress 0/20971520 bytes");
+        Assert.Contains(issues, issue => issue.Stage == "pvm fragment 3/3 completed, progress 20971520/20971520 bytes");
+    }
+
+    [Fact]
     public void PvmHintBytesAreSeparatedFromRequestedBytes()
     {
         using var tmp = new TempDir();

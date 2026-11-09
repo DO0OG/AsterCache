@@ -20,25 +20,35 @@ public static class Scheduler
         Func<string, FileLayoutInfo?>? layoutFn = null,
         Func<string, long>? sizeFn = null,
         double fullFileRatio = 0.3,
-        long? headBytes = null)
+        long? headBytes = null,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         long gap = gapBytes ?? BreakevenGap();
         if (strategy is not ("physical" or "path" or "none"))
         {
             throw new ArgumentException("unknown strategy", nameof(strategy));
         }
 
-        List<ReadRange> rows = ranges.ToList();
+        var rows = new List<ReadRange>();
+        foreach (ReadRange range in ranges)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            rows.Add(range);
+        }
+
         if (rows.Any(r => r.Score is not null))
         {
             // 안정 정렬: 점수 없는 행은 맨 뒤.
             rows = rows.OrderByDescending(r => r.Score ?? double.NegativeInfinity).ToList();
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         var chosen = new List<ReadRange>();
         long used = 0;
         foreach (ReadRange r in rows)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (budgetBytes is not null && used + r.Length > budgetBytes)
             {
                 continue;
@@ -71,6 +81,7 @@ public static class Scheduler
         var byPath = new OrderedDictionary<string, List<ReadRange>>();
         foreach (ReadRange r in chosen)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (!byPath.TryGetValue(r.Path, out List<ReadRange>? list))
             {
                 byPath[r.Path] = list = new List<ReadRange>();
@@ -84,6 +95,7 @@ public static class Scheduler
             var dens = new List<(double Ratio, string Path, long Size, long Need)>();
             foreach ((string path, List<ReadRange> rs) in byPath)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 long size = sizeFn(path);
                 long need = UnionBytes(rs);
                 if (size != 0 && (double)need / size >= fullFileRatio)
@@ -111,6 +123,7 @@ public static class Scheduler
         bool physMode = strategy == "physical";
         foreach ((string path, List<ReadRange> rs) in byPath)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             FileLayoutInfo? lay = physMode && layoutFn is not null ? layoutFn(path) : null;
             if (physMode)
             {

@@ -40,7 +40,11 @@ public sealed class DiskReadCoordinator
         private readonly CancellationTokenSource _stop;
         private readonly string? _startGameKey;
         private readonly bool _startStream;
+        private readonly object _activityLock = new();
+        private ReadIssueSnapshot? _lastReadIssue;
         internal bool _disposed;
+
+        internal readonly record struct ReadIssueSnapshot(string Stage, long RequestBytes, bool IsData, long At);
 
         internal Lease(DiskReadCoordinator owner, DiskState[] states, CancellationTokenSource stop, string purpose, string? startGameKey, bool startStream)
         {
@@ -58,6 +62,34 @@ public sealed class DiskReadCoordinator
         internal bool IsStartStream => _startStream;
 
         internal CancellationTokenSource StopSource => _stop;
+
+        internal void NoteReadIssue(string stage, long requestBytes, bool isData)
+        {
+            lock (_activityLock)
+            {
+                _lastReadIssue = new ReadIssueSnapshot(stage, Math.Max(0, requestBytes), isData, Stopwatch.GetTimestamp());
+            }
+        }
+
+        internal ReadIssueSnapshot? ReadIssueAtYield()
+        {
+            lock (_activityLock)
+            {
+                return _lastReadIssue;
+            }
+        }
+
+        internal string ReadActivityDetail()
+        {
+            ReadIssueSnapshot? issue = ReadIssueAtYield();
+            if (issue is not { } last)
+            {
+                return $"stage {Purpose}, no read issued (0 bytes, metadata)";
+            }
+
+            long elapsedMs = (long)Stopwatch.GetElapsedTime(last.At).TotalMilliseconds;
+            return $"stage {last.Stage}, last issue {elapsedMs} ms ago, request {last.RequestBytes} bytes ({(last.IsData ? "data" : "metadata")})";
+        }
 
         public void Dispose() => _owner.End(this);
     }
@@ -84,6 +116,8 @@ public sealed class DiskReadCoordinator
         public int LeasesAtYield { get; set; }
 
         public string PurposeAtYield { get; set; } = string.Empty;
+
+        public List<(string Purpose, Lease.ReadIssueSnapshot? Issue)> ReadIssuesAtYield { get; } = [];
 
         public bool DrainLogged { get; set; }
     }
@@ -172,6 +206,8 @@ public sealed class DiskReadCoordinator
                     }
 
                     state.DrainLeases.UnionWith(drain);
+                    state.ReadIssuesAtYield.Clear();
+                    state.ReadIssuesAtYield.AddRange(drain.Select(lease => (lease.Purpose, lease.ReadIssueAtYield())));
                     cancel.Add(state.Generation);
                     if (state.DrainLeases.Count == 0)
                     {
@@ -330,6 +366,7 @@ public sealed class DiskReadCoordinator
         state.YieldAtMs = 0;
         state.LeasesAtYield = 0;
         state.PurposeAtYield = string.Empty;
+        state.ReadIssuesAtYield.Clear();
         state.DrainLogged = false;
     }
 
@@ -337,7 +374,12 @@ public sealed class DiskReadCoordinator
     {
         long elapsed = Math.Max(0, _nowMs() - state.YieldAtMs);
         string purpose = state.PurposeAtYield.Length == 0 ? "none" : state.PurposeAtYield;
-        return $"disk yield: {state.LeasesAtYield} leases drained in {elapsed} ms ({purpose})";
+        string details = state.ReadIssuesAtYield.Count == 0
+            ? "no read issue recorded"
+            : string.Join("; ", state.ReadIssuesAtYield.Select(x => x.Issue is { } issue
+                ? $"stage {issue.Stage}, last issue {(long)Stopwatch.GetElapsedTime(issue.At).TotalMilliseconds} ms ago, request {issue.RequestBytes} bytes ({(issue.IsData ? "data" : "metadata")})"
+                : $"stage {x.Purpose}, no read issued (0 bytes, metadata)"));
+        return $"disk yield: {state.LeasesAtYield} leases drained in {elapsed} ms ({purpose}), {details}";
     }
 
     private bool Classify(string volumeRoot, List<DiskState> matching)

@@ -1,4 +1,5 @@
 using AsterCache.Core.Json;
+using AsterCache.Core.Plan;
 using AsterCache.Core.Prefetch;
 using AsterCache.Core.Settings;
 using AsterCache.Prefetch;
@@ -198,6 +199,43 @@ public sealed class PrewarmTests : IDisposable
     }
 
     [Fact]
+    public void PartialSupplementDoesNoWorkWhenTheGameRestartsDuringPostExitGrace()
+    {
+        GameSettings game = Game("a");
+        bool running = false;
+        _streamer.BytesOf = _ => 1L << 20;
+        var p = new Prewarmer([game], _streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => AvailableMib,
+            GameRunning = _ => running,
+            ZoneBytes = _ => 2L << 20,
+            TraceExists = _ => TraceExists,
+            DiskBytesPerSecond = _ => 0,
+        }, _log, StatusPath, () => _now);
+        AutoSettings auto = AutoSettings.Default with { StartupWarmMaxMib = 1, RewarmAfterExitMin = 3, RewarmMinutes = 0 };
+        p.SetAuto(auto);
+        _ = p.RunServiceStart();
+        Assert.True(p.SupplementPending("a"));
+
+        Assert.False(p.SupplementWhenIdle(game, default)); // idle streak begins before exit
+        var exits = new GameExitTracker(() => _now);
+        exits.ObserveStarted(game);
+        _ = exits.Poll([game], new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+        p.SetGameExitTracker(exits);
+        _now += GameExitTracker.Grace;
+        Assert.Single(exits.Poll([game], new HashSet<string>(StringComparer.OrdinalIgnoreCase)));
+        p.Tick(auto);
+        Assert.Single(_streamer.Calls); // 3 minute shared grace still blocks supplementation
+
+        _now += TimeSpan.FromSeconds(1);
+        running = true;
+        Assert.Empty(exits.Poll([game], new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "a.exe" }));
+        p.Tick(auto);
+
+        Assert.Single(_streamer.Calls); // 재기동 뒤에도 무거운 작업은 시작하지 않음
+    }
+
+    [Fact]
     public void TriggerProgramStartsTheWarmupCaseInsensitivelyAndOthersDoNot()
     {
         GameSettings g = Game("a", PrewarmSettings.Default with { OnServiceStart = false, TriggerExes = ["Steam.exe"] });
@@ -243,6 +281,52 @@ public sealed class PrewarmTests : IDisposable
 
         Prewarmer restarted = Make(g); // 서비스 재시작: 상태 파일만 남음
         Assert.Equal(warmedAt, restarted.LastWarmed("a"));
+    }
+
+    [Fact]
+    public void ChangingTheTraceGenerationInvalidatesARecentWarmProbe()
+    {
+        string plan = Path.Combine(_dir, "a.plan.json");
+        string trace = Path.Combine(_dir, "a.prefetch.json");
+        File.WriteAllText(plan, "plan");
+        File.WriteAllText(trace, "trace");
+        GameSettings g = Game("a") with { Plan = plan, Trace = trace };
+        Prewarmer p = new([g], _streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => AvailableMib,
+            GameRunning = _ => false,
+            ZoneBytes = _ => ZoneBytes,
+            ProbeReadMs = _ => new AsterCache.Windows.ProbeResult(8, 0, 0.3),
+            TraceExists = _ => true,
+            FileStamp = PlanFile.FingerprintOf,
+        }, _log, now: () => _now);
+
+        Assert.True(p.AlreadyWarm(g));
+        Assert.Equal(_now, p.RecentWarmProbeAt(g));
+
+        File.WriteAllText(trace, "trace changed");
+
+        Assert.Null(p.RecentWarmProbeAt(g));
+    }
+
+    [Fact]
+    public void RunningAPlanPrewarmInvalidatesTheRecentWarmProbe()
+    {
+        GameSettings g = Game("a");
+        Prewarmer p = new([g], _streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => AvailableMib,
+            GameRunning = _ => false,
+            ZoneBytes = _ => ZoneBytes,
+            TraceExists = _ => TraceExists,
+            ProbeReadMs = _ => new AsterCache.Windows.ProbeResult(8, 0, 0.3),
+        }, _log, now: () => _now);
+
+        Assert.True(p.AlreadyWarm(g));
+        Assert.NotNull(p.RecentWarmProbeAt(g));
+        Assert.True(p.Run(g, "test", ignoreCooldown: true).Ran);
+
+        Assert.Null(p.RecentWarmProbeAt(g));
     }
 
     [Theory]

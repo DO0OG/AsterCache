@@ -14,6 +14,7 @@ public sealed class Rewarmer
     private readonly PrewarmEnv _env;
     private readonly ILog _log;
     private readonly Func<DateTimeOffset> _now;
+    private GameExitTracker? _exitTracker;
     private readonly object _nextLock = new(); // Tick (유지 점검 스레드) 와 PullIn (재적용 틱 스레드) 이 같이 쓰는 _next 보호
     private DateTimeOffset? _next;
     private readonly Dictionary<string, string> _checkState = new(StringComparer.OrdinalIgnoreCase); // 게임별 마지막 재확인 결과 (로그를 바뀔 때만 남김)
@@ -26,15 +27,17 @@ public sealed class Rewarmer
         _now = now;
     }
 
+    public void SetGameExitTracker(GameExitTracker tracker) => _exitTracker = tracker;
+
     /// 게임이 끝났을 때: 다음 점검을 auto.rewarm_after_exit_min 뒤로 당깁니다 (이미 더 이르면 그대로). 게이트 (게임 실행 중·디스크 바쁨) 와 식었을 때만 읽는 점검은 Tick 이 그대로 적용합니다.
-    public void PullIn(AutoSettings auto)
+    public void PullIn(AutoSettings auto, DateTimeOffset? heavyWorkNotBefore = null)
     {
-        if (!auto.Enabled || auto.RewarmMinutes <= 0 || auto.RewarmAfterExitMin <= 0)
+        if (!auto.Enabled || auto.RewarmMinutes <= 0 || heavyWorkNotBefore is null && auto.RewarmAfterExitMin <= 0)
         {
             return;
         }
 
-        DateTimeOffset due = _now() + TimeSpan.FromMinutes(auto.RewarmAfterExitMin);
+        DateTimeOffset due = heavyWorkNotBefore ?? _now() + TimeSpan.FromMinutes(auto.RewarmAfterExitMin);
         lock (_nextLock)
         {
             if (_next is not { } next || due < next)
@@ -84,6 +87,7 @@ public sealed class Rewarmer
         }
 
         var budget = _prewarm.WarmBudget(); // 순위가 있으면 예산 안에 드는 게임만 점검 (순위가 바뀌면 다음 점검에서 대상도 바뀜)
+        DateTimeOffset? nextGateDue = null;
         foreach (GameSettings g in warmed)
         {
             if (ct.IsCancellationRequested)
@@ -96,6 +100,17 @@ public sealed class Rewarmer
             {
                 _log.Info("rewarm check stopped: a relocation started"); // 점검 주기는 이미 넘어가 있어 다음 주기에 다시 봄
                 return;
+            }
+
+            if (_exitTracker?.HeavyWorkNotBefore(g, _prewarm.Games, _env.SameDisk, auto.RewarmAfterExitMin) is { } heavyWorkDue && now < heavyWorkDue)
+            {
+                if (nextGateDue is null || heavyWorkDue < nextGateDue)
+                {
+                    nextGateDue = heavyWorkDue;
+                }
+
+                NoteCheck(g, "post-exit", $"{g.Name}: rewarm check deferred until {heavyWorkDue:O} after game exit");
+                continue;
             }
 
             if (budget is { } b && !b.In.Contains(g.Name))
@@ -124,6 +139,17 @@ public sealed class Rewarmer
             }
 
             Check(g, ct, budget is { } bg && bg.AllocMib.GetValueOrDefault(g.Name) is > 0 and long room ? room : null);
+        }
+
+        if (nextGateDue is { } due)
+        {
+            lock (_nextLock)
+            {
+                if (_next is not { } next || due < next)
+                {
+                    _next = due;
+                }
+            }
         }
     }
 

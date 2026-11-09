@@ -22,7 +22,7 @@ public sealed class AutoTracerTests : IDisposable
         Directory.CreateDirectory(Path.Combine(_rig.Dir, "plans"));
         string plan = Path.Combine(_rig.Dir, "plans", "foo.plan.json");
         _game = new GameSettings("foo", ["foo.exe"], plan + ".prefetch.json", plan, @"D:\Games\Foo", [@"D:\Games\Foo"], "GAMES", 1440) { Source = "auto" };
-        _rig.Settings = new AsterSettings(50, [_game]) { Auto = AutoSettings.Default with { TraceRuns = 1, TraceCapSeconds = 30, TraceCapMib = 64, Learn = LearnSettings.Default with { Enabled = false } } };
+        _rig.Settings = new AsterSettings(50, [_game]) { Auto = AutoSettings.Default with { TraceRuns = 1, TraceCapSeconds = 30, TraceCapMib = 64, TraceLateWindows = 0, Learn = LearnSettings.Default with { Enabled = false } } };
         _rig.World.Session = _trace;
         _tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings) { MinRunBytes = 0 };
     }
@@ -163,6 +163,140 @@ public sealed class AutoTracerTests : IDisposable
         _tracer.Step();
         Assert.False(_tracer.Active);
         Assert.Contains(_rig.Log.Lines, l => l.Contains("(time cap)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void LateTraceWindowsUseSeparateSessionsAndKeepSessionRelativeEventTimes()
+    {
+        _rig.Settings = _rig.Settings with
+        {
+            Auto = _rig.Settings.Auto with { TraceLateWindows = 2, TraceLateIntervalMin = 1, TraceLateWindowSeconds = 90 },
+        };
+        _rig.World.Running = true;
+        var sessions = new List<FakeTrace>();
+        _rig.World.StartTraceFactory = number =>
+        {
+            FakeTrace session = number == 1 ? _trace : new FakeTrace();
+            DateTime start = _rig.World.Now.UtcDateTime;
+            session.Records.Add(TraceRecord.Start(start, 100, 1, "foo.exe"));
+            session.Records.Add(TraceRecord.Read(start.AddSeconds(1), 100, @"D:\Games\Foo\a.bin", (number - 1) * 65536L, 65536));
+            sessions.Add(session);
+            return session;
+        };
+
+        DateTimeOffset startedAt = _rig.World.Now;
+        _tracer.Start(_game);
+        _rig.World.Now = startedAt.AddSeconds(30);
+        _tracer.Step(); // 첫 ETW 세션 종료
+        Assert.Single(sessions);
+        Assert.True(sessions[0].Stopped);
+
+        _rig.World.Now = startedAt.AddSeconds(90);
+        _tracer.Step(); // 첫 번째 추가 창 시작
+        Assert.Equal(2, sessions.Count);
+        Assert.Equal("late window 1/2", _rig.Status.Get("foo")!.Detail);
+
+        _rig.World.Now = startedAt.AddSeconds(180);
+        _tracer.Step(); // 창 사이에는 ETW 세션이 없음
+        Assert.True(sessions[1].Stopped);
+        _rig.World.Now = startedAt.AddSeconds(240);
+        _tracer.Step(); // 두 번째 추가 창 시작
+        Assert.Equal(3, sessions.Count);
+        Assert.Equal("late window 2/2", _rig.Status.Get("foo")!.Detail);
+
+        _rig.World.Now = startedAt.AddSeconds(330);
+        _tracer.Step(); // 모든 추가 창 종료, 게임 종료 후 저장 대기
+        Assert.False(File.Exists(Raw));
+        Assert.All(sessions, session => Assert.True(session.Disposed));
+
+        _rig.World.Running = false;
+        _tracer.Step();
+        _rig.World.Now += GameExitTracker.Grace;
+        _tracer.Step();
+
+        List<TraceEvent> saved = ((List<object?>)JsonRead.ReadFile(Raw)!).Select(TraceEvents.FromJson).ToList();
+        Assert.Equal([1_000L, 91_000L, 241_000L], saved.Select(e => e.TMs!.Value));
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("late window 1/2 started", StringComparison.Ordinal));
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("late window 2/2 started", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void FailedIntermediateStopEndsTheRunAndBlocksNewWindowsUntilCleanupIsConfirmed()
+    {
+        _rig.Settings = _rig.Settings with
+        {
+            Auto = _rig.Settings.Auto with { TraceCapSeconds = 10, TraceLateWindows = 2, TraceLateIntervalMin = 0, TraceLateWindowSeconds = 10 },
+        };
+        _rig.World.Running = true;
+        var failedSession = new FakeTrace
+        {
+            StopFailure = new IOException("stop failed"),
+            DisposeFailure = new IOException("dispose failed"),
+        };
+        _rig.World.StartTraceFactory = number => number == 1 ? _trace : failedSession;
+
+        _tracer.Start(_game);
+        _rig.World.Now += TimeSpan.FromSeconds(10);
+        _tracer.Step(); // 첫 창은 정상 종료
+        _tracer.Step(); // 첫 후반 창 시작
+        Assert.Equal(2, _rig.World.TraceStarts);
+        _rig.World.Now += TimeSpan.FromSeconds(10);
+        _tracer.Step(); // 중간 창 종료가 실패하면 Run 을 끝냄
+
+        Assert.False(_tracer.Active);
+        Assert.Equal(AutoStage.Failed, _rig.Status.Get("foo")!.Stage);
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("trace cleanup could not be confirmed", StringComparison.Ordinal));
+
+        _rig.World.Now += TimeSpan.FromSeconds(1);
+        _tracer.Step();
+        _tracer.Start(_game);
+
+        Assert.Equal(2, _rig.World.TraceStarts);
+    }
+
+    [Fact]
+    public void LateTraceWindowsShareTheOriginalReadCapAndWaitToSaveUntilExit()
+    {
+        _rig.Settings = _rig.Settings with
+        {
+            Auto = _rig.Settings.Auto with { TraceCapMib = 1, TraceLateWindows = 1, TraceLateIntervalMin = 1, TraceLateWindowSeconds = 30 },
+        };
+        _rig.World.Running = true;
+        var sessions = new List<FakeTrace>();
+        _rig.World.StartTraceFactory = number =>
+        {
+            FakeTrace session = number == 1 ? _trace : new FakeTrace();
+            DateTime start = _rig.World.Now.UtcDateTime;
+            session.Records.Add(TraceRecord.Start(start, 100, 1, "foo.exe"));
+            session.Records.Add(TraceRecord.Read(start.AddSeconds(1), 100, @"D:\Games\Foo\a.bin", (number - 1) * 65536L, 65536));
+            sessions.Add(session);
+            return session;
+        };
+
+        DateTimeOffset startedAt = _rig.World.Now;
+        _tracer.Start(_game);
+        _rig.World.Procs = [(100, 0)];
+        _tracer.Step(); // 첫 표본은 기준
+        _rig.World.Now = startedAt.AddSeconds(30);
+        _rig.World.Procs = [(100, 512 * 1024)];
+        _tracer.Step(); // 첫 창에서 0.5 MiB
+        _rig.World.Now = startedAt.AddSeconds(90);
+        _tracer.Step(); // 누적 캡을 초기화하지 않고 추가 창 시작
+        Assert.Equal(2, sessions.Count);
+
+        _rig.World.Now = startedAt.AddSeconds(100);
+        _rig.World.Procs = [(100, 1L << 20)];
+        _tracer.Step(); // 다음 창에서 0.5 MiB 추가되어 세션 누적 상한 도달
+        Assert.False(_tracer.Active);
+        Assert.True(sessions[1].Stopped);
+        Assert.False(File.Exists(Raw));
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("(read cap)", StringComparison.Ordinal));
+
+        _rig.World.Running = false;
+        _tracer.Step();
+        _rig.World.Now += GameExitTracker.Grace;
+        _tracer.Step();
+        Assert.True(File.Exists(Raw));
     }
 
     [Fact]

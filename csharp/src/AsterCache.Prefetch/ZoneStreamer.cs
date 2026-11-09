@@ -37,14 +37,15 @@ public static class ZoneStreamer
     public const long CancelCheckBytes = 8L << 20;
     private const long Page = 4096;
 
-    public static StreamStats Run(IReadOnlyList<ReadOp> ops, StreamMethod method = StreamMethod.Pvm, int chunkBytes = DefaultChunkBytes, int queueDepth = 2, CancellationToken ct = default)
+    public static StreamStats Run(IReadOnlyList<ReadOp> ops, StreamMethod method = StreamMethod.Pvm, int chunkBytes = DefaultChunkBytes, int queueDepth = 2, CancellationToken ct = default,
+        Action<string, long, bool>? noteIssue = null)
     {
         var watch = Stopwatch.StartNew();
         bool aborted = false;
         long hint = 0;
         (long bytes, long requests, long errors) = method switch
         {
-            StreamMethod.Pvm => RunPvm(ops, ct, out aborted, out hint, static slice => MemoryPrefetch.Prefetch(slice)),
+            StreamMethod.Pvm => RunPvm(ops, ct, out aborted, out hint, static slice => MemoryPrefetch.Prefetch(slice), noteIssue),
             StreamMethod.Overlapped => OverlappedReader.Run(ops, queueDepth, chunkBytes, ct, out aborted),
             _ => RunRead(ops, chunkBytes, ct, out aborted),
         };
@@ -141,7 +142,8 @@ public static class ZoneStreamer
 
     // Python _read_pvm 과 달리 파일 하나의 열기·매핑 실패 (게임이 배타적으로 연 파일 등) 는 그 파일만 오류 1 로 건너뛰고 나머지는 계속합니다 (바이트·요청은 호출이 성공했을 때만 셈).
     // prefetch: 조각 한 번의 PrefetchVirtualMemory 호출 (시험에서 가짜로 바꿔 호출 수와 취소 시점을 확인).
-    internal static (long, long, long) RunPvm(IReadOnlyList<ReadOp> ops, CancellationToken ct, out bool aborted, out long hintAccepted, Func<Win32MemoryRangeEntry[], bool> prefetch)
+    internal static (long, long, long) RunPvm(IReadOnlyList<ReadOp> ops, CancellationToken ct, out bool aborted, out long hintAccepted,
+        Func<Win32MemoryRangeEntry[], bool> prefetch, Action<string, long, bool>? noteIssue = null)
     {
         aborted = false;
         hintAccepted = 0;
@@ -225,6 +227,7 @@ public static class ZoneStreamer
             }
 
             List<(Win32MemoryRangeEntry[] Slice, long Bytes, int Ranges)> slices = Slices(ranges, pads);
+            long totalBytes = slices.Sum(slice => slice.Bytes);
             for (int i = 0; i < slices.Count; i++)
             {
                 if (ct.IsCancellationRequested)
@@ -233,7 +236,15 @@ public static class ZoneStreamer
                     break;
                 }
 
-                if (prefetch(slices[i].Slice))
+                noteIssue?.Invoke($"pvm fragment {i + 1}/{slices.Count} started, progress {bytes}/{totalBytes} bytes", slices[i].Bytes, true);
+                if (ct.IsCancellationRequested)
+                {
+                    aborted = true;
+                    break;
+                }
+
+                bool accepted = prefetch(slices[i].Slice);
+                if (accepted)
                 {
                     bytes += slices[i].Bytes;
                     hintAccepted += slices[i].Bytes;
@@ -243,6 +254,8 @@ public static class ZoneStreamer
                 {
                     errors++;
                 }
+
+                noteIssue?.Invoke($"pvm fragment {i + 1}/{slices.Count} completed, progress {bytes}/{totalBytes} bytes", slices[i].Bytes, true);
 
                 if (i < slices.Count - 1 && ct.IsCancellationRequested)
                 {

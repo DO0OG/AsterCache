@@ -86,8 +86,22 @@ public sealed record AutoSettings(
     /// trace_cap_mib 기본값: 이 값이면 명시하지 않은 것으로 보고 존 상한에 맞춰 자동 해석 (EffectiveTraceCapMib).
     public const int DefaultTraceCapMib = 6144;
 
+    public const int DefaultStartStreamCapSeconds = 120;
+
     /// 기본 prewarm_recent 0 = RAM 예산 안에서 최근 순으로 가능한 만큼 (1 이상이면 그 개수 상한, -1 = 최근순 예열 끔).
     public static AutoSettings Default { get; } = new(true, true, true, true, 0, 3, 1800, DefaultTraceCapMib, 4, []);
+
+    /// 시작 스트림 시간 상한 (초, 0..7200), 0 = 시간 상한 없음.
+    public int StartStreamCapSeconds { get; init; } = DefaultStartStreamCapSeconds;
+
+    /// 첫 트레이스 창이 끝난 뒤 다음 창까지 기다리는 시간 (분, 1..1440).
+    public int TraceLateIntervalMin { get; init; } = 10;
+
+    /// 추가 트레이스 창 하나의 수집 시간 (초, 1..7200).
+    public int TraceLateWindowSeconds { get; init; } = 90;
+
+    /// 첫 창 뒤 추가로 열 트레이스 창 수 (0..32), 0 = 추가 수집 끔.
+    public int TraceLateWindows { get; init; } = 6;
 
     /// 한 게임이 모을 트레이스 플레이 횟수 (1..32): 이보다 적게 모았으면 원시 트레이스가 있어도 다음 플레이를 다시 기록해 합집합으로 병합합니다. 1 = 첫 플레이만.
     public int TraceRuns { get; init; } = 3;

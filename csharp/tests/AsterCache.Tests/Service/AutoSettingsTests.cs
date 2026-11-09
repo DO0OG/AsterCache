@@ -59,6 +59,14 @@ public sealed class AutoSettingsTests
     }
 
     [Fact]
+    public void NewStreamAndLateTraceSettingsHaveDefaults()
+    {
+        AutoSettings auto = ParseAuto(new JsonObject()).Auto;
+
+        Assert.Equal((120, 10, 90, 6), (auto.StartStreamCapSeconds, auto.TraceLateIntervalMin, auto.TraceLateWindowSeconds, auto.TraceLateWindows));
+    }
+
+    [Fact]
     public void GameSourceDefaultsToManual()
     {
         var root = new JsonObject { ["games"] = new JsonArray(Game()) };
@@ -125,6 +133,33 @@ public sealed class AutoSettingsTests
     [InlineData("max_relocate_gib_per_day", 0)]
     [InlineData("max_relocate_gib_per_day", 1048576)]
     public void BoundaryAutoNumbersAreAccepted(string key, int value) => ParseAuto(new JsonObject { [key] = value });
+
+    [Theory]
+    [InlineData("start_stream_cap_seconds", -1)]
+    [InlineData("start_stream_cap_seconds", 7201)]
+    [InlineData("trace_late_interval_min", 0)]
+    [InlineData("trace_late_interval_min", 1441)]
+    [InlineData("trace_late_window_seconds", 0)]
+    [InlineData("trace_late_window_seconds", 7201)]
+    [InlineData("trace_late_windows", -1)]
+    [InlineData("trace_late_windows", 33)]
+    public void NewStreamAndLateTraceSettingsRejectValuesOutsideTheirRanges(string key, int value)
+    {
+        var error = Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { [key] = value }));
+        Assert.Contains("auto." + key, error.Message);
+    }
+
+    [Theory]
+    [InlineData("start_stream_cap_seconds", 0)]
+    [InlineData("start_stream_cap_seconds", 7200)]
+    [InlineData("trace_late_interval_min", 1)]
+    [InlineData("trace_late_interval_min", 1440)]
+    [InlineData("trace_late_window_seconds", 1)]
+    [InlineData("trace_late_window_seconds", 7200)]
+    [InlineData("trace_late_windows", 0)]
+    [InlineData("trace_late_windows", 32)]
+    public void NewStreamAndLateTraceSettingsAcceptInclusiveBounds(string key, int value) =>
+        ParseAuto(new JsonObject { [key] = value });
 
     [Theory]
     [InlineData(2048, 6144)] // 미명시 (기본값): max(6144, 존 x 2)

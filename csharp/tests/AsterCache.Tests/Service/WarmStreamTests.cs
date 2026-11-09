@@ -338,6 +338,44 @@ public sealed class WarmStreamTests
         Assert.Equal(read, streamer.ReadFor(a.Name));
     }
 
+    // 계획 도중 대여가 취소돼 StreamHead 가 OperationCanceledException 을 받아도 (서비스 종료가 아니면) 다음 게임 앞부분 예열이 계속됨.
+    [Fact]
+    public void PlanningCancellationOfOneHeadDoesNotAbortTheRestOfTheBatch()
+    {
+        GameSettings a = Game("a") with { Prewarm = Game("a").Prewarm with { OnServiceStart = true } };
+        GameSettings b = Game("b") with { Prewarm = Game("b").Prewarm with { OnServiceStart = true } };
+        using var warmCts = new CancellationTokenSource();
+        var streamer = new CancelOnHeadStreamer(a.Name);
+        _p = Make(streamer, a, b);
+        _p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 8000 });
+
+        _ = _p.RunServiceStart(ct: warmCts.Token);
+
+        Assert.Contains(a.Name, streamer.Tried);
+        Assert.Equal([b.Name], streamer.Done);
+        Assert.Contains(_log.Lines, l => l.Contains("a: load head prewarm cancelled (planning)", StringComparison.Ordinal));
+    }
+
+    private sealed class CancelOnHeadStreamer(string cancelling) : IGameStreamer
+    {
+        public List<string> Tried { get; } = [];
+
+        public List<string> Done { get; } = [];
+
+        public StreamStats Stream(GameSettings game) => new(0, 0, 0, 0.01);
+
+        public void StreamHeadCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue)
+        {
+            Tried.Add(game.Name);
+            if (game.Name == cancelling)
+            {
+                throw new OperationCanceledException("lease cancelled while planning");
+            }
+
+            Done.Add(game.Name);
+        }
+    }
+
     [Fact]
     public void ServiceCancellationStillStopsAKeptHotStream()
     {

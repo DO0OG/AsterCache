@@ -76,4 +76,37 @@ public sealed class LoadTierTests : IDisposable
         File.WriteAllText(old, "[{\"path\": " + PyJson.Dumps(Path.Combine(_game.OriginRoot, "a.bin")) + ", \"offset\": 0, \"length\": 4096, \"cost\": 8.0}]\r\n");
         Assert.Null(Assert.Single(TraceLoader.LoadRanges(old, _game.OriginRoot)).TMs);
     }
+
+    [Fact]
+    public void TracePreparationStopsAfterTheFakeFilesystemCancelsAtItsNthAccess()
+    {
+        string a = Path.Combine(_game.OriginRoot, "a.bin");
+        string b = Path.Combine(_game.OriginRoot, "b.bin");
+        string c = Path.Combine(_game.OriginRoot, "c.bin");
+        File.WriteAllBytes(b, new byte[8 * Mib]);
+        File.WriteAllBytes(c, new byte[8 * Mib]);
+        WriteRaw(new TraceEvent(a, 0, Mib), new TraceEvent(b, 0, Mib), new TraceEvent(c, 0, Mib));
+
+        using var stop = new CancellationTokenSource();
+        int accesses = 0;
+        string? Resolve(string path)
+        {
+            if (++accesses == 4)
+            {
+                stop.Cancel();
+            }
+
+            return path;
+        }
+
+        long? FileSize(string path)
+        {
+            accesses++;
+            return new FileInfo(path).Length;
+        }
+
+        Assert.Throws<OperationCanceledException>(() => TraceLoader.LoadRanges(AutoTracer.RawTracePath(_game), _game.OriginRoot,
+            Resolve, FileSize, stop.Token));
+        Assert.Equal(4, accesses); // 취소를 일으킨 접근 뒤 파일 시스템 호출을 더 하지 않음
+    }
 }

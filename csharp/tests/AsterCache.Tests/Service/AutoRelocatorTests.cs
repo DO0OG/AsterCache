@@ -225,6 +225,57 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
+    public void RelocationWaitsForTheSharedPostExitHeavyWorkGrace()
+    {
+        _settings = _settings with { Auto = AutoSettings.Default with { TraceRuns = 1, IdleMinutes = 0, IdleMinutesSet = true, RewarmAfterExitMin = 3 } };
+        var exits = new GameExitTracker(() => _w.Now);
+        exits.ObserveStarted(_game);
+        _ = exits.Poll([_game], new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+        _w.Now += GameExitTracker.Grace;
+        Assert.Single(exits.Poll([_game], new HashSet<string>(StringComparer.OrdinalIgnoreCase)));
+        _relocator = new AutoRelocator(WorldEnv(), _status, _log, () => _settings);
+        _relocator.SetGameExitTracker(exits);
+
+        Tick();
+        _w.Now += TimeSpan.FromMinutes(3) - GameExitTracker.Grace - TimeSpan.FromSeconds(1);
+        Tick();
+        Assert.Empty(Vol.Moves);
+
+        _w.Now += TimeSpan.FromSeconds(1);
+        Tick();
+        if (Vol.Moves.Count == 0)
+        {
+            _w.Now += TimeSpan.FromSeconds(1);
+            Tick();
+        }
+
+        Assert.NotEmpty(Vol.Moves);
+    }
+
+    [Fact]
+    public void GameRestartedDuringPostExitGraceDoesNotStartHeavyRelocationWork()
+    {
+        _settings = _settings with { Auto = AutoSettings.Default with { TraceRuns = 1, IdleMinutes = 0, IdleMinutesSet = true, RewarmAfterExitMin = 3 } };
+        var exits = new GameExitTracker(() => _w.Now);
+        exits.ObserveStarted(_game);
+        _ = exits.Poll([_game], new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+        _w.Now += GameExitTracker.Grace;
+        Assert.Single(exits.Poll([_game], new HashSet<string>(StringComparer.OrdinalIgnoreCase)));
+        _w.Now += TimeSpan.FromSeconds(1);
+        _w.Running = true;
+        _w.RunningExes.Add("bench.exe");
+        Assert.Empty(exits.Poll([_game], new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "bench.exe" }));
+        _relocator = new AutoRelocator(WorldEnv(), _status, _log, () => _settings);
+        _relocator.SetGameExitTracker(exits);
+
+        Tick();
+
+        Assert.Empty(Vol.Moves);
+        Assert.Equal(0, ApplyCalls);
+        Assert.Empty(_w.PlanZones);
+    }
+
+    [Fact]
     public void GameRunningNeverCountsAsIdleNoMatterHowLongTheWindow()
     {
         _settings = _settings with { Auto = AutoSettings.Default };

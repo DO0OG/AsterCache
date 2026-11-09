@@ -1,5 +1,6 @@
 using AsterCache.Core.Settings;
 using AsterCache.Core.Trace;
+using AsterCache.Prefetch;
 using AsterCache.Service;
 using AsterCache.Tracer;
 using Xunit;
@@ -68,5 +69,21 @@ public sealed class PrefetchStreamerTests : IDisposable
         Assert.True(stats.Aborted);
         Assert.Equal(BatchBytes, stats.Bytes);
         Assert.True(checks >= 2);
+    }
+
+    [Fact]
+    public void CancelledPrewarmPlanningDoesNotPublishAReadRequest()
+    {
+        WriteTrace(8);
+        using var stop = new CancellationTokenSource();
+        stop.Cancel();
+        int issued = 0;
+
+        (StreamStats stats, bool complete) = new PrefetchStreamer().StreamPrewarmCoordinated(_game, stop.Token, null, 8 * Mib, 0,
+            () => true, allowReorder: false, (_, _, _) => issued++);
+
+        Assert.False(complete);
+        Assert.True(stats.Aborted);
+        Assert.Equal(0, issued);
     }
 }

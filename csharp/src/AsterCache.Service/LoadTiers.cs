@@ -11,24 +11,48 @@ public static class LoadTiers
 {
     private static readonly ConcurrentDictionary<string, (DateTime Written, long Length, LoadBoundary? Boundary)> Cache = new(StringComparer.OrdinalIgnoreCase);
 
-    public static LoadBoundary? For(GameSettings game)
+    public static LoadBoundary? For(GameSettings game) => For(game, default);
+
+    internal static LoadBoundary? For(GameSettings game, CancellationToken cancellationToken)
     {
-        string raw = AutoTracer.PlanTracePath(game, File.Exists) ?? AutoTracer.RawTracePath(game); // 원시가 없으면 가져온 boot 트레이스
+        cancellationToken.ThrowIfCancellationRequested();
+        string raw = AutoTracer.PlanTracePath(game, path =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return File.Exists(path);
+        }) ?? AutoTracer.RawTracePath(game); // 원시가 없으면 가져온 boot 트레이스
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var info = new FileInfo(raw);
+            cancellationToken.ThrowIfCancellationRequested();
             if (!info.Exists)
             {
                 return null;
             }
 
-            if (Cache.TryGetValue(raw, out var hit) && hit.Written == info.LastWriteTimeUtc && hit.Length == info.Length)
+            cancellationToken.ThrowIfCancellationRequested();
+            DateTime written = info.LastWriteTimeUtc;
+            cancellationToken.ThrowIfCancellationRequested();
+            long length = info.Length;
+            if (Cache.TryGetValue(raw, out var hit) && hit.Written == written && hit.Length == length)
             {
                 return hit.Boundary;
             }
 
-            LoadBoundary? b = LoadBoundaries.Find(TraceLoader.LoadRanges(raw, game.OriginRoot, RealPaths.Resolve, p => File.Exists(p) ? new FileInfo(p).Length : null));
-            Cache[raw] = (info.LastWriteTimeUtc, info.Length, b);
+            cancellationToken.ThrowIfCancellationRequested();
+            LoadBoundary? b = LoadBoundaries.Find(TraceLoader.LoadRanges(raw, game.OriginRoot, RealPaths.Resolve, p =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!File.Exists(p))
+                {
+                    return null;
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                return new FileInfo(p).Length;
+            }, cancellationToken));
+            Cache[raw] = (written, length, b);
             return b;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)

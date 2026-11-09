@@ -133,6 +133,7 @@ public sealed class AutoRelocator
     private readonly DriveRecovery _recovery;
     private DiskReadCoordinator? _coordinator;
     private readonly AutoTier? _tier; // SSD 보조 저장 (선택 기능): 환경이 엔진을 주지 않으면 (시험) 없음
+    private GameExitTracker? _exitTracker;
     private readonly ConcurrentDictionary<string, DateTimeOffset> _coldTried = new(StringComparer.Ordinal); // 이번 서비스 실행 중 기록 없는 예열을 요청한 게임과 그 시각 (영구 건너뜀은 발견 주기마다 다시 시도)
     private (bool, int, bool) _coldKey; // 틱 스레드에서만 씀: 설정이 바뀌면 _coldTried 를 비움
     private readonly Dictionary<string, DateTimeOffset> _staleChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀
@@ -174,6 +175,14 @@ public sealed class AutoRelocator
 
     /// 쓰기(재배치) 뒤 드라이브 회복 상태: 회복 전에는 같은 드라이브의 다음 재배치·재계획을 시작하지 않습니다 (예열은 막지 않음).
     public IDriveRecovery Recovery => _recovery;
+
+    public void SetGameExitTracker(GameExitTracker tracker) => _exitTracker = tracker;
+
+    private bool HeavyWorkAllowed(GameSettings target)
+    {
+        AsterSettings settings = _settings();
+        return _exitTracker?.HeavyWorkAllowed(target, settings.Games, _env.SameDisk, settings.Auto.RewarmAfterExitMin, _env.Now()) ?? true;
+    }
 
     public void SetDiskReadCoordinator(DiskReadCoordinator coordinator)
     {
@@ -237,7 +246,7 @@ public sealed class AutoRelocator
         }
 
         AsterSettings s = _settings();
-        _tier.Tick(s, s.Auto.Relocate && s.Auto.MaxRelocationsPerDay > 0, gate, ct);
+        _tier.Tick(s, s.Auto.Relocate && s.Auto.MaxRelocationsPerDay > 0, gate, ct, HeavyWorkAllowed);
         foreach (GameSettings g in s.Games)
         {
             lock (_noteLock)
@@ -274,6 +283,11 @@ public sealed class AutoRelocator
         var ready = new List<GameSettings>();
         foreach (GameSettings g in work)
         {
+            if (!HeavyWorkAllowed(g))
+            {
+                continue;
+            }
+
             if (_status.Get(g.Name) is { Stage: AutoStage.Failed, Detail: { } failedDetail } && IsExtensionFailure(failedDetail))
             {
                 _extensionRecovery[g.Name] = 0; // 아래 Note 가 실패 문구를 덮기 전에 표시: 재개 때 새 이동보다 남은 되돌리기와 보관부터
@@ -388,7 +402,7 @@ public sealed class AutoRelocator
         IReadOnlyDictionary<string, DateTimeOffset> played = _status.LastPlayed();
         foreach (GameSettings g in s.Games.OrderByDescending(g => played.GetValueOrDefault(g.Name, DateTimeOffset.MinValue)).ThenBy(g => g.Name, StringComparer.Ordinal))
         {
-            if (AutoTracer.PlanTracePath(g, _env.FileExists) is not null || _prefetchTried.TryGetValue(g.Name, out DateTimeOffset at) && _env.Now() - at < RetryEvery
+            if (!HeavyWorkAllowed(g) || AutoTracer.PlanTracePath(g, _env.FileExists) is not null || _prefetchTried.TryGetValue(g.Name, out DateTimeOffset at) && _env.Now() - at < RetryEvery
                 || !_env.Capabilities(g.OriginRoot).CanPrewarm || AnyGameRunning(g))
             {
                 continue;
@@ -428,7 +442,7 @@ public sealed class AutoRelocator
         IReadOnlyDictionary<string, DateTimeOffset> played = _status.LastPlayed();
         foreach (GameSettings g in AutoMode.Recent(s.Games, played, s.Auto.PrewarmRecent)) // 플레이한 적 있는 게임만 (prewarm_recent 안, 미플레이는 첫 실행 때 트리거 예열만)
         {
-            if ((!_coldTried.TryGetValue(g.Name, out DateTimeOffset triedAt) || _env.Now() - triedAt >= RetryEvery) && !PostUpdateDelayed(g, s) && _prewarm.IsCold(g) && _prewarm.LastWarmed(g.Name) is null && _env.Capabilities(g.OriginRoot).CanPrewarm && !AnyGameRunning(g))
+            if (HeavyWorkAllowed(g) && (!_coldTried.TryGetValue(g.Name, out DateTimeOffset triedAt) || _env.Now() - triedAt >= RetryEvery) && !PostUpdateDelayed(g, s) && _prewarm.IsCold(g) && _prewarm.LastWarmed(g.Name) is null && _env.Capabilities(g.OriginRoot).CanPrewarm && !AnyGameRunning(g))
             {
                 _coldTried[g.Name] = _env.Now();
                 warms.Add((g, ColdWhy));
@@ -518,7 +532,7 @@ public sealed class AutoRelocator
     // 원시 트레이스가 아직 예열된 적 없거나 마지막 예열보다 새로우면 한 번 예열합니다 (같은 트레이스로는 한 번만 시도: 메모리가 모자라 건너뛰어도 30 초마다 다시 부르지 않음).
     private void WarmNewTrace(GameSettings g, List<(GameSettings Game, string Why)> warms)
     {
-        if (_prewarm is null || AutoTracer.PlanTracePath(g, _env.FileExists) is not { } tracePath || _env.FileWriteTime(tracePath) is not { } traced
+        if (_prewarm is null || !HeavyWorkAllowed(g) || AutoTracer.PlanTracePath(g, _env.FileExists) is not { } tracePath || _env.FileWriteTime(tracePath) is not { } traced
             || _traceWarmTried.TryGetValue(g.Name, out DateTimeOffset tried) && tried >= traced
             || _prewarm.LastWarmed(g.Name) is { } last && last >= traced
             || ReplanKept(_status, g.Name) // 업데이트 재계획이 끝나기 전의 트레이스는 새 계획이 아님: 시도로 치지 않고 끝난 뒤 새 계획 파일로 예열
@@ -561,7 +575,7 @@ public sealed class AutoRelocator
     // 게임이 도는 중이면 디스크를 건드리지 않습니다. 쿨다운은 무시합니다 (트레이스나 배치가 새로 바뀐 뒤의 예열이므로).
     private void Warm(GameSettings g, string why, List<(GameSettings Game, string Why)> warms)
     {
-        if (_prewarm is not null && !AnyGameRunning(g))
+        if (_prewarm is not null && HeavyWorkAllowed(g) && !AnyGameRunning(g))
         {
             warms.Add((g, why));
         }
@@ -626,7 +640,7 @@ public sealed class AutoRelocator
     // 게임이 돌면 디스크를 건드리지 않습니다. 쿨다운은 무시합니다 (트레이스나 배치가 새로 바뀐 뒤의 예열이므로). 취소·중단된 트레이스 예열은 다음 틱에 다시 시도합니다.
     private void WarmNow(GameSettings g, string why, CancellationToken token)
     {
-        if (token.IsCancellationRequested || AnyGameRunning(g))
+        if (token.IsCancellationRequested || !HeavyWorkAllowed(g) || AnyGameRunning(g))
         {
             _traceWarmTried.TryRemove(g.Name, out _);
             _coldTried.TryRemove(g.Name, out _);
@@ -739,7 +753,7 @@ public sealed class AutoRelocator
     {
         foreach (GameSettings g in s.Games)
         {
-            if (_status.Get(g.Name)?.RelocatedAt is null || !_env.FileExists(g.Plan) || AnyGameRunning(g)
+            if (!HeavyWorkAllowed(g) || _status.Get(g.Name)?.RelocatedAt is null || !_env.FileExists(g.Plan) || AnyGameRunning(g)
                 || _staleChecked.TryGetValue(g.Name, out DateTimeOffset at) && _env.Now() - at < StaleCheckEvery)
             {
                 continue;
@@ -952,6 +966,12 @@ public sealed class AutoRelocator
         string? Kept(string path) => _env.FileExists(path + UpdateSuffix) ? path + UpdateSuffix : _env.FileExists(path + StaleSuffix) ? path + StaleSuffix : null; // 두 번째 전체 치움부터 최신 원본은 .stale.update: 있으면 그것을, 없으면 .stale 을 되살림 (다른 접미사 파일은 보관 그대로)
         foreach (GameSettings g in s.Games)
         {
+            if (!HeavyWorkAllowed(g))
+            {
+                _recoverBusy = true;
+                continue;
+            }
+
             string raw = AutoTracer.RawTracePath(g);
             if (_env.FileExists(raw) || Kept(raw) is not { } keptRaw || _env.TraceBlocker(g) is null)
             {
@@ -1278,6 +1298,11 @@ public sealed class AutoRelocator
     {
         foreach (GameSettings g in s.Games)
         {
+            if (!HeavyWorkAllowed(g))
+            {
+                continue;
+            }
+
             string raw = AutoTracer.RawTracePath(g);
             bool relocated = _status.Get(g.Name)?.RelocatedAt is not null;
             if (!_env.FileExists(g.Plan) || IsExtending(g) || AnyGameRunning(g)
@@ -1434,7 +1459,7 @@ public sealed class AutoRelocator
     {
         foreach (GameSettings g in s.Games)
         {
-            if (_status.Get(g.Name)?.RelocatedAt is null || !_env.FileExists(g.Plan) || IsExtending(g) || AnyGameRunning(g)
+            if (!HeavyWorkAllowed(g) || _status.Get(g.Name)?.RelocatedAt is null || !_env.FileExists(g.Plan) || IsExtending(g) || AnyGameRunning(g)
                 || AutoTracer.PlanTracePath(g, _env.FileExists) is null || !_volatileChecked.Add(g.Name))
             {
                 continue;
@@ -1480,7 +1505,7 @@ public sealed class AutoRelocator
 
         foreach (GameSettings g in s.Games)
         {
-            if (_status.Get(g.Name) is not { Stage: AutoStage.Done, RelocatedAt: not null } || !_env.FileExists(g.Plan) || IsExtending(g) || AnyGameRunning(g)
+            if (!HeavyWorkAllowed(g) || _status.Get(g.Name) is not { Stage: AutoStage.Done, RelocatedAt: not null } || !_env.FileExists(g.Plan) || IsExtending(g) || AnyGameRunning(g)
                 || !_supplementChecked.Add(g.Name))
             {
                 continue;

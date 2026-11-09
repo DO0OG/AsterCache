@@ -28,6 +28,9 @@ public interface IGameStreamer
     (StreamStats Stats, bool Complete) StreamCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue) =>
         canIssue() ? Stream(game, stop, progress) : (new StreamStats(0, 0, 0, 0, Aborted: true), false);
 
+    (StreamStats Stats, bool Complete) StreamCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue) =>
+        StreamCoordinated(game, stop, progress, canIssue);
+
     /// 예열 전용 스트림. maxBytes 는 메모리·스트림 예산 안에서 읽을 전체 바이트 상한입니다.
     (StreamStats Stats, bool Complete) StreamPrewarm(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes) => Stream(game, stop, progress);
 
@@ -39,6 +42,9 @@ public interface IGameStreamer
 
     (StreamStats Stats, bool Complete) StreamPrewarmCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool> canIssue, bool allowReorder) =>
         StreamPrewarmCoordinated(game, stop, progress, maxBytes, skipBytes, canIssue);
+
+    (StreamStats Stats, bool Complete) StreamPrewarmCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool> canIssue, bool allowReorder, Action<string, long, bool>? noteIssue) =>
+        StreamPrewarmCoordinated(game, stop, progress, maxBytes, skipBytes, canIssue, allowReorder);
 
     bool WasPrewarmReordered(GameSettings game) => false;
 
@@ -61,6 +67,9 @@ public interface IGameStreamer
         }
     }
 
+    void StreamHeadCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue) =>
+        StreamHeadCoordinated(game, stop, progress, canIssue);
+
     /// 로딩 앞부분의 바이트 (원시 트레이스에 t_ms 가 있어 경계를 계산했을 때), 아니면 null.
     long? LoadHeadBytes(GameSettings game) => null;
 }
@@ -80,24 +89,29 @@ public sealed class PrefetchStreamer : IGameStreamer
 
     /// 계획의 존 크기 (바이트). 계획 파일이 없거나 읽을 수 없으면 null, 존이 비어 있으면 0.
     /// 잔여 재계획은 Zone 이 새로 옮길 구간뿐이라 (전부 제자리면 0), 핫셋 전체인 task 합계를 돌려줍니다.
-    public static long? ZoneBytes(GameSettings game) => ZoneBytes(game, true);
+    public static long? ZoneBytes(GameSettings game) => ZoneBytes(game, true, default);
 
     // withWarmOnly: 예열 전용 옆 파일 (가변 파일 범위) 까지 센 예열량. 시작 스트림의 예산은 false (계획 범위만).
-    private static long? ZoneBytes(GameSettings game, bool withWarmOnly)
+    private static long? ZoneBytes(GameSettings game, bool withWarmOnly, CancellationToken cancellationToken)
     {
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             PlanFile plan = PlanFile.Load(game.Plan);
             long planBytes = (plan.IsResidual ? plan.Tasks.Sum(t => t.Clusters) : plan.Zone.Clusters) * plan.ClusterBytes;
             long plannedWarmBytes = 0;
             long volatileBytes = 0;
             try
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (File.Exists(game.Trace))
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     IReadOnlyDictionary<string, string> marked = AutoTracer.ReadVolatile(AutoTracer.VolatilePath(game));
-                    foreach (TraceEvent row in LoadRows(game, withWarmOnly))
+                    cancellationToken.ThrowIfCancellationRequested();
+                    foreach (TraceEvent row in LoadRows(game, withWarmOnly, cancellationToken))
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
                         if (IsVolatilePath(row.Path, marked))
                         {
                             volatileBytes += row.Length;
@@ -130,7 +144,10 @@ public sealed class PrefetchStreamer : IGameStreamer
     public const long HeadBytes = 256L << 20;
 
     /// 이 게임의 앞부분 바이트: 로딩 경계의 tier0 (0 이면 옛 값), 경계를 모르면 HeadBytes.
-    public static long HeadBytesOf(GameSettings game) => LoadTiers.For(game)?.Tier0Bytes is > 0 and long tier0 ? tier0 : HeadBytes;
+    public static long HeadBytesOf(GameSettings game) => HeadBytesOf(game, default);
+
+    private static long HeadBytesOf(GameSettings game, CancellationToken cancellationToken) =>
+        LoadTiers.For(game, cancellationToken)?.Tier0Bytes is > 0 and long tier0 ? tier0 : HeadBytes;
 
     public long? LoadHeadBytes(GameSettings game) => LoadTiers.For(game)?.Tier0Bytes is > 0 and long tier0 ? tier0 : null;
 
@@ -139,10 +156,16 @@ public sealed class PrefetchStreamer : IGameStreamer
     /// 접근 순서 앞쪽 HeadBytesOf 만큼만 읽습니다 (스케줄러가 앞에 둔 부분과 같음).
     public void StreamHead(GameSettings game, CancellationToken stop) => StreamHead(game, stop, null);
 
-    public void StreamHead(GameSettings game, CancellationToken stop, Action<long, long>? progress) => _ = Batches(Head(Ops(game), HeadBytesOf(game)), stop, progress, null);
+    public void StreamHead(GameSettings game, CancellationToken stop, Action<long, long>? progress) => _ = Batches(Head(Ops(game, stop), HeadBytesOf(game, stop)), stop, progress, null);
 
     public void StreamHeadCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue) =>
-        _ = Batches(Head(Ops(game), HeadBytesOf(game)), stop, progress, canIssue);
+        StreamHeadCoordinated(game, stop, progress, canIssue, null);
+
+    public void StreamHeadCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue)
+    {
+        noteIssue?.Invoke("head schedule", 0, false);
+        _ = Batches(Head(Ops(game, stop), HeadBytesOf(game, stop)), stop, progress, canIssue, noteIssue);
+    }
 
     /// 예열이 끝난 뒤 버퍼드로 한 번 더 읽는 앞쪽 양: 스탠바이 목록에서 접근 순서 앞부분이 먼저 밀려나지 않게 최신으로 만듭니다.
     public const long RefreshBytes = 64L << 20;
@@ -151,12 +174,12 @@ public sealed class PrefetchStreamer : IGameStreamer
     public StreamStats Stream(GameSettings game) => Batches(Ops(game), CancellationToken.None, null, null).Stats;
 
     /// 게임 시작 스트림은 시작 예열과 겹치지 않게 갱신 읽기를 생략하고, 서비스 취소를 묶음 읽기에 전달합니다.
-    public StreamStats Stream(GameSettings game, CancellationToken stop) => Batches(Ops(game), stop, null, null).Stats;
+    public StreamStats Stream(GameSettings game, CancellationToken stop) => Batches(Ops(game, stop), stop, null, null).Stats;
 
     /// 예열용: 64 MiB 묶음 (FolderWarm.Read) 마다 stop 을 보고 진행을 알립니다. 끝까지 읽었으면 앞쪽 RefreshBytes 를 버퍼드로 한 번 더 읽습니다.
     public (StreamStats Stats, bool Complete) Stream(GameSettings game, CancellationToken stop, Action<long, long>? progress)
     {
-        List<ReadOp> ops = Ops(game);
+        List<ReadOp> ops = Ops(game, stop);
         (StreamStats Stats, bool Complete) r = Batches(ops, stop, progress, null);
         if (r.Complete)
         {
@@ -172,8 +195,14 @@ public sealed class PrefetchStreamer : IGameStreamer
 
     public (StreamStats Stats, bool Complete) StreamCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue)
     {
-        List<ReadOp> ops = Ops(game);
-        (StreamStats Stats, bool Complete) r = Batches(ops, stop, progress, canIssue);
+        return StreamCoordinated(game, stop, progress, canIssue, null);
+    }
+
+    public (StreamStats Stats, bool Complete) StreamCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue)
+    {
+        noteIssue?.Invoke("stream schedule", 0, false);
+        List<ReadOp> ops = Ops(game, stop);
+        (StreamStats Stats, bool Complete) r = Batches(ops, stop, progress, canIssue, noteIssue);
         return r.Complete && !canIssue() ? (r.Stats with { Aborted = true }, false) : r;
     }
 
@@ -188,11 +217,24 @@ public sealed class PrefetchStreamer : IGameStreamer
         => StreamPrewarmCore(game, stop, progress, maxBytes, skipBytes, canIssue, true);
 
     public (StreamStats Stats, bool Complete) StreamPrewarmCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool> canIssue, bool allowReorder)
-        => StreamPrewarmCore(game, stop, progress, maxBytes, skipBytes, canIssue, allowReorder);
+        => StreamPrewarmCore(game, stop, progress, maxBytes, skipBytes, canIssue, allowReorder, null);
 
-    private (StreamStats Stats, bool Complete) StreamPrewarmCore(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool>? canIssue, bool allowReorder)
+    public (StreamStats Stats, bool Complete) StreamPrewarmCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool> canIssue, bool allowReorder, Action<string, long, bool>? noteIssue)
+        => StreamPrewarmCore(game, stop, progress, maxBytes, skipBytes, canIssue, allowReorder, noteIssue);
+
+    private (StreamStats Stats, bool Complete) StreamPrewarmCore(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool>? canIssue, bool allowReorder, Action<string, long, bool>? noteIssue = null)
     {
-        (List<ReadOp> all, long gapBytes, bool fitsBudget) = PrewarmOps(game, maxBytes);
+        List<ReadOp> all;
+        long gapBytes;
+        bool fitsBudget;
+        try
+        {
+            (all, gapBytes, fitsBudget) = PrewarmOps(game, maxBytes, stop);
+        }
+        catch (OperationCanceledException) when (stop.IsCancellationRequested)
+        {
+            return (new StreamStats(0, 0, 0, 0, Aborted: true), false);
+        }
         _reordered[game.Name] = false;
         if (!fitsBudget || stop.IsCancellationRequested)
         {
@@ -230,7 +272,7 @@ public sealed class PrefetchStreamer : IGameStreamer
             return (new StreamStats(0, 0, 0, 0, Aborted: true), false);
         }
 
-        (StreamStats Stats, bool Complete) r = Batches(ops, stop, progress, canIssue);
+        (StreamStats Stats, bool Complete) r = Batches(ops, stop, progress, canIssue, noteIssue);
         if (r.Complete)
         {
             if (stop.IsCancellationRequested || (canIssue is not null && !canIssue()))
@@ -238,7 +280,7 @@ public sealed class PrefetchStreamer : IGameStreamer
                 return (r.Stats with { Aborted = true, GapBytes = gapBytes }, false);
             }
 
-            StreamStats refresh = Refresh(all, stop);
+            StreamStats refresh = Refresh(all, stop, noteIssue);
             if (stop.IsCancellationRequested || refresh.Aborted || (canIssue is not null && !canIssue()))
             {
                 return (r.Stats with { Aborted = true, GapBytes = gapBytes }, false);
@@ -249,10 +291,19 @@ public sealed class PrefetchStreamer : IGameStreamer
         return (r.Stats with { Aborted = r.Stats.Aborted || !complete, GapBytes = gapBytes }, complete);
     }
 
-    internal static StreamStats Refresh(IReadOnlyList<ReadOp> ops, CancellationToken stop) =>
-        stop.IsCancellationRequested ? new StreamStats(0, 0, 0, 0, Aborted: true) : ZoneStreamer.Run(Head(ops, RefreshBytes), StreamMethod.Read, ct: stop);
+    internal static StreamStats Refresh(IReadOnlyList<ReadOp> ops, CancellationToken stop, Action<string, long, bool>? noteIssue = null)
+    {
+        if (stop.IsCancellationRequested)
+        {
+            return new StreamStats(0, 0, 0, 0, Aborted: true);
+        }
 
-    private static (StreamStats Stats, bool Complete) Batches(List<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool>? canIssue)
+        List<ReadOp> refresh = Head(ops, RefreshBytes);
+        noteIssue?.Invoke("refresh", refresh.Sum(o => o.Length), true);
+        return ZoneStreamer.Run(refresh, StreamMethod.Read, ct: stop);
+    }
+
+    private static (StreamStats Stats, bool Complete) Batches(List<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool>? canIssue, Action<string, long, bool>? noteIssue = null)
     {
         long total = ops.Sum(o => o.Length);
         long done = 0;
@@ -263,7 +314,8 @@ public sealed class PrefetchStreamer : IGameStreamer
                 return new StreamStats(0, 0, 0, 0, Aborted: true, RequestedBytes: batch.Sum(op => op.Length));
             }
 
-            StreamStats s = ZoneStreamer.Run(batch, StreamMethod.Pvm, ct: stop);
+            noteIssue?.Invoke("stream batch", batch.Sum(op => op.Length), true);
+            StreamStats s = ZoneStreamer.Run(batch, StreamMethod.Pvm, ct: stop, noteIssue: noteIssue);
             done += s.Bytes;
             progress?.Invoke(done, total);
             return s;
@@ -313,39 +365,61 @@ public sealed class PrefetchStreamer : IGameStreamer
     }
 
     /// 게임의 선읽기 순서 목록 (허용 루트 검사 포함). 스트림·식음 확인·고정이 같은 목록을 씁니다.
-    public static List<ReadOp> Ops(GameSettings game)
+    public static List<ReadOp> Ops(GameSettings game, CancellationToken cancellationToken = default)
     {
-        return ScheduleOps(game, false).Ops;
+        return ScheduleOps(game, false, cancellationToken: cancellationToken).Ops;
     }
 
     /// 제품 예열이 읽을 원래 순서 목록입니다.
-    public static List<ReadOp> IncumbentPrewarmOps(GameSettings game, long maxBytes) => PrewarmOps(game, maxBytes).Ops;
+    public static List<ReadOp> IncumbentPrewarmOps(GameSettings game, long maxBytes, CancellationToken cancellationToken = default) => PrewarmOps(game, maxBytes, cancellationToken).Ops;
 
     /// 예열 스트림에만 틈을 더하고, 남은 예산이 없으면 원래 범위만 유지합니다.
     /// 원래 범위는 존 예산으로 이미 골라졌고, totalBudgetBytes (유효 존 상한·스트림 상한·가용 RAM 중 작은 값) 에서 그 범위를 뺀 나머지만 틈에 씁니다.
-    internal static (List<ReadOp> Ops, long GapBytes, bool FitsBudget) PrewarmOps(GameSettings game, long totalBudgetBytes)
+    internal static (List<ReadOp> Ops, long GapBytes, bool FitsBudget) PrewarmOps(GameSettings game, long totalBudgetBytes, CancellationToken cancellationToken = default)
     {
-        (List<ReadOp> original, _) = ScheduleOps(game, true, trimLast: totalBudgetBytes == 0); // 예산 0 = 부분 예열: 틈 메우기 없이 상한에 맞춰 앞부분만
-        (List<ReadOp> expanded, long gapBytes, bool fitsBudget) = FillPrewarmGaps(original, Math.Max(0, totalBudgetBytes),
-            p => File.Exists(p) ? new FileInfo(p).Length : 0);
+        cancellationToken.ThrowIfCancellationRequested();
+        (List<ReadOp> original, _) = ScheduleOps(game, true, trimLast: totalBudgetBytes == 0, cancellationToken: cancellationToken);
+        (List<ReadOp> expanded, long gapBytes, bool fitsBudget) = FillPrewarmGaps(original, Math.Max(0, totalBudgetBytes), p =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!File.Exists(p))
+            {
+                return 0;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            return new FileInfo(p).Length;
+        }, cancellationToken);
         if (!fitsBudget || gapBytes == 0)
         {
             return (expanded, gapBytes, fitsBudget);
         }
 
         (List<ReadOp> ordered, _) = Scheduler.Schedule(expanded.Select(o => new ReadRange(o.Path, o.Offset, o.Length)), "physical", null, 0,
-            FileLayout.Get, p => File.Exists(p) ? new FileInfo(p).Length : 0, fullFileRatio: 2, headBytes: HeadBytesOf(game));
+            FileLayout.Get, p =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!File.Exists(p))
+                {
+                    return 0;
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                return new FileInfo(p).Length;
+            }, fullFileRatio: 2, headBytes: HeadBytesOf(game, cancellationToken), cancellationToken: cancellationToken);
         return (ordered, gapBytes, true);
     }
 
     /// 작은 논리 틈을 모두 더했을 때 예산을 넘으면 256 KiB 미만만 다시 시도하고, 그것도 넘으면 원래 범위를 반환합니다.
     internal static (List<ReadOp> Ops, long GapBytes, bool FitsBudget) FillPrewarmGaps(
-        IReadOnlyList<ReadOp> ops, long totalBudgetBytes, Func<string, long> fileSize)
+        IReadOnlyList<ReadOp> ops, long totalBudgetBytes, Func<string, long> fileSize, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         List<ReadOp> original = [.. ops];
         long baseBytes = 0;
         foreach (ReadOp op in original)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (op.Length > long.MaxValue - baseBytes)
             {
                 return (original, 0, false);
@@ -362,6 +436,7 @@ public sealed class PrefetchStreamer : IGameStreamer
         var candidates = new List<(int Index, long Bytes)>();
         foreach (var group in original.Select((op, index) => (op, index)).GroupBy(x => x.op.Path, StringComparer.OrdinalIgnoreCase))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             long size;
             try
             {
@@ -414,6 +489,7 @@ public sealed class PrefetchStreamer : IGameStreamer
         var expanded = new List<(int Index, ReadOp Op)>();
         foreach (var group in original.Select((op, index) => (op, index)).GroupBy(x => x.op.Path, StringComparer.OrdinalIgnoreCase))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var sorted = group.OrderBy(x => x.op.Offset).ToList();
             ReadOp current = sorted[0].op;
             int firstIndex = sorted[0].index;
@@ -462,14 +538,26 @@ public sealed class PrefetchStreamer : IGameStreamer
     }
 
     // 선읽기 목록의 범위. withWarmOnly 이면 예열 전용 옆 파일 (가변 파일 범위) 도 합칩니다.
-    private static List<TraceEvent> LoadRows(GameSettings game, bool withWarmOnly)
+    private static List<TraceEvent> LoadRows(GameSettings game, bool withWarmOnly, CancellationToken cancellationToken = default)
     {
-        Func<string, long?> size = p => File.Exists(p) ? new FileInfo(p).Length : null;
-        List<TraceEvent> rows = TraceLoader.LoadRanges(game.Trace, game.OriginRoot, RealPaths.Resolve, size);
+        cancellationToken.ThrowIfCancellationRequested();
+        Func<string, long?> size = p =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!File.Exists(p))
+            {
+                return null;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            return new FileInfo(p).Length;
+        };
+        List<TraceEvent> rows = TraceLoader.LoadRanges(game.Trace, game.OriginRoot, RealPaths.Resolve, size, cancellationToken);
         string side = PlanOutput.WarmOnlyPath(game.Trace);
+        cancellationToken.ThrowIfCancellationRequested();
         if (withWarmOnly && File.Exists(side))
         {
-            rows.AddRange(TraceLoader.LoadRanges(side, game.OriginRoot, RealPaths.Resolve, size));
+            rows.AddRange(TraceLoader.LoadRanges(side, game.OriginRoot, RealPaths.Resolve, size, cancellationToken));
         }
 
         return rows;
@@ -500,18 +588,24 @@ public sealed class PrefetchStreamer : IGameStreamer
         return kept;
     }
 
-    private static (List<ReadOp> Ops, long BudgetBytes) ScheduleOps(GameSettings game, bool withWarmOnly, bool trimLast = false)
+    private static (List<ReadOp> Ops, long BudgetBytes) ScheduleOps(GameSettings game, bool withWarmOnly, bool trimLast = false, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!PlanGuards.Inside(game.OriginRoot, game.AllowedRoots, RealPaths.Real))
         {
             throw new PlanRejectedException("origin_root resolves outside allowed roots");
         }
 
-        List<TraceEvent> rows = LoadRows(game, withWarmOnly);
-        long budget = Budget(game, ZoneBytes(game, withWarmOnly), rows.Sum(r => r.Length));
+        List<TraceEvent> rows = LoadRows(game, withWarmOnly, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        long budget = Budget(game, ZoneBytes(game, withWarmOnly, cancellationToken), rows.Sum(r => r.Length));
         IEnumerable<ReadRange> ranges = rows.Select(r => new ReadRange(r.Path, r.Offset, r.Length));
         (List<ReadOp> ops, _) = Scheduler.Schedule(trimLast ? TrimToBudget(ranges, budget) : ranges, "physical", budget, 0,
-            FileLayout.Get, p => new FileInfo(p).Length, headBytes: HeadBytesOf(game));
+            FileLayout.Get, p =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return new FileInfo(p).Length;
+            }, headBytes: HeadBytesOf(game, cancellationToken), cancellationToken: cancellationToken);
         return (ops, budget);
     }
 
@@ -583,11 +677,21 @@ public sealed record DispatchEnv
     /// 이 프로세스가 감지된 지 얼마나 됐는가 (Settle 안이면 막 시작한 게임: 그 게임 자신의 읽기를 디스크 바쁨으로 세지 않음).
     public Func<ProcessStart, TimeSpan> Age { get; init; } = s => System.Diagnostics.Stopwatch.GetElapsedTime(s.Timestamp);
 
-    /// 그 게임의 핫 집합이 이미 파일 캐시에 있는가 (Prewarmer.AlreadyWarm). 기본은 모른다 (스트림).
-    public Func<GameSettings, bool> IsWarm { get; init; } = _ => false;
+    /// 그 게임의 핫 집합이 이미 파일 캐시에 있는가 (Prewarmer.AlreadyWarm). null 은 표본을 얻지 못함 (최근 실제 표본으로 보완).
+    public Func<GameSettings, bool?> IsWarm { get; init; } = _ => null;
+
+    /// 현재 표본을 얻지 못했을 때 쓸, 같은 계획·trace 세대의 최근 warm 표본 시각.
+    public Func<GameSettings, DateTimeOffset?> RecentWarmProbeAt { get; init; } = _ => null;
+
+    /// 최근 표본의 시작 스트림 보완 유효 기간 (분). 0 이면 보완하지 않습니다.
+    public Func<int> RecentWarmProbeMinutes { get; init; } = () => AutoSettings.Default.RewarmMinutes;
 
     /// 같은 게임의 시작 스트림 사이 최소 간격 (분), 0 = 끔.
     public Func<int> RestreamCooldownMin { get; init; } = () => 0;
+
+    public Func<IReadOnlyCollection<string>, IReadOnlyList<(int Pid, long ReadBytes)>> ReadCounters { get; init; } = ProcessSnapshot.ReadCounters;
+
+    public Func<int> StartStreamCapSeconds { get; init; } = () => AutoSettings.Default.StartStreamCapSeconds;
 
     public static DispatchEnv Create() => new()
     {
@@ -719,7 +823,23 @@ public sealed class GameDispatcher
 
         if (_env.Age(start) < DispatchEnv.Settle)
         {
-            return _env.IsWarm(g) ? "already warm" : null; // 막 시작한 게임: 바쁨 검사 대신 캐시 점검, 차가우면 스트림
+            bool? warm = _env.IsWarm(g);
+            if (warm is true)
+            {
+                return "already warm";
+            }
+
+            int recentWarmMinutes = _env.RecentWarmProbeMinutes();
+            if (warm is null && recentWarmMinutes > 0 && _env.RecentWarmProbeAt(g) is { } sampledAt)
+            {
+                TimeSpan age = now - sampledAt;
+                if (age >= TimeSpan.Zero && age <= TimeSpan.FromMinutes(recentWarmMinutes))
+                {
+                    return $"recent probe warm {(long)age.TotalSeconds}s ago";
+                }
+            }
+
+            return null; // 막 시작한 게임: 바쁨 검사 대신 캐시 점검, 실제 cold 또는 근거 없는 unknown 은 스트림
         }
 
         return _env.DiskBusy(g) ? "drive busy" : null;
@@ -783,16 +903,161 @@ public sealed class GameDispatcher
         try
         {
             CancellationToken streamStop = lease?.Token ?? stop;
-            bool CanIssue() => lease?.IsValid ?? !stop.IsCancellationRequested;
-            (StreamStats r, bool complete) = _streamer.StreamCoordinated(g, streamStop, null, CanIssue);
+            int capSeconds = Math.Max(0, _env.StartStreamCapSeconds());
+            long startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+            long lastSampleAt = startedAt;
+            long processReadBytes = 0;
+            var previousReads = new Dictionary<int, long>();
+            var boundary = new RuntimeLoadBoundary();
+            int boundaryStopped = 0;
+            int capStopped = 0;
+            object sampleLock = new();
+            using var issueStop = CancellationTokenSource.CreateLinkedTokenSource(streamStop);
+            try
+            {
+                foreach ((int pid, long bytes) in _env.ReadCounters(g.ExeNames))
+                {
+                    previousReads[pid] = bytes;
+                }
+            }
+            catch (Exception e) when (e is not (OutOfMemoryException or StackOverflowException))
+            {
+                _log.Warn($"{g.Name}: start stream read counters unavailable ({e.GetType().Name})");
+            }
+
+            _ = boundary.Update(0, 0);
+
+            void SampleReadCounters()
+            {
+                bool shouldCancel = false;
+                bool sampleFailed = false;
+                lock (sampleLock)
+                {
+                    if (issueStop.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
+                    long timestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+                    TimeSpan elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(startedAt, timestamp);
+                    if (capSeconds > 0 && elapsed >= TimeSpan.FromSeconds(capSeconds))
+                    {
+                        Volatile.Write(ref capStopped, 1);
+                        shouldCancel = true;
+                    }
+                    else if (System.Diagnostics.Stopwatch.GetElapsedTime(lastSampleAt, timestamp) >= TimeSpan.FromSeconds(1))
+                    {
+                        try
+                        {
+                            foreach ((int pid, long bytes) in _env.ReadCounters(g.ExeNames))
+                            {
+                                long delta = previousReads.TryGetValue(pid, out long previous) ? (bytes >= previous ? bytes - previous : bytes) : bytes;
+                                processReadBytes = checked(processReadBytes + Math.Max(0, delta));
+                                previousReads[pid] = bytes;
+                            }
+
+                            if (boundary.Update((long)elapsed.TotalMilliseconds, processReadBytes))
+                            {
+                                Volatile.Write(ref boundaryStopped, 1);
+                                shouldCancel = true;
+                            }
+                        }
+                        catch (Exception e) when (e is not (OutOfMemoryException or StackOverflowException))
+                        {
+                            sampleFailed = true;
+                        }
+
+                        lastSampleAt = timestamp;
+                    }
+                }
+
+                if (sampleFailed)
+                {
+                    _log.Warn($"{g.Name}: start stream read counter sample failed");
+                }
+
+                if (shouldCancel)
+                {
+                    issueStop.Cancel();
+                }
+            }
+
+            async Task SampleLoop(CancellationToken token)
+            {
+                while (true)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(1), token).ConfigureAwait(false);
+                    SampleReadCounters();
+                }
+            }
+
+            bool CanIssue()
+            {
+                if (issueStop.IsCancellationRequested || !(lease?.IsValid ?? !stop.IsCancellationRequested))
+                {
+                    return false;
+                }
+
+                SampleReadCounters();
+                return !issueStop.IsCancellationRequested && (lease?.IsValid ?? !stop.IsCancellationRequested);
+            }
+
+            lease?.NoteReadIssue("start stream planning", 0, false);
+            using var sampleStop = new CancellationTokenSource();
+            Task sampleTask = Task.Run(() => SampleLoop(sampleStop.Token));
+            StreamStats r;
+            bool complete;
+            long progressBytes = 0;
+            try
+            {
+                (r, complete) = _streamer.StreamCoordinated(g, issueStop.Token, (done, _) => Interlocked.Exchange(ref progressBytes, done), CanIssue,
+                    (stage, bytes, isData) => lease?.NoteReadIssue(stage, bytes, isData));
+            }
+            catch (OperationCanceledException) when (Volatile.Read(ref boundaryStopped) != 0 || Volatile.Read(ref capStopped) != 0)
+            {
+                r = new StreamStats(Interlocked.Read(ref progressBytes), 0, 0, System.Diagnostics.Stopwatch.GetElapsedTime(startedAt).TotalSeconds, Aborted: true);
+                complete = false;
+            }
+            finally
+            {
+                sampleStop.Cancel();
+                try
+                {
+                    sampleTask.GetAwaiter().GetResult();
+                }
+                catch (OperationCanceledException)
+                {
+                    // Sampling has stopped with the stream.
+                }
+            }
+
+            double elapsedSeconds = System.Diagnostics.Stopwatch.GetElapsedTime(startedAt).TotalSeconds;
+            double mbPerSecond = elapsedSeconds > 0 ? r.Bytes / (1_000_000d * elapsedSeconds) : 0;
+            if (Volatile.Read(ref boundaryStopped) != 0)
+            {
+                _log.Info($"{g.Name}: start stream stopped at load boundary after {r.Bytes} bytes, {elapsedSeconds:F1} s ({mbPerSecond:F1} MB/s)");
+                return false;
+            }
+
+            if (Volatile.Read(ref capStopped) != 0)
+            {
+                _log.Info($"{g.Name}: start stream stopped at cap after {r.Bytes} bytes, {elapsedSeconds:F1} s ({mbPerSecond:F1} MB/s)");
+                return false;
+            }
+
             if (!complete || r.Aborted || streamStop.IsCancellationRequested || !CanIssue())
             {
                 _log.Info($"{g.Name}: start stream cancelled after {r.Bytes} bytes");
                 return false;
             }
 
-            _log.Info($"{g.Name}: streamed {r.Bytes} bytes in {r.Requests} requests, {r.Errors} errors, {r.Seconds:F3} s");
+            _log.Info($"{g.Name}: streamed {r.Bytes} bytes in {r.Requests} requests, {r.Errors} errors, {elapsedSeconds:F3} s ({mbPerSecond:F1} MB/s)");
             return true;
+        }
+        catch (OperationCanceledException) when (!stop.IsCancellationRequested)
+        {
+            _log.Info($"{g.Name}: start stream cancelled (planning)"); // 계획 도중 대여가 취소됨: 서비스 종료가 아니면 다음 시작 스트림을 막지 않음
+            return false;
         }
         catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
         {

@@ -59,7 +59,7 @@ public sealed class AutoTier
         RefreshBytes(game);
     }
 
-    public void Tick(AsterSettings s, bool relocateOn, ReapplyGate gate, CancellationToken ct)
+    public void Tick(AsterSettings s, bool relocateOn, ReapplyGate gate, CancellationToken ct, Func<GameSettings, bool>? heavyWorkAllowed = null)
     {
         SsdTierSettings t = s.Auto.SsdTier;
         bool on = s.Auto.Enabled && t.Enabled;
@@ -72,6 +72,11 @@ public sealed class AutoTier
         foreach (string name in journals)
         {
             GameSettings? g = s.Games.FirstOrDefault(x => x.Name == name);
+            if (g is not null && heavyWorkAllowed is not null && !heavyWorkAllowed(g))
+            {
+                continue;
+            }
+
             if (!on || g is null || TierBlocked(g.AntiCheat ?? FreshCheat(g)))
             {
                 string why = !on ? "disabled" : g is null ? "game removed" : "anti-cheat";
@@ -97,7 +102,7 @@ public sealed class AutoTier
         }
 
         _rootWhy = null;
-        foreach (GameSettings g in s.Games.Where(g => !AnyGameRunning([g])))
+        foreach (GameSettings g in s.Games.Where(g => (heavyWorkAllowed?.Invoke(g) ?? true) && !AnyGameRunning([g])))
         {
             Maintain(g, root, t, () => RevertDeferred(s, g.Name, g, "ssd_tier settings changed"));
         }
@@ -116,7 +121,7 @@ public sealed class AutoTier
             return;
         }
 
-        ApplyNext(s, relocateOn, root, t, gate, ct);
+        ApplyNext(s, relocateOn, root, t, gate, ct, heavyWorkAllowed);
     }
 
     private static bool TierBlocked(string? cheat) => Capabilities.Decide(CapabilityFeature.Tier, cheat).Outcome != CapabilityOutcome.Allow; // 정책표 결정 (안티치트가 있으면 종류와 상관없이 거절)
@@ -150,9 +155,9 @@ public sealed class AutoTier
         RefreshBytes(g.Name);
     }
 
-    private void ApplyNext(AsterSettings s, bool relocateOn, string root, SsdTierSettings t, ReapplyGate gate, CancellationToken ct)
+    private void ApplyNext(AsterSettings s, bool relocateOn, string root, SsdTierSettings t, ReapplyGate gate, CancellationToken ct, Func<GameSettings, bool>? heavyWorkAllowed)
     {
-        GameSettings? next = s.Games.FirstOrDefault(g => Eligible(g, relocateOn));
+        GameSettings? next = s.Games.FirstOrDefault(g => (heavyWorkAllowed?.Invoke(g) ?? true) && Eligible(g, relocateOn));
         if (next is null || !_idle.Sample(_env.Now(), BusyReason(s, next) is null, s.Auto.IdleWindow))
         {
             return;

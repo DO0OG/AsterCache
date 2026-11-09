@@ -135,7 +135,7 @@ public sealed class ColdPrewarmTests : IDisposable
         Assert.True(p.Run(g, "service start").Ran);
         _onProbe = () => coordinator.Yield(g.OriginRoot, "game started", "other");
 
-        Assert.False(p.AlreadyWarm(g));
+        Assert.Null(p.AlreadyWarm(g)); // 거절은 cold 가 아니라 unknown
         Assert.Single(_probed);
         Assert.Single(_probed[0]);
     }

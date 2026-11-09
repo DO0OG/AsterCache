@@ -191,4 +191,27 @@ public sealed class GameExitTests
         Assert.Equal([game], tracker.Poll([brief, game], Names(), unseen));
         Assert.Empty(unseen); // 관측된 game 은 unseen 이 아님
     }
+
+    [Fact]
+    public void HeavyWorkGraceUsesTheLongerOfExitGraceAndConfiguredRewarmDelay()
+    {
+        Assert.Equal(GameExitTracker.Grace, GameExitTracker.HeavyWorkGrace(0));
+        Assert.Equal(TimeSpan.FromMinutes(3), GameExitTracker.HeavyWorkGrace(3));
+        Assert.Equal(_now + TimeSpan.FromMinutes(3), GameExitTracker.HeavyWorkNotBeforeAt(_now, 3));
+    }
+
+    [Fact]
+    public void HeavyWorkDelayKeepsTheFirstMissingTimeAfterExitIsConfirmed()
+    {
+        var tracker = Tracker();
+        var game = Games.Make("cod", "cod.exe");
+        tracker.ObserveStarted(game);
+        _ = tracker.Poll([game], Names());
+        DateTimeOffset goneAt = _now;
+
+        _now += GameExitTracker.Grace;
+        Assert.Single(tracker.Poll([game], Names()));
+
+        Assert.Equal(goneAt + TimeSpan.FromMinutes(3), tracker.HeavyWorkNotBefore("cod", 3));
+    }
 }

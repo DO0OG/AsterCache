@@ -29,7 +29,7 @@ public static class SettingsStore
         ["name", "exe_names", "trace", "plan", "origin_root", "allowed_roots", "volume_label", "reapply_interval_minutes", "prewarm", "max_stream_mib", "source", "anticheat", "display_name", "display_names"];
     private static readonly string[] AutoKeys =
     [
-        "enabled", "discover", "trace", "relocate", "prewarm_recent", "idle_minutes", "trace_cap_seconds", "trace_cap_mib",
+        "enabled", "discover", "trace", "relocate", "prewarm_recent", "idle_minutes", "trace_cap_seconds", "trace_cap_mib", "start_stream_cap_seconds", "trace_late_interval_min", "trace_late_window_seconds", "trace_late_windows",
         "max_relocations_per_day", "trace_runs", "trace_merge_min_mib", "trace_target_coverage", "trace_runs_max", "ignore_exes", "rewarm_minutes", "idle_seconds", "learn", "full_prewarm", "full_prewarm_max_mib", "engine_profiles", "shared_profiles",
         "ssd_tier", "post_update_delay_min", "recovery_max_min", "recovery_hard_max_min", "relocate_chunk_mib", "relocate_parallel", "relocate_io_priority", "relocate_verify", "relocate_order", "max_relocate_gib_per_day", "post_relocate_recovery", "keep_awake", "keep_stream_on_game_start", "load_boundary", "restream_cooldown_min", "rewarm_after_exit_min", "startup_warm_games", "startup_warm_max_mib",
     ];
@@ -168,6 +168,10 @@ public static class SettingsStore
             OptInt(o, "max_relocations_per_day", 0, 24, d.MaxRelocationsPerDay), ignore)
         {
             TraceRuns = OptInt(o, "trace_runs", 1, 32, d.TraceRuns),
+            StartStreamCapSeconds = OptInt(o, "start_stream_cap_seconds", 0, 7200, d.StartStreamCapSeconds),
+            TraceLateIntervalMin = OptInt(o, "trace_late_interval_min", 1, 1440, d.TraceLateIntervalMin),
+            TraceLateWindowSeconds = OptInt(o, "trace_late_window_seconds", 1, 7200, d.TraceLateWindowSeconds),
+            TraceLateWindows = OptInt(o, "trace_late_windows", 0, 32, d.TraceLateWindows),
             TraceMergeMinMib = OptInt(o, "trace_merge_min_mib", 1, 65536, d.TraceMergeMinMib),
             TraceTargetCoverage = OptInt(o, "trace_target_coverage", 1, 100, d.TraceTargetCoverage),
             TraceRunsMax = OptInt(o, "trace_runs_max", 1, 32, d.TraceRunsMax),

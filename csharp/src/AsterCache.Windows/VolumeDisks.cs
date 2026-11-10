@@ -30,6 +30,11 @@ public sealed class VolumeDisks(Func<string, IReadOnlySet<uint>?> query, Func<lo
 
     public string? PhysicalKeyOf(string path) => DisksOf(path) is { Count: > 0 } disks ? "disk" + string.Join('+', disks.Order()) : null;
 
+    /// 물리 디스크 성능 조회에 쓸 디스크 번호입니다. 경로를 매핑하지 못하면 null 입니다.
+    public static IReadOnlySet<uint>? DiskNumbers(string path) => Shared.DisksOf(path);
+
+    public IReadOnlySet<uint>? DiskNumbersOf(string path) => DisksOf(path);
+
     public bool? KnownAreSame(string a, string b)
     {
         IReadOnlySet<uint>? left = DisksOf(a);

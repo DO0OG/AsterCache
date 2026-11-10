@@ -514,7 +514,13 @@ public sealed class Prewarmer
     }
 
     // 이번 시도가 성공이 아니면 이전 항목의 마지막 성공 시각을 그대로 이어 씁니다.
-    private string? KeptOkAt(string game) => _status.TryGetValue(game, out object? prior) && prior is JObject po && LastOkAt(po) is { } ok ? ok.ToString("O") : null;
+    private string? KeptOkAt(string game)
+    {
+        lock (_gate)
+        {
+            return _status.TryGetValue(game, out object? prior) && prior is JObject po && LastOkAt(po) is { } ok ? ok.ToString("O") : null;
+        }
+    }
 
     /// 기록 없이 (통째·프로필) 예열에 성공했을 때: 게임과 방식 이름표.
     public event Action<GameSettings, string>? ColdWarmed;
@@ -986,6 +992,39 @@ public sealed class Prewarmer
         return before is { } t && _games.FirstOrDefault(g => string.Equals(g.Name, game, StringComparison.OrdinalIgnoreCase)) is { } gs && _env.RawTraceExists(gs) ? t : null;
     }
 
+    /// 게임 시작 시 이미 메모리에 있는 마지막 예열 상태를 돌려줍니다. 데이터 파일이나 게임 디스크를 새로 읽지 않습니다.
+    internal PlayWarmSnapshot? PlayStartSnapshot(string game, DateTimeOffset startedAt)
+    {
+        lock (_gate)
+        {
+            if (!_status.TryGetValue(game, out object? status) || status is not JObject entry)
+            {
+                return null;
+            }
+
+            string result = StatusString(entry, "result") ?? "unknown";
+            string? reason = StatusString(entry, "reason");
+            long? bytes = StatusLong(entry, "bytes");
+            long? readMib = StatusLong(entry, "warmed_mib") ?? (bytes is { } read ? read >> 20 : null);
+            long? targetMib = StatusLong(entry, "hot_mib");
+            if (targetMib is null && result == "ok")
+            {
+                targetMib = readMib;
+            }
+
+            DateTimeOffset? completedAt = StatusString(entry, "at") is { } at
+                && DateTimeOffset.TryParse(at, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset parsed) ? parsed : null;
+            double? secondsAgo = completedAt is { } then && startedAt >= then ? (startedAt - then).TotalSeconds : null;
+            return new PlayWarmSnapshot(StatusString(entry, "mode") ?? "hot set", result, reason, readMib, targetMib, secondsAgo);
+        }
+    }
+
+    private static string? StatusString(JObject entry, string key) =>
+        entry.TryGetValue(key, out object? value) ? value as string : null;
+
+    private static long? StatusLong(JObject entry, string key) =>
+        entry.TryGetValue(key, out object? value) ? value switch { long number => number, int number => number, _ => null } : null;
+
     /// 설정을 다시 읽었을 때 게임 목록만 바꿉니다 (쿨다운·상태는 유지). pin 이 꺼졌거나 빠진 게임의 고정은 풉니다.
     public void SetGames(IReadOnlyList<GameSettings> games)
     {
@@ -1277,10 +1316,19 @@ public sealed class Prewarmer
 
         lock (_run)
         {
-            if (_status.TryGetValue(game, out object? entry) && entry is JObject o)
+            bool changed = false;
+            lock (_gate)
             {
-                o["warmed_mib"] = warmedMib;
-                o["hot_mib"] = hotMib;
+                if (_status.TryGetValue(game, out object? entry) && entry is JObject o)
+                {
+                    o["warmed_mib"] = warmedMib;
+                    o["hot_mib"] = hotMib;
+                    changed = true;
+                }
+            }
+
+            if (changed)
+            {
                 FlushStatus();
             }
         }
@@ -1354,11 +1402,20 @@ public sealed class Prewarmer
     {
         lock (_run)
         {
-            if (_status.TryGetValue(game, out object? entry) && entry is JObject o)
+            bool changed = false;
+            lock (_gate)
             {
-                o["warmed_mib"] = warmedMib;
-                o["hot_mib"] = hotMib;
-                o["partial"] = false; // 나머지까지 읽음
+                if (_status.TryGetValue(game, out object? entry) && entry is JObject o)
+                {
+                    o["warmed_mib"] = warmedMib;
+                    o["hot_mib"] = hotMib;
+                    o["partial"] = false; // 나머지까지 읽음
+                    changed = true;
+                }
+            }
+
+            if (changed)
+            {
                 FlushStatus();
             }
         }
@@ -3029,7 +3086,7 @@ public sealed class Prewarmer
     private PrewarmResult Record(GameSettings game, DateTimeOffset now, PrewarmResult r, double mbps)
     {
         string? okAt = r.Ran ? now.ToString("O") : KeptOkAt(game.Name);
-        _status[game.Name] = new JObject
+        JObject entry = new()
         {
             { "at", now.ToString("O") },
             { "result", r.Ran ? "ok" : r.SkipReason!.StartsWith("failed", StringComparison.Ordinal) ? "failed" : "skipped" },
@@ -3044,25 +3101,25 @@ public sealed class Prewarmer
         {
             if (_profileMiss.TryGetValue(game.Name, out string? miss))
             {
-                ((JObject)_status[game.Name]!)["profile_miss_key"] = miss;
+                entry["profile_miss_key"] = miss;
             }
         }
         if (r.Ran && r.Mode is null && _streamer.LoadHeadBytes(game) is { } head)
         {
-            ((JObject)_status[game.Name]!)["head_mib"] = head >> 20; // 로딩 앞부분 (관리 창 상태 탭)
+            entry["head_mib"] = head >> 20; // 로딩 앞부분 (관리 창 상태 탭)
         }
 
         if (r.Mode is not null)
         {
-            ((JObject)_status[game.Name]!)["mode"] = r.Mode;
+            entry["mode"] = r.Mode;
         }
 
         lock (_gate)
         {
             if (r.Ran && r.Mode is null && _startupTrim.TryGetValue(game.Name, out (long WarmedMib, long HotMib) trim) && game.MaxStreamMib == trim.WarmedMib)
             {
-                ((JObject)_status[game.Name]!)["warmed_mib"] = ActualMib(r.Stats, trim.WarmedMib); // 서비스 시작 상한으로 앞부분만 읽음 (실제 읽은 양) (보충 예열이 끝나면 둘이 같아짐)
-                ((JObject)_status[game.Name]!)["hot_mib"] = trim.HotMib;
+                entry["warmed_mib"] = ActualMib(r.Stats, trim.WarmedMib); // 서비스 시작 상한으로 앞부분만 읽음 (실제 읽은 양) (보충 예열이 끝나면 둘이 같아짐)
+                entry["hot_mib"] = trim.HotMib;
             }
         }
 
@@ -3071,7 +3128,6 @@ public sealed class Prewarmer
             if (r.Mode is null && _partial.TryGetValue(game.Name, out (long WarmedMib, long HotMib) part))
             {
                 // 부분 예열 상태는 건너뜀·취소·실패 기록이 덮어쓰지 않음 (재시작 뒤에도 보충·표본 제한이 이어지게). 지우는 것은 완전 성공이나 보충 성공뿐.
-                JObject entry = (JObject)_status[game.Name]!;
                 bool memory = _memoryPartial.TryGetValue(game.Name, out (long WarmedMib, long HotMib) mem);
                 if (memory)
                 {
@@ -3084,6 +3140,8 @@ public sealed class Prewarmer
                     entry["hot_mib"] = part.HotMib;
                 }
             }
+
+            _status[game.Name] = entry;
         }
 
         FlushStatus();
@@ -3140,7 +3198,13 @@ public sealed class Prewarmer
             try
             {
                 string tmp = _statusPath + ".tmp";
-                DurableFile.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(PyJson.Dumps(new JObject { { "games", _status } }, indent: 2, ensureAscii: false) + "\n"));
+                string contents;
+                lock (_gate)
+                {
+                    contents = PyJson.Dumps(new JObject { { "games", _status } }, indent: 2, ensureAscii: false) + "\n";
+                }
+
+                DurableFile.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(contents));
                 File.Move(tmp, _statusPath, true);
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)

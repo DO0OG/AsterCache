@@ -896,11 +896,12 @@ public sealed class GameDispatcher
     private readonly Func<DateTimeOffset> _now;
     private readonly DispatchEnv _env;
     private readonly DiskReadCoordinator? _coordinator;
+    private readonly Action<ProcessStart, PlayStreamResult>? _streamResult;
     private readonly Dictionary<string, DateTimeOffset> _last = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<int, ProcessStart> _seen = []; // pid -> 서비스가 처음 관측한 시작 (Process.StartTime 을 읽지 않고 나이를 셈)
 
     public GameDispatcher(IReadOnlyList<GameSettings> games, IGameStreamer streamer, ILog log, Func<DateTimeOffset>? now = null, DispatchEnv? env = null,
-        DiskReadCoordinator? coordinator = null)
+        DiskReadCoordinator? coordinator = null, Action<ProcessStart, PlayStreamResult>? streamResult = null)
     {
         _env = env ?? new DispatchEnv();
         _games = games;
@@ -908,6 +909,7 @@ public sealed class GameDispatcher
         _log = log;
         _now = now ?? (() => DateTimeOffset.UtcNow);
         _coordinator = coordinator;
+        _streamResult = streamResult;
     }
 
     /// 설정을 다시 읽었을 때 게임 목록만 바꿉니다 (쿨다운은 유지).
@@ -994,12 +996,14 @@ public sealed class GameDispatcher
         DateTimeOffset now = _now();
         if (_last.TryGetValue(g.Name, out DateTimeOffset prev) && now - prev < Cooldown)
         {
+            ReportStream(start, "skipped", "start stream cooldown", null, null, null);
             return false;
         }
 
         if (!LauncherExes.Is(start.ExeName) && RestreamSkip(g, start, now) is { } why)
         {
             _log.Info($"{g.Name}: start stream skipped ({why})");
+            ReportStream(start, "skipped", why, null, null, null);
             return false;
         }
 
@@ -1007,6 +1011,7 @@ public sealed class GameDispatcher
         if (_coordinator is not null && lease is null)
         {
             _log.Info($"{g.Name}: start stream skipped (disk yielded)");
+            ReportStream(start, "skipped", "disk yielded", null, null, null);
             return false;
         }
 
@@ -1147,38 +1152,67 @@ public sealed class GameDispatcher
             if (Volatile.Read(ref boundaryStopped) != 0)
             {
                 _log.Info($"{g.Name}: start stream stopped at load boundary after {r.Bytes} bytes, {elapsedSeconds:F1} s ({mbPerSecond:F1} MB/s)");
+                ReportStream(start, "stopped", "load boundary", r.Bytes, elapsedSeconds, mbPerSecond);
                 return false;
             }
 
             if (Volatile.Read(ref capStopped) != 0)
             {
                 _log.Info($"{g.Name}: start stream stopped at cap after {r.Bytes} bytes, {elapsedSeconds:F1} s ({mbPerSecond:F1} MB/s)");
+                ReportStream(start, "stopped", "cap", r.Bytes, elapsedSeconds, mbPerSecond);
                 return false;
             }
 
             if (!complete || r.Aborted || streamStop.IsCancellationRequested || !CanIssue())
             {
                 _log.Info($"{g.Name}: start stream cancelled after {r.Bytes} bytes");
+                ReportStream(start, "cancelled", "cancelled", r.Bytes, elapsedSeconds, mbPerSecond);
                 return false;
             }
 
             _log.Info($"{g.Name}: streamed {r.Bytes} bytes in {r.Requests} requests, {r.Errors} errors, {elapsedSeconds:F3} s ({mbPerSecond:F1} MB/s)");
+            ReportStream(start, "completed", null, r.Bytes, elapsedSeconds, mbPerSecond);
             return true;
         }
         catch (OperationCanceledException) when (!stop.IsCancellationRequested)
         {
             _log.Info($"{g.Name}: start stream cancelled (planning)"); // 계획 도중 대여가 취소됨: 서비스 종료가 아니면 다음 시작 스트림을 막지 않음
+            ReportStream(start, "cancelled", "planning cancelled", null, null, null);
             return false;
+        }
+        catch (OperationCanceledException) when (stop.IsCancellationRequested)
+        {
+            ReportStream(start, "cancelled", "service stopping", null, null, null);
+            throw;
         }
         catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
         {
             _log.Info($"{g.Name}: no trace file yet, nothing to stream"); // 아직 추적을 만들지 않은 게임은 오류가 아님
+            ReportStream(start, "skipped", "no trace file", null, null, null);
             return false;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
         {
             _log.Error($"{g.Name}: stream failed", e);
+            ReportStream(start, "failed", e.GetType().Name, null, null, null);
             return false;
+        }
+        catch (Exception e)
+        {
+            ReportStream(start, "failed", e.GetType().Name, null, null, null);
+            throw;
+        }
+    }
+
+    private void ReportStream(ProcessStart start, string status, string? reason, long? bytes, double? seconds, double? mbps)
+    {
+        try
+        {
+            _streamResult?.Invoke(start, new PlayStreamResult(status, reason, bytes, seconds, mbps));
+        }
+        catch (Exception e) when (e is not (StackOverflowException or OutOfMemoryException))
+        {
+            // 기록 실패가 게임 시작 스트림에 영향을 주지 않게 합니다.
         }
     }
 }

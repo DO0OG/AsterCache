@@ -34,6 +34,24 @@ internal struct NtfsVolumeDataBuffer
     public long MftZoneEnd;
 }
 
+/// IOCTL_DISK_PERFORMANCE 출력 (DISK_PERFORMANCE, x64/x86 에서 88 바이트).
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct DiskPerformanceBuffer
+{
+    public long BytesRead;
+    public long BytesWritten;
+    public long ReadTime;
+    public long WriteTime;
+    public long IdleTime;
+    public uint ReadCount;
+    public uint WriteCount;
+    public uint QueueDepth;
+    public uint SplitCount;
+    public long QueryTime;
+    public uint StorageDeviceNumber;
+    public fixed char StorageManagerName[8];
+}
+
 /// GetFileInformationByHandleEx(FileBasicInfo) 출력 (40바이트, 시각은 FILETIME 100ns 단위).
 /// https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_basic_info
 [StructLayout(LayoutKind.Sequential)]

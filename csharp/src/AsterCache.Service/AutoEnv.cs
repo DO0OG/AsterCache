@@ -235,6 +235,9 @@ public sealed class AutoEnv
 
     public required Func<string, IReadOnlyList<Extent>?> Extents { get; init; }
 
+    /// 적용이 건너뛰는 파일 (스파스·압축·암호화 …): 배치 판정에서 남은 이동으로 세지 않음. 시험 기본값은 없음.
+    public Func<string, bool> Unmovable { get; init; } = _ => false;
+
     /// 'X:' → 볼륨 할당 비트맵, 읽지 못하면 (관리자 아님·I/O 오류) null. 존 확장 계획이 덧붙일 구간이 비어 있는지 미리 보는 데 씁니다. 시험 기본값은 null (확인 불가).
     public Func<string, VolumeBitmap?> Bitmap { get; init; } = _ => null;
 
@@ -359,6 +362,7 @@ public sealed class AutoEnv
             },
             Revert = (g, skipRows, ct) => ReapplyEnv.Revert(journalDir, g, skipRows, ct),
             Extents = FileLayout.Extents,
+            Unmovable = FileGuards.Unmovable,
             Bitmap = ReadBitmap,
             DiskBytesPerSecond = letter => DiskActivity.BytesPerSecond(letter),
             ProbeMbps = DiskProbe.Mbps,

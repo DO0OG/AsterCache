@@ -3683,6 +3683,28 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
+    public void AZoneAlreadyFilledToTheLimitIsNotReplannedByAChangedMergeFingerprintButTheWarmListFollowsTheNewTrace()
+    {
+        _settings = _settings with { MaxZoneMib = 2 };
+        Sessions = [Merged(RestOfTheBlocks())]; // 32 블록 (2 MiB) = 존 상한을 가득 채운 계획
+        _w.TraceFingerprint = _ => "fp-a";
+        ReportFullMoves();
+        DoneThenMergedTrace(Merged(RestOfTheBlocks()));
+        Assert.Equal(32L, PlanFile.Load(_game.Plan).Stats["hot_blocks"]);
+        string sha = PlanFile.Load(_game.Plan).Sha();
+        _w.TraceFingerprint = _ => "fp-b";
+
+        Tick();
+
+        Assert.False(File.Exists(_game.Plan + AutoRelocator.ExtendSuffix));
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.Equal(sha, PlanFile.Load(_game.Plan).Sha()); // 이미 옮긴 배치를 건드리지 않음
+        Assert.Empty(Vol.Moves);
+        Assert.Equal(0, ExtendLogs());
+        Assert.Contains(_log.Lines, l => l.Contains("prewarm trace refreshed from the merged trace", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void ASameMergeFingerprintDoesNotReplanWithoutGrowth()
     {
         _w.TraceFingerprint = _ => "fp-a";

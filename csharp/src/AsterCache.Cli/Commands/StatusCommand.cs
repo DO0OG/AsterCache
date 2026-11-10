@@ -19,7 +19,7 @@ internal static class StatusCommand
 
     public static int Run(ParsedArgs a, TextWriter o)
     {
-        object? plan = a.Given("plan") ? VolumeCommands.Verdict(LayoutVerifier.Verify(PlanFile.Load(a.Text("plan")!), FileLayout.Extents)) : null;
+        object? plan = a.Given("plan") ? VolumeCommands.Verdict(LayoutVerifier.Verify(PlanFile.Load(a.Text("plan")!), FileLayout.Extents, FileGuards.Unmovable)) : null;
         object? journal = null;
         if (a.Given("journal"))
         {

@@ -28,19 +28,38 @@ public sealed record LayoutReport(
 /// relayout/apply.py 의 verify_layout: 핫 데이터를 계획 순서로 읽을 때 물리적으로 이어지는가 (계획이 약속한 구간 수 이하인가).
 public static class LayoutVerifier
 {
-    public static LayoutReport Verify(PlanFile plan, Func<string, IReadOnlyList<Extent>?> extents)
+    /// unmovable: 적용이 옮기지 않는 파일 (스파스·압축·암호화 …) 이면 true. 옮겨지지 않을 파일은 존 소속·구간 수 판정에서 뺌 (가변 파일과 같음).
+    public static LayoutReport Verify(PlanFile plan, Func<string, IReadOnlyList<Extent>?> extents, Func<string, bool>? unmovable = null)
     {
+        var skip = new Dictionary<string, bool>(StringComparer.Ordinal);
         var ext = new Dictionary<string, IReadOnlyList<Extent>?>(StringComparer.Ordinal);
         var seq = new List<(long Lcn, long N)>();
         long missing = 0;
         long leftOut = 0;
+        bool lastUnmovable = false;
         foreach (PlanRange o in plan.Order)
         {
             if (VolatileFiles.Ignored(o.Path))
             {
+                lastUnmovable = false;
                 leftOut++; // 옛 계획 (excluded_files 키 없음) 에 든 가변 파일은 게임이 스스로 다시 써 존 밖으로 나가므로 존 소속·구간 수 판정에서 뺌
                 continue;
             }
+
+            if (unmovable is not null && (skip.TryGetValue(o.Path, out bool no) ? no : skip[o.Path] = unmovable(o.Path)))
+            {
+                // 적용이 건너뛰는 파일 (스파스 등) 은 영원히 제자리라 남은 이동으로 세면 이어 옮기기 필요가 풀리지 않음.
+                // 연달아 빠진 범위 묶음은 이어진 구간을 한 번만 가르므로 여유도 묶음마다 1.
+                if (!lastUnmovable)
+                {
+                    leftOut++;
+                }
+
+                lastUnmovable = true;
+                continue;
+            }
+
+            lastUnmovable = false;
 
             if (!ext.TryGetValue(o.Path, out IReadOnlyList<Extent>? e))
             {

@@ -1251,7 +1251,7 @@ public sealed class AutoRelocator
     {
         try
         {
-            LayoutReport r = LayoutVerifier.Verify(plan, _env.Extents);
+            LayoutReport r = LayoutVerifier.Verify(plan, _env.Extents, _env.Unmovable);
             return r.MissingFiles > 0 ? null : r.Contiguous;
         }
         catch (Exception e) when (e is not OperationCanceledException)
@@ -1357,7 +1357,8 @@ public sealed class AutoRelocator
                 long merged = Math.Min(DistinctBlocks(stableTrace) * HotSet.Block, cap);
                 long grew = merged - hotBlocks * HotSet.Block;
                 bool volatileHistory = excluded.Count > 0 || plan.Stats.ContainsKey(VolatileFiles.StatsKey);
-                bool reordered = newTrace && (volatileHistory && storedStable is not null
+                bool full = hotBlocks * HotSet.Block >= cap; // 존 상한까지 찬 계획: 새 트레이스는 순서만 바꿀 뿐 더 담지 못하고, 확장하면 이미 옮긴 배치를 깨뜨림 (예열 목록은 아래 refreshWarm 이 계속 갱신)
+                bool reordered = newTrace && !full && (volatileHistory && storedStable is not null
                     ? fingerprint != storedStable // 가변 파일은 안정 지문 비교에서 제외
                     : stored is not null && rawFingerprint is not null && rawFingerprint != stored); // 안정 지문이 없는 옛 계획은 원시 지문으로 비교한 뒤 새 지문을 기록
                 bool shrink = hotBlocks * HotSet.Block > cap; // 상한을 낮춰 계획의 핫셋이 새 상한을 넘음: 메타만 적지 않고 같은 존 시작으로 줄여 다시 계획
@@ -3007,7 +3008,7 @@ public sealed class AutoRelocator
             }
             else
             {
-                LayoutReport layout = LayoutVerifier.Verify(_env.LoadPlan(g.Plan), _env.Extents);
+                LayoutReport layout = LayoutVerifier.Verify(_env.LoadPlan(g.Plan), _env.Extents, _env.Unmovable);
                 _log.Info($"{g.Name}: auto relocation verified: " + (layout.Contiguous ? "contiguous" : layout.ResumeNeeded ? "resume-needed" : "non-contiguous"));
                 if (HoldUnreadable(g, plan))
                 {

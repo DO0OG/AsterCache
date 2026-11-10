@@ -112,7 +112,7 @@ internal static class VolumeCommands
 
     public static int Verify(ParsedArgs a, TextWriter o)
     {
-        LayoutReport report = LayoutVerifier.Verify(PlanFile.Load(a.Text("plan")!), FileLayout.Extents);
+        LayoutReport report = LayoutVerifier.Verify(PlanFile.Load(a.Text("plan")!), FileLayout.Extents, FileGuards.Unmovable);
         return AsterCli.Emit(o, Verdict(report));
     }
 

@@ -774,7 +774,7 @@ public sealed class ManageViewModelTests : IDisposable
         WriteAuto("{\"games\":{\"frost\":{\"source\":\"auto\",\"launcher\":\"steam\",\"stage\":\"done\",\"detail\":null,\"at\":\"2026-11-02T01:05:00+00:00\"}}}");
         _vm.ReloadAuto();
         Assert.Equal("완료", _vm.GameRows(null).Single().Stage);
-        Assert.Contains("  자동: frost 발견 → 트레이스 수집 중 → 재배치 대기 → 재배치 중 → [완료]", _vm.StatusLines(null));
+        Assert.Contains("  자동: frost 발견 → 트레이스 수집 중 → 재배치 자동 진행 대기 → 재배치 중 → [완료]", _vm.StatusLines(null));
     }
 
     // ---- 기본 화면 가독성 (상태 구분, 기본 열과 고급 열) ----
@@ -835,11 +835,11 @@ public sealed class ManageViewModelTests : IDisposable
 
         GameRow wait = vm.GameRows(null).Single(r => r.Name == "wait");
         GameRow bad = vm.GameRows(null).Single(r => r.Name == "bad");
-        Assert.Equal("재배치 대기", wait.State); // 기본 열은 짧은 단계 이름만
+        Assert.Equal("재배치 자동 진행 대기", wait.State); // 기본 열은 짧은 단계 이름만
         Assert.Contains("오늘 재배치 횟수 다 씀", wait.Reason);
         Assert.Contains("트레이스 불가 (vanguard)", wait.Reason); // 안티치트 상태는 기본 화면에 남음
         Assert.DoesNotContain("%", wait.State + wait.PrewarmState + wait.Reason);
-        Assert.Equal("재배치 대기 · 오늘 재배치 횟수 다 씀 +3", wait.Stage); // 고급 열은 주 상태 + 부가 하나, 나머지는 개수
+        Assert.Equal("재배치 자동 진행 대기 · 오늘 재배치 횟수 다 씀 +3", wait.Stage); // 고급 열은 주 상태 + 부가 하나, 나머지는 개수
         Assert.Contains("계획 핫셋/읽은 양 88%", wait.StageFull); // 점수·비율은 고급 열의 단계 글에
         Assert.Contains("과거 기록: 예전 회차 적중 61%", wait.StageFull); // 재부팅 전에 잰 적중률은 과거 기록으로 표시
         Assert.Equal("실패", bad.State);
@@ -858,7 +858,7 @@ public sealed class ManageViewModelTests : IDisposable
             : CliResult.Parse("{}"));
         Assert.True(_vm.RefreshStatus().Ok);
 
-        Assert.Equal("배치 이어 옮기기 필요", _vm.GameRows(null).Single().Reason);
+        Assert.Equal("배치 자동으로 이어 옮김", _vm.GameRows(null).Single().Reason);
         foreach (string key in new[] { "Col_State", "Col_PrewarmState", "Col_Reason", "Adv_Show", "State_Ready", "State_Partial", "State_History", "State_NotMeasured", "Reason_PrewarmLast", "Reason_Layout", "Stage_HitPercentOld" })
         {
             Assert.False(string.IsNullOrWhiteSpace(L.Get("ko", key)));
@@ -889,8 +889,8 @@ public sealed class ManageViewModelTests : IDisposable
     public void AutoLineEnglishDoneAndFailedAndSkipped()
     {
         var done = new AutoGame("auto", "gog", "done", null);
-        Assert.Equal("Auto: g discovered → collecting trace → waiting to relocate → relocating → [done]", AutoStatusFile.Line("g", done, "en"));
-        Assert.Equal("자동: g 발견 → 트레이스 수집 중 → 재배치 대기 → 재배치 중 → [완료]", AutoStatusFile.Line("g", done, "ko"));
+        Assert.Equal("Auto: g discovered → collecting trace → waiting for automatic relocation → relocating → [done]", AutoStatusFile.Line("g", done, "en"));
+        Assert.Equal("자동: g 발견 → 트레이스 수집 중 → 재배치 자동 진행 대기 → 재배치 중 → [완료]", AutoStatusFile.Line("g", done, "ko"));
         Assert.Equal("자동: g [실패] (no trace)", AutoStatusFile.Line("g", done with { Stage = "failed", Detail = "no trace" }, "ko"));
         Assert.Equal("Auto: g [skipped] (too small)", AutoStatusFile.Line("g", done with { Stage = "skipped", Detail = "too small" }, "en"));
         Assert.Equal("Auto: g [skipped]", AutoStatusFile.Line("g", done with { Stage = "skipped" }, "en"));
@@ -914,12 +914,12 @@ public sealed class ManageViewModelTests : IDisposable
     {
         var waiting = new AutoGame("auto", "gog", "waiting_idle", "prewarmed");
 
-        Assert.Equal("재배치 대기 (예열됨)", AutoStatusFile.StageText(waiting, "ko"));
+        Assert.Equal("재배치 자동 진행 대기 (예열됨)", AutoStatusFile.StageText(waiting, "ko"));
         Assert.Equal("done (prewarmed)", AutoStatusFile.StageText(waiting with { Stage = "done" }, "en"));
         Assert.Equal("완료 (예열됨)", AutoStatusFile.StageText(waiting with { Stage = "done" }, "ko"));
-        Assert.Equal("자동: g 발견 → 트레이스 수집 중 → [재배치 대기] (예열됨)", AutoStatusFile.Line("g", waiting, "ko"));
-        Assert.Equal("재배치 대기 (오늘 재배치 횟수 다 씀, 예열됨)", AutoStatusFile.StageText(waiting with { Detail = "daily limit reached, prewarmed" }, "ko"));
-        Assert.Equal("재배치 대기 (오늘 재배치 횟수 다 씀)", AutoStatusFile.StageText(waiting with { Detail = "daily limit reached" }, "ko"));
+        Assert.Equal("자동: g 발견 → 트레이스 수집 중 → [재배치 자동 진행 대기] (예열됨)", AutoStatusFile.Line("g", waiting, "ko"));
+        Assert.Equal("재배치 자동 진행 대기 (오늘 재배치 횟수 다 씀, 예열됨)", AutoStatusFile.StageText(waiting with { Detail = "daily limit reached, prewarmed" }, "ko"));
+        Assert.Equal("재배치 자동 진행 대기 (오늘 재배치 횟수 다 씀)", AutoStatusFile.StageText(waiting with { Detail = "daily limit reached" }, "ko"));
         Assert.Equal("실패 (예열됨)", AutoStatusFile.StageText(waiting with { Stage = "failed" }, "ko"));
     }
 
@@ -972,9 +972,9 @@ public sealed class ManageViewModelTests : IDisposable
     {
         var waiting = new AutoGame("auto", "gog", "waiting_idle", "daily limit reached, prewarming 128/512 MiB");
 
-        Assert.Equal("재배치 대기 (오늘 재배치 횟수 다 씀, 예열 중 128/512 MiB)", AutoStatusFile.StageText(waiting, "ko"));
-        Assert.Equal("waiting to relocate (daily relocation count used up, prewarming 128/512 MiB)", AutoStatusFile.StageText(waiting, "en"));
-        Assert.Equal("자동: g 발견 → 트레이스 수집 중 → [재배치 대기] (오늘 재배치 횟수 다 씀, 예열 중 128/512 MiB)", AutoStatusFile.Line("g", waiting, "ko"));
+        Assert.Equal("재배치 자동 진행 대기 (오늘 재배치 횟수 다 씀, 예열 중 128/512 MiB)", AutoStatusFile.StageText(waiting, "ko"));
+        Assert.Equal("waiting for automatic relocation (daily relocation count used up, prewarming 128/512 MiB)", AutoStatusFile.StageText(waiting, "en"));
+        Assert.Equal("자동: g 발견 → 트레이스 수집 중 → [재배치 자동 진행 대기] (오늘 재배치 횟수 다 씀, 예열 중 128/512 MiB)", AutoStatusFile.Line("g", waiting, "ko"));
         Assert.Equal("done (prewarming 1/2 MiB)", AutoStatusFile.StageText(waiting with { Stage = "done", Detail = "prewarming 1/2 MiB" }, "en"));
     }
 
@@ -1018,7 +1018,7 @@ public sealed class ManageViewModelTests : IDisposable
         _vm.ReloadAuto();
 
         Assert.Contains("(예열됨)", _vm.GameRows(null).Single().StageFull, StringComparison.Ordinal);
-        Assert.Equal("재배치 대기 · 예열됨", _vm.GameRows(null).Single().Stage);
+        Assert.Equal("재배치 자동 진행 대기 · 예열됨", _vm.GameRows(null).Single().Stage);
     }
 
     [Fact]

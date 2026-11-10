@@ -104,6 +104,9 @@ public sealed class ReapplyEnv
 
     public required Func<string, IReadOnlyList<Extent>?> Extents { get; init; }
 
+    /// 적용이 건너뛰는 파일 (스파스·압축·암호화 …): 배치 판정에서 남은 이동으로 세지 않음. 시험 기본값은 없음.
+    public Func<string, bool> Unmovable { get; init; } = _ => false;
+
     public required Func<string, Fingerprint> Stat { get; init; }
 
     public required Func<string, string> RealPath { get; init; }
@@ -141,6 +144,7 @@ public sealed class ReapplyEnv
             DiskBusy = g => DiskActivity.IsBusy(PlanFile.SplitDrive(g.OriginRoot)),
             LoadPlan = PlanFile.Load,
             Extents = FileLayout.Extents,
+            Unmovable = FileGuards.Unmovable,
             Stat = PlanFile.FingerprintOf,
             RealPath = RealPaths.Real,
             Apply = (g, plan, injected, ct) => RunLocked(journalDir, g, plan, ChooseOptions(g, injected, relocateOrder?.Invoke() ?? RelocateOrder.Target, relocateParallel?.Invoke(g) ?? 1), ct, log), // 존을 다시 정하면 계획에 남김
@@ -500,7 +504,7 @@ public sealed class ReapplyChecker
             List<bool?> stamps = applied ? [.. plan.Fingerprints.Where(f => !VolatileFiles.Ignored(f.Path)).Select(f => Compare(f, p => Guarded(_env.Stat, p)))] : [];
             bool changed = stamps.Contains(true);
             bool unknown = !changed && stamps.Contains(null);
-            LayoutReport? layout = applied && !changed ? LayoutVerifier.Verify(plan, p => Guarded(_env.Extents, p)) : null;
+            LayoutReport? layout = applied && !changed ? LayoutVerifier.Verify(plan, p => Guarded(_env.Extents, p), _env.Unmovable) : null;
             // 파일 배치를 못 읽은 항목이 있으면 (희소 파일 등) 판단할 수 없으므로 건강으로 봅니다: 같은 이유로 매 주기 재적용하며 0 바이트를 옮기는 일을 피함.
             bool? contiguous = layout is null || layout.HotClusters == 0 || layout.MissingFiles > 0 ? null : layout.Contiguous;
             ReapplyVerdict v = ReapplyPolicy.Decide(new ReapplyInputs(applied, changed, contiguous, Running, () => _env.DiskBusy(game), _env.CanApply, () => _env.Gate(game), unknown));

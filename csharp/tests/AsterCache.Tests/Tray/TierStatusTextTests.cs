@@ -14,7 +14,7 @@ public sealed class TierStatusTextTests
 
         Assert.Equal("완료 (재배치됨(프로필), SSD 보조 2.5 GB, 예열됨)", AutoStatusFile.StageText(done, "ko"));
         Assert.Equal("done (relocated (profile), SSD tier 2.5 GB, prewarmed)", AutoStatusFile.StageText(done, "en"));
-        Assert.Equal("재배치 대기 (SSD 보조 8.0 GB)", AutoStatusFile.StageText(new AutoGame("auto", "gog", "waiting_idle", "ssd tier 8.0 GB"), "ko"));
+        Assert.Equal("재배치 자동 진행 대기 (SSD 보조 8.0 GB)", AutoStatusFile.StageText(new AutoGame("auto", "gog", "waiting_idle", "ssd tier 8.0 GB"), "ko"));
         Assert.Equal("done", AutoStatusFile.StageText(done with { Detail = null }, "en"));
     }
 

@@ -378,7 +378,7 @@ League of Legends uses Riot Vanguard. Vanguard is also a kernel-level anti-cheat
 
 **Install size**
 - Riot's official document states that a normal install is about 35~40GB. [confirmed] https://support.riotgames.com/en-us/league-of-legends/client/league-of-legends-takes-too-much-space
-- A secondary blog says 16~25GB, so the sources conflict. The exact value must be measured on the user's own PC, and until then take 20~40GB as the reference. [secondary] https://nokiamob.net/2026/02/19/how-big-is-league-of-legends-in-2026/
+- A secondary blog says 16\~25GB, so the sources conflict. The exact value must be measured on the user's own PC, and until then take 20\~40GB as the reference. [secondary] https://nokiamob.net/2026/02/19/how-big-is-league-of-legends-in-2026/
 - The Game folder has about 400 large files. The whole release is split into more than 300,000 chunks. [confirmed] https://www.riotgames.com/en/news/supercharging-data-delivery-new-league-patcher
 
 **Patches and keeping the relocation**

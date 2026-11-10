@@ -48,7 +48,7 @@ To recreate them, run `AsterCache.Tray.exe --smoke --screenshot <png> [--tab 0..
 
 ## Measured results
 
-The figures are replay times of traced read patterns, not total load times of a running game.
+The synthetic dataset and Frostpunk figures are replay times of traced read patterns. The League of Legends and Call of Duty figures are aggregated from the service log during real play, plus a read benchmark of the prewarm list ([Real-world usage records](#real-world-usage-records)). None of them is the total load time of a running game.
 
 | Target | Measurement | Result |
 |---|---|---|
@@ -58,7 +58,11 @@ The figures are replay times of traced read patterns, not total load times of a 
 | Frostpunk | Replay after prewarm | 0.48 s |
 | Frostpunk, 1.9 GB loading read | HDD cold → SSD assist storage cold (warm) | 12.90 s → 2.81 s (warm 0.48 s) |
 | Frostpunk, same read pattern | NVMe SSD cold replay | 3.8 s |
-| Frostpunk-trace replica, scattered vs contiguous layout (2.02 GB) | Direct replay of the same read pattern, read-ahead off, median | Scattered 41.0~55.3 s → contiguous 19.3~20.5 s ([result folder](results/csharp_e7c_gen/README.md)) |
+| Frostpunk-trace replica, scattered vs contiguous layout (2.02 GB) | Direct replay of the same read pattern, read-ahead off, median | Scattered 41.0\~55.3 s → contiguous 19.3\~20.5 s ([result folder](results/csharp_e7c_gen/README.md)) |
+| League of Legends, prewarm target 8,182 MiB | RAM prewarm at launcher start (usage log, 1 run) | 8,173 MiB in 48.4 s (169 MB/s), hit rate right after prewarm 100% |
+| Call of Duty, prewarm target 10,218 MiB | Hot set RAM prewarm (usage log, 7 runs) | 9,081\~10,217 MiB in 128\~416 s (median 249.8 s) |
+| Call of Duty | Prewarm of the first 1,023 MiB at service start (usage log, 3 runs) | 34.7~40.7 s, hit rate right after prewarm 75% |
+| Call of Duty, prewarm list about 9.5 GB | HDD cold read, before and after prewarm reordering (ABBA benchmark, median) | Total read about 326 s. Reordering cut value-weighted ready time by 18.8% and delayed the worst episode by 13.1 s ([ORBIT](docs/ORBIT.md)) |
 | Service | Game start detection latency (polling, p95) | 58 ms |
 
 - The HDD is a WD20EZAZ (SATA, D:) and the SSD is NVMe (C:). The test machine runs Windows 11 Pro 10.0.26200 with 32 GiB of memory.

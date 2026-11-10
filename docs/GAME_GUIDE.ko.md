@@ -393,7 +393,7 @@ League of Legends는 Riot Vanguard를 씁니다. Vanguard도 커널 수준의 �
 
 **설치 용량**
 - Riot 공식 문서는 일반 설치 약 35~40GB라고 밝힙니다. [확인] https://support.riotgames.com/en-us/league-of-legends/client/league-of-legends-takes-too-much-space
-- 2차 블로그는 16~25GB라고 해 자료가 상충합니다. 정확한 값은 사용자 PC에서 직접 측정해야 하며, 그 전까지는 20~40GB를 기준으로 봅니다. [2차] https://nokiamob.net/2026/02/19/how-big-is-league-of-legends-in-2026/
+- 2차 블로그는 16\~25GB라고 해 자료가 상충합니다. 정확한 값은 사용자 PC에서 직접 측정해야 하며, 그 전까지는 20\~40GB를 기준으로 봅니다. [2차] https://nokiamob.net/2026/02/19/how-big-is-league-of-legends-in-2026/
 - Game 폴더에는 큰 파일이 약 400개 있습니다. 릴리스 전체는 30만 개 이상의 chunk로 나뉩니다. [확인] https://www.riotgames.com/en/news/supercharging-data-delivery-new-league-patcher
 
 **패치와 재배치 유지**

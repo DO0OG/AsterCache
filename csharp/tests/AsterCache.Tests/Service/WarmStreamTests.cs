@@ -1176,7 +1176,7 @@ public sealed class WarmStreamTests
 
     private sealed class ColdWorld
     {
-        public const long PhysBytes = 64L << 30; // 1/4 = 16384 MiB
+        public const long PhysBytes = 32L << 30; // 1/2 = 16384 MiB
 
         public ProbeResult? Probe { get; set; }
 
@@ -1195,7 +1195,7 @@ public sealed class WarmStreamTests
             TraceExists = g => g.Name == "y",
             DiskBytesPerSecond = _ => 0,
             ColdPlanner = (_, _, _, _) => new ColdPlan("full", Enumerable.Range(0, 20).Select(i => new ReadOp($@"D:\x\f{i}.bin", 0, Mib)).ToList(), 20 * Mib, null),
-            ColdRead = (_, _) => (new StreamStats(ColdWorld.PhysBytes / 4, 20, 0, 1), true), // X 가 RAM 의 1/4 를 채움
+            ColdRead = (_, _) => (new StreamStats(ColdWorld.PhysBytes / 2, 20, 0, 1), true), // X 가 RAM 의 1/2 를 채움
             ProbeSamples = _ =>
             {
                 w.Probes++;
@@ -1209,7 +1209,7 @@ public sealed class WarmStreamTests
     private static ProcessStart Launcher() => new(1, "launcher.exe", 0);
 
     [Fact]
-    public void AColdWarmFillingAQuarterOfRamBlocksALaterBatchUntilItsGameStarts()
+    public void AColdWarmFillingHalfOfRamBlocksALaterBatchUntilItsGameStarts()
     {
         GameSettings x = Game("x");
         GameSettings y = Game("y", "launcher.exe");

@@ -1122,7 +1122,7 @@ public sealed class PinAndRewarmTests
     {
         GameSettings[] games = [Game("a", false), Game("b", false)];
         Prewarmer p = Make(games);
-        _ram = Gib / 2; // 1/4 = 128 MiB: 부분 예열 최소 (256 MiB) 에도 못 미쳐 처음부터 자름
+        _ram = Gib / 4; // 1/2 = 128 MiB: 부분 예열 최소 (256 MiB) 에도 못 미쳐 처음부터 자름
 
         for (int i = 0; i < 9; i++)
         {
@@ -1166,11 +1166,11 @@ public sealed class PinAndRewarmTests
     }
 
     [Fact]
-    public void BatchBudgetIsAtMostAQuarterOfPhysicalRamEvenWhenMoreIsAvailable()
+    public void BatchBudgetIsAtMostHalfOfPhysicalRamEvenWhenMoreIsAvailable()
     {
         GameSettings[] games = [Game("a", false), Game("b", false), Game("c", false)];
         Prewarmer p = Make(games);
-        _ram = 8 * Gib; // 1/4 = 2048 MiB: 존 1610 은 하나, 둘째는 남은 438 MiB 만 (부분 예열), 셋째는 남은 예산 없음
+        _ram = 4 * Gib; // 1/2 = 2048 MiB: 존 1610 은 하나, 둘째는 남은 438 MiB 만 (부분 예열), 셋째는 남은 예산 없음
         _streamer.BytesOf = g => (g.MaxStreamSet ? g.MaxStreamMib : _zoneMib) << 20;
         _avail = 40000;
 

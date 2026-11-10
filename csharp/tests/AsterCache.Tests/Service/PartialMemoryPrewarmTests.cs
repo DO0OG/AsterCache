@@ -106,9 +106,9 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     }
 
     [Fact]
-    public void PhysicalRamQuarterAlsoLimitsThePartialSize()
+    public void PhysicalRamHalfAlsoLimitsThePartialSize()
     {
-        (_avail, _physical, _hotMib) = (12000, 8L << 30, 9000); // 가용 12000 - 4096 = 7904 이지만 물리 8 GiB / 4 = 2048
+        (_avail, _physical, _hotMib) = (12000, 4L << 30, 9000); // 가용 12000 - 4096 = 7904 이지만 물리 4 GiB / 2 = 2048
         Prewarmer p = Make(Game());
 
         Assert.True(p.Run(Game(), "test").Ran);

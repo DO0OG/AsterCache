@@ -6,11 +6,11 @@ using Xunit;
 
 namespace AsterCache.Tests.Service;
 
-/// 재예열·보충 예열 대상이 게임들 합계로 캐시 예산 (물리 RAM/4) 을 넘지 않고, 순위가 높은 게임이 먼저 들어가는가.
+/// 재예열·보충 예열 대상이 게임들 합계로 캐시 예산 (기본 물리 RAM/2) 을 넘지 않고, 순위가 높은 게임이 먼저 들어가는가.
 public sealed class RewarmBudgetTests
 {
     private const long Mib = 1L << 20;
-    private const long HotMib = 5000; // 둘의 합 10000 > 예산 8192 (물리 RAM 32 GiB 의 1/4)
+    private const long HotMib = 5000; // 둘의 합 10000 > 예산 8192 (물리 RAM 16 GiB 의 1/2)
     private readonly ListLog _log = new();
     private readonly CountStreamer _streamer = new();
     private DateTimeOffset _now = new(2026, 11, 6, 12, 0, 0, TimeSpan.Zero);
@@ -44,7 +44,7 @@ public sealed class RewarmBudgetTests
     {
         AvailableRamMib = () => _avail,
         GameRunning = _ => false,
-        PhysicalRamBytes = () => 32L << 30,
+        PhysicalRamBytes = () => 16L << 30,
         ZoneBytes = g => Math.Min(_streamer.ZoneMib, g.StreamCapBytes(_streamer.ZoneMib * Mib) / Mib) * Mib,
         TraceExists = _ => true,
         ProbeReadMs = _ => new ProbeResult(8, 8, 5.0), // 식음
@@ -53,7 +53,7 @@ public sealed class RewarmBudgetTests
     private Prewarmer Ranked(params GameSettings[] games)
     {
         Prewarmer p = Make(games);
-        p.WarmRank = list => _order.Select(n => list.First(g => g.Name == n));
+        p.WarmRank = list => _order.Select(n => list.FirstOrDefault(g => g.Name == n)).OfType<GameSettings>(); // 목록에 없는 이름은 건너뜀 (트리거로 걸린 일부만 받을 때)
         return p;
     }
 
@@ -127,7 +127,7 @@ public sealed class RewarmBudgetTests
     public void ARewarmedGameWhoseHotSetExceedsTheBudgetReadsOnlyItsAllocation()
     {
         GameSettings a = Game("a");
-        _streamer.ZoneMib = 12000; // 예산 8192 (물리 RAM 32 GiB 의 1/4) 보다 큰 핫 집합 하나
+        _streamer.ZoneMib = 12000; // 예산 8192 (물리 RAM 16 GiB 의 1/2) 보다 큰 핫 집합 하나
         _avail = 20000;
         _order = ["a"];
         Prewarmer p = Ranked(a);
@@ -172,5 +172,86 @@ public sealed class RewarmBudgetTests
         _now += TimeSpan.FromSeconds(61);
         Assert.True(p.SupplementWhenIdle(b, CancellationToken.None));
         Assert.Equal("b", _streamer.Calls[^1].Game);
+    }
+
+    private static GameSettings Launched(string name, int maxCacheMib = 0) =>
+        Game(name) with { Prewarm = PrewarmSettings.Default with { TriggerExes = ["launcher.exe"], MaxCacheMib = maxCacheMib } };
+
+    [Theory]
+    [InlineData(32, 0, 16384)] // 설정이 없으면 물리 RAM 의 절반
+    [InlineData(32, 4000, 4000)] // 양수면 그 값
+    [InlineData(32, 100000, 32768)] // 물리 RAM 을 넘지 못함
+    public void TheCacheBudgetIsHalfOfRamUnlessConfiguredAndNeverAbovePhysicalRam(long ramGib, int configured, long expectedMib) =>
+        Assert.Equal(expectedMib, Prewarmer.CacheCapMib(ramGib << 30, [Launched("a", configured)]));
+
+    [Fact]
+    public void TheLargestConfiguredBudgetWinsAndUnknownRamHasNoLimit()
+    {
+        Assert.Equal(6000, Prewarmer.CacheCapMib(32L << 30, [Launched("a", 3000), Launched("b", 6000), Launched("c")]));
+        Assert.Equal(long.MaxValue, Prewarmer.CacheCapMib(0, [Launched("a")]));
+        Assert.Equal(3000, Prewarmer.CacheCapMib(0, [Launched("a", 3000)]));
+    }
+
+    [Fact]
+    public void AvailableRamStillLimitsTheReadWhenTheBudgetIsLarge()
+    {
+        long budget = Prewarmer.CacheCapMib(32L << 30, [Game("a")]); // 16384
+        Assert.Equal(1904, Prewarmer.PartialCapMib(Game("a"), 12000, 6000, budget)); // 가용 6000 - 예비 4096
+        Assert.Null(Prewarmer.PartialCapMib(Game("a"), 12000, 4200, budget)); // 256 MiB 도 못 들어감
+        Assert.Equal(budget, Prewarmer.PartialCapMib(Game("a"), 20000, 40000, budget)); // 가용이 넉넉하면 예산이 한도
+    }
+
+    [Fact]
+    public void TheConfiguredBudgetReplacesTheAutomaticOneInTheRewarmBudget()
+    {
+        GameSettings a = Launched("a", 6000);
+        GameSettings b = Launched("b");
+        _avail = 16000;
+        Prewarmer p = Ranked(a, b);
+        Assert.True(p.Run(a, "service start").Ran);
+        Assert.True(p.Run(b, "service start").Ran);
+
+        Assert.Equal(6000, p.WarmBudget()!.Value.CapMib);
+        Assert.Contains("a", p.WarmBudget()!.Value.In);
+        Assert.DoesNotContain("b", p.WarmBudget()!.Value.In); // 5000 + 5000 > 6000
+    }
+
+    [Fact]
+    public void TheGameStartedByATriggerTakesTheBudgetBeforeTheHigherRankedOne()
+    {
+        GameSettings a = Game("a"); // 순위 1위지만 트리거가 아님
+        GameSettings b = Launched("b");
+        _avail = 16000;
+        Prewarmer p = Ranked(a, b);
+        Assert.True(p.Run(a, "service start").Ran);
+        Assert.True(p.Run(b, "service start").Ran);
+        Assert.Contains("a", p.WarmBudget()!.Value.In); // 트리거 전: 순위대로
+        Assert.DoesNotContain("b", p.WarmBudget()!.Value.In);
+
+        p.OnProcessStart(new ProcessStart(1, "launcher.exe", 0));
+
+        Assert.Contains("b", p.WarmBudget()!.Value.In);
+        Assert.DoesNotContain("a", p.WarmBudget()!.Value.In); // 양보: 이미 올린 a 의 캐시를 비우지는 않고 이후 점검 대상에서만 빠짐
+        _now += Prewarmer.TriggerPriorityWindow + TimeSpan.FromMinutes(1);
+        Assert.Contains("a", p.WarmBudget()!.Value.In); // 기간이 지나면 기존 순위
+        Assert.DoesNotContain("b", p.WarmBudget()!.Value.In);
+    }
+
+    [Fact]
+    public void GamesSharingATriggerKeepTheirRankAmongThemselves()
+    {
+        GameSettings a = Launched("a");
+        GameSettings b = Launched("b");
+        GameSettings c = Game("c");
+        _avail = 16000;
+        _order = ["c", "b", "a"];
+        Prewarmer p = Ranked(a, b, c);
+        Assert.True(p.Run(a, "service start").Ran);
+        Assert.True(p.Run(b, "service start").Ran);
+        Assert.True(p.Run(c, "service start").Ran);
+
+        p.OnProcessStart(new ProcessStart(1, "launcher.exe", 0));
+
+        Assert.Equal(["b"], p.WarmBudget()!.Value.In.OrderBy(n => n)); // 트리거를 공유한 a, b 중 순위가 높은 b 만 앞섬: 5000 + 5000 > 8192 라 순위 1위 c 도 밀림
     }
 }

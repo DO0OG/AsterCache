@@ -393,6 +393,7 @@ public sealed class Prewarmer
     private readonly Dictionary<string, (DateTimeOffset At, int Count)> _triggerSeen = new(StringComparer.OrdinalIgnoreCase); // 트리거 exe 별 마지막 처리 시각과 그 뒤 억제한 횟수, _gate 로 보호
     private readonly Dictionary<string, (DateTimeOffset At, long Bytes)> _readSample = new(StringComparer.OrdinalIgnoreCase); // 실행 중인 게임의 마지막 읽기 카운터 표본, _gate 로 보호
     private readonly Dictionary<string, DateTimeOffset> _gameIdleSince = new(StringComparer.OrdinalIgnoreCase); // 실행 중인 게임이 한가해진 시각 (읽기 증가율·디스크 처리량이 낮은 상태가 이어진 시작), _gate 로 보호
+    private (string Game, DateTimeOffset At)? _triggered; // 가장 최근 트리거로 예열을 시작한 게임과 시각: 보충·재예열 예산 순위에서 먼저 받음, _gate 로 보호
     private volatile AutoSettings _auto = AutoSettings.Default;
     private volatile string? _streaming; // 핫 집합 스트림이 도는 게임
     private volatile string? _coldReading; // 기록 없는 (통째·프로필) 예열의 읽기가 도는 게임: _streaming 과 달리 게임 시작 양보 신호는 받지 않음 (ct 로만 멈춤)
@@ -538,20 +539,26 @@ public sealed class Prewarmer
     // skipped: 이어 읽을 때 건너뛴 (이미 읽은) 바이트.
     internal static long ActualMib(StreamStats? stats, long limit, long skipped = 0) => stats is null ? limit : Math.Min(limit, (stats.Bytes + skipped + (1 << 20) - 1) >> 20);
 
-    // 전체가 들어가지 않을 때 읽을 앞부분의 크기 (MiB): min(원래 읽을 양, 가용 RAM - 예비, 물리 RAM / 4). 너무 작으면 null (건너뜀). 앞쪽 = 계획 순서 = 게임이 먼저 읽는 순서.
-    // roomMib: 묶음에서 남은 예산 (MiB, 단독 예열이면 제한 없음).
-    internal static long? PartialCapMib(GameSettings game, long hotMib, long availableRamMib, long physicalRamBytes, long roomMib = long.MaxValue)
+    // 예열 예산 (MiB, 게임들이 나눠 씀): prewarm.max_cache_mib 가 있으면 (게임마다 적혀 있으면 가장 큰 값) 그 값을 물리 RAM 으로 자른 것, 없으면 물리 RAM / 2. 물리 RAM 을 모르면 제한 없음.
+    // 존 최대 크기 (max_zone_mib auto) 의 자동값 (ZoneSize.AutoMaxMib) 과는 별개입니다.
+    internal static long CacheCapMib(long physicalRamBytes, IEnumerable<GameSettings> games)
     {
-        long cap = Math.Min(Math.Min(hotMib, roomMib), availableRamMib - Math.Max(game.Prewarm.MinFreeRamMib, GapFillReserveMib));
-        if (physicalRamBytes > 0)
-        {
-            cap = Math.Min(cap, physicalRamBytes >> 22);
-        }
+        long physMib = physicalRamBytes > 0 ? physicalRamBytes >> 20 : long.MaxValue;
+        long set = games.Select(g => (long)g.Prewarm.MaxCacheMib).DefaultIfEmpty(0).Max();
+        return set > 0 ? Math.Min(set, physMib) : physMib == long.MaxValue ? physMib : physMib / 2;
+    }
 
+    private long PhysCapMib() => CacheCapMib(_env.PhysicalRamBytes(), _games);
+
+    // 전체가 들어가지 않을 때 읽을 앞부분의 크기 (MiB): min(원래 읽을 양, 가용 RAM - 예비, 예열 예산 physCapMib). 너무 작으면 null (건너뜀). 앞쪽 = 계획 순서 = 게임이 먼저 읽는 순서.
+    // roomMib: 묶음에서 남은 예산 (MiB, 단독 예열이면 제한 없음).
+    internal static long? PartialCapMib(GameSettings game, long hotMib, long availableRamMib, long physCapMib, long roomMib = long.MaxValue)
+    {
+        long cap = Math.Min(Math.Min(Math.Min(hotMib, roomMib), availableRamMib - Math.Max(game.Prewarm.MinFreeRamMib, GapFillReserveMib)), physCapMib);
         return cap >= MinPartialMib && cap < hotMib && cap <= int.MaxValue ? cap : null;
     }
 
-    // 묶음에 남은 예산 (MiB) = 물리 RAM / 4 - 이미 올린 양. 이미 올린 양이 있으면 가용 RAM - 여유 - 이미 올린 양도 넘지 않음 (첫 게임의 가용 RAM 쪽 판단은 Run 의 부분 예열이 함).
+    // 묶음에 남은 예산 (MiB) = 예열 예산 - 이미 올린 양. 이미 올린 양이 있으면 가용 RAM - 여유 - 이미 올린 양도 넘지 않음 (첫 게임의 가용 RAM 쪽 판단은 Run 의 부분 예열이 함).
     // RunBatch (전체 예열) 와 WarmHeads (앞부분 예열) 가 같은 식을 씁니다.
     internal static long BatchRoomMib(long physCapMib, long availableRamMib, int minFreeRamMib, long heldMib)
     {
@@ -601,6 +608,9 @@ public sealed class Prewarmer
     /// 서비스 시작 예열은 부팅 뒤 이만큼 지나고, 게임 드라이브가 IdleNeeded 동안 한가해진 뒤에 시작합니다 (부팅 직후 디스크 경쟁 방지).
     public static readonly TimeSpan BootDelay = TimeSpan.FromMinutes(5);
     public static readonly TimeSpan IdleNeeded = TimeSpan.FromSeconds(60);
+
+    /// 트리거로 켠 게임이 보충·재예열 예산 순위에서 먼저 받는 기간 (그 뒤에는 기존 순위만).
+    public static readonly TimeSpan TriggerPriorityWindow = TimeSpan.FromHours(6);
     private static readonly TimeSpan GateStep = TimeSpan.FromSeconds(5);
 
     /// 기록 없는 예열의 통째 상한 기본값 (MiB, full_prewarm_max_mib 가 0 일 때).
@@ -1030,7 +1040,7 @@ public sealed class Prewarmer
         }
     }
 
-    /// 재예열·보충 예열 대상이 게임들 합계로 캐시 예산 (물리 RAM/4) 을 넘지 않게: 순위 (WarmRank) 순으로 예열 크기를 누적해 들어가는 게임만 In 에 담음 (한 게임이 예산보다 크면 예산까지로 셈).
+    /// 재예열·보충 예열 대상이 게임들 합계로 캐시 예산 (기본 물리 RAM/2, prewarm.max_cache_mib) 을 넘지 않게: 순위 (WarmRank) 순으로 예열 크기를 누적해 들어가는 게임만 In 에 담음 (한 게임이 예산보다 크면 예산까지로 셈).
     /// 상태를 저장하지 않으므로 순위가 바뀌면 다음 점검에서 대상도 바뀝니다. 순위가 없으면 null (모두 대상).
     /// AllocMib: 들어간 게임이 셈에 쓴 양 (MiB): 재예열은 이만큼까지만 읽어야 계상과 실제 읽기가 같습니다.
     internal (HashSet<string> In, long CapMib, long UsedMib, Dictionary<string, long> AllocMib)? WarmBudget()
@@ -1040,7 +1050,7 @@ public sealed class Prewarmer
             return null;
         }
 
-        long cap = _env.PhysicalRamBytes() is > 0 and long phys ? phys >> 22 : long.MaxValue;
+        long cap = PhysCapMib();
         List<GameSettings> candidates = [.. Warmed()];
         lock (_gate)
         {
@@ -1051,7 +1061,15 @@ public sealed class Prewarmer
         var inBudget = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var alloc = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
         long used = 0;
-        foreach (GameSettings g in rank(candidates).Where(g => names.Contains(g.Name)).Concat(candidates).DistinctBy(g => g.Name, StringComparer.OrdinalIgnoreCase))
+        string? triggered;
+        lock (_gate)
+        {
+            triggered = _triggered is { } t && _now() - t.At < TriggerPriorityWindow ? t.Game : null;
+        }
+
+        // 방금 트리거로 켠 게임이 먼저 예산을 받음 (OrderBy 는 안정 정렬이라 나머지는 기존 순위 그대로)
+        foreach (GameSettings g in rank(candidates).Where(g => names.Contains(g.Name)).Concat(candidates).DistinctBy(g => g.Name, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(g => string.Equals(g.Name, triggered, StringComparison.OrdinalIgnoreCase) ? 0 : 1))
         {
             long mib = ((_env.ZoneBytes(g) ?? 0) + (1 << 20) - 1) >> 20;
             if (mib <= 0)
@@ -1428,7 +1446,7 @@ public sealed class Prewarmer
         return done;
     }
 
-    /// 남은 핫 집합 구간을 읽는 보충 예열 한 번 (한 번 끝나면 다시 하지 않음). 다른 예열이 돌고 있거나, 게임·재배치가 있거나, RAM 예산 (물리 RAM/4, 가용 RAM - 여유) 을 넘으면 읽지 않고 false.
+    /// 남은 핫 집합 구간을 읽는 보충 예열 한 번 (한 번 끝나면 다시 하지 않음). 다른 예열이 돌고 있거나, 게임·재배치가 있거나, RAM 예산 (예열 예산, 가용 RAM - 여유) 을 넘으면 읽지 않고 false.
     /// 읽는 동안 게임 시작·재배치 시작은 StreamHot 의 기존 규칙으로 멈춥니다 (멈추면 남겨 두고 다음 유휴 때 다시).
     internal bool Supplement(GameSettings game, CancellationToken ct)
     {
@@ -1454,16 +1472,16 @@ public sealed class Prewarmer
             }
 
             long avail = _env.AvailableRamMib();
-            long physCap = _env.PhysicalRamBytes() is > 0 and long phys ? phys >> 22 : long.MaxValue;
+            long physCap = PhysCapMib();
             GameSettings warm = game;
             long? windowMib = null; // 전체가 예산에 안 들어갈 때 읽을 앞부분 (일반 예열의 부분 예산과 같은 식)
             long skipBytes = 0; // 끊긴 보충이 그 윈도에서 이미 읽은 바이트 (ResumePoint)
             bool refused = false; // 앞부분·이어 읽을 지점 표본이 디스크 대여 거절로 읽히지 않음: 이유를 남기지 않고 다음 유휴에 다시 (기억은 그대로)
             if (p.HotMib > physCap || p.HotMib + game.Prewarm.MinFreeRamMib > avail)
             {
-                if (PartialCapMib(game, p.HotMib, avail, _env.PhysicalRamBytes()) is not { } cap)
+                if (PartialCapMib(game, p.HotMib, avail, physCap) is not { } cap)
                 {
-                    LogSkipped(game.Name, "supplement memory budget", $"{game.Name}: supplement prewarm skipped (hot set {p.HotMib} MiB exceeds the budget: min(1/4 of RAM, available {avail} MiB - reserve {game.Prewarm.MinFreeRamMib} MiB), and less than {MinPartialMib} MiB fits)");
+                    LogSkipped(game.Name, "supplement memory budget", $"{game.Name}: supplement prewarm skipped (hot set {p.HotMib} MiB exceeds the budget: min(cache budget {physCap} MiB, available {avail} MiB - reserve {game.Prewarm.MinFreeRamMib} MiB), and less than {MinPartialMib} MiB fits)");
                     return false;
                 }
 
@@ -1776,7 +1794,17 @@ public sealed class Prewarmer
         }
 
         IReadOnlyList<GameSettings> hit = _games.Where(g => IsTrigger(g, start.ExeName)).ToList();
-        return RunBatch(narrow?.Invoke(hit) ?? hit, $"trigger {start.ExeName}", pin: !LauncherExes.Is(start.ExeName), ct: ct); // 런처가 뜰 때는 고정하지 않음 (런처 업데이트가 파일을 고칠 수 있게)
+        IReadOnlyList<GameSettings> chosen = [.. narrow?.Invoke(hit) ?? hit];
+        if (chosen.Count > 0)
+        {
+            GameSettings first = WarmRank?.Invoke(chosen).FirstOrDefault() ?? chosen[0]; // 같은 트리거를 여러 게임이 쓰면 기존 순위로 한 게임을 고름
+            lock (_gate)
+            {
+                _triggered = (first.Name, _now());
+            }
+        }
+
+        return RunBatch(chosen, $"trigger {start.ExeName}", pin: !LauncherExes.Is(start.ExeName), ct: ct); // 런처가 뜰 때는 고정하지 않음 (런처 업데이트가 파일을 고칠 수 있게)
     }
 
     // 같은 exe 의 트리거는 SkipLogEvery 안에 한 번만 처리하고 나머지는 세어 두었다가, 다음에 처리하는 때 한 줄로 남깁니다.
@@ -1809,7 +1837,7 @@ public sealed class Prewarmer
 
     /// 게임 설치 폴더 (origin_root) 아래의 지정한 파일들을 순서대로 파일 캐시로 읽습니다 (챔피언 선택 선읽기 같은 임의 목록). 읽은 바이트를 돌려주고, 읽지 않았으면 0.
     /// 경로는 정규화한 뒤 origin_root 아래의 것만 (".."·다른 드라이브·루트 밖 링크는 건너뜀), 이미 파일 캐시에 있는 파일은 예산을 쓰지 않고 건너뜁니다.
-    /// 예산은 budgetBytes 와 공유 RAM 예산 (물리 RAM/4, 가용 RAM - 여유 - 이미 올린 양) 중 작은 쪽. 다른 예열이 돌고 있거나 같은 디스크에서 재배치가 시작했으면 읽지 않습니다. ct 로 멈춥니다 (예외를 내지 않음).
+    /// 예산은 budgetBytes 와 공유 RAM 예산 (예열 예산, 가용 RAM - 여유 - 이미 올린 양) 중 작은 쪽. 다른 예열이 돌고 있거나 같은 디스크에서 재배치가 시작했으면 읽지 않습니다. ct 로 멈춥니다 (예외를 내지 않음).
     public long WarmFiles(GameSettings g, IReadOnlyList<string> paths, long budgetBytes, CancellationToken ct)
     {
         if (budgetBytes <= 0 || paths.Count == 0 || ct.IsCancellationRequested)
@@ -1908,7 +1936,7 @@ public sealed class Prewarmer
 
                 ops = uncached;
                 long held = ColdMib(null);
-                long physMib = _env.PhysicalRamBytes() is > 0 and long phys ? phys >> 22 : long.MaxValue;
+                long physMib = PhysCapMib();
                 long ramMib = Math.Min(_env.AvailableRamMib() - g.Prewarm.MinFreeRamMib - held, physMib - held);
                 long budget = Math.Min(budgetBytes, Math.Max(0, ramMib) << 20);
                 ops = PrefetchStreamer.Head(ops, budget);
@@ -2177,7 +2205,7 @@ public sealed class Prewarmer
         _log.Info(suppressed > 0 ? $"{text} (suppressed {suppressed})" : text);
     }
 
-    // 한 묶음의 예산 = min(물리 RAM / 4, 가용 RAM - 여유). 존 크기 합이 예산을 넘는 게임만 건너뛰고, 뒤 게임은 남은 예산으로 따로 판단합니다 (앞쪽 = 최근 순서가 우선).
+    // 한 묶음의 예산 = min(예열 예산, 가용 RAM - 여유). 존 크기 합이 예산을 넘는 게임만 건너뛰고, 뒤 게임은 남은 예산으로 따로 판단합니다 (앞쪽 = 최근 순서가 우선).
     // 서비스 시작·런처 시작이 같은 규칙입니다. 첫 게임의 가용 RAM 쪽 판단은 Run 의 자체 판단에 맡깁니다.
     // yieldToRelocation: 게임 사이마다 재배치가 시작됐는지 다시 보고, 돌고 있으면 끝날 때까지 기다린 뒤 이어서 읽습니다 (서비스 시작 예열: 게이트를 지난 직후나 예열 도중 시작된 재배치와 겹치지 않게).
     private IReadOnlyList<PrewarmResult> RunBatch(IEnumerable<GameSettings> games, string why, bool pin = true, CancellationToken ct = default, bool yieldToRelocation = false)
@@ -2189,13 +2217,13 @@ public sealed class Prewarmer
         if (list.Count > 2)
         {
             long availNow = _env.AvailableRamMib();
-            long physNow = _env.PhysicalRamBytes() is > 0 and long ph ? ph >> 22 : long.MaxValue;
+            long physNow = PhysCapMib();
             list = OrderByValuePerByte(list, g => SkipsInBatch(g, availNow) ? 0 : ((_env.ZoneBytes(g) ?? 0) + (1 << 20) - 1) >> 20, (g, used) => BatchRoomMib(physNow, availNow, g.Prewarm.MinFreeRamMib, cold + used));
         }
 
         WarmHeads(list, ct, yieldToRelocation, cold);
         long avail = _env.AvailableRamMib();
-        long physCap = _env.PhysicalRamBytes() is > 0 and long phys ? phys >> 22 : long.MaxValue; // MiB, 물리 RAM 의 1/4
+        long physCap = PhysCapMib(); // MiB, 예열 예산
         long used = 0; // 핫 집합 예열의 MiB (기록 없는 예열은 _coldMib 가 셈)
         foreach (GameSettings g in list)
         {
@@ -2217,7 +2245,7 @@ public sealed class Prewarmer
             bool fits = zoneMib <= room;
             if (!fits && room < MinPartialMib)
             {
-                LogSkipped(g.Name, "batch memory budget", $"{g.Name}: prewarm skipped (batch zones {held + zoneMib} MiB exceed the budget: min(1/4 of RAM, available {avail} MiB - reserve {g.Prewarm.MinFreeRamMib} MiB)) [{why}]");
+                LogSkipped(g.Name, "batch memory budget", $"{g.Name}: prewarm skipped (batch zones {held + zoneMib} MiB exceed the budget: min(cache budget {physCap} MiB, available {avail} MiB - reserve {g.Prewarm.MinFreeRamMib} MiB)) [{why}]");
                 results.Add(new PrewarmResult(g.Name, false, "batch memory budget", null, _now()));
                 continue;
             }
@@ -2259,7 +2287,7 @@ public sealed class Prewarmer
         }
 
         long avail = _env.AvailableRamMib();
-        long physCap = _env.PhysicalRamBytes() is > 0 and long phys ? phys >> 22 : long.MaxValue;
+        long physCap = PhysCapMib();
         foreach (GameSettings g in games)
         {
             if (ct.IsCancellationRequested || (yieldToRelocation && !WaitOutRelocation(g, ct)))
@@ -2290,7 +2318,7 @@ public sealed class Prewarmer
             if (lowMemory || hotMib > room)
             {
                 // 전체가 안 들어가도 Run 의 부분 예열이 읽으면 앞부분도 올림 (RunBatch 와 같은 판단, 상한은 Run 과 같게 전체 입장 때는 남은 예산을 씀)
-                if (PartialCapMib(g, hotMib, avail, _env.PhysicalRamBytes(), zoneMib <= room ? long.MaxValue : room) is not { } cap)
+                if (PartialCapMib(g, hotMib, avail, physCap, zoneMib <= room ? long.MaxValue : room) is not { } cap)
                 {
                     continue; // 이 게임만 건너뜀: 뒤 게임은 남은 예산으로 RunBatch 와 같이 따로 판단
                 }
@@ -2463,7 +2491,7 @@ public sealed class Prewarmer
                 bool overBudget = skip is null && roomMib is { } room && hotMib > room;
                 if (lowMemory || overBudget)
                 {
-                    if (PartialCapMib(game, hotMib, availableRamMib, _env.PhysicalRamBytes(), roomMib ?? long.MaxValue) is { } capMib)
+                    if (PartialCapMib(game, hotMib, availableRamMib, PhysCapMib(), roomMib ?? long.MaxValue) is { } capMib)
                     {
                         // 전체가 들어가지 않음: 앞쪽부터 들어가는 만큼만 읽음 (max_stream_mib 를 줄인 사본). 틈 메우기는 생략.
                         // 전체 크기는 원래 값을 유지: 서비스 시작 상한으로 이미 줄인 사본이면 그 원래 크기.
@@ -2853,7 +2881,7 @@ public sealed class Prewarmer
         long held = usedMib + ColdMib(game.Name);
         long avail = _env.AvailableRamMib();
         long availBudget = avail - game.Prewarm.MinFreeRamMib - held; // MiB
-        long ram = Math.Min(availBudget, (_env.PhysicalRamBytes() is > 0 and long phys ? phys >> 22 : long.MaxValue) - held); // min(물리 RAM / 4, 가용 RAM - 여유) - 이미 올린 양
+        long ram = Math.Min(availBudget, PhysCapMib() - held); // min(예열 예산, 가용 RAM - 여유) - 이미 올린 양
         long fullMib = !a.FullPrewarm ? 0 : Math.Min(a.FullPrewarmMaxMib > 0 ? a.FullPrewarmMaxMib : DefaultFullPrewarmMib, availBudget);
         long profileMib = !a.EngineProfiles ? 0 : a.FullPrewarm && a.FullPrewarmMaxMib > 0 ? Math.Min(ram, fullMib) : ram;
         if (skip is null && Math.Max(fullMib, profileMib) <= 0)

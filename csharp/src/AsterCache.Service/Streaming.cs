@@ -79,6 +79,14 @@ public interface IGameStreamer
 /// 예산은 계획의 존 크기 (계획이 없거나 존이 0 이면 추적의 총 바이트) 이고, 게임별 max_stream_mib 가 상한입니다. 고정 1 GiB 는 더 큰 핫 집합을 잘랐습니다.
 public sealed class PrefetchStreamer : IGameStreamer
 {
+    private sealed record TraceSourceCacheEntry(long Length, long LastWriteTicks, IReadOnlyList<TraceEvent> Rows);
+
+    private static readonly object TraceSourceCacheLock = new();
+
+    /// 시험용: 원시 트레이스를 실제로 파싱한 횟수 (경로별).
+    internal static readonly ConcurrentDictionary<string, int> SourceTraceParses = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<string, TraceSourceCacheEntry> TraceSourceCache = new(StringComparer.OrdinalIgnoreCase);
+
     private readonly ConcurrentDictionary<string, bool> _reordered = new(StringComparer.OrdinalIgnoreCase);
 
     /// 예열 목록을 정한 뒤 원래 순서를 바꿀 수 있습니다 (마지막 인자는 스트림 중지 신호). 기본은 기존 순서입니다.
@@ -110,7 +118,7 @@ public sealed class PrefetchStreamer : IGameStreamer
                     cancellationToken.ThrowIfCancellationRequested();
                     IReadOnlyDictionary<string, string> marked = AutoTracer.ReadVolatile(AutoTracer.VolatilePath(game));
                     cancellationToken.ThrowIfCancellationRequested();
-                    foreach (TraceEvent row in LoadRows(game, withWarmOnly, cancellationToken))
+                    foreach (TraceEvent row in LoadRows(game, withWarmOnly, cancellationToken, allowSourceRead: false)) // 길이 합만 필요: 출처 복원을 위해 원시 트레이스를 읽지 않음
                     {
                         cancellationToken.ThrowIfCancellationRequested();
                         if (IsVolatilePath(row.Path, marked))
@@ -153,6 +161,30 @@ public sealed class PrefetchStreamer : IGameStreamer
     public long? LoadHeadBytes(GameSettings game) => LoadTiers.For(game)?.Tier0Bytes is > 0 and long tier0 ? tier0 : null;
 
     public long? PrewarmReadBytes(GameSettings game) => ScheduleOps(game, true).Ops.Sum(o => o.Length);
+
+    /// 관찰 출처가 있는 예열 범위의 바이트. 구형 목록에 표식이 없으면 전체 예열 예산을 관찰된 것으로 취급합니다.
+    public static long? ObservedBytes(GameSettings game) => ObservedBytes(game, allowSourceRead: true);
+
+    internal static long? ObservedBytes(GameSettings game, bool allowSourceRead)
+    {
+        try
+        {
+            List<TraceEvent> rows = LoadRows(game, true, default, allowSourceRead);
+            long? zoneBytes = ZoneBytes(game, true, default);
+            long budget = Budget(game, zoneBytes, rows.Sum(r => r.Length));
+            if (!rows.Any(r => !r.Observed))
+            {
+                return budget;
+            }
+
+            List<TraceEvent> selected = budget < rows.Sum(r => r.Length) ? SelectToBudget(rows, budget) : rows;
+            return selected.Where(r => r.Observed).Sum(r => r.Length);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException or PlanRejectedException)
+        {
+            return null;
+        }
+    }
 
     /// 접근 순서 앞쪽 HeadBytesOf 만큼만 읽습니다 (스케줄러가 앞에 둔 부분과 같음).
     public void StreamHead(GameSettings game, CancellationToken stop) => StreamHead(game, stop, null);
@@ -545,7 +577,7 @@ public sealed class PrefetchStreamer : IGameStreamer
     }
 
     // 선읽기 목록의 범위. withWarmOnly 이면 예열 전용 옆 파일 (가변 파일 범위) 도 합칩니다.
-    private static List<TraceEvent> LoadRows(GameSettings game, bool withWarmOnly, CancellationToken cancellationToken = default)
+    internal static List<TraceEvent> LoadRows(GameSettings game, bool withWarmOnly, CancellationToken cancellationToken = default, bool allowSourceRead = true)
     {
         cancellationToken.ThrowIfCancellationRequested();
         Func<string, long?> size = p =>
@@ -560,39 +592,238 @@ public sealed class PrefetchStreamer : IGameStreamer
             return new FileInfo(p).Length;
         };
         List<TraceEvent> rows = TraceLoader.LoadRanges(game.Trace, game.OriginRoot, RealPaths.Resolve, size, cancellationToken);
+        IReadOnlyList<TraceEvent>? sourceRows = null;
+        if (NeedsSourceRestore(rows))
+        {
+            sourceRows = LoadSourceTraceRows(game, size, cancellationToken, allowSourceRead);
+            if (sourceRows is not null)
+            {
+                rows = RestoreObservedSources(rows, sourceRows);
+            }
+        }
+
         string side = PlanOutput.WarmOnlyPath(game.Trace);
         cancellationToken.ThrowIfCancellationRequested();
         if (withWarmOnly && File.Exists(side))
         {
-            rows.AddRange(TraceLoader.LoadRanges(side, game.OriginRoot, RealPaths.Resolve, size, cancellationToken));
+            List<TraceEvent> warmOnly = TraceLoader.LoadRanges(side, game.OriginRoot, RealPaths.Resolve, size, cancellationToken);
+            if (NeedsSourceRestore(warmOnly))
+            {
+                sourceRows ??= LoadSourceTraceRows(game, size, cancellationToken, allowSourceRead);
+                if (sourceRows is not null)
+                {
+                    warmOnly = RestoreObservedSources(warmOnly, sourceRows);
+                }
+            }
+
+            rows.AddRange(warmOnly);
         }
 
         return rows;
     }
 
-    // 순서 목록의 앞에서 budget 만큼 (상한보다 큰 범위는 건너뛰지 않고 남은 만큼으로 잘라 마지막으로 넣음). 부분 예열 경로에서만 씁니다.
-    private static List<ReadRange> TrimToBudget(IEnumerable<ReadRange> ranges, long budget)
+    private static bool NeedsSourceRestore(IReadOnlyList<TraceEvent> rows) => !rows.Any(r => !r.Observed || r.RangeGroup is not null);
+
+    private static IReadOnlyList<TraceEvent>? LoadSourceTraceRows(GameSettings game, Func<string, long?> size, CancellationToken cancellationToken, bool allowSourceRead)
     {
-        var kept = new List<ReadRange>();
-        long used = 0;
-        foreach (ReadRange r in ranges)
+        if (!allowSourceRead)
         {
-            if (used + r.Length <= budget)
+            lock (TraceSourceCacheLock) // 파일 접근 없이 캐시에서만 찾음 (게임 실행 중·시작 직후 경로)
             {
-                kept.Add(r);
-                used += r.Length;
-                continue;
+                foreach (string candidate in new[] { AutoTracer.RawTracePath(game), AutoTracer.BootTracePath(game) })
+                {
+                    if (TraceSourceCache.TryGetValue(candidate + "|" + game.OriginRoot, out TraceSourceCacheEntry? hit))
+                    {
+                        return hit.Rows;
+                    }
+                }
             }
 
-            if (budget - used > 0)
+            return null;
+        }
+
+        string? path = AutoTracer.PlanTracePath(game, File.Exists);
+        if (path is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var info = new FileInfo(path);
+            if (!info.Exists)
             {
-                kept.Add(new ReadRange(r.Path, r.Offset, budget - used));
+                return null;
             }
 
-            break;
+            long length = info.Length;
+            long written = info.LastWriteTimeUtc.Ticks;
+            string key = path + "|" + game.OriginRoot;
+            lock (TraceSourceCacheLock)
+            {
+                if (TraceSourceCache.TryGetValue(key, out TraceSourceCacheEntry? cached)
+                    && cached.Length == length && cached.LastWriteTicks == written)
+                {
+                    return cached.Rows;
+                }
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            SourceTraceParses.AddOrUpdate(path, 1, (_, n) => n + 1);
+            List<TraceEvent> rows = TraceLoader.LoadRanges(path, game.OriginRoot, RealPaths.Resolve, size, cancellationToken);
+            lock (TraceSourceCacheLock)
+            {
+                TraceSourceCache[key] = new TraceSourceCacheEntry(length, written, rows);
+            }
+
+            return rows;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException or PlanRejectedException)
+        {
+            return null;
+        }
+    }
+
+    private static List<TraceEvent> RestoreObservedSources(IReadOnlyList<TraceEvent> rows, IReadOnlyList<TraceEvent> sourceRows)
+    {
+        var source = new Dictionary<string, List<(long Start, long End)>>(StringComparer.OrdinalIgnoreCase);
+        foreach (IGrouping<string, TraceEvent> pathRows in sourceRows.Where(r => r.Length > 0).GroupBy(r => r.Path, StringComparer.OrdinalIgnoreCase))
+        {
+            var merged = new List<(long Start, long End)>();
+            foreach (TraceEvent row in pathRows.OrderBy(r => r.Offset))
+            {
+                long end = row.Offset + row.Length;
+                if (merged.Count > 0 && row.Offset <= merged[^1].End)
+                {
+                    merged[^1] = (merged[^1].Start, Math.Max(merged[^1].End, end));
+                }
+                else
+                {
+                    merged.Add((row.Offset, end));
+                }
+            }
+
+            source[pathRows.Key] = merged;
+        }
+
+        var restored = new List<TraceEvent>(rows.Count);
+        long group = 0;
+        foreach (TraceEvent row in rows)
+        {
+            long end = row.Offset + row.Length;
+            var pieces = new List<TraceEvent>();
+            long at = row.Offset;
+            if (source.TryGetValue(row.Path, out List<(long Start, long End)>? ranges))
+            {
+                foreach ((long start, long rangeEnd) in ranges)
+                {
+                    if (rangeEnd <= at)
+                    {
+                        continue;
+                    }
+
+                    if (start >= end)
+                    {
+                        break;
+                    }
+
+                    if (start > at)
+                    {
+                        long gapEnd = Math.Min(end, start);
+                        pieces.Add(row with { Offset = at, Length = gapEnd - at, Observed = false });
+                        at = gapEnd;
+                    }
+
+                    long observedEnd = Math.Min(end, rangeEnd);
+                    if (observedEnd > at)
+                    {
+                        pieces.Add(row with { Offset = at, Length = observedEnd - at, Observed = true });
+                        at = observedEnd;
+                    }
+
+                    if (at >= end)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            if (at < end)
+            {
+                pieces.Add(row with { Offset = at, Length = end - at, Observed = false });
+            }
+
+            if (pieces.Count == 1)
+            {
+                restored.Add(pieces[0]);
+            }
+            else if (pieces.Count > 1)
+            {
+                long rangeGroup = group++;
+                restored.AddRange(pieces.Select(piece => piece with { RangeGroup = rangeGroup }));
+            }
+        }
+
+        return restored;
+    }
+
+    // 전체가 들어가면 원래 순서를 유지하고, 잘라야 하면 관찰 범위를 먼저 예산에 남깁니다. 마지막 범위는 경계에서 자릅니다.
+    internal static List<TraceEvent> SelectToBudget(IReadOnlyList<TraceEvent> rows, long budget)
+    {
+        if (rows.Sum(r => r.Length) <= budget)
+        {
+            return [.. rows];
+        }
+
+        var kept = new List<TraceEvent>();
+        long used = 0;
+        foreach (bool observed in new[] { true, false })
+        {
+            foreach (TraceEvent r in rows.Where(r => r.Observed == observed))
+            {
+                long take = Math.Min(r.Length, Math.Max(0, budget - used));
+                if (take > 0)
+                {
+                    kept.Add(take == r.Length ? r : r with { Length = take });
+                    used += take;
+                }
+
+                if (take < r.Length || used >= budget)
+                {
+                    break;
+                }
+            }
+
+            if (used >= budget)
+            {
+                break;
+            }
         }
 
         return kept;
+    }
+
+    internal static List<TraceEvent> CoalesceRangeGroups(IReadOnlyList<TraceEvent> rows)
+    {
+        var result = new List<TraceEvent>(rows.Count);
+        foreach (TraceEvent row in rows)
+        {
+            if (row.RangeGroup is { } group && result.Count > 0)
+            {
+                TraceEvent previous = result[^1];
+                if (previous.RangeGroup == group
+                    && string.Equals(previous.Path, row.Path, StringComparison.OrdinalIgnoreCase)
+                    && previous.Offset + previous.Length == row.Offset)
+                {
+                    result[^1] = previous with { Length = previous.Length + row.Length };
+                    continue;
+                }
+            }
+
+            result.Add(row);
+        }
+
+        return result;
     }
 
     private static (List<ReadOp> Ops, long BudgetBytes) ScheduleOps(GameSettings game, bool withWarmOnly, bool trimLast = false, CancellationToken cancellationToken = default)
@@ -603,11 +834,16 @@ public sealed class PrefetchStreamer : IGameStreamer
             throw new PlanRejectedException("origin_root resolves outside allowed roots");
         }
 
-        List<TraceEvent> rows = LoadRows(game, withWarmOnly, cancellationToken);
+        List<TraceEvent> rows = LoadRows(game, withWarmOnly, cancellationToken, allowSourceRead: false); // 게임 시작 경로에서도 불리므로 원시 트레이스는 읽지 않고 캐시만 씀 (캐시는 예열 쪽 ObservedBytes 가 채움)
         cancellationToken.ThrowIfCancellationRequested();
         long budget = Budget(game, ZoneBytes(game, withWarmOnly, cancellationToken), rows.Sum(r => r.Length));
-        IEnumerable<ReadRange> ranges = rows.Select(r => new ReadRange(r.Path, r.Offset, r.Length));
-        (List<ReadOp> ops, _) = Scheduler.Schedule(trimLast ? TrimToBudget(ranges, budget) : ranges, "physical", budget, 0,
+        if (trimLast && budget < rows.Sum(r => r.Length))
+        {
+            rows = SelectToBudget(rows, budget);
+        }
+
+        IEnumerable<ReadRange> ranges = CoalesceRangeGroups(rows).Select(r => new ReadRange(r.Path, r.Offset, r.Length));
+        (List<ReadOp> ops, _) = Scheduler.Schedule(ranges, "physical", budget, 0,
             FileLayout.Get, p =>
             {
                 cancellationToken.ThrowIfCancellationRequested();

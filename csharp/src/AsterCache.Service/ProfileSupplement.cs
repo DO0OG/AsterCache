@@ -41,7 +41,7 @@ public static class ProfileSupplement
                 long len = Math.Min(end - start, room - taken);
                 for (long at = start; at < start + len; at += PieceBytes)
                 {
-                    extra.Add(new TraceEvent(p.Path, at, Math.Min(PieceBytes, start + len - at), p.Cost));
+                    extra.Add(new TraceEvent(p.Path, at, Math.Min(PieceBytes, start + len - at), p.Cost, Observed: false));
                 }
 
                 set.Add(start, start + len);

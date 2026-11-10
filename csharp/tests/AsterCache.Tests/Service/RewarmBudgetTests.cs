@@ -14,6 +14,7 @@ public sealed class RewarmBudgetTests
     private readonly ListLog _log = new();
     private readonly CountStreamer _streamer = new();
     private DateTimeOffset _now = new(2026, 11, 6, 12, 0, 0, TimeSpan.Zero);
+    private readonly Dictionary<string, long> _observedMib = new(StringComparer.OrdinalIgnoreCase);
     private long _avail = 6000;
     private string[] _order = ["a", "b"];
 
@@ -46,6 +47,7 @@ public sealed class RewarmBudgetTests
         GameRunning = _ => false,
         PhysicalRamBytes = () => 16L << 30,
         ZoneBytes = g => Math.Min(_streamer.ZoneMib, g.StreamCapBytes(_streamer.ZoneMib * Mib) / Mib) * Mib,
+        ObservedBytes = g => _observedMib.TryGetValue(g.Name, out long mib) ? mib * Mib : null,
         TraceExists = _ => true,
         ProbeReadMs = _ => new ProbeResult(8, 8, 5.0), // 식음
     }, _log, null, () => _now);
@@ -199,6 +201,46 @@ public sealed class RewarmBudgetTests
         Assert.Equal(1904, Prewarmer.PartialCapMib(Game("a"), 12000, 6000, budget)); // 가용 6000 - 예비 4096
         Assert.Null(Prewarmer.PartialCapMib(Game("a"), 12000, 4200, budget)); // 256 MiB 도 못 들어감
         Assert.Equal(budget, Prewarmer.PartialCapMib(Game("a"), 20000, 40000, budget)); // 가용이 넉넉하면 예산이 한도
+    }
+
+    [Fact]
+    public void ObservedRangesAcrossGamesAreAllocatedBeforeOneGamesSupplement()
+    {
+        GameSettings a = Game("a"), b = Game("b");
+        _avail = 20000;
+        _observedMib["a"] = 1000; // a 의 나머지 4000 MiB 는 보충 범위
+        _observedMib["b"] = 5000;
+        Prewarmer p = Ranked(a, b);
+        Assert.True(p.Run(a, "service start").Ran);
+        Assert.True(p.Run(b, "service start").Ran);
+
+        var budget = p.WarmBudget()!.Value;
+
+        Assert.Equal(8192, budget.UsedMib);
+        Assert.Equal(5000, budget.AllocMib["b"]); // b 의 관찰 범위가 전부 배정됨
+        Assert.Equal(3192, budget.AllocMib["a"]); // a 는 관찰 1000 + 남은 예산의 보충 2192
+    }
+
+    [Fact]
+    public void SupplementStaysWithinTheGamesAllocationSoItDoesNotTakeAnotherGamesObservedShare()
+    {
+        GameSettings a = Game("a"), b = Game("b");
+        _avail = 6000;
+        _observedMib["a"] = 1000; // a 의 나머지 4000 MiB 는 보충 범위
+        _observedMib["b"] = 5000;
+        Prewarmer p = Ranked(a, b);
+        Assert.True(p.Run(a, "service start").Ran); // 가용 6000: 앞부분만 읽은 보충 대기
+        Assert.True(p.Run(b, "service start").Ran);
+        Assert.True(p.SupplementPending("a"));
+        _avail = 20000;
+        _streamer.Calls.Clear();
+        p.SupplementWhenIdle(a, CancellationToken.None);
+        _now += TimeSpan.FromSeconds(61);
+
+        Assert.True(p.SupplementWhenIdle(a, CancellationToken.None));
+
+        Assert.Equal(("a", 3192), Assert.Single(_streamer.Calls)); // 보충 5000 MiB 전체가 아니라 b 의 관찰분 5000 MiB 를 뺀 배정량까지만
+        Assert.Equal(5000, p.WarmBudget()!.Value.AllocMib["b"]);
     }
 
     [Fact]

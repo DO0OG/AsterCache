@@ -3,7 +3,7 @@ using AsterCache.Core.Json;
 namespace AsterCache.Core.Trace;
 
 /// 추적 한 줄 {path, offset, length, cost}. cost 가 없으면 8.0 (Python 기본값). TMs (t_ms) 는 선택: 세션 시작부터의 밀리초, 없으면 줄에도 쓰지 않습니다 (옛 파일·Python 도구와 같은 바이트).
-public readonly record struct TraceEvent(string Path, long Offset, long Length, double Cost = TraceEvents.DefaultCost, long? TMs = null)
+public readonly record struct TraceEvent(string Path, long Offset, long Length, double Cost = TraceEvents.DefaultCost, long? TMs = null, bool Observed = true, long? RangeGroup = null)
 {
     public JObject ToJson()
     {
@@ -11,6 +11,16 @@ public readonly record struct TraceEvent(string Path, long Offset, long Length, 
         if (TMs is { } t)
         {
             o.Add("t_ms", t);
+        }
+
+        if (!Observed)
+        {
+            o.Add("observed", false);
+        }
+
+        if (RangeGroup is { } group)
+        {
+            o.Add("range_group", group);
         }
 
         return o;
@@ -64,7 +74,19 @@ public static class TraceEvents
             };
         }
 
-        return new TraceEvent(path, offset, length, cost, tMs);
+        bool observed = true;
+        if (r.TryGetValue("observed", out object? source))
+        {
+            observed = source is bool b ? b : throw new PyValueException("bad observed");
+        }
+
+        long? rangeGroup = null;
+        if (r.TryGetValue("range_group", out object? group))
+        {
+            rangeGroup = group is long l and >= 0 ? l : throw new PyValueException("bad range_group");
+        }
+
+        return new TraceEvent(path, offset, length, cost, tMs, observed, rangeGroup);
     }
 
     /// Python _validated_events: 요청마다 값 범위를 검사하고 64 KiB 블록 번호로 바꿉니다.

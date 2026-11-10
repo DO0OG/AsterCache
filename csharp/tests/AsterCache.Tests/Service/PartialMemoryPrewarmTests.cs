@@ -1,6 +1,7 @@
 using AsterCache.Core;
 using AsterCache.Core.Json;
 using AsterCache.Core.Settings;
+using AsterCache.Core.Trace;
 using AsterCache.Prefetch;
 using AsterCache.Service;
 using AsterCache.Tray;
@@ -321,5 +322,22 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
         Assert.False(p.Run(Game(), "test").Ran);
 
         Assert.Equal([false], ended);
+    }
+
+    [Fact]
+    public void PartialSelectionKeepsObservedRangesFirstAndSplitsAtTheBudgetBoundary()
+    {
+        TraceEvent[] rows = [
+            new("observed-a", 0, 100),
+            new("supplement", 0, 500, Observed: false),
+            new("observed-b", 0, 200),
+        ];
+
+        List<TraceEvent> partial = PrefetchStreamer.SelectToBudget(rows, 150);
+        List<TraceEvent> full = PrefetchStreamer.SelectToBudget(rows, 1000);
+
+        Assert.Equal([("observed-a", 100L), ("observed-b", 50L)], partial.Select(e => (e.Path, e.Length)));
+        Assert.All(partial, e => Assert.True(e.Observed));
+        Assert.Equal(rows, full); // 전체가 들어가면 선택 집합과 순서는 기존 목록 그대로
     }
 }

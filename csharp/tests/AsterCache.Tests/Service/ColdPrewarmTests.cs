@@ -517,6 +517,32 @@ public sealed class ColdPrewarmTests : IDisposable
     }
 
     [Fact]
+    public void ColdGameReadFirstLeavesOnlyTheRemainderToALaterTracedGame()
+    {
+        AvailableMib = 20000;
+        PhysicalBytes = 2200L << 20; // 예산 1100 MiB
+        GameSettings cold = Game("cold");
+        GameSettings hot = Game("hot");
+        _streamer.BytesOf = g => (g.MaxStreamSet ? g.MaxStreamMib : 700L) << 20;
+        var p = new Prewarmer([cold, hot], _streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => AvailableMib,
+            PhysicalRamBytes = () => PhysicalBytes,
+            GameRunning = _ => false,
+            ZoneBytes = g => g.Name == "hot" ? 700 * Mib : null,
+            TraceExists = g => g.Name == "hot",
+            ColdPlanner = (_, _, _, _) => new ColdPlan("full", [new ReadOp(@"D:\g.bin", 0, 1000 * Mib)], 1000 * Mib, null),
+            ColdRead = (ops, _) => (new StreamStats(1000 * Mib, 1, 0, 1), true),
+        }, _log, null, () => _now);
+
+        IReadOnlyList<PrewarmResult> r = p.RunAll([cold, hot], "batch");
+
+        Assert.True(r[0].Ran);
+        Assert.False(r[1].Ran); // 1000 + 700 > 1100: 남은 100 MiB 는 최소 부분 예열에도 못 미침
+        Assert.Equal("batch memory budget", r[1].SkipReason);
+    }
+
+    [Fact]
     public void UnplayedColdGameDoesNotCountAgainstTheBudgetNorGetItsSamplesRead()
     {
         AvailableMib = 20000;

@@ -50,7 +50,7 @@ ORBIT 는 `config.json` 이 아니라 CLI 로 켜고 끕니다(`aster orbit mode
 | `auto` | 자동 모드 설정. 생략한 키는 기본값을 씁니다. [자동 모드](AUTO_MODE.ko.md) 를 보십시오. |
 | `max_zone_mib` | 자동 계획의 존 크기 상한(MiB, 기본 2048), 또는 `"auto"`(물리 RAM ÷ 4, 2048~8192 MiB 사이이며, 디스크 종류를 모르거나 USB 이면 2048 상한). 32 GB PC 는 고정 2048 보다 `"auto"` 를 권장합니다. |
 | `games[].source` | 자동으로 찾은 게임은 `auto`, 직접 등록한 게임은 `manual` |
-| `games[].anticheat` | 설치 폴더에서 찾은 안티치트 흔적(예: `EasyAntiCheat`). 게임 탭에 표시되며 동작은 바꾸지 않습니다. |
+| `games[].anticheat` | 설치 폴더에서 찾은 안티치트 흔적(예: `EasyAntiCheat`). 게임 탭에 표시되며 동작은 바꾸지 않습니다. 안티치트 게임의 정책과 이 PC 의 사용 기록은 [안티치트 호환](ANTICHEAT.ko.md)을 보십시오. |
 | `games[].display_name` | 화면에 보일 게임 이름(선택). 없으면 서비스가 남긴 런처 이름, 그것도 없으면 키의 밑줄을 공백으로 바꾼 이름을 씁니다. 내부 키는 그대로입니다. |
 | `games[].display_names` | 언어별 화면 이름(선택). 예: `{"ko": "발로란트", "en": "VALORANT"}`. 키는 `ko`, `en` 만 됩니다. |
 | `auto.ssd_tier` | 선택 기능인 SSD 보조 저장: `enabled`(기본 `false`), `budget_gib`(기본 8), `root`(기본 `"auto"`). [SSD 보조 저장 (선택)](AUTO_MODE.ko.md#ssd-보조-저장-선택)을 보십시오. |

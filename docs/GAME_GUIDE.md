@@ -4,24 +4,24 @@
 
 This document walks through, in order, the whole process of reducing the load time of a game installed on the D: HDD with AsterCache. No build or pip install is needed. All commands below are run from the top-level folder of the repository (`D:\Git\AsterCache`).
 
-Scope of validation: trace conversion, planning, prefetch execution, and the launch script were run end to end with three Procmon-format CSV files (2,000 rows each) built from real file paths in D:\AsterBench. The Python administrator steps (relocation `probe`, `apply`, `revert`) were verified only up to getting `not_admin` as a non-administrator, and were not run on a game. On 2026-11-02, tracing, relocation, replay, and prewarm with the C# tools were run end to end on a real game, Frostpunk (D:\Frostpunk, no anti-cheat) (see the section "Procedure validated with Frostpunk" below).
+Scope of validation: trace conversion, planning, prefetch execution, and the launch script were run end to end with three Procmon-format CSV files (2,000 rows each) built from real file paths in D:\AsterBench. The Python administrator steps (relocation `probe`, `apply`, `revert`) were verified only up to getting `not_admin` as a non-administrator, and were not run on a game. On 2026-11-02, tracing, relocation, replay, and prewarm with the C# tools were run end to end on a real game, Frostpunk (D:\Frostpunk, no anti-cheat) (see the section "Procedure validated with Frostpunk" below). Anti-cheat games have only usage records from this PC and no controlled validation (see "Usage records on this PC" below).
 
 ## What to know first (target game: Call of Duty: Modern Warfare 4)
 
-- **Installing on an HDD is outside official support.** Activision's official PC requirements for MW4 (released 2026-10-23) list "115 GB or more of free SSD space" for all three tiers: minimum, recommended, and ray tracing. Whether installation on an HDD is blocked was not confirmed. All modes reportedly have on-demand texture streaming, so besides load times, stutter during play is also expected on an HDD. This tool only reduces the reads of fixed loading stretches, and may not reduce the streaming reads that keep happening during play.
-- **TPM 2.0, Secure Boot, and the Ricochet kernel anti-cheat driver are mandatory.** Ricochet monitors and reports applications that interact with the game. There is no public list of which tools are allowed. In the MW4 beta there was a case of a permanent ban from a false positive, and Activision acknowledged the false positive. The risk of losing an account is real.
+- **Installing on an HDD is outside official support.** Activision's official PC requirements for Call of Duty: Modern Warfare 4 (released 2026-10-23) list "115 GB or more of free SSD space" for all three tiers: minimum, recommended, and ray tracing. Whether installation on an HDD is blocked was not confirmed. All modes reportedly have on-demand texture streaming, so besides load times, stutter during play is also expected on an HDD. This tool only reduces the reads of fixed loading stretches, and may not reduce the streaming reads that keep happening during play.
+- **TPM 2.0, Secure Boot, and the Ricochet kernel anti-cheat driver are mandatory.** Ricochet monitors and reports applications that interact with the game. There is no public list of which tools are allowed. In the Call of Duty: Modern Warfare 4 beta there was a case of a permanent ban from a false positive, and Activision acknowledged the false positive. The risk of losing an account is real.
 - **Using Procmon with Ricochet games is not recommended.** No public report of using Procmon with Ricochet was found, and that is not evidence that it is safe. With other anti-cheats (BattlEye, EA), there are cases where the Procmon driver caused the game to refuse to launch, and where the driver stayed after Procmon was closed and a reboot was needed. The alternative is Windows built-in ETW (`wpr`, `logman`). However, "ETW is safer" is a guess, and no report on whether Ricochet conflicts with ETW was found either.
 - **The Python tools read only Procmon CSV.** ETW `.etl` conversion is done with the C# CLI `aster trace --etl <file> --exe <game exe> --origin-root <game folder> --out <file>`. It was tested with an `.etl` in S3 (`cs_etw_check.ps1`), and a name resolution defect was fixed in the process. The Python `trace` and `plan` commands cannot read `.etl`. **For a game without a kernel anti-cheat you can follow the process end to end, either on the Procmon path or on the same C# path as Frostpunk.**
 
 ### Recommended order
 
 1. **First validate the whole process with a game that has no kernel anti-cheat.** One game, Frostpunk, was completed on the C# path on 2026-11-02 (see the section below). Another example is Call of Duty 4: Modern Warfare on Steam (2007, about 8 GB, no kernel anti-cheat). Use only single player (the campaign) and do not connect to online modes. This is a way to measure the tool's effect on a real game for the first time without account risk.
-2. To apply it to MW4 after confirming the effect and safety: test only in the offline campaign, relocate with the game and the Battle.net (or Steam) launcher fully closed, and leave multiplayer and DMZ out of the first test.
-3. Collect the MW4 trace through the ETW path. The C# `aster trace --etl` conversion was validated in the administrator script S3 (`csharp\scripts\cs_etw_check.ps1`). However, whether collecting on MW4 is safe is unvalidated, so test first with one short mission. Until then, using Procmon on MW4 is not recommended.
+2. To apply it to Call of Duty: Modern Warfare 4 after confirming the effect and safety: test only in the offline campaign, relocate with the game and the Battle.net (or Steam) launcher fully closed, and leave multiplayer and DMZ out of the first test.
+3. Collect the Call of Duty: Modern Warfare 4 trace through the ETW path. The C# `aster trace --etl` conversion was validated in the administrator script S3 (`csharp\scripts\cs_etw_check.ps1`). However, whether collecting on Call of Duty: Modern Warfare 4 is safe is unvalidated, so test first with one short mission. Until then, using Procmon on Call of Duty: Modern Warfare 4 is not recommended. There are usage records of the service's automatic mode starting trace collection on Call of Duty on this PC, but they are not a controlled validation.
 
 ## Anti-cheat compatibility
 
-Many current games run kernel-level anti-cheat. This section says what AsterCache does and does not do, so you can decide whether to use it with a game. Anti-cheat policies differ per game and can change. AsterCache has not been tested with any anti-cheat game yet.
+Many current games run kernel-level anti-cheat. This section says what AsterCache does and does not do, so you can decide whether to use it with a game. Anti-cheat policies differ per game and can change. On this PC there are usage records of playing a Vanguard game (League of Legends) and a Ricochet game (Call of Duty) with the installed build ([Usage records on this PC](#usage-records-on-this-pc)). This is not a controlled validation, and no guarantee is made about account sanctions.
 
 ### What it does
 
@@ -40,6 +40,21 @@ Many current games run kernel-level anti-cheat. This section says what AsterCach
 - Files that the game has opened exclusively are skipped.
 - During automatic discovery, the service looks at file and folder names up to 4 levels deep in the install folder. It recognizes EasyAntiCheat, BattlEye, Vanguard (`vgc`, `vgk`), and Ricochet; other names containing anticheat, xigncode, nprotect, or gameguard are marked `unknown`. A game with such a trace is marked in the Games tab and in the `anticheat` setting, and one log line is written. The behavior does not change.
 
+| Anti-cheat | Markers | Policy |
+|---|---|---|
+| EasyAntiCheat | `.exe` starting with `EasyAntiCheat`, `EasyAntiCheat_EOS`, `start_protected_game.exe` | No automatic trace or pin; prewarm and relocation allowed |
+| BattlEye | `BattlEye`, `BEService*.exe`, `BEClient*.dll` | No automatic trace or pin; prewarm and relocation allowed |
+| Vanguard | `vgc*`, `vgk*` (`.exe`, `.sys`), `Riot Vanguard` | No automatic trace or pin; prewarm and relocation allowed |
+| Ricochet | Names containing `ricochet`, `randgrid.sys` | Automatic trace allowed; no pin; prewarm and relocation allowed |
+| BlackCipher | `BlackCipher` folder, `BlackCall64.aes` | No ETW trace, pin, or tier; prewarm and relocation allowed |
+| nProtect GameGuard | `GameGuard` folder, `npgg*.dll`, `GameMon.des` | No ETW trace, pin, or tier; prewarm and relocation allowed |
+| XIGNCODE3 | `xigncode` or `XIGNCODE3` folder, `x3.xem`, `xcorona*` | No ETW trace, pin, or tier; prewarm and relocation allowed |
+| Wellbia | `uncheater.exe`, `wellbia` | No ETW trace, pin, or tier; prewarm and relocation allowed |
+| HackShield | `HShield` folder | No ETW trace, pin, or tier; prewarm and relocation allowed |
+| HoYoverse mhyprot | `mhyprot2.sys`, `mhyprot3.sys` | No ETW trace, pin, or tier; prewarm and relocation allowed |
+| Denuvo Anti-Cheat | `denuvo-anti-cheat*` | No ETW trace, pin, or tier; prewarm and relocation allowed |
+| FACEIT | `faceit*` | No ETW trace, pin, or tier; prewarm and relocation allowed |
+
 ### Why each speed feature is considered safe
 
 These are the reasons each feature is considered safe. They are reasoning, not verified results.
@@ -50,6 +65,22 @@ These are the reasons each feature is considered safe. They are reasoning, not v
 - **Relocation:** runs only after the game has exited, and file content does not change.
 - **Detection:** a query-only process handle, or ETW events.
 
+### Usage records on this PC
+
+This is a tally of the service log from 2026-11-02 to 2026-11-10. It is not a controlled validation or benchmark. Total game load time and in-game frame stutter were not measured. Whether any account was sanctioned cannot be known from the log, and no guarantee is made. Sample counts and line formats are in [RESULTS_SUMMARY.md](RESULTS_SUMMARY.md#real-world-usage-records).
+
+| Item | League of Legends | Call of Duty |
+|---|---|---|
+| Game start detections (process starts) | 10, over 6 days | 62, over 8 days |
+| Anti-cheat (as judged by the service) | Vanguard | Ricochet |
+| Trace | 2 collected, then skipped (8 times) | 14 collections started |
+| Pin | Skipped (4 times) | Skipped (7 times) |
+| Relocation | 4 completed, 4 stopped | 5 completed, 3 stopped |
+| Hit rate right after prewarm (latest value only) | 100% | 75% |
+
+- League of Legends was judged as `vanguard` because it is a Riot game on a PC that has Vanguard. Call of Duty was judged as `ricochet` from a `ricochet` name in the install folder. Prewarm was applied to both games.
+- None of the relocation stop error messages gives anti-cheat as the reason. The cause was not examined further from the log alone. Details are in [Anti-cheat compatibility](ANTICHEAT.md#usage-records-on-this-pc).
+
 ### Signing
 
 The executables are not code-signed, so Windows SmartScreen may show a warning. That warning is the only effect confirmed so far. Whether signing status relates to anti-cheat decisions has not been checked.
@@ -58,7 +89,7 @@ The executables are not code-signed, so Windows SmartScreen may show a warning. 
 
 - Automatic mode is on by default. For a game with anti-cheat, turn automatic mode off in the Settings tab, or add the game's exe to `auto.ignore_exes`, before you play.
 - Automatic tracing uses the same kind of ETW collection as the manual route, so the Ricochet and Vanguard cautions in this guide ("What to know first", Step 1, and "Reference: League of Legends") still apply.
-- Not yet tested on any real anti-cheat game. This is outside the current validation.
+- Anti-cheat games have only usage records from this PC (one Vanguard game and one Ricochet game) and no controlled validation. Other anti-cheat games have not been tested. No guarantee is made about account sanctions.
 
 ## Procedure validated with Frostpunk (2026-11-02)
 
@@ -86,7 +117,7 @@ Recommended settings
 - **Finish prewarm before the game starts.** Use `prewarm.on_service_start` (default true) in the game entry of the service configuration, or put the launcher in `trigger_exes`. The measurement assumes prewarm finishes at least 15 seconds before the game starts. Prewarm runs only when available RAM is at least the zone size + `min_free_ram_mib` (default 4096 MiB). The configuration format is in the "Two operating modes" section of `csharp\README.md`.
 - Relocate only while the game is off (the script stops if it is running). It is recommended to close the launcher too. After relocation, check the automatic optimization exclusion in step 5.
 
-Results and limits are in the 2026-11-02 section of `VALIDATION_REPORT.md`. The measured values are replay times of traced read patterns, not total load times of a running game. 24-hour persistence, CMR drives, and anti-cheat games are unvalidated.
+Results and limits are in the 2026-11-02 section of `VALIDATION_REPORT.md`. The measured values are replay times of traced read patterns, not total load times of a running game. 24-hour persistence and CMR drives are unvalidated, and anti-cheat games have only usage records from this PC ([Usage records on this PC](#usage-records-on-this-pc)).
 
 ## Requirements
 
@@ -102,23 +133,23 @@ python --version
 
 Do not end paths with a backslash. The tool handles it either way, but in CMD `"D:\Games\"` fails to close the quote and gives an error. Case is not distinguished.
 
-## Applying directly to MW4
+## Applying directly to Call of Duty: Modern Warfare 4
 
-The recommendation above (validate first with a game without anti-cheat) is advice; the actual order when applying directly to MW4 is below. The detailed commands for each number are in the step descriptions that follow. This whole procedure has never been run with MW4, and whether Ricochet conflicts with ETW/Procmon is unvalidated.
+The recommendation above (validate first with a game without anti-cheat) is advice; the actual order when applying directly to Call of Duty: Modern Warfare 4 is below. The detailed commands for each number are in the step descriptions that follow. This whole manual procedure has never been run with Call of Duty: Modern Warfare 4, and whether Ricochet conflicts with manual ETW/Procmon collection is unvalidated. The usage records of the service's automatic mode are separate ([Usage records on this PC](#usage-records-on-this-pc)).
 
-1. **Check the install path.** Install MW4 on the D: drive from Battle.net or Steam (or the Xbox PC app), and use the install folder that the launcher shows (for example `D:\...\Call of Duty`) as is for `--prefix`, `--origin-root`, and `--allowed-root`. The folder selection menu name differs by launcher version, so check it on the install screen. The official install size is 115 GB (SSD basis), but depending on the pack composition secondary sources also give around 200 GB. Use the actual size on the install screen as the reference, and also leave contiguous free space on D: for relocation (at least the hot set size). Start after the install is finished and post-install work such as shader compilation is done.
+1. **Check the install path.** Install Call of Duty: Modern Warfare 4 on the D: drive from Battle.net or Steam (or the Xbox PC app), and use the install folder that the launcher shows (for example `D:\...\Call of Duty`) as is for `--prefix`, `--origin-root`, and `--allowed-root`. The folder selection menu name differs by launcher version, so check it on the install screen. The official install size is 115 GB (SSD basis), but depending on the pack composition secondary sources also give around 200 GB. Use the actual size on the install screen as the reference, and also leave contiguous free space on D: for relocation (at least the hot set size). Start after the install is finished and post-install work such as shader compilation is done.
 2. **Define the reference stretch.** In the offline campaign, define the same point (for example, from the main menu starting one campaign mission until a controllable screen appears) as one load. Repeat with the same mission and the same menu path every time. Leave multiplayer and DMZ out of the first test. First measure the current load time of this stretch with a stopwatch (the `-NoPrefetch` baseline in "How to measure the effect" of step 4).
 3. **Collect the trace (step 1).** There are two ways.
-   - **ETW (recommended; `.etl` conversion validated in the C# CLI with S3).** From an administrator PowerShell before starting the game, run `wpr -start FileIO -filemode` (check the profile name with `wpr -profiles`), start the game and load up to the reference stretch, then run `wpr -stop D:\AsterWork\mw4_run1.etl`. The current Python tools cannot read `.etl`, so convert the `.etl` with the C# CLI `aster trace --etl`. How the collector itself looks to Ricochet is unvalidated, so make the first collection one short mission, and stop immediately if there is a launch refusal, a warning, or an account notice.
+   - **ETW (recommended; `.etl` conversion validated in the C# CLI with S3).** From an administrator PowerShell before starting the game, run `wpr -start FileIO -filemode` (check the profile name with `wpr -profiles`), start the game and load up to the reference stretch, then run `wpr -stop D:\AsterWork\ricochet_run1.etl`. The current Python tools cannot read `.etl`, so convert the `.etl` with the C# CLI `aster trace --etl`. How the collector itself looks to Ricochet is unvalidated, so make the first collection one short mission, and stop immediately if there is a launch refusal, a warning, or an account notice.
    - **Procmon (only when the user accepts the risk).** Turn on Procmon first (set the `Process Name`, `Operation`, `Result`, and `Path` filters and start capture), then start the game. Running a Ricochet game with Procmon on may be the highest-risk combination, and there is no public safety report. After loading up to the reference stretch, turn off capture and save as CSV, exit the game, then **fully exit Procmon (File > Exit) and reboot the PC**. The Procmon driver can remain after exit, so both the next collection run and actual play are done after a reboot. So each collection needs a reboot (3~5 times). Do not leave Procmon installed and running during normal play.
 4. **Create the plan (step 2).** If you have Procmon CSV files, run `trace`, `plan`, and `relayout plan`. If you collected only ETW, stop here until the C# CLI conversion has been validated on a real `.etl`.
-5. **Relocate (step 3).** Fully close the Battle.net (or Steam) launcher and MW4, check in Task Manager that no related process remains, then run from an administrator PowerShell. Relocate while there is no post-install update (if an update rewrites files, the plan is rejected). When finished, run the launcher's file check/repair once to confirm there is no effect.
+5. **Relocate (step 3).** Fully close the Battle.net (or Steam) launcher and Call of Duty: Modern Warfare 4, check in Task Manager that no related process remains, then run from an administrator PowerShell. Relocate while there is no post-install update (if an update rewrites files, the plan is rejected). When finished, run the launcher's file check/repair once to confirm there is no effect.
 6. **Run and measure (step 4).** Start with `game_launch.ps1` and compare with `-NoPrefetch` using the reference stretch from number 2. Because the launcher starts the game, you may need to give `-Game` the launcher URI instead of the executable.
 7. **Maintain (step 5).** Exclude D: from Windows automatic optimization, and after updates check with `verify` and, if necessary, start again from step 1.
 
-### Expected effect when the hot set in MW4 is in the GB range
+### Expected effect when the hot set in Call of Duty: Modern Warfare 4 is in the GB range
 
-The values below are calculated assuming a sequential speed of 160 MB/s, and the real hot set size of MW4 is unknown (not measured). Relocation and prefetch remove seek time but do not reduce the number of bytes read.
+The values below are calculated assuming a sequential speed of 160 MB/s, and the hot set size of Call of Duty: Modern Warfare 4 during loading was not measured. For reference, the prewarm hot set that the service recorded for Call of Duty on this PC is 10,218 MiB ([Real-world usage records](RESULTS_SUMMARY.md#real-world-usage-records)). Relocation and prefetch remove seek time but do not reduce the number of bytes read.
 
 | Hot set | Prefetch floor time | Expectation |
 |---:|---:|---|
@@ -127,7 +158,7 @@ The values below are calculated assuming a sequential speed of 160 MB/s, and the
 | 10 GB | about 62.5 s | The prefetch floor may be longer than the loading, so the effect is limited |
 | 20 GB or more | about 125 s or more | Hard to expect an effect |
 
-No load time of MW4 on an HDD has been reported. On-demand texture streaming causes reads during play too, so stutter outside loading stretches may not be reduced by this tool.
+No load time of Call of Duty: Modern Warfare 4 on an HDD has been reported. On-demand texture streaming causes reads during play too, so stutter outside loading stretches may not be reduced by this tool.
 
 ## Step 0. Safety check
 
@@ -164,7 +195,7 @@ This records which parts of which files the game reads while loading. Recording 
 
 This tool does not filter by process name; it looks only at the Path prefix. If you remove the Process Name filter, reads from other processes such as launchers and antivirus are mixed in as well if they are in the same folder.
 
-### Ricochet games (MW4 and others): leave only an `.etl` with ETW (for reference; the C# `aster trace --etl` conversion was validated in S3)
+### Ricochet games (Call of Duty: Modern Warfare 4 and others): leave only an `.etl` with ETW (for reference; the C# `aster trace --etl` conversion was validated in S3)
 
 Below is a reference command that records file I/O with the built-in Windows `wpr`. This `FileIO` profile command was not run, and S3 was tested with the repository's `csharp\scripts\aster_fileio.wprp` profile. According to Microsoft documentation, ETW file read events have `Offset` (64-bit), `IoSize` (ByteOffset, IOSize in the Microsoft-Windows-Kernel-File provider), and `FileKey`, so offset and length can be obtained. Turn the collector on before the game starts and off after it exits, and stop immediately if there is any sign of trouble (launch refusal, warning, account notice). Make the first test short, in the offline campaign.
 
@@ -172,7 +203,7 @@ Below is a reference command that records file I/O with the built-in Windows `wp
 # Administrator PowerShell. The profile name must be checked locally with wpr -profiles (not confirmed).
 wpr -start FileIO -filemode
 # ... start game -> loading finished -> exit game ...
-wpr -stop D:\AsterWork\mw4_run1.etl
+wpr -stop D:\AsterWork\ricochet_run1.etl
 ```
 
 The Python `trace` command above cannot read this `.etl`. You can convert it with the C# CLI `aster trace --etl <file> --origin-root <game folder> --out <file> --dump-first 20` and check the read count and the first 20 entries.
@@ -328,11 +359,11 @@ This value is for a warm cache, so it is not a speed reference. If `errors` is n
 | 20 GB | about 125 s |
 | 30 GB | about 188 s |
 
-When the hot set exceeds a few GB, the prefetch time becomes the floor and the effect is limited, and the gain comes mainly from removing seeks. On the synthetic dataset (243 MB) the prefetch took 1.1~1.7 seconds. Frostpunk's read pattern was 2.02 GB, and on the relocated zone it took 15.1 s at the HDD sequential limit (about 135 MB/s). The hot set size of MW4 is not yet known.
+When the hot set exceeds a few GB, the prefetch time becomes the floor and the effect is limited, and the gain comes mainly from removing seeks. On the synthetic dataset (243 MB) the prefetch took 1.1~1.7 seconds. Frostpunk's read pattern was 2.02 GB, and on the relocated zone it took 15.1 s at the HDD sequential limit (about 135 MB/s). The hot set size of Call of Duty: Modern Warfare 4 during loading was not measured.
 
 - **Reads not in the trace are slow.** Reads such as a different level/mode from the recorded load, or texture streaming during play, are not helped by this tool. Blocks read only once (especially those that appear only in old runs) do not go into the zone and can cause seeks during prefetch, so consistency across 3~5 runs matters.
-- **This tool does not inject into or hook the game; it only reads files from a separate process.** Even so, whether an anti-cheat could regard it as an "app accessing game files" is unvalidated. There is also no official confirmation of whether `FSCTL_MOVE_FILE` triggers a game's integrity check (since the file content does not change, a hash check is presumed not to trigger). After relocation, run the launcher's file check/repair once to confirm there is no effect.
-- **Frostpunk is the only game validated.** It was measured by replay on 2026-11-02, and the total time of running the game was not measured. The other figures in the README were obtained from the synthetic dataset. MW4 and LoL have not been validated yet.
+- **This tool does not inject into or hook the game; it only reads files from a separate process.** Even so, whether an anti-cheat could regard it as an "app accessing game files" has not been controlled-validated (there are usage records from this PC, but no guarantee is made about account sanctions). There is also no official confirmation of whether `FSCTL_MOVE_FILE` triggers a game's integrity check (since the file content does not change, a hash check is presumed not to trigger). After relocation, run the launcher's file check/repair once to confirm there is no effect.
+- **Frostpunk is the only game whose read pattern was measured by replay.** It was measured on 2026-11-02, and the total time of running the game was not measured. The other figures in the README were obtained from the synthetic dataset. For Call of Duty and League of Legends there is only a tally of this PC's service log (real-world usage records), which is neither a controlled validation nor a load-time measurement ([Real-world usage records](RESULTS_SUMMARY.md#real-world-usage-records)).
 
 ## Reference: League of Legends (Vanguard)
 
@@ -356,12 +387,12 @@ League of Legends uses Riot Vanguard. Vanguard is also a kernel-level anti-cheat
 - If the patcher deletes a file and downloads it again, the relocation is broken. Check the layout state again after patches. [speculation]
 
 **Loading characteristics**
-- No figures showing the difference in LoL load time between HDD and SSD were found. Only the general claim that an HDD is 2~3 times slower than an SSD in typical games was confirmed. [secondary] https://www.gamepressure.com/newsroom/hdd-sshd-ssd-m2-speed-benchmark-of-hard-drives/z1692
-- LoL has a large share of network and CPU waiting, so the disk gain may be small. [speculation]
+- No figures showing the difference in League of Legends load time between HDD and SSD were found. Only the general claim that an HDD is 2~3 times slower than an SSD in typical games was confirmed. [secondary] https://www.gamepressure.com/newsroom/hdd-sshd-ssd-m2-speed-benchmark-of-hard-drives/z1692
+- League of Legends has a large share of network and CPU waiting, so the disk gain may be small. [speculation]
 - There is no public data on the number of bytes read during loading, so it must be measured with your own trace.
 
 **Recommended order**
 1. First validate the trace, relocation, and prefetch pipeline on another game without Vanguard.
-2. For LoL, measure only the read volume with Vanguard off and offline, to judge the room for an HDD gain. Collect traces only in this state.
+2. For League of Legends, measure only the read volume with Vanguard off and offline, to judge the room for an HDD gain. Collect traces only in this state.
 3. For recording the relocation, also consider a method that leaves the file read order directly instead of ETW. Do not use collection tools during play, and compare only the read speed after relocation.
 4. Check that the relocation persists after a patch. Move to the next stage only within the range confirmed to have no account risk.

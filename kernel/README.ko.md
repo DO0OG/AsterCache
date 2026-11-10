@@ -52,7 +52,7 @@
 
 ## 4. 위험과 절대 하지 않을 것
 
-파일 시스템 필터는 모든 I/O 경로에 끼어드는 커널 코드입니다. 버그 한 줄이 BSOD, 데이터 손상, 부팅 불가로 이어질 수 있고, 안티치트(Ricochet, Vanguard 등) 는 알 수 없는 커널 드라이버를 의심할 수 있습니다.
+파일 시스템 필터는 모든 I/O 경로에 끼어드는 커널 코드입니다. 버그 한 줄이 BSOD, 데이터 손상, 부팅 불가로 이어질 수 있고, 안티치트(Ricochet, Vanguard 등) 는 알 수 없는 커널 드라이버를 의심할 수 있습니다. 이 PC 에서 Vanguard 게임(League of Legends)과 Ricochet 게임(Call of Duty)을 플레이한 사용 기록은 사용자 모드 서비스만의 기록이며, 이 드라이버는 적재한 적이 없어 안티치트와의 관계를 확인하지 않았습니다([안티치트 호환](../docs/ANTICHEAT.ko.md#이-pc-의-사용-기록)).
 
 **이 PC(개발·게임 PC)에서 절대 하지 않을 것**
 1. `bcdedit` 의 모든 변경 (testsigning, nointegritychecks, debug, hypervisorlaunchtype 포함).

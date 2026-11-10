@@ -92,7 +92,7 @@ The engine is detected from file names in the game folder, and the files to read
 - `"auto": {"ssd_tier": {"enabled": true, "budget_gib": 8, "root": "auto"}}` turns on the optional SSD assist storage (off by default). `budget_gib` (1..4096) is the most SSD space one game may use. `root` is `"auto"` (the system drive if it is an SSD, otherwise the SSD with the most free space, under `AsterCache\tier`) or an absolute path on an SSD. See [SSD assist storage](#ssd-assist-storage-optional).
 - The manual buttons (register, capture trace, create plan, run relocation, prewarm now) work as before.
 - The service writes its state to `%ProgramData%\AsterCache\auto_status.json`. Only the service writes that file.
-- The Status tab shows one line per game, such as "Auto: Frostpunk discovered → collecting trace → waiting to relocate → relocating → [done]". The Games tab shows the source, stage, and anti-cheat columns. The learning stage shows "First run: learning (read-ahead n MiB)", and "Prewarmed" appears after prewarm. The per-game status line also shows `prewarm hit N%` (the hit rate measured at the last game start) and `SSD assist N GB` (the size of the game's SSD copies). Tray notifications are sent for discovery, for a finished relocation, and when a first run ends ("Faster from the next launch: <game>").
+- The Status tab shows one line per game, such as "Auto: Frostpunk discovered → collecting trace → waiting to relocate → relocating → [done]". The Games tab shows the source, stage, and anti-cheat columns. The learning stage shows "First run: learning (read-ahead n MiB)", and "Prewarmed" appears after prewarm. The per-game status line also shows `hit right after prewarm N%` (the hit rate measured right after a prewarm ends) and `SSD assist N GB` (the size of the game's SSD copies). Tray notifications are sent for discovery, for a finished relocation, and when a first run ends ("Faster from the next launch: <game>").
 - `aster status` has an `"auto"` key. `aster discover [--json]` lists the launcher games read-only, with the anti-cheat marker.
 - A game you registered by hand is also relocated automatically when `auto.relocate` is on, once its trace exists and the PC is idle. To prevent this, turn off `auto.relocate` (in the Settings tab of the management window, clear the Relocate box) or add the game's exe to `auto.ignore_exes`.
 - Games on an SSD are not automatically registered, traced, or relocated. On an HDD that is the Windows system drive, games are only discovered and prewarmed (status "prewarm only (system drive)"); they are not relocated or tiered.
@@ -102,7 +102,12 @@ The engine is detected from file names in the game folder, and the files to read
 
 ## Effect
 
-The speed effect of automatic mode has not been measured yet. When results exist, they will be added to [docs/RESULTS_SUMMARY.md](RESULTS_SUMMARY.md).
+How much automatic mode shortens total game load time has not been measured. There is a tally of the service log on this PC (2026-11-02 to 2026-11-10) as real-world usage records. It is not a controlled benchmark, and it has no comparison with prewarm off.
+
+- League of Legends (Vanguard): 10 game start detections, 2 traces collected and then skipped 8 times, relocation completed 4 times, hit rate right after prewarm 100% (latest value only).
+- Call of Duty (Ricochet): 62 game start detections, 14 trace collections started, relocation completed 5 times, hit rate right after prewarm 75% (latest value only).
+
+The method and sample counts are in [Real-world usage records](RESULTS_SUMMARY.md#real-world-usage-records), and the policy for anti-cheat games is in [Anti-cheat compatibility](ANTICHEAT.md). No guarantee is made about account sanctions.
 
 ## SSD assist storage (optional)
 

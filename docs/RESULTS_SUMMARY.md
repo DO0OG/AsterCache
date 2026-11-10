@@ -21,7 +21,7 @@ The dataset has 64 files, about 2.0 GiB (2,135,949,312 bytes), 4,000 trace entri
 
 ## Prefetch in physical-position order (separate experiment, median of 3 runs)
 
-This was run with the same synthetic dataset (64 files, 2.1 GiB). The HDD cold in this experiment was 17.3~19.0 s (median 17.8 s), while the benchmark's HDD cold was 55.7~71.3 s. Because the variation is this large even under the same conditions, the difference between the two values is treated as variation, not as a difference in method.
+This was run with the same synthetic dataset (64 files, 2.1 GiB). The HDD cold in this experiment was 17.3\~19.0 s (median 17.8 s), while the benchmark's HDD cold was 55.7\~71.3 s. Because the variation is this large even under the same conditions, the difference between the two values is treated as variation, not as a difference in method.
 
 | Configuration | Prefetch | Replay | Note |
 |---|---:|---:|---|
@@ -88,9 +88,9 @@ The hot set of Frostpunk is 2,020,769,792 bytes (30,843 blocks) on the D: WDC WD
 |---|---:|---:|---|---:|
 | Before relocation (original layout, 35 runs) | 15.05 (1 run) | 24.3 (1 run) | Scattered, 15.47~63.08% | Not applicable |
 | First relocation, preservation rule on (earlier value) | 15.13 | 21.7 / 22.6 (2 runs) | Not recorded in the result folder | Not recorded in the result folder |
-| Full move, 42.142% zone, first measurement | 12.06 (median of 3; 11.84~12.83) | 21.64 (median of 3; 18.94~27.32) | 42.142% (LCN 205,810,188) | 100% (493,352 of 493,352 clusters) |
-| Full move, 42.142% zone, final layout | 11.93 (median of 3; 11.84~12.19) | 17.64 (median of 3; 17.51~18.33) | 42.142% (LCN 205,810,272) | 100% |
-| Full move, high band 90.00% | 19.06 (median of 3; 18.12~19.08) | 27.86 (median of 3; 27.59~31.77) | 90.00% (LCN 439,536,840) | 100% |
+| Full move, 42.142% zone, first measurement | 12.06 (median of 3; 11.84\~12.83) | 21.64 (median of 3; 18.94\~27.32) | 42.142% (LCN 205,810,188) | 100% (493,352 of 493,352 clusters) |
+| Full move, 42.142% zone, final layout | 11.93 (median of 3; 11.84\~12.19) | 17.64 (median of 3; 17.51\~18.33) | 42.142% (LCN 205,810,272) | 100% |
+| Full move, high band 90.00% | 19.06 (median of 3; 18.12\~19.08) | 27.86 (median of 3; 27.59\~31.77) | 90.00% (LCN 439,536,840) | 100% |
 
 - Reading width and queue depth had no effect. In the original layout, queue depth 1, 2, 4, and 8 with 4 MiB requests, queue depth 4 with 1 MiB and 16 MiB requests took 16.05~16.91 s.
 - The WOF compression ratio is 1.014 at 8 KiB chunks and 1.016 at 16 KiB chunks. This saves only 1.4~1.6% of the bytes read, so it is not worth the decompression cost. 97.7% of the hot bytes are in nine `.dat` files, whose ratio is 1.002~1.003.
@@ -108,8 +108,8 @@ All figures are replay times of traced read patterns, not total load times of a 
 | Configuration | Cold replay, seconds (A → B, median of 3) | Read-ahead bytes (B) | Live read names resolved (B) | Notes |
 |---|---|---|---|---|
 | E7 synthetic scattered, first measurement ([result](../results/csharp_e7_20261102_203358/README.md)) | 21.67 → 44.90 (A/B 0.48) | 1.67~1.84 GB | 0 (no read events) | Names unresolved; reading whole open files competed with the replay for the disk |
-| E7b synthetic scattered, after the name-resolution fix ([result](../results/csharp_e7b_gen/README.md)) | 19.82 → 38.71 (A/B 0.51) | 1.14~1.18 GB | 9,913~14,860 resolved, 315~384 unresolved | Hit ratio 26~29% |
-| E7b Frostpunk, 42% zone contiguous layout ([result](../results/csharp_e7b_gen/README.md)) | 18.98 → 37.40 (A/B 0.51) | 2.18~2.42 GB | 41,730~44,186 resolved, 369~440 unresolved | Hit ratio 50~58%, no gain |
+| E7b synthetic scattered, after the name-resolution fix ([result](../results/csharp_e7b_gen/README.md)) | 19.82 → 38.71 (A/B 0.51) | 1.14\~1.18 GB | 9,913\~14,860 resolved, 315\~384 unresolved | Hit ratio 26\~29% |
+| E7b Frostpunk, 42% zone contiguous layout ([result](../results/csharp_e7b_gen/README.md)) | 18.98 → 37.40 (A/B 0.51) | 2.18\~2.42 GB | 41,730\~44,186 resolved, 369\~440 unresolved | Hit ratio 50\~58%, no gain |
 
 The name-resolution defect (zero read events) was fixed in E7b. Even so, read-ahead competed with the replay for the same disk, and B was about twice as slow as A.
 
@@ -120,7 +120,7 @@ The name-resolution defect (zero read events) was fixed in E7b. Even so, read-ah
 | Scattered, a replica of the Frostpunk trace (`fpset`) | 55.3 | 41.0 |
 | Frostpunk contiguous (42% zone) | 20.5 | 19.3 |
 
-With the same read pattern, the scattered layout took 41.0~55.3 s and the contiguous layout took 19.3~20.5 s (about 2.1 to 2.7 times, on a median basis). This is the basis for relocation reducing read time ([result](../results/csharp_e7c_gen/README.md)).
+With the same read pattern, the scattered layout took 41.0\~55.3 s and the contiguous layout took 19.3\~20.5 s (about 2.1 to 2.7 times, on a median basis). This is the basis for relocation reducing read time ([result](../results/csharp_e7c_gen/README.md)).
 
 ### E7c: gap-only read-ahead (`--gap-ms` / `--seq-runs`)
 
@@ -135,7 +135,7 @@ This build reads ahead only in the gaps between game reads. Saturated replay (`b
 | Frostpunk contiguous | gapped | 23.4/19.3/15.2 | 16.4/19.9/15.1 | 19.3 | 16.4 | 1.18 | 149/135/128 | 148/134/126 | 616/520/600 | 766/656/731 | 0.19/0.16/0.19 |
 | **fpset scattered** | **gapped** | 49.7/41.0/40.0 | 52.2/50.1/41.0 | 41.0 | 50.1 | **0.82** | 150/148/163 | 148/147/162 | 436/479/532 | 589/628/700 | 0.14/0.13/0.17 |
 
-- Saturated replay: all three datasets ran 1.08 to 1.24 times faster with B. Read-ahead shrank to 18~128 MB, and the earlier build's roughly twofold slowdown is gone. A varied widely (19~37 s on the synthetic dataset), so this is not counted as a gain; the reading is only that it did no harm.
+- Saturated replay: all three datasets ran 1.08 to 1.24 times faster with B. Read-ahead shrank to 18\~128 MB, and the earlier build's roughly twofold slowdown is gone. A varied widely (19\~37 s on the synthetic dataset), so this is not counted as a gain; the reading is only that it did no harm.
 - Gapped replay, the main evidence (`fpset` scattered): the B median of 50.1 s was slower than the A median of 41.0 s (0.82). The hit ratio was 13~17%, and the 0.4~0.5 GB read ahead in the gaps probably competed with the game reads for the disk.
 - The gapped Frostpunk contiguous result of 1.18 times is not significant, because A ranged from 15.2 to 23.4 s.
 - Gap detection worked. gap_count was 128~163 in the gapped Frostpunk contiguous and `fpset` runs, and 6~8 in the gapped synthetic random runs.
@@ -159,9 +159,9 @@ Reads ahead only sequential files, in 16 MiB steps. The total stays at or below 
 
 | Dataset | Replay | A 3 runs (s) | B 3 runs (s) | A median | B median | A/B | Read-ahead / request | Hit ratio | yielded |
 |---|---|---|---|---:|---:|---:|---|---|---|
-| fpset scattered | saturated | 49.6/48.0/46.6 | 53.4/54.6/51.4 | 48.0 | 53.4 | 0.90 | about 1.00 | 0.31~0.36 | 120~129 |
-| fpset scattered | gapped | 47.2/59.3/42.1 | 40.4/49.0/41.7 | 47.2 | 41.7 | 1.13 | about 1.01 | 0.53~0.55 | 238~261 |
-| Frostpunk contiguous | gapped | 16.4/15.2/14.9 | 18.8/17.3/18.2 | 15.2 | 18.2 | 0.84 | about 1.01 | 0.50~0.52 | 160~188 |
+| fpset scattered | saturated | 49.6/48.0/46.6 | 53.4/54.6/51.4 | 48.0 | 53.4 | 0.90 | about 1.00 | 0.31\~0.36 | 120\~129 |
+| fpset scattered | gapped | 47.2/59.3/42.1 | 40.4/49.0/41.7 | 47.2 | 41.7 | 1.13 | about 1.01 | 0.53\~0.55 | 238\~261 |
+| Frostpunk contiguous | gapped | 16.4/15.2/14.9 | 18.8/17.3/18.2 | 15.2 | 18.2 | 0.84 | about 1.01 | 0.50\~0.52 | 160\~188 |
 
 - The total limit held (read-ahead ≈ game reads, +0 to 1%).
 - The gapped fpset replay is 1.13, but the saturated fpset replay is 0.90, which misses the no-harm criterion (0.95 or more). The Frostpunk contiguous gapped replay shows no gain. Three runs are too noisy to count any gain.
@@ -173,9 +173,9 @@ Same as bounded, plus a pause while the game's reads over the last 500 ms run at
 
 | Dataset | Replay | A median (s) | B median (s) | A/B | Read-ahead / request | Hit ratio | yielded |
 |---|---|---:|---:|---:|---|---|---|
-| fpset scattered | saturated | 45.1 | 52.6 | 0.86 | 0.83~1.00 | 0.26~0.29 | 98~116 |
-| fpset scattered | gapped | 38.6 | 38.8 | 0.995 | 1.01~1.02 | 0.51~0.53 | 217~230 |
-| Frostpunk contiguous | gapped | 14.8 | 17.4 | 0.85 | 1.01~1.02 | 0.52~0.53 | 160~169 |
+| fpset scattered | saturated | 45.1 | 52.6 | 0.86 | 0.83\~1.00 | 0.26\~0.29 | 98\~116 |
+| fpset scattered | gapped | 38.6 | 38.8 | 0.995 | 1.01\~1.02 | 0.51\~0.53 | 217\~230 |
+| Frostpunk contiguous | gapped | 14.8 | 17.4 | 0.85 | 1.01\~1.02 | 0.52\~0.53 | 160\~169 |
 
 - Saturated fpset (0.86) misses the no-harm bar (0.95). The hit ratio is low, and most B runs were slower than most A runs.
 - Gapped fpset (0.995) misses the gain bar (1.10). Read latency did not drop even though read-ahead matched the request volume. The earlier 1.13 was likely noise in A; A was stable this time (38.3~38.9 s).

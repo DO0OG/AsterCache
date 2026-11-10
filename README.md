@@ -90,7 +90,7 @@ This is a tally of the service log on one PC (2026-11-02 to 2026-11-10). It is n
 | Hit rate right after prewarm (latest value only) | 100% | 75% |
 
 - **Hit rate.** Right after a prewarm ends, up to 8 places chosen from the hot set (1 MiB each) are read, and the hit rate is the share that finished in 0.8 ms or less, that is, the share that was in the RAM file cache. It is not a value at game start, and only the latest value per game is kept. The 75% for Call of Duty was measured right after 1,023 MiB of its 10,218 MiB hot set was prewarmed at service start.
-- **Limits.** The log has no program version, so the data is split by date only, and the table holds only late-period figures (2026-11-08 to 11-10). There is no record of a start stream actually running. There is no comparison with prewarm off.
+- **Limits.** The log has no program version, so the data is split by date only, and the table holds only late-period figures (2026-11-08 to 11-10). The start stream ran 9 times for Call of Duty and 9 times for League of Legends, but its effect on load times was not measured. There is no comparison with prewarm off.
 
 ## System requirements
 

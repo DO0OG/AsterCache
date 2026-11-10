@@ -277,22 +277,23 @@ bounded 와 같되, 최근 500 ms 의 게임 읽기 처리량이 80 MiB/s 이상
 
 ### 시작 스트림
 
-게임이 시작될 때 핫 집합을 읽는 시작 스트림이 실제로 실행된 기록은 이 로그에 없습니다. `start stream stopped ...`, `start stream cancelled ...` 줄이 0건이고 건너뜀 줄만 있습니다.
+게임이 시작될 때 핫 집합을 읽는 시작 스트림은 이 로그에서 실제로 실행됐습니다. 실행 기록 줄은 두 형식입니다. `<게임>: streamed N bytes ... s` 줄은 Call of Duty 8회, League of Legends 8회이고, `start stream stopped at load boundary after N bytes, S s` 줄(로딩 경계에서 멈춘 실행)은 Call of Duty 1회, League of Legends 1회입니다. `start stream cancelled` 줄은 0건입니다. 게임별 실행 횟수는 Call of Duty 9회, League of Legends 9회입니다. 읽은 양은 Call of Duty 1,268 ~ 7,151 MiB, League of Legends 73 ~ 8,168 MiB, 소요 시간은 Call of Duty 0.3 ~ 363 초, League of Legends 0.01 ~ 126 초입니다. 게임 이름이 없는 `net10.0-windows: streamed` 줄 65개는 세지 않았습니다.
 
 | `start stream skipped (...)` 사유 | League of Legends | Call of Duty |
 |---|---|---|
-| `game already running` | 0 | 39 |
-| `last stream N min ago, within restream cooldown` | 0 | 9 |
+| `game already running` | 0 | 41 |
+| `last stream N min ago, within restream cooldown` | 0 | 10 |
 | `already warm` | 1 | 4 |
 | `drive busy` | 1 | 1 |
-| 합계 | 2 | 53 |
+| `disk yielded` | 0 | 1 |
+| 합계 | 2 | 57 |
 
 ### 재지 않은 것과 로그에 없는 것
 
 - 게임 전체 로딩 시간, 플레이 중 프레임 끊김, 예열이 있을 때와 없을 때의 비교.
 - 게임을 켜는 순간의 적중률과 적중률의 이력(마지막 값 하나만 있음).
 - 프로그램 버전별 구분(로그에 버전이 없음).
-- 시작 스트림의 실제 읽기량과 소요 시간(실행 기록 0건).
+- 시작 스트림이 로딩 시간에 준 영향.
 
 집계 스크립트는 저장소에 두지 않았습니다. 위 줄 형식을 정규식으로 읽어 세면 같은 값이 나옵니다.
 

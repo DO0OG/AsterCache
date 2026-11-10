@@ -277,22 +277,23 @@ Every prewarm completion line (`<game>: prewarm done (<reason>): ...`) was read.
 
 ### Start stream
 
-The log has no record of the start stream (which reads the hot set when a game starts) actually running. There are 0 lines of `start stream stopped ...` or `start stream cancelled ...`; there are only skip lines.
+The start stream (which reads the hot set when a game starts) did run in this log. Run records come in two formats. Lines `<game>: streamed N bytes ... s` number 8 for Call of Duty and 8 for League of Legends. Lines `start stream stopped at load boundary after N bytes, S s` (runs stopped at the load boundary) number 1 for each. There are 0 lines of `start stream cancelled`. Per game, that is 9 runs of Call of Duty and 9 of League of Legends. Bytes read range from 1,268 to 7,151 MiB for Call of Duty and from 73 to 8,168 MiB for League of Legends. Durations range from 0.3 to 363 s for Call of Duty and from 0.01 to 126 s for League of Legends. 65 `net10.0-windows: streamed` lines, which have no game name, are not counted.
 
 | `start stream skipped (...)` reason | League of Legends | Call of Duty |
 |---|---|---|
-| `game already running` | 0 | 39 |
-| `last stream N min ago, within restream cooldown` | 0 | 9 |
+| `game already running` | 0 | 41 |
+| `last stream N min ago, within restream cooldown` | 0 | 10 |
 | `already warm` | 1 | 4 |
 | `drive busy` | 1 | 1 |
-| Total | 2 | 53 |
+| `disk yielded` | 0 | 1 |
+| Total | 2 | 57 |
 
 ### Not measured, and not in the log
 
 - Total game load time, in-game frame stutter, and a comparison with and without prewarm.
 - The hit rate at the moment of game start, and any history of the hit rate (only the latest value exists).
 - A split by program version (the log has no version).
-- The actual bytes read and duration of the start stream (0 execution records).
+- The effect of the start stream on load times.
 
 No tally script is kept in the repository. Reading the line formats above with regular expressions gives the same values.
 

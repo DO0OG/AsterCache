@@ -93,6 +93,8 @@ internal sealed class MainWindow : Window
     private static readonly TimeSpan TraceStopWait = TimeSpan.FromSeconds(10);
 
     private int _busy;
+    private int _layoutBusy; // 게임별 배치 판정을 백그라운드로 채우는 중 (창 작업과는 별개라 _busy 를 잡지 않음)
+    private int _layoutAgain; // 판정 조회 요청이 있음: 도는 중에 온 요청은 버리지 않고 끝난 뒤 한 번 더 돌림
     private string? _letter;
     private bool _loading;
     private bool _loaded; // 처음 읽기가 끝나기 전에는 "불러오는 중" 만 보임
@@ -156,7 +158,7 @@ internal sealed class MainWindow : Window
 
     public void SelectTab(int index) => _tabs.SelectedIndex = index;
 
-    public bool Idle => Volatile.Read(ref _busy) == 0;
+    public bool Idle => Volatile.Read(ref _busy) == 0 && Volatile.Read(ref _layoutBusy) == 0;
 
     public void ShowAdvanced(bool on) => _advanced.IsChecked = on;
 
@@ -469,7 +471,7 @@ internal sealed class MainWindow : Window
             })),
             Look.Btn(L.T("Btn_StopCollect"), () => _traceStop?.Cancel())));
         buttons.Children.Add(Group(
-            Look.Btn(L.T("Btn_MakePlan"), () => WithGame(g => RunAsync(L.T("Btn_MakePlan"), () => _manage.MakePlan(g, Progress)))),
+            Look.Btn(L.T("Btn_MakePlan"), () => WithGame(g => RunAsync(L.T("Btn_MakePlan"), () => _manage.ChangesLayout(g, () => _manage.MakePlan(g, Progress))))),
             Look.Btn(L.T("Btn_Apply"), () => WithGame(Apply)),
             Look.Btn(L.T("Btn_Revert"), () => WithGame(Revert))));
         buttons.Children.Add(Group(
@@ -665,7 +667,7 @@ internal sealed class MainWindow : Window
         string text = L.T("Confirm_Apply", _tray.DisplayName(name), moved is { } m ? ManageViewModel.Size(m) : L.T("Confirm_ApplySizeUnknown"));
         if (await ConfirmWindow.Ask(this, text))
         {
-            await RunAsync(L.T("Op_Relocate"), () => _manage.Apply(name, Progress));
+            await RunAsync(L.T("Op_Relocate"), () => _manage.ChangesLayout(name, () => _manage.Apply(name, Progress)));
         }
     }
 
@@ -673,7 +675,7 @@ internal sealed class MainWindow : Window
     {
         if (await ConfirmWindow.Ask(this, L.T("Confirm_Revert", _tray.DisplayName(name)), danger: true))
         {
-            await RunAsync(L.T("Btn_Revert"), () => _manage.Revert(name, Progress));
+            await RunAsync(L.T("Btn_Revert"), () => _manage.ChangesLayout(name, () => _manage.Revert(name, Progress)));
         }
     }
 
@@ -708,7 +710,7 @@ internal sealed class MainWindow : Window
             return;
         }
 
-        await RunAsync(L.T("Btn_ImportProfile"), () => _manage.ImportProfile(name, path));
+        await RunAsync(L.T("Btn_ImportProfile"), () => _manage.ChangesLayout(name, () => _manage.ImportProfile(name, path)));
     }
 
     private async Task Confirmed(string text, string what, Func<ActionResult> work, bool danger = false)
@@ -765,7 +767,7 @@ internal sealed class MainWindow : Window
             {
                 try
                 {
-                    _manage.RefreshStatus();
+                    _manage.RefreshOverview(); // 게임별 배치 판정은 아래 RefreshLayouts 가 따로 채움: 목록은 이것만으로 바로 보임
                     return (Rows: _manage.Drives(), Service: _manage.ServiceLog(), Tray: _manage.TrayLog());
                 }
                 catch (Exception e)
@@ -796,6 +798,7 @@ internal sealed class MainWindow : Window
             _watcher.SelectedIndex = Math.Max(0, Array.IndexOf(WatcherValues, _tray.Settings?.Watcher));
             _language.SelectedIndex = Math.Max(0, Array.IndexOf(LanguageValues, _tray.Settings?.Language));
             UpdateStatus();
+            RefreshLayoutsInBackground();
             return r;
         }
         finally
@@ -804,6 +807,41 @@ internal sealed class MainWindow : Window
             ShowFooter();
             Interlocked.Exchange(ref _busy, 0);
         }
+    }
+
+    /// 배치 판정 (디스크 조회) 을 창을 막지 않고 채웁니다: 판정이 하나 올 때마다 목록과 상태 탭을 다시 그립니다. 이미 도는 중이면 그 조회가 끝난 뒤 한 번 더 돕니다.
+    private void RefreshLayoutsInBackground()
+    {
+        Volatile.Write(ref _layoutAgain, 1);
+        if (Interlocked.CompareExchange(ref _layoutBusy, 1, 0) != 0)
+        {
+            return; // 도는 쪽이 요청 표시를 보고 다시 돎
+        }
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                while (Interlocked.Exchange(ref _layoutAgain, 0) == 1)
+                {
+                    _manage.RefreshLayouts(() => Dispatcher.UIThread.Post(UpdateStatus));
+                }
+            }
+            catch (Exception e)
+            {
+                // 창 맨 위 경계: 배치를 못 읽어도 앱을 죽이지 않음
+                App.Log.Error("layout reload failed", e);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _layoutBusy, 0);
+                Dispatcher.UIThread.Post(UpdateStatus);
+                if (Volatile.Read(ref _layoutAgain) == 1)
+                {
+                    RefreshLayoutsInBackground(); // 끝나는 순간에 온 요청
+                }
+            }
+        });
     }
 
     private void ShowDrives(IReadOnlyList<DriveRow> rows)
@@ -816,7 +854,7 @@ internal sealed class MainWindow : Window
         ShowRows();
     }
 
-    private static string Signature(IEnumerable<GameRow> rows) => string.Join("|", rows.Select(r => r.Stage + "/" + r.State + "/" + r.PrewarmState + "/" + r.Reason));
+    private static string Signature(IEnumerable<GameRow> rows) => string.Join("|", rows.Select(r => r.Stage + "/" + r.State + "/" + r.PrewarmState + "/" + r.Reason + "/" + r.VerdictRaw));
 
     private void ShowRows()
     {

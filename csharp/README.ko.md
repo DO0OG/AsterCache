@@ -196,7 +196,7 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 
 ## 설치 프로그램
 
-`packaging\windows\aster.iss` (Inno Setup 6) 는 관리 창, `aster.exe`, 서비스, 런타임 전체를 `Program Files\AsterCache` 에 설치하고, `AsterCache` 서비스를 등록하며(LocalSystem, 자동 시작), 데이터 폴더 전체의 ACL 을 설정합니다. 관리자 설치만 허용합니다. 설치 중 언어(English 또는 한국어, `config.json` 의 `"language"` 에 기록), 바탕화면·시작 메뉴 바로가기, 로그인 때 관리 창 실행과 트레이 아이콘 상주(바로가기는 모든 사용자 시작 프로그램 폴더), 서비스 설치와 시작, 마지막 화면의 관리 창 실행을 고를 수 있으며 모두 기본으로 켜져 있습니다. 제거하면 먼저 `aster tier revert --all` 로 SSD 보조 저장의 링크를 되돌리고(사본은 tier 폴더에 남음), 서비스를 멈추고 지우며 트레이를 종료합니다. 데이터 폴더는 남깁니다.
+`packaging\windows\aster.iss` (Inno Setup 6) 는 관리 창, `aster.exe`, 서비스, 런타임 전체를 `Program Files\AsterCache` 에 설치하고, `AsterCache` 서비스를 등록하며(LocalSystem, 자동 시작), 데이터 폴더 전체의 ACL 을 설정합니다. 관리자 설치만 허용합니다. 설치 중 언어(English 또는 한국어, `config.json` 의 `"language"` 에 기록), 바탕화면·시작 메뉴 바로가기, 로그인 때 관리 창 실행과 트레이 아이콘 상주(UAC 창 없이 관리자 권한으로 뜨는 예약 작업 `AsterCache`, 로그온 트리거·Users 그룹·가장 높은 권한이라 관리자 계정은 관리자 권한으로, 표준 사용자는 일반 권한으로 뜨며 배터리 제약 없음. Program Files 아래 설치일 때만 만들고, 그 밖의 폴더에서는 예전처럼 일반 권한의 모든 사용자 시작 프로그램 바로가기를 씀. 업그레이드 때 쓰지 않는 쪽을 지우고, 제거하면 둘 다 삭제함), 서비스 설치와 시작, 마지막 화면의 관리 창 실행을 고를 수 있으며 모두 기본으로 켜져 있습니다. 제거하면 먼저 `aster tier revert --all` 로 SSD 보조 저장의 링크를 되돌리고(사본은 tier 폴더에 남음), 서비스를 멈추고 지우며 트레이를 종료합니다. 데이터 폴더는 남깁니다.
 
 정의(`/D`): `/DAppDir`(관리 창·`aster.exe`·런타임이 든 폴더), `/DAppVersion`(사용자에게 보이는 버전), `/DAppNumVersion`(숫자 버전), `/DOutputDir`(설치본 `.exe` 를 쓸 폴더). 컴파일은 `ISCC.exe /DAppDir=<관리 창 publish 경로> /DAppVersion=<버전> aster.iss` 로 합니다. 릴리스 워크플로도 같은 방식으로 컴파일합니다.
 

@@ -265,6 +265,7 @@ public static partial class L
         ["Layout_NoPlan"] = ("계획 없음", "no plan"),
         ["Layout_Line"] = ("배치 {0} · 존 적중 {1} · 마지막 재배치 {2}", "layout {0} · zone hit {1} · last relocation {2}"),
         ["Layout_Unchecked"] = ("배치 확인 전 (새로 고침)", "layout not checked yet (refresh)"),
+        ["Layout_Checking"] = ("배치 확인 중", "checking layout"),
         ["Status_LoadHead"] = ("로딩 앞부분 {0} MiB", "load head {0} MiB"),
         ["Layout_Game"] = ("[{0}] {1} · 예열 {2}", "[{0}] {1} · prewarm {2}"),
         ["Msg_StatusRefreshed"] = ("상태를 새로 읽음 (게임 {0}개)", "Status refreshed (games: {0})"),

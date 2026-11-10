@@ -51,7 +51,7 @@ Behavior rules
 
 ## 4. Risks and what is never done
 
-A file system filter is kernel code that sits in every I/O path. One buggy line can cause a BSOD, data corruption, or an unbootable system, and anti-cheat software (Ricochet, Vanguard, and so on) may be suspicious of unknown kernel drivers.
+A file system filter is kernel code that sits in every I/O path. One buggy line can cause a BSOD, data corruption, or an unbootable system, and anti-cheat software (Ricochet, Vanguard, and so on) may be suspicious of unknown kernel drivers. The usage records of playing a Vanguard game (League of Legends) and a Ricochet game (Call of Duty) on this PC cover only the user-mode service. This driver has never been loaded, so its relation to anti-cheat has not been checked ([Anti-cheat compatibility](../docs/ANTICHEAT.md#usage-records-on-this-pc)).
 
 **Never do these on the development / gaming PC**
 1. Any `bcdedit` change (including testsigning, nointegritychecks, debug, hypervisorlaunchtype).

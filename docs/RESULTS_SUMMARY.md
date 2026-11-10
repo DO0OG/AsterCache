@@ -192,19 +192,21 @@ Same as bounded, plus a pause while the game's reads over the last 500 ms run at
 
 ## ORBIT prewarm order bench (2026-11-09)
 
-- **Environment.** User's PC, D: WDC WD20EZAZ 2 TB SMR, Call of Duty. The prewarm list has 39,180 read ops (about 9.5 GB) and 26 episodes. Before each round the service was stopped, the game was closed, and the standby list was cleared.
+- **Environment.** User's PC, D: WDC WD20EZAZ 2 TB SMR, Call of Duty. The prewarm list has 39,177 read ops (about 9.5 GB) and 26 episodes. Before each round the service was stopped, the game was closed, and the standby list was cleared.
 - **Method.** ABBA, 10 pairs (20 runs), alternating baseline order A and ORBIT order B. An episode's ready time is when all of its blocks have been read. The value-weighted mean weights each episode by its occurrence rate.
 
 | Metric | Value |
 |---|---|
-| Median reduction in value-weighted prep time (A−B)/A | 21.3% (per pair 19.5–23.4%) |
+| Median reduction in value-weighted prep time (A−B)/A | 18.8% (per pair 17.1–25.0%) |
 | Pairs with a reduction of 10% or more | 10/10 |
 | Sign test p | 0.001 |
-| Change in total read time (B−A)/A, median | −0.8% (A about 377 s, B about 372 s) |
-| Maximum per-episode p95 delay | 18.2 s (flag 4 failed) |
+| Change in total read time (B−A)/A, median | −0.1% (median of A about 326 s, B about 326 s) |
+| Maximum per-episode p95 delay | 13.1 s (flag 4 failed) |
 | Flags 2 / 3 / 4 | pass / pass / fail |
 
 The gain comes at a cost: some episodes were later because of the advance. This is one game, one drive, and one session, so generalizing to other games or drives is premature.
+
+This bench was run twice on the same day. The table above is the later run (values confirmed from the summary file of the raw data kept outside the repository). The earlier run showed a median reduction in value-weighted prep time of 21.3% (per pair 19.5–23.4%), a change in total read time of −0.8% (A about 377 s, B about 372 s), and a maximum per-episode p95 delay of 18.2 s (flag 4 failed). Those values survive only in the commit record of that time, and the raw data could not be found. Both runs used the same game and the same drive, and both reached the same conclusion (flags 2 and 3 pass, flag 4 fails).
 
 Reproduce by measuring with `csharp\scripts\cs_orbit_bench.ps1 -Game <name> -Pairs 10 ...` and judging with `aster orbit-bench summarize`.
 

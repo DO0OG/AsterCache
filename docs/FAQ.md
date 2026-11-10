@@ -10,7 +10,7 @@
 No. It only targets games on an HDD. Games on an SSD are skipped, because an SSD does not need it. A game on an HDD that is also the Windows system drive is only discovered and prewarmed (status "prewarm only (system drive)"); it is not relocated or tiered.
 
 **Is it safe with anti-cheat games?**
-AsterCache never touches the game process; it only reads files from its own process, watches file reads with Windows event tracing, and moves files after the game has exited. But it has not been tested with any anti-cheat game yet. For such a game, turn automatic mode off or add the game to `auto.ignore_exes` first. Details are in [Anti-cheat compatibility](ANTICHEAT.md).
+AsterCache never touches the game process; it only reads files from its own process, watches file reads with Windows event tracing, and moves files after the game has exited. But no controlled validation has been done. There are only usage records of playing a Vanguard game (League of Legends) and a Ricochet game (Call of Duty) with the installed build on this PC ([Usage records on this PC](ANTICHEAT.md#usage-records-on-this-pc)), and no guarantee is made about account sanctions. For an anti-cheat game, turn automatic mode off or add the game to `auto.ignore_exes` before you play. Details are in [Anti-cheat compatibility](ANTICHEAT.md).
 
 **How much RAM does it use?**
 About the size of the zone, which is the game's recorded read set (up to 2 GiB by default). Prewarm runs only when at least 4 GB of RAM would still be free afterwards, and Windows can reclaim the cache when your programs need the memory.

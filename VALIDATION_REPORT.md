@@ -14,13 +14,28 @@ The figures below are the current state. The sections after this one are the rec
 | Zone prefetch after the full move (E6, median of 3) | 11.93 s | section E6 below |
 | SSD assist storage, cold (warm) | 2.81 s (0.48 s) | README.md measured results table; not measured in this document |
 | Relocation work, 8 parallel reads (E12–E14) | 186 s → 41 s (4.5×) | [docs/RESULTS_SUMMARY.md](docs/RESULTS_SUMMARY.md), E10–E16 |
-| Automatic relocation of real games | Call of Duty 1.3 GB; Frostpunk 2 GB (profile); MapleStory 63 MB, 3.9 s; LoL 76 MB, 4.1 s | run record not yet in this repository |
+| Automatic relocation of real games | Call of Duty 1.3 GB; Frostpunk 2 GB (profile); MapleStory 63 MB, 3.9 s; League of Legends 76 MB, 4.1 s | run record not yet in this repository |
 | SMR recovery after a 2 GB move (E16, E16c) | 25 min to 1.5 h | [docs/RESULTS_SUMMARY.md](docs/RESULTS_SUMMARY.md), E10–E16 |
 
 Held back or not adopted:
 
 - Raw bandwidth of the outer zones is non-monotonic (E15), and the outer-zone benefit is not proven, so outer zones are held back.
 - First-run read-ahead (E7 to E7f) gave no proven gain. It stays off by default, and the stream, bounded, and adaptive modes are not adopted.
+
+### Real-world usage records (this PC, 2026-11-02 to 2026-11-10)
+
+This is a tally of the service log on one PC. It is not a controlled validation or benchmark. Total game load time and in-game frame stutter were not measured. On this PC there are usage records of playing a Vanguard game (League of Legends) and a Ricochet game (Call of Duty) with the installed build, and no guarantee is made about account sanctions. The method and sample counts are in [docs/RESULTS_SUMMARY.md](docs/RESULTS_SUMMARY.md#real-world-usage-records).
+
+| Item | League of Legends | Call of Duty |
+|---|---|---|
+| Game start detections (process starts) | 10, over 6 days | 62, over 8 days |
+| Anti-cheat (as judged by the service) | Vanguard | Ricochet |
+| Trace | 2 collected, then skipped (8 times) | 14 collections started |
+| Pin | Skipped (4 times) | Skipped (7 times) |
+| Relocation | 4 completed, 4 stopped | 5 completed, 3 stopped |
+| Hit rate right after prewarm (latest value only) | 100% | 75% |
+
+Prewarm durations, the definition of the hit rate, and what was not measured are in the same section of RESULTS_SUMMARY.
 
 ## Windows hardware validation (2026-11-01)
 
@@ -125,7 +140,7 @@ Access-order relocation (`relayout/`, FSCTL_MOVE_FILE) was run with administrato
 
 ### Remaining limits (2026-11-02)
 
-- 24-hour persistence not measured. Anti-cheat games (MW4 Ricochet, LoL Vanguard) not validated. MW4 is not installed. CMR drives not measured.
+- 24-hour persistence not measured. As of 2026-11-02, anti-cheat games (Ricochet in Call of Duty: Modern Warfare 4, Vanguard in League of Legends) were not validated, and Call of Duty: Modern Warfare 4 was not installed. Later usage records are in the "Real-world usage records" section above and are not a controlled validation. CMR drives not measured.
 - The cause of the 0.5 s delay of the C# stream in S2 is not determined.
 - The real behavior of in-service prewarm is still being tested with administrator rights.
 - The `infverif /w` decision is deferred.
@@ -218,7 +233,7 @@ The v0.7 cache is not connected to a real game's path, so games do not use the c
 ## Unresolved risks and evaluation gates
 
 - **Automatic acceleration of existing game processes is still 0% implemented.** SSD data is served only to programs that call the user-mode Python API.
-- BitLocker, DirectStorage, and minifilter environments are unvalidated. As for real game load time, only the traced replay of one game, Frostpunk, was measured (2026-11-02 section), and anti-cheat games and 24-hour persistence are unvalidated.
+- BitLocker, DirectStorage, and minifilter environments are unvalidated. As for real game load time, only the traced replay of one game, Frostpunk, was measured (2026-11-02 section), anti-cheat games have only usage records from this PC ("Real-world usage records" section above) and no controlled validation, and 24-hour persistence is unvalidated.
 - External write detection depends on `stat`/`ChangeTime`, so not every file mutation may be detected.
 - Separately from the logical payload limit, the SQLite DB/WAL/page fragmentation takes up storage. A 256MiB limit does not mean the file on disk stays at 256MiB.
 - The overhead benchmark includes the cost of Python execution, `fsync`, SQLite, and cache writes, but **it is not a comparison of physical HDD/SSD load**.

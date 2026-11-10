@@ -14,13 +14,28 @@
 | 전체 이동 뒤 존 선읽기(E6, 3회 중앙값) | 11.93 s | 아래 E6 절 |
 | SSD 보조 저장, 콜드(웜) | 2.81 s (0.48 s) | README.ko.md 측정 결과 표; 이 문서에서는 측정하지 않음 |
 | 재배치 작업, 병렬 8 읽기(E12–E14) | 186 s → 41 s (4.5배) | [docs/RESULTS_SUMMARY.ko.md](docs/RESULTS_SUMMARY.ko.md), E10–E16 |
-| 실제 게임 자동 재배치 | Call of Duty 1.3 GB; Frostpunk 2 GB(프로필); MapleStory 63 MB, 3.9 s; LoL 76 MB, 4.1 s | 실행 기록이 아직 이 저장소에 없음 |
+| 실제 게임 자동 재배치 | Call of Duty 1.3 GB; Frostpunk 2 GB(프로필); MapleStory 63 MB, 3.9 s; League of Legends 76 MB, 4.1 s | 실행 기록이 아직 이 저장소에 없음 |
 | 2 GB 이동 뒤 SMR 회복(E16, E16c) | 25분 ~ 1.5시간 | [docs/RESULTS_SUMMARY.ko.md](docs/RESULTS_SUMMARY.ko.md), E10–E16 |
 
 보류하거나 채택하지 않은 항목:
 
 - 바깥 구역의 원시 대역은 단조롭지 않으며(E15), 바깥 구역의 이득이 입증되지 않아 바깥 구역은 보류합니다.
 - 첫 실행 선읽기(E7 ~ E7f)는 입증된 이득이 없어 기본값을 끈 상태로 두며, 스트림·제한·적응형 방식은 채택하지 않습니다.
+
+### 실사용 기록 (이 PC, 2026-11-02 ~ 2026-11-10)
+
+한 PC 의 서비스 로그를 집계한 기록입니다. 통제된 검증이나 벤치마크가 아닙니다. 게임 전체 로딩 시간과 플레이 중 프레임 끊김은 재지 않았습니다. 이 PC 에서 Vanguard 게임(League of Legends)과 Ricochet 게임(Call of Duty)을 설치본으로 플레이한 사용 기록이 있으며, 계정 제재 여부는 보증하지 않습니다. 집계 방법과 표본 수는 [docs/RESULTS_SUMMARY.ko.md](docs/RESULTS_SUMMARY.ko.md#실사용-기록)에 있습니다.
+
+| 항목 | League of Legends | Call of Duty |
+|---|---|---|
+| 게임 시작 감지(프로세스 시작 횟수) | 10회, 6일 | 62회, 8일 |
+| 안티치트(서비스 판정) | Vanguard | Ricochet |
+| 트레이스 | 2회 수집 뒤 건너뜀(8회) | 14회 수집 시작 |
+| 고정(pin) | 건너뜀(4회) | 건너뜀(7회) |
+| 재배치 | 완료 4회, 중단 4회 | 완료 5회, 중단 3회 |
+| 예열 직후 적중률(마지막 값 1개) | 100% | 75% |
+
+예열 소요 시간, 적중률의 정의, 재지 않은 항목은 RESULTS_SUMMARY 의 같은 절에 있습니다.
 
 ## Windows 실기 검증 (2026-11-01)
 
@@ -125,7 +140,7 @@
 
 ### 남은 한계 (2026-11-02)
 
-- 24시간 지속성 미측정. 안티치트 게임(MW4 Ricochet, LoL Vanguard) 미검증. MW4 는 미설치. CMR 드라이브 미측정.
+- 24시간 지속성 미측정. 2026-11-02 시점에는 안티치트 게임(Call of Duty: Modern Warfare 4 의 Ricochet, League of Legends 의 Vanguard)을 검증하지 않았고 Call of Duty: Modern Warfare 4 는 설치하지 않았습니다. 그 뒤의 사용 기록은 위 "실사용 기록" 절에 있으며 통제된 검증은 아닙니다. CMR 드라이브 미측정.
 - S2 의 C# 스트림 0.5 s 지연 원인 미확정.
 - 서비스 안 예열의 실동작은 관리자 시험 진행 중.
 - `infverif /w` 결정 보류.
@@ -218,7 +233,7 @@
 ## 아직 해소하지 못한 위험과 평가 게이트
 
 - **기존 게임 프로세스 자동 가속은 아직 0% 구현**. 사용자 모드 Python API를 호출한 프로그램에서만 SSD 데이터가 제공됩니다.
-- BitLocker, DirectStorage, minifilter 환경은 미검증입니다. 실제 게임 load-time 은 Frostpunk 1종의 추적 재생만 측정했고(2026-11-02 절), 안티치트 게임과 24시간 지속성은 미검증입니다.
+- BitLocker, DirectStorage, minifilter 환경은 미검증입니다. 실제 게임 load-time 은 Frostpunk 1종의 추적 재생만 측정했고(2026-11-02 절), 안티치트 게임은 이 PC 의 사용 기록만 있고(위 "실사용 기록" 절) 통제된 검증은 하지 않았으며, 24시간 지속성은 미검증입니다.
 - 외부 쓰기 감지에 `stat`/`ChangeTime` 의존하므로 모든 파일 변형을 탐지하지 못할 수 있습니다.
 - 논리 페이로드 제한과 별도로 SQLite DB/WAL/페이지 조각화가 저장 공간을 차지합니다. 256MiB 한도라고 디스크 파일이 256MiB로 유지된다는 뜻은 아닙니다.
 - 오버헤드 벤치마크는 Python 실행, `fsync`, SQLite, 캐시 기록 비용이 포함되지만 **물리 HDD/SSD 부하 비교가 아닙니다**.

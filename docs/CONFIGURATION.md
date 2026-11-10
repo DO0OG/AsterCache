@@ -50,7 +50,7 @@ ORBIT is turned on and off from the CLI, not in `config.json` (`aster orbit mode
 | `auto` | Automatic mode settings. Omitted keys take their defaults. See [Automatic mode](AUTO_MODE.md). |
 | `max_zone_mib` | Upper limit of the zone size for automatic planning, in MiB (default 2048), or `"auto"` (physical RAM ÷ 4, between 2048 and 8192 MiB; capped at 2048 when the disk type is unknown or the disk is on USB). On a 32 GB PC, `"auto"` is recommended over a fixed 2048. |
 | `games[].source` | `auto` for a game found automatically, `manual` for a game you registered |
-| `games[].anticheat` | Anti-cheat folders found in the install folder, for example `EasyAntiCheat`. Shown in the Games tab; it does not change behavior |
+| `games[].anticheat` | Anti-cheat folders found in the install folder, for example `EasyAntiCheat`. Shown in the Games tab; it does not change behavior. For the policy on anti-cheat games and the usage records from this PC, see [Anti-cheat compatibility](ANTICHEAT.md) |
 | `games[].display_name` | Game name shown on screen (optional). When not set, uses the launcher name the service recorded, or else the key with underscores replaced by spaces. The internal key is unchanged. |
 | `games[].display_names` | Per-language display names (optional). Example: `{"ko": "발로란트", "en": "VALORANT"}`. Only the keys `ko` and `en` are accepted. |
 | `auto.ssd_tier` | Optional SSD assist storage: `enabled` (default `false`), `budget_gib` (default 8), `root` (default `"auto"`). See [SSD assist storage](AUTO_MODE.md#ssd-assist-storage-optional) |

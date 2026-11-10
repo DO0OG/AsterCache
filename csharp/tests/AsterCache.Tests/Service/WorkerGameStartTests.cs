@@ -79,10 +79,11 @@ public sealed class WorkerGameStartTests : IAsyncDisposable
 
         await WaitUntil(() => File.Exists(dir.Combine("play_samples.json")));
         using JsonDocument json = JsonDocument.Parse(File.ReadAllText(dir.Combine("play_samples.json")));
-        JsonElement sample = Assert.Single(json.RootElement.GetProperty("games").GetProperty(game.Name).EnumerateArray());
+        // 가짜 프로세스는 종료 처리 뒤에도 실행 중으로 보이므로, 다음 관측 틱이 세션을 하나 더 만들 수 있음: 종료로 끝난 세션을 골라 확인
+        JsonElement sample = json.RootElement.GetProperty("games").GetProperty(game.Name).EnumerateArray()
+            .First(s => s.GetProperty("endReason").GetString() == "game_exit");
         Assert.True(sample.GetProperty("observedAfterGameStart").GetBoolean());
         Assert.Equal("skipped", sample.GetProperty("startStream").GetProperty("status").GetString());
-        Assert.Equal("game_exit", sample.GetProperty("endReason").GetString());
         Assert.Contains(_log.Lines, line => line.Contains("observation started after game start", StringComparison.Ordinal));
     }
 

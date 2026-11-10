@@ -39,6 +39,14 @@ public sealed class PrewarmTests : IDisposable
 
     private static GameSettings Game(string name, PrewarmSettings? p = null) => Games.Make(name, name + ".exe") with { Prewarm = p ?? PrewarmSettings.Default };
 
+    [Fact]
+    public void PlayStartSnapshotTreatsMissingWarmHistoryAsUnavailable()
+    {
+        Prewarmer prewarmer = Make(Game("game"));
+
+        Assert.Null(prewarmer.PlayStartSnapshot("game", _now));
+    }
+
     // ---- 조건 판정 ----
 
     [Theory]

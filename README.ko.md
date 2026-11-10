@@ -245,6 +245,7 @@ flowchart LR
 | `tier\<게임>.json` | 서비스 | SSD 보조 저장 저널입니다. |
 | `auto_status.json` | 서비스 | 게임별 자동 단계(`discovered`, `tracing`, `learning`, `waiting_idle`, `relocating`, `done`, `failed`, `skipped`), 재배치 기록, 플레이 기록, 예열 적중률입니다. |
 | `prewarm_status.json` | 서비스 | 게임별 마지막 예열 결과입니다. |
+| `play_samples.json` | 서비스 | 게임별 최근 50회 플레이 구간의 디스크 읽기량·지연과 시작 예열·스트림 상태입니다. |
 | `orbit_mode.json`, `disk_model.json`, `benchmark_samples.json` | 서비스 | ORBIT 모드, 디스크별 보정 표본, 로딩 시간 표본입니다. |
 | `logs\service.log`, `logs\tray.log` | 서비스, 트레이 | 로그입니다. 트레이가 데이터 폴더에 쓸 수 없으면 `%LocalAppData%\AsterCache\logs` 에 씁니다. |
 | `tray.json` | 사용자 | 트레이 설정(갱신 피드 주소)입니다. |

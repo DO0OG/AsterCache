@@ -12,6 +12,8 @@ internal static class Win32
     public const uint FsctlGetNtfsVolumeData = 0x00090064;    // function 25, METHOD_BUFFERED
     public const uint FsctlGetVolumeBitmap = 0x0009006F;      // function 27, METHOD_NEITHER
     public const uint FsctlMoveFile = 0x00090074;             // function 29, METHOD_BUFFERED
+    public const uint IoctlDiskPerformance = 0x00070020;       // CTL_CODE(IOCTL_DISK_BASE = 7, 8, METHOD_BUFFERED, FILE_ANY_ACCESS)
+    public const uint IoctlDiskPerformanceOff = 0x00070060;    // CTL_CODE(IOCTL_DISK_BASE = 7, 0x18, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
     public const uint GenericRead = 0x80000000;
     public const uint FileReadAttributes = 0x80;

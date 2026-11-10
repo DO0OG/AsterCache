@@ -24,6 +24,7 @@ public sealed class Worker : BackgroundService
     private readonly SettingsReloader? _reload;
     private readonly KeepAwake? _keepAwake;
     private readonly RiotPhaseWatcher? _riot;
+    private readonly PlayRecorder? _playRecorder;
     private readonly DiskReadCoordinator _coordinator;
     private readonly object _watchLock = new();
     private readonly object _gameStateLock = new();
@@ -41,7 +42,7 @@ public sealed class Worker : BackgroundService
 
     public Worker(AsterSettings settings, ILog log, IProcessWatcher primary, IProcessWatcher? fallback, IGameStreamer streamer, ReapplyChecker checker,
         ReapplyGate? gate = null, Prewarmer? prewarm = null, AutoMode? auto = null, SettingsReloader? reload = null, KeepAwake? keepAwake = null, DispatchEnv? dispatchEnv = null,
-        RiotPhaseWatcher? riot = null, BootQuiet? quiet = null, DiskReadCoordinator? coordinator = null)
+        RiotPhaseWatcher? riot = null, BootQuiet? quiet = null, DiskReadCoordinator? coordinator = null, PlayRecorder? playRecorder = null)
     {
         _coordinator = coordinator ?? new DiskReadCoordinator(AsterCache.Windows.VolumeDisks.Shared, log);
         _prewarm = prewarm;
@@ -53,6 +54,7 @@ public sealed class Worker : BackgroundService
         _auto?.SetGameExitTracker(_exits);
         _prewarm?.SetGameExitTracker(_exits);
         _reload = reload;
+        _playRecorder = playRecorder;
         _settings = settings;
         _keepAwake = keepAwake ?? (auto is null ? null : new KeepAwake(KeepAwakeEnv.Create(auto.Status.Plays), log, () => _settings, _coordinator)); // 자동 모드가 있는 진짜 서비스에서만 기본으로 켬
         _keepAwake?.SetDiskReadCoordinator(_coordinator);
@@ -81,7 +83,7 @@ public sealed class Worker : BackgroundService
             IsWarm = prewarm is null ? dispatch.IsWarm : prewarm.AlreadyWarm,
             RecentWarmProbeAt = prewarm is null ? dispatch.RecentWarmProbeAt : prewarm.RecentWarmProbeAt,
             RecentWarmProbeMinutes = () => _settings.Auto.RewarmMinutes,
-        }, coordinator: _coordinator); // 설정을 다시 읽어도 최신 값
+        }, coordinator: _coordinator, streamResult: _playRecorder is null ? null : (start, result) => _playRecorder.RecordStartStream(start, result)); // 설정을 다시 읽어도 최신 값
         _checker = checker;
         _gate = gate ?? new ReapplyGate();
         _quiet = quiet ?? BootQuiet.Real(log, () => _settings.Games, () => prewarm?.UptimeMs() ?? Environment.TickCount64); // 부팅 조용 구간 (시험은 주입)
@@ -167,10 +169,17 @@ public sealed class Worker : BackgroundService
         Task keep = Task.Run(() => KeepAwakeLoopAsync(stoppingToken), CancellationToken.None);
         Task auto = _auto is null ? Task.CompletedTask : Task.Run(() => _auto.RunAsync(stoppingToken), CancellationToken.None);
         Task riotWatch = _riot is null ? Task.CompletedTask : Task.Run(() => _riot.RunAsync(stoppingToken), CancellationToken.None); // 챔피언 선택 선읽기는 재배치 루프·게임 시작 처리와 따로
-        await Task.WhenAll(watch, consume, handle, reapply, reload, auto, keep, riotWatch);
-        _auto?.Shutdown();
-        _prewarm?.Shutdown();
-        _log.Info("service stopped");
+        try
+        {
+            await Task.WhenAll(watch, consume, handle, reapply, reload, auto, keep, riotWatch);
+        }
+        finally
+        {
+            _playRecorder?.Dispose();
+            _auto?.Shutdown();
+            _prewarm?.Shutdown();
+            _log.Info("service stopped");
+        }
     }
 
     // 감시기는 설정이 바뀌어 감시할 이름이 달라지면 (Apply) 새로 만들어 다시 돌립니다. 처음부터 끝까지 한 번 돌고 끝나는 경우는 예전과 같습니다.
@@ -255,29 +264,48 @@ public sealed class Worker : BackgroundService
     private Action<ProcessStart> OnStart(ChannelWriter<ProcessStart> writer) => s =>
     {
         _riot?.NoteProcessStart(s.ExeName); // 리그 오브 레전드 게임 exe 가 뜨면 챔피언 선택 선읽기를 바로 멈춤
-        if (_settings.Games.FirstOrDefault(g => g.ExeNames.Contains(s.ExeName, StringComparer.OrdinalIgnoreCase)) is { } game)
+        GameSettings? game;
+        lock (_gameStateLock)
+        {
+            game = _settings.Games.FirstOrDefault(g => g.ExeNames.Contains(s.ExeName, StringComparer.OrdinalIgnoreCase));
+        }
+
+        if (game is not null)
         {
             IReadOnlySet<string>? names = CurrentNames();
             lock (_gameStateLock)
             {
-                if (names is not null)
+                game = _settings.Games.FirstOrDefault(g => string.Equals(g.Name, game.Name, StringComparison.OrdinalIgnoreCase)
+                    && g.ExeNames.Contains(s.ExeName, StringComparer.OrdinalIgnoreCase));
+                if (game is not null)
                 {
-                    _coordinator.MarkExiting(_exits.GoneNames(_settings.Games, names, game.Name)); // 틱 전에 이미 끝난 다른 게임은 시작 스트림 판단에서 뺌 (종료 판정은 틱에서만)
-                }
+                    if (_playRecorder is { } recorder)
+                    {
+                        TryPlayRecording("start", () => recorder.ObserveStart(game, s, _prewarm?.PlayStartSnapshot(game.Name, DateTimeOffset.UtcNow)));
+                    }
 
-                _coordinator.Yield(game.OriginRoot, "game started", game.Name);
-                _exits.ObserveStarted(game);
+                    if (names is not null)
+                    {
+                        _coordinator.MarkExiting(_exits.GoneNames(_settings.Games, names, game.Name)); // 틱 전에 이미 끝난 다른 게임은 시작 스트림 판단에서 뺌 (종료 판정은 틱에서만)
+                    }
+
+                    _coordinator.Yield(game.OriginRoot, "game started", game.Name);
+                    _exits.ObserveStarted(game);
+                }
             }
 
-            _prewarm?.NoteGameStart(game.Name); // 그 게임을 예열하던 스트림은 아래 취소에도 끝까지 (다른 게임의 예열은 묶음 경계에서 멈춤), 기록 없는 예열의 예산은 풂
-            _prewarm?.ReleasePin(game.Name, "game started"); // 고정은 스트림·재적용 취소보다 먼저 풂
-            _gate.Cancel(); // 재적용은 게임 exe 시작에서만 멈춥니다 (런처 같은 트리거 전용 프로그램은 아님)
-            _prewarm?.Recovery?.YieldTo(game.OriginRoot); // 같은 디스크에서 재는 중인 회복 표본도 멈춤
-            _auto?.Tracer.CancelShadow(game.Name); // 돌고 있는 그림자 계획은 게임과 CPU 를 다투지 않게 취소
-            _auto?.CancelWarm(); // 자동 모드의 예열 작업도 (핫 집합 스트림은 묶음 경계에서 멈추고, 그 뒤 예열은 시작하지 않음)
-            if (_auto is not null)
+            if (game is not null)
             {
-                _ = Task.Run(() => _auto.OnGameStart(game), CancellationToken.None); // last_played 와 자동 트레이스 시작은 감시기 스레드를 막지 않게 따로
+                _prewarm?.NoteGameStart(game.Name); // 그 게임을 예열하던 스트림은 아래 취소에도 끝까지 (다른 게임의 예열은 묶음 경계에서 멈춤), 기록 없는 예열의 예산은 풂
+                _prewarm?.ReleasePin(game.Name, "game started"); // 고정은 스트림·재적용 취소보다 먼저 풂
+                _gate.Cancel(); // 재적용은 게임 exe 시작에서만 멈춥니다 (런처 같은 트리거 전용 프로그램은 아님)
+                _prewarm?.Recovery?.YieldTo(game.OriginRoot); // 같은 디스크에서 재는 중인 회복 표본도 멈춤
+                _auto?.Tracer.CancelShadow(game.Name); // 돌고 있는 그림자 계획은 게임과 CPU 를 다투지 않게 취소
+                _auto?.CancelWarm(); // 자동 모드의 예열 작업도 (핫 집합 스트림은 묶음 경계에서 멈추고, 그 뒤 예열은 시작하지 않음)
+                if (_auto is not null)
+                {
+                    _ = Task.Run(() => _auto.OnGameStart(game), CancellationToken.None); // last_played 와 자동 트레이스 시작은 감시기 스레드를 막지 않게 따로
+                }
             }
         }
 
@@ -475,12 +503,22 @@ public sealed class Worker : BackgroundService
     // 새 설정으로 감시기·디스패처·예열 대상·자동 모드를 바꿉니다. 쿨다운 같은 상태는 유지하고, 감시할 이름이 달라졌을 때만 감시기를 다시 만듭니다.
     internal void Apply(AsterSettings s)
     {
-        _settings = s;
+        lock (_gameStateLock)
+        {
+            _settings = s;
+        }
+
+        if (_playRecorder is { } recorder)
+        {
+            TryPlayRecording("settings reload", () => recorder.StopGamesExcept(s.Games.Select(game => game.Name), "settings_reloaded"));
+        }
+
         _dispatcher.SetGames(s.Games);
         _prewarm?.SetGames(s.Games);
         _prewarm?.SetAuto(s.Auto);
         _auto?.SetSettings(s);
         _log.Info($"settings reloaded: {s.Games.Count} game(s)");
+
         string key = WatchKey(s);
         lock (_watchLock)
         {
@@ -587,16 +625,10 @@ public sealed class Worker : BackgroundService
                 _coordinator.MarkExiting(grace); // 종료 유예 중 게임은 양보는 유지하되 다른 게임 시작 스트림 판단에서 뺌
             }
 
+            ObserveRunningGames(procs);
             foreach (GameSettings g in exited)
             {
-                if (unseen.Contains(g))
-                {
-                    _auto?.NoteGameExit(g); // 보이지 않은 짧은 실행: 상태·트레이서 종료 처리(OnGameExit)는 받지 않음
-                }
-                else
-                {
-                    OnGameExit(g);
-                }
+                CompleteDetectedExit(g, unseen.Contains(g));
             }
         }
         catch (Exception e) when (e is not OperationCanceledException)
@@ -609,9 +641,66 @@ public sealed class Worker : BackgroundService
     private void OnGameExit(GameSettings game)
     {
         _log.Info($"{game.Name}: exited");
+        if (_playRecorder is { } recorder)
+        {
+            TryPlayRecording("end", () => recorder.EndSession(game.Name));
+        }
+
         _prewarm?.NoteGameExit(_exits.HeavyWorkNotBefore(game.Name, _settings.Auto.RewarmAfterExitMin));
         _auto?.NoteGameExit(game);
         NoteCoverage(game);
+    }
+
+    internal void CompleteDetectedExit(GameSettings game, bool unseen)
+    {
+        if (!unseen)
+        {
+            OnGameExit(game);
+            return;
+        }
+
+        if (_playRecorder is { } recorder)
+        {
+            TryPlayRecording("end", () => recorder.EndSession(game.Name));
+        }
+
+        _auto?.NoteGameExit(game); // 보이지 않은 짧은 실행: 나머지 종료 처리는 받지 않습니다.
+    }
+
+    /// 현재 프로세스 이름 스냅샷에 이미 실행 중인 게임의 관측을 시작합니다.
+    internal void ObserveRunningGames(IReadOnlyList<(int Pid, string Exe)> processes)
+    {
+        if (_playRecorder is not { } recorder)
+        {
+            return;
+        }
+
+        foreach (GameSettings game in _settings.Games)
+        {
+            if (processes.Any(process => game.ExeNames.Contains(process.Exe, StringComparer.OrdinalIgnoreCase)))
+            {
+                TryPlayRecording("observe running game", () => recorder.ObserveExisting(game));
+            }
+        }
+    }
+
+    private void TryPlayRecording(string operation, Action record)
+    {
+        try
+        {
+            record();
+        }
+        catch (Exception e)
+        {
+            try
+            {
+                _log.Error($"play recorder {operation} failed", e);
+            }
+            catch (Exception)
+            {
+                // 기록기 오류와 로거 오류가 기존 시작·종료 처리를 막지 않게 합니다.
+            }
+        }
     }
 
     // 실행 중인 게임 프로세스가 읽은 누적 바이트를 pid 별로 기억합니다 (종료 뒤에는 열 수 없음). 이 틱의 스냅샷만 씁니다.

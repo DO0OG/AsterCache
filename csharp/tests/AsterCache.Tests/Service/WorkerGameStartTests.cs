@@ -1,6 +1,9 @@
 using System.Diagnostics;
+using System.Text.Json;
+using AsterCache.Core.Logging;
 using AsterCache.Core.Settings;
 using AsterCache.Service;
+using AsterCache.Tests.Windows;
 using AsterCache.Windows;
 using Xunit;
 
@@ -30,9 +33,11 @@ public sealed class WorkerGameStartTests : IAsyncDisposable
         }
     }
 
-    private async Task<Worker> StartWorker(params GameSettings[] games)
+    private Task<Worker> StartWorker(params GameSettings[] games) => StartWorker(null, games);
+
+    private async Task<Worker> StartWorker(PlayRecorder? recorder, params GameSettings[] games)
     {
-        _worker = new Worker(new AsterSettings(1000, games), _log, _watcher, null, new FakeStreamer(), new ReapplyChecker(ReapplyTests.NoIoEnv(), _log), coordinator: _coordinator);
+        _worker = new Worker(new AsterSettings(1000, games), _log, _watcher, null, new FakeStreamer(), new ReapplyChecker(ReapplyTests.NoIoEnv(), _log), coordinator: _coordinator, playRecorder: recorder);
         await _worker.StartAsync(CancellationToken.None);
         for (int i = 0; i < 200 && _watcher.OnStart is null; i++)
         {
@@ -43,10 +48,85 @@ public sealed class WorkerGameStartTests : IAsyncDisposable
         return _worker;
     }
 
+    [Fact]
+    public async Task UnseenShortGameExitEndsItsPlayRecording()
+    {
+        using var dir = new TempDir();
+        GameSettings game = Games.Make("brief game", "brief-game.exe");
+        var recorder = new PlayRecorder(dir.Combine("play_samples.json"), _log, _ => null, sampleInterval: TimeSpan.FromMilliseconds(5));
+        Worker worker = await StartWorker(recorder, game);
+        Start(game);
+
+        worker.CompleteDetectedExit(game, unseen: true);
+
+        await WaitUntil(() => File.Exists(dir.Combine("play_samples.json")));
+        using JsonDocument json = JsonDocument.Parse(File.ReadAllText(dir.Combine("play_samples.json")));
+        JsonElement sample = Assert.Single(json.RootElement.GetProperty("games").GetProperty(game.Name).EnumerateArray());
+        Assert.NotNull(sample.GetProperty("endedAt").GetString());
+        Assert.Equal("game_exit", sample.GetProperty("endReason").GetString());
+    }
+
+    [Fact]
+    public async Task RunningGameFoundAtServiceObservationIsMarkedAsLate()
+    {
+        using var dir = new TempDir();
+        GameSettings game = Games.Make("already running", Running);
+        var recorder = new PlayRecorder(dir.Combine("play_samples.json"), _log, _ => null, sampleInterval: TimeSpan.FromMilliseconds(5));
+        Worker worker = await StartWorker(recorder, game);
+
+        worker.Apply(new AsterSettings(1000, [game]));
+        worker.CompleteDetectedExit(game, unseen: false);
+
+        await WaitUntil(() => File.Exists(dir.Combine("play_samples.json")));
+        using JsonDocument json = JsonDocument.Parse(File.ReadAllText(dir.Combine("play_samples.json")));
+        JsonElement sample = Assert.Single(json.RootElement.GetProperty("games").GetProperty(game.Name).EnumerateArray());
+        Assert.True(sample.GetProperty("observedAfterGameStart").GetBoolean());
+        Assert.Equal("skipped", sample.GetProperty("startStream").GetProperty("status").GetString());
+        Assert.Equal("game_exit", sample.GetProperty("endReason").GetString());
+        Assert.Contains(_log.Lines, line => line.Contains("observation started after game start", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task RecorderStartExceptionDoesNotSkipDiskYieldOrProcessDelivery()
+    {
+        GameSettings game = Games.Make("recording error", "recording-error.exe") with { OriginRoot = @"D:\Games\recording-error" };
+        var recorder = new PlayRecorder(null, _log, _ => null, sampleInterval: TimeSpan.FromMilliseconds(5), timestamp: () => throw new InvalidOperationException("recorder failed"));
+        _ = await StartWorker(recorder, game);
+
+        _watcher.OnStart!(new ProcessStart(91, game.ExeNames[0], 0));
+
+        Assert.True(_coordinator.IsRegistered(game.Name));
+        Assert.Contains(_log.Lines, line => line.Contains("play recorder start failed", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task RecorderExitLogExceptionDoesNotSkipExistingExitHandling()
+    {
+        GameSettings game = Games.Make("exit log error", "exit-log-error.exe");
+        var recorder = new PlayRecorder(null, new ThrowOnPlayRecordLog(), _ => null, sampleInterval: TimeSpan.FromMilliseconds(5));
+        Worker worker = await StartWorker(recorder, game);
+        Start(game);
+
+        worker.CompleteDetectedExit(game, unseen: false);
+
+        Assert.Contains(_log.Lines, line => line.Contains("exit log error: exited", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, line => line.Contains("play recorder end failed", StringComparison.Ordinal));
+    }
+
     private void Start(GameSettings game) => _watcher.OnStart!(new ProcessStart(1, game.ExeNames[0], Stopwatch.GetTimestamp()));
 
     private DiskReadCoordinator.Lease? BeginStart(GameSettings game) =>
         _coordinator.TryBegin(game.OriginRoot, "start stream", default, game.OriginRoot, allowWhileYielded: true, preserveGameKey: game.Name);
+
+    private static async Task WaitUntil(Func<bool> condition)
+    {
+        for (int i = 0; i < 200 && !condition(); i++)
+        {
+            await Task.Delay(5);
+        }
+
+        Assert.True(condition(), "condition was not met before the timeout");
+    }
 
     [Fact]
     public async Task SecondGameStartedRightAfterTheFirstExitedBeforeTheTickMayStream()
@@ -131,6 +211,17 @@ public sealed class WorkerGameStartTests : IAsyncDisposable
             catch (OperationCanceledException)
             {
                 // 종료
+            }
+        }
+    }
+
+    private sealed class ThrowOnPlayRecordLog : ILog
+    {
+        public void Write(LogLevel level, string message, Exception? exception = null)
+        {
+            if (message.Contains(": play record:", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("log failed");
             }
         }
     }

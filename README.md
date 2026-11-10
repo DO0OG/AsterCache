@@ -245,6 +245,7 @@ Files in `%ProgramData%\AsterCache`. The service runs as SYSTEM, and only admini
 | `tier\<game>.json` | service | The SSD assist storage journal. |
 | `auto_status.json` | service | Per-game automatic stage (`discovered`, `tracing`, `learning`, `waiting_idle`, `relocating`, `done`, `failed`, `skipped`), relocation history, play history, and prewarm hit rate. |
 | `prewarm_status.json` | service | The last prewarm result per game. |
+| `play_samples.json` | service | Disk read volume and latency per play interval, with the prewarm and start-stream state at game start, for the last 50 plays of each game. |
 | `orbit_mode.json`, `disk_model.json`, `benchmark_samples.json` | service | The ORBIT mode, per-disk calibration samples, and loading time samples. |
 | `logs\service.log`, `logs\tray.log` | service, tray | Logs. If the tray cannot write to the data folder, it writes to `%LocalAppData%\AsterCache\logs`. |
 | `tray.json` | user | Tray settings (the update feed address). |

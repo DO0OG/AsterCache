@@ -66,6 +66,7 @@ OrbitRuntime orbitRuntime = new(dataDir, orbitCalibration, orbitStatus, log, ena
 streamer.Reorder = canApply ? orbitRuntime.Reorder : null; // 스트림 중지 신호를 받는 오버로드
 PrewarmEnv prewarmEnv = canApply ? PrewarmEnv.Create(orbitCalibration, orbitRuntime) : baseEnv;
 var prewarm = new Prewarmer(settings.Games, streamer, prewarmEnv, log, canApply ? Path.Combine(dataDir, "prewarm_status.json") : null); // 데이터 폴더를 믿을 수 없으면 (SYSTEM 이 일반 사용자가 쓸 수 있는 곳에 쓰지 않도록) 상태 파일을 쓰지 않음
+var playRecorder = new PlayRecorder(canApply ? Path.Combine(dataDir, "play_samples.json") : null, log);
 LoadBoundaryWatch.OrbitApplied = canApply ? streamer.WasPrewarmReordered : _ => false;
 LoadBoundaryWatch.Recorder = canApply ? new BenchmarkRecorder(Path.Combine(dataDir, MetricsJson.SamplesFile), log) : null; // 로딩 표본 기록 (상태 파일과 같은 이유로 canApply 일 때만)
 if (LoadBoundaryWatch.Recorder is { } recorder)
@@ -97,7 +98,7 @@ if (auto is not null)
 }
 
 var reloader = new SettingsReloader(() => SettingsReloader.StampOf(configPath), LoadChecked, s => Worker.ChooseWatchers(s, admin), log, configStamp);
-builder.Services.AddHostedService(_ => new Worker(settings, log, primary, fallback, streamer, checker, prewarm: prewarm, auto: auto, reload: reloader, dispatchEnv: DispatchEnv.Create(), coordinator: coordinator));
+builder.Services.AddHostedService(_ => new Worker(settings, log, primary, fallback, streamer, checker, prewarm: prewarm, auto: auto, reload: reloader, dispatchEnv: DispatchEnv.Create(), coordinator: coordinator, playRecorder: playRecorder));
 await builder.Build().RunAsync();
 DiskActivity.StopSampling();
 return 0;

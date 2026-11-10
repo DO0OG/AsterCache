@@ -1,13 +1,13 @@
 using System.Runtime.InteropServices;
 using AsterCache.Core.I18n;
 using AsterCache.Core.Logging;
+using AsterCache.Core.Settings;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Styling;
-using Avalonia.Themes.Fluent;
 using Avalonia.Threading;
 
 namespace AsterCache.Tray;
@@ -23,10 +23,13 @@ internal sealed class App : Application
 
     public static bool Smoke { get; set; }
 
-    /// --smoke --screenshot <png>: 메인 창을 1100x720 으로 그려 저장하고 끝냅니다 (문서용 그림).
+    /// --smoke --screenshot <png>: 메인 창을 창 크기 (1180x760) 그대로 그려 저장하고 끝냅니다 (문서용 그림).
     public static string? ScreenshotPath { get; set; }
 
     public static int ScreenshotTab { get; set; }
+
+    /// --advanced: 그림 찍을 때 게임 표의 고급 열을 켭니다.
+    public static bool ScreenshotAdvanced { get; set; }
 
     /// --smoke --click <apply-auto|apply-language|apply-watcher>: 해당 버튼의 처리 경로를 실행하고 종료 코드로 결과를 알립니다 (0 정상, 3 실패).
     public static string? SmokeClick { get; set; }
@@ -48,6 +51,8 @@ internal sealed class App : Application
     private readonly List<AutoToast> _toasts = [];
     private string _lastNotice = string.Empty;
     private DateTimeOffset _lastNoticeAt = DateTimeOffset.MinValue;
+    private Window[] _extras = [];
+    private int _waited;
     private StatusIcons? _statusIcons;
     private StatusTone? _tone;
     private string _menuKey = string.Empty;
@@ -56,7 +61,8 @@ internal sealed class App : Application
 
     public override void Initialize()
     {
-        Styles.Add(new FluentTheme());
+        Styles.Add(Look.Theme());
+        Look.AddResources(Resources);
         Styles.Add(Look.AppStyles());
         RequestedThemeVariant = ThemeOverride switch { "light" => ThemeVariant.Light, "dark" => ThemeVariant.Dark, _ => ThemeVariant.Default };
     }
@@ -84,9 +90,14 @@ internal sealed class App : Application
             _main = new MainWindow(Manage, Model, Quit);
             if (Smoke && ScreenshotPath is not null)
             {
-                _main.Width = 1100;
-                _main.Height = 720;
                 _main.SelectTab(ScreenshotTab);
+                _main.ShowAdvanced(ScreenshotAdvanced);
+                string sample = "Sample-Game";
+                _extras = [new RegisterWindow(Model, () => { }, new GameInput(sample, ["Sample.exe"], @"C:\Plans\Sample-Game.prefetch.json", @"C:\Plans\Sample-Game.plan.json", @"D:\Games\Sample", [@"D:\Games"], "Games", null, [])), ConfirmWindow.Create(L.T("Confirm_Apply", "Sample Game", "12.3 GiB")), ConfirmWindow.Create(L.T("Confirm_Remove", sample), true), new AutoToast(L.T("Toast_Prewarmed", "Sample Game"), 0, StatusTone.Ok, () => { }), new AutoToast(L.T("Toast_Discovered", "A Game With A Very Long Name That Needs More Than One Line To Show Fully"), 1, StatusTone.Busy, () => { })];
+                foreach (Window w in _extras)
+                {
+                    w.Show();
+                }
             }
 
             _main.Show();
@@ -111,15 +122,26 @@ internal sealed class App : Application
                 }
                 else
                 {
-                    var stop = new DispatcherTimer { Interval = TimeSpan.FromSeconds(ScreenshotPath is null ? 3 : 3.5) };
+                    var stop = new DispatcherTimer { Interval = TimeSpan.FromSeconds(ScreenshotPath is null ? 3 : 1) };
                     stop.Tick += (_, _) =>
                     {
+                        if (ScreenshotPath is not null && (++_waited < 4 || (!_main.Idle && _waited < 90)))
+                        {
+                            return; // 처음 읽기 (게임마다 aster 호출) 가 끝나야 표가 채워진 그림이 나옴
+                        }
+
                         stop.Stop();
                         if (ScreenshotPath is not null)
                         {
-                            using var shot = new RenderTargetBitmap(new PixelSize(1100, 720), new Vector(96, 96));
+                            using var shot = new RenderTargetBitmap(new PixelSize((int)_main.Bounds.Width, (int)_main.Bounds.Height), new Vector(96, 96));
                             shot.Render(_main);
                             shot.Save(ScreenshotPath);
+                            string[] names = ["register", "confirm", "confirm-danger", "toast-ok", "toast-found"];
+                            for (int i = 0; i < _extras.Length; i++)
+                            {
+                                Snap(_extras[i], Path.ChangeExtension(ScreenshotPath, null) + "-" + names[i] + ".png");
+                            }
+
                             _statusIcons.SaveSheet(Path.ChangeExtension(ScreenshotPath, null) + "-icons.png");
                             Log.Info("smoke: screenshot saved");
                         }
@@ -133,6 +155,13 @@ internal sealed class App : Application
         }
 
         base.OnFrameworkInitializationCompleted();
+    }
+
+    private static void Snap(Window w, string path)
+    {
+        using var bmp = new RenderTargetBitmap(new PixelSize((int)Math.Ceiling(w.Bounds.Width), (int)Math.Ceiling(w.Bounds.Height)), new Vector(96, 96));
+        bmp.Render(w);
+        bmp.Save(path);
     }
 
     private async void ClickAndExit(IClassicDesktopStyleApplicationLifetime desktop, MainWindow main, string click)
@@ -208,25 +237,25 @@ internal sealed class App : Application
         foreach (AutoNotice e in AutoStatusFile.NewEvents(status.Events, _started, _seenEvents))
         {
             _seenEvents.Add(e.Key);
-            Toast(AutoStatusFile.Notice(e with { Game = Model.DisplayName(e.Game) }, L.Current));
+            Toast(AutoStatusFile.Notice(e with { Game = Model.DisplayName(e.Game) }, L.Current), e.Kind == "relocated" ? StatusTone.Ok : StatusTone.Busy);
         }
 
         foreach (string game in AutoStatusFile.FirstRunFinished(_stageSeen, status)) // 이벤트로는 알 수 없어 단계 변화로 감지
         {
-            Toast(L.T("Toast_FirstRun", Model.DisplayName(game)));
+            Toast(L.T("Toast_FirstRun", Model.DisplayName(game)), StatusTone.Ok);
         }
 
         foreach (string game in AutoStatusFile.PrewarmFinished(_prewarmSeen, _prewarmToast, status, DateOnly.FromDateTime(DateTime.Now)))
         {
-            Toast(L.T("Toast_Prewarmed", Model.DisplayName(game)));
+            Toast(L.T("Toast_Prewarmed", Model.DisplayName(game)), StatusTone.Ok);
         }
     }
 
-    private void Toast(string text)
+    private void Toast(string text, StatusTone tone)
     {
         _lastNotice = text;
         _lastNoticeAt = DateTimeOffset.UtcNow;
-        var toast = new AutoToast(text, _toasts.Count, ShowMain);
+        var toast = new AutoToast(text, _toasts.Count, tone, ShowMain);
         _toasts.Add(toast);
         toast.Closed += (_, _) => _toasts.Remove(toast);
         toast.Show();
@@ -302,7 +331,7 @@ internal sealed class App : Application
     private async void ConfirmRemove(string name)
     {
         ShowMain();
-        if (_main is not null && await ConfirmWindow.Ask(_main, L.T("Confirm_Remove", Model.DisplayName(name))))
+        if (_main is not null && await ConfirmWindow.Ask(_main, L.T("Confirm_Remove", Model.DisplayName(name)), danger: true))
         {
             Update(() => Model.RemoveGame(name));
         }
@@ -350,7 +379,7 @@ internal sealed class App : Application
     }
 
     /// 포함 자원 Assets\<파일> 의 그림, 읽지 못하면 null.
-    private static Bitmap? LoadBitmap(string file)
+    internal static Bitmap? LoadBitmap(string file)
     {
         try
         {

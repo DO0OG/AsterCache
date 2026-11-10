@@ -74,6 +74,9 @@ public static class TrayStatus
     /// 메뉴의 게임 항목: "이름 · 단계 · 예열" (비어 있는 부분은 생략).
     public static string GameItem(string display, string stage, string prewarm) => string.Join(" · ", new[] { display, stage, prewarm }.Where(p => p.Length > 0));
 
+    /// 상태 색의 짧은 말 (화면 머리의 배지 글자: 색만으로 구분하지 않음).
+    public static string ToneWord(StatusTone tone) => L.T(tone switch { StatusTone.Ok => "Tone_Ok", StatusTone.Busy => "Tone_Busy", StatusTone.Warn => "Tone_Warn", _ => "Tone_Gray" });
+
     /// 서비스 시작/정지를 한 메뉴 항목으로: 문구 키와 눌러도 되는지. 전환 중·미설치·알 수 없음은 시작 문구를 끈 채로 보입니다.
     public static (string Key, bool Enabled) ServiceAction(ServiceState service) => service switch
     {

@@ -1,5 +1,6 @@
 using AsterCache.Core.I18n;
 using AsterCache.Tray;
+using Avalonia.Media;
 using Xunit;
 
 namespace AsterCache.Tests.Tray;
@@ -107,5 +108,45 @@ public sealed class TrayStatusTests : IDisposable
         Assert.Equal(("성공", "건너뜀", "실패", "?"), (ManageViewModel.PrewarmResultText("ok"), ManageViewModel.PrewarmResultText("skipped"), ManageViewModel.PrewarmResultText("failed"), ManageViewModel.PrewarmResultText(null)));
         L.Current = L.En;
         Assert.Equal("not enough free memory", ManageViewModel.PrewarmReasonText("low memory (x)"));
+    }
+
+    public static TheoryData<string> Themes => new() { "light", "dark" };
+
+    /// 화면 색 체계: 본문·보조 글자는 어느 면 위에서나 4.5:1 이상, 상태 배지 글자는 자기 배경 위에서 4.5:1 이상, 상태 점은 표면 위에서 3:1 이상, 강조 버튼 글자도 4.5:1 이상.
+    [Theory]
+    [MemberData(nameof(Themes))]
+    public void PaletteKeepsTextContrastAtLeastFourPointFive(string theme)
+    {
+        Palette p = theme == "light" ? Look.Light : Look.Dark;
+        foreach (Color surface in new[] { p.Bg, p.Surface, p.SurfaceAlt, p.AccentSoft })
+        {
+            Assert.True(Look.Contrast(p.Text, surface) >= 4.5, $"{theme} text on {surface}");
+            Assert.True(Look.Contrast(p.Muted, surface) >= 4.5, $"{theme} muted on {surface}");
+        }
+
+        Assert.True(Look.Contrast(p.OnAccent, p.Accent) >= 4.5, $"{theme} accent button text");
+        foreach ((string name, ToneColors t) in new[] { ("gray", p.Gray), ("warn", p.Warn), ("busy", p.Busy), ("ok", p.Ok), ("danger", p.Danger) })
+        {
+            Assert.True(Look.Contrast(t.Fg, t.Bg) >= 4.5, $"{theme} {name} badge text");
+            Assert.True(Look.Contrast(t.Fg, p.Surface) >= 4.5, $"{theme} {name} text on surface (banner/reason line)");
+            Assert.True(Look.Contrast(t.Dot, p.Surface) >= 3.0, $"{theme} {name} dot on surface");
+        }
+    }
+
+    [Fact]
+    public void ContrastMatchesKnownValuesAndToneWordsExistInBothLanguages()
+    {
+        Assert.Equal(21.0, Look.Contrast(Colors.Black, Colors.White), 1);
+        Assert.Equal(1.0, Look.Contrast(Colors.White, Colors.White), 3);
+        foreach (StatusTone tone in Enum.GetValues<StatusTone>())
+        {
+            L.Current = L.Ko;
+            string ko = TrayStatus.ToneWord(tone);
+            L.Current = L.En;
+            string en = TrayStatus.ToneWord(tone);
+            Assert.False(string.IsNullOrEmpty(ko) || ko.StartsWith("Tone_", StringComparison.Ordinal));
+            Assert.False(string.IsNullOrEmpty(en) || en.StartsWith("Tone_", StringComparison.Ordinal));
+            Assert.NotEqual(ko, en);
+        }
     }
 }

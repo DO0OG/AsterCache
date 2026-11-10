@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
+using AsterCache.Core;
 using AsterCache.Core.I18n;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
@@ -57,7 +58,7 @@ public sealed record DriveRow(string Letter, string Label, string FileSystem, lo
 }
 
 /// 게임 탭 한 줄. 기본 열은 DisplayName·State (자동 단계)·PrewarmState (PrewarmKind: ready 이번 부팅 뒤 예열, partial 앞부분만, history 재부팅 전 과거 기록, none 실측 안 됨, warming 예열 중)·Reason·AntiCheat, 나머지는 고급 열. Verdict: aster verify 의 판정 (contiguous, non-contiguous, resume-needed), 계획이 없으면 "-", 아직 확인 전이면 "?".
-public sealed record GameRow(string Name, string Exe, string Origin, bool HasPlan, bool HasTrace, string Verdict, string Prewarm, string Source, string Stage, string AntiCheat, string PrewarmFull, string DisplayName = "", string VerdictRaw = "", string StageRaw = "", string State = "", string PrewarmState = "", string PrewarmKind = "", string Reason = "", string Gate = "", string StageFull = "", StatusTone StateTone = StatusTone.Gray, StatusTone PrewarmTone = StatusTone.Gray);
+public sealed record GameRow(string Name, string Exe, string Origin, bool HasPlan, bool HasTrace, string Verdict, string Prewarm, string Source, string Stage, string AntiCheat, string PrewarmFull, string DisplayName = "", string VerdictRaw = "", string StageRaw = "", string State = "", string PrewarmState = "", string PrewarmKind = "", string Reason = "", string Gate = "", string StageFull = "", StatusTone StateTone = StatusTone.Gray, StatusTone PrewarmTone = StatusTone.Gray, string Detail = "", string AutoLine = "");
 
 /// 게임 하나의 배치 상태 (aster status --plan 결과와 저널 파일 시각).
 public sealed record GameStatus(string Verdict, double? ZoneHitPercent, DateTime? LastRelayout);
@@ -244,7 +245,8 @@ public sealed class ManageViewModel(
                 DescribePrewarmShort(g.Prewarm), L.T(g.Source == "auto" ? "Source_Auto" : "Source_Manual"),
                 a is null ? "-" : AutoStatusFile.StageShort(a, L.Current, Boot), g.AntiCheat ?? "-", DescribePrewarm(g.Prewarm), tray.DisplayName(g.Name), verdict, a?.Detail ?? string.Empty,
                 a is null ? "-" : AutoStatusFile.StageName(a.Stage, L.Current), warm, kind, HoldReasons(g.Name, a, kind, verdict), GateText(_samples, g.Name),
-                a is null ? "-" : AutoStatusFile.StageText(a, L.Current, Boot), a is null ? StatusTone.Gray : TrayStatus.StageTone(a.Stage, a.Detail), TrayStatus.PrewarmTone(kind));
+                a is null ? "-" : AutoStatusFile.StageText(a, L.Current, Boot), a is null ? StatusTone.Gray : TrayStatus.StageTone(a.Stage, a.Detail), TrayStatus.PrewarmTone(kind),
+                L.T("Layout_Detail", LayoutText(g), PrewarmText(g.Name)), a is null ? string.Empty : AutoStatusFile.Line(tray.DisplayName(g.Name), a, L.Current));
         }).ToList();
 
     /// 마지막으로 읽은 auto_status.json (아직 못 읽었거나 없으면 null). 트레이 아이콘·툴팁이 5 초마다 씁니다.
@@ -364,18 +366,16 @@ public sealed class ManageViewModel(
     /// 서비스 상태 + 감시기 + 마지막 예열 + 게임별 배치 상태.
     public IReadOnlyList<string> StatusLines(string? letter)
     {
-        var lines = new List<string> { tray.StatusText, L.T("Status_Watcher", tray.Settings?.Watcher ?? L.T("Word_Unknown")), LastPrewarm() };
-        if (_auto is not null && AutoStatusFile.Progress(_auto, config.PlansDir).Line(L.Current) is { } progress)
+        (string watcher, string lastPrewarm) = StatusInfo();
+        var lines = new List<string> { tray.StatusText, watcher, lastPrewarm };
+        if (Progress() is { } progress && progress.Line(L.Current) is { } progressLine)
         {
-            lines.Add(progress);
+            lines.Add(progressLine);
         }
 
         foreach (GameSettings g in Games.Where(g => letter is null || OnDrive(g, letter)))
         {
-            string layout = !File.Exists(g.Plan) ? L.T("Layout_NoPlan")
-                : _status.TryGetValue(g.Name, out GameStatus? s)
-                    ? L.T("Layout_Line", VerdictText(s.Verdict), s.ZoneHitPercent is { } p ? p.ToString("F1", CultureInfo.InvariantCulture) + "%" : "-", s.LastRelayout is { } t ? t.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) : L.T("Word_Never"))
-                    : L.T("Layout_Unchecked");
+            string layout = LayoutText(g);
             lines.Add(L.T("Layout_Game", tray.DisplayName(g.Name), layout, PrewarmText(g.Name)));
             if (_auto?.Games.TryGetValue(g.Name, out AutoGame? auto) == true)
             {
@@ -385,6 +385,18 @@ public sealed class ManageViewModel(
 
         return lines;
     }
+
+    /// 상태 탭 머리의 두 줄: 감시기 방식과 마지막 예열.
+    public (string Watcher, string LastPrewarm) StatusInfo() => (L.T("Status_Watcher", tray.Settings?.Watcher ?? L.T("Word_Unknown")), LastPrewarm());
+
+    /// 자동 진행 집계 (아직 auto_status.json 을 못 읽었으면 null).
+    public AutoProgress? Progress() => _auto is null ? null : AutoStatusFile.Progress(_auto, config.PlansDir);
+
+    private string LayoutText(GameSettings g) =>
+        !File.Exists(g.Plan) ? L.T("Layout_NoPlan")
+            : _status.TryGetValue(g.Name, out GameStatus? s)
+                ? L.T("Layout_Line", VerdictText(s.Verdict), s.ZoneHitPercent is { } p ? p.ToString("F1", CultureInfo.InvariantCulture) + "%" : "-", s.LastRelayout is { } t ? t.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) : L.T("Word_Never"))
+                : L.T("Layout_Unchecked");
 
     /// auto_status.json 만 다시 읽습니다 (aster 프로세스 없음, 5 초 주기용). 읽은 결과를 돌려줍니다.
     public AutoStatusFile? ReloadAuto()

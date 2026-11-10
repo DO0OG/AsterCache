@@ -42,6 +42,9 @@ public sealed record PrewarmSettings(bool OnServiceStart, IReadOnlyList<string> 
     /// 예열한 파일을 읽기 전용 매핑으로 계속 들고 있어 파일 캐시에서 밀려나지 않게 함 (기본 꺼짐, 실측 전).
     public bool Pin { get; init; }
 
+    /// 예열이 파일 캐시에 올려 둘 합계의 상한 (MiB). 0 = 자동 (물리 RAM 의 1/2), 양수 = 그 값 (물리 RAM 을 넘지 못함). 게임들이 공유하는 예산이라 게임마다 적혀 있으면 가장 큰 값을 씁니다.
+    public int MaxCacheMib { get; init; }
+
     /// config 에 pin 키가 있었는지 (파싱 때만 설정). 없으면 물리 RAM 이 충분할 때 서비스가 자동으로 켭니다 (PinKeeper.Wanted).
     public bool PinSet { get; init; }
 }

@@ -442,14 +442,14 @@ public sealed class ColdPrewarmTests : IDisposable
     // ---- 상한과 예산 ----
 
     [Fact]
-    public void AutoBudgetIsTheSmallerOfAQuarterOfRamAndAvailableMinusReserve()
+    public void AutoBudgetIsTheSmallerOfHalfOfRamAndAvailableMinusReserve()
     {
         (AvailableMib, PhysicalBytes) = (3000, 64L << 30); // 가용 - 여유 = 2000 < 16384
         MakeOne(minFree: 1000).Run(Game("g"), "t");
         Assert.Equal([(1024 * Mib, 2000 * Mib)], _caps); // 통째 상한 기본 1024 MiB, 프로필은 RAM 예산
 
         _caps.Clear();
-        (AvailableMib, PhysicalBytes) = (60000, 16L << 30); // 물리 RAM / 4 = 4096 < 59000
+        (AvailableMib, PhysicalBytes) = (60000, 8L << 30); // 물리 RAM / 2 = 4096 < 59000
         MakeOne(minFree: 1000).Run(Game("g"), "t");
         Assert.Equal([(1024 * Mib, 4096 * Mib)], _caps);
     }
@@ -495,7 +495,7 @@ public sealed class ColdPrewarmTests : IDisposable
     public void ColdAmountCountsAgainstTheHotSetBatchBudget()
     {
         AvailableMib = 20000;
-        PhysicalBytes = 16L << 30; // 4096 MiB
+        PhysicalBytes = 8L << 30; // 4096 MiB
         GameSettings cold = Game("cold");
         GameSettings hot = Game("hot");
         _streamer.BytesOf = g => (g.MaxStreamSet ? g.MaxStreamMib : 3000L) << 20; // 실제로 읽은 양
@@ -520,7 +520,7 @@ public sealed class ColdPrewarmTests : IDisposable
     public void UnplayedColdGameDoesNotCountAgainstTheBudgetNorGetItsSamplesRead()
     {
         AvailableMib = 20000;
-        PhysicalBytes = 16L << 30; // 4096 MiB
+        PhysicalBytes = 8L << 30; // 4096 MiB
         GameSettings cold = Game("cold");
         GameSettings hot = Game("hot");
         int probes = 0;

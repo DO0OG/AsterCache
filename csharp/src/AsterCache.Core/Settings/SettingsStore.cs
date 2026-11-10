@@ -33,7 +33,7 @@ public static class SettingsStore
         "max_relocations_per_day", "trace_runs", "trace_merge_min_mib", "trace_target_coverage", "trace_runs_max", "ignore_exes", "rewarm_minutes", "idle_seconds", "learn", "full_prewarm", "full_prewarm_max_mib", "engine_profiles", "shared_profiles",
         "ssd_tier", "post_update_delay_min", "recovery_max_min", "recovery_hard_max_min", "relocate_chunk_mib", "relocate_parallel", "relocate_io_priority", "relocate_verify", "relocate_order", "max_relocate_gib_per_day", "post_relocate_recovery", "keep_awake", "keep_stream_on_game_start", "load_boundary", "restream_cooldown_min", "rewarm_after_exit_min", "startup_warm_games", "startup_warm_max_mib",
     ];
-    private static readonly string[] PrewarmKeys = ["on_service_start", "trigger_exes", "min_free_ram_mib", "cooldown_min", "pin"];
+    private static readonly string[] PrewarmKeys = ["on_service_start", "trigger_exes", "min_free_ram_mib", "cooldown_min", "pin", "max_cache_mib"];
     private static readonly string[] LearnKeys = ["enabled", "window_mib", "max_total_mib", "mode", "saturation_mbps"];
     private static readonly string[] SharedProfilesKeys = ["enabled", "url"];
     private static readonly string[] SsdTierKeys = ["enabled", "budget_gib", "root"];
@@ -380,7 +380,8 @@ public static class SettingsStore
         int minFree = o.TryGetValue("min_free_ram_mib", out object? m) ? Int(m, $"{at}.min_free_ram_mib", 0, 1 << 20) : d.MinFreeRamMib;
         int cooldown = o.TryGetValue("cooldown_min", out object? c) ? Int(c, $"{at}.cooldown_min", 0, 10080) : d.CooldownMin;
         bool pin = o.TryGetValue("pin", out object? pn) ? pn as bool? ?? throw new SettingsException($"{at}.pin: true or false expected") : d.Pin;
-        return new PrewarmSettings(onStart, triggers, minFree, cooldown) { Pin = pin, PinSet = o.ContainsKey("pin") };
+        int maxCache = o.TryGetValue("max_cache_mib", out object? mc) ? Int(mc, $"{at}.max_cache_mib", 0, 1 << 20) : d.MaxCacheMib;
+        return new PrewarmSettings(onStart, triggers, minFree, cooldown) { Pin = pin, PinSet = o.ContainsKey("pin"), MaxCacheMib = maxCache };
     }
 
     private static object? Need(JObject o, string key, string at) =>

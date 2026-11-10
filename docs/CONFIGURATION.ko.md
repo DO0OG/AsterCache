@@ -47,6 +47,7 @@ ORBIT 는 `config.json` 이 아니라 CLI 로 켜고 끕니다(`aster orbit mode
 | `prewarm.trigger_exes` | 이 프로그램이 뜨면 예열 실행(예: 런처). 기본은 비어 있음 |
 | `prewarm.min_free_ram_mib` | 예열 뒤에도 남겨 둘 가용 RAM(기본 4096) |
 | `prewarm.cooldown_min` | 예열 사이의 최소 간격(기본 30분) |
+| `prewarm.max_cache_mib` | 예열이 파일 캐시에 올려 둘 합계(MiB), 모든 게임이 나눠 씁니다. `0` 이거나 없으면 자동(물리 RAM 의 절반), 양수면 그 값이며 물리 RAM 을 넘지 못합니다. 여러 게임이 적으면 가장 큰 값을 씁니다. 가용 RAM 여유(`min_free_ram_mib`) 검사는 그대로 적용됩니다. |
 | `auto` | 자동 모드 설정. 생략한 키는 기본값을 씁니다. [자동 모드](AUTO_MODE.ko.md) 를 보십시오. |
 | `max_zone_mib` | 자동 계획의 존 크기 상한(MiB, 기본 2048), 또는 `"auto"`(물리 RAM ÷ 4, 2048~8192 MiB 사이이며, 디스크 종류를 모르거나 USB 이면 2048 상한). 32 GB PC 는 고정 2048 보다 `"auto"` 를 권장합니다. |
 | `games[].source` | 자동으로 찾은 게임은 `auto`, 직접 등록한 게임은 `manual` |

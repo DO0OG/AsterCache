@@ -47,6 +47,7 @@ ORBIT is turned on and off from the CLI, not in `config.json` (`aster orbit mode
 | `prewarm.trigger_exes` | Run prewarm when one of these programs starts (for example a launcher). Empty by default |
 | `prewarm.min_free_ram_mib` | Available RAM to leave free even after prewarm (default 4096) |
 | `prewarm.cooldown_min` | Minimum interval between prewarms (default 30 minutes) |
+| `prewarm.max_cache_mib` | Total MiB that prewarm may hold in the file cache, shared by all games. `0` or omitted = automatic (half of physical RAM); a positive value is used as is but cannot exceed physical RAM. If several games set it, the largest value applies. The available-RAM reserve (`min_free_ram_mib`) still applies. |
 | `auto` | Automatic mode settings. Omitted keys take their defaults. See [Automatic mode](AUTO_MODE.md). |
 | `max_zone_mib` | Upper limit of the zone size for automatic planning, in MiB (default 2048), or `"auto"` (physical RAM ÷ 4, between 2048 and 8192 MiB; capped at 2048 when the disk type is unknown or the disk is on USB). On a 32 GB PC, `"auto"` is recommended over a fixed 2048. |
 | `games[].source` | `auto` for a game found automatically, `manual` for a game you registered |

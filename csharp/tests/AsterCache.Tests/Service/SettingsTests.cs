@@ -221,6 +221,19 @@ public sealed class SettingsTests
         Assert.True(p.OnServiceStart);
         Assert.Empty(p.TriggerExes);
         Assert.Equal((4096, 30), (p.MinFreeRamMib, p.CooldownMin));
+        Assert.Equal(0, p.MaxCacheMib); // 0 = 자동 (물리 RAM 의 절반)
+    }
+
+    [Fact]
+    public void PrewarmMaxCacheMibIsParsed()
+    {
+        JsonObject g = Game();
+        g["prewarm"] = new JsonObject { ["max_cache_mib"] = 12288 };
+
+        PrewarmSettings p = Parse(g).Games[0].Prewarm;
+
+        Assert.Equal(12288, p.MaxCacheMib);
+        Assert.Equal((4096, 30), (p.MinFreeRamMib, p.CooldownMin));
     }
 
     [Fact]
@@ -247,6 +260,8 @@ public sealed class SettingsTests
     [InlineData("min_free_ram_mib", -1)]
     [InlineData("min_free_ram_mib", "4096")]
     [InlineData("cooldown_min", 100000)]
+    [InlineData("max_cache_mib", -1)]
+    [InlineData("max_cache_mib", "8192")]
     [InlineData("trigger_exes", "Steam.exe")]
     [InlineData("trigger_exes", new[] { "C:\\Steam\\Steam.exe" })]
     [InlineData("trigger_exes", new[] { "notexe" })]

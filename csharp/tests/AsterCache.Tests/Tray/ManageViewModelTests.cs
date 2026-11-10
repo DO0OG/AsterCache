@@ -244,6 +244,99 @@ public sealed class ManageViewModelTests : IDisposable
         Assert.Equal(AsterArgs.Status(Path.Combine(_dir, "prewarm_status.json"), Path.Combine(_dir, "auto_status.json"), null, null), _cli.Calls.Single().Args);
     }
 
+    // 배치 판정은 목록과 따로 늦게 채움: 창이 판정을 기다리지 않고, 파일이 그대로면 다시 묻지 않고, 게임이 실행 중이면 묻지 않음.
+    private int PlanCalls => _cli.Calls.Count(c => c.Args.Contains("--plan"));
+
+    private void PlannedGame()
+    {
+        Register();
+        File.WriteAllText(Path.Combine(Plans, "mw4.plan.json"), "{}");
+        _cli.On("status", (args, _) => args.Contains("--plan")
+            ? CliResult.Parse("{\"plan\":{\"hot_clusters\":200,\"in_zone_clusters\":150,\"verdict\":\"contiguous\"}}")
+            : CliResult.Parse("{\"admin\":false}"));
+    }
+
+    [Fact]
+    public void OverviewShowsTheListWithoutAnyPerGameLayoutQuery()
+    {
+        PlannedGame();
+        Assert.True(_vm.RefreshOverview().Ok);
+        Assert.Equal(0, PlanCalls);
+        GameRow row = _vm.GameRows(null).Single();
+        Assert.Equal(("mw4", "?"), (row.Name, row.VerdictRaw));
+        Assert.Contains("배치 확인 전", row.Detail);
+    }
+
+    [Fact]
+    public void LayoutsFillOneGameAtATimeAndAreReusedWhilePlanAndJournalAreUnchanged()
+    {
+        PlannedGame();
+        int changed = 0;
+        _vm.RefreshLayouts(() => changed++);
+        Assert.Equal((1, 1, "contiguous"), (PlanCalls, changed, _vm.GameRows(null).Single().VerdictRaw));
+        Assert.False(_vm.LayoutChecking);
+
+        _vm.RefreshLayouts(() => changed++);
+        Assert.Equal((1, 1), (PlanCalls, changed)); // 수정 시각이 같음: 조회 생략, 판정은 그대로
+
+        File.SetLastWriteTimeUtc(Path.Combine(Plans, "mw4.plan.json"), DateTime.UtcNow.AddMinutes(1));
+        _vm.RefreshLayouts();
+        Assert.Equal(2, PlanCalls); // 계획이 바뀌면 다시 확인
+
+        Directory.CreateDirectory(Path.Combine(_dir, "journals"));
+        File.WriteAllText(_vm.JournalPath("mw4"), "{}\n");
+        _vm.RefreshLayouts();
+        Assert.Equal(3, PlanCalls); // 저널이 생겨도 다시 확인
+    }
+
+    [Fact]
+    public void RunningGameDefersLayoutQueriesAndKeepsTheLastVerdict()
+    {
+        PlannedGame();
+        _vm.RefreshLayouts();
+        File.SetLastWriteTimeUtc(Path.Combine(Plans, "mw4.plan.json"), DateTime.UtcNow.AddMinutes(1));
+        _running = new Queue<bool>([true]);
+
+        _vm.RefreshLayouts();
+
+        Assert.Equal(1, PlanCalls); // 실행 중에는 조회하지 않음
+        Assert.Equal("contiguous", _vm.GameRows(null).Single().VerdictRaw); // 마지막 판정을 보여 줌
+        _vm.RefreshLayouts();
+        Assert.Equal(2, PlanCalls); // 게임이 끝나면 다음 읽기에서 확인
+    }
+
+    [Fact]
+    public void LayoutQueryStartedBeforeALayoutChangingActionEndsDoesNotOverwriteTheNewerState()
+    {
+        PlannedGame();
+        _cli.On("status", (args, _) =>
+        {
+            if (args.Contains("--plan"))
+            {
+                _vm.ChangesLayout("mw4", () => new ActionResult(true, "x")); // 조회 도중 되돌리기 같은 동작이 끝남
+                return CliResult.Parse("{\"plan\":{\"hot_clusters\":200,\"in_zone_clusters\":150,\"verdict\":\"contiguous\"}}");
+            }
+
+            return CliResult.Parse("{\"admin\":false}");
+        });
+
+        _vm.RefreshLayouts();
+        Assert.Equal("?", _vm.GameRows(null).Single().VerdictRaw); // 옛 결과는 버림
+        _vm.RefreshLayouts();
+        Assert.Equal(2, PlanCalls); // 파일 수정 시각이 같아도 다시 물음
+    }
+
+    [Fact]
+    public void LayoutChangingActionForcesRequeryEvenWhenFileTimesAreUnchanged()
+    {
+        PlannedGame();
+        _vm.RefreshLayouts();
+        Assert.True(_vm.ChangesLayout("mw4", () => new ActionResult(true, "x")).Ok);
+        _vm.RefreshLayouts();
+        Assert.Equal(2, PlanCalls);
+        Assert.Equal("contiguous", _vm.GameRows(null).Single().VerdictRaw); // 다시 묻는 동안에도 마지막 판정이 보였음
+    }
+
     // ---- 동작 ----
 
     [Fact]

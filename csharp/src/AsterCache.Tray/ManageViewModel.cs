@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Globalization;
 using System.Text;
@@ -75,7 +76,11 @@ public sealed class ManageViewModel(
     private const long ProbeZoneMib = 16384;
     private const int ZoneRoundMib = 16;
 
-    private readonly Dictionary<string, GameStatus> _status = new(StringComparer.OrdinalIgnoreCase);
+    // 배치 판정은 백그라운드 스레드가 채우고 화면 스레드가 읽으므로 동시 사전. 마지막으로 안 판정을 계속 보여 주고, 계획·저널 수정 시각이 같으면 다시 묻지 않습니다.
+    private readonly ConcurrentDictionary<string, GameStatus> _status = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, (DateTime Plan, DateTime Journal, DateTime At)> _checked = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, int> _generation = new(StringComparer.OrdinalIgnoreCase); // 게임별: 배치를 바꾸는 동작이 끝날 때마다 올림
+    private static readonly TimeSpan LayoutMaxAge = TimeSpan.FromMinutes(30); // 파일이 그대로여도 게임 업데이트 등으로 배치가 바뀔 수 있어 이 시간이 지나면 다시 확인
     private readonly TimeSpan _poll = poll ?? TimeSpan.FromMilliseconds(500);
     private JObject? _prewarm;
     private AutoStatusFile? _auto;
@@ -396,7 +401,7 @@ public sealed class ManageViewModel(
         !File.Exists(g.Plan) ? L.T("Layout_NoPlan")
             : _status.TryGetValue(g.Name, out GameStatus? s)
                 ? L.T("Layout_Line", VerdictText(s.Verdict), s.ZoneHitPercent is { } p ? p.ToString("F1", CultureInfo.InvariantCulture) + "%" : "-", s.LastRelayout is { } t ? t.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) : L.T("Word_Never"))
-                : L.T("Layout_Unchecked");
+                : L.T(LayoutChecking ? "Layout_Checking" : "Layout_Unchecked");
 
     /// auto_status.json 만 다시 읽습니다 (aster 프로세스 없음, 5 초 주기용). 읽은 결과를 돌려줍니다.
     public AutoStatusFile? ReloadAuto()
@@ -415,27 +420,102 @@ public sealed class ManageViewModel(
         return _auto;
     }
 
-    /// aster status 로 예열 기록과 게임별 배치 상태를 다시 읽습니다 (게임마다 프로세스 한 번).
-    public ActionResult RefreshStatus()
+    /// 게임별 배치 판정을 채우는 중이면 true (목록은 마지막 판정 또는 "확인 중" 으로 먼저 보임).
+    public volatile bool LayoutChecking;
+
+    /// 배치를 바꾸는 동작 (계획·재배치·되돌리기·가져오기) 을 감쌉니다: 끝나면 그 게임의 판정 재사용을 끊고, 동작 전에 시작한 조회 결과는 버립니다 (RefreshLayouts).
+    public ActionResult ChangesLayout(string name, Func<ActionResult> work)
+    {
+        try
+        {
+            return work();
+        }
+        finally
+        {
+            _generation.AddOrUpdate(name, 1, (_, v) => v + 1);
+            _checked.TryRemove(name, out _);
+        }
+    }
+
+    /// 서비스 상태와 예열 기록, auto_status.json 만 다시 읽습니다 (계획 없는 가벼운 aster status 한 번, 게임별 배치 조회 없음).
+    public ActionResult RefreshOverview()
     {
         tray.Refresh();
-        _status.Clear();
         CliResult all = cli.Run(AsterArgs.Status(PrewarmStatusPath, AutoStatusPath, null, null));
         _prewarm = Get(all.Json, "prewarm") as JObject;
         ReloadAuto();
-        foreach (GameSettings g in Games.Where(g => File.Exists(g.Plan)))
-        {
-            string journal = JournalPath(g.Name);
-            bool hasJournal = File.Exists(journal);
-            CliResult r = cli.Run(AsterArgs.Status(PrewarmStatusPath, AutoStatusPath, g.Plan, hasJournal ? journal : null));
-            object? plan = Get(r.Json, "plan");
-            long? hot = Get(plan, "hot_clusters") as long?;
-            long? inZone = Get(plan, "in_zone_clusters") as long?;
-            _status[g.Name] = new GameStatus(Get(plan, "verdict") as string ?? "error", hot > 0 && inZone is not null ? inZone * 100.0 / hot : null,
-                hasJournal ? File.GetLastWriteTime(journal) : null);
-        }
-
         return Report(true, L.T("Msg_StatusRefreshed", Games.Count));
+    }
+
+    /// 예열 기록과 게임별 배치 상태를 모두 다시 읽습니다 (RefreshOverview + RefreshLayouts, 동기).
+    public ActionResult RefreshStatus()
+    {
+        ActionResult r = RefreshOverview();
+        RefreshLayouts();
+        return r;
+    }
+
+    /// 계획이 있는 게임의 배치 판정을 aster status --plan 으로 차례로 채웁니다 (디스크의 파일 배치를 조회하므로 느릴 수 있음: 창 쪽이 백그라운드로 부름).
+    /// 계획·저널 수정 시각이 그대로면 마지막 판정을 쓰고 조회하지 않으며, 등록된 게임이 실행 중이면 조회를 모두 미룹니다 (프로세스 목록만 봄, 게임 프로세스는 열지 않음).
+    /// 판정 하나가 바뀔 때마다 changed 를 부릅니다.
+    public void RefreshLayouts(Action? changed = null)
+    {
+        LayoutChecking = true;
+        try
+        {
+            foreach (GameSettings g in Games.Where(g => File.Exists(g.Plan)).ToList())
+            {
+                string journal = JournalPath(g.Name);
+                bool hasJournal = File.Exists(journal);
+                DateTime plan = File.GetLastWriteTimeUtc(g.Plan);
+                DateTime written = hasJournal ? File.GetLastWriteTimeUtc(journal) : default;
+                if (_checked.TryGetValue(g.Name, out var seen) && seen.Plan == plan && seen.Journal == written && DateTime.UtcNow - seen.At < LayoutMaxAge && _status.ContainsKey(g.Name))
+                {
+                    continue;
+                }
+
+                if (AnyGameRunning())
+                {
+                    log.Info("layout check deferred: a registered game is running");
+                    return;
+                }
+
+                int generation = _generation.GetValueOrDefault(g.Name);
+                CliResult r = cli.Run(AsterArgs.Status(PrewarmStatusPath, AutoStatusPath, g.Plan, hasJournal ? journal : null));
+                if (_generation.GetValueOrDefault(g.Name) != generation)
+                {
+                    continue; // 조회 도중 배치를 바꾸는 동작이 끝남: 옛 결과로 덮지 않고 다음 읽기에서 다시 물음
+                }
+
+                object? p = Get(r.Json, "plan");
+                long? hot = Get(p, "hot_clusters") as long?;
+                long? inZone = Get(p, "in_zone_clusters") as long?;
+                string verdict = Get(p, "verdict") as string ?? "error";
+                _status[g.Name] = new GameStatus(verdict, hot > 0 && inZone is not null ? inZone * 100.0 / hot : null, hasJournal ? File.GetLastWriteTime(journal) : null);
+                if (verdict != "error")
+                {
+                    _checked[g.Name] = (plan, written, DateTime.UtcNow); // 오류는 기억하지 않아 다음에 다시 물음
+                }
+
+                changed?.Invoke();
+            }
+        }
+        finally
+        {
+            LayoutChecking = false;
+        }
+    }
+
+    private bool AnyGameRunning()
+    {
+        try
+        {
+            return isRunning(Games.SelectMany(g => g.ExeNames).ToList());
+        }
+        catch (Win32Exception)
+        {
+            return true; // 프로세스 목록을 못 읽으면 실행 중으로 보고 미룸
+        }
     }
 
     private string LastPrewarm()

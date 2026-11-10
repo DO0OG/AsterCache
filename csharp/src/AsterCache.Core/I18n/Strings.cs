@@ -403,5 +403,27 @@ public static partial class L
         ["Profile_Mismatch"] = ("{0}: 프로필을 가져오지 않음: 일치하지 않는 파일 {1}개 (예: {2})", "{0}: profile not imported: {1} file(s) do not match (e.g. {2})"),
         ["Fail_ProfileExport"] = ("{0}: 프로필 내보내기 실패: {1}", "{0}: profile export failed: {1}"),
         ["Fail_ProfileImport"] = ("{0}: 프로필 가져오기 실패: {1}", "{0}: profile import failed: {1}"),
+
+        // ---- 화면 개편: 상태 머리글·통계 타일·빈 상태 (트레이) ----
+        ["Tone_Ok"] = ("정상", "Healthy"),
+        ["Tone_Busy"] = ("작업 중", "Working"),
+        ["Tone_Warn"] = ("확인 필요", "Needs attention"),
+        ["Tone_Gray"] = ("서비스 꺼짐", "Service off"),
+        ["Sec_Progress"] = ("자동 진행", "Automatic progress"),
+        ["Sec_Games"] = ("게임별 상태 (확인이 필요한 게임이 위로)", "Per-game status (games that need attention first)"),
+        ["Stat_Found"] = ("발견한 게임", "Games found"),
+        ["Stat_FoundNote"] = ("자동으로 찾은 게임 수", "Games found automatically"),
+        ["Stat_Planned"] = ("배치 계획", "Plans made"),
+        ["Stat_PlannedNote"] = ("계획 파일이 만들어진 게임 수", "Games that have a plan file"),
+        ["Stat_Relocated"] = ("재배치 완료", "Relocated"),
+        ["Stat_RelocatedNote"] = ("빠른 영역으로 옮긴 게임 수", "Games moved to the fast zone"),
+        ["Stat_Prewarmed"] = ("예열 완료", "Prewarmed"),
+        ["Stat_PrewarmedNote"] = ("파일을 캐시에 미리 읽어 둔 게임 수", "Games whose files are preloaded into the cache"),
+        ["Stat_Hit"] = ("평균 적중률", "Average hit rate"),
+        ["Stat_HitNote"] = ("예열 직후 읽기가 캐시에서 처리된 비율", "Share of reads served from the cache right after prewarm"),
+        ["Layout_Detail"] = ("{0} · 예열 {1}", "{0} · prewarm {1}"),
+        ["Unit_Count"] = ("{0}개", "{0}"),
+        ["Empty_Games"] = ("등록된 게임이 없습니다. 위의 '등록'을 누르거나, 자동 모드가 게임을 찾을 때까지 기다리십시오.", "No games registered. Press Register above, or wait until automatic mode finds a game."),
+        ["Empty_GamesDrive"] = ("이 드라이브에 등록된 게임이 없습니다.", "No registered games on this drive."),
     };
 }

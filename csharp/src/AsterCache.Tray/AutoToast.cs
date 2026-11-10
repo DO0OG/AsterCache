@@ -1,19 +1,21 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 
 namespace AsterCache.Tray;
 
 /// 화면 오른쪽 아래에 6 초 떠 있는 작은 알림 (활성화하지 않음). 누르면 onClick 을 부르고 닫힙니다.
+/// 왼쪽 색 띠 (상태 색) + 앱 이름 + 본문 (긴 이름은 두 줄까지, 더 길면 말줄임).
 internal sealed class AutoToast : Window
 {
-    private const int ToastWidth = 340;
-    private const int ToastHeight = 72;
+    private const int ToastWidth = 360;
+    private const int ToastHeight = 88;
     private const int Gap = 8;
     private static readonly TimeSpan Visible = TimeSpan.FromSeconds(6);
 
-    public AutoToast(string text, int slot, Action onClick)
+    public AutoToast(string text, int slot, StatusTone tone, Action onClick)
     {
         Width = ToastWidth;
         Height = ToastHeight;
@@ -22,11 +24,18 @@ internal sealed class AutoToast : Window
         ShowActivated = false;
         Topmost = true;
         SystemDecorations = SystemDecorations.None;
-        var body = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, MaxLines = 3, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
-        var card = new Border { BorderBrush = Look.Brush(StatusTone.Busy), BorderThickness = new Thickness(1, 1, 1, 1), Padding = new Thickness(12), CornerRadius = new CornerRadius(6), Child = body };
-        Look.Themed(card, Border.BackgroundProperty, "SystemControlBackgroundAltHighBrush"); // 다크·라이트를 따르는 테마 색
-        Look.Themed(body, TextBlock.ForegroundProperty, "SystemControlForegroundBaseHighBrush");
-        Content = card;
+        var body = Look.Text(text, Look.Body, FontWeight.SemiBold);
+        body.MaxLines = 2;
+        body.TextTrimming = TextTrimming.CharacterEllipsis;
+        var stack = new StackPanel { Spacing = Look.S4, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(Look.S16, Look.S8), Children = { Look.Muted("AsterCache"), body } };
+        var stripe = new Border { Width = 6 }.Fill(Border.BackgroundProperty, Look.Key(tone) + ".Dot");
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
+        Grid.SetColumn(stack, 1);
+        row.Children.Add(stripe);
+        row.Children.Add(stack);
+        this.Fill(BackgroundProperty, "Aster.Surface");
+        Content = new Border { Child = row, BorderThickness = new Thickness(1), ClipToBounds = true }.Fill(Border.BorderBrushProperty, "Aster.Border");
+        ToolTip.SetTip(this, text);
         PointerPressed += (_, _) =>
         {
             onClick();

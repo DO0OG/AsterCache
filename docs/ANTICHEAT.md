@@ -4,7 +4,7 @@
 
 > Details that continue from [Safety measures](../README.md#safety-measures) in the README.
 
-Many current games run kernel-level anti-cheat. This section says what AsterCache does and does not do, so you can decide whether to use it with a game. Anti-cheat policies differ per game and can change. AsterCache has not been tested with any anti-cheat game yet.
+Many current games run kernel-level anti-cheat. This section says what AsterCache does and does not do, so you can decide whether to use it with a game. Anti-cheat policies differ per game and can change. On this PC there are usage records of playing a Vanguard game (League of Legends) and a Ricochet game (Call of Duty) with the installed build ([Usage records on this PC](#usage-records-on-this-pc)). This is not a controlled validation, and no guarantee is made about account sanctions.
 
 ## What it does
 
@@ -30,7 +30,7 @@ Many current games run kernel-level anti-cheat. This section says what AsterCach
 | EasyAntiCheat | `.exe` starting with `EasyAntiCheat`, `EasyAntiCheat_EOS`, `start_protected_game.exe` | No automatic trace or pin; prewarm and relocation allowed |
 | BattlEye | `BattlEye`, `BEService*.exe`, `BEClient*.dll` | No automatic trace or pin; prewarm and relocation allowed |
 | Vanguard | `vgc*`, `vgk*` (`.exe`, `.sys`), `Riot Vanguard` | No automatic trace or pin; prewarm and relocation allowed |
-| Ricochet | Names containing `ricochet`, `randgrid.sys` | Unchanged (automatic trace allowed; not tested on a real machine) |
+| Ricochet | Names containing `ricochet`, `randgrid.sys` | Automatic trace allowed; no pin; prewarm and relocation allowed |
 | BlackCipher | `BlackCipher` folder, `BlackCall64.aes` | No ETW trace, pin, or tier; prewarm and relocation allowed |
 | nProtect GameGuard | `GameGuard` folder, `npgg*.dll`, `GameMon.des` | No ETW trace, pin, or tier; prewarm and relocation allowed |
 | XIGNCODE3 | `xigncode` or `XIGNCODE3` folder, `x3.xem`, `xcorona*` | No ETW trace, pin, or tier; prewarm and relocation allowed |
@@ -55,9 +55,17 @@ These are the reasons each feature is considered safe. They are reasoning, not v
 
 The executables are not code-signed, so Windows SmartScreen may show a warning. That warning is the only effect confirmed so far. Whether signing status relates to anti-cheat decisions has not been checked.
 
+## Usage records on this PC
+
+This is a tally of the service log from 2026-11-02 to 2026-11-10. It is not a controlled validation. Whether any account was sanctioned cannot be known from the log, and no guarantee is made. Sample counts and line formats are in [RESULTS_SUMMARY.md](RESULTS_SUMMARY.md#real-world-usage-records).
+
+- **League of Legends.** Judged as `vanguard`. The rule is a Riot game on a PC that has Vanguard; it was not found from an install-folder name. Over 10 game start detections: 2 traces collected and then 8 skipped, pin skipped 4 times, relocation completed 4 times.
+- **Call of Duty.** Judged as `ricochet` from a `ricochet` name in the install folder. Over 62 game start detections: 14 trace collections started, pin skipped 7 times, relocation completed 5 times.
+- Prewarm was applied to both games.
+
 ## Limits and advice
 
 - Automatic mode is on by default. For a game with anti-cheat, turn automatic mode off in the Settings tab, or add the game's exe to `auto.ignore_exes`, before you play.
 - Automatic tracing uses the same kind of ETW collection as the manual route, so the Ricochet and Vanguard cautions in [GAME_GUIDE](GAME_GUIDE.md) still apply.
 - SSD assist storage skips games with anti-cheat folders, and never copies game exe or dll files.
-- Not yet tested on any real anti-cheat game. This is outside the current validation.
+- Anti-cheat games have only usage records from this PC (one Vanguard game and one Ricochet game) and no controlled validation. Other anti-cheat games have not been tested. No guarantee is made about account sanctions.

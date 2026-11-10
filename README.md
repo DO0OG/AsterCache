@@ -14,7 +14,7 @@
   <a href="https://github.com/DO0OG/AsterCache/actions/workflows/kernel-build.yml"><img alt="Kernel Build" src="https://github.com/DO0OG/AsterCache/actions/workflows/kernel-build.yml/badge.svg"></a>
 </p>
 
-> **Beta.** AsterCache is distributed as a beta pre-release. It physically moves file data, so back up drives that hold important data before using it. Validation covers one SMR drive (WD20EZAZ) and one real game (Frostpunk); CMR drives and anti-cheat games have not been tested (see [Known limitations](#known-limitations)).
+> **Beta.** AsterCache is distributed as a beta pre-release. It physically moves file data, so back up drives that hold important data before using it. Validation covers one SMR drive (WD20EZAZ) and one real game (Frostpunk); CMR drives have not been tested. Anti-cheat games have only usage records from this PC and no controlled validation (see [Real-world usage records](#real-world-usage-records) and [Known limitations](#known-limitations)).
 
 ## Recent changes
 
@@ -28,7 +28,7 @@
 
 AsterCache helps games installed on a hard disk (HDD) load faster. It watches what a game reads while it loads, puts those pieces side by side in one place on the disk, and loads them into RAM before you start the game. It does not change your game files and does not copy them to another drive, except for the optional SSD assist storage (off by default, see [SSD assist storage](docs/AUTO_MODE.md#ssd-assist-storage-optional)). Once it is installed you do not have to do anything: it works in the background (see [Getting started](#getting-started)).
 
-The figures in this document are replay times of recorded read patterns of one real game on one drive, not total load times of a running game. See [Measured results](#measured-results) and [VALIDATION_REPORT.md](VALIDATION_REPORT.md) for details.
+The measured figures in this document are replay times of recorded read patterns of one real game on one drive, not total load times of a running game. The [Real-world usage records](#real-world-usage-records) are a tally of usage logs, which is a different kind of figure. See [Measured results](#measured-results) and [VALIDATION_REPORT.md](VALIDATION_REPORT.md) for details.
 
 The main features are listed below. The full list is in [docs/USAGE.md](docs/USAGE.md).
 
@@ -68,6 +68,25 @@ The figures are replay times of traced read patterns, not total load times of a 
 - The 11.93 s value is from the E6 experiment: the relocation now moves all hot data into one zone by default (preservation off), instead of keeping segments of 8 MiB or more in place. The earlier value was 15.1 s. See [docs/research_cold_limit.md](docs/research_cold_limit.md).
 - More tables and interpretation are in [docs/RESULTS_SUMMARY.md](docs/RESULTS_SUMMARY.md) and [VALIDATION_REPORT.md](VALIDATION_REPORT.md).
 - Research note on general HDD I/O (outside the game): [docs/research_hdd_general.md](docs/research_hdd_general.md).
+
+### Real-world usage records
+
+This is a tally of the service log on one PC (2026-11-02 to 2026-11-10). It is not a controlled benchmark. Total game load time and in-game frame stutter were not measured. The method and sample counts are in [docs/RESULTS_SUMMARY.md](docs/RESULTS_SUMMARY.md#real-world-usage-records).
+
+| Item | League of Legends | Call of Duty |
+|---|---|---|
+| Game start detections (process starts) | 10, over 6 days | 62, over 8 days |
+| Anti-cheat (as judged by the service) | Vanguard | Ricochet |
+| Trace | 2 collected, then skipped (8 times) | 14 collections started |
+| Pin | Skipped (4 times) | Skipped (7 times) |
+| Relocation | 4 completed, 4 stopped | 5 completed, 3 stopped |
+| Prewarm target / RAM budget | 8,182 MiB / 8,173 MiB | 10,218 MiB / 8,173 MiB |
+| Prewarm duration (2026-11-08 to 11-10) | One partial prewarm of 8,173 MiB: 48.4 s | 7 whole-hot-set runs of 9,081 to 10,217 MiB: 128 to 416 s (median 249.8 s) |
+| Head-part prewarm at service start | 5 runs of 970 to 1,023 MiB: 11.5 to 22.3 s | 3 runs of 1,023 MiB: 34.7 to 40.7 s |
+| Hit rate right after prewarm (latest value only) | 100% | 75% |
+
+- **Hit rate.** Right after a prewarm ends, up to 8 places chosen from the hot set (1 MiB each) are read, and the hit rate is the share that finished in 0.8 ms or less, that is, the share that was in the RAM file cache. It is not a value at game start, and only the latest value per game is kept. The 75% for Call of Duty was measured right after 1,023 MiB of its 10,218 MiB hot set was prewarmed at service start.
+- **Limits.** The log has no program version, so the data is split by date only, and the table holds only late-period figures (2026-11-08 to 11-10). There is no record of a start stream actually running. There is no comparison with prewarm off.
 
 ## System requirements
 
@@ -138,7 +157,7 @@ For the hot-set prewarm of a game that has a recording, ORBIT computes whether r
 ### With or without an SSD
 
 - **With an SSD (optional, off by default):** AsterCache copies the hot files of an HDD game to an SSD within a budget (8 GiB per game by default), keeps each original as `<name>.aster-orig`, and puts a symbolic link in its place, so the game reads the same paths as before.
-- **Without an SSD:** only the HDD path above (relocation and prewarm) is used. The prewarm hit rate is measured at each game start and shown in the per-game status line.
+- **Without an SSD:** only the HDD path above (relocation and prewarm) is used. The prewarm hit rate is measured right after a prewarm ends and shown in the per-game status line as "hit right after prewarm N%" (see [Real-world usage records](#real-world-usage-records)).
 
 ### The result
 
@@ -270,15 +289,15 @@ There is no channel for sending commands to the service. The tray uses only file
 
 - It does not inject code into the game process, create threads in it, read or write its memory, use debug privileges, hook, overlay, or duplicate handles. It does not use a kernel driver either.
 - The service reads game files read-only in shared mode inside its own process and only observes through ETW. Relocation happens only after the game has fully exited.
-- If it recognizes an anti-cheat from traces in the install folder, it shows the kind on the Games tab. For kernel-level anti-cheat (EasyAntiCheat, BattlEye, Vanguard, and others) it does not run automatic trace or pin, and allows prewarm and relocation.
-- It has not been tested on any anti-cheat game yet. Before playing, turn automatic mode off on the Settings tab or add the game's exe to `auto.ignore_exes`. Details are in [docs/ANTICHEAT.md](docs/ANTICHEAT.md).
+- If it recognizes an anti-cheat from traces in the install folder, it shows the kind on the Games tab. For kernel-level anti-cheat (EasyAntiCheat, BattlEye, Vanguard, and others) it does not run automatic trace or pin, and allows prewarm and relocation. For Ricochet, only pin is not run.
+- On this PC there are usage records of playing a Vanguard game (League of Legends) and a Ricochet game (Call of Duty) with the installed build ([Real-world usage records](#real-world-usage-records)). This is not a controlled validation, and no guarantee is made about account sanctions. Before playing, turn automatic mode off on the Settings tab or add the game's exe to `auto.ignore_exes`. Details are in [docs/ANTICHEAT.md](docs/ANTICHEAT.md).
 
 ## Known limitations
 
 - This is not a driver or file system filter. It does not intercept the game's I/O path. The kernel minifilter (`kernel/`) has been through source, build, static analysis, and INF verification, but it has not been signed, loaded, or tested on real hardware, and it is not included in the release. Automatic warm-up right after boot is handled by the user-mode service. See [kernel/README.md](kernel/README.md).
 - Tracing records only reads that went to disk. Reads that were already in the cache may be missed.
 - SSD assist storage has only the Frostpunk loading read measured. Power loss during a copy, a full SSD, and anti-cheat games are not tested.
-- Only one real game, Frostpunk, has been measured. Anti-cheat games (Call of Duty, League of Legends, and so on) have not been validated.
+- Read-pattern replay was measured for only one real game, Frostpunk. Call of Duty (Ricochet) and League of Legends (Vanguard) have only a tally of this PC's usage logs ([Real-world usage records](#real-world-usage-records)); other anti-cheat games have not been tested.
 - Persistence was confirmed up to 10 hours after relocation. Beyond 24 hours has not been measured.
 - Measured on a single SMR drive (WD20EZAZ). CMR drives have not been measured.
 - The cold condition was produced by clearing the standby list with administrator rights. The drive's internal cache was not cleared.
@@ -287,7 +306,7 @@ There is no channel for sending commands to the service. The tray uses only file
 - Release binaries are not code-signed, so Windows may show an unsigned-publisher warning.
 - If only the tray is updated, the service stays on the old version. The tray shows the version mismatch, and you must reinstall the service with the installer.
 - Apps other than games in the Steam library, such as Wallpaper Engine or YoloMouse, can be registered automatically when they are on an HDD. To avoid this, add their exe to `auto.ignore_exes` or remove the game on the Games tab.
-- Automatic tracing may miss some of a game's first reads before its session starts. Automatic tracing and automatic relocation have not yet been run with a real game; only tests in a simulated environment have been done.
+- Automatic tracing may miss some of a game's first reads before its session starts. Automatic tracing and automatic relocation have logs of runs with real games on this PC (Call of Duty, League of Legends, and others), but no controlled validation has been done.
 - Games installed under `AppData\Local\Temp` are not found by the heuristic.
 - The shared profile repository is still being prepared. The effect of shared profiles, of Windows prefetch boot traces, and of engine and whole-folder prewarm has not been measured.
 - ORBIT's measured gain is still based on one game, drive, and session. ResultGate can demote to shadow when a fixed-seed 1,000-resample bootstrap shows significant worsening in the existing `ProbeReadyMs` proxy. That proxy is not actual ready time, and the gate never automatically adopts a candidate.
@@ -330,6 +349,6 @@ Third-party notices: THIRD_PARTY_NOTICES.md
 
 ## Disclaimer
 
-- It has not been validated on games with anti-cheat or games tied to online accounts.
+- No controlled validation has been done on games with anti-cheat or games tied to online accounts. There are only usage records from this PC ([Real-world usage records](#real-world-usage-records)), and no guarantee is made about account sanctions.
 - Relocation actually moves file data. Back up before using it on a drive that holds important data, and try it on a test folder first.
 - Provided without warranty under the MIT license. The measurements are results from a single PC.

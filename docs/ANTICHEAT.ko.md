@@ -4,7 +4,7 @@
 
 > README 의 [안전 장치](../README.ko.md#안전-장치)에서 이어지는 상세 설명입니다.
 
-요즘 게임 대부분은 커널 수준 안티치트를 씁니다. 이 절은 AsterCache 가 하는 일과 하지 않는 일을 적어, 게임에 쓸지 판단할 수 있게 합니다. 안티치트 정책은 게임마다 다르고 바뀔 수 있습니다. AsterCache 는 아직 어떤 안티치트 게임에서도 시험하지 않았습니다.
+요즘 게임 대부분은 커널 수준 안티치트를 씁니다. 이 절은 AsterCache 가 하는 일과 하지 않는 일을 적어, 게임에 쓸지 판단할 수 있게 합니다. 안티치트 정책은 게임마다 다르고 바뀔 수 있습니다. 이 PC 에서 Vanguard 게임(League of Legends)과 Ricochet 게임(Call of Duty)을 설치본으로 플레이한 사용 기록이 있습니다([이 PC 의 사용 기록](#이-pc-의-사용-기록)). 통제된 검증은 아니며, 계정 제재 여부는 보증하지 않습니다.
 
 ## 하는 일
 
@@ -30,7 +30,7 @@
 | EasyAntiCheat | `EasyAntiCheat` 로 시작하는 `.exe`, `EasyAntiCheat_EOS`, `start_protected_game.exe` | 자동 트레이스·고정 금지, 예열·재배치 허용 |
 | BattlEye | `BattlEye`, `BEService*.exe`, `BEClient*.dll` | 자동 트레이스·고정 금지, 예열·재배치 허용 |
 | Vanguard | `vgc*`, `vgk*` (`.exe`·`.sys`), `Riot Vanguard` | 자동 트레이스·고정 금지, 예열·재배치 허용 |
-| Ricochet | `ricochet` 이름, `randgrid.sys` | 기존 동작 유지(자동 트레이스 허용, 실기기 미검증) |
+| Ricochet | `ricochet` 이름, `randgrid.sys` | 자동 트레이스 허용, 고정 금지, 예열·재배치 허용 |
 | BlackCipher | `BlackCipher` 폴더, `BlackCall64.aes` | ETW 트레이스·고정·tier 금지, 예열·재배치 허용 |
 | nProtect GameGuard | `GameGuard` 폴더, `npgg*.dll`, `GameMon.des` | ETW 트레이스·고정·tier 금지, 예열·재배치 허용 |
 | XIGNCODE3 | `xigncode`·`XIGNCODE3` 폴더, `x3.xem`, `xcorona*` | ETW 트레이스·고정·tier 금지, 예열·재배치 허용 |
@@ -55,9 +55,17 @@
 
 실행 파일에는 코드 서명이 없어 SmartScreen 경고가 뜰 수 있습니다. 지금까지 확인된 영향은 이 경고뿐입니다. 서명 여부와 안티치트 판정의 관계는 확인하지 않았습니다.
 
+## 이 PC 의 사용 기록
+
+2026-11-02 ~ 2026-11-10 의 서비스 로그를 집계한 것입니다. 통제된 검증이 아니며, 계정 제재 여부는 로그로 알 수 없고 보증하지 않습니다. 표본 수와 줄 형식은 [RESULTS_SUMMARY.ko.md](RESULTS_SUMMARY.ko.md#실사용-기록)에 있습니다.
+
+- **League of Legends.** `vanguard` 로 판정됐습니다. Riot 게임이고 이 PC 에 Vanguard 가 있다는 조건으로 판정하며 설치 폴더 이름으로 잡은 것이 아닙니다. 게임 시작 감지 10회 동안 트레이스 2회 수집 뒤 8회 건너뜀, 고정 건너뜀 4회, 재배치 완료 4회였습니다.
+- **Call of Duty.** 설치 폴더의 `ricochet` 이름으로 `ricochet` 판정됐습니다. 게임 시작 감지 62회 동안 트레이스 수집 14회 시작, 고정 건너뜀 7회, 재배치 완료 5회였습니다.
+- 예열은 두 게임 모두 적용했습니다.
+
 ## 한계와 권고
 
 - 자동 모드는 기본으로 켜져 있습니다. 안티치트가 있는 게임은 플레이 전에 설정 탭에서 자동 모드를 끄거나, 그 게임의 exe 를 `auto.ignore_exes` 에 넣으십시오.
 - 자동 트레이스도 수동 방식과 같은 종류의 ETW 수집을 씁니다. 그래서 [안내서](GAME_GUIDE.ko.md)의 Ricochet·Vanguard 주의가 그대로 적용됩니다.
 - SSD 보조 저장은 안티치트 폴더가 있는 게임을 건너뛰며, 게임의 exe·dll 파일은 복사하지 않습니다.
-- 실제 안티치트 게임에서는 아직 시험하지 않았습니다. 현재 검증 범위 밖입니다.
+- 안티치트 게임은 이 PC 의 사용 기록(Vanguard, Ricochet 각 1종)만 있고 통제된 검증은 하지 않았습니다. 그 밖의 안티치트 게임은 시험하지 않았습니다. 계정 제재 여부는 보증하지 않습니다.

@@ -208,6 +208,92 @@ bounded 와 같되, 최근 500 ms 의 게임 읽기 처리량이 80 MiB/s 이상
 
 재현은 `csharp\scripts\cs_orbit_bench.ps1 -Game <이름> -Pairs 10 ...` 로 측정하고 `aster orbit-bench summarize` 로 판정합니다.
 
+## 실사용 기록
+
+한 PC 에서 서비스가 남긴 로그를 집계한 기록입니다. 통제된 벤치마크가 아니며, 위의 ORBIT ABBA 벤치와도 별개입니다. 예열이 없을 때와 비교한 대조 측정이 없고, 게임 전체 로딩 시간과 플레이 중 프레임 끊김은 재지 않았습니다. 아래 수치는 모두 로그와 상태 파일에서 직접 센 값입니다.
+
+### 자료와 환경
+
+- **자료.** `%ProgramData%\AsterCache\logs\service.log`(2026-11-02 18:27 ~ 2026-11-10 19:04, PC 현지 시각 UTC+9, 집계 시점 9,625줄), `auto_status.json`, `prewarm_status.json`, 설정 파일의 안티치트 항목을 읽었습니다. 플레이 시각 목록은 옮기지 않았고 날짜 범위와 횟수만 적었습니다.
+- **장비.** WDC WD20EZAZ 2 TB SMR HDD(D:, 로그 `disk D: HDD (looks like SMR)`), NVMe SSD(C:), Windows 11 Pro 10.0.26200, RAM 31.9 GiB(32 GiB). 두 게임 모두 D: 에 있습니다.
+- **게임 이름.** 로그와 상태 파일의 이름은 `LeagueOfLegens`(표시 이름 League of Legends, 수동 등록)와 `Call_of_Duty`(Steam, 자동 등록)입니다.
+- **버전.** 로그에는 프로그램 버전이 없어, 어느 줄이 어느 버전에서 나왔는지 알 수 없습니다. 기간 중 줄 서식이 바뀐 것은 확인됩니다(예열 완료 줄의 `hint MB/s` 는 2026-11-03 부터, `gaps filled` 는 2026-11-06 부터, `partial` 은 2026-11-08 부터, `prewarm phases` 줄은 2026-11-10 부터). 그래서 버전이 아니라 날짜로 나눴습니다. 앞 기간은 2026-11-02 ~ 2026-11-07, 뒤 기간은 2026-11-08 ~ 2026-11-10 입니다. README 에는 뒤 기간 수치만 씁니다.
+
+### 게임 시작 감지
+
+| 게임 | 기간 | 감지 횟수 | 감지한 날 수 |
+|---|---|---|---|
+| League of Legends | 2026-11-04 ~ 2026-11-10 | 10 (`LeagueClient.exe` 10) | 6 |
+| Call of Duty | 2026-11-02 ~ 2026-11-09 | 62 (`cod.exe` 31, `sp26-cod.exe` 31) | 8 |
+
+- **근거.** 줄 형식은 `<게임>: <exe> started (pid N) via poll` 이고, 이 줄 전부를 셌습니다(League of Legends n=10, Call of Duty n=62).
+- **주의.** 프로세스 시작을 센 값입니다. 경기나 플레이 세션의 수가 아닙니다. 같은 초에 두 번 감지된 줄도 있습니다. League of Legends 는 클라이언트 시작만 셉니다. `auto_status.json` 의 `plays` 는 최근 30개만 남아서 Call of Duty 의 전체 횟수에는 쓰지 못했습니다.
+
+### 안티치트 판정과 기능별 적용
+
+| 기능 | League of Legends (Vanguard) | Call of Duty (Ricochet) |
+|---|---|---|
+| 판정 | Riot 게임 규칙(`Core/Discovery/AntiCheat.cs`)이 `vanguard` 로 판정합니다. 설치 폴더 이름이 아니라, Riot 게임이고 이 PC 에 Vanguard 가 있다는 조건입니다. | 설치 폴더에서 `ricochet` 이름을 찾아 판정합니다. 로그 `anti-cheat detected (ricochet)` 1줄(2026-11-02) |
+| 트레이스(ETW) | 2회 수집(2026-11-04) 뒤 건너뜀 8회(2026-11-04 ~ 2026-11-10) | 수집 시작 14회(2026-11-04 ~ 2026-11-09) |
+| 고정(pin) | 건너뜀 4회 | 건너뜀 7회 |
+| 재배치 | 완료 4회, 중단 4회(오류 줄) | 완료 5회, 중단 3회(오류 줄) |
+| 예열 | 적용 | 적용 |
+| SSD 보조 저장 | 정책상 거절. 이 PC 설정은 꺼짐 | 정책상 거절. 이 PC 설정은 꺼짐 |
+
+- **근거.** 줄 형식은 `<게임>: auto trace started`(League of Legends n=2, Call of Duty n=14), `<게임>: trace skipped (anti-cheat: vanguard)`(n=8), `<게임>: pin skipped (anti-cheat: <종류>)`(League of Legends n=4, Call of Duty n=7), `<게임>: auto relocation done`(League of Legends n=4, Call of Duty n=5), `[ERROR] <게임>: auto relocation stopped: ...`(League of Legends n=4, Call of Duty n=3)입니다. 정책은 `Core/Discovery/Capabilities.cs` 입니다(트레이스 금지: eac, battleye, vanguard, kernel, unknown. 고정 금지: 그 목록과 ricochet. SSD 보조 저장: 안티치트가 있으면 거절).
+- **중단 오류 문구.** `zone_not_free`(구역을 다른 파일이 사용 중), `journal belongs to a different plan`, `zone overlaps hot data in a cycle` 입니다. 안티치트를 이유로 한 문구는 없습니다. 원인은 로그만으로 더 따지지 않았습니다.
+- **League of Legends 의 트레이스 2회.** 2026-11-04 에 수집됐고, 같은 날 오후 플레이부터 건너뜁니다. 그 시점에 판정이 적용된 이유는 로그에 없습니다.
+- 두 게임을 이 설정으로 실행했다는 사실만 보여 줍니다.
+
+### 예열 소요 시간
+
+예열 완료 줄(`<게임>: prewarm done (<사유>): ...`)을 전부 읽었습니다. 줄 형식은 `N MiB requested, X MiB gaps filled in S s = R hint MB/s, Q requests, E errors` 이고, 부분 예열이면 `partial A/B MiB, the rest does not fit in memory:` 가 앞에 붙습니다. `hint MB/s` 는 요청한 MiB 를 걸린 초로 나눈 값입니다. 이미 캐시에 있는 데이터를 요청하면 디스크 속도보다 빠르게 나옵니다. 전체 147줄(League of Legends 68, Call of Duty 79)에서 오류 수는 모두 0 입니다.
+
+**뒤 기간(2026-11-08 ~ 2026-11-10).**
+
+| 게임 | 종류 | n | 요청량(MiB) | 걸린 시간(초) 최소 / 중앙값 / 최대 | hint MB/s 최소 / 중앙값 / 최대 |
+|---|---|---|---|---|---|
+| League of Legends | 서비스 시작(앞부분) | 5 | 970 ~ 1,023 | 11.53 / 21.38 / 22.28 | 46 / 48 / 84 |
+| League of Legends | Riot 클라이언트 실행, 부분 예열 8,173 / 8,182 MiB | 1 | 8,173 | 48.43 | 169 |
+| Call of Duty | 서비스 시작(앞부분) | 3 | 1,023 | 34.67 / 39.84 / 40.74 | 25 / 26 / 30 |
+| Call of Duty | 핫 집합 전체(새 트레이스·재배치 뒤) | 7 | 9,081 ~ 10,217 | 128.12 / 249.77 / 415.54 | 22 / 41 / 80 |
+| Call of Duty | 부분 예열 8,173 / 8,948 ~ 10,218 MiB(Steam 실행·재배치 뒤) | 3 | 8,173 | 195.38 / 252.69 / 255.46 | 32 / 32 / 42 |
+| Call of Duty | 부분 예열 4,481 · 4,881 / 8,948 MiB(2026-11-08 새벽) | 2 | 4,481 ~ 4,881 | 50.66 / 79.02 / 107.38 | 42 / 69 / 96 |
+
+- **서비스 시작 예열.** 서비스가 시작될 때는 앞부분을 `auto.startup_warm_max_mib`(기본 1,024)까지만 읽습니다. 표의 970 ~ 1,023 MiB 가 그 값입니다.
+- **핫 집합 전체 7건의 분포.** 10,217 MiB 로 같은 4건도 128.12 ~ 249.77 초(41 ~ 80 hint MB/s)로 갈립니다. 이유는 로그로 확인하지 못했습니다.
+- **예열 단계 시간.** `prewarm phases` 줄은 2줄뿐입니다. Call of Duty 서비스 시작: 계획 0.89, 보정 0.06, common 0.93, ORBIT 0.00, 스트림 44.57, 기타 0.47, 합계 46.92 초. League of Legends 클라이언트 실행: 계획 0.53, 보정 4.82, common 0.00, ORBIT 0.00, 스트림 61.55, 기타 0.26, 합계 67.17 초. 같은 회의 `prewarm done` 줄은 각각 39.84 초와 48.43 초라서 두 줄의 시간 정의가 다릅니다. 차이의 원인은 확인하지 않았습니다.
+- **앞 기간(2026-11-02 ~ 2026-11-07).** League of Legends 62건, Call of Duty 64건입니다. 예열 대상이 그 사이에 계속 바뀌었습니다(요청량 League of Legends 0 ~ 8,166 MiB, Call of Duty 681 ~ 7,227 MiB). 1,000 hint MB/s 를 넘는 줄이 League of Legends 26건, Call of Duty 11건이고 최대는 16,482 입니다. README 에 적힌 이 드라이브의 연속 읽기(90~110 MB/s)로는 나올 수 없는 값이라 디스크 읽기 속도로 보지 않고, 표에서 뺐습니다.
+
+**예열 대상 크기와 RAM 예산.** `prewarm_status.json` 의 마지막 기록에서 League of Legends 의 핫 집합은 8,182 MiB, Call of Duty 는 10,218 MiB 입니다. 로그의 `cache budget of 8173 MiB`(1,973회, 값은 한 가지)가 RAM 예산입니다. 물리 RAM 31.9 GiB 의 4분의 1(약 8,173 MiB)과 일치합니다. 핫 집합이 예산보다 커서 Call of Duty 는 부분 예열(`partial 8173/...`)이 되풀이됩니다.
+
+### 예열 적중률과 핫 집합 비율
+
+- **적중률 정의(코드 확인).** `Prewarmer.HitPercent`(`csharp/src/AsterCache.Service/Prewarm.cs`)는 핫 집합의 읽기 순서 목록에서 앞쪽 4곳과 나머지에서 고르게 고른 4곳(최대 8곳)을 1 MiB 씩 일반 읽기로 읽어, 0.8 ms 이하로 끝난 곳의 비율을 냅니다(`CacheProbe.cs`). 파일 캐시(RAM)에 있던 곳의 비율입니다. 표본이 8곳이면 12.5% 단위로 나옵니다. `AutoMode.RecordHitAfterWarm` 이 예열이 끝난 직후, 같은 물리 디스크에서 게임이 실행 중이 아닐 때 재서 `auto_status.json` 의 `hit_percent` 에 쓰며, 게임별 마지막 값 하나만 남깁니다. 게임을 켜는 순간이나 로딩 중의 값이 아닙니다.
+- **값.** League of Legends 100%(`hit_at` 2026-11-10, 부분 예열 8,173 / 8,182 MiB 직후), Call of Duty 75%(2026-11-10, 서비스 시작 예열 1,023 / 10,218 MiB 직후)입니다. 각 n=1 입니다. 로그에는 적중률 줄이 없어 이력이 없습니다.
+- **핫 집합 비율(`coverage_percent`).** 적중률이 아닙니다. 로그 줄 `session read N MiB, plan hot set M MiB = P% of the bytes the process read (not the cache hit rate)` 의 P 로, 계획 핫 집합이 그 트레이스 세션에서 게임 프로세스가 읽은 바이트의 몇 %인지입니다. 이 서식의 줄은 2026-11-06 ~ 2026-11-10 에 있고(이전 서식 `zone covers` 줄은 뺐습니다), Call of Duty n=7: 100, 64, 6, 34, 4, 100, 8%(읽은 양 127 ~ 123,582 MiB), League of Legends n=5: 모두 100%(읽은 양 453 ~ 486 MiB)입니다. 짧은 세션은 100% 로 쏠립니다. 읽은 양이 큰 Call of Duty 세션은 4 ~ 8% 입니다.
+
+### 시작 스트림
+
+게임이 시작될 때 핫 집합을 읽는 시작 스트림이 실제로 실행된 기록은 이 로그에 없습니다. `start stream stopped ...`, `start stream cancelled ...` 줄이 0건이고 건너뜀 줄만 있습니다.
+
+| `start stream skipped (...)` 사유 | League of Legends | Call of Duty |
+|---|---|---|
+| `game already running` | 0 | 39 |
+| `last stream N min ago, within restream cooldown` | 0 | 9 |
+| `already warm` | 1 | 4 |
+| `drive busy` | 1 | 1 |
+| 합계 | 2 | 53 |
+
+### 재지 않은 것과 로그에 없는 것
+
+- 게임 전체 로딩 시간, 플레이 중 프레임 끊김, 예열이 있을 때와 없을 때의 비교.
+- 게임을 켜는 순간의 적중률과 적중률의 이력(마지막 값 하나만 있음).
+- 프로그램 버전별 구분(로그에 버전이 없음).
+- 시작 스트림의 실제 읽기량과 소요 시간(실행 기록 0건).
+
+집계 스크립트는 저장소에 두지 않았습니다. 위 줄 형식을 정규식으로 읽어 세면 같은 값이 나옵니다.
+
 ## 결과 해석 (옮긴 내용)
 
 - **드라이브 위치별 속도.** 드라이브 위치별 속도 차이는 없었습니다(`results/zone_curve_20261101`). 그래서 핫 존의 위치를 맞추는 최적화는 설계에서 뺐습니다.

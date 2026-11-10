@@ -208,6 +208,92 @@ The gain comes at a cost: some episodes were later because of the advance. This 
 
 Reproduce by measuring with `csharp\scripts\cs_orbit_bench.ps1 -Game <name> -Pairs 10 ...` and judging with `aster orbit-bench summarize`.
 
+## Real-world usage records
+
+This is a tally of the log the service wrote on one PC. It is not a controlled benchmark, and it is separate from the ORBIT ABBA bench above. There is no control measurement without prewarm, and total game load time and in-game frame stutter were not measured. Every figure below was counted directly from the log and status files.
+
+### Sources and environment
+
+- **Sources.** `%ProgramData%\AsterCache\logs\service.log` (2026-11-02 18:27 to 2026-11-10 19:04, PC local time UTC+9, 9,625 lines when tallied), `auto_status.json`, `prewarm_status.json`, and the anti-cheat entries in the settings file. Play-time lists are not reproduced; only date ranges and counts are given.
+- **Machine.** WDC WD20EZAZ 2 TB SMR HDD (D:, log line `disk D: HDD (looks like SMR)`), NVMe SSD (C:), Windows 11 Pro 10.0.26200, 31.9 GiB RAM (32 GiB). Both games are on D:.
+- **Game names.** The names in the log and status files are `LeagueOfLegens` (display name League of Legends, registered manually) and `Call_of_Duty` (Steam, registered automatically).
+- **Versions.** The log does not record the program version, so it is not known which line came from which version. It is confirmed that the line format changed during the period (the `hint MB/s` wording in prewarm completion lines from 2026-11-03, `gaps filled` from 2026-11-06, `partial` from 2026-11-08, and `prewarm phases` lines from 2026-11-10). So the data is split by date, not by version: the early period is 2026-11-02 to 2026-11-07 and the late period is 2026-11-08 to 2026-11-10. The README uses late-period figures only.
+
+### Game start detections
+
+| Game | Period | Detections | Days with a detection |
+|---|---|---|---|
+| League of Legends | 2026-11-04 to 2026-11-10 | 10 (`LeagueClient.exe` 10) | 6 |
+| Call of Duty | 2026-11-02 to 2026-11-09 | 62 (`cod.exe` 31, `sp26-cod.exe` 31) | 8 |
+
+- **Basis.** The line format is `<game>: <exe> started (pid N) via poll`, and every such line was counted (League of Legends n=10, Call of Duty n=62).
+- **Caution.** This counts process starts, not matches or play sessions. Some lines are two detections in the same second. For League of Legends only client starts are counted. `plays` in `auto_status.json` keeps only the latest 30, so it could not be used for the Call of Duty total.
+
+### Anti-cheat kind and feature outcomes
+
+| Feature | League of Legends (Vanguard) | Call of Duty (Ricochet) |
+|---|---|---|
+| Detection | The Riot-game rule (`Core/Discovery/AntiCheat.cs`) decides `vanguard`. It is not an install-folder name; the condition is a Riot game on a PC that has Vanguard. | Found by a `ricochet` name in the install folder. One log line `anti-cheat detected (ricochet)` (2026-11-02) |
+| Trace (ETW) | 2 collected (2026-11-04), then skipped 8 times (2026-11-04 to 2026-11-10) | 14 collections started (2026-11-04 to 2026-11-09) |
+| Pin | Skipped 4 times | Skipped 7 times |
+| Relocation | 4 completed, 4 stopped (error lines) | 5 completed, 3 stopped (error lines) |
+| Prewarm | Applied | Applied |
+| SSD assist storage | Refused by policy; off in this PC's settings | Refused by policy; off in this PC's settings |
+
+- **Basis.** The line formats are `<game>: auto trace started` (League of Legends n=2, Call of Duty n=14), `<game>: trace skipped (anti-cheat: vanguard)` (n=8), `<game>: pin skipped (anti-cheat: <kind>)` (League of Legends n=4, Call of Duty n=7), `<game>: auto relocation done` (League of Legends n=4, Call of Duty n=5), and `[ERROR] <game>: auto relocation stopped: ...` (League of Legends n=4, Call of Duty n=3). The policy is in `Core/Discovery/Capabilities.cs` (trace forbidden: eac, battleye, vanguard, kernel, unknown; pin forbidden: that list plus ricochet; SSD assist storage: refused when any anti-cheat is present).
+- **Stop error texts.** `zone_not_free` (the zone is in use by another file), `journal belongs to a different plan`, and `zone overlaps hot data in a cycle`. None of them names anti-cheat as the reason. The cause was not analyzed further from the log alone.
+- **The 2 League of Legends traces.** They were collected on 2026-11-04, and plays from that afternoon onward are skipped. The log does not say why the policy applied from that point.
+- This only shows that the two games were run with these settings.
+
+### Prewarm duration
+
+Every prewarm completion line (`<game>: prewarm done (<reason>): ...`) was read. The line format is `N MiB requested, X MiB gaps filled in S s = R hint MB/s, Q requests, E errors`, with `partial A/B MiB, the rest does not fit in memory:` in front for a partial prewarm. `hint MB/s` is the requested MiB divided by the elapsed seconds. Requesting data that is already cached gives a figure faster than the disk. Across all 147 lines (League of Legends 68, Call of Duty 79) the error count is 0.
+
+**Late period (2026-11-08 to 2026-11-10).**
+
+| Game | Kind | n | Requested (MiB) | Time (s) min / median / max | hint MB/s min / median / max |
+|---|---|---|---|---|---|
+| League of Legends | Service start (head part) | 5 | 970 to 1,023 | 11.53 / 21.38 / 22.28 | 46 / 48 / 84 |
+| League of Legends | Riot client launch, partial 8,173 / 8,182 MiB | 1 | 8,173 | 48.43 | 169 |
+| Call of Duty | Service start (head part) | 3 | 1,023 | 34.67 / 39.84 / 40.74 | 25 / 26 / 30 |
+| Call of Duty | Whole hot set (after a new trace or relocation) | 7 | 9,081 to 10,217 | 128.12 / 249.77 / 415.54 | 22 / 41 / 80 |
+| Call of Duty | Partial 8,173 / 8,948 to 10,218 MiB (after Steam launch or relocation) | 3 | 8,173 | 195.38 / 252.69 / 255.46 | 32 / 32 / 42 |
+| Call of Duty | Partial 4,481 and 4,881 / 8,948 MiB (early 2026-11-08) | 2 | 4,481 to 4,881 | 50.66 / 79.02 / 107.38 | 42 / 69 / 96 |
+
+- **Service-start prewarm.** When the service starts, it reads only the head part, up to `auto.startup_warm_max_mib` (default 1,024). The 970 to 1,023 MiB in the table is that value.
+- **Spread of the 7 whole-hot-set runs.** Even the 4 runs of the same 10,217 MiB range from 128.12 to 249.77 s (41 to 80 hint MB/s). The log does not show why.
+- **Prewarm phase times.** There are only 2 `prewarm phases` lines. Call of Duty service start: plan 0.89, calibration 0.06, common 0.93, ORBIT 0.00, stream 44.57, other 0.47, total 46.92 s. League of Legends client launch: plan 0.53, calibration 4.82, common 0.00, ORBIT 0.00, stream 61.55, other 0.26, total 67.17 s. The `prewarm done` lines of the same rounds say 39.84 s and 48.43 s, so the two lines define time differently. The reason for the gap was not checked.
+- **Early period (2026-11-02 to 2026-11-07).** League of Legends 62 lines, Call of Duty 64. The prewarm target kept changing during that time (requested League of Legends 0 to 8,166 MiB, Call of Duty 681 to 7,227 MiB). League of Legends has 26 lines and Call of Duty 11 lines above 1,000 hint MB/s, with a maximum of 16,482. These cannot come from this drive's sequential read (90 to 110 MB/s as stated in the README), so they are not treated as disk read speed and are left out of the table.
+
+**Prewarm target size and RAM budget.** In the last `prewarm_status.json` records, the League of Legends hot set is 8,182 MiB and the Call of Duty hot set is 10,218 MiB. The `cache budget of 8173 MiB` in the log (1,973 times, a single value) is the RAM budget. It matches one quarter of the 31.9 GiB of physical RAM (about 8,173 MiB). The hot set is larger than the budget, so Call of Duty repeatedly gets a partial prewarm (`partial 8173/...`).
+
+### Prewarm hit rate and hot set ratio
+
+- **Hit rate definition (checked in code).** `Prewarmer.HitPercent` (`csharp/src/AsterCache.Service/Prewarm.cs`) takes up to 8 places from the hot set's read-order list (the first 4 and 4 spread over the rest), reads 1 MiB from each with an ordinary read, and gives the share that finished in 0.8 ms or less (`CacheProbe.cs`). That is the share of places that were in the file cache (RAM). With 8 samples it moves in steps of 12.5%. `AutoMode.RecordHitAfterWarm` measures it right after a prewarm ends, when no game is running on the same physical disk, writes it to `hit_percent` in `auto_status.json`, and keeps only the latest value per game. It is not a value taken at game start or during loading.
+- **Values.** League of Legends 100% (`hit_at` 2026-11-10, right after the partial prewarm of 8,173 / 8,182 MiB), Call of Duty 75% (2026-11-10, right after the service-start prewarm of 1,023 / 10,218 MiB). Each is n=1. The log has no hit-rate line, so there is no history.
+- **Hot set ratio (`coverage_percent`).** This is not a hit rate. It is P in the log line `session read N MiB, plan hot set M MiB = P% of the bytes the process read (not the cache hit rate)`: the share of the bytes the game process read in that trace session that the planned hot set covers. Lines in this format exist from 2026-11-06 to 2026-11-10 (lines in the older `zone covers` format are left out). Call of Duty n=7: 100, 64, 6, 34, 4, 100, 8% (bytes read 127 to 123,582 MiB). League of Legends n=5: all 100% (bytes read 453 to 486 MiB). Short sessions skew to 100%. In the Call of Duty sessions with large reads, it is 4 to 8%.
+
+### Start stream
+
+The log has no record of the start stream (which reads the hot set when a game starts) actually running. There are 0 lines of `start stream stopped ...` or `start stream cancelled ...`; there are only skip lines.
+
+| `start stream skipped (...)` reason | League of Legends | Call of Duty |
+|---|---|---|
+| `game already running` | 0 | 39 |
+| `last stream N min ago, within restream cooldown` | 0 | 9 |
+| `already warm` | 1 | 4 |
+| `drive busy` | 1 | 1 |
+| Total | 2 | 53 |
+
+### Not measured, and not in the log
+
+- Total game load time, in-game frame stutter, and a comparison with and without prewarm.
+- The hit rate at the moment of game start, and any history of the hit rate (only the latest value exists).
+- A split by program version (the log has no version).
+- The actual bytes read and duration of the start stream (0 execution records).
+
+No tally script is kept in the repository. Reading the line formats above with regular expressions gives the same values.
+
 ## Interpretation of the results (carried over)
 
 - **Speed by drive position.** There was no difference in speed by position on the drive (`results/zone_curve_20261101`). So the optimization of placing the hot zone at a particular position was dropped from the design.

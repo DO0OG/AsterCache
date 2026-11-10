@@ -154,8 +154,19 @@ public sealed record PlanFile(
     public List<TraceEvent> PrefetchTrace(IReadOnlyList<IReadOnlyList<TraceEvent>> sessions)
     {
         var cost = new Dictionary<BlockKey, double>();
+        var observedRanges = new Dictionary<string, List<(long Start, long End)>>(StringComparer.OrdinalIgnoreCase);
         foreach (IReadOnlyList<TraceEvent> s in sessions)
         {
+            foreach (TraceEvent e in s.Where(e => e.Observed && e.Length > 0))
+            {
+                if (!observedRanges.TryGetValue(e.Path, out List<(long Start, long End)>? ranges))
+                {
+                    observedRanges[e.Path] = ranges = [];
+                }
+
+                ranges.Add((e.Offset, e.Offset + e.Length));
+            }
+
             foreach (BlockEvent e in TraceEvents.Validated(s, Block))
             {
                 for (long b = e.First; b <= e.Last; b++)
@@ -166,9 +177,30 @@ public sealed record PlanFile(
             }
         }
 
-        var rows = new List<TraceEvent>(Order.Count);
-        foreach (PlanRange o in Order)
+        foreach (string path in observedRanges.Keys.ToList())
         {
+            List<(long Start, long End)> ranges = observedRanges[path];
+            ranges.Sort((a, b) => a.Start.CompareTo(b.Start));
+            var merged = new List<(long Start, long End)>();
+            foreach ((long start, long rangeEnd) in ranges)
+            {
+                if (merged.Count > 0 && start <= merged[^1].End)
+                {
+                    merged[^1] = (merged[^1].Start, Math.Max(merged[^1].End, rangeEnd));
+                }
+                else
+                {
+                    merged.Add((start, rangeEnd));
+                }
+            }
+
+            observedRanges[path] = merged;
+        }
+
+        var rows = new List<TraceEvent>(Order.Count);
+        for (int rangeGroup = 0; rangeGroup < Order.Count; rangeGroup++)
+        {
+            PlanRange o = Order[rangeGroup];
             long off = o.Vcn * ClusterBytes;
             long n = o.Clusters * ClusterBytes;
             long first = off / Block;
@@ -184,10 +216,73 @@ public sealed record PlanFile(
                 c = Math.Max(c, cost.GetValueOrDefault(new BlockKey(o.Path, b), 0.0));
             }
 
-            rows.Add(new TraceEvent(o.Path, off, n, c));
+            observedRanges.TryGetValue(o.Path, out List<(long Start, long End)>? sourceRanges);
+            AppendPrefetchRanges(rows, o.Path, off, n, c, sourceRanges, rangeGroup);
         }
 
         return rows;
+    }
+
+    private static void AppendPrefetchRanges(List<TraceEvent> rows, string path, long offset, long length, double cost, List<(long Start, long End)>? ranges, long rangeGroup)
+    {
+        var pieces = new List<TraceEvent>();
+        long end = offset + length;
+        long at = offset;
+        int index = ranges is null ? 0 : FirstRangeEndingAfter(ranges, at);
+
+        while (at < end)
+        {
+            if (ranges is null || index >= ranges.Count || ranges[index].Start >= end)
+            {
+                pieces.Add(new TraceEvent(path, at, end - at, cost, Observed: false));
+                break;
+            }
+
+            (long start, long rangeEnd) = ranges[index];
+            if (rangeEnd <= at)
+            {
+                index++;
+                continue;
+            }
+
+            if (start > at)
+            {
+                long gapEnd = Math.Min(end, start);
+                pieces.Add(new TraceEvent(path, at, gapEnd - at, cost, Observed: false));
+                at = gapEnd;
+                continue;
+            }
+
+            long observedEnd = Math.Min(end, rangeEnd);
+            pieces.Add(new TraceEvent(path, at, observedEnd - at, cost));
+            at = observedEnd;
+            if (at >= rangeEnd)
+            {
+                index++;
+            }
+        }
+
+        rows.AddRange(pieces.Count > 1 ? pieces.Select(piece => piece with { RangeGroup = rangeGroup }) : pieces);
+    }
+
+    private static int FirstRangeEndingAfter(IReadOnlyList<(long Start, long End)> ranges, long offset)
+    {
+        int low = 0;
+        int high = ranges.Count;
+        while (low < high)
+        {
+            int mid = low + (high - low) / 2;
+            if (ranges[mid].End <= offset)
+            {
+                low = mid + 1;
+            }
+            else
+            {
+                high = mid;
+            }
+        }
+
+        return low;
     }
 
     /// 트레이스에서 뽑은 읽기 전용 예열 범위: 계획과 같은 핫셋 예산으로 고릅니다.

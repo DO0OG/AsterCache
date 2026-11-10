@@ -11,6 +11,7 @@ public sealed class BatchBudgetTests
     private static readonly DateTimeOffset Now = new(2026, 11, 8, 12, 0, 0, TimeSpan.Zero);
     private readonly RecordingStreamer _streamer = new();
     private readonly Dictionary<string, long> _zoneMib = [];
+    private readonly Dictionary<string, long> _observedMib = [];
     private long _avail;
     private long _physical;
 
@@ -42,6 +43,7 @@ public sealed class BatchBudgetTests
     }
 
     private readonly HashSet<string> _noTrace = [];
+    private readonly HashSet<string> _noZone = [];
 
     private static GameSettings Game(string name, int minFree = 0) => Games.Make(name, name + ".exe") with { Prewarm = PrewarmSettings.Default with { OnServiceStart = false, MinFreeRamMib = minFree } };
 
@@ -52,7 +54,8 @@ public sealed class BatchBudgetTests
         {
             AvailableRamMib = () => _avail,
             GameRunning = _ => false,
-            ZoneBytes = g => _zoneMib[g.Name] << 20,
+            ZoneBytes = g => _noZone.Contains(g.Name) ? null : _zoneMib[g.Name] << 20,
+            ObservedBytes = g => _observedMib.TryGetValue(g.Name, out long mib) ? mib << 20 : null,
             TraceExists = g => !_noTrace.Contains(g.Name),
             PhysicalRamBytes = () => _physical,
         }, new ListLog(), null, () => Now);
@@ -114,6 +117,62 @@ public sealed class BatchBudgetTests
         p.RunAll([x, y, z], "t");
 
         Assert.Equal(["x", "y", "z"], _streamer.Fulls.Select(g => g.Name));
+    }
+
+    [Fact]
+    public void EveryGamesObservedRangesAreAllocatedBeforeAnotherGamesSupplement()
+    {
+        (_avail, _physical) = (10000, 2200L << 20); // 1100 MiB cache budget
+        (_zoneMib["a"], _zoneMib["b"]) = (1000, 700);
+        (_observedMib["a"], _observedMib["b"]) = (400, 700); // a 의 나머지 600 MiB 는 보충 범위
+        GameSettings a = Game("a"), b = Game("b");
+        Prewarmer p = Make(a, b);
+
+        IReadOnlyList<PrewarmResult> results = p.RunAll([a, b], "t");
+
+        Assert.All(results, r => Assert.True(r.Ran));
+        Assert.Equal(["head a", "head b", "full a", "full b"], _streamer.Events);
+        GameSettings aRead = _streamer.Fulls.Single(g => g.Name == "a");
+        GameSettings bRead = _streamer.Fulls.Single(g => g.Name == "b");
+        Assert.Equal((400, true), (aRead.MaxStreamMib, aRead.MaxStreamSet)); // a 의 추측 범위는 선택되지 않음
+        Assert.False(bRead.MaxStreamSet); // b 의 관찰 범위는 전부 예산을 받음
+    }
+
+    [Fact]
+    public void ServiceStartCapAllocatesEveryGamesObservedRangesBeforeAnotherGamesSupplement()
+    {
+        (_avail, _physical) = (100000, 0);
+        (_zoneMib["a"], _zoneMib["b"]) = (1024, 768);
+        (_observedMib["a"], _observedMib["b"]) = (256, 768); // a 의 나머지 768 MiB 는 보충 범위
+        GameSettings a = Game("a"), b = Game("b");
+        Prewarmer p = Make(a, b);
+        p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 1024 });
+
+        IReadOnlyList<PrewarmResult> results = p.RunServiceStart([a, b]);
+
+        Assert.All(results, r => Assert.True(r.Ran)); // 게임 전체 크기로 상한을 먼저 쓰면 b 가 빠짐
+        GameSettings aRead = _streamer.Fulls.Single(g => g.Name == "a");
+        GameSettings bRead = _streamer.Fulls.Single(g => g.Name == "b");
+        Assert.Equal((256, true), (aRead.MaxStreamMib, aRead.MaxStreamSet));
+        Assert.False(bRead.MaxStreamSet);
+    }
+
+    [Fact]
+    public void ServiceStartSkippedUnrecordedGameDoesNotUseUpTheCapForLaterGames()
+    {
+        (_avail, _physical) = (100000, 0);
+        (_zoneMib["a"], _zoneMib["c"]) = (600, 300);
+        _noZone.Add("b"); // 기록 없는 게임: 통째 예열 기본 1024 MiB 는 남은 424 MiB 에 안 들어가 건너뜀
+        _noTrace.Add("b");
+        GameSettings a = Game("a"), b = Game("b"), c = Game("c");
+        Prewarmer p = Make(a, b, c);
+        p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 1024 });
+
+        IReadOnlyList<PrewarmResult> results = p.RunServiceStart([a, b, c]);
+
+        Assert.Equal(["a", "c"], _streamer.Fulls.Select(g => g.Name)); // c 가 건너뛴 b 의 몫 때문에 빠지지 않음
+        Assert.Equal("startup byte cap", results.Single(r => r.Game == "b").SkipReason);
+        Assert.True(results.Single(r => r.Game == "c").Ran);
     }
 
     [Fact]

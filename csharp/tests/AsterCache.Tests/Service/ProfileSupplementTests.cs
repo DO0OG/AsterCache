@@ -1,3 +1,6 @@
+using AsterCache.Core.Json;
+using AsterCache.Core.Plan;
+using AsterCache.Core.Settings;
 using AsterCache.Core.Trace;
 using AsterCache.Service;
 using Xunit;
@@ -105,5 +108,139 @@ public sealed class ProfileSupplementTests
         Assert.Equal(100 * Mib, added);
         Assert.Equal(7, events.Count); // 16 MiB x 6 + 4 MiB
         Assert.Equal(Enumerable.Range(0, 7).Select(i => i * ProfileSupplement.PieceBytes), events.Select(e => e.Offset)); // 이어지는 오프셋
+    }
+
+    [Fact]
+    public void SupplementSourceSurvivesPlanOutputAndLegacyRowsDefaultToObserved()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "aster_profile_source_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string origin = dir;
+            string asset = Path.Combine(dir, "asset.bin");
+            string output = Path.Combine(dir, "game.prefetch.json");
+            (IReadOnlyList<TraceEvent> mixed, _) = ProfileSupplement.Union([Ev(asset, 0, 1)], 2 * Mib, _ => [Ev(asset, 0, 2)]);
+            var plan = new PlanFile(PlanFile.CurrentVersion, origin, "C:", 64 * 1024, 64 * 1024, new PlanZone(0, 32),
+                [], [new PlanRange(asset, 0, 32)], [], new JObject());
+
+            List<TraceEvent> planned = plan.PrefetchTrace([mixed]);
+            PlanOutput.SavePrefetch(output, planned);
+            List<TraceEvent> loaded = TraceLoader.LoadRanges(output, origin, p => p, _ => 2 * Mib);
+
+            Assert.Equal([true, false], loaded.Select(e => e.Observed));
+            Assert.Equal([1 * Mib, 1 * Mib], loaded.Select(e => e.Length));
+            Assert.Single(loaded.Select(e => e.RangeGroup).Distinct());
+            TraceEvent originalRange = Assert.Single(PrefetchStreamer.CoalesceRangeGroups(loaded));
+            Assert.Equal(2 * Mib, originalRange.Length);
+
+            string legacy = Path.Combine(dir, "legacy.prefetch.json");
+            PlanOutput.SavePrefetch(legacy, [Ev(asset, 0, 1)]);
+            List<TraceEvent> oldRows = TraceLoader.LoadRanges(legacy, origin, p => p, _ => 2 * Mib);
+
+            Assert.True(Assert.Single(oldRows).Observed);
+            Assert.DoesNotContain("observed", File.ReadAllText(legacy, System.Text.Encoding.UTF8), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void LegacyRowsRestoreObservedIntersectionsFromTheExistingTraceAndKeepOrder()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "aster_legacy_source_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string root = Path.Combine(dir, "game");
+            Directory.CreateDirectory(root);
+            string asset = Path.Combine(root, "asset.bin");
+            File.WriteAllBytes(asset, new byte[8 * (int)Mib]);
+            GameSettings game = Games.Make("legacy", "legacy.exe") with
+            {
+                OriginRoot = root,
+                AllowedRoots = [root],
+                Plan = Path.Combine(dir, "legacy.plan.json"),
+                Trace = Path.Combine(dir, "legacy.prefetch.json"),
+            };
+            PlanOutput.SavePrefetch(game.Trace, [new TraceEvent(asset, 0, 8 * Mib)]);
+            PlanOutput.SavePrefetch(AutoTracer.RawTracePath(game), [new TraceEvent(asset, 2 * Mib, 2 * Mib)]);
+
+            List<TraceEvent> restored = PrefetchStreamer.LoadRows(game, false);
+
+            Assert.Equal([(0L, 2L * Mib, false), (2L * Mib, 2L * Mib, true), (4L * Mib, 4L * Mib, false)],
+                restored.Select(e => (e.Offset, e.Length, e.Observed)));
+            Assert.Equal(8 * Mib, restored.Sum(e => e.Length));
+            Assert.Single(restored.Select(e => e.RangeGroup).Distinct());
+
+            string uncachedRoot = Path.Combine(dir, "uncached");
+            Directory.CreateDirectory(uncachedRoot);
+            string uncachedAsset = Path.Combine(uncachedRoot, "asset.bin");
+            File.WriteAllBytes(uncachedAsset, new byte[8 * (int)Mib]);
+            GameSettings uncached = game with
+            {
+                Name = "uncached",
+                OriginRoot = uncachedRoot,
+                AllowedRoots = [uncachedRoot],
+                Plan = Path.Combine(dir, "uncached.plan.json"),
+                Trace = Path.Combine(dir, "uncached.prefetch.json"),
+            };
+            PlanOutput.SavePrefetch(uncached.Trace, [new TraceEvent(uncachedAsset, 0, 8 * Mib)]);
+            File.WriteAllText(AutoTracer.RawTracePath(uncached), "not parsed while source reads are disabled");
+
+            List<TraceEvent> safeFallback = PrefetchStreamer.LoadRows(uncached, false, default, allowSourceRead: false);
+
+            Assert.True(Assert.Single(safeFallback).Observed); // 캐시에 없는 원시 트레이스는 읽지 않고 기존 기본값으로 처리
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void GameStartPathsNeverParseTheRawTraceAndOnlyUseWhatTheWarmingSideCached()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "aster_start_source_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string root = Path.Combine(dir, "game");
+            Directory.CreateDirectory(root);
+            string asset = Path.Combine(root, "asset.bin");
+            File.WriteAllBytes(asset, new byte[8 * (int)Mib]);
+            GameSettings game = Games.Make("startpath", "startpath.exe") with
+            {
+                OriginRoot = root,
+                AllowedRoots = [root],
+                Plan = Path.Combine(dir, "startpath.plan.json"),
+                Trace = Path.Combine(dir, "startpath.prefetch.json"),
+                MaxStreamMib = 4,
+                MaxStreamSet = true,
+            };
+            PlanOutput.SavePrefetch(game.Trace, [new TraceEvent(asset, 0, 8 * Mib)]);
+            string raw = AutoTracer.RawTracePath(game);
+            PlanOutput.SavePrefetch(raw, [new TraceEvent(asset, 6 * Mib, 2 * Mib)]);
+
+            _ = PrefetchStreamer.Ops(game); // 시작 스트림·고정·표본이 타는 경로
+            _ = PrefetchStreamer.PartialProbeSamples(game);
+            _ = PrefetchStreamer.ObservedBytes(game, allowSourceRead: false);
+            Assert.False(PrefetchStreamer.SourceTraceParses.ContainsKey(raw)); // 캐시가 비었으면 읽지 않고 전부 관찰됨으로 처리
+
+            long? observed = PrefetchStreamer.ObservedBytes(game); // 예열 쪽만 원시 트레이스를 읽음
+            Assert.Equal(1, PrefetchStreamer.SourceTraceParses[raw]);
+            Assert.Equal(2 * Mib, observed);
+
+            _ = PrefetchStreamer.PartialProbeSamples(game);
+            _ = PrefetchStreamer.ObservedBytes(game, allowSourceRead: false);
+            Assert.Equal(1, PrefetchStreamer.SourceTraceParses[raw]); // 이후에는 캐시만
+            Assert.Equal(2 * Mib, PrefetchStreamer.ObservedBytes(game, allowSourceRead: false));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
     }
 }

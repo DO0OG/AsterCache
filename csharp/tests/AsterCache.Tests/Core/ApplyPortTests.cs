@@ -126,6 +126,44 @@ public sealed class ApplyPortTests : ApplyTestBase
     }
 
     [Fact]
+    public void FilesTheApplySkipsAreNotCountedAsWorkLeftSoTheLayoutIsNotStuckOnResumeNeeded()
+    {
+        PlanFile p = Make().Resolve(20000);
+
+        ApplyReport r = Apply(p, Exec(8 * Cb), Hooks(skip: path => path == F2 ? "sparse" : null)); // 스파스 파일은 계획에 있어도 옮겨지지 않음
+
+        Assert.Null(r.Stopped);
+        Assert.Empty(r.Failed);
+        LayoutReport raw = Verify(p);
+        Assert.True(raw.ResumeNeeded); // 건너뛴 파일을 몰라 영원히 이어 옮기기 필요
+        LayoutReport report = LayoutVerifier.Verify(p, f => Vol.Ext[f], f => f == F2);
+        Assert.True(report.Contiguous);
+        Assert.False(report.ResumeNeeded);
+        Assert.True(report.HotClusters < raw.HotClusters);
+    }
+
+    [Fact]
+    public void AFileThatCanStillBeMovedKeepsTheLayoutAtResumeNeededEvenWhenOtherFilesAreSkipped()
+    {
+        PlanFile p = Make().Resolve(20000);
+        ApplyReport r = Apply(p, Exec(8 * Cb, 12 * Cb), Hooks(skip: path => path == F2 ? "sparse" : null)); // 쓰기 한도로 멈춤: F1 의 남은 부분이 있음
+        Assert.Equal("write_cap", r.Stopped);
+
+        LayoutReport report = LayoutVerifier.Verify(p, f => Vol.Ext[f], f => f == F2);
+
+        Assert.False(report.Contiguous);
+        Assert.True(report.ResumeNeeded);
+    }
+
+    [Fact]
+    public void AFileWhoseAttributesCannotBeReadIsNotTreatedAsUnmovable()
+    {
+        Assert.True(AsterCache.Windows.FileGuards.Unmovable("x", _ => 0x200)); // 스파스
+        Assert.False(AsterCache.Windows.FileGuards.Unmovable("x", _ => 0x20)); // 보통 파일
+        Assert.False(AsterCache.Windows.FileGuards.Unmovable("x", _ => throw new IOException("not ready"))); // 일시적일 수 있음: 판정이 모름으로 남아야 함
+    }
+
+    [Fact]
     public void CancelAfterKthChunkStopsWithResumePointAndNextRunContinuesAfterIt()
     {
         PlanFile p = Make().Resolve(20000);

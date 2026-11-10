@@ -102,7 +102,7 @@ public sealed class DisplayNameAndReasonTests : IDisposable
 
     [Theory]
     [InlineData("daily write budget reached", "오늘 쓰기 한도 다 씀")]
-    [InlineData("drive recovering after relocation", "드라이브 안정화 중")]
+    [InlineData("drive recovering after relocation", "드라이브 안정화 중, 끝나면 자동 진행")]
     [InlineData("prewarmed, daily limit reached", "오늘 재배치 횟수 다 씀")]
     public void KnownEnglishReasonsBecomeShortKoreanText(string detail, string expected)
     {
@@ -111,7 +111,7 @@ public sealed class DisplayNameAndReasonTests : IDisposable
         Assert.Equal(expected, AutoStatusFile.ReasonText(detail, "ko"));
         Assert.Contains(expected, AutoStatusFile.StageText(game, "ko"));
         Assert.DoesNotContain("relocation", AutoStatusFile.StageText(game, "ko"));
-        Assert.StartsWith("waiting to relocate (", AutoStatusFile.StageText(game, "en"));
+        Assert.StartsWith("waiting for automatic relocation (", AutoStatusFile.StageText(game, "en"));
     }
 
     [Fact]
@@ -153,7 +153,7 @@ public sealed class DisplayNameAndReasonTests : IDisposable
         Assert.Equal("자동: G [실패] (데이터 검사 실패)", AutoStatusFile.Line("G", new AutoGame("auto", null, "failed", "data check failed"), "ko"));
         Assert.Equal("완료", AutoStatusFile.StageText(new AutoGame("auto", null, "done", "daily limit reached"), "ko")); // 완료 단계에는 사유를 붙이지 않음
         L.Current = L.En;
-        Assert.Equal("needs resuming", ManageViewModel.VerdictText("resume-needed"));
+        Assert.Equal("resuming automatically", ManageViewModel.VerdictText("resume-needed"));
         Assert.Equal("verification error", ManageViewModel.VerdictText("error"));
         L.Current = L.Ko;
         Assert.Equal("연속", ManageViewModel.VerdictText("contiguous"));

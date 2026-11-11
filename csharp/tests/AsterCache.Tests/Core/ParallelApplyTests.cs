@@ -129,22 +129,75 @@ public sealed class ParallelApplyTests : ApplyTestBase
     {
         PlanFile p = Plan();
         using var cts = new CancellationTokenSource();
-        Vol.BeforeMove = path => Thread.Sleep(path == F1 ? 40 : 1); // F1 이 느려서 앞 인덱스가 늦게 끝남 → 완료 집합이 접두가 아님
+        int firstF1Task = p.Tasks.ToList().FindIndex(t => t.Path == F1);
+        int laterTaskToObserve = -1;
+        int laterTaskDoneIndex = -1;
+        var lastTaskByPath = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (int i = 0; i < p.Tasks.Count; i++)
+        {
+            string path = p.Tasks[i].Path;
+            if (path != F1 && i > firstF1Task && lastTaskByPath.TryGetValue(path, out int previous) && previous > firstF1Task)
+            {
+                laterTaskToObserve = i;
+                laterTaskDoneIndex = previous;
+                break;
+            }
+
+            lastTaskByPath[path] = i;
+        }
+
+        Assert.True(firstF1Task >= 0, "F1 작업이 계획에 없습니다.");
+        Assert.True(laterTaskToObserve >= 0, "F1 뒤에서 완료를 확인할 다른 파일 작업이 없습니다.");
+
+        using var f1Started = new ManualResetEventSlim();
+        using var releaseF1 = new ManualResetEventSlim();
+        using var laterTaskStarted = new ManualResetEventSlim();
+        int stoppedAtMove = 0;
+        Vol.BeforeMove = path =>
+        {
+            if (path == F1)
+            {
+                f1Started.Set();
+                if (!releaseF1.Wait(TimeSpan.FromSeconds(60)))
+                {
+                    throw new TimeoutException("F1 작업이 뒤 인덱스 완료 신호를 기다리다 제한 시간을 초과했습니다.");
+                }
+            }
+        };
         Vol.AfterMove = n =>
         {
-            if (n == 30)
+            if (TaskOf(p, Vol.Moves[n - 1]) == laterTaskToObserve)
+            {
+                laterTaskStarted.Set(); // 같은 파일의 앞 작업은 이 시점에 저널에 기록되어 있음
+            }
+
+            if (n >= 30 && laterTaskStarted.IsSet && Interlocked.CompareExchange(ref stoppedAtMove, n, 0) == 0)
             {
                 cts.Cancel();
+                releaseF1.Set();
             }
         };
 
-        ApplyReport r1 = Applier.Apply(p, Vol, [Root], JournalPath, Hooks(), Exec(4), cts.Token);
-        Vol.AfterMove = null;
-        Vol.BeforeMove = null;
+        ApplyReport r1;
+        try
+        {
+            r1 = Applier.Apply(p, Vol, [Root], JournalPath, Hooks(), Exec(4), cts.Token);
+        }
+        finally
+        {
+            Vol.AfterMove = null;
+            Vol.BeforeMove = null;
+            releaseF1.Set();
+        }
 
         Assert.Equal("cancelled", r1.Stopped);
+        Assert.True(f1Started.IsSet, "취소 전에 F1 작업이 시작되지 않았습니다.");
+        Assert.True(laterTaskStarted.IsSet, "앞 인덱스 F1 작업이 끝나기 전에 뒤 인덱스 작업이 시작되지 않았습니다.");
+        Assert.True(stoppedAtMove >= 30, $"취소 이동 수 {stoppedAtMove}가 30보다 작습니다.");
         HashSet<long> done = new Journal(JournalPath).Rows.Where(r => Equals(r["type"], "step") && r.TryGetValue("state", out object? st) && Equals(st, "done")).Select(r => (long)r["idx"]!).ToHashSet();
         Assert.NotEmpty(done);
+        Assert.DoesNotContain((long)firstF1Task, done);
+        Assert.Contains((long)laterTaskDoneIndex, done);
         Assert.Contains(Enumerable.Range(0, (int)done.Max()).Select(i => (long)i), i => !done.Contains(i)); // 접두가 아님: 더 큰 인덱스가 끝났는데 작은 인덱스가 남음
 
         int movesBefore = Vol.Moves.Count;

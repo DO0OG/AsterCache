@@ -20,6 +20,7 @@ public sealed class SupplementWarmTests : IDisposable
     private bool _relocating;
     private double? _disk = 0;
     private long _avail = 16000;
+    private long _zoneMib = 100;
     private ProbeResult? _probe;
 
     public SupplementWarmTests() => Directory.CreateDirectory(_dir);
@@ -34,13 +35,20 @@ public sealed class SupplementWarmTests : IDisposable
 
         public Func<GameSettings, bool>? OnStream { get; set; }
 
+        public long? ReadMib { get; set; }
+
+        public long? RequestedMib { get; set; }
+
+        public long ErrorCount { get; set; }
+
         public StreamStats Stream(GameSettings game) => throw new NotSupportedException();
 
         public (StreamStats Stats, bool Complete) Stream(GameSettings game, CancellationToken stop, Action<long, long>? progress)
         {
             Seen.Add(game);
             bool go = OnStream?.Invoke(game) ?? true;
-            return (new StreamStats(Math.Min(100L, game.MaxStreamMib) * Mib, 1, 0, 0.01), go && !stop.IsCancellationRequested);
+            long windowMib = Math.Min(100L, game.MaxStreamMib);
+            return (new StreamStats((ReadMib ?? windowMib) * Mib, 1, ErrorCount, 0.01, RequestedBytes: (RequestedMib ?? windowMib) * Mib), go && !stop.IsCancellationRequested);
         }
     }
 
@@ -51,7 +59,7 @@ public sealed class SupplementWarmTests : IDisposable
         {
             AvailableRamMib = () => _avail,
             GameRunning = g => _running || (_helperRunning && DispatchEnv.IsGameRunning(g, [(1234, "body.exe")])),
-            ZoneBytes = g => Math.Min(100L, g.MaxStreamMib) * Mib,
+            ZoneBytes = g => Math.Min(_zoneMib, g.MaxStreamMib) * Mib,
             TraceExists = _ => true,
             DiskBytesPerSecond = _ => _disk,
             ProbeReadMs = _ => _probe,
@@ -122,6 +130,57 @@ public sealed class SupplementWarmTests : IDisposable
 
         Ticks(p, 6);
         Assert.Equal(2, _streamer.Seen.Count); // 한 번뿐
+    }
+
+    [Fact]
+    public void NoProgressIsHeldAcrossThirtySecondTicksAndSixtySecondIdleWindows()
+    {
+        _zoneMib = 1000;
+        GameSettings g = Game();
+        Prewarmer p = Make(g);
+        p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 40, RewarmMinutes = 5 });
+        Assert.True(Assert.Single(p.RunServiceStart()).Ran);
+        _avail = 4352; // 최소 부분 예열 크기인 256 MiB까지만 들어감
+        (_streamer.ReadMib, _streamer.RequestedMib, _streamer.ErrorCount) = (128, 256, 1);
+
+        Ticks(p, 3); // 첫 보충은 40 MiB 에서 128 MiB 로 진전
+        Ticks(p, 3); // 두 번째 완료는 같은 128 MiB: 5분 기한 시작
+        Assert.Equal(3, _streamer.Seen.Count);
+        Assert.Single(_log.Lines, line => line.Contains("supplement prewarm deferred (no progress", StringComparison.Ordinal));
+
+        Ticks(p, 9); // 30초 점검과 60초 연속 유휴가 여러 번 지나도 같은 범위를 읽지 않음
+        Assert.Equal(3, _streamer.Seen.Count);
+        Assert.Single(_log.Lines, line => line.Contains("supplement prewarm deferred (no progress", StringComparison.Ordinal));
+
+        Ticks(p, 3); // 기한과 새 60초 유휴가 모두 지나면 다시 한 번 시도
+        Assert.Equal(4, _streamer.Seen.Count);
+        Assert.Single(_log.Lines, line => line.Contains("supplement prewarm deferred (no progress", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ChangingTheReadListReleasesADeferredSupplement()
+    {
+        _zoneMib = 1000;
+        string root = Path.Combine(_dir, "game");
+        Directory.CreateDirectory(root);
+        string plan = Path.Combine(_dir, "plan.json");
+        string trace = Path.Combine(_dir, "trace.json");
+        File.WriteAllText(plan, "plan");
+        File.WriteAllText(trace, "trace");
+        GameSettings g = Game() with { OriginRoot = root, Plan = plan, Trace = trace };
+        Prewarmer p = Make(g);
+        p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 40, RewarmMinutes = 5 });
+        Assert.True(Assert.Single(p.RunServiceStart()).Ran);
+        _avail = 4352;
+        (_streamer.ReadMib, _streamer.RequestedMib, _streamer.ErrorCount) = (128, 256, 1);
+
+        Ticks(p, 3); // 40 -> 128 MiB 진전
+        Ticks(p, 3); // 같은 수락량으로 지연 등록
+        Assert.Equal(3, _streamer.Seen.Count);
+
+        File.WriteAllText(trace, "trace list changed"); // TraceLoader 의 입력이 바뀌면 계획 세대가 바뀜
+        Assert.True(p.Supplement(g, CancellationToken.None));
+        Assert.Equal(4, _streamer.Seen.Count);
     }
 
     [Fact]

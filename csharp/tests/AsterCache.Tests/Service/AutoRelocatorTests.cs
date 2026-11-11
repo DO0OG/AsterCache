@@ -1961,7 +1961,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     public void APrewarmThatOnlyFitPartlyInMemoryShowsPartialInsteadOfPrewarmed()
     {
         _status.Set("bench", "auto", null, AutoStage.Done, null);
-        _streamer.BytesOf = g => (long)g.MaxStreamMib << 20; // 실제로 읽은 양
+        _streamer.BytesOf = g => g.StreamCapBytes(8000L << 20); // max_stream_mib 를 명시하지 않은 계획은 존 전체를 읽음
         long available = 6000;
         var prewarm = new Prewarmer(_settings.Games, _streamer, new PrewarmEnv
         {

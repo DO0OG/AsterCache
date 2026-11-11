@@ -70,6 +70,7 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     private Prewarmer Make(GameSettings game)
     {
         _streamer.ReadSetBytes ??= g => Math.Min(_hotMib, g.StreamCapBytes(_hotMib * Mib) / Mib) * Mib;
+        _streamer.ScheduledStreamBytes ??= (g, _) => g.StreamCapBytes(_hotMib * Mib);
         return new Prewarmer([game], _streamer, new PrewarmEnv
         {
             AvailableRamMib = () => _availableReads is { Count: > 0 } ? _availableReads.Dequeue() : _avail,

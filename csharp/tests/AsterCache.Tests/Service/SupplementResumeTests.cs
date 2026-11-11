@@ -47,6 +47,15 @@ public sealed class SupplementResumeTests : IDisposable
         /// 읽기 통계에 담을 오류 수.
         public long ErrorCount { get; set; }
 
+        /// PVM 힌트가 받아들였다고 알릴 바이트 수. MiB 경계 시험에서는 ReadMib 보다 우선합니다.
+        public long? ReadBytes { get; set; }
+
+        /// 읽을 목록의 요청량 (MiB), 없으면 실제 목록 길이.
+        public long? RequestedMib { get; set; }
+
+        /// 읽는 도중에 일어나는 일 (게임 시작 등).
+        public Action? OnStream { get; set; }
+
         public StreamStats Stream(GameSettings game) => throw new NotSupportedException();
 
         public (StreamStats Stats, bool Complete) StreamPrewarm(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes)
@@ -58,9 +67,11 @@ public sealed class SupplementResumeTests : IDisposable
         {
             Calls.Add((game.MaxStreamMib, maxBytes));
             Skips.Add(skipBytes);
-            long total = Math.Max(0, (ScheduleMib ?? game.MaxStreamMib) * Mib - skipBytes);
+            OnStream?.Invoke();
+            long total = Math.Max(0, (ScheduleMib ?? RequestedMib ?? game.MaxStreamMib) * Mib - skipBytes);
             progress?.Invoke(0, total);
-            return (new StreamStats((ReadMib ?? game.MaxStreamMib) * Mib, 1, ErrorCount, 0.01), Complete && !stop.IsCancellationRequested);
+            long requested = Math.Max(0, (RequestedMib ?? ScheduleMib ?? game.MaxStreamMib) * Mib - skipBytes);
+            return (new StreamStats(ReadBytes ?? (ReadMib ?? game.MaxStreamMib) * Mib, 1, ErrorCount, 0.01, RequestedBytes: requested), Complete && !stop.IsCancellationRequested);
         }
     }
 
@@ -95,6 +106,18 @@ public sealed class SupplementResumeTests : IDisposable
         return p;
     }
 
+    private Prewarmer PartiallyWarmedAtServiceCap(GameSettings g, long laterAvail)
+    {
+        _avail = 6000;
+        Prewarmer p = Make(g);
+        p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 1024, RewarmMinutes = 5 });
+        Assert.True(Assert.Single(p.RunServiceStart()).Ran);
+        _streamer.Calls.Clear();
+        _streamer.Skips.Clear();
+        _avail = laterAvail;
+        return p;
+    }
+
     [Fact]
     public void ASupplementWhoseHotSetDoesNotFitReadsTheFrontThatFitsInsteadOfWaiting()
     {
@@ -121,6 +144,215 @@ public sealed class SupplementResumeTests : IDisposable
 
         Assert.Empty(_streamer.Calls);
         Assert.Contains(_log.Lines, l => l.Contains("supplement prewarm skipped (hot set", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AShortCompletedRequestListRetriesAfterTheConfiguredDelay()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmedAtServiceCap(g, 8000); // 계획 상한 3904 MiB, 실제 요청 목록은 1305 MiB
+        (_streamer.ReadMib, _streamer.RequestedMib, _streamer.ErrorCount) = (1305, 1305, 0);
+
+        Assert.True(p.Supplement(g, CancellationToken.None));
+        Assert.True(p.SupplementPending("g"));
+        Assert.Equal((1305L, HotMib), ((long)Status()["warmed_mib"]!, (long)Status()["hot_mib"]!));
+
+        _avail = 8255; // 255 MiB 증가는 조기 재시도 기준보다 작음
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        Assert.Single(_streamer.Calls);
+
+        _now += TimeSpan.FromMinutes(5);
+        Assert.True(p.Supplement(g, CancellationToken.None)); // 입력이 같아도 기한이 지나면 다시 판정
+        Assert.Equal(2, _streamer.Calls.Count);
+        Assert.True(p.SupplementPending("g"));
+    }
+
+    [Fact]
+    public void AShorterAcceptedListDoesNotResetTheProgressUsedByItsRetry()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmed(g, 8000); // 이전 진전 1904 MiB, 이번 계획 상한 3904 MiB
+        (_streamer.ReadMib, _streamer.ScheduleMib, _streamer.RequestedMib, _streamer.ErrorCount) = (1305, 1305, 1305, 0);
+
+        Assert.True(p.Supplement(g, CancellationToken.None)); // 받아들인 양은 이전 진전보다 작음
+        Assert.True(p.SupplementPending("g"));
+        Assert.False(p.Supplement(g, CancellationToken.None)); // 같은 목록을 바로 다시 읽지 않음
+        Assert.Single(_streamer.Calls);
+    }
+
+    [Fact]
+    public void ACancelledSupplementWithoutProgressIsNotReadAgainBeforeItsRetry()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmed(g, 8000); // 이전 진전 1904 MiB
+        (_streamer.ReadMib, _streamer.Complete) = (1305, false); // 메모리 재판정으로 이전 진전에 못 미쳐 끊김
+
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        Assert.True(p.SupplementPending("g"));
+        Assert.False(p.Supplement(g, CancellationToken.None)); // 다음 유휴에 같은 앞부분을 다시 읽지 않음
+        Assert.Single(_streamer.Calls);
+    }
+
+    [Fact]
+    public void ASupplementCancelledByAGameStartIsNotHeldByTheNoProgressDelay()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmed(g, 8000); // 이전 진전 1904 MiB
+        (_streamer.ReadMib, _streamer.Complete) = (1305, false);
+        _streamer.OnStream = () => p.NoteGameStart(g.Name); // 보충 도중 게임이 시작돼 끊김
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        _streamer.OnStream = null;
+        (_streamer.ReadMib, _streamer.Complete) = (null, true);
+
+        p.Supplement(g, CancellationToken.None); // 게임이 끝난 뒤의 보충은 재시도 기한에 묶이지 않음
+
+        Assert.Equal(2, _streamer.Calls.Count);
+    }
+
+    [Fact]
+    public void AShortPartialListIsRecheckedWhenMemoryAllowsTheFullPath()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmedAtServiceCap(g, 8000);
+        (_streamer.ReadMib, _streamer.ScheduleMib, _streamer.RequestedMib, _streamer.ErrorCount) = (1305, 1305, 1305, 0);
+        Assert.True(p.Supplement(g, CancellationToken.None)); // 부분 경로의 목록은 1305 MiB 에서 끝남
+
+        _avail = 20000;
+        (_streamer.ReadBytes, _streamer.ScheduleMib, _streamer.RequestedMib, _streamer.ErrorCount) = (1158 * Mib + 62 * Mib / 100, 2464, 2464, 0);
+        Assert.True(p.Supplement(g, CancellationToken.None)); // 기한 전이라도 전체 경로를 한 번 재판정
+
+        Assert.Equal(2, _streamer.Calls.Count);
+        Assert.False(p.SupplementPending("g"));
+        Assert.Equal((HotMib, HotMib), ((long)Status()["warmed_mib"]!, (long)Status()["hot_mib"]!));
+    }
+
+    [Fact]
+    public void AFluctuatingCapAllowsOnlyOneEarlyRetryBeforeTheDeadline()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmedAtServiceCap(g, 8000);
+        (_streamer.ReadMib, _streamer.RequestedMib, _streamer.ErrorCount) = (1305, 2464, 1);
+        Assert.True(p.Supplement(g, CancellationToken.None)); // 1024 -> 1305 MiB 진전
+
+        _avail = 7000; // cap 2904 MiB: 같은 바이트에서 기한 시작
+        Assert.True(p.Supplement(g, CancellationToken.None));
+        Assert.Equal(2, _streamer.Calls.Count);
+
+        _now += TimeSpan.FromSeconds(30);
+        _avail = 7256; // cap 3160 MiB: 조기 재시도 한 번
+        Assert.True(p.Supplement(g, CancellationToken.None));
+        Assert.Equal(3, _streamer.Calls.Count);
+
+        _avail = 7512; // cap 이 다시 256 MiB 증가해도 같은 기한에는 반복하지 않음
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        _avail = 8000; // 큰 폭의 흔들림도 조기 재시도를 추가하지 않음
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        Assert.Equal(3, _streamer.Calls.Count);
+
+        _now += TimeSpan.FromMinutes(5);
+        Assert.True(p.Supplement(g, CancellationToken.None)); // 원래 기한에 한 번 재시도
+        Assert.Equal(4, _streamer.Calls.Count);
+    }
+
+    [Fact]
+    public void ChangingCapsAndOneMibRoundingDoNotResetTheNoProgressDelay()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmedAtServiceCap(g, 8000);
+        _streamer.ReadBytes = 1305 * Mib + 100;
+        _streamer.ErrorCount = 1;
+        Assert.True(p.Supplement(g, CancellationToken.None)); // 1024 MiB 에서 진전
+
+        _avail = 7000; // 계획 상한은 3904 에서 2904 MiB 로 달라짐
+        _streamer.ReadBytes = 1305 * Mib; // 내림/올림 표시가 1305/1306 MiB 로 달라도 바이트는 늘지 않음
+        Assert.True(p.Supplement(g, CancellationToken.None));
+        Assert.Equal(2, _streamer.Calls.Count);
+
+        _now += TimeSpan.FromSeconds(30);
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        _now += TimeSpan.FromSeconds(30);
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        Assert.Equal(2, _streamer.Calls.Count);
+        Assert.Single(_log.Lines, line => line.Contains("supplement prewarm deferred (no progress", StringComparison.Ordinal));
+
+        _now += TimeSpan.FromMinutes(4);
+        Assert.True(p.Supplement(g, CancellationToken.None)); // 기한이 지나면 한 번 다시 시도
+        Assert.Equal(3, _streamer.Calls.Count);
+        Assert.Single(_log.Lines, line => line.Contains("supplement prewarm deferred (no progress", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void LargerMemoryCanRetryEarlyAndRealByteProgressClearsTheDelay()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmedAtServiceCap(g, 8000);
+        _streamer.ReadMib = 1305;
+        _streamer.ErrorCount = 1;
+        Assert.True(p.Supplement(g, CancellationToken.None));
+
+        _avail = 7000;
+        Assert.True(p.Supplement(g, CancellationToken.None)); // no progress: cool-down starts
+        Assert.Equal(2, _streamer.Calls.Count);
+
+        _avail = 7256; // cap 2904 -> 3160 MiB: MinPartialMib 만큼 늘어남
+        _streamer.ReadMib = 1500;
+        Assert.True(p.Supplement(g, CancellationToken.None));
+        Assert.Equal(3, _streamer.Calls.Count);
+
+        Assert.True(p.Supplement(g, CancellationToken.None)); // 실제 증가가 기한도 해제함
+        Assert.Equal(4, _streamer.Calls.Count);
+    }
+
+    [Fact]
+    public void ChangedGameSettingsReleaseTheNoProgressDelay()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmedAtServiceCap(g, 8000);
+        _streamer.ReadMib = 1305;
+        _streamer.ErrorCount = 1;
+        Assert.True(p.Supplement(g, CancellationToken.None));
+        _avail = 7000;
+        Assert.True(p.Supplement(g, CancellationToken.None)); // 같은 수락량으로 지연 등록
+
+        GameSettings changed = g with { Prewarm = g.Prewarm with { MinFreeRamMib = g.Prewarm.MinFreeRamMib + 1 } };
+        p.SetGames([changed]);
+
+        Assert.True(p.Supplement(changed, CancellationToken.None));
+        Assert.Equal(3, _streamer.Calls.Count);
+    }
+
+    [Fact]
+    public void RemovingAndReaddingAGameReleasesItsNoProgressDelay()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmedAtServiceCap(g, 8000);
+        _streamer.ReadMib = 1305;
+        _streamer.ErrorCount = 1;
+        Assert.True(p.Supplement(g, CancellationToken.None));
+        _avail = 7000;
+        Assert.True(p.Supplement(g, CancellationToken.None)); // 같은 수락량으로 지연 등록
+        p.SetGames([]);
+        p.SetGames([g]);
+
+        Assert.True(p.Supplement(g, CancellationToken.None));
+        Assert.Equal(3, _streamer.Calls.Count);
+    }
+
+    [Fact]
+    public void GameStartReleasesTheNoProgressDelayForRewarmAfterExit()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmedAtServiceCap(g, 8000);
+        _streamer.ReadMib = 1305;
+        _streamer.ErrorCount = 1;
+        Assert.True(p.Supplement(g, CancellationToken.None));
+        _avail = 7000;
+        Assert.True(p.Supplement(g, CancellationToken.None)); // 같은 수락량으로 지연 등록
+
+        p.NoteGameStart(g.Name);
+
+        Assert.True(p.Supplement(g, CancellationToken.None));
+        Assert.Equal(3, _streamer.Calls.Count);
     }
 
     [Fact]
@@ -258,6 +490,7 @@ public sealed class SupplementResumeTests : IDisposable
         Assert.False(p.Supplement(g, CancellationToken.None));
 
         _doneProbe = null; // 확인할 수 없음
+        _now += TimeSpan.FromMinutes(10); // 진전 없이 끊긴 두 번째 시도는 재시도 기한까지 다시 읽지 않음
         Assert.False(p.Supplement(g, CancellationToken.None));
 
         Assert.Equal([0L, 0L, 0L], _streamer.Skips); // 매번 처음부터 (진행을 거짓으로 세지 않음)
@@ -329,18 +562,21 @@ public sealed class SupplementResumeTests : IDisposable
     }
 
     [Fact]
-    public void AResumedWindowWithNothingLeftToReadIsFinishedAndTheNextOneStartsFresh()
+    public void AResumedWindowWithNoProgressWaitsThenStartsFresh()
     {
         GameSettings g = Game();
         Prewarmer p = PartiallyWarmed(g, 8000);
+        p.SetAuto(AutoSettings.Default with { RewarmMinutes = 1 });
         _doneProbe = new ProbeResult(8, 0, 0.3);
         (_streamer.ReadMib, _streamer.Complete) = (2000, false);
         Assert.False(p.Supplement(g, CancellationToken.None)); // 위치 2000 저장
         (_streamer.ReadMib, _streamer.Complete) = (0, true); // 남은 구간이 없어 0 바이트
 
-        Assert.True(p.Supplement(g, CancellationToken.None)); // 정체되지 않고 창 완료로 정리
+        Assert.True(p.Supplement(g, CancellationToken.None)); // 수락 바이트가 늘지 않아 재시도 기한을 둠
+        Assert.True(p.SupplementPending("g"));
+        _now += TimeSpan.FromMinutes(1);
         _streamer.ReadMib = null;
-        Assert.True(p.Supplement(g, CancellationToken.None));
+        Assert.True(p.Supplement(g, CancellationToken.None)); // 기한 뒤에는 저장한 이어 읽기 위치를 버리고 처음부터
 
         Assert.Equal([0L, 2000 * Mib, 0L], _streamer.Skips); // 위치 기억은 지워짐
     }
@@ -454,10 +690,25 @@ public sealed class SupplementResumeTests : IDisposable
     {
         GameSettings g = Game();
         Prewarmer p = PartiallyWarmed(g, 20000);
+        (_streamer.ReadMib, _streamer.ScheduleMib, _streamer.RequestedMib) = (HotMib, HotMib, HotMib);
 
         Assert.True(p.Supplement(g, CancellationToken.None));
 
         Assert.Equal(g.MaxStreamMib, Assert.Single(_streamer.Calls).MaxStreamMib); // 줄이지 않은 설정 그대로
         Assert.False(p.SupplementPending("g"));
+    }
+
+    [Fact]
+    public void AFullReadWithAShortRequestListCompletesAndClearsThePartialState()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmed(g, 20000);
+        (_streamer.ReadBytes, _streamer.ScheduleMib, _streamer.RequestedMib, _streamer.ErrorCount) = (1158 * Mib + 62 * Mib / 100, 2464, 2464, 0);
+
+        Assert.True(p.Supplement(g, CancellationToken.None));
+
+        Assert.Equal(g.MaxStreamMib, Assert.Single(_streamer.Calls).MaxStreamMib);
+        Assert.False(p.SupplementPending("g"));
+        Assert.Equal((HotMib, HotMib), ((long)Status()["warmed_mib"]!, (long)Status()["hot_mib"]!));
     }
 }

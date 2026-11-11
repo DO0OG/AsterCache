@@ -433,6 +433,10 @@ public sealed class Prewarmer
     private readonly Dictionary<string, (long WarmedMib, long HotMib)> _startupTrim = new(StringComparer.OrdinalIgnoreCase); // 서비스 시작 예열이 상한으로 줄여 읽는 중인 게임 (Record 가 같은 상태 쓰기에 warmed_mib/hot_mib 를 넣음), _gate 로 보호
     private readonly Dictionary<string, DateTimeOffset> _idleSince = new(StringComparer.OrdinalIgnoreCase); // 보충 예열을 기다리는 게임이 한가해지기 시작한 시각, _gate 로 보호
     private readonly Dictionary<string, (long WindowMib, long Bytes)> _resume = new(StringComparer.OrdinalIgnoreCase); // 끊긴 보충 예열이 그 윈도 (MaxStreamMib 로 잘린 목록) 의 스케줄 앞쪽에서 이미 읽은 바이트: 다음 보충이 이어 읽는 위치, _gate 로 보호
+    private sealed record SupplementReadProgress(long Bytes, string? Inputs, GameSettings Settings);
+    private sealed record SupplementRetry(DateTimeOffset RetryAt, long CapMib, long ProgressBytes, string? Inputs, GameSettings Settings, bool PlanExhausted, bool EarlyRetryUsed, bool Logged);
+    private readonly Dictionary<string, SupplementReadProgress> _supplementReadProgress = new(StringComparer.OrdinalIgnoreCase); // 부분 예열에서 마지막으로 받아들인 바이트 (MiB 반올림 전), _gate 로 보호
+    private readonly Dictionary<string, SupplementRetry> _supplementRetry = new(StringComparer.OrdinalIgnoreCase); // 무진전 또는 읽을 목록 소진 뒤 재시도 기한, _gate 로 보호
     private DateTimeOffset _driveObservedAt; // 지금 도는 읽기가 멈춰서 디스크 처리량을 마지막으로 잰 (또는 읽기를 시작한) 시각, _run 아래에서만 씀
 
     private sealed record ProbeFileGeneration(string Path, bool Exists, long Size, long MtimeNs);
@@ -873,6 +877,7 @@ public sealed class Prewarmer
         lock (_gate)
         {
             _coldMib.Remove(game);
+            _supplementRetry.Remove(game); // 플레이 뒤 재예열은 정체 기한을 넘겨서 다시 채울 수 있음
         }
     }
 
@@ -1112,6 +1117,14 @@ public sealed class Prewarmer
                 || before.FirstOrDefault(g => string.Equals(g.Name, k, StringComparison.OrdinalIgnoreCase)) != now).ToList())
             {
                 _resume.Remove(stale); // 빠진 게임, 또는 설정 (읽을 목록) 이 바뀐 게임의 이어 읽기 위치는 낡음
+            }
+
+            foreach (string stale in _supplementRetry.Keys.Concat(_supplementReadProgress.Keys).Distinct(StringComparer.OrdinalIgnoreCase)
+                .Where(k => games.FirstOrDefault(g => string.Equals(g.Name, k, StringComparison.OrdinalIgnoreCase)) is not { } now
+                    || before.FirstOrDefault(g => string.Equals(g.Name, k, StringComparison.OrdinalIgnoreCase)) != now).ToList())
+            {
+                _supplementRetry.Remove(stale);
+                _supplementReadProgress.Remove(stale);
             }
 
             foreach (string gone in _coldMib.Keys.Where(k => !games.Any(g => string.Equals(g.Name, k, StringComparison.OrdinalIgnoreCase))).ToList())
@@ -1539,7 +1552,11 @@ public sealed class Prewarmer
         {
             if (trimmed.TryGetValue(r.Game, out (long WarmedMib, long HotMib) t))
             {
-                NotePartial(r.Game, ActualMib(r.Stats, t.WarmedMib), t.HotMib); // 상한으로 앞부분만 읽음 (실제 읽은 양): 유휴 때 나머지를 보충 (상태 파일에는 Record 가 이미 남김)
+                if (list.FirstOrDefault(g => string.Equals(g.Name, r.Game, StringComparison.OrdinalIgnoreCase)) is { } game)
+                {
+                    long warmedMib = ActualMib(r.Stats, t.WarmedMib);
+                    NotePartial(game, warmedMib, t.HotMib, r.Stats?.Bytes ?? MibBytes(warmedMib)); // 상한으로 앞부분만 읽음 (실제 읽은 양): 유휴 때 나머지를 보충 (상태 파일에는 Record 가 이미 남김)
+                }
             }
         }
 
@@ -1555,21 +1572,24 @@ public sealed class Prewarmer
         }
     }
 
-    private void NotePartial(string game, long warmedMib, long hotMib)
+    private void NotePartial(GameSettings game, long warmedMib, long hotMib, long bytes)
     {
+        string? inputs = PrewarmRun.InputStamp(game);
         lock (_gate)
         {
-            _supplementNothingNew.Remove(game);
-            if (_memoryPartial.ContainsKey(game))
+            _supplementNothingNew.Remove(game.Name);
+            if (_memoryPartial.ContainsKey(game.Name))
             {
                 return; // 메모리 상한이 더 작게 읽어 이미 실제 읽은 양으로 기록함
             }
 
-            _partial[game] = (warmedMib, hotMib);
-            _resume.Remove(game); // 부분 상태를 새로 정함: 옛 이어 읽기 위치는 낡음
+            _partial[game.Name] = (warmedMib, hotMib);
+            _resume.Remove(game.Name); // 부분 상태를 새로 정함: 옛 이어 읽기 위치는 낡음
+            _supplementReadProgress[game.Name] = new(bytes, inputs, game);
+            _supplementRetry.Remove(game.Name);
         }
 
-        _log.Info($"{game}: startup prewarm read {warmedMib} of {hotMib} MiB, the rest is read when the drive is idle");
+        _log.Info($"{game.Name}: startup prewarm read {warmedMib} of {hotMib} MiB, the rest is read when the drive is idle");
     }
 
     // 나머지까지 읽어 부분 예열이 끝남: 메모리 상태와 상태 파일의 부분 표지를 함께 지웁니다.
@@ -1582,6 +1602,8 @@ public sealed class Prewarmer
             _memoryRunning.Remove(game);
             _resume.Remove(game);
             _supplementNothingNew.Remove(game);
+            _supplementReadProgress.Remove(game);
+            _supplementRetry.Remove(game);
         }
 
         PatchStatus(game, hotMib, hotMib);
@@ -1614,41 +1636,203 @@ public sealed class Prewarmer
         Record(game, at, new PrewarmResult(game.Name, true, null, stats, at), mbps);
     }
 
-    // 보충이 끊기거나 앞부분만 읽고 끝났을 때 읽은 양을 기억합니다 (줄어들지 않음): 상태 표시와 다음 보충의 시작점. 보충 대기 중인 게임만.
-    private void NoteProgress(string game, long warmedMib, long hotMib)
+    private long SupplementProgressBytes(GameSettings game, (long WarmedMib, long HotMib) partial, string? inputs)
     {
         lock (_gate)
         {
-            if (!_partial.TryGetValue(game, out (long WarmedMib, long HotMib) cur) || warmedMib <= cur.WarmedMib)
+            if (_supplementReadProgress.TryGetValue(game.Name, out SupplementReadProgress? progress)
+                && progress.Settings == game && string.Equals(progress.Inputs, inputs, StringComparison.Ordinal))
+            {
+                return progress.Bytes;
+            }
+
+            _supplementReadProgress.Remove(game.Name);
+            _supplementRetry.Remove(game.Name);
+            long bytes = MibBytes(partial.WarmedMib);
+            _supplementReadProgress[game.Name] = new(bytes, inputs, game);
+            return bytes;
+        }
+    }
+
+    private bool SupplementDeferred(GameSettings game, long capMib, long hotMib, long progressBytes, string? inputs)
+    {
+        DateTimeOffset now = _now();
+        lock (_gate)
+        {
+            if (!_supplementRetry.TryGetValue(game.Name, out SupplementRetry? retry))
+            {
+                return false;
+            }
+
+            if (retry.Settings != game || retry.ProgressBytes != progressBytes || !string.Equals(retry.Inputs, inputs, StringComparison.Ordinal))
+            {
+                _supplementRetry.Remove(game.Name);
+                return false;
+            }
+
+            if (now < retry.RetryAt)
+            {
+                bool memoryGrew = capMib >= retry.CapMib + MinPartialMib;
+                bool fullPathBecameAvailable = retry.CapMib < hotMib && capMib >= hotMib;
+                if (retry.EarlyRetryUsed || (!memoryGrew && !fullPathBecameAvailable))
+                {
+                    return true;
+                }
+
+                _supplementRetry[game.Name] = retry with { CapMib = capMib, EarlyRetryUsed = true };
+                return false;
+            }
+
+            _supplementRetry[game.Name] = retry with { RetryAt = now + PendingWarmRetryDelay(), CapMib = capMib, EarlyRetryUsed = false };
+            return false;
+        }
+    }
+
+    private void DeferSupplement(GameSettings game, long capMib, long progressBytes, string? inputs, StreamStats stats, bool planEnded, long planBytes)
+    {
+        DateTimeOffset now = _now();
+        DateTimeOffset retryAt = now + PendingWarmRetryDelay();
+        bool earlyRetryUsed = false;
+        bool log;
+        lock (_gate)
+        {
+            if (_supplementReadProgress.TryGetValue(game.Name, out SupplementReadProgress? progress)
+                && progress.Settings == game && string.Equals(progress.Inputs, inputs, StringComparison.Ordinal))
+            {
+                progressBytes = Math.Max(progressBytes, progress.Bytes);
+            }
+            else if (_partial.TryGetValue(game.Name, out (long WarmedMib, long HotMib) partial))
+            {
+                progressBytes = Math.Max(progressBytes, MibBytes(partial.WarmedMib));
+            }
+
+            bool sameProgress = _supplementRetry.TryGetValue(game.Name, out SupplementRetry? previous)
+                && previous.Settings == game && previous.ProgressBytes == progressBytes
+                && string.Equals(previous.Inputs, inputs, StringComparison.Ordinal);
+            bool same = sameProgress && previous!.PlanExhausted == planEnded;
+            if (sameProgress && previous is { } current && now < current.RetryAt)
+            {
+                retryAt = current.RetryAt;
+                earlyRetryUsed = current.EarlyRetryUsed;
+            }
+
+            log = !same || previous?.Logged != true;
+            _supplementRetry[game.Name] = new(retryAt, capMib, progressBytes, inputs, game, planEnded, earlyRetryUsed, true);
+        }
+
+        if (!log)
+        {
+            return;
+        }
+
+        if (planEnded)
+        {
+            _log.Info($"{game.Name}: supplement prewarm deferred (read list ended at {MibText(planBytes)} of {capMib} MiB planned, {stats.Errors} errors; retry after {retryAt:O})");
+        }
+        else
+        {
+            _log.Info($"{game.Name}: supplement prewarm deferred (no progress: {MibText(stats.Bytes)} accepted of {MibText(stats.RequestedBytes)} requested, {stats.Errors} errors; retry after {retryAt:O})");
+        }
+    }
+
+    private static bool SupplementPlanEnded(long? listBytes, StreamStats stats, long skipBytes, long capMib)
+    {
+        if (stats.Errors != 0 || listBytes is null && stats.RequestedBytes <= 0)
+        {
+            return false;
+        }
+
+        long bytes = listBytes ?? stats.RequestedBytes;
+        long total = bytes > long.MaxValue - skipBytes ? long.MaxValue : skipBytes + bytes;
+        return total < MibBytes(capMib);
+    }
+
+    private static bool SupplementFullyCovered(StreamStats stats, long skipBytes, long capMib, long? listBytes = null, bool fullReadPath = false)
+    {
+        if (stats.Errors != 0)
+        {
+            return false;
+        }
+
+        if (fullReadPath)
+        {
+            long fullList = listBytes ?? stats.RequestedBytes;
+            if (fullList <= 0)
+            {
+                fullList = stats.Bytes;
+            }
+
+            return fullList > 0;
+        }
+
+        long requestedTail = listBytes ?? stats.RequestedBytes;
+        if (listBytes is null && stats.RequestedBytes <= 0)
+        {
+            requestedTail = stats.Bytes; // 구형 스트리머 통계에 요청량이 없으면 수락량으로만 완료를 확인합니다.
+        }
+
+        long requested = requestedTail > long.MaxValue - skipBytes ? long.MaxValue : skipBytes + requestedTail;
+        long accepted = stats.Bytes > long.MaxValue - skipBytes ? long.MaxValue : skipBytes + stats.Bytes;
+        long target = MibBytes(capMib);
+        return requested >= target && accepted >= target;
+    }
+
+    private static long MibBytes(long mib) => mib <= 0 ? 0 : mib > long.MaxValue >> 20 ? long.MaxValue : mib << 20;
+
+    private static string MibText(long bytes) => $"{bytes / 1048576.0:F2} MiB";
+
+    // 보충이 끊기거나 앞부분만 읽고 끝났을 때 읽은 양을 기억합니다 (줄어들지 않음): 상태 표시와 다음 보충의 시작점. 보충 대기 중인 게임만.
+    private void NoteProgress(GameSettings game, string? inputs, long warmedMib, long hotMib, long bytes)
+    {
+        bool changed = false;
+        lock (_gate)
+        {
+            if (!_partial.TryGetValue(game.Name, out (long WarmedMib, long HotMib) cur))
             {
                 return;
             }
 
-            _partial[game] = (warmedMib, hotMib);
-            _supplementNothingNew.Remove(game);
-            if (_memoryPartial.ContainsKey(game))
+            long previousBytes = _supplementReadProgress.TryGetValue(game.Name, out SupplementReadProgress? previous)
+                && previous.Settings == game && string.Equals(previous.Inputs, inputs, StringComparison.Ordinal)
+                ? previous.Bytes
+                : MibBytes(cur.WarmedMib);
+            if (bytes <= previousBytes)
             {
-                _memoryPartial[game] = (warmedMib, hotMib); // 재예열 점검은 읽은 앞부분에서만 표본을 고름
+                return;
             }
+
+            _supplementReadProgress[game.Name] = new(bytes, inputs, game);
+            _supplementRetry.Remove(game.Name);
+            _supplementNothingNew.Remove(game.Name);
+            if (warmedMib > cur.WarmedMib)
+            {
+                _partial[game.Name] = (warmedMib, hotMib);
+                if (_memoryPartial.ContainsKey(game.Name))
+                {
+                    _memoryPartial[game.Name] = (warmedMib, hotMib); // 재예열 점검은 읽은 앞부분에서만 표본을 고름
+                }
+
+                changed = true;
+            }
+        }
+
+        if (!changed)
+        {
+            return;
         }
 
         lock (_run)
         {
-            bool changed = false;
             lock (_gate)
             {
-                if (_status.TryGetValue(game, out object? entry) && entry is JObject o)
+                if (_status.TryGetValue(game.Name, out object? entry) && entry is JObject o)
                 {
                     o["warmed_mib"] = warmedMib;
                     o["hot_mib"] = hotMib;
-                    changed = true;
                 }
             }
 
-            if (changed)
-            {
-                FlushStatus();
-            }
+            FlushStatus();
         }
     }
 
@@ -1765,6 +1949,8 @@ public sealed class Prewarmer
                     _idleSince.Remove(name);
                     _resume.Remove(name);
                     _supplementNothingNew.Remove(name);
+                    _supplementReadProgress.Remove(name);
+                    _supplementRetry.Remove(name);
                 }
 
                 continue;
@@ -2045,17 +2231,33 @@ public sealed class Prewarmer
             long avail = _env.AvailableRamMib();
             long physCap = PhysCapMib();
             long budgetCap = allocatedMib is { } allocated ? Math.Min(p.HotMib, allocated) : p.HotMib;
-            GameSettings warm = game;
-            long? windowMib = null; // 전체가 예산에 안 들어갈 때 읽을 앞부분 (일반 예열의 부분 예산과 같은 식)
-            long skipBytes = 0; // 끊긴 보충이 그 윈도에서 이미 읽은 바이트 (ResumePoint)
-            bool refused = false; // 앞부분·이어 읽을 지점 표본이 디스크 대여 거절로 읽히지 않음: 이유를 남기지 않고 다음 유휴에 다시 (기억은 그대로)
-            if (budgetCap < p.HotMib || p.HotMib > physCap || p.HotMib + game.Prewarm.MinFreeRamMib > avail)
+            bool needsPartial = budgetCap < p.HotMib || p.HotMib > physCap || p.HotMib + game.Prewarm.MinFreeRamMib > avail;
+            long? partialCap = null;
+            if (needsPartial)
             {
-                if (PartialCapMib(game, p.HotMib, avail, physCap, budgetCap) is not { } cap)
+                partialCap = PartialCapMib(game, p.HotMib, avail, physCap, budgetCap);
+                if (partialCap is not { } cap)
                 {
                     LogSkipped(game.Name, "supplement memory budget", $"{game.Name}: supplement prewarm skipped (hot set {p.HotMib} MiB exceeds the budget: min(cache budget {physCap} MiB, available {avail} MiB - reserve {game.Prewarm.MinFreeRamMib} MiB), and less than {MinPartialMib} MiB fits)");
                     return false;
                 }
+            }
+
+            long plannedCapMib = partialCap ?? p.HotMib;
+            string? inputStamp = PrewarmRun.InputStamp(game);
+            long progressBefore = SupplementProgressBytes(game, p, inputStamp);
+            if (SupplementDeferred(game, plannedCapMib, p.HotMib, progressBefore, inputStamp))
+            {
+                return false;
+            }
+
+            GameSettings warm = game;
+            long? windowMib = null; // 전체가 예산에 안 들어갈 때 읽을 앞부분 (일반 예열의 부분 예산과 같은 식)
+            long skipBytes = 0; // 끊긴 보충이 그 윈도에서 이미 읽은 바이트 (ResumePoint)
+            bool refused = false; // 앞부분·이어 읽을 지점 표본이 디스크 대여 거절로 읽히지 않음: 이유를 남기지 않고 다음 유휴에 다시 (기억은 그대로)
+            if (needsPartial)
+            {
+                long cap = partialCap.GetValueOrDefault();
 
                 if (cap <= p.WarmedMib)
                 {
@@ -2111,6 +2313,7 @@ public sealed class Prewarmer
                 return false;
             }
 
+            long readCapMib = windowMib ?? p.HotMib;
             long? zoneBytes = _env.ZoneBytes(game);
             (StreamStats Stats, bool Complete, string? CancelReason)? hot;
             long? tailTotal = null; // 이번에 읽을 목록의 길이 (건너뛴 앞부분 제외): 이어 읽을 위치를 스케줄 길이로 제한하고 끝까지 읽었는지 앎
@@ -2124,22 +2327,21 @@ public sealed class Prewarmer
                 _log.Info($"{game.Name}: supplement prewarm of the rest of the hot set ({p.WarmedMib} of {p.HotMib} MiB read{(windowMib is { } w ? $", reading the first {w} MiB" : string.Empty)}{(skipBytes > 0 ? $", continuing after {skipBytes >> 20} MiB" : string.Empty)})");
                 hot = StreamHot(warm, ct, zoneBytes, avail, windowMib is not null || skipBytes > 0, skipBytes: skipBytes, onTotal: total => tailTotal = total, settle: stats =>
                 {
-                    if (stats.Bytes <= 0 && skipBytes == 0)
-                    {
-                        return; // 이어 읽는데 0 바이트면 남은 구간이 없는 것 (이미 끝까지 읽음): 창 완료로 정리
-                    }
-
                     if (windowMib is { } window)
                     {
-                        NoteProgress(game.Name, ActualMib(stats, window, skipBytes), p.HotMib); // 앞부분만 읽음: 나머지는 다음 보충 때
+                        NoteProgress(game, inputStamp, ActualMib(stats, window, skipBytes), p.HotMib, skipBytes + stats.Bytes); // 앞부분만 읽음: 나머지는 다음 보충 때
                         lock (_gate)
                         {
                             _resume.Remove(game.Name); // 윈도를 끝까지 읽음
                         }
                     }
-                    else
+                    else if (SupplementFullyCovered(stats, skipBytes, p.HotMib, tailTotal, fullReadPath: windowMib is null))
                     {
                         ClearPartial(game.Name, p.HotMib); // 완료 알림보다 먼저 부분 상태를 지움
+                    }
+                    else
+                    {
+                        NoteProgress(game, inputStamp, ActualMib(stats, p.HotMib, skipBytes), p.HotMib, skipBytes + stats.Bytes);
                     }
                 }, allowReorder: false, roomMib: allocatedMib ?? long.MaxValue);
             }
@@ -2151,6 +2353,8 @@ public sealed class Prewarmer
                     _partial.Remove(game.Name); // 실패한 읽기는 되풀이하지 않음 (유휴마다 같은 실패를 반복하지 않게)
                     _resume.Remove(game.Name);
                     _supplementNothingNew.Remove(game.Name);
+                    _supplementReadProgress.Remove(game.Name);
+                    _supplementRetry.Remove(game.Name);
                 }
 
                 _log.Warn($"{game.Name}: supplement given up after the failure");
@@ -2165,14 +2369,17 @@ public sealed class Prewarmer
 
             if (!r.Complete)
             {
-                NoteProgress(game.Name, ActualMib(r.Stats, windowMib ?? p.HotMib, skipBytes), p.HotMib); // 끊겨도 읽은 양은 버리지 않음: 다음 보충이 이어서 읽음
+                long progressBytes = skipBytes + r.Stats.Bytes;
+                NoteProgress(game, inputStamp, ActualMib(r.Stats, windowMib ?? p.HotMib, skipBytes), p.HotMib, progressBytes); // 끊겨도 읽은 양은 버리지 않음: 다음 보충이 이어서 읽음
                 bool reordered = _streamer.WasPrewarmReordered(game);
                 // 위치는 틈을 뺀 스케줄 기준 (틈 메운 순서와 달라도 모자라게 셈: 덜 건너뛰는 쪽). 오류가 있으면 앞이 다 읽혔다고 못 하니 버리고, 목록 끝까지 읽은 뒤의 취소 (갱신 읽기 도중) 는 창 완료.
                 long pos = skipBytes + Math.Max(0, r.Stats.Bytes - r.Stats.GapBytes);
-                bool atEnd = r.Stats.Errors == 0 && tailTotal is { } t && pos >= skipBytes + t - r.Stats.GapBytes;
+                bool listAtEnd = r.Stats.Errors == 0 && tailTotal is { } t && pos >= skipBytes + t - r.Stats.GapBytes;
+                bool planEndedAtEnd = listAtEnd && windowMib is not null && SupplementPlanEnded(tailTotal, r.Stats, skipBytes, readCapMib);
+                bool atEnd = listAtEnd && !planEndedAtEnd && (windowMib is not null || SupplementFullyCovered(r.Stats, skipBytes, p.HotMib, tailTotal, fullReadPath: true));
                 lock (_gate)
                 {
-                    if (r.Stats.Errors > 0 || atEnd || r.Stats.GapBytes > 0 || reordered) // 순서를 바꿨거나 틈 메우기가 섞이면 위치를 믿을 수 없어 다음에 처음부터
+                    if (r.Stats.Errors > 0 || atEnd || planEndedAtEnd || r.Stats.GapBytes > 0 || reordered) // 순서를 바꿨거나 틈 메우기가 섞이면 위치를 믿을 수 없어 다음에 처음부터
                     {
                         _resume.Remove(game.Name);
                     }
@@ -2187,27 +2394,68 @@ public sealed class Prewarmer
                     ClearPartial(game.Name, p.HotMib); // 전체를 끝까지 읽음
                     CompletePendingWarmSupplement(game, r.Stats);
                 }
+                else if (planEndedAtEnd)
+                {
+                    DeferSupplement(game, plannedCapMib, progressBytes, inputStamp, r.Stats, planEnded: true, skipBytes + (tailTotal ?? r.Stats.RequestedBytes));
+                }
+                else if (progressBytes <= progressBefore
+                    && r.CancelReason is not ("game started" or "another game started on the same disk" or "disk read lease revoked" or "disk read lease refused" or "caller cancelled"))
+                {
+                    // 진전 없이 끊긴 보충도 유휴마다 같은 앞부분을 다시 읽지 않음 (게임 시작·디스크 양보로 끊긴 것은 제외: 게임이 끝나면 바로 이어야 함)
+                    DeferSupplement(game, plannedCapMib, progressBefore, inputStamp, r.Stats, planEnded: false, skipBytes + (tailTotal ?? r.Stats.RequestedBytes));
+                }
 
                 string reason = r.CancelReason ?? "cancelled externally";
                 LogSkipped(game.Name, "supplement cancelled " + reason, () => $"{game.Name}: supplement prewarm cancelled after {r.Stats.Bytes >> 20} MiB ({reason})");
                 return false;
             }
 
-            if (r.Stats.Bytes <= 0 && skipBytes == 0)
+            if (r.Stats.Bytes <= 0 && skipBytes == 0
+                && (windowMib is not null || !SupplementFullyCovered(r.Stats, skipBytes, p.HotMib, tailTotal, fullReadPath: true)))
             {
+                bool planEnded = SupplementPlanEnded(tailTotal, r.Stats, skipBytes, readCapMib);
+                long listBytes = tailTotal ?? r.Stats.RequestedBytes;
+                DeferSupplement(game, plannedCapMib, progressBefore, inputStamp, r.Stats, planEnded, skipBytes + listBytes);
                 _log.Info($"{game.Name}: supplement prewarm read nothing, kept as partial");
                 return false;
             }
 
+            long progressAfter = skipBytes + r.Stats.Bytes;
+            bool madeProgress = progressAfter > progressBefore;
+            bool requestListEnded = windowMib is not null && SupplementPlanEnded(tailTotal, r.Stats, skipBytes, readCapMib);
+            long plannedListBytes = tailTotal ?? r.Stats.RequestedBytes;
+            if (requestListEnded)
+            {
+                DeferSupplement(game, plannedCapMib, Math.Max(progressBefore, progressAfter), inputStamp, r.Stats, planEnded: true, skipBytes + plannedListBytes);
+                _log.Info($"{game.Name}: supplement prewarm read the first {MibText(progressAfter)} of {p.HotMib} MiB in {r.Stats.Seconds:F2} s ({MibText(r.Stats.Bytes)} accepted of {MibText(r.Stats.RequestedBytes)} requested, {r.Stats.Errors} errors), the plan lists {MibText(skipBytes + plannedListBytes)} within {readCapMib} MiB");
+                return true;
+            }
+
             if (windowMib is not null)
             {
-                _log.Info($"{game.Name}: supplement prewarm read the first {(skipBytes + r.Stats.Bytes) >> 20} MiB of {p.HotMib} MiB in {r.Stats.Seconds:F2} s, the rest does not fit in memory yet");
+                if (!madeProgress)
+                {
+                    DeferSupplement(game, plannedCapMib, progressBefore, inputStamp, r.Stats, planEnded: false, skipBytes + plannedListBytes);
+                }
+
+                _log.Info($"{game.Name}: supplement prewarm read the first {MibText(progressAfter)} of {p.HotMib} MiB in {r.Stats.Seconds:F2} s ({MibText(r.Stats.Bytes)} accepted of {MibText(r.Stats.RequestedBytes)} requested, {r.Stats.Errors} errors), the partial window remains pending");
+                return true;
+            }
+
+            if (!SupplementFullyCovered(r.Stats, skipBytes, p.HotMib, tailTotal, fullReadPath: true))
+            {
+                if (!madeProgress)
+                {
+                    DeferSupplement(game, plannedCapMib, progressBefore, inputStamp, r.Stats, planEnded: false, skipBytes + plannedListBytes);
+                }
+
+                _log.Info($"{game.Name}: supplement prewarm read the first {MibText(progressAfter)} of {p.HotMib} MiB in {r.Stats.Seconds:F2} s ({MibText(r.Stats.Bytes)} accepted of {MibText(r.Stats.RequestedBytes)} requested, {r.Stats.Errors} errors), the hot set remains partial");
                 return true;
             }
 
             ClearPartial(game.Name, p.HotMib);
             CompletePendingWarmSupplement(game, r.Stats);
-            _log.Info($"{game.Name}: supplement prewarm done: {r.Stats.Bytes >> 20} MiB requested, {r.Stats.GapBytes / 1048576.0:F2} MiB gaps filled in {r.Stats.Seconds:F2} s");
+            _log.Info($"{game.Name}: supplement prewarm done: {MibText(r.Stats.Bytes)} accepted of {MibText(r.Stats.RequestedBytes)} requested, {r.Stats.GapBytes / 1048576.0:F2} MiB gaps filled in {r.Stats.Seconds:F2} s, {r.Stats.Errors} errors");
             return true;
         }
         finally
@@ -3189,6 +3437,7 @@ public sealed class Prewarmer
                 // 스트림이 끝났다는 알림이 나가기 전에 부분 예열 상태를 확정합니다 (자동 상태가 옛 상태를 보고 표시를 만들지 않게). 읽은 양은 설정한 상한이 아니라 실제 스트림 통계.
                 void Settle(StreamStats stats)
                 {
+                    string? inputs = PrewarmRun.InputStamp(game);
                     lock (_gate)
                     {
                         _memoryRunning.Remove(game.Name);
@@ -3204,6 +3453,8 @@ public sealed class Prewarmer
                         {
                             (long WarmedMib, long HotMib) actual = (ActualMib(stats, planned.WarmedMib), planned.HotMib);
                             (_memoryPartial[game.Name], _partial[game.Name]) = (actual, actual); // 완전 예열로 기록하지 않음: 나머지는 메모리가 날 때 보충 예열이 읽고, 재예열 점검은 읽은 앞부분만 잼
+                            _supplementReadProgress[game.Name] = new(stats.Bytes, inputs, game);
+                            _supplementRetry.Remove(game.Name);
                         }
                         else
                         {
@@ -3211,6 +3462,8 @@ public sealed class Prewarmer
                             if (_games.FirstOrDefault(x => string.Equals(x.Name, game.Name, StringComparison.OrdinalIgnoreCase))?.MaxStreamMib == game.MaxStreamMib)
                             {
                                 _partial.Remove(game.Name); // 설정 상한 그대로 읽었으면 남은 구간이 없음 (서비스 시작 상한으로 줄인 사본은 다름)
+                                _supplementReadProgress.Remove(game.Name);
+                                _supplementRetry.Remove(game.Name);
                             }
                         }
                     }

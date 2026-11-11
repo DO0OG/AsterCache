@@ -921,7 +921,7 @@ internal sealed class PrewarmRun : IDisposable
     private int _depth;
 
     // 목록의 입력 (계획·트레이스·예열 전용 옆 파일·가변 표지) 의 (존재, 길이, 수정 시각). 메타데이터 조회뿐이며 읽지 못하면 null (재사용 안 함).
-    private static string? InputStamp(GameSettings game)
+    internal static string? InputStamp(GameSettings game)
     {
         try
         {

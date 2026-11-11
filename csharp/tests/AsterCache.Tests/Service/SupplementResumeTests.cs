@@ -124,6 +124,23 @@ public sealed class SupplementResumeTests : IDisposable
     }
 
     [Fact]
+    public void RepeatedNothingNewSkipsLogOnlyWhenItsStateChanges()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmed(g, 6000);
+
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        Assert.Single(_log.Lines, line => line.Contains("supplement prewarm skipped (the", StringComparison.Ordinal));
+
+        _avail = 8000;
+        Assert.True(p.Supplement(g, CancellationToken.None)); // 보충 진행으로 같은 상태 기억을 지움
+        Assert.False(p.Supplement(g, CancellationToken.None)); // 읽은 양이 바뀐 새 상태
+
+        Assert.Equal(2, _log.Lines.Count(line => line.Contains("supplement prewarm skipped (the", StringComparison.Ordinal)));
+    }
+
+    [Fact]
     public void AYieldedDiskDoesNotIssueTheResumeSampleOfASupplement()
     {
         GameSettings g = Game();

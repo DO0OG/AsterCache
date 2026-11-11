@@ -52,6 +52,9 @@ public interface IGameStreamer
     /// 예열이 실제로 읽을 원래 범위의 바이트 (틈 제외), 모르면 null. 최초 메모리 게이트가 존 크기 대신 씁니다.
     long? PrewarmReadBytes(GameSettings game) => null;
 
+    /// 부분 예열이면 실제 스트림과 같이 마지막 범위를 예산 경계에서 자른 크기입니다.
+    long? PrewarmReadBytes(GameSettings game, bool partial) => PrewarmReadBytes(game);
+
     /// 로딩 앞부분 (tier0) 만 stop 으로 멈출 수 있게 읽습니다. 묶음 예열이 모든 게임의 앞부분을 먼저 올릴 때 씁니다. 기본은 아무것도 하지 않음.
     void StreamHead(GameSettings game, CancellationToken stop)
     {
@@ -160,7 +163,9 @@ public sealed class PrefetchStreamer : IGameStreamer
 
     public long? LoadHeadBytes(GameSettings game) => LoadTiers.For(game)?.Tier0Bytes is > 0 and long tier0 ? tier0 : null;
 
-    public long? PrewarmReadBytes(GameSettings game) => ScheduleOps(game, true).Ops.Sum(o => o.Length);
+    public long? PrewarmReadBytes(GameSettings game) => PrewarmReadBytes(game, partial: false);
+
+    public long? PrewarmReadBytes(GameSettings game, bool partial) => ScheduleOps(game, true, trimLast: partial).Ops.Sum(o => o.Length);
 
     /// 관찰 출처가 있는 예열 범위의 바이트. 구형 목록에 표식이 없으면 전체 예열 예산을 관찰된 것으로 취급합니다.
     public static long? ObservedBytes(GameSettings game) => ObservedBytes(game, allowSourceRead: true);

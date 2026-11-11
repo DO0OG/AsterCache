@@ -1,5 +1,6 @@
 using AsterCache.Core;
 using AsterCache.Core.Json;
+using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
 using AsterCache.Core.Trace;
 using AsterCache.Prefetch;
@@ -21,6 +22,7 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     private long _avail;
     private long _physical;
     private long _hotMib = 8000;
+    private Queue<long>? _availableReads;
 
     private List<int> Probed { get; } = [];
 
@@ -39,12 +41,22 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
         /// 실제로 읽었다고 알릴 양 (MiB, 기본은 받은 상한 그대로).
         public long? ReadMib { get; set; }
 
+        public Func<GameSettings, long?>? ReadSetBytes { get; set; }
+
+        public Func<GameSettings, bool, long?>? ScheduledReadSetBytes { get; set; }
+
+        public Func<GameSettings, long, long>? ScheduledStreamBytes { get; set; }
+
+        public long? PrewarmReadBytes(GameSettings game) => ReadSetBytes?.Invoke(game);
+
+        public long? PrewarmReadBytes(GameSettings game, bool partial) => ScheduledReadSetBytes?.Invoke(game, partial) ?? PrewarmReadBytes(game);
+
         public StreamStats Stream(GameSettings game) => throw new NotSupportedException();
 
         public (StreamStats Stats, bool Complete) StreamPrewarm(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes)
         {
+            long total = ScheduledStreamBytes?.Invoke(game, maxBytes) ?? (long)game.MaxStreamMib * Mib;
             Calls.Add((game.MaxStreamMib, maxBytes));
-            long total = (long)game.MaxStreamMib * Mib;
             progress?.Invoke(0, total);
             if (OnProgress is not null && progress is not null)
             {
@@ -55,23 +67,56 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
         }
     }
 
-    private Prewarmer Make(GameSettings game) => new([game], _streamer, new PrewarmEnv
+    private Prewarmer Make(GameSettings game)
     {
-        AvailableRamMib = () => _avail,
-        GameRunning = _ => false,
-        ZoneBytes = g => Math.Min(_hotMib, g.StreamCapBytes(_hotMib * Mib) / Mib) * Mib, // 계획의 존 (핫 집합) 을 max_stream_mib 로 자른 값
-        TraceExists = _ => true,
-        PhysicalRamBytes = () => _physical,
-        ProbeReadMs = g =>
+        _streamer.ReadSetBytes ??= g => Math.Min(_hotMib, g.StreamCapBytes(_hotMib * Mib) / Mib) * Mib;
+        return new Prewarmer([game], _streamer, new PrewarmEnv
         {
-            Probed.Add(g.MaxStreamMib);
-            return new ProbeResult(8, 8, 5.0); // 읽은 구간이 밀려나 차가움
-        },
-    }, _log, StatusPath, () => _now);
+            AvailableRamMib = () => _availableReads is { Count: > 0 } ? _availableReads.Dequeue() : _avail,
+            GameRunning = _ => false,
+            ZoneBytes = g => Math.Min(_hotMib, g.StreamCapBytes(_hotMib * Mib) / Mib) * Mib, // 계획의 존 (핫 집합) 을 max_stream_mib 로 자른 값
+            TraceExists = _ => true,
+            PhysicalRamBytes = () => _physical,
+            ProbeReadMs = g =>
+            {
+                Probed.Add(g.MaxStreamMib);
+                return new ProbeResult(8, 8, 5.0); // 읽은 구간이 밀려나 차가움
+            },
+        }, _log, StatusPath, () => _now);
+    }
 
     private static GameSettings Game() => Games.Make("g", "g.exe");
 
     private JObject Status() => (JObject)((JObject)((JObject)JsonRead.ReadFile(StatusPath)!)["games"]!)["g"]!;
+
+    private GameSettings ScheduledGame(string name, int maxStreamMib, params (string File, int Mib)[] ranges)
+    {
+        string root = Path.Combine(_dir, name);
+        Directory.CreateDirectory(root);
+        string trace = Path.Combine(_dir, name + ".prefetch.json");
+        string plan = Path.Combine(_dir, name + ".plan.json");
+        var rows = new List<TraceEvent>();
+        foreach ((string file, int mib) in ranges)
+        {
+            string path = Path.Combine(root, file);
+            using var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
+            stream.SetLength((long)mib * Mib);
+            rows.Add(new TraceEvent(path, 0, (long)mib * Mib));
+        }
+
+        new PlanFile(PlanFile.CurrentVersion, root, PlanFile.SplitDrive(root).ToUpperInvariant(), 4096, 65536,
+            new PlanZone(0, 1), [], [], [], new JObject()).Save(plan);
+        PlanOutput.SavePrefetch(trace, rows);
+        return Game() with
+        {
+            OriginRoot = root,
+            AllowedRoots = [root],
+            Trace = trace,
+            Plan = plan,
+            MaxStreamMib = maxStreamMib,
+            MaxStreamSet = true,
+        };
+    }
 
     [Theory]
     [InlineData(6000L, 1904)] // 가용 6000 - 예비 4096
@@ -152,6 +197,128 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
         Assert.False(r.Ran);
         Assert.Equal(Prewarmer.Cancelled, r.SkipReason);
         Assert.False(p.SupplementPending("g"));
+    }
+
+    [Fact]
+    public void A39MibDropAfterPlanningReadsTheFrontAndRecordsTheRestForSupplement()
+    {
+        _hotMib = 8785;
+        _avail = 12842;
+        _availableReads = new Queue<long>([12881, 12842, 12842]);
+        Prewarmer p = Make(Game());
+
+        PrewarmResult result = p.Run(Game(), "test");
+
+        Assert.True(result.Ran);
+        Assert.Equal((8490, 0L), Assert.Single(_streamer.Calls)); // 39 MiB 부족에서 취소하지 않고 256 MiB 여유를 둔 앞부분
+        Assert.Equal((8490L, 8785L), p.PartialInfo("g"));
+        Assert.True(p.SupplementPending("g"));
+        Assert.Equal((8490L, 8785L, true), ((long)Status()["warmed_mib"]!, (long)Status()["hot_mib"]!, (bool)Status()["partial"]!));
+    }
+
+    [Fact]
+    public void A39MibDropOnAnOversizedScheduledRangeReads1609MibAndRecordsPartialSuccess()
+    {
+        _hotMib = 8000;
+        _avail = 5961;
+        _availableReads = new Queue<long>([6000, 5961]);
+        GameSettings game = ScheduledGame("boundary", 8000, ("large.bin", 8000));
+        var scheduler = new PrefetchStreamer();
+        _streamer.ScheduledReadSetBytes = (g, partial) => scheduler.PrewarmReadBytes(g, partial);
+        _streamer.ScheduledStreamBytes = (g, maxBytes) => PrefetchStreamer.PrewarmOps(g, maxBytes).Ops.Sum(op => op.Length);
+        Prewarmer p = Make(game);
+
+        PrewarmResult result = p.Run(game, "test");
+
+        GameSettings read = game with { MaxStreamMib = 1609, MaxStreamSet = true };
+        long actualScheduledBytes = PrefetchStreamer.PrewarmOps(read, 0).Ops.Sum(op => op.Length);
+        Assert.True(result.Ran);
+        Assert.Equal(1609L * Mib, actualScheduledBytes);
+        Assert.Equal((1609, 0L), Assert.Single(_streamer.Calls));
+        Assert.Equal((1609L, 8000L), p.PartialInfo("g"));
+        Assert.True(p.SupplementPending("g"));
+        Assert.Equal((1609L, 8000L, true), ((long)Status()["warmed_mib"]!, (long)Status()["hot_mib"]!, (bool)Status()["partial"]!));
+    }
+
+    [Fact]
+    public void PartialReadSizeMatchesTheScheduledListWithOversizedAndSmallRangesMixed()
+    {
+        _hotMib = 11;
+        GameSettings game = ScheduledGame("mixed", 6,
+            ("small-a.bin", 1), ("large.bin", 8), ("small-b.bin", 1), ("small-c.bin", 1));
+        var scheduler = new PrefetchStreamer();
+        GameSettings partial = game with { MaxStreamMib = 6, MaxStreamSet = true };
+
+        long? recalculatedBytes = scheduler.PrewarmReadBytes(partial, partial: true);
+        long actualScheduledBytes = PrefetchStreamer.PrewarmOps(partial, 0).Ops.Sum(op => op.Length);
+
+        Assert.Equal(6L * Mib, recalculatedBytes);
+        Assert.Equal(recalculatedBytes, actualScheduledBytes);
+    }
+
+    [Fact]
+    public void APreviouslyPartialPlanIsTrimmedAgainWhenTheFinalMemoryCheckDrops()
+    {
+        _avail = 6000;
+        Prewarmer p = Make(Game());
+        Assert.True(p.Run(Game(), "test").Ran);
+        Assert.Equal((1904L, 8000L), p.PartialInfo("g"));
+        _streamer.Calls.Clear();
+        _avail = 5600;
+        _availableReads = new Queue<long>([6000, 5600, 5600]);
+
+        PrewarmResult result = p.Run(Game(), "test", ignoreCooldown: true);
+
+        Assert.True(result.Ran);
+        Assert.Equal(1248, Assert.Single(_streamer.Calls).MaxStreamMib);
+        Assert.Equal((1248L, 8000L), p.PartialInfo("g"));
+    }
+
+    [Fact]
+    public void FinalReadListSizeTakesPrecedenceOverTheZoneSize()
+    {
+        _hotMib = 1000;
+        _avail = 6000;
+        _streamer.ReadSetBytes = g => Math.Min(5000, g.StreamCapBytes(5000 * Mib) / Mib) * Mib;
+        _availableReads = new Queue<long>([6000, 6000, 6000]);
+        Prewarmer p = Make(Game());
+
+        PrewarmResult result = p.Run(Game(), "test");
+
+        Assert.True(result.Ran);
+        Assert.Equal(1648, Assert.Single(_streamer.Calls).MaxStreamMib);
+        Assert.Equal((1648L, 5000L), p.PartialInfo("g"));
+    }
+
+    [Fact]
+    public void FinalTrimUsesConfiguredReserveWhenItExceedsTheDefault()
+    {
+        GameSettings game = Game() with { Prewarm = Game().Prewarm with { MinFreeRamMib = 6000 } };
+        _avail = 10000;
+        _availableReads = new Queue<long>([14000, 10000, 10000]);
+        Prewarmer p = Make(game);
+
+        PrewarmResult result = p.Run(game, "test");
+
+        Assert.True(result.Ran);
+        Assert.Equal(3744, Assert.Single(_streamer.Calls).MaxStreamMib); // 10000 - 6000 예비 - 256 여유
+        Assert.Equal((3744L, 8000L), p.PartialInfo("g"));
+    }
+
+    [Fact]
+    public void FinalTrimBelowTheMinimumSkipsWithoutReading()
+    {
+        _avail = 4607;
+        _availableReads = new Queue<long>([6000, 4607]);
+        Prewarmer p = Make(Game());
+
+        PrewarmResult result = p.Run(Game(), "test");
+
+        Assert.False(result.Ran);
+        Assert.StartsWith("low memory", result.SkipReason, StringComparison.Ordinal);
+        Assert.Empty(_streamer.Calls);
+        Assert.False(p.SupplementPending("g"));
+        Assert.Contains(_log.Lines, line => line.Contains("prewarm skipped (low memory", StringComparison.Ordinal));
     }
 
     [Fact]

@@ -178,12 +178,6 @@ public sealed class Rewarmer
             return;
         }
 
-        if (_prewarm.PendingWarmDriveRecovering(g))
-        {
-            NoteCheck(g, "recovering", $"{g.Name}: rewarm check skipped (an unfinished prewarm waits for the drive to finish recovering)"); // 대기 중인 게임은 대기 재시도·보충과 같이 회복 중에 표본도 읽지 않음
-            return;
-        }
-
         ProbeResult? probe;
         try
         {

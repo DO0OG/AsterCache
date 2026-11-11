@@ -181,6 +181,20 @@ public sealed class AutoMode
         }
     }
 
+    /// 정기 재적용이 존 점유로 거절됐을 때 자동 재배치의 잔여 재계획에 넘김 (재적용 루프 스레드에서 부름). 실패하면 넘기지 않음.
+    public bool ReapplyZoneBlocked(GameSettings g)
+    {
+        try
+        {
+            return _relocator.HandOffZoneBlocked(g);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _log.Error("auto reapply hand-off failed", e);
+            return false;
+        }
+    }
+
     /// 정기 재적용이 쓸 옵션 (회당 쓰기 상한·하루 잔여 예산 반영). 실패하면 null: 재적용은 기본 옵션을 씀.
     public ApplyOptions? ReapplyOptions(GameSettings g)
     {

@@ -115,7 +115,7 @@ public sealed class Rewarmer
 
             if (budget is { } b && !b.In.Contains(g.Name))
             {
-                NoteCheck(g, "budget", $"{g.Name}: rewarm check skipped (the cache budget of {b.CapMib} MiB is used by higher-ranked games: {b.UsedMib} MiB)");
+                NoteCheck(g, "budget", $"{g.Name}: rewarm check skipped ({Prewarmer.WarmBudgetSkipDetail(b.CapMib, b.UsedMib)})");
                 continue;
             }
 

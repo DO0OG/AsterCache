@@ -411,6 +411,7 @@ public sealed class Prewarmer
     private readonly HashSet<string> _relocHoldLogged = new(StringComparer.OrdinalIgnoreCase); // 재배치 중이라 시작 예열을 보류한 것을 이미 로그한 게임, _gate 로 보호
     private readonly Dictionary<string, (DateTimeOffset At, int Count)> _skipLogged = new(StringComparer.OrdinalIgnoreCase); // 게임|사유별 마지막으로 남긴 시각과 그 뒤 억제한 횟수, _gate 로 보호
     private readonly Dictionary<string, (string Reason, long CapMib, long WarmedMib, long HotMib)> _supplementNothingNew = new(StringComparer.OrdinalIgnoreCase); // 보충할 새 구간이 없다는 마지막 상태, _gate 로 보호
+    private readonly Dictionary<string, (string Reason, long CapMib, long UsedMib, long AllocMib)> _pendingWarmBudgetSkipped = new(StringComparer.OrdinalIgnoreCase); // 예산 거절의 마지막 상태, _gate 로 보호
     private readonly Dictionary<string, (DateTimeOffset At, int Count)> _triggerSeen = new(StringComparer.OrdinalIgnoreCase); // 트리거 exe 별 마지막 처리 시각과 그 뒤 억제한 횟수, _gate 로 보호
     private readonly Dictionary<string, (DateTimeOffset At, long Bytes)> _readSample = new(StringComparer.OrdinalIgnoreCase); // 실행 중인 게임의 마지막 읽기 카운터 표본, _gate 로 보호
     private readonly Dictionary<string, DateTimeOffset> _gameIdleSince = new(StringComparer.OrdinalIgnoreCase); // 실행 중인 게임이 한가해진 시각 (읽기 증가율·디스크 처리량이 낮은 상태가 이어진 시작), _gate 로 보호
@@ -1104,6 +1105,7 @@ public sealed class Prewarmer
             {
                 _pendingWarm.Remove(gone);
                 _idleSince.Remove(gone);
+                _pendingWarmBudgetSkipped.Remove(gone);
             }
 
             foreach (string stale in _resume.Keys.Where(k => games.FirstOrDefault(g => string.Equals(g.Name, k, StringComparison.OrdinalIgnoreCase)) is not { } now
@@ -1126,6 +1128,16 @@ public sealed class Prewarmer
         }
 
         _pins.Reconcile(games);
+        bool budgetWaiting;
+        lock (_gate)
+        {
+            budgetWaiting = _pendingWarmBudgetSkipped.Count > 0;
+        }
+
+        if (budgetWaiting)
+        {
+            WarmBudget(); // 목록·예산이 바뀌었으면 예산으로 미뤄 둔 대기 게임의 배정 회복을 바로 판정
+        }
     }
 
     /// 한 게임의 고정을 풉니다 (그 게임 exe 가 뜰 때, 스트림보다 먼저).
@@ -1179,6 +1191,7 @@ public sealed class Prewarmer
             {
                 _pendingWarm.Remove(game.Name);
                 _idleSince.Remove(game.Name);
+                _pendingWarmBudgetSkipped.Remove(game.Name);
             }
 
             return;
@@ -1191,6 +1204,7 @@ public sealed class Prewarmer
             {
                 _pendingWarm.Remove(game.Name);
                 _idleSince.Remove(game.Name);
+                _pendingWarmBudgetSkipped.Remove(game.Name);
             }
 
             return;
@@ -1217,6 +1231,7 @@ public sealed class Prewarmer
             }
 
             _pendingWarm[game.Name] = new(at + PendingWarmRetryDelay(), reason ?? "unsuccessful warm");
+            _pendingWarmBudgetSkipped.Remove(game.Name); // 다른 사유로 새로 잡힌 기한은 예산 회복으로 앞당기지 않음
         }
     }
 
@@ -1232,7 +1247,7 @@ public sealed class Prewarmer
         }
     }
 
-    /// 재예열·보충 예열 대상이 게임들 합계로 캐시 예산 (기본 물리 RAM/2, prewarm.max_cache_mib) 을 넘지 않게 합니다. 먼저 모든 게임의 관찰 범위, 남은 예산은 기존 순위대로 보충 범위에 나눕니다.
+    /// 재예열·보충 예열 대상이 게임들 합계로 캐시 예산 (기본 물리 RAM/2, prewarm.max_cache_mib) 을 넘지 않게 합니다. 관찰 범위를 우선 배정하고 미배정량은 기존 순위대로 나눕니다.
     /// 상태를 저장하지 않으므로 순위가 바뀌면 다음 점검에서 대상도 바뀝니다. 순위가 없으면 null (모두 대상).
     /// AllocMib: 들어간 게임이 셈에 쓴 양 (MiB): 재예열은 이만큼까지만 읽어야 계상과 실제 읽기가 같습니다.
     internal (HashSet<string> In, long CapMib, long UsedMib, Dictionary<string, long> AllocMib)? WarmBudget()
@@ -1337,8 +1352,38 @@ public sealed class Prewarmer
             used += take;
         }
 
+        // 3단계: 두 단계에서 배정되지 않은 관찰 범위도 남은 예산으로 최소 부분량을 받습니다.
+        foreach (GameSettings g in ordered.Where(g => rejected.Contains(g.Name)))
+        {
+            long take = Math.Min(Math.Max(0, totalMib[g.Name] - alloc.GetValueOrDefault(g.Name)), Math.Max(0, cap - used));
+            if (take < MinPartialMib)
+            {
+                continue;
+            }
+
+            inBudget.Add(g.Name);
+            alloc[g.Name] = alloc.GetValueOrDefault(g.Name) + take;
+            used += take;
+        }
+
+        lock (_gate)
+        {
+            DateTimeOffset now = _now();
+            foreach (string recovered in _pendingWarmBudgetSkipped.Keys.Where(name => alloc.GetValueOrDefault(name) > 0).ToList())
+            {
+                _pendingWarmBudgetSkipped.Remove(recovered);
+                if (_pendingWarm.TryGetValue(recovered, out PendingWarm? pending) && pending.RetryAt > now)
+                {
+                    _pendingWarm[recovered] = pending with { RetryAt = now }; // 배정이 회복되면 대기 기한을 앞당김
+                }
+            }
+        }
+
         return (inBudget, cap, used, alloc);
     }
+
+    internal static string WarmBudgetSkipDetail(long capMib, long usedMib) =>
+        $"the cache budget of {capMib} MiB has {usedMib} MiB assigned to warm targets; no allocation of at least {MinPartialMib} MiB fits this game";
 
     /// 기록 없이 예열한 게임의 재예열 점검 표본 (그 게임이 지금도 기록 없는 예열 대상이고 예열한 적이 있을 때만), 아니면 null.
     internal IReadOnlyList<(string Path, long Offset, int Bytes)>? ColdSamples(GameSettings game)
@@ -1548,6 +1593,7 @@ public sealed class Prewarmer
         {
             _pendingWarm.Remove(game);
             _idleSince.Remove(game);
+            _pendingWarmBudgetSkipped.Remove(game);
         }
     }
 
@@ -1768,6 +1814,7 @@ public sealed class Prewarmer
                 {
                     _pendingWarm.Remove(name);
                     _idleSince.Remove(name);
+                    _pendingWarmBudgetSkipped.Remove(name);
                 }
 
                 continue;
@@ -1877,11 +1924,45 @@ public sealed class Prewarmer
         long allocatedMib = budget.AllocMib.GetValueOrDefault(game.Name);
         if (!budget.In.Contains(game.Name) || allocatedMib <= 0)
         {
-            LogSkipped(game.Name, "pending warm budget", $"{game.Name}: pending prewarm skipped (the cache budget of {budget.CapMib} MiB is used by higher-ranked games: {budget.UsedMib} MiB)");
+            DeferPendingWarmForBudget(game.Name);
+            LogPendingWarmBudgetSkipped(game.Name, budget.CapMib, budget.UsedMib, allocatedMib);
             return 0;
         }
 
+        lock (_gate)
+        {
+            _pendingWarmBudgetSkipped.Remove(game.Name);
+        }
+
         return allocatedMib;
+    }
+
+    private void DeferPendingWarmForBudget(string game)
+    {
+        DateTimeOffset retryAt = _now() + PendingWarmRetryDelay();
+        lock (_gate)
+        {
+            if (_pendingWarm.TryGetValue(game, out PendingWarm? pending))
+            {
+                _pendingWarm[game] = pending with { RetryAt = retryAt };
+            }
+        }
+    }
+
+    private void LogPendingWarmBudgetSkipped(string game, long capMib, long usedMib, long allocatedMib)
+    {
+        var state = (Reason: "cache budget", CapMib: capMib, UsedMib: usedMib, AllocMib: allocatedMib);
+        lock (_gate)
+        {
+            if (_pendingWarmBudgetSkipped.TryGetValue(game, out var previous) && previous == state)
+            {
+                return;
+            }
+
+            _pendingWarmBudgetSkipped[game] = state;
+        }
+
+        _log.Info($"{game}: pending prewarm skipped ({WarmBudgetSkipDetail(capMib, usedMib)})");
     }
 
     /// 보충 예열 대기 게임이 IdleNeeded 동안 연속으로 한가했을 때만 Supplement 를 부릅니다 (SupplementTick 과 재예열 점검이 같은 판정을 씀). 유휴가 막 시작됐거나 아직 모자라면 읽지 않고 false.
@@ -1897,7 +1978,7 @@ public sealed class Prewarmer
         {
             if (!budget.In.Contains(g.Name))
             {
-                LogSkipped(g.Name, "warm budget", $"{g.Name}: supplement prewarm skipped (the cache budget of {budget.CapMib} MiB is used by higher-ranked games: {budget.UsedMib} MiB)");
+                LogSkipped(g.Name, "warm budget", $"{g.Name}: supplement prewarm skipped ({WarmBudgetSkipDetail(budget.CapMib, budget.UsedMib)})");
                 return false;
             }
 

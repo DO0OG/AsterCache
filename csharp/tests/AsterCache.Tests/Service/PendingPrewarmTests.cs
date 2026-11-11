@@ -29,6 +29,8 @@ public sealed class PendingPrewarmTests
     {
         public List<string> Calls { get; } = [];
 
+        public List<(string Game, int MaxStreamMib)> Limits { get; } = [];
+
         public bool IncompleteNext { get; set; }
 
         public Action<GameSettings>? BeforeProgress { get; set; }
@@ -40,6 +42,7 @@ public sealed class PendingPrewarmTests
         public (StreamStats Stats, bool Complete) StreamPrewarm(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes)
         {
             Calls.Add(game.Name);
+            Limits.Add((game.Name, game.MaxStreamMib));
             long requested = Math.Min(SizeBytes(game), game.MaxStreamSet ? (long)game.MaxStreamMib * Mib : long.MaxValue);
             BeforeProgress?.Invoke(game);
             progress?.Invoke(0, requested);
@@ -298,7 +301,7 @@ public sealed class PendingPrewarmTests
     }
 
     [Fact]
-    public void PendingWarmCannotTakeAnotherGamesCacheBudgetShare()
+    public void PendingBudgetRefusalWaitsForItsConfiguredRetryAndRetriesWhenTheShareOpens()
     {
         GameSettings a = Game("a") with { MaxStreamMib = 8192, MaxStreamSet = true };
         GameSettings b = Game("b") with { MaxStreamMib = 7000, MaxStreamSet = true };
@@ -306,7 +309,7 @@ public sealed class PendingPrewarmTests
         _zones["b"] = 6000;
         _rank = ["a", "b"];
         Prewarmer prewarmer = Make(null, a, b);
-        AutoSettings auto = Auto();
+        AutoSettings auto = Auto() with { RewarmMinutes = 10 };
         prewarmer.SetAuto(auto);
         Rank(prewarmer);
         Assert.True(prewarmer.Run(a, "test").Ran);
@@ -318,11 +321,120 @@ public sealed class PendingPrewarmTests
         Assert.DoesNotContain("b", budget.In);
         Assert.Equal(8192, budget.AllocMib["a"]);
 
-        ReachRetryAndIdle(prewarmer, auto);
+        _now += TimeSpan.FromMinutes(10);
+        prewarmer.Tick(auto); // 기한은 지났지만 유휴 연속 시간이 아직 모자람
+        _now += TimeSpan.FromSeconds(61);
+        prewarmer.Tick(auto); // 예산 거절: 다음 판단은 다시 10분 뒤
 
         Assert.Equal(["a", "b"], _streamer.Calls);
         Assert.True(prewarmer.HasPendingWarm("b"));
-        Assert.Contains(_log.Lines, line => line.Contains("b: pending prewarm skipped (the cache budget of 8192 MiB", StringComparison.Ordinal));
+        string refusal = "b: pending prewarm skipped (the cache budget of 8192 MiB has 8192 MiB assigned to warm targets; no allocation of at least 256 MiB fits this game)";
+        Assert.Contains(_log.Lines, line => line.Contains(refusal, StringComparison.Ordinal));
+        Assert.Single(_log.Lines, line => line.Contains("b: pending prewarm skipped", StringComparison.Ordinal));
+
+        GameSettings largerBudgetA = a with { Prewarm = a.Prewarm with { MaxCacheMib = 8300 } };
+        GameSettings largerBudgetB = b with { Prewarm = b.Prewarm with { MaxCacheMib = 8300 } };
+        prewarmer.SetGames([largerBudgetA, largerBudgetB]); // cap 이 바뀌어도 정해진 기한 전에는 다시 판정하지 않음
+        _now += TimeSpan.FromSeconds(30);
+        prewarmer.Tick(auto);
+        _now += TimeSpan.FromSeconds(30);
+        prewarmer.Tick(auto);
+        Assert.Equal(["a", "b"], _streamer.Calls);
+        Assert.Single(_log.Lines, line => line.Contains("b: pending prewarm skipped", StringComparison.Ordinal));
+
+        _now += TimeSpan.FromMinutes(9);
+        prewarmer.Tick(auto);
+
+        Assert.Equal(["a", "b"], _streamer.Calls);
+        Assert.Equal(2, _log.Lines.Count(line => line.Contains("b: pending prewarm skipped", StringComparison.Ordinal)));
+        Assert.Contains(_log.Lines, line => line.Contains(
+            "b: pending prewarm skipped (the cache budget of 8300 MiB has 8192 MiB assigned to warm targets; no allocation of at least 256 MiB fits this game)",
+            StringComparison.Ordinal));
+
+        prewarmer.SetGames([largerBudgetB]); // a 가 빠진 뒤 새 배정표에서 대기 게임에 예산이 열림
+        prewarmer.Tick(auto);
+
+        Assert.Equal(["a", "b", "b"], _streamer.Calls);
+        Assert.False(prewarmer.HasPendingWarm("b"));
+    }
+
+    [Fact]
+    public void ABudgetShareThatOpensDoesNotPullInARetryTimeSetByALaterFailure()
+    {
+        GameSettings a = Game("a") with { MaxStreamMib = 8192, MaxStreamSet = true };
+        GameSettings b = Game("b") with { MaxStreamMib = 7000, MaxStreamSet = true };
+        _zones["a"] = 8192;
+        _zones["b"] = 6000;
+        _rank = ["a", "b"];
+        Prewarmer prewarmer = Make(null, a, b);
+        AutoSettings auto = Auto() with { RewarmMinutes = 10 };
+        prewarmer.SetAuto(auto);
+        Rank(prewarmer);
+        Assert.True(prewarmer.Run(a, "test").Ran);
+        _streamer.IncompleteNext = true;
+        Assert.Equal(Prewarmer.Cancelled, prewarmer.Run(b, "test").SkipReason);
+        _now += TimeSpan.FromMinutes(10);
+        prewarmer.Tick(auto);
+        _now += TimeSpan.FromSeconds(61);
+        prewarmer.Tick(auto); // 예산 거절
+        Assert.Single(_log.Lines, line => line.Contains("b: pending prewarm skipped", StringComparison.Ordinal));
+
+        _now += TimeSpan.FromMinutes(10);
+        _streamer.IncompleteNext = true;
+        Assert.False(prewarmer.Run(b, "test").Ran); // 예산 거절 기한이 지난 뒤의 다른 실패가 새 기한을 잡음
+        int calls = _streamer.Calls.Count;
+
+        prewarmer.SetGames([b]); // a 가 빠져 예산이 열려도 새 기한은 그대로
+        prewarmer.Tick(auto);
+        _now += TimeSpan.FromSeconds(61);
+        prewarmer.Tick(auto);
+
+        Assert.Equal(calls, _streamer.Calls.Count);
+        Assert.True(prewarmer.HasPendingWarm("b"));
+    }
+
+    [Fact]
+    public void PendingWarmUsesTheRemainingBudgetAfterTheHigherRankedGameIsSupplemented()
+    {
+        GameSettings a = Game("a") with
+        {
+            Prewarm = Game("a").Prewarm with { MaxCacheMib = 16347 },
+        };
+        GameSettings b = Game("b");
+        _zones["a"] = 10026;
+        _zones["b"] = 8182;
+        _rank = ["a", "b"];
+        Prewarmer prewarmer = Make(null, a, b);
+        AutoSettings auto = Auto(startupCap: 1024);
+        prewarmer.SetAuto(auto);
+        Rank(prewarmer);
+
+        IReadOnlyList<PrewarmResult> started = prewarmer.RunServiceStart([a, b]);
+
+        Assert.True(started.Single(result => result.Game == "a").Ran);
+        Assert.Equal("startup byte cap", started.Single(result => result.Game == "b").SkipReason);
+        Assert.Contains(("a", 1024), _streamer.Limits);
+        Assert.True(prewarmer.SupplementPending("a"));
+        Assert.True(prewarmer.HasPendingWarm("b"));
+
+        Assert.False(prewarmer.SupplementWhenIdle(a, CancellationToken.None));
+        _now += TimeSpan.FromSeconds(61);
+        Assert.True(prewarmer.SupplementWhenIdle(a, CancellationToken.None));
+        Assert.False(prewarmer.SupplementPending("a"));
+
+        var budget = prewarmer.WarmBudget()!.Value;
+        Assert.Equal(16347, budget.CapMib);
+        Assert.Equal(16347, budget.UsedMib);
+        Assert.Equal(6321, budget.AllocMib["b"]);
+
+        prewarmer.Tick(auto); // b 의 유휴 시계를 시작
+        _now += TimeSpan.FromSeconds(61);
+        prewarmer.Tick(auto);
+
+        Assert.Contains(("b", 6321), _streamer.Limits);
+        Assert.Equal((6321L, 8182L), prewarmer.PartialInfo("b"));
+        Assert.False(prewarmer.HasPendingWarm("b"));
+        Assert.Equal(16347, prewarmer.WarmBudget()!.Value.UsedMib);
     }
 
     [Fact]

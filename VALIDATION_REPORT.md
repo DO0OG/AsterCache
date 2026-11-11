@@ -2,6 +2,36 @@
 
 # AsterCache v0.7 validation report — named checks 86~120
 
+## What this report covers
+
+This report lists what was checked, how, and what was not. The table in the first dated section is the current state; the sections after it are dated records. The items that were not verified are collected first.
+
+### Not verified or not tested
+
+- **Load time of a running game.** Only the traced replay of one game (Frostpunk, 2026-11-02) was measured. A wall-clock A/B of real game loads and the on-device validation of KeepAwake were still incomplete as of 0.9.0-beta.12.
+- **Anti-cheat games.** There are only usage records (one Vanguard game and one Ricochet game) and no controlled validation. No guarantee is made about account sanctions.
+- **Persistence.** The layout held for up to 10 hours on the synthetic dataset. 24 hours was not measured.
+- **Drives.** Measured on one SMR drive (WD20EZAZ). CMR drives were not measured.
+- **Environments not tested.** Power loss during writes, SSD damage, BitLocker, DirectStorage, and minifilter environments. The kernel minifilter (AsterFlt) was built and statically analyzed, but never signed, loaded, or installed, and the `infverif /w` decision is deferred.
+- **Open measurement issues.** The cause of the 0.5 s delay of the C# stream in S2 is not determined. The real behavior of in-service prewarm was still being tested with administrator rights. The cache hit on Python 3.11 (1.140 ms) exceeds the 1.1 ms criterion. The outer-zone benefit is not proven (E15), and E6-4 was not run.
+- **SSD assist storage.** Only the Frostpunk loading read was measured. Power loss during a copy and a full SSD were not tested.
+- **Cold condition.** It was produced by clearing the standby list (with administrator rights); the drive's internal cache was not cleared.
+- **Automatic tracing and relocation.** There are only logs of runs with real games, and no controlled validation. Automatic tracing may miss some of a game's first reads before its session starts.
+- **Effects not measured.** Shared profiles, Windows prefetch boot traces, and engine and whole-folder prewarm.
+- **Python reference cache (Linux container section).** Automatic acceleration of existing game processes is 0% implemented, and the micro-benchmark compares Python API processing times, not HDD or SSD load.
+
+The details and the exact wording are in the "Remaining issues", "Remaining limits", and "Unresolved risks and evaluation gates" sections below.
+
+### Contents
+
+| Section | Content |
+|---|---|
+| Summary as of 2026-11-03 | The current figures, what was held back, and a pointer to the usage records |
+| Windows hardware validation (2026-11-01) | Tests, defects fixed, benchmark figures, relocation experiments E2 and E3 |
+| Windows hardware validation (2026-11-02) | Frostpunk on a real game, SSD baseline, persistence, S1 to S4, kernel minifilter, Python reference, final C# version |
+| E6 cold limit experiment (2026-11-02) | Full move into one zone and the high band |
+| Linux container validation and later | Regression checks, stress, micro-benchmark, defects, risks, decision record |
+
 ## Summary as of 2026-11-03
 
 The figures below are the current state. The sections after this one are the record from 2026-11-01 and 2026-11-02.
@@ -22,33 +52,28 @@ Held back or not adopted:
 - Raw bandwidth of the outer zones is non-monotonic (E15), and the outer-zone benefit is not proven, so outer zones are held back.
 - First-run read-ahead (E7 to E7f) gave no proven gain. It stays off by default, and the stream, bounded, and adaptive modes are not adopted.
 
-### Real-world usage records (this PC, 2026-11-02 to 2026-11-10)
+### Real-world usage records (one PC, 2026-11-02 to 2026-11-10)
 
-This is a tally of the service log on one PC. It is not a controlled validation or benchmark. Total game load time and in-game frame stutter were not measured. On this PC there are usage records of playing a Vanguard game (League of Legends) and a Ricochet game (Call of Duty) with the installed build, and no guarantee is made about account sanctions. The method and sample counts are in [docs/RESULTS_SUMMARY.md](docs/RESULTS_SUMMARY.md#real-world-usage-records).
-
-| Item | League of Legends | Call of Duty |
-|---|---|---|
-| Game start detections (process starts) | 10, over 6 days | 62, over 8 days |
-| Anti-cheat (as judged by the service) | Vanguard | Ricochet |
-| Trace | 2 collected, then skipped (8 times) | 14 collections started |
-| Pin | Skipped (4 times) | Skipped (7 times) |
-| Relocation | 4 completed, 4 stopped | 5 completed, 3 stopped |
-| Hit rate right after prewarm (latest value only) | 100% | 75% |
-
-Prewarm durations, the definition of the hit rate, and what was not measured are in the same section of RESULTS_SUMMARY.
+This is a tally of the service log on one PC. It is not a controlled validation or benchmark. Total game load time and in-game frame stutter were not measured. There are usage records of playing a Vanguard game (League of Legends) and a Ricochet game (Call of Duty) with the installed build, and no guarantee is made about account sanctions.
+The counts, the prewarm durations, the definition of the hit rate, and what was not measured are in [docs/RESULTS_SUMMARY.md](docs/RESULTS_SUMMARY.md#real-world-usage-records).
 
 ## Windows hardware validation (2026-11-01)
 
+Python 3.11 and 3.12 test runs (59 tests passed after the fixes), five defects fixed, benchmark figures, and the relocation experiments E2 and E3.
+
+<details>
+<summary>Details: tables, results, and open issues</summary>
+
 The sections below are the record from 2026-11-01 and 2026-11-02, not the current state.
 
-### Environment
+**Environment**
 
 - Windows 11 Pro 10.0.26200, non-administrator, developer mode on, 32 GiB of memory, 16 logical cores
 - Python 3.11.4 (SQLite 3.42.0), Python 3.12.10 (SQLite 3.49.1)
 - D: WDC WD20EZAZ (SATA, MediaType=HDD, origin measurements), C: SAMSUNG MZVLB1T0HBLR (NVMe, MediaType=SSD, cache and baseline), E: Micron Crucial X8 (USB, SSD)
 - Source: `results/windows_20261101/win_checks.md`, `results/windows_20261101/physicaldisk.json`
 
-### Test results
+**Test results**
 
 | Group | Tests | Result | Source |
 |---|---:|---|---|
@@ -59,15 +84,16 @@ The sections below are the record from 2026-11-01 and 2026-11-02, not the curren
 
 Of the 35 before the fixes, test_104 was skipped on Windows. It was enabled after the fixes, and all 59 now pass on both versions.
 
-### Defects found and fixed
+**Defects found and fixed**
 
-1. **The cache failed entirely on Python 3.12 Windows.** On 3.12, `st_ctime` from `fstat` of a file handle is the ChangeTime while `st_ctime` from `stat` of a path is the creation time, so the two values differ. As a result almost every read ended in an origin-replaced error. On Windows the path stat comparison was reduced to the first 4 fields, and ChangeTime is now compared separately from the handle (commit `bc287ef`).
+1. **The cache failed entirely on Python 3.12 Windows.** On 3.12, `st_ctime` from `fstat` of a file handle is the ChangeTime while `st_ctime` from `stat` of a path is the creation time, so the two values differ. As a result almost every read ended in an origin-replaced error.
+   On Windows the path stat comparison was reduced to the first 4 fields, and ChangeTime is now compared separately from the handle (commit `bc287ef`).
 2. **Load performance.** Cold loading was 21.3 ms per block because of a SUM that scanned the whole cache blob on every write and the fsync of `synchronous=FULL`. With `synchronous=NORMAL`, a (touched, cache_key, byte_count) covering index, and `BEGIN IMMEDIATE` it became 4.2 ms (`results/windows_20261101/cache_fix_bench.json`).
 3. **Race guard.** When loading the blocks of a file that was just modified, a re-modification within the same clock tick cannot be distinguished by fingerprint. Files whose last modification is within 2 seconds are no longer loaded (`RACY_WINDOW_NS`).
 4. **The repeat validation counted a skip as a pass.** The condition `'skipped' not in proc.stderr` was added to the verdict in `repeat_validation.py`. With this fix, the `OK (skipped=1)` in the repeat record above counts as a failure.
 5. **The diagnostics script could not tell SSD from HDD.** `MediaType` of `Win32_DiskDrive` showed only `Fixed hard disk media` for all three devices (`results/windows_20261101/diagnostics.json`). The result of `Get-PhysicalDisk` was added to `windows_diagnostics.ps1` under the key `physical_disks_storage`. The existing keys were kept.
 
-### Benchmark and prefetch figures
+**Benchmark and prefetch figures**
 
 | Item | Value | Source |
 |---|---|---|
@@ -78,7 +104,7 @@ Of the 35 before the fixes, test_104 was skipped on Windows. It was enabled afte
 | Physical-position-sorted prefetch | cold 17.8 s → prewarm 11.1 s + replay 0.05 s (13.94 times the SSD cold of 0.8 s) | `results/prefetch_20261101/summary_table.json` |
 | Stress (Windows) | 50 seeds × 250 operations = 12,500 operations, 11,239 reads verified, 0 corruptions | `results/windows_20261101/stress_win.json` |
 
-### Relocation experiments (E2, E3)
+**Relocation experiments (E2, E3)**
 
 Access-order relocation (`relayout/`, FSCTL_MOVE_FILE) was run with administrator rights. The design criteria and verdicts are in section 5.1 of `docs/design_v1_relayout.md`.
 
@@ -94,16 +120,17 @@ Access-order relocation (`relayout/`, FSCTL_MOVE_FILE) was run with administrato
 - The prefetch of 1.09 s may reflect the drive cache (SMR media cache, DRAM) right after the move. Using the stable sequential speed of the same drive, 90~110 MB/s, it would be about 2.5 s. It is not treated as sustained performance until a re-measurement 24 hours later.
 - As of 2026-11-01, E2 did not run the 5 forced terminations, the forced VHDX detach, or `chkdsk /scan` (on 2026-11-02, S1 ran resume after 5 interruptions and the forced detach; see the section below). E3 has 3 measurements right after the move and 1 re-measurement after 1 hour, and has no measurement after 10 minutes idle and `defrag D: /O`.
 - Relocation revert (`relayout.cli revert`) was not run. Hash verification confirmed only that the data content is the same.
-- Concurrent stream (1 hour later, administrator cold, `results/relayout_e3/20261101_235628/F-concurrent.json`): at 0 µs of compute per request the wall clock was 1.65 s (8.9% of requests went to disk), at 250 µs it was 2.36 s, and at 1000 µs it was 6.13 s (1 disk request each). These were shorter than the non-administrator SSD baselines for the same compute conditions of 2.98 s and 6.30 s (`results/stream_tuning_20261101/ssd_think_baseline.json`). The two SSD values are reference values because the conditions differ.
+- Concurrent stream (1 hour later, administrator cold, `results/relayout_e3/20261101_235628/F-concurrent.json`): at 0 µs of compute per request the wall clock was 1.65 s (8.9% of requests went to disk), at 250 µs it was 2.36 s, and at 1000 µs it was 6.13 s (1 disk request each).
+  These were shorter than the non-administrator SSD baselines for the same compute conditions of 2.98 s and 6.30 s (`results/stream_tuning_20261101/ssd_think_baseline.json`). The two SSD values are reference values because the conditions differ.
 - Stream tuning (`results/stream_tuning_20261101/`, non-administrator, unbuffered substitute cold): queue depth 1, 1 MiB chunks, and keeping handles was the fastest (on a close-handles basis queue depth 4 was 1.66 s, depth 1 was 1.48 s, depth 1 with handles kept was 1.42 s). The SEQUENTIAL_SCAN hint was 10.7~16.9 times slower under the same conditions.
 
-### Result file list
+**Result file list**
 
 - `results/windows_20261101/`: `win_checks.md`, `win_checks.json`, `win_checks_raw.txt`, `cache_fix_bench.json`, `bench_cross_drive.json`, `api_microbenchmark_win.json`, `physicaldisk.json`, `diagnostics.json`, `unittest_win.log`, `repeat10_win.json`, `stress_win.json`, `stress.out.txt`, `integration_win.json`
 - `results/bench_20261101/`: `20261101_204602.json` (adopted), `run_stdout.txt`, `superseded_20261101_203628.json.txt` (earlier run, for reference)
 - `results/prefetch_20261101/`: `summary_table.json`, `measure.py`, `prefetch_measure_partial.json`
 
-### Remaining issues
+**Remaining issues**
 
 - `repeat_validation.py` still expects `'Ran 35 tests'`. The current `unittest discover` runs 59, so this script judges a full run of 59 as a failure. Changing the expected count was outside the scope of this fix, so it was left as is.
 - The cache hit of 1.140 ms on 3.11 exceeds the criterion of 1.1 ms set in `cache_fix_bench.json`. On 3.12 it does not exceed the criterion (0.979 ms).
@@ -111,15 +138,22 @@ Access-order relocation (`relayout/`, FSCTL_MOVE_FILE) was run with administrato
 - The two HDD cold experiments (benchmark 71.2 s, prefetch experiment 17.8 s) differ in dataset and cold method and cannot be compared directly.
 - Power loss during writes, SSD damage, BitLocker, DirectStorage, and minifilter environments were not tested.
 
+</details>
+
 ## Windows hardware validation (2026-11-02)
 
-### Environment
+Frostpunk as a real game (trace, relocation, replay, prewarm), the SSD baseline, 10-hour persistence, the S1 to S4 checks, the kernel minifilter build, the Python reference, and the final C# version.
+
+<details>
+<summary>Details: tables, results, and open issues</summary>
+
+**Environment**
 
 - Windows 11 Pro 10.0.26200, administrator rights (administrator scripts were run), 32 GiB of memory
 - D: WDC WD20EZAZ (SATA, origin HDD, reported as SMR in secondary sources), C: SAMSUNG MZVLB1T0HBLR (NVMe, SSD baseline and sparse copy)
 - Real game: Frostpunk 9.2 GB, D:\Frostpunk, no anti-cheat
 
-### Results
+**Results**
 
 | Item | Result | Source |
 |---|---|---|
@@ -138,7 +172,7 @@ Access-order relocation (`relayout/`, FSCTL_MOVE_FILE) was run with administrato
 | F. Python reference implementation | Eviction determinism, 3.12 summation determinism (same order as C#), resolving the drive root D:, skipping missing files and still tallying, `bench.shadow_copy` added. Tests 129 → 135 (pass on 3.11 and 3.12). The intermittent failure `test_116` was resolved (0 failures in 40 runs) | Result file path not confirmed (test run record) |
 | G. Final C# version | Re-apply cancellation (stops per fragment when a game starts, `resume-needed`), empty game list allowed, Velopack updates only the tray (service version mismatch is displayed), data folder owner and ACL lockdown, ETW field validation, `--dump-first`, `--stop-file`, RealPaths D: fix, service watcher default polling, prewarm (`prewarm` configuration, `aster prewarm`, `aster status`), tests 405 → 475 or more. CI (`csharp-ci.yml`) succeeded on the last push on 2026-11-01 | `csharp/README.md` |
 
-### Remaining limits (2026-11-02)
+**Remaining limits (2026-11-02)**
 
 - 24-hour persistence not measured. As of 2026-11-02, anti-cheat games (Ricochet in Call of Duty: Modern Warfare 4, Vanguard in League of Legends) were not validated, and Call of Duty: Modern Warfare 4 was not installed. Later usage records are in the "Real-world usage records" section above and are not a controlled validation. CMR drives not measured.
 - The cause of the 0.5 s delay of the C# stream in S2 is not determined.
@@ -148,13 +182,20 @@ Access-order relocation (`relayout/`, FSCTL_MOVE_FILE) was run with administrato
 - The sparse copy tool allocates all the space (being fixed).
 - The SSD 3.8 s in B and the SSD cold value of the synthetic dataset above differ in data and method and are not compared directly.
 
-### Result folder list
+**Result folder list**
 
 - `results/csharp_e4_20261102_105938`, `results/csharp_e4_20261102_111921`
 - `results/csharp_e4cmp_20261102_111921`
 - `results/prefetch_sweep_20261101/contig_persistence_t10h.json`, `results/relayout_e3/20261102_091906`
 
+</details>
+
 ## E6 cold limit experiment (2026-11-02)
+
+Full move into one zone: cold prefetch median 11.93 s (15.13 s with preservation on). The high band (90.00%) was about 1.6 times slower. One SMR drive and one game.
+
+<details>
+<summary>Details: tables, results, and open issues</summary>
 
 - Method: `csharp/scripts/cs_e6_cold_limit.ps1` (administrator). Raw LBA curve, raw read of the hot set, full move with preservation off, re-measure with the standby list purged before each run, SHA-256 before and after, DiskIo trace. Source: `results/cold_limit_20261102_155900/README.md`.
 - Result: after the full move to the 42.142% zone, cold prefetch median 11.93 s (3 runs; 15.13 s with preservation on). Direct replay median 17.64 s. SHA-256 identical for 20 files, contiguous verify (493,352 clusters). The move took 270 s for 2.02 GB.
@@ -162,11 +203,18 @@ Access-order relocation (`relayout/`, FSCTL_MOVE_FILE) was run with administrato
 - Reading width and queue depth had no effect (16.05~16.91 s). WOF compression ratio 1.014. Not run: E6-4 (overwrite-fill of the cache).
 - Conclusion: the default plan moves everything (preservation off). Limits: one SMR drive and one game.
 
+</details>
+
 ## Linux container validation
 
 Validation date: **2026-11-01**. Environment: Linux container, Python 3.13.5, built-in SQLite library. It was not run on a real user's Windows/HDD/SSD.
 
 ## Reproduction and test record
+
+35 new regression checks passed (35/35), the re-run 350/350, and 12,500 random operations without errors. These ran in a Linux container, not on a user's Windows, HDD, or SSD.
+
+<details>
+<summary>Details: tables, results, and open issues</summary>
 
 | Group | Actually run | Result | Description |
 |---|---:|---|---|
@@ -180,7 +228,7 @@ Validation date: **2026-11-01**. Environment: Linux container, Python 3.13.5, bu
 
 The cumulative number 120 is a **validation item ID** numbered continuously from earlier versions. It does not mean 120 independent Windows game speed validations. The 350 checks from 10 repetitions are the new 35 repeated under the same test conditions, and they are not independent real game datasets.
 
-### Scope of the 35 new checks
+**Scope of the 35 new checks**
 
 | Numbers | Focus |
 |---|---|
@@ -190,16 +238,31 @@ The cumulative number 120 is a **validation item ID** numbered continuously from
 | 109~115 | Cache write failure / low free space, concurrent threads, multiple DB connections, incomplete transactions, prewarm plan separation |
 | 116~120 | Protection of frequently read blocks, lookup from a second DB connection, small capacity, no-cache-fill mode, byte consistency after eviction |
 
+</details>
+
 ## Handling of origin changes and data errors
+
+How the SQLite cache detects changed origin files and data errors.
+
+<details>
+<summary>Details: tables, results, and open issues</summary>
 
 - **Before and after a read**, the size, inode, and modify/change times of the open file are checked, and whether the path points to a different file is also compared.
 - If the origin is observed to have changed, the block keys of a new generation are used, or the request is treated as an error.
 - If the internal SSD cache data bytes and SHA-256 do not match, the data is re-read from the origin.
 - Only after the whole API request has passed origin information validation are the new blocks loaded in one SQLite transaction.
 - Unlike v0.6, which split data and hash into two files, they are stored together in one row for an atomic commit. However, this does not solve physical failure of the SQLite DB itself or simultaneous malicious tampering with the origin.
-- WAL + `synchronous=NORMAL` is used. On power loss or an OS crash the last commit may be rolled back (the DB is not corrupted), and since it is a cache it recovers by reloading. The durability this setting provides follows the conditional guarantees in the official SQLite documentation. There was no direct power-cut experiment. Blocks of an origin whose last modification is within 2 seconds are not loaded (race guard, `RACY_WINDOW_NS`).
+- WAL + `synchronous=NORMAL` is used. On power loss or an OS crash the last commit may be rolled back (the DB is not corrupted), and since it is a cache it recovers by reloading. The durability this setting provides follows the conditional guarantees in the official SQLite documentation. There was no direct power-cut experiment.
+  Blocks of an origin whose last modification is within 2 seconds are not loaded (race guard, `RACY_WINDOW_NS`).
+
+</details>
 
 ## Real-byte replay with 50 random seeds
+
+50 seeds × 250 operations = 12,500 operations; 11,239 reads verified against the expected origin bytes.
+
+<details>
+<summary>Details: tables, results, and open issues</summary>
 
 This run of `results/stress.json`:
 
@@ -209,7 +272,14 @@ This run of `results/stress.json`:
 - Test files are created only in temporary directories, and the cache and origin may be on the same physical device
 - The recorded `origin_bytes` is **the length the application read through origin.read()**, not the physical bytes the real HDD head moved to read.
 
+</details>
+
 ## Container API micro-benchmark (for reference)
+
+Python API processing times only. It is not a comparison of HDD or SSD load.
+
+<details>
+<summary>Details: tables, results, and open issues</summary>
 
 **Median of 15 alternating-order tests.** Eight 64 KiB blocks in one file are accessed five times each (1 batch = 40 requests), and the same 40 are repeated. The first batch is not all cache misses but **8 misses + 32 hits**, so it must not be interpreted as pure cold loading performance.
 
@@ -222,7 +292,14 @@ The values above are **only the Python API processing times seen in that run**. 
 
 The v0.7 cache is not connected to a real game's path, so games do not use the cache above.
 
+</details>
+
 ## Additional defects found and fixed
+
+Five more defects found and fixed in the Python cache.
+
+<details>
+<summary>Details: tables, results, and open issues</summary>
 
 1. A problem in the first test where parent path access became `FileNotFoundError` instead of `ValueError` was fixed, and `..` is now rejected beforehand.
 2. If SQLite cache eviction depends only on the write time, frequently used old blocks are evicted first. Recent hit history is now kept in bounded memory and updated in a batch at the next cache load.
@@ -230,10 +307,12 @@ The v0.7 cache is not connected to a real game's path, so games do not use the c
 4. Origin reads now continue on an SSD write error or low free space. An initialization failure when the DB itself cannot be opened still exists.
 5. Beyond file content, the state **where the path was swapped for a different inode** is now also compared with the stat of the open file.
 
+</details>
+
 ## Unresolved risks and evaluation gates
 
 - **Automatic acceleration of existing game processes is still 0% implemented.** SSD data is served only to programs that call the user-mode Python API.
-- BitLocker, DirectStorage, and minifilter environments are unvalidated. As for real game load time, only the traced replay of one game, Frostpunk, was measured (2026-11-02 section), anti-cheat games have only usage records from this PC ("Real-world usage records" section above) and no controlled validation, and 24-hour persistence is unvalidated.
+- BitLocker, DirectStorage, and minifilter environments are unvalidated. As for real game load time, only the traced replay of one game, Frostpunk, was measured (2026-11-02 section), anti-cheat games have only usage records from the test PC ("Real-world usage records" section above) and no controlled validation, and 24-hour persistence is unvalidated.
 - External write detection depends on `stat`/`ChangeTime`, so not every file mutation may be detected.
 - Separately from the logical payload limit, the SQLite DB/WAL/page fragmentation takes up storage. A 256MiB limit does not mean the file on disk stays at 256MiB.
 - The overhead benchmark includes the cost of Python execution, `fsync`, SQLite, and cache writes, but **it is not a comparison of physical HDD/SSD load**.

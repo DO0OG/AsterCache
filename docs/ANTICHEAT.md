@@ -2,15 +2,14 @@
 
 # Anti-cheat compatibility
 
-> Details that continue from [Safety measures](../README.md#safety-measures) in the README.
+> What AsterCache does and does not do around anti-cheat games. How it protects your data is in [Safety measures](DEVELOPMENT.md#safety-measures).
 
-Many current games run kernel-level anti-cheat. This section says what AsterCache does and does not do, so you can decide whether to use it with a game. Anti-cheat policies differ per game and can change. On this PC there are usage records of playing a Vanguard game (League of Legends) and a Ricochet game (Call of Duty) with the installed build ([Usage records on this PC](#usage-records-on-this-pc)). This is not a controlled validation, and no guarantee is made about account sanctions.
+Many current games run kernel-level anti-cheat. This page says what AsterCache does and does not do, so you can decide whether to use it with a game. Anti-cheat policies differ per game and can change. There are usage records of playing a Vanguard game (League of Legends) and a Ricochet game (Call of Duty) with the installed build on one PC ([Usage records on this PC](#usage-records-on-this-pc)). This is not a controlled validation, and no guarantee is made about account sanctions.
 
 ## What it does
 
 - The service reads game files from inside its own process, read-only, with shared access (read, write, and delete sharing), or only maps them.
-- First-run read-ahead also reads files from the service's own process. The game process is not touched; reads are only observed through ETW.
-- It watches file-read events with a live ETW kernel session. It needs no handle to the game process.
+- First-run read-ahead also reads files from the service's own process. The game's reads are only observed, with a live ETW kernel session that needs no handle to the game process.
 - It reads Windows prefetch records (`C:\Windows\Prefetch\*.pf`) with read-only access, from the service only, and downloads one shared-profile zip a week over HTTPS. Neither touches the game process.
 - It moves file clusters with the NTFS defragmentation API (`FSCTL_MOVE_FILE`), and only after the game has fully exited. File content, size, and modified time do not change. Before a move, the plan's fingerprint (size and modified time) is checked.
 
@@ -23,7 +22,7 @@ Many current games run kernel-level anti-cheat. This section says what AsterCach
 ## Skipped and marked files
 
 - Files that the game has opened exclusively are skipped.
-- During automatic discovery, the service looks at file and folder names up to 4 levels deep in the install folder. It recognizes EasyAntiCheat, BattlEye, Vanguard (`vgc`, `vgk`), and Ricochet; other names containing anticheat, xigncode, nprotect, or gameguard are marked `unknown`. A game with such a name is marked in the Games tab and in the `anticheat` setting, and one log line is written. The behavior does not change. On the test PC, `aster discover` marked The Outlast Trials (Steam) with `eac`.
+- During automatic discovery, the service looks at file and folder names up to 4 levels deep in the install folder. It recognizes EasyAntiCheat, BattlEye, Vanguard (`vgc`, `vgk`), and Ricochet; other names containing anticheat, xigncode, nprotect, or gameguard are marked `unknown`. A game with such a name is marked in the Games tab and in the `anticheat` setting, and one log line is written. The behavior does not change. For example, `aster discover` marked The Outlast Trials (Steam) with `eac`.
 
 | Anti-cheat | Markers | Policy |
 |---|---|---|
@@ -57,7 +56,7 @@ The executables are not code-signed, so Windows SmartScreen may show a warning. 
 
 ## Usage records on this PC
 
-This is a tally of the service log from 2026-11-02 to 2026-11-10. It is not a controlled validation. Whether any account was sanctioned cannot be known from the log, and no guarantee is made. Sample counts and line formats are in [RESULTS_SUMMARY.md](RESULTS_SUMMARY.md#real-world-usage-records).
+This is a tally of the service log of one PC from 2026-11-02 to 2026-11-10. It is not a controlled validation. Whether any account was sanctioned cannot be known from the log, and no guarantee is made. Sample counts and line formats are in [RESULTS_SUMMARY.md](RESULTS_SUMMARY.md#real-world-usage-records).
 
 - **League of Legends.** Judged as `vanguard`. The rule is a Riot game on a PC that has Vanguard; it was not found from an install-folder name. Over 10 game start detections: 2 traces collected and then 8 skipped, pin skipped 4 times, relocation completed 4 times.
 - **Call of Duty.** Judged as `ricochet` from a `ricochet` name in the install folder. Over 62 game start detections: 14 trace collections started, pin skipped 7 times, relocation completed 5 times.
@@ -66,6 +65,6 @@ This is a tally of the service log from 2026-11-02 to 2026-11-10. It is not a co
 ## Limits and advice
 
 - Automatic mode is on by default. For a game with anti-cheat, turn automatic mode off in the Settings tab, or add the game's exe to `auto.ignore_exes`, before you play.
-- Automatic tracing uses the same kind of ETW collection as the manual route, so the Ricochet and Vanguard cautions in [GAME_GUIDE](GAME_GUIDE.md) still apply.
+- Automatic tracing uses the same kind of ETW collection as the manual route, so the Ricochet and Vanguard cautions in [GAME_GUIDE](GAME_GUIDE.md#anti-cheat-games) (and its League of Legends reference) still apply.
 - SSD assist storage skips games with anti-cheat folders, and never copies game exe or dll files.
-- Anti-cheat games have only usage records from this PC (one Vanguard game and one Ricochet game) and no controlled validation. Other anti-cheat games have not been tested. No guarantee is made about account sanctions.
+- Other anti-cheat games have not been tested.

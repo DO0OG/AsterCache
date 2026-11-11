@@ -356,6 +356,8 @@ public sealed record PrewarmResult(string Game, bool Ran, string? SkipReason, St
 {
     /// 기록 없이 예열했을 때의 방식 이름표 ("full" 또는 "profile Unity"), 핫 집합 예열이면 null.
     public string? Mode { get; init; }
+
+    internal string? CancelDetail { get; init; }
 }
 
 /// 사전 예열: 서비스 시작 때와 트리거 프로그램이 뜰 때, 게임의 존 순서 스트림 (기존 IGameStreamer, pvm) 을 돌려 핫 집합을 RAM 에 올립니다.
@@ -385,6 +387,16 @@ public sealed class Prewarmer
     private readonly object _run = new(); // 예열을 한 번에 하나로
     private readonly Dictionary<string, DateTimeOffset> _last = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _lastBeforeBoot = new(StringComparer.OrdinalIgnoreCase); // 부팅 전에 성공한 예열 시각 (상태 파일), 새 트레이스 판정 (LastWarmed) 만 씀, _gate 로 보호
+    private sealed record PendingWarm(DateTimeOffset RetryAt, string Reason);
+    private readonly Dictionary<string, PendingWarm> _pendingWarm = new(StringComparer.OrdinalIgnoreCase); // 성공하지 못한 일시 예열과 시작 상한 누락, _gate 로 보호
+    private sealed class PrewarmCancelDetail
+    {
+        private string? _first;
+
+        public string? First => Volatile.Read(ref _first);
+
+        public void Set(string reason) => _ = Interlocked.CompareExchange(ref _first, reason, null);
+    }
     private readonly JObject _status = new();
     private readonly PinKeeper _pins;
     private readonly Rewarmer _rewarm;
@@ -409,6 +421,7 @@ public sealed class Prewarmer
     private volatile bool _keepStream; // auto.keep_stream_on_game_start 가 켜진 채 그 게임이 시작돼 (같은 데이터를 동시에 읽으므로) 취소 신호에도 끝까지 읽기로 한 표시
     private volatile bool _streamGameStarted;
     private volatile CancellationTokenSource? _streamStop; // 도는 스트림을 멈추는 신호 (게임 시작이 같은 디스크 읽기를 바로 끊음)
+    private volatile PrewarmCancelDetail? _streamCancelDetail;
     private volatile CancellationTokenSource? _calibrationStop;
     private volatile CancellationTokenSource? _warmStop; // WarmFiles 읽기를 멈추는 신호 (호출자 ct 와 연결, 같은 디스크 게임 시작이 끊음), 읽는 게임은 _coldReading
     private (string Game, long At)? _yield; // 게임 시작으로 스트림 양보를 요청한 게임과 시각 (Stopwatch 틱), _gate 로 보호
@@ -756,6 +769,11 @@ public sealed class Prewarmer
                 return false;
             }
 
+            foreach (string mate in mates)
+            {
+                _idleSince.Remove(mate);
+            }
+
             mark();
             return true;
         }
@@ -833,6 +851,8 @@ public sealed class Prewarmer
                 {
                     _yield ??= (game, Stopwatch.GetTimestamp());
                 }
+
+                _streamCancelDetail?.Set(same ? "game started" : "another game started on the same disk");
 
                 try
                 {
@@ -1076,6 +1096,12 @@ public sealed class Prewarmer
         _games = games;
         lock (_gate)
         {
+            foreach (string gone in _pendingWarm.Keys.Where(k => !games.Any(g => string.Equals(g.Name, k, StringComparison.OrdinalIgnoreCase))).ToList())
+            {
+                _pendingWarm.Remove(gone);
+                _idleSince.Remove(gone);
+            }
+
             foreach (string stale in _resume.Keys.Where(k => games.FirstOrDefault(g => string.Equals(g.Name, k, StringComparison.OrdinalIgnoreCase)) is not { } now
                 || before.FirstOrDefault(g => string.Equals(g.Name, k, StringComparison.OrdinalIgnoreCase)) != now).ToList())
             {
@@ -1111,6 +1137,83 @@ public sealed class Prewarmer
         _rewarm.Tick(auto, ct);
     }
 
+    internal bool HasPendingWarm(string game)
+    {
+        lock (_gate)
+        {
+            return _pendingWarm.ContainsKey(game);
+        }
+    }
+
+    internal bool PendingWarmDriveRecovering(GameSettings game) => HasPendingWarm(game.Name)
+        && Recovery?.IsRecovering(PlanFile.SplitDrive(game.OriginRoot).ToUpperInvariant()) == true;
+
+    private TimeSpan PendingWarmRetryDelay() => _auto.RewarmMinutes > 0
+        ? TimeSpan.FromMinutes(_auto.RewarmMinutes)
+        : AutoRelocator.RetryEvery;
+
+    private static bool IsPermanentWarmRefusal(string? reason) => reason is "no plan file" or "no zone" or "no trace file" or "outside allowed roots"
+        || reason?.StartsWith("failed:", StringComparison.Ordinal) == true;
+
+    private static bool IsRetryableWarmOutcome(string? reason) => reason is Cancelled or RelocationRunning or "startup byte cap"
+        or "batch memory budget" or "game is running" or "drive busy" or "nothing read" or PostUpdateDelay
+        || reason?.StartsWith("low memory", StringComparison.Ordinal) == true;
+
+    private void TrackPendingWarm(GameSettings game, PrewarmResult result, DateTimeOffset at)
+    {
+        bool alreadyPending;
+        lock (_gate)
+        {
+            alreadyPending = _pendingWarm.ContainsKey(game.Name);
+        }
+
+        if (result.Ran)
+        {
+            lock (_gate)
+            {
+                _pendingWarm.Remove(game.Name);
+                _idleSince.Remove(game.Name);
+            }
+
+            return;
+        }
+
+        string? reason = result.SkipReason;
+        if (IsCold(game) || IsPermanentWarmRefusal(reason)) // 기록 없는 게임은 대기 재시도 대상이 아니고 런처 트리거·서비스 시작 때만 예열함
+        {
+            lock (_gate)
+            {
+                _pendingWarm.Remove(game.Name);
+                _idleSince.Remove(game.Name);
+            }
+
+            return;
+        }
+
+        if (!alreadyPending && (result.CancelDetail == "game started"
+            || reason == "game is running" && _env.GameRunning(game)
+            || reason == Cancelled && (_env.GameRunning(game) || _coordinator?.IsRegistered(game.Name) == true)
+            || result.CancelDetail == "disk read lease refused" && _coordinator?.IsRegistered(game.Name) == true))
+        {
+            return; // 그 게임 자신이 실행 중일 때의 거절은 게임 종료 경로에 맡김
+        }
+
+        if (!alreadyPending && !IsRetryableWarmOutcome(reason))
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            if (_pendingWarm.TryGetValue(game.Name, out PendingWarm? current) && current.RetryAt > at)
+            {
+                return; // 재시도 기한 전에 다른 경로가 실패해도 기한을 뒤로 밀지 않음
+            }
+
+            _pendingWarm[game.Name] = new(at + PendingWarmRetryDelay(), reason ?? "unsuccessful warm");
+        }
+    }
+
     /// 게임이 끝났을 때 (Worker 가 부름): 재예열 점검을 앞당깁니다.
     public void NoteGameExit(DateTimeOffset? heavyWorkNotBefore = null) => _rewarm.PullIn(_auto, heavyWorkNotBefore);
 
@@ -1128,7 +1231,14 @@ public sealed class Prewarmer
     /// AllocMib: 들어간 게임이 셈에 쓴 양 (MiB): 재예열은 이만큼까지만 읽어야 계상과 실제 읽기가 같습니다.
     internal (HashSet<string> In, long CapMib, long UsedMib, Dictionary<string, long> AllocMib)? WarmBudget()
     {
-        if (WarmRank is not { } rank)
+        Func<IReadOnlyList<GameSettings>, IEnumerable<GameSettings>>? rank = WarmRank;
+        bool hasPending;
+        lock (_gate)
+        {
+            hasPending = _pendingWarm.Count > 0;
+        }
+
+        if (rank is null && !hasPending)
         {
             return null;
         }
@@ -1138,6 +1248,7 @@ public sealed class Prewarmer
         lock (_gate)
         {
             candidates.AddRange(_games.Where(g => _partial.ContainsKey(g.Name) && !candidates.Any(c => string.Equals(c.Name, g.Name, StringComparison.OrdinalIgnoreCase))));
+            candidates.AddRange(_games.Where(g => _pendingWarm.ContainsKey(g.Name) && !candidates.Any(c => string.Equals(c.Name, g.Name, StringComparison.OrdinalIgnoreCase))));
         }
 
         HashSet<string> names = [.. candidates.Select(g => g.Name)];
@@ -1151,7 +1262,7 @@ public sealed class Prewarmer
         }
 
         // 방금 트리거로 켠 게임은 관찰·보충 두 단계 모두에서 먼저 배정받고, 같은 단계의 나머지는 기존 순위를 유지합니다.
-        List<GameSettings> ordered = [.. rank(candidates).Where(g => names.Contains(g.Name)).Concat(candidates)
+        List<GameSettings> ordered = [.. (rank?.Invoke(candidates) ?? candidates).Where(g => names.Contains(g.Name)).Concat(candidates)
             .DistinctBy(g => g.Name, StringComparer.OrdinalIgnoreCase)
             .OrderBy(g => string.Equals(g.Name, triggered, StringComparison.OrdinalIgnoreCase) ? 0 : 1)];
         var totalMib = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
@@ -1160,18 +1271,31 @@ public sealed class Prewarmer
         {
             long total = ZoneMib(g);
             bool hasZoneList = total > 0;
+            long coldHeld;
+            bool pending;
+            lock (_gate)
+            {
+                coldHeld = _coldMib.GetValueOrDefault(g.Name);
+                pending = _pendingWarm.ContainsKey(g.Name);
+            }
+
             if (total <= 0)
             {
-                lock (_gate)
-                {
-                    total = _coldMib.GetValueOrDefault(g.Name); // 기록 없이 예열한 게임은 올려 둔 양
-                }
+                total = coldHeld; // 기록 없이 예열한 게임은 올려 둔 양
+            }
+
+            bool unknownPendingSize = pending && coldHeld <= 0 && total <= 0;
+            if (unknownPendingSize)
+            {
+                total = cap;
             }
 
             total = Math.Min(total, cap);
-            long observed = total <= 0 || !hasZoneList
+            bool pendingDriveRecovering = pending
+                && Recovery?.IsRecovering(PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant()) == true;
+            long observed = unknownPendingSize ? 0 : total <= 0 || !hasZoneList
                 ? total
-                : ObservedMib(g, total, allowSourceRead: !DriveHasRunningGame(g)); // 출처를 모르면 전부 관찰된 것으로 셈
+                : ObservedMib(g, total, allowSourceRead: !pendingDriveRecovering && !DriveHasRunningGame(g)); // 회복 중인 대기 게임은 표본을 읽지 않고, 출처를 모르면 전부 관찰된 것으로 셈
             totalMib[g.Name] = total;
             observedMib[g.Name] = observed;
         }
@@ -1325,7 +1449,9 @@ public sealed class Prewarmer
             if (allocation <= 0 && (mib > 0 || plannedMib >= a.StartupWarmMaxMib) || (zone is null && allocation < mib))
             {
                 LogSkipped(g.Name, "startup byte cap", $"{g.Name}: prewarm skipped (the service-start cap of {a.StartupWarmMaxMib} MiB is used up) [service start]");
-                skipped.Add(new PrewarmResult(g.Name, false, "startup byte cap", null, _now()));
+                PrewarmResult result = new(g.Name, false, "startup byte cap", null, _now());
+                TrackPendingWarm(g, result, result.At);
+                skipped.Add(result);
             }
             else if (zone is not null && allocation < mib)
             {
@@ -1408,6 +1534,32 @@ public sealed class Prewarmer
         }
 
         PatchStatus(game, hotMib, hotMib);
+    }
+
+    private void DropPendingWarm(string game)
+    {
+        lock (_gate)
+        {
+            _pendingWarm.Remove(game);
+            _idleSince.Remove(game);
+        }
+    }
+
+    private void CompletePendingWarmSupplement(GameSettings game, StreamStats stats)
+    {
+        DateTimeOffset at = _now();
+        lock (_gate)
+        {
+            if (!_pendingWarm.ContainsKey(game.Name))
+            {
+                return;
+            }
+
+            _last[game.Name] = at;
+        }
+
+        double mbps = stats.Seconds > 0 ? stats.Bytes / 1048576.0 / stats.Seconds : 0;
+        Record(game, at, new PrewarmResult(game.Name, true, null, stats, at), mbps);
     }
 
     // 보충이 끊기거나 앞부분만 읽고 끝났을 때 읽은 양을 기억합니다 (줄어들지 않음): 상태 표시와 다음 보충의 시작점. 보충 대기 중인 게임만.
@@ -1543,6 +1695,8 @@ public sealed class Prewarmer
             pending = [.. _partial.Keys];
         }
 
+        HashSet<string> pendingPartial = new(StringComparer.OrdinalIgnoreCase);
+
         foreach (string name in pending)
         {
             if (ct.IsCancellationRequested)
@@ -1567,13 +1721,171 @@ public sealed class Prewarmer
                 continue;
             }
 
+            if (HasPendingWarm(name))
+            {
+                pendingPartial.Add(name);
+            }
+
             SupplementWhenIdle(g, ct);
         }
+
+        RetryPendingWarmTick(ct, pendingPartial);
+    }
+
+    private void RetryPendingWarmTick(CancellationToken ct, IReadOnlySet<string>? pendingPartial = null)
+    {
+        string[] pending;
+        DateTimeOffset now = _now();
+        lock (_gate)
+        {
+            pending = [.. _pendingWarm.Where(pair => pair.Value.RetryAt <= now).Select(pair => pair.Key)];
+        }
+
+        foreach (string name in pending)
+        {
+            if (ct.IsCancellationRequested)
+            {
+                return;
+            }
+
+            if (pendingPartial?.Contains(name) == true)
+            {
+                continue; // 이 틱에 보충 경로가 맡은 게임은 부분 읽기와 재시도를 겹치지 않음
+            }
+
+            GameSettings? game = _games.FirstOrDefault(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (game is null || IsCold(game)) // 기록이 없어진 게임은 대기에서 뺌 (기록 없는 게임은 대기 재시도 대상이 아님)
+            {
+                lock (_gate)
+                {
+                    _pendingWarm.Remove(name);
+                    _idleSince.Remove(name);
+                }
+
+                continue;
+            }
+
+            RetryPendingWarmWhenIdle(game, ct);
+        }
+    }
+
+    private bool RetryPendingWarmWhenIdle(GameSettings game, CancellationToken ct)
+    {
+        if (!PendingWarmCanRead(game, ct))
+        {
+            ResetIdleSinceForGame(game.Name);
+            return false;
+        }
+
+        DateTimeOffset now = _now();
+        if (!PendingWarmIdleElapsed(game, now))
+        {
+            return false;
+        }
+
+        if (PendingWarmAllocation(game) is not > 0)
+        {
+            return false;
+        }
+
+        if (!Monitor.TryEnter(_run))
+        {
+            return false;
+        }
+
+        try
+        {
+            DateTimeOffset enteredAt = _now();
+            lock (_gate)
+            {
+                if (!_pendingWarm.TryGetValue(game.Name, out PendingWarm? pending) || pending.RetryAt > enteredAt)
+                {
+                    return false;
+                }
+            }
+
+            if (!PendingWarmCanRead(game, ct))
+            {
+                ResetIdleSinceForGame(game.Name);
+                return false;
+            }
+
+            if (!PendingWarmIdleElapsed(game, enteredAt))
+            {
+                return false;
+            }
+
+            long? allocatedMib = PendingWarmAllocation(game);
+            if (allocatedMib is not > 0)
+            {
+                return false;
+            }
+
+            PrewarmResult result = Guarded(game, "pending warm retry", pin: false, ignoreCooldown: true, ct, roomMib: allocatedMib);
+            return result.Ran;
+        }
+        finally
+        {
+            Monitor.Exit(_run);
+        }
+    }
+
+    private bool AnyGameActiveOnDisk(GameSettings game) => AutoRelocator.SameDriveGames(_games, [game], _env.SameDisk)
+        .Any(g => _env.GameRunning(g) || _coordinator?.IsRegistered(g.Name) == true);
+
+    private bool PendingWarmCanRead(GameSettings game, CancellationToken ct) => !ct.IsCancellationRequested && BootSettled()
+        && HeavyWorkAllowed(game) && !Deferred(game)
+        && Recovery?.IsRecovering(PlanFile.SplitDrive(game.OriginRoot).ToUpperInvariant()) != true
+        && !AnyGameActiveOnDisk(game) && !_games.Any(g => Relocating(g.Name))
+        && _env.DiskBytesPerSecond(game) is { } bps && bps < DiskActivity.BusyBytesPerSecond;
+
+    private bool PendingWarmIdleElapsed(GameSettings game, DateTimeOffset now)
+    {
+        lock (_gate)
+        {
+            if (!_idleSince.TryGetValue(game.Name, out DateTimeOffset since))
+            {
+                _idleSince[game.Name] = since = now;
+            }
+
+            return now - since >= IdleNeeded;
+        }
+    }
+
+    private void ResetIdleSinceForGame(string game)
+    {
+        lock (_gate)
+        {
+            _idleSince.Remove(game);
+        }
+    }
+
+    private long? PendingWarmAllocation(GameSettings game)
+    {
+        if (WarmBudget() is not { } budget)
+        {
+            return null;
+        }
+
+        long allocatedMib = budget.AllocMib.GetValueOrDefault(game.Name);
+        if (!budget.In.Contains(game.Name) || allocatedMib <= 0)
+        {
+            LogSkipped(game.Name, "pending warm budget", $"{game.Name}: pending prewarm skipped (the cache budget of {budget.CapMib} MiB is used by higher-ranked games: {budget.UsedMib} MiB)");
+            return 0;
+        }
+
+        return allocatedMib;
     }
 
     /// 보충 예열 대기 게임이 IdleNeeded 동안 연속으로 한가했을 때만 Supplement 를 부릅니다 (SupplementTick 과 재예열 점검이 같은 판정을 씀). 유휴가 막 시작됐거나 아직 모자라면 읽지 않고 false.
     public bool SupplementWhenIdle(GameSettings g, CancellationToken ct)
     {
+        if (PendingWarmDriveRecovering(g))
+        {
+            ResetIdleSinceForGame(g.Name);
+            return false;
+        }
+
         if (!HeavyWorkAllowed(g))
         {
             return false;
@@ -1642,7 +1954,8 @@ public sealed class Prewarmer
 
         try
         {
-            if (ct.IsCancellationRequested || !HeavyWorkAllowed(game) || DriveHasRunningGame(game) || _games.Any(x => Relocating(x.Name)) || Deferred(game))
+            if (ct.IsCancellationRequested || PendingWarmDriveRecovering(game) || !HeavyWorkAllowed(game)
+                || DriveHasRunningGame(game) || _games.Any(x => Relocating(x.Name)) || Deferred(game))
             {
                 return false;
             }
@@ -1667,6 +1980,7 @@ public sealed class Prewarmer
                     if (MemoryPartialPending(game.Name))
                     {
                         LogSkipped(game.Name, "supplement nothing new", $"{game.Name}: supplement prewarm skipped (the {cap} MiB that fits is already read: {p.WarmedMib} of {p.HotMib} MiB)");
+                        DropPendingWarm(game.Name);
                         return false;
                     }
 
@@ -1675,6 +1989,7 @@ public sealed class Prewarmer
                         if (!refused && HeavyWorkAllowed(game))
                         {
                             LogSkipped(game.Name, "supplement nothing new", $"{game.Name}: supplement prewarm skipped (the {cap} MiB that fits is already read: {p.WarmedMib} of {p.HotMib} MiB)");
+                            DropPendingWarm(game.Name); // 들어가는 만큼은 이미 읽었으니 더 읽을 것이 없고, 남기면 회복 보류만 계속 걸림
                         }
 
                         return false;
@@ -1715,7 +2030,7 @@ public sealed class Prewarmer
             }
 
             long? zoneBytes = _env.ZoneBytes(game);
-            (StreamStats Stats, bool Complete)? hot;
+            (StreamStats Stats, bool Complete, string? CancelReason)? hot;
             long? tailTotal = null; // 이번에 읽을 목록의 길이 (건너뛴 앞부분 제외): 이어 읽을 위치를 스케줄 길이로 제한하고 끝까지 읽었는지 앎
             try
             {
@@ -1787,9 +2102,11 @@ public sealed class Prewarmer
                 if (atEnd && windowMib is null)
                 {
                     ClearPartial(game.Name, p.HotMib); // 전체를 끝까지 읽음
+                    CompletePendingWarmSupplement(game, r.Stats);
                 }
 
-                _log.Info($"{game.Name}: supplement prewarm cancelled after {r.Stats.Bytes >> 20} MiB");
+                string reason = r.CancelReason ?? "cancelled externally";
+                LogSkipped(game.Name, "supplement cancelled " + reason, () => $"{game.Name}: supplement prewarm cancelled after {r.Stats.Bytes >> 20} MiB ({reason})");
                 return false;
             }
 
@@ -1806,6 +2123,7 @@ public sealed class Prewarmer
             }
 
             ClearPartial(game.Name, p.HotMib);
+            CompletePendingWarmSupplement(game, r.Stats);
             _log.Info($"{game.Name}: supplement prewarm done: {r.Stats.Bytes >> 20} MiB requested, {r.Stats.GapBytes / 1048576.0:F2} MiB gaps filled in {r.Stats.Seconds:F2} s");
             return true;
         }
@@ -2408,7 +2726,9 @@ public sealed class Prewarmer
             GameSettings g = list[i];
             if (yieldToRelocation && !WaitOutRelocation(g, ct))
             {
-                results.Add(new PrewarmResult(g.Name, false, Cancelled, null, _now())); // 기다리는 동안 취소됨 (읽지 않았으므로 기록하지 않음)
+                PrewarmResult cancelled = new(g.Name, false, Cancelled, null, _now());
+                TrackPendingWarm(g, cancelled, cancelled.At); // 기다리는 동안 취소됨 (읽지 않았으므로 상태 파일에는 기록하지 않음)
+                results.Add(cancelled);
                 continue;
             }
 
@@ -2425,7 +2745,9 @@ public sealed class Prewarmer
             if (!fits && room < MinPartialMib)
             {
                 LogSkipped(g.Name, "batch memory budget", $"{g.Name}: prewarm skipped (batch zones {held + zoneMib} MiB exceed the budget: min(cache budget {physCap} MiB, available {avail} MiB - reserve {g.Prewarm.MinFreeRamMib} MiB)) [{why}]");
-                results.Add(new PrewarmResult(g.Name, false, "batch memory budget", null, _now()));
+                PrewarmResult skipped = new(g.Name, false, "batch memory budget", null, _now());
+                TrackPendingWarm(g, skipped, skipped.At);
+                results.Add(skipped);
                 continue;
             }
 
@@ -2552,9 +2874,16 @@ public sealed class Prewarmer
                 }
             });
             lease?.NoteReadIssue("head schedule", 0, false);
-            _streamer.StreamHeadCoordinated(game, stop.Token, (done, total) => CheckPrewarmBatch(game, stop, done, total),
+            var cancelDetail = new PrewarmCancelDetail();
+            _streamer.StreamHeadCoordinated(game, stop.Token, (done, total) => CheckPrewarmBatch(game, stop, done, total,
+                    detail: cancelDetail, callerToken: ct, leaseToken: lease?.Token ?? default),
                 () => !stop.IsCancellationRequested && (lease?.IsValid ?? true),
                 (stage, bytes, isData) => lease?.NoteReadIssue(stage, bytes, isData));
+            if (stop.IsCancellationRequested)
+            {
+                LogSkipped(game.Name, "head cancelled " + (cancelDetail.First ?? "cancelled externally"),
+                    $"{game.Name}: load head prewarm cancelled ({cancelDetail.First ?? "cancelled externally"})");
+            }
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -2616,7 +2945,9 @@ public sealed class Prewarmer
         catch (Exception e)
         {
             _log.Error($"{game.Name}: prewarm failed ({why})", e);
-            return new PrewarmResult(game.Name, false, "failed: " + e.GetType().Name, null, _now());
+            PrewarmResult failed = new(game.Name, false, "failed: " + e.GetType().Name, null, _now());
+            TrackPendingWarm(game, failed, failed.At);
+            return failed;
         }
     }
 
@@ -2630,18 +2961,31 @@ public sealed class Prewarmer
             DateTimeOffset now = _now();
             if (ct.IsCancellationRequested)
             {
-                _log.Info($"{game.Name}: prewarm cancelled ({why})");
-                return new PrewarmResult(game.Name, false, Cancelled, null, now);
+                string detail = _env.GameRunning(game) ? "game started"
+                    : _coordinator?.IsRegistered(game.Name) == true ? "disk read lease refused" : "caller cancelled";
+                LogSkipped(game.Name, "prewarm cancelled " + detail, $"{game.Name}: prewarm cancelled ({why}) after 0 MiB ({detail})");
+                PrewarmResult cancelled = new(game.Name, false, Cancelled, null, now) { CancelDetail = detail };
+                TrackPendingWarm(game, cancelled, now);
+                return cancelled;
+            }
+
+            if (string.Equals(why, "rewarm", StringComparison.Ordinal) && PendingWarmDriveRecovering(game))
+            {
+                return new PrewarmResult(game.Name, false, "drive recovery", null, now);
             }
 
             if (string.Equals(why, "rewarm", StringComparison.Ordinal) && RewarmAlreadyCovered(game))
             {
-                return new PrewarmResult(game.Name, false, "prewarm already running or recently completed", null, now);
+                PrewarmResult covered = new(game.Name, false, "prewarm already running or recently completed", null, now);
+                TrackPendingWarm(game, covered, now);
+                return covered;
             }
 
             if (Deferred(game))
             {
-                return new PrewarmResult(game.Name, false, PostUpdateDelay, null, now);
+                PrewarmResult deferred = new(game.Name, false, PostUpdateDelay, null, now);
+                TrackPendingWarm(game, deferred, now);
+                return deferred;
             }
 
             if (IsCold(game) && !(_env.ColdRefusal(game) is null && _env.PrefetchBoot(game))) // S2 가 먼저: boot 트레이스가 생기면 더는 기록 없는 게임이 아님
@@ -2747,11 +3091,12 @@ public sealed class Prewarmer
                         return Record(game, now, new PrewarmResult(game.Name, false, RelocationRunning, null, now), 0);
                     }
 
-                    (StreamStats s, bool complete) = hot;
+                    (StreamStats s, bool complete, string? cancelReason) = hot;
                     if (!complete)
                     {
-                        _log.Info($"{game.Name}: prewarm cancelled ({why}) after {s.Bytes >> 20} MiB");
-                        return Record(game, now, new PrewarmResult(game.Name, false, Cancelled, s, now), 0);
+                        string reason = cancelReason ?? "cancelled externally";
+                        LogSkipped(game.Name, "prewarm cancelled " + reason, () => $"{game.Name}: prewarm cancelled ({why}) after {s.Bytes >> 20} MiB ({reason})");
+                        return Record(game, now, new PrewarmResult(game.Name, false, Cancelled, s, now) { CancelDetail = reason }, 0);
                     }
 
                     if (s.Bytes <= 0)
@@ -2817,10 +3162,16 @@ public sealed class Prewarmer
         }
     }
 
-    private void CheckPrewarmBatch(GameSettings game, CancellationTokenSource stop, long done, long total, bool reserveFinalSet = false)
+    private void CheckPrewarmBatch(GameSettings game, CancellationTokenSource stop, long done, long total, bool reserveFinalSet = false,
+        PrewarmCancelDetail? detail = null, CancellationToken callerToken = default, CancellationToken leaseToken = default)
     {
         if (stop.IsCancellationRequested)
         {
+            string cancellation = leaseToken.IsCancellationRequested ? "disk read lease revoked"
+                : callerToken.IsCancellationRequested ? "caller cancelled"
+                : _streamGameStarted ? "game started on the same disk"
+                : "cancelled externally";
+            detail?.Set(cancellation);
             return;
         }
 
@@ -2831,9 +3182,32 @@ public sealed class Prewarmer
         bool finalSetExceedsReserve = reserveFinalSet &&
             (availableRamMib < GapFillReserveMib || finalSetMib > availableRamMib - GapFillReserveMib);
         // keep_stream_on_game_start 가 켜졌으면 읽던 게임 자신의 실행만으로는 취소하지 않음 (같은 디스크의 다른 게임 실행은 항상 봄). 메모리 검사는 그대로.
-        if (RunningBlocksRead(game) || (remaining > 0 && (ExternalLoadWhilePaused(game, stop.Token) || DiskSampleUnknown(game))) || finalSetExceedsReserve ||
-            !PrewarmPolicy.HasMemoryBudget(remainingMib, availableRamMib, game.Prewarm.MinFreeRamMib))
+        string? reason = null;
+        if (RunningBlocksRead(game))
         {
+            reason = _env.GameRunning(game) ? "game started" : "another game is running on the same disk";
+        }
+        else if (remaining > 0 && ExternalLoadWhilePaused(game, stop.Token))
+        {
+            reason = "disk busy after pause";
+        }
+        else if (remaining > 0 && _env.DiskSample?.Invoke(game) is { } sample
+            && sample.State is DiskActivity.SampleState.Warming or DiskActivity.SampleState.Stale)
+        {
+            reason = "disk sample " + sample.State.ToString().ToLowerInvariant();
+        }
+        else if (finalSetExceedsReserve)
+        {
+            reason = $"memory reserve: available {availableRamMib} MiB, final set {finalSetMib} MiB + reserve {GapFillReserveMib} MiB";
+        }
+        else if (!PrewarmPolicy.HasMemoryBudget(remainingMib, availableRamMib, game.Prewarm.MinFreeRamMib))
+        {
+            reason = $"memory budget: available {availableRamMib} MiB, remaining {remainingMib} MiB + reserve {game.Prewarm.MinFreeRamMib} MiB";
+        }
+
+        if (reason is not null)
+        {
+            detail?.Set(reason);
             stop.Cancel();
         }
     }
@@ -2842,21 +3216,22 @@ public sealed class Prewarmer
     // 같은 디스크에서 재배치가 시작했으면 읽지 않고 null.
     // settle: 끝까지 읽었을 때 StreamEnded 알림보다 먼저 부름 (읽은 통계를 받아 부분 예열 상태를 확정하거나 지움).
     // skipBytes: 읽기 목록 앞쪽 이만큼은 이미 읽었으니 건너뜀 (끊긴 보충을 이어 읽음, 틈 메우기 없는 경로에서만). onTotal: 이번에 읽을 목록의 길이 (건너뛴 앞부분 제외).
-    private (StreamStats Stats, bool Complete)? StreamHot(GameSettings game, CancellationToken ct, long? zoneBytes, long availableRamMib, bool partial = false, Action<StreamStats>? settle = null, long skipBytes = 0, Action<long>? onTotal = null, bool allowReorder = true)
+    private (StreamStats Stats, bool Complete, string? CancelReason)? StreamHot(GameSettings game, CancellationToken ct, long? zoneBytes, long availableRamMib, bool partial = false, Action<StreamStats>? settle = null, long skipBytes = 0, Action<long>? onTotal = null, bool allowReorder = true)
     {
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "prewarm stream", ct, preserveForGameRoot: _auto.KeepStreamOnGameStart ? game.OriginRoot : null, preserveGameKey: game.Name);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
         {
-            return (new StreamStats(0, 0, 0, 0, Aborted: true), false);
+            return (new StreamStats(0, 0, 0, 0, Aborted: true), false, "disk read lease refused");
         }
 
         using var stop = new CancellationTokenSource();
         using var calibration = CancellationTokenSource.CreateLinkedTokenSource(ct, stop.Token);
+        var cancelDetail = new PrewarmCancelDetail();
         if (!TryMarkReading(game.Name, () =>
         {
             _streamGameStarted = false;
             _calibrationStop = calibration;
-            (_keepStream, _streaming, _streamStop) = (false, game.Name, stop);
+            (_keepStream, _streaming, _streamStop, _streamCancelDetail) = (false, game.Name, stop, cancelDetail);
             _yield = null;
             _driveObservedAt = _now();
         }))
@@ -2872,11 +3247,16 @@ public sealed class Prewarmer
         long startedAt = Stopwatch.GetTimestamp();
         try
         {
-            using CancellationTokenRegistration leaseReg = lease?.Token.Register(stop.Cancel) ?? default;
+            using CancellationTokenRegistration leaseReg = lease?.Token.Register(() =>
+            {
+                cancelDetail.Set("disk read lease revoked");
+                stop.Cancel();
+            }) ?? default;
             using CancellationTokenRegistration callerReg = ct.Register(() =>
             {
                 if (!_keepStream)
                 {
+                    cancelDetail.Set("caller cancelled");
                     stop.Cancel();
                 }
             });
@@ -2894,14 +3274,14 @@ public sealed class Prewarmer
             calibration.Token.ThrowIfCancellationRequested();
             using (PrewarmRun.Time(PrewarmPhase.Common))
             {
-                WarmCommonFirst(game, stop, maxBytes, skipBytes, lease);
+                WarmCommonFirst(game, stop, maxBytes, skipBytes, lease, cancelDetail, ct);
             }
 
             calibration.Token.ThrowIfCancellationRequested();
             (StreamStats, bool) r = _streamer.StreamPrewarmCoordinated(game, stop.Token, (done, total) =>
             {
                 onTotal?.Invoke(total);
-                CheckPrewarmBatch(game, stop, done, total, reserveFinalSet: true);
+                CheckPrewarmBatch(game, stop, done, total, reserveFinalSet: true, detail: cancelDetail, callerToken: ct, leaseToken: lease?.Token ?? default);
                 if (done == 0)
                 {
                     return;
@@ -2918,20 +3298,20 @@ public sealed class Prewarmer
             complete = r.Item2 && !stop.IsCancellationRequested;
             finalStats = r.Item1;
             LogYield(game.Name, r.Item1.Bytes, lease);
-            return (r.Item1, complete);
+            return (r.Item1, complete, cancelDetail.First);
         }
         catch (OperationCanceledException) when (calibration.IsCancellationRequested)
         {
             StreamStats cancelled = new(0, 0, 0, 0, Aborted: true);
             finalStats = cancelled;
             LogYield(game.Name, 0, lease);
-            return (cancelled, false);
+            return (cancelled, false, cancelDetail.First ?? (lease?.Token.IsCancellationRequested == true ? "disk read lease revoked" : ct.IsCancellationRequested ? "caller cancelled" : "cancelled externally"));
         }
         finally
         {
             bool interrupted = !complete && _streamGameStarted;
             _calibrationStop = null;
-            (_streaming, _streamStop) = (null, null);
+            (_streaming, _streamStop, _streamCancelDetail) = (null, null, null);
             // shortcut: 스트림 PDH 는 순차 탐침과 비교할 수 없어 교차 확인을 배선하지 않음, 실측 이탈이 확인되면 끝까지 읽은 스트림의 실제 읽기 바이트/시간으로 다시 연결
             try
             {
@@ -2972,7 +3352,8 @@ public sealed class Prewarmer
     // 이번 스트림이 읽을 범위의 부분집합만 읽어 RAM 예산은 그대로이고, map_initial (일부 회차에서만 읽힌 나머지) 은 기존 스트림이 이어 읽어 이득이 줄지 않습니다 (common 은 이미 올라와 있어 다시 읽어도 빠름).
     // 디스크 대여·중단 신호는 StreamHot 의 것을 그대로 씁니다. 실패하면 건너뛰고 스트림이 같은 오류를 판단합니다.
     // 최종 예약 검사는 common 을 읽기 전에 이번 스트림 전체 양으로 합니다 (거절이면 common 도 읽지 않음).
-    private void WarmCommonFirst(GameSettings game, CancellationTokenSource stop, long maxBytes, long skipBytes, DiskReadCoordinator.Lease? lease)
+    private void WarmCommonFirst(GameSettings game, CancellationTokenSource stop, long maxBytes, long skipBytes, DiskReadCoordinator.Lease? lease,
+        PrewarmCancelDetail cancelDetail, CancellationToken callerToken)
     {
         try
         {
@@ -2985,18 +3366,25 @@ public sealed class Prewarmer
                 return;
             }
 
-            CheckPrewarmBatch(game, stop, 0, streamTotal, reserveFinalSet: true);
+            CheckPrewarmBatch(game, stop, 0, streamTotal, reserveFinalSet: true, detail: cancelDetail, callerToken: callerToken, leaseToken: lease?.Token ?? default);
             if (stop.IsCancellationRequested || lease is { IsValid: false })
             {
+                if (lease is { IsValid: false })
+                {
+                    cancelDetail.Set("disk read lease revoked");
+                    stop.Cancel();
+                }
+
                 return;
             }
 
             long total = ops.Sum(o => o.Length);
             Action<long, long> progress = (done, planned) =>
             {
-                CheckPrewarmBatch(game, stop, done, planned);
+                CheckPrewarmBatch(game, stop, done, planned, detail: cancelDetail, callerToken: callerToken, leaseToken: lease?.Token ?? default);
                 if (lease is { IsValid: false })
                 {
+                    cancelDetail.Set("disk read lease revoked");
                     stop.Cancel();
                 }
             };
@@ -3076,6 +3464,7 @@ public sealed class Prewarmer
 
         StreamStats? stats = null;
         string? label = null;
+        string? cancelReason = null;
         List<(string Path, long Offset, int Bytes)>? samples = null;
         if (skip is null)
         {
@@ -3106,7 +3495,7 @@ public sealed class Prewarmer
                     }
                     else
                     {
-                        (stats, label, skip) = (cold.Stats, plan.Label, cold.Complete && !ct.IsCancellationRequested ? null : Cancelled);
+                        (stats, label, skip, cancelReason) = (cold.Stats, plan.Label, cold.Complete && !ct.IsCancellationRequested ? null : Cancelled, cold.CancelReason);
                         samples = CacheProbe.PickSamples(plan.Ops);
                     }
                 }
@@ -3114,6 +3503,7 @@ public sealed class Prewarmer
             catch (OperationCanceledException)
             {
                 skip = Cancelled;
+                cancelReason = ct.IsCancellationRequested ? "caller cancelled" : "planning cancelled";
             }
             catch (DirectoryNotFoundException)
             {
@@ -3128,7 +3518,17 @@ public sealed class Prewarmer
 
         if (skip is not null || stats is null)
         {
-            _log.Info($"{game.Name}: prewarm {(skip == Cancelled ? "cancelled" : $"skipped ({skip})")} [{why}]{(skip == "game is running" ? BlockerNote(game) : string.Empty)}");
+            if (skip == Cancelled)
+            {
+                string reason = cancelReason ?? "cancelled externally";
+                long afterMib = stats is { } cancelledStats ? cancelledStats.Bytes >> 20 : 0;
+                LogSkipped(game.Name, "prewarm cancelled " + reason, $"{game.Name}: prewarm cancelled ({why}) after {afterMib} MiB ({reason})");
+            }
+            else
+            {
+                _log.Info($"{game.Name}: prewarm skipped ({skip}) [{why}]{(skip == "game is running" ? BlockerNote(game) : string.Empty)}");
+            }
+
             return Record(game, now, new PrewarmResult(game.Name, false, skip, stats, now), 0);
         }
 
@@ -3149,12 +3549,12 @@ public sealed class Prewarmer
     }
 
     // 기록 없는 읽기 한 번: 읽는 동안 _coldReading 표시를 세우고 (예외·취소로 끝나도 내림), 같은 디스크에서 재배치가 시작했으면 읽지 않고 null.
-    private (StreamStats Stats, bool Complete)? ColdReadMarked(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken ct)
+    private (StreamStats Stats, bool Complete, string? CancelReason)? ColdReadMarked(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken ct)
     {
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "cold prewarm", ct);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
         {
-            return (new StreamStats(0, 0, 0, 0, Aborted: true), false);
+            return (new StreamStats(0, 0, 0, 0, Aborted: true), false, "disk read lease refused");
         }
 
         if (!TryMarkReading(game.Name, () => _coldReading = game.Name))
@@ -3165,9 +3565,13 @@ public sealed class Prewarmer
         InvalidateResidencyProbe(game.Name);
         try
         {
+            var cancelDetail = new PrewarmCancelDetail();
             using var stop = CancellationTokenSource.CreateLinkedTokenSource(lease?.Token ?? ct);
             long total = ops.Sum(o => o.Length);
-            Action<long, long> progress = (done, planned) => CheckPrewarmBatch(game, stop, done, planned);
+            using CancellationTokenRegistration leaseReg = lease?.Token.Register(() => cancelDetail.Set("disk read lease revoked")) ?? default;
+            using CancellationTokenRegistration callerReg = ct.Register(() => cancelDetail.Set("caller cancelled"));
+            Action<long, long> progress = (done, planned) => CheckPrewarmBatch(game, stop, done, planned,
+                detail: cancelDetail, callerToken: ct, leaseToken: lease?.Token ?? default);
             (StreamStats Stats, bool Complete) read = _env.ColdReadWithProgress is { } withProgress
                 ? withProgress(ops, stop.Token, progress)
                 : _env.ColdRead(ops, stop.Token);
@@ -3176,7 +3580,9 @@ public sealed class Prewarmer
                 progress(read.Stats.Bytes, total);
             }
 
-            return stop.IsCancellationRequested ? (read.Stats with { Aborted = true }, false) : read;
+            return stop.IsCancellationRequested
+                ? (read.Stats with { Aborted = true }, false, cancelDetail.First ?? "cancelled externally")
+                : (read.Stats, read.Complete, cancelDetail.First);
         }
         finally
         {
@@ -3213,6 +3619,7 @@ public sealed class Prewarmer
 
     private PrewarmResult Record(GameSettings game, DateTimeOffset now, PrewarmResult r, double mbps)
     {
+        TrackPendingWarm(game, r, now);
         string? okAt = r.Ran ? now.ToString("O") : KeptOkAt(game.Name);
         JObject entry = new()
         {

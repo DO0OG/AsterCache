@@ -142,6 +142,27 @@ internal sealed class FakeWorld
 
     public double? Disk { get; set; } = 0;
 
+    public List<TimeSpan> WaitDurations { get; } = [];
+
+    public Func<TimeSpan, CancellationToken, bool>? WaitOverride { get; set; }
+
+    private bool Wait(TimeSpan duration, CancellationToken token)
+    {
+        WaitDurations.Add(duration);
+        if (WaitOverride is not null)
+        {
+            return WaitOverride(duration, token);
+        }
+
+        if (token.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        Now += duration;
+        return true;
+    }
+
     /// 디스크 처리량을 읽을 때마다 부르는 훅 (유휴 판정과 재배치 시작 사이에 일이 끼어드는 경쟁을 만들 때).
     public Action? OnDiskSample { get; set; }
 
@@ -257,6 +278,7 @@ internal sealed class FakeWorld
     {
         Now = () => Now,
         Ticks = Ticks ?? FakeClock.Ticks(() => Now),
+        Wait = Wait,
         SameDisk = (a, b) => SameDisk(a, b),
         Scan = () => Skipped.Count == 0 ? Found : new ScanResult([.. Found], [.. Skipped]),
         VolumeLabel = l => Labels.GetValueOrDefault(l, "GAMES"),

@@ -8,7 +8,7 @@ using Microsoft.Win32.SafeHandles;
 namespace AsterCache.Windows;
 
 /// 볼륨 원시 핸들로 지정 LCN 에서 비버퍼드 순차 읽기 속도를 재는 표본 (서비스 전용, 쓰기 뒤 디스크 회복 확인용).
-/// 서로 떨어진 3 구간을 1 MiB 블록으로 한 번씩 읽은 중앙값 MB/s (decimal): 같은 곳을 되풀이해 읽으면 2·3 회는 디스크 캐시라서. 한 표본만 재면 구간당 64 MiB, 존 + 참조면 구간당 32 MiB (회차 합계 192 MiB).
+/// 서로 떨어진 3 구간을 1 MiB 블록으로 한 번씩 읽은 중앙값 MB/s (decimal): 같은 곳을 되풀이해 읽으면 2·3 회는 디스크 캐시라서. 기준과 회복 표본은 같은 1~3 회전 칸을 씁니다. 한 표본만 재면 구간당 64 MiB, 존 + 참조면 구간당 32 MiB (회차 합계 192 MiB).
 /// 한 회차 (존 + 참조 표본, 기준 측정 포함) 는 호출하는 쪽이 만든 ProbeRound 세션으로 총 읽기 192 MiB·벽시계 10 s 를 함께 쓰고, 1 MiB 읽을 때마다 취소를 확인합니다 (취소·상한 초과는 null = 판정 불가).
 /// 비어 있는 영역은 SMR 이 0 을 즉시 돌려 과대하게 나오므로 호출하는 쪽이 할당된 곳만 고릅니다.
 public static class DiskProbe
@@ -200,7 +200,7 @@ public static class DiskProbe
         return null;
     }
 
-    /// 회복 표본의 회전 칸 (기준 측정이 쓴 0 번 칸을 건너뛰고 1..RotationSteps-1 을 되풀이): 몇 번째 표본이든 기준과 같은 LBA 를 다시 읽지 않음. rotation 은 1 부터.
+    /// 기준과 회복 표본의 회전 칸 (1..RotationSteps-1 을 되풀이). rotation 은 1 부터.
     public static int RotationIndex(int rotation) => 1 + Math.Max(rotation - 1, 0) % (RotationSteps - 1);
 
     internal static double Rate(long bytes, TimeSpan elapsed) => bytes / 1e6 / Math.Max(elapsed.TotalSeconds, 1e-9);

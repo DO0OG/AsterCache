@@ -2733,10 +2733,11 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     {
         SetAuto(a => a with { PostRelocateRecovery = mode });
         _w.LocateProbeSpots = (_, _) => (zoneAllocated, RefLcn);
+        _w.ProbeStepLcn = _ => 64;
         _w.ProbeMbps = (drive, lcn, _) =>
         {
             _probed.Add((drive, lcn));
-            return lcn == RefLcn ? _refMbps : _zoneMbps;
+            return lcn >= RefLcn ? _refMbps : _zoneMbps;
         };
     }
 
@@ -2774,9 +2775,240 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         _w.Now += Step;
         RunUntilDone();
 
-        Assert.Equal(1, probedAtMove); // 이동 직전에 한 번
-        Assert.Equal([(PlanFile.SplitDrive(Root).ToUpperInvariant(), RefLcn)], _probed.Take(1).ToList()); // 빈 존은 기준에서 뺌
+        Assert.Equal(3, probedAtMove); // 이동 직전에 같은 1~3 칸을 각각 한 번씩 측정
+        Assert.Equal(new[] { 64L, 128L, 192L }.Select(offset => (PlanFile.SplitDrive(Root).ToUpperInvariant(), RefLcn + offset)), _probed.Take(3)); // 빈 존은 기준에서 뺌
         Assert.True(Relocator.Recovery.IsRecovering(Drive));
+    }
+
+    [Fact]
+    public void ProbeBaselineUsesTheMedianOfTheSameThreeCellsAndKeepsTheStartLcns()
+    {
+        UseProbe(AutoSettings.RecoveryProbe, zoneAllocated: true);
+        double[] rates = [100, 20, 90, 80, 70, 60]; // zone/ref 쌍을 칸 1~3 순으로 반환
+        int read = 0;
+        _w.ProbeMbps = (drive, lcn, _) =>
+        {
+            _probed.Add((drive, lcn));
+            return rates[Math.Min(read++, rates.Length - 1)];
+        };
+
+        Tick();
+        _w.Now += Step;
+        RunUntilDone();
+
+        DriveRecoveryRecord saved = Assert.Single(_status.DriveRecoveries());
+        Assert.Equal(90, saved.Zone!.Value.Mbps); // 100, 90, 70 의 중앙값
+        Assert.Equal(60, saved.Ref!.Value.Mbps); // 20, 80, 60 의 중앙값
+        Assert.Equal(_probed[0].Lcn - 64, saved.Zone.Value.Lcn);
+        Assert.Equal(RefLcn, saved.Ref.Value.Lcn);
+        Assert.True(read >= 6);
+    }
+
+    [Fact]
+    public void MatchingMedianBaselineAndFourOfSixFluctuatingSamplesRecoverWithinTwelveMinutes()
+    {
+        UseProbe(AutoSettings.RecoveryProbe, zoneAllocated: true);
+        double[] baselineRates = [100, 80, 90, 80, 70, 80];
+        double[] zoneRates = [90, 90, 70, 90, 90, 70];
+        double[] refRates = [60, 80, 80, 60, 80, 80];
+        int baselineReads = 0;
+        int recoveryReads = 0;
+        bool afterWrite = false;
+        _w.ProbeMbps = (drive, lcn, _) =>
+        {
+            _probed.Add((drive, lcn));
+            if (!afterWrite)
+            {
+                return baselineRates[Math.Min(baselineReads++, baselineRates.Length - 1)];
+            }
+
+            int sample = Math.Min(recoveryReads / 2, zoneRates.Length - 1);
+            double speed = lcn >= RefLcn ? refRates[sample] : zoneRates[sample];
+            recoveryReads++;
+            return speed;
+        };
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> inner = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            ApplyReport report = inner(g, plan, options, ct);
+            afterWrite |= options.Execute && report.MovedBytes > 0;
+            return report;
+        };
+
+        Tick();
+        _w.Now += Step;
+        RunUntilDone();
+
+        DriveRecoveryRecord saved = Assert.Single(_status.DriveRecoveries());
+        Assert.Equal(90, saved.Zone!.Value.Mbps);
+        Assert.Equal(80, saved.Ref!.Value.Mbps);
+        Assert.Equal(6, baselineReads);
+        Run(TimeSpan.FromMinutes(12));
+
+        Assert.False(Relocator.Recovery.IsRecovering(Drive));
+        Assert.Equal(12, recoveryReads);
+        Assert.Contains(_log.Lines, line => line.Contains("recovered after 12 min (statistical recovery:", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void BaselineSelfReadsAreIgnoredAfterFreshObservationWindows()
+    {
+        UseProbe(AutoSettings.RecoveryProbe, zoneAllocated: true);
+        int executed = 0;
+        TimeSpan selfReadBusyRemaining = TimeSpan.Zero;
+        _w.ProbeMbps = (drive, lcn, _) =>
+        {
+            _probed.Add((drive, lcn));
+            _w.Disk = DiskActivity.BusyBytesPerSecond; // 기준 읽기가 바쁨 카운터에 반영됨
+            selfReadBusyRemaining = TimeSpan.FromMilliseconds(3_100);
+            return _zoneMbps;
+        };
+        _w.WaitOverride = (duration, token) =>
+        {
+            _w.Now += duration;
+            selfReadBusyRemaining -= duration;
+            if (selfReadBusyRemaining <= TimeSpan.Zero)
+            {
+                _w.Disk = 0; // 새 관측 구간에는 기준 읽기가 포함되지 않음
+            }
+
+            return !token.IsCancellationRequested;
+        };
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> inner = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            executed += options.Execute ? 1 : 0;
+            return inner(g, plan, options, ct);
+        };
+
+        Tick();
+        _w.Now += Step;
+        RunUntilDone();
+
+        Assert.Equal(6, _probed.Count);
+        Assert.True(executed > 0);
+        Assert.Equal(TimeSpan.FromMilliseconds(6_200), _w.WaitDurations.Aggregate(TimeSpan.Zero, (sum, duration) => sum + duration));
+    }
+
+    [Fact]
+    public void BusyExternalLoadAfterFreshObservationDefersBaselineAndWrite()
+    {
+        UseProbe(AutoSettings.RecoveryProbe, zoneAllocated: true);
+        int executed = 0;
+        _w.ProbeMbps = (drive, lcn, _) =>
+        {
+            _probed.Add((drive, lcn));
+            _w.Disk = DiskActivity.BusyBytesPerSecond;
+            return _zoneMbps;
+        };
+        _w.WaitOverride = (duration, token) =>
+        {
+            _w.Now += duration;
+            _w.Disk = DiskActivity.BusyBytesPerSecond; // 관측 구간에도 외부 작업이 이어짐
+            return !token.IsCancellationRequested;
+        };
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> inner = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            executed += options.Execute ? 1 : 0;
+            return inner(g, plan, options, ct);
+        };
+
+        Run(TimeSpan.FromMinutes(3));
+
+        Assert.Equal(2, _probed.Count); // 첫 칸까지만 측정
+        Assert.Equal(0, executed);
+        Assert.Equal(TimeSpan.FromMilliseconds(3_100), _w.WaitDurations.Aggregate(TimeSpan.Zero, (sum, duration) => sum + duration));
+    }
+
+    [Fact]
+    public void GameStartingDuringFreshObservationWaitStopsBaselineAndDefersWrite()
+    {
+        UseProbe(AutoSettings.RecoveryProbe, zoneAllocated: true);
+        _w.ProbeMbps = (drive, lcn, _) =>
+        {
+            _probed.Add((drive, lcn));
+            return _zoneMbps;
+        };
+        _w.WaitOverride = (duration, token) =>
+        {
+            _w.Now += duration;
+            _w.Running = true;
+            return !token.IsCancellationRequested;
+        };
+        AutoEnv env = WorldEnv();
+        env.GameRunningOnDisk = _ => _w.Running;
+        _relocator = new AutoRelocator(env, _status, _log, () => _settings);
+        int executed = 0;
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> inner = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            executed += options.Execute ? 1 : 0;
+            return inner(g, plan, options, ct);
+        };
+
+        Run(TimeSpan.FromMinutes(3));
+
+        Assert.Equal(2, _probed.Count);
+        Assert.Equal(0, executed);
+        Assert.Equal(TimeSpan.FromMilliseconds(100), _w.WaitDurations.Aggregate(TimeSpan.Zero, (sum, duration) => sum + duration));
+        Assert.Equal((AutoStage.WaitingIdle, "baseline interrupted (game start or disk busy), will retry"), (Entry.Stage, Entry.Detail));
+    }
+
+    [Fact]
+    public void CancellationDuringFreshObservationWaitStopsBaselineAndDefersWrite()
+    {
+        using var cts = new CancellationTokenSource();
+        UseProbe(AutoSettings.RecoveryProbe, zoneAllocated: true);
+        _w.ProbeMbps = (drive, lcn, _) =>
+        {
+            _probed.Add((drive, lcn));
+            return _zoneMbps;
+        };
+        _w.WaitOverride = (duration, token) =>
+        {
+            _w.Now += duration;
+            cts.Cancel();
+            return !token.IsCancellationRequested;
+        };
+        _relocator = new AutoRelocator(WorldEnv(), _status, _log, () => _settings);
+        int executed = 0;
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> inner = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            executed += options.Execute ? 1 : 0;
+            return inner(g, plan, options, ct);
+        };
+
+        for (int i = 0; i < 8 && _w.WaitDurations.Count == 0; i++)
+        {
+            Relocator.Tick(_gate, cts.Token);
+            _w.Now += Step;
+        }
+
+        Assert.Equal(2, _probed.Count);
+        Assert.Equal(0, executed);
+        Assert.Equal(TimeSpan.FromMilliseconds(100), _w.WaitDurations.Aggregate(TimeSpan.Zero, (sum, duration) => sum + duration));
+        Assert.Equal((AutoStage.WaitingIdle, "baseline interrupted (game start or disk busy), will retry"), (Entry.Stage, Entry.Detail));
+    }
+
+    [Fact]
+    public void ProbeBaselineWithoutAKnownRotationIntervalUsesTheFixedWait()
+    {
+        UseProbe(AutoSettings.RecoveryProbe, zoneAllocated: true);
+        _w.ProbeStepLcn = _ => 0;
+
+        Tick();
+        _w.Now += Step;
+        RunUntilDone();
+        _probed.Clear();
+
+        Assert.True(Relocator.Recovery.IsRecovering(Drive));
+        Run(TimeSpan.FromMinutes(14));
+        Assert.True(Relocator.Recovery.IsRecovering(Drive));
+        Run(TimeSpan.FromMinutes(2));
+        Assert.False(Relocator.Recovery.IsRecovering(Drive));
+        Assert.Empty(_probed);
     }
 
     [Fact]
@@ -2791,13 +3023,16 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         (_zoneMbps, _refMbps) = (61, 70);
         Run(TimeSpan.FromMinutes(5));
         Assert.True(Relocator.Recovery.IsRecovering(Drive));
-        Assert.Single(_log.Lines, l => l.Contains("recovering after relocation (zone 61 MB/s / 98 baseline, ref 70/72)", StringComparison.Ordinal));
+        string[] samples = [.. _log.Lines.Where(line => line.Contains("recovery sample cell", StringComparison.Ordinal))];
+        Assert.Equal(2, samples.Length);
+        Assert.All(samples, line => Assert.Contains("zone 61/98 MB/s, ref 70/72 MB/s, verdict Bad", line, StringComparison.Ordinal));
 
         (_zoneMbps, _refMbps) = (95, 70);
         Run(TimeSpan.FromMinutes(5));
 
         Assert.False(Relocator.Recovery.IsRecovering(Drive));
-        Assert.Contains(_log.Lines, l => l.Contains(": recovered after ", StringComparison.Ordinal) && l.Contains(" min", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, line => line.Contains("recovered after ", StringComparison.Ordinal)
+            && line.Contains(" min (two consecutive passes)", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -2901,7 +3136,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
-    public void DiskActivityBetweenTheBaselineZoneAndReferenceSamplesStopsTheRound()
+    public void DiskActivityDuringBaselineCellDefersBeforeTheNextCell()
     {
         UseProbe(AutoSettings.RecoveryProbe, zoneAllocated: true);
         int executes = 0;
@@ -2920,8 +3155,9 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
 
         Run(TimeSpan.FromMinutes(3));
 
-        Assert.Single(_probed);
+        Assert.Equal(2, _probed.Count); // 존·참조 한 칸을 마친 뒤 바쁨이 지속되면 다음 칸을 읽지 않음
         Assert.Equal(0, executes);
+        Assert.Equal(TimeSpan.FromMilliseconds(3_100), _w.WaitDurations.Aggregate(TimeSpan.Zero, (sum, duration) => sum + duration));
     }
 
     [Fact]
@@ -2940,9 +3176,15 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         _w.Now += Step;
         RunUntilDone();
 
-        Assert.Equal(2, rounds.Count);
-        Assert.Same(rounds[0], rounds[1]);
-        Assert.Equal((2, ProbeRound.MaxBytes, null), (rounds[0].Parts, rounds[0].BytesRead, rounds[0].Aborted));
+        Assert.Equal(6, rounds.Count);
+        for (int offset = 0; offset < rounds.Count; offset += 2)
+        {
+            Assert.Same(rounds[offset], rounds[offset + 1]);
+            Assert.Equal((2, ProbeRound.MaxBytes, null), (rounds[offset].Parts, rounds[offset].BytesRead, rounds[offset].Aborted));
+        }
+
+        Assert.NotSame(rounds[0], rounds[2]);
+        Assert.NotSame(rounds[2], rounds[4]);
         Assert.True(Relocator.Recovery.IsRecovering(Drive));
     }
 

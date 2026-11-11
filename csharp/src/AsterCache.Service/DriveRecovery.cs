@@ -6,10 +6,10 @@ namespace AsterCache.Service;
 /// 읽기 속도를 잰 한 곳 (LCN 과 MB/s).
 public readonly record struct ProbeSpot(long Lcn, double Mbps);
 
-/// 쓰기 직전 기준 속도: 대상 존 (비어 있어 무효면 null) 과 쓰지 않을 기준 구간 (없으면 null).
+/// 쓰기 직전 기준 속도: 대상 존 (비어 있어 무효면 null) 과 쓰지 않을 기준 구간 (없으면 null). 각 값은 회전 칸 1~3에서 잰 속도의 중앙값입니다.
 public sealed record DriveBaseline(ProbeSpot? Zone, ProbeSpot? Ref);
 
-/// 한 표본의 판정: Pass (기준의 90% 이상), Bad (미달), Unknown (바쁨·실패·상한 초과·기준 무효). Unknown 은 성공 연속 횟수에 넣지도 끊지도 않습니다.
+/// 한 표본의 판정: Pass (기준의 90% 이상), Bad (미달), Unknown (바쁨·실패·상한 초과·기준 무효). Unknown 은 연속 통과 횟수에 넣지도 끊지도 않습니다.
 public enum RecoveryVerdict
 {
     Pass,
@@ -17,7 +17,7 @@ public enum RecoveryVerdict
     Bad,
 }
 
-/// 쓰기 (재배치) 뒤 드라이브가 회복할 때까지의 상태. probe 는 기준 속도와 견줘 연속 2 회 90% 이상이면 회복으로 보고, 상한 (limit) 이 지나면 회복으로 칩니다.
+/// 쓰기 (재배치) 뒤 드라이브가 회복할 때까지의 상태. probe 는 기준 속도와 견줘 연속 2 회 90% 이상이거나 두 회전의 6 표본 중 4 개 이상이 통과하면 회복으로 보고, 상한 (limit) 이 지나면 회복을 확인하지 못한 것으로 칩니다.
 /// 표본은 매번 64 MiB 씩 옮겨 읽고 (HDD 자체 캐시 적중 방지), 디스크 순차 상한 초과가 서로 다른 회전 위치에서 한 바퀴 이어지면 기준 속도 과소 측정으로 인정합니다.
 /// 기준이 없는 추적 (고정 대기) 은 limit 이 지나야 끝납니다. 시각은 AutoEnv.Now, 표본은 AutoEnv.ProbeMbps (시험은 가짜). Poll 은 틱 스레드에서, IsRecovering 은 아무 스레드에서 부릅니다.
 /// status 가 있으면 추적을 auto_status.json 의 drive_recovery 에 남기고, 만들어질 때 (서비스 시작) 아직 안 끝난 추적을 되살립니다. 기준이 없거나 무효인 추적은 남은 시간 동안 고정 대기합니다.
@@ -25,6 +25,7 @@ public sealed class DriveRecovery : IDriveRecovery
 {
     public const double RecoveredFraction = 0.9;
     public const int RecoveredStreak = 2;
+    public const int StatisticalWindowSamples = (DiskProbe.RotationSteps - 1) * 2;
     public const double CeilingMbps = 250; // 비버퍼드 참조 기준값이 없을 때의 디스크 순차 상한이자 유효한 기준값의 한계 (넘으면 캐시 적중 의심)
     public const double CeilingFactor = 1.25; // 비버퍼드 참조 기준값이 있으면 (존 기준이 더 크면 그 값) × 이 배수 (CeilingMbps 를 넘지 않음)
     public const double SuspectFactor = 1.1; // 쓰기 직후 SuspectWindow 안의 표본이 기준의 이 배수를 넘으면 디스크 캐시 의심
@@ -82,7 +83,16 @@ public sealed class DriveRecovery : IDriveRecovery
 
     private readonly record struct ProbeLocation(long? Zone, long? Ref);
 
-    private readonly record struct ProbeSample(double? Zone, double? Ref, ProbeLocation Location, bool RotationKnown);
+    private readonly record struct ProbeSample(double? Zone, double? Ref, ProbeLocation Location, int RotationIndex, bool RotationKnown);
+
+    private sealed class SampleDiagnostics
+    {
+        public long BytesRead { get; set; }
+
+        public long ElapsedMs { get; set; }
+
+        public string? Reason { get; set; }
+    }
 
     // 추적의 세션 안 경과는 Stopwatch 로 잰다 (실행 중 시스템 시계가 튀어도 회복 대기가 일찍 끝나거나 늘어나지 않게). offset 은 만들 때 이미 지난 시간 (업데이트 시각 기준 추적).
     private sealed class Track(DriveBaseline? baseline, DateTimeOffset started, TimeSpan limit, TimeSpan offset, long startTicks, TimeSpan hardLimit)
@@ -109,9 +119,13 @@ public sealed class DriveRecovery : IDriveRecovery
 
         public int Streak { get; set; }
 
-        public bool Logged { get; set; }
+        public Queue<ProbeSample> StatisticalWindow { get; } = new();
 
-        public int Rotation { get; set; } = 1; // 기준은 0 번 칸에서 쟀음
+        public int FastSamples { get; set; }
+
+        public int BadIntervals { get; set; }
+
+        public int Rotation { get; set; } = 1; // 기준과 같은 1~3 번 칸을 순환
 
         public HashSet<ProbeLocation> CeilingLocations { get; } = [];
 
@@ -257,7 +271,8 @@ public sealed class DriveRecovery : IDriveRecovery
     private void Step(string key, Track t)
     {
         int rotationIndex = DiskProbe.RotationIndex(t.Rotation);
-        ProbeSample? got = Sample(key, t.Baseline!, rotationIndex, out bool deferred, out bool interruptedDuringRead);
+        SampleDiagnostics diagnostics = new();
+        ProbeSample? got = Sample(key, t.Baseline!, rotationIndex, out bool deferred, out bool interruptedDuringRead, diagnostics);
         lock (_lock)
         {
             if (deferred)
@@ -265,15 +280,28 @@ public sealed class DriveRecovery : IDriveRecovery
                 if (interruptedDuringRead)
                 {
                     ResetCeilingLocations(t);
+                    ResetStatisticalEvidence(t);
                     t.Rotation = 1; // 게임 뒤에는 위치 1부터 초과 위치 한 바퀴를 다시 모음
                     if (_active.TryGetValue(key, out Track? current) && current == t)
                     {
                         ScheduleUnknown(t, Elapsed(t)); // 중단 표본도 판정 불가 연속 횟수에 반영
                         Note(key, t, RecoveryVerdict.Unknown);
+                        LogSample(key, t, rotationIndex, null, RecoveryVerdict.Unknown, "game interrupted the read", diagnostics);
                     }
                 }
+                else if (diagnostics.Reason == "disk busy before sample" && _active.TryGetValue(key, out Track? current) && current == t)
+                {
+                    ResetCeilingLocations(t);
+                    ResetStatisticalEvidence(t);
+                    ScheduleUnknown(t, Elapsed(t));
+                    Note(key, t, RecoveryVerdict.Unknown);
+                }
+                else if (diagnostics.Reason is "game running" or "game started")
+                {
+                    ResetStatisticalEvidence(t);
+                }
 
-                return; // 읽기 전 지연은 시각·칸 순서·연속 횟수를 유지하고, 읽기 중 취소는 초과 위치 확인을 다시 시작
+                return; // 읽기 전 지연은 칸 순서·연속 통과 횟수를 유지하고, 바쁨은 새 통계 근거 없이 다음 시각만 늦춤
             }
 
             t.Rotation++;
@@ -286,8 +314,10 @@ public sealed class DriveRecovery : IDriveRecovery
             if (got is null || !ValidBaseline(t.Baseline!))
             {
                 ResetCeilingLocations(t);
+                ResetStatisticalEvidence(t);
                 ScheduleUnknown(t, now);
                 Note(key, t, RecoveryVerdict.Unknown); // 바쁘거나 못 잼 (또는 기준 무효): 연속 횟수는 그대로 (단순하게 건너뛴 회차는 세지 않음)
+                LogSample(key, t, rotationIndex, null, RecoveryVerdict.Unknown, diagnostics.Reason ?? "read failed or baseline invalid", diagnostics);
                 return;
             }
 
@@ -296,6 +326,7 @@ public sealed class DriveRecovery : IDriveRecovery
             bool refOverCeiling = t.Baseline.Ref is not null && got.Value.Ref > ceiling;
             if (zoneOverCeiling || refOverCeiling)
             {
+                ResetStatisticalEvidence(t);
                 RecordDiscardedCacheSample(t, got.Value.Location,
                     zoneOverCeiling ? got.Value.Zone : null,
                     refOverCeiling ? got.Value.Ref : null);
@@ -305,6 +336,7 @@ public sealed class DriveRecovery : IDriveRecovery
                     ResetCeilingLocations(t);
                     ScheduleUnknown(t, now);
                     Note(key, t, RecoveryVerdict.Unknown);
+                    LogSample(key, t, rotationIndex, got, RecoveryVerdict.Unknown, "sequential ceiling exceeded but rotation position is unknown", diagnostics);
                     return;
                 }
 
@@ -318,11 +350,12 @@ public sealed class DriveRecovery : IDriveRecovery
                     if (t.Streak >= RecoveredStreak)
                     {
                         Finish(key);
-                        _log.Info($"drive {key} recovered after {(int)now.TotalMinutes} min");
+                        LogSample(key, t, rotationIndex, got, RecoveryVerdict.Pass, "all sources exceeded the sequential ceiling at three distinct locations", diagnostics, recovery: "sequential ceiling recovery");
                         return;
                     }
 
                     Note(key, t, RecoveryVerdict.Pass);
+                    LogSample(key, t, rotationIndex, got, RecoveryVerdict.Pass, "all sources exceeded the sequential ceiling at three distinct locations", diagnostics);
                     return;
                 }
 
@@ -341,6 +374,8 @@ public sealed class DriveRecovery : IDriveRecovery
                 }
 
                 Note(key, t, RecoveryVerdict.Unknown); // 단일 위치나 일부 기준만 상한 초과: 판정하지 않음
+                LogSample(key, t, rotationIndex, got, RecoveryVerdict.Unknown,
+                    allBaselinesOverCeiling ? "waiting for a full lap of distinct ceiling locations" : "only some sources exceeded the sequential ceiling", diagnostics);
                 return;
             }
 
@@ -351,31 +386,168 @@ public sealed class DriveRecovery : IDriveRecovery
                     Suspect(t.Baseline.Zone, got.Value.Zone) ? got.Value.Zone : null,
                     Suspect(t.Baseline.Ref, got.Value.Ref) ? got.Value.Ref : null);
 
+                ResetStatisticalEvidence(t);
                 ScheduleUnknown(t, now);
                 Note(key, t, RecoveryVerdict.Unknown); // 쓰기 직후 기준보다 빠름: 캐시 의심, 판정에서 빼고 연속 횟수는 그대로
+                LogSample(key, t, rotationIndex, got, RecoveryVerdict.Unknown, "cache suspected within the first ten minutes", diagnostics);
                 return;
             }
 
-            // 회전 간격을 모르는 표본도 정상 범위 판정은 그대로 합니다 (위치 확인이 필요한 것은 상한 초과 집계뿐).
+            bool statisticalSampleAdded = got.Value.RotationKnown && AddStatisticalSample(t, got.Value);
+            if (!statisticalSampleAdded)
+            {
+                ResetStatisticalEvidence(t);
+            }
+
             t.UnknownStreak = 0;
-            t.Next = now + SampleEvery;
             bool ok = Meets(t.Baseline!.Zone, got.Value.Zone) && Meets(t.Baseline.Ref, got.Value.Ref);
             t.Streak = ok ? t.Streak + 1 : 0;
+            bool statisticalPass = got.Value.RotationKnown
+                && got.Value.RotationIndex == DiskProbe.RotationSteps - 1
+                && IsStatisticalPass(t);
+            ScheduleValid(t, now, ok, statisticalSampleAdded);
             if (t.Streak >= RecoveredStreak)
             {
                 Finish(key);
-                _log.Info($"drive {key} recovered after {(int)now.TotalMinutes} min");
+                LogSample(key, t, rotationIndex, got, RecoveryVerdict.Pass, "all sources met the 90% baseline threshold twice consecutively", diagnostics, recovery: "two consecutive passes");
+                return;
+            }
+
+            if (statisticalPass)
+            {
+                Finish(key);
+                LogSample(key, t, rotationIndex, got, RecoveryVerdict.Pass, "third sorted value met the 90% baseline threshold for every source", diagnostics, recovery: "statistical recovery: at least 4 of 6 samples met the 90% baseline threshold for every source");
                 return;
             }
 
             Note(key, t, ok ? RecoveryVerdict.Pass : RecoveryVerdict.Bad);
-            if (!ok && !t.Logged)
+            string reason = ok ? "all measured sources met the 90% baseline threshold" : "one or more sources were below the 90% baseline threshold";
+            if (!got.Value.RotationKnown)
             {
-                t.Logged = true;
-                _log.Info($"drive {key} recovering after relocation (zone {Show(got.Value.Zone)} MB/s / {Show(t.Baseline.Zone?.Mbps)} baseline, ref {Show(got.Value.Ref)}/{Show(t.Baseline.Ref?.Mbps)})");
+                reason += "; rotation position unknown, statistical window cleared";
             }
+
+            LogSample(key, t, rotationIndex, got, ok ? RecoveryVerdict.Pass : RecoveryVerdict.Bad, reason, diagnostics);
         }
     }
+
+    private static bool AddStatisticalSample(Track t, ProbeSample sample)
+    {
+        int lapSize = DiskProbe.RotationSteps - 1;
+        int lastIndex = t.StatisticalWindow.Count == 0 ? lapSize : t.StatisticalWindow.Last().RotationIndex;
+        int expected = lastIndex == lapSize ? 1 : lastIndex + 1;
+        if (sample.RotationIndex != expected)
+        {
+            ResetStatisticalEvidence(t);
+            if (sample.RotationIndex != 1)
+            {
+                return false;
+            }
+        }
+
+        t.StatisticalWindow.Enqueue(sample);
+        while (t.StatisticalWindow.Count > StatisticalWindowSamples)
+        {
+            _ = t.StatisticalWindow.Dequeue();
+        }
+
+        return true;
+    }
+
+    private static bool IsStatisticalPass(Track t)
+    {
+        if (t.StatisticalWindow.Count != StatisticalWindowSamples)
+        {
+            return false;
+        }
+
+        ProbeSample[] samples = [.. t.StatisticalWindow];
+        int lapSize = DiskProbe.RotationSteps - 1;
+        if (samples.Where((sample, index) => sample.RotationIndex != 1 + index % lapSize).Any())
+        {
+            return false;
+        }
+
+        ProbeLocation[] firstLap = [.. samples.Take(lapSize).Select(sample => sample.Location)];
+        ProbeLocation[] secondLap = [.. samples.Skip(lapSize).Select(sample => sample.Location)];
+        if (firstLap.Distinct().Count() != lapSize || !firstLap.ToHashSet().SetEquals(secondLap))
+        {
+            return false;
+        }
+
+        DriveBaseline baseline = t.Baseline!;
+        return StatisticalMeets(baseline.Zone, samples.Select(sample => sample.Zone))
+            && StatisticalMeets(baseline.Ref, samples.Select(sample => sample.Ref));
+    }
+
+    private static bool StatisticalMeets(ProbeSpot? baseline, IEnumerable<double?> values)
+    {
+        if (baseline is not { } b)
+        {
+            return true;
+        }
+
+        double[] sorted = [.. values.Where(value => value is not null).Select(value => value!.Value).Order()];
+        return sorted.Length == StatisticalWindowSamples && sorted[2] >= b.Mbps * RecoveredFraction;
+    }
+
+    private static void ResetStatisticalEvidence(Track t)
+    {
+        t.StatisticalWindow.Clear();
+        t.FastSamples = 0;
+        t.BadIntervals = 0;
+    }
+
+    private static void ScheduleValid(Track t, TimeSpan now, bool passed, bool statisticalSampleAdded)
+    {
+        t.UnknownStreak = 0;
+        if (!statisticalSampleAdded)
+        {
+            ResetStatisticalEvidence(t);
+            t.Next = now + SampleEvery;
+            return;
+        }
+
+        if (passed)
+        {
+            t.BadIntervals = 0;
+            t.FastSamples = Math.Min(t.FastSamples + 1, StatisticalWindowSamples);
+            t.Next = now + SampleEvery;
+            return;
+        }
+
+        if (t.FastSamples < StatisticalWindowSamples)
+        {
+            t.FastSamples++;
+            if (t.FastSamples == StatisticalWindowSamples)
+            {
+                t.BadIntervals = 1;
+                t.Next = now + TimeSpan.FromMinutes(4);
+            }
+            else
+            {
+                t.Next = now + SampleEvery;
+            }
+
+            return;
+        }
+
+        t.BadIntervals = Math.Min(t.BadIntervals + 1, 3);
+        t.Next = now + TimeSpan.FromMinutes(t.BadIntervals == 1 ? 4 : 8);
+    }
+
+    private void LogSample(string key, Track t, int rotationIndex, ProbeSample? sample, RecoveryVerdict verdict, string reason, SampleDiagnostics diagnostics, string? recovery = null)
+    {
+        string zone = $"{FormatMbps(sample?.Zone)}/{FormatMbps(t.Baseline?.Zone?.Mbps)}";
+        string reference = $"{FormatMbps(sample?.Ref)}/{FormatMbps(t.Baseline?.Ref?.Mbps)}";
+        string next = recovery is not null ? "none (recovered)" : $"{Math.Max(0, (t.Next - Elapsed(t)).TotalMinutes).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)} min";
+        string recovered = recovery is null ? string.Empty : $", recovered after {(int)Elapsed(t).TotalMinutes} min ({recovery})";
+        _log.Info($"drive {key} recovery sample cell {rotationIndex} zone {zone} MB/s, ref {reference} MB/s, verdict {verdict} ({reason}), window {t.StatisticalWindow.Count}/{StatisticalWindowSamples}, next {next}, read {diagnostics.BytesRead >> 20} MiB in {diagnostics.ElapsedMs} ms{recovered}");
+    }
+
+    private static string FormatMbps(double? mbps) => mbps is { } value
+        ? value.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)
+        : "-";
 
     /// 게임이 gameDrive 에서 시작했다: 같은 물리 디스크 (AutoEnv.SameDisk) 에서 재는 중인 표본을 취소합니다 (그 표본은 판정 불가).
     public void YieldTo(string gameDrive)
@@ -400,9 +572,9 @@ public sealed class DriveRecovery : IDriveRecovery
         }
     }
 
-    // 디스크가 바쁘거나 (읽을 수 없어도) 표본이 실패하거나 취소되면 null. 존과 참조 사이에 디스크 활동을 다시 봅니다.
+    // 표본 전 디스크가 바쁘거나 읽기 실패·취소면 null.
     // deferred: 읽기 전에 게임이 돌거나 시작한 회차. interruptedDuringRead 는 읽기 시작 뒤 게임이 끼어든 경우입니다.
-    private ProbeSample? Sample(string key, DriveBaseline b, int rotationIndex, out bool deferred, out bool interruptedDuringRead)
+    private ProbeSample? Sample(string key, DriveBaseline b, int rotationIndex, out bool deferred, out bool interruptedDuringRead, SampleDiagnostics diagnostics)
     {
         deferred = false;
         interruptedDuringRead = false;
@@ -435,6 +607,8 @@ public sealed class DriveRecovery : IDriveRecovery
 
             if (Busy(_env, key))
             {
+                reason = "disk busy before sample";
+                deferred = true;
                 return null;
             }
 
@@ -449,7 +623,7 @@ public sealed class DriveRecovery : IDriveRecovery
 
             round = new ProbeRound(lease?.Token ?? cts.Token, (b.Zone is null ? 0 : 1) + (b.Ref is null ? 0 : 1));
             long stepLcn = _env.ProbeStepLcn(key);
-            long step = stepLcn > 0 ? stepLcn * rotationIndex : 0; // 0 번 칸은 기준 측정이 읽은 곳이라 건너뜀
+            long step = stepLcn > 0 ? stepLcn * rotationIndex : 0; // 기준과 같은 1~3 회전 칸을 읽음
             var location = new ProbeLocation(b.Zone is { } z ? z.Lcn + step : null, b.Ref is { } r ? r.Lcn + step : null);
             bool rotationKnown = stepLcn > 0;
 
@@ -490,11 +664,6 @@ public sealed class DriveRecovery : IDriveRecovery
                     return null;
                 }
 
-                if (b.Ref is not null && zone is not null && Busy(_env, key))
-                {
-                    reason = "disk busy between samples";
-                    return null;
-                }
             }
 
             if (b.Ref is { } refSpot)
@@ -516,9 +685,13 @@ public sealed class DriveRecovery : IDriveRecovery
                 }
             }
 
-            return (b.Zone is not null && zone is null) || (b.Ref is not null && reference is null)
-                ? null
-                : new ProbeSample(zone, reference, location, rotationKnown);
+            if ((b.Zone is not null && zone is null) || (b.Ref is not null && reference is null))
+            {
+                reason ??= "read failed";
+                return null;
+            }
+
+            return new ProbeSample(zone, reference, location, rotationIndex, rotationKnown);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
@@ -532,10 +705,9 @@ public sealed class DriveRecovery : IDriveRecovery
             }
 
             reason ??= round?.Aborted;
-            if (round is { } measured && (measured.BytesRead > 0 || reason is not null))
-            {
-                _log.Info($"drive {key} recovery sample read {measured.BytesRead >> 20} MiB in {(long)System.Diagnostics.Stopwatch.GetElapsedTime(begin).TotalMilliseconds} ms" + (reason is null ? string.Empty : $", aborted ({reason})"));
-            }
+            diagnostics.BytesRead = round?.BytesRead ?? 0;
+            diagnostics.ElapsedMs = (long)System.Diagnostics.Stopwatch.GetElapsedTime(begin).TotalMilliseconds;
+            diagnostics.Reason = reason;
         }
     }
 
@@ -565,6 +737,7 @@ public sealed class DriveRecovery : IDriveRecovery
 
         if (paused)
         {
+            ResetStatisticalEvidence(t);
             t.PausedAt = _env.Ticks();
             t.PausedSince = _env.Now();
             _log.Info($"drive {key} recovery clock paused (game running)");

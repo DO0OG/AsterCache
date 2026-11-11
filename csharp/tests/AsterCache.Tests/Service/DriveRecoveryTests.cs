@@ -40,6 +40,19 @@ public sealed class DriveRecoveryTests
         _r.Poll();
     }
 
+    private void UseSampleRates(double[] zoneRates, double[] refRates)
+    {
+        int call = 0;
+        _w.ProbeMbps = (_, lcn, _) =>
+        {
+            _probed.Add(lcn);
+            _probeTimes.Add(_w.Now);
+            int sample = Math.Min(call / 2, Math.Min(zoneRates.Length, refRates.Length) - 1);
+            double speed = call++ % 2 == 0 ? zoneRates[sample] : refRates[sample];
+            return speed;
+        };
+    }
+
     [Fact]
     public void TwoConsecutiveGoodSamplesRecover()
     {
@@ -51,7 +64,7 @@ public sealed class DriveRecoveryTests
         Pass(2);
 
         Assert.False(_r.IsRecovering(Drive));
-        Assert.Contains(_log.Lines, l => l.Contains("drive E: recovered after 4 min", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("recovered after 4 min (two consecutive passes)", StringComparison.Ordinal));
     }
 
     [Theory]
@@ -70,6 +83,182 @@ public sealed class DriveRecoveryTests
     }
 
     [Fact]
+    public void SixBalancedSamplesRecoverWhenEachSourceHasFourPassesWithoutTwoJointConsecutivePasses()
+    {
+        UseSampleRates([100, 100, 80, 100, 100, 80], [60, 80, 80, 60, 80, 80]);
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        for (int i = 0; i < DriveRecovery.StatisticalWindowSamples; i++)
+        {
+            Pass(2);
+        }
+
+        Assert.False(_r.IsRecovering(Drive));
+        Assert.Contains(_log.Lines, line => line.Contains("statistical recovery: at least 4 of 6 samples", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, line => line.Contains("third sorted value met the 90% baseline threshold for every source", StringComparison.Ordinal)
+            && line.Contains("window 6/6", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, line => line.Contains("recovered after 12 min", StringComparison.Ordinal));
+        Assert.Equal(DriveRecovery.StatisticalWindowSamples,
+            _log.Lines.Count(line => line.Contains("recovery sample cell", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void ThreeOfSixSamplesDoNotMeetTheStatisticalBoundary()
+    {
+        UseSampleRates([100, 100, 100, 80, 80, 80], [60, 60, 60, 80, 80, 80]);
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        for (int i = 0; i < DriveRecovery.StatisticalWindowSamples; i++)
+        {
+            Pass(2);
+        }
+
+        Assert.True(_r.IsRecovering(Drive));
+        Assert.DoesNotContain(_log.Lines, line => line.Contains("statistical recovery:", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, line => line.Contains("window 6/6", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void StatisticalRecoveryRequiresFourPassesFromBothSources(bool zoneFallsShort)
+    {
+        if (zoneFallsShort)
+        {
+            UseSampleRates([100, 100, 80, 100, 80, 80], [60, 80, 80, 60, 80, 80]); // 존 3/6, 참조 4/6
+        }
+        else
+        {
+            UseSampleRates([100, 100, 80, 100, 100, 80], [80, 60, 80, 60, 60, 80]); // 존 4/6, 참조 3/6
+        }
+
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        for (int i = 0; i < DriveRecovery.StatisticalWindowSamples; i++)
+        {
+            Pass(2);
+        }
+
+        Assert.True(_r.IsRecovering(Drive));
+        Assert.DoesNotContain(_log.Lines, line => line.Contains("statistical recovery:", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void StatisticalRecoveryRejectsRepeatedPhysicalLocations()
+    {
+        UseSampleRates([100, 100, 80, 100, 100, 80], [60, 80, 80, 60, 80, 80]);
+        int rotation = 0;
+        _w.ProbeStepLcn = _ => new long[] { 60, 30, 20 }[rotation++ % 3]; // 회전 번호가 달라도 매번 같은 LCN 을 읽음
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        for (int i = 0; i < DriveRecovery.StatisticalWindowSamples; i++)
+        {
+            Pass(2);
+        }
+
+        Assert.True(_r.IsRecovering(Drive));
+        Assert.Equal(70L, Assert.Single(_probed.Where((_, index) => index % 2 == 0).Distinct()));
+        Assert.Equal(80L, Assert.Single(_probed.Where((_, index) => index % 2 == 1).Distinct()));
+    }
+
+    [Fact]
+    public void ConsecutiveBadSamplesUseTwoMinutesForTheFirstTwoLapsThenFourEightEight()
+    {
+        (_zone, _ref) = (10, 10);
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        DateTimeOffset started = _w.Now;
+
+        for (int i = 0; i < DriveRecovery.StatisticalWindowSamples; i++)
+        {
+            Pass(2);
+        }
+
+        Pass(3); // 15 분: 다음 표본은 16 분까지 미룸
+        Pass(1); // 16 분
+        Pass(7); // 23 분: 다음 표본은 24 분까지 미룸
+        Pass(1); // 24 분
+        Pass(7); // 31 분: 다음 표본은 32 분까지 미룸
+        Pass(1); // 32 분
+
+        double[] minutes = [.. _probeTimes.Distinct().Select(time => (time - started).TotalMinutes)];
+        Assert.True(new double[] { 2, 4, 6, 8, 10, 12, 16, 24, 32 }.SequenceEqual(minutes),
+            string.Join(Environment.NewLine, _log.Lines.Where(line => line.Contains("recovery sample cell", StringComparison.Ordinal))));
+    }
+
+    [Fact]
+    public void ValidPassAfterBackoffReturnsToTwoMinutes()
+    {
+        (_zone, _ref) = (10, 10);
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        DateTimeOffset started = _w.Now;
+        for (int i = 0; i < DriveRecovery.StatisticalWindowSamples; i++)
+        {
+            Pass(2);
+        }
+
+        (_zone, _ref) = (100, 80);
+        Pass(4); // 16 분: 미달 뒤 4 분 간격
+        Assert.True(_r.IsRecovering(Drive));
+        Pass(2); // 18 분: 통과 뒤 2 분 간격
+
+        Assert.False(_r.IsRecovering(Drive));
+        Assert.Equal(new[] { started + TimeSpan.FromMinutes(16), started + TimeSpan.FromMinutes(18) }, _probeTimes.Distinct().Skip(6));
+    }
+
+    [Fact]
+    public void UnknownSampleClearsStatisticalEvidenceAndRequiresSixFreshSamples()
+    {
+        UseSampleRates([100, 80, 100, 100, 80, 100, 100, 100, 80], [60, 80, 60, 80, 80, 80, 60, 80, 60]);
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        Pass(2);
+        Pass(2);
+        Pass(2);
+
+        _w.Disk = 4.0 * (1 << 20);
+        Pass(2); // 표본 전 바쁨은 창을 비우고 가상 값을 넣지 않음
+        _w.Disk = 0;
+        Pass(2); // 10 분: 미측정
+        for (int i = 0; i < 3; i++)
+        {
+            Pass(2);
+        }
+
+        Assert.True(_r.IsRecovering(Drive)); // 앞선 세 표본이 창에 남아 있으면 이 시점에 잘못 통과함
+        for (int i = 0; i < 2; i++)
+        {
+            Pass(2);
+        }
+
+        Assert.True(_r.IsRecovering(Drive));
+        Pass(2);
+
+        Assert.False(_r.IsRecovering(Drive));
+        Assert.Contains(_log.Lines, line => line.Contains("recovered after 22 min (statistical recovery:", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void GameInterruptingAReadClearsStatisticalEvidence()
+    {
+        (_zone, _ref) = (10, 10);
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        Pass(2);
+        Pass(2);
+        Pass(2);
+        _w.ProbeMbps = (_, lcn, _) =>
+        {
+            _probed.Add(lcn);
+            _probeTimes.Add(_w.Now);
+            _r.YieldTo(Drive);
+            return 10;
+        };
+
+        Pass(2);
+
+        Assert.True(_r.IsRecovering(Drive));
+        Assert.Contains(_log.Lines, line => line.Contains("verdict Unknown (game interrupted the read)", StringComparison.Ordinal)
+            && line.Contains("window 0/6", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void ABadSampleBetweenGoodOnesRestartsTheStreak()
     {
         _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
@@ -85,7 +274,7 @@ public sealed class DriveRecoveryTests
     }
 
     [Fact]
-    public void FirstNotRecoveredSampleLogsOnceWithValuesAndBaselines()
+    public void EachBadSampleLogsOneLineWithValuesAndBaselines()
     {
         _zone = 61;
         _ref = 70;
@@ -94,7 +283,12 @@ public sealed class DriveRecoveryTests
         Pass(2);
         Pass(2);
 
-        Assert.Single(_log.Lines, l => l.Contains("drive E: recovering after relocation (zone 61 MB/s / 100 baseline, ref 70/80)", StringComparison.Ordinal));
+        string[] samples = [.. _log.Lines.Where(line => line.Contains("recovery sample cell", StringComparison.Ordinal))];
+        Assert.Equal(2, samples.Length);
+        Assert.Contains("cell 1 zone 61/100 MB/s, ref 70/80 MB/s, verdict Bad", samples[0], StringComparison.Ordinal);
+        Assert.Contains("window 1/6", samples[0], StringComparison.Ordinal);
+        Assert.Contains("cell 2 zone 61/100 MB/s, ref 70/80 MB/s, verdict Bad", samples[1], StringComparison.Ordinal);
+        Assert.Contains("window 2/6", samples[1], StringComparison.Ordinal);
     }
 
     [Fact]
@@ -134,22 +328,25 @@ public sealed class DriveRecoveryTests
     }
 
     [Fact]
-    public void SamplesRotateBy64MibAndNeverReadTheBaselinePlaceAgain()
+    public void SamplesRotateBy64MibAcrossTheThreeRecoveryCells()
     {
         _w.ProbeStepLcn = _ => 64; // 가짜 클러스터 1 MiB: 64 MiB = 64 LCN
         _zone = 50; // 회복 못 함: 계속 잼
         _r.Begin(Drive, Both, TimeSpan.FromMinutes(120));
 
-        for (int i = 0; i < 8; i++)
+        for (int i = 0; i < DriveRecovery.StatisticalWindowSamples; i++)
         {
             Pass(2);
         }
+
+        Pass(4);
+        Pass(8);
 
         long[] zoneLcns = [.. _probed.Where(l => l is >= 10 and < 10 + 512 && (l - 10) % 64 == 0)];
         Assert.Equal(8, zoneLcns.Length);
         Assert.Equal(3, zoneLcns.Distinct().Count());
         Assert.Equal(3, zoneLcns.Take(3).Distinct().Count()); // 3 번 안에는 같은 시작점이 없음
-        Assert.DoesNotContain(10L, zoneLcns); // 기준을 쟀던 0 번 칸 (존 시작) 은 다시 읽지 않음
+        Assert.DoesNotContain(10L, zoneLcns); // 영역 시작 LCN 에서 떨어진 1~3 번 칸만 읽음
         Assert.All(zoneLcns, l => Assert.Equal(0, (l - 10) % 64));
         Assert.Equal(2 * 64, zoneLcns.Max() - zoneLcns.Min()); // 시작점이 64 MiB 씩 1..3 칸 (표본 안의 3 곳이 12 칸 안)
     }
@@ -587,6 +784,36 @@ public sealed class DriveRecoveryTests
     }
 
     [Fact]
+    public void RestartDropsTheStatisticalWindowAndCollectsSixFreshSamples()
+    {
+        UseSampleRates([100, 100, 80, 100, 100, 80, 100, 100, 80, 100, 100, 80],
+            [60, 80, 80, 60, 80, 80, 60, 80, 80, 60, 80, 80]);
+        using var dir = new TempDir();
+        (DriveRecovery first, _) = Open(StatusPath(dir));
+        first.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        for (int i = 0; i < 5; i++)
+        {
+            _w.Now += TimeSpan.FromMinutes(2);
+            first.Poll();
+        }
+
+        (DriveRecovery restored, _) = Open(StatusPath(dir));
+        restored.Poll(); // 저장된 회전·통계 창은 복원하지 않고 칸 1에서 새 표본
+        Assert.True(restored.IsRecovering(Drive));
+        for (int i = 0; i < DriveRecovery.StatisticalWindowSamples - 2; i++)
+        {
+            _w.Now += TimeSpan.FromMinutes(2);
+            restored.Poll();
+        }
+
+        Assert.True(restored.IsRecovering(Drive)); // 재시작 뒤 다섯 개만 새로 모음
+        _w.Now += TimeSpan.FromMinutes(2);
+        restored.Poll();
+
+        Assert.False(restored.IsRecovering(Drive)); // 여섯 번째 새 표본에서 통과
+    }
+
+    [Fact]
     public void ExpiredTrackIsDroppedOnRestartAndTheFileKeyDisappears()
     {
         using var dir = new TempDir();
@@ -960,6 +1187,23 @@ public sealed class DriveRecoveryTests
     }
 
     [Fact]
+    public void CacheSuspectWithinTenMinutesClearsStatisticalEvidence()
+    {
+        _zone = 80; // 유효한 미달 표본을 모아 연속 통과 조기 종료를 피함
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        Pass(2);
+        Pass(2);
+        Pass(2);
+        Assert.Contains(_log.Lines, line => line.Contains("window 3/6", StringComparison.Ordinal));
+
+        _zone = 120; // 10 분 안에 기준의 1.1 배를 넘는 캐시 의심 속도
+        Pass(2);
+
+        Assert.Contains(_log.Lines, line => line.Contains("cache suspected within the first ten minutes", StringComparison.Ordinal)
+            && line.Contains("window 0/6", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void FastPrewarmDoesNotLetADiskCacheHitCountAsRecovered()
     {
         _r.NoteWarmMbps(Drive, 1000);
@@ -1098,21 +1342,21 @@ public sealed class DriveRecoveryTests
     }
 
     [Fact]
-    public void DiskActivityBetweenZoneAndReferenceSamplesAbortsTheRound()
+    public void ActivityFromTheZoneReadDoesNotSkipTheReferenceInTheSameCell()
     {
         _w.ProbeMbps = (_, lcn, _) =>
         {
             _probed.Add(lcn);
-            _w.Disk = 10L << 20; // 존을 재는 사이에 다른 읽기가 시작됨
+            _w.Disk = 10L << 20; // 존 읽기 자체가 바쁨 카운터에 반영됨
             return _zone;
         };
         _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
 
         Pass(2);
 
-        Assert.Equal([74L], _probed); // 참조 표본은 재지 않음
+        Assert.Equal([74L, 84L], _probed); // 같은 칸의 존·참조를 모두 읽음
         Assert.True(_r.IsRecovering(Drive));
-        Assert.Contains(_log.Lines, l => l.Contains("aborted (disk busy between samples)", StringComparison.Ordinal));
+        Assert.Single(_log.Lines, line => line.Contains("recovery sample cell", StringComparison.Ordinal));
     }
 
     [Theory]
@@ -1185,7 +1429,7 @@ public sealed class DriveRecoveryTests
 
         Assert.Equal([74L], _probed);
         Assert.True(_r.IsRecovering(Drive));
-        Assert.Contains(_log.Lines, l => l.Contains("aborted (game running)", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("verdict Unknown (game interrupted the read)", StringComparison.Ordinal));
     }
 
     private static VolumeBitmap Bits(params (bool Used, int Length)[] runs)
@@ -1317,11 +1561,11 @@ public sealed class DriveRecoveryTests
     }
 
     [Fact]
-    public void RecoverySampleRotationNeverReturnsToTheBaselineWindow()
+    public void RecoverySampleRotationUsesTheSameThreeCellsAsTheBaseline()
     {
         int[] seq = [.. Enumerable.Range(1, 9).Select(DiskProbe.RotationIndex)];
 
         Assert.Equal([1, 2, 3, 1, 2, 3, 1, 2, 3], seq);
-        Assert.All(seq, i => Assert.InRange(i, 1, DiskProbe.RotationSteps - 1)); // 0 번 칸 = 기준이 읽은 곳
+        Assert.All(seq, i => Assert.InRange(i, 1, DiskProbe.RotationSteps - 1)); // 기준과 회복 표본 모두 1~3 번 칸
     }
 }

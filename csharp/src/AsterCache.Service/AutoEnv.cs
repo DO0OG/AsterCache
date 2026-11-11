@@ -259,6 +259,9 @@ public sealed class AutoEnv
     /// 'X:' 디스크 처리량 (바이트/초), 읽지 못하면 null.
     public required Func<string, double?> DiskBytesPerSecond { get; init; }
 
+    /// 취소되면 false를 돌려주는 제한 대기.
+    public Func<TimeSpan, CancellationToken, bool> Wait { get; init; } = static (duration, token) => !token.WaitHandle.WaitOne(duration);
+
     /// ('X:', LCN, 회차 세션) → 그 자리의 비버퍼드 순차 읽기 속도 (MB/s, 서로 떨어진 3 구간의 중앙값), 못 재면 null. 읽기량·시간·취소는 세션이 정함 (회차 192 MiB·10 s, 존 + 참조면 구간당 32 MiB). 서비스 전용, 시험은 가짜 (기본: 못 잼).
     public Func<string, long, ProbeRound, double?> ProbeMbps { get; init; } = (_, _, _) => null;
 

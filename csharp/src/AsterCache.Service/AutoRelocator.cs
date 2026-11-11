@@ -57,6 +57,10 @@ public sealed class AutoRelocator
 
     private const string ColdWhy = "cold start";
 
+    /// PDH 2초 갱신 주기와 1초 표본 구간의 위상을 지나 자기 읽기가 빠진 표본을 받습니다.
+    private static readonly TimeSpan BaselineBusyObservation = TimeSpan.FromMilliseconds(3_100);
+    private static readonly TimeSpan BaselineBusyPoll = TimeSpan.FromMilliseconds(100);
+
     /// boot 트레이스 (가져온 프로필) 로 만든 계획의 stats.source, 그 계획으로 재배치를 마친 게임의 detail 표시.
     public const string PlanSourceBoot = "boot";
     public const string RelocatedProfile = "relocated (profile)";
@@ -3070,54 +3074,145 @@ public sealed class AutoRelocator
         }
     }
 
-    // 쓰기 직전 기준 속도: 대상 존 (이미 할당돼 있을 때만: 빈 영역은 SMR 이 0 을 즉시 돌려 과대) 과 존에서 4 GiB 뒤의 할당된 기준 구간.
-    // 존·참조는 한 회차 (192 MiB·10 s, token 취소) 를 나눠 쓰고 그 사이에 디스크 활동을 다시 봅니다. 못 재면 Baseline null (고정 분으로 떨어짐), 게임 시작·바쁨으로 끊기면 Interrupted (이번 틱에는 재배치하지 않음).
+    // 쓰기 직전 기준 속도: 대상 존 (이미 할당돼 있을 때만: 빈 영역은 SMR 이 0 을 즉시 돌려 과대) 과 존에서 4 GiB 뒤의 할당된 기준 구간을 같은 1~3 회전 칸에서 재 중앙값으로 집계합니다.
+    // 각 칸은 존·참조가 ProbeRound 하나 (192 MiB·10 s, token 취소) 를 나눠 씁니다. 못 재거나 회전 간격이 없으면 Baseline null (고정 분), 게임 시작·바쁨이면 Interrupted (이번 틱에 재배치하지 않음) 입니다.
     private (DriveBaseline? Baseline, bool Interrupted) MeasureBaseline(GameSettings g, PlanFile plan, CancellationToken token)
     {
         try
         {
             using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(g.OriginRoot, "auto relocation baseline", token);
             bool CanIssue() => !token.IsCancellationRequested && (_coordinator is null || lease is { IsValid: true });
-            if (!CanIssue())
+            string drive = DriveOf(g);
+            bool GameRunning()
+            {
+                try
+                {
+                    return _env.GameRunningOnDisk?.Invoke(drive) ?? true;
+                }
+                catch (Exception)
+                {
+                    return true;
+                }
+            }
+
+            bool CanMeasure() => CanIssue() && !GameRunning() && !DriveRecovery.Busy(_env, drive);
+            if (!CanMeasure())
             {
                 return (null, true);
             }
 
             CancellationToken probeToken = lease?.Token ?? token;
-            string drive = DriveOf(g);
-            if (plan.Zone.StartLcn is not { } zone || _env.LocateProbeSpots(drive, zone, probeToken) is not { } spots || (!spots.ZoneAllocated && spots.ReferenceLcn is null))
+
+            bool WaitForQuietObservation()
             {
-                return (null, !CanIssue()); // 찾는 중 게임이 떠 취소됐으면 기준 없이 강행하지 않음
+                TimeSpan remaining = BaselineBusyObservation;
+                while (remaining > TimeSpan.Zero)
+                {
+                    if (!CanIssue() || GameRunning())
+                    {
+                        return false;
+                    }
+
+                    TimeSpan slice = remaining < BaselineBusyPoll ? remaining : BaselineBusyPoll;
+                    if (!_env.Wait(slice, probeToken))
+                    {
+                        return false;
+                    }
+
+                    remaining -= slice;
+                }
+
+                return CanMeasure();
             }
 
-            var round = new ProbeRound(probeToken, (spots.ZoneAllocated ? 1 : 0) + (spots.ReferenceLcn is null ? 0 : 1));
-            if (!CanIssue() || DriveRecovery.Busy(_env, drive))
+            long stepLcn = _env.ProbeStepLcn(drive);
+            if (stepLcn <= 0)
+            {
+                return (null, false); // 회전 위치를 보장할 수 없으면 비교 가능한 기준을 만들지 않음
+            }
+
+            if (!CanMeasure())
             {
                 return (null, true);
             }
 
-            if (spots.ZoneAllocated && !CanIssue())
+            if (plan.Zone.StartLcn is not { } zone)
+            {
+                return (null, false);
+            }
+
+            var located = _env.LocateProbeSpots(drive, zone, probeToken);
+            if (!CanMeasure())
             {
                 return (null, true);
             }
 
-            ProbeSpot? zoneSpot = spots.ZoneAllocated ? Spot(drive, zone, round) : null;
-            if (!CanIssue() || (spots.ZoneAllocated && spots.ReferenceLcn is not null && zoneSpot is not null && DriveRecovery.Busy(_env, drive)))
+            if (located is not { } spots || (!spots.ZoneAllocated && spots.ReferenceLcn is null))
+            {
+                return (null, false);
+            }
+
+            int parts = (spots.ZoneAllocated ? 1 : 0) + (spots.ReferenceLcn is null ? 0 : 1);
+            List<double> zoneSpeeds = [];
+            List<double> refSpeeds = [];
+            bool zoneMeasured = spots.ZoneAllocated;
+            bool refMeasured = spots.ReferenceLcn is not null;
+            for (int rotationIndex = 1; rotationIndex < DiskProbe.RotationSteps; rotationIndex++)
+            {
+                var round = new ProbeRound(probeToken, parts);
+                if (zoneMeasured)
+                {
+                    if (!CanIssue() || GameRunning())
+                    {
+                        return (null, true);
+                    }
+
+                    ProbeSpot? zoneSample = Spot(drive, checked(zone + stepLcn * rotationIndex), round);
+                    if (zoneSample is { } z)
+                    {
+                        zoneSpeeds.Add(z.Mbps);
+                    }
+                    else
+                    {
+                        zoneMeasured = false;
+                    }
+                }
+
+                if (refMeasured && spots.ReferenceLcn is { } reference)
+                {
+                    if (!CanIssue() || GameRunning())
+                    {
+                        return (null, true);
+                    }
+
+                    ProbeSpot? refSample = Spot(drive, checked(reference + stepLcn * rotationIndex), round);
+                    if (refSample is { } r)
+                    {
+                        refSpeeds.Add(r.Mbps);
+                    }
+                    else
+                    {
+                        refMeasured = false;
+                    }
+                }
+
+                if (rotationIndex < DiskProbe.RotationSteps - 1 && (zoneMeasured || refMeasured) && !WaitForQuietObservation())
+                {
+                    return (null, true);
+                }
+            }
+
+            if (!CanIssue() || GameRunning())
             {
                 return (null, true);
             }
 
-            if (spots.ReferenceLcn is not null && !CanIssue())
-            {
-                return (null, true);
-            }
-
-            ProbeSpot? refSpot = spots.ReferenceLcn is { } r ? Spot(drive, r, round) : null;
-            if (!CanIssue())
-            {
-                return (null, true);
-            }
-
+            ProbeSpot? zoneSpot = zoneMeasured && zoneSpeeds.Count == DiskProbe.RotationSteps - 1
+                ? new ProbeSpot(zone, MedianBaseline(zoneSpeeds))
+                : null;
+            ProbeSpot? refSpot = refMeasured && refSpeeds.Count == DiskProbe.RotationSteps - 1
+                ? new ProbeSpot(spots.ReferenceLcn!.Value, MedianBaseline(refSpeeds))
+                : null;
             return (zoneSpot is null && refSpot is null ? null : new DriveBaseline(zoneSpot, refSpot), false);
         }
         catch (Exception e) when (e is not OperationCanceledException)
@@ -3126,6 +3221,8 @@ public sealed class AutoRelocator
             return (null, false);
         }
     }
+
+    private static double MedianBaseline(IEnumerable<double> values) => values.Order().ElementAt((DiskProbe.RotationSteps - 1) / 2);
 
     private ProbeSpot? Spot(string drive, long lcn, ProbeRound round) => _env.ProbeMbps(drive, lcn, round) is > 0 and double mbps ? new ProbeSpot(lcn, mbps) : null;
 

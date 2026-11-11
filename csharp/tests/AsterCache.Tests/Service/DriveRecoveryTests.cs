@@ -15,6 +15,7 @@ public sealed class DriveRecoveryTests
     private readonly ListLog _log = new();
     private readonly DriveRecovery _r;
     private readonly List<long> _probed = [];
+    private readonly List<DateTimeOffset> _probeTimes = [];
     private double? _zone = 100;
     private double? _ref = 80;
     private readonly List<string> _gameRoots = [];
@@ -24,8 +25,10 @@ public sealed class DriveRecoveryTests
         _w.ProbeMbps = (_, lcn, _) =>
         {
             _probed.Add(lcn);
-            return lcn == 10 ? _zone : _ref;
+            _probeTimes.Add(_w.Now);
+            return lcn % 64 == 10 ? _zone : _ref;
         };
+        _w.ProbeStepLcn = _ => 64;
         AutoEnv env = _w.Env();
         env.GameRunningOnDisk = drive => _gameRoots.Any(root => _w.SameDisk(drive, root));
         _r = new DriveRecovery(env, _log);
@@ -152,22 +155,263 @@ public sealed class DriveRecoveryTests
     }
 
     [Fact]
-    public void SamplesAboveTheSequentialCeilingAreCacheHitsAndDoNotCount()
+    public void OneBaselineAboveTheSequentialCeilingDoesNotCountTowardRecovery()
     {
         _zone = 400; // 고정 순차 상한 250 을 넘음
         _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
 
         Pass(2);
-        Pass(2);
-        Pass(2);
-        Assert.True(_r.IsRecovering(Drive)); // 400 은 90% 이상이지만 캐시 적중이라 회복으로 세지 않음
-        Assert.Single(_log.Lines, l => l.Contains("sequential ceiling (disk cache hit)", StringComparison.Ordinal));
+        Pass(4);
+        Pass(8);
+        Assert.True(_r.IsRecovering(Drive)); // 존 기준만 상한 초과이고 참조 기준은 정상 범위
 
         _zone = 100;
-        Pass(2);
-        Assert.True(_r.IsRecovering(Drive)); // 제외된 회차는 연속에 안 들어감: 좋음 1 회
+        Pass(8);
+        Assert.True(_r.IsRecovering(Drive)); // 유효 표본 1 회
         Pass(2);
         Assert.False(_r.IsRecovering(Drive));
+        Assert.Contains(_log.Lines, l => l.Contains("3 cache-suspect samples", StringComparison.Ordinal)
+            && l.Contains("400-400 MB/s", StringComparison.Ordinal)
+            && l.Contains("zone LCNs 74, 138, 202", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ThreeRotatingSamplesAboveTheCeilingConfirmRecoveryWithoutChangingTheBaseline()
+    {
+        _w.ProbeStepLcn = _ => 64;
+        (_zone, _ref) = (300, 300);
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        DateTimeOffset started = _w.Now;
+
+        Assert.Equal(125, _r.CeilingFor(Drive));
+        Pass(2); // 회전 위치 1: 한 번의 초과만으로는 인정하지 않음
+        Assert.True(_r.IsRecovering(Drive));
+        Pass(4); // 회전 위치 2
+        Assert.True(_r.IsRecovering(Drive));
+        Pass(8); // 회전 위치 3: 세 위치가 모두 초과
+
+        Assert.False(_r.IsRecovering(Drive));
+        Assert.Equal(125, _r.CeilingFor(Drive)); // 기준 속도는 덮어쓰지 않음
+        Assert.Contains(_log.Lines, l => l.Contains("recovered after 14 min", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("3 cache-suspect samples", StringComparison.Ordinal)
+            && l.Contains("300-300 MB/s", StringComparison.Ordinal)
+            && l.Contains("zone LCNs 74, 138, 202", StringComparison.Ordinal)
+            && l.Contains("ref LCNs 84, 148, 212", StringComparison.Ordinal));
+        Assert.Equal(new[] { started + TimeSpan.FromMinutes(2), started + TimeSpan.FromMinutes(6), started + TimeSpan.FromMinutes(14) }, _probeTimes.Distinct());
+    }
+
+    [Fact]
+    public void CeilingRecoveryUsesTheLocationsActuallyRead()
+    {
+        int stepCalls = 0;
+        _w.ProbeStepLcn = _ => ++stepCalls % 2 == 1 ? 64 : 128;
+        (_zone, _ref) = (300, 300);
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        Pass(2);
+        Pass(4);
+        Pass(2);
+
+        Assert.False(_r.IsRecovering(Drive));
+        Assert.Equal(3, stepCalls); // 한 표본에서 간격을 다시 조회하지 않음
+        Assert.Equal(new long[] { 74, 84, 266, 276, 202, 212 }, _probed);
+        Assert.Contains(_log.Lines, l => l.Contains("3 cache-suspect samples", StringComparison.Ordinal)
+            && l.Contains("zone LCNs 74, 202, 266", StringComparison.Ordinal)
+            && l.Contains("ref LCNs 84, 212, 276", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ThreeHighReferenceSamplesConfirmRecoveryAtSixMinutes()
+    {
+        var baseline = new DriveBaseline(null, new ProbeSpot(20, 70));
+        _ref = 128;
+        _r.Begin(Drive, baseline, TimeSpan.FromMinutes(60));
+        DateTimeOffset started = _w.Now;
+
+        Pass(2);
+        Pass(2);
+        Pass(2);
+
+        Assert.False(_r.IsRecovering(Drive));
+        Assert.Contains(_log.Lines, l => l.Contains("recovery discarded 3 cache-suspect samples", StringComparison.Ordinal)
+            && l.Contains("128-128 MB/s", StringComparison.Ordinal)
+            && l.Contains("ref LCNs 84, 148, 212", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("recovered after 6 min", StringComparison.Ordinal));
+        Assert.Equal(new[] { started + TimeSpan.FromMinutes(2), started + TimeSpan.FromMinutes(4), started + TimeSpan.FromMinutes(6) }, _probeTimes.Distinct());
+    }
+
+    [Theory]
+    [InlineData(false)] // 회전 간격 0: 같은 위치를 읽음
+    [InlineData(true)] // 회전 간격 조회 실패
+    public void AnUnknownRotationIntervalCannotConfirmRecovery(bool lookupFails)
+    {
+        _w.ProbeStepLcn = _ => lookupFails ? throw new InvalidOperationException("rotation interval unavailable") : 0;
+        (_zone, _ref) = (300, 300);
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        Pass(2);
+        Pass(4);
+        Pass(8);
+
+        Assert.True(_r.IsRecovering(Drive));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("recovered after", StringComparison.Ordinal));
+        if (lookupFails)
+        {
+            Assert.Empty(_probed);
+        }
+        else
+        {
+            Assert.Equal(new long[] { 10, 20, 10, 20, 10, 20 }, _probed);
+        }
+    }
+
+    [Fact]
+    public void AGameInterruptingACeilingSampleClearsTheLocationLapAndRestartsAtTheFirstLocation()
+    {
+        _w.ProbeStepLcn = _ => 64;
+        (_zone, _ref) = (300, 300);
+        bool interruptThirdLocation = false;
+        _w.ProbeMbps = (_, lcn, _) =>
+        {
+            _probed.Add(lcn);
+            _probeTimes.Add(_w.Now);
+            if (interruptThirdLocation && lcn == 202)
+            {
+                interruptThirdLocation = false;
+                _gameRoots.Add(@"E:\Games\X");
+                _r.YieldTo(@"E:\Games\X");
+            }
+
+            return lcn % 64 == 10 ? _zone : _ref;
+        };
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        Pass(2); // 위치 1
+        Pass(4); // 위치 2
+        interruptThirdLocation = true;
+        Pass(2); // 위치 3 에서 게임 시작
+
+        Assert.True(_r.IsRecovering(Drive));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("recovered after", StringComparison.Ordinal));
+
+        _gameRoots.Clear();
+        _r.Poll(); // 취소는 Unknown 간격으로 대기하고, 부분 회전 위치를 버림
+        Assert.True(_r.IsRecovering(Drive));
+        Assert.Equal(5, _probed.Count);
+        Pass(4); // 위치 1부터 새로 확인
+        Assert.Equal(new long[] { 74, 84 }, _probed.Skip(5));
+
+        Pass(2); // 새 위치 2
+        Assert.True(_r.IsRecovering(Drive));
+        Pass(2); // 새 위치 3: 한 바퀴를 새로 확인
+        Assert.False(_r.IsRecovering(Drive));
+    }
+
+    [Fact]
+    public void DeferringBeforeAReadPreservesTheCeilingLocationLap()
+    {
+        _w.ProbeStepLcn = _ => 64;
+        (_zone, _ref) = (300, 300);
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        Pass(2); // 위치 1
+        Pass(4); // 위치 2
+        _gameRoots.Add(@"E:\Games\X");
+        Pass(2); // 위치 3 측정을 시작하기 전에 미룸
+        Assert.Equal(4, _probed.Count);
+        Assert.True(_r.IsRecovering(Drive));
+
+        _gameRoots.Clear();
+        _r.Poll(); // 읽기 전 지연은 회전 순서와 집계를 유지
+        Assert.False(_r.IsRecovering(Drive));
+        Assert.Equal(new long[] { 202, 212 }, _probed.Skip(4));
+    }
+
+    [Fact]
+    public void OneAboveCeilingLocationFollowedBySlowSamplesDoesNotConfirmRecovery()
+    {
+        (_zone, _ref) = (300, 300);
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        Pass(2); // 위치 1 만 상한 초과
+        (_zone, _ref) = (10, 8);
+        Pass(4); // 위치 2 는 느림
+        Pass(2); // 위치 3 도 느림
+
+        Assert.True(_r.IsRecovering(Drive));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("recovered after", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void SlowSampleResetsTheConsecutiveAboveCeilingLocations()
+    {
+        _w.ProbeStepLcn = _ => 64;
+        (_zone, _ref) = (300, 300);
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+
+        Pass(2); // 위치 1 상한 초과
+        Pass(4); // 위치 2 상한 초과
+        (_zone, _ref) = (10, 8);
+        Pass(8); // 위치 3 느림: 초과 위치 집계 초기화
+        (_zone, _ref) = (300, 300);
+        Pass(2); // 위치 1
+        Pass(4); // 위치 2: 새 연속 집계는 아직 두 위치
+
+        Assert.True(_r.IsRecovering(Drive));
+        Pass(8); // 위치 3: 이제 세 위치 연속 초과
+        Assert.False(_r.IsRecovering(Drive));
+    }
+
+    [Fact]
+    public void UnknownSamplesBackOffToEightMinutesAndValidSamplesRestoreTwoMinuteCadence()
+    {
+        _ref = null;
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
+        DateTimeOffset started = _w.Now;
+
+        Pass(2); // 첫 Unknown: 다음 4 분
+        Pass(2);
+        Pass(2); // 두 번째 Unknown: 다음 8 분
+        Pass(7);
+        Pass(1); // 세 번째 Unknown: 최대 8 분 유지
+        _ref = 80;
+        Pass(7);
+        Pass(1); // 유효 표본이므로 다음 간격 2 분
+        Pass(1);
+        Pass(1); // 두 번째 유효 표본
+
+        Assert.False(_r.IsRecovering(Drive));
+        Assert.Equal(new[]
+        {
+            started + TimeSpan.FromMinutes(2),
+            started + TimeSpan.FromMinutes(6),
+            started + TimeSpan.FromMinutes(14),
+            started + TimeSpan.FromMinutes(22),
+            started + TimeSpan.FromMinutes(24),
+        }, _probeTimes.Distinct());
+    }
+
+    [Fact]
+    public void DiscardedSampleSummaryIsLoggedAtTheRegularAndHardLimits()
+    {
+        _zone = 400;
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(4));
+        Pass(2);
+        Pass(2);
+
+        Assert.False(_r.IsRecovering(Drive));
+        Assert.Contains(_log.Lines, l => l.Contains("recovery wait ended at the 4 min limit", StringComparison.Ordinal));
+        Assert.Single(_log.Lines, l => l.Contains("1 cache-suspect samples", StringComparison.Ordinal));
+
+        _r.Begin(Drive, Both, TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(10));
+        Pass(2); // 일반 상한: 첫 표본을 포함해 요약
+        Pass(4); // 상한 뒤 새 표본
+        Pass(4); // 절대 상한
+
+        Assert.False(_r.IsRelocationHeld(Drive));
+        Assert.Equal(3, _log.Lines.Count(l => l.Contains("1 cache-suspect samples", StringComparison.Ordinal)));
+        Assert.Contains(_log.Lines, l => l.Contains("recovery not confirmed at the 2 min limit", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("recovery not confirmed after the 10 min hard limit", StringComparison.Ordinal));
     }
 
     [Theory]
@@ -207,7 +451,7 @@ public sealed class DriveRecoveryTests
         Pass(2);
 
         Assert.False(_r.IsRecovering(Drive));
-        Assert.All(_probed, lcn => Assert.Equal(20, lcn));
+        Assert.All(_probed, lcn => Assert.Equal(20, lcn % 64));
     }
 
     [Theory]
@@ -271,7 +515,7 @@ public sealed class DriveRecoveryTests
         Pass(2);
         Pass(2);
 
-        Assert.Contains(10L, _probed);
+        Assert.Contains(74L, _probed);
         Assert.False(_r.IsRecovering(@"E:\"));
     }
 
@@ -631,23 +875,24 @@ public sealed class DriveRecoveryTests
     [InlineData(false)] // 참조 기준만
     public void ASingleBaselineBoundsTheCeilingSymmetricallyAndACacheHitIsUnknown(bool zoneOnly)
     {
+        _w.ProbeStepLcn = _ => 64;
         var baseline = zoneOnly ? new DriveBaseline(new ProbeSpot(10, 50), null) : new DriveBaseline(null, new ProbeSpot(20, 50));
         (_zone, _ref) = (180, 180); // 기준 50 인데 캐시 적중 180
         _r.Begin(Drive, baseline, TimeSpan.FromMinutes(60));
         Assert.Equal(62.5, _r.CeilingFor(Drive), 3);
 
         Pass(12); // SuspectWindow (10 분) 밖
-        Pass(2);
-        Pass(2);
+        Pass(2); // 새 위치가 더해지는 동안은 간격을 늘리지 않음
 
-        Assert.True(_r.IsRecovering(Drive)); // 상한 250 이었다면 PASS 2 회로 회복됐을 값
-        Assert.Contains(_log.Lines, l => l.Contains("62 MB/s sequential ceiling (disk cache hit)", StringComparison.Ordinal));
+        Assert.True(_r.IsRecovering(Drive)); // 상한 250 이었다면 PASS 2 회로 회복됐을 값. 서로 다른 위치 2 곳으로는 한 바퀴가 아님
 
         (_zone, _ref) = (50, 50);
-        Pass(2);
+        Pass(2); // 새 위치의 정상 표본은 초과 연속 집계를 끊음
         Pass(2);
 
         Assert.False(_r.IsRecovering(Drive));
+        Assert.Contains(_log.Lines, l => l.Contains("2 cache-suspect samples", StringComparison.Ordinal)
+            && l.Contains("180-180 MB/s", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -697,20 +942,21 @@ public sealed class DriveRecoveryTests
         _r.Begin(Drive, new DriveBaseline(null, new ProbeSpot(20, 100)), TimeSpan.FromMinutes(60));
         _ref = 120; // 상한 (125) 아래지만 쓰기 직후 10 분 안에 기준의 1.1 배 초과
         Pass(2);
-        Pass(2);
+        Pass(4);
         Assert.True(_r.IsRecovering(Drive)); // UNKNOWN 두 번: 회복 아님
-        Assert.Contains(_log.Lines, l => l.Contains("disk cache suspected", StringComparison.Ordinal));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("disk cache suspected", StringComparison.Ordinal));
 
         _ref = 135; // 상한 (125) 초과도 UNKNOWN
-        Pass(2);
+        Pass(8);
         Assert.True(_r.IsRecovering(Drive));
 
-        _w.Now += TimeSpan.FromMinutes(6); // 쓴 지 10 분이 지나면 1.1 배 규칙은 끝: 120 은 기준 이상으로 PASS
         _ref = 120;
-        _r.Poll();
-        _w.Now += TimeSpan.FromMinutes(2);
-        _r.Poll();
+        Pass(8); // 쓴 지 10 분이 지나면 1.1 배 규칙은 끝: 120 은 기준 이상으로 PASS
+        Pass(2);
         Assert.False(_r.IsRecovering(Drive));
+        Assert.Contains(_log.Lines, l => l.Contains("3 cache-suspect samples", StringComparison.Ordinal)
+            && l.Contains("120-135 MB/s", StringComparison.Ordinal)
+            && l.Contains("ref LCNs 84, 148, 212", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -721,10 +967,18 @@ public sealed class DriveRecoveryTests
         _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
 
         Pass(2);
-        Pass(2);
+        Pass(4);
+        Pass(8);
 
         Assert.True(_r.IsRecovering(Drive));
-        Assert.Single(_log.Lines, l => l.Contains("125 MB/s sequential ceiling (disk cache hit)", StringComparison.Ordinal) && l.Contains("prewarm peak 1000 MB/s", StringComparison.Ordinal));
+        _zone = 100;
+        Pass(8);
+        Pass(2);
+
+        Assert.False(_r.IsRecovering(Drive));
+        Assert.Single(_log.Lines, l => l.Contains("3 cache-suspect samples", StringComparison.Ordinal)
+            && l.Contains("400-400 MB/s", StringComparison.Ordinal)
+            && l.Contains("prewarm peak 1000 MB/s", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -856,7 +1110,7 @@ public sealed class DriveRecoveryTests
 
         Pass(2);
 
-        Assert.Equal([10L], _probed); // 참조 표본은 재지 않음
+        Assert.Equal([74L], _probed); // 참조 표본은 재지 않음
         Assert.True(_r.IsRecovering(Drive));
         Assert.Contains(_log.Lines, l => l.Contains("aborted (disk busy between samples)", StringComparison.Ordinal));
     }
@@ -870,14 +1124,14 @@ public sealed class DriveRecoveryTests
         {
             _probed.Add(lcn);
             _r.YieldTo(gameRoot); // 존을 재는 중에 게임이 시작됨
-            return lcn == 10 ? _zone : _ref;
+            return lcn % 64 == 10 ? _zone : _ref;
         };
         _r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
 
         Pass(2);
         Pass(2);
 
-        Assert.Equal(cancelled, !_probed.Contains(20));
+        Assert.Equal(cancelled ? 1 : 4, _probed.Count);
         Assert.Equal(cancelled, _r.IsRecovering(Drive)); // 취소된 회차는 판정 불가라 회복으로 세지 않음
     }
 
@@ -899,7 +1153,7 @@ public sealed class DriveRecoveryTests
         Pass(2);
         Pass(2);
 
-        Assert.Contains(10L, _probed);
+        Assert.Contains(74L, _probed);
         Assert.False(_r.IsRecovering(Drive));
     }
 
@@ -912,7 +1166,7 @@ public sealed class DriveRecoveryTests
         Pass(2);
         Pass(2);
 
-        Assert.Contains(20L, _probed);
+        Assert.Contains(84L, _probed);
         Assert.False(_r.IsRecovering(Drive));
     }
 
@@ -929,7 +1183,7 @@ public sealed class DriveRecoveryTests
 
         Pass(2);
 
-        Assert.Equal([10L], _probed);
+        Assert.Equal([74L], _probed);
         Assert.True(_r.IsRecovering(Drive));
         Assert.Contains(_log.Lines, l => l.Contains("aborted (game running)", StringComparison.Ordinal));
     }

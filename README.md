@@ -42,11 +42,11 @@ AsterCache helps games installed on a hard disk (HDD) load faster. It watches wh
 
 Requirements: Windows 11 x64 and an NTFS game drive. Installing the service, tracing, and relocation need administrator rights.
 
-1. Open [GitHub Releases](https://github.com/DO0OG/AsterCache/releases) and download `AsterCache-v<version>-win-x64-setup.exe` (pre-release, for example v0.9.0-beta.37).
+1. Open [GitHub Releases](https://github.com/DO0OG/AsterCache/releases) and download `AsterCache-v<version>-win-x64-setup.exe` (pre-release, for example v0.9.0-beta.38).
 2. Run it and choose a language (English or 한국어).
 3. Keep the default choices (desktop and Start menu shortcuts, start with Windows, install the service) and click Next until it finishes.
 
-Prefer no installer? The same release has a zip, `AsterCache-0.9.0-beta.37-win-x64.zip`. Extract it, run `AsterCache.Tray.exe` as administrator, and install and start the service from the Settings tab.
+Prefer no installer? The same release has a zip, `AsterCache-0.9.0-beta.38-win-x64.zip`. Extract it, run `AsterCache.Tray.exe` as administrator, and install and start the service from the Settings tab.
 
 Running a newer installer upgrades the existing installation. Uninstalling reverts any SSD assist links first, then removes the program and the service, but keeps the data folder `%ProgramData%\AsterCache`. The installer is not code-signed, so Windows SmartScreen may show a warning. Building from source: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
@@ -149,10 +149,10 @@ The management window. The top row shows the Games tab and the Status tab; the b
 
 ## Recent changes
 
+- **0.9.0-beta.38, supplement prewarm no longer rereads without progress.** When memory was tight, the supplement prewarm reread the same front part about every 90 seconds without reading more. It now waits for the retry interval when nothing new was read, and tries again sooner only when memory grows.
 - **0.9.0-beta.37, leftover cache budget used.** A game that did not fit the prewarm budget whole used to be left out even when budget remained. It now gets what is left (256 MiB or more) and prewarms its front part. A budget refusal waits for the retry interval and is logged only when it changes.
 - **0.9.0-beta.36, resident utilities excluded, prewarm shrinks to fit memory.** Desktop utilities that stay running and do not load again, such as Wallpaper Engine, are no longer registered, and ones already registered are unregistered automatically. When memory is slightly short, prewarm reads the front part that fits instead of cancelling, and a prewarm that was cancelled is read again even while the drive recovers from a relocation. The drive-recovery check after relocation measures its baseline at the same positions as its samples and accepts 4 passes out of 6, so fluctuating measurements no longer keep it waiting for hours.
 - **0.9.0-beta.35, blocked reapply handed to auto relocation.** When restoring a degraded layout is rejected because another file occupies part of the zone, the game goes back to auto relocation, which replans only the remaining part. A reapply that stops at the per-round write cap continues after the drive recovers instead of a day later.
-- **0.9.0-beta.34, unfinished prewarms retried, quicker drive-recovery check.** A prewarm that was cancelled before it finished, or skipped by the service-start cap, is requested again when the disk is idle. The drive-recovery check after relocation no longer runs to its hard limit when its baseline speed was measured low, and a layout check blocked by a temporary condition is repeated every 5 minutes instead of a day later.
 - Changes since beta.25, and the earlier list since beta.8 (parallel relocation, drive recovery judgment, progress after install, yielding at game start, and more), are in [docs/CHANGES.md](docs/CHANGES.md).
 
 ## Documentation

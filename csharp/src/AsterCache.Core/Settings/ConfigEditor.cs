@@ -242,7 +242,8 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
     }
 
     /// 게임 삭제. 자동 등록 항목이면 그 exe_names 를 auto.ignore_exes 에 넣어 다음 발견 때 다시 등록되지 않게 합니다 (64 개가 넘으면 앞쪽부터 빼고, 뺀 이름 반환).
-    public IReadOnlyList<string> Remove(string name)
+    /// expected 를 주면 (자동 정리) 같은 잠금 안에서 최신 항목이 아직 source auto 이고 origin_root·exe_names 가 expected 와 같을 때만 지우고 (아니면 SettingsException), auto.ignore_exes 는 건드리지 않습니다.
+    public IReadOnlyList<string> Remove(string name, GameSettings? expected = null)
     {
         using FileStream _ = Lock();
         JObject root = ReadRoot();
@@ -251,6 +252,21 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
         if (at < 0)
         {
             throw new SettingsException("games: no game with that name");
+        }
+
+        if (expected is not null)
+        {
+            bool same = games[at] is JObject cur && cur.TryGetValue("source", out object? source) && source is "auto"
+                && cur.TryGetValue("origin_root", out object? origin) && origin is string o && string.Equals(o, expected.OriginRoot, StringComparison.OrdinalIgnoreCase)
+                && cur.TryGetValue("exe_names", out object? names) && names is List<object?> l && l.OfType<string>().SequenceEqual(expected.ExeNames, StringComparer.OrdinalIgnoreCase);
+            if (!same)
+            {
+                throw new SettingsException("games: the entry changed since it was read");
+            }
+
+            games.RemoveAt(at);
+            Save(root);
+            return [];
         }
 
         var dropped = new List<string>();

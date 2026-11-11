@@ -39,6 +39,8 @@ GOG 와 Ubisoft 읽기는 아직 실제 PC 에서 확인하지 않았습니다. 
 
 라이브러리를 읽지 않는 런처: Battle.net, EA 앱. 이들의 게임과 런처 없이 설치한 게임은 위의 Windows 제거 목록에 맞으면 거기서 잡히고, 그 밖은 아래 휴리스틱으로 잡힙니다. 수동으로 등록한 게임과 같은 폴더에 있는 게임은 자동 등록하지 않으며, 로그에 한 줄을 남깁니다. `Battle.net.exe`, `EADesktop.exe` 는 예열 트리거 프로그램으로만 적혀 있으며, 서비스가 이 런처들의 라이브러리를 읽지는 않습니다.
 
+게임이 아니고 한 번 띄우면 계속 켜져 있는 데스크톱 유틸리티(Wallpaper Engine, YoloMouse, Lossless Scaling, OBS Studio, SteamVR 등)는 자동 등록하지 않습니다. 고정된 Steam appid·exe 이름 목록이 런처 발견과 아래 휴리스틱 양쪽에서 이들을 제외하며, 이 목록은 `auto.ignore_exes` 와 별개입니다. 이미 자동 등록된 항목은 서비스가 시작된 뒤 실행 중이어도 한 번 등록 해제하고(파일을 옮기는 중이면 다음 발견 때), 이미 옮긴 파일은 그대로 두지만, SSD 보조 저장(`auto.ssd_tier`)을 쓰고 있었다면 등록이 사라진 게임의 링크는 서비스가 되돌립니다. 그 밖에 최적화하고 싶지 않은 프로그램은 관리 창에서 삭제하면 다시 등록되지 않습니다.
+
 ## 휴리스틱 감지
 
 등록되지 않은 프로세스가 HDD 볼륨의 exe 로 시작해 20초 안에 256 MiB 이상을 읽으면 게임으로 보고 등록합니다. 제외 대상은 Windows 폴더, AsterCache 자신, 런처와 도구 프로그램, `auto.ignore_exes` 의 exe 입니다. 또 경로에 `\bin\Debug\`, `\bin\Release\`, `\obj\`, `\.git\`, `\node_modules\`, `\AppData\Local\Temp\` 가 있는 exe 와 내장 도구 exe(`testhost*`, `dotnet`, `msbuild`, `vstest*`, `python*`, `node`, `java*`, `powershell`, `pwsh`, `cmd`, `conhost`, `explorer`, `7z*`, `winrar`)도 제외합니다. 이 고정 목록은 `auto.ignore_exes` 와 별개입니다. 폴더도 게임처럼 보여야 합니다. 256 MiB 이상 파일이 있거나 런처 흔적(`steam_appid.txt`, `.egstore`, `goggame-*.info`, Steam 매니페스트)이 있어야 합니다. 그래서 `AppData\Local\Temp` 아래 설치된 게임은 이 휴리스틱으로 잡히지 않습니다. 시작 부분은 이미 놓쳤으므로 트레이스는 다음 실행부터 기록합니다.

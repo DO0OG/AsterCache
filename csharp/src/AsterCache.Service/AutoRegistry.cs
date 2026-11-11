@@ -47,6 +47,7 @@ public sealed class AutoRegistry
     private readonly HashSet<string> _refusedLogged = new(StringComparer.OrdinalIgnoreCase); // 거부 이유를 이미 남긴 대상 (같은 줄이 반복되지 않게)
     private readonly Dictionary<int, DateTimeOffset> _pending = [];
     private bool _exesReviewed; // 제거 목록 게임의 exe 재평가는 서비스 시작 뒤 첫 발견 때 한 번
+    private bool _residentReviewed; // 상주 유틸리티 해제도 한 번 (실행 중이거나 재배치 중이라 미룬 항목이 있으면 다음 발견 때 다시)
     private readonly object _lock = new(); // 발견 루프와 휴리스틱 루프가 아래 두 목록을 함께 씀
     private readonly List<GameSettings> _added = []; // 방금 쓴 등록 (설정을 다시 읽기 전까지 겹침 검사에 포함)
     private readonly HashSet<string> _addedExes = new(StringComparer.OrdinalIgnoreCase);
@@ -74,6 +75,7 @@ public sealed class AutoRegistry
         }
 
         ReviewUninstallExes();
+        ReviewResidentUtilities();
         int added = 0;
         IReadOnlyList<DiscoveredGame> found = LastScan = _env.Scan();
         foreach (SkippedFolder f in (found as ScanResult)?.Skipped ?? [])
@@ -98,7 +100,7 @@ public sealed class AutoRegistry
 
             string exe = Path.GetFileName(d.ExePath);
             IReadOnlyList<GameSettings> games = AllGames();
-            if (Ignored(a, exe))
+            if (Ignored(a, exe) || ResidentUtilities.IsExe(exe))
             {
                 continue;
             }
@@ -181,6 +183,72 @@ public sealed class AutoRegistry
         }
     }
 
+    // 이미 자동 등록된 상주 유틸리티 (ResidentUtilities) 를 서비스 시작 뒤 한 번 등록 해제함. 상주 프로그램이라 실행 중이어도 해제하고 (트레이 삭제와 같음), 파일을 옮기는 중 (Relocating) 이면 건드리지 않고 다음 발견 때로 미룸. 직접 등록한 항목은 대상이 아님.
+    private void ReviewResidentUtilities()
+    {
+        if (_residentReviewed)
+        {
+            return;
+        }
+
+        bool deferred = false;
+        foreach (GameSettings g in _settings().Games.Where(x => x.Source == "auto" && IsResident(x)))
+        {
+            if (_status.Get(g.Name)?.Stage == AutoStage.Relocating)
+            {
+                deferred = true;
+                continue;
+            }
+
+            try
+            {
+                _editor.Remove(g.Name, expected: g); // 최신 파일에서 아직 같은 자동 항목일 때만, 제외 목록은 건드리지 않음
+                _log.Info($"auto: unregistered {g.Name} (resident utility, not a game)");
+            }
+            catch (Exception e) when (e is SettingsException or IOException or UnauthorizedAccessException or PyValueException)
+            {
+                deferred = true;
+                _log.Warn($"auto: could not unregister {g.Name}: {e.Message}");
+            }
+        }
+
+        _residentReviewed = !deferred;
+    }
+
+    // exe 가 모두 목록의 것이거나, Steam 앱 폴더 (...\steamapps\common\<installdir>) 이고 목록 appid 의 appmanifest 가 그 installdir 을 가리킴.
+    private bool IsResident(GameSettings g)
+    {
+        if (g.ExeNames.Count > 0 && g.ExeNames.All(ResidentUtilities.IsExe))
+        {
+            return true;
+        }
+
+        return IsResidentSteamFolder(g.OriginRoot.TrimEnd('\\'));
+    }
+
+    // root 가 목록 appid 의 설치 폴더 (...\steamapps\common\<installdir>) 인가: 같은 라이브러리의 appmanifest 의 installdir 로 확인.
+    private bool IsResidentSteamFolder(string root)
+    {
+        string common = Path.GetDirectoryName(root) ?? string.Empty;
+        string apps = Path.GetDirectoryName(common) ?? string.Empty;
+        if (!Path.GetFileName(common).Equals("common", StringComparison.OrdinalIgnoreCase) || !Path.GetFileName(apps).Equals("steamapps", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        string dir = Path.GetFileName(root);
+        return ResidentUtilities.AppIds.Any(id => _env.ReadText(Path.Combine(apps, $"appmanifest_{id}.acf")) is { } text && ResidentUtilities.OwnsInstallDir(text, dir));
+    }
+
+    // 프로세스 이미지가 목록 appid 의 Steam 설치 폴더 안인가 (해제한 유틸리티의 다른 exe 가 휴리스틱으로 다시 등록되지 않게).
+    private bool InResidentSteamFolder(string image)
+    {
+        const string marker = "\\steamapps\\common\\";
+        int at = image.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        int end = at < 0 ? -1 : image.IndexOf('\\', at + marker.Length);
+        return end > 0 && IsResidentSteamFolder(image[..end]);
+    }
+
     /// 이미지 경로가 빌드 산출물·저장소·사용자 데이터 폴더 안이거나 개발·시스템 도구 exe 이면 게임 후보에서 뺍니다 (고정 규칙).
     public static bool IsNonGameImage(string image)
     {
@@ -252,8 +320,8 @@ public sealed class AutoRegistry
         string exe = Path.GetFileName(image);
         string folder = Path.GetDirectoryName(image) ?? string.Empty;
         string? letter = image.Length > 2 && char.IsAsciiLetter(image[0]) && image[1] == ':' ? image[..2].ToUpperInvariant() : null;
-        if (letter is null || Ignored(a, exe) || NotGames.Contains(exe) || LauncherExes.Is(exe) || exe.StartsWith("AsterCache.", StringComparison.OrdinalIgnoreCase)
-            || IsNonGameImage(image) || Under(image, _env.WindowsDir) || Under(image, _env.ServiceDir))
+        if (letter is null || Ignored(a, exe) || NotGames.Contains(exe) || ResidentUtilities.IsExe(exe) || LauncherExes.Is(exe) || exe.StartsWith("AsterCache.", StringComparison.OrdinalIgnoreCase)
+            || IsNonGameImage(image) || Under(image, _env.WindowsDir) || Under(image, _env.ServiceDir) || InResidentSteamFolder(image))
         {
             return;
         }

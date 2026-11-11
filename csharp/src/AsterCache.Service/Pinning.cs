@@ -38,6 +38,7 @@ public sealed class PinKeeper
     private readonly Dictionary<string, (string Root, string? Cheat)> _cheat = new(StringComparer.OrdinalIgnoreCase); // 게임별 고정 금지 판정 (없음 포함, 탐지 실패는 넣지 않음): 게임 루트가 바뀌면 무효
     private readonly HashSet<string> _cheatLogged = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyList<GameSettings> _games = []; // Reconcile·CheckMemory 가 마지막으로 받은 등록 게임 (다른 스레드가 읽으므로 Volatile)
+    private bool _gamesKnown; // 위 목록을 한 번이라도 받았는가 (못 받았으면 고정 저장 때 등록 여부를 따지지 않음)
     private readonly Dictionary<string, bool> _deferred = new(StringComparer.OrdinalIgnoreCase); // 게임이 돌아서 미룬 고정 (afterRelocation 값): 게임이 끝난 뒤 다음 Reconcile·CheckMemory 에서 다시 시도
     private readonly HashSet<string> _holdLogged = new(StringComparer.OrdinalIgnoreCase); // 런처 보류 사유는 하나뿐이라 게임당 한 번만 남김
     private readonly HashSet<string> _yieldLogged = new(StringComparer.OrdinalIgnoreCase); // 디스크 양보 사유도 재시도 틱마다 반복하지 않게 게임당 한 번만 남김
@@ -183,7 +184,8 @@ public sealed class PinKeeper
             bool duplicate;
             lock (_lock)
             {
-                duplicate = _held.ContainsKey(game.Name); // 다른 호출이 먼저 고정했으면 핸들을 덮어쓰지 않음
+                // 다른 호출이 먼저 고정했거나 여는 동안 설정에서 빠졌으면 (Reconcile 이 같은 잠금에서 목록을 갱신함) 핸들을 저장하지 않고 버림
+                duplicate = _held.ContainsKey(game.Name) || (_gamesKnown && !_games.Any(g => string.Equals(g.Name, game.Name, StringComparison.OrdinalIgnoreCase)));
                 if (!duplicate)
                 {
                     _held[game.Name] = handle.Pin;
@@ -403,10 +405,19 @@ public sealed class PinKeeper
         }
     }
 
+    private void SetKnownGames(IReadOnlyList<GameSettings> games)
+    {
+        lock (_lock)
+        {
+            Volatile.Write(ref _games, games);
+            _gamesKnown = true;
+        }
+    }
+
     /// 설정을 다시 읽었을 때: pin 이 꺼졌거나 게임이 빠졌으면 풉니다.
     public void Reconcile(IReadOnlyList<GameSettings> games)
     {
-        Volatile.Write(ref _games, games);
+        SetKnownGames(games);
         RetryDeferred(games);
         long ram = _env.PhysicalRamBytes();
         foreach (string name in Held.Where(n => !games.Any(g => string.Equals(g.Name, n, StringComparison.OrdinalIgnoreCase) && !AntiCheat.ForbidsPin(g.AntiCheat) && (Wanted(g.Prewarm, ram) || (IsRecoveryPin(n) && !(g.Prewarm.PinSet && !g.Prewarm.Pin))))))
@@ -418,7 +429,7 @@ public sealed class PinKeeper
     /// 재적용 틱마다: 가용 RAM 이 그 게임의 min_free_ram_mib 아래면 풉니다.
     public void CheckMemory(IReadOnlyList<GameSettings> games)
     {
-        Volatile.Write(ref _games, games);
+        SetKnownGames(games);
         RetryDeferred(games);
         IReadOnlyCollection<string> held = Held;
         if (held.Count == 0)

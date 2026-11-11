@@ -27,6 +27,9 @@ Relocation needs a trace (the record of what the game reads). Without one from a
 **Will the very first launch be faster?**
 First-run read-ahead is an experimental feature, off by default (no gain in E7 to E7f measurements; `auto.learn.enabled`). The first launch only records what the game reads; the full effect comes from the second launch, after the move and prewarm. A game found only by activity detection (not from a launcher library) starts recording on its next launch. The measurements are in [docs/RESULTS_SUMMARY.md](RESULTS_SUMMARY.md#e7-first-run-read-ahead). Prewarm (the whole folder or an engine profile) also runs without a trace, but its effect has not been measured yet.
 
+**Does it optimize programs that stay running, such as Wallpaper Engine?**
+No. Desktop utilities that are not games and stay running once started, such as Wallpaper Engine, YoloMouse, Lossless Scaling, OBS Studio, and SteamVR, are excluded from automatic registration, and one already registered is unregistered once after the service starts. For any other program, remove it in the tray's management window; it is then not registered again.
+
 **Can my files get damaged?**
 Every move is verified with a SHA-256 check and written to a journal that can be reverted. Still, this is a beta that moves real data: back up important drives first. See [Safety measures](../README.md#safety-measures).
 

@@ -27,7 +27,7 @@ public static partial class LauncherManifests
     private const int MaxDepth = 16;
     private const int MaxNameLength = 64;
 
-    // 게임이 아닌 Steam 항목 (공용 재배포 패키지, 호환 계층).
+    // 게임이 아닌 Steam 항목 (공용 재배포 패키지, 호환 계층, 상주 유틸리티는 ResidentUtilities).
     private const long MinSteamAppBytes = 1L << 30;
     private static readonly string[] NonGameNamePrefixes = ["Steamworks", "Proton", "Steam Linux Runtime"];
 
@@ -75,7 +75,7 @@ public static partial class LauncherManifests
         }
 
         string name = s.GetValueOrDefault("name") as string ?? string.Empty;
-        if (id == "228980" || NonGameNamePrefixes.Any(p => name.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+        if (id == "228980" || ResidentUtilities.IsAppId(id) || NonGameNamePrefixes.Any(p => name.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
         {
             return null;
         }

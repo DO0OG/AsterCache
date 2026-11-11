@@ -117,9 +117,15 @@ public sealed class ReapplyTests
 
         public bool ApplyCancelled { get; set; }
 
+        public string? ApplyStopped { get; set; }
+
         public bool PlanMissing { get; set; }
 
         public ReapplyVerdict? GateBlock { get; set; }
+
+        public bool ZoneBlockedResult { get; set; }
+
+        public int ZoneBlockedCalls { get; private set; }
 
         public List<long> Spent { get; } = [];
 
@@ -204,6 +210,11 @@ public sealed class ReapplyTests
                     Spent.Add(bytes);
                     Calls.Add("spent");
                 },
+                ZoneBlocked = _ =>
+                {
+                    ZoneBlockedCalls++;
+                    return ZoneBlockedResult;
+                },
                 Options = _ => OptionsFn is { } f ? f() : Options,
                 WarnDegraded = _ => WarnAllowed,
                 Now = () => Now,
@@ -213,7 +224,7 @@ public sealed class ReapplyTests
                     AppliedOptions = opts;
                     ApplyCalls++;
                     LastToken = token;
-                    return ApplyThrows is null ? new ApplyReport { MovedBytes = 4096, Stopped = ApplyCancelled ? "cancelled" : null } : throw ApplyThrows;
+                    return ApplyThrows is null ? new ApplyReport { MovedBytes = 4096, Stopped = ApplyCancelled ? "cancelled" : ApplyStopped } : throw ApplyThrows;
                 },
             };
         }
@@ -413,6 +424,19 @@ public sealed class ReapplyTests
         Assert.DoesNotContain(Bench.Name, resuming);
         Assert.InRange((due[Bench.Name] - DateTimeOffset.UtcNow).TotalMinutes, 59, 60);
         Assert.Equal(0, rig.ExtentCalls);
+    }
+
+    [Theory]
+    [InlineData("write_cap", true)] // 회당 쓰기 상한에서 멈춤: 남은 부분을 짧은 간격으로 이어 옮김
+    [InlineData(null, false)] // 끝까지 옮김: 일반 간격
+    public void AReapplyStoppedByTheWriteCapKeepsTheShortRecheck(string? stopped, bool expected)
+    {
+        var rig = new Rig { Moved = false, ApplyStopped = stopped };
+
+        Assert.Equal(ReapplyVerdict.Reapply, rig.Check(Bench));
+
+        Assert.Equal(1, rig.ApplyCalls);
+        Assert.Equal(expected, rig.Checker.ShouldRetrySoon(Bench.Name));
     }
 
     [Fact]
@@ -791,6 +815,40 @@ public sealed class ReapplyTests
         using var stop = new CancellationTokenSource();
         stop.Cancel();
         Assert.True(gate.Run(stop.Token, token => token.IsCancellationRequested)); // 서비스 종료도 같은 토큰으로 전해짐
+    }
+
+    [Fact]
+    public void ZoneNotFreeHandedOverIsNotAppliedWithZeroSpentAndNoError()
+    {
+        var rig = new Rig { Moved = false, ApplyThrows = new PlanRejectedException("zone_not_free: LCN 60804616 is in use by another file"), ZoneBlockedResult = true, Options = new ApplyOptions(WriteCap: 4096) };
+
+        Assert.Equal(ReapplyVerdict.NotApplied, rig.Check(Bench));
+        Assert.Equal(1, rig.ApplyCalls);
+        Assert.Equal(1, rig.ZoneBlockedCalls);
+        Assert.Single(rig.Started);
+        Assert.Equal([0L], rig.Spent); // 이동 전 거절: 일일 횟수·회복 대기에 남기지 않음
+        Assert.DoesNotContain(rig.Log.Lines, l => l.StartsWith("Error", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ZoneNotFreeNotHandedOverFailsWithZeroSpent()
+    {
+        var rig = new Rig { Moved = false, ApplyThrows = new PlanRejectedException("zone_not_free: LCN 60804616 is in use by another file"), Options = new ApplyOptions(WriteCap: 4096) };
+
+        Assert.Equal(ReapplyVerdict.Failed, rig.Check(Bench));
+        Assert.Equal(1, rig.ZoneBlockedCalls);
+        Assert.Equal([0L], rig.Spent); // 두 번 부르지 않음
+        Assert.Contains(rig.Log.Lines, l => l.StartsWith("Error: bench: layout check failed", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void OtherExceptionsDoNotAskForAHandOverAndKeepThePlannedSpent()
+    {
+        var rig = new Rig { Moved = false, ApplyThrows = new IOException("x"), ZoneBlockedResult = true, Options = new ApplyOptions(WriteCap: 4096) };
+
+        Assert.Equal(ReapplyVerdict.Failed, rig.Check(Bench));
+        Assert.Equal(0, rig.ZoneBlockedCalls);
+        Assert.Equal([4096L], rig.Spent);
     }
 
     [Fact]

@@ -119,6 +119,9 @@ public sealed class ReapplyEnv
     /// 자동 모드와 같은 재적용 게이트 (서비스가 자동 모드를 만든 뒤 연결): 막는 이유 또는 null. 연결 전·시험 기본값은 막지 않음.
     public Func<GameSettings, ReapplyVerdict?> Gate { get; set; } = _ => null;
 
+    /// 존 점유(zone_not_free)로 재적용이 거절됐을 때 자동 재배치의 잔여 재계획에 넘길 수 있는가 (넘겼으면 true; 연결 전·시험 기본값은 넘기지 않음).
+    public Func<GameSettings, bool> ZoneBlocked { get; set; } = _ => false;
+
     /// 재적용을 시작하기 전에 예정 바이트를 일일 상한·예산 집계에 알림 (자동 재배치와 같이 실행 전에 셈).
     public Action<GameSettings, long> Started { get; set; } = (_, _) => { };
 
@@ -587,6 +590,17 @@ public sealed class ReapplyChecker
                     _log.Info($"{game.Name}: reapply deferred, the plan changed while waiting for the zone lock");
                     return ReapplyVerdict.DiskBusy;
                 }
+                catch (PlanRejectedException e) when (e.Message.StartsWith("zone_not_free", StringComparison.Ordinal))
+                {
+                    _env.Spent(game, 0); // 존 점검 단계의 거절은 이동 전: 아무것도 옮기지 않았으니 일일 횟수·회복 대기에 넣지 않음
+                    if (!_env.ZoneBlocked(game))
+                    {
+                        throw; // 넘기지 못함: 기존 실패 경로 (Spent 는 이미 0)
+                    }
+
+                    ClearShortRetry(game.Name);
+                    return ReapplyVerdict.NotApplied; // 자동 재배치가 잔여 재계획으로 이어받음
+                }
                 catch
                 {
                     _env.Spent(game, planned); // 예외로 끝나도 예정 바이트로 Spent 를 불러 예산에 남기고 SMR 회복 대기를 시작시킴 (과대 집계가 안전)
@@ -618,7 +632,15 @@ public sealed class ReapplyChecker
                 }
 
                 _cancelled.Remove(game.Name);
-                ClearShortRetry(game.Name);
+                if (rep.Stopped == "write_cap")
+                {
+                    _shortRetryPending.Add(game.Name); // 회당 쓰기 상한에서 멈춤: 남은 부분을 하루 뒤가 아니라 회복 대기가 풀리는 대로 이어 옮김
+                    _lastShortRetryLog[game.Name] = ReapplyVerdict.Reapply;
+                }
+                else
+                {
+                    ClearShortRetry(game.Name);
+                }
             }
 
             return v;

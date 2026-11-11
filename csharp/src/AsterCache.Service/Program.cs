@@ -86,6 +86,7 @@ var auto = canApply ? new AutoMode(new ConfigEditor(dataDir), AutoEnv.Create(jou
 if (auto is not null)
 {
     reapplyEnv.Gate = auto.ReapplyBlock; // 정기 재적용도 자동 재배치와 같은 게이트를 지남
+    reapplyEnv.ZoneBlocked = auto.ReapplyZoneBlocked; // 존 점유로 거절된 재적용은 자동 재배치의 잔여 재계획으로
     reapplyEnv.Started = auto.ReapplyStarted;
     reapplyEnv.Spent = auto.ReapplySpent;
     reapplyEnv.Options = auto.ReapplyOptions;

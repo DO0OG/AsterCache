@@ -1834,6 +1834,23 @@ public sealed class AutoRelocator
     public bool LayoutWarnAllowed(GameSettings g)
         => _status.Get(g.Name) is { RelocatedAt: not null } e && !IsExtending(g) && e.Detail != WriteLimitDetail;
 
+    /// 정기 재적용이 존 점유 (zone_not_free) 로 거절됐을 때 자동 재배치의 잔여 재계획에 넘김: 재배치된 게임을 처음 단계로 되돌려 다음 틱이 기존 게이트·유휴 확인·dry-run 을 거쳐 잔여만 다시 계획하게 함.
+    /// 넘기지 못하면 상태를 건드리지 않고 false (재적용이 기존대로 실패 처리). 트레이스가 없으면 NeedsWork 가 집지 못하는데 재적용만 막히므로 넘기지 않고, 무결성 실패로 멈춘 상태도 자동으로 풀지 않음.
+    public bool HandOffZoneBlocked(GameSettings g)
+    {
+        AsterSettings s = _settings();
+        if (!(s.Auto.Enabled && s.Auto.Relocate && s.Auto.MaxRelocationsPerDay > 0) || _env.ReplanResidual is null || IsExtending(g)
+            || _status.Get(g.Name) is not { RelocatedAt: not null } e || e.Stage == AutoStage.Failed && !IsRetriedHourly(e.Detail)
+            || AutoTracer.PlanTracePath(g, _env.FileExists) is null)
+        {
+            return false;
+        }
+
+        _status.ResetForReplan(g.Name, BusyDetail);
+        _log.Info($"{g.Name}: reapply blocked by zone_not_free, handing over to auto relocation to replan the remaining part");
+        return true;
+    }
+
     private bool NeedsWork(GameSettings g, bool relocateOn)
     {
         AutoGameEntry? e = _status.Get(g.Name);

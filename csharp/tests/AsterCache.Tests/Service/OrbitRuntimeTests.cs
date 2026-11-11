@@ -553,7 +553,7 @@ public sealed class OrbitRuntimeTests : IDisposable
     [Fact]
     public void InterruptedReorderedStreamDoesNotSaveOrReuseAResumeOffset()
     {
-        var streamer = new CapturingStreamer { WasReordered = true, Complete = false, BytesRead = 1L << 20 };
+        var streamer = new CapturingStreamer { WasReordered = true, Complete = false, BytesRead = 3L << 19 }; // 이전 진전 (1 MiB) 보다 더 읽고 끊김: 진전 없는 끊김은 재시도 기한까지 미뤄지므로
         var prewarmer = MakePrewarmer(streamer);
         SetDictionary(prewarmer, "_partial", _game.Name, (1L, 2L));
 

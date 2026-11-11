@@ -16,8 +16,10 @@ public sealed class PendingPrewarmTests
     private readonly Dictionary<string, long> _zones = new(StringComparer.OrdinalIgnoreCase);
     private DateTimeOffset _now = new(2026, 11, 11, 12, 0, 0, TimeSpan.Zero);
     private long _available = 16000;
+    private long _uptimeMs = 10_000_000;
     private bool _coldProbe;
     private int _probeCalls;
+    private int _observedReadCalls;
     private string[] _rank = ["a", "b", "other"];
     private Func<GameSettings, double?> _diskBytesPerSecond = _ => 0;
     private Action? _onWarmRank;
@@ -64,6 +66,7 @@ public sealed class PendingPrewarmTests
         PrewarmEnv env = new()
         {
             AvailableRamMib = () => _available,
+            UptimeMs = () => _uptimeMs,
             GameRunning = g => _running.Contains(g.Name),
             SameDisk = (_, _) => true,
             ZoneBytes = g =>
@@ -79,6 +82,8 @@ public sealed class PendingPrewarmTests
             TraceExists = g => !_noTrace || g.Name != "no-trace",
             PhysicalRamBytes = () => 16L << 30,
             DiskBytesPerSecond = g => _diskBytesPerSecond(g),
+            ObservedBytes = _ => { _observedReadCalls++; return null; },
+            ObservedBytesIfCached = _ => null,
             ProbeReadMs = _ =>
             {
                 _probeCalls++;
@@ -186,6 +191,30 @@ public sealed class PendingPrewarmTests
         Assert.Equal(calls, _streamer.Calls.Count);
         Assert.Contains(_log.Lines, line => line.Contains("supplement prewarm skipped (the", StringComparison.Ordinal));
         Assert.False(prewarmer.HasPendingWarm("a"));
+    }
+
+    [Fact]
+    public void PendingSupplementCanContinueAfterSixtyIdleSecondsWhileDriveRecovers()
+    {
+        GameSettings game = Game("a");
+        _zones["a"] = 8000;
+        _available = 6000;
+        Prewarmer prewarmer = Make(null, game);
+        AutoSettings auto = Auto();
+        prewarmer.SetAuto(auto);
+        Assert.True(prewarmer.Run(game, "test").Ran);
+        Assert.Equal((1904L, 8000L), prewarmer.PartialInfo("a"));
+        prewarmer.Recovery = new TestRecovery { Recovering = true };
+        _available = 10000;
+
+        Assert.False(prewarmer.SupplementWhenIdle(game, CancellationToken.None));
+        Assert.Single(_streamer.Calls);
+        _now += TimeSpan.FromSeconds(61);
+
+        Assert.True(prewarmer.SupplementWhenIdle(game, CancellationToken.None));
+
+        Assert.Equal(["a", "a"], _streamer.Calls);
+        Assert.Equal((5904L, 8000L), prewarmer.PartialInfo("a"));
     }
 
     [Fact]
@@ -322,7 +351,7 @@ public sealed class PendingPrewarmTests
     }
 
     [Fact]
-    public void PendingWarmWaitsForDriveRecoveryBeforeRetrying()
+    public void PendingWarmRetriesWhileDriveRecoversAfterTheIdleGate()
     {
         GameSettings game = Game("a");
         Prewarmer prewarmer = Make(null, game);
@@ -332,22 +361,17 @@ public sealed class PendingPrewarmTests
         prewarmer.SetAuto(auto);
         _streamer.IncompleteNext = true;
         Assert.Equal(Prewarmer.Cancelled, prewarmer.Run(game, "test").SkipReason);
+        _observedReadCalls = 0;
 
         ReachRetryAndIdle(prewarmer, auto);
-        Assert.Equal(["a"], _streamer.Calls);
-        Assert.True(prewarmer.HasPendingWarm(game.Name));
-
-        recovery.Recovering = false;
-        prewarmer.Tick(auto); // 회복이 끝난 뒤 새 유휴 시간을 셉니다.
-        _now += TimeSpan.FromSeconds(61);
-        prewarmer.Tick(auto);
 
         Assert.Equal(["a", "a"], _streamer.Calls);
         Assert.False(prewarmer.HasPendingWarm(game.Name));
+        Assert.True(_observedReadCalls > 0); // pending 상태여도 회복 중 예산 표본을 읽음
     }
 
     [Fact]
-    public void PendingGameWithEarlierSuccessAlsoWaitsForDriveRecoveryInTheRewarmCheck()
+    public void PendingGameWithEarlierSuccessRewarmsDuringDriveRecovery()
     {
         GameSettings game = Game("a");
         Prewarmer prewarmer = Make(null, game);
@@ -364,21 +388,12 @@ public sealed class PendingPrewarmTests
         recovery.Recovering = true;
         _coldProbe = true; // 표본이 식어 있음
         _now += TimeSpan.FromHours(1);
+        _uptimeMs = 0; // 대기 재시도는 부팅 대기 중이지만 재예열 표본은 회복 중에도 확인
         prewarmer.Tick(auto); // 재예열 점검 주기 시작
         _now += TimeSpan.FromMinutes(2);
         prewarmer.Tick(auto);
-        _now += TimeSpan.FromMinutes(2);
-        prewarmer.Tick(auto);
 
-        Assert.Equal(["a", "a"], _streamer.Calls);
-        Assert.Equal(0, _probeCalls);
-        Assert.True(prewarmer.HasPendingWarm(game.Name));
-
-        recovery.Recovering = false;
-        _now += TimeSpan.FromMinutes(2);
-        prewarmer.Tick(auto);
-
-        Assert.Equal(["a", "a", "a"], _streamer.Calls); // 회복이 끝나면 재예열 점검이 읽고 대기가 풀림
+        Assert.Equal(["a", "a", "a"], _streamer.Calls);
         Assert.True(_probeCalls > 0);
         Assert.False(prewarmer.HasPendingWarm(game.Name));
     }
@@ -403,7 +418,27 @@ public sealed class PendingPrewarmTests
     }
 
     [Fact]
-    public void GameHeldByItsOwnDriveRecoveryDoesNotResetAnotherGamesIdleCount()
+    public void PendingRetryStillStopsWhenTheGameStartsBeforeTheFirstRead()
+    {
+        GameSettings game = Game("a");
+        Prewarmer prewarmer = Make(null, game);
+        AutoSettings auto = Auto();
+        prewarmer.SetAuto(auto);
+        prewarmer.Recovery = new TestRecovery { Recovering = true };
+        _streamer.IncompleteNext = true;
+        Assert.Equal(Prewarmer.Cancelled, prewarmer.Run(game, "test").SkipReason);
+        _streamer.BeforeProgress = _ => _running.Add(game.Name);
+
+        ReachRetryAndIdle(prewarmer, auto);
+
+        Assert.Equal(["a", "a"], _streamer.Calls);
+        Assert.Null(prewarmer.LastWarmed(game.Name));
+        Assert.True(prewarmer.HasPendingWarm(game.Name));
+        Assert.Contains(_log.Lines, line => line.Contains("game started", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RecoveringPendingWarmStillWaitsForIdleAndTheSameDiskTurn()
     {
         GameSettings held = Game("a") with { OriginRoot = @"E:\Games\a" };
         GameSettings other = Game("b");
@@ -423,9 +458,9 @@ public sealed class PendingPrewarmTests
         _now += TimeSpan.FromSeconds(30);
         prewarmer.Tick(auto);
 
-        Assert.Equal(["a", "b", "b"], _streamer.Calls);
-        Assert.True(prewarmer.HasPendingWarm(held.Name));
-        Assert.False(prewarmer.HasPendingWarm(other.Name));
+        Assert.Equal(["a", "b", "a"], _streamer.Calls);
+        Assert.False(prewarmer.HasPendingWarm(held.Name));
+        Assert.True(prewarmer.HasPendingWarm(other.Name));
     }
 
     [Fact]

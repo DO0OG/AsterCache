@@ -5,6 +5,7 @@ using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
 using AsterCache.Service;
 using AsterCache.Tests.Core;
+using AsterCache.Windows;
 using Xunit;
 
 namespace AsterCache.Tests.Service;
@@ -167,11 +168,11 @@ public sealed class ReapplyTests
             return mine.OrderBy(e => e.Vcn).ToList();
         }
 
-        public ReapplyVerdict Check(GameSettings game, CancellationToken ct = default)
+        private ReapplyEnv CreateEnv()
         {
             ILookup<string, PlanTask> byPath = Plan.Tasks.ToLookup(t => t.Path, StringComparer.Ordinal);
             Dictionary<string, Fingerprint> fps = Plan.Fingerprints.ToDictionary(f => f.Path, StringComparer.Ordinal);
-            var env = new ReapplyEnv
+            return new ReapplyEnv
             {
                 CanApply = CanApply,
                 GameRunning = _ => GameRunning,
@@ -215,8 +216,11 @@ public sealed class ReapplyTests
                     return ApplyThrows is null ? new ApplyReport { MovedBytes = 4096, Stopped = ApplyCancelled ? "cancelled" : null } : throw ApplyThrows;
                 },
             };
-            return (_checker ??= new ReapplyChecker(env, Log)).Check(game, ct);
         }
+
+        public ReapplyChecker Checker => _checker ??= new ReapplyChecker(CreateEnv(), Log);
+
+        public ReapplyVerdict Check(GameSettings game, CancellationToken ct = default) => Checker.Check(game, ct);
     }
 
     [Fact]
@@ -282,6 +286,249 @@ public sealed class ReapplyTests
         Assert.Equal(block, rig.Check(Bench));
         Assert.Equal(0, rig.ApplyCalls);
         Assert.Empty(rig.Spent);
+    }
+
+    [Theory]
+    [InlineData(ReapplyVerdict.Recovering, true)]
+    [InlineData(ReapplyVerdict.NotIdle, true)]
+    [InlineData(ReapplyVerdict.DiskBusy, true)]
+    [InlineData(ReapplyVerdict.GameRunning, true)]
+    [InlineData(ReapplyVerdict.PostUpdateDelay, true)]
+    [InlineData(ReapplyVerdict.OnBattery, true)]
+    [InlineData(ReapplyVerdict.DailyLimit, false)]
+    [InlineData(ReapplyVerdict.NotApplied, false)]
+    [InlineData(ReapplyVerdict.NotRelocatable, false)]
+    [InlineData(ReapplyVerdict.ApplyDisabled, false)]
+    public void OnlyIncompleteLayoutsBlockedByRetryableHoldsRequestAShortRetry(ReapplyVerdict block, bool expected)
+    {
+        var rig = new Rig { Moved = false, GateBlock = block };
+
+        Assert.Equal(block, rig.Check(Bench));
+        Assert.Equal(expected, rig.Checker.ShouldRetrySoon(Bench.Name));
+    }
+
+    [Fact]
+    public void RepeatedShortHoldSuppressesTheSameLayoutCheckAndWarning()
+    {
+        var rig = new Rig { Moved = false, GateBlock = ReapplyVerdict.Recovering };
+
+        Assert.Equal(ReapplyVerdict.Recovering, rig.Check(Bench));
+        Assert.Equal(ReapplyVerdict.Recovering, rig.Check(Bench));
+
+        Assert.Single(rig.Log.Lines, line => line.Contains("layout check Recovering", StringComparison.Ordinal));
+        Assert.Single(rig.Log.Lines, line => line.StartsWith("Warn", StringComparison.Ordinal));
+        Assert.Contains(rig.Log.Lines, line => line.Contains("retry automatically when safety checks allow it", StringComparison.Ordinal));
+
+        rig.GateBlock = ReapplyVerdict.NotIdle;
+        Assert.Equal(ReapplyVerdict.NotIdle, rig.Check(Bench));
+        Assert.Equal(2, rig.Log.Lines.Count(line => line.Contains("layout check ", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void WorkerUsesTheShortRetryForAnIncompleteTransientHoldAndReappliesWhenItClears()
+    {
+        var rig = new Rig { Moved = false, GateBlock = ReapplyVerdict.Recovering };
+        GameSettings serviceGame = Bench with { OriginRoot = Path.GetTempPath() };
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), rig.Log, () => 0);
+        var quiet = new BootQuiet(() => 6 * 60_000, () => true, rig.Log, () => DateTimeOffset.UtcNow, () => 6 * 60_000);
+        var worker = new Worker(new AsterSettings(50, [serviceGame]), rig.Log, new SilentWatcher(), null, new FakeStreamer(), rig.Checker,
+            quiet: quiet, coordinator: coordinator);
+        var due = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+        var resuming = new HashSet<string>(StringComparer.Ordinal);
+        DateTimeOffset start = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(2);
+
+        worker.ReapplyTick(start, due, resuming, CancellationToken.None);
+
+        Assert.Contains(Bench.Name, resuming);
+        Assert.InRange((due[Bench.Name] - DateTimeOffset.UtcNow).TotalSeconds, 0, Worker.ResumeRetry.TotalSeconds);
+        Assert.Equal(0, rig.ApplyCalls);
+
+        rig.GateBlock = null;
+        due[Bench.Name] = DateTimeOffset.MinValue;
+        worker.ReapplyTick(start, due, resuming, CancellationToken.None);
+
+        Assert.DoesNotContain(Bench.Name, resuming);
+        Assert.Equal(1, rig.ApplyCalls);
+        Assert.InRange((due[Bench.Name] - DateTimeOffset.UtcNow).TotalMinutes, 59, 60);
+    }
+
+    [Fact]
+    public void WorkerKeepsPermanentHoldsOnTheConfiguredInterval()
+    {
+        var rig = new Rig { Moved = false, GateBlock = ReapplyVerdict.NotRelocatable };
+        GameSettings serviceGame = Bench with { OriginRoot = Path.GetTempPath() };
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), rig.Log, () => 0);
+        var quiet = new BootQuiet(() => 6 * 60_000, () => true, rig.Log, () => DateTimeOffset.UtcNow, () => 6 * 60_000);
+        var worker = new Worker(new AsterSettings(50, [serviceGame]), rig.Log, new SilentWatcher(), null, new FakeStreamer(), rig.Checker,
+            quiet: quiet, coordinator: coordinator);
+        var due = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+        var resuming = new HashSet<string>(StringComparer.Ordinal);
+        DateTimeOffset start = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(2);
+
+        worker.ReapplyTick(start, due, resuming, CancellationToken.None);
+
+        Assert.DoesNotContain(Bench.Name, resuming);
+        Assert.InRange((due[Bench.Name] - DateTimeOffset.UtcNow).TotalMinutes, 59, 60);
+        Assert.Equal(0, rig.ApplyCalls);
+    }
+
+    [Theory]
+    [InlineData(ReapplyVerdict.NotApplied)]
+    [InlineData(ReapplyVerdict.DailyLimit)]
+    public void WorkerKeepsNotAppliedAndDailyLimitOnTheConfiguredInterval(ReapplyVerdict block)
+    {
+        var rig = new Rig { Moved = false, GateBlock = block };
+        GameSettings serviceGame = Bench with { OriginRoot = Path.GetTempPath() };
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), rig.Log, () => 0);
+        var quiet = new BootQuiet(() => 6 * 60_000, () => true, rig.Log, () => DateTimeOffset.UtcNow, () => 6 * 60_000);
+        var worker = new Worker(new AsterSettings(50, [serviceGame]), rig.Log, new SilentWatcher(), null, new FakeStreamer(), rig.Checker,
+            quiet: quiet, coordinator: coordinator);
+        var due = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+        var resuming = new HashSet<string>(StringComparer.Ordinal);
+        DateTimeOffset start = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(2);
+
+        worker.ReapplyTick(start, due, resuming, CancellationToken.None);
+
+        Assert.DoesNotContain(Bench.Name, resuming);
+        Assert.InRange((due[Bench.Name] - DateTimeOffset.UtcNow).TotalMinutes, 59, 60);
+        Assert.Equal(0, rig.ApplyCalls);
+    }
+
+    [Fact]
+    public void WorkerDoesNotShortRetryAHealthyGameWhenItsDiskLeaseIsRefused()
+    {
+        var rig = new Rig();
+        GameSettings serviceGame = Bench with { OriginRoot = Path.GetTempPath() };
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), rig.Log, () => 0);
+        coordinator.Yield(serviceGame.OriginRoot, "game running", serviceGame.Name);
+        var quiet = new BootQuiet(() => 6 * 60_000, () => true, rig.Log, () => DateTimeOffset.UtcNow, () => 6 * 60_000);
+        var worker = new Worker(new AsterSettings(50, [serviceGame]), rig.Log, new SilentWatcher(), null, new FakeStreamer(), rig.Checker,
+            quiet: quiet, coordinator: coordinator);
+        var due = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+        var resuming = new HashSet<string>(StringComparer.Ordinal);
+        DateTimeOffset start = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(2);
+
+        worker.ReapplyTick(start, due, resuming, CancellationToken.None);
+
+        Assert.DoesNotContain(Bench.Name, resuming);
+        Assert.InRange((due[Bench.Name] - DateTimeOffset.UtcNow).TotalMinutes, 59, 60);
+        Assert.Equal(0, rig.ExtentCalls);
+    }
+
+    [Fact]
+    public void WorkerKeepsShortRetryForAConfirmedIncompleteLayoutWhenItsDiskLeaseIsRefused()
+    {
+        var rig = new Rig { Moved = false, GateBlock = ReapplyVerdict.Recovering };
+        Assert.Equal(ReapplyVerdict.Recovering, rig.Checker.Check(Bench));
+        rig.GameRunning = true;
+        Assert.Equal(ReapplyVerdict.GameRunning, rig.Checker.Check(Bench));
+        Assert.True(rig.Checker.ShouldRetrySoon(Bench.Name));
+        rig.GameRunning = false;
+        int checkedExtents = rig.ExtentCalls;
+
+        GameSettings serviceGame = Bench with { OriginRoot = Path.GetTempPath() };
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), rig.Log, () => 0);
+        coordinator.Yield(serviceGame.OriginRoot, "game running", serviceGame.Name);
+        var quiet = new BootQuiet(() => 6 * 60_000, () => true, rig.Log, () => DateTimeOffset.UtcNow, () => 6 * 60_000);
+        var worker = new Worker(new AsterSettings(50, [serviceGame]), rig.Log, new SilentWatcher(), null, new FakeStreamer(), rig.Checker,
+            quiet: quiet, coordinator: coordinator);
+        var due = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+        var resuming = new HashSet<string>(StringComparer.Ordinal);
+        DateTimeOffset start = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(2);
+
+        worker.ReapplyTick(start, due, resuming, CancellationToken.None);
+
+        Assert.Contains(Bench.Name, resuming);
+        Assert.InRange((due[Bench.Name] - DateTimeOffset.UtcNow).TotalSeconds, 0, Worker.ResumeRetry.TotalSeconds);
+        Assert.Equal(checkedExtents, rig.ExtentCalls);
+    }
+
+    [Fact]
+    public void WorkerRetainsShortRetryAfterCancelledReapplyHitsTheZoneLockThenResumes()
+    {
+        var rig = new Rig { Moved = false, ApplyCancelled = true };
+        GameSettings serviceGame = Bench with { OriginRoot = Path.GetTempPath() };
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), rig.Log, () => 0);
+        var quiet = new BootQuiet(() => 6 * 60_000, () => true, rig.Log, () => DateTimeOffset.UtcNow, () => 6 * 60_000);
+        var worker = new Worker(new AsterSettings(50, [serviceGame]), rig.Log, new SilentWatcher(), null, new FakeStreamer(), rig.Checker,
+            quiet: quiet, coordinator: coordinator);
+        var due = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+        var resuming = new HashSet<string>(StringComparer.Ordinal);
+        DateTimeOffset start = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(2);
+
+        worker.ReapplyTick(start, due, resuming, CancellationToken.None);
+
+        Assert.Contains(Bench.Name, resuming);
+        Assert.Equal(1, rig.ApplyCalls);
+
+        rig.ApplyCancelled = false;
+        rig.ApplyThrows = new PlanRejectedException(DataLock.PlanChangedMessage);
+        due[Bench.Name] = DateTimeOffset.MinValue;
+        worker.ReapplyTick(start, due, resuming, CancellationToken.None);
+
+        Assert.Contains(Bench.Name, resuming);
+        Assert.InRange((due[Bench.Name] - DateTimeOffset.UtcNow).TotalSeconds, 0, Worker.ResumeRetry.TotalSeconds);
+        Assert.Equal(2, rig.ApplyCalls);
+        Assert.Contains(rig.Log.Lines, line => line.Contains("plan changed while waiting for the zone lock", StringComparison.Ordinal));
+
+        rig.ApplyThrows = null;
+        due[Bench.Name] = DateTimeOffset.MinValue;
+        worker.ReapplyTick(start, due, resuming, CancellationToken.None);
+
+        Assert.DoesNotContain(Bench.Name, resuming);
+        Assert.Equal(3, rig.ApplyCalls);
+        Assert.InRange((due[Bench.Name] - DateTimeOffset.UtcNow).TotalMinutes, 59, 60);
+    }
+
+    [Fact]
+    public void WorkerKeepsTheShortRecheckThroughRepeatedZoneLockConflicts()
+    {
+        var rig = new Rig { Moved = false, ApplyCancelled = true };
+        GameSettings serviceGame = Bench with { OriginRoot = Path.GetTempPath() };
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), rig.Log, () => 0);
+        var quiet = new BootQuiet(() => 6 * 60_000, () => true, rig.Log, () => DateTimeOffset.UtcNow, () => 6 * 60_000);
+        var worker = new Worker(new AsterSettings(50, [serviceGame]), rig.Log, new SilentWatcher(), null, new FakeStreamer(), rig.Checker,
+            quiet: quiet, coordinator: coordinator);
+        var due = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+        var resuming = new HashSet<string>(StringComparer.Ordinal);
+        DateTimeOffset start = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(2);
+
+        worker.ReapplyTick(start, due, resuming, CancellationToken.None);
+        Assert.Contains(Bench.Name, resuming);
+
+        rig.ApplyCancelled = false;
+        rig.ApplyThrows = new PlanRejectedException(DataLock.PlanChangedMessage);
+        due[Bench.Name] = DateTimeOffset.MinValue;
+        worker.ReapplyTick(start, due, resuming, CancellationToken.None);
+        Assert.Contains(Bench.Name, resuming);
+        Assert.InRange((due[Bench.Name] - DateTimeOffset.UtcNow).TotalSeconds, 0, Worker.ResumeRetry.TotalSeconds);
+
+        due[Bench.Name] = DateTimeOffset.MinValue;
+        worker.ReapplyTick(start, due, resuming, CancellationToken.None);
+
+        Assert.Contains(Bench.Name, resuming); // 충돌이 되풀이돼도 재개 대상은 짧은 재검사를 유지
+        Assert.InRange((due[Bench.Name] - DateTimeOffset.UtcNow).TotalSeconds, 0, Worker.ResumeRetry.TotalSeconds);
+        Assert.Equal(3, rig.ApplyCalls);
+    }
+
+    [Fact]
+    public void CheckerPrunesShortRetryAndSuppressionStateForRemovedGames()
+    {
+        var rig = new Rig { Moved = false, GateBlock = ReapplyVerdict.Recovering };
+
+        Assert.Equal(ReapplyVerdict.Recovering, rig.Check(Bench));
+        Assert.True(rig.Checker.ShouldRetrySoon(Bench.Name));
+        rig.Checker.RetainGames([]);
+        Assert.False(rig.Checker.ShouldRetrySoon(Bench.Name));
+        rig.Checker.RetainGames([Bench.Name]);
+
+        Assert.Equal(ReapplyVerdict.Recovering, rig.Check(Bench));
+        Assert.Equal(2, rig.Log.Lines.Count(line => line.Contains("layout check Recovering", StringComparison.Ordinal)));
+    }
+
+    private sealed class SilentWatcher : IProcessWatcher
+    {
+        public Task RunAsync(Action<ProcessStart> onStart, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     [Fact]

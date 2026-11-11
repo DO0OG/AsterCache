@@ -430,11 +430,28 @@ public sealed class ReapplyChecker
     private readonly HashSet<string> _noPlanLogged = new(StringComparer.OrdinalIgnoreCase); // "계획 없음"은 게임당 한 번만
     private readonly Dictionary<string, DateTimeOffset> _warnedAt = new(StringComparer.Ordinal); // 배치 풀림 경고를 낸 시각 (게임당 하루 한 번)
     private readonly HashSet<string> _cancelled = new(StringComparer.Ordinal); // 취소로 반쯤 적용된 게임
+    private readonly HashSet<string> _shortRetryPending = new(StringComparer.Ordinal); // 짧은 재검사가 필요한 미완료 배치
+    private readonly Dictionary<string, ReapplyVerdict> _lastShortRetryLog = new(StringComparer.Ordinal); // 같은 일시 보류의 반복 로그 억제
 
     public ReapplyChecker(ReapplyEnv env, ILog log)
     {
         _env = env;
         _log = log;
+    }
+
+    public bool ShouldRetrySoon(string gameName) => _shortRetryPending.Contains(gameName);
+
+    public bool ShouldRetrySoon(string gameName, ReapplyVerdict verdict, bool resuming) =>
+        _shortRetryPending.Contains(gameName) || (resuming && IsShortRetryHold(verdict));
+
+    public void RetainGames(IEnumerable<string> gameNames)
+    {
+        HashSet<string> registered = gameNames.ToHashSet(StringComparer.Ordinal);
+        _shortRetryPending.RemoveWhere(name => !registered.Contains(name));
+        foreach (string name in _lastShortRetryLog.Keys.Where(name => !registered.Contains(name)).ToArray())
+        {
+            _lastShortRetryLog.Remove(name);
+        }
     }
 
     /// 파일 사이에서 게임 실행을 다시 보는 최소 간격 (그 사이는 취소 토큰만): 실행 판정은 프로세스 목록을 읽어 파일마다 부르기엔 비싸고, 1 초면 느린 디스크의 파일 하나 조회 도중에도 놓치지 않음.
@@ -486,6 +503,7 @@ public sealed class ReapplyChecker
             }
             catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
             {
+                ClearShortRetry(game.Name);
                 if (_noPlanLogged.Add(game.Name))
                 {
                     _log.Info($"{game.Name}: no plan file yet, nothing to check"); // 아직 계획을 만들지 않은 게임은 오류가 아님
@@ -495,6 +513,7 @@ public sealed class ReapplyChecker
 
             if (_env.TierActive(game))
             {
+                ClearShortRetry(game.Name);
                 _log.Info($"{game.Name}: layout check skipped, ssd tier links are active");
                 return ReapplyVerdict.Healthy;
             }
@@ -508,19 +527,44 @@ public sealed class ReapplyChecker
             // 파일 배치를 못 읽은 항목이 있으면 (희소 파일 등) 판단할 수 없으므로 건강으로 봅니다: 같은 이유로 매 주기 재적용하며 0 바이트를 옮기는 일을 피함.
             bool? contiguous = layout is null || layout.HotClusters == 0 || layout.MissingFiles > 0 ? null : layout.Contiguous;
             ReapplyVerdict v = ReapplyPolicy.Decide(new ReapplyInputs(applied, changed, contiguous, Running, () => _env.DiskBusy(game), _env.CanApply, () => _env.Gate(game), unknown));
-            _log.Info($"{game.Name}: layout check {v}" + (layout is null ? string.Empty : $" ({LayoutState(layout)}{ZoneHit(layout)})"));
+            bool shortRetry = contiguous == false && IsShortRetryHold(v);
+            bool continuingShortRetry = _shortRetryPending.Contains(game.Name) && contiguous == false && v == ReapplyVerdict.Reapply;
+            if (shortRetry)
+            {
+                _shortRetryPending.Add(game.Name);
+            }
+            else if (v != ReapplyVerdict.Reapply)
+            {
+                _shortRetryPending.Remove(game.Name);
+            }
+
+            bool retryFlow = shortRetry || continuingShortRetry;
+            if (!retryFlow || !_lastShortRetryLog.TryGetValue(game.Name, out ReapplyVerdict lastVerdict) || lastVerdict != v)
+            {
+                _log.Info($"{game.Name}: layout check {v}" + (layout is null ? string.Empty : $" ({LayoutState(layout)}{ZoneHit(layout)})"));
+            }
+
+            if (retryFlow)
+            {
+                _lastShortRetryLog[game.Name] = v;
+            }
+            else
+            {
+                _lastShortRetryLog.Remove(game.Name);
+            }
+
             if (contiguous == false && _cancelled.Contains(game.Name))
             {
                 _log.Info($"{game.Name}: partially applied (an earlier reapply was cancelled by a game start); resuming");
             }
             else if (contiguous == false)
             {
-                // 설계 2.3-6: 원본이 그대로인데 배치가 풀렸으면 정기 드라이브 최적화가 되돌렸을 수 있음. 자동으로 해제하지 않고 알리기만 함 (지문이 확실하고 경고할 만한 때만, 게임당 하루 한 번).
+                // 원본이 그대로인데 배치가 풀렸으면 정기 드라이브 최적화가 되돌렸을 수 있음. 재적용 게이트는 유지하고, 같은 경고는 게임당 하루 한 번만 냅니다.
                 DateTimeOffset now = _env.Now();
                 if (!unknown && _env.WarnDegraded(game) && (!_warnedAt.TryGetValue(game.Name, out DateTimeOffset last) || now - last >= TimeSpan.FromDays(1)))
                 {
                     _warnedAt[game.Name] = now;
-                    _log.Warn($"{game.Name}: layout degraded while source files are unchanged (cause unknown; a scheduled drive optimization or another tool may have moved files; not changed automatically)");
+                    _log.Warn($"{game.Name}: layout degraded while source files are unchanged (cause unknown; a scheduled drive optimization or another tool may have moved files; the service will retry automatically when safety checks allow it)");
                 }
             }
 
@@ -538,6 +582,8 @@ public sealed class ReapplyChecker
                 catch (PlanRejectedException e) when (e.Message == DataLock.PlanChangedMessage)
                 {
                     _env.Spent(game, 0); // 잠금을 기다리는 동안 계획이 바뀜: 아무것도 옮기지 않았으니 다음 검사에서 새 계획으로 다시
+                    _shortRetryPending.Add(game.Name); // 잠금 충돌은 일시적: 풀릴 때까지 짧게 다시 확인
+                    _lastShortRetryLog[game.Name] = ReapplyVerdict.Reapply;
                     _log.Info($"{game.Name}: reapply deferred, the plan changed while waiting for the zone lock");
                     return ReapplyVerdict.DiskBusy;
                 }
@@ -551,6 +597,8 @@ public sealed class ReapplyChecker
 
                 if (rep.Stopped == DataLock.BusyReason)
                 {
+                    _shortRetryPending.Add(game.Name); // 잠금 충돌은 일시적: 풀릴 때까지 짧게 다시 확인
+                    _lastShortRetryLog[game.Name] = ReapplyVerdict.Reapply;
                     _log.Info($"{game.Name}: reapply deferred, another apply or plan switch holds the zone lock");
                     return ReapplyVerdict.DiskBusy;
                 }
@@ -563,11 +611,14 @@ public sealed class ReapplyChecker
                 _log.Info($"{game.Name}: reapplied, moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed" + (rep.OrderUsed is { } ou ? $", order {ou}" + (rep.OrderFallbackReason is not null ? " (fallback)" : string.Empty) : string.Empty) + (rep.Stopped is { } s ? $", stopped: {s}" : string.Empty));
                 if (rep.Stopped == "cancelled")
                 {
+                    _shortRetryPending.Add(game.Name);
+                    _lastShortRetryLog[game.Name] = ReapplyVerdict.Reapply;
                     _cancelled.Add(game.Name);
                     return ReapplyVerdict.Cancelled;
                 }
 
                 _cancelled.Remove(game.Name);
+                ClearShortRetry(game.Name);
             }
 
             return v;
@@ -578,14 +629,22 @@ public sealed class ReapplyChecker
         }
         catch (ShaMismatchException e)
         {
+            ClearShortRetry(game.Name);
             _log.Error($"{game.Name}: DATA CHECK FAILED after move, journal kept for revert", e);
             return ReapplyVerdict.Failed;
         }
         catch (Exception e) when (e is PlanRejectedException or NotAdminException or PyValueException or IOException or UnauthorizedAccessException or Win32Exception)
         {
+            ClearShortRetry(game.Name);
             _log.Error($"{game.Name}: layout check failed", e);
             return ReapplyVerdict.Failed;
         }
+    }
+
+    private void ClearShortRetry(string gameName)
+    {
+        _shortRetryPending.Remove(gameName);
+        _lastShortRetryLog.Remove(gameName);
     }
 
     /// 계획 안의 모든 경로가 (링크를 푼 뒤) 허용 루트 안인가. 서비스는 SYSTEM 이라 계획 파일을 그대로 믿지 않습니다.
@@ -624,6 +683,10 @@ public sealed class ReapplyChecker
 
     private static string LayoutState(LayoutReport r) =>
         r.MissingFiles > 0 ? "layout unreadable for some files" : r.Contiguous ? "contiguous" : r.ResumeNeeded ? "resume-needed" : "non-contiguous";
+
+    private static bool IsShortRetryHold(ReapplyVerdict verdict) => verdict is
+        ReapplyVerdict.GameRunning or ReapplyVerdict.DiskBusy or ReapplyVerdict.Recovering or
+        ReapplyVerdict.OnBattery or ReapplyVerdict.PostUpdateDelay or ReapplyVerdict.NotIdle;
 
     // 참고용: 핫 데이터 중 존 안 클러스터 비율 (보존 구간이 있는 계획에서는 낮아도 정상).
     private static string ZoneHit(LayoutReport r) =>

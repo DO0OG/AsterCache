@@ -537,7 +537,7 @@ public sealed class Worker : BackgroundService
     {
         DateTimeOffset start = DateTimeOffset.UtcNow;
         var due = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
-        var resuming = new HashSet<string>(StringComparer.Ordinal); // 취소돼 반쯤 적용된 게임: 게임이 끝날 때까지 짧게 다시 확인
+        var resuming = new HashSet<string>(StringComparer.Ordinal); // 일시 보류·취소된 미완료 배치: 짧은 재검사 예약 상태
         try
         {
             while (!ct.IsCancellationRequested)
@@ -557,7 +557,16 @@ public sealed class Worker : BackgroundService
     {
         _quiet.Refresh();
         RunHeldTriggers();
-        foreach (GameSettings g in _settings.Games)
+        GameSettings[] games = [.. _settings.Games];
+        HashSet<string> registered = games.Select(g => g.Name).ToHashSet(StringComparer.Ordinal);
+        _checker.RetainGames(registered);
+        foreach (string name in due.Keys.Where(name => !registered.Contains(name)).ToArray())
+        {
+            due.Remove(name);
+        }
+
+        resuming.RemoveWhere(name => !registered.Contains(name));
+        foreach (GameSettings g in games)
         {
             due.TryAdd(g.Name, start + FirstCheckDelay);
             if (DateTimeOffset.UtcNow < due[g.Name] || _quiet.Defers("layout check and reapply"))
@@ -569,7 +578,8 @@ public sealed class Worker : BackgroundService
             ReapplyVerdict v = lease is null
                 ? ReapplyVerdict.GameRunning
                 : _gate.Run(lease.Token, token => _checker.Check(g, token, o => SameDiskRunning(o) || !lease.IsValid), () => SameDiskRunning(g) || !lease.IsValid, () => ReapplyVerdict.GameRunning); // 진입 게이트와 파일 사이 점검이 같은 판정을 씀 (같은 물리 디스크의 등록 게임 전체 + 대여 유효), 실행 중이면 검사 자체를 부르지 않음
-            bool waiting = v == ReapplyVerdict.Cancelled || (resuming.Contains(g.Name) && v is ReapplyVerdict.GameRunning or ReapplyVerdict.DiskBusy or ReapplyVerdict.Recovering or ReapplyVerdict.OnBattery or ReapplyVerdict.NotIdle or ReapplyVerdict.PostUpdateDelay);
+            bool wasResuming = resuming.Contains(g.Name);
+            bool waiting = v == ReapplyVerdict.Cancelled || _checker.ShouldRetrySoon(g.Name, v, wasResuming);
             _ = waiting ? resuming.Add(g.Name) : resuming.Remove(g.Name);
             due[g.Name] = DateTimeOffset.UtcNow + (waiting ? ResumeRetry : TimeSpan.FromMinutes(g.ReapplyMinutes));
         }

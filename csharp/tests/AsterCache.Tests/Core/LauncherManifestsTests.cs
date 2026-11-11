@@ -87,6 +87,18 @@ public sealed class LauncherManifestsTests
     [Fact]
     public void SteamworksRedistributableIsNotAGame() => Assert.Null(LauncherManifests.ParseAppManifest(Fixture("appmanifest_228980.acf")));
 
+    [Theory]
+    [InlineData("431960", false)] // Wallpaper Engine
+    [InlineData("1283970", false)] // YoloMouse
+    [InlineData("1", true)]
+    [InlineData("431961", true)]
+    public void ResidentUtilityAppIsNotAGameEvenWhenItIsBig(string appId, bool registered)
+    {
+        string acf = $"\"AppState\" {{ \"appid\" \"{appId}\" \"name\" \"n\" \"installdir\" \"d\" \"SizeOnDisk\" \"5368709120\" }}";
+
+        Assert.Equal(registered, LauncherManifests.ParseAppManifest(acf) is not null);
+    }
+
     [Fact]
     public void ManifestWithoutInstallDirIsNull() => Assert.Null(LauncherManifests.ParseAppManifest("\"AppState\" { \"appid\" \"1\" }"));
 

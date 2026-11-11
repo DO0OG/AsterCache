@@ -212,6 +212,35 @@ public sealed class PinAndRewarmTests
 
     // ---- 고정 ----
 
+    [Fact]
+    public void AGameUnregisteredWhileItWasBeingPrewarmedIsNotPinned()
+    {
+        _ram = 64 * Gib;
+        GameSettings g = Game("a");
+        Prewarmer p = Make(g);
+        p.WarmMeasured += (_, _) => p.SetGames([]); // 읽기가 끝난 직후 설정 재적재로 등록이 해제됨
+
+        Assert.True(p.Run(g, "service start").Ran);
+
+        Assert.Empty(p.Pinned);
+        Assert.Empty(_pins);
+    }
+
+    [Fact]
+    public void APinOpenedWhileTheGameGetsUnregisteredIsDiscardedNotKept()
+    {
+        _ram = 64 * Gib;
+        GameSettings g = Game("a");
+        Prewarmer p = Make(g);
+        _onOpen = () => p.SetGames([]); // 파일을 여는 도중 설정 재적재로 등록이 해제됨 (Reconcile 은 아직 저장 안 된 pin 을 못 봄)
+
+        Assert.True(p.Run(g, "service start").Ran);
+
+        Assert.Empty(p.Pinned);
+        Assert.NotEmpty(_pins);
+        Assert.All(_pins, pin => Assert.True(pin.Disposed));
+    }
+
     [Theory]
     [InlineData(32, true, true)]
     [InlineData(16, true, true)]

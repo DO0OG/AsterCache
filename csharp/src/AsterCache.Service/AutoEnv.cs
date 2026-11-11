@@ -96,6 +96,21 @@ public sealed class AutoEnv
     /// 설치 폴더 아래의 exe 와 크기 (제거 목록 exe 재평가, exe 지문). 읽을 수 없으면 빈 목록, 시험 기본값도 빈 목록.
     public Func<string, IReadOnlyList<(string Path, long Size)>> ExeFiles { get; init; } = _ => [];
 
+    /// 작은 텍스트 파일 (Steam appmanifest) 의 내용. 없거나 읽을 수 없으면 null, 시험 기본값도 null.
+    public Func<string, string?> ReadText { get; init; } = _ => null;
+
+    private static string? ReadSmallText(string path)
+    {
+        try
+        {
+            return File.Exists(path) && new FileInfo(path).Length <= 1 << 20 ? File.ReadAllText(path) : null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
     /// 'X:' 의 볼륨 레이블 (읽지 못하면 "").
     public required Func<string, string> VolumeLabel { get; init; }
 
@@ -298,6 +313,7 @@ public sealed class AutoEnv
             Scan = () => LauncherScan.Scan(),
             LooksLikeGame = dir => LauncherScan.LooksLikeGame(dir),
             ExeFiles = dir => LauncherScan.InstalledExes(dir),
+            ReadText = ReadSmallText,
             VolumeLabel = VolumeInfo.Label,
             IsHdd = letter => DiskInfo.Query(letter).IncursSeekPenalty,
             SameDisk = VolumeDisks.SameDisk,

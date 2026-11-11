@@ -310,7 +310,7 @@ There is no channel for sending commands to the service. The tray uses only file
 - Power loss, SSD damage, BitLocker, and DirectStorage environments have not been tested.
 - Release binaries are not code-signed, so Windows may show an unsigned-publisher warning.
 - If only the tray is updated, the service stays on the old version. The tray shows the version mismatch, and you must reinstall the service with the installer.
-- Apps other than games in the Steam library, such as Wallpaper Engine or YoloMouse, can be registered automatically when they are on an HDD. To avoid this, add their exe to `auto.ignore_exes` or remove the game on the Games tab.
+- Resident utilities such as Wallpaper Engine or YoloMouse are excluded from automatic registration. Other non-game apps in the Steam library can still be registered when they are on an HDD; to avoid this, add their exe to `auto.ignore_exes` or remove the game on the Games tab.
 - Automatic tracing may miss some of a game's first reads before its session starts. Automatic tracing and automatic relocation have logs of runs with real games on this PC (Call of Duty, League of Legends, and others), but no controlled validation has been done.
 - Games installed under `AppData\Local\Temp` are not found by the heuristic.
 - The shared profile repository is still being prepared. The effect of shared profiles, of Windows prefetch boot traces, and of engine and whole-folder prewarm has not been measured.

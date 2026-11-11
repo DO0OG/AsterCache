@@ -505,6 +505,115 @@ public sealed class AutoRegistryTests : IDisposable
         Assert.Equal("HYSafeMode.exe", _rig.Reload().Games.Single().ExeNames[0]);
     }
 
+    // ---- 상주 유틸리티 (고정 제외 목록) ----
+
+    private const string SteamApps = @"D:\SteamLibrary\steamapps";
+
+    private static string Acf(string appId, string installDir) => $"\"AppState\"\n{{\n\t\"appid\"\t\t\"{appId}\"\n\t\"name\"\t\t\"x\"\n\t\"installdir\"\t\t\"{installDir}\"\n}}\n";
+
+    [Theory]
+    [InlineData(@"D:\Apps\WallpaperEngine\wallpaper64.exe")]
+    [InlineData(@"D:\Apps\WallpaperEngine\bin\WALLPAPER32.EXE")]
+    [InlineData(@"D:\Apps\YoloMouse\YoloMouse.exe")]
+    [InlineData(@"D:\Apps\obs-studio\bin\64bit\obs64.exe")]
+    [InlineData(@"D:\SteamLibrary\steamapps\common\SteamVR\bin\win64\vrserver.exe")]
+    public void ResidentUtilityProcessesAreNeverGameCandidates(string image)
+    {
+        Run(_rig.Registry(), 10, image, 900);
+
+        Assert.Empty(Registered());
+    }
+
+    [Fact]
+    public void DiscoverySkipsResidentUtilityExesAndStillRegistersOthers()
+    {
+        World.Found.Add(Found("Wallpaper Engine", @"D:\Games\WallpaperEngine", "wallpaper64.exe"));
+        World.Found.Add(Found("Ok", @"D:\Games\Ok", "ok.exe"));
+
+        int n = _rig.Registry().DiscoverOnce();
+
+        Assert.Equal(1, n);
+        Assert.Equal(["Ok"], Registered());
+    }
+
+    [Fact]
+    public void ResidentAutoGamesAreUnregisteredOnceAndNotRegisteredAgain()
+    {
+        UninstallGame("wallpaper_engine", "main.exe", $@"{SteamApps}\common\wallpaper_engine", launcher: "steam");
+        UninstallGame("ExeOnly", "wallpaper32.exe", @"D:\Games\ExeOnly", launcher: "heuristic");
+        UninstallGame("Real", "real.exe", $@"{SteamApps}\common\Real", launcher: "steam");
+        UninstallGame("Mixed", "wallpaper64.exe", @"D:\Games\Mixed", launcher: "heuristic");
+        _rig.Editor.AddExeName("Mixed", "mixed.exe");
+        UninstallGame("OtherFolder", "other.exe", $@"{SteamApps}\common\OtherFolder", launcher: "steam");
+        UninstallGame("Manual", "wallpaperui.exe", @"D:\Games\Manual", source: "manual");
+        _rig.Reload();
+        World.Texts[$@"{SteamApps}\appmanifest_431960.acf"] = Acf("431960", "wallpaper_engine");
+        World.Texts[$@"{SteamApps}\appmanifest_1283970.acf"] = Acf("1283970", "SomethingElse");
+        AutoRegistry reg = _rig.Registry();
+
+        reg.DiscoverOnce();
+        _rig.Reload();
+        reg.DiscoverOnce();
+        Run(reg, 10, $@"{SteamApps}\common\wallpaper_engine\main.exe", 900); // 해제한 유틸리티의 설치 폴더 프로세스는 다시 후보가 되지 않음
+        Run(reg, 11, $@"{SteamApps}\common\OtherFolder\other2.exe", 900); // 목록 appid 의 폴더가 아니면 전처럼 후보 (이미 등록된 폴더의 exe 추가)
+
+        Assert.Equal(["Real", "Mixed", "OtherFolder", "Manual"], Registered());
+        Assert.Empty(_rig.Settings.Auto.IgnoreExes); // 자동 정리는 사용자 제외 목록을 건드리지 않음
+        Assert.Equal(["other.exe", "other2.exe"], _rig.Reload().Games.Single(g => g.Name == "OtherFolder").ExeNames);
+        Assert.Single(_rig.Log.Lines, l => l.Contains("unregistered wallpaper_engine", StringComparison.Ordinal));
+        Assert.Single(_rig.Log.Lines, l => l.Contains("unregistered ExeOnly", StringComparison.Ordinal));
+        Assert.Equal(2, _rig.Log.Lines.Count(l => l.Contains("unregistered", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void ManualEntryRegisteredAfterTheSettingsWereReadIsNotUnregistered()
+    {
+        UninstallGame("Wp", "wallpaper64.exe", @"D:\Games\Wp", launcher: "heuristic");
+        _rig.Editor.Remove("Wp"); // 사용자가 지우고 같은 이름·같은 exe 로 직접 등록 (서비스의 메모리 설정은 아직 옛것)
+        _rig.Editor.Add(_rig.Input("Wp", "wallpaper64.exe", @"D:\Games\Wp", "manual"));
+        AutoRegistry reg = _rig.Registry();
+
+        reg.DiscoverOnce();
+
+        GameSettings kept = Assert.Single(_rig.Editor.Load()!.Games);
+        Assert.Equal(("Wp", "manual"), (kept.Name, kept.Source));
+        Assert.DoesNotContain(_rig.Log.Lines, l => l.Contains("unregistered", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ResidentAutoGameIsUnregisteredEvenWhileRunningButNotWhileRelocating()
+    {
+        UninstallGame("Wp", "wallpaper64.exe", @"D:\Games\Wp", launcher: "heuristic");
+        UninstallGame("Obs", "obs64.exe", @"D:\Games\Obs", launcher: "heuristic");
+        _rig.Status.Set("Obs", "auto", "heuristic", AutoStage.Relocating, null);
+        World.RunningExes.Add("wallpaper64.exe"); // 상주 프로그램은 계속 실행 중이어도 해제됨
+        AutoRegistry reg = _rig.Registry();
+
+        reg.DiscoverOnce();
+
+        Assert.Equal(["Obs"], Registered()); // 재배치 중인 항목만 미룸
+
+        _rig.Reload();
+        reg.DiscoverOnce();
+        Assert.Equal(["Obs"], Registered());
+
+        _rig.Status.Set("Obs", "auto", "heuristic", AutoStage.Done, null);
+        _rig.Reload();
+        reg.DiscoverOnce();
+        Assert.Empty(Registered());
+    }
+
+    [Fact]
+    public void ResidentReviewIsSkippedWhileAutoDiscoveryIsOff()
+    {
+        UninstallGame("Wp", "wallpaper64.exe", @"D:\Games\Wp", launcher: "heuristic");
+        _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { Discover = false } };
+
+        _rig.Registry().DiscoverOnce();
+
+        Assert.Equal(["Wp"], Registered());
+    }
+
     [Fact]
     public void ExeAlreadyRegisteredIsSkipped()
     {

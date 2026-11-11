@@ -2838,7 +2838,10 @@ public sealed class Prewarmer
             planned += take;
             lock (_run)
             {
-                StreamHead(head, ct);
+                if (_games.Any(x => string.Equals(x.Name, g.Name, StringComparison.OrdinalIgnoreCase)))
+                {
+                    StreamHead(head, ct); // 대기 중 등록이 해제된 게임은 앞부분도 읽지 않음
+                }
             }
         }
     }
@@ -2967,6 +2970,11 @@ public sealed class Prewarmer
                 PrewarmResult cancelled = new(game.Name, false, Cancelled, null, now) { CancelDetail = detail };
                 TrackPendingWarm(game, cancelled, now);
                 return cancelled;
+            }
+
+            if (!_games.Any(x => string.Equals(x.Name, game.Name, StringComparison.OrdinalIgnoreCase)))
+            {
+                return new PrewarmResult(game.Name, false, "game removed", null, now); // 대기 중에 등록이 해제됨: 읽지 않음
             }
 
             if (string.Equals(why, "rewarm", StringComparison.Ordinal) && PendingWarmDriveRecovering(game))
@@ -3119,7 +3127,7 @@ public sealed class Prewarmer
                     _log.Info($"{game.Name}: prewarm phases ({why}): {run.Summary()}");
                     PrewarmResult done = Record(game, warmedAt, new PrewarmResult(game.Name, true, null, s, warmedAt), mbps);
                     WarmMeasured?.Invoke(game, mbps);
-                    if (pin && !ct.IsCancellationRequested)
+                    if (pin && !ct.IsCancellationRequested && _games.Any(x => string.Equals(x.Name, game.Name, StringComparison.OrdinalIgnoreCase)))
                     {
                         _pins.TryPin(game, why == AfterRelocation);
                     }

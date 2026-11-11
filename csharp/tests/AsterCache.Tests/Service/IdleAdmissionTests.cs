@@ -17,6 +17,7 @@ public sealed class IdleAdmissionTests
     private long _uptimeMs;
     private TimeSpan _waited;
     private bool _running;
+    private Action? _onSleep;
     private DiskActivity.SampleState _sample = DiskActivity.SampleState.Ok;
 
     // 100 MiB 묶음 다섯 개를 차례로 읽고 묶음마다 진행을 알림 (StreamPrewarmCore 의 Batches 와 같은 순서: 취소 확인 → 읽기 → 진행).
@@ -44,7 +45,23 @@ public sealed class IdleAdmissionTests
         }
     }
 
-    private Prewarmer Make(IGameStreamer streamer) => new([Game()], streamer, new PrewarmEnv
+    // 앞부분 읽기와 전체 읽기를 따로 기록.
+    private sealed class HeadStreamer : IGameStreamer
+    {
+        public List<string> Heads { get; } = [];
+
+        public List<string> Full { get; } = [];
+
+        public StreamStats Stream(GameSettings game)
+        {
+            Full.Add(game.Name);
+            return new StreamStats(100 * Mib, 1, 0, 0.01);
+        }
+
+        public void StreamHead(GameSettings game, CancellationToken stop) => Heads.Add(game.Name);
+    }
+
+    private Prewarmer Make(IGameStreamer streamer, params GameSettings[] games) => new(games.Length == 0 ? new[] { Game() } : games, streamer, new PrewarmEnv
     {
         AvailableRamMib = () => 16000,
         GameRunning = _ => _running,
@@ -55,6 +72,7 @@ public sealed class IdleAdmissionTests
         {
             Assert.Empty(_plain.Calls); // 기다리는 동안은 읽지 않음
             (_uptimeMs, _waited) = (_uptimeMs + (long)t.TotalMilliseconds, _waited + t);
+            _onSleep?.Invoke();
         },
         DiskBytesPerSecond = _ => 0,
         DiskSample = _ => (0, _sample),
@@ -86,6 +104,35 @@ public sealed class IdleAdmissionTests
 
         Assert.True(Assert.Single(results).Ran);
         Assert.True(_uptimeMs >= 5 * 60_000 + 55_000, $"started too early: {_uptimeMs} ms"); // 부팅 5 분 + 유휴 60 초 (Sleep 이 그동안 읽기 0 을 확인)
+    }
+
+    [Fact]
+    public void AGameUnregisteredWhileServiceStartWaitsForIdleIsNotRead()
+    {
+        _uptimeMs = (long)TimeSpan.FromHours(2).TotalMilliseconds;
+        Prewarmer p = Make(_plain);
+        _onSleep = () => p.SetGames([]); // 유휴를 기다리는 동안 설정 재적재로 등록이 해제됨
+
+        IReadOnlyList<PrewarmResult> results = p.RunServiceStart();
+
+        Assert.DoesNotContain(results, r => r.Ran);
+        Assert.Empty(_plain.Calls);
+    }
+
+    [Fact]
+    public void ALoadHeadIsNotReadForAGameUnregisteredWhileServiceStartWaitsForIdle()
+    {
+        _uptimeMs = (long)TimeSpan.FromHours(2).TotalMilliseconds;
+        GameSettings a = Games.Make("a", "a.exe");
+        GameSettings b = Games.Make("b", "b.exe");
+        var streamer = new HeadStreamer();
+        Prewarmer p = Make(streamer, a, b);
+        _onSleep = () => p.SetGames([b]); // 유휴를 기다리는 동안 a 의 등록이 해제됨
+
+        p.RunServiceStart();
+
+        Assert.Equal(["b"], streamer.Heads); // b 의 앞부분은 읽혀 이 경로를 실제로 지났음을 보임
+        Assert.DoesNotContain("a", streamer.Full);
     }
 
     [Fact]

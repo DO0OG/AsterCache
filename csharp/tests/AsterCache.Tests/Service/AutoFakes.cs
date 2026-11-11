@@ -121,6 +121,8 @@ internal sealed class FakeWorld
     /// 설치 폴더 → 그 아래 exe 와 크기 (제거 목록 exe 재평가, exe 지문).
     public Dictionary<string, List<(string Path, long Size)>> ExeFiles { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+    public Dictionary<string, string> Texts { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     public FakeTrace? Session { get; set; }
 
     public Func<int, FakeTrace>? StartTraceFactory { get; set; }
@@ -286,6 +288,7 @@ internal sealed class FakeWorld
         DirectoryExists = p => DirectoryExists(p),
         LooksLikeGame = p => LooksLikeGame(p),
         ExeFiles = p => ExeFiles.TryGetValue(p, out List<(string Path, long Size)>? list) ? list : [],
+        ReadText = p => Texts.GetValueOrDefault(p),
         StartTrace = (_, listener) =>
         {
             TraceStarts++;

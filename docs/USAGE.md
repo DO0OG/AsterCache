@@ -17,6 +17,7 @@
 - **Measurement.** Measures cold replay time per game before and after relocation.
 - **Profile export and import.** Moves a recorded trace to another PC with `aster profile export` and `aster profile import`. An import is accepted only when the file size and a sampled hash match.
 - **Management window.** Without administrator rights a banner appears at the top, and you can relaunch as administrator.
+- **Tray at logon.** When installed under Program Files, the installer registers a logon task named `AsterCache` that starts the tray with administrator rights, so no UAC prompt appears (a standard user account starts it with normal rights). Other install folders use the Start-folder shortcut.
 - **Command line `aster`.** Runs the same operations as the management window as commands, for automation.
 - **English and Korean UI.** The management window and the CLI support both languages (see [Language](CONFIGURATION.md#language)).
 

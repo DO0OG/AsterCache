@@ -3079,7 +3079,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     public void ReapplyGateNeedsTheIdleWindowThenPasses()
     {
         Assert.Equal(ReapplyVerdict.NotIdle, Relocator.ReapplyBlock(_game));
-        _w.Now += TimeSpan.FromMinutes(3);
+        _w.Now += TimeSpan.FromMinutes(5); // ResumeRetry 보다 긴 검사 공백이어도 30 분 유휴 기록은 이어짐
 
         Assert.Null(Relocator.ReapplyBlock(_game));
     }

@@ -18,10 +18,10 @@
 
 ## Recent changes
 
+- **0.9.0-beta.36, resident utilities excluded, prewarm shrinks to fit memory.** Desktop utilities that stay running and do not load again, such as Wallpaper Engine, are no longer registered, and ones already registered are unregistered automatically. When memory is slightly short, prewarm reads the front part that fits instead of cancelling, and a prewarm that was cancelled is read again even while the drive recovers from a relocation.
 - **0.9.0-beta.35, blocked reapply handed to auto relocation.** When restoring a degraded layout is rejected because another file occupies part of the zone, the game goes back to auto relocation, which replans only the remaining part. A reapply that stops at the per-round write cap continues after the drive recovers instead of a day later.
 - **0.9.0-beta.34, unfinished prewarms retried, quicker drive-recovery check.** A prewarm that was cancelled before it finished, or skipped by the service-start cap, is requested again when the disk is idle. The drive-recovery check after relocation no longer runs to its hard limit when its baseline speed was measured low, and a layout check blocked by a temporary condition is repeated every 5 minutes instead of a day later.
 - **0.9.0-beta.33, admin tray at logon, play records, observed-read prewarm.** When installed under Program Files, the tray starts with administrator rights at logon through a logon task, so no UAC prompt appears. Play records sample the disk's read counters during each play (`play_samples.json`). When the prewarm budget is short, ranges observed in play are filled before ranges guessed from engine profiles.
-- **0.9.0-beta.32, relocation skips and prewarm cache budget.** Sparse, compressed, and encrypted files are left out of the placement check, so they no longer keep relocation from finishing. Prewarm's cache budget defaults to half of physical RAM (`prewarm.max_cache_mib`), and games triggered recently, such as by a launcher, are prewarmed first for 6 hours.
 - Changes since beta.25, and the earlier list since beta.8 (parallel relocation, drive recovery judgment, progress after install, yielding at game start, and more), are in [docs/CHANGES.md](docs/CHANGES.md).
 
 ## What it does
@@ -107,7 +107,7 @@ This is a tally of the service log on one PC (2026-11-02 to 2026-11-10). It is n
 2. Run it and choose a language (English or 한국어).
 3. Keep the default choices (desktop and Start menu shortcuts, start with Windows, install the service) and click Next until it finishes.
 
-Prefer no installer? The same release has a zip, `AsterCache-0.9.0-beta.35-win-x64.zip`. Extract it, run `AsterCache.Tray.exe` as administrator, and install and start the service from the Settings tab.
+Prefer no installer? The same release has a zip, `AsterCache-0.9.0-beta.36-win-x64.zip`. Extract it, run `AsterCache.Tray.exe` as administrator, and install and start the service from the Settings tab.
 
 Running a newer installer upgrades the existing installation. Uninstalling reverts any SSD assist links first (`aster tier revert --all`; the copies stay in the tier folder), then removes the program and the service, but keeps the data folder `%ProgramData%\AsterCache`. The installer is not code-signed, so Windows SmartScreen may show a warning.
 

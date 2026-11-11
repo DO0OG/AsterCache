@@ -68,10 +68,10 @@ public sealed class RewarmBudgetTests
     }
 
     [Fact]
-    public void OnlyTheHigherRankedGameIsRewarmedWhenTheHotSetsExceedTheBudget()
+    public void RewarmUsesTheRemainingBudgetForARejectedObservedGame()
     {
-        GameSettings a = Game("a");
-        GameSettings b = Game("b");
+        GameSettings a = Game("a") with { MaxStreamMib = 5000, MaxStreamSet = true };
+        GameSettings b = Game("b") with { MaxStreamMib = 5000, MaxStreamSet = true };
         _avail = 16000;
         Prewarmer p = Ranked(a, b);
         Assert.True(p.Run(a, "service start").Ran);
@@ -82,8 +82,77 @@ public sealed class RewarmBudgetTests
 
         Cycle(p, auto);
 
-        Assert.Equal("a", Assert.Single(_streamer.Calls).Game);
-        Assert.Contains(_log.Lines, l => l.Contains("b: rewarm check skipped (the cache budget of 8192 MiB is used by higher-ranked games: 5000 MiB)", StringComparison.Ordinal));
+        Assert.Equal([("a", 5000), ("b", 3192)], _streamer.Calls);
+        Assert.Equal(8192, p.WarmBudget()!.Value.UsedMib);
+        Assert.Equal(3192, p.WarmBudget()!.Value.AllocMib["b"]);
+    }
+
+    [Theory]
+    [InlineData(255, false)]
+    [InlineData(256, true)]
+    public void ARejectedObservedGameGetsLeftoverOnlyWhenItMeetsThePartialMinimum(int leftoverMib, bool included)
+    {
+        _streamer.ZoneMib = 8192;
+        _avail = 20000;
+        GameSettings a = Game("a") with { MaxStreamMib = 8192 - leftoverMib, MaxStreamSet = true };
+        GameSettings b = Game("b") with { MaxStreamMib = 5000, MaxStreamSet = true };
+        Prewarmer p = Ranked(a, b);
+        Assert.True(p.Run(a, "service start").Ran);
+        Assert.True(p.Run(b, "service start").Ran);
+
+        var budget = p.WarmBudget()!.Value;
+
+        Assert.Equal(8192 - leftoverMib, budget.AllocMib["a"]);
+        Assert.Equal(included, budget.In.Contains("b"));
+        Assert.Equal(included ? 8192 : 8192 - leftoverMib, budget.UsedMib);
+        if (included)
+        {
+            Assert.Equal(256, budget.AllocMib["b"]);
+        }
+        else
+        {
+            Assert.DoesNotContain("b", budget.AllocMib.Keys);
+        }
+    }
+
+    [Fact]
+    public void ARejectedGameWithAFullObservedRangeGetsTheRemainingPartialAllocation()
+    {
+        GameSettings a = Game("a"), b = Game("b");
+        _avail = 20000;
+        _observedMib["a"] = 5000;
+        _observedMib["b"] = 5000;
+        Prewarmer p = Ranked(a, b);
+        Assert.True(p.Run(a, "service start").Ran);
+        Assert.True(p.Run(b, "service start").Ran);
+
+        var budget = p.WarmBudget()!.Value;
+
+        Assert.Equal(8192, budget.UsedMib);
+        Assert.Equal(5000, budget.AllocMib["a"]);
+        Assert.Equal(3192, budget.AllocMib["b"]);
+    }
+
+    [Fact]
+    public void RewarmAndSupplementBudgetMessagesDescribeAssignedShares()
+    {
+        _streamer.ZoneMib = 8192;
+        _avail = 20000;
+        GameSettings a = Game("a") with { MaxStreamMib = 7937, MaxStreamSet = true };
+        GameSettings b = Game("b") with { MaxStreamMib = 5000, MaxStreamSet = true };
+        Prewarmer p = Ranked(a, b);
+        Assert.True(p.Run(a, "service start").Ran);
+        Assert.True(p.Run(b, "service start").Ran);
+        AutoSettings auto = Auto();
+        p.Tick(auto);
+        _streamer.Calls.Clear();
+
+        Cycle(p, auto);
+
+        string detail = "the cache budget of 8192 MiB has 7937 MiB assigned to warm targets; no allocation of at least 256 MiB fits this game";
+        Assert.Contains(_log.Lines, line => line.Contains($"b: rewarm check skipped ({detail})", StringComparison.Ordinal));
+        Assert.False(p.SupplementWhenIdle(b, CancellationToken.None));
+        Assert.Contains(_log.Lines, line => line.Contains($"b: supplement prewarm skipped ({detail})", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -103,8 +172,10 @@ public sealed class RewarmBudgetTests
         _order = ["b", "a"];
         Cycle(p, auto);
 
-        Assert.Equal("b", Assert.Single(_streamer.Calls).Game);
-        Assert.Contains(_log.Lines, l => l.Contains("a: rewarm check skipped (the cache budget", StringComparison.Ordinal));
+        Assert.Equal(["a", "b"], _streamer.Calls.Select(call => call.Game).OrderBy(name => name, StringComparer.Ordinal));
+        var budget = p.WarmBudget()!.Value;
+        Assert.Equal(3192, budget.AllocMib["a"]);
+        Assert.Equal(5000, budget.AllocMib["b"]);
     }
 
     [Fact]
@@ -158,22 +229,23 @@ public sealed class RewarmBudgetTests
         _avail = 16000;
         _streamer.Calls.Clear();
 
-        Assert.False(p.SupplementWhenIdle(b, CancellationToken.None)); // 낮은 순위: 유휴 시계와 상관없이 건너뜀
+        Assert.False(p.SupplementWhenIdle(b, CancellationToken.None)); // 부분 예열 대기는 60초 유휴를 채워야 함
         _now += TimeSpan.FromSeconds(61);
-        Assert.False(p.SupplementWhenIdle(b, CancellationToken.None));
-        Assert.Empty(_streamer.Calls);
-        Assert.Contains(_log.Lines, l => l.Contains("b: supplement prewarm skipped (the cache budget of 8192 MiB", StringComparison.Ordinal));
+        Assert.True(p.SupplementWhenIdle(b, CancellationToken.None)); // 남은 3192 MiB 를 배정받음
+        Assert.Equal(("b", 3192), Assert.Single(_streamer.Calls));
 
         p.SupplementWhenIdle(a, CancellationToken.None);
         _now += TimeSpan.FromSeconds(61);
         Assert.True(p.SupplementWhenIdle(a, CancellationToken.None));
-        Assert.Equal("a", Assert.Single(_streamer.Calls).Game);
+        Assert.Equal("a", _streamer.Calls[^1].Game);
+        Assert.InRange(_streamer.Calls[^1].MaxStreamMib, 1, 5000);
 
         _order = ["b", "a"]; // 순위가 바뀌면 b 가 대상
         p.SupplementWhenIdle(b, CancellationToken.None);
         _now += TimeSpan.FromSeconds(61);
         Assert.True(p.SupplementWhenIdle(b, CancellationToken.None));
         Assert.Equal("b", _streamer.Calls[^1].Game);
+        Assert.InRange(_streamer.Calls[^1].MaxStreamMib, 1, 5000);
     }
 
     private static GameSettings Launched(string name, int maxCacheMib = 0) =>
@@ -255,7 +327,7 @@ public sealed class RewarmBudgetTests
 
         Assert.Equal(6000, p.WarmBudget()!.Value.CapMib);
         Assert.Contains("a", p.WarmBudget()!.Value.In);
-        Assert.DoesNotContain("b", p.WarmBudget()!.Value.In); // 5000 + 5000 > 6000
+        Assert.Equal(1000, p.WarmBudget()!.Value.AllocMib["b"]); // 관찰분을 보존한 뒤 남은 예산을 부분 배정
     }
 
     [Fact]
@@ -268,15 +340,15 @@ public sealed class RewarmBudgetTests
         Assert.True(p.Run(a, "service start").Ran);
         Assert.True(p.Run(b, "service start").Ran);
         Assert.Contains("a", p.WarmBudget()!.Value.In); // 트리거 전: 순위대로
-        Assert.DoesNotContain("b", p.WarmBudget()!.Value.In);
+        Assert.Equal(3192, p.WarmBudget()!.Value.AllocMib["b"]); // 관찰분 전체가 안 들어가도 남은 부분 예산을 받음
 
         p.OnProcessStart(new ProcessStart(1, "launcher.exe", 0));
 
         Assert.Contains("b", p.WarmBudget()!.Value.In);
-        Assert.DoesNotContain("a", p.WarmBudget()!.Value.In); // 양보: 이미 올린 a 의 캐시를 비우지는 않고 이후 점검 대상에서만 빠짐
+        Assert.Equal(3192, p.WarmBudget()!.Value.AllocMib["a"]); // 트리거 b 를 먼저 배정하고 a 는 남은 예산만 받음
         _now += Prewarmer.TriggerPriorityWindow + TimeSpan.FromMinutes(1);
         Assert.Contains("a", p.WarmBudget()!.Value.In); // 기간이 지나면 기존 순위
-        Assert.DoesNotContain("b", p.WarmBudget()!.Value.In);
+        Assert.Equal(3192, p.WarmBudget()!.Value.AllocMib["b"]); // 순위가 돌아와도 남은 부분 예산을 받음
     }
 
     [Fact]
@@ -294,6 +366,8 @@ public sealed class RewarmBudgetTests
 
         p.OnProcessStart(new ProcessStart(1, "launcher.exe", 0));
 
-        Assert.Equal(["b"], p.WarmBudget()!.Value.In.OrderBy(n => n)); // 트리거를 공유한 a, b 중 순위가 높은 b 만 앞섬: 5000 + 5000 > 8192 라 순위 1위 c 도 밀림
+        var budget = p.WarmBudget()!.Value;
+        Assert.Equal(["b", "c"], budget.In.OrderBy(n => n)); // 트리거 b 는 전체, 다음 순위 c 는 남은 3192 MiB, a 는 제외
+        Assert.Equal(3192, budget.AllocMib["c"]);
     }
 }

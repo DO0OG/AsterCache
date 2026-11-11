@@ -6,7 +6,6 @@ This document describes the layout and usage of the repository's Python referenc
 
 ## Layout
 
-
 - `bench/` — synthetic dataset generation (about 2 GiB, 4,000 trace entries), cold and warm replay, cold-condition preparation, and the scenario runner
 - `prefetch/` — NTFS extent lookup (`layout.py`), physical-position sorting and break-even gap merging (`scheduler.py`), sequential prefetch (`reader.py`), and the command-line entry point (`cli.py`)
 - `relayout/` — hot-block planning from a trace (`plan.py`), in-place NTFS moves (`mover.py`), plan apply, verify, and revert (`apply.py`), and the command-line entry point (`cli.py`)
@@ -21,7 +20,6 @@ This document describes the layout and usage of the repository's Python referenc
 - `results/` — measurement result JSON and logs
 
 ## Requirements
-
 
 - Python 3.11 or later. There are no external package dependencies. Validated on Windows 11 with Python 3.11.4 and 3.12.10.
 - The origin path and the cache path must be in different directory trees. A real speed comparison needs separate physical HDD and SSD devices.

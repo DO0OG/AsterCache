@@ -4,50 +4,408 @@
 
 > Details that continue from [Getting started](../README.md#getting-started) in the README: the stages of what the service does by itself, the supported launchers, and the setting keys.
 
-Automatic mode is on by default. In the usual case you do not need to register games or set anything. Each part can be turned off in the **Automatic mode** group of the Settings tab, or in `config.json`.
+Automatic mode is on by default. In the usual case you do not need to register games or set anything. Each part can be turned off in the **Automatic mode** group of the Settings tab, or in `config.json`. Setting names are listed here; their meanings and defaults are in [CONFIGURATION.md](CONFIGURATION.md). Folded blocks (click to open) hold the conditions, exceptions, and numbers.
+
+## The stages at a glance
+
+| Stage | One line |
+|---|---|
+| 1. Discovery | Finds HDD games in launcher libraries and registers them. |
+| 2. Recording reads | Records what a game reads while it loads (the trace). |
+| 3. Relocation | Moves the pieces the game reads into one zone while the PC is idle. |
+| 4. Prewarm | Reads the zone into RAM before the game starts. |
+| 5. Upkeep | Re-prewarms, tops up, retries, and rechecks the layout. |
+| 6. While a game runs | Yields the disk to the game and records how the disk behaved. |
+| 7. Drive recovery wait | Waits for an SMR drive to settle after bulk writes. |
+
+"Idle" is defined in [What "idle" means](#what-idle-means).
 
 ## Sources before the first run
 
-A game with no trace takes its first layout data from the first source below that applies. When the first real run records a trace, the plan made from it replaces the earlier one (the old plan is kept as `.stale`).
+A game with no trace takes its first layout data from the first source below that applies: a shared profile, a Windows prefetch record, an engine profile, or the whole folder. The first real trace replaces it.
 
-1. **Shared profile** (`auto.shared_profiles`, on by default). Once a week the service downloads one zip of shared profiles over HTTPS and looks each game up in its index by Steam app ID and depot manifest IDs, Epic app name and version, or exe size and sample SHA-256. A profile is used only when the file size and sample hash on this PC match. Offline or 404 responses are skipped silently. The download is capped at 64 MiB. The shared repository is still being prepared.
-2. **Windows prefetch record** (`C:\Windows\Prefetch\*.pf`). Used when the SysMain service runs and the application bit of `EnablePrefetcher` is on. The service only reads the game's `.pf` files and builds a boot trace from the files in the install folder, skipping files flagged "do not prefetch". The ranges the record refers to, plus 64 MiB before and after each (merged where they overlap, with no file size limit), are moved into the zone in physical order. If the zone covers less than 30 % of what a play reads, the status detail shows `partial (N%)`. The management window shows this as "relocated (prefetch)".
-3. **Engine profile** (Unity, Unreal, or Source), prewarmed without a trace.
-4. **Whole folder**, prewarmed without a trace when the folder fits the RAM budget.
+<details>
+<summary>Details: the four sources</summary>
+
+When the first real run records a trace, the plan made from it replaces the earlier one, trying the same zone position first (the old plan is kept as `.stale`).
+
+- **Shared profile** (`auto.shared_profiles`, on by default). Once a week the service downloads one zip over HTTPS and looks each game up by Steam app ID and depot manifest IDs, Epic app name and version, or exe size and sample SHA-256.
+- A profile is used only when the file size and sample hash on this PC match. Offline or 404 responses are skipped silently. The download is capped at 64 MiB. The shared repository is still being prepared.
+- **Windows prefetch record** (`C:\Windows\Prefetch\*.pf`). Used when the SysMain service runs and the application bit of `EnablePrefetcher` is on. The service only reads the game's `.pf` files.
+- It builds a boot trace from the files in the install folder, skipping files flagged "do not prefetch". The ranges the record refers to, plus 64 MiB before and after each (merged where they overlap, no file size limit), are moved into the zone in physical order.
+- If the zone covers less than 30 % of what a play reads, the status detail shows `partial (N%)`. The management window shows this as "relocated (prefetch)".
+- **Engine profile** (Unity, Unreal, or Source), prewarmed without a trace.
+- **Whole folder**, prewarmed without a trace when the folder fits the RAM budget.
+
+</details>
 
 ## Stages
 
-1. **Discovery.** Ten seconds after the service starts, and every hour after that, the service reads the libraries of the supported launchers (below). A game installed on an HDD (rotational volume) is registered with `"source": "auto"`. A game is skipped if its volume label is empty or longer than 32 characters (a log line is written), or if its exe name or an overlapping folder is already registered. The list holds up to 32 games. When it is full, launcher discovery stops, and a game that is actually run and detected replaces the least recently used automatic entry.
-2. **Trace.** When a registered game without a trace starts, the service records its reads with a live ETW session named `AsterCacheAutoTrace`. Recording stops at the first of: the game exiting, 1800 seconds (`trace_cap_seconds`), or the larger of 6144 MiB and twice the zone limit (`trace_cap_mib`). If a cap is reached while the game is still running, cleanup, saving, and merging wait until it exits. If the game is still running when the first window ends, late windows open: every `auto.trace_late_interval_min` (default 10) minutes it records for `auto.trace_late_window_seconds` (default 90), up to `auto.trace_late_windows` (default 6) times. The read cap applies to the session total, and saving and merging happen only after the game exits. A game whose anti-cheat forbids tracing is not collected this way either. The result is saved as `plans\<name>.trace.json`, the same file that the manual **Capture trace** button writes. The next plays are recorded the same way until `trace_runs` (default 3) are collected: each is saved as `plans\<name>.trace.runN.json`, and `trace.json` becomes the union of their blocks (the first run's access order, then blocks first seen in later runs), replaced atomically. If the merged hot set is at least `trace_merge_min_mib` (default 64) larger than the plan's, and the game is not running, the zone is extended in place: blocks already in the zone stay where they are and only new blocks are appended after them, within `max_zone_mib` (the earliest run's blocks win), through the same idle, daily-limit and write-budget checks as any relocation. If the region after the zone is not free, the extension is skipped, the previous plan stays, and it is retried only when a newer play changes the trace (`zone extension blocked: ...` in the log). The status column shows `trace 2/3` while more plays are being collected. Once the merge gain is too small and collection stops, the game is traced once more if any of these holds since its last valid run: 5 plays, 7 days, or a detected game update. A game whose anti-cheat forbids tracing is not collected this way. When the run-file number limit is reached, the oldest run is replaced and the merged block list is kept. A game detected at its start has already begun loading, so its trace is recorded from the next run. While this trace is recorded, the service can also read ahead (first-run learning). This is an experimental feature, off by default (`auto.learn.enabled` is `false`; no gain in E7 to E7f measurements). When it is on, it reads ahead only in files the game reads sequentially: a file is judged sequential after 6 forward reads in a row, each at most 4 MiB past the end of the previous read, and the game has read at least 8 MiB of that file. Such a file is read ahead in 16 MiB steps from the current position, up to `auto.learn.window_mib` (default 512 MiB) further, without waiting for gaps in the game's reads, and it keeps going while the game reads (`auto.learn.mode` `"stream"`, the default). With `"gap"`, it reads ahead only after 100 ms of quiet, in 1 MiB requests. Reads come from the service's own process, with one reader thread, low I/O priority, and the most recently read file first. Files the game has opened exclusively are skipped. The total is at most the game's reads × 1.5 + 64 MiB, and stays within `auto.learn.max_total_mib` (default: the smaller of a quarter of physical RAM and 4096 MiB) and keeps the free-RAM reserve (`min_free_ram_mib`). Only games on an HDD that is not the system drive are learned. The game process is never opened; reads are only observed through ETW.
-3. **Plan and relocation.** After a trace exists, the game is not running, and the PC has been idle for `idle_seconds` (default 30) in a row, the service handles one game at a time. It plans the zone (hot data × 1.1, capped by `max_zone_mib`), moves the data with the same Applier as manual relocation (journal and SHA-256 sample check), and confirms the layout. Idle means: throughput on the game's drive below 4 MiB/s and either AC power or a battery at 50 % or more. At most `max_relocations_per_day` (default 4) relocations run in 24 hours, and each game gets one automatic first relocation; later upkeep uses the existing periodic check. If a game starts during a move, the move stops after the current fragment and resumes later from the journal. If the data check fails or an error occurs while the game is off, the journal is used to revert, and the failure is recorded. Right after a move finishes (or fails, if a trace exists), the zone is prewarmed. Moves carry a low I/O priority hint (`FileIoPriorityHintInfo` Low). The documentation does not guarantee that the kernel applies it to the copy I/O of a move, and this has not been measured yet. If a game's files change size or modification time after relocation (a game update), the trace and plan are set aside as `.stale` (checked every 10 minutes), the stage goes back to discovery, and the game is traced and relocated again on its next run, trying its previous zone position first.
-4. **Prewarm.** At service start, when a supported launcher starts, and after a game exits, the most recently played games are prewarmed. Games you played recently, and often at this time of day, are warmed first. A game counts as exited only when all of its registered exe files have been gone for 60 seconds, so a launcher-to-game handoff is not mistaken for an exit; unregistered processes in the install folder do not delay it. After an exit, relocation, SSD tier apply, and prewarm or re-prewarm for a new trace on the same physical disk wait for the longer of 60 seconds and `auto.rewarm_after_exit_min` minutes, so a game that starts again within seconds is not disturbed. With `prewarm_recent` at its default 0, the service prewarms as many recent games as fit in the budget (the smaller of half of physical RAM, or `prewarm.max_cache_mib`, and free RAM minus `min_free_ram_mib`); a value from 1 to 32 caps the number of games instead. To keep the prewarm, every `rewarm_minutes` (default 10; 0 turns it off) the service reads 1 MiB from each of 8 places in the zone (the first 4 in read order and 4 evenly spaced). If at least 2 of them take more than 2 ms, the data has probably been evicted from the file cache, so it prewarms again while keeping `min_free_ram_mib` free. Re-prewarm and supplement prewarm (reading only a window that fits the budget, the smaller of the remaining hot set, free RAM minus the reserve, and the prewarm budget, at least 256 MiB, from the part of a hot set that does not fit) cover only games inside the prewarm budget, in prewarm-score order (recent play and time-of-day habits). A game outside it is not re-warmed after it cools, and the reason is logged. If a supplement stops midway, the position it reached is remembered while the service runs, and the next supplement continues from there (a supplement that mixed in gap filling, or whose front has gone cold, starts again from the beginning). If the front part has cooled or cannot be checked, it is read again from the front; a failed read or a settings change discards the position. A service restart loses the position. A running game does not stop the rewarm check for other games; each target is judged separately. It does not run while a game on the same drive as a prewarmed game is running, unless that game reads under 1 MiB/s and the disk stays under its busy threshold for 60 seconds in a row. While reading, it checks that game's read growth between batches, and about every 10 seconds it pauses for 1 second to measure disk throughput again and yields if the disk is busy. A failed read-count query counts as busy. The running game's own prewarm, and any relocation, re-layout, or tier write, stay blocked. The prewarm reads in 64 MiB batches: if another game starts, it stops at the next batch boundary; if the game being prewarmed starts, it also stops at the next batch boundary and yields to the game (`auto.keep_stream_on_game_start`, default `false`; `true` restores the old behavior of reading to the end, for experiments). The management window shows `prewarming x/y MiB`, and a tray notification is sent when a game's prewarm finishes (once per game per day). A full-folder prewarm reads in the disk's physical order. When a batch holds more than one game, the loading head (tier0) of each game is read first, in recent order, and then each game's whole zone. After a game update is detected, re-planning, relocation and prewarm for that game wait `post_update_delay_min` minutes (default 15; 0 turns it off), because the drive may still be reorganizing scattered writes (E9). On SMR drives, after a relocation the service waits for the drive to recover before it starts the next job (`auto.post_relocate_recovery`, default `"probe"`: every 2 minutes it reads a short sample, and the drive counts as recovered after 2 consecutive samples at 90% or more of the baseline, waiting at most `post_update_delay_min` × 4 minutes; `"fixed"` waits a fixed number of minutes, `"off"` turns it off). The wait stops while a game on the same disk is running and continues from the remaining time after it exits. A service restart keeps the paused state and the remaining time. While such a game runs, the recovery sample reads are skipped. The keep-awake read, pin creation, and boot checks check for a running game before they start, and layout checks (extent and fingerprint lookups) are rechecked about every second while running and stop when a game starts. Since 0.9.0-beta.14 the boot-time prewarm covers only recently played games, starts 5 minutes after boot, and runs only while the disk is idle; the full-folder prewarm cap is 1024 MiB by default (`auto.full_prewarm_max_mib`, where 0 now means 1024 MiB instead of a quarter of RAM). If the service starts within 5 minutes of boot (for example, when Windows starts it at logon), it holds the disk work it would start on its own (trigger prewarm such as a launcher starting, relocation, new-trace prewarm, layout checks and reapply, and the keep-awake read) until 5 minutes have passed and the game drive has been idle for 60 seconds; the held work then runs under the normal rules. A trace that was already prewarmed before the restart is not treated as new again. The quiet period also ends 15 minutes after boot even if the disk is still busy or unreadable. Prewarm ranges are marked as observed in play or guessed from an engine profile. When the budget is short, the observed ranges of all games are filled first, and the leftover budget goes to the guessed ranges; with enough budget, the ranges read and their order are unchanged. While a game runs, the service samples the physical disk's cumulative read counters once per second and logs a `play record:` line and saves `play_samples.json` at 30, 60, 120, 300, and 600 seconds after the start and at exit. It reads only the disk device counters, never the game's files or process, so this is measurement for comparing loading and stutter and does not make the game faster by itself.
-5. **Pinning (optional).** With `prewarm.pin` set to `true` (when the key is not written, it turns on automatically with 24 GiB of RAM or more; `false` turns it off; an explicit `true` works with 16 GiB of RAM or more), the prewarmed pages stay open as read-only mappings in the service, so they are less likely to be evicted. The mappings are released at once when free RAM falls below the reserve or when a game or launcher starts, so launcher updates can change the files. A prewarm started by a trigger program is not pinned. Effect unverified (needs an experiment).
+### 1. Discovery
+
+- **When.** Ten seconds after the service starts, then every hour.
+- **What.** Reads the [supported launchers](#supported-launchers) and registers each HDD game with `"source": "auto"`. A process that reads a lot after it starts is caught by the [heuristic](#heuristic-detection).
+- **Does not.** Register SSD games, resident utilities, or a game in the same folder as one you registered by hand. A game on the Windows system drive is only prewarmed.
+- **Settings.** `auto.discover`, `auto.ignore_exes`.
+- **Log.** `auto <launcher>: registered <name> (<exe>)`
+
+<details>
+<summary>Details: limits, skipped games, resident utilities</summary>
+
+**Limits and skips**
+
+- The list holds up to 32 games. When it is full, launcher discovery stops, and a game that is actually run and detected replaces the least recently used automatic entry.
+- A game is skipped if its volume label is empty or longer than 32 characters (one log line), or its exe name or an overlapping folder is already registered.
+- Games on an SSD are not registered, traced, or relocated. On an HDD that is the Windows system drive, a game is only discovered and prewarmed (status "prewarm only (system drive)").
+- A game you remove in the management window has its exe added to `auto.ignore_exes`, so it is not registered again (up to 64 exes; the oldest are dropped).
+- Other log lines: `auto <launcher>: skipped <name>: volume has no usable label`, `auto discovery: game list is full, skipping the rest`.
+
+**Resident utilities**
+
+- Desktop utilities that are not games and stay running once started (Wallpaper Engine, YoloMouse, Lossless Scaling, OBS Studio, SteamVR, and the like) are never registered.
+- A fixed list of Steam app IDs and exe names excludes them from launcher discovery and the heuristic. This list is separate from `auto.ignore_exes`.
+- One already registered automatically is unregistered once after the service starts, even if it is running, unless files are being relocated at that moment (then at the next discovery). Entries you registered yourself are not touched.
+- Files already moved stay where they are. With the SSD assist storage (`auto.ssd_tier`), the links of a game that is no longer registered are reverted. A game that is no longer registered is not prewarmed or pinned.
+- Log line: `auto: unregistered <game> (resident utility, not a game)`.
+
+</details>
+
+### 2. Recording reads (trace)
+
+- **When.** The first time a registered game without a trace starts (the trace is recorded from the next run, since the detected start has already begun loading). It repeats for a few plays.
+- **What.** Records the game's reads with a live ETW session and saves `plans\<name>.trace.json`, the same file as the manual **Capture trace** button.
+- **Does not.** Trace a game whose anti-cheat forbids it ([ANTICHEAT.md](ANTICHEAT.md)), or open the game process. Reads are only observed through ETW.
+- **Settings.** `auto.trace`, `trace_cap_seconds`, `trace_cap_mib`, `trace_runs`, `trace_merge_min_mib`, `trace_late_*`.
+- **Log.** `<game>: auto trace started (run 2/3)`, `<game>: auto trace ended (<why>), N read events saved`
+
+<details>
+<summary>Details: caps, several plays, zone extension, first-run learning</summary>
+
+**Recording**
+
+- The session is named `AsterCacheAutoTrace`. Recording stops at the first of: the game exiting, 1800 seconds (`trace_cap_seconds`), or the larger of 6144 MiB and twice the zone limit (`trace_cap_mib`).
+- If a cap is reached while the game is still running, cleanup, saving, and merging wait until it exits.
+- The trace records only reads that went to disk, so reads already served from the cache may be missed, and some of the first reads before the session starts may be missed too.
+
+**Late windows**
+
+- If the game is still running when the first window ends, every `auto.trace_late_interval_min` minutes it records for `auto.trace_late_window_seconds` seconds, up to `auto.trace_late_windows` times.
+- The read cap applies to the session total.
+
+**Several plays**
+
+- The next plays are recorded the same way until `trace_runs` are collected, each saved as `plans\<name>.trace.runN.json`.
+- `trace.json` becomes the union of their blocks (the first run's access order, then blocks first seen in later runs), replaced atomically. The status column shows `trace 2/3` meanwhile.
+- When the run-file number limit is reached, the oldest run is replaced and the merged block list is kept.
+- Once the merge gain is too small and collection stops, the game is traced once more if any of these holds since its last valid run: 5 plays, 7 days, or a detected game update.
+
+**Zone extension**
+
+- If the merged hot set is at least `trace_merge_min_mib` larger than the plan's, and the game is not running, the zone is extended in place.
+- Blocks already in the zone stay and only new blocks are appended after them, within `max_zone_mib` (the earliest run's blocks win), through the same idle, daily-limit, and write-budget checks as any relocation.
+- If the region after the zone is not free, the extension is skipped, the previous plan stays, and it is retried only when a newer play changes the trace. Log line: `<game>: zone extension blocked: ...`.
+
+**First-run learning (experimental, off by default)**
+
+- While the trace is recorded, the service can also read ahead. It is off (`auto.learn.enabled` is `false`; no gain in E7 to E7f measurements, see [RESULTS_SUMMARY.md](RESULTS_SUMMARY.md#e7-first-run-read-ahead)).
+- When on, it reads ahead only in files the game reads sequentially: 6 forward reads in a row, each at most 4 MiB past the end of the previous read, and at least 8 MiB of that file read.
+- Such a file is read ahead in 16 MiB steps from the current position, up to `auto.learn.window_mib` further, without waiting for gaps in the game's reads (`auto.learn.mode` `"stream"`, the default). With `"gap"`, it reads only after 100 ms of quiet, in 1 MiB requests.
+- Reads come from the service's own process, with one reader thread, low I/O priority, and the most recently read file first. Files the game has opened exclusively are skipped.
+- The total is at most the game's reads × 1.5 + 64 MiB, and stays within `auto.learn.max_total_mib` and the free-RAM reserve (`min_free_ram_mib`). Only games on an HDD that is not the system drive are learned.
+- The other modes `"bounded"` and `"adaptive"` are experimental variants; see [CONFIGURATION.md](CONFIGURATION.md).
+
+</details>
+
+### 3. Relocation
+
+- **When.** After a trace exists, the game is not running, and the PC is idle, one game at a time.
+- **What.** Plans a zone, moves the pieces into it (journal and SHA-256 sample check), confirms the layout, then prewarms the zone.
+- **Does not.** Run while a game runs (a move in progress stops after the current fragment), move sparse, compressed, or encrypted files, or change file content. A failed check reverts from the journal.
+- **Settings.** `auto.relocate`, `idle_seconds`, `max_relocations_per_day`, `max_zone_mib`, `max_relocate_gib_per_day`. How much it writes: [Effect on the hard disk](GAME_GUIDE.md#effect-on-the-hard-disk).
+- **Log.** `<game>: auto relocation done`, `[ERROR] <game>: auto relocation stopped: ...`
+
+<details>
+<summary>Details: limits, interrupted and split moves, game updates</summary>
+
+**Limits**
+
+- Zone size: hot data × 1.1, capped by `max_zone_mib`.
+- At most `max_relocations_per_day` relocations run in 24 hours, counted from the start of each. Those under 64 MiB are not counted but still count toward the byte budget.
+- Each game gets one automatic first relocation. Later upkeep uses the periodic check in [Upkeep](#5-upkeep).
+- `auto.relocate` also applies to games you registered by hand. To prevent it, turn it off or add the exe to `auto.ignore_exes`.
+
+**Interrupted and split moves**
+
+- If a game starts during a move, the move stops after the current fragment and resumes later from the journal.
+- If another file takes the zone still to be moved, or the plan changes, the parts already moved are kept and only the remaining part is planned again into a new free area.
+- A plan whose zone is already at its maximum size is not planned again, and the screen says the work resumes automatically.
+- If the data check fails or an error occurs while the game is off, the journal is used to revert and the failure is recorded. Only that automatic change is reverted.
+
+**Game updates**
+
+- If a game's files change size or modification time after relocation, the trace and plan are set aside as `.stale` (checked every 10 minutes), and the stage goes back to discovery.
+- The game is traced and relocated again on its next run, trying its previous zone position first.
+
+**Other**
+
+- Moves carry a low I/O priority hint (`FileIoPriorityHintInfo` Low). The documentation does not guarantee that the kernel applies it to the copy I/O of a move, and this has not been measured yet.
+- Right after a move finishes (or fails, if a trace exists), the zone is prewarmed.
+- Other log line: `<game>: partially applied plan replanned, the parts already moved are kept`.
+
+</details>
+
+### 4. Prewarm
+
+- **When.** At service start, when a supported launcher starts, and after a game exits.
+- **What.** Reads the zones of the most recently played games into RAM, within a RAM budget, in 64 MiB batches.
+- **Does not.** Hold the disk against a game: it stops at the next batch boundary when any game starts, including the game being prewarmed.
+- **Settings.** `auto.full_prewarm`, `auto.full_prewarm_max_mib`, `auto.engine_profiles`, `prewarm_recent`, `prewarm.max_cache_mib`, `prewarm.min_free_ram_mib`, `auto.startup_warm_max_mib`, `auto.rewarm_after_exit_min`.
+- **Log.** `<game>: prewarm done (<reason>): N MiB requested, ... in S s = R hint MB/s, ...`
+
+<details>
+<summary>Details: when, order, budget, reading, games without a trace</summary>
+
+**When exactly**
+
+- A game counts as exited only when all of its registered exe files have been gone for 60 seconds, so a launcher-to-game handoff is not mistaken for an exit. Unregistered processes in the install folder do not delay it.
+- After an exit, relocation, SSD tier apply, and prewarm or re-prewarm for a new trace on the same physical disk wait for the longer of 60 seconds and `auto.rewarm_after_exit_min` minutes.
+
+**Order and budget**
+
+- The most recently played games first, with those played often at this time of day ahead. Games triggered recently (for example by a launcher) are prewarmed first for 6 hours.
+- With `prewarm_recent` at 0, as many recent games as fit in the budget; a value from 1 to 32 caps the number of games instead.
+- Budget: the smaller of half of physical RAM (or `prewarm.max_cache_mib`) and free RAM minus `min_free_ram_mib`.
+- Free memory is measured again right before reading. If the list no longer fits, it reads the front part that fits, with a 256 MiB margin, and the rest is supplemented later.
+
+**Reading**
+
+- In the disk's physical order. When a batch holds more than one game, the loading head (tier0) of each game is read first, in recent order, and then each game's whole zone.
+- Each range is marked as observed in play or guessed from an engine profile. When the budget is short, the observed ranges of all games are filled first and the leftover goes to the guessed ranges.
+- At service start only the head part is read, up to `auto.startup_warm_max_mib`. The rest is read later, once the disk is idle.
+- The management window shows `prewarming x/y MiB`, and a tray notification is sent when a game's prewarm finishes (once per game per day).
+- If another game starts, it stops at the next batch boundary. If the game being prewarmed starts, it also stops and yields (`auto.keep_stream_on_game_start`, default `false`; `true` reads to the end, for experiments).
+
+**Games without a trace**
+
+- A small game (folder within the RAM budget) gets its whole folder prewarmed, up to `auto.full_prewarm_max_mib`. A larger game gets its engine profile files.
+- A game that is no longer registered is not prewarmed or pinned.
+- Other log lines: `prewarm cancelled <reason>`, `<game>: prewarm skipped (...)`, and a `prewarm phases` line with the elapsed time per phase. A partial prewarm has `partial A/B MiB, the rest does not fit in memory:` in front.
+
+</details>
+
+### 5. Upkeep
+
+- **When.** Re-prewarm check every `rewarm_minutes`; top-ups and retries as the disk stays idle; layout check periodically.
+- **What.** Samples 8 places in each zone and reads it again if it went cold; reads the part of a hot set that did not fit; retries a prewarm that was cut short; restores a drifted layout.
+- **Does not.** Re-warm a game outside the prewarm budget, or touch the layout while the game runs.
+- **Settings.** `rewarm_minutes`, `min_free_ram_mib`, `post_update_delay_min`.
+- **Log.** `<game>: rewarm check skipped (...)`, `<game>: layout degraded while source files are unchanged (...)`, `<game>: reapplied, moved N bytes, N failed`
+
+<details>
+<summary>Details: re-prewarm, top-up, retry, layout recheck and reapply</summary>
+
+**Re-prewarm (keeping the prewarm)**
+
+- Reads 1 MiB from each of 8 places in the zone (the first 4 in read order and 4 evenly spaced). If at least 2 of them take more than 2 ms, the data has probably been evicted from the file cache, so it prewarms again while keeping `min_free_ram_mib` free.
+- Only games inside the prewarm budget are re-warmed, in prewarm-score order (recent play and time-of-day habits). A game outside the budget is not re-warmed after it cools, and the reason is logged.
+- One running game does not stop the check for other games; each target is judged separately.
+
+**Top-up (supplement)**
+
+- When a hot set does not fit the budget, a window that fits is read as the drive stays idle: the smaller of the remaining hot set, free RAM minus the reserve, and the prewarm budget, at least 256 MiB.
+- If a top-up stops midway, the position it reached is remembered while the service runs, and the next one continues from there. One that mixed in gap filling, or whose front has gone cold, starts again from the beginning.
+- A failed read or a settings change discards the position, and a service restart loses it.
+- Log lines: `<game>: rewarm check: the rest of the hot set is not read yet, supplementing once the drive has stayed idle`, `<game>: supplement prewarm skipped (...)`.
+
+**Retrying an unfinished prewarm**
+
+- A prewarm of a traced game that was cancelled before it finished, or skipped by the service-start cap, stays on a waiting list and is requested again once the disk has been idle for 60 seconds, no game is running on that disk, and the cache budget has room.
+- Games without a trace are not retried this way.
+- A cancelled prewarm is read again even while the drive recovers from a relocation. Further relocations still wait for recovery.
+
+**Layout recheck and reapply**
+
+- A periodic check (1440 minutes by default) finds that the layout has drifted while the source files are unchanged, and reapplies the plan.
+- If a temporary condition blocks the check (a running game, a busy disk, drive recovery, battery power, not idle long enough, the post-update delay), it is repeated every 5 minutes instead. A reapply that stops at the per-round write cap keeps the 5-minute recheck.
+- When reapply is rejected because another file occupies part of the zone (`zone_not_free`), the game is handed to automatic relocation, which keeps the moved parts and replans only the remaining part, under its existing holds and daily limits.
+- It is handed over only when automatic relocation is on, the game has a trace, and it is not stopped by a failed data check. Otherwise it fails as before. A rejection before any move is recorded as 0 bytes.
+- These checks (extent and fingerprint lookups) are rechecked about every second and stop when a game starts.
+- Other log line: `<game>: reapply blocked by zone_not_free, handing over to auto relocation to replan the remaining part`.
+
+</details>
+
+### 6. While a game runs
+
+- **When.** From a game's start to its exit (plus a short grace period).
+- **What.** Blocks relocation, reapply, and tier writes on that disk, yields prewarm, and records how the disk behaved (`play record:`).
+- **Does not.** Read the game's files or process. The play record uses only disk device counters, and it does not make the game faster by itself.
+- **Settings.** `auto.start_stream_cap_seconds`, `auto.restream_cooldown_min`, `auto.keep_awake`.
+- **Log.** `<game>: start stream skipped (<why>)`, `play record: ...`
+
+<details>
+<summary>Details: same-disk rules, start stream, play record</summary>
+
+**Same disk**
+
+- The running game's own prewarm, and any relocation, re-layout, reapply, or tier write, stay blocked.
+- A prewarm of another game on that disk runs only if the running game reads under 1 MiB/s and the disk stays under its busy threshold for 60 seconds in a row.
+- While reading, it checks that game's read growth between batches, and about every 10 seconds it pauses for 1 second to measure disk throughput again and yields if the disk is busy. A failed read-count query counts as busy.
+- The log line for a prewarm skipped because a game is running names the process (name and pid) judged to be the running game. The elapsed run time is counted from when the service observed the start.
+
+**Start stream**
+
+- When a game starts, the service can read its hot set (the start stream). It stops at the loading boundary (the 10-second moving read rate falls below 10% of its peak, at most 60 seconds in) or at `auto.start_stream_cap_seconds`.
+- It is not repeated within `auto.restream_cooldown_min`. Log line: `<game>: start stream stopped at load boundary after N bytes, S s (R MB/s)`.
+
+**Small checks**
+
+- The keep-awake read, pin creation, and boot checks check for a running game before they start.
+- The keep-awake read (`auto.keep_awake`) is 4 KiB every 10 minutes while a launcher is open or at your usual play hour, so the HDD does not spin down. Power settings are never changed.
+
+**Play record**
+
+- The service samples the physical disk's cumulative read counters once per second and logs a `play record:` line and saves `play_samples.json` at 30, 60, 120, 300, and 600 seconds after the start and at exit.
+- It reads only the disk device counters, never the game's files or process. It is for comparing loading and stutter.
+
+</details>
+
+### 7. Drive recovery wait
+
+- **When.** After a relocation on an SMR drive, and after a game update is detected.
+- **What.** Waits until short test reads show the drive back at its normal speed, then allows the next job.
+- **Does not.** Block prewarm. It holds back relocation, and after a game update that game's re-planning and prewarm.
+- **Settings.** `post_relocate_recovery`, `recovery_max_min`, `recovery_hard_max_min`, `post_update_delay_min`.
+- **Log.** `drive D: recovering after relocation (...)`, `drive D: recovered after N min`
+
+<details>
+<summary>Details: probe rules, limits, other modes, pauses</summary>
+
+**Probe (default)**
+
+- The baseline is measured right before the write at the three positions the samples rotate through, and their median is used.
+- Every 2 minutes it reads a short sample. The drive counts as recovered after 2 consecutive samples at 90% or more of the baseline. When the measurements fluctuate, it also counts as recovered once at least 4 of the last 6 samples (two rotations) are at 90% or more.
+- When samples keep falling short, the interval grows to 4 and then 8 minutes after the first two rotations. Each sample logs its position, speed and baseline, verdict, and reason.
+- Samples above the cache-hit ceiling at all three rotating positions in a row also count as recovered. Samples that cannot be judged are spaced out up to 8 minutes apart, and the discarded ones are summarized in one log line.
+- It waits at most `recovery_max_min` minutes. If recovery is still unconfirmed, further relocations stay on hold until the drive is recovered or `recovery_hard_max_min` minutes have passed.
+- `"fixed"` waits `post_update_delay_min` minutes; `"off"` turns it off.
+
+**After a game update**
+
+- Re-planning, relocation, and prewarm for that game wait `post_update_delay_min` minutes, because the drive may still be reorganizing scattered writes (E9).
+
+**Pauses**
+
+- The wait stops while a game on the same disk is running, and continues from the remaining time after it exits. The recovery sample reads are skipped meanwhile.
+- A service restart keeps the paused state and the remaining time.
+- Other log lines: `drive D: recovery clock paused (game running)`, `drive D: recovery discarded N cache-suspect samples ...`.
+
+</details>
+
+### Right after boot
+
+If the service starts within 5 minutes of boot, it holds the disk work it would start on its own until 5 minutes have passed and the game drive has been idle for 60 seconds. The quiet period ends 15 minutes after boot at the latest.
+
+<details>
+<summary>Details: what is held</summary>
+
+- Held work: trigger prewarm such as a launcher starting, relocation, new-trace prewarm, layout checks and reapply, and the keep-awake read. The held work then runs under the normal rules.
+- Boot-time prewarm covers only recently played games. A trace that was already prewarmed before the restart is not treated as new again.
+- The period also ends 15 minutes after boot even if the disk is still busy or unreadable.
+- Log lines: `<what> deferred: boot quiet period`, `boot quiet period ended: ...`.
+
+</details>
+
+### Pinning (optional)
+
+With `prewarm.pin`, prewarmed pages stay open as read-only mappings in the service so they are less likely to be evicted. Effect unverified (needs an experiment).
+
+<details>
+<summary>Details: when pinning is on and released</summary>
+
+- When the key is not written, it turns on automatically with 24 GiB of RAM or more; `false` turns it off; an explicit `true` works with 16 GiB of RAM or more.
+- The mappings are released at once when free RAM falls below the reserve or when a game or launcher starts, so launcher updates can change the files. A prewarm started by a trigger program is not pinned.
+
+</details>
+
+## What "idle" means
+
+"Idle" means all of these:
+
+- No registered game installed on the same drive as the games waiting to move is running (games on other drives are ignored).
+- The game's drive stays under 4 MiB/s for 30 seconds in a row.
+- The PC is on AC power, or on a battery at 50 % or more.
+
+CPU use is not part of the test: relocation uses low I/O priority and only affects the target drive. If the PC has not been idle for 6 hours, `service.log` records one line with the reason (`game running`, `on battery`, or `disk busy`). To see which stage each game is in, open the management window and look at the **Status** tab and the stage column of the **Games** tab.
 
 ## Supported launchers
 
-| Launcher | How the game list is read | Prewarm trigger for auto-registered games |
-|---|---|---|
-| Steam | `libraryfolders.vdf` and `appmanifest` files. The executable is the largest `.exe` in the game folder, excluding installers, redistributables, and crash tools | `steam.exe` |
-| Epic Games Store | `LaunchExecutable` in `%ProgramData%\Epic\EpicGamesLauncher\Data\Manifests\*.item` | `EpicGamesLauncher.exe` |
-| GOG Galaxy | Registry `HKLM\SOFTWARE\WOW6432Node\GOG.com\Games` | `GalaxyClient.exe` |
-| Ubisoft Connect | Registry `Launcher\Installs`, value `InstallDir` | `upc.exe`, `UbisoftConnect.exe` |
-| Riot Client | `product_install_full_path` in `%ProgramData%\Riot Games\Metadata\<product>.live\*.product_settings.yaml`. League of Legends (`LeagueClient.exe`, `League of Legends.exe`) and Teamfight Tactics use the same exe names, and their entries are merged when they share a folder. VALORANT uses `VALORANT.exe` and `VALORANT-Win64-Shipping.exe`. Other products use the largest `.exe` in the folder. Entries that are not `.live` (for example PBE) are skipped. Marked as Vanguard anti-cheat | `RiotClientServices.exe` |
-| Windows uninstall list | `Uninstall` keys of HKLM and HKCU (32-bit too). Kept when the install folder is on an HDD (not the system drive), is at least 1 GiB, is not from a common publisher (Microsoft, Intel, NVIDIA, and others), and is not a launcher's own folder. The exe is the largest `.exe` in the folder. Catches standalone games such as Battle.net, EA, Nexon, and HoYoverse titles. An entry that was skipped because its name matched a launcher exclusion word has its exe chosen again at service start under the current rules (one log line). Limits: a launcher-style folder can give the wrong exe; after the game runs, the heuristic adds the real exe. | None |
-| Xbox (Microsoft Store) | `XboxGames\<game>\Content` folder on each HDD. The exe is the largest `.exe`. Folders that cannot be read are skipped. | None |
+Steam, Epic Games Store, GOG Galaxy, Ubisoft Connect, Riot Client, the Windows uninstall list, and the Xbox app folders are read. Battle.net and EA app libraries are not read; their games are found by the uninstall list or the heuristic.
 
-The GOG and Ubisoft readers have not been checked on a real PC yet. The Riot reader was checked on this PC with League of Legends on D: (an HDD). The Xbox reader has not been checked, because this PC has no such folder.
+<details>
+<summary>Details: how each launcher is read</summary>
 
-Not read for discovery: Battle.net and EA app. Games from these, and games installed without a launcher, are found by the Windows uninstall list above when it matches, and otherwise by the heuristic below. A game in the same folder as a game you registered by hand is not registered automatically, and a log line is written. `Battle.net.exe` and `EADesktop.exe` are listed only as prewarm trigger programs; the service does not read their libraries.
+**Steam** (prewarm trigger `steam.exe`)
 
-Desktop utilities that are not games and stay running once started, such as Wallpaper Engine, YoloMouse, Lossless Scaling, OBS Studio, and SteamVR, are never registered automatically: a fixed list of Steam app IDs and exe names excludes them from both launcher discovery and the heuristic below (this list is separate from `auto.ignore_exes`). If one was already registered automatically, it is unregistered once after the service starts, even if it is running, unless files are being relocated at that moment (then at the next discovery); files already moved stay where they are, except that with the SSD assist storage (`auto.ssd_tier`) the service reverts the links of a game that is no longer registered. Any other program you do not want optimized can be removed in the management window, and it is then not registered again.
+- `libraryfolders.vdf` and `appmanifest` files. The executable is the largest `.exe` in the game folder, excluding installers, redistributables, and crash tools.
+
+**Epic Games Store** (trigger `EpicGamesLauncher.exe`)
+
+- `LaunchExecutable` in `%ProgramData%\Epic\EpicGamesLauncher\Data\Manifests\*.item`.
+
+**GOG Galaxy** (trigger `GalaxyClient.exe`)
+
+- Registry `HKLM\SOFTWARE\WOW6432Node\GOG.com\Games`.
+
+**Ubisoft Connect** (triggers `upc.exe`, `UbisoftConnect.exe`)
+
+- Registry `Launcher\Installs`, value `InstallDir`.
+
+**Riot Client** (trigger `RiotClientServices.exe`)
+
+- `product_install_full_path` in `%ProgramData%\Riot Games\Metadata\<product>.live\*.product_settings.yaml`. Marked as Vanguard anti-cheat. Entries that are not `.live` (for example PBE) are skipped.
+- League of Legends (`LeagueClient.exe`, `League of Legends.exe`) and Teamfight Tactics use the same exe names, and their entries are merged when they share a folder.
+- VALORANT uses `VALORANT.exe` and `VALORANT-Win64-Shipping.exe`. Other products use the largest `.exe` in the folder.
+
+**Windows uninstall list** (no trigger)
+
+- `Uninstall` keys of HKLM and HKCU (32-bit too). Kept when the install folder is on an HDD (not the system drive), is at least 1 GiB, is not from a common publisher (Microsoft, Intel, NVIDIA, and others), and is not a launcher's own folder.
+- The exe is the largest `.exe` in the folder. Catches standalone games such as Battle.net, EA, Nexon, and HoYoverse titles.
+- An entry skipped because its name matched a launcher exclusion word has its exe chosen again at service start under the current rules (one log line).
+- Limits: a launcher-style folder can give the wrong exe; after the game runs, the heuristic adds the real exe.
+
+**Xbox (Microsoft Store)** (no trigger)
+
+- `XboxGames\<game>\Content` folder on each HDD. The exe is the largest `.exe`. Folders that cannot be read are skipped.
+
+**Checked and not checked**
+
+- The GOG and Ubisoft readers have not been checked on a real PC yet. The Riot reader was checked on the test PC with League of Legends on D: (an HDD). The Xbox reader has not been checked, because the test PC has no such folder.
+- `Battle.net.exe` and `EADesktop.exe` are listed only as prewarm trigger programs; the service does not read their libraries.
+
+</details>
 
 ## Heuristic detection
 
-A process that is not registered, starts from an exe on an HDD volume, and reads 256 MiB or more within 20 seconds is treated as a game and registered. Excluded: the Windows folder, AsterCache itself, launchers and tool programs, and the exes in `auto.ignore_exes`. Also excluded are exes whose path contains `\bin\Debug\`, `\bin\Release\`, `\obj\`, `\.git\`, `\node_modules\`, or `\AppData\Local\Temp\`, and the built-in tool exes `testhost*`, `dotnet`, `msbuild`, `vstest*`, `python*`, `node`, `java*`, `powershell`, `pwsh`, `cmd`, `conhost`, `explorer`, `7z*`, and `winrar` (this fixed list is separate from `auto.ignore_exes`). The folder must also look like a game: it holds a file of 256 MiB or more, or a launcher mark (`steam_appid.txt`, `.egstore`, `goggame-*.info`, or a Steam manifest). Games installed under `AppData\Local\Temp` are therefore not found by this heuristic. Because the start was already missed, the first trace is recorded from the next run.
+A process that is not registered, starts from an exe on an HDD volume, and reads 256 MiB or more within 20 seconds is treated as a game and registered, if its folder looks like a game. The first trace is recorded from the next run.
+
+<details>
+<summary>Details: exclusions and the folder test</summary>
+
+- **Excluded.** The Windows folder, AsterCache itself, launchers and tool programs, and the exes in `auto.ignore_exes`.
+- Also excluded: exes whose path contains `\bin\Debug\`, `\bin\Release\`, `\obj\`, `\.git\`, `\node_modules\`, or `\AppData\Local\Temp\`.
+- Also excluded: the built-in tool exes `testhost*`, `dotnet`, `msbuild`, `vstest*`, `python*`, `node`, `java*`, `powershell`, `pwsh`, `cmd`, `conhost`, `explorer`, `7z*`, and `winrar`. This fixed list is separate from `auto.ignore_exes`.
+- **The folder must look like a game.** It holds a file of 256 MiB or more, or a launcher mark (`steam_appid.txt`, `.egstore`, `goggame-*.info`, or a Steam manifest). Games installed under `AppData\Local\Temp` are therefore not found.
+
+</details>
 
 ## Engine profiles
 
-The engine is detected from file names in the game folder, and the files to read during loading are chosen from it. If several profiles match, their rules are merged and the rule that matched first wins; the tail beyond the budget is cut. A TFT install (`Engine` and `TFT` folders) is detected as Unreal.
+The engine (Unity, Unreal, Source, Riot, MapleStory, CASC, SCS, EA FC Online) is detected from file names in the game folder, and the files to read during loading are chosen from it. A TFT install is detected as Unreal.
+
+<details>
+<summary>Details: markers and read rules per engine</summary>
+
+If several profiles match, their rules are merged and the rule that matched first wins; the tail beyond the budget is cut.
 
 | Profile | Detection markers | Main read rules |
 |---|---|---|
@@ -60,51 +418,29 @@ The engine is detected from file names in the game folder, and the files to read
 | SCS (ETS2) | Root `base.scs` | base, def, core, effect, locale `.scs` each first 512 MiB |
 | EA FC Online | Root `fczf.exe`, `data/*.big` | `data_default.big` whole; root exe and dll; other `*.big` each first 256 MiB |
 
+</details>
+
 ## Settings
 
-```json
-{
-  "max_zone_mib": 2048,
-  "auto": {
-    "enabled": true,
-    "discover": true,
-    "trace": true,
-    "relocate": true,
-    "full_prewarm": true,
-    "full_prewarm_max_mib": 0,
-    "engine_profiles": true,
-    "shared_profiles": {"enabled": true, "url": "https://github.com/DO0OG/AsterCache-profiles/releases/latest/download/profiles.zip"},
-    "learn": {"enabled": false, "mode": "stream", "window_mib": 512, "max_total_mib": 0},
-    "prewarm_recent": 0,
-    "idle_seconds": 30,
-    "trace_cap_seconds": 1800,
-    "trace_cap_mib": 6144,
-    "trace_runs": 3,
-    "trace_merge_min_mib": 64,
-    "max_relocations_per_day": 2,
-    "rewarm_minutes": 10,
-    "post_update_delay_min": 15,
-    "ignore_exes": [],
-    "ssd_tier": {"enabled": false, "budget_gib": 8, "root": "auto"}
-  }
-}
-```
+All `auto.*` keys, their meanings, and their defaults are in [CONFIGURATION.md](CONFIGURATION.md).
 
-- `"auto": {"enabled": false}` turns off the whole automatic mode. `discover`, `trace`, and `relocate` turn off one stage each. `max_zone_mib` can also be `"auto"`. `"auto": {"learn": {"enabled": true}}` turns the first-run read-ahead on (an experimental feature, off by default). `mode` (experimental) is `"stream"` (default), `"gap"`, `"bounded"`, or `"adaptive"`. `"bounded"` reads ahead as `"stream"` does, but caps the total at the game's reads + 32 MiB and sends no new request for 50 ms after each game read. `"adaptive"` adds to `"bounded"` a pause while the game's reads over the last 500 ms run at `saturation_mbps` (1..10000, default 80 MiB/s) or more, and a 200 ms pause when our own request latency doubles. Read-ahead stays off by default (no gain in E7 to E7f measurements). `shared_profiles.enabled` turns the weekly download off, and `url` must be https. `idle_seconds` replaces the older `idle_minutes`; if only `idle_minutes` is written, that value is used.
-- `"auto": {"ssd_tier": {"enabled": true, "budget_gib": 8, "root": "auto"}}` turns on the optional SSD assist storage (off by default). `budget_gib` (1..4096) is the most SSD space one game may use. `root` is `"auto"` (the system drive if it is an SSD, otherwise the SSD with the most free space, under `AsterCache\tier`) or an absolute path on an SSD. See [SSD assist storage](#ssd-assist-storage-optional).
+- `"auto": {"enabled": false}` turns off the whole automatic mode. `discover`, `trace`, and `relocate` turn off one stage each.
+- The state is written to `%ProgramData%\AsterCache\auto_status.json` (only the service writes it). `aster status` has an `"auto"` key, and `aster discover [--json]` lists the launcher games read-only.
 - The manual buttons (register, capture trace, create plan, run relocation, prewarm now) work as before.
-- The service writes its state to `%ProgramData%\AsterCache\auto_status.json`. Only the service writes that file.
-- The Status tab shows one line per game, such as "Auto: Frostpunk discovered → collecting trace → waiting to relocate → relocating → [done]". The Games tab shows the source, stage, and anti-cheat columns. The learning stage shows "First run: learning (read-ahead n MiB)", and "Prewarmed" appears after prewarm. The per-game status line also shows `hit right after prewarm N%` (the hit rate measured right after a prewarm ends) and `SSD assist N GB` (the size of the game's SSD copies). Tray notifications are sent for discovery, for a finished relocation, and when a first run ends ("Faster from the next launch: <game>").
-- `aster status` has an `"auto"` key. `aster discover [--json]` lists the launcher games read-only, with the anti-cheat marker.
-- A game you registered by hand is also relocated automatically when `auto.relocate` is on, once its trace exists and the PC is idle. To prevent this, turn off `auto.relocate` (in the Settings tab of the management window, clear the Relocate box) or add the game's exe to `auto.ignore_exes`.
-- Games on an SSD are not automatically registered, traced, or relocated. On an HDD that is the Windows system drive, games are only discovered and prewarmed (status "prewarm only (system drive)"); they are not relocated or tiered.
-- A game you removed in the management window has its exe added to `auto.ignore_exes`, so it is not registered automatically again. The list holds up to 64 exes; when it is full, the oldest entries are dropped.
-- The daily limit `max_relocations_per_day` counts 24 hours from the start of each relocation. Relocations under 64 MiB are not counted (they still count toward the byte budget).
-- If an automatic relocation fails, its journal reverts only that automatic change.
+
+<details>
+<summary>Details: what the screens show</summary>
+
+- The Status tab shows one line per game, such as "Auto: Frostpunk discovered → collecting trace → waiting to relocate → relocating → [done]". The Games tab shows the source, stage, and anti-cheat columns.
+- The learning stage shows "First run: learning (read-ahead n MiB)", and "Prewarmed" appears after prewarm.
+- The per-game status line also shows `hit right after prewarm N%` (the hit rate measured right after a prewarm ends) and `SSD assist N GB` (the size of the game's SSD copies).
+- Tray notifications are sent for discovery, for a finished relocation, and when a first run ends ("Faster from the next launch: <game>").
+
+</details>
 
 ## Effect
 
-How much automatic mode shortens total game load time has not been measured. There is a tally of the service log on this PC (2026-11-02 to 2026-11-10) as real-world usage records. It is not a controlled benchmark, and it has no comparison with prewarm off.
+How much automatic mode shortens total game load time has not been measured. The service log of the test PC (2026-11-02 to 2026-11-10) gives usage records, which are not a controlled benchmark and have no comparison with prewarm off.
 
 - League of Legends (Vanguard): 10 game start detections, 2 traces collected and then skipped 8 times, relocation completed 4 times, hit rate right after prewarm 100% (latest value only).
 - Call of Duty (Ricochet): 62 game start detections, 14 trace collections started, relocation completed 5 times, hit rate right after prewarm 75% (latest value only).
@@ -113,17 +449,32 @@ The method and sample counts are in [Real-world usage records](RESULTS_SUMMARY.m
 
 ## SSD assist storage (optional)
 
-Off by default (`auto.ssd_tier.enabled`). While it is off, AsterCache does not touch any file, except that it reverts links left by an earlier run.
+Off by default (`auto.ssd_tier.enabled`). While it is off, AsterCache does not touch any file, except that it reverts links left by an earlier run. When on, it copies the hottest files of an HDD game to an SSD within a budget and puts a symbolic link in their place.
 
-- **Choosing files.** Each file is scored by its hot bytes (the parts the trace read) divided by its size. Files are taken from the highest score down while they fit the budget (`budget_gib`, default 8 GiB per game). Game `.exe` and `.dll` files and files outside `allowed_roots` are never chosen.
-- **Applying.** The file is copied to the SSD, and the size and a sampled SHA-256 are checked. The copy is recorded in the journal, the original is renamed to `<name>.aster-orig` in the same folder, a symbolic link takes its place, and the link is checked by size. If one file fails, only that file is reverted.
-- **When it runs.** One game at a time, only for an HDD game that is not running, is not on the system drive, has no anti-cheat folder, and has finished relocation (or has relocation turned off). It waits for idle like relocation does, and retries a game it could not finish after 6 hours.
-- **Keeping.** At each service tick the journal is checked. A missing or wrong-size copy is reverted at once. A file that became a normal file, or whose copy changed through the link, is marked stale and left alone. If the SSD has less than 1 GiB free, no new copies are added and the oldest game is reverted first. A change to the budget or the folder makes the game revert and apply again with the new setting.
-- **Reverting.** `aster tier revert --game <name>` or `--all` removes the links and restores the originals. The copies stay in the tier folder until `aster tier clean` deletes the unused ones. Uninstalling reverts all games first.
-- **Where it is stored.** The journal is `%ProgramData%\AsterCache\tier\<game>.json`. If a journal cannot be read, that game is skipped, nothing is touched, and a log line is written.
-- **Management window.** The checkbox and the budget are in the Settings tab, under Automatic mode. The per-game status line shows `SSD assist N GB`.
-- **Commands.** `aster tier status`, `aster tier apply --game <name>`, `aster tier revert --game <name>` or `--all`, and `aster tier clean` (apply, revert, and clean need administrator rights).
+<details>
+<summary>Details: choosing, applying, keeping, reverting</summary>
 
-## What "idle" means
+**Choosing and applying**
 
-"Idle" means no registered game installed on the same drive as the games waiting to move is running (games on other drives are ignored), the game's drive stays under 4 MiB/s for 30 seconds in a row, and the PC is on AC power (or a battery at 50 % or more). CPU use is not part of the test: relocation uses low I/O priority and only affects the target drive, so a PC with background work is still relocated. If the PC has not been idle for 6 hours, `service.log` records one line with the reason (`game running`, `on battery`, or `disk busy`). To see which stage each game is in, open the management window (tray icon, or the desktop shortcut) and look at the **Status** tab and the stage column of the **Games** tab.
+- Each file is scored by its hot bytes (the parts the trace read) divided by its size. Files are taken from the highest score down while they fit the budget (`budget_gib`, default 8 GiB per game, 1 to 4096). Game `.exe` and `.dll` files and files outside `allowed_roots` are never chosen.
+- The file is copied to the SSD, and the size and a sampled SHA-256 are checked. The copy is recorded in the journal, the original is renamed to `<name>.aster-orig` in the same folder, a symbolic link takes its place, and the link is checked by size. If one file fails, only that file is reverted.
+- `root` is `"auto"` (the system drive if it is an SSD, otherwise the SSD with the most free space, under `AsterCache\tier`) or an absolute path on an SSD.
+
+**When it runs**
+
+- One game at a time, only for an HDD game that is not running, is not on the system drive, has no anti-cheat folder, and has finished relocation (or has relocation turned off).
+- It waits for idle like relocation does, and retries a game it could not finish after 6 hours.
+
+**Keeping**
+
+- At each service tick the journal is checked. A missing or wrong-size copy is reverted at once. A file that became a normal file, or whose copy changed through the link, is marked stale and left alone.
+- If the SSD has less than 1 GiB free, no new copies are added and the oldest game is reverted first. A change to the budget or the folder makes the game revert and apply again with the new setting.
+
+**Reverting and commands**
+
+- `aster tier revert --game <name>` or `--all` removes the links and restores the originals. The copies stay in the tier folder until `aster tier clean` deletes the unused ones. Uninstalling reverts all games first.
+- The journal is `%ProgramData%\AsterCache\tier\<game>.json`. If a journal cannot be read, that game is skipped, nothing is touched, and a log line is written.
+- Commands: `aster tier status`, `aster tier apply --game <name>`, `aster tier revert --game <name>` or `--all`, and `aster tier clean` (apply, revert, and clean need administrator rights).
+- The checkbox and the budget are in the Settings tab, under Automatic mode. The per-game status line shows `SSD assist N GB`.
+
+</details>

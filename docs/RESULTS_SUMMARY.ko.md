@@ -2,9 +2,44 @@
 
 # 측정 결과 요약
 
-이 문서는 이전 README 의 측정 표와 결과 해석 중 `VALIDATION_REPORT.md` 에 없던 내용을 옮긴 것입니다. 전체 기록과 검증 항목은 `VALIDATION_REPORT.md` 에 있으며, 각 표의 출처 경로를 함께 적었습니다.
+이 문서는 측정 기록의 주인 문서입니다. 각 수치를 어떻게 쟀는지, 결과, 해석할 때 주의할 점, 서비스의 실사용 기록을 담습니다. 검증 범위와 검증하지 못한 항목은 [VALIDATION_REPORT.ko.md](../VALIDATION_REPORT.ko.md)에 있습니다.
 
-## HDD·SSD 로딩 벤치마크 (합성 데이터셋, 3회 중앙값)
+## 무엇을 쟀고 무엇은 재지 않았나
+
+- **잰 것.** 기록한 읽기 패턴의 재생 시간(합성 데이터셋과 게임 Frostpunk, 하드디스크와 SSD), 재배치 작업 시간, Call of Duty 로 잰 예열 순서 벤치(ORBIT), 첫 실행 선행 읽기 실험 여러 건(채택하지 않음), SMR 드라이브가 대량 쓰기 뒤에 보이는 동작.
+- **재지 않은 것.** 게임을 실행한 전체 로딩 시간, 플레이 중 프레임 끊김, 예열을 껐을 때와의 비교, CMR 드라이브, 24시간을 넘는 지속성.
+- **실사용 기록.** 서비스 로그 집계와 2026-11-11 서비스 기록은 서비스가 한 일을 센 것입니다. 통제된 벤치마크가 아닙니다(아래 [실사용 기록](#실사용-기록)).
+
+## 측정 방법
+
+- **게임 로딩이 아니라 재생입니다.** 벤치마크 도구가 기록된 블록을 기록된 순서대로 읽습니다. 여기 나오는 시간은 그 읽기 패턴의 재생 시간입니다.
+- **콜드 조건.** 관리자 권한 실행은 회마다 standby 목록을 비웁니다. 비관리자 실행은 언버퍼드 재읽기(`FILE_FLAG_NO_BUFFERING`)로 대신합니다. 어느 쪽이든 드라이브 자체의 캐시는 비우지 않습니다.
+- **반복.** 표에 따로 적지 않았으면 3회 중앙값입니다. ORBIT 벤치는 두 순서를 ABBA 쌍으로 번갈아 쟀습니다.
+- **시험 장비.** WDC WD20EZAZ 2 TB SMR HDD(SATA, D:), NVMe SSD(C:), Windows 11 Pro 10.0.26200, 메모리 32 GiB. 원자료는 `results/` 아래에 있습니다.
+
+## 주요 결과 한눈에 보기
+
+| 실험 | 주요 결과 | 비고 |
+|---|---|---|
+| [HDD·SSD 로딩 벤치마크](#hddssd-로딩-벤치마크-합성-데이터셋-3회-중앙값) | HDD 콜드 71.21 s, SSD 콜드 1.11 s (3회 중앙값) | 합성 데이터셋, 약 2.0 GiB |
+| [물리 위치 순서 선읽기](#물리-위치-순서-선읽기-별도-실험-3회-중앙값) | 선읽기 11.1 s + 재생 0.05 s, 스윕 최선 합계 7.84 s | 같은 합성 데이터셋 |
+| [재배치 실험 세부](#재배치-실험-세부-2026-11-01) | E2 HDD 콜드 27.1 s, 재배치 뒤 5.73 s. E3 선읽기 중앙값 1.05 s + 재생 0.047 s | VHDX와 합성 데이터셋 |
+| [SQLite 캐시](#sqlite-캐시-블록-256개-64-kib-3회-중앙값) | 콜드 로드 21.338 → 4.206 ms/블록 (Python 3.11) | 64 KiB 블록 256개 |
+| [스트림 읽기 튜닝](#스트림-읽기-튜닝-재배치-존-비관리자) | 큐 깊이 1·핸들 유지 1.42 s, 큐 깊이 4 1.66 s | 재배치한 243.5 MB 존, 비관리자 |
+| [동시 스트림 세부](#동시-스트림-세부-2026-11-01) | 요청당 게임 계산 0 µs 에서 1.65 s | SSD 콜드 1.22 s 의 1.35배 |
+| [E6 콜드 한계](#e6-콜드-한계-실험-2026-11-02) | 전체 이동 뒤 콜드 선읽기 중앙값 11.93 s (재배치 전 15.05 s) | Frostpunk, 42.142% 존 |
+| [E7 첫 실행 선행 읽기](#e7-첫-실행-선행-읽기) | 여섯 번의 측정에서 입증된 이득 없음. 채택하지 않고 기본 꺼짐 | 합성 데이터와 트레이스 재생 |
+| [ORBIT 예열 순서 벤치](#orbit-예열-순서-벤치-2026-11-09) | 가치 가중 준비 시간 18.8% 단축, 최악 에피소드 p95 13.1 s 지연 (플래그 4 실패) | 게임 1종·드라이브 1대·한 세션 |
+| [E8 HDD 일반 I/O](#e8-hdd-일반-io-2026-11-03) | 흩어진 쓰기 3 GB 직후 첫 콜드 읽기 58.8 s (평소 24 s) | SMR 디스크 |
+| [E10](#e10e16-hdd-일반-io-2026-11-03) | 재배치 작업 186 s → 41 s (병렬 8 읽기, 4.5배). 2 GB 이동 뒤 SMR 회복 25분 ~ 1.5시간 | 시험 HDD |
+| [실사용 기록](#실사용-기록) | Call of Duty 핫 집합 전체 예열 128 ~ 416 s (7건) | 서비스 로그, 벤치마크 아님 |
+
+## 결과
+
+### HDD·SSD 로딩 벤치마크 (합성 데이터셋, 3회 중앙값)
+
+<details>
+<summary>세부: 표와 기록</summary>
 
 데이터셋은 64개 파일, 약 2.0 GiB(2,135,949,312 바이트), 트레이스 4,000건, 블록 64 KiB 입니다.
 
@@ -19,7 +54,12 @@
 - HDD 콜드는 SSD 콜드의 약 64.1배, 단순 선읽기 총합은 SSD 콜드의 약 26.2배입니다.
 - 출처: `results/bench_20261101/20261101_204602.json`
 
-## 물리 위치 순서 선읽기 (별도 실험, 3회 중앙값)
+</details>
+
+### 물리 위치 순서 선읽기 (별도 실험, 3회 중앙값)
+
+<details>
+<summary>세부: 표와 기록</summary>
 
 같은 합성 데이터셋(64개 파일, 2.1 GiB)으로 수행했습니다. 이 실험의 HDD 콜드는 17.3\~19.0 s(중앙값 17.8 s)였고, 벤치마크의 HDD 콜드는 55.7\~71.3 s 였습니다. 같은 조건에서도 편차가 이만큼 크므로 두 값의 차이는 방법 차이가 아니라 편차로 봅니다.
 
@@ -35,14 +75,24 @@
 - 이 데이터셋에서는 물리 정렬과 경로 정렬의 차이가 노이즈 수준입니다. 파일이 순차로 쓰여 조각이 적었기 때문입니다.
 - 출처: `results/prefetch_20261101/summary_table.json`, `results/prefetch_sweep_20261101/sweep_20261101_212410.json`, `results/prefetch_sweep_20261101/contig_upper_bound.json`
 
-## 재배치 실험 세부 (2026-11-01)
+</details>
+
+### 재배치 실험 세부 (2026-11-01)
+
+<details>
+<summary>세부: 표와 기록</summary>
 
 - **E2 HDD (VHDX, D: HDD).** 콜드 27.1 s (13.7 / 64.6 / 27.1), 재배치 뒤 5.73 s (6.07 / 5.73 / 5.68). 출처: `results/relayout_e2_hdd/summary.json`
 - **E3 중앙값 (3회, 관리자 스탠바이 비우기 뒤).** 재배치 전 선읽기+재생 8.04 s, SSD(C: NVMe) 직접 0.763 s. 재배치 뒤 선읽기 중앙값 1.05 s(0.93~1.63 s, 실행 3회 값 0.97 / 1.09 / 1.68 s) + 재생 0.047 s.
   - 비율: D/E 1.43, C/E 10.1, A/E 22.4, D/A 0.064(재배치 전 대비 약 15.6배 단축)
   - 이 중앙값의 원자료 경로는 이전 README 에 적혀 있지 않아 확인하지 못했습니다.
 
-## SQLite 캐시 (블록 256개, 64 KiB, 3회 중앙값)
+</details>
+
+### SQLite 캐시 (블록 256개, 64 KiB, 3회 중앙값)
+
+<details>
+<summary>세부: 표와 기록</summary>
 
 | 구성 | 콜드 적재 (ms/블록) | 적중 (ms/블록) |
 |---|---:|---:|
@@ -53,7 +103,12 @@
 - 3.11 의 적중 1.140 ms 는 이 파일이 정한 기준 1.1 ms 를 넘습니다.
 - 출처: `results/windows_20261101/cache_fix_bench.json`
 
-## 스트림 읽기 튜닝 (재배치 존, 비관리자)
+</details>
+
+### 스트림 읽기 튜닝 (재배치 존, 비관리자)
+
+<details>
+<summary>세부: 표와 기록</summary>
 
 재배치된 243.5 MB 존(1,048 작업)에서 잰 값입니다. 표의 값은 3회 중앙값이며, `reuse_qd1.json` 만 5회입니다. 콜드 조건은 관리자 권한 없이 만든 언버퍼드 대체 방식(`cold_method: unbuffered_proxy`)입니다.
 
@@ -69,7 +124,12 @@
 - 큐 깊이 4 대 1 은 같은 실행 안에서 1.66 s 대 1.48 s(약 11%)입니다. 핸들 유지까지 합치면 1.66 s 대 1.42 s(약 15%)이며, 두 값은 다른 실행입니다.
 - 재배치 전의 흩어진 배치에서는 큐 깊이 4 가 도움이 됐습니다(`results/prefetch_sweep_20261101`). 그래서 이 결론은 재배치 존에만 적용합니다.
 
-## 동시 스트림 세부 (2026-11-01)
+</details>
+
+### 동시 스트림 세부 (2026-11-01)
+
+<details>
+<summary>세부: 표와 기록</summary>
 
 | 요청당 게임 연산 | 벽시계 중앙값 (실행 값) | 같은 조건 SSD 대비 |
 |---|---:|---|
@@ -80,7 +140,12 @@
 - 250 µs·1000 µs 의 기준 SSD 값은 `results/stream_tuning_20261101/ssd_think_baseline.json`(비관리자, 같은 연산 조건)입니다. 관리자 측정과 조건이 달라 참고값입니다.
 - 출처: `results/relayout_e3/20261101_235628/summary.json`, `results/relayout_e3/20261101_235628/F-concurrent.json`
 
-## E6 콜드 한계 실험 (2026-11-02)
+</details>
+
+### E6 콜드 한계 실험 (2026-11-02)
+
+<details>
+<summary>세부: 표와 기록</summary>
 
 Frostpunk 핫 집합은 2,020,769,792 바이트(블록 30,843개)이며 D: WDC WD20EZAZ(SATA)에 있습니다. 측정 전마다 스탠바이 목록을 비웠고 게임은 실행하지 않았습니다. 전체 기록은 [results/cold_limit_20261102_155900/README.md](../results/cold_limit_20261102_155900/README.md) 에 있습니다. 실험 동기는 [research_cold_limit.md](research_cold_limit.md) 에 있습니다.
 
@@ -95,15 +160,20 @@ Frostpunk 핫 집합은 2,020,769,792 바이트(블록 30,843개)이며 D: WDC W
 - 읽기 폭과 큐 깊이는 효과가 없었습니다. 재배치 전 배치에서 큐 1·2·4·8(4 MiB 요청), 큐 4(1 MiB, 16 MiB 요청)는 모두 16.05~16.91 s 였습니다.
 - WOF 압축률은 8 KiB 청크 1.014, 16 KiB 청크 1.016 입니다. 읽을 바이트가 1.4~1.6%만 줄어 복원 비용을 감수할 가치가 없습니다. 핫 바이트의 97.7%는 `.dat` 파일 9개에 있고, 그 압축률은 1.002~1.003 입니다.
 - 고대역(디스크 바깥쪽 90% 위치)은 42% 존보다 약 1.6배 느렸습니다(선읽기 19.06 s 대 11.93 s). 곡선의 300 MB/s 지점(73.7%, 78.9%, 89.4%, 94.7%, 100%)은 빈 영역에서 잰 값이라 데이터의 속도로 쓸 수 없습니다.
-- 결론: 계획 기본값을 "전부 이동"(보존 끔, `--preserve-mib 0`, 제자리에 남기는 구간 없음)으로 바꿨습니다. 최종 배치는 42.142% 존으로 유지합니다. 대가는 이동량이 약 2 GB 로 늘어 270~280 s 가 걸리는 것입니다.
+- 결론: 계획 기본값을 "전부 이동"(보존 끔, `--preserve-mib 0`, 제자리에 남기는 구간 없음)으로 바꿨습니다. 전에는 8 MiB 이상 구간을 제자리에 남겼고(보존 켬) 그때의 콜드 선읽기 값이 15.1 s 였으며, 11.93 s 중앙값은 전체 이동 결과입니다. 최종 배치는 42.142% 존으로 유지합니다. 대가는 이동량이 약 2 GB 로 늘어 270~280 s 가 걸리는 것입니다.
 
-## E7 첫 실행 선행 읽기
+</details>
+
+### E7 첫 실행 선행 읽기
 
 결론: 첫 실행 선행 읽기(`auto.learn.enabled`)는 기본으로 꺼 둡니다. 측정한 조건에서는 켜면 재생이 느려졌거나 이득이 입증되지 않았습니다. 앞서 달리기(`stream`) 모드도 E7d 에서 측정했으나 채택하지 않았습니다(아래 E7d 절).
 
+<details>
+<summary>세부: 표와 기록</summary>
+
 모든 수치는 추적한 읽기 패턴을 재생한 시간이며, 게임 전체 로딩 시간이 아닙니다. 콜드 측정은 측정 전에 대기 목록을 비우고, A(선행 읽기 없음)와 B(선행 읽기 켬)를 A,B,B,A,A,B 순서로 3회씩 교대했습니다. 합성 데이터셋은 `D:\AsterBench_e7`, Frostpunk 는 `D:\Frostpunk` 입니다.
 
-### E7, E7b: 첫 측정과 이름 해석 수정 뒤
+**E7, E7b: 첫 측정과 이름 해석 수정 뒤**
 
 | 구성 | 콜드 재생, 초 (A → B, 3회 중앙값) | 선행 읽기 바이트 (B) | 실시간 읽기 이름 해석 (B) | 비고 |
 |---|---|---|---|---|
@@ -113,7 +183,7 @@ Frostpunk 핫 집합은 2,020,769,792 바이트(블록 30,843개)이며 D: WDC W
 
 이름 해석 결함(읽기 알림 0건)은 E7b 에서 고쳐졌습니다. 그래도 선행 읽기가 재생과 같은 디스크를 다퉈 B 가 약 2배 느렸습니다.
 
-### 재배치 효과 (같은 읽기 패턴, 선행 읽기 꺼짐)
+**재배치 효과 (같은 읽기 패턴, 선행 읽기 꺼짐)**
 
 | 배치 | 포화 재생, A 중앙값 (초) | 틈 재생, A 중앙값 (초) |
 |---|---:|---:|
@@ -122,7 +192,7 @@ Frostpunk 핫 집합은 2,020,769,792 바이트(블록 30,843개)이며 D: WDC W
 
 같은 읽기 패턴이라도 흩어진 배치는 41.0\~55.3 s, 연속 배치는 19.3\~20.5 s 가 걸렸습니다(중앙값 기준 약 2.1\~2.7 배). 재배치가 읽기 시간을 줄이는 근거입니다([결과](../results/csharp_e7c_gen/README.md)).
 
-### E7c: 틈 전용 선행 읽기 (`--gap-ms`/`--seq-runs`)
+**E7c: 틈 전용 선행 읽기 (`--gap-ms`/`--seq-runs`)**
 
 게임 읽기 사이의 틈에서만 선행 읽기를 하도록 한 빌드입니다. 포화(`bench.replay`, 45 s)와 틈(100 요청마다 120 ms 대기) 재생을 각각 측정했고, 표 시간은 재생 시간(초, `summary.json` 의 `replay_s`)입니다.
 
@@ -141,7 +211,7 @@ Frostpunk 핫 집합은 2,020,769,792 바이트(블록 30,843개)이며 D: WDC W
 - 틈 감지는 동작했습니다. Frostpunk 연속과 `fpset` 틈 재생에서 gap_count 가 128~163 회, 합성 무작위 틈 재생에서는 6~8 회였습니다.
 - 재생은 트레이스 기반이고 틈 120 ms 는 인공 값입니다. 실제 게임 패턴과 같다고 볼 수 없습니다.
 
-### E7d: 스트림 모드 (`--mode stream`, 16 MiB 단위, 512 MiB 창)
+**E7d: 스트림 모드 (`--mode stream`, 16 MiB 단위, 512 MiB 창)**
 
 위와 같은 조건입니다. 측정 전 대기 목록을 비웠고, A,B,B,A,A,B 순서로 3회씩 했습니다. 시간은 재생 시간(초, `summary.json` 의 `replay_s`)입니다. 원자료: [E7d](../results/csharp_e7d_gen/README.md).
 
@@ -153,7 +223,7 @@ Frostpunk 핫 집합은 2,020,769,792 바이트(블록 30,843개)이며 D: WDC W
 
 스트림 모드도 채택하지 않습니다. 포화 조건은 해가 없다는 기준(B ≥ A × 0.95)을 못 맞췄고, 틈 조건은 재현되는 이득이 없습니다.
 
-### E7e: 한도 있는 선행 읽기 (`--mode bounded`)
+**E7e: 한도 있는 선행 읽기 (`--mode bounded`)**
 
 순차 파일만 16 MiB 단위로 선행 읽고, 총량은 게임 읽기 누적 + 32 MiB 를 넘지 않으며, 게임 읽기 뒤 50 ms 양보합니다. 측정 조건은 E7d 와 같습니다(콜드 대기 목록 비우기, A,B,B,A,A,B 순서 3회씩). 시간은 읽기 지연 합(s)입니다. 원자료: [E7e](../results/csharp_e7e_gen/README.md).
 
@@ -167,7 +237,7 @@ Frostpunk 핫 집합은 2,020,769,792 바이트(블록 30,843개)이며 D: WDC W
 - fpset 틈 재생은 1.13 이지만, 포화 재생은 0.90 으로 해 없음 기준(0.95 이상)을 못 맞췄습니다. Frostpunk 연속 틈은 이득이 없습니다. 3회라 노이즈가 큽니다.
 - 판정: bounded 기본 켬은 아직 타당하지 않습니다.
 
-### E7f: adaptive 모드 (`--mode adaptive`)
+**E7f: adaptive 모드 (`--mode adaptive`)**
 
 bounded 와 같되, 최근 500 ms 의 게임 읽기 처리량이 80 MiB/s 이상이면 쉬고, 우리 요청 지연이 2배로 오르면 200 ms 쉽니다. 측정 조건: 측정 전 대기 목록 비우기, fpset 은 A,B,B,A,A,B,B,A,A,B 순서로 각 5회, Frostpunk 는 3회. 시간은 읽기 지연 합(초)입니다. 원자료: [E7f](../results/csharp_e7f_gen/README.md).
 
@@ -182,7 +252,7 @@ bounded 와 같되, 최근 500 ms 의 게임 읽기 처리량이 80 MiB/s 이상
 - 선행 읽기가 같은 디스크에서 재생 전체 디스크 읽기의 1.3~1.5배를 더 읽어, 적중으로 아낀 시간을 다시 잃었습니다.
 - 판정: adaptive 기본 켬은 타당하지 않습니다.
 
-### 결론
+**결론**
 
 - 첫 실행 선행 읽기(`auto.learn.enabled`)는 기본 꺼짐을 유지합니다. E7~E7f 측정(포화·틈, 연속·흩어진 배치 모두)에서 이득이 입증되지 않았습니다.
 - 앞서 달리기(`stream`) 모드는 E7d 에서 측정했고 채택하지 않습니다. `auto.learn.enabled` 기본 꺼짐을 확정합니다.
@@ -190,9 +260,14 @@ bounded 와 같되, 최근 500 ms 의 게임 읽기 처리량이 80 MiB/s 이상
 - 이 기록은 합성 데이터와 트레이스 재생입니다. Frostpunk 를 실제로 실행한 전체 로딩 시간이 아닙니다.
 - 원자료: [E7](../results/csharp_e7_20261102_203358/README.md), [E7b](../results/csharp_e7b_gen/README.md), [E7c](../results/csharp_e7c_gen/README.md), [E7d](../results/csharp_e7d_gen/README.md), [E7e](../results/csharp_e7e_gen/README.md), [E7f](../results/csharp_e7f_gen/README.md).
 
-## ORBIT 예열 순서 벤치 (2026-11-09)
+</details>
 
-- **환경.** 사용자 PC, D: WDC WD20EZAZ 2 TB SMR, Call of Duty. 예열 목록은 39,177개 읽기 op·약 9.5 GB, 에피소드는 26개입니다. 회마다 서비스를 멈추고 게임을 끄고 standby 목록을 비웠습니다.
+### ORBIT 예열 순서 벤치 (2026-11-09)
+
+<details>
+<summary>세부: 표와 기록</summary>
+
+- **환경.** 시험 PC, D: WDC WD20EZAZ 2 TB SMR, Call of Duty. 예열 목록은 39,177개 읽기 op·약 9.5 GB, 에피소드는 26개입니다. 회마다 서비스를 멈추고 게임을 끄고 standby 목록을 비웠습니다.
 - **방법.** ABBA 10쌍(20회)으로 기준 순서 A 와 ORBIT 순서 B 를 번갈아 쟀습니다. 에피소드 준비 시각은 그 에피소드 블록을 모두 읽은 시각이고, 가치 가중 평균은 발생 비율로 가중했습니다.
 
 | 지표 | 값 |
@@ -210,18 +285,66 @@ bounded 와 같되, 최근 500 ms 의 게임 읽기 처리량이 80 MiB/s 이상
 
 재현은 `csharp\scripts\cs_orbit_bench.ps1 -Game <이름> -Pairs 10 ...` 로 측정하고 `aster orbit-bench summarize` 로 판정합니다.
 
+이 벤치는 [ORBIT: 예열 순서 조정](ORBIT.ko.md)에서 설명하는 방법을 잰 것입니다.
+
+</details>
+
+### E8 HDD 일반 I/O (2026-11-03)
+
+<details>
+<summary>세부: 표와 기록</summary>
+
+- 파일 3000 개를 콜드로 열면 30 s 가 걸렸습니다(파일당 10 ms, MFT 탐색). 기존 예열이 핫 파일을 열어 읽으므로 그 파일들의 메타데이터도 함께 웜이 됩니다.
+- 흩어진 쓰기 3 GB 직후 첫 콜드 읽기는 58.8 s 였습니다(평소 24 s). DM-SMR 디스크의 쓰기 뒤 정리 영향으로 보이며, 재배치(순차 쓰기) 직후 예열은 154 MB/s 로 정상이었습니다.
+- E9: 흩어진 쓰기 2 GB 뒤 콜드 재생이 기준(26.3 s)의 최대 4.45 배까지 느려졌다가 약 10 분 뒤 회복되어, 업데이트 뒤 지연 기본값을 15 분으로 정했습니다.
+- 노트: [research_hdd_general.md](research_hdd_general.md)
+
+</details>
+
+### E10–E16 HDD 일반 I/O (2026-11-03)
+
+<details>
+<summary>세부: 표와 기록</summary>
+
+- E10–E11: 조각 4→16 MiB 는 효과가 없었습니다(2.0 MB/s, 파일당 고정 비용). 표본 축소, 저널 묶음, 작업 직전 표본으로 186 s → 88 s 가 되었습니다.
+- E12–E14: 원본 순서 재배치는 더 느려(88 s → 110 s) auto 는 계획 순서를 씁니다. 병렬 8 로 HDD 41 s(4.5 배), NVMe 10.6 s 가 되어 동시 실행 기본값을 8 로 둡니다.
+- E15–E16: 바깥 존의 원시 대역 곡선은 비단조이고 대표성이 없어 바깥 대역 존은 보류합니다. 2 GB 이동 뒤 콜드 읽기가 19.5 s → 33 s 로 느려졌고, 되돌린 뒤 15 분에도 30 s 였습니다(SMR 저하).
+- E16c 회복 곡선: 2 GB 이동 뒤 SMR 회복에 25분 ~ 1.5시간이 걸렸습니다.
+- 노트: [research_hdd_general.md](research_hdd_general.md)
+
+</details>
+
+## 결과를 해석할 때 주의할 점
+
+- **드라이브 위치별 속도.** 드라이브 위치별 속도 차이는 없었습니다(`results/zone_curve_20261101`). 그래서 핫 존의 위치를 맞추는 최적화는 설계에서 뺐습니다.
+- **첫 실행에는 이득이 없습니다.** 재배치는 파일을 옮기는 데 시간이 걸립니다. 이득은 재배치 이후 반복 읽기에서 나타납니다.
+- **재배치 전 선읽기의 한계.** 재배치 전에는 HDD 탐색 횟수와 읽기 처리량(약 39 MiB/s)이 하한을 정했습니다. 재배치 뒤에는 핫 존 한 구간을 순차로 읽으므로 이 하한이 크게 줄었습니다. 예열 비용이 재생보다 훨씬 크므로, 예열을 로딩 전에 끝낼 수 있을 때만 의미가 있습니다.
+- **콜드 조건의 한계.** 비관리자 측정은 콜드 조건을 언버퍼드 재읽기(`FILE_FLAG_NO_BUFFERING`)로 대체했습니다. 드라이브와 컨트롤러 내장 캐시는 비우지 않았습니다. 벤치마크의 실행 간 편차 55.7~71.3 s 는 동시에 일어난 디스크 사용의 영향으로 추정하지만, 원인은 측정하지 않았습니다.
+- **웜 상태.** 웜 상태에서 HDD 와 SSD 는 1.28배 차이입니다(벤치마크 중앙값). OS 파일 캐시가 이미 채워진 상태라 차이가 작습니다.
+- **SMR.** WD20EZAZ 는 드라이브 관리형 SMR 로 보도되었습니다(2차 자료). 이동 직후 측정은 재매핑 전 상태일 수 있습니다. 같은 드라이브의 안정 순차 속도는 90~110 MB/s 였습니다(E1b). 이 값으로 보면 선읽기 기대치는 약 2.5 s 입니다.
+- **목표 판정.** 목표(SSD 대비 p50 1.25배 이내)는 판정하지 않았습니다. 게임 전체 로딩 시간과 반복 로딩의 p50·p95 가 아직 없기 때문입니다.
+- **게임 로딩 시간이 아닙니다.** 합성 데이터셋과 합성 트레이스로 재현한 결과입니다. Frostpunk 는 ETW 로 1회 추적한 뒤 재생했습니다. Procmon 트레이스와 게임 실행 전체 시간 측정은 아직 없습니다.
+
 ## 실사용 기록
 
 한 PC 에서 서비스가 남긴 로그를 집계한 기록입니다. 통제된 벤치마크가 아니며, 위의 ORBIT ABBA 벤치와도 별개입니다. 예열이 없을 때와 비교한 대조 측정이 없고, 게임 전체 로딩 시간과 플레이 중 프레임 끊김은 재지 않았습니다. 아래 수치는 모두 로그와 상태 파일에서 직접 센 값입니다.
 
 ### 자료와 환경
 
+<details>
+<summary>세부: 표와 기록</summary>
+
 - **자료.** `%ProgramData%\AsterCache\logs\service.log`(2026-11-02 18:27 ~ 2026-11-10 19:04, PC 현지 시각 UTC+9, 집계 시점 9,625줄), `auto_status.json`, `prewarm_status.json`, 설정 파일의 안티치트 항목을 읽었습니다. 플레이 시각 목록은 옮기지 않았고 날짜 범위와 횟수만 적었습니다.
 - **장비.** WDC WD20EZAZ 2 TB SMR HDD(D:, 로그 `disk D: HDD (looks like SMR)`), NVMe SSD(C:), Windows 11 Pro 10.0.26200, RAM 31.9 GiB(32 GiB). 두 게임 모두 D: 에 있습니다.
 - **게임 이름.** 로그와 상태 파일의 이름은 `LeagueOfLegens`(표시 이름 League of Legends, 수동 등록)와 `Call_of_Duty`(Steam, 자동 등록)입니다.
 - **버전.** 로그에는 프로그램 버전이 없어, 어느 줄이 어느 버전에서 나왔는지 알 수 없습니다. 기간 중 줄 서식이 바뀐 것은 확인됩니다(예열 완료 줄의 `hint MB/s` 는 2026-11-03 부터, `gaps filled` 는 2026-11-06 부터, `partial` 은 2026-11-08 부터, `prewarm phases` 줄은 2026-11-10 부터). 그래서 버전이 아니라 날짜로 나눴습니다. 앞 기간은 2026-11-02 ~ 2026-11-07, 뒤 기간은 2026-11-08 ~ 2026-11-10 입니다. README 에는 뒤 기간 수치만 씁니다.
 
+</details>
+
 ### 게임 시작 감지
+
+<details>
+<summary>세부: 표와 기록</summary>
 
 | 게임 | 기간 | 감지 횟수 | 감지한 날 수 |
 |---|---|---|---|
@@ -231,7 +354,12 @@ bounded 와 같되, 최근 500 ms 의 게임 읽기 처리량이 80 MiB/s 이상
 - **근거.** 줄 형식은 `<게임>: <exe> started (pid N) via poll` 이고, 이 줄 전부를 셌습니다(League of Legends n=10, Call of Duty n=62).
 - **주의.** 프로세스 시작을 센 값입니다. 경기나 플레이 세션의 수가 아닙니다. 같은 초에 두 번 감지된 줄도 있습니다. League of Legends 는 클라이언트 시작만 셉니다. `auto_status.json` 의 `plays` 는 최근 30개만 남아서 Call of Duty 의 전체 횟수에는 쓰지 못했습니다.
 
+</details>
+
 ### 안티치트 판정과 기능별 적용
+
+<details>
+<summary>세부: 표와 기록</summary>
 
 | 기능 | League of Legends (Vanguard) | Call of Duty (Ricochet) |
 |---|---|---|
@@ -240,14 +368,20 @@ bounded 와 같되, 최근 500 ms 의 게임 읽기 처리량이 80 MiB/s 이상
 | 고정(pin) | 건너뜀 4회 | 건너뜀 7회 |
 | 재배치 | 완료 4회, 중단 4회(오류 줄) | 완료 5회, 중단 3회(오류 줄) |
 | 예열 | 적용 | 적용 |
-| SSD 보조 저장 | 정책상 거절. 이 PC 설정은 꺼짐 | 정책상 거절. 이 PC 설정은 꺼짐 |
+| SSD 보조 저장 | 정책상 거절. 로그를 낸 PC 의 설정은 꺼짐 | 정책상 거절. 로그를 낸 PC 의 설정은 꺼짐 |
 
-- **근거.** 줄 형식은 `<게임>: auto trace started`(League of Legends n=2, Call of Duty n=14), `<게임>: trace skipped (anti-cheat: vanguard)`(n=8), `<게임>: pin skipped (anti-cheat: <종류>)`(League of Legends n=4, Call of Duty n=7), `<게임>: auto relocation done`(League of Legends n=4, Call of Duty n=5), `[ERROR] <게임>: auto relocation stopped: ...`(League of Legends n=4, Call of Duty n=3)입니다. 정책은 `Core/Discovery/Capabilities.cs` 입니다(트레이스 금지: eac, battleye, vanguard, kernel, unknown. 고정 금지: 그 목록과 ricochet. SSD 보조 저장: 안티치트가 있으면 거절).
+- **근거.** 줄 형식은 `<게임>: auto trace started`(League of Legends n=2, Call of Duty n=14), `<게임>: trace skipped (anti-cheat: vanguard)`(n=8), `<게임>: pin skipped (anti-cheat: <종류>)`(League of Legends n=4, Call of Duty n=7), `<게임>: auto relocation done`(League of Legends n=4, Call of Duty n=5), `[ERROR] <게임>: auto relocation stopped: ...`(League of Legends n=4, Call of Duty n=3)입니다.
+  정책은 `Core/Discovery/Capabilities.cs` 입니다(트레이스 금지: eac, battleye, vanguard, kernel, unknown. 고정 금지: 그 목록과 ricochet. SSD 보조 저장: 안티치트가 있으면 거절).
 - **중단 오류 문구.** `zone_not_free`(구역을 다른 파일이 사용 중), `journal belongs to a different plan`, `zone overlaps hot data in a cycle` 입니다. 안티치트를 이유로 한 문구는 없습니다. 원인은 로그만으로 더 따지지 않았습니다.
 - **League of Legends 의 트레이스 2회.** 2026-11-04 에 수집됐고, 같은 날 오후 플레이부터 건너뜁니다. 그 시점에 판정이 적용된 이유는 로그에 없습니다.
 - 두 게임을 이 설정으로 실행했다는 사실만 보여 줍니다.
 
+</details>
+
 ### 예열 소요 시간
+
+<details>
+<summary>세부: 표와 기록</summary>
 
 예열 완료 줄(`<게임>: prewarm done (<사유>): ...`)을 전부 읽었습니다. 줄 형식은 `N MiB requested, X MiB gaps filled in S s = R hint MB/s, Q requests, E errors` 이고, 부분 예열이면 `partial A/B MiB, the rest does not fit in memory:` 가 앞에 붙습니다. `hint MB/s` 는 요청한 MiB 를 걸린 초로 나눈 값입니다. 이미 캐시에 있는 데이터를 요청하면 디스크 속도보다 빠르게 나옵니다. 전체 147줄(League of Legends 68, Call of Duty 79)에서 오류 수는 모두 0 입니다.
 
@@ -267,17 +401,30 @@ bounded 와 같되, 최근 500 ms 의 게임 읽기 처리량이 80 MiB/s 이상
 - **예열 단계 시간.** `prewarm phases` 줄은 2줄뿐입니다. Call of Duty 서비스 시작: 계획 0.89, 보정 0.06, common 0.93, ORBIT 0.00, 스트림 44.57, 기타 0.47, 합계 46.92 초. League of Legends 클라이언트 실행: 계획 0.53, 보정 4.82, common 0.00, ORBIT 0.00, 스트림 61.55, 기타 0.26, 합계 67.17 초. 같은 회의 `prewarm done` 줄은 각각 39.84 초와 48.43 초라서 두 줄의 시간 정의가 다릅니다. 차이의 원인은 확인하지 않았습니다.
 - **앞 기간(2026-11-02 ~ 2026-11-07).** League of Legends 62건, Call of Duty 64건입니다. 예열 대상이 그 사이에 계속 바뀌었습니다(요청량 League of Legends 0 ~ 8,166 MiB, Call of Duty 681 ~ 7,227 MiB). 1,000 hint MB/s 를 넘는 줄이 League of Legends 26건, Call of Duty 11건이고 최대는 16,482 입니다. README 에 적힌 이 드라이브의 연속 읽기(90~110 MB/s)로는 나올 수 없는 값이라 디스크 읽기 속도로 보지 않고, 표에서 뺐습니다.
 
-**예열 대상 크기와 RAM 예산.** `prewarm_status.json` 의 마지막 기록에서 League of Legends 의 핫 집합은 8,182 MiB, Call of Duty 는 10,218 MiB 입니다. 로그의 `cache budget of 8173 MiB`(1,973회, 값은 한 가지)가 RAM 예산입니다. 물리 RAM 31.9 GiB 의 4분의 1(약 8,173 MiB)과 일치합니다. 핫 집합이 예산보다 커서 Call of Duty 는 부분 예열(`partial 8173/...`)이 되풀이됩니다.
+**예열 대상 크기와 RAM 예산.** `prewarm_status.json` 의 마지막 기록에서 League of Legends 의 핫 집합은 8,182 MiB, Call of Duty 는 10,218 MiB 입니다. 로그의 `cache budget of 8173 MiB`(1,973회, 값은 한 가지)가 RAM 예산입니다. 물리 RAM 31.9 GiB 의 4분의 1(약 8,173 MiB)과 일치합니다. 참고: 예열 캐시 예산 기본값은 0.9.0-beta.32 부터 물리 RAM 의 절반이며, 이 기록은 그 전의 4분의 1 예산에서 얻은 것입니다. 수치는 바꾸지 않았습니다. 핫 집합이 예산보다 커서 Call of Duty 는 부분 예열(`partial 8173/...`)이 되풀이됩니다.
+
+</details>
 
 ### 예열 적중률과 핫 집합 비율
 
-- **적중률 정의(코드 확인).** `Prewarmer.HitPercent`(`csharp/src/AsterCache.Service/Prewarm.cs`)는 핫 집합의 읽기 순서 목록에서 앞쪽 4곳과 나머지에서 고르게 고른 4곳(최대 8곳)을 1 MiB 씩 일반 읽기로 읽어, 0.8 ms 이하로 끝난 곳의 비율을 냅니다(`CacheProbe.cs`). 파일 캐시(RAM)에 있던 곳의 비율입니다. 표본이 8곳이면 12.5% 단위로 나옵니다. `AutoMode.RecordHitAfterWarm` 이 예열이 끝난 직후, 같은 물리 디스크에서 게임이 실행 중이 아닐 때 재서 `auto_status.json` 의 `hit_percent` 에 쓰며, 게임별 마지막 값 하나만 남깁니다. 게임을 켜는 순간이나 로딩 중의 값이 아닙니다.
+<details>
+<summary>세부: 표와 기록</summary>
+
+- **적중률 정의(코드 확인).** `Prewarmer.HitPercent`(`csharp/src/AsterCache.Service/Prewarm.cs`)는 핫 집합의 읽기 순서 목록에서 앞쪽 4곳과 나머지에서 고르게 고른 4곳(최대 8곳)을 1 MiB 씩 일반 읽기로 읽어, 0.8 ms 이하로 끝난 곳의 비율을 냅니다(`CacheProbe.cs`). 파일 캐시(RAM)에 있던 곳의 비율입니다. 표본이 8곳이면 12.5% 단위로 나옵니다. `AutoMode.RecordHitAfterWarm` 이 예열이 끝난 직후, 같은 물리 디스크에서 게임이 실행 중이 아닐 때 재서 `auto_status.json` 의 `hit_percent`
+  에 쓰며, 게임별 마지막 값 하나만 남깁니다. 게임을 켜는 순간이나 로딩 중의 값이 아닙니다.
 - **값.** League of Legends 100%(`hit_at` 2026-11-10, 부분 예열 8,173 / 8,182 MiB 직후), Call of Duty 75%(2026-11-10, 서비스 시작 예열 1,023 / 10,218 MiB 직후)입니다. 각 n=1 입니다. 로그에는 적중률 줄이 없어 이력이 없습니다.
-- **핫 집합 비율(`coverage_percent`).** 적중률이 아닙니다. 로그 줄 `session read N MiB, plan hot set M MiB = P% of the bytes the process read (not the cache hit rate)` 의 P 로, 계획 핫 집합이 그 트레이스 세션에서 게임 프로세스가 읽은 바이트의 몇 %인지입니다. 이 서식의 줄은 2026-11-06 ~ 2026-11-10 에 있고(이전 서식 `zone covers` 줄은 뺐습니다), Call of Duty n=7: 100, 64, 6, 34, 4, 100, 8%(읽은 양 127 ~ 123,582 MiB), League of Legends n=5: 모두 100%(읽은 양 453 ~ 486 MiB)입니다. 짧은 세션은 100% 로 쏠립니다. 읽은 양이 큰 Call of Duty 세션은 4 ~ 8% 입니다.
+- **핫 집합 비율(`coverage_percent`).** 적중률이 아닙니다. 로그 줄 `session read N MiB, plan hot set M MiB = P% of the bytes the process read (not the cache hit rate)` 의 P 로, 계획 핫 집합이 그 트레이스 세션에서 게임 프로세스가 읽은 바이트의 몇 %인지입니다. 이 서식의 줄은 2026-11-06 ~ 2026-11-10 에 있고(이전 서식 `zone covers`
+  줄은 뺐습니다), Call of Duty n=7: 100, 64, 6, 34, 4, 100, 8%(읽은 양 127 ~ 123,582 MiB), League of Legends n=5: 모두 100%(읽은 양 453 ~ 486 MiB)입니다. 짧은 세션은 100% 로 쏠립니다. 읽은 양이 큰 Call of Duty 세션은 4 ~ 8% 입니다.
+
+</details>
 
 ### 시작 스트림
 
-게임이 시작될 때 핫 집합을 읽는 시작 스트림은 이 로그에서 실제로 실행됐습니다. 실행 기록 줄은 두 형식입니다. `<게임>: streamed N bytes ... s` 줄은 Call of Duty 8회, League of Legends 8회이고, `start stream stopped at load boundary after N bytes, S s` 줄(로딩 경계에서 멈춘 실행)은 Call of Duty 1회, League of Legends 1회입니다. `start stream cancelled` 줄은 0건입니다. 게임별 실행 횟수는 Call of Duty 9회, League of Legends 9회입니다. 읽은 양은 Call of Duty 1,268 ~ 7,151 MiB, League of Legends 73 ~ 8,168 MiB, 소요 시간은 Call of Duty 0.3 ~ 363 초, League of Legends 0.01 ~ 126 초입니다. 게임 이름이 없는 `net10.0-windows: streamed` 줄 65개는 세지 않았습니다.
+<details>
+<summary>세부: 표와 기록</summary>
+
+게임이 시작될 때 핫 집합을 읽는 시작 스트림은 이 로그에서 실제로 실행됐습니다. 실행 기록 줄은 두 형식입니다. `<게임>: streamed N bytes ... s` 줄은 Call of Duty 8회, League of Legends 8회이고, `start stream stopped at load boundary after N bytes, S s` 줄(로딩 경계에서 멈춘 실행)은 Call of Duty 1회, League of Legends 1회입니다. `start stream cancelled` 줄은 0건입니다. 게임별 실행 횟수는 Call of Duty 9회, League of Legends 9회입니다.
+읽은 양은 Call of Duty 1,268 ~ 7,151 MiB, League of Legends 73 ~ 8,168 MiB, 소요 시간은 Call of Duty 0.3 ~ 363 초, League of Legends 0.01 ~ 126 초입니다. 게임 이름이 없는 `net10.0-windows: streamed` 줄 65개는 세지 않았습니다.
 
 | `start stream skipped (...)` 사유 | League of Legends | Call of Duty |
 |---|---|---|
@@ -288,51 +435,46 @@ bounded 와 같되, 최근 500 ms 의 게임 읽기 처리량이 80 MiB/s 이상
 | `disk yielded` | 0 | 1 |
 | 합계 | 2 | 57 |
 
+</details>
+
+### 서비스 작업 기록, 2026-11-11 (0.9.0-beta.34 ~ beta.35)
+
+2026-11-11 에 한 PC(2 TB SMR HDD, RAM 32 GB)에서 서비스가 한 일을 로그에서 옮긴 기록입니다. **로딩 시간과 끊김은 재지 않았습니다.** 서비스 자신의 작업에 걸린 시간을 보여 줄 뿐, 게임이 얼마나 빨리 로딩됐는지는 알려 주지 않습니다.
+
+| 주제 | 기록 |
+|---|---|
+| 예열 시간 | Call of Duty 전체 재예열 10,025 MiB: 280초(36 MB/s)와 253초(40 MB/s). 보충 예열 9,419 MiB: 269초. League of Legends 6,268 MiB: 54초(117 MB/s), 6,321 MiB: 38초. |
+| 예열 유지 | Call of Duty: 전체 예열 51분 뒤 재예열 검사에서 표본 8개 중 2개가 느려 다시 읽었습니다. 같은 시간 다른 프로그램이 메모리를 쓰고 있었습니다. 가용 메모리가 줄면 Windows 가 파일 캐시를 비우므로 예열이 오래 남지 않을 수 있습니다. |
+| 서비스 시작 뒤 | 시작 예열로 1,024 MiB 를 읽었고, 디스크가 한가해지자 나머지를 이어 읽어 약 10분 안에 Call of Duty 10,025 MiB 가 채워졌습니다. 시작 상한에 밀린 League of Legends 는 12분 뒤 대기 재시도로 읽혔습니다. |
+| 배치 복구 | 흐트러진 배치가 5분 간격 재검사로 재적용까지 갔고, 한 게임은 1 GiB 를 옮겨 존 적중률이 35.3% 에서 53.1% 로 올랐습니다. 존 일부를 다른 파일이 차지해 재적용이 거절된 게임은 자동 재배치로 넘어가 남은 부분만 새 자리로 옮겼고, 연속 배치가 확인됐습니다. |
+| 드라이브 회복 대기 | 재배치 뒤 회복 확인에 581 MB 이동 뒤 6분, 43 MB 이동 뒤 149분이 걸렸습니다. 회복 확인에 걸리는 시간은 옮긴 양과 비례하지 않았고 6분에서 149분까지 관찰됐습니다. |
+| 플레이 기록 | 0.9.0-beta.33 부터 서비스는 게임 실행 중 디스크 읽기 대기를 기록합니다(`play record:` 로그 줄, `play_samples.json`). 이 기록으로 로딩이나 끊김을 비교한 결과는 아직 없습니다. |
+
 ### 재지 않은 것과 로그에 없는 것
+
+<details>
+<summary>세부: 표와 기록</summary>
 
 - 게임 전체 로딩 시간, 플레이 중 프레임 끊김, 예열이 있을 때와 없을 때의 비교.
 - 게임을 켜는 순간의 적중률과 적중률의 이력(마지막 값 하나만 있음).
 - 프로그램 버전별 구분(로그에 버전이 없음).
 - 시작 스트림이 로딩 시간에 준 영향.
+- 플레이 기록(`play record:` 줄, `play_samples.json`)으로 로딩이나 끊김을 비교한 결과.
 
 집계 스크립트는 저장소에 두지 않았습니다. 위 줄 형식을 정규식으로 읽어 세면 같은 값이 나옵니다.
 
-## 결과 해석 (옮긴 내용)
+</details>
 
-- **드라이브 위치별 속도.** 드라이브 위치별 속도 차이는 없었습니다(`results/zone_curve_20261101`). 그래서 핫 존의 위치를 맞추는 최적화는 설계에서 뺐습니다.
-- **첫 실행에는 이득이 없습니다.** 재배치는 파일을 옮기는 데 시간이 걸립니다. 이득은 재배치 이후 반복 읽기에서 나타납니다.
-- **재배치 전 선읽기의 한계.** 재배치 전에는 HDD 탐색 횟수와 읽기 처리량(약 39 MiB/s)이 하한을 정했습니다. 재배치 뒤에는 핫 존 한 구간을 순차로 읽으므로 이 하한이 크게 줄었습니다. 예열 비용이 재생보다 훨씬 크므로, 예열을 로딩 전에 끝낼 수 있을 때만 의미가 있습니다.
-- **콜드 조건의 한계.** 비관리자 측정은 콜드 조건을 언버퍼드 재읽기(`FILE_FLAG_NO_BUFFERING`)로 대체했습니다. 드라이브와 컨트롤러 내장 캐시는 비우지 않았습니다. 벤치마크의 실행 간 편차 55.7~71.3 s 는 동시에 일어난 디스크 사용의 영향으로 추정하지만, 원인은 측정하지 않았습니다.
-- **웜 상태.** 웜 상태에서 HDD 와 SSD 는 1.28배 차이입니다(벤치마크 중앙값). OS 파일 캐시가 이미 채워진 상태라 차이가 작습니다.
-- **SMR.** WD20EZAZ 는 드라이브 관리형 SMR 로 보도되었습니다(2차 자료). 이동 직후 측정은 재매핑 전 상태일 수 있습니다. 같은 드라이브의 안정 순차 속도는 90~110 MB/s 였습니다(E1b). 이 값으로 보면 선읽기 기대치는 약 2.5 s 입니다.
-- **목표 판정.** 목표(SSD 대비 p50 1.25배 이내)는 판정하지 않았습니다. 게임 전체 로딩 시간과 반복 로딩의 p50·p95 가 아직 없기 때문입니다.
-- **게임 로딩 시간이 아닙니다.** 합성 데이터셋과 합성 트레이스로 재현한 결과입니다. Frostpunk 는 ETW 로 1회 추적한 뒤 재생했습니다. Procmon 트레이스와 게임 실행 전체 시간 측정은 아직 없습니다.
-
-## 후속 방향 (이전 README 의 "다음 방향" 절)
+## 후속 방향
 
 - 접근 순서 물리 재배치 설계의 자세한 내용은 `docs/design_v1_relayout.md` 에 있습니다. 1.4a 절에 E1 실측 결과가 있습니다.
 - 블록 단위 접근 순서 재배치라는 개념은 BORG(FAST'09)가 먼저 제시했습니다. 출처와 Windows API 제약은 `docs/prior_art_and_windows_api.md` 에 있습니다.
 - SMR 영향은 아직 분리하지 않았습니다. 대량 이동 쓰기가 쓰기 정체를 일으킬 수 있어, 작은 청크와 쓰기 상한으로 나눠 실측합니다.
 
-## 참고 문헌 (이전 README 의 기술 근거)
+## 참고 문헌
 
 - Microsoft, File Caching: https://learn.microsoft.com/en-us/windows/win32/fileio/file-caching
 - Microsoft, BypassIO: https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/bypassio
 - Microsoft, Filter Manager concepts: https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/filter-manager-concepts
 - SQLite WAL: https://sqlite.org/wal.html
 - SQLite `synchronous` pragma: https://sqlite.org/pragma.html#pragma_synchronous
-
-## E8 HDD 일반 I/O (2026-11-03)
-
-- 파일 3000 개를 콜드로 열면 30 s 가 걸렸습니다(파일당 10 ms, MFT 탐색). 기존 예열이 핫 파일을 열어 읽으므로 그 파일들의 메타데이터도 함께 웜이 됩니다.
-- 흩어진 쓰기 3 GB 직후 첫 콜드 읽기는 58.8 s 였습니다(평소 24 s). DM-SMR 디스크의 쓰기 뒤 정리 영향으로 보이며, 재배치(순차 쓰기) 직후 예열은 154 MB/s 로 정상이었습니다.
-- E9: 흩어진 쓰기 2 GB 뒤 콜드 재생이 기준(26.3 s)의 최대 4.45 배까지 느려졌다가 약 10 분 뒤 회복되어, 업데이트 뒤 지연 기본값을 15 분으로 정했습니다.
-- 노트: [research_hdd_general.md](research_hdd_general.md)
-
-## E10–E16 HDD 일반 I/O (2026-11-03)
-
-- E10–E11: 조각 4→16 MiB 는 효과가 없었습니다(2.0 MB/s, 파일당 고정 비용). 표본 축소, 저널 묶음, 작업 직전 표본으로 186 s → 88 s 가 되었습니다.
-- E12–E14: 원본 순서 재배치는 더 느려(88 s → 110 s) auto 는 계획 순서를 씁니다. 병렬 8 로 HDD 41 s(4.5 배), NVMe 10.6 s 가 되어 동시 실행 기본값을 8 로 둡니다.
-- E15–E16: 바깥 존의 원시 대역 곡선은 비단조이고 대표성이 없어 바깥 대역 존은 보류합니다. 2 GB 이동 뒤 콜드 읽기가 19.5 s → 33 s 로 느려졌고, 되돌린 뒤 15 분에도 30 s 였습니다(SMR 저하).
-- E16c 회복 곡선: 2 GB 이동 뒤 SMR 회복에 25분 ~ 1.5시간이 걸렸습니다.
-- 노트: [research_hdd_general.md](research_hdd_general.md)

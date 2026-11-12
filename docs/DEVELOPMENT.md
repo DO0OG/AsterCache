@@ -55,7 +55,7 @@ The C# projects in `csharp/AsterCache.sln` are the final implementation. They li
 | `AsterCache.Prefetch` | library | Read engines. The zone stream (`ZoneStreamer.cs`), whole-folder prewarm (`FolderWarm.cs`), and first-run read-ahead (`ReadAhead.cs`, experimental, off by default) |
 | `AsterCache.Service` | `AsterCache.Service.exe` | The Windows service. Everything that runs automatically lives here. |
 | `AsterCache.Cli` | `aster.exe` | The command line. `Commands/` holds plan, trace, apply, revert, prefetch, prewarm, status, discover, tier, orbit, profile, and more. |
-| `AsterCache.Tray` | `AsterCache.Tray.exe` | The Avalonia management window, tray icon, notifications, and Velopack updates. |
+| `AsterCache.Tray` | `AsterCache.Tray.exe` | The Avalonia management window, tray icon, notifications, and the automatic update (`Update/`). |
 
 ## Inside the service
 
@@ -110,8 +110,8 @@ Files in `%ProgramData%\AsterCache`. The service runs as SYSTEM, and only admini
 | `prewarm_status.json` | service | The last prewarm result per game. |
 | `play_samples.json` | service | Disk read volume and latency per play interval, with the prewarm and start-stream state at game start, for the last 50 plays of each game. |
 | `orbit_mode.json`, `disk_model.json`, `benchmark_samples.json` | service | The ORBIT mode, per-disk calibration samples, and loading time samples. |
+| `tray.json` | tray | Tray-only settings (`notifications.enabled`). An old `update_feed_url` key is ignored. Update behavior is `update.mode` and `update.prerelease` in `config.json`. |
 | `logs\service.log`, `logs\tray.log` | service, tray | Logs. If the tray cannot write to the data folder, it writes to `%LocalAppData%\AsterCache\logs`. |
-| `tray.json` | user | Tray settings (the update feed address). |
 
 ## How the tray app talks to the service
 
@@ -122,7 +122,7 @@ There is no channel for sending commands to the service. The tray uses only file
 - **Actions.** For trace collection, planning, relocation, and revert, the management window runs `aster.exe`. If administrator rights are needed it elevates through UAC and receives the result through `--result-file`.
 - **Service control.** Querying the state works without administrator rights through the SCM. Start, stop, install, and uninstall run `sc.exe` elevated.
 - **Prewarm now.** The tray process reads directly with the same `PrefetchStreamer`.
-- **Updates.** Only the tray updates through Velopack (when `tray.json` has a feed address); the service is reinstalled with the installer. The tray shows a notice when the versions differ.
+- **Updates.** The tray checks GitHub Releases of the fixed repository and, as administrator from an installer install, runs the verified installer silently (`Update/AutoUpdater.cs`); otherwise it only announces the new version. The service never uses the network. The tray shows a notice when the tray and service versions differ.
 
 ## Safety measures
 

@@ -13,7 +13,7 @@ using Avalonia.Threading;
 namespace AsterCache.Tray;
 
 /// 트레이 아이콘과 메인 창(닫으면 트레이로)을 가진 앱. 메뉴 항목은 TrayViewModel 을 부르기만 합니다.
-internal sealed class App : Application
+internal sealed partial class App : Application
 {
     public static TrayViewModel Model { get; set; } = null!;
 
@@ -113,6 +113,7 @@ internal sealed class App : Application
                 }
             };
             poll.Start();
+            StartUpdater();
             if (Smoke)
             {
                 Log.Info($"smoke: tray icon visible={_icon.IsVisible} menu_items={_icon.Menu?.Items.Count} main window visible={_main.IsVisible} status={Model.StatusText}");
@@ -199,7 +200,7 @@ internal sealed class App : Application
         }
 
         string[] lines = [.. new[] { Model.StatusText, summary.Counts, message }.Where(l => l.Length > 0)];
-        string key = $"{Model.Service}|{Model.PendingVersion}|{lines.Length}|{string.Join(",", Model.Games)}";
+        string key = $"{Model.Service}|{lines.Length}|{string.Join(",", Model.Games)}|{Updater?.Status.Key}";
         if (key == _menuKey && _icon.Menu is not null)
         {
             // 항목 구성이 같으면 메뉴를 새로 만들지 않고 글만 바꿈 (열려 있는 메뉴가 5 초마다 교체되지 않게)
@@ -322,12 +323,7 @@ internal sealed class App : Application
         menu.Items.Add(Item(L.T(serviceKey), () => InBackground(state == ServiceState.Running ? Model.StopService : Model.StartService), serviceEnabled));
         menu.Items.Add(new NativeMenuItemSeparator());
         menu.Items.Add(Item(L.T("Menu_OpenLogs"), () => Update(() => Model.OpenLogs())));
-        menu.Items.Add(Item(L.T("Menu_CheckUpdate"), CheckUpdate));
-        if (Model.PendingVersion is not null)
-        {
-            menu.Items.Add(Item(L.T("Menu_InstallUpdate", Model.PendingVersion), () => _ = Model.ApplyUpdateAsync(CancellationToken.None)));
-        }
-
+        AddUpdateItems(menu);
         menu.Items.Add(new NativeMenuItemSeparator());
         menu.Items.Add(Item(L.T("Menu_Exit"), Quit));
         return menu;
@@ -346,6 +342,7 @@ internal sealed class App : Application
     /// 진행 중인 트레이스는 저장하도록 기다린 뒤 (최대 10 초) 끝냅니다.
     private async void Quit()
     {
+        StopUpdater();
         if (_main is not null)
         {
             await _main.StopTraceAsync();
@@ -369,12 +366,6 @@ internal sealed class App : Application
 
         _main.Activate();
         _main.Reload();
-    }
-
-    private async void CheckUpdate()
-    {
-        await Model.CheckUpdateAsync();
-        Update(Model.Refresh);
     }
 
     private static NativeMenuItem Item(string header, Action click, bool enabled = true)

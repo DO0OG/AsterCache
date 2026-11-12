@@ -55,7 +55,7 @@ py -3.12 -m unittest discover -s tests
 | `AsterCache.Prefetch` | 라이브러리 | 읽기 엔진입니다. 존 스트림(`ZoneStreamer.cs`), 폴더 통째 예열(`FolderWarm.cs`), 첫 실행 선행 읽기(`ReadAhead.cs`, 실험 기능, 기본 꺼짐) |
 | `AsterCache.Service` | `AsterCache.Service.exe` | Windows 서비스입니다. 자동으로 도는 모든 일이 여기에 있습니다. |
 | `AsterCache.Cli` | `aster.exe` | 명령행입니다. `Commands/` 에 plan, trace, apply, revert, prefetch, prewarm, status, discover, tier, orbit, profile 등이 있습니다. |
-| `AsterCache.Tray` | `AsterCache.Tray.exe` | Avalonia 관리 창과 트레이 아이콘, 알림, Velopack 갱신입니다. |
+| `AsterCache.Tray` | `AsterCache.Tray.exe` | Avalonia 관리 창과 트레이 아이콘, 알림, 자동 업데이트(`Update/`)입니다. |
 
 ## 서비스 안의 구성
 
@@ -110,8 +110,8 @@ flowchart LR
 | `prewarm_status.json` | 서비스 | 게임별 마지막 예열 결과입니다. |
 | `play_samples.json` | 서비스 | 게임별 최근 50회 플레이 구간의 디스크 읽기량·지연과 시작 예열·스트림 상태입니다. |
 | `orbit_mode.json`, `disk_model.json`, `benchmark_samples.json` | 서비스 | ORBIT 모드, 디스크별 보정 표본, 로딩 시간 표본입니다. |
+| `tray.json` | 트레이 | 트레이 전용 설정(`notifications.enabled`)입니다. 예전 `update_feed_url` 키는 무시합니다. 업데이트 방식은 `config.json` 의 `update.mode`·`update.prerelease` 입니다. |
 | `logs\service.log`, `logs\tray.log` | 서비스, 트레이 | 로그입니다. 트레이가 데이터 폴더에 쓸 수 없으면 `%LocalAppData%\AsterCache\logs` 에 씁니다. |
-| `tray.json` | 사용자 | 트레이 설정(갱신 피드 주소)입니다. |
 
 ## 트레이 앱과 서비스의 통신
 
@@ -122,7 +122,7 @@ flowchart LR
 - **작업.** 트레이스 수집, 계획, 재배치, 되돌리기는 관리 창이 `aster.exe` 를 실행합니다. 관리자 권한이 필요하면 UAC 로 승격하고 결과는 `--result-file` 로 받습니다.
 - **서비스 제어.** 상태 조회는 SCM 으로 비관리자도 됩니다. 시작·정지·설치·제거는 `sc.exe` 를 승격 실행합니다.
 - **지금 예열.** 트레이 프로세스가 같은 `PrefetchStreamer` 로 직접 읽습니다.
-- **갱신.** 트레이만 Velopack 으로 갱신하며(`tray.json` 에 피드 주소가 있을 때), 서비스는 설치 프로그램으로 다시 설치합니다. 버전이 다르면 트레이가 알립니다.
+- **갱신.** 트레이가 고정 저장소의 GitHub 릴리스를 확인하고, 설치본을 관리자 권한으로 실행 중이면 검증한 설치 파일을 조용히 실행합니다(`Update/AutoUpdater.cs`). 그 밖에는 새 버전만 알립니다. 서비스는 네트워크를 쓰지 않습니다. 트레이와 서비스 버전이 다르면 트레이가 알립니다.
 
 ## 안전 장치
 

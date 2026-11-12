@@ -53,7 +53,7 @@ internal static class Program
         var elevator = new UacElevator();
         var shell = new ExplorerShell();
         App.Model = new TrayViewModel(config, new ScmServiceControl(elevator), new PrefetchStreamer(), shell, log, updates,
-            ScmServiceControl.FileVersionOf(Environment.ProcessPath));
+            ScmServiceControl.FileVersionOf(Environment.ProcessPath), Path.Combine(dataDir, "tray.json"), tray.NotificationsEnabled);
         App.Manage = new ManageViewModel(App.Model, config, new AsterProcess(elevator, Elevation.IsAdmin, log), App.ScreenshotPath is null ? new SystemDrives() : new SampleDrives(), elevator, shell, log, Elevation.IsAdmin,
             ProcessSnapshot.IsRunning, string.Join(' ', args.Select(AsterProcess.Quote)));
         return AppBuilder.Configure<App>().UsePlatformDetect().StartWithClassicDesktopLifetime(args, ShutdownMode.OnExplicitShutdown);

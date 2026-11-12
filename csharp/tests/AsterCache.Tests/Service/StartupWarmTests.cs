@@ -190,6 +190,28 @@ public sealed class StartupWarmTests : IDisposable
     }
 
     [Fact]
+    public void AGameThatWillSkipForTheCooldownDoesNotTakeTheStartupCapFromTheNextOne()
+    {
+        GameSettings[] games = [Game("a"), Game("b")];
+        Prewarmer p = Make(games);
+        p.SetAuto(AutoSettings.Default with { StartupWarmGames = 2, StartupWarmMaxMib = 150 }); // 게임마다 100 MiB
+        Assert.True(p.Run(games[0], "test").Ran); // a 는 방금 읽어 쿨다운 중
+        _streamer.Calls.Clear();
+        _streamer.Seen.Clear();
+        _streamer.BytesOf = _ =>
+        {
+            _now += TimeSpan.FromHours(1); // b 를 읽는 사이 a 의 쿨다운이 끝나도
+            return 100;
+        };
+
+        IReadOnlyList<PrewarmResult> results = p.RunServiceStart(games, default, null, PlayedDaysAgo(_now, ("a", 1), ("b", 2)));
+
+        Assert.StartsWith("cooldown", results.Single(r => r.Game == "a").SkipReason, StringComparison.Ordinal);
+        Assert.Equal(["b"], _streamer.Calls.Select(c => c.Game)); // b 만 읽음: 분류 때 정한 a 의 건너뜀이 상한 없는 읽기로 바뀌지 않음
+        Assert.Equal([games[1].MaxStreamMib], _streamer.Seen.Select(g => g.MaxStreamMib)); // b 는 상한 150 을 통째로 받아 줄여 읽지 않음
+    }
+
+    [Fact]
     public void WarmCacheMeansNoReadAndAColdOneStillStreams()
     {
         Prewarmer p = Make(Game("a"));

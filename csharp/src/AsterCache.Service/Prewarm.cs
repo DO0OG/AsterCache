@@ -64,6 +64,9 @@ public sealed class PrewarmEnv
 
     public required Func<GameSettings, bool> GameRunning { get; init; }
 
+    /// 프로세스 스냅샷을 한 번 찍어 그 스냅샷으로 게임 실행을 판정하는 함수를 만듭니다 (묶음 경계 점검이 같은 디스크의 여러 게임을 봐도 스냅샷은 한 번). null 이면 GameRunning 을 그대로 부릅니다.
+    public Func<Func<GameSettings, bool>>? GameRunningSnapshot { get; init; }
+
     /// 게임 실행 판정의 근거가 된 프로세스 설명 ("이름(pid) 경로", 없으면 null): 건너뛴 사유를 로그에 남기는 데만 씁니다. 시험 기본값은 null (실제 스냅샷을 부르지 않음).
     public Func<GameSettings, string?> DescribeBlockers { get; init; } = _ => null;
 
@@ -201,6 +204,11 @@ public sealed class PrewarmEnv
         {
             GameRunning = gameRunning,
             ProcessRunning = exe => ProcessSnapshot.IsRunning([exe]),
+            GameRunningSnapshot = () =>
+            {
+                IReadOnlyList<(int Pid, string Exe)> processes = ProcessSnapshot.Take();
+                return g => DispatchEnv.IsGameRunning(g, processes);
+            },
             SameDisk = sameDisk,
             DeviceCalibrationEnabled = orbitRuntime is null ? null : () => orbitRuntime.Mode != "off",
             DeviceCalibration = orbitCalibration is null ? null : (g, ops, antiCheat, lease, ct) =>
@@ -401,10 +409,20 @@ public sealed class Prewarmer
     private sealed class PrewarmCancelDetail
     {
         private string? _first;
+        private int _memory;
 
         public string? First => Volatile.Read(ref _first);
 
-        public void Set(string reason) => _ = Interlocked.CompareExchange(ref _first, reason, null);
+        /// 처음 남은 사유가 읽는 도중 메모리 판정이었는가 (문구가 아니라 값으로 구분).
+        public bool Memory => Volatile.Read(ref _memory) != 0;
+
+        public void Set(string reason, bool memory = false)
+        {
+            if (Interlocked.CompareExchange(ref _first, reason, null) is null && memory)
+            {
+                Volatile.Write(ref _memory, 1);
+            }
+        }
     }
     private readonly JObject _status = new();
     private readonly PinKeeper _pins;
@@ -420,7 +438,7 @@ public sealed class Prewarmer
     private readonly Dictionary<string, bool> _delayLogged = new(StringComparer.OrdinalIgnoreCase); // 업데이트 보류를 이미 로그한 게임 (값: 재계획 보류인가, 아니면 지연): 보류 종류가 바뀌면 다시 로그, _gate 로 보호
     private readonly HashSet<string> _relocHoldLogged = new(StringComparer.OrdinalIgnoreCase); // 재배치 중이라 시작 예열을 보류한 것을 이미 로그한 게임, _gate 로 보호
     private readonly Dictionary<string, (DateTimeOffset At, int Count)> _skipLogged = new(StringComparer.OrdinalIgnoreCase); // 게임|사유별 마지막으로 남긴 시각과 그 뒤 억제한 횟수, _gate 로 보호
-    private readonly Dictionary<string, (string Reason, long CapMib, long WarmedMib, long HotMib)> _supplementNothingNew = new(StringComparer.OrdinalIgnoreCase); // 보충할 새 구간이 없다는 마지막 상태, _gate 로 보호
+    private readonly Dictionary<string, (string Reason, long WarmedMib, long HotMib)> _supplementNothingNew = new(StringComparer.OrdinalIgnoreCase); // 보충할 새 구간이 없다는 마지막 상태, _gate 로 보호
     private readonly Dictionary<string, (string Reason, long CapMib, long UsedMib, long AllocMib)> _pendingWarmBudgetSkipped = new(StringComparer.OrdinalIgnoreCase); // 예산 거절의 마지막 상태, _gate 로 보호
     private readonly Dictionary<string, (DateTimeOffset At, int Count)> _triggerSeen = new(StringComparer.OrdinalIgnoreCase); // 트리거 exe 별 마지막 처리 시각과 그 뒤 억제한 횟수, _gate 로 보호
     private readonly Dictionary<string, (DateTimeOffset At, long Bytes)> _readSample = new(StringComparer.OrdinalIgnoreCase); // 실행 중인 게임의 마지막 읽기 카운터 표본, _gate 로 보호
@@ -441,6 +459,7 @@ public sealed class Prewarmer
     private readonly Dictionary<string, (long WarmedMib, long HotMib)> _partial = new(StringComparer.OrdinalIgnoreCase); // 서비스 시작 상한으로 핫 집합의 앞부분만 읽은 게임 (읽은 양, 전체), 보충 예열이 끝나면 지움, _gate 로 보호
     private readonly Dictionary<string, (long WarmedMib, long HotMib)> _memoryPartial = new(StringComparer.OrdinalIgnoreCase); // 메모리가 모자라 핫 집합의 앞부분만 읽은 게임 (다음에 전체가 들어가는 예열이 끝나면 지움)
     private readonly Dictionary<string, (long WarmedMib, long HotMib)> _memoryRunning = new(StringComparer.OrdinalIgnoreCase); // 지금 부분 예열을 읽는 중 (스트림이 끝나는 알림에서 "부분" 표시를 붙이려고)
+    private readonly Dictionary<string, DateTimeOffset> _memoryStopAt = new(StringComparer.OrdinalIgnoreCase); // 읽는 도중 메모리 판정으로 마지막에 멈춘 시각 (다시 읽기 시작하거나 끝까지 읽으면 지움), _gate 로 보호
     private readonly Dictionary<string, (long WarmedMib, long HotMib)> _startupTrim = new(StringComparer.OrdinalIgnoreCase); // 서비스 시작 예열이 상한으로 줄여 읽는 중인 게임 (Record 가 같은 상태 쓰기에 warmed_mib/hot_mib 를 넣음), _gate 로 보호
     private readonly Dictionary<string, DateTimeOffset> _idleSince = new(StringComparer.OrdinalIgnoreCase); // 보충 예열을 기다리는 게임이 한가해지기 시작한 시각, _gate 로 보호
     private readonly Dictionary<string, (long WindowMib, long Bytes)> _resume = new(StringComparer.OrdinalIgnoreCase); // 끊긴 보충 예열이 그 윈도 (MaxStreamMib 로 잘린 목록) 의 스케줄 앞쪽에서 이미 읽은 바이트: 다음 보충이 이어 읽는 위치, _gate 로 보호
@@ -589,6 +608,15 @@ public sealed class Prewarmer
     // 최종 예산 재축소 뒤에도 짧은 메모리 변동으로 같은 전체 예열을 반복하지 않게 남길 여유 (MiB).
     internal const int FinalShrinkHeadroomMib = 256;
 
+    // 메모리 사유로 멈춘 게임을 다시 읽기 전 최소 간격: 메모리가 계속 빠듯한 동안 같은 시도를 되풀이하지 않음.
+    internal static readonly TimeSpan MemoryRetryFloor = TimeSpan.FromMinutes(2);
+
+    // 부분 예열 창을 잡을 때 쓰는 가용 RAM (MiB): 처음 잡을 때도 계획 직후 재확인과 같은 여유를 빼서, 몇십 MiB 변동에 읽기가 통째 취소되지 않게 함.
+    internal static long WindowAvailableMib(long availableRamMib) => Math.Max(0, availableRamMib - FinalShrinkHeadroomMib);
+
+    // 재시도 성격의 예열 (대기 재시도, 재예열 점검): 메모리로 멈춘 직후 MemoryRetryFloor 안에는 다시 읽지 않음. 트리거·서비스 시작은 해당 없음.
+    private static bool IsRetryReason(string why) => why is "pending warm retry" or "rewarm";
+
     // 실제로 읽은 양 (스트림 통계, MiB 올림) 을 설정한 상한 limit 으로 자른 값. 통계가 없으면 limit, 0 바이트면 0 (호출 쪽이 성공으로 확정하지 않음).
     // skipped: 이어 읽을 때 건너뛴 (이미 읽은) 바이트.
     internal static long ActualMib(StreamStats? stats, long limit, long skipped = 0) => stats is null ? limit : Math.Min(limit, (stats.Bytes + skipped + (1 << 20) - 1) >> 20);
@@ -651,6 +679,7 @@ public sealed class Prewarmer
         _delayLogged.Remove(game);
         _relocHoldLogged.Remove(game);
         _supplementNothingNew.Remove(game);
+        _memoryStopAt.Remove(game);
         _pendingWarmBudgetSkipped.Remove(game);
         _readSample.Remove(game);
         _gameIdleSince.Remove(game);
@@ -981,11 +1010,15 @@ public sealed class Prewarmer
     internal const double IdleGameReadBytesPerSecond = 1 << 20;
 
     // 이 게임이나 같은 디스크의 다른 등록 게임이 돌고 있는가 (다른 게임은 한가하지 않을 때만): 돌면 그 디스크에 새 읽기를 내지 않습니다.
-    private bool DriveHasRunningGame(GameSettings game) => _env.GameRunning(game) || BusyOthers(game).Count > 0;
+    // running: 이미 찍은 스냅샷으로 판정하는 함수 (묶음 경계 점검이 한 번만 찍어 나눠 씀), 없으면 env.GameRunning.
+    private bool DriveHasRunningGame(GameSettings game, Func<GameSettings, bool>? running = null) => (running ?? _env.GameRunning)(game) || BusyOthers(game, running).Count > 0;
 
     // 같은 디스크에서 돌고 있으면서 한가하지 않은 다른 등록 게임 (재예열 점검도 씀).
-    internal List<GameSettings> BusyOthers(GameSettings game) =>
-        [.. AutoRelocator.SameDriveGames(_games, [game], _env.SameDisk).Where(x => !string.Equals(x.Name, game.Name, StringComparison.OrdinalIgnoreCase) && _env.GameRunning(x) && !OtherGameIdle(x))];
+    internal List<GameSettings> BusyOthers(GameSettings game, Func<GameSettings, bool>? running = null)
+    {
+        running ??= _env.GameRunning;
+        return [.. AutoRelocator.SameDriveGames(_games, [game], _env.SameDisk).Where(x => !string.Equals(x.Name, game.Name, StringComparison.OrdinalIgnoreCase) && running(x) && !OtherGameIdle(x))];
+    }
 
     // 같은 디스크에서 우리 읽기가 도는 중인가: 그동안의 디스크 처리량에는 우리 읽기가 섞임 (우리 읽기량은 물리 읽기가 아니라 PVM 힌트 바이트라 빼서 보정할 수도 없음).
     private bool SelfReadingOn(GameSettings other) =>
@@ -999,10 +1032,11 @@ public sealed class Prewarmer
 
     // 읽는 중에 외부 디스크 부하가 바쁨 기준 이상인가: 같은 디스크의 다른 등록 게임이 도는 동안 DiskObserveEvery 마다 다음 묶음을 내기 전에 읽기를 멈추고 (DiskObserveWindow) 처리량을 잼. 못 읽는 고장 (Broken) 이면 바쁨으로 보지 않지만 (진입 시점의 실패만 바쁨) 표본이 아직 없거나 낡았으면 (Warming·Stale) 바쁨.
     // shortcut: 처리량 표본 캐시 (2 초) 가 방금 것이면 우리 읽기가 섞일 수 있음, 관측 간격이 10 초라 보통은 새 표본이고 틀려도 양보 쪽으로만 어긋남.
-    private bool ExternalLoadWhilePaused(GameSettings game, CancellationToken stop)
+    private bool ExternalLoadWhilePaused(GameSettings game, CancellationToken stop, Func<GameSettings, bool>? running = null)
     {
+        running ??= _env.GameRunning;
         if (_now() - _driveObservedAt < DiskObserveEvery
-            || !AutoRelocator.SameDriveGames(_games, [game], _env.SameDisk).Any(x => !string.Equals(x.Name, game.Name, StringComparison.OrdinalIgnoreCase) && _env.GameRunning(x)))
+            || !AutoRelocator.SameDriveGames(_games, [game], _env.SameDisk).Any(x => !string.Equals(x.Name, game.Name, StringComparison.OrdinalIgnoreCase) && running(x)))
         {
             return false;
         }
@@ -1089,9 +1123,9 @@ public sealed class Prewarmer
     }
 
     // 읽기를 끊을 만큼 게임이 도는가. keep_stream_on_game_start 가 켜졌으면 읽던 게임 자신의 실행만 무시하고, 같은 디스크의 다른 등록 게임 (한가하지 않은 것) 은 설정과 무관하게 봅니다.
-    private bool RunningBlocksRead(GameSettings game) => !_auto.KeepStreamOnGameStart
-        ? DriveHasRunningGame(game)
-        : BusyOthers(game).Count > 0;
+    private bool RunningBlocksRead(GameSettings game, Func<GameSettings, bool>? running = null) => !_auto.KeepStreamOnGameStart
+        ? DriveHasRunningGame(game, running)
+        : BusyOthers(game, running).Count > 0;
 
     // 건너뛴 사유 로그용: 이 디스크에서 게임이 돈다고 판정한 근거 프로세스 (없으면 빈 문자열). 건너뛰어 로그를 남길 때만 부름.
     private string BlockerNote(GameSettings game)
@@ -1314,6 +1348,14 @@ public sealed class Prewarmer
         SampleDriveGames();
         SupplementTick(ct);
         _rewarm.Tick(auto, ct);
+    }
+
+    internal DateTimeOffset? PendingRetryAt(string game)
+    {
+        lock (_gate)
+        {
+            return _pendingWarm.TryGetValue(game, out PendingWarm? pending) ? pending.RetryAt : null;
+        }
     }
 
     internal bool HasPendingWarm(string game)
@@ -1611,12 +1653,17 @@ public sealed class Prewarmer
         var cold = new List<GameSettings>();
         var trimmed = new Dictionary<string, (long WarmedMib, long HotMib)>(StringComparer.OrdinalIgnoreCase);
         var candidates = new List<GameSettings>();
+        long availNow = _env.AvailableRamMib();
         foreach (GameSettings g in list)
         {
             if (AlreadyWarm(g) is true)
             {
                 LogSkipped(g.Name, "already warm", $"{g.Name}: prewarm skipped (already warm) [service start]");
                 skipped.Add(new PrewarmResult(g.Name, false, "already warm", null, _now()));
+            }
+            else if (_env.ZoneBytes(g) is not null && !IsCold(g) && WillSkipReason(g, availNow) is { } why)
+            {
+                skipped.Add(SkipAtServiceStart(g, why)); // 쿨다운 같은 사유로 어차피 건너뜀: 시작 상한을 배정하지 않고, 다른 게임을 읽는 사이 사유가 풀려도 상한 없이 읽지 않게 여기서 결과를 확정
             }
             else
             {
@@ -1750,6 +1797,7 @@ public sealed class Prewarmer
             _supplementNothingNew.Remove(game);
             _supplementReadProgress.Remove(game);
             _supplementRetry.Remove(game);
+            _memoryStopAt.Remove(game);
         }
 
         PatchStatus(game, hotMib, hotMib);
@@ -1759,6 +1807,11 @@ public sealed class Prewarmer
     {
         lock (_gate)
         {
+            if (_pendingWarm.TryGetValue(game, out PendingWarm? pending) && pending.TriggerExe is not null)
+            {
+                return; // 당겨 둔 트리거 재시도 표시는 보충 경로가 지우지 않음 (RetryPendingWarmTick 이 먼저 처리)
+            }
+
             _pendingWarm.Remove(game);
             _idleSince.Remove(game);
             _pendingWarmBudgetSkipped.Remove(game);
@@ -2138,11 +2191,6 @@ public sealed class Prewarmer
                 return;
             }
 
-            if (pendingPartial?.Contains(name) == true)
-            {
-                continue; // 이 틱에 보충 경로가 맡은 게임은 부분 읽기와 재시도를 겹치지 않음
-            }
-
             GameSettings? game = _games.FirstOrDefault(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase));
             if (game is null || IsCold(game) || !GamePolicy.AllowsPrewarm(game)) // 기록이 없어진 게임, 정책이 예열을 막은 게임은 대기에서 뺌 (기록 없는 게임은 대기 재시도 대상이 아님)
             {
@@ -2158,7 +2206,12 @@ public sealed class Prewarmer
 
             if (TryRunTriggerRetry(game, ct))
             {
-                continue;
+                continue; // 막던 게임이 사라지면 부분 상태 게임도 보충 유휴를 기다리지 않고 트리거 재시도를 먼저 함 (게임 실행·디스크 대여 판정은 Run 이 그대로 함)
+            }
+
+            if (pendingPartial?.Contains(name) == true)
+            {
+                continue; // 이 틱에 보충 경로가 맡은 게임은 부분 읽기와 재시도를 겹치지 않음
             }
 
             RetryPendingWarmWhenIdle(game, ct);
@@ -2381,7 +2434,7 @@ public sealed class Prewarmer
         {
             using IDisposable work = TrackGameWork(game.Name);
             if (ct.IsCancellationRequested || !HeavyWorkAllowed(game) || PolicyBlocksPrewarm(game)
-                || DriveHasRunningGame(game) || _games.Any(x => Relocating(x.Name)) || Deferred(game))
+                || DriveHasRunningGame(game) || _games.Any(x => Relocating(x.Name)) || Deferred(game) || MemoryRetryTooSoon(game.Name))
             {
                 return false;
             }
@@ -2393,7 +2446,7 @@ public sealed class Prewarmer
             long? partialCap = null;
             if (needsPartial)
             {
-                partialCap = PartialCapMib(game, p.HotMib, avail, physCap, budgetCap);
+                partialCap = PartialCapMib(game, p.HotMib, WindowAvailableMib(avail), physCap, budgetCap);
                 if (partialCap is not { } cap)
                 {
                     LogSkipped(game.Name, "supplement memory budget", $"{game.Name}: supplement prewarm skipped (hot set {p.HotMib} MiB exceeds the budget: min(cache budget {physCap} MiB, available {avail} MiB - reserve {game.Prewarm.MinFreeRamMib} MiB), and less than {MinPartialMib} MiB fits)");
@@ -2462,11 +2515,10 @@ public sealed class Prewarmer
             {
                 long finalReadMib = (finalReadSize + (1 << 20) - 1) >> 20;
                 long reserveMib = Math.Max(game.Prewarm.MinFreeRamMib, GapFillReserveMib);
-                long allowedMib = Math.Min(Math.Min(physCap, allocatedMib ?? long.MaxValue), avail - reserveMib);
+                long allowedMib = Math.Min(Math.Min(physCap, allocatedMib ?? long.MaxValue), WindowAvailableMib(avail) - reserveMib);
                 if (finalReadMib > allowedMib)
                 {
-                    long shrinkAvailableMib = Math.Max(0, avail - FinalShrinkHeadroomMib);
-                    if (PartialCapMib(game, finalReadMib, shrinkAvailableMib, physCap, budgetCap) is { } capMib)
+                    if (PartialCapMib(game, finalReadMib, WindowAvailableMib(avail), physCap, budgetCap) is { } capMib)
                     {
                         if (SupplementCoveredByCap(game, p, capMib, ct, out _))
                         {
@@ -2499,13 +2551,18 @@ public sealed class Prewarmer
 
             long readCapMib = windowMib ?? p.HotMib;
             long? zoneBytes = _env.ZoneBytes(game);
-            (StreamStats Stats, bool Complete, string? CancelReason)? hot;
+            (StreamStats Stats, bool Complete, string? CancelReason, bool MemoryStop)? hot;
             long? tailTotal = null; // 이번에 읽을 목록의 길이 (건너뛴 앞부분 제외): 이어 읽을 위치를 스케줄 길이로 제한하고 끝까지 읽었는지 앎
             try
             {
                 if (!HeavyWorkAllowed(game))
                 {
                     return false;
+                }
+
+                lock (_gate)
+                {
+                    _memoryStopAt.Remove(game.Name); // 다시 읽기 시작함: 이번에 메모리로 멈추면 그때 다시 기억
                 }
 
                 _log.Info($"{game.Name}: supplement prewarm of the rest of the hot set ({p.WarmedMib} of {p.HotMib} MiB read{(windowMib is { } w ? $", reading the first {w} MiB" : string.Empty)}{(skipBytes > 0 ? $", continuing after {skipBytes >> 20} MiB" : string.Empty)})");
@@ -2590,6 +2647,14 @@ public sealed class Prewarmer
                 }
 
                 string reason = r.CancelReason ?? "cancelled externally";
+                if (r.MemoryStop)
+                {
+                    lock (_gate)
+                    {
+                        _memoryStopAt[game.Name] = _now(); // 읽은 데까지는 NoteProgress 가 이미 남김
+                    }
+                }
+
                 LogSkipped(game.Name, "supplement cancelled " + reason, () => $"{game.Name}: supplement prewarm cancelled after {r.Stats.Bytes >> 20} MiB ({reason})");
                 return false;
             }
@@ -2661,7 +2726,11 @@ public sealed class Prewarmer
         if (MemoryPartialPending(game.Name))
         {
             LogSupplementNothingNew(game.Name, cap, p.WarmedMib, p.HotMib);
-            DropPendingWarm(game.Name);
+            if (!HasMemoryStop(game.Name))
+            {
+                DropPendingWarm(game.Name); // 메모리로 멈춘 게임은 대기를 남겨 둠: 가용 메모리가 읽은 양 + 여유 + 예비량으로 회복되면 다음 유휴 때 창 계산이 이어 읽음
+            }
+
             return true;
         }
 
@@ -3369,7 +3438,7 @@ public sealed class Prewarmer
 
     private void LogSupplementNothingNew(string game, long capMib, long warmedMib, long hotMib)
     {
-        var state = (Reason: "supplement nothing new", CapMib: capMib, WarmedMib: warmedMib, HotMib: hotMib);
+        var state = (Reason: "supplement nothing new", WarmedMib: warmedMib, HotMib: hotMib); // cap 은 가용 메모리에 따라 계속 흔들리므로 키에 넣지 않음
         lock (_gate)
         {
             if (_supplementNothingNew.TryGetValue(game, out var previous) && previous == state)
@@ -3465,11 +3534,34 @@ public sealed class Prewarmer
     }
 
     // 모의 계산에서 실제로 건너뛸 게임은 예산을 차지하지 않음: 업데이트 지연·기록 없는 예열·그 밖의 건너뜀 사유 (메모리 부족은 부분 예열이 읽으니 제외).
-    private bool SkipsInBatch(GameSettings g, long avail)
+    private bool SkipsInBatch(GameSettings g, long avail) => WillSkipReason(g, avail) is not null || IsCold(g);
+
+    // Run 이 메모리 부족 외의 사유로 건너뛸 게임의 사유 (없으면 null): 업데이트 지연 포함.
+    private string? WillSkipReason(GameSettings g, long avail)
     {
         TimeSpan? since = LastWarmed(g.Name) is { } prev ? _now() - prev : null;
         string? skip = PrewarmPolicy.SkipReason(_env.ZoneBytes(g), _env.TraceExists(g), DriveHasRunningGame(g), avail, g.Prewarm.MinFreeRamMib, since, TimeSpan.FromMinutes(g.Prewarm.CooldownMin));
-        return (skip is not null && !skip.StartsWith("low memory", StringComparison.Ordinal)) || IsCold(g) || Deferred(g);
+        if (skip is not null && !skip.StartsWith("low memory", StringComparison.Ordinal))
+        {
+            return skip;
+        }
+
+        return Deferred(g) ? PostUpdateDelay : null;
+    }
+
+    // 서비스 시작 분류에서 건너뛰기로 한 게임의 결과를 Run 과 같은 방식으로 남김 (업데이트 지연은 기록 없이 대기만).
+    private PrewarmResult SkipAtServiceStart(GameSettings g, string reason)
+    {
+        DateTimeOffset now = _now();
+        PrewarmResult result = new(g.Name, false, reason, null, now);
+        if (reason == PostUpdateDelay)
+        {
+            TrackPendingWarm(g, result, now);
+            return result;
+        }
+
+        LogSkipped(g.Name, reason, () => $"{g.Name}: prewarm skipped ({reason}) [service start]{(reason == "game is running" ? BlockerNote(g) : string.Empty)}");
+        return Record(g, now, result, 0);
     }
 
     // 묶음에 게임이 둘 이상이면 각 게임의 로딩 앞부분 (tier0) 을 최근 순서로 먼저 모두 올리고, 그 뒤 게임별 전체 (tier1 포함) 를 읽습니다 (앞부분은 이미 올라와 있어 다시 읽어도 빠름).
@@ -3514,7 +3606,7 @@ public sealed class Prewarmer
             if (lowMemory || hotMib > room)
             {
                 // 전체가 안 들어가도 Run 의 부분 예열이 읽으면 앞부분도 올림 (RunBatch 와 같은 판단, 상한은 Run 과 같게 전체 입장 때는 남은 예산을 씀)
-                if (PartialCapMib(g, hotMib, avail, physCap, zoneMib <= room ? long.MaxValue : room) is not { } cap)
+                if (PartialCapMib(g, hotMib, WindowAvailableMib(avail), physCap, zoneMib <= room ? long.MaxValue : room) is not { } cap)
                 {
                     continue; // 이 게임만 건너뜀: 뒤 게임은 남은 예산으로 RunBatch 와 같이 따로 판단
                 }
@@ -3673,6 +3765,12 @@ public sealed class Prewarmer
                 return new PrewarmResult(game.Name, false, "game removed", null, now); // 대기 중에 등록이 해제됨: 읽지 않음
             }
 
+            if (IsRetryReason(why) && MemoryRetryTooSoon(game.Name))
+            {
+                LogSkipped(game.Name, "memory retry floor", $"{game.Name}: prewarm skipped (stopped by memory less than {MemoryRetryFloor.TotalMinutes:F0} min ago) [{why}]");
+                return new PrewarmResult(game.Name, false, "memory retry floor", null, now); // 대기 기한은 그대로 둠
+            }
+
             if (PolicyBlocked(game, $"prewarm [{why}]"))
             {
                 PrewarmResult blocked = new(game.Name, false, GamePolicySkip, null, now); // 상태 파일 이력은 건드리지 않음
@@ -3732,7 +3830,7 @@ public sealed class Prewarmer
                 bool overBudget = skip is null && roomMib is { } room && hotMib > room;
                 if (lowMemory || overBudget)
                 {
-                    if (PartialCapMib(game, hotMib, availableRamMib, PhysCapMib(), roomMib ?? long.MaxValue) is { } capMib)
+                    if (PartialCapMib(game, hotMib, WindowAvailableMib(availableRamMib), PhysCapMib(), roomMib ?? long.MaxValue) is { } capMib)
                     {
                         // 전체가 들어가지 않음: 앞쪽부터 들어가는 만큼만 읽음 (max_stream_mib 를 줄인 사본). 틈 메우기는 생략.
                         // 전체 크기는 원래 값을 유지: 서비스 시작 상한으로 이미 줄인 사본이면 그 원래 크기.
@@ -3756,11 +3854,10 @@ public sealed class Prewarmer
                 {
                     long finalReadMib = (finalReadSize + (1 << 20) - 1) >> 20;
                     long reserveMib = Math.Max(game.Prewarm.MinFreeRamMib, GapFillReserveMib);
-                    long allowedMib = Math.Min(Math.Min(PhysCapMib(), roomMib ?? long.MaxValue), availableRamMib - reserveMib);
+                    long allowedMib = Math.Min(Math.Min(PhysCapMib(), roomMib ?? long.MaxValue), WindowAvailableMib(availableRamMib) - reserveMib); // 전체가 들어가는지도 창과 같은 여유를 둠: 경계에서 0 MiB 정지가 되풀이되지 않게
                     if (finalReadMib > allowedMib)
                     {
-                        long shrinkAvailableMib = Math.Max(0, availableRamMib - FinalShrinkHeadroomMib);
-                        if (PartialCapMib(game, finalReadMib, shrinkAvailableMib, PhysCapMib(), roomMib ?? long.MaxValue) is { } capMib)
+                        if (PartialCapMib(game, finalReadMib, WindowAvailableMib(availableRamMib), PhysCapMib(), roomMib ?? long.MaxValue) is { } capMib)
                         {
                             originalHotMib = Math.Max(originalHotMib, finalReadMib);
                             memoryPartial = (capMib, originalHotMib);
@@ -3797,6 +3894,7 @@ public sealed class Prewarmer
                     lock (_gate)
                     {
                         _memoryRunning.Remove(game.Name);
+                        _memoryStopAt.Remove(game.Name);
                         if (stats.Bytes <= 0)
                         {
                             return; // 아무것도 읽지 못함: 성공이 아니므로 부분 상태도 만들지 않음
@@ -3807,10 +3905,7 @@ public sealed class Prewarmer
 
                         if (memoryPartial is { } planned)
                         {
-                            (long WarmedMib, long HotMib) actual = (ActualMib(stats, planned.WarmedMib), planned.HotMib);
-                            (_memoryPartial[game.Name], _partial[game.Name]) = (actual, actual); // 완전 예열로 기록하지 않음: 나머지는 메모리가 날 때 보충 예열이 읽고, 재예열 점검은 읽은 앞부분만 잼
-                            _supplementReadProgress[game.Name] = new(stats.Bytes, inputs, game);
-                            _supplementRetry.Remove(game.Name);
+                            SetMemoryPartialLocked(game, stats, planned.WarmedMib, planned.HotMib, inputs);
                         }
                         else
                         {
@@ -3834,12 +3929,24 @@ public sealed class Prewarmer
                         return Record(game, now, new PrewarmResult(game.Name, false, RelocationRunning, null, now), 0);
                     }
 
-                    (StreamStats s, bool complete, string? cancelReason) = hot;
+                    (StreamStats s, bool complete, string? cancelReason, bool memoryStop) = hot;
                     if (!complete)
                     {
                         string reason = cancelReason ?? "cancelled externally";
+                        long? keptMib = memoryStop ? NoteMemoryStop(game, s, memoryPartial) : null; // Record 가 상태 파일에 쓰기 전에 읽은 데까지를 부분 상태로 확정
                         LogSkipped(game.Name, "prewarm cancelled " + reason, () => $"{game.Name}: prewarm cancelled ({why}) after {s.Bytes >> 20} MiB ({reason})");
-                        return Record(game, now, new PrewarmResult(game.Name, false, Cancelled, s, now) { CancelDetail = reason }, 0);
+                        if (keptMib is { } kept)
+                        {
+                            _log.Info($"{game.Name}: prewarm stopped by memory; kept the {kept} of {memoryPartial?.HotMib} MiB read as partial");
+                        }
+
+                        PrewarmResult stopped = Record(game, now, new PrewarmResult(game.Name, false, Cancelled, s, now) { CancelDetail = reason }, 0);
+                        if (memoryStop && s.Bytes > 0)
+                        {
+                            ExpediteMemoryRetry(game.Name); // 읽은 게 없는 정지 (0 MiB) 는 기존 재시도 주기를 유지
+                        }
+
+                        return stopped;
                     }
 
                     if (s.Bytes <= 0)
@@ -3858,7 +3965,7 @@ public sealed class Prewarmer
 
                     double mbps = s.Seconds > 0 ? s.Bytes / 1048576.0 / s.Seconds : 0;
                     string kind = memoryPartial is { } part ? $"partial {ActualMib(s, part.WarmedMib)}/{part.HotMib} MiB, the rest does not fit in memory: " : string.Empty;
-                    _log.Info($"{game.Name}: prewarm done ({why}): {kind}{s.Bytes >> 20} MiB requested, {s.GapBytes / 1048576.0:F2} MiB gaps filled in {s.Seconds:F2} s = {mbps:F0} hint MB/s, {s.Requests} requests, {s.Errors} errors");
+                    _log.Info($"{game.Name}: prewarm done ({why}): {kind}{s.Bytes >> 20} MiB requested, {s.GapBytes / 1048576.0:F2} MiB gaps filled in {s.Seconds:F2} s = {mbps:F0} hint MB/s, {s.Requests} requests, {s.Errors} errors, room {(roomMib is { } roomLimit ? roomLimit + " MiB" : "unlimited")}, available {_env.AvailableRamMib()} MiB");
                     _log.Info($"{game.Name}: prewarm phases ({why}): {run.Summary()}");
                     PrewarmResult done = Record(game, warmedAt, new PrewarmResult(game.Name, true, null, s, warmedAt), mbps);
                     WarmMeasured?.Invoke(game, mbps);
@@ -3889,6 +3996,74 @@ public sealed class Prewarmer
 
             LogSkipped(game.Name, skip, () => $"{game.Name}: prewarm skipped ({skip}) [{why}]{(skip == "game is running" ? BlockerNote(game) : string.Empty)}");
             return Record(game, now, new PrewarmResult(game.Name, false, skip, null, now), 0);
+        }
+    }
+
+    // 메모리 부분 예열 상태를 실제 읽은 양으로 확정 (_gate 안에서 부름): 완전 예열로 기록하지 않고, 나머지는 메모리가 날 때 보충 예열이 읽고, 재예열 점검은 읽은 앞부분만 잼.
+    private void SetMemoryPartialLocked(GameSettings game, StreamStats stats, long windowMib, long hotMib, string? inputs)
+    {
+        (long WarmedMib, long HotMib) actual = (ActualMib(stats, windowMib), hotMib);
+        (_memoryPartial[game.Name], _partial[game.Name]) = (actual, actual);
+        _supplementReadProgress[game.Name] = new(stats.Bytes, inputs, game);
+        _supplementRetry.Remove(game.Name);
+    }
+
+    // 읽는 도중 메모리 판정으로 멈춘 예열: 멈춘 시각을 기억하고, 줄여 읽던 창 (plan) 이 틈·오류·순서 바꿈 없이 읽은 만큼을 부분 예열로 남김. 남긴 양 (MiB), 안 남겼으면 null.
+    // 전체 계획 경로 (plan 없음) 와 0 MiB 는 남기지 않음: 읽은 곳이 목록 앞쪽과 같다고 보장할 수 없음 (보충의 NoteProgress 규칙과 같게).
+    // shortcut: 위치는 창 스케줄 기준의 근사 (접근 순서 head 를 넘는 구간은 물리 순서라 목록 앞쪽과 다를 수 있음), 어긋난 구간은 재예열 점검의 표본이 식은 것으로 잡아 다시 읽음.
+    private long? NoteMemoryStop(GameSettings game, StreamStats stats, (long WarmedMib, long HotMib)? plan)
+    {
+        bool positional = plan is not null && stats.Bytes > 0 && stats.GapBytes == 0 && stats.Errors == 0 && !_streamer.WasPrewarmReordered(game);
+        string? inputs = positional ? PrewarmRun.InputStamp(game) : null;
+        lock (_gate)
+        {
+            _memoryStopAt[game.Name] = _now();
+            if (!positional)
+            {
+                return null;
+            }
+
+            (long windowMib, long hotMib) = plan!.Value;
+            long warmedMib = ActualMib(stats, windowMib);
+            if (warmedMib >= hotMib)
+            {
+                return null;
+            }
+
+            _supplementNothingNew.Remove(game.Name);
+            _resume.Remove(game.Name); // 부분 상태를 새로 정함: 보충의 옛 이어 읽기 위치는 낡음
+            SetMemoryPartialLocked(game, stats, windowMib, hotMib, inputs);
+            return warmedMib;
+        }
+    }
+
+    // 메모리로 멈춘 게임의 재시도 대기를 한 주기 대신 MemoryRetryFloor 뒤로 당김 (기한을 뒤로 밀지는 않음). 메모리가 회복됐는지는 다시 읽을 때 창 계산이 확인함.
+    private void ExpediteMemoryRetry(string game)
+    {
+        lock (_gate)
+        {
+            DateTimeOffset soon = _now() + MemoryRetryFloor;
+            if (_pendingWarm.TryGetValue(game, out PendingWarm? pending) && pending.RetryAt > soon)
+            {
+                _pendingWarm[game] = pending with { RetryAt = soon };
+            }
+        }
+    }
+
+    private bool HasMemoryStop(string game)
+    {
+        lock (_gate)
+        {
+            return _memoryStopAt.ContainsKey(game);
+        }
+    }
+
+    // 메모리로 멈춘 지 MemoryRetryFloor 가 안 지났는가.
+    private bool MemoryRetryTooSoon(string game)
+    {
+        lock (_gate)
+        {
+            return _memoryStopAt.TryGetValue(game, out DateTimeOffset at) && _now() - at < MemoryRetryFloor;
         }
     }
 
@@ -3926,15 +4101,18 @@ public sealed class Prewarmer
             (availableRamMib < GapFillReserveMib || finalSetMib > availableRamMib - GapFillReserveMib);
         // keep_stream_on_game_start 가 켜졌으면 읽던 게임 자신의 실행만으로는 취소하지 않음 (같은 디스크의 다른 게임 실행은 항상 봄). 메모리 검사는 그대로.
         string? reason = null;
-        if (RunningBlocksRead(game))
+        bool memoryReason = false;
+        Func<GameSettings, bool>? snapshot = null;
+        bool running(GameSettings g) => (snapshot ??= _env.GameRunningSnapshot?.Invoke() ?? _env.GameRunning)(g); // 처음 필요할 때 한 번만 찍어 묶음 안의 판정이 나눠 씀
+        if (RunningBlocksRead(game, running))
         {
-            reason = _env.GameRunning(game) ? "game started" : "another game is running on the same disk";
+            reason = running(game) ? "game started" : "another game is running on the same disk";
         }
         else if (PolicyBlocksPrewarm(game))
         {
             reason = "game policy"; // 읽는 도중 정책이 바뀌면 다음 묶음 경계에서 멈춤
         }
-        else if (remaining > 0 && ExternalLoadWhilePaused(game, stop.Token))
+        else if (remaining > 0 && ExternalLoadWhilePaused(game, stop.Token, running))
         {
             reason = "disk busy after pause";
         }
@@ -3946,15 +4124,17 @@ public sealed class Prewarmer
         else if (finalSetExceedsReserve)
         {
             reason = $"memory reserve: available {availableRamMib} MiB, final set {finalSetMib} MiB + reserve {GapFillReserveMib} MiB";
+            memoryReason = true;
         }
         else if (!PrewarmPolicy.HasMemoryBudget(remainingMib, availableRamMib, game.Prewarm.MinFreeRamMib))
         {
             reason = $"memory budget: available {availableRamMib} MiB, remaining {remainingMib} MiB + reserve {game.Prewarm.MinFreeRamMib} MiB";
+            memoryReason = true;
         }
 
         if (reason is not null)
         {
-            detail?.Set(reason);
+            detail?.Set(reason, memoryReason);
             stop.Cancel();
         }
     }
@@ -3963,12 +4143,12 @@ public sealed class Prewarmer
     // 같은 디스크에서 재배치가 시작했으면 읽지 않고 null.
     // settle: 끝까지 읽었을 때 StreamEnded 알림보다 먼저 부름 (읽은 통계를 받아 부분 예열 상태를 확정하거나 지움).
     // skipBytes: 읽기 목록 앞쪽 이만큼은 이미 읽었으니 건너뜀 (끊긴 보충을 이어 읽음, 틈 메우기 없는 경로에서만). onTotal: 이번에 읽을 목록의 길이 (건너뛴 앞부분 제외).
-    private (StreamStats Stats, bool Complete, string? CancelReason)? StreamHot(GameSettings game, CancellationToken ct, long? zoneBytes, long availableRamMib, bool partial = false, Action<StreamStats>? settle = null, long skipBytes = 0, Action<long>? onTotal = null, bool allowReorder = true, long roomMib = long.MaxValue, bool allowWhileExiting = false)
+    private (StreamStats Stats, bool Complete, string? CancelReason, bool MemoryStop)? StreamHot(GameSettings game, CancellationToken ct, long? zoneBytes, long availableRamMib, bool partial = false, Action<StreamStats>? settle = null, long skipBytes = 0, Action<long>? onTotal = null, bool allowReorder = true, long roomMib = long.MaxValue, bool allowWhileExiting = false)
     {
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "prewarm stream", ct, preserveForGameRoot: _auto.KeepStreamOnGameStart ? game.OriginRoot : null, preserveGameKey: game.Name, allowWhileExiting: allowWhileExiting);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
         {
-            return (new StreamStats(0, 0, 0, 0, Aborted: true), false, "disk read lease refused");
+            return (new StreamStats(0, 0, 0, 0, Aborted: true), false, "disk read lease refused", false);
         }
 
         using var stop = new CancellationTokenSource();
@@ -4051,14 +4231,14 @@ public sealed class Prewarmer
             complete = r.Item2 && !stop.IsCancellationRequested;
             finalStats = r.Item1;
             LogYield(game.Name, r.Item1.Bytes, lease);
-            return (r.Item1, complete, cancelDetail.First);
+            return (r.Item1, complete, cancelDetail.First, cancelDetail.Memory);
         }
         catch (OperationCanceledException) when (calibration.IsCancellationRequested)
         {
             StreamStats cancelled = new(0, 0, 0, 0, Aborted: true);
             finalStats = cancelled;
             LogYield(game.Name, 0, lease);
-            return (cancelled, false, cancelDetail.First ?? (lease?.Token.IsCancellationRequested == true ? "disk read lease revoked" : ct.IsCancellationRequested ? "caller cancelled" : "cancelled externally"));
+            return (cancelled, false, cancelDetail.First ?? (lease?.Token.IsCancellationRequested == true ? "disk read lease revoked" : ct.IsCancellationRequested ? "caller cancelled" : "cancelled externally"), cancelDetail.Memory);
         }
         finally
         {

@@ -24,6 +24,8 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     private long _physical;
     private long _hotMib = 8000;
     private Queue<long>? _availableReads;
+    private int _snapshots;
+    private int _snapshotChecks;
 
     private List<int> Probed { get; } = [];
 
@@ -41,6 +43,9 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
 
         /// 실제로 읽었다고 알릴 양 (MiB, 기본은 받은 상한 그대로).
         public long? ReadMib { get; set; }
+
+        /// 읽기 통계에 담을 오류 수.
+        public long ErrorCount { get; set; }
 
         public Func<GameSettings, long?>? ReadSetBytes { get; set; }
 
@@ -64,18 +69,27 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
                 OnProgress(progress);
             }
 
-            return (new StreamStats(ReadMib is { } read ? read * Mib : total, 1, 0, 0.01), !stop.IsCancellationRequested);
+            return (new StreamStats(ReadMib is { } read ? read * Mib : total, 1, ErrorCount, 0.01), !stop.IsCancellationRequested);
         }
     }
 
-    private Prewarmer Make(GameSettings game)
+    private Prewarmer Make(GameSettings game, params GameSettings[] others)
     {
         _streamer.ReadSetBytes ??= g => Math.Min(_hotMib, g.StreamCapBytes(_hotMib * Mib) / Mib) * Mib;
         _streamer.ScheduledStreamBytes ??= (g, _) => g.StreamCapBytes(_hotMib * Mib);
-        return new Prewarmer([game], _streamer, new PrewarmEnv
+        return new Prewarmer([game, .. others], _streamer, new PrewarmEnv
         {
             AvailableRamMib = () => _availableReads is { Count: > 0 } ? _availableReads.Dequeue() : _avail,
             GameRunning = _ => false,
+            GameRunningSnapshot = () =>
+            {
+                _snapshots++;
+                return _ =>
+                {
+                    _snapshotChecks++;
+                    return false;
+                };
+            },
             ZoneBytes = g => Math.Min(_hotMib, g.StreamCapBytes(_hotMib * Mib) / Mib) * Mib, // 계획의 존 (핫 집합) 을 max_stream_mib 로 자른 값
             TraceExists = _ => true,
             PhysicalRamBytes = () => _physical,
@@ -121,8 +135,8 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     }
 
     [Theory]
-    [InlineData(6000L, 1904)] // 가용 6000 - 예비 4096
-    [InlineData(4096L + 256, 256)] // 경계: 256 MiB 면 읽음
+    [InlineData(6000L, 1648)] // 가용 6000 - 예비 4096 - 처음 창에도 두는 여유 256
+    [InlineData(4096L + 256 + 256, 256)] // 경계: 256 MiB 면 읽음
     public void ReadsOnlyTheFrontThatFitsAndSkipsTheTailGapFilling(long avail, long expectedMib)
     {
         _avail = avail;
@@ -142,7 +156,7 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     [Fact]
     public void BelowTheMinimumPartialSizeItIsSkippedAsBefore()
     {
-        _avail = 4096 + 255;
+        _avail = 4096 + 256 + 255;
         Prewarmer p = Make(Game());
 
         PrewarmResult r = p.Run(Game(), "test");
@@ -187,6 +201,7 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     public void MemoryPressureWhileReadingStopsThePartialReadAndRecordsNothingAsWarm()
     {
         _avail = 6000;
+        _streamer.ReadMib = 0; // 아직 아무것도 읽지 못한 채 멈춤
         Prewarmer p = Make(Game());
         _streamer.OnProgress = progress =>
         {
@@ -198,7 +213,159 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
 
         Assert.False(r.Ran);
         Assert.Equal(Prewarmer.Cancelled, r.SkipReason);
+        Assert.False(p.SupplementPending("g")); // 0 MiB 에서 멈췄으면 부분 상태도 남기지 않음
+        Assert.Null(p.PartialInfo("g"));
+    }
+
+    [Fact]
+    public void AMemoryStopKeepsWhatWasReadAsPartialAndTheNextSupplementReadsPastIt()
+    {
+        _avail = 6000;
+        _streamer.ReadMib = 300;
+        Prewarmer p = Make(Game());
+        _streamer.OnProgress = progress =>
+        {
+            _avail = 4096; // 300 MiB 읽은 뒤 메모리 압박
+            progress(300 * Mib, 1648 * Mib);
+        };
+
+        PrewarmResult r = p.Run(Game(), "test");
+
+        Assert.False(r.Ran);
+        Assert.Equal(Prewarmer.Cancelled, r.SkipReason);
+        Assert.Equal((300L, _hotMib), p.PartialInfo("g")); // 읽은 데까지가 부분 상태 (설정한 창 1648 이 아니라)
+        int cancelledAt = _log.Lines.ToList().FindIndex(l => l.Contains("prewarm cancelled (test) after 300 MiB (memory reserve", StringComparison.Ordinal));
+        int keptAt = _log.Lines.ToList().FindIndex(l => l.Contains("prewarm stopped by memory; kept the 300 of 8000 MiB read as partial", StringComparison.Ordinal));
+        Assert.True(cancelledAt >= 0 && keptAt > cancelledAt); // 취소 줄 다음에 남긴 양
+        Assert.Equal((300L, _hotMib, true), ((long)Status()["warmed_mib"]!, (long)Status()["hot_mib"]!, (bool)Status()["partial"]!));
+        Assert.Equal(300, p.WarmedPart(Game()).MaxStreamMib); // 재예열 점검의 표본도 읽은 앞부분에서만
+        _streamer.OnProgress = null;
+        _streamer.ReadMib = null;
+        _avail = 20000;
+        _now += TimeSpan.FromMinutes(3);
+
+        Assert.True(p.Supplement(Game(), CancellationToken.None));
+
+        Assert.Equal(2, _streamer.Calls.Count);
+        Assert.True(_streamer.Calls[1].MaxStreamMib > 300);
+    }
+
+    [Fact]
+    public void AMemoryStopKeepsTheRetryPendingAndRespectsTheFloorAndTheRecoveryCondition()
+    {
+        _avail = 6000;
+        _streamer.ReadMib = 300;
+        Prewarmer p = Make(Game());
+        _streamer.OnProgress = progress =>
+        {
+            _avail = 4096;
+            progress(300 * Mib, 1648 * Mib);
+        };
+        Assert.False(p.Run(Game(), "test").Ran);
+        _streamer.OnProgress = null;
+        Assert.True(p.HasPendingWarm("g"));
+
+        _avail = 20000; // 메모리는 넉넉해졌지만 멈춘 지 2 분 전
+        Assert.False(p.Supplement(Game(), CancellationToken.None));
+        Assert.Equal("memory retry floor", p.Run(Game(), "rewarm", ignoreCooldown: true).SkipReason); // 재시도 성격의 예열도 같은 하한
+        Assert.Single(_streamer.Calls);
+
+        _now += Prewarmer.MemoryRetryFloor + TimeSpan.FromSeconds(1);
+        _avail = 4096 + Prewarmer.FinalShrinkHeadroomMib + 300; // 읽은 양 + 여유 + 예비량에 못 미침: 읽지 않고 대기는 남김
+        Assert.False(p.Supplement(Game(), CancellationToken.None));
+        Assert.Single(_streamer.Calls);
+        Assert.True(p.HasPendingWarm("g"));
+
+        _avail = 4096 + Prewarmer.FinalShrinkHeadroomMib + 301; // 읽은 양 + 여유 + 예비량을 1 MiB 넘기면 이어 읽음
+        Assert.True(p.Supplement(Game(), CancellationToken.None));
+        Assert.Equal(2, _streamer.Calls.Count);
+        Assert.Equal(301, _streamer.Calls[1].MaxStreamMib);
+    }
+
+    [Fact]
+    public void AMemoryStopOfTheWholePlanIsNotRecordedAsPartialButRetriesSoonWhenSomethingWasRead()
+    {
+        (_hotMib, _avail) = (8000, 12500); // 전체 (8000 + 여유 256 + 예비 4096) 가 들어감
+        _streamer.ReadMib = 300;
+        Prewarmer p = Make(Game());
+        _streamer.OnProgress = progress =>
+        {
+            _avail = 4096;
+            progress(300 * Mib, 8000 * Mib);
+        };
+
+        Assert.False(p.Run(Game(), "test").Ran);
+
+        Assert.Equal(Game().MaxStreamMib, Assert.Single(_streamer.Calls).MaxStreamMib); // 줄이지 않은 전체 계획
+        Assert.Null(p.PartialInfo("g")); // 읽은 곳이 목록 앞쪽과 같다고 보장할 수 없어 남기지 않음
+        Assert.False(Status().ContainsKey("partial"));
+        Assert.Equal(_now + Prewarmer.MemoryRetryFloor, p.PendingRetryAt("g"));
+    }
+
+    [Fact]
+    public void AMemoryStopWithErrorsIsNotRecordedAsPartial()
+    {
+        _avail = 6000;
+        (_streamer.ReadMib, _streamer.ErrorCount) = (300, 1);
+        Prewarmer p = Make(Game());
+        _streamer.OnProgress = progress =>
+        {
+            _avail = 4096;
+            progress(300 * Mib, 1648 * Mib);
+        };
+
+        Assert.False(p.Run(Game(), "test").Ran);
+
+        Assert.Null(p.PartialInfo("g"));
+    }
+
+    [Fact]
+    public void AWholeSetThatFitsByLessThanTheHeadroomIsReadAsAWindowSoABoundaryDoesNotStopAtZero()
+    {
+        (_hotMib, _avail) = (1000, 1000 + 4096 + 29); // 전체가 29 MiB 여유로 들어감
+        Prewarmer p = Make(Game());
+
+        Assert.True(p.Run(Game(), "test").Ran);
+
+        Assert.Equal(1000 + 29 - Prewarmer.FinalShrinkHeadroomMib, Assert.Single(_streamer.Calls).MaxStreamMib); // 여유 256 을 남긴 창
+    }
+
+    [Fact]
+    public void AStopThatReadNothingLeavesNoPartialStateAndKeepsTheNormalRetryPeriod()
+    {
+        _avail = 6000;
+        _streamer.ReadMib = 0;
+        Prewarmer p = Make(Game());
+        _streamer.OnProgress = progress =>
+        {
+            _avail = 4096;
+            progress(0, 1648 * Mib);
+        };
+
+        Assert.False(p.Run(Game(), "test").Ran);
+
         Assert.False(p.SupplementPending("g"));
+        Assert.Null(p.PartialInfo("g"));
+        Assert.False(Status().ContainsKey("partial"));
+        Assert.True(p.HasPendingWarm("g"));
+        Assert.Equal(_now + TimeSpan.FromMinutes(AutoSettings.Default.RewarmMinutes), p.PendingRetryAt("g")); // 읽은 게 없으면 기존 재시도 주기 그대로
+    }
+
+    [Fact]
+    public void TheBatchCheckTakesOneProcessSnapshotNoMatterHowManyGamesItJudges()
+    {
+        _avail = 20000;
+        Prewarmer p = Make(Game(), Games.Make("h", "h.exe"));
+        _streamer.OnProgress = progress =>
+        {
+            progress(1 * Mib, 8000 * Mib);
+            progress(2 * Mib, 8000 * Mib);
+        };
+
+        Assert.True(p.Run(Game(), "test").Ran);
+
+        Assert.Equal(3, _snapshots); // 묶음 점검 3 번 (시작 0 MiB 와 위의 둘) 마다 한 번
+        Assert.Equal(_snapshots * 2, _snapshotChecks); // 한 스냅샷으로 두 게임을 판정
     }
 
     [Fact]
@@ -223,7 +390,7 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     {
         _hotMib = 8000;
         _avail = 5961;
-        _availableReads = new Queue<long>([6000, 5961]);
+        _availableReads = new Queue<long>([6256, 5961]);
         GameSettings game = ScheduledGame("boundary", 8000, ("large.bin", 8000));
         var scheduler = new PrefetchStreamer();
         _streamer.ScheduledReadSetBytes = (g, partial) => scheduler.PrewarmReadBytes(g, partial);
@@ -261,7 +428,7 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     [Fact]
     public void APreviouslyPartialPlanIsTrimmedAgainWhenTheFinalMemoryCheckDrops()
     {
-        _avail = 6000;
+        _avail = 6000 + Prewarmer.FinalShrinkHeadroomMib; // 처음 창에도 두는 여유를 더해 창을 1904 로 유지
         Prewarmer p = Make(Game());
         Assert.True(p.Run(Game(), "test").Ran);
         Assert.Equal((1904L, 8000L), p.PartialInfo("g"));
@@ -326,7 +493,7 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     [Fact]
     public void RewarmChecksSampleOnlyThePartReadIntoMemory()
     {
-        _avail = 6000;
+        _avail = 6000 + Prewarmer.FinalShrinkHeadroomMib; // 처음 창에도 두는 여유를 더해 창을 1904 로 유지
         Prewarmer p = Make(Game());
         Assert.Equal(Game().MaxStreamMib, p.WarmedPart(Game()).MaxStreamMib);
 
@@ -340,7 +507,7 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     [Fact]
     public void ARewarmCheckProbesOnlyTheReadFrontAndReadsItAgainWhenItWentCold()
     {
-        _avail = 6000;
+        _avail = 6000 + Prewarmer.FinalShrinkHeadroomMib; // 처음 창에도 두는 여유를 더해 창을 1904 로 유지
         Prewarmer p = Make(Game());
         Assert.True(p.Run(Game(), "service start").Ran);
         AutoSettings auto = AutoSettings.Default;
@@ -358,7 +525,7 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     [Fact]
     public void StartupCapAndMemoryCapTogetherRecordTheOriginalSizeAndTheActuallyReadAmountOnce()
     {
-        _avail = 4608; // 시작 상한 1024 도 가용 4608 - 예비 4096 = 512 보다 큼
+        _avail = 4096 + 256 + 512; // 시작 상한 1024 도 가용 - 예비 - 여유 = 512 보다 큼
         Prewarmer p = Make(Game());
         p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 1024 });
 
@@ -375,7 +542,7 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     [Fact]
     public void RestartedServiceRestoresTheMemoryPartialStateSoRewarmChecksStillSampleOnlyTheReadFront()
     {
-        _avail = 6000;
+        _avail = 6000 + Prewarmer.FinalShrinkHeadroomMib; // 처음 창에도 두는 여유를 더해 창을 1904 로 유지
         Assert.True(Make(Game()).Run(Game(), "test").Ran);
 
         Prewarmer second = Make(Game()); // 같은 상태 파일, 부팅은 하루 전
@@ -431,7 +598,7 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     [Fact]
     public void ASkippedRecordAfterAPartialPrewarmKeepsThePartialStateAcrossARestart()
     {
-        _avail = 6000;
+        _avail = 6000 + Prewarmer.FinalShrinkHeadroomMib; // 처음 창에도 두는 여유를 더해 창을 1904 로 유지
         Prewarmer p = Make(Game());
         Assert.True(p.Run(Game(), "test").Ran);
 

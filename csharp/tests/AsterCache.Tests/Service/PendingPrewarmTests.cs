@@ -203,14 +203,14 @@ public sealed class PendingPrewarmTests
     {
         GameSettings game = Game("a");
         _zones["a"] = 8000;
-        _available = 6000;
+        _available = 6000 + Prewarmer.FinalShrinkHeadroomMib; // 창을 잡을 때 두는 여유를 더해 1904 MiB 창
         Prewarmer prewarmer = Make(null, game);
         AutoSettings auto = Auto();
         prewarmer.SetAuto(auto);
         Assert.True(prewarmer.Run(game, "test").Ran);
         Assert.Equal((1904L, 8000L), prewarmer.PartialInfo("a"));
         prewarmer.Recovery = new TestRecovery { Recovering = true };
-        _available = 10000;
+        _available = 10000 + Prewarmer.FinalShrinkHeadroomMib;
 
         Assert.False(prewarmer.SupplementWhenIdle(game, CancellationToken.None));
         Assert.Single(_streamer.Calls);
@@ -350,6 +350,31 @@ public sealed class PendingPrewarmTests
 
         Assert.Equal(["a"], _streamer.Calls);
         Assert.False(prewarmer.HasPendingWarm("a"));
+    }
+
+    [Fact]
+    public void APartialStateGameStillRetriesTheRefusedTriggerRightAfterTheBlockerIsGone()
+    {
+        GameSettings game = TriggeredGame("a");
+        _zones["a"] = 8000;
+        _available = 6000 + Prewarmer.FinalShrinkHeadroomMib; // 핫 집합 8000 MiB 중 앞부분만 읽는 부분 예열
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log, () => 0);
+        Prewarmer prewarmer = Make(coordinator, game, Game("other"));
+        AutoSettings auto = Auto();
+        prewarmer.SetAuto(auto);
+        Assert.True(prewarmer.Run(game, "test").Ran);
+        Assert.True(prewarmer.SupplementPending("a"));
+        _now += TimeSpan.FromHours(2); // 쿨다운이 지나 트리거가 게임 실행 중이라는 사유로 거절되게 함
+        _running.Add("other");
+        coordinator.Yield(Game("other").OriginRoot, "game started", "other");
+        Assert.False(Assert.Single(prewarmer.OnProcessStart(Launcher())).Ran);
+        Assert.True(prewarmer.HasPendingWarm("a"));
+        _triggerAlive = true;
+
+        GameGone(prewarmer, coordinator, "other");
+        prewarmer.Tick(auto); // 보충이 유휴 60초를 기다리는 사이에도 트리거 재시도가 먼저 돎
+
+        Assert.Equal(["a", "a"], _streamer.Calls);
     }
 
     [Fact]

@@ -639,7 +639,7 @@ public sealed class PinAndRewarmTests
     {
         GameSettings g = Unset("a");
         Prewarmer p = Make(g);
-        _availSeq = new Queue<long>([16000, 16000, 4095]); // 진입·최종 예산 판단 뒤 고정 직전에 여유 아래로
+        _availSeq = new Queue<long>([16000, 16000, 16000, 4095]); // 진입·최종 예산 판단과 완료 로그 뒤 고정 직전에 여유 아래로
 
         Assert.True(p.Run(g, AfterRelocation).Ran);
 

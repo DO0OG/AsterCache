@@ -301,7 +301,7 @@ public sealed class PrewarmEnv
             ProbeFileSamplesChecked = (samples, ct, canIssue) => CacheProbe.Probe(samples, ct: ct, canIssue: canIssue),
             AvailableRamMib = SystemMemory.AvailableMib,
             DescribeBlockers = DispatchEnv.DescribeBlockers,
-            ZoneBytes = g => PrefetchStreamer.ZoneBytes(g) is { } z ? Math.Min(z, g.StreamCapBytes(z)) : null,
+            ZoneBytes = g => PrefetchStreamer.WarmBytes(g) is { } z ? Math.Min(z, g.StreamCapBytes(z)) : null,
             ObservedBytes = PrefetchStreamer.ObservedBytes,
             ObservedBytesIfCached = g => PrefetchStreamer.ObservedBytes(g, allowSourceRead: false),
             TraceExists = g => File.Exists(g.Trace),

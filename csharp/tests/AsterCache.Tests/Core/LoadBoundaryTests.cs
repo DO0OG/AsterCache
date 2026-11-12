@@ -98,6 +98,19 @@ public sealed class LoadBoundaryTests
     }
 
     [Fact]
+    public void RuntimeBoundaryExposesThePeakTheLastWindowAndTheObservedTimeForTheStopLog()
+    {
+        var boundary = new RuntimeLoadBoundary();
+        boundary.Update(0, 0);
+        for (int second = 1; second <= 20; second++)
+        {
+            boundary.Update(second * 1000L, second <= 10 ? second * 10 * Mib : 100 * Mib);
+        }
+
+        Assert.Equal((100 * Mib, 0L, 20_000L), (boundary.PeakBytes, boundary.LastWindowBytes, boundary.ObservedMs));
+    }
+
+    [Fact]
     public void RuntimeBoundaryWaitsForALargeLaterPeakAfterASmallEarlyRead()
     {
         var boundary = new RuntimeLoadBoundary();

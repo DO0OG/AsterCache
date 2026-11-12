@@ -46,7 +46,20 @@ public sealed class ResidualZoneConsumersTests : ApplyTestBase
         string planPath = Path.Combine(Directory.CreateDirectory(Path.Combine(Root, "plans")).FullName, "a.plan.json");
         scaled.Save(planPath);
         string trace = planPath + ".prefetch.json";
-        File.WriteAllText(trace, PyJson.Dumps(plan.PrefetchTrace(Sessions).Select(e => e.ToJson()).ToList(), ensureAscii: false) + "\n");
+        List<TraceEvent> rows = plan.PrefetchTrace(Sessions);
+        if (clusterBytes != Cb)
+        {
+            // 핫셋과 같은 크기의 예열 목록: 시험 파일 (1 MiB) 로는 클러스터를 키운 핫셋 크기를 담을 수 없어 성긴 큰 파일 하나로 둠
+            string big = Path.Combine(Root, "big.bin");
+            using (FileStream fs = File.Create(big))
+            {
+                fs.SetLength(plan.Order.Sum(o => o.Clusters) * clusterBytes);
+            }
+
+            rows = [new TraceEvent(big, 0, new FileInfo(big).Length)];
+        }
+
+        File.WriteAllText(trace, PyJson.Dumps(rows.Select(e => e.ToJson()).ToList(), ensureAscii: false) + "\n");
         return Games.Make("a", "a.exe") with { Plan = planPath, Trace = trace, OriginRoot = Root, AllowedRoots = [Root], Prewarm = PrewarmSettings.Default with { Pin = false, PinSet = true } };
     }
 
@@ -79,6 +92,30 @@ public sealed class ResidualZoneConsumersTests : ApplyTestBase
         Assert.Null(PrewarmPolicy.SkipReason(zone, true, false, 16000, 0, null, TimeSpan.Zero)); // 길이 0 이어도 "no zone" 이 아님
         Assert.Equal(HotClusters * Cb, PrefetchStreamer.Budget(g, zone, 0));
         Assert.Equal(HotClusters * Cb, PrefetchStreamer.PinCapBytes(zone, 64L << 30, 100000, 0)); // 고정 상한도 핫셋 크기
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TheBudgetTotalOfAResidualPlanIsTheBytesOfTheWarmListWhileThePlanRangeStaysTheHotSet(bool allInPlace)
+    {
+        PlanFile plan = Residual(allInPlace);
+        GameSettings g = GameOf(plan);
+        List<TraceEvent> rows = plan.PrefetchTrace(Sessions);
+        PlanOutput.SavePrefetch(g.Trace, rows.Take(1).ToList()); // 없어진 파일 때문에 목록이 계획 핫셋보다 작아진 상태
+
+        Assert.Equal(rows[0].Length, PrefetchStreamer.WarmBytes(g));
+        Assert.Equal(rows[0].Length, PrewarmEnv.Create().ZoneBytes(g));
+        Assert.Equal(HotClusters * Cb, PrefetchStreamer.ZoneBytes(g)); // 고정 상한 등 계획 범위가 뜻인 호출부는 그대로
+    }
+
+    [Fact]
+    public void TheBudgetTotalOfAResidualPlanFallsBackToThePlanHotSetWhenTheWarmListIsEmpty()
+    {
+        GameSettings g = GameOf(Residual(false));
+        PlanOutput.SavePrefetch(g.Trace, []);
+
+        Assert.Equal(HotClusters * Cb, PrefetchStreamer.WarmBytes(g));
     }
 
     [Fact]

@@ -1,6 +1,7 @@
 using AsterCache.Core;
 using AsterCache.Core.Json;
 using AsterCache.Core.Plan;
+using AsterCache.Core.Prefetch;
 using AsterCache.Core.Settings;
 using AsterCache.Core.Trace;
 using AsterCache.Prefetch;
@@ -501,11 +502,87 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
             new("observed-b", 0, 200),
         ];
 
-        List<TraceEvent> partial = PrefetchStreamer.SelectToBudget(rows, 150);
-        List<TraceEvent> full = PrefetchStreamer.SelectToBudget(rows, 1000);
+        List<TraceEvent> partial = PrefetchStreamer.SelectToBudget(rows, 150, rows.Length, 0, out _);
+        List<TraceEvent> full = PrefetchStreamer.SelectToBudget(rows, 1000, rows.Length, 0, out _);
 
         Assert.Equal([("observed-a", 100L), ("observed-b", 50L)], partial.Select(e => (e.Path, e.Length)));
         Assert.All(partial, e => Assert.True(e.Observed));
         Assert.Equal(rows, full); // 전체가 들어가면 선택 집합과 순서는 기존 목록 그대로
+    }
+
+    [Fact]
+    public void PartialSelectionPutsTheEarlyWarmOnlyRowsFirstAndOldWarmOnlyRowsLast()
+    {
+        TraceEvent[] rows = [
+            new("hot-a", 0, 100),
+            new("hot-b", 0, 100),
+            new("guess", 0, 100, Observed: false),
+            new("warm-late", 0, 100, TMs: 90_000),
+            new("warm-early", 0, 100, TMs: 5_000),
+            new("warm-old", 0, 100), // t_ms 없는 옛 행
+        ];
+
+        List<TraceEvent> tight = PrefetchStreamer.SelectToBudget(rows, 250, 3, 60_000, out long tightFront);
+        List<TraceEvent> wide = PrefetchStreamer.SelectToBudget(rows, 450, 3, 60_000, out long wideFront);
+        List<TraceEvent> all = PrefetchStreamer.SelectToBudget(rows, 1000, 3, 60_000, out long allFront);
+
+        Assert.Equal([("warm-early", 100L), ("hot-a", 100L), ("hot-b", 50L)], tight.Select(e => (e.Path, e.Length))); // 앞부분 예열 전용이 맨 앞, 선읽기 꼬리가 잘림
+        Assert.Equal([("warm-early", 100L), ("hot-a", 100L), ("hot-b", 100L), ("warm-late", 100L), ("warm-old", 50L)], wide.Select(e => (e.Path, e.Length)));
+        Assert.Equal((100L, 100L), (tightFront, wideFront)); // 스케줄러 앞부분에 더할 바이트
+        Assert.Equal(rows, all); // 예산이 충분하면 목록 그대로
+        Assert.Equal(0, allFront);
+    }
+
+    [Fact]
+    public void PartialSelectionDoesNotLetAnOverflowRowWithAnEarlyTimePushOutObservedRows()
+    {
+        TraceEvent[] rows = [
+            new("hot-a", 0, 100),
+            new("hot-b", 0, 100),
+            new("extra", 0, 100, TMs: 1_000, Overflow: true), // 존 밖에서 덧붙인 행: t_ms 가 앞부분이어도 (가) 가 아님
+            new("volatile-early", 0, 100, TMs: 2_000),
+        ];
+
+        List<TraceEvent> kept = PrefetchStreamer.SelectToBudget(rows, 250, 2, 60_000, out long front);
+
+        Assert.Equal([("volatile-early", 100L), ("hot-a", 100L), ("hot-b", 50L)], kept.Select(e => (e.Path, e.Length)));
+        Assert.Equal(100, front);
+    }
+
+    [Fact]
+    public void ThePartialScheduleReadsTheEarlyVolatileRangeFirstAndUsesTheDefaultFrontWithoutALoadBoundary()
+    {
+        GameSettings game = ScheduledGame("front", 12, ("hot.bin", 10));
+        string root = game.OriginRoot;
+        TraceEvent Warm(string file, long tMs, bool overflow = false)
+        {
+            string path = Path.Combine(root, file);
+            using var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
+            stream.SetLength(2 * Mib);
+            return new TraceEvent(path, 0, 2 * Mib, TMs: tMs, Overflow: overflow);
+        }
+
+        PlanOutput.SavePrefetch(game.Trace, [new TraceEvent(Path.Combine(root, "hot.bin"), 0, 10 * Mib)],
+            [Warm("late.bin", 500_000), Warm("early.bin", 100_000), Warm("extra.bin", 1_000, overflow: true)]); // 로딩 경계가 없으면 120 s 전이 앞부분
+        game = game with { MaxStreamMib = 12, MaxStreamSet = true };
+
+        List<ReadOp> ops = PrefetchStreamer.PrewarmOps(game, 0).Ops;
+
+        Assert.Equal(12 * Mib, ops.Sum(o => o.Length));
+        Assert.EndsWith("early.bin", ops[0].Path); // 앞부분 가변 범위가 스케줄러의 접근 순서 앞부분 맨 앞
+        Assert.DoesNotContain(ops, o => o.Path.EndsWith("late.bin", StringComparison.Ordinal) || o.Path.EndsWith("extra.bin", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TheLoadBoundaryLookupWithoutParsingOnlyUsesWhatIsCached()
+    {
+        GameSettings game = ScheduledGame("cached", 12, ("hot.bin", 10));
+        PlanOutput.SavePrefetch(game.Trace, [new TraceEvent(Path.Combine(game.OriginRoot, "hot.bin"), 0, Mib)]);
+        string raw = AutoTracer.RawTracePath(game);
+        File.WriteAllText(raw, PyJson.Dumps(new[] { new TraceEvent(Path.Combine(game.OriginRoot, "hot.bin"), 0, Mib, TMs: 0) }.Select(e => e.ToJson()).ToList(), ensureAscii: false));
+
+        Assert.Null(LoadTiers.For(game, default, allowParse: false)); // 캐시가 비어 있으면 파싱하지 않음
+        Assert.NotNull(LoadTiers.For(game, default));
+        Assert.NotNull(LoadTiers.For(game, default, allowParse: false));
     }
 }

@@ -328,4 +328,52 @@ public sealed partial class AutoRelocatorTests
         Assert.Equal(AutoStage.Done, Entry.Stage); // 새 계획에는 가변 파일이 없어 되풀이하지 않음
         Assert.Single(_log.Lines, l => l.Contains("plan holds files the game rewrites by itself", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void BlocksOutsideTheZoneAreChosenInMergeOrderWithinTheBudgetAndNeverTwice()
+    {
+        List<TraceEvent> listed = Make().Resolve(20000).PrefetchTrace(Sessions); // 존 안: OldBlocks 5 블록
+        List<TraceEvent> stable = Merged([.. RestOfTheBlocks(), (F1, 40), (F1, 41)]); // 32 블록 + 파일 끝 밖 2 블록, 존 안 5 블록은 걸러짐
+
+        List<TraceEvent> room = WarmOverflow.Select(listed, [.. stable, .. stable, new TraceEvent(F1.ToUpperInvariant(), 40 * Blk, Blk)], 5 * Blk, 5 * Blk + 10 * Blk + 100); // 같은 블록은 (대소문자가 달라도) 한 번만
+        List<TraceEvent> all = WarmOverflow.Select(listed, stable, 5 * Blk, long.MaxValue);
+        List<TraceEvent> none = WarmOverflow.Select(listed, stable, 5 * Blk, 5 * Blk + Blk - 1);
+
+        Assert.Equal(10 * Blk, room.Sum(r => r.Length));
+        Assert.Equal(29 * Blk, all.Sum(r => r.Length));
+        Assert.All(all, r => Assert.True(r.Overflow));
+        Assert.Empty(none);
+        Assert.DoesNotContain(all, r => OldBlocks(F1, F2).Any(o => o.Item1 == r.Path && o.Item2 * Blk >= r.Offset && o.Item2 * Blk < r.Offset + r.Length));
+    }
+
+    [Fact]
+    public void AFullZoneAddsTheNewRunsBlocksOutsideTheZoneToTheWarmListWithinTheCacheBudgetAndKeepsVolatileRangesOnce()
+    {
+        _settings = _settings with { MaxZoneMib = 2 };
+        Sessions = [Merged(RestOfTheBlocks())]; // 32 블록 (2 MiB) = 존 상한을 가득 채운 계획
+        string cache = Path.Combine(Root, "cache_1_2.xpakdata");
+        File.WriteAllBytes(cache, new byte[100]);
+        ReportFullMoves();
+        DoneThenMergedTrace([.. Merged([.. RestOfTheBlocks(), .. Enumerable.Range(40, 20).Select(i => (F1, (long)i))]), new TraceEvent(cache, 80, 10)]);
+        byte[] planBefore = File.ReadAllBytes(_game.Plan);
+        _w.PhysicalRam = 6L << 20; // 캐시 예산 3 MiB (RAM / 2) = 목록 (2 MiB + 가변 10 바이트) + 15 블록
+
+        Tick();
+
+        List<TraceEvent> warm = ReadWarmRows(PlanOutput.WarmOnlyPath(_game.Trace));
+        Assert.Single(warm, r => r.Path == cache); // 가변 범위는 중복 없이 한 번
+        Assert.All(warm.Where(r => r.Path == F1), r => Assert.True(r.Overflow)); // 덧붙임 행에는 표시가 붙음
+        Assert.Contains(warm, r => r.Path == F1 && r.Offset == 40 * Blk && r.Length == 15 * Blk); // 병합 순서대로 15 블록, 이어진 블록은 한 행
+        Assert.DoesNotContain(warm, r => r.Path == F1 && r.Offset >= 55 * Blk);
+        Assert.True(ReadWarmRows(_game.Trace).Sum(r => r.Length) + warm.Sum(r => r.Length) <= _w.PhysicalRam / 2);
+        Assert.Equal(planBefore, File.ReadAllBytes(_game.Plan)); // 재배치·계획은 그대로
+        Assert.Empty(Vol.Moves);
+        Assert.Contains(_log.Lines, l => l.Contains("prewarm list gained 0.9 MiB of blocks outside the full zone", StringComparison.Ordinal));
+
+        byte[] warmBefore = File.ReadAllBytes(PlanOutput.WarmOnlyPath(_game.Trace));
+        _w.Now += AutoRelocator.StaleCheckEvery;
+        _w.FileTimes[AutoTracer.RawTracePath(_game)] = _w.Now; // 같은 병합 트레이스를 한 번 더 따짐
+        Tick();
+        Assert.Equal(warmBefore, File.ReadAllBytes(PlanOutput.WarmOnlyPath(_game.Trace))); // 덧붙임이 누적되지 않음
+    }
 }

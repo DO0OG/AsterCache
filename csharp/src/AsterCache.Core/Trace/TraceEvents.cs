@@ -2,8 +2,8 @@ using AsterCache.Core.Json;
 
 namespace AsterCache.Core.Trace;
 
-/// 추적 한 줄 {path, offset, length, cost}. cost 가 없으면 8.0 (Python 기본값). TMs (t_ms) 는 선택: 세션 시작부터의 밀리초, 없으면 줄에도 쓰지 않습니다 (옛 파일·Python 도구와 같은 바이트).
-public readonly record struct TraceEvent(string Path, long Offset, long Length, double Cost = TraceEvents.DefaultCost, long? TMs = null, bool Observed = true, long? RangeGroup = null)
+/// 추적 한 줄 {path, offset, length, cost}. cost 가 없으면 8.0 (Python 기본값). TMs (t_ms) 는 선택: 세션 시작부터의 밀리초, 없으면 줄에도 쓰지 않습니다 (옛 파일·Python 도구와 같은 바이트). Overflow 는 예열 전용 목록에서 존 밖 블록을 덧붙인 행 표시 (선택, 거짓이면 줄에 쓰지 않음).
+public readonly record struct TraceEvent(string Path, long Offset, long Length, double Cost = TraceEvents.DefaultCost, long? TMs = null, bool Observed = true, long? RangeGroup = null, bool Overflow = false)
 {
     public JObject ToJson()
     {
@@ -21,6 +21,11 @@ public readonly record struct TraceEvent(string Path, long Offset, long Length, 
         if (RangeGroup is { } group)
         {
             o.Add("range_group", group);
+        }
+
+        if (Overflow)
+        {
+            o.Add("overflow", true);
         }
 
         return o;
@@ -86,7 +91,13 @@ public static class TraceEvents
             rangeGroup = group is long l and >= 0 ? l : throw new PyValueException("bad range_group");
         }
 
-        return new TraceEvent(path, offset, length, cost, tMs, observed, rangeGroup);
+        bool overflow = false;
+        if (r.TryGetValue("overflow", out object? extra))
+        {
+            overflow = extra is bool x ? x : throw new PyValueException("bad overflow");
+        }
+
+        return new TraceEvent(path, offset, length, cost, tMs, observed, rangeGroup, overflow);
     }
 
     /// Python _validated_events: 요청마다 값 범위를 검사하고 64 KiB 블록 번호로 바꿉니다.

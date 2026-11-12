@@ -122,10 +122,18 @@ public sealed class PrefetchStreamer : IGameStreamer
 
     /// 계획의 존 크기 (바이트). 계획 파일이 없거나 읽을 수 없으면 null, 존이 비어 있으면 0.
     /// 잔여 재계획은 Zone 이 새로 옮길 구간뿐이라 (전부 제자리면 0), 핫셋 전체인 task 합계를 돌려줍니다.
-    public static long? ZoneBytes(GameSettings game) => ZoneBytes(game, true, default);
+    public static long? ZoneBytes(GameSettings game) => ZoneBytes(game, true, default, ZoneView.Plan);
+
+    /// 게임 간 메모리 예산 배정에 쓰는 예열 목록의 바이트. ZoneBytes 와 같되, 잔여 계획은 task 합계 대신 실제 예열 목록 바이트이고 존 밖 덧붙임 행도 셉니다 (목록이 비었거나 읽히지 않을 때만 task 합계).
+    /// 고정 상한·트레이 측정은 계획 범위가 의미라 ZoneBytes 를 그대로 씁니다.
+    public static long? WarmBytes(GameSettings game) => ZoneBytes(game, true, default, ZoneView.Warm);
+
+    // 존 바이트를 무엇의 크기로 볼 것인가: Plan = 계획 범위 (덧붙임 행 제외, 고정 상한·트레이), Budget = 읽기 예산 (목록 전체를 담도록 덧붙임 행 포함),
+    // Warm = 게임 간 예산 배정 (Budget + 잔여 계획은 task 합계 대신 목록 바이트).
+    private enum ZoneView { Plan, Budget, Warm }
 
     // withWarmOnly: 예열 전용 옆 파일 (가변 파일 범위) 까지 센 예열량. 시작 스트림의 예산은 false (계획 범위만).
-    private static long? ZoneBytes(GameSettings game, bool withWarmOnly, CancellationToken cancellationToken)
+    private static long? ZoneBytes(GameSettings game, bool withWarmOnly, CancellationToken cancellationToken, ZoneView view = ZoneView.Budget)
     {
         try
         {
@@ -149,7 +157,7 @@ public sealed class PrefetchStreamer : IGameStreamer
                         {
                             volatileBytes += row.Length;
                         }
-                        else
+                        else if (view != ZoneView.Plan || !row.Overflow)
                         {
                             plannedWarmBytes += row.Length;
                         }
@@ -161,7 +169,8 @@ public sealed class PrefetchStreamer : IGameStreamer
                 // 현재 예열 목록을 읽지 못하면 계획의 존 예산을 유지합니다.
             }
 
-            return Math.Max(planBytes, plannedWarmBytes) + volatileBytes;
+            bool listIsTotal = view == ZoneView.Warm && plan.IsResidual && plannedWarmBytes + volatileBytes > 0;
+            return Math.Max(listIsTotal ? 0 : planBytes, plannedWarmBytes) + volatileBytes;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
         {
@@ -195,15 +204,16 @@ public sealed class PrefetchStreamer : IGameStreamer
     {
         try
         {
-            List<TraceEvent> rows = LoadRows(game, true, default, allowSourceRead);
+            List<TraceEvent> rows = LoadRows(game, true, out int warmOnlyStart, default, allowSourceRead);
             long? zoneBytes = ZoneBytes(game, true, default);
-            long budget = Budget(game, zoneBytes, rows.Sum(r => r.Length));
+            long total = rows.Sum(r => r.Length);
+            long budget = Budget(game, zoneBytes, total);
             if (!rows.Any(r => !r.Observed))
             {
                 return budget;
             }
 
-            List<TraceEvent> selected = budget < rows.Sum(r => r.Length) ? SelectToBudget(rows, budget) : rows;
+            List<TraceEvent> selected = budget < total ? TrimToBudget(game, rows, warmOnlyStart, budget, default, allowSourceRead).Rows : rows;
             return selected.Where(r => r.Observed).Sum(r => r.Length);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException or PlanRejectedException)
@@ -443,7 +453,7 @@ public sealed class PrefetchStreamer : IGameStreamer
     private static (List<ReadOp> Ops, long GapBytes, bool FitsBudget) BuildPrewarmOps(GameSettings game, long totalBudgetBytes, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        (List<ReadOp> original, _) = ScheduleOps(game, true, trimLast: totalBudgetBytes == 0, cancellationToken: cancellationToken);
+        (List<ReadOp> original, _, long frontBytes) = ScheduleOps(game, true, trimLast: totalBudgetBytes == 0, cancellationToken: cancellationToken);
         (List<ReadOp> expanded, long gapBytes, bool fitsBudget) = FillPrewarmGaps(original, Math.Max(0, totalBudgetBytes), p =>
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -471,7 +481,7 @@ public sealed class PrefetchStreamer : IGameStreamer
 
                 cancellationToken.ThrowIfCancellationRequested();
                 return new FileInfo(p).Length;
-            }, fullFileRatio: 2, headBytes: HeadBytesOf(game, cancellationToken), cancellationToken: cancellationToken);
+            }, fullFileRatio: 2, headBytes: HeadBytesOf(game, cancellationToken) + frontBytes, cancellationToken: cancellationToken);
         return (ordered, gapBytes, true);
     }
 
@@ -603,7 +613,11 @@ public sealed class PrefetchStreamer : IGameStreamer
     }
 
     // 선읽기 목록의 범위. withWarmOnly 이면 예열 전용 옆 파일 (가변 파일 범위) 도 합칩니다.
-    internal static List<TraceEvent> LoadRows(GameSettings game, bool withWarmOnly, CancellationToken cancellationToken = default, bool allowSourceRead = true)
+    internal static List<TraceEvent> LoadRows(GameSettings game, bool withWarmOnly, CancellationToken cancellationToken = default, bool allowSourceRead = true) =>
+        LoadRows(game, withWarmOnly, out _, cancellationToken, allowSourceRead);
+
+    // warmOnlyStart: 반환 목록에서 예열 전용 행이 시작하는 위치 (없으면 행 수).
+    private static List<TraceEvent> LoadRows(GameSettings game, bool withWarmOnly, out int warmOnlyStart, CancellationToken cancellationToken, bool allowSourceRead)
     {
         cancellationToken.ThrowIfCancellationRequested();
         Func<string, long?> size = p =>
@@ -628,6 +642,7 @@ public sealed class PrefetchStreamer : IGameStreamer
             }
         }
 
+        warmOnlyStart = rows.Count;
         string side = PlanOutput.WarmOnlyPath(game.Trace);
         cancellationToken.ThrowIfCancellationRequested();
         if (withWarmOnly && File.Exists(side))
@@ -793,40 +808,61 @@ public sealed class PrefetchStreamer : IGameStreamer
         return restored;
     }
 
-    // 전체가 들어가면 원래 순서를 유지하고, 잘라야 하면 관찰 범위를 먼저 예산에 남깁니다. 마지막 범위는 경계에서 자릅니다.
-    internal static List<TraceEvent> SelectToBudget(IReadOnlyList<TraceEvent> rows, long budget)
+    // 전체가 들어가면 원래 순서를 유지하고, 잘라야 하면 아래 우선순위로 예산에 남깁니다. 마지막 범위는 경계에서 자릅니다.
+    // 우선순위 = 내보내는 순서: (가) 게임이 쓰는 파일 (예열 전용, 덧붙임 아님) 의 실행 앞부분 (frontMs 전에 처음 읽힌) 관찰 행, (나) 선읽기 관찰 행, (다) 나머지 예열 전용 관찰 행 (t_ms 순, t_ms 없는 옛 행은 맨 뒤), (라) 추측 행.
+    // 덧붙임 행 (Overflow) 은 t_ms 가 앞부분이어도 (다) 에만 들어, 메모리가 남을 때만 읽힙니다. rows[warmOnlyStart..] 가 예열 전용 행입니다.
+    // frontBytes: 남긴 (가) 의 바이트 (스케줄러가 접근 순서로 먼저 읽는 앞부분에 더해야 하는 양). 전체가 들어가면 순서를 바꾸지 않으므로 0.
+    internal static List<TraceEvent> SelectToBudget(IReadOnlyList<TraceEvent> rows, long budget, int warmOnlyStart, long frontMs, out long frontBytes)
     {
+        frontBytes = 0;
         if (rows.Sum(r => r.Length) <= budget)
         {
             return [.. rows];
         }
 
+        List<TraceEvent> front = [];
+        List<TraceEvent> observed = [];
+        List<TraceEvent> warmOnly = [];
+        List<TraceEvent> guess = [];
+        for (int i = 0; i < rows.Count; i++)
+        {
+            TraceEvent r = rows[i];
+            List<TraceEvent> tier = !r.Observed ? guess : i < warmOnlyStart ? observed : !r.Overflow && r.TMs < frontMs ? front : warmOnly;
+            tier.Add(r);
+        }
+
         var kept = new List<TraceEvent>();
         long used = 0;
-        foreach (bool observed in new[] { true, false })
+        foreach (TraceEvent r in front.Concat(observed).Concat(warmOnly.OrderBy(w => w.TMs ?? long.MaxValue)).Concat(guess))
         {
-            foreach (TraceEvent r in rows.Where(r => r.Observed == observed))
+            long take = Math.Min(r.Length, budget - used);
+            if (take <= 0)
             {
-                long take = Math.Min(r.Length, Math.Max(0, budget - used));
-                if (take > 0)
-                {
-                    kept.Add(take == r.Length ? r : r with { Length = take });
-                    used += take;
-                }
-
-                if (take < r.Length || used >= budget)
-                {
-                    break;
-                }
+                break;
             }
 
-            if (used >= budget)
+            kept.Add(take == r.Length ? r : r with { Length = take });
+            used += take;
+            if (take < r.Length)
             {
                 break;
             }
         }
 
+        frontBytes = Math.Min(front.Sum(r => r.Length), used);
         return kept;
+    }
+
+    // 실행 앞부분의 끝 (ms): 로딩 경계를 알면 그 시각, 모르면 120 초. allowParse 가 거짓이면 이미 캐시에 있는 경계만 봅니다 (게임 실행 중 경로에서 원시 트레이스를 파싱하지 않음).
+    private static long FrontMs(GameSettings game, CancellationToken cancellationToken, bool allowParse) =>
+        LoadTiers.For(game, cancellationToken, allowParse)?.BoundaryMs is > 0 and long ms ? ms : DefaultFrontMs;
+
+    private const long DefaultFrontMs = 120_000;
+
+    private static (List<TraceEvent> Rows, long FrontBytes) TrimToBudget(GameSettings game, IReadOnlyList<TraceEvent> rows, int warmOnlyStart, long budget, CancellationToken cancellationToken, bool allowParse)
+    {
+        List<TraceEvent> kept = SelectToBudget(rows, budget, warmOnlyStart, warmOnlyStart < rows.Count ? FrontMs(game, cancellationToken, allowParse) : 0, out long frontBytes);
+        return (kept, frontBytes);
     }
 
     internal static List<TraceEvent> CoalesceRangeGroups(IReadOnlyList<TraceEvent> rows)
@@ -852,7 +888,7 @@ public sealed class PrefetchStreamer : IGameStreamer
         return result;
     }
 
-    private static (List<ReadOp> Ops, long BudgetBytes) ScheduleOps(GameSettings game, bool withWarmOnly, bool trimLast = false, CancellationToken cancellationToken = default)
+    private static (List<ReadOp> Ops, long BudgetBytes, long FrontBytes) ScheduleOps(GameSettings game, bool withWarmOnly, bool trimLast = false, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!PlanGuards.Inside(game.OriginRoot, game.AllowedRoots, RealPaths.Real))
@@ -860,12 +896,14 @@ public sealed class PrefetchStreamer : IGameStreamer
             throw new PlanRejectedException("origin_root resolves outside allowed roots");
         }
 
-        List<TraceEvent> rows = LoadRows(game, withWarmOnly, cancellationToken, allowSourceRead: false); // 게임 시작 경로에서도 불리므로 원시 트레이스는 읽지 않고 캐시만 씀 (캐시는 예열 쪽 ObservedBytes 가 채움)
+        List<TraceEvent> rows = LoadRows(game, withWarmOnly, out int warmOnlyStart, cancellationToken, allowSourceRead: false); // 게임 시작 경로에서도 불리므로 원시 트레이스는 읽지 않고 캐시만 씀 (캐시는 예열 쪽 ObservedBytes 가 채움)
         cancellationToken.ThrowIfCancellationRequested();
-        long budget = Budget(game, ZoneBytes(game, withWarmOnly, cancellationToken), rows.Sum(r => r.Length));
-        if (trimLast && budget < rows.Sum(r => r.Length))
+        long total = rows.Sum(r => r.Length);
+        long budget = Budget(game, ZoneBytes(game, withWarmOnly, cancellationToken), total);
+        long frontBytes = 0;
+        if (trimLast && budget < total)
         {
-            rows = SelectToBudget(rows, budget);
+            (rows, frontBytes) = TrimToBudget(game, rows, warmOnlyStart, budget, cancellationToken, allowParse: true);
         }
 
         IEnumerable<ReadRange> ranges = CoalesceRangeGroups(rows).Select(r => new ReadRange(r.Path, r.Offset, r.Length));
@@ -874,8 +912,8 @@ public sealed class PrefetchStreamer : IGameStreamer
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 return new FileInfo(p).Length;
-            }, headBytes: HeadBytesOf(game, cancellationToken), cancellationToken: cancellationToken);
-        return (ops, budget);
+            }, headBytes: HeadBytesOf(game, cancellationToken) + frontBytes, cancellationToken: cancellationToken); // 앞부분 가변 범위 (목록 맨 앞) 도 접근 순서로 먼저 읽음
+        return (ops, budget, frontBytes);
     }
 
     /// 고정할 파일: 선읽기 목록의 파일 중 허용 루트 안인 것 (읽기 전용으로만 쓰임). 매핑 총합이 capBytes 를 넘기 전의 앞쪽 파일만.
@@ -1440,7 +1478,7 @@ public sealed class GameDispatcher
             double mbPerSecond = elapsedSeconds > 0 ? r.Bytes / (1_000_000d * elapsedSeconds) : 0;
             if (Volatile.Read(ref boundaryStopped) != 0)
             {
-                _log.Info($"{g.Name}: start stream stopped at load boundary after {r.Bytes} bytes, {elapsedSeconds:F1} s ({mbPerSecond:F1} MB/s)");
+                _log.Info($"{g.Name}: start stream stopped at load boundary after {r.Bytes} bytes, {elapsedSeconds:F1} s ({mbPerSecond:F1} MB/s); boundary at {boundary.BoundaryMs} ms, peak {boundary.PeakBytes >> 20} MiB per 10 s, last window {boundary.LastWindowBytes >> 20} MiB, observed {boundary.ObservedMs / 1000d:F1} s");
                 ReportStream(start, "stopped", "load boundary", r.Bytes, elapsedSeconds, mbPerSecond);
                 return false;
             }

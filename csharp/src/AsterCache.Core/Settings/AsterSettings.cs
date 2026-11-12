@@ -1,5 +1,28 @@
 namespace AsterCache.Core.Settings;
 
+/// 게임 하나에 서비스가 하는 일의 범위: Inherit (전부), PrewarmOnly (재배치 계열 제외), RelocateOnly (예열 계열 제외), Off (아무것도 안 함).
+public enum GameMode
+{
+    Inherit,
+    PrewarmOnly,
+    RelocateOnly,
+    Off,
+}
+
+/// 자동 업데이트 방식: Auto (받아서 설치), Notify (알림만), Off (확인하지 않음).
+public enum UpdateMode
+{
+    Auto,
+    Notify,
+    Off,
+}
+
+/// 업데이트 설정 (config.json 의 update 가 없으면 기본값).
+public sealed record UpdateSettings(UpdateMode Mode = UpdateMode.Auto, bool Prerelease = false)
+{
+    public static UpdateSettings Default { get; } = new();
+}
+
 /// 게임 한 개의 서비스 설정. 경로는 모두 정규화된 절대 경로 (X:\...), 끝 역슬래시 없음.
 public sealed record GameSettings(
     string Name, IReadOnlyList<string> ExeNames, string Trace, string Plan, string OriginRoot, IReadOnlyList<string> AllowedRoots,
@@ -22,6 +45,12 @@ public sealed record GameSettings(
 
     /// 설치 폴더에서 알아낸 안티치트: "eac" | "battleye" | "vanguard" | "kernel" | "ricochet" | "unknown", 모르면 null.
     public string? AntiCheat { get; init; }
+
+    /// 이 게임에 서비스가 하는 일의 범위 (config 의 mode, 없으면 Inherit).
+    public GameMode Mode { get; init; } = GameMode.Inherit;
+
+    /// 참이면 Mode 와 무관하게 이 게임의 새 작업을 모두 멈춤 (config 의 paused, 없으면 false).
+    public bool Paused { get; init; }
 
     /// 런처가 준 표시 이름 (선택, 화면에만 씀). 내부 키 Name 은 계획·저널·상태 파일명이라 바꾸지 않습니다.
     public string? DisplayName { get; init; }
@@ -93,6 +122,12 @@ public sealed record AutoSettings(
 
     /// 기본 prewarm_recent 0 = RAM 예산 안에서 최근 순으로 가능한 만큼 (1 이상이면 그 개수 상한, -1 = 최근순 예열 끔).
     public static AutoSettings Default { get; } = new(true, true, true, true, 0, 3, 1800, DefaultTraceCapMib, 4, []);
+
+    /// 거짓이면 게임 시작 때의 시작 스트림을 하지 않음 (기본 true).
+    public bool StartStreamEnabled { get; init; } = true;
+
+    /// 자동 재배치·주기 재적용을 시작해도 되는 로컬 시각 (시, 0..23, 중복 없음, 최대 24개). 비어 있으면 시간 제한 없음.
+    public IReadOnlyList<int> RelocateHours { get; init; } = [];
 
     /// 시작 스트림 시간 상한 (초, 0..7200), 0 = 시간 상한 없음.
     public int StartStreamCapSeconds { get; init; } = DefaultStartStreamCapSeconds;
@@ -249,6 +284,9 @@ public sealed record RiotSettings(bool ChampSelectPrewarm = false, int ChampSele
 public sealed record AsterSettings(int PollMs, IReadOnlyList<GameSettings> Games, string Watcher = SettingsStore.DefaultWatcher, string Language = SettingsStore.DefaultLanguage)
 {
     public AutoSettings Auto { get; init; } = AutoSettings.Default;
+
+    /// 자동 업데이트 설정.
+    public UpdateSettings Update { get; init; } = UpdateSettings.Default;
 
     /// 리그 오브 레전드 챔피언 선택 선읽기 설정.
     public RiotSettings Riot { get; init; } = RiotSettings.Default;

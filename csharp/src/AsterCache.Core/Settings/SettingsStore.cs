@@ -23,17 +23,19 @@ public static class SettingsStore
     public const long MaxFileBytes = 1 << 20;
     public const int MaxGames = 32;
 
-    private static readonly string[] TopKeys = ["games", "poll_ms", "watcher", "language", "auto", "max_zone_mib", "riot"];
+    private static readonly string[] TopKeys = ["games", "poll_ms", "watcher", "language", "auto", "max_zone_mib", "riot", "update"];
     private static readonly string[] RiotKeys = ["champ_select_prewarm", "champ_select_budget_mib"];
     private static readonly string[] GameKeys =
-        ["name", "exe_names", "trace", "plan", "origin_root", "allowed_roots", "volume_label", "reapply_interval_minutes", "prewarm", "max_stream_mib", "source", "anticheat", "display_name", "display_names"];
+        ["name", "exe_names", "trace", "plan", "origin_root", "allowed_roots", "volume_label", "reapply_interval_minutes", "prewarm", "max_stream_mib", "source", "anticheat", "display_name", "display_names", "mode", "paused"];
     private static readonly string[] AutoKeys =
     [
         "enabled", "discover", "trace", "relocate", "prewarm_recent", "idle_minutes", "trace_cap_seconds", "trace_cap_mib", "start_stream_cap_seconds", "trace_late_interval_min", "trace_late_window_seconds", "trace_late_windows",
         "max_relocations_per_day", "trace_runs", "trace_merge_min_mib", "trace_target_coverage", "trace_runs_max", "ignore_exes", "rewarm_minutes", "idle_seconds", "learn", "full_prewarm", "full_prewarm_max_mib", "engine_profiles", "shared_profiles",
         "ssd_tier", "post_update_delay_min", "recovery_max_min", "recovery_hard_max_min", "relocate_chunk_mib", "relocate_parallel", "relocate_io_priority", "relocate_verify", "relocate_order", "max_relocate_gib_per_day", "post_relocate_recovery", "keep_awake", "keep_stream_on_game_start", "load_boundary", "restream_cooldown_min", "rewarm_after_exit_min", "startup_warm_games", "startup_warm_max_mib",
+        "start_stream_enabled", "relocate_hours",
     ];
     private static readonly string[] PrewarmKeys = ["on_service_start", "trigger_exes", "min_free_ram_mib", "cooldown_min", "pin", "max_cache_mib"];
+    private static readonly string[] UpdateKeys = ["mode", "prerelease"];
     private static readonly string[] LearnKeys = ["enabled", "window_mib", "max_total_mib", "mode", "saturation_mbps"];
     private static readonly string[] SharedProfilesKeys = ["enabled", "url"];
     private static readonly string[] SsdTierKeys = ["enabled", "budget_gib", "root"];
@@ -103,6 +105,7 @@ public static class SettingsStore
 
         AutoSettings auto = top.TryGetValue("auto", out object? au) ? ParseAuto(au) : AutoSettings.Default;
         RiotSettings riot = top.TryGetValue("riot", out object? rt) ? ParseRiot(rt) : RiotSettings.Default;
+        UpdateSettings update = top.TryGetValue("update", out object? up) ? ParseUpdate(up) : UpdateSettings.Default;
         bool zoneAuto = top.TryGetValue("max_zone_mib", out object? mz) && mz is "auto";
         int maxZone = top.ContainsKey("max_zone_mib") && !zoneAuto ? Int(top["max_zone_mib"], "max_zone_mib", 64, 65536) : DefaultMaxZoneMib;
         int poll = top.ContainsKey("poll_ms") ? Int(top["poll_ms"], "poll_ms", 50, 5000) : DefaultPollMs;
@@ -120,7 +123,7 @@ public static class SettingsStore
 
         CheckUnique(result.Select(x => x.Name), "games: duplicate name");
         CheckUnique(result.SelectMany(x => x.ExeNames), "games: exe name used twice");
-        return new AsterSettings(poll, result, watcher, language) { Auto = auto, Riot = riot, MaxZoneMib = maxZone, MaxZoneAuto = zoneAuto };
+        return new AsterSettings(poll, result, watcher, language) { Auto = auto, Riot = riot, Update = update, MaxZoneMib = maxZone, MaxZoneAuto = zoneAuto };
     }
 
     private static RiotSettings ParseRiot(object? v)
@@ -131,6 +134,24 @@ public static class SettingsStore
         bool prewarm = o.TryGetValue("champ_select_prewarm", out object? p) ? p as bool? ?? throw new SettingsException("riot.champ_select_prewarm: true or false expected") : d.ChampSelectPrewarm;
         int budget = o.TryGetValue("champ_select_budget_mib", out object? b) ? Int(b, "riot.champ_select_budget_mib", 64, 16384) : d.ChampSelectBudgetMib;
         return new RiotSettings(prewarm, budget);
+    }
+
+    private static UpdateSettings ParseUpdate(object? v)
+    {
+        JObject o = v as JObject ?? throw new SettingsException("update: object expected");
+        Unknown(o, UpdateKeys, "update");
+        UpdateSettings d = UpdateSettings.Default;
+        UpdateMode mode = o.TryGetValue("mode", out object? m)
+            ? m switch
+            {
+                "auto" => UpdateMode.Auto,
+                "notify" => UpdateMode.Notify,
+                "off" => UpdateMode.Off,
+                _ => throw new SettingsException("update.mode: \"auto\", \"notify\" or \"off\" expected"),
+            }
+            : d.Mode;
+        bool prerelease = o.TryGetValue("prerelease", out object? p) ? p as bool? ?? throw new SettingsException("update.prerelease: true or false expected") : d.Prerelease;
+        return new UpdateSettings(mode, prerelease);
     }
 
     private static AutoSettings ParseAuto(object? v)
@@ -151,6 +172,26 @@ public static class SettingsStore
             CheckUnique(ignore, "auto.ignore_exes: duplicate");
         }
 
+        IReadOnlyList<int> hours = d.RelocateHours;
+        if (o.TryGetValue("relocate_hours", out object? rh))
+        {
+            if (rh is not List<object?> hl || hl.Count > 24)
+            {
+                throw new SettingsException("auto.relocate_hours: list of 0..24 expected");
+            }
+
+            if (hl.Count > 0)
+            {
+                List<int> parsed = hl.Select((e, k) => Int(e, $"auto.relocate_hours[{k}]", 0, 23)).ToList();
+                if (parsed.Distinct().Count() != parsed.Count)
+                {
+                    throw new SettingsException("auto.relocate_hours: duplicate");
+                }
+
+                hours = parsed;
+            }
+        }
+
         LearnSettings learn = o.TryGetValue("learn", out object? ln) ? ParseLearn(ln) : LearnSettings.Default;
         int recent = OptInt(o, "prewarm_recent", -1, 32, d.PrewarmRecent);
         int idleMin = OptInt(o, "idle_minutes", 1, 1440, d.IdleMinutes);
@@ -167,6 +208,8 @@ public static class SettingsStore
             OptInt(o, "trace_cap_seconds", 30, 7200, d.TraceCapSeconds), OptInt(o, "trace_cap_mib", 64, 65536, d.TraceCapMib),
             OptInt(o, "max_relocations_per_day", 0, 24, d.MaxRelocationsPerDay), ignore)
         {
+            StartStreamEnabled = OptBool(o, "start_stream_enabled", d.StartStreamEnabled),
+            RelocateHours = hours,
             TraceRuns = OptInt(o, "trace_runs", 1, 32, d.TraceRuns),
             StartStreamCapSeconds = OptInt(o, "start_stream_cap_seconds", 0, 7200, d.StartStreamCapSeconds),
             TraceLateIntervalMin = OptInt(o, "trace_late_interval_min", 1, 1440, d.TraceLateIntervalMin),
@@ -338,6 +381,20 @@ public static class SettingsStore
                 ? (string)ac : throw new SettingsException($"{at}.anticheat: \"eac\", \"battleye\", \"vanguard\", \"kernel\", \"ricochet\" or \"unknown\" expected");
         }
 
+        GameMode mode = GameMode.Inherit;
+        if (g.TryGetValue("mode", out object? gm))
+        {
+            mode = gm switch
+            {
+                "inherit" => GameMode.Inherit,
+                "prewarm_only" => GameMode.PrewarmOnly,
+                "relocate_only" => GameMode.RelocateOnly,
+                "off" => GameMode.Off,
+                _ => throw new SettingsException($"{at}.mode: \"inherit\", \"prewarm_only\", \"relocate_only\" or \"off\" expected"),
+            };
+        }
+
+        bool paused = g.TryGetValue("paused", out object? pz) ? pz as bool? ?? throw new SettingsException($"{at}.paused: true or false expected") : false;
         string? displayName = g.TryGetValue("display_name", out object? dn) ? DisplayText(dn, $"{at}.display_name") : null;
         Dictionary<string, string>? displayNames = null;
         if (g.TryGetValue("display_names", out object? dns))
@@ -356,6 +413,8 @@ public static class SettingsStore
             MaxStreamSet = g.ContainsKey("max_stream_mib"),
             Source = source,
             AntiCheat = antiCheat,
+            Mode = mode,
+            Paused = paused,
         };
     }
 

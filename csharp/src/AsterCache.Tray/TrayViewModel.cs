@@ -21,7 +21,20 @@ public sealed record AutoForm(
 
     /// 하루 재배치 쓰기 상한 (GiB 숫자, 0 = 무제한).
     public string RelocateGib { get; init; } = "8";
+
+    /// 시작 스트림 켬 (null 이면 파일 값을 그대로 둠).
+    public bool? StartStream { get; init; }
+
+    /// 재배치 시간대의 시각 목록 (null 이면 파일 값을 그대로 둠, 비어 있으면 언제든).
+    public IReadOnlyList<int>? RelocateHours { get; init; }
+
+    /// 고급 구역의 입력 (null 이면 고급 값은 그대로 둠).
+    public AdvancedForm? Advanced { get; init; }
 }
+
+/// 설정 탭 고급 구역의 입력값 (숫자 글자, null 이면 사용자가 건드리지 않은 칸이라 파일 값을 그대로 둠). 범위는 저장할 때 설정 검증이 확인합니다.
+public sealed record AdvancedForm(
+    string? CacheMib, string? StartupGames, string? StartupMaxMib, string? RewarmAfterExitMin, string? MaxRelocationsPerDay, string? IdleSeconds, string? StartStreamCapSeconds);
 
 /// 파일·폴더를 기본 프로그램으로 엽니다. 시험은 가짜로 바꿉니다.
 public interface IShell
@@ -230,8 +243,25 @@ public sealed class TrayViewModel(
             return Report(false, L.T("Err_RelocateGib"));
         }
 
+        int?[] adv = [];
+        if (f.Advanced is { } av && !TryNumbers([av.CacheMib, av.StartupGames, av.StartupMaxMib, av.RewarmAfterExitMin, av.MaxRelocationsPerDay, av.IdleSeconds, av.StartStreamCapSeconds], out adv))
+        {
+            return Report(false, L.T("Err_AdvancedInput"));
+        }
+
+        int? cache = null;
+        if (adv.Length > 0 && adv[0] is int wanted && wanted != CacheMib(_settings))
+        {
+            if (_settings is not { Games.Count: > 0 })
+            {
+                return Report(false, L.T("Err_CacheNeedsGame"));
+            }
+
+            cache = wanted;
+        }
+
         string[] ignore = f.IgnoreExes.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-        return Edit(() => config.UpdateAuto(a => WithRelocateGib(a with
+        return Edit(() => config.UpdateAuto(a => WithAdvanced(WithRelocateGib(a with
         {
             Enabled = f.Enabled,
             Discover = f.Discover,
@@ -241,8 +271,76 @@ public sealed class TrayViewModel(
             IgnoreExes = ignore,
             RewarmMinutes = minutes,
             SsdTier = a.SsdTier with { Enabled = f.TierEnabled, BudgetGib = tierGib },
-        }, relocateGib), mib, zoneAuto), L.T("Msg_AutoSet"));
+            StartStreamEnabled = f.StartStream ?? a.StartStreamEnabled,
+            RelocateHours = f.RelocateHours ?? a.RelocateHours,
+        }, relocateGib), adv), mib, zoneAuto, cache), L.T("Msg_AutoSet"));
     }
+
+    /// 캐시 예산 (MiB, 0 = 자동): 서비스처럼 게임들에 적힌 값 중 가장 큰 것.
+    public static int CacheMib(AsterSettings? s) => s?.Games.Select(g => g.Prewarm.MaxCacheMib).DefaultIfEmpty(0).Max() ?? 0;
+
+    // adv 는 TryNumbers 로 읽은 고급 구역 값 (비어 있거나 항목이 null 이면 그대로 둠). 유휴 판정은 지금 값과 같으면 건드리지 않아 idle_minutes 만 있는 파일을 유지합니다.
+    private static AutoSettings WithAdvanced(AutoSettings a, int?[] adv)
+    {
+        if (adv.Length == 0)
+        {
+            return a;
+        }
+
+        AutoSettings b = a with
+        {
+            StartupWarmGames = adv[1] ?? a.StartupWarmGames,
+            StartupWarmMaxMib = adv[2] ?? a.StartupWarmMaxMib,
+            RewarmAfterExitMin = adv[3] ?? a.RewarmAfterExitMin,
+            MaxRelocationsPerDay = adv[4] ?? a.MaxRelocationsPerDay,
+            StartStreamCapSeconds = adv[6] ?? a.StartStreamCapSeconds,
+        };
+        return adv[5] is not int idle || idle == (int)a.IdleWindow.TotalSeconds ? b : b with { IdleSeconds = idle, IdleSecondsSet = true };
+    }
+
+    private static bool TryNumbers(string?[] texts, out int?[] numbers)
+    {
+        numbers = new int?[texts.Length];
+        for (int i = 0; i < texts.Length; i++)
+        {
+            if (texts[i] is null)
+            {
+                continue;
+            }
+
+            if (!int.TryParse(texts[i]!.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int n))
+            {
+                return false;
+            }
+
+            numbers[i] = n;
+        }
+
+        return true;
+    }
+
+    /// 재배치 시간대를 시각 목록으로: from 시부터 to 시 직전까지 (to 가 from 보다 작으면 자정을 넘김). from 과 to 가 같으면 빈 목록 (호출한 쪽이 먼저 걸러야 함).
+    public static IReadOnlyList<int> HoursBetween(int from, int to) =>
+        from == to ? [] : Enumerable.Range(0, ((to - from + 24) % 24)).Select(i => (from + i) % 24).ToList();
+
+    /// 시각 목록이 한 구간 (자정을 넘겨도 됨) 으로 표현되면 (From, To) 를, 아니면 null (비어 있어도 null).
+    public static (int From, int To)? RangeOf(IReadOnlyList<int> hours)
+    {
+        HashSet<int> set = [.. hours];
+        if (set.Count is 0 or 24)
+        {
+            return null;
+        }
+
+        int[] starts = set.Where(h => !set.Contains((h + 23) % 24)).ToArray();
+        int[] ends = set.Where(h => !set.Contains((h + 1) % 24)).ToArray();
+        return starts.Length == 1 ? (starts[0], (ends[0] + 1) % 24) : null;
+    }
+
+    /// 게임의 정책 (mode·일시 중지)·표시 이름을 한 번에 저장합니다. 이름 칸은 앞뒤 공백을 지우고, 비면 키를 지웁니다.
+    public ActionResult SetGameOptions(string name, GameMode mode, bool paused, string displayName, string nameKo, string nameEn) =>
+        Edit(() => config.SetGameOptions(name, mode, paused, displayName.Trim(), new Dictionary<string, string> { ["ko"] = nameKo.Trim(), ["en"] = nameEn.Trim() }),
+            L.T("Msg_GameOptionsSet", DisplayName(name)));
 
     /// 하루 (24 시간) 에 자동 재배치가 쓸 수 있는 총량 (GiB, 0 = 무제한) 을 기록합니다. 나머지 auto 값은 그대로 보존합니다.
     public ActionResult SetRelocateGib(string gib)

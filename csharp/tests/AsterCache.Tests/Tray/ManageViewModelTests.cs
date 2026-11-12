@@ -202,6 +202,17 @@ public sealed class ManageViewModelTests : IDisposable
     // ---- 목록과 상태 ----
 
     [Fact]
+    public void GameRowShowsPausedAndNonDefaultPolicyOnly()
+    {
+        Register();
+        Assert.True(_tray.SetGameOptions("mw4", GameMode.PrewarmOnly, true, string.Empty, string.Empty, string.Empty).Ok);
+        Assert.Equal("일시 중지됨 · 예열만", _vm.GameRows(null).Single().Policy);
+
+        Assert.True(_tray.SetGameOptions("mw4", GameMode.Off, false, string.Empty, string.Empty, string.Empty).Ok);
+        Assert.Equal("사용 안 함", _vm.GameRows(null).Single().Policy);
+    }
+
+    [Fact]
     public void GameRowsAndStatusTextFromAsterJson()
     {
         Register();
@@ -218,6 +229,7 @@ public sealed class ManageViewModelTests : IDisposable
 
         GameRow row = _vm.GameRows(null).Single();
         Assert.Equal(("mw4", "game.exe", true, false, "연속", "contiguous"), (row.Name, row.Exe, row.HasPlan, row.HasTrace, row.Verdict, row.VerdictRaw));
+        Assert.Equal(string.Empty, row.Policy); // 기본 정책이면 표시 없음
         Assert.Equal("시작 예 · Steam.exe", row.Prewarm);
         Assert.Contains("여유 RAM 4096 MiB", row.PrewarmFull);
         Assert.Empty(_vm.GameRows("Q:"));

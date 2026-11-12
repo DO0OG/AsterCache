@@ -125,12 +125,20 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
     }
 
     /// 잠금 안에서 최신 파일의 auto 를 읽어 change 로 바꾼 뒤 한 번에 씁니다 (그 사이 서비스나 다른 편집이 바꾼 값을 보존). max_zone 은 선택.
-    public void UpdateAuto(Func<AutoSettings, AutoSettings> change, int? maxZoneMib = null, bool maxZoneAuto = false)
+    public void UpdateAuto(Func<AutoSettings, AutoSettings> change, int? maxZoneMib = null, bool maxZoneAuto = false, int? maxCacheMib = null)
     {
         using FileStream _ = Lock();
         JObject root = ReadRoot();
         AutoSettings current = File.Exists(ConfigPath) ? SettingsStore.Load(ConfigPath, PlansDir).Auto : AutoSettings.Default;
         WriteAuto(root, change(current));
+        if (maxCacheMib is int cache) // 공유 예산이라 서비스가 가장 큰 값을 쓰므로 모든 게임에 같은 값을 적어야 낮춤이 먹힘
+        {
+            foreach (JObject g in GamesOf(root).OfType<JObject>())
+            {
+                SetMaxCache(g, cache);
+            }
+        }
+
         if (maxZoneAuto)
         {
             root["max_zone_mib"] = "auto";
@@ -234,6 +242,28 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
         Save(root);
     }
 
+    /// 게임의 mode·paused·표시 이름을 한 번의 저장으로 함께 정합니다 (기본값이거나 빈 이름이면 키를 지움). 없는 게임은 SettingsException. 내부 이름 (name) 은 바꾸지 않습니다.
+    public void SetGameOptions(string game, GameMode mode, bool paused, string? displayName, IReadOnlyDictionary<string, string>? displayNames)
+    {
+        using FileStream _ = Lock();
+        JObject root = ReadRoot();
+        JObject g = GameOf(root, game);
+        SetOrRemove(g, "mode", mode == GameMode.Inherit ? null : GamePolicy.ModeName(mode));
+        SetOrRemove(g, "paused", paused ? true : null);
+        SetOrRemove(g, "display_name", string.IsNullOrWhiteSpace(displayName) ? null : displayName);
+        var names = new JObject();
+        foreach (string lang in new[] { "ko", "en" })
+        {
+            if (displayNames is not null && displayNames.TryGetValue(lang, out string? n) && !string.IsNullOrWhiteSpace(n))
+            {
+                names.Add(lang, n);
+            }
+        }
+
+        SetOrRemove(g, "display_names", names.Count == 0 ? null : names);
+        Save(root);
+    }
+
     /// auto.start_stream_enabled 를 정합니다 (true 이면 키를 지움).
     public void SetStartStreamEnabled(bool enabled) =>
         EditSection("auto", "start_stream_enabled", enabled ? null : false);
@@ -310,6 +340,27 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
         else
         {
             o[key] = value;
+        }
+    }
+
+    // 0 (자동) 이면 prewarm.max_cache_mib 키를 지우고, 그 결과 prewarm 이 비면 prewarm 도 지움.
+    private static void SetMaxCache(JObject game, int mib)
+    {
+        if (!game.TryGetValue("prewarm", out object? po))
+        {
+            if (mib == 0)
+            {
+                return;
+            }
+
+            game["prewarm"] = po = new JObject();
+        }
+
+        JObject prewarm = po as JObject ?? throw new SettingsException("prewarm: object expected");
+        SetOrRemove(prewarm, "max_cache_mib", mib == 0 ? null : (long)mib);
+        if (prewarm.Count == 0)
+        {
+            game.Remove("prewarm");
         }
     }
 

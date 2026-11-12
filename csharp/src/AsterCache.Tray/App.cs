@@ -93,7 +93,7 @@ internal sealed partial class App : Application
                 _main.SelectTab(ScreenshotTab);
                 _main.ShowAdvanced(ScreenshotAdvanced);
                 string sample = "Sample-Game";
-                _extras = [new RegisterWindow(Model, () => { }, new GameInput(sample, ["Sample.exe"], @"C:\Plans\Sample-Game.prefetch.json", @"C:\Plans\Sample-Game.plan.json", @"D:\Games\Sample", [@"D:\Games"], "Games", null, [])), ConfirmWindow.Create(L.T("Confirm_Apply", "Sample Game", "12.3 GiB")), ConfirmWindow.Create(L.T("Confirm_Remove", sample), true), new AutoToast(L.T("Toast_Prewarmed", "Sample Game"), 0, StatusTone.Ok, () => { }), new AutoToast(L.T("Toast_Discovered", "A Game With A Very Long Name That Needs More Than One Line To Show Fully"), 1, StatusTone.Busy, () => { })];
+                _extras = [new RegisterWindow(Model, () => { }, new GameInput(sample, ["Sample.exe"], @"C:\Plans\Sample-Game.prefetch.json", @"C:\Plans\Sample-Game.plan.json", @"D:\Games\Sample", [@"D:\Games"], "Games", null, [])), ConfirmWindow.Create(L.T("Confirm_Apply", "Sample Game", "12.3 GiB")), ConfirmWindow.Create(L.T("Confirm_Remove", sample), true), new AutoToast(L.T("Toast_Prewarmed", "Sample Game"), 0, StatusTone.Ok, () => { }), new AutoToast(L.T("Toast_Discovered", "A Game With A Very Long Name That Needs More Than One Line To Show Fully"), 1, StatusTone.Busy, () => { }), new GameOptionsWindow(Model, new GameSettings(sample, ["Sample.exe"], @"C:\Plans\Sample-Game.prefetch.json", @"C:\Plans\Sample-Game.plan.json", @"D:\Games\Sample", [@"D:\Games"], "Games", 0) { Mode = GameMode.PrewarmOnly, Paused = true, DisplayName = "Sample Game" })];
                 foreach (Window w in _extras)
                 {
                     w.Show();
@@ -137,7 +137,7 @@ internal sealed partial class App : Application
                             using var shot = new RenderTargetBitmap(new PixelSize((int)_main.Bounds.Width, (int)_main.Bounds.Height), new Vector(96, 96));
                             shot.Render(_main);
                             shot.Save(ScreenshotPath);
-                            string[] names = ["register", "confirm", "confirm-danger", "toast-ok", "toast-found"];
+                            string[] names = ["register", "confirm", "confirm-danger", "toast-ok", "toast-found", "game-options"];
                             for (int i = 0; i < _extras.Length; i++)
                             {
                                 Snap(_extras[i], Path.ChangeExtension(ScreenshotPath, null) + "-" + names[i] + ".png");

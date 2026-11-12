@@ -76,6 +76,19 @@ public sealed class AutoLearnTests : IDisposable
     }
 
     [Fact]
+    public void ARelocateOnlyGameTracesButDoesNotReadAheadWhileLearning()
+    {
+        _rig.Settings = _rig.Settings with { Games = [_game with { Mode = GameMode.RelocateOnly }] };
+
+        _tracer.Start(_game);
+
+        Assert.Null(_rig.World.Listener); // 학습 선읽기는 예열 계열이라 막음
+        Assert.Equal(AutoStage.Tracing, _rig.Status.Get("foo")!.Stage);
+        Assert.Equal(1, _rig.World.TraceStarts); // 추적 자체는 계속
+        _tracer.Shutdown();
+    }
+
+    [Fact]
     public void LearnDisabledKeepsThePlainTracingStageWithoutAListener()
     {
         Configure(LearnSettings.Default with { Enabled = false });

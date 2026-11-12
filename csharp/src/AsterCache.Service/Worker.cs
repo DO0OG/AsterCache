@@ -40,11 +40,14 @@ public sealed class Worker : BackgroundService
     private readonly BootQuiet _quiet;
     private readonly object _heldLock = new();
     private readonly List<ProcessStart> _heldTriggers = []; // 부팅 조용 구간에 보류한 계기 (게임 exe 가 아닌 트리거), _heldLock 으로 보호
+    private readonly Func<DateTimeOffset> _now;
+    private readonly Dictionary<string, string> _reapplyHold = new(StringComparer.Ordinal); // 게임 정책·재배치 시간대로 재적용을 미룬 사유 (바뀔 때만 로그), 재적용 틱 스레드에서만 씀
 
     public Worker(AsterSettings settings, ILog log, IProcessWatcher primary, IProcessWatcher? fallback, IGameStreamer streamer, ReapplyChecker checker,
         ReapplyGate? gate = null, Prewarmer? prewarm = null, AutoMode? auto = null, SettingsReloader? reload = null, KeepAwake? keepAwake = null, DispatchEnv? dispatchEnv = null,
-        RiotPhaseWatcher? riot = null, BootQuiet? quiet = null, DiskReadCoordinator? coordinator = null, PlayRecorder? playRecorder = null)
+        RiotPhaseWatcher? riot = null, BootQuiet? quiet = null, DiskReadCoordinator? coordinator = null, PlayRecorder? playRecorder = null, Func<DateTimeOffset>? now = null)
     {
+        _now = now ?? (() => DateTimeOffset.UtcNow);
         _coordinator = coordinator ?? new DiskReadCoordinator(AsterCache.Windows.VolumeDisks.Shared, log);
         _prewarm = prewarm;
         _prewarm?.SetDiskReadCoordinator(_coordinator);
@@ -81,6 +84,7 @@ public sealed class Worker : BackgroundService
         {
             RestreamCooldownMin = () => _settings.Auto.RestreamCooldownMin,
             StartStreamCapSeconds = () => _settings.Auto.StartStreamCapSeconds,
+            StartStreamEnabled = () => _settings.Auto.StartStreamEnabled,
             IsWarm = prewarm is null ? dispatch.IsWarm : prewarm.AlreadyWarm,
             RecentWarmProbeAt = prewarm is null ? dispatch.RecentWarmProbeAt : prewarm.RecentWarmProbeAt,
             RecentWarmProbeMinutes = () => _settings.Auto.RewarmMinutes,
@@ -504,9 +508,16 @@ public sealed class Worker : BackgroundService
     // 새 설정으로 감시기·디스패처·예열 대상·자동 모드를 바꿉니다. 쿨다운 같은 상태는 유지하고, 감시할 이름이 달라졌을 때만 감시기를 다시 만듭니다.
     internal void Apply(AsterSettings s)
     {
+        bool relocationRevoked;
         lock (_gameStateLock)
         {
+            relocationRevoked = _settings.Games.Any(old => GamePolicy.AllowsRelocate(old) && s.Games.FirstOrDefault(g => string.Equals(g.Name, old.Name, StringComparison.OrdinalIgnoreCase)) is { } now && !GamePolicy.AllowsRelocate(now));
             _settings = s;
+        }
+
+        if (relocationRevoked)
+        {
+            _gate.Cancel(); // 돌고 있는 재배치·재적용은 기존의 안전한 중단 지점 (저널이 이어 갈 수 있는 곳) 에서 멈춤
         }
 
         if (_playRecorder is { } recorder)
@@ -567,12 +578,22 @@ public sealed class Worker : BackgroundService
         }
 
         resuming.RemoveWhere(name => !registered.Contains(name));
+        foreach (string name in _reapplyHold.Keys.Where(name => !registered.Contains(name)).ToArray())
+        {
+            _reapplyHold.Remove(name);
+        }
+
         foreach (GameSettings g in games)
         {
             due.TryAdd(g.Name, start + FirstCheckDelay);
             if (DateTimeOffset.UtcNow < due[g.Name] || _quiet.Defers("layout check and reapply"))
             {
                 continue; // 부팅 조용 구간의 검사는 기한을 그대로 둬서 구간이 끝난 다음 틱에 함
+            }
+
+            if (ReapplyHeld(g, resuming.Contains(g.Name)))
+            {
+                continue; // 기한을 그대로 둬서 정책이 풀리거나 시간대에 들어서는 첫 틱에 함
             }
 
             using DiskReadCoordinator.Lease? lease = _coordinator.TryBegin(g.OriginRoot, "reapply", ct); // 시작 이벤트를 놓쳐도 양보 중인 디스크의 해시 읽기·재적용은 하지 않음 (null 이면 양보 중)
@@ -593,6 +614,26 @@ public sealed class Worker : BackgroundService
         }
 
         MaintainPrewarm();
+    }
+
+    // 게임별 정책이 재배치를 막았거나, 재배치 시간대 (auto.relocate_hours) 밖이면 true. 이미 시작한 미완료 배치 (resuming) 는 시간대와 상관없이 이어 끝냅니다.
+    private bool ReapplyHeld(GameSettings g, bool resuming)
+    {
+        string? why = !GamePolicy.AllowsRelocate(g) ? $"game policy: {(g.Paused ? "paused" : GamePolicy.ModeName(g.Mode))}"
+            : !resuming && !GamePolicy.AllowsRelocateAt(_settings.Auto, _now().ToLocalTime().Hour) ? "outside auto.relocate_hours" : null;
+        if (why is null)
+        {
+            _ = _reapplyHold.Remove(g.Name);
+            return false;
+        }
+
+        if (!_reapplyHold.TryGetValue(g.Name, out string? last) || last != why)
+        {
+            _reapplyHold[g.Name] = why;
+            _log.Info($"{g.Name}: layout check and reapply skipped ({why})");
+        }
+
+        return true;
     }
 
     // g 와 같은 물리 디스크의 등록 게임 (g 포함) 이 도는가.

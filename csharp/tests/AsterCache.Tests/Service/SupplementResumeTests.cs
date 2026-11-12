@@ -56,7 +56,14 @@ public sealed class SupplementResumeTests : IDisposable
         /// 읽을 목록의 요청량 (MiB), 없으면 실제 목록 길이.
         public long? RequestedMib { get; set; }
 
-        public long? PrewarmReadBytes(GameSettings game, bool partial) => ReadSetMib is { } mib ? mib * Mib : null;
+        /// 최종 읽기 목록을 다시 계산하는 순간에 일어나는 일 (가용 메모리 변동 등).
+        public Action? OnReadSet { get; set; }
+
+        public long? PrewarmReadBytes(GameSettings game, bool partial)
+        {
+            OnReadSet?.Invoke();
+            return ReadSetMib is { } mib ? mib * Mib : null;
+        }
 
         /// 읽는 도중에 일어나는 일 (게임 시작 등).
         public Action? OnStream { get; set; }
@@ -156,6 +163,62 @@ public sealed class SupplementResumeTests : IDisposable
 
         Assert.Equal(3648, _streamer.Calls[^1].MaxStreamMib); // 8000 - 4096 예비 - 256 최종 여유
         Assert.Equal(0, _streamer.Skips[^1]); // 창이 바뀌어 이전 목록의 위치를 재사용하지 않음
+    }
+
+    [Fact]
+    public void AFinalLowMemorySkipDefersTheRetryInsteadOfRepeatingTheSampleReadEveryIdle()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmed(g, 8000);
+        _doneProbe = new ProbeResult(8, 0, 0.3);
+        (_streamer.ReadMib, _streamer.Complete) = (2000, false);
+        Assert.False(p.Supplement(g, CancellationToken.None)); // 이어 읽기 위치 2000 MiB 가 남음
+        int calls = _streamer.Calls.Count;
+        _streamer.ReadMib = null;
+        _streamer.Complete = true;
+        _streamer.ReadSetMib = 4100;
+        _streamer.OnReadSet = () => _avail = 4096 + 256 + 100; // 표본 읽기 뒤 가용 메모리가 줄어 최종 재산정에서 256 MiB 미만만 들어감
+        int before = _doneProbeCalls;
+
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        Assert.Equal(before + 1, _doneProbeCalls); // 첫 건너뜀은 표본을 한 번 읽음
+        Assert.Contains(_log.Lines, l => l.Contains("supplement prewarm deferred (low memory", StringComparison.Ordinal));
+
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        Assert.False(p.Supplement(g, CancellationToken.None));
+
+        Assert.Equal(before + 1, _doneProbeCalls); // 재시도 기한 전에는 표본을 다시 읽지 않음
+        Assert.Equal(calls, _streamer.Calls.Count);
+    }
+
+    [Fact]
+    public void AFinalCapAtOrBelowWhatIsAlreadyReadReturnsWithoutReReadingTheFront()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmedAtServiceCap(g, 8000); // 시작 상한으로 1024 MiB 읽은 부분 상태
+        _streamer.ReadSetMib = 4100;
+        _streamer.OnReadSet = () => _avail = 5200; // 최종 재산정의 상한 848 MiB <= 이미 읽은 1024 MiB
+
+        Assert.False(p.Supplement(g, CancellationToken.None));
+
+        Assert.Empty(_streamer.Calls);
+        Assert.Contains(_log.Lines, l => l.Contains("supplement prewarm skipped (the 848 MiB that fits is already read", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ThePausedPolicyStopsTheSupplementWithoutDroppingThePartialStateAndResumingReadsAgain()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmed(g, 8000);
+
+        p.SetGames([g with { Paused = true }]);
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        Assert.Empty(_streamer.Calls);
+        Assert.True(p.SupplementPending("g")); // 이력 (부분 상태) 은 보존
+
+        p.SetGames([g]);
+        Assert.True(p.Supplement(g, CancellationToken.None));
+        Assert.Single(_streamer.Calls);
     }
 
     [Fact]

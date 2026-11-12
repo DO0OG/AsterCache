@@ -84,8 +84,8 @@ public sealed class RiotPhaseWatcher
 
     public static bool IsClientExe(string? exe) => string.Equals(exe, ClientExe, StringComparison.OrdinalIgnoreCase);
 
-    /// 등록 게임 중 안티치트가 vanguard 이고 LeagueClient.exe 를 가진 게임 (리그 오브 레전드).
-    public static GameSettings? FindGame(AsterSettings s) => s.Games.FirstOrDefault(g => g.AntiCheat == "vanguard" && g.ExeNames.Any(IsClientExe));
+    /// 등록 게임 중 안티치트가 vanguard 이고 LeagueClient.exe 를 가진 게임 (리그 오브 레전드). 게임 정책이 예열을 막은 게임은 제외.
+    public static GameSettings? FindGame(AsterSettings s) => s.Games.FirstOrDefault(g => g.AntiCheat == "vanguard" && g.ExeNames.Any(IsClientExe) && GamePolicy.AllowsPrewarm(g));
 
     public static string? ReadLockfileText(string path)
     {

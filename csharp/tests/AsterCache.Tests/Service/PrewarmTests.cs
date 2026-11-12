@@ -91,6 +91,32 @@ public sealed class PrewarmTests : IDisposable
     }
 
     [Fact]
+    public void SupplementAndGeneralLowMemoryLinesUseDifferentSuppressionKeys()
+    {
+        string general = Prewarmer.SkipLogKey("g", "low memory (available 100 MiB, reserve 4096 MiB)");
+        string supplement = Prewarmer.SkipLogKey("g", "supplement low memory (available 5 MiB, reserve 4096 MiB)");
+
+        Assert.NotEqual(general, supplement);
+        Assert.Equal(supplement, Prewarmer.SkipLogKey("g", "supplement low memory (available 9999 MiB, reserve 1 MiB)")); // 숫자는 키에 들어가지 않음
+    }
+
+    [Fact]
+    public void ARemovalHeldBackByARelocationIsPrunedWhenTheRelocationEnds()
+    {
+        GameSettings g = Game("g");
+        Prewarmer p = Make(g);
+        Assert.True(p.Run(g, "test").Ran);
+        Assert.True(p.TryBeginRelocation("g"));
+
+        p.SetGames([]); // 재배치 중에 설정에서 빠짐: 정리는 보류
+        Assert.NotNull(p.LastWarmed("g"));
+
+        p.EndRelocation("g");
+
+        Assert.Null(p.LastWarmed("g")); // 끝나는 때 마저 정리
+    }
+
+    [Fact]
     public void EmptyZoneIsSkippedNotPassed()
     {
         Assert.Equal("no zone", PrewarmPolicy.SkipReason(0, true, false, 99999, 0, null, TimeSpan.Zero));

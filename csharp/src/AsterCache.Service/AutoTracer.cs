@@ -27,6 +27,7 @@ public sealed class AutoTracer
     private Run? _run;
     private readonly List<Run> _stopped = []; // 상한에 닿아 세션을 멈췄지만 게임이 끝나길 기다리는 기록 (저장 전)
     private readonly HashSet<string> _cheatLogged = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _policyLogged = new(StringComparer.OrdinalIgnoreCase); // 게임 정책으로 추적을 시작하지 않은 것을 이미 로그한 게임 (다시 허용되면 지움), _lock 으로 보호
 
     /// 두 번째 이후 플레이가 이보다 적게 읽었거나 (바이트) 첫 플레이의 1 % 보다 이벤트가 적으면 (메뉴만 켠 플레이 등) 저장하지 않고 회차로 세지 않습니다.
     public const long MinExtraRunBytes = 64L << 20;
@@ -431,8 +432,36 @@ public sealed class AutoTracer
     // 안티치트 게임은 ETW 커널 트레이스를 걸지 않음 (보호 드라이버가 세션을 보고 클라이언트를 끊음). 등록 정보 (설정을 읽을 때 Riot 규칙으로 채워짐), 폴더 이름 순으로 보고 (폴더 열거는 한 번만) 탐지 실패도 막음.
     private string? TraceBlocker(GameSettings g) => _env.TraceBlocker(g);
 
+    // 게임별 정책이 추적 (ETW 세션·학습) 을 막는가: 끄거나 일시 중지한 게임. 설정을 다시 읽은 최신 항목으로 봅니다.
+    private bool PolicyBlocksTracking(GameSettings g, out GameSettings latest)
+    {
+        latest = _settings().Games.FirstOrDefault(x => string.Equals(x.Name, g.Name, StringComparison.OrdinalIgnoreCase)) ?? g;
+        return !GamePolicy.AllowsTracking(latest);
+    }
+
     public void Start(GameSettings g)
     {
+        if (PolicyBlocksTracking(g, out GameSettings latest))
+        {
+            bool first;
+            lock (_lock)
+            {
+                first = _policyLogged.Add(g.Name);
+            }
+
+            if (first)
+            {
+                _log.Info($"{g.Name}: trace skipped (game policy: {(latest.Paused ? "paused" : GamePolicy.ModeName(latest.Mode))})");
+            }
+
+            return;
+        }
+
+        lock (_lock)
+        {
+            _ = _policyLogged.Remove(g.Name);
+        }
+
         if (TraceBlocker(g) is { } cheat)
         {
             bool first;
@@ -485,7 +514,7 @@ public sealed class AutoTracer
                     }
 
                     LearnSettings ls = _settings().Auto.Learn;
-                    learn = ls.Enabled && firstRun ? AutoLearn.Create(g, ls, _env.PhysicalRamBytes(), _learn) : null; // 시스템 SSD·SSD 는 위에서 이미 걸러짐
+                    learn = ls.Enabled && firstRun && GamePolicy.AllowsPrewarm(latest) ? AutoLearn.Create(g, ls, _env.PhysicalRamBytes(), _learn) : null; // 시스템 SSD·SSD 는 위에서 이미 걸러짐
                     var exits = new GameExitTracker(_env.Now);
                     exits.ObserveStarted(g);
                     _run = new Run(g, _env.StartTrace(g.ExeNames, learn is null ? null : AutoLearn.Listener(learn)), _env.Now(), exits) { Learn = learn, Number = LastRunNumber(g, _env.FileExists) + 1, RawWrittenAtStart = _env.FileWriteTime(RawTracePath(g)) }; // 번호는 유효 회차 수가 아니라 있는 run 파일 기준 (덮어쓰기 금지)
@@ -552,6 +581,13 @@ public sealed class AutoTracer
             run.Session = null;
             run.Learn?.Dispose();
             _log.Info($"{run.Game.Name}: trace stopped (anti-cheat: {cheat})");
+            return;
+        }
+
+        if (PolicyBlocksTracking(run.Game, out GameSettings paused))
+        {
+            _log.Info($"{run.Game.Name}: trace stopped (game policy: {(paused.Paused ? "paused" : GamePolicy.ModeName(paused.Mode))})");
+            Finish(run, "game policy", defer: true); // 읽은 만큼은 게임이 끝난 뒤 저장 (기존 시간·읽기량 상한과 같은 안전한 중단 지점)
             return;
         }
 
@@ -749,6 +785,7 @@ public sealed class AutoTracer
             foreach (GameSettings game in removed)
             {
                 _cheatLogged.Remove(game.Name);
+                _policyLogged.Remove(game.Name);
             }
         }
 

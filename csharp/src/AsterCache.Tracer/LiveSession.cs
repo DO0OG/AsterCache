@@ -39,6 +39,7 @@ public sealed class LiveSession : IDisposable
     private int _stopRequested;
     private int _disposeRequested;
     private int _sessionDisposed;
+    private int _pumpWaitTimedOut; // Stop 이 처리 스레드를 limit 만큼 기다리고도 못 끝냈음: Dispose 가 같은 시간을 또 기다리지 않고 바로 지연 해제로 넘김
 
     private LiveSession(TraceEventSession session, KernelCollector collector, Task pump, Timer? flusher, ILog? log)
     {
@@ -103,7 +104,15 @@ public sealed class LiveSession : IDisposable
     public List<TraceRecord> Stop()
     {
         RequestStop();
-        return FinishAfterPump(_pump, PumpWaitLimit, _collector.Finish, _log);
+        try
+        {
+            return FinishAfterPump(_pump, PumpWaitLimit, _collector.Finish, _log);
+        }
+        catch (TraceIncompleteException)
+        {
+            Volatile.Write(ref _pumpWaitTimedOut, 1);
+            throw;
+        }
     }
 
     private void RequestStop()
@@ -141,7 +150,7 @@ public sealed class LiveSession : IDisposable
             return;
         }
 
-        DisposeAfterStop(_pump, PumpWaitLimit, RequestStop, DisposeSession, _log);
+        DisposeAfterStop(_pump, PumpWaitLimit, RequestStop, DisposeSession, _log, Volatile.Read(ref _pumpWaitTimedOut) != 0);
     }
 
     private void DisposeSession()
@@ -152,7 +161,7 @@ public sealed class LiveSession : IDisposable
         }
     }
 
-    internal static void DisposeAfterStop(Task pump, TimeSpan limit, Action requestStop, Action disposeSession, ILog? log)
+    internal static void DisposeAfterStop(Task pump, TimeSpan limit, Action requestStop, Action disposeSession, ILog? log, bool alreadyWaited = false)
     {
         try
         {
@@ -166,7 +175,7 @@ public sealed class LiveSession : IDisposable
         bool stopped;
         try
         {
-            stopped = pump.Wait(limit);
+            stopped = alreadyWaited ? pump.IsCompleted : pump.Wait(limit); // 앞선 Stop 의 대기가 시간 초과였으면 다시 기다리지 않음
         }
         catch (AggregateException)
         {

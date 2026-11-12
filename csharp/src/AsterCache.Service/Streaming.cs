@@ -1066,6 +1066,9 @@ public sealed record DispatchEnv
 
     public Func<int> StartStreamCapSeconds { get; init; } = () => AutoSettings.Default.StartStreamCapSeconds;
 
+    /// auto.start_stream_enabled: 거짓이면 게임 시작 스트림을 하지 않습니다 (다른 예열은 그대로).
+    public Func<bool> StartStreamEnabled { get; init; } = () => AutoSettings.Default.StartStreamEnabled;
+
     public static DispatchEnv Create() => new()
     {
         OtherProcesses = (g, start) => RegisteredOthers(g, ProcessSnapshot.Take(), start.Pid),
@@ -1264,6 +1267,21 @@ public sealed class GameDispatcher
             : "unknown";
         _log.Info($"{g.Name}: {start.ExeName} started (pid {start.Pid})" + (start.Route is { } route ? $" via {route}" : string.Empty)
             + $" [detected_at={start.DetectedAt:O}, queue_wait_ms={queueWait}]"); // 경로 표시 (cs_service.ps1 이 "via X" 를 파싱) 뒤에 감지 시각·큐 대기를 분리 기록
+        if (!GamePolicy.AllowsPrewarm(g))
+        {
+            string policy = g.Paused ? "paused" : GamePolicy.ModeName(g.Mode);
+            _log.Info($"{g.Name}: start stream skipped (game policy: {policy})");
+            ReportStream(start, "skipped", "game policy", null, null, null);
+            return false;
+        }
+
+        if (!_env.StartStreamEnabled())
+        {
+            _log.Info($"{g.Name}: start stream skipped (auto.start_stream_enabled is false)");
+            ReportStream(start, "skipped", "start stream disabled", null, null, null);
+            return false;
+        }
+
         DateTimeOffset now = _now();
         if (_last.TryGetValue(g.Name, out DateTimeOffset prev) && now - prev < Cooldown)
         {

@@ -374,6 +374,9 @@ public sealed class Prewarmer
     /// 같은 디스크에서 재배치가 시작했거나 도는 중이라 읽기를 시작하지 않았다는 표시 (PrewarmResult.SkipReason).
     public const string RelocationRunning = "relocation running";
 
+    /// 게임별 정책 (games[].mode, games[].paused) 이 예열을 막아 읽지 않았다는 표시 (PrewarmResult.SkipReason).
+    public const string GamePolicySkip = "game policy";
+
     // 재배치 직후 예열의 이유 (AutoRelocator 가 "auto " + "after relocation" 으로 넘김): 회복 기간 고정의 조건.
     private const string AfterRelocation = "auto after relocation";
 
@@ -409,6 +412,7 @@ public sealed class Prewarmer
     private readonly Dictionary<string, ResidencyProbe> _residencyProbes = new(StringComparer.OrdinalIgnoreCase); // 마지막 실제 상주 표본과 계획·trace 세대, _gate 로 보호
     private readonly Dictionary<string, string> _profileMiss = new(StringComparer.OrdinalIgnoreCase); // 엔진 프로필이 없다는 판정과 그때의 설치 폴더 mtime 키 (prewarm_status.json 의 profile_miss_key), _gate 로 보호
     private readonly HashSet<string> _refusedLogged = new(StringComparer.OrdinalIgnoreCase); // 드라이브 거부를 이미 로그한 게임, _gate 로 보호
+    private readonly HashSet<string> _policyLogged = new(StringComparer.OrdinalIgnoreCase); // 게임 정책으로 예열을 멈춘 것을 이미 로그한 게임 (정책이 다시 허용되면 지움), _gate 로 보호
     private readonly Dictionary<string, bool> _delayLogged = new(StringComparer.OrdinalIgnoreCase); // 업데이트 보류를 이미 로그한 게임 (값: 재계획 보류인가, 아니면 지연): 보류 종류가 바뀌면 다시 로그, _gate 로 보호
     private readonly HashSet<string> _relocHoldLogged = new(StringComparer.OrdinalIgnoreCase); // 재배치 중이라 시작 예열을 보류한 것을 이미 로그한 게임, _gate 로 보호
     private readonly Dictionary<string, (DateTimeOffset At, int Count)> _skipLogged = new(StringComparer.OrdinalIgnoreCase); // 게임|사유별 마지막으로 남긴 시각과 그 뒤 억제한 횟수, _gate 로 보호
@@ -638,6 +642,7 @@ public sealed class Prewarmer
         _profileMiss.Remove(game);
         _residencyProbes.Remove(game);
         _refusedLogged.Remove(game);
+        _policyLogged.Remove(game);
         _delayLogged.Remove(game);
         _relocHoldLogged.Remove(game);
         _supplementNothingNew.Remove(game);
@@ -844,6 +849,7 @@ public sealed class Prewarmer
         lock (_gate)
         {
             _relocStarted.Remove(game);
+            PruneRemovedGameLocked(game); // 재배치 중에 설정에서 빠져 보류된 정리를 끝나는 때 마저 함
         }
     }
 
@@ -1110,6 +1116,37 @@ public sealed class Prewarmer
     /// 자동 모드 설정 (full_prewarm 등)을 바꿉니다. 시작 때와 설정을 다시 읽을 때 부름.
     public void SetAuto(AutoSettings auto) => _auto = auto;
 
+    // 호출자가 쥔 옛 사본이 아니라 설정을 다시 읽은 최신 항목으로 정책을 봅니다 (목록에 없으면 받은 값).
+    private GameSettings CurrentOf(GameSettings game) => _games.FirstOrDefault(x => string.Equals(x.Name, game.Name, StringComparison.OrdinalIgnoreCase)) ?? game;
+
+    /// 게임별 정책이 예열 계열 (예열·재예열·보충·시작 스트림·고정) 을 막는가. 전역 스위치·안티치트 게이트와는 따로 AND 로 봅니다.
+    internal bool PolicyBlocksPrewarm(GameSettings game) => !GamePolicy.AllowsPrewarm(CurrentOf(game));
+
+    // 막혔으면 true. 정책이 바뀔 때까지 같은 게임의 사유는 한 번만 로그합니다.
+    private bool PolicyBlocked(GameSettings game, string what)
+    {
+        GameSettings current = CurrentOf(game);
+        if (GamePolicy.AllowsPrewarm(current))
+        {
+            return false;
+        }
+
+        bool first;
+        lock (_gate)
+        {
+            first = _policyLogged.Add(game.Name);
+        }
+
+        if (first)
+        {
+            _log.Info($"{game.Name}: {what} skipped (game policy: {PolicyText(current)})");
+        }
+
+        return true;
+    }
+
+    private static string PolicyText(GameSettings g) => g.Paused ? "paused" : GamePolicy.ModeName(g.Mode);
+
     /// 이 게임이 기록 없는 예열 대상인가: 기능이 켜져 있고 (자동 모드, full_prewarm 이나 engine_profiles) 원시 트레이스도 prefetch 기록도 없음.
     public bool IsCold(GameSettings game)
     {
@@ -1214,6 +1251,28 @@ public sealed class Prewarmer
                 _pendingWarmBudgetSkipped.Remove(gone);
             }
 
+            foreach (GameSettings g in games)
+            {
+                if (GamePolicy.AllowsPrewarm(g))
+                {
+                    _policyLogged.Remove(g.Name); // 다시 허용되면 부분 상태·마지막 예열 이력은 그대로라 다음 점검부터 평소처럼 이어짐
+                    continue;
+                }
+
+                // 예열이 금지된 게임의 대기 상태 (대기 예열, 보충 재시도, 이어 읽기 위치) 는 낡은 채 엉뚱한 읽기를 하지 않게 정리. 이력 (_last·_partial·상태 파일) 은 보존.
+                _pendingWarm.Remove(g.Name);
+                _idleSince.Remove(g.Name);
+                _pendingWarmBudgetSkipped.Remove(g.Name);
+                _resume.Remove(g.Name);
+                _supplementRetry.Remove(g.Name);
+                _supplementReadProgress.Remove(g.Name);
+                _supplementNothingNew.Remove(g.Name);
+                if (_policyLogged.Add(g.Name))
+                {
+                    _log.Info($"{g.Name}: prewarm, supplement and pin stopped (game policy: {PolicyText(g)})");
+                }
+            }
+
             foreach (string gone in _removedGames.ToList())
             {
                 PruneRemovedGameLocked(gone);
@@ -1264,7 +1323,7 @@ public sealed class Prewarmer
         ? TimeSpan.FromMinutes(_auto.RewarmMinutes)
         : AutoRelocator.RetryEvery;
 
-    private static bool IsPermanentWarmRefusal(string? reason) => reason is "no plan file" or "no zone" or "no trace file" or "outside allowed roots"
+    private static bool IsPermanentWarmRefusal(string? reason) => reason is "no plan file" or "no zone" or "no trace file" or "outside allowed roots" or GamePolicySkip
         || reason?.StartsWith("failed:", StringComparison.Ordinal) == true;
 
     private static bool IsRetryableWarmOutcome(string? reason) => reason is Cancelled or RelocationRunning or "startup byte cap"
@@ -1332,12 +1391,12 @@ public sealed class Prewarmer
     /// 게임이 끝났을 때 (Worker 가 부름): 재예열 점검을 앞당깁니다.
     public void NoteGameExit(DateTimeOffset? heavyWorkNotBefore = null) => _rewarm.PullIn(_auto, heavyWorkNotBefore);
 
-    /// 예열에 성공한 적이 있는 게임 (최근 순, 설정에 아직 있는 것만).
+    /// 예열에 성공한 적이 있는 게임 (최근 순, 설정에 아직 있는 것만, 게임 정책이 예열을 막은 게임은 제외).
     internal IReadOnlyList<GameSettings> Warmed()
     {
         lock (_gate)
         {
-            return [.. _games.Where(g => _last.ContainsKey(g.Name) && HasPlayed(g.Name)).OrderByDescending(g => _last[g.Name]).ThenBy(g => g.Name, StringComparer.Ordinal)];
+            return [.. _games.Where(g => _last.ContainsKey(g.Name) && HasPlayed(g.Name) && GamePolicy.AllowsPrewarm(g)).OrderByDescending(g => _last[g.Name]).ThenBy(g => g.Name, StringComparer.Ordinal)];
         }
     }
 
@@ -1362,8 +1421,8 @@ public sealed class Prewarmer
         List<GameSettings> candidates = [.. Warmed()];
         lock (_gate)
         {
-            candidates.AddRange(_games.Where(g => _partial.ContainsKey(g.Name) && !candidates.Any(c => string.Equals(c.Name, g.Name, StringComparison.OrdinalIgnoreCase))));
-            candidates.AddRange(_games.Where(g => _pendingWarm.ContainsKey(g.Name) && !candidates.Any(c => string.Equals(c.Name, g.Name, StringComparison.OrdinalIgnoreCase))));
+            candidates.AddRange(_games.Where(g => _partial.ContainsKey(g.Name) && GamePolicy.AllowsPrewarm(g) && !candidates.Any(c => string.Equals(c.Name, g.Name, StringComparison.OrdinalIgnoreCase))));
+            candidates.AddRange(_games.Where(g => _pendingWarm.ContainsKey(g.Name) && GamePolicy.AllowsPrewarm(g) && !candidates.Any(c => string.Equals(c.Name, g.Name, StringComparison.OrdinalIgnoreCase))));
         }
 
         HashSet<string> names = [.. candidates.Select(g => g.Name)];
@@ -1529,6 +1588,7 @@ public sealed class Prewarmer
         AutoSettings a = _auto;
         GameSettings[] first = _games.Where(g => g.Prewarm.OnServiceStart && (started?.Invoke(g) ?? true)).ToArray();
         IEnumerable<GameSettings> merged = first.Concat((recent ?? []).Where(g => !first.Any(f => string.Equals(f.Name, g.Name, StringComparison.OrdinalIgnoreCase))));
+        merged = [.. merged.Where(g => !PolicyBlocked(g, "service-start prewarm"))]; // 정책이 예열을 막은 게임은 시작 예열 순위·개수·상한을 쓰지 않음
         if (lastPlayed is not null)
         {
             DateTimeOffset cutoff = _now() - StartupPlayedWithin;
@@ -1769,7 +1829,7 @@ public sealed class Prewarmer
         }
     }
 
-    private void DeferSupplement(GameSettings game, long capMib, long progressBytes, string? inputs, StreamStats stats, bool planEnded, long planBytes)
+    private void DeferSupplement(GameSettings game, long capMib, long progressBytes, string? inputs, StreamStats stats, bool planEnded, long planBytes, string? reason = null)
     {
         DateTimeOffset now = _now();
         DateTimeOffset retryAt = now + PendingWarmRetryDelay();
@@ -1806,7 +1866,11 @@ public sealed class Prewarmer
             return;
         }
 
-        if (planEnded)
+        if (reason is not null)
+        {
+            _log.Info($"{game.Name}: supplement prewarm deferred ({reason}; retry after {retryAt:O})");
+        }
+        else if (planEnded)
         {
             _log.Info($"{game.Name}: supplement prewarm deferred (read list ended at {MibText(planBytes)} of {capMib} MiB planned, {stats.Errors} errors; retry after {retryAt:O})");
         }
@@ -2037,7 +2101,7 @@ public sealed class Prewarmer
                 continue;
             }
 
-            if (!HeavyWorkAllowed(g))
+            if (!HeavyWorkAllowed(g) || PolicyBlocksPrewarm(g))
             {
                 continue;
             }
@@ -2075,7 +2139,7 @@ public sealed class Prewarmer
             }
 
             GameSettings? game = _games.FirstOrDefault(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase));
-            if (game is null || IsCold(game)) // 기록이 없어진 게임은 대기에서 뺌 (기록 없는 게임은 대기 재시도 대상이 아님)
+            if (game is null || IsCold(game) || !GamePolicy.AllowsPrewarm(game)) // 기록이 없어진 게임, 정책이 예열을 막은 게임은 대기에서 뺌 (기록 없는 게임은 대기 재시도 대상이 아님)
             {
                 lock (_gate)
                 {
@@ -2235,7 +2299,7 @@ public sealed class Prewarmer
     /// 보충 예열 대기 게임이 IdleNeeded 동안 연속으로 한가했을 때만 Supplement 를 부릅니다 (SupplementTick 과 재예열 점검이 같은 판정을 씀). 유휴가 막 시작됐거나 아직 모자라면 읽지 않고 false.
     public bool SupplementWhenIdle(GameSettings g, CancellationToken ct)
     {
-        if (!HeavyWorkAllowed(g))
+        if (!HeavyWorkAllowed(g) || PolicyBlocksPrewarm(g))
         {
             return false;
         }
@@ -2304,7 +2368,7 @@ public sealed class Prewarmer
         try
         {
             using IDisposable work = TrackGameWork(game.Name);
-            if (ct.IsCancellationRequested || !HeavyWorkAllowed(game)
+            if (ct.IsCancellationRequested || !HeavyWorkAllowed(game) || PolicyBlocksPrewarm(game)
                 || DriveHasRunningGame(game) || _games.Any(x => Relocating(x.Name)) || Deferred(game))
             {
                 return false;
@@ -2341,25 +2405,9 @@ public sealed class Prewarmer
             {
                 long cap = partialCap.GetValueOrDefault();
 
-                if (cap <= p.WarmedMib)
+                if (SupplementCoveredByCap(game, p, cap, ct, out refused))
                 {
-                    if (MemoryPartialPending(game.Name))
-                    {
-                        LogSupplementNothingNew(game.Name, cap, p.WarmedMib, p.HotMib);
-                        DropPendingWarm(game.Name);
-                        return false;
-                    }
-
-                    if (!HeavyWorkAllowed(game) || !FrontCold(game, p.WarmedMib, ct, out refused)) // 식은 앞부분은 재예열 점검이 다시 읽음
-                    {
-                        if (!refused && HeavyWorkAllowed(game))
-                        {
-                            LogSupplementNothingNew(game.Name, cap, p.WarmedMib, p.HotMib);
-                            DropPendingWarm(game.Name); // 들어가는 만큼은 이미 읽었으니 더 읽을 것이 없고, 남기면 회복 보류만 계속 걸림
-                        }
-
-                        return false;
-                    }
+                    return false;
                 }
 
                 if (!HeavyWorkAllowed(game))
@@ -2408,6 +2456,11 @@ public sealed class Prewarmer
                     long shrinkAvailableMib = Math.Max(0, avail - FinalShrinkHeadroomMib);
                     if (PartialCapMib(game, finalReadMib, shrinkAvailableMib, physCap, budgetCap) is { } capMib)
                     {
+                        if (SupplementCoveredByCap(game, p, capMib, ct, out _))
+                        {
+                            return false; // 줄인 뒤의 상한이 이미 읽은 양 이하: 앞부분을 다시 읽지 않고 앞쪽 "더 읽을 것 없음" 과 같은 경로로 돌아감
+                        }
+
                         bool changedWindow = windowMib is null || windowMib.Value != capMib;
                         windowMib = capMib;
                         warm = game with { MaxStreamMib = (int)capMib, MaxStreamSet = true };
@@ -2425,7 +2478,8 @@ public sealed class Prewarmer
                     else
                     {
                         string reason = $"low memory (available {avail} MiB, reserve {reserveMib} MiB, final set {finalReadMib} MiB; less than {MinPartialMib} MiB fits)";
-                        LogSkipped(game.Name, reason, $"{game.Name}: supplement prewarm skipped ({reason})");
+                        LogSkipped(game.Name, "supplement " + reason, $"{game.Name}: supplement prewarm skipped ({reason})"); // 일반 예열의 low memory 와 다른 억제 키
+                        DeferSupplement(game, plannedCapMib, progressBefore, inputStamp, new StreamStats(0, 0, 0, 0), planEnded: false, 0, reason); // 표본 읽기 뒤의 건너뜀이 유휴마다 되풀이되지 않게 재시도 기한을 둠
                         return false;
                     }
                 }
@@ -2580,6 +2634,37 @@ public sealed class Prewarmer
         {
             Monitor.Exit(_run);
         }
+    }
+
+    // cap 이 이미 읽은 양 (p.WarmedMib) 이하이면 더 읽을 것이 없는 경우를 처리하고 true: 메모리 부분 예열은 바로 대기에서 빼고, 아니면 앞부분 표본이 식지 않았을 때만 같은 처리 (식은 앞부분은 재예열 점검이 다시 읽음).
+    // refused: 디스크 대여가 거절·취소돼 표본을 읽지 못함 (기억은 그대로 두고 호출자가 조용히 멈춤).
+    private bool SupplementCoveredByCap(GameSettings game, (long WarmedMib, long HotMib) p, long cap, CancellationToken ct, out bool refused)
+    {
+        refused = false;
+        if (cap > p.WarmedMib)
+        {
+            return false;
+        }
+
+        if (MemoryPartialPending(game.Name))
+        {
+            LogSupplementNothingNew(game.Name, cap, p.WarmedMib, p.HotMib);
+            DropPendingWarm(game.Name);
+            return true;
+        }
+
+        if (HeavyWorkAllowed(game) && FrontCold(game, p.WarmedMib, ct, out refused))
+        {
+            return false;
+        }
+
+        if (!refused && HeavyWorkAllowed(game))
+        {
+            LogSupplementNothingNew(game.Name, cap, p.WarmedMib, p.HotMib);
+            DropPendingWarm(game.Name); // 들어가는 만큼은 이미 읽었으니 더 읽을 것이 없고, 남기면 회복 보류만 계속 걸림
+        }
+
+        return true;
     }
 
     /// 서비스 시작 예열 대상이 되는 마지막 플레이의 최대 경과.
@@ -2737,7 +2822,7 @@ public sealed class Prewarmer
             return [];
         }
 
-        IReadOnlyList<GameSettings> hit = _games.Where(g => IsTrigger(g, start.ExeName)).ToList();
+        IReadOnlyList<GameSettings> hit = _games.Where(g => IsTrigger(g, start.ExeName) && !PolicyBlocked(g, $"trigger prewarm ({start.ExeName})")).ToList();
         IReadOnlyList<GameSettings> chosen = [.. narrow?.Invoke(hit) ?? hit];
         if (chosen.Count > 0)
         {
@@ -2785,6 +2870,11 @@ public sealed class Prewarmer
     public long WarmFiles(GameSettings g, IReadOnlyList<string> paths, long budgetBytes, CancellationToken ct)
     {
         if (budgetBytes <= 0 || paths.Count == 0 || ct.IsCancellationRequested)
+        {
+            return 0;
+        }
+
+        if (PolicyBlocked(g, "warm files"))
         {
             return 0;
         }
@@ -3169,6 +3259,11 @@ public sealed class Prewarmer
             return "head-cancelled|" + StableSkipReason(reason[15..]);
         }
 
+        if (reason.StartsWith("supplement low memory", StringComparison.Ordinal))
+        {
+            return "supplement-low-memory";
+        }
+
         if (reason.StartsWith("low memory", StringComparison.Ordinal))
         {
             return "low-memory";
@@ -3211,6 +3306,17 @@ public sealed class Prewarmer
         var results = new List<PrewarmResult>();
         IReadOnlyList<GameSettings> list = games as IReadOnlyList<GameSettings> ?? [.. games];
         IReadOnlyList<GameSettings> given = list; // 결과는 받은 순서로 돌려줌 (읽는 순서만 예산에 따라 바뀔 수 있음)
+        if (list.Any(g => PolicyBlocksPrewarm(g)))
+        {
+            // 게임 정책이 예열을 막은 게임은 예산 계산과 읽기에서 빼고 결과만 남김
+            foreach (GameSettings denied in list.Where(g => PolicyBlocked(g, $"prewarm [{why}]")))
+            {
+                results.Add(new PrewarmResult(denied.Name, false, GamePolicySkip, null, _now()));
+            }
+
+            list = [.. list.Where(g => !PolicyBlocksPrewarm(g))];
+        }
+
         long cold = list.Count > 1 ? ColdMib(null) : 0; // 기록 없는 예열 양: 순위 모의 계산과 앞부분 예열이 한 번만 읽어 같이 씀
         if (list.Count > 2)
         {
@@ -3341,9 +3447,9 @@ public sealed class Prewarmer
             planned += take;
             lock (_run)
             {
-                if (_games.Any(x => string.Equals(x.Name, g.Name, StringComparison.OrdinalIgnoreCase)))
+                if (_games.Any(x => string.Equals(x.Name, g.Name, StringComparison.OrdinalIgnoreCase) && GamePolicy.AllowsPrewarm(x)))
                 {
-                    StreamHead(head, ct); // 대기 중 등록이 해제된 게임은 앞부분도 읽지 않음
+                    StreamHead(head, ct); // 대기 중 등록이 해제됐거나 정책이 예열을 막은 게임은 앞부분도 읽지 않음
                 }
             }
         }
@@ -3421,7 +3527,7 @@ public sealed class Prewarmer
         foreach ((string name, var samples) in held)
         {
             GameSettings? gm = _games.FirstOrDefault(x => string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase));
-            bool busy = gm is not null && DriveHasRunningGame(gm); // 같은 디스크에서 게임이 도는 동안은 표본을 읽지 않음
+            bool busy = gm is not null && (DriveHasRunningGame(gm) || PolicyBlocksPrewarm(gm)); // 같은 디스크에서 게임이 도는 동안과 정책이 예열을 막은 게임은 표본을 읽지 않음
             if (!busy && gm is not null && samples is not null && ProbeSamplesForGame(gm, samples, "warm state sample") is { Cold: true })
             {
                 lock (_gate)
@@ -3480,6 +3586,13 @@ public sealed class Prewarmer
             if (!_games.Any(x => string.Equals(x.Name, game.Name, StringComparison.OrdinalIgnoreCase)))
             {
                 return new PrewarmResult(game.Name, false, "game removed", null, now); // 대기 중에 등록이 해제됨: 읽지 않음
+            }
+
+            if (PolicyBlocked(game, $"prewarm [{why}]"))
+            {
+                PrewarmResult blocked = new(game.Name, false, GamePolicySkip, null, now); // 상태 파일 이력은 건드리지 않음
+                TrackPendingWarm(game, blocked, now);
+                return blocked;
             }
 
             if (string.Equals(why, "rewarm", StringComparison.Ordinal) && RewarmAlreadyCovered(game))
@@ -3731,6 +3844,10 @@ public sealed class Prewarmer
         if (RunningBlocksRead(game))
         {
             reason = _env.GameRunning(game) ? "game started" : "another game is running on the same disk";
+        }
+        else if (PolicyBlocksPrewarm(game))
+        {
+            reason = "game policy"; // 읽는 도중 정책이 바뀌면 다음 묶음 경계에서 멈춤
         }
         else if (remaining > 0 && ExternalLoadWhilePaused(game, stop.Token))
         {

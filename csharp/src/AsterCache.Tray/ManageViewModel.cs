@@ -80,6 +80,9 @@ public sealed class ManageViewModel(
     private readonly ConcurrentDictionary<string, GameStatus> _status = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, (DateTime Plan, DateTime Journal, DateTime At)> _checked = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _generation = new(StringComparer.OrdinalIgnoreCase); // 게임별: 배치를 바꾸는 동작이 끝날 때마다 올림
+    private readonly FileMetadataCache<AutoStatusFile> _autoCache = new();
+    private readonly FileMetadataCache<IReadOnlyList<LoadSample>> _samplesCache = new();
+    private readonly object _reloadGate = new();
     private static readonly TimeSpan LayoutMaxAge = TimeSpan.FromMinutes(30); // 파일이 그대로여도 게임 업데이트 등으로 배치가 바뀔 수 있어 이 시간이 지나면 다시 확인
     private readonly TimeSpan _poll = poll ?? TimeSpan.FromMilliseconds(500);
     private JObject? _prewarm;
@@ -206,12 +209,35 @@ public sealed class ManageViewModel(
 
         try
         {
-            return string.Join(Environment.NewLine, ReadLines(path).TakeLast(lines));
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(fs, Encoding.UTF8);
+            return string.Join(Environment.NewLine, ReadTail(reader, lines));
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             return L.T("Msg_ReadFailed", e.GetType().Name);
         }
+    }
+
+    internal static Queue<string> ReadTail(TextReader reader, int lines)
+    {
+        var tail = new Queue<string>(Math.Max(0, lines));
+        while (reader.ReadLine() is { } line)
+        {
+            if (lines <= 0)
+            {
+                continue;
+            }
+
+            if (tail.Count == lines)
+            {
+                tail.Dequeue();
+            }
+
+            tail.Enqueue(line);
+        }
+
+        return tail;
     }
 
     private static List<string> ReadLines(string path)
@@ -406,18 +432,22 @@ public sealed class ManageViewModel(
     /// auto_status.json 만 다시 읽습니다 (aster 프로세스 없음, 5 초 주기용). 읽은 결과를 돌려줍니다.
     public AutoStatusFile? ReloadAuto()
     {
-        _auto = AutoStatusFile.Load(AutoStatusPath);
-        tray.LauncherNames = _auto?.Games.Where(kv => kv.Value.DisplayName is not null).ToDictionary(kv => kv.Key, kv => kv.Value.DisplayName!, StringComparer.OrdinalIgnoreCase) ?? new Dictionary<string, string>();
-        try
+        lock (_reloadGate)
         {
-            _samples = LoadSamples(Path.Combine(DataDir, MetricsJson.SamplesFile));
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-        {
-            // 서비스가 쓰는 중이거나 잠겨 못 읽으면 직전 값을 그대로 둡니다
-        }
+            _auto = _autoCache.Get(AutoStatusPath, () => AutoStatusFile.Load(AutoStatusPath), cacheNull: false);
+            tray.LauncherNames = _auto?.Games.Where(kv => kv.Value.DisplayName is not null).ToDictionary(kv => kv.Key, kv => kv.Value.DisplayName!, StringComparer.OrdinalIgnoreCase) ?? new Dictionary<string, string>();
+            string samplesPath = Path.Combine(DataDir, MetricsJson.SamplesFile);
+            try
+            {
+                _samples = _samplesCache.Get(samplesPath, () => LoadSamples(samplesPath)) ?? [];
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                // 서비스가 쓰는 중이거나 잠겨 못 읽으면 직전 값을 그대로 둡니다
+            }
 
-        return _auto;
+            return _auto;
+        }
     }
 
     /// 게임별 배치 판정을 채우는 중이면 true (목록은 마지막 판정 또는 "확인 중" 으로 먼저 보임).

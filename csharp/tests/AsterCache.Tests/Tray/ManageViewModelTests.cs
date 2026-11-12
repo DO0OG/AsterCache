@@ -1,6 +1,7 @@
 using AsterCache.Core.I18n;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
+using AsterCache.Core.Metrics;
 using AsterCache.Core.Settings;
 using AsterCache.Prefetch;
 using AsterCache.Service;
@@ -150,6 +151,29 @@ public sealed class ManageViewModelTests : IDisposable
         Assert.Equal("line 101", lines[0]);
         Assert.Equal("line 300", lines[^1]);
         Assert.Contains("파일 없음", ManageViewModel.Tail(Path.Combine(_dir, "none.log")));
+    }
+
+    [Fact]
+    public void TailUsesABoundedQueueForUtf8TextWhileTheLogIsOpen()
+    {
+        string log = Path.Combine(_dir, "open.log");
+        using var stream = new FileStream(log, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+        using var writer = new StreamWriter(stream, new System.Text.UTF8Encoding(false)) { AutoFlush = true };
+        for (int i = 1; i <= 205; i++)
+        {
+            writer.WriteLine("줄 " + i);
+        }
+
+        writer.Write("끝");
+        string[] lines = ManageViewModel.Tail(log).Split(Environment.NewLine);
+        Assert.Equal(200, lines.Length);
+        Assert.Equal("줄 7", lines[0]);
+        Assert.Equal("끝", lines[^1]);
+
+        Queue<string> retained = ManageViewModel.ReadTail(new StringReader(string.Join("\n", Enumerable.Range(1, 10_000))), 200);
+        Assert.Equal(200, retained.Count);
+        Assert.Equal("9801", retained.Peek());
+        Assert.Equal("10000", retained.Last());
     }
 
     [Fact]
@@ -862,12 +886,47 @@ public sealed class ManageViewModelTests : IDisposable
     {
         Assert.True(_tray.AddGame(Game("frost") with { ExeNames = ["frost.exe"], TriggerExes = null }).Ok);
         WriteAuto("{\"games\":{\"frost\":{\"source\":\"auto\",\"launcher\":\"steam\",\"stage\":\"tracing\",\"detail\":null,\"at\":\"2026-11-02T01:00:00+00:00\"}}}");
-        Assert.NotNull(_vm.ReloadAuto());
+        AutoStatusFile loaded = Assert.IsType<AutoStatusFile>(_vm.ReloadAuto());
+        Assert.Same(loaded, _vm.ReloadAuto());
         Assert.Equal("트레이스 수집 중", _vm.GameRows(null).Single().Stage);
         WriteAuto("{\"games\":{\"frost\":{\"source\":\"auto\",\"launcher\":\"steam\",\"stage\":\"done\",\"detail\":null,\"at\":\"2026-11-02T01:05:00+00:00\"}}}");
-        _vm.ReloadAuto();
+        AutoStatusFile updated = Assert.IsType<AutoStatusFile>(_vm.ReloadAuto());
+        Assert.NotSame(loaded, updated);
         Assert.Equal("완료", _vm.GameRows(null).Single().Stage);
         Assert.Contains("  자동: frost 발견 → 트레이스 수집 중 → 재배치 자동 진행 대기 → 재배치 중 → [완료]", _vm.StatusLines(null));
+    }
+
+    [Fact]
+    public void ReloadAutoRetriesAfterATemporarilyLockedStatusFile()
+    {
+        Assert.True(_tray.AddGame(Game("frost") with { ExeNames = ["frost.exe"], TriggerExes = null }).Ok);
+        WriteAuto("{\"games\":{\"frost\":{\"source\":\"auto\",\"launcher\":\"steam\",\"stage\":\"done\",\"detail\":null,\"at\":\"2026-11-02T01:05:00+00:00\"}}}");
+
+        using (var hold = new FileStream(_vm.AutoStatusPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            Assert.Null(_vm.ReloadAuto());
+        }
+
+        Assert.NotNull(_vm.ReloadAuto());
+        Assert.Equal("완료", _vm.GameRows(null).Single().Stage);
+    }
+
+    [Fact]
+    public void ReloadAutoRefreshesSamplesWhenTheirFileMetadataChanges()
+    {
+        Register();
+        string samples = Path.Combine(_dir, MetricsJson.SamplesFile);
+        File.WriteAllText(samples, "{\"samples\":[]}");
+        _vm.ReloadAuto();
+        string before = _vm.GameRows(null).Single().Gate;
+        Assert.Equal(L.T("Gate_NoRecord"), before);
+
+        File.WriteAllText(samples, "{\"samples\":[{\"game_key\":\"mw4\",\"scenario\":\"S0\",\"arm\":\"Baseline\",\"elapsed\":\"Sec0\",\"cache_state\":\"Warm\",\"elapsed_basis\":\"service_uptime\"}]}");
+        _vm.ReloadAuto();
+
+        string after = _vm.GameRows(null).Single().Gate;
+        Assert.NotEqual(before, after);
+        Assert.StartsWith(L.T("Gate_Unverified", string.Empty), after);
     }
 
     // ---- 기본 화면 가독성 (상태 구분, 기본 열과 고급 열) ----

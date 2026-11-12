@@ -17,6 +17,9 @@ internal sealed class FileNames(Action<string, long, long>? onLate = null)
 
     public long Late { get; private set; }
 
+    /// FileKey 이름 표 크기 (세션이 긴 만큼 커지는 표를 재 보는 용도).
+    public int Count => _byKey.Count;
+
     public int Waiting => _held.Values.Sum(l => l.Count);
 
     public void NameKey(ulong key, string? name)

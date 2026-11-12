@@ -598,7 +598,11 @@ public sealed class AutoTracer
         {
             // 첫 표본의 프로세스는 지금 값이 기준, 그 뒤에 나타난 프로세스는 세션이 열린 뒤에 시작했으므로 0 이 기준
             long before = run.Last.TryGetValue(pid, out long last) ? last : run.Primed ? 0 : bytes;
-            run.Read += Math.Max(0, bytes - before);
+            if (run.Collecting)
+            {
+                run.Read += Math.Max(0, bytes - before); // 수집하지 않는 구간의 읽기는 상한에 세지 않음
+            }
+
             run.Last[pid] = bytes;
         }
 
@@ -627,12 +631,12 @@ public sealed class AutoTracer
 
         if (!run.InitialWindowEnded && elapsed >= TimeSpan.FromSeconds(a.TraceCapSeconds))
         {
-            if (!TryStopWindow(run, endLearning: true))
+            run.InitialWindowEnded = true;
+            if (!EndWindow(run, endLearning: true))
             {
                 return;
             }
 
-            run.InitialWindowEnded = true;
             run.NextLateWindowAt = run.StartedAt + TimeSpan.FromSeconds(a.TraceCapSeconds) + TimeSpan.FromMinutes(a.TraceLateIntervalMin);
             _log.Info($"{run.Game.Name}: initial trace window ended at time cap; waiting for late window 1/{a.TraceLateWindows}");
             if (a.TraceLateWindows <= 0)
@@ -645,50 +649,106 @@ public sealed class AutoTracer
 
         if (run.InitialWindowEnded)
         {
-            if (run.Session is not null && run.LateWindowStartedAt is { } windowStarted
-                && now - windowStarted >= TimeSpan.FromSeconds(a.TraceLateWindowSeconds))
+            StepLateWindows(run, a, now);
+        }
+    }
+
+    // 후반 창: 세션은 첫 창부터 게임 끝까지 두고 창 안에서만 읽기를 모읍니다 (창마다 새 세션이면 창 전에 열린 파일의 이름을 못 풀어 읽기가 버려짐).
+    private void StepLateWindows(Run run, AutoSettings a, DateTimeOffset now)
+    {
+        if (run.LateWindowStartedAt is { } started)
+        {
+            if (now - started < TimeSpan.FromSeconds(a.TraceLateWindowSeconds))
             {
-                if (!TryStopWindow(run))
-                {
-                    return;
-                }
-
-                run.LateWindowStartedAt = null;
-                if (run.LateWindowsStarted >= a.TraceLateWindows)
-                {
-                    Finish(run, "time cap", defer: true);
-                    return;
-                }
-
-                run.NextLateWindowAt = now + TimeSpan.FromMinutes(a.TraceLateIntervalMin);
+                return;
             }
 
-            if (run.Session is null)
+            run.LateWindowStartedAt = null;
+            if (!EndWindow(run))
             {
-                if (run.LateWindowsStarted >= a.TraceLateWindows)
-                {
-                    Finish(run, "time cap", defer: true);
-                    return;
-                }
-
-                if (now >= run.NextLateWindowAt)
-                {
-                    try
-                    {
-                        run.Session = _env.StartTrace(run.Game.ExeNames, null);
-                        run.LateWindowsStarted++;
-                        run.LateWindowStartedAt = now;
-                        string detail = $"late window {run.LateWindowsStarted}/{a.TraceLateWindows}";
-                        _status.Set(run.Game.Name, run.Game.Source, null, AutoStage.Tracing, detail);
-                        _log.Info($"{run.Game.Name}: {detail} started");
-                    }
-                    catch (Exception e) when (e is not OperationCanceledException)
-                    {
-                        _log.Error($"{run.Game.Name}: late trace window could not start", e);
-                        Finish(run, "trace session failed to restart", defer: true);
-                    }
-                }
+                return;
             }
+
+            run.NextLateWindowAt = now + TimeSpan.FromMinutes(a.TraceLateIntervalMin);
+        }
+
+        if (run.LateWindowsStarted >= a.TraceLateWindows)
+        {
+            Finish(run, "time cap", defer: true);
+            return;
+        }
+
+        if (now >= run.NextLateWindowAt)
+        {
+            StartLateWindow(run, a, now);
+        }
+    }
+
+    private void StartLateWindow(Run run, AutoSettings a, DateTimeOffset now)
+    {
+        try
+        {
+            run.Session?.ResumeWindow();
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _log.Warn($"{run.Game.Name}: trace session ended early, no more late windows ({e.GetType().Name})");
+            Finish(run, "trace session ended early", defer: true); // 남은 창은 열지 않고 지금까지 모은 것을 저장
+            return;
+        }
+
+        run.LateWindowsStarted++;
+        run.LateWindowStartedAt = now;
+        string detail = $"late window {run.LateWindowsStarted}/{a.TraceLateWindows}";
+        if (run.Number == 1)
+        {
+            _status.Set(run.Game.Name, run.Game.Source, null, AutoStage.Tracing, detail); // 추가 기록(2회차 이후)은 상태를 건드리지 않음: 단계를 덮으면 At 이 바뀌어 재학습 판정이 흔들림
+        }
+
+        _log.Info($"{run.Game.Name}: {detail} started");
+    }
+
+    // 수집 구간을 닫고 그 구간의 읽기 집계를 남깁니다. 닫지 못하면 (세션이 이미 죽음 등) 지금까지 모은 기록을 저장하도록 끝내고 false.
+    private bool EndWindow(Run run, bool endLearning = false)
+    {
+        try
+        {
+            if (run.Session?.PauseWindow() is { } w)
+            {
+                LogWindow(run, w);
+            }
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _log.Error($"{run.Game.Name}: trace window could not end; stopping the trace", e);
+            Finish(run, "trace window failed", defer: true); // 학습도 Finish 가 끝냄
+            return false;
+        }
+
+        if (endLearning)
+        {
+            EndLearn(run);
+        }
+
+        return true;
+    }
+
+    private void LogWindow(Run run, WindowStats w) =>
+        _log.Info($"{run.Game.Name}: trace window ended, {w.Reads} reads, {w.Targets} target processes, {w.EventsLost} events lost so far");
+
+    // 열린 채 끝나는 후반 창의 집계를 로그만 남기고 (Finish 가 곧 세션을 멈추므로 실패해도 무시)
+    private void LogOpenWindow(Run run)
+    {
+        try
+        {
+            if (run.Session?.PauseWindow() is { } w)
+            {
+                LogWindow(run, w);
+            }
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _log.Warn($"{run.Game.Name}: last trace window summary unavailable ({e.GetType().Name})");
         }
     }
 
@@ -822,6 +882,11 @@ public sealed class AutoTracer
         bool stoppedBefore = run.Held is not null; // 이미 멈춰 둔 기록의 저장: 세션은 멈출 때 정리했음
         try
         {
+            if (!stoppedBefore && run.Collecting)
+            {
+                LogOpenWindow(run); // 후반 창이 열린 채 끝나면 그 창의 집계도 남김
+            }
+
             IReadOnlyList<TraceRecord> records = run.Held ?? StopSession(run);
             if (!stoppedBefore)
             {
@@ -957,6 +1022,16 @@ public sealed class AutoTracer
         catch (Exception e) when (e is not OperationCanceledException)
         {
             _log.Error($"{g.Name}: auto trace failed", e);
+            if (run.Session is not null)
+            {
+                lock (_lock)
+                {
+                    _stopCleanupFailed = true; // 세션이 멈췄는지 확인되지 않음: 새 세션을 막음
+                }
+
+                _log.Error($"{g.Name}: trace cleanup could not be confirmed; new trace sessions are blocked");
+            }
+
             if (run.Number == 1)
             {
                 _status.Set(g.Name, g.Source, null, AutoStage.Failed, "trace failed: " + e.GetType().Name); // 추가 기록이 실패해도 이미 있는 트레이스와 상태는 그대로
@@ -1269,53 +1344,6 @@ public sealed class AutoTracer
         return run.Records;
     }
 
-    private bool TryStopWindow(Run run, bool endLearning = false)
-    {
-        try
-        {
-            _ = StopSession(run);
-            if (endLearning)
-            {
-                EndLearn(run);
-            }
-
-            return true;
-        }
-        catch (Exception e)
-        {
-            bool cleanupUnconfirmed = run.Session is not null;
-            try
-            {
-                run.Learn?.Dispose();
-            }
-            catch (Exception cleanupError)
-            {
-                cleanupUnconfirmed = true;
-                _log.Warn($"{run.Game.Name}: learning cleanup failed after trace window failure ({cleanupError.GetType().Name})");
-            }
-
-            run.LearningEnded = true;
-            lock (_lock)
-            {
-                _stopCleanupFailed |= cleanupUnconfirmed;
-                _run = _run == run ? null : _run;
-            }
-
-            _log.Error($"{run.Game.Name}: auto trace window could not stop; run failed", e);
-            if (cleanupUnconfirmed)
-            {
-                _log.Error($"{run.Game.Name}: trace cleanup could not be confirmed; new trace sessions are blocked");
-            }
-
-            if (run.Number == 1)
-            {
-                _status.Set(run.Game.Name, run.Game.Source, null, AutoStage.Failed, "trace window failed to stop");
-            }
-
-            return false;
-        }
-    }
-
     private void EndLearn(Run run)
     {
         if (run.LearningEnded)
@@ -1366,6 +1394,9 @@ public sealed class AutoTracer
         public DateTimeOffset NextLateWindowAt { get; set; }
 
         public DateTimeOffset? LateWindowStartedAt { get; set; }
+
+        /// 읽기를 모으는 구간 안인가: 첫 창, 또는 열려 있는 후반 창.
+        public bool Collecting => !InitialWindowEnded || LateWindowStartedAt is not null;
 
         /// 이 플레이가 몇 번째 기록인가 (1 = 첫 기록).
         public int Number { get; init; } = 1;

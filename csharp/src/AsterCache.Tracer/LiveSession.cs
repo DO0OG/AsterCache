@@ -11,13 +11,14 @@ namespace AsterCache.Tracer;
 /// NT Kernel Logger 는 시스템에 하나뿐이라 wpr·xperf·Procmon 등과 겹치면 서로를 끕니다. Windows 8 이상에서는 다른 이름의 세션에서도
 /// 커널 이벤트를 켤 수 있으므로 (시스템 로거 세션, 최대 8개) 기본 이름은 고유한 <see cref="DefaultSessionName"/> 입니다.
 /// 같은 이름의 세션이 이미 있으면 기본은 실패합니다 (NoRestartOnCreate: 남의 세션을 끄지 않음). 이전 실행이 남긴 고아 세션이면
-/// restartExisting 으로 다시 만듭니다. 이 코드는 관리자로 실행해 보지 않았습니다 (사용자 스크립트 S3 에서 확인).
+/// restartExisting 으로 다시 만듭니다.
 ///
 /// 버퍼: <see cref="DefaultBufferMB"/> (64 MB, TraceEvent 기본과 같음). 예전 256 MB 는 세션 메모리 비용이 커서 되돌렸습니다.
 /// 그 크기로 세션을 못 열면 <see cref="FallbackBufferMB"/> 로 한 번 다시 시도합니다. 유실 수는 <see cref="EventsLost"/> 로 남깁니다.
 ///
-/// 알려진 한계: 세션을 켠 뒤 처리 스레드가 붙기까지의 짧은 틈과, 세션 시작 전에 열린 파일의 이름 (Stop 때 정리 이벤트로 옴) 은
-/// 실제 실행으로 확인이 필요합니다. 이름을 못 푼 읽기는 <see cref="Unresolved"/> 로 셉니다.
+/// 알려진 한계: 세션을 켠 뒤 처리 스레드가 붙기까지의 짧은 틈은 실제 실행으로 확인이 필요합니다. 이름을 못 푼 읽기는 <see cref="Unresolved"/> 로 셉니다.
+/// 세션 시작 전에 열린 파일의 읽기는 이름을 풀지 못해 버려집니다 (실제 실행으로 확인: 세션 정지 때 정리 이벤트도 오지 않음).
+/// 그래서 서비스는 창마다 새 세션을 열지 않고 첫 세션을 게임 끝까지 두며 <see cref="PauseWindow"/> / <see cref="ResumeWindow"/> 로 읽기 수집 구간만 여닫습니다.
 public sealed class LiveSession : IDisposable
 {
     public const string DefaultSessionName = "AsterCacheTrace";
@@ -99,6 +100,35 @@ public sealed class LiveSession : IDisposable
             throw;
         }
     }
+
+    /// 읽기 수집 구간을 닫습니다: 세션과 파일 이름표는 게임 끝까지 두고 읽기 이벤트만 버립니다 (구간 밖에서 열린 파일의 이름을 잃지 않게).
+    /// 실시간 알림과 그 내려보내기 타이머도 이때 뗍니다. 닫기 전 구간의 집계를 돌려줍니다.
+    /// 처리 스레드가 이미 끝났으면 TraceIncompleteException (남은 구간이 조용히 0건이 되지 않게).
+    public WindowStats PauseWindow()
+    {
+        ThrowIfPumpEnded();
+        _flusher?.Dispose();
+        _collector.Pause();
+        return _collector.TakeWindowStats() with { EventsLost = _session.EventsLost };
+    }
+
+    /// 닫아 둔 수집 구간을 다시 엽니다. 처리 스레드가 이미 끝났으면 TraceIncompleteException.
+    public void ResumeWindow()
+    {
+        ThrowIfPumpEnded();
+        _collector.Resume();
+    }
+
+    private void ThrowIfPumpEnded()
+    {
+        if (_pump.IsCompleted)
+        {
+            throw new TraceIncompleteException("trace pump ended before the session was stopped");
+        }
+    }
+
+    /// 이름 표 크기와 모은 기록 수 (Stop 뒤에 읽음).
+    public (int Names, int Records) Footprint => _collector.Footprint;
 
     /// 세션을 멈추고 남은 이벤트까지 처리한 뒤 모은 기록을 돌려줍니다.
     public List<TraceRecord> Stop()

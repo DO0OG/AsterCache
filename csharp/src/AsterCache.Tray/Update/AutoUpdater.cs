@@ -30,7 +30,6 @@ public sealed class AutoUpdater(
     private ReleaseInfo? _release;
     private string? _staged; // 내려받아 검증을 마친 설치 파일 경로
     private string? _stagedHash;
-    private bool _approved; // 설치해도 된다고 정해짐 (auto 설정 또는 사용자가 메뉴에서 누름)
     private bool _manual; // 사용자가 메뉴에서 설치를 눌렀음 (자동 시도 횟수 제한을 넘어서도 시도함)
     private int _failures;
     private UpdateStatus _status = UpdateStatus.Idle;
@@ -53,6 +52,25 @@ public sealed class AutoUpdater(
 
     /// 이 실행에서 조용한 설치까지 할 수 있는가 (관리자, 설치 프로그램으로 설치된 복사본, 신뢰할 수 있는 내려받기 폴더). 아니면 알림만 합니다.
     public bool CanInstall => context.IsAdmin && context.InstalledBuild && staging is not null;
+
+    /// 조용한 설치는 지금 설정이 auto 이거나 사용자가 직접 누른 경우에만 (받아 둔 파일이 있어도 설정이 바뀌면 다시 판정).
+    private bool Approved(UpdateOptions o) => CanInstall && (_manual || o.Mode == UpdateMode.Auto);
+
+    /// 받아 둔·확인된 릴리스가 지금 설정으로는 대상이 아니면 (프리릴리스 제외로 바뀜) 버리고 받은 파일도 지웁니다. 버렸으면 true.
+    private bool DropIfNotTarget(UpdateOptions o)
+    {
+        if (_release is null || !_release.Version.IsPrerelease || o.IncludePrerelease)
+        {
+            return false;
+        }
+
+        log.Info("update: the pending prerelease is no longer a target, dropping it");
+        _release = null;
+        _staged = null;
+        _manual = false;
+        staging?.Clean(keep: null);
+        return true;
+    }
 
     /// 시작 5 분 뒤 첫 확인, 이후 24 시간마다. 실패는 15 분 → 1 시간 → 6 시간 간격으로 다시 시도합니다. 취소하면 조용히 끝납니다.
     public async Task RunAsync(CancellationToken cancellationToken)
@@ -90,6 +108,12 @@ public sealed class AutoUpdater(
         try
         {
             UpdateStatus s;
+            UpdateOptions o = options();
+            if (Status.State != UpdateState.Installing)
+            {
+                DropIfNotTarget(o); // 설치 프로그램이 쓰는 중인 파일은 지우지 않음
+            }
+
             if (Status.State == UpdateState.Installing)
             {
                 log.Warn("update: the installer did not close the tray in time, treating the install as failed");
@@ -98,7 +122,7 @@ public sealed class AutoUpdater(
             }
             else
             {
-                s = _staged is not null && _approved && options().Mode != UpdateMode.Off
+                s = _staged is not null && _release is not null && o.Mode != UpdateMode.Off && Approved(o)
                     ? await ProceedAsync(cancellationToken).ConfigureAwait(false)
                     : await CheckCycleAsync(manual: false, cancellationToken).ConfigureAwait(false);
             }
@@ -127,6 +151,11 @@ public sealed class AutoUpdater(
     /// 메뉴의 "업데이트 확인". 다른 작업이 진행 중이면 현재 상태를 그대로 돌려줍니다.
     public async Task<UpdateStatus> CheckNowAsync(CancellationToken cancellationToken)
     {
+        if (Status.State == UpdateState.Installing)
+        {
+            return Status; // 설치 프로그램이 이미 실행됨: 다시 확인하다 한 번 더 실행하지 않게
+        }
+
         if (!await _busy.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
             return Status;
@@ -142,9 +171,33 @@ public sealed class AutoUpdater(
         }
     }
 
+    /// 업데이트 설정을 저장한 직후에 부릅니다: 지금 설정으로 바로 다시 판정합니다 (off 면 대기·받아 둔 것을 정리, 그 밖에는 곧 한 번 확인).
+    /// 진행 중인 작업이 있으면 끝난 뒤에 (같은 직렬화로) 돕니다.
+    public async Task OptionsChangedAsync(CancellationToken cancellationToken)
+    {
+        await _busy.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (Status.State != UpdateState.Installing)
+            {
+                DropIfNotTarget(options());
+                await CheckCycleAsync(manual: false, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            _busy.Release();
+        }
+    }
+
     /// 메뉴의 "업데이트 설치". 이 실행이 조용한 설치를 할 수 없으면 (관리자 아님·zip 실행) 릴리스 페이지를 엽니다.
     public async Task<UpdateStatus> InstallNowAsync(CancellationToken cancellationToken)
     {
+        if (Status.State == UpdateState.Installing)
+        {
+            return Status;
+        }
+
         if (!await _busy.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
             return Status;
@@ -152,7 +205,13 @@ public sealed class AutoUpdater(
 
         try
         {
-            if (_release is null)
+            UpdateOptions o = options();
+            if (DropIfNotTarget(o))
+            {
+                return await CheckCycleAsync(manual: false, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (_release is null || o.Mode == UpdateMode.Off)
             {
                 return Status;
             }
@@ -164,7 +223,6 @@ public sealed class AutoUpdater(
                 return Status;
             }
 
-            _approved = true;
             _manual = true;
             return await ProceedAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -181,8 +239,8 @@ public sealed class AutoUpdater(
         {
             _release = null;
             _staged = null;
-            _approved = false;
             _manual = false;
+            staging?.Clean(keep: null); // 끄면 받아 둔 설치 파일도 정리
             return Set(manual ? new UpdateStatus(UpdateState.Disabled) : UpdateStatus.Idle);
         }
 
@@ -208,7 +266,6 @@ public sealed class AutoUpdater(
         {
             _release = null;
             _staged = null;
-            _approved = false;
             _manual = false;
             staging?.Clean(keep: null);
             staging?.ClearAttempts();
@@ -218,18 +275,12 @@ public sealed class AutoUpdater(
         if (_release is null || !_release.Version.Equals(release.Version))
         {
             _staged = null;
-            _approved = false;
             _manual = false;
         }
 
         _release = release;
         Set(new UpdateStatus(UpdateState.Available, release.Version.Core));
-        if (o.Mode == UpdateMode.Auto && CanInstall)
-        {
-            _approved = true;
-        }
-
-        return _approved && CanInstall ? await ProceedAsync(cancellationToken).ConfigureAwait(false) : Status;
+        return Approved(o) ? await ProceedAsync(cancellationToken).ConfigureAwait(false) : Status;
     }
 
     /// 내려받아 검증하고 (아직이면) 설치 조건을 봅니다. 조건이 맞으면 설치 프로그램을 실행합니다.
@@ -258,6 +309,12 @@ public sealed class AutoUpdater(
     private UpdateStatus TryInstall(ReleaseInfo release)
     {
         string version = release.Version.Core;
+        if (!Approved(options())) // 받는 동안 설정이 바뀌었을 수 있음
+        {
+            log.Info("update: the setting no longer allows a silent install, announcing only");
+            return Set(new UpdateStatus(UpdateState.Available, version));
+        }
+
         GateState g = gate.Query();
         if (g != GateState.Idle)
         {

@@ -322,11 +322,7 @@ public sealed class TrayViewModel(
 
     /// 업데이트 방식과 프리릴리스 포함 여부를 config.json 에 저장합니다 (데이터 폴더 쓰기 권한이 필요). 업데이트는 다음 확인부터 이 값을 따릅니다.
     public ActionResult SetUpdate(UpdateMode mode, bool prerelease) =>
-        Edit(() =>
-        {
-            config.SetUpdateMode(mode);
-            config.SetUpdatePrerelease(prerelease);
-        }, L.T("Msg_UpdateSet"));
+        Edit(() => config.SetUpdate(mode, prerelease), L.T("Msg_UpdateSet"));
 
     private ActionResult Edit(Action edit, string done)
     {

@@ -650,7 +650,16 @@ internal sealed class MainWindow : Window
     {
         UpdateMode mode = UpdateModes[Math.Max(0, _updateMode.SelectedIndex)];
         bool prerelease = _updatePrerelease.IsChecked == true;
-        return RunAsync(L.T("Op_UpdateChange"), () => _tray.SetUpdate(mode, prerelease));
+        return RunAsync(L.T("Op_UpdateChange"), () =>
+        {
+            ActionResult r = _tray.SetUpdate(mode, prerelease);
+            if (r.Ok)
+            {
+                _ = App.ReevaluateUpdateAsync(); // 저장한 방식을 다음 확인 주기까지 기다리지 않고 바로 반영
+            }
+
+            return r;
+        });
     }
 
     /// 설정 탭의 업데이트 구역에 현재 버전, 마지막 확인 시각, 현재 상태를 보입니다 (UI 스레드에서 부름).
@@ -661,6 +670,10 @@ internal sealed class MainWindow : Window
         string last = updater?.LastChecked is { } at ? at.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) : L.T("Update_NeverChecked");
         string state = updater is null ? L.T("Update_Unavailable") : updater.Status.State == UpdateState.Idle ? L.T("Update_NoStatus") : updater.Status.Text();
         _updateInfo.Text = L.T("Update_Info", current, last, state);
+        if (_checkUpdateNow is not null)
+        {
+            _checkUpdateNow.IsEnabled = updater is not null && updater.Status.State is not (UpdateState.Checking or UpdateState.Downloading or UpdateState.Installing);
+        }
     }
 
     private async Task ExportDiagnostics()

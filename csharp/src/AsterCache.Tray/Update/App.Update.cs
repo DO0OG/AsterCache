@@ -73,6 +73,25 @@ internal sealed partial class App
         }
     }
 
+    /// 업데이트 설정을 저장한 직후: 다음 확인 주기를 기다리지 않고 지금 설정으로 다시 판정합니다.
+    public static async Task ReevaluateUpdateAsync()
+    {
+        if (Updater is null || Smoke)
+        {
+            return;
+        }
+
+        try
+        {
+            await Task.Run(() => Updater.OptionsChangedAsync(CancellationToken.None));
+        }
+        catch (Exception e)
+        {
+            // 최상위 경계: 예상하지 못한 예외도 트레이를 끝내지 않고 로그만 남김
+            Log.Error("update re-evaluation failed", e);
+        }
+    }
+
     /// 설정 화면의 "지금 확인" (메뉴의 "업데이트 확인" 과 같은 길).
     public static async Task CheckUpdateNowAsync()
     {

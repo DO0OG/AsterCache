@@ -250,6 +250,32 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
     public void SetUpdatePrerelease(bool prerelease) =>
         EditSection("update", "prerelease", prerelease ? true : null);
 
+    /// update.mode 와 update.prerelease 를 한 번의 저장으로 함께 정합니다 (둘 중 하나만 바뀌는 일이 없게). 기본값 (auto, false) 이면 키를 지웁니다.
+    public void SetUpdate(UpdateMode mode, bool prerelease)
+    {
+        using FileStream _ = Lock();
+        JObject root = ReadRoot();
+        bool had = root.TryGetValue("update", out object? so);
+        JObject obj = had ? so as JObject ?? throw new SettingsException("update: object expected") : new JObject();
+        SetOrRemove(obj, "mode", mode == UpdateMode.Auto ? null : GamePolicy.UpdateModeName(mode));
+        SetOrRemove(obj, "prerelease", prerelease ? true : null);
+        if (obj.Count == 0)
+        {
+            if (!had)
+            {
+                return;
+            }
+
+            root.Remove("update");
+        }
+        else
+        {
+            root["update"] = obj;
+        }
+
+        Save(root);
+    }
+
     // value 가 null 이면 키를 지우고, 그 결과 객체가 비면 객체도 지웁니다. 객체가 없는데 지울 것도 없으면 파일을 만들지 않습니다.
     private void EditSection(string section, string key, object? value)
     {

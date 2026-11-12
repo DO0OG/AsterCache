@@ -34,6 +34,7 @@ public sealed class TrayViewModel(
     ConfigEditor config, IServiceControl service, IGameStreamer streamer, IShell shell, ILog log, UpdateService? updates = null,
     string? trayVersion = null)
 {
+    private readonly FileMetadataCache<AsterSettings> _settingsCache = new();
     private AsterSettings? _settings;
     private string? _configError;
     private int _streaming;
@@ -88,7 +89,7 @@ public sealed class TrayViewModel(
         ServiceReinstallNeeded = trayVersion is not null && serviceVersion is not null && !SameVersion(trayVersion, serviceVersion);
         try
         {
-            _settings = config.Load();
+            _settings = _settingsCache.Get(config.ConfigPath, config.Load);
             _configError = null;
         }
         catch (Exception e) when (e is SettingsException or IOException or UnauthorizedAccessException)
@@ -295,6 +296,7 @@ public sealed class TrayViewModel(
             return Report(false, L.T("Err_ConfigChange", FileLog.Scrub(e.Message)));
         }
 
+        _settingsCache.Invalidate();
         Refresh();
         return Report(true, done);
     }

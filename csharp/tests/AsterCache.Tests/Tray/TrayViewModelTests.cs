@@ -175,6 +175,21 @@ public sealed class TrayViewModelTests : IDisposable
     }
 
     [Fact]
+    public void RefreshReusesSettingsUntilTheConfigFileChanges()
+    {
+        Assert.True(_vm.AddGame(Game()).Ok);
+        AsterSettings loaded = Assert.IsType<AsterSettings>(_vm.Settings);
+
+        _vm.Refresh();
+        Assert.Same(loaded, _vm.Settings);
+
+        new ConfigEditor(_dir).SetAuto(AutoSettings.Default with { IdleMinutes = 7 });
+        _vm.Refresh();
+        Assert.NotSame(loaded, _vm.Settings);
+        Assert.Equal(7, _vm.Settings!.Auto.IdleMinutes);
+    }
+
+    [Fact]
     public void BrokenConfigIsShownNotThrown()
     {
         File.WriteAllText(Path.Combine(_dir, "config.json"), "{\"games\": 5}");

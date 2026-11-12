@@ -13,7 +13,8 @@ public static class LoadTiers
 
     public static LoadBoundary? For(GameSettings game) => For(game, default);
 
-    internal static LoadBoundary? For(GameSettings game, CancellationToken cancellationToken)
+    // allowParse 가 거짓이면 이미 캐시에 있는 경계만 돌려줍니다 (없으면 null, 원시 트레이스를 파싱하지 않음).
+    internal static LoadBoundary? For(GameSettings game, CancellationToken cancellationToken, bool allowParse = true)
     {
         cancellationToken.ThrowIfCancellationRequested();
         string raw = AutoTracer.PlanTracePath(game, path =>
@@ -38,6 +39,11 @@ public static class LoadTiers
             if (Cache.TryGetValue(raw, out var hit) && hit.Written == written && hit.Length == length)
             {
                 return hit.Boundary;
+            }
+
+            if (!allowParse)
+            {
+                return null;
             }
 
             cancellationToken.ThrowIfCancellationRequested();

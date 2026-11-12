@@ -100,6 +100,13 @@ public sealed class RuntimeLoadBoundary
 
     public bool ReachedMaximum { get; private set; }
 
+    /// 로그용: 지금까지 본 10 초 창의 최고 읽기량, 가장 최근 창의 읽기량, 마지막 표본의 관찰 시각 (ms). 판정에는 쓰지 않습니다.
+    public long PeakBytes => _peakBytes;
+
+    public long LastWindowBytes { get; private set; }
+
+    public long ObservedMs { get; private set; }
+
     /// <summary>읽기량이 계속 줄거나 60초 관찰 한도에 도달하면 true를 반환합니다.</summary>
     public bool Update(long tMs, long cumulativeBytes)
     {
@@ -126,12 +133,14 @@ public sealed class RuntimeLoadBoundary
         _baseline ??= cumulativeBytes;
         long relativeBytes = Math.Max(0, cumulativeBytes - _baseline.Value);
         _samples.Add((tMs, relativeBytes));
+        ObservedMs = tMs;
 
         if (tMs >= WindowMs)
         {
             long windowStartMs = tMs - WindowMs;
             long windowStartBytes = BytesAtOrBefore(windowStartMs);
             long windowBytes = Math.Max(0, relativeBytes - windowStartBytes);
+            LastWindowBytes = windowBytes;
             if (windowStartMs < LoadBoundaries.MaxBoundaryMs && windowBytes > _peakBytes)
             {
                 _peakBytes = windowBytes;

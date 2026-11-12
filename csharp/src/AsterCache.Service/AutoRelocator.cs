@@ -1502,7 +1502,8 @@ public sealed class AutoRelocator
                 {
                     try
                     {
-                        PlanOutput.SavePrefetch(g.Trace, plan.PrefetchTrace([stableTrace]), warmOnly);
+                        List<TraceEvent> hot = plan.PrefetchTrace([stableTrace]);
+                        PlanOutput.SavePrefetch(g.Trace, hot, full ? WithZoneOverflow(g, hot, stableTrace, warmOnly) : warmOnly);
                         _log.Info($"{g.Name}: prewarm trace refreshed from the merged trace; relocation plan and journal kept");
                     }
                     catch (Exception e) when (IsTransient(e))
@@ -1524,6 +1525,21 @@ public sealed class AutoRelocator
                 _log.Warn($"{g.Name}: zone extension check failed, will retry on the next trace ({e.GetType().Name})");
             }
         }
+    }
+
+    // 존이 상한까지 찬 계획은 새 블록을 담지 못하므로, 존 밖 블록을 예열 전용 목록에 더함 (목록 전체가 캐시 예산 안일 때만, 재배치·계획 파일은 그대로).
+    private IReadOnlyList<TraceEvent> WithZoneOverflow(GameSettings g, IReadOnlyList<TraceEvent> hot, IReadOnlyList<TraceEvent> stable, IReadOnlyList<TraceEvent> warmOnly)
+    {
+        long capMib = Prewarmer.CacheCapMib(_env.PhysicalRamBytes(), _settings().Games);
+        long capBytes = capMib >= long.MaxValue >> 20 ? long.MaxValue : capMib << 20; // 물리 RAM 을 모르면 제한 없음
+        List<TraceEvent> extra = WarmOverflow.Select(hot, stable, hot.Sum(r => r.Length) + warmOnly.Sum(r => r.Length), capBytes);
+        if (extra.Count == 0)
+        {
+            return warmOnly;
+        }
+
+        _log.Info($"{g.Name}: prewarm list gained {extra.Sum(r => r.Length) / (double)(1 << 20):F1} MiB of blocks outside the full zone");
+        return [.. warmOnly, .. extra];
     }
 
     // 지금 규칙으로 가변 파일인 파일이 핫 순서에 든 계획 (현재 규칙 버전 표지가 없는 것만: 규칙을 넓히기 전에 만든 계획을 한 번 정리).
@@ -2664,9 +2680,11 @@ public sealed class AutoRelocator
     private long SavePartialWarm(GameSettings g, long limit, IReadOnlyList<TraceEvent> stable, IReadOnlyList<TraceEvent> warmOnly)
     {
         long cap = limit << 20;
-        List<TraceEvent> hot = PlanFile.PrefetchHotSetTrace([stable], Math.Min(cap, g.StreamCapBytes(cap)));
-        PlanOutput.SavePrefetch(g.Trace, hot, warmOnly);
-        return hot.Sum(r => r.Length) >> 20;
+        long budget = Math.Min(cap, g.StreamCapBytes(cap));
+        List<TraceEvent> hot = PlanFile.PrefetchHotSetTrace([stable], budget);
+        long hotBytes = hot.Sum(r => r.Length);
+        PlanOutput.SavePrefetch(g.Trace, hot, hotBytes >= budget ? WithZoneOverflow(g, hot, stable, warmOnly) : warmOnly); // 핫셋이 예산까지 찼으면 못 든 블록도 예열 전용 목록에 (복원 재시도에서도 덧붙임이 사라지지 않게)
+        return hotBytes >> 20;
     }
 
     // 잔여 재계획의 PlanOutput.Save 가 예열 목록을 계획 Order 만으로 덮으므로, 병합 트레이스 기준 목록 (확대한 범위와 가변 범위) 으로 다시 씀. 실패해도 이미 바뀐 계획은 그대로 둠.

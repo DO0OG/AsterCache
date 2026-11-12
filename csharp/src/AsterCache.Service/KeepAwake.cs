@@ -160,7 +160,7 @@ public sealed class KeepAwake
                 hdd[letter] = isHdd = kind == true;
             }
 
-            bool wanted = isHdd && ((g.Prewarm.TriggerExes.Count > 0 && _env.AnyRunning(g.Prewarm.TriggerExes))
+            bool wanted = isHdd && GamePolicy.AllowsPrewarm(g) && ((g.Prewarm.TriggerExes.Count > 0 && _env.AnyRunning(g.Prewarm.TriggerExes))
                 || (plays.TryGetValue(g.Name, out IReadOnlyList<DateTimeOffset>? p) && PlayedAround(p, now)));
             if (!wanted)
             {

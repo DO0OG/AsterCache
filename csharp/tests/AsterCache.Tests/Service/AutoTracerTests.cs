@@ -68,6 +68,47 @@ public sealed class AutoTracerTests : IDisposable
         Assert.Equal(1, _rig.World.TraceStarts); // 원시 트레이스가 이미 있음
     }
 
+    [Theory]
+    [InlineData(GameMode.Inherit, false, true)]
+    [InlineData(GameMode.PrewarmOnly, false, true)]
+    [InlineData(GameMode.RelocateOnly, false, true)]
+    [InlineData(GameMode.Off, false, false)]
+    [InlineData(GameMode.Inherit, true, false)]
+    public void OffAndPausedGamesNeverStartATraceSessionAndTheReasonIsLoggedOnce(GameMode mode, bool paused, bool starts)
+    {
+        _rig.Settings = _rig.Settings with { Games = [_game with { Mode = mode, Paused = paused }] };
+
+        _tracer.Start(_game);
+        _tracer.Shutdown();
+        _tracer.Start(_game);
+
+        Assert.Equal(starts ? 2 : 0, _rig.World.TraceStarts);
+        Assert.Equal(starts ? 0 : 1, _rig.Log.Lines.Count(l => l.Contains("foo: trace skipped (game policy: ", StringComparison.Ordinal)));
+        Assert.False(File.Exists(Raw)); // 아무 파일도 만들지 않음
+    }
+
+    [Fact]
+    public void PausingAGameMidTraceStopsTheSessionAtTheNextStepAndKeepsWhatWasRead()
+    {
+        Reads((0, 65536));
+        _tracer.Start(_game);
+        _rig.World.Procs = [(100, 5L << 20)];
+        _rig.World.Running = true;
+        _tracer.Step();
+        Assert.True(_tracer.Active);
+
+        _rig.Settings = _rig.Settings with { Games = [_game with { Paused = true }] };
+        _tracer.Step();
+
+        Assert.False(_tracer.Active);
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("foo: trace stopped (game policy: paused)", StringComparison.Ordinal));
+        _rig.World.Running = false;
+        _tracer.Step();
+        _rig.World.Now += GameExitTracker.Grace;
+        _tracer.Step();
+        Assert.True(File.Exists(Raw)); // 읽은 만큼은 게임이 끝난 뒤 저장
+    }
+
     [Fact]
     public void ABootTraceAloneDoesNotStopTheFirstRunRecordingAndTheRawTraceIsWrittenNextToIt()
     {

@@ -68,6 +68,21 @@ public sealed class KeepAwakeTests
         Assert.Equal(expected, _log.Lines.Any(l => l.Contains("keep-awake started: D:", StringComparison.Ordinal)));
     }
 
+    [Theory]
+    [InlineData(GameMode.Inherit, false, 1)]
+    [InlineData(GameMode.PrewarmOnly, false, 1)]
+    [InlineData(GameMode.RelocateOnly, false, 0)]
+    [InlineData(GameMode.Off, false, 0)]
+    [InlineData(GameMode.Inherit, true, 0)]
+    public void AGameThePolicyKeepsFromPrewarmingIsNotKeptAwake(GameMode mode, bool paused, int reads)
+    {
+        KeepAwake k = Make(new Case(true, true, false, true, 600), games: [Game() with { Mode = mode, Paused = paused }]);
+
+        k.Tick();
+
+        Assert.Equal(reads, _reads.Count);
+    }
+
     [Fact]
     public void TimeoutZeroLogsOnceAndStaysOff()
     {

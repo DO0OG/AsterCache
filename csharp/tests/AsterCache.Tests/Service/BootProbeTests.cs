@@ -109,6 +109,21 @@ public sealed class BootProbeTests : IDisposable
         Assert.Equal(probes ? 10 : 0, _opened.Count);
     }
 
+    [Theory]
+    [InlineData(GameMode.Inherit, false, true)]
+    [InlineData(GameMode.RelocateOnly, false, false)]
+    [InlineData(GameMode.Off, false, false)]
+    [InlineData(GameMode.Inherit, true, false)]
+    public void AGameThePolicyKeepsFromPrewarmingIsNotProbed(GameMode mode, bool paused, bool probed)
+    {
+        GameSettings g = Games.Make("a", "a.exe") with { Mode = mode, Paused = paused };
+
+        AutoBootProbe? probe = Run(Settings(g), WithPlayed(("a", 1)), 1000, 10);
+
+        Assert.Equal(probed, probe is not null);
+        Assert.Equal(probed, _opened.Count > 0);
+    }
+
     [Fact]
     public void ARunningGameOnTheSameDriveMeansNoNewReads()
     {

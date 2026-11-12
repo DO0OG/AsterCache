@@ -26,7 +26,7 @@ public static partial class BootProbe
         AsterSettings settings, AutoStatus status, ILog log, DateTimeOffset now, long uptimeMs, Func<GameSettings, IReadOnlyList<string>> files, Func<string, bool> open, Func<TimeSpan> elapsed, Func<GameSettings, bool>? driveBusy = null, CancellationToken ct = default)
     {
         IReadOnlyDictionary<string, DateTimeOffset> played = status.LastPlayed();
-        GameSettings? game = settings.Games.Where(g => played.ContainsKey(g.Name)).OrderByDescending(g => played[g.Name]).ThenBy(g => g.Name, StringComparer.Ordinal).FirstOrDefault();
+        GameSettings? game = settings.Games.Where(g => played.ContainsKey(g.Name) && GamePolicy.AllowsPrewarm(g)).OrderByDescending(g => played[g.Name]).ThenBy(g => g.Name, StringComparer.Ordinal).FirstOrDefault();
         if (!settings.Auto.Enabled || game is null || TimeSpan.FromMilliseconds(uptimeMs) >= MaxUptime || GameRunning(driveBusy, game))
         {
             return null;

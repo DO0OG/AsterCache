@@ -104,4 +104,19 @@ public sealed class LiveSessionTests
 
         Assert.ThrowsAny<Exception>(() => EtlReader.Read(missing, ["game.exe"], new DevicePaths([])));
     }
+
+    [Fact]
+    public void DisposeDoesNotWaitAgainAfterStopAlreadyTimedOutAndDefersTheSessionDisposal()
+    {
+        var pump = new TaskCompletionSource();
+        bool disposed = false;
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        LiveSession.DisposeAfterStop(pump.Task, TimeSpan.FromSeconds(30), () => { }, () => disposed = true, null, alreadyWaited: true);
+
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(5));
+        Assert.False(disposed);
+        pump.SetResult();
+        Assert.True(SpinWait.SpinUntil(() => disposed, TimeSpan.FromSeconds(5))); // 처리 스레드가 끝나면 지연 해제
+    }
 }

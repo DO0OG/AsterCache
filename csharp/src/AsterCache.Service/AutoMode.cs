@@ -114,9 +114,15 @@ public sealed class AutoMode
 
             bool traced = _env.FileExists(AutoTracer.RawTracePath(g));
             Status.MarkPlayed(g.Name, g.Source, traced ? AutoStage.WaitingIdle : AutoStage.Discovered, _env.Now());
-            if (a.Trace && _tracer.WantsRun(g))
+            bool tracking = GamePolicy.AllowsTracking(g); // 끄거나 일시 중지한 게임은 추적·학습·게임 중 로딩 경계 읽기를 모두 하지 않음 (last_played 기록은 계속)
+            if (a.Trace && tracking && _tracer.WantsRun(g))
             {
                 _tracer.Start(g);
+            }
+
+            if (!tracking)
+            {
+                return;
             }
 
             if (a.LoadBoundary && _env.TraceBlocker(g) is { } cheat) // 게임 중 읽기이므로 트레이스와 같은 안티치트 정책표 결정: 금지 종류와 모름 (unknown) 은 읽지 않음

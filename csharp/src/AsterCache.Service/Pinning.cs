@@ -70,6 +70,12 @@ public sealed class PinKeeper
     /// 예열 성공 직후: 조건이 맞으면 그 게임의 존 파일을 고정합니다. afterRelocation 이고 그 드라이브가 회복 중이면 평소 RAM 하한·런처 보류 없이 회복 기간 고정을 합니다 (pin 을 false 로 명시한 게임 제외).
     public void TryPin(GameSettings game, bool afterRelocation = false)
     {
+        IReadOnlyList<GameSettings> known = Volatile.Read(ref _games);
+        if (!GamePolicy.AllowsPrewarm(known.FirstOrDefault(g => string.Equals(g.Name, game.Name, StringComparison.OrdinalIgnoreCase)) ?? game))
+        {
+            return; // 게임 정책이 예열 계열을 막은 게임은 고정하지 않음 (미룬 고정도 여기서 버려짐)
+        }
+
         if (DiskHasRunningGame(game))
         {
             Defer(game, afterRelocation);
@@ -420,9 +426,11 @@ public sealed class PinKeeper
         SetKnownGames(games);
         RetryDeferred(games);
         long ram = _env.PhysicalRamBytes();
-        foreach (string name in Held.Where(n => !games.Any(g => string.Equals(g.Name, n, StringComparison.OrdinalIgnoreCase) && !AntiCheat.ForbidsPin(g.AntiCheat) && (Wanted(g.Prewarm, ram) || (IsRecoveryPin(n) && !(g.Prewarm.PinSet && !g.Prewarm.Pin))))))
+        foreach (string name in Held.Where(n => !games.Any(g => string.Equals(g.Name, n, StringComparison.OrdinalIgnoreCase) && !AntiCheat.ForbidsPin(g.AntiCheat) && GamePolicy.AllowsPrewarm(g) && (Wanted(g.Prewarm, ram) || (IsRecoveryPin(n) && !(g.Prewarm.PinSet && !g.Prewarm.Pin))))))
         {
-            Release(name, games.Any(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase) && AntiCheat.ForbidsPin(g.AntiCheat)) ? "anti-cheat set in settings" : "pin turned off or game removed in settings");
+            Release(name, games.Any(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase) && AntiCheat.ForbidsPin(g.AntiCheat)) ? "anti-cheat set in settings"
+                : games.Any(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase) && !GamePolicy.AllowsPrewarm(g)) ? "game policy"
+                : "pin turned off or game removed in settings");
         }
     }
 

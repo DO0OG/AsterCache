@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using AsterCache.Core.Settings;
 using Xunit;
 
@@ -189,5 +190,51 @@ public sealed class GamePolicySettingsTests : IDisposable
 
         AutoSettings night = AutoSettings.Default with { RelocateHours = [2, 3, 23] };
         Assert.Equal([2, 3, 23], Enumerable.Range(0, 24).Where(h => GamePolicy.AllowsRelocateAt(night, h)));
+    }
+
+    [Fact]
+    public void SetGameOptionsWritesPolicyAndNamesInOneSaveAndDefaultsRemoveTheKeys()
+    {
+        ConfigEditor editor = Editor();
+        string pristine = Text(editor);
+
+        editor.SetGameOptions("A", GameMode.Off, true, "Default", new Dictionary<string, string> { ["ko"] = "한국어", ["en"] = "  " });
+
+        GameSettings g = editor.Load()!.Games[0];
+        Assert.Equal(("a", GameMode.Off, true, "Default"), (g.Name, g.Mode, g.Paused, g.DisplayName));
+        Assert.Equal("한국어", g.DisplayNames!["ko"]);
+        Assert.False(g.DisplayNames.ContainsKey("en"));
+
+        editor.SetGameOptions("a", GameMode.Inherit, false, null, new Dictionary<string, string>());
+        Assert.Equal(pristine, Text(editor));
+    }
+
+    [Fact]
+    public void SetGameOptionsRejectsBadNamesAndUnknownGamesWithoutChangingTheFile()
+    {
+        ConfigEditor editor = Editor();
+        string before = Text(editor);
+
+        Assert.Throws<SettingsException>(() => editor.SetGameOptions("a", GameMode.Off, false, "a	b", null));
+        Assert.Throws<SettingsException>(() => editor.SetGameOptions("a", GameMode.Off, false, null, new Dictionary<string, string> { ["ko"] = new string('x', 500) }));
+        Assert.Throws<SettingsException>(() => editor.SetGameOptions("zzz", GameMode.Off, false, null, null));
+        Assert.Equal(before, Text(editor));
+    }
+
+    [Fact]
+    public void UpdateAutoWritesTheCacheBudgetToEveryGameAndZeroRemovesItKeepingOtherPrewarmKeys()
+    {
+        ConfigEditor editor = Editor();
+        editor.Add(Game("b") with { OnServiceStart = false });
+
+        editor.UpdateAuto(a => a, maxCacheMib: 2048);
+        Assert.All(editor.Load()!.Games, g => Assert.Equal(2048, g.Prewarm.MaxCacheMib));
+
+        editor.UpdateAuto(a => a, maxCacheMib: 0);
+        AsterSettings s = editor.Load()!;
+        Assert.All(s.Games, g => Assert.Equal(0, g.Prewarm.MaxCacheMib));
+        Assert.DoesNotContain("max_cache_mib", Text(editor), StringComparison.Ordinal);
+        Assert.False(s.Games[1].Prewarm.OnServiceStart); // b 의 다른 prewarm 키는 남음
+        Assert.Equal(1, Regex.Count(Text(editor), "\"prewarm\"")); // a 의 빈 prewarm 객체는 사라짐
     }
 }

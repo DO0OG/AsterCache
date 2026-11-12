@@ -86,6 +86,24 @@ internal sealed class MainWindow : Window
     private readonly TextBox _autoIgnore = new() { Width = 360 };
     private readonly TextBox _zoneLimit = new() { Width = 160 };
     private readonly TextBox _rewarmMinutes = new() { Width = 160 };
+    private readonly CheckBox _advancedShow = new() { Content = L.T("Set_AdvancedShow") }; // 펼침 상태는 저장하지 않음 (config.json 에 새 키 없음)
+    private readonly ScrollViewer _settingsScroll = new() { HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Padding = new Thickness(0, 0, Look.S12, 0) };
+    // 마지막으로 화면을 채운 값: 적용할 때 이 값과 같은 칸은 사용자가 건드리지 않은 것이라 파일 값을 그대로 둠 (그 사이 다른 곳에서 바뀐 값을 되돌리지 않게)
+    private bool _shownStartStream;
+    private string _shownHours = "0|0|0";
+    private string?[] _shownAdv = new string?[7];
+    private readonly CheckBox _startStream = new() { Content = L.T("Auto_StartStream") };
+    private readonly ComboBox _hoursMode = new() { Width = 240 };
+    private readonly ComboBox _hoursFrom = new() { ItemsSource = Hours, Width = 100, SelectedIndex = 0 };
+    private readonly ComboBox _hoursTo = new() { ItemsSource = Hours, Width = 100, SelectedIndex = 0 };
+    private readonly StackPanel _hoursRange = new() { Orientation = Orientation.Horizontal, Spacing = Look.S8, IsVisible = false };
+    private readonly TextBox _advCache = new() { Width = 160 };
+    private readonly TextBox _advStartupGames = new() { Width = 160 };
+    private readonly TextBox _advStartupMax = new() { Width = 160 };
+    private readonly TextBox _advRewarmExit = new() { Width = 160 };
+    private readonly TextBox _advMaxRelocations = new() { Width = 160 };
+    private readonly TextBox _advIdle = new() { Width = 160 };
+    private readonly TextBox _advStartCap = new() { Width = 160 };
     private readonly ContentControl _headPill = new() { VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock _headLine = Look.Text(string.Empty, Look.Subtitle, FontWeight.SemiBold);
     private readonly TextBlock _headProblem = Look.Text(string.Empty, Look.Caption, color: Look.Danger + ".Fg");
@@ -95,6 +113,7 @@ internal sealed class MainWindow : Window
     private CancellationTokenSource? _traceStop;
     private readonly TabControl _tabs = new();
     private Task? _traceRun;
+    private static readonly List<string> Hours = Enumerable.Range(0, 24).Select(h => h.ToString("00", CultureInfo.InvariantCulture) + ":00").ToList();
     private static readonly string[] LanguageValues = ["auto", L.Ko, L.En];
     private static readonly string[] WatcherValues = ["poll", "etw"]; // 저장 값 (화면 라벨과 분리)
     private static readonly TimeSpan TraceStopWait = TimeSpan.FromSeconds(10);
@@ -167,7 +186,15 @@ internal sealed class MainWindow : Window
 
     public bool Idle => Volatile.Read(ref _busy) == 0 && Volatile.Read(ref _layoutBusy) == 0;
 
-    public void ShowAdvanced(bool on) => _advanced.IsChecked = on;
+    public void ShowAdvanced(bool on)
+    {
+        _advanced.IsChecked = on;
+        _advancedShow.IsChecked = on;
+        if (on)
+        {
+            Dispatcher.UIThread.Post(() => _settingsScroll.ScrollToEnd(), DispatcherPriority.Background); // 그림 찍기용: 접었다 펼친 고급 구역이 보이게 맨 아래로
+        }
+    }
 
     /// 위 머리와 (처음 읽기가 끝난 뒤) 목록·상태 탭 (트레이의 5 초 갱신이 부릅니다).
     public void UpdateStatus()
@@ -367,7 +394,7 @@ internal sealed class MainWindow : Window
         (string watcher, string lastPrewarm) = _manage.StatusInfo();
         AutoProgress? progress = _manage.Progress() is { Discovered: > 0 } p ? p : null;
         string sig = string.Join("\n", new[] { sum.Tone.ToString(), sum.Line, _tray.StatusText, watcher, lastPrewarm, progress is null ? string.Empty : progress.Line(L.Current) ?? string.Empty, _letter ?? string.Empty }
-            .Concat(rows.Select(r => string.Join("|", r.Name, r.State, r.StateTone, r.PrewarmState, r.PrewarmTone, r.Reason, r.Detail, r.AutoLine, r.Play)))
+            .Concat(rows.Select(r => string.Join("|", r.Name, r.State, r.StateTone, r.PrewarmState, r.PrewarmTone, r.Reason, r.Detail, r.AutoLine, r.Play, r.Policy)))
             .Append(_manage.EmptyGamesText(_letter)));
         if (sig == _statusSig)
         {
@@ -444,6 +471,11 @@ internal sealed class MainWindow : Window
             stack.Children.Add(Look.Text($"{L.T("Col_Reason")}: {r.Reason}", Look.Caption, color: Look.Key(r.StateTone == StatusTone.Gray ? StatusTone.Warn : r.StateTone) + ".Fg"));
         }
 
+        if (r.Policy.Length > 0)
+        {
+            stack.Children.Add(Look.Text(r.Policy, Look.Caption, FontWeight.SemiBold, Look.Key(StatusTone.Warn) + ".Fg"));
+        }
+
         if (r.AutoLine.Length > 0)
         {
             stack.Children.Add(Look.Muted(r.AutoLine));
@@ -465,6 +497,7 @@ internal sealed class MainWindow : Window
     {
         _games.ItemTemplate = new FuncDataTemplate<GameRow>((row, _) => row is null ? new Panel() : Cells(
             [row.DisplayName.Length == 0 ? row.Name : row.DisplayName, row.State, row.PrewarmState, row.Reason, row.AntiCheat, row.Exe, row.Origin, L.T(row.HasPlan ? "Cell_Yes" : "Cell_No"), L.T(row.HasTrace ? "Cell_Yes" : "Cell_No"), row.Verdict, row.Prewarm, row.Source, row.Stage, row.Gate],
+            policy: row.Policy,
             tips: [row.Name, null, null, null, null, null, null, null, null, row.VerdictRaw.Length == 0 ? null : row.VerdictRaw, row.PrewarmFull, null, row.StageRaw.Length == 0 ? row.StageFull : row.StageFull + "\n" + row.StageRaw, null],
             tones: [null, row.StateTone, row.PrewarmTone], advanced: _advanced.IsChecked == true));
         _games.Styles.Add(new Style(x => x.OfType<ListBoxItem>())
@@ -493,6 +526,7 @@ internal sealed class MainWindow : Window
         buttons.Children.Add(Group(
             Look.Btn(L.T("Btn_ExportProfile"), () => WithGame(ExportProfile)),
             Look.Btn(L.T("Btn_ImportProfile"), () => WithGame(ImportProfile))));
+        buttons.Children.Add(Group(Look.Btn(L.T("Btn_GameOptions"), () => WithGame(GameOptions))));
         buttons.Children.Add(Group(Look.Btn(L.T("Btn_Remove"), () => WithGame(g => Confirmed(L.T("Confirm_Remove", g), L.T("Btn_Remove"), () => _tray.RemoveGame(g), danger: true)), Look.ButtonKind.Danger)));
 
         var hint = Look.Muted(L.T("Msg_SelectGame"));
@@ -561,10 +595,19 @@ internal sealed class MainWindow : Window
         _checkUpdateNow = Look.Btn(L.T("Btn_CheckUpdateNow"), () => _ = App.CheckUpdateNowAsync());
         _checkUpdateNow.IsEnabled = App.Updater is not null;
         applyAuto.HorizontalAlignment = HorizontalAlignment.Right;
-        var checks = new WrapPanel { ItemSpacing = Look.S24, LineSpacing = Look.S8, Children = { _autoEnabled, _autoDiscover, _autoTrace, _autoRelocate, _tierEnabled } };
+        var checks = new WrapPanel { ItemSpacing = Look.S24, LineSpacing = Look.S8, Children = { _autoEnabled, _autoDiscover, _autoTrace, _autoRelocate, _startStream, _tierEnabled } };
         Grid auto = Look.Form(
             (L.T("Auto_Prewarm"), _autoPrewarm), (L.T("Auto_Ignore"), _autoIgnore), (L.T("Auto_ZoneLimit"), _zoneLimit), (L.T("Auto_Rewarm"), _rewarmMinutes),
-            (L.T("Auto_RelocateGib"), _relocateGib), (L.T("Auto_SsdTierBudget"), _tierBudget));
+            (L.T("Auto_RelocateGib"), _relocateGib), (L.T("Auto_RelocateHours"), RelocateHoursInput()), (L.T("Auto_SsdTierBudget"), _tierBudget));
+        Button applyAdvanced = Look.Btn(L.T("Btn_ApplyAdvanced"), () => _ = ApplyAuto(), Look.ButtonKind.Primary);
+        Grid advancedForm = NotedForm(
+            (L.T("Adv_CacheMib"), _advCache, "Adv_CacheMibNote"), (L.T("Adv_StartupGames"), _advStartupGames, "Adv_StartupGamesNote"),
+            (L.T("Adv_StartupMax"), _advStartupMax, "Adv_StartupMaxNote"), (L.T("Adv_RewarmAfterExit"), _advRewarmExit, "Adv_RewarmAfterExitNote"),
+            (L.T("Adv_MaxRelocations"), _advMaxRelocations, "Adv_MaxRelocationsNote"), (L.T("Adv_IdleSeconds"), _advIdle, "Adv_IdleSecondsNote"),
+            (L.T("Adv_StartStreamCap"), _advStartCap, "Adv_StartStreamCapNote"));
+        var advancedBody = new StackPanel { Spacing = Look.S12, IsVisible = false, Children = { Look.Muted(L.T("Set_AdvancedNote")), advancedForm, applyAdvanced } };
+        _advancedShow.IsCheckedChanged += (_, _) => advancedBody.IsVisible = _advancedShow.IsChecked == true;
+        Border advanced = Look.Section(L.T("Set_Advanced"), null, _advancedShow, advancedBody);
 
         // 서비스: 시작·정지 | 설치·제거 (되돌리기 어려운 제거는 빨간 글자)
         var service = new WrapPanel { ItemSpacing = Look.S16, LineSpacing = Look.S8 };
@@ -580,7 +623,7 @@ internal sealed class MainWindow : Window
             LineSpacing = Look.S8,
             Children = { Look.Btn(L.T("Btn_OpenData"), () => Say(_manage.OpenDataFolder().Message)), Look.Btn(L.T("Btn_OpenLogs"), () => Say(_tray.OpenLogs().Message)) },
         };
-        return TabBody(Page(new StackPanel
+        _settingsScroll.Content = new StackPanel
         {
             Spacing = Look.S12,
             MaxWidth = 900,
@@ -597,8 +640,10 @@ internal sealed class MainWindow : Window
                     new StackPanel { Orientation = Orientation.Horizontal, Spacing = Look.S8, Children = { applyUpdate, _checkUpdateNow } }),
                 Look.Section(L.T("Set_Folders"), null, folders),
                 Look.Section(L.T("Set_Versions"), null, _versions),
+                advanced,
             },
-        }));
+        };
+        return TabBody(_settingsScroll);
     }
 
     // ---- 로그 탭 ----
@@ -630,8 +675,80 @@ internal sealed class MainWindow : Window
             TierEnabled = _tierEnabled.IsChecked == true,
             TierBudget = _tierBudget.Text ?? string.Empty,
             RelocateGib = _relocateGib.Text ?? string.Empty,
+            StartStream = (_startStream.IsChecked == true) == _shownStartStream ? null : _startStream.IsChecked == true,
+            RelocateHours = HoursKey() == _shownHours ? null : _hoursMode.SelectedIndex switch { 0 => [], 1 => TrayViewModel.HoursBetween(_hoursFrom.SelectedIndex, _hoursTo.SelectedIndex), _ => null },
+            Advanced = new AdvancedForm(Changed(0, _advCache), Changed(1, _advStartupGames), Changed(2, _advStartupMax), Changed(3, _advRewarmExit), Changed(4, _advMaxRelocations), Changed(5, _advIdle), Changed(6, _advStartCap)),
         };
+        if (form.RelocateHours is { Count: 0 } && _hoursMode.SelectedIndex == 1 && _hoursFrom.SelectedIndex == _hoursTo.SelectedIndex)
+        {
+            Say(L.T("Err_HoursSame"), false);
+            return Task.FromResult(new ActionResult(false, L.T("Err_HoursSame")));
+        }
+
         return RunAsync(L.T("Op_AutoChange"), () => _tray.ApplyAuto(form));
+    }
+
+    private string HoursKey() => $"{_hoursMode.SelectedIndex}|{_hoursFrom.SelectedIndex}|{_hoursTo.SelectedIndex}";
+
+    // 고급 칸의 글: 채운 값과 같으면 null (건드리지 않음).
+    private string? Changed(int at, TextBox box) => (box.Text ?? string.Empty) == _shownAdv[at] ? null : box.Text ?? string.Empty;
+
+    // 재배치 시간대 입력: 언제든 / 시간 지정 (시작 ~ 끝) 한 구간. 파일에 한 구간으로 안 되는 값이 있으면 세 번째 항목으로 보존만 합니다.
+    private Control RelocateHoursInput()
+    {
+        _hoursMode.ItemsSource = new[] { L.T("Hours_Anytime"), L.T("Hours_Range") };
+        _hoursMode.SelectedIndex = 0;
+        _hoursMode.SelectionChanged += (_, _) =>
+        {
+            _hoursRange.IsVisible = _hoursMode.SelectedIndex == 1;
+            if (_hoursMode.SelectedIndex == 1 && _hoursFrom.SelectedIndex == _hoursTo.SelectedIndex)
+            {
+                _hoursFrom.SelectedIndex = 2; // 처음 고를 때의 기본 구간 (서로 달라야 바로 저장할 수 있음)
+                _hoursTo.SelectedIndex = 7;
+            }
+        };
+        _hoursRange.Children.Add(_hoursFrom);
+        _hoursRange.Children.Add(Look.Text("~", Look.Body));
+        _hoursRange.Children.Add(_hoursTo);
+        return new StackPanel
+        {
+            Spacing = Look.S4,
+            Children = { new StackPanel { Orientation = Orientation.Horizontal, Spacing = Look.S8, Children = { _hoursMode, _hoursRange } }, Look.Muted(L.T("Auto_RelocateHoursNote")) },
+        };
+    }
+
+    // Look.Form 처럼 왼쪽 설명 + 오른쪽 입력인데, 설명 아래에 한 줄 설명 (보조 글) 을 붙입니다.
+    private static Grid NotedForm(params (string Label, TextBox Box, string NoteKey)[] rows)
+    {
+        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("320,*"), ColumnSpacing = Look.S16, RowSpacing = Look.S12 };
+        for (int i = 0; i < rows.Length; i++)
+        {
+            grid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
+            var label = new StackPanel { Spacing = Look.S4, Children = { Look.Text(rows[i].Label, Look.Body), Look.Muted(L.T(rows[i].NoteKey)) } };
+            Grid.SetRow(label, i);
+            rows[i].Box.HorizontalAlignment = HorizontalAlignment.Left;
+            rows[i].Box.VerticalAlignment = VerticalAlignment.Top;
+            Grid.SetRow(rows[i].Box, i);
+            Grid.SetColumn(rows[i].Box, 1);
+            grid.Children.Add(label);
+            grid.Children.Add(rows[i].Box);
+        }
+
+        return grid;
+    }
+
+    // 파일의 재배치 시간대를 화면에 맞춤 (UI 스레드에서 부름).
+    private void ShowRelocateHours(IReadOnlyList<int> hours)
+    {
+        (int From, int To)? range = TrayViewModel.RangeOf(hours);
+        bool custom = hours.Count > 0 && range is null; // 한 구간으로 안 되는 값: 화면에서 건드리지 않으면 그대로 둠
+        _hoursMode.ItemsSource = custom ? new[] { L.T("Hours_Anytime"), L.T("Hours_Range"), L.T("Hours_Custom") } : new[] { L.T("Hours_Anytime"), L.T("Hours_Range") };
+        _hoursMode.SelectedIndex = custom ? 2 : range is null ? 0 : 1;
+        if (range is { } r)
+        {
+            _hoursFrom.SelectedIndex = r.From;
+            _hoursTo.SelectedIndex = r.To;
+        }
     }
 
     private Task<ActionResult> ApplyLanguage()
@@ -734,6 +851,22 @@ internal sealed class MainWindow : Window
         string label = path.Length > 2 && path[1] == ':' ? VolumeInfo.Label(path[..2]) : string.Empty;
         await new RegisterWindow(_tray, () => { }, ManageViewModel.InferGame(path, label, _tray.PlansDir)).ShowDialog(this);
         await RunAsync(L.T("Op_Loading"), () => new ActionResult(true, L.T("Msg_GameListReloaded")));
+    }
+
+    private async Task GameOptions(string name)
+    {
+        if (_tray.Settings?.Games.FirstOrDefault(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase)) is not { } game)
+        {
+            Say(L.T("Err_NotRegistered", name), false);
+            return;
+        }
+
+        var window = new GameOptionsWindow(_tray, game);
+        await window.ShowDialog(this);
+        if (window.Saved is { } saved)
+        {
+            await RunAsync(L.T("Op_GameOptions"), () => saved); // 저장은 창이 끝냈으니 목록·상태만 다시 읽고 결과를 아래 줄에 보임
+        }
     }
 
     private async Task Apply(string name)
@@ -869,6 +1002,18 @@ internal sealed class MainWindow : Window
             _tierEnabled.IsChecked = auto.SsdTier.Enabled;
             _tierBudget.Text = auto.SsdTier.BudgetGib.ToString(CultureInfo.InvariantCulture);
             _relocateGib.Text = auto.MaxRelocateGibPerDay.ToString(CultureInfo.InvariantCulture);
+            _startStream.IsChecked = auto.StartStreamEnabled;
+            ShowRelocateHours(auto.RelocateHours);
+            _advCache.Text = TrayViewModel.CacheMib(_tray.Settings).ToString(CultureInfo.InvariantCulture);
+            _advStartupGames.Text = auto.StartupWarmGames.ToString(CultureInfo.InvariantCulture);
+            _advStartupMax.Text = auto.StartupWarmMaxMib.ToString(CultureInfo.InvariantCulture);
+            _advRewarmExit.Text = auto.RewarmAfterExitMin.ToString(CultureInfo.InvariantCulture);
+            _advMaxRelocations.Text = auto.MaxRelocationsPerDay.ToString(CultureInfo.InvariantCulture);
+            _advIdle.Text = ((int)auto.IdleWindow.TotalSeconds).ToString(CultureInfo.InvariantCulture);
+            _advStartCap.Text = auto.StartStreamCapSeconds.ToString(CultureInfo.InvariantCulture);
+            _shownStartStream = _startStream.IsChecked == true;
+            _shownHours = HoursKey();
+            _shownAdv = [_advCache.Text, _advStartupGames.Text, _advStartupMax.Text, _advRewarmExit.Text, _advMaxRelocations.Text, _advIdle.Text, _advStartCap.Text];
             _zoneLimit.Text = _tray.Settings?.MaxZoneAuto == true ? "auto" : (_tray.Settings?.MaxZoneMib ?? SettingsStore.DefaultMaxZoneMib).ToString(CultureInfo.InvariantCulture);
             _watcher.SelectedIndex = Math.Max(0, Array.IndexOf(WatcherValues, _tray.Settings?.Watcher));
             _language.SelectedIndex = Math.Max(0, Array.IndexOf(LanguageValues, _tray.Settings?.Language));
@@ -934,7 +1079,7 @@ internal sealed class MainWindow : Window
         ShowRows();
     }
 
-    private static string Signature(IEnumerable<GameRow> rows) => string.Join("|", rows.Select(r => r.Stage + "/" + r.State + "/" + r.PrewarmState + "/" + r.Reason + "/" + r.VerdictRaw));
+    private static string Signature(IEnumerable<GameRow> rows) => string.Join("|", rows.Select(r => r.Stage + "/" + r.State + "/" + r.PrewarmState + "/" + r.Reason + "/" + r.VerdictRaw + "/" + r.Policy));
 
     private void ShowRows()
     {
@@ -980,7 +1125,7 @@ internal sealed class MainWindow : Window
 
     private static readonly Thickness RowPadding = new(Look.S8, Look.S8);
 
-    private static Grid Cells(IReadOnlyList<string> text, bool header = false, IReadOnlyList<string?>? tips = null, IReadOnlyList<StatusTone?>? tones = null, bool advanced = false)
+    private static Grid Cells(IReadOnlyList<string> text, bool header = false, IReadOnlyList<string?>? tips = null, IReadOnlyList<StatusTone?>? tones = null, bool advanced = false, string policy = "")
     {
         var g = new Grid { ColumnSpacing = Look.S8 };
         foreach (Col c in GameCols.Where(c => advanced || !c.Advanced))
@@ -1015,7 +1160,7 @@ internal sealed class MainWindow : Window
                     t.MaxWidth = c.Max;
                 }
 
-                cell = t;
+                cell = i == 0 && policy.Length > 0 ? new StackPanel { Spacing = Look.S4, Children = { t, Look.Text(policy, Look.Caption, color: Look.Key(StatusTone.Warn) + ".Fg") } } : t;
             }
 
             if (!header)

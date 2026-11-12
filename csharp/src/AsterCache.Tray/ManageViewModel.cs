@@ -59,7 +59,7 @@ public sealed record DriveRow(string Letter, string Label, string FileSystem, lo
 }
 
 /// 게임 탭 한 줄. 기본 열은 DisplayName·State (자동 단계)·PrewarmState (PrewarmKind: ready 이번 부팅 뒤 예열, partial 앞부분만, history 재부팅 전 과거 기록, none 실측 안 됨, warming 예열 중)·Reason·AntiCheat, 나머지는 고급 열. Verdict: aster verify 의 판정 (contiguous, non-contiguous, resume-needed), 계획이 없으면 "-", 아직 확인 전이면 "?".
-public sealed record GameRow(string Name, string Exe, string Origin, bool HasPlan, bool HasTrace, string Verdict, string Prewarm, string Source, string Stage, string AntiCheat, string PrewarmFull, string DisplayName = "", string VerdictRaw = "", string StageRaw = "", string State = "", string PrewarmState = "", string PrewarmKind = "", string Reason = "", string Gate = "", string StageFull = "", StatusTone StateTone = StatusTone.Gray, StatusTone PrewarmTone = StatusTone.Gray, string Detail = "", string AutoLine = "", string Play = "");
+public sealed record GameRow(string Name, string Exe, string Origin, bool HasPlan, bool HasTrace, string Verdict, string Prewarm, string Source, string Stage, string AntiCheat, string PrewarmFull, string DisplayName = "", string VerdictRaw = "", string StageRaw = "", string State = "", string PrewarmState = "", string PrewarmKind = "", string Reason = "", string Gate = "", string StageFull = "", StatusTone StateTone = StatusTone.Gray, StatusTone PrewarmTone = StatusTone.Gray, string Detail = "", string AutoLine = "", string Play = "", string Policy = "");
 
 /// 게임 하나의 배치 상태 (aster status --plan 결과와 저널 파일 시각).
 public sealed record GameStatus(string Verdict, double? ZoneHitPercent, DateTime? LastRelayout);
@@ -280,8 +280,21 @@ public sealed class ManageViewModel(
                 a is null ? "-" : AutoStatusFile.StageName(a.Stage, L.Current), warm, kind, HoldReasons(g.Name, a, kind, verdict), GateText(_samples, g.Name),
                 a is null ? "-" : AutoStatusFile.StageText(a, L.Current, Boot), a is null ? StatusTone.Gray : TrayStatus.StageTone(a.Stage, a.Detail), TrayStatus.PrewarmTone(kind),
                 L.T("Layout_Detail", LayoutText(g), PrewarmText(g.Name)), a is null ? string.Empty : AutoStatusFile.Line(tray.DisplayName(g.Name), a, L.Current),
-                PlaySummary.Describe(_plays, g.Name));
+                PlaySummary.Describe(_plays, g.Name), PolicyText(g));
         }).ToList();
+
+    /// 게임 줄에 보일 정책: 일시 중지, 기본이 아닌 정책 (예열만 등). 기본값이면 빈 글.
+    public static string PolicyText(GameSettings g) =>
+        string.Join(" · ", new[] { g.Paused ? L.T("Policy_Paused") : string.Empty, g.Mode == GameMode.Inherit ? string.Empty : ModeLabels(g.Mode).Name }.Where(t => t.Length > 0));
+
+    /// 정책 이름과 한 줄 설명 (게임 설정 창의 선택지).
+    public static (string Name, string Note) ModeLabels(GameMode mode) => mode switch
+    {
+        GameMode.PrewarmOnly => (L.T("Policy_PrewarmOnly"), L.T("Policy_PrewarmOnlyNote")),
+        GameMode.RelocateOnly => (L.T("Policy_RelocateOnly"), L.T("Policy_RelocateOnlyNote")),
+        GameMode.Off => (L.T("Policy_Off"), L.T("Policy_OffNote")),
+        _ => (L.T("Policy_Inherit"), L.T("Policy_InheritNote")),
+    };
 
     /// 마지막으로 읽은 auto_status.json (아직 못 읽었거나 없으면 null). 트레이 아이콘·툴팁이 5 초마다 씁니다.
     public AutoStatusFile? Auto => _auto;

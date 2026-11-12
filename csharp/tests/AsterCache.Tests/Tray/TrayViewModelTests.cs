@@ -341,6 +341,226 @@ public sealed class TrayViewModelTests : IDisposable
         Assert.Equal(Path.Combine(_dir, "logs"), _shell.Opened);
     }
 
+    private static AutoForm Plain() => new(true, true, true, true, 0, string.Empty, "2048", "10");
+
+    private static AdvancedForm Adv(string cache = "0", string games = "2", string max = "1024", string exit = "2", string relocations = "4", string idle = "30", string cap = "120") =>
+        new(cache, games, max, exit, relocations, idle, cap);
+
+    private byte[] ConfigBytes() => File.ReadAllBytes(Path.Combine(_dir, "config.json"));
+
+    [Fact]
+    public void ApplyAutoSavesStartStreamHoursAndAdvancedValuesInOneSave()
+    {
+        Assert.True(_vm.AddGame(Game("a")).Ok);
+        Assert.True(_vm.AddGame(Game("b") with { ExeNames = ["b.exe"] }).Ok);
+        var form = Plain() with
+        {
+            Enabled = false,
+            StartStream = false,
+            RelocateHours = TrayViewModel.HoursBetween(22, 6),
+            Advanced = Adv("4096", "5", "2048", "7", "9", "90", "0"),
+        };
+
+        Assert.True(_vm.ApplyAuto(form).Ok);
+
+        AsterSettings s = new ConfigEditor(_dir).Load()!;
+        Assert.False(s.Auto.Enabled);
+        Assert.False(s.Auto.StartStreamEnabled);
+        Assert.Equal([22, 23, 0, 1, 2, 3, 4, 5], s.Auto.RelocateHours);
+        Assert.Equal((5, 2048, 7, 9, 90, 0), (s.Auto.StartupWarmGames, s.Auto.StartupWarmMaxMib, s.Auto.RewarmAfterExitMin, s.Auto.MaxRelocationsPerDay, s.Auto.IdleSeconds, s.Auto.StartStreamCapSeconds));
+        Assert.All(s.Games, g => Assert.Equal(4096, g.Prewarm.MaxCacheMib)); // 공유 예산: 모든 게임에 같은 값
+        Assert.Equal(4096, TrayViewModel.CacheMib(_vm.Settings));
+    }
+
+    [Fact]
+    public void ApplyAutoKeepsStartStreamHoursAndAdvancedWhenTheFormOmitsThem()
+    {
+        Assert.True(_vm.AddGame(Game()).Ok);
+        var editor = new ConfigEditor(_dir);
+        editor.SetStartStreamEnabled(false);
+        editor.SetRelocateHours([1, 5, 9]);
+
+        Assert.True(_vm.ApplyAuto(Plain() with { Enabled = false }).Ok);
+
+        AutoSettings a = editor.Load()!.Auto;
+        Assert.False(a.Enabled);
+        Assert.False(a.StartStreamEnabled);
+        Assert.Equal([1, 5, 9], a.RelocateHours); // 한 구간이 아닌 값은 화면이 건드리지 않으면 그대로
+        Assert.Equal(AutoSettings.Default.StartupWarmGames, a.StartupWarmGames);
+    }
+
+    [Fact]
+    public void ApplyAutoWithAnEmptyHourListAndDefaultsRemovesTheKeys()
+    {
+        Assert.True(_vm.AddGame(Game()).Ok);
+        var editor = new ConfigEditor(_dir);
+        editor.SetStartStreamEnabled(false);
+        editor.SetRelocateHours([3, 4]);
+
+        Assert.True(_vm.ApplyAuto(Plain() with { StartStream = true, RelocateHours = [], Advanced = Adv() }).Ok);
+
+        string text = File.ReadAllText(Path.Combine(_dir, "config.json"));
+        Assert.DoesNotContain("start_stream_enabled", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("relocate_hours", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("max_cache_mib", text, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("33", "1024", "30")] // startup_warm_games 0..32
+    [InlineData("2", "0", "30")] // startup_warm_max_mib 1..
+    [InlineData("2", "1024", "9")] // idle_seconds 10..
+    public void AdvancedValueOutsideTheRangeSavesNothingNotEvenTheOtherValues(string games, string max, string idle)
+    {
+        Assert.True(_vm.AddGame(Game()).Ok);
+        byte[] before = ConfigBytes();
+
+        ActionResult r = _vm.ApplyAuto(Plain() with { Enabled = false, StartStream = false, Advanced = Adv(games: games, max: max, idle: idle) });
+
+        Assert.False(r.Ok);
+        Assert.Contains("auto.", r.Message, StringComparison.Ordinal);
+        Assert.Equal(before, ConfigBytes());
+    }
+
+    [Theory]
+    [InlineData("x")]
+    [InlineData("-1")]
+    [InlineData("")]
+    public void AdvancedNonNumberIsRejectedWithoutWriting(string bad)
+    {
+        Assert.True(_vm.AddGame(Game()).Ok);
+        byte[] before = ConfigBytes();
+
+        Assert.False(_vm.ApplyAuto(Plain() with { Advanced = Adv(relocations: bad) }).Ok);
+        Assert.False(_vm.ApplyAuto(Plain() with { Advanced = Adv(cache: bad) }).Ok);
+
+        Assert.Equal(before, ConfigBytes());
+    }
+
+    [Fact]
+    public void IdleSecondsUnchangedLeavesAnIdleMinutesOnlyFileAndChangedWinsOverIt()
+    {
+        Assert.True(_vm.AddGame(Game()).Ok);
+        var editor = new ConfigEditor(_dir);
+        editor.UpdateAuto(a => a with { IdleMinutes = 5, IdleMinutesSet = true });
+        Assert.DoesNotContain("idle_seconds", File.ReadAllText(Path.Combine(_dir, "config.json")), StringComparison.Ordinal);
+
+        Assert.True(_vm.ApplyAuto(Plain() with { Advanced = Adv(idle: "300") }).Ok); // 화면에 보인 유효 값 (5 분) 그대로
+        Assert.DoesNotContain("idle_seconds", File.ReadAllText(Path.Combine(_dir, "config.json")), StringComparison.Ordinal);
+
+        Assert.True(_vm.ApplyAuto(Plain() with { Advanced = Adv(idle: "60") }).Ok);
+        Assert.Equal(TimeSpan.FromSeconds(60), editor.Load()!.Auto.IdleWindow);
+    }
+
+    [Fact]
+    public void CacheBudgetNeedsARegisteredGameAndUnchangedValueTouchesNoGame()
+    {
+        Assert.False(_vm.ApplyAuto(Plain() with { Advanced = Adv("1024") }).Ok); // 게임이 없으면 둘 곳이 없음
+        Assert.True(_vm.AddGame(Game()).Ok);
+
+        Assert.True(_vm.ApplyAuto(Plain() with { Advanced = Adv("0") }).Ok);
+
+        Assert.DoesNotContain("\"prewarm\"", File.ReadAllText(Path.Combine(_dir, "config.json")), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void UntouchedFieldsAreNullAndKeepValuesThatChangedInTheFileAfterTheScreenWasFilled()
+    {
+        Assert.True(_vm.AddGame(Game("a")).Ok);
+        Assert.True(_vm.AddGame(Game("b") with { ExeNames = ["b.exe"] }).Ok);
+        var editor = new ConfigEditor(_dir); // 화면을 채운 뒤 다른 곳 (CLI·파일) 에서 바뀐 값
+        editor.UpdateAuto(a => a with { StartStreamEnabled = false, RelocateHours = [3, 4], StartupWarmGames = 7, StartupWarmMaxMib = 512, RewarmAfterExitMin = 9, MaxRelocationsPerDay = 6, StartStreamCapSeconds = 33 }, maxCacheMib: 4096);
+        _vm.Refresh();
+        var untouched = new AdvancedForm(null, null, null, null, null, null, null);
+
+        Assert.True(_vm.ApplyAuto(Plain() with { Enabled = false, StartStream = null, RelocateHours = null, Advanced = untouched }).Ok);
+
+        AsterSettings s = editor.Load()!;
+        Assert.False(s.Auto.Enabled);
+        Assert.False(s.Auto.StartStreamEnabled);
+        Assert.Equal([3, 4], s.Auto.RelocateHours);
+        Assert.Equal((7, 512, 9, 6, 33), (s.Auto.StartupWarmGames, s.Auto.StartupWarmMaxMib, s.Auto.RewarmAfterExitMin, s.Auto.MaxRelocationsPerDay, s.Auto.StartStreamCapSeconds));
+        Assert.All(s.Games, g => Assert.Equal(4096, g.Prewarm.MaxCacheMib)); // 캐시 칸을 건드리지 않았으면 쓰지 않음
+
+        Assert.True(_vm.ApplyAuto(Plain() with { Advanced = untouched with { StartupGames = "8" } }).Ok); // 건드린 칸만 바뀜
+        Assert.Equal((8, 512), (editor.Load()!.Auto.StartupWarmGames, editor.Load()!.Auto.StartupWarmMaxMib));
+    }
+
+    [Theory]
+    [InlineData(22, 6, new[] { 22, 23, 0, 1, 2, 3, 4, 5 })]
+    [InlineData(2, 7, new[] { 2, 3, 4, 5, 6 })]
+    [InlineData(0, 23, new[] { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22 })]
+    public void HoursBetweenAndRangeOfRoundTripOneRangeAcrossMidnight(int from, int to, int[] hours)
+    {
+        Assert.Equal(hours, TrayViewModel.HoursBetween(from, to));
+        Assert.Equal((from, to), TrayViewModel.RangeOf(hours));
+        Assert.Equal((from, to), TrayViewModel.RangeOf(hours.Reverse().ToArray())); // 순서와 무관
+    }
+
+    [Fact]
+    public void RangeOfRefusesWhatOneRangeCannotExpress()
+    {
+        Assert.Null(TrayViewModel.RangeOf([]));
+        Assert.Null(TrayViewModel.RangeOf([1, 5, 9]));
+        Assert.Null(TrayViewModel.RangeOf([1, 2, 5, 6]));
+        Assert.Null(TrayViewModel.RangeOf(Enumerable.Range(0, 24).ToArray()));
+        Assert.Empty(TrayViewModel.HoursBetween(4, 4));
+    }
+
+    [Fact]
+    public void SetGameOptionsSavesPolicyPauseAndNamesTogetherAndKeepsTheInternalName()
+    {
+        Assert.True(_vm.AddGame(Game("mw4")).Ok);
+
+        ActionResult r = _vm.SetGameOptions("mw4", GameMode.PrewarmOnly, true, " Modern Warfare ", "모던 워페어", "");
+
+        Assert.True(r.Ok);
+        GameSettings g = new ConfigEditor(_dir).Load()!.Games.Single();
+        Assert.Equal(("mw4", GameMode.PrewarmOnly, true, "Modern Warfare"), (g.Name, g.Mode, g.Paused, g.DisplayName));
+        Assert.Equal("모던 워페어", g.DisplayNames!["ko"]);
+        Assert.False(g.DisplayNames.ContainsKey("en"));
+        Assert.Equal("일시 중지됨 · 예열만", ManageViewModel.PolicyText(g));
+
+        Assert.True(_vm.SetGameOptions("mw4", GameMode.Inherit, false, "", "", "").Ok); // 기본값과 빈 이름이면 키가 사라짐
+        string text = File.ReadAllText(Path.Combine(_dir, "config.json"));
+        foreach (string key in new[] { "\"mode\"", "paused", "display_name" })
+        {
+            Assert.DoesNotContain(key, text, StringComparison.Ordinal);
+        }
+
+        Assert.Equal(string.Empty, ManageViewModel.PolicyText(new ConfigEditor(_dir).Load()!.Games.Single()));
+    }
+
+    [Fact]
+    public void SetGameOptionsRejectsABadNameWithoutChangingAnything()
+    {
+        Assert.True(_vm.AddGame(Game("mw4")).Ok);
+        byte[] before = ConfigBytes();
+
+        ActionResult bad = _vm.SetGameOptions("mw4", GameMode.Off, true, "a\tb", "", "");
+        ActionResult missing = _vm.SetGameOptions("nope", GameMode.Off, true, "", "", "");
+
+        Assert.False(bad.Ok);
+        Assert.False(missing.Ok);
+        Assert.Equal(before, ConfigBytes());
+    }
+
+    [Fact]
+    public void SettingsScreenSavesAreDeniedLikeOtherEditsWhenTheFolderIsNotWritable()
+    {
+        Assert.True(_vm.AddGame(Game("a")).Ok);
+        byte[] before = ConfigBytes();
+        Directory.CreateDirectory(Path.Combine(_dir, "config.json.tmp")); // 관리자 권한이 없을 때를 흉내
+
+        ActionResult options = _vm.SetGameOptions("a", GameMode.Off, false, "", "", "");
+        ActionResult auto = _vm.ApplyAuto(Plain() with { StartStream = false, Advanced = Adv(games: "3") });
+
+        Assert.False(options.Ok);
+        Assert.False(auto.Ok);
+        Assert.Contains("관리자 권한으로 트레이를 다시 실행", options.Message, StringComparison.Ordinal);
+        Assert.Contains("관리자 권한으로 트레이를 다시 실행", auto.Message, StringComparison.Ordinal);
+        Assert.Equal(before, ConfigBytes());
+    }
+
     internal sealed class FakeService : IServiceControl
     {
         public ServiceState State { get; set; } = ServiceState.Stopped;

@@ -11,6 +11,7 @@ public sealed class GameExitTracker
     private readonly Dictionary<string, DateTimeOffset> _goneSince = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DateTimeOffset> _exitSince = new(StringComparer.Ordinal);
     private readonly HashSet<string> _seen = new(StringComparer.Ordinal); // Poll 이 한 번이라도 띄운 등록 게임 (시작 이벤트만 있던 짧은 실행과 구분)
+    private static readonly IReadOnlyDictionary<string, DateTimeOffset> EmptyGoneSince = new Dictionary<string, DateTimeOffset>();
     private readonly object _sync = new();
     private readonly Func<DateTimeOffset> _now;
 
@@ -22,6 +23,18 @@ public sealed class GameExitTracker
             lock (_sync)
             {
                 return new HashSet<string>(_goneSince.Keys, StringComparer.OrdinalIgnoreCase);
+            }
+        }
+    }
+
+    /// 종료 유예 중인 게임과 소멸을 처음 본 시각 (종료 확정 시각이 아님). 유예가 없으면 빈 사전을 그대로 돌려줍니다.
+    public IReadOnlyDictionary<string, DateTimeOffset> GoneSince
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _goneSince.Count == 0 ? EmptyGoneSince : new Dictionary<string, DateTimeOffset>(_goneSince, StringComparer.OrdinalIgnoreCase);
             }
         }
     }

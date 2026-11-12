@@ -334,6 +334,94 @@ public sealed class DiskReadCoordinatorTests
         Assert.NotNull(allowed);
     }
 
+    private static DiskReadCoordinator.Lease? BeginTrigger(DiskReadCoordinator coordinator, string root, bool allowWhileExiting = true) =>
+        coordinator.TryBegin(root, "prewarm stream", default, allowWhileExiting: allowWhileExiting);
+
+    [Fact]
+    public void ExitingOnlyDiskAllowsTriggerLeasesButARunningGameOrOtherWorkStillBlocks()
+    {
+        DiskReadCoordinator coordinator = Coordinator(new ListLog());
+        coordinator.Yield(@"C:\Games\A", "game started", "a");
+        coordinator.Yield(@"C:\Games\B", "game started", "b");
+
+        coordinator.MarkExiting(new HashSet<string> { "a" });
+        Assert.Null(BeginTrigger(coordinator, @"C:\Games\T")); // b 가 실제로 실행 중
+
+        coordinator.MarkExiting(new HashSet<string> { "a", "b" });
+        using DiskReadCoordinator.Lease? lease = BeginTrigger(coordinator, @"C:\Games\T");
+        Assert.NotNull(lease);
+        Assert.True(lease!.IsValid);
+        Assert.Null(BeginTrigger(coordinator, @"C:\Games\T", allowWhileExiting: false)); // 트리거가 아닌 경로는 유예 중에도 거절
+        Assert.Null(coordinator.TryBegin(@"C:\Games\T", "warm files"));
+    }
+
+    [Fact]
+    public void TriggerLeaseIsCanceledWhenAnExitingGameComesBackOrAnotherGameStarts()
+    {
+        DiskReadCoordinator coordinator = Coordinator(new ListLog());
+        coordinator.Yield(@"C:\Games\A", "game started", "a");
+        coordinator.MarkExiting(new HashSet<string> { "a" });
+        using DiskReadCoordinator.Lease back = BeginTrigger(coordinator, @"C:\Games\T")!;
+        using DiskReadCoordinator.Lease other = BeginTrigger(coordinator, @"C:\Games\T")!;
+
+        coordinator.Yield(@"C:\Games\A", "game started", "a"); // 런처 -> 본체 전환: 유예 중 게임이 다시 뜸
+
+        Assert.False(back.IsValid);
+        Assert.True(back.Token.IsCancellationRequested);
+        Assert.True(other.Token.IsCancellationRequested);
+        Assert.Null(BeginTrigger(coordinator, @"C:\Games\T"));
+
+        coordinator.MarkExiting(new HashSet<string> { "a" });
+        using DiskReadCoordinator.Lease third = BeginTrigger(coordinator, @"C:\Games\T")!;
+        coordinator.Yield(@"C:\Games\C", "game started", "c"); // 다른 게임이 새로 시작
+        Assert.False(third.IsValid);
+        Assert.True(third.Token.IsCancellationRequested);
+    }
+
+    [Fact]
+    public void StartEventOrderMarkExitingWithoutTheGameThenYieldStillCancelsTheTriggerLease()
+    {
+        DiskReadCoordinator coordinator = Coordinator(new ListLog());
+        coordinator.Yield(@"C:\Games\A", "game started", "a");
+        coordinator.MarkExiting(new HashSet<string> { "a" });
+        using DiskReadCoordinator.Lease lease = BeginTrigger(coordinator, @"C:\Games\T")!;
+
+        coordinator.MarkExiting(new HashSet<string>()); // Worker.OnStart: 다시 뜬 게임을 뺀 유예 집합 (자동 모드와 무관)
+
+        Assert.True(lease.Token.IsCancellationRequested); // Yield 에 닿기 전에 이미 멈춤
+        Assert.False(lease.IsValid);
+        coordinator.Yield(@"C:\Games\A", "game started", "a");
+        Assert.Null(BeginTrigger(coordinator, @"C:\Games\T"));
+    }
+
+    [Fact]
+    public void KeepStreamTriggerLeaseIsAlsoCanceledWhenTheExitingGameReturns()
+    {
+        DiskReadCoordinator coordinator = Coordinator(new ListLog());
+        coordinator.Yield(@"C:\Games\A", "game started", "a");
+        coordinator.MarkExiting(new HashSet<string> { "a" });
+        using DiskReadCoordinator.Lease keep = coordinator.TryBegin(@"C:\Games\T", "prewarm stream", default, @"C:\Games\T", preserveGameKey: "t", allowWhileExiting: true)!;
+        Assert.True(keep.IsValid); // 시작 스트림 대여라 취소 토큰이 서비스 토큰뿐 (Yield 도 세대도 닿지 않음)
+
+        coordinator.MarkExiting(new HashSet<string>());
+
+        Assert.True(keep.Token.IsCancellationRequested);
+        Assert.False(keep.IsValid);
+    }
+
+    [Fact]
+    public void ExitingGameOwnStartStreamIsNotCanceledByItsOwnReturn()
+    {
+        DiskReadCoordinator coordinator = Coordinator(new ListLog());
+        coordinator.Yield(@"C:\Games\A", "game started", "a");
+        coordinator.MarkExiting(new HashSet<string> { "a" });
+        using DiskReadCoordinator.Lease own = coordinator.TryBegin(@"C:\Games\A", "start stream", default, @"C:\Games\A", allowWhileYielded: true, preserveGameKey: "a", allowWhileExiting: true)!;
+
+        coordinator.MarkExiting(new HashSet<string>());
+
+        Assert.False(own.Token.IsCancellationRequested); // 돌아온 게임 자신의 시작 스트림은 그 게임을 위한 것
+    }
+
     [Fact]
     public void UnresolvedVolumeMappingUsesAConservativeSharedYield()
     {

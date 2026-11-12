@@ -67,6 +67,9 @@ public sealed class PrewarmEnv
     /// 게임 실행 판정의 근거가 된 프로세스 설명 ("이름(pid) 경로", 없으면 null): 건너뛴 사유를 로그에 남기는 데만 씁니다. 시험 기본값은 null (실제 스냅샷을 부르지 않음).
     public Func<GameSettings, string?> DescribeBlockers { get; init; } = _ => null;
 
+    /// 이 이름의 프로세스가 지금 떠 있는가 (트리거 프로세스 생존 확인용). 시험 기본값은 꺼짐 (실제 스냅샷을 부르지 않음).
+    public Func<string, bool> ProcessRunning { get; init; } = _ => false;
+
     /// 두 설치 루트가 같은 물리 디스크인가 (모르면 참). 시험 기본값은 드라이브 문자 비교.
     public Func<string, string, bool> SameDisk { get; init; } = AutoEnv.SameLetter;
 
@@ -197,6 +200,7 @@ public sealed class PrewarmEnv
         return new PrewarmEnv
         {
             GameRunning = gameRunning,
+            ProcessRunning = exe => ProcessSnapshot.IsRunning([exe]),
             SameDisk = sameDisk,
             DeviceCalibrationEnabled = orbitRuntime is null ? null : () => orbitRuntime.Mode != "off",
             DeviceCalibration = orbitCalibration is null ? null : (g, ops, antiCheat, lease, ct) =>
@@ -392,7 +396,7 @@ public sealed class Prewarmer
     private readonly HashSet<string> _removedGames = new(StringComparer.OrdinalIgnoreCase); // 진행 중 작업이 끝난 뒤 임시 상태를 정리할 게임, _gate 로 보호
     private readonly Dictionary<string, DateTimeOffset> _last = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _lastBeforeBoot = new(StringComparer.OrdinalIgnoreCase); // 부팅 전에 성공한 예열 시각 (상태 파일), 새 트레이스 판정 (LastWarmed) 만 씀, _gate 로 보호
-    private sealed record PendingWarm(DateTimeOffset RetryAt, string Reason);
+    private sealed record PendingWarm(DateTimeOffset RetryAt, string Reason, string? TriggerExe = null); // TriggerExe: 막던 게임이 사라져 한 번 다시 시도할 트리거 exe
     private readonly Dictionary<string, PendingWarm> _pendingWarm = new(StringComparer.OrdinalIgnoreCase); // 성공하지 못한 일시 예열과 시작 상한 누락, _gate 로 보호
     private sealed class PrewarmCancelDetail
     {
@@ -421,6 +425,7 @@ public sealed class Prewarmer
     private readonly Dictionary<string, (DateTimeOffset At, int Count)> _triggerSeen = new(StringComparer.OrdinalIgnoreCase); // 트리거 exe 별 마지막 처리 시각과 그 뒤 억제한 횟수, _gate 로 보호
     private readonly Dictionary<string, (DateTimeOffset At, long Bytes)> _readSample = new(StringComparer.OrdinalIgnoreCase); // 실행 중인 게임의 마지막 읽기 카운터 표본, _gate 로 보호
     private readonly Dictionary<string, DateTimeOffset> _gameIdleSince = new(StringComparer.OrdinalIgnoreCase); // 실행 중인 게임이 한가해진 시각 (읽기 증가율·디스크 처리량이 낮은 상태가 이어진 시작), _gate 로 보호
+    private readonly TriggerRetries _triggerRetries = new(); // 같은 디스크의 다른 게임 때문에 거절된 트리거 예열과 그 막던 게임들
     private (string Game, DateTimeOffset At)? _triggered; // 가장 최근 트리거로 예열을 시작한 게임과 시각: 보충·재예열 예산 순위에서 먼저 받음, _gate 로 보호
     private volatile AutoSettings _auto = AutoSettings.Default;
     private volatile string? _streaming; // 핫 집합 스트림이 도는 게임
@@ -1378,9 +1383,9 @@ public sealed class Prewarmer
 
         lock (_gate)
         {
-            if (_pendingWarm.TryGetValue(game.Name, out PendingWarm? current) && current.RetryAt > at)
+            if (_pendingWarm.TryGetValue(game.Name, out PendingWarm? current) && (current.RetryAt > at || current.TriggerExe is not null))
             {
-                return; // 재시도 기한 전에 다른 경로가 실패해도 기한을 뒤로 밀지 않음
+                return; // 재시도 기한 전에 다른 경로가 실패해도 기한을 뒤로 밀지 않음, 당겨 둔 트리거 재시도 표시도 지우지 않음
             }
 
             _pendingWarm[game.Name] = new(at + PendingWarmRetryDelay(), reason ?? "unsuccessful warm");
@@ -2151,6 +2156,11 @@ public sealed class Prewarmer
                 continue;
             }
 
+            if (TryRunTriggerRetry(game, ct))
+            {
+                continue;
+            }
+
             RetryPendingWarmWhenIdle(game, ct);
         }
     }
@@ -2216,8 +2226,10 @@ public sealed class Prewarmer
         }
     }
 
-    private bool AnyGameActiveOnDisk(GameSettings game) => AutoRelocator.SameDriveGames(_games, [game], _env.SameDisk)
-        .Any(g => _env.GameRunning(g) || _coordinator?.IsRegistered(g.Name) == true);
+    private IEnumerable<GameSettings> GamesActiveOnDisk(GameSettings game) => AutoRelocator.SameDriveGames(_games, [game], _env.SameDisk)
+        .Where(g => _env.GameRunning(g) || _coordinator?.IsRegistered(g.Name) == true);
+
+    private bool AnyGameActiveOnDisk(GameSettings game) => GamesActiveOnDisk(game).Any();
 
     private bool PendingWarmCanRead(GameSettings game, CancellationToken ct) => !ct.IsCancellationRequested && BootSettled()
         && HeavyWorkAllowed(game) && !Deferred(game)
@@ -2833,7 +2845,80 @@ public sealed class Prewarmer
             }
         }
 
-        return RunBatch(chosen, $"trigger {start.ExeName}", pin: !LauncherExes.Is(start.ExeName), ct: ct); // 런처가 뜰 때는 고정하지 않음 (런처 업데이트가 파일을 고칠 수 있게)
+        IReadOnlyList<PrewarmResult> results = RunBatch(chosen, $"trigger {start.ExeName}", pin: !LauncherExes.Is(start.ExeName), ct: ct, trigger: true); // 런처가 뜰 때는 고정하지 않음 (런처 업데이트가 파일을 고칠 수 있게)
+        WaitForBlockingGames(results, start.ExeName);
+        return results;
+    }
+
+    // 같은 디스크의 다른 게임이 실행 중이라 거절된 트리거 예열은, 그 게임들이 사라진 것을 처음 본 때 한 번 다시 시도하도록 적어 둡니다 (NoteGamesGone).
+    private void WaitForBlockingGames(IReadOnlyList<PrewarmResult> results, string triggerExe)
+    {
+        foreach (PrewarmResult r in results.Where(r => !r.Ran && (r.SkipReason == "game is running" || r.CancelDetail == "disk read lease refused")))
+        {
+            if (_games.FirstOrDefault(g => string.Equals(g.Name, r.Game, StringComparison.OrdinalIgnoreCase)) is { } game && !_env.GameRunning(game))
+            {
+                _triggerRetries.Wait(game.Name, triggerExe, GamesActiveOnDisk(game).Select(g => g.Name).ToHashSet(StringComparer.OrdinalIgnoreCase), _now());
+            }
+        }
+    }
+
+    /// 종료 유예에 들어간 (프로세스가 사라진 것을 처음 본) 게임 이름들 (Worker 가 틱마다 부름): 그 게임 때문에 거절됐고 트리거 프로세스가 아직 살아 있는 예열의 재시도를 지금으로 당깁니다.
+    public void NoteGamesGone(IReadOnlySet<string> gone)
+    {
+        foreach ((string game, string exe) in _triggerRetries.NoteGone(gone, BlockerActive, _env.ProcessRunning, _now()))
+        {
+            lock (_gate)
+            {
+                if (_pendingWarm.TryGetValue(game, out PendingWarm? pending))
+                {
+                    _pendingWarm[game] = pending with { RetryAt = _now(), TriggerExe = exe };
+                }
+            }
+        }
+    }
+
+    // 막던 게임이 아직 실행 중이거나 양보 등록돼 있는가 (설정에서 빠진 게임은 아님).
+    private bool BlockerActive(string name) =>
+        _games.FirstOrDefault(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase)) is { } game && (_env.GameRunning(game) || _coordinator?.IsRegistered(name) == true);
+
+    // 당겨진 트리거 재시도를 트리거 경로와 같은 조건 (유휴·종료 유예 게이트 없음) 으로 한 번 돌립니다. 다른 예열이 돌고 있으면 표시를 남겨 다음 틱으로 미룸.
+    private bool TryRunTriggerRetry(GameSettings game, CancellationToken ct)
+    {
+        if (!Monitor.TryEnter(_run))
+        {
+            return false;
+        }
+
+        try
+        {
+            if (TakeTriggerRetry(game.Name) is not { } exe)
+            {
+                return false;
+            }
+
+            _log.Info($"{game.Name}: retrying the refused trigger prewarm ({exe}) now that the blocking game is gone");
+            _ = RunBatch([game], $"trigger {exe}", pin: !LauncherExes.Is(exe), ct: ct, trigger: true);
+            return true;
+        }
+        finally
+        {
+            Monitor.Exit(_run);
+        }
+    }
+
+    // 당겨진 트리거 재시도를 한 번만 꺼냅니다 (표시를 지우므로 다시 거절돼도 되풀이하지 않음).
+    private string? TakeTriggerRetry(string game)
+    {
+        lock (_gate)
+        {
+            if (!_pendingWarm.TryGetValue(game, out PendingWarm? pending) || pending.TriggerExe is not { } exe)
+            {
+                return null;
+            }
+
+            _pendingWarm[game] = pending with { TriggerExe = null };
+            return exe;
+        }
     }
 
     // 같은 exe 의 트리거는 SkipLogEvery 안에 한 번만 처리하고 나머지는 세어 두었다가, 다음에 처리하는 때 한 줄로 남깁니다.
@@ -3301,7 +3386,7 @@ public sealed class Prewarmer
     // 한 묶음의 예산 = min(예열 예산, 가용 RAM - 여유). 존 크기 합이 예산을 넘는 게임만 건너뛰고, 뒤 게임은 남은 예산으로 따로 판단합니다 (앞쪽 = 최근 순서가 우선).
     // 서비스 시작·런처 시작이 같은 규칙입니다. 첫 게임의 가용 RAM 쪽 판단은 Run 의 자체 판단에 맡깁니다.
     // yieldToRelocation: 게임 사이마다 재배치가 시작됐는지 다시 보고, 돌고 있으면 끝날 때까지 기다린 뒤 이어서 읽습니다 (서비스 시작 예열: 게이트를 지난 직후나 예열 도중 시작된 재배치와 겹치지 않게).
-    private IReadOnlyList<PrewarmResult> RunBatch(IEnumerable<GameSettings> games, string why, bool pin = true, CancellationToken ct = default, bool yieldToRelocation = false)
+    private IReadOnlyList<PrewarmResult> RunBatch(IEnumerable<GameSettings> games, string why, bool pin = true, CancellationToken ct = default, bool yieldToRelocation = false, bool trigger = false)
     {
         var results = new List<PrewarmResult>();
         IReadOnlyList<GameSettings> list = games as IReadOnlyList<GameSettings> ?? [.. games];
@@ -3328,7 +3413,7 @@ public sealed class Prewarmer
         long avail = _env.AvailableRamMib();
         long physCap = PhysCapMib(); // MiB, 예열 예산
         (long[] observed, long[] later) = ObservedSplit(list, avail);
-        WarmHeads(list, ct, yieldToRelocation, cold, observed, later);
+        WarmHeads(list, ct, yieldToRelocation, cold, observed, later, trigger);
         long used = 0; // 핫 집합 예열의 MiB (기록 없는 예열은 _coldMib 가 셈)
         for (int i = 0; i < list.Count; i++)
         {
@@ -3360,7 +3445,7 @@ public sealed class Prewarmer
                 continue;
             }
 
-            PrewarmResult r = Guarded(g, why, pin, ct: ct, usedMib: used, roomMib: fits ? null : room);
+            PrewarmResult r = Guarded(g, why, pin, ct: ct, usedMib: used, roomMib: fits ? null : room, trigger: trigger);
             results.Add(r);
             used += r.Ran && r.Mode is null ? r.Stats is { Bytes: > 0 } st ? (st.Bytes + (1 << 20) - 1) >> 20 : zoneMib : 0; // 예산에서는 설정한 상한이 아니라 실제로 읽은 양을 뺌 (통계가 없으면 존 크기)
         }
@@ -3389,7 +3474,7 @@ public sealed class Prewarmer
 
     // 묶음에 게임이 둘 이상이면 각 게임의 로딩 앞부분 (tier0) 을 최근 순서로 먼저 모두 올리고, 그 뒤 게임별 전체 (tier1 포함) 를 읽습니다 (앞부분은 이미 올라와 있어 다시 읽어도 빠름).
     // 올릴 게임은 RunBatch 와 같은 예산과 Run 과 같은 건너뜀 조건으로 고릅니다. 취소는 앞부분 묶음 사이에서 보고, 읽던 게임이 시작되면 끝까지 읽습니다 (StreamHot 과 같음).
-    private void WarmHeads(IReadOnlyList<GameSettings> games, CancellationToken ct, bool yieldToRelocation, long planned, long[] observed, long[] later)
+    private void WarmHeads(IReadOnlyList<GameSettings> games, CancellationToken ct, bool yieldToRelocation, long planned, long[] observed, long[] later, bool allowWhileExiting)
     {
         if (games.Count < 2)
         {
@@ -3449,16 +3534,16 @@ public sealed class Prewarmer
             {
                 if (_games.Any(x => string.Equals(x.Name, g.Name, StringComparison.OrdinalIgnoreCase) && GamePolicy.AllowsPrewarm(x)))
                 {
-                    StreamHead(head, ct); // 대기 중 등록이 해제됐거나 정책이 예열을 막은 게임은 앞부분도 읽지 않음
+                    StreamHead(head, ct, allowWhileExiting); // 대기 중 등록이 해제됐거나 정책이 예열을 막은 게임은 앞부분도 읽지 않음
                 }
             }
         }
     }
 
-    private void StreamHead(GameSettings game, CancellationToken ct)
+    private void StreamHead(GameSettings game, CancellationToken ct, bool allowWhileExiting)
     {
         using IDisposable work = TrackGameWork(game.Name);
-        using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "warm heads", ct, preserveForGameRoot: _auto.KeepStreamOnGameStart ? game.OriginRoot : null, preserveGameKey: game.Name);
+        using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "warm heads", ct, preserveForGameRoot: _auto.KeepStreamOnGameStart ? game.OriginRoot : null, preserveGameKey: game.Name, allowWhileExiting: allowWhileExiting);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
         {
             return;
@@ -3549,11 +3634,11 @@ public sealed class Prewarmer
     }
 
     // 한 게임의 예외가 나머지 게임의 예열을 막지 않게 합니다.
-    internal PrewarmResult Guarded(GameSettings game, string why, bool pin = true, bool ignoreCooldown = false, CancellationToken ct = default, long usedMib = 0, long? roomMib = null)
+    internal PrewarmResult Guarded(GameSettings game, string why, bool pin = true, bool ignoreCooldown = false, CancellationToken ct = default, long usedMib = 0, long? roomMib = null, bool trigger = false)
     {
         try
         {
-            return Run(game, why, pin, ignoreCooldown, ct, usedMib, roomMib);
+            return Run(game, why, pin, ignoreCooldown, ct, usedMib, roomMib, trigger);
         }
         catch (Exception e)
         {
@@ -3567,7 +3652,7 @@ public sealed class Prewarmer
     /// 한 게임을 지금 예열 (조건을 만족할 때만). 동시에 하나만 돕니다.
     /// ct 는 스트림을 시작하기 전 (차례를 기다린 뒤) 과 핫 집합 스트림의 묶음 사이에서 확인합니다. 단 지금 읽는 그 게임이 시작되면 (NoteGameStart) 이 스트림도 다음 묶음 경계에서 멈춥니다 (keep_stream_on_game_start 가 켜졌을 때만 끝까지 읽음).
     /// usedMib: 같은 묶음에서 앞서 올린 핫 집합의 양 (기록 없는 예열의 예산에서 뺌). roomMib: 묶음에 남은 예산 (MiB), 핫 집합이 더 크면 들어가는 만큼만 읽음 (부분 예열).
-    public PrewarmResult Run(GameSettings game, string why, bool pin = true, bool ignoreCooldown = false, CancellationToken ct = default, long usedMib = 0, long? roomMib = null)
+    public PrewarmResult Run(GameSettings game, string why, bool pin = true, bool ignoreCooldown = false, CancellationToken ct = default, long usedMib = 0, long? roomMib = null, bool trigger = false)
     {
         lock (_run)
         {
@@ -3611,7 +3696,7 @@ public sealed class Prewarmer
 
             if (IsCold(game) && !(_env.ColdRefusal(game) is null && _env.PrefetchBoot(game))) // S2 가 먼저: boot 트레이스가 생기면 더는 기록 없는 게임이 아님
             {
-                return RunCold(game, why, now, ct, usedMib);
+                return RunCold(game, why, now, ct, usedMib, trigger);
             }
 
             TimeSpan? since = !ignoreCooldown && LastWarmed(game.Name) is { } prev ? now - prev : null;
@@ -3743,7 +3828,7 @@ public sealed class Prewarmer
                 try
                 {
                     if (StreamHot(warm, ct, zoneBytes, availableRamMib, memoryPartial is not null, Settle,
-                        allowReorder: memoryPartial is null && !HasPartialState(game.Name), roomMib: roomMib ?? long.MaxValue) is not { } hot)
+                        allowReorder: memoryPartial is null && !HasPartialState(game.Name), roomMib: roomMib ?? long.MaxValue, allowWhileExiting: trigger) is not { } hot)
                     {
                         LogSkipped(game.Name, RelocationRunning, $"{game.Name}: prewarm skipped ({RelocationRunning}) [{why}]");
                         return Record(game, now, new PrewarmResult(game.Name, false, RelocationRunning, null, now), 0);
@@ -3878,9 +3963,9 @@ public sealed class Prewarmer
     // 같은 디스크에서 재배치가 시작했으면 읽지 않고 null.
     // settle: 끝까지 읽었을 때 StreamEnded 알림보다 먼저 부름 (읽은 통계를 받아 부분 예열 상태를 확정하거나 지움).
     // skipBytes: 읽기 목록 앞쪽 이만큼은 이미 읽었으니 건너뜀 (끊긴 보충을 이어 읽음, 틈 메우기 없는 경로에서만). onTotal: 이번에 읽을 목록의 길이 (건너뛴 앞부분 제외).
-    private (StreamStats Stats, bool Complete, string? CancelReason)? StreamHot(GameSettings game, CancellationToken ct, long? zoneBytes, long availableRamMib, bool partial = false, Action<StreamStats>? settle = null, long skipBytes = 0, Action<long>? onTotal = null, bool allowReorder = true, long roomMib = long.MaxValue)
+    private (StreamStats Stats, bool Complete, string? CancelReason)? StreamHot(GameSettings game, CancellationToken ct, long? zoneBytes, long availableRamMib, bool partial = false, Action<StreamStats>? settle = null, long skipBytes = 0, Action<long>? onTotal = null, bool allowReorder = true, long roomMib = long.MaxValue, bool allowWhileExiting = false)
     {
-        using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "prewarm stream", ct, preserveForGameRoot: _auto.KeepStreamOnGameStart ? game.OriginRoot : null, preserveGameKey: game.Name);
+        using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "prewarm stream", ct, preserveForGameRoot: _auto.KeepStreamOnGameStart ? game.OriginRoot : null, preserveGameKey: game.Name, allowWhileExiting: allowWhileExiting);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
         {
             return (new StreamStats(0, 0, 0, 0, Aborted: true), false, "disk read lease refused");
@@ -4085,7 +4170,7 @@ public sealed class Prewarmer
 
     // 기록 (원시 트레이스·prefetch 기록) 이 없는 게임: 설치 폴더가 예산 이하면 통째로, 크면 엔진 프로필로. 쿨다운은 항상 지킵니다 (같은 폴더를 연달아 두 번 읽지 않게): 재예열도 쿨다운 안이면 다음 점검으로 미룸.
     // 순서: 드라이브 거부 (시스템 SSD·SSD·판정 불가) → 게임 실행 중 → 쿨다운 → 디스크 유휴 → RAM 예산 → 폴더 열거 (비싼 일은 마지막).
-    private PrewarmResult RunCold(GameSettings game, string why, DateTimeOffset now, CancellationToken ct, long usedMib)
+    private PrewarmResult RunCold(GameSettings game, string why, DateTimeOffset now, CancellationToken ct, long usedMib, bool trigger)
     {
         AutoSettings a = _auto;
         TimeSpan cooldown = TimeSpan.FromMinutes(game.Prewarm.CooldownMin);
@@ -4157,7 +4242,7 @@ public sealed class Prewarmer
                 {
                     ForgetProfileMiss(game.Name);
                     _log.Info($"{game.Name}: prewarm triggered by {TriggerCause(why)}");
-                    if (ColdReadMarked(game, plan.Ops, ct) is not { } cold)
+                    if (ColdReadMarked(game, plan.Ops, ct, trigger) is not { } cold)
                     {
                         skip = RelocationRunning;
                     }
@@ -4217,9 +4302,9 @@ public sealed class Prewarmer
     }
 
     // 기록 없는 읽기 한 번: 읽는 동안 _coldReading 표시를 세우고 (예외·취소로 끝나도 내림), 같은 디스크에서 재배치가 시작했으면 읽지 않고 null.
-    private (StreamStats Stats, bool Complete, string? CancelReason)? ColdReadMarked(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken ct)
+    private (StreamStats Stats, bool Complete, string? CancelReason)? ColdReadMarked(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken ct, bool allowWhileExiting)
     {
-        using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "cold prewarm", ct);
+        using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "cold prewarm", ct, allowWhileExiting: allowWhileExiting);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
         {
             return (new StreamStats(0, 0, 0, 0, Aborted: true), false, "disk read lease refused");

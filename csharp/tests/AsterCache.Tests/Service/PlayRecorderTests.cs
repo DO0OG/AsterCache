@@ -204,6 +204,63 @@ public sealed class PlayRecorderTests
     }
 
     [Fact]
+    public async Task SessionStopsCountingAtTheFirstTimeTheProcessWasGone()
+    {
+        using var dir = new TempDir();
+        using var counter = new FakeCounter();
+        var recorder = new PlayRecorder(dir.Combine("play_samples.json"), new ListLog(), _ => counter, () => 8192, TimeSpan.FromMilliseconds(10));
+        GameSettings game = Games.Make("gone", "gone.exe");
+        var clock = Stopwatch.StartNew();
+        Assert.True(recorder.ObserveStart(game, new ProcessStart(41, game.ExeNames[0], Stopwatch.GetTimestamp()), null));
+        await WaitUntil(() => counter.Reads > 3);
+        DateTimeOffset goneAt = DateTimeOffset.UtcNow;
+
+        recorder.NoteGone(new Dictionary<string, DateTimeOffset> { [game.Name] = goneAt });
+        double goneSeconds = clock.Elapsed.TotalSeconds;
+        int readsAtGone = counter.Reads;
+        await WaitUntil(() => counter.Reads >= readsAtGone + 20); // 종료 확정 전 유예 동안 표본이 더 쌓임
+        recorder.EndSession(game.Name);
+        double endSeconds = clock.Elapsed.TotalSeconds;
+
+        JsonElement sample = ReadLastSample(dir, game.Name);
+        Assert.Equal(goneAt, sample.GetProperty("endedAt").GetDateTimeOffset()); // 종료 확정 시각이 아니라 소멸 최초 관측 시각
+        double duration = sample.GetProperty("durationSeconds").GetDouble();
+        Assert.InRange(duration, 0, goneSeconds + 0.01);
+        Assert.True(duration < endSeconds - 0.15, $"duration {duration} must not include the grace until {endSeconds}");
+        JsonElement total = sample.GetProperty("total");
+        int samples = total.GetProperty("sampleCount").GetInt32();
+        Assert.InRange(samples, 1, readsAtGone); // 유예 동안의 표본(20개 이상)은 세지 않음
+        Assert.Equal(samples * 0.1, total.GetProperty("idleSeconds").GetDouble(), 3); // 표본마다 유휴 0.1 초
+    }
+
+    [Fact]
+    public async Task ReturnFromTheGraceCancelsTheGoneMarkAndAStaleMarkIsNotRevived()
+    {
+        using var dir = new TempDir();
+        using var counter = new FakeCounter();
+        var recorder = new PlayRecorder(dir.Combine("play_samples.json"), new ListLog(), _ => counter, () => 8192, TimeSpan.FromMilliseconds(10));
+        GameSettings game = Games.Make("back", "back.exe");
+        Assert.True(recorder.ObserveStart(game, new ProcessStart(42, game.ExeNames[0], Stopwatch.GetTimestamp()), null));
+        int baseline = counter.Reads;
+        await WaitUntil(() => counter.Reads > baseline + 2);
+        DateTimeOffset goneAt = DateTimeOffset.UtcNow;
+        Dictionary<string, DateTimeOffset> gone = new() { [game.Name] = goneAt };
+
+        recorder.NoteGone(gone);
+        recorder.ObserveExisting(game); // 유예 중 같은 게임의 프로세스가 다시 보임
+        recorder.NoteGone(gone); // 틱 스레드가 읽어 둔 옛 값이 뒤늦게 도착
+        recorder.EndSession(game.Name);
+
+        Assert.True(ReadLastSample(dir, game.Name).GetProperty("endedAt").GetDateTimeOffset() > goneAt);
+    }
+
+    private static JsonElement ReadLastSample(TempDir dir, string game)
+    {
+        using JsonDocument json = JsonDocument.Parse(File.ReadAllText(dir.Combine("play_samples.json")));
+        return json.RootElement.GetProperty("games").GetProperty(game).EnumerateArray().Last().Clone();
+    }
+
+    [Fact]
     public async Task CounterOpenFailureIsPersistedAsUnavailableWithoutThrowing()
     {
         using var dir = new TempDir();

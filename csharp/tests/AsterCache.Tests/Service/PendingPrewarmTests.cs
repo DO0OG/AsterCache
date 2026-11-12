@@ -24,6 +24,7 @@ public sealed class PendingPrewarmTests
     private Func<GameSettings, double?> _diskBytesPerSecond = _ => 0;
     private Action? _onWarmRank;
     private bool _noTrace;
+    private bool _triggerAlive;
 
     private sealed class TestStreamer : IGameStreamer
     {
@@ -85,6 +86,7 @@ public sealed class PendingPrewarmTests
             TraceExists = g => !_noTrace || g.Name != "no-trace",
             PhysicalRamBytes = () => 16L << 30,
             DiskBytesPerSecond = g => _diskBytesPerSecond(g),
+            ProcessRunning = _ => _triggerAlive,
             ObservedBytes = _ => { _observedReadCalls++; return null; },
             ObservedBytesIfCached = _ => null,
             ProbeReadMs = _ =>
@@ -298,6 +300,156 @@ public sealed class PendingPrewarmTests
 
         Assert.Equal(["a", "a"], _streamer.Calls);
         Assert.False(prewarmer.HasPendingWarm("a"));
+    }
+
+    private GameSettings TriggeredGame(string name) => Game(name) with { Prewarm = Game(name).Prewarm with { TriggerExes = ["launcher.exe"] } };
+
+    private static ProcessStart Launcher() => new(7, "launcher.exe", 1);
+
+    // 다른 게임들이 실행 중일 때 (기본 "other" 하나) 트리거 예열이 거절된 상태를 만듭니다. processVisible 거짓이면 프로세스는 안 보이고 양보 등록만 있어 대여 거절로 거절됨.
+    private (Prewarmer Prewarmer, DiskReadCoordinator Coordinator, AutoSettings Auto) RefusedTrigger(bool processVisible = true, params string[] blockers)
+    {
+        blockers = blockers.Length == 0 ? ["other"] : blockers;
+        GameSettings game = TriggeredGame("a");
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log, () => 0);
+        Prewarmer prewarmer = Make(coordinator, [game, .. blockers.Select(Game)]);
+        AutoSettings auto = Auto();
+        prewarmer.SetAuto(auto);
+        foreach (string name in blockers)
+        {
+            if (processVisible)
+            {
+                _running.Add(name);
+            }
+
+            coordinator.Yield(Game(name).OriginRoot, "game started", name);
+        }
+
+        Assert.False(Assert.Single(prewarmer.OnProcessStart(Launcher())).Ran);
+        Assert.True(prewarmer.HasPendingWarm("a"));
+        return (prewarmer, coordinator, auto);
+    }
+
+    // 막던 게임들의 프로세스가 사라져 종료 유예에 들어선 틱 (Worker.NoteGameExits 와 같은 순서).
+    private void GameGone(Prewarmer prewarmer, DiskReadCoordinator coordinator, params string[] names)
+    {
+        HashSet<string> grace = new(names, StringComparer.OrdinalIgnoreCase);
+        _running.ExceptWith(names);
+        coordinator.MarkExiting(grace);
+        prewarmer.NoteGamesGone(grace);
+    }
+
+    [Fact]
+    public void TriggerPrewarmRefusedByARunningGameRetriesOnceRightAfterItsProcessIsGone()
+    {
+        (Prewarmer prewarmer, DiskReadCoordinator coordinator, AutoSettings auto) = RefusedTrigger();
+        _triggerAlive = true;
+
+        GameGone(prewarmer, coordinator, "other");
+        prewarmer.Tick(auto); // +10분 대기도, 유휴 60초도, 종료 후 유예도 기다리지 않음
+
+        Assert.Equal(["a"], _streamer.Calls);
+        Assert.False(prewarmer.HasPendingWarm("a"));
+    }
+
+    [Fact]
+    public void TriggerPrewarmRefusedByTheLeaseAloneRetriesWhenTheRegisteredGameLeavesToo()
+    {
+        (Prewarmer prewarmer, DiskReadCoordinator coordinator, AutoSettings auto) = RefusedTrigger(processVisible: false);
+        _triggerAlive = true;
+
+        GameGone(prewarmer, coordinator, "other");
+        prewarmer.Tick(auto);
+
+        Assert.Equal(["a"], _streamer.Calls);
+    }
+
+    [Fact]
+    public void TriggerRetryWaitsForEveryBlockingGameButNotForOnesThatAlreadyLeft()
+    {
+        (Prewarmer prewarmer, DiskReadCoordinator coordinator, AutoSettings auto) = RefusedTrigger(true, "o1", "o2");
+        _triggerAlive = true;
+
+        GameGone(prewarmer, coordinator, "o1"); // o2 는 아직 실행 중
+        prewarmer.Tick(auto);
+        Assert.Empty(_streamer.Calls);
+
+        coordinator.Resume(Game("o1").OriginRoot, "o1"); // o1 의 종료가 확정돼 등록이 풀림
+        GameGone(prewarmer, coordinator, "o2");
+        prewarmer.Tick(auto);
+
+        Assert.Equal(["a"], _streamer.Calls); // 같은 틱에 함께 유예인 것이 아니어도 막던 게임이 모두 떠났으면 재시도
+    }
+
+    [Fact]
+    public void TriggerRetryIsDroppedWhenTheRefusalIsOlderThanTheAgeLimit()
+    {
+        (Prewarmer prewarmer, DiskReadCoordinator coordinator, AutoSettings auto) = RefusedTrigger();
+        _triggerAlive = true;
+        _now += TriggerRetries.MaxAge + TimeSpan.FromMinutes(1);
+
+        GameGone(prewarmer, coordinator, "other");
+        prewarmer.Tick(auto);
+
+        Assert.Empty(_streamer.Calls); // 기존 대기 규칙 (같은 디스크 등록 게임이 있는 동안 막힘)
+    }
+
+    [Fact]
+    public void PulledInTriggerRetrySurvivesAnotherPathsFailure()
+    {
+        (Prewarmer prewarmer, DiskReadCoordinator coordinator, AutoSettings auto) = RefusedTrigger();
+        _triggerAlive = true;
+        GameGone(prewarmer, coordinator, "other");
+
+        Assert.False(prewarmer.Run(TriggeredGame("a"), "rewarm").Ran); // 트리거가 아닌 경로는 유예 중에도 거절돼 실패를 기록
+        prewarmer.Tick(auto);
+
+        Assert.Equal(["a"], _streamer.Calls);
+        Assert.False(prewarmer.HasPendingWarm("a"));
+    }
+
+    [Fact]
+    public void TriggerRetryRunsOnlyOnceAndFallsBackToTheNormalWaitWhenRefusedAgain()
+    {
+        (Prewarmer prewarmer, DiskReadCoordinator coordinator, AutoSettings auto) = RefusedTrigger();
+        _triggerAlive = true;
+        _streamer.IncompleteNext = true;
+
+        GameGone(prewarmer, coordinator, "other");
+        prewarmer.Tick(auto);
+        prewarmer.Tick(auto);
+
+        Assert.Equal(["a"], _streamer.Calls); // 다시 거절돼도 같은 틱들에서 되풀이하지 않음
+        Assert.True(prewarmer.HasPendingWarm("a"));
+    }
+
+    [Fact]
+    public void TriggerRetryIsNotPulledInWhenTheTriggerProcessIsAlreadyGone()
+    {
+        (Prewarmer prewarmer, DiskReadCoordinator coordinator, AutoSettings auto) = RefusedTrigger();
+        _triggerAlive = false;
+
+        GameGone(prewarmer, coordinator, "other");
+        prewarmer.Tick(auto);
+
+        Assert.Empty(_streamer.Calls);
+        Assert.True(prewarmer.HasPendingWarm("a")); // 기존 대기 규칙 (+재시도 간격, 유휴, 종료 후 유예) 그대로
+    }
+
+    [Fact]
+    public void TriggerPrewarmRunsWhileOnlyAnExitingGameIsRegisteredButNormalRewarmDoesNot()
+    {
+        GameSettings game = TriggeredGame("a"), other = Game("other");
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log, () => 0);
+        Prewarmer prewarmer = Make(coordinator, game, other);
+        prewarmer.SetAuto(Auto());
+        coordinator.Yield(other.OriginRoot, "game started", other.Name);
+        coordinator.MarkExiting(new HashSet<string> { "other" }); // 프로세스는 이미 없고 종료 판정만 기다림
+
+        Assert.Equal(Prewarmer.Cancelled, prewarmer.Run(game, "rewarm").SkipReason);
+        Assert.Empty(_streamer.Calls);
+        Assert.True(Assert.Single(prewarmer.OnProcessStart(Launcher())).Ran);
+        Assert.Equal(["a"], _streamer.Calls);
     }
 
     [Fact]

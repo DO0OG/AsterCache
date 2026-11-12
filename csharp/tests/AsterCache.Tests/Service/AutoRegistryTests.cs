@@ -43,6 +43,22 @@ public sealed class AutoRegistryTests : IDisposable
     }
 
     [Fact]
+    public void SettingsReloadClearsTemporaryRegistrationClaimsForRemovedGames()
+    {
+        World.Found.Add(Found("Removed", @"D:\Games\Removed", "removed.exe"));
+        AutoRegistry registry = _rig.Registry();
+
+        Assert.Equal(1, registry.DiscoverOnce());
+        GameSettings removed = Assert.Single(_rig.Reload().Games);
+        _rig.Editor.Remove(removed.Name, removed); // 자동 정리 경로: 제외 목록에 넣지 않음
+        AsterSettings reloaded = _rig.Reload();
+        registry.SettingsReloaded(reloaded, [removed]);
+
+        Assert.Equal(1, registry.DiscoverOnce());
+        Assert.Contains(removed.Name, Registered());
+    }
+
+    [Fact]
     public void LauncherDisplayNameGoesToTheStatusFileNeverToTheConfig()
     {
         string emojiTail = new string('a', 127) + "🎮";

@@ -46,6 +46,14 @@ public sealed class OrbitModel : IDisposable
 
     public static string PathFor(GameSettings game) => PathFor(Path.GetDirectoryName(game.Plan) ?? string.Empty, game.Name);
 
+    internal static void ForgetSnapshots(IEnumerable<GameSettings> games)
+    {
+        foreach (GameSettings game in games)
+        {
+            _ = SnapshotCaches.TryRemove(PathFor(game), out _);
+        }
+    }
+
     public void Dispose()
     {
         ScheduledBuild[] scheduled;

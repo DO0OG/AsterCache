@@ -742,6 +742,19 @@ public sealed class AutoTracer
     /// 그 게임이 시작되면 돌고 있는 그림자 계획을 취소합니다 (감시기 스레드에서 부름).
     public void CancelShadow(string game) => _shadow.CancelGame(game);
 
+    public void SettingsReloaded(IReadOnlyCollection<GameSettings> removed)
+    {
+        lock (_lock)
+        {
+            foreach (GameSettings game in removed)
+            {
+                _cheatLogged.Remove(game.Name);
+            }
+        }
+
+        OrbitModel.ForgetSnapshots(removed);
+    }
+
     /// 서비스 종료: 돌고 있는 세션만 정리합니다 (기록은 버림).
     public void Shutdown()
     {

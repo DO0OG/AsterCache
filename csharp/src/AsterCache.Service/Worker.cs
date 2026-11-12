@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Threading.Channels;
 using AsterCache.Core.Discovery;
 using AsterCache.Core.Logging;
@@ -314,7 +315,7 @@ public sealed class Worker : BackgroundService
             _prewarm?.ReleasePins($"launcher {s.ExeName} started"); // 런처 업데이트가 파일을 고칠 수 있게
         }
 
-        writer.TryWrite(s);
+        writer.TryWrite(s with { QueueTimestamp = Stopwatch.GetTimestamp() });
         if (_prewarm?.IsTrigger(s.ExeName) == true && (IsGameExe(s.ExeName) || !HoldTrigger(s)))
         {
             RunTrigger(s);

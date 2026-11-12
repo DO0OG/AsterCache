@@ -89,6 +89,10 @@ public sealed class OrbitModelTests : IDisposable
         Assert.Equal(new long[] { 10, 11, 12, 13 }, EpisodeBlocks(loaded.Episodes[0]).Select(block => block.Block));
         Assert.Equal(new long[] { 20, 21, 22, 23 }, EpisodeBlocks(loaded.Episodes[1]).Select(block => block.Block));
         Assert.Same(loaded, OrbitModel.Load(_dir, "foo", 0));
+
+        OrbitModel.ForgetSnapshots([_game]);
+
+        Assert.NotSame(loaded, OrbitModel.Load(_dir, "foo", 0));
     }
 
     [Fact]

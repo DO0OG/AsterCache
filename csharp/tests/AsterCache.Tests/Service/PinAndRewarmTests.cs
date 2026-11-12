@@ -738,6 +738,24 @@ public sealed class PinAndRewarmTests
     }
 
     [Fact]
+    public void RewarmCheckCanBeLoggedAgainAfterTheGameIsRemovedAndReadded()
+    {
+        Prewarmer p = WarmedGame();
+        GameSettings g = Game("a", pin: false);
+        TickAt(p, TimeSpan.Zero);
+        _probe = 0.5;
+        TickAt(p, TimeSpan.FromMinutes(10));
+        Assert.Single(_log.Lines, line => line.Contains("a: rewarm check: warm", StringComparison.Ordinal));
+
+        p.SetGames([]);
+        p.SetGames([g]);
+        Assert.True(p.Run(g, "after readd", ignoreCooldown: true).Ran);
+        TickAt(p, TimeSpan.FromMinutes(10));
+
+        Assert.Equal(2, _log.Lines.Count(line => line.Contains("a: rewarm check: warm", StringComparison.Ordinal)));
+    }
+
+    [Fact]
     public void ColdHotSetIsPrewarmedAgainEvenInsideTheCooldown()
     {
         Prewarmer p = WarmedGame();

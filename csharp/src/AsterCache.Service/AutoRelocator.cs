@@ -155,6 +155,7 @@ public sealed class AutoRelocator
     private readonly ConcurrentDictionary<string, (DateTimeOffset Until, string Text)> _transientHold = new(StringComparer.Ordinal); // 잠금 같은 일시 오류로 잔여 재계획을 못 한 게임과 다시 시도할 시각 (같은 서비스 실행 안에서 자동 재시도, 실패로 기록하지 않음)
     private readonly ConcurrentDictionary<string, (DateTimeOffset Until, string Text)> _unreadableHold = new(StringComparer.Ordinal); // 읽지 못한 파일이 계획에 보류로 남아 완료로 확정하지 못한 게임과 다시 계획할 시각
     private readonly ConcurrentDictionary<string, DateTimeOffset> _traceWarmTried = new(StringComparer.Ordinal); // 게임별로 예열을 시도한 트레이스 파일 시각
+    private readonly ConcurrentDictionary<string, byte> _removedGameCaches = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _warmLock = new(); // 아래 예열 큐 상태
     private readonly object _noteLock = new(); // 대기 표시 갱신과 예열 완료 표시가 서로의 detail 을 덮지 않게
     private readonly Queue<(GameSettings Game, string Why)> _warmQueue = new();
@@ -181,6 +182,14 @@ public sealed class AutoRelocator
     public IDriveRecovery Recovery => _recovery;
 
     public void SetGameExitTracker(GameExitTracker tracker) => _exitTracker = tracker;
+
+    public void SettingsReloaded(IEnumerable<GameSettings> removed)
+    {
+        foreach (GameSettings game in removed)
+        {
+            _removedGameCaches.TryAdd(game.Name, 0);
+        }
+    }
 
     private bool HeavyWorkAllowed(GameSettings target)
     {
@@ -229,6 +238,7 @@ public sealed class AutoRelocator
 
     public void Tick(ReapplyGate gate, CancellationToken ct)
     {
+        CleanupRemovedGameCaches();
         var warms = new List<(GameSettings Game, string Why)>(); // 틱 끝에서 요청 (재배치를 예열보다 먼저, 예열이 틱을 늦추지 않게)
         try
         {
@@ -238,6 +248,45 @@ public sealed class AutoRelocator
         finally
         {
             warms.ForEach(w => QueueWarm(w.Game, w.Why));
+        }
+    }
+
+    private void CleanupRemovedGameCaches()
+    {
+        IReadOnlyList<GameSettings> current = _settings().Games;
+        foreach (string name in _removedGameCaches.Keys)
+        {
+            if (current.Any(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase)))
+            {
+                _ = _removedGameCaches.TryRemove(name, out _);
+                continue;
+            }
+
+            lock (_warmLock)
+            {
+                if (_warming == name || _warmQueue.Any(q => string.Equals(q.Game.Name, name, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+            }
+
+            _coldTried.TryRemove(name, out _);
+            _staleChecked.Remove(name);
+            _delayLogged.Remove(name);
+            _prefetchTried.Remove(name);
+            _supplementChecked.Remove(name);
+            _volatileChecked.Remove(name);
+            _seeded.Remove(name);
+            _smrBudgetLogged.TryRemove(name, out _);
+            _limitSeen.Remove(name);
+            _extTried.Remove(name);
+            _planFailedAt.TryRemove(name, out _);
+            _transientHold.TryRemove(name, out _);
+            _unreadableHold.TryRemove(name, out _);
+            _traceWarmTried.TryRemove(name, out _);
+            _progress.TryRemove(name, out _);
+            _blockers.Clear(name);
+            _ = _removedGameCaches.TryRemove(name, out _);
         }
     }
 

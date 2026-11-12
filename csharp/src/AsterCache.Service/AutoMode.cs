@@ -85,13 +85,17 @@ public sealed class AutoMode
     public void SetSettings(AsterSettings s)
     {
         AsterSettings old = _settings;
+        HashSet<string> liveGames = new(s.Games.Select(g => g.Name), StringComparer.OrdinalIgnoreCase);
+        GameSettings[] removed = old.Games.Where(g => !liveGames.Contains(g.Name)).ToArray();
         _settings = s;
-        _registry.SettingsReloaded(s);
+        _registry.SettingsReloaded(s, removed);
+        _tracer.SettingsReloaded(removed);
+        _relocator.SettingsReloaded(removed);
         if (s.Games.Any(g => g.Source == "auto" && old.Games.All(o => o.Name != g.Name)))
         {
             RequestTick(); // 새로 등록된 자동 게임 (설정에 들어온 뒤라야 틱이 봄): 부트스트랩·콜드 예열을 다음 30 초 틱까지 미루지 않음
         }
-        foreach (string gone in old.Games.Select(g => g.Name).Except(s.Games.Select(g => g.Name)))
+        foreach (string gone in removed.Select(g => g.Name))
         {
             Status.Remove(gone); // 설정에서 빠진 게임의 상태는 버림 (같은 이름으로 다시 등록되면 새로 시작)
         }

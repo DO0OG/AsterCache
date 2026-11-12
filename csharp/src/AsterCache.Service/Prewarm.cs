@@ -385,6 +385,8 @@ public sealed class Prewarmer
     private readonly Func<DateTimeOffset> _now;
     private readonly object _gate = new(); // 짧은 메모리 상태만 보호: 스트림이 도는 동안에도 LastWarmed·Warmed 가 막히지 않게
     private readonly object _run = new(); // 예열을 한 번에 하나로
+    private readonly Dictionary<string, int> _activeWork = new(StringComparer.OrdinalIgnoreCase); // 설정 재적재 때 진행 중인 게임 상태를 보존, _gate 로 보호
+    private readonly HashSet<string> _removedGames = new(StringComparer.OrdinalIgnoreCase); // 진행 중 작업이 끝난 뒤 임시 상태를 정리할 게임, _gate 로 보호
     private readonly Dictionary<string, DateTimeOffset> _last = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _lastBeforeBoot = new(StringComparer.OrdinalIgnoreCase); // 부팅 전에 성공한 예열 시각 (상태 파일), 새 트레이스 판정 (LastWarmed) 만 씀, _gate 로 보호
     private sealed record PendingWarm(DateTimeOffset RetryAt, string Reason);
@@ -442,6 +444,13 @@ public sealed class Prewarmer
     private sealed record ProbeFileGeneration(string Path, bool Exists, long Size, long MtimeNs);
     private sealed record ProbeGeneration(ProbeFileGeneration Plan, ProbeFileGeneration Trace, ProbeFileGeneration WarmOnly);
     private sealed record ResidencyProbe(bool Warm, DateTimeOffset At, ProbeGeneration Generation);
+
+    private sealed class GameWorkLease(Prewarmer owner, string game) : IDisposable
+    {
+        private Prewarmer? _owner = owner;
+
+        public void Dispose() => Interlocked.Exchange(ref _owner, null)?.EndGameWork(game);
+    }
 
     public Prewarmer(IReadOnlyList<GameSettings> games, IGameStreamer streamer, PrewarmEnv env, ILog log, string? statusPath = null, Func<DateTimeOffset>? now = null,
         DiskReadCoordinator? coordinator = null)
@@ -585,6 +594,77 @@ public sealed class Prewarmer
     }
 
     private long PhysCapMib() => CacheCapMib(_env.PhysicalRamBytes(), _games);
+
+    private IDisposable TrackGameWork(string game)
+    {
+        lock (_gate)
+        {
+            _activeWork[game] = _activeWork.GetValueOrDefault(game) + 1;
+        }
+
+        return new GameWorkLease(this, game);
+    }
+
+    private void EndGameWork(string game)
+    {
+        lock (_gate)
+        {
+            if (_activeWork.TryGetValue(game, out int count) && count > 1)
+            {
+                _activeWork[game] = count - 1;
+            }
+            else
+            {
+                _activeWork.Remove(game);
+                PruneRemovedGameLocked(game);
+            }
+        }
+    }
+
+    private void PruneRemovedGameLocked(string game)
+    {
+        if (!_removedGames.Contains(game) || _activeWork.ContainsKey(game)
+            || _relocStarted.Contains(game)
+            || string.Equals(_streaming, game, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(_coldReading, game, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _removedGames.Remove(game);
+        _last.Remove(game);
+        _pendingWarm.Remove(game);
+        _idleSince.Remove(game);
+        _profileMiss.Remove(game);
+        _residencyProbes.Remove(game);
+        _refusedLogged.Remove(game);
+        _delayLogged.Remove(game);
+        _relocHoldLogged.Remove(game);
+        _supplementNothingNew.Remove(game);
+        _pendingWarmBudgetSkipped.Remove(game);
+        _readSample.Remove(game);
+        _gameIdleSince.Remove(game);
+        _coldMib.Remove(game);
+        _coldSamples.Remove(game);
+        _resume.Remove(game);
+        _supplementReadProgress.Remove(game);
+        _supplementRetry.Remove(game);
+        foreach (string key in _skipLogged.Keys.Where(k => k.StartsWith(game + "|", StringComparison.OrdinalIgnoreCase)).ToList())
+        {
+            _skipLogged.Remove(key);
+        }
+
+        if (_triggered is { } trigger && string.Equals(trigger.Game, game, StringComparison.OrdinalIgnoreCase))
+        {
+            _triggered = null;
+        }
+
+        HashSet<string> liveTriggers = new(_games.SelectMany(g => g.Prewarm.TriggerExes), StringComparer.OrdinalIgnoreCase);
+        foreach (string triggerExe in _triggerSeen.Keys.Where(k => !liveTriggers.Contains(k)).ToList())
+        {
+            _triggerSeen.Remove(triggerExe);
+        }
+    }
 
     // 전체가 들어가지 않을 때 읽을 앞부분의 크기 (MiB): min(원래 읽을 양, 가용 RAM - 예비, 예열 예산 physCapMib). 너무 작으면 null (건너뜀). 앞쪽 = 계획 순서 = 게임이 먼저 읽는 순서.
     // roomMib: 묶음에서 남은 예산 (MiB, 단독 예열이면 제한 없음).
@@ -1104,42 +1184,43 @@ public sealed class Prewarmer
     {
         IReadOnlyList<GameSettings> before = _games;
         _games = games;
+        HashSet<string> live = new(games.Select(g => g.Name), StringComparer.OrdinalIgnoreCase);
         lock (_gate)
         {
-            foreach (string gone in _pendingWarm.Keys.Where(k => !games.Any(g => string.Equals(g.Name, k, StringComparison.OrdinalIgnoreCase))).ToList())
+            foreach (GameSettings gone in before.Where(g => !live.Contains(g.Name)))
+            {
+                _removedGames.Add(gone.Name);
+            }
+
+            _removedGames.RemoveWhere(live.Contains);
+            foreach (string stale in _resume.Keys.Concat(_supplementRetry.Keys).Concat(_supplementReadProgress.Keys).Distinct(StringComparer.OrdinalIgnoreCase).ToList())
+            {
+                GameSettings? now = games.FirstOrDefault(g => string.Equals(g.Name, stale, StringComparison.OrdinalIgnoreCase));
+                GameSettings? was = before.FirstOrDefault(g => string.Equals(g.Name, stale, StringComparison.OrdinalIgnoreCase));
+                bool changed = now is not null && was != now;
+                bool removed = now is null;
+                if (changed || removed && !_activeWork.ContainsKey(stale) && !_relocStarted.Contains(stale))
+                {
+                    _resume.Remove(stale); // 빠진 게임, 또는 설정 (읽을 목록) 이 바뀐 게임의 이어 읽기 위치는 낡음
+                    _supplementRetry.Remove(stale);
+                    _supplementReadProgress.Remove(stale);
+                }
+            }
+
+            foreach (string gone in _pendingWarm.Keys.Where(k => !live.Contains(k) && !_activeWork.ContainsKey(k)).ToList())
             {
                 _pendingWarm.Remove(gone);
                 _idleSince.Remove(gone);
                 _pendingWarmBudgetSkipped.Remove(gone);
             }
 
-            foreach (string stale in _resume.Keys.Where(k => games.FirstOrDefault(g => string.Equals(g.Name, k, StringComparison.OrdinalIgnoreCase)) is not { } now
-                || before.FirstOrDefault(g => string.Equals(g.Name, k, StringComparison.OrdinalIgnoreCase)) != now).ToList())
+            foreach (string gone in _removedGames.ToList())
             {
-                _resume.Remove(stale); // 빠진 게임, 또는 설정 (읽을 목록) 이 바뀐 게임의 이어 읽기 위치는 낡음
-            }
-
-            foreach (string stale in _supplementRetry.Keys.Concat(_supplementReadProgress.Keys).Distinct(StringComparer.OrdinalIgnoreCase)
-                .Where(k => games.FirstOrDefault(g => string.Equals(g.Name, k, StringComparison.OrdinalIgnoreCase)) is not { } now
-                    || before.FirstOrDefault(g => string.Equals(g.Name, k, StringComparison.OrdinalIgnoreCase)) != now).ToList())
-            {
-                _supplementRetry.Remove(stale);
-                _supplementReadProgress.Remove(stale);
-            }
-
-            foreach (string gone in _coldMib.Keys.Where(k => !games.Any(g => string.Equals(g.Name, k, StringComparison.OrdinalIgnoreCase))).ToList())
-            {
-                _coldMib.Remove(gone);
-                _coldSamples.Remove(gone);
-                _refusedLogged.Remove(gone);
-            }
-
-            foreach (string stale in _supplementNothingNew.Keys.Where(k => !games.Any(g => string.Equals(g.Name, k, StringComparison.OrdinalIgnoreCase))).ToList())
-            {
-                _supplementNothingNew.Remove(stale);
+                PruneRemovedGameLocked(gone);
             }
         }
 
+        _rewarm.SetGames(games);
         _pins.Reconcile(games);
         bool budgetWaiting;
         lock (_gate)
@@ -2222,6 +2303,7 @@ public sealed class Prewarmer
 
         try
         {
+            using IDisposable work = TrackGameWork(game.Name);
             if (ct.IsCancellationRequested || !HeavyWorkAllowed(game)
                 || DriveHasRunningGame(game) || _games.Any(x => Relocating(x.Name)) || Deferred(game))
             {
@@ -2311,6 +2393,42 @@ public sealed class Prewarmer
             if (!HeavyWorkAllowed(game))
             {
                 return false;
+            }
+
+            using PrewarmRun run = PrewarmRun.Begin();
+            long? finalReadBytes = ReadSetBytes(warm, partial: windowMib is not null || skipBytes > 0);
+            avail = _env.AvailableRamMib();
+            if (finalReadBytes is > 0 and long finalReadSize)
+            {
+                long finalReadMib = (finalReadSize + (1 << 20) - 1) >> 20;
+                long reserveMib = Math.Max(game.Prewarm.MinFreeRamMib, GapFillReserveMib);
+                long allowedMib = Math.Min(Math.Min(physCap, allocatedMib ?? long.MaxValue), avail - reserveMib);
+                if (finalReadMib > allowedMib)
+                {
+                    long shrinkAvailableMib = Math.Max(0, avail - FinalShrinkHeadroomMib);
+                    if (PartialCapMib(game, finalReadMib, shrinkAvailableMib, physCap, budgetCap) is { } capMib)
+                    {
+                        bool changedWindow = windowMib is null || windowMib.Value != capMib;
+                        windowMib = capMib;
+                        warm = game with { MaxStreamMib = (int)capMib, MaxStreamSet = true };
+                        if (changedWindow)
+                        {
+                            skipBytes = 0; // 창이나 틈 메우기 방식이 바뀌면 이전 스케줄의 앞부분을 건너뛰지 않음
+                            lock (_gate)
+                            {
+                                _resume.Remove(game.Name);
+                            }
+                        }
+
+                        _log.Info($"{game.Name}: supplement memory budget fell after planning; reading the first {capMib} MiB of {p.HotMib} MiB");
+                    }
+                    else
+                    {
+                        string reason = $"low memory (available {avail} MiB, reserve {reserveMib} MiB, final set {finalReadMib} MiB; less than {MinPartialMib} MiB fits)";
+                        LogSkipped(game.Name, reason, $"{game.Name}: supplement prewarm skipped ({reason})");
+                        return false;
+                    }
+                }
             }
 
             long readCapMib = windowMib ?? p.HotMib;
@@ -2725,6 +2843,7 @@ public sealed class Prewarmer
 
         try
         {
+            using IDisposable work = TrackGameWork(g.Name);
             using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct); // 같은 디스크 게임 시작 (NoteGameStart) 이 끊을 수 있게 호출자 ct 와 연결
             if (!TryMarkReading(g.Name, () =>
             {
@@ -3011,7 +3130,7 @@ public sealed class Prewarmer
         int suppressed = 0;
         lock (_gate)
         {
-            string key = game + "|" + reason;
+            string key = SkipLogKey(game, reason);
             DateTimeOffset now = _now();
             if (_skipLogged.TryGetValue(key, out (DateTimeOffset At, int Count) last))
             {
@@ -3029,6 +3148,43 @@ public sealed class Prewarmer
 
         string text = line();
         _log.Info(suppressed > 0 ? $"{text} (suppressed {suppressed})" : text);
+    }
+
+    internal static string SkipLogKey(string game, string reason) => game + "|" + StableSkipReason(reason);
+
+    private static string StableSkipReason(string reason)
+    {
+        if (reason.StartsWith("supplement cancelled ", StringComparison.Ordinal))
+        {
+            return "supplement-cancelled|" + StableSkipReason(reason[21..]);
+        }
+
+        if (reason.StartsWith("prewarm cancelled ", StringComparison.Ordinal))
+        {
+            return "prewarm-cancelled|" + StableSkipReason(reason[18..]);
+        }
+
+        if (reason.StartsWith("head cancelled ", StringComparison.Ordinal))
+        {
+            return "head-cancelled|" + StableSkipReason(reason[15..]);
+        }
+
+        if (reason.StartsWith("low memory", StringComparison.Ordinal))
+        {
+            return "low-memory";
+        }
+
+        if (reason.StartsWith("memory reserve:", StringComparison.Ordinal))
+        {
+            return "memory-reserve";
+        }
+
+        if (reason.StartsWith("memory budget:", StringComparison.Ordinal))
+        {
+            return "memory-budget";
+        }
+
+        return reason.StartsWith("cooldown (", StringComparison.Ordinal) ? "cooldown" : reason;
     }
 
     private void LogSupplementNothingNew(string game, long capMib, long warmedMib, long hotMib)
@@ -3195,6 +3351,7 @@ public sealed class Prewarmer
 
     private void StreamHead(GameSettings game, CancellationToken ct)
     {
+        using IDisposable work = TrackGameWork(game.Name);
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "warm heads", ct, preserveForGameRoot: _auto.KeepStreamOnGameStart ? game.OriginRoot : null, preserveGameKey: game.Name);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
         {
@@ -3308,6 +3465,7 @@ public sealed class Prewarmer
     {
         lock (_run)
         {
+            using IDisposable work = TrackGameWork(game.Name);
             DateTimeOffset now = _now();
             if (ct.IsCancellationRequested)
             {

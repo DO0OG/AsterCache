@@ -655,6 +655,7 @@ public sealed class Worker : BackgroundService
 
             HashSet<string> names = new(procs.Select(p => p.Exe), StringComparer.OrdinalIgnoreCase);
             GameSettings[] exited;
+            IReadOnlySet<string> grace;
             List<GameSettings> unseen = [];
             lock (_gameStateLock)
             {
@@ -663,7 +664,7 @@ public sealed class Worker : BackgroundService
                     .Where(name => _settings.Games.Any(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase)))
                     .ToDictionary(name => name, name => _settings.Games.First(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase)).OriginRoot, StringComparer.OrdinalIgnoreCase);
                 _coordinator.ReconcileRunningGames(registered);
-                IReadOnlySet<string> grace = _exits.GraceNames;
+                grace = _exits.GraceNames;
                 foreach (GameSettings game in _settings.Games.Where(g => registered.ContainsKey(g.Name) && (!grace.Contains(g.Name) || !_coordinator.IsRegistered(g.Name))))
                 {
                     _coordinator.Yield(game.OriginRoot, "registered game running", game.Name); // 시작 이벤트 누락·서비스 재시작에도 실행 중에는 새 배경 I/O 를 예약하지 않음
@@ -677,6 +678,12 @@ public sealed class Worker : BackgroundService
                 _coordinator.MarkExiting(grace); // 종료 유예 중 게임은 양보는 유지하되 다른 게임 시작 스트림 판단에서 뺌
             }
 
+            if (_playRecorder is { } recorder)
+            {
+                TryPlayRecording("gone", () => recorder.NoteGone(_exits.GoneSince));
+            }
+
+            _prewarm?.NoteGamesGone(grace);
             ObserveRunningGames(procs);
             foreach (GameSettings g in exited)
             {

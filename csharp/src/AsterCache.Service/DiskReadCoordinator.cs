@@ -40,15 +40,16 @@ public sealed class DiskReadCoordinator
         private readonly CancellationTokenSource _stop;
         private readonly string? _startGameKey;
         private readonly bool _startStream;
+        private readonly bool _allowExiting;
         private readonly object _activityLock = new();
         private ReadIssueSnapshot? _lastReadIssue;
         internal bool _disposed;
 
         internal readonly record struct ReadIssueSnapshot(string Stage, long RequestBytes, bool IsData, long At);
 
-        internal Lease(DiskReadCoordinator owner, DiskState[] states, CancellationTokenSource stop, string purpose, string? startGameKey, bool startStream)
+        internal Lease(DiskReadCoordinator owner, DiskState[] states, CancellationTokenSource stop, string purpose, string? startGameKey, bool startStream, bool allowExiting)
         {
-            (_owner, _states, _stop, Purpose, _startGameKey, _startStream) = (owner, states, stop, purpose, startGameKey, startStream);
+            (_owner, _states, _stop, Purpose, _startGameKey, _startStream, _allowExiting) = (owner, states, stop, purpose, startGameKey, startStream, allowExiting);
         }
 
         public string Purpose { get; }
@@ -60,6 +61,8 @@ public sealed class DiskReadCoordinator
         internal string? StartGameKey => _startGameKey;
 
         internal bool IsStartStream => _startStream;
+
+        internal bool AllowsExiting => _allowExiting;
 
         internal CancellationTokenSource StopSource => _stop;
 
@@ -125,9 +128,13 @@ public sealed class DiskReadCoordinator
     // 시작 스트림 허용: 게임 key 가 등록돼 있고 다른 등록 게임은 모두 종료 유예 중일 때만.
     private static bool StartAllowed(DiskState s, string key) => s.RunningGames.ContainsKey(key) && s.RunningGames.Keys.All(k => string.Equals(k, key, StringComparison.OrdinalIgnoreCase) || s.Exiting.Contains(k));
 
+    // 등록된 게임이 모두 종료 유예 중이거나 하나도 없음: 프로세스는 이미 사라졌고 판정만 기다리는 상태.
+    private static bool OnlyExiting(DiskState s) => s.RunningGames.Keys.All(s.Exiting.Contains);
+
     /// 경로가 쓰는 볼륨 중 하나라도 양보 중이면 null.
     /// preserveForGameRoot: 이미 도는 스트림은 그 게임이 시작해도 유지합니다 (서비스 종료·다른 게임 시작에만 멈춤). allowWhileYielded: 새 게임 시작 스트림 전용.
-    public Lease? TryBegin(string path, string purpose, CancellationToken serviceToken = default, string? preserveForGameRoot = null, bool allowWhileYielded = false, string? preserveGameKey = null)
+    /// allowWhileExiting: 런처 트리거 예열 전용. 양보 등록이 종료 유예 중인 게임뿐이면 거절하지 않고, 유예 중 게임이 다시 뜨거나 다른 게임이 시작하면 취소됩니다.
+    public Lease? TryBegin(string path, string purpose, CancellationToken serviceToken = default, string? preserveForGameRoot = null, bool allowWhileYielded = false, string? preserveGameKey = null, bool allowWhileExiting = false)
     {
         if (serviceToken.IsCancellationRequested)
         {
@@ -140,16 +147,17 @@ public sealed class DiskReadCoordinator
             DiskState[] states = StatesFor(volumeRoot);
             string? startGameKey = preserveForGameRoot is null ? null : preserveGameKey ?? NormalizeRoot(preserveForGameRoot);
             bool startStream = startGameKey is not null;
-            if (states.Any(s => s.Yielded && (!allowWhileYielded || startGameKey is null || !StartAllowed(s, startGameKey))))
+            if (states.Any(s => s.Yielded && !(allowWhileExiting && OnlyExiting(s)) && (!allowWhileYielded || startGameKey is null || !StartAllowed(s, startGameKey))))
             {
                 return null;
             }
 
             CancellationToken[] tokens = startStream
                 ? [_serviceToken.CanBeCanceled ? _serviceToken : CancellationToken.None] // 서비스 토큰이 없으면 호출자(예열) 토큰에 묶지 않음: 같은 게임 지속 예외가 예열 취소로 끊기지 않게
+                : allowWhileExiting ? [serviceToken] // 유예 중 게임이 양보를 걸며 이미 취소한 세대에는 묶지 않음: 취소는 Yield 가 직접 함
                 : [.. states.Select(s => s.Generation.Token), serviceToken];
             var stop = CancellationTokenSource.CreateLinkedTokenSource(tokens);
-            var lease = new Lease(this, states, stop, purpose, startGameKey, startStream);
+            var lease = new Lease(this, states, stop, purpose, startGameKey, startStream, allowWhileExiting);
             foreach (DiskState state in states)
             {
                 _ = state.Active.Add(lease);
@@ -185,7 +193,11 @@ public sealed class DiskReadCoordinator
 
             foreach (DiskState state in states)
             {
-                _ = state.Exiting.Remove(key); // 다시 뜬 게임은 유예 해제
+                if (state.Exiting.Remove(key)) // 다시 뜬 게임은 유예 해제: 유예 동안만 허용된 대여는 바로 멈춤
+                {
+                    cancel.AddRange(ExitingLeases(state, [key]));
+                }
+
                 if (state.RunningGames.TryGetValue(key, out string? registeredRoot) && string.Equals(registeredRoot, root, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
@@ -260,17 +272,35 @@ public sealed class DiskReadCoordinator
     }
 
     /// 종료 유예 중인 게임 키 전체를 통째로 갱신합니다 (빠진 키는 유예 해제). 양보는 그대로 두고 시작 스트림 허용 판단에서만 빠집니다.
+    /// 유예에서 빠졌는데 아직 등록된 키 (다시 뜬 게임) 가 있으면 유예 동안만 허용된 대여를 멈춥니다: 시작 이벤트 경로는 Yield 앞에서 이 호출로 유예를 먼저 풂.
     public void MarkExiting(IReadOnlySet<string> gameKeys)
     {
+        List<CancellationTokenSource> cancel = [];
         lock (_sync)
         {
             foreach (DiskState state in _states)
             {
+                if (state.Exiting.Count > 0)
+                {
+                    string[] returned = [.. state.Exiting.Where(key => !gameKeys.Contains(key) && state.RunningGames.ContainsKey(key))];
+                    if (returned.Length > 0)
+                    {
+                        cancel.AddRange(ExitingLeases(state, returned));
+                    }
+                }
+
                 state.Exiting.Clear();
                 state.Exiting.UnionWith(state.RunningGames.Keys.Where(gameKeys.Contains));
             }
         }
+
+        Cancel(cancel);
     }
+
+    // 유예 동안만 허용된 대여. 돌아온 게임 자신의 시작 스트림은 그 게임을 위한 것이라 뺍니다.
+    private static IEnumerable<CancellationTokenSource> ExitingLeases(DiskState state, string[] returned) =>
+        state.Active.Where(lease => lease.AllowsExiting && !(lease.IsStartStream && lease.StartGameKey is { } key && returned.Contains(key, StringComparer.OrdinalIgnoreCase)))
+            .Select(lease => lease.StopSource);
 
     /// gameKey 가 어느 디스크에든 양보 등록돼 있는가.
     public bool IsRegistered(string gameKey)
@@ -318,7 +348,7 @@ public sealed class DiskReadCoordinator
         lock (_sync)
         {
             return !lease._disposed && !lease.Token.IsCancellationRequested && lease._states.All(state => state.Active.Contains(lease)
-                && (!state.Yielded || lease.IsStartStream && lease.StartGameKey is { } key && StartAllowed(state, key)));
+                && (!state.Yielded || lease.IsStartStream && lease.StartGameKey is { } key && StartAllowed(state, key) || lease.AllowsExiting && OnlyExiting(state)));
         }
     }
 

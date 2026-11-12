@@ -109,6 +109,10 @@ public sealed class PlayRecorder : IDisposable
                 _active.Add(game.Name, session);
                 session.SamplingTask = Task.Run(() => SampleSessionAsync(session));
             }
+            else
+            {
+                session.NoteReturn(_now()); // 유예 중에 같은 게임의 다른 exe 가 뜸: 종료가 아님
+            }
 
             _processSessions.Add(key, session);
             return true;
@@ -120,8 +124,14 @@ public sealed class PlayRecorder : IDisposable
     {
         lock (_gate)
         {
-            if (_disposed || _active.ContainsKey(game.Name))
+            if (_disposed)
             {
+                return false;
+            }
+
+            if (_active.TryGetValue(game.Name, out Session? current))
+            {
+                current.NoteReturn(_now()); // 매 틱 실행 중인 게임마다 불림: 유예에서 돌아온 세션의 소멸 표시를 지움
                 return false;
             }
 
@@ -132,6 +142,29 @@ public sealed class PlayRecorder : IDisposable
             _active.Add(game.Name, session);
             session.SamplingTask = Task.Run(() => SampleSessionAsync(session));
             return true;
+        }
+    }
+
+    /// 종료 유예 중인 게임의 소멸 최초 관측 시각을 세션에 표시합니다. 종료가 확정되면 기록은 그 시각까지만 셉니다 (유예 60~90 초는 게임 시간이 아님).
+    internal void NoteGone(IReadOnlyDictionary<string, DateTimeOffset> goneSince)
+    {
+        if (goneSince.Count == 0)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            long tick = _timestamp();
+            DateTimeOffset now = _now();
+            foreach ((string game, DateTimeOffset at) in goneSince)
+            {
+                if (_active.TryGetValue(game, out Session? session))
+                {
+                    long lag = Math.Max(0, (long)((now - at).TotalSeconds * Stopwatch.Frequency));
+                    session.NoteGone(at, tick - lag); // 시각과 틱을 같은 순간 (첫 관측) 에 맞춤
+                }
+            }
         }
     }
 
@@ -435,6 +468,11 @@ public sealed class PlayRecorder : IDisposable
         private PlayStreamResult _startStream = initialStartStream ?? new("pending", null, null, null, null);
         private DateTimeOffset? _endedAt;
         private double _finalDurationSeconds;
+        private DateTimeOffset? _goneAt; // 프로세스가 사라진 것을 처음 본 시각 (종료 유예 중에만 있음)
+        private long _goneTick;
+        private PlayWindowSummary? _goneTotal; // 그 시각까지의 누계
+        private int _goneWindows;
+        private DateTimeOffset _returnedAt = DateTimeOffset.MinValue; // 유예에서 돌아온 마지막 시각
 
         public GameSettings Game { get; } = game;
         public DateTimeOffset StartedAt { get; } = startedAt;
@@ -496,6 +534,27 @@ public sealed class PlayRecorder : IDisposable
             }
         }
 
+        public void NoteGone(DateTimeOffset at, long tick)
+        {
+            lock (_gate)
+            {
+                if (_goneAt is not null || at <= _returnedAt)
+                {
+                    return; // 처음 본 시각을 유지, 돌아오기 전의 옛 소멸 표시는 되살리지 않음 (틱 스레드와 시작 이벤트 스레드의 경쟁)
+                }
+
+                (_goneAt, _goneTick, _goneTotal, _goneWindows) = (at, tick, _accumulator.Total(), _windows.Count);
+            }
+        }
+
+        public void NoteReturn(DateTimeOffset at)
+        {
+            lock (_gate)
+            {
+                (_goneAt, _goneTotal, _returnedAt) = (null, null, at);
+            }
+        }
+
         public void RequestEnd(string reason)
         {
             lock (_gate)
@@ -521,8 +580,8 @@ public sealed class PlayRecorder : IDisposable
         {
             lock (_gate)
             {
-                _endedAt = now;
-                _finalDurationSeconds = Math.Max(0, Stopwatch.GetElapsedTime(StartedTick, tick).TotalSeconds);
+                _endedAt = _goneAt ?? now;
+                _finalDurationSeconds = Math.Max(0, Stopwatch.GetElapsedTime(StartedTick, _goneAt is null ? tick : _goneTick).TotalSeconds);
                 _requestedEndReason = reason;
                 if (_status != "unavailable")
                 {
@@ -558,8 +617,8 @@ public sealed class PlayRecorder : IDisposable
                 AvailableRamMib = AvailableRamMib,
                 StartWarm = Warm,
                 StartStream = _startStream,
-                Windows = [.. _windows],
-                Total = final ? _accumulator.Total() : null,
+                Windows = [.. final && _goneAt is not null ? _windows.Take(_goneWindows) : _windows],
+                Total = final ? _goneTotal ?? _accumulator.Total() : null,
             };
         }
     }

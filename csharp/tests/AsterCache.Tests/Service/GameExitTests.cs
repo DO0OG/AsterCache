@@ -140,6 +140,25 @@ public sealed class GameExitTests
     }
 
     [Fact]
+    public void GoneSinceKeepsTheFirstObservationTimeUntilTheExitIsReported()
+    {
+        var tracker = Tracker();
+        var game = Games.Make("cod", "cod.exe");
+
+        _ = tracker.Poll([game], Names("cod.exe"));
+        Assert.Empty(tracker.GoneSince);
+        DateTimeOffset first = _now;
+        _ = tracker.Poll([game], Names());
+        _now += TimeSpan.FromSeconds(30);
+        _ = tracker.Poll([game], Names());
+
+        Assert.Equal(first, tracker.GoneSince["cod"]); // 종료 확정 시각이 아니라 처음 본 시각
+        _now += GameExitTracker.Grace;
+        Assert.Single(tracker.Poll([game], Names()));
+        Assert.Empty(tracker.GoneSince);
+    }
+
+    [Fact]
     public void GoneNamesIsReadOnlyAndLeavesTheExitDecisionToThePoll()
     {
         var tracker = Tracker();

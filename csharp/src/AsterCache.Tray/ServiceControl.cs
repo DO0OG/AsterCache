@@ -100,7 +100,7 @@ public sealed class ScmServiceControl(IElevator elevator, string serviceName = S
         }
     }
 
-    /// SCM 에 등록된 경로 (ImagePath, 일반 사용자도 읽음) 의 실행 파일 버전. 트레이는 Velopack 으로, 서비스는 설치 프로그램으로 따로 갱신되므로 둘이 어긋날 수 있습니다.
+    /// SCM 에 등록된 경로 (ImagePath, 일반 사용자도 읽음) 의 실행 파일 버전. 트레이와 서비스는 같은 설치 프로그램으로 갱신되지만, 서비스 등록을 고르지 않았거나 설치가 중간에 멈추면 둘이 어긋날 수 있습니다.
     public string? InstalledVersion()
     {
         try

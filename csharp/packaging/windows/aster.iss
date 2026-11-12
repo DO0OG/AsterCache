@@ -59,6 +59,8 @@ LanguageDetectionMethod=uilanguage
 CloseApplications=yes
 ; 서비스 등록과 ACL 설정에 관리자 권한이 필요하다.
 PrivilegesRequired=admin
+; 자동 업데이트와 사람이 연 설치가 겹쳐 두 설치 프로그램이 동시에 파일과 서비스를 바꾸지 않게 한다.
+SetupMutex=AsterCacheSetupMutex
 ; x64compatible 은 Inno Setup 6.3 부터다. 그 이전 컴파일러도 받아들이도록 분기한다.
 #if Ver >= EncodeVer(6,3,0)
 ArchitecturesAllowed=x64compatible
@@ -173,10 +175,23 @@ begin
   end;
 end;
 
+var
+  // True for a silent upgrade of an install whose tray starts from the logon task: the tray is started again when Setup ends, even if it failed (an automatic update closed it).
+  RelaunchTray: Boolean;
+
+function TrayTaskExists(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(ExpandConstant('{sys}\schtasks.exe'), '/Query /TN {#AppName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
 // Before file copy: an earlier install's service must not hold the old files. A non-empty result stops Setup with that message (nothing has been copied yet).
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
+  // Decided before anything changes: an earlier install of the tray (copied files) with its logon task.
+  RelaunchTray := WizardSilent and FileExists(ExpandConstant('{app}\{#TrayExe}')) and TrayTaskExists();
   // The running tray keeps its files locked, so it is closed before the copy. It may not be running.
   RunTool(ExpandConstant('{sys}\taskkill.exe'), '/IM {#TrayExe} /F', False);
   if not ServiceExists() then Exit;
@@ -328,6 +343,14 @@ begin
       RunTool(ExpandConstant('{sys}\sc.exe'), 'start {#ServiceName}', False);
     end;
   end;
+end;
+
+// Runs whether Setup succeeded, failed or was aborted (PrepareToInstall closes the tray before anything can fail): after a silent upgrade the tray is started again
+// through its logon task, which runs it in the signed-in user's session. Not essential: a failure is ignored.
+procedure DeinitializeSetup();
+begin
+  if RelaunchTray and TrayTaskExists() then
+    RunTool(ExpandConstant('{sys}\schtasks.exe'), '/Run /TN {#AppName}', False);
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

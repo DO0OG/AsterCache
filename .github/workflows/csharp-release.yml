@@ -77,6 +77,12 @@ jobs:
         with:
           name: AsterCache-win-x64-${{ inputs.version }}
           path: dist
+      - name: Write SHA256SUMS.txt (the in-app updater verifies the installer against it)
+        shell: bash
+        run: |
+          # Lines are "<hash>  <file name>" with bare file names, for the zip and the installer.
+          (cd dist/releases/gui && sha256sum *.zip; cd ../../artifacts/installer && sha256sum *.exe) > dist/SHA256SUMS.txt
+          cat dist/SHA256SUMS.txt
       - name: Create GitHub release
         shell: bash
         env:
@@ -85,14 +91,14 @@ jobs:
           VERSION: ${{ inputs.version }}
           PRERELEASE_FLAG: ${{ contains(inputs.version, '-') && '--prerelease' || '' }}
         run: |
-          assets=(dist/releases/gui/*.zip dist/artifacts/installer/*.exe)
+          assets=(dist/releases/gui/*.zip dist/artifacts/installer/*.exe dist/SHA256SUMS.txt)
           gh release create "v$VERSION" "${assets[@]}" \
             --target "${{ github.sha }}" \
             --title "AsterCache v$VERSION" \
             --generate-notes $PRERELEASE_FLAG
 
-# Runs after verify and package. Publishes a GitHub release with the management-window zip and the
-# Inno Setup installer. A version containing "-" (e.g. 0.9.0-beta.1) is marked as a prerelease.
+# Runs after verify and package. Publishes a GitHub release with the management-window zip, the
+# Inno Setup installer and SHA256SUMS.txt (hashes of both). A version containing "-" (e.g. 0.9.0-beta.1) is marked as a prerelease.
 # The installer and the zip both carry the whole artifacts/gui folder (Tray, aster.exe, service, runtime);
 # the service is registered by the installer only when the "service" task is selected.
 # Signing is not configured: the signing warning step only reminds that artifacts are unsigned.

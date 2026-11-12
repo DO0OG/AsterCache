@@ -320,23 +320,6 @@ public sealed class TrayViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task AppliedUpdateNeverTouchesTheService()
-    {
-        var manager = new FakeUpdates();
-        var vm = new TrayViewModel(new ConfigEditor(_dir), _service, _streamer, _shell, new MemoryLog(), new UpdateService(manager, new MemoryLog()), "1.0.0.0");
-        _service.State = ServiceState.Running;
-        _service.Version = "1.0.0.0";
-
-        Assert.True((await vm.CheckUpdateAsync()).Ok);
-        ActionResult applied = await vm.ApplyUpdateAsync(CancellationToken.None);
-
-        Assert.True(applied.Ok);
-        Assert.Contains("서비스는 설치 프로그램으로", applied.Message);
-        Assert.True(manager.Applied);
-        Assert.Equal((0, 0), (_service.Starts, _service.Stops)); // 서비스 시작·정지·교체 요청 없음
-    }
-
-    [Fact]
     public void OpenLogsOpensLogsFolder()
     {
         Assert.True(_vm.OpenLogs().Ok);
@@ -390,19 +373,6 @@ public sealed class TrayViewModelTests : IDisposable
                 throw new System.ComponentModel.Win32Exception(1223);
             }
         }
-    }
-
-    private sealed class FakeUpdates : IUpdateManager
-    {
-        public bool Applied { get; private set; }
-
-        public bool IsInstalled => true;
-
-        public Task<string?> CheckForUpdatesAsync() => Task.FromResult<string?>("2.0.0");
-
-        public Task DownloadUpdatesAsync(Action<int> progress, CancellationToken cancellationToken) => Task.CompletedTask;
-
-        public void ApplyUpdatesAndRestart() => Applied = true;
     }
 
     internal sealed class FakeStreamer : IGameStreamer

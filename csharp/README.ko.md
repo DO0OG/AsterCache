@@ -189,7 +189,7 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 
 ## 트레이 갱신과 서비스
 
-트레이(Velopack, `%LocalAppData%\<packId>\current`)와 서비스(Inno Setup, `{autopf}\AsterCache`, `sc create` 경로)는 설치 경로가 다르고, 둘이 `%ProgramData%\AsterCache` (`config.json`, `plans\`, `journals\`, `logs\`) 를 공유합니다. 설치본으로 설치하면 관리 창(트레이), `aster.exe`, 서비스가 모두 `Program Files\AsterCache` 에 설치됩니다. 새 버전은 새 설치본을 다시 실행해 갱신합니다 (서비스 중지→교체→시작). Velopack 자동 갱신은 Velopack 으로 설치한 트레이에만 해당하며 설치본 설치에는 쓰이지 않습니다 (`UpdateService` 는 서비스 제어에 접근하지 않고 시험으로 고정). 실제 Velopack 설치 갱신 시험은 아직 하지 않았습니다.
+트레이와 서비스는 같은 설치 프로그램(Inno Setup, `{autopf}\AsterCache`)으로 설치되고, 둘이 `%ProgramData%\AsterCache` (`config.json`, `plans\`, `journals\`, `logs\`) 를 공유합니다. 설치본으로 설치하면 관리 창(트레이), `aster.exe`, 서비스가 모두 `Program Files\AsterCache` 에 설치됩니다. 새 버전은 새 설치본을 다시 실행해 갱신합니다 (서비스 중지→교체→시작). 트레이는 고정 저장소 `DO0OG/AsterCache` 에서 더 높은 정식 릴리스를 확인합니다 (시작 5분 뒤 첫 확인, 이후 24시간마다). Program Files 의 설치본을 관리자 권한으로 실행 중이면 설치 파일을 받아 SHA-256 (릴리스 자산의 digest 또는 `SHA256SUMS.txt`) 을 검증하고, 등록 게임이 실행 중이 아니고 재배치도 진행 중이 아닐 때 조용히 설치합니다 (`/SILENT /NORESTART /SUPPRESSMSGBOXES`). 그 밖에는 새 버전만 알립니다. 서비스는 네트워크를 쓰지 않습니다. 해시 검증은 받은 파일이 온전한지 확인할 뿐 게시자를 증명하지 않습니다 (설치 파일은 서명되지 않음). 실제 다운로드·설치·트레이 복귀는 아직 시험하지 않았습니다.
 
 - 형식 호환: `config.json` 은 알려진 키만 받으므로 새 트레이가 새 키를 쓰면 옛 서비스는 시작하지 못하고(종료 코드 2), 계획 파일은 `version` 이 정확히 일치해야 하며 (현재 1), 저널은 형식 버전이 없고 계획 SHA 로만 짝을 맞춥니다. 지금까지 형식을 바꾼 적은 없지만 바뀌면 어긋납니다.
 - 결정: 갱신 경로는 합치지 않고, 트레이가 SCM 에 등록된 서비스 실행 파일의 FileVersion 을 자기 FileVersion 과 비교해 다르면 상태 표시줄에 "서비스 재설치 필요 (서비스 x, 트레이 y)" 를 띄웁니다. 트레이와 서비스는 같은 `-p:Version` 으로 게시해야 비교가 의미 있습니다 (개발 빌드는 모두 1.0.0.0).
@@ -230,6 +230,6 @@ csharp\publish\gui\AsterCache.Tray.exe [--data-dir <폴더>]
 - 안티치트 게임(Ricochet, Vanguard)에서 ETW 수집과 서비스 상주의 영향은 통제된 검증을 하지 않았습니다. 이 PC 에서 Vanguard 게임(League of Legends)과 Ricochet 게임(Call of Duty)을 설치본으로 플레이한 사용 기록만 있고, 계정 제재 여부는 보증하지 않습니다. 2026-11-02 ~ 2026-11-10 서비스 로그 집계는 League of Legends 게임 시작 감지 10회(트레이스 2회 수집 뒤 8회 건너뜀, 재배치 완료 4회), Call of Duty 62회(트레이스 수집 14회 시작, 재배치 완료 5회)입니다. 표본 수와 집계 방법은 [실사용 기록](../docs/RESULTS_SUMMARY.ko.md#실사용-기록), 안티치트 정책은 [안티치트 호환](../docs/ANTICHEAT.ko.md)에 있습니다. 안티치트가 없는 게임으로 먼저 확인합니다.
 - 안티치트 게임(eac, battleye, vanguard, 탐지 실패; Vanguard 가 설치된 시스템의 Riot 게임은 수동 등록도 vanguard)에서는 서비스가 ETW 트레이스를 시작하지 않고 파일을 고정(pin)하지도 않습니다. 읽기 전용 예열과, 게임이 실행 중이 아닐 때의 재배치는 그대로입니다. 휴리스틱은 열 수 없는 프로세스에 커널 ETW 세션을 걸지 않고 건너뜁니다.
 - 0.9.0-beta.14 부터 서비스는 Vanguard·EAC·BattlEye 게임(탐지 실패 포함)에는 자동 ETW 트레이스를 시작하지 않습니다. 예열·시작 스트림·재배치는 그대로입니다 (실제 Vanguard 클라이언트가 트레이스 시작 뒤 두 번 종료되었습니다).
-- Velopack 갱신은 Velopack 으로 설치한 트레이에만 해당합니다. 설치본은 새 설치 프로그램을 실행해 갱신합니다 (위 "트레이 갱신과 서비스"). 실제 Velopack 설치 갱신 시험은 하지 않았습니다.
+- 자동 업데이트 ("트레이 갱신과 서비스" 참고) 는 가짜 HTTP·파일 시스템·프로세스 실행으로만 시험했습니다. 실제 다운로드·조용한 설치·트레이 복귀는 시험하지 않았습니다.
 - WDK 설치 크기와 winget 패키지 ID 는 확인하지 않았습니다.
 - 커널 미니필터(AsterFlt)는 소스 단계이며, 이 PC 에 적재하지 않습니다. 적재 검증은 VM 절차로만 다룹니다.

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Security.Cryptography;
 using AsterCache.Core.Logging;
+using AsterCache.Core.Settings;
 using AsterCache.Tray.Update;
 
 namespace AsterCache.Tests.Tray;
@@ -137,10 +138,10 @@ internal sealed class UpdateRig : IDisposable
         }
     }
 
-    public AutoUpdater Build()
+    public AutoUpdater Build(Func<UpdateOptions>? options = null)
     {
         var context = new UpdateContext(SemVer.TryParse(Current, out SemVer v) ? v : throw new InvalidOperationException(Current), Admin, Installed);
-        return new AutoUpdater(context, () => Options, new UpdateHttp("test", Limits, Handler), Installed ? new UpdateStaging(DataDir, IsReparse, p => DirWriters(p), p => FileWriters(p)) : null, Gate, Launcher, Clock, Opened.Add, Log, () => "korean");
+        return new AutoUpdater(context, options ?? (() => Options), new UpdateHttp("test", Limits, Handler), Installed ? new UpdateStaging(DataDir, IsReparse, p => DirWriters(p), p => FileWriters(p)) : null, Gate, Launcher, Clock, Opened.Add, Log, () => "korean");
     }
 
     public void Dispose()

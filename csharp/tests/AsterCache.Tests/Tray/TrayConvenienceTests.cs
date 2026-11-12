@@ -19,7 +19,7 @@ public sealed class TrayConvenienceTests : IDisposable
     {
         Directory.CreateDirectory(_dir);
         var config = new ConfigEditor(_dir);
-        _tray = new TrayViewModel(config, new TrayViewModelTests.FakeService(), new TrayViewModelTests.FakeStreamer(), new TrayViewModelTests.FakeShell(), _log, null, "1.2.3.0",
+        _tray = new TrayViewModel(config, new TrayViewModelTests.FakeService(), new TrayViewModelTests.FakeStreamer(), new TrayViewModelTests.FakeShell(), _log, "1.2.3.0",
             Path.Combine(_dir, "tray.json"));
         _manage = new ManageViewModel(_tray, config, new NoCli(), new NoDrives(), new NoElevator(), new TrayViewModelTests.FakeShell(), _log, () => false, _ => false);
     }
@@ -75,10 +75,10 @@ public sealed class TrayConvenienceTests : IDisposable
     {
         string path = At("tray.json");
         Assert.True(TraySettings.Load(path).NotificationsEnabled);
-        File.WriteAllText(path, "{\"update_feed_url\": \"https://example.invalid/feed\"}");
-        TraySettings old = TraySettings.Load(path);
-        Assert.True(old.UpdateEnabled);
-        Assert.True(old.NotificationsEnabled);
+        File.WriteAllText(path, "{\"update_feed_url\": \"https://example.invalid/feed\"}"); // 예전 버전이 쓰던 키: 거부하지 않고 무시
+        Assert.True(TraySettings.Load(path).NotificationsEnabled);
+        File.WriteAllText(path, "{\"update_feed_url\": \"http://example.invalid/feed\", \"notifications\": {\"enabled\": false}}");
+        Assert.False(TraySettings.Load(path).NotificationsEnabled);
         File.WriteAllText(path, "{\"notifications\": {}}");
         Assert.True(TraySettings.Load(path).NotificationsEnabled);
         File.WriteAllText(path, "{\"notifications\": {\"enabled\": false}}");
@@ -97,7 +97,7 @@ public sealed class TrayConvenienceTests : IDisposable
     }
 
     [Fact]
-    public void TurningNotificationsOffIsSavedKeepsTheFeedUrlAndSuppressesToastsButLogsThem()
+    public void TurningNotificationsOffIsSavedKeepsOtherKeysAndSuppressesToastsButLogsThem()
     {
         File.WriteAllText(At("tray.json"), "{\"update_feed_url\": \"https://example.invalid/feed\"}");
         Assert.True(_tray.AllowToast("before"));
@@ -110,7 +110,7 @@ public sealed class TrayConvenienceTests : IDisposable
         Assert.Contains(_log.Lines, l => l.Contains("A game was found", StringComparison.Ordinal));
         TraySettings saved = TraySettings.Load(At("tray.json"));
         Assert.False(saved.NotificationsEnabled);
-        Assert.Equal("https://example.invalid/feed", saved.UpdateFeedUrl);
+        Assert.Contains("https://example.invalid/feed", File.ReadAllText(At("tray.json"))); // 다른 키는 그대로 남음
         Assert.True(_tray.SetNotifications(true).Ok);
         Assert.True(_tray.AllowToast("again"));
     }
@@ -120,7 +120,7 @@ public sealed class TrayConvenienceTests : IDisposable
     {
         File.WriteAllText(At("blocker"), "x");
         var vm = new TrayViewModel(new ConfigEditor(_dir), new TrayViewModelTests.FakeService(), new TrayViewModelTests.FakeStreamer(), new TrayViewModelTests.FakeShell(), _log,
-            null, null, Path.Combine(_dir, "blocker", "tray.json"));
+            null, Path.Combine(_dir, "blocker", "tray.json"));
 
         Assert.False(vm.SetNotifications(false).Ok);
         Assert.True(vm.NotificationsEnabled);

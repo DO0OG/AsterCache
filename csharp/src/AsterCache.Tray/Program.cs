@@ -58,7 +58,7 @@ internal static class Program
         return AppBuilder.Configure<App>().UsePlatformDetect().StartWithClassicDesktopLifetime(args, ShutdownMode.OnExplicitShutdown);
     }
 
-    /// 자동 업데이트 (정식 릴리스, 고정 저장소). 현재 버전을 알 수 없으면 (개발 빌드) null. 방식은 아직 설정과 연결되지 않아 기본값 (auto, 정식만) 입니다.
+    /// 자동 업데이트 (정식 릴리스, 고정 저장소). 현재 버전을 알 수 없으면 (개발 빌드) null. 방식은 트레이가 읽어 둔 config.json 의 update 설정을 따르고, 읽지 못하면 알림만 합니다.
     private static AutoUpdater? CreateUpdater(string dataDir, ILog log, IShell shell)
     {
         if (UpdateEnvironment.CurrentVersion(typeof(Program).Assembly) is not { } current)
@@ -71,7 +71,7 @@ internal static class Program
         bool admin = Elevation.IsAdmin();
         var context = new UpdateContext(current, admin, installed);
         var gate = new TrayUpdateGate(() => App.Model.Settings, ProcessSnapshot.IsRunning, Path.Combine(dataDir, "auto_status.json"));
-        return new AutoUpdater(context, () => UpdateOptions.Default, new UpdateHttp(current.Core, new UpdateLimits()), installed ? new UpdateStaging(dataDir) : null, gate,
+        return new AutoUpdater(context, () => UpdateOptions.From(App.Model.Settings), new UpdateHttp(current.Core, new UpdateLimits()), installed ? new UpdateStaging(dataDir) : null, gate,
             new ProcessInstallerLauncher(), new SystemUpdateClock(), page => shell.Open(page.AbsoluteUri), log, () => L.Current == L.Ko ? "korean" : "english");
     }
 

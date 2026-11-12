@@ -29,7 +29,7 @@ public sealed class ManageViewModelTests : IDisposable
         Directory.CreateDirectory(_dir);
         _drive = Path.GetPathRoot(_dir)![..2];
         var config = new ConfigEditor(_dir);
-        _tray = new TrayViewModel(config, _service, new NoStream(), new NoShell(), new NullLog(), null, "1.0.0.0");
+        _tray = new TrayViewModel(config, _service, new NoStream(), new NoShell(), new NullLog(), "1.0.0.0");
         _vm = new ManageViewModel(_tray, config, _cli, new Drives(_drive), _elevator, new NoShell(), new NullLog(), () => false, _ => _running.Count > 0 && _running.Dequeue(),
             "--data-dir x", TimeSpan.FromMilliseconds(1), _dir, _ => _untrusted, Path.Combine(_dir, "svc", "AsterCache.Service.exe"));
     }
@@ -672,7 +672,7 @@ public sealed class ManageViewModelTests : IDisposable
 
         string config = Path.Combine(_dir, "config.json");
         File.WriteAllText(config, File.ReadAllText(config).Replace("\"volume_label\"", "\"max_stream_mib\": 100, \"volume_label\""));
-        var tray = new TrayViewModel(new ConfigEditor(_dir), _service, new NoStream(), new NoShell(), new NullLog(), null, "1.0.0.0");
+        var tray = new TrayViewModel(new ConfigEditor(_dir), _service, new NoStream(), new NoShell(), new NullLog(), "1.0.0.0");
         tray.Refresh();
         var vm = new ManageViewModel(tray, new ConfigEditor(_dir), _cli, new Drives(_drive), _elevator, new NoShell(), new NullLog(), () => false, _ => false,
             "--data-dir x", TimeSpan.FromMilliseconds(1), _dir, _ => _untrusted, Path.Combine(_dir, "svc", "AsterCache.Service.exe"));

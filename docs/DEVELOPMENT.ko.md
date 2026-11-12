@@ -110,6 +110,7 @@ flowchart LR
 | `prewarm_status.json` | 서비스 | 게임별 마지막 예열 결과입니다. |
 | `play_samples.json` | 서비스 | 게임별 최근 50회 플레이 구간의 디스크 읽기량·지연과 시작 예열·스트림 상태입니다. |
 | `orbit_mode.json`, `disk_model.json`, `benchmark_samples.json` | 서비스 | ORBIT 모드, 디스크별 보정 표본, 로딩 시간 표본입니다. |
+| `tray.json` | 트레이 | 트레이 전용 설정(`notifications.enabled`)입니다. 예전 `update_feed_url` 키는 무시합니다. 업데이트 방식은 `config.json` 의 `update.mode`·`update.prerelease` 입니다. |
 | `logs\service.log`, `logs\tray.log` | 서비스, 트레이 | 로그입니다. 트레이가 데이터 폴더에 쓸 수 없으면 `%LocalAppData%\AsterCache\logs` 에 씁니다. |
 
 ## 트레이 앱과 서비스의 통신

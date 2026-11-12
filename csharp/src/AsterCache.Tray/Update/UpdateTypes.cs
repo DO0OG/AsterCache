@@ -1,13 +1,18 @@
 using AsterCache.Core.I18n;
+using AsterCache.Core.Settings;
 
 namespace AsterCache.Tray.Update;
 
-public enum UpdateMode { Off, Notify, Auto }
-
-/// 업데이트 방식 설정의 값 형. 실제 설정 (update.mode, update.prerelease) 과의 연결은 통합 단계에서 공급 함수로 합니다.
+/// 업데이트 방식 (config.json 의 update.mode, update.prerelease) 의 값 형. 방식 이름은 Core 설정의 UpdateMode 를 그대로 씁니다.
 public sealed record UpdateOptions(UpdateMode Mode, bool IncludePrerelease)
 {
     public static UpdateOptions Default { get; } = new(UpdateMode.Auto, false);
+
+    /// 설정을 읽지 못했을 때의 안전한 값: 알림만, 프리릴리스 제외.
+    public static UpdateOptions Safe { get; } = new(UpdateMode.Notify, false);
+
+    /// 트레이가 마지막으로 읽은 설정에서 (읽지 못했으면 Safe).
+    public static UpdateOptions From(AsterSettings? settings) => settings is null ? Safe : new UpdateOptions(settings.Update.Mode, settings.Update.Prerelease);
 }
 
 public enum UpdateState { Idle, Checking, Disabled, Failed, UpToDate, Available, Downloading, WaitingForGame, Installing }

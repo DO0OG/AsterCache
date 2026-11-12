@@ -200,7 +200,7 @@ internal sealed partial class App : Application
         }
 
         string[] lines = [.. new[] { Model.StatusText, summary.Counts, message }.Where(l => l.Length > 0)];
-        string key = $"{Model.Service}|{Model.PendingVersion}|{lines.Length}|{string.Join(",", Model.Games)}|{Updater?.Status.Key}";
+        string key = $"{Model.Service}|{lines.Length}|{string.Join(",", Model.Games)}|{Updater?.Status.Key}";
         if (key == _menuKey && _icon.Menu is not null)
         {
             // 항목 구성이 같으면 메뉴를 새로 만들지 않고 글만 바꿈 (열려 있는 메뉴가 5 초마다 교체되지 않게)

@@ -31,7 +31,7 @@ public interface IShell
 
 /// 트레이 메뉴가 보여주고 부르는 모든 것. UI 없이 시험할 수 있게 화면 객체를 직접 쓰지 않습니다.
 public sealed class TrayViewModel(
-    ConfigEditor config, IServiceControl service, IGameStreamer streamer, IShell shell, ILog log, UpdateService? updates = null,
+    ConfigEditor config, IServiceControl service, IGameStreamer streamer, IShell shell, ILog log,
     string? trayVersion = null, string? traySettingsPath = null, bool notificationsEnabled = true)
 {
     private readonly FileMetadataCache<AsterSettings> _settingsCache = new();
@@ -41,7 +41,7 @@ public sealed class TrayViewModel(
 
     public ServiceState Service { get; private set; } = ServiceState.Unknown;
 
-    /// 서비스 실행 파일 버전이 트레이와 다름 (트레이만 Velopack 으로 갱신됐을 때): 설치 프로그램으로 서비스를 다시 설치해야 합니다.
+    /// 서비스 실행 파일 버전이 트레이와 다름 (서비스 등록을 고르지 않았거나 설치가 중간에 멈췄을 때): 설치 프로그램으로 서비스를 다시 설치해야 합니다.
     public bool ServiceReinstallNeeded { get; private set; }
 
     public IReadOnlyList<string> Games => _settings?.Games.Select(g => g.Name).ToList() ?? [];
@@ -106,9 +106,6 @@ public sealed class TrayViewModel(
 
     /// 등록된 서비스 실행 파일의 버전 (미설치면 null).
     public string? ServiceVersion { get; private set; }
-
-    /// 확인된 새 버전 (없으면 null).
-    public string? PendingVersion { get; private set; }
 
     public string PlansDir => config.PlansDir;
 
@@ -323,41 +320,13 @@ public sealed class TrayViewModel(
         }
     }
 
-    public async Task<ActionResult> CheckUpdateAsync()
-    {
-        if (updates is null)
+    /// 업데이트 방식과 프리릴리스 포함 여부를 config.json 에 저장합니다 (데이터 폴더 쓰기 권한이 필요). 업데이트는 다음 확인부터 이 값을 따릅니다.
+    public ActionResult SetUpdate(UpdateMode mode, bool prerelease) =>
+        Edit(() =>
         {
-            return Report(false, L.T("Err_UpdateDisabled"));
-        }
-
-        if (!updates.IsSupported)
-        {
-            return Report(false, L.T("Err_UpdateUnsupported"));
-        }
-
-        PendingVersion = await updates.CheckAsync();
-        return Report(true, PendingVersion is null ? L.T("Msg_UpToDate") : L.T("Msg_NewVersion", PendingVersion));
-    }
-
-    /// 확인된 업데이트를 받아 적용하고 다시 시작합니다.
-    public async Task<ActionResult> ApplyUpdateAsync(CancellationToken cancellationToken)
-    {
-        if (updates is null || PendingVersion is null)
-        {
-            return Report(false, L.T("Err_NoUpdate"));
-        }
-
-        try
-        {
-            await updates.DownloadAndApplyAsync(_ => { }, cancellationToken);
-            return Report(true, L.T("Msg_Updating"));
-        }
-        catch (Exception e) when (e is not OperationCanceledException)
-        {
-            log.Error("update apply failed", e);
-            return Report(false, L.T("Err_UpdateFailed"));
-        }
-    }
+            config.SetUpdateMode(mode);
+            config.SetUpdatePrerelease(prerelease);
+        }, L.T("Msg_UpdateSet"));
 
     private ActionResult Edit(Action edit, string done)
     {

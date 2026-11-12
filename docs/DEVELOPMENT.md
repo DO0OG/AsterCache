@@ -110,6 +110,7 @@ Files in `%ProgramData%\AsterCache`. The service runs as SYSTEM, and only admini
 | `prewarm_status.json` | service | The last prewarm result per game. |
 | `play_samples.json` | service | Disk read volume and latency per play interval, with the prewarm and start-stream state at game start, for the last 50 plays of each game. |
 | `orbit_mode.json`, `disk_model.json`, `benchmark_samples.json` | service | The ORBIT mode, per-disk calibration samples, and loading time samples. |
+| `tray.json` | tray | Tray-only settings (`notifications.enabled`). An old `update_feed_url` key is ignored. Update behavior is `update.mode` and `update.prerelease` in `config.json`. |
 | `logs\service.log`, `logs\tray.log` | service, tray | Logs. If the tray cannot write to the data folder, it writes to `%LocalAppData%\AsterCache\logs`. |
 
 ## How the tray app talks to the service

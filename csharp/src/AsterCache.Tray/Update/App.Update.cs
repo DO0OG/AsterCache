@@ -31,6 +31,7 @@ internal sealed partial class App
     private void OnUpdateStatus()
     {
         UpdateStatus s = Updater!.Status;
+        _main?.RefreshUpdateInfo();
         string key = $"{s.State}|{s.Version}";
         if (s.State is UpdateState.Available or UpdateState.Installing && _updateToasted != key)
         {
@@ -69,6 +70,25 @@ internal sealed partial class App
         {
             // 최상위 경계: 예상하지 못한 예외도 트레이를 끝내지 않고 로그만 남김
             Log.Error("update action failed", e);
+        }
+    }
+
+    /// 설정 화면의 "지금 확인" (메뉴의 "업데이트 확인" 과 같은 길).
+    public static async Task CheckUpdateNowAsync()
+    {
+        if (Updater is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await Task.Run(() => Updater.CheckNowAsync(CancellationToken.None));
+        }
+        catch (Exception e)
+        {
+            // 최상위 경계: 예상하지 못한 예외도 트레이를 끝내지 않고 로그만 남김
+            Log.Error("update check failed", e);
         }
     }
 }

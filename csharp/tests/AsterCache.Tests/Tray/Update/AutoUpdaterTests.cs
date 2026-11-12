@@ -1,3 +1,4 @@
+using AsterCache.Core.Settings;
 using AsterCache.Tray.Update;
 using Xunit;
 

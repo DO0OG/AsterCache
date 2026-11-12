@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using AsterCache.Core.Logging;
+using AsterCache.Core.Settings;
 
 namespace AsterCache.Tray.Update;
 
@@ -35,6 +36,9 @@ public sealed class AutoUpdater(
     private UpdateStatus _status = UpdateStatus.Idle;
 
     public event Action? StatusChanged;
+
+    /// 마지막으로 서버에 확인을 마친 시각 (성공·실패 모두, 아직 없으면 null). 설정 화면의 "마지막 확인" 표시용.
+    public DateTimeOffset? LastChecked { get; private set; }
 
     public UpdateStatus Status
     {
@@ -188,6 +192,7 @@ public sealed class AutoUpdater(
         }
 
         ReleaseInfo? release;
+        LastChecked = clock.UtcNow;
         try
         {
             byte[] json = await http.GetBytesAsync(ReleaseFeed.MetadataUrl(o.IncludePrerelease), cancellationToken).ConfigureAwait(false);

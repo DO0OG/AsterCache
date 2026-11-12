@@ -3,6 +3,7 @@ using AsterCache.Core;
 using AsterCache.Core.I18n;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Settings;
+using AsterCache.Tray.Update;
 using AsterCache.Windows;
 using Avalonia;
 using Avalonia.Controls;
@@ -67,6 +68,11 @@ internal sealed class MainWindow : Window
     private readonly TextBox _trayLog = ReadOnlyBox();
     private readonly TextBlock _versions = Look.Text(string.Empty);
     private readonly CheckBox _notifications = new() { Content = L.T("Notify_Enabled"), IsChecked = true };
+    private static readonly UpdateMode[] UpdateModes = [UpdateMode.Auto, UpdateMode.Notify, UpdateMode.Off];
+    private readonly ComboBox _updateMode = new() { ItemsSource = new[] { L.T("Update_ModeAuto"), L.T("Update_ModeNotify"), L.T("Update_ModeOff") }, Width = 200 };
+    private readonly CheckBox _updatePrerelease = new() { Content = L.T("Update_Prerelease") };
+    private readonly TextBlock _updateInfo = Look.Muted(string.Empty);
+    private Button? _checkUpdateNow;
     private readonly ComboBox _watcher = new() { ItemsSource = new[] { L.T("Watcher_Poll"), "etw" }, Width = 200 };
     private readonly ComboBox _language = new() { ItemsSource = new[] { L.T("Lang_Auto"), L.T("Lang_Ko"), L.T("Lang_En") }, Width = 200 };
     private readonly CheckBox _autoEnabled = new() { Content = L.T("Auto_Enabled") };
@@ -551,6 +557,9 @@ internal sealed class MainWindow : Window
         Button applyLanguage = Look.Btn(L.T("Btn_ApplyLanguage"), () => _ = ApplyLanguage(), Look.ButtonKind.Primary);
         Button applyAuto = Look.Btn(L.T("Btn_ApplyAuto"), () => _ = ApplyAuto(), Look.ButtonKind.Primary);
         Button applyNotifications = Look.Btn(L.T("Btn_ApplyNotifications"), () => _ = ApplyNotifications(), Look.ButtonKind.Primary);
+        Button applyUpdate = Look.Btn(L.T("Btn_ApplyUpdate"), () => _ = ApplyUpdate(), Look.ButtonKind.Primary);
+        _checkUpdateNow = Look.Btn(L.T("Btn_CheckUpdateNow"), () => _ = App.CheckUpdateNowAsync());
+        _checkUpdateNow.IsEnabled = App.Updater is not null;
         applyAuto.HorizontalAlignment = HorizontalAlignment.Right;
         var checks = new WrapPanel { ItemSpacing = Look.S24, LineSpacing = Look.S8, Children = { _autoEnabled, _autoDiscover, _autoTrace, _autoRelocate, _tierEnabled } };
         Grid auto = Look.Form(
@@ -584,6 +593,8 @@ internal sealed class MainWindow : Window
                 Look.Section(L.T("Set_PrewarmDefaults"), null, Look.Text(ManageViewModel.DescribePrewarm(PrewarmSettings.Default))),
                 Look.Section(L.T("Set_Language"), null, new StackPanel { Orientation = Orientation.Horizontal, Spacing = Look.S8, Children = { _language, applyLanguage } }),
                 Look.Section(L.T("Set_Notifications"), L.T("Set_NotificationsNote"), _notifications, applyNotifications),
+                Look.Section(L.T("Set_Update"), L.T("Set_UpdateNote"), new WrapPanel { ItemSpacing = Look.S24, LineSpacing = Look.S8, Children = { _updateMode, _updatePrerelease } }, _updateInfo,
+                    new StackPanel { Orientation = Orientation.Horizontal, Spacing = Look.S8, Children = { applyUpdate, _checkUpdateNow } }),
                 Look.Section(L.T("Set_Folders"), null, folders),
                 Look.Section(L.T("Set_Versions"), null, _versions),
             },
@@ -635,6 +646,23 @@ internal sealed class MainWindow : Window
         return RunAsync(L.T("Op_NotificationsChange"), () => _tray.SetNotifications(on));
     }
 
+    private Task<ActionResult> ApplyUpdate()
+    {
+        UpdateMode mode = UpdateModes[Math.Max(0, _updateMode.SelectedIndex)];
+        bool prerelease = _updatePrerelease.IsChecked == true;
+        return RunAsync(L.T("Op_UpdateChange"), () => _tray.SetUpdate(mode, prerelease));
+    }
+
+    /// 설정 탭의 업데이트 구역에 현재 버전, 마지막 확인 시각, 현재 상태를 보입니다 (UI 스레드에서 부름).
+    public void RefreshUpdateInfo()
+    {
+        AutoUpdater? updater = App.Updater;
+        string current = UpdateEnvironment.CurrentVersion(typeof(App).Assembly)?.Core ?? L.T("Word_Unknown");
+        string last = updater?.LastChecked is { } at ? at.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) : L.T("Update_NeverChecked");
+        string state = updater is null ? L.T("Update_Unavailable") : updater.Status.State == UpdateState.Idle ? L.T("Update_NoStatus") : updater.Status.Text();
+        _updateInfo.Text = L.T("Update_Info", current, last, state);
+    }
+
     private async Task ExportDiagnostics()
     {
         IStorageFile? file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
@@ -659,7 +687,7 @@ internal sealed class MainWindow : Window
         return RunAsync(L.T("Op_WatcherChange"), () => _tray.SetWatcher(watcher));
     }
 
-    /// --smoke --click <apply-auto|apply-language|apply-watcher>: 해당 버튼의 처리 경로를 실행하고 결과를 돌려줍니다 (열 때 읽기가 끝나기를 기다린 뒤).
+    /// --smoke --click <apply-auto|apply-language|apply-watcher|apply-update>: 해당 버튼의 처리 경로를 실행하고 결과를 돌려줍니다 (열 때 읽기가 끝나기를 기다린 뒤).
     public async Task<ActionResult> SmokeClick(string name)
     {
         for (int i = 0; i < 100 && Volatile.Read(ref _busy) != 0; i++)
@@ -672,6 +700,7 @@ internal sealed class MainWindow : Window
             "apply-auto" => await ApplyAuto(),
             "apply-language" => await ApplyLanguage(),
             "apply-watcher" => await ApplyWatcher(),
+            "apply-update" => await ApplyUpdate(),
             _ => new ActionResult(false, "unknown click: " + name),
         };
     }
@@ -831,6 +860,10 @@ internal sealed class MainWindow : Window
             _watcher.SelectedIndex = Math.Max(0, Array.IndexOf(WatcherValues, _tray.Settings?.Watcher));
             _language.SelectedIndex = Math.Max(0, Array.IndexOf(LanguageValues, _tray.Settings?.Language));
             _notifications.IsChecked = _tray.NotificationsEnabled;
+            UpdateOptions update = UpdateOptions.From(_tray.Settings); // 설정을 못 읽었으면 실제 동작과 같은 안전한 값 (알림만)
+            _updateMode.SelectedIndex = Math.Max(0, Array.IndexOf(UpdateModes, update.Mode));
+            _updatePrerelease.IsChecked = update.IncludePrerelease;
+            RefreshUpdateInfo();
             UpdateStatus();
             RefreshLayoutsInBackground();
             return r;

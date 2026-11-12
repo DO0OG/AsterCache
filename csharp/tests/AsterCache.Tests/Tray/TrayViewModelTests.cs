@@ -341,14 +341,6 @@ public sealed class TrayViewModelTests : IDisposable
         Assert.Equal(Path.Combine(_dir, "logs"), _shell.Opened);
     }
 
-    [Fact]
-    public async Task UpdateDisabledByDefault()
-    {
-        ActionResult r = await _vm.CheckUpdateAsync();
-        Assert.False(r.Ok);
-        Assert.Contains("비활성", r.Message);
-    }
-
     internal sealed class FakeService : IServiceControl
     {
         public ServiceState State { get; set; } = ServiceState.Stopped;

@@ -9,6 +9,8 @@ The configuration file is `%ProgramData%\AsterCache\config.json`. Editing it in 
 - The service re-reads the whole file every 5 seconds (when its size or modified time changes), so changes take effect without a restart. If the new configuration fails validation or the folder permission check, the previous settings stay in force and the reason is written to the log.
 - Unknown keys are rejected. Omitted keys take the defaults below.
 - ORBIT is turned on and off from the CLI, not in `config.json` (`aster orbit mode off|shadow|active`). See [ORBIT](ORBIT.md).
+- The management window's Settings and Games tabs write most of these keys. Its **Advanced** section (closed by default) holds seven numeric limits: `prewarm.max_cache_mib`, `auto.startup_warm_games`, `auto.startup_warm_max_mib`, `auto.rewarm_after_exit_min`, `auto.max_relocations_per_day`, `auto.idle_seconds`, and `auto.start_stream_cap_seconds`. A value the window writes equal to its default is removed from the file.
+- The pop-up notification switch is not in `config.json`; it is `notifications.enabled` in `tray.json`.
 
 ```json
 {
@@ -61,10 +63,10 @@ The configuration file is `%ProgramData%\AsterCache\config.json`. Editing it in 
 | `max_stream_mib` | the larger of 4096 and the zone size | Upper limit of what one stream or prewarm reads, in MiB. An explicit value wins. |
 | `source` | `manual` | `auto` for a game found automatically, `manual` for a game you registered. |
 | `anticheat` | none | Anti-cheat found in the install folder: `eac`, `battleye`, `vanguard`, `kernel`, `ricochet`, or `unknown`. Shown in the Games tab; it does not change behavior. For the policy, see [Anti-cheat compatibility](ANTICHEAT.md). |
-| `display_name` | none | Game name shown on screen. When not set, uses the launcher name the service recorded, or else the key with underscores replaced by spaces. The internal key is unchanged. |
+| `display_name` | none | Game name shown on screen. When not set, uses the launcher name the service recorded, or else the key with underscores replaced by spaces. The internal key is unchanged. You can also set it in the Game options window on the Games tab (default, Korean, and English name boxes). |
 | `display_names` | none | Per-language display names. Example: `{"ko": "발로란트", "en": "VALORANT"}`. Only the keys `ko` and `en` are accepted. |
-| `mode` | `inherit` | What the service does for this game: `inherit` (everything), `prewarm_only` (no relocation or periodic re-apply), `relocate_only` (no prewarm, re-prewarm, top-up, start-up stream, or pin), `off` (nothing). Tracing stays allowed unless the game is `off` or `paused`. |
-| `paused` | `false` | When `true`, the service starts no new work for this game, whatever `mode` says. Learned data and records are kept. |
+| `mode` | `inherit` | What the service does for this game: `inherit` (everything), `prewarm_only` (no relocation or periodic re-apply), `relocate_only` (no prewarm, re-prewarm, top-up, start-up stream, or pin), `off` (nothing). Tracing stays allowed unless the game is `off` or `paused`. Also set by the policy choice in the Game options window on the Games tab. |
+| `paused` | `false` | When `true`, the service starts no new work for this game, whatever `mode` says. Learned data and records are kept. Also set by the Paused checkbox in the Game options window on the Games tab. |
 
 `display_name` and `display_names` are optional keys you can write by hand. If you roll back to beta.24 with these keys in the configuration, that version rejects the settings (exit code 2), so remove both keys before rolling back.
 
@@ -74,9 +76,9 @@ The configuration file is `%ProgramData%\AsterCache\config.json`. Editing it in 
 |---|---|---|
 | `on_service_start` | `true` | Run prewarm when the service starts. |
 | `trigger_exes` | `[]` | Run prewarm when one of these programs starts, for example a launcher (up to 16). |
-| `min_free_ram_mib` | 4096 | Available RAM to leave free even after prewarm. |
+| `min_free_ram_mib` | 4096 | Available RAM to leave free even after prewarm. Not shown in the Settings window; edit the file. |
 | `cooldown_min` | 30 | Minimum interval between prewarms, in minutes. |
-| `max_cache_mib` | 0 (automatic) | Total MiB that prewarm may hold in the file cache, shared by all games. `0` or omitted = half of physical RAM; a positive value is used as is but cannot exceed physical RAM. If several games set it, the largest value applies. The `min_free_ram_mib` reserve still applies. |
+| `max_cache_mib` | 0 (automatic) | Total MiB that prewarm may hold in the file cache, shared by all games. `0` or omitted = half of physical RAM; a positive value is used as is but cannot exceed physical RAM. If several games set it, the largest value applies. The `min_free_ram_mib` reserve still applies. The Advanced section writes the value to every registered game (0 removes the key). |
 | `pin` | automatic | Keep prewarmed data open as read-only mappings in the service. When not written, it is on automatically with 24 GiB of RAM or more; `false` turns it off; an explicit `true` works with 16 GiB of RAM or more. Effect unverified (needs an experiment). See [Anti-cheat compatibility](ANTICHEAT.md). |
 
 ## Automatic mode: `auto`
@@ -121,7 +123,7 @@ What each stage does is in [Automatic mode](AUTO_MODE.md). Ranges are given in p
 | Key | Default | Meaning |
 |---|---|---|
 | `idle_seconds` | 30 | How long the PC must stay idle before relocation, in seconds (10 to 86400). The older `idle_minutes` (default 3) is used only if it is written and `idle_seconds` is not. |
-| `relocate_hours` | `[]` | Local hours of the day (0 to 23, no duplicates, up to 24 values) at which automatic relocation and periodic re-apply may start. Empty means no time limit. |
+| `relocate_hours` | `[]` | Local hours of the day (0 to 23, no duplicates, up to 24 values) at which automatic relocation and periodic re-apply may start. Empty means no time limit. The Settings tab offers one start-to-end range that may cross midnight; a file with several ranges is kept as written and shown as custom. |
 | `max_relocations_per_day` | 4 | The most relocations in 24 hours (0 to 24). |
 | `max_relocate_gib_per_day` | 8 | The most GiB a day that relocation may write (0 = unlimited, up to 1048576). An explicit 8 is treated as the default, so SMR disks still use 2 GiB. |
 | `relocate_chunk_mib` | 4 | Size of one moved piece, in MiB (1 to 256). |
@@ -143,7 +145,7 @@ What each stage does is in [Automatic mode](AUTO_MODE.md). Ranges are given in p
 | `startup_warm_max_mib` | 1024 | Total MiB the service-start prewarm reads at once (1 to 1048576). Games beyond it are skipped. |
 | `rewarm_minutes` | 10 | Interval of the cache check that prewarms again when the data went cold (0 to 1440; 0 = off). |
 | `rewarm_after_exit_min` | 2 | When a game exit is detected, the cache check is pulled forward to this many minutes later (0 to 1440; 0 = off). |
-| `start_stream_enabled` | `true` | When `false`, no start-up stream runs when a game starts. |
+| `start_stream_enabled` | `true` | When `false`, no start-up stream runs when a game starts. Also a switch in the Settings tab. |
 | `restream_cooldown_min` | 10 | The start-up stream of the same game is not run again within this many minutes (0 to 1440). It is also skipped while the game is running or the disk is busy. |
 | `start_stream_cap_seconds` | 120 | Time limit of the start-up stream, in seconds (0 to 7200). It also stops at the loading boundary (the point where the reads in a 10-second moving window fall below 10% of their peak, at most 60 seconds in). 0 means no time limit. |
 | `keep_awake` | `true` | A small 4 KiB read every 10 minutes, while a launcher is open or at the hours you usually play, so the HDD does not spin down. Windows power settings are not changed. |
@@ -156,6 +158,8 @@ What each stage does is in [Automatic mode](AUTO_MODE.md). Ranges are given in p
 |---|---|---|
 | `mode` | `auto` | How updates are handled: `auto`, `notify`, or `off`. |
 | `prerelease` | `false` | When `true`, prereleases are also considered. |
+
+The Updates card in the Settings tab sets `update.mode` and `update.prerelease`.
 
 Older versions reject the keys `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, and `update`, so remove them before rolling back.
 

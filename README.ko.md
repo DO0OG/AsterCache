@@ -14,7 +14,7 @@
   <a href="https://github.com/DO0OG/AsterCache/actions/workflows/kernel-build.yml"><img alt="Kernel Build" src="https://github.com/DO0OG/AsterCache/actions/workflows/kernel-build.yml/badge.svg"></a>
 </p>
 
-> **베타.** AsterCache 는 베타 프리릴리스로 배포합니다. 파일 데이터를 실제로 옮기므로 중요한 데이터가 있는 드라이브는 백업한 뒤 쓰십시오. 검증 범위는 SMR 드라이브(WD20EZAZ) 1대와 실제 게임 1종(Frostpunk)이며, CMR 드라이브는 시험하지 않았습니다. 안티치트 게임은 한 PC 의 사용 기록만 있고 통제된 검증은 하지 않았습니다([안티치트 호환](docs/ANTICHEAT.ko.md)).
+> **사용 전에 읽으십시오.** AsterCache 는 파일 데이터를 실제로 옮기므로 중요한 데이터가 있는 드라이브는 백업한 뒤 쓰십시오. 검증 범위는 SMR 드라이브(WD20EZAZ) 1대와 실제 게임 1종(Frostpunk)이며, CMR 드라이브는 시험하지 않았습니다. 안티치트 게임은 한 PC 의 사용 기록만 있고 통제된 검증은 하지 않았습니다([안티치트 호환](docs/ANTICHEAT.ko.md)).
 
 ## 무엇을 하는가
 
@@ -22,6 +22,7 @@ AsterCache 는 하드 디스크(HDD)에 설치한 게임의 로딩을 빠르게 
 
 - 게임 파일의 내용을 바꾸지 않고, 다른 드라이브로 복사하지도 않습니다(선택 기능인 SSD 보조 저장은 기본 꺼짐이며 유일한 예외입니다).
 - 설치한 뒤에는 따로 할 일이 없습니다. 백그라운드에서 알아서 동작합니다.
+- 트레이 창은 게임마다 마지막 플레이 요약을 보여 줍니다. 디스크 읽기 통계이며 로딩 시간이나 프레임을 잰 값이 아닙니다. 지원용 진단 ZIP 을 내보낼 수 있고, 그 파일은 이 PC 에만 남습니다.
 - 이 문서의 측정 수치는 기록한 읽기 패턴의 재생 시간이며, 게임을 실행한 전체 로딩 시간이 아닙니다.
 
 ## 누구에게 맞는가
@@ -42,13 +43,17 @@ AsterCache 는 하드 디스크(HDD)에 설치한 게임의 로딩을 빠르게 
 
 요구 사항: Windows 11 x64, NTFS 게임 드라이브. 서비스 설치, 트레이스 수집, 재배치에는 관리자 권한이 필요합니다.
 
-1. [GitHub Releases](https://github.com/DO0OG/AsterCache/releases) 에서 `AsterCache-v<버전>-win-x64-setup.exe` 를 받습니다(프리릴리스, 예: v0.9.0-beta.38).
+1. [GitHub Releases](https://github.com/DO0OG/AsterCache/releases) 에서 `AsterCache-v<버전>-win-x64-setup.exe` 를 받습니다(최신 릴리스).
 2. 실행해서 언어(English 또는 한국어)를 고릅니다.
 3. 기본 선택(바탕화면·시작 메뉴 바로가기, Windows 시작 시 실행, 서비스 설치)을 그대로 두고 끝날 때까지 다음을 누릅니다.
 
-설치 프로그램이 싫다면 같은 릴리스의 zip `AsterCache-0.9.0-beta.38-win-x64.zip` 을 쓸 수 있습니다. 압축을 풀고 `AsterCache.Tray.exe` 를 관리자 권한으로 실행한 뒤, 설정 탭에서 서비스를 설치하고 시작합니다.
+설치 프로그램이 싫다면 같은 릴리스의 zip `AsterCache-<버전>-win-x64.zip` 을 쓸 수 있습니다. 압축을 풀고 `AsterCache.Tray.exe` 를 관리자 권한으로 실행한 뒤, 설정 탭에서 서비스를 설치하고 시작합니다.
 
 새 설치본을 다시 실행하면 기존 설치를 업그레이드합니다. 제거하면 먼저 SSD 보조 저장의 링크를 되돌린 뒤 프로그램과 서비스를 지웁니다. 데이터 폴더 `%ProgramData%\AsterCache` 는 남습니다. 설치 프로그램에는 코드 서명이 없어 Windows SmartScreen 경고가 뜰 수 있습니다. 소스에서 빌드하려면 [docs/DEVELOPMENT.ko.md](docs/DEVELOPMENT.ko.md)를 보십시오.
+
+### 3. 업데이트
+
+트레이는 시작 5분 뒤와 그 뒤 24시간마다 공식 릴리스를 확인합니다. 기본(`update.mode` = `auto`)은 더 새로운 설치 프로그램을 받아 SHA-256 을 검증한 뒤 조용히 설치합니다. 단, 설치된 복사본을 관리자 권한으로 실행 중이고, 등록된 게임이 실행 중이 아니며, 재배치가 진행 중이 아닐 때만 설치합니다. 그 밖의 경우에는 알림만 하거나 릴리스 페이지를 엽니다. 설정 탭의 업데이트 구역에서 **자동 설치**, **알림만**, **끄기** 가운데 고를 수 있고, 프리릴리스는 따로 켜지 않으면 포함하지 않습니다. 서비스는 네트워크를 쓰지 않습니다. 조용한 설치는 아직 실기기에서 확인하지 않았습니다. 자세한 내용은 [docs/FAQ.ko.md](docs/FAQ.ko.md)를 보십시오.
 
 ### 2. 사용: 누를 버튼은 없습니다
 
@@ -135,7 +140,7 @@ flowchart LR
 - 추적은 디스크까지 간 읽기만 기록합니다. 이미 캐시에 있던 읽기는 빠질 수 있습니다.
 - 재생 측정은 SMR 드라이브 1대에서 실제 게임 Frostpunk 1종만 했습니다. 지속성은 재배치 뒤 10시간까지 확인했습니다. Call of Duty 와 League of Legends 는 사용 로그 집계만 있습니다.
 - 정전, SSD 손상, BitLocker, DirectStorage 환경은 시험하지 않았습니다.
-- 트레이만 갱신되면 서비스는 옛 버전으로 남습니다. 설치 프로그램으로 서비스를 다시 설치하십시오.
+- 트레이만 갱신되면 서비스는 옛 버전으로 남습니다. 설치 프로그램으로 서비스를 다시 설치하십시오. 자동 업데이트는 설치 프로그램 전체를 실행하므로 서비스도 함께 갱신됩니다.
 - Wallpaper Engine 같은 상주 유틸리티는 자동 등록에서 제외됩니다. HDD 에 있는 그 밖의 게임이 아닌 앱은 등록될 수 있으니, 원치 않으면 그 exe 를 `auto.ignore_exes` 에 넣거나 게임 탭에서 제거하십시오.
 - `AppData\Local\Temp` 아래 설치한 게임은 휴리스틱으로 잡히지 않습니다. 공유 프로필 저장소는 아직 준비 중입니다.
 - 검증한 것과 하지 않은 것의 전체 목록은 [VALIDATION_REPORT.ko.md](VALIDATION_REPORT.ko.md)에 있습니다.

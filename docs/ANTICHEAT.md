@@ -67,4 +67,5 @@ This is a tally of the service log of one PC from 2026-11-02 to 2026-11-10. It i
 - Automatic mode is on by default. For a game with anti-cheat, turn automatic mode off in the Settings tab, or add the game's exe to `auto.ignore_exes`, before you play.
 - Automatic tracing uses the same kind of ETW collection as the manual route, so the Ricochet and Vanguard cautions in [GAME_GUIDE](GAME_GUIDE.md#anti-cheat-games) (and its League of Legends reference) still apply.
 - SSD assist storage skips games with anti-cheat folders, and never copies game exe or dll files.
+- Game policy, pause, and the other settings do not lift the anti-cheat gate or the ban on pinning. Changing them is not a way around this page's rules.
 - Other anti-cheat games have not been tested.

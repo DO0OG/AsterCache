@@ -6,6 +6,8 @@
 
 Automatic mode is on by default. In the usual case you do not need to register games or set anything. Each part can be turned off in the **Automatic mode** group of the Settings tab, or in `config.json`. Setting names are listed here; their meanings and defaults are in [CONFIGURATION.md](CONFIGURATION.md). Folded blocks (click to open) hold the conditions, exceptions, and numbers.
 
+Each game can also be limited. Its **policy** (`games[].mode`: `inherit`, `prewarm_only`, `relocate_only`, or `off`) decides which stages may act on it, and **pause** (`games[].paused`) stops new work for it. A paused game, or one set to `off`, is not traced, prewarmed, or relocated. `prewarm_only` allows prewarming and planning but no relocation or periodic re-apply. `relocate_only` allows relocation but no prewarm, start-up stream, or pinning. Neither setting overrides the anti-cheat gate or the ban on pinning. A game that is no longer allowed to prewarm drops its waiting prewarm entries, and it resumes at the next check when allowed again.
+
 ## The stages at a glance
 
 | Stage | One line |
@@ -121,7 +123,8 @@ When the first real run records a trace, the plan made from it replaces the earl
 - **When.** After a trace exists, the game is not running, and the PC is idle, one game at a time.
 - **What.** Plans a zone, moves the pieces into it (journal and SHA-256 sample check), confirms the layout, then prewarms the zone.
 - **Does not.** Run while a game runs (a move in progress stops after the current fragment), move sparse, compressed, or encrypted files, or change file content. A failed check reverts from the journal.
-- **Settings.** `auto.relocate`, `idle_seconds`, `max_relocations_per_day`, `max_zone_mib`, `max_relocate_gib_per_day`. How much it writes: [Effect on the hard disk](GAME_GUIDE.md#effect-on-the-hard-disk).
+- **Hours.** If `auto.relocate_hours` is set, new relocations and periodic re-applies start only in those local hours. A relocation that already started and left a journal finishes outside them.
+- **Settings.** `auto.relocate`, `idle_seconds`, `relocate_hours`, `max_relocations_per_day`, `max_zone_mib`, `max_relocate_gib_per_day`. How much it writes: [Effect on the hard disk](GAME_GUIDE.md#effect-on-the-hard-disk).
 - **Log.** `<game>: auto relocation done`, `[ERROR] <game>: auto relocation stopped: ...`
 
 <details>
@@ -239,7 +242,7 @@ When the first real run records a trace, the plan made from it replaces the earl
 - **When.** From a game's start to its exit (plus a short grace period).
 - **What.** Blocks relocation, reapply, and tier writes on that disk, yields prewarm, and records how the disk behaved (`play record:`).
 - **Does not.** Read the game's files or process. The play record uses only disk device counters, and it does not make the game faster by itself.
-- **Settings.** `auto.start_stream_cap_seconds`, `auto.restream_cooldown_min`, `auto.keep_awake`.
+- **Settings.** `auto.start_stream_enabled` (when `false`, no start stream runs), `auto.start_stream_cap_seconds`, `auto.restream_cooldown_min`, `auto.keep_awake`.
 - **Log.** `<game>: start stream skipped (<why>)`, `play record: ...`
 
 <details>
@@ -434,7 +437,7 @@ All `auto.*` keys, their meanings, and their defaults are in [CONFIGURATION.md](
 - The Status tab shows one line per game, such as "Auto: Frostpunk discovered → collecting trace → waiting to relocate → relocating → [done]". The Games tab shows the source, stage, and anti-cheat columns.
 - The learning stage shows "First run: learning (read-ahead n MiB)", and "Prewarmed" appears after prewarm.
 - The per-game status line also shows `hit right after prewarm N%` (the hit rate measured right after a prewarm ends) and `SSD assist N GB` (the size of the game's SSD copies).
-- Tray notifications are sent for discovery, for a finished relocation, and when a first run ends ("Faster from the next launch: <game>").
+- Tray notifications are sent for discovery, for a finished relocation, and when a first run ends ("Faster from the next launch: <game>"). The pop-up can be turned off in the Settings tab's Notifications card (`notifications.enabled` in `tray.json`); the notice is still written to the tray log.
 
 </details>
 

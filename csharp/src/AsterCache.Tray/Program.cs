@@ -25,6 +25,17 @@ internal static class Program
         L.Current = L.Resolve(lang >= 0 && lang + 1 < args.Length ? args[lang + 1] : null, Environment.GetEnvironmentVariable("ASTER_LANG"),
             SettingsStore.ReadLanguage(Path.Combine(dataDir, "config.json")));
         ILog log = OpenLog(dataDir);
+        TraySettings tray;
+        try
+        {
+            tray = TraySettings.Load(Path.Combine(dataDir, "tray.json"));
+        }
+        catch (SettingsException e)
+        {
+            log.Error("cannot start: " + e.Message);
+            return 2;
+        }
+
         App.Log = log;
         App.Smoke = args.Contains("--smoke");
         int shot = Array.IndexOf(args, "--screenshot");
@@ -39,7 +50,8 @@ internal static class Program
         var config = new ConfigEditor(dataDir);
         var elevator = new UacElevator();
         var shell = new ExplorerShell();
-        App.Model = new TrayViewModel(config, new ScmServiceControl(elevator), new PrefetchStreamer(), shell, log, trayVersion: ScmServiceControl.FileVersionOf(Environment.ProcessPath));
+        App.Model = new TrayViewModel(config, new ScmServiceControl(elevator), new PrefetchStreamer(), shell, log,
+            ScmServiceControl.FileVersionOf(Environment.ProcessPath), Path.Combine(dataDir, "tray.json"), tray.NotificationsEnabled);
         App.Manage = new ManageViewModel(App.Model, config, new AsterProcess(elevator, Elevation.IsAdmin, log), App.ScreenshotPath is null ? new SystemDrives() : new SampleDrives(), elevator, shell, log, Elevation.IsAdmin,
             ProcessSnapshot.IsRunning, string.Join(' ', args.Select(AsterProcess.Quote)));
         App.Updater = CreateUpdater(dataDir, log, shell);

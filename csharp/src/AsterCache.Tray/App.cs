@@ -256,6 +256,12 @@ internal sealed partial class App : Application
     {
         _lastNotice = text;
         _lastNoticeAt = DateTimeOffset.UtcNow;
+        if (!Model.AllowToast(text))
+        {
+            Rebuild(); // 알림 창은 끄고 아이콘 풍선 도움말에는 남김
+            return;
+        }
+
         var toast = new AutoToast(text, _toasts.Count, tone, ShowMain);
         _toasts.Add(toast);
         toast.Closed += (_, _) => _toasts.Remove(toast);

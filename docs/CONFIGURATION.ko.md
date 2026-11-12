@@ -63,6 +63,8 @@
 | `anticheat` | 없음 | 설치 폴더에서 찾은 안티치트: `eac`, `battleye`, `vanguard`, `kernel`, `ricochet`, `unknown`. 게임 탭에 표시되며 동작은 바꾸지 않습니다. 정책은 [안티치트 호환](ANTICHEAT.ko.md)을 보십시오. |
 | `display_name` | 없음 | 화면에 보일 게임 이름. 없으면 서비스가 남긴 런처 이름, 그것도 없으면 키의 밑줄을 공백으로 바꾼 이름을 씁니다. 내부 키는 그대로입니다. |
 | `display_names` | 없음 | 언어별 화면 이름. 예: `{"ko": "발로란트", "en": "VALORANT"}`. 키는 `ko`, `en` 만 됩니다. |
+| `mode` | `inherit` | 이 게임에 서비스가 하는 일의 범위: `inherit`(전부), `prewarm_only`(재배치·정기 재적용 제외), `relocate_only`(예열·재예열·보충·시작 스트림·고정 제외), `off`(아무것도 안 함). 추적은 게임이 `off` 이거나 `paused` 가 아니면 계속 허용됩니다. |
+| `paused` | `false` | `true` 면 `mode` 와 무관하게 서비스가 이 게임의 새 작업을 시작하지 않습니다. 학습 데이터와 기록은 그대로 둡니다. |
 
 `display_name` 과 `display_names` 는 손으로 넣을 수 있는 선택 키입니다. 이 키가 든 설정을 beta.24 로 되돌리면 그 버전이 설정을 거부하므로(종료 코드 2), 되돌리기 전에 두 키를 지워야 합니다.
 
@@ -119,6 +121,7 @@
 | 키 | 기본값 | 뜻 |
 |---|---|---|
 | `idle_seconds` | 30 | 재배치 전에 PC 가 한가해야 하는 시간(초, 10~86400). 예전 키 `idle_minutes`(기본 3)는 적혀 있고 `idle_seconds` 가 없을 때만 씁니다. |
+| `relocate_hours` | `[]` | 자동 재배치와 정기 재적용을 시작해도 되는 로컬 시각(시, 0~23, 중복 없음, 최대 24개). 비어 있으면 시간 제한이 없습니다. |
 | `max_relocations_per_day` | 4 | 24시간 동안의 재배치 최대 횟수(0~24). |
 | `max_relocate_gib_per_day` | 8 | 하루에 재배치로 쓸 수 있는 최대 GiB(0 = 무제한, 최대 1048576). 8 은 기본값으로 취급되어 SMR 디스크는 여전히 2 GiB 를 씁니다. |
 | `relocate_chunk_mib` | 4 | 한 번에 옮기는 조각 크기(MiB, 1~256). |
@@ -140,11 +143,21 @@
 | `startup_warm_max_mib` | 1024 | 서비스 시작 예열이 한 번에 읽는 합계 상한(MiB, 1~1048576). 넘는 게임은 건너뜁니다. |
 | `rewarm_minutes` | 10 | 데이터가 식었는지 보고 다시 예열하는 캐시 점검 간격(0~1440, 0이면 끔). |
 | `rewarm_after_exit_min` | 2 | 게임 종료를 감지하면 캐시 점검을 이 시간(분) 뒤로 당깁니다(0~1440, 0이면 끔). |
+| `start_stream_enabled` | `true` | `false` 면 게임이 시작될 때 시작 스트림을 하지 않습니다. |
 | `restream_cooldown_min` | 10 | 같은 게임의 시작 스트림을 이 시간(분) 안에는 다시 돌리지 않습니다(0~1440). 게임이 이미 실행 중이거나 디스크가 바쁠 때도 건너뜁니다. |
 | `start_stream_cap_seconds` | 120 | 시작 스트림의 시간 상한(초, 0~7200). 로딩 경계(10초 이동 창 읽기량이 최고치의 10% 아래로 떨어지는 시점, 최대 60초)에서도 멈춥니다. 0이면 시간 상한이 없습니다. |
 | `keep_awake` | `true` | 런처가 떠 있거나 평소 플레이하는 시간대에 10분마다 4 KiB 를 작게 읽어 HDD 가 꺼지지 않게 합니다. Windows 전원 설정은 바꾸지 않습니다. |
 | `keep_stream_on_game_start` | `false` | `true` 면 예열 중인 게임이 시작돼도 끝까지 읽습니다(실험용). 평소에는 다음 64 MiB 묶음 경계에서 멈춰 게임에 디스크를 양보합니다. |
 | `load_boundary` | `false` | `true` 면 게임 시작 때 로딩 앞부분(tier0)이 RAM 에 들어온 시각을 잽니다. 디스크를 읽으므로 게임이 끝나면 멈춥니다. |
+
+## 업데이트: `update`
+
+| 키 | 기본값 | 뜻 |
+|---|---|---|
+| `mode` | `auto` | 업데이트 방식: `auto`, `notify`, `off`. |
+| `prerelease` | `false` | `true` 면 프리릴리스도 대상으로 합니다. |
+
+이전 버전은 `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, `update` 키를 거부하므로, 되돌리기 전에 지워야 합니다.
 
 ## 감시기
 

@@ -28,6 +28,23 @@ public sealed class JObject : IEnumerable<KeyValuePair<string, object?>>
         _items.Add(new KeyValuePair<string, object?>(key, value));
     }
 
+    /// 키를 지우고 뒤 항목의 순서는 유지합니다 (없으면 false).
+    public bool Remove(string key)
+    {
+        if (!_index.Remove(key, out int i))
+        {
+            return false;
+        }
+
+        _items.RemoveAt(i);
+        foreach (string k in _index.Where(kv => kv.Value > i).Select(kv => kv.Key).ToList())
+        {
+            _index[k]--;
+        }
+
+        return true;
+    }
+
     public bool ContainsKey(string key) => _index.ContainsKey(key);
 
     public bool TryGetValue(string key, out object? value)

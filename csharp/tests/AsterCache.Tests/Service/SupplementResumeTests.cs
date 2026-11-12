@@ -50,8 +50,13 @@ public sealed class SupplementResumeTests : IDisposable
         /// PVM 힌트가 받아들였다고 알릴 바이트 수. MiB 경계 시험에서는 ReadMib 보다 우선합니다.
         public long? ReadBytes { get; set; }
 
+        /// 계획 뒤 다시 계산하는 최종 읽기 목록 크기.
+        public long? ReadSetMib { get; set; }
+
         /// 읽을 목록의 요청량 (MiB), 없으면 실제 목록 길이.
         public long? RequestedMib { get; set; }
+
+        public long? PrewarmReadBytes(GameSettings game, bool partial) => ReadSetMib is { } mib ? mib * Mib : null;
 
         /// 읽는 도중에 일어나는 일 (게임 시작 등).
         public Action? OnStream { get; set; }
@@ -132,6 +137,25 @@ public sealed class SupplementResumeTests : IDisposable
         Assert.Equal((3904L, HotMib), p.PartialInfo("g"));
         JObject s = Status();
         Assert.Equal((3904L, HotMib), ((long)s["warmed_mib"]!, (long)s["hot_mib"]!)); // 상태 표시가 진행을 반영
+    }
+
+    [Fact]
+    public void FinalSupplementPlanShrinksWithHeadroomAndDropsAnOldWindowOffset()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmed(g, 8000);
+        _doneProbe = new ProbeResult(8, 0, 0.3);
+        (_streamer.ReadMib, _streamer.Complete) = (2000, false);
+        Assert.False(p.Supplement(g, CancellationToken.None)); // 창 3904, 이어 읽기 위치 2000
+
+        _streamer.ReadMib = null;
+        _streamer.Complete = true;
+        _streamer.ReadSetMib = 4100; // 다시 계산한 목록이 최초 예산보다 큼
+
+        Assert.True(p.Supplement(g, CancellationToken.None));
+
+        Assert.Equal(3648, _streamer.Calls[^1].MaxStreamMib); // 8000 - 4096 예비 - 256 최종 여유
+        Assert.Equal(0, _streamer.Skips[^1]); // 창이 바뀌어 이전 목록의 위치를 재사용하지 않음
     }
 
     [Fact]

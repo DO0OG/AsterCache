@@ -300,12 +300,34 @@ public sealed class AutoRegistry
     }
 
     /// 설정을 다시 읽어 방금 쓴 등록이 설정에 들어왔으면 임시 기록에서 뺍니다.
-    public void SettingsReloaded(AsterSettings s)
+    public void SettingsReloaded(AsterSettings s, IReadOnlyCollection<GameSettings>? removed = null)
     {
         lock (_lock)
         {
-            _added.RemoveAll(a => s.Games.Any(g => g.Name == a.Name));
+            string[] gone = removed?.Select(g => g.Name).ToArray() ?? [];
+            _added.RemoveAll(a => s.Games.Any(g => g.Name == a.Name) || gone.Contains(a.Name)); // 설정에 들어왔거나 사용자가 지운 등록은 임시 기록에서 뺌
+            if (removed is not null)
+            {
+                _addedExes.ExceptWith(removed.SelectMany(g => g.ExeNames)); // 지운 게임의 실행 파일이 다시 등록될 수 있게
+                string[] roots = removed.Select(g => g.OriginRoot).ToArray();
+                _refusedLogged.RemoveWhere(key => RefusedPath(key) is { } path && roots.Any(root => Overlaps(path, root)));
+            }
         }
+    }
+
+    private static string? RefusedPath(string key)
+    {
+        if (key.StartsWith("launcher|", StringComparison.OrdinalIgnoreCase))
+        {
+            return key[9..];
+        }
+
+        if (key.StartsWith("overlap|", StringComparison.OrdinalIgnoreCase) || key.StartsWith("notgame|", StringComparison.OrdinalIgnoreCase))
+        {
+            return key[8..];
+        }
+
+        return key.Length == 2 && key[1] == ':' ? null : key;
     }
 
     // 트레이스는 다음 실행부터 잡힘: 이번 실행은 이미 시작 부분의 읽기를 놓쳤고 정확한 게임인지도 이제야 알았기 때문.

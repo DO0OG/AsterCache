@@ -77,6 +77,7 @@ public sealed class ScmServiceControl(IElevator elevator, string serviceName = S
 {
     public const string DefaultName = "AsterCache";
     private const int ErrorServiceDoesNotExist = 1060;
+    private readonly FileMetadataCache<string> _versionCache = new();
 
     private static string Sc => Path.Combine(Environment.SystemDirectory, "sc.exe");
 
@@ -106,7 +107,7 @@ public sealed class ScmServiceControl(IElevator elevator, string serviceName = S
         try
         {
             string? exe = ImagePathExe(Registry.GetValue(@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\" + serviceName, "ImagePath", null) as string);
-            return exe is null || !File.Exists(exe) ? null : FileVersionOf(exe);
+            return exe is null ? null : _versionCache.Get(exe, () => File.Exists(exe) ? FileVersionOf(exe) : null);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         {

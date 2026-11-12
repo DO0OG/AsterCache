@@ -59,7 +59,7 @@ public sealed record DriveRow(string Letter, string Label, string FileSystem, lo
 }
 
 /// 게임 탭 한 줄. 기본 열은 DisplayName·State (자동 단계)·PrewarmState (PrewarmKind: ready 이번 부팅 뒤 예열, partial 앞부분만, history 재부팅 전 과거 기록, none 실측 안 됨, warming 예열 중)·Reason·AntiCheat, 나머지는 고급 열. Verdict: aster verify 의 판정 (contiguous, non-contiguous, resume-needed), 계획이 없으면 "-", 아직 확인 전이면 "?".
-public sealed record GameRow(string Name, string Exe, string Origin, bool HasPlan, bool HasTrace, string Verdict, string Prewarm, string Source, string Stage, string AntiCheat, string PrewarmFull, string DisplayName = "", string VerdictRaw = "", string StageRaw = "", string State = "", string PrewarmState = "", string PrewarmKind = "", string Reason = "", string Gate = "", string StageFull = "", StatusTone StateTone = StatusTone.Gray, StatusTone PrewarmTone = StatusTone.Gray, string Detail = "", string AutoLine = "");
+public sealed record GameRow(string Name, string Exe, string Origin, bool HasPlan, bool HasTrace, string Verdict, string Prewarm, string Source, string Stage, string AntiCheat, string PrewarmFull, string DisplayName = "", string VerdictRaw = "", string StageRaw = "", string State = "", string PrewarmState = "", string PrewarmKind = "", string Reason = "", string Gate = "", string StageFull = "", StatusTone StateTone = StatusTone.Gray, StatusTone PrewarmTone = StatusTone.Gray, string Detail = "", string AutoLine = "", string Play = "");
 
 /// 게임 하나의 배치 상태 (aster status --plan 결과와 저널 파일 시각).
 public sealed record GameStatus(string Verdict, double? ZoneHitPercent, DateTime? LastRelayout);
@@ -80,11 +80,16 @@ public sealed class ManageViewModel(
     private readonly ConcurrentDictionary<string, GameStatus> _status = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, (DateTime Plan, DateTime Journal, DateTime At)> _checked = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _generation = new(StringComparer.OrdinalIgnoreCase); // 게임별: 배치를 바꾸는 동작이 끝날 때마다 올림
+    private readonly FileMetadataCache<AutoStatusFile> _autoCache = new();
+    private readonly FileMetadataCache<IReadOnlyList<LoadSample>> _samplesCache = new();
+    private readonly FileMetadataCache<PlayRecords> _playCache = new();
+    private readonly object _reloadGate = new();
     private static readonly TimeSpan LayoutMaxAge = TimeSpan.FromMinutes(30); // 파일이 그대로여도 게임 업데이트 등으로 배치가 바뀔 수 있어 이 시간이 지나면 다시 확인
     private readonly TimeSpan _poll = poll ?? TimeSpan.FromMilliseconds(500);
     private JObject? _prewarm;
     private AutoStatusFile? _auto;
     private IReadOnlyList<LoadSample> _samples = [];
+    private PlayRecords _plays = PlayRecords.Empty;
 
     public bool IsAdmin => isAdmin();
 
@@ -206,12 +211,35 @@ public sealed class ManageViewModel(
 
         try
         {
-            return string.Join(Environment.NewLine, ReadLines(path).TakeLast(lines));
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(fs, Encoding.UTF8);
+            return string.Join(Environment.NewLine, ReadTail(reader, lines));
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             return L.T("Msg_ReadFailed", e.GetType().Name);
         }
+    }
+
+    internal static Queue<string> ReadTail(TextReader reader, int lines)
+    {
+        var tail = new Queue<string>(Math.Max(0, lines));
+        while (reader.ReadLine() is { } line)
+        {
+            if (lines <= 0)
+            {
+                continue;
+            }
+
+            if (tail.Count == lines)
+            {
+                tail.Dequeue();
+            }
+
+            tail.Enqueue(line);
+        }
+
+        return tail;
     }
 
     private static List<string> ReadLines(string path)
@@ -251,7 +279,8 @@ public sealed class ManageViewModel(
                 a is null ? "-" : AutoStatusFile.StageShort(a, L.Current, Boot), g.AntiCheat ?? "-", DescribePrewarm(g.Prewarm), tray.DisplayName(g.Name), verdict, a?.Detail ?? string.Empty,
                 a is null ? "-" : AutoStatusFile.StageName(a.Stage, L.Current), warm, kind, HoldReasons(g.Name, a, kind, verdict), GateText(_samples, g.Name),
                 a is null ? "-" : AutoStatusFile.StageText(a, L.Current, Boot), a is null ? StatusTone.Gray : TrayStatus.StageTone(a.Stage, a.Detail), TrayStatus.PrewarmTone(kind),
-                L.T("Layout_Detail", LayoutText(g), PrewarmText(g.Name)), a is null ? string.Empty : AutoStatusFile.Line(tray.DisplayName(g.Name), a, L.Current));
+                L.T("Layout_Detail", LayoutText(g), PrewarmText(g.Name)), a is null ? string.Empty : AutoStatusFile.Line(tray.DisplayName(g.Name), a, L.Current),
+                PlaySummary.Describe(_plays, g.Name));
         }).ToList();
 
     /// 마지막으로 읽은 auto_status.json (아직 못 읽었거나 없으면 null). 트레이 아이콘·툴팁이 5 초마다 씁니다.
@@ -406,18 +435,32 @@ public sealed class ManageViewModel(
     /// auto_status.json 만 다시 읽습니다 (aster 프로세스 없음, 5 초 주기용). 읽은 결과를 돌려줍니다.
     public AutoStatusFile? ReloadAuto()
     {
-        _auto = AutoStatusFile.Load(AutoStatusPath);
-        tray.LauncherNames = _auto?.Games.Where(kv => kv.Value.DisplayName is not null).ToDictionary(kv => kv.Key, kv => kv.Value.DisplayName!, StringComparer.OrdinalIgnoreCase) ?? new Dictionary<string, string>();
-        try
+        lock (_reloadGate)
         {
-            _samples = LoadSamples(Path.Combine(DataDir, MetricsJson.SamplesFile));
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-        {
-            // 서비스가 쓰는 중이거나 잠겨 못 읽으면 직전 값을 그대로 둡니다
-        }
+            _auto = _autoCache.Get(AutoStatusPath, () => AutoStatusFile.Load(AutoStatusPath), cacheNull: false);
+            tray.LauncherNames = _auto?.Games.Where(kv => kv.Value.DisplayName is not null).ToDictionary(kv => kv.Key, kv => kv.Value.DisplayName!, StringComparer.OrdinalIgnoreCase) ?? new Dictionary<string, string>();
+            string samplesPath = Path.Combine(DataDir, MetricsJson.SamplesFile);
+            try
+            {
+                _samples = _samplesCache.Get(samplesPath, () => LoadSamples(samplesPath)) ?? [];
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                // 서비스가 쓰는 중이거나 잠겨 못 읽으면 직전 값을 그대로 둡니다
+            }
 
-        return _auto;
+            string playPath = Path.Combine(DataDir, PlaySummary.FileName);
+            try
+            {
+                _plays = _playCache.Get(playPath, () => PlaySummary.Load(playPath)) ?? PlayRecords.Empty;
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                // 플레이 기록도 마찬가지로 직전 값을 유지
+            }
+
+            return _auto;
+        }
     }
 
     /// 게임별 배치 판정을 채우는 중이면 true (목록은 마지막 판정 또는 "확인 중" 으로 먼저 보임).
@@ -872,14 +915,46 @@ public sealed class ManageViewModel(
     public string ServiceLog() => Tail(Path.Combine(DataDir, "logs", "service.log"));
 
     /// 트레이 로그는 데이터 폴더에 못 쓰면 사용자별 폴더에 있으므로 더 최근에 쓴 쪽을 읽습니다.
-    public string TrayLog()
+    public string TrayLog() => Tail(TrayLogPath());
+
+    private string TrayLogPath()
     {
         string[] candidates =
         [
             Path.Combine(DataDir, "logs", "tray.log"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AsterCache", "logs", "tray.log"),
         ];
-        return Tail(candidates.Where(File.Exists).OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault() ?? candidates[0]);
+        return candidates.Where(File.Exists).OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault() ?? candidates[0];
+    }
+
+    /// 게임 목록이 비었을 때 보일 안내. 자동 발견이 켜져 있으면 기다리면 된다는 것과 직접 등록하는 방법, 꺼져 있으면 켜는 방법과 직접 등록하는 방법.
+    public string EmptyGamesText(string? letter)
+    {
+        if (letter is not null)
+        {
+            return L.T("Empty_GamesDrive");
+        }
+
+        AutoSettings auto = tray.Settings?.Auto ?? AutoSettings.Default;
+        return L.T(auto.Enabled && auto.Discover ? "Empty_GamesWait" : "Empty_Games");
+    }
+
+    /// 진단 ZIP 을 zipPath 에 만듭니다 (파일만 만들고 보내지 않음). 파일을 읽고 압축하므로 백그라운드에서 부르십시오.
+    public ActionResult ExportDiagnostics(string zipPath, string? userName = null, string? osVersion = null, long? maxBytes = null)
+    {
+        var input = new DiagnosticsInput(DataDir, TrayLogPath(), tray.TrayVersion ?? L.T("Word_Unknown"), tray.ServiceVersion,
+            osVersion ?? System.Runtime.InteropServices.RuntimeInformation.OSDescription, userName ?? Environment.UserName)
+        {
+            MaxBytes = maxBytes ?? DiagnosticsExport.DefaultMaxBytes,
+        };
+        DiagnosticsResult r = DiagnosticsExport.Write(zipPath, input);
+        if (!r.Ok)
+        {
+            return Report(false, L.T("Diag_Failed", r.Error));
+        }
+
+        int skipped = r.Entries.Count(e => !e.Included);
+        return Report(true, L.T("Diag_Done", zipPath, r.Entries.Count - skipped, skipped));
     }
 
     // ---- 내부 ----

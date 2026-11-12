@@ -17,6 +17,7 @@ public sealed class Rewarmer
     private GameExitTracker? _exitTracker;
     private readonly object _nextLock = new(); // Tick (유지 점검 스레드) 와 PullIn (재적용 틱 스레드) 이 같이 쓰는 _next 보호
     private DateTimeOffset? _next;
+    private readonly object _checkLock = new();
     private readonly Dictionary<string, string> _checkState = new(StringComparer.OrdinalIgnoreCase); // 게임별 마지막 재확인 결과 (로그를 바뀔 때만 남김)
 
     public Rewarmer(Prewarmer prewarm, PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
@@ -28,6 +29,18 @@ public sealed class Rewarmer
     }
 
     public void SetGameExitTracker(GameExitTracker tracker) => _exitTracker = tracker;
+
+    public void SetGames(IReadOnlyList<GameSettings> games)
+    {
+        HashSet<string> live = new(games.Select(g => g.Name), StringComparer.OrdinalIgnoreCase);
+        lock (_checkLock)
+        {
+            foreach (string gone in _checkState.Keys.Where(k => !live.Contains(k)).ToList())
+            {
+                _checkState.Remove(gone);
+            }
+        }
+    }
 
     /// 게임이 끝났을 때: 다음 점검을 auto.rewarm_after_exit_min 뒤로 당깁니다 (이미 더 이르면 그대로). 게이트 (게임 실행 중·디스크 바쁨) 와 식었을 때만 읽는 점검은 Tick 이 그대로 적용합니다.
     public void PullIn(AutoSettings auto, DateTimeOffset? heavyWorkNotBefore = null)
@@ -156,9 +169,23 @@ public sealed class Rewarmer
     /// 결과(상태)가 바뀔 때만 남김: 틱마다 같은 결과를 반복해 쓰지 않음 (예열 동작은 그대로).
     private void NoteCheck(GameSettings g, string state, string message)
     {
-        if (!_checkState.TryGetValue(g.Name, out string? last) || last != state)
+        bool changed;
+        lock (_checkLock)
         {
-            _checkState[g.Name] = state;
+            if (!_prewarm.Games.Any(game => string.Equals(game.Name, g.Name, StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+
+            changed = !_checkState.TryGetValue(g.Name, out string? last) || last != state;
+            if (changed)
+            {
+                _checkState[g.Name] = state;
+            }
+        }
+
+        if (changed)
+        {
             _log.Info(message);
         }
     }

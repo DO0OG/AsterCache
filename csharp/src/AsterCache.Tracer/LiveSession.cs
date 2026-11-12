@@ -36,6 +36,9 @@ public sealed class LiveSession : IDisposable
     private readonly Task _pump;
     private readonly Timer? _flusher;
     private readonly ILog? _log;
+    private int _stopRequested;
+    private int _disposeRequested;
+    private int _sessionDisposed;
 
     private LiveSession(TraceEventSession session, KernelCollector collector, Task pump, Timer? flusher, ILog? log)
     {
@@ -99,10 +102,20 @@ public sealed class LiveSession : IDisposable
     /// 세션을 멈추고 남은 이벤트까지 처리한 뒤 모은 기록을 돌려줍니다.
     public List<TraceRecord> Stop()
     {
+        RequestStop();
+        return FinishAfterPump(_pump, PumpWaitLimit, _collector.Finish, _log);
+    }
+
+    private void RequestStop()
+    {
+        if (Interlocked.Exchange(ref _stopRequested, 1) != 0)
+        {
+            return;
+        }
+
         _flusher?.Dispose();
         EventsLost = _session.EventsLost;
         _session.Stop();
-        return FinishAfterPump(_pump, PumpWaitLimit, _collector.Finish, _log);
     }
 
     /// 처리 스레드가 끝났음이 확인된 뒤에만 수집기를 정리합니다. 시간 초과면 이벤트 콜백이 아직 수집기를 고치고 있을 수 있어 (같은 목록을 동시에 건드림)
@@ -123,17 +136,51 @@ public sealed class LiveSession : IDisposable
 
     public void Dispose()
     {
-        _flusher?.Dispose();
-        if (_pump.IsCompleted)
+        if (Interlocked.Exchange(ref _disposeRequested, 1) != 0)
+        {
+            return;
+        }
+
+        DisposeAfterStop(_pump, PumpWaitLimit, RequestStop, DisposeSession, _log);
+    }
+
+    private void DisposeSession()
+    {
+        if (Interlocked.Exchange(ref _sessionDisposed, 1) == 0)
         {
             _session.Dispose();
         }
-        else
+    }
+
+    internal static void DisposeAfterStop(Task pump, TimeSpan limit, Action requestStop, Action disposeSession, ILog? log)
+    {
+        try
         {
-            // 처리 스레드가 아직 세션을 쓰는 중: 끝난 뒤에 정리
-            _log?.Warn("trace pump still running; session disposal deferred until it ends");
-            _ = _pump.ContinueWith(_ => _session.Dispose(), TaskScheduler.Default);
+            requestStop();
         }
+        catch (Exception e)
+        {
+            log?.Warn($"trace session stop failed ({e.GetType().Name}); session cleanup will wait for the pump");
+        }
+
+        bool stopped;
+        try
+        {
+            stopped = pump.Wait(limit);
+        }
+        catch (AggregateException)
+        {
+            stopped = true; // 실패한 처리 작업도 세션에 더는 접근하지 않습니다.
+        }
+
+        if (stopped)
+        {
+            disposeSession();
+            return;
+        }
+
+        log?.Warn($"trace pump still running after {limit.TotalSeconds:0} s; session disposal deferred until it ends");
+        _ = pump.ContinueWith(_ => disposeSession(), CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 }
 

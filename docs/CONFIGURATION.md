@@ -63,6 +63,8 @@ The configuration file is `%ProgramData%\AsterCache\config.json`. Editing it in 
 | `anticheat` | none | Anti-cheat found in the install folder: `eac`, `battleye`, `vanguard`, `kernel`, `ricochet`, or `unknown`. Shown in the Games tab; it does not change behavior. For the policy, see [Anti-cheat compatibility](ANTICHEAT.md). |
 | `display_name` | none | Game name shown on screen. When not set, uses the launcher name the service recorded, or else the key with underscores replaced by spaces. The internal key is unchanged. |
 | `display_names` | none | Per-language display names. Example: `{"ko": "발로란트", "en": "VALORANT"}`. Only the keys `ko` and `en` are accepted. |
+| `mode` | `inherit` | What the service does for this game: `inherit` (everything), `prewarm_only` (no relocation or periodic re-apply), `relocate_only` (no prewarm, re-prewarm, top-up, start-up stream, or pin), `off` (nothing). Tracing stays allowed unless the game is `off` or `paused`. |
+| `paused` | `false` | When `true`, the service starts no new work for this game, whatever `mode` says. Learned data and records are kept. |
 
 `display_name` and `display_names` are optional keys you can write by hand. If you roll back to beta.24 with these keys in the configuration, that version rejects the settings (exit code 2), so remove both keys before rolling back.
 
@@ -119,6 +121,7 @@ What each stage does is in [Automatic mode](AUTO_MODE.md). Ranges are given in p
 | Key | Default | Meaning |
 |---|---|---|
 | `idle_seconds` | 30 | How long the PC must stay idle before relocation, in seconds (10 to 86400). The older `idle_minutes` (default 3) is used only if it is written and `idle_seconds` is not. |
+| `relocate_hours` | `[]` | Local hours of the day (0 to 23, no duplicates, up to 24 values) at which automatic relocation and periodic re-apply may start. Empty means no time limit. |
 | `max_relocations_per_day` | 4 | The most relocations in 24 hours (0 to 24). |
 | `max_relocate_gib_per_day` | 8 | The most GiB a day that relocation may write (0 = unlimited, up to 1048576). An explicit 8 is treated as the default, so SMR disks still use 2 GiB. |
 | `relocate_chunk_mib` | 4 | Size of one moved piece, in MiB (1 to 256). |
@@ -140,11 +143,21 @@ What each stage does is in [Automatic mode](AUTO_MODE.md). Ranges are given in p
 | `startup_warm_max_mib` | 1024 | Total MiB the service-start prewarm reads at once (1 to 1048576). Games beyond it are skipped. |
 | `rewarm_minutes` | 10 | Interval of the cache check that prewarms again when the data went cold (0 to 1440; 0 = off). |
 | `rewarm_after_exit_min` | 2 | When a game exit is detected, the cache check is pulled forward to this many minutes later (0 to 1440; 0 = off). |
+| `start_stream_enabled` | `true` | When `false`, no start-up stream runs when a game starts. |
 | `restream_cooldown_min` | 10 | The start-up stream of the same game is not run again within this many minutes (0 to 1440). It is also skipped while the game is running or the disk is busy. |
 | `start_stream_cap_seconds` | 120 | Time limit of the start-up stream, in seconds (0 to 7200). It also stops at the loading boundary (the point where the reads in a 10-second moving window fall below 10% of their peak, at most 60 seconds in). 0 means no time limit. |
 | `keep_awake` | `true` | A small 4 KiB read every 10 minutes, while a launcher is open or at the hours you usually play, so the HDD does not spin down. Windows power settings are not changed. |
 | `keep_stream_on_game_start` | `false` | When `true`, a prewarm reads to the end even if its game starts (for experiments). Normally it stops at the next 64 MiB batch to yield the disk to the game. |
 | `load_boundary` | `false` | When `true`, measures when the loading head (tier0) is in RAM at each game start. It reads the disk, so it stops when the game exits. |
+
+## Updates: `update`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `mode` | `auto` | How updates are handled: `auto`, `notify`, or `off`. |
+| `prerelease` | `false` | When `true`, prereleases are also considered. |
+
+Older versions reject the keys `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, and `update`, so remove them before rolling back.
 
 ## Watcher
 

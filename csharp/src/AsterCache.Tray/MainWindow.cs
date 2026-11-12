@@ -66,6 +66,7 @@ internal sealed class MainWindow : Window
     private readonly TextBox _serviceLog = ReadOnlyBox();
     private readonly TextBox _trayLog = ReadOnlyBox();
     private readonly TextBlock _versions = Look.Text(string.Empty);
+    private readonly CheckBox _notifications = new() { Content = L.T("Notify_Enabled"), IsChecked = true };
     private readonly ComboBox _watcher = new() { ItemsSource = new[] { L.T("Watcher_Poll"), "etw" }, Width = 200 };
     private readonly ComboBox _language = new() { ItemsSource = new[] { L.T("Lang_Auto"), L.T("Lang_Ko"), L.T("Lang_En") }, Width = 200 };
     private readonly CheckBox _autoEnabled = new() { Content = L.T("Auto_Enabled") };
@@ -349,7 +350,7 @@ internal sealed class MainWindow : Window
 
     private void ShowEmpty(int rows)
     {
-        _gamesEmpty.Text = !_loaded ? L.T("Op_Loading") + " ..." : _letter is null ? L.T("Empty_Games") : L.T("Empty_GamesDrive");
+        _gamesEmpty.Text = !_loaded ? L.T("Op_Loading") + " ..." : _manage.EmptyGamesText(_letter);
         _gamesEmpty.IsVisible = rows == 0;
     }
 
@@ -360,7 +361,8 @@ internal sealed class MainWindow : Window
         (string watcher, string lastPrewarm) = _manage.StatusInfo();
         AutoProgress? progress = _manage.Progress() is { Discovered: > 0 } p ? p : null;
         string sig = string.Join("\n", new[] { sum.Tone.ToString(), sum.Line, _tray.StatusText, watcher, lastPrewarm, progress is null ? string.Empty : progress.Line(L.Current) ?? string.Empty, _letter ?? string.Empty }
-            .Concat(rows.Select(r => string.Join("|", r.Name, r.State, r.StateTone, r.PrewarmState, r.PrewarmTone, r.Reason, r.Detail, r.AutoLine))));
+            .Concat(rows.Select(r => string.Join("|", r.Name, r.State, r.StateTone, r.PrewarmState, r.PrewarmTone, r.Reason, r.Detail, r.AutoLine, r.Play)))
+            .Append(_manage.EmptyGamesText(_letter)));
         if (sig == _statusSig)
         {
             return;
@@ -409,7 +411,7 @@ internal sealed class MainWindow : Window
         _statusHost.Children.Add(Look.Heading(L.T("Sec_Games")));
         if (rows.Count == 0)
         {
-            _statusHost.Children.Add(Look.Card(Look.Muted(_letter is null ? L.T("Empty_Games") : L.T("Empty_GamesDrive"), Look.Body)));
+            _statusHost.Children.Add(Look.Card(Look.Muted(_manage.EmptyGamesText(_letter), Look.Body)));
         }
 
         foreach (GameRow r in rows.OrderBy(r => Rank(r.StateTone)).ThenBy(r => r.DisplayName.Length == 0 ? r.Name : r.DisplayName, StringComparer.OrdinalIgnoreCase))
@@ -439,6 +441,11 @@ internal sealed class MainWindow : Window
         if (r.AutoLine.Length > 0)
         {
             stack.Children.Add(Look.Muted(r.AutoLine));
+        }
+
+        if (r.Play.Length > 0)
+        {
+            stack.Children.Add(Look.Muted(r.Play));
         }
 
         Border card = Look.Card(stack, new Thickness(Look.S16, Look.S12));
@@ -543,6 +550,7 @@ internal sealed class MainWindow : Window
         Button apply = Look.Btn(L.T("Btn_ApplyWatcher"), () => _ = ApplyWatcher(), Look.ButtonKind.Primary);
         Button applyLanguage = Look.Btn(L.T("Btn_ApplyLanguage"), () => _ = ApplyLanguage(), Look.ButtonKind.Primary);
         Button applyAuto = Look.Btn(L.T("Btn_ApplyAuto"), () => _ = ApplyAuto(), Look.ButtonKind.Primary);
+        Button applyNotifications = Look.Btn(L.T("Btn_ApplyNotifications"), () => _ = ApplyNotifications(), Look.ButtonKind.Primary);
         applyAuto.HorizontalAlignment = HorizontalAlignment.Right;
         var checks = new WrapPanel { ItemSpacing = Look.S24, LineSpacing = Look.S8, Children = { _autoEnabled, _autoDiscover, _autoTrace, _autoRelocate, _tierEnabled } };
         Grid auto = Look.Form(
@@ -575,6 +583,7 @@ internal sealed class MainWindow : Window
                 Look.Section(L.T("Set_Watcher"), null, new StackPanel { Orientation = Orientation.Horizontal, Spacing = Look.S8, Children = { _watcher, apply } }, Look.Muted(L.T("Set_WatcherPoll") + Environment.NewLine + L.T("Set_WatcherEtw"))),
                 Look.Section(L.T("Set_PrewarmDefaults"), null, Look.Text(ManageViewModel.DescribePrewarm(PrewarmSettings.Default))),
                 Look.Section(L.T("Set_Language"), null, new StackPanel { Orientation = Orientation.Horizontal, Spacing = Look.S8, Children = { _language, applyLanguage } }),
+                Look.Section(L.T("Set_Notifications"), L.T("Set_NotificationsNote"), _notifications, applyNotifications),
                 Look.Section(L.T("Set_Folders"), null, folders),
                 Look.Section(L.T("Set_Versions"), null, _versions),
             },
@@ -592,7 +601,7 @@ internal sealed class MainWindow : Window
         var serviceTitle = Look.Heading(L.T("Log_Service"));
         serviceTitle.VerticalAlignment = VerticalAlignment.Center;
         Place(serviceTitle, top, 0);
-        Place(refresh, top, 1);
+        Place(new StackPanel { Orientation = Orientation.Horizontal, Spacing = Look.S8, Children = { Look.Btn(L.T("Btn_ExportDiag"), () => _ = ExportDiagnostics()), refresh } }, top, 1);
         Place(top, grid, 0, true);
         Place(_serviceLog, grid, 1, true);
         Place(Look.Heading(L.T("Log_Tray")), grid, 2, true);
@@ -618,6 +627,30 @@ internal sealed class MainWindow : Window
     {
         string language = LanguageValues[Math.Max(0, _language.SelectedIndex)];
         return RunAsync(L.T("Op_LanguageChange"), () => _tray.SetLanguage(language));
+    }
+
+    private Task<ActionResult> ApplyNotifications()
+    {
+        bool on = _notifications.IsChecked == true;
+        return RunAsync(L.T("Op_NotificationsChange"), () => _tray.SetNotifications(on));
+    }
+
+    private async Task ExportDiagnostics()
+    {
+        IStorageFile? file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = L.T("Pick_DiagSave"),
+            SuggestedFileName = $"AsterCache-diagnostics-{DateTime.Now:yyyyMMdd}.zip",
+            DefaultExtension = "zip",
+            FileTypeChoices = [new FilePickerFileType(L.T("Pick_DiagFilter")) { Patterns = ["*.zip"] }],
+        });
+        if (file?.TryGetLocalPath() is not { } path)
+        {
+            return;
+        }
+
+        string target = path.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) ? path : path + ".zip";
+        await RunAsync(L.T("Btn_ExportDiag"), () => _manage.ExportDiagnostics(target));
     }
 
     private Task<ActionResult> ApplyWatcher()
@@ -797,6 +830,7 @@ internal sealed class MainWindow : Window
             _zoneLimit.Text = _tray.Settings?.MaxZoneAuto == true ? "auto" : (_tray.Settings?.MaxZoneMib ?? SettingsStore.DefaultMaxZoneMib).ToString(CultureInfo.InvariantCulture);
             _watcher.SelectedIndex = Math.Max(0, Array.IndexOf(WatcherValues, _tray.Settings?.Watcher));
             _language.SelectedIndex = Math.Max(0, Array.IndexOf(LanguageValues, _tray.Settings?.Language));
+            _notifications.IsChecked = _tray.NotificationsEnabled;
             UpdateStatus();
             RefreshLayoutsInBackground();
             return r;

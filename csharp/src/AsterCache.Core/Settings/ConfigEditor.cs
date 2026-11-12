@@ -198,6 +198,16 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             auto["relocate_parallel"] = (long)a.RelocateParallel;
         }
 
+        if (!a.StartStreamEnabled) // 기본값이면 쓰지 않아 기존 파일이 그대로 유지됨
+        {
+            auto["start_stream_enabled"] = false;
+        }
+
+        if (a.RelocateHours.Count > 0)
+        {
+            auto["relocate_hours"] = a.RelocateHours.Select(h => (object?)(long)h).ToList();
+        }
+
         if (a.IdleSecondsSet || !a.IdleMinutesSet) // idle_minutes 만 명시된 설정은 그 값이 이기도록 idle_seconds 를 쓰지 않음
         {
             auto.Add("idle_seconds", (long)a.IdleSeconds);
@@ -205,6 +215,80 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
 
         root["auto"] = auto;
     }
+
+    /// 게임의 mode 를 정합니다 (Inherit 이면 키를 지움). 없는 게임은 SettingsException.
+    public void SetGameMode(string game, GameMode mode)
+    {
+        using FileStream _ = Lock();
+        JObject root = ReadRoot();
+        SetOrRemove(GameOf(root, game), "mode", mode == GameMode.Inherit ? null : GamePolicy.ModeName(mode));
+        Save(root);
+    }
+
+    /// 게임의 paused 를 정합니다 (false 이면 키를 지움). 없는 게임은 SettingsException.
+    public void SetGamePaused(string game, bool paused)
+    {
+        using FileStream _ = Lock();
+        JObject root = ReadRoot();
+        SetOrRemove(GameOf(root, game), "paused", paused ? true : null);
+        Save(root);
+    }
+
+    /// auto.start_stream_enabled 를 정합니다 (true 이면 키를 지움).
+    public void SetStartStreamEnabled(bool enabled) =>
+        EditSection("auto", "start_stream_enabled", enabled ? null : false);
+
+    /// auto.relocate_hours 를 정합니다 (비면 키를 지움). 범위·중복·개수는 검증이 거부합니다.
+    public void SetRelocateHours(IReadOnlyList<int> hours) =>
+        EditSection("auto", "relocate_hours", hours.Count == 0 ? null : hours.Select(h => (object?)(long)h).ToList());
+
+    /// update.mode 를 정합니다 (Auto 이면 키를 지움).
+    public void SetUpdateMode(UpdateMode mode) =>
+        EditSection("update", "mode", mode == UpdateMode.Auto ? null : GamePolicy.UpdateModeName(mode));
+
+    /// update.prerelease 를 정합니다 (false 이면 키를 지움).
+    public void SetUpdatePrerelease(bool prerelease) =>
+        EditSection("update", "prerelease", prerelease ? true : null);
+
+    // value 가 null 이면 키를 지우고, 그 결과 객체가 비면 객체도 지웁니다. 객체가 없는데 지울 것도 없으면 파일을 만들지 않습니다.
+    private void EditSection(string section, string key, object? value)
+    {
+        using FileStream _ = Lock();
+        JObject root = ReadRoot();
+        if (!root.TryGetValue(section, out object? so))
+        {
+            if (value is null)
+            {
+                return;
+            }
+
+            root[section] = so = new JObject();
+        }
+
+        JObject obj = so as JObject ?? throw new SettingsException($"{section}: object expected");
+        SetOrRemove(obj, key, value);
+        if (value is null && obj.Count == 0)
+        {
+            root.Remove(section);
+        }
+
+        Save(root);
+    }
+
+    private static void SetOrRemove(JObject o, string key, object? value)
+    {
+        if (value is null)
+        {
+            o.Remove(key);
+        }
+        else
+        {
+            o[key] = value;
+        }
+    }
+
+    private static JObject GameOf(JObject root, string game) =>
+        FindGame(GamesOf(root), game) ?? throw new SettingsException("games: no game with that name");
 
     public void SetMaxZoneMib(int mib)
     {

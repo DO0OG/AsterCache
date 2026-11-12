@@ -4,7 +4,12 @@ using System.Runtime.InteropServices;
 namespace AsterCache.Service;
 
 /// 감시 대상 프로세스가 새로 떴다는 알림. Timestamp 는 감지 시각 (Stopwatch.GetTimestamp).
-public sealed record ProcessStart(int Pid, string ExeName, long Timestamp, string? Route = null);
+public sealed record ProcessStart(int Pid, string ExeName, long Timestamp, string? Route = null)
+{
+    public DateTimeOffset DetectedAt { get; init; } = DateTimeOffset.UtcNow;
+
+    public long QueueTimestamp { get; init; }
+}
 
 /// 프로세스 시작 감지. RunAsync 는 취소될 때까지 onStart 를 부르고, 취소되면 정상 반환합니다.
 public interface IProcessWatcher

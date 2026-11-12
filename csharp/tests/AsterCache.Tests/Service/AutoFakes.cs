@@ -30,6 +30,37 @@ internal sealed class FakeTrace : IAutoTrace
 
     public bool Disposed { get; private set; }
 
+    /// 수집 구간을 연 채인가 (시작할 때 열려 있음).
+    public bool Collecting { get; private set; } = true;
+
+    /// 구간을 닫을 때 돌려줄 집계.
+    public WindowStats Window { get; set; }
+
+    public Exception? PauseFailure { get; set; }
+
+    public Exception? ResumeFailure { get; set; }
+
+    public WindowStats PauseWindow()
+    {
+        if (PauseFailure is { } failure)
+        {
+            throw failure;
+        }
+
+        Collecting = false;
+        return Window;
+    }
+
+    public void ResumeWindow()
+    {
+        if (ResumeFailure is { } failure)
+        {
+            throw failure;
+        }
+
+        Collecting = true;
+    }
+
     public IReadOnlyList<TraceRecord> Stop()
     {
         Stopped = true;

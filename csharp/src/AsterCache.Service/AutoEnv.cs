@@ -19,6 +19,12 @@ public interface IAutoTrace : IDisposable
 {
     /// 세션을 멈추고 모은 기록을 돌려줍니다.
     IReadOnlyList<TraceRecord> Stop();
+
+    /// 읽기 수집 구간을 닫습니다 (세션은 게임 끝까지 유지). 구간이 받은 읽기 집계를 돌려줍니다.
+    WindowStats PauseWindow();
+
+    /// 닫아 둔 읽기 수집 구간을 다시 엽니다.
+    void ResumeWindow();
 }
 
 /// 드라이브에서 자동 모드가 할 수 있는 일. 시스템 볼륨이 회전 디스크면 읽기 전용 경로 (발견·트레이스·예열) 만 허용하고 재배치·SSD 보조 저장은 거절합니다.
@@ -442,9 +448,14 @@ public sealed class AutoEnv
         public IReadOnlyList<TraceRecord> Stop()
         {
             List<TraceRecord> records = session.Stop();
-            log?.Info($"trace session stopped: {session.EventsLost} events lost");
+            (int names, int recorded) = session.Footprint;
+            log?.Info($"trace session stopped: {session.EventsLost} events lost, {session.Unresolved} reads dropped (name unresolved), {names} file names, {recorded} records");
             return records;
         }
+
+        public WindowStats PauseWindow() => session.PauseWindow();
+
+        public void ResumeWindow() => session.ResumeWindow();
 
         public void Dispose() => session.Dispose();
     }

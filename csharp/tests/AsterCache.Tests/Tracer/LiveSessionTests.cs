@@ -73,6 +73,31 @@ public sealed class LiveSessionTests
     }
 
     [Fact]
+    public void DisposeRequestsStopAndDefersSessionCleanupUntilThePumpEnds()
+    {
+        var pump = new TaskCompletionSource();
+        bool stopRequested = false;
+        bool sessionDisposed = false;
+
+        LiveSession.DisposeAfterStop(pump.Task, TimeSpan.FromMilliseconds(25), () => stopRequested = true, () => sessionDisposed = true, null);
+
+        Assert.True(stopRequested);
+        Assert.False(sessionDisposed);
+        pump.SetResult();
+        Assert.True(SpinWait.SpinUntil(() => sessionDisposed, TimeSpan.FromSeconds(2)));
+    }
+
+    [Fact]
+    public void DisposeStillReleasesTheSessionWhenStopRequestFails()
+    {
+        bool sessionDisposed = false;
+
+        LiveSession.DisposeAfterStop(Task.CompletedTask, TimeSpan.FromMilliseconds(25), () => throw new InvalidOperationException("stop failed"), () => sessionDisposed = true, null);
+
+        Assert.True(sessionDisposed);
+    }
+
+    [Fact]
     public void EtlReaderRejectsMissingFile()
     {
         string missing = Path.Combine(Path.GetTempPath(), "astercache-missing-" + Guid.NewGuid().ToString("N") + ".etl");

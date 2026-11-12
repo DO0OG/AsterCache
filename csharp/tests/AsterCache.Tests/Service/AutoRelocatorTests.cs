@@ -1806,6 +1806,27 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
+    public void RemovingAndReaddingAGameClearsItsColdWarmAttemptCache()
+    {
+        UseCold();
+        _status.Set("bench", "auto", null, AutoStage.Discovered, null);
+        _coldDiskBusy = true;
+        Tick();
+        Assert.Empty(_coldReads); // 디스크가 바빠 BusyRetry 뒤로 미뤄짐
+
+        _coldDiskBusy = false;
+        _settings = _settings with { Games = [] };
+        Relocator.SettingsReloaded([_game]);
+        _w.Now += Step;
+        Tick(); // 설정 제거를 틱 소유 스레드에서 정리
+        _settings = _settings with { Games = [_game] };
+        _w.Now += Step;
+        Tick();
+
+        Assert.Single(_coldReads); // 다시 등록된 게임은 BusyRetry 를 기다리지 않음
+    }
+
+    [Fact]
     public void PermanentSkipIsNotRetriedEveryTick()
     {
         UseCold();

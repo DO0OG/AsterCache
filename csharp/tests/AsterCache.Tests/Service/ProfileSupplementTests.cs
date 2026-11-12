@@ -237,6 +237,12 @@ public sealed class ProfileSupplementTests
             _ = PrefetchStreamer.ObservedBytes(game, allowSourceRead: false);
             Assert.Equal(1, PrefetchStreamer.SourceTraceParses[raw]); // 이후에는 캐시만
             Assert.Equal(2 * Mib, PrefetchStreamer.ObservedBytes(game, allowSourceRead: false));
+
+            var dispatcher = new GameDispatcher([game], new FakeStreamer(), new ListLog());
+            dispatcher.SetGames([]);
+
+            Assert.False(PrefetchStreamer.SourceTraceParses.ContainsKey(raw));
+            Assert.Equal(4 * Mib, PrefetchStreamer.ObservedBytes(game, allowSourceRead: false)); // 캐시가 비어 다시 전부 관찰됨 (예산 4 MiB) 으로 처리
         }
         finally
         {

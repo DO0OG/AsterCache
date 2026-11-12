@@ -101,6 +101,22 @@ public sealed class WorkerGameStartTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task StartLogSeparatesDetectionTimeFromQueueWait()
+    {
+        GameSettings game = Games.Make("queue timing", "queue-timing.exe");
+        _ = await StartWorker(game);
+        DateTimeOffset detectedAt = DateTimeOffset.UtcNow.AddSeconds(-2);
+        _watcher.OnStart!(new ProcessStart(123, game.ExeNames[0], Stopwatch.GetTimestamp(), "poll") { DetectedAt = detectedAt });
+
+        await WaitUntil(() => _log.Lines.Any(line => line.Contains("queue-timing.exe started (pid 123) via poll", StringComparison.Ordinal)));
+
+        string line = Assert.Single(_log.Lines, message => message.Contains("queue-timing.exe started (pid 123)", StringComparison.Ordinal));
+        Assert.Contains($"detected_at={detectedAt:O}", line, StringComparison.Ordinal);
+        Assert.Contains("queue_wait_ms=", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("queue_wait_ms=unknown", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RecorderExitLogExceptionDoesNotSkipExistingExitHandling()
     {
         GameSettings game = Games.Make("exit log error", "exit-log-error.exe");

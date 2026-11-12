@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using AsterCache.Core;
 using AsterCache.Core.Apply;
 using AsterCache.Core.Json;
@@ -89,6 +90,26 @@ public sealed class PrefetchStreamer : IGameStreamer
     /// 시험용: 원시 트레이스를 실제로 파싱한 횟수 (경로별).
     internal static readonly ConcurrentDictionary<string, int> SourceTraceParses = new(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<string, TraceSourceCacheEntry> TraceSourceCache = new(StringComparer.OrdinalIgnoreCase);
+
+    internal static void ForgetRemovedGames(IEnumerable<GameSettings> games)
+    {
+        foreach (GameSettings game in games)
+        {
+            string[] paths = [AutoTracer.RawTracePath(game), AutoTracer.BootTracePath(game)];
+            lock (TraceSourceCacheLock)
+            {
+                foreach (string path in paths)
+                {
+                    _ = TraceSourceCache.Remove(path + "|" + game.OriginRoot);
+                }
+            }
+
+            foreach (string path in paths)
+            {
+                _ = SourceTraceParses.TryRemove(path, out _);
+            }
+        }
+    }
 
     private readonly ConcurrentDictionary<string, bool> _reordered = new(StringComparer.OrdinalIgnoreCase);
 
@@ -1154,7 +1175,12 @@ public sealed class GameDispatcher
     }
 
     /// 설정을 다시 읽었을 때 게임 목록만 바꿉니다 (쿨다운은 유지).
-    public void SetGames(IReadOnlyList<GameSettings> games) => _games = games;
+    public void SetGames(IReadOnlyList<GameSettings> games)
+    {
+        IReadOnlyList<GameSettings> before = _games;
+        _games = games;
+        PrefetchStreamer.ForgetRemovedGames(before.Where(old => !games.Any(game => string.Equals(game.Name, old.Name, StringComparison.OrdinalIgnoreCase))));
+    }
 
     // 건너뛸 이유 (로그 문구), 없으면 null. 싼 판정부터.
     private string? RestreamSkip(GameSettings g, ProcessStart start, DateTimeOffset now)
@@ -1233,7 +1259,11 @@ public sealed class GameDispatcher
             _seen[start.Pid] = start; // 같은 pid 를 다시 감지해도 처음 관측 시각을 지킴 (pid 가 다른 exe 로 재사용되면 새로)
         }
 
-        _log.Info($"{g.Name}: {start.ExeName} started (pid {start.Pid})" + (start.Route is { } route ? $" via {route}" : string.Empty)); // 감지 지연 측정 (cs_service.ps1 test) 이 쿨다운과 무관하게 매번 이 줄을 봅니다
+        string queueWait = start.QueueTimestamp > 0
+            ? Math.Max(0, Stopwatch.GetElapsedTime(start.QueueTimestamp).TotalMilliseconds).ToString("F1", CultureInfo.InvariantCulture)
+            : "unknown";
+        _log.Info($"{g.Name}: {start.ExeName} started (pid {start.Pid})" + (start.Route is { } route ? $" via {route}" : string.Empty)
+            + $" [detected_at={start.DetectedAt:O}, queue_wait_ms={queueWait}]"); // 경로 표시 (cs_service.ps1 이 "via X" 를 파싱) 뒤에 감지 시각·큐 대기를 분리 기록
         DateTimeOffset now = _now();
         if (_last.TryGetValue(g.Name, out DateTimeOffset prev) && now - prev < Cooldown)
         {

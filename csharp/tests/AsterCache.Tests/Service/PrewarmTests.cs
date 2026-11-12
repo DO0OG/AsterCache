@@ -73,6 +73,24 @@ public sealed class PrewarmTests : IDisposable
     }
 
     [Fact]
+    public void SkipLogKeysStayBoundedWhenMemoryDetailsChange()
+    {
+        string[] lowMemory = Enumerable.Range(0, 2000)
+            .Select(available => Prewarmer.SkipLogKey("g", $"low memory (available {available} MiB < zone 2000 MiB + reserve 4096 MiB)"))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        string[] reserve = Enumerable.Range(0, 2000)
+            .Select(available => Prewarmer.SkipLogKey("g", $"prewarm cancelled memory reserve: available {available} MiB, final set 4000 MiB + reserve 4096 MiB"))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Single(lowMemory);
+        Assert.Single(reserve);
+        Assert.NotEqual(lowMemory[0], reserve[0]);
+        Assert.NotEqual(reserve[0], Prewarmer.SkipLogKey("g", "prewarm cancelled game started"));
+    }
+
+    [Fact]
     public void EmptyZoneIsSkippedNotPassed()
     {
         Assert.Equal("no zone", PrewarmPolicy.SkipReason(0, true, false, 99999, 0, null, TimeSpan.Zero));
@@ -289,6 +307,20 @@ public sealed class PrewarmTests : IDisposable
 
         Prewarmer restarted = Make(g); // 서비스 재시작: 상태 파일만 남음
         Assert.Equal(warmedAt, restarted.LastWarmed("a"));
+    }
+
+    [Fact]
+    public void RemovingAGameKeepsItsSuccessfulWarmHistory()
+    {
+        GameSettings g = Game("a");
+        Prewarmer p = Make(g);
+        Assert.True(p.Run(g, "first").Ran);
+        PlayWarmSnapshot? before = p.PlayStartSnapshot("a", _now);
+        Assert.NotNull(before);
+
+        p.SetGames([]);
+
+        Assert.Equal(before, p.PlayStartSnapshot("a", _now));
     }
 
     [Fact]

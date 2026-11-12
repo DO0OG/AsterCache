@@ -32,7 +32,7 @@ public interface IShell
 /// 트레이 메뉴가 보여주고 부르는 모든 것. UI 없이 시험할 수 있게 화면 객체를 직접 쓰지 않습니다.
 public sealed class TrayViewModel(
     ConfigEditor config, IServiceControl service, IGameStreamer streamer, IShell shell, ILog log, UpdateService? updates = null,
-    string? trayVersion = null)
+    string? trayVersion = null, string? traySettingsPath = null, bool notificationsEnabled = true)
 {
     private readonly FileMetadataCache<AsterSettings> _settingsCache = new();
     private AsterSettings? _settings;
@@ -61,6 +61,48 @@ public sealed class TrayViewModel(
     public AsterSettings? Settings => _settings;
 
     public string? TrayVersion => trayVersion;
+
+    /// 트레이 알림 창 (토스트) 을 띄울지 (tray.json 의 notifications.enabled, 기본 켜짐).
+    public bool NotificationsEnabled { get; private set; } = notificationsEnabled;
+
+    /// 알림 창을 띄워도 되는지. 꺼져 있으면 띄우지 않고 내용만 트레이 로그에 남깁니다.
+    public bool AllowToast(string text)
+    {
+        if (NotificationsEnabled)
+        {
+            return true;
+        }
+
+        log.Info("notification off: " + text);
+        return false;
+    }
+
+    /// 알림 창 켬·끔을 tray.json 에 저장합니다 (데이터 폴더 쓰기 권한이 필요).
+    public ActionResult SetNotifications(bool enabled)
+    {
+        if (traySettingsPath is null)
+        {
+            return Report(false, L.T("Err_ConfigChange", "tray.json"));
+        }
+
+        try
+        {
+            TraySettings.SaveNotifications(traySettingsPath, enabled);
+        }
+        catch (UnauthorizedAccessException e)
+        {
+            log.Error("tray settings change denied", e);
+            return Report(false, L.T("Err_NoPermission"));
+        }
+        catch (Exception e) when (e is SettingsException or IOException)
+        {
+            log.Error("tray settings change failed", e);
+            return Report(false, L.T("Err_ConfigChange", FileLog.Scrub(e.Message)));
+        }
+
+        NotificationsEnabled = enabled;
+        return Report(true, L.T(enabled ? "Msg_NotificationsOn" : "Msg_NotificationsOff"));
+    }
 
     /// 등록된 서비스 실행 파일의 버전 (미설치면 null).
     public string? ServiceVersion { get; private set; }
@@ -173,30 +215,73 @@ public sealed class TrayViewModel(
             IgnoreExes = ignoreExes.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries),
         }), L.T("Msg_AutoSet"));
 
-    /// 설정 탭의 "자동 모드 적용": auto 값을 저장하고, 성공하면 존 상한·예열 유지 주기도 저장합니다.
+    /// 설정 탭의 "자동 모드 적용": 모든 입력을 먼저 확인하고 auto 값·존 상한·예열 유지 주기·SSD 보조 저장·재배치 상한을 잠금 안에서 한 번에 저장합니다 (일부만 적용되지 않음).
     public ActionResult ApplyAuto(AutoForm f)
     {
-        ActionResult saved = SetAuto(f.Enabled, f.Discover, f.Trace, f.Relocate, f.PrewarmRecent, f.IgnoreExes);
-        ActionResult speed = saved.Ok ? SetSpeed(f.ZoneLimit, f.RewarmMinutes) : saved;
-        ActionResult tier = speed.Ok ? SetSsdTier(f.TierEnabled, f.TierBudget) : speed;
-        return tier.Ok ? SetRelocateGib(f.RelocateGib) : tier;
+        if (!TryZoneAndRewarm(f.ZoneLimit, f.RewarmMinutes, out int mib, out bool zoneAuto, out int minutes))
+        {
+            return Report(false, L.T("Err_SpeedInput"));
+        }
+
+        if (!TryTierBudget(f.TierBudget, out int tierGib))
+        {
+            return Report(false, L.T("Err_TierBudget"));
+        }
+
+        if (!TryRelocateGib(f.RelocateGib, out int relocateGib))
+        {
+            return Report(false, L.T("Err_RelocateGib"));
+        }
+
+        string[] ignore = f.IgnoreExes.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        return Edit(() => config.UpdateAuto(a => WithRelocateGib(a with
+        {
+            Enabled = f.Enabled,
+            Discover = f.Discover,
+            Trace = f.Trace,
+            Relocate = f.Relocate,
+            PrewarmRecent = f.PrewarmRecent,
+            IgnoreExes = ignore,
+            RewarmMinutes = minutes,
+            SsdTier = a.SsdTier with { Enabled = f.TierEnabled, BudgetGib = tierGib },
+        }, relocateGib), mib, zoneAuto), L.T("Msg_AutoSet"));
     }
 
     /// 하루 (24 시간) 에 자동 재배치가 쓸 수 있는 총량 (GiB, 0 = 무제한) 을 기록합니다. 나머지 auto 값은 그대로 보존합니다.
     public ActionResult SetRelocateGib(string gib)
     {
-        if (!int.TryParse(gib.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int n) || n > 1048576)
+        if (!TryRelocateGib(gib, out int n))
         {
             return Report(false, L.T("Err_RelocateGib"));
         }
 
-        return Edit(() => config.UpdateAuto(a => n == a.MaxRelocateGibPerDay && !a.MaxRelocateGibPerDaySet ? a : a with { MaxRelocateGibPerDay = n, MaxRelocateGibPerDaySet = true }), L.T("Msg_AutoSet")); // 표시된 기본값 그대로면 명시하지 않음 (SMR 기본값 규칙 유지)
+        return Edit(() => config.UpdateAuto(a => WithRelocateGib(a, n)), L.T("Msg_AutoSet"));
+    }
+
+    // 표시된 기본값 그대로면 명시하지 않음 (SMR 기본값 규칙 유지)
+    private static AutoSettings WithRelocateGib(AutoSettings a, int n) =>
+        n == a.MaxRelocateGibPerDay && !a.MaxRelocateGibPerDaySet ? a : a with { MaxRelocateGibPerDay = n, MaxRelocateGibPerDaySet = true };
+
+    private static bool TryRelocateGib(string gib, out int n) =>
+        int.TryParse(gib.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out n) && n <= 1048576;
+
+    private static bool TryTierBudget(string budgetGib, out int gib) =>
+        int.TryParse(budgetGib.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out gib) && gib is >= 1 and <= 4096;
+
+    private static bool TryZoneAndRewarm(string zoneLimit, string rewarmMinutes, out int mib, out bool auto, out int minutes)
+    {
+        string zone = zoneLimit.Trim();
+        mib = 0;
+        minutes = 0;
+        auto = zone.Equals("auto", StringComparison.OrdinalIgnoreCase);
+        return (auto || int.TryParse(zone, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out mib))
+            && int.TryParse(rewarmMinutes.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out minutes);
     }
 
     /// SSD 보조 저장 (선택 기능) 의 켬과 예산 (GiB) 을 기록합니다. 폴더(root) 와 나머지 auto 값은 그대로 보존합니다. 링크는 서비스가 만듭니다 (트레이는 설정만 바꿈).
     public ActionResult SetSsdTier(bool enabled, string budgetGib)
     {
-        if (!int.TryParse(budgetGib.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int gib) || gib is < 1 or > 4096)
+        if (!TryTierBudget(budgetGib, out int gib))
         {
             return Report(false, L.T("Err_TierBudget"));
         }
@@ -214,11 +299,7 @@ public sealed class TrayViewModel(
     /// 존 상한 ("auto" 또는 MiB 숫자) 과 예열 유지 주기 (분, 0 = 끔) 를 기록합니다. 나머지 auto 값은 그대로 보존합니다.
     public ActionResult SetSpeed(string zoneLimit, string rewarmMinutes)
     {
-        string zone = zoneLimit.Trim();
-        int mib = 0;
-        bool auto = zone.Equals("auto", StringComparison.OrdinalIgnoreCase);
-        if ((!auto && !int.TryParse(zone, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out mib))
-            || !int.TryParse(rewarmMinutes.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int minutes))
+        if (!TryZoneAndRewarm(zoneLimit, rewarmMinutes, out int mib, out bool auto, out int minutes))
         {
             return Report(false, L.T("Err_SpeedInput"));
         }

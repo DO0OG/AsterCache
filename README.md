@@ -14,7 +14,7 @@
   <a href="https://github.com/DO0OG/AsterCache/actions/workflows/kernel-build.yml"><img alt="Kernel Build" src="https://github.com/DO0OG/AsterCache/actions/workflows/kernel-build.yml/badge.svg"></a>
 </p>
 
-> **Beta.** AsterCache is distributed as a beta pre-release. It physically moves file data, so back up drives that hold important data before using it. Validation covers one SMR drive (WD20EZAZ) and one real game (Frostpunk); CMR drives have not been tested. Anti-cheat games have only usage records from one PC and no controlled validation ([Anti-cheat compatibility](docs/ANTICHEAT.md)).
+> **Read before use.** AsterCache physically moves file data, so back up drives that hold important data before using it. Validation covers one SMR drive (WD20EZAZ) and one real game (Frostpunk); CMR drives have not been tested. Anti-cheat games have only usage records from one PC and no controlled validation ([Anti-cheat compatibility](docs/ANTICHEAT.md)).
 
 ## What it does
 
@@ -22,6 +22,7 @@ AsterCache helps games installed on a hard disk (HDD) load faster. It watches wh
 
 - It does not change your game files, and does not copy them to another drive (the optional SSD assist storage, off by default, is the one exception).
 - After installing, you do not have to do anything. It works in the background.
+- The tray window shows a summary of each game's last play. It is disk read statistics, not a load-time or frame measurement. A diagnostics ZIP can be exported for support; it stays on your PC.
 - The measured figures in this document are replay times of recorded read patterns, not total load times of a running game.
 
 ## Who it is for
@@ -42,13 +43,17 @@ AsterCache helps games installed on a hard disk (HDD) load faster. It watches wh
 
 Requirements: Windows 11 x64 and an NTFS game drive. Installing the service, tracing, and relocation need administrator rights.
 
-1. Open [GitHub Releases](https://github.com/DO0OG/AsterCache/releases) and download `AsterCache-v<version>-win-x64-setup.exe` (pre-release, for example v0.9.0-beta.38).
+1. Open [GitHub Releases](https://github.com/DO0OG/AsterCache/releases) and download `AsterCache-v<version>-win-x64-setup.exe` (the latest release).
 2. Run it and choose a language (English or 한국어).
 3. Keep the default choices (desktop and Start menu shortcuts, start with Windows, install the service) and click Next until it finishes.
 
-Prefer no installer? The same release has a zip, `AsterCache-0.9.0-beta.38-win-x64.zip`. Extract it, run `AsterCache.Tray.exe` as administrator, and install and start the service from the Settings tab.
+Prefer no installer? The same release has a zip, `AsterCache-<version>-win-x64.zip`. Extract it, run `AsterCache.Tray.exe` as administrator, and install and start the service from the Settings tab.
 
 Running a newer installer upgrades the existing installation. Uninstalling reverts any SSD assist links first, then removes the program and the service, but keeps the data folder `%ProgramData%\AsterCache`. The installer is not code-signed, so Windows SmartScreen may show a warning. Building from source: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
+### 3. Updates
+
+The tray checks the official releases 5 minutes after it starts and then every 24 hours. By default (`update.mode` = `auto`) it downloads a newer installer, verifies its SHA-256, and installs it silently, but only when the tray runs with administrator rights from an installed copy, no registered game is running, and no relocation is in progress. Otherwise it only notifies you, or opens the release page. You can choose **Install automatically**, **Notify only**, or **Off** in the Settings tab's Updates section; prereleases are not included unless you turn that on. The service itself does not use the network. The silent installation has not yet been confirmed on a real machine. See [docs/FAQ.md](docs/FAQ.md).
 
 ### 2. Use it: there is nothing to press
 
@@ -135,7 +140,7 @@ The synthetic dataset and Frostpunk figures are replay times of traced read patt
 - Tracing records only reads that went to disk; reads already in the cache may be missed.
 - Replay was measured for one real game (Frostpunk) on one SMR drive. Persistence was confirmed up to 10 hours after relocation. Call of Duty and League of Legends have only usage-log tallies.
 - Power loss, SSD damage, BitLocker, and DirectStorage environments have not been tested.
-- If only the tray is updated, the service stays on the old version; reinstall the service with the installer.
+- If only the tray is updated, the service stays on the old version; reinstall the service with the installer. Automatic updates install the whole installer, so they update the service too.
 - Resident utilities such as Wallpaper Engine are excluded from automatic registration. Other non-game apps on an HDD may still be registered; add their exe to `auto.ignore_exes` or remove them on the Games tab.
 - Games installed under `AppData\Local\Temp` are not found by the heuristic. The shared profile repository is still being prepared.
 - The full list of what was and was not validated is in [VALIDATION_REPORT.md](VALIDATION_REPORT.md).

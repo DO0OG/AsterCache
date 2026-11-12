@@ -19,7 +19,7 @@ When a game starts, it reads that game's recorded data in order for up to 120 se
 Uninstalling first reverts SSD assist links, then removes the program and the service. The data folder `%ProgramData%\AsterCache` stays. Pieces already moved are not moved back, and the file contents are unchanged either way; to restore the previous layout, click **Revert** on the Games tab first. Removing a game from the list leaves its files as they are. See [Usage](USAGE.md#common-tasks).
 
 **How much RAM does it use?**
-Prewarmed data is ordinary file cache. Across all games it is limited to half of physical RAM by default (`prewarm.max_cache_mib`), and prewarm runs only when at least 4 GB of RAM would still be free afterwards. Windows reclaims the cache when your programs need the memory. See [Configuration](CONFIGURATION.md).
+Prewarmed data is ordinary file cache. Across all games it is limited to half of physical RAM by default (`prewarm.max_cache_mib`), and prewarm runs only when at least 4 GB of RAM would still be free afterwards. Windows reclaims the cache when your programs need the memory. See [Configuration](CONFIGURATION.md). The tray and the service also release memory they used to keep (the tray no longer reads whole logs, and the service drops data left behind by a removed game); the before-and-after figures have not been measured.
 
 **Is it safe with anti-cheat games?**
 AsterCache never touches the game process: it reads files from its own process, watches file reads with Windows event tracing, and moves files only after the game has exited. But no controlled validation has been done, only usage records from one PC, and no guarantee is made about account sanctions. For an anti-cheat game, turn automatic mode off or add the game to `auto.ignore_exes` before you play. See [Anti-cheat compatibility](ANTICHEAT.md).
@@ -36,11 +36,23 @@ Relocation needs a trace (the record of what the game reads). Before a first run
 **Will the very first launch be faster?**
 No. The first launch only records what the game reads; the full effect comes from the second launch, after the move and prewarm. First-run read-ahead is an experimental feature, off by default because the E7 to E7f measurements showed no gain (`auto.learn.enabled`; see [RESULTS_SUMMARY](RESULTS_SUMMARY.md)).
 
+**Can I turn automatic updates off?**
+Yes. In the Settings tab, open the **Updates** card and choose **Off**, or **Notify only** to be told about a new version without installing it. The same settings are `update.mode` (`auto`, `notify`, or `off`) in `config.json`. Prereleases are not offered unless `update.prerelease` is `true`.
+
+**What does automatic update download, and when does it install?**
+The tray checks the official GitHub releases 5 minutes after it starts and then every 24 hours. It downloads only a newer version: the `AsterCache-v<version>-win-x64-setup.exe` of that release, from GitHub only. It checks the installer's SHA-256 against the release's digest or `SHA256SUMS.txt`, and installs nothing if neither is available. It installs silently only when the tray is an installed copy running with administrator rights, no registered game is running, and no relocation is in progress; the installer runs with `/SILENT`, and the tray comes back afterwards. Otherwise it announces the version, or opens the release page for a zip copy or a copy without administrator rights. If the installation of one version does not change the installed version twice, it only announces it. A failed check or download is tried again after 15 minutes, then 1 hour, then 6 hours. The service does not use the network. This silent installation has not yet been confirmed on a real machine.
+
+**What is in the diagnostics ZIP?**
+Logs tab → **Export diagnostics** writes one ZIP file where you choose. It holds `info.txt` (tray, service, and OS versions, .NET runtime), `config.json`, `tray.json`, `auto_status.json`, `prewarm_status.json`, `play_samples.json`, the last 2,000 lines of `logs/service.log` and `logs/tray.log`, and `manifest.txt`, which lists what was included and what was left out and why. The total is limited to 20 MiB. It does not read game folders. Your user name in paths and in the text, the user part of URLs, token-like strings, and the values of JSON keys whose names contain token, secret, password, or similar are replaced with placeholders. This masking is rule-based and not complete, so check the file before you share it. Nothing is sent over the network.
+
+**Can I exclude only one game?**
+Yes. On the **Games** tab, select the game, click **Game options**, and tick **Paused** or set the policy to **Off**; neither starts new work for that game. To keep it from being registered again, click **Remove**, or add its exe to `auto.ignore_exes`. Removing a game leaves its files where they are.
+
 **Does it optimize programs that stay running, such as Wallpaper Engine?**
 No. Desktop utilities that are not games and stay running once started, such as Wallpaper Engine, YoloMouse, Lossless Scaling, OBS Studio, and SteamVR, are left out of automatic registration, and one already registered is unregistered once after the service starts. For any other program, remove it on the Games tab; it is then not registered again.
 
 **Can my files get damaged?**
-Every move is verified with a SHA-256 check and written to a journal that can be reverted. Still, this is a beta that moves real data: back up important drives first. See [Safety measures](DEVELOPMENT.md#safety-measures).
+Every move is verified with a SHA-256 check and written to a journal that can be reverted. Still, AsterCache moves real data: back up important drives first. See [Safety measures](DEVELOPMENT.md#safety-measures).
 
 ## Troubleshooting
 

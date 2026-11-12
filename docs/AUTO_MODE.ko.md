@@ -6,6 +6,8 @@
 
 자동 모드는 기본으로 켜져 있습니다. 보통은 게임을 등록하거나 따로 설정할 필요가 없습니다. 각 부분은 설정 탭의 **자동 모드** 묶음이나 `config.json` 에서 끌 수 있습니다. 여기서는 설정 이름만 적고, 뜻과 기본값은 [CONFIGURATION.ko.md](CONFIGURATION.ko.md)에 있습니다. 접힌 블록(눌러서 펼침)에 조건, 예외, 수치가 들어 있습니다.
 
+게임마다 범위를 더 좁힐 수도 있습니다. **정책**(`games[].mode`: `inherit`, `prewarm_only`, `relocate_only`, `off`)은 각 단계가 그 게임에 무엇을 할 수 있는지 정하고, **일시 중지**(`games[].paused`)는 그 게임의 새 작업을 멈춥니다. 일시 중지한 게임과 `off` 인 게임은 추적, 예열, 재배치를 하지 않습니다. `prewarm_only` 는 예열과 계획은 허용하고 재배치나 정기 재적용은 허용하지 않습니다. `relocate_only` 는 재배치는 허용하고 예열, 시작 스트림, 고정은 허용하지 않습니다. 두 설정 모두 안티치트 게이트와 고정 금지를 풀지 않습니다. 예열이 허용되지 않은 게임은 기다리던 예열 항목을 버리며, 다시 허용되면 다음 점검부터 이어 갑니다.
+
 ## 단계 한눈에 보기
 
 | 단계 | 한 줄 설명 |
@@ -121,7 +123,8 @@
 - **언제.** 트레이스가 생기고 게임이 꺼져 있으며 PC 가 한가할 때, 한 번에 게임 하나씩.
 - **무엇을.** 존을 계획하고, 조각을 옮기고(저널과 SHA-256 표본 검사), 배치를 확인한 뒤 그 존을 예열합니다.
 - **하지 않는 것.** 게임이 실행되는 동안 하지 않고(이동 중이면 지금 조각을 끝내고 멈춤), 스파스·압축·암호화 파일은 옮기지 않으며, 파일 내용을 바꾸지 않습니다. 검사가 실패하면 저널대로 되돌립니다.
-- **설정.** `auto.relocate`, `idle_seconds`, `max_relocations_per_day`, `max_zone_mib`, `max_relocate_gib_per_day`. 쓰는 양은 [하드디스크에 미치는 영향](GAME_GUIDE.ko.md#하드디스크에-미치는-영향)에 있습니다.
+- **시간대.** `auto.relocate_hours` 가 있으면 새 재배치와 정기 재적용은 그 현지 시각 안에서만 시작합니다. 이미 시작해 저널이 남은 재배치는 시간대 밖에서도 끝냅니다.
+- **설정.** `auto.relocate`, `idle_seconds`, `relocate_hours`, `max_relocations_per_day`, `max_zone_mib`, `max_relocate_gib_per_day`. 쓰는 양은 [하드디스크에 미치는 영향](GAME_GUIDE.ko.md#하드디스크에-미치는-영향)에 있습니다.
 - **로그.** `<게임>: auto relocation done`, `[ERROR] <게임>: auto relocation stopped: ...`
 
 <details>
@@ -239,7 +242,7 @@
 - **언제.** 게임이 시작될 때부터 종료까지(짧은 유예 시간 포함).
 - **무엇을.** 그 디스크의 재배치·재적용·계층 쓰기를 막고, 예열은 양보하며, 디스크가 어떻게 움직였는지 기록합니다(`play record:`).
 - **하지 않는 것.** 게임 파일이나 프로세스를 읽지 않습니다. 플레이 기록은 디스크 장치 카운터만 쓰며 그 자체로 게임을 빠르게 하지는 않습니다.
-- **설정.** `auto.start_stream_cap_seconds`, `auto.restream_cooldown_min`, `auto.keep_awake`.
+- **설정.** `auto.start_stream_enabled`(`false` 면 시작 스트림을 하지 않음), `auto.start_stream_cap_seconds`, `auto.restream_cooldown_min`, `auto.keep_awake`.
 - **로그.** `<게임>: start stream skipped (<사유>)`, `play record: ...`
 
 <details>
@@ -434,7 +437,7 @@ Steam, Epic Games Store, GOG Galaxy, Ubisoft Connect, Riot Client, Windows 제�
 - 관리 창 상태 탭에는 게임마다 "자동: Frostpunk 발견 → 트레이스 수집 중 → 재배치 대기 → 재배치 중 → [완료]" 형태의 줄이 나오고, 게임 탭에는 출처·단계·안티치트 열이 있습니다.
 - 학습 단계는 "첫 실행: 학습 중 (선행 읽기 n MiB)", 예열 뒤에는 "예열됨" 으로 표시됩니다.
 - 게임별 상태 줄에는 `예열 직후 적중 N%`(예열이 끝난 직후에 잰 적중률)과 `SSD 보조 N GB`(게임의 SSD 사본 크기)도 나옵니다.
-- 트레이 알림은 발견, 재배치 완료, 첫 실행 완료("다음 실행부터 빨라집니다: <게임>") 때 보냅니다.
+- 트레이 알림은 발견, 재배치 완료, 첫 실행 완료("다음 실행부터 빨라집니다: <게임>") 때 보냅니다. 알림 창은 설정 탭의 **알림** 체크 상자(`tray.json` 의 `notifications.enabled`)로 끌 수 있으며, 내용은 트레이 로그에 그대로 남습니다.
 
 </details>
 

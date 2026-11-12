@@ -31,7 +31,7 @@ What each feature does to the drive that holds the game:
 
 ## Cautions
 
-- **Back up first.** AsterCache is a beta and it physically moves file data. Back up drives that hold important data before using it.
+- **Back up first.** AsterCache physically moves file data. Back up drives that hold important data before using it.
 - **Do not power off or sleep during a move.** A move can resume from its journal, but power loss during writes was not tested. On a laptop, relocation waits for AC power or a battery at 50% or more.
 - **Exclude the drive from Windows drive optimization.** Windows defragments HDDs with a weekly scheduled task, which can undo the relocated layout. Open "Defragment and Optimize Drives" from the Start menu, press "Change settings" for the optimization schedule, open the drive list with "Choose", and uncheck the game drive. Do not run `defrag D:` yourself either.
   If the layout drifts anyway, the service notices it and restores it, which is another write.

@@ -16,12 +16,14 @@ The left side lists your fixed drives (letter, label, HDD or SSD, free space, nu
 
 | Tab | What you can do |
 |---|---|
-| **Status** | See the service state and the last prewarm; the five **Automatic progress** tiles (games found, plans made, relocated, prewarmed, average hit rate); and one card per game with its stage, layout verdict, last relocation, prewarm result, and `hit right after prewarm N%`. |
-| **Games** | See each game's status, prewarm state, hold reason, and anti-cheat marker. Buttons: Register, Remove, Collect trace, Create plan, Apply relocation, Revert, Prewarm now, Measure (below). **Show advanced columns** adds paths and settings. |
-| **Settings** | The **Automatic mode** card (use automatic mode, discover, trace, relocate, SSD assist storage, recent games to prewarm, excluded executables, zone limit, daily write limit); the **Service** card (install, uninstall, start, stop); the watcher; **language**; open the data and log folders; tray and service versions. |
-| **Logs** | The last 200 lines of `service.log` and `tray.log`, with refresh. |
+| **Status** | See the service state and the last prewarm; the five **Automatic progress** tiles (games found, plans made, relocated, prewarmed, average hit rate); and one card per game with its stage, layout verdict, last relocation, prewarm result, `hit right after prewarm N%`, and the last play. The last play takes two lines: when it was played, the prewarm state at start, and disk read statistics for the first 30 seconds, the first 120 seconds, and the whole play. These are disk read counters, not a load-time or frame measurement. A non-default policy or pause also shows on the card. |
+| **Games** | See each game's status, prewarm state, hold reason, and anti-cheat marker. Buttons: Register, Remove, Game options, Collect trace, Create plan, Apply relocation, Revert, Prewarm now, Measure, Export profile, Import profile (below). **Show advanced columns** adds paths and settings. Select a game and click **Game options** to open a window with a **Paused** checkbox, a **policy** (`games[].mode`: Everything (default), Prewarm only, Relocate only, or Off, each with a one-line description), and three display-name boxes (default, Korean, English). **Save** applies them and **Cancel** closes the window. The internal name does not change. A game whose policy is not the default, or that is paused, shows that under its name in the list (for example "Paused · Prewarm only"). |
+| **Settings** | The **Automatic mode** card (use automatic mode, discover, trace, relocate, SSD assist storage, recent games to prewarm, excluded executables, zone limit, daily write limit); the **Read ahead when a game starts (start stream)** checkbox (`auto.start_stream_enabled`) in the Automatic mode card; **Relocation hours** (`auto.relocate_hours`): **Any time**, or **Set hours** with a start and end hour that may cross midnight (a value that is not a single range is kept and shown as **Custom (edit in the file)**; equal start and end is refused); the **Updates** card (Install automatically, Notify only, or Off; include prereleases; check now); the **Notifications** checkbox; the **Service** card (install, uninstall, start, stop); the watcher; **language**; open the data and log folders; tray and service versions. At the bottom, the **Advanced** section stays closed until you tick **Show advanced settings**; it is described below. |
+| **Logs** | The last 200 lines of `service.log` and `tray.log`, with refresh. **Export diagnostics** writes a ZIP file to a place you choose (see the question about it in [FAQ](FAQ.md)). |
 
-The tray icon menu has **Open** and **Prewarm now (stream)**.
+**Advanced section (Settings tab).** It holds the numeric limits that were previously only editable in `config.json`. Each one shows its default and a one-line meaning; a value outside its range is refused and nothing is saved, and **Apply advanced settings** saves them together with the Automatic mode inputs above. The prewarm cache budget (`prewarm.max_cache_mib`) is shared by all games, not set per game; 0 means half of physical RAM. The other items are the number of games and the size cap for the prewarm at service start (`auto.startup_warm_games`, `auto.startup_warm_max_mib`), the wait after a game exits before prewarming again (`auto.rewarm_after_exit_min`), the daily relocation count (`auto.max_relocations_per_day`), the idle time (`auto.idle_seconds`), and the time limit of the start stream (`auto.start_stream_cap_seconds`). All keys are in [CONFIGURATION](CONFIGURATION.md).
+
+The tray icon menu has **Open**, **Prewarm now (stream)**, **Check for updates**, and **Install update (version)** when a newer version is ready, plus **Open logs**.
 
 ## Common tasks
 
@@ -30,6 +32,10 @@ The tray icon menu has **Open** and **Prewarm now (stream)**.
 **Turn automatic mode off.** In **Settings**, clear **Use automatic mode** and click **Apply automatic mode**. Or set `"auto": {"enabled": false}` in `%ProgramData%\AsterCache\config.json`.
 
 **Keep one game out.** Add its exe to `auto.ignore_exes`, or select it on the **Games** tab and click **Remove** (the exe is added to the list so it is not registered again).
+
+**Pause a game, or limit what it may do.** On the **Games** tab, select the game, click **Game options**, and tick **Paused** or choose a policy. A paused game and a game set to **Off** start no new work and are not traced; a trace that was already running keeps the reads it has recorded. **Prewarm only** prewarms and plans but never moves files. **Relocate only** moves files but does not prewarm. Other games are not affected.
+
+**Turn updates off, or only be told about them.** In **Settings**, open the **Updates** card and choose **Off** or **Notify only**. See the updates questions in [FAQ](FAQ.md).
 
 **Put a game back.** On the **Games** tab, select the game and click **Revert**. The journal restores the previous layout; the file contents never changed. Revert is refused while the game is running.
 

@@ -572,7 +572,7 @@ public sealed class PlayRecorder : IDisposable
             }
             catch (Exception e) when (e is not (StackOverflowException or OutOfMemoryException))
             {
-                // SampleSessionAsync already records provider failures as unavailable.
+                // SampleSessionAsync 가 제공자 실패를 이미 "사용 불가" 로 기록합니다.
             }
         }
 

@@ -705,7 +705,7 @@ public static class Orbit3
 
     private static (BlockOperation[] Operations, long[] PrefixMaxEnds) MakeIndex(BlockOperation[] operations)
     {
-        // UniqueCoverage sweep already emits disjoint ranges in ascending start order.
+        // UniqueCoverage 훑기가 이미 겹치지 않는 구간을 시작 위치 오름차순으로 내보냅니다.
         var prefixMaxEnds = new long[operations.Length];
         long maxEnd = long.MinValue;
         for (int index = 0; index < operations.Length; index++)

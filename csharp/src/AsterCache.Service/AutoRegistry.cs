@@ -15,7 +15,7 @@ public sealed class AutoRegistry
     private const int MaxRootClimb = 3;
 
     // 런처 보조 프로그램·도구: 많이 읽어도 게임이 아님 (런처 본체는 LauncherExes.All).
-    private static readonly HashSet<string> NotGames = new(StringComparer.OrdinalIgnoreCase)
+    internal static readonly HashSet<string> NotGames = new(StringComparer.OrdinalIgnoreCase)
     {
         "steamwebhelper.exe", "EpicWebHelper.exe", "Agent.exe", "explorer.exe", "aster.exe",
     };
@@ -243,7 +243,7 @@ public sealed class AutoRegistry
     // 프로세스 이미지가 목록 appid 의 Steam 설치 폴더 안인가 (해제한 유틸리티의 다른 exe 가 휴리스틱으로 다시 등록되지 않게).
     private bool InResidentSteamFolder(string image)
     {
-        const string marker = "\\steamapps\\common\\";
+        const string marker = LauncherExes.SteamCommon;
         int at = image.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
         int end = at < 0 ? -1 : image.IndexOf('\\', at + marker.Length);
         return end > 0 && IsResidentSteamFolder(image[..end]);

@@ -28,6 +28,10 @@ internal static class Win32
     public const int FileBasicInfoClass = 0; // FILE_INFO_BY_HANDLE_CLASS.FileBasicInfo
     public const int FileIoPriorityHintInfoClass = 12; // FILE_INFO_BY_HANDLE_CLASS.FileIoPriorityHintInfo
     public const int IoPriorityHintLow = 1; // PRIORITY_HINT: VeryLow = 0, Low = 1, Normal = 2
+    public const uint ProcessSetInformation = 0x0200;
+    public const uint ProcessSetQuota = 0x0100;
+    public const uint ProcessQueryLimitedInformation = 0x1000;
+    public const int ProcessMemoryPriorityClass = 0; // PROCESS_INFORMATION_CLASS.ProcessMemoryPriority
 }
 
 internal static unsafe partial class NativeMethods
@@ -92,4 +96,35 @@ internal static unsafe partial class NativeMethods
     [LibraryImport("shell32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool IsUserAnAdmin();
+
+    [LibraryImport(Kernel32, SetLastError = true)]
+    internal static partial SafeProcessHandle OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, uint processId);
+
+    [LibraryImport(Kernel32, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool ProcessIdToSessionId(uint processId, out uint sessionId);
+
+    [LibraryImport(Kernel32, EntryPoint = "QueryFullProcessImageNameW", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool QueryFullProcessImageNameW(SafeProcessHandle process, uint flags, char* exeName, ref uint size);
+
+    [LibraryImport(Kernel32, EntryPoint = "K32GetProcessMemoryInfo", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetProcessMemoryInfo(SafeProcessHandle process, ProcessMemoryCounters* counters, uint size);
+
+    [LibraryImport(Kernel32, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetProcessTimes(SafeProcessHandle process, long* creation, long* exit, long* kernel, long* user);
+
+    [LibraryImport(Kernel32, EntryPoint = "K32EmptyWorkingSet", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool EmptyWorkingSet(SafeProcessHandle process);
+
+    [LibraryImport(Kernel32, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetProcessInformation(SafeProcessHandle process, int infoClass, byte* info, uint size);
+
+    [LibraryImport(Kernel32, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool SetProcessInformation(SafeProcessHandle process, int infoClass, byte* info, uint size);
 }

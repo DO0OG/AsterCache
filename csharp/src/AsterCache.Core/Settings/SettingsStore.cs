@@ -23,7 +23,8 @@ public static class SettingsStore
     public const long MaxFileBytes = 1 << 20;
     public const int MaxGames = 32;
 
-    private static readonly string[] TopKeys = ["games", "poll_ms", "watcher", "language", "auto", "max_zone_mib", "riot", "update"];
+    private static readonly string[] TopKeys = ["games", "poll_ms", "watcher", "language", "auto", "max_zone_mib", "riot", "update", "memory"];
+    private static readonly string[] MemoryKeys = ["background_yield"];
     private static readonly string[] RiotKeys = ["champ_select_prewarm", "champ_select_budget_mib"];
     private static readonly string[] GameKeys =
         ["name", "exe_names", "trace", "plan", "origin_root", "allowed_roots", "volume_label", "reapply_interval_minutes", "prewarm", "max_stream_mib", "source", "anticheat", "display_name", "display_names", "mode", "paused"];
@@ -105,6 +106,7 @@ public static class SettingsStore
 
         AutoSettings auto = top.TryGetValue("auto", out object? au) ? ParseAuto(au) : AutoSettings.Default;
         RiotSettings riot = top.TryGetValue("riot", out object? rt) ? ParseRiot(rt) : RiotSettings.Default;
+        MemorySettings memory = top.TryGetValue("memory", out object? mem) ? ParseMemory(mem) : MemorySettings.Default;
         UpdateSettings update = top.TryGetValue("update", out object? up) ? ParseUpdate(up) : UpdateSettings.Default;
         bool zoneAuto = top.TryGetValue("max_zone_mib", out object? mz) && mz is "auto";
         int maxZone = top.ContainsKey("max_zone_mib") && !zoneAuto ? Int(top["max_zone_mib"], "max_zone_mib", 64, 65536) : DefaultMaxZoneMib;
@@ -123,7 +125,7 @@ public static class SettingsStore
 
         CheckUnique(result.Select(x => x.Name), "games: duplicate name");
         CheckUnique(result.SelectMany(x => x.ExeNames), "games: exe name used twice");
-        return new AsterSettings(poll, result, watcher, language) { Auto = auto, Riot = riot, Update = update, MaxZoneMib = maxZone, MaxZoneAuto = zoneAuto };
+        return new AsterSettings(poll, result, watcher, language) { Auto = auto, Riot = riot, Memory = memory, Update = update, MaxZoneMib = maxZone, MaxZoneAuto = zoneAuto };
     }
 
     private static RiotSettings ParseRiot(object? v)
@@ -134,6 +136,13 @@ public static class SettingsStore
         bool prewarm = o.TryGetValue("champ_select_prewarm", out object? p) ? p as bool? ?? throw new SettingsException("riot.champ_select_prewarm: true or false expected") : d.ChampSelectPrewarm;
         int budget = o.TryGetValue("champ_select_budget_mib", out object? b) ? Int(b, "riot.champ_select_budget_mib", 64, 16384) : d.ChampSelectBudgetMib;
         return new RiotSettings(prewarm, budget);
+    }
+
+    private static MemorySettings ParseMemory(object? v)
+    {
+        JObject o = v as JObject ?? throw new SettingsException("memory: object expected");
+        Unknown(o, MemoryKeys, "memory");
+        return new MemorySettings(o.TryGetValue("background_yield", out object? y) ? y as bool? ?? throw new SettingsException("memory.background_yield: true or false expected") : MemorySettings.Default.BackgroundYield);
     }
 
     private static UpdateSettings ParseUpdate(object? v)

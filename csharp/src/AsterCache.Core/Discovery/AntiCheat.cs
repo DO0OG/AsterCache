@@ -34,8 +34,20 @@ public static class AntiCheat
             return "ricochet";
         }
 
-        return leaves.Any(n => new[] { "anticheat", "anti-cheat", "xigncode", "nprotect", "gameguard" }.Any(p => Has(n, p))) ? "unknown" : null;
+        return leaves.Any(HasUnknownMarker) ? "unknown" : null;
     }
+
+    private static readonly string[] UnknownMarkers = ["anticheat", "anti-cheat", "xigncode", "nprotect", "gameguard"];
+
+    private static bool HasUnknownMarker(string n) => UnknownMarkers.Any(p => Has(n, p));
+
+    /// 실행 중인 프로세스 이름 (파일 이름) 이 안티치트 구성요소인가: 위 파일 이름 규칙과 같고, 사용자 세션에서 뜨는 보조 프로세스 (vgtray.exe 등 vg*.exe) 도 포함. 배경 프로세스 판정이 이런 프로세스를 열지 않으려고 씁니다.
+    public static bool IsProcessName(string exe) =>
+        IsEac(exe) || IsBattlEye(exe) || IsVanguard(exe) || IsKernel(exe) || (Starts(exe, "vg") && Ends(exe, ".exe")) || Has(exe, "ricochet") || Same(exe, "randgrid.sys") || HasUnknownMarker(exe)
+        || Starts(exe, "BlackCipher") || Starts(exe, "GameMon") || Ends(exe, "_BE.exe") || Starts(exe, "SGuard") || Starts(exe, "PnkBstr");
+
+    /// Riot 구성요소 프로세스 이름인가 (RiotExes 와 RiotClient*·LeagueClient* 파생 프로세스).
+    public static bool IsRiotExe(string exe) => RiotExes.Any(r => Same(exe, r)) || Starts(exe, "RiotClient") || Starts(exe, "LeagueClient");
 
     private static readonly string[] RiotExes =
     [

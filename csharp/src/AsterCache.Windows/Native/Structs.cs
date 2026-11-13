@@ -72,3 +72,20 @@ public struct Win32MemoryRangeEntry
     public nint VirtualAddress;
     public nuint NumberOfBytes;
 }
+
+/// GetProcessMemoryInfo 출력 (PROCESS_MEMORY_COUNTERS, x64 에서 72바이트).
+/// https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters
+[StructLayout(LayoutKind.Sequential)]
+internal struct ProcessMemoryCounters
+{
+    public uint Size;
+    public uint PageFaultCount;
+    public nuint PeakWorkingSetSize;
+    public nuint WorkingSetSize;
+    public nuint QuotaPeakPagedPoolUsage;
+    public nuint QuotaPagedPoolUsage;
+    public nuint QuotaPeakNonPagedPoolUsage;
+    public nuint QuotaNonPagedPoolUsage;
+    public nuint PagefileUsage;
+    public nuint PeakPagefileUsage;
+}

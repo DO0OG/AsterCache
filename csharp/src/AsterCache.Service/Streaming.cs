@@ -1470,7 +1470,7 @@ public sealed class GameDispatcher
                 }
                 catch (OperationCanceledException)
                 {
-                    // Sampling has stopped with the stream.
+                    // 표본 추출은 스트림과 함께 멈췄습니다.
                 }
             }
 

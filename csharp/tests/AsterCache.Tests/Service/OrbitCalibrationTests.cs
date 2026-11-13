@@ -209,6 +209,27 @@ public sealed class OrbitCalibrationTests : IDisposable
         Assert.Equal(3, _reads.Count);
     }
 
+    [Fact]
+    public void Reaching_the_time_limit_stops_before_the_next_read_and_discards_the_partial_sample()
+    {
+        using var limit = new CancellationTokenSource();
+        _latency = (count, _, _) =>
+        {
+            if (count == 3)
+            {
+                limit.Cancel();
+            }
+
+            return TimeSpan.FromMilliseconds(10);
+        };
+        OrbitCalibration cal = Make();
+
+        cal.Sample(_game, Ops, null, Lease(), default, limit.Token);
+
+        Assert.Equal(3, _reads.Count);
+        Assert.Equal((0, 0), cal.SampleCounts(Disk)); // 일부만 읽힌 표본은 보정 자료에 넣지 않음
+    }
+
     [Theory]
     [InlineData("vanguard", 15)]
     public void DefaultCapabilityGateAllowsVanguardCalibrationReads(string antiCheat, int expectedReads)
@@ -245,7 +266,7 @@ public sealed class OrbitCalibrationTests : IDisposable
             GameRunning = _ => false,
             ZoneBytes = _ => 1L << 30,
             TraceExists = _ => true,
-            DeviceCalibration = (g, _, antiCheat, lease, ct) => cal.Sample(g, Ops, antiCheat, lease, ct),
+            DeviceCalibration = (g, _, antiCheat, lease, ct, limit) => cal.Sample(g, Ops, antiCheat, lease, ct, limit),
         }, _log, null, () => _t0, coordinator: _coordinator);
         prewarmer.SetAuto(AutoSettings.Default with { KeepStreamOnGameStart = true });
 
@@ -530,7 +551,7 @@ public sealed class OrbitCalibrationTests : IDisposable
             GameRunning = _ => false,
             ZoneBytes = _ => 1L << 30,
             TraceExists = _ => true,
-            DeviceCalibration = (g, ops, antiCheat, lease, ct) =>
+            DeviceCalibration = (g, ops, antiCheat, lease, ct, _) =>
             {
                 calls++;
                 leaseSeen = lease is { IsValid: true };

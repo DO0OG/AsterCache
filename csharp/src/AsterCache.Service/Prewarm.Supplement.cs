@@ -455,7 +455,7 @@ public sealed partial class Prewarmer
             }
         }
 
-        if (!Monitor.TryEnter(_run))
+        if (!TryEnterRunIdle())
         {
             return false;
         }
@@ -695,9 +695,9 @@ public sealed partial class Prewarmer
                     DeferSupplement(game, plannedCapMib, progressBytes, inputStamp, r.Stats, planEnded: true, skipBytes + (tailTotal ?? r.Stats.RequestedBytes));
                 }
                 else if (progressBytes <= progressBefore
-                    && r.CancelReason is not ("game started" or "another game started on the same disk" or "disk read lease revoked" or "disk read lease refused" or "caller cancelled"))
+                    && r.CancelReason is not ("game started" or "another game started on the same disk" or "disk read lease revoked" or "disk read lease refused" or "caller cancelled" or PreemptedByTrigger))
                 {
-                    // 진전 없이 끊긴 보충도 유휴마다 같은 앞부분을 다시 읽지 않음 (게임 시작·디스크 양보로 끊긴 것은 제외: 게임이 끝나면 바로 이어야 함)
+                    // 진전 없이 끊긴 보충도 유휴마다 같은 앞부분을 다시 읽지 않음 (게임 시작·디스크 양보·트리거 선점으로 끊긴 것은 제외: 게임이 끝나거나 트리거 예열이 끝나면 바로 이어야 함)
                     DeferSupplement(game, plannedCapMib, progressBefore, inputStamp, r.Stats, planEnded: false, skipBytes + (tailTotal ?? r.Stats.RequestedBytes));
                 }
 

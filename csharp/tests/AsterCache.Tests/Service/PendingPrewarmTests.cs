@@ -353,6 +353,45 @@ public sealed class PendingPrewarmTests
     }
 
     [Fact]
+    public void PendingRetryDoesNotTakeTheLockWhileATriggerPrewarmIsWaiting()
+    {
+        GameSettings game = Game("a");
+        Prewarmer prewarmer = Make(null, game);
+        AutoSettings auto = Auto();
+        prewarmer.SetAuto(auto);
+        _streamer.IncompleteNext = true;
+        Assert.Equal(Prewarmer.Cancelled, prewarmer.Run(game, "test").SkipReason);
+        IDisposable mark = prewarmer.BeginTriggerWait([Game("b")]);
+
+        ReachRetryAndIdle(prewarmer, auto);
+
+        Assert.Equal(["a"], _streamer.Calls); // 재시도 기한과 유휴를 채웠어도 표시가 서 있는 동안은 읽지 않음
+        Assert.True(prewarmer.HasPendingWarm("a"));
+        mark.Dispose();
+        _now += TimeSpan.FromSeconds(1);
+        prewarmer.Tick(auto);
+        Assert.Equal(["a", "a"], _streamer.Calls);
+    }
+
+    [Fact]
+    public void TriggerRetryDoesNotTakeTheLockWhileATriggerPrewarmIsWaitingAndRunsAfterTheMarkIsGone()
+    {
+        (Prewarmer prewarmer, DiskReadCoordinator coordinator, AutoSettings auto) = RefusedTrigger();
+        _triggerAlive = true;
+        GameGone(prewarmer, coordinator, "other");
+        IDisposable mark = prewarmer.BeginTriggerWait([Game("b")]);
+
+        prewarmer.Tick(auto);
+
+        Assert.Empty(_streamer.Calls);
+        Assert.True(prewarmer.HasPendingWarm("a")); // 당겨진 재시도 표시는 남음
+        mark.Dispose();
+        prewarmer.Tick(auto);
+        Assert.Equal(["a"], _streamer.Calls);
+        Assert.False(prewarmer.HasPendingWarm("a"));
+    }
+
+    [Fact]
     public void APartialStateGameStillRetriesTheRefusedTriggerRightAfterTheBlockerIsGone()
     {
         GameSettings game = TriggeredGame("a");

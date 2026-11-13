@@ -71,6 +71,21 @@ public sealed class WarmFilesTests : IDisposable
     }
 
     [Fact]
+    public void WarmFilesDoesNotTakeTheLockWhileATriggerPrewarmIsWaiting()
+    {
+        Prewarmer p = Make();
+        string a = File(Game, "a.wad", 2);
+        IDisposable mark = p.BeginTriggerWait([Games.Make("h", "h.exe")]);
+
+        Assert.Equal(0, p.WarmFiles(Settings(), [a], 1L << 40, default));
+
+        Assert.Empty(_reads);
+        Assert.Contains(_log.Lines, l => l.Contains("warm files skipped (another prewarm is running)", StringComparison.Ordinal));
+        mark.Dispose();
+        Assert.Equal(2 * Mib, p.WarmFiles(Settings(), [a], 1L << 40, default));
+    }
+
+    [Fact]
     public void OnlyFilesUnderTheOriginRootAreRead()
     {
         Prewarmer p = Make();

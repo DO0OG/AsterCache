@@ -979,6 +979,16 @@ internal sealed class PrewarmRun : IDisposable
     private readonly long[] _ticks = new long[Enum.GetValues<PrewarmPhase>().Length];
     private (GameSettings Game, long Budget, List<ReadOp> Ops, long GapBytes, bool Fits, string? Stamp)? _plan;
     private int _depth;
+    private bool _calibrationCapped;
+
+    /// 이 회의 보정 읽기가 시간 상한에 걸렸음을 알림 (회 밖이면 무시): Summary 가 표시함.
+    internal static void NoteCalibrationCapped()
+    {
+        if (_current is { } run)
+        {
+            run._calibrationCapped = true;
+        }
+    }
 
     // 목록의 입력 (계획·트레이스·예열 전용 옆 파일·가변 표지) 의 (존재, 길이, 수정 시각). 메타데이터 조회뿐이며 읽지 못하면 null (재사용 안 함).
     internal static string? InputStamp(GameSettings game)
@@ -1055,7 +1065,7 @@ internal sealed class PrewarmRun : IDisposable
     public string Summary()
     {
         var e = Elapsed();
-        return $"plan {e.Plan:F2} s, calibration {e.Calibration:F2} s, common {e.Common:F2} s, orbit {e.Orbit:F2} s, stream {e.Stream:F2} s, other {e.Other:F2} s = {e.Total:F2} s";
+        return $"plan {e.Plan:F2} s, calibration {e.Calibration:F2} s{(_calibrationCapped ? " (capped)" : string.Empty)}, common {e.Common:F2} s, orbit {e.Orbit:F2} s, stream {e.Stream:F2} s, other {e.Other:F2} s = {e.Total:F2} s";
     }
 
     /// 단계 시간 (그 안에서 쓴 계획 계산 시간은 Plan 단계로만 셉니다).

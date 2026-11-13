@@ -142,7 +142,7 @@ public sealed class PrewarmEnv
     public Func<GameSettings, long, long, CancellationToken, (IReadOnlyList<ReadOp> Ops, long Total)>? CommonFirstOpsWithCancellation { get; init; }
 
     /// 핫 집합 스트림 직전에 원래 op 목록으로 장치 표본을 모읍니다.
-    public Action<GameSettings, IReadOnlyList<ReadOp>, string?, DiskReadCoordinator.Lease?, CancellationToken>? DeviceCalibration { get; init; }
+    public Action<GameSettings, IReadOnlyList<ReadOp>, string?, DiskReadCoordinator.Lease?, CancellationToken, CancellationToken>? DeviceCalibration { get; init; }
 
     /// 장치 표본 훅을 부를지 (모드가 off 면 거짓): 거짓이면 훅 인자를 만드는 메타데이터 읽기도 하지 않습니다. null 이면 훅이 있을 때 항상 부릅니다.
     public Func<bool>? DeviceCalibrationEnabled { get; init; }
@@ -177,11 +177,11 @@ public sealed class PrewarmEnv
             SetReadIoLow = low => ThreadIoPriority.TrySet(low ? IoPriority.Low : IoPriority.Normal),
             YieldBackground = backgroundYield is null ? (_, _) => { } : (why, ct) => backgroundYield.Begin(why, settle: true, ct),
             DeviceCalibrationEnabled = orbitRuntime is null ? null : () => orbitRuntime.Mode != "off",
-            DeviceCalibration = orbitCalibration is null ? null : (g, ops, antiCheat, lease, ct) =>
+            DeviceCalibration = orbitCalibration is null ? null : (g, ops, antiCheat, lease, ct, limit) =>
             {
                 string disk = orbitCalibration.KeyOf(g);
                 DeviceFit? before = orbitCalibration.Envelope(disk);
-                orbitCalibration.Sample(g, ops, antiCheat, lease, ct);
+                orbitCalibration.Sample(g, ops, antiCheat, lease, ct, limit);
                 if (before is not null && orbitCalibration.Envelope(disk) is null)
                 {
                     _ = orbitRuntime?.Demote("coverage_invalidated");

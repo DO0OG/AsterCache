@@ -146,10 +146,13 @@ public sealed class PrewarmEnv
     /// 스트림 노출과 같은 디스크 게임 시작을 예열 스레드에서 동기로 기록합니다.
     public Action<GameSettings, double, bool>? OrbitExposure { get; init; }
 
+    /// 트리거로 예열이 실제로 시작되기 직전 (가용 메모리 첫 읽기보다 앞) 에 부름: 배경 프로세스의 메모리 양보를 시작하고 가용 메모리가 가라앉을 때까지 기다립니다 (이유, 취소). 기본은 아무것도 안 함.
+    public Action<string, CancellationToken> YieldBackground { get; init; } = (_, _) => { };
+
     public static Func<GameSettings, bool> GameActiveOnDisk(IReadOnlyList<GameSettings> games,
         Func<string, string, bool> sameDisk, Func<GameSettings, bool> gameRunning) => OrbitRuntime.GameActiveOnDisk(games, sameDisk, gameRunning);
 
-    public static PrewarmEnv Create(OrbitCalibration? orbitCalibration = null, OrbitRuntime? orbitRuntime = null)
+    public static PrewarmEnv Create(OrbitCalibration? orbitCalibration = null, OrbitRuntime? orbitRuntime = null, BackgroundYield? backgroundYield = null)
     {
         Func<GameSettings, bool> gameRunning = DispatchEnv.IsGameRunning;
         Func<string, string, bool> sameDisk = VolumeDisks.SameDisk;
@@ -164,6 +167,7 @@ public sealed class PrewarmEnv
                 return g => DispatchEnv.IsGameRunning(g, processes);
             },
             SameDisk = sameDisk,
+            YieldBackground = backgroundYield is null ? (_, _) => { } : (why, ct) => backgroundYield.Begin(why, settle: true, ct),
             DeviceCalibrationEnabled = orbitRuntime is null ? null : () => orbitRuntime.Mode != "off",
             DeviceCalibration = orbitCalibration is null ? null : (g, ops, antiCheat, lease, ct) =>
             {

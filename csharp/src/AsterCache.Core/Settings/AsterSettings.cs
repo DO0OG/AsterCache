@@ -280,6 +280,12 @@ public sealed record RiotSettings(bool ChampSelectPrewarm = false, int ChampSele
     public static RiotSettings Default { get; } = new();
 }
 
+/// 메모리 설정 (config 의 memory 객체): background_yield 는 게임 세션 동안 게임과 무관한 배경 프로세스가 메모리를 양보하게 함 (기본 켜짐).
+public sealed record MemorySettings(bool BackgroundYield = true)
+{
+    public static MemorySettings Default { get; } = new();
+}
+
 /// config.json 한 벌 (검증을 통과한 값만 존재).
 public sealed record AsterSettings(int PollMs, IReadOnlyList<GameSettings> Games, string Watcher = SettingsStore.DefaultWatcher, string Language = SettingsStore.DefaultLanguage)
 {
@@ -290,6 +296,9 @@ public sealed record AsterSettings(int PollMs, IReadOnlyList<GameSettings> Games
 
     /// 리그 오브 레전드 챔피언 선택 선읽기 설정.
     public RiotSettings Riot { get; init; } = RiotSettings.Default;
+
+    /// 배경 메모리 양보 설정.
+    public MemorySettings Memory { get; init; } = MemorySettings.Default;
 
     /// 자동 재배치가 한 존에 쓰는 크기의 상한 (MiB).
     public int MaxZoneMib { get; init; } = SettingsStore.DefaultMaxZoneMib;

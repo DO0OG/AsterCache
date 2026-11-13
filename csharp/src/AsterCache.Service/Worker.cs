@@ -26,6 +26,7 @@ public sealed class Worker : BackgroundService
     private readonly KeepAwake? _keepAwake;
     private readonly RiotPhaseWatcher? _riot;
     private readonly PlayRecorder? _playRecorder;
+    private readonly BackgroundYield? _backgroundYield;
     private readonly DiskReadCoordinator _coordinator;
     private readonly object _watchLock = new();
     private readonly object _gameStateLock = new();
@@ -45,7 +46,7 @@ public sealed class Worker : BackgroundService
 
     public Worker(AsterSettings settings, ILog log, IProcessWatcher primary, IProcessWatcher? fallback, IGameStreamer streamer, ReapplyChecker checker,
         ReapplyGate? gate = null, Prewarmer? prewarm = null, AutoMode? auto = null, SettingsReloader? reload = null, KeepAwake? keepAwake = null, DispatchEnv? dispatchEnv = null,
-        RiotPhaseWatcher? riot = null, BootQuiet? quiet = null, DiskReadCoordinator? coordinator = null, PlayRecorder? playRecorder = null, Func<DateTimeOffset>? now = null)
+        RiotPhaseWatcher? riot = null, BootQuiet? quiet = null, DiskReadCoordinator? coordinator = null, PlayRecorder? playRecorder = null, Func<DateTimeOffset>? now = null, BackgroundYield? backgroundYield = null)
     {
         _now = now ?? (() => DateTimeOffset.UtcNow);
         _coordinator = coordinator ?? new DiskReadCoordinator(AsterCache.Windows.VolumeDisks.Shared, log);
@@ -59,6 +60,7 @@ public sealed class Worker : BackgroundService
         _prewarm?.SetGameExitTracker(_exits);
         _reload = reload;
         _playRecorder = playRecorder;
+        _backgroundYield = backgroundYield;
         _settings = settings;
         _keepAwake = keepAwake ?? (auto is null ? null : new KeepAwake(KeepAwakeEnv.Create(auto.Status.Plays), log, () => _settings, _coordinator)); // 자동 모드가 있는 진짜 서비스에서만 기본으로 켬
         _keepAwake?.SetDiskReadCoordinator(_coordinator);
@@ -128,6 +130,7 @@ public sealed class Worker : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _coordinator.SetServiceToken(stoppingToken);
+        _backgroundYield?.Recover(); // 직전 실행이 비정상 종료하며 낮춰 둔 우선순위가 있으면 먼저 되돌림
         if (_settings.Games.Count == 0 && _auto is null && _reload is null)
         {
             _log.Info("service started: no games registered, idle (nothing is watched or reapplied)");
@@ -183,6 +186,7 @@ public sealed class Worker : BackgroundService
             _playRecorder?.Dispose();
             _auto?.Shutdown();
             _prewarm?.Shutdown();
+            _backgroundYield?.Shutdown(); // 예열이 끝난 뒤: 이후 도착한 Begin 은 무시되고 낮춘 우선순위는 모두 되돌림
             _log.Info("service stopped");
         }
     }
@@ -307,6 +311,11 @@ public sealed class Worker : BackgroundService
                 _prewarm?.Recovery?.YieldTo(game.OriginRoot); // 같은 디스크에서 재는 중인 회복 표본도 멈춤
                 _auto?.Tracer.CancelShadow(game.Name); // 돌고 있는 그림자 계획은 게임과 CPU 를 다투지 않게 취소
                 _auto?.CancelWarm(); // 자동 모드의 예열 작업도 (핫 집합 스트림은 묶음 경계에서 멈추고, 그 뒤 예열은 시작하지 않음)
+                if (_backgroundYield is { } yielder)
+                {
+                    _ = Task.Run(() => yielder.Begin("game started", settle: false), CancellationToken.None); // 비우기는 감시기 스레드를 막지 않게 따로, 기다리지 않음 (트리거 경로가 이미 했으면 60초 안이라 무시됨)
+                }
+
                 if (_auto is not null)
                 {
                     _ = Task.Run(() => _auto.OnGameStart(game), CancellationToken.None); // last_played 와 자동 트레이스 시작은 감시기 스레드를 막지 않게 따로
@@ -684,6 +693,7 @@ public sealed class Worker : BackgroundService
             }
 
             _prewarm?.NoteGamesGone(grace);
+            _backgroundYield?.Tick(procs);
             ObserveRunningGames(procs);
             foreach (GameSettings g in exited)
             {
@@ -708,6 +718,10 @@ public sealed class Worker : BackgroundService
         _prewarm?.NoteGameExit(_exits.HeavyWorkNotBefore(game.Name, _settings.Auto.RewarmAfterExitMin));
         _auto?.NoteGameExit(game);
         NoteCoverage(game);
+        if (!_exits.RunningNames.Any(name => !string.Equals(name, game.Name, StringComparison.OrdinalIgnoreCase)))
+        {
+            _backgroundYield?.End(); // 다른 등록 게임이 없으면 낮춘 우선순위를 바로 되돌림
+        }
     }
 
     internal void CompleteDetectedExit(GameSettings game, bool unseen)

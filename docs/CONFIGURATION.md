@@ -45,8 +45,9 @@ The configuration file is `%ProgramData%\AsterCache\config.json`. Editing it in 
 | `watcher` | `poll` | How game starts are detected: `poll` or `etw`. `etw` needs administrator rights and falls back to polling if it fails. See [Watcher](#watcher). |
 | `poll_ms` | 50 | Polling interval of the `poll` watcher, in ms (50 to 5000). |
 | `max_zone_mib` | 2048 | Upper limit of the zone size for automatic planning, in MiB (64 to 65536), or `"auto"`: physical RAM ÷ 4, between 2048 and 8192 MiB, capped at 2048 when the disk type is unknown or the disk is on USB. On a 32 GB PC, `"auto"` is recommended over a fixed 2048. |
-| `riot.champ_select_prewarm` | `false` | While a Riot game's champion select runs, reads the chosen champions' and the map's files into RAM in advance, using the local League client API. Korean account LCU policy not confirmed. |
+| `riot.champ_select_prewarm` | `false` | While a Riot game's champion select runs, reads the chosen champions' and the map's files into RAM in advance, using the local League client API. Riot announced on 2019-01-24 that players in Korea may not use applications that use the League Client API, and no withdrawal was found, so do not turn this on with a Korean account. See [the League of Legends reference](GAME_GUIDE.md#reference-league-of-legends-vanguard). |
 | `riot.champ_select_budget_mib` | 2048 | The most MiB the champion select prewarm may read (64 to 16384). |
+| `memory.background_yield` | `true` | During a game session, programs unrelated to the game give up memory: their working sets are emptied and their memory priority is lowered, and the priority is restored when the session ends. Game, launcher, anti-cheat, and service processes are not touched. `false` turns it off; there is no switch for it in the Settings tab. See [Background memory yield](AUTO_MODE.md#background-memory-yield). |
 | `games` | `[]` | The game list (up to 32 games). The keys of one game are below. |
 
 ## One game: `games[]`
@@ -161,7 +162,7 @@ What each stage does is in [Automatic mode](AUTO_MODE.md). Ranges are given in p
 
 The Updates card in the Settings tab sets `update.mode` and `update.prerelease`.
 
-Older versions reject the keys `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, and `update`, so remove them before rolling back.
+Older versions reject the keys `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, `update`, and `memory`, so remove them before rolling back. `memory` is new in 1.0.3: versions 1.0.2 and earlier reject a settings file that contains it, whatever its value.
 
 ## Watcher
 

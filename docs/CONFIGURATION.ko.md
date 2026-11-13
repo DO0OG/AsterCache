@@ -45,8 +45,9 @@
 | `watcher` | `poll` | 게임 시작 감지 방식. `poll` 또는 `etw`. `etw` 는 관리자 권한이 필요하며 실패하면 폴링으로 내려갑니다. [감시기](#감시기)를 보십시오. |
 | `poll_ms` | 50 | `poll` 감시기의 확인 간격(ms, 50~5000). |
 | `max_zone_mib` | 2048 | 자동 계획의 존 크기 상한(MiB, 64~65536), 또는 `"auto"`(물리 RAM ÷ 4, 2048~8192 MiB 사이이며, 디스크 종류를 모르거나 USB 이면 2048 상한). 32 GB PC 는 고정 2048 보다 `"auto"` 를 권장합니다. |
-| `riot.champ_select_prewarm` | `false` | Riot 게임의 챔피언 선택 중 로컬 리그 오브 레전드 클라이언트 API로 고른 챔피언·맵 파일을 미리 RAM에 읽습니다. 한국 계정 LCU 정책은 미확인입니다. |
+| `riot.champ_select_prewarm` | `false` | Riot 게임의 챔피언 선택 중 로컬 리그 오브 레전드 클라이언트 API로 고른 챔피언·맵 파일을 미리 RAM에 읽습니다. Riot 이 2019-01-24 에 한국 플레이어는 League Client API 를 쓰는 앱을 쓸 수 없다고 공지했고 철회는 찾지 못했으므로, 한국 계정에서는 켜지 마십시오. [League of Legends 참고](GAME_GUIDE.ko.md#참고-league-of-legends-vanguard)를 보십시오. |
 | `riot.champ_select_budget_mib` | 2048 | 챔피언 선택 선읽기가 읽을 수 있는 최대 MiB(64~16384). |
+| `memory.background_yield` | `true` | 게임 세션 동안 게임과 무관한 프로그램이 메모리를 양보합니다. 그 프로그램의 작업 집합을 비우고 메모리 우선순위를 낮추며, 세션이 끝나면 우선순위를 되돌립니다. 게임·런처·안티치트·서비스 프로세스는 건드리지 않습니다. `false` 면 끕니다. 설정 탭에는 이 스위치가 없습니다. [배경 메모리 양보](AUTO_MODE.ko.md#배경-메모리-양보)를 보십시오. |
 | `games` | `[]` | 게임 목록(최대 32개). 게임 하나의 키는 아래에 있습니다. |
 
 ## 게임 하나: `games[]`
@@ -161,7 +162,7 @@
 
 설정 탭의 **업데이트** 카드가 `update.mode` 와 `update.prerelease` 를 정합니다.
 
-이전 버전은 `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, `update` 키를 거부하므로, 되돌리기 전에 지워야 합니다.
+이전 버전은 `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, `update`, `memory` 키를 거부하므로, 되돌리기 전에 지워야 합니다. `memory` 는 1.0.3 부터 있는 키이며, 1.0.2 이하 버전은 이 키가 파일에 있으면 값과 상관없이 설정 파일 전체를 거부합니다.
 
 ## 감시기
 

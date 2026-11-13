@@ -370,6 +370,7 @@ League of Legends는 Riot Vanguard를 씁니다. Vanguard도 커널 수준의 �
 
 - League of Legends 추정 핫셋은 전 모드 기준 약 9 GiB입니다. Global·UI·Common·맵 11·12 기본 규칙 약 5.3 GiB에 맵 30·453·22 약 3.6 GiB를 더한 시험 PC 실측 합계이며 Companions는 제외했습니다. 존 상한이 8 GiB 이면 뒤쪽(맵 22·TFT, Companions)이 잘릴 수 있습니다.
 - `riot.champ_select_prewarm`(기본 꺼짐)을 켜면 챔피언 선택 중 로컬 League of Legends 클라이언트 API(`127.0.0.1`)로 고른 챔피언과 맵 파일을 미리 RAM에 읽습니다. 게임 안 파일은 건드리지 않습니다.
-- 한국 계정에서 그 클라이언트 API 를 쓰는 정책은 미확인입니다. 이 기능을 켜기 전에 직접 확인하십시오.
+- 이 기능은 기본으로 꺼져 있고, 한국 계정에서는 켜지 않기를 권합니다. Riot 개발자 관계 팀이 2019-01-24 에 "당분간" 한국 플레이어는 League Client API 를 쓰는 앱을 쓸 수 없다고 공지했습니다([공지](https://www.riotgames.com/en/DevRel/changes-to-the-lcu-api-policy)). 이를 철회했다는 문장은 찾지 못했으므로 한국 계정에는 아직 적용될 수 있습니다.
+- Riot 은 이 클라이언트 API 가 서드파티 앱용으로 공식 지원되지 않는다고도 밝히고([개발자 문서](https://developer.riotgames.com/docs/lol)), 일반 정책에서 League Client API 를 쓰는 제품은 Developer Portal 을 통해 Riot 에 등록하고 감사를 받아야 한다고 적고 있습니다([정책](https://developer.riotgames.com/policies/general)). 이 도구 같은 무료 오픈소스 도구도 등록해야 하는지는 확인하지 못했습니다. 한국 밖에서는 이 사용 방식을 금지하거나 명시적으로 허용하는 Riot 문장을 찾지 못했습니다.
 
 </details>

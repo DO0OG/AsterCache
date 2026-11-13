@@ -39,6 +39,10 @@ public sealed class PrewarmEnv
     /// 게임이 실행 중일 때는 이미 캐시에 있는 출처 정보만 사용합니다 (원시 트레이스 파일을 새로 읽지 않음).
     public Func<GameSettings, long?> ObservedBytesIfCached { get; init; } = _ => null;
 
+    /// ZoneBytes·ObservedBytes 가 읽는 입력 파일들의 서명 (두 번째 인자: 캐시에서만 출처를 찾는 ObservedBytesIfCached 용인가), 만들 수 없으면 null.
+    /// 예산 계산 (WarmBudget) 의 추정 재사용 키입니다. 시험 기본값은 null (재사용 안 함).
+    public Func<GameSettings, bool, string?>? EstimateStamp { get; init; }
+
     public required Func<GameSettings, bool> TraceExists { get; init; }
 
     /// 계획을 만들 때의 유효 존 상한 (바이트), 모르면 null. 틈 메우기 예산의 상한이며 현재 존 크기와 무관합니다.
@@ -291,6 +295,7 @@ public sealed class PrewarmEnv
             ZoneBytes = g => PrefetchStreamer.WarmBytes(g) is { } z ? Math.Min(z, g.StreamCapBytes(z)) : null,
             ObservedBytes = PrefetchStreamer.ObservedBytes,
             ObservedBytesIfCached = g => PrefetchStreamer.ObservedBytes(g, allowSourceRead: false),
+            EstimateStamp = PrefetchStreamer.EstimateStamp,
             TraceExists = g => File.Exists(g.Trace),
             EffectiveZoneBytes = EffectiveZoneFromPlan,
         };

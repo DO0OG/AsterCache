@@ -11,6 +11,11 @@ public static class LoadTiers
 {
     private static readonly ConcurrentDictionary<string, (DateTime Written, long Length, LoadBoundary? Boundary)> Cache = new(StringComparer.OrdinalIgnoreCase);
 
+    private static int _generation;
+
+    /// 캐시가 새 경계로 바뀔 때마다 늘어남 (캐시에서만 찾는 예산 추정의 재사용 키).
+    internal static int Generation => Volatile.Read(ref _generation);
+
     public static LoadBoundary? For(GameSettings game) => For(game, default);
 
     // allowParse 가 거짓이면 이미 캐시에 있는 경계만 돌려줍니다 (없으면 null, 원시 트레이스를 파싱하지 않음).
@@ -59,6 +64,7 @@ public static class LoadTiers
                 return new FileInfo(p).Length;
             }, cancellationToken));
             Cache[raw] = (written, length, b);
+            _ = Interlocked.Increment(ref _generation);
             return b;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)

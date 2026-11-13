@@ -212,10 +212,11 @@ public sealed partial class Prewarmer
                 {
                     (StreamStats Stats, bool Complete, string? CancelReason, bool MemoryStop)? streamed;
                     bool fellBack = false; // 전체 경로가 메모리로 멈추면 창으로 줄여 한 번만 다시 읽음
+                    _yieldedSeconds = 0; // StreamHot 이 끝날 때마다 더함 (done 줄에 한 번 보임)
                     while (true)
                     {
                         streamed = StreamHot(warm, ct, zoneBytes, availableRamMib, memoryPartial is not null, Settle,
-                            allowReorder: memoryPartial is null && !HasPartialState(game.Name), roomMib: roomMib ?? long.MaxValue, allowWhileExiting: trigger);
+                            allowReorder: memoryPartial is null && !HasPartialState(game.Name), roomMib: roomMib ?? long.MaxValue, allowWhileExiting: trigger, why: why);
                         if (fellBack || memoryPartial is not null || streamed is not { Complete: false, MemoryStop: true }
                             || MemoryFallbackCapMib(game, finalReadMib, roomMib ?? long.MaxValue, ct) is not { } fallbackCap)
                         {
@@ -277,7 +278,7 @@ public sealed partial class Prewarmer
 
                     double mbps = s.Seconds > 0 ? s.Bytes / 1048576.0 / s.Seconds : 0;
                     string kind = memoryPartial is { } part ? $"partial {ActualMib(s, part.WarmedMib)}/{part.HotMib} MiB, the rest does not fit in memory: " : string.Empty;
-                    _log.Info($"{game.Name}: prewarm done ({why}): {kind}{s.Bytes >> 20} MiB requested, {s.GapBytes / 1048576.0:F2} MiB gaps filled in {s.Seconds:F2} s = {mbps:F0} hint MB/s, {s.Requests} requests, {s.Errors} errors, room {(roomMib is { } roomLimit ? roomLimit + " MiB" : "unlimited")}, available {_env.AvailableRamMib()} MiB");
+                    _log.Info($"{game.Name}: prewarm done ({why}): {kind}{s.Bytes >> 20} MiB requested, {s.GapBytes / 1048576.0:F2} MiB gaps filled in {s.Seconds:F2} s = {mbps:F0} hint MB/s, {s.Requests} requests, {s.Errors} errors, room {(roomMib is { } roomLimit ? roomLimit + " MiB" : "unlimited")}, available {_env.AvailableRamMib()} MiB{(_yieldedSeconds > 0 ? $", yielded {_yieldedSeconds:F1} s" : string.Empty)}");
                     _log.Info($"{game.Name}: prewarm phases ({why}): {run.Summary()}");
                     PrewarmResult done = Record(game, warmedAt, new PrewarmResult(game.Name, true, null, s, warmedAt), mbps);
                     WarmMeasured?.Invoke(game, mbps);
@@ -312,7 +313,7 @@ public sealed partial class Prewarmer
     }
 
     private void CheckPrewarmBatch(GameSettings game, CancellationTokenSource stop, long done, long total, bool reserveFinalSet = false,
-        PrewarmCancelDetail? detail = null, CancellationToken callerToken = default, CancellationToken leaseToken = default)
+        PrewarmCancelDetail? detail = null, CancellationToken callerToken = default, CancellationToken leaseToken = default, ReadYield? yield = null)
     {
         if (stop.IsCancellationRequested)
         {
@@ -343,7 +344,7 @@ public sealed partial class Prewarmer
         {
             reason = "game policy"; // 읽는 도중 정책이 바뀌면 다음 묶음 경계에서 멈춤
         }
-        else if (remaining > 0 && ExternalLoadWhilePaused(game, stop.Token, running))
+        else if (remaining > 0 && (yield is null ? ExternalLoadWhilePaused(game, stop.Token, running) : ObserveReadYield(game, stop.Token, running, yield)))
         {
             reason = "disk busy after pause";
         }
@@ -374,7 +375,7 @@ public sealed partial class Prewarmer
     // 같은 디스크에서 재배치가 시작했으면 읽지 않고 null.
     // settle: 끝까지 읽었을 때 StreamEnded 알림보다 먼저 부름 (읽은 통계를 받아 부분 예열 상태를 확정하거나 지움).
     // skipBytes: 읽기 목록 앞쪽 이만큼은 이미 읽었으니 건너뜀 (끊긴 보충을 이어 읽음, 틈 메우기 없는 경로에서만). onTotal: 이번에 읽을 목록의 길이 (건너뛴 앞부분 제외).
-    private (StreamStats Stats, bool Complete, string? CancelReason, bool MemoryStop)? StreamHot(GameSettings game, CancellationToken ct, long? zoneBytes, long availableRamMib, bool partial = false, Action<StreamStats>? settle = null, long skipBytes = 0, Action<long>? onTotal = null, bool allowReorder = true, long roomMib = long.MaxValue, bool allowWhileExiting = false)
+    private (StreamStats Stats, bool Complete, string? CancelReason, bool MemoryStop)? StreamHot(GameSettings game, CancellationToken ct, long? zoneBytes, long availableRamMib, bool partial = false, Action<StreamStats>? settle = null, long skipBytes = 0, Action<long>? onTotal = null, bool allowReorder = true, long roomMib = long.MaxValue, bool allowWhileExiting = false, string? why = null)
     {
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "prewarm stream", ct, preserveForGameRoot: _auto.KeepStreamOnGameStart ? game.OriginRoot : null, preserveGameKey: game.Name, allowWhileExiting: allowWhileExiting);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
@@ -403,6 +404,8 @@ public sealed partial class Prewarmer
         bool complete = false;
         StreamStats? finalStats = null;
         long startedAt = Stopwatch.GetTimestamp();
+        // 읽기는 이 스레드 (묶음 점검 콜백도 같은 스레드) 에서 내므로 I/O 우선순위도 여기서 바꾸고 아래 finally 에서 되돌립니다.
+        var readYield = new ReadYield(_env.SetReadIoLow, PrewarmYield.StartsYielding(why, _env.UptimeMs()));
         try
         {
             using CancellationTokenRegistration leaseReg = lease?.Token.Register(() =>
@@ -438,14 +441,14 @@ public sealed partial class Prewarmer
             calibration.Token.ThrowIfCancellationRequested();
             using (PrewarmRun.Time(PrewarmPhase.Common))
             {
-                WarmCommonFirst(game, stop, maxBytes, skipBytes, lease, cancelDetail, ct);
+                WarmCommonFirst(game, stop, maxBytes, skipBytes, lease, cancelDetail, ct, readYield);
             }
 
             calibration.Token.ThrowIfCancellationRequested();
             (StreamStats, bool) r = _streamer.StreamPrewarmCoordinated(game, stop.Token, (done, total) =>
             {
                 onTotal?.Invoke(total);
-                CheckPrewarmBatch(game, stop, done, total, reserveFinalSet: true, detail: cancelDetail, callerToken: ct, leaseToken: lease?.Token ?? default);
+                CheckPrewarmBatch(game, stop, done, total, reserveFinalSet: true, detail: cancelDetail, callerToken: ct, leaseToken: lease?.Token ?? default, yield: readYield);
                 if (done == 0)
                 {
                     return;
@@ -473,6 +476,8 @@ public sealed partial class Prewarmer
         }
         finally
         {
+            FinishYield(readYield, game.Name); // 스레드 풀 스레드에 낮은 우선순위가 남지 않게 (정상·취소·예외 모두)
+            _yieldedSeconds += readYield.Seconds;
             bool interrupted = !complete && _streamGameStarted;
             _calibrationStop = null;
             (_streaming, _streamStop, _streamCancelDetail) = (null, null, null);
@@ -492,6 +497,15 @@ public sealed partial class Prewarmer
             }
 
             StreamEnded?.Invoke(game, complete && (finalStats is { Bytes: > 0 } || skipBytes > 0)); // 아무것도 읽지 못했으면 예열 완료로 알리지 않음 (이어 읽기의 0 바이트는 앞에서 이미 읽은 것)
+        }
+    }
+
+    // 읽기가 끝나면 낮은 I/O 우선순위를 보통으로 되돌림. 되돌리지 못하면 (거의 없음) 스레드 풀 스레드에 낮음이 남을 수 있어 흔적을 남깁니다.
+    private void FinishYield(ReadYield readYield, string game)
+    {
+        if (!readYield.Finish(_now()))
+        {
+            _log.Warn($"{game}: could not restore normal I/O priority after prewarm");
         }
     }
 
@@ -517,7 +531,7 @@ public sealed partial class Prewarmer
     // 디스크 대여·중단 신호는 StreamHot 의 것을 그대로 씁니다. 실패하면 건너뛰고 스트림이 같은 오류를 판단합니다.
     // 최종 예약 검사는 common 을 읽기 전에 이번 스트림 전체 양으로 합니다 (거절이면 common 도 읽지 않음).
     private void WarmCommonFirst(GameSettings game, CancellationTokenSource stop, long maxBytes, long skipBytes, DiskReadCoordinator.Lease? lease,
-        PrewarmCancelDetail cancelDetail, CancellationToken callerToken)
+        PrewarmCancelDetail cancelDetail, CancellationToken callerToken, ReadYield? readYield = null)
     {
         try
         {
@@ -530,7 +544,7 @@ public sealed partial class Prewarmer
                 return;
             }
 
-            CheckPrewarmBatch(game, stop, 0, streamTotal, reserveFinalSet: true, detail: cancelDetail, callerToken: callerToken, leaseToken: lease?.Token ?? default);
+            CheckPrewarmBatch(game, stop, 0, streamTotal, reserveFinalSet: true, detail: cancelDetail, callerToken: callerToken, leaseToken: lease?.Token ?? default, yield: readYield);
             if (stop.IsCancellationRequested || lease is { IsValid: false })
             {
                 if (lease is { IsValid: false })
@@ -545,7 +559,7 @@ public sealed partial class Prewarmer
             long total = ops.Sum(o => o.Length);
             Action<long, long> progress = (done, planned) =>
             {
-                CheckPrewarmBatch(game, stop, done, planned, detail: cancelDetail, callerToken: callerToken, leaseToken: lease?.Token ?? default);
+                CheckPrewarmBatch(game, stop, done, planned, detail: cancelDetail, callerToken: callerToken, leaseToken: lease?.Token ?? default, yield: readYield);
                 if (lease is { IsValid: false })
                 {
                     cancelDetail.Set("disk read lease revoked");

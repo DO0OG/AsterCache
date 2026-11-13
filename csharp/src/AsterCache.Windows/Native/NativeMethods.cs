@@ -84,6 +84,16 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Kernel32)]
     internal static partial nint GetCurrentProcess();
 
+    [LibraryImport(Kernel32)]
+    internal static partial nint GetCurrentThread();
+
+    // https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntsetinformationthread (ThreadIoPriority = 22, 값은 IO_PRIORITY_HINT)
+    [LibraryImport("ntdll.dll")]
+    internal static partial int NtSetInformationThread(nint thread, int infoClass, uint* info, uint size);
+
+    [LibraryImport("ntdll.dll")]
+    internal static partial int NtQueryInformationThread(nint thread, int infoClass, uint* info, uint size, out uint returned);
+
     [LibraryImport(Kernel32, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool PrefetchVirtualMemory(nint process, nuint numberOfEntries, Win32MemoryRangeEntry* entries, uint flags);

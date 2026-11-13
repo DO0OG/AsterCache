@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AsterCache.Tests.Service;
 
-/// 서비스 시작 예열 다이어트: 플레이한 게임만, 부팅 5 분 + 디스크 60 초 유휴 뒤, 캐시가 따뜻하면 읽지 않음, 재시작 뒤 중복 없음.
+/// 서비스 시작 예열 다이어트: 플레이한 게임만, 부팅 60 초 + 디스크 20 초 유휴 뒤, 캐시가 따뜻하면 읽지 않음, 재시작 뒤 중복 없음.
 public sealed class StartupWarmTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "aster_startup_" + Guid.NewGuid().ToString("N"));
@@ -104,7 +104,7 @@ public sealed class StartupWarmTests : IDisposable
         IReadOnlyList<PrewarmResult> results = p.RunServiceStart(null, cts.Token);
 
         Assert.True(Assert.Single(results).Ran); // 재배치가 끝난 뒤 예열이 다시 실행됨
-        Assert.True(_waited - freedAt >= TimeSpan.FromSeconds(55)); // 보류 동안 유휴 시간이 초기화됨 (IdleNeeded 는 5 초 칸 11 번 기다린 뒤 통과)
+        Assert.True(_waited - freedAt >= TimeSpan.FromSeconds(15)); // 보류 동안 유휴 시간이 초기화됨 (PrewarmIdleNeeded 는 5 초 칸 3 번 기다린 뒤 통과)
         Assert.Equal(1, _log.Lines.Count(l => l.Contains("startup prewarm held while relocation is running", StringComparison.Ordinal)));
     }
 
@@ -121,17 +121,28 @@ public sealed class StartupWarmTests : IDisposable
     }
 
     [Fact]
-    public void ServiceStartWaitsFiveMinutesAfterBootThenAMinuteOfIdleDisk()
+    public void ServiceStartWaitsSixtySecondsAfterBootThenTwentySecondsOfIdleDisk()
     {
         Prewarmer p = Make(Game("a"));
-        _diskBusy = () => _uptimeMs < 6 * 60_000; // 부팅 5 분이 지나도 6 분까지는 디스크가 바쁨
 
         IReadOnlyList<PrewarmResult> results = p.RunServiceStart();
 
         Assert.True(Assert.Single(results).Ran);
-        Assert.True(_uptimeMs >= 6 * 60_000 + 55_000, $"started too early: {_uptimeMs} ms"); // 바쁨이 끝난 뒤 60 초 유휴
-        Assert.Contains(_log.Lines, l => l.Contains("waits for 5 min after boot and 60 s of idle disk", StringComparison.Ordinal));
+        Assert.InRange(_uptimeMs, 60_000 + 15_000, 60_000 + 20_000); // 부팅 60 초가 지난 뒤 유휴 20 초 (그 전에는 Sleep 이 읽기 0 을 확인)
+        Assert.Contains(_log.Lines, l => l.Contains("waits for 60 s after boot and 20 s of idle disk", StringComparison.Ordinal));
         Assert.Single(_streamer.Calls);
+    }
+
+    [Fact]
+    public void ServiceStartKeepsWaitingWhileTheDiskIsBusyAfterTheBootDelay()
+    {
+        Prewarmer p = Make(Game("a"));
+        _diskBusy = () => _uptimeMs < 3 * 60_000; // 부팅 60 초가 지나도 3 분까지는 디스크가 바쁨
+
+        IReadOnlyList<PrewarmResult> results = p.RunServiceStart();
+
+        Assert.True(Assert.Single(results).Ran);
+        Assert.True(_uptimeMs >= 3 * 60_000 + 15_000, $"started too early: {_uptimeMs} ms"); // 바쁨이 끝난 뒤 20 초 유휴
     }
 
     [Fact]
@@ -353,7 +364,7 @@ public sealed class StartupWarmTests : IDisposable
         Assert.Equal(["a", "b"], results.Where(r => r.Ran).Select(r => r.Game));
         Assert.Equal(["a", "b"], _streamer.Calls.Select(c => c.Game));
         Assert.True(held >= 100);
-        Assert.True(_waited - freedAt >= TimeSpan.FromSeconds(55)); // 재배치가 끝난 뒤 유휴를 다시 기다림
+        Assert.True(_waited - freedAt >= TimeSpan.FromSeconds(55)); // 재배치가 끝난 뒤 유휴를 다시 기다림 (게임 사이 대기는 기존 60 초 유휴)
     }
 
     [Fact]

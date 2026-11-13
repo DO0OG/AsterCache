@@ -214,6 +214,49 @@ public sealed class ColdPrewarmTests : IDisposable
     }
 
     [Fact]
+    public void AColdReadYieldsToOtherDiskActivityAndRestoresNormalWhenItEnds()
+    {
+        GameSettings g = Game("g");
+        var events = new List<string>();
+        ReadOp[] ops = Enumerable.Range(0, 3).Select(i => new ReadOp(Path.Combine(_dir, $"cold{i}.bin"), 0, 64 * Mib)).ToArray();
+        var p = new Prewarmer([g], _streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => AvailableMib,
+            PhysicalRamBytes = () => PhysicalBytes,
+            GameRunning = _ => false,
+            ZoneBytes = _ => null,
+            TraceExists = _ => false,
+            DiskBytesPerSecond = _ => 0,
+            DiskSample = _ => (50 * Mib, DiskActivity.SampleState.Ok), // 다른 읽기가 있음
+            SetReadIoLow = low =>
+            {
+                events.Add(low ? "low" : "normal");
+                return true;
+            },
+            ColdPlanner = (_, _, _, _) => new ColdPlan("full", ops, ops.Sum(op => op.Length), null),
+            ColdReadWithProgress = (readOps, ct, progress) =>
+            {
+                long total = readOps.Sum(op => op.Length);
+                long done = 0;
+                return FolderWarm.Read(readOps, ct, batch =>
+                {
+                    StreamStats stats = new(batch.Sum(op => op.Length), batch.Count, 0, 0.01);
+                    done += stats.Bytes;
+                    events.Add("batch");
+                    progress(done, total);
+                    return stats;
+                });
+            },
+        }, _log, Path.Combine(_dir, "cold-yield.json"), () => _now);
+        p.SetAuto(AutoSettings.Default);
+
+        PrewarmResult result = p.Run(g, "trigger steam.exe"); // 런처 계기는 양보로 시작
+
+        Assert.True(result.Ran); // 취소 없이 끝까지 읽음
+        Assert.Equal(["batch", "low", "batch", "batch", "normal"], events.Where(e => e is "batch" or "low" or "normal"));
+    }
+
+    [Fact]
     public void MemoryPressureAfterAColdBatchStopsAndDoesNotMarkTheWarmupSuccessful()
     {
         GameSettings g = Game("g", minFree: 4096);

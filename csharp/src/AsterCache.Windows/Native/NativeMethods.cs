@@ -81,6 +81,11 @@ internal static unsafe partial class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool UnmapViewOfFile(nint baseAddress);
 
+    // 매핑한 뷰를 읽을 때 디스크 오류를 예외 (in-page error) 가 아닌 반환값으로 받으려고 씁니다 (현재 프로세스 자신만).
+    [LibraryImport(Kernel32, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool ReadProcessMemory(nint process, nint baseAddress, byte* buffer, nuint size, out nuint read);
+
     [LibraryImport(Kernel32)]
     internal static partial nint GetCurrentProcess();
 

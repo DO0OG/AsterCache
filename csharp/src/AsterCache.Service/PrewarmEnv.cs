@@ -156,10 +156,19 @@ public sealed class PrewarmEnv
     /// 트리거로 예열이 실제로 시작되기 직전 (가용 메모리 첫 읽기보다 앞) 에 부름: 배경 프로세스의 메모리 양보를 시작하고 가용 메모리가 가라앉을 때까지 기다립니다 (이유, 취소). 기본은 아무것도 안 함.
     public Action<string, CancellationToken> YieldBackground { get; init; } = (_, _) => { };
 
+    /// 설정 memory.standby_ladder (예열한 캐시를 디스크 읽기 없이 다시 만져 순서를 정하고 유지, Solar) 가 켜져 있는가. 시험 기본값은 꺼짐 (실제 호출 없음).
+    public Func<bool> StandbyLadderEnabled { get; init; } = () => false;
+
+    /// 대기 목록 조회 (프로세스를 열지 않는 시스템 전체 통계, 못 읽으면 null): 사다리 새로 고침 시점의 신호. 시험 기본값은 조회 불가.
+    public Func<MemoryLists?> Lists { get; init; } = () => null;
+
+    /// 범위를 주어진 순서로 만짐 (파일 캐시에 있는 것을 다시 읽어 대기 목록 맨 뒤로, 디스크 읽기가 섞이면 멈춤). 시험 기본값은 아무것도 안 함.
+    public Func<IReadOnlyList<ReadOp>, CancellationToken, TouchResult> TouchRanges { get; init; } = (_, _) => new TouchResult(0, 0, 0, 0, TouchEnd.Completed);
+
     public static Func<GameSettings, bool> GameActiveOnDisk(IReadOnlyList<GameSettings> games,
         Func<string, string, bool> sameDisk, Func<GameSettings, bool> gameRunning) => OrbitRuntime.GameActiveOnDisk(games, sameDisk, gameRunning);
 
-    public static PrewarmEnv Create(OrbitCalibration? orbitCalibration = null, OrbitRuntime? orbitRuntime = null, BackgroundYield? backgroundYield = null)
+    public static PrewarmEnv Create(OrbitCalibration? orbitCalibration = null, OrbitRuntime? orbitRuntime = null, BackgroundYield? backgroundYield = null, Func<bool>? standbyLadder = null)
     {
         Func<GameSettings, bool> gameRunning = DispatchEnv.IsGameRunning;
         Func<string, string, bool> sameDisk = VolumeDisks.SameDisk;
@@ -176,6 +185,9 @@ public sealed class PrewarmEnv
             SameDisk = sameDisk,
             SetReadIoLow = low => ThreadIoPriority.TrySet(low ? IoPriority.Low : IoPriority.Normal),
             YieldBackground = backgroundYield is null ? (_, _) => { } : (why, ct) => backgroundYield.Begin(why, settle: true, ct),
+            StandbyLadderEnabled = standbyLadder ?? (() => false),
+            Lists = MemoryListInfo.Query,
+            TouchRanges = StandbyTouch.Run,
             DeviceCalibrationEnabled = orbitRuntime is null ? null : () => orbitRuntime.Mode != "off",
             DeviceCalibration = orbitCalibration is null ? null : (g, ops, antiCheat, lease, ct, limit) =>
             {

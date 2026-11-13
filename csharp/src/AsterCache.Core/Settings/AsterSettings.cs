@@ -281,7 +281,8 @@ public sealed record RiotSettings(bool ChampSelectPrewarm = false, int ChampSele
 }
 
 /// 메모리 설정 (config 의 memory 객체): background_yield 는 게임 세션 동안 게임과 무관한 배경 프로세스가 메모리를 양보하게 함 (기본 켜짐).
-public sealed record MemorySettings(bool BackgroundYield = true)
+/// standby_ladder 는 예열한 캐시를 디스크 읽기 없이 다시 만져 중요한 것이 마지막에 밀려나게 하고 밀려나기 전에 새로 고침 (기본 켜짐).
+public sealed record MemorySettings(bool BackgroundYield = true, bool StandbyLadder = true)
 {
     public static MemorySettings Default { get; } = new();
 }

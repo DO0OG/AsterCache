@@ -487,6 +487,7 @@ public sealed class BackgroundYieldTests
 
         Assert.Equal((10 + 20 + 100 + 200 + 300 + 400 + 500) * 4096L, lists.HeadroomBytes); // 우선순위 0~4 만
         Assert.Equal((6000 + 7000 + 8000) * 4096L, lists.CacheRepurposedBytes); // 우선순위 5~7 만
+        Assert.Equal((600 + 700 + 800) * 4096L, lists.CacheStandbyBytes); // 우선순위 5~7 만
     }
 
     [Fact]

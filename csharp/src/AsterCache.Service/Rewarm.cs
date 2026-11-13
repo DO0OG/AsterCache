@@ -4,11 +4,12 @@ using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Settings;
 using AsterCache.Windows;
+using WarmBudgetInfo = (System.Collections.Generic.HashSet<string> In, long CapMib, long UsedMib, System.Collections.Generic.Dictionary<string, long> AllocMib);
 
 namespace AsterCache.Service;
 
 /// 예열 유지: rewarm_minutes 마다, 예열한 게임 자신이 안 돌고 같은 디스크의 다른 등록 게임이 안 돌거나 돌아도 한가하고 (Prewarmer.BusyOthers) 그 게임 드라이브 처리량이 자동 재배치의 유휴 기준 아래일 때 (CPU 부하는 보지 않음), 예열한 적 있는 게임의 핫 집합 몇 곳을 읽어 보고 식었으면 (CacheProbe.Cold: 표본 8 곳 중 2 곳 이상이 CacheProbe.ColdThresholdMs 초과) 다시 예열합니다.
-public sealed class Rewarmer
+public sealed partial class Rewarmer
 {
     private readonly Prewarmer _prewarm;
     private readonly PrewarmEnv _env;
@@ -40,6 +41,8 @@ public sealed class Rewarmer
                 _checkState.Remove(gone);
             }
         }
+
+        _prewarm.Solar.Prune(live);
     }
 
     /// 게임이 끝났을 때: 다음 점검을 auto.rewarm_after_exit_min 뒤로 당깁니다 (이미 더 이르면 그대로). 게이트 (게임 실행 중·디스크 바쁨) 와 식었을 때만 읽는 점검은 Tick 이 그대로 적용합니다.
@@ -115,43 +118,18 @@ public sealed class Rewarmer
                 return;
             }
 
-            if (_exitTracker?.HeavyWorkNotBefore(g, _prewarm.Games, _env.SameDisk, auto.RewarmAfterExitMin) is { } heavyWorkDue && now < heavyWorkDue)
+            if (ReadBlock(g, now, auto, budget) is { } block)
             {
-                if (nextGateDue is null || heavyWorkDue < nextGateDue)
+                if (block.Due is { } gateDue && (nextGateDue is null || gateDue < nextGateDue))
                 {
-                    nextGateDue = heavyWorkDue;
+                    nextGateDue = gateDue;
                 }
 
-                NoteCheck(g, "post-exit", $"{g.Name}: rewarm check deferred until {heavyWorkDue:O} after game exit");
+                NoteCheck(g, block.State, block.Message);
                 continue;
             }
 
-            if (budget is { } b && !b.In.Contains(g.Name))
-            {
-                NoteCheck(g, "budget", $"{g.Name}: rewarm check skipped ({Prewarmer.WarmBudgetSkipDetail(b.CapMib, b.UsedMib)})");
-                continue;
-            }
-
-            if (_env.GameRunning(g))
-            {
-                string blockers = Blockers(g);
-                NoteCheck(g, "game-running|" + blockers, $"{g.Name}: rewarm check skipped: a game is running" + blockers); // 실행 중인 게임 자신은 건드리지 않음 (같은 사유·같은 프로세스면 점검 주기마다 반복하지 않음)
-                continue;
-            }
-
-            if (_prewarm.BusyOthers(g) is { Count: > 0 } busy)
-            {
-                NoteCheck(g, "drive-game-running|" + string.Join(",", busy.Select(x => x.Name)), $"{g.Name}: rewarm check skipped: a game is running on the same drive and is not idle" + Blockers(busy.ToArray())); // 한가한 다른 게임은 막지 않음
-                continue;
-            }
-
-            if (_env.DiskBytesPerSecond(g) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond)
-            {
-                NoteCheck(g, "busy", $"{g.Name}: rewarm check skipped (the game drive is busy or its load is unknown)");
-                continue;
-            }
-
-            Check(g, ct, budget is { } bg && bg.AllocMib.GetValueOrDefault(g.Name) is > 0 and long room ? room : null);
+            Check(g, ct, RoomOf(g, budget));
         }
 
         if (nextGateDue is { } due)
@@ -164,6 +142,38 @@ public sealed class Rewarmer
                 }
             }
         }
+    }
+
+    // 점검과 사다리가 이 게임 디스크를 지금 읽어도 되는가: 막히면 (상태 키, 로그 문구, 게이트가 풀릴 시각 (모르면 null)) 를, 괜찮으면 null 을 돌려줍니다.
+    private (string State, string Message, DateTimeOffset? Due)? ReadBlock(GameSettings g, DateTimeOffset now, AutoSettings auto, WarmBudgetInfo? budget)
+    {
+        if (_exitTracker?.HeavyWorkNotBefore(g, _prewarm.Games, _env.SameDisk, auto.RewarmAfterExitMin) is { } heavyWorkDue && now < heavyWorkDue)
+        {
+            return ("post-exit", $"{g.Name}: rewarm check deferred until {heavyWorkDue:O} after game exit", heavyWorkDue);
+        }
+
+        if (budget is { } b && !b.In.Contains(g.Name))
+        {
+            return ("budget", $"{g.Name}: rewarm check skipped ({Prewarmer.WarmBudgetSkipDetail(b.CapMib, b.UsedMib)})", null);
+        }
+
+        if (_env.GameRunning(g))
+        {
+            string blockers = Blockers(g);
+            return ("game-running|" + blockers, $"{g.Name}: rewarm check skipped: a game is running" + blockers, null); // 실행 중인 게임 자신은 건드리지 않음 (같은 사유·같은 프로세스면 점검 주기마다 반복하지 않음)
+        }
+
+        if (_prewarm.BusyOthers(g) is { Count: > 0 } busy)
+        {
+            return ("drive-game-running|" + string.Join(",", busy.Select(x => x.Name)), $"{g.Name}: rewarm check skipped: a game is running on the same drive and is not idle" + Blockers(busy.ToArray()), null); // 한가한 다른 게임은 막지 않음
+        }
+
+        if (_env.DiskBytesPerSecond(g) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond)
+        {
+            return ("busy", $"{g.Name}: rewarm check skipped (the game drive is busy or its load is unknown)", null);
+        }
+
+        return null;
     }
 
     /// 결과(상태)가 바뀔 때만 남김: 틱마다 같은 결과를 반복해 쓰지 않음 (예열 동작은 그대로).
@@ -197,6 +207,22 @@ public sealed class Rewarmer
         return blockers.Length == 0 ? string.Empty : $" (blocked by {blockers})";
     }
 
+    // 핫 집합 표본 점검 (재예열 점검과 사다리 새로 고침이 같이 씀): 읽지 못하면 null, 예외로 실패하면 failed (경고 한 줄).
+    private ProbeResult? Probe(GameSettings g, CancellationToken ct, out bool failed)
+    {
+        failed = false;
+        try
+        {
+            return _prewarm.ColdSamples(g) is { } samples ? _prewarm.ProbeSamplesForGame(g, samples, "rewarm sample", ct) : _prewarm.ProbeFront(g, ct); // 기록 없이 예열한 게임은 그때 읽은 파일 목록에서 고른 표본
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
+        {
+            _log.Warn($"{g.Name}: rewarm check failed: {e.GetType().Name}");
+            failed = true;
+            return null;
+        }
+    }
+
     private void Check(GameSettings g, CancellationToken ct, long? roomMib)
     {
         if (_prewarm.RewarmAlreadyCovered(g))
@@ -205,14 +231,9 @@ public sealed class Rewarmer
             return;
         }
 
-        ProbeResult? probe;
-        try
+        ProbeResult? probe = Probe(g, ct, out bool failed);
+        if (failed)
         {
-            probe = _prewarm.ColdSamples(g) is { } samples ? _prewarm.ProbeSamplesForGame(g, samples, "rewarm sample", ct) : _prewarm.ProbeFront(g, ct); // 기록 없이 예열한 게임은 그때 읽은 파일 목록에서 고른 표본
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
-        {
-            _log.Warn($"{g.Name}: rewarm check failed: {e.GetType().Name}");
             return;
         }
 
@@ -232,6 +253,7 @@ public sealed class Rewarmer
         else if (!probe.Cold)
         {
             NoteCheck(g, "warm", $"{g.Name}: rewarm check: warm ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms, average {probe.AverageMs:F2} ms)");
+            LadderUnmarked(g, ct); // 서비스를 다시 시작한 뒤 표식이 없는 게임은 warm 일 때 첫 사다리를 만듦
         }
         else
         {

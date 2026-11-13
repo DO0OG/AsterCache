@@ -5,6 +5,7 @@
 조사일 2026-11-01. 읽기 전용 웹 조사(저장소 수정 없음).
 확인 수준 표기: [확인] = 1차 자료(Microsoft Learn, 논문 원문, 소스 매니페스트)를 직접 읽음 / [2차] = 검색 요약·포럼·벤더·언론 등 간접 / [추측] = 근거 없는 추론 또는 계산 / [미확인] = 찾지 못함.
 검색 도구가 요약 형태로 돌려준 항목은 원문 전체를 읽지 못했으므로 [2차]로 낮춰 표기했다.
+F 절(SOLAR: 캐시 유지·순서·배경 양보)은 2026-11-14 에 같은 방식으로 더한 조사다.
 
 ---
 
@@ -137,6 +138,78 @@
 - DirectStorage: 로딩 중 엔진 오버헤드(CPU)가 지배적이라 빠른 NVMe 에서도 이득이 제한적이라는 포럼·언론 서술(Forspoken). 일부 벤더성 페이지의 NVMe 7.8s→1.9s 수치는 방법론 불명. [2차] https://www.neowin.net/amp/forspoken-on-pcie-50-nvme-hints-at-the-true-power-of-microsoft-directstorage-on-windows-11/
 - Steam 하드웨어 조사의 HDD 비율: Valve 원문의 HDD/SSD 구분을 찾지 못함. 2차 보도 하나가 2026-06 조사에서 주 드라이브가 SSD 인 비율 98.3% 라고 쓰나 원문 확인 전이라 신뢰도 낮음. [2차, 낮음] https://www.guru3d.com/story/steam-june-survey-16gb-ram-gains-ground-as-32gb-adoption-slows/
 - 시사점(사용자 실측 기반 계산): RAM 선읽기 콜드 17.8s→11.1s, 선읽기 처리량 39MB/s → 약 430MB 읽음(39×11.1). 같은 430MB 를 바깥 존 150MB/s 순차로 읽으면 이론 약 2.9s, SSD 0.8s 와의 격차가 13.9배에서 3~4배 수준으로 줄 뿐이다. 순차 읽기만으로 SSD급(0.8s)은 핫 집합이 약 120MB(=0.8s×150MB/s) 이하일 때만 가능하다. 따라서 HDD 단독 SSD급 목표는 물리적으로 도달하기 어렵고, 나머지는 RAM 보유/SSD 캐시/CPU 바운드 구간 중첩으로 메워야 한다. [계산, 사용자 수치 가정]
+
+---
+
+## F. SOLAR 선행 기술 (캐시 유지, 순서, 배경 양보)
+
+조사일 2026-11-14. 읽기 전용 웹 조사(웹 검색 29회와 원문 열람). 표기는 위와 같다([확인] = 원문을 직접 읽음, [2차] = 검색 요약만 봄, [미확인] = 근거를 찾지 못함). 판정 용어는 "같은 것을 찾지 못함", "개념은 선점됐고 적용·조합이 다름", "이미 있음" 셋이다. "찾지 못함"은 "없다"는 뜻이 아니다. 비공개 제품(Process Lasso, PrimoCache, 게임 부스터 등)의 내부 동작은 문서에 적힌 범위까지만 비교했다. 이 PC 에서 잰 내용은 [SOLAR](SOLAR.ko.md)에 있다.
+
+### F0. Windows 가 이미 하는 일
+- Windows Vista 이후 모든 페이지에 우선순위 0~7 이 있고, 대기 목록은 우선순위별 8개 목록으로 나뉘며 낮은 우선순위부터 가져간다. 기본값은 5 이고 투기적 선읽기 페이지에는 낮은 우선순위를 쓴다. SuperFetch 는 사용 이력으로 대기 목록에 선적재하고, 메모리가 비면 밀려난 데이터를 매우 낮은 I/O 우선순위로 다시 읽는다. 지연 시작 서비스도 낮은 CPU·메모리·I/O 우선순위로 돈다. 즉 "배경 작업의 메모리 우선순위를 낮춰 전경을 보호"는 Windows 자신의 설계 의도다. [확인] https://learn.microsoft.com/en-us/previous-versions/technet-magazine/cc162480(v=msdn.10)
+- Microsoft 특허 US 7,185,155 B2(공개 US 2005/0228964 A1, 우선일 2002-10-04, Google Patents 상 만료): 대기 페이지를 가치별 부분집합(예시 16개)에 두고 재균형기가 약 1초마다 사용 이력으로 다시 배치하며, 백신·인덱서 같은 배경 활동을 제약하고 작업 집합을 다듬는 루틴을 부르며, 커널 메모리 목록 카운터를 보고 조치 여부를 정한다. [확인, 문서 앞 2/3 만 읽음] https://patents.google.com/patent/US20050228964A1/en
+- `MEMORY_PRIORITY_INFORMATION`: 메모리 우선순위는 작업 집합을 다듬을 때 쓰는 힌트이며 다른 조건이 같으면 낮은 우선순위 페이지가 먼저 다듬어진다. [확인] https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-memory_priority_information
+- `SystemMemoryListInformation`(80)의 우선순위별 대기 수와 재사용 수 구조는 비공개지만 널리 알려져 있고, 같은 정보 클래스로 대기 목록 비우기 명령도 보낸다(ISLC, Mem Reduct 류). [2차] https://ntdoc.m417z.com/system_memory_list_information , https://processhacker.sourceforge.io/doc/memlists_8c_source.html , https://gist.github.com/jjYBdx4IL/82b2dfb3772b10bb2ce98e796a93bcad
+- 그러므로 이 카운터를 읽는 것 자체는 독자적인 점이 아니다. 독자성을 말할 수 있는 곳은 그 값을 어떤 결정에 어떻게 쓰는가뿐이다.
+
+### F1. 밀려나는 순서 정하기 (사다리)
+이미 캐시에 있는 파일 페이지를 가치가 낮은 것부터 높은 것 순으로 다시 참조했다가 놓아, 같은 우선순위(5) 안의 밀려나는 순서를 원하는 순서로 만든다. 디스크 읽기·드라이버·잠금이 없다.
+
+| 이름 | 하는 일 | 출처 | 확인 |
+|---|---|---|---|
+| Dust (Burnett 외, USENIX 2002) | 사용자 수준에서 블록을 정한 패턴으로 읽어 OS 교체 정책의 장부(최근성·빈도)를 원하는 상태로 만든 뒤 축출을 일으켜 교체 정책을 알아냄. 같은 논문의 웹 서버는 캐시 내용을 모형으로 삼아 캐시에 있을 요청을 먼저 처리함. | https://static.usenix.org/event/usenix02/full_papers/burnett/burnett_html/index.html | [확인] |
+| Microsoft 특허, SuperFetch | OS 가 대기 페이지를 가치별 부분집합에 두고 재균형기가 다시 배치. 가치 낮은 것부터 재사용. | F0 | [확인] |
+| DAMON_LRU_SORT (Linux 6.0) | 접근 감시로 뜨거운 영역은 LRU 에서 우선, 차가운 영역은 후순위로 정렬. 여유 메모리 워터마크 구간에서만 동작. | https://www.kernel.org/doc/html/latest/admin-guide/mm/damon/lru_sort.html | [확인] (파일 페이지 포함 여부는 문서에 없음 [미확인]) |
+| Fuchsia RFC-0068 | 사용자 공간이 `DONT_NEED`·`ALWAYS_NEED` 힌트로 축출 순서에 개입. | https://fuchsia.dev/fuchsia-src/contribute/governance/rfcs/0068_eviction_hints | [확인] |
+| Linux `MADV_COLD`, Android CachedAppOptimizer | 파일 매핑을 차갑게 표시해 먼저 회수. | https://android.googlesource.com/platform/frameworks/base/+/d5397bc42eb4d96414b2572f3c64c41d880c1282/services/core/jni/com_android_server_am_CachedAppOptimizer.cpp | [확인] |
+| cachebpf, PageFlex | eBPF 로 페이지 캐시 축출 정책 자체를 응용이 바꿈. | https://ar5iv.labs.arxiv.org/html/2502.02750 , https://cseweb.ucsd.edu/~snoeren/papers/pageflex-atc25.pdf | [2차] |
+
+- 다른 점: 표의 OS 쪽 항목은 커널 기능이거나 OS 가 준 힌트 인터페이스다. Windows 에는 사용자 모드가 대기 목록 안의 순서를 정하는 공개 인터페이스가 없고, 페이지 우선순위를 6·7 로 올리는 것은 이 PC 에서 `STATUS_INVALID_PARAMETER` 로 거부됐다. 사다리는 힌트 인터페이스 없이 "다시 참조된 대기 페이지는 목록 뒤로 간다"는 일반 동작만으로 순서를 만든다. Dust 는 바로 그 수단(사용자 수준 접근 순서로 교체 장부를 조작)을 2002년에 썼고 차이는 목적(정책을 알아냄 대 유지)과 대상(Unix 버퍼 캐시 대 Windows 대기 목록 우선순위 5)이다. 수단 자체가 새롭다고 말할 수 없다. SuperFetch 는 같은 목적을 OS 안에서 우선순위 단계로 하며, 사다리는 같은 단계 안의 순서를 사용자 모드에서 다시 쓰는 것이라 층이 다르다.
+- 판정: 개념은 선점됐고 적용·조합이 다름(확신도 중간). "Windows 대기 목록에서, 사용자 모드 서비스가, 디스크 읽기 없이, 이미 캐시된 게임 데이터를 가치 오름차순으로 다시 참조해 같은 우선순위 안의 밀려나는 순서를 정한다"는 조합을 그대로 한 제품·논문·특허·공개 코드는 찾지 못했다. 비공개 상용 도구(PrimoCache 등)의 내부 동작은 확인할 수 없고, 아이디어가 단순해 개인 스크립트 수준에서 누군가 했을 가능성은 배제하지 못한다.
+
+### F2. 주기적 새로 고침과 재사용 통계로 시점 정하기
+캐시에 아직 있을 때 다시 참조해 밀려나는 순서의 뒤로 보내 디스크 읽기 없이 유지하고, 시점은 정해진 주기가 아니라 우선순위 5 이상 대기 페이지의 재사용 누계 증가량으로 정한다.
+
+| 이름 | 하는 일 | 출처 | 확인 |
+|---|---|---|---|
+| vmtouch `-t` + cron | 파일의 모든 페이지를 읽어 캐시에 올림. 주기 실행은 사용자가 cron 으로 붙이고, 밀려났으면 디스크에서 다시 읽음. | https://linux.die.net/man/8/vmtouch | [확인] (cron 운용 사례 https://gist.github.com/vi/77717d7076618af92344 등은 [2차]) |
+| SuperFetch 재적재 | 메모리가 비면 밀려난 데이터를 매우 낮은 I/O 우선순위로 디스크에서 다시 읽음. | F0 | [확인] |
+| Microsoft 특허 재균형기 | 약 1초마다 부분집합을 다시 평가하고 커널 메모리 목록 카운터를 보고 조치 여부를 정함. | F0 | [확인, 일부] |
+| Linux workingset 재결함 거리 | 축출·활성화 누계 카운터의 차이로 캐시 밖에 있던 동안의 접근 수를 추정해 재활성화 여부를 정함. 누계 카운터 차이로 거리를 추정하는 발상. | https://github.com/torvalds/linux/blob/master/mm/workingset.c | [확인] |
+| MGLRU `min_ttl_ms` | 최근 N ms 작업 집합은 축출하지 않음. | https://lore.kernel.org/lkml/20220518014632.922072-12-yuzhao@google.com/ | [2차] |
+| PostgreSQL pg_prewarm autoprewarm | 공유 버퍼 내용을 주기적으로 기록하고 재시작 뒤 다시 읽어 데움. 데운 뒤 보호는 없음. | https://www.postgresql.org/docs/17/pgprewarm.html | [2차] |
+
+- 다른 점: vmtouch, SuperFetch, pg_prewarm 은 식은 뒤 디스크에서 다시 읽는다. 여기서는 아직 캐시에 있을 때 다시 참조해 디스크 읽기를 없애는 것이 핵심이며 HDD 에서 의미가 크다. 특허의 재균형기는 OS 안에서 정해진 주기(약 1초)로 재평가하고, Linux workingset 은 커널이 개별 페이지의 재결함 판단에 누계 카운터 차이를 쓴다. 여기서는 사용자 모드가 우선순위별 재사용 누계 증가량을 "우리 블록이 목록 앞에 얼마나 다가왔나"의 추정치로 써서 새로 고침 시점을 정한다. 이 용도(재사용 누계로 새로 고침 시점을 정함)는 찾지 못했다.
+- 판정: "캐시가 식기 전에 다시 만져 유지"는 개념은 선점됐고 적용·조합이 다름(확신도 높음. 재참조로 LRU 를 유지하는 것은 오래된 일반 관행이며, Windows 대기 목록에서 디스크 읽기 없는 유지로 쓰는 공개 사례는 찾지 못했다). "우선순위별 재사용 누계 증가량으로 새로 고침 시점을 정함"은 같은 것을 찾지 못함(확신도 중간 이하. 누계 카운터 차이로 거리를 추정하는 발상은 Linux workingset 에 있고 비공개 도구의 내부는 확인할 수 없다).
+- 쓸 때 함께 적을 것: 재사용 통계는 비공개 정보 클래스이고, 권한(`SeProfileSingleProcessPrivilege`)이 없으면 정해진 주기(10분)로 낮춰 동작한다.
+
+### F3. 메모리 압력이 있을 때만 하는 배경 양보
+(a) 게임과 무관한 배경 프로세스의 메모리 우선순위를 낮춘다. (b) 여유분(여유 + 우선순위 0~4 대기)이 모자라거나 캐시 페이지가 실제로 재사용될 때만 배경 작업 집합을 비운다. (c) 비운 뒤 곧바로 되찾는 프로세스는 다시 비우지 않는다.
+
+| 이름 | 하는 일 | 출처 | 확인 |
+|---|---|---|---|
+| Process Lasso SmartTrim | 기본 꺼짐. RAM 부하가 임계(기본 65%)를 넘을 때만, 작업 집합이 일정 크기(기본 196 MB) 이상인 프로세스만, 사용 중인 앱은 제외하고 다듬음. 별도 옵션으로 "캐시 제외 여유 RAM 이 X 미만이고 대기 목록이 Y 이상"일 때 대기 목록 비우기, "가장 낮은 우선순위(0) 대기만 비우기". | https://bitsum.com/apps/process-lasso/docs/algorithms/smarttrim/ , https://bitsum.com/?p=2933 | [확인] (재트림 회피 규칙은 문서에 없음 [미확인]) |
+| Mem Reduct, Sordum Reduce Memory 류 | 메모리 사용률 임계에서 작업 집합·대기 목록 등을 비움. | https://www.sordum.org/9197/reduce-memory-v1-7/ , https://betanews.com/2015/04/22/mem-reduct-a-memory-cleaner-which-isnt-rubbish | [2차] |
+| Intelligent Standby List Cleaner | "대기 목록 > X 이고 여유 메모리 < Y"일 때 대기 목록을 비움. 캐시를 버리는 쪽이라 목적이 반대. | https://www.wagnardsoft.com/forums/viewtopic.php?p=4203 | [2차] |
+| Windows 자체 | 메모리 우선순위, 지연 시작 서비스, 특허의 배경 활동 제약, `PROCESS_MODE_BACKGROUND_BEGIN`(작업 집합을 약 32 MiB 로 다듬는다는 측정). | F0, https://hacklines.com/en/editions/317087/click | F0 는 [확인], 32 MiB 는 [2차] |
+| 게임 부스터 (Razer Cortex, GameBoostHD, Windows 게임 모드) | 게임 중 배경 앱 종료·우선순위 낮춤, 종료 뒤 복원. 게임 모드의 메모리 동작은 공식 문서가 없음. | https://insider.razer.com/razer-cortex-39/razer-game-booster-82 , https://r1ch.net/projects/gameboosthd | [2차] |
+| Android CachedAppOptimizer·LMKD, Meta Senpai, MS Manners (SOSP 1999) | 배경 앱 메모리를 회수하되 발표 자료상 압력이 없을 때만 압축, PSI 압력을 보며 사전 회수, 배경 작업의 진행률 저하를 경합 신호로 보고 멈춤. cgroup `memory.low/min` 으로 페이지 캐시 포함 메모리 보호. | https://lpc.events/event/4/contributions/404/attachments/326/550/Handling_memory_pressure_on_Android.pdf , https://facebookmicrosites.github.io/resctl-demo-website/docs/demo_docs/memory_sizing_senpai/senpai , https://microsoft.com/en-us/research/wp-content/uploads/2016/02/SOSP1999.pdf , https://docs.kernel.org/admin-guide/cgroup-v2.html | [2차] (cgroup 문서는 [확인]) |
+
+- 다른 점: (a) 배경 프로세스 메모리 우선순위를 낮추는 것은 Windows 의 설계 의도 그대로이고 게임 부스터·Process Lasso 류도 한다. 새로움이 없다. (b) 압력이 있을 때만 다듬기는 SmartTrim 이 "RAM 부하 임계 + 큰 작업 집합 + 전경 제외"로 이미 한다. 차이는 조건 신호가 RAM 부하율이 아니라 "여유 + 우선순위 0~4 대기"(캐시보다 먼저 내줄 수 있는 양)와 "우선순위 5 재사용 발생"이라는 점, 목적이 RAM 을 비우는 것이 아니라 배경 작업 집합을 우선순위 0 대기로 보내 캐시보다 먼저 재사용되게 하는 희생 순서 조정이라는 점이다. 다만 SmartTrim 의 "캐시 제외 여유 RAM" 조건과 "우선순위 0 만 비우기"는 대기 우선순위를 의식한 인접 설계다. (c) 곧바로 되찾는 프로세스를 다시 비우지 않는 규칙은 공개 문서에서 같은 것을 찾지 못했고, 발상은 Linux 재결함 거리와 MS Manners 와 같은 계열이다.
+- 판정: 전체는 개념은 선점됐고 적용·조합이 다름(선점 부분 확신도 높음, 차이 부분 중간 이하). (a)는 이미 있음. (b)의 "대기 우선순위별 통계로 다듬기 여부를 정함"과 (c)는 같은 것을 찾지 못함(확신도 낮음~중간. 비공개 도구에 비슷한 조건이 있을 수 있다).
+- 쓸 때 함께 적을 것: 작업 집합 다듬기와 배경 우선순위 낮추기는 Windows 와 기존 도구(Process Lasso SmartTrim 등)에도 있는 수단이며, 여기서의 차이는 시점을 정하는 신호와 목적(파일 캐시 보호)이다. 다듬기는 배경 앱의 소프트 폴트와 압축 비용을 만들므로 "배경 앱에 영향이 없다"고 쓰지 않는다.
+
+### F4. 참고: 예열 순서 ORBIT
+블록 단위 접근 순서 재배치 개념은 BORG(FAST'09)가 선점했고 기여는 "드라이버 없이 stock Windows 위 사용자 모드와 공식 디프래그 API 로 게임 단위로 구현하고 선읽기와 결합"하는 조합·구현이라는 위 결론은 이번 조사에서도 바뀌지 않았다. 끊길 확률과 디스크 실측으로 예열 순서를 정하는 계산은 마감·신뢰도 기반 선읽기 일정과 최적 선읽기 이론(https://homes.cs.washington.edu/~karlin/papers/tracy.pdf, [2차])이 일반 이론으로 있고, "중단 확률로 할인한 순서"를 그대로 한 것은 찾지 못했다(검색 1회, 확신도 낮음). 판정은 개념은 선점됐고 적용·조합이 다름이다.
+
+### F5. 독자성을 말할 수 있는 지점
+- 수단 하나하나에는 선례가 있다. 재참조로 교체 순서 조작(Dust), 가치별 축출(SuperFetch, DAMON_LRU_SORT), 주기 재참조(vmtouch + cron), 압력 조건부 다듬기(SmartTrim). 개별 수단을 독자 기술이라 부르면 반박당한다.
+- 공개 자료에서 찾지 못한 것은 닫힌 고리다. Windows 우선순위별 대기 목록 통계 하나를 신호로 삼아 새로 고침 시점(F2), 배경 다듬기 여부(F3), 사다리 순서(F1)를 함께 정하는 단일 제어 고리.
+- 가치 함수가 게임 기록에서 나온다는 점도 구별된다. 사다리의 "가치"는 게임별 로딩 기록에서 나온 읽기 순서(공통 블록, 로딩 앞부분, 관찰된 범위 순)이므로, 범용 LRU 정렬(DAMON)이나 OS 이력 기반(SuperFetch)과 다르다.
+- 이 PC 에서 잰 Windows 동작("대기 페이지를 다시 참조하면 목록 뒤로 간다", "작업 집합에서 비운 페이지는 우선순위 0 대기로 간다", "페이지 우선순위 6·7 은 거부됨")은 같은 측정 기록을 이번 검색에서 찾지 못했다. 이것은 Windows 의 동작을 밝힌 것이지 AsterCache 가 만든 것이 아니므로 "발견·측정"으로 쓴다.
+- 문서에서 쓰는 표현은 "Windows 가 제공하지 않는 대기 목록 내부 순서를 사용자 모드에서 디스크 읽기 없이 정하는 AsterCache 의 구현", "새로 고침 시점을 정해진 주기 대신 Windows 의 우선순위별 재사용 통계로 정하는 방식", "메모리 압력이 실제로 있을 때만, 캐시보다 배경 프로세스 메모리가 먼저 재사용되도록 순서를 조정"이다. 새 알고리즘, 다른 방식보다 우수함, 영향 없음 같은 단정은 쓰지 않는다.
+- 법적 참고(조언 아님): 가장 가까운 Microsoft 특허 US 7,185,155 는 Google Patents 상 만료로 표시된다. 다른 특허의 청구항은 검토하지 않았다.
+- 찾아보지 않은 곳: Google Patents 직접 검색 화면, GitHub 코드 검색 자체(`RepurposedPagesByPriority` 와 `EmptyWorkingSet` 을 함께 쓰는 저장소), PrimoCache 의 축출 정책 문서, Windows Internals 본문, ReadyBoost/ReadyBoot 의 우선순위 처리, 한국어·중국어·일본어 자료.
 
 ---
 

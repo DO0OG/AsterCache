@@ -18,7 +18,8 @@ What each feature does to the drive that holds the game:
 | Prewarm | The zone, into the RAM file cache | None | RAM budget: half of physical RAM, and free RAM stays above `prewarm.min_free_ram_mib` |
 | Keeping the prewarm | 8 samples of 1 MiB every 10 minutes (`rewarm_minutes`); a re-read of the zone when the cache has gone cold | None | Only for games inside the RAM budget |
 | Keep-awake | 4 KiB every 10 minutes, while a launcher is open or at your usual play hour | None | `auto.keep_awake`; power settings are never changed |
-| ORBIT calibration | About 12 MiB per sample stream, uncached ([ORBIT](ORBIT.md)) | None | Only when no game runs and the disk is idle |
+| Keeping the cache in order (SOLAR) | Pages already in the file cache, touched again in memory; it stops once more than 32 MiB is counted as read from the disk, so at most about 100 MiB in the worst case ([SOLAR](SOLAR.md)) | None | Not on a disk where a game is running; `memory.standby_ladder` |
+| ORBIT calibration | About 12 MiB per sample stream, uncached ([ORBIT](ORBIT.md)); not done for a prewarm that a launcher starts | None | Only when no game runs and the disk is idle |
 | SSD assist storage (off by default) | The copied files | Copies to the SSD, not to the HDD | Budget 8 GiB per game ([Automatic mode](AUTO_MODE.md#ssd-assist-storage-optional)) |
 
 - **Relocation limits.** The zone is at most 2048 MiB by default (`max_zone_mib`). At most 4 relocations run in 24 hours (`max_relocations_per_day`). At most 8 GiB a day (`max_relocate_gib_per_day`; 2 GiB if the drive looks like SMR), and at most 2 GiB per round (1 GiB if it looks like SMR).

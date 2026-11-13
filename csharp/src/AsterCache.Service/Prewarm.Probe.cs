@@ -14,6 +14,12 @@ public sealed partial class Prewarmer
     // 핫 집합 몇 곳을 읽어 이미 파일 캐시에 있으면 (CacheProbe) 다시 읽지 않습니다. 표본을 못 읽으면 모름 (null) 입니다.
     internal bool? AlreadyWarm(GameSettings g)
     {
+        // 쿨다운 판정 (CooldownSince) 이 같은 표본을 다시 읽지 않고 쓰게 기록. 부분 예열 (메모리 부족) 뒤에는 전체 목록 표본이 늘 식음이라 기록하지 않음 (쿨다운 쪽이 앞부분 표본을 따로 읽음).
+        return MemoryPartialPending(g.Name) ? SampleResidency(g) : SampleAndNote(g, () => SampleResidency(g));
+    }
+
+    private bool? SampleResidency(GameSettings g)
+    {
         ProbeGeneration? before = ProbeGenerationOf(g);
         ProbeResult? p;
         try
@@ -91,11 +97,16 @@ public sealed partial class Prewarmer
         }
     }
 
-    private void InvalidateResidencyProbe(string game)
+    // keepCooldown: 앞부분 예열은 쿨다운 판정 (이미 내린 식음 확인) 에 따른 자기 읽기라 그 표본을 지우지 않음 (같은 묶음의 본 예열이 같은 판정을 이어받게).
+    private void InvalidateResidencyProbe(string game, bool keepCooldown = false)
     {
         lock (_gate)
         {
             _residencyProbes.Remove(game);
+            if (!keepCooldown)
+            {
+                _cooldownProbes.Remove(game);
+            }
         }
     }
 
@@ -247,6 +258,6 @@ public sealed partial class Prewarmer
     }
 
     /// 재예열 점검의 표본 측정: 부분 예열 상태면 읽은 앞부분의 잘라낸 목록에서만, 아니면 평소대로.
-    internal ProbeResult? ProbeFront(GameSettings g, CancellationToken ct = default) =>
-        MemoryPartialPending(g.Name) ? ProbeReadMsForGame(WarmedPart(g), "rewarm sample", ct, partial: true) : ProbeReadMsForGame(g, "rewarm sample", ct);
+    internal ProbeResult? ProbeFront(GameSettings g, CancellationToken ct = default, string purpose = "rewarm sample") =>
+        MemoryPartialPending(g.Name) ? ProbeReadMsForGame(WarmedPart(g), purpose, ct, partial: true) : ProbeReadMsForGame(g, purpose, ct);
 }

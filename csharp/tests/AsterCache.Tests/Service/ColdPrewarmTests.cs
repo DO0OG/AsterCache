@@ -50,6 +50,8 @@ public sealed class ColdPrewarmTests : IDisposable
 
     private int _bootAsked;
 
+    private int _yields;
+
     private int _made;
 
     private double? ProbeMs { get; set; } = 0.5;
@@ -71,6 +73,7 @@ public sealed class ColdPrewarmTests : IDisposable
             RawTraceExists = _ => RawTraceExists,
             DiskBytesPerSecond = _ => Disk,
             ColdRefusal = _ => Refusal,
+            YieldBackground = (_, _) => _yields++,
             PrefetchBoot = _ =>
             {
                 _bootAsked++;
@@ -121,6 +124,22 @@ public sealed class ColdPrewarmTests : IDisposable
         Assert.Contains(_log.Lines, l => l.Contains("prewarm done (service start, full)", StringComparison.Ordinal) && l.Contains(" hint MB/s,", StringComparison.Ordinal));
         var g = (JObject)((JObject)((JObject)JsonRead.ReadFile(Path.Combine(_dir, "status.json"))!)["games"]!)["g"]!;
         Assert.Equal(("ok", "full"), (g["result"], g["mode"]));
+    }
+
+    [Theory]
+    [InlineData("none", 1)]
+    [InlineData("refused", 0)]
+    [InlineData("running", 0)]
+    public void TriggerYieldsBackgroundMemoryOnlyWhenTheGameWithoutARecordWillBeWarmed(string blocker, int yields)
+    {
+        Refusal = blocker == "refused" ? "SSD" : null;
+        GameRunning = blocker == "running";
+        GameSettings g = Game("g") with { Prewarm = PrewarmSettings.Default with { TriggerExes = ["Steam.exe"] } };
+        Prewarmer p = Make(null, g);
+
+        _ = p.OnProcessStart(new ProcessStart(1, "steam.exe", 0));
+
+        Assert.Equal(yields, _yields); // 드라이브 거부·게임 실행 중이면 어차피 건너뛰므로 양보하지 않음
     }
 
     [Fact]

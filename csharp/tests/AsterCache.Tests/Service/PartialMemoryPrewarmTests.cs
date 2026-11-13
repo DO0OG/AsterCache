@@ -27,6 +27,8 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     private int _snapshots;
     private int _snapshotChecks;
     private bool _gameRunning;
+    private ProbeResult? _partialProbe; // 부분 예열 뒤 읽은 앞부분에서 고른 표본 (null 이면 ProbeReadMs 를 씀)
+    private int _yields;
 
     private List<int> Probed { get; } = [];
 
@@ -99,6 +101,8 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
                 Probed.Add(g.MaxStreamMib);
                 return new ProbeResult(8, 8, 5.0); // 읽은 구간이 밀려나 차가움
             },
+            ProbePartialReadMs = _partialProbe is { } front ? _ => front : null,
+            YieldBackground = (_, _) => _yields++,
         }, _log, StatusPath, () => _now);
     }
 
@@ -730,6 +734,7 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     public void ASkippedRecordAfterAPartialPrewarmKeepsThePartialStateAcrossARestart()
     {
         _avail = 6000 + Prewarmer.FinalShrinkHeadroomMib; // 처음 창에도 두는 여유를 더해 창을 1904 로 유지
+        _partialProbe = new ProbeResult(8, 0, 0.3); // 읽은 앞부분은 따뜻함: 쿨다운이 그대로 적용됨 (전체 목록 표본은 읽지 않은 뒤쪽 때문에 늘 식음)
         Prewarmer p = Make(Game());
         Assert.True(p.Run(Game(), "test").Ran);
 
@@ -741,6 +746,23 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
         Prewarmer second = Make(Game()); // 재시작
         Assert.True(second.MemoryPartialPending("g"));
         Assert.Equal(1904, second.WarmedPart(Game()).MaxStreamMib);
+    }
+
+    [Fact]
+    public void ATriggerInsideTheCooldownAfterAMemoryPartialPrewarmReadsNothingAndDoesNotYield()
+    {
+        _avail = 6000 + Prewarmer.FinalShrinkHeadroomMib;
+        _partialProbe = new ProbeResult(8, 0, 0.3);
+        GameSettings g = Game() with { Prewarm = PrewarmSettings.Default with { TriggerExes = ["Steam.exe"] } };
+        Prewarmer p = Make(g);
+        Assert.True(p.Run(g, "test").Ran);
+        int calls = _streamer.Calls.Count;
+
+        PrewarmResult r = Assert.Single(p.OnProcessStart(new ProcessStart(1, "steam.exe", 0)));
+
+        Assert.StartsWith("cooldown", r.SkipReason, StringComparison.Ordinal); // 전체 목록 표본 (늘 식음) 이 아니라 읽은 앞부분 표본으로 판정
+        Assert.Equal(calls, _streamer.Calls.Count);
+        Assert.Equal(0, _yields);
     }
 
     [Fact]
@@ -766,6 +788,7 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     {
         _avail = 6000;
         _streamer.ReadMib = 128; // 실행 최소 (256) 보다 작게 읽었지만 부분 성공
+        _partialProbe = new ProbeResult(8, 0, 0.3); // 읽은 앞부분은 따뜻함: 쿨다운이 그대로 적용됨
         Prewarmer p = Make(Game());
         Assert.True(p.Run(Game(), "test").Ran);
         Assert.False(p.Run(Game(), "test").Ran); // 쿨다운 건너뜀 기록이 상태 파일을 덮어씀

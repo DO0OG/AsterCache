@@ -84,7 +84,7 @@ public sealed partial class Prewarmer
                 return RunCold(game, why, now, ct, usedMib, trigger);
             }
 
-            TimeSpan? since = !ignoreCooldown && LastWarmed(game.Name) is { } prev ? now - prev : null;
+            TimeSpan? since = ignoreCooldown ? null : CooldownSince(game, now, why);
             long? zoneBytes = _env.ZoneBytes(game);
             long availableRamMib = _env.AvailableRamMib();
             string? Skip(long? bytes) => PrewarmPolicy.SkipReason(bytes, _env.TraceExists(game), DriveHasRunningGame(game), availableRamMib,

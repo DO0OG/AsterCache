@@ -20,6 +20,9 @@ public sealed class StartupWarmTests : IDisposable
     private bool _diskUnreadable;
     private string? _unreadableGame;
     private ProbeResult? _probe;
+    private int _probeCalls;
+    private int _probeWarmAfter = int.MaxValue; // 이 횟수를 넘는 표본은 따뜻함 (앞부분 예열이 데운 것처럼)
+    private bool _rawTrace;
     private Action? _onSleep;
 
     public StartupWarmTests() => Directory.CreateDirectory(_dir);
@@ -42,7 +45,12 @@ public sealed class StartupWarmTests : IDisposable
             _onSleep?.Invoke();
         },
         DiskBytesPerSecond = g => _diskUnreadable || g.Name == _unreadableGame ? null : _diskBusy() ? 50 << 20 : 0,
-        ProbeReadMs = _ => _probe,
+        ProbeReadMs = _ =>
+        {
+            _probeCalls++;
+            return _probeCalls > _probeWarmAfter ? new ProbeResult(8, 0, 0.3) : _probe;
+        },
+        RawTraceExists = _ => _rawTrace,
     }, _log, StatusPath, () => _now);
 
     [Fact]
@@ -243,6 +251,75 @@ public sealed class StartupWarmTests : IDisposable
         _uptimeMs = 60_000;
         Assert.True(Assert.Single(Make(Game("a")).RunServiceStart()).Ran);
         Assert.Equal(2, _streamer.Calls.Count);
+    }
+
+    [Fact]
+    public void RebootInsideTheCooldownWarmsWhenTheSampleIsColdAndReadsItOnce()
+    {
+        _rawTrace = true; // 원시 트레이스가 있으면 부팅 전 예열 시각이 쿨다운 기준에 그대로 쓰임
+        Assert.True(Assert.Single(Make(Game("a")).RunServiceStart()).Ran);
+        _callsBefore = 1;
+
+        _now += TimeSpan.FromMinutes(2); // 재부팅: 부팅이 예열보다 뒤인데 쿨다운 (30 분) 안
+        _uptimeMs = 60_000;
+        _probe = new ProbeResult(8, 8, 9.0);
+        _probeCalls = 0;
+        PrewarmResult again = Assert.Single(Make(Game("a")).RunServiceStart());
+
+        Assert.True(again.Ran);
+        Assert.Equal(2, _streamer.Calls.Count);
+        Assert.Equal(1, _probeCalls); // 분류의 표본을 쿨다운 판정과 본 예열이 다시 읽지 않고 씀
+        Assert.Contains(_log.Lines, l => l.Contains("a: cooldown ignored, the cache is cold [service start]", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TwoGamesInsideTheCooldownKeepTheColdVerdictThroughTheHeadsAndTheMainWarm()
+    {
+        _rawTrace = true;
+        Assert.Equal(2, Make(Game("a"), Game("b")).RunServiceStart().Count(r => r.Ran));
+        _callsBefore = _streamer.Calls.Count;
+
+        _now += TimeSpan.FromMinutes(2);
+        _uptimeMs = 60_000;
+        _probe = new ProbeResult(8, 8, 9.0);
+        _probeWarmAfter = 2; // 분류의 표본 뒤에 다시 읽으면 앞부분이 데운 것처럼 따뜻함으로 나옴
+        _probeCalls = 0;
+        IReadOnlyList<PrewarmResult> again = Make(Game("a"), Game("b")).RunServiceStart();
+
+        Assert.Equal(["a", "b"], again.Where(r => r.Ran).Select(r => r.Game).Order()); // 앞부분 예열 뒤에도 본 예열이 쿨다운으로 건너뛰지 않음
+        Assert.Equal(2, _probeCalls); // 게임마다 분류에서 한 번뿐
+    }
+
+    [Fact]
+    public void RestartedServiceWithAWarmSampleReadsNothingAgain()
+    {
+        _rawTrace = true;
+        Assert.True(Assert.Single(Make(Game("a")).RunServiceStart()).Ran);
+        _callsBefore = 1;
+
+        _now += TimeSpan.FromMinutes(2); // 서비스만 재시작: 부팅은 예열보다 앞, 캐시는 살아 있음
+        _uptimeMs = 2 * 3_600_000;
+        _probe = new ProbeResult(8, 0, 0.3);
+        PrewarmResult again = Assert.Single(Make(Game("a")).RunServiceStart());
+
+        Assert.False(again.Ran);
+        Assert.Single(_streamer.Calls);
+    }
+
+    [Fact]
+    public void RebootInsideTheCooldownStillSkipsWhenTheSampleCannotBeRead()
+    {
+        _rawTrace = true;
+        Assert.True(Assert.Single(Make(Game("a")).RunServiceStart()).Ran);
+        _callsBefore = 1;
+
+        _now += TimeSpan.FromMinutes(2);
+        _uptimeMs = 60_000;
+        _probe = null; // 표본을 못 읽음: 확인 불가는 쿨다운 유지
+        PrewarmResult again = Assert.Single(Make(Game("a")).RunServiceStart());
+
+        Assert.StartsWith("cooldown", again.SkipReason, StringComparison.Ordinal);
+        Assert.Single(_streamer.Calls);
     }
 
     [Fact]

@@ -302,7 +302,7 @@ public sealed partial class Prewarmer
     // Run 이 메모리 부족 외의 사유로 건너뛸 게임의 사유 (없으면 null): 업데이트 지연 포함.
     private string? WillSkipReason(GameSettings g, long avail)
     {
-        TimeSpan? since = LastWarmed(g.Name) is { } prev ? _now() - prev : null;
+        TimeSpan? since = CooldownSince(g, _now());
         string? skip = PrewarmPolicy.SkipReason(_env.ZoneBytes(g), _env.TraceExists(g), DriveHasRunningGame(g), avail, g.Prewarm.MinFreeRamMib, since, TimeSpan.FromMinutes(g.Prewarm.CooldownMin));
         if (skip is not null && !skip.StartsWith("low memory", StringComparison.Ordinal))
         {
@@ -354,7 +354,7 @@ public sealed partial class Prewarmer
             long zoneMib = ZoneMib(g);
             long room = RoomKeepingLaterObserved(BatchRoomMib(physCap, avail, g.Prewarm.MinFreeRamMib, planned), observed[i], later[i]); // RunBatch 와 같은 남은 예산
             long? hotBytes = _env.ZoneBytes(g);
-            TimeSpan? since = LastWarmed(g.Name) is { } prev ? _now() - prev : null;
+            TimeSpan? since = CooldownSince(g, _now());
             string? skip = PrewarmPolicy.SkipReason(hotBytes, _env.TraceExists(g), DriveHasRunningGame(g), avail, g.Prewarm.MinFreeRamMib, since, TimeSpan.FromMinutes(g.Prewarm.CooldownMin));
             if (skip?.StartsWith("low memory", StringComparison.Ordinal) == true && ReadSetBytes(g) is { } readBytes && readBytes < hotBytes)
             {
@@ -415,7 +415,7 @@ public sealed partial class Prewarmer
             return; // 같은 디스크에서 재배치가 시작함: 앞부분은 읽지 않음 (전체 예열 Run 이 같은 이유로 건너뜀을 남김)
         }
 
-        InvalidateResidencyProbe(game.Name);
+        InvalidateResidencyProbe(game.Name, keepCooldown: true);
         try
         {
             using CancellationTokenRegistration leaseReg = lease?.Token.Register(stop.Cancel) ?? default;

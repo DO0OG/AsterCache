@@ -32,12 +32,23 @@ public sealed partial class Prewarmer
                 _triggered = (first.Name, _now());
             }
 
-            _env.YieldBackground("trigger", ct); // 예열이 가용 메모리를 처음 읽기 (RunBatch) 전에 배경 프로세스의 메모리를 양보시킴
+            if (AnyWillWarm(chosen))
+            {
+                _env.YieldBackground("trigger", ct); // 예열이 가용 메모리를 처음 읽기 (RunBatch) 전에 배경 프로세스의 메모리를 양보시킴 (모두 건너뛸 것이면 비우지 않음)
+            }
         }
 
         IReadOnlyList<PrewarmResult> results = RunBatch(chosen, $"trigger {start.ExeName}", pin: !LauncherExes.Is(start.ExeName), ct: ct, trigger: true); // 런처가 뜰 때는 고정하지 않음 (런처 업데이트가 파일을 고칠 수 있게)
         WaitForBlockingGames(results, start.ExeName);
         return results;
+    }
+
+    // 예열을 실제로 읽을 게임이 하나라도 있는가 (RunBatch 와 같은 건너뜀 판정). 기록 없는 게임은 RunCold 의 확정 건너뜀 (드라이브 거부·게임 실행 중·쿨다운) 만 봄: 디스크 유휴는 양보 뒤에 바뀔 수 있어 진행으로 셈.
+    // 가용 메모리는 읽지 않음: 양보가 끝난 뒤 처음 읽어야 하고, 메모리 부족은 부분 예열이 읽으니 어차피 진행으로 셈.
+    private bool AnyWillWarm(IReadOnlyList<GameSettings> games)
+    {
+        DateTimeOffset now = _now();
+        return games.Any(g => IsCold(g) ? _env.ColdRefusal(g) is null && ColdFixedSkip(g, now) is null : WillSkipReason(g, long.MaxValue) is null);
     }
 
     // 같은 디스크의 다른 게임이 실행 중이라 거절된 트리거 예열은, 그 게임들이 사라진 것을 처음 본 때 한 번 다시 시도하도록 적어 둡니다 (NoteGamesGone).

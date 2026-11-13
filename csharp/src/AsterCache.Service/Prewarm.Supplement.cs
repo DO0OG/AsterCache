@@ -469,6 +469,8 @@ public sealed partial class Prewarmer
                 return false;
             }
 
+            long? zoneBytes = _env.ZoneBytes(game);
+            p = RaiseHotMib(game.Name, p, zoneBytes); // 기억한 목록 크기가 현재 목록보다 작으면 올림: 첫 관문·창 상한·표시가 현재 목록을 따름
             long avail = _env.AvailableRamMib();
             long physCap = PhysCapMib();
             long budgetCap = allocatedMib is { } allocated ? Math.Min(p.HotMib, allocated) : p.HotMib;
@@ -541,9 +543,10 @@ public sealed partial class Prewarmer
             using PrewarmRun run = PrewarmRun.Begin();
             long? finalReadBytes = ReadSetBytes(warm, partial: windowMib is not null || skipBytes > 0);
             avail = _env.AvailableRamMib();
+            long finalReadMib = 0; // 아래 전체 경로가 메모리로 멈췄을 때 창으로 줄이는 데도 씀
             if (finalReadBytes is > 0 and long finalReadSize)
             {
-                long finalReadMib = (finalReadSize + (1 << 20) - 1) >> 20;
+                finalReadMib = (finalReadSize + (1 << 20) - 1) >> 20;
                 long reserveMib = Math.Max(game.Prewarm.MinFreeRamMib, GapFillReserveMib);
                 long allowedMib = Math.Min(Math.Min(physCap, allocatedMib ?? long.MaxValue), WindowAvailableMib(avail) - reserveMib);
                 if (finalReadMib > allowedMib)
@@ -580,7 +583,6 @@ public sealed partial class Prewarmer
             }
 
             long readCapMib = windowMib ?? p.HotMib;
-            long? zoneBytes = _env.ZoneBytes(game);
             (StreamStats Stats, bool Complete, string? CancelReason, bool MemoryStop)? hot;
             long? tailTotal = null; // 이번에 읽을 목록의 길이 (건너뛴 앞부분 제외): 이어 읽을 위치를 스케줄 길이로 제한하고 끝까지 읽었는지 앎
             try
@@ -596,25 +598,47 @@ public sealed partial class Prewarmer
                 }
 
                 _log.Info($"{game.Name}: supplement prewarm of the rest of the hot set ({p.WarmedMib} of {p.HotMib} MiB read{(windowMib is { } w ? $", reading the first {w} MiB" : string.Empty)}{(skipBytes > 0 ? $", continuing after {skipBytes >> 20} MiB" : string.Empty)})");
-                hot = StreamHot(warm, ct, zoneBytes, avail, windowMib is not null || skipBytes > 0, skipBytes: skipBytes, onTotal: total => tailTotal = total, settle: stats =>
+                bool fellBack = false; // 전체 경로가 메모리로 멈추면 창으로 줄여 한 번만 다시 읽음
+                while (true)
                 {
-                    if (windowMib is { } window)
+                    hot = StreamHot(warm, ct, zoneBytes, avail, windowMib is not null || skipBytes > 0, skipBytes: skipBytes, onTotal: total => tailTotal = total, settle: stats =>
                     {
-                        NoteProgress(game, inputStamp, ActualMib(stats, window, skipBytes), p.HotMib, skipBytes + stats.Bytes); // 앞부분만 읽음: 나머지는 다음 보충 때
-                        lock (_gate)
+                        if (windowMib is { } window)
                         {
-                            _resume.Remove(game.Name); // 윈도를 끝까지 읽음
+                            NoteProgress(game, inputStamp, ActualMib(stats, window, skipBytes), p.HotMib, skipBytes + stats.Bytes); // 앞부분만 읽음: 나머지는 다음 보충 때
+                            lock (_gate)
+                            {
+                                _resume.Remove(game.Name); // 윈도를 끝까지 읽음
+                            }
                         }
-                    }
-                    else if (SupplementFullyCovered(stats, skipBytes, p.HotMib, tailTotal, fullReadPath: windowMib is null))
+                        else if (SupplementFullyCovered(stats, skipBytes, p.HotMib, tailTotal, fullReadPath: windowMib is null))
+                        {
+                            ClearPartial(game.Name, p.HotMib); // 완료 알림보다 먼저 부분 상태를 지움
+                        }
+                        else
+                        {
+                            NoteProgress(game, inputStamp, ActualMib(stats, p.HotMib, skipBytes), p.HotMib, skipBytes + stats.Bytes);
+                        }
+                    }, allowReorder: false, roomMib: allocatedMib ?? long.MaxValue);
+                    if (fellBack || windowMib is not null || hot is not { Complete: false, MemoryStop: true } || !HeavyWorkAllowed(game)
+                        || MemoryFallbackCapMib(game, finalReadMib, budgetCap, ct) is not { } fallbackCap
+                        || fallbackCap <= Math.Max(p.WarmedMib, ActualMib(hot.Value.Stats, p.HotMib, skipBytes)))
                     {
-                        ClearPartial(game.Name, p.HotMib); // 완료 알림보다 먼저 부분 상태를 지움
+                        break; // 기억한 양이나 이번 회에 (이어 읽은 뒤) 읽은 양 이하로만 들어가면 다시 읽지 않고 아래 기존 취소 경로 (읽은 양·이어 읽을 위치 기억, 재시도 대기)
                     }
-                    else
+
+                    fellBack = true;
+                    (windowMib, readCapMib, plannedCapMib) = (fallbackCap, fallbackCap, fallbackCap);
+                    warm = game with { MaxStreamMib = (int)fallbackCap, MaxStreamSet = true };
+                    tailTotal = null; // 두 번째 읽기가 목록 길이를 알리기 전에 끝나도 첫 읽기의 값이 남지 않게
+                    skipBytes = 0; // 창이 바뀌면 이전 스케줄의 앞부분을 건너뛰지 않음 (사전 검사의 창 변경과 같음)
+                    lock (_gate)
                     {
-                        NoteProgress(game, inputStamp, ActualMib(stats, p.HotMib, skipBytes), p.HotMib, skipBytes + stats.Bytes);
+                        _resume.Remove(game.Name);
                     }
-                }, allowReorder: false, roomMib: allocatedMib ?? long.MaxValue);
+
+                    _log.Info($"{game.Name}: supplement prewarm stopped by memory before the full list was read; reading the first {fallbackCap} MiB of {p.HotMib} MiB instead");
+                }
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
             {
@@ -741,6 +765,31 @@ public sealed partial class Prewarmer
         {
             Monitor.Exit(_run);
         }
+    }
+
+    // 기억한 목록 크기 (HotMib) 를 현재 목록 (zoneBytes, MiB 올림) 이 더 크면 올려 돌려주고 _partial·_memoryPartial 도 같게 고침. 늘어날 때만: 줄이면 끝난 것으로 잘못 칠 수 있음.
+    private (long WarmedMib, long HotMib) RaiseHotMib(string game, (long WarmedMib, long HotMib) p, long? zoneBytes)
+    {
+        long listMib = zoneBytes is > 0 ? (zoneBytes.Value + (1 << 20) - 1) >> 20 : 0;
+        if (listMib <= p.HotMib)
+        {
+            return p;
+        }
+
+        lock (_gate)
+        {
+            if (_partial.TryGetValue(game, out (long WarmedMib, long HotMib) cur) && cur.HotMib < listMib)
+            {
+                _partial[game] = (cur.WarmedMib, listMib);
+            }
+
+            if (_memoryPartial.TryGetValue(game, out (long WarmedMib, long HotMib) mem) && mem.HotMib < listMib)
+            {
+                _memoryPartial[game] = (mem.WarmedMib, listMib);
+            }
+        }
+
+        return (p.WarmedMib, listMib);
     }
 
     // cap 이 이미 읽은 양 (p.WarmedMib) 이하이면 더 읽을 것이 없는 경우를 처리하고 true: 메모리 부분 예열은 바로 대기에서 빼고, 아니면 앞부분 표본이 식지 않았을 때만 같은 처리 (식은 앞부분은 재예열 점검이 다시 읽음).

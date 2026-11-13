@@ -60,6 +60,14 @@ public sealed partial class Prewarmer
         return heldMib > 0 ? Math.Min(room, availableRamMib - minFreeRamMib - heldMib) : room;
     }
 
+    // 창 없이 전체를 읽던 예열이 메모리 검사로 멈췄을 때 (호출 쪽이 확인), 그 시점 가용 메모리에 들어가는 앞부분 (창) 의 크기 (MiB). 호출 쪽이 한 회에 한 번만 부름.
+    // 읽기 전 관문 (게임 시작 등) 이 막혔거나 256 MiB 미만만 들어가면 null: 같은 디스크에 새 읽기를 내지 않고 기존 취소 경로를 따름.
+    // fullMib: 전체 읽기 목록 크기 (모르면 0 → null), roomMib: 묶음·배정 상한 (PartialCapMib 의 roomMib 와 같음).
+    private long? MemoryFallbackCapMib(GameSettings game, long fullMib, long roomMib, CancellationToken ct) =>
+        fullMib <= 0 || ct.IsCancellationRequested || PolicyBlocksPrewarm(game) || DriveHasRunningGame(game)
+            ? null
+            : PartialCapMib(game, fullMib, WindowAvailableMib(_env.AvailableRamMib()), PhysCapMib(), roomMib);
+
     // 묶음 예산이 모자랄 때만 순서를 바꿉니다. 순위 (입력 순서) 대로 통째 들어가는 앞 게임들과, 부분 예열이 남은 예산을 받는 첫 게임은 자리를 지키고,
     // 그 뒤 후보는 바이트당 가치 (순위 가중 1/(순위+1) ÷ 존 MiB, 존을 모르면 DefaultFullPrewarmMib) 순으로 늘어놓습니다. 모두 들어가면 입력 그대로.
     // shortcut: 점수 자체가 아니라 순위 위치를 가치로 씀 (예열 점수는 자동 모드 쪽에서 순위로만 넘어옴), 점수를 Prewarmer 에 넘기게 되면 그 값으로.

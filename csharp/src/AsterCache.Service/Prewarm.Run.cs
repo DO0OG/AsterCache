@@ -137,9 +137,10 @@ public sealed partial class Prewarmer
                 using PrewarmRun run = PrewarmRun.Begin(); // 이 예열 한 회 동안만 계획을 재사용하고 단계 시간을 잼
                 long? finalReadBytes = ReadSetBytes(warm, partial: memoryPartial is not null);
                 availableRamMib = _env.AvailableRamMib();
+                long finalReadMib = 0; // 아래 전체 경로가 메모리로 멈췄을 때 창으로 줄이는 데도 씀
                 if (finalReadBytes is > 0 and long finalReadSize)
                 {
-                    long finalReadMib = (finalReadSize + (1 << 20) - 1) >> 20;
+                    finalReadMib = (finalReadSize + (1 << 20) - 1) >> 20;
                     long reserveMib = Math.Max(game.Prewarm.MinFreeRamMib, GapFillReserveMib);
                     long allowedMib = Math.Min(Math.Min(PhysCapMib(), roomMib ?? long.MaxValue), WindowAvailableMib(availableRamMib) - reserveMib); // 전체가 들어가는지도 창과 같은 여유를 둠: 경계에서 0 MiB 정지가 되풀이되지 않게
                     if (finalReadMib > allowedMib)
@@ -209,8 +210,32 @@ public sealed partial class Prewarmer
 
                 try
                 {
-                    if (StreamHot(warm, ct, zoneBytes, availableRamMib, memoryPartial is not null, Settle,
-                        allowReorder: memoryPartial is null && !HasPartialState(game.Name), roomMib: roomMib ?? long.MaxValue, allowWhileExiting: trigger) is not { } hot)
+                    (StreamStats Stats, bool Complete, string? CancelReason, bool MemoryStop)? streamed;
+                    bool fellBack = false; // 전체 경로가 메모리로 멈추면 창으로 줄여 한 번만 다시 읽음
+                    while (true)
+                    {
+                        streamed = StreamHot(warm, ct, zoneBytes, availableRamMib, memoryPartial is not null, Settle,
+                            allowReorder: memoryPartial is null && !HasPartialState(game.Name), roomMib: roomMib ?? long.MaxValue, allowWhileExiting: trigger);
+                        if (fellBack || memoryPartial is not null || streamed is not { Complete: false, MemoryStop: true }
+                            || MemoryFallbackCapMib(game, finalReadMib, roomMib ?? long.MaxValue, ct) is not { } fallbackCap)
+                        {
+                            break;
+                        }
+
+                        fellBack = true;
+                        originalHotMib = Math.Max(originalHotMib, finalReadMib);
+                        memoryPartial = (fallbackCap, originalHotMib);
+                        warm = game with { MaxStreamMib = (int)fallbackCap, MaxStreamSet = true };
+                        _ = _env.ObservedBytes(game); // 줄여 읽기 전에 출처 정보를 캐시에 올림 (위 사전 검사 경로와 같음)
+                        lock (_gate)
+                        {
+                            _memoryRunning[game.Name] = memoryPartial.Value;
+                        }
+
+                        _log.Info($"{game.Name}: prewarm stopped by memory before the full list was read; reading the first {fallbackCap} MiB of {originalHotMib} MiB instead");
+                    }
+
+                    if (streamed is not { } hot)
                     {
                         LogSkipped(game.Name, RelocationRunning, $"{game.Name}: prewarm skipped ({RelocationRunning}) [{why}]");
                         return Record(game, now, new PrewarmResult(game.Name, false, RelocationRunning, null, now), 0);

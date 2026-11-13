@@ -7,6 +7,7 @@ namespace AsterCache.Service;
 
 /// 부팅 조용 구간: 서비스가 부팅 뒤 Prewarmer.BootDelay 안에 떴을 때만, 부팅 BootDelay 가 지나고 게임 드라이브가 Prewarmer.IdleNeeded 동안 한가해질 때까지
 /// 서비스가 스스로 시작하는 게임 드라이브 작업 (계기 예열, 재배치·새 트레이스 예열, 배치 검사와 재적용, 유지 예열, HDD 깨워 두기) 을 보류합니다.
+/// 계기 예열만은 더 일찍 풀립니다 (구간 시작 Prewarmer.PrewarmBootDelay 뒤 + 게임 드라이브 Prewarmer.PrewarmIdleNeeded 유휴, 구간 자체는 그대로): 예열 읽기가 다른 읽기에 양보하기 때문입니다.
 /// 한 번 끝나면 다시 조용해지지 않습니다. 보류한 작업은 버리지 않고, 호출하는 쪽이 구간이 끝난 뒤 기존 조건으로 다시 판단합니다.
 /// 상한: 가동 시간이 BootDelay + MaxQuiet 에 이르면 유휴를 기다리지 않고 끝냅니다 (읽을 수 없거나 계속 바쁜 드라이브가 재배치·검사를 서비스 재시작까지 막지 않게).
 public sealed class BootQuiet
@@ -26,6 +27,8 @@ public sealed class BootQuiet
     private readonly HashSet<string> _logged = new(StringComparer.Ordinal); // 무엇별 보류 로그를 구간당 한 번만, _gate 로 보호
     private bool _ended; // 구간이 끝났음 (되돌아가지 않음), _gate 로 보호
     private long? _idleSince; // 부팅 BootDelay 뒤 게임 드라이브가 한가해지기 시작한 가동 시간 (ms, 절전 포함 단조 시계), _gate 로 보호
+    private long? _prewarmIdleSince; // 구간 시작 PrewarmBootDelay 뒤 게임 드라이브가 한가해지기 시작한 가동 시간 (ms), _gate 로 보호
+    private bool _prewarmReleased; // 계기 예열 보류를 풀어도 되는 조건에 이르렀음 (구간이 끝나거나 절전 복귀로 다시 시작할 때까지 유지), _gate 로 보호
     private long _origin; // 구간이 시작한 가동 시간 (복귀 때 그 시점으로 다시 맞춤), _gate 로 보호
     private long? _prevSlept; // 직전 Refresh 의 누적 절전 시간 (ms, 복귀 판정), _gate 로 보호
 
@@ -76,6 +79,8 @@ public sealed class BootQuiet
                 _ended = false;
                 _origin = uptime;
                 _idleSince = null;
+                _prewarmIdleSince = null;
+                _prewarmReleased = false;
                 _logged.Clear();
                 _log.Info("boot quiet period restarted: resume from sleep detected");
             }
@@ -91,10 +96,13 @@ public sealed class BootQuiet
 
         long elapsed = uptime - origin;
         bool capped = elapsed >= (Prewarmer.BootDelay + MaxQuiet).TotalMilliseconds;
-        bool idle = !capped && elapsed >= Prewarmer.BootDelay.TotalMilliseconds && _idle();
+        bool idleForPrewarm = !capped && elapsed >= Prewarmer.PrewarmBootDelay.TotalMilliseconds && _idle(); // 유휴 조회는 틱마다 한 번만
+        bool idle = idleForPrewarm && elapsed >= Prewarmer.BootDelay.TotalMilliseconds;
         lock (_gate)
         {
             _idleSince = idle ? _idleSince ?? uptime : null;
+            _prewarmIdleSince = idleForPrewarm ? _prewarmIdleSince ?? uptime : null;
+            _prewarmReleased |= _prewarmIdleSince is { } prewarmSince && uptime - prewarmSince >= Prewarmer.PrewarmIdleNeeded.TotalMilliseconds;
             if (capped)
             {
                 _ended = true;
@@ -108,12 +116,25 @@ public sealed class BootQuiet
         }
     }
 
+    /// 구간 중이면서 계기 예열 보류를 풀어도 되는가 (구간 시작 PrewarmBootDelay 뒤 게임 드라이브가 PrewarmIdleNeeded 동안 한가했음). 구간이 끝났으면 거짓 (그때는 Active 가 거짓이라 보류할 것이 없음).
+    public bool PrewarmReleased
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _applies && !_ended && _prewarmReleased;
+            }
+        }
+    }
+
     /// 이 작업을 구간 동안 보류해야 하면 true (구간이 아니면 false). 보류 로그는 무엇별로 구간당 한 번만 남깁니다.
-    public bool Defers(string what)
+    /// prewarm: 계기 예열이면 참 — PrewarmReleased 조건에 이른 뒤에는 구간 중이어도 보류하지 않습니다.
+    public bool Defers(string what, bool prewarm = false)
     {
         lock (_gate)
         {
-            if (!_applies || _ended)
+            if (!_applies || _ended || (prewarm && _prewarmReleased))
             {
                 return false;
             }

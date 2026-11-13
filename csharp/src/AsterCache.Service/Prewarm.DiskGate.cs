@@ -8,9 +8,13 @@ namespace AsterCache.Service;
 /// Prewarmer 의 같은 디스크 게임·재배치와의 양보: 실행 중 게임 감지, 외부 부하 대기, 게임 시작 때 스트림 취소.
 public sealed partial class Prewarmer
 {
-    /// 서비스 시작 예열은 부팅 뒤 이만큼 지나고, 게임 드라이브가 IdleNeeded 동안 한가해진 뒤에 시작합니다 (부팅 직후 디스크 경쟁 방지).
+    /// 부팅 조용 구간의 다른 작업 (재배치·새 트레이스 예열, 배치 검사, 유지 예열) 과 대기 예열은 부팅 뒤 이만큼 지나고, 게임 드라이브가 IdleNeeded 동안 한가해진 뒤에 시작합니다 (부팅 직후 디스크 경쟁 방지).
     public static readonly TimeSpan BootDelay = TimeSpan.FromMinutes(5);
     public static readonly TimeSpan IdleNeeded = TimeSpan.FromSeconds(60);
+
+    /// 서비스 시작 예열과 런처 계기 예열 (두 경로만) 의 부팅 대기와 유휴: 읽기 자체가 다른 읽기에 양보하므로 (PrewarmYield) 위 BootDelay·IdleNeeded 보다 짧게 기다립니다.
+    public static readonly TimeSpan PrewarmBootDelay = TimeSpan.FromSeconds(60);
+    public static readonly TimeSpan PrewarmIdleNeeded = TimeSpan.FromSeconds(20);
 
     /// 트리거로 켠 게임이 보충·재예열 예산 순위에서 먼저 받는 기간 (그 뒤에는 기존 순위만).
     public static readonly TimeSpan TriggerPriorityWindow = TimeSpan.FromHours(6);
@@ -121,7 +125,7 @@ public sealed partial class Prewarmer
     }
 
     // 묶음 경계 (게임 사이) 에서 재배치가 돌고 있으면 끝나고 디스크가 다시 한가해질 때까지 기다립니다 (시작 게이트와 같은 조건). 기다리는 중 취소되면 false.
-    private bool WaitOutRelocation(GameSettings game, CancellationToken ct) => !RelocationHeld() || WaitStartupGate([game], ct);
+    private bool WaitOutRelocation(GameSettings game, CancellationToken ct) => !RelocationHeld() || WaitStartupGate([game], ct, BootDelay, IdleNeeded);
 
     // 재배치 중인 게임이 있으면 (어느 게임이든) true. 보류 로그는 게임당 한 번, 재배치가 끝나면 다음에 다시 로그를 남깁니다.
     private bool RelocationHeld()
@@ -236,14 +240,17 @@ public sealed partial class Prewarmer
     private bool SelfReadingOn(GameSettings other) =>
         (_streaming ?? _coldReading) is { } reading && (string.Equals(reading, other.Name, StringComparison.OrdinalIgnoreCase) || SameDisk(reading, other.Name));
 
-    // 읽는 도중 같은 디스크에서 다른 등록 게임이 도는 동안, 이 간격마다 읽기를 잠깐 멈추고 외부 부하를 잼.
+    // 읽는 도중 (핫 집합 스트림은 늘, 그 밖의 읽기는 같은 디스크에서 다른 등록 게임이 도는 동안) 이 간격마다 읽기를 잠깐 멈추고 외부 부하를 잼. 멈춤은 간격의 10% 이내.
     private static readonly TimeSpan DiskObserveEvery = TimeSpan.FromSeconds(10);
 
     // 멈춰 있는 관측 구간의 길이: DiskActivity 표본 하나 (1 초).
     private static readonly TimeSpan DiskObserveWindow = TimeSpan.FromSeconds(1);
 
+    // 양보 관측의 멈춤 앞부분: PrefetchVirtualMemory 가 낸 읽기의 꼬리가 빠져나가게 비우고, 나머지 (DiskObserveWindow - 이 값) 만 잼. 멈춤 전체는 DiskObserveWindow 그대로.
+    private static readonly TimeSpan DiskObserveDrain = TimeSpan.FromMilliseconds(200);
+
     // 읽는 중에 외부 디스크 부하가 바쁨 기준 이상인가: 같은 디스크의 다른 등록 게임이 도는 동안 DiskObserveEvery 마다 다음 묶음을 내기 전에 읽기를 멈추고 (DiskObserveWindow) 처리량을 잼. 못 읽는 고장 (Broken) 이면 바쁨으로 보지 않지만 (진입 시점의 실패만 바쁨) 표본이 아직 없거나 낡았으면 (Warming·Stale) 바쁨.
-    // shortcut: 처리량 표본 캐시 (2 초) 가 방금 것이면 우리 읽기가 섞일 수 있음, 관측 간격이 10 초라 보통은 새 표본이고 틀려도 양보 쪽으로만 어긋남.
+    // shortcut: 공유 표본의 1 초 창이 멈춤 앞의 우리 읽기를 포함할 수 있어 틀려도 취소 쪽으로만 어긋남 (핫 집합·앞부분·기록 없는 예열의 양보 관측은 ObserveReadYield 가 멈춘 구간만 직접 잼), 이 경로 (파일 예열) 가 필요해지면 같은 방식으로.
     private bool ExternalLoadWhilePaused(GameSettings game, CancellationToken stop, Func<GameSettings, bool>? running = null)
     {
         running ??= _env.GameRunning;
@@ -260,8 +267,53 @@ public sealed partial class Prewarmer
 
     private bool ExternalDiskBusy(GameSettings game)
     {
-        (double? bps, DiskActivity.SampleState state) = (_env.GameDiskSample ?? _env.DiskSample)?.Invoke(game) ?? DefaultSample(_env.DiskBytesPerSecond(game));
+        (double? bps, DiskActivity.SampleState state) = ExternalDiskSample(game);
         return DiskActivity.IsBusy(bps, state);
+    }
+
+    private (double? Bps, DiskActivity.SampleState State) ExternalDiskSample(GameSettings game) =>
+        (_env.GameDiskSample ?? _env.DiskSample)?.Invoke(game) ?? DefaultSample(_env.DiskBytesPerSecond(game));
+
+    // 직접 재는 수단이 없을 때 (시험): 멈춤 전체를 한 번 기다린 뒤 공유 표본을 읽음.
+    private (double? Bps, DiskActivity.SampleState State) PausedSample(GameSettings game, CancellationToken stop)
+    {
+        _env.Sleep(DiskObserveWindow, stop);
+        return ExternalDiskSample(game);
+    }
+
+    // 핫 집합 스트림의 양보 관측: 스트림이 시작 때 양보 상태였으면 첫 묶음 직전에 한 번, 그 뒤로는 DiskObserveEvery 마다 읽기를 DiskObserveWindow 만큼 멈추고 디스크 처리량을 잼.
+    // 같은 디스크의 다른 등록 게임이 돌고 바쁘면 true (스트림 취소, 기존 규칙). 그 밖에는 취소 없이 읽기 스레드의 I/O 우선순위만 바꿈 (바쁘거나 모르면 낮음, 한가하면 보통).
+    private bool ObserveReadYield(GameSettings game, CancellationToken stop, Func<GameSettings, bool> running, ReadYield yield)
+    {
+        if (!yield.FirstObservationPending && _now() - _driveObservedAt < DiskObserveEvery)
+        {
+            return false;
+        }
+
+        yield.FirstObservationPending = false;
+        // 멈춘 구간만 직접 잼: 공유 표본은 2 초마다 1 초 창 하나라 창이 멈춤 앞의 우리 읽기를 포함할 수 있어 한가한 디스크도 바쁘게 읽힘.
+        (double? bps, DiskActivity.SampleState state) = _env.DiskWindowSample is { } measure
+            ? measure(game, () => _env.Sleep(DiskObserveDrain, stop), () => _env.Sleep(DiskObserveWindow - DiskObserveDrain, stop))
+            : PausedSample(game, stop);
+        _driveObservedAt = _now();
+        if (stop.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        bool otherGame = AutoRelocator.SameDriveGames(_games, [game], _env.SameDisk).Any(x => !string.Equals(x.Name, game.Name, StringComparison.OrdinalIgnoreCase) && running(x));
+        ReadLoad load = PrewarmYield.Decide(otherGame, bps, state);
+        if (load == ReadLoad.Cancel)
+        {
+            return true;
+        }
+
+        if (yield.Apply(load == ReadLoad.Yield, _now()))
+        {
+            _log.Info($"{game.Name}: prewarm yields to other disk activity (low I/O priority)");
+        }
+
+        return false;
     }
 
     private static (double?, DiskActivity.SampleState) DefaultSample(double? bps) => (bps, bps is null ? DiskActivity.SampleState.Broken : DiskActivity.SampleState.Ok);

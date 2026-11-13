@@ -277,18 +277,24 @@ public sealed class IdleGameGateTests
     }
 
     [Fact]
-    public void TheReadIsNotPausedToMeasureWhenNoOtherGameRunsOrTheIntervalIsShort()
+    public void TheReadPausesToMeasureEvenWhenNoOtherGameRunsAndYieldsInsteadOfStopping()
     {
         GameSettings a = Game("a");
         Prewarmer alone = Make(a);
         _streamer.OnBatch = progress =>
         {
             _now += TimeSpan.FromSeconds(11);
+            _disk = 20 * Mib; // 멈춘 구간의 처리량이 바쁨 기준 이상이어도 다른 게임이 없으면 취소하지 않고 양보
             progress(50 * Mib, 100 * Mib);
         };
-        Assert.True(alone.Run(a, "test").Ran); // 다른 게임이 없음
-        Assert.Equal(0, _slept);
 
+        Assert.True(alone.Run(a, "test").Ran);
+        Assert.Equal(1, _slept);
+    }
+
+    [Fact]
+    public void TheReadIsNotPausedToMeasureWhenTheIntervalIsShort()
+    {
         Prewarmer p = WarmedWithQuietClient(out _);
         _streamer.OnBatch = progress =>
         {

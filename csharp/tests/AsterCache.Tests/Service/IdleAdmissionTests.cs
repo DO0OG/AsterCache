@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AsterCache.Tests.Service;
 
-/// 게임·유휴 이벤트 기반의 짧은 준비: 부팅 직후는 5 분 게이트 유지, 부팅 한참 뒤 재시작은 유휴 60 초만, 게임 실행 중 읽기 0, 읽는 도중 표본이 모름 (Warming·Stale) 이면 다음 묶음부터 중단.
+/// 게임·유휴 이벤트 기반의 짧은 준비: 부팅 직후는 60 초 게이트 유지, 부팅 한참 뒤 재시작은 유휴 20 초만, 게임 실행 중 읽기 0, 읽는 도중 표본이 모름 (Warming·Stale) 이면 다음 묶음부터 중단.
 public sealed class IdleAdmissionTests
 {
     private const long Mib = 1L << 20;
@@ -82,7 +82,7 @@ public sealed class IdleAdmissionTests
     private static GameSettings Game() => Games.Make("a", "a.exe");
 
     [Fact]
-    public void ARestartLongAfterBootWaitsOnlyForTheIdleMinuteNotFiveMinutes()
+    public void ARestartLongAfterBootWaitsOnlyForTheIdleTwentySecondsNotTheBootDelay()
     {
         _uptimeMs = (long)TimeSpan.FromHours(2).TotalMilliseconds;
         Prewarmer p = Make(_plain);
@@ -90,12 +90,12 @@ public sealed class IdleAdmissionTests
         IReadOnlyList<PrewarmResult> results = p.RunServiceStart();
 
         Assert.True(Assert.Single(results).Ran);
-        Assert.InRange(_waited, TimeSpan.FromSeconds(55), TimeSpan.FromSeconds(60)); // IdleNeeded 만, 부팅 5 분을 다시 기다리지 않음
+        Assert.InRange(_waited, TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(20)); // PrewarmIdleNeeded 만, 부팅 60 초를 다시 기다리지 않음
         Assert.Single(_plain.Calls);
     }
 
     [Fact]
-    public void AServiceStartedRightAfterBootStillWaitsForTheFiveMinuteGate()
+    public void AServiceStartedRightAfterBootStillWaitsForTheSixtySecondGate()
     {
         _uptimeMs = 10_000;
         Prewarmer p = Make(_plain);
@@ -103,7 +103,7 @@ public sealed class IdleAdmissionTests
         IReadOnlyList<PrewarmResult> results = p.RunServiceStart();
 
         Assert.True(Assert.Single(results).Ran);
-        Assert.True(_uptimeMs >= 5 * 60_000 + 55_000, $"started too early: {_uptimeMs} ms"); // 부팅 5 분 + 유휴 60 초 (Sleep 이 그동안 읽기 0 을 확인)
+        Assert.True(_uptimeMs >= 60_000 + 15_000, $"started too early: {_uptimeMs} ms"); // 부팅 60 초 + 유휴 20 초 (Sleep 이 그동안 읽기 0 을 확인)
     }
 
     [Fact]

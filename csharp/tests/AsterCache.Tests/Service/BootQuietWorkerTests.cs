@@ -144,6 +144,33 @@ public sealed class BootQuietWorkerTests : IDisposable
     }
 
     [Fact]
+    public async Task HeldLauncherStartIsReleasedAtSixtySecondsAndTwentySecondsOfIdleWhileTheQuietContinues()
+    {
+        var emitted = new TaskCompletionSource();
+        BootQuiet q = Quiet();
+        Worker w = MakeWorker(new OneShot(new ProcessStart(4, "steam.exe", 0), emitted), MakePrewarm(), q);
+        DateTimeOffset start = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(2); // 첫 검사 기한이 지남
+
+        await w.StartAsync(CancellationToken.None);
+        await emitted.Task;
+        await WaitFor(() => _log.Lines.Any(line => line.Contains("prewarm steam.exe deferred: boot quiet period", StringComparison.Ordinal)));
+
+        _idle = true;
+        Tick(w, start, new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal)); // 가동 1 분: 유휴 시작
+        Assert.Empty(_streamer.Calls);
+
+        Elapse(TimeSpan.FromSeconds(20));
+        Tick(w, start, new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal)); // 유휴 20 초: 계기만 풀림
+        await WaitFor(() => !_streamer.Calls.IsEmpty && File.Exists(StatusPath));
+        await w.StopAsync(CancellationToken.None);
+
+        Assert.Equal("a", Assert.Single(_streamer.Calls).Game);
+        Assert.True(q.Active); // 구간은 끝나지 않음
+        Assert.Equal(0, _layoutChecks); // 배치 검사 등 다른 작업은 계속 보류
+        Assert.Single(_log.Lines, line => line.Contains("held prewarm triggers released: 1 (boot + idle disk)", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task GameExeStartRunsWhileQuiet()
     {
         var emitted = new TaskCompletionSource();

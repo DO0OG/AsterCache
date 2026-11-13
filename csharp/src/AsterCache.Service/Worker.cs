@@ -356,10 +356,10 @@ public sealed class Worker : BackgroundService
 
     private bool IsGameExe(string exe) => _settings.Games.Any(g => g.ExeNames.Contains(exe, StringComparer.OrdinalIgnoreCase));
 
-    // 부팅 조용 구간에는 게임 exe 가 아닌 계기 예열 (런처 등) 을 쌓아 둡니다. 구간이 끝나면 RunHeldTriggers 가 돌립니다. 쌓았으면 true.
+    // 부팅 조용 구간에는 게임 exe 가 아닌 계기 예열 (런처 등) 을 쌓아 둡니다. 구간이 끝나거나 계기 예열 조건 (BootQuiet.PrewarmReleased) 에 이르면 RunHeldTriggers 가 돌립니다. 쌓았으면 true.
     private bool HoldTrigger(ProcessStart s)
     {
-        if (!_quiet.Defers($"prewarm {s.ExeName}"))
+        if (!_quiet.Defers($"prewarm {s.ExeName}", prewarm: true))
         {
             return false;
         }
@@ -374,7 +374,8 @@ public sealed class Worker : BackgroundService
 
     private void RunHeldTriggers()
     {
-        if (_quiet.Active)
+        bool early = _quiet.PrewarmReleased; // 구간은 그대로 두고 계기 예열만 일찍 풀음
+        if (_quiet.Active && !early)
         {
             return;
         }
@@ -384,6 +385,11 @@ public sealed class Worker : BackgroundService
         {
             held = [.. _heldTriggers];
             _heldTriggers.Clear();
+        }
+
+        if (early && held.Length > 0)
+        {
+            _log.Info($"held prewarm triggers released: {held.Length} (boot + idle disk)");
         }
 
         foreach (ProcessStart s in held)

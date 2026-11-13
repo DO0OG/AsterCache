@@ -100,6 +100,7 @@ public sealed partial class Prewarmer
     private readonly Dictionary<string, SupplementReadProgress> _supplementReadProgress = new(StringComparer.OrdinalIgnoreCase); // 부분 예열에서 마지막으로 받아들인 바이트 (MiB 반올림 전), _gate 로 보호
     private readonly Dictionary<string, SupplementRetry> _supplementRetry = new(StringComparer.OrdinalIgnoreCase); // 무진전 또는 읽을 목록 소진 뒤 재시도 기한, _gate 로 보호
     private DateTimeOffset _driveObservedAt; // 지금 도는 읽기가 멈춰서 디스크 처리량을 마지막으로 잰 (또는 읽기를 시작한) 시각, _run 아래에서만 씀
+    private double _yieldedSeconds; // 핫 집합 스트림이 낮은 I/O 우선순위로 읽은 시간 (초, Run 이 예열 한 회 동안 모아 done 줄에 씀), _run 아래에서만 씀
 
     private sealed record ProbeFileGeneration(string Path, bool Exists, long Size, long MtimeNs);
     private sealed record ProbeGeneration(ProbeFileGeneration Plan, ProbeFileGeneration Trace, ProbeFileGeneration WarmOnly);

@@ -277,4 +277,74 @@ public sealed class BootQuietTests : IDisposable
         Assert.False(q.Active);
         Assert.DoesNotContain(_log.Lines, line => line.Contains("resume from sleep", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void PrewarmIsReleasedAfterSixtySecondsOfBootAndTwentySecondsOfIdleDiskWhileTheQuietContinues()
+    {
+        _idle = true;
+        _uptimeMs = 30_000;
+        BootQuiet q = Make();
+        q.Refresh(); // 부팅 60 초 전: 유휴여도 세지 않음
+        Elapse(TimeSpan.FromSeconds(25)); // 55 초
+        q.Refresh();
+        Assert.False(q.PrewarmReleased);
+        Assert.True(q.Defers("prewarm steam.exe", prewarm: true));
+
+        Elapse(TimeSpan.FromSeconds(10)); // 65 초: 유휴 시작
+        q.Refresh();
+        Elapse(TimeSpan.FromSeconds(19));
+        q.Refresh();
+        Assert.False(q.PrewarmReleased);
+
+        Elapse(TimeSpan.FromSeconds(1)); // 유휴 20 초
+        q.Refresh();
+
+        Assert.True(q.PrewarmReleased);
+        Assert.True(q.Active); // 구간은 그대로 (5 분 + 60 초 유휴 규칙)
+        Assert.False(q.Defers("prewarm steam.exe", prewarm: true));
+        Assert.True(q.Defers("layout check and reapply")); // 다른 작업은 계속 보류
+    }
+
+    [Fact]
+    public void ABusyDiskRestartsThePrewarmIdleWindow()
+    {
+        _idle = true;
+        BootQuiet q = Make(); // 가동 1 분
+        q.Refresh();
+        Elapse(TimeSpan.FromSeconds(15));
+        _idle = false;
+        q.Refresh();
+        _idle = true;
+        Elapse(TimeSpan.FromSeconds(10));
+        q.Refresh();
+        Elapse(TimeSpan.FromSeconds(19));
+        q.Refresh();
+        Assert.False(q.PrewarmReleased);
+
+        Elapse(TimeSpan.FromSeconds(1));
+        q.Refresh();
+        Assert.True(q.PrewarmReleased);
+    }
+
+    [Fact]
+    public void ResumeFromSleepRestartsThePrewarmCondition()
+    {
+        _idle = true;
+        BootQuiet q = Make();
+        q.Refresh();
+        Elapse(TimeSpan.FromSeconds(20));
+        q.Refresh();
+        Assert.True(q.PrewarmReleased);
+
+        Sleep(TimeSpan.FromMinutes(10)); // 절전: 구간이 다시 시작
+        q.Refresh();
+
+        Assert.False(q.PrewarmReleased);
+        Assert.True(q.Defers("prewarm steam.exe", prewarm: true));
+        Elapse(TimeSpan.FromSeconds(60)); // 복귀 뒤 60 초 + 유휴 20 초
+        q.Refresh();
+        Elapse(TimeSpan.FromSeconds(20));
+        q.Refresh();
+        Assert.True(q.PrewarmReleased);
+    }
 }

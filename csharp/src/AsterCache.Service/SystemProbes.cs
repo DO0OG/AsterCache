@@ -94,7 +94,7 @@ public static partial class DiskActivity
     private const uint MoreData = 0x800007D2;
     private const int SampleMs = 1000;
     private const long CacheMs = 2000;
-    private static readonly PhysicalSampler Shared = new(SampleAll, () => Environment.TickCount64);
+    private static readonly PhysicalSampler Shared = new(() => SampleAll(() => Thread.Sleep(SampleMs)), () => Environment.TickCount64);
 
     // PDH_FMT_COUNTERVALUE_ITEM_W: 이름 포인터, 값 (상태 4 바이트, 정렬 4 바이트 더, double).
     [StructLayout(LayoutKind.Sequential)]
@@ -113,6 +113,28 @@ public static partial class DiskActivity
 
     /// 서비스 시작에서 수집을 미리 켬 (첫 표본이 없는 구간을 시작 직후 몇 초로 줄임). 시험은 부르지 않음.
     public static void Start() => Shared.Start();
+
+    /// letter 가 놓인 디스크의 처리량을 호출자 스레드에서 직접 잼: settle() 로 기다린 뒤 PDH 를 수집하고, window() 로 기다린 뒤 다시 수집해 그 사이 (window 구간) 만 잽니다.
+    /// 공유 표본 (Read) 은 2 초마다 1 초 창 하나라 창이 언제 시작했는지 모르므로, 읽기를 멈춘 구간만 재야 할 때 (우리 읽기가 섞이면 안 될 때) 씁니다. 수집 실패·매핑 없음은 (null, Warming): 모름.
+    /// settle 은 멈춘 직후 진행 중이던 읽기가 빠져나가게 하는 앞부분입니다. 새 쿼리를 열고 닫는 수 ms 의 비용이 있어 틱 경로에서는 부르지 않습니다.
+    public static (double? Bps, SampleState State) MeasureWindow(string letter, Action settle, Action window)
+    {
+        settle();
+        Dictionary<string, double>? data = null;
+        try
+        {
+            data = SampleAll(window);
+        }
+        catch (Exception e) when (e is not OutOfMemoryException)
+        {
+            if (Reported.TryAdd("window measure", 0)) // 카운터가 없는 시스템에서 관측마다 (10 초) 반복하지 않게 한 번만
+            {
+                Log?.Info($"DiskActivity: window measure failed ({e.GetType().Name})");
+            }
+        }
+
+        return data is not null && Sum(letter, data) is { } bps ? (bps, SampleState.Ok) : (null, SampleState.Warming);
+    }
 
     /// 값과 상태를 한 번에 읽음 (Warming·Stale 과 Broken 을 구분하는 호출자용). 바쁨 판정은 IsBusy(bps, state).
     /// keepStalled: 게임 보호 판정용. 수집이 GiveUpMs 넘게 멈춘 정체는 Broken 으로 넘기지 않고 Warming·Stale 로 유지 (정체는 고장이 아님).
@@ -334,7 +356,8 @@ public static partial class DiskActivity
         private static void StartThread(Action loop) => new Thread(() => loop()) { IsBackground = true, Name = "DiskActivity sampler" }.Start(); // 백그라운드라 프로세스 종료를 막지 않음
     }
 
-    private static unsafe Dictionary<string, double>? SampleAll()
+    // wait: 두 번의 PDH 수집 사이를 기다리는 방법 (수집 스레드는 SampleMs 동안 잠, 창 측정은 호출자가 정한 멈춤).
+    private static unsafe Dictionary<string, double>? SampleAll(Action wait)
     {
         if (PdhOpenQueryW(null, 0, out nint query) != 0)
         {
@@ -348,7 +371,7 @@ public static partial class DiskActivity
                 return null;
             }
 
-            Thread.Sleep(SampleMs);
+            wait();
             uint size = 0;
             if (PdhCollectQueryData(query) != 0 || PdhGetFormattedCounterArrayW(counter, FormatDouble, ref size, out _, 0) != MoreData)
             {

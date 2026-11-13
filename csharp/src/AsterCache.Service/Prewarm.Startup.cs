@@ -26,7 +26,7 @@ public sealed partial class Prewarmer
 
     /// 서비스 시작 뒤: on_service_start 인 게임을 차례로 (started 를 주면 그 조건을 만족하는 게임만: 자동 모드의 플레이한 게임).
     /// recent (최근순) 를 주면 한 묶음으로 합칩니다: on_service_start 게임 먼저, 그다음 최근순 (중복 제거) — RAM 예산을 한 번만 씁니다.
-    /// 부팅 BootDelay 뒤 + 게임 드라이브 IdleNeeded 유휴까지 기다린 다음 (그동안 ct 가 취소되면 아무것도 하지 않음), 핫 집합이 이미 파일 캐시에 있는 게임은 읽지 않고 건너뜁니다.
+    /// 부팅 PrewarmBootDelay 뒤 + 게임 드라이브 PrewarmIdleNeeded 유휴까지 기다린 다음 (그동안 ct 가 취소되면 아무것도 하지 않음), 핫 집합이 이미 파일 캐시에 있는 게임은 읽지 않고 건너뜁니다.
     /// lastPlayed (게임 이름 → 마지막 플레이) 를 주면 (자동 모드가 켜진 경우) 대상을 최근 <see cref="StartupPlayedWithin"/> 안에 플레이한 게임으로 좁혀 마지막 플레이 순 상위 auto.startup_warm_games 개만 남기고
     /// (on_service_start 게임도 같은 순위), 합계 읽기량이 auto.startup_warm_max_mib 를 넘는 부분은 읽지 않습니다 (넘는 게임은 앞부분만, 이미 다 쓴 뒤의 게임은 건너뜀). 합계 상한은 기록이 없는 게임 (통째 예열) 도 포함해 항상 적용합니다.
     public IReadOnlyList<PrewarmResult> RunServiceStart(IEnumerable<GameSettings>? recent = null, CancellationToken ct = default, Func<GameSettings, bool>? started = null,
@@ -44,7 +44,7 @@ public sealed partial class Prewarmer
         }
 
         GameSettings[] list = [.. merged];
-        if (list.Length == 0 || !WaitStartupGate(list, ct))
+        if (list.Length == 0 || !WaitStartupGate(list, ct, PrewarmBootDelay, PrewarmIdleNeeded))
         {
             return [];
         }
@@ -159,14 +159,15 @@ public sealed partial class Prewarmer
     /// 서비스 시작 예열 대상이 되는 마지막 플레이의 최대 경과.
     public static readonly TimeSpan StartupPlayedWithin = TimeSpan.FromDays(14);
 
-    /// 서비스 시작 예열을 시작해도 되는 시점인가 (부팅 BootDelay 경과). 자동 모드의 기록 없는 예열 (cold start) 도 같은 조건을 봅니다.
+    /// 부팅 BootDelay 가 지났는가: 자동 재배치·새 트레이스 예열과 대기 예열 재시도가 보는 조건 (서비스 시작 예열 게이트는 더 짧은 PrewarmBootDelay).
     public bool BootSettled() => _env.UptimeMs() >= BootDelay.TotalMilliseconds;
 
     /// 부팅 뒤 경과 시간 (ms, PrewarmEnv.UptimeMs). 부팅 조용 구간 판정이 같은 시계를 씁니다.
     public long UptimeMs() => _env.UptimeMs();
 
-    // 부팅 5 분 경과 + 게임 드라이브 60 초 유휴를 기다립니다. 취소되면 false. 대상 드라이브 중 하나라도 처리량을 못 읽으면 (null) 유휴를 확인할 수 없으므로 읽지 않고 보류합니다.
-    private bool WaitStartupGate(IReadOnlyList<GameSettings> games, CancellationToken ct)
+    // 부팅 bootDelay 경과 + 게임 드라이브 idleNeeded 유휴를 기다립니다. 취소되면 false. 대상 드라이브 중 하나라도 처리량을 못 읽으면 (null) 유휴를 확인할 수 없으므로 읽지 않고 보류합니다.
+    // bootDelay·idleNeeded: 서비스 시작 예열은 PrewarmBootDelay·PrewarmIdleNeeded, 게임 사이 재배치 대기 (WaitOutRelocation) 는 기존 BootDelay·IdleNeeded.
+    private bool WaitStartupGate(IReadOnlyList<GameSettings> games, CancellationToken ct, TimeSpan bootDelay, TimeSpan idleNeeded)
     {
         TimeSpan idle = TimeSpan.Zero;
         bool logged = false;
@@ -181,7 +182,7 @@ public sealed partial class Prewarmer
             }
 
             double?[] rates = [.. games.Select(g => _env.DiskBytesPerSecond(g))];
-            bool settled = BootSettled();
+            bool settled = _env.UptimeMs() >= bootDelay.TotalMilliseconds;
             if (settled && rates.Any(r => r is null))
             {
                 // 디스크 유휴를 확인할 수 없음: 읽지 않고 계측값이 생길 때까지 (또는 취소될 때까지) 보류
@@ -198,7 +199,7 @@ public sealed partial class Prewarmer
 
             bool busy = !settled || rates.Any(r => r >= DiskActivity.BusyBytesPerSecond);
             idle = busy ? TimeSpan.Zero : idle + GateStep;
-            if (idle >= IdleNeeded)
+            if (idle >= idleNeeded)
             {
                 return true;
             }
@@ -206,7 +207,7 @@ public sealed partial class Prewarmer
             if (!logged)
             {
                 logged = true;
-                _log.Info($"service start prewarm waits for {BootDelay.TotalMinutes:F0} min after boot and {IdleNeeded.TotalSeconds:F0} s of idle disk");
+                _log.Info($"service start prewarm waits for {bootDelay.TotalSeconds:F0} s after boot and {idleNeeded.TotalSeconds:F0} s of idle disk");
             }
 
             _env.Sleep(GateStep, ct);
@@ -416,6 +417,7 @@ public sealed partial class Prewarmer
         }
 
         InvalidateResidencyProbe(game.Name, keepCooldown: true);
+        var readYield = new ReadYield(_env.SetReadIoLow, PrewarmYield.StartsYielding(allowWhileExiting ? "trigger" : null, _env.UptimeMs())); // 읽기와 묶음 점검이 같은 스레드: 양보는 StreamHot 과 같은 방식
         try
         {
             using CancellationTokenRegistration leaseReg = lease?.Token.Register(stop.Cancel) ?? default;
@@ -429,7 +431,7 @@ public sealed partial class Prewarmer
             lease?.NoteReadIssue("head schedule", 0, false);
             var cancelDetail = new PrewarmCancelDetail();
             _streamer.StreamHeadCoordinated(game, stop.Token, (done, total) => CheckPrewarmBatch(game, stop, done, total,
-                    detail: cancelDetail, callerToken: ct, leaseToken: lease?.Token ?? default),
+                    detail: cancelDetail, callerToken: ct, leaseToken: lease?.Token ?? default, yield: readYield),
                 () => !stop.IsCancellationRequested && (lease?.IsValid ?? true),
                 (stage, bytes, isData) => lease?.NoteReadIssue(stage, bytes, isData));
             if (stop.IsCancellationRequested)
@@ -448,6 +450,7 @@ public sealed partial class Prewarmer
         }
         finally
         {
+            FinishYield(readYield, game.Name);
             (_streaming, _streamStop) = (null, null);
             LogYield(game.Name, 0, lease);
         }

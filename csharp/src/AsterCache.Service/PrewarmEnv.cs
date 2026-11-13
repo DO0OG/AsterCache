@@ -68,6 +68,10 @@ public sealed class PrewarmEnv
     /// 게임 보호 판정 (외부 디스크 부하) 용 DiskSample: 수집 정체가 60 초를 넘어도 Broken 으로 넘기지 않음. 없으면 DiskSample 을 씀.
     public Func<GameSettings, (double? Bps, DiskActivity.SampleState State)>? GameDiskSample { get; init; }
 
+    /// 읽기를 멈춘 구간만 직접 잰 처리량과 상태 (게임, settle: 멈춘 직후 진행 중이던 읽기가 빠지길 기다림, window: 이 동안만 잼). 공유 표본 (DiskSample) 은 우리 읽기가 섞인 창일 수 있어 양보 관측은 이것을 씁니다.
+    /// 없으면 (시험 기본값) 멈춤 전체 (settle + window) 를 한 번의 Sleep 으로 기다린 뒤 DiskSample 을 읽는 기존 방식.
+    public Func<GameSettings, Action, Action, (double? Bps, DiskActivity.SampleState State)>? DiskWindowSample { get; init; }
+
     /// 게임이 시작 뒤 읽은 누적 바이트 (등록 exe 이름 프로세스들의 합, 이름·읽기 카운터만 봄), 하나라도 읽지 못하거나 프로세스가 없으면 null. 같은 디스크의 다른 게임이 한가한지 판정하는 데만 씀 (null 은 바쁨). 시험 기본값은 null.
     public Func<GameSettings, long?> GameReadBytes { get; init; } = _ => null;
 
@@ -146,6 +150,9 @@ public sealed class PrewarmEnv
     /// 스트림 노출과 같은 디스크 게임 시작을 예열 스레드에서 동기로 기록합니다.
     public Action<GameSettings, double, bool>? OrbitExposure { get; init; }
 
+    /// 현재 스레드의 읽기 I/O 우선순위를 낮음 (true) 또는 보통 (false) 으로 바꿈, 바꾸지 못하면 false. 핫 집합 스트림이 다른 읽기에 양보할 때 읽는 스레드에서 부릅니다. 시험 기본값은 항상 성공 (실제 호출 없음).
+    public Func<bool, bool> SetReadIoLow { get; init; } = _ => true;
+
     /// 트리거로 예열이 실제로 시작되기 직전 (가용 메모리 첫 읽기보다 앞) 에 부름: 배경 프로세스의 메모리 양보를 시작하고 가용 메모리가 가라앉을 때까지 기다립니다 (이유, 취소). 기본은 아무것도 안 함.
     public Action<string, CancellationToken> YieldBackground { get; init; } = (_, _) => { };
 
@@ -167,6 +174,7 @@ public sealed class PrewarmEnv
                 return g => DispatchEnv.IsGameRunning(g, processes);
             },
             SameDisk = sameDisk,
+            SetReadIoLow = low => ThreadIoPriority.TrySet(low ? IoPriority.Low : IoPriority.Normal),
             YieldBackground = backgroundYield is null ? (_, _) => { } : (why, ct) => backgroundYield.Begin(why, settle: true, ct),
             DeviceCalibrationEnabled = orbitRuntime is null ? null : () => orbitRuntime.Mode != "off",
             DeviceCalibration = orbitCalibration is null ? null : (g, ops, antiCheat, lease, ct) =>
@@ -251,6 +259,7 @@ public sealed class PrewarmEnv
             DiskBytesPerSecond = g => DiskActivity.BytesPerSecond(PlanFile.SplitDrive(g.OriginRoot)),
             DiskSample = g => DiskActivity.Read(PlanFile.SplitDrive(g.OriginRoot)),
             GameDiskSample = g => DiskActivity.Read(PlanFile.SplitDrive(g.OriginRoot), keepStalled: true),
+            DiskWindowSample = (g, settle, window) => DiskActivity.MeasureWindow(PlanFile.SplitDrive(g.OriginRoot), settle, window),
             GameReadBytes = RegisteredReadBytes,
             OpenPin = paths =>
             {

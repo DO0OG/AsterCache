@@ -106,7 +106,7 @@ public sealed partial class Prewarmer
                 {
                     ForgetProfileMiss(game.Name);
                     _log.Info($"{game.Name}: prewarm triggered by {TriggerCause(why)}");
-                    if (ColdReadMarked(game, plan.Ops, ct, trigger) is not { } cold)
+                    if (ColdReadMarked(game, plan.Ops, ct, trigger, why) is not { } cold)
                     {
                         skip = RelocationRunning;
                     }
@@ -166,7 +166,7 @@ public sealed partial class Prewarmer
     }
 
     // 기록 없는 읽기 한 번: 읽는 동안 _coldReading 표시를 세우고 (예외·취소로 끝나도 내림), 같은 디스크에서 재배치가 시작했으면 읽지 않고 null.
-    private (StreamStats Stats, bool Complete, string? CancelReason)? ColdReadMarked(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken ct, bool allowWhileExiting)
+    private (StreamStats Stats, bool Complete, string? CancelReason)? ColdReadMarked(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken ct, bool allowWhileExiting, string why)
     {
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "cold prewarm", ct, allowWhileExiting: allowWhileExiting);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
@@ -180,6 +180,7 @@ public sealed partial class Prewarmer
         }
 
         InvalidateResidencyProbe(game.Name);
+        var readYield = new ReadYield(_env.SetReadIoLow, PrewarmYield.StartsYielding(why, _env.UptimeMs())); // 읽기와 묶음 점검이 같은 스레드: 양보는 StreamHot 과 같은 방식
         try
         {
             var cancelDetail = new PrewarmCancelDetail();
@@ -188,7 +189,7 @@ public sealed partial class Prewarmer
             using CancellationTokenRegistration leaseReg = lease?.Token.Register(() => cancelDetail.Set("disk read lease revoked")) ?? default;
             using CancellationTokenRegistration callerReg = ct.Register(() => cancelDetail.Set("caller cancelled"));
             Action<long, long> progress = (done, planned) => CheckPrewarmBatch(game, stop, done, planned,
-                detail: cancelDetail, callerToken: ct, leaseToken: lease?.Token ?? default);
+                detail: cancelDetail, callerToken: ct, leaseToken: lease?.Token ?? default, yield: readYield);
             (StreamStats Stats, bool Complete) read = _env.ColdReadWithProgress is { } withProgress
                 ? withProgress(ops, stop.Token, progress)
                 : _env.ColdRead(ops, stop.Token);
@@ -203,6 +204,7 @@ public sealed partial class Prewarmer
         }
         finally
         {
+            FinishYield(readYield, game.Name);
             _coldReading = null;
         }
     }

@@ -482,7 +482,7 @@ public sealed class OrbitRuntimeTests : IDisposable
                 antiCheatCalls++;
                 return null;
             },
-            DeviceCalibration = hook ? (_, _, _, _, _) => hookCalls++ : null,
+            DeviceCalibration = hook ? (_, _, _, _, _, _) => hookCalls++ : null,
             DeviceCalibrationEnabled = enabled ? null : () => false,
         }, new ListLog());
 

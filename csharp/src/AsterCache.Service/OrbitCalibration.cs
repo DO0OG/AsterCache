@@ -112,9 +112,9 @@ public sealed class OrbitCalibration
         }
     }
 
-    /// 핫 집합 스트림 직전에 한 번 부릅니다. 시도한 읽기 바이트 합계 (조건이 어긋나면 0).
-    public long Sample(GameSettings game, IReadOnlyList<ReadOp> ops, string? antiCheatKind, DiskReadCoordinator.Lease? lease, CancellationToken ct) =>
-        lease is { IsValid: true } ? Probe([(game, antiCheatKind)], ops, lease, ct, false, out _) : 0;
+    /// 핫 집합 스트림 직전에 한 번 부릅니다. 시도한 읽기 바이트 합계 (조건이 어긋나면 0). limit 이 취소되면 (시간 상한) 다음 읽기를 내지 않고 그 표본은 버립니다 (일부만 읽힌 표본은 모델에 넣지 않음).
+    public long Sample(GameSettings game, IReadOnlyList<ReadOp> ops, string? antiCheatKind, DiskReadCoordinator.Lease? lease, CancellationToken ct, CancellationToken limit = default) =>
+        lease is { IsValid: true } ? Probe([(game, antiCheatKind)], ops, lease, ct, false, out _, limit) : 0;
 
     /// 부트스트랩 표본 하나: 대여 없이 읽으므로 호출한 쪽 (CLI) 이 서비스 정지와 게임 미실행을 확인해야 합니다. 나머지 조건과 저장은 Sample 과 같고, 표본에 bootstrap 표시가 붙습니다.
     public long SampleBootstrap(GameSettings game, IReadOnlyList<ReadOp> ops, string? antiCheatKind, CancellationToken ct) =>
@@ -128,7 +128,7 @@ public sealed class OrbitCalibration
     public long SampleBootstrap(IReadOnlyList<(GameSettings Game, string? AntiCheatKind)> games, IReadOnlyList<ReadOp> ops, CancellationToken ct, out string? reason) =>
         Probe(games, ops, null, ct, true, out reason);
 
-    private long Probe(IReadOnlyList<(GameSettings Game, string? AntiCheatKind)> games, IReadOnlyList<ReadOp> ops, DiskReadCoordinator.Lease? lease, CancellationToken ct, bool bootstrap, out string? reason)
+    private long Probe(IReadOnlyList<(GameSettings Game, string? AntiCheatKind)> games, IReadOnlyList<ReadOp> ops, DiskReadCoordinator.Lease? lease, CancellationToken ct, bool bootstrap, out string? reason, CancellationToken limit = default)
     {
         reason = null;
         if (games.Count == 0)
@@ -149,7 +149,7 @@ public sealed class OrbitCalibration
             return 0;
         }
 
-        using var linked = lease is null ? CancellationTokenSource.CreateLinkedTokenSource(ct) : CancellationTokenSource.CreateLinkedTokenSource(ct, lease.Token);
+        using var linked = lease is null ? CancellationTokenSource.CreateLinkedTokenSource(ct, limit) : CancellationTokenSource.CreateLinkedTokenSource(ct, lease.Token, limit);
         CancellationToken token = linked.Token;
         Segment[] segments = Segments(ops);
         long bytes = 0;
@@ -220,6 +220,11 @@ public sealed class OrbitCalibration
                 streams.Add(mine);
                 Trim(streams, Orbit3Constants.RecentProbeStreams);
             }
+        }
+
+        if (limit.IsCancellationRequested)
+        {
+            return bytes; // 시간 상한에 걸려 일부만 읽힌 표본: 모델에 넣지 않음 (읽은 위치는 위에서 이미 기억함)
         }
 
         // 한 스트림의 표본 12개는 같은 SMR 상태에서 나와 교환 가능하지 않으므로 스트림 하나를 관측값 하나로 셉니다 (보정 켜짐은 스트림 2×19 개 이상).

@@ -386,12 +386,26 @@ public sealed partial class Prewarmer
             }
 
             planned += take;
-            lock (_run)
+            if (!EnterRun(g.Name, ct, allowWhileExiting))
             {
+                return; // 트리거 경로가 락을 기다리다 취소됨: 앞부분도 읽지 않음
+            }
+
+            try
+            {
+                if (!allowWhileExiting && TriggerWaitCovers(g.Name))
+                {
+                    continue; // 트리거 예열이 기다리는 동안 같은 디스크의 다른 예열은 앞부분도 읽지 않음 (뒤의 게임별 예열이 같은 이유로 기존 재시도에 맡김), 다른 디스크의 뒤 게임은 계속
+                }
+
                 if (_games.Any(x => string.Equals(x.Name, g.Name, StringComparison.OrdinalIgnoreCase) && GamePolicy.AllowsPrewarm(x)))
                 {
                     StreamHead(head, ct, allowWhileExiting); // 대기 중 등록이 해제됐거나 정책이 예열을 막은 게임은 앞부분도 읽지 않음
                 }
+            }
+            finally
+            {
+                Monitor.Exit(_run);
             }
         }
     }
@@ -409,6 +423,7 @@ public sealed partial class Prewarmer
         if (!TryMarkReading(game.Name, () =>
         {
             (_keepStream, _streaming, _streamStop) = (false, game.Name, stop);
+            (_streamFromTrigger, _streamPreempted) = (allowWhileExiting, false);
             _yield = null;
             _driveObservedAt = _now();
         }))
@@ -431,7 +446,7 @@ public sealed partial class Prewarmer
             lease?.NoteReadIssue("head schedule", 0, false);
             var cancelDetail = new PrewarmCancelDetail();
             _streamer.StreamHeadCoordinated(game, stop.Token, (done, total) => CheckPrewarmBatch(game, stop, done, total,
-                    detail: cancelDetail, callerToken: ct, leaseToken: lease?.Token ?? default, yield: readYield),
+                    detail: cancelDetail, callerToken: ct, leaseToken: lease?.Token ?? default, yield: readYield, preemptible: true),
                 () => !stop.IsCancellationRequested && (lease?.IsValid ?? true),
                 (stage, bytes, isData) => lease?.NoteReadIssue(stage, bytes, isData));
             if (stop.IsCancellationRequested)

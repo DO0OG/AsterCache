@@ -71,7 +71,7 @@ public sealed partial class Prewarmer
             return 0;
         }
 
-        if (!Monitor.TryEnter(_run))
+        if (!TryEnterRunIdle())
         {
             LogSkipped(g.Name, "another prewarm", $"{g.Name}: warm files skipped (another prewarm is running)");
             return 0;

@@ -267,6 +267,66 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     }
 
     [Fact]
+    public void ASupplementDoesNotTakeTheLockWhileATriggerPrewarmIsWaiting()
+    {
+        _avail = 6000;
+        _streamer.ReadMib = 300;
+        Prewarmer p = Make(Game());
+        _streamer.OnProgress = progress =>
+        {
+            _avail = 4096;
+            progress(300 * Mib, 1648 * Mib);
+        };
+        Assert.False(p.Run(Game(), "test").Ran);
+        _streamer.OnProgress = null;
+        _streamer.ReadMib = null;
+        _avail = 20000;
+        _now += TimeSpan.FromMinutes(3);
+        IDisposable mark = p.BeginTriggerWait([Games.Make("o", "o.exe")]);
+
+        Assert.False(p.Supplement(Game(), CancellationToken.None));
+
+        Assert.Single(_streamer.Calls); // 읽지 않고 다음 틱으로 넘김
+        mark.Dispose();
+        Assert.True(p.Supplement(Game(), CancellationToken.None));
+        Assert.Equal(2, _streamer.Calls.Count);
+    }
+
+    [Fact]
+    public void ASupplementStoppedForATriggerPrewarmIsNotDeferredAndContinuesLater()
+    {
+        GameSettings other = Games.Make("o", "o.exe");
+        _avail = 6000;
+        _streamer.ReadMib = 300;
+        Prewarmer p = Make(Game(), other);
+        _streamer.OnProgress = progress =>
+        {
+            _avail = 4096;
+            progress(300 * Mib, 1648 * Mib);
+        };
+        Assert.False(p.Run(Game(), "test").Ran); // 300 MiB 만 읽은 부분 예열
+        _avail = 20000;
+        _now += TimeSpan.FromMinutes(3);
+        _streamer.ReadMib = 0;
+        IDisposable? mark = null;
+        _streamer.OnProgress = progress =>
+        {
+            mark = p.BeginTriggerWait([other]); // 이 스트림이 도는 중 같은 디스크의 다른 게임의 트리거 예열이 옴
+            progress(10 * Mib, 1648 * Mib);
+        };
+
+        Assert.False(p.Supplement(Game(), CancellationToken.None));
+
+        mark?.Dispose();
+        Assert.Contains(_log.Lines, l => l.Contains("supplement prewarm cancelled after 0 MiB (preempted by trigger prewarm)", StringComparison.Ordinal));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("supplement prewarm deferred", StringComparison.Ordinal)); // 진전이 없어도 10 분 보류를 걸지 않음
+        _streamer.OnProgress = null;
+        _streamer.ReadMib = null;
+        _now += TimeSpan.FromSeconds(30);
+        Assert.True(p.Supplement(Game(), CancellationToken.None));
+    }
+
+    [Fact]
     public void AMemoryStopKeepsTheRetryPendingAndRespectsTheFloorAndTheRecoveryCondition()
     {
         _avail = 6000;

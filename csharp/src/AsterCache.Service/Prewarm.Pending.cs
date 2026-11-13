@@ -171,7 +171,7 @@ public sealed partial class Prewarmer
             return false;
         }
 
-        if (!Monitor.TryEnter(_run))
+        if (!TryEnterRunIdle())
         {
             return false;
         }

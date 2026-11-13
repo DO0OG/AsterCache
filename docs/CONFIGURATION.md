@@ -47,7 +47,8 @@ The configuration file is `%ProgramData%\AsterCache\config.json`. Editing it in 
 | `max_zone_mib` | 2048 | Upper limit of the zone size for automatic planning, in MiB (64 to 65536), or `"auto"`: physical RAM ÷ 4, between 2048 and 8192 MiB, capped at 2048 when the disk type is unknown or the disk is on USB. On a 32 GB PC, `"auto"` is recommended over a fixed 2048. |
 | `riot.champ_select_prewarm` | `false` | While a Riot game's champion select runs, reads the chosen champions' and the map's files into RAM in advance, using the local League client API. Riot announced on 2019-01-24 that players in Korea may not use applications that use the League Client API, and no withdrawal was found, so do not turn this on with a Korean account. See [the League of Legends reference](GAME_GUIDE.md#reference-league-of-legends-vanguard). |
 | `riot.champ_select_budget_mib` | 2048 | The most MiB the champion select prewarm may read (64 to 16384). |
-| `memory.background_yield` | `true` | During a game session, programs unrelated to the game give up memory: their working sets are emptied and their memory priority is lowered, and the priority is restored when the session ends. Game, launcher, anti-cheat, and service processes are not touched. `false` turns it off; there is no switch for it in the Settings tab. See [Background memory yield](AUTO_MODE.md#background-memory-yield). |
+| `memory.background_yield` | `true` | During a game session, programs unrelated to the game give up memory: their memory priority is lowered and, only when memory is short or the cache is being reused, their working sets are emptied; the priority is restored when the session ends. Game, launcher, anti-cheat, and service processes are not touched. `false` turns it off; there is no switch for it in the Settings tab. See [Background memory yield](AUTO_MODE.md#background-memory-yield). |
+| `memory.standby_ladder` | `true` | After a prewarm, the game's cache is touched again in memory, in the reverse of the read order, so that the data a load needs first is the last to be pushed out; it is touched again before other programs push it out. Nothing is read from the disk on purpose, and it does not run on a disk where a game is running. `false` turns it off; there is no switch for it in the Settings tab. See [SOLAR](SOLAR.md). |
 | `games` | `[]` | The game list (up to 32 games). The keys of one game are below. |
 
 ## One game: `games[]`
@@ -78,7 +79,7 @@ The configuration file is `%ProgramData%\AsterCache\config.json`. Editing it in 
 | `on_service_start` | `true` | Run prewarm when the service starts. |
 | `trigger_exes` | `[]` | Run prewarm when one of these programs starts, for example a launcher (up to 16). |
 | `min_free_ram_mib` | 4096 | Available RAM to leave free even after prewarm. Not shown in the Settings window; edit the file. |
-| `cooldown_min` | 30 | Minimum interval between prewarms, in minutes. |
+| `cooldown_min` | 30 | Minimum interval between prewarms, in minutes. Inside the cooldown a game is still prewarmed when a sample read shows that its cache has gone cold, for example after a reboot; if the cache is warm or the sample cannot be read, the cooldown applies. See [Automatic mode](AUTO_MODE.md#4-prewarm). |
 | `max_cache_mib` | 0 (automatic) | Total MiB that prewarm may hold in the file cache, shared by all games. `0` or omitted = half of physical RAM; a positive value is used as is but cannot exceed physical RAM. If several games set it, the largest value applies. The `min_free_ram_mib` reserve still applies. The Advanced section writes the value to every registered game (0 removes the key). |
 | `pin` | automatic | Keep prewarmed data open as read-only mappings in the service. When not written, it is on automatically with 24 GiB of RAM or more; `false` turns it off; an explicit `true` works with 16 GiB of RAM or more. Effect unverified (needs an experiment). See [Anti-cheat compatibility](ANTICHEAT.md). |
 
@@ -162,7 +163,7 @@ What each stage does is in [Automatic mode](AUTO_MODE.md). Ranges are given in p
 
 The Updates card in the Settings tab sets `update.mode` and `update.prerelease`.
 
-Older versions reject the keys `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, `update`, and `memory`, so remove them before rolling back. `memory` is new in 1.0.3: versions 1.0.2 and earlier reject a settings file that contains it, whatever its value.
+Older versions reject the keys `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, `update`, and `memory`, so remove them before rolling back. `memory` is new in 1.0.3: versions 1.0.2 and earlier reject a settings file that contains it, whatever its value. `memory.standby_ladder` is newer than that: versions 1.0.3 and earlier reject a settings file that contains it, so remove it before rolling back.
 
 ## Watcher
 

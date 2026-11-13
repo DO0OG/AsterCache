@@ -17,7 +17,8 @@
 | 예열 | 존을 RAM 파일 캐시로 | 없음 | RAM 예산: 물리 RAM 의 절반, 가용 RAM 은 `prewarm.min_free_ram_mib` 이상 유지 |
 | 예열 유지 | 10분마다(`rewarm_minutes`) 1 MiB 표본 8개. 캐시가 식었으면 존을 다시 읽음 | 없음 | RAM 예산 안의 게임만 |
 | 깨워 두기 | 런처가 떠 있거나 평소 플레이 시간대에 10분마다 4 KiB | 없음 | `auto.keep_awake`. 전원 설정은 바꾸지 않음 |
-| ORBIT 보정 | 표본 스트림당 12 MiB 남짓, 캐시를 거치지 않음([ORBIT](ORBIT.ko.md)) | 없음 | 게임이 없고 디스크가 한가할 때만 |
+| 캐시 순서 유지(SOLAR) | 이미 파일 캐시에 있는 페이지를 메모리 안에서 다시 만짐. 디스크에서 읽힌 양이 32 MiB 를 넘게 세어지면 멈추므로 최악에도 약 100 MiB([SOLAR](SOLAR.ko.md)) | 없음 | 게임이 실행 중인 디스크에서는 하지 않음, `memory.standby_ladder` |
+| ORBIT 보정 | 표본 스트림당 12 MiB 남짓, 캐시를 거치지 않음([ORBIT](ORBIT.ko.md)). 런처가 시작한 예열에서는 하지 않음 | 없음 | 게임이 없고 디스크가 한가할 때만 |
 | SSD 보조 저장(기본 꺼짐) | 복사할 파일 | HDD 가 아니라 SSD 에 복사 | 게임당 예산 8 GiB([자동 모드](AUTO_MODE.ko.md#ssd-보조-저장-선택)) |
 
 - **재배치 상한.** 존은 기본 최대 2048 MiB(`max_zone_mib`)입니다. 24시간에 최대 4번(`max_relocations_per_day`) 재배치합니다. 하루 최대 8 GiB(`max_relocate_gib_per_day`, SMR 로 보이는 드라이브는 2 GiB), 회차당 최대 2 GiB(SMR 로 보이면 1 GiB)입니다.

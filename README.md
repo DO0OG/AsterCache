@@ -79,7 +79,7 @@ A hard disk reads with a moving head, like the arm of a record player. A game th
 2. **Record.** On the first play, Windows event tracing (ETW) writes down which parts of which files the game reads, in what order. The game process is never touched.
 3. **Relocate.** When the game is off and the drive is idle, the pieces are moved side by side into one zone of the disk, in read order, with the official NTFS move function (the one disk defragmenters use). File contents stay the same, and every step is journaled so it can be reverted.
 4. **Prewarm.** At PC start or when the launcher opens, the zone is read into RAM (the file cache). The game then reads from RAM. If the prewarm was not done in time, the zone is read in order the moment the game starts, which is still much faster than the scattered original.
-5. **Keep up.** The service re-prewarms if the cache went cold, and restores the layout if it drifted (for example after a game update).
+5. **Keep up.** The service re-prewarms if the cache went cold, touches the prewarmed cache again in memory so that it lasts longer ([SOLAR](docs/SOLAR.md)), and restores the layout if it drifted (for example after a game update).
 
 ```mermaid
 flowchart LR
@@ -87,6 +87,8 @@ flowchart LR
 ```
 
 **ORBIT: prewarm order adjustment.** For a game that has a recording, ORBIT calculates whether reading the prewarm in a different order, in segments of about 64 MiB, would help. Only the order changes, not the amount or the set of data read. The default mode is `active`; change it with `aster orbit mode off|shadow|active`. In the 2026-11-09 Call of Duty bench (one game, one drive, one session), the median value-weighted ready time fell 18.8%, but the worst-episode p95 rose by 13.1 s, so it is too early to generalize. See [docs/ORBIT.md](docs/ORBIT.md).
+
+**SOLAR: keeping the cache and its eviction order.** Prewarmed data is ordinary file cache. Windows reuses pages of the same priority in the order they entered its standby list, so the data a load needs first, which the prewarm reads first, would be the first to go. After a prewarm, SOLAR touches the cache the game has again, in the reverse of the read order and without reading the disk, so that the most important data is the last to be pushed out. It touches it again when Windows' standby-list statistics show that the pages ahead of it are being used up. If it finds a part missing, it leaves that to the next re-prewarm check. It is on by default (`memory.standby_ladder`) and does not run on a disk where a game is running. The experiments on the test PC show that the order can be set; what it does for load time or stutter in a real game has not been measured. See [docs/SOLAR.md](docs/SOLAR.md).
 
 **What AsterCache does not do.**
 - It does not change the content of your game files (a SHA-256 check before and after each move).
@@ -100,8 +102,9 @@ This is a summary. The full guide is [docs/GAME_GUIDE.md](docs/GAME_GUIDE.md).
 
 - **It writes to the game drive.** Relocation physically moves data. One automatic round writes at most 1 GiB on an SMR drive and 2 GiB on other drives. Per day the limit is 2 GiB on SMR and 8 GiB otherwise (`auto.max_relocate_gib_per_day`), and at most 4 relocations (`auto.max_relocations_per_day`). The first run of a relocation takes time; the gain shows in repeated loads.
 - **It works only when the PC is idle.** The game must be off, the game drive under 4 MiB/s for 30 seconds, and the PC on AC power (or a battery at 50% or more). If a game starts during a move, only the fragment being moved is finished, then it stops and resumes later.
-- **It also reads.** Prewarm reads the zone into RAM within the budget. A cache check reads 1 MiB from each of 8 places every 10 minutes. A small 4 KiB read every 10 minutes keeps the HDD from spinning down while a launcher is open or at the hours you usually play (`auto.keep_awake`, on by default; Windows power settings are not changed). Background reads yield to a game running on the same disk.
-- **It asks other programs to give up memory.** During a game session, programs that have nothing to do with the game have their working set emptied and their memory priority lowered, so that Windows takes their memory before the prewarm cache; the priority is restored when the session ends. This is on by default (`memory.background_yield`) and never touches game, launcher, or anti-cheat processes. Such a program can be slow for a moment when you use it again. The effect in real play has not been measured. See [docs/AUTO_MODE.md](docs/AUTO_MODE.md#background-memory-yield).
+- **It also reads.** Prewarm reads the zone into RAM within the budget. A cache check reads 1 MiB from each of 8 places every 10 minutes. A small 4 KiB read every 10 minutes keeps the HDD from spinning down while a launcher is open or at the hours you usually play (`auto.keep_awake`, on by default; Windows power settings are not changed). Background reads yield to a game running on the same disk, and prewarm reads lower their own I/O priority while other programs read the same disk.
+- **It asks other programs to give up memory.** During a game session, programs that have nothing to do with the game have their memory priority lowered and, only when memory is short or the cache is being reused, their working set emptied, so that Windows takes their memory before the prewarm cache; the priority is restored when the session ends. This is on by default (`memory.background_yield`) and never touches game, launcher, or anti-cheat processes. Such a program can be slow for a moment when you use it again. The effect in real play has not been measured. See [docs/AUTO_MODE.md](docs/AUTO_MODE.md#background-memory-yield).
+- **It touches the prewarmed cache again.** SOLAR reads pages that are already in the file cache, in memory, so that the data a load needs first is pushed out last and the cache lasts longer. It does not read the disk on purpose (when it finds a part missing it stops and leaves that to the next re-prewarm check), and it does not run on a disk where a game is running. It is on by default (`memory.standby_ladder`). The effect in real play has not been measured. See [docs/SOLAR.md](docs/SOLAR.md).
 - **SMR drives write slowly.** After a relocation the service waits until the drive has recovered before the next job. Only one SMR drive has been validated; CMR drives have not.
 - **Exclude the game drive from Windows drive optimization.** Windows defragments HDDs on a weekly schedule, which can undo the relocated layout. Do not run `defrag` on that drive either.
 - **Do not power off or sleep during a move.** Resume after interruptions was checked on a test volume; power loss during a move on real game data was not tested.
@@ -168,6 +171,7 @@ The management window. The top row shows the Games tab and the Status tab; the b
 | [docs/USAGE.md](docs/USAGE.md) | Using the tray window and the `aster` command, with examples |
 | [docs/AUTO_MODE.md](docs/AUTO_MODE.md) | What the service does by itself, step by step |
 | [docs/ORBIT.md](docs/ORBIT.md) | Prewarm order adjustment (ORBIT) |
+| [docs/SOLAR.md](docs/SOLAR.md) | Keeping the cache and its eviction order (SOLAR) |
 | [docs/GAME_GUIDE.md](docs/GAME_GUIDE.md) | Effects on the disk, cautions, and guidance by kind of game |
 | [docs/ANTICHEAT.md](docs/ANTICHEAT.md) | Anti-cheat compatibility: what it does, what it does not do |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Settings table with defaults, the watcher, and language |

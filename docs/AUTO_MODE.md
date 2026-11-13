@@ -16,7 +16,7 @@ Each game can also be limited. Its **policy** (`games[].mode`: `inherit`, `prewa
 | 2. Recording reads | Records what a game reads while it loads (the trace). |
 | 3. Relocation | Moves the pieces the game reads into one zone while the PC is idle. |
 | 4. Prewarm | Reads the zone into RAM before the game starts. |
-| 5. Upkeep | Re-prewarms, tops up, retries, and rechecks the layout. |
+| 5. Upkeep | Re-prewarms, tops up, retries, rechecks the layout, and keeps the prewarmed cache in order ([SOLAR](#solar-keeping-the-cache-in-order)). |
 | 6. While a game runs | Yields the disk to the game, lets unrelated background programs give up memory, and records how the disk behaved. |
 | 7. Drive recovery wait | Waits for an SMR drive to settle after bulk writes. |
 
@@ -178,6 +178,9 @@ When the first real run records a trace, the plan made from it replaces the earl
 - After an exit, relocation, SSD tier apply, and prewarm or re-prewarm for a new trace on the same physical disk wait for the longer of 60 seconds and `auto.rewarm_after_exit_min` minutes.
 - **Switching games.** While the 60-second exit check of a game that just closed is still running, a prewarm started by a launcher (a trigger prewarm) may read, if the games still registered on that disk are only ones waiting for that check. If one of them comes back, or another game starts, the prewarm is cancelled at once. Nothing changes while a game is actually running: no new reads on its disk. Re-prewarm checks, top-ups, and relocation still wait as above.
 - A trigger prewarm refused because a game was running is written down. The first time the service sees that game's processes gone (processes are checked every 30 seconds), it tries once more if the launcher is still running and the refusal is less than 30 minutes old (log line: `<game>: retrying the refused trigger prewarm (<exe>) now that the blocking game is gone`). If it is refused again, the usual waiting rules apply. How this behaves in real play has not been checked yet.
+- **A launcher's prewarm goes first.** When a launcher starts a prewarm that will actually read, the background prewarm of another game on the same disk (a re-prewarm, a top-up, or a waiting retry) is stopped as soon as the read being issued is done, and the launcher's game is read first (log: `<game>: prewarm cancelled (...) after N MiB (preempted by trigger prewarm)`). A stopped top-up goes on later from where it stopped, and a stopped re-prewarm or retry goes back to its usual retry. If the launcher's prewarm still has to wait for a read that cannot be stopped, it writes `<game>: trigger prewarm waited N s for <game>` (only when it waited 1 second or more). A launcher prewarm of games that would all be skipped anyway (cooldown, a game running on the disk) does not wait for other reads and writes the skip line at once. A prewarm of a game without a record is not stopped this way. This was added because, in the service log of the test PC, a launcher prewarm once waited 2 minutes 6 seconds behind a 210-second top-up of another game; whether it now starts at once in real play has not been confirmed.
+- **No calibration read for a launcher's prewarm.** A prewarm that a launcher starts no longer does the short disk-speed read that ORBIT takes before a prewarm. Any other prewarm limits that read to 5 seconds and drops the sample if it takes longer (log: `<game>: device calibration stopped at the 5 s limit, sample discarded`; the `prewarm phases` line shows `calibration N s`, with `(capped)` when the limit was reached).
+- **Cooldown.** `prewarm.cooldown_min` (30 minutes by default) keeps a game from being prewarmed again too soon. Inside the cooldown the service first reads the same kind of sample as the re-prewarm check (only when no game is running on that disk, and a sample is reused for up to 5 minutes). If the sample shows that the cache has gone cold, which a reboot does, the cooldown is ignored and the game is prewarmed (log: `<game>: cooldown ignored, the cache is cold [service start]`, or `[trigger <exe>]`). If the cache is warm or the sample cannot be read, the cooldown applies as before (`<game>: prewarm skipped (cooldown (N min left)) [...]`). A game without a record has no sample and keeps the plain cooldown.
 
 **Order and budget**
 
@@ -190,10 +193,11 @@ When the first real run records a trace, the plan made from it replaces the earl
 
 **Memory runs short while reading**
 
-- If a prewarm that was reading only the front part loses memory (available memory falls below the reserve, or the remaining budget no longer fits), it stops. When it had read something in list order, with no errors and no gap filling, that amount is kept as a partial prewarm (`partial`, `warmed_mib`, and `hot_mib` in `prewarm_status.json`) instead of being counted as nothing. Otherwise nothing is kept, and neither is anything kept by a stop before anything was read.
+- If a prewarm that was reading only the front part loses memory (available memory falls below the reserve, or the remaining budget no longer fits), it no longer throws away what it has read. It ends there: it reads on only up to the amount that fits the memory available at that moment, then finishes, and the amount read is kept as a partial prewarm (`partial`, `warmed_mib`, and `hot_mib` in `prewarm_status.json`). It is still cancelled, as before, when nothing has been read yet and less than 256 MiB fits, and when the read had errors or ORBIT had changed the order (nothing is kept then). Log: `<game>: prewarm read the first N of M MiB, the rest does not fit in memory (available A MiB, reserve R MiB) [<reason>]`, followed by the usual `prewarm done (...): partial N/M MiB, the rest does not fit in memory: ...`.
+- A top-up (supplement) now starts only when the memory that fits exceeds the amount already read by at least `max(256 MiB, 5% of the amount read)`, or by what is left of the hot set when that is smaller. Until then it reads nothing from the disk and writes `<game>: supplement waits for memory (read X MiB, room for Y MiB)`, once for each amount read. When it starts, it continues after the part already read, even if the window it remembers is larger than what fits now; the total is held to what fits. A top-up that reaches the limit ends there like a prewarm (`<game>: supplement prewarm read the first X MiB of Y MiB, the rest does not fit in memory (...)`), and the next one continues after it. This replaces a cycle seen in the service log of the test PC (read on 2026-11-14): the top-up of a game whose list was close to the limit was cancelled again and again (86 times for Call of Duty, 79 of them without adding anything to what was recorded). The amounts those 79 attempts had been accepted for reading add up to 51,624 MiB, an upper bound on what was read from the HDD in vain. The effect on loading in real play has not been measured.
 - If a prewarm that was reading the whole list (a supplement prewarm included) stops for memory, it reads again once in the same run, cut to the front part that fits the memory available at that moment. From there it is handled like a prewarm that was reading only the front part. What was already read is in the cache, so reading it again costs almost no disk time. It does not read again when it stopped for another reason, such as a game starting, and it is cancelled as before when less than 256 MiB fits. Log: `<game>: prewarm stopped by memory before the full list was read; reading the first N MiB of M MiB instead` (`supplement prewarm stopped by memory ...` for a supplement prewarm).
 - After any stop caused by memory, including one that kept nothing, top-ups and retries (the waiting-list retry and the re-prewarm check) leave that game alone for 2 minutes; a launcher trigger or a service start does not wait. If the stop had read something, a waiting retry is pulled forward to 2 minutes later instead of the usual period (`rewarm_minutes`, 10 minutes by default); a stop that read nothing keeps the usual period. A game with a kept partial prewarm stays on the waiting list instead of being dropped, and the rest is read once free memory exceeds the amount already read plus 256 MiB plus the reserve.
-- Log lines: `prewarm cancelled (...) after N MiB (memory reserve: ...)` (or `(memory budget: ...)`), followed by `<game>: prewarm stopped by memory; kept the N of M MiB read as partial`, and `<game>: prewarm skipped (stopped by memory less than 2 min ago) [<reason>]`. The `prewarm done` line ends with `room X MiB` (or `unlimited`) and `available Y MiB`, and a `rewarm check: cold (...)` line includes `available N MiB`, so the memory at that moment can be read from the log.
+- Log lines for the cases that still cancel: `prewarm cancelled (...) after N MiB (memory reserve: ...)` (or `(memory budget: ...)`), followed by `<game>: prewarm stopped by memory; kept the N of M MiB read as partial`, and `<game>: prewarm skipped (stopped by memory less than 2 min ago) [<reason>]`. The `prewarm done` line ends with `room X MiB` (or `unlimited`) and `available Y MiB`, and a `rewarm check: cold (...)` line includes `available N MiB`, so the memory at that moment can be read from the log.
 - A prewarm that read its whole list is no longer recorded as `partial`. For a game whose saved plan holds only the part still to be moved, the amount to read used to include whole-file reads added for files where 30% or more of the file was needed (1,306 MiB against 1,164 MiB allotted for one game), so a complete read of the list was recorded as `partial` and `rewarm check: the rest of the hot set is not read yet` repeated. The prewarm list is now counted on the same basis as the allotted amount, so those whole-file reads are not added and `partial` appears only when memory or the cache budget really fell short. A `partial` left in `prewarm_status.json` is cleared the next time a prewarm reads the whole list. The effect on loading has not been measured.
 
 **Reading**
@@ -203,6 +207,7 @@ When the first real run records a trace, the plan made from it replaces the earl
 - At service start only the head part is read, up to `auto.startup_warm_max_mib`. The rest is read later, once the disk is idle. A game that will be skipped anyway (for example during its cooldown, while it is running, or in the post-update delay) does not take a share of that limit, so the next game gets it.
 - The management window shows `prewarming x/y MiB`, and a tray notification is sent when a game's prewarm finishes (once per game per day).
 - If another game starts, it stops at the next batch boundary. If the game being prewarmed starts, it also stops and yields (`auto.keep_stream_on_game_start`, default `false`; `true` reads to the end, for experiments).
+- **Giving way to other reads.** The reading thread of a prewarm of a hot set (at service start, from a launcher, a re-prewarm, a top-up), of a game without a record, and of the loading head at service start lowers its own I/O priority to low while other programs read the same disk, and returns to normal when the disk is idle. About every 10 seconds it pauses for 1 second and measures the disk's throughput without its own reads: 4 MiB/s or more, or a figure that cannot be measured, counts as busy and means low priority. The rule for another game running on the disk is unchanged: that still cancels. A prewarm that a launcher starts, or that starts within 15 minutes of boot, measures the disk once before its first batch instead of waiting for the first 10-second interval, so it can step aside at once. Log: `<game>: prewarm yields to other disk activity (low I/O priority)` (once per read) and `, yielded N.N s` at the end of the `prewarm done` line. Nothing else changes: the order, the amount, and the cancel rules are the same.
 
 **Games without a trace**
 
@@ -215,10 +220,10 @@ When the first real run records a trace, the plan made from it replaces the earl
 ### 5. Upkeep
 
 - **When.** Re-prewarm check every `rewarm_minutes`; top-ups and retries as the disk stays idle; layout check periodically.
-- **What.** Samples 8 places in each zone and reads it again if it went cold; reads the part of a hot set that did not fit; retries a prewarm that was cut short; restores a drifted layout.
+- **What.** Samples 8 places in each zone and reads it again if it went cold; reads the part of a hot set that did not fit; retries a prewarm that was cut short; restores a drifted layout; keeps the prewarmed cache in order and refreshes it in memory ([SOLAR](#solar-keeping-the-cache-in-order)).
 - **Does not.** Re-warm a game outside the prewarm budget, or touch the layout while the game runs.
-- **Settings.** `rewarm_minutes`, `min_free_ram_mib`, `post_update_delay_min`.
-- **Log.** `<game>: rewarm check skipped (...)`, `<game>: layout degraded while source files are unchanged (...)`, `<game>: reapplied, moved N bytes, N failed`
+- **Settings.** `rewarm_minutes`, `min_free_ram_mib`, `post_update_delay_min`, `memory.standby_ladder`.
+- **Log.** `<game>: rewarm check skipped (...)`, `<game>: layout degraded while source files are unchanged (...)`, `<game>: reapplied, moved N bytes, N failed`, `<game>: ladder ordered N MiB in S s`
 
 <details>
 <summary>Details: re-prewarm, top-up, retry, layout recheck and reapply</summary>
@@ -228,11 +233,12 @@ When the first real run records a trace, the plan made from it replaces the earl
 - Reads 1 MiB from each of 8 places in the zone (the first 4 in read order and 4 evenly spaced). If at least 2 of them take more than 2 ms, the data has probably been evicted from the file cache, so it prewarms again while keeping `min_free_ram_mib` free.
 - Only games inside the prewarm budget are re-warmed, in prewarm-score order (recent play and time-of-day habits). A game outside the budget is not re-warmed after it cools, and the reason is logged.
 - One running game does not stop the check for other games; each target is judged separately.
+- If the [SOLAR](#solar-keeping-the-cache-in-order) ladder found part of the list missing from the cache, this check prewarms that game again even when its samples are warm (log: `<game>: rewarm check: part of the list is not in memory (found by the ladder), prewarming again (cooldown ignored)`). Parts still in the cache cost almost no disk time, so in effect only the missing parts are read. It happens at most once per `rewarm_minutes` for each game, counted from the last prewarm attempt, and not while a top-up is pending or a launcher's prewarm is waiting. It does nothing when automatic mode is off or `rewarm_minutes` is 0.
 
 **Top-up (supplement)**
 
-- When a hot set does not fit the budget, a window that fits is read as the drive stays idle: the smaller of the remaining hot set, free RAM minus the 256 MiB margin and the reserve, and the prewarm budget, at least 256 MiB.
-- If a top-up stops midway, the position it reached is remembered while the service runs, and the next one continues from there. One that mixed in gap filling, or whose front has gone cold, starts again from the beginning.
+- When a hot set does not fit the budget, a window that fits is read as the drive stays idle: the smaller of the remaining hot set, free RAM minus the 256 MiB margin and the reserve, and the prewarm budget, at least 256 MiB. It starts only when that window is larger than the amount already read by at least `max(256 MiB, 5%)`; see [Memory runs short while reading](#4-prewarm).
+- If a top-up stops midway, or ends at the memory limit, the position it reached is remembered while the service runs, and the next one continues from there. One that mixed in gap filling, or whose front has gone cold, starts again from the beginning.
 - A failed read or a settings change discards the position, and a service restart loses it.
 - Log lines: `<game>: rewarm check: the rest of the hot set is not read yet, supplementing once the drive has stayed idle`, `<game>: supplement prewarm skipped (...)`.
 
@@ -323,15 +329,26 @@ When the first real run records a trace, the plan made from it replaces the earl
 
 ### Right after boot
 
-If the service starts within 5 minutes of boot, it holds the disk work it would start on its own until 5 minutes have passed and the game drive has been idle for 60 seconds. The quiet period ends 15 minutes after boot at the latest.
+If the service starts within 5 minutes of boot, it holds the disk work it would start on its own until 5 minutes have passed and the game drive has been idle for 60 seconds. The quiet period ends 15 minutes after boot at the latest. Two prewarms are the exception: the prewarm at service start and a prewarm started by a launcher wait only until 60 seconds after boot and the game drive has been idle for 20 seconds, because their reads give way to other reads (see [Prewarm](#4-prewarm)).
 
 <details>
 <summary>Details: what is held</summary>
 
-- Held work: trigger prewarm such as a launcher starting, relocation, new-trace prewarm, layout checks and reapply, and the keep-awake read. The held work then runs under the normal rules.
+- Held work: relocation, new-trace prewarm, layout checks and reapply, and the keep-awake read. The held work then runs under the normal rules. A trigger prewarm such as a launcher starting is held only until the shorter condition above; it is released at the next 30-second check after that (log: `held prewarm triggers released: N (boot + idle disk)`), while the other held work stays held until the quiet period ends. The prewarm at service start writes `service start prewarm waits for 60 s after boot and 20 s of idle disk`.
+- A prewarm read that starts within 15 minutes of boot measures the disk before its first batch and, if other reads are there, steps aside at once with a low I/O priority (see [Prewarm](#4-prewarm)).
+- After a reboot the RAM cache is empty, but the cooldown counts from the last prewarm before the reboot. A sample that finds the cache cold ends the cooldown for that game (`cooldown ignored, the cache is cold [service start]`).
 - Boot-time prewarm covers only recently played games. A trace that was already prewarmed before the restart is not treated as new again.
 - The period also ends 15 minutes after boot even if the disk is still busy or unreadable.
 - Log lines: `<what> deferred: boot quiet period`, `boot quiet period ended: ...`.
+
+**What was measured on the test PC (2026-11-14)**
+
+These are experiments with a test tool and test files on the HDD, not the service itself and not a running game. A thread read a 1 GiB test file with `PrefetchVirtualMemory`, while another process read 64 KiB pieces of another file at random, without a pause and past the cache.
+
+- Reading thread at normal I/O priority: 113 MB/s alone; beside the other reads, 99 MB/s, and the other reads took 45.9 ms on average (p99 470.5 ms).
+- Reading thread at low I/O priority: 51 MB/s alone; beside the other reads, 8 MB/s, and the other reads took 26.1 ms on average (p99 84.9 ms). The other reads alone took 25.0 ms on average (p99 124.9 ms). Very low priority gave similar figures (49 MB/s alone, 11 MB/s beside, 31.5 ms and 88.7 ms).
+- On an idle disk, a read of 128 KiB pieces spaced 1.33 MiB apart, like a real prewarm list, ran at 31.6 to 38.6 MB/s at normal priority and at 13.0 to 14.2 MB/s at low priority.
+- So low priority hardly disturbs other reads, but it makes the prewarm 2.5 to 3 times slower even on an idle disk. That is why the prewarm uses it only while other reads are there. The pages read this way still enter the standby list at priority 5. How this changes the start of a launcher in real play has not been measured.
 
 </details>
 
@@ -352,10 +369,10 @@ With `prewarm.pin`, prewarmed pages stay open as read-only mappings in the servi
 During a game session, programs that have nothing to do with the game give up memory, so that Windows does not take it from the prewarm cache first. It is on by default (`memory.background_yield`) and applies to every registered game, including games with anti-cheat.
 
 - **When.** When a launcher or another trigger program starts a prewarm, and when a registered game's exe starts. It ends when the game counts as exited (and no other registered game is running), at service stop (a start request that arrives after that is ignored), when the setting is turned off, or 10 minutes after the last time a registered game was seen running (counted from the start when none was seen).
-- **What.** For each program in your user session that is not excluded (see the details): empties its working set (only if that is 32 MiB or more) and lowers its memory priority to "very low" (1) when it is higher (the Windows default is 5). At the end it sets the priority back to the value it had.
+- **What.** For each program in your user session that is not excluded (see the details): lowers its memory priority to "very low" (1) when it is higher (the Windows default is 5), and, only when memory is short or the cache is being reused (see Timing in the details), empties its working set (only if that is 32 MiB or more). At the end it sets the priority back to the value it had.
 - **Does not.** Open a game, launcher, launcher helper, anti-cheat, or Windows component process, or any service process (session 0). It changes nothing in another program except these two things: no ending, suspending, injecting, or reading memory, and no change of CPU or disk priority. The memory reserve (`prewarm.min_free_ram_mib`), the cache budget, and the prewarm decisions are unchanged.
 - **Settings.** `memory.background_yield` (default `true`).
-- **Log.** `background yield (trigger): trimmed N processes (...)`, `background yield ended: ...`. The meaning of each line is in the [FAQ](FAQ.md#troubleshooting).
+- **Log.** `background yield (trigger): trimmed N processes (...)` or `... no trim needed (...)`, `background yield ended: ...`. The meaning of each line is in the [FAQ](FAQ.md#troubleshooting).
 
 <details>
 <summary>Details: why, what is left alone, timing, side effects, recovery, turning it off</summary>
@@ -364,6 +381,7 @@ During a game session, programs that have nothing to do with the game give up me
 
 - On the test PC, when a game took about 10 GiB, Windows took the memory from cached file pages, and the prewarm cache is made of those pages. Reads by other programs can also push the prewarm cache out.
 - Emptying the working set of an unrelated program frees its memory in a form Windows reuses before the cache. A lowered memory priority keeps the pages that program reads afterwards from pushing the cache out.
+- Windows takes memory from free pages first, then from standby pages of lower priority (0 to 4), and only then from priority 5, where the file cache sits. A page emptied from a working set goes to the priority 0 list, most of it within 2 seconds (measured on the test PC, 2026-11-14). While free memory and priority 0 to 4 standby memory last, the cache is not reused, so emptying helps only when they run short. In a 4 hour 11 minute session on the test PC, the earlier rule emptied the background programs again 41 times (18 to 36 programs and 1.6 to 4.1 GiB each time) whatever the state of the cache. The conditions now follow measured pressure.
 
 **What was measured on the test PC**
 
@@ -381,9 +399,11 @@ These are experiments with an experiment tool, test programs, and test files on 
 
 **Timing**
 
-- Order: choose the programs, lower the priorities, then empty the working sets. The freed pages take a few seconds to show up as available memory. A prewarm started by a trigger program therefore waits up to 3 seconds after emptying, until available memory has stopped rising (two readings 500 ms apart, each up by less than 64 MiB), so that it reads the memory figure after the freed pages arrived. The start path of a game does not wait.
+- Order: choose the programs, lower the priorities, then, if needed, empty the working sets. The freed pages take a few seconds to show up as available memory. A prewarm started by a trigger program therefore waits up to 3 seconds after emptying, until available memory has stopped rising (two readings 500 ms apart, each up by less than 64 MiB), so that it reads the memory figure after the freed pages arrived. The start path of a game does not wait.
 - A start less than 60 seconds after the previous one is ignored, for example the game starting just after its launcher. After a session has ended, the next start is not held back.
-- While a registered game runs, every 2 minutes (on the 30-second check) programs that started since then get the same priority change. If at least 5 minutes have passed since the last emptying and the working sets of the chosen programs together have grown back by 1,024 MiB or more, they are emptied once more.
+- **At the start of a session,** the working sets are emptied only when the spare memory is short: free memory plus the standby memory of priority 0 to 4, which Windows reuses before the cache, is below `max(4 GiB, physical RAM / 4)`. If there is enough, only the priorities are lowered (log: `background yield (trigger): memory priority lowered for M, no trim needed (headroom H MiB, available A MiB)`). If Windows' memory statistics cannot be read, the working sets are emptied once at the start, as before, and `background yield: memory lists unavailable, trimming once per session` is written.
+- **During the session,** every 2 minutes (on the 30-second check) programs that started since then get the same priority change. The chosen programs are emptied again only when at least 2 minutes have passed since the last emptying and the cache (standby pages of priority 5 and above) was really reused: 512 MiB or more since the previous 2-minute check. A program that got back at least half of its previous working set after being emptied is active, and it is not emptied again in that session. If the statistics cannot be read, nothing is emptied again. Log: `background yield: trimmed again N processes (X MiB working set), cache repurposed R MiB in S s, K active processes skipped`.
+- Reading the memory statistics opens no process: it is a system-wide figure, and the service turns on the `SeProfileSingleProcessPrivilege` right for it.
 
 **Side effects**
 
@@ -410,6 +430,17 @@ These are experiments with an experiment tool, test programs, and test files on 
 - The `memory` key is new in 1.0.3. Versions 1.0.2 and earlier reject a settings file that contains it, so remove it before rolling back ([Configuration](CONFIGURATION.md)).
 
 </details>
+
+### SOLAR: keeping the cache in order
+
+After a game's prewarm, the prewarmed cache is touched again in memory, so that the data a load needs first is the last to be pushed out, and it is touched again before other programs push it out. Nothing is read from the disk on purpose. It is on by default (`memory.standby_ladder`). The full explanation, with the measurements, is in [SOLAR](SOLAR.md).
+
+- **When.** Right after a prewarm has read a game's list to the end. After that, about every 30 seconds, when Windows' standby-list statistics show that the pages ahead of the game's pages are being used up (the count of reused cache pages has grown by `max(512 MiB, 0.4 x the amount ahead)`); every 10 minutes when the statistics cannot be read.
+- **What.** Touches the cache the game has in the reverse of the read order, so the common blocks and the loading head leave the cache last. If it finds part of the list missing from the cache, it stops, and the next re-prewarm check prewarms the game again.
+- **Does not.** Run on a disk where a game is running; read the game's data from the disk on purpose; lock memory or keep a mapping open; open any process; or change the memory reserve, the cache budget, or the prewarm list. It does not stop the cache from being pushed out when memory is truly short.
+- **Settings.** `memory.standby_ladder` (default `true`). The re-prewarm that follows a missing part uses `rewarm_minutes`.
+- **Log.** `<game>: ladder ordered N MiB in S s`, `<game>: cache refreshed in memory: N MiB in S s (R MiB repurposed of A MiB ahead)`, `<game>: ladder found data missing from memory (...), left to the rewarm check`. The meaning of each line is in [SOLAR](SOLAR.md#checking-that-it-runs).
+- **Turning it off.** `"memory": { "standby_ladder": false }` in `config.json`. There is no switch in the Settings tab; the service re-reads the file. Versions 1.0.3 and earlier reject a settings file that contains `memory.standby_ladder`, so remove it before rolling back ([Configuration](CONFIGURATION.md)).
 
 ## What "idle" means
 

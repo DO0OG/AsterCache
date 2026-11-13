@@ -22,13 +22,19 @@
 예열한 데이터는 일반 파일 캐시입니다. 모든 게임을 합쳐 기본으로 물리 RAM 의 절반 이하이며(`prewarm.max_cache_mib`), 예열 뒤에도 가용 RAM 이 4 GB 이상 남을 때만 실행합니다. 다른 프로그램이 메모리를 필요로 하면 Windows 가 캐시를 회수합니다. 가용 메모리에 예열 목록 전체가 들어가지 않으면 들어가는 앞부분만 읽되 4 GB 예비량보다 256 MiB 를 더 비워 두고, 나머지는 메모리가 다시 날 때 읽습니다. 예비량과 캐시 예산을 낮추지는 않습니다. [설정](CONFIGURATION.ko.md)을 보십시오. 트레이와 서비스도 예전에 붙들고 있던 메모리를 풀어 줄였습니다(트레이는 로그 전체를 읽지 않고, 서비스는 등록 해제된 게임의 남은 데이터를 정리합니다). 전후 수치는 재지 않았습니다.
 
 **게임을 켠 뒤 열어 두었던 프로그램이 잠깐 느려졌습니다. 왜 그런가요?**
-배경 메모리 양보 때문입니다. 게임 세션이 시작되면 AsterCache 가 게임과 무관한 프로그램의 작업 집합을 비우고 메모리 우선순위를 낮춰, Windows 가 예열 캐시보다 그 프로그램의 메모리를 먼저 가져가게 합니다. 비워진 프로그램은 다시 쓸 때 페이지를 다시 가져와야 해서 잠깐 느려질 수 있습니다. 시험에서는 2 GiB 를 다시 만지는 데 0.8초가 걸렸습니다. 그 메모리를 먼저 재사용하므로 세션 동안 배경 프로그램이 약간 느려질 수도 있습니다. 의도된 동작이며 게임이 끝나면 우선순위를 되돌립니다. 게임·런처·안티치트 프로그램은 건드리지 않습니다. 실제 플레이에서 얼마나 달라지는지는 재지 않았습니다. [배경 메모리 양보](AUTO_MODE.ko.md#배경-메모리-양보)를 보십시오.
+배경 메모리 양보 때문입니다. 게임 세션이 시작되면 AsterCache 가 게임과 무관한 프로그램의 메모리 우선순위를 낮춰, Windows 가 예열 캐시보다 그 프로그램의 메모리를 먼저 가져가게 합니다. 작업 집합도 비우지만, 시작할 때 메모리가 모자랄 때(여유 메모리와 낮은 우선순위 대기 메모리의 합이 `max(4 GiB, 물리 RAM / 4)` 미만)와, 세션 중에는 캐시가 실제로 재사용될 때만입니다. 비워진 프로그램은 다시 쓸 때 페이지를 다시 가져와야 해서 잠깐 느려질 수 있습니다. 시험에서는 2 GiB 를 다시 만지는 데 0.8초가 걸렸습니다. 비운 뒤 메모리 대부분을 되찾는 프로그램은 그 세션에서 다시 비우지 않습니다. 그 메모리를 먼저 재사용하므로 세션 동안 배경 프로그램이 약간 느려질 수도 있습니다. 의도된 동작이며 게임이 끝나면 우선순위를 되돌립니다. 게임·런처·안티치트 프로그램은 건드리지 않습니다. 실제 플레이에서 얼마나 달라지는지는 재지 않았습니다. [배경 메모리 양보](AUTO_MODE.ko.md#배경-메모리-양보)를 보십시오.
 
 **배경 메모리 양보를 끄려면 어떻게 하나요?**
 `config.json` 에 `"memory": {"background_yield": false}` 를 넣으십시오. 설정 탭에는 스위치가 없습니다. 서비스가 5초 안에 파일을 다시 읽으며, 게임 세션 중에 껐으면 다음 30초 점검 때 우선순위를 되돌립니다. 이전 버전으로 되돌릴 때는 1.0.2 이하 버전이 `memory` 키를 거부하므로 먼저 지우십시오([설정](CONFIGURATION.ko.md)).
 
+**"캐시가 식는다"는 무슨 뜻인가요?**
+예열한 데이터는 파일 캐시에 있습니다. 파일 캐시는 보통 RAM 이라서, 다른 프로그램이 메모리를 필요로 하거나 다른 파일을 읽으면 Windows 가 도로 가져갑니다. 게임 데이터의 일부를 가져가면 그 부분의 캐시가 식은 것이고, 그 부분을 읽으면 다시 HDD 로 갑니다. 재예열 점검은 8곳에서 1 MiB 씩 읽어 그중 2곳 이상이 2 ms 를 넘으면 캐시가 식었다고 봅니다. 시험 PC 에서 전체 예열이 끝난 뒤 처음 식었다고 판정한 점검까지 걸린 시간의 중앙값은 League of Legends 29.0분, Call of Duty 71.5분이었고(점검은 약 10분마다 돕니다), 2026-11-11 이후 점검의 47%(League of Legends)와 71%(Call of Duty)가 캐시가 식었거나 일부가 식었다고 판정했습니다. [SOLAR](SOLAR.ko.md)는 캐시를 메모리 안에서 다시 만져 더 오래 남게 합니다. 실제 플레이에서 도움이 되는지는 재지 않았습니다.
+
+**SOLAR 를 끄려면 어떻게 하나요?**
+`config.json` 에 `"memory": {"standby_ladder": false}` 를 넣으십시오. 설정 탭에는 스위치가 없습니다. 서비스가 5초 안에 파일을 다시 읽고 그때부터 캐시를 만지지 않으며, 예열 자체와 재예열 점검은 영향이 없습니다. 1.0.3 이하 버전으로 되돌릴 때는 그 버전들이 `memory.standby_ladder` 를 거부하므로 먼저 지우십시오([설정](CONFIGURATION.ko.md)).
+
 **안티치트 게임에서 안전한가요?**
-AsterCache 는 게임 프로세스에 손대지 않습니다. 자기 프로세스에서 파일을 읽고, Windows 이벤트 추적으로 파일 읽기를 관찰하며, 게임이 종료된 뒤에만 파일을 옮깁니다. 다른 프로그램에 하는 일은 게임 세션 동안 게임과 무관한 프로그램의 작업 집합을 비우고 메모리 우선순위를 낮추는 것뿐이며, 게임·런처·안티치트 프로세스는 열지 않습니다([안티치트 호환](ANTICHEAT.ko.md)). 다만 통제된 검증은 하지 않았고 한 PC 의 사용 기록만 있으며, 계정 제재 여부는 보증하지 않습니다. 안티치트 게임은 플레이 전에 자동 모드를 끄거나 `auto.ignore_exes` 에 넣으십시오. [안티치트 호환](ANTICHEAT.ko.md)을 보십시오.
+AsterCache 는 게임 프로세스에 손대지 않습니다. 자기 프로세스에서 파일을 읽고, Windows 이벤트 추적으로 파일 읽기를 관찰하며, 게임이 종료된 뒤에만 파일을 옮깁니다. 다른 프로그램에 하는 일은 게임 세션 동안 게임과 무관한 프로그램의 메모리 우선순위를 낮추고, 메모리가 모자라거나 캐시가 실제로 재사용될 때만 그 작업 집합을 비우는 것뿐이며, 게임·런처·안티치트 프로세스는 열지 않습니다([안티치트 호환](ANTICHEAT.ko.md)). 다만 통제된 검증은 하지 않았고 한 PC 의 사용 기록만 있으며, 계정 제재 여부는 보증하지 않습니다. 안티치트 게임은 플레이 전에 자동 모드를 끄거나 `auto.ignore_exes` 에 넣으십시오. [안티치트 호환](ANTICHEAT.ko.md)을 보십시오.
 
 **게임 업데이트 뒤에는 어떻게 되나요?**
 패치로 파일이 바뀌면 저장해 둔 계획과 맞지 않을 수 있습니다. AsterCache 는 옮기기 전에 계획을 확인해 바뀐 파일은 건너뛰고, 게임이 꺼져 있는 동안 5분마다 배치가 흐트러졌는지 보고 흐트러졌으면 계획을 다시 적용합니다. 자동 모드에서는 바뀐 파일을 다시 학습하며, 계획 데이터의 절반 이상이 바뀌었으면 트레이스와 계획 전체를 `.stale` 로 치웁니다. 실제 게임 업데이트로는 아직 시험하지 않았습니다. [자동 모드](AUTO_MODE.ko.md)를 보십시오.
@@ -78,10 +84,12 @@ SMR 드라이브(WD20EZAZ) 1대만 측정했고 CMR 은 측정하지 않았습�
 재배치, 되돌리기, 볼륨 명령은 관리자 PowerShell 에서 실행하십시오.
 
 **예열이 실행되지 않았습니다.**
-건너뛴 이유는 `service.log` 에 남습니다. 가용 RAM 이 부족하거나, 게임이 실행 중이거나, 쿨다운 중이거나, 계획 파일이 없는 경우입니다. 게임 실행 여부는 그 게임에 등록된 실행 파일 이름으로만 봅니다. `aster status` 의 `prewarm` 항목에서도 확인할 수 있습니다.
+건너뛴 이유는 `service.log` 에 남습니다. 가용 RAM 이 부족하거나, 게임이 실행 중이거나, 쿨다운 중(표본 읽기가 캐시가 식었음을 보이면, 예를 들어 재부팅 뒤에는 쿨다운이 적용되지 않습니다)이거나, 계획 파일이 없는 경우입니다. 게임 실행 여부는 그 게임에 등록된 실행 파일 이름으로만 봅니다. `aster status` 의 `prewarm` 항목에서도 확인할 수 있습니다.
 
 **예열이 `partial` 로 끝나거나 로그에 메모리 때문에 멈췄다고 나옵니다.**
-가용 메모리에 예열 목록 전체가 들어가지 않아 앞부분만 읽은 것입니다. 읽는 도중 메모리가 예비량 아래로 내려가면 예열이 멈추고, 앞부분을 목록 순서대로 읽던 중이었다면 그때까지 읽은 만큼은 부분 예열로 남습니다. 나머지는 가용 메모리가 읽은 양 + 256 MiB + 예비량(`prewarm.min_free_ram_mib`, 기본 4,096 MiB)을 넘으면 읽으며, 멈춘 뒤 2분 안에는 읽지 않습니다. 예비량과 캐시 예산은 이 때문에 낮추지 않습니다. 목록 전체를 읽은 예열은 `partial` 로 기록되지 않습니다. 저장된 계획이 아직 옮기지 못한 부분만 담고 있는 게임에서는 예전 버전이 그렇게 기록하기도 했습니다(예: `partial 1164/1306 MiB`). `service.log` 에서 볼 줄은 다음과 같습니다.
+가용 메모리에 예열 목록 전체가 들어가지 않아 앞부분만 읽은 것입니다. 앞부분을 목록 순서대로 읽는 도중 메모리가 예비량 아래로 내려가도 예열은 읽은 것을 버리지 않습니다. 그 시점에 들어가는 양까지만 더 읽고 그만큼을 부분 예열로 남깁니다. 나머지는 가용 메모리가 읽은 양 + 256 MiB + 예비량(`prewarm.min_free_ram_mib`, 기본 4,096 MiB)을 넘으면 읽으며, 멈춘 뒤 2분 안에는 읽지 않습니다. 예비량과 캐시 예산은 이 때문에 낮추지 않습니다. 목록 전체를 읽은 예열은 `partial` 로 기록되지 않습니다. 저장된 계획이 아직 옮기지 못한 부분만 담고 있는 게임에서는 예전 버전이 그렇게 기록하기도 했습니다(예: `partial 1164/1306 MiB`). `service.log` 에서 볼 줄은 다음과 같습니다.
+- `<게임>: prewarm read the first N of M MiB, the rest does not fit in memory (available A MiB, reserve R MiB) [<사유>]`: 읽기가 한도에서 끝났고 읽은 만큼을 부분 예열로 남겼다는 뜻입니다. 오류가 아닙니다.
+- `<게임>: supplement waits for memory (read X MiB, room for Y MiB)`: `max(256 MiB, 읽은 양의 5%)` 이상 더 들어가지 않아 나머지를 아직 읽지 않는다는 뜻입니다. 기다리는 동안 디스크에서 아무것도 읽지 않습니다.
 - `<게임>: prewarm stopped by memory; kept the N of M MiB read as partial`
 - `<게임>: prewarm skipped (stopped by memory less than 2 min ago) [<사유>]`
 - `<게임>: prewarm done (...): ..., room X MiB, available Y MiB` 와 `rewarm check: cold (..., available N MiB)`. 그 시점의 메모리를 보여 줍니다.
@@ -89,12 +97,28 @@ SMR 드라이브(WD20EZAZ) 1대만 측정했고 CMR 은 측정하지 않았습�
 
 **로그의 `background yield` 줄은 무슨 뜻인가요?**
 [배경 메모리 양보](AUTO_MODE.ko.md#배경-메모리-양보)가 남기는 줄이며 프로그램 이름이나 경로 없이 개수와 크기만 담습니다(프로그램 이름은 경로 없이, 세션이 도는 동안의 `background_yield.json` 에만 적힙니다).
-- `background yield (trigger): trimmed N processes (X MiB working set), memory priority lowered for M, available B -> A MiB`: 런처나 다른 트리거 프로그램이 예열을 시작할 때 남습니다. N개 프로그램의 작업 집합을 비웠고(합계 X MiB, 32 MiB 이상인 프로그램만 비움), M개 프로그램의 메모리 우선순위를 낮췄으며, 가용 메모리는 B MiB 에서 최대 3초 기다린 뒤 A MiB 가 됐다는 뜻입니다. `trimmed 0` 은 대상이 없었거나 하나도 열지 못했다는 뜻입니다.
-- `background yield (game started): trimmed N processes (X MiB working set), memory priority lowered for M, available B MiB`: 등록 게임의 실행 파일이 시작될 때 같은 일을 기다리지 않고 해서 앞의 값만 있습니다. 60초 안에 세션이 이미 시작됐으면 남지 않습니다.
-- `background yield: trimmed again N processes (X MiB working set regrown by D MiB)`: 게임 중에 고른 프로그램들의 작업 집합 합이 1,024 MiB 이상 다시 늘어서 한 번 더 비웠다는 뜻입니다.
+- `background yield (trigger): trimmed N processes (X MiB working set), memory priority lowered for M, available B -> A MiB, headroom H MiB`: 런처나 다른 트리거 프로그램이 예열을 시작하는데 메모리가 모자랄 때 남습니다. N개 프로그램의 작업 집합을 비웠고(합계 X MiB, 32 MiB 이상인 프로그램만 비움), M개 프로그램의 메모리 우선순위를 낮췄으며, 가용 메모리는 B MiB 에서 최대 3초 기다린 뒤 A MiB 가 됐다는 뜻입니다. `headroom` 은 비우기 전의 여유 메모리와 우선순위 0~4 대기 메모리의 합입니다. `trimmed 0` 은 대상이 없었거나 하나도 열지 못했다는 뜻입니다.
+- `background yield (trigger): memory priority lowered for M, no trim needed (headroom H MiB, available A MiB)`: 여유분(headroom)이 `max(4 GiB, 물리 RAM / 4)` 이상이어서 우선순위만 낮추고 작업 집합은 비우지 않았다는 뜻입니다.
+- `background yield (game started): trimmed N processes (X MiB working set), memory priority lowered for M, available B MiB, headroom H MiB`: 등록 게임의 실행 파일이 시작될 때 같은 일을 기다리지 않고 해서 앞의 값만 있습니다. 60초 안에 세션이 이미 시작됐으면 남지 않습니다. 여기에도 `no trim needed` 줄이 나올 수 있습니다.
+- `background yield: trimmed again N processes (X MiB working set), cache repurposed R MiB in S s, K active processes skipped`: 게임 중에 캐시가 실제로 재사용됐고(직전 S초 동안 R MiB, 512 MiB 이상) 마지막 비우기로부터 2분 이상 지나서 고른 프로그램을 한 번 더 비웠다는 뜻입니다. 비운 뒤 메모리 대부분을 되찾은 K개 프로그램은 건드리지 않았습니다.
+- `background yield: memory lists unavailable, trimming once per session`: Windows 의 메모리 통계를 읽을 수 없어서 시작 때 한 번만 작업 집합을 비우고 다시 비우지 않는다는 뜻입니다.
 - `background yield ended: memory priority restored for N processes`: 세션이 끝났고 N개 프로그램의 우선순위를 원래대로 되돌렸다는 뜻입니다.
 - `background yield: restored memory priority for N processes left by the previous run`: 서비스가 시작될 때, 직전 실행이 비정상 종료했던 경우입니다.
 - `background yield state file not written: <예외 형식>`: `background_yield.json` 을 쓰지 못해서 그때는 우선순위를 낮추지 않았다는 뜻입니다(작업 집합은 그래도 비웁니다). 오류와 함께 남는 `background yield failed` 는 그 밖의 실패이며 서비스의 나머지에는 영향이 없습니다.
+
+**로그의 `ladder` 와 `cache refreshed` 줄은 무슨 뜻인가요?**
+[SOLAR](SOLAR.ko.md)가 `service.log` 에 남기는 줄입니다. 전체 목록은 [켜졌는지 확인하는 법](SOLAR.ko.md#켜졌는지-확인하는-법)에 있습니다.
+- `<게임>: ladder ordered N MiB in S s`: 예열 직후 그 게임의 캐시 N MiB 를 읽은 순서의 역순으로, 디스크 읽기 없이 만졌다는 뜻입니다.
+- `<게임>: cache refreshed in memory: N MiB in S s (R MiB repurposed of A MiB ahead)`: Windows 가 다시 쓴 캐시가 R MiB 로, 그 게임의 페이지 앞에 있는 A MiB 에 가까워져서 캐시를 다시 만졌다는 뜻입니다.
+- `<게임>: ladder found data missing from memory (K slow pieces, N MiB read from disk), left to the rewarm check`: 목록 일부가 이미 캐시에 없었다는 뜻입니다. 만지기를 멈췄고, 다음 재예열 점검이 표본이 따뜻해 보여도 그 게임을 다시 예열합니다(`rewarm check: part of the list is not in memory (found by the ladder), prewarming again (cooldown ignored)`).
+- `<게임>: cache refresh skipped, the samples are cold (...), left to the rewarm check`: 새로 고치기 전의 표본 점검이 캐시가 식었음을 보여서 재예열 점검에 맡겼다는 뜻입니다.
+
+**로그의 `cooldown ignored`, `yields`, `preempted` 줄은 무슨 뜻인가요?**
+- `<게임>: cooldown ignored, the cache is cold [service start]`(또는 `[trigger <exe>]`): 그 게임이 쿨다운 안이었지만, 표본 읽기가 캐시가 식었음을 보여서(예: 재부팅 뒤) 그래도 예열했다는 뜻입니다.
+- `service start prewarm waits for 60 s after boot and 20 s of idle disk`, `held prewarm triggers released: N (boot + idle disk)`: 서비스 시작 예열과 부팅 때 보류된 런처 예열이 그 조건만 기다린다는 뜻입니다([부팅 직후](AUTO_MODE.ko.md#부팅-직후)).
+- `<게임>: prewarm yields to other disk activity (low I/O priority)`, 그리고 `prewarm done` 줄 끝의 `, yielded N.N s`: 다른 프로그램이 같은 디스크를 읽고 있어서 예열이 모두 합쳐 N.N초 동안 낮은 I/O 우선순위로 읽었다는 뜻입니다.
+- `<게임>: prewarm cancelled (...) (preempted by trigger prewarm)`, `<게임>: trigger prewarm waited N s for <게임>`: 런처가 예열을 시작해서 같은 디스크의 다른 게임의 배경 예열이 먼저 읽게 길을 내주고 멈췄다는 뜻입니다. 두 번째 줄은 런처의 예열이 그래도 1초 이상 기다려야 했을 때 남습니다.
+- `<게임>: device calibration stopped at the 5 s limit, sample discarded`: 예열 전의 짧은 디스크 속도 읽기가 5초를 넘게 걸려 그 표본을 버렸다는 뜻입니다.
 
 **로그의 `trace window ended` 줄은 무슨 뜻인가요?**
 `<게임>: trace window ended, N reads, P target processes, L events lost so far` 는 기록 창이 닫힐 때마다 남습니다. `N` 은 그 창에서 저장한 읽기 수, `P` 는 창이 닫힐 때 살아 있던 게임 프로세스 수이며, `N` 이 0 인 추가 창은 아무것도 저장하지 못한 것입니다. `L` 은 트레이스 세션이 시작된 뒤 놓친 이벤트의 누적 수입니다. 세션이 멈출 때 남는 `trace session stopped: ... M reads dropped (name unresolved)` 는 어느 파일인지 알아내지 못한 읽기 수입니다. [자동 모드](AUTO_MODE.ko.md#2-읽기-기록트레이스)를 보십시오.

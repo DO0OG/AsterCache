@@ -67,7 +67,7 @@ streamer.Reorder = canApply ? orbitRuntime.Reorder : null; // 스트림 중지 �
 // 배경 메모리 양보: 상태 파일을 쓰므로 canApply 일 때만 (설정은 매번 최신값으로 읽음)
 Func<IReadOnlyList<string>> knownGameFolders = () => []; // 자동 모드를 만든 뒤 런처 탐색의 최근 결과로 바꿈
 BackgroundYield? backgroundYield = canApply ? new BackgroundYield(() => settings, BackgroundYieldEnv.Create(Path.Combine(dataDir, "background_yield.json"), () => knownGameFolders()), log) : null;
-PrewarmEnv prewarmEnv = canApply ? PrewarmEnv.Create(orbitCalibration, orbitRuntime, backgroundYield) : baseEnv;
+PrewarmEnv prewarmEnv = canApply ? PrewarmEnv.Create(orbitCalibration, orbitRuntime, backgroundYield, () => settings.Memory.StandbyLadder) : baseEnv;
 var prewarm = new Prewarmer(settings.Games, streamer, prewarmEnv, log, canApply ? Path.Combine(dataDir, "prewarm_status.json") : null); // 데이터 폴더를 믿을 수 없으면 (SYSTEM 이 일반 사용자가 쓸 수 있는 곳에 쓰지 않도록) 상태 파일을 쓰지 않음
 var playRecorder = new PlayRecorder(canApply ? Path.Combine(dataDir, "play_samples.json") : null, log);
 LoadBoundaryWatch.OrbitApplied = canApply ? streamer.WasPrewarmReordered : _ => false;

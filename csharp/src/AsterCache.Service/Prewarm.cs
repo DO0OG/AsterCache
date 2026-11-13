@@ -124,6 +124,7 @@ public sealed partial class Prewarmer
         _now = now ?? (() => DateTimeOffset.UtcNow);
         _coordinator = coordinator;
         _pins = new PinKeeper(env, log, _now) { Coordinator = coordinator };
+        _solar = new Solar(env, log, _now);
         _rewarm = new Rewarmer(this, env, log, _now);
         LoadStatus();
     }

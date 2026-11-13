@@ -50,6 +50,9 @@ public interface IGameStreamer
 
     bool WasPrewarmReordered(GameSettings game) => false;
 
+    /// 예열이 읽는 목록 (틈 메우기 제외, 부분 예열 뒤 표본을 고르는 것과 같은 기준: game 의 MaxStreamMib 로 잘린 읽은 범위), 모르면 null. 캐시를 디스크 읽기 없이 다시 만지는 사다리 (Solar) 의 대상입니다.
+    IReadOnlyList<ReadOp>? PlannedPrewarmReads(GameSettings game) => null;
+
     /// 예열이 실제로 읽을 원래 범위의 바이트 (틈 제외), 모르면 null. 최초 메모리 게이트가 존 크기 대신 씁니다.
     long? PrewarmReadBytes(GameSettings game) => null;
 
@@ -112,6 +115,18 @@ public sealed class PrefetchStreamer : IGameStreamer
     }
 
     private readonly ConcurrentDictionary<string, bool> _reordered = new(StringComparer.OrdinalIgnoreCase);
+
+    public IReadOnlyList<ReadOp>? PlannedPrewarmReads(GameSettings game)
+    {
+        try
+        {
+            return IncumbentPrewarmOps(game, 0); // 총 예산 0: 틈 메우기 없이 계획한 목록 그대로 (마지막 범위는 예산에서 자름)
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException or PlanRejectedException)
+        {
+            return null;
+        }
+    }
 
     /// 예열 목록을 정한 뒤 원래 순서를 바꿀 수 있습니다 (마지막 인자는 스트림 중지 신호). 기본은 기존 순서입니다.
     public Func<GameSettings, List<ReadOp>, CancellationToken, List<ReadOp>>? Reorder { get; set; }

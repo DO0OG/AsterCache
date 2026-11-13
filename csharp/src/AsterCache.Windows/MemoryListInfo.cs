@@ -4,8 +4,8 @@ using Microsoft.Win32.SafeHandles;
 
 namespace AsterCache.Windows;
 
-/// 대기 목록에서 읽은 두 값: 여유분 (여유 + 우선순위 0~4 대기) 바이트와 캐시 (우선순위 5~7) 재사용 누계 바이트.
-public readonly record struct MemoryLists(long HeadroomBytes, long CacheRepurposedBytes);
+/// 대기 목록에서 읽은 값: 여유분 (여유 + 우선순위 0~4 대기) 바이트, 캐시 (우선순위 5~7) 재사용 누계 바이트, 캐시 (우선순위 5~7) 대기 바이트.
+public readonly record struct MemoryLists(long HeadroomBytes, long CacheRepurposedBytes, long CacheStandbyBytes = 0);
 
 /// 메모리 목록 조회 (NtQuerySystemInformation SystemMemoryListInformation): 프로세스를 열지 않는 시스템 전체 통계입니다.
 /// 필요한 SeProfileSingleProcessPrivilege 는 처음 한 번 켭니다 (서비스는 LocalSystem). 실패하면 null.
@@ -33,7 +33,7 @@ public static unsafe class MemoryListInfo
         }
     }
 
-    /// 조회 결과 (페이지 수 배열) 를 두 값으로 줄입니다.
+    /// 조회 결과 (페이지 수 배열) 를 세 값으로 줄입니다.
     public static MemoryLists Summarize(ReadOnlySpan<nuint> v, long pageSize)
     {
         long headroom = (long)v[Zero] + (long)v[Free];
@@ -43,12 +43,14 @@ public static unsafe class MemoryListInfo
         }
 
         long cache = 0;
+        long standby = 0;
         for (int i = CachePriority; i < 8; i++)
         {
             cache += (long)v[Repurposed + i];
+            standby += (long)v[ByPriority + i];
         }
 
-        return new MemoryLists(headroom * pageSize, cache * pageSize);
+        return new MemoryLists(headroom * pageSize, cache * pageSize, standby * pageSize);
     }
 
     private static bool EnablePrivilege(string name)

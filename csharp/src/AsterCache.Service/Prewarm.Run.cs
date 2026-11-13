@@ -447,6 +447,7 @@ public sealed partial class Prewarmer
         bool complete = false;
         StreamStats? finalStats = null;
         long startedAt = Stopwatch.GetTimestamp();
+        double? streamSeconds = null; // 사다리 시간이 노출 시간에 들어가지 않게 스트림이 끝난 때의 값
         // 읽기는 이 스레드 (묶음 점검 콜백도 같은 스레드) 에서 내므로 I/O 우선순위도 여기서 바꾸고 아래 finally 에서 되돌립니다.
         var readYield = new ReadYield(_env.SetReadIoLow, PrewarmYield.StartsYielding(why, _env.UptimeMs()));
         try
@@ -509,6 +510,12 @@ public sealed partial class Prewarmer
             complete = r.Item2 && !stop.IsCancellationRequested;
             finalStats = r.Item1;
             LogYield(game.Name, r.Item1.Bytes, lease);
+            streamSeconds = Stopwatch.GetElapsedTime(startedAt).TotalSeconds;
+            if (complete && r.Item1.Bytes > 0)
+            {
+                LadderAfterStream(game, stop.Token); // 같은 디스크 대여 안에서: 게임 시작·대여 취소가 stop 으로 바로 멈춤
+            }
+
             return (r.Item1, complete, cancelDetail.First, cancelDetail.Memory);
         }
         catch (OperationCanceledException) when (calibration.IsCancellationRequested)
@@ -528,7 +535,7 @@ public sealed partial class Prewarmer
             // shortcut: 스트림 PDH 는 순차 탐침과 비교할 수 없어 교차 확인을 배선하지 않음, 실측 이탈이 확인되면 끝까지 읽은 스트림의 실제 읽기 바이트/시간으로 다시 연결
             try
             {
-                _env.OrbitExposure?.Invoke(game, Stopwatch.GetElapsedTime(startedAt).TotalSeconds, interrupted);
+                _env.OrbitExposure?.Invoke(game, streamSeconds ?? Stopwatch.GetElapsedTime(startedAt).TotalSeconds, interrupted);
             }
             catch (Exception e) when (e is not (OutOfMemoryException or StackOverflowException))
             {

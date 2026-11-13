@@ -48,6 +48,11 @@ public interface IGameStreamer
     (StreamStats Stats, bool Complete) StreamPrewarmCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool> canIssue, bool allowReorder, Action<string, long, bool>? noteIssue) =>
         StreamPrewarmCoordinated(game, stop, progress, maxBytes, skipBytes, canIssue, allowReorder);
 
+    /// afterBatch: 묶음 하나를 읽고 진행 알림을 낸 직후, 그 묶음이 요청한 읽기 목록으로 부름 (읽은 범위를 호출부가 곧바로 다시 만지게 함). 묶음을 모르는 스트리머는 부르지 않습니다.
+    (StreamStats Stats, bool Complete) StreamPrewarmCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool> canIssue, bool allowReorder, Action<string, long, bool>? noteIssue,
+        Action<IReadOnlyList<ReadOp>>? afterBatch) =>
+        StreamPrewarmCoordinated(game, stop, progress, maxBytes, skipBytes, canIssue, allowReorder, noteIssue);
+
     bool WasPrewarmReordered(GameSettings game) => false;
 
     /// 예열이 읽는 목록 (틈 메우기 제외, 부분 예열 뒤 표본을 고르는 것과 같은 기준: game 의 MaxStreamMib 로 잘린 읽은 범위), 모르면 null. 캐시를 디스크 읽기 없이 다시 만지는 사다리 (Solar) 의 대상입니다.
@@ -306,7 +311,12 @@ public sealed class PrefetchStreamer : IGameStreamer
     public (StreamStats Stats, bool Complete) StreamPrewarmCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool> canIssue, bool allowReorder, Action<string, long, bool>? noteIssue)
         => StreamPrewarmCore(game, stop, progress, maxBytes, skipBytes, canIssue, allowReorder, noteIssue);
 
-    private (StreamStats Stats, bool Complete) StreamPrewarmCore(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool>? canIssue, bool allowReorder, Action<string, long, bool>? noteIssue = null)
+    public (StreamStats Stats, bool Complete) StreamPrewarmCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool> canIssue, bool allowReorder, Action<string, long, bool>? noteIssue,
+        Action<IReadOnlyList<ReadOp>>? afterBatch)
+        => StreamPrewarmCore(game, stop, progress, maxBytes, skipBytes, canIssue, allowReorder, noteIssue, afterBatch);
+
+    private (StreamStats Stats, bool Complete) StreamPrewarmCore(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes, Func<bool>? canIssue, bool allowReorder, Action<string, long, bool>? noteIssue = null,
+        Action<IReadOnlyList<ReadOp>>? afterBatch = null)
     {
         List<ReadOp> all;
         long gapBytes;
@@ -358,7 +368,7 @@ public sealed class PrefetchStreamer : IGameStreamer
         }
 
         using var streamTimer = PrewarmRun.Time(PrewarmPhase.Stream);
-        (StreamStats Stats, bool Complete) r = Batches(ops, stop, progress, canIssue, noteIssue);
+        (StreamStats Stats, bool Complete) r = Batches(ops, stop, progress, canIssue, noteIssue, afterBatch);
         if (r.Complete)
         {
             if (stop.IsCancellationRequested || (canIssue is not null && !canIssue()))
@@ -389,7 +399,7 @@ public sealed class PrefetchStreamer : IGameStreamer
         return ZoneStreamer.Run(refresh, StreamMethod.Read, ct: stop);
     }
 
-    private static (StreamStats Stats, bool Complete) Batches(List<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool>? canIssue, Action<string, long, bool>? noteIssue = null)
+    private static (StreamStats Stats, bool Complete) Batches(List<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool>? canIssue, Action<string, long, bool>? noteIssue = null, Action<IReadOnlyList<ReadOp>>? afterBatch = null)
     {
         long total = ops.Sum(o => o.Length);
         long done = 0;
@@ -404,6 +414,7 @@ public sealed class PrefetchStreamer : IGameStreamer
             StreamStats s = ZoneStreamer.Run(batch, StreamMethod.Pvm, ct: stop, noteIssue: noteIssue);
             done += s.Bytes;
             progress?.Invoke(done, total);
+            afterBatch?.Invoke(batch); // 진행 알림 (묶음 점검) 뒤에 부름: 점검이 스트림을 멈췄으면 호출부가 만지지 않음
             return s;
         });
         return stop.IsCancellationRequested || (canIssue is not null && !canIssue())

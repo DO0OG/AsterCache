@@ -253,6 +253,7 @@ public sealed partial class Prewarmer
                     (StreamStats Stats, bool Complete, string? CancelReason, bool MemoryStop)? streamed;
                     bool fellBack = false; // 전체 경로가 메모리로 멈추면 창으로 줄여 한 번만 다시 읽음
                     _yieldedSeconds = 0; // StreamHot 이 끝날 때마다 더함 (done 줄에 한 번 보임)
+                    _requeued = default;
                     while (true)
                     {
                         streamed = StreamHot(warm, ct, zoneBytes, availableRamMib, memoryPartial is not null, Settle,
@@ -324,7 +325,7 @@ public sealed partial class Prewarmer
 
                     double mbps = s.Seconds > 0 ? s.Bytes / 1048576.0 / s.Seconds : 0;
                     string kind = memoryPartial is { } part ? $"partial {ActualMib(s, part.WarmedMib)}/{part.HotMib} MiB, the rest does not fit in memory: " : string.Empty;
-                    _log.Info($"{game.Name}: prewarm done ({why}): {kind}{s.Bytes >> 20} MiB requested, {s.GapBytes / 1048576.0:F2} MiB gaps filled in {s.Seconds:F2} s = {mbps:F0} hint MB/s, {s.Requests} requests, {s.Errors} errors, room {(roomMib is { } roomLimit ? roomLimit + " MiB" : "unlimited")}, available {_env.AvailableRamMib()} MiB{(_yieldedSeconds > 0 ? $", yielded {_yieldedSeconds:F1} s" : string.Empty)}");
+                    _log.Info($"{game.Name}: prewarm done ({why}): {kind}{s.Bytes >> 20} MiB requested, {s.GapBytes / 1048576.0:F2} MiB gaps filled in {s.Seconds:F2} s = {mbps:F0} hint MB/s, {s.Requests} requests, {s.Errors} errors, room {(roomMib is { } roomLimit ? roomLimit + " MiB" : "unlimited")}, available {_env.AvailableRamMib()} MiB{(_yieldedSeconds > 0 ? $", yielded {_yieldedSeconds:F1} s" : string.Empty)}{_requeued.Note()}");
                     _log.Info($"{game.Name}: prewarm phases ({why}): {run.Summary()}");
                     PrewarmResult done = Record(game, warmedAt, new PrewarmResult(game.Name, true, null, s, warmedAt), mbps);
                     WarmMeasured?.Invoke(game, mbps);
@@ -478,6 +479,8 @@ public sealed partial class Prewarmer
         double? streamSeconds = null; // 사다리 시간이 노출 시간에 들어가지 않게 스트림이 끝난 때의 값
         // 읽기는 이 스레드 (묶음 점검 콜백도 같은 스레드) 에서 내므로 I/O 우선순위도 여기서 바꾸고 아래 finally 에서 되돌립니다.
         var readYield = new ReadYield(_env.SetReadIoLow, PrewarmYield.StartsYielding(why, _env.UptimeMs()));
+        StreamRequeue? requeue = BeginRequeue(game, readYield.Exclude); // 읽는 묶음마다 곧바로 다시 만듦 (SOLAR 가 꺼져 있으면 null: 스트림은 지금과 같음)
+        double ExposureSeconds() => Math.Max(0, Stopwatch.GetElapsedTime(startedAt).TotalSeconds - (requeue?.Seconds ?? 0)); // 다시 만지기는 디스크 읽기가 아니므로 노출 시간에서 뺌
         try
         {
             using CancellationTokenRegistration leaseReg = lease?.Token.Register(() =>
@@ -512,9 +515,10 @@ public sealed partial class Prewarmer
             }
 
             calibration.Token.ThrowIfCancellationRequested();
+            RequeueSkipped(game, skipBytes, requeue, stop.Token); // 이어 읽기: 꼬리를 읽기 전에 건너뛴 앞부분을 한 번 만짐
             using (PrewarmRun.Time(PrewarmPhase.Common))
             {
-                WarmCommonFirst(game, stop, maxBytes, skipBytes, lease, cancelDetail, ct, readYield, fit);
+                WarmCommonFirst(game, stop, maxBytes, skipBytes, lease, cancelDetail, ct, readYield, fit, requeue);
             }
 
             calibration.Token.ThrowIfCancellationRequested();
@@ -534,7 +538,7 @@ public sealed partial class Prewarmer
                     Progress?.Invoke(game, done >> 20, (total + (1 << 20) - 1) >> 20);
                 }
             }, maxBytes, skipBytes, () => !stop.IsCancellationRequested && !(fit?.Finished ?? false) && (lease?.IsValid ?? true), allowReorder,
-                (stage, bytes, isData) => lease?.NoteReadIssue(stage, bytes, isData));
+                (stage, bytes, isData) => lease?.NoteReadIssue(stage, bytes, isData), requeue is null ? null : batch => requeue.Touch(batch, stop.Token));
             // 읽은 것을 버리지 않아도 될 때만 (오류·순서 바꿈 없음) 마무리로 남기고, 아니면 기존 메모리 취소와 같게 둠. 틈을 메운 계획은 읽은 곳이 앞쪽과 같다고 보장할 수 없어도 마무리하되 호출 쪽이 보수적으로 셈 (GapBytes).
             bool clean = r.Item1.Bytes > 0 && r.Item1.Errors == 0 && !_streamer.WasPrewarmReordered(game);
             bool limited = fit is { Finished: true } && !stop.IsCancellationRequested && (lease?.IsValid ?? true);
@@ -547,7 +551,7 @@ public sealed partial class Prewarmer
             complete = r.Item2 && !stop.IsCancellationRequested && !limited;
             finalStats = r.Item1;
             LogYield(game.Name, r.Item1.Bytes, lease);
-            streamSeconds = Stopwatch.GetElapsedTime(startedAt).TotalSeconds;
+            streamSeconds = ExposureSeconds();
             if (complete && r.Item1.Bytes > 0)
             {
                 LadderAfterStream(game, stop.Token); // 같은 디스크 대여 안에서: 게임 시작·대여 취소가 stop 으로 바로 멈춤. 한도로 마무리한 스트림은 건너뜀: 읽은 만큼의 앞부분은 창 크기가 달라 다시 계획한 목록과 같지 않아, 읽지 않은 구간을 만질 수 있음
@@ -566,13 +570,14 @@ public sealed partial class Prewarmer
         {
             FinishYield(readYield, game.Name); // 스레드 풀 스레드에 낮은 우선순위가 남지 않게 (정상·취소·예외 모두)
             _yieldedSeconds += readYield.Seconds;
+            _requeued += requeue?.Tally ?? default;
             bool interrupted = !complete && _streamGameStarted;
             _calibrationStop = null;
             (_streaming, _streamStop, _streamCancelDetail) = (null, null, null);
             // shortcut: 스트림 PDH 는 순차 탐침과 비교할 수 없어 교차 확인을 배선하지 않음, 실측 이탈이 확인되면 끝까지 읽은 스트림의 실제 읽기 바이트/시간으로 다시 연결
             try
             {
-                _env.OrbitExposure?.Invoke(game, streamSeconds ?? Stopwatch.GetElapsedTime(startedAt).TotalSeconds, interrupted);
+                _env.OrbitExposure?.Invoke(game, streamSeconds ?? ExposureSeconds(), interrupted);
             }
             catch (Exception e) when (e is not (OutOfMemoryException or StackOverflowException))
             {
@@ -626,7 +631,7 @@ public sealed partial class Prewarmer
     // 디스크 대여·중단 신호는 StreamHot 의 것을 그대로 씁니다. 실패하면 건너뛰고 스트림이 같은 오류를 판단합니다.
     // 최종 예약 검사는 common 을 읽기 전에 이번 스트림 전체 양으로 합니다 (거절이면 common 도 읽지 않음).
     private void WarmCommonFirst(GameSettings game, CancellationTokenSource stop, long maxBytes, long skipBytes, DiskReadCoordinator.Lease? lease,
-        PrewarmCancelDetail cancelDetail, CancellationToken callerToken, ReadYield? readYield = null, MemoryFit? fit = null)
+        PrewarmCancelDetail cancelDetail, CancellationToken callerToken, ReadYield? readYield = null, MemoryFit? fit = null, StreamRequeue? requeue = null)
     {
         try
         {
@@ -652,6 +657,16 @@ public sealed partial class Prewarmer
             }
 
             long total = ops.Sum(o => o.Length);
+            long requeued = 0; // 읽은 공통 블록 중 이미 다시 만진 바이트: 묶음 경계 (읽은 양 done) 마다 새로 읽은 만큼만 읽은 순서대로 만짐
+            void Requeue(long readBytes)
+            {
+                if (requeue is not null && readBytes > requeued)
+                {
+                    requeue.Touch(PrefetchStreamer.Tail(PrefetchStreamer.Head(ops, readBytes), requeued), stop.Token);
+                    requeued = readBytes;
+                }
+            }
+
             Action<long, long> progress = (done, planned) =>
             {
                 CheckPrewarmBatch(game, stop, done, planned, detail: cancelDetail, callerToken: callerToken, leaseToken: lease?.Token ?? default, yield: readYield, preemptible: true);
@@ -660,6 +675,8 @@ public sealed partial class Prewarmer
                     cancelDetail.Set("disk read lease revoked");
                     stop.Cancel();
                 }
+
+                Requeue(done);
             };
             (StreamStats Stats, bool Complete) read;
             if (_env.ColdReadWithIssue is { } withIssue)
@@ -676,6 +693,12 @@ public sealed partial class Prewarmer
                 lease?.NoteReadIssue("common-first read", total, true);
                 read = _env.ColdRead(ops, stop.Token);
             }
+
+            if (read.Complete)
+            {
+                Requeue(total); // 묶음 진행을 알리지 않는 읽기 경로가 남긴 나머지
+            }
+
             _log.Info($"{game.Name}: common-first prewarm {read.Stats.Bytes >> 20}/{total >> 20} MiB" + (read.Complete ? string.Empty : " (stopped)"));
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested)

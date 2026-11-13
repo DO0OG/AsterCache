@@ -311,4 +311,17 @@ public sealed class PrewarmYieldTests
         Assert.True(low > head, "앞부분 읽기 도중 낮음으로 바뀜");
         Assert.True(_events.IndexOf("normal", low) > low, "앞부분 읽기가 끝나면 보통으로 되돌림");
     }
+
+    [Fact]
+    public void TimeSpentOnNonDiskWorkWhileYieldingIsLeftOutOfTheYieldedSeconds()
+    {
+        var ry = new ReadYield(_ => true, startYielding: false);
+        ry.Exclude(3); // 낮은 우선순위가 아닐 때의 시간은 애초에 양보 시간이 아님
+        Assert.True(ry.Apply(low: true, _now));
+
+        ry.Exclude(2); // 낮은 동안 다시 만지는 데 쓴 시간
+        Assert.True(ry.Finish(_now + TimeSpan.FromSeconds(5)));
+
+        Assert.Equal(3, ry.Seconds, precision: 3);
+    }
 }

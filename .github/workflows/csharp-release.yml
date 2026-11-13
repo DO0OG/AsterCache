@@ -6,7 +6,7 @@ on:
       version:
         description: SemVer release version
         required: true
-        default: 1.0.2
+        default: 1.0.3
 
 jobs:
   verify:

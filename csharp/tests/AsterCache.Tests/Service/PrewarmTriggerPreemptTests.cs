@@ -279,4 +279,45 @@ public sealed class PrewarmTriggerPreemptTests
             return (new StreamStats(100, 2, 0, 0.01), true);
         }
     }
+
+    [Fact]
+    public async Task ATriggerThatWillReadStillWaitsForTheLockHeldByItsOwnGamesBackgroundRead()
+    {
+        GameSettings b = Game("b", "launcher.exe");
+        Prewarmer p = Make(null, b);
+        _streamer.Block("b");
+        Task<PrewarmResult> background = Task.Run(() => p.Run(b, "test"));
+        Assert.True(_streamer.Started("b").Wait(Bound));
+
+        Task<IReadOnlyList<PrewarmResult>> trigger = Task.Run(() => p.OnProcessStart(Launcher()));
+        await Task.Delay(Settle);
+
+        Assert.False(trigger.IsCompleted); // 읽을 게임이 있으면 락을 기다림 (같은 게임의 읽기는 선점하지 않음)
+        _streamer.ReleaseAll();
+        await background.WaitAsync(Bound);
+        Assert.Single(await trigger.WaitAsync(Bound));
+    }
+
+    [Fact]
+    public async Task ATriggerWhoseOnlyGameWillBeSkippedDoesNotWaitForAnotherGamesBackgroundRead()
+    {
+        GameSettings a = Game("a");
+        GameSettings b = Game("b", "launcher.exe");
+        Prewarmer p = Make(null, a, b);
+        Assert.True(p.Run(b, "test").Ran); // 방금 예열해 쿨다운 안: 이 트리거는 읽지 않음
+        _streamer.Block("a");
+        Task<PrewarmResult> background = Task.Run(() => p.Run(a, "test"));
+        Assert.True(_streamer.Started("a").Wait(Bound));
+
+        IReadOnlyList<PrewarmResult> results = await Task.Run(() => p.OnProcessStart(Launcher())).WaitAsync(TimeSpan.FromSeconds(10)); // a 의 읽기가 끝나기 전에 돌아옴
+
+        Assert.False(background.IsCompleted);
+        Assert.Empty(_streamer.Stopped); // a 의 읽기를 멈추지도 않음
+        PrewarmResult skipped = Assert.Single(results);
+        Assert.False(skipped.Ran);
+        Assert.StartsWith("cooldown", skipped.SkipReason, StringComparison.Ordinal);
+        Assert.Contains(_log.Lines, l => l.Contains("b: prewarm skipped (cooldown", StringComparison.Ordinal) && l.Contains("[trigger launcher.exe]", StringComparison.Ordinal));
+        _streamer.ReleaseAll();
+        Assert.True((await background.WaitAsync(Bound)).Ran);
+    }
 }

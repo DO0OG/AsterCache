@@ -77,6 +77,16 @@ public sealed partial class Rewarmer
         }
     }
 
+    // 보충이 메모리를 기다리는 중인 게임 (매번 한도로 끝나 읽기를 끝내는 회가 없음) 의 첫 사다리: 읽은 범위 (이어 읽을 위치까지) 의 역순으로 만듭니다. 대상 판정은 Prewarmer 가 함 (WaitingSupplementLadderReads).
+    private void LadderWaitingSupplement(GameSettings g, CancellationToken ct)
+    {
+        Solar solar = _prewarm.Solar;
+        if (solar.Enabled && !solar.HasMark(g.Name) && !solar.HasMissing(g.Name) && !_prewarm.TriggerWaitPending() && _prewarm.WaitingSupplementLadderReads(g) is { Count: > 0 } reads)
+        {
+            Run(g, ct, token => solar.Order(g, reads, token), "cache ladder");
+        }
+    }
+
     // 디스크 대여 안에서 만집니다 (거절되면 만지지 않음). 실패해도 점검·틱은 계속합니다.
     private void Run(GameSettings g, CancellationToken ct, Func<CancellationToken, TouchEnd?> work, string purpose)
     {

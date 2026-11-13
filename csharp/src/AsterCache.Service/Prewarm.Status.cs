@@ -358,6 +358,8 @@ public sealed partial class Prewarmer
         }
     }
 
+    private readonly object _flushGate = new(); // 예열 락 밖 (읽지 않는 트리거 건너뜀) 에서도 기록하므로 임시 파일 쓰기를 직렬화
+
     private void FlushStatus()
     {
         if (_statusPath is not null)
@@ -365,14 +367,17 @@ public sealed partial class Prewarmer
             try
             {
                 string tmp = _statusPath + ".tmp";
-                string contents;
-                lock (_gate)
+                lock (_flushGate)
                 {
-                    contents = PyJson.Dumps(new JObject { { "games", _status } }, indent: 2, ensureAscii: false) + "\n";
-                }
+                    string contents;
+                    lock (_gate)
+                    {
+                        contents = PyJson.Dumps(new JObject { { "games", _status } }, indent: 2, ensureAscii: false) + "\n";
+                    }
 
-                DurableFile.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(contents));
-                File.Move(tmp, _statusPath, true);
+                    DurableFile.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(contents));
+                    File.Move(tmp, _statusPath, true);
+                }
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {

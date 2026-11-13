@@ -598,4 +598,29 @@ public sealed class PrewarmTests : IDisposable
             }
         }
     }
+
+    [Theory]
+    [InlineData(0L, 3000L, 300L, MemoryLimitAction.Continue)] // 아직 읽은 게 없어도 들어가는 범위가 256 MiB 이상이면 줄여서 읽음
+    [InlineData(0L, 3000L, 255L, MemoryLimitAction.Cancel)] // 읽은 게 없고 256 MiB 도 안 들어가면 기존처럼 취소
+    [InlineData(500L, 3000L, 2000L, MemoryLimitAction.Continue)] // 읽은 양 < 들어가는 범위: 그 범위까지 계속
+    [InlineData(2000L, 3000L, 2000L, MemoryLimitAction.Finish)] // 읽은 양 = 들어가는 범위: 여기서 마무리
+    [InlineData(2500L, 3000L, 0L, MemoryLimitAction.Finish)] // 가용이 예비량 밑: 읽은 양이 곧 한도
+    [InlineData(3000L, 3000L, 100L, MemoryLimitAction.Continue)] // 이미 끝까지 읽음
+    public void AMemoryLimitHitWhileReadingFinishesOrContinuesButCancelsOnlyWhenNothingWasRead(long doneMib, long totalMib, long fitMib, MemoryLimitAction expected)
+    {
+        Assert.Equal(expected, PrewarmPolicy.AtMemoryLimit(doneMib << 20, totalMib << 20, fitMib, Prewarmer.MinPartialMib));
+    }
+
+    [Theory]
+    [InlineData(556L, 300L, 8000L, true)] // 256 MiB 더 들어감
+    [InlineData(555L, 300L, 8000L, false)]
+    [InlineData(8400L, 8000L, 20000L, true)] // 읽은 양의 5% (400) 가 256 보다 큼
+    [InlineData(8399L, 8000L, 20000L, false)]
+    [InlineData(11444L, 11300L, 11444L, true)] // 남은 구간 (144) 이 기준보다 작으면 그 전부가 들어갈 때 마지막 조각을 읽음
+    [InlineData(11443L, 11300L, 11444L, false)]
+    [InlineData(5000L, 8000L, 8000L, false)] // 들어가는 범위가 읽은 양보다 작음
+    public void ASupplementStartsOnlyWhenTheRoomIsMeaningfullyLargerThanWhatWasRead(long fitMib, long readMib, long hotMib, bool expected)
+    {
+        Assert.Equal(expected, PrewarmPolicy.SupplementHasRoom(fitMib, readMib, hotMib, Prewarmer.MinPartialMib));
+    }
 }

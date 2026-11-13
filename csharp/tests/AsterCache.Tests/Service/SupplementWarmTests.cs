@@ -140,7 +140,7 @@ public sealed class SupplementWarmTests : IDisposable
         Prewarmer p = Make(g);
         p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 40, RewarmMinutes = 5 });
         Assert.True(Assert.Single(p.RunServiceStart()).Ran);
-        _avail = 4352 + Prewarmer.FinalShrinkHeadroomMib; // 최소 부분 예열 크기인 256 MiB까지만 들어감 (창을 잡을 때 두는 여유 포함)
+        _avail = 4096 + 500 + Prewarmer.FinalShrinkHeadroomMib; // 창 500 MiB 까지만 들어감 (창을 잡을 때 두는 여유 포함): 읽은 양보다 의미 있게 더 들어가 보충을 시작함
         (_streamer.ReadMib, _streamer.RequestedMib, _streamer.ErrorCount) = (128, 256, 1);
 
         Ticks(p, 3); // 첫 보충은 40 MiB 에서 128 MiB 로 진전
@@ -171,7 +171,7 @@ public sealed class SupplementWarmTests : IDisposable
         Prewarmer p = Make(g);
         p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 40, RewarmMinutes = 5 });
         Assert.True(Assert.Single(p.RunServiceStart()).Ran);
-        _avail = 4352 + Prewarmer.FinalShrinkHeadroomMib;
+        _avail = 4096 + 500 + Prewarmer.FinalShrinkHeadroomMib;
         (_streamer.ReadMib, _streamer.RequestedMib, _streamer.ErrorCount) = (128, 256, 1);
 
         Ticks(p, 3); // 40 -> 128 MiB 진전

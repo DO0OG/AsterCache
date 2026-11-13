@@ -7,7 +7,7 @@ namespace AsterCache.Service;
 
 /// Rewarmer 의 사다리 (Solar) 유지: 30초 틱마다 시점이 된 게임의 캐시를 디스크 읽기 없이 새로 고치고, 서비스를 다시 시작한 뒤 표식이 없는 게임은 재예열 점검이 warm 으로 판정할 때 첫 사다리를 만듭니다.
 /// 게이트는 재예열 점검과 같은 함수 (ReadBlock) 를 씁니다: 재배치 중이 아니고, 같은 디스크의 게임이 돌지 않고, 게임 종료 직후 유예가 지났고, 예산 안의 게임이고, 디스크가 바쁘지 않을 때만 만집니다.
-/// 여기서는 재예열을 직접 부르지 않습니다: 디스크에서 다시 읽을지는 재예열 점검 (rewarm_minutes 주기, 표본으로 cold 확인, 자체 게이트) 만 정하므로 HDD 를 다시 읽는 빈도는 늘지 않습니다.
+/// 여기서는 재예열을 직접 부르지 않습니다: 디스크에서 다시 읽을지는 재예열 점검 (rewarm_minutes 주기, 표본으로 cold 확인 또는 사다리가 남긴 다시 채움 표시, 자체 게이트) 만 정하므로 HDD 를 다시 읽는 빈도는 늘지 않습니다.
 /// 사다리를 새로 고치는 일 자체 (메모리 안에서만 만지기) 는 자동 모드·rewarm_minutes 와 무관하게 memory.standby_ladder 로만 켜고 끕니다.
 public sealed partial class Rewarmer
 {
@@ -71,7 +71,7 @@ public sealed partial class Rewarmer
     private void LadderUnmarked(GameSettings g, CancellationToken ct)
     {
         Solar solar = _prewarm.Solar;
-        if (solar.Enabled && !solar.HasMark(g.Name) && !_prewarm.TriggerWaitPending() && _prewarm.LadderReads(_prewarm.CoveredPart(g)) is { Count: > 0 } reads)
+        if (solar.Enabled && !solar.HasMark(g.Name) && !solar.HasMissing(g.Name) && !_prewarm.TriggerWaitPending() && _prewarm.LadderReads(_prewarm.CoveredPart(g)) is { Count: > 0 } reads)
         {
             Run(g, ct, token => solar.Order(g, reads, token), "cache ladder");
         }

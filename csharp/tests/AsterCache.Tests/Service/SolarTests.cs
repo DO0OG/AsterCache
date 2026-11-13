@@ -115,7 +115,7 @@ public sealed class SolarTests
 
     [Theory]
     [InlineData(TouchEnd.Canceled, "ladder stopped after 100 MiB")]
-    [InlineData(TouchEnd.NeedsDiskReads, "ladder needs disk reads (3 slow pieces), skipped")]
+    [InlineData(TouchEnd.NeedsDiskReads, "ladder was too slow without disk reads seen (3 slow pieces), skipped")]
     public void AnInterruptedOrderLeavesNoMark(TouchEnd end, string text)
     {
         Solar solar = Make();
@@ -136,6 +136,85 @@ public sealed class SolarTests
         _ = Make().Order(Game("a"), Reads, CancellationToken.None);
 
         Assert.EndsWith("MiB in 0.4 s, 20 MiB read from disk", _log.Lines.Single());
+    }
+
+    [Fact]
+    public void ALadderThatFindsDataMissingFlagsTheGameOnceAndItIsClearedWhenTaken()
+    {
+        Solar solar = Make();
+        _result = new TouchResult(37 * Mib, 0.6, 36, 0, TouchEnd.NeedsDiskReads, 37 * Mib);
+
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+
+        Assert.True(solar.HasMissing("a"));
+        Assert.Equal("Info: a: ladder found data missing from memory (36 slow pieces, 37 MiB read from disk), left to the rewarm check", _log.Lines.Single());
+        Assert.True(solar.TakeMissing("a"));
+        Assert.False(solar.TakeMissing("a"));
+        Assert.False(solar.HasMissing("a"));
+    }
+
+    [Fact]
+    public void ARefreshThatFindsDataMissingFlagsTheGameAndALaterCompleteLadderClearsIt()
+    {
+        Solar solar = Make();
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        _result = _result with { SlowPieces = 5, End = TouchEnd.NeedsDiskReads, DiskBytes = 32 * Mib };
+        _ = solar.Refresh(Game("a"), CancellationToken.None);
+        Assert.True(solar.HasMissing("a"));
+        Assert.False(solar.HasMark("a"));
+
+        _result = _result with { SlowPieces = 0, End = TouchEnd.Completed };
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+
+        Assert.False(solar.HasMissing("a"));
+        Assert.True(solar.HasMark("a"));
+    }
+
+    [Fact]
+    public void ALadderThatEndedSlowWithoutAnyDiskReadSeenClearsTheMarkButDoesNotFlagTheGame()
+    {
+        Solar solar = Make();
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        _result = new TouchResult(10 * Mib, 0.6, 5, 1, TouchEnd.NeedsDiskReads);
+
+        _ = solar.Refresh(Game("a"), CancellationToken.None);
+        Assert.False(solar.HasMark("a"));
+        Assert.False(solar.HasMissing("a"));
+        Assert.Equal("Info: a: cache refresh was too slow without disk reads seen (5 slow pieces, 1 errors), left to the rewarm check", _log.Lines.Last());
+
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        Assert.False(solar.HasMissing("a"));
+        Assert.Equal("Info: a: ladder was too slow without disk reads seen (5 slow pieces, 1 errors), skipped", _log.Lines.Last());
+    }
+
+    [Fact]
+    public void RestoreMissingFlagsAgainOnlyWhileThereIsNoMark()
+    {
+        Solar solar = Make();
+        solar.RestoreMissing("a");
+        Assert.True(solar.HasMissing("a"));
+
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None); // 사다리가 서서 표시가 지워짐
+        solar.RestoreMissing("a");
+
+        Assert.False(solar.HasMissing("a"));
+    }
+
+    [Fact]
+    public void ACanceledLadderDoesNotFlagAndPruneDropsTheFlagOfAGameThatLeftTheSettings()
+    {
+        Solar solar = Make();
+        _result = _result with { End = TouchEnd.Canceled };
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        Assert.False(solar.HasMissing("a"));
+
+        _result = _result with { End = TouchEnd.NeedsDiskReads, DiskBytes = 32 * Mib };
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        _ = solar.Order(Game("b"), Reads, CancellationToken.None);
+        solar.Prune(new HashSet<string>(["b"], StringComparer.OrdinalIgnoreCase));
+
+        Assert.False(solar.HasMissing("a"));
+        Assert.True(solar.HasMissing("b"));
     }
 
     [Fact]
@@ -180,12 +259,12 @@ public sealed class SolarTests
     {
         Solar solar = Make();
         _ = solar.Order(Game("a"), Reads, CancellationToken.None);
-        _result = new TouchResult(10 * Mib, 0.6, 5, 1, TouchEnd.NeedsDiskReads);
+        _result = new TouchResult(10 * Mib, 0.6, 5, 1, TouchEnd.NeedsDiskReads, 32 * Mib);
 
         Assert.Equal(TouchEnd.NeedsDiskReads, solar.Refresh(Game("a"), CancellationToken.None));
 
         Assert.False(solar.HasMark("a"));
-        Assert.Contains("a: cache refresh needs disk reads (5 slow pieces), left to the rewarm check, 1 errors", _log.Lines.Last());
+        Assert.Contains("a: cache refresh found data missing from memory (5 slow pieces, 32 MiB read from disk, 1 errors), left to the rewarm check", _log.Lines.Last());
         Assert.Empty(solar.Due([Game("a")], _now + TimeSpan.FromHours(1)));
     }
 
@@ -278,11 +357,19 @@ public sealed class SolarTests
 
         public Action? DuringStream { get; set; }
 
+        /// 참이면 스트림이 읽기 전에 예외로 실패함.
+        public bool Fail { get; set; }
+
         public StreamStats Stream(GameSettings game) => throw new NotSupportedException();
 
         public (StreamStats Stats, bool Complete) StreamPrewarm(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes)
         {
             Calls.Add((game.Name, game.MaxStreamMib));
+            if (Fail)
+            {
+                throw new IOException("read failed");
+            }
+
             long total = Math.Min(game.MaxStreamMib == 0 ? ZoneMib : game.MaxStreamMib, ZoneMib) * Mib;
             progress?.Invoke(0, total);
             DuringStream?.Invoke();
@@ -557,16 +644,16 @@ public sealed class SolarTests
         _touched.Clear();
         _streamer.Calls.Clear();
         GrowReuse(20000);
-        _result = _result with { SlowPieces = 4, End = TouchEnd.NeedsDiskReads };
+        _result = _result with { SlowPieces = 4, End = TouchEnd.NeedsDiskReads, DiskBytes = 40 * Mib };
         _now += TimeSpan.FromMinutes(5);
         AutoSettings auto = Auto();
 
         p.Tick(auto); // 새로 고침이 디스크 읽기를 요구 -> 표식만 지우고 재예열은 부르지 않음
         Assert.Single(_touched);
         Assert.False(p.Solar.HasMark("a"));
-        Assert.Contains(_log.Lines, l => l.Contains("a: cache refresh needs disk reads (4 slow pieces), left to the rewarm check"));
+        Assert.Contains(_log.Lines, l => l.Contains("a: cache refresh found data missing from memory (4 slow pieces, 40 MiB read from disk), left to the rewarm check"));
 
-        _result = _result with { SlowPieces = 0, End = TouchEnd.Completed };
+        _result = _result with { SlowPieces = 0, DiskBytes = 0, End = TouchEnd.Completed };
         for (int i = 0; i < 3; i++)
         {
             _now += TimeSpan.FromMinutes(2);
@@ -577,12 +664,179 @@ public sealed class SolarTests
         Assert.Single(_touched);
         Assert.Empty(_streamer.Calls);
 
-        _now += TimeSpan.FromMinutes(6); // 첫 틱 뒤 10 분이 지나 재예열 점검 차례: 표본이 warm 이라 다시 사다리
+        _now += TimeSpan.FromMinutes(6); // 첫 틱 뒤 10 분이 지나 재예열 점검 차례: 표본이 warm 이어도 다시 채움 표시 때문에 재예열
         p.Tick(auto);
 
-        Assert.Equal(2, _touched.Count);
+        Assert.Single(_streamer.Calls);
+        Assert.Equal(2, _touched.Count); // 재예열 직후의 사다리
         Assert.True(p.Solar.HasMark("a"));
+        Assert.False(p.Solar.HasMissing("a"));
+        Assert.Contains(_log.Lines, l => l == "Info: a: rewarm check: part of the list is not in memory (found by the ladder), prewarming again (cooldown ignored)");
+    }
+
+    // 예열 직후 사다리가 디스크 읽기를 만난 상태 (표식 없음, 다시 채움 표시 있음) 의 게임 하나, 첫 틱까지 지난 상태.
+    private Prewarmer FlaggedGame(out AutoSettings auto)
+    {
+        _result = _result with { SlowPieces = 3, End = TouchEnd.NeedsDiskReads, DiskBytes = 32 * Mib };
+        Prewarmer p = MakePrewarmer(Game("a"));
+        _ = p.Run(Game("a"), "service start");
+        Assert.True(p.Solar.HasMissing("a"));
+        Assert.False(p.Solar.HasMark("a"));
+        _touched.Clear();
+        _streamer.Calls.Clear();
+        auto = Auto();
+        p.Tick(auto); // 첫 틱은 다음 점검 시각만 정함
+        return p;
+    }
+
+    [Fact]
+    public void ARewarmThatStillFindsDataMissingIsRepeatedOnlyOncePerCheckPeriod()
+    {
+        Prewarmer p = FlaggedGame(out AutoSettings auto);
+
+        _now += TimeSpan.FromMinutes(10.5);
+        p.Tick(auto);
+        Assert.Single(_streamer.Calls); // 표본은 warm 인데도 한 번 다시 읽음
+        Assert.True(p.Solar.HasMissing("a")); // 재예열 뒤 사다리가 또 디스크 읽기를 만나 다시 섬
+
+        _now += TimeSpan.FromMinutes(2);
+        p.Tick(auto);
+        Assert.Single(_streamer.Calls); // 주기 안에서는 되풀이하지 않음
+
+        _now += TimeSpan.FromMinutes(9);
+        p.Tick(auto);
+        Assert.Equal(2, _streamer.Calls.Count);
+    }
+
+    [Fact]
+    public void AfterASuccessfulRefillTheLadderMarkStandsAndLaterChecksDoNotPrewarmAgain()
+    {
+        Prewarmer p = FlaggedGame(out AutoSettings auto);
+        _result = _result with { SlowPieces = 0, DiskBytes = 0, End = TouchEnd.Completed };
+
+        _now += TimeSpan.FromMinutes(10.5);
+        p.Tick(auto);
+        Assert.Single(_streamer.Calls);
+        Assert.True(p.Solar.HasMark("a"));
+
+        _now += TimeSpan.FromMinutes(10.5);
+        p.Tick(auto);
+        Assert.Single(_streamer.Calls);
+    }
+
+    [Fact]
+    public void AChecksPulledInByAGameExitDoNotRefillBeforeRewarmMinutesHavePassedSinceTheLastPrewarm()
+    {
+        Prewarmer p = FlaggedGame(out AutoSettings auto);
+        p.SetAuto(auto);
+        _now += TimeSpan.FromMinutes(10.5);
+        p.Tick(auto);
+        Assert.Single(_streamer.Calls);
+        Assert.True(p.Solar.HasMissing("a")); // 재예열 뒤 사다리가 또 디스크 읽기를 만나 표시가 다시 섬
+
+        _now += TimeSpan.FromMinutes(1);
+        p.NoteGameExit(); // 다른 게임이 끝남: 점검을 2 분 뒤로 당김
+        _now += TimeSpan.FromMinutes(2.5);
+        p.Tick(auto);
+
+        Assert.Single(_streamer.Calls); // 마지막 예열 뒤 10 분 전이라 다시 읽지 않고 표시를 둠
+        Assert.True(p.Solar.HasMissing("a"));
+        Assert.Contains(_log.Lines, l => l.Contains("a: rewarm check: part of the list is not in memory (found by the ladder), waiting until 10 min after the last prewarm"));
+
+        _now += TimeSpan.FromMinutes(10.5);
+        p.Tick(auto);
+
+        Assert.Equal(2, _streamer.Calls.Count);
+    }
+
+    [Fact]
+    public void AFailedRewarmIsNotRetriedByPulledInChecksBeforeRewarmMinutesHavePassed()
+    {
+        Prewarmer p = FlaggedGame(out AutoSettings auto);
+        p.SetAuto(auto);
+        _streamer.Fail = true; // 스트림이 돌지 않고 예외: 마지막 성공 예열 시각은 그대로
+        _now += TimeSpan.FromMinutes(10.5);
+        p.Tick(auto);
+        Assert.Single(_streamer.Calls);
+        Assert.True(p.Solar.HasMissing("a"));
+
+        _now += TimeSpan.FromMinutes(1);
+        p.NoteGameExit(); // 점검을 2 분 뒤로 당김
+        _now += TimeSpan.FromMinutes(2.5);
+        p.Tick(auto);
+        Assert.Single(_streamer.Calls); // 마지막 시도 뒤 10 분 전이라 다시 시도하지 않음
+        Assert.True(p.Solar.HasMissing("a"));
+
+        _now += TimeSpan.FromMinutes(10.5);
+        p.Tick(auto);
+        Assert.Equal(2, _streamer.Calls.Count);
+    }
+
+    [Fact]
+    public void ARewarmThatIsSkippedBeforeReadingKeepsTheFlagForTheNextCheck()
+    {
+        Prewarmer p = FlaggedGame(out AutoSettings auto);
+        _avail = 100; // 메모리가 모자라 읽기 전에 건너뜀
+        _now += TimeSpan.FromMinutes(10.5);
+        p.Tick(auto);
+
         Assert.Empty(_streamer.Calls);
+        Assert.True(p.Solar.HasMissing("a"));
+
+        _avail = 20000;
+        _result = _result with { SlowPieces = 0, DiskBytes = 0, End = TouchEnd.Completed };
+        _now += TimeSpan.FromMinutes(10.5);
+        p.Tick(auto);
+
+        Assert.Single(_streamer.Calls);
+        Assert.False(p.Solar.HasMissing("a"));
+        Assert.True(p.Solar.HasMark("a"));
+    }
+
+    [Fact]
+    public void WhileTheFlagStandsTheLadderTickDoesNotTouchTheGame()
+    {
+        Prewarmer p = FlaggedGame(out AutoSettings auto);
+        GrowReuse(30000);
+        _now += TimeSpan.FromMinutes(5);
+
+        p.Tick(auto);
+
+        Assert.Empty(_touched);
+        Assert.Empty(_streamer.Calls);
+        Assert.True(p.Solar.HasMissing("a"));
+    }
+
+    [Fact]
+    public void TheFlagIsKeptWhileTheRewarmCheckConditionsBlockOrTheCheckIsOff()
+    {
+        Prewarmer p = FlaggedGame(out AutoSettings auto);
+
+        _ = _running.Add("a"); // 게임 실행 중
+        _now += TimeSpan.FromMinutes(10.5);
+        p.Tick(auto);
+        _ = _running.Remove("a");
+        _diskBusy = true; // 디스크가 바쁨
+        _now += TimeSpan.FromMinutes(10.5);
+        p.Tick(auto);
+        _diskBusy = false;
+        using (p.BeginTriggerWait([Game("b")])) // 트리거 대기 중
+        {
+            _now += TimeSpan.FromMinutes(10.5);
+            p.Tick(auto);
+        }
+
+        _now += TimeSpan.FromMinutes(10.5);
+        p.Tick(auto with { RewarmMinutes = 0 }); // 점검 끔
+        p.Tick(auto with { Enabled = false }); // 자동 모드 끔
+
+        Assert.Empty(_streamer.Calls);
+        Assert.True(p.Solar.HasMissing("a"));
+
+        p.Tick(auto); // 끈 동안 다음 점검 시각이 지워져 다시 정함
+        _now += TimeSpan.FromMinutes(10.5);
+        p.Tick(auto); // 조건이 풀리면 한 번 채움
+        Assert.Single(_streamer.Calls);
     }
 
     [Fact]

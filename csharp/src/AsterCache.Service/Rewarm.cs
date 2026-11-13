@@ -8,7 +8,7 @@ using WarmBudgetInfo = (System.Collections.Generic.HashSet<string> In, long CapM
 
 namespace AsterCache.Service;
 
-/// 예열 유지: rewarm_minutes 마다, 예열한 게임 자신이 안 돌고 같은 디스크의 다른 등록 게임이 안 돌거나 돌아도 한가하고 (Prewarmer.BusyOthers) 그 게임 드라이브 처리량이 자동 재배치의 유휴 기준 아래일 때 (CPU 부하는 보지 않음), 예열한 적 있는 게임의 핫 집합 몇 곳을 읽어 보고 식었으면 (CacheProbe.Cold: 표본 8 곳 중 2 곳 이상이 CacheProbe.ColdThresholdMs 초과) 다시 예열합니다.
+/// 예열 유지: rewarm_minutes 마다, 예열한 게임 자신이 안 돌고 같은 디스크의 다른 등록 게임이 안 돌거나 돌아도 한가하고 (Prewarmer.BusyOthers) 그 게임 드라이브 처리량이 자동 재배치의 유휴 기준 아래일 때 (CPU 부하는 보지 않음), 예열한 적 있는 게임의 핫 집합 몇 곳을 읽어 보고 식었으면 (CacheProbe.Cold: 표본 8 곳 중 2 곳 이상이 CacheProbe.ColdThresholdMs 초과) 다시 예열합니다. 사다리 (Solar) 가 목록의 일부가 메모리에 없는 것을 찾은 게임은 표본이 warm 이어도 다시 예열합니다 (게임마다 마지막 예열 뒤 rewarm_minutes 가 지난 뒤에만).
 public sealed partial class Rewarmer
 {
     private readonly Prewarmer _prewarm;
@@ -20,6 +20,7 @@ public sealed partial class Rewarmer
     private DateTimeOffset? _next;
     private readonly object _checkLock = new();
     private readonly Dictionary<string, string> _checkState = new(StringComparer.OrdinalIgnoreCase); // 게임별 마지막 재확인 결과 (로그를 바뀔 때만 남김)
+    private readonly Dictionary<string, DateTimeOffset> _missingTriedAt = new(StringComparer.OrdinalIgnoreCase); // 게임별로 사다리의 다시 채움 표시로 재예열을 마지막 시도한 시각 (성공·실패·건너뜀 모두), _checkLock 으로 보호, 메모리에만 둠
 
     public Rewarmer(Prewarmer prewarm, PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
     {
@@ -39,6 +40,11 @@ public sealed partial class Rewarmer
             foreach (string gone in _checkState.Keys.Where(k => !live.Contains(k)).ToList())
             {
                 _checkState.Remove(gone);
+            }
+
+            foreach (string gone in _missingTriedAt.Keys.Where(k => !live.Contains(k)).ToList())
+            {
+                _missingTriedAt.Remove(gone);
             }
         }
 
@@ -129,7 +135,7 @@ public sealed partial class Rewarmer
                 continue;
             }
 
-            Check(g, ct, RoomOf(g, budget));
+            Check(g, ct, RoomOf(g, budget), auto, now);
         }
 
         if (nextGateDue is { } due)
@@ -223,11 +229,49 @@ public sealed partial class Rewarmer
         }
     }
 
-    private void Check(GameSettings g, CancellationToken ct, long? roomMib)
+    private void Check(GameSettings g, CancellationToken ct, long? roomMib, AutoSettings auto, DateTimeOffset now)
     {
         if (_prewarm.RewarmAlreadyCovered(g))
         {
             NoteCheck(g, "recent-warm", $"{g.Name}: rewarm check skipped (prewarm is running or recently completed)");
+            return;
+        }
+
+        // 사다리가 목록의 일부가 메모리에 없는 것을 찾았으면 표본이 warm 이어도 식은 것으로 봅니다 (표본은 8 곳뿐). 보충 대기 게임은 보충이 사다리를 다시 만들고, 트리거가 기다리는 동안은 표시를 둔 채 미룸.
+        Solar solar = _prewarm.Solar;
+        if (solar.HasMissing(g.Name) && !_prewarm.SupplementPending(g.Name) && !_prewarm.TriggerWaitPending())
+        {
+            // 점검이 당겨져도 (게임 종료·유예) 표시로 인한 재예열은 게임마다 마지막 예열과 마지막 시도 중 늦은 쪽 뒤 rewarm_minutes 가 지나야 함:
+            // 재예열 뒤 사다리가 곧 표시를 다시 세우거나 예열이 실패·건너뛰어도 HDD 를 주기보다 잦게 읽지 않음
+            DateTimeOffset? last = _prewarm.LastWarmed(g.Name);
+            lock (_checkLock)
+            {
+                if (_missingTriedAt.TryGetValue(g.Name, out DateTimeOffset tried) && (last is not { } l || tried > l))
+                {
+                    last = tried;
+                }
+            }
+
+            if (last is { } since && now >= since && now - since < TimeSpan.FromMinutes(auto.RewarmMinutes))
+            {
+                NoteCheck(g, "ladder-missing-wait", $"{g.Name}: rewarm check: part of the list is not in memory (found by the ladder), waiting until {auto.RewarmMinutes} min after the last prewarm attempt");
+                return;
+            }
+
+            _ = solar.TakeMissing(g.Name);
+            lock (_checkLock)
+            {
+                _checkState[g.Name] = "ladder-missing"; // 로그는 매번 남기고, 채운 뒤 다음 점검의 warm 도 새 상태로 기록되게 함
+                _missingTriedAt[g.Name] = now;
+            }
+
+            _log.Info($"{g.Name}: rewarm check: part of the list is not in memory (found by the ladder), prewarming again (cooldown ignored)");
+            PrewarmResult result = _prewarm.RewarmGame(g, ct, roomMib);
+            if (!result.Ran && result.Stats is not { Bytes: > 0 })
+            {
+                solar.RestoreMissing(g.Name); // 읽기 전에 건너뜀 (메모리·지연·대여 거절·재배치 등): 다음 점검에서 다시 시도
+            }
+
             return;
         }
 

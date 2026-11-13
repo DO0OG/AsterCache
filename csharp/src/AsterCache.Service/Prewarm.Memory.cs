@@ -94,16 +94,31 @@ public sealed partial class Prewarmer
         return [.. list.Take(keep), .. list.Skip(keep).Select((g, n) => (G: g, V: 1.0 / (keep + n + 1) / (zoneMib(g) is > 0 and long z ? z : DefaultFullPrewarmMib))).OrderByDescending(x => x.V).Select(x => x.G)];
     }
 
-    private long ZoneMib(GameSettings game) => ((_env.ZoneBytes(game) ?? 0) + (1 << 20) - 1) >> 20;
+    // estimate: 예산 계산의 추정으로만 쓰는 호출 (입력 파일·설정이 같고 MaxAge 안이면 이전 값 재사용). 읽을 범위·양을 정하는 호출은 false 로 매번 새로 읽음.
+    private long ZoneMib(GameSettings game, bool estimate = false) =>
+        (((estimate ? EstimatedZoneBytes(game) : _env.ZoneBytes(game)) ?? 0) + (1 << 20) - 1) >> 20;
 
-    private long ObservedMib(GameSettings game, long totalMib, bool allowSourceRead = true)
+    private long? EstimatedZoneBytes(GameSettings game) => Estimated("zone", game, false, () => _env.ZoneBytes(game), true);
+
+    // 추정의 재사용 키: 입력 파일 서명 + ZoneBytes·ObservedBytes 가 쓰는 게임 설정. 서명을 만들 수 없으면 (시험의 가짜 env 포함) null = 재사용 안 함.
+    private string? EstimateStampOf(GameSettings game, bool fromMemoryCaches) =>
+        _env.EstimateStamp?.Invoke(game, fromMemoryCaches) is { } files
+            ? $"{files}|{game.Plan}|{game.Trace}|{game.OriginRoot}|{game.MaxStreamSet}|{game.MaxStreamMib}"
+            : null;
+
+    private long? Estimated(string kind, GameSettings game, bool fromMemoryCaches, Func<long?> compute, bool estimate) =>
+        _estimates.Get(kind, game.Name, estimate ? EstimateStampOf(game, fromMemoryCaches) : null, compute);
+
+    private long ObservedMib(GameSettings game, long totalMib, bool allowSourceRead = true, bool estimate = false)
     {
         if (totalMib <= 0)
         {
             return totalMib;
         }
 
-        long? observedBytes = allowSourceRead ? _env.ObservedBytes(game) : _env.ObservedBytesIfCached(game);
+        long? observedBytes = allowSourceRead
+            ? Estimated("observed", game, false, () => _env.ObservedBytes(game), estimate)
+            : Estimated("observed-cached", game, true, () => _env.ObservedBytesIfCached(game), estimate);
         if (observedBytes is not { } bytes)
         {
             return totalMib;
@@ -195,7 +210,7 @@ public sealed partial class Prewarmer
         var observedMib = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
         foreach (GameSettings g in ordered)
         {
-            long total = ZoneMib(g);
+            long total = ZoneMib(g, estimate: true);
             bool hasZoneList = total > 0;
             long coldHeld;
             bool pending;
@@ -219,7 +234,7 @@ public sealed partial class Prewarmer
             total = Math.Min(total, cap);
             long observed = unknownPendingSize ? 0 : total <= 0 || !hasZoneList
                 ? total
-                : ObservedMib(g, total, allowSourceRead: !DriveHasRunningGame(g)); // 같은 디스크에서 게임이 실행 중이면 출처를 읽지 않고, 출처를 모르면 전부 관찰된 것으로 셈
+                : ObservedMib(g, total, allowSourceRead: !DriveHasRunningGame(g), estimate: true); // 같은 디스크에서 게임이 실행 중이면 출처를 읽지 않고, 출처를 모르면 전부 관찰된 것으로 셈
             totalMib[g.Name] = total;
             observedMib[g.Name] = observed;
         }

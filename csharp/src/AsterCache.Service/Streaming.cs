@@ -98,6 +98,7 @@ public sealed class PrefetchStreamer : IGameStreamer
     /// 시험용: 원시 트레이스를 실제로 파싱한 횟수 (경로별).
     internal static readonly ConcurrentDictionary<string, int> SourceTraceParses = new(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<string, TraceSourceCacheEntry> TraceSourceCache = new(StringComparer.OrdinalIgnoreCase);
+    private static int _sourceCacheGeneration; // TraceSourceCache 가 바뀔 때마다 늘림 (캐시에서만 찾는 예산 추정의 재사용 키)
 
     internal static void ForgetRemovedGames(IEnumerable<GameSettings> games)
     {
@@ -110,6 +111,8 @@ public sealed class PrefetchStreamer : IGameStreamer
                 {
                     _ = TraceSourceCache.Remove(path + "|" + game.OriginRoot);
                 }
+
+                _ = Interlocked.Increment(ref _sourceCacheGeneration);
             }
 
             foreach (string path in paths)
@@ -240,6 +243,22 @@ public sealed class PrefetchStreamer : IGameStreamer
         {
             return null;
         }
+    }
+
+    // 예산 추정 (WarmBytes·ObservedBytes) 이 읽는 입력의 (존재, 길이, 수정 시각): 목록의 입력 (PrewarmRun.InputStamp) 에 원시·boot 트레이스를 더함. 메타데이터 조회뿐이며 만들 수 없으면 null.
+    // ZoneBytes·LoadRows·LoadSourceTraceRows·LoadTiers.For 의 입력이 바뀌면 여기도 고칠 것.
+    // fromMemoryCaches: 출처를 메모리 캐시에서만 찾는 추정은 그 캐시의 세대도 입력이라 서명에 더함.
+    internal static string? EstimateStamp(GameSettings game, bool fromMemoryCaches)
+    {
+        string? files = PrewarmRun.InputStamp(game);
+        string? traces = PrewarmRun.Stamp(() => [AutoTracer.RawTracePath(game), AutoTracer.BootTracePath(game)]);
+        if (files is null || traces is null)
+        {
+            return null;
+        }
+
+        string stamp = $"{files}|{traces}";
+        return fromMemoryCaches ? $"{stamp}|{Volatile.Read(ref _sourceCacheGeneration)}:{LoadTiers.Generation}" : stamp;
     }
 
     /// 접근 순서 앞쪽 HeadBytesOf 만큼만 읽습니다 (스케줄러가 앞에 둔 부분과 같음).
@@ -741,6 +760,7 @@ public sealed class PrefetchStreamer : IGameStreamer
             lock (TraceSourceCacheLock)
             {
                 TraceSourceCache[key] = new TraceSourceCacheEntry(length, written, rows);
+                _ = Interlocked.Increment(ref _sourceCacheGeneration);
             }
 
             return rows;
@@ -1017,11 +1037,14 @@ internal sealed class PrewarmRun : IDisposable
     }
 
     // 목록의 입력 (계획·트레이스·예열 전용 옆 파일·가변 표지) 의 (존재, 길이, 수정 시각). 메타데이터 조회뿐이며 읽지 못하면 null (재사용 안 함).
-    internal static string? InputStamp(GameSettings game)
+    internal static string? InputStamp(GameSettings game) =>
+        Stamp(() => [game.Plan, game.Trace, PlanOutput.WarmOnlyPath(game.Trace), AutoTracer.VolatilePath(game)]);
+
+    internal static string? Stamp(Func<string[]> paths)
     {
         try
         {
-            return string.Join('|', new[] { game.Plan, game.Trace, PlanOutput.WarmOnlyPath(game.Trace), AutoTracer.VolatilePath(game) }.Select(path =>
+            return string.Join('|', paths().Select(path =>
             {
                 var info = new FileInfo(path);
                 return info.Exists ? $"{info.Length}:{info.LastWriteTimeUtc.Ticks}" : "-";

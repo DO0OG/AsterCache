@@ -470,8 +470,11 @@ public sealed partial class Prewarmer
                 return false;
             }
 
-            long? zoneBytes = _env.ZoneBytes(game);
-            p = RaiseHotMib(game.Name, p, zoneBytes); // 기억한 목록 크기가 현재 목록보다 작으면 올림: 첫 관문·창 상한·표시가 현재 목록을 따름
+            // 읽을지 기다릴지 정하는 판정까지는 예산 계산과 같은 추정 (읽지 않고 돌아가는 틱은 계획을 해석하지 않음). 추정으로는 지역 값만 고치고 지속되는 상태는 새로 읽은 값으로만 고침.
+            string? zoneStamp = EstimateStampOf(game, false);
+            long? zoneBytes = _estimates.Get("zone", game.Name, zoneStamp, () => _env.ZoneBytes(game));
+            (long WarmedMib, long HotMib) remembered = p;
+            p = (p.WarmedMib, Math.Max(p.HotMib, ZoneListMib(zoneBytes))); // 기억한 목록 크기가 현재 목록보다 작으면 올림 (_partial 은 읽기 직전에)
             long avail = _env.AvailableRamMib();
             long physCap = PhysCapMib();
             long budgetCap = allocatedMib is { } allocated ? Math.Min(p.HotMib, allocated) : p.HotMib;
@@ -490,6 +493,12 @@ public sealed partial class Prewarmer
             long plannedCapMib = partialCap ?? p.HotMib;
             string? inputStamp = PrewarmRun.InputStamp(game);
             long progressBefore = SupplementProgressBytes(game, p, inputStamp);
+            SupplementRetry? retryBefore;
+            lock (_gate)
+            {
+                _supplementRetry.TryGetValue(game.Name, out retryBefore);
+            }
+
             if (SupplementDeferred(game, plannedCapMib, p.HotMib, progressBefore, inputStamp))
             {
                 return false;
@@ -556,6 +565,29 @@ public sealed partial class Prewarmer
             {
                 return false;
             }
+
+            long? freshZone = _env.ZoneBytes(game); // 읽기로 정해진 뒤에는 계획을 새로 읽음
+            if (ZoneListMib(freshZone) != ZoneListMib(zoneBytes))
+            {
+                // 추정이 낡았음: 새 값을 추정에 넣고 이번 회는 읽지 않음 (재시도 기한 상태도 되돌림), 다음 보충이 새 값으로 판정
+                _estimates.Set("zone", game.Name, zoneStamp, freshZone);
+                lock (_gate)
+                {
+                    if (retryBefore is null)
+                    {
+                        _supplementRetry.Remove(game.Name);
+                    }
+                    else
+                    {
+                        _supplementRetry[game.Name] = retryBefore;
+                    }
+                }
+
+                return false;
+            }
+
+            zoneBytes = freshZone;
+            p = RaiseHotMib(game.Name, remembered, zoneBytes); // 기억한 목록 크기가 현재 목록보다 작으면 올림: 창 상한·표시가 현재 목록을 따름
 
             using PrewarmRun run = PrewarmRun.Begin();
             long? finalReadBytes = ReadSetBytes(warm, partial: windowMib is not null || skipBytes > 0);
@@ -883,10 +915,12 @@ public sealed partial class Prewarmer
         _log.Info($"{game}: supplement waits for memory (read {warmedMib} MiB, room for {fitMib} MiB)");
     }
 
+    private static long ZoneListMib(long? zoneBytes) => zoneBytes is > 0 ? (zoneBytes.Value + (1 << 20) - 1) >> 20 : 0;
+
     // 기억한 목록 크기 (HotMib) 를 현재 목록 (zoneBytes, MiB 올림) 이 더 크면 올려 돌려주고 _partial·_memoryPartial 도 같게 고침. 늘어날 때만: 줄이면 끝난 것으로 잘못 칠 수 있음.
     private (long WarmedMib, long HotMib) RaiseHotMib(string game, (long WarmedMib, long HotMib) p, long? zoneBytes)
     {
-        long listMib = zoneBytes is > 0 ? (zoneBytes.Value + (1 << 20) - 1) >> 20 : 0;
+        long listMib = ZoneListMib(zoneBytes);
         if (listMib <= p.HotMib)
         {
             return p;

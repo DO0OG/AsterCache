@@ -195,6 +195,7 @@ public sealed partial class Prewarmer
             }
         }
 
+        _estimates.Retain(live);
         _rewarm.SetGames(games);
         _pins.Reconcile(games);
         bool budgetWaiting;

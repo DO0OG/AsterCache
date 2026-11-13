@@ -30,6 +30,7 @@ public sealed partial class Prewarmer
     private readonly ILog _log;
     private readonly string? _statusPath;
     private readonly Func<DateTimeOffset> _now;
+    private readonly WarmEstimateCache _estimates; // 예산 계산 (WarmBudget) 의 게임별 추정 재사용, 읽을 범위를 정하는 호출은 거치지 않음
     private readonly object _gate = new(); // 짧은 메모리 상태만 보호: 스트림이 도는 동안에도 LastWarmed·Warmed 가 막히지 않게
     private readonly object _run = new(); // 예열을 한 번에 하나로
     private readonly Dictionary<string, int> _activeWork = new(StringComparer.OrdinalIgnoreCase); // 설정 재적재 때 진행 중인 게임 상태를 보존, _gate 로 보호
@@ -123,6 +124,7 @@ public sealed partial class Prewarmer
         _statusPath = statusPath;
         _now = now ?? (() => DateTimeOffset.UtcNow);
         _coordinator = coordinator;
+        _estimates = new WarmEstimateCache(_now);
         _pins = new PinKeeper(env, log, _now) { Coordinator = coordinator };
         _solar = new Solar(env, log, _now);
         _rewarm = new Rewarmer(this, env, log, _now);

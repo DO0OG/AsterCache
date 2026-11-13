@@ -393,6 +393,34 @@ public sealed partial class Prewarmer
         }
     }
 
+    // 읽는 도중 메모리 판정이 "여기서 마무리" 를 알리는 표시 (스트림 한 번, 창 읽기에서만): 취소가 아니라 새 묶음을 내지 않고 읽은 데까지를 부분 예열로 남김.
+    // skipBytes: 이미 읽어 건너뛴 앞부분. limitBytes: 이번 읽기가 (건너뛴 앞부분 포함) 넘지 않을 총량 (이어 읽는 창이 지금 예산보다 클 때), 없으면 long.MaxValue.
+    private sealed class MemoryFit(long skipBytes, long limitBytes)
+    {
+        private int _finished;
+        private bool _budget;
+
+        public long AvailableMib { get; private set; }
+
+        public long ReserveMib { get; private set; }
+
+        public bool Finished => Volatile.Read(ref _finished) != 0;
+
+        public string Detail => $"available {AvailableMib} MiB, reserve {ReserveMib} MiB";
+
+        // 마무리 로그의 "the rest ..." 뒤에 붙는 사유: 메모리에 안 들어감인지, 읽을 총량 한도 (배정 몫·캐시 예산) 에 닿았는지.
+        public string Reason => _budget ? $"is left for later, the budget was reached ({Detail})" : $"does not fit in memory ({Detail})";
+
+        // 이번 읽기 목록 (건너뛴 앞부분 제외) 에서 읽을 총량: 한도가 있으면 한도까지만.
+        public long EffectiveTotal(long total) => Math.Min(total, Math.Max(0, limitBytes - skipBytes));
+
+        public void Finish(long availableMib, long reserveMib, bool budget = false)
+        {
+            (AvailableMib, ReserveMib, _budget) = (availableMib, reserveMib, budget);
+            Volatile.Write(ref _finished, 1);
+        }
+    }
+
     // 실제 읽기 집합 크기. 부분 예열은 스트림처럼 마지막 범위를 자르고, 조회하지 못하면 null입니다.
     private long? ReadSetBytes(GameSettings game, bool partial = false)
     {

@@ -44,6 +44,9 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
 
         public Action<Action<long, long>>? OnProgress { get; set; }
 
+        /// 마지막 스트림에 준 정지 토큰 (읽는 도중 취소됐는지 보려고).
+        public CancellationToken LastStop { get; private set; }
+
         /// 실제로 읽었다고 알릴 양 (MiB, 기본은 받은 상한 그대로).
         public long? ReadMib { get; set; }
 
@@ -66,6 +69,7 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
         {
             long total = ScheduledStreamBytes?.Invoke(game, maxBytes) ?? (long)game.MaxStreamMib * Mib;
             Calls.Add((game.MaxStreamMib, maxBytes));
+            LastStop = stop;
             progress?.Invoke(0, total);
             if (OnProgress is not null && progress is not null)
             {
@@ -222,7 +226,7 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
         _streamer.OnProgress = progress =>
         {
             _avail = 4096; // 읽는 중에 메모리 압박
-            progress(64 * Mib, 1904 * Mib);
+            progress(0, 1904 * Mib);
         };
 
         PrewarmResult r = p.Run(Game(), "test");
@@ -234,25 +238,23 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     }
 
     [Fact]
-    public void AMemoryStopKeepsWhatWasReadAsPartialAndTheNextSupplementReadsPastIt()
+    public void AMemoryLimitHitWhileReadingFinishesWithWhatWasReadAsPartialAndTheNextSupplementReadsPastIt()
     {
         _avail = 6000;
         _streamer.ReadMib = 300;
         Prewarmer p = Make(Game());
         _streamer.OnProgress = progress =>
         {
-            _avail = 4096; // 300 MiB 읽은 뒤 메모리 압박
+            _avail = 4096; // 300 MiB 읽은 뒤 메모리 압박: 들어가는 범위 0 이라 읽은 양이 이미 넘음
             progress(300 * Mib, 1648 * Mib);
         };
 
         PrewarmResult r = p.Run(Game(), "test");
 
-        Assert.False(r.Ran);
-        Assert.Equal(Prewarmer.Cancelled, r.SkipReason);
+        Assert.True(r.Ran); // 취소·실패가 아니라 읽은 데까지로 마무리한 부분 예열
         Assert.Equal((300L, _hotMib), p.PartialInfo("g")); // 읽은 데까지가 부분 상태 (설정한 창 1648 이 아니라)
-        int cancelledAt = _log.Lines.ToList().FindIndex(l => l.Contains("prewarm cancelled (test) after 300 MiB (memory reserve", StringComparison.Ordinal));
-        int keptAt = _log.Lines.ToList().FindIndex(l => l.Contains("prewarm stopped by memory; kept the 300 of 8000 MiB read as partial", StringComparison.Ordinal));
-        Assert.True(cancelledAt >= 0 && keptAt > cancelledAt); // 취소 줄 다음에 남긴 양
+        Assert.Contains(_log.Lines, l => l.Contains("prewarm read the first 300 of 8000 MiB, the rest does not fit in memory (available 4096 MiB, reserve 4096 MiB) [test]", StringComparison.Ordinal));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("prewarm cancelled", StringComparison.Ordinal));
         Assert.Equal((300L, _hotMib, true), ((long)Status()["warmed_mib"]!, (long)Status()["hot_mib"]!, (bool)Status()["partial"]!));
         Assert.Equal(300, p.WarmedPart(Game()).MaxStreamMib); // 재예열 점검의 표본도 읽은 앞부분에서만
         _streamer.OnProgress = null;
@@ -277,7 +279,7 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
             _avail = 4096;
             progress(300 * Mib, 1648 * Mib);
         };
-        Assert.False(p.Run(Game(), "test").Ran);
+        Assert.True(p.Run(Game(), "test").Ran);
         _streamer.OnProgress = null;
         _streamer.ReadMib = null;
         _avail = 20000;
@@ -304,7 +306,7 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
             _avail = 4096;
             progress(300 * Mib, 1648 * Mib);
         };
-        Assert.False(p.Run(Game(), "test").Ran); // 300 MiB 만 읽은 부분 예열
+        Assert.True(p.Run(Game(), "test").Ran); // 300 MiB 만 읽고 마무리한 부분 예열
         _avail = 20000;
         _now += TimeSpan.FromMinutes(3);
         _streamer.ReadMib = 0;
@@ -327,10 +329,10 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     }
 
     [Fact]
-    public void AMemoryStopKeepsTheRetryPendingAndRespectsTheFloorAndTheRecoveryCondition()
+    public void AMemoryStopThatCannotBeKeptAsPartialStillRespectsTheRetryFloor()
     {
         _avail = 6000;
-        _streamer.ReadMib = 300;
+        (_streamer.ReadMib, _streamer.ErrorCount) = (300, 1); // 오류가 섞여 읽은 곳을 앞쪽으로 보장할 수 없음: 마무리하지 않고 기존 메모리 취소
         Prewarmer p = Make(Game());
         _streamer.OnProgress = progress =>
         {
@@ -342,20 +344,36 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
         Assert.True(p.HasPendingWarm("g"));
 
         _avail = 20000; // 메모리는 넉넉해졌지만 멈춘 지 2 분 전
-        Assert.False(p.Supplement(Game(), CancellationToken.None));
-        Assert.Equal("memory retry floor", p.Run(Game(), "rewarm", ignoreCooldown: true).SkipReason); // 재시도 성격의 예열도 같은 하한
+        Assert.Equal("memory retry floor", p.Run(Game(), "rewarm", ignoreCooldown: true).SkipReason); // 재시도 성격의 예열은 하한을 지킴
         Assert.Single(_streamer.Calls);
+    }
 
-        _now += Prewarmer.MemoryRetryFloor + TimeSpan.FromSeconds(1);
-        _avail = 4096 + Prewarmer.FinalShrinkHeadroomMib + 300; // 읽은 양 + 여유 + 예비량에 못 미침: 읽지 않고 대기는 남김
+    [Fact]
+    public void ASupplementAfterAMemoryLimitFinishWaitsUntilTheRoomGrowsPastTheThresholdThenReadsPastIt()
+    {
+        _avail = 6000;
+        _streamer.ReadMib = 300;
+        Prewarmer p = Make(Game());
+        _streamer.OnProgress = progress =>
+        {
+            _avail = 4096;
+            progress(300 * Mib, 1648 * Mib);
+        };
+        Assert.True(p.Run(Game(), "test").Ran);
+        _streamer.OnProgress = null;
+        _streamer.ReadMib = null;
+        _now += TimeSpan.FromMinutes(3);
+
+        _avail = 4096 + Prewarmer.FinalShrinkHeadroomMib + 300 + 255; // 들어가는 범위 555: 읽은 양 300 보다 255 만 큼 (기준 256 미만): 읽지 않음
+        Assert.False(p.Supplement(Game(), CancellationToken.None));
         Assert.False(p.Supplement(Game(), CancellationToken.None));
         Assert.Single(_streamer.Calls);
-        Assert.True(p.HasPendingWarm("g"));
+        Assert.Single(_log.Lines, l => l.Contains("g: supplement waits for memory (read 300 MiB, room for 555 MiB)", StringComparison.Ordinal)); // 같은 상태는 한 줄만
 
-        _avail = 4096 + Prewarmer.FinalShrinkHeadroomMib + 301; // 읽은 양 + 여유 + 예비량을 1 MiB 넘기면 이어 읽음
+        _avail += 1; // 256 MiB 커짐: 시작
         Assert.True(p.Supplement(Game(), CancellationToken.None));
         Assert.Equal(2, _streamer.Calls.Count);
-        Assert.Equal(301, _streamer.Calls[1].MaxStreamMib);
+        Assert.Equal(556, _streamer.Calls[1].MaxStreamMib);
     }
 
     [Fact]
@@ -504,13 +522,13 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
         _streamer.OnProgress = progress =>
         {
             bool first = _streamer.Calls.Count == 1;
-            (_streamer.ReadMib, _avail) = (300, first ? 8000 : 4500); // 다시 읽는 창도 가용이 더 줄어 멈춤
+            (_streamer.ReadMib, _avail) = (300, first ? 8000 : 4300); // 다시 읽는 창도 가용이 더 줄어 읽은 양 (300) 이 들어가는 범위 (204) 를 넘음
             progress(300 * Mib, (first ? 8000 : 3648) * Mib);
         };
 
         PrewarmResult r = p.Run(Game(), "test");
 
-        Assert.False(r.Ran);
+        Assert.True(r.Ran); // 창 읽기는 취소하지 않고 읽은 데까지로 마무리
         Assert.Equal(2, _streamer.Calls.Count); // 한 회에 한 번만
         Assert.Single(_log.Lines, l => l.Contains("before the full list was read", StringComparison.Ordinal));
         Assert.Equal((300L, 8000L), p.PartialInfo("g")); // 창 경로의 부분 확정 규칙 그대로
@@ -965,5 +983,47 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
         Assert.Null(LoadTiers.For(game, default, allowParse: false)); // 캐시가 비어 있으면 파싱하지 않음
         Assert.NotNull(LoadTiers.For(game, default));
         Assert.NotNull(LoadTiers.For(game, default, allowParse: false));
+    }
+
+    [Fact]
+    public void AMemoryDropMidReadKeepsReadingUpToTheRangeThatFitsNowAndFinishesThereWithoutCancelling()
+    {
+        (_hotMib, _avail) = (11444, 14986); // 창 10634 = 가용 - 256 - 4096 (조사한 실제 사례)
+        Prewarmer p = Make(Game());
+        bool cancelledMidRead = true;
+        _streamer.OnProgress = progress =>
+        {
+            _avail = 14716; // 계획 뒤 가용이 270 MiB 줄어 (여유 256 을 넘음) 최종 집합 10634 > 가용 - 예비 = 10620
+            progress(3112 * Mib, 10634 * Mib); // 읽은 3112 < 들어가는 범위 10620: 줄여서 계속 읽음
+            cancelledMidRead = _streamer.LastStop.IsCancellationRequested;
+            _streamer.ReadMib = 10624;
+            progress(10624 * Mib, 10634 * Mib); // 한 묶음 더 읽어 들어가는 범위 이상: 여기서 마무리
+        };
+
+        PrewarmResult r = p.Run(Game(), "test");
+
+        Assert.False(cancelledMidRead);
+        Assert.True(r.Ran); // 취소·실패가 아닌 부분 예열
+        Assert.Equal((10624L, 11444L), p.PartialInfo("g")); // 읽은 데까지 기록
+        Assert.Contains(_log.Lines, l => l.Contains("prewarm read the first 10624 of 11444 MiB, the rest does not fit in memory (available 14716 MiB, reserve 4096 MiB)", StringComparison.Ordinal));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("prewarm cancelled", StringComparison.Ordinal));
+        Assert.Equal((10624L, 11444L, true), ((long)Status()["warmed_mib"]!, (long)Status()["hot_mib"]!, (bool)Status()["partial"]!));
+    }
+
+    [Fact]
+    public void AMemoryDropWhoseRangeStillFitsTheWholeWindowReadsItToTheEnd()
+    {
+        _avail = 6000; // 창 1648
+        Prewarmer p = Make(Game());
+        _streamer.OnProgress = progress =>
+        {
+            _avail = 5800; // 줄었지만 최종 집합 1648 이 들어가는 범위 1704 안
+            progress(300 * Mib, 1648 * Mib);
+        };
+
+        Assert.True(p.Run(Game(), "test").Ran);
+
+        Assert.Equal((1648L, _hotMib), p.PartialInfo("g"));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("does not fit in memory (available", StringComparison.Ordinal)); // 마무리 줄 없이 평소 완료
     }
 }

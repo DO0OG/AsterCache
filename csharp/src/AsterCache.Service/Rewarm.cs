@@ -288,7 +288,12 @@ public sealed partial class Rewarmer
         else if (_prewarm.SupplementPending(g.Name))
         {
             NoteCheck(g, "supplement", $"{g.Name}: rewarm check: the rest of the hot set is not read yet, supplementing once the drive has stayed idle"); // 부분 예열 뒤에는 표본이 cold 든 warm 이든 전체 재예열로 가지 않고, 보충은 SupplementTick 과 같은 연속 유휴 판정을 거침
-            if (!_prewarm.SupplementWhenIdle(g, ct) && probe.Cold && _prewarm.MemoryPartialPending(g.Name))
+            bool supplemented = _prewarm.SupplementWhenIdle(g, ct);
+            if (!supplemented && !probe.Cold)
+            {
+                LadderWaitingSupplement(g, ct); // 보충이 메모리를 기다리는 중이면 (곧 더 읽을 수 있는 상태가 아니면) 읽은 범위의 첫 사다리를 만듦
+            }
+            else if (!supplemented && probe.Cold && _prewarm.MemoryPartialPending(g.Name))
             {
                 NoteCheck(g, "partial-cold", $"{g.Name}: rewarm check: the part read into memory went cold ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms, available {_env.AvailableRamMib()} MiB), reading it again (cooldown ignored)"); // 메모리가 모자라 앞부분만 읽은 게임: 읽은 구간이 밀려났을 때만 다시 (남은 구간은 표본에 넣지 않음)
                 _prewarm.RewarmGame(g, ct, roomMib);

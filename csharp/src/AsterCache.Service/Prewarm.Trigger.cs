@@ -37,7 +37,8 @@ public sealed partial class Prewarmer
         IDisposable? waiting = null; // 읽을 게임이 있으면 RunBatch 가 끝날 때까지 서 있는 트리거 대기 표시 (배경 예열이 끼어들지 않게, 정상·취소·예외 모두 지움)
         try
         {
-            IReadOnlyList<GameSettings> warming = chosen.Count > 0 ? WillWarmOf(chosen) : []; // 실제로 읽을 게임만: 표시·선점의 "대상" (건너뛸 게임의 배경 스트림을 보호하지 않고, 건너뛸 게임만 있으면 아무것도 멈추지 않음)
+            IReadOnlyList<string?> skips = chosen.Count > 0 ? TriggerSkipReasons(chosen) : [];
+            IReadOnlyList<GameSettings> warming = [.. chosen.Where((_, i) => skips[i] is null)]; // 실제로 읽을 게임만: 표시·선점의 "대상" (건너뛸 게임의 배경 스트림을 보호하지 않고, 건너뛸 게임만 있으면 아무것도 멈추지 않음)
             if (warming.Count > 0)
             {
                 waiting = BeginTriggerWait(warming);
@@ -45,7 +46,10 @@ public sealed partial class Prewarmer
                 _env.YieldBackground("trigger", ct); // 예열이 가용 메모리를 처음 읽기 (RunBatch) 전에 배경 프로세스의 메모리를 양보시킴 (모두 건너뛸 것이면 비우지 않음)
             }
 
-            results = RunBatch(chosen, $"trigger {start.ExeName}", pin: !LauncherExes.Is(start.ExeName), ct: ct, trigger: true); // 런처가 뜰 때는 고정하지 않음 (런처 업데이트가 파일을 고칠 수 있게)
+            string why = $"trigger {start.ExeName}";
+            results = chosen.Count > 0 && warming.Count == 0
+                ? SkipTriggerNow(chosen, skips, why) // 읽을 게임이 없으면 다른 예열이 락을 놓기를 기다리지 않고 바로 건너뜀을 남김
+                : RunBatch(chosen, why, pin: !LauncherExes.Is(start.ExeName), ct: ct, trigger: true); // 런처가 뜰 때는 고정하지 않음 (런처 업데이트가 파일을 고칠 수 있게)
         }
         finally
         {
@@ -56,12 +60,59 @@ public sealed partial class Prewarmer
         return results;
     }
 
-    // 예열을 실제로 읽을 게임들 (RunBatch 와 같은 건너뜀 판정, 게임마다 한 번씩만 판정해 표본 읽기를 겹치지 않음). 기록 없는 게임은 RunCold 의 확정 건너뜀 (드라이브 거부·게임 실행 중·쿨다운) 만 봄: 디스크 유휴는 양보 뒤에 바뀔 수 있어 진행으로 셈.
+    // 게임마다 트리거 예열이 건너뛸 사유, 실제로 읽을 게임이면 null (RunBatch 와 같은 건너뜀 판정, 게임마다 한 번씩만 판정해 표본 읽기를 겹치지 않음). 기록 없는 게임은 RunCold 의 확정 건너뜀 (드라이브 거부·게임 실행 중·쿨다운) 만 봄: 디스크 유휴는 양보 뒤에 바뀔 수 있어 진행으로 셈.
     // 가용 메모리는 읽지 않음: 양보가 끝난 뒤 처음 읽어야 하고, 메모리 부족은 부분 예열이 읽으니 어차피 진행으로 셈.
-    private IReadOnlyList<GameSettings> WillWarmOf(IReadOnlyList<GameSettings> games)
+    private IReadOnlyList<string?> TriggerSkipReasons(IReadOnlyList<GameSettings> games)
     {
         DateTimeOffset now = _now();
-        return [.. games.Where(g => IsCold(g) ? _env.ColdRefusal(g) is null && ColdFixedSkip(g, now) is null : WillSkipReason(g, long.MaxValue) is null)];
+        return [.. games.Select(g => IsCold(g) ? _env.ColdRefusal(g) ?? ColdFixedSkip(g, now) : WillSkipReason(g, long.MaxValue))];
+    }
+
+    // 모두 건너뛸 트리거: Run 이 락 안에서 남기는 것과 같은 건너뜀 줄·기록을 락 없이 남김 (읽지 않으므로 락이 필요 없고, 다른 예열이 몇 분 읽는 동안 스레드 풀 스레드를 붙잡지 않음).
+    // 같은 디스크에서 게임이 실행 중인 건너뜀은 호출자의 WaitForBlockingGames 가 기존 재시도 경로에 올림.
+    private IReadOnlyList<PrewarmResult> SkipTriggerNow(IReadOnlyList<GameSettings> games, IReadOnlyList<string?> skips, string why)
+    {
+        List<PrewarmResult> results = [];
+        for (int i = 0; i < games.Count; i++)
+        {
+            (GameSettings game, string skip, DateTimeOffset now) = (games[i], skips[i]!, _now());
+            if (IsCold(game))
+            {
+                if (_env.ColdRefusal(game) is not null)
+                {
+                    bool first;
+                    lock (_gate)
+                    {
+                        first = _refusedLogged.Add(game.Name);
+                    }
+
+                    if (first)
+                    {
+                        _log.Info($"{game.Name}: prewarm without a record skipped ({skip}) [{why}]");
+                    }
+
+                    results.Add(new PrewarmResult(game.Name, false, skip, null, now)); // 상태 파일에도 쓰지 않음 (RunCold 와 같음)
+                    continue;
+                }
+
+                _log.Info($"{game.Name}: prewarm skipped ({skip}) [{why}]{(skip == "game is running" ? BlockerNote(game) : string.Empty)}");
+                results.Add(Record(game, now, new PrewarmResult(game.Name, false, skip, null, now), 0));
+                continue;
+            }
+
+            PrewarmResult result = new(game.Name, false, skip, null, now);
+            if (skip == PostUpdateDelay)
+            {
+                TrackPendingWarm(game, result, now); // 업데이트 지연은 기록 없이 대기만 (Run 과 같음)
+                results.Add(result);
+                continue;
+            }
+
+            LogSkipped(game.Name, skip, () => $"{game.Name}: prewarm skipped ({skip}) [{why}]{(skip == "game is running" ? BlockerNote(game) : string.Empty)}");
+            results.Add(Record(game, now, result, 0));
+        }
+
+        return results;
     }
 
     // 같은 디스크의 다른 게임이 실행 중이라 거절된 트리거 예열은, 그 게임들이 사라진 것을 처음 본 때 한 번 다시 시도하도록 적어 둡니다 (NoteGamesGone).

@@ -360,6 +360,12 @@ public sealed class SolarTests
         /// 참이면 스트림이 읽기 전에 예외로 실패함.
         public bool Fail { get; set; }
 
+        /// 묶음 점검 (진행 알림) 을 직접 부르는 읽는 도중의 일 (메모리 한도 등).
+        public Action<Action<long, long>>? OnProgress { get; set; }
+
+        /// 실제로 읽었다고 알릴 양 (MiB), 없으면 받은 범위 전부.
+        public long? ReadMib { get; set; }
+
         public StreamStats Stream(GameSettings game) => throw new NotSupportedException();
 
         public (StreamStats Stats, bool Complete) StreamPrewarm(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes)
@@ -372,8 +378,13 @@ public sealed class SolarTests
 
             long total = Math.Min(game.MaxStreamMib == 0 ? ZoneMib : game.MaxStreamMib, ZoneMib) * Mib;
             progress?.Invoke(0, total);
+            if (OnProgress is not null && progress is not null)
+            {
+                OnProgress(progress);
+            }
+
             DuringStream?.Invoke();
-            return (new StreamStats(total, 1, 0, 0.01), Complete && !stop.IsCancellationRequested);
+            return (new StreamStats(ReadMib is { } read ? read * Mib : total, 1, 0, 0.01), Complete && !stop.IsCancellationRequested);
         }
 
         public (StreamStats Stats, bool Complete) Stream(GameSettings game, CancellationToken stop, Action<long, long>? progress) => StreamPrewarm(game, stop, progress, 0);
@@ -925,5 +936,155 @@ public sealed class SolarTests
         Assert.Equal([.. Reversed([.. _common, .. all])], ladder); // 보충분의 뒤쪽 -> ... -> 앞부분 -> 공통 블록
         Assert.Equal(all[49], ladder[0]);
         Assert.Equal(_common[0], ladder[^1]);
+    }
+
+    [Fact]
+    public void AStreamFinishedShortAtTheMemoryLimitIsNotTouchedBecauseItsReadRangeIsNotTheReplannedList()
+    {
+        ReadOp[] all = HotSet(50);
+        (_streamer.All, _streamer.ZoneMib) = (all, 5000);
+        _avail = 4096 + 256 + 3000; // 창 3000
+        _streamer.ReadMib = 1000;
+        _streamer.OnProgress = progress =>
+        {
+            _avail = 4096 + 800; // 읽는 도중 들어가는 범위가 800 으로 줄어 읽은 1000 이 이미 넘음: 취소가 아니라 마무리
+            progress(1000 * Mib, 3000 * Mib);
+        };
+        Prewarmer p = MakePrewarmer(Game("a"));
+
+        Assert.True(p.Run(Game("a"), "service start").Ran);
+
+        Assert.Equal((1000L, 5000L), p.PartialInfo("a"));
+        Assert.Empty(_touched); // 읽은 만큼의 앞부분은 창 크기가 다르면 다시 계획한 목록과 같지 않아 (물리 순서 재정렬), 읽지 않은 구간을 만질 수 있으므로 건너뜀
+        Assert.False(p.Solar.HasMark("a"));
+    }
+
+    [Fact]
+    public void ASupplementFinishedShortAtTheMemoryLimitIsNotTouchedEither()
+    {
+        ReadOp[] all = HotSet(50);
+        (_streamer.All, _streamer.ZoneMib) = (all, 5000);
+        _avail = 4096 + 256 + 3000;
+        Prewarmer p = MakePrewarmer(Game("a"));
+        Assert.True(p.Run(Game("a"), "service start").Ran); // 창 3000 을 끝까지 읽음
+        _touched.Clear();
+        _avail = 4096 + 256 + 4300; // 보충 창 4300
+        _streamer.ReadMib = 3300;
+        _streamer.OnProgress = progress =>
+        {
+            _avail = 4096 + 3300;
+            progress(3300 * Mib, 4300 * Mib);
+        };
+
+        Assert.False(p.SupplementWhenIdle(Game("a"), CancellationToken.None));
+        _now += TimeSpan.FromSeconds(61);
+        Assert.True(p.SupplementWhenIdle(Game("a"), CancellationToken.None));
+
+        Assert.Equal((3300L, 5000L), p.PartialInfo("a"));
+        Assert.Empty(_touched);
+    }
+
+    [Fact]
+    public void AStreamStoppedByMemoryBeforeReadingAnythingIsNotTouched()
+    {
+        ReadOp[] all = HotSet(50);
+        (_streamer.All, _streamer.ZoneMib) = (all, 5000);
+        _avail = 4096 + 256 + 3000;
+        _streamer.ReadMib = 0;
+        _streamer.OnProgress = progress =>
+        {
+            _avail = 4096 + 100;
+            progress(0, 3000 * Mib); // 아직 아무것도 읽지 못한 채 들어가는 범위가 256 MiB 미만: 취소
+        };
+        Prewarmer p = MakePrewarmer(Game("a"));
+
+        Assert.False(p.Run(Game("a"), "service start").Ran);
+
+        Assert.Empty(_touched);
+        Assert.False(p.Solar.HasMark("a"));
+    }
+
+    // 한도로 마무리한 일반 예열 (읽은 1000 MiB, 창 3000) 뒤 보충 시도가 메모리 부족으로 막힌 상태를 만듦.
+    private Prewarmer ShortFinishedAndWaiting(ReadOp[] all, bool waitForMemory)
+    {
+        (_streamer.All, _streamer.ZoneMib) = (all, 5000);
+        _avail = 4096 + 256 + 3000; // 창 3000
+        _streamer.ReadMib = 1000;
+        _streamer.OnProgress = progress =>
+        {
+            _avail = 4096 + 800; // 읽는 도중 들어가는 범위가 800 으로 줄어 읽은 1000 이 이미 넘음: 마무리
+            progress(1000 * Mib, 3000 * Mib);
+        };
+        GrowReuse(1000);
+        Prewarmer p = MakePrewarmer(Game("a"));
+        Assert.True(p.Run(Game("a"), "service start").Ran);
+        Assert.Empty(_touched); // 마무리한 스트림은 만지지 않음
+        _streamer.OnProgress = null;
+        _avail = waitForMemory ? 4096 + 256 + 1100 : 20000; // 대기: 들어가는 범위 1100 은 읽은 1000 보다 256 이상 크지 않음 / 아니면 곧 더 읽을 수 있음
+        _now += TimeSpan.FromSeconds(30);
+        Assert.False(p.SupplementWhenIdle(Game("a"), CancellationToken.None)); // 한가함을 막 보기 시작
+        _now += TimeSpan.FromSeconds(61);
+        return p;
+    }
+
+    [Fact]
+    public void AGameWhoseSupplementWaitsForMemoryGetsItsFirstLadderOverTheRangeItReadWhenTheRewarmCheckFindsItWarm()
+    {
+        ReadOp[] all = HotSet(50);
+        Prewarmer p = ShortFinishedAndWaiting(all, waitForMemory: true);
+        Assert.False(p.SupplementWhenIdle(Game("a"), CancellationToken.None)); // 보충: 읽은 양보다 의미 있게 더 들어가지 않아 읽지 않음
+        Assert.Empty(_touched);
+
+        AutoSettings auto = Auto();
+        p.Tick(auto); // 첫 틱은 다음 점검 시각만 정함
+        _now += TimeSpan.FromMinutes(10.5);
+        p.Tick(auto); // 점검: 표본이 warm, 보충은 메모리를 기다리는 중 -> 첫 사다리
+
+        Assert.Equal([.. Reversed(all.Take(10))], _touched.Single()); // 창 3000 의 목록 중 실제로 읽은 앞 1000 MiB (파일 10 개) 만
+        Assert.True(p.Solar.HasMark("a"));
+    }
+
+    [Fact]
+    public void AGameWhoseSupplementCanSoonReadMoreHasNoWaitingLadderTarget()
+    {
+        ReadOp[] all = HotSet(50);
+        Prewarmer p = ShortFinishedAndWaiting(all, waitForMemory: false); // 메모리는 충분해 곧 더 읽을 수 있음 (메모리를 기다리는 상태가 아님)
+
+        Assert.Null(p.WaitingSupplementLadderReads(Game("a"))); // 재예열 점검은 사다리를 만들지 않고 보충에 맡김
+    }
+
+    [Fact]
+    public void TheWaitingLadderTargetIsTheFrontOfTheReadWindowNotAReplannedList()
+    {
+        ReadOp[] all = HotSet(50);
+        Prewarmer p = ShortFinishedAndWaiting(all, waitForMemory: true);
+        Assert.False(p.SupplementWhenIdle(Game("a"), CancellationToken.None)); // 메모리를 기다리는 상태가 됨
+
+        Assert.Equal(all.Take(10), p.WaitingSupplementLadderReads(Game("a"))); // 읽은 창 (3000 MiB) 목록의 앞 1000 MiB
+    }
+
+    [Fact]
+    public void AWaitingSupplementLadderThatFindsDataMissingLeavesTheRefillMarkAndIsNotRepeatedNorRefilledWhileTheSupplementIsPending()
+    {
+        ReadOp[] all = HotSet(50);
+        Prewarmer p = ShortFinishedAndWaiting(all, waitForMemory: true);
+        Assert.False(p.SupplementWhenIdle(Game("a"), CancellationToken.None));
+        _result = _result with { SlowPieces = 4, End = TouchEnd.NeedsDiskReads, DiskBytes = 40 * Mib }; // 사다리가 캐시에 없는 부분을 만남
+        AutoSettings auto = Auto();
+        p.Tick(auto);
+        _now += TimeSpan.FromMinutes(10.5);
+
+        p.Tick(auto); // 점검: 보충이 메모리를 기다리는 게임의 첫 사다리가 디스크 읽기를 감지해 멈춤
+
+        Assert.Single(_touched);
+        Assert.True(p.Solar.HasMissing("a")); // 표식을 지우고 다시 채움 표시를 세움
+        Assert.False(p.Solar.HasMark("a"));
+        int callsBefore = _streamer.Calls.Count;
+        _now += TimeSpan.FromMinutes(10.5);
+
+        p.Tick(auto); // 다음 점검
+
+        Assert.Single(_touched); // 표시가 있는 게임은 다시 만들지 않음
+        Assert.Equal(callsBefore, _streamer.Calls.Count); // 보충이 대기 중이라 표시로 인한 재예열도 읽지 못하고 건너뛰기를 되풀이하지 않음 (읽기 호출 없음)
     }
 }

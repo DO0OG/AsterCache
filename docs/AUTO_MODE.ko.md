@@ -190,7 +190,8 @@
 
 **읽는 도중 메모리가 모자랄 때**
 
-- 앞부분만 읽던 예열이 메모리를 잃으면(가용 메모리가 예비량 아래로 내려가거나 남은 예산이 더는 들어가지 않으면) 멈춥니다. 목록 순서대로 읽은 것이 있고 오류와 틈 메우기가 없었다면 그만큼을 부분 예열(`prewarm_status.json` 의 `partial`, `warmed_mib`, `hot_mib`)로 남기며, 아무것도 읽지 않은 것으로 치지 않습니다. 그렇지 않으면 아무것도 남기지 않습니다. 목록 전체를 읽던 예열은 같은 방식으로 멈추지만 아무것도 남기지 않고, 아무것도 읽기 전에 멈춘 경우도 마찬가지입니다.
+- 앞부분만 읽던 예열이 메모리를 잃으면(가용 메모리가 예비량 아래로 내려가거나 남은 예산이 더는 들어가지 않으면) 멈춥니다. 목록 순서대로 읽은 것이 있고 오류와 틈 메우기가 없었다면 그만큼을 부분 예열(`prewarm_status.json` 의 `partial`, `warmed_mib`, `hot_mib`)로 남기며, 아무것도 읽지 않은 것으로 치지 않습니다. 그렇지 않으면 아무것도 남기지 않으며, 아무것도 읽기 전에 멈춘 경우도 마찬가지입니다.
+- 목록 전체를 읽던 예열(보충 예열 포함)이 메모리 때문에 멈추면, 같은 회에서 한 번만 그 시점의 가용 메모리에 들어가는 앞부분으로 줄여 다시 읽습니다. 그 뒤는 앞부분만 읽던 예열과 똑같이 다룹니다. 이미 읽은 부분은 캐시에 있으므로 다시 읽는 데 디스크를 거의 쓰지 않습니다. 게임 시작처럼 다른 이유로 멈춘 때는 다시 읽지 않고, 256 MiB 미만만 들어가면 전처럼 취소합니다. 로그: `<게임>: prewarm stopped by memory before the full list was read; reading the first N MiB of M MiB instead`(보충 예열은 `supplement prewarm stopped by memory ...`).
 - 메모리 때문에 멈추면(아무것도 남기지 않은 경우도 포함) 보충과 재시도(대기 목록 재시도, 재예열 점검)는 2분 동안 그 게임을 건드리지 않습니다. 런처 트리거와 서비스 시작은 기다리지 않습니다. 멈추기 전에 읽은 것이 있으면 대기 중인 재시도는 보통 주기(`rewarm_minutes`, 기본 10분) 대신 2분 뒤로 당겨지고, 아무것도 읽지 못하고 멈췄으면 보통 주기를 유지합니다. 부분 예열을 남긴 게임은 대기 목록에서 빠지지 않고 남으며, 가용 메모리가 이미 읽은 양 + 256 MiB + 예비량을 넘으면 나머지를 읽습니다.
 - 로그: `prewarm cancelled (...) after N MiB (memory reserve: ...)`(또는 `(memory budget: ...)`) 다음에 `<게임>: prewarm stopped by memory; kept the N of M MiB read as partial`, 그리고 `<게임>: prewarm skipped (stopped by memory less than 2 min ago) [<사유>]`. `prewarm done` 줄은 `room X MiB`(또는 `unlimited`)와 `available Y MiB` 로 끝나고 `rewarm check: cold (...)` 줄은 `available N MiB` 를 담고 있으므로, 그 시점의 메모리를 로그로 알 수 있습니다.
 

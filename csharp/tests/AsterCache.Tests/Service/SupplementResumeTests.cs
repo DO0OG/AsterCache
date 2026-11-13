@@ -21,6 +21,8 @@ public sealed class SupplementResumeTests : IDisposable
     private ProbeResult? _doneProbe; // 이어 읽기 전 끊긴 구간 표본의 결과 (null = 확인 못 함 → 처음부터)
     private int _doneProbeCalls;
     private const long HotMib = 8000;
+    private bool _gameRunning;
+    private long _listMib = HotMib; // 현재 예열 목록의 크기 (MiB): 처음 부분 예열 뒤 바꿔 기억한 크기와 달라지게 함
 
     public SupplementResumeTests() => Directory.CreateDirectory(_dir);
 
@@ -90,8 +92,8 @@ public sealed class SupplementResumeTests : IDisposable
     private Prewarmer Make(GameSettings game) => new([game], _streamer, new PrewarmEnv
     {
         AvailableRamMib = () => _avail,
-        GameRunning = _ => false,
-        ZoneBytes = g => Math.Min(HotMib, g.StreamCapBytes(HotMib * Mib) / Mib) * Mib,
+        GameRunning = _ => _gameRunning,
+        ZoneBytes = g => Math.Min(_listMib, g.StreamCapBytes(_listMib * Mib) / Mib) * Mib,
         TraceExists = _ => true,
         ProbeReadMs = _ => _probe,
         ProbeDone = (_, _) =>
@@ -204,6 +206,154 @@ public sealed class SupplementResumeTests : IDisposable
 
         Assert.Empty(_streamer.Calls);
         Assert.Contains(_log.Lines, l => l.Contains("supplement prewarm skipped (the 848 MiB that fits is already read", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AFullPathSupplementStoppedByMemoryIsReadAgainOnceAsTheWindowThatFitsNow()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmed(g, 20000); // 전체 8000 이 들어가는 경로
+        _streamer.ReadSetMib = HotMib;
+        _streamer.OnStream = () =>
+        {
+            bool first = _streamer.Calls.Count == 1;
+            (_streamer.ScheduleMib, _avail) = (first ? HotMib : 3648, 8000); // 읽기 시작 때 가용이 줄어 첫 묶음 검사가 메모리로 멈춤
+            _streamer.ReadMib = first ? 0 : null;
+        };
+
+        p.Supplement(g, CancellationToken.None);
+
+        Assert.Equal(2, _streamer.Calls.Count);
+        Assert.Equal(3648, _streamer.Calls[1].MaxStreamMib); // 8000 - 예비 4096 - 여유 256
+        Assert.Equal(0, _streamer.Calls[1].MaxBytes);
+        Assert.Equal(0, _streamer.Skips[1]);
+        Assert.Contains(_log.Lines, l => l.Contains("supplement prewarm stopped by memory before the full list was read; reading the first 3648 MiB of 8000 MiB instead", StringComparison.Ordinal));
+        Assert.Equal((3648L, HotMib), p.PartialInfo("g"));
+    }
+
+    [Fact]
+    public void ASupplementStoppedByAGameStartingIsNeverReadAgain()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmed(g, 20000);
+        _streamer.ReadSetMib = HotMib;
+        _streamer.OnStream = () => (_gameRunning, _avail, _streamer.ScheduleMib, _streamer.ReadMib) = (true, 8000, HotMib, 0); // 가용도 줄었지만 먼저 걸리는 사유는 게임 시작
+
+        Assert.False(p.Supplement(g, CancellationToken.None));
+
+        Assert.Single(_streamer.Calls);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("before the full list was read", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AGameThatStartsRightAfterTheSupplementMemoryStopKeepsItFromBeingReadAgain()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmed(g, 20000);
+        _streamer.ReadSetMib = HotMib;
+        p.StreamEnded += (_, _) => _gameRunning = true; // 멈춘 직후, 다시 읽기 전에 게임이 뜸
+        _streamer.OnStream = () => (_avail, _streamer.ScheduleMib, _streamer.ReadMib) = (8000, HotMib, 0);
+
+        Assert.False(p.Supplement(g, CancellationToken.None));
+
+        Assert.Single(_streamer.Calls);
+    }
+
+    [Fact]
+    public void AWindowAtOrBelowWhatIsAlreadyReadIsNotReadAgainAndTheMemoryStopStillHoldsTheRetry()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmed(g, 20000); // 이미 읽은 양 1904
+        _streamer.ReadSetMib = HotMib;
+        _streamer.OnStream = () => (_avail, _streamer.ScheduleMib, _streamer.ReadMib) = (6000, HotMib, 0); // 창 6000 - 4096 - 256 = 1648 <= 1904
+
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        _avail = 20000;
+        Assert.False(p.Supplement(g, CancellationToken.None)); // 기존 취소 경로가 남긴 메모리 정지 하한 안
+
+        Assert.Single(_streamer.Calls);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("before the full list was read", StringComparison.Ordinal));
+        Assert.Equal((1904L, HotMib), p.PartialInfo("g"));
+    }
+
+    [Theory]
+    [InlineData(10500L, 2)] // 새 창 6148 이 이번 회에 읽은 6000 보다 큼: 다시 읽음 (이어 읽기 위치 없이 처음부터)
+    [InlineData(9500L, 1)] // 새 창 5148 이 이번 회에 읽은 6000 이하: 다시 읽지 않고 진행을 남김
+    public void AResumedFullPathStoppedByMemoryIsReadAgainOnlyWhenTheWindowExceedsWhatThisRoundRead(long availAfterStop, int expectedCalls)
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmed(g, 20000);
+        _doneProbe = new ProbeResult(8, 0, 0.3);
+        _streamer.ReadSetMib = HotMib;
+        (_streamer.ScheduleMib, _streamer.ReadMib, _streamer.Complete) = (HotMib, 2000, false);
+        Assert.False(p.Supplement(g, CancellationToken.None)); // 2000 MiB 에서 끊겨 이어 읽을 위치가 남음
+        _streamer.Calls.Clear();
+        _streamer.Skips.Clear();
+        _streamer.Complete = true;
+        long window = availAfterStop - 4096 - Prewarmer.FinalShrinkHeadroomMib;
+        p.StreamEnded += (_, _) => _avail = availAfterStop; // 멈춘 뒤 다시 읽기 직전의 가용
+        _streamer.OnStream = () =>
+        {
+            bool first = _streamer.Calls.Count == 1;
+            (_streamer.ScheduleMib, _streamer.ReadMib) = (first ? HotMib : window, first ? 4000 : null);
+            if (first)
+            {
+                _avail = 4000; // 2000 에서 이어 4000 MiB 를 읽은 뒤 (합 6000) 메모리 압박
+            }
+        };
+
+        p.Supplement(g, CancellationToken.None);
+
+        Assert.Equal(expectedCalls, _streamer.Calls.Count);
+        Assert.Equal(2000 * Mib, _streamer.Skips[0]); // 첫 읽기는 이어 읽기
+        if (expectedCalls == 2)
+        {
+            Assert.Equal((window, 0L), (_streamer.Calls[1].MaxStreamMib, _streamer.Skips[1]));
+        }
+        else
+        {
+            Assert.Equal((6000L, HotMib), p.PartialInfo("g")); // 이번 회의 진행을 버리지 않음
+        }
+    }
+
+    [Fact]
+    public void ASupplementWindowStoppedByMemoryAgainIsNotReadAThirdTime()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmed(g, 20000);
+        _streamer.ReadSetMib = HotMib;
+        _streamer.OnStream = () =>
+        {
+            bool first = _streamer.Calls.Count == 1;
+            (_streamer.ScheduleMib, _avail) = (first ? HotMib : 3648, first ? 8000 : 4500); // 다시 읽는 창도 더 줄어든 가용에 멈춤
+            _streamer.ReadMib = 0;
+        };
+
+        Assert.False(p.Supplement(g, CancellationToken.None));
+
+        Assert.Equal(2, _streamer.Calls.Count);
+        Assert.Single(_log.Lines, l => l.Contains("before the full list was read", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ARememberedHotSetSizeGrowsToTheCurrentListAndTheWindowCapFollowsItButItNeverShrinks()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmed(g, 8000);
+        _listMib = 8100; // 목록이 기억한 8000 보다 커짐
+        _avail = 8050 + 4096 + Prewarmer.FinalShrinkHeadroomMib;
+        _streamer.ReadSetMib = 8100;
+
+        p.Supplement(g, CancellationToken.None);
+
+        Assert.Equal(8050, _streamer.Calls[0].MaxStreamMib); // 낡은 8000 이 아니라 새 크기가 상한
+        Assert.Equal((8050L, 8100L), p.PartialInfo("g"));
+        Assert.Equal(8100, (long)Status()["hot_mib"]!);
+
+        _listMib = 7000; // 줄어든 목록은 기억한 크기를 낮추지 않음
+        p.Supplement(g, CancellationToken.None);
+
+        Assert.Equal(8100, p.PartialInfo("g")!.Value.HotMib);
     }
 
     [Fact]

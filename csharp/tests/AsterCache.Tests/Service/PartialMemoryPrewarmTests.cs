@@ -26,6 +26,7 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     private Queue<long>? _availableReads;
     private int _snapshots;
     private int _snapshotChecks;
+    private bool _gameRunning;
 
     private List<int> Probed { get; } = [];
 
@@ -80,14 +81,14 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
         return new Prewarmer([game, .. others], _streamer, new PrewarmEnv
         {
             AvailableRamMib = () => _availableReads is { Count: > 0 } ? _availableReads.Dequeue() : _avail,
-            GameRunning = _ => false,
+            GameRunning = _ => _gameRunning,
             GameRunningSnapshot = () =>
             {
                 _snapshots++;
                 return _ =>
                 {
                     _snapshotChecks++;
-                    return false;
+                    return _gameRunning;
                 };
             },
             ZoneBytes = g => Math.Min(_hotMib, g.StreamCapBytes(_hotMib * Mib) / Mib) * Mib, // 계획의 존 (핫 집합) 을 max_stream_mib 로 자른 값
@@ -349,6 +350,95 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
         Assert.False(Status().ContainsKey("partial"));
         Assert.True(p.HasPendingWarm("g"));
         Assert.Equal(_now + TimeSpan.FromMinutes(AutoSettings.Default.RewarmMinutes), p.PendingRetryAt("g")); // 읽은 게 없으면 기존 재시도 주기 그대로
+    }
+
+    [Theory]
+    [InlineData(0L)] // 사전 검사 때는 전체가 들어갔다가 첫 묶음 검사에서 가용이 줄어 0 MiB 에서 멈춘 경우
+    [InlineData(7L)] // 몇 MiB 읽은 뒤 멈춘 경우
+    public void AFullPathStoppedByMemoryIsReadAgainOnceAsTheWindowThatFitsNow(long firstReadMib)
+    {
+        _avail = 8000 + 4096 + Prewarmer.FinalShrinkHeadroomMib + 100; // 사전 검사에는 전체 8000 이 들어감
+        Prewarmer p = Make(Game());
+        _streamer.OnProgress = progress =>
+        {
+            if (_streamer.Calls.Count > 1)
+            {
+                _streamer.ReadMib = null; // 다시 읽기는 끝까지 읽음
+                return;
+            }
+
+            (_streamer.ReadMib, _avail) = (firstReadMib, 8000); // 첫 읽기 도중 가용이 줄어 묶음 검사가 메모리로 멈춤
+            progress(firstReadMib * Mib, 8000 * Mib);
+        };
+
+        PrewarmResult r = p.Run(Game(), "test");
+
+        Assert.True(r.Ran);
+        Assert.Equal([Game().MaxStreamMib, 8000 - 4096 - Prewarmer.FinalShrinkHeadroomMib], _streamer.Calls.Select(c => c.MaxStreamMib)); // 전체 → 그 시점 가용에 들어가는 창 (3648)
+        Assert.Equal(0, _streamer.Calls[1].MaxBytes); // 창 경로는 틈 메우기 없음
+        Assert.Contains(_log.Lines, l => l.Contains("prewarm stopped by memory before the full list was read; reading the first 3648 MiB of 8000 MiB instead", StringComparison.Ordinal));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("prewarm cancelled", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("partial 3648/8000 MiB", StringComparison.Ordinal));
+        Assert.Equal((3648L, 8000L), p.PartialInfo("g")); // 부분 예열로 기록
+        Assert.True((bool)Status()["partial"]!);
+    }
+
+    [Fact]
+    public void AFullPathStoppedByAnythingButMemoryIsNeverReadAgain()
+    {
+        _avail = 8000 + 4096 + Prewarmer.FinalShrinkHeadroomMib + 100;
+        Prewarmer p = Make(Game());
+        _streamer.OnProgress = progress =>
+        {
+            (_gameRunning, _avail, _streamer.ReadMib) = (true, 8000, 7); // 가용도 줄었지만 먼저 걸리는 사유는 게임 시작
+            progress(7 * Mib, 8000 * Mib);
+        };
+
+        PrewarmResult r = p.Run(Game(), "test");
+
+        Assert.False(r.Ran);
+        Assert.Single(_streamer.Calls);
+        Assert.Contains(_log.Lines, l => l.Contains("prewarm cancelled (test) after 7 MiB (game started)", StringComparison.Ordinal));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("before the full list was read", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AGameThatStartsRightAfterTheMemoryStopKeepsTheFullPathFromBeingReadAgain()
+    {
+        _avail = 8000 + 4096 + Prewarmer.FinalShrinkHeadroomMib + 100;
+        Prewarmer p = Make(Game());
+        p.StreamEnded += (_, _) => _gameRunning = true; // 첫 읽기가 메모리로 멈춘 직후, 다시 읽기 전에 게임이 뜸
+        _streamer.OnProgress = progress =>
+        {
+            (_streamer.ReadMib, _avail) = (7, 8000);
+            progress(7 * Mib, 8000 * Mib);
+        };
+
+        PrewarmResult r = p.Run(Game(), "test");
+
+        Assert.False(r.Ran);
+        Assert.Single(_streamer.Calls);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("before the full list was read", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TheWindowReadAfterTheFallbackIsNotFallenBackAgainWhenItStopsByMemoryToo()
+    {
+        _avail = 8000 + 4096 + Prewarmer.FinalShrinkHeadroomMib + 100;
+        Prewarmer p = Make(Game());
+        _streamer.OnProgress = progress =>
+        {
+            bool first = _streamer.Calls.Count == 1;
+            (_streamer.ReadMib, _avail) = (300, first ? 8000 : 4500); // 다시 읽는 창도 가용이 더 줄어 멈춤
+            progress(300 * Mib, (first ? 8000 : 3648) * Mib);
+        };
+
+        PrewarmResult r = p.Run(Game(), "test");
+
+        Assert.False(r.Ran);
+        Assert.Equal(2, _streamer.Calls.Count); // 한 회에 한 번만
+        Assert.Single(_log.Lines, l => l.Contains("before the full list was read", StringComparison.Ordinal));
+        Assert.Equal((300L, 8000L), p.PartialInfo("g")); // 창 경로의 부분 확정 규칙 그대로
     }
 
     [Fact]

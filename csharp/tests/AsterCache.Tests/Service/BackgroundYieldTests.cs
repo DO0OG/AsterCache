@@ -41,6 +41,14 @@ internal sealed class YieldWorld
 
     public Func<long> Avail { get; set; } = () => 10000;
 
+    /// 대기 목록 조회 결과 (null 이면 조회 실패).
+    public MemoryLists? ListsNow { get; set; }
+
+    /// 비우기 한 번에 걸리는 시간 (가짜 시계가 그만큼 흐름).
+    public TimeSpan TrimCost { get; set; }
+
+    public long PhysicalRam { get; set; } = 32L * 1024 * Mib;
+
     public string? State { get; set; }
 
     /// 우선순위 쓰기가 실패하는 pid (같은 프로세스인데 쓰기 실패를 흉내).
@@ -82,6 +90,7 @@ internal sealed class YieldWorld
             }
 
             p.Ws = Math.Min(p.Ws, 20 * Mib); // 비우면 작업 집합이 줄어듦
+            Now += TrimCost;
             return true;
         },
         MemoryPriority = pid =>
@@ -101,6 +110,8 @@ internal sealed class YieldWorld
             return true;
         },
         AvailableMib = () => Avail(),
+        Lists = () => ListsNow,
+        PhysicalBytes = () => PhysicalRam,
         Now = () => Now,
         Delay = (t, _) => Now += t,
         ReadState = () => State,
@@ -273,31 +284,209 @@ public sealed class BackgroundYieldTests
         Assert.Equal(22, ended); // 마지막 게임 관측 (12분) 뒤 10분
     }
 
+    private static MemoryLists Lists(long headroomMib, long repurposedMib = 0) => new(headroomMib * Mib, repurposedMib * Mib);
+
+    // 가용 게임 실행 중인 세션: big.exe (500 MiB) 가 시작에서 비워진 상태. 조회 결과는 _w.ListsNow.
+    private BackgroundYield RunningSession(MemoryLists? lists)
+    {
+        _ = _w.Add(50, "big.exe", wsMib: 500);
+        _ = _w.Add(10, "cod.exe");
+        _w.ListsNow = lists;
+        BackgroundYield y = Make();
+        y.Begin("trigger", settle: false);
+        return y;
+    }
+
+    private void TickAt(BackgroundYield y, int minute, long wsMib, MemoryLists? lists)
+    {
+        _w.Now = _w.Start + TimeSpan.FromMinutes(minute);
+        _w.Procs[50].Ws = wsMib * Mib;
+        _w.ListsNow = lists;
+        y.Tick(_w.Snapshot());
+    }
+
     [Fact]
-    public void WorkingSetIsTrimmedAgainOnlyAfterFiveMinutesAndAtLeastOneGibRegrowth()
+    public void StartDoesNotTrimWhenHeadroomReachesTheTargetButStillLowersPriorityAndSkipsTheSettleWait()
+    {
+        _ = _w.Add(50, "big.exe", wsMib: 500);
+        _w.ListsNow = Lists(8192); // 물리 RAM 32 GiB 의 1/4 = 8 GiB
+
+        Make().Begin("trigger", settle: true);
+
+        Assert.Empty(_w.Trimmed);
+        Assert.Equal([(50, 1)], _w.Sets);
+        Assert.Equal(_w.Start, _w.Now); // 가라앉기 대기 없음
+        Assert.True(Logged("background yield (trigger): memory priority lowered for 1, no trim needed (headroom 8192 MiB, available 10000 MiB)"));
+    }
+
+    [Fact]
+    public void StartTrimsWhenHeadroomIsBelowTheTargetAndTheFloorIsFourGibOnSmallMachines()
+    {
+        _ = _w.Add(50, "big.exe", wsMib: 500);
+        _w.ListsNow = Lists(8191);
+        Make().Begin("trigger", settle: false);
+        Assert.Equal([50], _w.Trimmed);
+        Assert.True(Logged("trimmed 1 processes (500 MiB working set), memory priority lowered for 1, available 10000 MiB, headroom 8191 MiB"));
+
+        _w.Trimmed.Clear();
+        _w.Procs[50].Ws = 500 * Mib;
+        _w.Now += TimeSpan.FromMinutes(5);
+        (_w.PhysicalRam, _w.ListsNow) = (8L * 1024 * Mib, Lists(4096)); // RAM/4 = 2 GiB 라 하한 4 GiB 가 목표
+        Make().Begin("trigger", settle: false);
+        Assert.Empty(_w.Trimmed);
+        Assert.True(Logged("no trim needed (headroom 4096 MiB"));
+    }
+
+    [Fact]
+    public void ASecondBeginRightAfterAStartWithoutATrimDoesNotWaitToSettleButOneAfterATrimDoes()
+    {
+        _ = _w.Add(50, "big.exe", wsMib: 500);
+        _w.ListsNow = Lists(8192);
+        BackgroundYield y = Make();
+        y.Begin("trigger", settle: false);
+        _w.Now += TimeSpan.FromSeconds(1);
+
+        y.Begin("game started", settle: true);
+
+        Assert.Equal(_w.Start + TimeSpan.FromSeconds(1), _w.Now); // 비운 결과가 없으니 가라앉기를 기다리지 않음
+
+        _w.Now += TimeSpan.FromMinutes(5);
+        _w.ListsNow = Lists(1000);
+        y.End();
+        y.Begin("trigger", settle: false);
+        DateTimeOffset afterTrim = _w.Now += TimeSpan.FromSeconds(1);
+
+        y.Begin("game started", settle: true);
+
+        Assert.True(_w.Now > afterTrim); // 비운 직후라면 같이 기다림
+    }
+
+    [Fact]
+    public void StartTrimsWhenTheMemoryListsCannotBeReadAndWarnsOnlyOncePerSession()
     {
         _ = _w.Add(50, "big.exe", wsMib: 500);
         _ = _w.Add(10, "cod.exe");
         BackgroundYield y = Make();
+
         y.Begin("trigger", settle: false);
+
+        Assert.Equal([50], _w.Trimmed);
+        Assert.True(Logged("trimmed 1 processes (500 MiB working set), memory priority lowered for 1, available 10000 MiB"));
+        TickAt(y, 2, 500, null);
+        TickAt(y, 4, 500, null);
+        Assert.Single(_w.Trimmed); // 조회가 안 되면 다시 비우지 않음
+        Assert.Single(_log.Lines, l => l.Contains("memory lists unavailable, trimming once per session", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void WorkingSetIsTrimmedAgainOnlyWhenTheCacheWasRepurposedByAtLeast512MibSinceTheLastMaintenance()
+    {
+        BackgroundYield y = RunningSession(Lists(1000, 10_000));
         Assert.Single(_w.Trimmed);
 
-        void TickAt(int minute, long wsMib)
+        TickAt(y, 2, 100, Lists(1000, 10_000 + 511)); // 작업 집합이 어떻게 늘어도 캐시가 재사용되지 않으면 안 비움
+        TickAt(y, 4, 1500, Lists(1000, 10_000 + 511 + 511));
+        Assert.Single(_w.Trimmed);
+
+        TickAt(y, 6, 100, Lists(1000, 10_000 + 1022 + 512));
+        Assert.Equal([50, 50], _w.Trimmed);
+        Assert.True(Logged("background yield: trimmed again 1 processes (100 MiB working set), cache repurposed 512 MiB in 120 s, 0 active processes skipped"));
+    }
+
+    [Fact]
+    public void TheNextMaintenanceCanTrimAgainEvenWhenTheTrimItselfTookTime()
+    {
+        BackgroundYield y = RunningSession(Lists(1000, 0));
+        _w.TrimCost = TimeSpan.FromSeconds(5);
+
+        TickAt(y, 2, 100, Lists(1000, 600));
+        Assert.Equal([50, 50], _w.Trimmed);
+
+        TickAt(y, 4, 40, Lists(1000, 1200)); // 정확히 2분 뒤: 비우는 동안 흐른 시간이 간격 판정을 모자라게 하지 않음
+        Assert.Equal([50, 50, 50], _w.Trimmed);
+    }
+
+    [Fact]
+    public void AProcessThatLeftTheSessionLosesItsTrimMemory()
+    {
+        BackgroundYield y = RunningSession(Lists(1000, 0));
+        YieldWorld.Proc gone = _w.Procs[50];
+        _ = _w.Procs.Remove(50);
+
+        _w.Now = _w.Start + TimeSpan.FromMinutes(2); // 50 이 목록에 없는 유지 주기
+        y.Tick(_w.Snapshot());
+        _w.Procs[50] = gone; // 같은 생성 시각으로 다시 나타남
+        TickAt(y, 4, 400, Lists(1000, 600)); // 기억이 남았다면 절반 이상 되찾은 것으로 보고 건너뜀
+
+        Assert.Equal([50, 50], _w.Trimmed);
+    }
+
+    [Fact]
+    public void AProcessThatRegainedHalfOfItsWorkingSetIsNotTrimmedAgainThisSession()
+    {
+        BackgroundYield y = RunningSession(Lists(1000, 0));
+
+        TickAt(y, 2, 250, Lists(1000, 600)); // 500 MiB 의 절반을 되찾음
+        Assert.Single(_w.Trimmed);
+        Assert.True(Logged("trimmed again 0 processes (0 MiB working set), cache repurposed 600 MiB in 120 s, 1 active processes skipped"));
+
+        TickAt(y, 4, 40, Lists(1000, 1200)); // 다시 줄었어도 이 세션에서는 대상이 아님
+        Assert.Single(_w.Trimmed);
+
+        _w.Now += TimeSpan.FromMinutes(11); // 게임 없이 10분이 지나 세션이 끝나면 기억도 지워짐
+        y.Tick([]);
+        _w.Procs[50].Ws = 500 * Mib;
+        _w.Now += TimeSpan.FromMinutes(2);
+        y.Begin("game started", settle: false);
+        Assert.Equal([50, 50], _w.Trimmed);
+    }
+
+    [Fact]
+    public void ProcessesThatStayedSmallAfterTheTrimAreTrimmedAgain()
+    {
+        BackgroundYield y = RunningSession(Lists(1000, 0));
+        _ = _w.Add(51, "other.exe", wsMib: 300);
+
+        TickAt(y, 2, 100, Lists(1000, 0)); // 51 은 이번 세션에 처음 보임 (비운 적 없음)
+        TickAt(y, 4, 100, Lists(1000, 600));
+
+        Assert.Equal([50, 50, 51], _w.Trimmed);
+        Assert.True(Logged("trimmed again 2 processes (400 MiB working set)"));
+    }
+
+    [Fact]
+    public void PressureDecisionsAreMadeFromValuesAlone()
+    {
+        Assert.Equal(4096L << 20, YieldPressure.TargetHeadroomBytes(8L << 30));
+        Assert.Equal(8L << 30, YieldPressure.TargetHeadroomBytes(32L << 30));
+        Assert.True(YieldPressure.NeedsTrim(null, 32L << 30));
+        Assert.True(YieldPressure.NeedsTrim(Lists(8191), 32L << 30));
+        Assert.False(YieldPressure.NeedsTrim(Lists(8192), 32L << 30));
+        Assert.False(YieldPressure.NeedsTrim(Lists(4096), 8L << 30)); // 하한 4 GiB 가 목표
+        Assert.True(YieldPressure.NeedsTrim(Lists(4095), 8L << 30));
+        Assert.False(YieldPressure.ShouldRetrim(TimeSpan.FromSeconds(119), 600L << 20));
+        Assert.False(YieldPressure.ShouldRetrim(TimeSpan.FromMinutes(2), (512L << 20) - 1));
+        Assert.False(YieldPressure.ShouldRetrim(TimeSpan.FromMinutes(2), null));
+        Assert.True(YieldPressure.ShouldRetrim(TimeSpan.FromMinutes(2), 512L << 20));
+        Assert.True(YieldPressure.RegainedMost(250, 500));
+        Assert.False(YieldPressure.RegainedMost(249, 500));
+        Assert.False(YieldPressure.RegainedMost(100, 0));
+    }
+
+    [Fact]
+    public void MemoryListSummaryAddsFreeAndLowPriorityStandbyAsHeadroomAndSumsCacheReuse()
+    {
+        var v = new nuint[22];
+        (v[0], v[1]) = (10, 20); // zero, free
+        for (int i = 0; i < 8; i++)
         {
-            _w.Now = _w.Start + TimeSpan.FromMinutes(minute);
-            _w.Procs[50].Ws = wsMib * Mib;
-            y.Tick(_w.Snapshot());
+            (v[5 + i], v[13 + i]) = ((nuint)(100 * (i + 1)), (nuint)(1000 * (i + 1)));
         }
 
-        TickAt(2, 1500);
-        TickAt(4, 1500);
-        Assert.Single(_w.Trimmed); // 5분 전에는 다시 비우지 않음
-        TickAt(6, 1500);
-        Assert.Equal(2, _w.Trimmed.Count);
-        Assert.True(Logged("background yield: trimmed again 1 processes (1500 MiB working set regrown by 1480 MiB)"));
-        TickAt(8, 600);
-        TickAt(12, 600); // 5분이 지났지만 증가분이 1024 MiB 미만
-        Assert.Equal(2, _w.Trimmed.Count);
+        MemoryLists lists = MemoryListInfo.Summarize(v, 4096);
+
+        Assert.Equal((10 + 20 + 100 + 200 + 300 + 400 + 500) * 4096L, lists.HeadroomBytes); // 우선순위 0~4 만
+        Assert.Equal((6000 + 7000 + 8000) * 4096L, lists.CacheRepurposedBytes); // 우선순위 5~7 만
     }
 
     [Fact]
@@ -500,7 +689,7 @@ public sealed class BackgroundYieldTests
         _w.Described.Clear();
         _w.Procs[50].Ws = 3000 * Mib;
         _w.Now += TimeSpan.FromMinutes(4);
-        y.Tick(_w.Snapshot()); // 5분·1 GiB 조건이어도 대상이 아님
+        y.Tick(_w.Snapshot()); // 작업 집합이 커져도 대상이 아님
         _w.Now += TimeSpan.FromMinutes(1);
         y.Begin("game started", settle: false); // 새 세션에서도
         Assert.Equal(trimmedBefore, _w.Trimmed.Count);
@@ -708,5 +897,21 @@ public sealed class ProcessMemoryLiveTests
         child.WaitForExit();
         Assert.Null(ProcessMemory.Describe(pid)); // 끝난 프로세스는 예외 없이 null
         Assert.False(ProcessMemory.Trim(pid));
+    }
+}
+
+/// 실제 Windows 호출: 대기 목록 조회가 값을 돌려주고 합이 물리 RAM 을 넘지 않는지. 권한을 켤 수 있는 (관리자) 토큰이 필요합니다.
+[Trait("Category", "Live")]
+public sealed class MemoryListLiveTests
+{
+    [Fact]
+    public void QueryReturnsHeadroomAndCacheReuseWithinPhysicalMemory()
+    {
+        MemoryLists? lists = MemoryListInfo.Query();
+
+        Assert.NotNull(lists);
+        Assert.True(lists.Value.HeadroomBytes > 0);
+        Assert.True(lists.Value.HeadroomBytes <= SystemMemory.TotalBytes());
+        Assert.True(lists.Value.CacheRepurposedBytes >= 0);
     }
 }

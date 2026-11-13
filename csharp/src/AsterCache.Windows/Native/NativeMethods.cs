@@ -32,6 +32,9 @@ internal static class Win32
     public const uint ProcessSetQuota = 0x0100;
     public const uint ProcessQueryLimitedInformation = 0x1000;
     public const int ProcessMemoryPriorityClass = 0; // PROCESS_INFORMATION_CLASS.ProcessMemoryPriority
+    public const uint TokenAdjustPrivileges = 0x0020;
+    public const uint TokenQuery = 0x0008;
+    public const uint PrivilegeEnabled = 2; // SE_PRIVILEGE_ENABLED
 }
 
 internal static unsafe partial class NativeMethods
@@ -127,4 +130,20 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Kernel32, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool SetProcessInformation(SafeProcessHandle process, int infoClass, byte* info, uint size);
+
+    // https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntquerysysteminformation
+    [LibraryImport("ntdll.dll")]
+    internal static partial int NtQuerySystemInformation(int infoClass, nuint* info, uint size, out uint returned);
+
+    [LibraryImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool OpenProcessToken(nint process, uint access, out SafeAccessTokenHandle token);
+
+    [LibraryImport("advapi32.dll", EntryPoint = "LookupPrivilegeValueW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool LookupPrivilegeValueW(string? systemName, string name, out Luid luid);
+
+    [LibraryImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool AdjustTokenPrivileges(SafeAccessTokenHandle token, [MarshalAs(UnmanagedType.Bool)] bool disableAll, TokenPrivileges* state, uint length, nint previous, nint returnLength);
 }

@@ -73,6 +73,24 @@ public struct Win32MemoryRangeEntry
     public nuint NumberOfBytes;
 }
 
+/// LUID (권한 식별자, 8바이트).
+[StructLayout(LayoutKind.Sequential)]
+internal struct Luid
+{
+    public uint LowPart;
+    public int HighPart;
+}
+
+/// TOKEN_PRIVILEGES 권한 하나짜리 (16바이트).
+/// https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-token_privileges
+[StructLayout(LayoutKind.Sequential)]
+internal struct TokenPrivileges
+{
+    public uint Count;
+    public Luid Luid;
+    public uint Attributes;
+}
+
 /// GetProcessMemoryInfo 출력 (PROCESS_MEMORY_COUNTERS, x64 에서 72바이트).
 /// https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters
 [StructLayout(LayoutKind.Sequential)]

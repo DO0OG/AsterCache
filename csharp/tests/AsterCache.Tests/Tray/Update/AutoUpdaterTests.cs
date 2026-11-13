@@ -273,6 +273,8 @@ public sealed class AutoUpdaterTests
         await u.StepAsync(CancellationToken.None);
 
         Assert.Equal(UpdateState.UpToDate, u.Status.State);
+        Assert.Contains("1.0.0", u.Status.Text()); // 문구의 버전 자리가 채워짐
+        Assert.DoesNotContain("{0}", u.Status.Text());
         Assert.Empty(Files(rig));
         Assert.Single(rig.Handler.Requests);
     }

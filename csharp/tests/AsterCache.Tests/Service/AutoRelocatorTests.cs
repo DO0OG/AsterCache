@@ -1983,7 +1983,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     {
         _status.Set("bench", "auto", null, AutoStage.Done, null);
         _streamer.BytesOf = g => g.StreamCapBytes(8000L << 20); // max_stream_mib 를 명시하지 않은 계획은 존 전체를 읽음
-        long available = 6000;
+        long available = 6000 + Prewarmer.FinalShrinkHeadroomMib; // 창을 잡을 때 두는 여유를 더해 1904 MiB 창
         var prewarm = new Prewarmer(_settings.Games, _streamer, new PrewarmEnv
         {
             AvailableRamMib = () => available,

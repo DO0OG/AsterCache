@@ -105,28 +105,28 @@ public sealed class SupplementResumeTests : IDisposable
 
     private JObject Status() => (JObject)((JObject)((JObject)JsonRead.ReadFile(StatusPath)!)["games"]!)["g"]!;
 
-    // 가용 6000 MiB 에서 부분 예열 (1904 MiB) 을 한 상태로 만든 뒤 가용 RAM 을 바꿈.
+    // 가용 6000 MiB 에서 부분 예열 (1904 MiB) 을 한 상태로 만든 뒤 가용 RAM 을 바꿈. 창을 잡을 때 두는 여유 (Prewarmer.FinalShrinkHeadroomMib) 는 가용에 미리 더해 창 크기가 가용 - 예비가 되게 함.
     private Prewarmer PartiallyWarmed(GameSettings g, long laterAvail)
     {
-        _avail = 6000;
+        _avail = 6000 + Prewarmer.FinalShrinkHeadroomMib;
         Prewarmer p = Make(g);
         Assert.True(p.Run(g, "service start").Ran);
         Assert.Equal((1904L, HotMib), p.PartialInfo("g"));
         _streamer.Calls.Clear();
         _streamer.Skips.Clear();
-        _avail = laterAvail;
+        _avail = laterAvail + Prewarmer.FinalShrinkHeadroomMib;
         return p;
     }
 
     private Prewarmer PartiallyWarmedAtServiceCap(GameSettings g, long laterAvail)
     {
-        _avail = 6000;
+        _avail = 6000 + Prewarmer.FinalShrinkHeadroomMib;
         Prewarmer p = Make(g);
         p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 1024, RewarmMinutes = 5 });
         Assert.True(Assert.Single(p.RunServiceStart()).Ran);
         _streamer.Calls.Clear();
         _streamer.Skips.Clear();
-        _avail = laterAvail;
+        _avail = laterAvail + Prewarmer.FinalShrinkHeadroomMib;
         return p;
     }
 
@@ -158,6 +158,7 @@ public sealed class SupplementResumeTests : IDisposable
         _streamer.ReadMib = null;
         _streamer.Complete = true;
         _streamer.ReadSetMib = 4100; // 다시 계산한 목록이 최초 예산보다 큼
+        _streamer.OnReadSet = () => _avail = 8000; // 계획 뒤 가용이 줄어 최종 재산정이 창을 3648 로 줄임
 
         Assert.True(p.Supplement(g, CancellationToken.None));
 
@@ -203,6 +204,22 @@ public sealed class SupplementResumeTests : IDisposable
 
         Assert.Empty(_streamer.Calls);
         Assert.Contains(_log.Lines, l => l.Contains("supplement prewarm skipped (the 848 MiB that fits is already read", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TheNothingNewLogIsWrittenOnceWhileOnlyTheFluctuatingCapChanges()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmed(g, 4096 + 256 + 1500); // 들어가는 양 1500 은 이미 읽은 양 (1648) 이하
+
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        _avail = 4096 + 256 + 1400; // 가용이 흔들려 cap 만 바뀜
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        _avail = 4096 + 256 + 1600;
+        Assert.False(p.Supplement(g, CancellationToken.None));
+
+        Assert.Empty(_streamer.Calls);
+        Assert.Single(_log.Lines, l => l.Contains("is already read", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -452,7 +469,7 @@ public sealed class SupplementResumeTests : IDisposable
         Assert.False(p.Supplement(g, CancellationToken.None));
         Assert.Single(_log.Lines, line => line.Contains("supplement prewarm skipped (the", StringComparison.Ordinal));
 
-        _avail = 8000;
+        _avail = 8000 + Prewarmer.FinalShrinkHeadroomMib;
         Assert.True(p.Supplement(g, CancellationToken.None)); // 보충 진행으로 같은 상태 기억을 지움
         Assert.False(p.Supplement(g, CancellationToken.None)); // 읽은 양이 바뀐 새 상태
 
@@ -508,7 +525,7 @@ public sealed class SupplementResumeTests : IDisposable
         Prewarmer p = Make(g);
         p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 1000 });
         Assert.True(Assert.Single(p.RunServiceStart()).Ran);
-        _avail = 8000;
+        _avail = 8000 + Prewarmer.FinalShrinkHeadroomMib;
         Assert.True(p.Supplement(g, CancellationToken.None));
         _streamer.Calls.Clear();
         var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
@@ -591,7 +608,7 @@ public sealed class SupplementResumeTests : IDisposable
         _doneProbe = new ProbeResult(8, 0, 0.3);
         (_streamer.ReadMib, _streamer.Complete) = (2000, false);
         Assert.False(p.Supplement(g, CancellationToken.None));
-        _avail = 4096 + 3000; // 예산이 3000 으로 줄어 옛 창을 끝낼 수 없음
+        _avail = 4096 + 3000 + Prewarmer.FinalShrinkHeadroomMib; // 예산이 3000 으로 줄어 옛 창을 끝낼 수 없음
         (_streamer.ReadMib, _streamer.Complete) = (null, true);
 
         Assert.True(p.Supplement(g, CancellationToken.None));
@@ -639,7 +656,7 @@ public sealed class SupplementResumeTests : IDisposable
         (_streamer.ReadMib, _streamer.Complete) = (3904, false); // 창 끝까지 읽은 뒤 취소
         Assert.False(p.Supplement(g, CancellationToken.None));
         Assert.Equal((3904L, HotMib), p.PartialInfo("g"));
-        _avail = 4096 + 5000; // 예산이 커짐
+        _avail = 4096 + 5000 + Prewarmer.FinalShrinkHeadroomMib; // 예산이 커짐
         (_streamer.ReadMib, _streamer.Complete) = (null, true);
 
         Assert.True(p.Supplement(g, CancellationToken.None));
@@ -717,7 +734,7 @@ public sealed class SupplementResumeTests : IDisposable
         Assert.False(p.Supplement(g, CancellationToken.None)); // 위치 2000
         (_streamer.ReadMib, _streamer.Complete) = (null, true);
         Assert.True(p.Run(g, "test", ignoreCooldown: true).Ran); // 일반 예열이 부분 상태를 새로 정함
-        _avail = 4096 + 5000; // 다음 보충이 읽을 구간이 생김
+        _avail = 4096 + 5000 + Prewarmer.FinalShrinkHeadroomMib; // 다음 보충이 읽을 구간이 생김
         (_streamer.ReadMib, _streamer.Complete) = (500, false);
         _streamer.Skips.Clear();
 
@@ -759,7 +776,7 @@ public sealed class SupplementResumeTests : IDisposable
         Prewarmer p = Make(g);
         p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 1000 });
         Assert.True(Assert.Single(p.RunServiceStart()).Ran); // 시작 상한으로 1000 MiB 만 읽음
-        _avail = 8000;
+        _avail = 8000 + Prewarmer.FinalShrinkHeadroomMib;
         Assert.True(p.Supplement(g, CancellationToken.None)); // 3904 까지 읽음
         _streamer.Calls.Clear();
 

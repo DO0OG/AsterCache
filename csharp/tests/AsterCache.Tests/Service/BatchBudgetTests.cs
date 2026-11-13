@@ -62,9 +62,9 @@ public sealed class BatchBudgetTests
     }
 
     [Fact]
-    public void RequestLargerThanTheBudgetReadsAtMost904MibAndIsNotRecordedAsFullInBothPasses()
+    public void RequestLargerThanTheBudgetReadsAtMost648MibAndIsNotRecordedAsFullInBothPasses()
     {
-        (_avail, _physical) = (5000, 8L << 30); // 가용 5000, 예약 4096, 요청 5000
+        (_avail, _physical) = (5000, 8L << 30); // 가용 5000, 예약 4096, 처음 창에도 두는 여유 256, 요청 5000
         _zoneMib["a"] = 5000;
         _zoneMib["b"] = 100;
         GameSettings a = Game("a", 4096), b = Game("b", 4096);
@@ -72,11 +72,11 @@ public sealed class BatchBudgetTests
 
         IReadOnlyList<PrewarmResult> results = p.RunAll([a, b], "t");
 
-        Assert.Equal(["head a", "full a"], _streamer.Events); // 앞부분도 같은 판단: b 는 남은 예산이 없어 둘 다 건너뜀
-        Assert.Equal(904, Assert.Single(_streamer.Fulls).MaxStreamMib);
+        Assert.Equal(["head a", "head b", "full a", "full b"], _streamer.Events); // 앞부분도 같은 판단: 남은 여유 256 MiB 에 b (100 MiB) 가 들어감
+        Assert.Equal(648, _streamer.Fulls[0].MaxStreamMib);
+        Assert.True(_streamer.Fulls.Sum(g => g.MaxStreamSet ? g.MaxStreamMib : _zoneMib[g.Name]) <= 5000 - 4096); // 읽은 합 (648 + 100) 은 가용 - 예비 안
         Assert.True(p.SupplementPending("a")); // 요청 전체를 읽은 것으로 기록하지 않음
-        Assert.Equal([("a", true), ("b", false)], results.Select(r => (r.Game, r.Ran)));
-        Assert.Equal("batch memory budget", results[1].SkipReason);
+        Assert.Equal([("a", true), ("b", true)], results.Select(r => (r.Game, r.Ran)));
     }
 
     [Fact]
@@ -192,7 +192,7 @@ public sealed class BatchBudgetTests
     [Fact]
     public void TheHeadPassNeverReadsPastTheCapEvenWhenTier0IsLarger()
     {
-        (_avail, _physical) = (5000, 8L << 30); // RV-01: cap 904 MiB
+        (_avail, _physical) = (5000, 8L << 30); // RV-01: cap 648 MiB (처음 창에도 여유 256 MiB)
         _zoneMib["a"] = 5000;
         _zoneMib["b"] = 100;
         _streamer.Tier0Mib = _ => 2000; // 로딩 앞부분이 cap 보다 큼
@@ -201,7 +201,7 @@ public sealed class BatchBudgetTests
 
         p.RunAll([a, b], "t");
 
-        Assert.Equal([904], _streamer.HeadReadMib);
+        Assert.Equal(648, _streamer.HeadReadMib[0]); // 첫 게임의 앞부분 읽기는 cap 을 넘지 않음
     }
 
     [Fact]

@@ -767,7 +767,7 @@ public sealed class WarmStreamTests
     }
 
     [Theory]
-    [InlineData(3000L, false)] // 실제 읽을 집합 + 예비가 들어가면 통째로
+    [InlineData(2800L, false)] // 실제 읽을 집합 + 예비 + 여유 256 이 들어가면 통째로 (가용 7200 - 4096 - 256 = 2848)
     [InlineData(3200L, true)] // 안 들어가면 건너뛰지 않고 들어가는 만큼만 (부분 예열)
     [InlineData(null, true)]
     public void InitialMemoryGateUsesTheActualReadSetInsteadOfTheZoneSizeAndOtherwiseReadsOnlyWhatFits(long? readMib, bool partial)

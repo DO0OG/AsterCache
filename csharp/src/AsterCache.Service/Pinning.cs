@@ -86,6 +86,7 @@ public sealed class PinKeeper
         string drive = Path.GetPathRoot(game.OriginRoot) ?? string.Empty;
         bool recovering = afterRelocation && !(game.Prewarm.PinSet && !game.Prewarm.Pin) && Recovery?.IsRecovering(drive) == true;
         long ram = _env.PhysicalRamBytes();
+        string? cheat = null;
         if (recovering)
         {
             long avail = _env.AvailableRamMib();
@@ -108,7 +109,8 @@ public sealed class PinKeeper
                 return;
             }
 
-            if (_env.LauncherRunning())
+            cheat = PinBlocker(game); // 런처 보류보다 먼저 판정: 안티치트 게임의 로그가 사유를 바로 말하게 함
+            if (cheat is null && _env.LauncherRunning())
             {
                 if (_holdLogged.Add(game.Name))
                 {
@@ -118,7 +120,8 @@ public sealed class PinKeeper
             }
         }
 
-        if (PinBlocker(game) is { } cheat)
+        cheat ??= recovering ? PinBlocker(game) : null; // 회복 고정은 위에서 판정하지 않았음
+        if (cheat is not null)
         {
             bool first;
             lock (_lock)

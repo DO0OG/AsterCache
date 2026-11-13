@@ -92,7 +92,10 @@ When the first real run records a trace, the plan made from it replaces the earl
 **Late windows**
 
 - If the game is still running when the first window ends, every `auto.trace_late_interval_min` minutes it records for `auto.trace_late_window_seconds` seconds, up to `auto.trace_late_windows` times.
-- The read cap applies to the session total.
+- The session stays open between windows, from the first window until the game exits, the last late window ends, or a cap is reached. Reads that happen while no window is open are dropped at once (not kept in memory), and the file is written to disk only after the game has exited. A new session per window could not tell which file a read belonged to if the game had opened that file before the window began, so those reads were dropped and a late window saved nothing; keeping one session lets the later windows save them. This was reproduced with a test program; it has not been confirmed with a real game yet.
+- The read cap counts only the reads inside open windows.
+- Keeping the session open means Windows delivers file events to the service for the whole play, outside the windows too. Its CPU cost has not been measured. Each window writes `<game>: trace window ended, N reads, P target processes, L events lost so far` to the service log; if the late windows save nothing, look at `N`. When the session stops, `trace session stopped: L events lost, M reads dropped (name unresolved), K file names, R records` gives the total; `M` should be small next to the total reads.
+- Games whose anti-cheat forbids tracing never get a session, so none of this applies to them ([ANTICHEAT.md](ANTICHEAT.md)).
 
 **Several plays**
 
@@ -106,6 +109,7 @@ When the first real run records a trace, the plan made from it replaces the earl
 - If the merged hot set is at least `trace_merge_min_mib` larger than the plan's, and the game is not running, the zone is extended in place.
 - Blocks already in the zone stay and only new blocks are appended after them, within `max_zone_mib` (the earliest run's blocks win), through the same idle, daily-limit, and write-budget checks as any relocation.
 - If the region after the zone is not free, the extension is skipped, the previous plan stays, and it is retried only when a newer play changes the trace. Log line: `<game>: zone extension blocked: ...`.
+- When the zone has already reached its size limit, blocks that the merged trace holds but that no longer fit in it are not moved. Without moving anything (and so without writing to the game drive), they are added to the game's prewarm list instead, as long as the whole list stays inside the cache budget (`prewarm.max_cache_mib`, half of physical RAM by default). When the list is cut to fit memory, they rank after the zone's observed ranges (see [Order and budget](#4-prewarm)), and the start stream does not read them. Log line: `<game>: prewarm list gained N MiB of blocks outside the full zone`.
 
 **First-run learning (experimental, off by default)**
 
@@ -172,19 +176,29 @@ When the first real run records a trace, the plan made from it replaces the earl
 
 - A game counts as exited only when all of its registered exe files have been gone for 60 seconds, so a launcher-to-game handoff is not mistaken for an exit. Unregistered processes in the install folder do not delay it.
 - After an exit, relocation, SSD tier apply, and prewarm or re-prewarm for a new trace on the same physical disk wait for the longer of 60 seconds and `auto.rewarm_after_exit_min` minutes.
+- **Switching games.** While the 60-second exit check of a game that just closed is still running, a prewarm started by a launcher (a trigger prewarm) may read, if the games still registered on that disk are only ones waiting for that check. If one of them comes back, or another game starts, the prewarm is cancelled at once. Nothing changes while a game is actually running: no new reads on its disk. Re-prewarm checks, top-ups, and relocation still wait as above.
+- A trigger prewarm refused because a game was running is written down. The first time the service sees that game's processes gone (processes are checked every 30 seconds), it tries once more if the launcher is still running and the refusal is less than 30 minutes old (log line: `<game>: retrying the refused trigger prewarm (<exe>) now that the blocking game is gone`). If it is refused again, the usual waiting rules apply. How this behaves in real play has not been checked yet.
 
 **Order and budget**
 
 - The most recently played games first, with those played often at this time of day ahead. Games triggered recently (for example by a launcher) are prewarmed first for 6 hours.
 - With `prewarm_recent` at 0, as many recent games as fit in the budget; a value from 1 to 32 caps the number of games instead.
 - Budget: the smaller of half of physical RAM (or `prewarm.max_cache_mib`) and free RAM minus `min_free_ram_mib`.
-- Free memory is measured again right before reading. If the list no longer fits, it reads the front part that fits, with a 256 MiB margin, and the rest is supplemented later.
+- Free memory is measured again right before reading. If the list no longer fits, it reads the front part that fits and the rest is supplemented later. A 256 MiB margin is kept on top of the reserve (`prewarm.min_free_ram_mib`, 4,096 MiB by default) both in the last check before reading (whether the whole list still fits) and when it picks the front part, so a small change in free memory does not cancel the read. The reserve and the cache budget are unchanged.
+- The cache budget is divided between games by the size of each game's actual prewarm list. A partly relocated plan, which holds only the part still to be moved, used to be counted at its whole hot set, which gave that game a larger share than it read.
+- When the list has to be cut, the ranges kept first are, in this order: (1) ranges in files the game also writes to (these are not moved with the zone and are kept in a separate prewarm-only list) that were first read early in the play, up to the loading boundary or 120 seconds when no boundary is known; (2) the ranges observed in play; (3) the rest of the prewarm-only ranges, by the time they were first read; (4) guessed ranges. Ranges added from outside a full zone (see [Zone extension](#2-recording-reads-trace)) take part only at (3). The early ranges of (1) are also read first. They used to sit at the end of the list, so a cut dropped them before anything else.
+
+**Memory runs short while reading**
+
+- If a prewarm that was reading only the front part loses memory (available memory falls below the reserve, or the remaining budget no longer fits), it stops. When it had read something in list order, with no errors and no gap filling, that amount is kept as a partial prewarm (`partial`, `warmed_mib`, and `hot_mib` in `prewarm_status.json`) instead of being counted as nothing. Otherwise nothing is kept: a prewarm that was reading the whole list stops the same way but keeps nothing, and neither does a stop before anything was read.
+- After any stop caused by memory, including one that kept nothing, top-ups and retries (the waiting-list retry and the re-prewarm check) leave that game alone for 2 minutes; a launcher trigger or a service start does not wait. If the stop had read something, a waiting retry is pulled forward to 2 minutes later instead of the usual period (`rewarm_minutes`, 10 minutes by default); a stop that read nothing keeps the usual period. A game with a kept partial prewarm stays on the waiting list instead of being dropped, and the rest is read once free memory exceeds the amount already read plus 256 MiB plus the reserve.
+- Log lines: `prewarm cancelled (...) after N MiB (memory reserve: ...)` (or `(memory budget: ...)`), followed by `<game>: prewarm stopped by memory; kept the N of M MiB read as partial`, and `<game>: prewarm skipped (stopped by memory less than 2 min ago) [<reason>]`. The `prewarm done` line ends with `room X MiB` (or `unlimited`) and `available Y MiB`, and a `rewarm check: cold (...)` line includes `available N MiB`, so the memory at that moment can be read from the log.
 
 **Reading**
 
 - In the disk's physical order. When a batch holds more than one game, the loading head (tier0) of each game is read first, in recent order, and then each game's whole zone.
 - Each range is marked as observed in play or guessed from an engine profile. When the budget is short, the observed ranges of all games are filled first and the leftover goes to the guessed ranges.
-- At service start only the head part is read, up to `auto.startup_warm_max_mib`. The rest is read later, once the disk is idle.
+- At service start only the head part is read, up to `auto.startup_warm_max_mib`. The rest is read later, once the disk is idle. A game that will be skipped anyway (for example during its cooldown, while it is running, or in the post-update delay) does not take a share of that limit, so the next game gets it.
 - The management window shows `prewarming x/y MiB`, and a tray notification is sent when a game's prewarm finishes (once per game per day).
 - If another game starts, it stops at the next batch boundary. If the game being prewarmed starts, it also stops and yields (`auto.keep_stream_on_game_start`, default `false`; `true` reads to the end, for experiments).
 
@@ -215,7 +229,7 @@ When the first real run records a trace, the plan made from it replaces the earl
 
 **Top-up (supplement)**
 
-- When a hot set does not fit the budget, a window that fits is read as the drive stays idle: the smaller of the remaining hot set, free RAM minus the reserve, and the prewarm budget, at least 256 MiB.
+- When a hot set does not fit the budget, a window that fits is read as the drive stays idle: the smaller of the remaining hot set, free RAM minus the 256 MiB margin and the reserve, and the prewarm budget, at least 256 MiB.
 - If a top-up stops midway, the position it reached is remembered while the service runs, and the next one continues from there. One that mixed in gap filling, or whose front has gone cold, starts again from the beginning.
 - A failed read or a settings change discards the position, and a service restart loses it.
 - Log lines: `<game>: rewarm check: the rest of the hot set is not read yet, supplementing once the drive has stayed idle`, `<game>: supplement prewarm skipped (...)`.
@@ -258,7 +272,7 @@ When the first real run records a trace, the plan made from it replaces the earl
 **Start stream**
 
 - When a game starts, the service can read its hot set (the start stream). It stops at the loading boundary (the 10-second moving read rate falls below 10% of its peak, at most 60 seconds in) or at `auto.start_stream_cap_seconds`.
-- It is not repeated within `auto.restream_cooldown_min`. Log line: `<game>: start stream stopped at load boundary after N bytes, S s (R MB/s)`.
+- It is not repeated within `auto.restream_cooldown_min`. Log line: `<game>: start stream stopped at load boundary after N bytes, S s (R MB/s); boundary at B ms, peak P MiB per 10 s, last window W MiB, observed T s`. The numbers after the semicolon show why it stopped there: the boundary time, the largest and the latest 10-second read amounts, and how long the start was watched.
 
 **Small checks**
 
@@ -269,6 +283,7 @@ When the first real run records a trace, the plan made from it replaces the earl
 
 - The service samples the physical disk's cumulative read counters once per second and logs a `play record:` line and saves `play_samples.json` at 30, 60, 120, 300, and 600 seconds after the start and at exit.
 - It reads only the disk device counters, never the game's files or process. It is for comparing loading and stutter.
+- The end time, the length, and the totals (bytes read, read time, disk idle time) of a play stop at the moment the service first saw the game's processes gone, so the 60-second exit check is not counted. If the game comes back during that check, the play continues.
 
 </details>
 

@@ -10,6 +10,7 @@ Many current games run kernel-level anti-cheat. This page says what AsterCache d
 
 - The service reads game files from inside its own process, read-only, with shared access (read, write, and delete sharing), or only maps them.
 - First-run read-ahead also reads files from the service's own process. The game's reads are only observed, with a live ETW kernel session that needs no handle to the game process.
+- For a game on which tracing is allowed (for example a Ricochet game), the ETW session stays open from the start of the recording until the game exits or the last late window ends, instead of being opened again for each late window. It still only observes: the session itself needs no handle to the game process, and reads that happen between the recording windows are discarded without being kept. The file is written to disk only after the game has exited.
 - It reads Windows prefetch records (`C:\Windows\Prefetch\*.pf`) with read-only access, from the service only, and downloads one shared-profile zip a week over HTTPS. Neither touches the game process.
 - It moves file clusters with the NTFS defragmentation API (`FSCTL_MOVE_FILE`), and only after the game has fully exited. File content, size, and modified time do not change. Before a move, the plan's fingerprint (size and modified time) is checked.
 
@@ -68,4 +69,5 @@ This is a tally of the service log of one PC from 2026-11-02 to 2026-11-10. It i
 - Automatic tracing uses the same kind of ETW collection as the manual route, so the Ricochet and Vanguard cautions in [GAME_GUIDE](GAME_GUIDE.md#anti-cheat-games) (and its League of Legends reference) still apply.
 - SSD assist storage skips games with anti-cheat folders, and never copies game exe or dll files.
 - Game policy, pause, and the other settings do not lift the anti-cheat gate or the ban on pinning. Changing them is not a way around this page's rules.
+- A game whose anti-cheat forbids tracing (the "No automatic trace" and "No ETW trace" rows above) is not traced, and no trace session is opened for it, as before. The longer-lived session applies only to games on which tracing is allowed.
 - Other anti-cheat games have not been tested.

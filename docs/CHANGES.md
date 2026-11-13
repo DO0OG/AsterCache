@@ -4,6 +4,15 @@
 
 > Main changes by version. For details, see each version's GitHub release and the commit history.
 
+## 1.0.3
+
+Keeps the prewarmed game files in memory while a game runs. The effect on load time and stutter in real games has not been measured yet.
+
+- **Background memory yield (new, on by default).** A game that takes memory gets it from the standby list, and the prewarmed game files are on that list, so they were the first to go. Other programs reading files churned the same list. Measured on the test PC: emptying a process's working set sends its pages to standby priority 0, which is reused before the prewarmed files at priority 5; a process reading 17 GiB at normal memory priority pushed a cached test file out completely, while the same read at very low memory priority left it in place; emptying 29 background processes raised available memory from 15,587 to 19,324 MiB. During a game session (a launcher starting a prewarm, or a registered game starting) AsterCache now empties the working sets of background programs (32 MiB or larger) and lowers their memory priority, applies the priority to programs that start later, and empties again only after five minutes and 1 GiB of regrowth. When the session ends (the game exits, ten minutes without activity, the setting is turned off, or the service stops) the priority is restored; a state file lets the next start restore it after a crash. Registered games and their trigger programs, launchers and their helpers, anti-cheat and Riot components, session 0, and AsterCache itself are never opened; programs under a game folder, a game library, a launcher or anti-cheat folder, or the Windows folder are left alone. Nothing else is done to other processes. The memory reserve, the cache budget, and the prewarm checks are unchanged. A program that was emptied can be slow for a moment when you return to it. Turn it off with `"memory": {"background_yield": false}`.
+- **A prewarm that read the whole list is no longer recorded as partial.** The read order widened a file to its full size when 30% or more of it was read, using a budget taken from the plan rather than from the list, so for a game whose plan total was larger than its list the widened list exceeded the amount it was allowed and the prewarm was recorded as `partial` with plenty of memory free. The order now uses the same list-based budget as the allowance.
+- **Tray update text shows the version.** "Up to date" was shown and logged with an empty placeholder.
+- **Champion select read-ahead stays off.** Riot's developer relations notice of 2019-01-24 says players in Korea may not use applications that use the League Client API, and no retraction was found. The documentation now says so instead of "unconfirmed".
+
 ## 1.0.2
 
 A fix found in the service log right after 1.0.1 was installed.

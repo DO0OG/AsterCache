@@ -106,7 +106,10 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
 
     private JObject Status() => (JObject)((JObject)((JObject)JsonRead.ReadFile(StatusPath)!)["games"]!)["g"]!;
 
-    private GameSettings ScheduledGame(string name, int maxStreamMib, params (string File, int Mib)[] ranges)
+    private GameSettings ScheduledGame(string name, int maxStreamMib, params (string File, int Mib)[] ranges) => ScheduledGame(name, maxStreamMib, false, ranges);
+
+    // residual: 계획의 task 합계가 목록보다 훨씬 큰 잔여 계획 (8000 MiB)
+    private GameSettings ScheduledGame(string name, int maxStreamMib, bool residual, params (string File, int Mib)[] ranges)
     {
         string root = Path.Combine(_dir, name);
         Directory.CreateDirectory(root);
@@ -121,8 +124,16 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
             rows.Add(new TraceEvent(path, 0, (long)mib * Mib));
         }
 
+        var stats = new JObject();
+        PlanTask[] tasks = [];
+        if (residual)
+        {
+            stats["residual"] = 1L;
+            tasks = [new PlanTask(rows[0].Path, 0, 8000L * Mib / 4096, 0)];
+        }
+
         new PlanFile(PlanFile.CurrentVersion, root, PlanFile.SplitDrive(root).ToUpperInvariant(), 4096, 65536,
-            new PlanZone(0, 1), [], [], [], new JObject()).Save(plan);
+            new PlanZone(0, 1), tasks, [], [], stats).Save(plan);
         PlanOutput.SavePrefetch(trace, rows);
         return Game() with
         {
@@ -497,6 +508,36 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
         Assert.Equal((1609L, 8000L), p.PartialInfo("g"));
         Assert.True(p.SupplementPending("g"));
         Assert.Equal((1609L, 8000L, true), ((long)Status()["warmed_mib"]!, (long)Status()["hot_mib"]!, (bool)Status()["partial"]!));
+    }
+
+    [Fact]
+    public void AListReadToTheEndWithinItsAllocationIsDoneEvenWhenWholeFileFillInsWouldExceedIt()
+    {
+        // 잔여 계획 (task 합 8000 MiB) 이고 목록이 큰 파일의 40% 만 담음: 예산이 task 합이면 스케줄러가 그 파일을 통째 (100 MiB) 로 승격해 배정량 (340 MiB) 을 넘음.
+        // head.bin 300 MiB 는 앞부분 (256 MiB) 로 먼저 나가 승격 대상이 아님
+        GameSettings game = ScheduledGame("promoted", 4096, true, ("head.bin", 300), ("big.bin", 100)) with { MaxStreamSet = false };
+        PlanOutput.SavePrefetch(game.Trace, [new TraceEvent(Path.Combine(game.OriginRoot, "head.bin"), 0, 300 * Mib), new TraceEvent(Path.Combine(game.OriginRoot, "big.bin"), 0, 40 * Mib)]);
+        var scheduler = new PrefetchStreamer();
+        _streamer.ScheduledReadSetBytes = (g, partial) => scheduler.PrewarmReadBytes(g, partial);
+        _streamer.ScheduledStreamBytes = (g, maxBytes) => PrefetchStreamer.PrewarmOps(g, maxBytes).Ops.Sum(op => op.Length);
+        var p = new Prewarmer([game], _streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => 20000,
+            GameRunning = _ => false,
+            ZoneBytes = PrewarmEnv.Create().ZoneBytes, // 실제 계획·목록을 읽는 판정 (배정·표시와 같은 기준)
+            TraceExists = _ => true,
+            PhysicalRamBytes = () => 32L << 30,
+        }, _log, StatusPath, () => _now);
+
+        PrewarmResult result = p.Run(game, "rewarm", ignoreCooldown: true, roomMib: 340);
+
+        Assert.True(result.Ran);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("fell after planning", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("prewarm done (rewarm): 340 MiB requested", StringComparison.Ordinal));
+        Assert.Null(p.PartialInfo("g"));
+        Assert.False(p.SupplementPending("g"));
+        Assert.False(Status().ContainsKey("partial"));
+        Assert.Equal(340L * Mib, scheduler.PrewarmReadBytes(game)); // 읽을 목록 = 배정량
     }
 
     [Fact]

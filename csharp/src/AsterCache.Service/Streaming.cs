@@ -899,7 +899,8 @@ public sealed class PrefetchStreamer : IGameStreamer
         List<TraceEvent> rows = LoadRows(game, withWarmOnly, out int warmOnlyStart, cancellationToken, allowSourceRead: false); // 게임 시작 경로에서도 불리므로 원시 트레이스는 읽지 않고 캐시만 씀 (캐시는 예열 쪽 ObservedBytes 가 채움)
         cancellationToken.ThrowIfCancellationRequested();
         long total = rows.Sum(r => r.Length);
-        long budget = Budget(game, ZoneBytes(game, withWarmOnly, cancellationToken), total);
+        // 예열 목록의 예산은 배정·표시가 쓰는 목록 기준 (Warm): 잔여 계획의 task 합계를 예산으로 쓰면 스케줄러의 파일 전체 승격이 배정량을 넘어 목록을 다 읽고도 부분 예열로 남음
+        long budget = Budget(game, ZoneBytes(game, withWarmOnly, cancellationToken, withWarmOnly ? ZoneView.Warm : ZoneView.Budget), total);
         long frontBytes = 0;
         if (trimLast && budget < total)
         {

@@ -29,12 +29,23 @@ public sealed partial class Prewarmer
         return p is { Samples: > 0 } ? (p.Samples - p.Slow) * 100 / p.Samples : null;
     }
 
+    // 기록 없는 게임의 확정 건너뜀 사유 (게임 실행 중 → 쿨다운). RunCold 와 트리거의 배경 메모리 양보 판정이 같이 씀 (디스크 유휴·메모리는 읽는 사이 바뀌므로 제외).
+    private string? ColdFixedSkip(GameSettings game, DateTimeOffset now)
+    {
+        if (DriveHasRunningGame(game))
+        {
+            return "game is running";
+        }
+
+        TimeSpan cooldown = TimeSpan.FromMinutes(game.Prewarm.CooldownMin);
+        return LastWarmed(game.Name) is { } prev && now - prev < cooldown ? $"cooldown ({Math.Ceiling((cooldown - (now - prev)).TotalMinutes)} min left)" : null;
+    }
+
     // 기록 (원시 트레이스·prefetch 기록) 이 없는 게임: 설치 폴더가 예산 이하면 통째로, 크면 엔진 프로필로. 쿨다운은 항상 지킵니다 (같은 폴더를 연달아 두 번 읽지 않게): 재예열도 쿨다운 안이면 다음 점검으로 미룸.
     // 순서: 드라이브 거부 (시스템 SSD·SSD·판정 불가) → 게임 실행 중 → 쿨다운 → 디스크 유휴 → RAM 예산 → 폴더 열거 (비싼 일은 마지막).
     private PrewarmResult RunCold(GameSettings game, string why, DateTimeOffset now, CancellationToken ct, long usedMib, bool trigger)
     {
         AutoSettings a = _auto;
-        TimeSpan cooldown = TimeSpan.FromMinutes(game.Prewarm.CooldownMin);
         if (_env.ColdRefusal(game) is { } refused)
         {
             bool first;
@@ -51,16 +62,8 @@ public sealed partial class Prewarmer
             return new PrewarmResult(game.Name, false, refused, null, now); // 상태 파일에도 쓰지 않음: 기록 없는 예열 대상이 아닌 드라이브
         }
 
-        string? skip = null;
-        if (DriveHasRunningGame(game))
-        {
-            skip = "game is running";
-        }
-        else if (LastWarmed(game.Name) is { } prev && now - prev < cooldown)
-        {
-            skip = $"cooldown ({Math.Ceiling((cooldown - (now - prev)).TotalMinutes)} min left)";
-        }
-        else if (_env.DiskBytesPerSecond(game) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond)
+        string? skip = ColdFixedSkip(game, now);
+        if (skip is null && (_env.DiskBytesPerSecond(game) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond))
         {
             skip = "drive busy";
         }

@@ -4,6 +4,13 @@
 
 > Main changes by version. For details, see each version's GitHub release and the commit history.
 
+## 1.0.2
+
+A fix found in the service log right after 1.0.1 was installed.
+
+- **A full prewarm that fails the memory check now shrinks.** A prewarm that judged the whole list to fit and started reading it was cancelled when the check just before or during the read found less memory, and kept nothing, unlike a prewarm that had started with only the front part. Available memory dips for a moment while a prewarm reads, so a list near the edge of available memory was cancelled again on each attempt. The blocks that 1.0.1 adds to the list moved a large game onto that edge. A full prewarm or supplement prewarm that stops for memory now reads the front part that fits the memory available at that moment, once, in the same run, and is handled like any front-part prewarm from there (log: `prewarm stopped by memory before the full list was read; reading the first N MiB of M MiB instead`). It does not read again when it stopped for another reason, such as a game starting. The reserve (`prewarm.min_free_ram_mib`), the 256 MiB margin, the cache budget, and the checks themselves are unchanged.
+- **Supplement prewarm follows the current list size.** The list size remembered for a partial prewarm stayed at the old value after the list grew, which capped the front part at the old size. It is now raised to the current list size when that is larger.
+
 ## 1.0.1
 
 Changes since 1.0.0. They fix cases, found in real play records, where the prewarm read less than it could or ran late. The effect on load time and stutter in real games has not been measured yet.

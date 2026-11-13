@@ -44,12 +44,22 @@ internal sealed class ReadYield(Func<bool, bool> setLow, bool startYielding)
     private bool _everYielded;
     private DateTimeOffset _since;
     private TimeSpan _total;
+    private TimeSpan _excluded;
 
     /// 양보로 시작했고 첫 관측을 아직 하지 않음 (첫 묶음 직전에 한 번 관측하고 내림).
     public bool FirstObservationPending { get; set; } = startYielding;
 
-    /// 낮은 우선순위로 읽은 시간 (초).
-    public double Seconds => _total.TotalSeconds;
+    /// 낮은 우선순위로 읽은 시간 (초). 디스크를 읽지 않은 일 (다시 만지기) 에 쓴 시간은 뺍니다.
+    public double Seconds => Math.Max(0, (_total - _excluded).TotalSeconds);
+
+    /// 낮은 우선순위인 동안 디스크를 읽지 않는 일에 seconds 를 썼음을 알려 양보 시간에서 뺍니다.
+    public void Exclude(double seconds)
+    {
+        if (_low)
+        {
+            _excluded += TimeSpan.FromSeconds(seconds);
+        }
+    }
 
     /// 상태를 바꿉니다 (low: 낮음, 아니면 보통). 바꾸지 못하면 (setLow 실패) 상태는 그대로이며 다음 관측 때 다시 시도합니다.
     /// 이 스트림에서 처음 낮음으로 바뀐 때만 true (로그 한 줄용).

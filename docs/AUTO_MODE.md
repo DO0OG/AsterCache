@@ -17,7 +17,7 @@ Each game can also be limited. Its **policy** (`games[].mode`: `inherit`, `prewa
 | 3. Relocation | Moves the pieces the game reads into one zone while the PC is idle. |
 | 4. Prewarm | Reads the zone into RAM before the game starts. |
 | 5. Upkeep | Re-prewarms, tops up, retries, and rechecks the layout. |
-| 6. While a game runs | Yields the disk to the game and records how the disk behaved. |
+| 6. While a game runs | Yields the disk to the game, lets unrelated background programs give up memory, and records how the disk behaved. |
 | 7. Drive recovery wait | Waits for an SMR drive to settle after bulk writes. |
 
 "Idle" is defined in [What "idle" means](#what-idle-means).
@@ -194,6 +194,7 @@ When the first real run records a trace, the plan made from it replaces the earl
 - If a prewarm that was reading the whole list (a supplement prewarm included) stops for memory, it reads again once in the same run, cut to the front part that fits the memory available at that moment. From there it is handled like a prewarm that was reading only the front part. What was already read is in the cache, so reading it again costs almost no disk time. It does not read again when it stopped for another reason, such as a game starting, and it is cancelled as before when less than 256 MiB fits. Log: `<game>: prewarm stopped by memory before the full list was read; reading the first N MiB of M MiB instead` (`supplement prewarm stopped by memory ...` for a supplement prewarm).
 - After any stop caused by memory, including one that kept nothing, top-ups and retries (the waiting-list retry and the re-prewarm check) leave that game alone for 2 minutes; a launcher trigger or a service start does not wait. If the stop had read something, a waiting retry is pulled forward to 2 minutes later instead of the usual period (`rewarm_minutes`, 10 minutes by default); a stop that read nothing keeps the usual period. A game with a kept partial prewarm stays on the waiting list instead of being dropped, and the rest is read once free memory exceeds the amount already read plus 256 MiB plus the reserve.
 - Log lines: `prewarm cancelled (...) after N MiB (memory reserve: ...)` (or `(memory budget: ...)`), followed by `<game>: prewarm stopped by memory; kept the N of M MiB read as partial`, and `<game>: prewarm skipped (stopped by memory less than 2 min ago) [<reason>]`. The `prewarm done` line ends with `room X MiB` (or `unlimited`) and `available Y MiB`, and a `rewarm check: cold (...)` line includes `available N MiB`, so the memory at that moment can be read from the log.
+- A prewarm that read its whole list is no longer recorded as `partial`. For a game whose saved plan holds only the part still to be moved, the amount to read used to include whole-file reads added for files where 30% or more of the file was needed (1,306 MiB against 1,164 MiB allotted for one game), so a complete read of the list was recorded as `partial` and `rewarm check: the rest of the hot set is not read yet` repeated. The prewarm list is now counted on the same basis as the allotted amount, so those whole-file reads are not added and `partial` appears only when memory or the cache budget really fell short. A `partial` left in `prewarm_status.json` is cleared the next time a prewarm reads the whole list. The effect on loading has not been measured.
 
 **Reading**
 
@@ -255,10 +256,10 @@ When the first real run records a trace, the plan made from it replaces the earl
 ### 6. While a game runs
 
 - **When.** From a game's start to its exit (plus a short grace period).
-- **What.** Blocks relocation, reapply, and tier writes on that disk, yields prewarm, and records how the disk behaved (`play record:`).
+- **What.** Blocks relocation, reapply, and tier writes on that disk, yields prewarm, lets unrelated background programs give up memory ([Background memory yield](#background-memory-yield)), and records how the disk behaved (`play record:`).
 - **Does not.** Read the game's files or process. The play record uses only disk device counters, and it does not make the game faster by itself.
-- **Settings.** `auto.start_stream_enabled` (when `false`, no start stream runs), `auto.start_stream_cap_seconds`, `auto.restream_cooldown_min`, `auto.keep_awake`.
-- **Log.** `<game>: start stream skipped (<why>)`, `play record: ...`
+- **Settings.** `auto.start_stream_enabled` (when `false`, no start stream runs), `auto.start_stream_cap_seconds`, `auto.restream_cooldown_min`, `auto.keep_awake`, `memory.background_yield`.
+- **Log.** `<game>: start stream skipped (<why>)`, `play record: ...`, `background yield ...`
 
 <details>
 <summary>Details: same-disk rules, start stream, play record</summary>
@@ -343,6 +344,70 @@ With `prewarm.pin`, prewarmed pages stay open as read-only mappings in the servi
 
 - When the key is not written, it turns on automatically with 24 GiB of RAM or more; `false` turns it off; an explicit `true` works with 16 GiB of RAM or more.
 - The mappings are released at once when free RAM falls below the reserve or when a game or launcher starts, so launcher updates can change the files. A prewarm started by a trigger program is not pinned.
+
+</details>
+
+### Background memory yield
+
+During a game session, programs that have nothing to do with the game give up memory, so that Windows does not take it from the prewarm cache first. It is on by default (`memory.background_yield`) and applies to every registered game, including games with anti-cheat.
+
+- **When.** When a launcher or another trigger program starts a prewarm, and when a registered game's exe starts. It ends when the game counts as exited (and no other registered game is running), at service stop (a start request that arrives after that is ignored), when the setting is turned off, or 10 minutes after the last time a registered game was seen running (counted from the start when none was seen).
+- **What.** For each program in your user session that is not excluded (see the details): empties its working set (only if that is 32 MiB or more) and lowers its memory priority to "very low" (1) when it is higher (the Windows default is 5). At the end it sets the priority back to the value it had.
+- **Does not.** Open a game, launcher, launcher helper, anti-cheat, or Windows component process, or any service process (session 0). It changes nothing in another program except these two things: no ending, suspending, injecting, or reading memory, and no change of CPU or disk priority. The memory reserve (`prewarm.min_free_ram_mib`), the cache budget, and the prewarm decisions are unchanged.
+- **Settings.** `memory.background_yield` (default `true`).
+- **Log.** `background yield (trigger): trimmed N processes (...)`, `background yield ended: ...`. The meaning of each line is in the [FAQ](FAQ.md#troubleshooting).
+
+<details>
+<summary>Details: why, what is left alone, timing, side effects, recovery, turning it off</summary>
+
+**Why**
+
+- On the test PC, when a game took about 10 GiB, Windows took the memory from cached file pages, and the prewarm cache is made of those pages. Reads by other programs can also push the prewarm cache out.
+- Emptying the working set of an unrelated program frees its memory in a form Windows reuses before the cache. A lowered memory priority keeps the pages that program reads afterwards from pushing the cache out.
+
+**What was measured on the test PC**
+
+These are experiments with an experiment tool, test programs, and test files on 2026-11-13, not the service itself and not measurements inside a running game. How much this changes loading time or stutter in real play has not been measured.
+
+- Emptying the working sets of 29 background processes (7,664 MiB of working set in total): available memory went from 15,587 MiB to 19,324 MiB after 10 seconds. In the next 2 minutes, all 2,398 MiB of pages that Windows reused came from the lowest-priority list and none from priority 5, where the prewarm cache sits. Their working sets together fell to 861 MiB and were 1,900 MiB again 2 minutes later.
+- A test program with an emptied working set of 2 GiB took 0.8 seconds to touch all of it again.
+- A program read 17 GiB, more than the 15.5 GiB of available memory, while a 512 MiB test file sat in the cache. At the lowest memory priority the file stayed in the cache (38 of 2,000 sampled 4 KiB reads were slow, median 6.8 µs). At normal priority (5) it was pushed out (1,980 of 2,000 went to the disk, median 134 µs).
+
+**What is left alone**
+
+- Never opened, by name: system processes and AsterCache itself (`AsterCache.*`); any exe registered as a game or as a trigger program of a game; the launchers `steam.exe`, `EpicGamesLauncher.exe`, `GalaxyClient.exe`, `Battle.net.exe`, `RiotClientServices.exe`, `EADesktop.exe`, `upc.exe`, `UbisoftConnect.exe`; the helpers `steamwebhelper.exe`, `EpicWebHelper.exe`, `Agent.exe`, `explorer.exe`, `aster.exe`; the anti-cheat components in [Anti-cheat compatibility](ANTICHEAT.md#skipped-and-marked-files) (EasyAntiCheat, BattlEye, Vanguard including `vg*.exe`, and the others in that table) plus helpers named `BlackCipher*`, `GameMon*`, `SGuard*`, `PnkBstr*`, or `*_BE.exe`; and Riot's own programs (`RiotClient*`, `LeagueClient*`, the Riot game exes).
+- Never opened, by session: any program outside a user session, which includes the services in session 0.
+- Excluded by path: a program that passes the name check is first opened with query-only rights to read its path. If the path is under the Windows folder, under a registered game's install or allowed folder, under the install folder of a game the launcher scan has already found (only while automatic mode is on), or inside a folder named `steamapps`, `Steam`, `Epic Games`, `Riot Games`, `Riot Vanguard`, `Battle.net`, `XboxGames`, `GOG Galaxy`, `EA Games`, `Origin Games`, `Ubisoft`, `EasyAntiCheat`, or `BattlEye`, it is left alone and never opened with write rights.
+
+**Timing**
+
+- Order: choose the programs, lower the priorities, then empty the working sets. The freed pages take a few seconds to show up as available memory. A prewarm started by a trigger program therefore waits up to 3 seconds after emptying, until available memory has stopped rising (two readings 500 ms apart, each up by less than 64 MiB), so that it reads the memory figure after the freed pages arrived. The start path of a game does not wait.
+- A start less than 60 seconds after the previous one is ignored, for example the game starting just after its launcher. After a session has ended, the next start is not held back.
+- While a registered game runs, every 2 minutes (on the 30-second check) programs that started since then get the same priority change. If at least 5 minutes have passed since the last emptying and the working sets of the chosen programs together have grown back by 1,024 MiB or more, they are emptied once more.
+
+**Side effects**
+
+- A program that was emptied can be slower for a moment when you use it again, because its pages are brought back.
+- Background programs can be slightly slower during a game session, because their memory is now reused first. This is intended.
+- It works only when the service has administrator rights and a trusted data folder, the same condition as the other features that write state files.
+- Settings can change during a session. At each start and each 2-minute upkeep, the programs already chosen are checked again against the current settings by name and path. One that has become excluded, for example a program that is now a registered game, is dropped from the list and its priority is put back at once.
+- The log has counts and sizes only, no program names or paths. Program names (no paths) are written only to the state file below, which exists while a session runs.
+
+**State file and recovery**
+
+- `background_yield.json` in the data folder (`%ProgramData%\AsterCache`) lists the programs whose priority was lowered: process id, program name, creation time, and the original priority. It is written before the priority is lowered and deleted when the session ends. If it cannot be written, the priorities are not lowered that time (the working sets are still emptied).
+- If the service stopped abnormally, the next start restores those priorities first, even when the setting is off, and writes `background yield: restored memory priority for N processes left by the previous run`. A process is restored only if its id, name, and creation time still match, so a process that reused the id is not touched. A program whose priority could not be written back stays in the file and is tried again at the next end or start.
+
+**Turning it off**
+
+- Add this to `config.json`:
+
+```json
+"memory": { "background_yield": false }
+```
+
+- There is no switch in the Settings tab. The service re-reads the file; when the setting is turned off during a session, the priorities are restored at the next 30-second check.
+- The `memory` key is new in 1.0.3. Versions 1.0.2 and earlier reject a settings file that contains it, so remove it before rolling back ([Configuration](CONFIGURATION.md)).
 
 </details>
 

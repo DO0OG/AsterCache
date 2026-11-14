@@ -23,9 +23,15 @@ public enum StreamMethod
 
 /// 읽기 결과 (Python read_ops 의 stats). Aborted: 취소로 일부를 건너뜀. RequestedBytes: 요청한 길이 합 (파일 크기로 자르기 전).
 /// HintAcceptedBytes: Pvm 에서 PrefetchVirtualMemory 가 받아들인 바이트일 뿐 실제로 상주한다는 뜻이 아님 (Bytes 에도 같은 값이 들어감, 상주 추정은 CacheProbe 로).
+/// BufferedBytes: Pvm 에서 스파스 파일이라 매핑하지 않고 버퍼드로 읽은 바이트 (Bytes 에는 들어가고 HintAcceptedBytes 에는 안 들어감).
 public sealed record StreamStats(long Bytes, long Requests, long Errors, double Seconds, bool Aborted = false, long RequestedBytes = 0, long HintAcceptedBytes = 0)
 {
     public long GapBytes { get; init; }
+
+    public long BufferedBytes { get; init; }
+
+    /// 예열 완료 로그 줄에 붙이는 말 (스파스 파일을 버퍼드로 읽은 것이 없으면 빈 문자열).
+    public string BufferedNote() => BufferedBytes > 0 ? $", {BufferedBytes >> 20} MiB of sparse files by buffered read" : string.Empty;
 }
 
 /// ops 를 파일 캐시로 가져옵니다. 쓰기 없음. Python prefetch/reader.py read_ops (method read | pvm).
@@ -43,17 +49,97 @@ public static class ZoneStreamer
         var watch = Stopwatch.StartNew();
         bool aborted = false;
         long hint = 0;
+        long buffered = 0;
         (long bytes, long requests, long errors) = method switch
         {
-            StreamMethod.Pvm => RunPvm(ops, ct, out aborted, out hint, static slice => MemoryPrefetch.Prefetch(slice), noteIssue),
+            StreamMethod.Pvm => RunPvmOrBuffered(ops, chunkBytes, ct, out aborted, out hint, out buffered, static slice => MemoryPrefetch.Prefetch(slice), FileGuards.FileAttributes, noteIssue),
             StreamMethod.Overlapped => OverlappedReader.Run(ops, queueDepth, chunkBytes, ct, out aborted),
             _ => RunRead(ops, chunkBytes, ct, out aborted),
         };
-        return new StreamStats(bytes, requests, errors, Math.Round(watch.Elapsed.TotalSeconds, 4), aborted, ops.Sum(o => o.Length), hint);
+        return new StreamStats(bytes, requests, errors, Math.Round(watch.Elapsed.TotalSeconds, 4), aborted, ops.Sum(o => o.Length), hint) { BufferedBytes = buffered };
+    }
+
+    // 스파스 속성 파일은 섹션 (CreateFileMapping) 을 만드는 순간 그 파일의 캐시 페이지가 버려지므로 매핑하지 않고 버퍼드 읽기 (RunRead) 로 읽습니다.
+    // 범위 목록을 스파스 여부가 같은 연속 구간으로 나눠 앞에서부터 차례로 처리하므로 읽는 순서는 그대로입니다. 속성을 조회할 수 없으면 스파스로 보지 않습니다.
+    internal static (long, long, long) RunPvmOrBuffered(IReadOnlyList<ReadOp> ops, int chunk, CancellationToken ct, out bool aborted, out long hintAccepted, out long buffered,
+        Func<Win32MemoryRangeEntry[], bool> prefetch, Func<string, uint> attributes, Action<string, long, bool>? noteIssue = null)
+    {
+        aborted = false;
+        hintAccepted = 0;
+        buffered = 0;
+        if (ct.IsCancellationRequested)
+        {
+            aborted = ops.Count > 0;
+            return (0, 0, 0); // 이미 취소됨: 속성 조회도 읽기도 하지 않음 (RunPvm·RunRead 와 같은 계약)
+        }
+
+        var sparse = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        var parts = new List<(bool Sparse, int From, int To)>();
+        for (int i = 0; i < ops.Count; i++)
+        {
+            if (!sparse.TryGetValue(ops[i].Path, out bool isSparse))
+            {
+                sparse[ops[i].Path] = isSparse = FileGuards.IsSparse(ops[i].Path, attributes);
+            }
+
+            if (parts.Count > 0 && parts[^1].Sparse == isSparse)
+            {
+                parts[^1] = (isSparse, parts[^1].From, i + 1);
+            }
+            else
+            {
+                parts.Add((isSparse, i, i + 1));
+            }
+        }
+
+        if (parts.Count == 1 && !parts[0].Sparse)
+        {
+            return RunPvm(ops, ct, out aborted, out hintAccepted, prefetch, noteIssue); // 스파스 파일이 없으면 이전과 완전히 같음
+        }
+
+        long bytes = 0;
+        long requests = 0;
+        long errors = 0;
+        byte[]? buffer = null; // 스파스 구간마다 1 MiB 를 새로 할당하지 않고 한 번의 호출 안에서 재사용
+        foreach ((bool isSparse, int from, int to) in parts)
+        {
+            if (ct.IsCancellationRequested)
+            {
+                aborted = true; // 앞 구간이 끝난 뒤의 취소: 뒤 구간은 읽지 않음
+                break;
+            }
+
+            IReadOnlyList<ReadOp> part = parts.Count == 1 ? ops : [.. ops.Skip(from).Take(to - from)];
+            bool partAborted;
+            long b;
+            long r;
+            long e;
+            if (isSparse)
+            {
+                noteIssue?.Invoke("buffered read of sparse files", part.Sum(o => o.Length), true);
+                // 앞읽기를 꺼서 요청한 범위만 읽음: 켜 두면 흩어진 목록에서 요청보다 13~23% 더 읽힘 (같은 PC 의 시험 파일 측정)
+                (b, r, e) = RunRead(part, chunk, ct, out partAborted, buffer ??= new byte[chunk], FileOptions.RandomAccess);
+                buffered += b;
+            }
+            else
+            {
+                (b, r, e) = RunPvm(part, ct, out partAborted, out long hint, prefetch, noteIssue);
+                hintAccepted += hint;
+            }
+
+            (bytes, requests, errors) = (bytes + b, requests + r, errors + e);
+            if (partAborted)
+            {
+                aborted = true;
+                break;
+            }
+        }
+
+        return (bytes, requests, errors);
     }
 
     // Python _worker(reuse=True, threads=1): 한 줄씩 순서대로, 파일 핸들 유지, 오류가 나면 그 핸들을 버리고 계속.
-    private static (long, long, long) RunRead(IReadOnlyList<ReadOp> ops, int chunk, CancellationToken ct, out bool aborted)
+    private static (long, long, long) RunRead(IReadOnlyList<ReadOp> ops, int chunk, CancellationToken ct, out bool aborted, byte[]? buffer = null, FileOptions options = FileOptions.None)
     {
         aborted = false;
         if (ct.IsCancellationRequested)
@@ -66,7 +152,7 @@ public static class ZoneStreamer
         long bytes = 0;
         long requests = 0;
         long errors = 0;
-        byte[] buf = new byte[chunk];
+        byte[] buf = buffer ?? new byte[chunk];
         var handles = new Dictionary<string, SafeFileHandle>();
         try
         {
@@ -82,7 +168,7 @@ public static class ZoneStreamer
                 {
                     if (!handles.TryGetValue(op.Path, out SafeFileHandle? h))
                     {
-                        h = File.OpenHandle(op.Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                        h = File.OpenHandle(op.Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, options);
                         handles[op.Path] = h;
                     }
 

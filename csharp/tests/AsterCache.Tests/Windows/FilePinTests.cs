@@ -49,6 +49,19 @@ public sealed class FilePinTests
     }
 
     [Fact]
+    public void SparseFilesAreNotMappedBecauseCreatingTheirSectionDropsTheCachedPages()
+    {
+        using var tmp = new TempDir();
+        tmp.WriteRandom("ok.bin", 50_000);
+        tmp.WriteRandom("sparse.bin", 50_000); // 열 수 있는 파일: 매핑했다면 Count 가 2
+        string sparse = tmp.Combine("sparse.bin");
+
+        using FilePin pin = FilePin.Open([tmp.Combine("ok.bin"), sparse], path => path == sparse ? 0x20 | FileGuards.SparseAttribute : 0x20);
+
+        Assert.Equal((1, 1), (pin.Count, pin.Skipped));
+    }
+
+    [Fact]
     public void EmptyListIsAnEmptyPin()
     {
         using FilePin pin = FilePin.Open([]);

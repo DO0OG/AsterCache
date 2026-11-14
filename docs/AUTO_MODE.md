@@ -354,7 +354,7 @@ These are experiments with a test tool and test files on the HDD, not the servic
 
 ### Pinning (optional)
 
-With `prewarm.pin`, prewarmed pages stay open as read-only mappings in the service so they are less likely to be evicted. Effect unverified (needs an experiment).
+With `prewarm.pin`, prewarmed pages stay open as read-only mappings in the service so they are less likely to be evicted. Files with the sparse attribute are not pinned (they are counted as skipped in the log), because creating a mapping for one discarded its cached pages in a test on one PC. Effect unverified (needs an experiment).
 
 <details>
 <summary>Details: when pinning is on and released</summary>

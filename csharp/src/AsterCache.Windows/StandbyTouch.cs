@@ -1,4 +1,3 @@
-using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using AsterCache.Core.Prefetch;
@@ -196,15 +195,7 @@ public static unsafe class StandbyTouch
     {
         if (!tally.Sparse.TryGetValue(path, out bool sparse))
         {
-            try
-            {
-                sparse = (tally.Attributes(path) & FileGuards.SparseAttribute) != 0;
-            }
-            catch (Exception e) when (e is IOException or Win32Exception or UnauthorizedAccessException)
-            {
-                sparse = false;
-            }
-
+            sparse = FileGuards.IsSparse(path, tally.Attributes);
             tally.Sparse[path] = sparse;
         }
 

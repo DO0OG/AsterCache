@@ -30,6 +30,19 @@ public static class FileGuards
         return a;
     }
 
+    /// 스파스 속성 (FILE_ATTRIBUTE_SPARSE_FILE) 인가. 조회할 수 없으면 추측하지 않고 false. attrFn 으로 속성 조회를 바꿀 수 있습니다 (시험용).
+    public static bool IsSparse(string path, Func<string, uint>? attrFn = null)
+    {
+        try
+        {
+            return ((attrFn ?? FileAttributes)(path) & SparseAttribute) != 0;
+        }
+        catch (Exception e) when (e is IOException or Win32Exception or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
     /// 적용이 건너뛰는 파일인가 (SkipReason 이 있음). 배치 판정이 이런 파일을 남은 이동으로 세지 않게 하는 데 씁니다.
     /// 속성을 읽지 못한 경우 (파일 없음·접근 거부·볼륨 미준비) 는 일시적일 수 있어 false 입니다. 그런 파일은 판정이 계속 "모름" 으로 셉니다.
     public static bool Unmovable(string path) => Unmovable(path, null);

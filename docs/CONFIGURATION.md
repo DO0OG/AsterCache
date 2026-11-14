@@ -81,7 +81,7 @@ The configuration file is `%ProgramData%\AsterCache\config.json`. Editing it in 
 | `min_free_ram_mib` | 4096 | Available RAM to leave free even after prewarm. Not shown in the Settings window; edit the file. |
 | `cooldown_min` | 30 | Minimum interval between prewarms, in minutes. Inside the cooldown a game is still prewarmed when a sample read shows that its cache has gone cold, for example after a reboot; if the cache is warm or the sample cannot be read, the cooldown applies. See [Automatic mode](AUTO_MODE.md#4-prewarm). |
 | `max_cache_mib` | 0 (automatic) | Total MiB that prewarm may hold in the file cache, shared by all games. `0` or omitted = half of physical RAM; a positive value is used as is but cannot exceed physical RAM. If several games set it, the largest value applies. The `min_free_ram_mib` reserve still applies. The Advanced section writes the value to every registered game (0 removes the key). |
-| `pin` | automatic | Keep prewarmed data open as read-only mappings in the service. When not written, it is on automatically with 24 GiB of RAM or more; `false` turns it off; an explicit `true` works with 16 GiB of RAM or more. Effect unverified (needs an experiment). See [Anti-cheat compatibility](ANTICHEAT.md). |
+| `pin` | automatic | Keep prewarmed data open as read-only mappings in the service. When not written, it is on automatically with 24 GiB of RAM or more; `false` turns it off; an explicit `true` works with 16 GiB of RAM or more. Files with the sparse attribute are not pinned. Effect unverified (needs an experiment). See [Anti-cheat compatibility](ANTICHEAT.md). |
 
 ## Automatic mode: `auto`
 

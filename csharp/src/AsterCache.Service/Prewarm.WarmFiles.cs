@@ -196,6 +196,7 @@ public sealed partial class Prewarmer
                 Aborted = sum.Aborted || s.Aborted,
                 RequestedBytes = sum.RequestedBytes + s.RequestedBytes,
                 HintAcceptedBytes = sum.HintAcceptedBytes + s.HintAcceptedBytes,
+                BufferedBytes = sum.BufferedBytes + s.BufferedBytes,
             };
             if (!complete)
             {

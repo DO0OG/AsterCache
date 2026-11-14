@@ -92,7 +92,7 @@ flowchart LR
 2. **기록.** 등록 게임이 처음 실행되면 `AutoTracer` 가 `Tracer` 의 실시간 ETW 세션으로 읽기를 기록해 `plans\<게임>.trace.json` 에 씁니다. 이후 플레이는 `.trace.runN.json` 으로 모아 합칩니다.
 3. **계획.** `AutoRelocator` 가 트레이스에서 핫 집합(`HotSet`)을 뽑고 `PlanFile`(안에서 `ZoneAllocator` 가 구역을 배치)로 `plans\<게임>.plan.json` 과 읽기 순서 파일 `.plan.json.prefetch.json` 을 씁니다. 수동 `aster plan` 과 같은 코드입니다.
 4. **재배치.** 게임이 꺼져 있고 PC 가 한가하면 수동 재배치와 같은 `Applier` 가 `NtfsVolume` 의 `FSCTL_MOVE_FILE` 로 조각을 옮깁니다. 이동마다 `journals\<게임>.jsonl` 에 기록하고, 검증이 실패하면 `Reverter` 가 저널대로 되돌립니다.
-5. **예열.** `Prewarmer` 가 `ZoneStreamer` 로 구역의 파일을 읽기 전용으로 매핑해 `PrefetchVirtualMemory` 로 요청하고, 결과를 `prewarm_status.json` 에 씁니다. ORBIT 이 켜져 있으면 읽기 전에 예열 순서가 바뀝니다.
+5. **예열.** `Prewarmer` 가 `ZoneStreamer` 로 구역의 파일을 읽기 전용으로 매핑해 `PrefetchVirtualMemory` 로 요청하고, 결과를 `prewarm_status.json` 에 씁니다. 스파스 속성 파일은 매핑하지 않고 목록 순서대로 보통의 버퍼드 읽기로 읽습니다. 한 PC(HDD)의 시험 파일에서 스파스 파일은 매핑을 만들면 캐시된 페이지가 버려졌고 버퍼드 읽기만 쓰면 버려지지 않았기 때문입니다([SOLAR](SOLAR.ko.md)). ORBIT 이 켜져 있으면 읽기 전에 예열 순서가 바뀝니다.
 
 ## 데이터 폴더
 

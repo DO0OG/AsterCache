@@ -77,10 +77,11 @@ public sealed partial class Prewarmer
     private IEnumerable<GameSettings> OtherGames(GameSettings game) => Enumerable.Reverse(Warmed()).Where(g => !string.Equals(g.Name, game.Name, StringComparison.OrdinalIgnoreCase));
 
     // pick 이 고른 다른 게임들을 만지고 (Rewarmer.RefreshGroup) 쓴 시간을 스트림의 양보 시간에서 빼도록 알립니다. 고른 게임이 없으면 아무것도 하지 않습니다.
-    private RequeueTally TouchOthers(GameSettings game, CancellationToken stop, ReadYield readYield, Func<IReadOnlyList<GameSettings>> pick, long aheadLess = 0)
+    // touchedGames: 주면 끝까지 만진 게임 (만진 순서, 이름과 바이트) 을 채워 줍니다 (스트림 끝의 사다리가 묶음으로 다시 표식할 때 씀).
+    private RequeueTally TouchOthers(GameSettings game, CancellationToken stop, ReadYield readYield, Func<IReadOnlyList<GameSettings>> pick, long aheadLess = 0, List<(string Game, long Bytes)>? touchedGames = null)
     {
         long startedAt = Stopwatch.GetTimestamp();
-        (int Games, long Bytes, IReadOnlyList<string> Names) touched = (0, 0, []);
+        (int Games, long Bytes, IReadOnlyList<(string Game, long Bytes)> Touched) touched = (0, 0, []);
         try
         {
             if (pick() is not { Count: > 0 } others)
@@ -106,14 +107,17 @@ public sealed partial class Prewarmer
             _protectedNames.Clear(); // 이번 예열 한 회의 첫 보호
         }
 
-        return new RequeueTally(0, 0, false, 0, touched.Names.Count(_protectedNames.Add), touched.Bytes, seconds, touched.Games > 0 ? 1 : 0);
+        touchedGames?.AddRange(touched.Touched);
+        return new RequeueTally(0, 0, false, 0, touched.Touched.Count(t => _protectedNames.Add(t.Game)), touched.Bytes, seconds, touched.Games > 0 ? 1 : 0);
     }
 
     // 핫 집합 스트림이 끝까지 읽은 직후 (StreamHot, 디스크 대여 안): 그 게임이 지금까지 캐시에 올린 전체의 역순으로 캐시를 만져 중요한 것이 마지막에 밀려나게 합니다.
     // game 은 스트림이 읽은 범위를 나타내는 사본 (메모리·상한으로 줄인 것 포함, 보충이면 이어 읽은 창) 이라 앞에서 읽은 부분과 보충분이 모두 대상입니다. 방금 읽었으므로 표본 점검은 생략합니다.
     // reads: 메모리 한도로 마무리한 스트림은 읽은 창의 앞부분 (WindowLadderReads), 끝까지 읽었으면 null (읽은 범위 전체).
     // 게임이 이미 도는 디스크이거나 keep_stream_on_game_start (게임이 떠도 스트림을 끊지 않는 실험 설정) 가 켜져 있으면 만지지 않습니다: 만지기도 캐시에 없으면 디스크 읽기라 게임을 느리게 할 수 있습니다.
-    private void LadderAfterStream(GameSettings game, CancellationToken stop, Func<IReadOnlyList<ReadOp>?>? reads = null)
+    // 사다리를 만들기 직전에 (트리거 예열은 제외) 표식이 있는 다른 게임을 한 번 만져 보호합니다 (스트림 앞의 보호와 같은 함수·게이트, "때가 됐는지"와 묶음 최소 간격은 보지 않음: 스트림 끝의 이 순서를 확정해야 A 가 맞음).
+    // 그러면 이 게임의 사다리는 다른 게임들 뒤에 오고, 둘을 만진 순서대로 한 묶음으로 다시 표식합니다 (Solar.Order). 쓴 시간은 완료 줄의 보호 꼬리에 합산하고 양보 시간에서 뺍니다.
+    private void LadderAfterStream(GameSettings game, CancellationToken stop, bool trigger, ReadYield readYield, Func<IReadOnlyList<ReadOp>?>? reads = null)
     {
         if (!_solar.Enabled || _auto.KeepStreamOnGameStart || _streamGameStarted || stop.IsCancellationRequested || _streamPreempted || PreemptedByTriggerWait(game.Name) || DriveHasRunningGame(game)
             || (reads is null ? LadderReads(game) : reads()) is not { Count: > 0 } ladder)
@@ -123,7 +127,17 @@ public sealed partial class Prewarmer
 
         try
         {
-            _ = _solar.Order(game, ladder, stop);
+            List<(string Game, long Bytes)> protectedFirst = [];
+            if (!trigger && CanProtectOthers(game, stop))
+            {
+                _requeued += TouchOthers(game, stop, readYield, () => _solar.Marked(OtherGames(game)), touchedGames: protectedFirst);
+                if (ProtectionHalted(game) || stop.IsCancellationRequested)
+                {
+                    return; // 보호하는 사이 게임이 시작했거나 선점됨: 진입할 때 막힌 것처럼 사다리를 시작하지 않음
+                }
+            }
+
+            _ = _solar.Order(game, ladder, stop, protectedFirst: protectedFirst);
         }
         catch (Exception e) when (e is not (OperationCanceledException or OutOfMemoryException or StackOverflowException))
         {

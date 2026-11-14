@@ -37,12 +37,15 @@ internal static class SolarPolicy
     /// 다른 게임들이 방금 만진 뒤 우리 앞에 있는 양: 그 게임 X 의 이전 표식이 우리 표식보다 먼저 만들어졌을 때만 (그때만 X 의 페이지가 우리 앞에 있었음) min(X 의 이전 표식이 만진 바이트, X 가 이번에 만진 바이트) 만큼 줄어듦 (0 미만이면 0).
     /// X 에 이전 표식이 없었거나 (새로 예열된 게임) 우리 표식보다 나중이면 줄이지 않습니다. 스트림이 디스크에서 새로 읽은 양은 재사용 누계에 이미 잡히므로 이 규칙에서 자연히 빠지고, 스파스로 건너뛴 양은 만진 바이트에 없습니다.
     /// 묶음 새로 고침·스트림 뒤 사다리·스트림 앞의 보호가 같은 규칙을 씁니다 (묶음에서 새 표식을 받는 게임은 GroupAhead 로 다시 계산하므로 대상이 아님).
-    public static long AheadAfterOthersTouched(LadderMark mine, IEnumerable<(LadderMark? Previous, long TouchedBytes)> others) =>
-        Ahead(mine.AheadBytes, others.Sum(o => o.Previous is { } previous && previous.At < mine.At ? Math.Min(previous.TouchedBytes, o.TouchedBytes) : 0));
+    /// withoutPreviousAll: 이전 표식이 없는 X 가 만진 바이트 전체를 줄입니다 (스트림 끝의 사다리용): 재예열·보충 스트림의 게임은 표식이 이미 지워져 있어 위 규칙대로면 0 이 되는데, 실제로는 그 게임이 캐시에 가진 페이지가 우리 앞에서 뒤로 가기 때문.
+    /// 얼마가 그런 페이지인지 알 수 없어 만진 전체를 줄입니다 (과하면 새로 고침이 한 번 일찍 올 뿐이고 덜 줄이면 캐시를 잃음).
+    public static long AheadAfterOthersTouched(LadderMark mine, IEnumerable<(LadderMark? Previous, long TouchedBytes)> others, bool withoutPreviousAll = false) =>
+        Ahead(mine.AheadBytes, others.Sum(o => o.Previous is { } previous ? (previous.At < mine.At ? Math.Min(previous.TouchedBytes, o.TouchedBytes) : 0) : withoutPreviousAll ? o.TouchedBytes : 0));
 
     /// 스트림 도중의 보호가 새 표식의 A 를 계산할 때 캐시 대기 바이트에서 뺄 양: 스트림이 그때까지 읽은 양은 끝의 사다리에서 다시 만져져 보호한 게임들의 뒤로 가지만,
-    /// 끝의 사다리는 스트림 게임의 이전 표식이 있을 때만 min(이전 표식이 만진 양, 이번 양) 을 줄이므로 (AheadAfterOthersTouched) 그 몫을 빼 이중으로 줄지 않게 합니다.
-    public static long StreamAheadLess(long streamReadBytes, long priorTouchedBytes) => Math.Max(0, streamReadBytes - priorTouchedBytes);
+    /// 끝의 사다리는 스트림 게임의 이전 표식이 있으면 min(이전 표식이 만진 양, 이번 양) 만 줄이므로 (AheadAfterOthersTouched) 그 몫을 뺀 나머지를 미리 뺍니다.
+    /// 이전 표식이 없으면 (priorTouchedBytes 0) 끝의 사다리가 만진 전체를 줄이므로 (withoutPreviousAll) 여기서는 빼지 않습니다: 빼면 끝에서 건너뛴 게임이 두 번 줄고, 사다리 없이 끝나도 스트림 페이지는 그 게임 앞에 그대로 있어 안 빼는 쪽이 실제와 맞습니다.
+    public static long StreamAheadLess(long streamReadBytes, long priorTouchedBytes) => priorTouchedBytes > 0 ? Math.Max(0, streamReadBytes - priorTouchedBytes) : 0;
 
     /// 묶음을 만진 순서 (가장 오래된 것이 먼저) 대로 각 게임의 앞에 있는 양: g_i 의 A = max(0, C - (g_i 와 그 뒤에 만진 게임들이 만진 합)), C 는 만진 직후 캐시 대기 바이트.
     public static long[] GroupAhead(long cacheStandbyBytes, IReadOnlyList<long> touchedBytes)

@@ -830,7 +830,7 @@ public sealed partial class Prewarmer
             if (requestListEnded)
             {
                 DeferSupplement(game, plannedCapMib, Math.Max(progressBefore, progressAfter), inputStamp, r.Stats, planEnded: true, skipBytes + plannedListBytes);
-                _log.Info($"{game.Name}: supplement prewarm read the first {MibText(progressAfter)} of {p.HotMib} MiB in {r.Stats.Seconds:F2} s ({MibText(r.Stats.Bytes)} accepted of {MibText(r.Stats.RequestedBytes)} requested, {r.Stats.Errors} errors){_requeued.Note()}, the plan lists {MibText(skipBytes + plannedListBytes)} within {readCapMib} MiB");
+                _log.Info($"{game.Name}: supplement prewarm read the first {MibText(progressAfter)} of {p.HotMib} MiB in {r.Stats.Seconds:F2} s ({MibText(r.Stats.Bytes)} accepted of {MibText(r.Stats.RequestedBytes)} requested, {r.Stats.Errors} errors{r.Stats.BufferedNote()}){_requeued.Note()}, the plan lists {MibText(skipBytes + plannedListBytes)} within {readCapMib} MiB");
                 return true;
             }
 
@@ -841,7 +841,7 @@ public sealed partial class Prewarmer
                     DeferSupplement(game, plannedCapMib, progressBefore, inputStamp, r.Stats, planEnded: false, skipBytes + plannedListBytes);
                 }
 
-                _log.Info($"{game.Name}: supplement prewarm read the first {MibText(progressAfter)} of {p.HotMib} MiB in {r.Stats.Seconds:F2} s ({MibText(r.Stats.Bytes)} accepted of {MibText(r.Stats.RequestedBytes)} requested, {r.Stats.Errors} errors){_requeued.Note()}, the partial window remains pending");
+                _log.Info($"{game.Name}: supplement prewarm read the first {MibText(progressAfter)} of {p.HotMib} MiB in {r.Stats.Seconds:F2} s ({MibText(r.Stats.Bytes)} accepted of {MibText(r.Stats.RequestedBytes)} requested, {r.Stats.Errors} errors{r.Stats.BufferedNote()}){_requeued.Note()}, the partial window remains pending");
                 return true;
             }
 
@@ -852,13 +852,13 @@ public sealed partial class Prewarmer
                     DeferSupplement(game, plannedCapMib, progressBefore, inputStamp, r.Stats, planEnded: false, skipBytes + plannedListBytes);
                 }
 
-                _log.Info($"{game.Name}: supplement prewarm read the first {MibText(progressAfter)} of {p.HotMib} MiB in {r.Stats.Seconds:F2} s ({MibText(r.Stats.Bytes)} accepted of {MibText(r.Stats.RequestedBytes)} requested, {r.Stats.Errors} errors){_requeued.Note()}, the hot set remains partial");
+                _log.Info($"{game.Name}: supplement prewarm read the first {MibText(progressAfter)} of {p.HotMib} MiB in {r.Stats.Seconds:F2} s ({MibText(r.Stats.Bytes)} accepted of {MibText(r.Stats.RequestedBytes)} requested, {r.Stats.Errors} errors{r.Stats.BufferedNote()}){_requeued.Note()}, the hot set remains partial");
                 return true;
             }
 
             ClearPartial(game.Name, p.HotMib);
             CompletePendingWarmSupplement(game, r.Stats);
-            _log.Info($"{game.Name}: supplement prewarm done: {MibText(r.Stats.Bytes)} accepted of {MibText(r.Stats.RequestedBytes)} requested, {r.Stats.GapBytes / 1048576.0:F2} MiB gaps filled in {r.Stats.Seconds:F2} s, {r.Stats.Errors} errors{(_yieldedSeconds > 0 ? $", yielded {_yieldedSeconds:F1} s" : string.Empty)}{_requeued.Note()}");
+            _log.Info($"{game.Name}: supplement prewarm done: {MibText(r.Stats.Bytes)} accepted of {MibText(r.Stats.RequestedBytes)} requested, {r.Stats.GapBytes / 1048576.0:F2} MiB gaps filled in {r.Stats.Seconds:F2} s, {r.Stats.Errors} errors{r.Stats.BufferedNote()}{(_yieldedSeconds > 0 ? $", yielded {_yieldedSeconds:F1} s" : string.Empty)}{_requeued.Note()}");
             return true;
         }
         finally

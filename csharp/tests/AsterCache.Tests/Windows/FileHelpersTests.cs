@@ -9,6 +9,15 @@ namespace AsterCache.Tests.Windows;
 public sealed class FileHelpersTests
 {
     [Fact]
+    public void IsSparseReadsOnlyTheSparseBitAndTreatsUnreadableAttributesAsNotSparse()
+    {
+        Assert.True(FileGuards.IsSparse("x", _ => 0x20 | FileGuards.SparseAttribute));
+        Assert.False(FileGuards.IsSparse("x", _ => 0x20 | 0x800 | 0x400));
+        Assert.False(FileGuards.IsSparse("x", _ => throw new IOException("nope")));
+        Assert.False(FileGuards.IsSparse(@"C:\no\such\file"));
+    }
+
+    [Fact]
     public void SkipReasonFlags()
     {
         Assert.Null(FileGuards.SkipReason("x", _ => 0x20));

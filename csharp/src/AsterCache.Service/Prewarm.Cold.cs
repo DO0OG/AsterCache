@@ -158,7 +158,7 @@ public sealed partial class Prewarmer
         }
 
         double mbps = stats.Seconds > 0 ? stats.Bytes / 1048576.0 / stats.Seconds : 0;
-        _log.Info($"{game.Name}: prewarm done ({why}, {label}): {stats.Bytes >> 20} MiB requested in {stats.Seconds:F2} s = {mbps:F0} hint MB/s, {stats.Requests} requests, {stats.Errors} errors");
+        _log.Info($"{game.Name}: prewarm done ({why}, {label}): {stats.Bytes >> 20} MiB requested in {stats.Seconds:F2} s = {mbps:F0} hint MB/s, {stats.Requests} requests, {stats.Errors} errors{stats.BufferedNote()}");
         PrewarmResult done = Record(game, warmedAt, new PrewarmResult(game.Name, true, null, stats, warmedAt) { Mode = label }, mbps);
         WarmMeasured?.Invoke(game, mbps);
         ColdWarmed?.Invoke(game, label!);

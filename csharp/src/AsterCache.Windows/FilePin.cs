@@ -14,14 +14,21 @@ public sealed class FilePin : IDisposable
     /// 매핑을 들고 있는 파일 수.
     public int Count => _maps.Count;
 
-    /// 열거나 매핑하지 못해 건너뛴 파일 수 (배타적으로 열린 파일, 크기 0, 권한 등).
+    /// 열거나 매핑하지 못해 건너뛴 파일 수 (배타적으로 열린 파일, 크기 0, 권한 등) 와 스파스 속성이라 매핑하지 않은 파일 수.
     public int Skipped { get; private set; }
 
-    public static FilePin Open(IEnumerable<string> paths)
+    /// attributes: 파일 속성 조회 (스파스 판정, 시험은 가짜로 바꿈). 스파스 파일은 섹션을 만드는 순간 그 파일의 캐시가 버려지므로 매핑하지 않습니다.
+    public static FilePin Open(IEnumerable<string> paths, Func<string, uint>? attributes = null)
     {
         var pin = new FilePin();
         foreach (string path in paths.Distinct(StringComparer.OrdinalIgnoreCase))
         {
+            if (FileGuards.IsSparse(path, attributes))
+            {
+                pin.Skipped++;
+                continue;
+            }
+
             try
             {
                 pin._maps.Add(FileMapping.Open(path));

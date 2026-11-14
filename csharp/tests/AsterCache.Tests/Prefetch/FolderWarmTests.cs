@@ -296,6 +296,23 @@ public sealed class FolderWarmTests
     }
 
     [Fact]
+    public void ReadSumsTheBytesReadBufferedFromSparseFilesIncludingWhenStoppedMidWay()
+    {
+        ReadOp[] ops = [.. Enumerable.Range(0, 4).Select(i => new ReadOp($@"C:\g{i}", 0, 40 * Mib))];
+        using var cts = new CancellationTokenSource();
+
+        (StreamStats all, _) = FolderWarm.Read(ops, CancellationToken.None, b => new StreamStats(b.Sum(o => o.Length), b.Count, 0, 0.5) { BufferedBytes = 3 * Mib });
+        (StreamStats cut, bool complete) = FolderWarm.Read(ops, cts.Token, b =>
+        {
+            cts.Cancel();
+            return new StreamStats(b.Sum(o => o.Length) / 2, b.Count, 0, 0.5, true) { BufferedBytes = 5 * Mib };
+        });
+
+        Assert.Equal(2 * 3 * Mib, all.BufferedBytes);
+        Assert.Equal((5 * Mib, false), (cut.BufferedBytes, complete));
+    }
+
+    [Fact]
     public void ReadSumsHintAcceptedAndRequestedBytesAndKeepsAborted()
     {
         ReadOp[] ops = [.. Enumerable.Range(0, 4).Select(i => new ReadOp($@"C:\g{i}", 0, 40 * Mib))];

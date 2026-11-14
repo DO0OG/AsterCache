@@ -50,6 +50,7 @@ public sealed partial class Prewarmer
         }
 
         var skipped = new List<PrewarmResult>();
+        var warmSkipped = new List<GameSettings>(); // 이미 warm 이라 건너뛴 게임 (표본 판정을 그대로 써서 곧바로 첫 사다리)
         var cold = new List<GameSettings>();
         var trimmed = new Dictionary<string, (long WarmedMib, long HotMib)>(StringComparer.OrdinalIgnoreCase);
         var candidates = new List<GameSettings>();
@@ -60,6 +61,7 @@ public sealed partial class Prewarmer
             {
                 LogSkipped(g.Name, "already warm", $"{g.Name}: prewarm skipped (already warm) [service start]");
                 skipped.Add(new PrewarmResult(g.Name, false, "already warm", null, _now()));
+                warmSkipped.Add(g);
             }
             else if (_env.ZoneBytes(g) is not null && !IsCold(g) && WillSkipReason(g, availNow) is { } why)
             {
@@ -70,6 +72,8 @@ public sealed partial class Prewarmer
                 candidates.Add(g);
             }
         }
+
+        _rewarm.LadderAfterStartSkip(warmSkipped, _auto, ct); // 서비스를 다시 시작하면 표식이 없어 첫 재예열 점검까지 새로 고침이 없던 공백을 메움
 
         // 시작 상한도 출처별 두 단계로 나눕니다: 모든 게임의 관찰분을 먼저 (입력 순서), 남은 상한을 보충분에 씁니다. 기록 없는 게임은 전부 첫 단계에서 순서대로 셉니다.
         var totalMib = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);

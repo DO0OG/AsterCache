@@ -481,7 +481,8 @@ public sealed partial class Prewarmer
         // 읽기는 이 스레드 (묶음 점검 콜백도 같은 스레드) 에서 내므로 I/O 우선순위도 여기서 바꾸고 아래 finally 에서 되돌립니다.
         var readYield = new ReadYield(_env.SetReadIoLow, PrewarmYield.StartsYielding(why, _env.UptimeMs()));
         StreamRequeue? requeue = BeginRequeue(game, readYield.Exclude); // 읽는 묶음마다 곧바로 다시 만듦 (SOLAR 가 꺼져 있으면 null: 스트림은 지금과 같음)
-        double protectedSeconds = 0; // 스트림 앞의 보호가 쓴 시간
+        double protectedSeconds = 0; // 스트림 앞과 도중의 보호가 쓴 시간
+        DateTimeOffset protectCheckedAt = default; // 스트림 도중의 보호가 마지막으로 새로 고칠 때를 본 시각
         double ExposureSeconds() => Math.Max(0, Stopwatch.GetElapsedTime(startedAt).TotalSeconds - (requeue?.Seconds ?? 0) - protectedSeconds); // 다시 만지기는 디스크 읽기가 아니므로 노출 시간에서 뺌
         try
         {
@@ -509,6 +510,7 @@ public sealed partial class Prewarmer
             RequeueTally protectedOthers = ProtectOthers(game, stop.Token, allowWhileExiting, readYield); // 디스크를 읽기 전에 (보정 읽기도 읽기): 트리거 예열은 하지 않음
             protectedSeconds = protectedOthers.ProtectedSeconds;
             _requeued += protectedOthers;
+            protectCheckedAt = _now(); // 방금 보호했으므로 도중의 판정은 그 뒤 ProtectCheckEvery 부터
             // 트리거 예열은 보정 읽기를 하지 않음 (ORBIT 결정은 이미 쌓인 장치 구간만 쓰고 이번 스트림의 표본을 요구하지 않음)
             if (!allowWhileExiting && _env.DeviceCalibration is not null && (_env.DeviceCalibrationEnabled?.Invoke() ?? true)) // 훅이 없거나 off 면 기준선과 같은 호출만 남김
             {
@@ -543,7 +545,13 @@ public sealed partial class Prewarmer
                     Progress?.Invoke(game, done >> 20, (total + (1 << 20) - 1) >> 20);
                 }
             }, maxBytes, skipBytes, () => !stop.IsCancellationRequested && !(fit?.Finished ?? false) && (lease?.IsValid ?? true), allowReorder,
-                (stage, bytes, isData) => lease?.NoteReadIssue(stage, bytes, isData), requeue is null ? null : batch => requeue.Touch(batch, stop.Token));
+                (stage, bytes, isData) => lease?.NoteReadIssue(stage, bytes, isData), requeue is null ? null : batch =>
+                {
+                    requeue.Touch(batch, stop.Token);
+                    RequeueTally midStream = ProtectBetweenBatches(game, stop.Token, allowWhileExiting, readYield, requeue.Bytes, ref protectCheckedAt); // 묶음 읽기 → 묶음 점검 → 묶음 다시 만지기 → 다른 게임 보호
+                    protectedSeconds += midStream.ProtectedSeconds;
+                    _requeued += midStream;
+                });
             // 읽은 것을 버리지 않아도 될 때만 (오류·순서 바꿈 없음) 마무리로 남기고, 아니면 기존 메모리 취소와 같게 둠. 틈을 메운 계획은 읽은 곳이 앞쪽과 같다고 보장할 수 없어도 마무리하되 호출 쪽이 보수적으로 셈 (GapBytes).
             bool clean = r.Item1.Bytes > 0 && r.Item1.Errors == 0 && !_streamer.WasPrewarmReordered(game);
             bool limited = fit is { Finished: true } && !stop.IsCancellationRequested && (lease?.IsValid ?? true);

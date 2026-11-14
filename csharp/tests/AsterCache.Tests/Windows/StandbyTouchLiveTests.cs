@@ -1,5 +1,7 @@
+using System.Runtime.InteropServices;
 using AsterCache.Core.Prefetch;
 using AsterCache.Windows;
+using Microsoft.Win32.SafeHandles;
 using Xunit;
 
 namespace AsterCache.Tests.Windows;
@@ -9,6 +11,16 @@ namespace AsterCache.Tests.Windows;
 public sealed class StandbyTouchLiveTests
 {
     private const int Mib = 1 << 20;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool DeviceIoControl(SafeFileHandle device, uint code, nint input, uint inputSize, nint output, uint outputSize, out uint returned, nint overlapped);
+
+    // FSCTL_SET_SPARSE: 시험 임시 폴더의 작은 파일에만 씀 (게임 파일의 속성은 건드리지 않음)
+    private static void MarkSparse(string path)
+    {
+        using SafeFileHandle h = File.OpenHandle(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        Assert.True(DeviceIoControl(h, 0x900C4, 0, 0, 0, 0, out _, 0));
+    }
 
     [Fact]
     public void TouchesTwoRangesOfACachedFileAndReportsTheBytesAndCompletion()
@@ -36,6 +48,24 @@ public sealed class StandbyTouchLiveTests
         Assert.Equal(TouchEnd.Completed, r.End);
         Assert.Equal(1, r.Errors);
         Assert.Equal(Mib, r.Bytes);
+    }
+
+    [Fact]
+    public void ARealSparseFileIsSkippedWithoutBeingTouchedWhileAnOrdinaryFileIsTouched()
+    {
+        using var dir = new TempDir();
+        _ = dir.WriteRandom("sparse.bin", 4 * Mib);
+        _ = dir.WriteRandom("t.bin", 2 * Mib);
+        MarkSparse(dir.Combine("sparse.bin"));
+        _ = File.ReadAllBytes(dir.Combine("t.bin"));
+
+        TouchResult r = StandbyTouch.Run([new ReadOp(dir.Combine("sparse.bin"), 0, 4 * Mib), new ReadOp(dir.Combine("t.bin"), 0, 2 * Mib)], CancellationToken.None);
+
+        Assert.True((FileGuards.FileAttributes(dir.Combine("sparse.bin")) & FileGuards.SparseAttribute) != 0);
+        Assert.Equal(TouchEnd.Completed, r.End);
+        Assert.Equal(2L * Mib, r.Bytes);
+        Assert.Equal(4L * Mib, r.SkippedBytes);
+        Assert.Equal(0, r.Errors);
     }
 
     [Fact]

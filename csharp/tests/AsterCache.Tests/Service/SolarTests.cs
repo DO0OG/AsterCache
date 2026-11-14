@@ -228,6 +228,75 @@ public sealed class SolarTests
     }
 
     [Fact]
+    public void SparseBytesNotTouchedAreAppendedToEveryLadderAndRefreshLineAndTheMissingLineKeepsTheWholeListAsN()
+    {
+        Solar solar = Make();
+        _result = _result with { SkippedBytes = 12 * Mib };
+
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        _ = solar.Refresh(Game("a"), CancellationToken.None);
+        Assert.EndsWith("MiB in 0.4 s, 12 MiB in sparse files not touched", _log.Lines.ElementAt(0));
+        Assert.EndsWith("MiB ahead), 12 MiB in sparse files not touched", _log.Lines.ElementAt(1));
+
+        _result = _result with { End = TouchEnd.Canceled };
+        _ = solar.Refresh(Game("a"), CancellationToken.None);
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        Assert.EndsWith("cache refresh stopped after 100 MiB, 12 MiB in sparse files not touched", _log.Lines.ElementAt(2));
+        Assert.EndsWith("ladder stopped after 100 MiB, 12 MiB in sparse files not touched", _log.Lines.ElementAt(3));
+
+        _result = _result with { End = TouchEnd.Completed };
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        _result = new TouchResult(6 * Mib, 0.6, 3, 0, TouchEnd.NeedsDiskReads, 37 * Mib, 12 * Mib);
+        _ = solar.Refresh(Game("a"), CancellationToken.None);
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        Assert.Equal("Info: a: cache refresh found data missing from memory after 6 of 30 MiB (3 slow pieces, 37 MiB read from disk), left to the rewarm check, 12 MiB in sparse files not touched", _log.Lines.ElementAt(5));
+        Assert.Equal("Info: a: ladder found data missing from memory after 6 of 30 MiB (3 slow pieces, 37 MiB read from disk), left to the rewarm check, 12 MiB in sparse files not touched", _log.Lines.ElementAt(6));
+    }
+
+    [Fact]
+    public void ALadderWhoseRangesAreAllInSparseFilesTouchedNothingSoItLeavesNoMarkNoMissingFlagAndLogsOnce()
+    {
+        Solar solar = Make();
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        solar.RestoreMissing("b");
+        _result = new TouchResult(0, 0.0, 0, 0, TouchEnd.Completed, 0, 30 * Mib);
+
+        Assert.Equal(TouchEnd.Completed, solar.Order(Game("b"), Reads, CancellationToken.None));
+        Assert.Equal(TouchEnd.Completed, solar.Order(Game("b"), Reads, CancellationToken.None));
+        Assert.Equal(TouchEnd.Completed, solar.Refresh(Game("a"), CancellationToken.None));
+
+        Assert.False(solar.HasMark("b"));
+        Assert.False(solar.HasMissing("b")); // 이미 서 있던 빠짐 표시도 지움
+        Assert.True(solar.HasNothingToTouch("b"));
+        Assert.Single(_log.Lines, l => l == "Info: b: ladder has nothing to touch (30 MiB in sparse files not touched)"); // 두 번 판정해도 줄은 한 번
+        Assert.False(solar.HasMark("a")); // 만진 것이 없는 새로 고침은 표식을 지워 틱마다 되풀이하지 않음
+        Assert.False(solar.HasMissing("a"));
+        Assert.EndsWith("a: cache refreshed in memory: 0 MiB in 0.0 s (0 MiB repurposed of 7900 MiB ahead), 30 MiB in sparse files not touched", _log.Lines.Last());
+    }
+
+    [Fact]
+    public void TheNothingToTouchMemoryEndsWhenALadderTouchesSomethingFindsDataMissingIsForgottenOrThePruneDropsTheGame()
+    {
+        Solar solar = Make();
+        TouchResult allSparse = new(0, 0.0, 0, 0, TouchEnd.Completed, 0, 30 * Mib);
+        string[] games = ["a", "b", "c", "d"];
+        _result = allSparse;
+        foreach (string g in games)
+        {
+            _ = solar.Order(Game(g), Reads, CancellationToken.None);
+        }
+
+        _result = new TouchResult(100 * Mib, 0.4, 0, 0, TouchEnd.Completed);
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None); // 이번에는 만짐
+        _result = new TouchResult(12 * Mib, 0.6, 3, 0, TouchEnd.NeedsDiskReads, 37 * Mib);
+        _ = solar.Order(Game("b"), Reads, CancellationToken.None); // 디스크 읽기를 만남
+        solar.Forget("c");
+        solar.Prune(new HashSet<string>(["a", "b", "c"], StringComparer.OrdinalIgnoreCase));
+
+        Assert.All(games, g => Assert.False(solar.HasNothingToTouch(g)));
+    }
+
+    [Fact]
     public void RefreshTouchesTheStoredLadderAgainAndLogsTheReuseAgainstWhatWasAhead()
     {
         Solar solar = Make();
@@ -601,6 +670,29 @@ public sealed class SolarTests
         Assert.Contains(_log.Lines, l => l.StartsWith("Info: b: prewarm done", StringComparison.Ordinal));
         Assert.Contains(_log.Lines, l => l.StartsWith("Info: c: prewarm done", StringComparison.Ordinal));
         Assert.DoesNotContain(_log.Lines, l => (l.StartsWith("Info: b:", StringComparison.Ordinal) || l.StartsWith("Info: c:", StringComparison.Ordinal)) && l.Contains("requeued", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TheDoneLineShowsTheSparseBytesTheBatchTouchesSkippedAndAllSparseBatchesLeaveNoMark()
+    {
+        _streamer.Batches.AddRange(TwoBatches());
+        _result = _result with { SkippedBytes = 20 * Mib };
+        Prewarmer mixed = MakePrewarmer(Game("a"));
+
+        Assert.True(mixed.Run(Game("a"), "service start").Ran);
+
+        Assert.Contains(_log.Lines, l => l.Contains("a: prewarm done (service start)") && l.EndsWith(", requeued 200 MiB in 0.8 s (40 MiB in sparse files not touched)", StringComparison.Ordinal));
+
+        _streamer.Batches.Clear();
+        _streamer.Batches.AddRange(TwoBatches());
+        _result = new TouchResult(0, 0.0, 0, 0, TouchEnd.Completed, 0, 50 * Mib);
+        Prewarmer allSparse = MakePrewarmer(Game("b"));
+
+        Assert.True(allSparse.Run(Game("b"), "service start").Ran);
+
+        Assert.Contains(_log.Lines, l => l.Contains("b: prewarm done (service start)") && l.EndsWith(", requeued 0 MiB in 0.0 s (100 MiB in sparse files not touched)", StringComparison.Ordinal));
+        Assert.False(allSparse.Solar.HasMark("b"));
+        Assert.False(allSparse.Solar.HasMissing("b"));
     }
 
     [Theory]
@@ -1077,6 +1169,45 @@ public sealed class SolarTests
         Assert.Single(_streamer.Calls);
         Assert.False(p.Solar.HasMissing("a"));
         Assert.True(p.Solar.HasMark("a"));
+    }
+
+    // 목록 전체가 스파스 파일이라 만질 것이 없었던 게임 하나, 첫 틱까지 지난 상태.
+    private Prewarmer AllSparseGame(out AutoSettings auto)
+    {
+        _result = new TouchResult(0, 0.0, 0, 0, TouchEnd.Completed, 0, 100 * Mib);
+        Prewarmer p = MakePrewarmer(Game("a"));
+        _ = p.Run(Game("a"), "service start");
+        Assert.True(p.Solar.HasNothingToTouch("a"));
+        Assert.False(p.Solar.HasMark("a"));
+        _touched.Clear();
+        _streamer.Calls.Clear();
+        auto = Auto();
+        p.Tick(auto);
+        return p;
+    }
+
+    [Fact]
+    public void RewarmChecksDoNotTryTheLadderAgainForAGameWhoseListIsAllSparseButANewStreamJudgesItAgain()
+    {
+        Prewarmer p = AllSparseGame(out AutoSettings auto);
+        int logBefore = _log.Lines.Count;
+
+        _now += TimeSpan.FromMinutes(10.5);
+        p.Tick(auto);
+        _now += TimeSpan.FromMinutes(10.5);
+        p.Tick(auto);
+
+        Assert.Empty(_touched); // 점검이 둘 돌아도 만지기 호출이 없고
+        Assert.Empty(_streamer.Calls);
+        Assert.DoesNotContain(_log.Lines.Skip(logBefore), l => l.Contains("ladder", StringComparison.Ordinal)); // 사다리 줄도 없음
+        Assert.Single(_log.Lines, l => l.Contains("ladder has nothing to touch", StringComparison.Ordinal)); // 처음 한 줄뿐
+
+        _result = new TouchResult(100 * Mib, 0.4, 0, 0, TouchEnd.Completed); // 파일 속성이 바뀌었다면
+        Assert.True(p.Run(Game("a"), "service start", ignoreCooldown: true).Ran);
+
+        Assert.NotEmpty(_touched); // 새 예열 스트림 뒤의 사다리는 다시 판정함
+        Assert.True(p.Solar.HasMark("a"));
+        Assert.False(p.Solar.HasNothingToTouch("a"));
     }
 
     [Fact]

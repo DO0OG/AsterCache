@@ -70,12 +70,12 @@ Windows 의 통계를 읽을 수 없으면(예: 권한이 없을 때) 3번은 �
 
 ## 켜졌는지 확인하는 법
 
-아래 줄은 `service.log` 에 남습니다. `<게임>` 은 게임 이름이고, `, N MiB read from disk` 나 `, N errors` 같은 꼬리는 0 이 아닐 때만 붙습니다.
+아래 줄은 `service.log` 에 남습니다. `<게임>` 은 게임 이름이고, `, N MiB read from disk`, `, N errors`, `, K MiB in sparse files not touched` 같은 꼬리는 0 이 아닐 때만 붙습니다.
 
-- `<게임>: ladder ordered N MiB in S s`: 예열이나 재예열 점검 뒤에 사다리를 만들었습니다.
+- `<게임>: ladder ordered N MiB in S s`: 예열이나 재예열 점검 뒤에 사다리를 만들었습니다. `<게임>: ladder has nothing to touch (K MiB in sparse files not touched)` 는 목록 전체가 스파스 파일이라 사다리를 만들지 않았다는 뜻이며, 점검마다가 아니라 그 판정이 새로 나올 때만(서비스를 다시 시작하거나 새 예열 뒤에는 다시) 남습니다.
 - `<게임>: cache refreshed in memory: N MiB in S s (R MiB repurposed of A MiB ahead)`: 새로 고쳤습니다. `R` 은 다시 쓴 양의 늘어난 값, `A` 는 앞에 있는 양입니다.
-- `<게임>: prewarm done (...) ..., requeued N MiB in S s` (`supplement prewarm done` 줄 끝에도 같음): 스트림이 읽는 도중 만진 묶음입니다. 만진 것이 없으면 붙지 않습니다. 만지기가 디스크 읽기를 보고 멈췄으면 `, requeue stopped by disk reads` 가 더 붙습니다. 보충이 창만 읽고 끝나면 `done` 대신 `supplement prewarm read the first …` 줄로 끝나며, 그 줄에도 같은 `requeued` 문구가 붙습니다.
-- `<게임>: ladder found data missing from memory after T of N MiB (K slow pieces, M MiB read from disk), left to the rewarm check`, 그리고 `cache refresh found data missing from memory after T of N MiB (...)`: 목록 일부가 캐시에 없었습니다. 사다리는 역순으로 만지므로 `T` 가 `N` 에 가까우면 빠진 것은 목록 앞쪽, 곧 가장 중요한 부분입니다.
+- `<게임>: prewarm done (...) ..., requeued N MiB in S s` (`supplement prewarm done` 줄 끝에도 같음): 스트림이 읽는 도중 만진 묶음입니다. 만진 것도 건너뛴 것도 없으면 붙지 않습니다. `requeued N MiB in S s (K MiB in sparse files not touched)` 는 묶음 가운데 스파스 파일에 있어 건너뛴 양을 보여 주며("한계와 주의" 참고), 0 이면 괄호가 없습니다. 만지기가 디스크 읽기를 보고 멈췄으면 `, requeue stopped by disk reads` 가 더 붙습니다. 보충이 창만 읽고 끝나면 `done` 대신 `supplement prewarm read the first …` 줄로 끝나며, 그 줄에도 같은 `requeued` 문구가 붙습니다.
+- `<게임>: ladder found data missing from memory after T of N MiB (K slow pieces, M MiB read from disk), left to the rewarm check`, 그리고 `cache refresh found data missing from memory after T of N MiB (...)`: 목록 일부가 캐시에 없었습니다. 사다리는 역순으로 만지므로 `T` 가 `N` 에 가까우면 빠진 것은 목록 앞쪽, 곧 가장 중요한 부분입니다. `N` 은 건너뛴 스파스 범위를 포함한 사다리 전체 길이이므로, 줄 끝에 `K MiB in sparse files not touched` 가 있으면 `T` 에 `K` 를 더한 값이 `N` 에 가까운지를 보십시오.
 - `<게임>: rewarm check: part of the list is not in memory (found by the ladder), prewarming again (cooldown ignored)`: 다음 재예열 점검이 그 게임을 다시 예열합니다. `..., waiting until N min after the last prewarm attempt` 는 주기가 지나기를 기다린다는 뜻입니다.
 - `<게임>: cache refresh skipped, the samples are cold (X/Y over Z ms), left to the rewarm check`, 또는 `the samples could not be read`, `there are no readable samples`: 새로 고치기 전에 표본 점검을 했습니다.
 - `<게임>: ladder stopped after N MiB`, `cache refresh stopped after N MiB`: 게임이 시작했거나 대여가 끝나 멈췄습니다. 표식은 남아 다시 시도합니다.
@@ -86,7 +86,8 @@ Windows 의 통계를 읽을 수 없으면(예: 권한이 없을 때) 3번은 �
 
 - **실제 플레이에서의 효과는 아직 재지 않았습니다.** 실험은 순서를 정할 수 있다는 것과, 아직 메모리에 있는 캐시를 새로 고치는 데는 디스크 읽기가 들지 않는다는 것을 보였습니다. 실행 중인 게임에서 로딩 시간이나 끊김이 얼마나 달라지는지는 보여 주지 않습니다. 식은 것으로 판정되는 재예열 점검의 비율이 줄었는지도 아직 확인하지 않았습니다.
 - **밀려나는 것을 막지는 않습니다.** 메모리가 정말 모자라면 Windows 는 이 페이지도 다시 씁니다. SOLAR 는 어느 것이 먼저 나가는지와 얼마나 빨리 되돌리는지만 바꿉니다.
-- **아주 긴 예열은 자기 앞부분을 잃을 수 있습니다.** 한 번은 Call of Duty 의 11,388 MiB 예열이 322초 걸렸고, 끝난 직후 만든 사다리가 이미 빠진 부분을 찾았습니다. 목록이 대기 목록 용량에 가까워서, 먼저 읽은 부분이 나머지를 읽는 동안 밀려난 것으로 보입니다. 다른 프로그램의 읽기도 더해졌을 수 있습니다. 또 빠진 부분만 읽는 재예열은 그 게임의 나머지 페이지를 이전 예열 때의 오래된 순서로 남기고 Windows 는 그것부터 다시 쓰므로, 사다리는 빠진 부분을 맨 끝에서 만나 멈췄고 예열이 약 20분마다 되풀이됐습니다. 읽은 묶음을 곧바로 다시 만지는 것은 이를 막으려는 것입니다. **설치본에서는 아직 확인하지 않았습니다.** 목록이 대기 목록이 담을 수 있는 양보다 크면 먼저 읽은 부분이 나머지를 읽는 동안 밀려날 수는 여전히 있고, 로그의 `after T of N MiB` 로 사다리가 어디까지 만졌는지 볼 수 있습니다.
+- **스파스 속성 파일은 다시 만지지 않습니다.** 같은 PC 한 대의 HDD 에서 시험 파일로 잰 결과입니다. 예열 읽기 직후 새 매핑(섹션)으로 만지면 일반 파일은 디스크를 읽지 않았고(47회), 스파스 속성 파일은 매번 디스크에서 다시 읽었습니다(64 MiB 에 약 1.1초). 그래서 SOLAR 는 섹션을 열기 전에 파일 속성을 조회해(메타데이터만, 한 번의 실행에서 파일마다 한 번) 스파스이면 건너뜁니다. 건너뛴 양은 로그에 `K MiB in sparse files not touched` 로 남고, 만진 양에도 오류에도 빠진 데이터에도 넣지 않습니다. 그런 파일의 데이터는 SOLAR 의 순서·유지 대상이 아니며 예열과 재예열 점검(버퍼드 읽기 표본)에만 의존합니다. 이것은 그 PC 에서 잰 것이며 Windows 가 일반적으로 그렇게 동작한다는 말은 아닙니다. SOLAR 는 속성을 읽기만 하고 파일을 바꾸지 않습니다. 한 게임의 목록 전체가 스파스 파일이면 로그에 `ladder has nothing to touch (K MiB in sparse files not touched)` 가 한 번 남고, 다음 예열 스트림이 다시 판정할 때까지 재예열 점검이 사다리를 다시 시도하지 않습니다.
+- **아주 긴 예열은 자기 앞부분을 잃을 수 있습니다.** 한 번은 Call of Duty 의 11,388 MiB 예열이 322초 걸렸고, 끝난 직후 만든 사다리가 이미 빠진 부분을 찾았습니다. 목록이 대기 목록 용량에 가까워서, 먼저 읽은 부분이 나머지를 읽는 동안 밀려났을 수 있습니다. 다른 프로그램의 읽기도 더해졌을 수 있습니다. 따로, 설치본 1.0.4-dev.7 에서 Call of Duty 의 묶음 다시 만지기가 서로 다른 스트림에서 같은 위치(3,379 MiB)에서 `requeue stopped by disk reads` 로 멈췄고 사다리도 빠진 데이터를 만나 재예열이 되풀이됐습니다. 파일 속성을 집계하니(메타데이터만, 2026-11-14) 그 게임 폴더의 `.xsub` 210개 중 78개(50.6 GiB)가 스파스 속성이었고, 사다리가 디스크 읽기 없이 끝나던 다른 게임의 폴더에는 스파스 파일이 없었습니다. 이 세 가지로 되풀이의 원인을 스파스 파일로 판단했습니다. 멈춘 위치의 파일이 스파스였는지는 확인하지 않았고, 처음 사례에서 밀려남이 얼마나였는지도 가려내지 못했습니다. 또 빠진 부분만 읽는 재예열은 그 게임의 나머지 페이지를 이전 예열 때의 오래된 순서로 남기고 Windows 는 그것부터 다시 쓰는데, 읽은 묶음을 곧바로 다시 만지는 것은 이를 막으려는 것입니다. **이 변경 뒤 되풀이가 멈추는지는 설치본에서 아직 확인하지 않았습니다.** 목록이 대기 목록이 담을 수 있는 양보다 크면 먼저 읽은 부분이 나머지를 읽는 동안 밀려날 수는 여전히 있고, 로그의 `after T of N MiB` 로 사다리가 어디까지 만졌는지 볼 수 있습니다.
 - **8곳 표본 점검은 일부만 식은 캐시를 놓칠 수 있습니다.** 사다리는 목록 전체를 보므로, 표본이 따뜻해 보여도 사다리가 빠진 부분을 찾으면 재예열로 이어집니다.
 - **이 통계는 Windows 가 문서화하지 않은 인터페이스입니다.** Windows 11 10.0.26200 에서만 확인했습니다. 읽을 수 없으면 10분 주기로 바뀝니다.
 - **밀려나는 순서는 HDD 한 대의 시험 파일로, 우선순위 5 의 페이지에서만 확인했습니다.** 페이지 우선순위를 6 이나 7 로 올리는 것은 Windows 가 거부해서(`STATUS_INVALID_PARAMETER`) 쓰지 않습니다.

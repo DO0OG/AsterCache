@@ -7,11 +7,14 @@ namespace AsterCache.Windows;
 /// 옮기면 안 되는 파일 판정. Python mover.file_attrs / skip_reason.
 public static class FileGuards
 {
+    /// FILE_ATTRIBUTE_SPARSE_FILE
+    public const uint SparseAttribute = 0x200;
+
     // 디렉터리, 오프라인, 스파스, 재해석 지점, 압축, 암호화: v1 은 옮기지 않습니다. 판정 순서는 Python dict 순서.
     // https://learn.microsoft.com/en-us/windows/win32/fileio/file-attribute-constants
     private static readonly (uint Bit, string Name)[] SkipAttrs =
     {
-        (0x10, "directory"), (0x1000, "offline"), (0x200, "sparse"), (0x400, "reparse"), (0x800, "compressed"), (0x4000, "encrypted"),
+        (0x10, "directory"), (0x1000, "offline"), (SparseAttribute, "sparse"), (0x400, "reparse"), (0x800, "compressed"), (0x4000, "encrypted"),
     };
 
     private const string UnreadablePrefix = "attrs_unreadable: ";

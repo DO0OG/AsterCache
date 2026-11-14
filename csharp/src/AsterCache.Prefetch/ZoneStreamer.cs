@@ -30,8 +30,8 @@ public sealed record StreamStats(long Bytes, long Requests, long Errors, double 
 
     public long BufferedBytes { get; init; }
 
-    /// 예열 완료 로그 줄에 붙이는 말 (스파스 파일을 버퍼드로 읽은 것이 없으면 빈 문자열).
-    public string BufferedNote() => BufferedBytes > 0 ? $", {BufferedBytes >> 20} MiB of sparse files by buffered read" : string.Empty;
+    /// 예열 완료 로그 줄에 붙이는 말 (스파스 파일을 버퍼드로 읽은 것이 MiB 로 0 이면 빈 문자열).
+    public string BufferedNote() => BufferedBytes >> 20 > 0 ? $", {BufferedBytes >> 20} MiB of sparse files by buffered read" : string.Empty;
 }
 
 /// ops 를 파일 캐시로 가져옵니다. 쓰기 없음. Python prefetch/reader.py read_ops (method read | pvm).

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using AsterCache.Core.Prefetch;
 using AsterCache.Windows;
 using Xunit;
@@ -20,7 +21,8 @@ public sealed class StandbyTouchTests : IDisposable
     public void Dispose() => _dir.Dispose();
 
     // 범위마다 하나의 뷰: 2 MiB 범위 n 개. 누계는 뷰 전후 두 번 읽히고, 두 번째 읽기에 perView 쪽을 더함 (null 이면 조회 불가).
-    private TouchResult Run(int ranges, uint? perView)
+    // viewMs: 뷰마다 가짜 시계가 돌려줄 만지는 시간 (ms) — 시간 상한이 걸린 시간으로 정해지므로 실제 시간에 기대지 않고 정확히 정함.
+    private TouchResult Run(int ranges, uint? perView, double viewMs = 0)
     {
         uint value = 1_000_000;
         int calls = 0;
@@ -38,7 +40,15 @@ public sealed class StandbyTouchTests : IDisposable
 
             return value;
         };
-        return StandbyTouch.Run([.. Enumerable.Repeat(new ReadOp(_path, 0, 2 * Mib), ranges)], CancellationToken.None, counter);
+        return StandbyTouch.Run([.. Enumerable.Repeat(new ReadOp(_path, 0, 2 * Mib), ranges)], CancellationToken.None, counter, _ => Archive, FakeClock(viewMs));
+    }
+
+    // 뷰 하나를 재는 두 번의 호출 (만지기 전, 후) 사이에 ms 가 흐르는 시계 (Stopwatch 틱).
+    private static Func<long> FakeClock(double viewMs)
+    {
+        long ticks = 0;
+        int calls = 0;
+        return () => ++calls % 2 == 0 ? ticks += (long)(Stopwatch.Frequency * viewMs / 1000.0) : ticks;
     }
 
     [Fact]
@@ -63,7 +73,7 @@ public sealed class StandbyTouchTests : IDisposable
     [Fact]
     public void ViewsReadFromDiskStopOnceMoreThan32MiBAccumulated()
     {
-        TouchResult r = Run(40, 512); // 2 MiB 뷰 전체가 디스크에서 읽힘
+        TouchResult r = Run(40, 512, 20); // 2 MiB 뷰 전체가 디스크에서 읽힘 (20 ms 동안 디스크는 5 MiB 까지 읽을 수 있음)
 
         Assert.Equal(TouchEnd.NeedsDiskReads, r.End);
         Assert.True(r.DiskBytes > StandbyTouch.DiskReadStopBytes);
@@ -73,11 +83,34 @@ public sealed class StandbyTouchTests : IDisposable
     [Fact]
     public void ViewsThatAreOnlyPartlyReadFromDiskStillAddUpAndStop()
     {
-        TouchResult r = Run(400, 256); // 뷰마다 절반만 디스크에서 읽힘: 뷰 단위 판정이면 놓치던 경우
+        TouchResult r = Run(400, 256, 20); // 뷰마다 절반만 디스크에서 읽힘: 뷰 단위 판정이면 놓치던 경우
 
         Assert.Equal(TouchEnd.NeedsDiskReads, r.End);
         Assert.True(r.DiskBytes > StandbyTouch.DiskReadStopBytes);
         Assert.True(r.Bytes < 400L * 2 * Mib);
+    }
+
+    [Fact]
+    public void ViewsTouchedInMemoryNeverAddUpToAStopEvenWhenOtherProcessesReadAHugeNumberOfPagesMeanwhile()
+    {
+        _ = _dir.WriteRandom("v.bin", 16 * Mib);
+        uint value = 1_000_000;
+        int calls = 0;
+        Func<uint?> counter = () =>
+        {
+            if (++calls % 2 == 0 && calls / 2 % 7 == 0) // 7 번째마다 한 뷰에 다른 프로세스의 몰림 (16 MiB 뷰 전체에 해당하는 쪽 수) 이 겹침
+            {
+                value += 4096 * 4;
+            }
+
+            return value;
+        };
+
+        TouchResult r = StandbyTouch.Run([.. Enumerable.Repeat(new ReadOp(_dir.Combine("v.bin"), 0, 16 * Mib), 21)], CancellationToken.None, counter, _ => Archive, FakeClock(5.0)); // 몰림 3 번, 뷰마다 메모리에서 5 ms
+
+        Assert.Equal(TouchEnd.Completed, r.End);
+        Assert.Equal(21L * 16 * Mib, r.Bytes);
+        Assert.InRange(r.DiskBytes, 4_000_000, 4_050_000); // 몰린 뷰 3 개가 5 ms 동안 디스크가 읽을 수 있는 양 (약 1.28 MiB) 씩만 셈
     }
 
     [Fact]
@@ -167,14 +200,26 @@ public sealed class StandbyTouchTests : IDisposable
     [Theory]
     [InlineData(0u, 1 << 20, 0.0, 0L)]
     [InlineData(2u, 1 << 20, 0.0, 0L)] // 허용치 이하
-    [InlineData(3u, 1 << 20, 0.0, 4096L)]
-    [InlineData(258u, 1 << 20, 0.0, 1L << 20)]
-    [InlineData(10000u, 1 << 20, 0.0, 1L << 20)] // 뷰 크기를 넘지 않음
+    [InlineData(3u, 1 << 20, 0.02, 4096L)]
+    [InlineData(300u, 1 << 20, 4.0, 1L << 20)]
+    [InlineData(10000u, 1 << 20, 4.0, 1L << 20)] // 뷰 크기를 넘지 않음
     [InlineData(2050u, 64 << 20, 1000.0, 0L)] // 1 초 동안의 허용치 2 + 2048 쪽
     [InlineData(2051u, 64 << 20, 1000.0, 4096L)]
     [InlineData(5u, 0, 0.0, 0L)]
-    public void DiskBytesAreThePagesReadBeyondTheNoiseAllowanceCappedAtTheView(uint pagesRead, long viewBytes, double ms, long expected) =>
+    [InlineData(16384u, 64 << 20, 0.0, 0L)] // 시간이 0 이면 디스크가 읽을 수 있는 양도 0
+    [InlineData(16384u, 64 << 20, 20.0, 5368709L)] // 메모리에서 20 ms: 쪽 수는 뷰 전체여도 20 ms 동안 디스크가 읽을 수 있는 양 (256 MiB/s) 까지만
+    [InlineData(20000u, 64 << 20, 250.0, 64L << 20)] // 시간 상한이 뷰 크기와 같아지는 경계
+    [InlineData(16384u, 64 << 20, 500.0, 62906368L)] // 실제로 느린 뷰: 상한 (128 MiB) 이 넉넉해 쪽 수에서 허용치를 뺀 양 그대로
+    public void DiskBytesAreThePagesReadBeyondTheNoiseAllowanceCappedAtTheViewAndAtWhatTheDiskCouldReadInThatTime(uint pagesRead, long viewBytes, double ms, long expected) =>
         Assert.Equal(expected, StandbyTouch.DiskBytesOf(pagesRead, viewBytes, ms));
+
+    [Fact]
+    public void ASlowViewThatReadItsWholeSizeFromDiskIsCountedInFullPastTheStop()
+    {
+        long one = StandbyTouch.DiskBytesOf(16384, 64L << 20, 500.0); // 64 MiB 뷰를 0.5 초 (HDD 속도) 에 만짐
+
+        Assert.True(one > StandbyTouch.DiskReadStopBytes);
+    }
 
     [Fact]
     public void ACounterThatWrapsAroundIsDifferencedAsUnsigned()
@@ -182,6 +227,6 @@ public sealed class StandbyTouchTests : IDisposable
         uint before = uint.MaxValue - 10;
         uint after = unchecked(before + 600); // 넘쳐서 작아짐
 
-        Assert.Equal(2L * Mib, StandbyTouch.DiskBytesOf(unchecked(after - before), 2 * Mib, 0));
+        Assert.Equal(2L * Mib, StandbyTouch.DiskBytesOf(unchecked(after - before), 2 * Mib, 10.0));
     }
 }

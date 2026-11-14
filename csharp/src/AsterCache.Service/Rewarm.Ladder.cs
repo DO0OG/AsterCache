@@ -11,7 +11,7 @@ namespace AsterCache.Service;
 /// 사다리를 새로 고치는 일 자체 (메모리 안에서만 만지기) 는 자동 모드·rewarm_minutes 와 무관하게 memory.standby_ladder 로만 켜고 끕니다.
 public sealed partial class Rewarmer
 {
-    private readonly object _groupLock = new(); // 묶음 새로 고침 (유지 틱) 과 스트림 앞의 보호 (스트림 스레드) 가 같은 게임을 동시에 만지지 않게, 기다리지 않고 못 잡으면 그 회는 건너뜀
+    private readonly object _groupLock = new(); // 묶음 새로 고침 (유지 틱) 과 스트림의 보호 (스트림 스레드: 앞·도중·사다리 직전) 가 같은 게임을 동시에 만지지 않게, 기다리지 않고 못 잡으면 그 회는 건너뜀
 
     /// 유지 틱: 대기 목록을 한 번 읽어 (표식이 있을 때만) 표식이 있는 게임 중 하나라도 새로 고칠 때가 됐으면 묶음 전체를 순위가 낮은 것부터 (가장 최근에 예열한 게임이 마지막) 다시 만집니다.
     public void LadderTick(AutoSettings auto, CancellationToken ct = default)
@@ -43,10 +43,10 @@ public sealed partial class Rewarmer
         !_prewarm.Games.Any(x => _prewarm.Relocating(x.Name)) && !_prewarm.RewarmAlreadyCovered(g) && ReadBlock(g, now, auto, budget, ignoreDriveLoad: true) is null && _prewarm.DiskReadAllowed(g, ct);
 
     /// order (순위가 낮은 것부터) 의 표식이 있는 게임을 차례로 새로 고치고 (표본 점검 → warm 이면 만지기), 만진 게임들의 표식을 같은 기준으로 다시 씁니다 (Solar.Regroup).
-    /// 유지 틱의 묶음 새로 고침과 스트림 앞의 보호가 같은 함수를 씁니다. 게이트에 막힌 게임은 건너뛰고 나머지는 계속하며, halted 가 참이거나 취소·재배치가 시작되면 거기서 멈춥니다.
+    /// 유지 틱의 묶음 새로 고침과 스트림의 보호 (앞·도중·사다리 직전) 네 호출부가 같은 함수를 씁니다. 게이트에 막힌 게임은 건너뛰고 나머지는 계속하며, halted 가 참이거나 취소·재배치가 시작되면 거기서 멈춥니다.
     /// aheadLess: 스트림 도중의 보호가 넘기는, 진행 중인 스트림의 몫 (Solar.Regroup 참고), 그 밖에는 0.
-    /// 돌려주는 값: 끝까지 만진 게임 수와 만진 바이트와 그 게임 이름.
-    internal (int Games, long Bytes, IReadOnlyList<string> Names) RefreshGroup(IReadOnlyList<GameSettings> order, AutoSettings auto, CancellationToken ct, Func<bool> halted, long aheadLess = 0)
+    /// 돌려주는 값: 끝까지 만진 게임 수와 만진 바이트와 그 게임들 (만진 순서, 이름과 바이트).
+    internal (int Games, long Bytes, IReadOnlyList<(string Game, long Bytes)> Touched) RefreshGroup(IReadOnlyList<GameSettings> order, AutoSettings auto, CancellationToken ct, Func<bool> halted, long aheadLess = 0)
     {
         if (!Monitor.TryEnter(_groupLock))
         {
@@ -77,7 +77,7 @@ public sealed partial class Rewarmer
             Monitor.Exit(_groupLock);
         }
 
-        return (touched.Count, touched.Sum(t => t.Bytes), [.. touched.Select(t => t.Game)]);
+        return (touched.Count, touched.Sum(t => t.Bytes), [.. touched.Select(t => (t.Game, t.Bytes))]);
     }
 
     // 새로 고치기 전에 기존 재예열 점검의 표본 (warm/cold 판정) 을 한 번 거칩니다: warm 일 때만 만집니다.

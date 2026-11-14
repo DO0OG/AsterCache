@@ -1701,8 +1701,8 @@ public sealed class SolarTests
 
     // ---- 묶음 새로 고침과 스트림 앞의 보호 ----
 
-    // a (더 오래전, 순위가 낮고 A 가 작음: 3900 MiB) 와 b (최근, A 7900 MiB) 를 예열해 둘 다 표식이 있고 4 분 넘게 지난 상태. b 는 트리거 경로로 예열해 스트림 앞의 보호가 a 를 만지지 않게 함.
-    // 재사용 누계는 1000 MiB 에서 시작: a 는 1560 MiB (0.4 x 3900) 늘면 때가 되고 b 는 3160 MiB 가 필요. c 는 예열하지 않은 세 번째 게임.
+    // a (더 오래전, 순위가 낮고 A 가 작음: b 의 트리거 사다리가 이전 표식 없이 100 MiB 를 만져 3900 에서 3800 MiB) 와 b (최근, A 7900 MiB) 를 예열해 둘 다 표식이 있고 4 분 넘게 지난 상태. b 는 트리거 경로로 예열해 스트림 앞의 보호가 a 를 만지지 않게 함.
+    // 재사용 누계는 1000 MiB 에서 시작: a 는 1520 MiB (0.4 x 3800) 늘면 때가 되고 b 는 3160 MiB 가 필요. c 는 예열하지 않은 세 번째 게임.
     private Prewarmer TwoMarkedGames()
     {
         _lists = new MemoryLists(0, 1000 * Mib, 4000 * Mib);
@@ -1721,7 +1721,7 @@ public sealed class SolarTests
     {
         Prewarmer p = TwoMarkedGames();
         _onTouch = () => _lists = new MemoryLists(0, 2600 * Mib, 9000 * Mib); // 만진 직후의 캐시 대기 바이트 C
-        GrowReuse(1000 + 1600); // a: 0.4 x 3900 = 1560 MiB 에 이름, b: 0.4 x 7900 = 3160 MiB 에는 못 미침
+        GrowReuse(1000 + 1600); // a: 0.4 x 3800 = 1520 MiB 에 이름, b: 0.4 x 7900 = 3160 MiB 에는 못 미침
         int logged = _log.Lines.Count;
 
         p.Tick(Auto());
@@ -1729,7 +1729,7 @@ public sealed class SolarTests
         Assert.Equal(2, _touched.Count);
         Assert.All(_touched, t => Assert.Equal(Reversed(Reads), t));
         string[] lines = [.. _log.Lines.Skip(logged).Where(l => l.Contains("cache refreshed in memory"))];
-        Assert.Contains("a: cache refreshed in memory: 100 MiB in 0.4 s (1600 MiB repurposed of 3900 MiB ahead)", lines[0]); // 때가 되지 않은 b 도 함께, 순위가 낮은 a 가 먼저
+        Assert.Contains("a: cache refreshed in memory: 100 MiB in 0.4 s (1600 MiB repurposed of 3800 MiB ahead)", lines[0]); // 때가 되지 않은 b 도 함께, 순위가 낮은 a 가 먼저
         Assert.Contains("b: cache refreshed in memory: 100 MiB in 0.4 s (1600 MiB repurposed of 7900 MiB ahead)", lines[1]);
         _onTouch = null;
         _lists = new MemoryLists(0, 2700 * Mib, 9000 * Mib);
@@ -1800,15 +1800,15 @@ public sealed class SolarTests
 
         Assert.True(result.Ran);
         Assert.Equal(2, touchesAtStream); // 스트림이 읽는 동안에는 a, b 를 이미 만졌음
-        Assert.Equal(3, _touched.Count); // 그리고 이 게임의 사다리
+        Assert.Equal(5, _touched.Count); // 그리고 사다리 직전의 보호 (a, b) 와 이 게임의 사다리
         Assert.All(_touched, t => Assert.Equal(Reversed(Reads), t));
         string[] lines = [.. _log.Lines.Skip(logged)];
         int a = Array.FindIndex(lines, l => l.Contains("a: cache refreshed in memory"));
         int b = Array.FindIndex(lines, l => l.Contains("b: cache refreshed in memory"));
         int done = Array.FindIndex(lines, l => l.Contains("c: prewarm done (service start)"));
         Assert.True(a >= 0 && a < b && b < done); // 순위가 낮은 a 가 먼저
-        Assert.Contains(", protected 2 games (200 MiB in ", lines[done]);
-        Assert.EndsWith(" s)", lines[done]);
+        Assert.Contains(", protected 2 games (400 MiB in ", lines[done]); // 앞과 사다리 직전, 두 번 합산 (서로 다른 게임은 2)
+        Assert.EndsWith(" s), 2 times", lines[done]);
         Assert.DoesNotContain(_log.Lines, l => l.Contains("a: prewarm done") && l.Contains("protected")); // 표식 있는 다른 게임이 없던 스트림에는 꼬리가 없음
     }
 
@@ -2172,10 +2172,10 @@ public sealed class SolarTests
         PrewarmResult result = p.Run(Game("c"), "service start");
 
         Assert.True(result.Ran);
-        Assert.Equal([3, 3, 1, 1, 3, 3, 1, 3], TouchSizes()); // 앞의 보호 (a, b) → 묶음 0, 묶음 1 (읽기 → 점검 → 다시 만지기) → 보호 (a, b) → 묶음 2 → c 의 사다리
+        Assert.Equal([3, 3, 1, 1, 3, 3, 1, 3, 3, 3], TouchSizes()); // 앞의 보호 (a, b) → 묶음 0, 묶음 1 (읽기 → 점검 → 다시 만지기) → 보호 (a, b) → 묶음 2 → 사다리 직전의 보호 (a, b) → c 의 사다리
         string done = _log.Lines.Skip(logged).Single(l => l.Contains("c: prewarm done (service start)"));
-        Assert.Contains(", protected 2 games (400 MiB in ", done); // 서로 다른 게임은 2, 양은 두 번 합산
-        Assert.EndsWith(" s), 2 times", done);
+        Assert.Contains(", protected 2 games (600 MiB in ", done); // 서로 다른 게임은 2, 양은 세 번 합산
+        Assert.EndsWith(" s), 3 times", done);
     }
 
     [Fact]
@@ -2212,7 +2212,7 @@ public sealed class SolarTests
 
         Assert.True(p.Run(Game("c"), "service start").Ran);
 
-        Assert.Equal([3, 3, 1, 1, 1, 3], TouchSizes()); // 앞의 보호만
+        Assert.Equal([3, 3, 1, 1, 1, 3, 3, 3], TouchSizes()); // 앞의 보호와 사다리 직전의 보호만 (도중에는 없음)
     }
 
     [Fact]
@@ -2581,9 +2581,62 @@ public sealed class SolarTests
         StreamWithProtectionFromAMarkedStreamGame(streamGameHasAMark: false);
 
         string[] after = [.. _log.Lines.TakeLast(2)];
-        // 보호 시점의 C = 9000, 스트림이 만진 양 = 묶음 2 개 x 100 MiB: 9000 - 200 = 8800 에서 b (마지막) 는 -100, a 는 -200. 스트림 게임에 이전 표식이 없어 끝의 사다리는 줄이지 않음
-        Assert.Contains("of 8600 MiB ahead", after[0]);
-        Assert.Contains("of 8700 MiB ahead", after[1]);
+        // 스트림 끝의 사다리 직전 보호가 a, b, c 를 만진 순서대로 한 묶음으로 다시 표식해 (실제 순서) 도중의 값을 덮음: 최종값은 9000 - 300 (a), 9000 - 200 (b)
+        Assert.Contains("of 8700 MiB ahead", after[0]);
+        Assert.Contains("of 8800 MiB ahead", after[1]);
+    }
+
+    // 도중의 보호를 받은 게임 e (다른 디스크) 가 스트림 끝에서는 게임 실행으로 막혀 건너뛰어지는 경우: 도중에 만든 표식의 A 와 끝의 줄이기를 함께 고정함.
+    // 도중의 보호 시점: C = 9000, 스트림이 만진 양 = 묶음 2 개 x 100 MiB, e 가 만진 양 100 MiB.
+    private void ProtectedMidStreamThenSkippedAtTheEnd(bool streamGameHasAMark)
+    {
+        GameSettings e = Game("e") with { OriginRoot = @"E:\Games\e" };
+        GrowReuse(1000);
+        Prewarmer p = MakePrewarmer(e, Game("c"));
+        Assert.True(p.Run(e, "service start").Ran);
+        if (streamGameHasAMark)
+        {
+            _now += TimeSpan.FromMinutes(2);
+            Assert.True(p.Run(Game("c"), "service start").Ran); // c 의 이전 표식 (100 MiB)
+        }
+
+        _now += TimeSpan.FromMinutes(2);
+        _touched.Clear();
+        ThreeSingleOpBatches();
+        _streamer.BetweenProgressAndTouch = i =>
+        {
+            if (i == 1)
+            {
+                _now += TimeSpan.FromSeconds(61);
+                _lists = new MemoryLists(0, 20000 * Mib, 9000 * Mib); // e 가 때가 됨
+            }
+
+            if (i == 2)
+            {
+                _ = _running.Add("e"); // 도중의 보호는 끝났고, 끝에서는 e 가 실행 중이라 막힘
+            }
+        };
+
+        Assert.True(p.Run(Game("c"), "rewarm", ignoreCooldown: true).Ran);
+        _ = p.Solar.Refresh(e, CancellationToken.None);
+    }
+
+    [Fact]
+    public void WhenTheStreamGameHadNoMarkAProtectedGameThatTheEndSkipsIsLoweredOnlyByTheEndLadderNotTwice()
+    {
+        ProtectedMidStreamThenSkippedAtTheEnd(streamGameHasAMark: false);
+
+        // 도중: 이전 표식이 없으면 스트림 몫을 빼지 않아 9000 - 100 (e) = 8900, 끝: 건너뛴 e 가 사다리 100 MiB 전체만큼 줄어 8800 (둘 다 빼면 8600)
+        Assert.Contains("of 8800 MiB ahead", _log.Lines.Last());
+    }
+
+    [Fact]
+    public void WhenTheStreamGameHadAMarkAProtectedGameThatTheEndSkipsIsLoweredByTheShareTheEndLadderDoesNotTakeAndThenByTheEndLadder()
+    {
+        ProtectedMidStreamThenSkippedAtTheEnd(streamGameHasAMark: true);
+
+        // 도중: 스트림 몫 200 에서 이전 표식이 만진 100 을 뺀 100 만 빼 9000 - 100 - 100 = 8800, 끝: 이전 표식이 e 의 표식보다 먼저라 min(100, 100) = 100 이 더 줄어 8700
+        Assert.Contains("of 8700 MiB ahead", _log.Lines.Last());
     }
 
     [Fact]
@@ -2592,17 +2645,266 @@ public sealed class SolarTests
         StreamWithProtectionFromAMarkedStreamGame(streamGameHasAMark: true);
 
         string[] after = [.. _log.Lines.TakeLast(2)];
-        // 이전 표식이 만진 100 MiB 는 끝의 사다리가 줄이므로 보호는 200 - 100 만 뺌: 보호 직후 8900 에서 b -100 = 8800, a -200 = 8700, 끝의 사다리가 min(100, 100) 씩 더 줄여 8700 / 8600 (이중 적용이면 8500 / 8400)
-        Assert.Contains("of 8600 MiB ahead", after[0]);
-        Assert.Contains("of 8700 MiB ahead", after[1]);
+        // 이전 표식이 있어도 같은 결과: 스트림 끝의 사다리 직전 보호가 a, b, c 를 만진 순서대로 한 묶음으로 다시 표식해 9000 - 300 (a), 9000 - 200 (b)
+        Assert.Contains("of 8700 MiB ahead", after[0]);
+        Assert.Contains("of 8800 MiB ahead", after[1]);
     }
 
     [Fact]
-    public void TheStreamShareToTakeOutIsWhatTheStreamReadMinusWhatTheEndLadderLowersAnyway()
+    public void TheStreamShareToTakeOutIsWhatTheStreamReadMinusWhatTheEndLadderLowersAnywayAndNothingWithoutAPreviousMark()
     {
-        Assert.Equal(200 * Mib, SolarPolicy.StreamAheadLess(200 * Mib, 0));
+        Assert.Equal(0, SolarPolicy.StreamAheadLess(200 * Mib, 0)); // 이전 표식이 없으면 끝의 사다리가 전체를 줄이므로 빼지 않음
         Assert.Equal(100 * Mib, SolarPolicy.StreamAheadLess(200 * Mib, 100 * Mib));
         Assert.Equal(0, SolarPolicy.StreamAheadLess(100 * Mib, 300 * Mib));
+    }
+
+    [Fact]
+    public void AGameStartOrAPreemptionWhileTheEndProtectionRunsLeavesNoLadderAndNoStoppedLadderLine()
+    {
+        Prewarmer started = TwoMarkedGames();
+        bool armed = false;
+        ThreeSingleOpBatches();
+        _streamer.BetweenProgressAndTouch = i => armed = i == 2; // 마지막 묶음 뒤 사다리 직전의 보호부터 (보호 만지기는 3 op, 묶음은 1 op)
+        _onTouch = () =>
+        {
+            if (armed && _touched[^1].Count == 3)
+            {
+                started.NoteGameStart("c");
+            }
+        };
+
+        _ = started.Run(Game("c"), "service start");
+
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("c: ladder ordered") || l.Contains("c: ladder stopped"));
+        Assert.False(started.Solar.HasMark("c"));
+
+        _onTouch = null;
+        _touched.Clear();
+        _streamer.Batches.Clear();
+        Prewarmer waiting = TwoMarkedGames();
+        int logged = _log.Lines.Count;
+        ThreeSingleOpBatches();
+        IDisposable? wait = null;
+        armed = false;
+        _streamer.BetweenProgressAndTouch = i => armed = i == 2;
+        _onTouch = () =>
+        {
+            if (armed && _touched[^1].Count == 3)
+            {
+                wait ??= waiting.BeginTriggerWait([Game("b")]);
+            }
+        };
+
+        _ = waiting.Run(Game("c"), "service start");
+        wait?.Dispose();
+
+        Assert.DoesNotContain(_log.Lines.Skip(logged), l => l.Contains("c: ladder ordered") || l.Contains("c: ladder stopped"));
+        Assert.False(waiting.Solar.HasMark("c"));
+    }
+
+    [Fact]
+    public void ASupplementThatReadItsWindowToTheEndProtectsTheOtherMarkedGamesRightBeforeItsLadder()
+    {
+        ReadOp[] all = HotSet(50);
+        (_streamer.All, _streamer.ZoneMib) = (all, 5000);
+        _avail = 7000; // 핫 집합 5000 MiB + 예비 4096 MiB 가 다 들어가지 않아 앞부분만 읽음
+        Prewarmer p = TwoMarkedGames();
+        Assert.True(p.Run(Game("c"), "service start").Ran);
+        Assert.True(p.SupplementPending("c"));
+        _touched.Clear();
+        _avail = 20000;
+        Assert.False(p.SupplementWhenIdle(Game("c"), CancellationToken.None));
+        _now += TimeSpan.FromSeconds(61);
+        int logged = _log.Lines.Count;
+
+        Assert.True(p.SupplementWhenIdle(Game("c"), CancellationToken.None));
+
+        string[] lines = [.. _log.Lines.Skip(logged)];
+        int a = Array.FindLastIndex(lines, l => l.Contains("a: cache refreshed in memory"));
+        int b = Array.FindLastIndex(lines, l => l.Contains("b: cache refreshed in memory"));
+        int ladder = Array.FindIndex(lines, l => l.Contains("c: ladder ordered"));
+        Assert.True(a >= 0 && a < b && b < ladder); // 사다리 직전의 보호 (a, b) 가 이 게임의 사다리보다 먼저
+        Assert.Contains(_log.Lines.Skip(logged), l => l.Contains("c: supplement prewarm done") && l.Contains(", protected 2 games (") && l.EndsWith(" s), 2 times"));
+    }
+
+    [Theory]
+    [InlineData(99, 300, 200, 6800)] // 이전 표식이 없으면 이번에 만진 200 MiB 전체
+    [InlineData(99, 300, 9000, 0)] // 0 미만이 되지 않음
+    [InlineData(-1, 300, 200, 6800)] // 이전 표식이 먼저면 기존 규칙 min(300, 200)
+    [InlineData(-1, 100, 200, 6900)]
+    [InlineData(1, 300, 200, 7000)] // 이전 표식이 나중이면 줄이지 않음
+    public void WithoutAPreviousMarkTheStreamEndRuleLowersWhatIsAheadByEverythingTheLadderTouched(int previousIsEarlier, long previousTouchedMib, long touchedNowMib, long expectedMib)
+    {
+        LadderMark mine = Mark(0, 7000, _now);
+        LadderMark? previous = previousIsEarlier == 99 ? null : Previous(previousTouchedMib, _now + TimeSpan.FromMinutes(previousIsEarlier));
+
+        Assert.Equal(expectedMib * Mib, SolarPolicy.AheadAfterOthersTouched(mine, [(previous, touchedNowMib * Mib)], withoutPreviousAll: true));
+    }
+
+    [Fact]
+    public void ALadderThatFollowsAProtectionRemarksTheProtectedGamesAndItselfAsOneGroupAndLowersTheRestOnlyByItsOwnTouch()
+    {
+        Solar solar = Make();
+        _ = solar.Order(Game("x"), Reads, CancellationToken.None); // 보호에서 빠질 게임, A = 7900
+        _now += TimeSpan.FromMinutes(1);
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        _now += TimeSpan.FromMinutes(1);
+        solar.Regroup([("a", 100 * Mib, null)]); // 보호가 a 를 만짐 (x 는 건너뜀)
+
+        _ = solar.Order(Game("c"), Reads, CancellationToken.None, protectedFirst: [("a", 100 * Mib)]);
+
+        _ = solar.Refresh(Game("a"), CancellationToken.None);
+        Assert.Contains("of 7800 MiB ahead", _log.Lines.Last()); // 8000 - (a 100 + c 100)
+        _ = solar.Refresh(Game("c"), CancellationToken.None);
+        Assert.Contains("of 7900 MiB ahead", _log.Lines.Last()); // 8000 - c 100
+        _ = solar.Refresh(Game("x"), CancellationToken.None);
+        Assert.Contains("of 7800 MiB ahead", _log.Lines.Last()); // 건너뛴 x: c 가 만진 100 만 (a 의 몫은 보호가 이미 반영), c 에 이전 표식이 없어도 전체
+    }
+
+    [Fact]
+    public void ALadderAfterAStreamLowersTheOthersByItsWholeTouchEvenWhenNoGameWasProtectedButAnyOtherLadderStaysTheSame()
+    {
+        Solar solar = Make();
+        _ = solar.Order(Game("x"), Reads, CancellationToken.None);
+        _ = solar.Order(Game("c"), Reads, CancellationToken.None, protectedFirst: []); // 보호를 못 한 스트림 끝의 사다리
+        _ = solar.Refresh(Game("x"), CancellationToken.None);
+        Assert.Contains("of 7800 MiB ahead", _log.Lines.Last());
+
+        Solar plain = Make();
+        _ = plain.Order(Game("x"), Reads, CancellationToken.None);
+        _ = plain.Order(Game("c"), Reads, CancellationToken.None); // 스트림 끝이 아닌 첫 사다리는 지금과 같음
+        _ = plain.Refresh(Game("x"), CancellationToken.None);
+        Assert.Contains("of 7900 MiB ahead", _log.Lines.Last());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TheEndOfAStreamProtectsTheOtherMarkedGamesRightBeforeItsLadderAndMarksThemAllAsOneGroupWhetherOrNotTheStreamGameHadAMark(bool streamGameHasAMark)
+    {
+        Prewarmer p = TwoMarkedGames();
+        if (streamGameHasAMark)
+        {
+            Assert.True(p.Run(Game("c"), "service start").Ran);
+            _now += TimeSpan.FromMinutes(2);
+        }
+
+        _touched.Clear();
+        _onTouch = () => _lists = new MemoryLists(0, 2600 * Mib, 9000 * Mib); // 만진 직후의 캐시 대기 바이트 C
+        int logged = _log.Lines.Count;
+
+        Assert.True(p.Run(Game("c"), "rewarm", ignoreCooldown: true).Ran);
+
+        Assert.Equal(5, _touched.Count); // 앞의 보호 (a, b), 사다리 직전의 보호 (a, b), c 의 사다리
+        string[] lines = [.. _log.Lines.Skip(logged)];
+        int a = Array.FindLastIndex(lines, l => l.Contains("a: cache refreshed in memory"));
+        int b = Array.FindLastIndex(lines, l => l.Contains("b: cache refreshed in memory"));
+        int ladder = Array.FindIndex(lines, l => l.Contains("c: ladder ordered"));
+        Assert.True(a >= 0 && a < b && b < ladder); // 사다리보다 먼저, 순위가 낮은 a 부터
+        _onTouch = null;
+        _ = p.Solar.Refresh(Game("a"), CancellationToken.None);
+        _ = p.Solar.Refresh(Game("b"), CancellationToken.None);
+        _ = p.Solar.Refresh(Game("c"), CancellationToken.None);
+        string[] after = [.. _log.Lines.TakeLast(3)];
+        Assert.Contains("of 8700 MiB ahead", after[0]); // C 9000 - (a, b, c 가 만진 300): 이전 표식 유무와 무관, 이중으로 줄지 않음
+        Assert.Contains("of 8800 MiB ahead", after[1]);
+        Assert.Contains("of 8900 MiB ahead", after[2]);
+    }
+
+    [Fact]
+    public void ATriggerStreamWithoutAPreviousMarkLowersWhatIsAheadOfTheOtherGamesByEverythingItsLadderTouched()
+    {
+        GrowReuse(1000);
+        Prewarmer p = MakePrewarmer(Game("a"), Game("b"));
+        Assert.True(p.Run(Game("a"), "service start").Ran); // A = 7900 MiB
+        _now += TimeSpan.FromMinutes(2);
+        _touched.Clear();
+        int touchesAtStream = -1;
+        _streamer.DuringStream = () => touchesAtStream = _touched.Count;
+
+        Assert.True(p.Run(Game("b"), "launcher", trigger: true).Ran);
+
+        Assert.Equal(0, touchesAtStream);
+        Assert.Single(_touched); // 사다리 직전의 보호도 없음
+        _ = p.Solar.Refresh(Game("a"), CancellationToken.None);
+        Assert.Contains("(0 MiB repurposed of 7800 MiB ahead)", _log.Lines.Last()); // 7900 - b 가 만진 100 전체
+    }
+
+    [Fact]
+    public async Task WhenTheProtectionCannotRunAtTheEndOfAStreamTheLadderStillLowersTheOthersByItsWholeTouch()
+    {
+        GrowReuse(1000);
+        Prewarmer p = MakePrewarmer(Game("a"), Game("c"));
+        Assert.True(p.Run(Game("a"), "service start").Ran); // A = 7900 MiB
+        _now += TimeSpan.FromMinutes(2);
+        _touched.Clear();
+        object rewarm = typeof(Prewarmer).GetField("_rewarm", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(p)!;
+        object groupLock = typeof(Rewarmer).GetField("_groupLock", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(rewarm)!;
+        using var held = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        Task holder = Task.Run(() =>
+        {
+            lock (groupLock) // 유지 틱의 묶음 새로 고침이 도는 중: 보호는 기다리지 않고 건너뜀
+            {
+                held.Set();
+                release.Wait();
+            }
+        });
+        held.Wait();
+        try
+        {
+            Assert.True(p.Run(Game("c"), "service start").Ran);
+        }
+        finally
+        {
+            release.Set();
+            await holder;
+        }
+
+        Assert.Single(_touched); // c 의 사다리만
+        _ = p.Solar.Refresh(Game("a"), CancellationToken.None);
+        Assert.Contains("of 7800 MiB ahead", _log.Lines.Last());
+    }
+
+    [Fact]
+    public void AGameThatAGateKeepsOutOfTheProtectionStillHasItsAheadLoweredByTheStreamEndLadder()
+    {
+        GameSettings e = Game("e") with { OriginRoot = @"E:\Games\e" }; // 다른 디스크
+        GrowReuse(1000);
+        Prewarmer p = MakePrewarmer(e, Game("c"));
+        Assert.True(p.Run(e, "service start").Ran); // A = 7900 MiB
+        _now += TimeSpan.FromMinutes(2);
+        _touched.Clear();
+        _ = _running.Add("e"); // e 는 실행 중: 게이트가 막음
+
+        Assert.True(p.Run(Game("c"), "service start").Ran);
+
+        Assert.Single(_touched);
+        _ = p.Solar.Refresh(e, CancellationToken.None);
+        Assert.Contains("of 7800 MiB ahead", _log.Lines.Last());
+    }
+
+    [Fact]
+    public void AStreamFinishedShortAtTheMemoryLimitProtectsTheOtherMarkedGamesBeforeItsLadderToo()
+    {
+        ReadOp[] all = HotSet(50);
+        (_streamer.All, _streamer.ZoneMib) = (all, 5000);
+        Prewarmer p = MakePrewarmer(Game("a"), Game("b"));
+        Assert.True(p.Run(Game("a"), "service start").Ran); // 끝까지 읽음
+        _now += TimeSpan.FromMinutes(2);
+        _touched.Clear();
+        _avail = 4096 + 256 + 3000;
+        _streamer.ReadMib = 1000;
+        _streamer.OnProgress = progress =>
+        {
+            _avail = 4096 + 800;
+            progress(1000 * Mib, 3000 * Mib);
+        };
+
+        Assert.True(p.Run(Game("b"), "service start").Ran);
+
+        Assert.Equal((1000L, 5000L), p.PartialInfo("b"));
+        Assert.Equal([50, 50, 10], [.. _touched.Select(t => t.Count)]); // 앞의 보호 (a), 사다리 직전의 보호 (a), 읽은 앞 1000 MiB 의 사다리
     }
 
     [Fact]

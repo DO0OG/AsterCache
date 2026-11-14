@@ -568,7 +568,7 @@ public sealed partial class Prewarmer
             if (r.Item1.Bytes > 0 && (complete || (shortFinish && partial && r.Item1.GapBytes == 0 && windowMib > 0)))
             {
                 // 같은 디스크 대여 안에서: 게임 시작·대여 취소가 stop 으로 바로 멈춤. 한도로 마무리한 스트림은 창 읽기·이어 읽기 (partial: 틈 메우기 예산 0, 스트림이 읽은 목록 = 같은 창으로 계획한 목록) 일 때만 읽은 창의 앞부분을 만짐: 예산이 있는 계획으로 읽은 전체 경로는 목록이 달라질 수 있어 건너뜀
-                LadderAfterStream(game, stop.Token, complete ? null : () => WindowLadderReads(game, windowMib, skipBytes + r.Item1.Bytes));
+                LadderAfterStream(game, stop.Token, allowWhileExiting, readYield, complete ? null : () => WindowLadderReads(game, windowMib, skipBytes + r.Item1.Bytes));
             }
 
             return shortFinish ? (r.Item1, true, fit!.Reason, true) : (r.Item1, complete, cancelDetail.First, cancelDetail.Memory);

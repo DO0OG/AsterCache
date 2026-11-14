@@ -81,7 +81,9 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
 
     /// 읽은 목록을 예열 순서의 역순으로 만지고 표식을 남깁니다 (예열 직후, 표식 없는 게임의 첫 사다리). 꺼져 있거나 만질 것이 없으면 null.
     /// made: 표식을 남겼을 때 만진 바이트를 알림 (서비스 시작 직후 여러 게임의 사다리가 Regroup 에 넘길 값).
-    public TouchEnd? Order(GameSettings game, IReadOnlyList<ReadOp> reads, CancellationToken ct, Action<long>? made = null)
+    /// protectedFirst: null 이면 스트림 끝의 사다리가 아님 (기존 규칙). 비어 있으면 스트림 끝의 사다리인데 직전에 보호한 게임이 없음: 이전 표식이 없는 게임이 만진 전체를 다른 게임의 앞에 있는 양에서 줄임.
+    /// 비어 있지 않으면 스트림 끝이고 직전에 보호로 만진 다른 게임 (만진 순서, 바이트): 이 게임과 함께 한 묶음으로 다시 표식합니다.
+    public TouchEnd? Order(GameSettings game, IReadOnlyList<ReadOp> reads, CancellationToken ct, Action<long>? made = null, IReadOnlyList<(string Game, long Bytes)>? protectedFirst = null)
     {
         if (!Enabled)
         {
@@ -113,7 +115,16 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
                 LadderMark? previous = MarkOf(game.Name); // SetMark 가 덮어쓰기 전의 표식
                 SetMark(game.Name, ladder, r);
                 made?.Invoke(r.Bytes);
-                ReduceOthers([game.Name], [(previous, r.Bytes)]); // 이 게임이 만진 페이지가 다른 게임의 뒤로 감
+                if (protectedFirst is { Count: > 0 })
+                {
+                    // 보호한 게임들은 이미 만진 만큼 다른 표식에서 줄였으므로 (alreadyReduced) 이 게임의 몫만 더 줄임. 만진 순서 그대로 한 묶음으로 A 를 실제 순서에 맞게 다시 계산
+                    Regroup([.. protectedFirst.Select(p => (p.Game, p.Bytes, (LadderMark?)null)), (game.Name, r.Bytes, previous)], alreadyReduced: protectedFirst.Count, reduceWithoutPrevious: true);
+                }
+                else
+                {
+                    ReduceOthers([game.Name], [(previous, r.Bytes)], protectedFirst is not null); // 이 게임이 만진 페이지가 다른 게임의 뒤로 감
+                }
+
                 log.Info($"{game.Name}: ladder ordered {r.Bytes >> 20} MiB in {r.Seconds:F1} s{Errors(r)}{Sparse(r)}");
                 break;
             case TouchEnd.Canceled:
@@ -213,7 +224,8 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
     /// 묶음을 만진 순서대로 (touched: 게임, 만진 바이트, 만지기 전의 표식, 가장 오래된 것이 먼저) 표식을 같은 기준 시점 (재사용 누계·대기 바이트) 으로 다시 쓰고,
     /// 이번에 만지지 않은 표식은 앞에 있는 양을 SolarPolicy.AheadAfterOthersTouched 로 줄입니다. 대기 목록을 못 읽으면 표식은 그대로 두고 (시간 기준) 줄이기만 합니다.
     /// aheadLess: 진행 중인 스트림이 이미 읽은 양 중 끝의 사다리가 줄여 주지 않을 몫 (스트림 도중의 보호), 캐시 대기 바이트에서 빼고 계산합니다.
-    public void Regroup(IReadOnlyList<(string Game, long Bytes, LadderMark? Previous)> touched, long aheadLess = 0)
+    /// alreadyReduced: touched 의 앞 몇 개는 이미 다른 표식에서 줄였음 (스트림 끝의 묶음: 보호가 먼저 줄임). reduceWithoutPrevious: SolarPolicy.AheadAfterOthersTouched 의 withoutPreviousAll.
+    public void Regroup(IReadOnlyList<(string Game, long Bytes, LadderMark? Previous)> touched, long aheadLess = 0, int alreadyReduced = 0, bool reduceWithoutPrevious = false)
     {
         if (touched.Count == 0)
         {
@@ -233,7 +245,7 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
                 }
             }
 
-            ReduceOthersLocked([.. touched.Select(t => t.Game)], [.. touched.Select(t => (t.Previous, t.Bytes))]);
+            ReduceOthersLocked([.. touched.Select(t => t.Game)], [.. touched.Skip(alreadyReduced).Select(t => (t.Previous, t.Bytes))], reduceWithoutPrevious);
             _groupAt = at;
         }
     }
@@ -264,20 +276,20 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
     }
 
     // except 가 아닌 표식의 A 를 줄입니다 (touched: 그 게임들이 만지기 전의 표식과 만진 바이트).
-    private void ReduceOthers(IEnumerable<string> except, IReadOnlyList<(LadderMark? Previous, long Bytes)> touched)
+    private void ReduceOthers(IEnumerable<string> except, IReadOnlyList<(LadderMark? Previous, long Bytes)> touched, bool withoutPreviousAll = false)
     {
         lock (_lock)
         {
-            ReduceOthersLocked(except, touched);
+            ReduceOthersLocked(except, touched, withoutPreviousAll);
         }
     }
 
-    private void ReduceOthersLocked(IEnumerable<string> except, IReadOnlyList<(LadderMark? Previous, long Bytes)> touched)
+    private void ReduceOthersLocked(IEnumerable<string> except, IReadOnlyList<(LadderMark? Previous, long Bytes)> touched, bool withoutPreviousAll = false)
     {
         HashSet<string> skip = new(except, StringComparer.OrdinalIgnoreCase);
         foreach ((string game, LadderMark mark) in _marks.Where(m => !skip.Contains(m.Key)).Select(m => (m.Key, m.Value)).ToList())
         {
-            _marks[game] = mark with { AheadBytes = SolarPolicy.AheadAfterOthersTouched(mark, touched.Select(t => (t.Previous, t.Bytes))) };
+            _marks[game] = mark with { AheadBytes = SolarPolicy.AheadAfterOthersTouched(mark, touched.Select(t => (t.Previous, t.Bytes)), withoutPreviousAll) };
         }
     }
 

@@ -40,6 +40,10 @@ public static unsafe class StandbyTouch
     /// 디스크에서 읽힌 것으로 본 양이 이 값을 넘으면 멈춥니다.
     public const long DiskReadStopBytes = 32L << 20;
 
+    /// 뷰를 만지는 데 걸린 시간 동안 디스크가 읽을 수 있다고 보는 양 (초당): 256 MiB/s. 이 서비스가 예열하는 대상은 HDD 의 게임이라 연속 읽기의 넉넉한 상한이고, 더 빠른 장치에서는 실제 읽기가 덜 세어질 뿐 읽기 자체가 빨라 해가 작습니다.
+    // 페이지 읽기 누계는 시스템 전체 값이라 다른 프로세스의 몰림 (같은 PC 에서 0.25 초에 3만~8만 쪽) 이 뷰를 만지는 순간과 겹치면 뷰 전체가 디스크 읽기로 보이기 때문에, 메모리에서 20 ms 에 끝난 뷰는 이 상한으로 몇 MiB 까지만 셉니다.
+    public const long MaxDiskBytesPerSecond = 256L << 20;
+
     /// 페이지 읽기 누계를 읽을 수 없을 때만 쓰는 뷰 단위 시간 기준: 64 MiB 당 이 시간 (ms) 에 비례한 시간을 넘으면 그 뷰는 디스크에서 읽힌 것으로 봅니다 (캐시는 64 MiB 에 약 30 ms, HDD 는 250 ms 이상).
     public const double ViewSlowMsPer64Mib = 256.0;
 
@@ -69,15 +73,17 @@ public static unsafe class StandbyTouch
         public long Skipped;
         public required Func<uint?> PageReads;
         public required Func<string, uint> Attributes;
+        public required Func<long> Timestamp;
         public readonly Dictionary<string, bool> Sparse = new(StringComparer.OrdinalIgnoreCase); // 이 Run 에서 이미 속성을 본 파일
         public TouchEnd End = TouchEnd.Completed;
     }
 
-    /// 뷰를 ms 동안 만지는 사이 늘어난 페이지 읽기 수 (부호 없는 뺄셈 결과) 가운데 디스크에서 읽힌 것으로 볼 바이트: 잡음 허용치를 빼고 뷰 크기를 넘지 않게.
+    /// 뷰를 ms 동안 만지는 사이 늘어난 페이지 읽기 수 (부호 없는 뺄셈 결과) 가운데 디스크에서 읽힌 것으로 볼 바이트: 잡음 허용치를 빼고 뷰 크기와 그 시간 동안 디스크가 읽을 수 있는 양 (MaxDiskBytesPerSecond) 을 넘지 않게.
     public static long DiskBytesOf(uint pagesRead, long viewBytes, double ms)
     {
         long allowed = NoisePages + (long)(NoisePagesPerSecond * ms / 1000.0);
-        return Math.Clamp((pagesRead - allowed) * 4096L, 0, Math.Max(0, viewBytes));
+        long bytes = Math.Clamp((pagesRead - allowed) * 4096L, 0, Math.Max(0, viewBytes));
+        return Math.Min(bytes, (long)(MaxDiskBytesPerSecond * ms / 1000.0));
     }
 
     /// 페이지 읽기 누계가 없을 때: 뷰를 만지는 데 걸린 시간이 바이트에 비례한 기준 (하한 MinSlowMs) 을 넘었는가.
@@ -90,10 +96,11 @@ public static unsafe class StandbyTouch
     public static TouchResult Run(IReadOnlyList<ReadOp> ranges, CancellationToken ct, Func<uint?> pageReads) => Run(ranges, ct, pageReads, FileGuards.FileAttributes);
 
     /// attributes: 파일 속성 조회 (예외를 던지면 스파스로 보지 않고 열기를 시도함, 시험은 가짜로 바꿈).
-    public static TouchResult Run(IReadOnlyList<ReadOp> ranges, CancellationToken ct, Func<uint?> pageReads, Func<string, uint> attributes)
+    /// timestamp: 뷰를 만지는 데 걸린 시간을 재는 시계 (Stopwatch 틱, 기본은 Stopwatch.GetTimestamp, 시험은 가짜로 바꿈).
+    public static TouchResult Run(IReadOnlyList<ReadOp> ranges, CancellationToken ct, Func<uint?> pageReads, Func<string, uint> attributes, Func<long>? timestamp = null)
     {
         long started = Stopwatch.GetTimestamp();
-        var tally = new Tally { PageReads = pageReads, Attributes = attributes };
+        var tally = new Tally { PageReads = pageReads, Attributes = attributes, Timestamp = timestamp ?? Stopwatch.GetTimestamp };
         var sections = new Dictionary<string, Section?>(StringComparer.OrdinalIgnoreCase);
         byte* buffer = (byte*)NativeMemory.Alloc(PieceBytes);
         try
@@ -170,7 +177,7 @@ public static unsafe class StandbyTouch
             try
             {
                 uint? before = tally.PageReads();
-                long t0 = Stopwatch.GetTimestamp();
+                long t0 = tally.Timestamp();
                 if (!TouchView(view, aligned, pos, viewEnd, buffer, tally, ct))
                 {
                     return;
@@ -178,7 +185,7 @@ public static unsafe class StandbyTouch
 
                 if (tally.End == TouchEnd.Completed)
                 {
-                    NoteDiskReads(tally, before, tally.PageReads(), viewEnd - pos, Stopwatch.GetElapsedTime(t0).TotalMilliseconds);
+                    NoteDiskReads(tally, before, tally.PageReads(), viewEnd - pos, Stopwatch.GetElapsedTime(t0, tally.Timestamp()).TotalMilliseconds);
                 }
             }
             finally

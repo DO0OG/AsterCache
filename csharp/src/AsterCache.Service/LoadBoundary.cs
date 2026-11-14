@@ -58,7 +58,8 @@ public static class LoadBoundaryWatch
     {
         now ??= () => DateTimeOffset.UtcNow;
         sleep ??= d => ct.WaitHandle.WaitOne(d);
-        probeWithStop ??= probe is null ? (s, stop) => CacheProbe.Probe(s, SlowMs, stop) : (s, _) => probe(s);
+        // 4 KiB 표본은 1 쪽만 늘어도 되어 페이지 읽기 조건이 거르는 힘이 없으므로 시간만으로 판정
+        probeWithStop ??= probe is null ? (s, stop) => CacheProbe.Probe(s, SlowMs, stop, pageReads: () => null) : (s, _) => probe(s);
         if ((boundary ?? LoadTiers.For)(game) is not { Tier0.Count: > 0 } b)
         {
             return null;

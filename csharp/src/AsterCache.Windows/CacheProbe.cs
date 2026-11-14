@@ -22,6 +22,10 @@ public static class CacheProbe
     /// 느린 표본이 이만큼 (표본 8 곳 중) 이상이면 캐시에서 빠진 것으로 봅니다: 한두 곳의 일시적 지연으로 다시 예열하지 않게.
     public const int ColdSlowSamples = 2;
 
+    /// 느린 표본으로 세려면 읽는 동안 시스템의 페이지 읽기 누계도 읽은 쪽 수의 1/4 (하한 16 쪽, 표본이 더 작으면 그 쪽 수) 이상 늘어야 합니다:
+    /// 1 MiB 가 디스크에서 읽히면 256 쪽이 늘고, 다른 프로세스의 평소 읽기는 초당 수백 쪽이라 0.8 ms 안팎에는 수십 쪽을 넘기 어려움 (드문 몰림과 겹치는 오판은 남음). 다른 작업이 CPU 를 쓸 때 읽는 스레드가 밀려 캐시 적중이 느려 보이는 것을 거름.
+    public const int MinGrownPages = 16;
+
     /// 접근 순서 앞쪽 (게임 시작에 먼저 필요한 부분) 에서 고정으로 고르는 표본 수와, 나머지에서 고르게 고르는 표본 수.
     public const int HeadSamples = 4;
     public const int SpreadSamples = 4;
@@ -54,10 +58,18 @@ public static class CacheProbe
     /// key (게임 이름) 별 점검 회차 번호 (0 부터): PickSamples 의 round 로 넘겨 점검마다 다른 위치를 읽게 합니다.
     public static int NextRound(string key) => Rounds.AddOrUpdate(key, 0, (_, n) => n + 1);
 
-    /// 표본마다 읽어 걸린 시간 (ms) 을 재고 slowMs 를 넘으면 느린 것으로 판정합니다 (기본은 1 MiB 용 기준). 열 수 없거나 읽을 것이 없는 표본은 뺍니다. 모두 빠지면 null.
-    /// ct 가 취소되면 표본 사이에서 멈추고 null (부분 결과로 판정하지 않음).
-    public static ProbeResult? Probe(IReadOnlyList<(string Path, long Offset, int Bytes)> samples, double slowMs = ColdThresholdMs, CancellationToken ct = default, Func<bool>? canIssue = null)
+    /// 읽은 바이트 수에 걸맞게 페이지 읽기가 늘었다고 볼 최소 쪽 수.
+    public static long PagesNeeded(int bytes)
     {
+        long pages = (bytes + 4095L) / 4096;
+        return Math.Max(pages / 4, Math.Min(MinGrownPages, pages));
+    }
+
+    /// 표본마다 읽어 걸린 시간 (ms) 을 재고 slowMs 를 넘고 그동안 pageReads (시스템의 페이지 읽기 누계, 기본은 실제 조회) 도 PagesNeeded 이상 늘었으면 느린 것으로 판정합니다 (기본은 1 MiB 용 기준). 누계를 읽을 수 없으면 (null) 시간만으로 봅니다. 열 수 없거나 읽을 것이 없는 표본은 뺍니다. 모두 빠지면 null.
+    /// ct 가 취소되면 표본 사이에서 멈추고 null (부분 결과로 판정하지 않음).
+    public static ProbeResult? Probe(IReadOnlyList<(string Path, long Offset, int Bytes)> samples, double slowMs = ColdThresholdMs, CancellationToken ct = default, Func<bool>? canIssue = null, Func<uint?>? pageReads = null)
+    {
+        pageReads ??= SystemPageReads.Query;
         byte[] buf = new byte[SampleBytes];
         double total = 0;
         int ok = 0;
@@ -73,15 +85,17 @@ public static class CacheProbe
             {
                 using var f = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.None);
                 f.Seek(offset, SeekOrigin.Begin);
+                uint? before = pageReads();
                 var watch = Stopwatch.StartNew();
                 int got = f.Read(buf, 0, bytes);
                 watch.Stop();
+                uint? after = pageReads();
                 if (got > 0)
                 {
                     double ms = watch.Elapsed.TotalMilliseconds;
                     total += ms;
                     ok++;
-                    slow += ms > slowMs ? 1 : 0;
+                    slow += ms > slowMs && (before is not { } b || after is not { } a || unchecked(a - b) >= PagesNeeded(got)) ? 1 : 0;
                 }
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)

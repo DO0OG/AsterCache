@@ -204,8 +204,8 @@ public sealed class LoadBoundaryWatchTests : IDisposable
         var samples = new List<(string, long, int)> { (file, 0, LoadBoundaryWatch.SampleBytes) };
 
         Assert.Equal(0.5, LoadBoundaryWatch.SlowMs);
-        Assert.Equal(1, CacheProbe.Probe(samples, -1)!.Slow); // 기준보다 느리면 느림
-        Assert.Equal(0, CacheProbe.Probe(samples, 1e9)!.Slow);
+        Assert.Equal(1, CacheProbe.Probe(samples, -1, pageReads: () => null)!.Slow); // 기준보다 느리면 느림 (경계 감시는 시간만 봄)
+        Assert.Equal(0, CacheProbe.Probe(samples, 1e9, pageReads: () => null)!.Slow);
     }
 
     [Fact]

@@ -17,6 +17,8 @@ public sealed partial class Prewarmer
 
     private RequeueTally _requeued; // 핫 집합 스트림이 읽는 묶음을 다시 만든 양 (Run·보충이 예열 한 회 동안 모아 done 줄에 씀), _run 아래에서만 씀
 
+    private readonly HashSet<string> _protectedNames = new(StringComparer.OrdinalIgnoreCase); // 이번 예열 한 회에서 보호한 다른 게임 (done 줄의 서로 다른 게임 수), 첫 보호 때 비움, _run 아래에서만 씀
+
     // 핫 집합 스트림 한 번이 읽는 묶음마다 그 범위를 곧바로 다시 만지는 도우미 (StreamHot 이 만듦). 꺼져 있거나 keep_stream_on_game_start (게임이 떠도 스트림이 계속 읽음, 만지기도 디스크 읽기가 될 수 있음) 면 null.
     // 만지기는 스트림과 같은 스레드·같은 대여·같은 중지 토큰 아래에서만 돌고, 게임 시작·트리거 선점 표시가 서면 건너뜁니다 (묶음 점검이 그 사유로 스트림을 멈추기 전의 틈도 막음).
     private StreamRequeue? BeginRequeue(GameSettings game, Action<double>? onTouched = null) =>
@@ -48,25 +50,45 @@ public sealed partial class Prewarmer
     // 그러면 이 스트림이 새로 읽는 페이지는 다른 게임이 아니라 캐시 (와 이 게임 자신의 오래된 페이지) 부터 밀어냅니다. 표본 점검과 게이트는 새로 고침과 같습니다.
     // 트리거 예열 (allowWhileExiting) 은 게임 시작이 임박한 경로라 늦추지 않으려고 하지 않고, 스트림이 끝난 뒤 사다리가 다른 게임의 A 만 줄입니다 (Solar.Order).
     // 만지는 데 쓴 시간은 스트림의 노출 시간·양보 시간에서 빼도록 돌려줍니다. 실패·취소돼도 스트림 결과는 같습니다.
-    private RequeueTally ProtectOthers(GameSettings game, CancellationToken stop, bool trigger, ReadYield readYield)
+    private RequeueTally ProtectOthers(GameSettings game, CancellationToken stop, bool trigger, ReadYield readYield) =>
+        trigger || !CanProtectOthers(game, stop) ? default : TouchOthers(game, stop, readYield, () => _solar.Marked(OtherGames(game)));
+
+    // 핫 집합 스트림이 도는 동안 묶음 사이 (StreamHot 의 묶음 다시 만지기 직후): 표식이 있는 다른 게임이 새로 고칠 때가 됐으면 (유지 틱과 같은 판정 Rewarmer.DueGroup) 스트림 앞의 보호와 같은 함수로 다시 만집니다.
+    // 판정에는 대기 목록 통계 조회가 한 번 들므로 직전 판정 뒤 SolarPolicy.ProtectCheckEvery 가 지났을 때만 봅니다 (checkedAt). 조건과 계약 (같은 스레드·대여·중지 토큰, 실패가 결과를 바꾸지 않음) 은 스트림 앞의 보호와 같습니다.
+    // streamBytes: 이 스트림이 그때까지 만진 양 (공통 블록·건너뛴 앞부분·묶음): 새 표식의 앞에 있는 양에서 끝의 사다리가 줄여 주지 않을 만큼을 뺍니다.
+    private RequeueTally ProtectBetweenBatches(GameSettings game, CancellationToken stop, bool trigger, ReadYield readYield, long streamBytes, ref DateTimeOffset checkedAt)
     {
-        bool Halted() => _streamGameStarted || _streamPreempted || PreemptedByTriggerWait(game.Name);
-        if (trigger || !_solar.Enabled || _auto.KeepStreamOnGameStart || stop.IsCancellationRequested || Halted())
+        DateTimeOffset now = _now();
+        if (trigger || !CanProtectOthers(game, stop) || (now >= checkedAt && now - checkedAt < SolarPolicy.ProtectCheckEvery))
         {
             return default;
         }
 
-        IReadOnlyList<GameSettings> others = _solar.Marked(Enumerable.Reverse(Warmed()).Where(g => !string.Equals(g.Name, game.Name, StringComparison.OrdinalIgnoreCase))); // Warmed 는 최근 순
-        if (others.Count == 0)
-        {
-            return default;
-        }
+        checkedAt = now;
+        return TouchOthers(game, stop, readYield, () => _rewarm.DueGroup(OtherGames(game), _auto, stop), SolarPolicy.StreamAheadLess(streamBytes, _solar.PriorTouchedBytes(game.Name)));
+    }
 
+    // 보호할 수 있는 상태인가: SOLAR 가 켜져 있고, 게임이 떠도 스트림이 계속 읽는 설정이 아니고, 스트림이 멈추지 않았고, 게임 시작·트리거 선점 표시가 서 있지 않음.
+    private bool CanProtectOthers(GameSettings game, CancellationToken stop) => _solar.Enabled && !_auto.KeepStreamOnGameStart && !stop.IsCancellationRequested && !ProtectionHalted(game);
+
+    private bool ProtectionHalted(GameSettings game) => _streamGameStarted || _streamPreempted || PreemptedByTriggerWait(game.Name);
+
+    // 스트림의 게임을 뺀 예열한 게임, 순위가 낮은 것부터 (Warmed 는 최근 순).
+    private IEnumerable<GameSettings> OtherGames(GameSettings game) => Enumerable.Reverse(Warmed()).Where(g => !string.Equals(g.Name, game.Name, StringComparison.OrdinalIgnoreCase));
+
+    // pick 이 고른 다른 게임들을 만지고 (Rewarmer.RefreshGroup) 쓴 시간을 스트림의 양보 시간에서 빼도록 알립니다. 고른 게임이 없으면 아무것도 하지 않습니다.
+    private RequeueTally TouchOthers(GameSettings game, CancellationToken stop, ReadYield readYield, Func<IReadOnlyList<GameSettings>> pick, long aheadLess = 0)
+    {
         long startedAt = Stopwatch.GetTimestamp();
-        (int Games, long Bytes) touched = (0, 0);
+        (int Games, long Bytes, IReadOnlyList<string> Names) touched = (0, 0, []);
         try
         {
-            touched = _rewarm.RefreshGroup(others, _auto, stop, Halted);
+            if (pick() is not { Count: > 0 } others)
+            {
+                return default;
+            }
+
+            touched = _rewarm.RefreshGroup(others, _auto, stop, () => ProtectionHalted(game), aheadLess);
         }
         catch (OperationCanceledException)
         {
@@ -79,7 +101,12 @@ public sealed partial class Prewarmer
 
         double seconds = Stopwatch.GetElapsedTime(startedAt).TotalSeconds;
         readYield.Exclude(seconds);
-        return new RequeueTally(0, 0, false, 0, touched.Games, touched.Bytes, seconds);
+        if (_requeued.ProtectedTimes == 0)
+        {
+            _protectedNames.Clear(); // 이번 예열 한 회의 첫 보호
+        }
+
+        return new RequeueTally(0, 0, false, 0, touched.Names.Count(_protectedNames.Add), touched.Bytes, seconds, touched.Games > 0 ? 1 : 0);
     }
 
     // 핫 집합 스트림이 끝까지 읽은 직후 (StreamHot, 디스크 대여 안): 그 게임이 지금까지 캐시에 올린 전체의 역순으로 캐시를 만져 중요한 것이 마지막에 밀려나게 합니다.

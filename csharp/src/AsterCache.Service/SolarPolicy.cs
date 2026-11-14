@@ -25,6 +25,9 @@ internal static class SolarPolicy
     /// 묶음 새로 고침은 직전 묶음 새로 고침 뒤 이 시간 안에는 다시 하지 않습니다 (몰림이 30초 단위라 틱마다 되풀이하지 않게).
     public static readonly TimeSpan GroupEvery = TimeSpan.FromSeconds(60);
 
+    /// 스트림이 도는 동안 다른 게임의 새로 고칠 때를 보는 간격: 판정마다 대기 목록 통계를 한 번 읽으므로 묶음마다 (약 1초) 보지 않습니다.
+    public static readonly TimeSpan ProtectCheckEvery = TimeSpan.FromSeconds(10);
+
     /// 대기 목록을 읽을 수 없을 때 (권한 없음 등) 시간으로 대신하는 주기.
     public static readonly TimeSpan FallbackEvery = TimeSpan.FromMinutes(10);
 
@@ -36,6 +39,10 @@ internal static class SolarPolicy
     /// 묶음 새로 고침·스트림 뒤 사다리·스트림 앞의 보호가 같은 규칙을 씁니다 (묶음에서 새 표식을 받는 게임은 GroupAhead 로 다시 계산하므로 대상이 아님).
     public static long AheadAfterOthersTouched(LadderMark mine, IEnumerable<(LadderMark? Previous, long TouchedBytes)> others) =>
         Ahead(mine.AheadBytes, others.Sum(o => o.Previous is { } previous && previous.At < mine.At ? Math.Min(previous.TouchedBytes, o.TouchedBytes) : 0));
+
+    /// 스트림 도중의 보호가 새 표식의 A 를 계산할 때 캐시 대기 바이트에서 뺄 양: 스트림이 그때까지 읽은 양은 끝의 사다리에서 다시 만져져 보호한 게임들의 뒤로 가지만,
+    /// 끝의 사다리는 스트림 게임의 이전 표식이 있을 때만 min(이전 표식이 만진 양, 이번 양) 을 줄이므로 (AheadAfterOthersTouched) 그 몫을 빼 이중으로 줄지 않게 합니다.
+    public static long StreamAheadLess(long streamReadBytes, long priorTouchedBytes) => Math.Max(0, streamReadBytes - priorTouchedBytes);
 
     /// 묶음을 만진 순서 (가장 오래된 것이 먼저) 대로 각 게임의 앞에 있는 양: g_i 의 A = max(0, C - (g_i 와 그 뒤에 만진 게임들이 만진 합)), C 는 만진 직후 캐시 대기 바이트.
     public static long[] GroupAhead(long cacheStandbyBytes, IReadOnlyList<long> touchedBytes)
@@ -54,6 +61,10 @@ internal static class SolarPolicy
     /// 사다리를 만든 뒤의 캐시 재사용 누계 증가분 (표식이나 지금 값이 없으면 null).
     public static long? Repurposed(LadderMark mark, MemoryLists? lists) =>
         lists is { } l && mark.RepurposedBytes is { } baseline ? Math.Max(0, l.CacheRepurposedBytes - baseline) : null;
+
+    /// 표식이 있던 게임이 식었다고 볼 때 로그 줄 끝에 붙이는 말: 사다리를 만든 뒤 지난 분과 (재사용 누계를 알면) 그동안의 재사용 양과 지금 앞에 있는 양.
+    public static string SinceLadder(DateTimeOffset at, DateTimeOffset now, long? repurposedBytes, long aheadBytes) =>
+        $", since the ladder {Math.Max(0, (long)(now - at).TotalMinutes)} min ago{(repurposedBytes is { } grown ? $": {grown >> 20} MiB repurposed of {aheadBytes >> 20} MiB ahead" : string.Empty)}";
 
     /// 지금 새로 고칠 때인가: 증가분이 max(하한, 0.4 x A) 이상이거나 남은 여유 (A - 증가분) 가 MinHeadroomBytes 미만이면 예.
     /// 남은 여유 기준은 표식을 만들 때 A 가 2 x MinHeadroomBytes 이상이었던 게임에만: 캐시가 원래 작은 게임은 만질 때마다 곧바로 다시 때가 되기 때문.

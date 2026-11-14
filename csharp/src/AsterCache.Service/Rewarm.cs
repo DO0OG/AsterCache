@@ -151,7 +151,8 @@ public sealed partial class Rewarmer
     }
 
     // 점검과 사다리가 이 게임 디스크를 지금 읽어도 되는가: 막히면 (상태 키, 로그 문구, 게이트가 풀릴 시각 (모르면 null)) 를, 괜찮으면 null 을 돌려줍니다.
-    private (string State, string Message, DateTimeOffset? Due)? ReadBlock(GameSettings g, DateTimeOffset now, AutoSettings auto, WarmBudgetInfo? budget)
+    // ignoreDriveLoad: 디스크를 읽지 않는 만지기 (사다리 새로 고침) 는 다른 프로세스의 드라이브 사용량에 막히지 않음. 게임 실행·종료 직후·예산 게이트는 그대로.
+    private (string State, string Message, DateTimeOffset? Due)? ReadBlock(GameSettings g, DateTimeOffset now, AutoSettings auto, WarmBudgetInfo? budget, bool ignoreDriveLoad = false)
     {
         if (_exitTracker?.HeavyWorkNotBefore(g, _prewarm.Games, _env.SameDisk, auto.RewarmAfterExitMin) is { } heavyWorkDue && now < heavyWorkDue)
         {
@@ -174,13 +175,16 @@ public sealed partial class Rewarmer
             return ("drive-game-running|" + string.Join(",", busy.Select(x => x.Name)), $"{g.Name}: rewarm check skipped: a game is running on the same drive and is not idle" + Blockers(busy.ToArray()), null); // 한가한 다른 게임은 막지 않음
         }
 
-        if (_env.DiskBytesPerSecond(g) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond)
+        if (!ignoreDriveLoad && DriveBusy(g))
         {
             return ("busy", $"{g.Name}: rewarm check skipped (the game drive is busy or its load is unknown)", null);
         }
 
         return null;
     }
+
+    // 게임 드라이브가 바쁘거나 처리량을 모르는가.
+    private bool DriveBusy(GameSettings g) => _env.DiskBytesPerSecond(g) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond;
 
     /// 결과(상태)가 바뀔 때만 남김: 틱마다 같은 결과를 반복해 쓰지 않음 (예열 동작은 그대로).
     private void NoteCheck(GameSettings g, string state, string message)
@@ -302,11 +306,12 @@ public sealed partial class Rewarmer
         else if (!probe.Cold)
         {
             NoteCheck(g, "warm", $"{g.Name}: rewarm check: warm ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms, average {probe.AverageMs:F2} ms)");
+            solar.ClearOverlooked(g.Name);
             LadderUnmarked(g, ct); // 서비스를 다시 시작한 뒤 표식이 없는 게임은 warm 일 때 첫 사다리를 만듦
         }
         else
         {
-            NoteCheck(g, "cold", $"{g.Name}: rewarm check: cold ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms, average {probe.AverageMs:F2} ms, available {_env.AvailableRamMib()} MiB), prewarming again (cooldown ignored)");
+            NoteCheck(g, "cold", $"{g.Name}: rewarm check: cold ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms, average {probe.AverageMs:F2} ms, available {_env.AvailableRamMib()} MiB), prewarming again (cooldown ignored){solar.SinceLadder(g.Name)}");
             _prewarm.RewarmGame(g, ct, roomMib);
         }
     }

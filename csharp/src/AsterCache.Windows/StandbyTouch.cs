@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using AsterCache.Core.Prefetch;
@@ -14,12 +15,14 @@ public enum TouchEnd
     NeedsDiskReads,
 }
 
-/// 만지기 결과: 만진 바이트, 걸린 시간 (초), 느린 조각 수, 열기·매핑·읽기 오류 수, 끝난 사유, 디스크에서 읽힌 것으로 본 바이트.
-public readonly record struct TouchResult(long Bytes, double Seconds, int SlowPieces, int Errors, TouchEnd End, long DiskBytes = 0);
+/// 만지기 결과: 만진 바이트, 걸린 시간 (초), 느린 조각 수, 열기·매핑·읽기 오류 수, 끝난 사유, 디스크에서 읽힌 것으로 본 바이트,
+/// 스파스 파일이라 열지 않고 건너뛴 바이트 (파일 크기로 자르지 않은 요청 길이, 만진 것도 빠진 것도 아님).
+public readonly record struct TouchResult(long Bytes, double Seconds, int SlowPieces, int Errors, TouchEnd End, long DiskBytes = 0, long SkippedBytes = 0);
 
 /// 파일 캐시에 이미 있는 범위를 순서대로 다시 읽어 (작업 집합에 올렸다 놓음) 대기 목록의 맨 뒤로 보냅니다. 디스크 읽기는 하지 않는 것이 전제이고, 캐시에 없는 페이지를 만나면 읽기가 되므로 뷰마다 시스템의 페이지 읽기 누계 (SystemPageReads) 가 얼마나 늘었는지 봐서 디스크에서 읽힌 양이 쌓이면 멈춥니다.
 /// 범위마다 뷰를 따로 매핑해 만지고 바로 풀어야 만진 순서대로 밀려납니다 (한 뷰에서 여러 범위를 만들고 끝에 한 번에 풀면 주소 순서). 고정 (잠금) 은 하지 않으며 뷰는 최대 ViewBytes 만 한 번에 열어 둡니다.
 /// 읽기는 ReadProcessMemory (자기 프로세스) 로 해서 디스크 오류가 예외가 아니라 반환값으로 옵니다.
+/// 스파스 속성 파일은 섹션을 열기 전에 건너뜁니다: 같은 PC 의 시험 파일에서 스파스 파일은 새 섹션으로 만지면 캐시에 있어도 디스크에서 다시 읽혔고 일반 파일은 그렇지 않았습니다. 속성은 읽기만 합니다.
 public static unsafe class StandbyTouch
 {
     public const int PieceBytes = 1 << 20;
@@ -64,7 +67,10 @@ public static unsafe class StandbyTouch
         public int Errors;
         public double SlowMs;
         public long Disk;
+        public long Skipped;
         public required Func<uint?> PageReads;
+        public required Func<string, uint> Attributes;
+        public readonly Dictionary<string, bool> Sparse = new(StringComparer.OrdinalIgnoreCase); // 이 Run 에서 이미 속성을 본 파일
         public TouchEnd End = TouchEnd.Completed;
     }
 
@@ -82,10 +88,13 @@ public static unsafe class StandbyTouch
     public static TouchResult Run(IReadOnlyList<ReadOp> ranges, CancellationToken ct) => Run(ranges, ct, SystemPageReads.Query);
 
     /// pageReads: 시스템 전체의 디스크에서 읽어 들인 쪽 수 누계 (읽을 수 없으면 null, 시험은 가짜로 바꿈).
-    public static TouchResult Run(IReadOnlyList<ReadOp> ranges, CancellationToken ct, Func<uint?> pageReads)
+    public static TouchResult Run(IReadOnlyList<ReadOp> ranges, CancellationToken ct, Func<uint?> pageReads) => Run(ranges, ct, pageReads, FileGuards.FileAttributes);
+
+    /// attributes: 파일 속성 조회 (예외를 던지면 스파스로 보지 않고 열기를 시도함, 시험은 가짜로 바꿈).
+    public static TouchResult Run(IReadOnlyList<ReadOp> ranges, CancellationToken ct, Func<uint?> pageReads, Func<string, uint> attributes)
     {
         long started = Stopwatch.GetTimestamp();
-        var tally = new Tally { PageReads = pageReads };
+        var tally = new Tally { PageReads = pageReads, Attributes = attributes };
         var sections = new Dictionary<string, Section?>(StringComparer.OrdinalIgnoreCase);
         byte* buffer = (byte*)NativeMemory.Alloc(PieceBytes);
         try
@@ -115,11 +124,17 @@ public static unsafe class StandbyTouch
             NativeMemory.Free(buffer);
         }
 
-        return new TouchResult(tally.Bytes, Stopwatch.GetElapsedTime(started).TotalSeconds, tally.Slow, tally.Errors, tally.End, tally.Disk);
+        return new TouchResult(tally.Bytes, Stopwatch.GetElapsedTime(started).TotalSeconds, tally.Slow, tally.Errors, tally.End, tally.Disk, tally.Skipped);
     }
 
     private static void TouchRange(ReadOp range, Dictionary<string, Section?> sections, byte* buffer, Tally tally, CancellationToken ct)
     {
+        if (IsSparse(range.Path, tally))
+        {
+            tally.Skipped += Math.Max(0, range.Length);
+            return;
+        }
+
         if (!sections.TryGetValue(range.Path, out Section? section))
         {
             if (sections.Count >= MaxOpenFiles)
@@ -174,6 +189,26 @@ public static unsafe class StandbyTouch
 
             pos = viewEnd;
         }
+    }
+
+    // 스파스 속성 (FILE_ATTRIBUTE_SPARSE_FILE) 인가: 파일마다 한 번만 조회합니다. 조회할 수 없으면 추측하지 않고 false (열기를 시도하고, 실패하면 오류로 셈).
+    private static bool IsSparse(string path, Tally tally)
+    {
+        if (!tally.Sparse.TryGetValue(path, out bool sparse))
+        {
+            try
+            {
+                sparse = (tally.Attributes(path) & FileGuards.SparseAttribute) != 0;
+            }
+            catch (Exception e) when (e is IOException or Win32Exception or UnauthorizedAccessException)
+            {
+                sparse = false;
+            }
+
+            tally.Sparse[path] = sparse;
+        }
+
+        return sparse;
     }
 
     // 끝까지 만진 뷰에서 디스크로 읽힌 양: 페이지 읽기 누계가 있으면 그 증가분으로, 없으면 시간으로 (느리면 뷰 전체) 봅니다. 쌓인 양이 DiskReadStopBytes 를 넘으면 멈춤.

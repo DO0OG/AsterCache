@@ -4,13 +4,13 @@ using AsterCache.Windows;
 
 namespace AsterCache.Service;
 
-/// 한 예열 스트림이 만지는 데 쓴 양: 만진 바이트, 걸린 시간 (초), 디스크 읽기가 감지돼 만지기가 멈췄는가.
-internal readonly record struct RequeueTally(long Bytes, double Seconds, bool DiskStopped)
+/// 한 예열 스트림이 만지는 데 쓴 양: 만진 바이트, 걸린 시간 (초), 디스크 읽기가 감지돼 만지기가 멈췄는가, 스파스 파일이라 만지지 않은 바이트.
+internal readonly record struct RequeueTally(long Bytes, double Seconds, bool DiskStopped, long SkippedBytes = 0)
 {
-    public static RequeueTally operator +(RequeueTally a, RequeueTally b) => new(a.Bytes + b.Bytes, a.Seconds + b.Seconds, a.DiskStopped || b.DiskStopped);
+    public static RequeueTally operator +(RequeueTally a, RequeueTally b) => new(a.Bytes + b.Bytes, a.Seconds + b.Seconds, a.DiskStopped || b.DiskStopped, a.SkippedBytes + b.SkippedBytes);
 
-    /// 예열 완료 로그 줄 끝에 붙이는 말 (만진 것도 멈춘 것도 없으면 빈 문자열).
-    public string Note() => Bytes > 0 || DiskStopped ? $", requeued {Bytes >> 20} MiB in {Seconds:F1} s{(DiskStopped ? ", requeue stopped by disk reads" : string.Empty)}" : string.Empty;
+    /// 예열 완료 로그 줄 끝에 붙이는 말 (만진 것도 멈춘 것도 건너뛴 것도 없으면 빈 문자열).
+    public string Note() => Bytes > 0 || DiskStopped || SkippedBytes > 0 ? $", requeued {Bytes >> 20} MiB in {Seconds:F1} s{(SkippedBytes > 0 ? $" ({SkippedBytes >> 20} MiB in sparse files not touched)" : string.Empty)}{(DiskStopped ? ", requeue stopped by disk reads" : string.Empty)}" : string.Empty;
 }
 
 /// 예열 스트림이 묶음을 읽을 때마다 그 범위를 곧바로 다시 만집니다 (SOLAR 의 만지기, 디스크 읽기 없음이 전제).
@@ -30,7 +30,9 @@ internal sealed class StreamRequeue(Func<IReadOnlyList<ReadOp>, CancellationToke
 
     public bool DiskStopped { get; private set; }
 
-    public RequeueTally Tally => new(Bytes, Seconds, DiskStopped);
+    public long SkippedBytes { get; private set; }
+
+    public RequeueTally Tally => new(Bytes, Seconds, DiskStopped, SkippedBytes);
 
     /// 방금 읽은 범위를 읽은 순서대로 만집니다. 스트림이 멈췄거나 (stop) 게임이 시작했거나 트리거가 멈추게 했으면 (halted), 또는 앞 묶음의 만지기가 디스크 읽기로 멈췄으면 만지지 않습니다.
     public void Touch(IReadOnlyList<ReadOp> ranges, CancellationToken stop) => Run(ranges, stop, skipped: false);
@@ -50,6 +52,7 @@ internal sealed class StreamRequeue(Func<IReadOnlyList<ReadOp>, CancellationToke
             TouchResult r = touch(ranges, stop);
             Bytes += r.Bytes;
             Seconds += r.Seconds;
+            SkippedBytes += r.SkippedBytes;
             onTouched?.Invoke(r.Seconds);
             if (r.End == TouchEnd.NeedsDiskReads)
             {

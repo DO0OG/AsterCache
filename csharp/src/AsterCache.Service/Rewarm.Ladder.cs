@@ -71,7 +71,7 @@ public sealed partial class Rewarmer
     private void LadderUnmarked(GameSettings g, CancellationToken ct)
     {
         Solar solar = _prewarm.Solar;
-        if (solar.Enabled && !solar.HasMark(g.Name) && !solar.HasMissing(g.Name) && !_prewarm.TriggerWaitPending() && _prewarm.LadderReads(_prewarm.CoveredPart(g)) is { Count: > 0 } reads)
+        if (solar.Enabled && !solar.HasMark(g.Name) && !solar.HasMissing(g.Name) && !solar.HasNothingToTouch(g.Name) && !_prewarm.TriggerWaitPending() && _prewarm.LadderReads(_prewarm.CoveredPart(g)) is { Count: > 0 } reads)
         {
             Run(g, ct, token => solar.Order(g, reads, token), "cache ladder");
         }
@@ -81,7 +81,7 @@ public sealed partial class Rewarmer
     private void LadderWaitingSupplement(GameSettings g, CancellationToken ct)
     {
         Solar solar = _prewarm.Solar;
-        if (solar.Enabled && !solar.HasMark(g.Name) && !solar.HasMissing(g.Name) && !_prewarm.TriggerWaitPending() && _prewarm.WaitingSupplementLadderReads(g) is { Count: > 0 } reads)
+        if (solar.Enabled && !solar.HasMark(g.Name) && !solar.HasMissing(g.Name) && !solar.HasNothingToTouch(g.Name) && !_prewarm.TriggerWaitPending() && _prewarm.WaitingSupplementLadderReads(g) is { Count: > 0 } reads)
         {
             Run(g, ct, token => solar.Order(g, reads, token), "cache ladder");
         }

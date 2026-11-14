@@ -93,6 +93,77 @@ public sealed class StandbyTouchTests : IDisposable
         Assert.True(StandbyTouch.ViewTooSlow(5, 128 << 10));
     }
 
+    private const uint Archive = 0x20;
+    private const uint Sparse = FileGuards.SparseAttribute;
+
+    [Fact]
+    public void ARangeOfASparseFileIsSkippedBeforeAnySectionIsOpenedAndCountedApartFromTouchedBytesAndErrors()
+    {
+        string notThere = _dir.Combine("sparse.bin"); // 열려고 하면 오류로 셈: 오류 0 이면 열지 않은 것
+        var asked = new List<string>();
+
+        TouchResult r = StandbyTouch.Run([new ReadOp(notThere, 0, 2 * Mib), new ReadOp(notThere, 4 * Mib, 3 * Mib)], CancellationToken.None, () => 1_000_000, path =>
+        {
+            asked.Add(path);
+            return Archive | Sparse;
+        });
+
+        Assert.Equal(TouchEnd.Completed, r.End);
+        Assert.Equal(5L * Mib, r.SkippedBytes);
+        Assert.Equal((0L, 0, 0L, 0), (r.Bytes, r.Errors, r.DiskBytes, r.SlowPieces));
+        Assert.Equal([notThere], asked); // 파일마다 한 번만 조회
+    }
+
+    [Fact]
+    public void SparseAndOrdinaryFilesMixedTouchOnlyTheOrdinaryOnesAndEachFilesAttributesAreReadOnce()
+    {
+        string sparse = _dir.Combine("s.bin");
+        _ = _dir.WriteRandom("s.bin", 2 * Mib);
+        var asked = new List<string>();
+
+        TouchResult r = StandbyTouch.Run([new ReadOp(sparse, 0, 2 * Mib), new ReadOp(_path, 0, 2 * Mib), new ReadOp(sparse, 0, Mib), new ReadOp(_path, 0, Mib)], CancellationToken.None, () => 1_000_000, path =>
+        {
+            asked.Add(path);
+            return path == sparse ? Archive | Sparse : Archive;
+        });
+
+        Assert.Equal(TouchEnd.Completed, r.End);
+        Assert.Equal(3L * Mib, r.Bytes);
+        Assert.Equal(3L * Mib, r.SkippedBytes);
+        Assert.Equal(0, r.Errors);
+        Assert.Equal([sparse, _path], asked);
+    }
+
+    [Fact]
+    public void AnAttributeReadThatThrowsIsNotTakenForSparseSoTheFileIsOpenedAsBefore()
+    {
+        string notThere = _dir.Combine("none.bin");
+        Func<string, uint> broken = _ => throw new IOException("attributes unreadable");
+
+        TouchResult r = StandbyTouch.Run([new ReadOp(_path, 0, 2 * Mib), new ReadOp(notThere, 0, Mib)], CancellationToken.None, () => 1_000_000, broken);
+
+        Assert.Equal(TouchEnd.Completed, r.End);
+        Assert.Equal(2L * Mib, r.Bytes); // 열 수 있는 파일은 만지고
+        Assert.Equal(1, r.Errors); // 없는 파일은 기존대로 오류
+        Assert.Equal(0, r.SkippedBytes);
+    }
+
+    [Fact]
+    public void AFilesAttributesAreNotReadAgainAfterTheOpenSectionsAreClearedForTooManyFiles()
+    {
+        string[] paths = [.. Enumerable.Range(0, 70).Select(i => _dir.Combine($"none{i}.bin"))]; // 65번째부터 열린 섹션을 모두 닫고 비움 (없는 파일은 오류로 세고 기억됨)
+        var asked = new List<string>();
+
+        TouchResult r = StandbyTouch.Run([.. paths.Select(p => new ReadOp(p, 0, Mib)), new ReadOp(paths[0], 0, Mib)], CancellationToken.None, () => 1_000_000, path =>
+        {
+            asked.Add(path);
+            return Archive;
+        });
+
+        Assert.Equal(71, r.Errors);
+        Assert.Equal(paths, asked); // 비운 뒤에 다시 만난 첫 파일도 다시 조회하지 않음
+    }
+
     [Theory]
     [InlineData(0u, 1 << 20, 0.0, 0L)]
     [InlineData(2u, 1 << 20, 0.0, 0L)] // 허용치 이하

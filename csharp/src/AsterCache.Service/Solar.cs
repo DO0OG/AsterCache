@@ -14,6 +14,7 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
     private readonly object _lock = new();
     private readonly Dictionary<string, LadderMark> _marks = new(StringComparer.OrdinalIgnoreCase); // 마지막으로 만든 사다리의 표식, 메모리에만 둠 (서비스를 다시 시작하면 없음), _lock 으로 보호
     private readonly HashSet<string> _missing = new(StringComparer.OrdinalIgnoreCase); // 사다리가 목록의 일부가 캐시에 없음을 발견한 게임 (재예열 점검이 다시 채울 때까지), 메모리에만 둠, _lock 으로 보호
+    private readonly HashSet<string> _untouchable = new(StringComparer.OrdinalIgnoreCase); // 목록이 전부 스파스 파일이라 만질 것이 없었던 게임 (다음 예열 스트림 뒤 사다리가 다시 판정할 때까지 재예열 점검이 사다리를 다시 시도하지 않음), 메모리에만 둠, _lock 으로 보호
 
     public bool Enabled => env.StandbyLadderEnabled();
 
@@ -31,6 +32,15 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         lock (_lock)
         {
             return _missing.Contains(game);
+        }
+    }
+
+    /// 사다리가 만질 것이 하나도 없었던 (목록 전체가 스파스 파일인) 게임인가.
+    public bool HasNothingToTouch(string game)
+    {
+        lock (_lock)
+        {
+            return _untouchable.Contains(game);
         }
     }
 
@@ -54,6 +64,7 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
             }
 
             _ = _missing.RemoveWhere(k => !live.Contains(k));
+            _ = _untouchable.RemoveWhere(k => !live.Contains(k));
         }
     }
 
@@ -75,12 +86,22 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         switch (r.End)
         {
             case TouchEnd.Completed:
+                if (Untouched(r))
+                {
+                    if (NoteNothingToTouch(game.Name))
+                    {
+                        log.Info($"{game.Name}: ladder has nothing to touch ({r.SkippedBytes >> 20} MiB in sparse files not touched)"); // 처음 한 번만
+                    }
+
+                    break;
+                }
+
                 SetMark(game.Name, ladder, r);
-                log.Info($"{game.Name}: ladder ordered {r.Bytes >> 20} MiB in {r.Seconds:F1} s{Errors(r)}");
+                log.Info($"{game.Name}: ladder ordered {r.Bytes >> 20} MiB in {r.Seconds:F1} s{Errors(r)}{Sparse(r)}");
                 break;
             case TouchEnd.Canceled:
                 Forget(game.Name); // 순서가 반쯤만 만들어짐: 표식 없이 둠
-                log.Info($"{game.Name}: ladder stopped after {r.Bytes >> 20} MiB{Errors(r)}");
+                log.Info($"{game.Name}: ladder stopped after {r.Bytes >> 20} MiB{Errors(r)}{Sparse(r)}");
                 break;
             default:
                 if (!NoteIncomplete(game.Name, r))
@@ -89,7 +110,7 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
                     break;
                 }
 
-                log.Info($"{game.Name}: ladder found data missing from memory {Missing(r, ladder)}, left to the rewarm check");
+                log.Info($"{game.Name}: ladder found data missing from memory {Missing(r, ladder)}, left to the rewarm check{Sparse(r)}");
                 break;
         }
 
@@ -116,11 +137,19 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         switch (r.End)
         {
             case TouchEnd.Completed:
-                SetMark(game.Name, mark.Ladder, r);
-                log.Info($"{game.Name}: cache refreshed in memory: {r.Bytes >> 20} MiB in {r.Seconds:F1} s ({repurposed >> 20} MiB repurposed of {mark.AheadBytes >> 20} MiB ahead){Errors(r)}");
+                if (Untouched(r))
+                {
+                    _ = NoteNothingToTouch(game.Name); // 표식을 지워 틱마다 되풀이하지 않음
+                }
+                else
+                {
+                    SetMark(game.Name, mark.Ladder, r);
+                }
+
+                log.Info($"{game.Name}: cache refreshed in memory: {r.Bytes >> 20} MiB in {r.Seconds:F1} s ({repurposed >> 20} MiB repurposed of {mark.AheadBytes >> 20} MiB ahead){Errors(r)}{Sparse(r)}");
                 break;
             case TouchEnd.Canceled:
-                log.Info($"{game.Name}: cache refresh stopped after {r.Bytes >> 20} MiB{Errors(r)}"); // 표식은 그대로 둠: 다음 틱에 다시 시도
+                log.Info($"{game.Name}: cache refresh stopped after {r.Bytes >> 20} MiB{Errors(r)}{Sparse(r)}"); // 표식은 그대로 둠: 다음 틱에 다시 시도
                 break;
             default:
                 if (!NoteIncomplete(game.Name, r))
@@ -129,7 +158,7 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
                     break;
                 }
 
-                log.Info($"{game.Name}: cache refresh found data missing from memory {Missing(r, mark.Ladder)}, left to the rewarm check");
+                log.Info($"{game.Name}: cache refresh found data missing from memory {Missing(r, mark.Ladder)}, left to the rewarm check{Sparse(r)}");
                 break;
         }
 
@@ -168,8 +197,22 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         {
             _marks[game] = mark;
             _ = _missing.Remove(game); // 목록 전체가 메모리에 있음
+            _ = _untouchable.Remove(game);
         }
     }
+
+    // 목록이 전부 스파스 파일이라 만진 것이 없음 (건너뛴 것만 있음): 표식도 빠짐 표시도 세우지 않고 기존 표식은 지우며, 처음 기억할 때만 true.
+    private bool NoteNothingToTouch(string game)
+    {
+        lock (_lock)
+        {
+            _ = _marks.Remove(game);
+            _ = _missing.Remove(game);
+            return _untouchable.Add(game);
+        }
+    }
+
+    private static bool Untouched(TouchResult r) => r.Bytes == 0 && r.SkippedBytes > 0;
 
     // 표식을 지우고, 디스크 읽기를 실제로 본 경우에만 다시 채움 표시를 남깁니다 (표본이 warm 이어도 재예열 점검이 다시 읽게 함). 시간 기준이나 읽기 실패만으로 끝났다면 재예열로 고쳐지지 않으므로 표시 없이 점검의 표본 판정에 맡깁니다. 표시를 세웠으면 true.
     private bool NoteIncomplete(string game, TouchResult r)
@@ -178,6 +221,7 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         lock (_lock)
         {
             _ = _marks.Remove(game);
+            _ = _untouchable.Remove(game); // 디스크 읽기를 만났으면 만질 것이 있음
             if (diskSeen)
             {
                 _ = _missing.Add(game);
@@ -205,11 +249,15 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         lock (_lock)
         {
             _ = _marks.Remove(game);
+            _ = _untouchable.Remove(game);
         }
     }
 
-    // 다시 채움 로그의 꼬리: 사다리 (역순) 를 몇 MiB 만지고 멈췄는지 (만진 양이 전체에 가까우면 빠진 것은 가장 중요한 앞쪽), 느린 조각 수와 디스크에서 읽힌 양, 오류 수
+    // 다시 채움 로그의 꼬리: 사다리 (역순) 를 몇 MiB 만지고 멈췄는지 (만진 양이 전체에 가까우면 빠진 것은 가장 중요한 앞쪽), 느린 조각 수와 디스크에서 읽힌 양, 오류 수. N 은 건너뛴 스파스 범위를 포함한 사다리 전체 (건너뛴 양은 줄 끝 꼬리로 따로 보임).
     private static string Missing(TouchResult r, IReadOnlyList<ReadOp> ladder) => $"after {r.Bytes >> 20} of {ladder.Sum(o => o.Length) >> 20} MiB ({r.SlowPieces} slow pieces{(r.DiskBytes > 0 ? $", {r.DiskBytes >> 20} MiB read from disk" : string.Empty)}{(r.Errors > 0 ? $", {r.Errors} errors" : string.Empty)})";
+
+    // 줄 끝에 붙이는 스파스 파일이라 만지지 않은 양 (없으면 빈 문자열)
+    private static string Sparse(TouchResult r) => r.SkippedBytes > 0 ? $", {r.SkippedBytes >> 20} MiB in sparse files not touched" : string.Empty;
 
     // 줄 끝에 붙이는 오류 수와 디스크에서 읽힌 것으로 본 양
     private static string Errors(TouchResult r) => (r.Errors > 0 ? $", {r.Errors} errors" : string.Empty) + (r.DiskBytes > 0 ? $", {r.DiskBytes >> 20} MiB read from disk" : string.Empty);

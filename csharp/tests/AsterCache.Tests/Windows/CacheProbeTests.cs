@@ -140,4 +140,84 @@ public sealed class CacheProbeTests
         Assert.Equal(0.8, CacheProbe.ColdThresholdMs);
         Assert.InRange(CacheProbe.ColdThresholdMs, 0.5, 1.7);
     }
+
+    // 표본마다 읽기 전후로 누계를 한 번씩 읽으므로, 두 번째 호출마다 perSample 쪽 늘어난 가짜 누계 (넘침 시험은 start 를 끝 가까이로).
+    private static Func<uint?> Pages(uint perSample, uint start = 0)
+    {
+        int calls = 0;
+        uint value = start;
+        return () =>
+        {
+            if (calls++ % 2 == 1)
+            {
+                value = unchecked(value + perSample);
+            }
+
+            return value;
+        };
+    }
+
+    // 시간 기준은 -1 (항상 넘음) 이나 1e9 (절대 안 넘음) 로 고정해 실제 경과 시간에 기대지 않음.
+    private static ProbeResult EightSamples(int bytes, double slowMs, Func<uint?> pageReads)
+    {
+        using var tmp = new TempDir();
+        tmp.WriteRandom("a.bin", 1 << 20);
+        string path = tmp.Combine("a.bin");
+
+        return CacheProbe.Probe(Enumerable.Range(0, 8).Select(_ => (path, 0L, bytes)).ToList(), slowMs, pageReads: pageReads)!;
+    }
+
+    [Fact]
+    public void SamplesOverTheTimeLimitWithFewPageReadsAreNotSlow()
+    {
+        ProbeResult r = EightSamples(1 << 20, -1, Pages(5));
+
+        Assert.Equal((8, 0), (r.Samples, r.Slow));
+        Assert.False(r.Cold);
+    }
+
+    [Fact]
+    public void SamplesOverTheTimeLimitWithPageReadsFittingTheirSizeAreSlowAndCold()
+    {
+        ProbeResult r = EightSamples(1 << 20, -1, Pages(256));
+
+        Assert.Equal((8, 8), (r.Samples, r.Slow));
+        Assert.True(r.Cold);
+    }
+
+    [Fact]
+    public void ManyPageReadsWithinTheTimeLimitAreNotSlow()
+    {
+        Assert.Equal(0, EightSamples(1 << 20, 1e9, Pages(256)).Slow);
+    }
+
+    [Theory]
+    [InlineData(1 << 20, 63, 0)] // 1/4 (64 쪽) 바로 아래
+    [InlineData(1 << 20, 64, 8)] // 1/4
+    [InlineData(1 << 17, 15, 0)] // 128 KiB (32 쪽): 1/4 는 8 쪽이라 하한 16 쪽이 우선
+    [InlineData(1 << 17, 16, 8)]
+    [InlineData(1 << 14, 3, 0)] // 16 KiB (4 쪽): 하한이 표본의 쪽 수로 낮아짐
+    [InlineData(1 << 14, 4, 8)]
+    [InlineData(4096, 0, 0)] // 4 KiB (1 쪽)
+    [InlineData(4096, 1, 8)]
+    public void PageReadGrowthMustReachAQuarterOfTheSampleWithAFloor(int bytes, uint pages, int slow)
+    {
+        Assert.Equal(slow, EightSamples(bytes, -1, Pages(pages)).Slow);
+    }
+
+    [Fact]
+    public void WithoutAPageReadCountTheTimeAloneDecides()
+    {
+        Assert.Equal(8, EightSamples(1 << 20, -1, () => null).Slow);
+        Assert.Equal(0, EightSamples(1 << 20, 1e9, () => null).Slow);
+        int calls = 0;
+        Assert.Equal(8, EightSamples(1 << 20, -1, () => calls++ % 2 == 0 ? 0u : null).Slow); // 읽은 뒤의 누계만 실패해도 시간만
+    }
+
+    [Fact]
+    public void AWrappedPageReadCountIsComparedWithUnsignedSubtraction()
+    {
+        Assert.Equal(8, EightSamples(1 << 20, -1, Pages(256, uint.MaxValue - 100)).Slow);
+        Assert.Equal(0, EightSamples(1 << 20, -1, Pages(5, uint.MaxValue - 2)).Slow);
+    }
 }

@@ -53,6 +53,9 @@ public sealed class SolarTests
 
     private static LadderMark Mark(long? repurposedMib, long aheadMib, DateTimeOffset at) => new(at, repurposedMib is { } r ? r * Mib : null, aheadMib * Mib, 0, []);
 
+    // 다른 게임이 만지기 전에 가졌던 표식 (그때 만진 양과 만든 시각만 의미 있음)
+    private static LadderMark Previous(long touchedMib, DateTimeOffset at) => new(at, null, 0, touchedMib * Mib, []);
+
     [Theory]
     [InlineData(10000, 3999, false)] // A 10000 MiB 의 0.4 배 = 4000 MiB 미만
     [InlineData(10000, 4000, true)]
@@ -83,6 +86,42 @@ public sealed class SolarTests
     {
         Assert.Equal(7000 * Mib, SolarPolicy.Ahead(8000 * Mib, 1000 * Mib));
         Assert.Equal(0, SolarPolicy.Ahead(500 * Mib, 1000 * Mib));
+    }
+
+    [Theory]
+    [InlineData(6000, 2500, 400, false)] // 표식 A 6000 MiB 가 다른 게임이 만져 2500 MiB 로 줄었음: 남은 여유 2100 MiB, 비율 기준 (하한 512 MiB) 에도 못 미침
+    [InlineData(6000, 2500, 453, true)] // 남은 여유 2047 MiB < 2 GiB
+    [InlineData(1500, 1500, 100, false)] // 표식을 만들 때 A 가 4 GiB 미만이면 남은 여유 기준은 적용하지 않음
+    [InlineData(1500, 1500, 599, false)] // 비율 기준 0.4 x 1500 = 600 MiB
+    [InlineData(1500, 1500, 600, true)]
+    public void RefreshIsAlsoDueWhenWhatIsLeftAheadFallsUnderTwoGiBUnlessTheMarkWasSmallToBeginWith(long markedMib, long aheadMib, long grownMib, bool due)
+    {
+        LadderMark mark = Mark(5000, markedMib, _now) with { AheadBytes = aheadMib * Mib };
+
+        Assert.Equal(due, SolarPolicy.RefreshDue(mark, new MemoryLists(0, (5000 + grownMib) * Mib), _now));
+    }
+
+    [Theory]
+    [InlineData(-1, 300, 7000, 6700)] // X 의 이전 표식이 내 표식보다 먼저 (그때 X 의 페이지가 내 앞에 있었음): 줄임
+    [InlineData(1, 300, 7000, 7000)] // X 의 이전 표식이 내 표식보다 나중: X 의 페이지는 원래 내 뒤였으므로 줄이지 않음
+    [InlineData(0, 300, 7000, 7000)] // 같은 시각도 먼저가 아님
+    [InlineData(99, 300, 7000, 7000)] // X 에 이전 표식이 없었음 (새로 예열된 게임): 줄이지 않음
+    [InlineData(-1, 300, 200, 6800)] // min(이전 표식이 만진 300, 이번에 만진 200) = 200: 이번에 적게 만졌으면 그만큼만
+    [InlineData(-1, 100, 200, 6900)] // min(100, 200) = 100: 이전 표식이 적게 만졌으면 (나머지는 디스크에서 새로 읽은 것) 그만큼만
+    [InlineData(-1, 9000, 9000, 0)] // 0 미만이 되지 않음
+    public void WhatIsAheadFallsOnlyByWhatTheOthersMovedFromAheadOfUsToBehindUs(int previousIsEarlier, long previousTouchedMib, long touchedNowMib, long expectedMib)
+    {
+        LadderMark mine = Mark(0, 7000, _now);
+        LadderMark? previous = previousIsEarlier == 99 ? null : Previous(previousTouchedMib, _now + TimeSpan.FromMinutes(previousIsEarlier));
+
+        Assert.Equal(expectedMib * Mib, SolarPolicy.AheadAfterOthersTouched(mine, [(previous, touchedNowMib * Mib)]));
+    }
+
+    [Fact]
+    public void TheGroupAheadIsStandbyMinusWhatThisGameAndTheOnesTouchedAfterItTouched()
+    {
+        Assert.Equal([4000 * Mib, 5000 * Mib, 7000 * Mib], SolarPolicy.GroupAhead(10000 * Mib, [1000 * Mib, 2000 * Mib, 3000 * Mib]));
+        Assert.Equal([0L, 0L, 500 * Mib], SolarPolicy.GroupAhead(3500 * Mib, [1000 * Mib, 2000 * Mib, 3000 * Mib]));
     }
 
     // ---- 본체 ----
@@ -334,7 +373,7 @@ public sealed class SolarTests
 
         Assert.False(solar.HasMark("a"));
         Assert.Contains("a: cache refresh found data missing from memory after 10 of 30 MiB (5 slow pieces, 32 MiB read from disk, 1 errors), left to the rewarm check", _log.Lines.Last());
-        Assert.Empty(solar.Due([Game("a")], _now + TimeSpan.FromHours(1)));
+        Assert.Empty(solar.DueGroup([Game("a")], _now + TimeSpan.FromHours(1)));
     }
 
     [Fact]
@@ -350,23 +389,179 @@ public sealed class SolarTests
     }
 
     [Fact]
-    public void DueKeepsTheInputOrderOnlyListsMarkedGamesAndReadsTheListsOnceOnlyWhenSomethingIsMarked()
+    public void DueGroupListsEveryMarkedGameInTheInputOrderWhenOneOfThemIsDueAndReadsTheListsOnceOnlyWhenSomethingIsMarked()
     {
         Solar solar = Make();
-        Assert.Empty(solar.Due([Game("a")], _now));
+        Assert.Empty(solar.DueGroup([Game("a")], _now));
         Assert.Equal(0, _listQueries);
 
-        _lists = new MemoryLists(0, 0, 8000 * Mib);
-        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        _lists = new MemoryLists(0, 0, 1000 * Mib);
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None); // A 는 작아 증가분 하한 512 MiB 가 기준
+        _lists = new MemoryLists(0, 0, 20000 * Mib);
         _ = solar.Order(Game("b"), Reads, CancellationToken.None);
-        _ = solar.Order(Game("c"), Reads, CancellationToken.None);
-        _lists = new MemoryLists(0, 9000 * Mib, 8000 * Mib); // 모든 표식이 시점에 이름
+        _ = solar.Order(Game("c"), Reads, CancellationToken.None); // A = 19900 MiB: 증가분 600 MiB 로는 때가 아님
+        _lists = new MemoryLists(0, 100 * Mib, 20000 * Mib);
+        Assert.Empty(solar.DueGroup([Game("c"), Game("a"), Game("b")], _now)); // 아무도 때가 아님
+        _lists = new MemoryLists(0, 600 * Mib, 20000 * Mib); // a 만 때가 됨
         int before = _listQueries;
 
-        IReadOnlyList<GameSettings> due = solar.Due([Game("c"), Game("x"), Game("a"), Game("b")], _now);
+        IReadOnlyList<GameSettings> group = solar.DueGroup([Game("c"), Game("x"), Game("a"), Game("b")], _now);
 
-        Assert.Equal(["c", "a", "b"], due.Select(g => g.Name));
+        Assert.Equal(["c", "a", "b"], group.Select(g => g.Name)); // 때가 된 a 만이 아니라 표식이 있는 모두, 입력 순서 그대로
         Assert.Equal(before + 1, _listQueries);
+    }
+
+    [Fact]
+    public void ADueGameThatCannotBeTouchedNowDoesNotStartTheGroup()
+    {
+        Solar solar = Make();
+        _lists = new MemoryLists(0, 0, 1000 * Mib);
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None); // A 가 작아 증가분 512 MiB 에 때가 됨
+        _lists = new MemoryLists(0, 0, 20000 * Mib);
+        _ = solar.Order(Game("b"), Reads, CancellationToken.None);
+        _lists = new MemoryLists(0, 600 * Mib, 20000 * Mib);
+
+        Assert.Empty(solar.DueGroup([Game("a"), Game("b")], _now, g => g.Name != "a")); // 때가 된 a 가 막혀 있음
+        Assert.Equal(["a", "b"], solar.DueGroup([Game("a"), Game("b")], _now, g => g.Name != "b").Select(g => g.Name)); // 막힌 것은 때가 아닌 b: 시작하고 묶음은 전체
+    }
+
+    [Fact]
+    public void AGroupIsNotDueAgainWithinSixtySecondsOfTheLastGroupRefresh()
+    {
+        Solar solar = Make();
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        solar.Regroup([("a", 100 * Mib, null)]);
+        _lists = new MemoryLists(0, 9000 * Mib, 8000 * Mib); // 때가 됨
+
+        Assert.Empty(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(59)));
+        Assert.Single(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(60)));
+    }
+
+    [Fact]
+    public void RegroupWritesTheTouchedMarksFromOneInstantAndLowersTheOtherOnesByWhatWasTouched()
+    {
+        Solar solar = Make();
+        foreach (string name in new[] { "a", "b", "c", "d" })
+        {
+            _ = solar.Order(Game(name), Reads, CancellationToken.None); // 표식 (A 는 아래에서 다시 쓰거나 줄어듦: d 는 이 시점에 7900 MiB)
+        }
+
+        _lists = new MemoryLists(0, 777 * Mib, 8000 * Mib);
+        DateTimeOffset before = _now - TimeSpan.FromMinutes(1); // 이 게임들의 이전 표식은 d 보다 먼저 만들어졌음: 그 페이지는 d 앞에 있었음
+        solar.Regroup([("a", 1000 * Mib, Previous(1000, before)), ("b", 2000 * Mib, Previous(2000, before)), ("c", 3000 * Mib, Previous(3000, before))]); // a 가 가장 먼저 (가장 오래됨) 만짐
+        _lists = new MemoryLists(0, 877 * Mib, 8000 * Mib);
+        foreach (string name in new[] { "a", "b", "c", "d" })
+        {
+            _ = solar.Refresh(Game(name), CancellationToken.None);
+        }
+
+        string[] lines = [.. _log.Lines.Where(l => l.Contains("cache refreshed in memory"))];
+        Assert.Contains("a: cache refreshed in memory: 100 MiB in 0.4 s (100 MiB repurposed of 2000 MiB ahead)", lines[0]); // 8000 - (1000 + 2000 + 3000)
+        Assert.Contains("b: cache refreshed in memory: 100 MiB in 0.4 s (100 MiB repurposed of 3000 MiB ahead)", lines[1]); // 8000 - (2000 + 3000)
+        Assert.Contains("c: cache refreshed in memory: 100 MiB in 0.4 s (100 MiB repurposed of 5000 MiB ahead)", lines[2]); // 8000 - 3000
+        Assert.Contains("d: cache refreshed in memory: 100 MiB in 0.4 s (877 MiB repurposed of 1900 MiB ahead)", lines[3]); // 만지지 않은 표식: 기준값은 그대로, A 에서 만진 합 6000 MiB 를 뺌
+    }
+
+    [Fact]
+    public void WhatTheOthersTouchedNeverTakesWhatIsAheadBelowZero()
+    {
+        Solar solar = Make();
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        _ = solar.Order(Game("b"), Reads, CancellationToken.None);
+
+        solar.Regroup([("b", 20000 * Mib, Previous(20000, _now - TimeSpan.FromMinutes(1)))]);
+        _ = solar.Refresh(Game("a"), CancellationToken.None);
+
+        Assert.Contains("a: cache refreshed in memory: 100 MiB in 0.4 s (0 MiB repurposed of 0 MiB ahead)", _log.Lines.Last());
+    }
+
+    [Theory]
+    [InlineData(1000, 300, 300)] // min(이전 표식이 만진 1000, 이번에 만진 300)
+    [InlineData(300, 1000, 300)] // min(300, 1000): 이번에 더 만진 것은 디스크에서 새로 읽은 것
+    public void ALadderOfAGameThatHadAnEarlierMarkLowersWhatIsAheadOfTheOtherMarksByTheSmallerOfTheTwoAmounts(long earlierMib, long nowMib, long reducedMib)
+    {
+        Solar solar = Make();
+        _result = _result with { Bytes = earlierMib * Mib };
+        _ = solar.Order(Game("b"), Reads, CancellationToken.None); // b 의 이전 표식
+        _now += TimeSpan.FromMinutes(1);
+        _result = _result with { Bytes = 100 * Mib };
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None); // A = 7900 MiB, b 의 이전 표식보다 나중
+        _now += TimeSpan.FromMinutes(1);
+        _result = _result with { Bytes = nowMib * Mib };
+
+        _ = solar.Order(Game("b"), Reads, CancellationToken.None);
+        _result = _result with { Bytes = 100 * Mib };
+        _ = solar.Refresh(Game("a"), CancellationToken.None);
+
+        Assert.Contains($"(0 MiB repurposed of {7900 - reducedMib} MiB ahead)", _log.Lines.Last());
+    }
+
+    [Fact]
+    public void AFirstLadderOrOneWhoseEarlierMarkIsLaterThanTheOthersLeavesWhatIsAheadAlone()
+    {
+        Solar solar = Make();
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None); // A = 7900 MiB
+        _now += TimeSpan.FromMinutes(1);
+        _ = solar.Order(Game("b"), Reads, CancellationToken.None); // b 는 이전 표식이 없었음: 이미 캐시에 있던 페이지의 위치를 모르므로 줄이지 않음
+        _now += TimeSpan.FromMinutes(1);
+        _ = solar.Order(Game("b"), Reads, CancellationToken.None); // b 의 이전 표식은 a 의 표식보다 나중: 그 페이지는 원래 a 뒤였음
+
+        _ = solar.Refresh(Game("a"), CancellationToken.None);
+
+        Assert.Contains("(0 MiB repurposed of 7900 MiB ahead)", _log.Lines.Last());
+    }
+
+    // 묶음으로 새로 고친 a (먼저 만짐) 와 b: A 는 8000 - (1000 + 2000) = 5000 MiB 와 8000 - 2000 = 6000 MiB
+    private Solar RegroupedPair()
+    {
+        Solar solar = Make();
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        _ = solar.Order(Game("b"), Reads, CancellationToken.None);
+        solar.Regroup([("a", 1000 * Mib, null), ("b", 2000 * Mib, null)]);
+        return solar;
+    }
+
+    [Fact]
+    public void AfterAGroupRefreshReTouchingOnlyTheLaterGameLeavesTheEarlierOnesAheadAlone()
+    {
+        Solar solar = RegroupedPair();
+        _result = _result with { Bytes = 300 * Mib };
+
+        _ = solar.Order(Game("b"), Reads, CancellationToken.None); // b 의 이전 표식은 a 보다 나중: b 의 페이지는 원래 a 뒤였음
+        _result = _result with { Bytes = 100 * Mib };
+        _ = solar.Refresh(Game("a"), CancellationToken.None);
+
+        Assert.Contains("(0 MiB repurposed of 5000 MiB ahead)", _log.Lines.Last());
+    }
+
+    [Fact]
+    public void AfterAGroupRefreshReTouchingOnlyTheEarlierGameLowersTheLaterOnesAhead()
+    {
+        Solar solar = RegroupedPair();
+        _result = _result with { Bytes = 300 * Mib };
+
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None); // a 의 이전 표식은 b 보다 먼저 (같은 묶음 안의 순서): a 의 페이지는 b 앞에 있었음
+        _result = _result with { Bytes = 100 * Mib };
+        _ = solar.Refresh(Game("b"), CancellationToken.None);
+
+        Assert.Contains("(0 MiB repurposed of 5700 MiB ahead)", _log.Lines.Last()); // 6000 - min(이전 표식이 만진 1000, 이번 300)
+    }
+
+    [Fact]
+    public void RefreshReportsTheBytesItTouchedOnlyWhenItFinishedTheWholeLadder()
+    {
+        Solar solar = Make();
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        _ = solar.Order(Game("b"), Reads, CancellationToken.None);
+        long? got = null;
+
+        _ = solar.Refresh(Game("a"), CancellationToken.None, (_, bytes) => got = bytes);
+        Assert.Equal(100 * Mib, got);
+
+        got = null;
+        _result = new TouchResult(10 * Mib, 0.6, 5, 0, TouchEnd.NeedsDiskReads, 32 * Mib);
+        _ = solar.Refresh(Game("b"), CancellationToken.None, (_, bytes) => got = bytes);
+        Assert.Null(got);
     }
 
     [Fact]
@@ -501,6 +696,7 @@ public sealed class SolarTests
     private bool _diskBusy;
     private long _avail = 20000;
     private ProbeResult? _probe = new ProbeResult(8, 0, 0.2); // warm (null: 표본을 읽을 수 없음)
+    private readonly HashSet<string> _coldGames = []; // 이 게임들의 표본은 식음 (나머지는 _probe)
     private IReadOnlyList<ReadOp> _common = [];
     private bool _resumeProbe; // 참이면 끊긴 보충이 이어 읽을 위치를 확인하는 표본 훅이 있음 (warm)
     private bool _commonProgress; // 참이면 공통 블록 읽기가 op 하나마다 진행을 알림 (실제 서비스의 묶음 진행처럼), 아니면 진행 없는 읽기
@@ -515,7 +711,7 @@ public sealed class SolarTests
             ZoneBytes = g => Math.Min(_streamer.ZoneMib, g.StreamCapBytes(_streamer.ZoneMib * Mib) / Mib) * Mib,
             TraceExists = env.TraceExists,
             PhysicalRamBytes = () => 64L << 30,
-            ProbeReadMs = _ => _probe,
+            ProbeReadMs = g => _coldGames.Contains(g.Name) ? new ProbeResult(8, 8, 5.0) : _probe,
             DiskBytesPerSecond = _ => _diskBusy ? 1e9 : 0,
             CommonFirstOps = (_, _, _) => (_common, _common.Sum(o => o.Length)),
             ColdRead = (ops, _) => (new StreamStats(ops.Sum(o => o.Length), 1, 0, 0.01), true),
@@ -1285,10 +1481,11 @@ public sealed class SolarTests
         _touched.Clear();
         GrowReuse(20000);
         _now += TimeSpan.FromMinutes(5);
+        int logged = _log.Lines.Count; // 예열 스트림 앞의 보호가 남긴 줄은 뺌
 
         p.Tick(Auto());
 
-        string[] refreshed = _log.Lines.Where(l => l.Contains("cache refreshed in memory")).Select(l => l.Split(':')[1].Trim()).ToArray();
+        string[] refreshed = _log.Lines.Skip(logged).Where(l => l.Contains("cache refreshed in memory")).Select(l => l.Split(':')[1].Trim()).ToArray();
         Assert.Equal(["b", "a", "c"], refreshed); // 가장 오래 전에 예열한 b 부터, 가장 최근 c 가 마지막
     }
 
@@ -1348,7 +1545,7 @@ public sealed class SolarTests
     }
 
     [Fact]
-    public void AStreamFinishedShortAtTheMemoryLimitIsNotTouchedBecauseItsReadRangeIsNotTheReplannedList()
+    public void AStreamFinishedShortAtTheMemoryLimitLaddersTheRangeItReadAndNotTheRestOfTheWindow()
     {
         ReadOp[] all = HotSet(50);
         (_streamer.All, _streamer.ZoneMib) = (all, 5000);
@@ -1364,12 +1561,12 @@ public sealed class SolarTests
         Assert.True(p.Run(Game("a"), "service start").Ran);
 
         Assert.Equal((1000L, 5000L), p.PartialInfo("a"));
-        Assert.Empty(_touched); // 읽은 만큼의 앞부분은 창 크기가 다르면 다시 계획한 목록과 같지 않아 (물리 순서 재정렬), 읽지 않은 구간을 만질 수 있으므로 건너뜀
-        Assert.False(p.Solar.HasMark("a"));
+        Assert.Equal(Reversed(all.Take(10)), _touched.Single()); // 스트림이 읽은 창 (3000 MiB) 의 목록 중 읽은 앞 1000 MiB (파일 10 개) 만: 나머지 구간은 만지지 않음
+        Assert.True(p.Solar.HasMark("a"));
     }
 
     [Fact]
-    public void ASupplementFinishedShortAtTheMemoryLimitIsNotTouchedEither()
+    public void ASupplementFinishedShortAtTheMemoryLimitLaddersTheRangeItReadToo()
     {
         ReadOp[] all = HotSet(50);
         (_streamer.All, _streamer.ZoneMib) = (all, 5000);
@@ -1390,7 +1587,7 @@ public sealed class SolarTests
         Assert.True(p.SupplementWhenIdle(Game("a"), CancellationToken.None));
 
         Assert.Equal((3300L, 5000L), p.PartialInfo("a"));
-        Assert.Empty(_touched);
+        Assert.Equal(Reversed(all.Take(33)), _touched.Single()); // 보충 창 (4300 MiB) 의 목록 중 읽은 앞 3300 MiB 만
     }
 
     [Fact]
@@ -1427,7 +1624,9 @@ public sealed class SolarTests
         GrowReuse(1000);
         Prewarmer p = MakePrewarmer(Game("a"));
         Assert.True(p.Run(Game("a"), "service start").Ran);
-        Assert.Empty(_touched); // 마무리한 스트림은 만지지 않음
+        Assert.Equal(Reversed(all.Take(10)), _touched.Single()); // 마무리한 스트림도 끝난 직후 읽은 범위의 사다리를 만듦 (아래 시나리오는 사다리가 없는 상태에서 시작하므로 표식을 지움)
+        p.Solar.Forget("a");
+        _touched.Clear();
         _streamer.OnProgress = null;
         _avail = waitForMemory ? 4096 + 256 + 1100 : 20000; // 대기: 들어가는 범위 1100 은 읽은 1000 보다 256 이상 크지 않음 / 아니면 곧 더 읽을 수 있음
         _now += TimeSpan.FromSeconds(30);
@@ -1495,5 +1694,362 @@ public sealed class SolarTests
 
         Assert.Single(_touched); // 표시가 있는 게임은 다시 만들지 않음
         Assert.Equal(callsBefore, _streamer.Calls.Count); // 보충이 대기 중이라 표시로 인한 재예열도 읽지 못하고 건너뛰기를 되풀이하지 않음 (읽기 호출 없음)
+    }
+
+    // ---- 묶음 새로 고침과 스트림 앞의 보호 ----
+
+    // a (더 오래전, 순위가 낮고 A 가 작음: 3900 MiB) 와 b (최근, A 7900 MiB) 를 예열해 둘 다 표식이 있고 4 분 넘게 지난 상태. b 는 트리거 경로로 예열해 스트림 앞의 보호가 a 를 만지지 않게 함.
+    // 재사용 누계는 1000 MiB 에서 시작: a 는 1560 MiB (0.4 x 3900) 늘면 때가 되고 b 는 3160 MiB 가 필요. c 는 예열하지 않은 세 번째 게임.
+    private Prewarmer TwoMarkedGames()
+    {
+        _lists = new MemoryLists(0, 1000 * Mib, 4000 * Mib);
+        Prewarmer p = MakePrewarmer(Game("a"), Game("b"), Game("c"));
+        Assert.True(p.Run(Game("a"), "service start").Ran);
+        GrowReuse(1000);
+        _now += TimeSpan.FromMinutes(2);
+        Assert.True(p.Run(Game("b"), "launcher", trigger: true).Ran);
+        _now += TimeSpan.FromMinutes(2);
+        _touched.Clear();
+        return p;
+    }
+
+    [Fact]
+    public void WhenOnlyOneMarkedGameIsDueTheTickRefreshesTheWholeGroupLowestRankFirstAndWritesTheMarksFromTheTouchOrder()
+    {
+        Prewarmer p = TwoMarkedGames();
+        _onTouch = () => _lists = new MemoryLists(0, 2600 * Mib, 9000 * Mib); // 만진 직후의 캐시 대기 바이트 C
+        GrowReuse(1000 + 1600); // a: 0.4 x 3900 = 1560 MiB 에 이름, b: 0.4 x 7900 = 3160 MiB 에는 못 미침
+        int logged = _log.Lines.Count;
+
+        p.Tick(Auto());
+
+        Assert.Equal(2, _touched.Count);
+        Assert.All(_touched, t => Assert.Equal(Reversed(Reads), t));
+        string[] lines = [.. _log.Lines.Skip(logged).Where(l => l.Contains("cache refreshed in memory"))];
+        Assert.Contains("a: cache refreshed in memory: 100 MiB in 0.4 s (1600 MiB repurposed of 3900 MiB ahead)", lines[0]); // 때가 되지 않은 b 도 함께, 순위가 낮은 a 가 먼저
+        Assert.Contains("b: cache refreshed in memory: 100 MiB in 0.4 s (1600 MiB repurposed of 7900 MiB ahead)", lines[1]);
+        _onTouch = null;
+        _lists = new MemoryLists(0, 2700 * Mib, 9000 * Mib);
+        _ = p.Solar.Refresh(Game("a"), CancellationToken.None);
+        _ = p.Solar.Refresh(Game("b"), CancellationToken.None);
+        string[] after = [.. _log.Lines.TakeLast(2)];
+        Assert.Contains("(100 MiB repurposed of 8800 MiB ahead)", after[0]); // 9000 - (100 + 100)
+        Assert.Contains("(100 MiB repurposed of 8900 MiB ahead)", after[1]); // 9000 - 100
+    }
+
+    [Fact]
+    public void AColdGameLeavesTheGroupAndAGameTheGateSkipsKeepsItsMarkWithWhatWasAheadLoweredByWhatTheOthersTouched()
+    {
+        _lists = new MemoryLists(0, 1000 * Mib, 4000 * Mib);
+        Prewarmer p = MakePrewarmer(Game("a"), Game("b"), Game("c"));
+        Assert.True(p.Run(Game("a"), "service start").Ran); // A = 3900 MiB
+        GrowReuse(1000);
+        _now += TimeSpan.FromMinutes(2);
+        Assert.True(p.Run(Game("b"), "launcher", trigger: true).Ran);
+        _now += TimeSpan.FromMinutes(2);
+        Assert.True(p.Run(Game("c"), "launcher", trigger: true).Ran); // A: b 7900, c 7900 MiB
+        _now += TimeSpan.FromSeconds(30); // c 는 방금 (1 분 안) 예열: 게이트가 건너뜀
+        _touched.Clear();
+        _coldGames.Add("a");
+        GrowReuse(1000 + 1600); // a: 0.4 x 3900 = 1560 MiB 에 이름
+        int logged = _log.Lines.Count;
+
+        p.Tick(Auto());
+
+        Assert.Single(_touched); // b 만 만짐
+        Assert.False(p.Solar.HasMark("a")); // 식은 게임은 표식을 지우고 재예열 점검에 맡김
+        Assert.Contains(_log.Lines.Skip(logged), l => l.Contains("a: cache refresh skipped, the samples are cold"));
+        Assert.True(p.Solar.HasMark("c"));
+        _coldGames.Clear();
+        _ = p.Solar.Refresh(Game("c"), CancellationToken.None);
+        Assert.Contains("(1600 MiB repurposed of 7800 MiB ahead)", _log.Lines.Last()); // 7900 - min(b 의 이전 표식이 만진 100, 이번에 만진 100): b 의 이전 표식이 c 보다 먼저, 기준값은 그대로
+        _ = p.Solar.Refresh(Game("b"), CancellationToken.None);
+        Assert.Contains("(0 MiB repurposed of 7900 MiB ahead)", _log.Lines.Last()); // b 의 새 표식: 대기 8000 - 자기가 만진 100, 기준값은 이번 시점
+    }
+
+    [Fact]
+    public void TheGroupIsNotRefreshedAgainWithinSixtySecondsEvenWhenDue()
+    {
+        Prewarmer p = TwoMarkedGames();
+        GrowReuse(1000 + 1600);
+        p.Tick(Auto());
+        Assert.Equal(2, _touched.Count);
+        GrowReuse(30000);
+        _now += TimeSpan.FromSeconds(30);
+
+        p.Tick(Auto());
+
+        Assert.Equal(2, _touched.Count);
+        _now += TimeSpan.FromSeconds(31);
+        p.Tick(Auto());
+        Assert.Equal(4, _touched.Count);
+    }
+
+    [Fact]
+    public void AStreamThatIsNotATriggerTouchesTheOtherMarkedGamesLowestRankFirstBeforeItReadsAndTheDoneLineShowsIt()
+    {
+        Prewarmer p = TwoMarkedGames();
+        int touchesAtStream = -1;
+        _streamer.DuringStream = () => touchesAtStream = _touched.Count;
+        int logged = _log.Lines.Count;
+
+        PrewarmResult result = p.Run(Game("c"), "service start");
+
+        Assert.True(result.Ran);
+        Assert.Equal(2, touchesAtStream); // 스트림이 읽는 동안에는 a, b 를 이미 만졌음
+        Assert.Equal(3, _touched.Count); // 그리고 이 게임의 사다리
+        Assert.All(_touched, t => Assert.Equal(Reversed(Reads), t));
+        string[] lines = [.. _log.Lines.Skip(logged)];
+        int a = Array.FindIndex(lines, l => l.Contains("a: cache refreshed in memory"));
+        int b = Array.FindIndex(lines, l => l.Contains("b: cache refreshed in memory"));
+        int done = Array.FindIndex(lines, l => l.Contains("c: prewarm done (service start)"));
+        Assert.True(a >= 0 && a < b && b < done); // 순위가 낮은 a 가 먼저
+        Assert.Contains(", protected 2 games (200 MiB in ", lines[done]);
+        Assert.EndsWith(" s)", lines[done]);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("a: prewarm done") && l.Contains("protected")); // 표식 있는 다른 게임이 없던 스트림에는 꼬리가 없음
+    }
+
+    [Fact]
+    public void ATriggerStreamDoesNotProtectTheOtherGamesButItsLadderLowersWhatIsAheadOfThem()
+    {
+        GrowReuse(1000);
+        Prewarmer p = MakePrewarmer(Game("a"), Game("b"));
+        Assert.True(p.Run(Game("b"), "launcher", trigger: true).Ran); // b 의 이전 표식 (100 MiB)
+        _now += TimeSpan.FromMinutes(2);
+        Assert.True(p.Run(Game("a"), "launcher", trigger: true).Ran); // A = 7900 MiB, b 의 표식보다 나중
+        _now += TimeSpan.FromMinutes(2);
+        _touched.Clear();
+        int touchesAtStream = -1;
+        _streamer.DuringStream = () => touchesAtStream = _touched.Count;
+        int logged = _log.Lines.Count;
+
+        Assert.True(p.Run(Game("b"), "launcher", ignoreCooldown: true, trigger: true).Ran);
+
+        Assert.Equal(0, touchesAtStream); // 트리거 예열은 늦추지 않음
+        Assert.Single(_touched); // b 의 사다리만
+        Assert.DoesNotContain(_log.Lines.Skip(logged), l => l.Contains("protected"));
+        _ = p.Solar.Refresh(Game("a"), CancellationToken.None);
+        Assert.Contains("(0 MiB repurposed of 7800 MiB ahead)", _log.Lines.Last()); // 7900 - min(b 의 이전 표식이 만진 100, 이번에 만진 100)
+    }
+
+    [Fact]
+    public void AStreamLeavesGamesWithoutAMarkAloneAndWithTheSettingOffItIsTheSameAsBefore()
+    {
+        GrowReuse(1000);
+        _enabled = false;
+        Prewarmer unmarked = MakePrewarmer(Game("a"), Game("b"));
+        Assert.True(unmarked.Run(Game("a"), "service start").Ran); // 표식 없음
+        _enabled = true;
+        _now += TimeSpan.FromMinutes(2);
+        int touchesAtStream = -1;
+        _streamer.DuringStream = () => touchesAtStream = _touched.Count;
+
+        Assert.True(unmarked.Run(Game("b"), "service start").Ran);
+
+        Assert.Equal(0, touchesAtStream);
+        _touched.Clear();
+        Prewarmer marked = TwoMarkedGames();
+        _enabled = false;
+        _touched.Clear();
+
+        Assert.True(marked.Run(Game("c"), "service start").Ran);
+
+        Assert.Empty(_touched);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("c: prewarm done") && l.Contains("protected"));
+    }
+
+    [Fact]
+    public void AColdOtherGameIsNotTouchedByTheProtectionBecauseTheSampleCheckStaysInPlace()
+    {
+        Prewarmer p = TwoMarkedGames();
+        _coldGames.Add("a");
+        int touchesAtStream = -1;
+        _streamer.DuringStream = () => touchesAtStream = _touched.Count;
+        int logged = _log.Lines.Count;
+
+        Assert.True(p.Run(Game("c"), "service start").Ran);
+
+        Assert.Equal(1, touchesAtStream); // b 만
+        Assert.False(p.Solar.HasMark("a"));
+        Assert.Contains(_log.Lines.Skip(logged), l => l.Contains("a: cache refresh skipped, the samples are cold"));
+    }
+
+    [Fact]
+    public void AGameStartDuringTheProtectionStopsItAtOnceAndTheRestOfTheMarkedGamesAreNotTouched()
+    {
+        Prewarmer p = TwoMarkedGames();
+        _onTouch = () => p.NoteGameStart("c");
+        int logged = _log.Lines.Count;
+
+        PrewarmResult result = p.Run(Game("c"), "service start");
+
+        Assert.False(result.Ran);
+        Assert.Single(_touched);
+        Assert.Contains(_log.Lines.Skip(logged), l => l.Contains("a: cache refresh stopped after"));
+        Assert.DoesNotContain(_log.Lines.Skip(logged), l => l.Contains("b: cache refresh"));
+    }
+
+    [Fact]
+    public void AProtectionThatFindsDataMissingOrThrowsLeavesTheStreamResultTheSame()
+    {
+        Prewarmer missing = TwoMarkedGames();
+        _result = _result with { End = TouchEnd.NeedsDiskReads, SlowPieces = 3, DiskBytes = 32 * Mib };
+
+        PrewarmResult result = missing.Run(Game("c"), "service start");
+
+        Assert.True(result.Ran);
+        Assert.Equal(30 * Mib, result.Stats!.Bytes);
+        Assert.True(missing.Solar.HasMissing("a")); // 빠진 부분은 재예열 점검에 맡김
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("c: prewarm done") && l.Contains("protected")); // 끝까지 만진 게임이 없으면 꼬리 없음
+
+        _result = new TouchResult(100 * Mib, 0.4, 0, 0, TouchEnd.Completed);
+        Prewarmer throwing = TwoMarkedGames();
+        _onTouch = () => throw new IOException("boom");
+
+        PrewarmResult thrown = throwing.Run(Game("c"), "service start");
+
+        Assert.True(thrown.Ran);
+        Assert.Equal(30 * Mib, thrown.Stats!.Bytes);
+        Assert.Contains(_log.Lines, l => l.Contains("a: cache refresh failed: IOException"));
+    }
+
+    [Fact]
+    public void AGameThatAGateKeepsBlockedWhileItIsDueDoesNotMakeTheOtherGamesBeTouchedAgainAndAgain()
+    {
+        GameSettings e = Game("e") with { OriginRoot = @"E:\Games\e" }; // 다른 디스크
+        _lists = new MemoryLists(0, 1000 * Mib, 4000 * Mib);
+        Prewarmer p = MakePrewarmer(e, Game("b"), Game("c"));
+        Assert.True(p.Run(e, "service start").Ran); // A = 3900 MiB
+        GrowReuse(1000);
+        _now += TimeSpan.FromMinutes(2);
+        Assert.True(p.Run(Game("b"), "launcher", trigger: true).Ran);
+        _now += TimeSpan.FromMinutes(2);
+        Assert.True(p.Run(Game("c"), "launcher", trigger: true).Ran);
+        _now += TimeSpan.FromMinutes(2);
+        _touched.Clear();
+        _ = _running.Add("e"); // e 는 실행 중: 게이트가 막음
+        GrowReuse(1000 + 1600); // e 만 때가 됨 (b, c 는 3160 MiB 가 필요)
+
+        for (int i = 0; i < 4; i++)
+        {
+            p.Tick(Auto());
+            _now += TimeSpan.FromSeconds(61);
+        }
+
+        Assert.Empty(_touched); // 막힌 e 때문에 b, c 가 되풀이해 만져지지 않음
+        Assert.True(p.Solar.HasMark("e"));
+        GrowReuse(1000 + 3200); // 이제 b, c 자신이 때가 됨
+
+        p.Tick(Auto());
+
+        Assert.Equal(2, _touched.Count); // b 와 c 만 (막힌 e 는 건너뜀)
+    }
+
+    [Fact]
+    public void AGameWhoseDiskReadLeaseIsRefusedKeepsItsMarkAndIsSkippedWithoutALog()
+    {
+        Prewarmer p = TwoMarkedGames();
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        p.SetDiskReadCoordinator(coordinator);
+        coordinator.Yield(@"D:\Games\x", "game start", "x"); // 같은 디스크에서 게임이 시작해 양보 중: 대여 거절
+        GrowReuse(1000 + 1600);
+        int logged = _log.Lines.Count;
+
+        p.Tick(Auto());
+
+        Assert.Empty(_touched);
+        Assert.True(p.Solar.HasMark("a"));
+        Assert.True(p.Solar.HasMark("b"));
+        Assert.DoesNotContain(_log.Lines.Skip(logged), l => l.Contains("cache refresh skipped"));
+    }
+
+    [Fact]
+    public void ATriggerThatStartsWaitingDuringTheProtectionStopsItBeforeTheNextGame()
+    {
+        Prewarmer p = TwoMarkedGames();
+        IDisposable? wait = null;
+        _onTouch = () => wait ??= p.BeginTriggerWait([Game("b")]); // a 를 만지는 도중 같은 디스크의 트리거 예열이 기다리기 시작함
+        int logged = _log.Lines.Count;
+
+        _ = p.Run(Game("c"), "service start");
+        wait?.Dispose();
+
+        Assert.Single(_touched); // a 만: b 와 이 게임의 사다리는 만지지 않음
+        Assert.DoesNotContain(_log.Lines.Skip(logged), l => l.Contains("b: cache refresh"));
+    }
+
+    [Fact]
+    public void ARewarmStreamAndASupplementStreamProtectTheOtherGamesBeforeTheyReadToo()
+    {
+        Prewarmer p = TwoMarkedGames();
+        int touchesAtStream = -1;
+        _streamer.DuringStream = () => touchesAtStream = _touched.Count;
+
+        Assert.True(p.Run(Game("c"), "rewarm", ignoreCooldown: true).Ran);
+
+        Assert.Equal(2, touchesAtStream); // 재예열: a, b 를 이미 만졌음
+
+        ReadOp[] all = HotSet(50);
+        (_streamer.All, _streamer.ZoneMib) = (all, 5000);
+        _avail = 7000; // 핫 집합 5000 MiB + 예비 4096 MiB 가 다 들어가지 않아 앞부분만 읽음
+        Prewarmer partial = TwoMarkedGames();
+        Assert.True(partial.Run(Game("c"), "service start").Ran);
+        Assert.True(partial.SupplementPending("c"));
+        _touched.Clear();
+        _avail = 20000;
+        touchesAtStream = -1;
+        Assert.False(partial.SupplementWhenIdle(Game("c"), CancellationToken.None));
+        _now += TimeSpan.FromSeconds(61);
+
+        Assert.True(partial.SupplementWhenIdle(Game("c"), CancellationToken.None));
+
+        Assert.Equal(2, touchesAtStream); // 보충: 읽기 전에 a, b 를 만졌음
+        Assert.Contains(_log.Lines, l => l.Contains("c: supplement prewarm done") && l.Contains(", protected 2 games ("));
+    }
+
+    [Fact]
+    public void ASupplementThatReadAFullPlanAndFinishedShortAtTheMemoryLimitDoesNotLadderItsReadRange()
+    {
+        ReadOp[] all = HotSet(50);
+        (_streamer.All, _streamer.ZoneMib) = (all, 5000);
+        _avail = 4096 + 256 + 3000;
+        Prewarmer p = MakePrewarmer(Game("a"));
+        Assert.True(p.Run(Game("a"), "service start").Ran); // 창 3000 을 끝까지 읽음
+        _touched.Clear();
+        _avail = 4096 + 256 + 6000; // 이번에는 전체가 들어감: 틈 메우기 예산이 있는 전체 경로 (창 없음)
+        _streamer.ReadMib = 3300;
+        _streamer.OnProgress = progress =>
+        {
+            _avail = 4096 + 3300;
+            progress(3300 * Mib, 5000 * Mib);
+        };
+
+        Assert.False(p.SupplementWhenIdle(Game("a"), CancellationToken.None));
+        _now += TimeSpan.FromSeconds(61);
+        Assert.True(p.SupplementWhenIdle(Game("a"), CancellationToken.None));
+
+        Assert.Equal((3300L, 5000L), p.PartialInfo("a"));
+        Assert.Empty(_touched); // 예산이 있는 계획으로 읽은 범위는 창으로 다시 계획한 목록과 같다고 알 수 없어 만지지 않음 (재예열 점검의 첫 사다리가 받침)
+    }
+
+    [Fact]
+    public void TailsThatWouldShowZeroMibAreLeftOut()
+    {
+        Assert.Equal(string.Empty, new RequeueTally(0, 0, false, 700 * 1024).Note());
+        Assert.Equal(string.Empty, new RequeueTally(700 * 1024, 0.1, false).Note());
+        Assert.Equal(", requeued 5 MiB in 1.0 s", new RequeueTally(5 * Mib, 1.0, false, 700 * 1024).Note());
+        Assert.Equal(", requeued 5 MiB in 1.0 s (2 MiB in sparse files not touched)", new RequeueTally(5 * Mib, 1.0, false, 2 * Mib).Note());
+        Assert.Equal(string.Empty, new RequeueTally(0, 0, false, 0, 2, 500 * 1024, 0.1).Note());
+        Assert.Equal(", protected 2 games (3 MiB in 0.1 s)", new RequeueTally(0, 0, false, 0, 2, 3 * Mib, 0.1).Note());
+        Assert.Equal(string.Empty, new StreamStats(5 * Mib, 1, 0, 1) { BufferedBytes = 700 * 1024 }.BufferedNote());
+
+        _result = _result with { SkippedBytes = 700 * 1024 };
+        Solar solar = Make();
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        _ = solar.Refresh(Game("a"), CancellationToken.None);
+        Assert.All(_log.Lines, l => Assert.DoesNotContain("sparse files not touched", l));
+        _result = new TouchResult(10 * Mib, 0.6, 5, 0, TouchEnd.NeedsDiskReads, 32 * Mib, 700 * 1024);
+        _ = solar.Order(Game("b"), Reads, CancellationToken.None);
+        Assert.EndsWith("left to the rewarm check", _log.Lines.Last());
     }
 }

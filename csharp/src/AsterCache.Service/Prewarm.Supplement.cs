@@ -707,7 +707,7 @@ public sealed partial class Prewarmer
                         {
                             NoteProgress(game, inputStamp, ActualMib(stats, p.HotMib, skipBytes), p.HotMib, skipBytes + stats.Bytes);
                         }
-                    }, allowReorder: false, roomMib: allocatedMib ?? long.MaxValue, limitBytes: limitMib is { } limitBytesMib ? MibBytes(limitBytesMib) : long.MaxValue, allowFinish: true);
+                    }, allowReorder: false, roomMib: allocatedMib ?? long.MaxValue, limitBytes: limitMib is { } limitBytesMib ? MibBytes(limitBytesMib) : long.MaxValue, allowFinish: true, windowMib: windowMib ?? p.HotMib);
                     if (fellBack || windowMib is not null || hot is not { Complete: false, MemoryStop: true } || !HeavyWorkAllowed(game)
                         || MemoryFallbackCapMib(game, finalReadMib, budgetCap, ct) is not { } fallbackCap
                         || fallbackCap <= Math.Max(p.WarmedMib, ActualMib(hot.Value.Stats, p.HotMib, skipBytes)))
@@ -881,21 +881,7 @@ public sealed partial class Prewarmer
             }
         }
 
-        try
-        {
-            GameSettings window = game with { MaxStreamMib = (int)Math.Min(resume.WindowMib, int.MaxValue), MaxStreamSet = true };
-            if (_streamer.PlannedPrewarmReads(window) is not { Count: > 0 } planned || PrefetchStreamer.Head(planned, resume.Bytes) is not { Count: > 0 } read)
-            {
-                return null;
-            }
-
-            IReadOnlyList<ReadOp> common = _env.CommonFirstOps(window, 0, 0).Ops;
-            return common.Count == 0 ? read : [.. common, .. read];
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException)
-        {
-            return null;
-        }
+        return WindowLadderReads(game, resume.WindowMib, resume.Bytes);
     }
 
     // 들어가는 범위가 읽은 양보다 의미 있게 크지 않아 보충을 시작하지 않는 상태: 읽은 양이 바뀔 때만 한 줄 (들어가는 범위는 가용 메모리에 따라 계속 흔들리므로 키에 넣지 않음).

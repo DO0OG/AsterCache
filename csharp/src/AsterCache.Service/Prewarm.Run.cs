@@ -257,7 +257,7 @@ public sealed partial class Prewarmer
                     while (true)
                     {
                         streamed = StreamHot(warm, ct, zoneBytes, availableRamMib, memoryPartial is not null, Settle,
-                            allowReorder: memoryPartial is null && !HasPartialState(game.Name), roomMib: roomMib ?? long.MaxValue, allowWhileExiting: trigger, why: why);
+                            allowReorder: memoryPartial is null && !HasPartialState(game.Name), roomMib: roomMib ?? long.MaxValue, allowWhileExiting: trigger, why: why, windowMib: memoryPartial?.WarmedMib ?? 0);
                         if (fellBack || memoryPartial is not null || streamed is not { Complete: false, MemoryStop: true }
                             || MemoryFallbackCapMib(game, finalReadMib, roomMib ?? long.MaxValue, ct) is not { } fallbackCap)
                         {
@@ -443,8 +443,9 @@ public sealed partial class Prewarmer
     // settle: 끝까지 읽었을 때 (또는 아래 메모리 한도로 마무리했을 때, 두 번째 인자 true) StreamEnded 알림보다 먼저 부름 (읽은 통계를 받아 부분 예열 상태를 확정하거나 지움).
     // 창 읽기 (partial) 와 allowFinish 가 켜진 읽기 (순서를 바꾸지 않는 보충) 는 메모리 한도에 걸려도 취소하지 않고 읽은 데까지로 마무리해 (Complete 와 MemoryStop 이 함께 참, CancelReason 은 가용·예비량) 돌려줍니다.
     // 틈을 메우는 계획 (partial 아님) 이 마무리하면 통계의 GapBytes > 0 이라 호출 쪽이 읽은 양을 보수적으로 세고 이어 읽을 위치는 남기지 않습니다. limitBytes: 건너뛴 앞부분을 포함해 이만큼까지만 읽음.
+    // windowMib: 읽는 창 (MiB) 의 크기, 틈 없는 창 읽기가 한도로 마무리했을 때 읽은 범위의 사다리를 만드는 데 씀 (0 이면 모름: 만들지 않음).
     // skipBytes: 읽기 목록 앞쪽 이만큼은 이미 읽었으니 건너뜀 (끊긴 보충을 이어 읽음, 틈 메우기 없는 경로에서만). onTotal: 이번에 읽을 목록의 길이 (건너뛴 앞부분 제외).
-    private (StreamStats Stats, bool Complete, string? CancelReason, bool MemoryStop)? StreamHot(GameSettings game, CancellationToken ct, long? zoneBytes, long availableRamMib, bool partial = false, Action<StreamStats, bool>? settle = null, long skipBytes = 0, Action<long>? onTotal = null, bool allowReorder = true, long roomMib = long.MaxValue, bool allowWhileExiting = false, string? why = null, long limitBytes = long.MaxValue, bool allowFinish = false)
+    private (StreamStats Stats, bool Complete, string? CancelReason, bool MemoryStop)? StreamHot(GameSettings game, CancellationToken ct, long? zoneBytes, long availableRamMib, bool partial = false, Action<StreamStats, bool>? settle = null, long skipBytes = 0, Action<long>? onTotal = null, bool allowReorder = true, long roomMib = long.MaxValue, bool allowWhileExiting = false, string? why = null, long limitBytes = long.MaxValue, bool allowFinish = false, long windowMib = 0)
     {
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "prewarm stream", ct, preserveForGameRoot: _auto.KeepStreamOnGameStart ? game.OriginRoot : null, preserveGameKey: game.Name, allowWhileExiting: allowWhileExiting);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
@@ -480,7 +481,8 @@ public sealed partial class Prewarmer
         // 읽기는 이 스레드 (묶음 점검 콜백도 같은 스레드) 에서 내므로 I/O 우선순위도 여기서 바꾸고 아래 finally 에서 되돌립니다.
         var readYield = new ReadYield(_env.SetReadIoLow, PrewarmYield.StartsYielding(why, _env.UptimeMs()));
         StreamRequeue? requeue = BeginRequeue(game, readYield.Exclude); // 읽는 묶음마다 곧바로 다시 만듦 (SOLAR 가 꺼져 있으면 null: 스트림은 지금과 같음)
-        double ExposureSeconds() => Math.Max(0, Stopwatch.GetElapsedTime(startedAt).TotalSeconds - (requeue?.Seconds ?? 0)); // 다시 만지기는 디스크 읽기가 아니므로 노출 시간에서 뺌
+        double protectedSeconds = 0; // 스트림 앞의 보호가 쓴 시간
+        double ExposureSeconds() => Math.Max(0, Stopwatch.GetElapsedTime(startedAt).TotalSeconds - (requeue?.Seconds ?? 0) - protectedSeconds); // 다시 만지기는 디스크 읽기가 아니므로 노출 시간에서 뺌
         try
         {
             using CancellationTokenRegistration leaseReg = lease?.Token.Register(() =>
@@ -504,6 +506,9 @@ public sealed partial class Prewarmer
                 long allocationBytes = allocationMib > (long.MaxValue >> 20) ? long.MaxValue : allocationMib << 20;
                 maxBytes = Math.Min(maxBytes, allocationBytes);
             }
+            RequeueTally protectedOthers = ProtectOthers(game, stop.Token, allowWhileExiting, readYield); // 디스크를 읽기 전에 (보정 읽기도 읽기): 트리거 예열은 하지 않음
+            protectedSeconds = protectedOthers.ProtectedSeconds;
+            _requeued += protectedOthers;
             // 트리거 예열은 보정 읽기를 하지 않음 (ORBIT 결정은 이미 쌓인 장치 구간만 쓰고 이번 스트림의 표본을 요구하지 않음)
             if (!allowWhileExiting && _env.DeviceCalibration is not null && (_env.DeviceCalibrationEnabled?.Invoke() ?? true)) // 훅이 없거나 off 면 기준선과 같은 호출만 남김
             {
@@ -552,9 +557,10 @@ public sealed partial class Prewarmer
             finalStats = r.Item1;
             LogYield(game.Name, r.Item1.Bytes, lease);
             streamSeconds = ExposureSeconds();
-            if (complete && r.Item1.Bytes > 0)
+            if (r.Item1.Bytes > 0 && (complete || (shortFinish && partial && r.Item1.GapBytes == 0 && windowMib > 0)))
             {
-                LadderAfterStream(game, stop.Token); // 같은 디스크 대여 안에서: 게임 시작·대여 취소가 stop 으로 바로 멈춤. 한도로 마무리한 스트림은 건너뜀: 읽은 만큼의 앞부분은 창 크기가 달라 다시 계획한 목록과 같지 않아, 읽지 않은 구간을 만질 수 있음
+                // 같은 디스크 대여 안에서: 게임 시작·대여 취소가 stop 으로 바로 멈춤. 한도로 마무리한 스트림은 창 읽기·이어 읽기 (partial: 틈 메우기 예산 0, 스트림이 읽은 목록 = 같은 창으로 계획한 목록) 일 때만 읽은 창의 앞부분을 만짐: 예산이 있는 계획으로 읽은 전체 경로는 목록이 달라질 수 있어 건너뜀
+                LadderAfterStream(game, stop.Token, complete ? null : () => WindowLadderReads(game, windowMib, skipBytes + r.Item1.Bytes));
             }
 
             return shortFinish ? (r.Item1, true, fit!.Reason, true) : (r.Item1, complete, cancelDetail.First, cancelDetail.Memory);

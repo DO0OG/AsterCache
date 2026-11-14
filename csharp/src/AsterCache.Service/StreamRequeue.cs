@@ -5,12 +5,16 @@ using AsterCache.Windows;
 namespace AsterCache.Service;
 
 /// 한 예열 스트림이 만지는 데 쓴 양: 만진 바이트, 걸린 시간 (초), 디스크 읽기가 감지돼 만지기가 멈췄는가, 스파스 파일이라 만지지 않은 바이트.
-internal readonly record struct RequeueTally(long Bytes, double Seconds, bool DiskStopped, long SkippedBytes = 0)
+/// Protected*: 스트림이 디스크를 읽기 전에 표식이 있는 다른 게임을 만진 양 (게임 수, 바이트, 걸린 시간): 묶음을 다시 만지는 것과 따로 셈.
+internal readonly record struct RequeueTally(long Bytes, double Seconds, bool DiskStopped, long SkippedBytes = 0, int ProtectedGames = 0, long ProtectedBytes = 0, double ProtectedSeconds = 0)
 {
-    public static RequeueTally operator +(RequeueTally a, RequeueTally b) => new(a.Bytes + b.Bytes, a.Seconds + b.Seconds, a.DiskStopped || b.DiskStopped, a.SkippedBytes + b.SkippedBytes);
+    public static RequeueTally operator +(RequeueTally a, RequeueTally b) => new(a.Bytes + b.Bytes, a.Seconds + b.Seconds, a.DiskStopped || b.DiskStopped, a.SkippedBytes + b.SkippedBytes,
+        a.ProtectedGames + b.ProtectedGames, a.ProtectedBytes + b.ProtectedBytes, a.ProtectedSeconds + b.ProtectedSeconds);
 
-    /// 예열 완료 로그 줄 끝에 붙이는 말 (만진 것도 멈춘 것도 건너뛴 것도 없으면 빈 문자열).
-    public string Note() => Bytes > 0 || DiskStopped || SkippedBytes > 0 ? $", requeued {Bytes >> 20} MiB in {Seconds:F1} s{(SkippedBytes > 0 ? $" ({SkippedBytes >> 20} MiB in sparse files not touched)" : string.Empty)}{(DiskStopped ? ", requeue stopped by disk reads" : string.Empty)}" : string.Empty;
+    /// 예열 완료 로그 줄 끝에 붙이는 말 (만진 것도 멈춘 것도 건너뛴 것도 지킨 것도 없으면 빈 문자열, MiB 로 0 인 스파스·보호 꼬리는 붙이지 않음).
+    public string Note() => RequeuedNote() + (ProtectedGames > 0 && ProtectedBytes >> 20 > 0 ? $", protected {ProtectedGames} games ({ProtectedBytes >> 20} MiB in {ProtectedSeconds:F1} s)" : string.Empty);
+
+    private string RequeuedNote() => Bytes >> 20 > 0 || DiskStopped || SkippedBytes >> 20 > 0 ? $", requeued {Bytes >> 20} MiB in {Seconds:F1} s{(SkippedBytes >> 20 > 0 ? $" ({SkippedBytes >> 20} MiB in sparse files not touched)" : string.Empty)}{(DiskStopped ? ", requeue stopped by disk reads" : string.Empty)}" : string.Empty;
 }
 
 /// 예열 스트림이 묶음을 읽을 때마다 그 범위를 곧바로 다시 만집니다 (SOLAR 의 만지기, 디스크 읽기 없음이 전제).

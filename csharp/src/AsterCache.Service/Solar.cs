@@ -15,6 +15,7 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
     private readonly Dictionary<string, LadderMark> _marks = new(StringComparer.OrdinalIgnoreCase); // 마지막으로 만든 사다리의 표식, 메모리에만 둠 (서비스를 다시 시작하면 없음), _lock 으로 보호
     private readonly HashSet<string> _missing = new(StringComparer.OrdinalIgnoreCase); // 사다리가 목록의 일부가 캐시에 없음을 발견한 게임 (재예열 점검이 다시 채울 때까지), 메모리에만 둠, _lock 으로 보호
     private readonly HashSet<string> _untouchable = new(StringComparer.OrdinalIgnoreCase); // 목록이 전부 스파스 파일이라 만질 것이 없었던 게임 (다음 예열 스트림 뒤 사다리가 다시 판정할 때까지 재예열 점검이 사다리를 다시 시도하지 않음), 메모리에만 둠, _lock 으로 보호
+    private DateTimeOffset? _groupAt; // 마지막으로 묶음을 새로 고친 (표식을 같은 기준으로 다시 쓴) 시각, 메모리에만 둠, _lock 으로 보호
 
     public bool Enabled => env.StandbyLadderEnabled();
 
@@ -96,7 +97,9 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
                     break;
                 }
 
+                LadderMark? previous = MarkOf(game.Name); // SetMark 가 덮어쓰기 전의 표식
                 SetMark(game.Name, ladder, r);
+                ReduceOthers([game.Name], [(previous, r.Bytes)]); // 이 게임이 만진 페이지가 다른 게임의 뒤로 감
                 log.Info($"{game.Name}: ladder ordered {r.Bytes >> 20} MiB in {r.Seconds:F1} s{Errors(r)}{Sparse(r)}");
                 break;
             case TouchEnd.Canceled:
@@ -119,7 +122,8 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
 
     /// 표식이 있는 게임의 사다리를 다시 만듭니다 (디스크 읽기 없음). 표식이 없거나 꺼져 있으면 null.
     /// 디스크 읽기가 섞이면 표식을 지우고 다시 채움 표시를 남겨 기존 재예열 점검에 맡깁니다: 재예열은 여기서 부르지 않으며, 재예열이 끝나 사다리가 다시 만들어질 때까지 새로 고치지 않습니다.
-    public TouchEnd? Refresh(GameSettings game, CancellationToken ct)
+    /// touched: 끝까지 만졌을 때 이전 표식과 만진 바이트를 알림 (묶음 새로 고침이 Regroup 에 넘길 값).
+    public TouchEnd? Refresh(GameSettings game, CancellationToken ct, Action<LadderMark, long>? touched = null)
     {
         LadderMark? mark;
         lock (_lock)
@@ -144,6 +148,7 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
                 else
                 {
                     SetMark(game.Name, mark.Ladder, r);
+                    touched?.Invoke(mark, r.Bytes);
                 }
 
                 log.Info($"{game.Name}: cache refreshed in memory: {r.Bytes >> 20} MiB in {r.Seconds:F1} s ({repurposed >> 20} MiB repurposed of {mark.AheadBytes >> 20} MiB ahead){Errors(r)}{Sparse(r)}");
@@ -165,8 +170,57 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         return r.End;
     }
 
-    /// 표식이 있고 새로 고칠 때가 된 게임 (입력 순서 그대로). 대기 목록은 표식이 하나라도 있을 때만 한 번 읽습니다.
-    public IReadOnlyList<GameSettings> Due(IEnumerable<GameSettings> games, DateTimeOffset at)
+    /// 표식이 있는 게임 (입력 순서 그대로).
+    public IReadOnlyList<GameSettings> Marked(IEnumerable<GameSettings> games) => [.. MarkedPairs(games).Select(m => m.Game)];
+
+    /// 묶음 새로 고침 대상: 표식이 있는 게임 전체 (입력 순서 그대로). 그중 지금 만질 수 있는 (usable, 없으면 모두) 게임 하나라도 새로 고칠 때가 됐고 직전 묶음 새로 고침 뒤 GroupEvery 가 지났을 때만, 아니면 빈 목록.
+    /// 게이트에 막힌 게임은 때가 됐어도 시작 판정에 쓰지 않습니다: 계속 막힌 게임 하나 때문에 다른 게임이 되풀이해 만져지지 않게. 대기 목록은 표식이 하나라도 있을 때만 한 번 읽습니다.
+    public IReadOnlyList<GameSettings> DueGroup(IEnumerable<GameSettings> games, DateTimeOffset at, Func<GameSettings, bool>? usable = null)
+    {
+        List<(GameSettings Game, LadderMark Mark)> marked = MarkedPairs(games);
+        DateTimeOffset? last;
+        lock (_lock)
+        {
+            last = _groupAt;
+        }
+
+        if (marked.Count == 0 || (last is { } groupAt && at - groupAt < SolarPolicy.GroupEvery))
+        {
+            return [];
+        }
+
+        MemoryLists? lists = env.Lists();
+        return marked.Any(m => SolarPolicy.RefreshDue(m.Mark, lists, at) && (usable?.Invoke(m.Game) ?? true)) ? [.. marked.Select(m => m.Game)] : [];
+    }
+
+    /// 묶음을 만진 순서대로 (touched: 게임, 만진 바이트, 만지기 전의 표식, 가장 오래된 것이 먼저) 표식을 같은 기준 시점 (재사용 누계·대기 바이트) 으로 다시 쓰고,
+    /// 이번에 만지지 않은 표식은 앞에 있는 양을 SolarPolicy.AheadAfterOthersTouched 로 줄입니다. 대기 목록을 못 읽으면 표식은 그대로 두고 (시간 기준) 줄이기만 합니다.
+    public void Regroup(IReadOnlyList<(string Game, long Bytes, LadderMark? Previous)> touched)
+    {
+        if (touched.Count == 0)
+        {
+            return;
+        }
+
+        MemoryLists? lists = env.Lists();
+        long[] ahead = lists is { } l ? SolarPolicy.GroupAhead(l.CacheStandbyBytes, [.. touched.Select(t => t.Bytes)]) : [];
+        DateTimeOffset at = now();
+        lock (_lock)
+        {
+            for (int i = 0; lists is { } current && i < touched.Count; i++)
+            {
+                if (_marks.TryGetValue(touched[i].Game, out LadderMark? mark))
+                {
+                    _marks[touched[i].Game] = new LadderMark(at.AddTicks(i), current.CacheRepurposedBytes, ahead[i], touched[i].Bytes, mark.Ladder); // 만진 순서대로 시각을 늘려 (가장 오래된 게임이 가장 이름) 같은 묶음 안에서도 AheadAfterOthersTouched 가 앞뒤를 가림
+                }
+            }
+
+            ReduceOthersLocked([.. touched.Select(t => t.Game)], [.. touched.Select(t => (t.Previous, t.Bytes))]);
+            _groupAt = at;
+        }
+    }
+
+    private List<(GameSettings Game, LadderMark Mark)> MarkedPairs(IEnumerable<GameSettings> games)
     {
         List<(GameSettings Game, LadderMark Mark)> marked = [];
         lock (_lock)
@@ -180,13 +234,33 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
             }
         }
 
-        if (marked.Count == 0)
-        {
-            return [];
-        }
+        return marked;
+    }
 
-        MemoryLists? lists = env.Lists();
-        return [.. marked.Where(m => SolarPolicy.RefreshDue(m.Mark, lists, at)).Select(m => m.Game)];
+    private LadderMark? MarkOf(string game)
+    {
+        lock (_lock)
+        {
+            return _marks.GetValueOrDefault(game);
+        }
+    }
+
+    // except 가 아닌 표식의 A 를 줄입니다 (touched: 그 게임들이 만지기 전의 표식과 만진 바이트).
+    private void ReduceOthers(IEnumerable<string> except, IReadOnlyList<(LadderMark? Previous, long Bytes)> touched)
+    {
+        lock (_lock)
+        {
+            ReduceOthersLocked(except, touched);
+        }
+    }
+
+    private void ReduceOthersLocked(IEnumerable<string> except, IReadOnlyList<(LadderMark? Previous, long Bytes)> touched)
+    {
+        HashSet<string> skip = new(except, StringComparer.OrdinalIgnoreCase);
+        foreach ((string game, LadderMark mark) in _marks.Where(m => !skip.Contains(m.Key)).Select(m => (m.Key, m.Value)).ToList())
+        {
+            _marks[game] = mark with { AheadBytes = SolarPolicy.AheadAfterOthersTouched(mark, touched.Select(t => (t.Previous, t.Bytes))) };
+        }
     }
 
     private void SetMark(string game, IReadOnlyList<ReadOp> ladder, TouchResult r)
@@ -256,8 +330,8 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
     // 다시 채움 로그의 꼬리: 사다리 (역순) 를 몇 MiB 만지고 멈췄는지 (만진 양이 전체에 가까우면 빠진 것은 가장 중요한 앞쪽), 느린 조각 수와 디스크에서 읽힌 양, 오류 수. N 은 건너뛴 스파스 범위를 포함한 사다리 전체 (건너뛴 양은 줄 끝 꼬리로 따로 보임).
     private static string Missing(TouchResult r, IReadOnlyList<ReadOp> ladder) => $"after {r.Bytes >> 20} of {ladder.Sum(o => o.Length) >> 20} MiB ({r.SlowPieces} slow pieces{(r.DiskBytes > 0 ? $", {r.DiskBytes >> 20} MiB read from disk" : string.Empty)}{(r.Errors > 0 ? $", {r.Errors} errors" : string.Empty)})";
 
-    // 줄 끝에 붙이는 스파스 파일이라 만지지 않은 양 (없으면 빈 문자열)
-    private static string Sparse(TouchResult r) => r.SkippedBytes > 0 ? $", {r.SkippedBytes >> 20} MiB in sparse files not touched" : string.Empty;
+    // 줄 끝에 붙이는 스파스 파일이라 만지지 않은 양 (MiB 로 0 이면 빈 문자열)
+    private static string Sparse(TouchResult r) => r.SkippedBytes >> 20 > 0 ? $", {r.SkippedBytes >> 20} MiB in sparse files not touched" : string.Empty;
 
     // 줄 끝에 붙이는 오류 수와 디스크에서 읽힌 것으로 본 양
     private static string Errors(TouchResult r) => (r.Errors > 0 ? $", {r.Errors} errors" : string.Empty) + (r.DiskBytes > 0 ? $", {r.DiskBytes >> 20} MiB read from disk" : string.Empty);

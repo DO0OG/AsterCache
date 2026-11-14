@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using AsterCache.Core;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
@@ -43,20 +44,59 @@ public sealed partial class Prewarmer
         }
     }
 
+    // 핫 집합 스트림이 디스크를 읽기 시작하기 직전 (StreamHot, 디스크 대여 안): 표식이 있는 다른 게임들을 순위가 낮은 것부터 한 번 만집니다 (유지 틱의 묶음 새로 고침과 같은 함수, 대상에서 이 게임만 뺌).
+    // 그러면 이 스트림이 새로 읽는 페이지는 다른 게임이 아니라 캐시 (와 이 게임 자신의 오래된 페이지) 부터 밀어냅니다. 표본 점검과 게이트는 새로 고침과 같습니다.
+    // 트리거 예열 (allowWhileExiting) 은 게임 시작이 임박한 경로라 늦추지 않으려고 하지 않고, 스트림이 끝난 뒤 사다리가 다른 게임의 A 만 줄입니다 (Solar.Order).
+    // 만지는 데 쓴 시간은 스트림의 노출 시간·양보 시간에서 빼도록 돌려줍니다. 실패·취소돼도 스트림 결과는 같습니다.
+    private RequeueTally ProtectOthers(GameSettings game, CancellationToken stop, bool trigger, ReadYield readYield)
+    {
+        bool Halted() => _streamGameStarted || _streamPreempted || PreemptedByTriggerWait(game.Name);
+        if (trigger || !_solar.Enabled || _auto.KeepStreamOnGameStart || stop.IsCancellationRequested || Halted())
+        {
+            return default;
+        }
+
+        IReadOnlyList<GameSettings> others = _solar.Marked(Enumerable.Reverse(Warmed()).Where(g => !string.Equals(g.Name, game.Name, StringComparison.OrdinalIgnoreCase))); // Warmed 는 최근 순
+        if (others.Count == 0)
+        {
+            return default;
+        }
+
+        long startedAt = Stopwatch.GetTimestamp();
+        (int Games, long Bytes) touched = (0, 0);
+        try
+        {
+            touched = _rewarm.RefreshGroup(others, _auto, stop, Halted);
+        }
+        catch (OperationCanceledException)
+        {
+            // 스트림이 멈춤: 아무것도 하지 않음
+        }
+        catch (Exception e) when (e is not (OutOfMemoryException or StackOverflowException))
+        {
+            _log.Warn($"{game.Name}: protecting the other games skipped: {e.GetType().Name}"); // 예열 결과에는 영향을 주지 않음
+        }
+
+        double seconds = Stopwatch.GetElapsedTime(startedAt).TotalSeconds;
+        readYield.Exclude(seconds);
+        return new RequeueTally(0, 0, false, 0, touched.Games, touched.Bytes, seconds);
+    }
+
     // 핫 집합 스트림이 끝까지 읽은 직후 (StreamHot, 디스크 대여 안): 그 게임이 지금까지 캐시에 올린 전체의 역순으로 캐시를 만져 중요한 것이 마지막에 밀려나게 합니다.
     // game 은 스트림이 읽은 범위를 나타내는 사본 (메모리·상한으로 줄인 것 포함, 보충이면 이어 읽은 창) 이라 앞에서 읽은 부분과 보충분이 모두 대상입니다. 방금 읽었으므로 표본 점검은 생략합니다.
+    // reads: 메모리 한도로 마무리한 스트림은 읽은 창의 앞부분 (WindowLadderReads), 끝까지 읽었으면 null (읽은 범위 전체).
     // 게임이 이미 도는 디스크이거나 keep_stream_on_game_start (게임이 떠도 스트림을 끊지 않는 실험 설정) 가 켜져 있으면 만지지 않습니다: 만지기도 캐시에 없으면 디스크 읽기라 게임을 느리게 할 수 있습니다.
-    private void LadderAfterStream(GameSettings game, CancellationToken stop)
+    private void LadderAfterStream(GameSettings game, CancellationToken stop, Func<IReadOnlyList<ReadOp>?>? reads = null)
     {
         if (!_solar.Enabled || _auto.KeepStreamOnGameStart || _streamGameStarted || stop.IsCancellationRequested || _streamPreempted || PreemptedByTriggerWait(game.Name) || DriveHasRunningGame(game)
-            || LadderReads(game) is not { Count: > 0 } reads)
+            || (reads is null ? LadderReads(game) : reads()) is not { Count: > 0 } ladder)
         {
             return;
         }
 
         try
         {
-            _ = _solar.Order(game, reads, stop);
+            _ = _solar.Order(game, ladder, stop);
         }
         catch (Exception e) when (e is not (OperationCanceledException or OutOfMemoryException or StackOverflowException))
         {
@@ -84,6 +124,26 @@ public sealed partial class Prewarmer
         }
     }
 
+    // 틈 없는 창 읽기가 읽은 범위의 사다리 대상 (공통 블록 + 창 목록의 앞 bytes 바이트): 창 (windowMib) 은 스트림이 읽은 것과 같은 크기로 계획하므로 읽지 않은 구간을 만지지 않습니다. 계획할 수 없으면 null.
+    private IReadOnlyList<ReadOp>? WindowLadderReads(GameSettings game, long windowMib, long bytes)
+    {
+        try
+        {
+            GameSettings window = game with { MaxStreamMib = (int)Math.Min(windowMib, int.MaxValue), MaxStreamSet = true };
+            if (_streamer.PlannedPrewarmReads(window) is not { Count: > 0 } planned || PrefetchStreamer.Head(planned, bytes) is not { Count: > 0 } read)
+            {
+                return null;
+            }
+
+            IReadOnlyList<ReadOp> common = _env.CommonFirstOps(window, 0, 0).Ops;
+            return common.Count == 0 ? read : [.. common, .. read];
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException)
+        {
+            return null;
+        }
+    }
+
     /// 지금까지 읽은 범위를 나타내는 게임: 부분 예열 (메모리·시작 상한) 이면 읽은 앞부분까지로 줄인 사본, 아니면 그대로.
     internal GameSettings CoveredPart(GameSettings g)
     {
@@ -91,6 +151,13 @@ public sealed partial class Prewarmer
         {
             return _partial.TryGetValue(g.Name, out (long WarmedMib, long HotMib) part) ? g with { MaxStreamMib = (int)Math.Min(part.WarmedMib, int.MaxValue), MaxStreamSet = true } : g;
         }
+    }
+
+    // 이 게임 디스크의 읽기 대여를 지금 얻을 수 있는가 (얻으면 바로 놓음): 새로 고침이 대여 거절을 "표본 없음" 으로 보고 표식을 지우지 않게 먼저 물어봅니다.
+    internal bool DiskReadAllowed(GameSettings game, CancellationToken ct)
+    {
+        using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "cache refresh gate", ct);
+        return _coordinator is null || lease is { IsValid: true };
     }
 
     // 디스크 대여 안에서 work 를 돌립니다 (거절·무효면 null): 게임이 시작돼 대여가 취소되면 work 의 토큰이 취소됩니다.

@@ -273,8 +273,8 @@ public sealed class PrewarmEnv
             LauncherRunning = () => ProcessSnapshot.IsRunning(LauncherExes.All),
             CpuPercent = new CpuLoad().Percent,
             DiskBytesPerSecond = g => DiskActivity.BytesPerSecond(PlanFile.SplitDrive(g.OriginRoot)),
-            DiskSample = g => DiskActivity.Read(PlanFile.SplitDrive(g.OriginRoot)),
-            GameDiskSample = g => DiskActivity.Read(PlanFile.SplitDrive(g.OriginRoot), keepStalled: true),
+            DiskSample = g => DiskActivity.Read(PlanFile.SplitDrive(g.OriginRoot), holdLast: true),
+            GameDiskSample = g => DiskActivity.Read(PlanFile.SplitDrive(g.OriginRoot), keepStalled: true, holdLast: true),
             DiskWindowSample = (g, settle, window) => DiskActivity.MeasureWindow(PlanFile.SplitDrive(g.OriginRoot), settle, window),
             GameReadBytes = RegisteredReadBytes,
             OpenPin = paths =>

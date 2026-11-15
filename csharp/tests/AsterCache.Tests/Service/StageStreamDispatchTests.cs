@@ -24,12 +24,20 @@ public sealed class StageStreamDispatchTests
     private bool _backingOff;
     private int _lookups; // 프로세스·읽기 카운터 조회 횟수
     private ManualResetEventSlim? _samplerGate; // 있으면 표본 스레드가 시계를 읽다가 멈춤 (진행 중인 표본을 흉내)
-    private readonly int _mainThread = Environment.CurrentManagedThreadId;
+    private readonly ManualResetEventSlim _samplerEntered = new(); // 표본 스레드가 시계 읽기에 들어섰음을 알림
+    private Thread? _handleThread; // Handle 을 부르는 (시험) 스레드
+    private int _namedLookups; // 이름 있는 읽기 카운터 조회 횟수
     private Action? _onSleep;
     private bool _stage = true;
     private IReadOnlyList<(int Pid, string Exe)> _processes = [];
 
-    private GameDispatcher Dispatcher() =>
+    private GameDispatcher Dispatcher()
+    {
+        _handleThread = Thread.CurrentThread;
+        return Create();
+    }
+
+    private GameDispatcher Create() =>
         new([Game, Games.Make("other", "other.exe")], _streamer, _log, () => DateTimeOffset.UnixEpoch.AddSeconds(_sec), new DispatchEnv
         {
             BackingOff = _ => _backingOff,
@@ -47,12 +55,14 @@ public sealed class StageStreamDispatchTests
             ReadCountersWithExeNames = _ =>
             {
                 _lookups++;
+                _namedLookups++;
                 return [.. _counters];
             },
             Timestamp = () =>
             {
-                if (_samplerGate is { } gate && Environment.CurrentManagedThreadId != _mainThread)
+                if (_samplerGate is { } gate && Thread.CurrentThread != _handleThread)
                 {
+                    _samplerEntered.Set();
                     gate.Wait();
                 }
 
@@ -383,7 +393,7 @@ public sealed class StageStreamDispatchTests
     {
         RunningFirst();
         _streamer.StartOpsList = [A];
-        _streamer.OnStartOps = () => _sec += 130; // 계획이 상한 (120 초) 을 넘김
+        _streamer.OnStartOps = _ => _sec += 130; // 계획이 상한 (120 초) 을 넘김
         Assert.False(Dispatcher().Handle(Start(5, "cod.exe")));
         Assert.Contains(_log.Lines, l => l.Contains("start stream stopped at cap after ", StringComparison.Ordinal));
         Assert.Empty(_streamer.BatchCount);
@@ -392,7 +402,7 @@ public sealed class StageStreamDispatchTests
         var other = new StageStreamDispatchTests();
         other.RunningFirst();
         other._streamer.StartOpsList = [A];
-        other._streamer.OnStartOps = () => other._sec += 5;
+        other._streamer.OnStartOps = _ => other._sec += 5;
         other._streamer.OnBatch = (_, _) => other._sec += 2;
         Assert.True(other.Dispatcher().Handle(other.Start(5, "cod.exe")));
         Assert.Contains(other._log.Lines, l => l.Contains(", 11.000 s (", StringComparison.Ordinal)); // 계획 5 초 + 묶음 6 초
@@ -404,18 +414,29 @@ public sealed class StageStreamDispatchTests
         RunningFirst();
         _stage = false;
         _streamer.FinalCheck = false;
-        _samplerGate = new ManualResetEventSlim();
+        var gate = new ManualResetEventSlim();
+        _samplerGate = gate;
+        Thread handle = Thread.CurrentThread;
+        int hookDone = 0;
         _streamer.OnBatch = (phase, index) =>
         {
+            if (index == 0)
+            {
+                // 표본 스레드가 시계 읽기에서 멈추고, 스트림이 돌아간 뒤 Handle 스레드가 표본 합류 (또는 잠금) 에서 막힌 것이 보이면 풀어 줌: 합류 도중에 마지막 표본이 상한을 세우는 순서.
+                // 시간이 아니라 신호로 맞춤 (5 초 안에 막힘이 안 보이는 극단적 지연에서는 그냥 풀어 시험이 멈추지 않게 함)
+                _ = Task.Run(() =>
+                {
+                    _samplerEntered.Wait(TimeSpan.FromSeconds(30));
+                    SpinWait.SpinUntil(() => Volatile.Read(ref hookDone) != 0 && (handle.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0, TimeSpan.FromSeconds(5));
+                    _sec = 500; // 풀린 표본이 읽는 시각은 상한을 넘음
+                    gate.Set();
+                });
+            }
+
             if (index == 2)
             {
-                _ = Task.Run(async () =>
-                {
-                    await Task.Delay(2500);
-                    _sec = 500; // 표본이 풀려 시계를 읽으면 상한을 넘은 시각
-                    _samplerGate.Set();
-                });
-                Thread.Sleep(2000); // 그 사이 표본 스레드가 깨어나 시계를 읽다가 멈춤 (스트림은 끝 확인 없이 돌아감)
+                Assert.True(_samplerEntered.Wait(TimeSpan.FromSeconds(30))); // 실제 표본 스레드가 시계를 읽다 멈출 때까지
+                Volatile.Write(ref hookDone, 1);
             }
         };
 
@@ -423,6 +444,98 @@ public sealed class StageStreamDispatchTests
 
         Assert.Contains(_log.Lines, l => l.Contains("start stream stopped at cap after ", StringComparison.Ordinal)); // 표본 합류 뒤에 플래그를 읽음
         Assert.DoesNotContain(_log.Lines, l => l.Contains("start stream cancelled", StringComparison.Ordinal));
+    }
+
+    private void PlanWithNextStage()
+    {
+        RunningFirst();
+        _streamer.FirstPlan = new StageFirstPlan([A], "sp26-cod.exe", [B], 0);
+    }
+
+    [Fact]
+    public void NextStageProcessThatAppearedAndExitedWhileReadingTheFirstStageStillSkipsTheAhead()
+    {
+        PlanWithNextStage();
+        _streamer.OnBatch = (phase, index) =>
+        {
+            _sec += 2;
+            if (phase == A.Path && index == 0)
+            {
+                _counters.Add((9, "sp26-cod.exe", 0)); // 표본 한 번에 보임
+            }
+
+            if (phase == A.Path && index == 1)
+            {
+                _counters.RemoveAll(c => c.Pid == 9); // A 가 끝나기 전에 사라짐
+            }
+        };
+
+        Assert.True(Dispatcher().Handle(Start(5, "cod.exe")));
+
+        Assert.DoesNotContain(B.Path, _streamer.Phases); // B 의 읽기는 발행되지 않음
+        Assert.Contains(_log.Lines, l => l.Contains("; ahead stage sp26-cod.exe 0 MiB in 0.0 s (stopped, next stage started)", StringComparison.Ordinal));
+        Assert.Empty(_io); // 우선순위도 바꾸지 않음
+    }
+
+    [Fact]
+    public void NextStageProcessThatStartedDuringPlanningIsNotMissed()
+    {
+        PlanWithNextStage();
+        _streamer.OnPlan = () => _counters.Add((9, "sp26-cod.exe", 0)); // 계획 중에 뜸 (시작 때의 pid 집합에는 없음)
+        _streamer.OnBatch = (_, _) => _sec += 2;
+
+        Assert.True(Dispatcher().Handle(Start(5, "cod.exe")));
+
+        Assert.DoesNotContain(B.Path, _streamer.Phases);
+        Assert.Contains(_log.Lines, l => l.Contains("ahead stage sp26-cod.exe 0 MiB", StringComparison.Ordinal) && l.Contains("stopped, next stage started", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void NextStageProcessThatWasThereFromTheStartIsNotANewOneAndTheAheadRuns()
+    {
+        PlanWithNextStage();
+        _counters.Add((9, "sp26-cod.exe", 0)); // 스트림 시작 때 이미 있던 pid: 새 pid 가 아님 (설계 4절: 시작 때 없던 pid 만 멈춤 신호)
+        _streamer.OnBatch = (_, _) => _sec += 2;
+
+        Assert.True(Dispatcher().Handle(Start(5, "cod.exe")));
+
+        Assert.Contains(B.Path, _streamer.Phases);
+        Assert.Contains(_log.Lines, l => l.Contains("ahead stage sp26-cod.exe 192 MiB", StringComparison.Ordinal) && l.Contains("completed)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void WithoutAStagePlanOrWhenDisabledNoNamedCounterLookupHappens()
+    {
+        RunningFirst();
+        _streamer.OnBatch = (_, _) => _sec += 2;
+        Assert.True(Dispatcher().Handle(Start(5, "cod.exe"))); // 켠 상태, 단계 정보 없음
+        Assert.Equal(0, _namedLookups);
+
+        _stage = false;
+        _sec = 700;
+        _processes = [(7, "cod.exe")];
+        _counters.Clear();
+        _counters.Add((7, "cod.exe", 0));
+        _streamer.FirstPlan = new StageFirstPlan([A], "sp26-cod.exe", [B], 0);
+        Assert.True(Dispatcher().Handle(Start(7, "cod.exe"))); // 끈 상태
+        Assert.Equal(0, _namedLookups);
+    }
+
+    [Fact]
+    public void PlanningRunsUnderTheLiveSamplerAndTheCapCancelsTheTokenGivenToThePlanner()
+    {
+        RunningFirst();
+        _streamer.StartOpsList = [A];
+        _streamer.OnStartOps = token =>
+        {
+            _sec += 130; // 실제 표본 스레드가 계획 도중 이 시각을 보고 상한 취소를 거는지 신호로 기다림
+            Assert.True(token.WaitHandle.WaitOne(TimeSpan.FromSeconds(30)));
+        };
+
+        Assert.False(Dispatcher().Handle(Start(5, "cod.exe")));
+
+        Assert.Contains(_log.Lines, l => l.Contains("start stream stopped at cap after ", StringComparison.Ordinal));
+        Assert.Empty(_streamer.BatchCount);
     }
 
     [Fact]
@@ -676,20 +789,25 @@ public sealed class StageStreamDispatchTests
         public Dictionary<string, int> BatchCount { get; } = [];
         public IReadOnlyList<ReadOp>? StartOpsList { get; set; }
         public bool FinalCheck { get; set; } = true;
-        public Action? OnStartOps { get; set; }
+        public Action<CancellationToken>? OnStartOps { get; set; }
+        public Action? OnPlan { get; set; }
         public CancellationToken StartOpsToken { get; private set; }
         public int CanIssueCalls { get; private set; }
 
         public IReadOnlyList<ReadOp>? StartOps(GameSettings game, CancellationToken stop)
         {
             StartOpsToken = stop;
-            OnStartOps?.Invoke();
+            OnStartOps?.Invoke(stop);
             return StartOpsList;
         }
 
         public StreamStats Stream(GameSettings game) => new(0, 0, 0, 0);
 
-        public StageFirstPlan? PlanFirstStage(GameSettings game, CancellationToken stop) => FirstPlan;
+        public StageFirstPlan? PlanFirstStage(GameSettings game, CancellationToken stop)
+        {
+            OnPlan?.Invoke();
+            return FirstPlan;
+        }
 
         public StageLaterPlan PlanLaterStage(GameSettings game, string exe, CancellationToken stop) => LaterPlans(exe);
 

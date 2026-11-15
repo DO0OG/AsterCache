@@ -230,7 +230,7 @@ public sealed partial class GameDispatcher
         DateTimeOffset? quietSince = null;
         IReadOnlyList<ReadOp>? streamOps = spec.Ops is null ? null : StageStreamPlans.Split(spec.Ops); // 한 묶음이 64 MiB 를 크게 넘지 않게 잘라, 우선순위 전환과 메모리 게이트가 묶음마다 듣게 함
         long remainingBytes = streamOps is null ? long.MaxValue : streamOps.Sum(o => o.Length);
-        bool needNames = spec.BoundaryPid is not null; // 첫 스트림은 미리 흘리기를 시작할 때에야 이름 있는 카운터로 바꿈 (그 전에는 원본과 같은 카운터 조회)
+        bool needNames = spec.BoundaryPid is not null; // 첫 스트림은 계획이 끝나 미리 흘릴 단계가 있다고 안 뒤에야 이름 있는 카운터로 바꿈 (그 전·단계 정보가 없으면 원본과 같은 카운터 조회)
         string? aheadExe = null;
         HashSet<int> initialPids = [];
         StageFirstPlan? aheadPlan = null;
@@ -252,6 +252,7 @@ public sealed partial class GameDispatcher
             foreach ((int pid, _, long bytes) in Counters())
             {
                 previousReads[pid] = bytes;
+                _ = initialPids.Add(pid); // 스트림 시작 때 이미 있던 프로세스: 다음 단계의 새 프로세스를 가르는 기준
             }
         }
         catch (Exception e) when (e is not (OutOfMemoryException or StackOverflowException))
@@ -460,6 +461,31 @@ public sealed partial class GameDispatcher
                         (IReadOnlyList<ReadOp>? planned, aheadPlan) = planner(issueStop.Token); // 원본처럼 시계·표본·상한 취소가 돌기 시작한 뒤에 목록을 만듦
                         streamOps = planned is null ? null : StageStreamPlans.Split(planned);
                         Interlocked.Exchange(ref remainingBytes, streamOps is null ? long.MaxValue : streamOps.Sum(o => o.Length));
+                        if (aheadPlan is { } known)
+                        {
+                            lock (sampleLock)
+                            {
+                                try
+                                {
+                                    // 미리 흘릴 단계가 있을 때만 이름 있는 조회로 바꾸고, 계획 중에 뜬 다음 단계의 새 pid 도 지금 확인함 (그 뒤는 표본이 첫 단계 동안 계속 봄)
+                                    foreach ((int pid, string exe, _) in _env.ReadCountersWithExeNames(g.ExeNames))
+                                    {
+                                        if (!initialPids.Contains(pid) && string.Equals(exe, known.AheadExe, StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            Volatile.Write(ref nextStageSeen, 1);
+                                        }
+                                    }
+
+                                    aheadExe = known.AheadExe;
+                                    needNames = true;
+                                }
+                                catch (Exception e) when (e is not (OutOfMemoryException or StackOverflowException))
+                                {
+                                    _log.Warn($"{g.Name}: start stream read counters unavailable ({e.GetType().Name})");
+                                    aheadPlan = null; // 다음 단계 프로세스를 가릴 수 없으면 미리 흘리지 않음
+                                }
+                            }
+                        }
                     }
 
                     (r, complete) = streamOps is null
@@ -510,26 +536,13 @@ public sealed partial class GameDispatcher
         // 첫 단계를 다 흘린 뒤: 경계 판정 없이 다음 단계를 낮은 우선순위에서 이어 흘림 (같은 대여, 같은 상한 시계). 다음 단계 프로세스가 보이거나 다른 게임의 시작이 대기열에 들어오면 멈춤.
         AheadOutcome StreamAhead(StageFirstPlan plan)
         {
+            if (Volatile.Read(ref nextStageSeen) != 0)
+            {
+                return new AheadOutcome(plan.AheadExe, 0, 0, false, "next stage started"); // 첫 단계를 읽는 동안 (또는 계획 중에) 새 프로세스가 떴었음: 이미 시작한 단계는 미리 흘리지 않음
+            }
+
             lock (sampleLock)
             {
-                IReadOnlyList<(int Pid, string Exe, long ReadBytes)> named;
-                try
-                {
-                    named = _env.ReadCountersWithExeNames(g.ExeNames); // 이름 있는 카운터로 바꾸며 기준을 다시 잡음
-                }
-                catch (Exception e) when (e is not (OutOfMemoryException or StackOverflowException))
-                {
-                    return new AheadOutcome(plan.AheadExe, 0, 0, false, "counters unavailable");
-                }
-
-                if (named.Any(c => string.Equals(c.Exe, plan.AheadExe, StringComparison.OrdinalIgnoreCase)))
-                {
-                    return new AheadOutcome(plan.AheadExe, 0, 0, false, "next stage started"); // 첫 단계를 흘리는 동안 이미 떴음
-                }
-
-                initialPids = [.. named.Select(c => c.Pid)];
-                aheadExe = plan.AheadExe;
-                needNames = true;
                 (low, quietSince) = (true, null); // 낮음으로 시작
                 Volatile.Write(ref wantLow, 1);
                 Interlocked.Exchange(ref remainingBytes, plan.AheadOps.Sum(o => o.Length));

@@ -24,6 +24,9 @@ internal sealed class FakeTrace : IAutoTrace
 
     public Exception? StopFailure { get; set; }
 
+    /// 비어 있지 않으면 Stop 이 이 문이 열릴 때까지 기다림 (느린 추적 종료를 흉내).
+    public ManualResetEventSlim? StopGate { get; set; }
+
     public Exception? DisposeFailure { get; set; }
 
     public bool Stopped { get; private set; }
@@ -63,6 +66,7 @@ internal sealed class FakeTrace : IAutoTrace
 
     public IReadOnlyList<TraceRecord> Stop()
     {
+        _ = StopGate?.Wait(TimeSpan.FromSeconds(30));
         Stopped = true;
         if (StopFailure is { } failure)
         {

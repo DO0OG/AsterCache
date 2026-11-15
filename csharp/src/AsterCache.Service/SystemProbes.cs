@@ -138,9 +138,10 @@ public static partial class DiskActivity
 
     /// 값과 상태를 한 번에 읽음 (Warming·Stale 과 Broken 을 구분하는 호출자용). 바쁨 판정은 IsBusy(bps, state).
     /// keepStalled: 게임 보호 판정용. 수집이 GiveUpMs 넘게 멈춘 정체는 Broken 으로 넘기지 않고 Warming·Stale 로 유지 (정체는 고장이 아님).
-    public static (double? Bps, SampleState State) Read(string letter, bool keepStalled = false) => Shared.Read(letter, keepStalled);
+    /// holdLast: 양보 판단용. 값을 못 읽게 된 지 HoldMs 안이면 고장 대신 직전 값을 이어 씀 ("바쁨/모름" 으로 막는 호출자는 쓰지 않음).
+    public static (double? Bps, SampleState State) Read(string letter, bool keepStalled = false, bool holdLast = false) => Shared.Read(letter, keepStalled, holdLast);
 
-    /// 바쁜가, 표본이 아직 없거나 낡았으면 바쁨, 읽지 못하는 고장은 바쁘지 않음 (기존 동작: 고장 때문에 영구히 막지 않음). keepStalled 는 Read 와 같음.
+    /// 바쁜가, 표본이 아직 없거나 낡았으면 바쁨, 읽지 못하는 고장은 바쁘지 않음 (기존 동작: 고장 때문에 영구히 막지 않음). keepStalled 는 Read 와 같음. 양보 판단 전용이라 직전 값을 이어 씀 (holdLast).
     public static bool BusyUnlessBroken(string letter, bool keepStalled = false) => Shared.BusyUnlessBroken(letter, keepStalled);
 
     /// 읽지 못하면 바쁜 것으로 간주 (보수적: 재적용을 미룸).
@@ -156,29 +157,51 @@ public static partial class DiskActivity
     public static double? Sum(string letter, IReadOnlyDictionary<string, double> instances) => Sum(letter, instances, out _);
 
     /// 사유: 매핑 없음 = instance_unmapped, 유한하지 않거나 음수인 값이 있음 = value_invalid (그 경우 letter 와 무관하게 null).
-    public static double? Sum(string letter, IReadOnlyDictionary<string, double> instances, out string? reason)
-    {
-        string key = letter.TrimEnd(':', '\\').ToUpperInvariant() + ":";
-        double sum = 0;
-        bool found = false;
-        foreach ((string name, double value) in instances)
-        {
-            if (!double.IsFinite(value) || value < 0)
-            {
-                reason = ValueInvalid;
-                return null;
-            }
+    public static double? Sum(string letter, IReadOnlyDictionary<string, double> instances, out string? reason) => Sum(letter, instances, [], out reason, out _);
 
-            string[] parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length > 1 && uint.TryParse(parts[0], out _) && parts.Skip(1).Contains(key, StringComparer.OrdinalIgnoreCase))
-            {
-                sum += value;
-                found = true;
-            }
+    /// remembered: 앞서 이 문자가 붙어 있던 디스크 번호. 문자가 붙은 인스턴스가 없으면 그 번호의 인스턴스로 이어 읽음. disks: 다음에 기억할 디스크 번호.
+    public static double? Sum(string letter, IReadOnlyDictionary<string, double> instances, IReadOnlyCollection<string> remembered, out string? reason, out IReadOnlyCollection<string> disks)
+    {
+        disks = remembered;
+        if (instances.Values.Any(v => !double.IsFinite(v) || v < 0))
+        {
+            reason = ValueInvalid;
+            return null;
         }
 
-        reason = found ? null : InstanceUnmapped;
-        return found ? sum : null;
+        IReadOnlyList<string> picked = PickInstances(letter, instances.Keys, remembered, out disks);
+        reason = picked.Count > 0 ? null : InstanceUnmapped;
+        return picked.Count > 0 ? picked.Sum(name => instances[name]) : null;
+    }
+
+    private static string Key(string letter) => letter.TrimEnd(':', '\\').ToUpperInvariant() + ":";
+
+    // 인스턴스 이름 ("0", "0 C: D:") 앞의 디스크 번호, 숫자가 아니면 null (_Total).
+    private static string? DiskNumber(string name) => uint.TryParse(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault(), out uint n) ? n.ToString(System.Globalization.CultureInfo.InvariantCulture) : null;
+
+    /// letter 가 붙은 인스턴스를 고름. 붙은 디스크 번호가 기억에 없는 번호를 포함하면 새 매핑이라 그 번호들로 기억을 바꿈 (disks).
+    /// 붙은 번호가 모두 기억 안에 있으면 일부 인스턴스만 문자를 놓친 것이라 기억을 줄이지 않고 문자 없이 번호만 남은 인스턴스 ("2") 도 함께 고름.
+    /// 하나도 없으면 remembered 번호의 인스턴스 ("0", "0 E:") 를 고름 (disks 는 그대로): 카운터가 한 표본에서 문자를 놓쳐도 이어 읽음.
+    /// 번호는 앞자리가 아니라 첫 토큰 전체로 비교함 ("1" 이 "10" 을 고르지 않음).
+    public static IReadOnlyList<string> PickInstances(string letter, IEnumerable<string> names, IReadOnlyCollection<string> remembered, out IReadOnlyCollection<string> disks)
+    {
+        string key = Key(letter);
+        string[] all = [.. names];
+        string[] mapped = [.. all.Where(name => name.Split(' ', StringSplitOptions.RemoveEmptyEntries) is { Length: > 1 } parts && uint.TryParse(parts[0], out _) && parts.Skip(1).Contains(key, StringComparer.OrdinalIgnoreCase))];
+        disks = remembered;
+        if (mapped.Length == 0)
+        {
+            return [.. all.Where(name => DiskNumber(name) is { } d && remembered.Contains(d))];
+        }
+
+        string[] numbers = [.. mapped.Select(n => DiskNumber(n)!).Distinct()];
+        if (numbers.Any(n => !remembered.Contains(n)))
+        {
+            disks = numbers;
+            return mapped;
+        }
+
+        return [.. mapped, .. all.Where(name => !name.Contains(' ', StringComparison.Ordinal) && DiskNumber(name) is { } d && remembered.Contains(d))];
     }
 
     private static readonly ConcurrentDictionary<string, byte> Reported = new(StringComparer.Ordinal);
@@ -187,14 +210,11 @@ public static partial class DiskActivity
     /// 서비스 시작에서 꽂는 서비스 로그 (없으면 기록하지 않음 — 시험·CLI).
     public static ILog? Log { get; set; }
 
-    /// 드라이브별 1 회만 기록 (반복 로그 방지).
-    private static void Report(string letter, string reason)
-    {
-        if (Reported.TryAdd(letter, 0))
-        {
-            Log?.Info($"DiskActivity: {letter} {StatusText} ({reason})");
-        }
-    }
+    // 값을 못 읽게 된 뒤 양보 판단이 직전 값을 이어 쓰는 시간: 인스턴스 목록이 잠시 다시 만들어지는 정도의 끊김을 건너뜀.
+    private const long HoldMs = 10_000;
+
+    // 같은 드라이브의 끊김·회복 로그 쌍을 남기는 최소 간격: 사이에 생긴 끊김은 횟수로 합침.
+    private const long LogPairEveryMs = 600_000;
 
     /// 표본 상태: Ok = 최신 표본이 있음, Warming = 첫 표본 전, Stale = 마지막 성공 표본이 StaleMs 이상 지남, Broken = 수집 실패·카운터 쓸 수 없음·수집이 GiveUpMs 넘게 멈춤.
     public enum SampleState { Ok, Warming, Stale, Broken }
@@ -211,7 +231,8 @@ public static partial class DiskActivity
     /// start: 수집 루프를 돌리는 방법 (기본 백그라운드 스레드, 시험은 아무것도 안 하고 Refresh·Tick 을 직접 부름). log: 수집 실패 기록 (기본 DiskActivity.Log).
     public sealed class PhysicalSampler(Func<IReadOnlyDictionary<string, double>?> sample, Func<long> nowMs, Action<Action>? start = null, Func<ILog?>? log = null)
     {
-        private sealed record Snapshot(long At, IReadOnlyDictionary<string, double>? Data);
+        // Seq: 게시 순번. 오래된 표본을 늦게 처리하는 호출이 더 새 표본으로 갱신된 상태를 되돌리지 못하게 비교함.
+        internal sealed record Snapshot(long At, IReadOnlyDictionary<string, double>? Data, long Seq);
 
         // 표본 간격 (CacheMs) 의 두 배: 한 번 놓쳐도 이어지고, 두 번 연속 놓치면 낡은 값으로 판정하지 않음.
         private const long StaleMs = CacheMs * 2;
@@ -221,6 +242,7 @@ public static partial class DiskActivity
         private const string SampleStalled = "sample_stalled";
         private readonly CancellationTokenSource _stop = new();
         private volatile Snapshot? _latest;
+        private long _seq;
         private int _stalledWarned; // 정체 경고를 이미 남겼는가 (0/1)
         private long _startedAt = long.MinValue; // 수집을 시작한 시각, 시작 전에는 MinValue
 
@@ -242,48 +264,203 @@ public static partial class DiskActivity
         /// 바쁜가 (IsBusy(bps, state) 규칙), 값과 상태는 같은 한 번의 읽기에서 나옴.
         public bool BusyUnlessBroken(string letter, bool keepStalled = false)
         {
-            (double? bps, SampleState state) = Read(letter, keepStalled);
+            (double? bps, SampleState state) = Read(letter, keepStalled, holdLast: true);
             return IsBusy(bps, state);
         }
 
         /// 최신 스냅샷 하나에서 값과 상태를 함께 돌려줌 (값과 상태를 따로 읽다 사이에 표본이 게시되는 경쟁을 막음).
-        public (double? Bps, SampleState State) Read(string letter, bool keepStalled = false)
+        /// holdLast: 고장 (Broken) 이어도 처음 못 읽게 된 표본에서 HoldMs 가 지나지 않았으면 마지막으로 읽은 값을 Ok 로 돌려줌 (양보 판단 전용).
+        public (double? Bps, SampleState State) Read(string letter, bool keepStalled = false, bool holdLast = false)
         {
             Start();
-            long now = nowMs();
-            if (_latest is not { } snap)
+            (double? bps, SampleState state) = Evaluate(letter, keepStalled, _latest);
+            if (holdLast && state == SampleState.Broken)
             {
-                return now - Volatile.Read(ref _startedAt) < GiveUpMs ? (null, SampleState.Warming) : Stalled(letter, keepStalled ? SampleState.Warming : SampleState.Broken);
+                lock (_letters)
+                {
+                    if (State(letter) is { GoodAt: not null, DownSince: { } since } st && nowMs() - since < HoldMs)
+                    {
+                        return (st.GoodBps, SampleState.Ok);
+                    }
+                }
             }
 
+            return (bps, state);
+        }
+
+        internal Snapshot? Latest => _latest;
+
+        // 상태 갱신과 로그 대기열 적재는 잠금 안에서, 로그 출력은 잠금 밖에서 함 (느린 로그가 다른 드라이브의 읽기를 막지 않게).
+        internal (double? Bps, SampleState State) Evaluate(string letter, bool keepStalled, Snapshot? snap)
+        {
+            (double? Bps, SampleState State) result;
+            lock (_letters)
+            {
+                result = EvaluateLocked(letter, keepStalled, snap, nowMs());
+            }
+
+            Flush();
+            return result;
+        }
+
+        private (double? Bps, SampleState State) EvaluateLocked(string letter, bool keepStalled, Snapshot? snap, long now)
+        {
+            if (snap is null)
+            {
+                long started = Volatile.Read(ref _startedAt);
+                return now - started < GiveUpMs ? (null, SampleState.Warming) : Stalled(letter, keepStalled ? SampleState.Warming : SampleState.Broken, started);
+            }
+
+            LetterState st = State(letter);
+            bool older = snap.Seq < st.Seq; // 이미 더 새 표본으로 갱신된 상태는 되돌리지 않음
+            st.Seq = Math.Max(st.Seq, snap.Seq);
             if (snap.Data is null)
             {
-                Report(letter, CounterUnavailable);
+                if (!older)
+                {
+                    Down(st, letter, CounterUnavailable, snap.At);
+                }
+
                 return (null, SampleState.Broken);
             }
 
             if (now - snap.At >= StaleMs)
             {
-                return now - snap.At < GiveUpMs ? (null, SampleState.Stale) : Stalled(letter, keepStalled ? SampleState.Stale : SampleState.Broken);
+                return now - snap.At < GiveUpMs ? (null, SampleState.Stale) : Stalled(letter, keepStalled ? SampleState.Stale : SampleState.Broken, snap.At);
             }
 
-            double? bps = Sum(letter, snap.Data, out string? reason);
+            double? bps = Sum(letter, snap.Data, st.Disks, out string? reason, out IReadOnlyCollection<string> disks);
             if (reason is not null)
             {
-                Report(letter, reason);
+                if (!older)
+                {
+                    Down(st, letter, reason, snap.At);
+                }
+
                 return (null, SampleState.Broken);
+            }
+
+            if (!older)
+            {
+                st.Disks = disks;
+                st.GoodBps = bps!.Value;
+                st.GoodAt = snap.At;
+                Recovered(st, letter, snap.At);
             }
 
             return (bps, SampleState.Ok);
         }
 
-        // 정체가 GiveUpMs 를 넘음: 경고는 정체 진입마다 한 번 (새 표본이 게시되면 다시 켜짐). state 는 호출자가 정함 (기본 Broken, 게임 보호 판정은 정체 상태 유지).
-        private (double?, SampleState) Stalled(string letter, SampleState state)
+        // 드라이브 문자 하나의 기억: 마지막으로 붙어 있던 디스크 번호, 마지막으로 읽은 값, 끊김 진행 상태와 로그 합치기, 반영한 마지막 표본 순번.
+        private sealed class LetterState
         {
-            Report(letter, SampleStalled);
+            public IReadOnlyCollection<string> Disks = [];
+            public double GoodBps;
+            public long? GoodAt;
+            public long? DownSince;
+            public string? DownReason;
+            public bool DownLogged;
+            public long? PairAt;
+            public int Merged;
+            public long Seq;
+        }
+
+        private readonly Dictionary<string, LetterState> _letters = [];
+        private readonly Queue<(string Message, bool Warn)> _out = new(); // _letters 잠금으로 보호, 순서대로 출력할 로그
+        private int _draining;
+
+        // _letters 잠금 안에서만 부름.
+        private LetterState State(string letter)
+        {
+            string key = Key(letter);
+            if (!_letters.TryGetValue(key, out LetterState? st))
+            {
+                _letters[key] = st = new LetterState();
+            }
+
+            return st;
+        }
+
+        // 대기열을 순서대로 출력: 한 스레드만 출력하고 (나머지는 바로 돌아감, 비운 뒤 다시 확인하므로 놓치지 않음) 호출자 스레드는 _letters 를 쥔 채 쓰지 않음.
+        private void Flush()
+        {
+            while (Interlocked.CompareExchange(ref _draining, 1, 0) == 0)
+            {
+                try
+                {
+                    while (true)
+                    {
+                        (string Message, bool Warn) item;
+                        lock (_letters)
+                        {
+                            if (!_out.TryDequeue(out item))
+                            {
+                                break;
+                            }
+                        }
+
+                        Note(item.Message, item.Warn);
+                    }
+                }
+                finally
+                {
+                    Volatile.Write(ref _draining, 0);
+                }
+
+                lock (_letters)
+                {
+                    if (_out.Count == 0)
+                    {
+                        return;
+                    }
+                }
+            }
+        }
+
+        // 값을 못 읽는 상태에 들어감 (at: 최초 실패 표본의 시각): 같은 상태가 이어지는 동안은 다시 남기지 않고, 같은 드라이브의 로그 쌍은 LogPairEveryMs 에 한 번만 남김 (사이의 끊김은 횟수로 합침). _letters 잠금 안에서만 부름.
+        private void Down(LetterState st, string letter, string reason, long at)
+        {
+            if (st.DownSince is not null)
+            {
+                return;
+            }
+
+            st.DownSince = at;
+            st.DownReason = reason;
+            st.DownLogged = st.PairAt is not { } last || at - last >= LogPairEveryMs;
+            if (!st.DownLogged)
+            {
+                st.Merged++;
+                return;
+            }
+
+            st.PairAt = at;
+            _out.Enqueue(($"DiskActivity: {letter} {StatusText} ({reason}{(st.Merged > 0 ? $", {st.Merged} short outage(s) merged since the last report" : string.Empty)})", false));
+            st.Merged = 0;
+        }
+
+        // 다시 읽게 됨: 끊김을 남겼던 경우에만 지속 시간과 함께 회복을 남김. _letters 잠금 안에서만 부름.
+        private void Recovered(LetterState st, string letter, long at)
+        {
+            if (st.DownSince is not { } since)
+            {
+                return;
+            }
+
+            st.DownSince = null;
+            if (st.DownLogged)
+            {
+                _out.Enqueue(($"DiskActivity: {letter} disk activity available again after {Math.Max(0, at - since) / 1000} s ({st.DownReason})", false));
+            }
+        }
+
+        // 정체가 GiveUpMs 를 넘음 (since: 정체가 시작된 시각): 경고는 정체 진입마다 한 번 (새 표본이 게시되면 다시 켜짐). state 는 호출자가 정함 (기본 Broken, 게임 보호 판정은 정체 상태 유지). _letters 잠금 안에서만 부름.
+        private (double?, SampleState) Stalled(string letter, SampleState state, long since)
+        {
+            Down(State(letter), letter, SampleStalled, since);
             if (Interlocked.Exchange(ref _stalledWarned, 1) == 0)
             {
-                Note($"DiskActivity: samples stalled for over {GiveUpMs / 1000} s, giving up on {letter} (other callers treat it as broken, game protection gates stay busy)", warn: true);
+                _out.Enqueue(($"DiskActivity: samples stalled for over {GiveUpMs / 1000} s, giving up on {letter} (other callers treat it as broken, game protection gates stay busy)", true));
             }
 
             return (null, state);
@@ -302,8 +479,25 @@ public static partial class DiskActivity
                 Note($"DiskActivity: sample failed ({e.GetType().Name})");
             }
 
-            _latest = new Snapshot(nowMs(), data);
+            Publish(data);
+        }
+
+        // 표본을 게시하고, 이미 읽은 적 있는 드라이브는 여기서 상태를 갱신함 (읽는 빈도와 상관없이 최초 실패 시각·기억한 디스크 번호를 놓치지 않음).
+        private void Publish(IReadOnlyDictionary<string, double>? data)
+        {
+            var snap = new Snapshot(nowMs(), data, Interlocked.Increment(ref _seq));
+            _latest = snap;
             Volatile.Write(ref _stalledWarned, 0);
+            string[] letters;
+            lock (_letters)
+            {
+                letters = [.. _letters.Keys];
+            }
+
+            foreach (string letter in letters)
+            {
+                Evaluate(letter, false, snap);
+            }
         }
 
         /// 한 주기: 표본을 잡고, 수집에 걸린 시간을 뺀 다음 대기 시간 (ms) 을 돌려줌 (주기 = CacheMs).
@@ -345,7 +539,7 @@ public static partial class DiskActivity
                 }
                 catch (Exception e) when (e is not OutOfMemoryException)
                 {
-                    _latest = new Snapshot(nowMs(), null); // 예상 밖 실패: 고장 표본을 게시하고 계속 재시도
+                    Publish(null); // 예상 밖 실패: 고장 표본을 게시하고 계속 재시도
                     Note($"DiskActivity: sampler loop failed ({e.GetType().Name})");
                 }
 

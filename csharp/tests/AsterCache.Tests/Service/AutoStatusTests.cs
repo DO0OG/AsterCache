@@ -20,6 +20,31 @@ public sealed class AutoStatusTests : IDisposable
     private AutoStatus Make(string? path = "", Action<TimeSpan>? sleep = null) => new(path == string.Empty ? StatusPath : path, _log, () => _now, sleep ?? (_ => { }), FakeClock.Ticks(() => _now));
 
     [Fact]
+    public void QuickExitNoticeRoundTripsAddsAnEventAndIsClearedWithItsKeyGone()
+    {
+        AutoStatus s = Make();
+        s.Set("cod", "auto", null, AutoStage.Done, null);
+        var record = new QuickExitRecord(2, [52, 9], _now, BackedOffResult.Exited, ["WinDivert64.sys"]);
+
+        s.SetQuickExit("cod", record);
+        s.SetQuickExit("unknown game", record); // 항목이 없는 게임은 남기지 않음
+
+        var game = (JObject)((JObject)((JObject)JsonRead.ReadFile(StatusPath)!)["games"]!)["cod"]!;
+        var quick = (JObject)game["quick_exit"]!;
+        Assert.Equal(["count", "run_seconds", "at", "backed_off", "new_drivers"], quick.Select(kv => kv.Key));
+        Assert.Equal("exited", quick["backed_off"]);
+        Assert.Equal(["quick_exit"], s.Events.Select(e => e.Kind));
+        QuickExitRecord read = Make().Get("cod")!.QuickExit!;
+        Assert.Equal((2, "exited"), (read.Count, read.BackedOff));
+        Assert.Equal([52, 9], read.RunSeconds);
+        Assert.Equal(["WinDivert64.sys"], read.NewDrivers);
+
+        s.ClearQuickExit("cod");
+
+        Assert.False(((JObject)((JObject)((JObject)JsonRead.ReadFile(StatusPath)!)["games"]!)["cod"]!).ContainsKey("quick_exit"));
+    }
+
+    [Fact]
     public void FileHasTheAgreedShapeAndRoundTrips()
     {
         AutoStatus s = Make();

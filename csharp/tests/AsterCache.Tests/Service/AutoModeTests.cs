@@ -200,6 +200,20 @@ public sealed class AutoModeTests : IDisposable
         Assert.Equal(0, _rig.World.TraceStarts);
     }
 
+    [Fact]
+    public void BackedOffGameStartRecordsThePlayButOpensNoTraceOrBoundaryRead()
+    {
+        AddGame("foo", "auto");
+        _rig.World.Session = new FakeTrace();
+        _rig.World.Now = T0;
+
+        Mode().OnGameStart(Game(), backOff: true);
+
+        Assert.Equal(T0, _rig.Status.Get("foo")!.LastPlayed);
+        Assert.Equal(0, _rig.World.TraceStarts);
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("foo: auto trace skipped (quick exit guard: backing off)", StringComparison.Ordinal));
+    }
+
     [Theory]
     [InlineData(false, true)]
     [InlineData(true, false)]
@@ -425,6 +439,40 @@ public sealed class AutoModeTests : IDisposable
         Assert.False(tokens[1].IsCancellationRequested);
 
         mode.NoteGameExit(Game());
+        await second.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.True(tokens[1].IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task LateExitFromAnEarlierSessionDoesNotCancelTheNewLoadBoundaryWatch()
+    {
+        AddGame("foo", "auto");
+        _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { LoadBoundary = true, Trace = false } };
+        _rig.World.Running = true;
+        AutoMode mode = Mode();
+        var tokens = new List<CancellationToken>();
+        var started = new SemaphoreSlim(0);
+        mode.BoundaryRunner = (_, ct) =>
+        {
+            lock (tokens)
+            {
+                tokens.Add(ct);
+            }
+
+            started.Release();
+            ct.WaitHandle.WaitOne();
+        };
+
+        Task first = Task.Run(() => mode.OnGameStart(Game(), startedAt: T0));
+        await started.WaitAsync(TimeSpan.FromSeconds(30));
+        Task second = Task.Run(() => mode.OnGameStart(Game(), startedAt: T0.AddSeconds(20)));
+        await started.WaitAsync(TimeSpan.FromSeconds(30));
+        await first.WaitAsync(TimeSpan.FromSeconds(30));
+
+        mode.NoteGameExit(Game(), T0.AddSeconds(10)); // 이전 실행의 늦은 종료
+
+        Assert.False(tokens[1].IsCancellationRequested);
+        mode.NoteGameExit(Game(), T0.AddSeconds(30));
         await second.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.True(tokens[1].IsCancellationRequested);
     }

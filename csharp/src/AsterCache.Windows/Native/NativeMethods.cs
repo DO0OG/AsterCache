@@ -138,6 +138,16 @@ internal static unsafe partial class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool EmptyWorkingSet(SafeProcessHandle process);
 
+    [LibraryImport(Kernel32, EntryPoint = "K32EnumDeviceDrivers", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool EnumDeviceDrivers(nint* bases, uint size, out uint needed);
+
+    [LibraryImport(Kernel32, EntryPoint = "K32GetDeviceDriverBaseNameW", SetLastError = true)]
+    internal static partial uint GetDeviceDriverBaseNameW(nint driverBase, char* name, uint size);
+
+    [LibraryImport(Kernel32, EntryPoint = "K32GetDeviceDriverFileNameW", SetLastError = true)]
+    internal static partial uint GetDeviceDriverFileNameW(nint driverBase, char* name, uint size);
+
     [LibraryImport(Kernel32, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool GetProcessInformation(SafeProcessHandle process, int infoClass, byte* info, uint size);

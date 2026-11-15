@@ -9,6 +9,9 @@ public sealed record ProcessStart(int Pid, string ExeName, long Timestamp, strin
     public DateTimeOffset DetectedAt { get; init; } = DateTimeOffset.UtcNow;
 
     public long QueueTimestamp { get; init; }
+
+    /// 디스패처 대기열에 넣을 때 대기 수를 올린 게임 이름 (꺼낼 때 같은 이름을 내림).
+    public string? QueuedGame { get; init; }
 }
 
 /// 프로세스 시작 감지. RunAsync 는 취소될 때까지 onStart 를 부르고, 취소되면 정상 반환합니다.

@@ -10,6 +10,7 @@ public sealed class GameExitTracker
     private readonly HashSet<string> _running = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DateTimeOffset> _goneSince = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DateTimeOffset> _exitSince = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTimeOffset> _pendingExit = new(StringComparer.Ordinal); // 확정됐지만 아직 처리하지 않은 종료 (소멸 시각), 처리하는 쪽이 TakePendingExit 로 가져감
     private readonly HashSet<string> _seen = new(StringComparer.Ordinal); // Poll 이 한 번이라도 띄운 등록 게임 (시작 이벤트만 있던 짧은 실행과 구분)
     private static readonly IReadOnlyDictionary<string, DateTimeOffset> EmptyGoneSince = new Dictionary<string, DateTimeOffset>();
     private readonly object _sync = new();
@@ -69,6 +70,25 @@ public sealed class GameExitTracker
             _ = _running.Add(game.Name);
             _ = _goneSince.Remove(game.Name);
             _ = _exitSince.Remove(game.Name);
+            _ = _pendingExit.Remove(game.Name);
+        }
+    }
+
+    /// 확정된 종료를 아직 아무도 처리하지 않았으면 가져가며 true (at 를 주면 그 소멸 시각의 종료일 때만). 처리 쪽과 재시작 쪽이 서로 한 번만 처리하게 합니다.
+    public bool TakePendingExit(string gameName, DateTimeOffset? at = null)
+    {
+        lock (_sync)
+        {
+            return _pendingExit.TryGetValue(gameName, out DateTimeOffset pending) && (at is null || at == pending) && _pendingExit.Remove(gameName);
+        }
+    }
+
+    /// 종료로 확정된 게임이 사라진 것을 처음 본 시각 (다시 시작하면 지워짐). 없으면 null.
+    public DateTimeOffset? ExitedAt(string gameName)
+    {
+        lock (_sync)
+        {
+            return _exitSince.TryGetValue(gameName, out DateTimeOffset at) ? at : null;
         }
     }
 
@@ -141,6 +161,7 @@ public sealed class GameExitTracker
                 _ = _running.Add(g.Name);
                 _ = _goneSince.Remove(g.Name);
                 _ = _exitSince.Remove(g.Name);
+                _ = _pendingExit.Remove(g.Name);
                 _ = _seen.Add(g.Name);
             }
             else if (_running.Contains(g.Name))
@@ -149,7 +170,7 @@ public sealed class GameExitTracker
                 {
                     if (now - _goneSince[g.Name] >= Grace)
                     {
-                        _exitSince[g.Name] = _goneSince[g.Name];
+                        _exitSince[g.Name] = _pendingExit[g.Name] = _goneSince[g.Name];
                         _ = _running.Remove(g.Name);
                         _ = _goneSince.Remove(g.Name);
                         if (!_seen.Remove(g.Name))
@@ -174,6 +195,7 @@ public sealed class GameExitTracker
         foreach (string removed in _exitSince.Keys.Where(k => !configured.Contains(k)).ToList())
         {
             _ = _exitSince.Remove(removed);
+            _ = _pendingExit.Remove(removed);
         }
 
         return exited;

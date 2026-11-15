@@ -21,6 +21,8 @@ public sealed class StageStreamDispatchTests
     private double _sec;
     private long _available = 20_000;
     private bool _queuedOther;
+    private bool _backingOff;
+    private int _lookups; // 프로세스·읽기 카운터 조회 횟수
     private Action? _onSleep;
     private bool _stage = true;
     private IReadOnlyList<(int Pid, string Exe)> _processes = [];
@@ -28,10 +30,23 @@ public sealed class StageStreamDispatchTests
     private GameDispatcher Dispatcher() =>
         new([Game, Games.Make("other", "other.exe")], _streamer, _log, () => DateTimeOffset.UnixEpoch.AddSeconds(_sec), new DispatchEnv
         {
-            OtherProcesses = (g, s) => DispatchEnv.RegisteredOthers(g, _processes, s.Pid),
+            BackingOff = _ => _backingOff,
+            OtherProcesses = (g, s) =>
+            {
+                _lookups++;
+                return DispatchEnv.RegisteredOthers(g, _processes, s.Pid);
+            },
             Age = s => TimeSpan.FromSeconds(_sec - s.Timestamp),
-            ReadCounters = _ => [.. _counters.Select(c => (c.Pid, c.Bytes))],
-            ReadCountersWithExeNames = _ => [.. _counters],
+            ReadCounters = _ =>
+            {
+                _lookups++;
+                return [.. _counters.Select(c => (c.Pid, c.Bytes))];
+            },
+            ReadCountersWithExeNames = _ =>
+            {
+                _lookups++;
+                return [.. _counters];
+            },
             Timestamp = () => (long)(_sec * Stopwatch.Frequency),
             Sleep = (span, _) =>
             {
@@ -330,6 +345,27 @@ public sealed class StageStreamDispatchTests
         Assert.False(d.Handle(Start(6, "sp26-cod.exe")));
 
         Assert.Contains(_log.Lines, l => l.Contains("stage stream sp26-cod.exe", StringComparison.Ordinal) && l.Contains("stopped, memory reserve", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void BackingOffSessionStreamsNothingForTheFirstOrALaterExeAndDoesNotLookAtProcesses()
+    {
+        RunningFirst();
+        _streamer.FirstPlan = new StageFirstPlan([A], "sp26-cod.exe", [B], 0);
+        _streamer.LaterPlans = _ => new StageLaterPlan([B], true, 0);
+        _backingOff = true;
+        GameDispatcher d = Dispatcher();
+
+        Assert.False(d.Handle(Start(5, "cod.exe")));
+        _sec = 100;
+        _processes = [(5, "cod.exe"), (6, "sp26-cod.exe")];
+        _counters.Add((6, "sp26-cod.exe", 500L << 20));
+        Assert.False(d.Handle(Start(6, "sp26-cod.exe")));
+
+        Assert.Equal(2, _log.Lines.Count(l => l.Contains("cod: start stream skipped (quick exit guard: backing off)", StringComparison.Ordinal)));
+        Assert.Empty(_streamer.Phases); // 스트림·미리 흘리기·증거 대기 없음
+        Assert.Equal(0, _lookups); // 프로세스·읽기 카운터 조회도 없음
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("stage stream", StringComparison.Ordinal) || l.Contains("ahead stage", StringComparison.Ordinal));
     }
 
     [Fact]

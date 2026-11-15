@@ -55,6 +55,24 @@ public sealed class AutoTracer
         }
     }
 
+    /// 재실행 분리에서 현재 실행의 추적이 끝날 때까지 기다립니다.
+    public Task EndGameSessionAsync(GameSettings game, DateTimeOffset exitedAt)
+    {
+        Run? run;
+        lock (_lock)
+        {
+            run = _run;
+            if (run is null || !string.Equals(run.Game.Name, game.Name, StringComparison.OrdinalIgnoreCase) || exitedAt < run.StartedAt)
+            {
+                return Task.CompletedTask;
+            }
+
+            run.RequestEnd();
+        }
+
+        return run.Finished.Task;
+    }
+
     public static string RawTracePath(GameSettings g) => Path.Combine(Path.GetDirectoryName(g.Plan) ?? string.Empty, g.Name + ".trace.json");
 
     /// 트레이스에서 알게 된 가변 파일 (경로 → 사유) 표시 파일: 계획에서 뺄 파일. 낡은 트레이스를 치울 때 같이 치웁니다.
@@ -610,6 +628,12 @@ public sealed class AutoTracer
             return;
         }
 
+        if (run.EndRequested)
+        {
+            Finish(run, GameExited);
+            return;
+        }
+
         if (_settings().Games.FirstOrDefault(x => string.Equals(x.Name, run.Game.Name, StringComparison.OrdinalIgnoreCase)) is { } latest && TraceBlocker(latest) is { } cheat)
         {
             lock (_lock)
@@ -620,6 +644,7 @@ public sealed class AutoTracer
             run.Session?.Dispose(); // 설정이 바뀌어 지금은 금지된 게임: 기록은 버리고 세션을 닫음
             run.Session = null;
             run.Learn?.Dispose();
+            run.Finished.TrySetResult(true);
             _log.Info($"{run.Game.Name}: trace stopped (anti-cheat: {cheat})");
             return;
         }
@@ -912,6 +937,7 @@ public sealed class AutoTracer
             run.Session = null;
         }
         run?.Learn?.Dispose();
+        run?.Finished.TrySetResult(true);
         FinishStopped(true);
     }
 
@@ -1094,6 +1120,8 @@ public sealed class AutoTracer
             {
                 _run = _run == run ? null : _run;
             }
+
+            run.Finished.TrySetResult(true);
         }
 
         return false;
@@ -1475,6 +1503,8 @@ public sealed class AutoTracer
 
     private sealed class Run(GameSettings game, IAutoTrace session, DateTimeOffset startedAt, GameExitTracker exits)
     {
+        private int _endRequested;
+
         public GameSettings Game { get; } = game;
 
         public IAutoTrace? Session { get; set; } = session;
@@ -1530,5 +1560,11 @@ public sealed class AutoTracer
         public bool Saving { get; set; }
 
         public bool Exited { get; set; }
+
+        public TaskCompletionSource<bool> Finished { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool EndRequested => Volatile.Read(ref _endRequested) != 0;
+
+        public void RequestEnd() => Interlocked.Exchange(ref _endRequested, 1);
     }
 }

@@ -179,6 +179,7 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             { "ignore_exes", a.IgnoreExes.Cast<object?>().ToList() },
             { "rewarm_minutes", (long)a.RewarmMinutes },
             { "restream_cooldown_min", (long)a.RestreamCooldownMin },
+            { "quick_exit_seconds", (long)a.QuickExitSeconds },
             { "rewarm_after_exit_min", (long)a.RewarmAfterExitMin },
             { "startup_warm_games", (long)a.StartupWarmGames },
             { "startup_warm_max_mib", (long)a.StartupWarmMaxMib },

@@ -388,6 +388,24 @@ public sealed class AutoSettingsTests
     }
 
     [Theory]
+    [InlineData(10, true)]
+    [InlineData(600, true)]
+    [InlineData(9, false)]
+    [InlineData(601, false)]
+    public void QuickExitSecondsRange(int value, bool ok)
+    {
+        Assert.Equal(90, ParseAuto(new JsonObject()).Auto.QuickExitSeconds);
+        if (ok)
+        {
+            Assert.Equal(value, ParseAuto(new JsonObject { ["quick_exit_seconds"] = value }).Auto.QuickExitSeconds);
+        }
+        else
+        {
+            Assert.Contains("auto.quick_exit_seconds", Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { ["quick_exit_seconds"] = value })).Message);
+        }
+    }
+
+    [Theory]
     [InlineData(0, true)]
     [InlineData(1440, true)]
     [InlineData(-1, false)]

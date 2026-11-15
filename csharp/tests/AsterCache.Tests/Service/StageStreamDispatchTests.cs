@@ -23,6 +23,8 @@ public sealed class StageStreamDispatchTests
     private bool _queuedOther;
     private bool _backingOff;
     private int _lookups; // 프로세스·읽기 카운터 조회 횟수
+    private ManualResetEventSlim? _samplerGate; // 있으면 표본 스레드가 시계를 읽다가 멈춤 (진행 중인 표본을 흉내)
+    private readonly int _mainThread = Environment.CurrentManagedThreadId;
     private Action? _onSleep;
     private bool _stage = true;
     private IReadOnlyList<(int Pid, string Exe)> _processes = [];
@@ -47,7 +49,15 @@ public sealed class StageStreamDispatchTests
                 _lookups++;
                 return [.. _counters];
             },
-            Timestamp = () => (long)(_sec * Stopwatch.Frequency),
+            Timestamp = () =>
+            {
+                if (_samplerGate is { } gate && Environment.CurrentManagedThreadId != _mainThread)
+                {
+                    gate.Wait();
+                }
+
+                return (long)(_sec * Stopwatch.Frequency);
+            },
             Sleep = (span, _) =>
             {
                 _sec += span.TotalSeconds;
@@ -369,6 +379,68 @@ public sealed class StageStreamDispatchTests
     }
 
     [Fact]
+    public void PlanningTimeCountsTowardsTheCapAndTheLoggedTimeLikeInTheOriginalOrder()
+    {
+        RunningFirst();
+        _streamer.StartOpsList = [A];
+        _streamer.OnStartOps = () => _sec += 130; // 계획이 상한 (120 초) 을 넘김
+        Assert.False(Dispatcher().Handle(Start(5, "cod.exe")));
+        Assert.Contains(_log.Lines, l => l.Contains("start stream stopped at cap after ", StringComparison.Ordinal));
+        Assert.Empty(_streamer.BatchCount);
+        Assert.True(_streamer.StartOpsToken.CanBeCanceled); // 상한 취소에 연결된 토큰으로 계획을 만듦
+
+        var other = new StageStreamDispatchTests();
+        other.RunningFirst();
+        other._streamer.StartOpsList = [A];
+        other._streamer.OnStartOps = () => other._sec += 5;
+        other._streamer.OnBatch = (_, _) => other._sec += 2;
+        Assert.True(other.Dispatcher().Handle(other.Start(5, "cod.exe")));
+        Assert.Contains(other._log.Lines, l => l.Contains(", 11.000 s (", StringComparison.Ordinal)); // 계획 5 초 + 묶음 6 초
+    }
+
+    [Fact]
+    public void DisabledStreamReportsTheCapWhenTheSampleInFlightWhileTheSamplerStopsSetsIt()
+    {
+        RunningFirst();
+        _stage = false;
+        _streamer.FinalCheck = false;
+        _samplerGate = new ManualResetEventSlim();
+        _streamer.OnBatch = (phase, index) =>
+        {
+            if (index == 2)
+            {
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(2500);
+                    _sec = 500; // 표본이 풀려 시계를 읽으면 상한을 넘은 시각
+                    _samplerGate.Set();
+                });
+                Thread.Sleep(2000); // 그 사이 표본 스레드가 깨어나 시계를 읽다가 멈춤 (스트림은 끝 확인 없이 돌아감)
+            }
+        };
+
+        Assert.False(Dispatcher().Handle(Start(5, "cod.exe")));
+
+        Assert.Contains(_log.Lines, l => l.Contains("start stream stopped at cap after ", StringComparison.Ordinal)); // 표본 합류 뒤에 플래그를 읽음
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("start stream cancelled", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void EvidenceThatArrivesAfterTheWindowExpiredWhileSleepingIsNotAccepted()
+    {
+        GameDispatcher d = DispatcherAfterFirstExe();
+        _streamer.LaterPlans = _ => new StageLaterPlan([A], false, 0);
+        _sec = 109.5; // 시작 (100) 뒤 9.5 초에 대기 진입
+        _counters[1] = (6, "sp26-cod.exe", 500L << 20);
+        _onSleep = () => _counters[1] = (6, "sp26-cod.exe", _counters[1].Bytes + (80L << 20)); // 잠든 사이 80 MiB, 깨어나면 10.5 초
+
+        Assert.False(d.Handle(new ProcessStart(6, "sp26-cod.exe", 100)));
+
+        Assert.Contains(_log.Lines, l => l.Contains("stage stream skipped (sp26-cod.exe: no load evidence", StringComparison.Ordinal));
+        Assert.Empty(_streamer.Phases);
+    }
+
+    [Fact]
     public void BigOpIsCutSoThePriorityFollowsTheGameBatchByBatch()
     {
         GameDispatcher d = DispatcherAfterFirstExe();
@@ -604,9 +676,16 @@ public sealed class StageStreamDispatchTests
         public Dictionary<string, int> BatchCount { get; } = [];
         public IReadOnlyList<ReadOp>? StartOpsList { get; set; }
         public bool FinalCheck { get; set; } = true;
+        public Action? OnStartOps { get; set; }
+        public CancellationToken StartOpsToken { get; private set; }
         public int CanIssueCalls { get; private set; }
 
-        public IReadOnlyList<ReadOp>? StartOps(GameSettings game, CancellationToken stop) => StartOpsList;
+        public IReadOnlyList<ReadOp>? StartOps(GameSettings game, CancellationToken stop)
+        {
+            StartOpsToken = stop;
+            OnStartOps?.Invoke();
+            return StartOpsList;
+        }
 
         public StreamStats Stream(GameSettings game) => new(0, 0, 0, 0);
 

@@ -15,7 +15,8 @@ public sealed partial class GameDispatcher
     private readonly Dictionary<string, DateTimeOffset> _lastStage = new(StringComparer.OrdinalIgnoreCase); // (게임, 실행 파일) -> 마지막 단계 스트림 시각
 
     /// 스트림 한 번의 구성. Ops 가 null 이면 시작 목록 전체 (IGameStreamer.StreamCoordinated), BoundaryPid 가 있으면 그 프로세스의 읽기만 경계 판정에 셉니다.
-    private sealed record StreamSpec(IReadOnlyList<ReadOp>? Ops, int? BoundaryPid, bool StartLow, bool MemoryGate, StageFirstPlan? Ahead);
+    // Planner: 목록 계획을 시계·표본·상한 취소 범위 안에서 만들게 넘김 (원본은 스트리머가 스트림 안에서 목록을 만들었음)
+    private sealed record StreamSpec(IReadOnlyList<ReadOp>? Ops, int? BoundaryPid, bool StartLow, bool MemoryGate, Func<CancellationToken, (IReadOnlyList<ReadOp>? Ops, StageFirstPlan? Ahead)>? Planner = null);
 
     private sealed record AheadOutcome(string Exe, long Bytes, double Seconds, bool Complete, string? Reason);
 
@@ -50,9 +51,15 @@ public sealed partial class GameDispatcher
     private bool StreamFirst(GameSettings g, ProcessStart start, DiskReadCoordinator.Lease? lease, CancellationToken stop)
     {
         bool stage = _env.StageStreamEnabled();
-        StageFirstPlan? plan = stage ? _streamer.PlanFirstStage(g, lease?.Token ?? stop) : null;
-        IReadOnlyList<ReadOp>? ops = plan?.Ops ?? (stage ? _streamer.StartOps(g, lease?.Token ?? stop) : null); // 메모리 게이트가 걸리면 단계 정보가 없어도 같은 잘린 목록으로 흘림
-        StreamOutcome o = RunStream(g, start, lease, stop, new StreamSpec(ops, null, false, stage, plan is { AheadOps.Count: > 0 } ? plan : null));
+        StageFirstPlan? plan = null;
+        (IReadOnlyList<ReadOp>? Ops, StageFirstPlan? Ahead) Plan(CancellationToken token)
+        {
+            plan = _streamer.PlanFirstStage(g, token);
+            IReadOnlyList<ReadOp>? ops = plan?.Ops ?? _streamer.StartOps(g, token); // 메모리 게이트가 걸리면 단계 정보가 없어도 같은 잘린 목록으로 흘림
+            return (ops, plan is { AheadOps.Count: > 0 } ? plan : null);
+        }
+
+        StreamOutcome o = RunStream(g, start, lease, stop, new StreamSpec(null, null, false, stage, stage ? Plan : null));
         double mbPerSecond = o.MbPerSecond;
         if (o.BoundaryStopped)
         {
@@ -184,6 +191,11 @@ public sealed partial class GameDispatcher
         {
             stop.ThrowIfCancellationRequested();
             long read = Math.Max(0, ReadOf() - baseline);
+            if (_env.Age(start) >= StageStreamRule.EvidenceWindow) // 읽은 뒤에 확인: 창이 만료된 뒤 얻은 카운터는 증거로 쓰지 않음 (늦게 깬 잠 포함)
+            {
+                return $"no load evidence, {MiB(read)} MiB in {(int)StageStreamRule.EvidenceWindow.TotalSeconds} s";
+            }
+
             if (StageStreamRule.LoadEvidence(read))
             {
                 return null;
@@ -192,11 +204,6 @@ public sealed partial class GameDispatcher
             if (OtherGameQueued(g))
             {
                 return "another game started";
-            }
-
-            if (_env.Age(start) >= StageStreamRule.EvidenceWindow)
-            {
-                return $"no load evidence, {MiB(read)} MiB in {(int)StageStreamRule.EvidenceWindow.TotalSeconds} s";
             }
 
             _env.Sleep(TimeSpan.FromSeconds(1), stop);
@@ -223,9 +230,10 @@ public sealed partial class GameDispatcher
         DateTimeOffset? quietSince = null;
         IReadOnlyList<ReadOp>? streamOps = spec.Ops is null ? null : StageStreamPlans.Split(spec.Ops); // 한 묶음이 64 MiB 를 크게 넘지 않게 잘라, 우선순위 전환과 메모리 게이트가 묶음마다 듣게 함
         long remainingBytes = streamOps is null ? long.MaxValue : streamOps.Sum(o => o.Length);
-        bool needNames = spec.BoundaryPid is not null || spec.Ahead is not null;
-        string? aheadExe = spec.Ahead?.AheadExe;
+        bool needNames = spec.BoundaryPid is not null; // 첫 스트림은 미리 흘리기를 시작할 때에야 이름 있는 카운터로 바꿈 (그 전에는 원본과 같은 카운터 조회)
+        string? aheadExe = null;
         HashSet<int> initialPids = [];
+        StageFirstPlan? aheadPlan = null;
         ReadYield? readYield = spec.StartLow ? new ReadYield(_env.SetReadIoLow, true) : null;
         object sampleLock = new();
         using var issueStop = CancellationTokenSource.CreateLinkedTokenSource(streamStop);
@@ -244,7 +252,6 @@ public sealed partial class GameDispatcher
             foreach ((int pid, _, long bytes) in Counters())
             {
                 previousReads[pid] = bytes;
-                _ = initialPids.Add(pid);
             }
         }
         catch (Exception e) when (e is not (OutOfMemoryException or StackOverflowException))
@@ -393,9 +400,39 @@ public sealed partial class GameDispatcher
 
         void Noted(string stage, long bytes, bool isData) => lease?.NoteReadIssue(stage, bytes, isData);
 
+        CancellationTokenSource? sampleStop = null;
+        Task? sampleTask = null;
+
+        void StartSampler()
+        {
+            sampleStop = new CancellationTokenSource();
+            CancellationToken token = sampleStop.Token;
+            sampleTask = Task.Run(() => SampleLoop(token));
+        }
+
+        void StopSampler()
+        {
+            if (sampleStop is null)
+            {
+                return;
+            }
+
+            sampleStop.Cancel();
+            try
+            {
+                sampleTask!.GetAwaiter().GetResult();
+            }
+            catch (OperationCanceledException)
+            {
+                // 표본 추출은 스트림과 함께 멈췄습니다.
+            }
+
+            sampleStop.Dispose();
+            sampleStop = null;
+        }
+
         lease?.NoteReadIssue("start stream planning", 0, false);
-        using var sampleStop = new CancellationTokenSource();
-        Task sampleTask = Task.Run(() => SampleLoop(sampleStop.Token));
+        StartSampler();
         StreamStats r;
         bool complete;
         long progressBytes = 0;
@@ -410,24 +447,38 @@ public sealed partial class GameDispatcher
         {
             try
             {
-                void Progress(long done, long total)
+                try
                 {
-                    Interlocked.Exchange(ref progressBytes, done);
-                    Interlocked.Exchange(ref remainingBytes, Math.Max(0, total - done));
-                }
+                    void Progress(long done, long total)
+                    {
+                        Interlocked.Exchange(ref progressBytes, done);
+                        Interlocked.Exchange(ref remainingBytes, Math.Max(0, total - done));
+                    }
 
-                (r, complete) = streamOps is null
-                    ? _streamer.StreamCoordinated(g, issueStop.Token, Progress, CanIssue, Noted)
-                    : _streamer.StreamOpsCoordinated(g, streamOps, issueStop.Token, Progress, CanIssue, Noted);
+                    if (spec.Planner is { } planner)
+                    {
+                        (IReadOnlyList<ReadOp>? planned, aheadPlan) = planner(issueStop.Token); // 원본처럼 시계·표본·상한 취소가 돌기 시작한 뒤에 목록을 만듦
+                        streamOps = planned is null ? null : StageStreamPlans.Split(planned);
+                        Interlocked.Exchange(ref remainingBytes, streamOps is null ? long.MaxValue : streamOps.Sum(o => o.Length));
+                    }
+
+                    (r, complete) = streamOps is null
+                        ? _streamer.StreamCoordinated(g, issueStop.Token, Progress, CanIssue, Noted)
+                        : _streamer.StreamOpsCoordinated(g, streamOps, issueStop.Token, Progress, CanIssue, Noted);
+                }
+                catch (OperationCanceledException) when (Volatile.Read(ref boundaryStopped) != 0 || Volatile.Read(ref capStopped) != 0 || Volatile.Read(ref otherStop) is not null)
+                {
+                    r = new StreamStats(Interlocked.Read(ref progressBytes), 0, 0, Stopwatch.GetElapsedTime(startedAt, _env.Timestamp()).TotalSeconds, Aborted: true);
+                    complete = false;
+                }
             }
-            catch (OperationCanceledException) when (Volatile.Read(ref boundaryStopped) != 0 || Volatile.Read(ref capStopped) != 0 || Volatile.Read(ref otherStop) is not null)
+            finally
             {
-                r = new StreamStats(Interlocked.Read(ref progressBytes), 0, 0, Stopwatch.GetElapsedTime(startedAt, _env.Timestamp()).TotalSeconds, Aborted: true);
-                complete = false;
+                StopSampler(); // 원본처럼 표본 작업을 멈추고 합류한 뒤에 플래그를 읽어 종료 사유를 정함 (진행 중이던 표본이 경계·상한을 세울 수 있음)
             }
 
             elapsedSeconds = Stopwatch.GetElapsedTime(startedAt, _env.Timestamp()).TotalSeconds;
-            (boundaryA, capA, otherA) = (Volatile.Read(ref boundaryStopped) != 0, Volatile.Read(ref capStopped) != 0, Volatile.Read(ref otherStop)); // 원본처럼 경계·상한 플래그를 먼저 읽고 취소를 판정 (미리 흘리기가 첫 스트림의 결과를 바꾸지도 않음)
+            (boundaryA, capA, otherA) = (Volatile.Read(ref boundaryStopped) != 0, Volatile.Read(ref capStopped) != 0, Volatile.Read(ref otherStop)); // 경계·상한 플래그를 먼저 읽고 취소를 판정 (미리 흘리기가 첫 스트림의 결과를 바꾸지도 않음)
             if (!boundaryA && !capA && otherA is null)
             {
                 cancelled = !complete || r.Aborted || streamStop.IsCancellationRequested || !CanIssue();
@@ -435,23 +486,21 @@ public sealed partial class GameDispatcher
             }
 
             stoppedA = boundaryA || capA || otherA is not null;
-            if (!stoppedA && !cancelled && spec.Ahead is { } plan)
+            if (!stoppedA && !cancelled && aheadPlan is { } plan)
             {
-                ahead = StreamAhead(plan);
+                StartSampler(); // 미리 흘리는 동안에도 상한·다음 단계·대기열을 표본으로 봄
+                try
+                {
+                    ahead = StreamAhead(plan);
+                }
+                finally
+                {
+                    StopSampler();
+                }
             }
         }
         finally
         {
-            sampleStop.Cancel();
-            try
-            {
-                sampleTask.GetAwaiter().GetResult();
-            }
-            catch (OperationCanceledException)
-            {
-                // 표본 추출은 스트림과 함께 멈췄습니다.
-            }
-
             _ = readYield?.Finish(_now()); // 낮음이 남지 않게 보통으로 되돌림 (읽는 스레드)
         }
 
@@ -461,13 +510,26 @@ public sealed partial class GameDispatcher
         // 첫 단계를 다 흘린 뒤: 경계 판정 없이 다음 단계를 낮은 우선순위에서 이어 흘림 (같은 대여, 같은 상한 시계). 다음 단계 프로세스가 보이거나 다른 게임의 시작이 대기열에 들어오면 멈춤.
         AheadOutcome StreamAhead(StageFirstPlan plan)
         {
-            if (Volatile.Read(ref nextStageSeen) != 0)
-            {
-                return new AheadOutcome(plan.AheadExe, 0, 0, false, "next stage started"); // 첫 단계를 흘리는 동안 이미 떴음
-            }
-
             lock (sampleLock)
             {
+                IReadOnlyList<(int Pid, string Exe, long ReadBytes)> named;
+                try
+                {
+                    named = _env.ReadCountersWithExeNames(g.ExeNames); // 이름 있는 카운터로 바꾸며 기준을 다시 잡음
+                }
+                catch (Exception e) when (e is not (OutOfMemoryException or StackOverflowException))
+                {
+                    return new AheadOutcome(plan.AheadExe, 0, 0, false, "counters unavailable");
+                }
+
+                if (named.Any(c => string.Equals(c.Exe, plan.AheadExe, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return new AheadOutcome(plan.AheadExe, 0, 0, false, "next stage started"); // 첫 단계를 흘리는 동안 이미 떴음
+                }
+
+                initialPids = [.. named.Select(c => c.Pid)];
+                aheadExe = plan.AheadExe;
+                needNames = true;
                 (low, quietSince) = (true, null); // 낮음으로 시작
                 Volatile.Write(ref wantLow, 1);
                 Interlocked.Exchange(ref remainingBytes, plan.AheadOps.Sum(o => o.Length));

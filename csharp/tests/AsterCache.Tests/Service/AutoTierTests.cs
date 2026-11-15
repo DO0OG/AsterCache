@@ -49,7 +49,7 @@ public sealed class AutoTierTests : IDisposable
         _games.Add(g);
         _fs.Put(root + @"\a.bin", _a);
         _fs.Put(root + @"\b.bin", _b);
-        _world.Files.UnionWith([AutoTracer.RawTracePath(g), TraceStageIndex.IndexPath(AutoTracer.RawTracePath(g))]);
+        _world.Files.Add(AutoTracer.RawTracePath(g));
     }
 
     private AsterSettings Settings(bool on = true, int budget = 8) => new(50, _games) { Auto = AutoSettings.Default with { TraceRuns = 1, SsdTier = new SsdTierSettings(on, budget, "auto") } };

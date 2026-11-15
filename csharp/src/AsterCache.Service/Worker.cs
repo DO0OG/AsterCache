@@ -29,6 +29,7 @@ public sealed class Worker : BackgroundService
     private readonly BackgroundYield? _backgroundYield;
     private readonly DiskReadCoordinator _coordinator;
     private readonly object _watchLock = new();
+    private readonly QueuedStarts _queuedStarts = new(); // 디스패처 대기열의 게임별 시작 수 (단계 스트림이 다른 게임의 시작이 기다리는지 봄)
     private readonly object _gameStateLock = new();
     private volatile AsterSettings _settings;
     private (IProcessWatcher Primary, IProcessWatcher? Fallback) _watchers;
@@ -87,6 +88,8 @@ public sealed class Worker : BackgroundService
             RestreamCooldownMin = () => _settings.Auto.RestreamCooldownMin,
             StartStreamCapSeconds = () => _settings.Auto.StartStreamCapSeconds,
             StartStreamEnabled = () => _settings.Auto.StartStreamEnabled,
+            StageStreamEnabled = () => _settings.Auto.StageStreamEnabled,
+            OtherGameQueued = _queuedStarts.AnyOther,
             IsWarm = prewarm is null ? dispatch.IsWarm : prewarm.AlreadyWarm,
             RecentWarmProbeAt = prewarm is null ? dispatch.RecentWarmProbeAt : prewarm.RecentWarmProbeAt,
             RecentWarmProbeMinutes = () => _settings.Auto.RewarmMinutes,
@@ -328,6 +331,11 @@ public sealed class Worker : BackgroundService
             _prewarm?.ReleasePins($"launcher {s.ExeName} started"); // 런처 업데이트가 파일을 고칠 수 있게
         }
 
+        if (game is not null)
+        {
+            _queuedStarts.Add(game.Name);
+        }
+
         writer.TryWrite(s with { QueueTimestamp = Stopwatch.GetTimestamp() });
         if (_prewarm?.IsTrigger(s.ExeName) == true && (IsGameExe(s.ExeName) || !HoldTrigger(s)))
         {
@@ -444,6 +452,11 @@ public sealed class Worker : BackgroundService
         {
             await foreach (ProcessStart s in reader.ReadAllAsync(ct))
             {
+                if (_settings.Games.FirstOrDefault(g => g.ExeNames.Contains(s.ExeName, StringComparer.OrdinalIgnoreCase)) is { } queued)
+                {
+                    _queuedStarts.Remove(queued.Name); // 꺼냈으니 대기 중이 아님 (설정이 바뀌어 게임이 달라졌으면 0 아래로 내려가지 않게만 함)
+                }
+
                 _dispatcher.Handle(s, ct); // 순서와 쿨다운 의미를 유지하며 별도 루프에서 처리
             }
         }

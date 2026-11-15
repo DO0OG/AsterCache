@@ -23,6 +23,7 @@ public sealed class StartStreamGateTests
             IsWarm = warm ?? (_ => null),
             RecentWarmProbeAt = recentWarm ?? (_ => null),
             RecentWarmProbeMinutes = () => recentWarmMinutes,
+            StageStreamEnabled = () => false, // 이후 실행 파일의 단계 스트림을 끈 상태의 기존 건너뜀 규칙을 시험 (단계 스트림은 StageStreamDispatchTests)
         });
 
     private ProcessStart Start(int pid, string exe) => new(pid, exe, _sec);

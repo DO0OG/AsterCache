@@ -217,7 +217,7 @@ public sealed class DispatcherTests
     }
 
     private static GameDispatcher Guarded(FakeStreamer streamer, ListLog log, Func<DateTimeOffset> now, Func<GameSettings, ProcessStart, bool>? running = null, bool busy = false) =>
-        new([Mw4], streamer, log, now, new DispatchEnv { OtherRunning = running ?? ((_, _) => false), DiskBusy = _ => busy, RestreamCooldownMin = () => 10 });
+        new([Mw4], streamer, log, now, new DispatchEnv { OtherRunning = running ?? ((_, _) => false), DiskBusy = _ => busy, RestreamCooldownMin = () => 10, StageStreamEnabled = () => false }); // 단계 스트림을 끈 상태의 기존 건너뜀 문구를 시험
 
     [Fact]
     public void FirstStartStreamsOnce()

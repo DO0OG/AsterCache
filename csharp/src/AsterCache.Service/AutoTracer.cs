@@ -273,15 +273,14 @@ public sealed class AutoTracer
         int last = LastRunNumber(g, env.FileExists);
         bool room = last < MaxRunFiles;
         bool relearn = RelearnDue(g, env, status, minBytes);
-        bool stageIndexMissing = room && env.FileExists(RawTracePath(g)) && !env.FileExists(TraceStageIndex.IndexPath(RawTracePath(g))) && env.TraceBlocker(g) is null; // 추적이 금지된 게임은 더 추적할 수 없으니 진행 표시에도 "추적 중" 으로 보이지 않게 함
         if (valid < a.TraceRuns)
         {
-            return new TraceNext(valid, a.TraceRuns, room || relearn || stageIndexMissing, null);
+            return new TraceNext(valid, a.TraceRuns, room || relearn, null);
         }
 
-        int limit = Math.Max(Math.Max(a.TraceRuns, a.TraceRunsMax), relearn || stageIndexMissing ? valid + 1 : 0);
+        int limit = Math.Max(Math.Max(a.TraceRuns, a.TraceRunsMax), relearn ? valid + 1 : 0);
         int? coverage = status.Get(g.Name)?.CoveragePercent;
-        bool more = stageIndexMissing || relearn || room && valid < limit && ReadMergeGainMib(g, last) is { } gain && gain >= a.TraceMergeMinMib; // 커버리지는 표시용: 짧은 재실행이 100% 로 덮어써도 멈추지 않게 병합 증가량만 봄
+        bool more = relearn || room && valid < limit && ReadMergeGainMib(g, last) is { } gain && gain >= a.TraceMergeMinMib; // 커버리지는 표시용: 짧은 재실행이 100% 로 덮어써도 멈추지 않게 병합 증가량만 봄
         return new TraceNext(valid, limit, more, coverage);
     }
 
@@ -364,8 +363,24 @@ public sealed class AutoTracer
         }
     }
 
+    /// 단계 색인이 없는 게임에 그것을 얻으려고 한 번 더 추적하는 최대 횟수 (저장되지 않은 run 도 시도로 셈).
+    public const int MaxStageIndexTries = 2;
+
+    /// 단계 색인을 얻으려는 추가 추적의 차례 (1..MaxStageIndexTries), 해당 없으면 0. 학습 진행 표시 (NextTrace) 에는 들어가지 않습니다. 추적이 꺼졌거나 금지된 게임, run 파일 여유가 없는 게임은 0.
+    public static int StageTraceAttempt(GameSettings g, AutoSettings a, AutoEnv env)
+    {
+        string raw = RawTracePath(g);
+        if (!a.Trace || LastRunNumber(g, env.FileExists) >= MaxRunFiles || !env.FileExists(raw) || env.FileExists(TraceStageIndex.IndexPath(raw)) || env.TraceBlocker(g) is not null)
+        {
+            return 0;
+        }
+
+        int tried = env.StageIndexTries(raw);
+        return tried < MaxStageIndexTries ? tried + 1 : 0;
+    }
+
     /// 이 게임의 다음 플레이를 트레이스할지 (게임 시작 판정과 Start 가 같은 NextTrace 를 씀).
-    public bool WantsRun(GameSettings g) => NextTrace(g, _settings().Auto, _env, _status, MinRunBytes).Wanted;
+    public bool WantsRun(GameSettings g) => NextTrace(g, _settings().Auto, _env, _status, MinRunBytes).Wanted || StageTraceAttempt(g, _settings().Auto, _env) > 0;
 
     // 직전 병합 (run lastRun) 이 더한 새 고유 블록 (MiB). 메타가 없거나 다른 병합의 것이거나 읽을 수 없으면 null.
     private static long? ReadMergeGainMib(GameSettings g, int lastRun)
@@ -489,6 +504,8 @@ public sealed class AutoTracer
         int done; // 이미 모은 유효 플레이 수
         bool firstRun; // 원시 트레이스가 아직 없는 첫 기록 (아니면 병합용 추가 기록: 상태·선행 읽기를 건드리지 않음). 유효 회차가 0 이어도 run1 이 있으면 추가 기록
         TraceNext next;
+        int stageAttempt; // 단계 색인만을 위한 추가 추적의 차례 (아니면 0)
+        int runNumber = 0;
         lock (_lock)
         {
             if (_shutdown)
@@ -499,8 +516,9 @@ public sealed class AutoTracer
 
             next = NextTrace(g, _settings().Auto, _env, _status, MinRunBytes);
             done = next.Valid;
+            stageAttempt = next.Wanted ? 0 : StageTraceAttempt(g, _settings().Auto, _env);
             firstRun = !_env.FileExists(RawTracePath(g));
-            if (_run is not null || _stopCleanupFailed || !next.Wanted || _stopped.Any(r => string.Equals(r.Game.Name, g.Name, StringComparison.OrdinalIgnoreCase)))
+            if (_run is not null || _stopCleanupFailed || !next.Wanted && stageAttempt == 0 || _stopped.Any(r => string.Equals(r.Game.Name, g.Name, StringComparison.OrdinalIgnoreCase)))
             {
                 return;
             }
@@ -524,6 +542,7 @@ public sealed class AutoTracer
                     var exits = new GameExitTracker(_env.Now);
                     exits.ObserveStarted(g);
                     _run = new Run(g, _env.StartTrace(g.ExeNames, learn is null ? null : AutoLearn.Listener(learn)), _env.Now(), exits) { Learn = learn, Number = LastRunNumber(g, _env.FileExists) + 1, RawWrittenAtStart = _env.FileWriteTime(RawTracePath(g)) }; // 번호는 유효 회차 수가 아니라 있는 run 파일 기준 (덮어쓰기 금지)
+                    runNumber = _run.Number;
                     learn?.Start();
                 }
                 catch (Exception e) when (e is not OperationCanceledException)
@@ -547,6 +566,21 @@ public sealed class AutoTracer
                 _log.Info($"{g.Name}: auto trace and relocation skipped ({refused})"); // 같은 이유면 매번 남기지 않음
             }
 
+            return;
+        }
+
+        if (stageAttempt > 0)
+        {
+            try
+            {
+                TraceStageIndex.WriteTried(RawTracePath(g), stageAttempt); // 저장되지 않는 run 도 시도로 셈 (서비스를 다시 시작해도 유지)
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                _log.Warn($"{g.Name}: stage index attempt not recorded ({e.GetType().Name})");
+            }
+
+            _log.Info($"{g.Name}: auto trace started (run {runNumber} for stage index, attempt {stageAttempt}/{MaxStageIndexTries})");
             return;
         }
 
@@ -1287,7 +1321,17 @@ public sealed class AutoTracer
         _log.Info($"{g.Name}: rotated trace run files to keep the merged base and allow relearning");
     }
 
-    private void InvalidateStageIndex(GameSettings g) => DeleteIfExists(TraceStageIndex.IndexPath(RawTracePath(g)));
+    private void InvalidateStageIndex(GameSettings g)
+    {
+        try
+        {
+            DeleteIfExists(TraceStageIndex.IndexPath(RawTracePath(g)));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"{g.Name}: old stage index not removed ({e.GetType().Name})"); // 부가 파일 때문에 본 기록을 잃지 않음: 낡은 색인은 원시 추적이 바뀌면 읽을 때 무시됨
+        }
+    }
 
     private void SaveStageMarks(GameSettings g, int number, IReadOnlyList<StageMark> marks)
     {

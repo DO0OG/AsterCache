@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.RegularExpressions;
 using AsterCache.Core.Json;
 
 namespace AsterCache.Core.Trace;
@@ -17,6 +19,53 @@ public sealed record TraceStageIndex(IReadOnlyList<TraceStage> Stages)
     public static string RunMarksPath(string runPath) => runPath + Suffix;
 
     public static string IndexPath(string rawTracePath) => rawTracePath + Suffix;
+
+    /// 단계 색인을 얻으려는 추가 추적을 시도한 횟수를 남기는 곁 파일 (서비스를 다시 시작해도 유지).
+    public static string TriedPath(string rawTracePath) => rawTracePath + ".stages.tried";
+
+    public static int ReadTried(string rawTracePath)
+    {
+        try
+        {
+            return File.Exists(TriedPath(rawTracePath)) && int.TryParse(File.ReadAllText(TriedPath(rawTracePath)).Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out int n) ? n : 0;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return 0;
+        }
+    }
+
+    public static void WriteTried(string rawTracePath, int tries) =>
+        File.WriteAllText(TriedPath(rawTracePath), tries.ToString(CultureInfo.InvariantCulture));
+
+    /// 원시 추적이 다른 경로 (수동 추적·learn) 로 다시 쓰였을 때: 낡은 단계 색인·시도 횟수·run 곁 파일을 지웁니다. 못 지운 색인은 원시 추적의 길이·시각이 달라 읽을 때 무시됩니다.
+    public static void ClearSidecars(string rawTracePath)
+    {
+        string dir = Path.GetDirectoryName(rawTracePath) ?? string.Empty;
+        string name = Path.GetFileName(rawTracePath);
+        int dot = name.LastIndexOf('.');
+        bool hasSuffix = dot > 0 && dot < name.Length - 1;
+        string stem = hasSuffix ? name[..dot] : name;
+        string suffix = hasSuffix ? name[dot..] : string.Empty;
+        var runMarks = new Regex($@"^{Regex.Escape(stem)}\.run\d+{Regex.Escape(suffix)}{Regex.Escape(Suffix)}$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        try
+        {
+            foreach (string file in Directory.Exists(dir) ? Directory.EnumerateFiles(dir, "*" + Suffix) : [])
+            {
+                if (runMarks.IsMatch(Path.GetFileName(file)))
+                {
+                    File.Delete(file);
+                }
+            }
+
+            File.Delete(IndexPath(rawTracePath));
+            File.Delete(TriedPath(rawTracePath));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // 지우지 못해도 색인은 원시 추적과 맞지 않으면 읽을 때 무시됨
+        }
+    }
 
     /// 최신 run 우선으로 병합하면서 먼저 나온 블록의 단계를 보존합니다.
     public static TraceStageIndex? Build(IReadOnlyList<(IReadOnlyList<TraceEvent> Events, IReadOnlyList<StageMark> Marks)> runsNewestFirst)
@@ -172,6 +221,7 @@ public sealed record TraceStageIndex(IReadOnlyList<TraceStage> Stages)
         {
             if (JsonRead.ReadFile(path) is not JObject root
                 || !root.TryGetValue("version", out object? version) || version is not long v || v != 1
+                || root.TryGetValue("raw", out object? stamp) && !RawStampMatches(path, stamp)
                 || !root.TryGetValue("stages", out object? value) || value is not List<object?> rows)
             {
                 return null;
@@ -223,7 +273,33 @@ public sealed record TraceStageIndex(IReadOnlyList<TraceStage> Stages)
                     { "length", range.Length },
                 }).ToList() },
         }).ToList();
-        WriteJson(path, new JObject { { "version", 1L }, { "stages", stages } });
+        var root = new JObject { { "version", 1L } };
+        if (RawOf(path) is { } raw && File.Exists(raw))
+        {
+            var info = new FileInfo(raw); // 이 색인이 만들어진 병합 추적의 표식: 나중에 원시 추적이 바뀌면 낡은 색인을 쓰지 않음
+            root.Add("raw", new JObject { { "length", info.Length }, { "written", info.LastWriteTimeUtc.Ticks } });
+        }
+
+        root.Add("stages", stages);
+        WriteJson(path, root);
+    }
+
+    private static string? RawOf(string indexPath) => indexPath.EndsWith(Suffix, StringComparison.Ordinal) ? indexPath[..^Suffix.Length] : null;
+
+    private static bool RawStampMatches(string indexPath, object? stamp)
+    {
+        if (RawOf(indexPath) is not { } raw)
+        {
+            return true;
+        }
+
+        if (stamp is not JObject o || !o.TryGetValue("length", out object? length) || length is not long len || !o.TryGetValue("written", out object? written) || written is not long ticks)
+        {
+            return false;
+        }
+
+        var info = new FileInfo(raw);
+        return info.Exists && info.Length == len && info.LastWriteTimeUtc.Ticks == ticks;
     }
 
     private static List<StageMark> NormalizeMarks(IReadOnlyList<StageMark> marks)

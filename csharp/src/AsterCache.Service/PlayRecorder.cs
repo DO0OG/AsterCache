@@ -36,6 +36,17 @@ internal sealed record PlayWindowSummary(
     double IdleSeconds,
     uint MaxQueueDepth);
 
+/// 같은 세션에서 이후에 뜬 실행 파일 하나의 시작 스트림 결과와 그 시작 기준 +30/+60/+120 초 창 (기존 창과 같은 요약 형식).
+internal sealed class PlayStageStart
+{
+    public string Exe { get; set; } = string.Empty;
+    public double OffsetSeconds { get; set; }
+    public PlayStreamResult Stream { get; set; } = new("pending", null, null, null, null);
+    public List<PlayWindowSummary> Windows { get; set; } = [];
+
+    public PlayStageStart Copy() => new() { Exe = Exe, OffsetSeconds = OffsetSeconds, Stream = Stream, Windows = [.. Windows] };
+}
+
 internal sealed class PlaySampleRecord
 {
     public string SessionId { get; set; } = string.Empty;
@@ -52,6 +63,8 @@ internal sealed class PlaySampleRecord
     public PlayStreamResult StartStream { get; set; } = new("pending", null, null, null, null);
     public List<PlayWindowSummary> Windows { get; set; } = [];
     public PlayWindowSummary? Total { get; set; }
+    public List<PlayStageStart> StageStarts { get; set; } = [];
+    public List<PlayPeriodSummary> Periods { get; set; } = [];
 }
 
 /// 게임 시작 때부터 물리 디스크의 누적 통계를 읽어 구간별 표본과 종료 요약을 남깁니다.
@@ -60,6 +73,8 @@ public sealed class PlayRecorder : IDisposable
 {
     public const int MaxSamplesPerGame = 50;
     public static readonly int[] CheckpointSeconds = [30, 60, 120, 300, 600];
+    public static readonly int[] StageCheckpointSeconds = [30, 60, 120];
+    public const int MaxStageStarts = 20;
     private static readonly TimeSpan LateStreamRetention = TimeSpan.FromMinutes(10);
 
     private readonly object _gate = new();
@@ -71,13 +86,16 @@ public sealed class PlayRecorder : IDisposable
     private readonly Func<long> _timestamp;
     private readonly TimeSpan _sampleInterval;
     private readonly int[] _checkpoints;
+    private readonly int[] _stageCheckpoints;
+    private readonly int _periodSeconds;
     private readonly PlaySamplesStore _store;
     private readonly ILog _log;
     private bool _disposed;
     private const string ExistingGameStreamReason = "game already running when observation began";
 
     internal PlayRecorder(string? path, ILog log, Func<string, IPlayDiskCounter?>? openCounter = null, Func<long>? availableRamMib = null,
-        TimeSpan? sampleInterval = null, Func<DateTimeOffset>? now = null, Func<long>? timestamp = null, IReadOnlyList<int>? checkpoints = null)
+        TimeSpan? sampleInterval = null, Func<DateTimeOffset>? now = null, Func<long>? timestamp = null, IReadOnlyList<int>? checkpoints = null,
+        IReadOnlyList<int>? stageCheckpoints = null, int periodSeconds = PlayPeriods.DefaultSeconds)
     {
         _log = log;
         _store = new PlaySamplesStore(path, log);
@@ -87,6 +105,8 @@ public sealed class PlayRecorder : IDisposable
         _now = now ?? (() => DateTimeOffset.UtcNow);
         _timestamp = timestamp ?? Stopwatch.GetTimestamp;
         _checkpoints = checkpoints is null ? [.. CheckpointSeconds] : [.. checkpoints.Order()];
+        _stageCheckpoints = stageCheckpoints is null ? [.. StageCheckpointSeconds] : [.. stageCheckpoints.Order()];
+        _periodSeconds = Math.Max(1, periodSeconds);
     }
 
     /// 시작 이벤트 시각으로 세션을 만듭니다. 같은 게임의 후속 exe 는 현재 세션에 연결합니다.
@@ -105,13 +125,14 @@ public sealed class PlayRecorder : IDisposable
             {
                 long startedTick = start.Timestamp > 0 ? start.Timestamp : _timestamp();
                 long ram = SafeAvailableRam();
-                session = new Session(game, _now(), startedTick, ram, warm, _checkpoints, _sampleInterval.TotalSeconds, observedAfterGameStart: false);
+                session = new Session(game, _now(), startedTick, ram, warm, _checkpoints, _sampleInterval.TotalSeconds, observedAfterGameStart: false, stageCheckpoints: _stageCheckpoints, periodSeconds: _periodSeconds);
                 _active.Add(game.Name, session);
                 session.SamplingTask = Task.Run(() => SampleSessionAsync(session));
             }
             else
             {
                 session.NoteReturn(_now()); // 유예 중에 같은 게임의 다른 exe 가 뜸: 종료가 아님
+                session.AddStageStart(start.ExeName, key, start.Timestamp > 0 ? start.Timestamp : _timestamp());
             }
 
             _processSessions.Add(key, session);
@@ -138,7 +159,7 @@ public sealed class PlayRecorder : IDisposable
             long tick = _timestamp();
             var skippedStream = new PlayStreamResult("skipped", ExistingGameStreamReason, null, null, null);
             var session = new Session(game, _now(), tick, SafeAvailableRam(), null, _checkpoints, _sampleInterval.TotalSeconds,
-                observedAfterGameStart: true, initialStartStream: skippedStream);
+                observedAfterGameStart: true, initialStartStream: skippedStream, stageCheckpoints: _stageCheckpoints, periodSeconds: _periodSeconds);
             _active.Add(game.Name, session);
             session.SamplingTask = Task.Run(() => SampleSessionAsync(session));
             return true;
@@ -180,7 +201,7 @@ public sealed class PlayRecorder : IDisposable
             }
         }
 
-        if (session.SetStartStream(result, _timestamp()) is { } record)
+        if (session.SetStartStream(new ProcessKey(start.Pid, start.Timestamp), result, _timestamp()) is { } record)
         {
             _store.Upsert(record);
         }
@@ -204,6 +225,10 @@ public sealed class PlayRecorder : IDisposable
         PlaySampleRecord record = session.Finish(reason, _now(), _timestamp());
         _store.Upsert(record);
         _log.Info(Format(record));
+        if (record.Periods.Count > 0)
+        {
+            _log.Info($"{record.Game}: play record periods: {PlayPeriods.Format(record.Periods)}");
+        }
     }
 
     /// 설정 재적재나 서비스 정지 때 실행 중인 표본 루프를 끝냅니다.
@@ -297,6 +322,7 @@ public sealed class PlayRecorder : IDisposable
                     }
                 }
 
+                PersistStage(session, tick);
                 previous = current;
                 previousTick = tick;
             }
@@ -328,6 +354,8 @@ public sealed class PlayRecorder : IDisposable
                                 _log.Info(Format(record));
                             }
                         }
+
+                        PersistStage(session, tick);
                     }
                     else if (!session.IsUnavailable)
                     {
@@ -352,6 +380,23 @@ public sealed class PlayRecorder : IDisposable
     }
 
     private void Persist(PlaySampleRecord record) => _store.Upsert(record);
+
+    // 이후 실행 파일의 창이 새로 채워졌으면 기록하고, +120 초 창까지 채운 시작은 한 줄로 남김
+    private void PersistStage(Session session, long tick)
+    {
+        if (session.TakeStageUpdate(out List<(string Game, PlayStageStart Start)> finished))
+        {
+            _store.Upsert(session.Snapshot(tick));
+        }
+
+        foreach ((string game, PlayStageStart stage) in finished)
+        {
+            _log.Info(FormatStage(game, stage));
+        }
+    }
+
+    private static string FormatStage(string game, PlayStageStart stage) =>
+        $"{game}: play record stage {stage.Exe}: {string.Concat("stage", FormatStream(stage.Stream).AsSpan(5))}; {string.Join("; ", stage.Windows.Select(w => FormatWindow(w, $"{w.Seconds}s")))}";
 
     private long SafeAvailableRam()
     {
@@ -456,12 +501,18 @@ public sealed class PlayRecorder : IDisposable
     private readonly record struct ProcessKey(int Pid, long Timestamp);
 
     private sealed class Session(GameSettings game, DateTimeOffset startedAt, long startedTick, long availableRamMib, PlayWarmSnapshot? warm,
-        int[] checkpoints, double sampleIntervalSeconds, bool observedAfterGameStart, PlayStreamResult? initialStartStream = null)
+        int[] checkpoints, double sampleIntervalSeconds, bool observedAfterGameStart, PlayStreamResult? initialStartStream = null, int[]? stageCheckpoints = null, int periodSeconds = PlayPeriods.DefaultSeconds)
     {
         private readonly object _gate = new();
         private readonly string _sessionId = Guid.NewGuid().ToString("N");
         private readonly PlayRecordAccumulator _accumulator = new(checkpoints, sampleIntervalSeconds);
         private readonly List<PlayWindowSummary> _windows = [];
+        private readonly List<LaterStart> _laterStarts = [];
+        private readonly PlayRecordAccumulator _periodAccumulator = new(PlayPeriods.Checkpoints(periodSeconds), sampleIntervalSeconds);
+        private readonly List<PlayWindowSummary> _periodWindows = [];
+        private bool _stageChanged;
+        private int _gonePeriodWindows;
+        private PlayWindowSummary? _gonePeriodTotal;
         private string? _requestedEndReason;
         private string _status = "recording";
         private string? _physicalDisk;
@@ -493,13 +544,60 @@ public sealed class PlayRecorder : IDisposable
             }
         }
 
-        public PlaySampleRecord? SetStartStream(PlayStreamResult result, long tick)
+        private sealed class LaterStart(ProcessKey key, long startTick, PlayStageStart record, PlayRecordAccumulator? accumulator)
+        {
+            public ProcessKey Key { get; } = key;
+            public long StartTick { get; } = startTick;
+            public PlayStageStart Record { get; } = record;
+            public PlayRecordAccumulator? Accumulator { get; set; } = accumulator;
+            public bool Logged { get; set; }
+        }
+
+        /// 같은 세션에 뜬 이후 실행 파일: 그 시작 기준 창을 따로 셈 (기존 세션 기록은 그대로).
+        public void AddStageStart(string exe, ProcessKey key, long startTick)
+        {
+            lock (_gate)
+            {
+                if (_laterStarts.Count >= MaxStageStarts || _laterStarts.Any(l => l.Key == key))
+                {
+                    return;
+                }
+
+                var record = new PlayStageStart { Exe = exe, OffsetSeconds = Math.Max(0, Stopwatch.GetElapsedTime(StartedTick, startTick).TotalSeconds) };
+                _laterStarts.Add(new LaterStart(key, startTick, record, new PlayRecordAccumulator(stageCheckpoints ?? [.. StageCheckpointSeconds], sampleIntervalSeconds)));
+            }
+        }
+
+        /// 새로 채워진 이후 시작 창이 있으면 true, 마지막 창까지 채운 시작은 finished 에 (한 번만).
+        public bool TakeStageUpdate(out List<(string Game, PlayStageStart Start)> finished)
+        {
+            lock (_gate)
+            {
+                finished = [.. _laterStarts.Where(l => !l.Logged && l.Accumulator is null).Select(l =>
+                {
+                    l.Logged = true;
+                    return (Game.Name, l.Record.Copy());
+                })];
+                bool changed = _stageChanged;
+                _stageChanged = false;
+                return changed;
+            }
+        }
+
+        public PlaySampleRecord? SetStartStream(ProcessKey key, PlayStreamResult result, long tick)
         {
             lock (_gate)
             {
                 if (_startStream.Status != "pending" && !(_startStream.Status == "skipped" && _startStream.Reason == ExistingGameStreamReason))
                 {
-                    return null;
+                    LaterStart? later = _laterStarts.Find(l => l.Key == key); // 첫 결과를 이미 받은 세션: 이후 시작의 결과는 그 시작 항목에 붙임 (전에는 버려짐)
+                    if (later is null || later.Record.Stream.Status != "pending")
+                    {
+                        return null;
+                    }
+
+                    later.Record.Stream = result;
+                    return SnapshotLocked(tick);
                 }
 
                 _startStream = result;
@@ -518,6 +616,18 @@ public sealed class PlayRecorder : IDisposable
                 foreach (PlayWindowSummary window in added)
                 {
                     _windows.Add(window);
+                }
+
+                _periodWindows.AddRange(_periodAccumulator.Add(previous, current, previousElapsed, elapsed));
+                foreach (LaterStart later in _laterStarts.Where(l => l.Accumulator is not null && tick > l.StartTick))
+                {
+                    IReadOnlyList<PlayWindowSummary> laterWindows = later.Accumulator!.Add(previous, current, Math.Max(0, Stopwatch.GetElapsedTime(later.StartTick, previousTick).TotalSeconds), Stopwatch.GetElapsedTime(later.StartTick, tick).TotalSeconds);
+                    later.Record.Windows.AddRange(laterWindows);
+                    _stageChanged |= laterWindows.Count > 0;
+                    if (later.Record.Windows.Count >= (stageCheckpoints ?? StageCheckpointSeconds).Length)
+                    {
+                        later.Accumulator = null; // 마지막 창까지 채움: 더 셈하지 않음
+                    }
                 }
 
                 return added;
@@ -544,6 +654,7 @@ public sealed class PlayRecorder : IDisposable
                 }
 
                 (_goneAt, _goneTick, _goneTotal, _goneWindows) = (at, tick, _accumulator.Total(), _windows.Count);
+                (_gonePeriodTotal, _gonePeriodWindows) = (_periodAccumulator.Total(), _periodWindows.Count);
             }
         }
 
@@ -619,6 +730,8 @@ public sealed class PlayRecorder : IDisposable
                 StartStream = _startStream,
                 Windows = [.. final && _goneAt is not null ? _windows.Take(_goneWindows) : _windows],
                 Total = final ? _goneTotal ?? _accumulator.Total() : null,
+                StageStarts = [.. _laterStarts.Select(l => l.Record.Copy())],
+                Periods = PlayPeriods.Build(final && _goneAt is not null ? [.. _periodWindows.Take(_gonePeriodWindows)] : _periodWindows, final ? _goneAt is not null ? _gonePeriodTotal : _periodAccumulator.Total() : null),
             };
         }
     }

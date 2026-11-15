@@ -398,6 +398,59 @@ public sealed class PlayRecorderTests
         Assert.True(condition(), "condition was not met before the timeout");
     }
 
+    [Fact]
+    public async Task LaterExeGetsItsOwnWindowAndStreamResultWithoutChangingTheSessionRecord()
+    {
+        using var dir = new TempDir();
+        var log = new ListLog();
+        using var counter = new FakeCounter();
+        var recorder = new PlayRecorder(dir.Combine("play_samples.json"), log, _ => counter, () => 8192, TimeSpan.FromMilliseconds(10),
+            checkpoints: [1], stageCheckpoints: [1], periodSeconds: 1);
+        GameSettings game = Games.Make("stagegame", "launcher-game.exe", "main-game.exe");
+        ProcessStart first = new(31, game.ExeNames[0], Stopwatch.GetTimestamp());
+        Assert.True(recorder.ObserveStart(game, first, null));
+        await Task.Delay(100);
+        ProcessStart second = new(32, game.ExeNames[1], Stopwatch.GetTimestamp());
+        Assert.True(recorder.ObserveStart(game, second, null));
+        recorder.RecordStartStream(first, new PlayStreamResult("completed", null, 2_254L << 20, 61.6, 36.6));
+        recorder.RecordStartStream(second, new PlayStreamResult("completed", null, 100L << 20, 3.0, 35.0)); // 전에는 버려지던 이후 시작의 결과
+
+        await WaitUntil(() => log.Lines.Any(line => line.Contains("play record stage main-game.exe:", StringComparison.Ordinal)));
+        await Task.Delay(1200); // 구간 길이 (1 초) 를 넘겨 기간 요약이 생기게
+        recorder.EndSession(game.Name);
+
+        JsonElement sample = ReadLastSample(dir, game.Name);
+        Assert.Equal("completed", sample.GetProperty("startStream").GetProperty("status").GetString());
+        Assert.Equal(2_254L << 20, sample.GetProperty("startStream").GetProperty("readBytes").GetInt64()); // 첫 시작의 결과는 그대로
+        JsonElement stage = Assert.Single(sample.GetProperty("stageStarts").EnumerateArray());
+        Assert.Equal("main-game.exe", stage.GetProperty("exe").GetString());
+        Assert.Equal(100L << 20, stage.GetProperty("stream").GetProperty("readBytes").GetInt64());
+        Assert.Equal(1, Assert.Single(stage.GetProperty("windows").EnumerateArray()).GetProperty("seconds").GetInt32());
+        Assert.Equal(1, Assert.Single(sample.GetProperty("windows").EnumerateArray()).GetProperty("seconds").GetInt32()); // 기존 창은 그대로 하나
+        Assert.NotEmpty(sample.GetProperty("periods").EnumerateArray());
+        Assert.Contains(log.Lines, line => line.Contains("stagegame: play record stage main-game.exe: stage stream 100 MiB in 3.0 s (35.0 MB/s, completed); 1s measured at", StringComparison.Ordinal));
+        Assert.Contains(log.Lines, line => line.Contains("stagegame: play record periods: ", StringComparison.Ordinal));
+        Assert.Contains(log.Lines, line => line.Contains("stagegame: play record: ", StringComparison.Ordinal) && line.Contains("start stream 2254 MiB in 61.6 s", StringComparison.Ordinal)); // 기존 줄 형식 불변
+    }
+
+    [Fact]
+    public void OldSamplesFileWithoutTheNewFieldsLoadsAndKeepsItsRecord()
+    {
+        using var dir = new TempDir();
+        string path = dir.Combine("play_samples.json");
+        File.WriteAllText(path, "{\"games\":{\"old\":[{\"sessionId\":\"s1\",\"game\":\"old\",\"startedAt\":\"2026-11-10T00:00:00+00:00\",\"durationSeconds\":700,\"status\":\"complete\"}]}}");
+        var log = new ListLog();
+        var store = new PlayRecorder.PlaySamplesStore(path, log);
+
+        store.Upsert(new PlaySampleRecord { SessionId = "s2", Game = "old", StartedAt = DateTimeOffset.UnixEpoch, DurationSeconds = 5 });
+
+        Assert.DoesNotContain(log.Lines, line => line.Contains("not read", StringComparison.Ordinal));
+        using JsonDocument json = JsonDocument.Parse(File.ReadAllText(path));
+        JsonElement[] samples = [.. json.RootElement.GetProperty("games").GetProperty("old").EnumerateArray()];
+        Assert.Equal(["s1", "s2"], samples.Select(x => x.GetProperty("sessionId").GetString()));
+        Assert.Empty(samples[0].GetProperty("stageStarts").EnumerateArray()); // 옛 기록은 빈 목록으로 읽힘
+    }
+
     private sealed class FakeCounter : IPlayDiskCounter
     {
         public string? PhysicalDisk => "disk1";

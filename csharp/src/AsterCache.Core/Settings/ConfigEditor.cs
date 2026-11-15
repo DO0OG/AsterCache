@@ -211,6 +211,11 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             auto["start_stream_enabled"] = false;
         }
 
+        if (!a.StageStreamEnabled)
+        {
+            auto["stage_stream_enabled"] = false;
+        }
+
         if (a.RelocateHours.Count > 0)
         {
             auto["relocate_hours"] = a.RelocateHours.Select(h => (object?)(long)h).ToList();

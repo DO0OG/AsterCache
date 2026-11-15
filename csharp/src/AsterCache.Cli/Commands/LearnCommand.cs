@@ -229,6 +229,7 @@ internal static class LearnCommand
         (List<TraceEvent> events, _) = TraceBuilder.Build(records, exes, root);
         List<TraceEvent> canonical = TraceBuilder.CanonicalizeCase(events);
         TraceWriter.Write([canonical], outPath);
+        TraceStageIndex.ClearSidecars(outPath); // 새 추적과 맞지 않는 옛 단계 색인·run 표지·시도 횟수를 지움
         return canonical.Count;
     }
 }

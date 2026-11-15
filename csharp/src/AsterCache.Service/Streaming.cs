@@ -85,11 +85,24 @@ public interface IGameStreamer
 
     /// 로딩 앞부분의 바이트 (원시 트레이스에 t_ms 가 있어 경계를 계산했을 때), 아니면 null.
     long? LoadHeadBytes(GameSettings game) => null;
+
+    /// 단계 스트림: 첫 실행 파일의 시작 목록을 (앞부분 + 첫 단계) 와 (다음 단계) 로 나눈 계획, 단계 정보가 없으면 null (지금처럼 시작 목록 전체).
+    StageFirstPlan? PlanFirstStage(GameSettings game, CancellationToken stop) => null;
+
+    /// 단계 스트림이 켜졌을 때 단계 정보 없는 첫 스트림이 흘릴 시작 목록 (메모리 게이트를 위해 잘라 흘림), 모르면 null (StreamCoordinated 가 스스로 만듦).
+    IReadOnlyList<ReadOp>? StartOps(GameSettings game, CancellationToken stop) => null;
+
+    /// 단계 스트림: 이후 실행 파일이 읽을 목록 (그 단계의 블록, 단계를 모르면 시작 목록 전체). 기본은 읽을 것 없음.
+    StageLaterPlan PlanLaterStage(GameSettings game, string exe, CancellationToken stop) => new([], false, 0);
+
+    /// 주어진 목록을 StreamCoordinated 와 같은 묶음 경로로 흘립니다. 기본은 시작 목록 전체 (StreamCoordinated).
+    (StreamStats Stats, bool Complete) StreamOpsCoordinated(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue) =>
+        StreamCoordinated(game, stop, progress, canIssue, noteIssue);
 }
 
 /// 게임의 .prefetch.json 을 Python prefetch.cli 기본값 (physical, 간격 0, 파일 30% 이상이면 통째) 으로 스케줄해 PrefetchVirtualMemory 로 읽습니다.
 /// 예산은 계획의 존 크기 (계획이 없거나 존이 0 이면 추적의 총 바이트) 이고, 게임별 max_stream_mib 가 상한입니다. 고정 1 GiB 는 더 큰 핫 집합을 잘랐습니다.
-public sealed class PrefetchStreamer : IGameStreamer
+public sealed partial class PrefetchStreamer : IGameStreamer
 {
     private sealed record TraceSourceCacheEntry(long Length, long LastWriteTicks, IReadOnlyList<TraceEvent> Rows);
 
@@ -1167,10 +1180,32 @@ public sealed record DispatchEnv
     /// auto.start_stream_enabled: 거짓이면 게임 시작 스트림을 하지 않습니다 (다른 예열은 그대로).
     public Func<bool> StartStreamEnabled { get; init; } = () => AutoSettings.Default.StartStreamEnabled;
 
+    /// auto.stage_stream_enabled: 거짓이면 이후 실행 파일의 단계 스트림과 첫 스트림의 미리 흘리기를 하지 않음 (지금 동작 그대로).
+    public Func<bool> StageStreamEnabled { get; init; } = () => AutoSettings.Default.StageStreamEnabled;
+
+    /// 이름까지 아는 읽기 카운터 (단계 스트림이 새 프로세스와 다음 단계 프로세스를 가려냄).
+    public Func<IReadOnlyCollection<string>, IReadOnlyList<(int Pid, string ExeName, long ReadBytes)>> ReadCountersWithExeNames { get; init; } = ProcessSnapshot.ReadCountersWithExeNames;
+
+    /// 가용 메모리 (MiB): 단계 스트림과 시작 스트림의 메모리 게이트. 기본은 게이트 없음.
+    public Func<long> AvailableMib { get; init; } = () => long.MaxValue;
+
+    /// 읽는 스레드의 I/O 우선순위를 낮춤 (true) 또는 보통으로 되돌림 (false), 바꾸지 못하면 false. 기본은 성공으로 칩니다.
+    public Func<bool, bool> SetReadIoLow { get; init; } = _ => true;
+
+    public Func<long> Timestamp { get; init; } = Stopwatch.GetTimestamp;
+
+    /// 증거 대기용 잠. 취소되면 곧바로 돌아옵니다.
+    public Action<TimeSpan, CancellationToken> Sleep { get; init; } = (span, ct) => _ = ct.WaitHandle.WaitOne(span);
+
+    /// 이 게임이 아닌 다른 게임의 시작이 디스패처 대기열에 있는가 (게임 이름을 받음): 있으면 미리 흘리기·증거 대기를 끝냄.
+    public Func<string, bool> OtherGameQueued { get; init; } = _ => false;
+
     public static DispatchEnv Create() => new()
     {
         OtherProcesses = (g, start) => RegisteredOthers(g, ProcessSnapshot.Take(), start.Pid),
         DiskBusy = g => DiskActivity.BusyUnlessBroken(PlanFile.SplitDrive(g.OriginRoot), keepStalled: true), // 표본이 없거나 낡으면 바쁨 (정체가 60 초를 넘어도 게임 보호는 유지), 카운터 고장은 기존대로 바쁘지 않음
+        AvailableMib = SystemMemory.AvailableMib,
+        SetReadIoLow = low => ThreadIoPriority.TrySet(low ? IoPriority.Low : IoPriority.Normal),
     };
 
     /// 등록 이름 프로세스만 (설치 폴더 아래 미등록 프로세스는 제외, 시작한 pid 와 서비스 자신도 제외).
@@ -1249,7 +1284,7 @@ public sealed record DispatchEnv
 
 /// 감지된 프로세스를 게임에 대응시켜 스트림을 부릅니다. 같은 게임은 Cooldown 안에 한 번만 (런처·보조 프로세스가 연달아 떠도 중복 읽기 없음).
 /// 게임 exe 가 다시 떴을 때 (게임이 이미 도는 중, 직전 스트림이 restream 간격 안, 그 디스크가 바쁨) 는 같은 데이터를 디스크에서 또 읽지 않도록 건너뜁니다. 런처 시작은 예외.
-public sealed class GameDispatcher
+public sealed partial class GameDispatcher
 {
     public static readonly TimeSpan Cooldown = TimeSpan.FromSeconds(60);
 
@@ -1381,6 +1416,11 @@ public sealed class GameDispatcher
         }
 
         DateTimeOffset now = _now();
+        if (IsLaterStart(g, start))
+        {
+            return HandleLater(g, start, now, stop);
+        }
+
         if (_last.TryGetValue(g.Name, out DateTimeOffset prev) && now - prev < Cooldown)
         {
             ReportStream(start, "skipped", "start stream cooldown", null, null, null);
@@ -1405,161 +1445,7 @@ public sealed class GameDispatcher
         _last[g.Name] = now;
         try
         {
-            CancellationToken streamStop = lease?.Token ?? stop;
-            int capSeconds = Math.Max(0, _env.StartStreamCapSeconds());
-            long startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
-            long lastSampleAt = startedAt;
-            long processReadBytes = 0;
-            var previousReads = new Dictionary<int, long>();
-            var boundary = new RuntimeLoadBoundary();
-            int boundaryStopped = 0;
-            int capStopped = 0;
-            object sampleLock = new();
-            using var issueStop = CancellationTokenSource.CreateLinkedTokenSource(streamStop);
-            try
-            {
-                foreach ((int pid, long bytes) in _env.ReadCounters(g.ExeNames))
-                {
-                    previousReads[pid] = bytes;
-                }
-            }
-            catch (Exception e) when (e is not (OutOfMemoryException or StackOverflowException))
-            {
-                _log.Warn($"{g.Name}: start stream read counters unavailable ({e.GetType().Name})");
-            }
-
-            _ = boundary.Update(0, 0);
-
-            void SampleReadCounters()
-            {
-                bool shouldCancel = false;
-                bool sampleFailed = false;
-                lock (sampleLock)
-                {
-                    if (issueStop.IsCancellationRequested)
-                    {
-                        return;
-                    }
-
-                    long timestamp = System.Diagnostics.Stopwatch.GetTimestamp();
-                    TimeSpan elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(startedAt, timestamp);
-                    if (capSeconds > 0 && elapsed >= TimeSpan.FromSeconds(capSeconds))
-                    {
-                        Volatile.Write(ref capStopped, 1);
-                        shouldCancel = true;
-                    }
-                    else if (System.Diagnostics.Stopwatch.GetElapsedTime(lastSampleAt, timestamp) >= TimeSpan.FromSeconds(1))
-                    {
-                        try
-                        {
-                            foreach ((int pid, long bytes) in _env.ReadCounters(g.ExeNames))
-                            {
-                                long delta = previousReads.TryGetValue(pid, out long previous) ? (bytes >= previous ? bytes - previous : bytes) : bytes;
-                                processReadBytes = checked(processReadBytes + Math.Max(0, delta));
-                                previousReads[pid] = bytes;
-                            }
-
-                            if (boundary.Update((long)elapsed.TotalMilliseconds, processReadBytes))
-                            {
-                                Volatile.Write(ref boundaryStopped, 1);
-                                shouldCancel = true;
-                            }
-                        }
-                        catch (Exception e) when (e is not (OutOfMemoryException or StackOverflowException))
-                        {
-                            sampleFailed = true;
-                        }
-
-                        lastSampleAt = timestamp;
-                    }
-                }
-
-                if (sampleFailed)
-                {
-                    _log.Warn($"{g.Name}: start stream read counter sample failed");
-                }
-
-                if (shouldCancel)
-                {
-                    issueStop.Cancel();
-                }
-            }
-
-            async Task SampleLoop(CancellationToken token)
-            {
-                while (true)
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(1), token).ConfigureAwait(false);
-                    SampleReadCounters();
-                }
-            }
-
-            bool CanIssue()
-            {
-                if (issueStop.IsCancellationRequested || !(lease?.IsValid ?? !stop.IsCancellationRequested))
-                {
-                    return false;
-                }
-
-                SampleReadCounters();
-                return !issueStop.IsCancellationRequested && (lease?.IsValid ?? !stop.IsCancellationRequested);
-            }
-
-            lease?.NoteReadIssue("start stream planning", 0, false);
-            using var sampleStop = new CancellationTokenSource();
-            Task sampleTask = Task.Run(() => SampleLoop(sampleStop.Token));
-            StreamStats r;
-            bool complete;
-            long progressBytes = 0;
-            try
-            {
-                (r, complete) = _streamer.StreamCoordinated(g, issueStop.Token, (done, _) => Interlocked.Exchange(ref progressBytes, done), CanIssue,
-                    (stage, bytes, isData) => lease?.NoteReadIssue(stage, bytes, isData));
-            }
-            catch (OperationCanceledException) when (Volatile.Read(ref boundaryStopped) != 0 || Volatile.Read(ref capStopped) != 0)
-            {
-                r = new StreamStats(Interlocked.Read(ref progressBytes), 0, 0, System.Diagnostics.Stopwatch.GetElapsedTime(startedAt).TotalSeconds, Aborted: true);
-                complete = false;
-            }
-            finally
-            {
-                sampleStop.Cancel();
-                try
-                {
-                    sampleTask.GetAwaiter().GetResult();
-                }
-                catch (OperationCanceledException)
-                {
-                    // 표본 추출은 스트림과 함께 멈췄습니다.
-                }
-            }
-
-            double elapsedSeconds = System.Diagnostics.Stopwatch.GetElapsedTime(startedAt).TotalSeconds;
-            double mbPerSecond = elapsedSeconds > 0 ? r.Bytes / (1_000_000d * elapsedSeconds) : 0;
-            if (Volatile.Read(ref boundaryStopped) != 0)
-            {
-                _log.Info($"{g.Name}: start stream stopped at load boundary after {r.Bytes} bytes, {elapsedSeconds:F1} s ({mbPerSecond:F1} MB/s); boundary at {boundary.BoundaryMs} ms, peak {boundary.PeakBytes >> 20} MiB per 10 s, last window {boundary.LastWindowBytes >> 20} MiB, observed {boundary.ObservedMs / 1000d:F1} s");
-                ReportStream(start, "stopped", "load boundary", r.Bytes, elapsedSeconds, mbPerSecond);
-                return false;
-            }
-
-            if (Volatile.Read(ref capStopped) != 0)
-            {
-                _log.Info($"{g.Name}: start stream stopped at cap after {r.Bytes} bytes, {elapsedSeconds:F1} s ({mbPerSecond:F1} MB/s)");
-                ReportStream(start, "stopped", "cap", r.Bytes, elapsedSeconds, mbPerSecond);
-                return false;
-            }
-
-            if (!complete || r.Aborted || streamStop.IsCancellationRequested || !CanIssue())
-            {
-                _log.Info($"{g.Name}: start stream cancelled after {r.Bytes} bytes");
-                ReportStream(start, "cancelled", "cancelled", r.Bytes, elapsedSeconds, mbPerSecond);
-                return false;
-            }
-
-            _log.Info($"{g.Name}: streamed {r.Bytes} bytes in {r.Requests} requests, {r.Errors} errors, {elapsedSeconds:F3} s ({mbPerSecond:F1} MB/s)");
-            ReportStream(start, "completed", null, r.Bytes, elapsedSeconds, mbPerSecond);
-            return true;
+            return StreamFirst(g, start, lease, stop);
         }
         catch (OperationCanceledException) when (!stop.IsCancellationRequested)
         {

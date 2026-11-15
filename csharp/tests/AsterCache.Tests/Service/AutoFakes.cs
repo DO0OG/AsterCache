@@ -331,6 +331,7 @@ internal sealed class FakeWorld
         FileExists = p => Files.Contains(p) || File.Exists(p),
         FileWriteTime = p => FileTimes.TryGetValue(p, out DateTimeOffset t) ? t : null,
         RunReadBytes = p => RunReadBytes(p),
+        StageIndexTries = AsterCache.Core.Trace.TraceStageIndex.ReadTried,
         TraceFingerprint = p => TraceFingerprint(p),
         GameProcesses = _ => Procs,
         AnyRunning = exes =>

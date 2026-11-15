@@ -74,7 +74,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         _game = new GameSettings("bench", ["bench.exe"], plan + ".prefetch.json", plan, Root, [Root], "GAMES", 1440) { Source = "auto" };
         _settings = new AsterSettings(50, [_game]) with { Auto = AutoSettings.Default with { TraceRuns = 1, IdleMinutesSet = true, RelocateParallel = 1, RelocateParallelSet = true, PostRelocateRecovery = AutoSettings.RecoveryOff } }; // 기존 시험은 idle_minutes (3 분) 만 명시된 설정, 쓰기 뒤 회복 대기는 아래 별도 시험
         _status = new AutoStatus(Path.Combine(Root, "auto_status.json"), _log, () => _w.Now, ticks: FakeClock.Ticks(() => _w.Now));
-        _w.Files.UnionWith([AutoTracer.RawTracePath(_game), TraceStageIndex.IndexPath(AutoTracer.RawTracePath(_game))]); // 단계 색인이 없으면 한 번 더 추적하려 하므로 기본 상태에 함께 둠
+        _w.Files.Add(AutoTracer.RawTracePath(_game));
         _w.LoadSessions = () => Sessions;
         _w.MakePlan = (sessions, origin, zoneMib) => PlanFile.Make(sessions, origin, zoneMib << 20, Cb, p => Files[p], preserveBytes: 64 << 20);
         _w.Apply = (_, plan, options, ct) =>
@@ -4053,7 +4053,6 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     {
         DoneAndReadyToReplan(out string raw);
         SetAuto(a => a with { TraceRuns = 3 });
-        _w.Files.Add(TraceStageIndex.IndexPath(raw));
         _w.Files.Add(TraceWriter.RunPath(raw, 1));
         _w.Files.Add(TraceWriter.RunPath(raw, 2));
         _w.Files.Add(TraceWriter.RunPath(raw, 3));

@@ -87,6 +87,7 @@ internal static class TraceCommand
 
         string outPath = PathText.Str(a.Text("out")!);
         (List<string> runs, int count) = TraceWriter.Write(sessions, outPath);
+        TraceStageIndex.ClearSidecars(outPath); // run 과 원시 추적을 새로 썼으니 옛 단계 색인·run 표지·시도 횟수는 짝이 맞지 않음
         o.WriteLine(PyJson.Dumps(new JObject
         {
             { "union", outPath },

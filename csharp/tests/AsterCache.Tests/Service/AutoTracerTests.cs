@@ -1210,6 +1210,70 @@ public sealed class AutoTracerTests : IDisposable
     }
 
     [Fact]
+    public void StageIndexTracesStopAfterTwoAttemptsEvenWhenTheRunIsNotSaved()
+    {
+        Extra(runs: 1, max: 1);
+        SeedRuns(1);
+        File.Delete(TraceStageIndex.IndexPath(Raw));
+
+        for (int attempt = 1; attempt <= 2; attempt++)
+        {
+            Assert.True(_tracer.WantsRun(_game));
+            _rig.World.Session = new FakeTrace(); // 읽기가 하나도 없어 저장되지 않는 run
+            _rig.World.Running = true;
+            _tracer.Start(_game);
+            Assert.True(_tracer.Active);
+            Assert.Contains(_rig.Log.Lines, l => l.Contains($"for stage index, attempt {attempt}/2)", StringComparison.Ordinal));
+            EndAfterExitGrace();
+            Assert.False(_tracer.Active);
+        }
+
+        Assert.False(File.Exists(TraceStageIndex.IndexPath(Raw)));
+        Assert.Equal(2, TraceStageIndex.ReadTried(Raw)); // 표식으로 남아 서비스를 다시 시작해도 유지
+        Assert.False(_tracer.WantsRun(_game));
+        Assert.Equal(2, _rig.World.TraceStarts); // 시도 두 번만 세션을 엶
+        Assert.Equal(2, _rig.Log.Lines.Count(l => l.Contains("for stage index, attempt", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void StageIndexTraceDoesNotChangeTheLearningProgressNorRunWhenTracingIsOff()
+    {
+        Extra(runs: 1, max: 1);
+        SeedRuns(1);
+        File.Delete(TraceStageIndex.IndexPath(Raw));
+        AutoEnv env = _rig.World.Env();
+
+        Assert.False(AutoTracer.NextTrace(_game, _rig.Settings.Auto, env, _rig.Status).Wanted); // 진행 표시 (trace N/M) 의 근거는 그대로
+        Assert.True(_tracer.WantsRun(_game));
+
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { Trace = false } };
+        Assert.False(_tracer.WantsRun(_game)); // 전역 추적을 끈 사용자에게는 아무것도 하지 않음
+        Assert.Equal(0, AutoTracer.StageTraceAttempt(_game, _rig.Settings.Auto, env));
+    }
+
+    [Fact]
+    public void FailingToRemoveTheOldStageIndexKeepsTheRunAndTheStaleIndexIsIgnored()
+    {
+        SetRuns(3);
+        FirstRunOfTwoBlocks();
+        string index = TraceStageIndex.IndexPath(Raw);
+        Assert.NotNull(TraceStageIndex.Read(index));
+
+        Reads((131072, 65536));
+        _rig.World.Running = true;
+        using (var held = new FileStream(index, FileMode.Open, FileAccess.Read, FileShare.Read)) // 삭제를 막는 열린 핸들 (공유 위반)
+        {
+            _tracer.Start(_game);
+            EndAfterExitGrace();
+        }
+
+        Assert.True(File.Exists(TraceWriter.RunPath(Raw, 2))); // 부가 파일 때문에 본 기록을 잃지 않음
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("old stage index not removed", StringComparison.Ordinal));
+        Assert.DoesNotContain(_rig.Log.Lines, l => l.Contains("auto trace failed", StringComparison.Ordinal));
+        Assert.Null(TraceStageIndex.Read(index)); // 낡은 색인은 병합 추적과 맞지 않아 단계 정보 없음으로 취급
+    }
+
+    [Fact]
     public void MissingStageIndexDoesNotRequestATraceForAnAntiCheatGame()
     {
         Extra(runs: 1, max: 1);

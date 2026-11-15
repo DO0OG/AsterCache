@@ -162,6 +162,9 @@ public sealed class AutoEnv
     /// run 파일 하나의 읽기량 (바이트, 행 길이 합), 읽을 수 없으면 null (유효 회차로 셈). 시험 기본값은 null.
     public Func<string, long?> RunReadBytes { get; init; } = _ => null;
 
+    /// 단계 색인을 얻으려는 추가 추적을 이미 시도한 횟수 (원시 트레이스 경로 기준). 시험 기본값은 0.
+    public Func<string, int> StageIndexTries { get; init; } = _ => 0;
+
     /// 원시 트레이스의 병합 결과 지문 (블록 집합·순서 해시), 읽을 수 없으면 null. 시험 기본값은 null.
     public Func<string, string?> TraceFingerprint { get; init; } = _ => null;
 
@@ -339,6 +342,7 @@ public sealed class AutoEnv
             ServiceDir = AppContext.BaseDirectory,
             FileExists = File.Exists,
             RunReadBytes = AutoTracer.RunReadBytes,
+            StageIndexTries = TraceStageIndex.ReadTried,
             TraceFingerprint = AutoTracer.TraceFingerprint,
             ProfileEvents = (g, budget) => PlanGuards.Inside(g.OriginRoot, g.AllowedRoots, RealPaths.Real) ? ProfileSupplement.EventsFor(g.OriginRoot, g.ExeNames, budget, RealPaths.Resolve) : [],
             DirectoryExists = Directory.Exists,

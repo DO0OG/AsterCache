@@ -28,7 +28,7 @@ public sealed class ConfigEditorAutoTests : IDisposable
         editor.Add(Game("a"));
         editor.SetAuto(AutoSettings.Default);
 
-        Assert.Equal(41, CountKeys(File.ReadAllText(editor.ConfigPath), "auto"));
+        Assert.Equal(42, CountKeys(File.ReadAllText(editor.ConfigPath), "auto"));
         Assert.Equal(Plain(AutoSettings.Default), Plain(editor.Load()!.Auto));
 
         var custom = new AutoSettings(false, false, true, false, 3, 7, 90, 128, 5, ["a.exe", "b.exe"])
@@ -60,6 +60,7 @@ public sealed class ConfigEditorAutoTests : IDisposable
             TraceTargetCoverage = 55,
             TraceRunsMax = 6,
             RestreamCooldownMin = 3,
+            QuickExitSeconds = 45,
             RewarmAfterExitMin = 5,
         };
         editor.SetAuto(custom);
@@ -80,6 +81,7 @@ public sealed class ConfigEditorAutoTests : IDisposable
         Assert.False(read.KeepAwake);
         Assert.True(read.KeepStreamOnGameStart);
         Assert.Equal(3, read.RestreamCooldownMin);
+        Assert.Equal(45, read.QuickExitSeconds);
         Assert.Equal(5, read.RewarmAfterExitMin);
 
         editor.SetAuto(AutoSettings.Default with { RewarmMinutes = 0 });

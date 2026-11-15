@@ -27,6 +27,7 @@ public sealed class Worker : BackgroundService
     private readonly RiotPhaseWatcher? _riot;
     private readonly PlayRecorder? _playRecorder;
     private readonly BackgroundYield? _backgroundYield;
+    private readonly QuickExitGuard? _quickExit;
     private readonly DiskReadCoordinator _coordinator;
     private readonly object _watchLock = new();
     private readonly object _gameStateLock = new();
@@ -36,19 +37,22 @@ public sealed class Worker : BackgroundService
     private CancellationTokenSource? _generation;
     private bool _restart;
     private int _maintaining;
-    private readonly GameExitTracker _exits = new();
+    private readonly GameExitTracker _exits;
     private readonly SessionReads _reads = new();
     private readonly BootQuiet _quiet;
     private readonly object _heldLock = new();
     private readonly List<ProcessStart> _heldTriggers = []; // 부팅 조용 구간에 보류한 계기 (게임 exe 가 아닌 트리거), _heldLock 으로 보호
     private readonly Func<DateTimeOffset> _now;
+    private readonly Dictionary<string, long> _latestStart = new(StringComparer.OrdinalIgnoreCase); // 게임별 가장 최근 시작의 일련번호, _gameStateLock 으로 보호
+    private long _startSeq;
     private readonly Dictionary<string, string> _reapplyHold = new(StringComparer.Ordinal); // 게임 정책·재배치 시간대로 재적용을 미룬 사유 (바뀔 때만 로그), 재적용 틱 스레드에서만 씀
 
     public Worker(AsterSettings settings, ILog log, IProcessWatcher primary, IProcessWatcher? fallback, IGameStreamer streamer, ReapplyChecker checker,
         ReapplyGate? gate = null, Prewarmer? prewarm = null, AutoMode? auto = null, SettingsReloader? reload = null, KeepAwake? keepAwake = null, DispatchEnv? dispatchEnv = null,
-        RiotPhaseWatcher? riot = null, BootQuiet? quiet = null, DiskReadCoordinator? coordinator = null, PlayRecorder? playRecorder = null, Func<DateTimeOffset>? now = null, BackgroundYield? backgroundYield = null)
+        RiotPhaseWatcher? riot = null, BootQuiet? quiet = null, DiskReadCoordinator? coordinator = null, PlayRecorder? playRecorder = null, Func<DateTimeOffset>? now = null, BackgroundYield? backgroundYield = null, QuickExitGuard? quickExit = null)
     {
         _now = now ?? (() => DateTimeOffset.UtcNow);
+        _exits = new GameExitTracker(_now);
         _coordinator = coordinator ?? new DiskReadCoordinator(AsterCache.Windows.VolumeDisks.Shared, log);
         _prewarm = prewarm;
         _prewarm?.SetDiskReadCoordinator(_coordinator);
@@ -61,6 +65,7 @@ public sealed class Worker : BackgroundService
         _reload = reload;
         _playRecorder = playRecorder;
         _backgroundYield = backgroundYield;
+        _quickExit = quickExit;
         _settings = settings;
         _keepAwake = keepAwake ?? (auto is null ? null : new KeepAwake(KeepAwakeEnv.Create(auto.Status.Plays), log, () => _settings, _coordinator)); // 자동 모드가 있는 진짜 서비스에서만 기본으로 켬
         _keepAwake?.SetDiskReadCoordinator(_coordinator);
@@ -90,6 +95,7 @@ public sealed class Worker : BackgroundService
             IsWarm = prewarm is null ? dispatch.IsWarm : prewarm.AlreadyWarm,
             RecentWarmProbeAt = prewarm is null ? dispatch.RecentWarmProbeAt : prewarm.RecentWarmProbeAt,
             RecentWarmProbeMinutes = () => _settings.Auto.RewarmMinutes,
+            BackingOff = quickExit is null ? dispatch.BackingOff : quickExit.IsBackingOff,
         }, coordinator: _coordinator, streamResult: _playRecorder is null ? null : (start, result) => _playRecorder.RecordStartStream(start, result)); // 설정을 다시 읽어도 최신 값
         _checker = checker;
         _gate = gate ?? new ReapplyGate();
@@ -274,6 +280,15 @@ public sealed class Worker : BackgroundService
     {
         _riot?.NoteProcessStart(s.ExeName); // 리그 오브 레전드 게임 exe 가 뜨면 챔피언 선택 선읽기를 바로 멈춤
         GameSettings? game;
+        bool backOff = false; // 짧은 종료 뒤 물러나는 실행: 시작 스트림·배경 양보·자동 추적·그 게임의 트리거 예열을 하지 않음
+        bool newSession = false; // 그 게임이 실행 중이 아니었을 때의 시작 = 세션의 시작 (런처 → 본체 전환은 새 세션이 아님)
+        bool finishPrevious = false;
+        bool splitSession = false;
+        long startSeq = 0;
+        DateTimeOffset startAt = s.DetectedAt == default ? _now() : s.DetectedAt;
+        DateTimeOffset previousEndAt = startAt;
+        string previousReason = "game_exit";
+        IReadOnlySet<string>? names = null;
         lock (_gameStateLock)
         {
             game = _settings.Games.FirstOrDefault(g => g.ExeNames.Contains(s.ExeName, StringComparer.OrdinalIgnoreCase));
@@ -281,16 +296,36 @@ public sealed class Worker : BackgroundService
 
         if (game is not null)
         {
-            IReadOnlySet<string>? names = CurrentNames();
+            names = CurrentNames();
+            DateTimeOffset? firstExitAt;
+            bool splitCandidate;
             lock (_gameStateLock)
             {
                 game = _settings.Games.FirstOrDefault(g => string.Equals(g.Name, game.Name, StringComparison.OrdinalIgnoreCase)
                     && g.ExeNames.Contains(s.ExeName, StringComparer.OrdinalIgnoreCase));
+                firstExitAt = game is null ? null : ExitAt(game.Name);
+                splitCandidate = game is not null && _quickExit?.WouldSplitSession(game.Name, s.ExeName, s.Pid, firstExitAt ?? startAt) == true;
+            }
+
+            bool otherProcess = splitCandidate && game is not null && OtherGameProcessRunning(game, s);
+            lock (_gameStateLock)
+            {
+                game = _settings.Games.FirstOrDefault(g => game is not null && string.Equals(g.Name, game.Name, StringComparison.OrdinalIgnoreCase)
+                    && g.ExeNames.Contains(s.ExeName, StringComparer.OrdinalIgnoreCase));
                 if (game is not null)
                 {
-                    if (_playRecorder is { } recorder)
+                    previousEndAt = ExitAt(game.Name) ?? firstExitAt ?? startAt; // 소멸 시각은 ObserveStarted 가 지우기 전에 보관, 아직 못 봤으면 새 시작 시각이 이전 실행 종료의 상한
+                    bool continued = false;
+                    splitSession = _quickExit?.StartedAgain(game.Name, s.ExeName, s.Pid, previousEndAt, startAt, splitCandidate && !otherProcess, out continued) == true;
+                    bool tookPendingExit = _exits.TakePendingExit(game.Name); // 확정됐지만 아직 처리되지 않은 종료만 시작 쪽이 처리 (이미 처리된 종료 뒤의 재실행은 평소 시작 경로). 같은 세션이 이어지는 경우(continued)는 가져가고도 처리하지 않는 것이 의도: 새 실행이 곧바로 같은 일을 함
+                    newSession = splitSession || !continued && !_exits.RunningNames.Contains(game.Name);
+                    finishPrevious = splitSession || newSession && tookPendingExit;
+                    startSeq = ++_startSeq;
+                    _latestStart[game.Name] = startSeq;
+                    if (finishPrevious)
                     {
-                        TryPlayRecording("start", () => recorder.ObserveStart(game, s, _prewarm?.PlayStartSnapshot(game.Name, DateTimeOffset.UtcNow)));
+                        bool quick = _quickExit?.EndSession(game.Name, previousEndAt) == true;
+                        previousReason = quick ? "quick_exit" : "game_exit";
                     }
 
                     if (names is not null)
@@ -300,25 +335,53 @@ public sealed class Worker : BackgroundService
 
                     _coordinator.Yield(game.OriginRoot, "game started", game.Name);
                     _exits.ObserveStarted(game);
+                    backOff = _quickExit is { } quickExit && (newSession
+                        ? quickExit.BeginSession(game.Name, s.ExeName, s.Pid, startAt)
+                        : quickExit.IsBackingOff(game.Name)); // 디스크 양보와 위의 취소는 물러나도 그대로
                 }
+
             }
 
             if (game is not null)
             {
+                if (finishPrevious)
+                {
+                    OnGameExit(game, previousEndAt, previousReason, restarted: true, names);
+                }
+
+                if (_playRecorder is { } recorder)
+                {
+                    TryPlayRecording("start", () => recorder.ObserveStart(game, s, _prewarm?.PlayStartSnapshot(game.Name, DateTimeOffset.UtcNow)));
+                }
+
                 _prewarm?.NoteGameStart(game.Name); // 그 게임을 예열하던 스트림은 아래 취소에도 끝까지 (다른 게임의 예열은 묶음 경계에서 멈춤), 기록 없는 예열의 예산은 풂
                 _prewarm?.ReleasePin(game.Name, "game started"); // 고정은 스트림·재적용 취소보다 먼저 풂
                 _gate.Cancel(); // 재적용은 게임 exe 시작에서만 멈춥니다 (런처 같은 트리거 전용 프로그램은 아님)
                 _prewarm?.Recovery?.YieldTo(game.OriginRoot); // 같은 디스크에서 재는 중인 회복 표본도 멈춤
                 _auto?.Tracer.CancelShadow(game.Name); // 돌고 있는 그림자 계획은 게임과 CPU 를 다투지 않게 취소
                 _auto?.CancelWarm(); // 자동 모드의 예열 작업도 (핫 집합 스트림은 묶음 경계에서 멈추고, 그 뒤 예열은 시작하지 않음)
-                if (_backgroundYield is { } yielder)
+                if (_backgroundYield is { } yielder && !backOff)
                 {
                     _ = Task.Run(() => yielder.Begin("game started", settle: false), CancellationToken.None); // 비우기는 감시기 스레드를 막지 않게 따로, 기다리지 않음 (트리거 경로가 이미 했으면 60초 안이라 무시됨)
                 }
 
                 if (_auto is not null)
                 {
-                    _ = Task.Run(() => _auto.OnGameStart(game), CancellationToken.None); // last_played 와 자동 트레이스 시작은 감시기 스레드를 막지 않게 따로
+                    if (finishPrevious)
+                    {
+                        _ = Task.Run(async () =>
+                        {
+                            await _auto.EndRestartedGameAsync(game, previousEndAt);
+                            if (IsLatestRunningStart(game.Name, startSeq)) // 기다리는 사이 더 새 실행이 뜨거나 꺼졌으면 낡은 시작으로 추적·감시를 열지 않음
+                            {
+                                _auto.OnGameStart(game, backOff, startAt);
+                            }
+                        }, CancellationToken.None);
+                    }
+                    else
+                    {
+                        _ = Task.Run(() => _auto.OnGameStart(game, backOff, startAt), CancellationToken.None); // last_played 와 자동 트레이스 시작은 감시기 스레드를 막지 않게 따로
+                    }
                 }
             }
         }
@@ -334,6 +397,17 @@ public sealed class Worker : BackgroundService
             RunTrigger(s);
         }
     };
+
+    private bool IsLatestRunningStart(string game, long seq)
+    {
+        lock (_gameStateLock)
+        {
+            return _latestStart.TryGetValue(game, out long latest) && latest == seq && _exits.RunningNames.Contains(game);
+        }
+    }
+
+    private DateTimeOffset? ExitAt(string game) =>
+        _exits.GoneSince.TryGetValue(game, out DateTimeOffset goneAt) ? goneAt : _exits.ExitedAt(game);
 
     // 시작 이벤트 시점의 프로세스 이름만 읽습니다 (프로세스를 열지 않음, 이름 스냅샷 한 번). 실패하면 null 이며 유예 표시는 틱에 맡깁니다.
     private IReadOnlySet<string>? CurrentNames()
@@ -351,6 +425,20 @@ public sealed class Worker : BackgroundService
         {
             _log.Error("game start process snapshot failed", e);
             return null;
+        }
+    }
+
+    // 방금 시작한 프로세스 말고 그 게임의 등록 이름 프로세스가 떠 있는가 (이름 스냅샷 한 번, 프로세스를 열지 않음). 스냅샷이 실패하면 떠 있다고 봅니다.
+    private bool OtherGameProcessRunning(GameSettings game, ProcessStart start)
+    {
+        try
+        {
+            return DispatchEnv.RegisteredOthers(game, ProcessSnapshot.Take(), start.Pid).Count > 0;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _log.Error("game start process snapshot failed", e);
+            return true;
         }
     }
 
@@ -402,7 +490,17 @@ public sealed class Worker : BackgroundService
     {
         if (_prewarm is { } prewarm)
         {
-            _ = Task.Run(() => RunPrewarm(() => prewarm.OnProcessStart(s, _auto is null ? null : _auto.NarrowTriggered, _auto?.WarmToken ?? default)), CancellationToken.None);
+            _ = Task.Run(() => RunPrewarm(() =>
+            {
+                Func<IReadOnlyList<GameSettings>, IEnumerable<GameSettings>>? narrow = _quickExit is null && _auto is null ? null : games =>
+                {
+                    IReadOnlyList<GameSettings> allowed = _quickExit is null
+                        ? games
+                        : games.Where(g => !_quickExit.WouldBackOff(g.Name)).ToList(); // 지금 시작하면 물러날 게임은 런처 같은 트리거에서도 예열·양보를 받지 않음
+                    return _auto?.NarrowTriggered(allowed) ?? allowed;
+                };
+                _ = prewarm.OnProcessStart(s, narrow, _auto?.WarmToken ?? default);
+            }), CancellationToken.None);
         }
     }
 
@@ -670,11 +768,13 @@ public sealed class Worker : BackgroundService
 
             HashSet<string> names = new(procs.Select(p => p.Exe), StringComparer.OrdinalIgnoreCase);
             GameSettings[] exited;
+            Dictionary<string, DateTimeOffset?> exitTimes;
             IReadOnlySet<string> grace;
             List<GameSettings> unseen = [];
             lock (_gameStateLock)
             {
                 exited = [.. _exits.Poll(_settings.Games, names, unseen)]; // 보이지 않은 짧은 실행도 포함 (양보 해제·자동 모드 알림용)
+                exitTimes = exited.ToDictionary(game => game.Name, game => _exits.ExitedAt(game.Name), StringComparer.OrdinalIgnoreCase);
                 Dictionary<string, string> registered = _exits.RunningNames
                     .Where(name => _settings.Games.Any(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase)))
                     .ToDictionary(name => name, name => _settings.Games.First(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase)).OriginRoot, StringComparer.OrdinalIgnoreCase);
@@ -703,7 +803,7 @@ public sealed class Worker : BackgroundService
             ObserveRunningGames(procs);
             foreach (GameSettings g in exited)
             {
-                CompleteDetectedExit(g, unseen.Contains(g));
+                CompleteDetectedExit(g, unseen.Contains(g), exitTimes[g.Name]);
             }
         }
         catch (Exception e) when (e is not OperationCanceledException)
@@ -713,37 +813,71 @@ public sealed class Worker : BackgroundService
     }
 
     // 게임 종료가 한 곳으로 모이는 자리: 로그와 재예열 앞당김 (종료 시 읽은 양 집계 같은 후속 작업도 여기에 붙임).
-    private void OnGameExit(GameSettings game)
+    // 재실행 분리 (restarted) 는 같은 정리를 하되 이미 판정한 종료 사유를 받고, 곧 새 실행이 이어지므로 종료 후 예열은 예약하지 않으며, 다른 게임 판단에 시작 때의 이름 스냅샷을 씁니다.
+    private void OnGameExit(GameSettings game, DateTimeOffset? exitedAt = null, string? reason = null, bool restarted = false, IReadOnlySet<string>? names = null)
     {
+        exitedAt ??= _exits.ExitedAt(game.Name);
         _log.Info($"{game.Name}: exited");
+        reason ??= EndQuickExitSession(game, exitedAt);
         if (_playRecorder is { } recorder)
         {
-            TryPlayRecording("end", () => recorder.EndSession(game.Name));
+            TryPlayRecording("end", () => recorder.EndSession(game.Name, reason, exitedAt));
         }
 
-        _prewarm?.NoteGameExit(_exits.HeavyWorkNotBefore(game.Name, _settings.Auto.RewarmAfterExitMin));
-        _auto?.NoteGameExit(game);
+        if (!restarted)
+        {
+            _prewarm?.NoteGameExit(_exits.HeavyWorkNotBefore(game.Name, _settings.Auto.RewarmAfterExitMin));
+        }
+
+        _auto?.NoteGameExit(game, exitedAt);
         NoteCoverage(game);
-        if (!_exits.RunningNames.Any(name => !string.Equals(name, game.Name, StringComparison.OrdinalIgnoreCase)))
+        bool others = _exits.RunningNames.Any(name => !string.Equals(name, game.Name, StringComparison.OrdinalIgnoreCase));
+        if (restarted)
+        {
+            others |= names?.Any(name => _settings.Games.Any(g => !string.Equals(g.Name, game.Name, StringComparison.OrdinalIgnoreCase)
+                && g.ExeNames.Contains(name, StringComparer.OrdinalIgnoreCase))) ?? _settings.Games.Any(g => !string.Equals(g.Name, game.Name, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (!others)
         {
             _backgroundYield?.End(); // 다른 등록 게임이 없으면 낮춘 우선순위를 바로 되돌림
         }
     }
 
-    internal void CompleteDetectedExit(GameSettings game, bool unseen)
+    // 실행 직후 종료 판정: 종료 시각은 확정 시각이 아니라 사라진 것을 처음 본 시각 (유예·틱 간격을 길이에 넣지 않음). 플레이 기록의 종료 사유를 돌려줍니다.
+    private string EndQuickExitSession(GameSettings game, DateTimeOffset? exitedAt = null) =>
+        _quickExit?.EndSession(game.Name, exitedAt ?? _exits.ExitedAt(game.Name)) == true ? "quick_exit" : "game_exit";
+
+    internal void CompleteDetectedExit(GameSettings game, bool unseen, DateTimeOffset? exitedAt = null)
     {
-        if (!unseen)
+        if (exitedAt is { } detectedAt && !TakeDetectedExit(game, detectedAt))
         {
-            OnGameExit(game);
             return;
         }
 
-        if (_playRecorder is { } recorder)
+        exitedAt ??= _exits.ExitedAt(game.Name);
+        if (!unseen)
         {
-            TryPlayRecording("end", () => recorder.EndSession(game.Name));
+            OnGameExit(game, exitedAt);
+            return;
         }
 
-        _auto?.NoteGameExit(game); // 보이지 않은 짧은 실행: 나머지 종료 처리는 받지 않습니다.
+        string reason = EndQuickExitSession(game, exitedAt);
+        if (_playRecorder is { } recorder)
+        {
+            TryPlayRecording("end", () => recorder.EndSession(game.Name, reason, exitedAt));
+        }
+
+        _auto?.NoteGameExit(game, exitedAt); // 보이지 않은 짧은 실행: 나머지 종료 처리는 받지 않습니다.
+    }
+
+    // 확정된 종료를 잠금 안에서 확인하며 가져갑니다: 이미 시작 쪽이나 다른 처리가 가져갔으면 false.
+    private bool TakeDetectedExit(GameSettings game, DateTimeOffset exitedAt)
+    {
+        lock (_gameStateLock)
+        {
+            return _exits.TakePendingExit(game.Name, exitedAt);
+        }
     }
 
     /// 현재 프로세스 이름 스냅샷에 이미 실행 중인 게임의 관측을 시작합니다.

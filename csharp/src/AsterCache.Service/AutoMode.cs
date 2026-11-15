@@ -52,7 +52,8 @@ public sealed class AutoMode
     }
 
     private readonly CancellationTokenSource _stop = new(); // 서비스 종료: 게임 시작 때 도는 로딩 경계 감시를 멈춤
-    private readonly ConcurrentDictionary<string, CancellationTokenSource> _boundaryWatch = new(StringComparer.OrdinalIgnoreCase); // 게임별 로딩 경계 감시 (게임 종료 때 취소)
+    private readonly ConcurrentDictionary<string, BoundaryWatch> _boundaryWatch = new(StringComparer.OrdinalIgnoreCase); // 게임별 로딩 경계 감시 (게임 종료 때 취소)
+    private sealed record BoundaryWatch(CancellationTokenSource Token, DateTimeOffset StartedAt);
 
     /// 시험용 seam: 로딩 경계 감시 본체 (비우면 LoadBoundaryWatch.Run).
     public Action<GameSettings, CancellationToken>? BoundaryRunner { get; set; }
@@ -101,11 +102,12 @@ public sealed class AutoMode
         }
     }
 
-    /// 등록 게임 exe 가 떴을 때 (감시기 스레드 밖에서 부름): last_played 기록, 원시 트레이스가 없으면 자동 트레이스 시작.
-    public void OnGameStart(GameSettings g)
+    /// 등록 게임 exe 가 떴을 때 (감시기 스레드 밖에서 부름): last_played 기록, 원시 트레이스가 없으면 자동 트레이스 시작. backOff 이면 (짧은 종료 뒤 물러나는 실행) last_played 만 기록하고 추적·로딩 경계 읽기는 하지 않음.
+    public void OnGameStart(GameSettings g, bool backOff = false, DateTimeOffset? startedAt = null)
     {
         Guard("game start", () =>
         {
+            DateTimeOffset sessionStartedAt = startedAt ?? _env.Now();
             AutoSettings a = _settings.Auto;
             if (!a.Enabled)
             {
@@ -114,6 +116,12 @@ public sealed class AutoMode
 
             bool traced = _env.FileExists(AutoTracer.RawTracePath(g));
             Status.MarkPlayed(g.Name, g.Source, traced ? AutoStage.WaitingIdle : AutoStage.Discovered, _env.Now());
+            if (backOff)
+            {
+                _log.Info($"{g.Name}: auto trace skipped (quick exit guard: backing off)");
+                return;
+            }
+
             bool tracking = GamePolicy.AllowsTracking(g); // 끄거나 일시 중지한 게임은 추적·학습·게임 중 로딩 경계 읽기를 모두 하지 않음 (last_played 기록은 계속)
             if (a.Trace && tracking && _tracer.WantsRun(g))
             {
@@ -134,10 +142,11 @@ public sealed class AutoMode
                 // 적중률은 여기서 재지 않음 (게임 디스크 읽기): 예열 직후 값이 auto_status 에 남아 있음. 게임이 끝나면 NoteGameExit 가 멈춤
                 var watch = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
                 CancellationTokenSource? previous = null;
-                _ = _boundaryWatch.AddOrUpdate(g.Name, watch, (_, old) =>
+                var entry = new BoundaryWatch(watch, sessionStartedAt);
+                _ = _boundaryWatch.AddOrUpdate(g.Name, entry, (_, old) =>
                 {
-                    previous = old;
-                    return watch;
+                    previous = old.Token;
+                    return entry;
                 });
                 Release(previous); // 같은 게임이 다시 뜬 경우 이전 감시를 멈추고 치움
                 try
@@ -159,7 +168,7 @@ public sealed class AutoMode
                 }
                 finally
                 {
-                    if (_boundaryWatch.TryRemove(new KeyValuePair<string, CancellationTokenSource>(g.Name, watch)))
+                    if (_boundaryWatch.TryRemove(new KeyValuePair<string, BoundaryWatch>(g.Name, entry)))
                     {
                         watch.Dispose(); // 맵에서 뺀 쪽이 치움 (종료 통지가 이미 뺐다면 그쪽이 치움)
                     }
@@ -169,11 +178,26 @@ public sealed class AutoMode
     }
 
     /// 게임 종료 때 (Worker 의 종료 감지에서 부름): 그 게임의 로딩 경계 감시를 멈춥니다.
-    public void NoteGameExit(GameSettings g)
+    public void NoteGameExit(GameSettings g, DateTimeOffset? exitedAt = null)
     {
-        if (_boundaryWatch.TryRemove(g.Name, out CancellationTokenSource? watch))
+        if (_boundaryWatch.TryGetValue(g.Name, out BoundaryWatch? watch)
+            && (exitedAt is null || exitedAt.Value >= watch.StartedAt)
+            && _boundaryWatch.TryRemove(new KeyValuePair<string, BoundaryWatch>(g.Name, watch)))
         {
-            Release(watch);
+            Release(watch.Token);
+        }
+    }
+
+    /// 재실행 분리에서 이전 실행의 자동 추적이 끝나기를 기다립니다 (새 실행의 추적을 시작하기 전). 오래 걸리면 기다림을 접고 다음으로 넘어감.
+    public async Task EndRestartedGameAsync(GameSettings g, DateTimeOffset exitedAt)
+    {
+        try
+        {
+            await _tracer.EndGameSessionAsync(g, exitedAt).WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            _log.Warn($"{g.Name}: previous auto trace did not finish within 30s of the restart");
         }
     }
 

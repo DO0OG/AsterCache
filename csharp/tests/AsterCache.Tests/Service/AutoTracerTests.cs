@@ -164,6 +164,29 @@ public sealed class AutoTracerTests : IDisposable
     }
 
     [Fact]
+    public async Task RestartSplitEndsThePreviousTraceEvenThoughTheSameProgramIsStillRunningAndIgnoresALateEarlierExit()
+    {
+        Reads((0, 65536));
+        _tracer.Start(_game);
+        _rig.World.Procs = [(100, 5L << 20)];
+        _rig.World.Running = true; // 같은 이름의 새 프로세스가 이미 떠 있어 종료 유예로는 끝나지 않음
+        _tracer.Step();
+
+        await _tracer.EndGameSessionAsync(_game, _rig.World.Now.AddSeconds(-5)); // 이전 실행의 늦은 종료: 지금 실행을 닫지 않음
+        _tracer.Step();
+        Assert.True(_tracer.Active);
+
+        Task ending = _tracer.EndGameSessionAsync(_game, _rig.World.Now.AddSeconds(1));
+        Assert.False(ending.IsCompleted);
+        _tracer.Step();
+
+        await ending.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.False(_tracer.Active);
+        Assert.True(_trace.Disposed);
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("auto trace ended (game exited)", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void ARunEndRecordsTheOrbitShadowPlanAndLeavesTheOtherStatusFieldsAlone()
     {
         Reads((0, 65536), (65536, 65536));

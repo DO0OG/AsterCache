@@ -238,7 +238,11 @@ internal sealed partial class App : Application
         foreach (AutoNotice e in AutoStatusFile.NewEvents(status.Events, _started, _seenEvents))
         {
             _seenEvents.Add(e.Key);
-            Toast(AutoStatusFile.Notice(e with { Game = Model.DisplayName(e.Game) }, L.Current), e.Kind == "relocated" ? StatusTone.Ok : StatusTone.Busy);
+            status.Games.TryGetValue(e.Game, out AutoGame? game);
+            if (AutoStatusFile.Notice(e with { Game = Model.DisplayName(e.Game) }, L.Current, game) is { Length: > 0 } text) // 알림 내용이 이미 지워진 실행 직후 종료 사건은 건너뜀
+            {
+                Toast(text, e.Kind == "relocated" ? StatusTone.Ok : e.Kind == "quick_exit" ? StatusTone.Warn : StatusTone.Busy);
+            }
         }
 
         foreach (string game in AutoStatusFile.FirstRunFinished(_stageSeen, status)) // 이벤트로는 알 수 없어 단계 변화로 감지

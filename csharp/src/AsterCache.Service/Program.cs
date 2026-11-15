@@ -102,8 +102,10 @@ if (auto is not null)
     auto.BoundaryLease = LoadBoundaryWatch.LeaseFrom(coordinator);
 }
 
+// 실행 직후 종료 감지: 상태 파일을 쓰므로 canApply 일 때만, 알림은 자동 모드의 상태 파일 (auto_status.json) 로
+QuickExitGuard? quickExit = canApply ? new QuickExitGuard(QuickExitEnv.Create(Path.Combine(dataDir, "quick_exit.json"), () => settings.Auto.QuickExitSeconds, auto?.Status), log) : null;
 var reloader = new SettingsReloader(() => SettingsReloader.StampOf(configPath), LoadChecked, s => Worker.ChooseWatchers(s, admin), log, configStamp);
-builder.Services.AddHostedService(_ => new Worker(settings, log, primary, fallback, streamer, checker, prewarm: prewarm, auto: auto, reload: reloader, dispatchEnv: DispatchEnv.Create(), coordinator: coordinator, playRecorder: playRecorder, backgroundYield: backgroundYield));
+builder.Services.AddHostedService(_ => new Worker(settings, log, primary, fallback, streamer, checker, prewarm: prewarm, auto: auto, reload: reloader, dispatchEnv: DispatchEnv.Create(), coordinator: coordinator, playRecorder: playRecorder, backgroundYield: backgroundYield, quickExit: quickExit));
 await builder.Build().RunAsync();
 DiskActivity.StopSampling();
 return 0;

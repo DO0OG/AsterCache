@@ -1167,6 +1167,9 @@ public sealed record DispatchEnv
     /// auto.start_stream_enabled: 거짓이면 게임 시작 스트림을 하지 않습니다 (다른 예열은 그대로).
     public Func<bool> StartStreamEnabled { get; init; } = () => AutoSettings.Default.StartStreamEnabled;
 
+    /// 짧은 종료 뒤 서비스가 물러나는 실행인가 (게임 이름 기준, QuickExitGuard).
+    public Func<string, bool> BackingOff { get; init; } = _ => false;
+
     public static DispatchEnv Create() => new()
     {
         OtherProcesses = (g, start) => RegisteredOthers(g, ProcessSnapshot.Take(), start.Pid),
@@ -1377,6 +1380,13 @@ public sealed class GameDispatcher
         {
             _log.Info($"{g.Name}: start stream skipped (auto.start_stream_enabled is false)");
             ReportStream(start, "skipped", "start stream disabled", null, null, null);
+            return false;
+        }
+
+        if (_env.BackingOff(g.Name))
+        {
+            _log.Info($"{g.Name}: start stream skipped (quick exit guard: backing off)");
+            ReportStream(start, "skipped", "quick exit guard", null, null, null);
             return false;
         }
 

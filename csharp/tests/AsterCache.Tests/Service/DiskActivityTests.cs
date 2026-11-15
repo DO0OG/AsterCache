@@ -256,6 +256,170 @@ public sealed class DiskActivityTests
     }
 
     [Fact]
+    public void ALetterlessSampleKeepsReadingTheRememberedDiskAndANewMappingOverwritesIt()
+    {
+        IReadOnlyCollection<string> disks;
+        Assert.Equal(["0 D:"], DiskActivity.PickInstances("D:", ["0 D:", "1 C:", "_Total"], [], out disks));
+        Assert.Equal(["0"], disks);
+        Assert.Equal(["0"], DiskActivity.PickInstances("D:", ["0", "1 C:", "_Total"], disks, out IReadOnlyCollection<string> kept)); // 문자를 놓친 표본: 기억한 번호로 이어 읽음
+        Assert.Equal(["0"], kept);
+        Assert.Empty(DiskActivity.PickInstances("D:", ["0", "1 C:"], [], out _)); // 기억이 없으면 매핑 없음
+        Assert.Equal(["2 D:"], DiskActivity.PickInstances("D:", ["2 D:", "0 E:"], ["0"], out disks)); // 다른 번호에 문자가 다시 붙음: 새 매핑
+        Assert.Equal(["2"], disks);
+    }
+
+    [Fact]
+    public void ARememberedDiskNumberIsMatchedWholeNotByItsLeadingDigit()
+    {
+        Assert.Equal(["10 D:"], DiskActivity.PickInstances("D:", ["10 D:", "1 C:"], [], out IReadOnlyCollection<string> disks));
+        Assert.Equal(["10"], DiskActivity.PickInstances("D:", ["1", "10"], disks, out _));
+    }
+
+    [Fact]
+    public void TheSamplerKeepsReadingTheRememberedDiskWhenASampleMissesTheLetter()
+    {
+        var current = new Dictionary<string, double> { ["0 D:"] = 80 * Mib, ["1 C:"] = 0 };
+        var sampler = Manual(() => current, () => 0);
+        sampler.Refresh();
+        Assert.Equal(T(80 * Mib, DiskActivity.SampleState.Ok), sampler.Read("D:"));
+        current = new Dictionary<string, double> { ["0"] = 7 * Mib, ["1 C:"] = 0 };
+        sampler.Refresh();
+        Assert.Equal(T(7 * Mib, DiskActivity.SampleState.Ok), sampler.Read("D:"));
+    }
+
+    [Fact]
+    public void OutageAndRecoveryAreLoggedOnceEachWithTheDurationAndAPairWithinTenMinutesIsMerged()
+    {
+        long now = 0;
+        var log = new ListLog();
+        var current = Instances;
+        var sampler = new DiskActivity.PhysicalSampler(() => current, () => now, _ => { }, () => log);
+        Dictionary<string, double> lost = new() { ["5 E:"] = 0 };
+        void Step(long at, Dictionary<string, double> sample)
+        {
+            now = at;
+            current = sample;
+            sampler.Refresh();
+            sampler.Read("D:");
+        }
+
+        Step(0, Instances);
+        Step(2000, lost);
+        Step(3000, lost); // 같은 상태가 이어지는 동안 반복하지 않음
+        Assert.Equal(["Info: DiskActivity: D: disk activity unavailable; optimization paused (instance_unmapped)"], log.Lines);
+        Step(5000, Instances);
+        Assert.Equal("Info: DiskActivity: D: disk activity available again after 3 s (instance_unmapped)", log.Lines.Last());
+        Step(8000, lost); // 10 분 안의 두 번째 쌍은 남기지 않고 횟수로 합침
+        Step(9000, Instances);
+        Assert.Equal(2, log.Lines.Count);
+        Step(700_000, lost);
+        Assert.Equal(3, log.Lines.Count);
+        Assert.Contains("1 short outage(s) merged", log.Lines.Last(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void YieldChecksFollowTheLastValueForTenSecondsFromTheFirstFailedSampleThenGoBackToTheUsualAnswer()
+    {
+        long now = 0;
+        var current = Instances;
+        var sampler = Manual(() => current, () => now);
+        sampler.Refresh();
+        Assert.True(sampler.BusyUnlessBroken("D:")); // 80 MiB/s: 바쁨
+        current = new Dictionary<string, double> { ["5 E:"] = 0 };
+        foreach (long at in new long[] { 2000, 5000, 8000, 11_000 })
+        {
+            now = at;
+            sampler.Refresh(); // 최초 실패는 2 초
+        }
+
+        now = 11_999;
+        Assert.Equal(DiskActivity.SampleState.Broken, sampler.Read("D:").State); // 이어 쓰지 않는 호출자 (막는 쪽) 는 기존 그대로
+        Assert.True(sampler.BusyUnlessBroken("D:")); // 최초 실패 뒤 9.999 초: 직전 값 (바쁨), 마지막 정상 표본 (0 초) 기준이면 이미 끝났을 때
+        now = 12_000;
+        Assert.False(sampler.BusyUnlessBroken("D:")); // 최초 실패 뒤 10 초: 기존 처리 (고장 = 바쁘지 않음)
+    }
+
+    [Fact]
+    public void ASampleProcessedLateNeverRollsBackWhatANewerSampleSet()
+    {
+        long now = 0;
+        var current = new Dictionary<string, double> { ["0 D:"] = Mib };
+        var sampler = Manual(() => current, () => now);
+        sampler.Refresh();
+        Assert.Equal(Mib, sampler.Read("D:").Bps);
+        DiskActivity.PhysicalSampler.Snapshot old = sampler.Latest!;
+        now = 1000;
+        current = new Dictionary<string, double> { ["2 D:"] = 2 * Mib };
+        sampler.Refresh(); // 새 매핑 (디스크 2)
+        Assert.Equal(T(Mib, DiskActivity.SampleState.Ok), sampler.Evaluate("D:", false, old)); // 오래된 표본은 자기 값만 돌려주고 기억은 건드리지 않음
+        now = 2000;
+        current = new Dictionary<string, double> { ["2"] = 3 * Mib };
+        sampler.Refresh();
+        Assert.Equal(T(3 * Mib, DiskActivity.SampleState.Ok), sampler.Read("D:")); // 기억이 0 으로 돌아갔다면 이어 읽지 못함
+    }
+
+    [Fact]
+    public void ADiskThatKeepsItsLetterOnlyInSomeInstancesStaysRemembered()
+    {
+        IReadOnlyCollection<string> disks;
+        Assert.Equal(["1 F:", "2 F:"], DiskActivity.PickInstances("F:", ["1 F:", "2 F:", "3 G:"], [], out disks));
+        Assert.Equal(["1", "2"], disks);
+        Assert.Equal(["1 F:", "2"], DiskActivity.PickInstances("F:", ["1 F:", "2", "3 G:"], disks, out disks)); // 일부만 문자를 놓침: 번호만 남은 것도 합산하고 기억은 그대로
+        Assert.Equal(["1", "2"], disks);
+        Assert.Equal(["1", "2"], DiskActivity.PickInstances("F:", ["1", "2", "3 G:"], disks, out disks));
+        Assert.Equal(["3 F:"], DiskActivity.PickInstances("F:", ["3 F:", "2"], disks, out disks)); // 다른 번호에 문자가 붙음: 새 매핑
+        Assert.Equal(["3"], disks);
+    }
+
+    [Fact]
+    public void AnOutageIsMeasuredFromItsFirstFailedSampleEvenWhenNobodyReadsDuringIt()
+    {
+        long now = 0;
+        var log = new ListLog();
+        var current = Instances;
+        var sampler = new DiskActivity.PhysicalSampler(() => current, () => now, _ => { }, () => log);
+        sampler.Refresh();
+        sampler.Read("D:");
+        var lost = new Dictionary<string, double> { ["5 E:"] = 0 };
+        foreach (long at in new long[] { 2000, 4000, 6000 })
+        {
+            now = at;
+            current = lost;
+            sampler.Refresh(); // 읽는 호출 없음
+        }
+
+        now = 8000;
+        current = Instances;
+        sampler.Refresh();
+        Assert.Equal("Info: DiskActivity: D: disk activity available again after 6 s (instance_unmapped)", log.Lines.Last());
+    }
+
+    [Fact]
+    public async Task ASlowLogForOneDriveDoesNotHoldUpReadingAnotherDrive()
+    {
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var current = new Dictionary<string, double> { ["0 C:"] = Mib, ["1 E:"] = 0 };
+        var sampler = new DiskActivity.PhysicalSampler(() => current, () => 0, _ => { }, () => new BlockingLog(entered, release));
+        sampler.Refresh();
+        Task slow = Task.Run(() => sampler.Read("D:")); // 매핑 없음: 끊김 로그를 쓰다 막힘
+        Assert.True(entered.Wait(5000));
+        Task<(double? Bps, DiskActivity.SampleState State)> other = Task.Run(() => sampler.Read("C:"));
+        Assert.Equal(DiskActivity.SampleState.Ok, (await other.WaitAsync(TimeSpan.FromSeconds(2))).State); // 로그가 막혀 있어도 다른 드라이브 읽기는 진행
+        release.Set();
+        await slow.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    private sealed class BlockingLog(ManualResetEventSlim entered, ManualResetEventSlim release) : AsterCache.Core.Logging.ILog
+    {
+        public void Write(AsterCache.Core.Logging.LogLevel level, string message, Exception? exception = null)
+        {
+            entered.Set();
+            release.Wait();
+        }
+    }
+
+    [Fact]
     public void OnlyAnUnnumberedInstanceIsUnmapped()
     {
         Assert.Null(DiskActivity.Sum("D:", new Dictionary<string, double> { ["0"] = 0 }, out string? reason));

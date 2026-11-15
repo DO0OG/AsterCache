@@ -187,21 +187,22 @@ public sealed class PlayRecorder : IDisposable
     }
 
     /// 게임 종료 유예가 끝났을 때 세션을 끝냅니다.
-    internal void EndSession(string game, string reason = "game_exit")
+    internal void EndSession(string game, string reason = "game_exit", DateTimeOffset? exitedAt = null)
     {
         Session? session;
         lock (_gate)
         {
-            if (!_active.Remove(game, out session))
+            if (!_active.TryGetValue(game, out session) || exitedAt is { } at && at < session.StartedAt)
             {
                 return;
             }
 
+            _active.Remove(game);
             session.RequestEnd(reason);
         }
 
         session.StopSampling();
-        PlaySampleRecord record = session.Finish(reason, _now(), _timestamp());
+        PlaySampleRecord record = session.Finish(reason, _now(), _timestamp(), exitedAt);
         _store.Upsert(record);
         _log.Info(Format(record));
     }
@@ -576,16 +577,18 @@ public sealed class PlayRecorder : IDisposable
             }
         }
 
-        public PlaySampleRecord Finish(string reason, DateTimeOffset now, long tick)
+        public PlaySampleRecord Finish(string reason, DateTimeOffset now, long tick, DateTimeOffset? exitedAt = null)
         {
             lock (_gate)
             {
-                _endedAt = _goneAt ?? now;
-                _finalDurationSeconds = Math.Max(0, Stopwatch.GetElapsedTime(StartedTick, _goneAt is null ? tick : _goneTick).TotalSeconds);
+                _endedAt = _goneAt ?? exitedAt ?? now;
+                long endTick = _goneAt is not null ? _goneTick
+                    : tick - Math.Max(0, (long)((now - _endedAt.Value).TotalSeconds * Stopwatch.Frequency));
+                _finalDurationSeconds = Math.Max(0, Stopwatch.GetElapsedTime(StartedTick, endTick).TotalSeconds);
                 _requestedEndReason = reason;
                 if (_status != "unavailable")
                 {
-                    _status = reason == "game_exit" ? "complete" : "interrupted";
+                    _status = reason is "game_exit" or "quick_exit" ? "complete" : "interrupted"; // 짧은 종료도 끝까지 기록한 세션 (꼬리표로만 구분)
                 }
 
                 return SnapshotLocked(tick, final: true);

@@ -27,6 +27,31 @@ public sealed class GameExitTests
     }
 
     [Fact]
+    public void ConfirmedExitIsPendingUntilOneSideTakesItAndARestartClearsIt()
+    {
+        var tracker = Tracker();
+        var game = Games.Make("pending", "pending.exe");
+        _ = tracker.Poll([game], Names("pending.exe"));
+        _ = tracker.Poll([game], Names());
+        DateTimeOffset goneAt = _now;
+        _now += GameExitTracker.Grace;
+        _ = tracker.Poll([game], Names());
+
+        Assert.False(tracker.TakePendingExit(game.Name, goneAt.AddSeconds(1))); // 다른 소멸 시각의 종료는 가져가지 못함
+        Assert.True(tracker.TakePendingExit(game.Name, goneAt));
+        Assert.False(tracker.TakePendingExit(game.Name)); // 한 번만
+        Assert.Equal(goneAt, tracker.ExitedAt(game.Name)); // 소멸 시각 자체는 재예열 계산용으로 남음
+
+        _now += TimeSpan.FromHours(1);
+        _ = tracker.Poll([game], Names("pending.exe"));
+        _ = tracker.Poll([game], Names());
+        _now += GameExitTracker.Grace;
+        _ = tracker.Poll([game], Names());
+        tracker.ObserveStarted(game);
+        Assert.False(tracker.TakePendingExit(game.Name)); // 다시 시작하면 처리 대기 표시가 사라짐
+    }
+
+    [Fact]
     public void UnregisteredProcessUnderGameFolderNeverDelaysTheExit()
     {
         var tracker = Tracker();

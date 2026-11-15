@@ -7,9 +7,12 @@ using AsterCache.Core.Json;
 namespace AsterCache.Tray;
 
 /// 서비스가 auto_status.json 에 적은 게임 하나의 자동 단계.
-public sealed record AutoGame(string Source, string? Launcher, string Stage, string? Detail, int? HitPercent = null, int? CoveragePercent = null, string? DisplayName = null, DateTimeOffset? HitAt = null);
+public sealed record AutoGame(string Source, string? Launcher, string Stage, string? Detail, int? HitPercent = null, int? CoveragePercent = null, string? DisplayName = null, DateTimeOffset? HitAt = null, QuickExitNote? QuickExit = null);
 
-/// 알림 대상 사건 (kind: discovered, relocated).
+/// 서비스가 남긴 실행 직후 종료 알림 (auto_status.json 의 quick_exit): 연속 횟수, 물러난 실행의 결과 (none/exited/launched), 새로 올라온 드라이버 이름 (null 은 알 수 없음).
+public sealed record QuickExitNote(int Count, string BackedOff, IReadOnlyList<string>? NewDrivers);
+
+/// 알림 대상 사건 (kind: discovered, relocated, quick_exit).
 public sealed record AutoNotice(DateTimeOffset At, string Game, string Kind)
 {
     public string Key => $"{At.UtcTicks}|{Game}|{Kind}";
@@ -38,7 +41,7 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
                 {
                     if (kv.Value is JObject g && Get(g, "stage") is string stage)
                     {
-                        games[kv.Key] = new AutoGame(Get(g, "source") as string ?? "auto", Get(g, "launcher") as string, stage, Get(g, "detail") as string, Get(g, "hit_percent") is long hp ? (int)Math.Clamp(hp, 0, 100) : null, Get(g, "coverage_percent") is long cp ? (int)Math.Clamp(cp, 0, 100) : null, Get(g, "display_name") as string, DateTimeOffset.TryParse(Get(g, "hit_at") as string, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out DateTimeOffset ha) ? ha : null);
+                        games[kv.Key] = new AutoGame(Get(g, "source") as string ?? "auto", Get(g, "launcher") as string, stage, Get(g, "detail") as string, Get(g, "hit_percent") is long hp ? (int)Math.Clamp(hp, 0, 100) : null, Get(g, "coverage_percent") is long cp ? (int)Math.Clamp(cp, 0, 100) : null, Get(g, "display_name") as string, DateTimeOffset.TryParse(Get(g, "hit_at") as string, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out DateTimeOffset ha) ? ha : null, ReadQuickExit(g));
                     }
                 }
             }
@@ -64,9 +67,14 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
         }
     }
 
-    /// since 이후에 생겼고 seen 에 없는 discovered / relocated 사건만 (순서 유지). seen 은 부르는 쪽이 채웁니다.
+    private static QuickExitNote? ReadQuickExit(JObject g) =>
+        Get(g, "quick_exit") is JObject q && Get(q, "count") is long count
+            ? new QuickExitNote((int)Math.Clamp(count, 0, int.MaxValue), Get(q, "backed_off") as string ?? "none", Get(q, "new_drivers") is List<object?> names ? [.. names.OfType<string>()] : null)
+            : null;
+
+    /// since 이후에 생겼고 seen 에 없는 discovered / relocated / quick_exit 사건만 (순서 유지). seen 은 부르는 쪽이 채웁니다.
     public static IReadOnlyList<AutoNotice> NewEvents(IEnumerable<AutoNotice> events, DateTimeOffset since, ISet<string> seen) =>
-        events.Where(e => e.Kind is "discovered" or "relocated" && e.At >= since && !seen.Contains(e.Key)).ToList();
+        events.Where(e => e.Kind is "discovered" or "relocated" or "quick_exit" && e.At >= since && !seen.Contains(e.Key)).ToList();
 
     /// 첫 실행 (learning / tracing) 이 끝난 게임 이름: seen 에 기억한 이전 단계가 첫 실행이었고 지금은 재배치 대기 이후인 것. 트레이가 처음 본 단계는 알리지 않고 기억만 합니다. seen 은 이 함수가 갱신합니다.
     public static IReadOnlyList<string> FirstRunFinished(IDictionary<string, string> seen, AutoStatusFile status)
@@ -108,7 +116,16 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
     /// 설치 뒤 자동 진행 집계 (발견·계획·재배치·예열·적중률 평균).
     public static AutoProgress Progress(AutoStatusFile status, string plansDir) => AutoProgress.From(status.Games.Select(kv => (kv.Key, kv.Value.Stage, kv.Value.Detail, kv.Value.HitPercent)), plansDir);
 
-    public static string Notice(AutoNotice e, string lang) => L.Get(lang, e.Kind == "relocated" ? "Toast_Relocated" : "Toast_Discovered", e.Game);
+    /// 알림 문장. quick_exit 는 그 게임 항목의 알림 내용으로 만듭니다 (항목에 알림이 없으면 빈 글).
+    public static string Notice(AutoNotice e, string lang, AutoGame? game = null) => e.Kind != "quick_exit"
+        ? L.Get(lang, e.Kind == "relocated" ? "Toast_Relocated" : "Toast_Discovered", e.Game)
+        : game?.QuickExit is { } q ? QuickExitText(e.Game, q, lang) : string.Empty;
+
+    private static string QuickExitText(string game, QuickExitNote q, string lang) =>
+        L.Get(lang, "Toast_QuickExit", game, q.Count, QuickExitDrivers(q, lang), q.BackedOff switch { "exited" => L.Get(lang, "Quick_Exited"), "launched" => L.Get(lang, "Quick_Launched"), _ => string.Empty });
+
+    private static string QuickExitDrivers(QuickExitNote q, string lang) =>
+        q.NewDrivers is null ? L.Get(lang, "Quick_Unknown") : q.NewDrivers.Count == 0 ? L.Get(lang, "Quick_None") : string.Join(", ", q.NewDrivers);
 
     public static string StageName(string stage, string lang)
     {
@@ -254,6 +271,11 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
         if (TraceUnavailableTag.Match(g.Detail ?? string.Empty) is { Success: true } blocked)
         {
             parts.Add(L.Get(lang, "Stage_TraceUnavailable", blocked.Groups[1].Value, blocked.Groups[2].Value));
+        }
+
+        if (g.QuickExit is { } quick)
+        {
+            parts.Add(L.Get(lang, "Reason_QuickExit", quick.Count, QuickExitDrivers(quick, lang)));
         }
 
         return parts.Count == 0 ? null : string.Join(", ", parts);

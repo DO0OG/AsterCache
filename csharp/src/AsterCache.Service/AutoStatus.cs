@@ -19,7 +19,11 @@ public static class AutoStage
 }
 
 public sealed record AutoGameEntry(
-    string Source, string? Launcher, string Stage, string? Detail, DateTimeOffset At, DateTimeOffset? LastPlayed, DateTimeOffset? RelocatedAt, int? HitPercent = null, DateTimeOffset? HitAt = null, AutoBootProbe? BootProbe = null, IReadOnlyList<DateTimeOffset>? Plays = null, int? LoadBoundaryMs = null, DateTimeOffset? LoadBoundaryAt = null, int? CoveragePercent = null, string? DisplayName = null, OrbitShadowRecord? OrbitShadow = null, OrbitRuntimeRecord? OrbitRuntime = null);
+    string Source, string? Launcher, string Stage, string? Detail, DateTimeOffset At, DateTimeOffset? LastPlayed, DateTimeOffset? RelocatedAt, int? HitPercent = null, DateTimeOffset? HitAt = null, AutoBootProbe? BootProbe = null, IReadOnlyList<DateTimeOffset>? Plays = null, int? LoadBoundaryMs = null, DateTimeOffset? LoadBoundaryAt = null, int? CoveragePercent = null, string? DisplayName = null, OrbitShadowRecord? OrbitShadow = null, OrbitRuntimeRecord? OrbitRuntime = null, QuickExitRecord? QuickExit = null);
+
+/// 실행 직후 종료 알림 (auto_status.json 의 quick_exit): 연속 횟수, 최근 실행 길이 (초), 마지막 짧은 종료 시각, 물러난 실행의 결과 (BackedOffResult),
+/// 마지막 정상 실행 뒤 새로 올라온 커널 드라이버 이름 (null 은 알 수 없음, 키도 만들지 않음).
+public sealed record QuickExitRecord(int Count, IReadOnlyList<int> RunSeconds, DateTimeOffset At, string BackedOff, IReadOnlyList<string>? NewDrivers);
 
 /// ORBIT-3 결정 한 건의 요약 (shadow_orbit 의 새 키로만 기록하고 ORBIT-2R-R 그림자 필드는 건드리지 않음).
 public sealed record OrbitRuntimeRecord(string Mode, bool Applied, string Reason, int? DeviceN, int? ValueRuns, double? Lambda, double? DLow, string? Fingerprint);
@@ -363,6 +367,32 @@ public sealed class AutoStatus
         }
     }
 
+    /// 실행 직후 종료 알림을 남기고 사건 quick_exit 를 더합니다 (트레이가 새 사건마다 한 번 알림). 항목이 없으면 (자동 모드가 추적하지 않는 게임) 남기지 않습니다.
+    public void SetQuickExit(string name, QuickExitRecord record)
+    {
+        lock (_lock)
+        {
+            if (_games.TryGetValue(name, out AutoGameEntry? old))
+            {
+                _games[name] = old with { QuickExit = record };
+                AddEventLocked(record.At, name, "quick_exit");
+                Save();
+            }
+        }
+    }
+
+    public void ClearQuickExit(string name)
+    {
+        lock (_lock)
+        {
+            if (_games.TryGetValue(name, out AutoGameEntry? old) && old.QuickExit is not null)
+            {
+                _games[name] = old with { QuickExit = null };
+                Save();
+            }
+        }
+    }
+
     public void AddEvent(string game, string kind)
     {
         lock (_lock)
@@ -516,6 +546,17 @@ public sealed class AutoStatus
             if (e.CoveragePercent is { } cp)
             {
                 game.Add("coverage_percent", (long)cp); // 재지 않은 게임의 항목 모양은 그대로
+            }
+
+            if (e.QuickExit is { } qe)
+            {
+                var quick = new JObject { { "count", (long)qe.Count }, { "run_seconds", qe.RunSeconds.Select(s => (object?)(long)s).ToList() }, { "at", Iso(qe.At) }, { "backed_off", qe.BackedOff } };
+                if (qe.NewDrivers is { } drivers)
+                {
+                    quick.Add("new_drivers", drivers.Select(d => (object?)d).ToList()); // 알 수 없으면 키를 만들지 않음
+                }
+
+                game.Add("quick_exit", quick); // 알림이 없으면 키를 만들지 않음 (기존 파일 모양 유지)
             }
 
             if (e.OrbitShadow is not null || e.OrbitRuntime is not null)
@@ -682,7 +723,7 @@ public sealed class AutoStatus
                     {
                         // shadow_orbit 는 읽지 않습니다: 그림자 계획 기록은 휘발성이라 재시작 뒤 비워지는 것이 의도입니다.
                         bool interrupted = stage == AutoStage.Relocating; // 재배치 도중 꺼짐: 실제로 돌지 않으므로 시작 예열 보류를 풀음
-                        _games[name] = new AutoGameEntry(Str(o, "source") ?? "manual", Str(o, "launcher"), interrupted ? AutoStage.WaitingIdle : stage, interrupted ? "relocation interrupted, will resume" : Str(o, "detail"), Time(o, "at") ?? _now(), Time(o, "last_played"), Time(o, "relocated_at"), o.TryGetValue("hit_percent", out object? hp) && hp is long h ? (int)Math.Clamp(h, 0, 100) : null, Time(o, "hit_at"), ReadBootProbe(o), ReadPlays(o), TryGetEither(o, "tier0_probe_ready_ms", "load_boundary_ms", out object? lb) && lb is long l ? (int)Math.Clamp(l, 0, int.MaxValue) : null, Time(o, "tier0_probe_ready_at") ?? Time(o, "load_boundary_at"), o.TryGetValue("coverage_percent", out object? cv) && cv is long cp ? (int)Math.Clamp(cp, 0, 100) : null, Str(o, "display_name"));
+                        _games[name] = new AutoGameEntry(Str(o, "source") ?? "manual", Str(o, "launcher"), interrupted ? AutoStage.WaitingIdle : stage, interrupted ? "relocation interrupted, will resume" : Str(o, "detail"), Time(o, "at") ?? _now(), Time(o, "last_played"), Time(o, "relocated_at"), o.TryGetValue("hit_percent", out object? hp) && hp is long h ? (int)Math.Clamp(h, 0, 100) : null, Time(o, "hit_at"), ReadBootProbe(o), ReadPlays(o), TryGetEither(o, "tier0_probe_ready_ms", "load_boundary_ms", out object? lb) && lb is long l ? (int)Math.Clamp(l, 0, int.MaxValue) : null, Time(o, "tier0_probe_ready_at") ?? Time(o, "load_boundary_at"), o.TryGetValue("coverage_percent", out object? cv) && cv is long cp ? (int)Math.Clamp(cp, 0, 100) : null, Str(o, "display_name"), QuickExit: ReadQuickExit(o));
                     }
                 }
             }
@@ -761,6 +802,14 @@ public sealed class AutoStatus
         o.TryGetValue("boot_probe", out object? v) && v is JObject b && Time(b, "at") is { } at && b.TryGetValue("files", out object? f) && f is long files
             && b.TryGetValue("open_ms_per_file", out object? ms) && (ms as double? ?? ms as long?) is { } openMs
             ? new AutoBootProbe(at, (int)Math.Clamp(files, 0, int.MaxValue), openMs) : null;
+
+    private static QuickExitRecord? ReadQuickExit(JObject o) =>
+        o.TryGetValue("quick_exit", out object? v) && v is JObject q && q.TryGetValue("count", out object? c) && c is long count && Time(q, "at") is { } at
+            ? new QuickExitRecord((int)Math.Clamp(count, 0, int.MaxValue),
+                q.TryGetValue("run_seconds", out object? rs) && rs is List<object?> runs ? [.. runs.OfType<long>().Select(s => (int)Math.Clamp(s, 0, int.MaxValue))] : [],
+                at, Str(q, "backed_off") ?? BackedOffResult.None,
+                q.TryGetValue("new_drivers", out object? nd) && nd is List<object?> names ? [.. names.OfType<string>()] : null)
+            : null;
 
     private static List<DateTimeOffset>? ReadPlays(JObject o) =>
         o.TryGetValue("plays", out object? v) && v is List<object?> list ? [.. list.Select(Time).OfType<DateTimeOffset>().TakeLast(MaxPlays)] : null;

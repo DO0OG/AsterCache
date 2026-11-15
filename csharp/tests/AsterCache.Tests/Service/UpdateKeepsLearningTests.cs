@@ -86,6 +86,7 @@ public sealed partial class AutoRelocatorTests
         Assert.True(AutoTracer.NextTrace(_game, _settings.Auto, WorldEnv(), _status).Wanted); // 계획을 마친 뒤에도 새 플레이가 생길 때까지 다시 학습 대기
         string run2 = TraceWriter.RunPath(trace, 2);
         _w.Files.Add(run2);
+        _w.Files.Add(TraceStageIndex.IndexPath(trace));
         _w.FileTimes[run2] = _w.Now;
         Assert.False(AutoTracer.NextTrace(_game, _settings.Auto, WorldEnv(), _status).Wanted);
     }

@@ -217,6 +217,26 @@ public static unsafe partial class ProcessSnapshot
         return result;
     }
 
+    /// 이름이 맞는 실행 중인 프로세스의 (PID, exe 이름, 읽은 누적 바이트).
+    public static IReadOnlyList<(int Pid, string ExeName, long ReadBytes)> ReadCountersWithExeNames(IEnumerable<string> exeNames) =>
+        SelectReadCountersWithExeNames(Take(), exeNames, ReadBytes);
+
+    internal static IReadOnlyList<(int Pid, string ExeName, long ReadBytes)> SelectReadCountersWithExeNames(
+        IReadOnlyList<(int Pid, string Exe)> processes, IEnumerable<string> exeNames, Func<int, long?> readBytes)
+    {
+        var names = new HashSet<string>(exeNames, StringComparer.OrdinalIgnoreCase);
+        var result = new List<(int, string, long)>();
+        foreach ((int pid, string exe) in processes)
+        {
+            if (names.Contains(exe) && readBytes(pid) is { } bytes)
+            {
+                result.Add((pid, exe, bytes));
+            }
+        }
+
+        return result;
+    }
+
     public static bool IsRunning(IEnumerable<string> exeNames)
     {
         var names = new HashSet<string>(exeNames, StringComparer.OrdinalIgnoreCase);

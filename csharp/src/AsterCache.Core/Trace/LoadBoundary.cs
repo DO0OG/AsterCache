@@ -90,7 +90,7 @@ public sealed class RuntimeLoadBoundary
     private const long WindowMs = LoadBoundaries.WindowSeconds * 1000;
     // shortcut: 온라인 판정은 미래 최고치를 모름, 실기 로그로 임계 재조정
     private const long MinimumObservationMs = 15_000;
-    private const long MinimumPeakBytes = 64L << 20;
+    public const long MinimumPeakBytes = 64L << 20;
     private readonly List<(long AtMs, long Bytes)> _samples = [];
     private long? _baseline;
     private long _peakBytes;

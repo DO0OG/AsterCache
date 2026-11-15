@@ -135,11 +135,24 @@ public sealed partial class AutoRelocator
                         string runFile = TraceWriter.RunPath(trace, run); // 플레이 수는 run 파일로 세므로 옛 버전의 run 파일이 남지 않게 함
                         if (_env.FileExists(runFile))
                         {
-                            _env.MoveAside(runFile, Aside(runFile));
+                            string destination = Aside(runFile);
+                            _env.MoveAside(runFile, destination);
+                            string runMarks = TraceStageIndex.RunMarksPath(runFile);
+                            if (_env.FileExists(runMarks))
+                            {
+                                _env.MoveAside(runMarks, runMarks + destination[runFile.Length..]);
+                            }
                         }
                     }
 
-                    _env.MoveAside(trace, Aside(trace));
+                    string traceDestination = Aside(trace);
+                    _env.MoveAside(trace, traceDestination);
+                    string stageIndex = TraceStageIndex.IndexPath(trace);
+                    if (_env.FileExists(stageIndex))
+                    {
+                        _env.MoveAside(stageIndex, stageIndex + traceDestination[trace.Length..]);
+                    }
+
                     string marks = AutoTracer.VolatilePath(g); // 옛 트레이스에서 알게 된 가변 파일 표시도 같이 치움
                     if (_env.FileExists(marks))
                     {
@@ -320,6 +333,11 @@ public sealed partial class AutoRelocator
                     if (_env.FileExists(runFile + sfx))
                     {
                         _env.MoveAside(runFile + sfx, runFile);
+                        string runMarks = TraceStageIndex.RunMarksPath(runFile);
+                        if (_env.FileExists(runMarks + sfx))
+                        {
+                            _env.MoveAside(runMarks + sfx, runMarks);
+                        }
                     }
                 }
 
@@ -330,6 +348,12 @@ public sealed partial class AutoRelocator
                 }
 
                 _env.MoveAside(kept, raw);
+                string stageIndex = TraceStageIndex.IndexPath(raw);
+                if (_env.FileExists(stageIndex + sfx))
+                {
+                    _env.MoveAside(stageIndex + sfx, stageIndex);
+                }
+
                 _ = restored.Add(g.Name);
                 _log.Info($"{g.Name}: trace set aside by an earlier update restored (tracing is not allowed for this game), re-planning");
             }

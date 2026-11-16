@@ -72,7 +72,7 @@ py -3.12 -m unittest discover -s tests
 | 예열·스트리머 | `Prewarm.cs`, `Streaming.cs`, `Rewarm.cs`, `Pinning.cs`, `KeepAwake.cs` | `Prewarmer` 가 서비스 시작·런처 실행·게임 종료 뒤에 예열 순서와 RAM 예산을 정하고, `PrefetchStreamer` 가 `ZoneStreamer` 로 읽습니다. `GameDispatcher` 는 게임이 시작될 때의 시작 스트림을 맡습니다. `Rewarmer` 는 주기적으로 캐시 적중을 표본으로 확인해 식었으면 다시 예열하고, `PinKeeper` 는 예열한 페이지를 읽기 전용 매핑으로 붙들며(선택), `KeepAwake` 는 HDD 가 꺼지지 않게 작게 읽습니다. |
 | ORBIT | `OrbitModel.cs`, `OrbitCalibration.cs`, `OrbitRuntime.cs`, `OrbitShadow.cs` | 에피소드 모형(`<게임>.orbit.json`)과 디스크 보정(`disk_model.json`)을 만들고, 모드(`orbit_mode.json`)에 따라 `Core/Plan/Orbit/OrbitPlanner.cs` 의 결정을 예열 순서에 반영합니다. `shadow` 모드는 기록만 합니다. |
 | 디스크 대여·취소 | `DiskReadCoordinator.cs`, `GameExits.cs`, `BootQuiet.cs` | 배경 읽기는 물리 디스크마다 대여(Lease)를 받아야 합니다. 같은 디스크에서 등록 게임이 실행 중이거나 종료 직후 유예 중이면 대여를 내주지 않고, 이미 받은 대여는 취소 토큰으로 멈춥니다. 부팅 직후에는 디스크 작업을 잠시 보류합니다. |
-| 게임 시작·종료 규칙 | `GameDispatcher.Stage.cs`, `StageStreamRule.cs`, `StageStreamPlans.cs`, `PrefetchStreamer.Stage.cs`, `QueuedStarts.cs`, `QuickExitGuard.cs`, `QuickExitRule.cs`, `PlayRecorder.cs`, `PlayPeriods.cs`, `Core/Trace/TraceStages.cs`, `Windows/KernelDrivers.cs` | 단계 스트림(트레이스 곁에 만든 단계 색인으로, 게임이 띄우는 실행 파일마다 읽음), 실행 직후 종료 감지(짧은 세션을 세고, 한 번 물러나고, 새 커널 드라이버를 알림. 상태는 `quick_exit.json`), 실행 파일별·10분 단위 요약이 있는 플레이 기록입니다. |
+| 게임 시작·종료 규칙 | `GameDispatcher.Stage.cs`, `StageStreamRule.cs`, `StageStreamPlans.cs`, `PrefetchStreamer.Stage.cs`, `QueuedStarts.cs`, `QuickExitGuard.cs`, `QuickExitRule.cs`, `PlayRecorder.cs`, `PlayPeriods.cs`, `Core/Trace/TraceStages.cs`, `Windows/KernelDrivers.cs` | 단계 스트림(트레이스 곁에 만든 단계 색인으로, 게임이 띄우는 실행 파일마다 읽음), 실행 직후 종료 감지(짧은 세션을 세고, 한 실행 물러나고, 새 커널 드라이버를 알림. 상태는 `quick_exit.json`), 실행 파일별·10분 단위 요약이 있는 플레이 기록입니다. |
 | 캐시 유지(SOLAR) | `Solar.cs`, `SolarPolicy.cs`, `Rewarm.Ladder.cs`, `StreamRequeue.cs`, `Prewarm.Solar.cs`, `WarmEstimateCache.cs`, `Windows/StandbyTouch.cs`, `Windows/CacheProbe.cs`, `Windows/FileGuards.cs` | 예열한 캐시를 메모리에서 다시 만지고(스파스 파일은 건너뜀), 밀려나기 전에 새로 고치며, 다른 게임의 캐시를 지킵니다. `WarmEstimateCache.cs` 는 예산 계산이 쓰는 게임별 크기 추정값을 최대 10분 보관합니다. [SOLAR](SOLAR.ko.md)를 보십시오. |
 | 안티치트 게이트 | `Core/Discovery/AntiCheat.cs`, `Capabilities.cs` | 설치 폴더의 파일·폴더 이름만 보고 안티치트 종류를 짐작합니다(파일을 열지 않음). 기능별 정책표가 트레이스·고정·SSD 보조 저장의 허용 여부를 정합니다. 서비스(`AutoTracer`, `PinKeeper`, `AutoTier`)와 명령행(`Commands/AntiCheatGuard.cs`)이 같은 규칙을 씁니다. 탐지에 실패하면(`unknown`) 금지 쪽으로 봅니다. 종류별 정책은 [ANTICHEAT.ko.md](ANTICHEAT.ko.md)에 있습니다. |
 | SSD 보조 저장 | `AutoTier.cs`, `Core/Tier/` | 선택 기능입니다. 핫 파일 사본을 SSD 에 두고 원래 자리에 심볼릭 링크를 둡니다. 저널은 `tier\<게임>.json` 입니다. |
@@ -126,7 +126,7 @@ flowchart LR
 - **작업.** 트레이스 수집, 계획, 재배치, 되돌리기는 관리 창이 `aster.exe` 를 실행합니다. 관리자 권한이 필요하면 UAC 로 승격하고 결과는 `--result-file` 로 받습니다.
 - **서비스 제어.** 상태 조회는 SCM 으로 비관리자도 됩니다. 시작·정지·설치·제거는 `sc.exe` 를 승격 실행합니다.
 - **지금 예열.** 트레이 프로세스가 같은 `PrefetchStreamer` 로 직접 읽습니다.
-- **갱신.** 트레이가 고정 저장소의 GitHub 릴리스를 확인하고, 설치본을 관리자 권한으로 실행 중이면 검증한 설치 파일을 조용히 실행합니다(`Update/AutoUpdater.cs`). 그 밖에는 새 버전만 알립니다. 서비스는 네트워크를 쓰지 않습니다. 트레이와 서비스 버전이 다르면 트레이가 알립니다.
+- **갱신.** 트레이가 고정 저장소의 GitHub 릴리스를 확인하고, 설치본을 관리자 권한으로 실행 중이면 검증한 설치 파일을 조용히 실행합니다(`Update/AutoUpdater.cs`). 그 밖에는 새 버전만 알립니다. 서비스는 업데이트를 내려받지 않으며, 네트워크를 쓰는 것은 공유 프로필을 HTTPS 로 받을 때(`ProfileFeed.cs`)뿐입니다. 트레이와 서비스 버전이 다르면 트레이가 알립니다.
 
 ## 안전 장치
 

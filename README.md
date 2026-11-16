@@ -33,7 +33,7 @@ AsterCache helps games installed on a hard disk (HDD) load faster. It watches wh
 
 **Not a good fit, or no gain**
 - Games on an SSD are skipped. A game on an HDD that is also the Windows system drive is only prewarmed, not relocated.
-- The first launch of a game is not faster. The effect starts from the second launch.
+- The first real play of a game is mostly recorded. The full effect is expected from the second launch; before that, a prewarm without a record or boot data from Windows prefetch may help, but no effect on real loading time has been measured.
 - Reads that were not recorded (another level or mode, texture streaming during play) are not helped.
 - Games with anti-cheat: no guarantee is made about account sanctions. Read [Anti-cheat compatibility](docs/ANTICHEAT.md) first.
 
@@ -69,7 +69,7 @@ To watch progress, double-click the tray icon and open the **Status** tab. To tu
 
 ### 3. Updates
 
-The tray checks the official releases 5 minutes after it starts and then every 24 hours. By default (`update.mode` = `auto`) it downloads a newer installer, verifies its SHA-256, and installs it silently, but only when the tray runs with administrator rights from an installed copy, no registered game is running, and no relocation is in progress. Otherwise it only notifies you, or opens the release page. You can choose **Install automatically**, **Notify only**, or **Off** in the Settings tab's Updates section; prereleases are not included unless you turn that on. The service itself does not use the network. The silent installation has not yet been confirmed on a real machine. See [docs/FAQ.md](docs/FAQ.md).
+The tray checks the official releases 5 minutes after it starts and then every 24 hours. By default (`update.mode` = `auto`) it downloads a newer installer, verifies its SHA-256, and installs it silently, but only when the tray runs with administrator rights from an installed copy, no registered game is running, and no relocation is in progress. Otherwise it only notifies you, or opens the release page. You can choose **Install automatically**, **Notify only**, or **Off** in the Settings tab's Updates section; prereleases are not included unless you turn that on. Program updates are handled by the tray; the service itself uses the network only to download the shared profile over HTTPS (about once a week, while automatic mode and `auto.shared_profiles` are on). The silent installation has not yet been confirmed on a real machine. See [docs/FAQ.md](docs/FAQ.md).
 
 ## How it works
 
@@ -78,7 +78,7 @@ A hard disk reads with a moving head, like the arm of a record player. A game th
 1. **Discover.** The background service finds HDD games from launcher libraries and by detecting game starts.
 2. **Record.** On the first play, Windows event tracing (ETW) writes down which parts of which files the game reads, in what order. The game process is never touched.
 3. **Relocate.** When the game is off and the drive is idle, the pieces are moved side by side into one zone of the disk, in read order, with the official NTFS move function (the one disk defragmenters use). File contents stay the same, and every step is journaled so it can be reverted.
-4. **Prewarm.** At PC start or when the launcher opens, the zone is read into RAM (the file cache). The game then reads from RAM. If the prewarm was not done in time, the zone is read in order the moment the game starts, which is still much faster than the scattered original.
+4. **Prewarm.** At PC start or when the launcher opens, the zone is read into RAM (the file cache). The game then reads from RAM. If the prewarm was not done in time, the zone is read in order the moment the game starts, which is expected to be faster than the scattered original (that was measured on replays of recorded reads, not on real loading).
 5. **Keep up.** The service re-prewarms if the cache went cold, touches the prewarmed cache again in memory so that it lasts longer ([SOLAR](docs/SOLAR.md)), and restores the layout if it drifted (for example after a game update).
 
 ```mermaid

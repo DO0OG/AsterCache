@@ -171,6 +171,85 @@ public sealed class BootQuietWorkerTests : IDisposable
     }
 
     [Fact]
+    public async Task TheShortBootGateRunsOnlyWhileAHeldLauncherTriggerWaitsInsideTheQuiet()
+    {
+        var emitted = new TaskCompletionSource();
+        BootQuiet q = Quiet();
+        Worker w = MakeWorker(new OneShot(new ProcessStart(5, "steam.exe", 0), emitted), MakePrewarm(), q);
+        Assert.False(w.BootGatePending()); // 보류한 계기가 없으면 평소 틱만
+
+        await w.StartAsync(CancellationToken.None);
+        await emitted.Task;
+        await WaitFor(() => _log.Lines.Any(line => line.Contains("prewarm steam.exe deferred: boot quiet period", StringComparison.Ordinal)));
+        Assert.True(w.BootGatePending());
+
+        _idle = true;
+        w.BootGateTick(); // 가동 1 분: 유휴 시작
+        Assert.True(w.BootGatePending());
+        Elapse(TimeSpan.FromSeconds(20));
+        w.BootGateTick(); // 유휴 20 초: 풀림, 보류한 계기를 돌림
+        await WaitFor(() => !_streamer.Calls.IsEmpty && File.Exists(StatusPath));
+        await w.StopAsync(CancellationToken.None);
+
+        Assert.False(w.BootGatePending()); // 풀린 뒤에는 짧은 주기를 쓰지 않음
+        Assert.Equal("a", Assert.Single(_streamer.Calls).Game);
+        Assert.True(q.Active); // 구간은 그대로
+    }
+
+    [Fact]
+    public async Task AHeldLauncherTriggerIsReleasedAtTheFirstFiveSecondGateTickAfterTwentySecondsOfIdle()
+    {
+        var emitted = new TaskCompletionSource();
+        BootQuiet q = Quiet();
+        Worker w = MakeWorker(new OneShot(new ProcessStart(6, "steam.exe", 0), emitted), MakePrewarm(), q);
+        await w.StartAsync(CancellationToken.None);
+        await emitted.Task;
+        await WaitFor(() => _log.Lines.Any(line => line.Contains("prewarm steam.exe deferred: boot quiet period", StringComparison.Ordinal)));
+
+        _idle = true;
+        w.BootGateTick(); // 가동 60 초: 유휴 시작
+        for (int i = 0; i < 3; i++)
+        {
+            Elapse(TimeSpan.FromSeconds(5));
+            w.BootGateTick(); // 65·70·75 초
+        }
+
+        Assert.True(w.BootGatePending());
+        Assert.Empty(_streamer.Calls);
+
+        Elapse(TimeSpan.FromSeconds(5));
+        w.BootGateTick(); // 80 초: 유휴 20 초
+        await WaitFor(() => !_streamer.Calls.IsEmpty && File.Exists(StatusPath));
+        await w.StopAsync(CancellationToken.None);
+
+        Assert.Equal("a", Assert.Single(_streamer.Calls).Game);
+        Assert.Single(_log.Lines, line => line.Contains("held prewarm triggers released: 1 (boot + idle disk)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ALauncherTriggerHeldDuringTheThirtySecondWaitWakesTheLoopAtOnce()
+    {
+        int idleCalls = 0;
+        var q = new BootQuiet(() => _uptimeMs, () =>
+        {
+            Interlocked.Increment(ref idleCalls);
+            return false;
+        }, _log, () => _now, () => _uptimeMs - _sleptMs);
+        var open = new TaskCompletionSource();
+        Worker w = MakeWorker(new GatedShot(new ProcessStart(7, "steam.exe", 0), open.Task), MakePrewarm(), q);
+
+        await w.StartAsync(CancellationToken.None);
+        await WaitFor(() => Volatile.Read(ref idleCalls) >= 1); // 재적용 루프의 첫 틱 (가동 1 분: 유휴 조회를 함) 뒤 30초 대기에 들어감
+        int before = Volatile.Read(ref idleCalls);
+
+        open.SetResult(); // 대기 도중 계기 도착: 보류하며 대기를 깨움
+        await WaitFor(() => Volatile.Read(ref idleCalls) > before); // 5초나 30초를 기다리지 않고 바로 다음 틱이 돎
+        await w.StopAsync(CancellationToken.None);
+
+        Assert.True(Volatile.Read(ref idleCalls) > before);
+    }
+
+    [Fact]
     public async Task GameExeStartRunsWhileQuiet()
     {
         var emitted = new TaskCompletionSource();
@@ -209,6 +288,24 @@ public sealed class BootQuietWorkerTests : IDisposable
             emitted.TrySetResult();
             try
             {
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // 취소는 정상 종료
+            }
+        }
+    }
+
+    // gate 가 끝난 뒤에 트리거 하나를 알리는 감시기: 재적용 루프가 이미 30초 대기에 들어간 뒤 트리거가 들어오는 상황을 만듦.
+    private sealed class GatedShot(ProcessStart start, Task gate) : IProcessWatcher
+    {
+        public async Task RunAsync(Action<ProcessStart> onStart, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await gate.WaitAsync(cancellationToken);
+                onStart(start);
                 await Task.Delay(Timeout.Infinite, cancellationToken);
             }
             catch (OperationCanceledException)

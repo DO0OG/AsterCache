@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Settings;
 
@@ -37,7 +38,9 @@ public sealed partial class Prewarmer
         IDisposable? waiting = null; // 읽을 게임이 있으면 RunBatch 가 끝날 때까지 서 있는 트리거 대기 표시 (배경 예열이 끼어들지 않게, 정상·취소·예외 모두 지움)
         try
         {
+            long sampledAt = Stopwatch.GetTimestamp();
             IReadOnlyList<string?> skips = chosen.Count > 0 ? TriggerSkipReasons(chosen) : [];
+            TimeSpan sampled = Stopwatch.GetElapsedTime(sampledAt);
             IReadOnlyList<GameSettings> warming = [.. chosen.Where((_, i) => skips[i] is null)]; // 실제로 읽을 게임만: 표시·선점의 "대상" (건너뛸 게임의 배경 스트림을 보호하지 않고, 건너뛸 게임만 있으면 아무것도 멈추지 않음)
             if (warming.Count > 0)
             {
@@ -49,7 +52,7 @@ public sealed partial class Prewarmer
             string why = $"trigger {start.ExeName}";
             results = chosen.Count > 0 && warming.Count == 0
                 ? SkipTriggerNow(chosen, skips, why) // 읽을 게임이 없으면 다른 예열이 락을 놓기를 기다리지 않고 바로 건너뜀을 남김
-                : RunBatch(chosen, why, pin: !LauncherExes.Is(start.ExeName), ct: ct, trigger: true); // 런처가 뜰 때는 고정하지 않음 (런처 업데이트가 파일을 고칠 수 있게)
+                : RunBatch(chosen, why, pin: !LauncherExes.Is(start.ExeName), ct: ct, trigger: true, sampled: sampled); // 런처가 뜰 때는 고정하지 않음 (런처 업데이트가 파일을 고칠 수 있게)
         }
         finally
         {

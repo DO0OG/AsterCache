@@ -16,12 +16,13 @@ public sealed class BootQuietTests : IDisposable
     private long _uptimeMs = Minute;
     private long _sleptMs; // 절전 중 흐른 시간: 가동 시간 (TickCount) 에는 들어가고 절전 제외 시계에는 빠짐
     private bool _idle;
+    private double? _bps; // 유휴 조회가 본 처리량 (풀림 로그용)
 
     public BootQuietTests() => Directory.CreateDirectory(_dir);
 
     public void Dispose() => Directory.Delete(_dir, true);
 
-    private BootQuiet Make() => new(() => _uptimeMs, () => _idle, _log, () => _now, () => _uptimeMs - _sleptMs);
+    private BootQuiet Make() => new(() => _uptimeMs, () => _idle, _log, () => _now, () => _uptimeMs - _sleptMs, () => _bps);
 
     // 절전: 벽시계와 가동 시간 (TickCount) 은 흐르고 절전 제외 시계는 멈춤
     private void Sleep(TimeSpan span)
@@ -346,5 +347,93 @@ public sealed class BootQuietTests : IDisposable
         Elapse(TimeSpan.FromSeconds(20));
         q.Refresh();
         Assert.True(q.PrewarmReleased);
+    }
+
+    [Fact]
+    public void PrewarmIsReleasedAtTheFirstFiveSecondSampleAfterTwentySecondsOfIdle()
+    {
+        _idle = true;
+        _uptimeMs = 60_000;
+        BootQuiet q = Make();
+        q.Refresh(); // 가동 60 초: 유휴 시작
+        for (int i = 0; i < 3; i++)
+        {
+            Elapse(TimeSpan.FromSeconds(5)); // 65·70·75 초
+            q.Refresh();
+            Assert.False(q.PrewarmReleased);
+        }
+
+        Elapse(TimeSpan.FromSeconds(5)); // 80 초: 유휴 20 초
+        q.Refresh();
+
+        Assert.True(q.PrewarmReleased);
+        Assert.True(q.Active);
+    }
+
+    [Fact]
+    public void ANotIdleSampleBetweenFiveSecondChecksRestartsTheTwentySeconds()
+    {
+        _idle = true;
+        _uptimeMs = 60_000;
+        BootQuiet q = Make();
+        q.Refresh(); // 60 초
+        Elapse(TimeSpan.FromSeconds(5));
+        q.Refresh(); // 65 초
+        Elapse(TimeSpan.FromSeconds(5));
+        _idle = false;
+        q.Refresh(); // 70 초: 한가하지 않음
+        _idle = true;
+        for (int i = 0; i < 3; i++)
+        {
+            Elapse(TimeSpan.FromSeconds(5)); // 75·80·85 초: 유휴 시작이 75 초
+            q.Refresh();
+        }
+
+        Assert.False(q.PrewarmReleased); // 첫 유휴 시작 (60 초) 부터 세면 풀렸을 시각
+
+        Elapse(TimeSpan.FromSeconds(5)); // 90 초
+        q.Refresh();
+        Assert.False(q.PrewarmReleased);
+
+        Elapse(TimeSpan.FromSeconds(5)); // 95 초: 75 초부터 20 초
+        q.Refresh();
+        Assert.True(q.PrewarmReleased);
+    }
+
+    [Fact]
+    public void ReleaseLogsOneLineWithUptimeIdleStartChecksAndTheLastSample()
+    {
+        _uptimeMs = 60_000;
+        BootQuiet q = Make();
+        _bps = 6L << 20;
+        _idle = false;
+        q.Refresh(); // 60 초: 6 MiB/s 로 바쁨
+        _idle = true;
+        _bps = 1L << 19;
+        for (int i = 0; i < 5; i++)
+        {
+            Elapse(TimeSpan.FromSeconds(5)); // 65 ~ 85 초: 유휴 시작 65 초
+            q.Refresh();
+        }
+
+        string line = Assert.Single(_log.Lines, l => l.Contains("boot prewarm release:", StringComparison.Ordinal));
+        Assert.Contains("boot prewarm release: uptime 85 s, idle since 65 s, 6 checks (1 not idle), last disk 0.5 MiB/s", line, StringComparison.Ordinal);
+
+        Elapse(TimeSpan.FromSeconds(5));
+        q.Refresh(); // 풀린 뒤에는 다시 남기지 않음
+        Assert.Single(_log.Lines, l => l.Contains("boot prewarm release:", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ReleaseLogIsNotWrittenForAServiceOutsideTheBootWindow()
+    {
+        _idle = true;
+        _uptimeMs = 6 * Minute;
+        BootQuiet q = Make();
+        q.Refresh();
+        Elapse(TimeSpan.FromSeconds(30));
+        q.Refresh();
+
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("boot prewarm release:", StringComparison.Ordinal));
     }
 }

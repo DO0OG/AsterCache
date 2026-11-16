@@ -14,6 +14,8 @@ public sealed class Worker : BackgroundService
 {
     public static readonly TimeSpan FirstCheckDelay = TimeSpan.FromMinutes(1);
     public static readonly TimeSpan CheckTick = TimeSpan.FromSeconds(30);
+    // 부팅 조용 구간에 계기 예열을 보류해 둔 동안만 풀림 판정을 이 주기로 돎 (서비스 시작 예열 게이트 Prewarmer.GateStep 과 같음). 그 밖에는 CheckTick 그대로.
+    private static readonly TimeSpan BootGateStep = TimeSpan.FromSeconds(5);
     public static readonly TimeSpan ResumeRetry = TimeSpan.FromMinutes(5);
 
     private readonly ILog _log;
@@ -42,6 +44,7 @@ public sealed class Worker : BackgroundService
     private readonly SessionReads _reads = new();
     private readonly BootQuiet _quiet;
     private readonly object _heldLock = new();
+    private CancellationTokenSource _tickWake = new(); // 취소하면 지금 기다리는 틱 대기가 일찍 끝남 (보류한 트리거가 들어왔을 때), 취소할 때마다 새것으로 바꿈
     private readonly List<ProcessStart> _heldTriggers = []; // 부팅 조용 구간에 보류한 계기 (게임 exe 가 아닌 트리거), _heldLock 으로 보호
     private readonly Func<DateTimeOffset> _now;
     private readonly Dictionary<string, long> _latestStart = new(StringComparer.OrdinalIgnoreCase); // 게임별 가장 최근 시작의 일련번호, _gameStateLock 으로 보호
@@ -465,6 +468,7 @@ public sealed class Worker : BackgroundService
             _heldTriggers.Add(s);
         }
 
+        WakeTick(); // 30초 대기 도중 들어온 트리거도 바로 5초 주기 판정으로 넘어가게
         return true;
     }
 
@@ -681,13 +685,85 @@ public sealed class Worker : BackgroundService
             while (!ct.IsCancellationRequested)
             {
                 ReapplyTick(start, due, resuming, ct);
-                await (_auto is null ? Task.Delay(CheckTick, ct) : _auto.WaitForTickAsync(CheckTick, ct)); // 발견이 새 게임을 등록하면 일찍 깨움
+                await WaitNextTickAsync(ct);
             }
         }
         catch (OperationCanceledException)
         {
             // 종료
         }
+    }
+
+    // 다음 틱까지 기다림 (발견이 새 게임을 등록하면 일찍 깨움). 보류한 계기 예열이 있는 동안은 틱 사이를 BootGateStep 으로 쪼개 풀림만 판정함 (틱 전체를 자주 돌지 않음).
+    internal async Task WaitNextTickAsync(CancellationToken ct)
+    {
+        long started = Stopwatch.GetTimestamp();
+        CancellationTokenSource wake;
+        while (true)
+        {
+            wake = _tickWake; // 보류 여부를 보기 전에 잡아 둠: 그 뒤에 들어온 트리거의 깨움을 놓치지 않음
+            if (!BootGatePending() || Stopwatch.GetElapsedTime(started) >= CheckTick)
+            {
+                break;
+            }
+
+            if (await WaitTickAsync(BootGateStep, wake, ct))
+            {
+                return;
+            }
+
+            BootGateTick();
+        }
+
+        TimeSpan left = CheckTick - Stopwatch.GetElapsedTime(started);
+        if (left > TimeSpan.Zero)
+        {
+            await WaitTickAsync(left, wake, ct);
+        }
+    }
+
+    /// 지금 기다리는 틱 대기를 일찍 끝냅니다 (다음 틱 판단이 곧바로 돌게).
+    internal void WakeTick() => Interlocked.Exchange(ref _tickWake, new CancellationTokenSource()).Cancel();
+
+    // 일찍 깨어났으면 (자동 모드의 발견 신호 또는 wake 취소) true.
+    private async Task<bool> WaitTickAsync(TimeSpan delay, CancellationTokenSource wake, CancellationToken ct)
+    {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, wake.Token);
+        try
+        {
+            if (_auto is not null)
+            {
+                return await _auto.WaitForTickAsync(delay, linked.Token);
+            }
+
+            await Task.Delay(delay, linked.Token);
+            return false;
+        }
+        catch (OperationCanceledException) when (wake.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            return true;
+        }
+    }
+
+    /// 부팅 구간 안에서 보류한 계기 예열이 있고 아직 풀리지 않았는가: 이때만 짧은 주기로 풀림을 판정합니다.
+    internal bool BootGatePending()
+    {
+        if (!_quiet.Active || _quiet.PrewarmReleased)
+        {
+            return false;
+        }
+
+        lock (_heldLock)
+        {
+            return _heldTriggers.Count > 0;
+        }
+    }
+
+    /// 짧은 주기 판정 하나: 구간 상태를 갱신하고 풀렸으면 보류한 계기 예열을 돌립니다 (재적용 틱의 앞 두 줄과 같음).
+    internal void BootGateTick()
+    {
+        _quiet.Refresh();
+        RunHeldTriggers();
     }
 
     /// 재적용 틱 하나: 재적용 루프가 부르고, 시험도 같은 틱을 직접 부릅니다. 부팅 조용 구간이면 배치 검사와 자동 재배치를 보류하고 기한을 그대로 둬서 구간이 끝난 다음 틱에 합니다. 보류한 계기는 구간이 끝나면 돌립니다.

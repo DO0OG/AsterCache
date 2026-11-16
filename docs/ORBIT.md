@@ -8,7 +8,7 @@ ORBIT is a calculation that decides in which order a game's prewarm reads its da
 
 ## Why it exists
 
-Prewarm reads a game's hot data into RAM in a fixed order. If a game starts while its prewarm is still running, the prewarm is interrupted, and only what was read by then helps. The data every load needs (the common blocks and the loading head, tier0) is already read first.
+Prewarm reads a game's hot data into RAM in a fixed order. If a game starts while its prewarm is still running, the prewarm is interrupted, and only what was read by then helps. The data every load needs (the common blocks and the loading head: tier0, the blocks read first in a load) is already read first.
 
 What is left is the later part, such as the map chunks of games that are often interrupted. ORBIT asks whether a different order of those 64 MiB chunks would make the data that plays actually need ready sooner.
 

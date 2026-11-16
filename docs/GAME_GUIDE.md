@@ -15,7 +15,7 @@ What each feature does to the drive that holds the game:
 |---|---|---|---|
 | Trace | Only observed through Windows event tracing | Files in the data folder (trace, plan, journal, log) | Stops at 1800 s or 6144 MiB (`trace_cap_seconds`, `trace_cap_mib`) |
 | Relocation | The pieces it moves | **The only large write.** It rewrites the moved pieces at a new place on the same drive; the file content does not change | See "Relocation limits" below |
-| Prewarm | The zone, into the RAM file cache | None | RAM budget: half of physical RAM, and free RAM stays above `prewarm.min_free_ram_mib` |
+| Prewarm | The zone (the contiguous area the recorded blocks were moved to), into the RAM file cache | None | RAM budget: half of physical RAM, and free RAM stays above `prewarm.min_free_ram_mib` |
 | Keeping the prewarm | 8 samples of 1 MiB every 10 minutes (`rewarm_minutes`); a re-read of the zone when the cache has gone cold | None | Only for games inside the RAM budget |
 | Keep-awake | 4 KiB every 10 minutes, while a launcher is open or at your usual play hour | None | `auto.keep_awake`; power settings are never changed |
 | Start stream and stage stream | The recorded blocks the game reads at start, and the blocks of each later registered program of the same game right after it starts, at low I/O priority | None | `auto.start_stream_cap_seconds`, `auto.stage_stream_enabled`; stops at the loading boundary and when free memory minus the reserve runs out ([Automatic mode](AUTO_MODE.md#6-while-a-game-runs)) |
@@ -262,7 +262,7 @@ If `errors` is not 0, the trace is stale (a patch, for example).
 
 - `-Game` can also take a URI such as `battlenet://...` or `steam://rungameid/...`. When the launcher starts the game, the prefetch may not finish before the game starts.
 - `-NoPrefetch` runs only the game (for comparison). Pass game arguments as an array, like `-GameArgs '+set','x'`.
-- The default `-FullFileRatio 2` reads only the recorded blocks. After relocation the rest of a file is not in the hot zone, so reading whole files (the `prefetch.cli` default of 0.3) is wasted time (the amount read grew from 205 MB to 402 MB).
+- The default `-FullFileRatio 2` reads only the recorded blocks. After relocation the rest of a file is not in the relocation zone, so reading whole files (the `prefetch.cli` default of 0.3) is wasted time (the amount read grew from 205 MB to 402 MB).
 
 **How to measure the effect.** Right after rebooting the PC (empty cache), run the game with `-NoPrefetch` and time the load (launch to load complete) with a stopwatch; reboot and repeat 3 times. Measure 3 times the same way without `-NoPrefetch`, and compare the medians. If you repeat without rebooting, the Windows file cache always makes it fast and the comparison is meaningless.
 

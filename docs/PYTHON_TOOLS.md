@@ -23,7 +23,7 @@ This document describes the layout and usage of the repository's Python referenc
 
 - Python 3.11 or later. There are no external package dependencies. Validated on Windows 11 with Python 3.11.4 and 3.12.10.
 - The origin path and the cache path must be in different directory trees. A real speed comparison needs separate physical HDD and SSD devices.
-- Benchmarks and stream tuning were run without administrator rights. The cold condition for the relocation measurements (E2, E3) was produced by clearing the standby list with administrator rights, and relocation itself also requires administrator rights.
+- Benchmarks and stream tuning were run without administrator rights. The cold condition for the relocation measurements (experiments E2 and E3, on a VHDX and on the synthetic dataset) was produced by clearing the standby list with administrator rights, and relocation itself also requires administrator rights.
 - Do not use it directly on important game data or on a system drive. Run it on a test folder first.
 - Linux file I/O and Windows NTFS I/O are not equivalent. The Linux container validation results are documented separately in `VALIDATION_REPORT.md`.
 
@@ -63,7 +63,7 @@ python -m relayout.cli revert --journal j.jsonl --allowed-root D:\AsterBench [--
 ```
 
 - `plan` and `verify` need no privileges. `probe`, `apply`, and `revert` end with `{"error":"not_admin"}` unless run as administrator.
-- Without `--execute`, nothing is moved. `--dry-run` saves the chosen hot zone into the plan file.
+- Without `--execute`, nothing is moved. `--dry-run` saves the chosen relocation zone into the plan file.
 - The plan's volume, the origin root, `--allowed-root`, and the opened volume must all be on the same drive, and if the label differs, nothing is touched.
 - The journal is JSON Lines. `revert` applies the journal in reverse to restore the previous physical layout. The data content does not change.
 - Run the two experiment scripts from an administrator PowerShell, relative to the top-level folder of the repository.

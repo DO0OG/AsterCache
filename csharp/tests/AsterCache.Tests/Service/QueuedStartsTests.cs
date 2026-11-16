@@ -13,7 +13,7 @@ public sealed class QueuedStartsTests
         queued.Add("cod");
         queued.Add("cod");
         queued.Add("COD");
-        Assert.False(queued.AnyOther("cod")); // 같은 게임의 시작은 (대소문자 무시) 세지 않음: 다음 단계 프로세스는 표본 루프가 pid 로 가려냄
+        Assert.False(queued.AnyOther("cod")); // 같은 게임의 시작은 (대소문자 무시) 세지 않음: 다른 게임의 시작만 증거 대기를 끝냄
 
         queued.Add("other"); // 맨 앞이 아닌 뒤쪽의 다른 게임
         Assert.True(queued.AnyOther("cod"));

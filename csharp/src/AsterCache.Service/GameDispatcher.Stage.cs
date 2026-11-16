@@ -18,7 +18,7 @@ public sealed partial class GameDispatcher
     // Planner: 목록 계획을 시계·표본·상한 취소 범위 안에서 만들게 넘김 (원본은 스트리머가 스트림 안에서 목록을 만들었음)
     private sealed record StreamSpec(IReadOnlyList<ReadOp>? Ops, int? BoundaryPid, bool StartLow, bool MemoryGate, Func<CancellationToken, IReadOnlyList<ReadOp>?>? Planner = null);
 
-    private sealed record StreamOutcome(StreamStats Stats, bool Complete, double Seconds, double MbPerSecond, bool BoundaryStopped, bool CapStopped, string? OtherStop, bool Cancelled,
+    private sealed record StreamOutcome(StreamStats Stats, double Seconds, double MbPerSecond, bool BoundaryStopped, bool CapStopped, string? OtherStop, bool Cancelled,
         double YieldedSeconds, RuntimeLoadBoundary Boundary);
 
     private bool IsLaterStart(GameSettings g, ProcessStart start) =>
@@ -52,7 +52,7 @@ public sealed partial class GameDispatcher
         IReadOnlyList<ReadOp>? Plan(CancellationToken token) =>
             _streamer.PlanFirstStage(g, token) ?? _streamer.StartOps(g, token); // 메모리 게이트가 걸리면 단계 정보가 없어도 같은 잘린 목록으로 흘림
 
-        StreamOutcome o = RunStream(g, start, lease, stop, new StreamSpec(null, null, false, stage, stage ? Plan : null));
+        StreamOutcome o = RunStream(g, lease, stop, new StreamSpec(null, null, false, stage, stage ? Plan : null));
         double mbPerSecond = o.MbPerSecond;
         if (o.BoundaryStopped)
         {
@@ -127,7 +127,7 @@ public sealed partial class GameDispatcher
             }
 
             _lastStage[key] = now;
-            StreamOutcome o = RunStream(g, start, lease, stop, new StreamSpec(plan.Ops, start.Pid, true, true, null));
+            StreamOutcome o = RunStream(g, lease, stop, new StreamSpec(plan.Ops, start.Pid, true, true, null));
             string? reason = o.BoundaryStopped ? "load boundary" : o.CapStopped ? "cap" : o.OtherStop ?? (o.Cancelled ? "cancelled" : null);
             string skipped = plan.VolatileSkippedBytes > 0 ? $"; skipped volatile {MiB(plan.VolatileSkippedBytes)} MiB" : string.Empty;
             _log.Info($"{g.Name}: stage stream {exe} {MiB(o.Stats.Bytes)} MiB in {o.Seconds:F1} s ({o.MbPerSecond:F1} MB/s, {(reason is null ? "completed" : "stopped, " + reason)}), yielded {o.YieldedSeconds:F1} s{skipped}");
@@ -193,7 +193,7 @@ public sealed partial class GameDispatcher
     }
 
     // 시작 스트림·단계 스트림 공통 본체: 읽기 카운터를 1 초마다 표본해 경계·상한·양보를 판정하고, 묶음마다 메모리 게이트와 우선순위를 적용합니다.
-    private StreamOutcome RunStream(GameSettings g, ProcessStart start, DiskReadCoordinator.Lease? lease, CancellationToken stop, StreamSpec spec)
+    private StreamOutcome RunStream(GameSettings g, DiskReadCoordinator.Lease? lease, CancellationToken stop, StreamSpec spec)
     {
         CancellationToken streamStop = lease?.Token ?? stop;
         int capSeconds = Math.Max(0, _env.StartStreamCapSeconds());
@@ -424,6 +424,6 @@ public sealed partial class GameDispatcher
         }
 
         double mbPerSecond = elapsedSeconds > 0 ? r.Bytes / (1_000_000d * elapsedSeconds) : 0;
-        return new StreamOutcome(r, complete, elapsedSeconds, mbPerSecond, boundaryA, capA, otherA, cancelled, readYield?.Seconds ?? 0, boundary);
+        return new StreamOutcome(r, elapsedSeconds, mbPerSecond, boundaryA, capA, otherA, cancelled, readYield?.Seconds ?? 0, boundary);
     }
 }

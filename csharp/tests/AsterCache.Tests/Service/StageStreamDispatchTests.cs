@@ -7,7 +7,7 @@ using Xunit;
 
 namespace AsterCache.Tests.Service;
 
-/// 단계 스트림 디스패처: 가짜 시계·가짜 읽기 카운터·가짜 스트리머로 첫 실행 파일 (미리 흘리기)·이후 실행 파일·끄기를 시험합니다.
+/// 단계 스트림 디스패처: 가짜 시계·가짜 읽기 카운터·가짜 스트리머로 첫 실행 파일 (앞부분 + 첫 단계)·이후 실행 파일·끄기를 시험합니다.
 public sealed class StageStreamDispatchTests
 {
     private static readonly GameSettings Game = Games.Make("cod", "cod.exe", "sp26-cod.exe", "Battle.net.exe");

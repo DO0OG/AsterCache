@@ -8,7 +8,7 @@ namespace AsterCache.Service;
 /// 단계 스트림이 읽을 목록: 현재 시작 목록 (Ops) 과 병합 추적의 단계 색인을 교집합합니다 (읽는 집합은 늘 시작 목록의 부분집합, 가변 파일 제외).
 public sealed partial class PrefetchStreamer
 {
-    private sealed record StageIndexCacheEntry(long Length, long LastWriteTicks, TraceStageIndex? Index);
+    private sealed record StageIndexCacheEntry(long Length, long LastWriteTicks, long RawLength, long RawLastWriteTicks, TraceStageIndex? Index);
 
     private static readonly object StageIndexLock = new();
     private static readonly Dictionary<string, StageIndexCacheEntry> StageIndexCache = new(StringComparer.OrdinalIgnoreCase);
@@ -44,7 +44,7 @@ public sealed partial class PrefetchStreamer
         return new HashSet<string>(ops.Select(op => op.Path).Where(path => IsVolatilePath(path, marked)), StringComparer.OrdinalIgnoreCase);
     }
 
-    // 길이·수정 시각이 같으면 파싱한 색인을 재사용. 파일이 없거나 읽을 수 없으면 null (단계 정보 없음).
+    // 색인 파일과 원시 추적의 길이·수정 시각이 같으면 파싱한 색인을 재사용 (원시 추적이 바뀌면 색인에 적힌 표식 검증을 다시 거침). 파일이 없거나 읽을 수 없으면 null (단계 정보 없음).
     private static TraceStageIndex? StageIndexOf(GameSettings game)
     {
         string path = TraceStageIndex.IndexPath(AutoTracer.RawTracePath(game));
@@ -56,9 +56,13 @@ public sealed partial class PrefetchStreamer
                 return null;
             }
 
+            var raw = new FileInfo(AutoTracer.RawTracePath(game));
+            long rawLength = raw.Exists ? raw.Length : -1;
+            long rawTicks = raw.Exists ? raw.LastWriteTimeUtc.Ticks : -1;
+
             lock (StageIndexLock)
             {
-                if (StageIndexCache.TryGetValue(path, out StageIndexCacheEntry? hit) && hit.Length == info.Length && hit.LastWriteTicks == info.LastWriteTimeUtc.Ticks)
+                if (StageIndexCache.TryGetValue(path, out StageIndexCacheEntry? hit) && hit.Length == info.Length && hit.LastWriteTicks == info.LastWriteTimeUtc.Ticks && hit.RawLength == rawLength && hit.RawLastWriteTicks == rawTicks)
                 {
                     return hit.Index;
                 }
@@ -67,7 +71,7 @@ public sealed partial class PrefetchStreamer
             TraceStageIndex? index = TraceStageIndex.Read(path);
             lock (StageIndexLock)
             {
-                StageIndexCache[path] = new StageIndexCacheEntry(info.Length, info.LastWriteTimeUtc.Ticks, index);
+                StageIndexCache[path] = new StageIndexCacheEntry(info.Length, info.LastWriteTimeUtc.Ticks, rawLength, rawTicks, index);
             }
 
             return index;

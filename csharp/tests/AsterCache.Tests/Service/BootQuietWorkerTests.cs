@@ -236,11 +236,14 @@ public sealed class BootQuietWorkerTests : IDisposable
             return false;
         }, _log, () => _now, () => _uptimeMs - _sleptMs);
         var open = new TaskCompletionSource();
+        var waiting = new TaskCompletionSource();
         Worker w = MakeWorker(new GatedShot(new ProcessStart(7, "steam.exe", 0), open.Task), MakePrewarm(), q);
+        w.TickWaitRegistered = () => waiting.TrySetResult(); // 재적용 루프가 첫 틱 (가동 1 분: 유휴 조회를 함) 뒤 30초 대기를 깨움 토큰에 연결한 순간
 
         await w.StartAsync(CancellationToken.None);
-        await WaitFor(() => Volatile.Read(ref idleCalls) >= 1); // 재적용 루프의 첫 틱 (가동 1 분: 유휴 조회를 함) 뒤 30초 대기에 들어감
+        await waiting.Task.WaitAsync(TimeSpan.FromSeconds(10)); // 이 신호 뒤의 트리거 보류는 그 대기를 반드시 깨움 (유휴 조회 횟수로 대기 진입을 추측하지 않음)
         int before = Volatile.Read(ref idleCalls);
+        Assert.True(before >= 1);
 
         open.SetResult(); // 대기 도중 계기 도착: 보류하며 대기를 깨움
         await WaitFor(() => Volatile.Read(ref idleCalls) > before); // 5초나 30초를 기다리지 않고 바로 다음 틱이 돎

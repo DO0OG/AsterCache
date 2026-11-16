@@ -722,6 +722,9 @@ public sealed class Worker : BackgroundService
         }
     }
 
+    /// 시험용 이음매: 틱 대기가 깨움 토큰에 연결된 직후 부름 (이 뒤의 WakeTick 은 그 대기를 반드시 깨움). 제품은 설정하지 않음.
+    internal Action? TickWaitRegistered { get; set; }
+
     /// 지금 기다리는 틱 대기를 일찍 끝냅니다 (다음 틱 판단이 곧바로 돌게).
     internal void WakeTick() => Interlocked.Exchange(ref _tickWake, new CancellationTokenSource()).Cancel();
 
@@ -729,6 +732,7 @@ public sealed class Worker : BackgroundService
     private async Task<bool> WaitTickAsync(TimeSpan delay, CancellationTokenSource wake, CancellationToken ct)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, wake.Token);
+        TickWaitRegistered?.Invoke();
         try
         {
             if (_auto is not null)

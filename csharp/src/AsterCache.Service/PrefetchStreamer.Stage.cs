@@ -13,15 +13,14 @@ public sealed partial class PrefetchStreamer
     private static readonly object StageIndexLock = new();
     private static readonly Dictionary<string, StageIndexCacheEntry> StageIndexCache = new(StringComparer.OrdinalIgnoreCase);
 
-    public StageFirstPlan? PlanFirstStage(GameSettings game, CancellationToken stop)
+    public IReadOnlyList<ReadOp>? PlanFirstStage(GameSettings game, CancellationToken stop)
     {
         if (StageIndexOf(game) is not { Stages.Count: >= 2 } index)
         {
             return null;
         }
 
-        List<ReadOp> ops = Ops(game, stop);
-        return StageStreamPlans.First(ops, HeadBytesOf(game, stop), index, VolatilePaths(game, ops));
+        return StageStreamPlans.First(Ops(game, stop), HeadBytesOf(game, stop), index);
     }
 
     public IReadOnlyList<ReadOp>? StartOps(GameSettings game, CancellationToken stop) => Ops(game, stop);

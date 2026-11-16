@@ -86,8 +86,8 @@ public interface IGameStreamer
     /// 로딩 앞부분의 바이트 (원시 트레이스에 t_ms 가 있어 경계를 계산했을 때), 아니면 null.
     long? LoadHeadBytes(GameSettings game) => null;
 
-    /// 단계 스트림: 첫 실행 파일의 시작 목록을 (앞부분 + 첫 단계) 와 (다음 단계) 로 나눈 계획, 단계 정보가 없으면 null (지금처럼 시작 목록 전체).
-    StageFirstPlan? PlanFirstStage(GameSettings game, CancellationToken stop) => null;
+    /// 단계 스트림: 첫 실행 파일이 흘릴 목록 (앞부분 + 첫 단계 블록), 단계 정보가 없으면 null (지금처럼 시작 목록 전체).
+    IReadOnlyList<ReadOp>? PlanFirstStage(GameSettings game, CancellationToken stop) => null;
 
     /// 단계 스트림이 켜졌을 때 단계 정보 없는 첫 스트림이 흘릴 시작 목록 (메모리 게이트를 위해 잘라 흘림), 모르면 null (StreamCoordinated 가 스스로 만듦).
     IReadOnlyList<ReadOp>? StartOps(GameSettings game, CancellationToken stop) => null;
@@ -1180,10 +1180,10 @@ public sealed record DispatchEnv
     /// auto.start_stream_enabled: 거짓이면 게임 시작 스트림을 하지 않습니다 (다른 예열은 그대로).
     public Func<bool> StartStreamEnabled { get; init; } = () => AutoSettings.Default.StartStreamEnabled;
 
-    /// auto.stage_stream_enabled: 거짓이면 이후 실행 파일의 단계 스트림과 첫 스트림의 미리 흘리기를 하지 않음 (지금 동작 그대로).
+    /// auto.stage_stream_enabled: 거짓이면 이후 실행 파일의 단계 스트림과 첫 스트림의 단계 구분을 하지 않음 (지금 동작 그대로).
     public Func<bool> StageStreamEnabled { get; init; } = () => AutoSettings.Default.StageStreamEnabled;
 
-    /// 이름까지 아는 읽기 카운터 (단계 스트림이 새 프로세스와 다음 단계 프로세스를 가려냄).
+    /// 이름까지 아는 읽기 카운터 (이후 실행 파일의 단계 스트림이 새 프로세스를 가려냄).
     public Func<IReadOnlyCollection<string>, IReadOnlyList<(int Pid, string ExeName, long ReadBytes)>> ReadCountersWithExeNames { get; init; } = ProcessSnapshot.ReadCountersWithExeNames;
 
     /// 가용 메모리 (MiB): 단계 스트림과 시작 스트림의 메모리 게이트. 기본은 게이트 없음.
@@ -1197,7 +1197,7 @@ public sealed record DispatchEnv
     /// 증거 대기용 잠. 취소되면 곧바로 돌아옵니다.
     public Action<TimeSpan, CancellationToken> Sleep { get; init; } = (span, ct) => _ = ct.WaitHandle.WaitOne(span);
 
-    /// 이 게임이 아닌 다른 게임의 시작이 디스패처 대기열에 있는가 (게임 이름을 받음): 있으면 미리 흘리기·증거 대기를 끝냄.
+    /// 이 게임이 아닌 다른 게임의 시작이 디스패처 대기열에 있는가 (게임 이름을 받음): 있으면 증거 대기를 끝냄.
     public Func<string, bool> OtherGameQueued { get; init; } = _ => false;
 
     /// 짧은 종료 뒤 서비스가 물러나는 실행인가 (게임 이름 기준, QuickExitGuard).

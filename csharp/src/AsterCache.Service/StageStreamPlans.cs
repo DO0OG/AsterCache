@@ -4,9 +4,6 @@ using AsterCache.Prefetch;
 
 namespace AsterCache.Service;
 
-/// 첫 실행 파일의 단계 스트림 계획: Ops = 앞부분 + 첫 단계 블록, AheadOps = 첫 단계가 끝난 뒤 낮은 우선순위로 미리 흘릴 다음 단계 블록 (AheadExe 가 뜨면 멈춤).
-public sealed record StageFirstPlan(IReadOnlyList<ReadOp> Ops, string AheadExe, IReadOnlyList<ReadOp> AheadOps, long VolatileSkippedBytes);
-
 /// 이후 실행 파일의 단계 스트림 계획: HasStage 가 거짓이면 단계를 모르는 실행 파일이라 시작 목록 전체이고, 흘리기 전에 읽기 증거를 요구합니다.
 public sealed record StageLaterPlan(IReadOnlyList<ReadOp> Ops, bool HasStage, long VolatileSkippedBytes);
 
@@ -37,16 +34,9 @@ internal static class StageStreamPlans
         return pieces;
     }
 
-    public static StageFirstPlan? First(IReadOnlyList<ReadOp> ops, long headBytes, TraceStageIndex? index, IReadOnlySet<string> volatilePaths)
-    {
-        if (index is null || index.Stages.Count < 2 || StageStreamRule.FirstStageOps(ops, headBytes, index) is not { } first)
-        {
-            return null;
-        }
-
-        List<ReadOp> ahead = StageStreamRule.StageOps(ops, index.Stages[1], volatilePaths);
-        return new StageFirstPlan(first, index.Stages[1].Exe, ahead, StageVolatileBytes(ops, index.Stages[1], volatilePaths));
-    }
+    /// 단계가 둘 이상이면 앞부분과 첫 단계 블록만 (이후 단계 블록은 뺌), 아니면 null (지금처럼 시작 목록 전체).
+    public static List<ReadOp>? First(IReadOnlyList<ReadOp> ops, long headBytes, TraceStageIndex? index) =>
+        index is null || index.Stages.Count < 2 ? null : StageStreamRule.FirstStageOps(ops, headBytes, index);
 
     public static StageLaterPlan Later(IReadOnlyList<ReadOp> ops, TraceStageIndex? index, string exe, IReadOnlySet<string> volatilePaths)
     {

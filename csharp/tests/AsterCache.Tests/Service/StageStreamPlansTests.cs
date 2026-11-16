@@ -22,20 +22,17 @@ public sealed class StageStreamPlansTests
     [Fact]
     public void FirstPlanWithoutTwoStagesIsNull()
     {
-        Assert.Null(StageStreamPlans.First(Ops, 0, null, NoVolatile));
-        Assert.Null(StageStreamPlans.First(Ops, 0, new TraceStageIndex([new TraceStage("cod.exe", 0, [])]), NoVolatile));
+        Assert.Null(StageStreamPlans.First(Ops, 0, null));
+        Assert.Null(StageStreamPlans.First(Ops, 0, new TraceStageIndex([new TraceStage("cod.exe", 0, [])])));
     }
 
     [Fact]
-    public void FirstPlanKeepsTheHeadAndUnassignedBlocksAndAheadIsOnlyTheNextStageInsideTheStartList()
+    public void FirstPlanKeepsTheHeadAndUnassignedBlocksAndDropsLaterStageBlocks()
     {
-        StageFirstPlan plan = StageStreamPlans.First(Ops, 0, Index(), new HashSet<string>(["v.bin"]))!;
+        List<ReadOp> first = StageStreamPlans.First(Ops, 0, Index())!;
 
-        Assert.Equal("sp26-cod.exe", plan.AheadExe);
-        Assert.Equal([new ReadOp("a.bin", Mib, Mib)], plan.AheadOps); // 가변 파일 (v.bin) 은 빠짐
-        Assert.Equal([new ReadOp("a.bin", 0, Mib), new ReadOp("a.bin", 2 * Mib, 2 * Mib), new ReadOp("v.bin", Mib, Mib)], plan.Ops); // v.bin 앞 1 MiB 는 다음 단계 몫
-        Assert.Equal(Mib, plan.VolatileSkippedBytes); // 다음 단계의 v.bin 1 MiB 만 (시작 목록의 v.bin 2 MiB 전체가 아님)
-        Assert.All(plan.AheadOps, ahead => Assert.Contains(Ops, op => op.Path == ahead.Path && op.Offset <= ahead.Offset && op.Offset + op.Length >= ahead.Offset + ahead.Length)); // 시작 목록의 부분집합
+        Assert.Equal([new ReadOp("a.bin", 0, Mib), new ReadOp("a.bin", 2 * Mib, 2 * Mib), new ReadOp("v.bin", Mib, Mib)], first); // 다음 단계 몫 (a.bin 1~2 MiB, v.bin 앞 1 MiB) 은 빠짐
+        Assert.All(first, op => Assert.Contains(Ops, all => all.Path == op.Path && all.Offset <= op.Offset && all.Offset + all.Length >= op.Offset + op.Length)); // 시작 목록의 부분집합
     }
 
     [Fact]

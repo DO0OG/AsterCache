@@ -139,7 +139,7 @@ internal static class StageStreamRule
 
     public static bool WantLow(long gameReadDeltaBytes, double seconds) => seconds > 0 && gameReadDeltaBytes / seconds >= DiskActivity.BusyBytesPerSecond;
 
-    /// 이후 exe 의 스트림과 미리 흘리기는 낮음으로 시작해, 게임 읽기가 QuietToRaise 동안 조용했을 때만 보통으로 올리고 다시 바빠지면 바로 낮춥니다.
+    /// 이후 exe 의 스트림은 낮음으로 시작해, 게임 읽기가 QuietToRaise 동안 조용했을 때만 보통으로 올리고 다시 바빠지면 바로 낮춥니다.
     /// busy 는 WantLow 결과, quietSince 는 조용해지기 시작한 시각(바쁘면 null). 호출한 쪽이 돌려준 QuietSince 를 다음 호출에 넘깁니다.
     public static (bool Low, DateTimeOffset? QuietSince) NextPriority(bool low, DateTimeOffset? quietSince, bool busy, DateTimeOffset now)
     {

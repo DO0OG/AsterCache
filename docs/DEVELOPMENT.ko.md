@@ -52,7 +52,7 @@ py -3.12 -m unittest discover -s tests
 | `AsterCache.Core` | 라이브러리 | 플랫폼과 무관한 규칙입니다. 계획(`Plan/HotSet.cs`, `ZoneAllocator.cs`, `PlanFile.cs`), ORBIT 계획기(`Plan/Orbit/OrbitPlanner.cs`), 재배치 실행·저널·되돌리기(`Apply/Applier.cs`, `Journal.cs`, `Reverter.cs`, `LayoutVerifier.cs`), 설정(`Settings/SettingsStore.cs`, `ConfigEditor.cs`), 안티치트 판정과 기능별 정책표(`Discovery/AntiCheat.cs`, `Capabilities.cs`), 엔진 프로필(`Profiles/engines.json`), SSD 보조 저장(`Tier/`), 화면 문구(`I18n/`) |
 | `AsterCache.Windows` | 라이브러리 | Win32 호출입니다. NTFS 클러스터 이동(`NtfsVolume.cs`, `FSCTL_MOVE_FILE`), 파일 물리 배치 조회(`FileLayout.cs`), 읽기 전용 매핑과 `PrefetchVirtualMemory`(`FileMapping.cs`, `FilePin.cs`), 캐시를 거치지 않는 읽기(`UnbufferedReader.cs`), 캐시 적중 표본(`CacheProbe.cs`), 디스크 종류와 볼륨의 물리 디스크(`DiskInfo.cs`, `VolumeDisks.cs`), Windows 프리페치 `.pf`(`PrefetchFiles.cs`), 런처 라이브러리(`LauncherScan.cs`) |
 | `AsterCache.Tracer` | 라이브러리 | ETW 기록입니다. 실시간 커널 세션(`LiveSession.cs`, `KernelCollector.cs`), `.etl` 변환(`EtlReader.cs`), 트레이스 생성·저장(`TraceBuilder.cs`, `TraceWriter.cs`) |
-| `AsterCache.Prefetch` | 라이브러리 | 읽기 엔진입니다. 존 스트림(`ZoneStreamer.cs`), 폴더 통째 예열(`FolderWarm.cs`), 첫 실행 선행 읽기(`ReadAhead.cs`, 실험 기능, 기본 꺼짐) |
+| `AsterCache.Prefetch` | 라이브러리 | 읽기 엔진입니다. 존(기록된 블록을 옮겨 모은 연속 영역) 스트림(`ZoneStreamer.cs`), 폴더 통째 예열(`FolderWarm.cs`), 첫 실행 선행 읽기(`ReadAhead.cs`, 실험 기능, 기본 꺼짐) |
 | `AsterCache.Service` | `AsterCache.Service.exe` | Windows 서비스입니다. 자동으로 도는 모든 일이 여기에 있습니다. |
 | `AsterCache.Cli` | `aster.exe` | 명령행입니다. `Commands/` 에 plan, trace, apply, revert, prefetch, prewarm, status, discover, tier, orbit, profile 등이 있습니다. |
 | `AsterCache.Tray` | `AsterCache.Tray.exe` | Avalonia 관리 창과 트레이 아이콘, 알림, 자동 업데이트(`Update/`)입니다. |
@@ -67,13 +67,13 @@ py -3.12 -m unittest discover -s tests
 | 시작 감지 | `ProcessWatching.cs`, `EtwProcessWatcher.cs` | 폴링(기본)이나 ETW 로 등록 게임과 런처의 실행을 알아챕니다. 안티치트 게임이 등록돼 있으면 설정이 `etw` 여도 폴링을 씁니다. |
 | 자동 모드 | `AutoMode.cs` | 발견, 트레이서, 재배치, SSD 보조 저장을 묶습니다. |
 | 발견 | `AutoRegistry.cs`, `ProfileFeed.cs`, `ProfileSupplement.cs` | 런처 라이브러리(1시간마다)와 읽기량 휴리스틱(2초마다)으로 게임을 찾아 `config.json` 에 등록합니다. 기록이 없는 게임의 배치 정보는 공유 프로필, Windows 프리페치 기록, 엔진 프로필, 폴더 전체 순으로 찾습니다. |
-| 트레이서 | `AutoTracer.cs`, `TracePhases.cs`, `LoadTiers.cs` | 등록 게임의 첫 실행부터 ETW 세션으로 읽기를 기록하고, 여러 번의 플레이를 합칩니다. 모든 플레이에서 반복해 읽힌 구간(common)을 따로 계산하고, 로딩 앞부분(tier0)을 정합니다. |
+| 트레이서 | `AutoTracer.cs`, `TracePhases.cs`, `LoadTiers.cs` | 등록 게임의 첫 실행부터 ETW 세션으로 읽기를 기록하고, 여러 번의 플레이를 합칩니다. 모든 플레이에서 반복해 읽힌 구간(common)을 따로 계산하고, 로딩 앞부분(tier0, 로딩 초반에 읽는 블록)을 정합니다. |
 | 재배치 | `AutoRelocator.cs`, `DriveRecovery.cs` | 기록으로 계획을 만들고, PC 가 한가하고 게임이 꺼져 있을 때 이동·검증합니다. 재배치 뒤에는 디스크 회복을 확인하고 곧바로 예열합니다. |
 | 예열·스트리머 | `Prewarm.cs`, `Streaming.cs`, `Rewarm.cs`, `Pinning.cs`, `KeepAwake.cs` | `Prewarmer` 가 서비스 시작·런처 실행·게임 종료 뒤에 예열 순서와 RAM 예산을 정하고, `PrefetchStreamer` 가 `ZoneStreamer` 로 읽습니다. `GameDispatcher` 는 게임이 시작될 때의 시작 스트림을 맡습니다. `Rewarmer` 는 주기적으로 캐시 적중을 표본으로 확인해 식었으면 다시 예열하고, `PinKeeper` 는 예열한 페이지를 읽기 전용 매핑으로 붙들며(선택), `KeepAwake` 는 HDD 가 꺼지지 않게 작게 읽습니다. |
-| ORBIT | `OrbitModel.cs`, `OrbitCalibration.cs`, `OrbitRuntime.cs`, `OrbitShadow.cs` | 에피소드 모형(`<게임>.orbit.json`)과 디스크 보정(`disk_model.json`)을 만들고, 모드(`orbit_mode.json`)에 따라 `Core/Plan/Orbit/OrbitPlanner.cs` 의 결정을 예열 순서에 반영합니다. `shadow` 모드는 기록만 합니다. |
-| 디스크 대여·취소 | `DiskReadCoordinator.cs`, `GameExits.cs`, `BootQuiet.cs` | 배경 읽기는 물리 디스크마다 대여(Lease)를 받아야 합니다. 같은 디스크에서 등록 게임이 실행 중이거나 종료 직후 유예 중이면 대여를 내주지 않고, 이미 받은 대여는 취소 토큰으로 멈춥니다. 부팅 직후에는 디스크 작업을 잠시 보류합니다. |
-| 게임 시작·종료 규칙 | `GameDispatcher.Stage.cs`, `StageStreamRule.cs`, `StageStreamPlans.cs`, `PrefetchStreamer.Stage.cs`, `QueuedStarts.cs`, `QuickExitGuard.cs`, `QuickExitRule.cs`, `PlayRecorder.cs`, `PlayPeriods.cs`, `Core/Trace/TraceStages.cs`, `Windows/KernelDrivers.cs` | 단계 스트림(트레이스 곁에 만든 단계 색인으로, 게임이 띄우는 실행 파일마다 읽음), 실행 직후 종료 감지(짧은 세션을 세고, 정상 세션으로 연속이 초기화될 때까지 한 번 물러나며, 새 커널 드라이버를 알림. 상태는 `quick_exit.json`), 실행 파일별·10분 단위 요약이 있는 플레이 기록입니다. |
-| 캐시 유지(SOLAR) | `Solar.cs`, `SolarPolicy.cs`, `Rewarm.Ladder.cs`, `StreamRequeue.cs`, `Prewarm.Solar.cs`, `WarmEstimateCache.cs`, `Windows/StandbyTouch.cs`, `Windows/CacheProbe.cs`, `Windows/FileGuards.cs` | 예열한 캐시를 메모리에서 다시 만지고(스파스 파일은 건너뜀), 밀려나기 전에 새로 고치며, 다른 게임의 캐시를 지킵니다. `WarmEstimateCache.cs` 는 예산 계산이 쓰는 게임별 크기 추정값을 최대 10분 보관합니다. [SOLAR](SOLAR.ko.md)를 보십시오. |
+| ORBIT | `OrbitModel.cs`, `OrbitCalibration.cs`, `OrbitRuntime.cs`, `OrbitShadow.cs` | 에피소드(함께 읽히는 데이터 묶음) 모형(`<게임>.orbit.json`)과 디스크 보정(`disk_model.json`)을 만들고, 모드(`orbit_mode.json`)에 따라 `Core/Plan/Orbit/OrbitPlanner.cs` 의 결정을 예열 순서에 반영합니다. `shadow` 모드는 기록만 합니다. |
+| 디스크 임대·취소 | `DiskReadCoordinator.cs`, `GameExits.cs`, `BootQuiet.cs` | 배경 읽기는 물리 디스크마다 임대(Lease)를 받아야 합니다. 같은 디스크에서 등록 게임이 실행 중이거나 종료 직후 유예 중이면 임대를 내주지 않고, 이미 받은 임대는 취소 토큰으로 멈춥니다. 부팅 직후에는 디스크 작업을 잠시 보류합니다. |
+| 게임 시작·종료 규칙 | `GameDispatcher.Stage.cs`, `StageStreamRule.cs`, `StageStreamPlans.cs`, `PrefetchStreamer.Stage.cs`, `QueuedStarts.cs`, `QuickExitGuard.cs`, `QuickExitRule.cs`, `PlayRecorder.cs`, `PlayPeriods.cs`, `Core/Trace/TraceStages.cs`, `Windows/KernelDrivers.cs` | 단계 스트림(트레이스 곁에 만든 단계 색인으로, 게임이 띄우는 실행 파일마다 읽음), 실행 직후 종료 감지(짧은 세션을 세고, 정상 세션으로 연속이 초기화될 때까지 한 번 부가 작업을 건너뛰며, 새 커널 드라이버를 알림. 상태는 `quick_exit.json`), 실행 파일별·10분 단위 요약이 있는 플레이 기록입니다. |
+| 캐시 유지(SOLAR) | `Solar.cs`, `SolarPolicy.cs`, `Rewarm.Ladder.cs`, `StreamRequeue.cs`, `Prewarm.Solar.cs`, `WarmEstimateCache.cs`, `Windows/StandbyTouch.cs`, `Windows/CacheProbe.cs`, `Windows/FileGuards.cs` | 예열한 캐시를 메모리에서 다시 참조하고(스파스 파일은 건너뜀), 밀려나기 전에 새로 고치며, 다른 게임의 캐시를 지킵니다. `WarmEstimateCache.cs` 는 예산 계산이 쓰는 게임별 크기 추정값을 최대 10분 보관합니다. [SOLAR](SOLAR.ko.md)를 보십시오. |
 | 안티치트 게이트 | `Core/Discovery/AntiCheat.cs`, `Capabilities.cs` | 설치 폴더의 파일·폴더 이름만 보고 안티치트 종류를 짐작합니다(파일을 열지 않음). 기능별 정책표가 트레이스·고정·SSD 보조 저장의 허용 여부를 정합니다. 서비스(`AutoTracer`, `PinKeeper`, `AutoTier`)와 명령행(`Commands/AntiCheatGuard.cs`)이 같은 규칙을 씁니다. 탐지에 실패하면(`unknown`) 금지 쪽으로 봅니다. 종류별 정책은 [ANTICHEAT.ko.md](ANTICHEAT.ko.md)에 있습니다. |
 | SSD 보조 저장 | `AutoTier.cs`, `Core/Tier/` | 선택 기능입니다. 핫 파일 사본을 SSD 에 두고 원래 자리에 심볼릭 링크를 둡니다. 저널은 `tier\<게임>.json` 입니다. |
 
@@ -92,9 +92,9 @@ flowchart LR
 
 1. **발견.** `AutoRegistry` 가 게임을 `config.json` 의 `games[]` 에 `source: auto` 로 등록합니다.
 2. **기록.** 등록 게임이 처음 실행되면 `AutoTracer` 가 `Tracer` 의 실시간 ETW 세션으로 읽기를 기록해 `plans\<게임>.trace.json` 에 씁니다. 이후 플레이는 `.trace.runN.json` 으로 모아 합칩니다. 자동 추적은 디스크 읽기 완료를 요청별로 더하고(`IoSummaryCollector`), 게임이 끝난 뒤 파일 배치로 (파일, 블록) 행으로 바꿔(`IoLayoutScan` 이 배치를 조회하고 `IoBlockMapper` 가 대응) 각 회차의 곁 파일 `.trace.runN.json.io.json` 에 씁니다.
-3. **계획.** `AutoRelocator` 가 트레이스에서 핫 집합(`HotSet`)을 뽑고 `PlanFile`(안에서 `ZoneAllocator` 가 구역을 배치)로 `plans\<게임>.plan.json` 과 읽기 순서 파일 `.plan.json.prefetch.json` 을 씁니다. 수동 `aster plan` 과 같은 코드입니다.
+3. **계획.** `AutoRelocator` 가 트레이스에서 핫 집합(`HotSet`)을 뽑고 `PlanFile`(안에서 `ZoneAllocator` 가 존을 배치)로 `plans\<게임>.plan.json` 과 읽기 순서 파일 `.plan.json.prefetch.json` 을 씁니다. 수동 `aster plan` 과 같은 코드입니다.
 4. **재배치.** 게임이 꺼져 있고 PC 가 한가하면 수동 재배치와 같은 `Applier` 가 `NtfsVolume` 의 `FSCTL_MOVE_FILE` 로 조각을 옮깁니다. 이동마다 `journals\<게임>.jsonl` 에 기록하고, 검증이 실패하면 `Reverter` 가 저널대로 되돌립니다.
-5. **예열.** `Prewarmer` 가 `ZoneStreamer` 로 구역의 파일을 읽기 전용으로 매핑해 `PrefetchVirtualMemory` 로 요청하고, 결과를 `prewarm_status.json` 에 씁니다. 스파스 속성 파일은 매핑하지 않고 목록 순서대로 보통의 버퍼드 읽기로 읽습니다. 한 PC(HDD)의 시험 파일에서 스파스 파일은 매핑을 만들면 캐시된 페이지가 버려졌고 버퍼드 읽기만 쓰면 버려지지 않았기 때문입니다([SOLAR](SOLAR.ko.md)). ORBIT 이 켜져 있으면 읽기 전에 예열 순서가 바뀝니다.
+5. **예열.** `Prewarmer` 가 `ZoneStreamer` 로 존의 파일을 읽기 전용으로 매핑해 `PrefetchVirtualMemory` 로 요청하고, 결과를 `prewarm_status.json` 에 씁니다. 스파스 속성 파일은 매핑하지 않고 목록 순서대로 보통의 버퍼드 읽기로 읽습니다. 한 PC(HDD)의 시험 파일에서 스파스 파일은 매핑을 만들면 캐시된 페이지가 버려졌고 버퍼드 읽기만 쓰면 버려지지 않았기 때문입니다([SOLAR](SOLAR.ko.md)). ORBIT 이 켜져 있으면 읽기 전에 예열 순서가 바뀝니다.
 
 ## 데이터 폴더
 
@@ -112,7 +112,7 @@ flowchart LR
 | `auto_status.json` | 서비스 | 게임별 자동 단계(`discovered`, `tracing`, `learning`, `waiting_idle`, `relocating`, `done`, `failed`, `skipped`), 재배치 기록, 플레이 기록, 예열 적중률입니다. |
 | `prewarm_status.json` | 서비스 | 게임별 마지막 예열 결과입니다. |
 | `play_samples.json` | 서비스 | 게임별 최근 50회 플레이 구간의 디스크 읽기량·지연과 시작 예열·스트림 상태입니다. 플레이에서 뒤에 뜬 실행 파일마다의 스트림 결과와 +30·+60·+120초 구간(`stageStarts`), 10분 단위 요약(`periods`)도 담습니다. |
-| `quick_exit.json` | 서비스 | 게임별 연속 짧은 종료 횟수와 실행 길이, 그 연속의 물러남 결과, 마지막 정상 실행 때 조회한 커널 드라이버 목록입니다. 지워도 안전합니다(횟수가 다시 시작합니다). |
+| `quick_exit.json` | 서비스 | 게임별 연속 짧은 종료 횟수와 실행 길이, 그 연속의 건너뜀 결과, 마지막 정상 실행 때 조회한 커널 드라이버 목록입니다. 지워도 안전합니다(횟수가 다시 시작합니다). |
 | `plans\<게임>.trace.json.stages.json`, `.stages.tried` | 서비스 | 병합 트레이스 곁에 만든 단계 색인과 그것을 만들려고 추가로 추적해 본 횟수입니다. 지워도 안전합니다. |
 | `orbit_mode.json`, `disk_model.json`, `benchmark_samples.json` | 서비스 | ORBIT 모드, 디스크별 보정 표본, 로딩 시간 표본입니다. |
 | `tray.json` | 트레이 | 트레이 전용 설정(`notifications.enabled`)입니다. 예전 `update_feed_url` 키는 무시합니다. 업데이트 방식은 `config.json` 의 `update.mode`·`update.prerelease` 입니다. |
@@ -137,7 +137,7 @@ flowchart LR
 - **저널과 되돌리기.** 이동한 조각마다 저널(JSON Lines)을 남기며, `revert` 로 예전 물리 배치로 되돌립니다. 데이터 내용은 바뀌지 않습니다. 이전 저널은 지우지 않고 `<게임>.jsonl.<UTC 시각>` 이름으로 보관합니다.
 - **허용 폴더와 볼륨 고정.** `allowed_roots` 밖의 파일과 `volume_label` 이 다른 볼륨은 건드리지 않습니다.
 - **중단 처리.** 재배치 중 게임이 시작되면 이동 중이던 한 조각만 끝내고 멈춥니다. 저널에 재개 지점을 남기고, 게임이 끝난 뒤 같은 계획으로 이어갑니다.
-- **여러 날에 나눠 옮기기.** 여러 날에 걸쳐 옮기는 중에 남은 구역을 다른 파일이 차지하거나 계획이 바뀌어도, 이미 옮긴 부분은 다시 옮기지 않고 남은 부분만 새 빈 구간에 다시 계획합니다. 같은 디스크의 여러 게임이 같은 빈 구간을 잡지 않습니다.
+- **여러 날에 나눠 옮기기.** 여러 날에 걸쳐 옮기는 중에 남은 존을 다른 파일이 차지하거나 계획이 바뀌어도, 이미 옮긴 부분은 다시 옮기지 않고 남은 부분만 새 빈 구간에 다시 계획합니다. 같은 디스크의 여러 게임이 같은 빈 구간을 잡지 않습니다.
 - **데이터 폴더 권한.** `%ProgramData%\AsterCache` 는 SYSTEM 과 Administrators 만 쓸 수 있고, 일반 사용자는 읽기만 합니다. 서비스를 제거해도 데이터 폴더는 남으며, `cs_service.ps1 -Action uninstall -PurgeData` 를 명시했을 때만 지웁니다.
 - **권한 확인.** 관리자 권한이 없으면 재배치와 되돌리기는 아무것도 바꾸지 않고 `not_admin` 으로 끝납니다.
 

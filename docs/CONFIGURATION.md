@@ -44,7 +44,7 @@ The configuration file is `%ProgramData%\AsterCache\config.json`. Editing it in 
 | `language` | `auto` | UI language: `auto`, `ko`, or `en`. `auto` follows the Windows display language and falls back to English unless it is Korean. |
 | `watcher` | `poll` | How game starts are detected: `poll` or `etw`. `etw` needs administrator rights and falls back to polling if it fails. See [Watcher](#watcher). |
 | `poll_ms` | 50 | Polling interval of the `poll` watcher, in ms (50 to 5000). |
-| `max_zone_mib` | 2048 | Upper limit of the zone size for automatic planning, in MiB (64 to 65536), or `"auto"`: physical RAM ÷ 4, between 2048 and 8192 MiB, capped at 2048 when the disk type is unknown or the disk is on USB. On a 32 GB PC, `"auto"` is recommended over a fixed 2048. |
+| `max_zone_mib` | 2048 | Upper limit of the zone size (the zone is the contiguous area the recorded blocks are moved to) for automatic planning, in MiB (64 to 65536), or `"auto"`: physical RAM ÷ 4, between 2048 and 8192 MiB, capped at 2048 when the disk type is unknown or the disk is on USB. On a 32 GB PC, `"auto"` is recommended over a fixed 2048. |
 | `riot.champ_select_prewarm` | `false` | While a Riot game's champion select runs, reads the chosen champions' and the map's files into RAM in advance, using the local League client API. Riot announced on 2019-01-24 that players in Korea may not use applications that use the League Client API, and no withdrawal was found, so do not turn this on with a Korean account. See [the League of Legends reference](GAME_GUIDE.md#reference-league-of-legends-vanguard). |
 | `riot.champ_select_budget_mib` | 2048 | The most MiB the champion select prewarm may read (64 to 16384). |
 | `memory.background_yield` | `true` | During a game session, programs unrelated to the game give up memory: their memory priority is lowered and, only when memory is short or the cache is being reused, their working sets are emptied; the priority is restored when the session ends. Game, launcher, anti-cheat, and service processes are not touched. `false` turns it off; there is no switch for it in the Settings tab. See [Background memory yield](AUTO_MODE.md#background-memory-yield). |
@@ -67,7 +67,7 @@ The configuration file is `%ProgramData%\AsterCache\config.json`. Editing it in 
 | `anticheat` | none | Anti-cheat found in the install folder: `eac`, `battleye`, `vanguard`, `kernel`, `ricochet`, or `unknown`. Shown in the Games tab. The value also decides whether automatic trace, pinning, and SSD assist storage are allowed for the game. For the policy, see [Anti-cheat compatibility](ANTICHEAT.md). |
 | `display_name` | none | Game name shown on screen. When not set, uses the launcher name the service recorded, or else the key with underscores replaced by spaces. The internal key is unchanged. You can also set it in the Game options window on the Games tab (default, Korean, and English name boxes). |
 | `display_names` | none | Per-language display names. Example: `{"ko": "발로란트", "en": "VALORANT"}`. Only the keys `ko` and `en` are accepted. |
-| `mode` | `inherit` | What the service does for this game: `inherit` (everything), `prewarm_only` (no relocation or periodic re-apply), `relocate_only` (no prewarm, re-prewarm, top-up, start-up stream, or pin), `off` (nothing). Tracing stays allowed unless the game is `off` or `paused`. Also set by the policy choice in the Game options window on the Games tab. |
+| `mode` | `inherit` | What the service does for this game: `inherit` (everything), `prewarm_only` (no relocation or periodic re-apply), `relocate_only` (no prewarm, re-prewarm, supplement prewarm, start-up stream, or pin), `off` (nothing). Tracing stays allowed unless the game is `off` or `paused`. Also set by the policy choice in the Game options window on the Games tab. |
 | `paused` | `false` | When `true`, the service starts no new work for this game, whatever `mode` says. Learned data and records are kept. Also set by the Paused checkbox in the Game options window on the Games tab. |
 
 `display_name` and `display_names` are optional keys you can write by hand. If you roll back to beta.24 with these keys in the configuration, that version rejects the settings (exit code 2), so remove both keys before rolling back.
@@ -104,7 +104,7 @@ What each stage does is in [Automatic mode](AUTO_MODE.md). Ranges are given in p
 | `full_prewarm` | `true` | For a game with no trace, prewarm the whole install folder when it fits the RAM budget. |
 | `full_prewarm_max_mib` | 0 | Folder size limit for that prewarm, in MiB (0 to 1048576). `0` means 1024 MiB. |
 | `engine_profiles` | `true` | For a larger game with no trace, prewarm the files of its engine (Unity, Unreal, Source, and others). |
-| `learn` | `enabled: false`, `mode: "stream"`, `window_mib: 512`, `max_total_mib: 0`, `saturation_mbps: 80` | Experimental first-run read-ahead; off because E7 to E7f showed no gain. `mode` is `"stream"`, `"gap"`, `"bounded"`, or `"adaptive"`. `max_total_mib` 0 = the smaller of a quarter of physical RAM and 4096 MiB. |
+| `learn` | `enabled: false`, `mode: "stream"`, `window_mib: 512`, `max_total_mib: 0`, `saturation_mbps: 80` | Experimental first-run read-ahead; off because the E7 to E7f read-ahead experiments showed no gain. `mode` is `"stream"`, `"gap"`, `"bounded"`, or `"adaptive"`. `max_total_mib` 0 = the smaller of a quarter of physical RAM and 4096 MiB. |
 
 **Tracing**
 
@@ -155,7 +155,7 @@ What each stage does is in [Automatic mode](AUTO_MODE.md). Ranges are given in p
 | `quick_exit_seconds` | 90 | A game session shorter than this many seconds (10 to 600) counts as an exit right after launch. If the game is started again within 10 minutes, the service backs off for that one run, at most once until a normal session resets the streak. See [When a game closes right after launch](AUTO_MODE.md#6-while-a-game-runs). |
 | `keep_awake` | `true` | A small 4 KiB read every 10 minutes, while a launcher is open or at the hours you usually play, so the HDD does not spin down. Windows power settings are not changed. |
 | `keep_stream_on_game_start` | `false` | When `true`, a prewarm reads to the end even if its game starts (for experiments). Normally it stops at the next 64 MiB batch to yield the disk to the game. |
-| `load_boundary` | `false` | When `true`, measures when the loading head (tier0) is in RAM at each game start. It reads the disk, so it stops when the game exits. |
+| `load_boundary` | `false` | When `true`, measures when the loading head (tier0, the blocks read first in a load) is in RAM at each game start. It reads the disk, so it stops when the game exits. |
 
 ## Updates: `update`
 

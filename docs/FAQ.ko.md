@@ -13,31 +13,31 @@
 재배치는 게임 드라이브에 쓰지만 상한이 있습니다. 한 번에 SMR 드라이브는 최대 1 GiB(그 밖에는 2 GiB), 하루에 SMR 은 2 GiB(그 밖에는 8 GiB)이고, PC 가 한가할 때만 합니다. 그 뒤에는 주로 읽습니다. 드라이브 수명, 온도, 소음에 미치는 영향은 측정하지 않았습니다. [하드디스크에 미치는 영향과 주의사항](../README.ko.md#하드디스크에-미치는-영향과-주의사항)과 [게임 적용 안내](GAME_GUIDE.ko.md)를 보십시오.
 
 **게임을 하는 동안 무엇을 하나요?**
-게임이 시작되면 그 게임의 기록된 데이터를 최대 120초 동안 순서대로 읽고(로딩 경계에서 더 일찍 멈춥니다), 같은 디스크의 배경 작업(재배치, 예열, 다른 읽기)은 기다리거나 멈춥니다. 플레이 기록을 위해 게임 파일이나 프로세스가 아니라 디스크의 읽기 카운터를 표본으로 읽습니다. 트레이스가 허용된 게임에서는 기록 세션이 플레이 내내 열려 있지만, 읽기는 기록 창 안에서만 저장합니다. 게임이 이어서 자기 등록 프로그램을 또 띄우면(예를 들어 런처 격 프로그램 뒤의 본체) 그 프로그램이 처음 읽는 블록을 뜬 직후 낮은 I/O 우선순위로 읽습니다(단계 스트림). 게임과 무관한 프로그램도 그 세션 동안 메모리를 양보합니다([배경 메모리 양보](AUTO_MODE.ko.md#배경-메모리-양보)). 단계는 [자동 모드](AUTO_MODE.ko.md), 설정은 [설정](CONFIGURATION.ko.md)에 있습니다.
+게임이 시작되면 그 게임의 기록된 데이터를 최대 120초 동안 순서대로 읽고(로딩 초반의 많은 읽기가 잦아드는 로딩 경계에서 더 일찍 멈춥니다), 같은 디스크의 배경 작업(재배치, 예열, 다른 읽기)은 기다리거나 멈춥니다. 플레이 기록을 위해 게임 파일이나 프로세스가 아니라 디스크의 읽기 카운터를 표본으로 읽습니다. 트레이스가 허용된 게임에서는 기록 세션이 플레이 내내 열려 있지만, 읽기는 기록 창 안에서만 저장합니다. 게임이 이어서 자기 등록 프로그램을 또 띄우면(예를 들어 런처 격 프로그램 뒤의 본체) 그 프로그램이 처음 읽는 블록을 뜬 직후 낮은 I/O 우선순위로 읽습니다(단계 스트림). 게임과 무관한 프로그램도 그 세션 동안 메모리를 양보합니다([배경 메모리 양보](AUTO_MODE.ko.md#배경-메모리-양보)). 단계는 [자동 모드](AUTO_MODE.ko.md), 설정은 [설정](CONFIGURATION.ko.md)에 있습니다.
 
 **지우면 어떻게 되나요? 게임을 목록에서 빼면요?**
 프로그램을 제거하면 먼저 SSD 보조 저장의 링크를 되돌린 뒤 프로그램과 서비스를 지웁니다. 데이터 폴더 `%ProgramData%\AsterCache` 는 남습니다. 이미 옮긴 조각은 되돌려지지 않으며 어느 쪽이든 파일 내용은 그대로입니다. 예전 배치로 복원하려면 먼저 게임 탭에서 **되돌리기**를 누르십시오. 게임을 목록에서 빼도 파일은 그대로입니다. [사용법](USAGE.ko.md#자주-하는-작업)을 보십시오.
 
 **RAM 을 얼마나 쓰나요?**
-예열한 데이터는 일반 파일 캐시입니다. 모든 게임을 합쳐 기본으로 물리 RAM 의 절반 이하이며(`prewarm.max_cache_mib`), 예열 뒤에도 가용 RAM 이 4 GB 이상 남을 때만 실행합니다. 다른 프로그램이 메모리를 필요로 하면 Windows 가 캐시를 회수합니다. 가용 메모리에 예열 목록 전체가 들어가지 않으면 들어가는 앞부분만 읽되 4 GB 예비량보다 256 MiB 를 더 비워 두고, 나머지는 메모리가 다시 날 때 읽습니다. 예비량과 캐시 예산을 낮추지는 않습니다. [설정](CONFIGURATION.ko.md)을 보십시오. 트레이와 서비스도 예전에 붙들고 있던 메모리를 풀어 줄였습니다(트레이는 로그 전체를 읽지 않고, 서비스는 등록 해제된 게임의 남은 데이터를 정리합니다). 전후 수치는 재지 않았습니다.
+예열한 데이터는 일반 파일 캐시입니다. 모든 게임을 합쳐 기본으로 물리 RAM 의 절반 이하이며(`prewarm.max_cache_mib`), 예열 뒤에도 가용 RAM 이 4 GB 이상 남을 때만 실행합니다. 다른 프로그램이 메모리를 필요로 하면 Windows 가 캐시를 회수합니다. 가용 메모리에 예열 목록 전체가 들어가지 않으면 들어가는 앞쪽 부분만 읽되 4 GB 예비량보다 256 MiB 를 더 비워 두고, 나머지는 메모리가 다시 날 때 읽습니다. 예비량과 캐시 예산을 낮추지는 않습니다. [설정](CONFIGURATION.ko.md)을 보십시오. 트레이와 서비스도 예전에 붙들고 있던 메모리를 풀어 줄였습니다(트레이는 로그 전체를 읽지 않고, 서비스는 등록 해제된 게임의 남은 데이터를 정리합니다). 전후 수치는 재지 않았습니다.
 
 **게임을 켠 뒤 열어 두었던 프로그램이 잠깐 느려졌습니다. 왜 그런가요?**
-배경 메모리 양보 때문입니다. 게임 세션이 시작되면 AsterCache 가 게임과 무관한 프로그램의 메모리 우선순위를 낮춰, Windows 가 예열 캐시보다 그 프로그램의 메모리를 먼저 가져가게 합니다. 작업 집합도 비우지만, 시작할 때 메모리가 모자랄 때(여유 메모리와 낮은 우선순위 대기 메모리의 합이 `max(4 GiB, 물리 RAM / 4)` 미만)와, 세션 중에는 캐시가 실제로 재사용될 때만입니다. 비워진 프로그램은 다시 쓸 때 페이지를 다시 가져와야 해서 잠깐 느려질 수 있습니다. 시험에서는 2 GiB 를 다시 만지는 데 0.8초가 걸렸습니다. 비운 뒤 메모리 대부분을 되찾는 프로그램은 그 세션에서 다시 비우지 않습니다. 그 메모리를 먼저 재사용하므로 세션 동안 배경 프로그램이 약간 느려질 수도 있습니다. 의도된 동작이며 게임이 끝나면 우선순위를 되돌립니다. 게임·런처·안티치트 프로그램은 건드리지 않습니다. 실제 플레이에서 얼마나 달라지는지는 재지 않았습니다. [배경 메모리 양보](AUTO_MODE.ko.md#배경-메모리-양보)를 보십시오.
+배경 메모리 양보 때문입니다. 게임 세션이 시작되면 AsterCache 가 게임과 무관한 프로그램의 메모리 우선순위를 낮춰, Windows 가 예열 캐시보다 그 프로그램의 메모리를 먼저 가져가게 합니다. 작업 집합도 비우지만, 시작할 때 메모리가 모자랄 때(여유 메모리와 낮은 우선순위 대기 메모리의 합이 `max(4 GiB, 물리 RAM / 4)` 미만)와, 세션 중에는 캐시가 실제로 재사용될 때만입니다. 비워진 프로그램은 다시 쓸 때 페이지를 다시 가져와야 해서 잠깐 느려질 수 있습니다. 시험에서는 2 GiB 를 다시 참조하는 데 0.8초가 걸렸습니다. 비운 뒤 메모리 대부분을 되찾는 프로그램은 그 세션에서 다시 비우지 않습니다. 그 메모리를 먼저 재사용하므로 세션 동안 배경 프로그램이 약간 느려질 수도 있습니다. 의도된 동작이며 게임이 끝나면 우선순위를 되돌립니다. 게임·런처·안티치트 프로그램은 건드리지 않습니다. 실제 플레이에서 얼마나 달라지는지는 재지 않았습니다. [배경 메모리 양보](AUTO_MODE.ko.md#배경-메모리-양보)를 보십시오.
 
 **배경 메모리 양보를 끄려면 어떻게 하나요?**
 `config.json` 에 `"memory": {"background_yield": false}` 를 넣으십시오. 설정 탭에는 스위치가 없습니다. 서비스가 5초 안에 파일을 다시 읽으며, 게임 세션 중에 껐으면 다음 30초 점검 때 우선순위를 되돌립니다. 이전 버전으로 되돌릴 때는 1.0.2 이하 버전이 `memory` 키를 거부하므로 먼저 지우십시오([설정](CONFIGURATION.ko.md)).
 
 **"캐시가 식는다"는 무슨 뜻인가요?**
-예열한 데이터는 파일 캐시에 있습니다. 파일 캐시는 보통 RAM 이라서, 다른 프로그램이 메모리를 필요로 하거나 다른 파일을 읽으면 Windows 가 도로 가져갑니다. 게임 데이터의 일부를 가져가면 그 부분의 캐시가 식은 것이고, 그 부분을 읽으면 다시 HDD 로 갑니다. 재예열 점검은 8곳에서 1 MiB 씩 읽어 그중 2곳 이상이 2 ms 를 넘으면 캐시가 식었다고 봅니다. 읽는 동안 시스템의 페이지 읽기 수도 표본 크기에 걸맞게 늘었을 때만 느린 곳으로 세므로, 다른 작업이 CPU 를 쓰는 중에 캐시에 있는 표본이 느리게 읽힌 것은 식었다고 보지 않습니다(설치본에서는 아직 확인하지 않았고, 아래 수치는 이 규칙 이전에 잰 값입니다). 시험 PC 에서 전체 예열이 끝난 뒤 처음 식었다고 판정한 점검까지 걸린 시간의 중앙값은 League of Legends 29.0분, Call of Duty 71.5분이었고(점검은 약 10분마다 돕니다), 2026-11-11 이후 점검의 47%(League of Legends)와 71%(Call of Duty)가 캐시가 식었거나 일부가 식었다고 판정했습니다. [SOLAR](SOLAR.ko.md)는 캐시를 메모리 안에서 다시 만져 더 오래 남게 합니다. 실제 플레이에서 도움이 되는지는 재지 않았습니다.
+예열한 데이터는 파일 캐시에 있습니다. 파일 캐시는 보통 RAM 이라서, 다른 프로그램이 메모리를 필요로 하거나 다른 파일을 읽으면 Windows 가 도로 가져갑니다. 게임 데이터의 일부를 가져가면 그 부분의 캐시가 식은 것이고, 그 부분을 읽으면 다시 HDD 로 갑니다. 재예열 점검은 8곳에서 1 MiB 씩 읽어 그중 2곳 이상이 2 ms 를 넘으면 캐시가 식었다고 봅니다. 읽는 동안 시스템의 페이지 읽기 수도 표본 크기에 걸맞게 늘었을 때만 느린 곳으로 세므로, 다른 작업이 CPU 를 쓰는 중에 캐시에 있는 표본이 느리게 읽힌 것은 식었다고 보지 않습니다(설치본에서는 아직 확인하지 않았고, 아래 수치는 이 규칙 이전에 잰 값입니다). 시험 PC 에서 전체 예열이 끝난 뒤 처음 식었다고 판정한 점검까지 걸린 시간의 중앙값은 League of Legends 29.0분, Call of Duty 71.5분이었고(점검은 약 10분마다 돕니다), 2026-11-11 이후 점검의 47%(League of Legends)와 71%(Call of Duty)가 캐시가 식었거나 일부가 식었다고 판정했습니다. [SOLAR](SOLAR.ko.md)는 캐시를 메모리 안에서 다시 참조해 더 오래 남게 합니다. 실제 플레이에서 도움이 되는지는 재지 않았습니다.
 
 **SOLAR 를 끄려면 어떻게 하나요?**
-`config.json` 에 `"memory": {"standby_ladder": false}` 를 넣으십시오. 설정 탭에는 스위치가 없습니다. 서비스가 5초 안에 파일을 다시 읽고 그때부터 캐시를 만지지 않으며, 예열 자체와 재예열 점검은 영향이 없습니다. 1.0.3 이하 버전으로 되돌릴 때는 그 버전들이 `memory.standby_ladder` 를 거부하므로 먼저 지우십시오([설정](CONFIGURATION.ko.md)).
+`config.json` 에 `"memory": {"standby_ladder": false}` 를 넣으십시오. 설정 탭에는 스위치가 없습니다. 서비스가 5초 안에 파일을 다시 읽고 그때부터 캐시를 참조하지 않으며, 예열 자체와 재예열 점검은 영향이 없습니다. 1.0.3 이하 버전으로 되돌릴 때는 그 버전들이 `memory.standby_ladder` 를 거부하므로 먼저 지우십시오([설정](CONFIGURATION.ko.md)).
 
 **안티치트 게임에서 안전한가요?**
 AsterCache 는 게임 프로세스에 손대지 않습니다. 자기 프로세스에서 파일을 읽고, Windows 이벤트 추적으로 파일 읽기를 관찰하며, 게임이 종료된 뒤에만 파일을 옮깁니다. 다른 프로그램에 하는 일은 게임 세션 동안 게임과 무관한 프로그램의 메모리 우선순위를 낮추고, 메모리가 모자라거나 캐시가 실제로 재사용될 때만 그 작업 집합을 비우는 것뿐이며, 게임·런처·안티치트 프로세스는 열지 않습니다([안티치트 호환](ANTICHEAT.ko.md)). 다만 통제된 검증은 하지 않았고 한 PC 의 사용 기록만 있으며, 계정 제재 여부는 보증하지 않습니다. 안티치트 게임은 플레이 전에 자동 모드를 끄거나 `auto.ignore_exes` 에 넣으십시오. [안티치트 호환](ANTICHEAT.ko.md)을 보십시오.
 
 **게임이 실행하자마자 꺼집니다. AsterCache 때문인가요?**
-꼭 그렇지는 않으며, AsterCache 는 게임이 꺼지는 것을 막지 않습니다. 게임이 실행 직후 꺼지는 이유는 많고, 다른 프로그램이 올린 커널 드라이버도 그중 하나입니다. AsterCache 가 하는 일은 그 패턴을 알아채는 것입니다. `auto.quick_exit_seconds`(기본 90초)보다 짧은 세션은 짧은 종료로 세고, 10분 안에 그 게임을 다시 실행하면 서비스가 그 실행에서 물러납니다. 정상 세션으로 연속이 초기화될 때까지는 한 번만 물러나며, 그 실행에서는 시작 스트림, 단계 스트림, 자동 추적, 로딩 경계 읽기, 배경 메모리 양보, 트리거 예열을 하지 않습니다. 짧은 종료가 두 번 연속되면 마지막 정상 실행(기본값에서는 5분 이상 간 세션) 뒤 새로 올라온 커널 드라이버를 나열합니다. 볼 곳은 `service.log`(`exited quickly`, `quick exit N in a row`, `backing off for this run`), 트레이 알림, 상태 탭의 그 게임 카드("실행 직후 꺼짐 N회, 새 드라이버: ...")입니다. 읽는 법: 물러난 실행도 꺼졌다면(`backed-off run: exited too`) 서비스가 비켜 있었는데도 꺼진 것이라 원인이 다른 데 있을 가능성이 높지만 그것이 증명은 아닙니다. 물러난 실행이 살아남았다면 로그는 앞선 종료에 서비스가 관여했을 수도 있고 프로그램이 스스로 다시 시작했을 수도 있다고만 적으며 어느 쪽인지는 단정하지 않습니다. 드라이버 목록은 단서이지 원인 확정이 아닙니다. `none` 은 새 드라이버가 없다는 뜻이고, `unavailable` 은 이번에 목록을 읽지 못했다는 뜻이며, `unknown (no normal run recorded)` 는 비교할 정상 실행이 없다는 뜻입니다. 새 드라이버가 다른 프로그램의 것이면 그 프로그램을 닫거나 멈추고 다시 실행해 보십시오. AsterCache 를 의심에서 빼려면 서비스를 중지하고 비교하십시오. 자동 모드를 끄거나 `auto.ignore_exes` 에 넣는 것만으로는 이미 등록된 게임의 모든 동작이 멈추지 않습니다(예를 들어 시작 스트림에는 따로 스위치가 있습니다). 드라이버 목록 조회는 프로그램 이름을 지목하지 않으며 프로세스를 열지 않습니다([자동 모드](AUTO_MODE.ko.md#6-게임-실행-중)). 시험 PC 한 대에서 가벼운 게임을 직접 꺼 보며 확인했고, 스스로 꺼지는 게임으로는 확인하지 않았습니다.
+꼭 그렇지는 않으며, AsterCache 는 게임이 꺼지는 것을 막지 않습니다. 게임이 실행 직후 꺼지는 이유는 많고, 다른 프로그램이 올린 커널 드라이버도 그중 하나입니다. AsterCache 가 하는 일은 그 패턴을 알아채는 것입니다. `auto.quick_exit_seconds`(기본 90초)보다 짧은 세션은 짧은 종료로 세고, 10분 안에 그 게임을 다시 실행하면 서비스가 그 실행에서 부가 작업을 건너뜁니다. 정상 세션으로 연속이 초기화될 때까지는 한 번만 그렇게 하며, 그 실행에서는 시작 스트림, 단계 스트림, 자동 추적, 로딩 경계 읽기, 배경 메모리 양보, 트리거 예열을 하지 않습니다. 짧은 종료가 두 번 연속되면 마지막 정상 실행(기본값에서는 5분 이상 간 세션) 뒤 새로 올라온 커널 드라이버를 나열합니다. 볼 곳은 `service.log`(`exited quickly`, `quick exit N in a row`, `backing off for this run`), 트레이 알림, 상태 탭의 그 게임 카드("실행 직후 꺼짐 N회, 새 드라이버: ...")입니다. 읽는 법: 부가 작업을 건너뛴 실행도 꺼졌다면(`backed-off run: exited too`) 서비스가 비켜 있었는데도 꺼진 것이라 원인이 다른 데 있을 가능성이 높지만 그것이 증명은 아닙니다. 부가 작업을 건너뛴 실행이 살아남았다면 로그는 앞선 종료에 서비스가 관여했을 수도 있고 프로그램이 스스로 다시 시작했을 수도 있다고만 적으며 어느 쪽인지는 단정하지 않습니다. 드라이버 목록은 단서이지 원인 확정이 아닙니다. `none` 은 새 드라이버가 없다는 뜻이고, `unavailable` 은 이번에 목록을 읽지 못했다는 뜻이며, `unknown (no normal run recorded)` 는 비교할 정상 실행이 없다는 뜻입니다. 새 드라이버가 다른 프로그램의 것이면 그 프로그램을 닫거나 멈추고 다시 실행해 보십시오. AsterCache 를 의심에서 빼려면 서비스를 중지하고 비교하십시오. 자동 모드를 끄거나 `auto.ignore_exes` 에 넣는 것만으로는 이미 등록된 게임의 모든 동작이 멈추지 않습니다(예를 들어 시작 스트림에는 따로 스위치가 있습니다). 드라이버 목록 조회는 프로그램 이름을 지목하지 않으며 프로세스를 열지 않습니다([자동 모드](AUTO_MODE.ko.md#6-게임-실행-중)). 시험 PC 한 대에서 가벼운 게임을 직접 꺼 보며 확인했고, 스스로 꺼지는 게임으로는 확인하지 않았습니다.
 
 **게임 업데이트 뒤에는 어떻게 되나요?**
 패치로 파일이 바뀌면 저장해 둔 계획과 맞지 않을 수 있습니다. AsterCache 는 옮기기 전에 계획을 확인해 바뀐 파일은 건너뛰고, 배치가 흐트러졌는지 점검하고(기본 1440분마다, 점검이 보류되었거나 이어갈 작업이 있으면 5분 뒤 다시) 흐트러졌으면 계획을 다시 적용합니다. 자동 모드에서는 바뀐 파일을 다시 학습하며, 계획 데이터의 절반 이상이 바뀌었으면 트레이스와 계획 전체를 `.stale` 로 치웁니다. 실제 게임 업데이트로는 아직 시험하지 않았습니다. [자동 모드](AUTO_MODE.ko.md)를 보십시오.
@@ -52,7 +52,7 @@ SMR 드라이브(WD20EZAZ) 1대만 측정했고 CMR 은 측정하지 않았습�
 재배치에는 게임이 실제로 읽는 기록(트레이스)이 필요합니다. 첫 실행 전에는 맞는 공유 프로필(저장소가 준비 중이라 지금은 건너뜁니다)을 먼저 찾고, 그다음 게임의 Windows 프리페치 기록을 봅니다. 둘 다 부트 트레이스가 되어 재배치를 일찍 시작할 수 있습니다. 예열은 기록이 없어도 합니다. 설치 폴더 전체가 RAM 예산 안인 게임은 폴더 전체를, 더 큰 게임은 엔진의 파일만 예열하며, 효과는 아직 측정하지 않았습니다. 다른 PC 에서 만든 기록은 `aster profile import` 로 가져올 수 있습니다([사용법](USAGE.ko.md#aster-명령)).
 
 **처음 실행도 빨라지나요?**
-원칙적으로 아닙니다. 첫 실제 플레이는 게임이 읽는 것을 기록하고, 최대 효과는 재배치와 예열이 끝난 두 번째 실행부터 나올 것으로 봅니다. 그 전에도 기록 없는 예열(작은 게임은 폴더 전체, 큰 게임은 엔진 파일)이나 Windows 프리페치의 부팅 자료를 쓸 수 있으며, 이것과 시작 스트림이 실제 로딩 시간에 준 효과는 재지 않았습니다. 첫 실행 선행 읽기는 실험 기능이며, E7~E7f 측정에서 이득이 없어 기본 꺼짐입니다(`auto.learn.enabled`, [RESULTS_SUMMARY](RESULTS_SUMMARY.ko.md) 참고).
+원칙적으로 아닙니다. 첫 실제 플레이는 게임이 읽는 것을 기록하고, 최대 효과는 재배치와 예열이 끝난 두 번째 실행부터 나올 것으로 봅니다. 그 전에도 기록 없는 예열(작은 게임은 폴더 전체, 큰 게임은 엔진 파일)이나 Windows 프리페치의 부팅 자료를 쓸 수 있으며, 이것과 시작 스트림이 실제 로딩 시간에 준 효과는 재지 않았습니다. 첫 실행 선행 읽기는 실험 기능이며, 첫 실행 선행 읽기 실험 E7~E7f 측정에서 이득이 없어 기본 꺼짐입니다(`auto.learn.enabled`, [RESULTS_SUMMARY](RESULTS_SUMMARY.ko.md) 참고).
 
 **자동 업데이트를 끌 수 있나요?**
 네. 설정 탭의 **업데이트** 카드에서 **끄기**를 고르거나, 설치하지 않고 알림만 받으려면 **알림만**을 고르십시오. 같은 설정이 `config.json` 의 `update.mode`(`auto`, `notify`, `off`)입니다. `update.prerelease` 가 `true` 가 아니면 프리릴리스는 제안하지 않습니다.
@@ -90,13 +90,13 @@ SMR 드라이브(WD20EZAZ) 1대만 측정했고 CMR 은 측정하지 않았습�
 건너뛴 이유는 `service.log` 에 남습니다. 가용 RAM 이 부족하거나, 게임이 실행 중이거나, 쿨다운 중(표본 읽기가 캐시가 식었음을 보이면, 예를 들어 재부팅 뒤에는 쿨다운이 적용되지 않습니다)이거나, 계획 파일이 없는 경우입니다. 게임 실행 여부는 그 게임에 등록된 실행 파일 이름으로만 봅니다. `aster status` 의 `prewarm` 항목에서도 확인할 수 있습니다.
 
 **예열이 `partial` 로 끝나거나 로그에 메모리 때문에 멈췄다고 나옵니다.**
-가용 메모리에 예열 목록 전체가 들어가지 않아 앞부분만 읽은 것입니다. 앞부분을 목록 순서대로 읽는 도중 메모리가 예비량 아래로 내려가도 예열은 읽은 것을 버리지 않습니다. 그 시점에 들어가는 양까지만 더 읽고 그만큼을 부분 예열로 남깁니다. 나머지는 가용 메모리가 읽은 양 + 256 MiB + 예비량(`prewarm.min_free_ram_mib`, 기본 4,096 MiB)을 넘으면 읽으며, 멈춘 뒤 2분 안에는 읽지 않습니다. 예비량과 캐시 예산은 이 때문에 낮추지 않습니다. 목록 전체를 읽은 예열은 `partial` 로 기록되지 않습니다. 저장된 계획이 아직 옮기지 못한 부분만 담고 있는 게임에서는 예전 버전이 그렇게 기록하기도 했습니다(예: `partial 1164/1306 MiB`). `service.log` 에서 볼 줄은 다음과 같습니다.
+가용 메모리에 예열 목록 전체가 들어가지 않아 앞쪽 부분만 읽은 것입니다. 앞쪽 부분을 목록 순서대로 읽는 도중 메모리가 예비량 아래로 내려가도 예열은 읽은 것을 버리지 않습니다. 그 시점에 들어가는 양까지만 더 읽고 그만큼을 부분 예열로 남깁니다. 나머지는 가용 메모리가 읽은 양 + 256 MiB + 예비량(`prewarm.min_free_ram_mib`, 기본 4,096 MiB)을 넘으면 읽으며, 멈춘 뒤 2분 안에는 읽지 않습니다. 예비량과 캐시 예산은 이 때문에 낮추지 않습니다. 목록 전체를 읽은 예열은 `partial` 로 기록되지 않습니다. 저장된 계획이 아직 옮기지 못한 부분만 담고 있는 게임에서는 예전 버전이 그렇게 기록하기도 했습니다(예: `partial 1164/1306 MiB`). `service.log` 에서 볼 줄은 다음과 같습니다.
 - `<게임>: prewarm read the first N of M MiB, the rest does not fit in memory (available A MiB, reserve R MiB) [<사유>]`: 읽기가 한도에서 끝났고 읽은 만큼을 부분 예열로 남겼다는 뜻입니다. 오류가 아닙니다.
 - `<게임>: supplement waits for memory (read X MiB, room for Y MiB)`: `max(256 MiB, 읽은 양의 5%)` 이상 더 들어가지 않아 나머지를 아직 읽지 않는다는 뜻입니다. 기다리는 동안 디스크에서 아무것도 읽지 않습니다.
 - `<게임>: prewarm stopped by memory; kept the N of M MiB read as partial`
 - `<게임>: prewarm skipped (stopped by memory less than 2 min ago) [<사유>]`
 - `<게임>: prewarm done (...): ..., room X MiB, available Y MiB` 와 `rewarm check: cold (..., available N MiB)`. 그 시점의 메모리를 보여 줍니다.
-- `<게임>: prewarm list gained N MiB of blocks outside the full zone`. 가득 찬 존에 더는 들어가지 않는 블록을 아무것도 옮기지 않고 예열 목록에 더했다는 뜻입니다.
+- `<게임>: prewarm list gained N MiB of blocks outside the full zone`. 가득 찬 존(기록된 블록을 옮겨 모은 영역)에 더는 들어가지 않는 블록을 아무것도 옮기지 않고 예열 목록에 더했다는 뜻입니다.
 
 **로그의 `background yield` 줄은 무슨 뜻인가요?**
 [배경 메모리 양보](AUTO_MODE.ko.md#배경-메모리-양보)가 남기는 줄이며 프로그램 이름이나 경로 없이 개수와 크기만 담습니다(프로그램 이름은 경로 없이, 세션이 도는 동안의 `background_yield.json` 에만 적힙니다).
@@ -111,16 +111,16 @@ SMR 드라이브(WD20EZAZ) 1대만 측정했고 CMR 은 측정하지 않았습�
 
 **로그의 `ladder` 와 `cache refreshed` 줄은 무슨 뜻인가요?**
 [SOLAR](SOLAR.ko.md)가 `service.log` 에 남기는 줄입니다. 전체 목록은 [켜졌는지 확인하는 법](SOLAR.ko.md#켜졌는지-확인하는-법)에 있습니다.
-- `<게임>: ladder ordered N MiB in S s`: 예열 직후 그 게임의 캐시 N MiB 를 읽은 순서의 역순으로, 디스크 읽기 없이 만졌다는 뜻입니다.
-- `<게임>: cache refreshed in memory: N MiB in S s (R MiB repurposed of A MiB ahead)`: Windows 가 다시 쓴 캐시가 R MiB 로, 그 게임의 페이지 앞에 있는 A MiB 에 가까워져서 캐시를 다시 만졌다는 뜻입니다.
-- `<게임>: ladder found data missing from memory (K slow pieces, N MiB read from disk), left to the rewarm check`: 목록 일부가 이미 캐시에 없었다는 뜻입니다. 만지기를 멈췄고, 다음 재예열 점검이 표본이 따뜻해 보여도 그 게임을 다시 예열합니다(`rewarm check: part of the list is not in memory (found by the ladder), prewarming again (cooldown ignored)`).
+- `<게임>: ladder ordered N MiB in S s`: 예열 직후 그 게임의 캐시 N MiB 를 읽은 순서의 역순으로, 디스크 읽기 없이 참조했다는 뜻입니다.
+- `<게임>: cache refreshed in memory: N MiB in S s (R MiB repurposed of A MiB ahead)`: Windows 가 다시 쓴 캐시가 R MiB 로, 그 게임의 페이지보다 먼저 재사용될 A MiB 에 가까워져서 캐시를 다시 참조했다는 뜻입니다.
+- `<게임>: ladder found data missing from memory (K slow pieces, N MiB read from disk), left to the rewarm check`: 목록 일부가 이미 캐시에 없었다는 뜻입니다. 참조하기를 멈췄고, 다음 재예열 점검이 표본이 따뜻해 보여도 그 게임을 다시 예열합니다(`rewarm check: part of the list is not in memory (found by the ladder), prewarming again (cooldown ignored)`).
 - `<게임>: cache refresh skipped, the samples are cold (...), left to the rewarm check`: 새로 고치기 전의 표본 점검이 캐시가 식었음을 보여서 재예열 점검에 맡겼다는 뜻입니다.
 
 **로그의 `cooldown ignored`, `yields`, `preempted` 줄은 무슨 뜻인가요?**
 - `<게임>: cooldown ignored, the cache is cold [service start]`(또는 `[trigger <exe>]`): 그 게임이 쿨다운 안이었지만, 표본 읽기가 캐시가 식었음을 보여서(예: 재부팅 뒤) 그래도 예열했다는 뜻입니다.
 - `service start prewarm waits for 60 s after boot and 20 s of idle disk`, `held prewarm triggers released: N (boot + idle disk)`: 서비스 시작 예열과 부팅 때 보류된 런처 예열이 그 조건만 기다린다는 뜻입니다([부팅 직후](AUTO_MODE.ko.md#부팅-직후)).
 - `boot prewarm release: uptime U s, idle since S s, C checks (B not idle), last disk X MiB/s`: 보류한 런처 예열이 그 시각에 풀린 이유입니다. 그때까지 PC가 켜져 있던 시간, 한가한 구간이 시작된 시각, 한가함을 확인한 횟수(5초마다)와 그중 한가하지 않았던 횟수, 마지막으로 본 디스크 처리량을 보여 줍니다.
-- `<게임>: prewarm yields to other disk activity (low I/O priority)`, 그리고 `prewarm done` 줄 끝의 `, yielded N.N s`: 다른 프로그램이 같은 디스크를 읽고 있어서 예열이 모두 합쳐 N.N초 동안 낮은 I/O 우선순위로 읽었다는 뜻입니다. `<게임>: prewarm back to normal I/O priority after N.N s at low` 는 보통 우선순위로 처음 돌아온 때이고, 핫 집합 예열의 `prewarm done`·`prewarm cancelled` 줄 끝(과 `load head prewarm` 줄)의 `, read A MiB in S s at normal I/O priority and B MiB in T s at low (K switches)` 는 우선순위별로 읽은 양과 바뀐 횟수입니다. 기록이 없는 게임의 예열과 보충에는 붙지 않습니다.
+- `<게임>: prewarm yields to other disk activity (low I/O priority)`, 그리고 `prewarm done` 줄 끝의 `, yielded N.N s`: 다른 프로그램이 같은 디스크를 읽고 있어서 예열이 모두 합쳐 N.N초 동안 낮은 I/O 우선순위로 읽었다는 뜻입니다. `<게임>: prewarm back to normal I/O priority after N.N s at low` 는 보통 우선순위로 처음 돌아온 때이고, 핫 집합 예열의 `prewarm done`·`prewarm cancelled` 줄 끝(과 로딩 초반에 읽는 블록을 읽는 `load head prewarm` 줄)의 `, read A MiB in S s at normal I/O priority and B MiB in T s at low (K switches)` 는 우선순위별로 읽은 양과 바뀐 횟수입니다. 기록이 없는 게임의 예열과 보충에는 붙지 않습니다.
 - `prewarm prepared in N s before the per-game reads [<사유>]: ...`, `<게임>: load head prewarm started` / `done: N MiB in S s` / `cancelled (<사유>) after N MiB in S s` / `interrupted (caller cancelled) after ...` / `skipped (<사유>)`: 게임별 읽기 전에 시간이 어디에 쓰였는지와 게임마다 로딩 앞부분 읽기가 한 일을 보여 줍니다(첫 줄은 준비가 5초 이상 걸렸을 때만 나옵니다).
 - `<게임>: prewarm cancelled (...) (preempted by trigger prewarm)`, `<게임>: trigger prewarm waited N s for <게임>`: 런처가 예열을 시작해서 같은 디스크의 다른 게임의 배경 예열이 먼저 읽게 길을 내주고 멈췄다는 뜻입니다. 두 번째 줄은 런처의 예열이 그래도 1초 이상 기다려야 했을 때 남습니다.
 - `<게임>: device calibration stopped at the 5 s limit, sample discarded`: 예열 전의 짧은 디스크 속도 읽기가 5초를 넘게 걸려 그 표본을 버렸다는 뜻입니다.
@@ -130,7 +130,7 @@ SMR 드라이브(WD20EZAZ) 1대만 측정했고 CMR 은 측정하지 않았습�
 - `<게임>: stage stream <exe> N MiB in S s (R MB/s, completed), yielded Y s`: 게임이 첫 실행 파일 뒤에 띄운 프로그램(`<exe>`)에, 그 단계가 처음 읽는 블록을 낮은 I/O 우선순위로 읽어 준 것입니다. `stopped, load boundary`, `stopped, cap`, `stopped, memory reserve`, `stopped, cancelled` 는 일찍 끝난 이유입니다. 실제 플레이에서 도움이 되는지는 재지 않았습니다.
 - `<게임>: stage stream skipped (<exe>: <이유>)`: `cooldown N s`(같은 프로그램이 60초 안에 다시 뜸), `no blocks in the start list`, `no load evidence, ...`(새 프로세스가 로딩이라고 볼 만큼 읽지 않음), `another game started`, `disk yielded` 입니다.
 - `<게임>: exited quickly (Ns)`: `auto.quick_exit_seconds` 보다 짧은 세션입니다. 서비스가 다음 점검에서 종료를 알아채므로 `N` 은 실제 실행보다 조금 깁니다.
-- `<게임>: backing off for this run (quick exit N in a row, ...)`, `<게임>: start stream skipped (quick exit guard: backing off)`, `<게임>: auto trace skipped (quick exit guard: backing off)`: 그 짧은 종료 연속에서 서비스가 한 번 물러나는 실행입니다.
+- `<게임>: backing off for this run (quick exit N in a row, ...)`, `<게임>: start stream skipped (quick exit guard: backing off)`, `<게임>: auto trace skipped (quick exit guard: backing off)`: 그 짧은 종료 연속에서 서비스가 한 번 부가 작업을 건너뛰는 실행입니다.
 - `<게임>: quick exit N in a row (runs ...); backed-off run: ...; new kernel drivers since the last normal run: ...` 와 `<게임>: launched after the service backed off (Ns); ...`: 위의 질문을 보십시오.
 - `DiskActivity: D: disk activity unavailable; optimization paused (<사유>)` 와 `DiskActivity: D: disk activity available again after N s (<사유>)`: 디스크 활동 카운터가 한동안 그 드라이브를 놓쳤다는 뜻입니다. 서비스는 같은 디스크 번호로 이어 읽고, 양보 판단은 최대 10초 동안 직전 값을 씁니다. 같은 드라이브는 10분에 한 쌍까지만 남기고 그 사이는 `short outage(s) merged` 로 합칩니다. 보일 수 있는 사유는 `instance_unmapped`, `counter_unavailable`, `value_invalid`, `sample_stalled` 입니다.
 

@@ -29,7 +29,7 @@ This page is the home of the measurement records: how each figure was measured, 
 | [Concurrent stream details](#concurrent-stream-details-2026-11-01) | 1.65 s at 0 µs of game compute per request | 1.35 times the SSD cold of 1.22 s |
 | [E6 cold limit](#e6-cold-limit-experiment-2026-11-02) | Cold prefetch median 11.93 s after the full move (15.05 s before relocation) | Frostpunk, 42.142% zone |
 | [E7 first-run read-ahead](#e7-first-run-read-ahead) | No proven gain in six rounds; not adopted, off by default | Synthetic data and trace replay |
-| [ORBIT prewarm order bench](#orbit-prewarm-order-bench-2026-11-09) | Value-weighted prep time down 18.8%; worst-episode p95 up 13.1 s (flag 4 failed) | One game, one drive, one session |
+| [ORBIT prewarm order bench](#orbit-prewarm-order-bench-2026-11-09) | Value-weighted prep time down 18.8%; worst-episode p95 up 13.1 s (the no-late-episode check, flag 4, failed) | One game, one drive, one session |
 | [E8 general HDD I/O](#e8-general-hdd-io-2026-11-03) | First cold read after 3 GB of scattered writes 58.8 s (normally 24 s) | SMR drive |
 | [E10](#e10e16-hdd-general-io-2026-11-03) | Relocation work 186 s → 41 s with eight parallel reads (4.5×); SMR recovery after a 2 GB move 25 min to 1.5 h | Test HDD |
 | [Real-world usage records](#real-world-usage-records) | Call of Duty whole-hot-set prewarm 128 to 416 s (7 runs) | Service log, not a benchmark |
@@ -276,14 +276,14 @@ Same as bounded, plus a pause while the game's reads over the last 500 ms run at
 | Pairs with a reduction of 10% or more | 10/10 |
 | Sign test p | 0.001 |
 | Change in total read time (B−A)/A, median | −0.1% (median of A about 326 s, B about 326 s) |
-| Maximum per-episode p95 delay | 13.1 s (flag 4 failed) |
-| Flags 2 / 3 / 4 | pass / pass / fail |
+| Maximum per-episode p95 delay | 13.1 s (the no-late-episode check, flag 4, failed) |
+| Flags 2 / 3 / 4 (ready time, total read time, no late episode) | pass / pass / fail |
 
 The gain comes at a cost: some episodes were later because of the advance. This is one game, one drive, and one session, so generalizing to other games or drives is premature.
 
 This bench was run twice on the same day. The table above is the later run (values confirmed from the summary file of the raw data kept outside the repository).
-The earlier run showed a median reduction in value-weighted prep time of 21.3% (per pair 19.5–23.4%), a change in total read time of −0.8% (A about 377 s, B about 372 s), and a maximum per-episode p95 delay of 18.2 s (flag 4 failed). Those values survive only in the commit record of that time, and the raw data could not be found.
-Both runs used the same game and the same drive, and both reached the same conclusion (flags 2 and 3 pass, flag 4 fails).
+The earlier run showed a median reduction in value-weighted prep time of 21.3% (per pair 19.5–23.4%), a change in total read time of −0.8% (A about 377 s, B about 372 s), and a maximum per-episode p95 delay of 18.2 s (the no-late-episode check, flag 4, failed). Those values survive only in the commit record of that time, and the raw data could not be found.
+Both runs used the same game and the same drive, and both reached the same conclusion (the ready-time and total-read-time checks, flags 2 and 3, pass; the no-late-episode check, flag 4, fails).
 
 Reproduce by measuring with `csharp\scripts\cs_orbit_bench.ps1 -Game <name> -Pairs 10 ...` and judging with `aster orbit-bench summarize`.
 
@@ -318,9 +318,9 @@ This bench is for the method described in [ORBIT: prewarm order adjustment](ORBI
 
 ## Cautions when reading the results
 
-- **Speed by drive position.** There was no difference in speed by position on the drive (`results/zone_curve_20261101`). So the optimization of placing the hot zone at a particular position was dropped from the design.
+- **Speed by drive position.** There was no difference in speed by position on the drive (`results/zone_curve_20261101`). So the optimization of placing the relocation zone at a particular position was dropped from the design.
 - **No gain on the first run.** Relocation takes time to move the files. The gain appears in repeated reads after relocation.
-- **Limit of prefetch before relocation.** Before relocation, the number of HDD seeks and the read throughput (about 39 MiB/s) set the lower bound. After relocation the hot zone is read sequentially as one stretch, so this lower bound dropped substantially. Because the prewarm cost is much larger than the replay, prewarm is meaningful only when it can finish before loading.
+- **Limit of prefetch before relocation.** Before relocation, the number of HDD seeks and the read throughput (about 39 MiB/s) set the lower bound. After relocation the relocation zone is read sequentially as one stretch, so this lower bound dropped substantially. Because the prewarm cost is much larger than the replay, prewarm is meaningful only when it can finish before loading.
 - **Limit of the cold condition.** The non-administrator measurements replaced the cold condition with an unbuffered re-read (`FILE_FLAG_NO_BUFFERING`). The drive and controller internal caches were not cleared. The run-to-run variation of 55.7~71.3 s in the benchmark is presumed to come from concurrent disk use, but the cause was not measured.
 - **Warm state.** In the warm state HDD and SSD differ by a factor of 1.28 (benchmark median). The OS file cache is already filled, so the difference is small.
 - **SMR.** The WD20EZAZ has been reported as drive-managed SMR (secondary source). A measurement right after a move may be in a state before remapping. The stable sequential speed of the same drive was 90~110 MB/s (E1b). By this value the prefetch expectation is about 2.5 s.
@@ -430,7 +430,7 @@ Note: the default prewarm cache budget has been half of physical RAM since 0.9.0
 <details>
 <summary>Details: tables and records</summary>
 
-The start stream (which reads the hot set when a game starts) did run in this log. Run records come in two formats. Lines `<game>: streamed N bytes ... s` number 8 for Call of Duty and 8 for League of Legends. Lines `start stream stopped at load boundary after N bytes, S s` (runs stopped at the load boundary) number 1 for each. There are 0 lines of `start stream cancelled`.
+The start stream (which reads the hot set when a game starts) did run in this log. Run records come in two formats. Lines `<game>: streamed N bytes ... s` number 8 for Call of Duty and 8 for League of Legends. Lines `start stream stopped at load boundary after N bytes, S s` (runs stopped at the load boundary, the point where the load's heavy reading dies down) number 1 for each. There are 0 lines of `start stream cancelled`.
 Per game, that is 9 runs of Call of Duty and 9 of League of Legends. Bytes read range from 1,268 to 7,151 MiB for Call of Duty and from 73 to 8,168 MiB for League of Legends. Durations range from 0.3 to 363 s for Call of Duty and from 0.01 to 126 s for League of Legends. 65 `net10.0-windows: streamed` lines, which have no game name, are not counted.
 
 | `start stream skipped (...)` reason | League of Legends | Call of Duty |
@@ -452,7 +452,7 @@ These are records of what the service did on one PC (2 TB SMR HDD, 32 GB RAM) on
 
 | Topic | Record |
 |---|---|
-| Prewarm time | Call of Duty, full re-prewarm of 10,025 MiB: 280 s (36 MB/s) and 253 s (40 MB/s). Top-up prewarm of 9,419 MiB: 269 s. League of Legends, 6,268 MiB: 54 s (117 MB/s); 6,321 MiB: 38 s. |
+| Prewarm time | Call of Duty, full re-prewarm of 10,025 MiB: 280 s (36 MB/s) and 253 s (40 MB/s). Supplement prewarm of 9,419 MiB: 269 s. League of Legends, 6,268 MiB: 54 s (117 MB/s); 6,321 MiB: 38 s. |
 | Keeping the prewarm | Call of Duty: at the re-prewarm check 51 minutes after a full prewarm, 2 of 8 samples were slow, so it was read again. Other programs were using memory at the same time. When available memory shrinks, Windows empties the file cache, so a prewarm may not last long. |
 | After the service started | The start prewarm read 1,024 MiB. As the disk became idle the rest was read, and Call of Duty's 10,025 MiB was filled within about 10 minutes. League of Legends, held back by the start limit, was read by a waiting retry 12 minutes later. |
 | Layout recovery | A disturbed layout reached reapply through the 5-minute recheck. One game moved 1 GiB and its zone hit rate rose from 35.3% to 53.1%. For a game whose reapply was rejected because another file occupied part of its zone, the service switched to automatic relocation. It moved only the remaining part to a new place, and a contiguous layout was confirmed. |

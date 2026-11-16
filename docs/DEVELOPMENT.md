@@ -91,7 +91,7 @@ flowchart LR
 ```
 
 1. **Discovery.** `AutoRegistry` registers the game in `games[]` of `config.json` with `source: auto`.
-2. **Recording.** When a registered game first runs, `AutoTracer` records its reads through the real-time ETW session of `Tracer` and writes `plans\<game>.trace.json`. Later plays are collected as `.trace.runN.json` and merged.
+2. **Recording.** When a registered game first runs, `AutoTracer` records its reads through the real-time ETW session of `Tracer` and writes `plans\<game>.trace.json`. Later plays are collected as `.trace.runN.json` and merged. Automatic tracing also sums disk-read completions per request (`IoSummaryCollector`), and after the game exits converts them to (file, block) rows from the files' layout (`IoLayoutScan` queries the layout, `IoBlockMapper` maps), written beside each run as `.trace.runN.json.io.json`.
 3. **Plan.** `AutoRelocator` extracts the hot set (`HotSet`) from the trace and builds the plan with `PlanFile` (which lays out the zone through `ZoneAllocator`), writing `plans\<game>.plan.json` and the read-order file `.plan.json.prefetch.json`. It is the same code as the manual `aster plan`.
 4. **Relocation.** When the game is off and the PC is idle, the same `Applier` as for manual relocation moves the pieces with `FSCTL_MOVE_FILE` through `NtfsVolume`. Each move is recorded in `journals\<game>.jsonl`, and if verification fails `Reverter` rolls back along the journal.
 5. **Prewarm.** `Prewarmer` maps the zone's files read-only through `ZoneStreamer`, requests them with `PrefetchVirtualMemory`, and writes the result to `prewarm_status.json`. Files with the sparse attribute are not mapped but read with an ordinary buffered read in list order, because in a test on one PC (an HDD, test files) creating a mapping for a sparse file discarded its cached pages, while buffered reads alone did not ([SOLAR](SOLAR.md)). If ORBIT is on, the prewarm order is changed before the reads.
@@ -104,6 +104,7 @@ Files in `%ProgramData%\AsterCache`. The service runs as SYSTEM, and only admini
 |---|---|---|
 | `config.json` | management window, service | Settings and the game list. Writes lock `config.json.lock`, and the service re-reads it every 5 seconds. |
 | `plans\<game>.trace.json`, `.trace.runN.json`, `.trace.common.json` | service, `aster trace` | The read recording, the per-play recordings, and the ranges repeated in every play. A recording built from prefetch or a shared profile is `.boot.trace.json`. |
+| `plans\<game>.trace.runN.json.io.json`, `plans\<game>.trace.json.io-only.NN.json`, `plans\<game>.trace.json.io.tried` | service | Per-run disk-read summary: a file table, (file, 64 KiB block) rows converted from disk positions after the game exited, quality totals by class, the time origin, the raw-trace fingerprint, standalone summaries (capped at 32), and the extra-trace attempt count. Measurement data, not plan input; safe to delete. |
 | `plans\<game>.plan.json`, `.plan.json.prefetch.json`, `.warmonly.json` | service, `aster plan` | The layout plan, the prewarm input, and the prewarm-only list. |
 | `plans\<game>.orbit.json` | service, `aster orbit` | The ORBIT episode model. |
 | `journals\<game>.jsonl` | `Applier` | The relocation journal. Earlier journals are kept as `.jsonl.<UTC time>`. |

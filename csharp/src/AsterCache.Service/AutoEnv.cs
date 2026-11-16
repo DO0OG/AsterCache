@@ -17,6 +17,12 @@ namespace AsterCache.Service;
 /// 자동 트레이스가 쓰는 ETW 세션 하나. 시험은 가짜로 바꿉니다.
 public interface IAutoTrace : IDisposable
 {
+    /// 세션을 멈춘 뒤의 디스크 읽기 요청 표 (집계를 켜지 않았으면 null).
+    IoRequestSnapshot? IoRequests => null;
+
+    /// 원시 기록을 이 시점의 내용으로 확정합니다 (세션은 디스크 읽기 관찰을 계속).
+    void FreezeRawRecords();
+
     /// 세션을 멈추고 모은 기록을 돌려줍니다.
     IReadOnlyList<TraceRecord> Stop();
 
@@ -165,6 +171,17 @@ public sealed class AutoEnv
     /// 단계 색인을 얻으려는 추가 추적을 이미 시도한 횟수 (원시 트레이스 경로 기준). 시험 기본값은 0.
     public Func<string, int> StageIndexTries { get; init; } = _ => 0;
 
+    /// 디스크 읽기 집계를 얻으려 한 추가 추적 횟수 (원시 트레이스 경로 기준). 시험 기본값은 0.
+    public Func<string, int?> IoSummaryTries { get; init; } = _ => 0;
+
+    /// 곁 파일 (집계) 이 읽을 수 있고 짝 (원시 파일 지문) 이 맞는가. 세 번째는 단독 집계 여부. 시험 기본값은 거짓.
+    public Func<string, string, bool, bool> IoSummaryValid { get; init; } = (_, _, _) => false;
+
+    public Action<string, int> WriteIoSummaryTries { get; init; } = IoSummaryStore.WriteTried;
+
+    /// (요청 표, 집계 루트, 취소) → 끝난 뒤 게임 폴더의 파일 배치로 바꾼 집계. 취소되거나 못 만들면 null. 시험 기본값은 null.
+    public Func<IoRequestSnapshot, IReadOnlyCollection<string>, CancellationToken, IoSummary?> BuildIoSummary { get; init; } = (_, _, _) => null;
+
     /// 원시 트레이스의 병합 결과 지문 (블록 집합·순서 해시), 읽을 수 없으면 null. 시험 기본값은 null.
     public Func<string, string?> TraceFingerprint { get; init; } = _ => null;
 
@@ -183,7 +200,7 @@ public sealed class AutoEnv
     public required Func<IReadOnlyCollection<string>, bool> AnyRunning { get; init; }
 
     /// (게임 exe 이름들, 선행 읽기 알림 또는 null) → ETW 세션. 알림이 있으면 읽기·열기를 실시간으로 알리고 세션 버퍼를 짧은 간격으로 내려 보냅니다.
-    public required Func<IReadOnlyCollection<string>, LiveListener?, IAutoTrace> StartTrace { get; init; }
+    public required Func<IReadOnlyCollection<string>, LiveListener?, IReadOnlyCollection<string>?, IAutoTrace> StartTrace { get; init; }
 
     /// 부트스트랩 S2: 프리페치 기록 (.pf) 으로 이 게임의 boot 트레이스를 만듭니다. 만든 범위 수, 못 만들면 0 (이미 있거나 기록 없음). 시험 기본값은 0.
     public Func<GameSettings, int> PrefetchBoot { get; init; } = _ => 0;
@@ -343,6 +360,15 @@ public sealed class AutoEnv
             FileExists = File.Exists,
             RunReadBytes = AutoTracer.RunReadBytes,
             StageIndexTries = TraceStageIndex.ReadTried,
+            IoSummaryTries = IoSummaryStore.ReadTriedOrNull,
+            IoSummaryValid = (sidecar, raw, standalone) => File.Exists(sidecar) && File.Exists(raw)
+                && (standalone ? IoSummaryStore.ReadStandaloneForRaw(sidecar, raw) : IoSummaryStore.ReadForRun(raw)) is not null,
+            WriteIoSummaryTries = IoSummaryStore.WriteTried,
+            BuildIoSummary = (snapshot, roots, ct) =>
+            {
+                ThreadIoPriority.TrySet(IoPriority.Low); // 배치 조회가 게임 폴더 디스크를 다투지 않게 (호출 스레드는 전용 낮은 우선순위 스레드)
+                return IoLayoutScan.Build(snapshot, roots, ct);
+            },
             TraceFingerprint = AutoTracer.TraceFingerprint,
             ProfileEvents = (g, budget) => PlanGuards.Inside(g.OriginRoot, g.AllowedRoots, RealPaths.Real) ? ProfileSupplement.EventsFor(g.OriginRoot, g.ExeNames, budget, RealPaths.Resolve) : [],
             DirectoryExists = Directory.Exists,
@@ -350,8 +376,9 @@ public sealed class AutoEnv
             ChangeTime = AsterCache.Windows.FileTimes.ChangeTimeOf,
             GameProcesses = exes => ProcessSnapshot.ReadCounters(exes),
             AnyRunning = exes => ProcessSnapshot.IsRunning(exes),
-            StartTrace = (exes, listener) => new LiveAutoTrace(LiveSession.Start(
-                exes, TraceSessionName, restartExisting: true, listener: listener, flushInterval: listener is null ? null : EtwProcessWatcher.FlushInterval, log: log), log),
+            StartTrace = (exes, listener, roots) => new LiveAutoTrace(LiveSession.Start(
+                exes, TraceSessionName, restartExisting: true, listener: listener,
+                flushInterval: listener is null ? null : EtwProcessWatcher.FlushInterval, log: log, ioSummaryRoots: roots), log),
             Canonicalize = events => TraceBuilder.CanonicalizeCase(events),
             PrefetchBoot = g => AutoTracer.BootFromPrefetch(g),
             TraceSource = AutoTracer.TraceSourceOf,
@@ -383,7 +410,7 @@ public sealed class AutoEnv
             },
             TracePaths = AutoTracer.TracePaths,
             TraceRows = AutoTracer.TraceRows,
-            DropChanged = AutoTracer.DropChanged,
+            DropChanged = (g, paths) => AutoTracer.DropChanged(g, paths, log is null ? null : message => log.Warn(message)),
             Touch = path =>
             {
                 DataLock.RequireHeld(path);
@@ -449,6 +476,10 @@ public sealed class AutoEnv
 
     private sealed class LiveAutoTrace(LiveSession session, ILog? log) : IAutoTrace
     {
+        public IoRequestSnapshot? IoRequests => session.IoRequests;
+
+        public void FreezeRawRecords() => session.FreezeRawRecords();
+
         public IReadOnlyList<TraceRecord> Stop()
         {
             List<TraceRecord> records = session.Stop();

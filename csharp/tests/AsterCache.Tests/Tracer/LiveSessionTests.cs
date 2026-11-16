@@ -43,6 +43,62 @@ public sealed class LiveSessionTests
     }
 
     [Fact]
+    public void StopCapturesEventsLostBeforeStoppingTheSession()
+    {
+        bool stopped = false;
+        int reads = 0;
+        long ReadEventsLost()
+        {
+            Assert.False(stopped);
+            reads++;
+            return 9;
+        }
+
+        void Stop()
+        {
+            Assert.Equal(1, reads);
+            stopped = true;
+        }
+
+        long eventsLost = LiveSession.StopSession(ReadEventsLost, Stop);
+
+        Assert.Equal(9, eventsLost);
+        Assert.Equal(1, reads);
+        Assert.True(stopped);
+    }
+
+    [Fact]
+    public void StopRunsOnceEvenWhenStopDisposeAndTheFailurePathAllRequestIt()
+    {
+        int requested = 0;
+        int stops = 0;
+
+        long? first = LiveSession.StopOnce(ref requested, () => 5, () => stops++);
+        long? second = LiveSession.StopOnce(ref requested, () => 6, () => stops++); // Dispose 가 Stop 뒤에 다시 부름
+
+        Assert.Equal(5, first);
+        Assert.Null(second);
+        Assert.Equal(1, stops);
+    }
+
+    [Fact]
+    public void AFailedStopIsNotRetriedBecauseAnAlreadyGoneSessionMustNotBeQueriedAgain()
+    {
+        int requested = 0;
+        int stops = 0;
+
+        Assert.Throws<InvalidOperationException>(() => LiveSession.StopOnce(ref requested, () => 1, () =>
+        {
+            stops++;
+            throw new InvalidOperationException("session gone");
+        }));
+        long? again = LiveSession.StopOnce(ref requested, () => throw new InvalidOperationException("must not be read"), () => stops++);
+
+        Assert.Null(again);
+        Assert.Equal(1, stops);
+    }
+
+    [Fact]
     public void WaitPumpReturnsWithinLimitWhenPumpNeverStops()
     {
         var never = new TaskCompletionSource();

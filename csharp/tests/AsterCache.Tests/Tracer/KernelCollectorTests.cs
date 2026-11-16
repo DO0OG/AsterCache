@@ -1,3 +1,4 @@
+using AsterCache.Core.Trace;
 using AsterCache.Tracer;
 using Xunit;
 
@@ -88,5 +89,91 @@ public sealed class KernelCollectorTests
 
         Assert.Equal(0, c.TakeWindowStats().Reads);
         Assert.Equal(1, c.TakeWindowStats().Targets);
+    }
+
+    private static KernelCollector WithSummary(out IoSummaryCollector summary, IReadOnlySet<uint>? gameDisks = null)
+    {
+        summary = new IoSummaryCollector(new DateTimeOffset(T0), gameDisks);
+        var collector = new KernelCollector(["game.exe", "late.exe"], new DevicePaths([]), ioSummary: summary);
+        collector.StartProcess(T0, 10, 1, "game.exe");
+        return collector;
+    }
+
+    [Fact]
+    public void DiskReadsKeepCountingAfterTheRawWindowClosesWithoutGrowingTheRawRecords()
+    {
+        KernelCollector c = WithSummary(out _);
+        c.NameKey(7, File1);
+        c.AddRead(T0.AddSeconds(1), 10, 7, 70, 0, 4096);
+        c.Pause(new DateTimeOffset(T0.AddSeconds(2)));
+        c.AddDiskRead(3, 8192, 4096, 2.5, T0.AddSeconds(3), paging: true);
+
+        IoRequestSnapshot requests = Assert.IsType<IoRequestSnapshot>(c.FinishIoRequests(new DateTimeOffset(T0.AddSeconds(4)), eventsLost: 3));
+
+        Assert.Equal(new IoRequest(3, 8192, 4096, 1, 2500, 2500, 3_000_000, 1), Assert.Single(requests.Requests));
+        Assert.Equal(3, requests.EventsLost);
+        Assert.Equal([new IoSummaryWindow(0, 2_000_000)], requests.RawWindows);
+        Assert.Single(c.Finish(), record => record.Kind == RecordKind.Read);
+    }
+
+    [Fact]
+    public void AfterTheRawFreezeEveryEventExceptDiskCompletionsIsDroppedAtOnce()
+    {
+        KernelCollector c = WithSummary(out _);
+        c.NameKey(7, File1);
+        c.AddRead(T0.AddSeconds(1), 10, 7, 70, 0, 4096);
+        c.Pause(new DateTimeOffset(T0.AddSeconds(2)));
+        c.FreezeRawRecords();
+        (int names, int records) = c.Footprint;
+
+        c.NameKey(8, @"D:\Other\noise.bin");
+        c.OpenFile(10, 80, @"D:\Games\late.bin");
+        c.StartProcess(T0.AddSeconds(3), 11, 1, "late.exe");
+        c.StopProcess(T0.AddSeconds(3), 10);
+        c.CloseObject(70);
+        c.AddRead(T0.AddSeconds(3), 10, 7, 70, 4096, 4096);
+        c.AddWrite(T0.AddSeconds(3), 10, 8, 80);
+        c.AddDiskRead(3, 0, 4096, 1.0, T0.AddSeconds(3), paging: false);
+
+        List<TraceRecord> raw = c.Finish();
+        IoRequestSnapshot requests = Assert.IsType<IoRequestSnapshot>(c.FinishIoRequests(new DateTimeOffset(T0.AddSeconds(4)), eventsLost: 0));
+
+        Assert.Equal((names, records), c.Footprint); // 이름표·기록이 더 자라지 않음
+        Assert.DoesNotContain(raw, record => record.Pid == 11 || record.Kind == RecordKind.ProcessStop || record.Kind == RecordKind.Write);
+        Assert.Single(raw, record => record.Kind == RecordKind.Read);
+        Assert.Equal(1, Assert.Single(requests.Requests).Count);
+        Assert.Equal(0, c.RawTraceZeroUs);
+    }
+
+    [Fact]
+    public void ARawRecordBeforeTheObservationOriginKeepsASignedZeroOffsetAndIsNeverClippedToZero()
+    {
+        // 관찰 시작 (공급자를 켠 뒤) 보다 2 ms 앞선 첫 기록: 원시 0점은 -2,000 us, 그 뒤 1 ms 에 온 디스크 읽기는 +1,000 us
+        var origin = new DateTimeOffset(T0);
+        var summary = new IoSummaryCollector(origin);
+        var c = new KernelCollector(["game.exe"], new DevicePaths([]), ioSummary: summary);
+        c.StartProcess(T0.AddMilliseconds(-2), 10, 1, "game.exe");
+        c.AddDiskRead(3, 0, 4096, 1.0, T0.AddMilliseconds(1), paging: false);
+        c.Pause(origin.AddSeconds(1));
+        c.FreezeRawRecords();
+
+        IoRequestSnapshot requests = Assert.IsType<IoRequestSnapshot>(c.FinishIoRequests(origin.AddSeconds(2), eventsLost: 0));
+
+        Assert.Equal(-2000, requests.RawTraceZeroUs);
+        Assert.Equal(1000, Assert.Single(requests.Requests).FirstSessionUs);
+    }
+
+    [Fact]
+    public void DiskReadsOfDisksOtherThanTheGameDiskGoToTheOtherDiskTotalsOnly()
+    {
+        KernelCollector c = WithSummary(out _, new HashSet<uint> { 4 });
+        c.AddDiskRead(4, 0, 4096, 1.0, T0.AddSeconds(1), paging: false);
+        c.AddDiskRead(1, 0, 8192, 2.0, T0.AddSeconds(1), paging: false);
+
+        IoRequestSnapshot requests = Assert.IsType<IoRequestSnapshot>(c.FinishIoRequests(new DateTimeOffset(T0.AddSeconds(2)), eventsLost: 0));
+
+        Assert.Equal(4u, Assert.Single(requests.Requests).Disk);
+        Assert.Equal(new IoClassTotals(1, 8192, 2000), requests.OtherDisk);
+        Assert.Equal(new IoClassTotals(2, 12288, 3000), requests.Total);
     }
 }

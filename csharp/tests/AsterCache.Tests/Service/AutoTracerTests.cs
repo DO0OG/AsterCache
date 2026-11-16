@@ -22,7 +22,7 @@ public sealed class AutoTracerTests : IDisposable
         Directory.CreateDirectory(Path.Combine(_rig.Dir, "plans"));
         string plan = Path.Combine(_rig.Dir, "plans", "foo.plan.json");
         _game = new GameSettings("foo", ["foo.exe"], plan + ".prefetch.json", plan, @"D:\Games\Foo", [@"D:\Games\Foo"], "GAMES", 1440) { Source = "auto" };
-        _rig.Settings = new AsterSettings(50, [_game]) { Auto = AutoSettings.Default with { TraceRuns = 1, TraceCapSeconds = 30, TraceCapMib = 64, TraceLateWindows = 0, Learn = LearnSettings.Default with { Enabled = false } } };
+        _rig.Settings = new AsterSettings(50, [_game]) { Auto = AutoSettings.Default with { TraceRuns = 1, TraceCapSeconds = 30, TraceCapMib = 64, TraceLateWindows = 0, IoSummaryEnabled = false, Learn = LearnSettings.Default with { Enabled = false } } };
         _rig.World.Session = _trace;
         _tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings) { MinRunBytes = 0 };
     }
@@ -41,6 +41,14 @@ public sealed class AutoTracerTests : IDisposable
 
         _trace.Records.Add(TraceRecord.Read(DateTime.UtcNow, 100, @"D:\Other\b.bin", 0, 4096)); // 원점 루트 밖
         _trace.Records.Add(TraceRecord.Read(DateTime.UtcNow, 999, @"D:\Games\Foo\c.bin", 0, 4096)); // 게임 프로세스가 아님
+    }
+
+    // 끝난 뒤 변환의 입력: 디스크 읽기 한 건짜리 요청 표 (가짜 세션이 Stop 뒤에 내줌)
+    private IoRequestSnapshot IoRequests(params IoSummaryWindow[] windows)
+    {
+        var collector = new IoSummaryCollector(_rig.World.Now);
+        collector.AddDiskRead(1, 0, 4096, 2500, 1_000_000, paging: false);
+        return collector.Snapshot(_rig.World.Now.AddMinutes(1), windows, eventsLost: 1, null);
     }
 
     private void EndAfterExitGrace(AutoTracer? tracer = null)
@@ -485,6 +493,99 @@ public sealed class AutoTracerTests : IDisposable
         _rig.World.Now += GameExitTracker.Grace;
         _tracer.Step();
         Assert.False(_tracer.Active);
+    }
+
+    [Fact]
+    public void IoSummaryKeepsObservationAliveAfterTheRawTraceWindowEnds()
+    {
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { IoSummaryEnabled = true } };
+        GameSettings game = _game with { ExeNames = ["foo.exe", "late.exe"] };
+        _rig.Settings = _rig.Settings with { Games = [game] };
+        Reads((0, 65536));
+        _trace.IoRequests = IoRequests(new IoSummaryWindow(0, 2000000));
+
+        _tracer.Start(game);
+        _rig.World.Procs = [(100, 5L << 20)];
+        _rig.World.Running = true;
+        _tracer.Step();
+        _rig.World.Now += TimeSpan.FromSeconds(30);
+        _tracer.Step();
+
+        Assert.True(_tracer.Active);
+        Assert.False(_trace.Stopped);
+        Assert.False(_trace.Collecting);
+        Assert.True(_trace.RawRecordsFrozen);
+        Assert.False(File.Exists(Raw));
+        Assert.Equal(0, _rig.World.BuildIoSummaryCalls); // 게임이 도는 동안에는 파일 배치를 읽지 않음
+
+        _trace.Records.Add(TraceRecord.Start(DateTime.UtcNow, 1001, 1, "late.exe"));
+        _trace.Records.Add(TraceRecord.Read(DateTime.UtcNow, 1001, @"D:\Games\Foo\late.bin", 0, 4096));
+
+        EndAfterExitGrace();
+
+        Assert.False(_tracer.Active);
+        Assert.True(_trace.Stopped);
+        List<object?> raw = (List<object?>)JsonRead.ReadFile(TraceWriter.RunPath(Raw, 1))!;
+        Assert.DoesNotContain(raw, value => value is JObject row && (string?)row["path"] == @"D:\Games\Foo\late.bin");
+        Assert.DoesNotContain(TraceStageIndex.ReadMarks(TraceWriter.RunPath(Raw, 1)) ?? [], mark => mark.Exe == "late.exe");
+        IoSummary saved = Assert.IsType<IoSummary>(IoSummaryStore.ReadForRun(TraceWriter.RunPath(Raw, 1)));
+        Assert.Equal(1, saved.Quality.Total.Reads);
+        Assert.Equal(1, _rig.World.BuildIoSummaryCalls);
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("I/O summary: observed", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void IoSummaryIsSavedWhenTheRawRunIsRejectedAsTooSmall()
+    {
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { IoSummaryEnabled = true } };
+        Extra(runs: 1, max: 1);
+        SeedRuns(1);
+        var tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings) { MinRunBytes = 1 << 20 };
+        _trace.IoRequests = IoRequests();
+        Reads((0, 65536));
+
+        tracer.Start(_game);
+        EndAfterExitGrace(tracer);
+
+        string run2 = TraceWriter.RunPath(Raw, 2);
+        Assert.False(File.Exists(run2));
+        Assert.False(File.Exists(IoSummaryStore.RunPath(run2)));
+        IoSummary saved = Assert.IsType<IoSummary>(IoSummaryStore.ReadStandaloneForRaw(IoSummaryStore.StandalonePath(Raw, 1), Raw));
+        Assert.Equal(1, saved.Quality.Total.Reads);
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("too small", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void IoSummaryDoesNotAttachToARawTraceChangedDuringTheSession()
+    {
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { IoSummaryEnabled = true } };
+        _trace.IoRequests = IoRequests();
+
+        _tracer.Start(_game);
+        _rig.World.FileTimes[Raw] = _rig.World.Now.AddSeconds(1);
+        EndAfterExitGrace();
+
+        Assert.False(File.Exists(IoSummaryStore.RunPath(TraceWriter.RunPath(Raw, 1))));
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("I/O summary not saved, the trace changed", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void DisablingIoSummaryKeepsThePreviousTimeCapAndDoesNotRequestDiskKeywords()
+    {
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { IoSummaryEnabled = false } };
+        Reads((0, 65536));
+        _tracer.Start(_game);
+        _rig.World.Running = true;
+        _rig.World.Procs = [(100, 1L << 20)];
+        _tracer.Step();
+        Assert.Null(Assert.Single(_rig.World.IoSummaryRoots));
+
+        _rig.World.Now += TimeSpan.FromSeconds(30);
+        _tracer.Step();
+
+        Assert.False(_tracer.Active);
+        Assert.True(_trace.Stopped);
+        Assert.DoesNotContain(_rig.World.Files, path => path.EndsWith(".io.json", StringComparison.Ordinal));
     }
 
     [Theory]
@@ -1233,6 +1334,92 @@ public sealed class AutoTracerTests : IDisposable
     }
 
     [Fact]
+    public void OneAdditionalTraceCanRequestBothTheStageIndexAndIoSummary()
+    {
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { IoSummaryEnabled = true } };
+        Extra(runs: 1, max: 1);
+        SeedRuns(1);
+        File.Delete(TraceStageIndex.IndexPath(Raw));
+        Assert.True(_tracer.WantsRun(_game));
+
+        _tracer.Start(_game);
+
+        Assert.True(_tracer.Active);
+        Assert.Equal(1, _rig.World.TraceStarts);
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("for stage index, attempt 1/2 and I/O summary, attempt 1/2", StringComparison.Ordinal));
+        _tracer.Shutdown();
+    }
+
+    [Fact]
+    public void IoSummaryAdditionalTracingStopsAfterTwoUnsuccessfulAttempts()
+    {
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { IoSummaryEnabled = true } };
+        Extra(runs: 1, max: 1);
+        SeedRuns(1);
+        for (int attempt = 1; attempt <= AutoTracer.MaxIoSummaryTries; attempt++)
+        {
+            Assert.True(_tracer.WantsRun(_game));
+            _rig.World.Session = new FakeTrace();
+            _rig.World.Running = true;
+            _tracer.Start(_game);
+            Assert.Contains(_rig.Log.Lines, line => line.Contains($"I/O summary, attempt {attempt}/2", StringComparison.Ordinal));
+            EndAfterExitGrace();
+        }
+
+        Assert.False(_tracer.WantsRun(_game));
+        Assert.Equal(AutoTracer.MaxIoSummaryTries, IoSummaryStore.ReadTried(Raw));
+        Assert.Equal(AutoTracer.MaxIoSummaryTries, _rig.World.TraceStarts);
+    }
+
+    [Fact]
+    public void FailedIoSummaryAttemptPersistenceBlocksFurtherAttemptsForThisServiceLifetime()
+    {
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { IoSummaryEnabled = true } };
+        Extra(runs: 1, max: 1);
+        SeedRuns(1);
+        _rig.World.WriteIoSummaryTries = (_, _) => throw new IOException("read only");
+        var tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings) { MinRunBytes = 0 };
+        Assert.True(tracer.WantsRun(_game));
+        _rig.World.Session = new FakeTrace();
+        _rig.World.Running = true;
+
+        tracer.Start(_game);
+        EndAfterExitGrace(tracer);
+
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("I/O summary attempt not recorded", StringComparison.Ordinal));
+        Assert.False(tracer.WantsRun(_game));
+        tracer.Start(_game);
+
+        Assert.Equal(1, _rig.World.TraceStarts);
+        Assert.False(tracer.Active);
+    }
+
+    [Fact]
+    public void MissingIoSummaryRequestsOneAdditionalTraceAfterTheConfiguredRunLimit()
+    {
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { IoSummaryEnabled = true } };
+        Extra(runs: 1, max: 1);
+        SeedRuns(1);
+        _rig.World.Files.Remove(TraceWriter.RunPath(Raw, 1) + ".io.json");
+
+        Assert.True(_tracer.WantsRun(_game));
+
+        _rig.World.Files.Add(TraceWriter.RunPath(Raw, 1) + ".io.json");
+        Assert.False(_tracer.WantsRun(_game));
+    }
+
+    [Fact]
+    public void MissingIoSummaryCanRequestAnAdditionalTraceWhenRunFilesAreAtTheirLimit()
+    {
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { IoSummaryEnabled = true } };
+        Extra(runs: 1, max: 1);
+        SeedRuns(AutoTracer.MaxRunFiles);
+
+        Assert.Equal(1, AutoTracer.IoSummaryAttempt(_game, _rig.Settings.Auto, _rig.World.Env()));
+        Assert.True(_tracer.WantsRun(_game));
+    }
+
+    [Fact]
     public void StageIndexTracesStopAfterTwoAttemptsEvenWhenTheRunIsNotSaved()
     {
         Extra(runs: 1, max: 1);
@@ -1436,6 +1623,14 @@ public sealed class AutoTracerTests : IDisposable
     {
         Extra(runs: 3, max: 8);
         SeedRuns(AutoTracer.MaxRunFiles);
+        DateTimeOffset ioStarted = new(2026, 11, 1, 0, 0, 0, TimeSpan.Zero);
+        for (int run = 1; run <= AutoTracer.MaxRunFiles; run++)
+        {
+            DateTimeOffset started = ioStarted.AddMinutes(run);
+            IoSummary io = IoSummaries.With(started, @"D:\Games\Foo\a.bin");
+            IoSummaryStore.Write(IoSummaryStore.RunPath(TraceWriter.RunPath(Raw, run)), io);
+        }
+
         HashSet<(string Path, long Offset, long Length)> before = TraceBlocks(Raw);
         _rig.World.FileTimes[TraceWriter.RunPath(Raw, AutoTracer.MaxRunFiles)] = _rig.World.Now.AddDays(-7);
         Reads(Enumerable.Range(0, 20).Select(i => (8000L * MiB + i * 2L * MiB, 65536L)).ToArray());
@@ -1444,6 +1639,8 @@ public sealed class AutoTracerTests : IDisposable
 
         Assert.True(_tracer.Active);
         Assert.Equal(AutoTracer.MaxRunFiles - 1, AutoTracer.LastRunNumber(_game, File.Exists)); // 병합본을 기준으로 run 파일 번호를 당김
+        Assert.Equal(ioStarted.AddMinutes(2), IoSummaryStore.Read(IoSummaryStore.RunPath(TraceWriter.RunPath(Raw, 1)))!.ObservedAtUtc);
+        Assert.False(File.Exists(IoSummaryStore.RunPath(TraceWriter.RunPath(Raw, AutoTracer.MaxRunFiles)))); // 가장 오래된 회차의 집계도 함께 버림
         _rig.World.Running = false;
         _tracer.Step();
         _rig.World.Now += GameExitTracker.Grace;
@@ -1607,5 +1804,386 @@ public sealed class AutoTracerTests : IDisposable
         _tracer.Step();
         Assert.False(_tracer.Active);
         Assert.Contains(_rig.Log.Lines, l => l.Contains("(read cap)", StringComparison.Ordinal));
+    }
+
+    // ---- 끝난 뒤 변환·서비스 종료·집계 파일 정리 (집계 스위치를 켠 상태) ----
+
+    private void EnableIoSummary() => _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { IoSummaryEnabled = true } };
+
+    private void RunUntilRawIsFrozen()
+    {
+        Reads((0, 65536));
+        _trace.IoRequests = IoRequests();
+        _tracer.Start(_game);
+        _rig.World.Procs = [(100, 5L << 20)];
+        _rig.World.Running = true;
+        _tracer.Step();
+        _rig.World.Now += TimeSpan.FromSeconds(30);
+        _tracer.Step();
+    }
+
+    [Fact]
+    public void ARawTraceFrozenAtTheCapIsSavedWhenTheServiceShutsDownAndTheSummaryIsSkipped()
+    {
+        EnableIoSummary();
+        RunUntilRawIsFrozen();
+        Assert.True(_trace.RawRecordsFrozen);
+        Assert.False(File.Exists(Raw));
+
+        _tracer.Shutdown();
+
+        Assert.True(File.Exists(Raw)); // 이 변경 전에는 상한에서 세션을 멈추고 보류해 둔 기록이라 종료 때 저장됨
+        Assert.True(_trace.Stopped);
+        Assert.True(_trace.Disposed);
+        Assert.Equal(0, _rig.World.BuildIoSummaryCalls);
+        Assert.False(File.Exists(IoSummaryStore.RunPath(TraceWriter.RunPath(Raw, 1))));
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("saving the raw trace", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AServiceShutdownBeforeTheRawCaptureEndsStillDiscardsTheRecordsAsBefore()
+    {
+        EnableIoSummary();
+        Reads((0, 65536));
+        _tracer.Start(_game);
+        _rig.World.Procs = [(100, 5L << 20)];
+        _rig.World.Running = true;
+        _tracer.Step();
+
+        _tracer.Shutdown();
+
+        Assert.False(File.Exists(Raw));
+        Assert.True(_trace.Disposed);
+        Assert.False(_trace.Stopped);
+        Assert.Equal(0, _rig.World.BuildIoSummaryCalls);
+    }
+
+    [Fact]
+    public void ShutdownWhileTheRawTraceIsFrozenWithTheSwitchOffKeepsTheOldHoldAndSavePath()
+    {
+        Reads((0, 65536));
+        _tracer.Start(_game);
+        _rig.World.Procs = [(100, 5L << 20)];
+        _rig.World.Running = true;
+        _tracer.Step();
+        _rig.World.Now += TimeSpan.FromSeconds(30);
+        _tracer.Step(); // 스위치가 꺼져 있으면 상한에서 세션을 멈추고 기록을 보류함 (이전 동작)
+        Assert.True(_trace.Stopped);
+        Assert.False(File.Exists(Raw));
+
+        _tracer.Shutdown();
+
+        Assert.True(File.Exists(Raw));
+        Assert.Equal(0, _rig.World.BuildIoSummaryCalls);
+    }
+
+    [Fact]
+    public void ASummaryBuiltWhileThePlanChangedIsDroppedButTheRawTraceIsStillSaved()
+    {
+        EnableIoSummary();
+        Reads((0, 65536));
+        _trace.IoRequests = IoRequests();
+        _rig.World.BuildIoSummary = (snapshot, _, _) =>
+        {
+            _rig.World.FileTimes[_game.Plan] = _rig.World.Now.AddMinutes(5); // 변환하는 사이 재배치가 계획을 바꿈
+            return new IoBlockMapper(snapshot).Build(0, 0, 0, 0, 0, false);
+        };
+
+        _tracer.Start(_game);
+        EndAfterExitGrace();
+
+        Assert.True(File.Exists(Raw));
+        Assert.False(File.Exists(IoSummaryStore.RunPath(TraceWriter.RunPath(Raw, 1))));
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("I/O summary dropped, the plan or journal changed", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AFailingFileLayoutScanOnlyWarnsAndTheRawTraceIsStillSaved()
+    {
+        EnableIoSummary();
+        Reads((0, 65536));
+        _trace.IoRequests = IoRequests();
+        _rig.World.BuildIoSummary = (_, _, _) => throw new IOException("scan failed");
+
+        _tracer.Start(_game);
+        EndAfterExitGrace();
+
+        Assert.True(File.Exists(Raw));
+        Assert.Equal(1, _rig.World.BuildIoSummaryCalls);
+        Assert.False(File.Exists(IoSummaryStore.RunPath(TraceWriter.RunPath(Raw, 1))));
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("I/O summary not built (IOException)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TheScanReceivesTheGameRootsAndTheRequestTableOnceAfterTheGameExits()
+    {
+        EnableIoSummary();
+        Reads((0, 65536));
+        _trace.IoRequests = IoRequests();
+        IReadOnlyCollection<string>? seenRoots = null;
+        _rig.World.BuildIoSummary = (snapshot, roots, _) =>
+        {
+            seenRoots = roots;
+            return new IoBlockMapper(snapshot).Build(1, 0, 0, 0, 3, false);
+        };
+
+        _tracer.Start(_game);
+        EndAfterExitGrace();
+
+        Assert.Equal(_game.AllowedRoots, seenRoots);
+        Assert.Equal(1, _rig.World.BuildIoSummaryCalls);
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("1 files scanned in 3 ms", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ALockedIoSummaryFileOnlyWarnsAndTheRawRunIsStillMergedWithTheSwitchOff()
+    {
+        SetRuns(3);
+        FirstRunOfTwoBlocks();
+        string run2Io = IoSummaryStore.RunPath(TraceWriter.RunPath(Raw, 2));
+        File.WriteAllText(run2Io, "{}");
+        using var hold = new FileStream(run2Io, FileMode.Open, FileAccess.Read, FileShare.None);
+        Reads((131072, 65536));
+
+        _tracer.Start(_game);
+        EndAfterExitGrace();
+
+        Assert.True(File.Exists(TraceWriter.RunPath(Raw, 2)));
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("(run 2, merged)", StringComparison.Ordinal));
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("I/O summary file not removed", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void LockedIoSummaryFilesDoNotBlockTheRunFileRotation()
+    {
+        Extra(runs: 3, max: 8);
+        SeedRuns(AutoTracer.MaxRunFiles);
+        string oldestIo = IoSummaryStore.RunPath(TraceWriter.RunPath(Raw, 1));
+        string secondIo = IoSummaryStore.RunPath(TraceWriter.RunPath(Raw, 2));
+        IoSummaryStore.Write(oldestIo, IoSummaries.With(_rig.World.Now, @"D:\Games\Foo\a.bin"));
+        IoSummaryStore.Write(secondIo, IoSummaries.With(_rig.World.Now, @"D:\Games\Foo\a.bin"));
+        IoSummaryStore.WriteTried(Raw, 2);
+        using var holdOldest = new FileStream(oldestIo, FileMode.Open, FileAccess.Read, FileShare.None);
+        using var holdTried = new FileStream(IoSummaryStore.TriedPath(Raw), FileMode.Open, FileAccess.Read, FileShare.None);
+        _rig.World.FileTimes[TraceWriter.RunPath(Raw, AutoTracer.MaxRunFiles)] = _rig.World.Now.AddDays(-7);
+        Reads(Enumerable.Range(0, 20).Select(i => (8000L * MiB + i * 2L * MiB, 65536L)).ToArray());
+
+        _tracer.Start(_game);
+
+        Assert.True(_tracer.Active);
+        Assert.Equal(AutoTracer.MaxRunFiles - 1, AutoTracer.LastRunNumber(_game, File.Exists)); // 집계 파일을 못 지워도 회전은 끝남
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("I/O summary file not removed", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void DeletingTheAttemptFileResetsTheInMemoryCountButAFailedPersistenceStillBlocks()
+    {
+        EnableIoSummary();
+        Extra(runs: 1, max: 1);
+        SeedRuns(1);
+        for (int attempt = 1; attempt <= AutoTracer.MaxIoSummaryTries; attempt++)
+        {
+            Assert.True(_tracer.WantsRun(_game));
+            _rig.World.Session = new FakeTrace();
+            _rig.World.Running = true;
+            _tracer.Start(_game);
+            EndAfterExitGrace();
+        }
+
+        Assert.False(_tracer.WantsRun(_game));
+
+        File.Delete(IoSummaryStore.TriedPath(Raw)); // 업데이트·회전이 시도 횟수 파일을 지움: 새 세대
+
+        Assert.True(_tracer.WantsRun(_game));
+    }
+
+    // ---- 끝난 뒤 변환의 양보·예산, 동결 실패, 종료와 Finish 의 겹침 ----
+
+    private static void BlockUntilCancelled(CancellationToken ct, ManualResetEventSlim? entered = null)
+    {
+        entered?.Set();
+        ct.WaitHandle.WaitOne(TimeSpan.FromSeconds(30));
+        ct.ThrowIfCancellationRequested();
+    }
+
+    [Fact]
+    public async Task AGameStartCancelsTheFileLayoutScanAndTheRawTraceIsStillSaved()
+    {
+        EnableIoSummary();
+        Reads((0, 65536));
+        _trace.IoRequests = IoRequests();
+        using var entered = new ManualResetEventSlim();
+        _rig.World.BuildIoSummary = (_, _, ct) =>
+        {
+            BlockUntilCancelled(ct, entered);
+            return null;
+        };
+        _tracer.Start(_game);
+
+        Task end = Task.Run(() => EndAfterExitGrace());
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(30)));
+        _tracer.CancelShadow("other"); // 감시기가 등록 게임 시작마다 부름: 어느 게임이든 변환을 멈춤
+        await end.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(File.Exists(Raw));
+        Assert.False(File.Exists(IoSummaryStore.RunPath(TraceWriter.RunPath(Raw, 1))));
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("I/O summary not built (a game started)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TheTimeBudgetStopsTheFileLayoutScanAndTheRawTraceIsStillSaved()
+    {
+        EnableIoSummary();
+        Reads((0, 65536));
+        _trace.IoRequests = IoRequests();
+        _rig.World.BuildIoSummary = (_, _, ct) =>
+        {
+            BlockUntilCancelled(ct);
+            return null;
+        };
+        var tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings) { MinRunBytes = 0, IoScanBudget = TimeSpan.FromMilliseconds(50) };
+
+        tracer.Start(_game);
+        EndAfterExitGrace(tracer);
+
+        Assert.True(File.Exists(Raw));
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("I/O summary not built (time budget)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task AServiceShutdownDuringTheScanIsLoggedAsShutdown()
+    {
+        EnableIoSummary();
+        Reads((0, 65536));
+        _trace.IoRequests = IoRequests();
+        using var entered = new ManualResetEventSlim();
+        _rig.World.BuildIoSummary = (_, _, ct) =>
+        {
+            BlockUntilCancelled(ct, entered);
+            return null;
+        };
+        _tracer.Start(_game);
+        Task end = Task.Run(() => EndAfterExitGrace());
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(30)));
+
+        _tracer.Shutdown();
+        await end.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("I/O summary not built (service shutdown)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AGameAlreadyRunningOnTheDiskSkipsTheScanButTheRawTraceIsStillSaved()
+    {
+        EnableIoSummary();
+        Reads((0, 65536));
+        _trace.IoRequests = IoRequests();
+        AutoEnv env = _rig.World.Env();
+        env.GameRunningOnDisk = _ => true;
+        var tracer = new AutoTracer(env, _rig.Status, _rig.Log, () => _rig.Settings) { MinRunBytes = 0 };
+
+        tracer.Start(_game);
+        EndAfterExitGrace(tracer);
+
+        Assert.True(File.Exists(Raw));
+        Assert.Equal(0, _rig.World.BuildIoSummaryCalls);
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("I/O summary not built (a game is running)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AFailedRawFreezeSavesAndScansOnlyAfterTheGameExits()
+    {
+        EnableIoSummary();
+        Reads((0, 65536));
+        _trace.IoRequests = IoRequests();
+        _trace.FreezeFailure = new IOException("pump ended");
+        _tracer.Start(_game);
+        _rig.World.Procs = [(100, 5L << 20)];
+        _rig.World.Running = true;
+        _tracer.Step();
+        _rig.World.Now += TimeSpan.FromSeconds(30);
+
+        _tracer.Step(); // 시간 상한: 동결이 실패해도 게임이 도는 동안에는 저장·변환하지 않음
+
+        Assert.True(_trace.Stopped);
+        Assert.False(File.Exists(Raw));
+        Assert.Equal(0, _rig.World.BuildIoSummaryCalls);
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("raw trace could not be frozen", StringComparison.Ordinal));
+
+        EndAfterExitGrace();
+
+        Assert.True(File.Exists(Raw));
+        Assert.Equal(1, _rig.World.BuildIoSummaryCalls);
+    }
+
+    [Fact]
+    public async Task AServiceShutdownDuringFinishDoesNotStopTheSameSessionTwice()
+    {
+        EnableIoSummary();
+        RunUntilRawIsFrozen();
+        using var gate = new ManualResetEventSlim();
+        _trace.StopGate = gate;
+        _rig.World.Running = false;
+        Task finish = Task.Run(() =>
+        {
+            _tracer.Step();
+            _rig.World.Now += GameExitTracker.Grace;
+            _tracer.Step();
+        });
+        Assert.True(_trace.StopStarted.Wait(TimeSpan.FromSeconds(30))); // Finish 가 세션을 멈추는 중
+
+        _tracer.Shutdown();
+        gate.Set();
+        await finish.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(1, _trace.StopCalls);
+        Assert.True(File.Exists(Raw)); // 저장은 Finish 쪽에서 한 번
+    }
+
+    [Fact]
+    public void AnUnreadableAttemptFileDoesNotLowerTheInMemoryCount()
+    {
+        EnableIoSummary();
+        Extra(runs: 1, max: 1);
+        SeedRuns(1);
+        for (int attempt = 1; attempt <= AutoTracer.MaxIoSummaryTries; attempt++)
+        {
+            Assert.True(_tracer.WantsRun(_game));
+            _rig.World.Session = new FakeTrace();
+            _rig.World.Running = true;
+            _tracer.Start(_game);
+            EndAfterExitGrace();
+        }
+
+        using var hold = new FileStream(IoSummaryStore.TriedPath(Raw), FileMode.Open, FileAccess.Read, FileShare.None); // 있지만 읽을 수 없음
+
+        Assert.Null(IoSummaryStore.ReadTriedOrNull(Raw));
+        Assert.False(_tracer.WantsRun(_game)); // "파일 없음" 과 달리 메모리 횟수 (2) 를 그대로 믿음
+    }
+
+    // ---- 변환 전후 상태 조회 (저널) 실패 ----
+
+    private static bool ScanSourceCleared(AutoTracer tracer) =>
+        typeof(AutoTracer).GetField("_ioScanSource", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(tracer) is null;
+
+    [Theory]
+    [InlineData(1)] // 변환 전
+    [InlineData(2)] // 변환 뒤
+    public void AFailingStateLookupBeforeOrAfterTheScanOnlyDropsTheSummaryAndTheRawTraceIsStillSaved(int failingCall)
+    {
+        EnableIoSummary();
+        Reads((0, 65536));
+        _trace.IoRequests = IoRequests();
+        int calls = 0;
+        _rig.World.JournalRows = _ => ++calls == failingCall ? throw new IOException("journal locked") : 0;
+
+        _tracer.Start(_game);
+        EndAfterExitGrace();
+
+        Assert.True(File.Exists(Raw));
+        Assert.False(File.Exists(IoSummaryStore.RunPath(TraceWriter.RunPath(Raw, 1))));
+        Assert.Equal(failingCall == 2 ? 1 : 0, _rig.World.BuildIoSummaryCalls);
+        Assert.True(ScanSourceCleared(_tracer));
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("I/O summary not built (IOException)", StringComparison.Ordinal));
     }
 }

@@ -110,6 +110,7 @@ What each stage does is in [Automatic mode](AUTO_MODE.md). Ranges are given in p
 
 | Key | Default | Meaning |
 |---|---|---|
+| `io_summary_enabled` | `true` | In automatic tracing, collect disk-read completions until the game exits and save a per-run file summary, converted after exit by reading file layouts (not file contents). The existing trace and the anti-cheat gate are unchanged. |
 | `trace_cap_seconds` | 1800 | Time limit of the first trace window, in seconds (30 to 7200). |
 | `trace_cap_mib` | 6144 | Read limit of a trace, in MiB (64 to 65536). The default value means the larger of 6144 and twice the zone limit; any other value is used as written. |
 | `trace_runs` | 3 | If the number of plays is below this value (1 to 32), the service traces again to accumulate the hot set and widen the zone. |

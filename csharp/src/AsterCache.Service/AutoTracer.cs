@@ -22,12 +22,17 @@ public sealed class AutoTracer
     private readonly OrbitShadow _shadow;
     private readonly object _lock = new();
     private volatile bool _shutdown;
+    private CancellationTokenSource _shutdownSource = new(); // 서비스 종료에서 끝난 뒤 변환 (파일 배치 조회) 을 멈춤, _lock 으로 보호
+    private CancellationTokenSource? _ioScanSource; // 돌고 있는 변환의 취소 (게임 시작·시간 예산·서비스 종료), _lock 으로 보호
+    private bool _ioScanGameStarted; // _ioScanSource 가 게임 시작으로 취소됐는가, _lock 으로 보호
     private bool _stopCleanupFailed;
     private OrbitModel _orbitModel = new();
     private Run? _run;
     private readonly List<Run> _stopped = []; // 상한에 닿아 세션을 멈췄지만 게임이 끝나길 기다리는 기록 (저장 전)
     private readonly HashSet<string> _cheatLogged = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _policyLogged = new(StringComparer.OrdinalIgnoreCase); // 게임 정책으로 추적을 시작하지 않은 것을 이미 로그한 게임 (다시 허용되면 지움), _lock 으로 보호
+    private readonly Dictionary<string, int> _ioSummaryAttempts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _ioSummaryPersistenceFailed = new(StringComparer.OrdinalIgnoreCase);
 
     /// 두 번째 이후 플레이가 이보다 적게 읽었거나 (바이트) 첫 플레이의 1 % 보다 이벤트가 적으면 (메뉴만 켠 플레이 등) 저장하지 않고 회차로 세지 않습니다.
     public const long MinExtraRunBytes = 64L << 20;
@@ -146,7 +151,7 @@ public sealed class AutoTracer
     /// 업데이트로 바뀐 파일의 행만 트레이스 병합본·run 파일·예열 목록 (선읽기 파일과 예열 전용 옆 파일) 에서 빼고 표지를 남깁니다. 호출하는 쪽이 계획 잠금 안에 있어야 합니다.
     /// 먼저 모든 파일을 읽어 뺄 행을 정하고 (읽을 수 없는 파일이 있으면 아무것도 바꾸기 전에 예외), 무언가 빠지는 파일만 원본을 .stale 로 복사해 두고 다시 씁니다 (이미 뺀 파일은 건드리지 않아 중간에 멈췄다 다시 불려도 .stale 은 원본 그대로).
     /// 다시 쓴 run 이 MinRunBytes 아래로 줄어도 다음 병합이 정리된 병합본을 기준으로 유지하도록 rotated 표지를 남깁니다. 다시 학습 표지는 파일을 실제로 다시 썼거나 표지가 없을 때만 (되풀이 호출이 재학습을 다시 켜지 않게), 마지막에: 다시 쓴 파일보다 새로워야 함.
-    public static void DropChanged(GameSettings g, IReadOnlySet<string> paths)
+    public static void DropChanged(GameSettings g, IReadOnlySet<string> paths, Action<string>? warn = null)
     {
         AsterCache.Core.Apply.DataLock.RequireHeld(g.Plan);
         string raw = RawTracePath(g);
@@ -155,7 +160,6 @@ public sealed class AutoTracer
         {
             files.Add(TraceWriter.RunPath(raw, run));
         }
-
         var rewrites = new List<(string File, List<TraceEvent> Kept)>();
         foreach (string file in files.Where(File.Exists))
         {
@@ -167,8 +171,67 @@ public sealed class AutoTracer
             }
         }
 
-        DateTime? planned = rewrites.Count > 0 ? PlannedAtUtc(g) : null; // 이 계획을 만든 뒤에 보관한 사본만 이번 업데이트의 것
+        // 집계 곁 파일은 원시 회차와 따로 따짐: 짝 (지문) 이 안 맞으면 무효, 바뀐 파일이 파일 표에 있으면 낡은 집계 (치움), 원시 회차만 다시 쓰이면 지문만 새 원시 파일에 맞춰 갱신
+        var rewrittenPaths = rewrites.Select(rewrite => rewrite.File).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var changedPaths = new HashSet<string>(paths, StringComparer.OrdinalIgnoreCase);
+        var invalidatedIoSidecars = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var staleIoSidecars = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var ioSidecarPairs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var rebindIoSidecars = new List<(string Sidecar, string PairedTrace, IoSummary Summary)>();
+        var rawAsideSuffixes = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+
+        void CheckPairedSummary(string sidecar, string pairedTrace, bool standalone)
+        {
+            if (!File.Exists(sidecar))
+            {
+                return;
+            }
+
+            IoSummary? summary = standalone ? IoSummaryStore.ReadStandaloneForRaw(sidecar, pairedTrace) : IoSummaryStore.ReadForRun(pairedTrace);
+            if (summary is null)
+            {
+                invalidatedIoSidecars.Add(sidecar);
+            }
+            else if (summary.Files.Any(file => changedPaths.Contains(file.Path)))
+            {
+                staleIoSidecars.Add(sidecar);
+                ioSidecarPairs[sidecar] = pairedTrace;
+            }
+            else if (rewrittenPaths.Contains(pairedTrace))
+            {
+                rebindIoSidecars.Add((sidecar, pairedTrace, summary));
+            }
+        }
+
+        try
+        {
+            CheckPairedSummary(IoSummaryStore.RunPath(raw), raw, standalone: false);
+            for (int run = 1; run <= MaxRunFiles; run++)
+            {
+                string runPath = TraceWriter.RunPath(raw, run);
+                CheckPairedSummary(IoSummaryStore.RunPath(runPath), runPath, standalone: false);
+            }
+
+            foreach (string standalone in IoSummaryStore.StandalonePaths(raw))
+            {
+                CheckPairedSummary(standalone, raw, standalone: true);
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            warn?.Invoke($"{g.Name}: I/O summary files could not be checked for the game update ({e.GetType().Name}); stale summaries stay invalid by their raw fingerprint");
+        }
+
+        bool anyInvalidated = invalidatedIoSidecars.Count > 0 || staleIoSidecars.Count > 0;
+        DateTime? planned = rewrites.Count > 0 || anyInvalidated ? PlannedAtUtc(g) : null; // 이 계획을 만든 뒤에 보관한 사본만 이번 업데이트의 것
         bool ThisUpdate(string copy) => planned is { } at && File.GetLastWriteTimeUtc(copy) >= at.AddSeconds(1); // planned_at 은 초 단위로 잘리므로 같은 초에 보관된 이전 사본은 이번 것으로 치지 않음
+        string? Aside(string path)
+        {
+            string stalePath = path + AutoRelocator.StaleSuffix;
+            string updatePath = path + AutoRelocator.UpdateSuffix;
+            return !File.Exists(stalePath) ? stalePath : ThisUpdate(stalePath) ? null : !ThisUpdate(updatePath) ? updatePath : null;
+        }
+
         if (rewrites.Count > 0 && File.Exists(TraceStageIndex.IndexPath(raw)))
         {
             File.Delete(TraceStageIndex.IndexPath(raw)); // 원시 범위가 바뀌면 이전 색인을 쓰지 않음
@@ -177,19 +240,75 @@ public sealed class AutoTracer
         foreach ((string file, List<TraceEvent> kept) in rewrites)
         {
             // 있는 .stale 이 이번 업데이트의 것이면 (중간에 멈췄다 다시 불림) 그대로 두고, 이전 업데이트의 것이면 덮지 않고 이번 원본을 .stale.update 로 따로 보관 (옛 저널·원본 보관 불변 조건). 계획 시각을 모르면 이번 업데이트의 사본으로 확인할 수 없으므로 .stale.update 를 덮어 이번 원본을 보관 (맨 처음 .stale 은 유지).
-            string stale = file + AutoRelocator.StaleSuffix;
-            string update = file + AutoRelocator.UpdateSuffix;
-            string? target = !File.Exists(stale) ? stale : ThisUpdate(stale) ? null : !ThisUpdate(update) ? update : null;
+            string? target = Aside(file);
             if (target is not null)
             {
                 File.Copy(file, target, true);
                 File.SetLastWriteTimeUtc(target, DateTime.UtcNow); // 복사는 원본의 수정 시각을 따라가므로 보관한 때로 맞춤
             }
 
+            rawAsideSuffixes[file] = target is not null
+                ? target[file.Length..]
+                : new[] { AutoRelocator.StaleSuffix, AutoRelocator.UpdateSuffix }
+                    .FirstOrDefault(suffix => File.Exists(file + suffix) && ThisUpdate(file + suffix));
+
             string temp = file + ".tmp";
             string text = PyJson.Dumps(kept.Select(e => e.ToJson()).ToList(), ensureAscii: false) + "\n";
             AsterCache.Core.DurableFile.WriteAllBytes(temp, PyJson.Utf8.GetBytes(PyJson.ToCrlf(text)));
             File.Move(temp, file, true);
+        }
+
+        try
+        {
+            foreach (string sidecar in staleIoSidecars)
+            {
+                string? suffix = ioSidecarPairs.TryGetValue(sidecar, out string? pairedRaw)
+                    ? rawAsideSuffixes.GetValueOrDefault(pairedRaw)
+                    : null;
+                string? target = suffix is not null ? sidecar + suffix : Aside(sidecar);
+                try
+                {
+                    if (target is not null)
+                    {
+                        File.Copy(sidecar, target, true);
+                        File.SetLastWriteTimeUtc(target, DateTime.UtcNow);
+                    }
+
+                    File.Delete(sidecar);
+                    File.Delete(IoSummaryStore.InvalidPath(sidecar));
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    MarkInvalid(sidecar, g, warn, e);
+                }
+            }
+
+            foreach (string sidecar in invalidatedIoSidecars)
+            {
+                try
+                {
+                    File.Delete(sidecar);
+                    File.Delete(IoSummaryStore.InvalidPath(sidecar));
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    MarkInvalid(sidecar, g, warn, e);
+                }
+            }
+
+            foreach ((string sidecar, string pairedTrace, IoSummary summary) in rebindIoSidecars)
+            {
+                IoSummaryStore.Write(sidecar, summary with { RawFingerprint = IoSummaryStore.RawFingerprint(pairedTrace) });
+            }
+
+            if (anyInvalidated)
+            {
+                File.Delete(IoSummaryStore.TriedPath(raw)); // 업데이트로 무효화된 집계는 새 추적으로 다시 채울 수 있음
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            warn?.Invoke($"{g.Name}: I/O summary files could not be cleaned for the game update ({e.GetType().Name}); stale summaries stay invalid by their raw fingerprint"); // 집계는 무효로 끝나고 원시 추적 정리는 계속
         }
 
         if (rewrites.Count > 0)
@@ -201,6 +320,19 @@ public sealed class AutoTracer
         if (rewrites.Count > 0 || !File.Exists(UpdatedMarkPath(g)))
         {
             File.WriteAllText(UpdatedMarkPath(g), "1");
+        }
+    }
+
+    // 낡은 집계를 지우지 못했을 때 (잠김): 원시 추적이 그대로라 지문이 다시 맞을 수 있으므로 곁에 무효 표지를 남겨 읽기가 거부하게 함 (다음 정리가 집계와 표지를 함께 지움)
+    private static void MarkInvalid(string sidecar, GameSettings g, Action<string>? warn, Exception cause)
+    {
+        try
+        {
+            IoSummaryStore.MarkInvalid(sidecar);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            warn?.Invoke($"{g.Name}: stale I/O summary not removed ({cause.GetType().Name}) and its invalid mark not written ({e.GetType().Name})");
         }
     }
 
@@ -397,8 +529,84 @@ public sealed class AutoTracer
         return tried < MaxStageIndexTries ? tried + 1 : 0;
     }
 
+    public const int MaxIoSummaryTries = 2;
+
+    /// 물리 읽기 집계가 없는 게임에 집계를 얻으려 한 추가 추적의 차례 (1..2), 해당 없으면 0.
+    public static int IoSummaryAttempt(GameSettings g, AutoSettings a, AutoEnv env)
+    {
+        string raw = RawTracePath(g);
+        if (!a.Trace || !a.IoSummaryEnabled || !env.FileExists(raw) || env.TraceBlocker(g) is not null)
+        {
+            return 0;
+        }
+
+        string directSidecar = IoSummaryStore.RunPath(raw);
+        if (env.FileExists(directSidecar) && env.IoSummaryValid(directSidecar, raw, false))
+        {
+            return 0;
+        }
+
+        foreach (string standalone in IoSummaryStore.StandalonePaths(raw))
+        {
+            if (env.FileExists(standalone) && env.IoSummaryValid(standalone, raw, true))
+            {
+                return 0;
+            }
+        }
+
+        for (int number = 1; number <= MaxRunFiles; number++)
+        {
+            string run = TraceWriter.RunPath(raw, number);
+            string sidecar = IoSummaryStore.RunPath(run);
+            if (env.FileExists(run) && env.FileExists(sidecar) && env.IoSummaryValid(sidecar, run, false))
+            {
+                return 0;
+            }
+        }
+
+        int tried = env.IoSummaryTries(raw) ?? 0;
+        return tried < MaxIoSummaryTries ? tried + 1 : 0;
+    }
+
+    private int IoSummaryAttemptForService(GameSettings g, AutoSettings a)
+    {
+        string raw = RawTracePath(g);
+        lock (_lock)
+        {
+            if (_ioSummaryPersistenceFailed.Contains(raw))
+            {
+                return 0; // 시도 횟수를 디스크에 못 남긴 게임은 서비스가 도는 동안 더 추적하지 않음
+            }
+
+            // 업데이트·회전이 디스크의 시도 횟수 파일을 지웠으면 (새 세대) 메모리 횟수도 같이 초기화
+            int attempted = _ioSummaryAttempts.GetValueOrDefault(raw);
+            if (_env.IoSummaryTries(raw) is { } onDisk)
+            {
+                attempted = Math.Min(attempted, onDisk); // 읽기에 실패했을 때 (null) 는 메모리 횟수를 낮추지 않음
+            }
+
+            _ioSummaryAttempts[raw] = attempted;
+            if (attempted >= MaxIoSummaryTries)
+            {
+                return 0;
+            }
+
+            int next = IoSummaryAttempt(g, a, _env);
+            return next == 0 ? 0 : Math.Max(next, attempted + 1);
+        }
+    }
+
+    /// 끝난 뒤 변환 (게임 폴더 파일 배치 조회) 의 시간 예산: 넘으면 집계만 버리고 원시 기록 저장은 계속합니다.
+    public TimeSpan IoScanBudget { get; init; } = TimeSpan.FromSeconds(30);
+
     /// 이 게임의 다음 플레이를 트레이스할지 (게임 시작 판정과 Start 가 같은 NextTrace 를 씀).
-    public bool WantsRun(GameSettings g) => NextTrace(g, _settings().Auto, _env, _status, MinRunBytes).Wanted || StageTraceAttempt(g, _settings().Auto, _env) > 0;
+    public bool WantsRun(GameSettings g)
+    {
+        AutoSettings auto = _settings().Auto;
+        return NextTrace(g, auto, _env, _status, MinRunBytes).Wanted
+            || StageTraceAttempt(g, auto, _env) > 0
+            || IoSummaryAttemptForService(g, auto) > 0;
+    }
 
     // 직전 병합 (run lastRun) 이 더한 새 고유 블록 (MiB). 메타가 없거나 다른 병합의 것이거나 읽을 수 없으면 null.
     private static long? ReadMergeGainMib(GameSettings g, int lastRun)
@@ -523,20 +731,24 @@ public sealed class AutoTracer
         bool firstRun; // 원시 트레이스가 아직 없는 첫 기록 (아니면 병합용 추가 기록: 상태·선행 읽기를 건드리지 않음). 유효 회차가 0 이어도 run1 이 있으면 추가 기록
         TraceNext next;
         int stageAttempt; // 단계 색인만을 위한 추가 추적의 차례 (아니면 0)
+        int ioSummaryAttempt; // 물리 읽기 집계를 위한 추가 추적의 차례 (아니면 0)
         int runNumber = 0;
         lock (_lock)
         {
             if (_shutdown)
             {
                 _shutdown = false;
+                _shutdownSource = new CancellationTokenSource();
                 _orbitModel = new OrbitModel();
             }
 
-            next = NextTrace(g, _settings().Auto, _env, _status, MinRunBytes);
+            AutoSettings auto = _settings().Auto;
+            next = NextTrace(g, auto, _env, _status, MinRunBytes);
             done = next.Valid;
-            stageAttempt = next.Wanted ? 0 : StageTraceAttempt(g, _settings().Auto, _env);
+            stageAttempt = next.Wanted ? 0 : StageTraceAttempt(g, auto, _env);
+            ioSummaryAttempt = next.Wanted ? 0 : IoSummaryAttemptForService(g, auto);
             firstRun = !_env.FileExists(RawTracePath(g));
-            if (_run is not null || _stopCleanupFailed || !next.Wanted && stageAttempt == 0 || _stopped.Any(r => string.Equals(r.Game.Name, g.Name, StringComparison.OrdinalIgnoreCase)))
+            if (_run is not null || _stopCleanupFailed || !next.Wanted && stageAttempt == 0 && ioSummaryAttempt == 0 || _stopped.Any(r => string.Equals(r.Game.Name, g.Name, StringComparison.OrdinalIgnoreCase)))
             {
                 return;
             }
@@ -559,7 +771,13 @@ public sealed class AutoTracer
                     learn = ls.Enabled && firstRun && GamePolicy.AllowsPrewarm(latest) ? AutoLearn.Create(g, ls, _env.PhysicalRamBytes(), _learn) : null; // 시스템 SSD·SSD 는 위에서 이미 걸러짐
                     var exits = new GameExitTracker(_env.Now);
                     exits.ObserveStarted(g);
-                    _run = new Run(g, _env.StartTrace(g.ExeNames, learn is null ? null : AutoLearn.Listener(learn)), _env.Now(), exits) { Learn = learn, Number = LastRunNumber(g, _env.FileExists) + 1, RawWrittenAtStart = _env.FileWriteTime(RawTracePath(g)) }; // 번호는 유효 회차 수가 아니라 있는 run 파일 기준 (덮어쓰기 금지)
+                    _run = new Run(g, _env.StartTrace(g.ExeNames, learn is null ? null : AutoLearn.Listener(learn), auto.IoSummaryEnabled ? g.AllowedRoots : null), _env.Now(), exits)
+                    {
+                        Learn = learn,
+                        Number = LastRunNumber(g, _env.FileExists) + 1,
+                        RawWrittenAtStart = _env.FileWriteTime(RawTracePath(g)),
+                        IoSummaryEnabled = auto.IoSummaryEnabled,
+                    }; // 번호는 유효 회차 수가 아니라 있는 run 파일 기준 (덮어쓰기 금지)
                     runNumber = _run.Number;
                     learn?.Start();
                 }
@@ -587,18 +805,50 @@ public sealed class AutoTracer
             return;
         }
 
-        if (stageAttempt > 0)
+        if (stageAttempt > 0 || ioSummaryAttempt > 0)
         {
-            try
+            if (stageAttempt > 0)
             {
-                TraceStageIndex.WriteTried(RawTracePath(g), stageAttempt); // 저장되지 않는 run 도 시도로 셈 (서비스를 다시 시작해도 유지)
-            }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-            {
-                _log.Warn($"{g.Name}: stage index attempt not recorded ({e.GetType().Name})");
+                try
+                {
+                    TraceStageIndex.WriteTried(RawTracePath(g), stageAttempt); // 저장되지 않는 run 도 시도로 셈 (서비스를 다시 시작해도 유지)
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    _log.Warn($"{g.Name}: stage index attempt not recorded ({e.GetType().Name})");
+                }
             }
 
-            _log.Info($"{g.Name}: auto trace started (run {runNumber} for stage index, attempt {stageAttempt}/{MaxStageIndexTries})");
+            if (ioSummaryAttempt > 0)
+            {
+                try
+                {
+                    _env.WriteIoSummaryTries(RawTracePath(g), ioSummaryAttempt);
+                    lock (_lock)
+                    {
+                        string raw = RawTracePath(g);
+                        _ioSummaryAttempts[raw] = Math.Max(_ioSummaryAttempts.GetValueOrDefault(raw), ioSummaryAttempt);
+                    }
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    lock (_lock)
+                    {
+                        string raw = RawTracePath(g);
+                        _ioSummaryAttempts[raw] = Math.Max(_ioSummaryAttempts.GetValueOrDefault(raw), ioSummaryAttempt);
+                        _ioSummaryPersistenceFailed.Add(raw);
+                    }
+
+                    _log.Warn($"{g.Name}: I/O summary attempt not recorded ({e.GetType().Name})");
+                }
+            }
+
+            string purpose = stageAttempt > 0 && ioSummaryAttempt > 0
+                ? $"stage index, attempt {stageAttempt}/{MaxStageIndexTries} and I/O summary, attempt {ioSummaryAttempt}/{MaxIoSummaryTries}"
+                : stageAttempt > 0
+                    ? $"stage index, attempt {stageAttempt}/{MaxStageIndexTries}"
+                    : $"I/O summary, attempt {ioSummaryAttempt}/{MaxIoSummaryTries}";
+            _log.Info($"{g.Name}: auto trace started (run {runNumber} for {purpose})");
             return;
         }
 
@@ -630,7 +880,7 @@ public sealed class AutoTracer
 
         if (run.EndRequested)
         {
-            Finish(run, GameExited);
+            Finish(run, run.RawWhy ?? GameExited);
             return;
         }
 
@@ -684,13 +934,18 @@ public sealed class AutoTracer
         TimeSpan elapsed = now - run.StartedAt;
         if (exited)
         {
-            Finish(run, GameExited); // 게임 디스크에 불필요한 I/O 를 하지 않도록 정상 종료 때만 바로 저장
+            Finish(run, run.RawWhy ?? GameExited); // 게임 디스크에 불필요한 I/O 를 하지 않도록 정상 종료 때만 바로 저장
+            return;
+        }
+
+        if (run.RawEnded)
+        {
             return;
         }
 
         if (run.Read >= (long)ReadCapMib(run, all) << 20)
         {
-            Finish(run, "read cap", defer: true);
+            EndRawCapture(run, "read cap");
             return;
         }
 
@@ -706,7 +961,7 @@ public sealed class AutoTracer
             _log.Info($"{run.Game.Name}: initial trace window ended at time cap; waiting for late window 1/{a.TraceLateWindows}");
             if (a.TraceLateWindows <= 0)
             {
-                Finish(run, "time cap", defer: true);
+                EndRawCapture(run, "time cap");
             }
 
             return;
@@ -739,7 +994,7 @@ public sealed class AutoTracer
 
         if (run.LateWindowsStarted >= a.TraceLateWindows)
         {
-            Finish(run, "time cap", defer: true);
+            EndRawCapture(run, "time cap");
             return;
         }
 
@@ -814,6 +1069,44 @@ public sealed class AutoTracer
         catch (Exception e) when (e is not OperationCanceledException)
         {
             _log.Warn($"{run.Game.Name}: last trace window summary unavailable ({e.GetType().Name})");
+        }
+    }
+
+    private void EndRawCapture(Run run, string why)
+    {
+        if (run.RawEnded)
+        {
+            return;
+        }
+
+        if (run.Collecting && !EndWindow(run, endLearning: true))
+        {
+            return;
+        }
+
+        EndLearn(run);
+        run.InitialWindowEnded = true;
+        run.LateWindowStartedAt = null;
+        run.RawEnded = true;
+        run.RawWhy = why;
+        if (run.IoSummaryEnabled)
+        {
+            try
+            {
+                run.Session?.FreezeRawRecords();
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                _log.Warn($"{run.Game.Name}: raw trace could not be frozen ({e.GetType().Name}); stopping observation");
+                Finish(run, $"{why}, raw freeze failed", defer: true); // 이웃 실패 경로와 같이 게임이 도는 동안 저장·변환하지 않음
+                return;
+            }
+
+            _log.Info($"{run.Game.Name}: trace recording stopped ({why}); I/O observation continues until the game exits");
+        }
+        else
+        {
+            Finish(run, why, defer: true);
         }
     }
 
@@ -900,8 +1193,19 @@ public sealed class AutoTracer
     private int ReadCapMib(Run run, AsterSettings all) =>
         all.Auto.TraceCapMib != AutoSettings.DefaultTraceCapMib ? all.Auto.TraceCapMib : run.AutoCapMib ??= all.Auto.EffectiveTraceCapMib(AutoRelocator.EffectiveZoneMib(all, run.Game, _env));
 
-    /// 그 게임이 시작되면 돌고 있는 그림자 계획을 취소합니다 (감시기 스레드에서 부름).
-    public void CancelShadow(string game) => _shadow.CancelGame(game);
+    /// 그 게임이 시작되면 돌고 있는 그림자 계획과 끝난 뒤 변환 (게임 폴더 메타데이터 조회) 을 취소합니다 (감시기 스레드에서 부름). 변환은 어느 게임이 시작되든 취소: 같은 디스크를 다툼.
+    public void CancelShadow(string game)
+    {
+        _shadow.CancelGame(game);
+        lock (_lock)
+        {
+            if (_ioScanSource is { } scan)
+            {
+                _ioScanGameStarted = true;
+                scan.Cancel();
+            }
+        }
+    }
 
     public void SettingsReloaded(IReadOnlyCollection<GameSettings> removed)
     {
@@ -922,15 +1226,32 @@ public sealed class AutoTracer
     {
         Run? run;
         OrbitModel orbitModel;
+        bool finishing;
         lock (_lock)
         {
             _shutdown = true;
+            _shutdownSource.Cancel();
             orbitModel = _orbitModel;
             (run, _run) = (_run, null);
+            finishing = run?.Finishing == true;
         }
 
         _shadow.Shutdown();
         orbitModel.Dispose();
+        if (!finishing && run is { RawEnded: true, IoSummaryEnabled: true, Session: not null }) // 이미 Finish 가 세션을 멈추는 중이면 그쪽이 저장함
+        {
+            // 원시 기록이 이미 확정된 채 관찰만 이어 가던 중이었음: 이 변경 전에는 상한에서 세션을 멈추고 보류해 두던 기록이라 같은 저장 경로로 보냄 (집계는 변환을 건너뛰고 버림)
+            try
+            {
+                HoldForSave(run, StopSession(run), run.RawWhy ?? "service shutdown");
+                _log.Info($"{run.Game.Name}: auto trace stopped (service shutdown after {run.RawWhy}), saving the raw trace");
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                _log.Warn($"{run.Game.Name}: raw trace not kept at shutdown ({e.GetType().Name})");
+            }
+        }
+
         run?.Session?.Dispose();
         if (run is not null)
         {
@@ -953,6 +1274,14 @@ public sealed class AutoTracer
                 LogOpenWindow(run); // 후반 창이 열린 채 끝나면 그 창의 집계도 남김
             }
 
+            if (!stoppedBefore)
+            {
+                lock (_lock)
+                {
+                    run.Finishing = true; // 서비스 종료의 동결 경로가 같은 세션을 또 멈추지 않게
+                }
+            }
+
             IReadOnlyList<TraceRecord> records = run.Held ?? StopSession(run);
             if (!stoppedBefore)
             {
@@ -972,11 +1301,23 @@ public sealed class AutoTracer
                 return false;
             }
 
+            ResolveIoSummary(run);
             (List<TraceEvent> events, _) = TraceBuilder.Build(records, g.ExeNames, g.OriginRoot);
             List<TraceEvent> canonical = _env.Canonicalize(events);
             IReadOnlyList<StageMark> stageMarks = TraceStageMarks.FromRecords(records, g.ExeNames);
             if (canonical.Count == 0)
             {
+                if (!SaveIoSummaryOnly(run, lockWait, out bool summaryChanged))
+                {
+                    HoldForSave(run, records, why);
+                    return true;
+                }
+
+                if (!summaryChanged)
+                {
+                    LogIoSummary(run);
+                }
+
                 _log.Warn($"{g.Name}: auto trace ended ({why}) with no reads captured");
                 if (run.Number == 1)
                 {
@@ -988,6 +1329,17 @@ public sealed class AutoTracer
 
             if (run.Number > 1 && TooSmall(g, canonical) is { } small)
             {
+                if (!SaveIoSummaryOnly(run, lockWait, out bool summaryChanged))
+                {
+                    HoldForSave(run, records, why);
+                    return true;
+                }
+
+                if (!summaryChanged)
+                {
+                    LogIoSummary(run);
+                }
+
                 _log.Info($"{g.Name}: auto trace ended ({why}), run {run.Number} too small ({small}), not saved and not counted");
                 return false;
             }
@@ -1022,8 +1374,9 @@ public sealed class AutoTracer
 
                 if (run.Number == 1)
                 {
-                    InvalidateStageIndex(g);
-                    TraceWriter.Write([canonical], RawTracePath(g));
+                    string rawPath = RawTracePath(g);
+                    TraceStageIndex.ClearSidecars(rawPath);
+                    TraceWriter.Write([canonical], rawPath);
                     SaveStageMarks(g, run.Number, stageMarks);
                     SaveStageIndex(g, [(canonical, stageMarks)]);
                 }
@@ -1031,6 +1384,8 @@ public sealed class AutoTracer
                 {
                     Merge(g, canonical, run.Number, stageMarks);
                 }
+
+                WriteIoSummaryLocked(run);
 
                 replanGeneration = _status.ReplanGeneration(g.Name); // 잠금 안에서 병합한 이벤트와 같은 재계획 세대를 넘김
             });
@@ -1063,6 +1418,7 @@ public sealed class AutoTracer
             }
             else
             {
+                LogIoSummary(run);
                 SaveVolatile(g, marks);
                 if (run.Number > 1 && TraceBlocker(g) is null)
                 {
@@ -1125,6 +1481,170 @@ public sealed class AutoTracer
         }
 
         return false;
+    }
+
+    // 게임이 끝난 뒤 디스크 읽기 요청을 게임 폴더 파일 배치 (속성 조회) 로 (파일, 블록) 에 이읍니다. 낮은 우선순위 스레드에서 돌리고 서비스 종료에서 멈춥니다.
+    // 순서 보장: 재배치·재계획·확장·SSD 보조 저장은 모두 게임 종료 뒤 rewarm_after_exit_min 이 지나야 시작하므로 (GameExitTracker.HeavyWorkAllowed) 변환은 보통 그 전에 끝납니다.
+    // 그래도 재배치가 끼어들면 역변환이 틀리므로 변환 앞뒤의 계획·저널 상태가 다르면 집계를 버립니다.
+    private void ResolveIoSummary(Run run)
+    {
+        if (run.IoSummaryResolved || run.IoRequests is not { } requests)
+        {
+            return;
+        }
+
+        run.IoSummaryResolved = true;
+        GameSettings g = run.Game;
+        CancellationTokenSource scan;
+        lock (_lock)
+        {
+            if (_shutdownSource.IsCancellationRequested)
+            {
+                _log.Info($"{g.Name}: I/O summary not built (service shutdown)");
+                return;
+            }
+
+            // 같은 디스크의 게임이 이미 도는 중이면 그 로딩과 메타데이터 조회를 다투지 않도록 건너뜀 (기록 저장은 계속)
+            if (_env.GameRunningOnDisk?.Invoke(PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant()) == true)
+            {
+                _log.Info($"{g.Name}: I/O summary not built (a game is running)");
+                return;
+            }
+
+            scan = _ioScanSource = CancellationTokenSource.CreateLinkedTokenSource(_shutdownSource.Token);
+            _ioScanGameStarted = false;
+        }
+
+        scan.CancelAfter(IoScanBudget);
+        IoSummary? summary = null;
+        try
+        {
+            string before = LayoutStamp(g);
+            RunBelowNormal(() => summary = _env.BuildIoSummary(requests, g.AllowedRoots, scan.Token));
+            if (summary is not null && before != LayoutStamp(g))
+            {
+                _log.Warn($"{g.Name}: I/O summary dropped, the plan or journal changed while file layouts were read");
+                return;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            string reason;
+            lock (_lock)
+            {
+                reason = _shutdownSource.IsCancellationRequested ? "service shutdown" : _ioScanGameStarted ? "a game started" : "time budget";
+            }
+
+            _log.Info($"{g.Name}: I/O summary not built ({reason})");
+            return;
+        }
+        catch (Exception e)
+        {
+            _log.Warn($"{g.Name}: I/O summary not built ({e.GetType().Name})"); // 집계는 부가 정보: 전후 상태 조회가 실패해도 원시 기록 저장은 계속
+            return;
+        }
+        finally
+        {
+            lock (_lock)
+            {
+                _ioScanSource = null;
+            }
+
+            scan.Dispose();
+        }
+
+        run.IoSummary = summary;
+    }
+
+    private string LayoutStamp(GameSettings g) =>
+        $"{_env.FileWriteTime(g.Plan):O}|{_env.JournalRows(g)}|{_env.JournalPlanSha(g)}|{_status.Get(g.Name)?.RelocatedAt:O}|{_status.ReplanGeneration(g.Name)}";
+
+    private bool SaveIoSummaryOnly(Run run, TimeSpan? lockWait, out bool traceChanged)
+    {
+        traceChanged = false;
+        if (run.IoSummary is null)
+        {
+            return true;
+        }
+
+        bool locked = false;
+        bool changedDuringSave = false;
+        RunBelowNormal(() =>
+        {
+            using AsterCache.Core.Apply.DataLock? gate = AsterCache.Core.Apply.DataLock.TryAcquire(run.Game.Plan, lockWait);
+            if (gate is null)
+            {
+                return;
+            }
+
+            if (_env.FileWriteTime(RawTracePath(run.Game)) != run.RawWrittenAtStart)
+            {
+                changedDuringSave = true;
+                return;
+            }
+
+            locked = true;
+            WriteIoSummaryLocked(run, standalone: true);
+        });
+
+        if (changedDuringSave)
+        {
+            traceChanged = true;
+            _log.Info($"{run.Game.Name}: I/O summary not saved, the trace changed while it waited for the zone lock (game update cleanup)");
+            return true;
+        }
+
+        return locked;
+    }
+
+    private void WriteIoSummaryLocked(Run run, bool standalone = false)
+    {
+        if (run.IoSummary is not { } summary)
+        {
+            return;
+        }
+
+        try
+        {
+            string raw = RawTracePath(run.Game);
+            if (standalone)
+            {
+                IoSummaryStore.WriteStandalone(raw, summary);
+            }
+            else
+            {
+                string runPath = TraceWriter.RunPath(raw, run.Number);
+                IoSummaryStore.WriteForRun(runPath, summary);
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"{run.Game.Name}: I/O summary not saved ({e.GetType().Name})");
+        }
+    }
+
+    private void LogIoSummary(Run run)
+    {
+        if (run.IoSummary is not { } summary || run.IoSummaryLogged)
+        {
+            return;
+        }
+
+        _log.Info($"{run.Game.Name}: {summary.FormatLogLine()}");
+        run.IoSummaryLogged = true;
+    }
+
+    private void HoldForSave(Run run, IReadOnlyList<TraceRecord> records, string why)
+    {
+        run.Held = records;
+        run.Why = why;
+        lock (_lock)
+        {
+            if (!_stopped.Contains(run))
+            {
+                _stopped.Add(run);
+            }
+        }
     }
 
     // 첫 플레이보다 훨씬 작은 (이벤트 수가 1 % 미만) 또는 읽은 양이 MinRunBytes 미만인 플레이의 사유, 아니면 null. 첫 플레이 크기를 못 읽으면 바이트 기준만 봄.
@@ -1247,6 +1767,7 @@ public sealed class AutoTracer
     {
         string raw = RawTracePath(g);
         InvalidateStageIndex(g);
+        DeleteIoSidecar(IoSummaryStore.RunPath(raw));
         string first = TraceWriter.RunPath(raw, 1);
         bool legacy = number == 2 && !_env.FileExists(first); // run 파일 없이 원시 트레이스만 있던 게임: 그 트레이스가 run1 (호환: 크기와 무관하게 유효)
         if (legacy)
@@ -1258,6 +1779,7 @@ public sealed class AutoTracer
         bool run1Valid = legacy || _env.FileExists(LegacyRun1Path(g));
 
         string currentRun = TraceWriter.RunPath(raw, number);
+        DeleteIoSidecar(IoSummaryStore.RunPath(currentRun));
         TraceWriter.WriteFile(currentRun, canonical);
         SaveStageMarks(g, number, stageMarks);
         var previous = new List<IReadOnlyList<TraceEvent>>();
@@ -1290,6 +1812,11 @@ public sealed class AutoTracer
         List<TraceEvent> union = TraceWriter.Union([canonical, .. previous]);
         string temp = raw + ".tmp";
         TraceWriter.WriteFile(temp, union);
+        foreach (string standalone in IoSummaryStore.StandalonePaths(raw))
+        {
+            DeleteIoSidecar(standalone);
+        }
+
         File.Move(temp, raw, true);
         SaveStageIndex(g, stageRuns);
         SaveMergeMeta(g, number, (union.Count - TraceWriter.Union(previous).Count) * TraceWriter.Block >> 20);
@@ -1320,6 +1847,8 @@ public sealed class AutoTracer
         string oldestRun = TraceWriter.RunPath(raw, oldest);
         File.Delete(oldestRun); // 기존 원시 병합본이 이 회차의 블록을 보존
         DeleteIfExists(TraceStageIndex.RunMarksPath(oldestRun));
+        DeleteIoSidecar(IoSummaryStore.RunPath(oldestRun));
+        DeleteIoSidecar(IoSummaryStore.TriedPath(raw)); // 지운 회차의 집계가 마지막 것이었으면 다시 추가 추적할 수 있음
         int target = 1;
         for (int number = 1; number <= MaxRunFiles; number++)
         {
@@ -1343,6 +1872,8 @@ public sealed class AutoTracer
                 {
                     DeleteIfExists(destinationMarks);
                 }
+
+                MoveIoSidecar(IoSummaryStore.RunPath(source), IoSummaryStore.RunPath(destination));
             }
         }
 
@@ -1385,6 +1916,40 @@ public sealed class AutoTracer
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             _log.Warn($"{g.Name}: stage index not saved ({e.GetType().Name})");
+        }
+    }
+
+    // 집계 곁 파일은 부가 파일입니다: 지우거나 옮기지 못해도 경고만 남기고 원시 추적의 저장·병합·회전은 계속합니다 (낡은 곁 파일은 원시 지문이 달라 읽을 때 무효).
+    private void DeleteIoSidecar(string path)
+    {
+        try
+        {
+            DeleteIfExists(path);
+            DeleteIfExists(IoSummaryStore.InvalidPath(path));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"I/O summary file not removed ({e.GetType().Name}): {Path.GetFileName(path)}");
+        }
+    }
+
+    private void MoveIoSidecar(string source, string destination)
+    {
+        try
+        {
+            if (File.Exists(source))
+            {
+                IoSummaryStore.MoveSummary(source, destination, (moved, to) => File.Move(moved, to, true));
+            }
+            else
+            {
+                DeleteIfExists(destination);
+                DeleteIfExists(IoSummaryStore.InvalidPath(destination));
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"I/O summary file not moved ({e.GetType().Name}): {Path.GetFileName(source)}");
         }
     }
 
@@ -1462,6 +2027,7 @@ public sealed class AutoTracer
         try
         {
             records = session.Stop();
+            run.IoRequests = session.IoRequests;
         }
         catch
         {
@@ -1530,6 +2096,24 @@ public sealed class AutoTracer
         public bool LearningEnded { get; set; }
 
         public bool InitialWindowEnded { get; set; }
+
+        public bool IoSummaryEnabled { get; init; }
+
+        public bool RawEnded { get; set; }
+
+        public string? RawWhy { get; set; }
+
+        /// 세션을 멈춘 뒤의 디스크 읽기 요청 표, 그리고 끝난 뒤 파일 배치로 바꾼 집계 (바꾸기를 이미 해 봤는지도).
+        public IoRequestSnapshot? IoRequests { get; set; }
+
+        public IoSummary? IoSummary { get; set; }
+
+        public bool IoSummaryResolved { get; set; }
+
+        /// Finish 가 세션을 멈추기 시작했음 (_lock 으로 보호).
+        public bool Finishing { get; set; }
+
+        public bool IoSummaryLogged { get; set; }
 
         public int LateWindowsStarted { get; set; }
 

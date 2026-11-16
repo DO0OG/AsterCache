@@ -217,6 +217,11 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             auto["stage_stream_enabled"] = false;
         }
 
+        if (!a.IoSummaryEnabled)
+        {
+            auto["io_summary_enabled"] = false;
+        }
+
         if (a.RelocateHours.Count > 0)
         {
             auto["relocate_hours"] = a.RelocateHours.Select(h => (object?)(long)h).ToList();
@@ -273,6 +278,10 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
     /// auto.start_stream_enabled 를 정합니다 (true 이면 키를 지움).
     public void SetStartStreamEnabled(bool enabled) =>
         EditSection("auto", "start_stream_enabled", enabled ? null : false);
+
+    /// auto.io_summary_enabled 를 정합니다 (true 이면 키를 지움).
+    public void SetIoSummaryEnabled(bool enabled) =>
+        EditSection("auto", "io_summary_enabled", enabled ? null : false);
 
     /// auto.relocate_hours 를 정합니다 (비면 키를 지움). 범위·중복·개수는 검증이 거부합니다.
     public void SetRelocateHours(IReadOnlyList<int> hours) =>

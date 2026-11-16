@@ -10,6 +10,8 @@ public sealed class AutoModeTests : IDisposable
 {
     private readonly AutoRig _rig = new();
 
+    public AutoModeTests() => _rig.Editor.SetIoSummaryEnabled(false);
+
     public void Dispose() => _rig.Dispose();
 
     private static readonly DateTimeOffset T0 = new(2026, 11, 2, 12, 0, 0, TimeSpan.Zero);

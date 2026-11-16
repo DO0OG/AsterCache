@@ -72,7 +72,7 @@
 |---|---|
 | `discover [--json]` | 런처 라이브러리에서 찾은 게임 목록을 보여 줍니다. 읽기 전용입니다. |
 | `status [--plan <계획>] [--journal <저널>]` | 읽기 전용 현황입니다. 관리자 권한, 디스크, 마지막 예열, 자동 모드를 보여 주며, `--plan` 을 주면 배치 판정도 보여 줍니다. |
-| `trace --live --exe <exe> --origin-root <폴더> --out <파일> [--seconds N]` | ETW 로 게임이 읽는 내용을 기록합니다. `--csv`, `--etl` 은 기존 기록을 변환합니다. |
+| `trace --live --exe <exe> --origin-root <폴더> --out <파일> [--seconds N] [--io-summary-root <폴더>]` | ETW 로 게임이 읽는 내용을 기록합니다. `--io-summary-root` 는 여러 번 지정할 수 있고, 디스크 읽기 완료도 수집해 세션이 끝난 뒤 그 폴더 아래 파일의 배치(파일 내용이 아님)로 파일에 이어 `<out>.io.json` 에 저장합니다. `--csv`, `--etl` 은 기존 기록을 변환합니다. |
 | `plan --trace <파일> --origin-root <폴더> --zone-mib N --out <파일> [--dry-run]` | 트레이스로 배치 계획을 만듭니다. `--dry-run` 은 수치만 보여 줍니다. |
 | `probe --volume D:` | 재배치 전에 볼륨을 점검합니다. |
 | `apply --plan <파일> --allowed-root <폴더> --require-volume-label <레이블> [--dry-run \| --execute]` | 조각을 옮깁니다. `--execute` 가 없으면 아무것도 옮기지 않습니다. 레이블이 다르면 아무것도 건드리지 않습니다. |

@@ -1,4 +1,5 @@
 using AsterCache.Core.Settings;
+using AsterCache.Core.Trace;
 using AsterCache.Service;
 using Xunit;
 
@@ -189,7 +190,8 @@ public sealed class AutoModeTests : IDisposable
     {
         AddGame("foo", "manual");
         _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { TraceRuns = 1 } };
-        _rig.World.Files.Add(AutoTracer.RawTracePath(Game()));
+        string raw = AutoTracer.RawTracePath(Game());
+        _rig.World.Files.UnionWith([raw, TraceStageIndex.IndexPath(raw)]);
 
         Mode().OnGameStart(Game());
 
@@ -276,7 +278,8 @@ public sealed class AutoModeTests : IDisposable
             TraceExists = _ => true,
         }, _rig.Log);
         var emitted = new TaskCompletionSource();
-        _rig.World.Files.Add(AutoTracer.RawTracePath(Game("warm")));
+        string warmRaw = AutoTracer.RawTracePath(Game("warm"));
+        _rig.World.Files.UnionWith([warmRaw, TraceStageIndex.IndexPath(warmRaw)]);
         var worker = new Worker(_rig.Settings, _rig.Log, new OneShotStart(new ProcessStart(7, "warm.exe", 0), emitted, () => streamer.Calls.Count >= 2), null, new FakeStreamer(),
             new ReapplyChecker(ReapplyTests.NoIoEnv(), _rig.Log), prewarm: prewarm, auto: Mode());
 
@@ -360,7 +363,7 @@ public sealed class AutoModeTests : IDisposable
         _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { TraceRuns = 2 } };
         string raw = AutoTracer.RawTracePath(Game());
         Directory.CreateDirectory(Path.GetDirectoryName(raw)!);
-        _rig.World.Files.UnionWith([raw, AsterCache.Tracer.TraceWriter.RunPath(raw, 1), AsterCache.Tracer.TraceWriter.RunPath(raw, 2)]);
+        _rig.World.Files.UnionWith([raw, TraceStageIndex.IndexPath(raw), AsterCache.Tracer.TraceWriter.RunPath(raw, 1), AsterCache.Tracer.TraceWriter.RunPath(raw, 2)]);
         File.WriteAllText(AutoTracer.MergeMetaPath(Game()), "{\"run\": 2, \"new_mib\": 100}");
         _rig.World.Session = new FakeTrace();
         _rig.Status.Set("foo", "auto", null, AutoStage.Done, null);

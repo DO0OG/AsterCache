@@ -9,6 +9,9 @@ public sealed record ProcessStart(int Pid, string ExeName, long Timestamp, strin
     public DateTimeOffset DetectedAt { get; init; } = DateTimeOffset.UtcNow;
 
     public long QueueTimestamp { get; init; }
+
+    /// 디스패처 대기열에 넣을 때 대기 수를 올린 게임 이름 (꺼낼 때 같은 이름을 내림).
+    public string? QueuedGame { get; init; }
 }
 
 /// 프로세스 시작 감지. RunAsync 는 취소될 때까지 onStart 를 부르고, 취소되면 정상 반환합니다.
@@ -211,6 +214,26 @@ public static unsafe partial class ProcessSnapshot
             if (names.Contains(exe) && ReadBytes(pid) is { } bytes)
             {
                 result.Add((pid, bytes));
+            }
+        }
+
+        return result;
+    }
+
+    /// 이름이 맞는 실행 중인 프로세스의 (PID, exe 이름, 읽은 누적 바이트).
+    public static IReadOnlyList<(int Pid, string ExeName, long ReadBytes)> ReadCountersWithExeNames(IEnumerable<string> exeNames) =>
+        SelectReadCountersWithExeNames(Take(), exeNames, ReadBytes);
+
+    internal static IReadOnlyList<(int Pid, string ExeName, long ReadBytes)> SelectReadCountersWithExeNames(
+        IReadOnlyList<(int Pid, string Exe)> processes, IEnumerable<string> exeNames, Func<int, long?> readBytes)
+    {
+        var names = new HashSet<string>(exeNames, StringComparer.OrdinalIgnoreCase);
+        var result = new List<(int, string, long)>();
+        foreach ((int pid, string exe) in processes)
+        {
+            if (names.Contains(exe) && readBytes(pid) is { } bytes)
+            {
+                result.Add((pid, exe, bytes));
             }
         }
 

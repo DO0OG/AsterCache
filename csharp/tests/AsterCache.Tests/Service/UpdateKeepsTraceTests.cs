@@ -1,4 +1,5 @@
 using AsterCache.Core.Plan;
+using AsterCache.Core.Trace;
 using AsterCache.Service;
 using AsterCache.Tracer;
 using Xunit;
@@ -79,11 +80,19 @@ public sealed partial class AutoRelocatorTests
     {
         UseAntiCheat(kind);
         DoneAndReadyToReplan(out string trace);
+        string run1 = TraceWriter.RunPath(trace, 1);
+        string runMarks = TraceStageIndex.RunMarksPath(run1);
+        string stageIndex = TraceStageIndex.IndexPath(trace);
+        _w.Files.UnionWith([run1, runMarks, stageIndex]);
 
         UpdateAndDetect();
 
         Assert.DoesNotContain(trace, _w.Files);
         Assert.Contains(trace + ".stale", _w.Files);
+        Assert.DoesNotContain(run1, _w.Files);
+        Assert.Contains(run1 + ".stale", _w.Files);
+        Assert.Contains(runMarks + ".stale", _w.Files);
+        Assert.Contains(stageIndex + ".stale", _w.Files);
         Assert.DoesNotContain(_log.Lines, l => l.Contains(KeptLine, StringComparison.Ordinal));
     }
 
@@ -93,7 +102,15 @@ public sealed partial class AutoRelocatorTests
         UseAntiCheat("vanguard");
         long start = DoneAndReadyToReplan(out trace);
         File.Move(_game.Plan, _game.Plan + ".stale");
-        foreach (string f in new[] { trace, TraceWriter.RunPath(trace, 1), TraceWriter.RunPath(trace, 2) })
+        foreach (string f in new[]
+                 {
+                     trace,
+                     TraceWriter.RunPath(trace, 1),
+                     TraceWriter.RunPath(trace, 2),
+                     TraceStageIndex.IndexPath(trace),
+                     TraceStageIndex.RunMarksPath(TraceWriter.RunPath(trace, 1)),
+                     TraceStageIndex.RunMarksPath(TraceWriter.RunPath(trace, 2)),
+                 })
         {
             _w.Files.Remove(f);
             _w.Files.Add(f + ".stale");
@@ -123,6 +140,9 @@ public sealed partial class AutoRelocatorTests
         Assert.Contains(trace, _w.Files);
         Assert.Contains(TraceWriter.RunPath(trace, 1), _w.Files);
         Assert.Contains(TraceWriter.RunPath(trace, 2), _w.Files);
+        Assert.Contains(TraceStageIndex.IndexPath(trace), _w.Files);
+        Assert.Contains(TraceStageIndex.RunMarksPath(TraceWriter.RunPath(trace, 1)), _w.Files);
+        Assert.Contains(TraceStageIndex.RunMarksPath(TraceWriter.RunPath(trace, 2)), _w.Files);
         Assert.DoesNotContain(trace + ".stale", _w.Files);
         Assert.DoesNotContain(TraceWriter.RunPath(trace, 1) + ".stale", _w.Files);
         Assert.DoesNotContain(TraceWriter.RunPath(trace, 2) + ".stale", _w.Files);

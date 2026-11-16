@@ -30,6 +30,7 @@ public sealed class Worker : BackgroundService
     private readonly QuickExitGuard? _quickExit;
     private readonly DiskReadCoordinator _coordinator;
     private readonly object _watchLock = new();
+    private readonly QueuedStarts _queuedStarts = new(); // 디스패처 대기열의 게임별 시작 수 (단계 스트림이 다른 게임의 시작이 기다리는지 봄)
     private readonly object _gameStateLock = new();
     private volatile AsterSettings _settings;
     private (IProcessWatcher Primary, IProcessWatcher? Fallback) _watchers;
@@ -92,6 +93,8 @@ public sealed class Worker : BackgroundService
             RestreamCooldownMin = () => _settings.Auto.RestreamCooldownMin,
             StartStreamCapSeconds = () => _settings.Auto.StartStreamCapSeconds,
             StartStreamEnabled = () => _settings.Auto.StartStreamEnabled,
+            StageStreamEnabled = () => _settings.Auto.StageStreamEnabled,
+            OtherGameQueued = _queuedStarts.AnyOther,
             IsWarm = prewarm is null ? dispatch.IsWarm : prewarm.AlreadyWarm,
             RecentWarmProbeAt = prewarm is null ? dispatch.RecentWarmProbeAt : prewarm.RecentWarmProbeAt,
             RecentWarmProbeMinutes = () => _settings.Auto.RewarmMinutes,
@@ -391,7 +394,12 @@ public sealed class Worker : BackgroundService
             _prewarm?.ReleasePins($"launcher {s.ExeName} started"); // 런처 업데이트가 파일을 고칠 수 있게
         }
 
-        writer.TryWrite(s with { QueueTimestamp = Stopwatch.GetTimestamp() });
+        if (game is not null)
+        {
+            _queuedStarts.Add(game.Name);
+        }
+
+        writer.TryWrite(s with { QueueTimestamp = Stopwatch.GetTimestamp(), QueuedGame = game?.Name });
         if (_prewarm?.IsTrigger(s.ExeName) == true && (IsGameExe(s.ExeName) || !HoldTrigger(s)))
         {
             RunTrigger(s);
@@ -542,6 +550,11 @@ public sealed class Worker : BackgroundService
         {
             await foreach (ProcessStart s in reader.ReadAllAsync(ct))
             {
+                if (s.QueuedGame is { } queued)
+                {
+                    _queuedStarts.Remove(queued); // 꺼냈으니 대기 중이 아님 (올릴 때 적어 둔 이름을 그대로 내려 설정이 바뀌어도 짝이 맞음)
+                }
+
                 _dispatcher.Handle(s, ct); // 순서와 쿨다운 의미를 유지하며 별도 루프에서 처리
             }
         }

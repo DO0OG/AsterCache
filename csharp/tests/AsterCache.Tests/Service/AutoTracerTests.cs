@@ -64,6 +64,7 @@ public sealed class AutoTracerTests : IDisposable
 
         _tracer.Shutdown();
         _rig.World.Files.Add(Raw);
+        _rig.World.Files.Add(TraceStageIndex.IndexPath(Raw));
         _tracer.Start(_game);
         Assert.Equal(1, _rig.World.TraceStarts); // 원시 트레이스가 이미 있음
     }
@@ -159,6 +160,8 @@ public sealed class AutoTracerTests : IDisposable
         Assert.Equal(2, events.Count);
         Assert.Equal(@"D:\Games\Foo\a.bin", ((JObject)events[0]!)["path"]);
         Assert.True(File.Exists(Path.Combine(Path.GetDirectoryName(Raw)!, "foo.trace.run1.json")));
+        Assert.Equal([new StageMark("foo.exe", 0)], TraceStageIndex.ReadMarks(TraceWriter.RunPath(Raw, 1)));
+        Assert.Equal("foo.exe", Assert.Single(TraceStageIndex.Read(TraceStageIndex.IndexPath(Raw))!.Stages).Exe);
         Assert.Equal(AutoStage.WaitingIdle, _rig.Status.Get("foo")!.Stage);
         Assert.Contains(_rig.Log.Lines, l => l.Contains("auto trace ended (game exited)", StringComparison.Ordinal));
     }
@@ -704,6 +707,8 @@ public sealed class AutoTracerTests : IDisposable
         Assert.Equal([131072L, 0L], run2.Select(r => ((JObject)r!)["offset"]));
         var merged = (List<object?>)JsonRead.ReadFile(Raw)!;
         Assert.Equal([131072L, 0L, 65536L], merged.Select(r => ((JObject)r!)["offset"])); // 최신 run2 의 순서가 앞, run1 에서만 본 블록은 뒤
+        Assert.Equal([new StageMark("foo.exe", 0)], TraceStageIndex.ReadMarks(TraceWriter.RunPath(Raw, 2)));
+        Assert.Equal([65536L, 131072L], TraceStageIndex.Read(TraceStageIndex.IndexPath(Raw))!.Stages[0].Ranges.Select(r => r.Length)); // 블록 2 와 이어진 블록 0·1 한 범위
         Assert.False(File.Exists(Raw + ".tmp"));
         Assert.Contains(_rig.Log.Lines, l => l.Contains("(run 2, merged)", StringComparison.Ordinal));
     }
@@ -891,6 +896,12 @@ public sealed class AutoTracerTests : IDisposable
         }
 
         TraceWriter.Write(sessions, Raw);
+        for (int i = 0; i < count; i++)
+        {
+            TraceStageIndex.WriteMarks(TraceWriter.RunPath(Raw, i + 1), [new StageMark($"foo{i + 1}.exe", 0)]);
+        }
+
+        TraceStageIndex.Write(TraceStageIndex.IndexPath(Raw), new TraceStageIndex([new TraceStage("foo.exe", 0, [])]));
         _rig.World.RunReadBytes = AutoTracer.RunReadBytes;
     }
 
@@ -1139,6 +1150,7 @@ public sealed class AutoTracerTests : IDisposable
         }
 
         TraceWriter.WriteFile(Raw, [a, b]);
+        TraceStageIndex.Write(TraceStageIndex.IndexPath(Raw), new TraceStageIndex([new TraceStage("foo.exe", 0, [])]));
         TracePhases.Recount(_game);
         Assert.Equal(2, TracePhases.CommonOf(_game)!.Count); // 세 회차 모두 읽은 a, b 가 common
 
@@ -1146,6 +1158,7 @@ public sealed class AutoTracerTests : IDisposable
         Assert.NotNull(gate);
         AutoTracer.DropChanged(_game, new HashSet<string>(StringComparer.OrdinalIgnoreCase) { b.Path }); // 업데이트로 b.bin 이 바뀜
 
+        Assert.False(File.Exists(TraceStageIndex.IndexPath(Raw)));
         var only = Assert.Single(TracePhases.CommonOf(_game)!);
         Assert.Equal(a.Path, only.Path); // 다시 쓴 run 을 반영해 common 이 갱신되고 b.bin 은 빠짐
     }
@@ -1200,6 +1213,99 @@ public sealed class AutoTracerTests : IDisposable
         Extra(max: 8);
         _rig.Status.Remove("foo"); // 커버리지 값이 없어도 병합 증가량이 충분하면 수집
         Assert.True(_tracer.WantsRun(_game));
+    }
+
+    [Fact]
+    public void MissingStageIndexRequestsOneAdditionalTraceAfterTheConfiguredRunLimit()
+    {
+        Extra(runs: 1, max: 1);
+        SeedRuns(1);
+        File.Delete(TraceStageIndex.IndexPath(Raw));
+
+        Assert.True(_tracer.WantsRun(_game));
+        Reads((0, 65536));
+        _tracer.Start(_game);
+        Assert.True(_tracer.Active);
+        EndAfterExitGrace();
+
+        Assert.True(File.Exists(TraceStageIndex.IndexPath(Raw)));
+        Assert.False(_tracer.WantsRun(_game));
+    }
+
+    [Fact]
+    public void StageIndexTracesStopAfterTwoAttemptsEvenWhenTheRunIsNotSaved()
+    {
+        Extra(runs: 1, max: 1);
+        SeedRuns(1);
+        File.Delete(TraceStageIndex.IndexPath(Raw));
+
+        for (int attempt = 1; attempt <= 2; attempt++)
+        {
+            Assert.True(_tracer.WantsRun(_game));
+            _rig.World.Session = new FakeTrace(); // 읽기가 하나도 없어 저장되지 않는 run
+            _rig.World.Running = true;
+            _tracer.Start(_game);
+            Assert.True(_tracer.Active);
+            Assert.Contains(_rig.Log.Lines, l => l.Contains($"for stage index, attempt {attempt}/2)", StringComparison.Ordinal));
+            EndAfterExitGrace();
+            Assert.False(_tracer.Active);
+        }
+
+        Assert.False(File.Exists(TraceStageIndex.IndexPath(Raw)));
+        Assert.Equal(2, TraceStageIndex.ReadTried(Raw)); // 표식으로 남아 서비스를 다시 시작해도 유지
+        Assert.False(_tracer.WantsRun(_game));
+        Assert.Equal(2, _rig.World.TraceStarts); // 시도 두 번만 세션을 엶
+        Assert.Equal(2, _rig.Log.Lines.Count(l => l.Contains("for stage index, attempt", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void StageIndexTraceDoesNotChangeTheLearningProgressNorRunWhenTracingIsOff()
+    {
+        Extra(runs: 1, max: 1);
+        SeedRuns(1);
+        File.Delete(TraceStageIndex.IndexPath(Raw));
+        AutoEnv env = _rig.World.Env();
+
+        Assert.False(AutoTracer.NextTrace(_game, _rig.Settings.Auto, env, _rig.Status).Wanted); // 진행 표시 (trace N/M) 의 근거는 그대로
+        Assert.True(_tracer.WantsRun(_game));
+
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { Trace = false } };
+        Assert.False(_tracer.WantsRun(_game)); // 전역 추적을 끈 사용자에게는 아무것도 하지 않음
+        Assert.Equal(0, AutoTracer.StageTraceAttempt(_game, _rig.Settings.Auto, env));
+    }
+
+    [Fact]
+    public void FailingToRemoveTheOldStageIndexKeepsTheRunAndTheStaleIndexIsIgnored()
+    {
+        SetRuns(3);
+        FirstRunOfTwoBlocks();
+        string index = TraceStageIndex.IndexPath(Raw);
+        Assert.NotNull(TraceStageIndex.Read(index));
+
+        Reads((131072, 65536));
+        _rig.World.Running = true;
+        using (var held = new FileStream(index, FileMode.Open, FileAccess.Read, FileShare.Read)) // 삭제를 막는 열린 핸들 (공유 위반)
+        {
+            _tracer.Start(_game);
+            EndAfterExitGrace();
+        }
+
+        Assert.True(File.Exists(TraceWriter.RunPath(Raw, 2))); // 부가 파일 때문에 본 기록을 잃지 않음
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("old stage index not removed", StringComparison.Ordinal));
+        Assert.DoesNotContain(_rig.Log.Lines, l => l.Contains("auto trace failed", StringComparison.Ordinal));
+        Assert.Null(TraceStageIndex.Read(index)); // 낡은 색인은 병합 추적과 맞지 않아 단계 정보 없음으로 취급
+    }
+
+    [Fact]
+    public void MissingStageIndexDoesNotRequestATraceForAnAntiCheatGame()
+    {
+        Extra(runs: 1, max: 1);
+        SeedRuns(1);
+        File.Delete(TraceStageIndex.IndexPath(Raw));
+        _rig.World.AntiCheats[_game.OriginRoot] = "vanguard";
+
+        Assert.False(_tracer.WantsRun(_game));
+        Assert.Equal(0, _rig.World.TraceStarts);
     }
 
     [Fact]
@@ -1346,6 +1452,7 @@ public sealed class AutoTracerTests : IDisposable
         Assert.True(File.Exists(TraceWriter.RunPath(Raw, AutoTracer.MaxRunFiles)));
         Assert.False(File.Exists(TraceWriter.RunPath(Raw, AutoTracer.MaxRunFiles + 1)));
         Assert.Equal(AutoTracer.MaxRunFiles, AutoTracer.LastRunNumber(_game, File.Exists));
+        Assert.Equal("foo2.exe", Assert.Single(TraceStageIndex.ReadMarks(TraceWriter.RunPath(Raw, 1))!).Exe);
         HashSet<(string Path, long Offset, long Length)> after = TraceBlocks(Raw);
         Assert.Subset(after, before); // 기존 병합본의 블록이 모두 남음
         Assert.Contains((@"D:\Games\Foo\a.bin", 8000L * MiB, 65536L), after);

@@ -64,7 +64,7 @@ The configuration file is `%ProgramData%\AsterCache\config.json`. Editing it in 
 | `reapply_interval_minutes` | 1440 | Interval of the periodic layout check, in minutes (5 to 10080). |
 | `max_stream_mib` | the larger of 4096 and the zone size | Upper limit of what one stream or prewarm reads, in MiB. An explicit value wins. |
 | `source` | `manual` | `auto` for a game found automatically, `manual` for a game you registered. |
-| `anticheat` | none | Anti-cheat found in the install folder: `eac`, `battleye`, `vanguard`, `kernel`, `ricochet`, or `unknown`. Shown in the Games tab; it does not change behavior. For the policy, see [Anti-cheat compatibility](ANTICHEAT.md). |
+| `anticheat` | none | Anti-cheat found in the install folder: `eac`, `battleye`, `vanguard`, `kernel`, `ricochet`, or `unknown`. Shown in the Games tab. The value also decides whether automatic trace, pinning, and SSD assist storage are allowed for the game. For the policy, see [Anti-cheat compatibility](ANTICHEAT.md). |
 | `display_name` | none | Game name shown on screen. When not set, uses the launcher name the service recorded, or else the key with underscores replaced by spaces. The internal key is unchanged. You can also set it in the Game options window on the Games tab (default, Korean, and English name boxes). |
 | `display_names` | none | Per-language display names. Example: `{"ko": "발로란트", "en": "VALORANT"}`. Only the keys `ko` and `en` are accepted. |
 | `mode` | `inherit` | What the service does for this game: `inherit` (everything), `prewarm_only` (no relocation or periodic re-apply), `relocate_only` (no prewarm, re-prewarm, top-up, start-up stream, or pin), `off` (nothing). Tracing stays allowed unless the game is `off` or `paused`. Also set by the policy choice in the Game options window on the Games tab. |
@@ -148,8 +148,10 @@ What each stage does is in [Automatic mode](AUTO_MODE.md). Ranges are given in p
 | `rewarm_minutes` | 10 | Interval of the cache check that prewarms again when the data went cold (0 to 1440; 0 = off). |
 | `rewarm_after_exit_min` | 2 | When a game exit is detected, the cache check is pulled forward to this many minutes later (0 to 1440; 0 = off). |
 | `start_stream_enabled` | `true` | When `false`, no start-up stream runs when a game starts. Also a switch in the Settings tab. |
+| `stage_stream_enabled` | `true` | When `false`, no stage stream runs for the executables a game starts after its first one, and the first start-up stream reads its whole start list as before. There is no switch for it in the Settings tab. See [Stage stream](AUTO_MODE.md#6-while-a-game-runs). |
 | `restream_cooldown_min` | 10 | The start-up stream of the same game is not run again within this many minutes (0 to 1440). It is also skipped while the game is running or the disk is busy. |
 | `start_stream_cap_seconds` | 120 | Time limit of the start-up stream, in seconds (0 to 7200). It also stops at the loading boundary (the point where the reads in a 10-second moving window fall below 10% of their peak, at most 60 seconds in). 0 means no time limit. |
+| `quick_exit_seconds` | 90 | A game session shorter than this many seconds (10 to 600) counts as an exit right after launch. If the game is started again within 10 minutes, the service backs off for that one run. See [When a game closes right after launch](AUTO_MODE.md#6-while-a-game-runs). |
 | `keep_awake` | `true` | A small 4 KiB read every 10 minutes, while a launcher is open or at the hours you usually play, so the HDD does not spin down. Windows power settings are not changed. |
 | `keep_stream_on_game_start` | `false` | When `true`, a prewarm reads to the end even if its game starts (for experiments). Normally it stops at the next 64 MiB batch to yield the disk to the game. |
 | `load_boundary` | `false` | When `true`, measures when the loading head (tier0) is in RAM at each game start. It reads the disk, so it stops when the game exits. |
@@ -163,7 +165,7 @@ What each stage does is in [Automatic mode](AUTO_MODE.md). Ranges are given in p
 
 The Updates card in the Settings tab sets `update.mode` and `update.prerelease`.
 
-Older versions reject the keys `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, `update`, and `memory`, so remove them before rolling back. `memory` is new in 1.0.3: versions 1.0.2 and earlier reject a settings file that contains it, whatever its value. `memory.standby_ladder` is newer than that: versions 1.0.3 and earlier reject a settings file that contains it, so remove it before rolling back.
+Older versions reject the keys `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, `update`, and `memory`, so remove them before rolling back. `memory` is new in 1.0.3: versions 1.0.2 and earlier reject a settings file that contains it, whatever its value. `memory.standby_ladder` is newer than that: versions 1.0.3 and earlier reject a settings file that contains it, so remove it before rolling back. `auto.stage_stream_enabled` and `auto.quick_exit_seconds` are newer still: versions 1.0.3 and earlier reject a settings file that contains either, so remove them before rolling back.
 
 ## Watcher
 

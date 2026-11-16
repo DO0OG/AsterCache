@@ -64,7 +64,7 @@
 | `reapply_interval_minutes` | 1440 | 정기 배치 검사 간격(분, 5~10080). |
 | `max_stream_mib` | 4096과 존 크기 중 큰 값 | 한 번의 스트림·예열이 읽는 상한(MiB). 명시값이 우선합니다. |
 | `source` | `manual` | 자동으로 찾은 게임은 `auto`, 직접 등록한 게임은 `manual`. |
-| `anticheat` | 없음 | 설치 폴더에서 찾은 안티치트: `eac`, `battleye`, `vanguard`, `kernel`, `ricochet`, `unknown`. 게임 탭에 표시되며 동작은 바꾸지 않습니다. 정책은 [안티치트 호환](ANTICHEAT.ko.md)을 보십시오. |
+| `anticheat` | 없음 | 설치 폴더에서 찾은 안티치트: `eac`, `battleye`, `vanguard`, `kernel`, `ricochet`, `unknown`. 게임 탭에 표시되며, 값에 따라 그 게임의 자동 추적·고정·SSD 보조 저장 허용 여부도 정해집니다. 정책은 [안티치트 호환](ANTICHEAT.ko.md)을 보십시오. |
 | `display_name` | 없음 | 화면에 보일 게임 이름. 없으면 서비스가 남긴 런처 이름, 그것도 없으면 키의 밑줄을 공백으로 바꾼 이름을 씁니다. 내부 키는 그대로입니다. 게임 탭의 게임 설정 창(기본·한국어·영어 이름 칸)에서도 고칠 수 있습니다. |
 | `display_names` | 없음 | 언어별 화면 이름. 예: `{"ko": "발로란트", "en": "VALORANT"}`. 키는 `ko`, `en` 만 됩니다. |
 | `mode` | `inherit` | 이 게임에 서비스가 하는 일의 범위: `inherit`(전부), `prewarm_only`(재배치·정기 재적용 제외), `relocate_only`(예열·재예열·보충·시작 스트림·고정 제외), `off`(아무것도 안 함). 추적은 게임이 `off` 이거나 `paused` 가 아니면 계속 허용됩니다. 게임 탭의 게임 설정 창에서 정책을 고르는 것으로도 바꿉니다. |
@@ -148,8 +148,10 @@
 | `rewarm_minutes` | 10 | 데이터가 식었는지 보고 다시 예열하는 캐시 점검 간격(0~1440, 0이면 끔). |
 | `rewarm_after_exit_min` | 2 | 게임 종료를 감지하면 캐시 점검을 이 시간(분) 뒤로 당깁니다(0~1440, 0이면 끔). |
 | `start_stream_enabled` | `true` | `false` 면 게임이 시작될 때 시작 스트림을 하지 않습니다. 설정 탭의 스위치로도 바꿉니다. |
+| `stage_stream_enabled` | `true` | `false` 면 게임이 첫 실행 파일 뒤에 띄우는 실행 파일마다 하는 단계 스트림을 하지 않고, 첫 시작 스트림도 예전처럼 시작 목록 전체를 읽습니다. 설정 탭에는 스위치가 없습니다. [단계 스트림](AUTO_MODE.ko.md#6-게임-실행-중)을 보십시오. |
 | `restream_cooldown_min` | 10 | 같은 게임의 시작 스트림을 이 시간(분) 안에는 다시 돌리지 않습니다(0~1440). 게임이 이미 실행 중이거나 디스크가 바쁠 때도 건너뜁니다. |
 | `start_stream_cap_seconds` | 120 | 시작 스트림의 시간 상한(초, 0~7200). 로딩 경계(10초 이동 창 읽기량이 최고치의 10% 아래로 떨어지는 시점, 최대 60초)에서도 멈춥니다. 0이면 시간 상한이 없습니다. |
+| `quick_exit_seconds` | 90 | 게임 세션이 이 시간(초, 10~600)보다 짧게 끝나면 실행 직후 종료로 셉니다. 10분 안에 그 게임을 다시 실행하면 그 실행에서는 서비스가 물러납니다. [게임이 실행 직후 꺼질 때](AUTO_MODE.ko.md#6-게임-실행-중)를 보십시오. |
 | `keep_awake` | `true` | 런처가 떠 있거나 평소 플레이하는 시간대에 10분마다 4 KiB 를 작게 읽어 HDD 가 꺼지지 않게 합니다. Windows 전원 설정은 바꾸지 않습니다. |
 | `keep_stream_on_game_start` | `false` | `true` 면 예열 중인 게임이 시작돼도 끝까지 읽습니다(실험용). 평소에는 다음 64 MiB 묶음 경계에서 멈춰 게임에 디스크를 양보합니다. |
 | `load_boundary` | `false` | `true` 면 게임 시작 때 로딩 앞부분(tier0)이 RAM 에 들어온 시각을 잽니다. 디스크를 읽으므로 게임이 끝나면 멈춥니다. |
@@ -163,7 +165,7 @@
 
 설정 탭의 **업데이트** 카드가 `update.mode` 와 `update.prerelease` 를 정합니다.
 
-이전 버전은 `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, `update`, `memory` 키를 거부하므로, 되돌리기 전에 지워야 합니다. `memory` 는 1.0.3 부터 있는 키이며, 1.0.2 이하 버전은 이 키가 파일에 있으면 값과 상관없이 설정 파일 전체를 거부합니다. `memory.standby_ladder` 는 그보다 새 키입니다. 1.0.3 이하 버전은 이 키가 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오.
+이전 버전은 `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, `update`, `memory` 키를 거부하므로, 되돌리기 전에 지워야 합니다. `memory` 는 1.0.3 부터 있는 키이며, 1.0.2 이하 버전은 이 키가 파일에 있으면 값과 상관없이 설정 파일 전체를 거부합니다. `memory.standby_ladder` 는 그보다 새 키입니다. 1.0.3 이하 버전은 이 키가 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오. `auto.stage_stream_enabled` 와 `auto.quick_exit_seconds` 는 그보다 더 새 키입니다. 1.0.3 이하 버전은 둘 중 하나라도 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오.
 
 ## 감시기
 

@@ -168,6 +168,26 @@ public sealed class QuickExitGuardTests
     }
 
     [Fact]
+    public void BackedOffRunThatEndsBetweenTheLimitsDoesNotBackOffAgainAfterServiceRestart()
+    {
+        QuickExitGuard guard = Make();
+        _ = Run(guard, 52);
+        _now = _now.AddMinutes(1);
+
+        (bool backOff, bool quick) = Run(guard, 150);
+
+        Assert.True(backOff);
+        Assert.False(quick);
+
+        QuickExitGuard restarted = Make();
+        _now = _now.AddMinutes(1);
+
+        (bool nextBackOff, _) = Run(restarted, 20);
+
+        Assert.False(nextBackOff);
+    }
+
+    [Fact]
     public void RunsBetweenTheLimitsNeitherCountNorReset()
     {
         QuickExitGuard guard = Make();

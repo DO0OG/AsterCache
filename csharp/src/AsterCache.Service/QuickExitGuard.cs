@@ -226,6 +226,7 @@ public sealed class QuickExitGuard
                 case QuickExitKind.Between:
                     if (session.BackOff)
                     {
+                        state.BackedOff = BackedOffResult.Launched;
                         effectVersion = ++state.EffectVersion;
                         effect = BackedOffLaunchEffect(game, state, session, end, seconds, effectVersion);
                     }

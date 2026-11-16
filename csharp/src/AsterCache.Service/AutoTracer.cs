@@ -686,8 +686,12 @@ public sealed class AutoTracer
         return !GamePolicy.AllowsTracking(latest);
     }
 
-    public void Start(GameSettings g)
+    public void Start(GameSettings g) => _ = Start(g, out _);
+
+    // 저장 마무리 중인 실행만 완료 신호를 돌려줘 시작 작업이 한 번 재시도하게 함.
+    public bool Start(GameSettings g, out Task? previousFinish)
     {
+        previousFinish = null;
         if (PolicyBlocksTracking(g, out GameSettings latest))
         {
             bool first;
@@ -701,7 +705,7 @@ public sealed class AutoTracer
                 _log.Info($"{g.Name}: trace skipped (game policy: {(latest.Paused ? "paused" : GamePolicy.ModeName(latest.Mode))})");
             }
 
-            return;
+            return false;
         }
 
         lock (_lock)
@@ -722,7 +726,7 @@ public sealed class AutoTracer
                 _log.Info($"{g.Name}: trace skipped (anti-cheat: {cheat})");
             }
 
-            return;
+            return false;
         }
 
         string? refused;
@@ -748,9 +752,30 @@ public sealed class AutoTracer
             stageAttempt = next.Wanted ? 0 : StageTraceAttempt(g, auto, _env);
             ioSummaryAttempt = next.Wanted ? 0 : IoSummaryAttemptForService(g, auto);
             firstRun = !_env.FileExists(RawTracePath(g));
-            if (_run is not null || _stopCleanupFailed || !next.Wanted && stageAttempt == 0 && ioSummaryAttempt == 0 || _stopped.Any(r => string.Equals(r.Game.Name, g.Name, StringComparison.OrdinalIgnoreCase)))
+            if (_run is { } running)
             {
-                return;
+                if (running.Finishing || running.EndRequested)
+                {
+                    previousFinish = running.Finished.Task;
+                }
+
+                return false;
+            }
+
+            if (_stopCleanupFailed || !next.Wanted && stageAttempt == 0 && ioSummaryAttempt == 0)
+            {
+                return false;
+            }
+
+            Run? stopped = _stopped.FirstOrDefault(r => string.Equals(r.Game.Name, g.Name, StringComparison.OrdinalIgnoreCase));
+            if (stopped is not null)
+            {
+                if (stopped.Saving)
+                {
+                    previousFinish = stopped.SaveFinished.Task;
+                }
+
+                return false;
             }
 
             refused = _env.Capabilities(g.OriginRoot).PrewarmRefusal; // 시스템 SSD·SSD·종류를 모르는 드라이브는 건드리지 않음 (시스템 HDD 는 읽기 전용 트레이스만)
@@ -790,7 +815,7 @@ public sealed class AutoTracer
                         _status.Set(g.Name, g.Source, null, AutoStage.Failed, "trace session failed to start");
                     }
 
-                    return;
+                    return false;
                 }
             }
         }
@@ -802,7 +827,7 @@ public sealed class AutoTracer
                 _log.Info($"{g.Name}: auto trace and relocation skipped ({refused})"); // 같은 이유면 매번 남기지 않음
             }
 
-            return;
+            return false;
         }
 
         if (stageAttempt > 0 || ioSummaryAttempt > 0)
@@ -849,17 +874,18 @@ public sealed class AutoTracer
                     ? $"stage index, attempt {stageAttempt}/{MaxStageIndexTries}"
                     : $"I/O summary, attempt {ioSummaryAttempt}/{MaxIoSummaryTries}";
             _log.Info($"{g.Name}: auto trace started (run {runNumber} for {purpose})");
-            return;
+            return true;
         }
 
         if (!firstRun)
         {
             _log.Info($"{g.Name}: auto trace started (run {done + 1}/{next.Limit}" + (next.Coverage is { } cov && done >= _settings().Auto.TraceRuns ? $", coverage {cov}%" : string.Empty) + ")");
-            return;
+            return true;
         }
 
         _status.Set(g.Name, g.Source, null, learn is null ? AutoStage.Tracing : AutoStage.Learning, learn is null ? null : AutoLearn.Detail(learn.Stats));
         _log.Info($"{g.Name}: auto trace started" + (learn is null ? string.Empty : " (learning: read ahead while the game runs)"));
+        return true;
     }
 
     /// 1 초마다 부릅니다. 끝내야 하면 세션을 멈추고 트레이스를 씁니다.
@@ -1152,13 +1178,19 @@ public sealed class AutoTracer
             }
             finally
             {
+                bool saved = false;
                 lock (_lock)
                 {
                     r.Saving = false;
                     if (!again)
                     {
-                        _stopped.Remove(r);
+                        saved = _stopped.Remove(r);
                     }
+                }
+
+                if (saved)
+                {
+                    r.SaveFinished.TrySetResult(true); // 보류 목록에서 뺀 뒤에만 저장 완료를 알림
                 }
             }
         }
@@ -1269,17 +1301,17 @@ public sealed class AutoTracer
         bool stoppedBefore = run.Held is not null; // 이미 멈춰 둔 기록의 저장: 세션은 멈출 때 정리했음
         try
         {
-            if (!stoppedBefore && run.Collecting)
-            {
-                LogOpenWindow(run); // 후반 창이 열린 채 끝나면 그 창의 집계도 남김
-            }
-
             if (!stoppedBefore)
             {
                 lock (_lock)
                 {
-                    run.Finishing = true; // 서비스 종료의 동결 경로가 같은 세션을 또 멈추지 않게
+                    run.Finishing = true; // 저장 경로 진입을 알려 시작 재시도가 완료 신호를 기다리게 함
                 }
+            }
+
+            if (!stoppedBefore && run.Collecting)
+            {
+                LogOpenWindow(run); // 후반 창이 열린 채 끝나면 그 창의 집계도 남김
             }
 
             IReadOnlyList<TraceRecord> records = run.Held ?? StopSession(run);
@@ -2142,6 +2174,9 @@ public sealed class AutoTracer
 
         /// 저장 중이면 true (다른 스레드가 같은 기록을 두 번 저장하지 않게).
         public bool Saving { get; set; }
+
+        /// 보류 기록의 실제 저장이 끝나 목록에서 빠질 때 알림.
+        public TaskCompletionSource<bool> SaveFinished { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public bool Exited { get; set; }
 

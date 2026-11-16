@@ -623,6 +623,10 @@ public sealed partial class AutoRelocatorTests
         WriteRows(run2, a); // 바뀐 파일이 없는 파일은 건드리지 않음
         WriteRows(g.Trace, b, a);
         WriteRows(warmOnly, b);
+        IoSummary expectedIo = IoSummaries.With(DateTimeOffset.UtcNow, b.Path);
+        string run1Io = IoSummaryStore.RunPath(run1);
+        IoSummaryStore.WriteForRun(run1, expectedIo);
+        IoSummaryStore.WriteTried(raw, 2);
         byte[] rawBefore = File.ReadAllBytes(raw);
         byte[] run2Before = File.ReadAllBytes(run2);
         HashSet<string> changed = new(StringComparer.OrdinalIgnoreCase) { @"d:\g\B.BIN" };
@@ -637,6 +641,10 @@ public sealed partial class AutoRelocatorTests
         Assert.Empty(RowPaths(warmOnly));
         Assert.Equal(rawBefore, File.ReadAllBytes(raw + ".stale")); // 원본은 .stale 로
         Assert.Equal(2, RowPaths(run1 + ".stale").Length);
+        IoSummary staleIo = Assert.IsType<IoSummary>(IoSummaryStore.Read(run1Io + AutoRelocator.StaleSuffix));
+        Assert.Equal(expectedIo.Quality, staleIo.Quality);
+        Assert.False(File.Exists(run1Io));
+        Assert.Equal(0, IoSummaryStore.ReadTried(raw));
         Assert.Equal(2, RowPaths(g.Trace + ".stale").Length);
         Assert.False(File.Exists(run2 + ".stale")); // 빠진 행이 없으면 복사도 다시 쓰기도 없음
         Assert.Equal(run2Before, File.ReadAllBytes(run2));
@@ -648,6 +656,169 @@ public sealed partial class AutoRelocatorTests
         AutoTracer.DropChanged(g, changed); // 중간에 멈췄다 다시 불려도 .stale 은 원본 그대로
         Assert.Equal(rawBefore, File.ReadAllBytes(raw + ".stale"));
         Assert.Equal(markTime, File.GetLastWriteTimeUtc(AutoTracer.UpdatedMarkPath(g))); // 다시 쓴 파일이 없으면 재학습 표지를 새로 쓰지 않음
+    }
+
+    [Fact]
+    public void ChangedRunAndIoSummaryUseTheSameStaleSuffixWhenAnOlderStaleRunExists()
+    {
+        DateTime planned = new(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc);
+        string raw = OlderUpdateFixture(Path.Combine(Root, "plans9"), out GameSettings g, new DateTimeOffset(planned).ToUnixTimeSeconds());
+        string run = TraceWriter.RunPath(raw, 1);
+        var a = new TraceEvent(@"D:\g\A.bin", 0, 65536);
+        var b = new TraceEvent(@"D:\g\b.bin", 0, 65536);
+        WriteRows(raw, a, b);
+        WriteRows(run, a, b);
+        WriteRows(run + AutoRelocator.StaleSuffix, a, b);
+        File.SetLastWriteTimeUtc(run + AutoRelocator.StaleSuffix, planned.AddDays(-30));
+        string io = IoSummaryStore.RunPath(run);
+        IoSummaryStore.WriteForRun(run, IoSummaries.With(DateTimeOffset.UtcNow, b.Path));
+        IoSummaryStore.WriteTried(raw, 2);
+
+        using DataLock? gate = DataLock.TryAcquire(g.Plan);
+        Assert.NotNull(gate);
+        AutoTracer.DropChanged(g, new HashSet<string>(StringComparer.OrdinalIgnoreCase) { b.Path });
+
+        Assert.True(File.Exists(run + AutoRelocator.UpdateSuffix));
+        Assert.True(File.Exists(io + AutoRelocator.UpdateSuffix));
+        Assert.False(File.Exists(io + AutoRelocator.StaleSuffix));
+        Assert.False(File.Exists(io));
+        Assert.Equal(0, IoSummaryStore.ReadTried(raw));
+    }
+
+    [Fact]
+    public void ChangedSummaryOnlyFileInvalidatesTheAggregateEvenWhenRawRowsDoNotChange()
+    {
+        string plans = Path.Combine(Root, "plans10");
+        Directory.CreateDirectory(plans);
+        GameSettings g = _game with { Plan = Path.Combine(plans, "bench.plan.json"), Trace = Path.Combine(plans, "bench.plan.json.prefetch.json") };
+        string raw = AutoTracer.RawTracePath(g);
+        string a = @"D:\g\A.bin";
+        string b = @"D:\g\B.bin";
+        WriteRows(raw, new TraceEvent(a, 0, 65536));
+        string standalone = IoSummaryStore.WriteStandalone(raw, IoSummaries.With(DateTimeOffset.UtcNow, b));
+        IoSummaryStore.WriteTried(raw, 2);
+        byte[] rawBefore = File.ReadAllBytes(raw);
+
+        using DataLock? gate = DataLock.TryAcquire(g.Plan);
+        Assert.NotNull(gate);
+        AutoTracer.DropChanged(g, new HashSet<string>(StringComparer.OrdinalIgnoreCase) { b });
+
+        Assert.Equal(rawBefore, File.ReadAllBytes(raw));
+        Assert.False(File.Exists(standalone));
+        Assert.True(File.Exists(standalone + AutoRelocator.StaleSuffix));
+        Assert.Equal(0, IoSummaryStore.ReadTried(raw));
+        Assert.True(File.Exists(AutoTracer.UpdatedMarkPath(g)));
+    }
+
+    [Fact]
+    public void ARawRewriteForAnotherFileKeepsTheAggregateAndRebindsItsFingerprint()
+    {
+        string plans = Path.Combine(Root, "plans11");
+        Directory.CreateDirectory(plans);
+        GameSettings g = _game with { Plan = Path.Combine(plans, "bench.plan.json"), Trace = Path.Combine(plans, "bench.plan.json.prefetch.json") };
+        string raw = AutoTracer.RawTracePath(g);
+        string run1 = TraceWriter.RunPath(raw, 1);
+        var a = new TraceEvent(@"D:\g\A.bin", 0, 65536);
+        var b = new TraceEvent(@"D:\g\b.bin", 0, 65536);
+        WriteRows(raw, a, b);
+        WriteRows(run1, a, b);
+        IoSummaryStore.WriteForRun(run1, IoSummaries.With(DateTimeOffset.UtcNow, a.Path)); // 집계의 파일 표에는 바뀌지 않는 A 만
+        string standalone = IoSummaryStore.WriteStandalone(raw, IoSummaries.With(DateTimeOffset.UtcNow, a.Path));
+        IoSummaryStore.WriteTried(raw, 2);
+
+        using DataLock? gate = DataLock.TryAcquire(g.Plan);
+        Assert.NotNull(gate);
+        AutoTracer.DropChanged(g, new HashSet<string>(StringComparer.OrdinalIgnoreCase) { b.Path });
+
+        Assert.Equal([a.Path], RowPaths(run1)); // 원시 회차는 다시 쓰임
+        Assert.Equal([a.Path], RowPaths(raw));
+        Assert.NotNull(IoSummaryStore.ReadForRun(run1)); // 집계는 살아 있고 짝 지문만 새 원시 파일에 맞춰짐
+        Assert.NotNull(IoSummaryStore.ReadStandaloneForRaw(standalone, raw));
+        Assert.False(File.Exists(IoSummaryStore.RunPath(run1) + AutoRelocator.StaleSuffix));
+        Assert.Equal(2, IoSummaryStore.ReadTried(raw)); // 무효가 된 집계가 없으니 시도 횟수도 그대로
+    }
+
+    [Fact]
+    public void ALockedIoSummaryFileOnlyWarnsAndTheRawTraceCleanupOfAnUpdateContinues()
+    {
+        string plans = Path.Combine(Root, "plans12");
+        Directory.CreateDirectory(plans);
+        GameSettings g = _game with { Plan = Path.Combine(plans, "bench.plan.json"), Trace = Path.Combine(plans, "bench.plan.json.prefetch.json") };
+        string raw = AutoTracer.RawTracePath(g);
+        string run1 = TraceWriter.RunPath(raw, 1);
+        var a = new TraceEvent(@"D:\g\A.bin", 0, 65536);
+        var b = new TraceEvent(@"D:\g\b.bin", 0, 65536);
+        WriteRows(raw, a, b);
+        WriteRows(run1, a, b);
+        IoSummaryStore.WriteForRun(run1, IoSummaries.With(DateTimeOffset.UtcNow, b.Path)); // 바뀐 파일을 담은 낡은 집계
+        string run1Io = IoSummaryStore.RunPath(run1);
+        using var hold = new FileStream(run1Io, FileMode.Open, FileAccess.Read, FileShare.None);
+
+        using DataLock? gate = DataLock.TryAcquire(g.Plan);
+        Assert.NotNull(gate);
+        AutoTracer.DropChanged(g, new HashSet<string>(StringComparer.OrdinalIgnoreCase) { b.Path });
+
+        Assert.Equal([a.Path], RowPaths(raw)); // 집계 파일을 못 치워도 원시 회차 정리는 끝남
+        Assert.Equal([a.Path], RowPaths(run1));
+        Assert.True(File.Exists(AutoTracer.UpdatedMarkPath(g)));
+    }
+
+    [Fact]
+    public void AStaleSummaryThatCouldNotBeRemovedStaysInvalidAfterTheLockIsReleasedAndTheNextCleanupRemovesItWithItsMark()
+    {
+        string plans = Path.Combine(Root, "plans13");
+        Directory.CreateDirectory(plans);
+        GameSettings g = _game with { Plan = Path.Combine(plans, "bench.plan.json"), Trace = Path.Combine(plans, "bench.plan.json.prefetch.json") };
+        string raw = AutoTracer.RawTracePath(g);
+        string a = @"D:\g\A.bin";
+        string b = @"D:\g\B.bin";
+        WriteRows(raw, new TraceEvent(a, 0, 65536)); // 원시 추적에는 A 만: 업데이트가 원시를 다시 쓰지 않아 지문이 그대로
+        string standalone = IoSummaryStore.WriteStandalone(raw, IoSummaries.With(DateTimeOffset.UtcNow, b));
+        var changed = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { b };
+        using DataLock? gate = DataLock.TryAcquire(g.Plan);
+        Assert.NotNull(gate);
+
+        var warnings = new List<string>();
+        using (new FileStream(standalone, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            AutoTracer.DropChanged(g, changed, warnings.Add);
+        }
+
+        Assert.True(File.Exists(standalone)); // 잠겨 지우지 못함
+        Assert.True(File.Exists(IoSummaryStore.InvalidPath(standalone)));
+        Assert.Null(IoSummaryStore.ReadStandaloneForRaw(standalone, raw)); // 잠금이 풀려도 지문이 맞는데도 무효로 읽힘
+
+        AutoTracer.DropChanged(g, changed, warnings.Add); // 다음 정리: 집계와 표지를 함께 지움
+
+        Assert.False(File.Exists(standalone));
+        Assert.False(File.Exists(IoSummaryStore.InvalidPath(standalone)));
+        Assert.Empty(warnings);
+    }
+
+    [Fact]
+    public void ClearSidecarsAlsoRemovesInvalidMarksAndANewSummaryIsNotRejectedByAnOldMark()
+    {
+        string plans = Path.Combine(Root, "plans14");
+        Directory.CreateDirectory(plans);
+        string raw = Path.Combine(plans, "bench.trace.json");
+        WriteRows(raw, new TraceEvent(@"D:\g\A.bin", 0, 65536));
+        string run1 = TraceWriter.RunPath(raw, 1);
+        WriteRows(run1, new TraceEvent(@"D:\g\A.bin", 0, 65536));
+        IoSummaryStore.WriteForRun(run1, IoSummaries.With(DateTimeOffset.UtcNow, @"D:\g\A.bin"));
+        string runIo = IoSummaryStore.RunPath(run1);
+        IoSummaryStore.MarkInvalid(runIo);
+        string standalone = IoSummaryStore.StandalonePath(raw, 1);
+        File.WriteAllText(standalone, "{}");
+        IoSummaryStore.MarkInvalid(standalone);
+        Assert.Null(IoSummaryStore.ReadForRun(run1));
+
+        IoSummaryStore.WriteForRun(run1, IoSummaries.With(DateTimeOffset.UtcNow, @"D:\g\A.bin")); // 새 집계는 옛 표지를 지우고 씀
+        Assert.NotNull(IoSummaryStore.ReadForRun(run1));
+        IoSummaryStore.MarkInvalid(runIo);
+
+        TraceStageIndex.ClearSidecars(raw);
+
+        Assert.All(new[] { runIo, IoSummaryStore.InvalidPath(runIo), standalone, IoSummaryStore.InvalidPath(standalone) }, file => Assert.False(File.Exists(file), file));
     }
 
     [Fact]

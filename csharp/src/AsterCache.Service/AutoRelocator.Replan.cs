@@ -130,18 +130,35 @@ public sealed partial class AutoRelocator
                 if (changed is null && !recorded && !keep && _env.FileExists(trace))
                 {
                     string Aside(string path) => !_env.FileExists(path + StaleSuffix) ? path + StaleSuffix : dropFailed ? path + StaleSuffix + PartialSuffix : path + UpdateSuffix; // 이미 있는 원본 .stale (이전 업데이트의 것, 또는 일부 정리가 실패하며 남긴 것) 은 덮지 않음
-                    for (int run = AutoTracer.LastRunNumber(g, _env.FileExists); run >= 1; run--)
+                    for (int run = 1; run <= AutoTracer.MaxRunFiles; run++)
                     {
                         string runFile = TraceWriter.RunPath(trace, run); // 플레이 수는 run 파일로 세므로 옛 버전의 run 파일이 남지 않게 함
+                        string destination = Aside(runFile);
+                        string suffix = destination[runFile.Length..];
                         if (_env.FileExists(runFile))
                         {
-                            string destination = Aside(runFile);
                             _env.MoveAside(runFile, destination);
-                            string runMarks = TraceStageIndex.RunMarksPath(runFile);
-                            if (_env.FileExists(runMarks))
-                            {
-                                _env.MoveAside(runMarks, runMarks + destination[runFile.Length..]);
-                            }
+                        }
+
+                        string runMarks = TraceStageIndex.RunMarksPath(runFile);
+                        if (_env.FileExists(runMarks))
+                        {
+                            _env.MoveAside(runMarks, runMarks + suffix);
+                        }
+
+                        string ioSummary = IoSummaryStore.RunPath(runFile);
+                        if (_env.FileExists(ioSummary))
+                        {
+                            MoveIoSummaryAside(g, ioSummary, ioSummary + suffix);
+                        }
+                    }
+
+                    foreach (string standalone in IoSummaryStore.StandalonePaths(trace))
+                    {
+                        if (_env.FileExists(standalone))
+                        {
+                            string destination = Aside(standalone);
+                            MoveIoSummaryAside(g, standalone, destination);
                         }
                     }
 
@@ -151,6 +168,15 @@ public sealed partial class AutoRelocator
                     if (_env.FileExists(stageIndex))
                     {
                         _env.MoveAside(stageIndex, stageIndex + traceDestination[trace.Length..]);
+                    }
+
+                    try
+                    {
+                        File.Delete(IoSummaryStore.TriedPath(trace)); // 무효화된 회차 뒤에 남은 집계 추가 추적 횟수를 초기화
+                    }
+                    catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                    {
+                        _log.Warn($"{g.Name}: I/O summary attempt count not reset ({e.GetType().Name})");
                     }
 
                     string marks = AutoTracer.VolatilePath(g); // 옛 트레이스에서 알게 된 가변 파일 표시도 같이 치움
@@ -240,6 +266,19 @@ public sealed partial class AutoRelocator
 
     // 아직 끝나지 않은 (부분 적용된) 계획의 업데이트: 일부 파일만 바뀌었으면 그 파일의 범위만 트레이스·예열 목록에서 빼고 남은 학습으로 잔여 재계획합니다 (이미 옮긴 조각은 잔여 재계획이 지킴).
     // 다시 트레이스할 수 없는 게임·boot 계획·실패는 기존대로 트레이스를 그대로 둠. 호출하는 쪽이 잠금 안에 있음.
+    // 집계 곁 파일은 부가 파일: 잠겨 옮기지 못해도 경고만 남기고 원시 추적·계획 처리는 계속 (낡은 집계는 원시 지문이 달라 읽을 때 무효)
+    private void MoveIoSummaryAside(GameSettings g, string source, string destination)
+    {
+        try
+        {
+            IoSummaryStore.MoveSummary(source, destination, _env.MoveAside); // 무효 표지도 함께 옮김
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"{g.Name}: I/O summary file not moved ({e.GetType().Name}): {Path.GetFileName(source)}");
+        }
+    }
+
     private void DropChangedRanges(GameSettings g, PlanFile plan)
     {
         if (IsBootPlan(plan) || !_env.FileExists(AutoTracer.RawTracePath(g)) || _env.TraceBlocker(g) is not null || ChangedIfSmall(g, plan, traceShare: false) is not { } changed)
@@ -333,11 +372,26 @@ public sealed partial class AutoRelocator
                     if (_env.FileExists(runFile + sfx))
                     {
                         _env.MoveAside(runFile + sfx, runFile);
-                        string runMarks = TraceStageIndex.RunMarksPath(runFile);
-                        if (_env.FileExists(runMarks + sfx))
-                        {
-                            _env.MoveAside(runMarks + sfx, runMarks);
-                        }
+                    }
+
+                    string runMarks = TraceStageIndex.RunMarksPath(runFile);
+                    if (_env.FileExists(runMarks + sfx))
+                    {
+                        _env.MoveAside(runMarks + sfx, runMarks);
+                    }
+
+                    string ioSummary = IoSummaryStore.RunPath(runFile);
+                    if (_env.FileExists(ioSummary + sfx))
+                    {
+                        MoveIoSummaryAside(g, ioSummary + sfx, ioSummary);
+                    }
+                }
+
+                foreach (string standalone in IoSummaryStore.StandalonePaths(raw))
+                {
+                    if (_env.FileExists(standalone + sfx) && !_env.FileExists(standalone))
+                    {
+                        MoveIoSummaryAside(g, standalone + sfx, standalone);
                     }
                 }
 

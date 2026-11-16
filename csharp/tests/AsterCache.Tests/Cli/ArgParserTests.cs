@@ -1,4 +1,5 @@
 using AsterCache.Cli;
+using AsterCache.Cli.Commands;
 using Xunit;
 
 namespace AsterCache.Tests.Cli;
@@ -28,6 +29,18 @@ public sealed class ArgParserTests
         Assert.True(a.Flag("dry-run"));
         Assert.Equal("auto", a.Text("zone-start-lcn"));
         Assert.False(a.Given("strategy"));
+    }
+
+    [Fact]
+    public void TraceIoSummaryRootCanBeRepeated()
+    {
+        ParsedArgs a = ArgParser.Parse(TraceCommand.Options,
+            ["--live", "--exe", "game.exe", "--prefix", "D:\\Games", "--out", "trace.json", "--io-summary-root", "D:\\Games", "--io-summary-root", "E:\\Games"]);
+        ParsedArgs withoutSummary = ArgParser.Parse(TraceCommand.Options,
+            ["--live", "--exe", "game.exe", "--prefix", "D:\\Games", "--out", "trace.json"]);
+
+        Assert.Equal([@"D:\Games", @"E:\Games"], a.List("io-summary-root"));
+        Assert.Empty(withoutSummary.List("io-summary-root"));
     }
 
     [Fact]

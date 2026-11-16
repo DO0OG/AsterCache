@@ -1,3 +1,4 @@
+using AsterCache.Core.Trace;
 using Microsoft.Diagnostics.Tracing.Parsers;
 using Microsoft.Diagnostics.Tracing.Parsers.Kernel;
 
@@ -10,19 +11,29 @@ namespace AsterCache.Tracer;
 /// 실시간 리스너에는 이 기록 규칙과 따로, 읽는 순간 FileKey → 열려 있는 FileObject 이름으로 바로 알리고 (OnRead), 그래도 모르면 이름이 올 때 늦게 알립니다 (OnLateRead). 기록 (Finish) 은 이 때문에 달라지지 않습니다.
 internal sealed class KernelCollector
 {
+    private const int IrpPagingIo = 0x02; // IrpFlags 의 페이징 읽기 비트 (TraceEvent 열거형 이름은 Windows 이름과 어긋나 값으로 판정)
+
+    private readonly object _rawLock = new();
     private readonly ProcessTree _tree;
     private readonly DevicePaths _devices;
     private readonly FileNames _names;
     private readonly List<TraceRecord> _records = [];
     private readonly List<(int Index, ulong Key, string? ObjName)> _pending = [];
+    private List<TraceRecord>? _frozenRecords;
+    private volatile bool _rawFrozen; // 원시 기록 확정 뒤에는 디스크 읽기 완료 말고 모든 이벤트를 바로 버림 (프로세스 추적도 멈춰 TargetsActive 는 갱신되지 않음: 자동 추적은 게임 종료를 프로세스 목록으로 판정)
     private readonly HashSet<ulong> _written = []; // 이미 쓰기로 기록한 FileKey (쓰기 이벤트는 많아서 파일마다 한 번만)
     private readonly ReadWindow _window = new(); // 닫힌 구간의 읽기·쓰기는 기록하지 않음 (이름·프로세스 이벤트는 계속 처리)
     private volatile LiveListener? _listener; // 첫 구간이 끝나면 Pause 가 뗌
     private volatile int _active;
     private volatile bool _sawTarget;
+    private readonly IoSummaryCollector? _ioSummary;
+    private readonly DateTimeOffset _originUtc;
+    private readonly List<IoSummaryWindow> _rawWindows = [];
+    private long? _rawWindowStartedUs;
 
-    public KernelCollector(KernelTraceEventParser kernel, IReadOnlyCollection<string> exeNames, DevicePaths devices, LiveListener? listener = null)
-        : this(exeNames, devices, listener)
+    public KernelCollector(KernelTraceEventParser kernel, IReadOnlyCollection<string> exeNames, DevicePaths devices, LiveListener? listener = null,
+        IoSummaryCollector? ioSummary = null)
+        : this(exeNames, devices, listener, ioSummary)
     {
         kernel.ProcessStart += OnProcessStart;
         kernel.ProcessDCStart += OnProcessStart; // 세션 시작 때 이미 떠 있던 프로세스
@@ -31,17 +42,24 @@ internal sealed class KernelCollector
         kernel.FileIOFileCreate += d => NameKey(d.FileKey, d.FileName);
         kernel.FileIOFileRundown += d => NameKey(d.FileKey, d.FileName);
         kernel.FileIOCreate += d => OpenFile(d.ProcessID, d.FileObject, d.FileName);
-        kernel.FileIOClose += d => _names.CloseObject(d.FileObject);
+        kernel.FileIOClose += d => CloseObject(d.FileObject);
         kernel.FileIORead += d => AddRead(d.TimeStamp, d.ProcessID, d.FileKey, d.FileObject, d.Offset, d.IoSize);
         kernel.FileIOWrite += d => AddWrite(d.TimeStamp, d.ProcessID, d.FileKey, d.FileObject);
+        if (_ioSummary is not null)
+        {
+            kernel.DiskIORead += d => AddDiskRead(d.DiskNumber, d.ByteOffset, d.TransferSize, d.ElapsedTimeMSec, d.TimeStamp, ((int)d.IrpFlags & IrpPagingIo) != 0);
+        }
     }
 
     /// 이벤트 파서 없이 만드는 쪽 (시험이 이벤트 처리 메서드를 직접 부름).
-    internal KernelCollector(IReadOnlyCollection<string> exeNames, DevicePaths devices, LiveListener? listener = null)
+    internal KernelCollector(IReadOnlyCollection<string> exeNames, DevicePaths devices, LiveListener? listener = null, IoSummaryCollector? ioSummary = null)
     {
         _tree = new ProcessTree(exeNames);
         _devices = devices;
         _listener = listener;
+        _ioSummary = ioSummary;
+        _originUtc = ioSummary?.ObservedAtUtc ?? DateTimeOffset.UtcNow;
+        _rawWindowStartedUs = _ioSummary is null ? null : 0;
         _names = new FileNames((name, offset, size) => _listener?.OnLateRead?.Invoke(_devices.ToDosPath(name), offset, size));
     }
 
@@ -62,11 +80,47 @@ internal sealed class KernelCollector
     /// 처리 스레드가 이미 잡은 알림은 뗀 뒤 몇 건 더 나갈 수 있음 (학습 요약 수치가 한두 건 어긋날 수 있을 뿐 해롭지 않음).
     public void Pause()
     {
-        _window.Close();
-        _listener = null;
+        Pause(DateTimeOffset.UtcNow);
     }
 
-    public void Resume() => _window.Reopen();
+    internal void Pause(DateTimeOffset atUtc)
+    {
+        lock (_rawLock)
+        {
+            CloseRawWindow(atUtc);
+            _window.Close();
+            _listener = null;
+        }
+    }
+
+    public void Resume()
+    {
+        Resume(DateTimeOffset.UtcNow);
+    }
+
+    internal void Resume(DateTimeOffset atUtc)
+    {
+        lock (_rawLock)
+        {
+            _rawWindowStartedUs = _ioSummary is null ? null : Math.Max(0, SessionTimeUs(atUtc));
+            _window.Reopen();
+        }
+    }
+
+    /// 처리 스레드가 끝난 뒤에 부릅니다: 요청 표와 총계를 내줍니다 (파일·블록으로의 변환은 IoBlockMapper 가 따로).
+    public IoRequestSnapshot? FinishIoRequests(DateTimeOffset endedAtUtc, long eventsLost)
+    {
+        if (_ioSummary is null)
+        {
+            return null;
+        }
+
+        lock (_rawLock)
+        {
+            CloseRawWindow(endedAtUtc);
+            return _ioSummary.Snapshot(endedAtUtc, _rawWindows, eventsLost, RawTraceZeroUs);
+        }
+    }
 
     /// 지난 호출 뒤 구간이 받은 읽기 집계를 읽고 비웁니다 (EventsLost 는 세션이 채움).
     public WindowStats TakeWindowStats()
@@ -75,9 +129,57 @@ internal sealed class KernelCollector
     }
 
     /// 이름 표 크기와 모은 기록 수 (세션이 긴 만큼 메모리를 재 보는 용도, Stop 뒤에 읽음).
-    public (int Names, int Records) Footprint => (_names.Count, _records.Count);
+    public (int Names, int Records) Footprint
+    {
+        get
+        {
+            lock (_rawLock)
+            {
+                return (_names.Count, _records.Count);
+            }
+        }
+    }
+
+    public long? RawTraceZeroUs { get; private set; }
+
+    public void FreezeRawRecords()
+    {
+        lock (_rawLock)
+        {
+            if (_rawFrozen)
+            {
+                return;
+            }
+
+            _frozenRecords = FinishRecords();
+            DateTime? rawStart = _records.Count == 0 ? null : _records[0].Time;
+            RawTraceZeroUs = rawStart is { } start ? SessionTimeUs(start) : null;
+            _records.Clear();
+            _pending.Clear();
+            _rawFrozen = true;
+        }
+    }
 
     public List<TraceRecord> Finish()
+    {
+        lock (_rawLock)
+        {
+            if (_frozenRecords is not null)
+            {
+                return [.. _frozenRecords];
+            }
+
+            List<TraceRecord> records = FinishRecords();
+            if (_ioSummary is not null && RawTraceZeroUs is null && _records.Count > 0)
+            {
+                RawTraceZeroUs = SessionTimeUs(_records[0].Time);
+            }
+
+            return records;
+        }
+    }
+
+    private List<TraceRecord> FinishRecords()
     {
         var dropped = new HashSet<int>();
         foreach ((int index, ulong key, string? objName) in _pending)
@@ -123,74 +225,166 @@ internal sealed class KernelCollector
 
     internal void StartProcess(DateTime time, int pid, int parentPid, string image)
     {
-        if (_tree.Start(pid, parentPid, image))
+        if (_rawFrozen)
         {
-            _sawTarget = true;
+            return;
         }
 
-        _active = _tree.ActiveCount;
-        _records.Add(TraceRecord.Start(time, pid, parentPid, image));
+        lock (_rawLock)
+        {
+            if (_tree.Start(pid, parentPid, image))
+            {
+                _sawTarget = true;
+            }
+
+            _active = _tree.ActiveCount;
+            if (!_rawFrozen)
+            {
+                _records.Add(TraceRecord.Start(time, pid, parentPid, image));
+            }
+        }
     }
 
     internal void StopProcess(DateTime time, int pid)
     {
-        bool target = _tree.IsTarget(pid);
-        _tree.Stop(pid);
-        _active = _tree.ActiveCount;
-        if (target)
+        if (_rawFrozen)
         {
-            _records.Add(TraceRecord.Stop(time, pid)); // 대상이 아닌 프로세스의 종료는 TraceBuilder 에서도 할 일이 없어 담지 않음
+            return;
+        }
+
+        lock (_rawLock)
+        {
+            bool target = _tree.IsTarget(pid);
+            _tree.Stop(pid);
+            _active = _tree.ActiveCount;
+            if (target && !_rawFrozen)
+            {
+                _records.Add(TraceRecord.Stop(time, pid)); // 대상이 아닌 프로세스의 종료는 TraceBuilder 에서도 할 일이 없어 담지 않음
+            }
         }
     }
 
-    internal void NameKey(ulong key, string? name) => _names.NameKey(key, name);
+    internal void NameKey(ulong key, string? name)
+    {
+        if (_rawFrozen)
+        {
+            return;
+        }
+
+        lock (_rawLock)
+        {
+            _names.NameKey(key, name);
+        }
+    }
+
+    internal void CloseObject(ulong fileObject)
+    {
+        if (_rawFrozen)
+        {
+            return;
+        }
+
+        lock (_rawLock)
+        {
+            _names.CloseObject(fileObject);
+        }
+    }
 
     internal void OpenFile(int pid, ulong fileObject, string? name)
     {
-        _names.NameObject(fileObject, name);
-        if (_listener is { } listener && !string.IsNullOrEmpty(name) && _tree.IsTarget(pid))
+        if (_rawFrozen)
         {
-            listener.OnOpen(_devices.ToDosPath(name));
+            return;
+        }
+
+        lock (_rawLock)
+        {
+            _names.NameObject(fileObject, name);
+            if (_listener is { } listener && !string.IsNullOrEmpty(name) && _tree.IsTarget(pid))
+            {
+                listener.OnOpen(_devices.ToDosPath(name));
+            }
         }
     }
 
     internal void AddRead(DateTime time, int pid, ulong key, ulong fileObject, long offset, long size)
     {
-        if (!_window.IsOpen || !_tree.IsTarget(pid))
+        if (_rawFrozen)
         {
             return;
         }
 
-        _window.Count();
-        (string? name, string? fallback) = _names.AtRead(key, fileObject);
-        if (name is null)
+        lock (_rawLock)
         {
-            _pending.Add((_records.Count, key, fallback));
-        }
+            if (_rawFrozen || !_window.IsOpen || !_tree.IsTarget(pid))
+            {
+                return;
+            }
 
-        if (_listener is { } listener && _names.ResolveNow(key, fileObject, offset, size) is { } live)
-        {
-            listener.OnRead(_devices.ToDosPath(live), offset, size); // 못 푼 읽기는 FileNames 가 보류했다가 이름이 오면 OnLateRead 로 알림
-        }
+            _window.Count();
+            (string? name, string? fallback) = _names.AtRead(key, fileObject);
+            if (name is null)
+            {
+                _pending.Add((_records.Count, key, fallback));
+            }
 
-        _records.Add(TraceRecord.Read(time, pid, name ?? "", offset, size));
+            if (_listener is { } listener && _names.ResolveNow(key, fileObject, offset, size) is { } live)
+            {
+                listener.OnRead(_devices.ToDosPath(live), offset, size); // 못 푼 읽기는 FileNames 가 보류했다가 이름이 오면 OnLateRead 로 알림
+            }
+
+            _records.Add(TraceRecord.Read(time, pid, name ?? "", offset, size));
+        }
     }
+
+    /// 디스크 읽기 완료: 잠금 없이 요청 표만 갱신합니다 (이 이벤트는 처리 스레드 하나에서만 오고, 원시 기록 상태와 만나지 않음).
+    internal void AddDiskRead(int diskNumber, long byteOffset, long bytes, double elapsedMilliseconds, DateTime time, bool paging) =>
+        _ioSummary?.AddDiskRead(diskNumber >= 0 ? (uint)diskNumber : uint.MaxValue, byteOffset, bytes, ToMicroseconds(elapsedMilliseconds), SessionTimeUs(time), paging);
+
+    private void CloseRawWindow(DateTimeOffset atUtc)
+    {
+        if (_rawWindowStartedUs is not { } started)
+        {
+            return;
+        }
+
+        _rawWindows.Add(new IoSummaryWindow(started, Math.Max(started, SessionTimeUs(atUtc))));
+        _rawWindowStartedUs = null;
+    }
+
+    /// 관찰 시작을 0 으로 한 마이크로초. 관찰 시작보다 앞선 이벤트는 음수로 남겨 원시 0점과의 차이가 잘리지 않게 합니다 (시간 원점을 쓰는 쪽이 따로 0 으로 자름).
+    private long SessionTimeUs(DateTimeOffset time) => (long)(time.ToUniversalTime() - _originUtc).TotalMicroseconds;
+
+    private long SessionTimeUs(DateTime time) => SessionTimeUs(new DateTimeOffset(time));
+
+    private static long ToMicroseconds(double milliseconds) =>
+        double.IsFinite(milliseconds) && milliseconds > 0 && milliseconds < long.MaxValue / 1000d
+            ? (long)Math.Round(milliseconds * 1000d, MidpointRounding.AwayFromZero)
+            : 0;
 
     internal void AddWrite(DateTime time, int pid, ulong key, ulong fileObject)
     {
         // 쓰기도 수집 구간 안만 봄: 예전 창마다 세션과 같은 범위라 가변 파일 판정이 달라지지 않고, 구간 밖에서 표가 자라지 않음
-        if (!_window.IsOpen || !_tree.IsTarget(pid) || !_written.Add(key))
+        if (_rawFrozen)
         {
             return;
         }
 
-        (string? name, string? fallback) = _names.AtRead(key, fileObject);
-        if (name is null)
+        lock (_rawLock)
         {
-            _pending.Add((_records.Count, key, fallback));
-        }
+            if (_rawFrozen || !_window.IsOpen || !_tree.IsTarget(pid) || !_written.Add(key))
+            {
+                return;
+            }
 
-        _records.Add(TraceRecord.Write(time, pid, name ?? ""));
+            (string? name, string? fallback) = _names.AtRead(key, fileObject);
+            if (name is null)
+            {
+                _pending.Add((_records.Count, key, fallback));
+            }
+
+            _records.Add(TraceRecord.Write(time, pid, name ?? ""));
+        }
     }
 
     private static string FirstToken(string commandLine)

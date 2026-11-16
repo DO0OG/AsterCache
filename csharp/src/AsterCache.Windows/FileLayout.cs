@@ -59,6 +59,21 @@ public static class FileLayout
         }
     }
 
+    /// 할당된 구간만 VCN 순으로 (스파스·압축 구멍은 건너뜀), 실패하면 null, 빈 목록은 디스크 extent 없음. 구멍이 있는 파일도 쓸 수 있는 집계 변환용이라 Extents 와 의미가 다릅니다 (그쪽은 구멍이 있으면 null).
+    public static IReadOnlyList<Extent>? AllocatedExtents(string path)
+    {
+        try
+        {
+            using Microsoft.Win32.SafeHandles.SafeFileHandle h = NativeMethods.CreateFileW(
+                Path.GetFullPath(path), Win32.FileReadAttributes, Win32.ShareAll, 0, Win32.OpenExisting, 0, 0);
+            return h.IsInvalid ? null : ReadExtents(h, skipHoles: true);
+        }
+        catch (Exception e) when (IsExpected(e))
+        {
+            return null;
+        }
+    }
+
     /// Python prefetch.cli._layout: extent 도 클러스터 크기도 알 때만 값을 돌려줍니다.
     public static FileLayoutInfo? Get(string path)
     {
@@ -67,7 +82,7 @@ public static class FileLayout
         return ext is not null && cs is > 0 ? new FileLayoutInfo(ext, cs.Value) : null;
     }
 
-    private static unsafe List<Extent>? ReadExtents(Microsoft.Win32.SafeHandles.SafeFileHandle h)
+    private static unsafe List<Extent>? ReadExtents(Microsoft.Win32.SafeHandles.SafeFileHandle h, bool skipHoles = false)
     {
         var output = new List<Extent>();
         long start = 0;
@@ -106,10 +121,16 @@ public static class FileLayout
                 long lcn = BinaryPrimitives.ReadInt64LittleEndian(buf.AsSpan(Header + 16 * i + 8));
                 if (lcn < 0)
                 {
-                    return null; // 스파스·압축 구멍: 쓸 수 있는 물리 순서 없음
+                    if (!skipHoles)
+                    {
+                        return null; // 스파스·압축 구멍: 쓸 수 있는 물리 순서 없음
+                    }
+                }
+                else
+                {
+                    output.Add(new Extent(vcn, lcn, next - vcn));
                 }
 
-                output.Add(new Extent(vcn, lcn, next - vcn));
                 vcn = next;
             }
 

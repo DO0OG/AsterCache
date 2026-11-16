@@ -407,6 +407,7 @@ public static partial class L
         ["Cli_Trace_NeedExe"] = ("--etl 과 --live 에는 --exe 가 필요함", "--exe is required with --etl and --live"),
         ["Cli_Trace_DumpNeedsEtl"] = ("--dump-first 는 --etl 에서만 씀", "--dump-first needs --etl"),
         ["Cli_Trace_StopNeedsLive"] = ("--stop-file 은 --live 에서만 씀", "--stop-file needs --live"),
+        ["Cli_Trace_IoSummaryNeedsLive"] = ("--io-summary-root 는 --live 에서만 씀", "--io-summary-root needs --live"),
         ["Cli_Launch_ReadsFailed"] = ("경고: 일부 읽기가 실패함: 트레이스가 오래됐을 수 있음 (게임이 패치됐나요?). verify 로 확인하십시오.", "warning: some reads failed: the trace may be stale (game patched?). Check with verify."),
         ["Cli_Trace_Tracing"] = ("추적 중: 중지하려면 Ctrl+C 를 누르십시오", "tracing; press Ctrl+C to stop"),
         ["Cli_Trace_TracingEnter"] = ("추적 중: 중지하려면 Ctrl+C 또는 Enter 를 누르십시오", "tracing; press Ctrl+C or Enter to stop"),

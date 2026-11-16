@@ -72,7 +72,7 @@ Use this to control each step, or to try a game that automatic mode skipped. Ope
 |---|---|
 | `discover [--json]` | Lists games found in launcher libraries. Read only. |
 | `status [--plan <plan>] [--journal <journal>]` | Read-only overview: administrator rights, disks, last prewarm, automatic mode. With `--plan`, also the layout verdict. |
-| `trace --live --exe <exe> --origin-root <folder> --out <file> [--seconds N]` | Records a game's reads with ETW. `--csv` and `--etl` convert an existing recording instead. |
+| `trace --live --exe <exe> --origin-root <folder> --out <file> [--seconds N] [--io-summary-root <folder>]` | Records a game's reads with ETW. Repeat `--io-summary-root` to also collect disk-read completions and, after the session stops, convert them to files under those folders by reading file layouts (not file contents); the result is saved to `<out>.io.json`. `--csv` and `--etl` convert an existing recording instead. |
 | `plan --trace <file> --origin-root <folder> --zone-mib N --out <file> [--dry-run]` | Builds the layout plan from a trace. `--dry-run` only shows the numbers. |
 | `probe --volume D:` | Checks a volume before relocation. |
 | `apply --plan <file> --allowed-root <folder> --require-volume-label <label> [--dry-run \| --execute]` | Moves the pieces. Without `--execute` nothing moves. If the label differs, nothing is touched. |

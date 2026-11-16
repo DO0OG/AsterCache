@@ -1,4 +1,5 @@
 using AsterCache.Core.Logging;
+using AsterCache.Core.Trace;
 using AsterCache.Windows;
 using Microsoft.Diagnostics.Tracing.Parsers;
 using Microsoft.Diagnostics.Tracing.Session;
@@ -64,31 +65,44 @@ public sealed class LiveSession : IDisposable
     /// 세션이 버퍼 부족으로 잃은 이벤트 수 (Stop 직전 값). 0 이 아니면 이 기록은 불완전합니다.
     public long EventsLost { get; private set; }
 
+    /// 디스크 읽기 요청 표와 총계 (Stop 뒤에 읽음, 집계를 켜지 않았으면 null). 파일·블록으로의 변환은 끝난 뒤 IoLayoutScan 이 합니다.
+    public IoRequestSnapshot? IoRequests { get; private set; }
+
     /// 비관리자면 NotAdminException (세션을 만들기 전에 검사).
     public static LiveSession Start(IReadOnlyCollection<string> exeNames, string sessionName = DefaultSessionName, bool restartExisting = false,
-        Func<bool>? isAdmin = null, DevicePaths? devices = null, int bufferMB = DefaultBufferMB, LiveListener? listener = null, TimeSpan? flushInterval = null, ILog? log = null)
+        Func<bool>? isAdmin = null, DevicePaths? devices = null, int bufferMB = DefaultBufferMB, LiveListener? listener = null,
+        TimeSpan? flushInterval = null, ILog? log = null, IReadOnlyCollection<string>? ioSummaryRoots = null)
     {
         Elevation.RequireAdmin(isAdmin);
         try
         {
-            return Open(exeNames, sessionName, restartExisting, devices, bufferMB, listener, flushInterval, log);
+            return Open(exeNames, sessionName, restartExisting, devices, bufferMB, listener, flushInterval, log, ioSummaryRoots);
         }
         catch (Exception) when (bufferMB > FallbackBufferMB)
         {
-            return Open(exeNames, sessionName, restartExisting, devices, FallbackBufferMB, listener, flushInterval, log);
+            return Open(exeNames, sessionName, restartExisting, devices, FallbackBufferMB, listener, flushInterval, log, ioSummaryRoots);
         }
     }
 
     private static LiveSession Open(
-        IReadOnlyCollection<string> exeNames, string sessionName, bool restartExisting, DevicePaths? devices, int bufferMB, LiveListener? listener, TimeSpan? flushInterval, ILog? log)
+        IReadOnlyCollection<string> exeNames, string sessionName, bool restartExisting, DevicePaths? devices, int bufferMB, LiveListener? listener,
+        TimeSpan? flushInterval, ILog? log, IReadOnlyCollection<string>? ioSummaryRoots)
     {
+        IReadOnlySet<uint>? gameDisks = ioSummaryRoots is { Count: > 0 } ? GameDiskNumbers(ioSummaryRoots) : null; // 세션을 열기 전에 한 번만 조회
         var session = new TraceEventSession(sessionName,
             restartExisting ? TraceEventSessionOptions.Create : TraceEventSessionOptions.NoRestartOnCreate);
         try
         {
             session.BufferSizeMB = bufferMB; // 제공자를 켜기 전에만 설정 가능
-            session.EnableKernelProvider(KernelTraceEventParser.Keywords.Process | KernelTraceEventParser.Keywords.FileIO | KernelTraceEventParser.Keywords.FileIOInit);
-            var collector = new KernelCollector(session.Source.Kernel, exeNames, devices ?? DevicePaths.FromSystem(), listener);
+            KernelTraceEventParser.Keywords keywords = KernelTraceEventParser.Keywords.Process | KernelTraceEventParser.Keywords.FileIO | KernelTraceEventParser.Keywords.FileIOInit;
+            if (ioSummaryRoots is { Count: > 0 })
+            {
+                keywords |= KernelTraceEventParser.Keywords.DiskIO; // 디스크 읽기 완료만: 위치·크기·지연이 오고, 파일은 끝난 뒤 배치로 정함
+            }
+
+            session.EnableKernelProvider(keywords);
+            IoSummaryCollector? ioSummary = ioSummaryRoots is { Count: > 0 } ? new IoSummaryCollector(DateTimeOffset.UtcNow, gameDisks) : null;
+            var collector = new KernelCollector(session.Source.Kernel, exeNames, devices ?? DevicePaths.FromSystem(), listener, ioSummary);
             Task pump = Task.Run(() => session.Source.Process());
             // 실시간 알림을 받는 쪽은 버퍼가 차기를 기다리지 않도록 짧은 간격으로 내려 보냄 (SessionFlush)
             Timer? flusher = flushInterval is { } every ? new Timer(_ => SessionFlush.Flush(sessionName), null, every, every) : null;
@@ -99,6 +113,22 @@ public sealed class LiveSession : IDisposable
             session.Dispose();
             throw;
         }
+    }
+
+    private static IReadOnlySet<uint>? GameDiskNumbers(IEnumerable<string> roots)
+    {
+        var numbers = new HashSet<uint>();
+        foreach (string root in roots)
+        {
+            if (VolumeDisks.DiskNumbers(root) is not { Count: > 0 } disks)
+            {
+                return null;
+            }
+
+            numbers.UnionWith(disks);
+        }
+
+        return numbers.Count > 0 ? numbers : null;
     }
 
     /// 읽기 수집 구간을 닫습니다: 세션과 파일 이름표는 게임 끝까지 두고 읽기 이벤트만 버립니다 (구간 밖에서 열린 파일의 이름을 잃지 않게).
@@ -119,6 +149,12 @@ public sealed class LiveSession : IDisposable
         _collector.Resume();
     }
 
+    public void FreezeRawRecords()
+    {
+        ThrowIfPumpEnded();
+        _collector.FreezeRawRecords();
+    }
+
     private void ThrowIfPumpEnded()
     {
         if (_pump.IsCompleted)
@@ -136,7 +172,9 @@ public sealed class LiveSession : IDisposable
         RequestStop();
         try
         {
-            return FinishAfterPump(_pump, PumpWaitLimit, _collector.Finish, _log);
+            List<TraceRecord> records = FinishAfterPump(_pump, PumpWaitLimit, _collector.Finish, _log);
+            IoRequests = _collector.FinishIoRequests(DateTimeOffset.UtcNow, EventsLost);
+            return records;
         }
         catch (TraceIncompleteException)
         {
@@ -147,14 +185,25 @@ public sealed class LiveSession : IDisposable
 
     private void RequestStop()
     {
-        if (Interlocked.Exchange(ref _stopRequested, 1) != 0)
+        if (StopOnce(ref _stopRequested, () =>
         {
-            return;
+            _flusher?.Dispose();
+            return _session.EventsLost;
+        }, () => _session.Stop()) is { } eventsLost)
+        {
+            EventsLost = eventsLost;
         }
+    }
 
-        _flusher?.Dispose();
-        EventsLost = _session.EventsLost;
-        _session.Stop();
+    /// 정지는 한 번만: Stop·Dispose·취소·예외 경로가 겹쳐 불려도 이미 멈췄거나 멈추다 실패했으면 (WMI 0x80071069 와 같은 이미 없는 세션 조회) 다시 부르지 않고 null.
+    internal static long? StopOnce(ref int requested, Func<long> readEventsLost, Action stop) =>
+        Interlocked.Exchange(ref requested, 1) != 0 ? null : StopSession(readEventsLost, stop);
+
+    internal static long StopSession(Func<long> readEventsLost, Action stop)
+    {
+        long eventsLost = readEventsLost();
+        stop();
+        return eventsLost;
     }
 
     /// 처리 스레드가 끝났음이 확인된 뒤에만 수집기를 정리합니다. 시간 초과면 이벤트 콜백이 아직 수집기를 고치고 있을 수 있어 (같은 목록을 동시에 건드림)

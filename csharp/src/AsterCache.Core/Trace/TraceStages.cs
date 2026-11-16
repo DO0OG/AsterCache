@@ -38,11 +38,21 @@ public sealed record TraceStageIndex(IReadOnlyList<TraceStage> Stages)
     public static void WriteTried(string rawTracePath, int tries) =>
         File.WriteAllText(TriedPath(rawTracePath), tries.ToString(CultureInfo.InvariantCulture));
 
-    /// 원시 추적이 다른 경로 (수동 추적·learn) 로 다시 쓰였을 때: 낡은 단계 색인·시도 횟수·run 곁 파일을 지웁니다. 못 지운 색인은 원시 추적의 길이·시각이 달라 읽을 때 무시됩니다.
+    /// 원시 추적을 다시 쓸 때 낡은 단계 색인·I/O 집계·시도 횟수·run 곁 파일을 지웁니다. 못 지운 색인은 원시 추적의 길이·시각이 달라 읽을 때 무시됩니다.
     public static void ClearSidecars(string rawTracePath)
     {
-        string dir = Path.GetDirectoryName(rawTracePath) ?? string.Empty;
-        string name = Path.GetFileName(rawTracePath);
+        string full;
+        try
+        {
+            full = Path.GetFullPath(rawTracePath); // 디렉터리 없는 상대 경로 (trace.json) 는 현재 디렉터리 기준
+        }
+        catch (Exception e) when (e is ArgumentException or NotSupportedException or IOException)
+        {
+            return;
+        }
+
+        string dir = Path.GetDirectoryName(full) ?? Directory.GetCurrentDirectory();
+        string name = Path.GetFileName(full);
         int dot = name.LastIndexOf('.');
         bool hasSuffix = dot > 0 && dot < name.Length - 1;
         string stem = hasSuffix ? name[..dot] : name;
@@ -58,12 +68,51 @@ public sealed record TraceStageIndex(IReadOnlyList<TraceStage> Stages)
                 }
             }
 
-            File.Delete(IndexPath(rawTracePath));
-            File.Delete(TriedPath(rawTracePath));
+            File.Delete(IndexPath(full));
+            File.Delete(TriedPath(full));
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             // 지우지 못해도 색인은 원시 추적과 맞지 않으면 읽을 때 무시됨
+        }
+
+        ClearIoSummaries(full, dir, name, stem, suffix);
+    }
+
+    // I/O 집계 곁 파일: 파일마다 따로 지워 하나가 잠겨 있어도 나머지를 치우고, 실패는 원시 추적을 쓰는 일을 막지 않음.
+    private static void ClearIoSummaries(string full, string dir, string name, string stem, string suffix)
+    {
+        var runIo = new Regex($@"^{Regex.Escape(stem)}\.run\d+{Regex.Escape(suffix)}{Regex.Escape(IoSummaryStore.Suffix)}(\.invalid)?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        var standaloneIo = new Regex($@"^{Regex.Escape(name)}\.io-only\.\d{{2}}\.json(\.invalid)?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        var targets = new List<string> { IoSummaryStore.RunPath(full), IoSummaryStore.InvalidPath(IoSummaryStore.RunPath(full)), IoSummaryStore.TriedPath(full) };
+        try
+        {
+            if (Directory.Exists(dir))
+            {
+                targets.AddRange(Directory.EnumerateFiles(dir, "*" + IoSummaryStore.Suffix + "*").Where(file => runIo.IsMatch(Path.GetFileName(file))));
+                targets.AddRange(Directory.EnumerateFiles(dir, "*.io-only.*.json*").Where(file => standaloneIo.IsMatch(Path.GetFileName(file))));
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // 목록을 못 읽으면 아는 이름만 지움
+        }
+
+        // 집계와 무효 표지는 쌍으로: 집계를 못 지웠으면 그 표지는 남겨 잠금이 풀린 뒤에도 무효로 읽히게 함 (집계가 없는 표지만 지움)
+        var kept = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string file in targets.Where(file => !file.EndsWith(IoSummaryStore.InvalidSuffix, StringComparison.OrdinalIgnoreCase)).Concat(targets.Where(file => file.EndsWith(IoSummaryStore.InvalidSuffix, StringComparison.OrdinalIgnoreCase))))
+        {
+            try
+            {
+                if (!file.EndsWith(IoSummaryStore.InvalidSuffix, StringComparison.OrdinalIgnoreCase) || !kept.Contains(file[..^IoSummaryStore.InvalidSuffix.Length]))
+                {
+                    File.Delete(file);
+                }
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                _ = kept.Add(file); // 지우지 못한 집계는 표지가 없으면 읽을 때 지문이 맞는 한 유효
+            }
         }
     }
 

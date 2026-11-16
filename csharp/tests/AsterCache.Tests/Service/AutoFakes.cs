@@ -18,11 +18,39 @@ internal static class FakeClock
     public static Func<long> Ticks(Func<DateTimeOffset> now) => () => (long)((decimal)(now() - Epoch).Ticks * System.Diagnostics.Stopwatch.Frequency / TimeSpan.TicksPerSecond);
 }
 
+/// 시험용 집계: 파일마다 블록 0 한 행을 가진 요약.
+internal static class IoSummaries
+{
+    public static IoSummary With(DateTimeOffset started, params string[] files)
+    {
+        var total = new IoClassTotals(files.Length, files.Length * 65536L, files.Length * 20L);
+        var quality = new IoSummaryQuality(total, 20, total, default, default, default, default, 0, 0, 0);
+        return new IoSummary(started, started.AddSeconds(1), [], quality, [.. files.Select(file => new IoSummaryFile(file))],
+            [.. files.Select((_, index) => new IoSummaryRow(index, 0, 1, 65536, 20, 20, 100, 0))]);
+    }
+}
+
 internal sealed class FakeTrace : IAutoTrace
 {
     public List<TraceRecord> Records { get; } = [];
 
+    public List<TraceRecord>? FrozenRecords { get; private set; }
+
+    public bool RawRecordsFrozen => FrozenRecords is not null;
+
+    public IoRequestSnapshot? IoRequests { get; set; }
+
     public Exception? StopFailure { get; set; }
+
+    /// 동결이 이 예외로 실패함 (처리 스레드가 먼저 끝난 세션을 흉내).
+    public Exception? FreezeFailure { get; set; }
+
+    /// Stop 이 불린 횟수와, 그 안에서 게이트를 기다리기 시작했음을 알리는 신호.
+    public int StopCalls => _stopCalls;
+
+    public ManualResetEventSlim StopStarted { get; } = new();
+
+    private int _stopCalls;
 
     /// 비어 있지 않으면 Stop 이 이 문이 열릴 때까지 기다림 (느린 추적 종료를 흉내).
     public ManualResetEventSlim? StopGate { get; set; }
@@ -54,6 +82,16 @@ internal sealed class FakeTrace : IAutoTrace
         return Window;
     }
 
+    public void FreezeRawRecords()
+    {
+        if (FreezeFailure is { } failure)
+        {
+            throw failure;
+        }
+
+        FrozenRecords ??= [.. Records];
+    }
+
     public void ResumeWindow()
     {
         if (ResumeFailure is { } failure)
@@ -66,6 +104,8 @@ internal sealed class FakeTrace : IAutoTrace
 
     public IReadOnlyList<TraceRecord> Stop()
     {
+        _ = Interlocked.Increment(ref _stopCalls);
+        StopStarted.Set();
         _ = StopGate?.Wait(TimeSpan.FromSeconds(30));
         Stopped = true;
         if (StopFailure is { } failure)
@@ -73,7 +113,7 @@ internal sealed class FakeTrace : IAutoTrace
             throw failure;
         }
 
-        return Records;
+        return FrozenRecords ?? Records;
     }
 
     public void Dispose()
@@ -134,6 +174,13 @@ internal sealed class FakeWorld
     /// run 파일의 읽기량 (기본: 모름 = 유효 회차로 셈).
     public Func<string, long?> RunReadBytes { get; set; } = _ => null;
 
+    public Action<string, int> WriteIoSummaryTries { get; set; } = IoSummaryStore.WriteTried;
+
+    /// 끝난 뒤 변환 (파일 배치 조회) 의 가짜: 기본은 배치를 모르는 채 요청 표만 총계로 바꿈. 호출 기록은 BuildIoSummaryCalls.
+    public Func<IoRequestSnapshot, IReadOnlyCollection<string>, CancellationToken, IoSummary?> BuildIoSummary { get; set; } = (snapshot, _, _) => new IoBlockMapper(snapshot).Build(0, 0, 0, 0, 0, false);
+
+    public int BuildIoSummaryCalls { get; private set; }
+
     /// 원시 트레이스의 병합 결과 지문 (기본: 읽을 수 없음).
     public Func<string, string?> TraceFingerprint { get; set; } = _ => null;
 
@@ -161,6 +208,8 @@ internal sealed class FakeWorld
     public FakeTrace? Session { get; set; }
 
     public Func<int, FakeTrace>? StartTraceFactory { get; set; }
+
+    public List<IReadOnlyCollection<string>?> IoSummaryRoots { get; } = [];
 
     public Exception? StartTraceThrows { get; set; }
 
@@ -336,6 +385,16 @@ internal sealed class FakeWorld
         FileWriteTime = p => FileTimes.TryGetValue(p, out DateTimeOffset t) ? t : null,
         RunReadBytes = p => RunReadBytes(p),
         StageIndexTries = AsterCache.Core.Trace.TraceStageIndex.ReadTried,
+        IoSummaryTries = IoSummaryStore.ReadTriedOrNull,
+        IoSummaryValid = (sidecar, raw, standalone) => File.Exists(sidecar)
+            ? File.Exists(raw) && (standalone ? IoSummaryStore.ReadStandaloneForRaw(sidecar, raw) : IoSummaryStore.ReadForRun(raw)) is not null
+            : Files.Contains(sidecar), // 물리 파일 없이 경로만 있는 가짜 환경은 유효로 침
+        WriteIoSummaryTries = WriteIoSummaryTries,
+        BuildIoSummary = (snapshot, roots, ct) =>
+        {
+            BuildIoSummaryCalls++;
+            return BuildIoSummary(snapshot, roots, ct);
+        },
         TraceFingerprint = p => TraceFingerprint(p),
         GameProcesses = _ => Procs,
         AnyRunning = exes =>
@@ -347,10 +406,11 @@ internal sealed class FakeWorld
         LooksLikeGame = p => LooksLikeGame(p),
         ExeFiles = p => ExeFiles.TryGetValue(p, out List<(string Path, long Size)>? list) ? list : [],
         ReadText = p => Texts.GetValueOrDefault(p),
-        StartTrace = (_, listener) =>
+        StartTrace = (_, listener, roots) =>
         {
             TraceStarts++;
             Listener = listener;
+            IoSummaryRoots.Add(roots);
             return StartTraceThrows is null ? StartTraceFactory?.Invoke(TraceStarts) ?? Session ?? throw new InvalidOperationException("Session") : throw StartTraceThrows;
         },
         Canonicalize = e =>

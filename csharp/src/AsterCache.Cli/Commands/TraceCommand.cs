@@ -2,6 +2,7 @@ using AsterCache.Core.I18n;
 using AsterCache.Core.Json;
 using AsterCache.Core.Trace;
 using AsterCache.Tracer;
+using AsterCache.Windows;
 
 namespace AsterCache.Cli.Commands;
 
@@ -21,6 +22,7 @@ internal static class TraceCommand
         new("seconds", Type: ArgType.Int),
         new("dump-first", Type: ArgType.Int),
         new("stop-file"),
+        new("io-summary-root", ArgKind.Many),
     ];
 
     public static int Run(ParsedArgs a, TextWriter o)
@@ -48,12 +50,24 @@ internal static class TraceCommand
             throw new ArgException(L.Get(a.Lang, "Cli_Trace_StopNeedsLive"));
         }
 
-        if (a.Flag("live") && AntiCheatGuard.RefuseTrace(o, prefix, exes) is { } refused)
+        if (a.Given("io-summary-root") && !a.Flag("live"))
         {
-            return refused;
+            throw new ArgException(L.Get(a.Lang, "Cli_Trace_IoSummaryNeedsLive"));
+        }
+
+        if (a.Flag("live"))
+        {
+            foreach (string root in new[] { prefix }.Concat(a.List("io-summary-root")))
+            {
+                if (AntiCheatGuard.RefuseTrace(o, root, exes) is { } refused)
+                {
+                    return refused;
+                }
+            }
         }
 
         var sessions = new List<List<TraceEvent>>();
+        IoSummary? ioSummary = null;
         if (a.Given("csv"))
         {
             foreach (string file in a.List("csv"))
@@ -81,13 +95,21 @@ internal static class TraceCommand
         }
         else
         {
-            (List<TraceRecord> live, long liveLost) = CaptureLive(exes, a.Int("seconds"), a.Text("stop-file"), a.Lang);
+            IReadOnlyList<string> ioSummaryRoots = a.List("io-summary-root");
+            (List<TraceRecord> live, long liveLost, IoRequestSnapshot? requests) = CaptureLive(exes, a.Int("seconds"), a.Text("stop-file"), a.Lang,
+                ioSummaryRoots.Count == 0 ? null : ioSummaryRoots);
+            ioSummary = ConvertIoSummary(requests, ioSummaryRoots, o); // 세션을 닫은 뒤 게임 폴더 파일 배치로 (파일, 블록) 에 잇기
             sessions.Add(Build(o, "live", live, exes, prefix, liveLost));
         }
 
         string outPath = PathText.Str(a.Text("out")!);
+        TraceStageIndex.ClearSidecars(outPath); // 옛 원시 기록과 짝이 맞지 않는 단계 색인·집계·회차 표지·시도 횟수를 먼저 지움
         (List<string> runs, int count) = TraceWriter.Write(sessions, outPath);
-        TraceStageIndex.ClearSidecars(outPath); // run 과 원시 추적을 새로 썼으니 옛 단계 색인·run 표지·시도 횟수는 짝이 맞지 않음
+        if (ioSummary is { } summary)
+        {
+            SaveIoSummary(outPath, summary, o);
+        }
+
         o.WriteLine(PyJson.Dumps(new JObject
         {
             { "union", outPath },
@@ -95,6 +117,32 @@ internal static class TraceCommand
             { "per_run", runs.Cast<object?>().ToList() },
         }));
         return 0;
+    }
+
+    // 변환은 부가 정보: 실패해도 받은 원시 기록은 그대로 저장하도록 경고 한 줄만 남기고 null (서비스와 같은 방식)
+    internal static IoSummary? ConvertIoSummary(IoRequestSnapshot? requests, IReadOnlyList<string> roots, TextWriter output,
+        Func<IoRequestSnapshot, IReadOnlyList<string>, CancellationToken, IoSummary>? scan = null)
+    {
+        if (requests is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return (scan ?? ((snapshot, folders, ct) => IoLayoutScan.Build(snapshot, folders, ct)))(requests, roots, CancellationToken.None);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            output.WriteLine($"I/O summary not built ({e.GetType().Name})");
+            return null;
+        }
+    }
+
+    internal static void SaveIoSummary(string outPath, IoSummary summary, TextWriter output)
+    {
+        IoSummaryStore.WriteForRun(outPath, summary);
+        output.WriteLine(summary.FormatLogLine());
     }
 
     // eventsLost: .etl / 실시간 세션이 버퍼 부족으로 잃은 이벤트 수. 0 이 아니면 읽기가 빠졌을 수 있습니다 (trace JSON 형식은 그대로 두고 이 줄에만 남깁니다).
@@ -107,14 +155,15 @@ internal static class TraceCommand
 
     // 세션은 관리자만 열 수 있습니다 (NotAdminException, 아무것도 만들기 전에). Ctrl+C, (터미널이면) Enter, 또는 --seconds 로 멈춥니다.
     // --stop-file: 그 파일이 생기면 멈춥니다 (스크립트가 프로세스를 강제 종료하지 않고 출력을 끝까지 쓰게 하는 길).
-    private static (List<TraceRecord> Records, long EventsLost) CaptureLive(IReadOnlyList<string> exes, long? seconds, string? stopFile, string lang)
+    private static (List<TraceRecord> Records, long EventsLost, IoRequestSnapshot? IoRequests) CaptureLive(IReadOnlyList<string> exes, long? seconds, string? stopFile,
+        string lang, IReadOnlyCollection<string>? ioSummaryRoots)
     {
         if (stopFile is not null)
         {
             File.Delete(stopFile); // 이전 실행이 남긴 파일 때문에 바로 멈추지 않도록
         }
 
-        using LiveSession session = LiveSession.Start(exes);
+        using LiveSession session = LiveSession.Start(exes, ioSummaryRoots: ioSummaryRoots);
         using var stop = new ManualResetEventSlim();
         ConsoleCancelEventHandler onCancel = (_, e) =>
         {
@@ -155,6 +204,6 @@ internal static class TraceCommand
         }
 
         List<TraceRecord> records = session.Stop();
-        return (records, session.EventsLost);
+        return (records, session.EventsLost, session.IoRequests);
     }
 }

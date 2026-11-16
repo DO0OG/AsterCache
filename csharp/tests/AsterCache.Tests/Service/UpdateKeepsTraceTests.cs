@@ -83,7 +83,8 @@ public sealed partial class AutoRelocatorTests
         string run1 = TraceWriter.RunPath(trace, 1);
         string runMarks = TraceStageIndex.RunMarksPath(run1);
         string stageIndex = TraceStageIndex.IndexPath(trace);
-        _w.Files.UnionWith([run1, runMarks, stageIndex]);
+        string standalone = IoSummaryStore.StandalonePath(trace, 1);
+        _w.Files.UnionWith([run1, runMarks, stageIndex, standalone]);
 
         UpdateAndDetect();
 
@@ -93,7 +94,48 @@ public sealed partial class AutoRelocatorTests
         Assert.Contains(run1 + ".stale", _w.Files);
         Assert.Contains(runMarks + ".stale", _w.Files);
         Assert.Contains(stageIndex + ".stale", _w.Files);
+        Assert.Contains(standalone + ".stale", _w.Files);
         Assert.DoesNotContain(_log.Lines, l => l.Contains(KeptLine, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ALockedIoSummaryFileDoesNotStopTheWholeTraceSetAside()
+    {
+        UseAntiCheat(null);
+        DoneAndReadyToReplan(out string trace);
+        string run1 = TraceWriter.RunPath(trace, 1);
+        string runIo = IoSummaryStore.RunPath(run1);
+        _w.Files.Add(run1);
+        File.WriteAllText(runIo, "{}");
+        File.WriteAllText(IoSummaryStore.TriedPath(trace), "2");
+        using var holdSummary = new FileStream(runIo, FileMode.Open, FileAccess.Read, FileShare.None);
+        using var holdTried = new FileStream(IoSummaryStore.TriedPath(trace), FileMode.Open, FileAccess.Read, FileShare.None);
+
+        UpdateAndDetect();
+
+        Assert.DoesNotContain(trace, _w.Files);
+        Assert.Contains(trace + ".stale", _w.Files);
+        Assert.Contains(run1 + ".stale", _w.Files);
+        Assert.True(File.Exists(_game.Plan + ".stale")); // 계획 이동·상태 초기화까지 끝남
+        Assert.Equal(AutoStage.Discovered, Entry.Stage);
+        Assert.Contains(_log.Lines, l => l.Contains("I/O summary file not moved", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("I/O summary attempt count not reset", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ALockedIoSummaryFileDoesNotStopTheRestoreOfTheTraceSetAsideByAnEarlierUpdate()
+    {
+        TraceSetAsideByAnOlderBuild(out string trace, withBootPlan: true);
+        string stale = IoSummaryStore.RunPath(TraceWriter.RunPath(trace, 1)) + ".stale";
+        File.WriteAllText(stale, "{}");
+        using var hold = new FileStream(stale, FileMode.Open, FileAccess.Read, FileShare.None);
+
+        Tick();
+
+        Assert.Contains(trace, _w.Files); // 집계 이동이 실패해도 원시 추적은 복원됨
+        Assert.DoesNotContain(trace + ".stale", _w.Files);
+        Assert.Equal(1, _log.Lines.Count(l => l.Contains("trace set aside by an earlier update restored", StringComparison.Ordinal)));
+        Assert.Contains(_log.Lines, l => l.Contains("I/O summary file not moved", StringComparison.Ordinal));
     }
 
     // 업데이트가 트레이스를 .stale 로 치웠고 (옛 빌드), 그 사이 boot 계획이 만들어진 상태: 이전 계획은 .stale, 트레이스·run 파일도 .stale.
@@ -107,6 +149,9 @@ public sealed partial class AutoRelocatorTests
                      trace,
                      TraceWriter.RunPath(trace, 1),
                      TraceWriter.RunPath(trace, 2),
+                     IoSummaryStore.RunPath(TraceWriter.RunPath(trace, 1)),
+                     IoSummaryStore.RunPath(TraceWriter.RunPath(trace, 2)),
+                     IoSummaryStore.StandalonePath(trace, 1),
                      TraceStageIndex.IndexPath(trace),
                      TraceStageIndex.RunMarksPath(TraceWriter.RunPath(trace, 1)),
                      TraceStageIndex.RunMarksPath(TraceWriter.RunPath(trace, 2)),
@@ -143,9 +188,15 @@ public sealed partial class AutoRelocatorTests
         Assert.Contains(TraceStageIndex.IndexPath(trace), _w.Files);
         Assert.Contains(TraceStageIndex.RunMarksPath(TraceWriter.RunPath(trace, 1)), _w.Files);
         Assert.Contains(TraceStageIndex.RunMarksPath(TraceWriter.RunPath(trace, 2)), _w.Files);
+        Assert.Contains(IoSummaryStore.RunPath(TraceWriter.RunPath(trace, 1)), _w.Files);
+        Assert.Contains(IoSummaryStore.RunPath(TraceWriter.RunPath(trace, 2)), _w.Files);
+        Assert.Contains(IoSummaryStore.StandalonePath(trace, 1), _w.Files);
         Assert.DoesNotContain(trace + ".stale", _w.Files);
         Assert.DoesNotContain(TraceWriter.RunPath(trace, 1) + ".stale", _w.Files);
         Assert.DoesNotContain(TraceWriter.RunPath(trace, 2) + ".stale", _w.Files);
+        Assert.DoesNotContain(IoSummaryStore.RunPath(TraceWriter.RunPath(trace, 1)) + ".stale", _w.Files);
+        Assert.DoesNotContain(IoSummaryStore.RunPath(TraceWriter.RunPath(trace, 2)) + ".stale", _w.Files);
+        Assert.DoesNotContain(IoSummaryStore.StandalonePath(trace, 1) + ".stale", _w.Files);
         Assert.True(File.Exists(_game.Plan + ".boot")); // boot 계획은 옆으로, 이전 계획의 존 시작은 .stale 에 그대로
         Assert.Equal(start, PlanFile.Load(_game.Plan + ".stale").Zone.StartLcn);
         Assert.Equal(1, _log.Lines.Count(l => l.Contains("trace set aside by an earlier update restored", StringComparison.Ordinal)));

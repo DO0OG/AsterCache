@@ -129,6 +129,9 @@ public sealed record AutoSettings(
     /// 거짓이면 같은 게임의 이후 실행 파일 시작에 단계 스트림을 하지 않고 첫 스트림도 단계를 구분하지 않고 지금처럼 시작 목록 전체를 흘림 (기본 true).
     public bool StageStreamEnabled { get; init; } = true;
 
+    /// 거짓이면 자동 트레이스에 디스크 읽기 완료 집계와 그 관찰 수명을 더하지 않습니다 (기본 true).
+    public bool IoSummaryEnabled { get; init; } = true;
+
     /// 자동 재배치·주기 재적용을 시작해도 되는 로컬 시각 (시, 0..23, 중복 없음, 최대 24개). 비어 있으면 시간 제한 없음.
     public IReadOnlyList<int> RelocateHours { get; init; } = [];
 

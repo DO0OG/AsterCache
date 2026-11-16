@@ -1,6 +1,7 @@
 using AsterCache.Cli;
 using AsterCache.Cli.Commands;
 using AsterCache.Core.Json;
+using AsterCache.Core.Trace;
 using AsterCache.Tests.Windows;
 using AsterCache.Windows;
 using Xunit;
@@ -172,6 +173,90 @@ public sealed class CliTests
         Assert.Contains("exactly one of --csv, --etl, --live", err, StringComparison.Ordinal);
 
         Assert.Equal(2, Run("trace", "--etl", "a.etl", "--prefix", @"D:\", "--out", "x.json").Code);
+    }
+
+    [Fact]
+    public void TraceIoSummaryRootNeedsLive()
+    {
+        (int code, _, string err) = Run("--lang", "en", "trace", "--csv", Fixture("tracer/procmon_run1.csv"), "--prefix", @"D:\", "--out", "x.json", "--io-summary-root", @"D:\Games");
+
+        Assert.Equal(2, code);
+        Assert.Contains("--io-summary-root needs --live", err, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TraceChecksEveryIoSummaryRootBeforeOpeningTheSession()
+    {
+        if (Elevation.IsAdmin())
+        {
+            return; // 이 시험은 차단된 경로에서 실제 커널 세션을 열지 않도록 비관리자에서만 명령을 실행합니다.
+        }
+
+        Func<string, string?> folderKind = AntiCheatGuard.FolderKind;
+        Func<string, string?> registeredKind = AntiCheatGuard.RegisteredKind;
+        Func<bool> vanguardInstalled = AntiCheatGuard.VanguardInstalled;
+        AntiCheatGuard.FolderKind = _ => null;
+        AntiCheatGuard.RegisteredKind = root => root == @"D:\Forbidden" ? "eac" : null;
+        AntiCheatGuard.VanguardInstalled = () => false;
+        try
+        {
+            (int code, string output, _) = Run("--lang", "en", "trace", "--live", "--exe", "game.exe", "--prefix", @"D:\Allowed",
+                "--io-summary-root", @"D:\Forbidden", "--out", "trace.json");
+
+            Assert.Equal(1, code);
+            Assert.Contains("anti_cheat", output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            AntiCheatGuard.FolderKind = folderKind;
+            AntiCheatGuard.RegisteredKind = registeredKind;
+            AntiCheatGuard.VanguardInstalled = vanguardInstalled;
+        }
+    }
+
+    [Fact]
+    public void TraceHelpIncludesIoSummaryRoot()
+    {
+        (int code, string text, _) = Run("--lang", "en", "trace", "--help");
+
+        Assert.Equal(0, code);
+        Assert.Contains("--io-summary-root V", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AFailedIoSummaryConversionOnlyWarnsAndReturnsNoSummarySoTheRawTraceIsStillSaved()
+    {
+        DateTimeOffset started = new(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
+        IoRequestSnapshot requests = new IoSummaryCollector(started).Snapshot(started.AddSeconds(1), [], 0, null);
+        var output = new StringWriter();
+
+        IoSummary? summary = TraceCommand.ConvertIoSummary(requests, [@"D:\Games"], output, (_, _, _) => throw new IOException("enumeration failed"));
+
+        Assert.Null(summary);
+        Assert.Contains("I/O summary not built (IOException)", output.ToString(), StringComparison.Ordinal);
+        Assert.Null(TraceCommand.ConvertIoSummary(null, [@"D:\Games"], output));
+        Assert.NotNull(TraceCommand.ConvertIoSummary(requests, [@"D:\Games"], output, (snapshot, _, _) => new IoBlockMapper(snapshot).Build(0, 0, 0, 0, 0, false)));
+    }
+
+    [Fact]
+    public void TraceSummaryIsSavedBesideOutAndPrintedInTheSharedFormat()
+    {
+        using var dir = new TempDir();
+        DateTimeOffset started = new(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
+        var collector = new IoSummaryCollector(started);
+        collector.AddDiskRead(1, 4096, 4096, 2500, 1000, paging: false);
+        var mapper = new IoBlockMapper(collector.Snapshot(started.AddSeconds(2), [], eventsLost: 3, null));
+        mapper.AddFile(Path.Combine(dir.Path, "a.bin"), false, true, 1, [new IoFileExtent(0, 0, 8192)]);
+        IoSummary summary = mapper.Build(1, 0, 0, 0, 7, false);
+        string outPath = dir.Combine("manual.json");
+        File.WriteAllText(outPath, "[]\n");
+        var output = new StringWriter();
+
+        TraceCommand.SaveIoSummary(outPath, summary, output);
+
+        IoSummary saved = Assert.IsType<IoSummary>(IoSummaryStore.ReadForRun(outPath));
+        Assert.Equal(summary.Quality, saved.Quality);
+        Assert.Equal(summary.FormatLogLine() + Environment.NewLine, output.ToString());
     }
 
     [Fact]

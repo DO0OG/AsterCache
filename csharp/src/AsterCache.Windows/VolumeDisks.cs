@@ -6,6 +6,9 @@ using Microsoft.Win32.SafeHandles;
 
 namespace AsterCache.Windows;
 
+/// 볼륨이 놓인 디스크 한 구간 (IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS 의 DISK_EXTENT).
+public readonly record struct DiskExtent(uint Disk, long StartingOffset, long Length);
+
 /// 드라이브 문자 → 그 볼륨이 놓인 물리 디스크 번호들 (IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, 접근 권한 0 이라 관리자 불필요).
 /// 같은 물리 디스크는 SameDisk(a, b) = 두 집합이 겹침. 조회에 실패한 (모르는) 쪽은 보수적으로 같은 디스크로 칩니다.
 /// 결과는 5 분 캐시하고, 조회 실패(예외 포함)는 캐시하지 않고 그 드라이브 항목을 지웁니다 (분리·재연결·문자 재할당 반영).
@@ -54,8 +57,15 @@ public sealed class VolumeDisks(Func<string, IReadOnlySet<uint>?> query, Func<lo
     /// 둘 중 하나라도 모르면 (null) 같은 디스크, 아니면 번호가 겹치는가.
     internal static bool Overlap(IReadOnlySet<uint>? a, IReadOnlySet<uint>? b) => a is null || b is null || a.Overlaps(b);
 
+    /// 'X:' (또는 그 아래 경로) 볼륨이 놓인 디스크 구간들 (디스크 번호, 디스크 안 시작 바이트, 길이), 조회에 실패하면 null. 캐시하지 않습니다 (끝난 뒤 한 번만 부름).
+    public static IReadOnlyList<DiskExtent>? DiskExtentsOf(string path) =>
+        path.Length >= 2 && path[1] == ':' && char.IsAsciiLetter(path[0]) ? QueryExtents(char.ToUpperInvariant(path[0]) + ":") : null;
+
     /// VOLUME_DISK_EXTENTS: NumberOfDiskExtents (4 바이트, 정렬 4 바이트 더) 뒤에 DISK_EXTENT (DiskNumber 4, 정렬 4, StartingOffset 8, ExtentLength 8 = 24 바이트) 배열.
-    internal static IReadOnlySet<uint>? Parse(ReadOnlySpan<byte> buffer)
+    internal static IReadOnlySet<uint>? Parse(ReadOnlySpan<byte> buffer) =>
+        ParseExtents(buffer) is { } extents ? extents.Select(e => e.Disk).ToHashSet() : null;
+
+    internal static IReadOnlyList<DiskExtent>? ParseExtents(ReadOnlySpan<byte> buffer)
     {
         if (buffer.Length < 8)
         {
@@ -68,13 +78,14 @@ public sealed class VolumeDisks(Func<string, IReadOnlySet<uint>?> query, Func<lo
             return null;
         }
 
-        var disks = new HashSet<uint>();
+        var extents = new List<DiskExtent>((int)count);
         for (int i = 0; i < count; i++)
         {
-            disks.Add(BinaryPrimitives.ReadUInt32LittleEndian(buffer[(8 + (i * 24))..]));
+            ReadOnlySpan<byte> item = buffer[(8 + (i * 24))..];
+            extents.Add(new DiskExtent(BinaryPrimitives.ReadUInt32LittleEndian(item), BinaryPrimitives.ReadInt64LittleEndian(item[8..]), BinaryPrimitives.ReadInt64LittleEndian(item[16..])));
         }
 
-        return disks;
+        return extents;
     }
 
     private IReadOnlySet<uint>? DisksOf(string path)
@@ -116,7 +127,10 @@ public sealed class VolumeDisks(Func<string, IReadOnlySet<uint>?> query, Func<lo
         return disks;
     }
 
-    private static unsafe IReadOnlySet<uint>? QueryDisks(string letter)
+    private static IReadOnlySet<uint>? QueryDisks(string letter) =>
+        QueryExtents(letter) is { } extents ? extents.Select(e => e.Disk).ToHashSet() : null;
+
+    private static unsafe IReadOnlyList<DiskExtent>? QueryExtents(string letter)
     {
         using SafeFileHandle h = NativeMethods.CreateFileW(@"\\.\" + letter, 0, Win32.ShareAll, 0, Win32.OpenExisting, 0, 0);
         if (h.IsInvalid)
@@ -128,7 +142,7 @@ public sealed class VolumeDisks(Func<string, IReadOnlySet<uint>?> query, Func<lo
         fixed (byte* o = output)
         {
             return NativeMethods.DeviceIoControl(h, IoctlVolumeGetVolumeDiskExtents, null, 0, o, (uint)output.Length, out uint returned, 0)
-                ? Parse(output.AsSpan(0, (int)returned))
+                ? ParseExtents(output.AsSpan(0, (int)returned))
                 : null;
         }
     }

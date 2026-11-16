@@ -13,7 +13,7 @@
 재배치는 게임 드라이브에 쓰지만 상한이 있습니다. 한 번에 SMR 드라이브는 최대 1 GiB(그 밖에는 2 GiB), 하루에 SMR 은 2 GiB(그 밖에는 8 GiB)이고, PC 가 한가할 때만 합니다. 그 뒤에는 주로 읽습니다. 드라이브 수명, 온도, 소음에 미치는 영향은 측정하지 않았습니다. [하드디스크에 미치는 영향과 주의사항](../README.ko.md#하드디스크에-미치는-영향과-주의사항)과 [게임 적용 안내](GAME_GUIDE.ko.md)를 보십시오.
 
 **게임을 하는 동안 무엇을 하나요?**
-게임이 시작되면 그 게임의 기록된 데이터를 최대 120초 동안 순서대로 읽고(로딩 경계에서 더 일찍 멈춥니다), 같은 디스크의 배경 작업(재배치, 예열, 다른 읽기)은 기다리거나 멈춥니다. 플레이 기록을 위해 게임 파일이나 프로세스가 아니라 디스크의 읽기 카운터를 표본으로 읽습니다. 트레이스가 허용된 게임에서는 기록 세션이 플레이 내내 열려 있지만, 읽기는 기록 창 안에서만 저장합니다. 게임과 무관한 프로그램도 그 세션 동안 메모리를 양보합니다([배경 메모리 양보](AUTO_MODE.ko.md#배경-메모리-양보)). 단계는 [자동 모드](AUTO_MODE.ko.md), 설정은 [설정](CONFIGURATION.ko.md)에 있습니다.
+게임이 시작되면 그 게임의 기록된 데이터를 최대 120초 동안 순서대로 읽고(로딩 경계에서 더 일찍 멈춥니다), 같은 디스크의 배경 작업(재배치, 예열, 다른 읽기)은 기다리거나 멈춥니다. 플레이 기록을 위해 게임 파일이나 프로세스가 아니라 디스크의 읽기 카운터를 표본으로 읽습니다. 트레이스가 허용된 게임에서는 기록 세션이 플레이 내내 열려 있지만, 읽기는 기록 창 안에서만 저장합니다. 게임이 이어서 자기 등록 프로그램을 또 띄우면(예를 들어 런처 격 프로그램 뒤의 본체) 그 프로그램이 처음 읽는 블록을 뜬 직후 낮은 I/O 우선순위로 읽습니다(단계 스트림). 게임과 무관한 프로그램도 그 세션 동안 메모리를 양보합니다([배경 메모리 양보](AUTO_MODE.ko.md#배경-메모리-양보)). 단계는 [자동 모드](AUTO_MODE.ko.md), 설정은 [설정](CONFIGURATION.ko.md)에 있습니다.
 
 **지우면 어떻게 되나요? 게임을 목록에서 빼면요?**
 프로그램을 제거하면 먼저 SSD 보조 저장의 링크를 되돌린 뒤 프로그램과 서비스를 지웁니다. 데이터 폴더 `%ProgramData%\AsterCache` 는 남습니다. 이미 옮긴 조각은 되돌려지지 않으며 어느 쪽이든 파일 내용은 그대로입니다. 예전 배치로 복원하려면 먼저 게임 탭에서 **되돌리기**를 누르십시오. 게임을 목록에서 빼도 파일은 그대로입니다. [사용법](USAGE.ko.md#자주-하는-작업)을 보십시오.
@@ -35,6 +35,9 @@
 
 **안티치트 게임에서 안전한가요?**
 AsterCache 는 게임 프로세스에 손대지 않습니다. 자기 프로세스에서 파일을 읽고, Windows 이벤트 추적으로 파일 읽기를 관찰하며, 게임이 종료된 뒤에만 파일을 옮깁니다. 다른 프로그램에 하는 일은 게임 세션 동안 게임과 무관한 프로그램의 메모리 우선순위를 낮추고, 메모리가 모자라거나 캐시가 실제로 재사용될 때만 그 작업 집합을 비우는 것뿐이며, 게임·런처·안티치트 프로세스는 열지 않습니다([안티치트 호환](ANTICHEAT.ko.md)). 다만 통제된 검증은 하지 않았고 한 PC 의 사용 기록만 있으며, 계정 제재 여부는 보증하지 않습니다. 안티치트 게임은 플레이 전에 자동 모드를 끄거나 `auto.ignore_exes` 에 넣으십시오. [안티치트 호환](ANTICHEAT.ko.md)을 보십시오.
+
+**게임이 실행하자마자 꺼집니다. AsterCache 때문인가요?**
+꼭 그렇지는 않으며, AsterCache 는 게임이 꺼지는 것을 막지 않습니다. 게임이 실행 직후 꺼지는 이유는 많고, 다른 프로그램이 올린 커널 드라이버도 그중 하나입니다. AsterCache 가 하는 일은 그 패턴을 알아채는 것입니다. `auto.quick_exit_seconds`(기본 90초)보다 짧은 세션은 짧은 종료로 세고, 10분 안에 그 게임을 다시 실행하면 서비스가 그 실행에서 한 번 물러나며(시작 스트림, 단계 스트림, 자동 추적, 로딩 경계 읽기, 배경 메모리 양보, 트리거 예열을 하지 않음), 짧은 종료가 두 번 연속되면 마지막 정상 실행(5분 이상 간 세션) 뒤 새로 올라온 커널 드라이버를 나열합니다. 볼 곳은 `service.log`(`exited quickly`, `quick exit N in a row`, `backing off for this run`), 트레이 알림, 상태 탭의 그 게임 카드("실행 직후 꺼짐 N회, 새 드라이버: ...")입니다. 읽는 법: 물러난 실행도 꺼졌다면(`backed-off run: exited too`) 서비스가 비켜 있었는데도 꺼진 것이라 원인이 다른 데 있을 가능성이 높지만 그것이 증명은 아닙니다. 물러난 실행이 살아남았다면 로그는 앞선 종료에 서비스가 관여했을 수도 있고 프로그램이 스스로 다시 시작했을 수도 있다고만 적으며 어느 쪽인지는 단정하지 않습니다. 드라이버 목록은 단서이지 원인 확정이 아닙니다. `none` 은 새 드라이버가 없다는 뜻이고 `unknown` 은 목록을 읽지 못했거나 비교할 정상 실행이 없다는 뜻입니다. 새 드라이버가 다른 프로그램의 것이면 그 프로그램을 닫거나 멈추고 다시 실행해 보십시오. AsterCache 를 의심에서 빼려면 자동 모드를 끄거나 그 게임을 `auto.ignore_exes` 에 넣으십시오. 프로그램 이름을 지목하지 않으며 게임 프로세스를 열지 않습니다([자동 모드](AUTO_MODE.ko.md#6-게임-실행-중)). 시험 PC 한 대에서 가벼운 게임을 직접 꺼 보며 확인했고, 스스로 꺼지는 게임으로는 확인하지 않았습니다.
 
 **게임 업데이트 뒤에는 어떻게 되나요?**
 패치로 파일이 바뀌면 저장해 둔 계획과 맞지 않을 수 있습니다. AsterCache 는 옮기기 전에 계획을 확인해 바뀐 파일은 건너뛰고, 게임이 꺼져 있는 동안 5분마다 배치가 흐트러졌는지 보고 흐트러졌으면 계획을 다시 적용합니다. 자동 모드에서는 바뀐 파일을 다시 학습하며, 계획 데이터의 절반 이상이 바뀌었으면 트레이스와 계획 전체를 `.stale` 로 치웁니다. 실제 게임 업데이트로는 아직 시험하지 않았습니다. [자동 모드](AUTO_MODE.ko.md)를 보십시오.
@@ -119,6 +122,15 @@ SMR 드라이브(WD20EZAZ) 1대만 측정했고 CMR 은 측정하지 않았습�
 - `<게임>: prewarm yields to other disk activity (low I/O priority)`, 그리고 `prewarm done` 줄 끝의 `, yielded N.N s`: 다른 프로그램이 같은 디스크를 읽고 있어서 예열이 모두 합쳐 N.N초 동안 낮은 I/O 우선순위로 읽었다는 뜻입니다.
 - `<게임>: prewarm cancelled (...) (preempted by trigger prewarm)`, `<게임>: trigger prewarm waited N s for <게임>`: 런처가 예열을 시작해서 같은 디스크의 다른 게임의 배경 예열이 먼저 읽게 길을 내주고 멈췄다는 뜻입니다. 두 번째 줄은 런처의 예열이 그래도 1초 이상 기다려야 했을 때 남습니다.
 - `<게임>: device calibration stopped at the 5 s limit, sample discarded`: 예열 전의 짧은 디스크 속도 읽기가 5초를 넘게 걸려 그 표본을 버렸다는 뜻입니다.
+
+**로그의 `stage stream` 과 `quick exit` 줄은 무슨 뜻인가요?**
+게임이 시작될 때의 동작에서 나옵니다([게임 실행 중](AUTO_MODE.ko.md#6-게임-실행-중)).
+- `<게임>: stage stream <exe> N MiB in S s (R MB/s, completed), yielded Y s`: 게임이 첫 실행 파일 뒤에 띄운 프로그램(`<exe>`)에, 그 단계가 처음 읽는 블록을 낮은 I/O 우선순위로 읽어 준 것입니다. `stopped, load boundary`, `stopped, cap`, `stopped, memory reserve`, `stopped, cancelled` 는 일찍 끝난 이유입니다. 실제 플레이에서 도움이 되는지는 재지 않았습니다.
+- `<게임>: stage stream skipped (<exe>: <이유>)`: `stage stream cooldown`(같은 프로그램이 60초 안에 다시 뜸), `no blocks in the start list`, `no load evidence, ...`(새 프로세스가 로딩이라고 볼 만큼 읽지 않음), `another game started`, `disk yielded` 입니다.
+- `<게임>: exited quickly (Ns)`: `auto.quick_exit_seconds` 보다 짧은 세션입니다. 서비스가 다음 점검에서 종료를 알아채므로 `N` 은 실제 실행보다 조금 깁니다.
+- `<게임>: backing off for this run (quick exit N in a row, ...)`, `<게임>: start stream skipped (quick exit guard: backing off)`, `<게임>: auto trace skipped (quick exit guard: backing off)`: 짧은 종료 뒤 서비스가 물러나 있는 그 한 번의 실행입니다.
+- `<게임>: quick exit N in a row (runs ...); backed-off run: ...; new kernel drivers since the last normal run: ...` 와 `<게임>: launched after the service backed off (Ns); ...`: 위의 질문을 보십시오.
+- `DiskActivity: D: disk activity unavailable; optimization paused (<사유>)` 와 `DiskActivity: D: disk activity available again after N s (<사유>)`: 디스크 활동 카운터가 한동안 그 드라이브를 놓쳤다는 뜻입니다. 서비스는 같은 디스크 번호로 이어 읽고, 양보 판단은 최대 10초 동안 직전 값을 씁니다. 같은 드라이브는 10분에 한 쌍까지만 남기고 그 사이는 `short outage(s) merged` 로 합칩니다. 보일 수 있는 사유는 `instance_unmapped`, `counter_unavailable`, `value_invalid`, `sample_stalled` 입니다.
 
 **로그의 `trace window ended` 줄은 무슨 뜻인가요?**
 `<게임>: trace window ended, N reads, P target processes, L events lost so far` 는 기록 창이 닫힐 때마다 남습니다. `N` 은 그 창에서 저장한 읽기 수, `P` 는 창이 닫힐 때 살아 있던 게임 프로세스 수이며, `N` 이 0 인 추가 창은 아무것도 저장하지 못한 것입니다. `L` 은 트레이스 세션이 시작된 뒤 놓친 이벤트의 누적 수입니다. 세션이 멈출 때 남는 `trace session stopped: ... M reads dropped (name unresolved)` 는 어느 파일인지 알아내지 못한 읽기 수입니다. [자동 모드](AUTO_MODE.ko.md#2-읽기-기록트레이스)를 보십시오.

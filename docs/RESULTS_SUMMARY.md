@@ -442,6 +442,8 @@ Per game, that is 9 runs of Call of Duty and 9 of League of Legends. Bytes read 
 | `disk yielded` | 0 | 1 |
 | Total | 2 | 57 |
 
+A `game already running` skip is a start that came while the game was already running; it can be a program that the game started after its first one, whose start stream could not run. The stage stream added afterwards reads the blocks of such a program right after it starts ([Automatic mode](AUTO_MODE.md#6-while-a-game-runs)). This log predates it, and its effect has not been measured.
+
 </details>
 
 ### Service work records, 2026-11-11 (0.9.0-beta.34 to beta.35)
@@ -466,6 +468,7 @@ These are records of what the service did on one PC (2 TB SMR HDD, 32 GB RAM) on
 - The hit rate at the moment of game start, and any history of the hit rate (only the latest value exists).
 - A split by program version (the log has no version).
 - The effect of the start stream on load times.
+- The effect of the stage stream (the blocks of a program the game starts after its first one) on load times and on the reads in the first 2 minutes after that program starts.
 - A comparison of loading or stutter using the play record (`play record:` lines, `play_samples.json`).
 
 No tally script is kept in the repository. Reading the line formats above with regular expressions gives the same values.

@@ -148,8 +148,10 @@
 | `rewarm_minutes` | 10 | 데이터가 식었는지 보고 다시 예열하는 캐시 점검 간격(0~1440, 0이면 끔). |
 | `rewarm_after_exit_min` | 2 | 게임 종료를 감지하면 캐시 점검을 이 시간(분) 뒤로 당깁니다(0~1440, 0이면 끔). |
 | `start_stream_enabled` | `true` | `false` 면 게임이 시작될 때 시작 스트림을 하지 않습니다. 설정 탭의 스위치로도 바꿉니다. |
+| `stage_stream_enabled` | `true` | `false` 면 게임이 첫 실행 파일 뒤에 띄우는 실행 파일마다 하는 단계 스트림을 하지 않고, 첫 시작 스트림도 예전처럼 시작 목록 전체를 읽습니다. 설정 탭에는 스위치가 없습니다. [단계 스트림](AUTO_MODE.ko.md#6-게임-실행-중)을 보십시오. |
 | `restream_cooldown_min` | 10 | 같은 게임의 시작 스트림을 이 시간(분) 안에는 다시 돌리지 않습니다(0~1440). 게임이 이미 실행 중이거나 디스크가 바쁠 때도 건너뜁니다. |
 | `start_stream_cap_seconds` | 120 | 시작 스트림의 시간 상한(초, 0~7200). 로딩 경계(10초 이동 창 읽기량이 최고치의 10% 아래로 떨어지는 시점, 최대 60초)에서도 멈춥니다. 0이면 시간 상한이 없습니다. |
+| `quick_exit_seconds` | 90 | 게임 세션이 이 시간(초, 10~600)보다 짧게 끝나면 실행 직후 종료로 셉니다. 10분 안에 그 게임을 다시 실행하면 그 실행에서는 서비스가 한 번 물러납니다. [게임이 실행 직후 꺼질 때](AUTO_MODE.ko.md#6-게임-실행-중)를 보십시오. |
 | `keep_awake` | `true` | 런처가 떠 있거나 평소 플레이하는 시간대에 10분마다 4 KiB 를 작게 읽어 HDD 가 꺼지지 않게 합니다. Windows 전원 설정은 바꾸지 않습니다. |
 | `keep_stream_on_game_start` | `false` | `true` 면 예열 중인 게임이 시작돼도 끝까지 읽습니다(실험용). 평소에는 다음 64 MiB 묶음 경계에서 멈춰 게임에 디스크를 양보합니다. |
 | `load_boundary` | `false` | `true` 면 게임 시작 때 로딩 앞부분(tier0)이 RAM 에 들어온 시각을 잽니다. 디스크를 읽으므로 게임이 끝나면 멈춥니다. |
@@ -163,7 +165,7 @@
 
 설정 탭의 **업데이트** 카드가 `update.mode` 와 `update.prerelease` 를 정합니다.
 
-이전 버전은 `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, `update`, `memory` 키를 거부하므로, 되돌리기 전에 지워야 합니다. `memory` 는 1.0.3 부터 있는 키이며, 1.0.2 이하 버전은 이 키가 파일에 있으면 값과 상관없이 설정 파일 전체를 거부합니다. `memory.standby_ladder` 는 그보다 새 키입니다. 1.0.3 이하 버전은 이 키가 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오.
+이전 버전은 `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, `update`, `memory` 키를 거부하므로, 되돌리기 전에 지워야 합니다. `memory` 는 1.0.3 부터 있는 키이며, 1.0.2 이하 버전은 이 키가 파일에 있으면 값과 상관없이 설정 파일 전체를 거부합니다. `memory.standby_ladder` 는 그보다 새 키입니다. 1.0.3 이하 버전은 이 키가 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오. `auto.stage_stream_enabled` 와 `auto.quick_exit_seconds` 는 그보다 더 새 키입니다. 1.0.3 이하 버전은 둘 중 하나라도 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오.
 
 ## 감시기
 

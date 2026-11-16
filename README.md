@@ -58,10 +58,10 @@ Running a newer installer upgrades the existing installation. Uninstalling rever
 | When | What AsterCache does |
 |---|---|
 | Right after install, then every hour | Finds HDD games in your Steam, Epic, GOG, Ubisoft, and Riot libraries and the Windows uninstall list, and registers them. |
-| First play of a registered game | Records what the game reads. This run is only recorded. |
+| First play of a registered game | Records what the game reads. This run is mainly for recording. |
 | After you quit the game and the drive is idle | Moves the recorded pieces into one zone (about 5 minutes per 2 GB), one game at a time, then prewarms that zone. Starting a game pauses the move. |
 | Every PC start and launcher open | Prewarms the zone into RAM, within a RAM budget. |
-| From the second launch | The full effect applies. |
+| From the second launch | The full effect is expected (the effect on real loading time has not been measured). |
 
 Before a first run, a small game's whole folder (or a large game's engine profile) is prewarmed without a record; the effect of that prewarm has not been measured.
 

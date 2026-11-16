@@ -151,7 +151,7 @@
 
 **게임 업데이트**
 
-- 재배치 뒤 게임 파일의 크기나 수정 시각이 바뀌면 옛 계획을 `.stale` 로 치우고(10분마다 확인) 단계를 발견으로 되돌립니다. 작은 업데이트(계획된 데이터의 절반 미만이 바뀜)는 바뀐 파일의 범위만 트레이스에서 빼고 나머지는 유지하며, 더 큰 변경은 트레이스 전체도 치웁니다. 안티치트가 트레이스를 금지한 게임은 쓸 수 있는 트레이스를 유지합니다.
+- 재배치 뒤 게임 파일의 크기나 수정 시각이 바뀌면 옛 계획을 `.stale` 로 치우고(10분마다 확인) 단계를 발견으로 되돌립니다. 작은 업데이트는 바뀐 파일의 범위만 트레이스에서 빼고 나머지는 유지합니다. 바뀐 파일이 계획된 데이터의 절반 미만이면서 전체 트레이스 바이트의 절반 미만일 때만 작은 업데이트로 봅니다. 더 큰 변경은 트레이스 전체도 치웁니다. 안티치트가 트레이스를 금지한 게임은 쓸 수 있는 트레이스를 유지합니다.
 - 다음 실행 때 이전 존 위치를 먼저 시도하며 다시 트레이스·재배치합니다.
 
 **그 밖에**
@@ -266,7 +266,7 @@
 
 - **언제.** 게임이 시작될 때부터 종료까지(짧은 유예 시간 포함).
 - **무엇을.** 그 디스크의 재배치·재적용·계층 쓰기를 막고, 예열은 양보하며, 게임과 무관한 배경 프로그램이 메모리를 양보하게 하고([배경 메모리 양보](#배경-메모리-양보)), 디스크가 어떻게 움직였는지 기록합니다(`play record:`). 게임이 뒤에 띄우는 프로그램의 블록도 읽고(단계 스트림), 게임이 실행 직후 계속 꺼지면 그 실행에서 물러납니다.
-- **하지 않는 것.** 게임 프로세스를 열지 않습니다. 플레이 기록은 디스크 장치 카운터만 쓰며 그 자체로 게임을 빠르게 하지는 않습니다.
+- **하지 않는 것.** 게임 프로세스의 메모리를 읽거나 바꾸지 않고, 조회 전용 핸들보다 큰 권한으로 열지 않습니다(시작 스트림과 단계 스트림은 그 핸들로 I/O 카운터를 읽습니다). 플레이 기록은 디스크 장치 카운터만 쓰며 그 자체로 게임을 빠르게 하지는 않습니다.
 - **설정.** `auto.start_stream_enabled`(`false` 면 시작 스트림을 하지 않음), `auto.stage_stream_enabled`, `auto.start_stream_cap_seconds`, `auto.restream_cooldown_min`, `auto.quick_exit_seconds`, `auto.keep_awake`, `memory.background_yield`.
 - **로그.** `<게임>: start stream skipped (<사유>)`, `<게임>: stage stream ...`, `<게임>: exited quickly (Ns)`, `<게임>: backing off for this run (...)`, `play record: ...`, `background yield ...`
 
@@ -304,7 +304,7 @@
 
 - 게임 세션이 `auto.quick_exit_seconds`(기본 90초, 10~600)보다 짧게 끝나면 실행 직후 종료입니다. 짧은 종료가 아니면서 5분 이상이면 정상 세션이라 횟수를 되돌리고(기본값에서는 5분 이상이면 모두 그렇고, `quick_exit_seconds` 를 300 보다 크게 두면 그보다 긴 실행도 짧은 종료로 셉니다), 그 사이는 세지도 되돌리지도 않습니다. 세션은 첫 게임 프로세스가 뜬 때부터 모두 사라질 때까지입니다. 길이는 서비스가 프로세스가 사라진 것을 알아챈 때를 기준으로 하며(점검이 약 30초마다 돕니다), 기준에 가까운 실행은 세지 않을 수 있습니다.
 - 첫 번째 짧은 종료는 `<게임>: exited quickly (Ns)` 를 남깁니다.
-- 짧은 종료 뒤 10분 안에 그 게임을 다시 실행하면, 서비스는 그 실행에서 물러납니다. 물러난 실행이 곧바로 짧게 끝나면 그것을 기록하고 그 연속에서는 다시 물러나지 않습니다. 다만 물러난 실행이 짧은 종료 기준을 넘고 5분이 되기 전에 끝나면 아무것도 기록하지 않아, 마지막 짧은 종료 뒤 10분 안의 다음 시작에서 다시 물러날 수 있습니다. 물러난 실행에서는 시작 스트림, 단계 스트림, 자동 추적, 로딩 경계 읽기, 배경 메모리 양보, 트리거 예열을 하지 않습니다. 게임에 디스크를 양보하는 동작은 그대로입니다. 로그: `<게임>: backing off for this run (quick exit N in a row, last Ss, M min ago): no start stream, memory yield or trace`, `<게임>: start stream skipped (quick exit guard: backing off)`, `<게임>: auto trace skipped (quick exit guard: backing off)`.
+- 짧은 종료 뒤 10분 안에 그 게임을 다시 실행하면, 서비스는 그 실행에서 물러납니다. 물러난 실행이 곧바로 짧게 끝나면 그것을 기록하고 그 연속에서는 다시 물러나지 않습니다. 다만 물러난 실행이 짧은 종료 기준을 넘고 5분이 되기 전에 끝나면 `launched after the service backed off` 로그와 알림은 남지만 저장되는 물러남 표시는 갱신하지 않아, 마지막 짧은 종료 뒤 10분 안의 다음 시작에서 다시 물러날 수 있습니다. 물러난 실행에서는 시작 스트림, 단계 스트림, 자동 추적, 로딩 경계 읽기, 배경 메모리 양보, 트리거 예열을 하지 않습니다. 게임에 디스크를 양보하는 동작은 그대로입니다. 로그: `<게임>: backing off for this run (quick exit N in a row, last Ss, M min ago): no start stream, memory yield or trace`, `<게임>: start stream skipped (quick exit guard: backing off)`, `<게임>: auto trace skipped (quick exit guard: backing off)`.
 - 짧은 종료가 두 번 연속되면, 서비스는 마지막 정상 실행(5분 이상 간 마지막 세션) 뒤 새로 올라온 커널 드라이버를 찾아 로그, 트레이 알림(알림 스위치를 따릅니다), 상태 탭의 그 게임 카드에 알립니다. 로그: `<게임>: quick exit N in a row (runs 32s, 47s); backed-off run: exited too|launched|not backed off; new kernel drivers since the last normal run: <이름 (경로), ...>|none|unavailable|unknown (no normal run recorded)`. `unavailable` 은 이번에 드라이버 목록을 읽지 못했다는 뜻이고, `unknown (no normal run recorded)` 는 비교할 정상 실행이 없다는 뜻입니다. 물러난 실행이 꺼지지 않고 살아남으면 `<게임>: launched after the service backed off (Ns); the earlier quick exit(s) may involve the service, or the program may restart itself` 를 남깁니다. 서비스가 원인이라고 단정하지 않는데, 스스로 다시 실행하는 프로그램에서도 같은 모양이 나오기 때문입니다.
 - 드라이버 목록은 올라와 있는 커널 드라이버를 읽기 전용으로 조회한 것입니다(파일 이름과 경로는 Windows 가 주는 대로). 프로세스를 열지 않고 드라이버를 건드리지도 않습니다. 횟수와 마지막 정상 실행의 드라이버 목록은 데이터 폴더의 `quick_exit.json` 에 남습니다.
 - 이 기능이 아닌 것. 게임이 꺼지는 것을 막지 않습니다. 패턴을 알아채고, 서비스를 의심에서 뺄 수 있게 한 실행 동안 물러나며, 마지막 정상 실행 뒤 무엇이 바뀌었는지 보여 줍니다. 원인은 다른 프로그램의 커널 드라이버일 수 있고, 목록의 새 드라이버는 단서이지 원인 확정이 아닙니다.

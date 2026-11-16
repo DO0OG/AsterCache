@@ -24,7 +24,7 @@ Many current games run kernel-level anti-cheat. This page says what AsterCache d
 ## What it does not do
 
 - No code injection, no thread creation in the game process, no reading or writing of its memory, no debug privilege, no hooking, no overlay, and no handle duplication.
-- Game processes are opened only with `PROCESS_QUERY_LIMITED_INFORMATION`, to read the name, path, and bytes read. If a protected process refuses even that, the service decides from ETW events alone and does not try to open that process again. In that case it judges from the reads in the 20 seconds after the refusal is confirmed; reads before those 20 seconds are not counted.
+- Game processes are opened only with `PROCESS_QUERY_LIMITED_INFORMATION`, to read the name, path, and bytes read. If a protected process refuses even that when automatic discovery first checks a process, the service decides from ETW events alone and does not try to open that process again on that path (the start and stage streams ask again at each sample). In that case it judges from the reads in the 20 seconds after the refusal is confirmed; reads before those 20 seconds are not counted.
 - No kernel driver.
 - SOLAR, the cooldown sample, the lowered I/O priority of the prewarm's reading thread, and a launcher's prewarm going first open no game, launcher, or anti-cheat process, and they read or change no other process's memory.
 - The quick exit guard and the disk-activity query open no process. The stage stream opens nothing beyond the query-only handle described above, and none of the three reads or changes another process's memory.
@@ -33,7 +33,7 @@ Many current games run kernel-level anti-cheat. This page says what AsterCache d
 ## Skipped and marked files
 
 - Files that the game has opened exclusively are skipped.
-- During automatic discovery, the service looks at file and folder names up to 4 levels deep in the install folder. It recognizes EasyAntiCheat, BattlEye, Vanguard (`vgc`, `vgk`), and Ricochet; other names containing anticheat, xigncode, nprotect, or gameguard are marked `unknown`. A game with such a name is marked in the Games tab and in the `anticheat` setting, and one log line is written. The behavior does not change. For example, `aster discover` marked The Outlast Trials (Steam) with `eac`.
+- During automatic discovery, the service looks at file and folder names up to 4 levels deep in the install folder. It recognizes EasyAntiCheat, BattlEye, Vanguard (`vgc`, `vgk`), and Ricochet; other names containing anticheat, xigncode, nprotect, or gameguard are marked `unknown`. A game with such a name is marked in the Games tab and in the `anticheat` setting, and one log line is written. The marked kind is also used by the anti-cheat gate: it decides whether automatic trace, pinning, and SSD assist storage are allowed for the game (table below; `unknown` counts as forbidden). For example, `aster discover` marked The Outlast Trials (Steam) with `eac`.
 
 | Anti-cheat | Markers | Policy |
 |---|---|---|

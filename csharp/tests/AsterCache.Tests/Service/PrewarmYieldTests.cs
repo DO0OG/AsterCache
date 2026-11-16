@@ -21,27 +21,29 @@ public sealed class PrewarmYieldTests
 
     public PrewarmYieldTests() => _streamer = new BatchStreamer(this);
 
-    // 100 MiB 묶음 여덟 개를 차례로 읽고 (묶음마다 4 초가 흐름) 묶음마다 진행을 알림 (StreamPrewarmCore 의 Batches 와 같은 순서: 취소 확인 → 읽기 → 진행).
+    // 100 MiB 묶음 (기본 여덟 개) 를 차례로 읽고 (묶음마다 4 초가 흐름) 묶음마다 진행을 알림 (StreamPrewarmCore 의 Batches 와 같은 순서: 취소 확인 → 읽기 → 진행).
     private sealed class BatchStreamer(PrewarmYieldTests t) : IGameStreamer
     {
         public Action<int>? OnIssue { get; set; }
+
+        public int Batches { get; set; } = 8;
 
         public StreamStats Stream(GameSettings game) => throw new NotSupportedException();
 
         public (StreamStats Stats, bool Complete) Stream(GameSettings game, CancellationToken stop, Action<long, long>? progress)
         {
-            progress?.Invoke(0, 800 * Mib);
+            progress?.Invoke(0, Batches * 100 * Mib);
             long done = 0;
-            for (int i = 0; i < 8 && !stop.IsCancellationRequested; i++)
+            for (int i = 0; i < Batches && !stop.IsCancellationRequested; i++)
             {
                 t._events.Add("issue");
                 t._now += TimeSpan.FromSeconds(4);
                 done += 100 * Mib;
                 OnIssue?.Invoke(i);
-                progress?.Invoke(done, 800 * Mib);
+                progress?.Invoke(done, Batches * 100 * Mib);
             }
 
-            return (new StreamStats(done, 8, 0, 0.01), !stop.IsCancellationRequested);
+            return (new StreamStats(done, Batches, 0, 0.01), !stop.IsCancellationRequested);
         }
     }
 
@@ -323,5 +325,249 @@ public sealed class PrewarmYieldTests
         Assert.True(ry.Finish(_now + TimeSpan.FromSeconds(5)));
 
         Assert.Equal(3, ry.Seconds, precision: 3);
+    }
+
+    // 관측 멈춤마다 시각을 모으는 가짜: 외부 처리량은 outcomes 순서대로 (남으면 마지막 값 반복).
+    private List<DateTimeOffset> ObserveWith(params (double? Bps, DiskActivity.SampleState State)[] outcomes)
+    {
+        List<DateTimeOffset> at = [];
+        _window = (_, settle, window) =>
+        {
+            settle();
+            window();
+            at.Add(_now);
+            return outcomes[Math.Min(at.Count - 1, outcomes.Length - 1)];
+        };
+        return at;
+    }
+
+    private static List<double> Gaps(List<DateTimeOffset> at) => [.. at.Zip(at.Skip(1), (a, b) => (b - a).TotalSeconds)];
+
+    [Fact]
+    public void AfterThreeIdleObservationsInARowTheObservationPauseWaitsThirtySeconds()
+    {
+        _streamer.Batches = 20; // 80 초
+        List<DateTimeOffset> at = ObserveWith((0, DiskActivity.SampleState.Ok));
+        Prewarmer p = Make();
+
+        Assert.True(p.Run(Games.Make("a", "a.exe"), "trigger steam.exe").Ran);
+
+        List<double> gaps = Gaps(at);
+        Assert.Equal(4, at.Count); // 처음, 10 초 간격 두 번, 그 뒤 30 초
+        Assert.All(gaps.Take(2), g => Assert.InRange(g, 10, 15));
+        Assert.InRange(gaps[2], 30, 35);
+    }
+
+    [Fact]
+    public void ABusyObservationBringsTheTenSecondIntervalBackAtOnce()
+    {
+        _streamer.Batches = 25; // 100 초
+        (double?, DiskActivity.SampleState) idle = (0, DiskActivity.SampleState.Ok);
+        List<DateTimeOffset> at = ObserveWith(idle, idle, idle, (Busy, DiskActivity.SampleState.Ok), idle);
+        Prewarmer p = Make();
+
+        Assert.True(p.Run(Games.Make("a", "a.exe"), "trigger steam.exe").Ran);
+
+        List<double> gaps = Gaps(at);
+        Assert.InRange(gaps[2], 30, 35); // 한가함 세 번 뒤 30 초
+        Assert.InRange(gaps[3], 10, 15); // 바쁨 한 번 뒤 바로 10 초
+        Assert.InRange(gaps[4], 10, 15); // 한가함 연속이 처음부터 다시 셈
+    }
+
+    [Theory]
+    [InlineData(DiskActivity.SampleState.Warming)]
+    [InlineData(DiskActivity.SampleState.Stale)]
+    public void AnObservationWithoutAUsableSampleIsNotCountedAsIdle(DiskActivity.SampleState state)
+    {
+        _streamer.Batches = 20; // 80 초
+        List<DateTimeOffset> at = ObserveWith((null, state));
+        Prewarmer p = Make();
+
+        Assert.True(p.Run(Games.Make("a", "a.exe"), "trigger steam.exe").Ran);
+
+        Assert.True(at.Count >= 6, "간격이 늘지 않고 10 초마다 잼");
+        Assert.All(Gaps(at), g => Assert.InRange(g, 10, 15));
+    }
+
+    [Fact]
+    public void ReadYieldCountsReadBytesAndTimeAtEachPriorityAndTheSwitches()
+    {
+        var ry = new ReadYield(_ => true, startYielding: false);
+        ry.NoteRead(0, _now);
+        ry.NoteRead(100 * Mib, _now + TimeSpan.FromSeconds(4)); // 보통
+        Assert.True(ry.Apply(low: true, _now + TimeSpan.FromSeconds(4)));
+        ry.NoteRead(300 * Mib, _now + TimeSpan.FromSeconds(12)); // 낮음
+        Assert.False(ry.Apply(low: false, _now + TimeSpan.FromSeconds(12)));
+        ry.NoteRead(0, _now + TimeSpan.FromSeconds(13)); // 새 읽기 목록: 기준만 다시 잡음
+
+        Assert.Equal(new ReadMix(100 * Mib, 4, 200 * Mib, 8, 2), ry.Mix);
+        Assert.Equal(", read 100 MiB in 4.0 s at normal I/O priority and 200 MiB in 8.0 s at low (2 switches)", ry.Mix.Note());
+        Assert.Equal(1, ry.ToNormal);
+        Assert.Equal(string.Empty, new ReadMix(100 * Mib, 4, 0, 0, 0).Note()); // 낮음을 쓰지 않았으면 줄은 그대로
+    }
+
+    [Fact]
+    public void TheDoneLineAddsTheReadMixAndOnlyTheFirstReturnToNormalIsLogged()
+    {
+        _streamer.Batches = 20;
+        _streamer.OnIssue = i => _bps = i is (>= 2 and < 5) or (>= 8 and < 11) ? Busy : 0; // 두 번 낮아졌다가 돌아옴
+        Prewarmer p = Make();
+
+        Assert.True(p.Run(Games.Make("a", "a.exe"), "rewarm").Ran);
+
+        Assert.Single(_log.Lines, l => l.Contains("a: prewarm back to normal I/O priority after ", StringComparison.Ordinal));
+        string done = Assert.Single(_log.Lines, l => l.Contains("prewarm done (rewarm)", StringComparison.Ordinal));
+        Assert.Matches(@", yielded [\d.]+ s, read \d+ MiB in [\d.]+ s at normal I/O priority and [1-9]\d* MiB in [\d.]+ s at low \([1-9]\d* switches\)", done);
+    }
+
+    [Fact]
+    public void ALoadHeadReadLogsItsStartAndEndWithTheAmountAndTime()
+    {
+        GameSettings[] games = [Games.Make("a", "a.exe"), Games.Make("b", "b.exe")];
+        var p = new Prewarmer(games, new HeadStreamer(this), Env(), _log, null, () => _now);
+
+        p.RunAll(games, "rewarm");
+
+        Assert.Single(_log.Lines, l => l.Contains("a: load head prewarm started", StringComparison.Ordinal));
+        Assert.Single(_log.Lines, l => l.Contains("a: load head prewarm done: 50 MiB in ", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AGameWhoseLoadHeadIsNotReadLogsTheReason()
+    {
+        GameSettings[] games = [Games.Make("a", "a.exe"), Games.Make("b", "b.exe")];
+        PrewarmEnv env = Env();
+        var p = new Prewarmer(games, new HeadStreamer(this), new PrewarmEnv
+        {
+            AvailableRamMib = env.AvailableRamMib,
+            GameRunning = env.GameRunning,
+            ZoneBytes = g => g.Name == "b" ? null : 800 * Mib,
+            TraceExists = env.TraceExists,
+            UptimeMs = env.UptimeMs,
+            Sleep = env.Sleep,
+            ProbeReadMs = env.ProbeReadMs,
+            DiskSample = env.DiskSample,
+            SetReadIoLow = env.SetReadIoLow,
+        }, _log, null, () => _now);
+
+        p.RunAll(games, "rewarm");
+
+        Assert.Single(_log.Lines, l => l.Contains("b: load head prewarm skipped (no plan file)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void PreparationLongerThanFiveSecondsLogsEachStepOnce()
+    {
+        Prewarmer p = Make();
+
+        var heads = new Prewarmer.HeadTimes { Planning = 30.4, Reading = 1.1 };
+        p.LogPrepared("trigger steam.exe", sampled: 3.2, ordered: 0.1, planned: 1.5, heads, headsTotal: 52.9);
+        p.LogPrepared("trigger steam.exe", sampled: 1, ordered: 1, planned: 1, new Prewarmer.HeadTimes(), headsTotal: 1); // 5 초 미만은 남기지 않음
+
+        string line = Assert.Single(_log.Lines, l => l.Contains("prewarm prepared in ", StringComparison.Ordinal));
+        Assert.Contains("prewarm prepared in 57.7 s before the per-game reads [trigger steam.exe]: cooldown and cold samples 3.2 s, order 0.1 s, lists and layout lookups 1.5 s, load head plans and layout lookups 30.4 s, load head reads 1.1 s, other waits in load heads 21.4 s", line, StringComparison.Ordinal);
+    }
+
+    // 앞부분 스트리머: 첫 읽기를 내기 전 계획 (planMs) 과 읽기 (readMs) 에 실제로 시간을 씀 (준비 시간 줄이 올바른 칸에 넣는지 보려고). 읽기 전 진행 0 은 알리지 않음 (실제 스트리머와 같음).
+    private sealed class SlowHeadStreamer(PrewarmYieldTests t, int planMs, int readMs) : IGameStreamer
+    {
+        public StreamStats Stream(GameSettings game) => new(100 * Mib, 1, 0, 0.01);
+
+        public void StreamHeadCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue)
+        {
+            noteIssue?.Invoke("head schedule", 0, false);
+            Thread.Sleep(planMs); // 목록 계산·배치 조회
+            noteIssue?.Invoke("stream batch", 100 * Mib, true);
+            Thread.Sleep(readMs); // 읽기
+            t._now += TimeSpan.FromSeconds(4);
+            progress?.Invoke(100 * Mib, 200 * Mib);
+            t._now += TimeSpan.FromSeconds(4);
+            progress?.Invoke(200 * Mib, 200 * Mib);
+        }
+    }
+
+    private sealed class CancelingHeadStreamer(CancellationTokenSource caller) : IGameStreamer
+    {
+        public StreamStats Stream(GameSettings game) => new(100 * Mib, 1, 0, 0.01);
+
+        public void StreamHeadCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue)
+        {
+            caller.Cancel(); // 계획 도중 서비스 종료 등으로 호출자 토큰이 취소됨
+            throw new OperationCanceledException(caller.Token);
+        }
+    }
+
+    [Fact]
+    public void ACancelledStreamCountsTheLastBatchAtItsPriority()
+    {
+        _streamer.Batches = 20;
+        _bps = Busy;
+        using var cts = new CancellationTokenSource();
+        _streamer.OnIssue = i =>
+        {
+            if (i == 5)
+            {
+                cts.Cancel(); // 여섯 번째 묶음 (600 MiB) 을 읽은 직후 취소: 진행 알림이 취소 확인에 걸려도 그 양을 세어야 함
+            }
+        };
+        Prewarmer p = Make();
+
+        PrewarmResult r = p.Run(Games.Make("a", "a.exe"), "rewarm", ct: cts.Token);
+
+        Assert.False(r.Ran);
+        string line = Assert.Single(_log.Lines, l => l.Contains("prewarm cancelled (rewarm)", StringComparison.Ordinal));
+        Assert.Matches(@"after 600 MiB \([^)]*\), read 300 MiB in [\d.]+ s at normal I/O priority and 300 MiB in [\d.]+ s at low \(1 switches\)", line); // 보통 세 묶음 + 낮음 세 묶음
+    }
+
+    [Fact]
+    public void TheLoadHeadFirstBatchIsCountedAtItsPriorityEvenWithoutAZeroProgressCallback()
+    {
+        _uptimeMs = 10_000;
+        UseWindow(Busy);
+        GameSettings[] games = [Games.Make("a", "a.exe"), Games.Make("b", "b.exe")];
+        var p = new Prewarmer(games, new SlowHeadStreamer(this, 0, 0), Env(), _log, null, () => _now);
+
+        p.RunAll(games, "rewarm");
+
+        string line = Assert.Single(_log.Lines, l => l.Contains("a: load head prewarm done:", StringComparison.Ordinal));
+        Assert.Matches(@"done: 200 MiB in [\d.]+ s, read 100 MiB in 4\.0 s at normal I/O priority and 100 MiB in 5\.0 s at low \(1 switches\)", line);
+    }
+
+    [Fact]
+    public void ThePreparedLineSeparatesTheLoadHeadPlanFromTheLoadHeadRead()
+    {
+        GameSettings[] games = [Games.Make("a", "a.exe"), Games.Make("b", "b.exe")];
+        var p = new Prewarmer(games, new SlowHeadStreamer(this, planMs: 150, readMs: 250), Env(), _log, null, () => _now) { PrepareLogAbove = TimeSpan.Zero };
+
+        p.RunAll(games, "rewarm");
+
+        string line = Assert.Single(_log.Lines, l => l.Contains("prewarm prepared in ", StringComparison.Ordinal));
+        System.Text.RegularExpressions.Match m = System.Text.RegularExpressions.Regex.Match(line, @"load head plans and layout lookups ([\d.]+) s, load head reads ([\d.]+) s");
+        Assert.True(m.Success, line);
+        Assert.True(double.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) >= 0.2, "게임 둘의 계획 150 ms 씩이 계획 칸에");
+        Assert.True(double.Parse(m.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture) >= 0.4, "게임 둘의 읽기 250 ms 씩이 읽기 칸에");
+    }
+
+    [Fact]
+    public void ACallerCancelDuringTheLoadHeadStillLogsTheHeadEndAndThePreparedLine()
+    {
+        _uptimeMs = 10_000;
+        _bps = Busy;
+        UseWindow(Busy);
+        using var cts = new CancellationTokenSource();
+        GameSettings[] games = [Games.Make("a", "a.exe"), Games.Make("b", "b.exe")];
+        var p = new Prewarmer(games, new CancelingHeadStreamer(cts), Env(), _log, null, () => _now) { PrepareLogAbove = TimeSpan.Zero };
+
+        try
+        {
+            p.RunServiceStart(ct: cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // 호출자 취소는 예외로 나올 수 있음
+        }
+
+        Assert.Single(_log.Lines, l => l.Contains("a: load head prewarm interrupted (caller cancelled) after ", StringComparison.Ordinal));
+        Assert.Single(_log.Lines, l => l.Contains("prewarm prepared in ", StringComparison.Ordinal));
     }
 }

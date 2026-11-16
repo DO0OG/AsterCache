@@ -22,6 +22,7 @@ public sealed class BootQuiet
     private readonly Func<long> _uptimeMs;
     private readonly Func<long> _unbiasedMs; // 절전 시간을 뺀 가동 시간 (복귀 판정 전용)
     private readonly Func<bool> _idle;
+    private readonly Func<double?>? _lastBps; // 방금 유휴 조회에서 가장 바쁜 게임 드라이브의 처리량 (바이트/초, 모르면 null), 풀림 로그용
     private readonly ILog _log;
     private readonly object _gate = new();
     private readonly HashSet<string> _logged = new(StringComparer.Ordinal); // 무엇별 보류 로그를 구간당 한 번만, _gate 로 보호
@@ -31,25 +32,43 @@ public sealed class BootQuiet
     private bool _prewarmReleased; // 계기 예열 보류를 풀어도 되는 조건에 이르렀음 (구간이 끝나거나 절전 복귀로 다시 시작할 때까지 유지), _gate 로 보호
     private long _origin; // 구간이 시작한 가동 시간 (복귀 때 그 시점으로 다시 맞춤), _gate 로 보호
     private long? _prevSlept; // 직전 Refresh 의 누적 절전 시간 (ms, 복귀 판정), _gate 로 보호
+    private int _checks; // 계기 예열 풀림 판정 (유휴 조회) 횟수와 그중 한가하지 않았던 횟수, 구간을 다시 시작하면 0, _gate 로 보호
+    private int _busyChecks;
+    private double? _lastSample; // 마지막 유휴 조회의 처리량, _gate 로 보호
 
     /// uptimeMs: 시스템 가동 시간 (ms, 절전 포함). idle: 게임 드라이브가 지금 모두 한가한가 (읽을 수 없으면 false). now: 벽시계, 판정에 쓰지 않습니다 (시험이 UTC 보정을 주입하는 데만 씀).
-    /// unbiasedMs: 절전 시간을 뺀 가동 시간 (ms, 복귀 판정 전용). 없으면 QueryUnbiasedInterruptTime.
-    public BootQuiet(Func<long> uptimeMs, Func<bool> idle, ILog log, Func<DateTimeOffset>? now = null, Func<long>? unbiasedMs = null)
+    /// unbiasedMs: 절전 시간을 뺀 가동 시간 (ms, 복귀 판정 전용). 없으면 QueryUnbiasedInterruptTime. lastBps: idle 을 부른 직후 그 조회의 처리량 (풀림 로그에만 씀).
+    public BootQuiet(Func<long> uptimeMs, Func<bool> idle, ILog log, Func<DateTimeOffset>? now = null, Func<long>? unbiasedMs = null, Func<double?>? lastBps = null)
     {
         _uptimeMs = uptimeMs;
         _unbiasedMs = unbiasedMs ?? BootQuietNative.UnbiasedMs;
         _idle = idle;
+        _lastBps = lastBps;
         _log = log;
         _applies = uptimeMs() < Prewarmer.BootDelay.TotalMilliseconds; // 부팅 뒤에 뜬 서비스 (재시작 포함) 는 구간이 없음
     }
 
     /// 실제 환경: 가동 시간은 uptimeMs (없으면 Environment.TickCount64), 유휴는 게임 드라이브 전부의 처리량이 바쁨 기준 미만 (하나라도 읽을 수 없으면 유휴 아님).
-    public static BootQuiet Real(ILog log, Func<IEnumerable<GameSettings>> games, Func<long>? uptimeMs = null, Func<long>? unbiasedMs = null) => new(
-        uptimeMs ?? (() => Environment.TickCount64),
-        () => games().All(g => DiskActivity.BytesPerSecond(PlanFile.SplitDrive(g.OriginRoot)) is { } bps && bps < DiskActivity.BusyBytesPerSecond),
-        log,
-        null,
-        unbiasedMs);
+    public static BootQuiet Real(ILog log, Func<IEnumerable<GameSettings>> games, Func<long>? uptimeMs = null, Func<long>? unbiasedMs = null)
+    {
+        double? worst = null; // 이번 조회에서 본 가장 큰 처리량 (Refresh 한 스레드에서만 부름)
+        return new(
+            uptimeMs ?? (() => Environment.TickCount64),
+            () =>
+            {
+                worst = null;
+                return games().All(g =>
+                {
+                    double? bps = DiskActivity.BytesPerSecond(PlanFile.SplitDrive(g.OriginRoot));
+                    worst = bps is { } v ? Math.Max(worst ?? 0, v) : worst;
+                    return bps is { } rate && rate < DiskActivity.BusyBytesPerSecond;
+                });
+            },
+            log,
+            null,
+            unbiasedMs,
+            () => worst);
+    }
 
     /// 지금 구간인가: 부팅 뒤 BootDelay 안에 뜬 서비스이고, 아직 끝나지 않았습니다.
     public bool Active
@@ -81,6 +100,7 @@ public sealed class BootQuiet
                 _idleSince = null;
                 _prewarmIdleSince = null;
                 _prewarmReleased = false;
+                (_checks, _busyChecks, _lastSample) = (0, 0, null);
                 _logged.Clear();
                 _log.Info("boot quiet period restarted: resume from sleep detected");
             }
@@ -96,13 +116,25 @@ public sealed class BootQuiet
 
         long elapsed = uptime - origin;
         bool capped = elapsed >= (Prewarmer.BootDelay + MaxQuiet).TotalMilliseconds;
-        bool idleForPrewarm = !capped && elapsed >= Prewarmer.PrewarmBootDelay.TotalMilliseconds && _idle(); // 유휴 조회는 틱마다 한 번만
+        bool judged = !capped && elapsed >= Prewarmer.PrewarmBootDelay.TotalMilliseconds;
+        bool idleForPrewarm = judged && _idle(); // 유휴 조회는 판정마다 한 번만 (두 유휴 조건이 같은 표본을 봄)
+        double? sample = judged ? _lastBps?.Invoke() : null;
         bool idle = idleForPrewarm && elapsed >= Prewarmer.BootDelay.TotalMilliseconds;
         lock (_gate)
         {
             _idleSince = idle ? _idleSince ?? uptime : null;
             _prewarmIdleSince = idleForPrewarm ? _prewarmIdleSince ?? uptime : null;
+            if (judged)
+            {
+                (_checks, _busyChecks, _lastSample) = (_checks + 1, _busyChecks + (idleForPrewarm ? 0 : 1), sample);
+            }
+
+            bool wasReleased = _prewarmReleased;
             _prewarmReleased |= _prewarmIdleSince is { } prewarmSince && uptime - prewarmSince >= Prewarmer.PrewarmIdleNeeded.TotalMilliseconds;
+            if (_prewarmReleased && !wasReleased)
+            {
+                _log.Info($"boot prewarm release: uptime {uptime / 1000} s, idle since {_prewarmIdleSince / 1000} s, {_checks} checks ({_busyChecks} not idle), last disk {(_lastSample is { } bps ? $"{bps / 1048576.0:F1} MiB/s" : "unknown")}");
+            }
             if (capped)
             {
                 _ended = true;

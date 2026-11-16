@@ -285,7 +285,7 @@ public sealed partial class Prewarmer
     // 같은 디스크의 다른 등록 게임이 돌고 바쁘면 true (스트림 취소, 기존 규칙). 그 밖에는 취소 없이 읽기 스레드의 I/O 우선순위만 바꿈 (바쁘거나 모르면 낮음, 한가하면 보통).
     private bool ObserveReadYield(GameSettings game, CancellationToken stop, Func<GameSettings, bool> running, ReadYield yield)
     {
-        if (!yield.FirstObservationPending && _now() - _driveObservedAt < DiskObserveEvery)
+        if (!yield.FirstObservationPending && _now() - _driveObservedAt < yield.ObserveEvery(DiskObserveEvery)) // 한가함이 이어지는 동안은 간격을 늘림 (ReadYield.NoteObservation)
         {
             return false;
         }
@@ -308,9 +308,15 @@ public sealed partial class Prewarmer
             return true;
         }
 
+        yield.NoteObservation(load == ReadLoad.Normal);
+        int returned = yield.ToNormal;
         if (yield.Apply(load == ReadLoad.Yield, _now()))
         {
             _log.Info($"{game.Name}: prewarm yields to other disk activity (low I/O priority)");
+        }
+        else if (returned == 0 && yield.ToNormal == 1)
+        {
+            _log.Info($"{game.Name}: prewarm back to normal I/O priority after {yield.Seconds:F1} s at low"); // 오가며 줄이 쏟아지지 않게 스트림당 처음 돌아올 때만
         }
 
         return false;

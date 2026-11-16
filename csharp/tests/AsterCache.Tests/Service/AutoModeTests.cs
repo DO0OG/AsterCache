@@ -276,7 +276,7 @@ public sealed class AutoModeTests : IDisposable
             GameRunning = _ => false,
             ZoneBytes = _ => 1 << 20,
             TraceExists = _ => true,
-        }, _rig.Log);
+        }, _rig.Log, null, () => T0); // 가짜 시계: 실제 시각이면 마지막 플레이가 14 일 창 (StartupPlayedWithin) 밖으로 흘러 시험이 어느 날부터 실패함
         var emitted = new TaskCompletionSource();
         string warmRaw = AutoTracer.RawTracePath(Game("warm"));
         _rig.World.Files.UnionWith([warmRaw, TraceStageIndex.IndexPath(warmRaw)]);

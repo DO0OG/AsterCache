@@ -210,13 +210,13 @@
 - 서비스 시작 때는 앞부분만 `auto.startup_warm_max_mib` 까지 읽고, 나머지는 디스크가 한가해진 뒤에 읽습니다. 어차피 건너뛸 게임(예: 쿨다운 중, 실행 중, 업데이트 뒤 지연 중)은 이 상한의 몫을 차지하지 않으므로 다음 게임이 그 몫을 받습니다.
 - 관리 창에 `예열 중 x/y MB` 가 나오고, 예열이 끝나면 트레이 알림을 보냅니다(게임당 하루 1회).
 - 다른 게임이 시작되면 묶음 경계에서 멈춥니다. 지금 예열 중인 게임이 시작되어도 멈추고 양보합니다(`auto.keep_stream_on_game_start`, 기본 `false`, `true` 면 끝까지 읽음, 실험용).
-- **다른 읽기에 길 내주기.** 핫 집합 예열(서비스 시작, 런처, 재예열, 보충), 기록이 없는 게임의 예열, 서비스 시작 때 로딩 앞부분 읽기의 읽기 스레드는 다른 프로그램이 같은 디스크를 읽는 동안 자기 I/O 우선순위를 낮음으로 내리고, 디스크가 한가해지면 보통으로 되돌립니다. 약 10초마다 1초 멈춰 자기 읽기 없이 디스크 처리량을 재며, 4 MiB/s 이상이거나 잴 수 없으면 바쁜 것으로 보아 낮은 우선순위로 읽습니다. 같은 디스크에서 다른 게임이 실행 중일 때의 규칙은 그대로입니다. 그때는 여전히 취소합니다. 런처가 시작한 예열이나 부팅 15분 안에 시작한 예열은 첫 10초 간격을 기다리지 않고 첫 묶음 전에 디스크를 한 번 재므로, 바로 길을 내줄 수 있습니다. 로그: `<게임>: prewarm yields to other disk activity (low I/O priority)`(읽기당 한 번), `prewarm done` 줄 끝의 `, yielded N.N s`. 그 밖에는 달라진 것이 없습니다. 순서, 양, 취소 규칙은 같습니다.
+- **다른 읽기에 길 내주기.** 핫 집합 예열(서비스 시작, 런처, 재예열, 보충), 기록이 없는 게임의 예열, 서비스 시작 때 로딩 앞부분 읽기의 읽기 스레드는 다른 프로그램이 같은 디스크를 읽는 동안 자기 I/O 우선순위를 낮음으로 내리고, 디스크가 한가해지면 보통으로 되돌립니다. 약 10초마다 1초 멈춰 자기 읽기 없이 디스크 처리량을 재며, 4 MiB/s 이상이거나 잴 수 없으면 바쁜 것으로 보아 낮은 우선순위로 읽습니다. 같은 디스크에서 다른 게임이 실행 중일 때의 규칙은 그대로입니다. 그때는 여전히 취소합니다. 런처가 시작한 예열이나 부팅 15분 안에 시작한 예열은 첫 10초 간격을 기다리지 않고 첫 묶음 전에 디스크를 한 번 재므로, 바로 길을 내줄 수 있습니다. 디스크가 연속 3번 한가하면 멈춤 간격을 30초로 늘리고, 한가하지 않은 결과(바쁨, 표본 없음, 낡은 표본)가 한 번이라도 나오면 바로 10초로 돌아갑니다. 로그: `<게임>: prewarm yields to other disk activity (low I/O priority)`(읽기당 한 번), `<게임>: prewarm back to normal I/O priority after N.N s at low`(처음 돌아올 때만), 낮은 우선순위를 썼을 때는 핫 집합 예열의 `prewarm done` 줄 끝 `, yielded N.N s` 뒤에 `, read A MiB in S s at normal I/O priority and B MiB in T s at low (K switches)` 가 붙습니다. 같은 `, read ...` 꼬리(`yielded` 없이)가 그 예열의 `prewarm cancelled (...) after N MiB (<사유>)` 줄과 `load head prewarm done`·`cancelled` 줄 끝에도 붙습니다. 기록이 없는 게임의 예열과 보충(`supplement prewarm done`)에는 붙지 않습니다. 그 밖에는 달라진 것이 없습니다. 순서, 양, 취소 규칙은 같습니다.
 
 **기록이 없는 게임**
 
 - 작은 게임(폴더가 RAM 예산 안)은 폴더 전체를 `auto.full_prewarm_max_mib` 까지, 큰 게임은 엔진 프로필의 파일을 예열합니다.
 - 등록이 사라진 게임은 예열하거나 고정하지 않습니다.
-- 다른 로그 줄: `prewarm cancelled <사유>`, `<게임>: prewarm skipped (...)`, 단계별 시간을 담은 `prewarm phases` 줄. 부분 예열이면 앞에 `partial A/B MiB, the rest does not fit in memory:` 가 붙습니다.
+- 다른 로그 줄: `prewarm cancelled <사유>`, `<게임>: prewarm skipped (...)`, 단계별 시간을 담은 `prewarm phases` 줄. 게임별 읽기 전의 준비가 5초 이상 걸리면 `prewarm prepared in N s before the per-game reads [<사유>]: cooldown and cold samples, order, lists and layout lookups, load head plans and layout lookups, load head reads, other waits in load heads` 가 단계별 시간을 나눠 보여 주고(앞부분 읽기가 취소돼도 남습니다), 게임이 여럿인 묶음의 로딩 앞부분 읽기는 `<게임>: load head prewarm started` 다음에 `done: N MiB in S s`, `cancelled (<사유>) after N MiB in S s`(계획 도중 서비스가 멈추면 `interrupted (caller cancelled) after ...`, 읽지 않았으면 `skipped (<사유>)`)를 남깁니다. 부분 예열이면 앞에 `partial A/B MiB, the rest does not fit in memory:` 가 붙습니다.
 
 </details>
 
@@ -362,7 +362,7 @@
 <details>
 <summary>세부: 무엇을 보류하나</summary>
 
-- 보류하는 작업: 재배치, 새 트레이스 예열, 배치 검사와 재적용, HDD 깨워 두기. 그 뒤 기존 조건으로 실행합니다. 런처 계기 예열은 위의 더 짧은 조건까지만 보류하며, 그 조건이 되면 다음 30초 점검 때 풉니다(로그: `held prewarm triggers released: N (boot + idle disk)`). 다른 보류 작업은 구간이 끝날 때까지 그대로 보류합니다. 서비스 시작 예열은 `service start prewarm waits for 60 s after boot and 20 s of idle disk` 를 남깁니다.
+- 보류하는 작업: 재배치, 새 트레이스 예열, 배치 검사와 재적용, HDD 깨워 두기. 그 뒤 기존 조건으로 실행합니다. 런처 계기 예열은 위의 더 짧은 조건까지만 보류하며, 런처 예열을 보류한 동안에는 5초마다(그 밖에는 30초마다) 점검하고, 조건이 되면 그 점검에서 바로 풉니다(로그: `held prewarm triggers released: N (boot + idle disk)`, 그 앞에 `boot prewarm release: uptime U s, idle since S s, C checks (B not idle), last disk X MiB/s`). 다른 보류 작업은 구간이 끝날 때까지 그대로 보류합니다. 서비스 시작 예열은 `service start prewarm waits for 60 s after boot and 20 s of idle disk` 를 남깁니다.
 - 부팅 15분 안에 시작한 예열 읽기는 첫 묶음 전에 디스크를 재고, 다른 읽기가 있으면 바로 낮은 I/O 우선순위로 길을 내줍니다([예열](#4-예열) 참고).
 - 재부팅하면 RAM 캐시는 비지만 쿨다운은 재부팅 전의 마지막 예열부터 셉니다. 표본이 캐시가 식었음을 보이면 그 게임의 쿨다운은 끝납니다(`cooldown ignored, the cache is cold [service start]`).
 - 부팅 예열은 최근에 플레이한 게임만 대상으로 합니다. 재시작 전에 이미 예열한 트레이스는 새 트레이스로 다시 치지 않습니다.

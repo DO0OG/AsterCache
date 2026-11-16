@@ -119,7 +119,9 @@ SMR 드라이브(WD20EZAZ) 1대만 측정했고 CMR 은 측정하지 않았습�
 **로그의 `cooldown ignored`, `yields`, `preempted` 줄은 무슨 뜻인가요?**
 - `<게임>: cooldown ignored, the cache is cold [service start]`(또는 `[trigger <exe>]`): 그 게임이 쿨다운 안이었지만, 표본 읽기가 캐시가 식었음을 보여서(예: 재부팅 뒤) 그래도 예열했다는 뜻입니다.
 - `service start prewarm waits for 60 s after boot and 20 s of idle disk`, `held prewarm triggers released: N (boot + idle disk)`: 서비스 시작 예열과 부팅 때 보류된 런처 예열이 그 조건만 기다린다는 뜻입니다([부팅 직후](AUTO_MODE.ko.md#부팅-직후)).
-- `<게임>: prewarm yields to other disk activity (low I/O priority)`, 그리고 `prewarm done` 줄 끝의 `, yielded N.N s`: 다른 프로그램이 같은 디스크를 읽고 있어서 예열이 모두 합쳐 N.N초 동안 낮은 I/O 우선순위로 읽었다는 뜻입니다.
+- `boot prewarm release: uptime U s, idle since S s, C checks (B not idle), last disk X MiB/s`: 보류한 런처 예열이 그 시각에 풀린 이유입니다. 그때까지 PC가 켜져 있던 시간, 한가한 구간이 시작된 시각, 한가함을 확인한 횟수(5초마다)와 그중 한가하지 않았던 횟수, 마지막으로 본 디스크 처리량을 보여 줍니다.
+- `<게임>: prewarm yields to other disk activity (low I/O priority)`, 그리고 `prewarm done` 줄 끝의 `, yielded N.N s`: 다른 프로그램이 같은 디스크를 읽고 있어서 예열이 모두 합쳐 N.N초 동안 낮은 I/O 우선순위로 읽었다는 뜻입니다. `<게임>: prewarm back to normal I/O priority after N.N s at low` 는 보통 우선순위로 처음 돌아온 때이고, 핫 집합 예열의 `prewarm done`·`prewarm cancelled` 줄 끝(과 `load head prewarm` 줄)의 `, read A MiB in S s at normal I/O priority and B MiB in T s at low (K switches)` 는 우선순위별로 읽은 양과 바뀐 횟수입니다. 기록이 없는 게임의 예열과 보충에는 붙지 않습니다.
+- `prewarm prepared in N s before the per-game reads [<사유>]: ...`, `<게임>: load head prewarm started` / `done: N MiB in S s` / `cancelled (<사유>) after N MiB in S s` / `interrupted (caller cancelled) after ...` / `skipped (<사유>)`: 게임별 읽기 전에 시간이 어디에 쓰였는지와 게임마다 로딩 앞부분 읽기가 한 일을 보여 줍니다(첫 줄은 준비가 5초 이상 걸렸을 때만 나옵니다).
 - `<게임>: prewarm cancelled (...) (preempted by trigger prewarm)`, `<게임>: trigger prewarm waited N s for <게임>`: 런처가 예열을 시작해서 같은 디스크의 다른 게임의 배경 예열이 먼저 읽게 길을 내주고 멈췄다는 뜻입니다. 두 번째 줄은 런처의 예열이 그래도 1초 이상 기다려야 했을 때 남습니다.
 - `<게임>: device calibration stopped at the 5 s limit, sample discarded`: 예열 전의 짧은 디스크 속도 읽기가 5초를 넘게 걸려 그 표본을 버렸다는 뜻입니다.
 

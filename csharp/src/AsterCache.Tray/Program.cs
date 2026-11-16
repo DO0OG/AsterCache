@@ -55,7 +55,10 @@ internal static class Program
         App.Manage = new ManageViewModel(App.Model, config, new AsterProcess(elevator, Elevation.IsAdmin, log), App.ScreenshotPath is null ? new SystemDrives() : new SampleDrives(), elevator, shell, log, Elevation.IsAdmin,
             ProcessSnapshot.IsRunning, string.Join(' ', args.Select(AsterProcess.Quote)));
         App.Updater = CreateUpdater(dataDir, log, shell);
-        return AppBuilder.Configure<App>().UsePlatformDetect().StartWithClassicDesktopLifetime(args, ShutdownMode.OnExplicitShutdown);
+        // 기본 합성 방식 (Windows.UI.Composition) 은 창을 닫아도 합성 스레드가 코어 0.3 개를 계속 쓰므로 (Avalonia 11.3.12) 일반 창 표면으로 고정
+        return AppBuilder.Configure<App>().UsePlatformDetect()
+            .With(new Win32PlatformOptions { CompositionMode = [Win32CompositionMode.RedirectionSurface] })
+            .StartWithClassicDesktopLifetime(args, ShutdownMode.OnExplicitShutdown);
     }
 
     /// 자동 업데이트 (정식 릴리스, 고정 저장소). 현재 버전을 알 수 없으면 (개발 빌드) null. 방식은 트레이가 읽어 둔 config.json 의 update 설정을 따르고, 읽지 못하면 알림만 합니다.

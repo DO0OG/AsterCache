@@ -16,6 +16,7 @@ public sealed class AutoMode
     public static readonly TimeSpan HeuristicEvery = TimeSpan.FromSeconds(2);
     public static readonly TimeSpan TraceEvery = TimeSpan.FromSeconds(1);
     public static readonly TimeSpan SummaryEvery = TimeSpan.FromHours(1);
+    public static readonly TimeSpan PreviousTraceFinishTimeout = TimeSpan.FromSeconds(30);
 
     private readonly AutoEnv _env;
     private readonly ILog _log;
@@ -57,6 +58,9 @@ public sealed class AutoMode
 
     /// 시험용 seam: 로딩 경계 감시 본체 (비우면 LoadBoundaryWatch.Run).
     public Action<GameSettings, CancellationToken>? BoundaryRunner { get; set; }
+
+    /// 시험용 seam: 이전 추적 완료 대기 (기본은 상한과 종료 토큰을 적용).
+    public Func<Task, TimeSpan, CancellationToken, Task<bool>> TraceFinishWaiter { get; set; } = WaitForTraceFinishAsync;
 
     /// 로딩 경계 감시가 회차마다 얻는 중재 대여 (Program 이 넣음). 비어 있으면 대여를 얻지 못한 것으로 보고 읽지 않습니다.
     public Func<GameSettings, DiskReadCoordinator.Lease?>? BoundaryLease { get; set; }
@@ -103,9 +107,10 @@ public sealed class AutoMode
     }
 
     /// 등록 게임 exe 가 떴을 때 (감시기 스레드 밖에서 부름): last_played 기록, 원시 트레이스가 없으면 자동 트레이스 시작. backOff 이면 (짧은 종료 뒤 물러나는 실행) last_played 만 기록하고 추적·로딩 경계 읽기는 하지 않음.
-    public void OnGameStart(GameSettings g, bool backOff = false, DateTimeOffset? startedAt = null)
+    public async Task OnGameStart(GameSettings g, bool backOff = false, DateTimeOffset? startedAt = null, Func<bool>? isLatestRunningStart = null)
     {
-        Guard("game start", () =>
+        Task<bool>? traceRetry = null;
+        try
         {
             DateTimeOffset sessionStartedAt = startedAt ?? _env.Now();
             AutoSettings a = _settings.Auto;
@@ -125,7 +130,10 @@ public sealed class AutoMode
             bool tracking = GamePolicy.AllowsTracking(g); // 끄거나 일시 중지한 게임은 추적·학습·게임 중 로딩 경계 읽기를 모두 하지 않음 (last_played 기록은 계속)
             if (a.Trace && tracking && _tracer.WantsRun(g))
             {
-                _tracer.Start(g);
+                if (!_tracer.Start(g, out Task? previousFinish) && previousFinish is not null)
+                {
+                    traceRetry = WaitAndRetryTraceStartAsync(g, previousFinish, isLatestRunningStart);
+                }
             }
 
             if (!tracking)
@@ -133,48 +141,83 @@ public sealed class AutoMode
                 return;
             }
 
-            if (a.LoadBoundary && _env.TraceBlocker(g) is { } cheat) // 게임 중 읽기이므로 트레이스와 같은 안티치트 정책표 결정: 금지 종류와 모름 (unknown) 은 읽지 않음
+            AsterSettings currentSettings = _settings;
+            GameSettings? currentGame = currentSettings.Games.FirstOrDefault(x => string.Equals(x.Name, g.Name, StringComparison.OrdinalIgnoreCase));
+            AutoSettings currentAuto = currentSettings.Auto;
+            if (currentGame is not null && currentAuto.Enabled && currentAuto.LoadBoundary && GamePolicy.AllowsTracking(currentGame)
+                && _env.TraceBlocker(currentGame) is { } cheat) // 게임 중 읽기이므로 트레이스와 같은 안티치트 정책표 결정: 금지 종류와 모름 (unknown) 은 읽지 않음
             {
                 _log.Info($"{g.Name}: tier0 probe skipped (anti-cheat {cheat})");
             }
-            else if (a.LoadBoundary)
+            else if (currentGame is not null && currentAuto.Enabled && currentAuto.LoadBoundary && GamePolicy.AllowsTracking(currentGame))
             {
                 // 적중률은 여기서 재지 않음 (게임 디스크 읽기): 예열 직후 값이 auto_status 에 남아 있음. 게임이 끝나면 NoteGameExit 가 멈춤
                 var watch = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
-                CancellationTokenSource? previous = null;
-                var entry = new BoundaryWatch(watch, sessionStartedAt);
-                _ = _boundaryWatch.AddOrUpdate(g.Name, entry, (_, old) =>
+                AsterSettings latestSettings = _settings;
+                GameSettings? latestGame = latestSettings.Games.FirstOrDefault(x => string.Equals(x.Name, g.Name, StringComparison.OrdinalIgnoreCase));
+                AutoSettings latestAuto = latestSettings.Auto;
+                string? latestCheat = latestGame is null ? null : _env.TraceBlocker(latestGame);
+                if (latestGame is null || !latestAuto.Enabled || !latestAuto.LoadBoundary || !GamePolicy.AllowsTracking(latestGame) || latestCheat is not null)
                 {
-                    previous = old.Token;
-                    return entry;
-                });
-                Release(previous); // 같은 게임이 다시 뜬 경우 이전 감시를 멈추고 치움
-                try
-                {
-                    // 등록 전에 게임이 끝났으면 NoteGameExit 가 놓치므로 등록 직후 확인 (등록 뒤의 종료는 NoteGameExit 가 취소)
-                    if (!_env.AnyRunning(g.ExeNames))
+                    watch.Dispose();
+                    if (latestGame is not null && latestCheat is not null)
                     {
-                        Release(watch, dispose: false);
+                        _log.Info($"{g.Name}: tier0 probe skipped (anti-cheat {latestCheat})");
                     }
-
-                    if (BoundaryRunner is { } run)
+                }
+                else
+                {
+                    CancellationTokenSource? previous = null;
+                    var entry = new BoundaryWatch(watch, sessionStartedAt);
+                    if (isLatestRunningStart?.Invoke() == false)
                     {
-                        run(g, watch.Token);
+                        watch.Dispose();
                     }
                     else
                     {
-                        LoadBoundaryWatch.Run(g, Status, _log, watch.Token, _env.Now, lease: () => BoundaryLease?.Invoke(g));
-                    }
-                }
-                finally
-                {
-                    if (_boundaryWatch.TryRemove(new KeyValuePair<string, BoundaryWatch>(g.Name, entry)))
-                    {
-                        watch.Dispose(); // 맵에서 뺀 쪽이 치움 (종료 통지가 이미 뺐다면 그쪽이 치움)
+                        _ = _boundaryWatch.AddOrUpdate(latestGame.Name, entry, (_, old) =>
+                        {
+                            previous = old.Token;
+                            return entry;
+                        });
+                        Release(previous); // 같은 게임이 다시 뜬 경우 이전 감시를 멈추고 치움
+                        try
+                        {
+                            // 등록 전에 게임이 끝났으면 NoteGameExit 가 놓치므로 등록 직후 확인 (등록 뒤의 종료는 NoteGameExit 가 취소)
+                            if (!_env.AnyRunning(latestGame.ExeNames))
+                            {
+                                Release(watch, dispose: false);
+                            }
+
+                            if (BoundaryRunner is { } run)
+                            {
+                                run(latestGame, watch.Token);
+                            }
+                            else
+                            {
+                                LoadBoundaryWatch.Run(latestGame, Status, _log, watch.Token, _env.Now, lease: () => BoundaryLease?.Invoke(latestGame));
+                            }
+                        }
+                        finally
+                        {
+                            if (_boundaryWatch.TryRemove(new KeyValuePair<string, BoundaryWatch>(latestGame.Name, entry)))
+                            {
+                                watch.Dispose(); // 맵에서 뺀 쪽이 치움 (종료 통지가 이미 뺐다면 그쪽이 치움)
+                            }
+                        }
                     }
                 }
             }
-        });
+
+            if (traceRetry is not null && !await traceRetry.ConfigureAwait(false))
+            {
+                return; // 대기 중 시작 세대나 게임 상태가 바뀌었으면 낡은 시작 작업을 끝냄
+            }
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _log.Error("auto game start failed", e);
+        }
     }
 
     /// 게임 종료 때 (Worker 의 종료 감지에서 부름): 그 게임의 로딩 경계 감시를 멈춥니다.
@@ -188,16 +231,88 @@ public sealed class AutoMode
         }
     }
 
-    /// 재실행 분리에서 이전 실행의 자동 추적이 끝나기를 기다립니다 (새 실행의 추적을 시작하기 전). 오래 걸리면 기다림을 접고 다음으로 넘어감.
-    public async Task EndRestartedGameAsync(GameSettings g, DateTimeOffset exitedAt)
+    /// 재실행 분리에서 종료만 요청합니다. 완료 신호는 새 시작 작업이 한 번만 기다립니다.
+    public void EndRestartedGame(GameSettings g, DateTimeOffset exitedAt)
+    {
+        _ = _tracer.EndGameSessionAsync(g, exitedAt); // 새 시작 작업이 같은 완료 신호를 한 번만 기다리게 종료 요청만 전달
+    }
+
+    private async Task<bool> WaitAndRetryTraceStartAsync(GameSettings g, Task previousFinish, Func<bool>? isLatestRunningStart)
+    {
+        bool finished;
+        try
+        {
+            finished = await TraceFinishWaiter(previousFinish, PreviousTraceFinishTimeout, _stop.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_stop.IsCancellationRequested)
+        {
+            _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (service shutdown)");
+            return false;
+        }
+
+        if (!finished)
+        {
+            if (_stop.IsCancellationRequested)
+            {
+                _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (service shutdown)");
+                return false;
+            }
+
+            if (isLatestRunningStart?.Invoke() == false)
+            {
+                _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (game exited before retry)");
+                return false;
+            }
+
+            _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (previous trace did not finish within {PreviousTraceFinishTimeout.TotalSeconds:0}s)");
+            return true;
+        }
+
+        if (_stop.IsCancellationRequested)
+        {
+            _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (service shutdown)");
+            return false;
+        }
+
+        AsterSettings latestSettings = _settings;
+        GameSettings? latest = latestSettings.Games.FirstOrDefault(x => string.Equals(x.Name, g.Name, StringComparison.OrdinalIgnoreCase));
+        if (latest is null)
+        {
+            _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (game is no longer registered)");
+            return false;
+        }
+
+        if (!(isLatestRunningStart?.Invoke() ?? true) || !_env.AnyRunning(latest.ExeNames))
+        {
+            _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (game exited before retry)");
+            return false;
+        }
+
+        AutoSettings auto = latestSettings.Auto;
+        if (!auto.Enabled || !auto.Trace || !GamePolicy.AllowsTracking(latest))
+        {
+            _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (retry is no longer eligible)");
+            return false;
+        }
+
+        bool eligible = auto.Enabled && auto.Trace && GamePolicy.AllowsTracking(latest) && _tracer.WantsRun(latest);
+        bool started = eligible && _tracer.Start(latest, out _);
+        _log.Info(started
+            ? $"{g.Name}: auto trace start resumed after waiting for the previous trace"
+            : $"{g.Name}: auto trace start abandoned after waiting for the previous trace (retry is no longer eligible)");
+        return true;
+    }
+
+    private static async Task<bool> WaitForTraceFinishAsync(Task finished, TimeSpan timeout, CancellationToken cancellationToken)
     {
         try
         {
-            await _tracer.EndGameSessionAsync(g, exitedAt).WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            await finished.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+            return true;
         }
         catch (TimeoutException)
         {
-            _log.Warn($"{g.Name}: previous auto trace did not finish within 30s of the restart");
+            return false;
         }
     }
 

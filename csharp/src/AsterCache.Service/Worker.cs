@@ -377,16 +377,16 @@ public sealed class Worker : BackgroundService
                     {
                         _ = Task.Run(async () =>
                         {
-                            await _auto.EndRestartedGameAsync(game, previousEndAt);
+                            _auto.EndRestartedGame(game, previousEndAt);
                             if (IsLatestRunningStart(game.Name, startSeq)) // 기다리는 사이 더 새 실행이 뜨거나 꺼졌으면 낡은 시작으로 추적·감시를 열지 않음
                             {
-                                _auto.OnGameStart(game, backOff, startAt);
+                                await _auto.OnGameStart(game, backOff, startAt, () => IsLatestRunningStart(game.Name, startSeq));
                             }
                         }, CancellationToken.None);
                     }
                     else
                     {
-                        _ = Task.Run(() => _auto.OnGameStart(game, backOff, startAt), CancellationToken.None); // last_played 와 자동 트레이스 시작은 감시기 스레드를 막지 않게 따로
+                        _ = Task.Run(() => _auto.OnGameStart(game, backOff, startAt, () => IsLatestRunningStart(game.Name, startSeq)), CancellationToken.None); // last_played 와 자동 트레이스 시작은 감시기 스레드를 막지 않게 따로
                     }
                 }
             }

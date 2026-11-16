@@ -44,7 +44,7 @@ public sealed class HitPercentTests : IDisposable
     }
 
     [Fact]
-    public void WarmRecordsHitPercentOnceAndGameStartDoesNotProbeTheGameDisk()
+    public async Task WarmRecordsHitPercentOnceAndGameStartDoesNotProbeTheGameDisk()
     {
         _rig.Editor.Add(_rig.Input("foo", "foo.exe", @"D:\Gamesoo", "auto", null));
         _rig.Reload();
@@ -58,7 +58,7 @@ public sealed class HitPercentTests : IDisposable
         Assert.True(r.Ran, r.SkipReason);
         Assert.Equal((75, 1), (_rig.Status.Get("foo")!.HitPercent, _probes)); // 예열 직후 한 번
 
-        mode.OnGameStart(_rig.Settings.Games[0]);
+        await mode.OnGameStart(_rig.Settings.Games[0]);
 
         Assert.Equal((75, 1), (_rig.Status.Get("foo")!.HitPercent, _probes)); // 게임 시작 때는 CacheProbe 를 부르지 않음
     }

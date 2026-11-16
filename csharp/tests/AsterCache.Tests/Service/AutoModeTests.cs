@@ -1,6 +1,7 @@
 using AsterCache.Core.Settings;
 using AsterCache.Core.Trace;
 using AsterCache.Service;
+using AsterCache.Tracer;
 using Xunit;
 
 namespace AsterCache.Tests.Service;
@@ -27,6 +28,58 @@ public sealed class AutoModeTests : IDisposable
     private void Played(string name, int hoursAgo) => _rig.Status.MarkPlayed(name, "auto", AutoStage.WaitingIdle, T0 - TimeSpan.FromHours(hoursAgo));
 
     private static IEnumerable<string> Names(IEnumerable<GameSettings> games) => games.Select(g => g.Name);
+
+    private Task StartSavingTrace(AutoMode mode, ManualResetEventSlim saveStarted, ManualResetEventSlim finishSave)
+    {
+        _rig.World.StartTraceFactory = number =>
+        {
+            var trace = new FakeTrace();
+            if (number == 1)
+            {
+                trace.Records.Add(TraceRecord.Start(DateTime.UtcNow, 100, 1, "foo.exe"));
+                trace.Records.Add(TraceRecord.Read(DateTime.UtcNow, 100, @"D:\Games\foo\a.bin", 0, 65536));
+            }
+
+            return trace;
+        };
+        _rig.World.OnCanonicalize = () =>
+        {
+            saveStarted.Set();
+            finishSave.Wait();
+        };
+
+        mode.Tracer.Start(Game("foo"));
+        mode.Tracer.Step();
+        _rig.World.Now += GameExitTracker.Grace;
+        Task saving = Task.Run(mode.Tracer.Step);
+        Assert.True(saveStarted.Wait(TimeSpan.FromSeconds(30)));
+        return saving;
+    }
+
+    private Task StartSavingHeldTrace(AutoMode mode, ManualResetEventSlim saveStarted, ManualResetEventSlim finishSave)
+    {
+        _rig.World.StartTraceFactory = _ => new FakeTrace();
+        mode.Tracer.Start(Game("foo"));
+        _rig.World.Running = true;
+        mode.Tracer.Step();
+
+        AsterSettings original = _rig.Settings;
+        mode.SetSettings(original with { Games = [original.Games[0] with { Paused = true }] });
+        mode.Tracer.Step(); // 정책 변경으로 세션을 멈춰 저장 보류 목록에 둠
+        mode.SetSettings(original);
+
+        _rig.World.Running = false;
+        mode.Tracer.Step(); // 종료 시각을 기록
+        _rig.World.Now += GameExitTracker.Grace;
+        _rig.World.OnCanonicalize = () =>
+        {
+            saveStarted.Set();
+            finishSave.Wait();
+        };
+        Task saving = Task.Run(mode.Tracer.Step);
+        Assert.True(saveStarted.Wait(TimeSpan.FromSeconds(30)));
+        return saving;
+    }
 
     [Fact]
     public async Task RegisteringANewAutoGameWakesTheTickAtOnceButOtherReloadsDoNot()
@@ -174,13 +227,13 @@ public sealed class AutoModeTests : IDisposable
     private GameSettings Game(string name = "foo") => _rig.Settings.Games.Single(g => g.Name == name);
 
     [Fact]
-    public void GameStartRecordsLastPlayedAndOpensAnAutoTraceWhenTheRawTraceIsMissing()
+    public async Task GameStartRecordsLastPlayedAndOpensAnAutoTraceWhenTheRawTraceIsMissing()
     {
         AddGame("foo", "auto");
         _rig.World.Session = new FakeTrace();
         _rig.World.Now = T0;
 
-        Mode().OnGameStart(Game());
+        await Mode().OnGameStart(Game());
 
         Assert.Equal(T0, _rig.Status.Get("foo")!.LastPlayed);
         Assert.Equal(AutoStage.Tracing, _rig.Status.Get("foo")!.Stage); // auto.learn 기본 꺼짐 (E7 재측정 전): 일반 트레이스 단계
@@ -188,14 +241,14 @@ public sealed class AutoModeTests : IDisposable
     }
 
     [Fact]
-    public void GameStartWithATraceAlreadyOnDiskOnlyRecordsThePlay()
+    public async Task GameStartWithATraceAlreadyOnDiskOnlyRecordsThePlay()
     {
         AddGame("foo", "manual");
         _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { TraceRuns = 1 } };
         string raw = AutoTracer.RawTracePath(Game());
         _rig.World.Files.UnionWith([raw, TraceStageIndex.IndexPath(raw)]);
 
-        Mode().OnGameStart(Game());
+        await Mode().OnGameStart(Game());
 
         Assert.Equal((AutoStage.WaitingIdle, "manual"), (_rig.Status.Get("foo")!.Stage, _rig.Status.Get("foo")!.Source));
         Assert.NotNull(_rig.Status.Get("foo")!.LastPlayed);
@@ -203,13 +256,281 @@ public sealed class AutoModeTests : IDisposable
     }
 
     [Fact]
-    public void BackedOffGameStartRecordsThePlayButOpensNoTraceOrBoundaryRead()
+    public async Task GameStartWaitsForAPreviousTraceSaveThenStartsOnce()
+    {
+        AddGame("foo", "auto");
+        AddGame("bar", "auto");
+        AutoMode mode = Mode();
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { LoadBoundary = true } };
+        mode.SetSettings(_rig.Settings);
+        using var saveStarted = new ManualResetEventSlim();
+        using var finishSave = new ManualResetEventSlim();
+        Task saving = StartSavingTrace(mode, saveStarted, finishSave);
+        _rig.World.RunningExes.Add("bar.exe");
+        var waitStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var boundaryStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        TimeSpan? waitLimit = null;
+        mode.BoundaryRunner = (_, _) => boundaryStarted.TrySetResult();
+        mode.TraceFinishWaiter = async (finished, timeout, cancellationToken) =>
+        {
+            waitLimit = timeout;
+            waitStarted.TrySetResult();
+            await finished.WaitAsync(cancellationToken);
+            return true;
+        };
+
+        Task starting = Task.Run(() => mode.OnGameStart(Game("bar"), isLatestRunningStart: () => true));
+        await Task.WhenAll(waitStarted.Task, boundaryStarted.Task).WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.False(finishSave.IsSet);
+        Assert.Equal(1, _rig.World.TraceStarts);
+
+        finishSave.Set();
+        await Task.WhenAll(saving, starting).WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(AutoMode.PreviousTraceFinishTimeout, waitLimit);
+        Assert.Equal(2, _rig.World.TraceStarts);
+        Assert.True(File.Exists(AutoTracer.RawTracePath(Game("foo"))));
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("bar: auto trace start resumed after waiting for the previous trace", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task RestartedGameUsesOneBoundedWaitForThePreviousTrace()
+    {
+        AddGame("foo", "auto");
+        AutoMode mode = Mode();
+        _rig.World.StartTraceFactory = _ => new FakeTrace();
+        _rig.World.Running = true;
+        mode.Tracer.Start(Game("foo"));
+        mode.EndRestartedGame(Game("foo"), _rig.World.Now.AddSeconds(1));
+
+        var waitStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        int waits = 0;
+        TimeSpan? waitLimit = null;
+        mode.TraceFinishWaiter = async (finished, timeout, cancellationToken) =>
+        {
+            waitLimit = timeout;
+            Interlocked.Increment(ref waits);
+            waitStarted.TrySetResult();
+            await finished.WaitAsync(cancellationToken);
+            return true;
+        };
+        Task starting = Task.Run(() => mode.OnGameStart(Game("foo")));
+        await waitStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        mode.Tracer.Step(); // 재실행 분리에서 요청된 종료를 마무리
+        await starting.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(1, waits);
+        Assert.Equal(AutoMode.PreviousTraceFinishTimeout, waitLimit);
+        Assert.Equal(2, _rig.World.TraceStarts);
+    }
+
+    [Fact]
+    public async Task GameStartDoesNotRetryAfterTheGameExitsWhileWaiting()
+    {
+        AddGame("foo", "auto");
+        AddGame("bar", "auto");
+        AutoMode mode = Mode();
+        using var saveStarted = new ManualResetEventSlim();
+        using var finishSave = new ManualResetEventSlim();
+        Task saving = StartSavingTrace(mode, saveStarted, finishSave);
+        _rig.World.RunningExes.Add("bar.exe");
+        var waitStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        mode.TraceFinishWaiter = async (finished, _, cancellationToken) =>
+        {
+            waitStarted.TrySetResult();
+            await finished.WaitAsync(cancellationToken);
+            return true;
+        };
+
+        Task starting = Task.Run(() => mode.OnGameStart(Game("bar"), isLatestRunningStart: () => true));
+        await waitStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        // 감시기 목록에 아직 남은 exe 와 실제 실행 상태를 분리해 확인.
+        _rig.World.RunningExes.Remove("bar.exe");
+        finishSave.Set();
+        await Task.WhenAll(saving, starting).WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(1, _rig.World.TraceStarts);
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("bar: auto trace start abandoned after waiting for the previous trace (game exited before retry)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task GameStartWaitsForASavingStoppedTraceThenStartsOnce()
+    {
+        AddGame("foo", "auto");
+        AutoMode mode = Mode();
+        using var saveStarted = new ManualResetEventSlim();
+        using var finishSave = new ManualResetEventSlim();
+        Task saving = StartSavingHeldTrace(mode, saveStarted, finishSave);
+        _rig.World.Running = true;
+        var waitStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        mode.TraceFinishWaiter = async (finished, _, cancellationToken) =>
+        {
+            waitStarted.TrySetResult();
+            await finished.WaitAsync(cancellationToken);
+            return true;
+        };
+
+        Task starting = Task.Run(() => mode.OnGameStart(Game("foo")));
+        await waitStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Equal(1, _rig.World.TraceStarts);
+
+        finishSave.Set();
+        await Task.WhenAll(saving, starting).WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(2, _rig.World.TraceStarts);
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("foo: auto trace start resumed after waiting for the previous trace", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task OlderGameStartResumingAfterANewerStartKeepsTheNewLoadBoundaryWatch()
+    {
+        AddGame("foo", "auto");
+        AutoMode mode = Mode();
+        using var saveStarted = new ManualResetEventSlim();
+        using var finishSave = new ManualResetEventSlim();
+        Task saving = StartSavingHeldTrace(mode, saveStarted, finishSave);
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { LoadBoundary = true } };
+        mode.SetSettings(_rig.Settings);
+        _rig.World.Running = true;
+        int latestStart = 1;
+        var waitStarted = new SemaphoreSlim(0, 2);
+        mode.TraceFinishWaiter = async (finished, _, cancellationToken) =>
+        {
+            waitStarted.Release();
+            await finished.WaitAsync(cancellationToken);
+            return true;
+        };
+        var boundaryStarted = new SemaphoreSlim(0, 2);
+        var tokens = new List<CancellationToken>();
+        var retryStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _rig.World.StartTraceFactory = number =>
+        {
+            if (number == 2)
+            {
+                retryStarted.TrySetResult();
+            }
+
+            return new FakeTrace();
+        };
+        mode.BoundaryRunner = (_, token) =>
+        {
+            lock (tokens)
+            {
+                tokens.Add(token);
+            }
+
+            boundaryStarted.Release();
+            token.WaitHandle.WaitOne();
+        };
+
+        Task older = Task.Run(() => mode.OnGameStart(Game("foo"), isLatestRunningStart: () => Volatile.Read(ref latestStart) == 1));
+        await Task.WhenAll(waitStarted.WaitAsync(TimeSpan.FromSeconds(30)), boundaryStarted.WaitAsync(TimeSpan.FromSeconds(30)));
+        Volatile.Write(ref latestStart, 2);
+        Task newer = Task.Run(() => mode.OnGameStart(Game("foo"), isLatestRunningStart: () => Volatile.Read(ref latestStart) == 2));
+        await Task.WhenAll(waitStarted.WaitAsync(TimeSpan.FromSeconds(30)), boundaryStarted.WaitAsync(TimeSpan.FromSeconds(30)));
+
+        finishSave.Set();
+        await Task.WhenAll(saving, older).WaitAsync(TimeSpan.FromSeconds(30));
+        await retryStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(2, _rig.World.TraceStarts);
+        Assert.True(tokens[0].IsCancellationRequested);
+        Assert.False(tokens[1].IsCancellationRequested);
+        mode.NoteGameExit(Game("foo"));
+        Assert.True(tokens[1].IsCancellationRequested);
+        await newer.WaitAsync(TimeSpan.FromSeconds(30));
+    }
+
+    [Fact]
+    public async Task GameStartGivesUpWhenThePreviousTraceWaitTimesOut()
+    {
+        AddGame("foo", "auto");
+        AddGame("bar", "auto");
+        AutoMode mode = Mode();
+        using var saveStarted = new ManualResetEventSlim();
+        using var finishSave = new ManualResetEventSlim();
+        Task saving = StartSavingTrace(mode, saveStarted, finishSave);
+        _rig.World.RunningExes.Add("bar.exe");
+        var waitStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        TimeSpan? waitLimit = null;
+        mode.TraceFinishWaiter = (_, timeout, _) =>
+        {
+            waitLimit = timeout;
+            waitStarted.TrySetResult();
+            return Task.FromResult(false);
+        };
+
+        await mode.OnGameStart(Game("bar"));
+        await waitStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        finishSave.Set();
+        await saving.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(AutoMode.PreviousTraceFinishTimeout, waitLimit);
+        Assert.Equal(1, _rig.World.TraceStarts);
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("bar: auto trace start abandoned after waiting for the previous trace (previous trace did not finish within 30s)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task GameStartDoesNotWaitWhenAnotherGameHasALiveTrace()
+    {
+        AddGame("foo", "auto");
+        AddGame("bar", "auto");
+        AutoMode mode = Mode();
+        _rig.World.StartTraceFactory = _ => new FakeTrace();
+        _rig.World.RunningExes.Add("bar.exe");
+        mode.Tracer.Start(Game("foo"));
+        int waits = 0;
+        mode.TraceFinishWaiter = (_, _, _) =>
+        {
+            waits++;
+            return Task.FromResult(true);
+        };
+
+        await mode.OnGameStart(Game("bar"));
+
+        Assert.Equal(0, waits);
+        Assert.Equal(1, _rig.World.TraceStarts);
+        Assert.DoesNotContain(_rig.Log.Lines, line => line.Contains("bar: auto trace start", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task GameStartWaitIsCancelledByServiceShutdown()
+    {
+        AddGame("foo", "auto");
+        AddGame("bar", "auto");
+        AutoMode mode = Mode();
+        using var saveStarted = new ManualResetEventSlim();
+        using var finishSave = new ManualResetEventSlim();
+        Task saving = StartSavingTrace(mode, saveStarted, finishSave);
+        _rig.World.RunningExes.Add("bar.exe");
+        var waitStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        mode.TraceFinishWaiter = async (_, _, cancellationToken) =>
+        {
+            waitStarted.TrySetResult();
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+            return true;
+        };
+
+        Task starting = Task.Run(() => mode.OnGameStart(Game("bar")));
+        await waitStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        mode.Shutdown();
+        await starting.WaitAsync(TimeSpan.FromSeconds(30));
+        finishSave.Set();
+        await saving.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(1, _rig.World.TraceStarts);
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("bar: auto trace start abandoned after waiting for the previous trace (service shutdown)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task BackedOffGameStartRecordsThePlayButOpensNoTraceOrBoundaryRead()
     {
         AddGame("foo", "auto");
         _rig.World.Session = new FakeTrace();
         _rig.World.Now = T0;
 
-        Mode().OnGameStart(Game(), backOff: true);
+        await Mode().OnGameStart(Game(), backOff: true);
 
         Assert.Equal(T0, _rig.Status.Get("foo")!.LastPlayed);
         Assert.Equal(0, _rig.World.TraceStarts);
@@ -219,25 +540,25 @@ public sealed class AutoModeTests : IDisposable
     [Theory]
     [InlineData(false, true)]
     [InlineData(true, false)]
-    public void GameStartHonorsTheTraceAndEnabledSwitches(bool traceOn, bool enabled)
+    public async Task GameStartHonorsTheTraceAndEnabledSwitches(bool traceOn, bool enabled)
     {
         AddGame("foo", "auto");
         _rig.World.Session = new FakeTrace();
         _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { Trace = traceOn, Enabled = enabled } };
 
-        Mode().OnGameStart(Game());
+        await Mode().OnGameStart(Game());
 
         Assert.Equal(0, _rig.World.TraceStarts);
         Assert.Equal(enabled, _rig.Status.Get("foo") is not null);
     }
 
     [Fact]
-    public void ExceptionsInsideAnAutoActionAreLoggedNotThrown()
+    public async Task ExceptionsInsideAnAutoActionAreLoggedNotThrown()
     {
         AddGame("foo", "auto");
         _rig.World.StartTraceThrows = new InvalidOperationException("boom");
 
-        Mode().OnGameStart(Game()); // 세션 시작 실패는 failed 로 기록됨
+        await Mode().OnGameStart(Game()); // 세션 시작 실패는 failed 로 기록됨
         Mode().RelocateTick(new ReapplyGate(), CancellationToken.None); // 가짜 세계가 CpuPercent 만 쓰고 끝남
 
         Assert.Equal(AutoStage.Failed, _rig.Status.Get("foo")!.Stage);
@@ -344,7 +665,7 @@ public sealed class AutoModeTests : IDisposable
     }
 
     [Fact]
-    public void GameStartKeepsRecordingExtraRunsUntilTraceRunsIsReachedAndLeavesTheStageAlone()
+    public async Task GameStartKeepsRecordingExtraRunsUntilTraceRunsIsReachedAndLeavesTheStageAlone()
     {
         AddGame("foo", "manual");
         _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { TraceRuns = 3 } };
@@ -352,14 +673,14 @@ public sealed class AutoModeTests : IDisposable
         _rig.World.Session = new FakeTrace();
         _rig.Status.Complete("foo", "manual", T0, counted: false, null);
 
-        Mode().OnGameStart(Game());
+        await Mode().OnGameStart(Game());
 
         Assert.Equal(1, _rig.World.TraceStarts);
         Assert.Equal(AutoStage.Done, _rig.Status.Get("foo")!.Stage);
     }
 
     [Fact]
-    public void GameStartTracesAnExtraRunOnlyWhileCoverageIsLowAndTheLastMergeAddedNewBlocks()
+    public async Task GameStartTracesAnExtraRunOnlyWhileCoverageIsLowAndTheLastMergeAddedNewBlocks()
     {
         AddGame("foo", "auto");
         _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { TraceRuns = 2 } };
@@ -372,12 +693,12 @@ public sealed class AutoModeTests : IDisposable
         File.WriteAllText(AutoTracer.MergeMetaPath(Game()), "{\"run\": 2, \"new_mib\": 10}");
         _rig.Status.RecordCoverage("foo", 22);
 
-        Mode().OnGameStart(Game());
+        await Mode().OnGameStart(Game());
         Assert.Equal(0, _rig.World.TraceStarts); // 새 블록 10 MiB < 64
 
         File.WriteAllText(AutoTracer.MergeMetaPath(Game()), "{\"run\": 2, \"new_mib\": 100}");
         _rig.Status.RecordCoverage("foo", 100); // 짧은 재실행이 덮어쓴 값
-        Mode().OnGameStart(Game());
+        await Mode().OnGameStart(Game());
 
         Assert.Equal(1, _rig.World.TraceStarts);
         Assert.Equal(AutoStage.Done, _rig.Status.Get("foo")!.Stage);
@@ -480,7 +801,7 @@ public sealed class AutoModeTests : IDisposable
     }
 
     [Fact]
-    public void LoadBoundaryWatchIsCancelledWhenTheGameExitedBeforeItRegistered()
+    public async Task LoadBoundaryWatchIsCancelledWhenTheGameExitedBeforeItRegistered()
     {
         AddGame("foo", "auto");
         _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { LoadBoundary = true } };
@@ -489,7 +810,7 @@ public sealed class AutoModeTests : IDisposable
         bool cancelledOnEntry = false;
         mode.BoundaryRunner = (_, ct) => cancelledOnEntry = ct.IsCancellationRequested;
 
-        mode.OnGameStart(Game()); // 게임은 이미 꺼져 있음 (Running = false): 등록 뒤 확인이 취소해야 함
+        await mode.OnGameStart(Game()); // 게임은 이미 꺼져 있음 (Running = false): 등록 뒤 확인이 취소해야 함
 
         Assert.True(cancelledOnEntry);
     }
@@ -499,7 +820,7 @@ public sealed class AutoModeTests : IDisposable
     [InlineData("vanguard", false)]
     [InlineData(AutoEnv.AntiCheatUnknown, false)]
     [InlineData(null, true)]
-    public void LoadBoundaryWatchStartsOnlyWhenTheAntiCheatPolicyAllowsIt(string? cheat, bool runs)
+    public async Task LoadBoundaryWatchStartsOnlyWhenTheAntiCheatPolicyAllowsIt(string? cheat, bool runs)
     {
         AddGame("foo", "auto");
         _rig.Settings = _rig.Settings with { Auto = AutoSettings.Default with { LoadBoundary = true } };
@@ -510,7 +831,7 @@ public sealed class AutoModeTests : IDisposable
         int started = 0;
         mode.BoundaryRunner = (_, _) => started++;
 
-        mode.OnGameStart(Game());
+        await mode.OnGameStart(Game());
 
         Assert.Equal(runs ? 1 : 0, started);
     }

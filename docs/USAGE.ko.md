@@ -74,6 +74,7 @@
 | `status [--plan <계획>] [--journal <저널>]` | 읽기 전용 현황입니다. 관리자 권한, 디스크, 마지막 예열, 자동 모드를 보여 주며, `--plan` 을 주면 배치 판정도 보여 줍니다. |
 | `trace --live --exe <exe> --origin-root <폴더> --out <파일> [--seconds N] [--io-summary-root <폴더>]` | ETW 로 게임이 읽는 내용을 기록합니다. `--io-summary-root` 는 여러 번 지정할 수 있고, 디스크 읽기 완료도 수집해 세션이 끝난 뒤 그 폴더 아래 파일의 배치(파일 내용이 아님)로 파일에 이어 `<out>.io.json` 에 저장합니다. `--csv`, `--etl` 은 기존 기록을 변환합니다. |
 | `plan --trace <파일> --origin-root <폴더> --zone-mib N --out <파일> [--dry-run]` | 트레이스로 배치 계획을 만듭니다. `--dry-run` 은 수치만 보여 줍니다. |
+| `plan estimate --io-summary <파일> [--io-summary <파일> ...] --origin-root <게임 폴더> [--plan <파일>] [--zone-mib 2048,4096,...] [--zone-start-lcn N]` | 지정한 게임 폴더 안의 물리 읽기 집계에서 현재·가상 배치를 추정하며 파일을 옮기지 않습니다. 폴더 밖 집계 파일은 제외하고 건수를 출력합니다. 표준 출력에는 JSON 하나를, 표준 오류에는 짧은 영문 요약을 출력합니다. 같은 `session_id` 는 한 번만 셉니다. |
 | `probe --volume D:` | 재배치 전에 볼륨을 점검합니다. |
 | `apply --plan <파일> --allowed-root <폴더> --require-volume-label <레이블> [--dry-run \| --execute]` | 조각을 옮깁니다. `--execute` 가 없으면 아무것도 옮기지 않습니다. 레이블이 다르면 아무것도 건드리지 않습니다. |
 | `verify --plan <파일>` | 배치가 그대로 있는지 검사합니다. |
@@ -119,6 +120,14 @@ aster prewarm --plan plan.json --origin-root D:\Games\Frostpunk
 ```text
 {"error":"not_admin"}
 ```
+
+**물리 읽기 집계로 재배치 효과를 추정하기.** 필수 게임 폴더를 기준으로 안티치트·실행 중 게임을 확인하고, 집계와 선택적 계획 파일, 파일 메타데이터·배치만 조회합니다. 폴더 밖 파일은 집계에서 제외하고 `files_outside_origin_root` 에 셉니다. 게임 파일 내용은 읽지 않고 계획이나 저널도 쓰지 않습니다.
+
+```bat
+aster plan estimate --io-summary trace.run14.json.io.json --origin-root D:\Games\Frostpunk --plan plan.json --zone-mib 2048,4096,8192,16384
+```
+
+JSON 의 `inputs` 와 `combined` 에 집계별·합친 결과가 들어갑니다. 블록 분류와 사유별 수치, `Order` 의 논리 범위와 블록 겹침으로 낸 계획 커버리지, 구역 크기별 현재 물리 조각의 구역 포함 여부, 페이징 요청 분류, 블록 안 조각 사이 거리까지 반영한 현재·가상 순서 통계, 지연·요청 수 기준 선정을 포함합니다. `current_policy` 는 속성상 이동 가능한 블록과 정책 후보·제외·판정 불가를 나눕니다. 선정 결과의 이동량과 필요한 연속 공간은 마지막 짧은 블록도 클러스터 점유 길이로 셉니다. `--zone-start-lcn` 도 확정된 계획 구역도 없으면 LCN 0 을 사용하고 `zone_starts` 에 그 사실을 표시합니다. `zone_starts` 는 볼륨마다 처음 얻은 유효한 배치 조회 결과로 정하고 계획의 구역 클러스터 수 `plan_zone_clusters` 도 냅니다. `notes` 에는 구역이 시작 위치에서 연속으로 비어 있다고 가정하며 계획의 고정 목표 위치는 구역 안으로 세지 않는다는 점을 적습니다. 클러스터가 64 KiB 보다 큰 볼륨의 파일은 `layout_unavailable`(`cluster_larger_than_block`)로 분류합니다. `--origin-root` 는 존재하는 폴더여야 합니다. 정책 제외 목록을 읽지 못하면 `notes` 에 미반영 사실을 표시합니다. 결과는 비교 지표이며 실제 헤드 이동이나 로딩 시간 개선량을 뜻하지 않습니다.
 
 **배치가 그대로인지 검사하기.**
 

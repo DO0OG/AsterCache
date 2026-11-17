@@ -49,13 +49,19 @@ py -3.12 -m unittest discover -s tests
 
 | 프로젝트 | 산출물 | 역할과 주요 파일 |
 |---|---|---|
-| `AsterCache.Core` | 라이브러리 | 플랫폼과 무관한 규칙입니다. 계획(`Plan/HotSet.cs`, `ZoneAllocator.cs`, `PlanFile.cs`), ORBIT 계획기(`Plan/Orbit/OrbitPlanner.cs`), 재배치 실행·저널·되돌리기(`Apply/Applier.cs`, `Journal.cs`, `Reverter.cs`, `LayoutVerifier.cs`), 설정(`Settings/SettingsStore.cs`, `ConfigEditor.cs`), 안티치트 판정과 기능별 정책표(`Discovery/AntiCheat.cs`, `Capabilities.cs`), 엔진 프로필(`Profiles/engines.json`), SSD 보조 저장(`Tier/`), 화면 문구(`I18n/`) |
+| `AsterCache.Core` | 라이브러리 | 플랫폼과 무관한 규칙입니다. 계획(`Plan/HotSet.cs`, `ZoneAllocator.cs`, `PlanFile.cs`), 읽기 전용 재배치 추정(`Plan/RelocationEstimate.cs`), ORBIT 계획기(`Plan/Orbit/OrbitPlanner.cs`), 재배치 실행·저널·되돌리기(`Apply/Applier.cs`, `Journal.cs`, `Reverter.cs`, `LayoutVerifier.cs`), 설정(`Settings/SettingsStore.cs`, `ConfigEditor.cs`), 안티치트 판정과 기능별 정책표(`Discovery/AntiCheat.cs`, `Capabilities.cs`), 엔진 프로필(`Profiles/engines.json`), SSD 보조 저장(`Tier/`), 화면 문구(`I18n/`) |
 | `AsterCache.Windows` | 라이브러리 | Win32 호출입니다. NTFS 클러스터 이동(`NtfsVolume.cs`, `FSCTL_MOVE_FILE`), 파일 물리 배치 조회(`FileLayout.cs`), 읽기 전용 매핑과 `PrefetchVirtualMemory`(`FileMapping.cs`, `FilePin.cs`), 캐시를 거치지 않는 읽기(`UnbufferedReader.cs`), 캐시 적중 표본(`CacheProbe.cs`), 디스크 종류와 볼륨의 물리 디스크(`DiskInfo.cs`, `VolumeDisks.cs`), Windows 프리페치 `.pf`(`PrefetchFiles.cs`), 런처 라이브러리(`LauncherScan.cs`) |
 | `AsterCache.Tracer` | 라이브러리 | ETW 기록입니다. 실시간 커널 세션(`LiveSession.cs`, `KernelCollector.cs`), `.etl` 변환(`EtlReader.cs`), 트레이스 생성·저장(`TraceBuilder.cs`, `TraceWriter.cs`) |
 | `AsterCache.Prefetch` | 라이브러리 | 읽기 엔진입니다. 존(기록된 블록을 옮겨 모은 연속 영역) 스트림(`ZoneStreamer.cs`), 폴더 통째 예열(`FolderWarm.cs`), 첫 실행 선행 읽기(`ReadAhead.cs`, 실험 기능, 기본 꺼짐) |
 | `AsterCache.Service` | `AsterCache.Service.exe` | Windows 서비스입니다. 자동으로 도는 모든 일이 여기에 있습니다. |
-| `AsterCache.Cli` | `aster.exe` | 명령행입니다. `Commands/` 에 plan, trace, apply, revert, prefetch, prewarm, status, discover, tier, orbit, profile 등이 있습니다. |
+| `AsterCache.Cli` | `aster.exe` | 명령행입니다. `Commands/` 에 plan, trace, apply, revert, prefetch, prewarm, status, discover, tier, orbit, profile 등이 있습니다. `plan estimate` 는 물리 배치 조회 결과를 Core 추정기에 연결합니다. |
 | `AsterCache.Tray` | `AsterCache.Tray.exe` | Avalonia 관리 창과 트레이 아이콘, 알림, 자동 업데이트(`Update/`)입니다. |
+
+## 읽기 전용 재배치 추정
+
+`aster plan estimate --io-summary <파일> [--io-summary <파일> ...] --origin-root <게임 폴더> [--plan <파일>] [--zone-mib 2048,4096,...] [--zone-start-lcn N]` 은 지정한 폴더를 기준으로 안티치트와 실행 중 게임을 확인한 뒤 물리 집계와 현재 파일 메타데이터·배치를 조회합니다. 폴더 밖 집계 파일은 사용하지 않고 건수를 냅니다. Windows 배치 스냅샷은 `IoLayoutScan` 의 재해석 지점·NTFS 조건과 `FileLayout`, `VolumeDisks`, `FileGuards` 를 재사용하고, 세션 중복 제거·블록 합계·선정·순서 계산은 파일 시스템에 접근하지 않는 `Plan/RelocationEstimate.cs` 에서 합니다. 게임 파일 내용은 읽지 않으며 계획이나 저널도 쓰지 않습니다.
+
+JSON 의 `inputs` 는 집계별 결과이고 `combined` 는 세션 중복을 제거한 합친 결과입니다. `files_outside_origin_root` 는 게임 폴더 밖 파일 수입니다. `classification` 에는 이동 가능, 사유별 이동 불가, 세션 중 변경, 없는 파일·구간, 배치 조회 불가 블록 수치가 있습니다. `plan_coverage` 는 `PlanFile.Order` 의 파일 논리 범위와 블록 범위의 겹침으로 안·밖·알 수 없음을 냅니다. `zones[].current_zone_coverage` 는 구역 크기별 현재 물리 배치를 따로 집계하고, 블록의 모든 물리 조각이 구역 안에 있을 때만 안으로 셉니다. 각 범위는 블록 수·요청 수·읽기 바이트·지연 합을 포함합니다. `current_policy` 는 속성상 이동 가능한 합계에서 정책 후보, 사유별 제외, 판정 불가를 나눕니다. `paging` 은 `requests > paging_requests` 인 블록과 페이징 전용 블록을 분류하며 읽기 방식은 `unknown` 으로 표시합니다. `sequence` 는 블록별 물리 조각의 논리 순서로 이동 거리를 계산하고 블록 내부 조각 사이 거리도 포함합니다. `zones` 의 선정 예산·이동량·필요 연속 공간·가상 배치 간격은 짧은 마지막 블록도 클러스터 점유 길이를 씁니다. 선정 결과에는 읽기 바이트·지연 비율이 있습니다. `policy_exclusion_source` 는 `trace_marks`, `plan`, `unavailable` 중 정보 출처를 표시합니다. `zone_starts` 는 볼륨 기준 LCN, 조회 가능한 경우 디스크 바이트 위치, 시작점을 인자·계획·기본 LCN 0 중 어디서 가져왔는지 보여 줍니다. 볼륨의 클러스터 크기와 구역 시작은 그 볼륨에서 처음 얻은 유효한 조회 결과(클러스터 크기 0 초과, 디스크 구간 1개)로 정하며, 그런 결과가 없는 볼륨은 목록에 없습니다. `plan_zone_clusters` 는 계획이 그 볼륨의 것일 때 계획의 구역 클러스터 수입니다. `notes` 에는 구역이 시작 위치에서 연속으로 비어 있다고 가정하며 계획의 고정 목표 위치는 구역 안으로 세지 않는다는 점을 적습니다. 클러스터가 64 KiB 블록보다 큰 볼륨의 파일 블록은 `layout_unavailable`(사유 `cluster_larger_than_block`)로 분류합니다. `--origin-root` 는 존재하는 폴더여야 합니다.
 
 ## 서비스 안의 구성
 

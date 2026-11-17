@@ -31,7 +31,8 @@ public sealed record RelocationEstimateBlock(
     IReadOnlyList<RelocationEstimatePhysicalExtent> CurrentExtents,
     bool? InPlan,
     bool? PolicyCandidate,
-    string? PolicyExclusionReason);
+    string? PolicyExclusionReason,
+    double Weight = 1.0);
 
 public sealed record RelocationEstimateSession(
     string SourcePath,
@@ -88,13 +89,17 @@ public sealed record RelocationEstimateSelection(
     long BytesToMove,
     long BlocksAlreadyInZone,
     long RequiredContiguousBytes,
-    RelocationEstimateSequence VirtualSequence);
+    RelocationEstimateSequence VirtualSequence,
+    RelocationEstimateModelMetrics Model,
+    double ModelPositionReductionMs,
+    double? RealizedGainMs = null);
 
 public sealed record RelocationEstimateScenario(
     long ZoneMib,
     RelocationEstimatePlanCoverage CurrentZoneCoverage,
     RelocationEstimateSelection ByLatency,
-    RelocationEstimateSelection ByRequests);
+    RelocationEstimateSelection ByRequests,
+    RelocationEstimateSelection ByLinkGain);
 
 public sealed record RelocationEstimateAnalysis(
     RelocationEstimateTotals Total,
@@ -110,7 +115,9 @@ public sealed record RelocationEstimateAnalysis(
     RelocationEstimateTotals PagingOnly,
     RelocationEstimateTotals PagingUnknown,
     RelocationEstimateSequence CurrentSequence,
-    IReadOnlyList<RelocationEstimateScenario> Scenarios);
+    IReadOnlyList<RelocationEstimateScenario> Scenarios,
+    RelocationEstimateSegmentStats Segments,
+    RelocationEstimateModelMetrics CurrentModel);
 
 public sealed record RelocationEstimateSessionResult(
     string SourcePath,
@@ -120,16 +127,38 @@ public sealed record RelocationEstimateSessionResult(
     long BlockTableDropped,
     RelocationEstimateAnalysis Analysis);
 
+/// <summary>평가용 플레이 하나를 선정마다 가상 배치로 놓았을 때의 모형 지표입니다. 이 플레이는 선정에 쓰이지 않았습니다.</summary>
+public sealed record RelocationEstimateEvaluatedSelection(RelocationEstimateModelMetrics Model, RelocationEstimateLinkChange Change);
+
+public sealed record RelocationEstimateEvaluationZone(
+    long ZoneMib,
+    RelocationEstimateEvaluatedSelection ByLatency,
+    RelocationEstimateEvaluatedSelection ByRequests,
+    RelocationEstimateEvaluatedSelection ByLinkGain);
+
+public sealed record RelocationEstimateEvaluation(
+    string SourcePath,
+    string SessionId,
+    RelocationEstimateTotals Total,
+    RelocationEstimateTotals UnseenInTraining,
+    RelocationEstimateModelMetrics Current,
+    IReadOnlyList<RelocationEstimateEvaluationZone> Zones);
+
 public sealed record RelocationEstimateReport(
     IReadOnlyList<RelocationEstimateSessionResult> Sessions,
     IReadOnlyList<string> DuplicateSessionIds,
-    RelocationEstimateAnalysis Combined);
+    RelocationEstimateAnalysis Combined,
+    RelocationEstimateModel Model,
+    long DiskBytes,
+    IReadOnlyList<RelocationEstimateEvaluation> Evaluations,
+    IReadOnlyList<string> DuplicateEvaluationSessionIds);
 
 /// <summary>물리 집계의 파일 배치·분류 자료에서 추정치를 계산합니다. 파일 시스템에 접근하지 않습니다.</summary>
-public static class RelocationEstimate
+public static partial class RelocationEstimate
 {
     public const long BlockSizeBytes = 64 * 1024;
     private const long Mib = 1024 * 1024;
+    public const double DefaultSessionDecay = 0.7;
 
     private sealed record BlockKey(string Path, long BlockNumber);
 
@@ -137,13 +166,22 @@ public static class RelocationEstimate
         IReadOnlyList<RelocationEstimateSession> sessions,
         IReadOnlyList<long> zoneMib,
         IReadOnlyList<RelocationEstimateZoneStart> zoneStarts,
-        bool planProvided = false)
+        bool planProvided = false,
+        RelocationEstimateModel? model = null,
+        double sessionDecay = DefaultSessionDecay,
+        IReadOnlyList<RelocationEstimateSession>? evaluationSessions = null)
     {
         if (zoneMib.Any(size => size <= 0))
         {
             throw new ArgumentOutOfRangeException(nameof(zoneMib));
         }
 
+        if (!(sessionDecay > 0 && sessionDecay <= 1))
+        {
+            throw new ArgumentOutOfRangeException(nameof(sessionDecay));
+        }
+
+        model ??= RelocationEstimateModel.Default;
         var unique = new List<RelocationEstimateSession>();
         var duplicates = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -158,26 +196,129 @@ public static class RelocationEstimate
             unique.Add(session);
         }
 
+        var evaluation = new List<RelocationEstimateSession>();
+        var duplicateEvaluation = new List<string>();
+        var evaluationSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (RelocationEstimateSession session in evaluationSessions ?? [])
+        {
+            if (seen.Contains(session.SessionId))
+            {
+                throw new ArgumentException("an evaluation session_id is also a training session_id: " + session.SessionId, nameof(evaluationSessions));
+            }
+
+            if (!evaluationSeen.Add(session.SessionId))
+            {
+                duplicateEvaluation.Add(session.SessionId);
+                continue;
+            }
+
+            evaluation.Add(session);
+        }
+
         IReadOnlyDictionary<string, RelocationEstimateZoneStart> starts = zoneStarts
             .GroupBy(start => start.VolumeKey, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.Last(), StringComparer.OrdinalIgnoreCase);
+
+        List<RelocationEstimateBlock> combined = Merge(unique, SessionWeights(unique, sessionDecay));
+        List<RelocationEstimateBlock> line = RecencyLine(unique, combined);
+        // 디스크 크기를 모르면 읽기 구간 사이 이음 거리의 최댓값을 씁니다.
+        long diskBytes = model.DiskBytes is > 0
+            ? model.DiskBytes.Value
+            : Math.Max(1, RelocationEstimateSegments.MaximumLinkDistance(RelocationEstimateSegments.Build(line, _ => true)));
         var results = new List<RelocationEstimateSessionResult>(unique.Count);
         foreach (RelocationEstimateSession session in unique)
         {
             List<RelocationEstimateBlock> blocks = Normalize(session.Blocks);
             results.Add(new RelocationEstimateSessionResult(session.SourcePath, session.SessionId, session.Truncated,
-                session.EventsLost, session.BlockTableDropped, Analyze(blocks, zoneMib, starts, planProvided)));
+                session.EventsLost, session.BlockTableDropped, Analyze(blocks, blocks, zoneMib, starts, planProvided, model, diskBytes, null)));
         }
 
-        List<RelocationEstimateBlock> combined = Merge(unique);
-        return new RelocationEstimateReport(results, duplicates, Analyze(combined, zoneMib, starts, planProvided));
+        var placements = new Dictionary<(long Zone, string Criterion), Dictionary<BlockKey, RelocationEstimatePhysicalExtent>>();
+        RelocationEstimateAnalysis combinedAnalysis = Analyze(combined, line, zoneMib, starts, planProvided, model, diskBytes, placements);
+        List<RelocationEstimateEvaluation> evaluations = Evaluate(evaluation, combined, zoneMib, placements, model, diskBytes);
+        return new RelocationEstimateReport(results, duplicates, combinedAnalysis, model, diskBytes, evaluations, duplicateEvaluation);
     }
+
+    /// <summary>플레이 가중치는 관측 시각이 최근인 것부터 1, decay, decay^2 … 입니다.</summary>
+    private static Dictionary<RelocationEstimateSession, double> SessionWeights(IReadOnlyList<RelocationEstimateSession> sessions, double decay)
+    {
+        var weights = new Dictionary<RelocationEstimateSession, double>(ReferenceEqualityComparer.Instance);
+        double weight = 1;
+        foreach (RelocationEstimateSession session in RecentFirst(sessions))
+        {
+            weights[session] = weight;
+            weight *= decay;
+        }
+
+        return weights;
+    }
+
+    private static IEnumerable<RelocationEstimateSession> RecentFirst(IReadOnlyList<RelocationEstimateSession> sessions) =>
+        sessions.OrderByDescending(item => item.ObservedAtUtc.ToUniversalTime())
+            .ThenBy(item => item.SourcePath, StringComparer.Ordinal).ThenBy(item => item.SessionId, StringComparer.Ordinal);
+
+    /// <summary>최근 플레이부터 이어 붙이고 이미 나온 블록은 건너뛴 한 줄의 순서입니다. FirstObservedUs 는 이 줄에서의 순번으로 바꿉니다.</summary>
+    private static List<RelocationEstimateBlock> RecencyLine(IReadOnlyList<RelocationEstimateSession> sessions, IReadOnlyList<RelocationEstimateBlock> merged)
+    {
+        var byKey = merged.ToDictionary(block => new BlockKey(block.Path, block.BlockNumber), new BlockKeyComparer());
+        var seen = new HashSet<BlockKey>(new BlockKeyComparer());
+        var line = new List<RelocationEstimateBlock>(merged.Count);
+        foreach (RelocationEstimateSession session in RecentFirst(sessions))
+        {
+            foreach (RelocationEstimateBlock block in Normalize(session.Blocks))
+            {
+                var key = new BlockKey(block.Path, block.BlockNumber);
+                if (seen.Add(key))
+                {
+                    line.Add(byKey[key] with { FirstObservedUs = line.Count });
+                }
+            }
+        }
+
+        return line;
+    }
+
+    private static List<RelocationEstimateEvaluation> Evaluate(
+        IReadOnlyList<RelocationEstimateSession> sessions,
+        IReadOnlyList<RelocationEstimateBlock> training,
+        IReadOnlyList<long> zoneMib,
+        Dictionary<(long Zone, string Criterion), Dictionary<BlockKey, RelocationEstimatePhysicalExtent>> placements,
+        RelocationEstimateModel model,
+        long diskBytes)
+    {
+        var trainingKeys = new HashSet<BlockKey>(training.Select(block => new BlockKey(block.Path, block.BlockNumber)), new BlockKeyComparer());
+        var results = new List<RelocationEstimateEvaluation>(sessions.Count);
+        foreach (RelocationEstimateSession session in sessions.OrderBy(item => item.ObservedAtUtc.ToUniversalTime())
+            .ThenBy(item => item.SourcePath, StringComparer.Ordinal).ThenBy(item => item.SessionId, StringComparer.Ordinal))
+        {
+            List<RelocationEstimateBlock> blocks = Normalize(session.Blocks);
+            RelocationEstimateEvaluatedSelection Placed(long zone, string criterion) => new(
+                ModelMetrics(
+                    [.. blocks.Select(block => placements[(zone, criterion)].TryGetValue(new BlockKey(block.Path, block.BlockNumber), out RelocationEstimatePhysicalExtent? extent)
+                        ? block with { CurrentExtents = [extent] }
+                        : block)], model, diskBytes),
+                LinkChange(blocks, placements[(zone, criterion)], model, diskBytes));
+            results.Add(new RelocationEstimateEvaluation(session.SourcePath, session.SessionId, Totals(blocks),
+                Totals(blocks.Where(block => !trainingKeys.Contains(new BlockKey(block.Path, block.BlockNumber)))),
+                ModelMetrics(blocks, model, diskBytes),
+                [.. zoneMib.Select(size => new RelocationEstimateEvaluationZone(size, Placed(size, "latency"), Placed(size, "requests"), Placed(size, "link_gain")))]));
+        }
+
+        return results;
+    }
+
+    private static RelocationEstimateModelMetrics ModelMetrics(IReadOnlyList<RelocationEstimateBlock> ordered, RelocationEstimateModel model, long diskBytes) =>
+        RelocationEstimateSegments.Metrics(RelocationEstimateSegments.Build(ordered, _ => true), model, diskBytes);
 
     private static RelocationEstimateAnalysis Analyze(
         IReadOnlyList<RelocationEstimateBlock> blocks,
+        IReadOnlyList<RelocationEstimateBlock> line,
         IReadOnlyList<long> zoneMib,
         IReadOnlyDictionary<string, RelocationEstimateZoneStart> starts,
-        bool planProvided)
+        bool planProvided,
+        RelocationEstimateModel model,
+        long diskBytes,
+        Dictionary<(long Zone, string Criterion), Dictionary<BlockKey, RelocationEstimatePhysicalExtent>>? placements)
     {
         RelocationEstimateTotals total = Totals(blocks);
         RelocationEstimateBlock[] movableBlocks = [.. blocks.Where(block => block.Classification == EstimateBlockClass.Movable)];
@@ -206,17 +347,20 @@ public static class RelocationEstimate
         RelocationEstimateTotals pagingOnly = Totals(blocks.Where(block => block.Requests > 0 && block.Requests == block.PagingRequests));
         RelocationEstimateTotals pagingUnknown = Totals(blocks.Where(block => block.Requests <= 0 || block.PagingRequests > block.Requests));
         RelocationEstimateSequence current = Sequence(blocks);
+        RelocationEstimateModelMetrics currentModel = ModelMetrics(line, model, diskBytes);
         var scenarios = new List<RelocationEstimateScenario>(zoneMib.Count);
         foreach (long size in zoneMib)
         {
             scenarios.Add(new RelocationEstimateScenario(size,
                 CurrentZoneCoverage(blocks, size, starts),
-                Select(blocks, total, size, "latency", starts),
-                Select(blocks, total, size, "requests", starts)));
+                Select(blocks, line, total, size, "latency", starts, model, diskBytes, currentModel, placements),
+                Select(blocks, line, total, size, "requests", starts, model, diskBytes, currentModel, placements),
+                SelectByLinkGain(blocks, line, total, size, starts, model, diskBytes, currentModel, placements)));
         }
 
         return new RelocationEstimateAnalysis(total, movable, unmovable, changed, missingFile, missingSection, unavailable,
-            coverage, policy, nonPaging, pagingOnly, pagingUnknown, current, scenarios);
+            coverage, policy, nonPaging, pagingOnly, pagingUnknown, current, scenarios,
+            RelocationEstimateSegments.Stats(RelocationEstimateSegments.Build(line, _ => true)), currentModel);
     }
 
     private static RelocationEstimatePlanCoverage CurrentZoneCoverage(
@@ -250,15 +394,20 @@ public static class RelocationEstimate
 
     private static RelocationEstimateSelection Select(
         IReadOnlyList<RelocationEstimateBlock> blocks,
+        IReadOnlyList<RelocationEstimateBlock> line,
         RelocationEstimateTotals total,
         long zoneMib,
         string criterion,
-        IReadOnlyDictionary<string, RelocationEstimateZoneStart> starts)
+        IReadOnlyDictionary<string, RelocationEstimateZoneStart> starts,
+        RelocationEstimateModel model,
+        long diskBytes,
+        RelocationEstimateModelMetrics currentModel,
+        Dictionary<(long Zone, string Criterion), Dictionary<BlockKey, RelocationEstimatePhysicalExtent>>? placements)
     {
         long zoneBytes = checked(zoneMib * Mib);
         var selected = new HashSet<BlockKey>(new BlockKeyComparer());
         foreach (IGrouping<string, RelocationEstimateBlock> volume in blocks
-            .Where(block => block.Classification == EstimateBlockClass.Movable)
+            .Where(IsSelectable)
             .GroupBy(block => block.VolumeKey, StringComparer.OrdinalIgnoreCase))
         {
             IOrderedEnumerable<RelocationEstimateBlock> candidates = criterion == "latency"
@@ -279,6 +428,25 @@ public static class RelocationEstimate
             }
         }
 
+        return Describe(blocks, line, total, zoneMib, criterion, selected, starts, model, diskBytes, currentModel, placements, null);
+    }
+
+    /// <summary>고른 블록 집합의 기존 지표, 가상 배치의 순서 지표, 모형 지표를 계산합니다.</summary>
+    private static RelocationEstimateSelection Describe(
+        IReadOnlyList<RelocationEstimateBlock> blocks,
+        IReadOnlyList<RelocationEstimateBlock> line,
+        RelocationEstimateTotals total,
+        long zoneMib,
+        string criterion,
+        HashSet<BlockKey> selected,
+        IReadOnlyDictionary<string, RelocationEstimateZoneStart> starts,
+        RelocationEstimateModel model,
+        long diskBytes,
+        RelocationEstimateModelMetrics currentModel,
+        Dictionary<(long Zone, string Criterion), Dictionary<BlockKey, RelocationEstimatePhysicalExtent>>? placements,
+        double? realizedGainMs)
+    {
+        long zoneBytes = checked(zoneMib * Mib);
         List<RelocationEstimateBlock> chosen = blocks.Where(block => selected.Contains(new BlockKey(block.Path, block.BlockNumber))).ToList();
         RelocationEstimateTotals selectedTotals = Totals(chosen);
         long required = 0, toMove = 0, alreadyInZone = 0, movedBlocks = 0;
@@ -300,8 +468,33 @@ public static class RelocationEstimate
                 : BytesOutsideZone(block.CurrentExtents, moveZoneStart, moveZoneEnd)));
         }
 
-        var virtualBlocks = new List<RelocationEstimateBlock>(blocks.Count);
-        foreach (IGrouping<string, RelocationEstimateBlock> volume in blocks.GroupBy(block => block.VolumeKey, StringComparer.OrdinalIgnoreCase))
+        (List<RelocationEstimateBlock> virtualBlocks, Dictionary<BlockKey, RelocationEstimatePhysicalExtent> map) = Place(blocks, selected, zoneBytes, starts);
+        (List<RelocationEstimateBlock> lineVirtual, Dictionary<BlockKey, RelocationEstimatePhysicalExtent> lineMap) = ReferenceEquals(blocks, line)
+            ? (virtualBlocks, map)
+            : Place(line, selected, zoneBytes, starts);
+        if (placements is not null)
+        {
+            // 평가는 선정에 쓴 순서(최근 순 한 줄)로 놓은 구역 위치를 씁니다.
+            placements[(zoneMib, criterion)] = lineMap;
+        }
+
+        RelocationEstimateModelMetrics virtualModel = ModelMetrics(lineVirtual, model, diskBytes);
+        return new RelocationEstimateSelection(criterion, zoneMib, selectedTotals,
+            Ratio(selectedTotals.ReadBytes, total.ReadBytes), Ratio(selectedTotals.LatencySumUs, total.LatencySumUs),
+            movedBlocks, toMove, alreadyInZone, required, Sequence(virtualBlocks),
+            virtualModel, currentModel.PositionMs - virtualModel.PositionMs, realizedGainMs);
+    }
+
+    /// <summary>고른 블록을 읽힌 순서대로 볼륨별 구역 시작부터 붙여 놓은 가상 배치입니다. 고른 블록의 가상 위치도 함께 돌려줍니다.</summary>
+    private static (List<RelocationEstimateBlock> Blocks, Dictionary<BlockKey, RelocationEstimatePhysicalExtent> Map) Place(
+        IReadOnlyList<RelocationEstimateBlock> ordered,
+        HashSet<BlockKey> selected,
+        long zoneBytes,
+        IReadOnlyDictionary<string, RelocationEstimateZoneStart> starts)
+    {
+        var virtualBlocks = new List<RelocationEstimateBlock>(ordered.Count);
+        var map = new Dictionary<BlockKey, RelocationEstimatePhysicalExtent>(new BlockKeyComparer());
+        foreach (IGrouping<string, RelocationEstimateBlock> volume in ordered.GroupBy(block => block.VolumeKey, StringComparer.OrdinalIgnoreCase))
         {
             long zoneStart = starts.TryGetValue(volume.Key, out RelocationEstimateZoneStart? start) ? start.StartByte ?? 0 : 0;
             long offset = 0;
@@ -309,16 +502,16 @@ public static class RelocationEstimate
                 .OrderBy(block => block.FirstObservedUs).ThenBy(block => block.Path, StringComparer.OrdinalIgnoreCase).ThenBy(block => block.BlockNumber))
             {
                 long end = checked(zoneStart + offset + block.OccupiedBytes);
-                virtualBlocks.Add(block with { CurrentExtents = [new RelocationEstimatePhysicalExtent(checked(zoneStart + offset), end)] });
+                var extent = new RelocationEstimatePhysicalExtent(checked(zoneStart + offset), end);
+                map[new BlockKey(block.Path, block.BlockNumber)] = extent;
+                virtualBlocks.Add(block with { CurrentExtents = [extent] });
                 offset = checked(offset + block.OccupiedBytes);
             }
 
             virtualBlocks.AddRange(volume.Where(block => !selected.Contains(new BlockKey(block.Path, block.BlockNumber))));
         }
 
-        return new RelocationEstimateSelection(criterion, zoneMib, selectedTotals,
-            Ratio(selectedTotals.ReadBytes, total.ReadBytes), Ratio(selectedTotals.LatencySumUs, total.LatencySumUs),
-            movedBlocks, toMove, alreadyInZone, required, Sequence(virtualBlocks));
+        return (virtualBlocks, map);
     }
 
     private static bool TryZoneBounds(string volumeKey, long zoneBytes,
@@ -424,7 +617,8 @@ public static class RelocationEstimate
             median, distances[p90Index], distances[^1]);
     }
 
-    private static List<RelocationEstimateBlock> Merge(IReadOnlyList<RelocationEstimateSession> sessions)
+    private static List<RelocationEstimateBlock> Merge(IReadOnlyList<RelocationEstimateSession> sessions,
+        IReadOnlyDictionary<RelocationEstimateSession, double> weights)
     {
         var grouped = new Dictionary<BlockKey, List<(RelocationEstimateSession Session, RelocationEstimateBlock Block, long FirstObservedUs)>>(new BlockKeyComparer());
         foreach (RelocationEstimateSession session in sessions.OrderBy(item => item.ObservedAtUtc.ToUniversalTime())
@@ -443,7 +637,8 @@ public static class RelocationEstimate
             }
         }
 
-        return grouped.Values.Select(MergeBlocks)
+        // 블록의 가중치는 그 블록이 나온 플레이들의 가중치 합입니다.
+        return grouped.Values.Select(entries => MergeBlocks(entries) with { Weight = entries.Sum(entry => weights[entry.Session]) })
             .OrderBy(block => block.FirstObservedUs).ThenBy(block => block.Path, StringComparer.OrdinalIgnoreCase)
             .ThenBy(block => block.BlockNumber).ToList();
     }

@@ -13,12 +13,16 @@ namespace AsterCache.Tests.Cli;
 
 public sealed class RelocationEstimateCliTests : IDisposable
 {
+    private const string TrainId = "0123456789abcdef0123456789abcdef";
+    private const string EvalId = "fedcba9876543210fedcba9876543210";
+    private const string SameId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     private readonly TempDir _dir = new();
     private readonly Func<IReadOnlyList<(int Pid, string Exe)>> _savedProcesses = RelocationEstimateCommand.RunningProcesses;
     private readonly Func<string> _savedConfigPath = RelocationEstimateCommand.ConfigPath;
     private readonly Func<string, RelocationEstimateCommand.FileLayoutSnapshot> _savedLayoutReader = RelocationEstimateCommand.LayoutReader;
     private readonly Func<string, AsterSettings> _savedSettingsReader = RelocationEstimateCommand.SettingsReader;
     private readonly Func<string, string, bool> _savedSameDisk = RelocationEstimateCommand.SameDisk;
+    private readonly Func<string, string, RelocationEstimateCommand.DeviceCalibrationValues?> _savedCalibrationReader = RelocationEstimateCommand.CalibrationReader;
     private readonly (Func<string, string?> Folder, Func<bool> Vanguard, Func<string, string?> Registered) _savedGuard =
         (AntiCheatGuard.FolderKind, AntiCheatGuard.VanguardInstalled, AntiCheatGuard.RegisteredKind);
 
@@ -28,6 +32,7 @@ public sealed class RelocationEstimateCliTests : IDisposable
         RelocationEstimateCommand.ConfigPath = () => _dir.Combine("config.json");
         RelocationEstimateCommand.SettingsReader = path => AntiCheatGuard.Load(path, Path.Combine(Path.GetDirectoryName(path)!, "plans"));
         RelocationEstimateCommand.SameDisk = (_, _) => true;
+        RelocationEstimateCommand.CalibrationReader = (_, _) => null;
         AntiCheatGuard.FolderKind = _ => null;
         AntiCheatGuard.VanguardInstalled = () => false;
         AntiCheatGuard.RegisteredKind = _ => null;
@@ -40,6 +45,7 @@ public sealed class RelocationEstimateCliTests : IDisposable
         RelocationEstimateCommand.LayoutReader = _savedLayoutReader;
         RelocationEstimateCommand.SettingsReader = _savedSettingsReader;
         RelocationEstimateCommand.SameDisk = _savedSameDisk;
+        RelocationEstimateCommand.CalibrationReader = _savedCalibrationReader;
         (AntiCheatGuard.FolderKind, AntiCheatGuard.VanguardInstalled, AntiCheatGuard.RegisteredKind) = _savedGuard;
         _dir.Dispose();
     }
@@ -351,6 +357,128 @@ public sealed class RelocationEstimateCliTests : IDisposable
         Assert.Equal(1L, ((JObject)fallbackReasons["plan_exclusion"]!)["blocks"]);
     }
 
+    [Fact]
+    public void EvaluatePlayIsReportedSeparatelyAndModelSourcesAreListed()
+    {
+        string root = _dir.Combine("game");
+        Directory.CreateDirectory(root);
+        string file = Path.Combine(root, "a.bin");
+        string train = _dir.Combine("train.io.json");
+        string evaluate = _dir.Combine("eval.io.json");
+        WriteSummary(train, [new(file)], [BlockRow(0, 0, 1), BlockRow(0, 1, 2)], TrainId);
+        WriteSummary(evaluate, [new(file)], [BlockRow(0, 0, 1), BlockRow(0, 1, 2), BlockRow(0, 2, 3)], EvalId);
+        SetLayouts(new Dictionary<string, RelocationEstimateCommand.FileLayoutSnapshot>(StringComparer.OrdinalIgnoreCase)
+        {
+            [file] = Layout(4 * 65_536, [new Extent(0, 100, 16), new Extent(16, 5000, 16), new Extent(32, 9000, 16), new Extent(48, 13_000, 16)]),
+        });
+
+        (int code, string output, string error) = CliTests.Run("plan", "estimate", "--io-summary", train, "--evaluate-io-summary", evaluate,
+            "--origin-root", root, "--zone-mib", "1,2", "--position-base-ms", "7", "--position-full-ms", "0");
+
+        Assert.Equal(0, code);
+        JObject json = (JObject)JsonRead.Parse(output)!;
+        JObject model = (JObject)json["link_model"]!;
+        Assert.Equal(7d, model["position_base_ms"]);
+        Assert.Equal(0d, model["position_full_ms"]);
+        Assert.Equal(150d, model["transfer_mbps"]);
+        JObject sources = (JObject)model["sources"]!;
+        Assert.Equal("arguments", sources["position_base_ms"]);
+        Assert.Equal("arguments", sources["position_full_ms"]);
+        Assert.Equal("defaults", sources["transfer_mbps"]);
+        List<object?> evaluation = (List<object?>)json["evaluation"]!;
+        JObject played = (JObject)Assert.Single(evaluation)!;
+        Assert.Equal(EvalId, played["session_id"]);
+        Assert.Equal(1L, ((JObject)played["unseen_in_training"]!)["blocks"]);
+        Assert.Equal(2, ((List<object?>)played["zones"]!).Count);
+        JObject combined = (JObject)json["combined"]!;
+        Assert.Equal(2L, ((JObject)combined["total"]!)["blocks"]); // 평가용 플레이는 학습 합계에 들지 않습니다
+        JObject scenario = (JObject)((List<object?>)((JObject)combined["sequence"]!)["zones"]!)[0]!;
+        Assert.NotNull(((JObject)scenario["by_link_gain"]!)["model"]);
+        Assert.Equal("movable_not_policy_excluded", ((JObject)scenario["by_latency"]!)["candidate_set"]);
+        Assert.NotNull(((JObject)scenario["by_link_gain"]!)["model_position_reduction_ms"]);
+        JObject firstZone = (JObject)((List<object?>)played["zones"]!)[0]!;
+        JObject linkChange = (JObject)((JObject)firstZone["by_link_gain"]!)["link_change"]!;
+        Assert.NotNull(((JObject)linkChange["removed"]!)["before_model_position_ms"]);
+        Assert.NotNull(linkChange["crossing_zone"]);
+        Assert.NotNull(linkChange["inside_zone"]);
+        Assert.Contains(((List<object?>)json["notes"]!), note => note is string text && text.Contains("evaluation plays are not used for selection", StringComparison.Ordinal));
+        Assert.Contains("Zone 1 MiB link_gain", error, StringComparison.Ordinal);
+        Assert.Contains("Evaluation eval.io.json", error, StringComparison.Ordinal);
+        List<object?> inputs = (List<object?>)json["inputs"]!;
+        Assert.Equal(["train", "evaluate"], inputs.Select(input => ((JObject)input!)["role"]).ToArray());
+    }
+
+    [Fact]
+    public void CalibrationThroughputIsUsedOnlyWhenNoArgumentIsGiven()
+    {
+        string root = _dir.Combine("game");
+        Directory.CreateDirectory(root);
+        string file = Path.Combine(root, "a.bin");
+        string summary = _dir.Combine("only.io.json");
+        WriteSummary(summary, [new(file)], [Row(0, 1)]);
+        SetLayouts(new Dictionary<string, RelocationEstimateCommand.FileLayoutSnapshot>(StringComparer.OrdinalIgnoreCase)
+        {
+            [file] = Layout(65_536, [new Extent(0, 100, 16)]),
+        });
+        RelocationEstimateCommand.CalibrationReader = (_, _) => new RelocationEstimateCommand.DeviceCalibrationValues(180, 9);
+
+        (_, string fromCalibration, _) = CliTests.Run("plan", "estimate", "--io-summary", summary, "--origin-root", root, "--zone-mib", "1");
+        (_, string fromArgument, _) = CliTests.Run("plan", "estimate", "--io-summary", summary, "--origin-root", root, "--zone-mib", "1",
+            "--transfer-mbps", "90");
+
+        JObject calibrated = (JObject)((JObject)JsonRead.Parse(fromCalibration)!)["link_model"]!;
+        Assert.Equal(180d, calibrated["transfer_mbps"]);
+        Assert.Equal("calibration", ((JObject)calibrated["sources"]!)["transfer_mbps"]);
+        Assert.Equal(9d, ((JObject)calibrated["calibration"]!)["seek_hat_ms"]);
+        JObject given = (JObject)((JObject)JsonRead.Parse(fromArgument)!)["link_model"]!;
+        Assert.Equal(90d, given["transfer_mbps"]);
+        Assert.Equal("arguments", ((JObject)given["sources"]!)["transfer_mbps"]);
+        Assert.Null(given["calibration"]);
+    }
+
+    [Fact]
+    public void EvaluatePlayWithTheSameSessionIdAsTrainingIsAnArgumentError()
+    {
+        string root = _dir.Combine("game");
+        Directory.CreateDirectory(root);
+        string file = Path.Combine(root, "a.bin");
+        string train = _dir.Combine("train.io.json");
+        string evaluate = _dir.Combine("eval.io.json");
+        WriteSummary(train, [new(file)], [Row(0, 1)], SameId);
+        WriteSummary(evaluate, [new(file)], [Row(0, 1)], SameId);
+
+        (int code, _, string error) = CliTests.Run("plan", "estimate", "--io-summary", train, "--evaluate-io-summary", evaluate, "--origin-root", root);
+
+        Assert.Equal(2, code);
+        Assert.Contains("evaluate-io-summary", error, StringComparison.Ordinal);
+        Assert.Contains(SameId, error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ModelArgumentsAreValidatedAndOutputRepeatsExactly()
+    {
+        string root = _dir.Combine("game");
+        Directory.CreateDirectory(root);
+        string file = Path.Combine(root, "a.bin");
+        string summary = _dir.Combine("repeat.io.json");
+        WriteSummary(summary, [new(file)], [BlockRow(0, 0, 1), BlockRow(0, 1, 2)]);
+        SetLayouts(new Dictionary<string, RelocationEstimateCommand.FileLayoutSnapshot>(StringComparer.OrdinalIgnoreCase)
+        {
+            [file] = Layout(2 * 65_536, [new Extent(0, 100, 16), new Extent(16, 9000, 16)]),
+        });
+
+        (int negative, _, string negativeError) = CliTests.Run("plan", "estimate", "--io-summary", summary, "--origin-root", root, "--transfer-mbps", "0");
+        (int decay, _, string decayError) = CliTests.Run("plan", "estimate", "--io-summary", summary, "--origin-root", root, "--session-decay", "1.5");
+        (_, string first, _) = CliTests.Run("plan", "estimate", "--io-summary", summary, "--origin-root", root, "--zone-mib", "1,2");
+        (_, string second, _) = CliTests.Run("plan", "estimate", "--io-summary", summary, "--origin-root", root, "--zone-mib", "1,2");
+
+        Assert.Equal(2, negative);
+        Assert.Contains("transfer-mbps", negativeError, StringComparison.Ordinal);
+        Assert.Equal(2, decay);
+        Assert.Contains("session-decay", decayError, StringComparison.Ordinal);
+        Assert.Equal(first, second);
+    }
+
     private void SetLayouts(IReadOnlyDictionary<string, RelocationEstimateCommand.FileLayoutSnapshot> layouts) =>
         RelocationEstimateCommand.LayoutReader = path => layouts.TryGetValue(path, out RelocationEstimateCommand.FileLayoutSnapshot? layout)
             ? layout
@@ -361,14 +489,16 @@ public sealed class RelocationEstimateCliTests : IDisposable
 
     private static IoSummaryRow Row(int file, long first) => new(file, 0, 1, 4096, 10, 10, first, 0);
 
-    private static void WriteSummary(string path, IReadOnlyList<IoSummaryFile> files, IReadOnlyList<IoSummaryRow> rows)
+    private static IoSummaryRow BlockRow(int file, long block, long first) => new(file, block, 1, 4096, 10, 10, first, 0);
+
+    private static void WriteSummary(string path, IReadOnlyList<IoSummaryFile> files, IReadOnlyList<IoSummaryRow> rows, string? sessionId = null)
     {
         IoClassTotals linked = new(rows.Count, rows.Sum(row => row.Bytes), rows.Sum(row => row.LatencySumUs));
         var quality = new IoSummaryQuality(linked, rows.Count == 0 ? 0 : rows.Max(row => row.LatencyMaxUs), linked,
             default, default, default, default, 0, 0, 0);
         DateTimeOffset now = DateTimeOffset.UtcNow;
         IoSummaryStore.Write(path, new IoSummary(now, now.AddSeconds(1), [new IoSummaryWindow(0, 1)], quality, files, rows,
-            Guid.NewGuid().ToString("N")));
+            sessionId ?? Guid.NewGuid().ToString("N")));
     }
 
     private static AsterSettings Settings(string root) =>

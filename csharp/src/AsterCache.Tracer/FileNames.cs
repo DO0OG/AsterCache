@@ -11,16 +11,19 @@ internal sealed class FileNames(Action<string, long, long>? onLate = null)
     private readonly Dictionary<ulong, string> _byObject = [];
     private readonly Dictionary<ulong, List<Held>> _held = []; // FileKey → 이름을 기다리는 읽기
     private readonly Dictionary<ulong, ulong> _heldKeyOfObject = []; // FileObject → 그 오브젝트로 보류한 마지막 FileKey
+    private int? _maxEntriesAfterFreeze;
 
     /// 읽는 순간 풀려 전달된 읽기 수 / 늦게 전달된 읽기 수 / 아직 이름을 기다리는 읽기 수.
     public long Resolved { get; private set; }
 
     public long Late { get; private set; }
 
-    /// FileKey 이름 표 크기 (세션이 긴 만큼 커지는 표를 재 보는 용도).
-    public int Count => _byKey.Count;
+    /// FileKey 와 FileObject 이름 표의 합계 크기.
+    public int Count => _byKey.Count + _byObject.Count;
 
     public int Waiting => _held.Values.Sum(l => l.Count);
+
+    public void LimitNewEntriesAfterFreeze(int maxEntries) => _maxEntriesAfterFreeze = Math.Max(0, maxEntries);
 
     public void NameKey(ulong key, string? name)
     {
@@ -93,9 +96,20 @@ internal sealed class FileNames(Action<string, long, long>? onLate = null)
         }
     }
 
-    private static bool Set(Dictionary<ulong, string> table, ulong id, string? name)
+    private bool Set(Dictionary<ulong, string> table, ulong id, string? name)
     {
         if (id == 0 || string.IsNullOrEmpty(name))
+        {
+            return false;
+        }
+
+        if (table.ContainsKey(id))
+        {
+            table[id] = name;
+            return true;
+        }
+
+        if (_maxEntriesAfterFreeze is { } maxEntries && _byKey.Count + _byObject.Count >= maxEntries)
         {
             return false;
         }

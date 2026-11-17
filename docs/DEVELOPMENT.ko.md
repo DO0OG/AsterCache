@@ -104,7 +104,7 @@ flowchart LR
 |---|---|---|
 | `config.json` | 관리 창·서비스 | 설정과 게임 목록입니다. 쓸 때는 `config.json.lock` 으로 잠그고, 서비스가 5초마다 다시 읽습니다. |
 | `plans\<게임>.trace.json`, `.trace.runN.json`, `.trace.common.json` | 서비스·`aster trace` | 읽기 기록, 플레이별 기록, 모든 플레이에서 반복된 구간입니다. 프리페치·공유 프로필에서 만든 기록은 `.boot.trace.json` 입니다. |
-| `plans\<게임>.trace.runN.json.io.json`, `plans\<게임>.trace.json.io-only.NN.json`, `plans\<게임>.trace.json.io.tried` | 서비스 | 회차별 디스크 읽기 요약: 파일 표, 게임이 끝난 뒤 디스크 위치에서 바꾼 (파일, 64 KiB 블록) 행, 분류별 품질 값, 시간 원점, 원시 추적 지문, 최대 32개의 측정 전용 요약, 추가 추적 횟수를 담습니다. 계획 입력이 아닌 측정 자료이며 지워도 안전합니다. |
+| `plans\<게임>.trace.runN.json.io.json`, `plans\<게임>.trace.json.io-only.NN.json`, `plans\<게임>.trace.json.io.tried` | 서비스 | 버전 4 디스크 읽기·파일 읽기 방식 집계입니다. `read_modes` 각 행은 `path`, `cache_requests`, `cache_bytes`, `nocache_requests`, `nocache_bytes`, `paging_requests`, `paging_bytes` 를 담습니다. `quality` 에는 `read_modes_files_dropped`, `read_modes_reads_unnamed`, 표시 값 최대 32개의 `read_modes_flag_counts`(`flags`, `reads`), `read_modes_flag_count_other`, `read_modes_observed_until_utc` 가 추가됩니다. `read_modes_dropped_requests` 는 버린 경로 목록 상한을 넘어 경로를 보관하지 못한 요청 수이고, `read_modes_files_dropped_exact` 는 버린 파일 수가 정확한지 표시합니다. 버전 3은 읽을 수 있으며 읽기 방식은 모름입니다. 세션 ID 로 서로 다른 플레이를 구분하고, 측정 전용 요약은 최대 32개까지 둡니다. 계획 입력이 아닌 측정 자료이며 지워도 안전합니다. |
 | `plans\<게임>.plan.json`, `.plan.json.prefetch.json`, `.warmonly.json` | 서비스·`aster plan` | 배치 계획, 예열 입력, 예열 전용 목록입니다. |
 | `plans\<게임>.orbit.json` | 서비스·`aster orbit` | ORBIT 에피소드 모형입니다. |
 | `journals\<게임>.jsonl` | `Applier` | 재배치 저널입니다. 이전 저널은 `.jsonl.<UTC 시각>` 으로 보관합니다. |

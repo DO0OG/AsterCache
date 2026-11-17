@@ -117,7 +117,7 @@ public sealed class KernelCollectorTests
     }
 
     [Fact]
-    public void AfterTheRawFreezeEveryEventExceptDiskCompletionsIsDroppedAtOnce()
+    public void AfterTheRawFreezeOnlyReadModeNamesAndProcessTrackingContinue()
     {
         KernelCollector c = WithSummary(out _);
         c.NameKey(7, File1);
@@ -138,7 +138,8 @@ public sealed class KernelCollectorTests
         List<TraceRecord> raw = c.Finish();
         IoRequestSnapshot requests = Assert.IsType<IoRequestSnapshot>(c.FinishIoRequests(new DateTimeOffset(T0.AddSeconds(4)), eventsLost: 0));
 
-        Assert.Equal((names, records), c.Footprint); // 이름표·기록이 더 자라지 않음
+        Assert.True(c.Footprint.Names > names); // 읽기 방식 판정에 필요한 파일 이름은 계속 추적
+        Assert.Equal(records, c.Footprint.Records); // 원시 기록은 더 자라지 않음
         Assert.DoesNotContain(raw, record => record.Pid == 11 || record.Kind == RecordKind.ProcessStop || record.Kind == RecordKind.Write);
         Assert.Single(raw, record => record.Kind == RecordKind.Read);
         Assert.Equal(1, Assert.Single(requests.Requests).Count);
@@ -175,5 +176,138 @@ public sealed class KernelCollectorTests
         Assert.Equal(4u, Assert.Single(requests.Requests).Disk);
         Assert.Equal(new IoClassTotals(1, 8192, 2000), requests.OtherDisk);
         Assert.Equal(new IoClassTotals(2, 12288, 3000), requests.Total);
+    }
+
+    [Fact]
+    public void ReadModesUseFileRequestFlagsAndContinueAfterTheRawTraceIsFrozen()
+    {
+        var summary = new IoSummaryCollector(new DateTimeOffset(T0), readModeRoots: [@"D:\Games"]);
+        var c = new KernelCollector(["game.exe", "late.exe"], new DevicePaths([]), ioSummary: summary);
+        c.StartProcess(T0, 10, 1, "game.exe");
+        c.NameKey(7, File1);
+        c.AddRead(T0.AddSeconds(1), 10, 7, 70, 0, 4096, ioFlags: 0);
+        c.AddRead(T0.AddSeconds(1), 10, 7, 70, 4096, 8192, ioFlags: 0x01);
+        c.AddRead(T0.AddSeconds(1), 10, 7, 70, 12288, 4096, ioFlags: 0x02);
+        c.AddRead(T0.AddSeconds(1), 10, 7, 70, 16384, 8192, ioFlags: 0x41);
+        c.AddRead(T0.AddSeconds(1), 99, 7, 70, 0, 4096, ioFlags: 0x01); // 대상 트리 밖
+        c.Pause(new DateTimeOffset(T0.AddSeconds(2)));
+        c.FreezeRawRecords();
+
+        c.StartProcess(T0.AddSeconds(3), 11, 10, "late.exe");
+        c.AddRead(T0.AddSeconds(3), 11, 9, 90, 0, 2048, ioFlags: 0x40); // 원시 동결 뒤 이름 확인
+        c.NameKey(9, @"D:\Games\late.bin");
+        c.AddRead(T0.AddSeconds(3), 11, 99, 0, 0, 1024, ioFlags: 0x08); // 끝내 이름을 못 찾음
+        c.AddRead(T0.AddSeconds(3), 11, 100, 0, 0, 1024, ioFlags: 0x10);
+        c.NameKey(100, @"D:\Other\outside.bin"); // 게임 폴더 밖은 저장하지 않음
+
+        IoRequestSnapshot requests = Assert.IsType<IoRequestSnapshot>(c.FinishIoRequests(new DateTimeOffset(T0.AddSeconds(4)), 0));
+        IoSummary saved = new IoBlockMapper(requests).Build(0, 0, 0, 0, 0, false);
+
+        Assert.Equal(2, saved.ReadModes!.Count);
+        IoSummaryReadMode first = saved.ReadModes.Single(mode => mode.Path == File1);
+        Assert.Equal((1L, 4096L, 1L, 8192L, 2L, 12288L),
+            (first.CacheRequests, first.CacheBytes, first.NoCacheRequests, first.NoCacheBytes, first.PagingRequests, first.PagingBytes));
+        IoSummaryReadMode late = saved.ReadModes.Single(mode => mode.Path.EndsWith("late.bin", StringComparison.Ordinal));
+        Assert.Equal((0L, 0L, 0L, 0L, 1L, 2048L),
+            (late.CacheRequests, late.CacheBytes, late.NoCacheRequests, late.NoCacheBytes, late.PagingRequests, late.PagingBytes));
+        Assert.Equal(1, saved.Quality.ReadModeReadsUnnamed);
+        Assert.Equal(0, saved.Quality.ReadModeFilesDropped);
+        Assert.Equal(1, saved.Quality.ReadModeFlagCounts!.Single(flag => flag.Flags == 0x01).Reads);
+        Assert.Equal(0, saved.Quality.ReadModeFlagCountOther);
+        Assert.NotNull(saved.Quality.ReadModesObservedUntilUtc);
+        Assert.Equal(4, c.Finish().Count(record => record.Kind == RecordKind.Read)); // 동결 뒤 원시 기록은 늘지 않음
+    }
+
+    [Fact]
+    public void ReadModeFileLimitCountsEachDroppedPathOnce()
+    {
+        var summary = new IoSummaryCollector(new DateTimeOffset(T0), readModeRoots: [@"D:\Games"], maxReadModeFiles: 1);
+        summary.AddProcessRead(@"D:\Games\keep.bin", 1, 4096, 0);
+        summary.AddProcessRead(@"D:\Games\drop.bin", 1, 2048, 1);
+        summary.AddProcessRead(@"D:\Games\drop.bin", 1, 2048, 1);
+
+        IoRequestSnapshot requests = summary.Snapshot(new DateTimeOffset(T0.AddSeconds(1)), [], 0, null);
+        IoSummary saved = new IoBlockMapper(requests).Build(0, 0, 0, 0, 0, false);
+
+        Assert.Single(saved.ReadModes!);
+        Assert.Equal(1, saved.Quality.ReadModeFilesDropped);
+    }
+
+    [Fact]
+    public void ReadModeNameTableIsBoundedAfterFreezeAndStillUpdatesExistingKeys()
+    {
+        const int maxNames = 1 << 18;
+        var summary = new IoSummaryCollector(new DateTimeOffset(T0), readModeRoots: [@"D:\Games"]);
+        var c = new KernelCollector(["game.exe"], new DevicePaths([]), ioSummary: summary);
+        c.StartProcess(T0, 10, 1, "game.exe");
+        c.FreezeRawRecords();
+
+        for (ulong key = 1; key <= maxNames; key++)
+        {
+            c.NameKey(key, $@"D:\Games\{key}.bin");
+        }
+
+        c.NameKey(1, @"D:\Games\reused.bin");
+        c.NameKey(maxNames + 1, @"D:\Games\unnamed.bin");
+        Assert.Equal(maxNames, c.Footprint.Names);
+
+        c.AddRead(T0.AddSeconds(1), 10, 1, 0, 0, 4096, ioFlags: 0x01);
+        c.AddRead(T0.AddSeconds(1), 10, maxNames + 1, 0, 0, 8192, ioFlags: 0x01);
+        c.NameKey(maxNames + 1, @"D:\Games\unnamed.bin");
+        IoSummaryReadMode readMode = Assert.Single(new IoBlockMapper(c.FinishIoRequests(new DateTimeOffset(T0.AddSeconds(2)), 0)!)
+            .Build(0, 0, 0, 0, 0, false).ReadModes!);
+
+        Assert.Equal(@"D:\Games\reused.bin", readMode.Path);
+        Assert.Equal(1, readMode.NoCacheRequests);
+        Assert.Equal(1, summary.Snapshot(new DateTimeOffset(T0.AddSeconds(2)), [], 0, null).ReadModeReadsUnnamed);
+    }
+
+    [Fact]
+    public void FileNameLimitKeepsUpdatesAndAllowsClosedObjectIdentifiersToBeReused()
+    {
+        var names = new FileNames();
+        names.NameKey(1, @"D:\Games\old.bin");
+        names.LimitNewEntriesAfterFreeze(2);
+        names.NameObject(7, @"D:\Games\first.bin");
+        names.CloseObject(7);
+        names.NameObject(7, @"D:\Games\second.bin");
+        names.NameKey(1, @"D:\Games\updated.bin");
+        names.NameObject(8, @"D:\Games\over-limit.bin");
+
+        Assert.Equal(2, names.Count);
+        Assert.Equal(@"D:\Games\updated.bin", names.AtRead(1, 7).Name);
+        Assert.Equal(@"D:\Games\second.bin", names.AtRead(0, 7).Fallback);
+        Assert.Null(names.AtRead(0, 8).Fallback);
+    }
+
+    [Fact]
+    public void ClosingAndReopeningAReadWindowKeepsReadModeCountsWithoutAddingClosedReadsToRawRecords()
+    {
+        KernelCollector c = WithSummary(out _);
+        c.NameKey(7, File1);
+        c.AddRead(T0.AddSeconds(1), 10, 7, 70, 0, 4096, ioFlags: 0);
+        c.Pause(new DateTimeOffset(T0.AddSeconds(2)));
+        c.AddRead(T0.AddSeconds(3), 10, 7, 70, 4096, 8192, ioFlags: 0x01);
+        c.Resume(new DateTimeOffset(T0.AddSeconds(4)));
+        c.AddRead(T0.AddSeconds(5), 10, 7, 70, 12288, 4096, ioFlags: 0);
+
+        IoRequestSnapshot requests = Assert.IsType<IoRequestSnapshot>(c.FinishIoRequests(new DateTimeOffset(T0.AddSeconds(6)), 0));
+        IoSummaryReadMode mode = Assert.Single(new IoBlockMapper(requests).Build(0, 0, 0, 0, 0, false).ReadModes!);
+
+        Assert.Equal((2L, 8192L, 1L, 8192L), (mode.CacheRequests, mode.CacheBytes, mode.NoCacheRequests, mode.NoCacheBytes));
+        Assert.Equal(2, c.Finish().Count(record => record.Kind == RecordKind.Read));
+    }
+
+    [Fact]
+    public void FinishReturnsTheSameRawRecordsBeforeAndAfterFreezing()
+    {
+        KernelCollector c = Collector();
+        c.NameKey(7, File1);
+        c.AddRead(T0.AddSeconds(1), 10, 7, 70, 0, 4096);
+
+        List<TraceRecord> beforeFreeze = c.Finish();
+        c.FreezeRawRecords();
+
+        Assert.Equal(beforeFreeze, c.Finish());
     }
 }

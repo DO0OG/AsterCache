@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using AsterCache.Core.Trace;
 using AsterCache.Tracer;
 using Xunit;
@@ -121,6 +122,71 @@ public sealed class IoSummaryTests : IDisposable
     }
 
     [Fact]
+    public void FileReadFlagCountsKeepThirtyTwoValuesAndAggregateTheRest()
+    {
+        var collector = new IoSummaryCollector(Started);
+        for (uint flags = 0; flags < IoSummaryCollector.MaxReadModeFlags + 1; flags++)
+        {
+            collector.AddProcessRead(@"D:\Games\a.bin", 1, 4096, flags);
+        }
+
+        IoSummary summary = new IoBlockMapper(collector.Snapshot(Started.AddSeconds(1), [], 0, null)).Build(0, 0, 0, 0, 0, false);
+
+        Assert.Equal(IoSummaryCollector.MaxReadModeFlags, summary.Quality.ReadModeFlagCounts!.Count);
+        Assert.Equal(1, summary.Quality.ReadModeFlagCountOther);
+    }
+
+    [Fact]
+    public void ReadModeTotalsDistinguishCacheOnlyUncachedOnlyMixedAndPagingFiles()
+    {
+        var collector = new IoSummaryCollector(Started);
+        collector.AddProcessRead(@"D:\Games\cache.bin", 2, 2L << 20, 0);
+        collector.AddProcessRead(@"D:\Games\nocache.bin", 1, 3L << 20, 0x01);
+        collector.AddProcessRead(@"D:\Games\mixed.bin", 1, 1L << 20, 0);
+        collector.AddProcessRead(@"D:\Games\mixed.bin", 1, 1L << 20, 0x01);
+        collector.AddProcessRead(@"D:\Games\paging.bin", 1, 1L << 20, 0x02);
+        collector.AddProcessRead(@"D:\Games\paging.bin", 1, 1L << 20, 0x41);
+
+        IoSummary summary = new IoBlockMapper(collector.Snapshot(Started.AddSeconds(1), [], 0, null)).Build(0, 0, 0, 0, 0, false);
+
+        IoSummaryReadMode cache = Assert.Single(summary.ReadModes!, mode => mode.Path == @"D:\Games\cache.bin");
+        Assert.Equal((2L, 2L << 20), (cache.CacheRequests, cache.CacheBytes));
+        IoSummaryReadMode noCache = Assert.Single(summary.ReadModes!, mode => mode.Path.EndsWith("nocache.bin", StringComparison.Ordinal));
+        Assert.Equal((1L, 3L << 20), (noCache.NoCacheRequests, noCache.NoCacheBytes));
+        IoSummaryReadMode mixed = Assert.Single(summary.ReadModes!, mode => mode.Path.EndsWith("mixed.bin", StringComparison.Ordinal));
+        Assert.Equal((1L, 1L << 20, 1L, 1L << 20), (mixed.CacheRequests, mixed.CacheBytes, mixed.NoCacheRequests, mixed.NoCacheBytes));
+        IoSummaryReadMode paging = Assert.Single(summary.ReadModes!, mode => mode.Path.EndsWith("paging.bin", StringComparison.Ordinal));
+        Assert.Equal((2L, 2L << 20), (paging.PagingRequests, paging.PagingBytes));
+        Assert.Contains("1 files read only without the cache (3.0 MiB)", summary.FormatReadModesLogLine(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DroppedReadModePathTrackingStopsAtItsLimitAndCountsUntrackedRequests()
+    {
+        const int maxTrackedPaths = 1 << 16;
+        var collector = new IoSummaryCollector(Started, readModeRoots: [@"D:\Games"], maxReadModeFiles: 1);
+        collector.AddProcessRead(@"D:\Games\keep.bin", 1, 4096, 0);
+        for (int i = 0; i <= maxTrackedPaths; i++)
+        {
+            collector.AddProcessRead($@"D:\Games\drop{i}.bin", 1, 4096, 0x01);
+        }
+
+        collector.AddProcessRead($@"D:\Games\drop{maxTrackedPaths}.bin", 1, 4096, 0x01);
+        IoSummary summary = new IoBlockMapper(collector.Snapshot(Started.AddSeconds(1), [], 0, null)).Build(0, 0, 0, 0, 0, false);
+        string path = Path.Combine(_dir, "dropped.trace.run1.json.io.json");
+        IoSummaryStore.Write(path, summary);
+        JsonObject quality = JsonNode.Parse(File.ReadAllText(path))!["quality"]!.AsObject();
+
+        Assert.Equal(maxTrackedPaths, (int)quality["read_modes_files_dropped"]!);
+        Assert.Equal(2L, (long)quality["read_modes_dropped_requests"]!);
+        Assert.False((bool)quality["read_modes_files_dropped_exact"]!);
+        Assert.True(summary.Quality.Truncated);
+        IoSummary restored = Assert.IsType<IoSummary>(IoSummaryStore.Read(path));
+        Assert.Equal(2, restored.Quality.ReadModeDroppedRequests);
+        Assert.False(restored.Quality.ReadModeFilesDroppedExact);
+    }
+
+    [Fact]
     public void BlockTableLimitCountsDroppedBlocksInsteadOfTreatingThemAsZeroReads()
     {
         var mapper = new IoBlockMapper(Snapshot(Request(1, 0, 3 * IoBlockMapper.BlockSizeBytes, 300)), maxBlocks: 2);
@@ -170,7 +236,17 @@ public sealed class IoSummaryTests : IDisposable
     [Fact]
     public void StoreRoundTripsWithANegativeRawZeroAndRejectsVersionMismatchOrDamagedJson()
     {
-        var mapper = new IoBlockMapper(Snapshot(Request(4, 100_000, 20_000, 1000)) with { RawTraceZeroUs = -2000, EventsLost = 3 });
+        IoRequestSnapshot requests = Snapshot(Request(4, 100_000, 20_000, 1000)) with
+        {
+            RawTraceZeroUs = -2000,
+            EventsLost = 3,
+            ReadModes = [new IoSummaryReadMode(@"D:\Games\a.bin", 1, 4096, 2, 8192, 3, 12288)],
+            ReadModeFilesDropped = 2,
+            ReadModeReadsUnnamed = 4,
+            ReadModeFlags = [new IoFlagCount(0x01, 2), new IoFlagCount(0x42, 1)],
+            ReadModeFlagsOther = 5,
+        };
+        var mapper = new IoBlockMapper(requests);
         mapper.AddFile(@"D:\Games\a.bin", true, true, 4, [new IoFileExtent(96_000, 60_000, 30_000)]);
         IoSummary expected = mapper.Build(7, 1, 2, 1, 42, false);
         string path = Path.Combine(_dir, "foo.trace.run1.json.io.json");
@@ -181,17 +257,48 @@ public sealed class IoSummaryTests : IDisposable
         Assert.Equal(expected.ObservedAtUtc, actual.ObservedAtUtc);
         Assert.Equal(expected.EndedAtUtc, actual.EndedAtUtc);
         Assert.Equal(expected.RawWindows, actual.RawWindows);
-        Assert.Equal(expected.Quality, actual.Quality);
+        Assert.Equal(expected.Quality with { ReadModeFlagCounts = null }, actual.Quality with { ReadModeFlagCounts = null });
         Assert.Equal(expected.Files, actual.Files);
         Assert.Equal(expected.Rows, actual.Rows);
+        Assert.Equal(expected.ReadModes, actual.ReadModes);
         Assert.Equal(expected.SessionId, actual.SessionId);
+        Assert.Equal(expected.Quality.ReadModeFilesDropped, actual.Quality.ReadModeFilesDropped);
+        Assert.Equal(expected.Quality.ReadModeReadsUnnamed, actual.Quality.ReadModeReadsUnnamed);
+        Assert.Equal(expected.Quality.ReadModeFlagCounts, actual.Quality.ReadModeFlagCounts);
+        Assert.Equal(expected.Quality.ReadModeFlagCountOther, actual.Quality.ReadModeFlagCountOther);
+        Assert.Equal(requests.EndedAtUtc, actual.Quality.ReadModesObservedUntilUtc);
         Assert.Equal(-2000, actual.RawTraceZeroUs);
         Assert.Equal(Started.AddTicks(-2000 * TimeSpan.TicksPerMicrosecond), actual.RawTraceZeroAtUtc);
         Assert.Contains("not pure service time", File.ReadAllText(path)); // 지연의 뜻이 곁 파일에도 적힘
-        File.WriteAllText(path, File.ReadAllText(path).Replace("\"version\": 3", "\"version\": 2"));
+        File.WriteAllText(path, File.ReadAllText(path).Replace("\"version\": 4", "\"version\": 2"));
         Assert.Null(IoSummaryStore.Read(path));
         File.WriteAllText(path, "not json");
         Assert.Null(IoSummaryStore.Read(path));
+    }
+
+    [Fact]
+    public void VersionThreeSummariesRemainReadableAndHaveUnknownReadModes()
+    {
+        string path = Path.Combine(_dir, "legacy.trace.run1.json.io.json");
+        IoSummaryStore.Write(path, SomeSummary());
+        JsonObject root = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+        root["version"] = 3;
+        root.Remove("read_modes");
+        JsonObject quality = root["quality"]!.AsObject();
+        quality.Remove("read_modes_files_dropped");
+        quality.Remove("read_modes_dropped_requests");
+        quality.Remove("read_modes_files_dropped_exact");
+        quality.Remove("read_modes_reads_unnamed");
+        quality.Remove("read_modes_flag_counts");
+        quality.Remove("read_modes_flag_count_other");
+        quality.Remove("read_modes_observed_until_utc");
+        File.WriteAllText(path, root.ToJsonString());
+
+        IoSummary summary = Assert.IsType<IoSummary>(IoSummaryStore.Read(path));
+
+        Assert.False(summary.HasReadModes);
+        Assert.Empty(summary.ReadModes!);
+        Assert.Null(summary.Quality.ReadModesObservedUntilUtc);
     }
 
     private IoSummary SomeSummary() => new IoBlockMapper(Snapshot()).Build(0, 0, 0, 0, 0, false);

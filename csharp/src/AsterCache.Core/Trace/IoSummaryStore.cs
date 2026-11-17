@@ -7,12 +7,14 @@ namespace AsterCache.Core.Trace;
 /// 물리 읽기 집계를 회차 추적의 곁 파일로 읽고 씁니다.
 public static class IoSummaryStore
 {
-    public const int Version = 3;
+    public const int Version = 4;
 
     /// 곁 파일에 같이 적는 지연의 뜻 (읽는 사람이 순수 서비스 시간으로 오해하지 않게).
     public const string LatencyNote = "Per request: from the moment it went down the disk stack until completion, so waiting in front of the device is included and it is not pure service time. Overlapping requests make the sum larger than the real stall time. Per block rows split a request's latency across the blocks it touched in proportion to bytes.";
     public const string Suffix = ".io.json";
     public const int MaxStandaloneFiles = 32;
+    /// 이전 시도 횟수 뒤에도 읽기 방식 집계를 두 플레이분 모으기 위한 상한.
+    public const int MaxTried = 4;
 
     public static string RunPath(string runPath) => runPath + Suffix;
 
@@ -47,7 +49,7 @@ public static class IoSummaryStore
         {
             return File.Exists(TriedPath(rawTracePath))
                 && int.TryParse(File.ReadAllText(TriedPath(rawTracePath)).Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out int n)
-                    ? Math.Clamp(n, 0, 2)
+                    ? Math.Clamp(n, 0, MaxTried)
                     : 0;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
@@ -57,7 +59,7 @@ public static class IoSummaryStore
     }
 
     public static void WriteTried(string rawTracePath, int tries) =>
-        File.WriteAllText(TriedPath(rawTracePath), Math.Clamp(tries, 0, 2).ToString(CultureInfo.InvariantCulture));
+        File.WriteAllText(TriedPath(rawTracePath), Math.Clamp(tries, 0, MaxTried).ToString(CultureInfo.InvariantCulture));
 
     public static IoSummary? Read(string path)
     {
@@ -69,7 +71,7 @@ public static class IoSummaryStore
         try
         {
             if (JsonRead.ReadFile(path) is not JObject root
-                || !Long(root, "version", out long version) || version != Version
+                || !Long(root, "version", out long version) || version is not (3 or Version)
                 || !Long(root, "block_size", out long blockSize) || blockSize != IoBlockMapper.BlockSizeBytes
                 || !String(root, "latency_unit", out string? unit) || unit != "us"
                 || !String(root, "observed_at_utc", out string? startedText)
@@ -117,6 +119,33 @@ public static class IoSummaryStore
                 rows.Add(new IoSummaryRow((int)fileNumber, block, requests, bytes, sum, max, first, paging));
             }
 
+            var readModes = new List<IoSummaryReadMode>();
+            if (version == Version)
+            {
+                if (!root.TryGetValue("read_modes", out object? modesValue) || modesValue is not List<object?> modeRows)
+                {
+                    return null;
+                }
+
+                var modePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (object? value in modeRows)
+                {
+                    if (value is not JObject mode || !String(mode, "path", out string? name) || string.IsNullOrWhiteSpace(name)
+                        || !modePaths.Add(name)
+                        || !Long(mode, "cache_requests", out long cacheRequests) || cacheRequests < 0
+                        || !Long(mode, "cache_bytes", out long cacheBytes) || cacheBytes < 0
+                        || !Long(mode, "nocache_requests", out long noCacheRequests) || noCacheRequests < 0
+                        || !Long(mode, "nocache_bytes", out long noCacheBytes) || noCacheBytes < 0
+                        || !Long(mode, "paging_requests", out long pagingRequests) || pagingRequests < 0
+                        || !Long(mode, "paging_bytes", out long pagingBytes) || pagingBytes < 0)
+                    {
+                        return null;
+                    }
+
+                    readModes.Add(new IoSummaryReadMode(name, cacheRequests, cacheBytes, noCacheRequests, noCacheBytes, pagingRequests, pagingBytes));
+                }
+            }
+
             var windows = new List<IoSummaryWindow>(windowRows.Count);
             foreach (object? value in windowRows)
             {
@@ -130,7 +159,7 @@ public static class IoSummaryStore
                 windows.Add(new IoSummaryWindow(start, end));
             }
 
-            if (!ReadQuality(q, out IoSummaryQuality? quality))
+            if (!ReadQuality(q, (int)version, out IoSummaryQuality? quality))
             {
                 return null;
             }
@@ -188,7 +217,7 @@ public static class IoSummaryStore
                 }
             }
 
-            return new IoSummary(started, ended, windows, quality!, files, rows, sessionId!, rawFingerprint, rawTraceZeroUs, rawTraceZeroAtUtc);
+            return new IoSummary(started, ended, windows, quality!, files, rows, sessionId!, rawFingerprint, rawTraceZeroUs, rawTraceZeroAtUtc, readModes);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException or OverflowException or FormatException or ArgumentException)
         {
@@ -220,6 +249,16 @@ public static class IoSummaryStore
             { "first_session_us", row.FirstSessionUs },
             { "paging_requests", row.PagingRequests },
         }).ToList();
+        var readModes = (summary.ReadModes ?? []).Select(mode => (object?)new JObject
+        {
+            { "path", mode.Path },
+            { "cache_requests", mode.CacheRequests },
+            { "cache_bytes", mode.CacheBytes },
+            { "nocache_requests", mode.NoCacheRequests },
+            { "nocache_bytes", mode.NoCacheBytes },
+            { "paging_requests", mode.PagingRequests },
+            { "paging_bytes", mode.PagingBytes },
+        }).ToList();
         var root = new JObject
         {
             { "version", (long)Version },
@@ -236,6 +275,7 @@ public static class IoSummaryStore
             { "quality", QualityJson(summary.Quality) },
             { "files", files },
             { "rows", rows },
+            { "read_modes", readModes },
         };
 
         string temp = path + ".tmp";
@@ -332,7 +372,8 @@ public static class IoSummaryStore
         }
 
         File.Delete(target);
-        Write(target, summary with { RawFingerprint = RawFingerprint(rawTracePath), SessionId = Guid.NewGuid().ToString("N") });
+        string sessionId = Guid.TryParseExact(summary.SessionId, "N", out _) ? summary.SessionId : Guid.NewGuid().ToString("N");
+        Write(target, summary with { RawFingerprint = RawFingerprint(rawTracePath), SessionId = sessionId });
         return target;
     }
 
@@ -361,6 +402,17 @@ public static class IoSummaryStore
         { "volumes_skipped", q.VolumesSkipped },
         { "scan_ms", q.ScanMs },
         { "scan_incomplete", q.ScanIncomplete },
+        { "read_modes_files_dropped", q.ReadModeFilesDropped },
+        { "read_modes_dropped_requests", q.ReadModeDroppedRequests },
+        { "read_modes_files_dropped_exact", q.ReadModeFilesDroppedExact },
+        { "read_modes_reads_unnamed", q.ReadModeReadsUnnamed },
+        { "read_modes_flag_counts", (q.ReadModeFlagCounts ?? []).Select(flag => (object?)new JObject
+            {
+                { "flags", (long)flag.Flags },
+                { "reads", flag.Reads },
+            }).ToList() },
+        { "read_modes_flag_count_other", q.ReadModeFlagCountOther },
+        { "read_modes_observed_until_utc", q.ReadModesObservedUntilUtc?.ToString("O", CultureInfo.InvariantCulture) },
         { "truncated", q.Truncated },
     };
 
@@ -371,7 +423,7 @@ public static class IoSummaryStore
         { "latency_sum_us", t.LatencySumUs },
     };
 
-    private static bool ReadQuality(JObject o, out IoSummaryQuality? quality)
+    private static bool ReadQuality(JObject o, int version, out IoSummaryQuality? quality)
     {
         quality = null;
         string[] classes = ["disk_total", "linked", "other_disk", "no_file", "not_converted", "dropped"];
@@ -403,8 +455,75 @@ public static class IoSummaryStore
             return false;
         }
 
+        long readModeFilesDropped = 0;
+        long readModeDroppedRequests = 0;
+        bool readModeFilesDroppedExact = true;
+        long readModeReadsUnnamed = 0;
+        IoFlagCount[]? readModeFlagCounts = null;
+        long readModeFlagCountOther = 0;
+        DateTimeOffset? readModesObservedUntilUtc = null;
+        if (version >= 4)
+        {
+            if (!Long(o, "read_modes_files_dropped", out readModeFilesDropped) || readModeFilesDropped < 0
+                || !Long(o, "read_modes_reads_unnamed", out readModeReadsUnnamed) || readModeReadsUnnamed < 0
+                || !Long(o, "read_modes_flag_count_other", out readModeFlagCountOther) || readModeFlagCountOther < 0
+                || !o.TryGetValue("read_modes_flag_counts", out object? flagsValue) || flagsValue is not List<object?> flagRows
+                || flagRows.Count > IoSummaryCollector.MaxReadModeFlags)
+            {
+                return false;
+            }
+
+            var flags = new List<IoFlagCount>(flagRows.Count);
+            var seenFlags = new HashSet<uint>();
+            foreach (object? value in flagRows)
+            {
+                if (value is not JObject flag || !Long(flag, "flags", out long rawFlags) || rawFlags < 0 || rawFlags > uint.MaxValue
+                    || !Long(flag, "reads", out long reads) || reads < 0 || !seenFlags.Add((uint)rawFlags))
+                {
+                    return false;
+                }
+
+                flags.Add(new IoFlagCount((uint)rawFlags, reads));
+            }
+
+            readModeFlagCounts = flags.Count == 0 ? null : flags.ToArray();
+            if (o.TryGetValue("read_modes_dropped_requests", out object? droppedRequestsValue)
+                && (!Long(o, "read_modes_dropped_requests", out readModeDroppedRequests) || readModeDroppedRequests < 0))
+            {
+                return false;
+            }
+
+            if (o.TryGetValue("read_modes_files_dropped_exact", out object? droppedExactValue))
+            {
+                if (droppedExactValue is not bool droppedExact)
+                {
+                    return false;
+                }
+
+                readModeFilesDroppedExact = droppedExact;
+            }
+
+            if (!o.TryGetValue("read_modes_observed_until_utc", out object? observedValue))
+            {
+                return false;
+            }
+
+            if (observedValue is not null)
+            {
+                if (observedValue is not string observedText
+                    || !DateTimeOffset.TryParse(observedText, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset observedUntil))
+                {
+                    return false;
+                }
+
+                readModesObservedUntilUtc = observedUntil.ToUniversalTime();
+            }
+        }
+
         quality = new IoSummaryQuality(totals[0], values[0], totals[1], totals[2], totals[3], totals[4], totals[5],
-            values[1], values[2], values[3], values[4], values[5], values[6], values[7], values[8], values[9], scanIncomplete);
+            values[1], values[2], values[3], values[4], values[5], values[6], values[7], values[8], values[9], scanIncomplete,
+            readModeFilesDropped, readModeReadsUnnamed, readModeFlagCounts, readModeFlagCountOther, readModesObservedUntilUtc,
+            readModeDroppedRequests, readModeFilesDroppedExact);
         return o.TryGetValue("truncated", out object? truncatedValue)
             && truncatedValue is bool truncated
             && truncated == quality.Truncated;

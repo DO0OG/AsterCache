@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using AsterCache.Core.Apply;
 using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
@@ -27,6 +29,17 @@ internal static class IoSummaries
         var quality = new IoSummaryQuality(total, 20, total, default, default, default, default, 0, 0, 0);
         return new IoSummary(started, started.AddSeconds(1), [], quality, [.. files.Select(file => new IoSummaryFile(file))],
             [.. files.Select((_, index) => new IoSummaryRow(index, 0, 1, 65536, 20, 20, 100, 0))]);
+    }
+
+    public static IoSummary WithReadModes(DateTimeOffset started, string sessionId, params string[] files)
+    {
+        IoSummary summary = With(started, files);
+        return summary with
+        {
+            SessionId = sessionId,
+            ReadModes = [.. files.Select(file => new IoSummaryReadMode(file, 1, 4096, 0, 0, 0, 0))],
+            Quality = summary.Quality with { ReadModesObservedUntilUtc = summary.EndedAtUtc },
+        };
     }
 }
 
@@ -386,9 +399,11 @@ internal sealed class FakeWorld
         RunReadBytes = p => RunReadBytes(p),
         StageIndexTries = AsterCache.Core.Trace.TraceStageIndex.ReadTried,
         IoSummaryTries = IoSummaryStore.ReadTriedOrNull,
-        IoSummaryValid = (sidecar, raw, standalone) => File.Exists(sidecar)
-            ? File.Exists(raw) && (standalone ? IoSummaryStore.ReadStandaloneForRaw(sidecar, raw) : IoSummaryStore.ReadForRun(raw)) is not null
-            : Files.Contains(sidecar), // 물리 파일 없이 경로만 있는 가짜 환경은 유효로 침
+        ReadIoSummary = (sidecar, raw, standalone) => File.Exists(sidecar)
+            ? !File.Exists(raw) ? null : (standalone ? IoSummaryStore.ReadStandaloneForRaw(sidecar, raw) : IoSummaryStore.ReadForRun(raw))
+            : Files.Contains(sidecar) && !Files.Contains(IoSummaryStore.InvalidPath(sidecar)) && (Files.Contains(raw) || File.Exists(raw))
+                ? IoSummaries.WithReadModes(Now, FakeSummarySession(sidecar), @"D:\Games\Foo\a.bin")
+                : null,
         WriteIoSummaryTries = WriteIoSummaryTries,
         BuildIoSummary = (snapshot, roots, ct) =>
         {
@@ -516,6 +531,8 @@ internal sealed class FakeWorld
         CpuPercent = () => Cpu,
         PowerOk = () => Power,
     };
+
+    private static string FakeSummarySession(string sidecar) => new Guid(SHA256.HashData(Encoding.UTF8.GetBytes(sidecar.ToUpperInvariant())).AsSpan(0, 16)).ToString("N");
 }
 
 /// 임시 데이터 폴더 + 실제 ConfigEditor + 가짜 세계: 등록·상태 시험의 바탕.

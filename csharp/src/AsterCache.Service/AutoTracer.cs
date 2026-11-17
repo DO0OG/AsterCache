@@ -192,7 +192,8 @@ public sealed class AutoTracer
             {
                 invalidatedIoSidecars.Add(sidecar);
             }
-            else if (summary.Files.Any(file => changedPaths.Contains(file.Path)))
+            else if (summary.Files.Any(file => changedPaths.Contains(file.Path))
+                || (summary.ReadModes ?? []).Any(mode => changedPaths.Contains(mode.Path)))
             {
                 staleIoSidecars.Add(sidecar);
                 ioSidecarPairs[sidecar] = pairedTrace;
@@ -529,9 +530,9 @@ public sealed class AutoTracer
         return tried < MaxStageIndexTries ? tried + 1 : 0;
     }
 
-    public const int MaxIoSummaryTries = 2;
+    public const int MaxIoSummaryTries = IoSummaryStore.MaxTried;
 
-    /// 물리 읽기 집계가 없는 게임에 집계를 얻으려 한 추가 추적의 차례 (1..2), 해당 없으면 0.
+    /// 읽기 방식 집계가 있는 서로 다른 플레이 두 번을 모으기 위한 추가 추적 차례 (1..MaxIoSummaryTries), 해당 없으면 0.
     public static int IoSummaryAttempt(GameSettings g, AutoSettings a, AutoEnv env)
     {
         string raw = RawTracePath(g);
@@ -540,17 +541,27 @@ public sealed class AutoTracer
             return 0;
         }
 
-        string directSidecar = IoSummaryStore.RunPath(raw);
-        if (env.FileExists(directSidecar) && env.IoSummaryValid(directSidecar, raw, false))
+        var sessions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        void AddReadModeSession(string sidecar, string pairedTrace, bool standalone)
         {
-            return 0;
+            IoSummary? summary = env.ReadIoSummary(sidecar, pairedTrace, standalone);
+            if (summary is { HasReadModes: true, SessionId.Length: > 0 })
+            {
+                sessions.Add(summary.SessionId);
+            }
+        }
+
+        string directSidecar = IoSummaryStore.RunPath(raw);
+        if (env.FileExists(directSidecar))
+        {
+            AddReadModeSession(directSidecar, raw, standalone: false);
         }
 
         foreach (string standalone in IoSummaryStore.StandalonePaths(raw))
         {
-            if (env.FileExists(standalone) && env.IoSummaryValid(standalone, raw, true))
+            if (env.FileExists(standalone))
             {
-                return 0;
+                AddReadModeSession(standalone, raw, standalone: true);
             }
         }
 
@@ -558,10 +569,15 @@ public sealed class AutoTracer
         {
             string run = TraceWriter.RunPath(raw, number);
             string sidecar = IoSummaryStore.RunPath(run);
-            if (env.FileExists(run) && env.FileExists(sidecar) && env.IoSummaryValid(sidecar, run, false))
+            if (env.FileExists(run) && env.FileExists(sidecar))
             {
-                return 0;
+                AddReadModeSession(sidecar, run, standalone: false);
             }
+        }
+
+        if (sessions.Count >= 2)
+        {
+            return 0;
         }
 
         int tried = env.IoSummaryTries(raw) ?? 0;
@@ -1663,6 +1679,11 @@ public sealed class AutoTracer
         }
 
         _log.Info($"{run.Game.Name}: {summary.FormatLogLine()}");
+        if (summary.HasReadModes)
+        {
+            _log.Info($"{run.Game.Name}: {summary.FormatReadModesLogLine()}");
+        }
+
         run.IoSummaryLogged = true;
     }
 
@@ -1798,6 +1819,24 @@ public sealed class AutoTracer
     private void Merge(GameSettings g, List<TraceEvent> canonical, int number, IReadOnlyList<StageMark> stageMarks)
     {
         string raw = RawTracePath(g);
+        var standaloneSummaries = new List<(string Path, IoSummary Summary)>();
+        foreach (string standalone in IoSummaryStore.StandalonePaths(raw))
+        {
+            if (!File.Exists(standalone))
+            {
+                continue;
+            }
+
+            if (IoSummaryStore.ReadStandaloneForRaw(standalone, raw) is { } summary)
+            {
+                standaloneSummaries.Add((standalone, summary));
+            }
+            else
+            {
+                DeleteIoSidecar(standalone);
+            }
+        }
+
         InvalidateStageIndex(g);
         DeleteIoSidecar(IoSummaryStore.RunPath(raw));
         string first = TraceWriter.RunPath(raw, 1);
@@ -1844,15 +1883,44 @@ public sealed class AutoTracer
         List<TraceEvent> union = TraceWriter.Union([canonical, .. previous]);
         string temp = raw + ".tmp";
         TraceWriter.WriteFile(temp, union);
-        foreach (string standalone in IoSummaryStore.StandalonePaths(raw))
-        {
-            DeleteIoSidecar(standalone);
-        }
-
         File.Move(temp, raw, true);
+        RebindStandaloneSummaries(raw, standaloneSummaries);
         SaveStageIndex(g, stageRuns);
         SaveMergeMeta(g, number, (union.Count - TraceWriter.Union(previous).Count) * TraceWriter.Block >> 20);
         TracePhases.Recount(g, MinRunBytes); // 새 회차를 반영한 common 구분을 미리 남김 (예열 때 큰 run 파일을 읽지 않게)
+    }
+
+    // 단독 집계의 지문을 새 병합본에 맞춰 다시 씁니다. 부가 파일이라 다시 쓰지 못해도 (다른 프로그램이 열어 둔 경우 등) 경고만 남기고 병합의 뒤 단계를 계속합니다.
+    // 다시 쓰지 못한 집계는 옛 지문으로 남아 유효한 집계로 읽히지 않습니다.
+    private void RebindStandaloneSummaries(string raw, List<(string Path, IoSummary Summary)> summaries)
+    {
+        if (summaries.Count == 0)
+        {
+            return;
+        }
+
+        string rawFingerprint;
+        try
+        {
+            rawFingerprint = IoSummaryStore.RawFingerprint(raw);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"I/O summary files not rewritten ({e.GetType().Name}): the merged trace could not be read");
+            return;
+        }
+
+        foreach ((string path, IoSummary summary) in summaries)
+        {
+            try
+            {
+                IoSummaryStore.Write(path, summary with { RawFingerprint = rawFingerprint });
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                _log.Warn($"I/O summary file not rewritten ({e.GetType().Name}): {Path.GetFileName(path)}");
+            }
+        }
     }
 
     // run 파일 한도에 닿으면 병합본에 이미 든 가장 오래된 회차를 지우고 나머지 번호를 당깁니다.

@@ -101,10 +101,12 @@ public sealed class IoBlockMapper
         var quality = new IoSummaryQuality(
             _snapshot.Total, _snapshot.LatencyMaxUs, linked, _snapshot.OtherDisk, noFile, notConverted, _snapshot.Dropped,
             _snapshot.PagingReads, _snapshot.PagingBytes, _snapshot.EventsLost, _blockTableDropped,
-            filesScanned, filesChanged, filesUnreadable, volumesSkipped, scanMs, scanIncomplete);
+            filesScanned, filesChanged, filesUnreadable, volumesSkipped, scanMs, scanIncomplete,
+            _snapshot.ReadModeFilesDropped, _snapshot.ReadModeReadsUnnamed, _snapshot.ReadModeFlags, _snapshot.ReadModeFlagsOther, _snapshot.EndedAtUtc,
+            _snapshot.ReadModeDroppedRequests, _snapshot.ReadModeFilesDroppedExact);
         long? zero = _snapshot.RawTraceZeroUs is { } z && Math.Abs(z) <= long.MaxValue / TimeSpan.TicksPerMicrosecond ? z : null;
         return new IoSummary(_snapshot.ObservedAtUtc, _snapshot.EndedAtUtc, _snapshot.RawWindows, quality, _files, rows, Guid.NewGuid().ToString("N"),
-            null, zero, zero is { } at ? _snapshot.ObservedAtUtc.AddTicks(at * TimeSpan.TicksPerMicrosecond) : null);
+            null, zero, zero is { } at ? _snapshot.ObservedAtUtc.AddTicks(at * TimeSpan.TicksPerMicrosecond) : null, _snapshot.ReadModes ?? []);
     }
 
     // 요청 하나를 위치 순으로 걸으며 분류 (바이트·지연 누적) 하고 파일에 닿은 부분은 블록에 더합니다.

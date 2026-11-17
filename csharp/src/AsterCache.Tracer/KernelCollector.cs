@@ -12,6 +12,9 @@ namespace AsterCache.Tracer;
 internal sealed class KernelCollector
 {
     private const int IrpPagingIo = 0x02; // IrpFlags 의 페이징 읽기 비트 (TraceEvent 열거형 이름은 Windows 이름과 어긋나 값으로 판정)
+    private const int MaxPendingReadModeGroups = IoSummaryCollector.MaxReadModeFiles;
+    // 원시 기록 동결 뒤 읽기 방식 집계용 FileKey·FileObject 이름 표 상한.
+    private const int MaxReadModeNames = 1 << 18;
 
     private readonly object _rawLock = new();
     private readonly ProcessTree _tree;
@@ -19,8 +22,10 @@ internal sealed class KernelCollector
     private readonly FileNames _names;
     private readonly List<TraceRecord> _records = [];
     private readonly List<(int Index, ulong Key, string? ObjName)> _pending = [];
+    private readonly Dictionary<PendingReadModeKey, PendingReadModeTotals> _pendingReadModes = [];
     private List<TraceRecord>? _frozenRecords;
-    private volatile bool _rawFrozen; // 원시 기록 확정 뒤에는 디스크 읽기 완료 말고 모든 이벤트를 바로 버림 (프로세스 추적도 멈춰 TargetsActive 는 갱신되지 않음: 자동 추적은 게임 종료를 프로세스 목록으로 판정)
+    private volatile bool _rawFrozen; // 원시 기록 확정 뒤에는 읽기 방식 집계에 필요한 이름·프로세스 추적만 계속
+    private bool _readModesFlushed;
     private readonly HashSet<ulong> _written = []; // 이미 쓰기로 기록한 FileKey (쓰기 이벤트는 많아서 파일마다 한 번만)
     private readonly ReadWindow _window = new(); // 닫힌 구간의 읽기·쓰기는 기록하지 않음 (이름·프로세스 이벤트는 계속 처리)
     private volatile LiveListener? _listener; // 첫 구간이 끝나면 Pause 가 뗌
@@ -43,7 +48,7 @@ internal sealed class KernelCollector
         kernel.FileIOFileRundown += d => NameKey(d.FileKey, d.FileName);
         kernel.FileIOCreate += d => OpenFile(d.ProcessID, d.FileObject, d.FileName);
         kernel.FileIOClose += d => CloseObject(d.FileObject);
-        kernel.FileIORead += d => AddRead(d.TimeStamp, d.ProcessID, d.FileKey, d.FileObject, d.Offset, d.IoSize);
+        kernel.FileIORead += d => AddRead(d.TimeStamp, d.ProcessID, d.FileKey, d.FileObject, d.Offset, d.IoSize, unchecked((uint)d.IoFlags));
         kernel.FileIOWrite += d => AddWrite(d.TimeStamp, d.ProcessID, d.FileKey, d.FileObject);
         if (_ioSummary is not null)
         {
@@ -118,6 +123,7 @@ internal sealed class KernelCollector
         lock (_rawLock)
         {
             CloseRawWindow(endedAtUtc);
+            FlushPendingReadModes();
             return _ioSummary.Snapshot(endedAtUtc, _rawWindows, eventsLost, RawTraceZeroUs);
         }
     }
@@ -156,6 +162,11 @@ internal sealed class KernelCollector
             RawTraceZeroUs = rawStart is { } start ? SessionTimeUs(start) : null;
             _records.Clear();
             _pending.Clear();
+            if (_ioSummary is not null)
+            {
+                _names.LimitNewEntriesAfterFreeze(MaxReadModeNames);
+            }
+
             _rawFrozen = true;
         }
     }
@@ -225,7 +236,7 @@ internal sealed class KernelCollector
 
     internal void StartProcess(DateTime time, int pid, int parentPid, string image)
     {
-        if (_rawFrozen)
+        if (_rawFrozen && _ioSummary is null)
         {
             return;
         }
@@ -247,7 +258,7 @@ internal sealed class KernelCollector
 
     internal void StopProcess(DateTime time, int pid)
     {
-        if (_rawFrozen)
+        if (_rawFrozen && _ioSummary is null)
         {
             return;
         }
@@ -266,7 +277,7 @@ internal sealed class KernelCollector
 
     internal void NameKey(ulong key, string? name)
     {
-        if (_rawFrozen)
+        if (_rawFrozen && _ioSummary is null)
         {
             return;
         }
@@ -279,7 +290,7 @@ internal sealed class KernelCollector
 
     internal void CloseObject(ulong fileObject)
     {
-        if (_rawFrozen)
+        if (_rawFrozen && _ioSummary is null)
         {
             return;
         }
@@ -292,7 +303,7 @@ internal sealed class KernelCollector
 
     internal void OpenFile(int pid, ulong fileObject, string? name)
     {
-        if (_rawFrozen)
+        if (_rawFrozen && _ioSummary is null)
         {
             return;
         }
@@ -300,29 +311,47 @@ internal sealed class KernelCollector
         lock (_rawLock)
         {
             _names.NameObject(fileObject, name);
-            if (_listener is { } listener && !string.IsNullOrEmpty(name) && _tree.IsTarget(pid))
+            if (!_rawFrozen && _listener is { } listener && !string.IsNullOrEmpty(name) && _tree.IsTarget(pid))
             {
                 listener.OnOpen(_devices.ToDosPath(name));
             }
         }
     }
 
-    internal void AddRead(DateTime time, int pid, ulong key, ulong fileObject, long offset, long size)
+    internal void AddRead(DateTime time, int pid, ulong key, ulong fileObject, long offset, long size, uint ioFlags = 0)
     {
-        if (_rawFrozen)
+        if (_rawFrozen && _ioSummary is null)
         {
             return;
         }
 
         lock (_rawLock)
         {
-            if (_rawFrozen || !_window.IsOpen || !_tree.IsTarget(pid))
+            if ((_rawFrozen && _ioSummary is null) || !_tree.IsTarget(pid))
+            {
+                return;
+            }
+
+            bool recordRaw = !_rawFrozen && _window.IsOpen;
+            (string? name, string? fallback) = _names.AtRead(key, fileObject);
+            if (_ioSummary is not null)
+            {
+                if (name is not null)
+                {
+                    _ioSummary.AddProcessRead(_devices.ToDosPath(name), 1, size, ioFlags);
+                }
+                else
+                {
+                    AddPendingReadMode(key, fallback, size, ioFlags);
+                }
+            }
+
+            if (!recordRaw)
             {
                 return;
             }
 
             _window.Count();
-            (string? name, string? fallback) = _names.AtRead(key, fileObject);
             if (name is null)
             {
                 _pending.Add((_records.Count, key, fallback));
@@ -350,6 +379,43 @@ internal sealed class KernelCollector
 
         _rawWindows.Add(new IoSummaryWindow(started, Math.Max(started, SessionTimeUs(atUtc))));
         _rawWindowStartedUs = null;
+    }
+
+    private void AddPendingReadMode(ulong key, string? fallback, long bytes, uint flags)
+    {
+        var pendingKey = new PendingReadModeKey(key, fallback, flags);
+        if (_pendingReadModes.TryGetValue(pendingKey, out PendingReadModeTotals totals))
+        {
+            totals.Requests++;
+            totals.Bytes += Math.Max(0, bytes);
+            _pendingReadModes[pendingKey] = totals;
+            return;
+        }
+
+        if (_pendingReadModes.Count >= MaxPendingReadModeGroups)
+        {
+            _ioSummary!.AddProcessRead(null, 1, bytes, flags); // 이름 대기 표가 찼으면 더 저장하지 않고 미해결 읽기로 남김
+            return;
+        }
+
+        _pendingReadModes.Add(pendingKey, new PendingReadModeTotals(1, Math.Max(0, bytes)));
+    }
+
+    private void FlushPendingReadModes()
+    {
+        if (_readModesFlushed || _ioSummary is null)
+        {
+            return;
+        }
+
+        foreach ((PendingReadModeKey key, PendingReadModeTotals totals) in _pendingReadModes)
+        {
+            string? name = _names.Settle(key.FileKey, key.Fallback);
+            _ioSummary.AddProcessRead(name is null ? null : _devices.ToDosPath(name), totals.Requests, totals.Bytes, key.Flags);
+        }
+
+        _pendingReadModes.Clear();
+        _readModesFlushed = true;
     }
 
     /// 관찰 시작을 0 으로 한 마이크로초. 관찰 시작보다 앞선 이벤트는 음수로 남겨 원시 0점과의 차이가 잘리지 않게 합니다 (시간 원점을 쓰는 쪽이 따로 0 으로 자름).
@@ -399,4 +465,8 @@ internal sealed class KernelCollector
         int space = s.IndexOf(' ');
         return space < 0 ? s : s[..space];
     }
+
+    private readonly record struct PendingReadModeKey(ulong FileKey, string? Fallback, uint Flags);
+
+    private record struct PendingReadModeTotals(long Requests, long Bytes);
 }

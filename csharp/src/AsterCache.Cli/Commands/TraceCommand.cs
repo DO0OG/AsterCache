@@ -143,6 +143,10 @@ internal static class TraceCommand
     {
         IoSummaryStore.WriteForRun(outPath, summary);
         output.WriteLine(summary.FormatLogLine());
+        if (summary.HasReadModes)
+        {
+            output.WriteLine(summary.FormatReadModesLogLine());
+        }
     }
 
     // eventsLost: .etl / 실시간 세션이 버퍼 부족으로 잃은 이벤트 수. 0 이 아니면 읽기가 빠졌을 수 있습니다 (trace JSON 형식은 그대로 두고 이 줄에만 남깁니다).

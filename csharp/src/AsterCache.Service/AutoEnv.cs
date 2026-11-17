@@ -174,8 +174,8 @@ public sealed class AutoEnv
     /// 디스크 읽기 집계를 얻으려 한 추가 추적 횟수 (원시 트레이스 경로 기준). 시험 기본값은 0.
     public Func<string, int?> IoSummaryTries { get; init; } = _ => 0;
 
-    /// 곁 파일 (집계) 이 읽을 수 있고 짝 (원시 파일 지문) 이 맞는가. 세 번째는 단독 집계 여부. 시험 기본값은 거짓.
-    public Func<string, string, bool, bool> IoSummaryValid { get; init; } = (_, _, _) => false;
+    /// 곁 파일을 읽을 수 있고 짝 원시 파일 지문이 맞으면 집계를 돌려줍니다. 세 번째는 단독 집계 여부.
+    public Func<string, string, bool, IoSummary?> ReadIoSummary { get; init; } = (_, _, _) => null;
 
     public Action<string, int> WriteIoSummaryTries { get; init; } = IoSummaryStore.WriteTried;
 
@@ -361,8 +361,9 @@ public sealed class AutoEnv
             RunReadBytes = AutoTracer.RunReadBytes,
             StageIndexTries = TraceStageIndex.ReadTried,
             IoSummaryTries = IoSummaryStore.ReadTriedOrNull,
-            IoSummaryValid = (sidecar, raw, standalone) => File.Exists(sidecar) && File.Exists(raw)
-                && (standalone ? IoSummaryStore.ReadStandaloneForRaw(sidecar, raw) : IoSummaryStore.ReadForRun(raw)) is not null,
+            ReadIoSummary = (sidecar, raw, standalone) => File.Exists(sidecar) && File.Exists(raw)
+                ? (standalone ? IoSummaryStore.ReadStandaloneForRaw(sidecar, raw) : IoSummaryStore.ReadForRun(raw))
+                : null,
             WriteIoSummaryTries = IoSummaryStore.WriteTried,
             BuildIoSummary = (snapshot, roots, ct) =>
             {

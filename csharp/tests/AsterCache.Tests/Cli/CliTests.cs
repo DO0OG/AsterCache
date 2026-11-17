@@ -243,8 +243,9 @@ public sealed class CliTests
     {
         using var dir = new TempDir();
         DateTimeOffset started = new(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
-        var collector = new IoSummaryCollector(started);
+        var collector = new IoSummaryCollector(started, readModeRoots: [dir.Path]);
         collector.AddDiskRead(1, 4096, 4096, 2500, 1000, paging: false);
+        collector.AddProcessRead(Path.Combine(dir.Path, "a.bin"), 1, 4096, 0);
         var mapper = new IoBlockMapper(collector.Snapshot(started.AddSeconds(2), [], eventsLost: 3, null));
         mapper.AddFile(Path.Combine(dir.Path, "a.bin"), false, true, 1, [new IoFileExtent(0, 0, 8192)]);
         IoSummary summary = mapper.Build(1, 0, 0, 0, 7, false);
@@ -255,8 +256,10 @@ public sealed class CliTests
         TraceCommand.SaveIoSummary(outPath, summary, output);
 
         IoSummary saved = Assert.IsType<IoSummary>(IoSummaryStore.ReadForRun(outPath));
-        Assert.Equal(summary.Quality, saved.Quality);
-        Assert.Equal(summary.FormatLogLine() + Environment.NewLine, output.ToString());
+        Assert.Equal(summary.Quality with { ReadModeFlagCounts = null }, saved.Quality with { ReadModeFlagCounts = null });
+        Assert.Equal(summary.Quality.ReadModeFlagCounts, saved.Quality.ReadModeFlagCounts);
+        Assert.Equal(summary.FormatLogLine() + Environment.NewLine + summary.FormatReadModesLogLine() + Environment.NewLine, output.ToString());
+        Assert.Equal(summary.ReadModes, saved.ReadModes);
     }
 
     [Fact]

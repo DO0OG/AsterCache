@@ -101,7 +101,9 @@ public sealed class LiveSession : IDisposable
             }
 
             session.EnableKernelProvider(keywords);
-            IoSummaryCollector? ioSummary = ioSummaryRoots is { Count: > 0 } ? new IoSummaryCollector(DateTimeOffset.UtcNow, gameDisks) : null;
+            IoSummaryCollector? ioSummary = ioSummaryRoots is { Count: > 0 }
+                ? new IoSummaryCollector(DateTimeOffset.UtcNow, gameDisks, readModeRoots: ioSummaryRoots)
+                : null;
             var collector = new KernelCollector(session.Source.Kernel, exeNames, devices ?? DevicePaths.FromSystem(), listener, ioSummary);
             Task pump = Task.Run(() => session.Source.Process());
             // 실시간 알림을 받는 쪽은 버퍼가 차기를 기다리지 않도록 짧은 간격으로 내려 보냄 (SessionFlush)

@@ -199,11 +199,13 @@ public static class ZoneAllocator
 
     /// 단위들 -> 접근 순서의 VCN 범위 (파일 안에서 중복 제거) 와 건너뛴 경로 수.
     internal static (List<PlanRange> Order, int Skipped) HotRanges(IReadOnlyList<Unit> units,
-        IReadOnlyDictionary<string, IReadOnlyList<Extent>?> extentsByFile, long cb, long block, IReadOnlyDictionary<string, long>? sizes)
+        IReadOnlyDictionary<string, IReadOnlyList<Extent>?> extentsByFile, long cb, long block, IReadOnlyDictionary<string, long>? sizes,
+        IReadOnlySet<string>? sparseFiles = null)
     {
         var claimed = new Dictionary<string, List<(long A, long B)>>(StringComparer.Ordinal);
         var order = new List<PlanRange>();
         var skipped = new HashSet<string>(StringComparer.Ordinal);
+        var supportedSparse = new HashSet<string>(StringComparer.Ordinal);
         foreach (Unit u in units)
         {
             if (!extentsByFile.TryGetValue(u.Path, out IReadOnlyList<Extent>? ext) || ext is null || ext.Count == 0)
@@ -223,15 +225,65 @@ public static class ZoneAllocator
                 claimed[u.Path] = mine = [];
             }
 
-            foreach ((long a, long b) in Subtract((u.Start * block / cb, v1), mine))
+            IEnumerable<(long A, long B)> ranges;
+            if (sparseFiles?.Contains(u.Path) == true)
+            {
+                long fileClusters = sizes is not null && sizes.TryGetValue(u.Path, out long fileSize) ? CeilDiv(fileSize, cb) : -1;
+                ranges = SparseRanges(ext, u.Start * block / cb, v1, fileClusters);
+            }
+            else
+            {
+                ranges = [(u.Start * block / cb, v1)];
+            }
+
+            foreach ((long a, long b) in ranges.SelectMany(r => Subtract(r, mine)))
             {
                 int at = mine.BinarySearch((a, b));
                 mine.Insert(at < 0 ? ~at : at, (a, b));
                 order.Add(new PlanRange(u.Path, a, b - a));
+                if (sparseFiles?.Contains(u.Path) == true)
+                {
+                    _ = supportedSparse.Add(u.Path);
+                }
+            }
+        }
+
+        if (sparseFiles is not null)
+        {
+            foreach (string path in sparseFiles.Where(path => !supportedSparse.Contains(path)))
+            {
+                skipped.Add(path);
             }
         }
 
         return (order, skipped.Count);
+    }
+
+    private static IEnumerable<(long A, long B)> SparseRanges(IReadOnlyList<Extent> extents, long requestStart, long requestEnd, long fileClusters)
+    {
+        if (requestStart >= requestEnd)
+        {
+            yield break;
+        }
+
+        foreach (AllocatedRange allocated in SparseAllocation.Normalize(extents))
+        {
+            long lo = Math.Max(requestStart, allocated.Vcn);
+            long hi = Math.Min(requestEnd, allocated.Vcn + allocated.Clusters);
+            long start = CeilDiv(lo, SparseAllocation.MoveClusters) * SparseAllocation.MoveClusters;
+            long end = hi / SparseAllocation.MoveClusters * SparseAllocation.MoveClusters;
+            if (start < end)
+            {
+                yield return (start, end);
+            }
+
+            if (fileClusters > 0 && SparseAllocation.TailStart(fileClusters) is { } tailStart
+                && requestStart <= tailStart && requestEnd >= fileClusters
+                && allocated.Vcn <= tailStart && allocated.Vcn + allocated.Clusters >= fileClusters)
+            {
+                yield return (tailStart, fileClusters);
+            }
+        }
     }
 
     private static long CeilDiv(long x, long y) => (x + y - 1) / y;
@@ -240,12 +292,25 @@ public static class ZoneAllocator
     /// zoneStartLcn 이 null 이면 존을 아직 못 정한 것: 목표는 존 시작 기준 오프셋으로 돌려주고, 제자리·존 겹침은 없다고 봅니다.
     public static AllocResult Allocate(IReadOnlyList<Unit> units, IReadOnlyDictionary<string, IReadOnlyList<Extent>?> extentsByFile,
         long? zoneStartLcn, long zoneClusters, long clusterBytes, long block = HotSet.Block,
-        IReadOnlyDictionary<string, long>? sizes = null, long preserveBytes = 0, long alignClusters = 4, long fixedClusters = 0)
+        IReadOnlyDictionary<string, long>? sizes = null, long preserveBytes = 0, long alignClusters = 4, long fixedClusters = 0,
+        IReadOnlySet<string>? sparseFiles = null)
     {
         long cb = clusterBytes;
         bool rel = zoneStartLcn is null;
         long zoneStart = zoneStartLcn ?? RelBase;
-        (List<PlanRange> order, int skipped) = HotRanges(units, extentsByFile, cb, block, sizes);
+        (List<PlanRange> order, int skipped) = HotRanges(units, extentsByFile, cb, block, sizes, sparseFiles);
+
+        var sparseTailStarts = new Dictionary<string, long>(StringComparer.Ordinal);
+        if (sparseFiles is not null && sizes is not null)
+        {
+            foreach (string path in sparseFiles)
+            {
+                if (sizes.TryGetValue(path, out long size) && SparseAllocation.TailStart(CeilDiv(size, cb)) is { } tailStart)
+                {
+                    sparseTailStarts[path] = tailStart;
+                }
+            }
+        }
 
         var flat = new List<Piece>();
         foreach (PlanRange o in order)
@@ -322,7 +387,9 @@ public static class ZoneAllocator
                 }
 
                 PlanTask? last = tasks.Count > 0 ? tasks[^1] : null;
-                if (last is not null && last.Path == p.Path && last.Vcn + last.Clusters == p.Vcn && last.TargetLcn + last.Clusters == target)
+                bool crossesSparseTail = last is not null && sparseTailStarts.TryGetValue(p.Path, out long tailStart)
+                    && last.Path == p.Path && last.Vcn < tailStart && last.Vcn + last.Clusters == tailStart && p.Vcn >= tailStart;
+                if (last is not null && !crossesSparseTail && last.Path == p.Path && last.Vcn + last.Clusters == p.Vcn && last.TargetLcn + last.Clusters == target)
                 {
                     tasks[^1] = last with { Clusters = last.Clusters + p.N };
                     sources[^1].Add((p.Lcn, p.N));

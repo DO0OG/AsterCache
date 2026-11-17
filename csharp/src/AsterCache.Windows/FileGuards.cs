@@ -10,7 +10,7 @@ public static class FileGuards
     /// FILE_ATTRIBUTE_SPARSE_FILE
     public const uint SparseAttribute = 0x200;
 
-    // 디렉터리, 오프라인, 스파스, 재해석 지점, 압축, 암호화: v1 은 옮기지 않습니다. 판정 순서는 Python dict 순서.
+    // 디렉터리, 오프라인, 스파스, 재해석 지점, 압축, 암호화: 일반 호출 경로의 제외 속성입니다. 판정 순서는 Python dict 순서.
     // https://learn.microsoft.com/en-us/windows/win32/fileio/file-attribute-constants
     private static readonly (uint Bit, string Name)[] SkipAttrs =
     {
@@ -53,6 +53,13 @@ public static class FileGuards
 
     /// 옮기면 안 되는 이유 (압축·스파스·암호화 등), 없으면 null. attrFn 으로 속성 조회를 바꿀 수 있습니다 (시험용).
     public static string? SkipReason(string path, Func<string, uint>? attrFn = null)
+        => SkipReason(path, attrFn, allowSparseOnly: false);
+
+    /// 재배치에서만 스파스 속성 단독 파일을 허용합니다. 다른 제외 속성이 함께 있으면 기존 이유로 제외합니다.
+    public static string? RelocationSkipReason(string path, Func<string, uint>? attrFn = null)
+        => SkipReason(path, attrFn, allowSparseOnly: true);
+
+    private static string? SkipReason(string path, Func<string, uint>? attrFn, bool allowSparseOnly)
     {
         uint a;
         try
@@ -66,6 +73,12 @@ public static class FileGuards
 
         foreach ((uint bit, string name) in SkipAttrs)
         {
+            if (allowSparseOnly && bit == SparseAttribute && (a & SparseAttribute) != 0
+                && (a & (0x10u | 0x1000u | 0x400u | 0x800u | 0x4000u)) == 0)
+            {
+                continue;
+            }
+
             if ((a & bit) != 0)
             {
                 return name;
@@ -74,4 +87,10 @@ public static class FileGuards
 
         return null;
     }
+
+    /// 재배치 배치 검사에서 적용할 수 없는 파일인가.
+    public static bool RelocationUnmovable(string path) => RelocationUnmovable(path, null);
+
+    public static bool RelocationUnmovable(string path, Func<string, uint>? attrFn) =>
+        RelocationSkipReason(path, attrFn) is { } reason && !reason.StartsWith(UnreadablePrefix, StringComparison.Ordinal);
 }

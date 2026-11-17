@@ -133,6 +133,12 @@ public sealed partial class AutoRelocator
 
             plan.Stats[PlannedAtKey] = _env.Now().ToUnixTimeSeconds();
             plan.Stats[VolatileFiles.RuleKey] = VolatileFiles.RuleVersion;
+            plan.Stats[SparseAllocation.RuleKey] = SparseAllocation.RuleVersion;
+            if (plan.Stats.TryGetValue("unsupported_sparse_files", out object? unsupportedSparse) && unsupportedSparse is long unsupportedCount)
+            {
+                _log.Info($"{g.Name}: {unsupportedCount} sparse file(s) left out of the plan, their pieces do not fit the 16-cluster move unit");
+            }
+
             if (excluded.Count > 0)
             {
                 plan.Stats.Add(VolatileFiles.StatsKey, excluded);
@@ -240,17 +246,22 @@ public sealed partial class AutoRelocator
         var have = candidate.Order.Select(o => o.Path).ToHashSet(StringComparer.Ordinal);
         var order = candidate.Order.ToList();
         var prints = candidate.Fingerprints.ToList();
+        var sparse = candidate.SparseAllocations.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
         foreach (PlanFile old in previous.Where(p => p.Stats.TryGetValue(ResidualPlanner.HeldKey, out object? h) && h is JObject))
         {
             foreach (string path in ((JObject)old.Stats[ResidualPlanner.HeldKey]!).Select(kv => kv.Key).Where(p => !have.Contains(p) && _env.Extents(p) is null))
             {
                 order.AddRange(old.Order.Where(o => o.Path == path));
                 prints.AddRange(old.Fingerprints.Where(f => f.Path == path));
+                if (old.SparseAllocations.TryGetValue(path, out IReadOnlyList<AllocatedRange>? ranges))
+                {
+                    sparse[path] = ranges;
+                }
                 _ = have.Add(path);
             }
         }
 
-        return order.Count == candidate.Order.Count ? candidate : candidate with { Order = order, Fingerprints = prints };
+        return order.Count == candidate.Order.Count ? candidate : candidate with { Order = order, Fingerprints = prints, SparseAllocations = sparse };
     }
 
     // 확장 중에 계획이 실패하면 실패 상태로 두지 않고 이전 계획을 되살립니다. 확장이 아니어도 낡은 계획 (.stale) 이 있으면 같은 규칙: 되살리고 done (stale plan) 을 유지합니다.

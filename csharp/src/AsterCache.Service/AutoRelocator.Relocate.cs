@@ -165,6 +165,11 @@ public sealed partial class AutoRelocator
             mark = _env.JournalRows(g); // 저널을 옮겨 보관했을 수 있으므로 계획을 저장한 뒤의 줄 수
             if (dry.TasksTodo == 0)
             {
+                if (HoldSparseChanged(g, dry.SparseAllocationChangedFiles))
+                {
+                    return; // 보류된 스파스 파일이 있는데 "이미 제자리" 로 확정하지 않음
+                }
+
                 if (_env.HasPendingVerification(g))
                 {
                     // 이동은 끝났지만 미룬 SHA 검증이 남음: 빈 작업으로 한 번 돌려 저널의 미검증 표본을 확인 (대여·재검사 규칙 동일). 끝나기 전에는 완료로 확정하지 않음. 불일치는 ShaMismatchException 으로 기존 처리를 탐.
@@ -249,7 +254,7 @@ public sealed partial class AutoRelocator
             pendingRecovery = bytes;
             ApplyReport rep = ApplyOrDefer(g, plan, run, token);
             _status.SetLastRelocationBytes(rep.MovedBytes); // 시작 때 넣은 예정 바이트 대신 실제로 옮긴 양
-            _log.Info($"{g.Name}: auto relocation moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed, order {rep.OrderUsed ?? order}" + (rep.OrderFallbackReason is not null ? " (fallback)" : string.Empty) + (rep.Stopped is { } why ? $", stopped: {why}" : string.Empty) + rep.Timings.Summary);
+            _log.Info($"{g.Name}: auto relocation moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed, order {rep.OrderUsed ?? order}" + (rep.OrderFallbackReason is not null ? " (fallback)" : string.Empty) + (rep.Stopped is { } why ? $", stopped: {why}" : string.Empty) + rep.SparseSummary + rep.Timings.Summary);
             pendingRecovery = 0;
             BeginRecovery(g, s.Auto, rep.MovedBytes, baseline);
             if (rep.Stopped == DataLock.BusyReason)
@@ -274,6 +279,10 @@ public sealed partial class AutoRelocator
             {
                 Note(g, AutoStage.WaitingIdle, WriteLimitDetail);
             }
+            else if (HoldSparseChanged(g, rep.SparseAllocationChangedFiles))
+            {
+                // 스파스 파일의 할당 구간이 바뀌어 그 파일만 보류: 완료로 확정하지 않고 다시 계획 (나머지 파일은 이미 옮겼거나 저널이 이어받음)
+            }
             else if (rep.Failed.Count > 0)
             {
                 if (!BlockFailedExtension(g, $"{rep.Failed.Count} step(s) failed", null, mark, token))
@@ -283,8 +292,13 @@ public sealed partial class AutoRelocator
             }
             else
             {
-                LayoutReport layout = LayoutVerifier.Verify(_env.LoadPlan(g.Plan), _env.Extents, _env.Unmovable);
+                LayoutReport layout = LayoutVerifier.Verify(_env.LoadPlan(g.Plan), _env.Extents, _env.Unmovable, _env.IsSparse);
                 _log.Info($"{g.Name}: auto relocation verified: " + (layout.Contiguous ? "contiguous" : layout.ResumeNeeded ? "resume-needed" : "non-contiguous"));
+                if (HoldSparseChanged(g, layout.SparseAllocationChangedFiles))
+                {
+                    return; // 옮긴 뒤 확인에서 스파스 파일의 할당 구간이 달라진 것이 보임: 완료로 확정하지 않음
+                }
+
                 if (HoldUnreadable(g, plan))
                 {
                     return; // 옮길 것은 옮겼으나 읽지 못한 파일이 보류로 남음: 완료로 확정하지 않음

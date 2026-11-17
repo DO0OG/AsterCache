@@ -133,7 +133,8 @@
 
 - **언제.** 트레이스가 생기고 게임이 꺼져 있으며 PC 가 한가할 때, 한 번에 게임 하나씩.
 - **무엇을.** 존을 계획하고, 조각을 옮기고(저널과 SHA-256 표본 검사), 배치를 확인한 뒤 그 존을 예열합니다.
-- **하지 않는 것.** 게임이 실행되는 동안 하지 않고(이동 중이면 지금 조각을 끝내고 멈춤), 스파스·압축·암호화 파일은 옮기지 않으며, 파일 내용을 바꾸지 않습니다. 검사가 실패하면 저널대로 되돌립니다.
+- **하지 않는 것.** 게임이 실행되는 동안 하지 않고(이동 중이면 지금 조각을 끝내고 멈춤), 압축·암호화 파일과 다른 제외 속성이 함께 있는 스파스 파일은 옮기지 않으며, 스파스 파일의 구멍을 채우거나 속성을 바꾸지 않고, 파일 내용을 바꾸지 않습니다. 검사가 실패하면 저널대로 되돌립니다.
+- **스파스 파일을 옮기기 전에 만든 계획.** 이전 버전이 만든 계획에는 스파스 파일의 할당 구간 기록이 없어, 다른 이유로 그 게임을 다시 계획하기 전까지 재배치는 그 파일을 예전과 똑같이 계속 건너뜁니다. 물리 조각이 16클러스터 이동 단위에 맞지 않는 스파스 파일은 새 계획에서 통째로 빠지며 `<게임>: N sparse file(s) left out of the plan, their pieces do not fit the 16-cluster move unit` 로 남습니다.
 - **시간대.** `auto.relocate_hours` 가 있으면 새 재배치와 정기 재적용은 그 현지 시각 안에서만 시작합니다. 이미 시작해 저널이 남은 재배치는 시간대 밖에서도 끝냅니다.
 - **설정.** `auto.relocate`, `idle_seconds`, `relocate_hours`, `max_relocations_per_day`, `max_zone_mib`, `max_relocate_gib_per_day`. 쓰는 양은 [하드디스크에 미치는 영향](GAME_GUIDE.ko.md#하드디스크에-미치는-영향)에 있습니다.
 - **로그.** `<게임>: auto relocation done`, `[ERROR] <게임>: auto relocation stopped: ...`
@@ -232,7 +233,7 @@
 - **무엇을.** 존의 8곳을 재어 식었으면 다시 읽고, 예산에 안 들어간 핫 집합의 나머지를 읽고, 끊긴 예열을 재시도하고, 흐트러진 배치를 복구하고, 예열한 캐시를 순서대로 두고 메모리 안에서 새로 고칩니다([SOLAR](#solar-캐시-유지와-순서)).
 - **하지 않는 것.** 예열 예산 밖 게임을 다시 예열하지 않고, 게임이 실행되는 동안 배치를 건드리지 않습니다.
 - **설정.** `rewarm_minutes`, `min_free_ram_mib`, `post_update_delay_min`, `memory.standby_ladder`.
-- **로그.** `<게임>: rewarm check skipped (...)`, `<게임>: layout degraded while source files are unchanged (...)`, `<게임>: reapplied, moved N bytes, N failed`, `<게임>: ladder ordered N MiB in S s`
+- **로그.** `<게임>: rewarm check skipped (...)`, `<게임>: layout degraded while source files are unchanged (...)`, `<게임>: reapplied, moved N bytes, N failed`(같은 꼬리가 `<게임>: auto relocation moved N bytes, ...` 에도 붙고, 스파스 파일을 옮기거나 보류했으면 `, sparse moved N bytes`, `, K sparse file(s) held (allocation changed)` 로 끝남), `<게임>: K sparse file(s) changed allocation since the plan, held out of the layout check and reapply`(스파스 파일의 할당 구간이 계획과 달라 정기 배치 검사와 다시 적용이 그 파일만 빼고 게임의 나머지는 평소대로 다룸, 수가 바뀔 때만 로그)와 `<게임>: K sparse file(s) changed allocation since the plan, held, will plan again later`(자동 재배치 뒤 같은 상황: 그 파일은 옮기지 않고 한 시간 뒤 다시 계획함), `<게임>: held files remain, plan set aside as .stale, will plan again`, `<게임>: ladder ordered N MiB in S s`
 
 <details>
 <summary>세부: 재예열, 보충, 재시도, 배치 재검사와 재적용</summary>

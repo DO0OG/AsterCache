@@ -210,7 +210,7 @@ public sealed partial class AutoRelocator
     {
         try
         {
-            LayoutReport r = LayoutVerifier.Verify(plan, _env.Extents, _env.Unmovable);
+            LayoutReport r = LayoutVerifier.Verify(plan, _env.Extents, _env.Unmovable, _env.IsSparse);
             return r.MissingFiles > 0 ? null : r.Contiguous;
         }
         catch (Exception e) when (e is not OperationCanceledException)

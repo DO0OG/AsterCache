@@ -36,6 +36,17 @@ public sealed class ApplyReport
 
     public long MovedBytes { get; set; }
 
+    /// 스파스 파일의 할당 구간으로 옮긴 바이트 (MovedBytes 에 포함).
+    public long SparseMovedBytes { get; set; }
+
+    /// 할당 구간이 계획 뒤 바뀌어 보류한 스파스 파일 수.
+    public long SparseAllocationChangedFiles { get; set; }
+
+    /// 서비스 로그에 덧붙이는 스파스 요약. 옮기지도 보류하지도 않았으면 빈 문자열.
+    public string SparseSummary =>
+        (SparseMovedBytes > 0 ? $", sparse moved {SparseMovedBytes} bytes" : string.Empty)
+        + (SparseAllocationChangedFiles > 0 ? $", {SparseAllocationChangedFiles} sparse file(s) held (allocation changed)" : string.Empty);
+
     public List<FailedStep> Failed { get; } = [];
 
     public string? Stopped { get; set; }
@@ -96,6 +107,16 @@ public sealed class ApplyReport
             {
                 o.Add("order_fallback_reason", OrderFallbackReason);
             }
+        }
+
+        if (SparseMovedBytes > 0)
+        {
+            o.Add("sparse_moved_bytes", SparseMovedBytes);
+        }
+
+        if (SparseAllocationChangedFiles > 0)
+        {
+            o.Add("sparse_allocation_changed_files", SparseAllocationChangedFiles);
         }
 
         if (ShaChecked is not null)

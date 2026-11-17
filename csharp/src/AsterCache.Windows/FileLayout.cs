@@ -74,6 +74,17 @@ public static class FileLayout
         }
     }
 
+    /// 재배치용 배치입니다. 스파스 파일만 할당 구간을 반환하며, 다른 파일의 Extents 의미는 유지합니다.
+    public static IReadOnlyList<Extent>? RelocationExtents(string path)
+    {
+        if (!FileGuards.IsSparse(path))
+        {
+            return Extents(path);
+        }
+
+        return FileGuards.RelocationSkipReason(path) is null ? AllocatedExtents(path) : null;
+    }
+
     /// Python prefetch.cli._layout: extent 도 클러스터 크기도 알 때만 값을 돌려줍니다.
     public static FileLayoutInfo? Get(string path)
     {

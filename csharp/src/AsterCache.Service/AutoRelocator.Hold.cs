@@ -101,6 +101,22 @@ public sealed partial class AutoRelocator
         return true;
     }
 
+    // 스파스 파일의 할당 구간이 계획 뒤 바뀌어 보류됐으면 완료로 확정하지 않고 UnreadableRetry 뒤 다시 계획합니다 (읽지 못한 파일 보류와 같은 흐름). 보류가 없으면 거짓.
+    private bool HoldSparseChanged(GameSettings g, long count)
+    {
+        if (count <= 0)
+        {
+            return false;
+        }
+
+        DateTimeOffset until = _env.Now() + UnreadableRetry;
+        string text = $"{count} sparse file(s) changed allocation, planning again after {until.ToUniversalTime():HH:mm} UTC";
+        _unreadableHold[g.Name] = (until, text);
+        Note(g, AutoStage.WaitingIdle, text);
+        _log.Warn($"{g.Name}: {count} sparse file(s) changed allocation since the plan, held, will plan again later");
+        return true;
+    }
+
     // 보류가 끝나 계획을 낡은 것으로 치우고 다시 계획 (이미 옮긴 조각은 잔여 재계획이 지킴). 계획을 치우지 못하면 거짓 (일시 오류로 보류 다시).
     private bool RetryUnreadable(GameSettings g)
     {
@@ -119,7 +135,7 @@ public sealed partial class AutoRelocator
 
                 if (_env.FileExists(g.Plan))
                 {
-                    SetAsideForReplan(g);
+                    SetAsideForReplan(g, "held files remain");
                 }
             }
 

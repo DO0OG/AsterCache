@@ -1,5 +1,6 @@
 using AsterCache.Core.Json;
 using AsterCache.Core.Model;
+using AsterCache.Core.Plan;
 
 namespace AsterCache.Core.Apply;
 
@@ -55,10 +56,30 @@ public static class Reverter
             }
         }
 
+        // 스파스 파일의 계획 시점 논리 할당 구간 (저널 header). 없으면 스파스 파일이 없는 저널입니다.
+        JObject? header = jr.Rows.FirstOrDefault(r => r.TryGetValue("type", out object? ht) && Equals(ht, "header"));
+        IReadOnlyDictionary<string, IReadOnlyList<AllocatedRange>> sparse = header is not null && header.TryGetValue("sparse_allocations", out object? sa)
+            ? PlanFile.ParseSparseAllocations(sa) : new Dictionary<string, IReadOnlyList<AllocatedRange>>(StringComparer.Ordinal);
+        long sparseChunk = Math.Max(SparseAllocation.MoveClusters, chunk / SparseAllocation.MoveClusters * SparseAllocation.MoveClusters);
         foreach ((long idx, JObject r) in steps.Reverse())
         {
             string path = (string)r["path"]!;
             IReadOnlyList<Extent> cur = hooks.Extents(path) ?? [];
+            bool isSparse = sparse.TryGetValue(path, out IReadOnlyList<AllocatedRange>? expectedAllocation);
+            if (!isSparse && hooks.IsSparse?.Invoke(path) == true)
+            {
+                rep.Skipped.Add(new SkippedStep(idx, "sparse")); // 계획에 할당 기준값이 없는 스파스 파일: 적용이 건너뛰는 파일이라 되돌리기도 옮기지 않음
+                continue;
+            }
+
+            if (isSparse && !expectedAllocation!.SequenceEqual(SparseAllocation.Normalize(cur)))
+            {
+                rep.Skipped.Add(new SkippedStep(idx, "sparse allocation changed")); // 할당 구간이 계획 뒤 바뀜: 원래 자리를 믿을 수 없어 옮기지 않고 기록
+                continue;
+            }
+
+            long taskEnd = isSparse ? (long)r["vcn"]! + (long)r["clusters"]! : 0;
+            bool taskTail = isSparse && (long)r["clusters"]! % SparseAllocation.MoveClusters != 0;
             foreach (object? piece in (List<object?>)r["from"]!)
             {
                 var p = (List<object?>)piece!;
@@ -71,6 +92,20 @@ public static class Reverter
                     continue;
                 }
 
+                if (isSparse)
+                {
+                    // 정방향과 같은 경계 규칙: 시작은 16클러스터 경계, 길이는 16의 배수 (파일 끝의 마지막 조각만 예외). 벗어나는 조각은 옮기지 않음.
+                    bool supported = v % SparseAllocation.MoveClusters == 0 && (n % SparseAllocation.MoveClusters == 0 || taskTail && v + n == taskEnd)
+                        && SparseAllocation.Covers(cur, v, n);
+                    if (!supported)
+                    {
+                        rep.Skipped.Add(new SkippedStep(idx, "unsupported sparse range"));
+                        continue;
+                    }
+
+                    done = done / SparseAllocation.MoveClusters * SparseAllocation.MoveClusters;
+                }
+
                 if (!options.Execute)
                 {
                     rep.Restored++;
@@ -78,7 +113,8 @@ public static class Reverter
                 }
 
                 bool failed = false;
-                for (long off = done; off < n; off += chunk)
+                long step = isSparse ? sparseChunk : chunk;
+                for (long off = done; off < n; off += step)
                 {
                     if (cancellationToken.IsCancellationRequested)
                     {
@@ -87,7 +123,7 @@ public static class Reverter
                         return rep;
                     }
 
-                    long c = Math.Min(chunk, n - off);
+                    long c = Math.Min(step, n - off);
                     if (written + (c * cb) > options.WriteCap)
                     {
                         rep.Stopped = "write_cap";

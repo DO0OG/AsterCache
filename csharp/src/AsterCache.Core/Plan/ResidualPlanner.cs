@@ -22,7 +22,7 @@ public static class ResidualPlanner
     /// 계획 stats 의 잔여 재계획 세대 (이전 계획의 세대 + 1, 없으면 1): 계획 SHA 에 들어가 재계획 결과가 이전 계획과 같은 task 여도 다른 계획이 되게 함.
     public const string GenerationKey = "residual_gen";
 
-    private readonly record struct Part(string Path, long Vcn, long Lcn, long N, bool Fixed);
+    private readonly record struct Part(string Path, long Vcn, long Lcn, long N, bool Fixed, bool SparseTail = false);
 
     /// 저널의 planned 행 (path, vcn, clusters, target_lcn) 과 옛 계획들의 tasks 에서 이전 목표 목록 (중복 제거, 저널 먼저).
     /// 저널이 없거나 모양이 틀린 행은 건너뜁니다. 저널 파일을 읽지 못하면 (IOException, 중간 줄 손상 PyValueException) 그대로 던져 호출자가 재시도 대기로 남기게 합니다:
@@ -91,6 +91,7 @@ public static class ResidualPlanner
         var ext = new Dictionary<string, IReadOnlyList<Extent>?>(StringComparer.Ordinal);
         var order = new List<PlanRange>();
         var parts = new List<Part>();
+        var sourceLayout = new List<(string Path, long Lcn, long N)>();
         var dropped = new HashSet<string>(StringComparer.Ordinal);
         var held = new JObject();
         foreach (PlanRange o in candidate.Order)
@@ -118,10 +119,57 @@ public static class ResidualPlanner
             }
 
             order.Add(o);
-            foreach ((long v, long lcn, long n) in ZoneAllocator.Pieces(e, o.Vcn, o.Vcn + o.Clusters))
+            if (candidate.SparseAllocations.TryGetValue(o.Path, out IReadOnlyList<AllocatedRange>? expectedAllocation))
             {
-                Split(o.Path, v, lcn, n, prior, parts);
+                if (!expectedAllocation.SequenceEqual(SparseAllocation.Normalize(e)) || !SparseAllocation.Covers(e, o.Vcn, o.Clusters))
+                {
+                    held[o.Path] = "allocation_changed";
+                    continue;
+                }
+
+                long fileClusters = candidate.Fingerprints.FirstOrDefault(f => f.Path == o.Path) is { } fp
+                    ? (fp.Size + cb - 1) / cb : o.Vcn + o.Clusters;
+                long end = o.Vcn + o.Clusters;
+                for (long v = o.Vcn; v < end;)
+                {
+                    long n = Math.Min(SparseAllocation.MoveClusters, end - v);
+                    IReadOnlyList<(long Vcn, long Lcn, long N)> piecesHere = ZoneAllocator.Pieces(e, v, v + n);
+                    if (piecesHere.Count == 0 || piecesHere[0].Vcn != v || piecesHere[^1].Vcn + piecesHere[^1].N != v + n)
+                    {
+                        held[o.Path] = "allocation_changed";
+                        break;
+                    }
+
+                    sourceLayout.AddRange(piecesHere.Select(p => (o.Path, p.Lcn, p.N)));
+                    long delta = piecesHere[0].Lcn - v;
+                    bool fixedRange = piecesHere.All(p => p.Lcn - p.Vcn == delta)
+                        && prior.TryGetValue((o.Path, delta), out List<(long A, long B)>? priorRanges)
+                        && priorRanges.Any(r => r.A <= v && r.B >= v + n);
+                    bool tail = n % SparseAllocation.MoveClusters != 0 && v + n == fileClusters;
+                    if (!SparseAllocation.SupportsMove(v, n, fileClusters))
+                    {
+                        held[o.Path] = "unsupported_sparse_range";
+                        break;
+                    }
+
+                    parts.Add(new Part(o.Path, v, piecesHere[0].Lcn, n, fixedRange, tail));
+                    v += n;
+                }
             }
+            else
+            {
+                foreach ((long v, long lcn, long n) in ZoneAllocator.Pieces(e, o.Vcn, o.Vcn + o.Clusters))
+                {
+                    sourceLayout.Add((o.Path, lcn, n));
+                    Split(o.Path, v, lcn, n, prior, parts);
+                }
+            }
+        }
+
+        if (held.Count > 0)
+        {
+            _ = parts.RemoveAll(p => held.ContainsKey(p.Path)); // 파일 중간에서 보류된 파일은 앞 조각 작업도 없음
+            _ = sourceLayout.RemoveAll(x => held.ContainsKey(x.Path));
         }
 
         long residual = parts.Where(p => !p.Fixed).Sum(p => p.N);
@@ -150,7 +198,7 @@ public static class ResidualPlanner
             }
 
             final.Add((target, p.N));
-            if (tasks.Count > 0 && lastFixed[^1] == p.Fixed && tasks[^1].Path == p.Path && tasks[^1].Vcn + tasks[^1].Clusters == p.Vcn
+            if (tasks.Count > 0 && !p.SparseTail && lastFixed[^1] == p.Fixed && tasks[^1].Path == p.Path && tasks[^1].Vcn + tasks[^1].Clusters == p.Vcn
                 && tasks[^1].TargetLcn + tasks[^1].Clusters == target)
             {
                 tasks[^1] = tasks[^1] with { Clusters = tasks[^1].Clusters + p.N };
@@ -166,7 +214,7 @@ public static class ResidualPlanner
         long moved = tasks.Where((_, i) => !lastFixed[i]).Sum(t => t.Clusters);
         long skipped = (candidate.Stats.TryGetValue("skipped_files", out object? sk) && sk is long s ? s : 0) + dropped.Count;
         JObject stats = new ZoneStats(0, 0, fixedClusters * cb, 0, misaligned, parts.Sum(p => p.N) * cb, moved * cb, moving,
-            moving == 0 ? 0 : PyFloat.Round2((double)moved / moving), residual, skipped, ZoneAllocator.CountRuns(parts.Select(p => (p.Lcn, p.N)).ToList()),
+            moving == 0 ? 0 : PyFloat.Round2((double)moved / moving), residual, skipped, ZoneAllocator.CountRuns(sourceLayout.Select(x => (x.Lcn, x.N)).ToList()),
             ZoneAllocator.CountRuns(final)).ToJson();
         foreach ((string key, object? value) in candidate.Stats.Where(kv => !stats.ContainsKey(kv.Key) && kv.Key != HeldKey && kv.Key != HeldTargetsKey && kv.Key != AdjacentKey && kv.Key != GenerationKey)) // 이전 계획의 보류와 인접 배치 표지는 이번 판정으로 다시 정함
         {
@@ -188,12 +236,15 @@ public static class ResidualPlanner
         }
         // 존 시작은 null 이면 안 됨: ResolveZone 이 빈 구간을 다시 찾고 모든 목표를 밀어 고정 task 를 망가뜨림. 잔여가 없으면 첫 task 의 목표 (없으면 0) 로 정한 값일 뿐 의미 없음.
         long start = run ?? (tasks.Count > 0 ? tasks[0].TargetLcn : 0);
+        List<Fingerprint> prints = candidate.Fingerprints.Where(f => !dropped.Contains(f.Path)).ToList();
+        var printed = prints.Select(f => f.Path).ToHashSet(StringComparer.Ordinal); // 지문이 없는 (보류로 빠진) 파일의 할당 구간은 남기지 않음
         return candidate with
         {
             Zone = new PlanZone(start, residual),
             Tasks = tasks,
             Order = order,
-            Fingerprints = candidate.Fingerprints.Where(f => !dropped.Contains(f.Path)).ToList(),
+            Fingerprints = prints,
+            SparseAllocations = candidate.SparseAllocations.Where(kv => printed.Contains(kv.Key)).ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal),
             Stats = stats,
         };
     }

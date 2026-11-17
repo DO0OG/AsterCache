@@ -279,6 +279,9 @@ public sealed class AutoEnv
     /// 적용이 건너뛰는 파일 (스파스·압축·암호화 …): 배치 판정에서 남은 이동으로 세지 않음. 시험 기본값은 없음.
     public Func<string, bool> Unmovable { get; init; } = _ => false;
 
+    /// 스파스 속성인가: 계획이 할당 기준값을 모르는 스파스 파일은 배치 검사에서 뺌.
+    public Func<string, bool> IsSparse { get; init; } = _ => false;
+
     /// 'X:' → 볼륨 할당 비트맵, 읽지 못하면 (관리자 아님·I/O 오류) null. 존 확장 계획이 덧붙일 구간이 비어 있는지 미리 보는 데 씁니다. 시험 기본값은 null (확인 불가).
     public Func<string, VolumeBitmap?> Bitmap { get; init; } = _ => null;
 
@@ -418,8 +421,9 @@ public sealed class AutoEnv
                 File.SetLastWriteTimeUtc(path, DateTime.UtcNow);
             },
             Revert = (g, skipRows, ct) => ReapplyEnv.Revert(journalDir, g, skipRows, ct),
-            Extents = FileLayout.Extents,
-            Unmovable = FileGuards.Unmovable,
+            Extents = FileLayout.RelocationExtents,
+            Unmovable = FileGuards.RelocationUnmovable,
+            IsSparse = p => FileGuards.IsSparse(p),
             Bitmap = ReadBitmap,
             DiskBytesPerSecond = letter => DiskActivity.BytesPerSecond(letter),
             ProbeMbps = DiskProbe.Mbps,
@@ -447,7 +451,8 @@ public sealed class AutoEnv
     private static PlanFile MakePlanAtLcn(IReadOnlyList<IReadOnlyList<TraceEvent>> sessions, string origin, long zoneMib, long? start, long usedClusters)
     {
         int cb = FileLayout.ClusterBytes(origin) is > 0 and int c ? c : throw new PlanRejectedException("cluster size unknown");
-        return PlanFile.Make(sessions, origin, zoneMib << 20, cb, FileLayout.Extents, zoneStartLcn: start, fixedClusters: usedClusters);
+        return PlanFile.Make(sessions, origin, zoneMib << 20, cb, FileLayout.RelocationExtents, zoneStartLcn: start, fixedClusters: usedClusters,
+            sparseFn: p => FileGuards.IsSparse(p));
     }
 
     /// 탐지를 못 한 결과 (I/O 실패 또는 열거 불완전): 없음이 아니라 모름. 티어는 거절하고 캐시하지 않으며, 등록에는 저장하지 않습니다.

@@ -107,6 +107,9 @@ public sealed class ReapplyEnv
     /// 적용이 건너뛰는 파일 (스파스·압축·암호화 …): 배치 판정에서 남은 이동으로 세지 않음. 시험 기본값은 없음.
     public Func<string, bool> Unmovable { get; init; } = _ => false;
 
+    /// 스파스 속성인가: 계획이 할당 기준값을 모르는 스파스 파일은 배치 검사에서 뺌.
+    public Func<string, bool> IsSparse { get; init; } = _ => false;
+
     public required Func<string, Fingerprint> Stat { get; init; }
 
     public required Func<string, string> RealPath { get; init; }
@@ -146,8 +149,9 @@ public sealed class ReapplyEnv
             GameRunning = DispatchEnv.IsGameRunning,
             DiskBusy = g => DiskActivity.IsBusy(PlanFile.SplitDrive(g.OriginRoot)),
             LoadPlan = PlanFile.Load,
-            Extents = FileLayout.Extents,
-            Unmovable = FileGuards.Unmovable,
+            Extents = FileLayout.RelocationExtents,
+            Unmovable = FileGuards.RelocationUnmovable,
+            IsSparse = p => FileGuards.IsSparse(p),
             Stat = PlanFile.FingerprintOf,
             RealPath = RealPaths.Real,
             Apply = (g, plan, injected, ct) => RunLocked(journalDir, g, plan, ChooseOptions(g, injected, relocateOrder?.Invoke() ?? RelocateOrder.Target, relocateParallel?.Invoke(g) ?? 1), ct, log), // 존을 다시 정하면 계획에 남김
@@ -310,10 +314,11 @@ public sealed class ReapplyEnv
 
     private static ApplyHooks Hooks(IoPriorityHint? hint) => new()
     {
-        Extents = FileLayout.Extents,
+        Extents = FileLayout.RelocationExtents,
         Digest = (p, size, extra) => SampleDigest.Compute(p, size, extra, hint: hint),
         EdgeDigest = (p, size, extra) => SampleDigest.Compute(p, size, extra, span: 0, hint: hint),
-        SkipReason = p => FileGuards.SkipReason(p),
+        SkipReason = p => FileGuards.RelocationSkipReason(p),
+        IsSparse = p => FileGuards.IsSparse(p),
         RealPath = RealPaths.Real,
     };
 
@@ -435,6 +440,7 @@ public sealed class ReapplyChecker
     private readonly HashSet<string> _cancelled = new(StringComparer.Ordinal); // 취소로 반쯤 적용된 게임
     private readonly HashSet<string> _shortRetryPending = new(StringComparer.Ordinal); // 짧은 재검사가 필요한 미완료 배치
     private readonly Dictionary<string, ReapplyVerdict> _lastShortRetryLog = new(StringComparer.Ordinal); // 같은 일시 보류의 반복 로그 억제
+    private readonly Dictionary<string, long> _sparseHeldLogged = new(StringComparer.Ordinal); // 게임별로 마지막에 로그한 보류 스파스 파일 수 (같은 수의 반복 로그 억제)
 
     public ReapplyChecker(ReapplyEnv env, ILog log)
     {
@@ -454,6 +460,11 @@ public sealed class ReapplyChecker
         foreach (string name in _lastShortRetryLog.Keys.Where(name => !registered.Contains(name)).ToArray())
         {
             _lastShortRetryLog.Remove(name);
+        }
+
+        foreach (string name in _sparseHeldLogged.Keys.Where(name => !registered.Contains(name)).ToArray())
+        {
+            _sparseHeldLogged.Remove(name);
         }
     }
 
@@ -526,7 +537,18 @@ public sealed class ReapplyChecker
             List<bool?> stamps = applied ? [.. plan.Fingerprints.Where(f => !VolatileFiles.Ignored(f.Path)).Select(f => Compare(f, p => Guarded(_env.Stat, p)))] : [];
             bool changed = stamps.Contains(true);
             bool unknown = !changed && stamps.Contains(null);
-            LayoutReport? layout = applied && !changed ? LayoutVerifier.Verify(plan, p => Guarded(_env.Extents, p), _env.Unmovable) : null;
+            LayoutReport? layout = applied && !changed ? LayoutVerifier.Verify(plan, p => Guarded(_env.Extents, p), _env.Unmovable, _env.IsSparse, holdChangedSparse: true) : null;
+            // 할당 구간이 계획 뒤 바뀐 (조회 실패 포함) 스파스 파일은 검사와 적용에서 빠짐 (적용도 그 파일을 건너뜀): 나머지 파일은 평소대로. 보류 수가 바뀔 때만 로그.
+            long heldSparse = layout?.SparseHeldFiles ?? 0;
+            if (heldSparse != _sparseHeldLogged.GetValueOrDefault(game.Name))
+            {
+                _sparseHeldLogged[game.Name] = heldSparse;
+                if (heldSparse > 0)
+                {
+                    _log.Info($"{game.Name}: {heldSparse} sparse file(s) changed allocation since the plan, held out of the layout check and reapply");
+                }
+            }
+
             // 파일 배치를 못 읽은 항목이 있으면 (희소 파일 등) 판단할 수 없으므로 건강으로 봅니다: 같은 이유로 매 주기 재적용하며 0 바이트를 옮기는 일을 피함.
             bool? contiguous = layout is null || layout.HotClusters == 0 || layout.MissingFiles > 0 ? null : layout.Contiguous;
             ReapplyVerdict v = ReapplyPolicy.Decide(new ReapplyInputs(applied, changed, contiguous, Running, () => _env.DiskBusy(game), _env.CanApply, () => _env.Gate(game), unknown));
@@ -622,7 +644,7 @@ public sealed class ReapplyChecker
                     _log.Info($"{game.Name}: previous zone was taken by another file, zone moved" + (rep.JournalArchivedTo is { } a ? $", earlier journal kept as {a}" : string.Empty));
                 }
 
-                _log.Info($"{game.Name}: reapplied, moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed" + (rep.OrderUsed is { } ou ? $", order {ou}" + (rep.OrderFallbackReason is not null ? " (fallback)" : string.Empty) : string.Empty) + (rep.Stopped is { } s ? $", stopped: {s}" : string.Empty));
+                _log.Info($"{game.Name}: reapplied, moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed" + (rep.OrderUsed is { } ou ? $", order {ou}" + (rep.OrderFallbackReason is not null ? " (fallback)" : string.Empty) : string.Empty) + (rep.Stopped is { } s ? $", stopped: {s}" : string.Empty) + rep.SparseSummary);
                 if (rep.Stopped == "cancelled")
                 {
                     _shortRetryPending.Add(game.Name);

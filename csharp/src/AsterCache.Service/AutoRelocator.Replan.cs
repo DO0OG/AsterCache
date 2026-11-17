@@ -10,8 +10,8 @@ namespace AsterCache.Service;
 /// AutoRelocator 의 다시 계획: 게임 업데이트 뒤 바뀐 범위를 가려내 계획을 다시 세우는 흐름.
 public sealed partial class AutoRelocator
 {
-    // 재배치 도중 목표 존이 막혀 멈춘 경우: 업데이트 재계획과 같은 방식으로 저널·계획을 옆으로 치우고 (트레이스는 그대로) 처음 단계로 되돌립니다.
-    private void SetAsideForReplan(GameSettings g)
+    // 재배치 도중 목표 존이 막혀 멈춘 경우 (reason 은 로그에 남는 이유, 기본은 존 점유): 업데이트 재계획과 같은 방식으로 저널·계획을 옆으로 치우고 (트레이스는 그대로) 처음 단계로 되돌립니다.
+    private void SetAsideForReplan(GameSettings g, string reason = "zone region appears occupied")
     {
         if (_env.ReplanResidual is null || _env.JournalRows(g) == 0)
         {
@@ -20,7 +20,7 @@ public sealed partial class AutoRelocator
         // 저널에 행이 있으면 그대로 둠: 다음 Plan 이 저널과 .stale 로 잔여 재계획하고 교체 때 저널을 보관 (보관부터 하면 이미 옮긴 데이터를 다시 옮김)
         _env.MoveAside(g.Plan, g.Plan + StaleSuffix);
         _status.ResetForReplan(g.Name, BusyDetail);
-        _log.Info($"{g.Name}: zone region appears occupied, plan set aside as {StaleSuffix}, will plan again");
+        _log.Info($"{g.Name}: {reason}, plan set aside as {StaleSuffix}, will plan again");
     }
 
     // 잔여 재계획이 이미 옮긴 조각 바로 뒤에 배치했는지 서비스 로그에 남김 (인접 공간이 없으면 새 빈 구간).

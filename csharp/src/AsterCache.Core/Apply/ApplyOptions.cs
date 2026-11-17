@@ -59,6 +59,11 @@ public sealed class ApplyHooks
     /// 건너뛸 이유 (압축·스파스·암호화 …), 옮겨도 되면 null. apply 에 필요 (Windows FileGuards.SkipReason).
     public Func<string, string?>? SkipReason { get; init; }
 
+    /// 스파스 속성인가. 계획이 할당 기준값을 가진 파일에서만 스파스 규칙을 쓰므로, 기준값이 없는 스파스 파일 (이전 형식 계획 등) 을 건너뛰는 데 필요합니다.
+    /// 재배치용 SkipReason (FileGuards.RelocationSkipReason) 을 쓰는 호출부는 반드시 함께 넘길 것. null 이면 속성을 알 수 없어 기준값 없는 스파스 파일도 일반 파일처럼 옮깁니다:
+    /// 속성 없이 "스파스면 옮기지 않음" 을 기본값으로 삼을 수 없기 때문입니다 (모든 파일이 걸림). 운영 호출부 (CLI, 서비스) 가 넘기는지는 시험이 확인합니다.
+    public Func<string, bool>? IsSparse { get; init; }
+
     public Action<TimeSpan> Sleep { get; init; } = Thread.Sleep;
 
     /// 링크·정션을 푼 경로. 기본은 Path.GetFullPath (링크를 풀지 않으므로 실제 실행은 GetFinalPathNameByHandle 기반 구현을 주입).

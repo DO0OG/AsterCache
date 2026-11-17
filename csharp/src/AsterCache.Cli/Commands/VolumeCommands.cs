@@ -112,7 +112,7 @@ internal static class VolumeCommands
 
     public static int Verify(ParsedArgs a, TextWriter o)
     {
-        LayoutReport report = LayoutVerifier.Verify(PlanFile.Load(a.Text("plan")!), FileLayout.Extents, FileGuards.Unmovable);
+        LayoutReport report = LayoutVerifier.Verify(PlanFile.Load(a.Text("plan")!), FileLayout.RelocationExtents, FileGuards.RelocationUnmovable, p => FileGuards.IsSparse(p));
         return AsterCli.Emit(o, Verdict(report));
     }
 
@@ -178,10 +178,11 @@ internal static class VolumeCommands
 
     internal static ApplyHooks Hooks() => new()
     {
-        Extents = FileLayout.Extents,
+        Extents = FileLayout.RelocationExtents,
         Digest = (path, size, ranges) => SampleDigest.Compute(path, size, ranges),
         EdgeDigest = (path, size, ranges) => SampleDigest.Compute(path, size, ranges, span: 0),
-        SkipReason = path => FileGuards.SkipReason(path),
+        SkipReason = path => FileGuards.RelocationSkipReason(path),
+        IsSparse = path => FileGuards.IsSparse(path),
         RealPath = RealPaths.Real,
     };
 }

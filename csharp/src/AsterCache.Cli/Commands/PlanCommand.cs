@@ -66,8 +66,8 @@ internal static class PlanCommand
                 throw new PyValueException($"--min-sessions {minSessions} exceeds the {sessions.Count} traces given");
             }
 
-            plan = PlanFile.Make(sessions, originRoot, a.Int("zone-mib")!.Value * Mib, cb, FileLayout.Extents, zoneStartLcn: start,
-                minSessions: (int)minSessions, preserveBytes: a.Int("preserve-mib")!.Value * Mib);
+            plan = PlanFile.Make(sessions, originRoot, a.Int("zone-mib")!.Value * Mib, cb, FileLayout.RelocationExtents, zoneStartLcn: start,
+                minSessions: (int)minSessions, preserveBytes: a.Int("preserve-mib")!.Value * Mib, sparseFn: p => FileGuards.IsSparse(p));
         }
         else
         {

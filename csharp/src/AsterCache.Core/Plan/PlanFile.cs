@@ -23,9 +23,13 @@ public sealed record PlanFile(
 {
     public const long CurrentVersion = 1;
 
+    /// 희소 파일의 계획 시점 논리 할당 구간. LCN 은 저장하지 않아 정상 이동은 변경으로 보지 않습니다.
+    public IReadOnlyDictionary<string, IReadOnlyList<AllocatedRange>> SparseAllocations { get; init; } = new Dictionary<string, IReadOnlyList<AllocatedRange>>(StringComparer.Ordinal);
+
     public static PlanFile Make(IReadOnlyList<IReadOnlyList<TraceEvent>> sessions, string originRoot, long zoneBytes, long clusterBytes,
         Func<string, IReadOnlyList<Extent>?> extentsFn, Func<string, long>? sizeFn = null, Func<string, Fingerprint>? fingerprintFn = null,
-        long? zoneStartLcn = null, long block = HotSet.Block, int minSessions = 1, long preserveBytes = 0, long alignClusters = 4, long fixedClusters = 0)
+        long? zoneStartLcn = null, long block = HotSet.Block, int minSessions = 1, long preserveBytes = 0, long alignClusters = 4, long fixedClusters = 0,
+        Func<string, bool>? sparseFn = null)
     {
         sizeFn ??= p => new FileInfo(p).Length;
         fingerprintFn ??= FingerprintOf;
@@ -35,15 +39,111 @@ public sealed record PlanFile(
         paths.Sort(CodePointComparer.Instance);
         var ext = paths.ToDictionary(p => p, extentsFn, StringComparer.Ordinal);
         var sizes = paths.ToDictionary(p => p, sizeFn, StringComparer.Ordinal);
+        var sparsePaths = new HashSet<string>(paths.Where(p => sparseFn?.Invoke(p) == true), StringComparer.Ordinal);
         long zc = zoneBytes / clusterBytes;
-        AllocResult alloc = ZoneAllocator.Allocate(units, ext, zoneStartLcn, zc, clusterBytes, block, sizes, preserveBytes, alignClusters, fixedClusters);
+        AllocResult alloc = ZoneAllocator.Allocate(units, ext, zoneStartLcn, zc, clusterBytes, block, sizes, preserveBytes, alignClusters, fixedClusters, sparsePaths);
+        // 제자리·존 가득·보존으로 조각이 빠져 지원하지 못하는 작업 (16클러스터 경계 밖) 이 생기는 스파스 파일은 그 파일만 대상에서 빼고 다시 배정합니다 (뺀 파일은 skipped_files 에 셈).
+        var unsupported = new HashSet<string>(StringComparer.Ordinal);
+        while (sparsePaths.Count > 0)
+        {
+            var bad = alloc.Tasks.Where(t => sparsePaths.Contains(t.Path) && !SparseAllocation.SupportsMove(t.Vcn, t.Clusters, (sizes[t.Path] + clusterBytes - 1) / clusterBytes))
+                .Select(t => t.Path).ToHashSet(StringComparer.Ordinal);
+            if (bad.Count == 0)
+            {
+                break;
+            }
+
+            unsupported.UnionWith(bad);
+            alloc = ZoneAllocator.Allocate(units.Where(u => !unsupported.Contains(u.Path)).ToList(), ext, zoneStartLcn, zc, clusterBytes, block, sizes, preserveBytes, alignClusters, fixedClusters, sparsePaths);
+        }
+
         JObject stats = alloc.Stats.ToJson();
         stats.Add("hot_blocks", (long)hot.Count);
         stats.Add("units", (long)units.Count);
+        if (sparsePaths.Count > 0)
+        {
+            stats.Add("supported_hot_blocks", CountOrderedBlocks(alloc.Order, clusterBytes, block)); // 스파스 파일이 있으면 계획이 실제로 지원하는 구간 기준 값
+            stats.Add("supported_units", CountSupportedUnits(units, alloc.Order, clusterBytes, block));
+            if (unsupported.Count > 0)
+            {
+                stats.Add("unsupported_sparse_files", (long)unsupported.Count); // 물리 조각이 16클러스터 경계에 맞지 않아 통째로 뺀 스파스 파일 수 (실제 게임에서 많은지 로그로 확인)
+            }
+        }
+
         var orderPaths = alloc.Order.Select(o => o.Path).Distinct(StringComparer.Ordinal).ToList();
         orderPaths.Sort(CodePointComparer.Instance);
+        var sparseAllocations = orderPaths.Where(sparsePaths.Contains)
+            .ToDictionary(p => p, p => SparseAllocation.Normalize(ext[p]!), StringComparer.Ordinal);
         return new PlanFile(CurrentVersion, originRoot, SplitDrive(originRoot).ToUpperInvariant(), clusterBytes, block,
-            new PlanZone(zoneStartLcn, zc), alloc.Tasks, alloc.Order, orderPaths.Select(fingerprintFn).ToList(), stats);
+            new PlanZone(zoneStartLcn, zc), alloc.Tasks, alloc.Order, orderPaths.Select(fingerprintFn).ToList(), stats)
+        {
+            SparseAllocations = sparseAllocations,
+        };
+    }
+
+    private static long CountOrderedBlocks(IReadOnlyList<PlanRange> order, long clusterBytes, long block)
+    {
+        var ranges = order.GroupBy(o => o.Path, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.Select(o => (Start: o.Vcn * clusterBytes / block, End: (o.Vcn * clusterBytes + o.Clusters * clusterBytes + block - 1) / block))
+                .OrderBy(r => r.Start).ThenBy(r => r.End).ToList(), StringComparer.Ordinal);
+        long count = 0;
+        foreach (List<(long Start, long End)> list in ranges.Values)
+        {
+            long start = -1, end = -1;
+            foreach ((long nextStart, long nextEnd) in list)
+            {
+                if (start >= 0 && nextStart <= end)
+                {
+                    end = Math.Max(end, nextEnd);
+                }
+                else
+                {
+                    count += end - start;
+                    (start, end) = (nextStart, nextEnd);
+                }
+            }
+
+            count += end - start;
+        }
+
+        return count;
+    }
+
+    private static long CountSupportedUnits(IReadOnlyList<Unit> units, IReadOnlyList<PlanRange> order, long clusterBytes, long block)
+    {
+        var ranges = order.GroupBy(o => o.Path, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.Select(o => (Start: o.Vcn * clusterBytes / block, End: (o.Vcn * clusterBytes + o.Clusters * clusterBytes + block - 1) / block))
+                .OrderBy(r => r.Start).ToList(), StringComparer.Ordinal);
+        long count = 0;
+        foreach (Unit u in units)
+        {
+            if (!ranges.TryGetValue(u.Path, out List<(long Start, long End)>? supported))
+            {
+                continue;
+            }
+
+            long end = u.Start + u.Count;
+            int lo = 0, hi = supported.Count;
+            while (lo < hi)
+            {
+                int mid = lo + (hi - lo) / 2;
+                if (supported[mid].End <= u.Start)
+                {
+                    lo = mid + 1;
+                }
+                else
+                {
+                    hi = mid;
+                }
+            }
+
+            if (lo < supported.Count && supported[lo].Start < end)
+            {
+                count++;
+            }
+        }
+
+        return count;
     }
 
     /// size 와 mtime_ns. Windows 의 Python st_mtime_ns 는 FILETIME x 100 이라 Ticks 로 정확히 같습니다. 심볼릭 링크 (SSD 보조 저장) 는 대상의 값을 봅니다.
@@ -90,7 +190,7 @@ public sealed record PlanFile(
             fingerprints.Add(f.Path, new List<object?> { f.Size, f.MtimeNs });
         }
 
-        return new JObject
+        var result = new JObject
         {
             { "version", Version },
             { "origin_root", OriginRoot },
@@ -103,6 +203,12 @@ public sealed record PlanFile(
             { "fingerprints", fingerprints },
             { "stats", Stats },
         };
+        if (SparseAllocations.Count > 0)
+        {
+            result.Add("sparse_allocations", SparseAllocationJson(SparseAllocations));
+        }
+
+        return result;
     }
 
     /// json.dumps(plan, indent=1): LF 줄바꿈, 끝 줄바꿈 없음.
@@ -130,6 +236,10 @@ public sealed record PlanFile(
             { "tasks", Tasks.Select(t => t.ToJson()).ToList() },
             { "order", Order.Select(o => o.ToJson()).ToList() },
         };
+        if (SparseAllocations.Count > 0)
+        {
+            keep.Add("sparse_allocations", SparseAllocationJson(SparseAllocations));
+        }
         if (Stats.TryGetValue(ResidualPlanner.GenerationKey, out object? gen) && gen is long)
         {
             keep.Add(ResidualPlanner.GenerationKey, gen);
@@ -407,8 +517,60 @@ public sealed record PlanFile(
             throw Malformed();
         }
 
+        IReadOnlyDictionary<string, IReadOnlyList<AllocatedRange>> sparseAllocations = plan.TryGetValue("sparse_allocations", out object? sparse)
+            ? ParseSparseAllocations(sparse) : new Dictionary<string, IReadOnlyList<AllocatedRange>>(StringComparer.Ordinal);
         return new PlanFile(version, Str(Field(plan, "origin_root")), Str(Field(plan, "volume")), clusterBytes, block,
-            new PlanZone(startLcn, UInt(Field(zone, "clusters"))), tasks, order, fingerprints, Obj(Field(plan, "stats")));
+            new PlanZone(startLcn, UInt(Field(zone, "clusters"))), tasks, order, fingerprints, Obj(Field(plan, "stats")))
+        {
+            SparseAllocations = sparseAllocations,
+        };
+    }
+
+    public static IReadOnlyDictionary<string, IReadOnlyList<AllocatedRange>> ParseSparseAllocations(object? value)
+    {
+        JObject raw = Obj(value);
+        var result = new Dictionary<string, IReadOnlyList<AllocatedRange>>(StringComparer.Ordinal);
+        foreach ((string path, object? entry) in raw)
+        {
+            List<AllocatedRange> ranges = [];
+            foreach (object? item in Arr(entry))
+            {
+                List<object?> pair = Arr(item);
+                if (pair.Count != 2)
+                {
+                    throw Malformed();
+                }
+
+                long vcn = UInt(pair[0]);
+                long clusters = UInt(pair[1]);
+                if (clusters == 0 || ranges.Count > 0 && vcn <= ranges[^1].Vcn + ranges[^1].Clusters)
+                {
+                    throw Malformed();
+                }
+
+                ranges.Add(new AllocatedRange(vcn, clusters));
+            }
+
+            if (ranges.Count == 0)
+            {
+                throw Malformed();
+            }
+
+            result.Add(path, ranges);
+        }
+
+        return result;
+    }
+
+    private static JObject SparseAllocationJson(IReadOnlyDictionary<string, IReadOnlyList<AllocatedRange>> allocations)
+    {
+        var sparse = new JObject();
+        foreach ((string path, IReadOnlyList<AllocatedRange> ranges) in allocations.OrderBy(kv => kv.Key, CodePointComparer.Instance))
+        {
+            sparse.Add(path, ranges.Select(r => (object?)new List<object?> { r.Vcn, r.Clusters }).ToList());
+        }
+
+        return sparse;
     }
 
     private static PyValueException Malformed() => new("malformed plan");

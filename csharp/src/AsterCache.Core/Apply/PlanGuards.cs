@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using AsterCache.Core.Json;
 using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
@@ -76,7 +77,7 @@ public static class PlanGuards
             }
         }
 
-        foreach (Fingerprint fp in plan.Fingerprints.Where(f => !VolatileFiles.Ignored(f.Path))) // 게임이 스스로 다시 쓰는 파일은 지문 비교에서 뺌 (계획 변경 판정과 같은 규칙)
+        foreach (Fingerprint fp in plan.Fingerprints.Where(f => !VolatileFiles.Ignored(f.Path) && !plan.SparseAllocations.ContainsKey(f.Path))) // 스파스 파일은 파일 단위로 보류하고 재계획합니다.
         {
             Fingerprint now = hooks.Stat(fp.Path);
             if (now.Size != fp.Size || now.MtimeNs != fp.MtimeNs)
@@ -84,7 +85,87 @@ public static class PlanGuards
                 throw new PlanRejectedException("source_changed: " + fp.Path);
             }
         }
+
+        Dictionary<string, Fingerprint> fingerprints = plan.Fingerprints.ToDictionary(f => f.Path, StringComparer.Ordinal);
+        foreach ((string path, IReadOnlyList<AllocatedRange> ranges) in plan.SparseAllocations)
+        {
+            if (ranges.Count == 0 || !fingerprints.TryGetValue(path, out Fingerprint? fp))
+            {
+                throw new PlanRejectedException("malformed sparse allocation: " + path);
+            }
+
+            long fileClusters = (fp.Size + plan.ClusterBytes - 1) / plan.ClusterBytes;
+            foreach (PlanTask task in plan.Tasks.Where(t => t.Path == path))
+            {
+                if (!SparseAllocation.SupportsMove(task.Vcn, task.Clusters, fileClusters))
+                {
+                    throw new PlanRejectedException("unsupported_sparse_range: " + path);
+                }
+            }
+        }
     }
+
+    /// 현재 논리 할당 범위가 계획 당시와 다른 희소 파일을 반환합니다. 조회 실패도 보류 대상으로 돌려줍니다.
+    public static IReadOnlySet<string> ChangedSparseFiles(PlanFile plan, Func<string, IReadOnlyList<Extent>?> extents, Func<string, Fingerprint>? stat = null)
+    {
+        var changed = new HashSet<string>(StringComparer.Ordinal);
+        Dictionary<string, Fingerprint> fingerprints = plan.Fingerprints.ToDictionary(f => f.Path, StringComparer.Ordinal);
+        changed.UnionWith(ChangedSparseFiles(plan.SparseAllocations, extents));
+        if (stat is null)
+        {
+            return changed;
+        }
+
+        foreach ((string path, IReadOnlyList<AllocatedRange> _) in plan.SparseAllocations)
+        {
+            try
+            {
+                if (stat is not null && fingerprints.TryGetValue(path, out Fingerprint? fp))
+                {
+                    Fingerprint now = stat(path);
+                    if (now.Size != fp.Size || now.MtimeNs != fp.MtimeNs)
+                    {
+                        _ = changed.Add(path);
+                    }
+                }
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or Win32Exception)
+            {
+                _ = changed.Add(path);
+            }
+        }
+
+        return changed;
+    }
+
+    public static IReadOnlySet<string> ChangedSparseFiles(IReadOnlyDictionary<string, IReadOnlyList<AllocatedRange>> expected,
+        Func<string, IReadOnlyList<Extent>?> extents)
+    {
+        var changed = new HashSet<string>(StringComparer.Ordinal);
+        foreach ((string path, IReadOnlyList<AllocatedRange> ranges) in expected)
+        {
+            try
+            {
+                IReadOnlyList<Extent>? current = extents(path);
+                if (current is null || !ranges.SequenceEqual(SparseAllocation.Normalize(current)))
+                {
+                    _ = changed.Add(path);
+                }
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or Win32Exception)
+            {
+                _ = changed.Add(path);
+            }
+        }
+
+        return changed;
+    }
+
+    public static bool IsAllocated(IReadOnlyList<Extent>? extents, long vcn, long clusters) => SparseAllocation.Covers(extents, vcn, clusters);
+
+    /// [vcn, vcn + n) 안에서 target + 오프셋 에 놓인 클러스터 수 (앞에서부터 이어진 양이 아니라 전체).
+    public static long PlacedClusters(IReadOnlyList<Extent>? ext, long vcn, long n, long target) =>
+        ZoneAllocator.Pieces(ext ?? [], vcn, vcn + n).Where(x => x.Lcn - x.Vcn == target - vcn).Sum(x => x.N);
 
     /// [vcn, vcn + n) 의 앞에서부터 이미 target + 오프셋 에 놓인 클러스터 수.
     public static long DonePrefix(IReadOnlyList<Extent>? ext, long vcn, long n, long target)
@@ -105,12 +186,14 @@ public static class PlanGuards
 
     /// 남은 목표 클러스터는 비어 있거나 계획 자신의 파일이 차지해야 합니다 (이동이 먼저 비웁니다).
     /// reserved: 다른 게임 계획이 예약한 존 범위. 남은 목표가 겹치면 같은 zone_not_free 로 거절합니다.
-    public static void CheckZoneFree(PlanFile plan, VolumeBitmap bitmap, Func<string, IReadOnlyList<Extent>?> extents, IReadOnlyList<(long Lcn, long Clusters)>? reserved = null)
+    public static void CheckZoneFree(PlanFile plan, VolumeBitmap bitmap, Func<string, IReadOnlyList<Extent>?> extents,
+        IReadOnlyList<(long Lcn, long Clusters)>? reserved = null, IReadOnlySet<string>? ignoredPaths = null)
     {
-        var own = plan.Tasks.Select(t => t.Path).Distinct(StringComparer.Ordinal)
+        bool Ignored(string path) => ignoredPaths?.Contains(path) == true;
+        var own = plan.Tasks.Select(t => t.Path).Where(p => !Ignored(p)).Distinct(StringComparer.Ordinal)
             .SelectMany(p => (extents(p) ?? []).Select(e => (A: e.Lcn, B: e.Lcn + e.Clusters)))
             .OrderBy(x => x.A).ThenBy(x => x.B).ToList();
-        foreach (PlanTask t in plan.Tasks)
+        foreach (PlanTask t in plan.Tasks.Where(t => !Ignored(t.Path)))
         {
             long done = DonePrefix(extents(t.Path), t.Vcn, t.Clusters, t.TargetLcn);
             foreach ((long a, long n) in done < t.Clusters ? reserved ?? [] : [])
@@ -139,7 +222,7 @@ public static class PlanGuards
     /// journalPath 를 주면, 이미 정한 존이 다른 파일에 막혔고 (zone_not_free) 그 저널에 끝나지 않은 단계가 없으며 계획이 제자리 조각 없이
     /// 존 오프셋만으로 된 것이면 (in_place_bytes == 0) 새 빈 구간을 찾아 목표를 옮깁니다 (rezoned = true). 이어할 단계가 있으면 기존처럼 거부합니다.
     public static PlanFile ResolveZone(PlanFile plan, IVolume vol, Func<string, IReadOnlyList<Extent>?> extents, string? journalPath, out bool rezoned,
-        IReadOnlyList<(long Lcn, long Clusters)>? reserved = null)
+        IReadOnlyList<(long Lcn, long Clusters)>? reserved = null, IReadOnlySet<string>? ignoredPaths = null)
     {
         rezoned = false;
         VolumeBitmap bm = vol.Bitmap();
@@ -150,7 +233,7 @@ public static class PlanGuards
 
         try
         {
-            CheckZoneFree(plan, bm, extents, reserved);
+            CheckZoneFree(plan, bm, extents, reserved, ignoredPaths);
             return plan;
         }
         catch (PlanRejectedException e) when (journalPath is not null && e.Message.StartsWith("zone_not_free", StringComparison.Ordinal)

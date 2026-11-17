@@ -244,6 +244,48 @@ public sealed class ReapplyTests
         Assert.Contains(rig.Log.Lines, l => l.Contains("contiguous, zone hit 100.0%", StringComparison.Ordinal));
     }
 
+    // 계획 뒤 할당 구간이 달라진 스파스 파일 하나 (기준값이 지금 배치와 다름) 를 가진 계획.
+    private static Rig RigWithAChangedSparseFile(bool moved)
+    {
+        var rig = new Rig { Moved = moved };
+        string path = rig.Plan.Tasks[0].Path;
+        rig.Plan = rig.Plan with { SparseAllocations = new Dictionary<string, IReadOnlyList<AllocatedRange>> { [path] = [new AllocatedRange(0, 1)] } };
+        return rig;
+    }
+
+    [Fact]
+    public void ASparseFileWhoseAllocationChangedIsHeldOutOfTheCheckAndDoesNotStopTheReapply()
+    {
+        Rig rig = RigWithAChangedSparseFile(moved: true);
+
+        Assert.Equal(ReapplyVerdict.Healthy, rig.Check(Bench)); // 그 파일은 검사에서 빠지고 나머지는 건강
+        Assert.Equal(0, rig.ApplyCalls);
+        Assert.Contains(rig.Log.Lines, l => l.Contains("1 sparse file(s) changed allocation since the plan, held out of the layout check and reapply", StringComparison.Ordinal));
+        Assert.DoesNotContain(rig.Log.Lines, l => l.Contains("planning again", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void WhenTheOtherFilesLayoutIsLostTheReapplyRunsAsUsualWhileTheChangedSparseFileStaysHeld()
+    {
+        Rig rig = RigWithAChangedSparseFile(moved: false);
+
+        Assert.Equal(ReapplyVerdict.Reapply, rig.Check(Bench));
+        Assert.Equal(1, rig.ApplyCalls);
+    }
+
+    [Fact]
+    public void TheHeldSparseFileIsLoggedOnlyWhenTheirNumberChanges()
+    {
+        Rig rig = RigWithAChangedSparseFile(moved: true);
+
+        for (int cycle = 0; cycle < 4; cycle++)
+        {
+            Assert.Equal(ReapplyVerdict.Healthy, rig.Check(Bench));
+        }
+
+        Assert.Single(rig.Log.Lines, l => l.Contains("sparse file(s) changed allocation", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void ContiguousLayoutOutsideTheZoneIsHealthyAndNeverReappliedEvenRepeatedly()
     {

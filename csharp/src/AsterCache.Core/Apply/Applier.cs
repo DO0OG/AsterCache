@@ -65,16 +65,33 @@ public static class Applier
             throw new PlanRejectedException($"cluster size {cb} != plan {plan.ClusterBytes}");
         }
 
+        var skippedByPath = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (string path in plan.Tasks.Select(t => t.Path).Distinct(StringComparer.Ordinal))
+        {
+            if (skipReason(path) is { } why)
+            {
+                skippedByPath[path] = why;
+            }
+            else if (!plan.SparseAllocations.ContainsKey(path) && hooks.IsSparse?.Invoke(path) == true)
+            {
+                skippedByPath[path] = "sparse"; // 계획이 할당 기준값을 모르는 스파스 파일 (이전 형식 계획, 계획 뒤 스파스가 된 파일): 예전처럼 건너뜀
+            }
+        }
+
+        IReadOnlySet<string> changedSparse = PlanGuards.ChangedSparseFiles(plan, hooks.Extents, hooks.Stat);
+        foreach (string path in changedSparse.Where(p => !skippedByPath.ContainsKey(p)))
+        {
+            skippedByPath[path] = "sparse allocation changed";
+        }
+
         bool autoZone = plan.Zone.StartLcn is null;
-        plan = PlanGuards.ResolveZone(plan, vol, hooks.Extents, journalPath, out bool rezoned, options.Reserved);
+        plan = PlanGuards.ResolveZone(plan, vol, hooks.Extents, journalPath, out bool rezoned, options.Reserved, changedSparse.Count > 0 ? changedSparse : null); // 구역 확인에서는 할당이 바뀐 스파스 파일만 뺌
         long chunk = Math.Max(1, options.ChunkBytes / cb);
         var rep = new ApplyReport();
-        foreach (string p in plan.Tasks.Select(t => t.Path).Distinct(StringComparer.Ordinal).OrderBy(p => p, CodePointComparer.Instance))
+        rep.SparseAllocationChangedFiles = changedSparse.Count;
+        foreach ((string p, string reason) in skippedByPath.OrderBy(kv => kv.Key, CodePointComparer.Instance))
         {
-            if (skipReason(p) is { } why)
-            {
-                rep.SkippedFiles.Add(new(p, why));
-            }
+            rep.SkippedFiles.Add(new(p, reason));
         }
 
         var skipped = rep.SkippedFiles.Select(s => s.Key).ToHashSet(StringComparer.Ordinal);
@@ -557,7 +574,7 @@ public static class Applier
 
         if (jr.Rows.Count == 0)
         {
-            ApplyTimings.Time(ref tm.JournalTicks, () => jr.AddBatched(new JObject
+            var headerRow = new JObject
             {
                 { "type", "header" },
                 { "plan_sha", psha },
@@ -565,7 +582,13 @@ public static class Applier
                 { "cluster_bytes", (long)vol.ClusterBytes },
                 { "started", hooks.Clock() },
                 { "digest_rule", EdgeRule },
-            }));
+            };
+            if (plan.SparseAllocations.Count > 0)
+            {
+                headerRow.Add("sparse_allocations", plan.ToJson()["sparse_allocations"]);
+            }
+
+            ApplyTimings.Time(ref tm.JournalTicks, () => jr.AddBatched(headerRow));
         }
 
         // 앞선 실행이 after 검증을 못 마쳤음 (취소로 미룸, 또는 강제 종료로 end 행이 없음): 마지막으로 검증을 마친 end 행 뒤의 sha_before 중
@@ -587,7 +610,7 @@ public static class Applier
 
         try
         {
-            RunTasks(vol, todo, rep, jr, before, chunk, writeCap, hooks, Digest, perTask ? SampledDigest : null, planAhead, verify == VerifyMode.Off, parallel, ct, canIssue);
+            RunTasks(plan, vol, todo, rep, jr, before, chunk, writeCap, hooks, Digest, perTask ? SampledDigest : null, planAhead, verify == VerifyMode.Off, parallel, ct, canIssue);
         }
         catch (Exception)
         {
@@ -617,7 +640,7 @@ public static class Applier
     // parallel > 1 이면 작업자 스레드 여러 개가 같은 대기열에서 작업을 가져갑니다: 가져가는 규칙은 "준비된 (지금 진행 중이 아닌) 파일 중 다음 작업 위치가 가장 앞선 것"
     // 이라 같은 파일의 작업은 항상 계획 순서로 한 번에 하나, 작업자가 하나면 todo 순서 그대로입니다. 보고서·표본 맵·대기열 같은 공유 상태는 gate 로, 저널 쓰기는 Journal 안의 잠금으로 직렬화.
     // 한 작업자가 멈춤 사유를 정하면 (취소·쓰기 상한·존 점유·예외) 다른 작업자는 진행 중인 조각만 끝내고 단계 행 없이 멈춥니다 (planned 행이 재개 지점).
-    private static void RunTasks(IVolume vol, List<(int Idx, PlanTask Task, long Done)> todo, ApplyReport rep, Journal jr,
+    private static void RunTasks(PlanFile plan, IVolume vol, List<(int Idx, PlanTask Task, long Done)> todo, ApplyReport rep, Journal jr,
         OrderedDictionary<string, string?> before, long chunk, long writeCap, ApplyHooks hooks, Func<string, string> digest,
         Func<int, PlanTask, (string Sha, List<(long Offset, long Length)> Ranges)?>? taskDigest, int planAhead, bool noVerify, int parallel, CancellationToken ct, Func<bool>? canIssue)
     {
@@ -630,6 +653,11 @@ public static class Applier
         var windowed = new bool[todo.Count]; // planned 행 쓰기를 이미 시도한 todo 위치
         var queues = new Dictionary<string, Queue<int>>(StringComparer.Ordinal);
         var ready = new SortedSet<(int N, string Path)>();
+        var sparseChangedPaths = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
+        foreach ((string path, string reason) in rep.SkippedFiles.Where(s => s.Value == "sparse allocation changed"))
+        {
+            sparseChangedPaths.TryAdd(path, 0);
+        }
         for (int n = 0; n < todo.Count; n++)
         {
             string tp = todo[n].Task.Path;
@@ -737,6 +765,19 @@ public static class Applier
         {
             (int i, PlanTask t, long d) = todo[n];
             string p = t.Path;
+            if (sparseChangedPaths.ContainsKey(p))
+            {
+                const string changedReason = "sparse allocation changed";
+                ApplyTimings.Time(ref tm.JournalTicks, () => jr.AddBatched(new JObject { { "type", "step" }, { "idx", (long)i }, { "state", "failed" }, { "reason", changedReason } }));
+                lock (gate)
+                {
+                    rep.Failed.Add(new FailedStep(i, p, changedReason));
+                    tm.Tasks++;
+                }
+
+                return;
+            }
+
             if (!CanIssue()) // 이동 전 표본(파일당 읽기)도 읽지 않음: 취소 뒤에는 디스크를 더 건드리지 않음
             {
                 Stop("cancelled");
@@ -829,7 +870,11 @@ public static class Applier
                 }
             }
 
-            long off = d;
+            long off = plan.SparseAllocations.ContainsKey(p) ? d / SparseAllocation.MoveClusters * SparseAllocation.MoveClusters : d; // 스파스 파일은 이동 시작도 경계에 맞춤 (앞쪽에 이미 제자리인 조각이 있어도 경계부터)
+            long startOff = off;
+            IReadOnlyList<Extent>? beforeMoves = null; // 스파스 작업의 첫 이동 직전 배치: 이동 뒤 배치와 비교해 실제로 옮겨진 양을 셈
+            long successfulClusters = 0;
+            bool sparseTask = plan.SparseAllocations.ContainsKey(p);
             string? err = null;
             bool busy = false;
             while (off < t.Clusters && err is null)
@@ -845,15 +890,31 @@ public static class Applier
                     return;
                 }
 
-                long c = Math.Min(chunk, t.Clusters - off);
+                long remainingClusters = t.Clusters - off;
+                long c = Math.Min(sparseTask ? Math.Max(chunk, SparseAllocation.MoveClusters) : chunk, remainingClusters); // 스파스는 청크가 한 단위보다 작아도 한 단위씩
                 bool capHit;
                 lock (gate)
                 {
                     c = Math.Min(c, Math.Max(0, writeCap - rep.MovedBytes) / cb); // 남은 예산이 한 조각보다 작으면 줄여서 옮김 (1 클러스터 미만이면 소진)
+                    if (sparseTask)
+                    {
+                        c = remainingClusters < SparseAllocation.MoveClusters
+                            ? c == remainingClusters ? c : 0
+                            : c < SparseAllocation.MoveClusters ? 0 : c / SparseAllocation.MoveClusters * SparseAllocation.MoveClusters;
+                    }
+
                     capHit = c < 1;
                     if (!capHit)
                     {
                         rep.MovedBytes += c * cb; // 상한은 동시 실행에서도 지키도록 이동 전에 잡고, 실패하면 돌려놓음
+                    }
+                }
+
+                if (!capHit && sparseTask)
+                {
+                    lock (gate)
+                    {
+                        rep.SparseMovedBytes += c * cb;
                     }
                 }
 
@@ -870,8 +931,48 @@ public static class Applier
                         rep.MovedBytes -= c * cb;
                     }
 
+                    if (sparseTask)
+                    {
+                        lock (gate)
+                        {
+                            rep.SparseMovedBytes -= c * cb;
+                        }
+                    }
+
                     Stop("cancelled");
                     return;
+                }
+
+                if (sparseTask)
+                {
+                    bool allocated;
+                    try
+                    {
+                        IReadOnlyList<Extent>? current = ApplyTimings.Time(ref tm.OpenTicks, () => hooks.Extents(p));
+                        beforeMoves ??= current;
+                        IReadOnlyList<AllocatedRange> expected = plan.SparseAllocations[p];
+                        long fileClusters = (plan.Fingerprints.First(f => f.Path == p).Size + cb - 1) / cb;
+                        allocated = current is not null && expected.SequenceEqual(SparseAllocation.Normalize(current))
+                            && SparseAllocation.Covers(current, t.Vcn + off, c)
+                            && SparseAllocation.SupportsMove(t.Vcn + off, c, fileClusters);
+                    }
+                    catch (Exception e) when (e is IOException or UnauthorizedAccessException or Win32Exception)
+                    {
+                        allocated = false;
+                    }
+
+                    if (!allocated)
+                    {
+                        _ = sparseChangedPaths.TryAdd(p, 0);
+                        lock (gate)
+                        {
+                            rep.MovedBytes -= c * cb;
+                            rep.SparseMovedBytes -= c * cb;
+                        }
+
+                        err = "sparse allocation changed";
+                        break;
+                    }
                 }
 
                 long t0 = Stopwatch.GetTimestamp();
@@ -894,6 +995,19 @@ public static class Applier
                     }
                 }
 
+                if (moved && sparseTask)
+                {
+                    successfulClusters += c;
+                }
+
+                if (!moved && sparseTask)
+                {
+                    lock (gate)
+                    {
+                        rep.SparseMovedBytes -= c * cb;
+                    }
+                }
+
                 off += c;
             }
 
@@ -903,7 +1017,30 @@ public static class Applier
                 return;
             }
 
-            bool ok = err is null && PlanGuards.DonePrefix(ApplyTimings.Time(ref tm.OpenTicks, () => hooks.Extents(p)), t.Vcn, t.Clusters, t.TargetLcn) == t.Clusters;
+            IReadOnlyList<Extent>? after = ApplyTimings.Time(ref tm.OpenTicks, () => hooks.Extents(p));
+            long doneAfter = PlanGuards.DonePrefix(after, t.Vcn, t.Clusters, t.TargetLcn);
+            bool sparseUnchanged = !plan.SparseAllocations.TryGetValue(p, out IReadOnlyList<AllocatedRange>? expectedSparse)
+                || after is not null && expectedSparse.SequenceEqual(SparseAllocation.Normalize(after)) && SparseAllocation.Covers(after, t.Vcn, t.Clusters);
+            if (!sparseUnchanged)
+            {
+                _ = sparseChangedPaths.TryAdd(p, 0);
+                err ??= "sparse allocation changed";
+            }
+
+            long actuallyMoved = sparseTask && beforeMoves is not null
+                ? Math.Max(0, PlanGuards.PlacedClusters(after, t.Vcn, t.Clusters, t.TargetLcn) - PlanGuards.PlacedClusters(beforeMoves, t.Vcn, t.Clusters, t.TargetLcn)) // 앞에서부터 이어진 양이 아니라 작업 전체에서 새로 목표에 놓인 양
+                : successfulClusters;
+            if (actuallyMoved < successfulClusters)
+            {
+                lock (gate)
+                {
+                    long notMoved = (successfulClusters - actuallyMoved) * cb; // 호출은 성공했으나 배치가 그대로인 양: 옮긴 양과 쓰기 예산에서 뺌
+                    rep.SparseMovedBytes -= notMoved;
+                    rep.MovedBytes -= notMoved;
+                }
+            }
+
+            bool ok = err is null && doneAfter == t.Clusters && sparseUnchanged;
             bool isBusy = err is not null && busy;
             string? reason = ok ? null : isBusy ? TargetBusy : err ?? "extent_mismatch";
             ApplyTimings.Time(ref tm.JournalTicks, () => jr.AddBatched(new JObject { { "type", "step" }, { "idx", (long)i }, { "state", ok ? "done" : "failed" }, { "reason", reason } }));
@@ -941,6 +1078,7 @@ public static class Applier
         if (parallel <= 1)
         {
             Worker();
+            rep.SparseAllocationChangedFiles = Math.Max(rep.SparseAllocationChangedFiles, sparseChangedPaths.Count);
             return;
         }
 
@@ -962,6 +1100,7 @@ public static class Applier
             }
         }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)).ToArray();
         Task.WaitAll(workers);
+        rep.SparseAllocationChangedFiles = Math.Max(rep.SparseAllocationChangedFiles, sparseChangedPaths.Count);
         rep.Failed.Sort((a, b) => a.Idx.CompareTo(b.Idx)); // 끝난 순서가 실행마다 다르므로 작업 인덱스로 정렬해 보고서를 결정적으로
         if (errors.Count > 0)
         {

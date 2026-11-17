@@ -133,7 +133,8 @@ When the first real run records a trace, the plan made from it replaces the earl
 
 - **When.** After a trace exists, the game is not running, and the PC is idle, one game at a time.
 - **What.** Plans a zone, moves the pieces into it (journal and SHA-256 sample check), confirms the layout, then prewarms the zone.
-- **Does not.** Run while a game runs (a move in progress stops after the current fragment), move sparse, compressed, or encrypted files, or change file content. A failed check reverts from the journal.
+- **Does not.** Run while a game runs (a move in progress stops after the current fragment), move compressed or encrypted files, move a sparse file that also has another excluded attribute, fill the holes of a sparse file or change its attributes, or change file content. A failed check reverts from the journal.
+- **Plans made before sparse files could be relocated.** A plan made by an earlier version does not record the allocated ranges of its sparse files, so relocation keeps skipping those files exactly as before until the game is planned again for another reason. A sparse file whose physical pieces do not fit the 16-cluster move unit is left out of a new plan as a whole: `<game>: N sparse file(s) left out of the plan, their pieces do not fit the 16-cluster move unit`.
 - **Hours.** If `auto.relocate_hours` is set, new relocations and periodic re-applies start only in those local hours. A relocation that already started and left a journal finishes outside them.
 - **Settings.** `auto.relocate`, `idle_seconds`, `relocate_hours`, `max_relocations_per_day`, `max_zone_mib`, `max_relocate_gib_per_day`. How much it writes: [Effect on the hard disk](GAME_GUIDE.md#effect-on-the-hard-disk).
 - **Log.** `<game>: auto relocation done`, `[ERROR] <game>: auto relocation stopped: ...`
@@ -232,7 +233,7 @@ When the first real run records a trace, the plan made from it replaces the earl
 - **What.** Samples 8 places in each zone and reads it again if it went cold; reads the part of a hot set that did not fit; retries a prewarm that was cut short; restores a drifted layout; keeps the prewarmed cache in order and refreshes it in memory ([SOLAR](#solar-keeping-the-cache-in-order)).
 - **Does not.** Re-warm a game outside the prewarm budget, or touch the layout while the game runs.
 - **Settings.** `rewarm_minutes`, `min_free_ram_mib`, `post_update_delay_min`, `memory.standby_ladder`.
-- **Log.** `<game>: rewarm check skipped (...)`, `<game>: layout degraded while source files are unchanged (...)`, `<game>: reapplied, moved N bytes, N failed`, `<game>: ladder ordered N MiB in S s`
+- **Log.** `<game>: rewarm check skipped (...)`, `<game>: layout degraded while source files are unchanged (...)`, `<game>: reapplied, moved N bytes, N failed` (the same tail is on `<game>: auto relocation moved N bytes, ...`; when a sparse file was moved or held it ends with `, sparse moved N bytes` and `, K sparse file(s) held (allocation changed)`), `<game>: K sparse file(s) changed allocation since the plan, held out of the layout check and reapply` (the allocated ranges of a sparse file differ from the plan, so the periodic layout check and the reapply leave that file out and treat the rest of the game as usual; logged only when the number changes) and `<game>: K sparse file(s) changed allocation since the plan, held, will plan again later` (the same finding after an automatic relocation: that file is not moved and is planned again after an hour), `<game>: held files remain, plan set aside as .stale, will plan again`, `<game>: ladder ordered N MiB in S s`
 
 <details>
 <summary>Details: re-prewarm, supplement prewarm, retry, layout recheck and reapply</summary>

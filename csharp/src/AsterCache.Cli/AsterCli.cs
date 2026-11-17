@@ -18,6 +18,7 @@ public static class AsterCli
     private static readonly Command[] Commands =
     [
         new("plan", PlanCommand.Options, PlanCommand.Run, Relayout: true),
+        new("plan estimate", RelocationEstimateCommand.Options, (_, _) => 0, RunRaw: RelocationEstimateCommand.RunRaw),
         new("probe", VolumeCommands.ProbeOptions, VolumeCommands.Probe, Relayout: true),
         new("apply", VolumeCommands.ApplyOptions, VolumeCommands.Apply, Relayout: true),
         new("verify", VolumeCommands.VerifyOptions, VolumeCommands.Verify, Relayout: true),
@@ -74,8 +75,9 @@ public static class AsterCli
             return args.Count == 0 ? 2 : 0;
         }
 
-        // "profile export" 처럼 두 단어인 명령은 앞 두 인자를 이름으로 봅니다.
-        string cmdName = args[0] is "profile" or "tier" or "orbit" or "orbit-bench" && args.Count > 1 ? args[0] + " " + args[1] : args[0];
+        // "profile export" 처럼 두 단어인 명령은 앞 두 인자를 이름으로 봅니다. plan 은 한 단어 명령이기도 하므로 "plan estimate" 일 때만 두 단어로 봅니다.
+        bool twoWords = args.Count > 1 && (args[0] is "profile" or "tier" or "orbit" or "orbit-bench" || (args[0] == "plan" && args[1] == "estimate"));
+        string cmdName = twoWords ? args[0] + " " + args[1] : args[0];
         Command? cmd = Commands.FirstOrDefault(c => c.Name == cmdName);
         if (cmd is null)
         {

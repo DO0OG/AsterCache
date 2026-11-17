@@ -74,6 +74,7 @@ Use this to control each step, or to try a game that automatic mode skipped. Ope
 | `status [--plan <plan>] [--journal <journal>]` | Read-only overview: administrator rights, disks, last prewarm, automatic mode. With `--plan`, also the layout verdict. |
 | `trace --live --exe <exe> --origin-root <folder> --out <file> [--seconds N] [--io-summary-root <folder>]` | Records a game's reads with ETW. Repeat `--io-summary-root` to also collect disk-read completions and, after the session stops, convert them to files under those folders by reading file layouts (not file contents); the result is saved to `<out>.io.json`. `--csv` and `--etl` convert an existing recording instead. |
 | `plan --trace <file> --origin-root <folder> --zone-mib N --out <file> [--dry-run]` | Builds the layout plan from a trace. `--dry-run` only shows the numbers. |
+| `plan estimate --io-summary <file> [--io-summary <file> ...] --origin-root <game folder> [--plan <file>] [--zone-mib 2048,4096,...] [--zone-start-lcn N]` | Estimates current and virtual placement from physical-read summaries under the required game folder without moving files. Files outside the folder are excluded and counted. Prints one JSON result to stdout and short English summaries to stderr. Repeated `session_id` values are counted once. |
 | `probe --volume D:` | Checks a volume before relocation. |
 | `apply --plan <file> --allowed-root <folder> --require-volume-label <label> [--dry-run \| --execute]` | Moves the pieces. Without `--execute` nothing moves. If the label differs, nothing is touched. |
 | `verify --plan <file>` | Checks whether the layout is still in place. |
@@ -119,6 +120,14 @@ aster prewarm --plan plan.json --origin-root D:\Games\Frostpunk
 ```text
 {"error":"not_admin"}
 ```
+
+**Estimate relocation from physical reads.** The required game folder is the basis for anti-cheat and running-game checks. The command reads only the summary, optional plan, and file metadata/layout; it excludes and counts files outside the folder. It does not read game-file contents or write plans or journals.
+
+```bat
+aster plan estimate --io-summary trace.run14.json.io.json --origin-root D:\Games\Frostpunk --plan plan.json --zone-mib 2048,4096,8192,16384
+```
+
+The JSON includes `inputs` and `combined` estimates, block classification and reason totals, `Order` logical-range plan coverage, and per-zone current-placement coverage that counts a block as inside only when all of its physical pieces are inside. Sequence distance includes movement between pieces within a block. `current_policy` separates attribute-movable blocks from current-policy candidates, exclusions, and unknowns. Selection movement and required contiguous space use cluster-occupied lengths, including a short final block. Each selection reports selected read-byte and latency ratios, bytes to move, and required contiguous space. `files_outside_origin_root` counts unique excluded files. If neither `--zone-start-lcn` nor a resolved plan zone is available, the estimate uses LCN 0 and identifies that source under `zone_starts`. `zone_starts` is set from the first valid layout lookup on each volume and also reports `plan_zone_clusters`, the plan's zone cluster count; `notes` states that a zone is assumed contiguously free from its start and that the plan's fixed target positions are not counted as inside a zone. A file on a volume whose cluster is larger than 64 KiB is `layout_unavailable` (`cluster_larger_than_block`). `--origin-root` must be an existing folder. If policy exclusion data is unavailable, `notes` says so. Results are comparison metrics; they do not predict head travel or loading-time improvement.
 
 **Check that a layout is still in place.**
 

@@ -114,6 +114,42 @@ public sealed class VolumeBitmap
         return found;
     }
 
+    /// 존 앞 여유를 두기 시작하는 최소 남는 길이 (필요 길이를 뺀 빈 구간의 나머지). 이보다 짧으면 구간 시작에 둡니다:
+    /// 나머지의 절반이 512 MiB 도 안 되면 (다른 프로그램의 쓰기 약 0.8 GiB/시간 기준 40 분 미만) 여유의 이득이 작습니다.
+    public const long ZoneMarginMinSlackBytes = 1L << 30;
+
+    /// 앞 여유의 상한. 여유가 클수록 존이 더 높은 LCN (HDD 안쪽) 으로 가므로 상한을 둡니다. 다른 프로그램이 7 분마다 약 90 MiB 를 새로 쓰는 실측 (약 0.8 GiB/시간) 으로 몇 시간치.
+    public const long ZoneMarginCapBytes = 4L << 30;
+
+    /// 빈 구간에서 필요한 길이를 뺀 나머지 (slackClusters) 에서 존 앞에 둘 여유 (클러스터, align 의 배수). 나머지가 최소보다 짧으면 0, 아니면 나머지의 절반을 상한까지.
+    public static long ZoneMarginClusters(long slackClusters, long clusterBytes, long align)
+    {
+        if (clusterBytes <= 0 || slackClusters * clusterBytes < ZoneMarginMinSlackBytes)
+        {
+            return 0;
+        }
+
+        long margin = Math.Min(slackClusters / 2, ZoneMarginCapBytes / clusterBytes);
+        return align > 1 ? margin / align * align : margin;
+    }
+
+    /// 새 존 자리: FindFreeRun (낮은 LCN 우선) 이 고르는 빈 구간 안에서 시작이 아니라 ZoneMarginClusters 만큼 뒤. 구간 시작·여유도 함께 돌려줍니다.
+    public ZonePlacement? FindZoneRun(long clustersNeeded, long clusterBytes, long align, IReadOnlyList<(long Lcn, long Clusters)>? excluded = null)
+    {
+        foreach ((long lcn, long n) in Without(FreeRuns(), excluded))
+        {
+            long start = AlignUp(lcn, align);
+            long slack = lcn + n - start - clustersNeeded;
+            if (slack >= 0)
+            {
+                long margin = ZoneMarginClusters(slack, clusterBytes, align);
+                return new ZonePlacement(start + margin, start, margin);
+            }
+        }
+
+        return null;
+    }
+
     private static IEnumerable<(long Lcn, long Length)> Without(IEnumerable<(long Lcn, long Length)> runs, IReadOnlyList<(long Lcn, long Clusters)>? excluded)
     {
         if (excluded is null or { Count: 0 })
@@ -167,3 +203,6 @@ public sealed class VolumeBitmap
         return r == 0 ? value : value + (align - r);
     }
 }
+
+/// 새 존 자리: 존 시작, 고른 빈 구간의 (정렬된) 시작, 그 앞에 둔 여유 (클러스터, 0 이면 구간 시작).
+public readonly record struct ZonePlacement(long Start, long RunStart, long MarginClusters);

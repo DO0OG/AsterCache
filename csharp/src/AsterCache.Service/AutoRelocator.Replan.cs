@@ -1,3 +1,4 @@
+using AsterCache.Core.Apply;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Plan;
@@ -29,6 +30,11 @@ public sealed partial class AutoRelocator
         if (plan.Stats.TryGetValue(ResidualPlanner.AdjacentKey, out object? adjacent))
         {
             _log.Info($"{g.Name}: " + (adjacent is 1L ? "remainder placed right after the moved part" : "no free space after the moved part, using a new place"));
+        }
+
+        if (plan.Stats.TryGetValue(PlanGuards.ZoneMarginKey, out object? margin) && plan.Stats.TryGetValue(PlanGuards.ZoneRunStartKey, out object? runStart))
+        {
+            _log.Info($"{g.Name}: new place leaves {margin} clusters after the free run start (run {runStart}, zone {plan.Zone.StartLcn}) to stay clear of other programs' new files");
         }
     }
 

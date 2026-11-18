@@ -115,6 +115,7 @@ public sealed partial class AutoRelocator
                 && (IsJournalMismatch(e) || IsZoneNotFree(e) && !(_seeded.Contains(g.Name) && _env.JournalRows(g) == 0)))
             {
                 // 부분 적용된 계획이 막혔거나 (점유) 저널이 다른 계획의 것: 이미 옮긴 조각은 지키고 남은 부분만 다시 계획
+                LogRejectedPlace(g, plan, e.Message);
                 if (!ReplanRemainder(g, plan, e))
                 {
                     return;
@@ -129,6 +130,7 @@ public sealed partial class AutoRelocator
                 }
                 catch (PlanRejectedException again) when (IsZoneNotFree(again) || IsJournalMismatch(again))
                 {
+                    LogRejectedPlace(g, plan, again.Message);
                     HoldRecovery(g, again.Message); // 잔여 재계획 뒤에도 막힘: 30 분 보류
                     return;
                 }
@@ -163,6 +165,11 @@ public sealed partial class AutoRelocator
             if (dry.ZoneRetargeted)
             {
                 _log.Info($"{g.Name}: previous zone was taken by another file, zone moved" + (dry.JournalArchivedTo is { } a ? $", earlier journal kept as {a}" : string.Empty));
+            }
+
+            if (dry.ZoneMarginClusters > 0)
+            {
+                _log.Info($"{g.Name}: new zone placed {dry.ZoneMarginClusters} clusters after the free run start (run {dry.ZoneRunStartLcn}, zone {dry.ZoneStartLcn}) to stay clear of other programs' new files");
             }
 
             mark = _env.JournalRows(g); // 저널을 옮겨 보관했을 수 있으므로 계획을 저장한 뒤의 줄 수
@@ -259,6 +266,11 @@ public sealed partial class AutoRelocator
             _status.SetLastRelocationBytes(rep.MovedBytes); // 시작 때 넣은 예정 바이트 대신 실제로 옮긴 양
             _log.Info($"{g.Name}: auto relocation moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed, order {rep.OrderUsed ?? order}" + (rep.OrderFallbackReason is not null ? " (fallback)" : string.Empty) + (rep.Stopped is { } why ? $", stopped: {why}" : string.Empty) + rep.SparseSummary + rep.Timings.Summary);
             pendingRecovery = 0;
+            if (_status.Recovery(g.Name) is { OccupiedStreak: > 0 } streaked)
+            {
+                _status.SetRecovery(g.Name, ClearOccupiedStreakIfMoved(streaked, rep.MovedBytes));
+            }
+
             BeginRecovery(g, s.Auto, rep.MovedBytes, baseline);
             if (rep.Stopped == DataLock.BusyReason)
             {
@@ -270,6 +282,7 @@ public sealed partial class AutoRelocator
             }
             else if (rep.Stopped == Applier.ZoneOccupied)
             {
+                LogRejectedPlace(g, plan, null, rep.Failed.Count > 0 ? rep.Failed[0].Idx : null);
                 if (_status.Recovery(g.Name) is { Replans: >= 1 })
                 {
                     HoldRecovery(g, rep.Stopped); // 잔여 재계획을 이미 썼음: 처음부터 다시 계획하지 않고 보류

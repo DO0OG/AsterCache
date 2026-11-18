@@ -228,7 +228,8 @@ public static class PlanGuards
         VolumeBitmap bm = vol.Bitmap();
         if (plan.Zone.StartLcn is null)
         {
-            return plan.Resolve(FindZone(plan, bm, reserved));
+            ZonePlacement fresh = FindZone(plan, bm, reserved);
+            return Stamp(plan.Resolve(fresh.Start), fresh);
         }
 
         try
@@ -240,9 +241,10 @@ public static class PlanGuards
             && plan.Stats.TryGetValue("in_place_bytes", out object? inPlace) && inPlace is 0L && !HasUnfinishedStep(journalPath))
         {
             long oldStart = plan.Zone.StartLcn.Value;
-            long start = FindZone(plan, bm, reserved);
+            ZonePlacement placed = FindZone(plan, bm, reserved);
+            long start = placed.Start;
             rezoned = true;
-            return plan with { Zone = plan.Zone with { StartLcn = start }, Tasks = plan.Tasks.Select(t => t with { TargetLcn = t.TargetLcn - oldStart + start }).ToList() };
+            return Stamp(plan with { Zone = plan.Zone with { StartLcn = start }, Tasks = plan.Tasks.Select(t => t with { TargetLcn = t.TargetLcn - oldStart + start }).ToList() }, placed);
         }
     }
 
@@ -267,10 +269,29 @@ public static class PlanGuards
         return last.Values.Any(s => s != "done");
     }
 
-    private static long FindZone(PlanFile plan, VolumeBitmap bm, IReadOnlyList<(long Lcn, long Clusters)>? reserved)
+    /// 계획 stats 의 여유 기록 키: 새 존에 앞 여유를 두었을 때만 남고 (서비스 로그용), 계획 SHA 에는 들어가지 않음.
+    public const string ZoneMarginKey = "zone_margin_clusters";
+
+    public const string ZoneRunStartKey = "zone_run_start_lcn";
+
+    // 다른 프로그램의 새 파일이 큰 빈 구간의 앞쪽부터 채워지므로, 구간이 충분히 길면 시작이 아니라 앞에 여유를 둔 자리에 존을 둠 (VolumeBitmap.FindZoneRun).
+    private static ZonePlacement FindZone(PlanFile plan, VolumeBitmap bm, IReadOnlyList<(long Lcn, long Clusters)>? reserved)
     {
         long need = (long)plan.Stats["zone_used_clusters"]!;
-        return bm.FindFreeRun(need, preferLowLcn: true, align: ZoneAlign, excluded: reserved) ?? throw new PlanRejectedException($"no free run of {need} clusters");
+        return bm.FindZoneRun(need, plan.ClusterBytes, ZoneAlign, reserved) ?? throw new PlanRejectedException($"no free run of {need} clusters");
+    }
+
+    private static PlanFile Stamp(PlanFile plan, ZonePlacement placed)
+    {
+        _ = plan.Stats.Remove(ZoneMarginKey);
+        _ = plan.Stats.Remove(ZoneRunStartKey);
+        if (placed.MarginClusters > 0)
+        {
+            plan.Stats[ZoneMarginKey] = placed.MarginClusters;
+            plan.Stats[ZoneRunStartKey] = placed.RunStart;
+        }
+
+        return plan;
     }
 
     // bisect_right(starts, lcn) - 1

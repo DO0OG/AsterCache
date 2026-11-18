@@ -108,6 +108,69 @@ public sealed class ResidualReplanTests : ApplyTestBase
         Assert.Equal(0L, plan.Stats[ResidualPlanner.AdjacentKey]);
     }
 
+    private const long MarginCap = (4L << 30) / Cb; // 앞 여유 상한 (클러스터)
+
+    // 큰 볼륨: 0 ~ 20000 은 다른 파일이 쓰고 그 뒤로는 큰 빈 구간 (옮긴 조각은 20000 부터 이어짐)
+    private void UseALargeVolumeWithAWallBelowTheZone()
+    {
+        Vol.TotalClusters = 4_000_000;
+        Vol.Ext["wall.bin"] = [new Extent(0, 0, 20000)];
+    }
+
+    [Fact]
+    public void ANewZoneInALongFreeRunIsPlacedAfterAMarginAndTheStatsRecordIt()
+    {
+        UseALargeVolumeWithAWallBelowTheZone();
+
+        PlanFile plan = PlanGuards.ResolveZone(Make(), Vol, p => Vol.Ext[p], null, out _, reserved: [(20000, 100)]);
+
+        long runStart = (long)plan.Stats[PlanGuards.ZoneRunStartKey]!;
+        Assert.Equal(20100, runStart); // 예약 바로 뒤 (4 의 배수)
+        Assert.Equal(MarginCap, (long)plan.Stats[PlanGuards.ZoneMarginKey]!);
+        Assert.Equal(runStart + MarginCap, plan.Zone.StartLcn);
+        Assert.Equal(0, plan.Zone.StartLcn % PlanGuards.ZoneAlign);
+        Assert.DoesNotContain(plan.Tasks, t => t.TargetLcn < plan.Zone.StartLcn);
+    }
+
+    [Fact]
+    public void ANewZoneInAShortFreeRunStaysAtTheRunStartWithNoMarginRecord()
+    {
+        Vol.Ext["wall.bin"] = [new Extent(0, 0, 20000)]; // 볼륨 200000 클러스터: 남는 길이가 최소에 못 미침
+
+        PlanFile plan = PlanGuards.ResolveZone(Make(), Vol, p => Vol.Ext[p]);
+
+        Assert.Equal(20000, plan.Zone.StartLcn);
+        Assert.False(plan.Stats.ContainsKey(PlanGuards.ZoneMarginKey));
+    }
+
+    [Fact]
+    public void ASpaceRightAfterTheMovedPartIsStillPreferredToTheMarginRule()
+    {
+        UseALargeVolumeWithAWallBelowTheZone();
+
+        (PlanFile plan, long end) = ReplanAfterPartialA();
+
+        Assert.Equal(end, plan.Zone.StartLcn);
+        Assert.Equal(1L, plan.Stats[ResidualPlanner.AdjacentKey]);
+        Assert.False(plan.Stats.ContainsKey(PlanGuards.ZoneMarginKey));
+    }
+
+    [Fact]
+    public void WhenTheSpaceRightAfterTheMovedPartIsBlockedTheNewRunAfterTheOtherFileGetsAMargin()
+    {
+        UseALargeVolumeWithAWallBelowTheZone();
+
+        (PlanFile plan, long end) = ReplanAfterPartialA(blockOffset: 10);
+
+        Assert.Equal(0L, plan.Stats[ResidualPlanner.AdjacentKey]);
+        long runStart = (long)plan.Stats[PlanGuards.ZoneRunStartKey]!;
+        Assert.True(runStart >= end + 14 && runStart % PlanGuards.ZoneAlign == 0); // 막은 파일 (end + 10, 4 클러스터) 뒤의 큰 구간
+        Assert.Equal(MarginCap, (long)plan.Stats[PlanGuards.ZoneMarginKey]!);
+        Assert.Equal(runStart + MarginCap, plan.Zone.StartLcn);
+        _ = Apply(plan, Exec(2L << 30));
+        Assert.Equal(0, LayoutVerifier.Verify(plan, p => Vol.Ext[p]).MissingFiles); // 여유 자리로 실제 이동도 끝남
+    }
+
     [Fact]
     public void ASpaceOverlappingAnotherPlansReservationFallsBackToTheGeneralSearch()
     {

@@ -265,7 +265,7 @@ public sealed partial class AutoRelocator
 
             PlanFile built = _env.ReplanResidual!(g, active, ResidualOlds(g), SessionsFor(g, active));
             LogResidualPlacement(g, built);
-            _status.SetRecovery(g.Name, new RecoveryAttempt(built.Sha(), LcnIn(cause.Message), 1, null, prior.Reason, prior.Stamp));
+            _status.SetRecovery(g.Name, new RecoveryAttempt(built.Sha(), LcnIn(cause.Message), 1, null, prior.Reason, prior.Stamp, prior.OccupiedStreak));
             _ = _seeded.Remove(g.Name);
             _ = RestoreWarmList(g);
             return true;

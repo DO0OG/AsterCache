@@ -60,6 +60,11 @@ public sealed class ApplyReport
 
     public string? JournalArchivedTo { get; set; }
 
+    /// 이번에 새 존을 고르며 빈 구간 시작 앞에 둔 여유 (클러스터, 0 이면 구간 시작) 와 그 구간의 시작 LCN. 서비스 로그용.
+    public long ZoneMarginClusters { get; set; }
+
+    public long? ZoneRunStartLcn { get; set; }
+
     /// order=source 를 요청했을 때만 채움: 실제로 쓴 순서와, target 으로 바꿨다면 그 이유.
     public string? OrderUsed { get; set; }
 

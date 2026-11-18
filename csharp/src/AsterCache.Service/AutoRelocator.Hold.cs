@@ -3,6 +3,7 @@ using AsterCache.Core;
 using AsterCache.Core.Apply;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
+using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
 
@@ -174,9 +175,86 @@ public sealed partial class AutoRelocator
     /// 점유 충돌 뒤 잔여 재계획이 다시 막혔을 때 쉬는 시간 (재시작해도 풀리지 않음).
     public static readonly TimeSpan RecoveryHold = TimeSpan.FromMinutes(30);
 
+    /// 같은 점유 사유가 이 횟수째 연속되면 보류 시간을 늘리기 시작함.
+    public const int OccupiedStreakGrow = 3;
+
+    /// 늘린 보류 시간의 상한.
+    public static readonly TimeSpan RecoveryHoldMax = TimeSpan.FromHours(4);
+
     private static readonly Regex RejectedLcn = new(@"LCN (\d+)", RegexOptions.None, TimeSpan.FromSeconds(1));
 
     private static long? LcnIn(string message) => RejectedLcn.Match(message) is { Success: true } m ? long.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) : null;
+
+    // 다른 프로그램이 존 자리를 차지해 막힌 사유인가 (실행 전 확인의 zone_not_free, 실행 중 연속 점유 중단).
+    // 다른 계획의 예약과 겹친 거절 (reserved by another plan) 은 그 계획이 끝나면 풀리므로 다른 프로그램의 점유로 세지 않음.
+    private static bool IsOccupiedReason(string? reason) => reason is not null
+        && (reason.StartsWith("zone_not_free", StringComparison.Ordinal) && !reason.Contains("reserved by another plan", StringComparison.Ordinal) || reason == Applier.ZoneOccupied);
+
+    /// 이 가까움 (클러스터) 안이면 "옮긴 조각 끝 바로 뒤" 로 봄 (4 KiB 클러스터에서 4 MiB).
+    public const long ProgressNearClusters = 1024;
+
+    /// 거절된 LCN 이 존의 어디였는지: 존 앞 여유 안 / 존 안에서 옮긴 마지막 조각 끝 바로 뒤 (진행 지점) / 존 안 그 밖 / 존 밖.
+    /// runStart: 계획 stats 의 여유를 둔 빈 구간 시작 (없으면 null). progressEnd: 존 안에서 이미 옮긴 마지막 조각의 끝 (없으면 null). 계획·저널에 이미 있는 값만 씀.
+    public static string RejectedPlace(long lcn, long zoneStart, long zoneClusters, long? runStart, long? progressEnd)
+    {
+        if (lcn < zoneStart)
+        {
+            return runStart is { } run && lcn >= run ? $"in the margin before the zone ({zoneStart - lcn} clusters before its start)" : "outside the zone";
+        }
+
+        if (lcn >= zoneStart + zoneClusters)
+        {
+            return "outside the zone";
+        }
+
+        return progressEnd is { } end && lcn >= end && lcn - end < ProgressNearClusters
+            ? $"right after the last moved piece ({lcn - end} clusters after its end)"
+            : "inside the zone, not next to the moved part";
+    }
+
+    // 점유로 막힌 자리를 한 줄 로그로: 이 로그는 점유가 다른 프로그램의 새 파일 자리인지 이동 진행 지점인지 가르는 근거. lcn 이 없으면 (실행 중 중단) 첫 실패 단계의 목표.
+    private void LogRejectedPlace(GameSettings g, PlanFile plan, string? message, long? failedIdx = null)
+    {
+        try
+        {
+            if (plan.Zone.StartLcn is not { } zoneStart || message is not null && message.Contains("reserved by another plan", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            var cache = new Dictionary<string, IReadOnlyList<Extent>?>(StringComparer.Ordinal);
+            IReadOnlyList<Extent>? Ext(string path) => cache.TryGetValue(path, out IReadOnlyList<Extent>? e) ? e : cache[path] = _env.Extents(path);
+            long? progressEnd = null;
+            foreach (PlanTask t in plan.Tasks.Where(t => t.TargetLcn >= zoneStart && t.TargetLcn < zoneStart + plan.Zone.Clusters))
+            {
+                long done = PlanGuards.DonePrefix(Ext(t.Path), t.Vcn, t.Clusters, t.TargetLcn);
+                if (done > 0)
+                {
+                    progressEnd = Math.Max(progressEnd ?? 0, t.TargetLcn + done);
+                }
+            }
+
+            long? lcn = message is not null ? LcnIn(message)
+                : failedIdx is { } i && i >= 0 && i < plan.Tasks.Count ? plan.Tasks[(int)i].TargetLcn + PlanGuards.DonePrefix(Ext(plan.Tasks[(int)i].Path), plan.Tasks[(int)i].Vcn, plan.Tasks[(int)i].Clusters, plan.Tasks[(int)i].TargetLcn) : null;
+            long? runStart = plan.Stats.TryGetValue(PlanGuards.ZoneRunStartKey, out object? rs) && rs is long r ? r : null;
+            if (lcn is { } at)
+            {
+                _log.Info($"{g.Name}: zone rejected at LCN {at}: {RejectedPlace(at, zoneStart, plan.Zone.Clusters, runStart, progressEnd)} (zone {zoneStart}, moved up to {progressEnd?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-"})");
+            }
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            // 진단 로그일 뿐: 읽지 못하면 남기지 않음
+        }
+    }
+
+    /// 점유 사유가 streak 번째 연속일 때의 보류 시간: 3 번째부터 두 배씩 (30 분 → 1 시간 → 2 시간 → 4 시간 상한).
+    public static TimeSpan RecoveryHoldFor(int streak) =>
+        streak < OccupiedStreakGrow ? RecoveryHold : TimeSpan.FromTicks(Math.Min(RecoveryHoldMax.Ticks, RecoveryHold.Ticks << Math.Min(streak - OccupiedStreakGrow + 1, 8)));
+
+    /// 의미 있는 양 (횟수로 세는 최소 바이트) 을 옮겼으면 점유가 연속된 횟수를 지움.
+    public static RecoveryAttempt ClearOccupiedStreakIfMoved(RecoveryAttempt attempt, long movedBytes) =>
+        movedBytes >= AutoStatus.CountedRelocationMinBytes ? attempt with { OccupiedStreak = 0 } : attempt;
 
     private DateTimeOffset? RecoveryHeldUntil(GameSettings g) => _status.Recovery(g.Name) is { NextAllowed: { } until } && until > _env.Now() ? until : null;
 
@@ -195,10 +273,17 @@ public sealed partial class AutoRelocator
             return;
         }
 
-        DateTimeOffset until = _env.Now() + RecoveryHold;
-        _status.SetRecovery(g.Name, prior with { RejectedLcn = LcnIn(why) ?? prior.RejectedLcn, NextAllowed = until, Reason = reason, Stamp = stamp });
+        // 잔여 재계획마다 계획 SHA 가 바뀌어 위의 표식 비교가 걸리지 않으므로, 같은 점유 사유가 연속된 횟수를 따로 셈 (다른 사유가 끼면 다시 1)
+        int streak = IsOccupiedReason(reason) ? (IsOccupiedReason(prior.Reason) ? prior.OccupiedStreak : 0) + 1 : 0;
+        TimeSpan hold = RecoveryHoldFor(streak);
+        DateTimeOffset until = _env.Now() + hold;
+        _status.SetRecovery(g.Name, prior with { RejectedLcn = LcnIn(why) ?? prior.RejectedLcn, NextAllowed = until, Reason = reason, Stamp = stamp, OccupiedStreak = streak });
         Note(g, AutoStage.WaitingIdle, HoldText(until));
         _log.Warn($"{g.Name}: recovery held until {until.ToUniversalTime():u} ({FirstLine(why)})");
+        if (streak >= OccupiedStreakGrow)
+        {
+            _log.Warn($"{g.Name}: zone occupied {streak} times in a row, another program keeps writing to this drive, hold extended to {hold.TotalMinutes:F0} min");
+        }
     }
 
     // 거절된 입력의 표식: 활성 계획 SHA, 저널 header SHA·줄 수, 트레이스 수정 시각. 읽을 수 없는 부분은 "?" (그 사이 읽히게 되면 표식이 달라져 다시 평가).

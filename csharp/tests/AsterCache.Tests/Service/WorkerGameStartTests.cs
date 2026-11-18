@@ -31,11 +31,24 @@ public sealed class WorkerGameStartTests : IAsyncDisposable
         _ => null,
     }, () => 0), _log);
 
+    // 워커가 멈춘 뒤에 치울 것들: 워커의 1 초 추적 틱이 상태 파일 (auto_status.json) 을 쓰는 중에 폴더를 지우면 공유 위반이 나므로, 시험 본문의 using 이 아니라 여기서 정리
+    private readonly List<IDisposable> _afterWorkerStop = [];
+
     public async ValueTask DisposeAsync()
     {
-        if (_worker is not null)
+        try
         {
-            await _worker.StopAsync(CancellationToken.None);
+            if (_worker is not null)
+            {
+                await _worker.StopAsync(CancellationToken.None);
+            }
+        }
+        finally
+        {
+            foreach (IDisposable d in _afterWorkerStop)
+            {
+                d.Dispose();
+            }
         }
     }
 
@@ -495,6 +508,7 @@ public sealed class WorkerGameStartTests : IAsyncDisposable
         time = origin.AddSeconds(170);
         _workerNow = time;
         worker.NoteGameExits(); // 종료 확정·처리
+        await WaitUntil(() => _log.Lines.Contains("Info: seen exit: exited")); // 종료 처리 기록은 배경에서 남을 수 있어 나타날 때까지 기다림
         Assert.Single(_log.Lines, line => line == "Info: seen exit: exited");
         Assert.Contains((50, 5), world.Sets); // 정상 종료 처리가 양보를 복원함
 
@@ -544,7 +558,8 @@ public sealed class WorkerGameStartTests : IAsyncDisposable
     [Fact]
     public async Task SlowTraceEndWithAShortRunThenABackedOffRunNeverOpensTraceOrBoundaryReadsForThoseRuns()
     {
-        using var rig = new AutoRig();
+        var rig = new AutoRig();
+        _afterWorkerStop.Add(rig);
         rig.Editor.Add(rig.Input("late-start", "late-start.exe", @"D:\Games\late-start", "auto"));
         rig.Reload();
         rig.Settings = rig.Settings with { Auto = AutoSettings.Default with { LoadBoundary = true } };

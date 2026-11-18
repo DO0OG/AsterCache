@@ -67,13 +67,27 @@ public static class ResidualReplan
         candidateStats[ResidualPlanner.GenerationKey] = prevGen;
         candidate = candidate with { Stats = candidateStats };
         // 잔여는 이미 옮긴 조각 바로 뒤의 빈 공간을 먼저 쓰고 (분산 방지), 없으면 예약 제외 빈 구간 중 낮은 LCN
+        // 인접 자리가 막혀 새 빈 구간을 쓰게 되면 구간이 충분히 길 때 시작이 아니라 앞에 여유를 둔 자리 (다른 프로그램의 새 파일과 겹침 방지)
+        ZonePlacement? placed = null;
         PlanFile built = ResidualPlanner.Build(candidate, previous, hooks.Extents,
-            need => vol.Bitmap().FindFreeRun(need, preferLowLcn: true, align: PlanGuards.ZoneAlign, excluded: reserved),
+            need =>
+            {
+                placed = vol.Bitmap().FindZoneRun(need, vol.ClusterBytes, PlanGuards.ZoneAlign, reserved);
+                return placed?.Start;
+            },
             (need, ends) =>
             {
                 VolumeBitmap bm = vol.Bitmap();
                 return ends.Where(e => bm.RangeFree(e, need) && !(reserved ?? []).Any(r => r.Lcn < e + need && e < r.Lcn + r.Clusters)).Select(e => (long?)e).FirstOrDefault();
             });
+        _ = built.Stats.Remove(PlanGuards.ZoneMarginKey); // 후보 stats 에서 물려받은 이전 여유 기록은 이번 판정으로 다시 정함
+        _ = built.Stats.Remove(PlanGuards.ZoneRunStartKey);
+        if (placed is { MarginClusters: > 0 } margin)
+        {
+            built.Stats[PlanGuards.ZoneMarginKey] = margin.MarginClusters;
+            built.Stats[PlanGuards.ZoneRunStartKey] = margin.RunStart;
+        }
+
         // 최종 방어선: 이전 계획 파일을 못 읽어 세대를 모르더라도 새 계획의 SHA 가 현재 저널의 계획 SHA 와 같을 수 없게 세대를 올림 (같으면 옛 검증 표본을 재사용함)
         string? journalSha = JournalPlanSha(journalPath);
         for (int bumps = 0; journalSha is not null && built.Sha() == journalSha; bumps++)

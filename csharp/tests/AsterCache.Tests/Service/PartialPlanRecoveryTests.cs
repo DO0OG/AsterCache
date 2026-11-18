@@ -439,6 +439,94 @@ public sealed partial class AutoRelocatorTests
     }
 
     [Fact]
+    public void TheHoldGrowsFromTheThirdConsecutiveOccupiedReasonWithACapAndOnlyAMeaningfulMoveClearsTheCount()
+    {
+        Assert.Equal(AutoRelocator.RecoveryHold, AutoRelocator.RecoveryHoldFor(1));
+        Assert.Equal(AutoRelocator.RecoveryHold, AutoRelocator.RecoveryHoldFor(2));
+        Assert.Equal(TimeSpan.FromHours(1), AutoRelocator.RecoveryHoldFor(3));
+        Assert.Equal(TimeSpan.FromHours(2), AutoRelocator.RecoveryHoldFor(4));
+        Assert.Equal(AutoRelocator.RecoveryHoldMax, AutoRelocator.RecoveryHoldFor(5));
+        Assert.Equal(AutoRelocator.RecoveryHoldMax, AutoRelocator.RecoveryHoldFor(1000));
+
+        var attempt = new RecoveryAttempt(null, null, 1, null, "zone region appears occupied, stopping", null, 4);
+        Assert.Equal(4, AutoRelocator.ClearOccupiedStreakIfMoved(attempt, AutoStatus.CountedRelocationMinBytes - 1).OccupiedStreak);
+        Assert.Equal(0, AutoRelocator.ClearOccupiedStreakIfMoved(attempt, AutoStatus.CountedRelocationMinBytes).OccupiedStreak);
+    }
+
+    [Fact]
+    public void TheRejectedLcnIsPlacedInTheMarginRightAfterTheMovedPartElsewhereInTheZoneOrOutside()
+    {
+        // 존 1000 ~ 1999, 여유를 둔 구간 시작 400, 옮긴 부분은 1500 까지
+        Assert.StartsWith("in the margin before the zone (100 clusters", AutoRelocator.RejectedPlace(900, 1000, 1000, 400, 1500));
+        Assert.StartsWith("outside the zone", AutoRelocator.RejectedPlace(399, 1000, 1000, 400, 1500)); // 구간 시작 앞
+        Assert.StartsWith("outside the zone", AutoRelocator.RejectedPlace(900, 1000, 1000, null, 1500)); // 여유 기록 없음
+        Assert.StartsWith("right after the last moved piece (0 clusters", AutoRelocator.RejectedPlace(1500, 1000, 1000, 400, 1500));
+        Assert.StartsWith("right after the last moved piece (7 clusters", AutoRelocator.RejectedPlace(1507, 1000, 1000, null, 1500));
+        Assert.StartsWith("inside the zone, not next to", AutoRelocator.RejectedPlace(1500 + AutoRelocator.ProgressNearClusters, 1000, 2000, null, 1500)); // 진행 지점에서 멀리
+        Assert.StartsWith("inside the zone, not next to", AutoRelocator.RejectedPlace(1200, 1000, 1000, null, 1500)); // 옮긴 부분 안쪽
+        Assert.StartsWith("inside the zone, not next to", AutoRelocator.RejectedPlace(1000, 1000, 1000, null, null)); // 아직 옮긴 것이 없음
+        Assert.StartsWith("outside the zone", AutoRelocator.RejectedPlace(2000, 1000, 1000, 400, 1500));
+    }
+
+    [Fact]
+    public void AReservedByAnotherPlanReasonIsNotCountedAsAnotherProgramOccupyingTheZone()
+    {
+        Assert.Equal("write_cap", Apply(Make().Resolve(20000), Partial(32)).Stopped);
+        Make().Resolve(30000).Save(_game.Plan);
+        WaitingForTheRest();
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
+        _w.Apply = (g, plan, options, ct) => options.DryRun ? throw new PlanRejectedException("zone_not_free: LCN 777 is reserved by another plan") : real(g, plan, options, ct);
+
+        for (int n = 1; n <= 4; n++)
+        {
+            Run(TimeSpan.FromMinutes(4));
+
+            RecoveryAttempt held = _status.Recovery("bench")!;
+            Assert.Equal(0, held.OccupiedStreak);
+            Assert.InRange(held.NextAllowed!.Value, _w.Now, _w.Now + AutoRelocator.RecoveryHold); // 늘리지 않고 30 분
+            _w.Now = held.NextAllowed.Value + TimeSpan.FromMinutes(1);
+        }
+
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("another program keeps writing", StringComparison.Ordinal));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("zone rejected at LCN", StringComparison.Ordinal)); // 예약 충돌은 자리 로그도 남기지 않음
+    }
+
+    [Fact]
+    public void TheSameOccupiedReasonRepeatedAcrossNewPlanShasLengthensTheHoldFromTheThirdTimeAndADifferentReasonCountsApart()
+    {
+        Assert.Equal("write_cap", Apply(Make().Resolve(20000), Partial(32)).Stopped);
+        Make().Resolve(30000).Save(_game.Plan);
+        WaitingForTheRest();
+        string reason = "zone_not_free: LCN 777 is in use by another file";
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
+        _w.Apply = (g, plan, options, ct) => options.DryRun ? throw new PlanRejectedException(reason) : real(g, plan, options, ct);
+
+        for (int n = 1; n <= 4; n++)
+        {
+            DateTimeOffset before = _w.Now;
+            Run(TimeSpan.FromMinutes(4));
+
+            RecoveryAttempt held = _status.Recovery("bench")!;
+            Assert.Equal(n, held.OccupiedStreak);
+            TimeSpan hold = AutoRelocator.RecoveryHoldFor(n);
+            Assert.InRange(held.NextAllowed!.Value, before + hold, before + hold + TimeSpan.FromMinutes(4)); // 계획 SHA 가 매번 달라도 같은 사유라 횟수가 이어짐
+            Assert.Equal(n >= 3, _log.Lines.Any(l => l.Contains("another program keeps writing to this drive", StringComparison.Ordinal)));
+            Assert.Contains(_log.Lines, l => l.Contains("zone rejected at LCN 777: outside the zone", StringComparison.Ordinal));
+            Assert.Equal(AutoStage.WaitingIdle, Entry.Stage);
+            _w.Now = held.NextAllowed.Value + TimeSpan.FromMinutes(1);
+        }
+
+        Assert.Equal(4, new AutoStatus(Path.Combine(Root, "auto_status.json"), _log).Recovery("bench")!.OccupiedStreak); // 파일에 저장됨
+
+        reason = "journal belongs to a different plan"; // 다른 사유는 따로 셈: 횟수가 다시 시작
+        Run(TimeSpan.FromMinutes(4));
+
+        RecoveryAttempt other = _status.Recovery("bench")!;
+        Assert.Equal(0, other.OccupiedStreak);
+        Assert.InRange(other.NextAllowed!.Value, _w.Now, _w.Now + AutoRelocator.RecoveryHold);
+    }
+
+    [Fact]
     public void ARejectionRepeatedAfterTheHoldForTheSamePlanJournalAndReasonStopsInsteadOfRetryingEvery30Minutes()
     {
         Assert.Equal("write_cap", Apply(Make().Resolve(20000), Partial(32)).Stopped);

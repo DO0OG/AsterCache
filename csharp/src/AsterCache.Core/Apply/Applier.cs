@@ -138,6 +138,11 @@ public static class Applier
         rep.Executed = options.Execute;
         bool persist = options.SaveTo is not null && (autoZone || rezoned) && (options.Execute || options.DryRun); // 정한 존은 이어하기를 위해 남아야 함
         rep.ZoneRetargeted = rezoned;
+        if ((autoZone || rezoned) && plan.Stats.TryGetValue(PlanGuards.ZoneMarginKey, out object? margin) && margin is long marginClusters && plan.Stats.TryGetValue(PlanGuards.ZoneRunStartKey, out object? runStart) && runStart is long runStartLcn)
+        {
+            rep.ZoneMarginClusters = marginClusters;
+            rep.ZoneRunStartLcn = runStartLcn;
+        }
         if (rezoned && (persist || options.Execute))
         {
             rep.JournalArchivedTo = ArchiveJournal(journalPath, hooks); // 새 계획은 다른 저널 header 를 쓰므로, 끝난 저널은 되돌리기 기록으로 옆에 보관

@@ -35,7 +35,10 @@ public sealed record IoRequestSnapshot(
     IReadOnlyList<IoFlagCount>? ReadModeFlags = null,
     long ReadModeFlagsOther = 0,
     long ReadModeDroppedRequests = 0,
-    bool ReadModeFilesDroppedExact = true);
+    bool ReadModeFilesDroppedExact = true,
+    SelfReadFilter? SelfReads = null,
+    IReadOnlyList<SelfReadBatch>? SelfReadBatches = null,
+    long SelfReadDroppedOps = 0);
 
 /// 디스크 읽기 완료 이벤트를 (디스크, 바이트 위치, 크기) 요청 단위로 합칩니다. 이벤트 콜백 안에서 부르므로 사전 갱신 말고는 하지 않습니다 (파일 조회·문자열·JSON·로그 없음).
 /// 디스크 읽기 이벤트의 IRP 는 논리 읽기의 IRP 와 다른 객체라 이벤트 시점에는 파일을 알 수 없습니다 (실측): 파일·블록은 끝난 뒤 IoBlockMapper 가 배치 표로 정합니다.
@@ -79,6 +82,7 @@ public sealed class IoSummaryCollector
     private long _readModeReadsUnnamed;
     private long _readModeFlagsOther;
     private bool _readModeFilesDroppedExact = true;
+    private readonly SelfReadObservation _selfReads = SelfReadLog.Begin(); // 관찰 동안 서비스가 읽은 구간 (Snapshot 이 끝냄)
 
     /// gameDiskNumbers: 집계 루트가 놓인 볼륨의 디스크 번호들. 모르면 (null) 모든 디스크의 완료를 요청 표에 담습니다.
     public IoSummaryCollector(DateTimeOffset observedAtUtc, IReadOnlySet<uint>? gameDiskNumbers = null, int maxRequests = MaxRequests,
@@ -231,9 +235,11 @@ public sealed class IoSummaryCollector
             .Select(pair => new IoSummaryReadMode(pair.Key, pair.Value.CacheRequests, pair.Value.CacheBytes, pair.Value.NoCacheRequests, pair.Value.NoCacheBytes,
                 pair.Value.PagingRequests, pair.Value.PagingBytes)).ToArray();
         IoFlagCount[] flags = _readModeFlags.OrderBy(pair => pair.Key).Select(pair => new IoFlagCount(pair.Key, pair.Value)).ToArray();
+        (IReadOnlyList<SelfReadBatch> selfBatches, long selfDropped) = _selfReads.End();
         return new IoRequestSnapshot(ObservedAtUtc, endedAtUtc.ToUniversalTime(), rawWindows.ToArray(), rawTraceZeroUs, Math.Max(0, eventsLost),
             _total, _latencyMaxUs, _otherDisk, _noFile, _dropped, _pagingReads, _pagingBytes, requests, readModes, _readModeFilesDropped,
-            _readModeReadsUnnamed, flags.Length == 0 ? null : flags, _readModeFlagsOther, _readModeDroppedRequests, _readModeFilesDroppedExact);
+            _readModeReadsUnnamed, flags.Length == 0 ? null : flags, _readModeFlagsOther, _readModeDroppedRequests, _readModeFilesDroppedExact,
+            SelfReadBatches: selfBatches, SelfReadDroppedOps: selfDropped);
     }
 
     private bool IsReadModePath(string path)

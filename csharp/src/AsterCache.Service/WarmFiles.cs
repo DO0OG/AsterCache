@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using AsterCache.Core.Apply;
 using AsterCache.Core.Prefetch;
+using AsterCache.Core.Trace;
 using AsterCache.Prefetch;
 using AsterCache.Windows;
 using Microsoft.Win32.SafeHandles;
@@ -52,12 +53,14 @@ public static class FileWarm
 
     private static StreamStats ReadLow(IReadOnlyList<ReadOp> batch, CancellationToken ct)
     {
+        DateTimeOffset startedUtc = DateTimeOffset.UtcNow;
         var watch = Stopwatch.StartNew();
         var hint = new IoPriorityHint(_ => { }); // 실패해도 보통 우선순위로 계속
         byte[] buf = new byte[ChunkBytes];
         long bytes = 0;
         long requests = 0;
         long errors = 0;
+        var done = new List<ReadOp>(batch.Count); // 끝까지 읽은 구간만 기록
         foreach (ReadOp op in batch)
         {
             if (ct.IsCancellationRequested)
@@ -83,6 +86,11 @@ public static class FileWarm
                     bytes += n;
                     requests++;
                 }
+
+                if (at >= end)
+                {
+                    done.Add(op);
+                }
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
@@ -90,6 +98,7 @@ public static class FileWarm
             }
         }
 
+        SelfReadLog.Note(done, startedUtc, DateTimeOffset.UtcNow); // 디스크 읽기 집계에서 서비스 자신의 읽기를 빼기 위한 기록
         return new StreamStats(bytes, requests, errors, Math.Round(watch.Elapsed.TotalSeconds, 4), ct.IsCancellationRequested, batch.Sum(o => o.Length));
     }
 }

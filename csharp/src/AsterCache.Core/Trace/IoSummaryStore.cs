@@ -392,6 +392,7 @@ public static class IoSummaryStore
         { "no_file", ClassJson(q.NoFile) },
         { "not_converted", ClassJson(q.NotConverted) },
         { "dropped", ClassJson(q.Dropped) },
+        { "self_read", ClassJson(q.SelfRead) },
         { "paging_reads", q.PagingReads },
         { "paging_bytes", q.PagingBytes },
         { "events_lost", q.EventsLost },
@@ -520,10 +521,22 @@ public static class IoSummaryStore
             }
         }
 
+        IoClassTotals selfRead = default;
+        if (o.TryGetValue("self_read", out object? selfValue))
+        {
+            if (selfValue is not JObject self || !Long(self, "reads", out long selfReads) || !Long(self, "bytes", out long selfBytes) || !Long(self, "latency_sum_us", out long selfLatency)
+                || selfReads < 0 || selfBytes < 0 || selfLatency < 0)
+            {
+                return false;
+            }
+
+            selfRead = new IoClassTotals(selfReads, selfBytes, selfLatency);
+        }
+
         quality = new IoSummaryQuality(totals[0], values[0], totals[1], totals[2], totals[3], totals[4], totals[5],
             values[1], values[2], values[3], values[4], values[5], values[6], values[7], values[8], values[9], scanIncomplete,
             readModeFilesDropped, readModeReadsUnnamed, readModeFlagCounts, readModeFlagCountOther, readModesObservedUntilUtc,
-            readModeDroppedRequests, readModeFilesDroppedExact);
+            readModeDroppedRequests, readModeFilesDroppedExact, selfRead);
         return o.TryGetValue("truncated", out object? truncatedValue)
             && truncatedValue is bool truncated
             && truncated == quality.Truncated;

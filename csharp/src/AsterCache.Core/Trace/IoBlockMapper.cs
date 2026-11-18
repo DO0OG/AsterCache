@@ -16,6 +16,7 @@ public sealed class IoBlockMapper
     private const int Linked = 0;
     private const int NoFile = 1;
     private const int NotConverted = 2;
+    private const int SelfRead = 3; // 서비스 자신의 읽기라 블록에 더하지 않은 것 (SelfReadFilter)
 
     private readonly IoRequestSnapshot _snapshot;
     private readonly int _maxBlocks;
@@ -73,8 +74,9 @@ public sealed class IoBlockMapper
         IoClassTotals linked = default;
         IoClassTotals noFile = _snapshot.NoFile;
         IoClassTotals notConverted = default;
-        Span<long> bytes = stackalloc long[3];
-        Span<long> latency = stackalloc long[3];
+        IoClassTotals selfRead = default;
+        Span<long> bytes = stackalloc long[4];
+        Span<long> latency = stackalloc long[4];
         foreach (IoRequest request in _snapshot.Requests)
         {
             if (request.Bytes <= 0 || request.Count <= 0)
@@ -85,10 +87,16 @@ public sealed class IoBlockMapper
             bytes.Clear();
             latency.Clear();
             Place(request, bytes, latency);
-            int dominant = bytes[Linked] >= bytes[NoFile] && bytes[Linked] >= bytes[NotConverted] ? Linked : bytes[NoFile] >= bytes[NotConverted] ? NoFile : NotConverted;
+            int dominant = Linked;
+            for (int kind = NoFile; kind <= SelfRead; kind++)
+            {
+                dominant = bytes[kind] > bytes[dominant] ? kind : dominant;
+            }
+
             linked = linked.Plus(dominant == Linked ? request.Count : 0, bytes[Linked] * request.Count, latency[Linked]);
             noFile = noFile.Plus(dominant == NoFile ? request.Count : 0, bytes[NoFile] * request.Count, latency[NoFile]);
             notConverted = notConverted.Plus(dominant == NotConverted ? request.Count : 0, bytes[NotConverted] * request.Count, latency[NotConverted]);
+            selfRead = selfRead.Plus(dominant == SelfRead ? request.Count : 0, bytes[SelfRead] * request.Count, latency[SelfRead]);
         }
 
         var rows = new List<IoSummaryRow>(_blocks.Count);
@@ -103,7 +111,7 @@ public sealed class IoBlockMapper
             _snapshot.PagingReads, _snapshot.PagingBytes, _snapshot.EventsLost, _blockTableDropped,
             filesScanned, filesChanged, filesUnreadable, volumesSkipped, scanMs, scanIncomplete,
             _snapshot.ReadModeFilesDropped, _snapshot.ReadModeReadsUnnamed, _snapshot.ReadModeFlags, _snapshot.ReadModeFlagsOther, _snapshot.EndedAtUtc,
-            _snapshot.ReadModeDroppedRequests, _snapshot.ReadModeFilesDroppedExact);
+            _snapshot.ReadModeDroppedRequests, _snapshot.ReadModeFilesDroppedExact, selfRead);
         long? zero = _snapshot.RawTraceZeroUs is { } z && Math.Abs(z) <= long.MaxValue / TimeSpan.TicksPerMicrosecond ? z : null;
         return new IoSummary(_snapshot.ObservedAtUtc, _snapshot.EndedAtUtc, _snapshot.RawWindows, quality, _files, rows, Guid.NewGuid().ToString("N"),
             null, zero, zero is { } at ? _snapshot.ObservedAtUtc.AddTicks(at * TimeSpan.TicksPerMicrosecond) : null, _snapshot.ReadModes ?? []);
@@ -127,7 +135,15 @@ public sealed class IoBlockMapper
                 kind = interval.File >= 0 ? Linked : NotConverted;
                 if (interval.File >= 0)
                 {
-                    AddBlocks(interval.File, interval.FileStart + (position - interval.Start), part, request, consumed);
+                    long fileOffset = interval.FileStart + (position - interval.Start);
+                    if (IsSelfRead(request, interval.File, fileOffset, part))
+                    {
+                        kind = SelfRead;
+                    }
+                    else
+                    {
+                        AddBlocks(interval.File, fileOffset, part, request, consumed);
+                    }
                 }
             }
             else
@@ -143,6 +159,15 @@ public sealed class IoBlockMapper
             position += part;
         }
     }
+
+    // 서비스가 그 시각에 그 구간을 읽었고 게임은 읽지 않은 디스크 읽기. 원시 기록 창 안의 읽기만 봅니다: 게임 읽기가 트레이스에 남는 때만 "게임이 같이 읽었는가" 를 확인할 수 있고, 창 밖에서는 확인할 수 없어 남깁니다.
+    // 그리고 이 요청이 한 번만 (Count 1) 있고 모두 페이징 읽기일 때만 봅니다:
+    // 같은 위치를 두 번 읽었으면 게임의 읽기가 섞였을 수 있고, 페이징이 아닌 읽기는 캐시를 거치지 않은 게임의 읽기입니다 (서비스의 버퍼드·매핑 읽기는 페이징으로 내려감).
+    private bool IsSelfRead(IoRequest request, int file, long fileOffset, long length) =>
+        _snapshot.SelfReads is { } filter && request.Count == 1 && request.PagingCount == 1 && InRawWindow(request.FirstSessionUs)
+        && filter.IsSelf(_files[file].Path, fileOffset, length, request.FirstSessionUs);
+
+    private bool InRawWindow(long sessionUs) => _snapshot.RawWindows.Any(w => sessionUs >= w.StartedUs && sessionUs <= w.EndedUs);
 
     private void AddBlocks(int file, long fileOffset, long length, IoRequest request, long consumed)
     {

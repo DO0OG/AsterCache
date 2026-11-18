@@ -8,7 +8,7 @@ public static class SparseAllocation
 {
     public const long MoveClusters = 16;
 
-    /// 서비스가 만든 계획 stats 의 표지 키: 스파스 파일의 할당 기준값을 기록하는 규칙으로 만든 계획. 표지가 없는 이전 형식 계획은 스파스 파일을 옮기지 못하므로 한 번 다시 계획합니다.
+    /// 서비스가 만든 계획 stats 의 표지 키: 스파스 파일의 할당 기준값을 기록하는 규칙으로 만든 계획. 표지가 없는 이전 형식 계획은 스파스 파일을 옮기지 못하므로, 서비스가 한 번 기준값을 더해 잔여 재계획으로 바꿉니다 (WithMissingBaselines).
     public const string RuleKey = "sparse_rule";
 
     public const long RuleVersion = 1;
@@ -32,6 +32,34 @@ public static class SparseAllocation
         }
 
         return result;
+    }
+
+    /// 할당 기준값이 없는 이전 형식 계획의 사본에, Order 에 든 스파스 파일의 지금 할당 구간을 기준값으로 더하고 RuleKey 표지를 붙인 후보 (작업·지문·Order 는 그대로).
+    /// 할당 구간을 읽지 못하거나 (null) 디스크 구간이 없는 파일은 더하지 않고, 이미 기준값이 있는 파일은 건드리지 않습니다. 더할 파일이 없으면 null.
+    public static PlanFile? WithMissingBaselines(PlanFile plan, Func<string, bool> isSparse, Func<string, IReadOnlyList<Extent>?> extents)
+    {
+        var added = new Dictionary<string, IReadOnlyList<AllocatedRange>>(plan.SparseAllocations, StringComparer.Ordinal);
+        foreach (string path in plan.Order.Select(o => o.Path).Distinct(StringComparer.Ordinal).Where(p => !added.ContainsKey(p) && isSparse(p)))
+        {
+            if (extents(path) is { Count: > 0 } e)
+            {
+                added[path] = Normalize(e);
+            }
+        }
+
+        if (added.Count == plan.SparseAllocations.Count)
+        {
+            return null;
+        }
+
+        var stats = new Json.JObject();
+        foreach ((string key, object? value) in plan.Stats)
+        {
+            stats.Add(key, value);
+        }
+
+        stats[RuleKey] = RuleVersion;
+        return plan with { SparseAllocations = added, Stats = stats };
     }
 
     public static bool Covers(IReadOnlyList<Extent>? extents, long vcn, long clusters)

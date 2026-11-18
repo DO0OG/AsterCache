@@ -21,7 +21,8 @@ public sealed partial class AutoRelocator
             string tracePath = AutoTracer.PlanTracePath(g, _env.FileExists) ?? AutoTracer.RawTracePath(g);
             bool boot = tracePath == AutoTracer.BootTracePath(g);
             bool prefetch = boot && _env.TraceSource(tracePath) == PlanSourcePrefetch;
-            (IReadOnlyList<TraceEvent> trace, JObject excluded, IReadOnlyList<TraceEvent> warmOnly) = DropVolatile(g, _env.LoadTrace(tracePath, g.OriginRoot));
+            IReadOnlyDictionary<string, string> marks = _env.LoadVolatile(AutoTracer.VolatilePath(g)); // 계획에 반영한 표시 수를 남기려고 한 번만 읽음
+            (IReadOnlyList<TraceEvent> trace, JObject excluded, IReadOnlyList<TraceEvent> warmOnly) = DropVolatile(g, _env.LoadTrace(tracePath, g.OriginRoot), marks);
             IReadOnlyList<TraceEvent> fingerprintTrace = trace;
             long supplementBytes = 0;
             string? cheat = _env.TraceBlocker(g);
@@ -133,6 +134,7 @@ public sealed partial class AutoRelocator
 
             plan.Stats[PlannedAtKey] = _env.Now().ToUnixTimeSeconds();
             plan.Stats[VolatileFiles.RuleKey] = VolatileFiles.RuleVersion;
+            plan.Stats[VolatileFiles.MarksKey] = (long)marks.Count;
             plan.Stats[SparseAllocation.RuleKey] = SparseAllocation.RuleVersion;
             if (plan.Stats.TryGetValue("unsupported_sparse_files", out object? unsupportedSparse) && unsupportedSparse is long unsupportedCount)
             {
@@ -208,13 +210,13 @@ public sealed partial class AutoRelocator
     }
 
     // 가변 파일 (이름 규칙, 트레이스에서 run 사이에 바뀌었거나 쓰기로 열렸다고 표시된 파일) 을 계획 입력에서 뺍니다. 뺀 파일과 사유는 계획 stats 에 남김.
-    private (IReadOnlyList<TraceEvent> Kept, JObject Excluded, IReadOnlyList<TraceEvent> WarmOnly) DropVolatile(GameSettings g, IReadOnlyList<TraceEvent> trace)
+    private (IReadOnlyList<TraceEvent> Kept, JObject Excluded, IReadOnlyList<TraceEvent> WarmOnly) DropVolatile(GameSettings g, IReadOnlyList<TraceEvent> trace, IReadOnlyDictionary<string, string>? marked = null)
     {
-        IReadOnlyDictionary<string, string> marked = _env.LoadVolatile(AutoTracer.VolatilePath(g));
+        marked ??= _env.LoadVolatile(AutoTracer.VolatilePath(g));
         var excluded = new JObject();
         foreach (string path in trace.Select(t => t.Path).Distinct(StringComparer.Ordinal))
         {
-            if ((VolatileFiles.NameReason(path) ?? (marked.TryGetValue(path, out string? why) ? why : null)) is { } reason)
+            if (VolatileFiles.Reason(path, marked) is { } reason)
             {
                 excluded.Add(path, reason);
             }

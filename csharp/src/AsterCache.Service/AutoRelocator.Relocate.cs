@@ -68,9 +68,12 @@ public sealed partial class AutoRelocator
             }
 
             bool changed = stamps.Contains(true);
-            if (changed || HoldsVolatile(plan) && _volatileChecked.Add(g.Name)) // 부분 적용된 계획도 새 규칙의 가변 파일을 들고 있으면 한 번 잔여 재계획 (이미 옮긴 조각은 지킴)
+            (int markedCount, string markedReasons) = HoldsMarked(g, plan);
+            if (changed || (HoldsVolatile(plan) || markedCount > 0) && _volatileChecked.Add(g.Name)) // 부분 적용된 계획도 새 규칙의 가변 파일을 들고 있으면 한 번 잔여 재계획 (이미 옮긴 조각은 지킴)
             {
-                _log.Info(changed ? $"{g.Name}: source files changed since the plan, planning again" : $"{g.Name}: plan holds files the game rewrites by itself, planning again"); // 없어진 파일은 새 계획에서 빠짐
+                _log.Info(changed ? $"{g.Name}: source files changed since the plan, planning again"
+                    : markedCount > 0 ? $"{g.Name}: plan holds {markedCount} file(s) the trace marked as rewritten by the game ({markedReasons}), planning again"
+                    : $"{g.Name}: plan holds files the game rewrites by itself, planning again"); // 없어진 파일은 새 계획에서 빠짐
                 if (changed)
                 {
                     DropChangedRanges(g, plan);

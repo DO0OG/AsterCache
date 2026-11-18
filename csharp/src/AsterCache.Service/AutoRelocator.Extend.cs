@@ -206,14 +206,46 @@ public sealed partial class AutoRelocator
     private static bool HoldsVolatile(PlanFile plan) =>
         !(plan.Stats.TryGetValue(VolatileFiles.RuleKey, out object? v) && v is long version && version >= VolatileFiles.RuleVersion) && plan.Order.Any(o => VolatileFiles.Ignored(o.Path));
 
+    // 트레이스가 가변으로 표시한 파일 (가변 표시 목록, DropVolatile 과 같은 출처) 이 계획의 핫 순서나 지문에 든 수와 사유. 표시가 계획을 만들 때 반영한 수 (stats volatile_marks) 보다 늘었을 때만 따짐:
+    // 그 표시로 이미 만든 계획은 (표시된 파일이 계획에 없어서) 같은 이유로 되풀이 다시 계획되지 않음. 읽지 못해 보류로 남은 파일 (held_files) 은 다시 계획해도 남으므로 세지 않음. 이름 규칙 파일은 HoldsVolatile 이 따로 봄.
+    // 반영 수는 개수로 비교함: 표시는 늘기만 한다는 전제 (목록이 통째로 바뀌는 경로는 보관본 복원뿐이고 그때는 개수가 같고 내용이 다를 수 있음).
+    private (int Count, string Reasons) HoldsMarked(GameSettings g, PlanFile plan)
+    {
+        IReadOnlyDictionary<string, string> marked = _env.LoadVolatile(AutoTracer.VolatilePath(g));
+        long applied = plan.Stats.TryGetValue(VolatileFiles.MarksKey, out object? m) && m is long n ? n : 0;
+        if (marked.Count <= applied)
+        {
+            return (0, string.Empty);
+        }
+
+        HashSet<string> heldOut = plan.Stats.TryGetValue(ResidualPlanner.HeldKey, out object? hf) && hf is JObject heldFiles ? [.. heldFiles.Select(kv => kv.Key)] : [];
+        string[] held = [.. plan.Order.Select(o => o.Path).Concat(plan.Fingerprints.Select(f => f.Path)).Distinct(StringComparer.OrdinalIgnoreCase).Where(p => marked.ContainsKey(p) && !heldOut.Contains(p))];
+        return (held.Length, string.Join(", ", held.Select(p => marked[p]).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)));
+    }
+
+    // 가변 표시 목록을 보는 시점: 서비스 실행당 한 번에 더해, 목록 파일의 수정 시각이 달라졌을 때 (플레이 뒤 새 표시가 생김) 다시. 시각 확인은 stat 한 번이라 틱마다 해도 계획을 읽지 않음.
+    private bool VolatileCheckDue(GameSettings g)
+    {
+        DateTimeOffset? stamp = _env.FileWriteTime(AutoTracer.VolatilePath(g));
+        bool first = _volatileChecked.Add(g.Name);
+        bool changed = !first && stamp != _volatileMarksTime.GetValueOrDefault(g.Name);
+        _volatileMarksTime[g.Name] = stamp;
+        return first || changed;
+    }
+
     // 가변 파일을 빼기 전에 만든 옛 계획 (규칙 버전 표지가 없고 핫 순서에 가변 파일이 듦): 게임이 그 파일을 다시 써서 존이 흐트러져 보이므로
     // 서비스 실행당 한 번 가변 파일을 뺀 계획으로 다시 만듭니다. 확장 재계획과 같은 길 (.extend): 같은 존 시작에 맞추고, 유휴·일일 상한·바이트 예산 같은 재배치 게이트를 그대로 지납니다.
     private void ReplanLegacyVolatile(AsterSettings s)
     {
+        if (!(s.Auto.Relocate && s.Auto.MaxRelocationsPerDay > 0))
+        {
+            return; // 자동 재배치를 끈 설정: 다시 계획해도 재배치가 멈춰 .extend 만 남아 재적용을 막음
+        }
+
         foreach (GameSettings g in s.Games)
         {
             if (!HeavyWorkAllowed(g) || !GamePolicy.AllowsRelocate(g) || _status.Get(g.Name)?.RelocatedAt is null || !_env.FileExists(g.Plan) || IsExtending(g) || AnyGameRunning(g)
-                || AutoTracer.PlanTracePath(g, _env.FileExists) is null || !_volatileChecked.Add(g.Name))
+                || AutoTracer.PlanTracePath(g, _env.FileExists) is null || !VolatileCheckDue(g))
             {
                 continue;
             }
@@ -221,7 +253,8 @@ public sealed partial class AutoRelocator
             try
             {
                 PlanFile plan = _env.LoadPlan(g.Plan);
-                if (plan.Zone.StartLcn is null || !HoldsVolatile(plan))
+                (int markedCount, string markedReasons) = HoldsMarked(g, plan);
+                if (plan.Zone.StartLcn is null || !HoldsVolatile(plan) && markedCount == 0)
                 {
                     continue;
                 }
@@ -237,7 +270,9 @@ public sealed partial class AutoRelocator
                 _ = _env.ArchiveJournal(g);
                 _env.MoveAside(g.Plan, g.Plan + ExtendSuffix);
                 _status.ResetForReplan(g.Name, ExtendDetail);
-                _log.Info($"{g.Name}: plan holds files the game rewrites by itself, plan set aside as {ExtendSuffix}, will plan again without them (same zone)");
+                _log.Info(markedCount > 0
+                    ? $"{g.Name}: plan holds {markedCount} file(s) the trace marked as rewritten by the game ({markedReasons}), plan set aside as {ExtendSuffix}, will plan again without them (same zone)"
+                    : $"{g.Name}: plan holds files the game rewrites by itself, plan set aside as {ExtendSuffix}, will plan again without them (same zone)");
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {

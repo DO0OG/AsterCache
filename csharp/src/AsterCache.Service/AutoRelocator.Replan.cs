@@ -211,7 +211,8 @@ public sealed partial class AutoRelocator
     // 읽을 수 없으면 바뀐 것으로 쳐서 행을 빼는 대상에만 더합니다 (안 빼면 비어 있는 존 자리를 채우는 다음 순위 블록이 그 파일의 옛 오프셋을 새 계획과 예열 목록에 넣음). 트레이스를 읽을 수 없으면 null.
     private HashSet<string>? ChangedIfSmall(GameSettings g, PlanFile plan, bool traceShare)
     {
-        var changed = plan.Fingerprints.Where(f => !VolatileFiles.Ignored(f.Path) && ReapplyChecker.Changed(f, _env.Stat)).Select(f => f.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        IReadOnlyDictionary<string, string> marked = _env.LoadVolatile(AutoTracer.VolatilePath(g)); // ReplanStale 과 같은 제외 기준
+        var changed = plan.Fingerprints.Where(f => VolatileFiles.Reason(f.Path, marked) is null && ReapplyChecker.Changed(f, _env.Stat)).Select(f => f.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
         long total = plan.Order.Sum(o => o.Clusters);
         long lost = plan.Order.Where(o => changed.Contains(o.Path)).Sum(o => o.Clusters);
         if (changed.Count == 0 || total <= 0 || lost >= total * PartialMaxChangedShare)
@@ -227,7 +228,7 @@ public sealed partial class AutoRelocator
         try
         {
             var known = plan.Fingerprints.Select(f => f.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            foreach (string path in _env.TracePaths(raw).Where(p => !known.Contains(p) && !changed.Contains(p) && !VolatileFiles.Ignored(p) && ModifiedSince(p, since)))
+            foreach (string path in _env.TracePaths(raw).Where(p => !known.Contains(p) && !changed.Contains(p) && VolatileFiles.Reason(p, marked) is null && ModifiedSince(p, since)))
             {
                 _ = changed.Add(path);
             }
@@ -420,14 +421,12 @@ public sealed partial class AutoRelocator
         return restored;
     }
 
-    // 드라이브가 분리됐거나 (폴더 없음) 파일을 읽을 수 없으면 (잠김 등) "변경" 이 아니라 건너뜀: 다음 검사에 다시 봅니다. 대표 파일 (게임 exe, 가장 큰 파일 몇 개) 이
-    // 바뀐 경우에만 전체 지문을 비교합니다 (shortcut: 대표가 아닌 파일만 바뀐 업데이트는 대표가 바뀔 때까지 못 잡음, 재배치 직전 검사가 잡음).
+    // 드라이브가 분리됐거나 (폴더 없음) 파일을 읽을 수 없으면 (잠김 등) "변경" 이 아니라 건너뜀: 다음 검사에 다시 봅니다. 가변 파일 (이름 규칙, 트레이스 표시) 을 뺀 지문 전체를 비교합니다
+    // (대표 파일만 보면 작은 파일만 바뀐 업데이트를 못 잡음): 비용은 지문 수만큼의 stat 이고 첫 차이에서 멈춥니다.
     private bool ReplanStale(GameSettings g, PlanFile plan)
     {
-        List<Fingerprint> prints = [.. plan.Fingerprints.Where(f => !VolatileFiles.Ignored(f.Path))]; // 게임이 스스로 다시 쓰는 파일 (캐시·설정·로그·세이브) 은 업데이트 증거가 아님
-        IEnumerable<Fingerprint> sample = prints.Where(f => g.ExeNames.Contains(Path.GetFileName(f.Path), StringComparer.OrdinalIgnoreCase))
-            .Concat(prints.OrderByDescending(f => f.Size).Take(LargestSampled));
-        return sample.Any(Differs) && prints.Any(Differs);
+        IReadOnlyDictionary<string, string> marked = _env.LoadVolatile(AutoTracer.VolatilePath(g));
+        return plan.Fingerprints.Where(f => VolatileFiles.Reason(f.Path, marked) is null).Any(Differs); // 게임이 스스로 다시 쓰는 파일 (캐시·설정·로그·세이브·표시 파일) 은 업데이트 증거가 아님
     }
 
     // 지문과 다른가. 파일이 없어짐 (업데이트가 지움) 은 바뀜, 그 밖의 읽기 실패 (잠김·권한) 는 판단 불가라 재계획하지 않음 (재적용 검사와 같은 기준).

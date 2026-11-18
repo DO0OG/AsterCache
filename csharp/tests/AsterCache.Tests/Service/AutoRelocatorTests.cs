@@ -2697,10 +2697,10 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         Assert.DoesNotContain(AutoRelocator.RelocatedPrefetch, Entry.Detail ?? string.Empty, StringComparison.Ordinal);
     }
 
-    // ---- 지문 검사 비용: 대표 파일만 먼저 ----
+    // ---- 지문 검사: 대표 파일 밖의 변경도 잡음 ----
 
     [Fact]
-    public void FullFingerprintComparisonRunsOnlyWhenARepresentativeFileChanged()
+    public void FullFingerprintComparisonCatchesAChangeOutsideTheExeAndTheLargestFiles()
     {
         DoneAndReadyToReplan(out _);
         string exe = Path.Combine(Root, "bench.exe");
@@ -2720,23 +2720,13 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         _w.Now += AutoRelocator.StaleCheckEvery;
         Tick();
         ExpectStillPlanned();
-        Assert.Equal(4, stats.Count); // exe + 큰 3 개만 봄 (전체 9 개 아님)
-        Assert.DoesNotContain(biggestOutsideSample, stats);
+        Assert.Equal(fps.Count, stats.Count); // 변화가 없으면 지문마다 한 번씩 stat
 
-        changed.Add(biggestOutsideSample); // 대표가 아닌 파일만 바뀜: 다음 대표 변경 때 잡힘
-        stats.Clear();
-        _w.Now += AutoRelocator.StaleCheckEvery;
-        Tick();
-        ExpectStillPlanned();
-        Assert.Equal(4, stats.Count);
-
-        changed.Remove(biggestOutsideSample);
-        changed.Add(exe); // 대표 변경 -> 전체 비교 -> 재계획
+        changed.Add(biggestOutsideSample); // 대표가 아닌 파일만 바뀜: 이제 바로 잡힘
         stats.Clear();
         _w.Now += AutoRelocator.StaleCheckEvery;
         Tick();
         Assert.Equal(AutoStage.Discovered, Entry.Stage);
-        Assert.Equal(1 + 2 * fps.Count, stats.Count); // 대표 (exe) 1 번 + 전체 비교 + 잠금 안에서 바뀐 파일을 가리는 전체 비교
         Assert.Contains(biggestOutsideSample, stats);
     }
 

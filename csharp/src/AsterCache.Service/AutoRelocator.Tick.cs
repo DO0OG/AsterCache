@@ -47,6 +47,7 @@ public sealed partial class AutoRelocator
             _prefetchTried.Remove(name);
             _supplementChecked.Remove(name);
             _volatileChecked.Remove(name);
+            _volatileMarksTime.Remove(name);
             _sparseChecked.Remove(name);
             _sparseRetryAt.Remove(name);
             _seeded.Remove(name);

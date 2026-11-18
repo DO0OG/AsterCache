@@ -40,4 +40,10 @@ public static class VolatileFiles
     }
 
     public static bool Ignored(string path) => NameReason(path) is not null;
+
+    /// 계획 stats 에 계획을 만들 때 반영한 트레이스 가변 표시 수를 남기는 키: 표시가 이보다 늘면 계획이 새 표시 파일을 들고 있는지 다시 봅니다.
+    public const string MarksKey = "volatile_marks";
+
+    /// 이름 규칙 또는 트레이스 가변 표시 (경로 → 사유) 에 걸리면 사유, 아니면 null: 계획 입력에서 빼는 판정과 업데이트 판정이 같은 기준을 쓰게 하는 하나의 함수.
+    public static string? Reason(string path, IReadOnlyDictionary<string, string> marked) => NameReason(path) ?? (marked.TryGetValue(path, out string? why) ? why : null);
 }

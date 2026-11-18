@@ -67,8 +67,6 @@ public sealed partial class AutoRelocator
     /// 이번 업데이트의 원본 보관 이름: 이전 업데이트의 .stale 이 이미 있어 그것을 덮지 않고 따로 둘 때 (.stale.partial 은 정리가 실패한 뒤의 정리본이라 의미가 다름).
     public const string UpdateSuffix = ".stale.update";
 
-    /// 지문 검사의 대표 파일: 게임 exe 와 계획에서 가장 큰 파일 몇 개. 이 중 하나라도 바뀌었을 때만 전체 지문을 비교합니다.
-    private const int LargestSampled = 3;
     internal const string ReplanDetail = "game updated, will trace again on next run";
 
     /// 트레이스 금지 게임의 업데이트: 트레이스를 유지한 채 다시 계획하는 동안의 detail (ReplanDetail 접두라 업데이트 뒤 지연 규칙도 같이 지킴).
@@ -116,6 +114,7 @@ public sealed partial class AutoRelocator
     private readonly Dictionary<string, DateTimeOffset> _prefetchTried = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 프리페치 기록으로 boot 를 만들어 본 게임과 그 시각
     private readonly HashSet<string> _supplementChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 프로필 보충 재계획을 이미 따져 본 게임 (서비스 실행당 한 번)
     private readonly HashSet<string> _volatileChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 옛 계획의 가변 파일을 이미 따져 본 게임 (서비스 실행당 한 번)
+    private readonly Dictionary<string, DateTimeOffset?> _volatileMarksTime = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 가변 파일을 따져 본 때의 트레이스 가변 표시 파일 수정 시각 (달라지면 다시 따짐)
     private readonly Dictionary<string, DateTimeOffset> _sparseRetryAt = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 빈 구간이 모자라 스파스 기준값 교체를 못 한 게임과 다시 시도할 시각 (비트맵을 틱마다 읽지 않게)
     private readonly HashSet<string> _sparseChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 스파스 할당 기준값이 없는 이전 형식 계획을 이미 따져 본 게임 (서비스 실행당 한 번)
     private readonly HashSet<string> _seeded = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 이전 존 시작에 맞춰 계획을 만든 게임

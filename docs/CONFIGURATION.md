@@ -117,7 +117,7 @@ What each stage does is in [Automatic mode](AUTO_MODE.md). Ranges are given in p
 | `trace_runs_max` | 8 | The most valid trace runs (at least 64 MiB read each) collected by the additional-run rule (1 to 32). |
 | `trace_merge_min_mib` | 64 | After `trace_runs`, extra collection continues while the previous merge added at least this many MiB of new blocks (1 to 65536). |
 | `trace_target_coverage` | 70 | No longer used to decide additional runs; kept only for compatibility. |
-| `trace_late_interval_min` | 10 | If the game is still running after the first window, a late window opens every this many minutes (1 to 1440). |
+| `trace_late_interval_min` | 10 | If the game is still running after the first window, the first late window opens right after the first window, and each later one opens this many minutes after the previous one ends (1 to 1440). |
 | `trace_late_window_seconds` | 90 | Recording time of each late window, in seconds (1 to 7200). |
 | `trace_late_windows` | 6 | The most late windows after the first one (0 to 32). 0 turns late tracing off. |
 

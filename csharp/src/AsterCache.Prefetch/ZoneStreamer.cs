@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using AsterCache.Core.Prefetch;
+using AsterCache.Core.Trace;
 using AsterCache.Prefetch.Modes;
 using AsterCache.Windows;
 using AsterCache.Windows.Native;
@@ -46,6 +47,7 @@ public static class ZoneStreamer
     public static StreamStats Run(IReadOnlyList<ReadOp> ops, StreamMethod method = StreamMethod.Pvm, int chunkBytes = DefaultChunkBytes, int queueDepth = 2, CancellationToken ct = default,
         Action<string, long, bool>? noteIssue = null)
     {
+        DateTimeOffset startedUtc = DateTimeOffset.UtcNow;
         var watch = Stopwatch.StartNew();
         bool aborted = false;
         long hint = 0;
@@ -56,6 +58,11 @@ public static class ZoneStreamer
             StreamMethod.Overlapped => OverlappedReader.Run(ops, queueDepth, chunkBytes, ct, out aborted),
             _ => RunRead(ops, chunkBytes, ct, out aborted),
         };
+        if (!aborted && errors == 0)
+        {
+            SelfReadLog.Note(ops, startedUtc, DateTimeOffset.UtcNow); // 디스크 읽기 집계에서 서비스 자신의 읽기를 빼기 위한 기록: 끝까지 읽은 묶음만 (멈췄거나 못 연 파일이 있으면 어디까지 읽었는지 모름)
+        }
+
         return new StreamStats(bytes, requests, errors, Math.Round(watch.Elapsed.TotalSeconds, 4), aborted, ops.Sum(o => o.Length), hint) { BufferedBytes = buffered };
     }
 

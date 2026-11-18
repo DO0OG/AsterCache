@@ -35,7 +35,7 @@ public readonly record struct IoClassTotals(long Reads, long Bytes, long Latency
     public IoClassTotals Plus(long reads, long bytes, long latencyUs) => new(Reads + reads, Bytes + bytes, LatencySumUs + latencyUs);
 }
 
-/// 완료 총계 = 블록에 연결됨 + 다른 디스크 + 파일 구간 밖 + 변환 안 함 + 상한 초과로 버림.
+/// 완료 총계 = 블록에 연결됨 + 다른 디스크 + 파일 구간 밖 + 변환 안 함 + 상한 초과로 버림 + 서비스 자신의 읽기로 뺌 (SelfRead, 블록에는 더하지 않음).
 public sealed record IoSummaryQuality(
     IoClassTotals Total,
     long LatencyMaxUs,
@@ -60,7 +60,8 @@ public sealed record IoSummaryQuality(
     long ReadModeFlagCountOther = 0,
     DateTimeOffset? ReadModesObservedUntilUtc = null,
     long ReadModeDroppedRequests = 0,
-    bool ReadModeFilesDroppedExact = true)
+    bool ReadModeFilesDroppedExact = true,
+    IoClassTotals SelfRead = default)
 {
     public bool Truncated => Dropped.Reads > 0 || BlockTableDropped > 0 || ScanIncomplete || ReadModeFilesDropped > 0
         || ReadModeDroppedRequests > 0 || !ReadModeFilesDroppedExact;
@@ -89,7 +90,8 @@ public sealed record IoSummary(
         return $"I/O summary: observed {seconds:0.0}s, {q.Total.Reads} disk reads/{Mib(q.Total.Bytes):0.0} MiB, block linked {q.Linked.Reads} reads/{Mib(q.Linked.Bytes):0.0} MiB ({linked:0.0}% of bytes), "
             + $"other disk {q.OtherDisk.Reads} reads/{Mib(q.OtherDisk.Bytes):0.0} MiB, no file {q.NoFile.Reads} reads/{Mib(q.NoFile.Bytes):0.0} MiB, not converted {q.NotConverted.Reads} reads/{Mib(q.NotConverted.Bytes):0.0} MiB, "
             + $"dropped {q.Dropped.Reads} reads/{Mib(q.Dropped.Bytes):0.0} MiB, latency {q.Total.LatencySumUs / 1000d:0.0} ms sum/{q.LatencyMaxUs / 1000d:0.0} ms max, {q.EventsLost} events lost, "
-            + $"truncated {q.Truncated} (blocks {q.BlockTableDropped}), {q.FilesScanned} files scanned in {q.ScanMs} ms, {q.FilesChanged} changed during session";
+            + $"truncated {q.Truncated} (blocks {q.BlockTableDropped}), {q.FilesScanned} files scanned in {q.ScanMs} ms, {q.FilesChanged} changed during session, "
+            + $"{q.SelfRead.Reads} reads/{Mib(q.SelfRead.Bytes):0.0} MiB left out as the service's own reads";
     }
 
     public string FormatReadModesLogLine()

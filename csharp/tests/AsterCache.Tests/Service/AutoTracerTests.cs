@@ -300,6 +300,40 @@ public sealed class AutoTracerTests : IDisposable
     }
 
     [Fact]
+    public void TheFirstLateWindowOpensRightAfterTheFirstWindowAndTheIntervalOnlySeparatesLaterWindows()
+    {
+        LateWindowSettings(2, 10, 30);
+        DateTimeOffset startedAt = _rig.World.Now;
+        _tracer.Start(_game);
+        _rig.World.Now = startedAt.AddSeconds(30);
+        _tracer.Step(); // 첫 창 종료
+        Assert.False(_trace.Collecting);
+
+        _tracer.Step(); // 첫 추가 창이 간격 없이 바로 열림
+        Assert.True(_trace.Collecting);
+        Assert.Equal("late window 1/2", _rig.Status.Get("foo")!.Detail);
+
+        _rig.World.Now = startedAt.AddSeconds(60);
+        _tracer.Step(); // 추가 창 하나가 끝남 (창 길이 30 초는 그대로)
+        Assert.False(_trace.Collecting);
+
+        _rig.World.Now = startedAt.AddSeconds(60 + (9 * 60));
+        _tracer.Step(); // 두 번째 창은 앞 창이 끝난 뒤 간격 (10 분) 이 차야 열림
+        Assert.False(_trace.Collecting);
+
+        _rig.World.Now = startedAt.AddSeconds(60 + (10 * 60));
+        _tracer.Step();
+        Assert.True(_trace.Collecting);
+        Assert.Equal("late window 2/2", _rig.Status.Get("foo")!.Detail);
+
+        _rig.World.Now = startedAt.AddSeconds(90 + (10 * 60));
+        _tracer.Step(); // 창 수 상한 (2) 에서 끝남
+        Assert.False(_trace.Collecting);
+        Assert.True(_trace.Stopped);
+        Assert.Equal(2, _rig.Log.Lines.Count(l => l.Contains("late window", StringComparison.Ordinal) && l.Contains("started", StringComparison.Ordinal)));
+    }
+
+    [Fact]
     public void EachWindowEndLogsTheReadsAndTheTargetProcesses()
     {
         LateWindowSettings(1, 1, 30);
@@ -314,7 +348,7 @@ public sealed class AutoTracerTests : IDisposable
     [Fact]
     public void ReadCapIgnoresReadsWhileNoWindowIsOpen()
     {
-        LateWindowSettings(1, 1, 30, capMib: 1);
+        LateWindowSettings(2, 1, 30, capMib: 1);
         DateTimeOffset startedAt = _rig.World.Now;
         _tracer.Start(_game);
         _rig.World.Procs = [(100, 0)];
@@ -322,16 +356,20 @@ public sealed class AutoTracerTests : IDisposable
         _rig.World.Now = startedAt.AddSeconds(30);
         _rig.World.Procs = [(100, 512 * 1024)];
         _tracer.Step(); // 첫 창에서 0.5 MiB, 창이 닫힘
+        _tracer.Step(); // 첫 추가 창이 바로 열림
 
         _rig.World.Now = startedAt.AddSeconds(60);
+        _tracer.Step(); // 첫 추가 창이 읽기 없이 닫힘
+
+        _rig.World.Now = startedAt.AddSeconds(90);
         _rig.World.Procs = [(100, 40L << 20)];
         _tracer.Step(); // 창 밖에서 40 MiB: 세지 않음
         Assert.True(_tracer.Active);
 
-        _rig.World.Now = startedAt.AddSeconds(90);
-        _tracer.Step(); // 후반 창 시작: 읽기량 기준을 이 값으로 다시 잡음
+        _rig.World.Now = startedAt.AddSeconds(120);
+        _tracer.Step(); // 두 번째 추가 창 시작: 읽기량 기준을 이 값으로 다시 잡음
         Assert.True(_tracer.Active);
-        _rig.World.Now = startedAt.AddSeconds(100);
+        _rig.World.Now = startedAt.AddSeconds(130);
         _rig.World.Procs = [(100, (40L << 20) + (512 * 1024))];
         _tracer.Step(); // 창 안 0.5 MiB 가 더해져 상한 (1 MiB) 도달
         Assert.False(_tracer.Active);

@@ -999,8 +999,8 @@ public sealed class AutoTracer
                 return;
             }
 
-            run.NextLateWindowAt = run.StartedAt + TimeSpan.FromSeconds(a.TraceCapSeconds) + TimeSpan.FromMinutes(a.TraceLateIntervalMin);
-            _log.Info($"{run.Game.Name}: initial trace window ended at time cap; waiting for late window 1/{a.TraceLateWindows}");
+            run.NextLateWindowAt = run.StartedAt + TimeSpan.FromSeconds(a.TraceCapSeconds); // 첫 추가 창은 첫 창 바로 뒤에 엽니다 (간격은 추가 창 사이에만)
+            _log.Info($"{run.Game.Name}: initial trace window ended at time cap; late window 1/{a.TraceLateWindows} follows");
             if (a.TraceLateWindows <= 0)
             {
                 EndRawCapture(run, "time cap");
@@ -1564,11 +1564,16 @@ public sealed class AutoTracer
         }
 
         scan.CancelAfter(IoScanBudget);
+        if (requests.SelfReadDroppedOps > 0)
+        {
+            _log.Info($"{g.Name}: {requests.SelfReadDroppedOps} service read ranges were not noted (limit {SelfReadLog.MaxOps}); their disk reads stay in the I/O summary");
+        }
+
         IoSummary? summary = null;
         try
         {
             string before = LayoutStamp(g);
-            RunBelowNormal(() => summary = _env.BuildIoSummary(requests, g.AllowedRoots, scan.Token));
+            RunBelowNormal(() => summary = _env.BuildIoSummary(requests with { SelfReads = OwnReadFilter(requests, run.Records, scan.Token) }, g.AllowedRoots, scan.Token));
             if (summary is not null && before != LayoutStamp(g))
             {
                 _log.Warn($"{g.Name}: I/O summary dropped, the plan or journal changed while file layouts were read");
@@ -1603,6 +1608,11 @@ public sealed class AutoTracer
 
         run.IoSummary = summary;
     }
+
+    // 서비스가 스스로 읽은 구간 (시작 스트림·예열) 을 디스크 읽기 집계에서 빼기 위한 표: 게임이 같은 시간대에 같은 구간을 읽었으면 남깁니다.
+    private static SelfReadFilter OwnReadFilter(IoRequestSnapshot requests, IEnumerable<TraceRecord> records, CancellationToken ct) =>
+        new(requests.ObservedAtUtc, requests.SelfReadBatches ?? [],
+            records.Where(r => r.Kind == RecordKind.Read).Select(r => new GameRead(r.Path, new DateTimeOffset(r.Time), r.Offset, r.Length)), ct);
 
     private string LayoutStamp(GameSettings g) =>
         $"{_env.FileWriteTime(g.Plan):O}|{_env.JournalRows(g)}|{_env.JournalPlanSha(g)}|{_status.Get(g.Name)?.RelocatedAt:O}|{_status.ReplanGeneration(g.Name)}";

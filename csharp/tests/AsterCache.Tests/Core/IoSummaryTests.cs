@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using AsterCache.Core.Prefetch;
 using AsterCache.Core.Trace;
 using AsterCache.Tracer;
 using Xunit;
@@ -416,6 +417,103 @@ public sealed class IoSummaryTests : IDisposable
     }
 
     [Fact]
+    public void OwnReadsOfTheServiceAreLeftOutUnlessTheGameReadTheSameRangeOrTheRequestWasNotAPagingReadOnce()
+    {
+        const string File = @"D:\Games.bin";
+        var batch = new SelfReadBatch(Started.AddSeconds(4), Started.AddSeconds(6),
+            [new ReadOp(File, 0, 4096), new ReadOp(File, 65_536, 4096), new ReadOp(File, 131_072, 4096), new ReadOp(File, 196_608, 4096), new ReadOp(File, 262_144, 4096)]);
+        var game = new GameRead(File, Started.AddSeconds(5.5), 65_536, 4096); // 서비스와 같은 시간대에 게임도 같은 구간을 읽음
+        IoRequestSnapshot requests = Snapshot(
+            Request(4, 0, 4096, 100, first: 5_000_000, paging: 1), // 서비스만 읽음: 뺌
+            Request(4, 65_536, 4096, 100, first: 5_000_000, paging: 1), // 게임도 읽음: 남김
+            Request(4, 131_072, 4096, 100, first: 5_000_000, paging: 0), // 페이징이 아닌 읽기: 남김
+            Request(4, 196_608, 4096, 100, first: 50_000_000, paging: 1), // 서비스 읽기가 끝난 지 한참 뒤: 남김
+            Request(4, 262_144, 4096, 100, count: 2, first: 5_000_000, paging: 2)); // 두 번 읽힘: 남김
+        requests = requests with { RawWindows = [new IoSummaryWindow(0, 60_000_000)], SelfReads = new SelfReadFilter(Started, [batch], [game]) };
+        var mapper = new IoBlockMapper(requests);
+        mapper.AddFile(File, false, true, 4, [new IoFileExtent(0, 0, 400_000)]);
+
+        IoSummary summary = mapper.Build(1, 0, 0, 0, 1, false);
+
+        Assert.Equal([1L, 2L, 3L, 4L], summary.Rows.Select(row => row.BlockNumber));
+        Assert.Equal(new IoClassTotals(1, 4096, 100), summary.Quality.SelfRead);
+        Assert.Equal(new IoClassTotals(5, 4096 * 5, 400), summary.Quality.Linked);
+        Assert.Equal(summary.Quality.Total.Bytes, summary.Quality.Linked.Bytes + summary.Quality.SelfRead.Bytes);
+
+        string path = Path.Combine(_dir, "own.trace.run1.json.io.json");
+        IoSummaryStore.Write(path, summary);
+        Assert.Equal(summary.Quality.SelfRead, IoSummaryStore.Read(path)!.Quality.SelfRead);
+    }
+
+    [Fact]
+    public void WithoutAFilterNothingIsLeftOut()
+    {
+        var mapper = new IoBlockMapper(Snapshot(Request(4, 0, 4096, 100, first: 5_000_000, paging: 1)));
+        mapper.AddFile(@"D:\Games.bin", false, true, 4, [new IoFileExtent(0, 0, 8192)]);
+
+        IoSummary summary = mapper.Build(1, 0, 0, 0, 1, false);
+
+        Assert.Single(summary.Rows);
+        Assert.Equal(default, summary.Quality.SelfRead);
+    }
+
+    [Fact]
+    public void OnlyReadsInsideARawWindowCanBeLeftOutBecauseOutsideItTheGameReadsAreNotRecorded()
+    {
+        const string File = @"D:\Games.bin";
+        var batch = new SelfReadBatch(Started.AddSeconds(4), Started.AddSeconds(6), [new ReadOp(File, 0, 4096), new ReadOp(File, 65_536, 4096)]);
+        IoRequestSnapshot requests = Snapshot(
+            Request(4, 0, 4096, 100, first: 5_000_000, paging: 1), // 창 안
+            Request(4, 65_536, 4096, 100, first: 5_500_000, paging: 1)); // 창 밖: 같은 시간대여도 게임 읽기를 확인할 수 없어 남김
+        requests = requests with { RawWindows = [new IoSummaryWindow(0, 5_200_000)], SelfReads = new SelfReadFilter(Started, [batch], []) };
+        var mapper = new IoBlockMapper(requests);
+        mapper.AddFile(File, false, true, 4, [new IoFileExtent(0, 0, 200_000)]);
+
+        IoSummary summary = mapper.Build(1, 0, 0, 0, 1, false);
+
+        Assert.Equal([1L], summary.Rows.Select(row => row.BlockNumber));
+        Assert.Equal(new IoClassTotals(1, 4096, 100), summary.Quality.SelfRead);
+    }
+
+    [Fact]
+    public void ARequestOnlyPartlyCoveredByTheServiceRangeIsKeptAndAdjacentRangesCountAsOne()
+    {
+        const string File = @"D:\Games.bin";
+        var batch = new SelfReadBatch(Started.AddSeconds(4), Started.AddSeconds(6),
+            [new ReadOp(File, 0, 4096), new ReadOp(File, 4096, 4096), new ReadOp(File, 131_072, 4096)]);
+        IoRequestSnapshot requests = Snapshot(
+            Request(4, 0, 8192, 100, first: 5_000_000, paging: 1), // 이웃한 두 서비스 구간이 전체를 덮음: 뺌
+            Request(4, 131_072, 8192, 100, first: 5_000_000, paging: 1)); // 앞 절반만 덮임: 남김
+        requests = requests with { RawWindows = [new IoSummaryWindow(0, 60_000_000)], SelfReads = new SelfReadFilter(Started, [batch], []) };
+        var mapper = new IoBlockMapper(requests);
+        mapper.AddFile(File, false, true, 4, [new IoFileExtent(0, 0, 400_000)]);
+
+        IoSummary summary = mapper.Build(1, 0, 0, 0, 1, false);
+
+        Assert.Equal([2L], summary.Rows.Select(row => row.BlockNumber));
+        Assert.Equal(new IoClassTotals(1, 8192, 100), summary.Quality.SelfRead);
+        Assert.Equal(new IoClassTotals(1, 8192, 100), summary.Quality.Linked);
+    }
+
+    [Fact]
+    public void AnObservationKeepsTheEarliestBatchesPastTheLimitAndIgnoresOtherObservations()
+    {
+        var ops = new ReadOp[] { new(@"D:\Games\log-test.bin", 0, 4096) };
+        var collector = new IoSummaryCollector(Started); // 관찰 시작
+        SelfReadObservation other = SelfReadLog.Begin();
+        _ = other.End(); // 끝난 관찰은 더 받지 않음
+        SelfReadLog.Note(ops, Started, Started.AddSeconds(1));
+        SelfReadLog.Note(new ReadOp[SelfReadLog.MaxOps], Started, Started.AddSeconds(2)); // 상한을 넘김: 버림
+
+        IoRequestSnapshot snapshot = collector.Snapshot(Started.AddSeconds(3), [], 0, null);
+
+        Assert.Contains(snapshot.SelfReadBatches!, b => b.Ops.Length == 1 && b.Ops[0].Path == ops[0].Path);
+        Assert.DoesNotContain(snapshot.SelfReadBatches!, b => b.Ops.Length == SelfReadLog.MaxOps);
+        Assert.True(snapshot.SelfReadDroppedOps >= SelfReadLog.MaxOps);
+        Assert.Empty(other.End().Batches);
+    }
+
+    [Fact]
     public void SummaryLineIncludesTheClassesLatencyQualityAndScanCost()
     {
         var quality = new IoSummaryQuality(
@@ -424,7 +522,7 @@ public sealed class IoSummaryTests : IDisposable
         var summary = new IoSummary(Started, Started.AddSeconds(2), [], quality, [], []);
 
         Assert.Equal("I/O summary: observed 2.0s, 4 disk reads/4.0 MiB, block linked 1 reads/1.0 MiB (25.0% of bytes), other disk 1 reads/1.0 MiB, no file 1 reads/1.0 MiB, not converted 1 reads/1.0 MiB, "
-            + "dropped 0 reads/0.0 MiB, latency 2.5 ms sum/1.6 ms max, 3 events lost, truncated False (blocks 0), 12 files scanned in 34 ms, 2 changed during session",
+            + "dropped 0 reads/0.0 MiB, latency 2.5 ms sum/1.6 ms max, 3 events lost, truncated False (blocks 0), 12 files scanned in 34 ms, 2 changed during session, 0 reads/0.0 MiB left out as the service's own reads",
             summary.FormatLogLine());
     }
 }

@@ -201,9 +201,16 @@ public static partial class RelocationEstimate
             {
                 ReadSegment previous = segments[k - 1];
                 long distance = RelocationEstimateSegments.LinkDistance(previous, segment);
-                // 조각이 셋 이상 끊긴 블록의 가운데 조각들은 센 블록이 없으므로 그 블록의 가중치를 씁니다.
+                // 블록 안 끊김 이음은 끊긴 블록이 양쪽 구간에 다 들어 있어 한 번만 셉니다.
                 int counted = previous.BlockCount + segment.BlockCount;
-                double weight = counted > 0 ? (previous.WeightSum + segment.WeightSum) / counted : segment.Blocks[0].Weight;
+                double sum = previous.WeightSum + segment.WeightSum;
+                if (segment.BreakInsideBlock)
+                {
+                    counted--;
+                    sum -= segment.Blocks[0].Weight;
+                }
+
+                double weight = sum / counted;
                 gain = weight * model.PositionMs(distance, diskBytes);
             }
 

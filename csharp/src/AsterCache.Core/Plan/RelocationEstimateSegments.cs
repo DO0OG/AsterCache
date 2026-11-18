@@ -130,13 +130,9 @@ internal static class RelocationEstimateSegments
                     if (current.Blocks.Count == 0 || !ReferenceEquals(current.Blocks[^1], block))
                     {
                         current.Blocks.Add(block);
-                        // 블록 안 끊김으로 이어진 구간의 첫 블록은 앞 구간에서 이미 센 블록이라 가중치에는 다시 넣지 않습니다.
-                        if (!(current.BreakInsideBlock && current.Blocks.Count == 1))
-                        {
-                            current.BlockCount++;
-                            current.WeightSum += block.Weight;
-                        }
-
+                        // 구간마다 물리적으로 든 모든 블록을 셉니다. 블록 안 끊김으로 두 구간에 걸친 블록의 이중 계산은 이음 가중치 평균에서 뺍니다.
+                        current.BlockCount++;
+                        current.WeightSum += block.Weight;
                         current.Selectable &= ok;
                     }
 

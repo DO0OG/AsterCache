@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using AsterCache.Cli.Commands;
 using AsterCache.Core.Json;
 using AsterCache.Core.Model;
@@ -7,6 +8,7 @@ using AsterCache.Core.Trace;
 using AsterCache.Service;
 using AsterCache.Tests.Windows;
 using AsterCache.Windows;
+using Microsoft.Win32.SafeHandles;
 using Xunit;
 
 namespace AsterCache.Tests.Cli;
@@ -477,6 +479,97 @@ public sealed class RelocationEstimateCliTests : IDisposable
         Assert.Equal(2, decay);
         Assert.Contains("session-decay", decayError, StringComparison.Ordinal);
         Assert.Equal(first, second);
+    }
+
+    [Fact]
+    public void BlockInsideASparseHoleHasNoLocationAndAddsNothingToMovedBytesOrLinks()
+    {
+        string root = _dir.Combine("game");
+        Directory.CreateDirectory(root);
+        string sparse = Path.Combine(root, "sparse.bin");
+        string summaryPath = _dir.Combine("hole.io.json");
+        // 블록 0 과 2 는 구역(처음 256 클러스터) 밖에 할당돼 있고 블록 1 은 구멍입니다(읽혔어도 할당이 없음).
+        WriteSummary(summaryPath, [new(sparse)], [BlockRow(0, 0, 1), BlockRow(0, 1, 2), BlockRow(0, 2, 3)]);
+        SetLayouts(new Dictionary<string, RelocationEstimateCommand.FileLayoutSnapshot>(StringComparer.OrdinalIgnoreCase)
+        {
+            [sparse] = Layout(3 * 65_536, [new Extent(0, 1000, 16), new Extent(32, 2000, 16)]),
+        });
+
+        (int code, string output, _) = CliTests.Run("plan", "estimate", "--io-summary", summaryPath, "--origin-root", root, "--zone-mib", "1");
+
+        Assert.Equal(0, code);
+        JObject combined = (JObject)((JObject)JsonRead.Parse(output)!)["combined"]!;
+        JObject classification = (JObject)combined["classification"]!;
+        Assert.Equal(2L, ((JObject)classification["movable"]!)["blocks"]);
+        Assert.Equal(1L, ((JObject)classification["missing_section"]!)["blocks"]);
+        JObject current = (JObject)((JObject)combined["sequence"]!)["current"]!;
+        Assert.Equal(2L, current["blocks_with_location"]);
+        Assert.Equal(1L, current["blocks_without_location"]);
+        // 구멍 블록이 줄을 끊으므로 앞뒤 블록 사이에 이음이 생기지 않습니다.
+        Assert.Equal(0L, ((JObject)((JObject)combined["sequence"]!)["current_model"]!)["links"]);
+        JObject scenario = (JObject)((List<object?>)((JObject)combined["sequence"]!)["zones"]!)[0]!;
+        JObject byLatency = (JObject)scenario["by_latency"]!;
+        Assert.Equal(2L, byLatency["moved_blocks"]);
+        Assert.Equal(131_072L, byLatency["bytes_to_move"]);
+        Assert.Equal(131_072L, byLatency["required_contiguous_bytes"]);
+        Assert.Contains(((List<object?>)((JObject)JsonRead.Parse(output)!)["notes"]!), note => note is string text && text.Contains("16-cluster", StringComparison.Ordinal));
+    }
+
+    // 스파스 속성만 있는 파일은 옮길 수 있음, 압축이 함께 있으면 옮길 수 없음으로 분류하는지 실제 속성으로 확인합니다(NTFS 임시 폴더).
+    [Theory]
+    [InlineData(false, 2L, 0L)]
+    [InlineData(true, 0L, 2L)]
+    public void SparseAttributeAloneIsMovableButSparseWithCompressionIsNot(bool compressed, long movable, long unmovable)
+    {
+        string root = _dir.Combine("game");
+        Directory.CreateDirectory(root);
+        string path = Path.Combine(root, "sparse.bin");
+        const int block = 65_536;
+        using (SafeFileHandle h = File.OpenHandle(path, FileMode.Create, FileAccess.ReadWrite, FileShare.None, FileOptions.WriteThrough))
+        {
+            if (compressed)
+            {
+                SetCompression(h);
+            }
+
+            Assert.True(DeviceIoControl(h, 0x900C4, 0, 0, 0, 0, out _, 0)); // FSCTL_SET_SPARSE
+            RandomAccess.Write(h, new byte[block], 0);
+            RandomAccess.Write(h, new byte[block], 2L * block);
+            RandomAccess.SetLength(h, 3L * block);
+            RandomAccess.FlushToDisk(h);
+        }
+
+        string summaryPath = _dir.Combine("attr.io.json");
+        WriteSummary(summaryPath, [new(path)], [BlockRow(0, 0, 1), BlockRow(0, 2, 3)]);
+
+        (int code, string output, _) = CliTests.Run("plan", "estimate", "--io-summary", summaryPath, "--origin-root", root, "--zone-mib", "1");
+
+        Assert.Equal(0, code);
+        JObject classification = (JObject)((JObject)((JObject)JsonRead.Parse(output)!)["combined"]!)["classification"]!;
+        Assert.Equal(movable, ((JObject)classification["movable"]!)["blocks"]);
+        JObject reasons = (JObject)classification["unmovable_by_reason"]!;
+        Assert.Equal(unmovable == 0 ? 0 : 1, reasons.Count);
+        if (unmovable > 0)
+        {
+            Assert.Equal(unmovable, ((JObject)reasons["sparse"]!)["blocks"]); // 스파스와 압축이 함께 있으면 기존 이유 그대로입니다
+        }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool DeviceIoControl(SafeFileHandle device, uint code, nint input, uint inputSize, nint output, uint outputSize, out uint returned, nint overlapped);
+
+    private static void SetCompression(SafeFileHandle handle)
+    {
+        nint input = Marshal.AllocHGlobal(sizeof(ushort));
+        try
+        {
+            Marshal.WriteInt16(input, 1); // COMPRESSION_FORMAT_DEFAULT
+            Assert.True(DeviceIoControl(handle, 0x9C040, input, sizeof(ushort), 0, 0, out _, 0)); // FSCTL_SET_COMPRESSION
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(input);
+        }
     }
 
     private void SetLayouts(IReadOnlyDictionary<string, RelocationEstimateCommand.FileLayoutSnapshot> layouts) =>

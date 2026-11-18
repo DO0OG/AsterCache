@@ -30,9 +30,9 @@ public sealed class RelocationEstimateLinkGainTests
         Assert.Equal([(0L, 200L), (500L, 650L), (900L, 1000L)], segments.Select(s => (s.StartByte, s.EndByte)).ToArray());
         Assert.Equal([false, true, true], segments.Select(s => s.LinkedFromPrevious).ToArray());
         Assert.Equal([false, false, true], segments.Select(s => s.BreakInsideBlock).ToArray());
-        // 조각이 끊긴 블록 c 는 두 구간의 블록 목록에 들지만 가중치 평균에는 한 번만 셉니다.
-        Assert.Equal([2, 2, 1], segments.Select(s => s.BlockCount).ToArray());
-        Assert.Equal([2d, 2d, 1d], segments.Select(s => s.WeightSum).ToArray());
+        // 조각이 끊긴 블록 c 는 두 구간에 물리적으로 들어 있어 두 구간 모두에서 셉니다(이중 계산은 이음 평균에서만 뺌).
+        Assert.Equal([2, 2, 2], segments.Select(s => s.BlockCount).ToArray());
+        Assert.Equal([2d, 2d, 2d], segments.Select(s => s.WeightSum).ToArray());
         Assert.Equal(2, segments[2].Blocks.Count);
 
         // 이음은 200→500(300), 650→900(250) 두 개이고 합쳐 20 ms, 전송은 450 바이트입니다.
@@ -308,6 +308,26 @@ public sealed class RelocationEstimateLinkGainTests
         Assert.Equal(1, selection.Selected.Blocks);
         Assert.Equal(20d, selection.RealizedGainMs!.Value, 9); // 조각 사이 이음 둘, 가중치 1
         Assert.Equal(1, selection.Model.Segments);
+    }
+
+    [Fact]
+    public void BrokenBlockCountsInBothSegmentsAndIsDeductedOnlyFromItsInsideLink()
+    {
+        // a [900,1000) 은 x 의 첫 조각 [1000,1100) 과 이어져 구간 하나가 되고, x 의 둘째 조각 [3000,3100) 은 블록 안 끊김 구간,
+        // c [5000,5100) 이 그 뒤에 이어집니다. 감쇠 0.5 에서 가중치는 a = 1, c = 1, x = 1 + 0.5 (옛 플레이에도 있음).
+        // 구간1 {a, x} 의 합 2.5·수 2, 구간2 {x} 의 합 1.5·수 1. 블록 안 이음 구간1→구간2 는 x 의 이중 계산을 빼 (2.5 + 1.5 - 1.5) / (2 + 1 - 1) = 1.25,
+        // 구간2→구간3 은 x 가 구간2 에 들어 있으므로 (1.5 + 1) / 2 = 1.25.
+        // 모든 이음이 10 ms 라 이득은 12.5 + 12.5 = 25 입니다(x 를 구간2 에서 빼면 둘째 이음이 1 * 10 이 되어 22.5).
+        var recent = new RelocationEstimateSession("new.io.json", "new", DateTimeOffset.UnixEpoch.AddDays(2),
+            [Block("a", 0, 0, 900, 1000), Block("x", 0, 1, [(1000, 1100), (3000, 3100)]), Block("c", 0, 2, 5000, 5100)]);
+        var older = new RelocationEstimateSession("old.io.json", "old", DateTimeOffset.UnixEpoch.AddDays(1),
+            [Block("x", 0, 1, [(1000, 1100), (3000, 3100)])]);
+
+        RelocationEstimateSelection selection = RelocationEstimate.Calculate([older, recent], [1], [Zone], false, Flat, 0.5)
+            .Combined.Scenarios[0].ByLinkGain;
+
+        Assert.Equal(3, selection.Selected.Blocks);
+        Assert.Equal(25d, selection.RealizedGainMs!.Value, 9);
     }
 
     [Fact]

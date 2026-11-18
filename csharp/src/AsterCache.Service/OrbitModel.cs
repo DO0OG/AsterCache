@@ -188,7 +188,7 @@ public sealed class OrbitModel : IDisposable
             bool saved = Build(game, minRunBytes, BuildBudget, linked.Token, afterTempWrite);
             if (!saved && !scheduled.Stop.IsCancellationRequested && (timeout.IsCancellationRequested || clock.Elapsed >= BuildBudget))
             {
-                log.Warn($"{game.Name}: 모형 구축 시간이 초과되었습니다.");
+                log.Warn($"{game.Name}: orbit model build exceeded its time budget");
             }
         }
         catch (Exception e)

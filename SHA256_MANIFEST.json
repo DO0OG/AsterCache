@@ -16,11 +16,6 @@
       "sha256": "d70cc37f2c1dcb58143116b0cd24d763c9a940e3dad3f4eae1c900fa5c0dd50b"
     },
     {
-      "path": "astercache_v06.py",
-      "size": 5046,
-      "sha256": "7c6af099fd13aacd0a0185b224d5c49f2ed4a9fd6c089a8c3ec19dd1071bf1bf"
-    },
-    {
       "path": "astercache_v07.py",
       "size": 5435,
       "sha256": "c1cbe45c2d4950779753ab2206bafb64fb90ce224af894edaf8363929b212407"

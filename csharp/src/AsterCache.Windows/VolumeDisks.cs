@@ -117,7 +117,7 @@ public sealed class VolumeDisks(Func<string, IReadOnlySet<uint>?> query, Func<lo
             _cache.TryRemove(letter, out _);
             if (_reported.TryAdd(letter, 0))
             {
-                Trace.WriteLine($"VolumeDisks: {letter} 물리 디스크를 판정하지 못해 같은 디스크로 봅니다.");
+                Trace.WriteLine($"VolumeDisks: {letter} physical disk could not be determined, treating it as the same disk");
             }
 
             return null;

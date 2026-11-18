@@ -116,4 +116,105 @@ public sealed class SparseRelocationLiveTests
         Assert.Equal(allocation, Allocation(path));
         Assert.Equal(before, Map(path)); // 원래 위치로 돌아옴
     }
+
+    // 서비스가 쓰는 규칙과 같음: 스파스 속성 파일은 할당 기준값이 없는 계획에서는 건너뜀.
+    private static ApplyHooks LegacyHooks() => new()
+    {
+        Extents = FileLayout.RelocationExtents,
+        Digest = (path, size, ranges) => SampleDigest.Compute(path, size, ranges),
+        EdgeDigest = (path, size, ranges) => SampleDigest.Compute(path, size, ranges, span: 0),
+        SkipReason = path => FileGuards.RelocationSkipReason(path),
+        IsSparse = path => FileGuards.IsSparse(path),
+    };
+
+    private static ApplyOptions Exec(string planPath, long writeCap = 2L << 30) => new(Execute: true, SaveTo: planPath, Verify: VerifyMode.All, WriteCap: writeCap);
+
+    // 기준값이 없는 이전 형식 계획으로 일반 파일만 옮긴 뒤 (스파스 파일은 건너뜀), 기준값을 더한 후보로 잔여 재계획해 활성 계획을 바꾼 상태.
+    private static PlanFile LegacyReplaced(TempDir dir, NtfsVolume vol, string sparse, string normal, string planPath, string journal)
+    {
+        long unit = 16 * vol.ClusterBytes;
+        List<TraceEvent> events = [.. WrittenUnits.Select(u => new TraceEvent(sparse, u * unit, unit, 8.0)), new(normal, 0, new FileInfo(normal).Length, 8.0)];
+        PlanFile legacy = PlanFile.Make([events], dir.Path, 8L << 20, vol.ClusterBytes, FileLayout.RelocationExtents, preserveBytes: 0);
+        Assert.Empty(legacy.SparseAllocations);
+        ApplyReport first = Applier.Apply(legacy, vol, [dir.Path], journal, LegacyHooks(), Exec(planPath));
+        Assert.Empty(first.Failed);
+        Assert.Contains(first.SkippedFiles, s => s.Key == sparse);
+        PlanFile candidate = SparseAllocation.WithMissingBaselines(PlanFile.Load(planPath), p => FileGuards.IsSparse(p), FileLayout.RelocationExtents)!;
+        return ResidualReplan.Run(candidate, planPath, journal, vol, null, LegacyHooks(), () => DateTime.UtcNow, null, []).Plan;
+    }
+
+    [Fact]
+    public void LegacyPlanReplacementMovesTheSparseAllocatedRangesIntoOneNewRunAndKeepsContentSizeAttributeAndTimes()
+    {
+        Assert.True(Elevation.IsAdmin(), "run elevated: the move needs a volume handle");
+        using var dir = new TempDir();
+        string letter = Path.GetPathRoot(dir.Path)![..2].ToUpperInvariant();
+        using NtfsVolume vol = NtfsVolume.Open(letter);
+        long unit = 16 * vol.ClusterBytes;
+        string sparse = CreateSparseFile(dir, unit);
+        string normal = dir.Combine("normal.bin");
+        File.WriteAllBytes(normal, RandomNumberGenerator.GetBytes((int)(4 * unit)));
+        string sha = Hash(sparse);
+        long size = new FileInfo(sparse).Length;
+        DateTime mtime = File.GetLastWriteTimeUtc(sparse);
+        IReadOnlyList<AllocatedRange> allocation = Allocation(sparse);
+        Dictionary<long, long> before = Map(sparse);
+        string planPath = dir.Combine("plan.json");
+        string journal = dir.Combine("journal.jsonl");
+
+        PlanFile replaced = LegacyReplaced(dir, vol, sparse, normal, planPath, journal);
+
+        Assert.Equal(allocation, replaced.SparseAllocations[sparse]);
+        Assert.Equal(before, Map(sparse)); // 교체는 옮기지 않음
+        Assert.False(LayoutVerifier.Verify(replaced, FileLayout.RelocationExtents, FileGuards.RelocationUnmovable, p => FileGuards.IsSparse(p), holdChangedSparse: true).Contiguous);
+
+        ApplyReport rep = Applier.Apply(PlanFile.Load(planPath), vol, [dir.Path], journal, LegacyHooks(), Exec(planPath));
+
+        Assert.Empty(rep.Failed);
+        Assert.True(rep.SparseMovedBytes > 0);
+        Assert.NotEqual(before, Map(sparse));
+        long[] lcns = [.. Map(sparse).OrderBy(kv => kv.Key).Select(kv => kv.Value)];
+        Assert.Equal(WrittenUnits.Length * 16, lcns.Length);
+        Assert.True(LayoutVerifier.Verify(PlanFile.Load(planPath), FileLayout.RelocationExtents, FileGuards.RelocationUnmovable, p => FileGuards.IsSparse(p), holdChangedSparse: true).Contiguous);
+        Assert.Equal(sha, Hash(sparse));
+        Assert.Equal(size, new FileInfo(sparse).Length);
+        Assert.True(FileGuards.IsSparse(sparse));
+        Assert.Equal(allocation, Allocation(sparse));
+        Assert.Equal(mtime, File.GetLastWriteTimeUtc(sparse));
+    }
+
+    [Fact]
+    public void LegacyPlanReplacementResumesAfterAnInterruptedReapplyAndTheJournalRestoresTheOriginalPlace()
+    {
+        Assert.True(Elevation.IsAdmin(), "run elevated: the move needs a volume handle");
+        using var dir = new TempDir();
+        string letter = Path.GetPathRoot(dir.Path)![..2].ToUpperInvariant();
+        using NtfsVolume vol = NtfsVolume.Open(letter);
+        long cb = vol.ClusterBytes;
+        string sparse = CreateSparseFile(dir, 16 * cb);
+        string normal = dir.Combine("normal.bin");
+        File.WriteAllBytes(normal, RandomNumberGenerator.GetBytes((int)(4 * 16 * cb)));
+        string sha = Hash(sparse);
+        IReadOnlyList<AllocatedRange> allocation = Allocation(sparse);
+        Dictionary<long, long> before = Map(sparse);
+        string planPath = dir.Combine("plan.json");
+        string journal = dir.Combine("journal.jsonl");
+        _ = LegacyReplaced(dir, vol, sparse, normal, planPath, journal);
+
+        ApplyReport partial = Applier.Apply(PlanFile.Load(planPath), vol, [dir.Path], journal, LegacyHooks(), Exec(planPath, writeCap: 16 * cb)); // 한 단위만 옮기고 멈춤 (게임 시작으로 취소한 것과 같음)
+
+        Assert.Equal("write_cap", partial.Stopped);
+        ApplyReport resumed = Applier.Apply(PlanFile.Load(planPath), vol, [dir.Path], journal, LegacyHooks(), Exec(planPath));
+        Assert.Empty(resumed.Failed);
+        Assert.Null(resumed.Stopped);
+        Assert.True(LayoutVerifier.Verify(PlanFile.Load(planPath), FileLayout.RelocationExtents, FileGuards.RelocationUnmovable, p => FileGuards.IsSparse(p), holdChangedSparse: true).Contiguous);
+
+        RevertReport reverted = Reverter.Revert(journal, vol, [dir.Path], LegacyHooks(), new ApplyOptions(Execute: true));
+
+        Assert.Empty(reverted.Skipped);
+        Assert.Equal(sha, Hash(sparse));
+        Assert.True(FileGuards.IsSparse(sparse));
+        Assert.Equal(allocation, Allocation(sparse));
+        Assert.Equal(before, Map(sparse)); // 원래 위치로 돌아옴
+    }
 }

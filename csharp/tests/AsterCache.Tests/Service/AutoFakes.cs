@@ -358,6 +358,9 @@ internal sealed class FakeWorld
 
     public Func<string, IReadOnlyList<Extent>?> Extents { get; set; } = _ => throw new InvalidOperationException("Extents");
 
+    /// 스파스 속성인 파일 (기본: 없음).
+    public Func<string, bool> IsSparse { get; set; } = _ => false;
+
     /// 볼륨 할당 비트맵: 존 확장 계획이 덧붙일 구간이 비었는지 미리 보는 데 씀. 기본은 읽지 못함 (null).
     public Func<string, VolumeBitmap?> Bitmap { get; set; } = _ => null;
 
@@ -462,6 +465,7 @@ internal sealed class FakeWorld
         RealPath = Path.GetFullPath,
         Apply = (g, plan, options, ct) => Apply(g, plan, options, ct),
         Stat = p => Stat(p),
+        IsSparse = p => IsSparse(p),
         ChangeTime = p => ChangeTime(p),
         JournalRows = g => JournalRows(g),
         Lock = g =>

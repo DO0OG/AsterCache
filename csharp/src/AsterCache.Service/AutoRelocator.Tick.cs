@@ -47,6 +47,8 @@ public sealed partial class AutoRelocator
             _prefetchTried.Remove(name);
             _supplementChecked.Remove(name);
             _volatileChecked.Remove(name);
+            _sparseChecked.Remove(name);
+            _sparseRetryAt.Remove(name);
             _seeded.Remove(name);
             _smrBudgetLogged.TryRemove(name, out _);
             _limitSeen.Remove(name);
@@ -95,6 +97,7 @@ public sealed partial class AutoRelocator
         ReplanExtended(s);
         ReplanLegacyVolatile(s);
         ReplanProfileSupplement(s);
+        ReplanLegacySparse(s);
         PrefetchBootstrap(s);
         WarmCold(s, warms);
         bool relocateOn = s.Auto.Relocate && s.Auto.MaxRelocationsPerDay > 0;

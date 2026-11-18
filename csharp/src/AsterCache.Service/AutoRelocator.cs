@@ -116,6 +116,8 @@ public sealed partial class AutoRelocator
     private readonly Dictionary<string, DateTimeOffset> _prefetchTried = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 프리페치 기록으로 boot 를 만들어 본 게임과 그 시각
     private readonly HashSet<string> _supplementChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 프로필 보충 재계획을 이미 따져 본 게임 (서비스 실행당 한 번)
     private readonly HashSet<string> _volatileChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 옛 계획의 가변 파일을 이미 따져 본 게임 (서비스 실행당 한 번)
+    private readonly Dictionary<string, DateTimeOffset> _sparseRetryAt = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 빈 구간이 모자라 스파스 기준값 교체를 못 한 게임과 다시 시도할 시각 (비트맵을 틱마다 읽지 않게)
+    private readonly HashSet<string> _sparseChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 스파스 할당 기준값이 없는 이전 형식 계획을 이미 따져 본 게임 (서비스 실행당 한 번)
     private readonly HashSet<string> _seeded = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 이전 존 시작에 맞춰 계획을 만든 게임
     private readonly ConcurrentDictionary<string, byte> _smrBudgetLogged = new(StringComparer.Ordinal); // 명시한 하루 쓰기 예산이 SMR 기본값보다 큰 게임 (한 번만 로그)
     private readonly Dictionary<string, (bool Auto, int Mib)> _limitSeen = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 존 상한 설정 (auto 여부·값) 을 이미 따져 본 게임과 그때의 설정 (설정이 바뀌거나 서비스를 다시 시작하기 전에는 계획을 다시 읽지 않음)

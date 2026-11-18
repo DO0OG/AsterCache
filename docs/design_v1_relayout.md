@@ -451,7 +451,7 @@ core 를 score 내림차순으로 게임별 존 예산 C_game 까지 채우고, 
 | procmon_import.py | 재사용 + 수정 | 경로 정규화, 실제 CSV 픽스처 테스트 |
 | session_planner.py | 재사용 (빈도, decay) | 순서 합의는 relayout/plan.py 의 새 함수 |
 | sqlite_cache.py | 게임 경로에서 빼고 `_fingerprint` 만 재사용 | 7.3 |
-| astercache_v06.py, blockcache_v06.py | legacy/ 로 이동 | 새 경로와 무관 |
+| astercache_v06.py, blockcache_v06.py | astercache_v06.py 는 지움(없는 `blockcache` 모듈을 가져오는 깨진 코드, 어디서도 쓰지 않음). blockcache_v06.py 는 bench_api.py 비교용으로 남김 | 새 경로와 무관 |
 | **relayout/plan.py (신규)** | 순수 함수: select_hot, build_units, consensus_order, allocate_zone, plan_moves, check_drift | 디스크에 접근하지 않으므로 단위 테스트 가능 |
 | **relayout/mover.py (신규)** | 볼륨 비트맵, FSCTL_MOVE_FILE(청크), 저널, 재개, 해시 표본 검증, 디스크 유휴 확인 | 관리자 전용. ctypes 패턴은 prefetch/layout.py 와 같게 |
 | **relayout/cli.py (신규)** | plan / apply / verify / status / reapply | apply 와 reapply 만 관리자 |

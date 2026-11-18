@@ -625,7 +625,7 @@ internal static class RelocationEstimateCommand
             return new FileLayoutSnapshot(true, false, 0, null, null, null, null, "file_metadata_unavailable");
         }
 
-        string? guard = FileGuards.SkipReason(path);
+        string? guard = FileGuards.RelocationSkipReason(path);
         IReadOnlyList<Extent>? extents = FileLayout.AllocatedExtents(path);
         int? clusterBytes = FileLayout.ClusterBytes(path);
         IReadOnlyList<DiskExtent>? diskExtents = VolumeDisks.DiskExtentsOf(path);
@@ -1124,6 +1124,7 @@ internal static class RelocationEstimateCommand
             "evaluation link_change splits the change by join: removed (now non-zero, zero after), crossing_zone (one end moved to the zone, non-zero after) and inside_zone (both ends in the zone, non-zero); model_position_ms is the time after, before_model_position_ms the time of the same joins now",
             "by_link_gain weights plays by recency (1, session-decay, session-decay^2, ...) and ranks by the model position time removed; evaluation plays are not used for selection",
             "a zone is assumed to be contiguously free from its start position, and the plan's fixed target positions are not counted as inside the zone",
+            "sparse files are counted by their allocated ranges as they are now (holes are not placed or counted); relocation works on them in 16-cluster units, which the estimate does not round to",
         };
         if (!policyAvailable)
         {

@@ -81,6 +81,23 @@ public sealed class LoadRefillPlansTests : IDisposable
     }
 
     [Fact]
+    public void IsStaleIsTrueOnlyForAMissingOrOlderListWithSummariesPresent()
+    {
+        Func<string, DateTimeOffset?> time = p => File.Exists(p) ? File.GetLastWriteTimeUtc(p) : null;
+        Assert.False(LoadRefillPlans.IsStale(_game, time)); // 집계 없음: 만들 것이 없음
+
+        string summary = IoSummaryStore.RunPath(Run(1));
+        IoSummaryStore.WriteForRun(Run(1), Summary(_gameFile, 0, 2, [1_000_000]));
+        Assert.True(LoadRefillPlans.IsStale(_game, time)); // 목록 없음
+
+        LoadRefillPlans.Rebuild(_game, Started);
+        Assert.False(LoadRefillPlans.IsStale(_game, time)); // 목록이 더 새로움 (같은 시각 포함)
+
+        File.SetLastWriteTimeUtc(summary, File.GetLastWriteTimeUtc(LoadRefillPlans.PathOf(_game)).AddMinutes(1));
+        Assert.True(LoadRefillPlans.IsStale(_game, time)); // 집계가 더 새로움
+    }
+
+    [Fact]
     public void RebuildRemovesTheOldListWhenNoBlockIsLeft()
     {
         IoSummaryStore.WriteForRun(Run(1), Summary(_gameFile, 0, 2, [1_000_000]));

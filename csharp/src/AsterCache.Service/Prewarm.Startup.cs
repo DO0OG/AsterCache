@@ -167,6 +167,9 @@ public sealed partial class Prewarmer
     /// 부팅 BootDelay 가 지났는가: 자동 재배치·새 트레이스 예열과 대기 예열 재시도가 보는 조건 (서비스 시작 예열 게이트는 더 짧은 PrewarmBootDelay).
     public bool BootSettled() => _env.UptimeMs() >= BootDelay.TotalMilliseconds;
 
+    /// 서비스 시작 예열과 같은 조건 (부팅 PrewarmBootDelay 뒤 + 게임 드라이브 PrewarmIdleNeeded 유휴) 을 기다립니다. 취소되면 false.
+    public bool WaitServiceStartGate(IReadOnlyList<GameSettings> games, CancellationToken ct) => games.Count > 0 && WaitStartupGate(games, ct, PrewarmBootDelay, PrewarmIdleNeeded);
+
     /// 부팅 뒤 경과 시간 (ms, PrewarmEnv.UptimeMs). 부팅 조용 구간 판정이 같은 시계를 씁니다.
     public long UptimeMs() => _env.UptimeMs();
 

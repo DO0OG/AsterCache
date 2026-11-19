@@ -1018,8 +1018,10 @@ public sealed class AutoTracer
     }
 
     // 후반 창: 세션은 첫 창부터 게임 끝까지 두고 창 안에서만 읽기를 모읍니다 (창마다 새 세션이면 창 전에 열린 파일의 이름을 못 풀어 읽기가 버려짐).
+    // 등록 실행 파일이 새로 시작했으면 (NoteTargetStart) 남은 창 하나를 다음 예약 시각을 기다리지 않고 그 시각에 엽니다. 창이 이미 열려 있으면 아무것도 하지 않습니다.
     private void StepLateWindows(Run run, AutoSettings a, DateTimeOffset now)
     {
+        string? startedExe = run.TakeTargetStart();
         if (run.LateWindowStartedAt is { } started)
         {
             if (now - started < TimeSpan.FromSeconds(a.TraceLateWindowSeconds))
@@ -1042,13 +1044,25 @@ public sealed class AutoTracer
             return;
         }
 
-        if (now >= run.NextLateWindowAt)
+        if (now >= run.NextLateWindowAt || startedExe is not null)
         {
-            StartLateWindow(run, a, now);
+            StartLateWindow(run, a, now, startedExe);
         }
     }
 
-    private void StartLateWindow(Run run, AutoSettings a, DateTimeOffset now)
+    /// 트레이스 세션이 후반 창 단계에 있는 같은 게임의 등록 실행 파일이 새로 시작했음을 알립니다 (감시기 시작 처리에서 부름). 창은 트레이스 루프가 다음 틱에 엽니다.
+    public void NoteTargetStart(string game, string exe)
+    {
+        lock (_lock)
+        {
+            if (_run is { InitialWindowEnded: true, RawEnded: false, Finishing: false } run && string.Equals(run.Game.Name, game, StringComparison.OrdinalIgnoreCase))
+            {
+                run.NoteTargetStart(exe);
+            }
+        }
+    }
+
+    private void StartLateWindow(Run run, AutoSettings a, DateTimeOffset now, string? targetStartExe = null)
     {
         try
         {
@@ -1069,7 +1083,7 @@ public sealed class AutoTracer
             _status.Set(run.Game.Name, run.Game.Source, null, AutoStage.Tracing, detail); // 추가 기록(2회차 이후)은 상태를 건드리지 않음: 단계를 덮으면 At 이 바뀌어 재학습 판정이 흔들림
         }
 
-        _log.Info($"{run.Game.Name}: {detail} started");
+        _log.Info($"{run.Game.Name}: {detail} started" + (targetStartExe is null ? string.Empty : $" at a target start ({targetStartExe})"));
     }
 
     // 수집 구간을 닫고 그 구간의 읽기 집계를 남깁니다. 닫지 못하면 (세션이 이미 죽음 등) 지금까지 모은 기록을 저장하도록 끝내고 false.
@@ -1686,12 +1700,43 @@ public sealed class AutoTracer
         RebuildLoadRefill(run.Game);
     }
 
+    /// 서비스 시작 때: 목록 파일이 없거나 그 게임의 가장 새 집계보다 오래된 게임의 목록을 저장된 집계로 만듭니다 (실행 중인 게임은 건너뜀, 폴더 잠금 안, 낮은 우선순위).
+    /// 부팅 뒤 대기·디스크 유휴는 부르는 쪽이 기다린 뒤 백그라운드로 부릅니다.
+    public void RebuildStaleLoadRefills(CancellationToken ct)
+    {
+        foreach (GameSettings g in _settings().Games)
+        {
+            if (ct.IsCancellationRequested)
+            {
+                return;
+            }
+
+            if (_env.AnyRunning(g.ExeNames) || !LoadRefillPlans.IsStale(g, _env.FileWriteTime))
+            {
+                continue;
+            }
+
+            RunBelowNormal(() =>
+            {
+                using AsterCache.Core.Apply.DataLock? gate = AsterCache.Core.Apply.DataLock.TryAcquire(g.Plan);
+                if (gate is null)
+                {
+                    _log.Info($"{g.Name}: load refill list not built at service start (zone lock busy)");
+                }
+                else if (!_env.AnyRunning(g.ExeNames)) // 잠금을 기다리는 사이 게임이 떴으면 만들지 않음
+                {
+                    RebuildLoadRefill(g, " (service start)");
+                }
+            });
+        }
+    }
+
     // 집계가 바뀔 때마다 다음 로드에 다시 채울 블록 목록을 새로 만듦 (게임이 끝난 뒤 낮은 우선순위 스레드, 폴더 잠금 안). 부가 정보라 실패해도 기록 저장은 계속.
-    private void RebuildLoadRefill(GameSettings g)
+    private void RebuildLoadRefill(GameSettings g, string logSuffix = "")
     {
         try
         {
-            _log.Info($"{g.Name}: {LoadRefillPlans.Rebuild(g, _env.Now())}");
+            _log.Info($"{g.Name}: {LoadRefillPlans.Rebuild(g, _env.Now())}{logSuffix}");
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
@@ -2198,6 +2243,7 @@ public sealed class AutoTracer
     private sealed class Run(GameSettings game, IAutoTrace session, DateTimeOffset startedAt, GameExitTracker exits)
     {
         private int _endRequested;
+        private string? _targetStart;
 
         public GameSettings Game { get; } = game;
 
@@ -2281,5 +2327,10 @@ public sealed class AutoTracer
         public bool EndRequested => Volatile.Read(ref _endRequested) != 0;
 
         public void RequestEnd() => Interlocked.Exchange(ref _endRequested, 1);
+
+        /// 등록 실행 파일이 새로 시작함 (트레이스 루프가 TakeTargetStart 로 가져가 후반 창을 엽니다).
+        public void NoteTargetStart(string exe) => Volatile.Write(ref _targetStart, exe);
+
+        public string? TakeTargetStart() => Interlocked.Exchange(ref _targetStart, null);
     }
 }

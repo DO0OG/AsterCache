@@ -179,6 +179,18 @@ public sealed class Worker : BackgroundService
             }), CancellationToken.None);
         }
 
+        if (_prewarm is not null && _auto is not null)
+        {
+            _ = Task.Run(() => RunPrewarm(() =>
+            {
+                using var gateStop = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _auto.WarmToken);
+                if (_prewarm.WaitServiceStartGate(_settings.Games, gateStop.Token)) // 서비스 시작 예열과 같은 대기 조건, 예열과 따로 돌려 서로 막지 않음
+                {
+                    _auto.Tracer.RebuildStaleLoadRefills(gateStop.Token);
+                }
+            }), CancellationToken.None);
+        }
+
         var channel = Channel.CreateUnbounded<ProcessStart>();
         var dispatch = Channel.CreateUnbounded<ProcessStart>();
         Task watch = WatchAsync(channel.Writer, stoppingToken);
@@ -364,6 +376,7 @@ public sealed class Worker : BackgroundService
                 _prewarm?.ReleasePin(game.Name, "game started"); // 고정은 스트림·재적용 취소보다 먼저 풂
                 _gate.Cancel(); // 재적용은 게임 exe 시작에서만 멈춥니다 (런처 같은 트리거 전용 프로그램은 아님)
                 _prewarm?.Recovery?.YieldTo(game.OriginRoot); // 같은 디스크에서 재는 중인 회복 표본도 멈춤
+                _auto?.Tracer.NoteTargetStart(game.Name, s.ExeName); // 트레이스 중 등록 실행 파일이 새로 뜨면 후반 창을 그 시각에 엶
                 _auto?.Tracer.CancelShadow(game.Name); // 돌고 있는 그림자 계획은 게임과 CPU 를 다투지 않게 취소
                 _auto?.CancelWarm(); // 자동 모드의 예열 작업도 (핫 집합 스트림은 묶음 경계에서 멈추고, 그 뒤 예열은 시작하지 않음)
                 if (_backgroundYield is { } yielder && !backOff)

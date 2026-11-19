@@ -428,6 +428,103 @@ public sealed class AutoTracerTests : IDisposable
     }
 
     [Fact]
+    public void ATargetStartOpensTheNextLateWindowAtOnceAndLaterTimedWindowsWaitForTheInterval()
+    {
+        LateWindowSettings(2, 10, 30);
+        DateTimeOffset startedAt = _rig.World.Now;
+        _tracer.Start(_game);
+        _tracer.NoteTargetStart("foo", "foo.exe"); // 첫 창이 아직 열려 있음: 무시
+        _rig.World.Now = startedAt.AddSeconds(10);
+        _tracer.Step();
+        Assert.True(_trace.Collecting);
+        _rig.World.Now = startedAt.AddSeconds(30);
+        _tracer.Step(); // 첫 창 종료
+        _tracer.Step(); // 첫 추가 창 (간격 없이)
+        _rig.World.Now = startedAt.AddSeconds(60);
+        _tracer.Step();
+        Assert.False(_trace.Collecting);
+
+        _rig.World.Now = startedAt.AddSeconds(100); // 예약 시각 (앞 창 끝 + 10 분) 보다 한참 이름
+        _tracer.NoteTargetStart("foo", "foo.exe");
+        _tracer.Step();
+
+        Assert.True(_trace.Collecting);
+        Assert.Equal("late window 2/2", _rig.Status.Get("foo")!.Detail);
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("late window 2/2 started at a target start (foo.exe)", StringComparison.Ordinal));
+        Assert.DoesNotContain(_rig.Log.Lines, l => l.Contains("late window 1/2 started at a target start", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ATargetStartDoesNothingWhileAWindowIsOpenOrNoWindowIsLeftOrTheGameIsAnother()
+    {
+        LateWindowSettings(1, 10, 30);
+        DateTimeOffset startedAt = _rig.World.Now;
+        _tracer.Start(_game);
+        _rig.World.Now = startedAt.AddSeconds(30);
+        _tracer.Step();
+        _tracer.Step(); // 유일한 추가 창이 열림
+        Assert.True(_trace.Collecting);
+
+        _tracer.NoteTargetStart("foo", "foo.exe"); // 이미 열려 있음
+        _rig.World.Now = startedAt.AddSeconds(40);
+        _tracer.Step();
+        Assert.Single(_rig.Log.Lines, l => l.Contains("late window", StringComparison.Ordinal) && l.Contains("started", StringComparison.Ordinal));
+
+        _rig.World.Now = startedAt.AddSeconds(60);
+        _tracer.Step(); // 창 수 상한 (1) 에서 끝남
+        Assert.False(_trace.Collecting);
+        _tracer.NoteTargetStart("foo", "foo.exe"); // 남은 창 없음
+        _tracer.Step();
+        Assert.False(_trace.Collecting);
+        Assert.Single(_rig.Log.Lines, l => l.Contains("late window", StringComparison.Ordinal) && l.Contains("started", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ATargetStartOfAnotherGameIsIgnored()
+    {
+        LateWindowSettings(2, 10, 30);
+        DateTimeOffset startedAt = _rig.World.Now;
+        _tracer.Start(_game);
+        _rig.World.Now = startedAt.AddSeconds(30);
+        _tracer.Step();
+        _tracer.Step(); // 첫 추가 창
+        _rig.World.Now = startedAt.AddSeconds(60);
+        _tracer.Step();
+
+        _rig.World.Now = startedAt.AddSeconds(100);
+        _tracer.NoteTargetStart("bar", "bar.exe");
+        _tracer.Step();
+
+        Assert.False(_trace.Collecting);
+    }
+
+    [Fact]
+    public void ServiceStartRebuildsTheLoadRefillListOnlyWhenItIsMissingOrOlderThanTheNewestSummary()
+    {
+        string summary = IoSummaryStore.RunPath(TraceWriter.RunPath(Raw, 1));
+        string list = LoadRefillPlans.PathOf(_game);
+        DateTimeOffset now = _rig.World.Now;
+        bool Built() => _rig.Log.Lines.Any(l => l.Contains("load refill list built from", StringComparison.Ordinal) && l.Contains("(service start)", StringComparison.Ordinal));
+
+        _tracer.RebuildStaleLoadRefills(default); // 집계 없음
+        Assert.False(Built());
+
+        _rig.World.FileTimes[summary] = now;
+        _rig.World.Running = true;
+        _tracer.RebuildStaleLoadRefills(default); // 게임 실행 중
+        Assert.False(Built());
+
+        _rig.World.Running = false;
+        _rig.World.FileTimes[list] = now.AddMinutes(1);
+        _tracer.RebuildStaleLoadRefills(default); // 목록이 더 새로움
+        Assert.False(Built());
+
+        _rig.World.FileTimes[list] = now.AddMinutes(-1);
+        _tracer.RebuildStaleLoadRefills(default); // 목록이 오래됨
+        Assert.True(Built());
+    }
+
+    [Fact]
     public void ASessionThatEndedEarlyOpensNoMoreLateWindows()
     {
         LateWindowSettings(2, 1, 30);

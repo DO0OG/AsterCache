@@ -525,6 +525,32 @@ public sealed class AutoTracerTests : IDisposable
     }
 
     [Fact]
+    public void ServiceStartRebuildsTheUnbufferedFileListOnlyWhenItIsMissingOrOlderThanTheNewestSummaryAndNoGameRuns()
+    {
+        string summary = IoSummaryStore.RunPath(TraceWriter.RunPath(Raw, 1));
+        string list = UnbufferedFiles.PathOf(_game);
+        DateTimeOffset now = _rig.World.Now;
+        bool Built() => _rig.Log.Lines.Any(l => l.Contains("unbuffered file list built from", StringComparison.Ordinal) && l.Contains("(service start)", StringComparison.Ordinal));
+
+        _tracer.RebuildStaleLoadRefills(default); // 집계 없음
+        Assert.False(Built());
+
+        _rig.World.FileTimes[summary] = now;
+        _rig.World.Running = true;
+        _tracer.RebuildStaleLoadRefills(default); // 게임 실행 중
+        Assert.False(Built());
+
+        _rig.World.Running = false;
+        _rig.World.FileTimes[list] = now.AddMinutes(1);
+        _tracer.RebuildStaleLoadRefills(default); // 목록이 더 새로움
+        Assert.False(Built());
+
+        _rig.World.FileTimes[list] = now.AddMinutes(-1);
+        _tracer.RebuildStaleLoadRefills(default); // 목록이 오래됨
+        Assert.True(Built());
+    }
+
+    [Fact]
     public void ASessionThatEndedEarlyOpensNoMoreLateWindows()
     {
         LateWindowSettings(2, 1, 30);

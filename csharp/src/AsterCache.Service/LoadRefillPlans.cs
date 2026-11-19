@@ -85,14 +85,17 @@ internal static class LoadRefillPlans
     }
 
     /// 목록 파일이 없거나 이 게임의 가장 새 집계보다 오래됐는가 (집계가 하나도 없으면 만들 것이 없으므로 false). writeTime 은 파일의 수정 시각 (없으면 null).
-    public static bool IsStale(GameSettings g, Func<string, DateTimeOffset?> writeTime)
+    public static bool IsStale(GameSettings g, Func<string, DateTimeOffset?> writeTime) => IsStale(g, writeTime, PathOf(g));
+
+    /// 집계에서 만든 다른 목록 파일 (listPath) 이 없거나 가장 새 집계보다 오래됐는가.
+    public static bool IsStale(GameSettings g, Func<string, DateTimeOffset?> writeTime, string listPath)
     {
         string raw = AutoTracer.RawTracePath(g);
         IEnumerable<string> summaries = new[] { IoSummaryStore.RunPath(raw) }
             .Concat(Enumerable.Range(1, AutoTracer.MaxRunFiles).Select(n => IoSummaryStore.RunPath(TraceWriter.RunPath(raw, n))))
             .Concat(IoSummaryStore.StandalonePaths(raw));
         DateTimeOffset? newest = summaries.Select(writeTime).Max();
-        return newest is { } n && (writeTime(PathOf(g)) is not { } built || built < n);
+        return newest is { } n && (writeTime(listPath) is not { } built || built < n);
     }
 
     /// 목록을 다시 만들어 저장합니다 (집계가 없거나 블록이 하나도 없으면 낡은 파일을 지움). 로그 한 줄을 돌려줍니다.

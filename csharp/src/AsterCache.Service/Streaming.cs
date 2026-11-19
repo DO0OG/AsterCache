@@ -95,6 +95,9 @@ public interface IGameStreamer
     /// 단계 스트림: 이후 실행 파일이 읽을 목록 (그 단계의 블록, 단계를 모르면 시작 목록 전체). 기본은 읽을 것 없음.
     StageLaterPlan PlanLaterStage(GameSettings game, string exe, CancellationToken stop) => new([], false, 0);
 
+    /// 앞선 플레이의 로드 구간 블록 목록 (capBytes 이하, 디스크 위치 순). 목록이 없거나 쓸 블록이 없으면 null (이후 실행 파일은 지금 동작 그대로).
+    LoadRefillPlan? PlanLoadRefill(GameSettings game, long capBytes, CancellationToken stop) => null;
+
     /// 주어진 목록을 StreamCoordinated 와 같은 묶음 경로로 흘립니다. 기본은 시작 목록 전체 (StreamCoordinated).
     (StreamStats Stats, bool Complete) StreamOpsCoordinated(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue) =>
         StreamCoordinated(game, stop, progress, canIssue, noteIssue);

@@ -146,6 +146,26 @@ public static class IoSummaryStore
                 }
             }
 
+            List<long>? targetStarts = null; // 옛 집계에는 없는 선택 항목
+            if (root.TryGetValue("target_starts_us", out object? startsValue) && startsValue is not null)
+            {
+                if (startsValue is not List<object?> startRows)
+                {
+                    return null;
+                }
+
+                targetStarts = new List<long>(startRows.Count);
+                foreach (object? value in startRows)
+                {
+                    if (value is not long startUs)
+                    {
+                        return null;
+                    }
+
+                    targetStarts.Add(startUs);
+                }
+            }
+
             var windows = new List<IoSummaryWindow>(windowRows.Count);
             foreach (object? value in windowRows)
             {
@@ -217,7 +237,7 @@ public static class IoSummaryStore
                 }
             }
 
-            return new IoSummary(started, ended, windows, quality!, files, rows, sessionId!, rawFingerprint, rawTraceZeroUs, rawTraceZeroAtUtc, readModes);
+            return new IoSummary(started, ended, windows, quality!, files, rows, sessionId!, rawFingerprint, rawTraceZeroUs, rawTraceZeroAtUtc, readModes, targetStarts);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException or OverflowException or FormatException or ArgumentException)
         {
@@ -276,6 +296,7 @@ public static class IoSummaryStore
             { "files", files },
             { "rows", rows },
             { "read_modes", readModes },
+            { "target_starts_us", (summary.TargetStartsUs ?? []).Select(us => (object?)us).ToList() },
         };
 
         string temp = path + ".tmp";

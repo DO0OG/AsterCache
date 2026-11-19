@@ -147,6 +147,37 @@ public sealed class KernelCollectorTests
     }
 
     [Fact]
+    public void RegisteredExeStartsAreRecordedInSessionTimeEvenAfterTheRawFreezeButNotDescendantsOrOnesAlreadyRunning()
+    {
+        var summary = new IoSummaryCollector(new DateTimeOffset(T0));
+        var c = new KernelCollector(["game.exe", "late.exe"], new DevicePaths([]), ioSummary: summary);
+        c.StartProcess(T0.AddSeconds(-1), 9, 1, "game.exe", alreadyRunning: true); // 관찰 전부터 떠 있던 프로세스
+        c.StartProcess(T0.AddSeconds(2), 10, 9, "helper.exe"); // 대상의 자손이지만 등록된 실행 파일 이름이 아님
+        c.Pause(new DateTimeOffset(T0.AddSeconds(2)));
+        c.FreezeRawRecords();
+
+        c.StartProcess(T0.AddSeconds(3), 11, 1, @"D:\Games\late.exe");
+        c.StartProcess(T0.AddSeconds(5), 12, 1, "other.exe");
+        IoRequestSnapshot requests = Assert.IsType<IoRequestSnapshot>(c.FinishIoRequests(new DateTimeOffset(T0.AddSeconds(6)), eventsLost: 0));
+
+        Assert.Equal([3_000_000L], requests.TargetStartsUs);
+    }
+
+    [Fact]
+    public void TheStartThatOpenedTheSessionCountsAsAStartAtZeroOnceAndNeedsASummary()
+    {
+        var summary = new IoSummaryCollector(new DateTimeOffset(T0));
+        var c = new KernelCollector(["game.exe"], new DevicePaths([]), ioSummary: summary);
+        c.StartProcess(T0, 9, 1, "game.exe", alreadyRunning: true); // 트레이스를 띄운 시작은 이미 떠 있는 프로세스로 들어옴
+        c.NoteTriggerStart();
+        c.NoteTriggerStart();
+        c.StartProcess(T0.AddSeconds(4), 10, 1, "game.exe");
+
+        Assert.Equal([0L, 4_000_000L], Assert.IsType<IoRequestSnapshot>(c.FinishIoRequests(new DateTimeOffset(T0.AddSeconds(5)), eventsLost: 0)).TargetStartsUs);
+        new KernelCollector(["game.exe"], new DevicePaths([])).NoteTriggerStart(); // 집계가 없으면 아무것도 하지 않음
+    }
+
+    [Fact]
     public void ARawRecordBeforeTheObservationOriginKeepsASignedZeroOffsetAndIsNeverClippedToZero()
     {
         // 관찰 시작 (공급자를 켠 뒤) 보다 2 ms 앞선 첫 기록: 원시 0점은 -2,000 us, 그 뒤 1 ms 에 온 디스크 읽기는 +1,000 us

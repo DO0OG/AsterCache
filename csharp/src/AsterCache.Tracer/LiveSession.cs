@@ -151,6 +151,8 @@ public sealed class LiveSession : IDisposable
         _collector.Resume();
     }
 
+    public void NoteTriggerStart() => _collector.NoteTriggerStart();
+
     public void FreezeRawRecords()
     {
         ThrowIfPumpEnded();

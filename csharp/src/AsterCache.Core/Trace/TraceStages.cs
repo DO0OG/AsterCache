@@ -70,6 +70,7 @@ public sealed record TraceStageIndex(IReadOnlyList<TraceStage> Stages)
 
             File.Delete(IndexPath(full));
             File.Delete(TriedPath(full));
+            File.Delete(LoadRefillStore.PathFor(full)); // 새로 배우는 트레이스에는 낡은 로드 구간 목록을 쓰지 않음
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {

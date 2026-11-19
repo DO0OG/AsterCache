@@ -23,6 +23,9 @@ public interface IAutoTrace : IDisposable
     /// 원시 기록을 이 시점의 내용으로 확정합니다 (세션은 디스크 읽기 관찰을 계속).
     void FreezeRawRecords();
 
+    /// 이 세션은 등록 실행 파일의 시작을 서비스가 감지한 직후에 열렸습니다: 그 시작 (세션 관찰 시작 전이라 0) 을 집계의 실행 파일 시작 시각에 넣습니다.
+    void NoteTriggerStart() { }
+
     /// 세션을 멈추고 모은 기록을 돌려줍니다.
     IReadOnlyList<TraceRecord> Stop();
 
@@ -485,6 +488,8 @@ public sealed class AutoEnv
         public IoRequestSnapshot? IoRequests => session.IoRequests;
 
         public void FreezeRawRecords() => session.FreezeRawRecords();
+
+        public void NoteTriggerStart() => session.NoteTriggerStart();
 
         public IReadOnlyList<TraceRecord> Stop()
         {

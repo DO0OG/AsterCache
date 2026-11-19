@@ -67,6 +67,7 @@ public sealed record IoSummaryQuality(
         || ReadModeDroppedRequests > 0 || !ReadModeFilesDroppedExact;
 }
 
+/// TargetStartsUs: 관찰 중 등록 실행 파일이 새로 시작한 시각 (관찰 시작을 0 으로 한 마이크로초, 게임이 이미 떠 있던 프로세스 제외). 옛 집계에는 없어 null 입니다.
 public sealed record IoSummary(
     DateTimeOffset ObservedAtUtc,
     DateTimeOffset EndedAtUtc,
@@ -78,7 +79,8 @@ public sealed record IoSummary(
     string? RawFingerprint = null,
     long? RawTraceZeroUs = null,
     DateTimeOffset? RawTraceZeroAtUtc = null,
-    IReadOnlyList<IoSummaryReadMode>? ReadModes = null)
+    IReadOnlyList<IoSummaryReadMode>? ReadModes = null,
+    IReadOnlyList<long>? TargetStartsUs = null)
 {
     public bool HasReadModes => Quality.ReadModesObservedUntilUtc is not null;
 

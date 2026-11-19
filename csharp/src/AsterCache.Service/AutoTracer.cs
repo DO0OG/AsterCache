@@ -820,6 +820,7 @@ public sealed class AutoTracer
                         IoSummaryEnabled = auto.IoSummaryEnabled,
                     }; // 번호는 유효 회차 수가 아니라 있는 run 파일 기준 (덮어쓰기 금지)
                     runNumber = _run.Number;
+                    _run.Session?.NoteTriggerStart(); // Start 는 등록 실행 파일의 시작을 감지한 직후에만 불림 (게임 시작·재실행 대기 뒤 재시도)
                     learn?.Start();
                 }
                 catch (Exception e) when (e is not OperationCanceledException)
@@ -1678,6 +1679,22 @@ public sealed class AutoTracer
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             _log.Warn($"{run.Game.Name}: I/O summary not saved ({e.GetType().Name})");
+            return;
+        }
+
+        RebuildLoadRefill(run.Game);
+    }
+
+    // 집계가 바뀔 때마다 다음 로드에 다시 채울 블록 목록을 새로 만듦 (게임이 끝난 뒤 낮은 우선순위 스레드, 폴더 잠금 안). 부가 정보라 실패해도 기록 저장은 계속.
+    private void RebuildLoadRefill(GameSettings g)
+    {
+        try
+        {
+            _log.Info($"{g.Name}: {LoadRefillPlans.Rebuild(g, _env.Now())}");
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"{g.Name}: load refill list not saved ({e.GetType().Name})");
         }
     }
 

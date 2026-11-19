@@ -77,6 +77,14 @@ public sealed class AutoTracerTests : IDisposable
         Assert.Equal(1, _rig.World.TraceStarts); // 원시 트레이스가 이미 있음
     }
 
+    [Fact]
+    public void TheStartThatOpenedTheSessionIsHandedToItAsAnExeStartTime()
+    {
+        _tracer.Start(_game);
+
+        Assert.Equal(1, _rig.World.Session!.TriggerStarts);
+    }
+
     [Theory]
     [InlineData(GameMode.Inherit, false, true)]
     [InlineData(GameMode.PrewarmOnly, false, true)]

@@ -295,8 +295,8 @@ public sealed class AutoMode
             return false;
         }
 
-        bool eligible = auto.Enabled && auto.Trace && GamePolicy.AllowsTracking(latest) && _tracer.WantsRun(latest);
-        bool started = eligible && _tracer.Start(latest, out _);
+        // 게임 시작 시점의 WantsRun 판정을 유지: 대기 중 직전 실행이 저장되며 값이 바뀌어도 다시 판정하지 않음 (안티치트 게이트는 Start 안에서 그대로 확인)
+        bool started = _tracer.Start(latest, out _, wantedAtGameStart: true);
         _log.Info(started
             ? $"{g.Name}: auto trace start resumed after waiting for the previous trace"
             : $"{g.Name}: auto trace start abandoned after waiting for the previous trace (retry is no longer eligible)");

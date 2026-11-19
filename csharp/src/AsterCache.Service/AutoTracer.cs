@@ -705,7 +705,8 @@ public sealed class AutoTracer
     public void Start(GameSettings g) => _ = Start(g, out _);
 
     // 저장 마무리 중인 실행만 완료 신호를 돌려줘 시작 작업이 한 번 재시도하게 함.
-    public bool Start(GameSettings g, out Task? previousFinish)
+    // wantedAtGameStart: 게임 시작 때 이미 "트레이스할 차례"로 판정했고 직전 저장을 기다린 재시도이면 true (그 사이 저장으로 NextTrace 가 바뀌어도 다시 거르지 않음).
+    public bool Start(GameSettings g, out Task? previousFinish, bool wantedAtGameStart = false)
     {
         previousFinish = null;
         if (PolicyBlocksTracking(g, out GameSettings latest))
@@ -778,7 +779,7 @@ public sealed class AutoTracer
                 return false;
             }
 
-            if (_stopCleanupFailed || !next.Wanted && stageAttempt == 0 && ioSummaryAttempt == 0)
+            if (_stopCleanupFailed || !wantedAtGameStart && !next.Wanted && stageAttempt == 0 && ioSummaryAttempt == 0)
             {
                 return false;
             }

@@ -293,6 +293,57 @@ public sealed class AutoModeTests : IDisposable
         Assert.Contains(_rig.Log.Lines, line => line.Contains("bar: auto trace start resumed after waiting for the previous trace", StringComparison.Ordinal));
     }
 
+    // 대기 중 일어나는 변화 (settings 와 world 를 고침) 를 주고, 대기 뒤 트레이스가 시작됐는지 돌려줌. 게임 시작 시점의 WantsRun 은 true.
+    private async Task<bool> StartsAfterWaitingWhile(Action<AutoMode> duringWait)
+    {
+        AddGame("foo", "auto");
+        AddGame("bar", "auto");
+        AutoMode mode = Mode();
+        using var saveStarted = new ManualResetEventSlim();
+        using var finishSave = new ManualResetEventSlim();
+        Task saving = StartSavingTrace(mode, saveStarted, finishSave);
+        _rig.World.RunningExes.Add("bar.exe");
+        mode.TraceFinishWaiter = async (finished, _, cancellationToken) =>
+        {
+            await finished.WaitAsync(cancellationToken);
+            duringWait(mode);
+            return true;
+        };
+
+        Task starting = Task.Run(() => mode.OnGameStart(Game("bar"), isLatestRunningStart: () => true));
+        await Task.Delay(100); // 대기에 들어갈 시간
+        finishSave.Set();
+        await Task.WhenAll(saving, starting).WaitAsync(TimeSpan.FromSeconds(30));
+        return _rig.World.TraceStarts == 2;
+    }
+
+    [Fact]
+    public async Task GameStartKeepsItsWantsRunDecisionAfterWaitingEvenIfThePreviousRunChangesIt()
+    {
+        bool started = await StartsAfterWaitingWhile(mode => mode.SetSettings(_rig.Settings with { Auto = _rig.Settings.Auto with { TraceRuns = 0, TraceRunsMax = 0 } })); // 직전 실행 저장 뒤 WantsRun 이 false 가 되는 상황
+
+        Assert.True(started);
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("bar: auto trace start resumed after waiting for the previous trace", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task GameStartDoesNotStartAfterWaitingWhenTracingWasTurnedOff()
+    {
+        Assert.False(await StartsAfterWaitingWhile(mode => mode.SetSettings(_rig.Settings with { Auto = _rig.Settings.Auto with { Trace = false } })));
+    }
+
+    [Fact]
+    public async Task GameStartDoesNotStartAfterWaitingWhenTheGameWasPaused()
+    {
+        Assert.False(await StartsAfterWaitingWhile(mode => mode.SetSettings(_rig.Settings with { Games = _rig.Settings.Games.Select(g => g.Name == "bar" ? g with { Paused = true } : g).ToList() })));
+    }
+
+    [Fact]
+    public async Task GameStartDoesNotStartAfterWaitingWhenAnAntiCheatBlocksTheTrace()
+    {
+        Assert.False(await StartsAfterWaitingWhile(mode => mode.SetSettings(_rig.Settings with { Games = _rig.Settings.Games.Select(g => g.Name == "bar" ? g with { AntiCheat = "eac" } : g).ToList() })));
+    }
+
     [Fact]
     public async Task RestartedGameUsesOneBoundedWaitForThePreviousTrace()
     {

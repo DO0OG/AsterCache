@@ -1,0 +1,3 @@
+﻿verify C:awttraceretry start 05:11:59
+lock acquired 05:11:59
+DONE build= test= format= 05:11:59

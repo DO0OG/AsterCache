@@ -976,7 +976,7 @@ public sealed partial class PrefetchStreamer : IGameStreamer
                 cancellationToken.ThrowIfCancellationRequested();
                 return new FileInfo(p).Length;
             }, headBytes: HeadBytesOf(game, cancellationToken) + frontBytes, cancellationToken: cancellationToken); // 앞부분 가변 범위 (목록 맨 앞) 도 접근 순서로 먼저 읽음
-        return (ops, budget, frontBytes);
+        return (UnbufferedFiles.Without(game, ops), budget, frontBytes); // 캐시 없이만 읽히는 파일은 예열·스트림·고정 목록에서 뺌 (예산 창은 그대로라 빠진 만큼 메모리가 남음)
     }
 
     /// 고정할 파일: 선읽기 목록의 파일 중 허용 루트 안인 것 (읽기 전용으로만 쓰임). 매핑 총합이 capBytes 를 넘기 전의 앞쪽 파일만.
@@ -1054,7 +1054,7 @@ internal sealed class PrewarmRun : IDisposable
 
     // 목록의 입력 (계획·트레이스·예열 전용 옆 파일·가변 표지) 의 (존재, 길이, 수정 시각). 메타데이터 조회뿐이며 읽지 못하면 null (재사용 안 함).
     internal static string? InputStamp(GameSettings game) =>
-        Stamp(() => [game.Plan, game.Trace, PlanOutput.WarmOnlyPath(game.Trace), AutoTracer.VolatilePath(game)]);
+        Stamp(() => [game.Plan, game.Trace, PlanOutput.WarmOnlyPath(game.Trace), AutoTracer.VolatilePath(game), UnbufferedFiles.PathOf(game)]);
 
     internal static string? Stamp(Func<string[]> paths)
     {

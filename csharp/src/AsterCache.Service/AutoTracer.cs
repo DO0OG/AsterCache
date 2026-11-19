@@ -1698,9 +1698,10 @@ public sealed class AutoTracer
         }
 
         RebuildLoadRefill(run.Game);
+        RebuildUnbufferedFiles(run.Game);
     }
 
-    /// 서비스 시작 때: 목록 파일이 없거나 그 게임의 가장 새 집계보다 오래된 게임의 목록을 저장된 집계로 만듭니다 (실행 중인 게임은 건너뜀, 폴더 잠금 안, 낮은 우선순위).
+    /// 서비스 시작 때: 로드 구간 목록과 캐시 없이만 읽히는 파일 목록 (각각) 이 없거나 그 게임의 가장 새 집계보다 오래된 게임의 목록을 저장된 집계로 만듭니다 (실행 중인 게임은 건너뜀, 폴더 잠금 안, 낮은 우선순위).
     /// 부팅 뒤 대기·디스크 유휴는 부르는 쪽이 기다린 뒤 백그라운드로 부릅니다.
     public void RebuildStaleLoadRefills(CancellationToken ct)
     {
@@ -1711,7 +1712,9 @@ public sealed class AutoTracer
                 return;
             }
 
-            if (_env.AnyRunning(g.ExeNames) || !LoadRefillPlans.IsStale(g, _env.FileWriteTime))
+            bool refillStale = LoadRefillPlans.IsStale(g, _env.FileWriteTime);
+            bool unbufferedStale = UnbufferedFiles.IsStale(g, _env.FileWriteTime);
+            if (_env.AnyRunning(g.ExeNames) || !(refillStale || unbufferedStale))
             {
                 continue;
             }
@@ -1725,7 +1728,15 @@ public sealed class AutoTracer
                 }
                 else if (!_env.AnyRunning(g.ExeNames)) // 잠금을 기다리는 사이 게임이 떴으면 만들지 않음
                 {
-                    RebuildLoadRefill(g, " (service start)");
+                    if (refillStale)
+                    {
+                        RebuildLoadRefill(g, " (service start)");
+                    }
+
+                    if (unbufferedStale)
+                    {
+                        RebuildUnbufferedFiles(g, " (service start)");
+                    }
                 }
             });
         }
@@ -1741,6 +1752,19 @@ public sealed class AutoTracer
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             _log.Warn($"{g.Name}: load refill list not saved ({e.GetType().Name})");
+        }
+    }
+
+    // 집계가 바뀔 때마다 캐시 없이만 읽히는 파일 목록도 새로 만듦 (부가 정보라 실패해도 기록 저장은 계속).
+    private void RebuildUnbufferedFiles(GameSettings g, string logSuffix = "")
+    {
+        try
+        {
+            _log.Info($"{g.Name}: {UnbufferedFiles.Rebuild(g, _env.Now())}{logSuffix}");
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"{g.Name}: unbuffered file list not saved ({e.GetType().Name})");
         }
     }
 

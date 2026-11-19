@@ -35,6 +35,9 @@ internal sealed class ProcessTree
         return target;
     }
 
+    /// 자손이 아니라 등록된 실행 파일 이름 자체의 시작인가.
+    public bool IsRegistered(string image) => Matches(image);
+
     public void Stop(int pid) => _active.Remove(pid);
 
     private bool Matches(string image)

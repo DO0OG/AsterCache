@@ -38,7 +38,8 @@ public sealed record IoRequestSnapshot(
     bool ReadModeFilesDroppedExact = true,
     SelfReadFilter? SelfReads = null,
     IReadOnlyList<SelfReadBatch>? SelfReadBatches = null,
-    long SelfReadDroppedOps = 0);
+    long SelfReadDroppedOps = 0,
+    IReadOnlyList<long>? TargetStartsUs = null);
 
 /// 디스크 읽기 완료 이벤트를 (디스크, 바이트 위치, 크기) 요청 단위로 합칩니다. 이벤트 콜백 안에서 부르므로 사전 갱신 말고는 하지 않습니다 (파일 조회·문자열·JSON·로그 없음).
 /// 디스크 읽기 이벤트의 IRP 는 논리 읽기의 IRP 와 다른 객체라 이벤트 시점에는 파일을 알 수 없습니다 (실측): 파일·블록은 끝난 뒤 IoBlockMapper 가 배치 표로 정합니다.

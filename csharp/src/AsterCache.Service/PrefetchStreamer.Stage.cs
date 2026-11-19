@@ -2,6 +2,7 @@ using AsterCache.Core.Prefetch;
 using AsterCache.Core.Settings;
 using AsterCache.Core.Trace;
 using AsterCache.Prefetch;
+using AsterCache.Windows;
 
 namespace AsterCache.Service;
 
@@ -30,6 +31,8 @@ public sealed partial class PrefetchStreamer
         List<ReadOp> ops = Ops(game, stop);
         return StageStreamPlans.Later(ops, StageIndexOf(game), exe, VolatilePaths(game, ops));
     }
+
+    public LoadRefillPlan? PlanLoadRefill(GameSettings game, long capBytes, CancellationToken stop) => LoadRefillPlans.Plan(game, capBytes, FileLayout.Get, stop);
 
     public (StreamStats Stats, bool Complete) StreamOpsCoordinated(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue)
     {

@@ -137,6 +137,19 @@ internal static class StageStreamRule
 
     public static bool LoadEvidence(long newPidReadBytes) => newPidReadBytes >= EvidenceBytes;
 
+    /// 로드 구간 목록은 시작 뒤 이 시간 안의 블록이라, 이보다 늦게 처리된 시작에는 쓰지 않습니다 (옛 동작으로).
+    public static TimeSpan RefillMaxStartAge => LoadRefillPlanner.Window;
+
+    /// 로드 구간 목록으로 흘리기 전 보조 시작 (오류 처리기·짧은 재시작) 을 거르는 짧은 확인: 새 프로세스가 이 시간 안에 이만큼 읽었으면 로드로 봅니다.
+    /// 근거: 실제 로드의 첫 10 초 읽기가 3 MiB 였던 사례를 놓치지 않는 값 (그 1/3) 이고, 아무것도 읽지 않는 보조 프로세스와 곧 끝나는 프로세스는 걸립니다. 실측 전에 정한 값입니다.
+    public const long RefillEvidenceBytes = 1L << 20;
+
+    public static readonly TimeSpan RefillEvidenceWindow = TimeSpan.FromSeconds(10);
+
+    /// 로드 구간 목록의 크기: 고정 상한과 메모리 게이트가 허용하는 양 (가용 − 예비) 중 작은 값.
+    public static long RefillCapBytes(long availableMib, long reserveMib) =>
+        Math.Min(LoadRefillPlanner.CapBytes, Math.Max(0, availableMib - reserveMib) * Mib);
+
     public static bool WantLow(long gameReadDeltaBytes, double seconds) => seconds > 0 && gameReadDeltaBytes / seconds >= DiskActivity.BusyBytesPerSecond;
 
     /// 이후 exe 의 스트림은 낮음으로 시작해, 게임 읽기가 QuietToRaise 동안 조용했을 때만 보통으로 올리고 다시 바빠지면 바로 낮춥니다.

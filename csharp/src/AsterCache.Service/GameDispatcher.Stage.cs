@@ -16,7 +16,7 @@ public sealed partial class GameDispatcher
 
     /// 스트림 한 번의 구성. Ops 가 null 이면 시작 목록 전체 (IGameStreamer.StreamCoordinated), BoundaryPid 가 있으면 그 프로세스의 읽기만 경계 판정에 셉니다.
     // Planner: 목록 계획을 시계·표본·상한 취소 범위 안에서 만들게 넘김 (원본은 스트리머가 스트림 안에서 목록을 만들었음)
-    private sealed record StreamSpec(IReadOnlyList<ReadOp>? Ops, int? BoundaryPid, bool StartLow, bool MemoryGate, Func<CancellationToken, IReadOnlyList<ReadOp>?>? Planner = null);
+    private sealed record StreamSpec(IReadOnlyList<ReadOp>? Ops, int? BoundaryPid, bool StartLow, bool MemoryGate, Func<CancellationToken, IReadOnlyList<ReadOp>?>? Planner = null, bool IgnoreBoundary = false, bool YieldToQueuedGame = false);
 
     private sealed record StreamOutcome(StreamStats Stats, double Seconds, double MbPerSecond, bool BoundaryStopped, bool CapStopped, string? OtherStop, bool Cancelled,
         double YieldedSeconds, RuntimeLoadBoundary Boundary);
@@ -106,7 +106,8 @@ public sealed partial class GameDispatcher
 
         try
         {
-            StageLaterPlan plan = _streamer.PlanLaterStage(g, exe, stop);
+            LoadRefillPlan? refill = PlanRefill(g, start, stop);
+            StageLaterPlan plan = refill is null ? _streamer.PlanLaterStage(g, exe, stop) : new StageLaterPlan(refill.Ops, true, 0); // 목록의 증거 확인은 짧음 (아래)
             if (plan.Ops.Count == 0)
             {
                 Skip("no blocks in the start list", "no stage blocks");
@@ -119,6 +120,12 @@ public sealed partial class GameDispatcher
                 return false;
             }
 
+            if (refill is not null && ConfirmRefillStart(g, start, stop) is { } unconfirmed)
+            {
+                Skip(unconfirmed, unconfirmed.StartsWith("another", StringComparison.Ordinal) ? "another game started" : "no load evidence");
+                return false;
+            }
+
             using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(g.OriginRoot, "stage stream", stop, g.OriginRoot, allowWhileYielded: true, preserveGameKey: g.Name);
             if (_coordinator is not null && lease is null)
             {
@@ -127,10 +134,16 @@ public sealed partial class GameDispatcher
             }
 
             _lastStage[key] = now;
-            StreamOutcome o = RunStream(g, lease, stop, new StreamSpec(plan.Ops, start.Pid, true, true, null));
+            StreamOutcome o = RunStream(g, lease, stop, new StreamSpec(plan.Ops, start.Pid, true, true, null, refill is not null, refill is not null));
+            if (refill is not null)
+            {
+                _lastStage[key] = _now(); // 흘리는 동안 겹친 같은 로드의 시작이 곧바로 다시 흘리지 않게 끝난 시각부터 대기
+            }
+
             string? reason = o.BoundaryStopped ? "load boundary" : o.CapStopped ? "cap" : o.OtherStop ?? (o.Cancelled ? "cancelled" : null);
             string skipped = plan.VolatileSkippedBytes > 0 ? $"; skipped volatile {MiB(plan.VolatileSkippedBytes)} MiB" : string.Empty;
-            _log.Info($"{g.Name}: stage stream {exe} {MiB(o.Stats.Bytes)} MiB in {o.Seconds:F1} s ({o.MbPerSecond:F1} MB/s, {(reason is null ? "completed" : "stopped, " + reason)}), yielded {o.YieldedSeconds:F1} s{skipped}");
+            string source = refill is not null ? $"; source load history ({refill.Plays} plays, {refill.Loads} loads, {MiB(plan.Ops.Sum(op => op.Length))} MiB planned)" : plan.HasStage ? "; source trace stage" : "; source start list";
+            _log.Info($"{g.Name}: stage stream {exe} {MiB(o.Stats.Bytes)} MiB in {o.Seconds:F1} s ({o.MbPerSecond:F1} MB/s, {(reason is null ? "completed" : "stopped, " + reason)}), yielded {o.YieldedSeconds:F1} s{skipped}{source}");
             ReportStream(start, reason is null ? "completed" : reason == "cancelled" ? "cancelled" : "stopped", reason, o.Stats.Bytes, o.Seconds, o.MbPerSecond);
             return reason is null;
         }
@@ -154,6 +167,61 @@ public sealed partial class GameDispatcher
             _log.Error($"{g.Name}: stage stream failed ({exe})", e); // 새 경로의 실패가 디스패처 루프를 멈추지 않게 함
             ReportStream(start, "failed", e.GetType().Name, null, null, null);
             return false;
+        }
+    }
+
+    // 같은 게임의 앞선 플레이에서 모은 로드 구간 블록 목록 (메모리 게이트가 허용하는 양 이하). 목록이 없거나 시작이 이미 오래됐으면 null (지금 동작 그대로).
+    private LoadRefillPlan? PlanRefill(GameSettings g, ProcessStart start, CancellationToken stop)
+    {
+        if (_env.Age(start) >= StageStreamRule.RefillMaxStartAge)
+        {
+            return null;
+        }
+
+        long available;
+        try
+        {
+            available = _env.AvailableMib();
+        }
+        catch (Exception e) when (e is not (OutOfMemoryException or StackOverflowException))
+        {
+            available = long.MaxValue / (1L << 20); // 가용 메모리를 읽지 못하면 고정 상한만 (스트림의 게이트도 같은 경우 게이트 없음)
+        }
+
+        return _streamer.PlanLoadRefill(g, StageStreamRule.RefillCapBytes(available, StageStreamRule.ReserveMib(g)), stop) is { Ops.Count: > 0 } plan ? plan : null;
+    }
+
+    // 로드 구간 목록은 단계 증거 (64 MiB) 를 기다리지 않는 대신, 같은 이름의 보조 시작 (오류 처리기·짧은 재시작) 을 거르는 짧은 확인을 합니다:
+    // 새 프로세스가 살아 있고 RefillEvidenceWindow 안에 RefillEvidenceBytes 이상 읽었으면 통과 (읽자마자 바로). 흘리지 않을 이유를 돌려주고, 흘려도 되면 null.
+    private string? ConfirmRefillStart(GameSettings g, ProcessStart start, CancellationToken stop)
+    {
+        long? ReadOf() => _env.ReadCountersWithExeNames(g.ExeNames).Where(c => c.Pid == start.Pid).Select(c => (long?)c.ReadBytes).FirstOrDefault();
+        int waited = 0;
+        while (true)
+        {
+            stop.ThrowIfCancellationRequested();
+            if (ReadOf() is not { } read)
+            {
+                return "no load evidence, the process is gone";
+            }
+
+            if (read >= StageStreamRule.RefillEvidenceBytes)
+            {
+                return null;
+            }
+
+            if (waited >= (int)StageStreamRule.RefillEvidenceWindow.TotalSeconds)
+            {
+                return $"no load evidence, {read >> 10} KiB in {waited} s";
+            }
+
+            if (OtherGameQueued(g))
+            {
+                return "another game started";
+            }
+
+            _env.Sleep(TimeSpan.FromSeconds(1), stop);
+            waited++;
         }
     }
 
@@ -272,7 +340,7 @@ public sealed partial class GameDispatcher
                             previousReads[pid] = bytes;
                         }
 
-                        if (boundary.Update((long)elapsed.TotalMilliseconds, processReadBytes))
+                        if (boundary.Update((long)elapsed.TotalMilliseconds, processReadBytes) && !spec.IgnoreBoundary) // 로드 구간 목록은 첫 휴지에서 멈추지 않음 (목록 끝·시간 상한에서 멈춤)
                         {
                             Volatile.Write(ref boundaryStopped, 1);
                             shouldCancel = true;
@@ -348,6 +416,12 @@ public sealed partial class GameDispatcher
             SampleReadCounters();
             if (!LeaseValid() || MemoryShort())
             {
+                return false;
+            }
+
+            if (spec.YieldToQueuedGame && OtherGameQueued(g)) // 긴 목록이 디스패처를 붙잡고 다른 게임의 시작을 막지 않게
+            {
+                StopFor("another game started");
                 return false;
             }
 

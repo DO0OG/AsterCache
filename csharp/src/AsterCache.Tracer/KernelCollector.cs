@@ -13,6 +13,8 @@ internal sealed class KernelCollector
 {
     private const int IrpPagingIo = 0x02; // IrpFlags 의 페이징 읽기 비트 (TraceEvent 열거형 이름은 Windows 이름과 어긋나 값으로 판정)
     private const int MaxPendingReadModeGroups = IoSummaryCollector.MaxReadModeFiles;
+    // 등록 실행 파일 시작 시각 기록 상한 (맵 로드마다 재시작하는 게임도 하루 플레이에 수십 번이라 넉넉한 값).
+    private const int MaxTargetStarts = 512;
     // 원시 기록 동결 뒤 읽기 방식 집계용 FileKey·FileObject 이름 표 상한.
     private const int MaxReadModeNames = 1 << 18;
 
@@ -34,14 +36,15 @@ internal sealed class KernelCollector
     private readonly IoSummaryCollector? _ioSummary;
     private readonly DateTimeOffset _originUtc;
     private readonly List<IoSummaryWindow> _rawWindows = [];
+    private readonly List<long> _targetStartsUs = [];
     private long? _rawWindowStartedUs;
 
     public KernelCollector(KernelTraceEventParser kernel, IReadOnlyCollection<string> exeNames, DevicePaths devices, LiveListener? listener = null,
         IoSummaryCollector? ioSummary = null)
         : this(exeNames, devices, listener, ioSummary)
     {
-        kernel.ProcessStart += OnProcessStart;
-        kernel.ProcessDCStart += OnProcessStart; // 세션 시작 때 이미 떠 있던 프로세스
+        kernel.ProcessStart += d => OnProcessStart(d, alreadyRunning: false);
+        kernel.ProcessDCStart += d => OnProcessStart(d, alreadyRunning: true); // 세션 시작 때 이미 떠 있던 프로세스
         kernel.ProcessStop += d => StopProcess(d.TimeStamp, d.ProcessID);
         kernel.FileIOName += d => NameKey(d.FileKey, d.FileName);
         kernel.FileIOFileCreate += d => NameKey(d.FileKey, d.FileName);
@@ -124,7 +127,7 @@ internal sealed class KernelCollector
         {
             CloseRawWindow(endedAtUtc);
             FlushPendingReadModes();
-            return _ioSummary.Snapshot(endedAtUtc, _rawWindows, eventsLost, RawTraceZeroUs);
+            return _ioSummary.Snapshot(endedAtUtc, _rawWindows, eventsLost, RawTraceZeroUs) with { TargetStartsUs = [.. _targetStartsUs] };
         }
     }
 
@@ -142,6 +145,23 @@ internal sealed class KernelCollector
             lock (_rawLock)
             {
                 return (_names.Count, _records.Count);
+            }
+        }
+    }
+
+    /// 서비스가 등록 실행 파일의 시작을 감지해 이 세션을 열었음: 그 시작은 세션에 이미 떠 있던 프로세스 (DCStart) 로 들어와 기록에서 빠지므로 관찰 시작 (0) 의 시작으로 넣습니다.
+    internal void NoteTriggerStart()
+    {
+        if (_ioSummary is null)
+        {
+            return;
+        }
+
+        lock (_rawLock)
+        {
+            if (_targetStartsUs.Count < MaxTargetStarts && !_targetStartsUs.Contains(0))
+            {
+                _targetStartsUs.Add(0);
             }
         }
     }
@@ -225,16 +245,16 @@ internal sealed class KernelCollector
         return result;
     }
 
-    private void OnProcessStart(ProcessTraceData d)
+    private void OnProcessStart(ProcessTraceData d, bool alreadyRunning)
     {
         // 짧은 ImageFileName (15자) 보다 전체 경로가 있으면 그것을, 없으면 명령줄 첫 토큰을 먼저 씁니다.
         string image = !string.IsNullOrEmpty(d.KernelImageFileName) ? d.KernelImageFileName
             : !string.IsNullOrEmpty(d.CommandLine) ? FirstToken(d.CommandLine)
             : d.ImageFileName ?? "";
-        StartProcess(d.TimeStamp, d.ProcessID, d.ParentID, image);
+        StartProcess(d.TimeStamp, d.ProcessID, d.ParentID, image, alreadyRunning);
     }
 
-    internal void StartProcess(DateTime time, int pid, int parentPid, string image)
+    internal void StartProcess(DateTime time, int pid, int parentPid, string image, bool alreadyRunning = false)
     {
         if (_rawFrozen && _ioSummary is null)
         {
@@ -243,6 +263,11 @@ internal sealed class KernelCollector
 
         lock (_rawLock)
         {
+            if (_ioSummary is not null && !alreadyRunning && _targetStartsUs.Count < MaxTargetStarts && _tree.IsRegistered(image))
+            {
+                _targetStartsUs.Add(Math.Max(0, SessionTimeUs(time))); // 맵 로드 때 다시 뜨는 실행 파일의 시각 (집계가 로드 구간을 가르는 기준)
+            }
+
             if (_tree.Start(pid, parentPid, image))
             {
                 _sawTarget = true;

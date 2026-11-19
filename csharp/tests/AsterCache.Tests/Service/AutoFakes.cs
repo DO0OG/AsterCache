@@ -95,6 +95,10 @@ internal sealed class FakeTrace : IAutoTrace
         return Window;
     }
 
+    public int TriggerStarts { get; private set; }
+
+    public void NoteTriggerStart() => TriggerStarts++;
+
     public void FreezeRawRecords()
     {
         if (FreezeFailure is { } failure)

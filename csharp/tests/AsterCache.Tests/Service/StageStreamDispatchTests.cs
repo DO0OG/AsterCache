@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using AsterCache.Core.Prefetch;
 using AsterCache.Core.Settings;
+using AsterCache.Core.Trace;
 using AsterCache.Prefetch;
 using AsterCache.Service;
 using Xunit;
@@ -311,7 +312,7 @@ public sealed class StageStreamDispatchTests
 
         Assert.True(d.Handle(Start(6, "sp26-cod.exe")));
 
-        Assert.Contains(_log.Lines, l => l.Contains("stage stream sp26-cod.exe", StringComparison.Ordinal) && l.EndsWith("; skipped volatile 7 MiB", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("stage stream sp26-cod.exe", StringComparison.Ordinal) && l.EndsWith("; skipped volatile 7 MiB; source trace stage", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -659,8 +660,213 @@ public sealed class StageStreamDispatchTests
         Assert.DoesNotContain(_log.Lines, l => l.Contains("stopped at cap", StringComparison.Ordinal));
     }
 
+    private static readonly ReadOp Big = new(@"D:\Games\codig.bin", 0, 384L << 20);
+
+    private void WithRefill(long mib = 384)
+    {
+        _streamer.Refill = new LoadRefillPlan([new ReadOp(Big.Path, 0, mib << 20)], 2, 3);
+        _counters[1] = (6, "sp26-cod.exe", 3L << 20); // 로드 첫 10 초에 3 MiB 읽은 실제 사례: 짧은 확인을 통과해야 함
+    }
+
+    [Fact]
+    public void RefillStartThatReadsAlmostNothingIsSkippedAfterTheShortCheck()
+    {
+        GameDispatcher d = DispatcherAfterFirstExe();
+        WithRefill();
+        _counters[1] = (6, "sp26-cod.exe", 200L << 10); // 보조 시작: 10 초 동안 200 KiB
+
+        Assert.False(d.Handle(Start(6, "sp26-cod.exe")));
+
+        Assert.Contains(_log.Lines, l => l.Contains("stage stream skipped (sp26-cod.exe: no load evidence, 200 KiB in 10 s)", StringComparison.Ordinal));
+        Assert.Equal(110, _sec); // 디스패처를 최대 10 초만 붙잡음
+        Assert.Empty(_streamer.Phases);
+    }
+
+    [Fact]
+    public void RefillStartWhoseProcessIsGoneIsSkippedAtOnce()
+    {
+        GameDispatcher d = DispatcherAfterFirstExe();
+        WithRefill();
+        _counters.RemoveAt(1);
+
+        Assert.False(d.Handle(Start(6, "sp26-cod.exe")));
+
+        Assert.Contains(_log.Lines, l => l.Contains("stage stream skipped (sp26-cod.exe: no load evidence, the process is gone)", StringComparison.Ordinal));
+        Assert.Equal(100, _sec);
+    }
+
+    [Fact]
+    public void RefillStartPassesAsSoonAsTheReadsReachTheEvidenceWithinTheWindow()
+    {
+        GameDispatcher d = DispatcherAfterFirstExe();
+        WithRefill(64);
+        _counters[1] = (6, "sp26-cod.exe", 0);
+        int sleeps = 0;
+        _onSleep = () =>
+        {
+            if (++sleeps == 3)
+            {
+                _counters[1] = (6, "sp26-cod.exe", 2L << 20);
+            }
+        };
+
+        Assert.True(d.Handle(Start(6, "sp26-cod.exe")));
+
+        Assert.Equal([Big.Path], _streamer.Phases);
+        Assert.Equal(103, _sec);
+    }
+
+    [Fact]
+    public void RefillCheckEndsAtOnceWhenAnotherGamesStartIsQueued()
+    {
+        GameDispatcher d = DispatcherAfterFirstExe();
+        WithRefill();
+        _counters[1] = (6, "sp26-cod.exe", 0);
+        _queuedOther = true;
+
+        Assert.False(d.Handle(Start(6, "sp26-cod.exe")));
+
+        Assert.Contains(_log.Lines, l => l.Contains("stage stream skipped (sp26-cod.exe: another game started)", StringComparison.Ordinal));
+        Assert.Equal(100, _sec);
+    }
+
+    [Fact]
+    public void RefillStreamStopsWhenAnotherGamesStartIsQueuedSoTheDispatcherIsNotHeld()
+    {
+        GameDispatcher d = DispatcherAfterFirstExe();
+        WithRefill();
+        _streamer.OnBatch = (_, _) =>
+        {
+            _sec += 5;
+            _queuedOther = true; // 첫 묶음 뒤에 다른 게임의 시작이 큐에 들어옴
+        };
+
+        Assert.False(d.Handle(Start(6, "sp26-cod.exe")));
+
+        Assert.Contains(_log.Lines, l => l.Contains("stage stream sp26-cod.exe", StringComparison.Ordinal) && l.Contains("stopped, another game started", StringComparison.Ordinal));
+        Assert.Equal(1, _streamer.BatchCount[Big.Path]);
+    }
+
+    [Fact]
+    public void RefillListIsStreamedPastTheFirstQuietAndStopsAtTheEndOfTheList()
+    {
+        GameDispatcher d = DispatcherAfterFirstExe();
+        WithRefill();
+        _streamer.LaterPlans = _ => new StageLaterPlan([B], true, 0); // 목록이 있으면 쓰지 않음
+        _streamer.OnBatch = (_, _) =>
+        {
+            _sec += 15;
+            _counters[1] = (6, "sp26-cod.exe", 300L << 20); // 첫 묶음 뒤로는 읽기가 멈춤 (옛 경계 판정이면 여기서 멈춤)
+        };
+
+        Assert.True(d.Handle(Start(6, "sp26-cod.exe")));
+
+        Assert.Equal([Big.Path], _streamer.Phases);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("load boundary", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("stage stream sp26-cod.exe 384 MiB in ", StringComparison.Ordinal) && l.Contains("completed), yielded", StringComparison.Ordinal)
+            && l.EndsWith("; source load history (2 plays, 3 loads, 384 MiB planned)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RefillListStopsAtTheTimeCapAndKeepsLowPriority()
+    {
+        GameDispatcher d = DispatcherAfterFirstExe();
+        WithRefill();
+        _streamer.OnBatch = (_, _) => _sec += 70;
+
+        Assert.False(d.Handle(Start(6, "sp26-cod.exe")));
+
+        Assert.Contains(_log.Lines, l => l.Contains("stage stream sp26-cod.exe", StringComparison.Ordinal) && l.Contains("stopped, cap", StringComparison.Ordinal));
+        Assert.True(_io[0].Low); // 낮은 우선순위로 시작
+    }
+
+    [Fact]
+    public void RefillListStartsWithoutWaitingForLoadEvidence()
+    {
+        GameDispatcher d = DispatcherAfterFirstExe();
+        WithRefill(64);
+        _streamer.LaterPlans = _ => new StageLaterPlan([A, B], false, 0); // 목록이 없었다면 읽기 증거를 기다림
+        _counters[1] = (6, "sp26-cod.exe", 3L << 20); // 로드 첫 10 초 읽기가 3 MiB 뿐
+
+        Assert.True(d.Handle(Start(6, "sp26-cod.exe")));
+
+        Assert.Equal([Big.Path], _streamer.Phases);
+        Assert.Equal(100, _sec); // 기다리지 않음
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("no load evidence", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void WithoutAListTheStageStreamIsAsBeforeAndNamesItsSource()
+    {
+        GameDispatcher d = DispatcherAfterFirstExe();
+        _streamer.LaterPlans = _ => new StageLaterPlan([B], true, 0);
+
+        Assert.True(d.Handle(Start(6, "sp26-cod.exe")));
+
+        Assert.Equal([B.Path], _streamer.Phases);
+        Assert.Contains(_log.Lines, l => l.Contains("stage stream sp26-cod.exe", StringComparison.Ordinal) && l.EndsWith("; source trace stage", StringComparison.Ordinal));
+        Assert.Equal(1, _streamer.RefillCalls);
+    }
+
+    [Fact]
+    public void RefillCapIsTheSmallerOfTheFixedCapAndWhatTheMemoryGateAllows()
+    {
+        GameDispatcher d = DispatcherAfterFirstExe();
+        _available = 4096 + 1000; // 예비량 4,096 MiB 를 빼면 1,000 MiB
+        _ = d.Handle(Start(6, "sp26-cod.exe"));
+        Assert.Equal(1000L << 20, _streamer.LastRefillCap);
+
+        _available = 40_000;
+        _sec = 300;
+        _ = d.Handle(Start(7, "sp26-cod.exe"));
+        Assert.Equal(LoadRefillPlanner.CapBytes, _streamer.LastRefillCap);
+    }
+
+    [Fact]
+    public void AStartHandledLongAfterItsWindowIgnoresTheListAndKeepsTheOldPath()
+    {
+        GameDispatcher d = DispatcherAfterFirstExe();
+        WithRefill();
+        _streamer.LaterPlans = _ => new StageLaterPlan([B], true, 0);
+        _sec = 300;
+
+        Assert.True(d.Handle(new ProcessStart(6, "sp26-cod.exe", 100))); // 시작이 200 초 전
+
+        Assert.Equal([B.Path], _streamer.Phases);
+        Assert.Contains(_log.Lines, l => l.EndsWith("; source trace stage", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ACooldownRunsFromTheEndOfARefillSoAnOverlappingStartOfTheSameLoadDoesNotStreamTwice()
+    {
+        GameDispatcher d = DispatcherAfterFirstExe();
+        WithRefill(); // 384 MiB: 묶음 여섯 개
+        _streamer.OnBatch = (_, _) => _sec += 15; // 스트림이 약 90 초 (시작 100 → 끝 190)
+        Assert.True(d.Handle(Start(6, "sp26-cod.exe")));
+        _streamer.Phases.Clear();
+
+        _sec = 235; // 시작에서 135 초 (옛 기준이면 대기 끝), 끝에서 45 초
+        _processes = [(5, "cod.exe"), (7, "sp26-cod.exe")];
+        _counters.Add((7, "sp26-cod.exe", 0));
+        Assert.False(d.Handle(Start(7, "sp26-cod.exe")));
+
+        Assert.Contains(_log.Lines, l => l.Contains("stage stream skipped (sp26-cod.exe: cooldown ", StringComparison.Ordinal));
+        Assert.Empty(_streamer.Phases);
+    }
+
     private sealed class StageFakeStreamer : IGameStreamer
     {
+        public LoadRefillPlan? Refill { get; set; }
+        public long LastRefillCap { get; private set; }
+        public int RefillCalls { get; private set; }
+
+        public LoadRefillPlan? PlanLoadRefill(GameSettings game, long capBytes, CancellationToken stop)
+        {
+            RefillCalls++;
+            LastRefillCap = capBytes;
+            return Refill;
+        }
+
         public IReadOnlyList<ReadOp>? FirstOps { get; set; }
         public Func<string, StageLaterPlan> LaterPlans { get; set; } = _ => new StageLaterPlan([], false, 0);
         public Action<string, int>? OnBatch { get; set; }

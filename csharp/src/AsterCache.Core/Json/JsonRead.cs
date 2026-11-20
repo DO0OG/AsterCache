@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 
 namespace AsterCache.Core.Json;
@@ -7,7 +6,6 @@ namespace AsterCache.Core.Json;
 /// 정수는 Python 의 type(x) is int 처럼 엄격합니다: 소수점·지수가 있는 숫자는 double, int64 범위 밖 정수는 거부합니다.
 public static class JsonRead
 {
-    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
     private static readonly JsonDocumentOptions Options = new() { MaxDepth = 512 };
 
     public static object? Parse(string text)
@@ -23,28 +21,73 @@ public static class JsonRead
         }
     }
 
-    /// UTF-8 (BOM 허용, Python utf-8-sig) 파일을 읽습니다.
+    /// UTF-8 (BOM 허용, Python utf-8-sig) 파일을 읽습니다. 파일을 조각으로 읽어 바로 값으로 만듭니다 (<see cref="JsonFileReader"/>).
     public static object? ReadFile(string path)
     {
-        byte[] bytes;
-        using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-        {
-            bytes = new byte[fs.Length];
-            fs.ReadExactly(bytes);
-        }
-
-        int skip = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? 3 : 0;
-        string text;
+        var s = new JsonFileReader(path);
         try
         {
-            text = StrictUtf8.GetString(bytes, skip, bytes.Length - skip);
-        }
-        catch (DecoderFallbackException e)
-        {
-            throw new PyValueException("invalid UTF-8: " + e.Message);
-        }
+            object? value = null;
+            JsonException? syntaxError = null;
+            try
+            {
+                s.ReadNext();
+                value = ReadValue(ref s);
+                s.ReadNext(); // 끝 뒤에 다른 내용이 없는지 확인
+            }
+            catch (JsonException e)
+            {
+                syntaxError = e;
+            }
 
-        return Parse(text);
+            s.Finish(syntaxError);
+            return value;
+        }
+        finally
+        {
+            s.Dispose();
+        }
+    }
+
+    /// 지금 토큰에서 시작하는 값 하나를 읽어 <see cref="Convert"/> 와 같은 모양으로 만들고, 그 값의 마지막 토큰에서 멈춥니다.
+    internal static object? ReadValue(ref JsonFileReader s)
+    {
+        switch (s.Reader.TokenType)
+        {
+            case JsonTokenType.StartObject:
+                var obj = new JObject();
+                while (s.ReadNext() && s.Reader.TokenType == JsonTokenType.PropertyName)
+                {
+                    string name = s.GetString();
+                    s.ReadNext();
+                    obj.Add(name, ReadValue(ref s));
+                }
+
+                return obj;
+            case JsonTokenType.StartArray:
+                var list = new List<object?>();
+                while (s.ReadNext() && s.Reader.TokenType != JsonTokenType.EndArray)
+                {
+                    list.Add(ReadValue(ref s));
+                }
+
+                return list;
+            case JsonTokenType.String:
+                return s.GetString();
+            case JsonTokenType.True:
+                return true;
+            case JsonTokenType.False:
+                return false;
+            case JsonTokenType.Number:
+                if (!s.ReadNumber(out bool isDouble, out long integer, out double real))
+                {
+                    return null;
+                }
+
+                return isDouble ? (object)real : integer; // 두 갈래의 형을 같게 두면 long 이 double 로 바뀜
+            default:
+                return null;
+        }
     }
 
     private static object? Convert(JsonElement e)

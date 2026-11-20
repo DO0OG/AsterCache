@@ -14,23 +14,18 @@ public static class TraceLoader
         cancellationToken.ThrowIfCancellationRequested();
         resolve ??= DefaultResolve;
         fileSize ??= DefaultFileSize;
-        object? data = JsonRead.ReadFile(tracePath);
+        TraceFileRows file = TraceFile.Read(tracePath);
         cancellationToken.ThrowIfCancellationRequested();
-        object? rows = data is JObject obj ? (obj.TryGetValue("ranges", out object? r) ? r : null) : data;
-        if (rows is not List<object?> list)
-        {
-            throw new PyValueException("bad trace file");
-        }
-
+        List<TraceEvent> rows = file.Rows ?? throw new PyValueException("bad trace file");
         cancellationToken.ThrowIfCancellationRequested();
         string root = resolve(originRoot) ?? throw new DirectoryNotFoundException(originRoot);
         cancellationToken.ThrowIfCancellationRequested();
         var sizes = new Dictionary<string, long?>(StringComparer.Ordinal);
-        var result = new List<TraceEvent>(list.Count);
-        foreach (object? row in list)
+        int kept = 0; // 읽은 목록 안에서 그대로 추려 두 번째 목록을 만들지 않음
+        for (int i = 0; i < rows.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            TraceEvent e = TraceEvents.FromJson(row);
+            TraceEvent e = rows[i];
             if (e.Offset < 0 || e.Length <= 0)
             {
                 throw new PyValueException("bad row");
@@ -51,10 +46,18 @@ public static class TraceLoader
                 continue;
             }
 
-            result.Add(e with { Length = Math.Min(e.Length, size.Value - e.Offset) });
+            rows[kept++] = e with { Length = Math.Min(e.Length, size.Value - e.Offset) };
         }
 
-        return result;
+        cancellationToken.ThrowIfCancellationRequested();
+        if (file.RowError is not null)
+        {
+            throw file.RowError; // 읽을 수 없던 행은 앞의 행을 다 처리한 뒤에 오류가 됨 (옛 방식과 같은 순서)
+        }
+
+        rows.RemoveRange(kept, rows.Count - kept);
+        rows.TrimExcess();
+        return rows;
     }
 
     /// pathlib.PureWindowsPath.is_relative_to: 대소문자를 무시하고 구성 요소 단위로 접두를 비교합니다.

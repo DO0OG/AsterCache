@@ -113,7 +113,14 @@ public sealed partial class Prewarmer
             return null;
         }
 
-        IReadOnlyList<ReadOp> reads = PrefetchStreamer.Head(all, (long)(availMib * PlayTouchAvailableFraction) << 20); // 목록 앞쪽 (가장 중요한 부분) 만
+        long cap = (long)(availMib * PlayTouchAvailableFraction) << 20;
+        IReadOnlyList<ReadOp> ordered = all;
+        if (_env.RankedRows(game) is { } ranked)
+        {
+            ordered = PlayRanking.Reorder(all, ranked); // 순위 목록에 든 블록을 순위 순으로 앞에: 자르는 한도 안에 경기 중 지연이 큰 블록이 먼저 들게 (순위 밖 범위는 지금 순서로 뒤에)
+        }
+
+        IReadOnlyList<ReadOp> reads = PrefetchStreamer.Head(ordered, cap); // 목록 앞쪽 (가장 중요한 부분) 만
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "play touch", default, game.OriginRoot, allowWhileYielded: true, preserveGameKey: game.Name);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
         {
@@ -130,6 +137,13 @@ public sealed partial class Prewarmer
         {
             bool none = false;
             touched = _solar.TouchFront(game, reads, linked.Token, exe, ThrottledTouch, keeping: true, noneInMemory: () => none = true) is not null;
+            if (none && !ReferenceEquals(ordered, all))
+            {
+                // 순위 순서의 맨 앞이 메모리에 없음 (순위 목록이 마지막 예열 뒤에 바뀌었거나 그 블록이 빠짐): 목록 전체를 잃었다고 보지 않고 순위 없는 순서로 한 번 더 시도
+                none = false;
+                touched = _solar.TouchFront(game, PrefetchStreamer.Head(all, cap), linked.Token, exe, ThrottledTouch, keeping: true, noneInMemory: () => none = true) is not null;
+            }
+
             empty = none;
         }
         finally

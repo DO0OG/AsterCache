@@ -89,7 +89,7 @@ public sealed partial class Prewarmer
                 return new ProbeFileGeneration(path, true, stamp.Size, stamp.MtimeNs);
             }
 
-            return new ProbeGeneration(FileGeneration(game.Plan), FileGeneration(game.Trace), FileGeneration(PlanOutput.WarmOnlyPath(game.Trace)));
+            return new ProbeGeneration(FileGeneration(game.Plan), FileGeneration(game.Trace), FileGeneration(PlanOutput.WarmOnlyPath(game.Trace)), FileGeneration(LoadRefillPlans.RankedPathOf(game)));
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException)
         {

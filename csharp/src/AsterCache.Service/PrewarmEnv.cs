@@ -6,6 +6,7 @@ using AsterCache.Core.Plan.Orbit;
 using AsterCache.Core.Prefetch;
 using AsterCache.Core.Profiles;
 using AsterCache.Core.Settings;
+using AsterCache.Core.Trace;
 using AsterCache.Prefetch;
 using AsterCache.Windows;
 
@@ -145,6 +146,9 @@ public sealed class PrewarmEnv
 
     public Func<GameSettings, long, long, CancellationToken, (IReadOnlyList<ReadOp> Ops, long Total)>? CommonFirstOpsWithCancellation { get; init; }
 
+    /// 실행 중 유지가 만지는 순서를 정하는 블록 순위 행 (순위 순, 없으면 null → 순서를 바꾸지 않음). 기본은 없음 (시험용), Create 는 저장된 순위 목록.
+    public Func<GameSettings, List<TraceEvent>?> RankedRows { get; init; } = _ => null;
+
     /// 핫 집합 스트림 직전에 원래 op 목록으로 장치 표본을 모읍니다.
     public Action<GameSettings, IReadOnlyList<ReadOp>, string?, DiskReadCoordinator.Lease?, CancellationToken, CancellationToken>? DeviceCalibration { get; init; }
 
@@ -195,6 +199,7 @@ public sealed class PrewarmEnv
             StandbyLadderEnabled = standbyLadder ?? (() => false),
             Lists = MemoryListInfo.Query,
             TouchRanges = StandbyTouch.Run,
+            RankedRows = g => LoadRefillPlans.RankedRows(g),
             IsSparse = p => FileGuards.IsSparse(p),
             DeviceCalibrationEnabled = orbitRuntime is null ? null : () => orbitRuntime.Mode != "off",
             DeviceCalibration = orbitCalibration is null ? null : (g, ops, antiCheat, lease, ct, limit) =>

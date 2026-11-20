@@ -50,6 +50,19 @@ public sealed class LoadRefillTests : IDisposable
     }
 
     [Fact]
+    public void WithoutAWindowEveryPhaseOfEveryPlayCountsAndPlaysWithoutStartsAreKept()
+    {
+        var files = new[] { new IoSummaryFile(A), new IoSummaryFile(B) };
+        LoadRefillSource first = Source([Sec(1)], files, Row(0, 0, 2, latencyUs: 50), Row(0, 1, 900, latencyUs: 10), Row(1, 0, 4, latencyUs: 700), Row(0, 3, 6, paging: 0)); // 창 밖 (900 초)·시작 전 블록도 모음
+        LoadRefillSource second = Source([], files, Row(0, 0, 5, latencyUs: 50), Row(1, 2, 8, latencyUs: 5)); // 시작 시각 없는 집계도 한 플레이
+
+        LoadRefillList list = LoadRefillPlanner.Collect([first, second], Existing, null, 1L << 30);
+
+        Assert.Equal([(A, 0L, 2), (B, 0L, 1), (A, 1L, 1), (B, 2L, 1)], list.Blocks.Select(b => (b.Path, b.Block, b.Count))); // 플레이 수 → 지연 합 (700, 10, 5)
+        Assert.Equal((2, 0, 0, 1), (list.Plays, list.Loads, list.PlaysWithoutStarts, (int)list.SkippedNoCacheBlocks));
+    }
+
+    [Fact]
     public void PlaysAreMergedAndSortedByPlayCountThenLatencyAndCutAtTheCap()
     {
         var files = new[] { new IoSummaryFile(A), new IoSummaryFile(B) };
@@ -113,6 +126,21 @@ public sealed class LoadRefillTests : IDisposable
         Assert.Equal([new ReadOp(A, 0, Block), new ReadOp(B, 0, Block)], capped); // 점수 순 앞의 두 블록만
         Assert.Empty(LoadRefillPlanner.ToOps(list, _ => null, 1L << 30, null));
         Assert.Empty(LoadRefillPlanner.ToOps(list, _ => Stat, 0, null));
+    }
+
+    [Fact]
+    public void RowsKeepTheScoreOrderOneBlockEachClipTheTailAndDropFilesThatChanged()
+    {
+        var list = new LoadRefillList(
+            [new(B, 4, 3, 0), new(A, 9, 2, 0), new(A, 2, 1, 0)],
+            new Dictionary<string, LoadRefillFileStat> { [A] = new(9 * Block + 100, 7), [B] = Stat }, 3, 0, 0, 0, 0);
+
+        List<TraceEvent> rows = LoadRefillPlanner.ToRows(list, path => list.Files[path]);
+        List<TraceEvent> changed = LoadRefillPlanner.ToRows(list, path => path == A ? new LoadRefillFileStat(1, 1) : Stat);
+
+        Assert.Equal([(B, 4 * Block, Block), (A, 9 * Block, 100L), (A, 2 * Block, Block)], rows.Select(r => (r.Path, r.Offset, r.Length))); // 점수 순 그대로, 끝 블록은 파일 끝에서 자름
+        Assert.All(rows, r => Assert.True(r.Observed));
+        Assert.Equal([(B, 4 * Block, Block)], changed.Select(r => (r.Path, r.Offset, r.Length)));
     }
 
     [Fact]

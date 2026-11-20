@@ -330,7 +330,7 @@ public sealed class WarmEstimateCacheTests
             };
             string?[] files =
             [
-                game.Plan, game.Trace, PlanOutput.WarmOnlyPath(game.Trace), AutoTracer.VolatilePath(game), AutoTracer.RawTracePath(game), AutoTracer.BootTracePath(game),
+                game.Plan, game.Trace, PlanOutput.WarmOnlyPath(game.Trace), AutoTracer.VolatilePath(game), AutoTracer.RawTracePath(game), AutoTracer.BootTracePath(game), LoadRefillPlans.RankedPathOf(game),
             ];
             string? last = PrefetchStreamer.EstimateStamp(game, false);
             Assert.Equal(last, PrefetchStreamer.EstimateStamp(game, false));

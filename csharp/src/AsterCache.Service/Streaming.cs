@@ -121,6 +121,7 @@ public sealed partial class PrefetchStreamer : IGameStreamer
         foreach (GameSettings game in games)
         {
             string[] paths = [AutoTracer.RawTracePath(game), AutoTracer.BootTracePath(game)];
+            LoadRefillPlans.ForgetRanked(game);
             lock (TraceSourceCacheLock)
             {
                 foreach (string path in paths)
@@ -227,8 +228,8 @@ public sealed partial class PrefetchStreamer : IGameStreamer
     /// 이 게임의 앞부분 바이트: 로딩 경계의 tier0 (0 이면 옛 값), 경계를 모르면 HeadBytes.
     public static long HeadBytesOf(GameSettings game) => HeadBytesOf(game, default);
 
-    private static long HeadBytesOf(GameSettings game, CancellationToken cancellationToken) =>
-        LoadTiers.For(game, cancellationToken)?.Tier0Bytes is > 0 and long tier0 ? tier0 : HeadBytes;
+    private static long HeadBytesOf(GameSettings game, CancellationToken cancellationToken, bool allowParse = true) =>
+        LoadTiers.For(game, cancellationToken, allowParse)?.Tier0Bytes is > 0 and long tier0 ? tier0 : HeadBytes;
 
     public long? LoadHeadBytes(GameSettings game) => LoadTiers.For(game)?.Tier0Bytes is > 0 and long tier0 ? tier0 : null;
 
@@ -252,7 +253,7 @@ public sealed partial class PrefetchStreamer : IGameStreamer
                 return budget;
             }
 
-            List<TraceEvent> selected = budget < total ? TrimToBudget(game, rows, warmOnlyStart, budget, default, allowSourceRead).Rows : rows;
+            List<TraceEvent> selected = budget < total ? TrimToBudget(game, rows, warmOnlyStart, budget, default, allowSourceRead, LoadRefillPlans.RankedRows(game)).Rows : rows;
             return selected.Where(r => r.Observed).Sum(r => r.Length);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException or PlanRejectedException)
@@ -404,6 +405,11 @@ public sealed partial class PrefetchStreamer : IGameStreamer
 
         using var streamTimer = PrewarmRun.Time(PrewarmPhase.Stream);
         (StreamStats Stats, bool Complete) r = Batches(ops, stop, progress, canIssue, noteIssue, afterBatch);
+        if (r.Stats.Bytes > 0)
+        {
+            LoadRefillPlans.CommitRanked(game); // 실제로 읽은 선택만 마지막 예열의 선택으로 기억 (건너뛰거나 읽기 전에 취소된 회는 이전 기억 유지)
+        }
+
         if (r.Complete)
         {
             if (stop.IsCancellationRequested || (canIssue is not null && !canIssue()))
@@ -874,7 +880,10 @@ public sealed partial class PrefetchStreamer : IGameStreamer
     // 우선순위 = 내보내는 순서: (가) 게임이 쓰는 파일 (예열 전용, 덧붙임 아님) 의 실행 앞부분 (frontMs 전에 처음 읽힌) 관찰 행, (나) 선읽기 관찰 행, (다) 나머지 예열 전용 관찰 행 (t_ms 순, t_ms 없는 옛 행은 맨 뒤), (라) 추측 행.
     // 덧붙임 행 (Overflow) 은 t_ms 가 앞부분이어도 (다) 에만 들어, 메모리가 남을 때만 읽힙니다. rows[warmOnlyStart..] 가 예열 전용 행입니다.
     // frontBytes: 남긴 (가) 의 바이트 (스케줄러가 접근 순서로 먼저 읽는 앞부분에 더해야 하는 양). 전체가 들어가면 순서를 바꾸지 않으므로 0.
-    internal static List<TraceEvent> SelectToBudget(IReadOnlyList<TraceEvent> rows, long budget, int warmOnlyStart, long frontMs, out long frontBytes)
+    // ranked: 플레이 전체 기록의 블록 순위 목록 (없으면 null → 위 순서 그대로). 있으면 (가) 와 선읽기 행의 앞 tier0Bytes (tier0) 다음, 나머지 선읽기 행 앞에 순위 행을 둡니다 (PlayRanking.Order).
+    // noteRanked: 순위 행에서 담은 바이트를 알림 (순위 목록이 있을 때만).
+    internal static List<TraceEvent> SelectToBudget(IReadOnlyList<TraceEvent> rows, long budget, int warmOnlyStart, long frontMs, out long frontBytes, IReadOnlyList<TraceEvent>? ranked = null, long tier0Bytes = 0,
+        Action<long>? noteRanked = null)
     {
         frontBytes = 0;
         if (rows.Sum(r => r.Length) <= budget)
@@ -895,8 +904,22 @@ public sealed partial class PrefetchStreamer : IGameStreamer
 
         var kept = new List<TraceEvent>();
         long used = 0;
-        foreach (TraceEvent r in front.Concat(observed).Concat(warmOnly.OrderBy(w => w.TMs ?? long.MaxValue)).Concat(guess))
+        List<TraceEvent> sorted;
+        int rankedFrom = 0;
+        int rankedTo = 0;
+        if (ranked is { Count: > 0 })
         {
+            (sorted, rankedFrom, rankedTo) = PlayRanking.Order(front, observed, warmOnly.OrderBy(w => w.TMs ?? long.MaxValue), guess, ranked, tier0Bytes);
+        }
+        else
+        {
+            sorted = [.. front, .. observed, .. warmOnly.OrderBy(w => w.TMs ?? long.MaxValue), .. guess];
+        }
+
+        long rankedUsed = 0;
+        for (int i = 0; i < sorted.Count; i++)
+        {
+            TraceEvent r = sorted[i];
             long take = Math.Min(r.Length, budget - used);
             if (take <= 0)
             {
@@ -905,10 +928,16 @@ public sealed partial class PrefetchStreamer : IGameStreamer
 
             kept.Add(take == r.Length ? r : r with { Length = take });
             used += take;
+            rankedUsed += i >= rankedFrom && i < rankedTo ? take : 0;
             if (take < r.Length)
             {
                 break;
             }
+        }
+
+        if (ranked is { Count: > 0 })
+        {
+            noteRanked?.Invoke(rankedUsed);
         }
 
         frontBytes = Math.Min(front.Sum(r => r.Length), used);
@@ -921,9 +950,12 @@ public sealed partial class PrefetchStreamer : IGameStreamer
 
     private const long DefaultFrontMs = 120_000;
 
-    private static (List<TraceEvent> Rows, long FrontBytes) TrimToBudget(GameSettings game, IReadOnlyList<TraceEvent> rows, int warmOnlyStart, long budget, CancellationToken cancellationToken, bool allowParse)
+    // ranked: 블록 순위 행 (게임이 끝난 뒤 만들어 둔 파일만 읽음, 없으면 null → 순위 없이 지금 순서).
+    private static (List<TraceEvent> Rows, long FrontBytes) TrimToBudget(GameSettings game, IReadOnlyList<TraceEvent> rows, int warmOnlyStart, long budget, CancellationToken cancellationToken, bool allowParse,
+        List<TraceEvent>? ranked)
     {
-        List<TraceEvent> kept = SelectToBudget(rows, budget, warmOnlyStart, warmOnlyStart < rows.Count ? FrontMs(game, cancellationToken, allowParse) : 0, out long frontBytes);
+        List<TraceEvent> kept = SelectToBudget(rows, budget, warmOnlyStart, warmOnlyStart < rows.Count ? FrontMs(game, cancellationToken, allowParse) : 0, out long frontBytes,
+            ranked, ranked is null ? 0 : HeadBytesOf(game, cancellationToken, allowParse), PrewarmRun.NoteRankedBytes);
         return (kept, frontBytes);
     }
 
@@ -964,9 +996,14 @@ public sealed partial class PrefetchStreamer : IGameStreamer
         // 예열 목록의 예산은 배정·표시가 쓰는 목록 기준 (Warm): 잔여 계획의 task 합계를 예산으로 쓰면 스케줄러의 파일 전체 승격이 배정량을 넘어 목록을 다 읽고도 부분 예열로 남음
         long budget = Budget(game, ZoneBytes(game, withWarmOnly, cancellationToken, withWarmOnly ? ZoneView.Warm : ZoneView.Budget), total);
         long frontBytes = 0;
-        if (trimLast && budget < total)
+        if (budget < total)
         {
-            (rows, frontBytes) = TrimToBudget(game, rows, warmOnlyStart, budget, cancellationToken, allowParse: true);
+            // 순위 목록이 있으면 스트림 (trimLast 아님) 과 사다리·만지기·유지 목록 (trimLast) 이 같은 선택 규칙을 써서 같은 범위 집합을 고름. 없으면 이전과 같이 trimLast 일 때만 자름.
+            List<TraceEvent>? ranked = withWarmOnly ? LoadRefillPlans.RankedRows(game, cancellationToken) : null;
+            if (trimLast || ranked is not null)
+            {
+                (rows, frontBytes) = TrimToBudget(game, rows, warmOnlyStart, budget, cancellationToken, allowParse: true, ranked);
+            }
         }
 
         IEnumerable<ReadRange> ranges = CoalesceRangeGroups(rows).Select(r => new ReadRange(r.Path, r.Offset, r.Length));
@@ -1042,6 +1079,8 @@ internal sealed class PrewarmRun : IDisposable
     private (GameSettings Game, long Budget, List<ReadOp> Ops, long GapBytes, bool Fits, string? Stamp)? _plan;
     private int _depth;
     private bool _calibrationCapped;
+    private long? _rankedBytes;
+    private string? _game;
 
     /// 이 회의 보정 읽기가 시간 상한에 걸렸음을 알림 (회 밖이면 무시): Summary 가 표시함.
     internal static void NoteCalibrationCapped()
@@ -1052,9 +1091,9 @@ internal sealed class PrewarmRun : IDisposable
         }
     }
 
-    // 목록의 입력 (계획·트레이스·예열 전용 옆 파일·가변 표지) 의 (존재, 길이, 수정 시각). 메타데이터 조회뿐이며 읽지 못하면 null (재사용 안 함).
+    // 목록의 입력 (계획·트레이스·예열 전용 옆 파일·가변 표지·캐시 없이 읽는 파일 목록·블록 순위 목록) 의 (존재, 길이, 수정 시각). 메타데이터 조회뿐이며 읽지 못하면 null (재사용 안 함).
     internal static string? InputStamp(GameSettings game) =>
-        Stamp(() => [game.Plan, game.Trace, PlanOutput.WarmOnlyPath(game.Trace), AutoTracer.VolatilePath(game), UnbufferedFiles.PathOf(game)]);
+        Stamp(() => [game.Plan, game.Trace, PlanOutput.WarmOnlyPath(game.Trace), AutoTracer.VolatilePath(game), UnbufferedFiles.PathOf(game), LoadRefillPlans.RankedPathOf(game)]);
 
     internal static string? Stamp(Func<string[]> paths)
     {
@@ -1072,9 +1111,24 @@ internal sealed class PrewarmRun : IDisposable
         }
     }
 
-    public static PrewarmRun Begin()
+    /// 이 스레드가 이 게임의 예열 한 회 안인가 (그 게임의 순위 목록을 새로 읽어 이 회의 선택으로 삼는 때, LoadRefillPlans.RankedRows).
+    /// 같은 스레드에서 도는 회 안에서만 맞습니다 (회 안에 await·Task.Run 이 들어오면 계산이 회 밖으로 판정되어 기억한 선택을 그대로 씀).
+    internal static bool ActiveFor(string game) => _current is { _game: { } name } && string.Equals(name, game, StringComparison.OrdinalIgnoreCase);
+
+    /// 이 회의 예열 선택이 블록 순위 목록에서 담은 바이트를 알림 (회 밖이면 무시): Summary 가 표시함.
+    internal static void NoteRankedBytes(long bytes)
+    {
+        if (_current is { } run)
+        {
+            run._rankedBytes = bytes;
+        }
+    }
+
+    /// game: 이 회가 예열하는 게임 (순위 목록을 이 게임에 대해서만 새로 읽게 함). 중첩된 회는 바깥 회의 게임을 그대로 씁니다.
+    public static PrewarmRun Begin(string? game = null)
     {
         PrewarmRun run = _current ??= new PrewarmRun();
+        run._game ??= game;
         run._depth++;
         return run;
     }
@@ -1130,7 +1184,7 @@ internal sealed class PrewarmRun : IDisposable
     public string Summary()
     {
         var e = Elapsed();
-        return $"plan {e.Plan:F2} s, calibration {e.Calibration:F2} s{(_calibrationCapped ? " (capped)" : string.Empty)}, common {e.Common:F2} s, orbit {e.Orbit:F2} s, stream {e.Stream:F2} s, other {e.Other:F2} s = {e.Total:F2} s";
+        return $"plan {e.Plan:F2} s, calibration {e.Calibration:F2} s{(_calibrationCapped ? " (capped)" : string.Empty)}, common {e.Common:F2} s, orbit {e.Orbit:F2} s, stream {e.Stream:F2} s, other {e.Other:F2} s = {e.Total:F2} s{(_rankedBytes is { } ranked ? $", {ranked >> 20} MiB selected from the ranked block list" : string.Empty)}";
     }
 
     /// 단계 시간 (그 안에서 쓴 계획 계산 시간은 Plan 단계로만 셉니다).

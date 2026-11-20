@@ -105,7 +105,7 @@ public sealed partial class Prewarmer
     private ReadMix _readMix; // 핫 집합 스트림이 보통·낮은 우선순위로 읽은 양과 시간 (Run 이 예열 한 회 동안 모아 done·cancelled 줄에 씀), _run 아래에서만 씀
 
     private sealed record ProbeFileGeneration(string Path, bool Exists, long Size, long MtimeNs);
-    private sealed record ProbeGeneration(ProbeFileGeneration Plan, ProbeFileGeneration Trace, ProbeFileGeneration WarmOnly);
+    private sealed record ProbeGeneration(ProbeFileGeneration Plan, ProbeFileGeneration Trace, ProbeFileGeneration WarmOnly, ProbeFileGeneration Ranked);
     private sealed record ResidencyProbe(bool Warm, DateTimeOffset At, ProbeGeneration Generation);
 
     private sealed class GameWorkLease(Prewarmer owner, string game) : IDisposable

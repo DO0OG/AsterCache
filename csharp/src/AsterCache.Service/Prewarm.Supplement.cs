@@ -622,7 +622,7 @@ public sealed partial class Prewarmer
             zoneBytes = freshZone;
             p = RaiseHotMib(game.Name, remembered, zoneBytes); // 기억한 목록 크기가 현재 목록보다 작으면 올림: 창 상한·표시가 현재 목록을 따름
 
-            using PrewarmRun run = PrewarmRun.Begin();
+            using PrewarmRun run = PrewarmRun.Begin(game.Name);
             long? finalReadBytes = ReadSetBytes(warm, partial: windowMib is not null || skipBytes > 0);
             avail = _env.AvailableRamMib();
             long finalReadMib = 0; // 아래 전체 경로가 메모리로 멈췄을 때 창으로 줄이는 데도 씀

@@ -280,6 +280,38 @@ public sealed partial class Prewarmer
         }
     }
 
+    // 창 (windowMib) 의 계획 목록을 끝까지 읽었는데 목록이 창보다 짧음 (캐시 없이 읽는 파일을 예산으로 자른 뒤에 빼므로 생김): 읽은 양을 창 크기로 올립니다.
+    // 읽은 양이 창에 못 미치면 다음 점검이 같은 창을 진전 없이 다시 읽으므로, 올려 두면 기존 "이미 읽음" 판정 (SupplementCoveredByCap) 이 맡아 앞부분 표본이 식었을 때만 다시 읽고, 배정이 늘어 창이 커지면 더 큰 창을 읽습니다.
+    private void NoteWindowListRead(GameSettings game, long windowMib)
+    {
+        lock (_gate)
+        {
+            if (!_partial.TryGetValue(game.Name, out (long WarmedMib, long HotMib) cur) || cur.WarmedMib >= windowMib || windowMib > cur.HotMib)
+            {
+                return;
+            }
+
+            _partial[game.Name] = (windowMib, cur.HotMib);
+            if (_memoryPartial.ContainsKey(game.Name))
+            {
+                _memoryPartial[game.Name] = (windowMib, cur.HotMib);
+            }
+        }
+
+        lock (_run)
+        {
+            lock (_gate)
+            {
+                if (_status.TryGetValue(game.Name, out object? entry) && entry is JObject o)
+                {
+                    o["warmed_mib"] = windowMib;
+                }
+            }
+
+            FlushStatus();
+        }
+    }
+
     // 이미 읽은 앞부분 (warmedMib) 의 표본이 식었는가: 식었으면 보충이 앞부분부터 다시 읽음. 읽지 못하면 식지 않은 것으로 봄.
     private bool FrontCold(GameSettings game, long warmedMib, CancellationToken ct, out bool refused)
     {
@@ -780,6 +812,7 @@ public sealed partial class Prewarmer
                 }
                 else if (planEndedAtEnd)
                 {
+                    NoteWindowListRead(game, readCapMib);
                     DeferSupplement(game, plannedCapMib, progressBytes, inputStamp, r.Stats, planEnded: true, skipBytes + (tailTotal ?? r.Stats.RequestedBytes));
                 }
                 else if (progressBytes <= progressBefore
@@ -830,6 +863,7 @@ public sealed partial class Prewarmer
             long plannedListBytes = tailTotal ?? r.Stats.RequestedBytes;
             if (requestListEnded)
             {
+                NoteWindowListRead(game, readCapMib);
                 DeferSupplement(game, plannedCapMib, Math.Max(progressBefore, progressAfter), inputStamp, r.Stats, planEnded: true, skipBytes + plannedListBytes);
                 _log.Info($"{game.Name}: supplement prewarm read the first {MibText(progressAfter)} of {p.HotMib} MiB in {r.Stats.Seconds:F2} s ({MibText(r.Stats.Bytes)} accepted of {MibText(r.Stats.RequestedBytes)} requested, {r.Stats.Errors} errors{r.Stats.BufferedNote()}){_requeued.Note()}, the plan lists {MibText(skipBytes + plannedListBytes)} within {readCapMib} MiB");
                 return true;

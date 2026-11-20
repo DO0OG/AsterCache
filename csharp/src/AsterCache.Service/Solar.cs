@@ -18,6 +18,8 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
     private readonly Dictionary<string, DroppedMark> _dropped = new(StringComparer.OrdinalIgnoreCase); // 식거나 빠졌다고 보아 지운 표식의 시각·그때의 재사용 양·앞에 있는 양 (재예열 점검의 식음 로그가 한 번 쓰면 버리고, 새 표식이 서도 버림), 메모리에만 둠, _lock 으로 보호
     private readonly HashSet<string> _overlooked = new(StringComparer.OrdinalIgnoreCase); // 드라이브가 바쁠 때 표본이 식어 나온 것을 이 표식에서 이미 한 번 봐 준 게임 (표식이 사라지거나 새로 서거나 warm 표본이 나오면 비움), 메모리에만 둠, _lock 으로 보호
     private DateTimeOffset? _groupAt; // 마지막으로 묶음을 새로 고친 (표식을 같은 기준으로 다시 쓴) 시각, 메모리에만 둠, _lock 으로 보호
+    private DateTimeOffset _idleTouchBlockedUntil; // 게임이 없을 때 만지는 데 쓴 시간이 벽시계의 IdleTouchShare 를 넘지 않도록 이 시각까지는 묶음 새로 고침을 하지 않음, 메모리에만 둠, _lock 으로 보호
+    private bool _idleTouchDeferredNoted; // 위 상한 때문에 미룬 것을 이미 로그에 남겼는가 (상한이 풀리면 비움), _lock 으로 보호
 
     private readonly record struct DroppedMark(DateTimeOffset At, long? RepurposedBytes, long AheadBytes);
 
@@ -101,6 +103,11 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         LadderMark? earlier = MarkOf(game.Name); // 이 줄이 빠짐을 알릴 때 붙일 값을 위해 지우기 전에 잡아 둠
         long? grown = earlier is null ? null : SolarPolicy.Repurposed(earlier, env.Lists());
         TouchResult r = env.TouchRanges(ladder, ct);
+        if (startExe is null)
+        {
+            NoteIdleTouch(r.Seconds); // 게임 시작 때의 만지기는 상한과 무관
+        }
+
         switch (r.End)
         {
             case TouchEnd.Completed:
@@ -213,6 +220,7 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         long? grown = SolarPolicy.Repurposed(mark, env.Lists());
         long repurposed = grown ?? 0;
         TouchResult r = env.TouchRanges(mark.Ladder, ct);
+        NoteIdleTouch(r.Seconds);
         switch (r.End)
         {
             case TouchEnd.Completed:
@@ -251,7 +259,7 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
 
     /// 묶음 새로 고침 대상: 표식이 있는 게임 전체 (입력 순서 그대로). 그중 지금 만질 수 있는 (usable, 없으면 모두) 게임 하나라도 새로 고칠 때가 됐고 직전 묶음 새로 고침 뒤 GroupEvery 가 지났을 때만, 아니면 빈 목록.
     /// 게이트에 막힌 게임은 때가 됐어도 시작 판정에 쓰지 않습니다: 계속 막힌 게임 하나 때문에 다른 게임이 되풀이해 만져지지 않게. 대기 목록은 표식이 하나라도 있을 때만 한 번 읽습니다.
-    public IReadOnlyList<GameSettings> DueGroup(IEnumerable<GameSettings> games, DateTimeOffset at, Func<GameSettings, bool>? usable = null)
+    public IReadOnlyList<GameSettings> DueGroup(IEnumerable<GameSettings> games, DateTimeOffset at, Func<GameSettings, bool>? usable = null, bool capped = true)
     {
         List<(GameSettings Game, LadderMark Mark)> marked = MarkedPairs(games);
         DateTimeOffset? last;
@@ -266,7 +274,73 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         }
 
         MemoryLists? lists = env.Lists();
+        if (capped && IdleTouchBlocked(at, out DateTimeOffset until)) // 스트림 도중의 보호는 상한에 막히지 않음 (capped: false)
+        {
+            // 상한 때문에 미룸: 때가 된 게임이 있어도 만지지 않고 (게이트 판정도 건너뜀), 미루기 시작할 때만 한 줄 남김
+            if (marked.Any(m => SolarPolicy.RefreshDue(m.Mark, lists, at)) && NoteIdleTouchDeferred())
+            {
+                log.Info($"cache refresh deferred: touching time is capped at {SolarPolicy.IdleTouchShare * 100:F0}% of wall time, next in {Math.Max(0, (long)(until - at).TotalSeconds)} s");
+            }
+
+            return [];
+        }
+
         return marked.Any(m => SolarPolicy.RefreshDue(m.Mark, lists, at) && (usable?.Invoke(m.Game) ?? true)) ? [.. marked.Select(m => m.Game)] : [];
+    }
+
+    /// 표식이 있는 게임 (입력 순서 그대로) 중 어느 하나라도 앞으로 readBytes 를 더 읽으면 새로 고칠 때가 되는 경우에만 그 전체를, 아니면 빈 목록: 작은 재예열이 다른 게임의 캐시를 밀어낼 수 없을 때 스트림 앞의 보호 (와 같은 스트림 끝의 보호) 를 건너뛰는 데 씁니다.
+    /// 묶음은 순서를 지켜야 하므로 하나라도 닿으면 전체를 돌려줍니다 (DueGroup 과 같음). GroupEvery·상한은 보지 않음: 이 보호는 스트림 한 번에 한 번 필요한 순서 맞추기입니다.
+    public IReadOnlyList<GameSettings> MarkedAtRisk(IEnumerable<GameSettings> games, long readBytes, DateTimeOffset at)
+    {
+        List<(GameSettings Game, LadderMark Mark)> marked = MarkedPairs(games);
+        if (marked.Count == 0)
+        {
+            return [];
+        }
+
+        MemoryLists? lists = env.Lists();
+        return marked.Any(m => SolarPolicy.ReadReaches(m.Mark, lists, readBytes, at)) ? [.. marked.Select(m => m.Game)] : [];
+    }
+
+    /// 게임이 없을 때 만지는 데 seconds 초를 썼음을 알립니다 (게임 시작·실행 중의 만지기는 알리지 않음): 다음 묶음 새로 고침은 그 시간의 1/IdleTouchShare 뒤로 미룹니다. 상한 안에서 막지 않고 쓴 만지기 (스트림 앞·뒤의 보호, 사다리) 도 이 계산에는 들어갑니다. 스트림이 읽는 묶음을 곧바로 다시 만드는 시간은 읽는 일의 일부라 넣지 않습니다 (넣으면 묶음마다 50 배씩 쌓여 도중의 보호가 영영 막힘).
+    public void NoteIdleTouch(double seconds)
+    {
+        if (seconds <= 0)
+        {
+            return;
+        }
+
+        DateTimeOffset end = now();
+        lock (_lock)
+        {
+            _idleTouchBlockedUntil = (end > _idleTouchBlockedUntil ? end : _idleTouchBlockedUntil) + SolarPolicy.IdleTouchWait(seconds);
+        }
+    }
+
+    private bool IdleTouchBlocked(DateTimeOffset at, out DateTimeOffset until)
+    {
+        lock (_lock)
+        {
+            until = _idleTouchBlockedUntil;
+            if (at >= until)
+            {
+                _idleTouchDeferredNoted = false;
+                return false;
+            }
+
+            return true;
+        }
+    }
+
+    // 상한 때문에 미룬 것을 처음 알릴 때만 true.
+    private bool NoteIdleTouchDeferred()
+    {
+        lock (_lock)
+        {
+            bool first = !_idleTouchDeferredNoted;
+            _idleTouchDeferredNoted = true;
+            return first;
+        }
     }
 
     /// 묶음을 만진 순서대로 (touched: 게임, 만진 바이트, 만지기 전의 표식, 가장 오래된 것이 먼저) 표식을 같은 기준 시점 (재사용 누계·대기 바이트) 으로 다시 쓰고,

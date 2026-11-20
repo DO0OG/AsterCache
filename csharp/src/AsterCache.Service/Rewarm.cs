@@ -20,6 +20,9 @@ public sealed partial class Rewarmer
     private DateTimeOffset? _next;
     private readonly object _checkLock = new();
     private readonly Dictionary<string, string> _checkState = new(StringComparer.OrdinalIgnoreCase); // 게임별 마지막 재확인 결과 (로그를 바뀔 때만 남김)
+    private readonly Dictionary<string, (bool Reread, int Streak)> _coldRuns = new(StringComparer.OrdinalIgnoreCase); // 게임별: 직전 점검이 식은 캐시를 다시 읽었는가, 다시 읽은 뒤 또 식은 횟수의 연속 (그 게임이 식지 않은 점검이 있으면 지움), _nextLock 으로 보호, 메모리에만 둠
+    private readonly Dictionary<string, DateTimeOffset> _gameDue = new(StringComparer.OrdinalIgnoreCase); // 간격을 늘린 게임의 다음 점검 시각 (그전의 점검 틱은 그 게임을 건너뜀, 게임 종료로 당긴 점검은 지움), _nextLock 으로 보호
+    private const int MaxCheckIntervalMinutes = 60; // 늘린 점검 간격의 상한 (rewarm_minutes 가 이보다 길면 그 값)
     private readonly Dictionary<string, DateTimeOffset> _missingTriedAt = new(StringComparer.OrdinalIgnoreCase); // 게임별로 사다리의 다시 채움 표시로 재예열을 마지막 시도한 시각 (성공·실패·건너뜀 모두), _checkLock 으로 보호, 메모리에만 둠
 
     public Rewarmer(Prewarmer prewarm, PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
@@ -48,6 +51,15 @@ public sealed partial class Rewarmer
             }
         }
 
+        lock (_nextLock)
+        {
+            foreach (string gone in _coldRuns.Keys.Where(k => !live.Contains(k)).ToList())
+            {
+                _ = _coldRuns.Remove(gone);
+                _ = _gameDue.Remove(gone);
+            }
+        }
+
         _prewarm.Solar.Prune(live);
     }
 
@@ -65,6 +77,7 @@ public sealed partial class Rewarmer
             if (_next is not { } next || due < next)
             {
                 _next = due;
+                _gameDue.Clear(); // 당겨진 점검은 늘린 간격 때문에 건너뛰지 않음
             }
         }
     }
@@ -76,6 +89,8 @@ public sealed partial class Rewarmer
             lock (_nextLock)
             {
                 _next = null;
+                _coldRuns.Clear();
+                _gameDue.Clear();
             }
 
             return;
@@ -124,6 +139,11 @@ public sealed partial class Rewarmer
                 return;
             }
 
+            if (GameCheckDeferred(g.Name, now))
+            {
+                continue; // 식은 것을 다시 읽는 일이 되풀이돼 이 게임의 점검 간격을 늘린 중
+            }
+
             if (ReadBlock(g, now, auto, budget) is { } block)
             {
                 if (block.Due is { } gateDue && (nextGateDue is null || gateDue < nextGateDue))
@@ -135,7 +155,7 @@ public sealed partial class Rewarmer
                 continue;
             }
 
-            Check(g, ct, RoomOf(g, budget), auto, now);
+            NoteColdRun(g.Name, Check(g, ct, RoomOf(g, budget), auto, now), auto, now);
         }
 
         if (nextGateDue is { } due)
@@ -147,6 +167,71 @@ public sealed partial class Rewarmer
                     _next = due;
                 }
             }
+        }
+    }
+
+    // 게임별 점검 간격 (분): 다시 읽은 캐시가 또 식는 일이 되풀이되는 동안 (다른 프로그램이 캐시를 계속 쓰는 중) 첫 번째는 rewarm_minutes 그대로, 되풀이마다 두 배씩 (10 → 20 → 40) MaxCheckIntervalMinutes 까지 늘립니다.
+    // 게임·런처가 시작해 거는 예열, 서비스 시작 예열, 재배치 뒤 예열은 이 점검을 거치지 않고, 게임 종료로 당긴 점검 (PullIn) 은 늘린 간격을 지우고 제때 돕니다.
+    private int GameIntervalMinutes(string game, AutoSettings auto)
+    {
+        int streak;
+        lock (_nextLock)
+        {
+            streak = _coldRuns.TryGetValue(game, out (bool Reread, int Streak) run) ? run.Streak : 0;
+        }
+
+        return Math.Max(auto.RewarmMinutes, (int)Math.Min(MaxCheckIntervalMinutes, (long)auto.RewarmMinutes << streak));
+    }
+
+    private bool GameCheckDeferred(string game, DateTimeOffset now)
+    {
+        lock (_nextLock)
+        {
+            return _gameDue.TryGetValue(game, out DateTimeOffset due) && now < due;
+        }
+    }
+
+    // 점검 한 번의 결과를 그 게임의 연속 횟수에 반영합니다 (Check 의 반환값: true 는 식은 캐시를 실제로 다시 읽음, false 는 식지 않음, null 은 그 밖이라 그대로).
+    // 직전 점검도 다시 읽었는데 또 식었으면 횟수를 늘리고 (첫 식음은 늘리지 않음), 식지 않은 점검이 있으면 이 게임의 횟수를 지웁니다 (다른 게임의 결과는 무관). 간격이 바뀔 때만 로그 한 줄.
+    private void NoteColdRun(string game, bool? result, AutoSettings auto, DateTimeOffset now)
+    {
+        if (result is null)
+        {
+            return;
+        }
+
+        int before = GameIntervalMinutes(game, auto);
+        lock (_nextLock)
+        {
+            (bool reread, int streak) = _coldRuns.TryGetValue(game, out (bool Reread, int Streak) run) ? run : (false, 0);
+            if (result == true)
+            {
+                _coldRuns[game] = (true, reread ? Math.Min(streak + 1, 8) : streak); // 8 이면 어떤 rewarm_minutes 도 상한에 닿음 (시프트가 넘치지 않게)
+            }
+            else
+            {
+                _ = _coldRuns.Remove(game);
+            }
+        }
+
+        int minutes = GameIntervalMinutes(game, auto);
+        lock (_nextLock)
+        {
+            if (minutes > auto.RewarmMinutes)
+            {
+                _gameDue[game] = now + TimeSpan.FromMinutes(minutes);
+            }
+            else
+            {
+                _ = _gameDue.Remove(game);
+            }
+        }
+
+        if (minutes != before)
+        {
+            _log.Info(minutes > before
+                ? $"{game}: rewarm check interval raised to {minutes} min: the cache went cold again right after it was read"
+                : $"{game}: rewarm check interval back to {minutes} min: the cache stayed warm for a whole check period");
         }
     }
 
@@ -233,12 +318,13 @@ public sealed partial class Rewarmer
         }
     }
 
-    private void Check(GameSettings g, CancellationToken ct, long? roomMib, AutoSettings auto, DateTimeOffset now)
+    // 돌려주는 값: 식은 캐시를 실제로 다시 읽었으면 true, 식지 않은 것을 확인했으면 false, 그 밖 (건너뜀·읽기 전에 건너뛴 재예열·보충·표본 없음·실패) 은 null.
+    private bool? Check(GameSettings g, CancellationToken ct, long? roomMib, AutoSettings auto, DateTimeOffset now)
     {
         if (_prewarm.RewarmAlreadyCovered(g))
         {
             NoteCheck(g, "recent-warm", $"{g.Name}: rewarm check skipped (prewarm is running or recently completed)");
-            return;
+            return null;
         }
 
         // 사다리가 목록의 일부가 메모리에 없는 것을 찾았으면 표본이 warm 이어도 식은 것으로 봅니다 (표본은 8 곳뿐). 보충 대기 게임은 보충이 사다리를 다시 만들고, 트리거가 기다리는 동안은 표시를 둔 채 미룸.
@@ -256,10 +342,11 @@ public sealed partial class Rewarmer
                 }
             }
 
-            if (last is { } since && now >= since && now - since < TimeSpan.FromMinutes(auto.RewarmMinutes))
+            int waitMinutes = GameIntervalMinutes(g.Name, auto); // 되풀이되면 점검과 같은 규칙으로 늘어난 간격
+            if (last is { } since && now >= since && now - since < TimeSpan.FromMinutes(waitMinutes))
             {
-                NoteCheck(g, "ladder-missing-wait", $"{g.Name}: rewarm check: part of the list is not in memory (found by the ladder), waiting until {auto.RewarmMinutes} min after the last prewarm attempt");
-                return;
+                NoteCheck(g, "ladder-missing-wait", $"{g.Name}: rewarm check: part of the list is not in memory (found by the ladder), waiting until {waitMinutes} min after the last prewarm attempt");
+                return null;
             }
 
             _ = solar.TakeMissing(g.Name);
@@ -276,13 +363,13 @@ public sealed partial class Rewarmer
                 solar.RestoreMissing(g.Name); // 읽기 전에 건너뜀 (메모리·지연·대여 거절·재배치 등): 다음 점검에서 다시 시도
             }
 
-            return;
+            return Read(result);
         }
 
         ProbeResult? probe = Probe(g, ct, out bool failed);
         if (failed)
         {
-            return;
+            return null;
         }
 
         if (probe is null)
@@ -296,11 +383,13 @@ public sealed partial class Rewarmer
             if (!supplemented && !probe.Cold)
             {
                 LadderWaitingSupplement(g, ct); // 보충이 메모리를 기다리는 중이면 (곧 더 읽을 수 있는 상태가 아니면) 읽은 범위의 첫 사다리를 만듦
+                return false;
             }
-            else if (!supplemented && probe.Cold && _prewarm.MemoryPartialPending(g.Name))
+
+            if (!supplemented && probe.Cold && _prewarm.MemoryPartialPending(g.Name))
             {
                 NoteCheck(g, "partial-cold", $"{g.Name}: rewarm check: the part read into memory went cold ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms, available {_env.AvailableRamMib()} MiB), reading it again (cooldown ignored)"); // 메모리가 모자라 앞부분만 읽은 게임: 읽은 구간이 밀려났을 때만 다시 (남은 구간은 표본에 넣지 않음)
-                _prewarm.RewarmGame(g, ct, roomMib);
+                return Read(_prewarm.RewarmGame(g, ct, roomMib));
             }
         }
         else if (!probe.Cold)
@@ -308,11 +397,17 @@ public sealed partial class Rewarmer
             NoteCheck(g, "warm", $"{g.Name}: rewarm check: warm ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms, average {probe.AverageMs:F2} ms)");
             solar.ClearOverlooked(g.Name);
             LadderUnmarked(g, ct); // 서비스를 다시 시작한 뒤 표식이 없는 게임은 warm 일 때 첫 사다리를 만듦
+            return false;
         }
         else
         {
             NoteCheck(g, "cold", $"{g.Name}: rewarm check: cold ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms, average {probe.AverageMs:F2} ms, available {_env.AvailableRamMib()} MiB), prewarming again (cooldown ignored){solar.SinceLadder(g.Name)}");
-            _prewarm.RewarmGame(g, ct, roomMib);
+            return Read(_prewarm.RewarmGame(g, ct, roomMib));
         }
+
+        return null;
     }
+
+    // 재예열이 실제로 읽었으면 true (메모리·지연·대여 거절 등으로 읽기 전에 건너뛰었으면 null: 간격 늘리기에 세지 않음).
+    private static bool? Read(PrewarmResult result) => result.Ran || result.Stats is { Bytes: > 0 } ? true : null;
 }

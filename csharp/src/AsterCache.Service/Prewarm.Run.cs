@@ -545,7 +545,7 @@ public sealed partial class Prewarmer
                 long allocationBytes = allocationMib > (long.MaxValue >> 20) ? long.MaxValue : allocationMib << 20;
                 maxBytes = Math.Min(maxBytes, allocationBytes);
             }
-            RequeueTally protectedOthers = ProtectOthers(game, stop.Token, allowWhileExiting, readYield); // 디스크를 읽기 전에 (보정 읽기도 읽기): 트리거 예열은 하지 않음
+            RequeueTally protectedOthers = ProtectOthers(game, stop.Token, allowWhileExiting, readYield, skipBytes, maxBytes); // 디스크를 읽기 전에 (보정 읽기도 읽기): 트리거 예열은 하지 않음, 읽을 양이 작으면 하지 않음
             protectedSeconds = protectedOthers.ProtectedSeconds;
             _requeued += protectedOthers;
             protectCheckedAt = _now(); // 방금 보호했으므로 도중의 판정은 그 뒤 ProtectCheckEvery 부터

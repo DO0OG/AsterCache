@@ -17,6 +17,8 @@ public sealed partial class Prewarmer
 
     private RequeueTally _requeued; // 핫 집합 스트림이 읽는 묶음을 다시 만든 양 (Run·보충이 예열 한 회 동안 모아 done 줄에 씀), _run 아래에서만 씀
 
+    private bool _smallRead; // 이번 스트림이 읽을 양이 작아 (표식이 있는 어느 게임도 닿지 않음) 스트림 앞의 보호를 건너뜀: 끝의 보호도 건너뜀, 스트림 앞의 보호가 정하고 _run 아래에서만 씀
+
     private readonly HashSet<string> _protectedNames = new(StringComparer.OrdinalIgnoreCase); // 이번 예열 한 회에서 보호한 다른 게임 (done 줄의 서로 다른 게임 수), 첫 보호 때 비움, _run 아래에서만 씀
 
     // 핫 집합 스트림 한 번이 읽는 묶음마다 그 범위를 곧바로 다시 만지는 도우미 (StreamHot 이 만듦). 꺼져 있거나 keep_stream_on_game_start (게임이 떠도 스트림이 계속 읽음, 만지기도 디스크 읽기가 될 수 있음) 면 null.
@@ -50,8 +52,34 @@ public sealed partial class Prewarmer
     // 그러면 이 스트림이 새로 읽는 페이지는 다른 게임이 아니라 캐시 (와 이 게임 자신의 오래된 페이지) 부터 밀어냅니다. 표본 점검과 게이트는 새로 고침과 같습니다.
     // 트리거 예열 (allowWhileExiting) 은 게임 시작이 임박한 경로라 늦추지 않으려고 하지 않고, 스트림이 끝난 뒤 사다리가 다른 게임의 A 만 줄입니다 (Solar.Order).
     // 만지는 데 쓴 시간은 스트림의 노출 시간·양보 시간에서 빼도록 돌려줍니다. 실패·취소돼도 스트림 결과는 같습니다.
-    private RequeueTally ProtectOthers(GameSettings game, CancellationToken stop, bool trigger, ReadYield readYield) =>
-        trigger || !CanProtectOthers(game, stop) ? default : TouchOthers(game, stop, readYield, () => _solar.Marked(OtherGames(game)));
+    // 이 스트림이 읽을 양이 작아 (표식이 있는 어느 게임도 그만큼 더 읽어도 새로 고칠 때가 되지 않음: Solar.MarkedAtRisk) 다른 게임의 캐시를 밀어낼 수 없으면 보호하지 않습니다.
+    // 건너뛰었으면 스트림 끝의 사다리 직전 보호도, 끝에서 그때의 재사용량으로 다시 판정해 여전히 닿는 게임이 없을 때만 건너뜁니다 (도중의 보호는 실제 재사용으로 따로 지킴). 1순위 게임을 한 번 더 만지는 것은 건너뛰지 않습니다.
+    private RequeueTally ProtectOthers(GameSettings game, CancellationToken stop, bool trigger, ReadYield readYield, long skipBytes, long gapBytes)
+    {
+        _smallRead = false;
+        return trigger || !CanProtectOthers(game, stop) ? default : TouchOthers(game, stop, readYield, () =>
+        {
+            IReadOnlyList<GameSettings> atRisk = _solar.MarkedAtRisk(OtherGames(game), PlannedReadBytes(game, skipBytes, gapBytes), _now());
+            _smallRead = atRisk.Count == 0;
+            return atRisk;
+        });
+    }
+
+    // 이 스트림이 읽을 양의 위쪽 추정: 계획한 목록의 크기 (이어 읽기가 건너뛴 앞부분 제외) 에 틈 메우기 예산을 더한 값. 계획할 수 없으면 long.MaxValue (그러면 지금처럼 항상 보호).
+    // 실제로 읽는 양은 이보다 적을 수 있고 (이미 캐시에 있는 것은 읽지 않음) 다른 프로그램의 사용은 들어 있지 않으므로, 스트림 끝에서 실제 재사용으로 다시 판정합니다 (LadderAfterStream).
+    private long PlannedReadBytes(GameSettings game, long skipBytes, long gapBytes)
+    {
+        try
+        {
+            return _streamer.PlannedPrewarmReads(game) is { } planned ? SaturatingAdd(Math.Max(0, planned.Sum(o => o.Length) - skipBytes), gapBytes) : long.MaxValue;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException)
+        {
+            return long.MaxValue;
+        }
+    }
+
+    private static long SaturatingAdd(long a, long b) => a > long.MaxValue - b ? long.MaxValue : a + b;
 
     // 핫 집합 스트림이 도는 동안 묶음 사이 (StreamHot 의 묶음 다시 만지기 직후): 표식이 있는 다른 게임이 새로 고칠 때가 됐으면 (유지 틱과 같은 판정 Rewarmer.DueGroup) 스트림 앞의 보호와 같은 함수로 다시 만집니다.
     // 판정에는 대기 목록 통계 조회가 한 번 들므로 직전 판정 뒤 SolarPolicy.ProtectCheckEvery 가 지났을 때만 봅니다 (checkedAt). 조건과 계약 (같은 스레드·대여·중지 토큰, 실패가 결과를 바꾸지 않음) 은 스트림 앞의 보호와 같습니다.
@@ -65,7 +93,9 @@ public sealed partial class Prewarmer
         }
 
         checkedAt = now;
-        return TouchOthers(game, stop, readYield, () => _rewarm.DueGroup(OtherGames(game), _auto, stop), SolarPolicy.StreamAheadLess(streamBytes, _solar.PriorTouchedBytes(game.Name)));
+        RequeueTally tally = TouchOthers(game, stop, readYield, () => _rewarm.DueGroup(OtherGames(game), _auto, stop, capped: false), SolarPolicy.StreamAheadLess(streamBytes, _solar.PriorTouchedBytes(game.Name)));
+        _smallRead &= tally.ProtectedTimes == 0; // 실제 재사용이 늘어 도중에 지켰다면 읽은 양이 작지 않았음: 끝의 보호도 함
+        return tally;
     }
 
     // 보호할 수 있는 상태인가: SOLAR 가 켜져 있고, 게임이 떠도 스트림이 계속 읽는 설정이 아니고, 스트림이 멈추지 않았고, 게임 시작·트리거 선점 표시가 서 있지 않음.
@@ -128,7 +158,9 @@ public sealed partial class Prewarmer
         try
         {
             List<(string Game, long Bytes)> protectedFirst = [];
-            if (!trigger && CanProtectOthers(game, stop))
+            // 앞에서 작다고 본 스트림도 끝에서 그때의 재사용량으로 다시 판정: 틈 메우기나 다른 프로그램의 사용으로 많이 읽었으면 지금처럼 보호함
+            bool skipProtection = _smallRead && !trigger && CanProtectOthers(game, stop) && _solar.MarkedAtRisk(OtherGames(game), 0, _now()).Count == 0;
+            if (!trigger && !skipProtection && CanProtectOthers(game, stop))
             {
                 _requeued += TouchOthers(game, stop, readYield, () => _solar.Marked(OtherGames(game)), touchedGames: protectedFirst);
                 if (ProtectionHalted(game) || stop.IsCancellationRequested)
@@ -138,7 +170,7 @@ public sealed partial class Prewarmer
             }
 
             _ = _solar.Order(game, ladder, stop, protectedFirst: protectedFirst);
-            // 플레이 1순위 게임이 방금 스트림한 게임이 아니면 그 게임을 맨 뒤에 한 번 더 만져 가장 늦게 밀려나게 함 (표본이 식었으면 새로 고침이 재예열 점검을 앞당김)
+            // 플레이 1순위 게임이 방금 스트림한 게임이 아니면 그 게임을 맨 뒤에 한 번 더 만져 가장 늦게 밀려나게 함 (표본이 식었으면 새로 고침이 재예열 점검을 앞당김). 작은 스트림도 건너뛰지 않음: 방금 만든 사다리가 1순위 게임의 뒤에 서 버림
             if (!trigger && CanProtectOthers(game, stop) && FirstPlayPriority() is { } first && !string.Equals(first.Name, game.Name, StringComparison.OrdinalIgnoreCase)
                 && _solar.Marked([first]).Count > 0)
             {

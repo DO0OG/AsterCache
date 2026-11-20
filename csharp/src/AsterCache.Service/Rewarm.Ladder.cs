@@ -30,11 +30,11 @@ public sealed partial class Rewarmer
     }
 
     /// order (순위가 낮은 것부터) 중 지금 새로 고칠 묶음 (Solar.DueGroup, 만질 수 있는 게임 하나라도 때가 됐고 직전 묶음 새로 고침 뒤 60초가 지났을 때): 유지 틱과 스트림 도중의 보호가 같은 판정을 씁니다.
-    internal IReadOnlyList<GameSettings> DueGroup(IEnumerable<GameSettings> order, AutoSettings auto, CancellationToken ct)
+    internal IReadOnlyList<GameSettings> DueGroup(IEnumerable<GameSettings> order, AutoSettings auto, CancellationToken ct, bool capped = true)
     {
         DateTimeOffset now = _now();
         Lazy<WarmBudgetInfo?> budget = new(_prewarm.WarmBudget); // 표식이 있고 때가 된 게임이 있을 때만 계산
-        return _prewarm.Solar.DueGroup(order, now, g => Touchable(g, now, auto, budget.Value, ct));
+        return _prewarm.Solar.DueGroup(order, now, g => Touchable(g, now, auto, budget.Value, ct), capped); // capped: 게임이 없을 때의 만지기 시간 상한 (유지 틱만 받음, 스트림 도중의 보호는 받지 않음)
     }
 
     // 지금 이 게임을 만져도 되는가 (재예열 점검과 같은 게이트, 단 드라이브 사용량은 제외): 재배치 중이 아니고, 방금 예열하지 않았고, ReadBlock 에 막히지 않고, 읽기 대여를 얻을 수 있음.

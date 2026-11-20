@@ -4,6 +4,7 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 using System.ServiceProcess;
 using AsterCache.Core.Logging;
+using AsterCache.Windows;
 using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 
@@ -86,10 +87,18 @@ public static partial class RealPaths
 
 /// 볼륨이 놓인 물리 디스크의 처리량 (PhysicalDisk(N 문자들)\Disk Bytes/sec, PDH 영어 카운터 이름이라 한국어 Windows 에서도 동작).
 /// 같은 물리 디스크의 다른 볼륨 활동도 보도록 인스턴스 이름의 "N C: D:" 에서 볼륨 문자가 속한 디스크를 찾아 합칩니다.
+/// 하드디스크는 같은 표본의 % Idle Time 도 함께 봅니다 (Load): 흩어진 작은 읽기는 처리량이 낮아도 디스크 시간을 채우기 때문입니다.
 public static partial class DiskActivity
 {
     /// 이보다 많이 읽고 쓰는 중이면 바쁜 것으로 봅니다 (바이트/초).
     public const double BusyBytesPerSecond = 4 << 20;
+
+    /// 탐색이 드는 디스크 (하드디스크) 에서 % Idle Time 이 이 값 미만이면 처리량이 낮아도 바쁜 것으로 봅니다.
+    /// 근거 (이 PC 의 하드디스크 실측): 아무도 안 쓸 때 표본 대부분이 98~100 (64 이상은 39개 중 38개, 순간 급증 때만 0~70), 64 KiB 를 초당 30회 읽는 다른 프로세스는 매 표본 23~64,
+    /// 하드디스크를 꽉 채우는 순차·흩어진 읽기는 0~1. 한가한 쪽의 보통 값 (88 이상) 과 읽기 30회/초의 최대 (64) 사이에서 읽는 쪽으로 여유를 두고 정함.
+    /// SSD 는 병렬로 처리해 쉬는 시간 비율이 실제 부하를 나타내지 않으므로 (NVMe 가 3 MiB/s 에서 4% 로 나옴) 쓰지 않음.
+    public const double BusyIdlePercent = 75;
+
     private const uint FormatDouble = 0x200;
     private const uint MoreData = 0x800007D2;
     private const int SampleMs = 1000;
@@ -108,7 +117,10 @@ public static partial class DiskActivity
     /// 서비스 종료 때 표본 스레드를 멈춥니다.
     public static void StopSampling() => Shared.Stop();
 
-    /// letter ("D:") 가 놓인 물리 디스크(들)의 처리량 합 (바이트/초). 디스크를 찾지 못하거나 읽지 못하면 null.
+    /// 처리량 (바이트/초) 을 부하로 바꿈: 탐색이 드는 디스크에서 쉬는 시간 비율이 BusyIdlePercent 미만이면 처리량이 낮아도 BusyBytesPerSecond 로 올려 바쁨으로 보게 함. 비율을 모르면 처리량 그대로.
+    public static double Load(double bytesPerSecond, double? idlePercent, bool seeks) => seeks && idlePercent < BusyIdlePercent ? Math.Max(bytesPerSecond, BusyBytesPerSecond) : bytesPerSecond;
+
+    /// letter ("D:") 가 놓인 물리 디스크(들)의 부하 합 (바이트/초, 처리량이며 하드디스크는 Load 로 올린 값). 디스크를 찾지 못하거나 읽지 못하면 null.
     public static double? BytesPerSecond(string letter) => Shared.BytesPerSecond(letter);
 
     /// 서비스 시작에서 수집을 미리 켬 (첫 표본이 없는 구간을 시작 직후 몇 초로 줄임). 시험은 부르지 않음.
@@ -551,7 +563,8 @@ public static partial class DiskActivity
     }
 
     // wait: 두 번의 PDH 수집 사이를 기다리는 방법 (수집 스레드는 SampleMs 동안 잠, 창 측정은 호출자가 정한 멈춤).
-    private static unsafe Dictionary<string, double>? SampleAll(Action wait)
+    // 처리량과 쉬는 시간 비율은 같은 쿼리·같은 두 번의 수집에서 읽음 (표본 주기와 수집 횟수는 그대로). 쉬는 시간 비율을 못 읽으면 처리량만으로 판정 (기존 동작).
+    private static Dictionary<string, double>? SampleAll(Action wait)
     {
         if (PdhOpenQueryW(null, 0, out nint query) != 0)
         {
@@ -560,55 +573,97 @@ public static partial class DiskActivity
 
         try
         {
-            if (PdhAddEnglishCounterW(query, @"\PhysicalDisk(*)\Disk Bytes/sec", 0, out nint counter) != 0 || PdhCollectQueryData(query) != 0)
+            if (PdhAddEnglishCounterW(query, @"\PhysicalDisk(*)\Disk Bytes/sec", 0, out nint counter) != 0)
+            {
+                return null;
+            }
+
+            bool hasIdle = PdhAddEnglishCounterW(query, @"\PhysicalDisk(*)\% Idle Time", 0, out nint idleCounter) == 0;
+            if (PdhCollectQueryData(query) != 0)
             {
                 return null;
             }
 
             wait();
-            uint size = 0;
-            if (PdhCollectQueryData(query) != 0 || PdhGetFormattedCounterArrayW(counter, FormatDouble, ref size, out _, 0) != MoreData)
+            if (PdhCollectQueryData(query) != 0 || ReadInstances(counter) is not { } result)
             {
                 return null;
             }
 
-            nint buffer = Marshal.AllocHGlobal((nint)size);
-            try
+            Dictionary<string, double>? idle = hasIdle ? ReadInstances(idleCounter) : null;
+            foreach (string name in result.Keys.ToArray())
             {
-                if (PdhGetFormattedCounterArrayW(counter, FormatDouble, ref size, out uint count, buffer) != 0)
-                {
-                    return null;
-                }
-
-                var result = new Dictionary<string, double>(StringComparer.Ordinal);
-                for (int i = 0; i < count; i++)
-                {
-                    CounterItem item = *((CounterItem*)buffer + i);
-                    if (item.Status != 0)
-                    {
-                        return null; // 한 인스턴스라도 읽지 못하면 전체를 믿지 않음 (보수적)
-                    }
-
-                    result[Marshal.PtrToStringUni(item.Name) ?? string.Empty] = item.Value;
-                }
-
-                if (!_namesLogged)
-                {
-                    _namesLogged = true;
-                    Log?.Info("DiskActivity: PhysicalDisk instances " + string.Join(", ", result.Keys));
-                }
-
-                return result;
+                result[name] = Load(result[name], idle is not null && idle.TryGetValue(name, out double percent) ? percent : null, idle is not null && Seeks(name));
             }
-            finally
+
+            if (!_namesLogged)
             {
-                Marshal.FreeHGlobal(buffer);
+                _namesLogged = true;
+                Log?.Info("DiskActivity: PhysicalDisk instances " + string.Join(", ", result.Keys));
             }
+
+            return result;
         }
         finally
         {
             PdhCloseQuery(query);
         }
+    }
+
+    // 카운터 하나의 인스턴스별 값 (한 인스턴스라도 읽지 못하면 전체를 믿지 않음: 보수적).
+    private static unsafe Dictionary<string, double>? ReadInstances(nint counter)
+    {
+        uint size = 0;
+        if (PdhGetFormattedCounterArrayW(counter, FormatDouble, ref size, out _, 0) != MoreData)
+        {
+            return null;
+        }
+
+        nint buffer = Marshal.AllocHGlobal((nint)size);
+        try
+        {
+            if (PdhGetFormattedCounterArrayW(counter, FormatDouble, ref size, out uint count, buffer) != 0)
+            {
+                return null;
+            }
+
+            var result = new Dictionary<string, double>(StringComparer.Ordinal);
+            for (int i = 0; i < count; i++)
+            {
+                CounterItem item = *((CounterItem*)buffer + i);
+                if (item.Status != 0)
+                {
+                    return null;
+                }
+
+                result[Marshal.PtrToStringUni(item.Name) ?? string.Empty] = item.Value;
+            }
+
+            return result;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    // 인스턴스 ("0 C: D:") 의 디스크가 탐색이 드는 종류 (하드디스크) 인가: 디스크 번호별로 한 번만 물어 기억함. 문자가 없거나 알 수 없으면 아님 (처리량만으로 판정), 모르는 값은 기억하지 않아 다음 표본에 다시 물음.
+    private static readonly ConcurrentDictionary<string, bool> SeekDisks = new(StringComparer.Ordinal);
+
+    private static bool Seeks(string instance)
+    {
+        string[] parts = instance.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || !uint.TryParse(parts[0], out _))
+        {
+            return false;
+        }
+
+        if (SeekDisks.TryGetValue(parts[0], out bool known))
+        {
+            return known;
+        }
+
+        return DiskInfo.Query(parts[1]).IncursSeekPenalty is { } seeks && SeekDisks.GetOrAdd(parts[0], seeks);
     }
 
     [LibraryImport("pdh.dll", StringMarshalling = StringMarshalling.Utf16)]

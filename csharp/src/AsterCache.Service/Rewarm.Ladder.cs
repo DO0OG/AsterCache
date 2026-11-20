@@ -22,7 +22,7 @@ public sealed partial class Rewarmer
             return;
         }
 
-        IReadOnlyList<GameSettings> group = DueGroup(Enumerable.Reverse(_prewarm.Warmed()), auto, ct); // Warmed 는 최근 순
+        IReadOnlyList<GameSettings> group = DueGroup(Enumerable.Reverse(_prewarm.Warmed()), auto, ct); // Warmed 는 플레이 가능성이 높은 순 (예산 순위가 없으면 최근 예열 순)
         if (group.Count > 0)
         {
             _ = RefreshGroup(group, auto, ct, _prewarm.TriggerWaitPending);
@@ -65,9 +65,10 @@ public sealed partial class Rewarmer
                     break;
                 }
 
-                if (Touchable(g, now, auto, budget, ct))
+                if (Touchable(g, now, auto, budget, ct) && Refresh(g, ct, (previous, bytes) => touched.Add((g.Name, bytes, previous)))
+                    && auto.RewarmAfterExitMin > 0 && _prewarm.FirstPlayPriority() is { } first && string.Equals(first.Name, g.Name, StringComparison.OrdinalIgnoreCase))
                 {
-                    Refresh(g, ct, (previous, bytes) => touched.Add((g.Name, bytes, previous)));
+                    PullIn(auto, now); // 플레이 1순위 게임의 표본이 식었음: 다음 재예열 점검을 앞당겨 (기존 경로) 곧 다시 읽게 함. 사용자가 앞당김을 끈 (rewarm_after_exit_min <= 0) 설정은 따름
                 }
             }
         }
@@ -81,19 +82,19 @@ public sealed partial class Rewarmer
     }
 
     // 새로 고치기 전에 기존 재예열 점검의 표본 (warm/cold 판정) 을 한 번 거칩니다: warm 일 때만 만집니다.
-    // 시간 감시만으로는 CPU 선점을 디스크 읽기로 오판할 수 있어서이고, 이미 식었다면 표식을 지우고 재예열 점검에 맡깁니다.
-    private void Refresh(GameSettings g, CancellationToken ct, Action<LadderMark, long> touched)
+    // 시간 감시만으로는 CPU 선점을 디스크 읽기로 오판할 수 있어서이고, 이미 식었다면 표식을 지우고 재예열 점검에 맡깁니다. 돌려주는 값: 표본이 식어서 재예열 점검에 맡겼는가 (표본을 못 읽은 경우는 거짓).
+    private bool Refresh(GameSettings g, CancellationToken ct, Action<LadderMark, long> touched)
     {
         Solar solar = _prewarm.Solar;
         ProbeResult? probe = Probe(g, ct, out bool failed);
         if (ct.IsCancellationRequested)
         {
-            return; // 게임 시작 등으로 취소됨: 표식은 그대로
+            return false; // 게임 시작 등으로 취소됨: 표식은 그대로
         }
 
         if (probe is { Cold: true } && DriveBusy(g) && solar.OverlookBusyCold(g.Name))
         {
-            return; // 다른 프로세스가 드라이브를 쓰는 중의 느린 표본은 식었다는 증거가 못 됨: 이 표식에서 처음 한 번만 표식을 지우지 않고 그 회를 건너뜀 (둘째부터는 아래처럼 재예열 점검에 맡겨 표본을 되풀이해 읽지 않음)
+            return false; // 다른 프로세스가 드라이브를 쓰는 중의 느린 표본은 식었다는 증거가 못 됨: 이 표식에서 처음 한 번만 표식을 지우지 않고 그 회를 건너뜀 (둘째부터는 아래처럼 재예열 점검에 맡겨 표본을 되풀이해 읽지 않음)
         }
 
         if (probe is { Cold: false })
@@ -107,10 +108,11 @@ public sealed partial class Rewarmer
             string since = solar.ForgetCold(g.Name);
             string state = probe is null ? (failed ? "the samples could not be read" : "there are no readable samples") : $"the samples are cold ({probe.Slow}/{probe.Samples} over {CacheProbe.ColdThresholdMs:F1} ms)";
             _log.Info($"{g.Name}: cache refresh skipped, {state}, left to the rewarm check{since}");
-            return;
+            return probe is { Cold: true };
         }
 
         Run(g, ct, token => solar.Refresh(g, token, touched), "cache refresh");
+        return false;
     }
 
     // 재예열 점검이 warm 으로 판정한 게임에 표식이 없으면 (서비스를 다시 시작한 뒤) 읽은 범위 전체의 역순으로 첫 사다리를 만듭니다 (표본은 방금 점검에서 읽음).

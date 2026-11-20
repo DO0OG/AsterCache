@@ -42,13 +42,70 @@ public sealed partial class Prewarmer
         return set > 0 ? Math.Min(set, physMib) : physMib == long.MaxValue ? physMib : physMib / 2;
     }
 
-    private long PhysCapMib() => CacheCapMib(_env.PhysicalRamBytes(), _games);
+    // 게임이 실행 뒤 잡는 메모리 (몫, MiB) 와 그 값을 낸 플레이 수를 돌려줌 (서비스가 플레이 기록을 보고 정함). 기본 null = 기록 없음: 예열 상한은 기존 규칙 그대로.
+    public Func<string, (long Mib, int Plays)?>? Footprint { get; set; }
+
+    private (long Mib, int Plays)? FootprintOf(GameSettings game) => Footprint?.Invoke(game.Name);
+
+    // 예열 상한의 예비 (MiB): 몫을 알면 max(min_free_ram_mib, 몫 + 1024), 모르면 기존 max(min_free_ram_mib, 4096).
+    internal static long ReserveMib(GameSettings game, long? footprintMib) =>
+        footprintMib is { } f ? GameFootprint.ReserveMib(game.Prewarm.MinFreeRamMib, f) : Math.Max(game.Prewarm.MinFreeRamMib, GapFillReserveMib);
+
+    // 몫을 반영한 상한이 내려갈 수 있는 하한: 몫을 모를 때 상한의 절반. 로드 초반에 읽는 앞부분은 밀려나기 전에 쓰이고, 잘못 배운 몫 (다른 프로그램이 메모리를 잡은 플레이 등) 으로 인한 감소를 절반으로 제한하며,
+    // 상한이 0 이 되어 대기 재시도가 끝없이 도는 일을 막습니다. oldCap: 몫을 모를 때의 상한, newCap: 몫을 반영한 상한 (oldCap 이하).
+    internal static long FootprintCap(long oldCap, long newCap) => Math.Min(oldCap, Math.Max(newCap, oldCap / 2));
+
+    // 가용 RAM 에서 예비를 뺀 상한 (MiB) 과 그것을 다른 상한 others 와 합친 값: 몫을 알면 하한 (FootprintCap) 안에서 몫 예비를 씀.
+    internal static long AvailableCap(GameSettings game, long availableMib, long others, long? footprintMib)
+    {
+        long old = Math.Min(others, availableMib - ReserveMib(game, null));
+        return footprintMib is null ? old : FootprintCap(old, Math.Min(others, availableMib - ReserveMib(game, footprintMib)));
+    }
+
+    private static readonly TimeSpan PhysCapKeep = TimeSpan.FromSeconds(10);
+    private (DateTimeOffset At, string Game, long Mib)? _physCapAt; // 몫을 반영한 예산의 짧은 캐시: 가용 RAM 의 잔 변동으로 한 점검 안에서 예산이 흔들리지 않게, _gate 로 보호
+
+    // 예열 예산 (MiB): 물리 RAM 기준 예산과, 곧 플레이할 게임 (예산 순위 1순위) 이 실행 뒤 남길 캐시 (지금 가용 - 그 게임의 예비) 중 작은 쪽, 단 몫을 모를 때의 절반 아래로는 내려가지 않음.
+    // 모든 게임의 예열 합이 이 선을 넘으면 그 게임이 뜰 때 몫이 넘친 예열을 밀어내므로 디스크 시간만 쓰고 남아야 할 블록까지 밀려납니다.
+    // 몫을 아는 게임이 없거나 어떤 게임이든 실행 중이면 (그 게임의 몫은 이미 가용에서 빠졌으므로 두 번 빼지 않음) 기존 예산 그대로이고, 이때는 프로세스 스냅샷도 정렬도 하지 않습니다.
+    private long PhysCapMib()
+    {
+        long cap = CacheCapMib(_env.PhysicalRamBytes(), _games);
+        if (Footprint is null || !_games.Any(g => FootprintOf(g) is not null))
+        {
+            return cap;
+        }
+
+        Func<GameSettings, bool> running = _env.GameRunningSnapshot?.Invoke() ?? _env.GameRunning;
+        if (_games.Any(running) || FirstPlayPriority() is not { } next || FootprintOf(next) is not { } fp)
+        {
+            return cap;
+        }
+
+        DateTimeOffset now = _now();
+        lock (_gate)
+        {
+            if (_physCapAt is { } cached && cached.Game == next.Name && now >= cached.At && now - cached.At < PhysCapKeep)
+            {
+                return Math.Min(cap, cached.Mib);
+            }
+        }
+
+        long mib = FootprintCap(cap, Math.Min(cap, WindowAvailableMib(_env.AvailableRamMib()) - ReserveMib(next, fp.Mib)));
+        lock (_gate)
+        {
+            _physCapAt = (now, next.Name, mib);
+        }
+
+        return mib;
+    }
 
     // 전체가 들어가지 않을 때 읽을 앞부분의 크기 (MiB): min(원래 읽을 양, 가용 RAM - 예비, 예열 예산 physCapMib). 너무 작으면 null (건너뜀). 앞쪽 = 계획 순서 = 게임이 먼저 읽는 순서.
     // roomMib: 묶음에서 남은 예산 (MiB, 단독 예열이면 제한 없음).
-    internal static long? PartialCapMib(GameSettings game, long hotMib, long availableRamMib, long physCapMib, long roomMib = long.MaxValue)
+    // footprintMib: 게임이 실행 뒤 잡는 메모리 (몫, MiB), 알면 고정 예비 대신 max(min_free_ram_mib, 몫 + 1024) 를 뺌.
+    internal static long? PartialCapMib(GameSettings game, long hotMib, long availableRamMib, long physCapMib, long roomMib = long.MaxValue, long? footprintMib = null)
     {
-        long cap = Math.Min(Math.Min(Math.Min(hotMib, roomMib), availableRamMib - Math.Max(game.Prewarm.MinFreeRamMib, GapFillReserveMib)), physCapMib);
+        long cap = AvailableCap(game, availableRamMib, Math.Min(Math.Min(hotMib, roomMib), physCapMib), footprintMib);
         return cap >= MinPartialMib && cap < hotMib && cap <= int.MaxValue ? cap : null;
     }
 
@@ -66,7 +123,7 @@ public sealed partial class Prewarmer
     private long? MemoryFallbackCapMib(GameSettings game, long fullMib, long roomMib, CancellationToken ct) =>
         fullMib <= 0 || ct.IsCancellationRequested || PolicyBlocksPrewarm(game) || DriveHasRunningGame(game)
             ? null
-            : PartialCapMib(game, fullMib, WindowAvailableMib(_env.AvailableRamMib()), PhysCapMib(), roomMib);
+            : PartialCapMib(game, fullMib, WindowAvailableMib(_env.AvailableRamMib()), PhysCapMib(), roomMib, FootprintOf(game)?.Mib);
 
     // 묶음 예산이 모자랄 때만 순서를 바꿉니다. 순위 (입력 순서) 대로 통째 들어가는 앞 게임들과, 부분 예열이 남은 예산을 받는 첫 게임은 자리를 지키고,
     // 그 뒤 후보는 바이트당 가치 (순위 가중 1/(순위+1) ÷ 존 MiB, 존을 모르면 DefaultFullPrewarmMib) 순으로 늘어놓습니다. 모두 들어가면 입력 그대로.
@@ -158,13 +215,26 @@ public sealed partial class Prewarmer
         return Math.Min(streamCap, Math.Min(physicalCap, availableCap));
     }
 
-    /// 예열에 성공한 적이 있는 게임 (최근 순, 설정에 아직 있는 것만, 게임 정책이 예열을 막은 게임은 제외).
+    /// 플레이 가능성이 가장 높은 예열한 게임 (Warmed 의 첫 게임), 예산 순위 (WarmRank) 가 없으면 순서가 예열 시각뿐이라 null.
+    internal GameSettings? FirstPlayPriority() => WarmRank is null ? null : Warmed().FirstOrDefault();
+
+    /// 예열에 성공한 적이 있는 게임 (설정에 아직 있는 것만, 게임 정책이 예열을 막은 게임은 제외). 순서는 예산 순위 (WarmRank, 자동 모드의 예열 점수) 가 있으면 그 순위 (높은 것부터, 순위에 없는 게임은 뒤에 예열 시각 순),
+    /// 없으면 마지막 예열 시각이 최근인 것부터. 예산 배정과 사다리가 같은 기준을 쓰므로 배정 1순위와 사다리 1순위가 같은 게임입니다.
     internal IReadOnlyList<GameSettings> Warmed()
     {
+        List<GameSettings> byWarmTime;
         lock (_gate)
         {
-            return [.. _games.Where(g => _last.ContainsKey(g.Name) && HasPlayed(g.Name) && GamePolicy.AllowsPrewarm(g)).OrderByDescending(g => _last[g.Name]).ThenBy(g => g.Name, StringComparer.Ordinal)];
+            byWarmTime = [.. _games.Where(g => _last.ContainsKey(g.Name) && HasPlayed(g.Name) && GamePolicy.AllowsPrewarm(g)).OrderByDescending(g => _last[g.Name]).ThenBy(g => g.Name, StringComparer.Ordinal)];
         }
+
+        if (WarmRank is not { } rank || byWarmTime.Count < 2)
+        {
+            return byWarmTime;
+        }
+
+        List<GameSettings> ranked = [.. rank(byWarmTime).Where(g => byWarmTime.Any(w => string.Equals(w.Name, g.Name, StringComparison.OrdinalIgnoreCase)))];
+        return [.. ranked, .. byWarmTime.Where(w => !ranked.Any(g => string.Equals(w.Name, g.Name, StringComparison.OrdinalIgnoreCase)))];
     }
 
     /// 재예열·보충 예열 대상이 게임들 합계로 캐시 예산 (기본 물리 RAM/2, prewarm.max_cache_mib) 을 넘지 않게 합니다. 관찰 범위를 우선 배정하고 미배정량은 기존 순위대로 나눕니다.
@@ -300,6 +370,62 @@ public sealed partial class Prewarmer
         }
 
         return (inBudget, cap, used, alloc);
+    }
+
+    private readonly HashSet<string> _sparseOut = new(StringComparer.OrdinalIgnoreCase); // 마지막 예열 판정이 스파스 범위를 뺀 게임, _gate 로 보호
+
+    private void SetSparseOut(string game, bool on)
+    {
+        lock (_gate)
+        {
+            _ = on ? _sparseOut.Add(game) : _sparseOut.Remove(game);
+        }
+    }
+
+    // 마지막 예열 판정이 스파스 범위를 뺐으면 그 표시를 단 사본, 아니면 그대로: 재예열·사다리 표본, 보충, 고정이 예열이 읽은 목록과 같은 범위를 보게 함.
+    internal GameSettings WithSparseMark(GameSettings g)
+    {
+        lock (_gate)
+        {
+            return !g.SkipSparse && _sparseOut.Contains(g.Name) ? g with { SkipSparse = true } : g;
+        }
+    }
+
+    // 계획한 예열 목록에서 스파스 파일이 차지하는 양 (MiB): 사다리가 만지지 못하는 범위. 목록을 계획할 수 없으면 0.
+    private long SparseMib(GameSettings game)
+    {
+        try
+        {
+            if (_streamer.PlannedPrewarmReads(game) is not { Count: > 0 } planned)
+            {
+                return 0;
+            }
+
+            var sparse = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            long bytes = planned.Where(op => sparse.TryGetValue(op.Path, out bool s) ? s : sparse[op.Path] = _env.IsSparse(op.Path)).Sum(op => op.Length);
+            return bytes >> 20;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
+        {
+            return 0;
+        }
+    }
+
+    /// 예산 안에서 이 게임이 읽어도 되는 양 (MiB), 제한 없으면 null: 재배치 뒤 예열처럼 묶음 예산 없이 도는 예열이 다른 게임의 몫을 잠식하지 않게 재예열·보충과 같은 배정 (WarmBudget) 을 받습니다.
+    /// 순위가 없으면 (예산을 나누지 않는 설정) 제한 없음. 예산에 든 게임은 배정량 (0 은 크기를 모르는 게임이라 제한 없음), 든 적 없는 게임은 남은 예산.
+    internal long? BudgetRoomMib(GameSettings game)
+    {
+        if (WarmBudget() is not { } budget)
+        {
+            return null;
+        }
+
+        if (budget.In.Contains(game.Name))
+        {
+            return budget.AllocMib.GetValueOrDefault(game.Name) is > 0 and long alloc ? alloc : null;
+        }
+
+        return Math.Max(0, budget.CapMib - budget.UsedMib);
     }
 
     internal static string WarmBudgetSkipDetail(long capMib, long usedMib) =>

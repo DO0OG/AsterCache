@@ -1788,6 +1788,74 @@ public sealed class SolarTests
         Assert.Equal(4, _touched.Count);
     }
 
+    // 예산 순위 (WarmRank) 에서 a 가 1순위, b 가 그다음 (둘 다 표식이 있고 a 가 더 오래전 예열)
+    private static void PlayOrderIsAThenB(Prewarmer p) => p.WarmRank = list => list.OrderBy(g => g.Name, StringComparer.Ordinal);
+
+    [Fact]
+    public void AStreamTouchesTheFirstPlayPriorityGameOnceMoreAfterItsLadderAndNothingChangesWithoutABudgetRank()
+    {
+        Prewarmer p = TwoMarkedGames();
+        PlayOrderIsAThenB(p);
+        int logged = _log.Lines.Count;
+
+        Assert.True(p.Run(Game("c"), "service start").Ran);
+
+        Assert.Equal(6, _touched.Count); // 앞의 보호 2 + 사다리 직전의 보호 2 + c 의 사다리 + 플레이 1순위 a 를 한 번 더
+        string[] lines = [.. _log.Lines.Skip(logged)];
+        int ladder = Array.FindIndex(lines, l => l.Contains("c: ladder ordered 100 MiB"));
+        int again = Array.FindIndex(lines, l => l.Contains("c: ladder ordered, a touched again after it as the first play priority"));
+        Assert.True(ladder >= 0 && again > ladder);
+        Assert.Contains("a: cache refreshed in memory", lines[again - 1]); // 그 한 번이 a 를 c 의 사다리 뒤에 만듦
+
+        Prewarmer plain = TwoMarkedGames(); // 예산 순위를 모르면 5 번 그대로
+        Assert.True(plain.Run(Game("c"), "service start").Ran);
+        Assert.Equal(5, _touched.Count);
+    }
+
+    [Fact]
+    public void AColdFirstPlayPriorityGameBringsTheNextRewarmCheckForwardAndAnotherGameDoesNot()
+    {
+        Prewarmer p = TwoMarkedGames();
+        PlayOrderIsAThenB(p);
+        _coldGames.Add("a");
+        GrowReuse(1000 + 1600);
+        p.Tick(Auto()); // 점검 주기를 처음 세우고, 묶음 새로 고침에서 a 의 표본이 식음
+        Assert.Contains(_log.Lines, l => l.Contains("a: cache refresh skipped, the samples are cold"));
+        _now += TimeSpan.FromSeconds(31);
+        int logged = _log.Lines.Count;
+
+        p.Tick(Auto()); // 10 분이 지나지 않았지만 앞당겨져 a 를 점검
+
+        Assert.Contains(_log.Lines.Skip(logged), l => l.Contains("a: rewarm check: cold"));
+
+        Prewarmer other = TwoMarkedGames();
+        PlayOrderIsAThenB(other);
+        _coldGames.Clear();
+        _coldGames.Add("b"); // 1순위가 아닌 b 가 식음
+        GrowReuse(1000 + 1600);
+        other.Tick(Auto());
+        _now += TimeSpan.FromSeconds(31);
+        logged = _log.Lines.Count;
+
+        other.Tick(Auto());
+
+        Assert.DoesNotContain(_log.Lines.Skip(logged), l => l.Contains("rewarm check"));
+
+        Prewarmer off = TwoMarkedGames();
+        PlayOrderIsAThenB(off);
+        _coldGames.Clear();
+        _coldGames.Add("a");
+        GrowReuse(1000 + 1600);
+        AutoSettings noPullIn = Auto() with { RewarmAfterExitMin = 0 }; // 사용자가 앞당김을 끔
+        off.Tick(noPullIn);
+        _now += TimeSpan.FromSeconds(31);
+        logged = _log.Lines.Count;
+
+        off.Tick(noPullIn);
+
+        Assert.DoesNotContain(_log.Lines.Skip(logged), l => l.Contains("rewarm check"));
+    }
+
     [Fact]
     public void AStreamThatIsNotATriggerTouchesTheOtherMarkedGamesLowestRankFirstBeforeItReadsAndTheDoneLineShowsIt()
     {

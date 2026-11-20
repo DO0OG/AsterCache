@@ -240,7 +240,7 @@ public sealed partial class AutoRelocator
             return;
         }
 
-        PrewarmResult r = _prewarm!.Guarded(g, "auto " + why, pin: true, ignoreCooldown: true, token);
+        PrewarmResult r = _prewarm!.Guarded(g, "auto " + why, pin: true, ignoreCooldown: true, token, roomMib: why == ColdWhy ? null : _prewarm.BudgetRoomMib(g)); // 재배치 뒤 예열도 재예열·보충과 같은 예산 배정을 받음
         if (why == ColdWhy)
         {
             // 일시적인 이유 (메모리 부족, 게임 실행 중, 취소) 로 못 했으면 다음 틱에 다시, 디스크 바쁨은 BusyRetry 뒤에. 폴더가 크고 맞는 엔진이 없는 것 같은 결과는 다시 열거하지 않음.

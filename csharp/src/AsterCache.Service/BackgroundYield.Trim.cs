@@ -22,18 +22,18 @@ public sealed partial class BackgroundYield
             _targets[t.Pid] = t;
         }
 
-        int lowered = Lower(found);
+        (int lowered, int ioLowered) = Lower(found, processes);
         MemoryLists? lists = QueryLists();
         _lastRepurposed = lists?.CacheRepurposedBytes;
         _beginTrimmed = YieldPressure.NeedsTrim(lists, env.PhysicalBytes());
         long? headroomMib = lists is { } l ? l.HeadroomBytes >> 20 : null;
         if (!_beginTrimmed)
         {
-            return new YieldStart(before, 0, 0, lowered, false, headroomMib);
+            return new YieldStart(before, 0, 0, lowered, ioLowered, false, headroomMib);
         }
 
         (int trimmed, long bytes, _) = TrimAll(found, now);
-        return new YieldStart(before, trimmed, bytes, lowered, true, headroomMib);
+        return new YieldStart(before, trimmed, bytes, lowered, ioLowered, true, headroomMib);
     }
 
     // 조회 실패는 세션당 한 번만 알립니다.
@@ -55,7 +55,7 @@ public sealed partial class BackgroundYield
         int count = 0;
         int active = 0;
         long bytes = 0;
-        foreach (YieldTarget t in targets.Where(t => t.WorkingSetBytes >= TrimMinBytes))
+        foreach (YieldTarget t in targets.Where(t => !t.InheritOnly && t.WorkingSetBytes >= TrimMinBytes))
         {
             if (_trimMemo.TryGetValue(t.Pid, out TrimMemo memo) && memo.Created == t.Created
                 && (memo.Busy || YieldPressure.RegainedMost(t.WorkingSetBytes, memo.Before)))
@@ -82,9 +82,10 @@ public sealed partial class BackgroundYield
         _lastMaintain = now;
         Revalidate(processes);
         HashSet<int> alive = [.. processes.Select(p => p.Pid)];
-        foreach (int pid in _targets.Keys.Where(pid => !alive.Contains(pid)).ToList())
+        Dictionary<int, string> names = NamesOf(processes);
+        foreach (int pid in _targets.Values.Where(t => !names.TryGetValue(t.Pid, out string? now) || !string.Equals(now, t.Exe, StringComparison.OrdinalIgnoreCase)).Select(t => t.Pid).ToList())
         {
-            _ = _targets.Remove(pid);
+            _ = _targets.Remove(pid); // 끝났거나 같은 pid 를 다른 이름의 프로세스가 이어받음 (그러면 아래 Select 가 새 프로세스로 다시 고름)
         }
 
         _skipped.RemoveWhere(pid => !alive.Contains(pid));
@@ -99,7 +100,7 @@ public sealed partial class BackgroundYield
             _targets[t.Pid] = t;
         }
 
-        _ = Lower(fresh);
+        _ = Lower(fresh, processes);
         long? repurposed = QueryLists()?.CacheRepurposedBytes;
         long? delta = repurposed - _lastRepurposed;
         _lastRepurposed = repurposed;

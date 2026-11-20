@@ -33,6 +33,7 @@ internal static class Win32
     public const uint ProcessQueryLimitedInformation = 0x1000;
     public const int ProcessMemoryPriorityClass = 0; // PROCESS_INFORMATION_CLASS.ProcessMemoryPriority
     public const int ProcessBasicInformation = 0; // PROCESSINFOCLASS.ProcessBasicInformation
+    public const int ProcessIoPriorityClass = 33; // PROCESSINFOCLASS.ProcessIoPriority (값은 IO_PRIORITY_HINT)
     public const uint TokenAdjustPrivileges = 0x0020;
     public const uint TokenQuery = 0x0008;
     public const uint PrivilegeEnabled = 2; // SE_PRIVILEGE_ENABLED
@@ -160,6 +161,10 @@ internal static unsafe partial class NativeMethods
     // https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryinformationprocess
     [LibraryImport("ntdll.dll")]
     internal static partial int NtQueryInformationProcess(SafeProcessHandle process, int infoClass, nuint* info, uint size, out uint returned);
+
+    // https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntsetinformationprocess (ProcessIoPriority = 33, 값은 IO_PRIORITY_HINT)
+    [LibraryImport("ntdll.dll")]
+    internal static partial int NtSetInformationProcess(SafeProcessHandle process, int infoClass, uint* info, uint size);
 
     // https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntquerysysteminformation
     [LibraryImport("ntdll.dll")]

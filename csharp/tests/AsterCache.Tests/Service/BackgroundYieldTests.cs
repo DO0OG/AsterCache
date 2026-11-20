@@ -21,6 +21,7 @@ internal sealed class YieldWorld
         public long Ws = 10 * Mib;
         public long Created = 1000;
         public int Priority = 5;
+        public int Parent;
     }
 
     public Dictionary<int, Proc> Procs { get; } = [];
@@ -79,7 +80,7 @@ internal sealed class YieldWorld
         Describe = pid =>
         {
             Described.Add(pid);
-            return Procs.TryGetValue(pid, out Proc? p) ? new ProcessInfo(p.Path, p.Ws, p.Created) : null;
+            return Procs.TryGetValue(pid, out Proc? p) ? new ProcessInfo(p.Path, p.Ws, p.Created, p.Parent) : null;
         },
         Trim = pid =>
         {
@@ -490,6 +491,154 @@ public sealed class BackgroundYieldTests
         Assert.Equal((600 + 700 + 800) * 4096L, lists.CacheStandbyBytes); // 우선순위 5~7 만
     }
 
+    private const long Second = 10_000_000; // FILETIME 한 단위는 100ns
+
+    // 첫 낮추기 (가짜 시계의 시작) 뒤 seconds 초에 parent 의 자식으로 떠서 낮은 값을 물려받은 프로세스. 낮추기 전 (seconds 가 음수) 이면 원래부터 낮은 값으로 뜬 것.
+    private YieldWorld.Proc Spawn(int pid, string exe, int parent, int seconds)
+    {
+        YieldWorld.Proc p = _w.Add(pid, exe, priority: 1);
+        (p.Parent, p.Created) = (parent, _w.Start.ToFileTime() + (seconds * Second));
+        return p;
+    }
+
+    private BackgroundYield RunningYield()
+    {
+        _ = _w.Add(50, "big.exe", wsMib: 500);
+        _ = _w.Add(10, "cod.exe");
+        BackgroundYield y = Make();
+        y.Begin("trigger", settle: false);
+        return y;
+    }
+
+    private void MaintainAt(BackgroundYield y, int minute)
+    {
+        _w.Now = _w.Start + TimeSpan.FromMinutes(minute);
+        y.Tick(_w.Snapshot());
+    }
+
+    [Fact]
+    public void ChildrenAndGrandchildrenOfALoweredProcessAreRecordedWithTheAncestorsOriginalAndRestoredAtTheEnd()
+    {
+        BackgroundYield y = RunningYield();
+        _ = Spawn(61, "grandkid.exe", 60, 40); // 손자가 목록에서 먼저 나와도 이어짐
+        _ = Spawn(60, "kid.exe", 50, 20);
+
+        MaintainAt(y, 2);
+
+        Assert.Equal([(50, 1)], _w.Sets); // 물려받은 것은 이미 낮아서 쓰지 않음
+        Assert.Contains("\"pid\": 60", _w.State, StringComparison.Ordinal);
+        Assert.Contains("\"pid\": 61", _w.State, StringComparison.Ordinal);
+        _ = _w.Procs.Remove(10);
+
+        y.End();
+
+        Assert.Equal([5, 5, 5], new[] { 50, 60, 61 }.Select(pid => _w.Procs[pid].Priority));
+        Assert.True(Logged("memory priority restored for 3 processes (2 inherited)"));
+        Assert.Null(_w.State);
+    }
+
+    [Fact]
+    public void ALowProcessCreatedBeforeItsParentWasLoweredOrWithAnUnrecordedParentIsNeverTouched()
+    {
+        BackgroundYield y = RunningYield();
+        _ = _w.Add(52, "low.exe", priority: 1); // 원래부터 낮은 프로세스 (기록 안 됨)
+        _ = Spawn(61, "old.exe", 50, -30); // 부모가 낮춰지기 전에 뜸
+        _ = Spawn(62, "child.exe", 52, 20); // 부모가 기록에 없음
+        _ = Spawn(63, "orphan.exe", 4000, 20); // 모르는 부모
+
+        MaintainAt(y, 2);
+        _ = _w.Procs.Remove(10);
+        y.End();
+
+        Assert.Equal([(50, 1), (50, 5)], _w.Sets);
+        Assert.Equal([1, 1, 1, 1], new[] { 52, 61, 62, 63 }.Select(pid => _w.Procs[pid].Priority));
+        Assert.True(Logged("memory priority restored for 1 processes (0 inherited)"));
+    }
+
+    [Fact]
+    public void AChildStartedAfterTheLastCheckIsRestoredByTheFinalLookupAtTheEnd()
+    {
+        BackgroundYield y = RunningYield();
+        MaintainAt(y, 2);
+        _ = Spawn(60, "late.exe", 50, 150); // 마지막 유지 (2분) 뒤
+        _w.Now = _w.Start + TimeSpan.FromMinutes(3);
+
+        y.End();
+
+        Assert.Equal(5, _w.Procs[60].Priority);
+        Assert.Equal(5, _w.Procs[50].Priority);
+        Assert.True(Logged("memory priority restored for 2 processes (1 inherited)"));
+    }
+
+    [Fact]
+    public void AChildWhoseParentAlreadyEndedIsStillRecordedAndRestored()
+    {
+        BackgroundYield y = RunningYield();
+        _ = Spawn(60, "kid.exe", 50, 20);
+        _ = _w.Procs.Remove(50); // 부모가 먼저 끝남 (기록은 남음)
+
+        MaintainAt(y, 2);
+
+        Assert.Contains("\"pid\": 60", _w.State, StringComparison.Ordinal);
+        _ = _w.Procs.Remove(10);
+        y.End();
+
+        Assert.Equal(5, _w.Procs[60].Priority);
+        Assert.True(Logged("memory priority restored for 1 processes (1 inherited)"));
+    }
+
+    [Fact]
+    public void ARestartedServiceRestoresTheInheritedEntriesFromTheStateFileToo()
+    {
+        BackgroundYield y = RunningYield();
+        _ = Spawn(60, "kid.exe", 50, 20);
+        MaintainAt(y, 2);
+        Assert.Equal(1, _w.Procs[60].Priority);
+
+        Make().Recover(); // 서비스가 비정상 종료한 뒤의 새 인스턴스
+
+        Assert.Equal([5, 5], new[] { 50, 60 }.Select(pid => _w.Procs[pid].Priority));
+        Assert.Null(_w.State);
+        Assert.True(Logged("restored memory priority for 2 processes left by the previous run"));
+    }
+
+    [Fact]
+    public void ALoweredEntryWhosePidWasReusedByAnotherProcessIsNotTakenAsTheParent()
+    {
+        BackgroundYield y = RunningYield();
+        _ = _w.Procs.Remove(50);
+        MaintainAt(y, 2); // 대상에서 빠짐
+        YieldWorld.Proc reused = _w.Add(50, "reuse.exe", priority: 1); // 같은 pid 를 다른 프로세스가 재사용, 원래부터 낮음
+        reused.Created = _w.Start.ToFileTime() + (60 * Second);
+        _ = Spawn(60, "kid.exe", 50, 180);
+
+        MaintainAt(y, 4);
+        _ = _w.Procs.Remove(10);
+        y.End();
+
+        Assert.Equal([(50, 1)], _w.Sets);
+        Assert.Equal(1, _w.Procs[60].Priority);
+        Assert.Equal(1, _w.Procs[50].Priority);
+    }
+
+    [Fact]
+    public void AnExcludedChildOfALoweredProcessIsNeitherReadNorWritten()
+    {
+        BackgroundYield y = RunningYield();
+        _ = Spawn(60, "vgtray.exe", 50, 20); // 안티치트 이름
+        _ = Spawn(61, "service.exe", 50, 20);
+        _w.Procs[61].Session = 0;
+
+        MaintainAt(y, 2);
+        _ = _w.Procs.Remove(10);
+        y.End();
+
+        Assert.DoesNotContain(60, _w.PriorityReads);
+        Assert.DoesNotContain(61, _w.Touched);
+        Assert.DoesNotContain(_w.Sets, s => s.Pid is 60 or 61);
+        Assert.Equal([1, 1], new[] { 60, 61 }.Select(pid => _w.Procs[pid].Priority));
+    }
+
     [Fact]
     public void EndDoesNotRestoreAProcessWhoseCreationTimeChanged()
     {
@@ -898,6 +1047,27 @@ public sealed class ProcessMemoryLiveTests
         child.WaitForExit();
         Assert.Null(ProcessMemory.Describe(pid)); // 끝난 프로세스는 예외 없이 null
         Assert.False(ProcessMemory.Trim(pid));
+    }
+}
+
+/// 실제 Windows 호출: 읽기만 합니다. 시험이 직접 띄운 자식 프로세스의 부모 pid 가 시험 프로세스로 나오는지.
+[Trait("Category", "Live")]
+public sealed class ProcessParentLiveTests
+{
+    [Fact]
+    public void DescribeReportsTheCreatingProcessAsTheParentOfAChildProcess()
+    {
+        using Process child = Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "ping.exe"), "-n 30 127.0.0.1") { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true })!;
+        try
+        {
+            ProcessInfo? info = ProcessMemory.Describe(child.Id);
+            Assert.NotNull(info);
+            Assert.Equal(Environment.ProcessId, info.Value.Parent);
+        }
+        finally
+        {
+            child.Kill();
+        }
     }
 }
 

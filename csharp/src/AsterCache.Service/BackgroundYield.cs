@@ -253,8 +253,21 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
             return;
         }
 
+        IReadOnlyList<(int Pid, string Exe)> processes = env.Processes();
+        if (_active)
+        {
+            // 마지막 점검 뒤에 생긴 자식도 되돌리도록, 되돌리기 전에 물려받은 것만 한 번 더 찾습니다 (새로 낮추지는 않음).
+            List<YieldTarget> fresh = Select(processes, pid => _targets.ContainsKey(pid) || _skipped.Contains(pid));
+            foreach (YieldTarget t in fresh)
+            {
+                _targets[t.Pid] = t;
+            }
+
+            _ = Lower(fresh, inheritOnly: true);
+        }
+
         var kept = new List<LoweredProcess>();
-        int restored = Restore([.. _lowered.Values], env.Processes(), kept);
+        (int restored, int inherited) = Restore([.. _lowered.Values], processes, kept);
         (_active, _lastBegin) = (false, null); // 끝난 세션은 60초 제한에 걸리지 않음
         _lowered.Clear();
         foreach (LoweredProcess k in kept)
@@ -267,7 +280,7 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
         _trimMemo.Clear();
         (_lastRepurposed, _listsWarned) = (null, false);
         _ = SaveState();
-        log.Info($"background yield ended: memory priority restored for {restored} processes");
+        log.Info($"background yield ended: memory priority restored for {restored} processes ({inherited} inherited)");
     }
 
     // 비운 페이지는 변경 목록을 거쳐 대기 목록으로 가는 중이라 (2초 +2.1 GiB, 5초 +3.0, 10초 +3.7) 가용 메모리가 가라앉을 때까지 500ms 간격으로 잽니다:
@@ -299,7 +312,9 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
 internal readonly record struct TrimMemo(long Created, long Before, bool Busy);
 
 /// 세션 대상 프로세스: pid 는 재사용되므로 생성 시각 (FILETIME) 과 함께 같은 프로세스인지 봅니다. 이름과 경로는 규칙을 다시 돌릴 때 프로세스를 다시 열지 않으려고 기억합니다.
-internal readonly record struct YieldTarget(int Pid, string Exe, string Path, long Created, long WorkingSetBytes);
+internal readonly record struct YieldTarget(int Pid, string Exe, string Path, long Created, long WorkingSetBytes, int Parent = 0);
 
 /// 메모리 우선순위를 낮춘 프로세스와 원래 값. 상태 파일에서 읽은 옛 항목은 이름이 없을 수 있고, 경로는 파일에 적지 않습니다.
-internal readonly record struct LoweredProcess(int Pid, string? Exe, string? Path, long Created, int Priority);
+/// LoweredAt (FILETIME) 은 낮춘 시각이고 이보다 늦게 만들어진 자식은 낮은 값을 물려받습니다. 물려받은 항목 (Inherited) 은 만든 시각이 곧 낮춰진 시각입니다.
+/// 둘 다 상태 파일에 적지 않아 파일에서 읽은 항목은 알 수 없음 (MaxValue) 이고, 그 항목의 자식은 물려받은 것으로 보지 않습니다.
+internal readonly record struct LoweredProcess(int Pid, string? Exe, string? Path, long Created, int Priority, long LoweredAt = long.MaxValue, bool Inherited = false);

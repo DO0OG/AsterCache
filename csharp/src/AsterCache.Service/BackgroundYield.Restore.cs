@@ -7,12 +7,13 @@ public sealed partial class BackgroundYield
 {
     // 같은 프로세스 (pid 와 생성 시각이 같음) 일 때만 원래 값으로 되돌립니다. 열기 전에 현재 프로세스 목록에서 pid 의 이름을 확인해
     // 없거나 (끝남), 기록한 이름과 다르거나, 기록이 없는 옛 항목이 이름 제외 규칙에 걸리거나, 세션 0·모름이면 열지 않고 버립니다 (pid 재사용).
-    // 같은 프로세스인데 쓰기에 실패한 항목만 kept 에 담아 다음에 다시 시도하게 합니다. 되돌린 수를 돌려줍니다.
-    private int Restore(IEnumerable<LoweredProcess> entries, IReadOnlyList<(int Pid, string Exe)> processes, List<LoweredProcess> kept)
+    // 같은 프로세스인데 쓰기에 실패한 항목만 kept 에 담아 다음에 다시 시도하게 합니다. 되돌린 수와 그 가운데 물려받은 항목의 수를 돌려줍니다.
+    private (int Restored, int Inherited) Restore(IEnumerable<LoweredProcess> entries, IReadOnlyList<(int Pid, string Exe)> processes, List<LoweredProcess> kept)
     {
         Dictionary<int, string> names = NamesOf(processes);
         HashSet<string> gameExes = BackgroundProcessRules.GameExes(settings().Games);
         int restored = 0;
+        int inherited = 0;
         foreach (LoweredProcess p in entries)
         {
             if (!names.TryGetValue(p.Pid, out string? current)
@@ -30,6 +31,7 @@ public sealed partial class BackgroundYield
             if (env.SetMemoryPriority(p.Pid, p.Priority))
             {
                 restored++;
+                inherited += p.Inherited ? 1 : 0;
             }
             else
             {
@@ -37,7 +39,7 @@ public sealed partial class BackgroundYield
             }
         }
 
-        return restored;
+        return (restored, inherited);
     }
 
     private static Dictionary<int, string> NamesOf(IReadOnlyList<(int Pid, string Exe)> processes)

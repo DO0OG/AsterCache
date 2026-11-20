@@ -3,8 +3,8 @@ using Microsoft.Win32.SafeHandles;
 
 namespace AsterCache.Windows;
 
-/// 다른 프로세스의 경로·작업 집합·생성 시각 (FILETIME). 읽을 수 없으면 Describe 가 null.
-public readonly record struct ProcessInfo(string Path, long WorkingSetBytes, long Created);
+/// 다른 프로세스의 경로·작업 집합·생성 시각 (FILETIME)·부모 pid (모르면 0). 읽을 수 없으면 Describe 가 null.
+public readonly record struct ProcessInfo(string Path, long WorkingSetBytes, long Created, int Parent = 0);
 
 /// 배경 프로세스의 메모리 양보에 쓰는 프로세스 단위 호출. 다른 프로세스에 하는 일은 작업 집합 비우기와 메모리 우선순위 변경 두 가지뿐입니다.
 /// 실패 (접근 거부, 이미 종료) 는 예외가 아니라 null/false 이며 핸들은 항상 닫습니다. 열기 권한은 호출마다 필요한 최소: 조회 0x1000, 비우기 0x1100, 우선순위 쓰기 0x0200.
@@ -35,7 +35,10 @@ public static unsafe class ProcessMemory
             return null;
         }
 
-        return new ProcessInfo(new string(buf, 0, (int)size), (long)Math.Min(counters.WorkingSetSize, long.MaxValue), created);
+        // PROCESS_BASIC_INFORMATION 은 포인터 크기 칸 여섯 개이고 마지막이 부모 pid 입니다 (부모가 끝나도 남음). 못 읽으면 0.
+        nuint* basic = stackalloc nuint[6];
+        int parent = NativeMethods.NtQueryInformationProcess(h, Win32.ProcessBasicInformation, basic, (uint)(6 * sizeof(nuint)), out _) >= 0 ? (int)basic[5] : 0;
+        return new ProcessInfo(new string(buf, 0, (int)size), (long)Math.Min(counters.WorkingSetSize, long.MaxValue), created, parent);
     }
 
     /// 작업 집합을 비웁니다 (페이지는 대기 목록으로 가고, 프로세스가 다시 만지면 소프트 폴트로 돌아옴).

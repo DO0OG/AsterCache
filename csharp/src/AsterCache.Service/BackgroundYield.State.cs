@@ -22,7 +22,7 @@ public sealed partial class BackgroundYield
                 }
 
                 var kept = new List<LoweredProcess>();
-                int restored = Restore(Parse(text), env.Processes(), kept);
+                (int restored, _) = Restore(Parse(text), env.Processes(), kept);
                 foreach (LoweredProcess k in kept)
                 {
                     _lowered[k.Pid] = k; // 같은 프로세스인데 쓰기에 실패한 항목은 파일에 남겨 다음 End·Recover 가 다시 시도

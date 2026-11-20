@@ -106,7 +106,11 @@ internal sealed partial class App : Application
             {
                 AutoStatusFile? auto = Manage.ReloadAuto(); // 메뉴를 다시 만들기 전에 런처 이름을 먼저 읽음
                 Update(Model.Refresh);
-                _main.UpdateStatus();
+                if (_main.IsVisible)
+                {
+                    _main.UpdateStatus(); // 숨겨진 창은 그릴 필요 없음 (열 때 ShowMain 이 바로 갱신)
+                }
+
                 if (!Smoke)
                 {
                     Notify(auto);
@@ -369,6 +373,7 @@ internal sealed partial class App : Application
         }
 
         _main.Activate();
+        _main.UpdateStatus();
         _main.Reload();
     }
 

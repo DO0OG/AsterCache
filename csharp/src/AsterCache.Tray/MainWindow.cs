@@ -108,7 +108,8 @@ internal sealed class MainWindow : Window
     private readonly TextBlock _headLine = Look.Text(string.Empty, Look.Subtitle, FontWeight.SemiBold);
     private readonly TextBlock _headProblem = Look.Text(string.Empty, Look.Caption, color: Look.Danger + ".Fg");
     private readonly TextBlock _progress = Look.Text(string.Empty, Look.Body);
-    private readonly ProgressBar _busyBar = new() { IsIndeterminate = true, IsVisible = false, Height = 3, MinHeight = 3 };
+    // 진행 띠의 움직임은 숨겨도 (창을 트레이로 보내도) 계속 돌아 화면 스레드를 쓰므로, 작업 중에만 IsIndeterminate 를 켬
+    private readonly ProgressBar _busyBar = new() { IsVisible = false, Height = 3, MinHeight = 3 };
     private Border? _footer;
     private CancellationTokenSource? _traceStop;
     private readonly TabControl _tabs = new();
@@ -952,6 +953,7 @@ internal sealed class MainWindow : Window
             return new ActionResult(false, L.T("Msg_Busy"));
         }
 
+        _busyBar.IsIndeterminate = true;
         _busyBar.IsVisible = true;
         Say(what + " ..."); // 아래 줄도 같이 보임
         try
@@ -1029,6 +1031,7 @@ internal sealed class MainWindow : Window
         finally
         {
             _busyBar.IsVisible = false;
+            _busyBar.IsIndeterminate = false;
             ShowFooter();
             Interlocked.Exchange(ref _busy, 0);
         }

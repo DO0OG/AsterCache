@@ -451,7 +451,7 @@ public sealed class SupplementResumeTests : IDisposable
     }
 
     [Fact]
-    public void AShortCompletedRequestListRetriesAfterTheConfiguredDelay()
+    public void AShortCompletedRequestListIsNotReadAgainAfterTheDelayUnlessTheWindowGrows()
     {
         GameSettings g = Game();
         Prewarmer p = PartiallyWarmedAtServiceCap(g, 8000); // 계획 상한 3904 MiB, 실제 요청 목록은 1305 MiB
@@ -459,14 +459,18 @@ public sealed class SupplementResumeTests : IDisposable
 
         Assert.True(p.Supplement(g, CancellationToken.None));
         Assert.True(p.SupplementPending("g"));
-        Assert.Equal((1305L, HotMib), ((long)Status()["warmed_mib"]!, (long)Status()["hot_mib"]!));
+        Assert.Equal((3904L, HotMib), ((long)Status()["warmed_mib"]!, (long)Status()["hot_mib"]!)); // 창의 목록을 끝까지 읽었으므로 읽은 양은 창 크기
 
         _avail = 8255; // 255 MiB 증가는 조기 재시도 기준보다 작음
         Assert.False(p.Supplement(g, CancellationToken.None));
         Assert.Single(_streamer.Calls);
 
         _now += TimeSpan.FromMinutes(5);
-        Assert.True(p.Supplement(g, CancellationToken.None)); // 입력이 같아도 기한이 지나면 다시 판정
+        Assert.False(p.Supplement(g, CancellationToken.None)); // 기한이 지나도 같은 창을 진전 없이 다시 읽지 않음
+        Assert.Single(_streamer.Calls);
+
+        _avail = 8000 + Prewarmer.FinalShrinkHeadroomMib + 512; // 창이 512 MiB 커지면 다시 읽음
+        Assert.True(p.Supplement(g, CancellationToken.None));
         Assert.Equal(2, _streamer.Calls.Count);
         Assert.True(p.SupplementPending("g"));
     }
@@ -511,6 +515,63 @@ public sealed class SupplementResumeTests : IDisposable
         p.Supplement(g, CancellationToken.None); // 게임이 끝난 뒤의 보충은 재시도 기한에 묶이지 않음
 
         Assert.Equal(2, _streamer.Calls.Count);
+    }
+
+    // 읽을 창 (3904 MiB) 보다 예열 목록 (3500 MiB) 이 짧은 게임 (창 계획 뒤에 캐시 없이 읽는 파일을 빼서 생김) 이 창을 끝까지 읽은 상태
+    private Prewarmer ReadWholeShortListOfTheWindow(GameSettings g)
+    {
+        Prewarmer p = PartiallyWarmedAtServiceCap(g, 8000);
+        (_streamer.ReadMib, _streamer.ScheduleMib, _streamer.RequestedMib, _streamer.ErrorCount) = (3500, 3500, 3500, 0);
+        Assert.True(p.Supplement(g, CancellationToken.None)); // 창 3904 의 목록은 3500 MiB 에서 끝남
+        Assert.Single(_streamer.Calls);
+        return p;
+    }
+
+    [Fact]
+    public void ASupplementThatReadAListShorterThanItsWindowIsNotReadAgainWhileTheFrontIsWarm()
+    {
+        GameSettings g = Game();
+        Prewarmer p = ReadWholeShortListOfTheWindow(g);
+
+        Assert.Equal(3904L, (long)Status()["warmed_mib"]!); // 읽은 양을 창 크기로 올림
+        _probe = new ProbeResult(8, 0, 0.3); // 앞부분이 따뜻함
+        for (int i = 0; i < 3; i++)
+        {
+            _now += TimeSpan.FromMinutes(15); // 재시도 기한이 지나도
+            Assert.False(p.Supplement(g, CancellationToken.None)); // 같은 창을 진전 없이 다시 읽지 않음
+        }
+
+        Assert.Single(_streamer.Calls);
+    }
+
+    [Fact]
+    public void AGrownWindowIsReadAgainAfterAShortListWasRead()
+    {
+        GameSettings g = Game();
+        Prewarmer p = ReadWholeShortListOfTheWindow(g);
+        _probe = new ProbeResult(8, 0, 0.3);
+
+        _avail = 12000 + Prewarmer.FinalShrinkHeadroomMib; // 배정이 늘어 창이 3904 에서 7904 MiB 로 커짐
+        (_streamer.ReadMib, _streamer.ScheduleMib, _streamer.RequestedMib) = (null, null, null);
+        Assert.True(p.Supplement(g, CancellationToken.None));
+
+        Assert.Equal(2, _streamer.Calls.Count);
+        Assert.True(_streamer.Calls[1].MaxStreamMib > 3904); // 더 큰 창을 읽음
+    }
+
+    [Fact]
+    public void AColdFrontIsReadAgainAfterAShortListWasRead()
+    {
+        GameSettings g = Game();
+        Prewarmer p = ReadWholeShortListOfTheWindow(g);
+
+        _probe = new ProbeResult(8, 8, 5.0); // 앞부분이 식음
+        _now += TimeSpan.FromMinutes(15);
+        (_streamer.ReadMib, _streamer.ScheduleMib, _streamer.RequestedMib) = (3500, 3500, 3500);
+        Assert.True(p.Supplement(g, CancellationToken.None));
+
+        Assert.Equal(2, _streamer.Calls.Count);
+        Assert.Equal(_streamer.Calls[0].MaxStreamMib, _streamer.Calls[1].MaxStreamMib); // 같은 창을 다시 읽음 (식은 앞부분을 채움)
     }
 
     [Fact]

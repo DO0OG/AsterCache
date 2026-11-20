@@ -25,6 +25,13 @@ internal static class SolarPolicy
     /// 묶음 새로 고침은 직전 묶음 새로 고침 뒤 이 시간 안에는 다시 하지 않습니다 (몰림이 30초 단위라 틱마다 되풀이하지 않게).
     public static readonly TimeSpan GroupEvery = TimeSpan.FromSeconds(60);
 
+    /// 게임이 없을 때 메모리 안 캐시를 다시 만지는 데 쓰는 시간이 벽시계 시간에서 차지할 수 있는 몫의 상한 (2%): 한 번에 7초를 썼으면 그 뒤 350초가 지나야 다음 묶음 새로 고침을 합니다 (GroupEvery 는 그대로 하한).
+    /// 근거: 설치본 실측에서 다른 프로그램이 캐시를 계속 쓰는 동안 60초마다 약 16.8 GiB 를 4~7초씩 만져 서비스 CPU 가 90초에 5~21초까지 올랐고, 이 몫이면 그 때도 CPU 를 코어 하나의 2% 안에 둠. 값 자체는 실험으로 고른 것이 아니라 "배경 일이 눈에 띄지 않을 크기" 로 정한 것입니다.
+    public const double IdleTouchShare = 0.02;
+
+    /// 만지는 데 touchSeconds 초를 썼을 때 다음 묶음 새로 고침까지 기다릴 시간 (IdleTouchShare 로 나눈 값).
+    public static TimeSpan IdleTouchWait(double touchSeconds) => TimeSpan.FromSeconds(touchSeconds / IdleTouchShare);
+
     /// 스트림이 도는 동안 다른 게임의 새로 고칠 때를 보는 간격: 판정마다 대기 목록 통계를 한 번 읽으므로 묶음마다 (약 1초) 보지 않습니다.
     public static readonly TimeSpan ProtectCheckEvery = TimeSpan.FromSeconds(10);
 
@@ -77,4 +84,10 @@ internal static class SolarPolicy
             ? grown >= Math.Max(MinRepurposedBytes, (long)(AheadFraction * mark.AheadBytes))
                 || (mark.MarkedAheadBytes >= 2 * MinHeadroomBytes && mark.AheadBytes - grown < MinHeadroomBytes)
             : now - mark.At >= FallbackEvery;
+
+    /// 앞으로 readBytes 를 더 읽으면 (그만큼 캐시 재사용이 늘면) 이 표식의 게임이 새로 고칠 때가 되는가: 읽을 양이 그 게임의 남은 여유보다 충분히 작으면 (RefreshDue 가 아니면) 거짓이라 미리 지킬 필요가 없습니다.
+    /// 대기 목록을 모르거나 표식에 기준이 없으면 참 (지금처럼 지킴).
+    public static bool ReadReaches(LadderMark mark, MemoryLists? lists, long readBytes, DateTimeOffset now) =>
+        lists is not { } l || mark.RepurposedBytes is null
+        || RefreshDue(mark, l with { CacheRepurposedBytes = l.CacheRepurposedBytes > long.MaxValue - readBytes ? long.MaxValue : l.CacheRepurposedBytes + readBytes }, now);
 }

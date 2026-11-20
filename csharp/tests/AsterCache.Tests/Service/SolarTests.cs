@@ -405,6 +405,7 @@ public sealed class SolarTests
         _lists = new MemoryLists(0, 0, 20000 * Mib);
         _ = solar.Order(Game("b"), Reads, CancellationToken.None);
         _ = solar.Order(Game("c"), Reads, CancellationToken.None); // A = 19900 MiB: 증가분 600 MiB 로는 때가 아님
+        _now += TimeSpan.FromMinutes(5); // 만지는 데 쓴 시간의 상한 (0.4 초 x 3 = 60 초) 이 지난 뒤
         _lists = new MemoryLists(0, 100 * Mib, 20000 * Mib);
         Assert.Empty(solar.DueGroup([Game("c"), Game("a"), Game("b")], _now)); // 아무도 때가 아님
         _lists = new MemoryLists(0, 600 * Mib, 20000 * Mib); // a 만 때가 됨
@@ -424,6 +425,7 @@ public sealed class SolarTests
         _ = solar.Order(Game("a"), Reads, CancellationToken.None); // A 가 작아 증가분 512 MiB 에 때가 됨
         _lists = new MemoryLists(0, 0, 20000 * Mib);
         _ = solar.Order(Game("b"), Reads, CancellationToken.None);
+        _now += TimeSpan.FromMinutes(5); // 만지는 데 쓴 시간의 상한이 지난 뒤
         _lists = new MemoryLists(0, 600 * Mib, 20000 * Mib);
 
         Assert.Empty(solar.DueGroup([Game("a"), Game("b")], _now, g => g.Name != "a")); // 때가 된 a 가 막혀 있음
@@ -1727,6 +1729,7 @@ public sealed class SolarTests
         Assert.True(p.Run(Game("b"), "launcher", trigger: true).Ran);
         _now += TimeSpan.FromMinutes(2);
         _touched.Clear();
+        GrowReuse(1000 + 1600); // 다른 프로그램이 캐시를 쓰는 중: 작은 읽기도 a 에 닿아 스트림 앞의 보호가 돔 (a: 0.4 x 3800 = 1520 MiB)
         return p;
     }
 
@@ -2869,6 +2872,7 @@ public sealed class SolarTests
         {
             Assert.True(p.Run(Game("c"), "service start").Ran);
             _now += TimeSpan.FromMinutes(2);
+            GrowReuse(1000 + 5000); // 앞의 보호가 표식을 새로 썼으므로 다시 때가 되게 함
         }
 
         _touched.Clear();
@@ -2974,6 +2978,7 @@ public sealed class SolarTests
         Prewarmer p = MakePrewarmer(Game("a"), Game("b"));
         Assert.True(p.Run(Game("a"), "service start").Ran); // 끝까지 읽음
         _now += TimeSpan.FromMinutes(2);
+        GrowReuse(3500); // 다른 프로그램이 캐시를 쓰는 중: a 의 0.4 x 7900 = 3160 MiB 를 넘어 앞의 보호가 돔
         _touched.Clear();
         _avail = 4096 + 256 + 3000;
         _streamer.ReadMib = 1000;
@@ -3525,5 +3530,293 @@ public sealed class SolarTests
         Assert.Equal(2, _touched.Count);
         Assert.Equal(TouchEnd.NeedsDiskReads, r.End);
         Assert.Equal(40 * Mib, r.DiskBytes);
+    }
+
+    // ---- 게임이 없을 때 만지는 시간의 상한과 점검 간격 늘리기 (이슈 #282) ----
+
+    [Fact]
+    public void ATouchOfSevenSecondsDelaysTheNextGroupRefreshBy350SecondsAndTheDeferralIsLoggedOnce()
+    {
+        Assert.Equal(350, SolarPolicy.IdleTouchWait(7).TotalSeconds, 6);
+        Solar solar = Make();
+        _result = _result with { Seconds = 7 };
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None); // 7 초 만짐
+        solar.Regroup([("a", 100 * Mib, null)]);
+        _lists = new MemoryLists(0, 9000 * Mib, 8000 * Mib); // 때가 됨
+
+        Assert.Empty(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(60))); // 최소 간격 60 초는 지났지만 상한이 막음
+        Assert.Empty(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(349)));
+        Assert.Single(_log.Lines, l => l.Contains("cache refresh deferred: touching time is capped at 2% of wall time, next in "));
+        Assert.Single(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(350))); // 쓴 시간이 벽시계의 2% 로 돌아옴
+    }
+
+    [Fact]
+    public void AShortTouchLeavesTheSixtySecondFloorAsTheOnlyDelayAndLogsNothing()
+    {
+        Solar solar = Make(); // 0.4 초를 만지면 20 초 뒤부터 허용
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        solar.Regroup([("a", 100 * Mib, null)]);
+        _lists = new MemoryLists(0, 9000 * Mib, 8000 * Mib);
+
+        Assert.Empty(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(59)));
+        Assert.Single(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(60)));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("deferred"));
+    }
+
+    [Fact]
+    public void ARefreshAndALadderCountTowardTheShareButTheGameStartTouchAndTheTouchWhilePlayingDoNot()
+    {
+        Solar solar = Make();
+        _result = _result with { Seconds = 7 };
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None, startExe: "a.exe"); // 게임 시작 때의 만지기
+        _ = solar.TouchFront(Game("a"), Reads, CancellationToken.None, "a.exe", keeping: true); // 게임 실행 중 유지
+        _lists = new MemoryLists(0, 9000 * Mib, 8000 * Mib);
+
+        Assert.Single(solar.DueGroup([Game("a")], _now)); // 7 초씩 두 번 썼지만 상한과 무관
+
+        _result = _result with { Seconds = 0.4 };
+        _ = solar.Order(Game("b"), Reads, CancellationToken.None); // 0.4 초 -> 20 초
+        _result = _result with { Seconds = 7 };
+        _ = solar.Refresh(Game("b"), CancellationToken.None); // 새로 고침의 7 초가 더해져 370 초
+        Assert.Empty(solar.DueGroup([Game("a"), Game("b")], _now + TimeSpan.FromSeconds(369)));
+        Assert.Equal(["a", "b"], solar.DueGroup([Game("a"), Game("b")], _now + TimeSpan.FromSeconds(370)).Select(g => g.Name));
+    }
+
+    [Fact]
+    public void TheTimeTheLadderAfterAStreamTookKeepsTheTickFromRefreshingUntilItFitsTheShare()
+    {
+        GrowReuse(1000);
+        _result = _result with { Seconds = 5 };
+        _streamer.Batches.AddRange(TwoBatches()); // 묶음 다시 만지기 (스트림이 읽는 일의 일부) 는 세지 않고, 끝의 사다리 5 초만 -> 250 초
+        Prewarmer p = MakePrewarmer(Game("a"));
+        _ = p.Run(Game("a"), "service start");
+        _touched.Clear();
+        GrowReuse(20000);
+        _now += TimeSpan.FromMinutes(4);
+
+        p.Tick(Auto());
+        Assert.Empty(_touched); // 때는 됐지만 240 초 < 250 초
+        Assert.Contains(_log.Lines, l => l.Contains("cache refresh deferred"));
+
+        _now += TimeSpan.FromMinutes(1); // 300 초
+        p.Tick(Auto());
+        Assert.Single(_touched);
+    }
+
+    [Fact]
+    public void AStreamThatReadsLittleDoesNotProtectOrReTouchTheOtherGamesAndOneThatReadsALotStillDoes()
+    {
+        GrowReuse(1000);
+        Prewarmer p = MakePrewarmer(Game("a"), Game("b"));
+        Assert.True(p.Run(Game("a"), "service start").Ran); // a: A = 7900 MiB, 0.4 x 7900 = 3160 MiB 늘면 새로 고칠 때
+        _now += TimeSpan.FromMinutes(5);
+        _touched.Clear();
+        int logged = _log.Lines.Count;
+
+        Assert.True(p.Run(Game("b"), "rewarm", ignoreCooldown: true).Ran); // 읽을 양 30 MiB 는 a 의 여유보다 충분히 작음
+
+        Assert.Single(_touched); // b 의 사다리만: 스트림 앞·사다리 직전의 보호와 1순위 게임 한 번 더가 없음
+        Assert.DoesNotContain(_log.Lines.Skip(logged), l => l.Contains("a: cache refreshed in memory") || l.Contains("protected"));
+
+        _now += TimeSpan.FromMinutes(5);
+        _touched.Clear();
+        _streamer.All = [new ReadOp(@"D:\b\big.bin", 0, 4000 * Mib)]; // 4000 MiB 읽으면 a 는 3160 MiB 를 넘음
+        _streamer.ZoneMib = 5000;
+        logged = _log.Lines.Count;
+
+        Assert.True(p.Run(Game("b"), "rewarm", ignoreCooldown: true).Ran);
+
+        Assert.Equal(3, _touched.Count); // 앞의 보호 (a), 사다리 직전의 보호 (a), b 의 사다리: 지금까지와 같음
+        Assert.Contains(_log.Lines.Skip(logged), l => l.Contains("b: prewarm done (rewarm)") && l.Contains(", protected 1 games ("));
+    }
+
+    [Fact]
+    public void ASmallStreamWhoseOthersGetDueWhileItReadsProtectsThemBetweenBatchesAndAtTheEndTooEvenWhileTheShareHolds()
+    {
+        GrowReuse(1000);
+        _result = _result with { Seconds = 20 }; // a 의 사다리 20 초 -> 1000 초 동안 유지 틱은 상한으로 막힘
+        Prewarmer p = MakePrewarmer(Game("a"), Game("b"));
+        Assert.True(p.Run(Game("a"), "service start").Ran);
+        _now += TimeSpan.FromMinutes(5);
+        _touched.Clear();
+        ThreeSingleOpBatches();
+        _streamer.BetweenProgressAndTouch = i =>
+        {
+            if (i == 1)
+            {
+                _now += TimeSpan.FromSeconds(61); // 상한 (1000 초) 안이지만 스트림 도중의 보호는 상한에 막히지 않음
+                GrowReuse(1000 + 5000); // 읽는 도중 다른 프로그램이 캐시를 써 a 가 때가 됨
+            }
+        };
+
+        Assert.True(p.Run(Game("b"), "rewarm", ignoreCooldown: true).Ran);
+
+        Assert.Equal([1, 1, 3, 1, 3, 3], TouchSizes()); // 앞의 보호는 없고, 묶음 0, 묶음 1, 도중의 보호 (a), 묶음 2, 사다리 직전의 보호 (a), b 의 사다리
+    }
+
+    [Theory]
+    [InlineData(3000, true, false)]
+    [InlineData(3200, true, true)]
+    [InlineData(3000, false, true)]
+    public void AReadReachesAGameOnlyWhenTheReuseItCausesWouldMakeItsRefreshDueOrTheListsAreUnknown(long readMib, bool listsKnown, bool reaches)
+    {
+        LadderMark mark = Mark(1000, 7900, _now); // 0.4 x 7900 = 3160 MiB 늘면 때
+        MemoryLists? lists = listsKnown ? new MemoryLists(0, 1000 * Mib, 8000 * Mib) : null;
+
+        Assert.Equal(reaches, SolarPolicy.ReadReaches(mark, lists, readMib * Mib, _now));
+        Assert.True(SolarPolicy.ReadReaches(Mark(null, 7900, _now), lists, 1, _now)); // 기준을 모르는 표식은 지킴
+        Assert.True(SolarPolicy.ReadReaches(mark, new MemoryLists(0, 1000 * Mib, 8000 * Mib), long.MaxValue, _now)); // 계획할 수 없어 크기를 모를 때 (넘치지 않음)
+    }
+
+    // 점검에서 식은 게임 a 를 다시 읽는 상태: 점검 간격을 보려고 틱을 되풀이함.
+    private Prewarmer ColdChecksFixture(out AutoSettings auto, params string[] games)
+    {
+        GameSettings[] all = [.. (games.Length == 0 ? ["a"] : games).Select(Game)];
+        Prewarmer p = MakePrewarmer(all);
+        foreach (GameSettings g in all)
+        {
+            Assert.True(p.Run(g, "service start").Ran);
+        }
+
+        auto = Auto();
+        p.SetAuto(auto);
+        p.Tick(auto); // 첫 틱은 다음 점검 시각만 정함
+        _coldGames.Add("a");
+        _streamer.Calls.Clear();
+        return p;
+    }
+
+    private bool CheckedAfter(Prewarmer p, AutoSettings auto, double minutes)
+    {
+        int before = _streamer.Calls.Count;
+        _now += TimeSpan.FromMinutes(minutes);
+        p.Tick(auto);
+        return _streamer.Calls.Count > before;
+    }
+
+    [Fact]
+    public void TheRewarmCheckIntervalOfAGameGrowsOnlyWhenWhatWasReadAgainGoesColdAgainAndGoesBackWhenItStaysWarm()
+    {
+        Prewarmer p = ColdChecksFixture(out AutoSettings auto);
+
+        Assert.True(CheckedAfter(p, auto, 10.5)); // 첫 식음: 다시 읽음, 간격은 그대로
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("interval raised"));
+        Assert.True(CheckedAfter(p, auto, 10.5)); // 다시 읽은 것이 또 식음 -> 20 분
+        Assert.Contains(_log.Lines, l => l.EndsWith("a: rewarm check interval raised to 20 min: the cache went cold again right after it was read", StringComparison.Ordinal));
+        Assert.False(CheckedAfter(p, auto, 10)); // 10 분이 지났지만 아직
+        Assert.True(CheckedAfter(p, auto, 10.5)); // 20 분 지남 -> 40 분
+        Assert.Contains(_log.Lines, l => l.Contains("interval raised to 40 min"));
+        Assert.False(CheckedAfter(p, auto, 10.5));
+        Assert.False(CheckedAfter(p, auto, 10.5));
+        Assert.False(CheckedAfter(p, auto, 10.5));
+        Assert.True(CheckedAfter(p, auto, 10.5)); // 40 분 지남 -> 60 분 (상한)
+        Assert.Contains(_log.Lines, l => l.Contains("interval raised to 60 min"));
+        Assert.True(CheckedAfter(p, auto, 61)); // 상한에 있으면 더 늘지 않고 로그도 없음
+        Assert.Single(_log.Lines, l => l.Contains("interval raised to 60 min"));
+
+        _coldGames.Clear(); // 조용해짐: 한 점검 주기 동안 식지 않고 유지됨
+        Assert.False(CheckedAfter(p, auto, 61)); // 표본이 warm 이라 읽지 않음
+        Assert.Contains(_log.Lines, l => l.EndsWith("a: rewarm check interval back to 10 min: the cache stayed warm for a whole check period", StringComparison.Ordinal));
+        _coldGames.Add("a");
+        Assert.True(CheckedAfter(p, auto, 10.5)); // 이제 10 분마다, 첫 식음이라 늘지 않음
+        Assert.Single(_log.Lines, l => l.Contains("interval raised to 60 min"));
+    }
+
+    [Fact]
+    public void ARewarmThatCouldNotReadAnythingDoesNotRaiseTheInterval()
+    {
+        Prewarmer p = ColdChecksFixture(out AutoSettings auto);
+        _streamer.Fail = true; // 읽기 전에 실패: 읽은 것이 없음
+
+        for (int i = 0; i < 4; i++)
+        {
+            Assert.True(CheckedAfter(p, auto, 10.5)); // 점검마다 시도함
+        }
+
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("interval raised"));
+    }
+
+    [Fact]
+    public void AGameThatKeepsGoingColdDoesNotHoldTheOtherGamesToItsLongerIntervalAndTheirWarmResultsDoNotResetIt()
+    {
+        Prewarmer p = ColdChecksFixture(out AutoSettings auto, "a", "b");
+        Assert.True(CheckedAfter(p, auto, 10.5)); // a 를 다시 읽음 (b 는 warm)
+        Assert.True(CheckedAfter(p, auto, 10.5)); // a 가 또 식음 -> 20 분 (b 는 warm 이었지만 a 의 간격은 그대로)
+        Assert.Contains(_log.Lines, l => l.Contains("a: rewarm check interval raised to 20 min"));
+        _coldGames.Add("b");
+        int before = _streamer.Calls.Count;
+
+        _now += TimeSpan.FromMinutes(10.5);
+        p.Tick(auto); // a 는 아직 간격 안, b 는 제 간격대로 점검
+
+        Assert.Equal(["b"], _streamer.Calls.Skip(before).Select(c => c.Game));
+    }
+
+    [Fact]
+    public void TheRepeatedRefillOfAGameTheLadderFoundIncompleteCountsTowardTheSameInterval()
+    {
+        Prewarmer p = FlaggedGame(out AutoSettings auto);
+
+        _now += TimeSpan.FromMinutes(10.5);
+        p.Tick(auto); // 빠짐 표시로 다시 읽음, 사다리가 또 빠짐을 만나 표시가 다시 섬
+        Assert.Single(_streamer.Calls);
+        _now += TimeSpan.FromMinutes(10.5);
+        p.Tick(auto); // 또 다시 읽음 -> 같은 규칙으로 20 분
+        Assert.Equal(2, _streamer.Calls.Count);
+        Assert.Contains(_log.Lines, l => l.Contains("a: rewarm check interval raised to 20 min"));
+
+        _now += TimeSpan.FromMinutes(10.5);
+        p.Tick(auto);
+        Assert.Equal(2, _streamer.Calls.Count); // 늘어난 간격 안에서는 읽지 않음
+    }
+
+    [Fact]
+    public void ALongerCheckIntervalDoesNotDelayACheckPulledInByAGameExitOrATriggerPrewarm()
+    {
+        Prewarmer p = ColdChecksFixture(out AutoSettings auto);
+        Assert.True(CheckedAfter(p, auto, 10.5));
+        Assert.True(CheckedAfter(p, auto, 10.5)); // 간격이 20 분으로 늘어남
+
+        p.NoteGameExit(); // 게임이 끝남: 점검을 rewarm_after_exit_min 뒤로 당김
+        Assert.True(CheckedAfter(p, auto, auto.RewarmAfterExitMin + 0.5)); // 20 분을 기다리지 않고 제때 점검
+
+        int calls = _streamer.Calls.Count;
+        _now += TimeSpan.FromMinutes(5);
+        Assert.True(p.Run(Game("a"), "launcher", ignoreCooldown: true, trigger: true).Ran); // 게임·런처가 시작해 거는 예열은 간격과 무관
+        Assert.Equal(calls + 1, _streamer.Calls.Count);
+    }
+
+    [Fact]
+    public void AStreamThatReadMoreThanItsEstimateProtectsTheOtherGamesAtTheEndByTheRealReuse()
+    {
+        GrowReuse(1000);
+        Prewarmer p = MakePrewarmer(Game("a"), Game("b"));
+        Assert.True(p.Run(Game("a"), "service start").Ran);
+        _now += TimeSpan.FromMinutes(5);
+        _touched.Clear();
+        _streamer.DuringStream = () => GrowReuse(1000 + 5000); // 계획보다 많이 읽거나 다른 프로그램이 캐시를 써 a 가 때가 됨 (앞의 판정은 작음)
+        int logged = _log.Lines.Count;
+
+        Assert.True(p.Run(Game("b"), "rewarm", ignoreCooldown: true).Ran);
+
+        Assert.Equal(2, _touched.Count); // 앞의 보호는 없고, 끝의 보호 (a) 와 b 의 사다리
+        Assert.Contains(_log.Lines.Skip(logged), l => l.Contains("b: prewarm done (rewarm)") && l.Contains(", protected 1 games ("));
+    }
+
+    [Fact]
+    public void AfterASmallStreamTheFirstPlayPriorityGameIsStillTouchedAgainBehindTheLadderItJustMade()
+    {
+        GrowReuse(1000);
+        Prewarmer p = MakePrewarmer(Game("a"), Game("b"));
+        PlayOrderIsAThenB(p);
+        Assert.True(p.Run(Game("a"), "service start").Ran);
+        _now += TimeSpan.FromMinutes(5);
+        _touched.Clear();
+        int logged = _log.Lines.Count;
+
+        Assert.True(p.Run(Game("b"), "rewarm", ignoreCooldown: true).Ran); // 작은 스트림: 앞·사다리 직전의 보호는 없음
+
+        Assert.Equal(2, _touched.Count); // b 의 사다리, 그 뒤 1순위 a 를 한 번 더
+        Assert.Contains(_log.Lines.Skip(logged), l => l.Contains("b: ladder ordered, a touched again after it as the first play priority"));
     }
 }

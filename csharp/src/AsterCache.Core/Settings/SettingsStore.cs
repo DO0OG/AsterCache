@@ -24,7 +24,7 @@ public static class SettingsStore
     public const int MaxGames = 32;
 
     private static readonly string[] TopKeys = ["games", "poll_ms", "watcher", "language", "auto", "max_zone_mib", "riot", "update", "memory"];
-    private static readonly string[] MemoryKeys = ["background_yield", "standby_ladder"];
+    private static readonly string[] MemoryKeys = ["background_yield", "standby_ladder", "background_io_priority"];
     private static readonly string[] RiotKeys = ["champ_select_prewarm", "champ_select_budget_mib"];
     private static readonly string[] GameKeys =
         ["name", "exe_names", "trace", "plan", "origin_root", "allowed_roots", "volume_label", "reapply_interval_minutes", "prewarm", "max_stream_mib", "source", "anticheat", "display_name", "display_names", "mode", "paused"];
@@ -145,7 +145,8 @@ public static class SettingsStore
         MemorySettings d = MemorySettings.Default;
         bool backgroundYield = o.TryGetValue("background_yield", out object? y) ? y as bool? ?? throw new SettingsException("memory.background_yield: true or false expected") : d.BackgroundYield;
         bool ladder = o.TryGetValue("standby_ladder", out object? l) ? l as bool? ?? throw new SettingsException("memory.standby_ladder: true or false expected") : d.StandbyLadder;
-        return new MemorySettings(backgroundYield, ladder);
+        bool ioPriority = o.TryGetValue("background_io_priority", out object? i) ? i as bool? ?? throw new SettingsException("memory.background_io_priority: true or false expected") : d.BackgroundIoPriority;
+        return new MemorySettings(backgroundYield, ladder, ioPriority);
     }
 
     private static UpdateSettings ParseUpdate(object? v)

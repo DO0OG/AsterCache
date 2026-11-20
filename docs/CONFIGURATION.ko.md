@@ -48,6 +48,7 @@
 | `riot.champ_select_prewarm` | `false` | Riot 게임의 챔피언 선택 중 로컬 리그 오브 레전드 클라이언트 API로 고른 챔피언·맵 파일을 미리 RAM에 읽습니다. Riot 이 2019-01-24 에 한국 플레이어는 League Client API 를 쓰는 앱을 쓸 수 없다고 공지했고 철회는 찾지 못했으므로, 한국 계정에서는 켜지 마십시오. [League of Legends 참고](GAME_GUIDE.ko.md#참고-league-of-legends-vanguard)를 보십시오. |
 | `riot.champ_select_budget_mib` | 2048 | 챔피언 선택 선읽기가 읽을 수 있는 최대 MiB(64~16384). |
 | `memory.background_yield` | `true` | 게임 세션 동안 게임과 무관한 프로그램이 메모리를 양보합니다. 그 프로그램의 메모리 우선순위를 낮추고, 메모리가 모자라거나 캐시가 실제로 재사용될 때만 작업 집합을 비우며, 세션이 끝나면 우선순위를 되돌립니다. 게임·런처·안티치트·서비스 프로세스는 건드리지 않습니다. `false` 면 끕니다. 설정 탭에는 이 스위치가 없습니다. [배경 메모리 양보](AUTO_MODE.ko.md#배경-메모리-양보)를 보십시오. |
+| `memory.background_io_priority` | `true` | 게임 세션 동안 같은 프로그램의 디스크(I/O) 우선순위를 보통에서 낮음으로 낮춰, 그 프로그램의 디스크 읽기가 게임의 읽기를 늦추지 않게 하고, 세션이 끝나면 되돌립니다. `memory.background_yield` 가 `false` 면 아무것도 하지 않으며, `false` 로 두면 이 부분만 끕니다. 설정 탭에는 이 스위치가 없습니다. [배경 메모리 양보](AUTO_MODE.ko.md#배경-메모리-양보)를 보십시오. |
 | `memory.standby_ladder` | `true` | 예열 뒤 그 게임의 캐시를 읽은 순서의 역순으로 메모리 안에서 다시 참조해, 로딩이 가장 먼저 필요로 하는 데이터가 가장 나중에 밀려나게 하고, 다른 프로그램이 밀어내기 전에 다시 참조합니다. 일부러 디스크에서 읽지 않으며, 게임이 실행 중인 디스크에서는 돌지 않습니다. `false` 면 끕니다. 설정 탭에는 이 스위치가 없습니다. [SOLAR](SOLAR.ko.md)를 보십시오. |
 | `games` | `[]` | 게임 목록(최대 32개). 게임 하나의 키는 아래에 있습니다. |
 
@@ -166,7 +167,7 @@
 
 설정 탭의 **업데이트** 카드가 `update.mode` 와 `update.prerelease` 를 정합니다.
 
-이전 버전은 `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, `update`, `memory` 키를 거부하므로, 되돌리기 전에 지워야 합니다. `memory` 는 1.0.3 부터 있는 키이며, 1.0.2 이하 버전은 이 키가 파일에 있으면 값과 상관없이 설정 파일 전체를 거부합니다. `memory.standby_ladder` 는 그보다 새 키입니다. 1.0.3 이하 버전은 이 키가 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오. `auto.stage_stream_enabled` 와 `auto.quick_exit_seconds` 는 그보다 더 새 키입니다. 1.0.3 이하 버전은 둘 중 하나라도 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오.
+이전 버전은 `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, `update`, `memory` 키를 거부하므로, 되돌리기 전에 지워야 합니다. `memory` 는 1.0.3 부터 있는 키이며, 1.0.2 이하 버전은 이 키가 파일에 있으면 값과 상관없이 설정 파일 전체를 거부합니다. `memory.standby_ladder` 는 그보다 새 키입니다. 1.0.3 이하 버전은 이 키가 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오. `auto.stage_stream_enabled` 와 `auto.quick_exit_seconds` 는 그보다 더 새 키입니다. 1.0.3 이하 버전은 둘 중 하나라도 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오. `memory.background_io_priority` 는 1.0.5 부터 있는 키입니다. 1.0.4 이하 버전은 이 키가 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오.
 
 ## 감시기
 

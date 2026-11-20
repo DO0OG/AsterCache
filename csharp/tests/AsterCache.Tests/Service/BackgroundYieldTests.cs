@@ -21,6 +21,7 @@ internal sealed class YieldWorld
         public long Ws = 10 * Mib;
         public long Created = 1000;
         public int Priority = 5;
+        public int Io = 2; // I/O 우선순위 (보통)
         public int Parent;
     }
 
@@ -33,6 +34,18 @@ internal sealed class YieldWorld
     public List<(int Pid, int Priority)> Sets { get; } = [];
 
     public List<int> PriorityReads { get; } = [];
+
+    public List<(int Pid, int Priority)> IoSets { get; } = [];
+
+    public List<int> IoReads { get; } = [];
+
+    /// I/O 우선순위 쓰기가 실패하는 pid.
+    public HashSet<int> IoSetFails { get; } = [];
+
+    /// 조회 권한으로 경로를 읽지 못하는 pid.
+    public HashSet<int> DescribeFails { get; } = [];
+
+    public DateTimeOffset Boot { get; set; } = DateTimeOffset.UnixEpoch;
 
     public int ProcessListCalls;
 
@@ -65,7 +78,7 @@ internal sealed class YieldWorld
         Procs[pid] = new Proc { Exe = exe, Session = session, Path = path ?? @"C:\Users\u\AppData\Local\Programs\app\" + exe, Ws = wsMib * Mib, Priority = priority };
 
     /// 조회·쓰기·우선순위 읽기가 닿은 모든 pid (제외 대상은 여기에 한 번도 없어야 함).
-    public IEnumerable<int> Touched => Described.Concat(Trimmed).Concat(Sets.Select(s => s.Pid)).Concat(PriorityReads).Distinct();
+    public IEnumerable<int> Touched => Described.Concat(Trimmed).Concat(Sets.Select(s => s.Pid)).Concat(PriorityReads).Concat(IoSets.Select(s => s.Pid)).Concat(IoReads).Distinct();
 
     public IReadOnlyList<(int Pid, string Exe)> Snapshot() => [.. Procs.Select(p => (p.Key, p.Value.Exe))];
 
@@ -80,7 +93,7 @@ internal sealed class YieldWorld
         Describe = pid =>
         {
             Described.Add(pid);
-            return Procs.TryGetValue(pid, out Proc? p) ? new ProcessInfo(p.Path, p.Ws, p.Created, p.Parent) : null;
+            return !DescribeFails.Contains(pid) && Procs.TryGetValue(pid, out Proc? p) ? new ProcessInfo(p.Path, p.Ws, p.Created, p.Parent) : null;
         },
         Trim = pid =>
         {
@@ -110,10 +123,27 @@ internal sealed class YieldWorld
             p.Priority = value;
             return true;
         },
+        IoPriority = pid =>
+        {
+            IoReads.Add(pid);
+            return Procs.TryGetValue(pid, out Proc? p) ? p.Io : null;
+        },
+        SetIoPriority = (pid, value) =>
+        {
+            IoSets.Add((pid, value));
+            if (IoSetFails.Contains(pid) || !Procs.TryGetValue(pid, out Proc? p))
+            {
+                return false;
+            }
+
+            p.Io = value;
+            return true;
+        },
         AvailableMib = () => Avail(),
         Lists = () => ListsNow,
         PhysicalBytes = () => PhysicalRam,
         Now = () => Now,
+        BootTime = () => Boot,
         Delay = (t, _) => Now += t,
         ReadState = () => State,
         WriteState = text => State = WriteFails ? throw new IOException("disk full") : text,
@@ -160,6 +190,8 @@ public sealed class BackgroundYieldTests
         Assert.Equal([20], _w.Touched);
         Assert.Equal([20], _w.Trimmed);
         Assert.Equal([(20, 1)], _w.Sets);
+        Assert.Equal([(20, 1)], _w.IoSets);
+        Assert.Equal([20], _w.IoReads);
     }
 
     [Fact]
@@ -194,7 +226,7 @@ public sealed class BackgroundYieldTests
 
         Assert.Equal([(50, 1), (51, 1)], _w.Sets);
         Assert.Equal([50, 52], _w.Trimmed); // 32 MiB 이상만
-        Assert.True(Logged("background yield (trigger): trimmed 2 processes (900 MiB working set), memory priority lowered for 2, available 10000 MiB"));
+        Assert.True(Logged("background yield (trigger): trimmed 2 processes (900 MiB working set), memory priority lowered for 2, I/O priority lowered for 3, available 10000 MiB"));
 
         _w.Now += TimeSpan.FromSeconds(30);
         _ = _w.Add(53, "late.exe", wsMib: 300);
@@ -317,7 +349,7 @@ public sealed class BackgroundYieldTests
         Assert.Empty(_w.Trimmed);
         Assert.Equal([(50, 1)], _w.Sets);
         Assert.Equal(_w.Start, _w.Now); // 가라앉기 대기 없음
-        Assert.True(Logged("background yield (trigger): memory priority lowered for 1, no trim needed (headroom 8192 MiB, available 10000 MiB)"));
+        Assert.True(Logged("background yield (trigger): memory priority lowered for 1, I/O priority lowered for 1, no trim needed (headroom 8192 MiB, available 10000 MiB)"));
     }
 
     [Fact]
@@ -327,7 +359,7 @@ public sealed class BackgroundYieldTests
         _w.ListsNow = Lists(8191);
         Make().Begin("trigger", settle: false);
         Assert.Equal([50], _w.Trimmed);
-        Assert.True(Logged("trimmed 1 processes (500 MiB working set), memory priority lowered for 1, available 10000 MiB, headroom 8191 MiB"));
+        Assert.True(Logged("trimmed 1 processes (500 MiB working set), memory priority lowered for 1, I/O priority lowered for 1, available 10000 MiB, headroom 8191 MiB"));
 
         _w.Trimmed.Clear();
         _w.Procs[50].Ws = 500 * Mib;
@@ -372,7 +404,7 @@ public sealed class BackgroundYieldTests
         y.Begin("trigger", settle: false);
 
         Assert.Equal([50], _w.Trimmed);
-        Assert.True(Logged("trimmed 1 processes (500 MiB working set), memory priority lowered for 1, available 10000 MiB"));
+        Assert.True(Logged("trimmed 1 processes (500 MiB working set), memory priority lowered for 1, I/O priority lowered for 1, available 10000 MiB"));
         TickAt(y, 2, 500, null);
         TickAt(y, 4, 500, null);
         Assert.Single(_w.Trimmed); // 조회가 안 되면 다시 비우지 않음
@@ -497,6 +529,7 @@ public sealed class BackgroundYieldTests
     private YieldWorld.Proc Spawn(int pid, string exe, int parent, int seconds)
     {
         YieldWorld.Proc p = _w.Add(pid, exe, priority: 1);
+        p.Io = 1;
         (p.Parent, p.Created) = (parent, _w.Start.ToFileTime() + (seconds * Second));
         return p;
     }
@@ -514,6 +547,453 @@ public sealed class BackgroundYieldTests
     {
         _w.Now = _w.Start + TimeSpan.FromMinutes(minute);
         y.Tick(_w.Snapshot());
+    }
+
+    [Fact]
+    public void WindowsFolderChildrenAndTheirDescendantsOfALoweredProcessAreRestoredAtTheEndButNeverLoweredOrTrimmed()
+    {
+        BackgroundYield y = RunningYield();
+        YieldWorld.Proc shell = Spawn(60, "cmd.exe", 50, 20);
+        (shell.Path, shell.Ws) = (@"C:\Windows\System32\cmd.exe", 500 * Mib);
+        _ = Spawn(61, "git.exe", 60, 40); // Windows 폴더의 자식이 띄운 손자
+        _w.Procs[62] = new YieldWorld.Proc { Exe = "conhost.exe", Path = @"C:\Windows\System32\conhost.exe", Priority = 1, Io = 1, Parent = 61, Created = _w.Start.ToFileTime() + (60 * Second) };
+
+        MaintainAt(y, 2);
+
+        Assert.Equal([(50, 1)], _w.Sets); // Windows 폴더의 자식도 새로 낮추지는 않음
+        Assert.Equal([(50, 1)], _w.IoSets);
+        Assert.DoesNotContain(60, _w.Trimmed);
+        Assert.Contains("\"pid\": 62", _w.State, StringComparison.Ordinal);
+        _ = _w.Procs.Remove(10);
+
+        y.End();
+
+        Assert.Equal([5, 5, 5, 5], new[] { 50, 60, 61, 62 }.Select(pid => _w.Procs[pid].Priority));
+        Assert.Equal([2, 2, 2, 2], new[] { 50, 60, 61, 62 }.Select(pid => _w.Procs[pid].Io));
+        Assert.Null(_w.State);
+    }
+
+    [Fact]
+    public void AWindowsFolderProcessThatIsNotAnInheritingChildOfALoweredProcessIsNeverWritten()
+    {
+        BackgroundYield y = RunningYield();
+        _ = _w.Add(64, "svchost.exe", path: @"C:\Windows\System32\svchost.exe", wsMib: 500); // 부모가 기록에 없음
+        _ = Spawn(65, "robocopy.exe", 4000, 20).Path = @"C:\Windows\System32\robocopy.exe"; // 모르는 부모
+        YieldWorld.Proc own = _w.Add(66, "tool.exe", path: @"C:\Windows\System32\tool.exe");
+        (own.Parent, own.Created) = (50, _w.Start.ToFileTime() + (20 * Second)); // 낮춘 부모의 자식이지만 스스로 값이 보통 (물려받지 않음)
+
+        MaintainAt(y, 2);
+        _ = _w.Procs.Remove(10);
+        y.End();
+
+        Assert.DoesNotContain(_w.Sets, s => s.Pid is 64 or 65 or 66);
+        Assert.DoesNotContain(_w.IoSets, s => s.Pid is 64 or 65 or 66);
+        Assert.DoesNotContain(64, _w.Trimmed);
+        Assert.Equal([5, 1, 5], new[] { 64, 65, 66 }.Select(pid => _w.Procs[pid].Priority));
+    }
+
+    [Fact]
+    public void GameLauncherAntiCheatSessionZeroAndGameFolderChildrenOfALoweredProcessAreNeverReadOrWritten()
+    {
+        BackgroundYield y = RunningYield();
+        _ = Spawn(66, "cod.exe", 50, 20); // 등록 게임
+        _ = Spawn(67, "steam.exe", 50, 20); // 런처
+        _ = Spawn(68, "vgtray.exe", 50, 20); // 안티치트
+        Spawn(69, "svc.exe", 50, 20).Session = 0; // 세션 0
+        _ = Spawn(70, "x.exe", 50, 20).Path = @"D:\Games\cod\bin\x.exe"; // 게임 폴더 아래
+        _ = Spawn(71, "y.exe", 50, 20).Path = @"C:\Program Files\EasyAntiCheat\y.exe"; // 안티치트 폴더 아래
+
+        MaintainAt(y, 2);
+        _ = _w.Procs.Remove(10);
+        y.End();
+
+        int[] kids = [66, 67, 68, 69, 70, 71];
+        Assert.DoesNotContain(_w.Touched, pid => pid is >= 66 and <= 69);
+        Assert.DoesNotContain(_w.Sets.Concat(_w.IoSets), s => kids.Contains(s.Pid));
+        Assert.DoesNotContain(_w.PriorityReads.Concat(_w.IoReads), pid => kids.Contains(pid));
+        Assert.Equal([1, 1, 1, 1, 1, 1], kids.Select(pid => _w.Procs[pid].Priority));
+    }
+
+    [Fact]
+    public void WhenTheStateFileWriteFailsAChildFoundThatMomentIsStillRestoredAtTheEnd()
+    {
+        BackgroundYield y = RunningYield();
+        _ = Spawn(60, "kid.exe", 50, 20);
+        _ = _w.Add(70, "late.exe", wsMib: 500); // 새로 낮추려던 것은 기록 없이 낮추지 않음
+        _w.WriteFails = true;
+
+        MaintainAt(y, 2);
+
+        Assert.Equal([5, 2], new[] { _w.Procs[70].Priority, _w.Procs[70].Io });
+        _w.WriteFails = false;
+        _ = _w.Procs.Remove(10);
+        y.End();
+
+        Assert.Equal([5, 2], new[] { _w.Procs[60].Priority, _w.Procs[60].Io });
+        Assert.Null(_w.State);
+    }
+
+    [Fact]
+    public void ARestartedServiceAlsoRestoresChildrenStartedAfterTheLastRecordButNotOnesCreatedBeforeTheParentWasLowered()
+    {
+        _ = RunningYield();
+        Assert.Contains("lowered_at", _w.State, StringComparison.Ordinal);
+        _ = Spawn(60, "kid.exe", 50, 150); // 마지막 기록 뒤 (서비스가 내려가 있던 동안 포함)
+        _ = Spawn(61, "grandkid.exe", 60, 160);
+        _ = Spawn(62, "old.exe", 50, -30); // 부모가 낮춰지기 전부터 낮았음
+
+        Make().Recover();
+
+        Assert.Equal([5, 5, 5], new[] { 50, 60, 61 }.Select(pid => _w.Procs[pid].Priority));
+        Assert.Equal([2, 2, 2], new[] { 50, 60, 61 }.Select(pid => _w.Procs[pid].Io));
+        Assert.Equal([1, 1], new[] { _w.Procs[62].Priority, _w.Procs[62].Io });
+        Assert.Null(_w.State);
+        Assert.True(Logged("restored memory priority for 3 processes left by the previous run, I/O priority for 3"));
+    }
+
+    [Fact]
+    public void AChildThatCombinesItsOwnLoweringWithAnInheritedSideKeepsTheEarlierTimeSoItsOwnChildIsFound()
+    {
+        BackgroundYield y = RunningYield();
+        YieldWorld.Proc kid = Spawn(60, "kid.exe", 50, 20);
+        kid.Priority = 5; // 메모리는 스스로 올려 직접 낮추고 I/O 는 물려받음
+        _ = Spawn(61, "grandkid.exe", 60, 40).Priority = 5;
+
+        MaintainAt(y, 2);
+        _ = _w.Procs.Remove(10);
+        y.End();
+
+        Assert.Equal(2, _w.Procs[61].Io);
+        Assert.Equal(2, _w.Procs[60].Io);
+    }
+
+    [Fact]
+    public void WhenOnlyTheIoSettingIsOffAndTheRestoreKeepsFailingItIsTriedOnceAndTheEndRetries()
+    {
+        BackgroundYield y = RunningYield();
+        _ = _w.IoSetFails.Add(50);
+        _settings = _settings with { Memory = new MemorySettings(true, true, false) };
+
+        MaintainAt(y, 1);
+        MaintainAt(y, 2);
+        MaintainAt(y, 3);
+
+        Assert.Equal(1, _log.Lines.Count(l => l.Contains("(setting turned off)", StringComparison.Ordinal)));
+        Assert.Equal(1, _w.IoSets.Count(s => s.Priority == 2));
+
+        _ = _w.IoSetFails.Remove(50);
+        _ = _w.Procs.Remove(10);
+        y.End();
+
+        Assert.Equal(2, _w.Procs[50].Io);
+        Assert.Null(_w.State);
+    }
+
+    // 낮춘 부모 (pid 50) 가 끝나고 같은 pid 를 대상이 아닌 프로세스가 다시 씀. 그 프로세스가 띄운 낮은 값의 자식은 Windows 폴더 하나, 일반 폴더 하나.
+    private BackgroundYield ReusedParentPid(string exe, uint session)
+    {
+        BackgroundYield y = RunningYield();
+        _ = _w.Procs.Remove(50);
+        _w.Add(50, exe, session: session).Created = _w.Start.ToFileTime() + (60 * Second);
+        _ = Spawn(60, "cmd.exe", 50, 200).Path = @"C:\Windows\System32\cmd.exe";
+        _ = Spawn(61, "tool.exe", 50, 200);
+        return y;
+    }
+
+    [Theory]
+    [InlineData("svchost.exe", 0u)]
+    [InlineData("cod.exe", 1u)]
+    [InlineData("steam.exe", 1u)]
+    public void ChildrenOfAProcessThatReusedTheEndedParentsPidAreNotTakenAsInheritedAtTheEnd(string exe, uint session)
+    {
+        BackgroundYield y = ReusedParentPid(exe, session);
+
+        MaintainAt(y, 2);
+        _ = _w.Procs.Remove(10);
+        y.End();
+
+        Assert.Equal([1, 1, 1, 1], new[] { 60, 61 }.SelectMany(pid => new[] { _w.Procs[pid].Priority, _w.Procs[pid].Io }));
+        Assert.DoesNotContain(_w.Sets.Concat(_w.IoSets), s => s.Pid is 60 or 61);
+    }
+
+    [Theory]
+    [InlineData("svchost.exe", 0u)]
+    [InlineData("cod.exe", 1u)]
+    public void ChildrenOfAProcessThatReusedTheEndedParentsPidAreNotTakenAsInheritedByRecover(string exe, uint session)
+    {
+        _ = ReusedParentPid(exe, session);
+
+        Make().Recover();
+
+        Assert.Equal([1, 1, 1, 1], new[] { 60, 61 }.SelectMany(pid => new[] { _w.Procs[pid].Priority, _w.Procs[pid].Io }));
+        Assert.DoesNotContain(_w.Sets.Concat(_w.IoSets), s => s.Pid is 60 or 61);
+    }
+
+    [Fact]
+    public void RecoverAfterARebootDoesNotUseTheFilesPidsAsParents()
+    {
+        _ = RunningYield();
+        _ = Spawn(60, "kid.exe", 50, 200);
+        _w.Boot = _w.Start + TimeSpan.FromDays(1); // 파일은 재부팅 앞에 적힘
+
+        Make().Recover();
+
+        Assert.Equal([1, 1], new[] { _w.Procs[60].Priority, _w.Procs[60].Io });
+        Assert.Equal(5, _w.Procs[50].Priority); // 같은 프로세스 (만든 시각 같음) 면 그 항목 자체는 되돌림
+    }
+
+    [Fact]
+    public void AChildThatEnteredBackgroundModeItselfIsNotTakenAsInheritedForMemoryEither()
+    {
+        BackgroundYield y = RunningYield();
+        _w.Procs[61] = new YieldWorld.Proc { Exe = "bg.exe", Priority = 1, Io = 0, Parent = 50, Created = _w.Start.ToFileTime() + (20 * Second) };
+
+        MaintainAt(y, 2);
+        _ = _w.Procs.Remove(10);
+        y.End();
+
+        Assert.Equal([1, 0], new[] { _w.Procs[61].Priority, _w.Procs[61].Io });
+    }
+
+    [Fact]
+    public void AWindowsFolderChildThatAlsoHitsAnotherPathRuleOrWhosePathCannotBeReadIsNeverReadOrWritten()
+    {
+        _w.KnownFolders = [@"C:\Windows\Temp\MyGame"];
+        BackgroundYield y = RunningYield();
+        _ = Spawn(60, "g.exe", 50, 20).Path = @"C:\Windows\Temp\MyGame\g.exe"; // Windows 폴더 아래이면서 알려진 게임 폴더
+        _ = Spawn(61, "cmd.exe", 50, 20).Path = @"C:\Windows\System32\cmd.exe";
+        _ = _w.DescribeFails.Add(61); // 경로를 못 읽음
+
+        MaintainAt(y, 2);
+        _ = _w.Procs.Remove(10);
+        y.End();
+
+        Assert.DoesNotContain(_w.PriorityReads.Concat(_w.IoReads), pid => pid is 60 or 61);
+        Assert.DoesNotContain(_w.Sets.Concat(_w.IoSets), s => s.Pid is 60 or 61);
+        Assert.Equal([1, 1, 1, 1], new[] { 60, 61 }.SelectMany(pid => new[] { _w.Procs[pid].Priority, _w.Procs[pid].Io }));
+    }
+
+    [Fact]
+    public void TheMaintenanceRetrimDoesNotOpenWindowsFolderProgramsAgain()
+    {
+        BackgroundYield y = RunningSession(Lists(1000, 10_000));
+        _ = _w.Add(70, "svchost.exe", path: @"C:\Windows\System32\svchost.exe", wsMib: 500);
+
+        TickAt(y, 2, 100, Lists(1000, 10_000));
+        TickAt(y, 4, 100, Lists(1000, 10_000 + 600));
+        TickAt(y, 6, 100, Lists(1000, 10_000 + 1300));
+
+        Assert.True(_w.Trimmed.Count > 1); // 다시 비우기가 일어남
+        Assert.DoesNotContain(70, _w.Trimmed);
+        Assert.Equal(1, _w.Described.Count(pid => pid == 70));
+    }
+
+    [Fact]
+    public void OnlyNormalIoPriorityIsLoweredToLowAndRestoredAtTheEndWhileOtherValuesAreLeftAlone()
+    {
+        _ = _w.Add(50, "normal.exe");
+        _w.Add(51, "low.exe").Io = 1;
+        _w.Add(52, "high.exe").Io = 3;
+        _w.Add(53, "verylow.exe").Io = 0;
+        BackgroundYield y = Make();
+
+        y.Begin("trigger", settle: false);
+
+        Assert.Equal([(50, 1)], _w.IoSets);
+        Assert.Equal(1, _w.Procs[50].Io);
+        Assert.Equal([1, 3, 0], new[] { 51, 52, 53 }.Select(pid => _w.Procs[pid].Io));
+        Assert.Contains("\"io_priority\": 2", _w.State, StringComparison.Ordinal);
+        Assert.True(Logged("memory priority lowered for 4, I/O priority lowered for 1"));
+
+        y.End();
+
+        Assert.Equal([(50, 1), (50, 2)], _w.IoSets);
+        Assert.Equal([2, 1, 3, 0], new[] { 50, 51, 52, 53 }.Select(pid => _w.Procs[pid].Io));
+        Assert.Null(_w.State);
+        Assert.True(Logged("memory priority restored for 4 processes (0 inherited), I/O priority restored for 1 processes"));
+    }
+
+    [Fact]
+    public void ChildrenAndGrandchildrenOfAProcessWithLoweredIoPriorityAreRestoredWithItAndAnIoOnlyEntryIsKept()
+    {
+        BackgroundYield y = RunningYield();
+        _ = Spawn(61, "grandkid.exe", 60, 40);
+        _ = Spawn(60, "kid.exe", 50, 20);
+
+        MaintainAt(y, 2);
+
+        Assert.Equal([(50, 1)], _w.IoSets); // 물려받은 것은 이미 낮아서 쓰지 않음
+        Assert.Equal(1, _w.Procs[61].Io);
+        _ = _w.Procs.Remove(10);
+        y.End();
+
+        Assert.Equal([2, 2, 2], new[] { 50, 60, 61 }.Select(pid => _w.Procs[pid].Io));
+        Assert.True(Logged("I/O priority restored for 3 processes"));
+        Assert.Null(_w.State);
+    }
+
+    [Fact]
+    public void AChildWhoseMemoryPriorityWasSetByItselfStillInheritsTheIoPriorityOnlyOnce()
+    {
+        BackgroundYield y = RunningYield();
+        YieldWorld.Proc kid = Spawn(60, "kid.exe", 50, 20);
+        kid.Priority = 5; // 스스로 올림: 메모리는 직접 낮추고 I/O 는 물려받음
+
+        MaintainAt(y, 2);
+
+        Assert.Equal([(50, 1), (60, 1)], _w.Sets);
+        Assert.Equal([(50, 1)], _w.IoSets);
+        _ = _w.Procs.Remove(10);
+        y.End();
+
+        Assert.Equal([5, 2], new[] { _w.Procs[60].Priority, _w.Procs[60].Io });
+        Assert.Null(_w.State);
+    }
+
+    [Fact]
+    public void ARestartedServiceRestoresTheIoPriorityOfTheLoweredAndInheritedProcessesFromTheStateFile()
+    {
+        BackgroundYield y = RunningYield();
+        _ = Spawn(60, "kid.exe", 50, 20);
+        MaintainAt(y, 2);
+        Assert.Equal([1, 1], new[] { 50, 60 }.Select(pid => _w.Procs[pid].Io));
+
+        Make().Recover();
+
+        Assert.Equal([2, 2], new[] { 50, 60 }.Select(pid => _w.Procs[pid].Io));
+        Assert.Null(_w.State);
+        Assert.True(Logged("restored memory priority for 2 processes left by the previous run, I/O priority for 2"));
+    }
+
+    [Fact]
+    public void AStateFileWrittenBeforeIoPriorityExistedStillRestoresMemoryAndAnIoOnlyEntryRestoresIo()
+    {
+        _ = _w.Add(50, "big.exe");
+        _ = _w.Add(51, "other.exe");
+        _w.Procs[50].Priority = 1;
+        _w.Procs[51].Io = 1;
+        _w.State = "{\"lowered\":[{\"pid\":50,\"exe\":\"big.exe\",\"created\":1000,\"priority\":5}," // 이전 형식: io_priority 없음
+            + "{\"pid\":51,\"exe\":\"other.exe\",\"created\":1000,\"io_priority\":2}]}";
+
+        Make().Recover();
+
+        Assert.Equal([(50, 5)], _w.Sets);
+        Assert.Equal([(51, 2)], _w.IoSets);
+        Assert.Equal([5, 2], new[] { _w.Procs[50].Priority, _w.Procs[51].Io });
+        Assert.Null(_w.State);
+    }
+
+    [Theory]
+    [InlineData("{\"lowered\":[{\"pid\":50,\"created\":1000,\"io_priority\":0}]}")]
+    [InlineData("{\"lowered\":[{\"pid\":50,\"created\":1000,\"io_priority\":\"2\"}]}")]
+    [InlineData("{\"lowered\":[{\"pid\":50,\"created\":1000,\"priority\":5,\"io_priority\":9}]}")]
+    public void AStateEntryWithAnInvalidIoPriorityIsDroppedAndNothingIsTouched(string text)
+    {
+        _ = _w.Add(50, "big.exe");
+        _w.State = text;
+
+        Make().Recover();
+
+        Assert.Null(_w.State);
+        Assert.Empty(_w.Sets);
+        Assert.Empty(_w.IoSets);
+    }
+
+    [Fact]
+    public void WithTheIoSettingOffOnlyMemoryPriorityIsLoweredAndNothingIoIsReadOrWritten()
+    {
+        _ = _w.Add(50, "big.exe", wsMib: 500);
+        _settings = _settings with { Memory = new MemorySettings(true, true, false) };
+
+        Make().Begin("trigger", settle: false);
+
+        Assert.Equal([(50, 1)], _w.Sets);
+        Assert.Empty(_w.IoReads);
+        Assert.Empty(_w.IoSets);
+        Assert.DoesNotContain("io_priority", _w.State, StringComparison.Ordinal);
+        Assert.True(Logged("memory priority lowered for 1, I/O priority lowered for 0"));
+    }
+
+    [Fact]
+    public void TurningOnlyTheIoSettingOffDuringASessionRestoresIoAtTheNextTickAndKeepsMemoryLowered()
+    {
+        BackgroundYield y = RunningYield();
+        _ = Spawn(60, "kid.exe", 50, 20); // 마지막 점검 뒤에 뜬 자식도 함께 되돌림
+        _settings = _settings with { Memory = new MemorySettings(true, true, false) };
+
+        MaintainAt(y, 1);
+
+        Assert.Equal([2, 2], new[] { 50, 60 }.Select(pid => _w.Procs[pid].Io));
+        Assert.Equal(1, _w.Procs[50].Priority);
+        Assert.DoesNotContain("io_priority", _w.State, StringComparison.Ordinal);
+        Assert.Contains("\"priority\": 5", _w.State, StringComparison.Ordinal);
+        Assert.True(Logged("I/O priority restored for 2 processes (setting turned off)"));
+
+        _ = _w.Procs.Remove(10);
+        y.End();
+
+        Assert.Equal(5, _w.Procs[50].Priority);
+        Assert.Null(_w.State);
+    }
+
+    [Fact]
+    public void AFailureOnOneSideLeavesTheOtherSideLoweredAndRecordedAndEachFailedRestoreIsRetried()
+    {
+        _ = _w.Add(50, "big.exe", wsMib: 500);
+        _ = _w.IoSetFails.Add(50);
+        BackgroundYield y = Make();
+
+        y.Begin("trigger", settle: false);
+
+        Assert.Equal(1, _w.Procs[50].Priority);
+        Assert.Equal(2, _w.Procs[50].Io);
+        Assert.DoesNotContain("io_priority", _w.State, StringComparison.Ordinal); // 못 낮춘 쪽은 기록하지 않음
+        Assert.True(Logged("memory priority lowered for 1, I/O priority lowered for 0"));
+
+        _ = _w.IoSetFails.Remove(50);
+        y.End();
+        Assert.Equal(5, _w.Procs[50].Priority);
+        Assert.Null(_w.State);
+
+        _w.Now += TimeSpan.FromMinutes(5);
+        y.Begin("trigger", settle: false); // 다음 세션: 둘 다 낮춤
+        Assert.Equal([1, 1], new[] { _w.Procs[50].Priority, _w.Procs[50].Io });
+        _ = _w.SetFails.Add(50);
+        y.End(); // 메모리 되돌리기만 실패
+
+        Assert.Equal(2, _w.Procs[50].Io);
+        Assert.Equal(1, _w.Procs[50].Priority);
+        Assert.Contains("\"priority\": 5", _w.State, StringComparison.Ordinal);
+        Assert.DoesNotContain("io_priority", _w.State, StringComparison.Ordinal);
+
+        _ = _w.SetFails.Remove(50);
+        Make().Recover();
+        Assert.Equal(5, _w.Procs[50].Priority);
+        Assert.Null(_w.State);
+
+        _w.Now += TimeSpan.FromMinutes(5);
+        BackgroundYield next = Make();
+        next.Begin("trigger", settle: false);
+        _ = _w.IoSetFails.Add(50);
+        next.End();
+        Assert.Contains("\"io_priority\": 2", _w.State, StringComparison.Ordinal); // I/O 되돌리기 실패는 파일에 남음
+        _ = _w.IoSetFails.Remove(50);
+        Make().Recover();
+        Assert.Equal(2, _w.Procs[50].Io);
+        Assert.Null(_w.State);
+    }
+
+    [Fact]
+    public void WhenTheStateFileCannotBeWrittenIoPriorityIsNotLoweredEither()
+    {
+        _ = _w.Add(50, "big.exe", wsMib: 500);
+        _w.WriteFails = true;
+
+        Make().Begin("trigger", settle: false);
+
+        Assert.Empty(_w.IoSets);
+        Assert.Equal(2, _w.Procs[50].Io);
+        Assert.True(Logged("I/O priority lowered for 0"));
     }
 
     [Fact]
@@ -706,6 +1186,10 @@ public sealed class BackgroundYieldTests
         Assert.False(ParseMemory(new JsonObject { ["background_yield"] = false }).BackgroundYield);
         Assert.True(ParseMemory(new JsonObject { ["background_yield"] = true }).BackgroundYield);
         Assert.Throws<SettingsException>(() => ParseMemory(new JsonObject { ["background_yield"] = "yes" }));
+        Assert.True(ParseMemory(null).BackgroundIoPriority);
+        Assert.False(ParseMemory(new JsonObject { ["background_io_priority"] = false }).BackgroundIoPriority);
+        Assert.True(ParseMemory(new JsonObject { ["background_io_priority"] = false }).BackgroundYield);
+        Assert.Throws<SettingsException>(() => ParseMemory(new JsonObject { ["background_io_priority"] = 1 }));
         Assert.Throws<SettingsException>(() => ParseMemory(new JsonObject { ["unknown"] = 1 }));
         Assert.Throws<SettingsException>(() => ParseMemory(JsonValue.Create(true)));
     }
@@ -758,6 +1242,8 @@ public sealed class BackgroundYieldTests
         y.Begin("trigger", settle: false);
         Assert.Equal(0, _w.ProcessListCalls);
         Assert.Empty(_w.Sets);
+        Assert.Empty(_w.IoReads);
+        Assert.Empty(_w.IoSets);
 
         _settings = _settings with { Memory = new MemorySettings(true) };
         y.Begin("trigger", settle: false);
@@ -1047,6 +1533,94 @@ public sealed class ProcessMemoryLiveTests
         child.WaitForExit();
         Assert.Null(ProcessMemory.Describe(pid)); // 끝난 프로세스는 예외 없이 null
         Assert.False(ProcessMemory.Trim(pid));
+    }
+}
+
+/// 실제 Windows 호출: 시험 프로세스 자신과 자신이 띄운 자식 프로세스의 I/O 우선순위만 바꿉니다 (다른 프로세스는 건드리지 않음, 끝나면 원래 값으로). 관리자 권한은 필요 없습니다.
+[Trait("Category", "Live")]
+public sealed class ProcessIoPriorityLiveTests
+{
+    [Fact]
+    public void LoweringTheProcessIsInheritedByANewChildAndRestoringBringsTheOriginalBack()
+    {
+        int self = Environment.ProcessId;
+        int? original = ProcessMemory.IoPriority(self);
+        Assert.NotNull(original);
+        Assert.True(ProcessMemory.SetIoPriority(self, ProcessMemory.IoPriorityLow));
+        try
+        {
+            Assert.Equal(ProcessMemory.IoPriorityLow, ProcessMemory.IoPriority(self));
+            using Process child = Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "ping.exe"), "-n 30 127.0.0.1") { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true })!;
+            try
+            {
+                Assert.Equal(ProcessMemory.IoPriorityLow, ProcessMemory.IoPriority(child.Id)); // 낮춘 부모가 띄운 자식은 낮음으로 시작
+                Assert.True(ProcessMemory.SetIoPriority(child.Id, ProcessMemory.IoPriorityNormal));
+                Assert.Equal(ProcessMemory.IoPriorityNormal, ProcessMemory.IoPriority(child.Id));
+            }
+            finally
+            {
+                child.Kill();
+                child.WaitForExit();
+            }
+
+            Assert.Null(ProcessMemory.IoPriority(1 << 30)); // 없는 프로세스는 예외 없이 null/false
+            Assert.False(ProcessMemory.SetIoPriority(1 << 30, ProcessMemory.IoPriorityLow));
+        }
+        finally
+        {
+            Assert.True(ProcessMemory.SetIoPriority(self, original.Value));
+        }
+
+        Assert.Equal(original, ProcessMemory.IoPriority(self));
+    }
+
+    [Fact]
+    public void AWindowsFolderChildAndItsOwnChildStartedByTheLoweredTestProcessInheritLowAndAreRestorable()
+    {
+        int self = Environment.ProcessId;
+        int? original = ProcessMemory.IoPriority(self);
+        Assert.NotNull(original);
+        Assert.True(ProcessMemory.SetIoPriority(self, ProcessMemory.IoPriorityLow));
+        try
+        {
+            using Process shell = Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "cmd.exe"), "/c ping -n 30 127.0.0.1 >nul") { CreateNoWindow = true, UseShellExecute = false })!;
+            try
+            {
+                ProcessInfo? info = ProcessMemory.Describe(shell.Id);
+                Assert.NotNull(info);
+                Assert.StartsWith(Environment.GetFolderPath(Environment.SpecialFolder.Windows), info.Value.Path, StringComparison.OrdinalIgnoreCase); // 경로 규칙으로 빠지는 프로세스
+                Assert.Equal(self, info.Value.Parent);
+                Assert.Equal(ProcessMemory.IoPriorityLow, ProcessMemory.IoPriority(shell.Id));
+                int? grandchild = null;
+                for (int i = 0; i < 100 && grandchild is null; i++)
+                {
+                    grandchild = Process.GetProcessesByName("ping").Select(p => p.Id).Cast<int?>().FirstOrDefault(id => ProcessMemory.Describe(id!.Value)?.Parent == shell.Id);
+                    if (grandchild is null)
+                    {
+                        Thread.Sleep(50);
+                    }
+                }
+
+                Assert.NotNull(grandchild);
+                Assert.Equal(ProcessMemory.IoPriorityLow, ProcessMemory.IoPriority(grandchild.Value)); // 낮은 값을 물려받은 손자
+                Assert.True(ProcessMemory.SetIoPriority(shell.Id, ProcessMemory.IoPriorityNormal));
+                Assert.Equal(ProcessMemory.IoPriorityNormal, ProcessMemory.IoPriority(shell.Id));
+            }
+            finally
+            {
+                foreach (Process p in Process.GetProcessesByName("ping").Where(p => ProcessMemory.Describe(p.Id)?.Parent == shell.Id))
+                {
+                    p.Kill();
+                }
+
+                shell.Kill();
+                shell.WaitForExit();
+            }
+        }
+        finally
+        {
+            Assert.True(ProcessMemory.SetIoPriority(self, original.Value));
+        }
     }
 }
 

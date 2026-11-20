@@ -422,7 +422,7 @@ public sealed partial class Prewarmer
             if (lowMemory || hotMib > room)
             {
                 // 전체가 안 들어가도 Run 의 부분 예열이 읽으면 앞부분도 올림 (RunBatch 와 같은 판단, 상한은 Run 과 같게 전체 입장 때는 남은 예산을 씀)
-                if (PartialCapMib(g, hotMib, WindowAvailableMib(avail), physCap, zoneMib <= room ? long.MaxValue : room) is not { } cap)
+                if (PartialCapMib(g, hotMib, WindowAvailableMib(avail), physCap, zoneMib <= room ? long.MaxValue : room, FootprintOf(g)?.Mib) is not { } cap)
                 {
                     Skipped(g, "batch memory budget");
                     continue; // 이 게임만 건너뜀: 뒤 게임은 남은 예산으로 RunBatch 와 같이 따로 판단

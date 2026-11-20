@@ -73,7 +73,7 @@ public sealed partial class Prewarmer
 
     private bool ProtectionHalted(GameSettings game) => _streamGameStarted || _streamPreempted || PreemptedByTriggerWait(game.Name);
 
-    // 스트림의 게임을 뺀 예열한 게임, 순위가 낮은 것부터 (Warmed 는 최근 순).
+    // 스트림의 게임을 뺀 예열한 게임, 순위가 낮은 것부터 (Warmed 는 플레이 가능성 순: 예산 순위가 있으면 그 순위, 없으면 최근 예열 순).
     private IEnumerable<GameSettings> OtherGames(GameSettings game) => Enumerable.Reverse(Warmed()).Where(g => !string.Equals(g.Name, game.Name, StringComparison.OrdinalIgnoreCase));
 
     // pick 이 고른 다른 게임들을 만지고 (Rewarmer.RefreshGroup) 쓴 시간을 스트림의 양보 시간에서 빼도록 알립니다. 고른 게임이 없으면 아무것도 하지 않습니다.
@@ -138,6 +138,13 @@ public sealed partial class Prewarmer
             }
 
             _ = _solar.Order(game, ladder, stop, protectedFirst: protectedFirst);
+            // 플레이 1순위 게임이 방금 스트림한 게임이 아니면 그 게임을 맨 뒤에 한 번 더 만져 가장 늦게 밀려나게 함 (표본이 식었으면 새로 고침이 재예열 점검을 앞당김)
+            if (!trigger && CanProtectOthers(game, stop) && FirstPlayPriority() is { } first && !string.Equals(first.Name, game.Name, StringComparison.OrdinalIgnoreCase)
+                && _solar.Marked([first]).Count > 0)
+            {
+                _requeued += TouchOthers(game, stop, readYield, () => _solar.Marked([first]));
+                _log.Info($"{game.Name}: ladder ordered, {first.Name} touched again after it as the first play priority");
+            }
         }
         catch (Exception e) when (e is not (OperationCanceledException or OutOfMemoryException or StackOverflowException))
         {
@@ -188,6 +195,7 @@ public sealed partial class Prewarmer
     /// 지금까지 읽은 범위를 나타내는 게임: 부분 예열 (메모리·시작 상한) 이면 읽은 앞부분까지로 줄인 사본, 아니면 그대로.
     internal GameSettings CoveredPart(GameSettings g)
     {
+        g = WithSparseMark(g);
         lock (_gate)
         {
             return _partial.TryGetValue(g.Name, out (long WarmedMib, long HotMib) part) ? g with { MaxStreamMib = (int)Math.Min(part.WarmedMib, int.MaxValue), MaxStreamSet = true } : g;

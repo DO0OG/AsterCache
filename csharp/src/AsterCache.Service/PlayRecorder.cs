@@ -59,6 +59,7 @@ internal sealed class PlaySampleRecord
     public bool ObservedAfterGameStart { get; set; }
     public string? PhysicalDisk { get; set; }
     public long AvailableRamMib { get; set; }
+    public long? MinAvailableRamMib { get; set; } // 시작 뒤 GameFootprint.WindowSeconds 안의 최소 가용 RAM (몫 학습용)
     public PlayWarmSnapshot? StartWarm { get; set; }
     public PlayStreamResult StartStream { get; set; } = new("pending", null, null, null, null);
     public List<PlayWindowSummary> Windows { get; set; } = [];
@@ -139,6 +140,9 @@ public sealed class PlayRecorder : IDisposable
             return true;
         }
     }
+
+    /// 게임이 실행 뒤 잡는 메모리 (몫, MiB) 와 그 값을 낸 플레이 수: 최근 플레이 기록의 중앙값, 쓸 기록이 없으면 null.
+    internal (long Mib, int Plays)? Footprint(string game) => GameFootprint.Median(_store.Samples(game));
 
     /// 서비스 시작이나 설정 재적재 때 이미 실행 중인 게임의 관측을 시작합니다.
     internal bool ObserveExisting(GameSettings game)
@@ -313,6 +317,7 @@ public sealed class PlayRecorder : IDisposable
                     return;
                 }
 
+                session.NoteAvailable(SafeAvailableRam(), tick);
                 foreach (PlayWindowSummary checkpoint in session.AddSample(previous, current, previousTick, tick))
                 {
                     PlaySampleRecord record = session.Snapshot(tick);
@@ -429,7 +434,7 @@ public sealed class PlayRecorder : IDisposable
         }
 
         parts.Add(FormatWarm(record.StartWarm));
-        parts.Add($"start RAM {record.AvailableRamMib} MiB");
+        parts.Add($"start RAM {record.AvailableRamMib} MiB" + (record.MinAvailableRamMib is { } min ? $", min RAM {min} MiB" : string.Empty));
         parts.Add(FormatStream(record.StartStream));
         foreach (PlayWindowSummary window in record.Windows)
         {
@@ -530,6 +535,21 @@ public sealed class PlayRecorder : IDisposable
         public DateTimeOffset StartedAt { get; } = startedAt;
         public long StartedTick { get; } = startedTick;
         public long AvailableRamMib { get; } = availableRamMib;
+        private long? _minAvailableMib;
+
+        /// 시작 뒤 GameFootprint.WindowSeconds 안의 가용 RAM 표본 중 최소값을 남깁니다 (0 은 못 읽은 값이라 뺌).
+        public void NoteAvailable(long mib, long tick)
+        {
+            if (mib <= 0 || Stopwatch.GetElapsedTime(StartedTick, tick).TotalSeconds > GameFootprint.WindowSeconds)
+            {
+                return;
+            }
+
+            lock (_gate)
+            {
+                _minAvailableMib = _minAvailableMib is { } current ? Math.Min(current, mib) : mib;
+            }
+        }
         public PlayWarmSnapshot? Warm { get; } = warm;
         public bool ObservedAfterGameStart { get; } = observedAfterGameStart;
         public CancellationTokenSource Stop { get; } = new();
@@ -729,6 +749,7 @@ public sealed class PlayRecorder : IDisposable
                 ObservedAfterGameStart = ObservedAfterGameStart,
                 PhysicalDisk = _physicalDisk,
                 AvailableRamMib = AvailableRamMib,
+                MinAvailableRamMib = _minAvailableMib,
                 StartWarm = Warm,
                 StartStream = _startStream,
                 Windows = [.. final && _goneAt is not null ? _windows.Take(_goneWindows) : _windows],
@@ -924,6 +945,14 @@ public sealed class PlayRecorder : IDisposable
             _path = path;
             _log = log;
             (_document, _persist) = Load(path, log);
+        }
+
+        public IReadOnlyList<PlaySampleRecord> Samples(string game)
+        {
+            lock (_gate)
+            {
+                return _document.Games.TryGetValue(game, out List<PlaySampleRecord>? samples) ? [.. samples] : [];
+            }
         }
 
         public void Upsert(PlaySampleRecord record)

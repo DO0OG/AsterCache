@@ -976,7 +976,7 @@ public sealed partial class PrefetchStreamer : IGameStreamer
                 cancellationToken.ThrowIfCancellationRequested();
                 return new FileInfo(p).Length;
             }, headBytes: HeadBytesOf(game, cancellationToken) + frontBytes, cancellationToken: cancellationToken); // 앞부분 가변 범위 (목록 맨 앞) 도 접근 순서로 먼저 읽음
-        return (UnbufferedFiles.Without(game, ops), budget, frontBytes); // 캐시 없이만 읽히는 파일은 예열·스트림·고정 목록에서 뺌 (예산 창은 그대로라 빠진 만큼 메모리가 남음)
+        return (SparseWarmExclusion.Without(game, UnbufferedFiles.Without(game, ops)), budget, frontBytes); // 캐시 없이만 읽히는 파일은 예열·스트림·고정 목록에서 뺌 (예산 창은 그대로라 빠진 만큼 메모리가 남음), 스파스 표시가 있는 게임 사본은 스파스 구간도 뺌
     }
 
     /// 고정할 파일: 선읽기 목록의 파일 중 허용 루트 안인 것 (읽기 전용으로만 쓰임). 매핑 총합이 capBytes 를 넘기 전의 앞쪽 파일만.

@@ -447,6 +447,7 @@ public sealed partial class Prewarmer
     /// 읽는 동안 게임 시작·재배치 시작은 StreamHot 의 기존 규칙으로 멈춥니다 (멈추면 남겨 두고 다음 유휴 때 다시).
     internal bool Supplement(GameSettings game, CancellationToken ct, long? allocatedMib = null)
     {
+        game = WithSparseMark(game); // 스파스를 뺀 예열이면 보충도 같은 목록에서 이어 읽음
         (long WarmedMib, long HotMib) p;
         lock (_gate)
         {
@@ -482,10 +483,10 @@ public sealed partial class Prewarmer
             long? partialCap = null;
             if (needsPartial)
             {
-                partialCap = PartialCapMib(game, p.HotMib, WindowAvailableMib(avail), physCap, budgetCap);
+                partialCap = PartialCapMib(game, p.HotMib, WindowAvailableMib(avail), physCap, budgetCap, FootprintOf(game)?.Mib);
                 if (partialCap is not { } cap)
                 {
-                    LogSkipped(game.Name, "supplement memory budget", $"{game.Name}: supplement prewarm skipped (hot set {p.HotMib} MiB exceeds the budget: min(cache budget {physCap} MiB, available {avail} MiB - reserve {game.Prewarm.MinFreeRamMib} MiB), and less than {MinPartialMib} MiB fits)");
+                    LogSkipped(game.Name, "supplement memory budget", $"{game.Name}: supplement prewarm skipped (hot set {p.HotMib} MiB exceeds the budget: min(cache budget {physCap} MiB, available {avail} MiB - reserve {ReserveMib(game, FootprintOf(game)?.Mib)} MiB), and less than {MinPartialMib} MiB fits)");
                     return false;
                 }
             }
@@ -601,11 +602,11 @@ public sealed partial class Prewarmer
                     finalReadMib = Math.Min(finalReadMib, limit);
                 }
 
-                long reserveMib = Math.Max(game.Prewarm.MinFreeRamMib, GapFillReserveMib);
+                long reserveMib = ReserveMib(game, FootprintOf(game)?.Mib);
                 long allowedMib = Math.Min(Math.Min(physCap, allocatedMib ?? long.MaxValue), WindowAvailableMib(avail) - reserveMib);
                 if (finalReadMib > allowedMib)
                 {
-                    if (PartialCapMib(game, finalReadMib, WindowAvailableMib(avail), physCap, budgetCap) is { } capMib)
+                    if (PartialCapMib(game, finalReadMib, WindowAvailableMib(avail), physCap, budgetCap, FootprintOf(game)?.Mib) is { } capMib)
                     {
                         if (SupplementCoveredByCap(game, p, capMib, ct, out _))
                         {

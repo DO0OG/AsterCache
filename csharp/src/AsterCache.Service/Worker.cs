@@ -84,6 +84,11 @@ public sealed class Worker : BackgroundService
             prewarm.WarmRank = auto.WarmRank;
         }
 
+        if (prewarm is not null && playRecorder is not null)
+        {
+            prewarm.Footprint = playRecorder.Footprint; // 게임이 실행 뒤 잡는 메모리 (플레이 기록의 최근 중앙값)
+        }
+
         _log = log;
         _riot = riot ?? (prewarm is null ? null : new RiotPhaseWatcher(() => _settings, RiotWatchEnv.Create(prewarm), log)); // 설정 riot.champ_select_prewarm 이 꺼져 있으면 아무것도 부르지 않고 기다림
         DiskActivity.Log = log;

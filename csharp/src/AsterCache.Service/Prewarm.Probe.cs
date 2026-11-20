@@ -208,6 +208,7 @@ public sealed partial class Prewarmer
 
     private ProbeResult? ProbeReadMsForGame(GameSettings game, string purpose, CancellationToken ct = default, bool partial = false)
     {
+        game = WithSparseMark(game); // 스파스를 뺀 예열의 표본은 읽지 않은 범위에서 고르지 않음
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, purpose, ct);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
         {

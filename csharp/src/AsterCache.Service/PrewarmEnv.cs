@@ -166,6 +166,9 @@ public sealed class PrewarmEnv
     /// 대기 목록 조회 (프로세스를 열지 않는 시스템 전체 통계, 못 읽으면 null): 사다리 새로 고침 시점의 신호. 시험 기본값은 조회 불가.
     public Func<MemoryLists?> Lists { get; init; } = () => null;
 
+    /// 스파스 파일인가: 사다리가 만지지 못하는 범위를 예열 상한 안에서 먼저 세는 데 씁니다. 시험 기본값은 아님.
+    public Func<string, bool> IsSparse { get; init; } = _ => false;
+
     /// 범위를 주어진 순서로 만짐 (파일 캐시에 있는 것을 다시 읽어 대기 목록 맨 뒤로, 디스크 읽기가 섞이면 멈춤). 시험 기본값은 아무것도 안 함.
     public Func<IReadOnlyList<ReadOp>, CancellationToken, TouchResult> TouchRanges { get; init; } = (_, _) => new TouchResult(0, 0, 0, 0, TouchEnd.Completed);
 
@@ -192,6 +195,7 @@ public sealed class PrewarmEnv
             StandbyLadderEnabled = standbyLadder ?? (() => false),
             Lists = MemoryListInfo.Query,
             TouchRanges = StandbyTouch.Run,
+            IsSparse = p => FileGuards.IsSparse(p),
             DeviceCalibrationEnabled = orbitRuntime is null ? null : () => orbitRuntime.Mode != "off",
             DeviceCalibration = orbitCalibration is null ? null : (g, ops, antiCheat, lease, ct, limit) =>
             {

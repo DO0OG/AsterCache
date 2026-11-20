@@ -40,6 +40,9 @@ public sealed record GameSettings(
     /// 이번에 읽을 바이트의 상한: 명시값은 그대로, 명시하지 않았으면 max(기본 4096 MiB, 존 크기). 존은 계획 때 이미 존 상한 (max_zone_mib, auto 는 RAM 규칙) 안으로 잘려 있어 존 전체를 읽습니다.
     public long StreamCapBytes(long zoneBytes) => MaxStreamSet ? (long)MaxStreamMib << 20 : Math.Max((long)MaxStreamMib << 20, zoneBytes);
 
+    /// 서비스 실행 중에만 쓰는 표시 (config 에는 쓰지 않음): 예열 상한이 모자라 스파스 파일 범위를 메모리 예열 목록·표본·고정 목록에서 뺀 게임의 사본에 붙습니다 (Prewarmer 가 게임별로 정함).
+    public bool SkipSparse { get; init; }
+
     /// 등록 출처: "manual" (사용자가 직접, 기본) 또는 "auto" (발견·감지로 자동 등록, 항목이 꽉 차면 밀려날 수 있음).
     public string Source { get; init; } = SettingsStore.DefaultSource;
 

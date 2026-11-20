@@ -190,7 +190,7 @@ public sealed class PrewarmEnv
             ProcessRunning = exe => ProcessSnapshot.IsRunning([exe]),
             GameRunningSnapshot = () =>
             {
-                IReadOnlyList<(int Pid, string Exe)> processes = ProcessSnapshot.Take();
+                IReadOnlyList<(int Pid, string Exe)> processes = ProcessSnapshot.TakeShared();
                 return g => DispatchEnv.IsGameRunning(g, processes);
             },
             SameDisk = sameDisk,

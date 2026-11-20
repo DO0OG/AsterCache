@@ -137,6 +137,12 @@ public static unsafe partial class ProcessSnapshot
         return list;
     }
 
+    private static readonly SharedProcessSnapshot Shared = new(Pids, Take, () => Environment.TickCount64);
+
+    /// 한 번의 점검 안의 판정들이 나눠 쓰는 스냅샷: PID 목록이 그대로이고 1 초가 안 지났으면 직전 것을 돌려줍니다 (SharedProcessSnapshot).
+    /// 게임 시작·종료를 알아채는 경로는 쓰지 말고 Take 로 항상 새로 찍습니다.
+    public static IReadOnlyList<(int Pid, string Exe)> TakeShared() => Shared.Get();
+
     /// 실행 중인 PID 목록만 (이름 없음). 전체 스냅샷보다 200배 가볍습니다.
     public static IReadOnlyList<int> Pids()
     {
@@ -243,7 +249,7 @@ public static unsafe partial class ProcessSnapshot
     public static bool IsRunning(IEnumerable<string> exeNames)
     {
         var names = new HashSet<string>(exeNames, StringComparer.OrdinalIgnoreCase);
-        return Take().Any(p => names.Contains(p.Exe));
+        return TakeShared().Any(p => names.Contains(p.Exe));
     }
 
     [StructLayout(LayoutKind.Sequential)]

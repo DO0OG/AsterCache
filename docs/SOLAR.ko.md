@@ -44,6 +44,15 @@ Windows 의 통계를 읽을 수 없으면(예: 권한이 없을 때) 3번은 �
 
 </details>
 
+## 게임이 실행되는 동안의 캐시 유지
+
+시작 때의 참조는 한 번이고, 그 뒤에도 게임은 계속 읽습니다. 플레이 중에는 예열하지 않은 데이터를 분당 0.8~1.7 GiB 읽고, 예열이 메모리에 올려 둔 페이지는 7~14 분 안에 대기 목록에서 빠집니다. 경기를 잰 결과 경기 중 디스크 읽기 지연의 71~88% 는 이미 예열 목록에 든 블록에서 났습니다. 그래서 시작 때의 참조가 끝난 뒤에도 같은 작업이 그 게임의 등록 실행 파일이 하나라도 실행 중인 동안 이어지며, 2 분마다([배경 메모리 양보](AUTO_MODE.ko.md#배경-메모리-양보)의 유지 주기와 같은 길이) 그 게임이 예열해 둔 목록의 앞쪽을 메모리 안에서 다시 참조합니다. 디스크는 일부러 읽지 않습니다.
+
+- **얼마나, 어떤 순서로.** 목록의 앞쪽(가장 중요한 부분)을 그때 사용 가능한 물리 메모리의 절반까지 참조합니다(11 GiB 가 비어 있으면 5.5 GiB). 대기 목록은 이 양과 두 회차 사이에 게임이 스스로 읽는 양(측정에서 최대 약 3.4 GiB)을 함께 담아야 하므로, 이 경우 7.6 GiB 를 넘으면 안 됩니다. 앞부분은 시작 때의 참조와 같이 찾아 참조합니다(중요한 순서로 목록을 따라가 메모리에 없는 첫 범위(느린 조각)까지 가고, 거기까지만 사다리 순서로 다시 참조해 가장 중요한 블록이 가장 늦게 밀려나게 함). 처음 빠진 범위 뒤는 읽지 않습니다. 빠진 부분을 채우는 일은 지금처럼 게임이 끝난 뒤 재예열 점검에 맡깁니다. 스파스 파일은 참조하지 않습니다. 기준 기록은 바꾸지 않고, 다른 게임의 먼저 재사용될 양은 시작 때의 참조와 같이 줄입니다.
+- **조건.** 시작 때의 참조와 같습니다: 그 게임의 시작 스트림이 허용되고(게임 정책, `auto.start_stream_enabled`, 짧은 종료 뒤 물러나는 실행이 아님), 목록이 메모리에 있고, 재배치 중이 아니고, `memory.standby_ladder` 가 켜져 있을 때입니다. 새 설정은 없습니다. 사용 가능한 메모리가 `prewarm.min_free_ram_mib` 아래이면 그 회차는 건너뜁니다.
+- **게임과 다투지 않기.** 참조는 64 MiB 이하로 나눠 초당 256 MiB 로 제한하므로, 5.5 GiB 를 메모리 대역을 한꺼번에 쓰지 않고 한 번에 약 20 초에 걸쳐 만집니다. 회차 동안 읽는 스레드는 CPU 우선순위와 I/O 우선순위를 낮추고 회차가 끝나면 되돌립니다. 스레드 배경 모드는 쓰지 않습니다. 페이지의 메모리 우선순위까지 낮춰 참조한 페이지가 우선순위 낮은 대기 목록으로 가므로 목적과 반대이기 때문입니다.
+- **끝나는 때.** 한 게임에는 유지가 하나만 돌아, 런처 뒤에 게임이 뜨는 것처럼 실행 파일이 이어 시작해도 둘째는 돌지 않습니다. 회차마다 시작 스트림과 같은 종류의 임대를 새로 받아, 같은 디스크에서 다른 게임이 시작하거나 게임이 끝나면 취소되고, 건너뛴 회차가 유지를 끝내지는 않습니다. 시작 때의 참조가 어떻게 끝났든(임대가 잠시 거절됐거나 재배치 중이라 건너뛰었어도) 시작하며, 회차마다 조건을 다시 봅니다. 그 게임의 등록 실행 파일이 하나도 실행 중이 아니게 되거나, 서비스가 멈추거나, 목표한 양이 메모리에 하나도 남아 있지 않은 회차에서 끝납니다(그대로 두면 2 분마다 같은 줄을 남기고 느린 조각을 게임이 끝날 때까지 디스크에서 읽습니다. 빠진 것은 게임이 끝난 뒤 재예열 점검에 맡깁니다). 일부라도 남아 있으면 계속합니다. 프로세스를 열지 않고 쓰기도 하지 않습니다.
+
 ## 언제 도나
 
 아래가 모두 맞아야 합니다. 아니면 아무것도 참조하지 않습니다.
@@ -52,7 +61,7 @@ Windows 의 통계를 읽을 수 없으면(예: 권한이 없을 때) 3번은 �
 |---|---|
 | 설정 | `memory.standby_ladder` 가 `true`(기본). |
 | 서비스 권한 | 서비스가 관리자 권한이고 신뢰할 수 있는 데이터 폴더를 쓸 때. [배경 메모리 양보](AUTO_MODE.ko.md#배경-메모리-양보)와 같은 조건입니다. |
-| 그 디스크에서 게임이 실행 중이 아님 | 캐시에 없는 것을 참조하면 디스크 읽기라서, 게임이 도는 디스크에는 새 배경 읽기를 내지 않는 규칙을 따릅니다. 게임이 시작하면 멈춥니다. 유일한 예외는 방금 시작한 게임 자신의 예열 목록을 메모리에서 참조하고 메모리에 없는 첫 범위에서 멈추는 참조입니다("게임 실행 파일이 시작할 때의 참조" 참고). |
+| 그 디스크에서 게임이 실행 중이 아님 | 캐시에 없는 것을 참조하면 디스크 읽기라서, 게임이 도는 디스크에는 새 배경 읽기를 내지 않는 규칙을 따릅니다. 게임이 시작하면 멈춥니다. 유일한 예외는 그 게임 자신의 예열 목록을 시작 때와 실행되는 동안 메모리에서 참조하고 메모리에 없는 첫 범위에서 멈추는 참조입니다("게임 실행 파일이 시작할 때의 참조", "게임이 실행되는 동안의 캐시 유지" 참고). |
 | 런처 예열이 기다리는 중이 아님 | 런처 예열이 먼저입니다. 런처 때문에 멈춘 스트림 뒤에도 만들지 않고, 묶음 새로 고침은 런처 예열이 기다리기 시작하면 멈춥니다. |
 | 새로 고침의 조건 | 재예열 점검과 같되 드라이브 사용량은 보지 않습니다: 재배치 중이 아니고, 게임 종료 직후 유예가 지났고, 게임이 예열 예산 안에 있고, 디스크 읽기 임대가 허용될 때. 새로 고침은 캐시에 있는 페이지를 메모리 안에서 참조할 뿐이라 다른 프로그램이 같은 드라이브를 쓰고 있어도 돕니다. 디스크에서 다시 읽을 수 있는 재예열 점검의 조건(게임 드라이브가 4 MiB/s 미만일 것 포함)은 그대로입니다. 임대는 그 디스크에서 게임이 실행돼 양보 중일 때만 거절되고, 거절되면 그 게임만 건너뛰고 기준 기록은 남습니다. |
 | `auto.keep_stream_on_game_start` 가 꺼져 있음 | 이 실험 설정에서는 게임이 떠도 스트림을 끊지 않아, SOLAR 가 따라가지 않습니다. |
@@ -60,7 +69,7 @@ Windows 의 통계를 읽을 수 없으면(예: 권한이 없을 때) 3번은 �
 ## 하지 않는 것
 
 - 메모리에 억지로 붙잡아 두지 않습니다. 잠금도, 열어 두는 매핑도 없고(선택 기능 [고정](AUTO_MODE.ko.md#고정선택)과 다릅니다) 페이지 우선순위도 바꾸지 않습니다. 메모리가 모자라면 Windows 가 이 페이지도 다시 쓸 수 있고, SOLAR 는 어느 것이 먼저 나가는지만 바꿉니다.
-- 게임이 실행 중인 디스크에서는 돌지 않습니다. 방금 시작한 게임이 자신의 예열 목록을 참조하는 경우만 예외입니다.
+- 게임이 실행 중인 디스크에서는 돌지 않습니다. 그 게임이 시작할 때와 실행되는 동안 자신의 예열 목록을 참조하는 경우만 예외입니다.
 - 메모리 예비량(`prewarm.min_free_ram_mib`)과 캐시 예산(`prewarm.max_cache_mib`)을 낮추지 않고, 예열 목록도 읽는 양도 바꾸지 않습니다.
 - 게임·런처·안티치트 프로세스를 열지 않고, 어떤 프로세스도 열지 않습니다. [안티치트 호환성](ANTICHEAT.ko.md)을 보십시오.
 
@@ -83,6 +92,7 @@ Windows 의 통계를 읽을 수 없으면(예: 권한이 없을 때) 3번은 �
 - `<게임>: prewarm done (...) ..., protected K games (N MiB in S s)` (완료 줄 끝, `requeued` 가 있으면 그 뒤): 스트림이 읽기 직전, 읽는 도중, 사다리를 만들기 직전에 기준 기록이 있는 다른 게임 중 서로 다른 K 개를 모두 N MiB, S 초 참조했습니다. 두 번 이상 다시 참조했으면 꼬리 끝에 `, R times` 가 더 붙습니다(한 번이면 없음). 참조한 것이 없으면 붙지 않고, 그 게임들의 `cache refreshed in memory` 줄은 그대로 남습니다. 런처 예열의 줄에는 붙지 않습니다.
 - `<게임>: prewarm done (...) ..., requeued N MiB in S s` (`supplement prewarm done` 줄 끝에도 같음): 스트림이 읽는 도중 참조한 묶음입니다. 참조한 것도 건너뛴 것도 없으면 붙지 않습니다. `requeued N MiB in S s (K MiB in sparse files not touched)` 는 묶음 가운데 스파스 파일에 있어 건너뛴 양을 보여 주며("한계와 주의" 참고), 0 이면 괄호가 없습니다. 참조하기가 디스크 읽기를 보고 멈췄으면 `, requeue stopped by disk reads` 가 더 붙습니다. 보충이 창만 읽고 끝나면 `done` 대신 `supplement prewarm read the first …` 줄로 끝나며, 그 줄에도 같은 `requeued` 문구가 붙습니다. `, K MiB of sparse files by buffered read` (같은 줄들의 `requeued` 앞) 는 스트림에서 매핑 대신 그렇게 읽은 양을 보여 주며, 0 이면 붙지 않습니다.
 - `<게임>: cache touched at game start (<exe>): N MiB in S s, D MiB read from disk`: 실행 파일 `<exe>` 가 시작할 때의 참조입니다("게임 실행 파일이 시작할 때의 참조" 참고). `D` 는 참조하다 디스크에서 읽힌 것으로 본 양이며 0 이어도 붙습니다. `<게임>: cache touched at game start (<exe>): N MiB of M MiB still in memory, in S s, D MiB read from disk, left to the rewarm check` 는 목록의 앞부분만 메모리에 남아 있어 그 부분만 참조했다는 뜻이고, `<게임>: cache touch at game start (<exe>) found none of the M MiB list in memory (...)` 는 하나도 남아 있지 않았다는 뜻입니다. 참조가 멈췄으면 사다리 줄과 같은 말에서 `ladder` 자리에 `cache touch at game start (<exe>)` 가 들어간 줄이 남습니다: `... found data missing from memory after T of N MiB (...), left to the rewarm check`, `... stopped after N MiB`, `... was too slow without disk reads seen (...), skipped`. `<게임>: cache touch at game start skipped (<exe>: <사유>)` 는 하지 않은 까닭입니다: `last touch S s ago, within 60 s`, `disk yielded`(임대가 거절됨, 예를 들어 같은 디스크에서 다른 게임이 실행 중).
+- `<게임>: cache kept while playing (<exe>): N MiB of M MiB still in memory, in S s, D MiB read from disk`: 게임이 실행되는 동안의 캐시 유지 한 회차입니다("게임이 실행되는 동안의 캐시 유지" 참고). `M` 은 그 회차가 목표로 한 양(사용 가능한 메모리의 절반까지)이고 `N` 은 그중 메모리에 남아 있던 양입니다. `<게임>: cache keeping while playing skipped (<exe>: <사유>)` 는 한 회차를 건너뛴 까닭이며 사유가 바뀔 때까지 한 번만 남습니다: `available N MiB < reserve M MiB`, `disk yielded`. `<게임>: cache keeping ended after R rounds` 는 게임이 끝나거나 서비스가 멈췄을 때, `<게임>: cache keeping ended after R rounds (nothing left in memory)` 는 한 회차가 목록을 메모리에서 하나도 찾지 못했을 때 남습니다(그 회차는 `cache keeping while playing (<exe>) found none of the M MiB list in memory (...)` 도 남깁니다).
 - `<게임>: ladder found data missing from memory after T of N MiB (K slow pieces, M MiB read from disk), left to the rewarm check`, 그리고 `cache refresh found data missing from memory after T of N MiB (...)`: 목록 일부가 캐시에 없었습니다. 기준 기록이 있던 게임이면 줄 끝에 `, since the ladder M min ago: R MiB repurposed of A MiB ahead` 가 붙습니다(M 은 그 기준 기록을 만든 뒤 분, R 은 그 뒤 다시 쓴 양, A 는 지금(기준 기록을 지웠으면 지울 때) 먼저 재사용될 양이며, 대기 목록을 읽을 수 없으면 `: R MiB … ahead` 없이 시간만). 기준 기록이 없었으면 붙지 않습니다. 식은 것이 새로 고침이 늦어서인지, 막혀서인지, 순서 밖에서 밀려난 것인지를 가리는 데 씁니다. 사다리는 역순으로 참조하므로 `T` 가 `N` 에 가까우면 빠진 것은 목록 앞쪽, 곧 가장 중요한 부분입니다. `N` 은 건너뛴 스파스 범위를 포함한 사다리 전체 길이이므로, 줄 끝에 `K MiB in sparse files not touched` 가 있으면 `T` 에 `K` 를 더한 값이 `N` 에 가까운지를 보십시오.
 - `<게임>: rewarm check: part of the list is not in memory (found by the ladder), prewarming again (cooldown ignored)`: 다음 재예열 점검이 그 게임을 다시 예열합니다. `..., waiting until N min after the last prewarm attempt` 는 주기가 지나기를 기다린다는 뜻입니다.
 - `<게임>: cache refresh skipped, the samples are cold (X/Y over Z ms), left to the rewarm check`, 또는 `the samples could not be read`, `there are no readable samples`: 새로 고치기 전에 표본 점검을 했습니다. 이 세 가지 줄(식음, `could not be read`, `no readable samples`)과 `<게임>: rewarm check: cold (...), prewarming again (cooldown ignored)` 줄 끝에도 기준 기록이 있던 게임이면 같은 `, since the ladder M min ago: ...` 꼬리가 붙습니다(기준 기록을 새로 고침이 먼저 지웠으면 지우기 전의 값을 기억해 두었다가 재예열 점검의 식음 줄에 한 번 붙이고 버립니다. 새 기준 기록이 서도 버립니다). 게임 드라이브가 바쁠 때 식어 나온 표본은 한 기준 기록에서 처음 한 번은 로그 없이 건너뛰므로 그때는 이 줄이 남지 않습니다.

@@ -22,6 +22,15 @@ public sealed partial class Prewarmer
     /// 캐시에 없는 범위 (느린 조각) 를 만나면 거기서 멈추고 (Solar.Order) 나머지는 재예열 점검에 맡기되, 빠진 것이 확인되거나 이미 알려져 있으면 메모리에 남은 앞부분만 사다리 순서로 만집니다 (Solar.TouchFront). 파일을 읽기만 하고 게임·런처 프로세스는 열지 않습니다.
     internal void TouchAtGameStart(GameSettings game, string exe)
     {
+        TouchOnceAtGameStart(game, exe);
+        if (_solar.Enabled)
+        {
+            KeepCacheWhilePlaying(game, exe); // 시작 만지기가 어떻게 끝났든 (대여 양보·재배치 중 같은 일시적 사유 포함) 같은 작업 안에서 게임이 끝날 때까지 주기마다 이어 만짐: 회차마다 게이트를 다시 봄
+        }
+    }
+
+    private void TouchOnceAtGameStart(GameSettings game, string exe)
+    {
         if (!_solar.Enabled || Relocating(game.Name))
         {
             return;

@@ -216,7 +216,11 @@ public sealed partial class Prewarmer
     /// 모든 고정을 풉니다 (런처가 뜰 때). 회복 기간 고정은 남깁니다 (런처 업데이트는 파일 변경 해제로 막음).
     public void ReleasePins(string why) => _pins.ReleaseAll(why, keepRecovery: true);
 
-    public void Shutdown() => _pins.ReleaseAll("service stopping");
+    public void Shutdown()
+    {
+        StopPlayTouch(); // 게임 실행 중 캐시 유지가 기다리거나 만지던 것도 멈춤
+        _pins.ReleaseAll("service stopping");
+    }
 
     /// 주기 점검 (재적용 틱마다): 가용 RAM 이 모자라면 고정 해제, 예열 유지 주기가 되면 식은 게임을 다시 예열. ct 가 취소되면 (게임 시작) 시작하지 않은 예열은 하지 않습니다.
     public void Tick(AutoSettings auto, CancellationToken ct = default)

@@ -1659,6 +1659,72 @@ public sealed class AutoTracerTests : IDisposable
         Assert.Equal(0, AutoTracer.IoSummaryAttempt(_game, _rig.Settings.Auto, _rig.World.Env()));
     }
 
+    // 지금 plans 상태와 같은 모양: 유효 회차가 상한에 닿았고 단계 색인이 있으며 읽기 방식 집계가 2세션인데, 시작 시각이 있는 플레이는 1번뿐
+    private void ThinLoadListState(int timedPlays)
+    {
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { IoSummaryEnabled = true } };
+        Extra(runs: 1, max: 1);
+        SeedRuns(1);
+        _rig.World.Files.Add(TraceStageIndex.IndexPath(Raw));
+        IoSummaryStore.WriteForRun(TraceWriter.RunPath(Raw, 1), IoSummaryWithReadModes(Guid.NewGuid().ToString("N")));
+        IoSummaryStore.WriteStandalone(Raw, IoSummaryWithReadModes(Guid.NewGuid().ToString("N")));
+        _rig.World.LoadListTimedPlays = _ => timedPlays; // 저장된 목록 파일의 plays 값
+    }
+
+    [Fact]
+    public void ALoadListFromFewerThanTwoTimedPlaysRequestsAnotherTraceWithinTheTryLimit()
+    {
+        ThinLoadListState(timedPlays: 1);
+
+        Assert.Equal(1, AutoTracer.LoadListAttempt(_game, _rig.Settings.Auto, _rig.World.Env()));
+        Assert.True(_tracer.WantsRun(_game));
+        Assert.Equal(0, AutoTracer.IoSummaryAttempt(_game, _rig.Settings.Auto, _rig.World.Env())); // 다른 항은 모두 거짓
+
+        LoadRefillStore.WriteTried(Raw, AutoTracer.MaxLoadListTries - 1);
+        Assert.Equal(AutoTracer.MaxLoadListTries, AutoTracer.LoadListAttempt(_game, _rig.Settings.Auto, _rig.World.Env()));
+        LoadRefillStore.WriteTried(Raw, AutoTracer.MaxLoadListTries);
+        Assert.False(_tracer.WantsRun(_game));
+    }
+
+    [Fact]
+    public void ALoadListFromTwoTimedPlaysNeedsNoExtraTrace()
+    {
+        ThinLoadListState(timedPlays: 2);
+
+        Assert.Equal(0, AutoTracer.LoadListAttempt(_game, _rig.Settings.Auto, _rig.World.Env()));
+        Assert.False(_tracer.WantsRun(_game));
+    }
+
+    [Fact]
+    public void ALoadListExtraTraceIsNotRequestedForABlockedGameOrWithoutIoSummaries()
+    {
+        ThinLoadListState(timedPlays: 1);
+        Assert.True(_tracer.WantsRun(_game));
+        Assert.False(_tracer.WantsRun(_game with { AntiCheat = "vanguard" })); // 안티치트 금지 게임
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { IoSummaryEnabled = false } };
+        Assert.False(_tracer.WantsRun(_game));
+    }
+
+    [Fact]
+    public void StartingALoadListExtraTraceRecordsTheTryAndLogsItsPurpose()
+    {
+        ThinLoadListState(timedPlays: 1);
+
+        _tracer.Start(_game);
+        _tracer.Shutdown();
+
+        Assert.Equal(1, LoadRefillStore.ReadTried(Raw));
+        Assert.Contains(_rig.Log.Lines, l => l.Contains($"auto trace started (run 2 for load list, attempt 1/{AutoTracer.MaxLoadListTries})", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void NotNeededLineListsTheValuesBehindTheDecision()
+    {
+        ThinLoadListState(timedPlays: 2);
+
+        Assert.Equal("auto trace not needed (valid 1/limit 1, relearn no (plays 0/5), stage index yes, io summaries 2, load list from 2 timed plays)", _tracer.NotNeededLine(_game));
+    }
+
     [Fact]
     public void StandaloneReadModeSummarySurvivesTheNextNormalMergeWithItsSessionId()
     {

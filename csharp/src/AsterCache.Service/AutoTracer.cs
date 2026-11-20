@@ -455,8 +455,11 @@ public sealed class AutoTracer
         }
 
         return env.Now() - last >= TimeSpan.FromDays(RelearnAfterDays)
-            || status.Plays().TryGetValue(g.Name, out IReadOnlyList<DateTimeOffset>? plays) && plays.Count(at => at > last) >= RelearnAfterPlays;
+            || PlaysAfter(status, g.Name, last) >= RelearnAfterPlays;
     }
+
+    private static int PlaysAfter(AutoStatus status, string game, DateTimeOffset last) =>
+        status.Plays().TryGetValue(game, out IReadOnlyList<DateTimeOffset>? plays) ? plays.Count(at => at > last) : 0;
 
     private static DateTimeOffset? LastValidRunTime(GameSettings g, AutoEnv env, long minBytes)
     {
@@ -541,6 +544,19 @@ public sealed class AutoTracer
             return 0;
         }
 
+        if (ReadModeSessionCount(g, env) >= 2)
+        {
+            return 0;
+        }
+
+        int tried = env.IoSummaryTries(raw) ?? 0;
+        return tried < MaxIoSummaryTries ? tried + 1 : 0;
+    }
+
+    /// 읽기 방식이 담긴 I/O 집계가 있는 서로 다른 플레이 수 (같은 세션의 재저장은 한 번).
+    private static int ReadModeSessionCount(GameSettings g, AutoEnv env)
+    {
+        string raw = RawTracePath(g);
         var sessions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         void AddReadModeSession(string sidecar, string pairedTrace, bool standalone)
         {
@@ -575,13 +591,43 @@ public sealed class AutoTracer
             }
         }
 
-        if (sessions.Count >= 2)
+        return sessions.Count;
+    }
+
+    /// 로드 구간 목록이 이만큼의 시작 시각 있는 플레이로 만들어져야 로드 하나의 블록이 두 번 이상 겹쳐 점수가 매겨집니다 (한 플레이만으로는 점수가 전부 같음).
+    public const int MinTimedPlays = 2;
+
+    /// 목록 보강 추가 추적의 최대 횟수: 부족한 플레이는 MinTimedPlays 개이고, 한 번은 시작 시각이 기록되지 못한 플레이를 위한 여유입니다.
+    public const int MaxLoadListTries = MinTimedPlays + 1;
+
+    /// 로드 구간 목록이 만들어진 시작 시각 있는 플레이 수 (저장된 목록 파일의 값, 목록이 없으면 0). 게임 시작 경로라 큰 .io.json 을 다시 읽지 않습니다.
+    private static int TimedPlays(GameSettings g, AutoEnv env) => env.LoadListTimedPlays(RawTracePath(g));
+
+    /// 시작 시각이 있는 플레이가 MinTimedPlays 번 미만이라 로드 구간 목록이 빈약할 때 한 번 더 추적하는 차례 (1..MaxLoadListTries), 해당 없으면 0. I/O 집계를 남기지 않는 설정이면 집계가 안 생기므로 0.
+    public static int LoadListAttempt(GameSettings g, AutoSettings a, AutoEnv env)
+    {
+        string raw = RawTracePath(g);
+        if (!a.Trace || !a.IoSummaryEnabled || !env.FileExists(raw) || env.TraceBlocker(g) is not null || TimedPlays(g, env) >= MinTimedPlays)
         {
             return 0;
         }
 
-        int tried = env.IoSummaryTries(raw) ?? 0;
-        return tried < MaxIoSummaryTries ? tried + 1 : 0;
+        int tried = env.LoadListTries(raw);
+        return tried < MaxLoadListTries ? tried + 1 : 0;
+    }
+
+    /// 게임 시작 때 트레이스하지 않기로 한 이유를 한 줄로 (판정에 쓴 값들).
+    public string NotNeededLine(GameSettings g)
+    {
+        AutoSettings auto = _settings().Auto;
+        TraceNext next = NextTrace(g, auto, _env, _status, MinRunBytes);
+        DateTimeOffset? last = LastValidRunTime(g, _env, MinRunBytes);
+        int plays = last is { } at ? PlaysAfter(_status, g.Name, at) : 0;
+        string raw = RawTracePath(g);
+        string relearn = RelearnDue(g, _env, _status, MinRunBytes) ? "yes" : "no";
+        string stage = _env.FileExists(TraceStageIndex.IndexPath(raw)) ? "yes" : "no";
+        return $"auto trace not needed (valid {next.Valid}/limit {next.Limit}, relearn {relearn} (plays {plays}/{RelearnAfterPlays}), "
+            + $"stage index {stage}, io summaries {ReadModeSessionCount(g, _env)}, load list from {TimedPlays(g, _env)} timed plays)";
     }
 
     private int IoSummaryAttemptForService(GameSettings g, AutoSettings a)
@@ -621,7 +667,8 @@ public sealed class AutoTracer
         AutoSettings auto = _settings().Auto;
         return NextTrace(g, auto, _env, _status, MinRunBytes).Wanted
             || StageTraceAttempt(g, auto, _env) > 0
-            || IoSummaryAttemptForService(g, auto) > 0;
+            || IoSummaryAttemptForService(g, auto) > 0
+            || LoadListAttempt(g, auto, _env) > 0;
     }
 
     // 직전 병합 (run lastRun) 이 더한 새 고유 블록 (MiB). 메타가 없거나 다른 병합의 것이거나 읽을 수 없으면 null.
@@ -753,6 +800,7 @@ public sealed class AutoTracer
         TraceNext next;
         int stageAttempt; // 단계 색인만을 위한 추가 추적의 차례 (아니면 0)
         int ioSummaryAttempt; // 물리 읽기 집계를 위한 추가 추적의 차례 (아니면 0)
+        int loadListAttempt; // 로드 구간 목록 보강을 위한 추가 추적의 차례 (아니면 0)
         int runNumber = 0;
         lock (_lock)
         {
@@ -768,6 +816,7 @@ public sealed class AutoTracer
             done = next.Valid;
             stageAttempt = next.Wanted ? 0 : StageTraceAttempt(g, auto, _env);
             ioSummaryAttempt = next.Wanted ? 0 : IoSummaryAttemptForService(g, auto);
+            loadListAttempt = next.Wanted ? 0 : LoadListAttempt(g, auto, _env);
             firstRun = !_env.FileExists(RawTracePath(g));
             if (_run is { } running)
             {
@@ -779,7 +828,7 @@ public sealed class AutoTracer
                 return false;
             }
 
-            if (_stopCleanupFailed || !wantedAtGameStart && !next.Wanted && stageAttempt == 0 && ioSummaryAttempt == 0)
+            if (_stopCleanupFailed || !wantedAtGameStart && !next.Wanted && stageAttempt == 0 && ioSummaryAttempt == 0 && loadListAttempt == 0)
             {
                 return false;
             }
@@ -848,7 +897,7 @@ public sealed class AutoTracer
             return false;
         }
 
-        if (stageAttempt > 0 || ioSummaryAttempt > 0)
+        if (stageAttempt > 0 || ioSummaryAttempt > 0 || loadListAttempt > 0)
         {
             if (stageAttempt > 0)
             {
@@ -886,11 +935,35 @@ public sealed class AutoTracer
                 }
             }
 
-            string purpose = stageAttempt > 0 && ioSummaryAttempt > 0
-                ? $"stage index, attempt {stageAttempt}/{MaxStageIndexTries} and I/O summary, attempt {ioSummaryAttempt}/{MaxIoSummaryTries}"
-                : stageAttempt > 0
-                    ? $"stage index, attempt {stageAttempt}/{MaxStageIndexTries}"
-                    : $"I/O summary, attempt {ioSummaryAttempt}/{MaxIoSummaryTries}";
+            if (loadListAttempt > 0)
+            {
+                try
+                {
+                    LoadRefillStore.WriteTried(RawTracePath(g), loadListAttempt); // 저장되지 않는 run 도 시도로 셈 (서비스를 다시 시작해도 유지)
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    _log.Warn($"{g.Name}: load list attempt not recorded ({e.GetType().Name})");
+                }
+            }
+
+            var purposes = new List<string>();
+            if (stageAttempt > 0)
+            {
+                purposes.Add($"stage index, attempt {stageAttempt}/{MaxStageIndexTries}");
+            }
+
+            if (ioSummaryAttempt > 0)
+            {
+                purposes.Add($"I/O summary, attempt {ioSummaryAttempt}/{MaxIoSummaryTries}");
+            }
+
+            if (loadListAttempt > 0)
+            {
+                purposes.Add($"load list, attempt {loadListAttempt}/{MaxLoadListTries}");
+            }
+
+            string purpose = string.Join(" and ", purposes);
             _log.Info($"{g.Name}: auto trace started (run {runNumber} for {purpose})");
             return true;
         }

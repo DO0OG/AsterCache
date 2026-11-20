@@ -174,6 +174,12 @@ public sealed class AutoEnv
     /// 단계 색인을 얻으려는 추가 추적을 이미 시도한 횟수 (원시 트레이스 경로 기준). 시험 기본값은 0.
     public Func<string, int> StageIndexTries { get; init; } = _ => 0;
 
+    /// 저장된 로드 구간 목록이 만들어진 시작 시각 있는 플레이 수 (원시 트레이스 경로 기준, 목록이 없거나 못 읽으면 0). 시험 기본값은 충분함 (MinTimedPlays).
+    public Func<string, int> LoadListTimedPlays { get; init; } = _ => AutoTracer.MinTimedPlays;
+
+    /// 로드 구간 목록을 보강하려 한 추가 추적 횟수 (원시 트레이스 경로 기준). 시험 기본값은 0.
+    public Func<string, int> LoadListTries { get; init; } = _ => 0;
+
     /// 디스크 읽기 집계를 얻으려 한 추가 추적 횟수 (원시 트레이스 경로 기준). 시험 기본값은 0.
     public Func<string, int?> IoSummaryTries { get; init; } = _ => 0;
 
@@ -367,6 +373,8 @@ public sealed class AutoEnv
             RunReadBytes = AutoTracer.RunReadBytes,
             StageIndexTries = TraceStageIndex.ReadTried,
             IoSummaryTries = IoSummaryStore.ReadTriedOrNull,
+            LoadListTries = LoadRefillStore.ReadTried,
+            LoadListTimedPlays = raw => LoadRefillStore.Read(LoadRefillStore.PathFor(raw))?.Plays ?? 0,
             ReadIoSummary = (sidecar, raw, standalone) => File.Exists(sidecar) && File.Exists(raw)
                 ? (standalone ? IoSummaryStore.ReadStandaloneForRaw(sidecar, raw) : IoSummaryStore.ReadForRun(raw))
                 : null,

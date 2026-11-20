@@ -213,7 +213,23 @@ public sealed class ReapplyEnv
         }
 
         Directory.CreateDirectory(journalDir);
+        if (lowIoLog is not null && hint is not null && options.Execute)
+        {
+            options = WithRest(options, g, lowIoLog, ct); // 서비스의 백그라운드 경로만: 쓰기 조각 사이마다 다른 프로그램의 디스크 활동을 보고 쉼
+        }
+
         return Applier.Apply(plan, vol, g.AllowedRoots, JournalPath(journalDir, g), Hooks(hint), options, ct);
+    }
+
+    /// 쓰기 조각을 내기 직전 검사 (CanIssue) 에 RelocationRest 를 덧붙임 (원래 검사가 있으면 그것을 먼저 봄).
+    private static ApplyOptions WithRest(ApplyOptions options, GameSettings g, ILog log, CancellationToken ct)
+    {
+        string letter = PlanFile.SplitDrive(g.OriginRoot);
+        var rest = new RelocationRest(g.Name, log,
+            () => DiskActivity.MeasureWindow(letter, () => Thread.Sleep(RelocationRest.ObserveDrain), () => Thread.Sleep(RelocationRest.ObserveWindow)),
+            (span, stop) => stop.WaitHandle.WaitOne(span), () => DateTimeOffset.UtcNow);
+        Func<bool>? inner = options.CanIssue;
+        return options with { CanIssue = () => (inner?.Invoke() ?? true) && rest.MayIssue(ct) };
     }
 
     /// 저널대로 되돌립니다 (skipRows 줄 뒤부터만, 게임이 뜨면 조각 사이에서 멈춤). 저널이 없으면 (아무것도 옮기지 않았음) null.

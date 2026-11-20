@@ -63,6 +63,10 @@ public sealed partial class Prewarmer
                 LogSkipped(g.Name, "already warm", $"{g.Name}: prewarm skipped (already warm) [service start]");
                 skipped.Add(new PrewarmResult(g.Name, false, "already warm", null, _now()));
                 warmSkipped.Add(g);
+                lock (_gate)
+                {
+                    _ = _warmAtServiceStart.Add(g.Name); // 시작 만지기가 서비스 시작 사다리와 같은 게임에서 돌게
+                }
             }
             else if (_env.ZoneBytes(g) is not null && !IsCold(g) && WillSkipReason(g, availNow) is { } why)
             {

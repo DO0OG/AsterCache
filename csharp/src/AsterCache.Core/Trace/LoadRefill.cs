@@ -210,6 +210,24 @@ public static class LoadRefillStore
 
     public static string PathFor(string rawTracePath) => rawTracePath + Suffix;
 
+    /// 목록을 보강하려고 추가로 추적한 횟수를 남기는 곁 파일 (서비스를 다시 시작해도 유지, 원시 트레이스를 다시 쓸 때 지워짐).
+    public static string TriedPath(string rawTracePath) => rawTracePath + ".loadrefill.tried";
+
+    public static int ReadTried(string rawTracePath)
+    {
+        try
+        {
+            return File.Exists(TriedPath(rawTracePath)) && int.TryParse(File.ReadAllText(TriedPath(rawTracePath)).Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out int n) ? n : 0;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return 0;
+        }
+    }
+
+    public static void WriteTried(string rawTracePath, int tries) =>
+        File.WriteAllText(TriedPath(rawTracePath), tries.ToString(CultureInfo.InvariantCulture));
+
     public static void Write(string path, LoadRefillList list, DateTimeOffset builtAtUtc)
     {
         var paths = list.Files.Keys.Order(StringComparer.OrdinalIgnoreCase).ToList();

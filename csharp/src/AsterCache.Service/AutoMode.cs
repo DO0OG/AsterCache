@@ -54,6 +54,7 @@ public sealed class AutoMode
 
     private readonly CancellationTokenSource _stop = new(); // 서비스 종료: 게임 시작 때 도는 로딩 경계 감시를 멈춤
     private readonly ConcurrentDictionary<string, BoundaryWatch> _boundaryWatch = new(StringComparer.OrdinalIgnoreCase); // 게임별 로딩 경계 감시 (게임 종료 때 취소)
+    private readonly ConcurrentDictionary<string, string> _notNeededLogged = new(StringComparer.OrdinalIgnoreCase); // 게임별로 마지막에 남긴 "트레이스 불필요" 줄
     private sealed record BoundaryWatch(CancellationTokenSource Token, DateTimeOffset StartedAt);
 
     /// 시험용 seam: 로딩 경계 감시 본체 (비우면 LoadBoundaryWatch.Run).
@@ -134,6 +135,11 @@ public sealed class AutoMode
                 {
                     traceRetry = WaitAndRetryTraceStartAsync(g, previousFinish, isLatestRunningStart);
                 }
+            }
+            else if (a.Trace && tracking && _tracer.NotNeededLine(g) is var notNeeded && _notNeededLogged.GetValueOrDefault(g.Name) != notNeeded)
+            {
+                _notNeededLogged[g.Name] = notNeeded; // 같은 게임에 같은 이유가 반복되면 한 번만 남김
+                _log.Info($"{g.Name}: {notNeeded}");
             }
 
             if (!tracking)

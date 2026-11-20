@@ -193,6 +193,9 @@ internal sealed class FakeWorld
 
     public Action<string, int> WriteIoSummaryTries { get; set; } = IoSummaryStore.WriteTried;
 
+    /// 저장된 로드 구간 목록의 시작 시각 있는 플레이 수 (기본: 충분함).
+    public Func<string, int> LoadListTimedPlays { get; set; } = _ => AutoTracer.MinTimedPlays;
+
     /// 끝난 뒤 변환 (파일 배치 조회) 의 가짜: 기본은 배치를 모르는 채 요청 표만 총계로 바꿈. 호출 기록은 BuildIoSummaryCalls.
     public Func<IoRequestSnapshot, IReadOnlyCollection<string>, CancellationToken, IoSummary?> BuildIoSummary { get; set; } = (snapshot, _, _) => new IoBlockMapper(snapshot).Build(0, 0, 0, 0, 0, false);
 
@@ -406,6 +409,8 @@ internal sealed class FakeWorld
         RunReadBytes = p => RunReadBytes(p),
         StageIndexTries = AsterCache.Core.Trace.TraceStageIndex.ReadTried,
         IoSummaryTries = IoSummaryStore.ReadTriedOrNull,
+        LoadListTries = LoadRefillStore.ReadTried,
+        LoadListTimedPlays = p => LoadListTimedPlays(p),
         ReadIoSummary = (sidecar, raw, standalone) => File.Exists(sidecar)
             ? !File.Exists(raw) ? null : (standalone ? IoSummaryStore.ReadStandaloneForRaw(sidecar, raw) : IoSummaryStore.ReadForRun(raw))
             : Files.Contains(sidecar) && !Files.Contains(IoSummaryStore.InvalidPath(sidecar)) && (Files.Contains(raw) || File.Exists(raw))

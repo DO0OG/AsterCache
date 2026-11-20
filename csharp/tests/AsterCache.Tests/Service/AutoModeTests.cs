@@ -256,6 +256,21 @@ public sealed class AutoModeTests : IDisposable
     }
 
     [Fact]
+    public async Task GameStartLogsWhyNoTraceIsNeededOnlyOnceForTheSameReason()
+    {
+        AddGame("foo", "manual");
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { TraceRuns = 1 } };
+        string raw = AutoTracer.RawTracePath(Game());
+        _rig.World.Files.UnionWith([raw, TraceStageIndex.IndexPath(raw)]);
+        AutoMode mode = Mode();
+
+        await mode.OnGameStart(Game());
+        await mode.OnGameStart(Game());
+
+        Assert.Single(_rig.Log.Lines, line => line.Contains("foo: auto trace not needed (valid ", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task GameStartWaitsForAPreviousTraceSaveThenStartsOnce()
     {
         AddGame("foo", "auto");

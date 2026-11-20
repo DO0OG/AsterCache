@@ -20,6 +20,8 @@ public sealed class SolarTests
     private MemoryLists? _lists = new(0, 0, 8000 * Mib);
     private int _listQueries;
     private TouchResult _result = new(100 * Mib, 0.4, 0, 0, TouchEnd.Completed);
+    private readonly Queue<TouchResult> _queued = new(); // 비어 있지 않으면 만지기 호출마다 차례로 이 결과를 돌려줌 (그다음부터 _result)
+    private readonly List<bool> _ioLow = []; // 읽는 스레드의 I/O 우선순위 전환 기록
 
     private static readonly ReadOp[] Reads = [new ReadOp(@"D:\a\1.bin", 0, 10 * Mib), new ReadOp(@"D:\a\2.bin", 0, 10 * Mib), new ReadOp(@"D:\a\1.bin", 50 * Mib, 10 * Mib)];
 
@@ -43,7 +45,8 @@ public sealed class SolarTests
         {
             _touched.Add(ranges);
             _onTouch?.Invoke();
-            return ct.IsCancellationRequested ? _result with { End = TouchEnd.Canceled } : _result;
+            TouchResult next = _queued.Count > 0 ? _queued.Dequeue() : _result;
+            return ct.IsCancellationRequested ? next with { End = TouchEnd.Canceled } : next;
         },
     };
 
@@ -726,6 +729,11 @@ public sealed class SolarTests
             StandbyLadderEnabled = env.StandbyLadderEnabled,
             Lists = env.Lists,
             TouchRanges = env.TouchRanges,
+            SetReadIoLow = low =>
+            {
+                _ioLow.Add(low);
+                return true;
+            },
         }, _log, null, () => _now);
     }
 
@@ -2994,5 +3002,202 @@ public sealed class SolarTests
         _result = new TouchResult(10 * Mib, 0.6, 5, 0, TouchEnd.NeedsDiskReads, 32 * Mib, 700 * 1024);
         _ = solar.Order(Game("b"), Reads, CancellationToken.None);
         Assert.EndsWith("left to the rewarm check", _log.Lines.Last());
+    }
+
+    // ---- 게임 시작 때 메모리 안에서 다시 만지기 ----
+
+    private Prewarmer TwoWarmedGames()
+    {
+        Prewarmer p = MakePrewarmer(Game("a"), Game("b"));
+        Assert.True(p.Run(Game("a"), "service start").Ran);
+        _now += TimeSpan.FromMinutes(2);
+        Assert.True(p.Run(Game("b"), "service start").Ran);
+        _now += TimeSpan.FromMinutes(2);
+        _touched.Clear();
+        return p;
+    }
+
+    [Fact]
+    public void AnExeStartTouchesOnlyThatGamesReadRangeInLadderOrderAndLeavesTheMark()
+    {
+        Prewarmer p = TwoWarmedGames();
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Equal(Reversed(Reads), _touched.Single());
+        Assert.True(p.Solar.HasMark("a"));
+        Assert.Contains("a: cache touched at game start (a.exe): 100 MiB in 0.4 s, 0 MiB read from disk", _log.Lines.Last());
+    }
+
+    private static TouchResult Stopped(long bytesMib, long diskMib) => new(bytesMib * Mib, 0.5, 4, 0, TouchEnd.NeedsDiskReads, diskMib * Mib);
+
+    [Fact]
+    public void ARangeMissingFromMemoryFindsTheFrontInReadOrderAndTouchesOnlyThatInLadderOrderKeepingTheMissingFlag()
+    {
+        Prewarmer p = TwoWarmedGames();
+        _queued.Enqueue(Stopped(2, 32)); // 사다리 순서는 덜 중요한 끝의 빈 곳에서 먼저 멈춤
+        _queued.Enqueue(Stopped(15, 5)); // 읽은 순서로 15 MiB 까지 갔고 끝의 5 MiB 는 디스크에서 읽힘
+        _queued.Enqueue(new TouchResult(15 * Mib, 0.4, 0, 0, TouchEnd.Completed));
+        int solarBefore = _log.Lines.Count;
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Equal(3, _touched.Count);
+        Assert.Equal(Reversed(Reads), _touched[0]);
+        Assert.Equal(Reads, _touched[1]); // 중요한 순서
+        Assert.Equal([new ReadOp(@"D:\a\2.bin", 0, 5 * Mib), new ReadOp(@"D:\a\1.bin", 0, 10 * Mib)], _touched[2]); // 앞부분만 사다리 순서로
+        Assert.True(p.Solar.HasMissing("a"));
+        Assert.False(p.Solar.HasMark("a"));
+        Assert.Contains("a: cache touched at game start (a.exe): 10 MiB of 30 MiB still in memory, in 0.9 s, 5 MiB read from disk, left to the rewarm check", _log.Lines.Last());
+        Assert.Contains(_log.Lines.Skip(solarBefore), l => l.Contains("a: cache touch at game start (a.exe) found data missing from memory after 2 of 30 MiB"));
+    }
+
+    [Fact]
+    public void WhenTheMissingPartIsAlreadyKnownTheFrontIsFoundDirectlyAndNothingIsTouchedWhenNoneIsInMemory()
+    {
+        Prewarmer p = TwoWarmedGames();
+        _queued.Enqueue(Stopped(2, 32));
+        _queued.Enqueue(Stopped(15, 5));
+        _queued.Enqueue(new TouchResult(15 * Mib, 0.4, 0, 0, TouchEnd.Completed));
+        p.TouchAtGameStart(Game("a"), "a.exe");
+        _touched.Clear();
+        _now += TimeSpan.FromMinutes(5);
+        _queued.Enqueue(Stopped(32, 32)); // 앞부분도 전부 빠짐
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Equal([Reads], _touched); // 알려진 빠짐은 사다리 순서로 시도하지 않고 읽은 순서로 한 번만 (앞부분이 없으니 다시 만지지 않음)
+        Assert.True(p.Solar.HasMissing("a"));
+        Assert.Contains("a: cache touch at game start (a.exe) found none of the 30 MiB list in memory", _log.Lines.Last());
+    }
+
+    [Fact]
+    public void ATouchThatFindsEverythingInMemoryAfterAStaleMissingFlagMakesTheNormalLadderAndClearsTheFlag()
+    {
+        Prewarmer p = TwoWarmedGames();
+        _queued.Enqueue(Stopped(2, 32));
+        _queued.Enqueue(Stopped(15, 5));
+        _queued.Enqueue(new TouchResult(15 * Mib, 0.4, 0, 0, TouchEnd.Completed));
+        p.TouchAtGameStart(Game("a"), "a.exe");
+        _touched.Clear();
+        _now += TimeSpan.FromMinutes(5);
+
+        p.TouchAtGameStart(Game("a"), "a.exe"); // 이번엔 전부 메모리에 있음 (기본 결과는 끝까지 만짐)
+
+        Assert.Equal([Reads, Reversed(Reads)], _touched);
+        Assert.False(p.Solar.HasMissing("a"));
+        Assert.True(p.Solar.HasMark("a"));
+    }
+
+    [Fact]
+    public void AGameSkippedAsAlreadyWarmAtServiceStartButFoundMissingByItsLadderIsStillTouchedAtGameStart()
+    {
+        _result = Stopped(10, 32); // 서비스 시작 사다리가 빠진 것을 발견함 (표식 없이 빠짐 표시)
+        Prewarmer p = MakePrewarmer(Game("a"));
+        _ = p.RunServiceStart([Game("a")]);
+        Assert.Null(p.LastWarmed("a")); // 이번 서비스가 예열한 기록은 없음
+        Assert.True(p.Solar.HasMissing("a"));
+        _touched.Clear();
+        _result = new TouchResult(100 * Mib, 0.4, 0, 0, TouchEnd.Completed);
+        _queued.Enqueue(Stopped(15, 5));
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Equal([Reads, [new ReadOp(@"D:\a\2.bin", 0, 5 * Mib), new ReadOp(@"D:\a\1.bin", 0, 10 * Mib)]], _touched);
+    }
+
+    [Fact]
+    public void TheTouchReadsAtLowIoPriorityAndRestoresItAndStartAndStageLeasesStayValidAroundIt()
+    {
+        Prewarmer p = TwoWarmedGames();
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        p.SetDiskReadCoordinator(coordinator);
+        coordinator.Yield(@"D:\Games\a", "game started", "a");
+        using DiskReadCoordinator.Lease? before = coordinator.TryBegin(@"D:\Games\a", "start stream", default, @"D:\Games\a", allowWhileYielded: true, preserveGameKey: "a");
+        DiskReadCoordinator.Lease? during = null;
+        bool? lowDuring = null;
+        _onTouch = () =>
+        {
+            lowDuring ??= _ioLow.LastOrDefault();
+            during ??= coordinator.TryBegin(@"D:\Games\a", "stage stream", default, @"D:\Games\a", allowWhileYielded: true, preserveGameKey: "a"); // 만지는 도중 단계 스트림도 대여를 얻음
+        };
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Single(_touched);
+        Assert.Equal([true, false], _ioLow);
+        Assert.True(lowDuring);
+        Assert.NotNull(before);
+        Assert.True(before.IsValid); // 시작 스트림의 대여는 만지기와 함께 끝까지 유효
+        Assert.NotNull(during);
+        Assert.True(during.IsValid);
+        during.Dispose();
+    }
+
+    [Fact]
+    public void ATouchRunsOnceInsideTheMinimumGapAndAgainAfterIt()
+    {
+        Prewarmer p = TwoWarmedGames();
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+        _now += TimeSpan.FromSeconds(30);
+        p.TouchAtGameStart(Game("a"), "b.exe");
+        Assert.Single(_touched);
+        Assert.Contains("skipped (b.exe: last touch 30 s ago, within 60 s)", _log.Lines.Last());
+
+        _now += Prewarmer.StartTouchMinGap;
+        p.TouchAtGameStart(Game("a"), "b.exe");
+
+        Assert.Equal(2, _touched.Count);
+    }
+
+    [Fact]
+    public void AGameNotWarmedSinceBootOrWithTheSettingOffIsNotTouched()
+    {
+        Prewarmer p = MakePrewarmer(Game("a"), Game("c"));
+        Assert.True(p.Run(Game("a"), "service start").Ran);
+        _touched.Clear();
+
+        p.TouchAtGameStart(Game("c"), "c.exe"); // 예열한 적 없음
+        _enabled = false;
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Empty(_touched);
+    }
+
+    [Fact]
+    public void TheTouchRunsInAStartStreamLeaseThatSurvivesTheGameStartButStopsWhenTheGameEnds()
+    {
+        Prewarmer p = TwoWarmedGames();
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        p.SetDiskReadCoordinator(coordinator);
+        coordinator.Yield(@"D:\Games\a", "game started", "a"); // 게임이 막 시작해 양보 중이어도 이 게임의 시작 만지기는 대여를 얻음
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+        Assert.Single(_touched);
+        Assert.True(p.Solar.HasMark("a"));
+
+        _now += TimeSpan.FromMinutes(2);
+        _onTouch = () => coordinator.Resume(@"D:\Games\a", "a"); // 만지는 도중 게임이 끝남
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Equal(2, _touched.Count);
+        Assert.False(p.Solar.HasMark("a"));
+        Assert.Contains("a: cache touch at game start (a.exe) stopped after 100 MiB", _log.Lines.Last());
+    }
+
+    [Fact]
+    public void ADifferentGameStartingOnTheSameDiskRefusesOrCancelsTheTouch()
+    {
+        Prewarmer p = TwoWarmedGames();
+        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
+        p.SetDiskReadCoordinator(coordinator);
+        coordinator.Yield(@"D:\Games\a", "game started", "a");
+        coordinator.Yield(@"D:\Games\b", "game started", "b"); // 같은 디스크에서 다른 게임도 실행 중: 시작 스트림도 허용하지 않는 상태
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Empty(_touched);
+        Assert.Contains("skipped (a.exe: disk yielded)", _log.Lines.Last());
     }
 }

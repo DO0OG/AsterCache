@@ -83,7 +83,8 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
     /// made: 표식을 남겼을 때 만진 바이트를 알림 (서비스 시작 직후 여러 게임의 사다리가 Regroup 에 넘길 값).
     /// protectedFirst: null 이면 스트림 끝의 사다리가 아님 (기존 규칙). 비어 있으면 스트림 끝의 사다리인데 직전에 보호한 게임이 없음: 이전 표식이 없는 게임이 만진 전체를 다른 게임의 앞에 있는 양에서 줄임.
     /// 비어 있지 않으면 스트림 끝이고 직전에 보호로 만진 다른 게임 (만진 순서, 바이트): 이 게임과 함께 한 묶음으로 다시 표식합니다.
-    public TouchEnd? Order(GameSettings game, IReadOnlyList<ReadOp> reads, CancellationToken ct, Action<long>? made = null, IReadOnlyList<(string Game, long Bytes)>? protectedFirst = null)
+    /// startExe: 주면 게임 실행 파일이 시작할 때 메모리 안에서 다시 만지는 호출 (로그 문구만 다르고 표식·묶음 계산은 같음).
+    public TouchEnd? Order(GameSettings game, IReadOnlyList<ReadOp> reads, CancellationToken ct, Action<long>? made = null, IReadOnlyList<(string Game, long Bytes)>? protectedFirst = null, string? startExe = null)
     {
         if (!Enabled)
         {
@@ -96,6 +97,7 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
             return null;
         }
 
+        string what = startExe is null ? "ladder" : $"cache touch at game start ({startExe})"; // 로그 줄의 주어
         LadderMark? earlier = MarkOf(game.Name); // 이 줄이 빠짐을 알릴 때 붙일 값을 위해 지우기 전에 잡아 둠
         long? grown = earlier is null ? null : SolarPolicy.Repurposed(earlier, env.Lists());
         TouchResult r = env.TouchRanges(ladder, ct);
@@ -106,7 +108,7 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
                 {
                     if (NoteNothingToTouch(game.Name))
                     {
-                        log.Info($"{game.Name}: ladder has nothing to touch ({r.SkippedBytes >> 20} MiB in sparse files not touched)"); // 처음 한 번만
+                        log.Info($"{game.Name}: {what} has nothing to touch ({r.SkippedBytes >> 20} MiB in sparse files not touched)"); // 처음 한 번만
                     }
 
                     break;
@@ -125,24 +127,62 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
                     ReduceOthers([game.Name], [(previous, r.Bytes)], protectedFirst is not null); // 이 게임이 만진 페이지가 다른 게임의 뒤로 감
                 }
 
-                log.Info($"{game.Name}: ladder ordered {r.Bytes >> 20} MiB in {r.Seconds:F1} s{Errors(r)}{Sparse(r)}");
+                log.Info(startExe is null
+                    ? $"{game.Name}: ladder ordered {r.Bytes >> 20} MiB in {r.Seconds:F1} s{Errors(r)}{Sparse(r)}"
+                    : $"{game.Name}: cache touched at game start ({startExe}): {r.Bytes >> 20} MiB in {r.Seconds:F1} s, {r.DiskBytes >> 20} MiB read from disk{(r.Errors > 0 ? $", {r.Errors} errors" : string.Empty)}{Sparse(r)}");
                 break;
             case TouchEnd.Canceled:
                 Forget(game.Name); // 순서가 반쯤만 만들어짐: 표식 없이 둠
-                log.Info($"{game.Name}: ladder stopped after {r.Bytes >> 20} MiB{Errors(r)}{Sparse(r)}");
+                log.Info($"{game.Name}: {what} stopped after {r.Bytes >> 20} MiB{Errors(r)}{Sparse(r)}");
                 break;
             default:
                 string since = Since(game.Name, earlier, grown);
                 if (!NoteIncomplete(game.Name, r))
                 {
-                    log.Info($"{game.Name}: ladder was too slow without disk reads seen ({r.SlowPieces} slow pieces{Errors(r)}), skipped");
+                    log.Info($"{game.Name}: {what} was too slow without disk reads seen ({r.SlowPieces} slow pieces{Errors(r)}), skipped");
                     break;
                 }
 
-                log.Info($"{game.Name}: ladder found data missing from memory {Missing(r, ladder)}, left to the rewarm check{Sparse(r)}{since}");
+                log.Info($"{game.Name}: {what} found data missing from memory {Missing(r, ladder)}, left to the rewarm check{Sparse(r)}{since}");
                 break;
         }
 
+        return r.End;
+    }
+
+    /// 게임 실행 파일이 시작할 때 목록의 일부가 이미 메모리에 없는 게임 (사다리 순서로 만지면 덜 중요한 쪽의 빈 곳에서 먼저 멈추므로 가장 중요한 앞부분을 만지지 못함): 중요한 순서 (읽은 순서) 로 먼저 만져 메모리에 남은 앞부분의 끝을 찾고 (느린 조각에서 멈추는 판정과 디스크 읽기 한도는 Order 와 같음),
+    /// 그 앞부분만 사다리 순서로 다시 만져 남은 것 가운데 가장 중요한 블록이 가장 늦게 밀려나게 합니다. 전체가 메모리에 있다는 표식은 남기지 않고 빠짐 표시를 그대로 둬 게임이 끝난 뒤 재예열 점검이 나머지를 읽게 합니다.
+    /// 다른 게임의 앞에 있는 양은 앞부분이 메모리에 있던 만큼 줄입니다 (이 게임은 표식이 없어 스트림 끝의 사다리와 같이 만진 전체를 줄이는 규칙: ReduceOthers 의 withoutPreviousAll). 자기 표식은 만들지 않으므로 앞에 있는 양을 따로 셀 일이 없습니다.
+    public TouchEnd? TouchFront(GameSettings game, IReadOnlyList<ReadOp> reads, CancellationToken ct, string startExe)
+    {
+        if (!Enabled || reads.Count == 0)
+        {
+            return null;
+        }
+
+        string what = $"cache touch at game start ({startExe})";
+        TouchResult find = env.TouchRanges(reads, ct);
+        if (find.End == TouchEnd.Completed)
+        {
+            return Order(game, reads, ct, startExe: startExe); // 전부 메모리에 있음 (빠짐 표시가 낡았거나 앞의 판정이 잡음으로 멈춤): 처음부터 사다리 한 번
+        }
+
+        long total = reads.Sum(o => o.Length);
+        long inMemory = Math.Max(0, find.Bytes - find.DiskBytes);
+        if (find.End == TouchEnd.Canceled || inMemory <= 0)
+        {
+            log.Info(find.End == TouchEnd.Canceled
+                ? $"{game.Name}: {what} stopped after {find.Bytes >> 20} MiB{Errors(find)}{Sparse(find)}"
+                : $"{game.Name}: {what} found none of the {total >> 20} MiB list in memory ({find.SlowPieces} slow pieces, {find.DiskBytes >> 20} MiB read from disk), left to the rewarm check");
+            return find.End;
+        }
+
+        // 멈춘 곳까지가 앞부분 (건너뛴 스파스 범위의 길이는 목록 위치에 들어감). 멈춘 조각 근처에서 디스크로 읽힌 만큼도 이제 메모리에 있으므로 함께 만짐
+        TouchResult r = env.TouchRanges(LadderOrder.Reverse(PrefetchStreamer.Head(reads, find.Bytes + find.SkippedBytes)), ct);
+        ReduceOthers([game.Name], [(null, inMemory)], withoutPreviousAll: true);
+        log.Info(r.End == TouchEnd.Canceled
+            ? $"{game.Name}: {what} stopped after {r.Bytes >> 20} MiB{Errors(r)}{Sparse(r)}"
+            : $"{game.Name}: cache touched at game start ({startExe}): {inMemory >> 20} MiB of {total >> 20} MiB still in memory, in {find.Seconds + r.Seconds:F1} s, {(find.DiskBytes + r.DiskBytes) >> 20} MiB read from disk{Sparse(find)}, left to the rewarm check");
         return r.End;
     }
 

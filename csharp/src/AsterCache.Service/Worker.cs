@@ -384,6 +384,12 @@ public sealed class Worker : BackgroundService
                 _auto?.Tracer.NoteTargetStart(game.Name, s.ExeName); // 트레이스 중 등록 실행 파일이 새로 뜨면 후반 창을 그 시각에 엶
                 _auto?.Tracer.CancelShadow(game.Name); // 돌고 있는 그림자 계획은 게임과 CPU 를 다투지 않게 취소
                 _auto?.CancelWarm(); // 자동 모드의 예열 작업도 (핫 집합 스트림은 묶음 경계에서 멈추고, 그 뒤 예열은 시작하지 않음)
+                if (_prewarm is { } touching && !backOff && GamePolicy.AllowsPrewarm(game) && _settings.Auto.StartStreamEnabled) // 시작 스트림이 허용되는 게임만 (디스패처의 게이트와 같음)
+                {
+                    GameSettings started = game;
+                    _ = Task.Run(() => RunPrewarm(() => touching.TouchAtGameStart(started, s.ExeName)), CancellationToken.None); // 시작 스트림·감시기 스레드를 막지 않게 따로, 그 게임의 캐시를 메모리 안에서 다시 만짐
+                }
+
                 if (_backgroundYield is { } yielder && !backOff)
                 {
                     _ = Task.Run(() => yielder.Begin("game started", settle: false), CancellationToken.None); // 비우기는 감시기 스레드를 막지 않게 따로, 기다리지 않음 (트리거 경로가 이미 했으면 60초 안이라 무시됨)

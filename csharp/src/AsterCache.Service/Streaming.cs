@@ -1279,7 +1279,7 @@ public sealed record DispatchEnv
         return imagePath?.StartsWith(root, StringComparison.OrdinalIgnoreCase) == true;
     }
 
-    internal static bool IsGameRunning(GameSettings g) => IsGameRunning(g, ProcessSnapshot.Take());
+    internal static bool IsGameRunning(GameSettings g) => IsGameRunning(g, ProcessSnapshot.TakeShared());
 
     // shortcut: 등록 이름만 봄. 미등록 본체는 자동 등록 게임이면 많이 읽을 때 이름이 학습되고, 수동 등록 게임은 사용자가 실행 파일을 추가해야 실행으로 셈 (설치 폴더 아래 미등록 상주 프로그램이 모든 게임을 막지 않게).
     internal static bool IsGameRunning(GameSettings g, IReadOnlyList<(int Pid, string Exe)> processes) =>

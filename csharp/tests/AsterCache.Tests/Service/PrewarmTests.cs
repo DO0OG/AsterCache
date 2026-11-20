@@ -376,6 +376,32 @@ public sealed class PrewarmTests : IDisposable
     }
 
     [Fact]
+    public void ChangingTheRankedBlockListInvalidatesARecentWarmProbe()
+    {
+        string plan = Path.Combine(_dir, "a.plan.json");
+        string trace = Path.Combine(_dir, "a.prefetch.json");
+        File.WriteAllText(plan, "plan");
+        File.WriteAllText(trace, "trace");
+        GameSettings g = Game("a") with { Plan = plan, Trace = trace };
+        Prewarmer p = new([g], _streamer, new PrewarmEnv
+        {
+            AvailableRamMib = () => AvailableMib,
+            GameRunning = _ => false,
+            ZoneBytes = _ => ZoneBytes,
+            ProbeReadMs = _ => new AsterCache.Windows.ProbeResult(8, 0, 0.3),
+            TraceExists = _ => true,
+            FileStamp = PlanFile.FingerprintOf,
+        }, _log, now: () => _now);
+
+        Assert.True(p.AlreadyWarm(g));
+        Assert.Equal(_now, p.RecentWarmProbeAt(g));
+
+        File.WriteAllText(LoadRefillPlans.RankedPathOf(g), "ranked"); // 플레이가 끝나 순위 목록이 새로 만들어짐
+
+        Assert.Null(p.RecentWarmProbeAt(g)); // 목록의 순서가 달라졌으니 예전 표본은 쓰지 않음 (표본은 다시 읽음)
+    }
+
+    [Fact]
     public void RunningAPlanPrewarmInvalidatesTheRecentWarmProbe()
     {
         GameSettings g = Game("a");

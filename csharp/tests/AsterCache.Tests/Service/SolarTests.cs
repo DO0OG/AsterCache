@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Text.Json.Nodes;
 using AsterCache.Core.Prefetch;
 using AsterCache.Core.Settings;
+using AsterCache.Core.Trace;
 using AsterCache.Prefetch;
 using AsterCache.Service;
 using AsterCache.Windows;
@@ -22,6 +23,7 @@ public sealed class SolarTests
     private TouchResult _result = new(100 * Mib, 0.4, 0, 0, TouchEnd.Completed);
     private readonly Queue<TouchResult> _queued = new(); // 비어 있지 않으면 만지기 호출마다 차례로 이 결과를 돌려줌 (그다음부터 _result)
     private readonly List<bool> _ioLow = []; // 읽는 스레드의 I/O 우선순위 전환 기록
+    private List<TraceEvent>? _ranked; // 실행 중 유지가 쓰는 블록 순위 행 (기본은 없음)
 
     private static readonly ReadOp[] Reads = [new ReadOp(@"D:\a\1.bin", 0, 10 * Mib), new ReadOp(@"D:\a\2.bin", 0, 10 * Mib), new ReadOp(@"D:\a\1.bin", 50 * Mib, 10 * Mib)];
 
@@ -731,6 +733,7 @@ public sealed class SolarTests
             StandbyLadderEnabled = env.StandbyLadderEnabled,
             Lists = env.Lists,
             TouchRanges = env.TouchRanges,
+            RankedRows = _ => _ranked,
             SetReadIoLow = low =>
             {
                 _ioLow.Add(low);
@@ -3431,6 +3434,62 @@ public sealed class SolarTests
         Assert.Equal(1, periods);
         Assert.Equal(2, _touched.Count); // 시작 만지기 + 찾기 한 번 (앞부분이 없으니 다시 만지지 않음)
         Assert.Contains(_log.Lines, l => l.Contains("a: cache keeping while playing (a.exe) found none of the 30 MiB list in memory"));
+        Assert.EndsWith("a: cache keeping ended after 1 rounds (nothing left in memory)", _log.Lines.Last());
+    }
+
+    [Fact]
+    public void WhenTheRankedFrontIsNotInMemoryTheKeepingTriesTheUnrankedOrderOnceMoreBeforeItEnds()
+    {
+        Prewarmer p = TwoWarmedGames();
+        _result = new TouchResult(30 * Mib, 0.4, 0, 0, TouchEnd.Completed);
+        _ranked = [new TraceEvent(@"D:\a\2.bin", 0, 65536)]; // 마지막 예열 뒤 바뀐 순위: 맨 앞 블록이 메모리에 없음
+        _ = _running.Add("a");
+        int periods = 0;
+        _sleep = (t, ct) =>
+        {
+            if (IsPeriod(t) && ++periods == 1)
+            {
+                _queued.Enqueue(Stopped(32, 32)); // 첫 회차 순위 순서의 찾기: 맨 앞부터 빠짐
+            }
+            else if (IsPeriod(t))
+            {
+                _ = _running.Remove("a");
+            }
+        };
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Equal(new ReadOp(@"D:\a\2.bin", 0, 65536), _touched[1][0]); // 순위 순서로 먼저 시도
+        Assert.Equal(Reads, _touched[2]); // 못 찾으면 순위 없는 순서로 한 번 더
+        Assert.Equal(Reversed(Reads), _touched[3]); // 그쪽은 메모리에 있어 사다리 순서로 이어 만짐
+        Assert.Contains(_log.Lines, l => l.Contains("a: cache kept while playing (a.exe): 30 MiB of 30 MiB still in memory"));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("nothing left in memory"));
+        Assert.EndsWith("a: cache keeping ended after 1 rounds", _log.Lines.Last());
+    }
+
+    [Fact]
+    public void TheKeepingEndsWhenNeitherTheRankedNorTheUnrankedOrderHasAnythingInMemory()
+    {
+        Prewarmer p = TwoWarmedGames();
+        _ranked = [new TraceEvent(@"D:\a\2.bin", 0, 65536)];
+        _ = _running.Add("a");
+        int periods = 0;
+        _sleep = (t, ct) =>
+        {
+            if (IsPeriod(t) && ++periods == 1)
+            {
+                _queued.Enqueue(Stopped(32, 32)); // 순위 순서
+                _queued.Enqueue(Stopped(32, 32)); // 순위 없는 순서도
+            }
+            else if (IsPeriod(t))
+            {
+                _ = _running.Remove("a");
+            }
+        };
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Equal(3, _touched.Count); // 시작 만지기 + 두 번의 찾기
         Assert.EndsWith("a: cache keeping ended after 1 rounds (nothing left in memory)", _log.Lines.Last());
     }
 

@@ -201,7 +201,7 @@ public sealed partial class Prewarmer
 
             if (skip is null)
             {
-                using PrewarmRun run = PrewarmRun.Begin(); // 이 예열 한 회 동안만 계획을 재사용하고 단계 시간을 잼
+                using PrewarmRun run = PrewarmRun.Begin(game.Name); // 이 예열 한 회 동안만 계획을 재사용하고 단계 시간을 잼
                 long? finalReadBytes = ReadSetBytes(warm, partial: memoryPartial is not null);
                 availableRamMib = _env.AvailableRamMib();
                 long finalReadMib = 0; // 아래 전체 경로가 메모리로 멈췄을 때 창으로 줄이는 데도 씀
@@ -508,7 +508,7 @@ public sealed partial class Prewarmer
         }
 
         InvalidateResidencyProbe(game.Name);
-        using PrewarmRun run = PrewarmRun.Begin(); // 보충 등 바깥 회가 없는 경로도 이 스트림 한 번 동안은 계획을 재사용
+        using PrewarmRun run = PrewarmRun.Begin(game.Name); // 보충 등 바깥 회가 없는 경로도 이 스트림 한 번 동안은 계획을 재사용
         DateTimeOffset? last = null;
         bool complete = false;
         bool shortFinish = false; // 메모리 한도로 읽은 데까지만 읽고 마무리함

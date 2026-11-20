@@ -37,12 +37,17 @@ public static class LoadRefillPlanner
     /// 로드 중 사용 가능 메모리는 약 11 GiB 였으므로 그 절반 아래에서 가장 큰 로드 하나를 거의 담는 값으로 4 GiB 를 둡니다. 실제 크기는 메모리 게이트가 다시 줄입니다.
     public const long CapBytes = 4L << 30;
 
+    /// 플레이 전체 기록으로 만드는 순위 목록의 고정 상한. 근거: 게임 사이 예열 예산이 5.8 GiB 안팎 (게임이 많거나 메모리가 넉넉하면 8~11 GiB) 이고,
+    /// 조사에서 예산 안에 담긴 순위 앞쪽 4~5.5 GiB 가 경기 중 지연의 대부분을 덮었으므로 예산 수준인 8 GiB 까지만 둡니다 (그 이상은 예산 밖이라 읽히지 않음).
+    public const long RankedCapBytes = 8L << 30;
+
     /// 플레이들의 로드 구간 블록 합집합. 블록은 (여러 플레이에서 나온 횟수 내림, 지연 합 내림, 경로, 번호) 순이고 capBytes 를 넘는 뒷부분은 자릅니다.
     /// stat 은 지금 있는 파일의 크기·수정 시각을 돌려주고 (없거나 허용 밖·가변 파일이면 null → 그 파일 블록은 뺌), 블록이 파일 끝을 넘으면 뺍니다.
     /// 캐시를 거치지 않고만 읽힌 블록 (페이징 요청 0) 과 관찰 중 바뀐 파일은 뺍니다. 시작 시각이 없는 집계는 건너뛰고 PlaysWithoutStarts 로 셉니다.
-    public static LoadRefillList Collect(IEnumerable<LoadRefillSource> sources, Func<string, LoadRefillFileStat?> stat, TimeSpan window, long capBytes)
+    /// window 가 null 이면 시작 시각과 무관하게 플레이 전체 구간의 블록을 모읍니다 (시작 시각이 없는 집계도 한 플레이로 세고 Loads 는 0).
+    public static LoadRefillList Collect(IEnumerable<LoadRefillSource> sources, Func<string, LoadRefillFileStat?> stat, TimeSpan? window, long capBytes)
     {
-        long windowUs = (long)window.TotalMicroseconds;
+        long windowUs = window is { } w ? (long)w.TotalMicroseconds : 0;
         var stats = new Dictionary<string, LoadRefillFileStat?>(StringComparer.OrdinalIgnoreCase);
         var merged = new Dictionary<string, Dictionary<long, (int Count, long LatencyUs)>>(StringComparer.OrdinalIgnoreCase);
         int plays = 0;
@@ -52,7 +57,7 @@ public static class LoadRefillPlanner
         foreach (LoadRefillSource source in sources)
         {
             long[] starts = [.. source.StartsUs.Distinct().Order()];
-            if (starts.Length == 0)
+            if (window is not null && starts.Length == 0)
             {
                 withoutStarts++;
                 continue;
@@ -63,11 +68,15 @@ public static class LoadRefillPlanner
             var loadsHit = new HashSet<int>();
             foreach (IoSummaryRow row in summary.Rows)
             {
-                int at = Array.BinarySearch(starts, row.FirstSessionUs);
-                int index = at >= 0 ? at : ~at - 1; // 첫 접근 시각 이하의 가장 늦은 시작
-                if (index < 0 || row.FirstSessionUs - starts[index] >= windowUs)
+                int index = 0;
+                if (window is not null)
                 {
-                    continue;
+                    int at = Array.BinarySearch(starts, row.FirstSessionUs);
+                    index = at >= 0 ? at : ~at - 1; // 첫 접근 시각 이하의 가장 늦은 시작
+                    if (index < 0 || row.FirstSessionUs - starts[index] >= windowUs)
+                    {
+                        continue;
+                    }
                 }
 
                 IoSummaryFile file = summary.Files[row.FileNumber];
@@ -100,7 +109,10 @@ public static class LoadRefillPlanner
                 blocks[row.BlockNumber] = blocks.TryGetValue(row.BlockNumber, out (int Count, long LatencyUs) old)
                     ? (old.Count + 1, old.LatencyUs + row.LatencySumUs)
                     : (1, row.LatencySumUs);
-                loadsHit.Add(index);
+                if (window is not null)
+                {
+                    loadsHit.Add(index);
+                }
             }
 
             loads += loadsHit.Count;
@@ -200,6 +212,30 @@ public static class LoadRefillPlanner
 
         return Scheduler.Schedule(ranges, "physical", null, 0, layout, null, cancellationToken: cancellationToken).Ops;
     }
+
+    /// 점수 순 블록을 그 순서 그대로 블록 하나씩의 행으로 바꿉니다 (예열 선택이 앞 단계 행과 겹치는 구간을 빼고 예산 순서로 쓰고, 유지가 만지는 순서를 정하는 데 씀).
+    /// 파일이 지금 저장할 때와 다르면 (크기·수정 시각, current 가 null 이면 없음) 그 파일 블록은 뺍니다. 마지막 블록은 파일 끝에서 자릅니다.
+    public static List<TraceEvent> ToRows(LoadRefillList list, Func<string, LoadRefillFileStat?> current, CancellationToken cancellationToken = default)
+    {
+        var valid = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        var rows = new List<TraceEvent>(list.Blocks.Count);
+        foreach (LoadRefillBlock block in list.Blocks)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!valid.TryGetValue(block.Path, out bool ok))
+            {
+                valid[block.Path] = ok = list.Files.TryGetValue(block.Path, out LoadRefillFileStat saved) && current(block.Path) is { } now && now == saved;
+            }
+
+            if (ok)
+            {
+                long offset = block.Block * LoadBoundaries.Block;
+                rows.Add(new TraceEvent(block.Path, offset, Math.Min(LoadBoundaries.Block, list.Files[block.Path].Size - offset)));
+            }
+        }
+
+        return rows;
+    }
 }
 
 /// 게임별 로드 구간 블록 목록 파일 (계획 폴더, 원시 트레이스 옆). 임시 파일에 쓴 뒤 바꿔 끼웁니다.
@@ -209,6 +245,11 @@ public static class LoadRefillStore
     public const string Suffix = ".loadrefill.json";
 
     public static string PathFor(string rawTracePath) => rawTracePath + Suffix;
+
+    /// 플레이 전체 기록의 블록 순위 목록 (같은 형식, 로드 구간 목록과 따로 둠: 계획·존 밖 덧붙임이 쓰는 prefetch.json·warmonly.json 에 섞이지 않음).
+    public const string RankedSuffix = ".ranked.json";
+
+    public static string RankedPathFor(string rawTracePath) => rawTracePath + RankedSuffix;
 
     /// 목록을 보강하려고 추가로 추적한 횟수를 남기는 곁 파일 (서비스를 다시 시작해도 유지, 원시 트레이스를 다시 쓸 때 지워짐).
     public static string TriedPath(string rawTracePath) => rawTracePath + ".loadrefill.tried";

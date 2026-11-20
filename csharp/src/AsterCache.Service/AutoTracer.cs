@@ -1772,9 +1772,10 @@ public sealed class AutoTracer
 
         RebuildLoadRefill(run.Game);
         RebuildUnbufferedFiles(run.Game);
+        RebuildRanked(run.Game);
     }
 
-    /// 서비스 시작 때: 로드 구간 목록과 캐시 없이만 읽히는 파일 목록 (각각) 이 없거나 그 게임의 가장 새 집계보다 오래된 게임의 목록을 저장된 집계로 만듭니다 (실행 중인 게임은 건너뜀, 폴더 잠금 안, 낮은 우선순위).
+    /// 서비스 시작 때: 로드 구간 목록·캐시 없이만 읽히는 파일 목록·블록 순위 목록 (각각) 이 없거나 그 게임의 가장 새 집계보다 오래된 게임의 목록을 저장된 집계로 만듭니다 (실행 중인 게임은 건너뜀, 폴더 잠금 안, 낮은 우선순위).
     /// 부팅 뒤 대기·디스크 유휴는 부르는 쪽이 기다린 뒤 백그라운드로 부릅니다.
     public void RebuildStaleLoadRefills(CancellationToken ct)
     {
@@ -1787,7 +1788,8 @@ public sealed class AutoTracer
 
             bool refillStale = LoadRefillPlans.IsStale(g, _env.FileWriteTime);
             bool unbufferedStale = UnbufferedFiles.IsStale(g, _env.FileWriteTime);
-            if (_env.AnyRunning(g.ExeNames) || !(refillStale || unbufferedStale))
+            bool rankedStale = LoadRefillPlans.RankedIsStale(g, _env.FileWriteTime);
+            if (_env.AnyRunning(g.ExeNames) || !(refillStale || unbufferedStale || rankedStale))
             {
                 continue;
             }
@@ -1809,6 +1811,11 @@ public sealed class AutoTracer
                     if (unbufferedStale)
                     {
                         RebuildUnbufferedFiles(g, " (service start)");
+                    }
+
+                    if (rankedStale)
+                    {
+                        RebuildRanked(g, " (service start)");
                     }
                 }
             });
@@ -1838,6 +1845,19 @@ public sealed class AutoTracer
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             _log.Warn($"{g.Name}: unbuffered file list not saved ({e.GetType().Name})");
+        }
+    }
+
+    // 집계가 바뀔 때마다 플레이 전체 기록의 블록 순위 목록도 새로 만듦 (부가 정보라 실패해도 기록 저장은 계속).
+    private void RebuildRanked(GameSettings g, string logSuffix = "")
+    {
+        try
+        {
+            _log.Info($"{g.Name}: {LoadRefillPlans.RebuildRanked(g, _env.Now())}{logSuffix}");
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"{g.Name}: ranked block list not saved ({e.GetType().Name})");
         }
     }
 

@@ -103,7 +103,7 @@ public sealed class UnbufferedFilesTests : IDisposable
     }
 
     [Fact]
-    public void RebuildAlsoSavesTheFilesReadMostlyWithoutTheCacheAndTheMissingListMakesItStale()
+    public void RebuildAlsoSavesTheFilesWhereHoldingWouldLoseMoreThanItGainsAndTheMissingListMakesItStale()
     {
         Func<string, DateTimeOffset?> time = p => File.Exists(p) ? File.GetLastWriteTimeUtc(p) : null;
         SavePlay(1, Bare, Cached);
@@ -111,7 +111,7 @@ public sealed class UnbufferedFilesTests : IDisposable
 
         string line = UnbufferedFiles.Rebuild(_game, DateTimeOffset.UtcNow);
 
-        Assert.Contains("1 files read mostly without the cache", line, StringComparison.Ordinal);
+        Assert.Contains("1 files where holding would lose more than it gains", line, StringComparison.Ordinal);
         Assert.Equal([_bare], UnbufferedFiles.NoCacheRead(_game)); // _cached 는 캐시 없는 읽기가 있어도 캐시 경유가 더 많아 목록에 없음
         Assert.False(UnbufferedFiles.IsStale(_game, time));
 

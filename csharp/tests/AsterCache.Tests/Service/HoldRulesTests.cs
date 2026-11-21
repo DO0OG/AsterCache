@@ -233,7 +233,7 @@ public sealed class HoldRulesTests : IDisposable
     }
 
     [Fact]
-    public void AFileTheGameReadMostlyWithoutTheCacheIsLeftOutWhetherItIsStaticOrWrittenAndAnOldRecordWithoutTheInformationHoldsAsBefore()
+    public void AFileWhoseHoldingWouldLoseMoreThanItGainsIsLeftOutWhetherItIsStaticOrWrittenAndAnOldRecordWithoutTheInformationHoldsAsBefore()
     {
         History(4096, 4096, 4096);
         HoldFileRules before = PrewarmEnv.HoldRules(_game, true, (_, _, _) => false)!;

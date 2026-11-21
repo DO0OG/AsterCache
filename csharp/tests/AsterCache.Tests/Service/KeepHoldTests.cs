@@ -1418,7 +1418,7 @@ public sealed class KeepHoldTests
     }
 
     [Fact]
-    public void AFileTheGameReadMostlyWithoutTheCacheIsNotHeldAndTheStartLineCountsItsBytes()
+    public void AFileWhoseHoldingWouldLoseMoreThanItGainsIsNotHeldAndTheStartLineCountsItsBytes()
     {
         _writtenReasons[F(3)] = Prewarmer.HoldNoCacheRead;
         _writtenReasons[F(4)] = Prewarmer.HoldNoCacheRead;
@@ -1428,6 +1428,6 @@ public sealed class KeepHoldTests
         p.TouchAtGameStart(Game("a"), "a.exe");
 
         Assert.Equal([(F(1), 0), (F(2), 0), (F(2), 8), (F(5), 0)], Flat(_hold.Batches));
-        Assert.Contains(_log.Lines, l => l.Contains("cache held while playing (a.exe): 32 MiB") && l.Contains("16 MiB in files the game read mostly without the cache"));
+        Assert.Contains(_log.Lines, l => l.Contains("cache held while playing (a.exe): 32 MiB") && l.Contains("16 MiB in files where holding loses more than it gains"));
     }
 }

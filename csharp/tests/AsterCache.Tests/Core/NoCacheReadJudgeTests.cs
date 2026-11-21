@@ -3,7 +3,8 @@ using Xunit;
 
 namespace AsterCache.Tests.Core;
 
-/// 캐시 없는 읽기가 있었던 파일 판정 (붙들기가 뺌): 한 번이라도 있으면 판정하고, 페이징 읽기만이면 판정하지 않으며, 읽기 방식을 기록하지 않은 옛 집계는 모름이라 쓰지 않고, 저장 파일 왕복을 시험합니다.
+/// 붙들면 손해가 큰 파일 판정 (붙들기가 뺌): 파일마다 캐시 없는 읽기의 손해 추정과 붙들어서 줄이는 캐시 경유 지연의 이득 추정을 견주고, 지연 기록이 없으면 요청 수 다수결로 판정하며, 페이징 읽기는 캐시 없는 읽기로 세지 않고,
+/// 읽기 방식을 기록하지 않은 옛 집계는 모름이라 쓰지 않고, 저장 파일 왕복을 시험합니다.
 public sealed class NoCacheReadJudgeTests : IDisposable
 {
     private const string A = @"D:\Games\a.bin";
@@ -20,8 +21,48 @@ public sealed class NoCacheReadJudgeTests : IDisposable
             new IoSummaryQuality(default, 0, default, default, default, default, default, 0, 0, 0, ReadModesObservedUntilUtc: Started.AddDays(day).AddMinutes(30)),
             [], [], Guid.NewGuid().ToString("N"), ReadModes: modes);
 
+    private static IoSummary PlayWithRows(int day, IoSummaryReadMode mode, long bytes, long latencyUs) =>
+        Play(day, mode) with
+        {
+            Files = [new IoSummaryFile(mode.Path)],
+            Rows = [new IoSummaryRow(0, 0, 10, bytes, latencyUs, latencyUs, 0, 5)], // 캐시를 거쳐 읽힌 요청이 있는 블록 (순위 블록과 같은 기준)
+        };
+
     [Fact]
-    public void AFileWhoseNoCacheReadsOutnumberItsCacheAndPagingReadsOverThePlaysIsInTheListAndOneWithMoreCacheReadsIsNot()
+    public void AFileWhoseEstimatedLossFromSlowedNoCacheReadsExceedsTheEstimatedGainIsLeftOutEvenWhenMostRequestsGoThroughTheCache()
+    {
+        // 캐시 경유 요청 100 대 캐시 없음 10 (다수결로는 붙듦) 이지만 디스크 바이트의 절반이 캐시 없는 읽기: s = 0.5, L_nc = 500,000 µs, G_c = 500,000 µs → 손해 540,000 > 이득 추정 200,000
+        var heavy = new IoSummaryReadMode(A, 100, 100 << 20, 10, 10 << 20, 0, 0);
+
+        NoCacheReadFileList list = NoCacheReadJudge.Collect([PlayWithRows(0, heavy, 20 << 20, 1_000_000)]);
+
+        Assert.Equal([A], list.Files);
+    }
+
+    [Fact]
+    public void AFileWithAFewNoCacheReadsButALargeGainStaysHeld()
+    {
+        // 캐시 없는 바이트가 디스크 바이트의 5%: L_nc = 50,000 µs × 1.08 = 54,000 < 0.4 × G_c (950,000 µs) = 380,000
+        var light = new IoSummaryReadMode(A, 100, 100 << 20, 5, 1 << 20, 0, 0);
+
+        NoCacheReadFileList list = NoCacheReadJudge.Collect([PlayWithRows(0, light, 20 << 20, 1_000_000)]);
+
+        Assert.Empty(list.Files);
+    }
+
+    [Fact]
+    public void WithoutLatencyRecordsAFileIsJudgedByTheMajorityOfRequests()
+    {
+        var mostly = new IoSummaryReadMode(A, 2, 2 << 20, 3, 3 << 20, 0, 0);
+        var lessNoCache = new IoSummaryReadMode(B, 9, 9 << 20, 1, 1 << 20, 0, 0);
+
+        NoCacheReadFileList list = NoCacheReadJudge.Collect([Play(0, mostly, lessNoCache)]); // 행이 없어 지연 기록이 없음
+
+        Assert.Equal([A], list.Files);
+    }
+
+    [Fact]
+    public void AFileWhoseNoCacheReadsOutnumberItsCacheAndPagingReadsOverThePlaysIsInTheListAndOneWithMoreCacheReadsIsNotWhenThereAreNoLatencyRecords()
     {
         var mostly = new IoSummaryReadMode(A, 2, 2 << 20, 3, 3 << 20, 0, 0); // 플레이 하나에서는 캐시 경유가 더 많지만
         var mostlyLater = new IoSummaryReadMode(A, 0, 0, 5, 5 << 20, 1, 1 << 20); // 합치면 캐시 없음 8 > 캐시 2 + 페이징 1

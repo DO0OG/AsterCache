@@ -27,7 +27,7 @@ internal static class UnbufferedFiles
         NoCacheReadFileList noCache = NoCacheReadJudge.Collect(plays);
         NoCacheReadFileStore.Write(NoCacheReadPathOf(g), noCache, now);
 
-        return $"unbuffered file list built from {list.Plays} plays: {list.Files.Count} files/{(list.Bytes / 1_048_576d).ToString("F1", CultureInfo.InvariantCulture)} MiB read only without the cache, {noCache.Files.Count} files read mostly without the cache";
+        return $"unbuffered file list built from {list.Plays} plays: {list.Files.Count} files/{(list.Bytes / 1_048_576d).ToString("F1", CultureInfo.InvariantCulture)} MiB read only without the cache, {noCache.Files.Count} files where holding would lose more than it gains";
     }
 
     /// 저장된 목록 가운데 지금 파일이 판정 때와 같은 파일의 경로 (목록이 없으면 빈 집합 → 지금 동작 그대로).
@@ -52,7 +52,7 @@ internal static class UnbufferedFiles
         });
     }
 
-    /// 게임이 주로 캐시 없이 읽은 파일 (붙들기가 뺌). 목록이 없거나 읽기 방식을 기록한 플레이가 없으면 빈 집합 → 지금처럼 붙듦.
+    /// 붙들면 손해가 이득보다 큰 파일 (게임이 캐시 없이 읽는 몫이 커서 뷰가 그 읽기를 느리게 하는 손해가 큰 파일, 붙들기가 뺌). 목록이 없거나 읽기 방식을 기록한 플레이가 없으면 빈 집합 → 지금처럼 붙듦.
     public static HashSet<string> NoCacheRead(GameSettings g) =>
         NoCacheReadFileStore.Read(NoCacheReadPathOf(g)) is { } list ? new HashSet<string>(list.Files, StringComparer.OrdinalIgnoreCase) : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 

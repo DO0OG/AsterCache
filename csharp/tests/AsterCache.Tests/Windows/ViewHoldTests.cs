@@ -56,7 +56,7 @@ public sealed class ViewHoldTests : IDisposable
     {
         string a = Make("a.bin", 4);
         string b = Make("b.bin", 4);
-        using var hold = new ViewHold(Counter(0), Counter(0));
+        using var hold = new ViewHold(Counter(0), Counter(0), minFileBytes: 0);
         hold.Rebase();
 
         HoldBatchResult r = hold.Hold([new ReadOp(a, 0, 2L * Mib), new ReadOp(b, 0, 2L * Mib), new ReadOp(a, 0, 2L * Mib), new ReadOp(a, Mib, 2L * Mib)], CancellationToken.None);
@@ -80,7 +80,7 @@ public sealed class ViewHoldTests : IDisposable
     public void TheCheckLooksUpTheWorkingSetWithoutReadingAndRefillsNothingWhileEverythingIsResident()
     {
         string a = Make("a.bin", 8);
-        using var hold = new ViewHold(Counter(0), Counter(0)); // 가짜 누계: 다른 시험의 읽기가 판정에 섞이지 않게
+        using var hold = new ViewHold(Counter(0), Counter(0), minFileBytes: 0); // 가짜 누계: 다른 시험의 읽기가 판정에 섞이지 않게
         hold.Rebase();
         _ = hold.Hold([new ReadOp(a, 0, 8L * Mib)], CancellationToken.None);
 
@@ -98,7 +98,7 @@ public sealed class ViewHoldTests : IDisposable
     public void WhenTheMemoryManagerTrimsTheWorkingSetTheCheckFindsItAndReadsOnlyThoseBackIn()
     {
         string a = Make("a.bin", 8);
-        using var hold = new ViewHold(Counter(0), Counter(0));
+        using var hold = new ViewHold(Counter(0), Counter(0), minFileBytes: 0);
         hold.Rebase();
         _ = hold.Hold([new ReadOp(a, 0, 8L * Mib)], CancellationToken.None);
         Assert.True(EmptyWorkingSet(Process.GetCurrentProcess().Handle)); // 메모리 관리자가 작업 집합을 줄이는 것을 흉내 냄: 붙든 쪽이 Valid 에서 빠짐 (페이지는 대기 목록에 있어 디스크 읽기는 없음)
@@ -119,7 +119,7 @@ public sealed class ViewHoldTests : IDisposable
     {
         string a = Make("a.bin", 4);
         string b = Make("b.bin", 4);
-        using var hold = new ViewHold();
+        using var hold = new ViewHold(minFileBytes: 0);
         hold.Rebase();
         _ = hold.Hold([new ReadOp(a, 0, 4L * Mib), new ReadOp(b, 0, 4L * Mib)], CancellationToken.None);
         IReadOnlyList<(nint Address, long Length)> before = hold.LiveRanges();
@@ -144,7 +144,7 @@ public sealed class ViewHoldTests : IDisposable
     {
         string a = Make("a.bin", 4);
         string c = Make("c.bin", 4);
-        using var hold = new ViewHold();
+        using var hold = new ViewHold(minFileBytes: 0);
         hold.Rebase();
         _ = hold.Hold([new ReadOp(a, 0, 4L * Mib), new ReadOp(c, 0, 4L * Mib)], CancellationToken.None);
 
@@ -165,7 +165,7 @@ public sealed class ViewHoldTests : IDisposable
     {
         string a = Make("a.bin", 4);
         string b = Make("b.bin", 4);
-        using var hold = new ViewHold();
+        using var hold = new ViewHold(minFileBytes: 0);
         hold.Rebase();
         _ = hold.Hold([new ReadOp(a, 0, 4L * Mib), new ReadOp(b, 0, 4L * Mib)], CancellationToken.None);
         File.SetLastWriteTimeUtc(a, DateTime.UtcNow.AddMinutes(5));
@@ -186,7 +186,7 @@ public sealed class ViewHoldTests : IDisposable
     public void DisposeReleasesEverythingAndLeavesNoSectionOrViewSoShrinkingWorks()
     {
         string a = Make("a.bin", 4);
-        var hold = new ViewHold();
+        var hold = new ViewHold(minFileBytes: 0);
         hold.Rebase();
         _ = hold.Hold([new ReadOp(a, 0, 4L * Mib)], CancellationToken.None);
 
@@ -205,7 +205,7 @@ public sealed class ViewHoldTests : IDisposable
     {
         string a = Make("a.bin", 4);
         string b = Make("b.bin", 4);
-        using var hold = new ViewHold(Counter(100), Counter(1000));
+        using var hold = new ViewHold(Counter(100), Counter(1000), minFileBytes: 0);
         hold.Rebase();
 
         HoldBatchResult r = hold.Hold([new ReadOp(a, 0, 4L * Mib), new ReadOp(b, 0, 4L * Mib)], CancellationToken.None);
@@ -221,7 +221,7 @@ public sealed class ViewHoldTests : IDisposable
     {
         string a = Make("a.bin", 2);
         string s = Make("s.bin", 2);
-        using var hold = new ViewHold(attributes: p => p == s ? FileGuards.SparseAttribute : 0);
+        using var hold = new ViewHold(attributes: p => p == s ? FileGuards.SparseAttribute : 0, minFileBytes: 0);
         hold.Rebase();
 
         HoldBatchResult r = hold.Hold([new ReadOp(s, 0, 2L * Mib), new ReadOp(_dir.Combine("none.bin"), 0, Mib), new ReadOp(a, 0, 8L * Mib)], CancellationToken.None);
@@ -233,10 +233,72 @@ public sealed class ViewHoldTests : IDisposable
     }
 
     [Fact]
+    public void AFileWhoseFirstTwoBytesAreMZIsNotHeldWhateverItsNameAndIsCounted()
+    {
+        string exe = _dir.Combine("tool.bin"); // 확장자와 상관없이 내용으로 판정
+        byte[] data = new byte[3 * Mib];
+        data[0] = (byte)'M';
+        data[1] = (byte)'Z';
+        File.WriteAllBytes(exe, data);
+        string plain = Make("p.bin", 3);
+        using var hold = new ViewHold(Counter(0), Counter(0), minFileBytes: 0);
+        hold.Rebase();
+
+        HoldBatchResult r = hold.Hold([new ReadOp(exe, 0, 3L * Mib), new ReadOp(plain, 0, 3L * Mib)], CancellationToken.None);
+
+        Assert.Equal(3L * Mib, r.ImageBytes);
+        Assert.Equal(3L * Mib, hold.HeldBytes); // 일반 파일만 붙듦
+        Assert.Equal(1, hold.Files);
+    }
+
+    [Fact]
+    public void AFileThatCannotBeReadForTheMZCheckIsNotHeldAndCountsAsAnError()
+    {
+        using var hold = new ViewHold(Counter(0), Counter(0), minFileBytes: 0);
+        hold.Rebase();
+
+        HoldBatchResult r = hold.Hold([new ReadOp(_dir.Combine("none.bin"), 0, Mib)], CancellationToken.None);
+
+        Assert.Equal(0, hold.HeldBytes);
+        Assert.Equal(1, r.Errors);
+    }
+
+    [Fact]
+    public void FilesSmallerThanTheThresholdAreNotHeldAndTheirBytesAreCounted()
+    {
+        string small = Make("small.bin", 2);
+        string big = Make("big.bin", 6);
+        using var hold = new ViewHold(Counter(0), Counter(0), minFileBytes: 4L * Mib);
+        hold.Rebase();
+
+        HoldBatchResult r = hold.Hold([new ReadOp(small, 0, 2L * Mib), new ReadOp(big, 0, 6L * Mib)], CancellationToken.None);
+
+        Assert.Equal(2L * Mib, r.SmallBytes);
+        Assert.Equal(6L * Mib, hold.HeldBytes);
+        Assert.Equal(16L << 20, ViewHold.MinFileBytes);
+    }
+
+    [Fact]
+    public void WithoutRefillTheCheckDropsTheSegmentsTheMemoryManagerReducedInsteadOfReadingThemBack()
+    {
+        string a = Make("a.bin", 8);
+        using var hold = new ViewHold(Counter(0), Counter(0), minFileBytes: 0);
+        hold.Rebase();
+        _ = hold.Hold([new ReadOp(a, 0, 8L * Mib)], CancellationToken.None);
+        Assert.True(EmptyWorkingSet(Process.GetCurrentProcess().Handle));
+
+        HoldCheckResult r = hold.Recheck(Prewarm32Mib, CancellationToken.None, refill: false);
+
+        Assert.True(r.DroppedBytes >= 4L * Mib, $"dropped {r.DroppedBytes}");
+        Assert.Equal(0, r.RefilledBytes);
+        Assert.True(hold.HeldBytes <= 4L * Mib);
+    }
+
+    [Fact]
     public void ACanceledTokenHoldsNothing()
     {
         string a = Make("a.bin", 2);
-        using var hold = new ViewHold();
+        using var hold = new ViewHold(minFileBytes: 0);
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
@@ -250,7 +312,7 @@ public sealed class ViewHoldTests : IDisposable
     {
         string a = Make("a.bin", 32);
         string b = Make("b.bin", 32);
-        using var hold = new ViewHold(Counter(0), Counter(0)); // 가짜 누계: 다른 시험이 내는 읽기가 경계로 보이지 않게 (조회 비용은 실제 호출 시간에 들어 있음)
+        using var hold = new ViewHold(Counter(0), Counter(0), minFileBytes: 0); // 가짜 누계: 다른 시험이 내는 읽기가 경계로 보이지 않게 (조회 비용은 실제 호출 시간에 들어 있음)
         hold.Rebase();
         long t0 = Stopwatch.GetTimestamp();
         HoldBatchResult held = hold.Hold([new ReadOp(a, 0, 32L * Mib), new ReadOp(b, 0, 32L * Mib)], CancellationToken.None);

@@ -64,6 +64,9 @@ public sealed class KeepHoldTests
         public long DiskPerMiss = 4 * Mib;
         public int Rebases;
         public int Rechecks;
+        public readonly List<bool> Refills = [];
+        public long ImageBytesPerBatch;
+        public long SmallBytesPerBatch;
         public int Disposed;
         public Exception? Throw;
         public Func<HoldCheckResult>? NextCheck;
@@ -102,7 +105,7 @@ public sealed class KeepHoldTests
             }
 
             _held += bytes;
-            return new HoldBatchResult(bytes, 0, 0, ErrorsPerBatch, 0, 1, 1, 0, 0.1, 0.05, -1);
+            return new HoldBatchResult(bytes, 0, 0, ErrorsPerBatch, 0, 1, 1, 0, 0.1, 0.05, -1, ImageBytesPerBatch, SmallBytesPerBatch);
         }
 
         public long Release(long bytes)
@@ -113,9 +116,10 @@ public sealed class KeepHoldTests
             return released;
         }
 
-        public HoldCheckResult Recheck(long refillStopBytes, CancellationToken ct)
+        public HoldCheckResult Recheck(long refillStopBytes, CancellationToken ct, bool refill = true)
         {
             Rechecks++;
+            Refills.Add(refill);
             return NextCheck?.Invoke() ?? new HoldCheckResult(_held, 0, 0, 0, false, [], 1, 0, 0.5, 0.2);
         }
 
@@ -266,13 +270,13 @@ public sealed class KeepHoldTests
     public void WhenTheFloorLeavesNoRoomNothingIsHeldAndTheKeepTouchingStays()
     {
         Prewarmer p = Make(Reads);
-        _avail = 4100;
+        _avail = 2100;
         RunFor(20);
 
         p.TouchAtGameStart(Game("a"), "a.exe");
 
         Assert.Equal(0, _opened);
-        Assert.Contains(_log.Lines, l => l.Contains("cache hold while playing skipped (a.exe: available 4100 MiB leaves no room above the floor 4096 MiB)"));
+        Assert.Contains(_log.Lines, l => l.Contains("cache hold while playing skipped (a.exe: available 2100 MiB leaves no room above the floor 2048 MiB)"));
     }
 
     [Fact]
@@ -306,16 +310,16 @@ public sealed class KeepHoldTests
     [Fact]
     public void HoldingStopsWhenTheAvailableMemoryReachesTheFloorWhileHolding()
     {
-        // 가용 = 4196 - 붙든 MiB: 목표 100 MiB (하한 위에 남는 양), 붙든 양이 84 MiB 를 넘으면 (가용 - 16 < 하한) 다음 배치를 시작하지 않음
+        // 가용 = 2148 - 붙든 MiB: 목표 100 MiB (하한 위에 남는 양), 붙든 양이 84 MiB 를 넘으면 (가용 - 16 < 하한) 다음 배치를 시작하지 않음
         ReadOp[] big = [.. Enumerable.Range(0, 20).Select(i => Op(10 + i, 0, 8))];
         Prewarmer p = Make(big);
-        _availFn = () => 4196 - (_hold.HeldBytes >> 20);
+        _availFn = () => 2148 - (_hold.HeldBytes >> 20);
         RunFor(0);
 
         p.TouchAtGameStart(Game("a"), "a.exe");
 
         Assert.Equal(6, _hold.Batches.Count);
-        Assert.Contains(_log.Lines, l => l.Contains("cache held while playing (a.exe): 96 MiB of 100 MiB target") && l.Contains("stopped at the memory floor (4096 MiB"));
+        Assert.Contains(_log.Lines, l => l.Contains("cache held while playing (a.exe): 96 MiB of 100 MiB target") && l.Contains("stopped at the memory floor (2048 MiB"));
     }
 
     [Fact]
@@ -468,6 +472,57 @@ public sealed class KeepHoldTests
     }
 
     [Fact]
+    public void AnAntiCheatComponentFileIsNotHeldAndTheLogCountsWhatWasLeftOut()
+    {
+        ReadOp[] list = [Op(1, 0, 8), new ReadOp(@"D:\a\Randgrid.sys", 0, 8 * Mib), Op(3, 0, 8)];
+        _hold.ImageBytesPerBatch = 5 * Mib;
+        _hold.SmallBytesPerBatch = 2 * Mib;
+        GameSettings ricochet = Game("a") with { AntiCheat = "ricochet" };
+        Prewarmer p = Make(list, ricochet);
+        RunFor(2);
+
+        p.TouchAtGameStart(ricochet, "a.exe");
+
+        Assert.DoesNotContain(_hold.Batches.SelectMany(b => b), o => o.Path.EndsWith("Randgrid.sys"));
+        Assert.Contains(_log.Lines, l => l.Contains("cache held while playing (a.exe)") && l.Contains("8 MiB in anti-cheat files") && l.Contains("5 MiB in executable images (MZ) or unreadable files") && l.Contains("2 MiB in files under 16 MiB"));
+    }
+
+    [Fact]
+    public void TheCheckDoesNotRefillWhenTheAvailableMemoryIsWithinTheMarginOfTheFloorButDoesWhenThereIsRoom()
+    {
+        Prewarmer p = Make(Reads);
+        RunFor(250, e => _avail = e < 200 ? 2500 : 20000); // 첫 점검 (120 초): 하한 2048 + 1024 보다 낮음, 둘째 (240 초): 여유 있음
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Equal([false, true], _hold.Refills);
+    }
+
+    [Fact]
+    public void TheHoldGateAnswersTheSameForTheSameGameOnEveryCallEvenWhenTheSettingNamesAnAllowedKind()
+    {
+        var env = new PrewarmEnv
+        {
+            AvailableRamMib = () => 20000,
+            GameRunning = _ => false,
+            ZoneBytes = _ => 0,
+            TraceExists = _ => true,
+            AntiCheatOf = _ => "eac", // 폴더에서는 금지 종류가 감지됨
+        };
+        var keeper = new PinKeeper(env, _log);
+        GameSettings game = Game("a") with { AntiCheat = "ricochet" }; // 설정은 허용 종류
+
+        (string? first, _) = keeper.HoldGate(game);
+        (string? second, _) = keeper.HoldGate(game);
+        (string? third, string? kind) = keeper.HoldGate(game);
+
+        Assert.Equal("eac", first);
+        Assert.Equal("eac", second); // 캐시가 설정값이 아니라 감지값을 담아 두 번째 호출부터 풀리지 않음
+        Assert.Equal("eac", third);
+        Assert.Equal("ricochet", kind);
+    }
+
+    [Fact]
     public void WithTheSwitchOffTheRememberingTouchingRunsAndNothingIsHeld()
     {
         _keepHold = false;
@@ -487,12 +542,12 @@ public sealed class KeepHoldTests
     {
         ReadOp[] gib = [.. Enumerable.Range(0, 4).Select(i => Op(20 + i, 0, 1024))];
         Prewarmer p = Make(gib);
-        RunFor(5, e => _avail = e == 1 ? 3000 : 20000); // 첫 확인에서만 하한 (4096) 아래
+        RunFor(5, e => _avail = e == 1 ? 1500 : 20000); // 첫 확인에서만 하한 (2048) 아래
 
         p.TouchAtGameStart(Game("a"), "a.exe");
 
-        Assert.Equal([(4096 - 3000 + 256) * Mib], _hold.Released); // 부족한 양 + 여유
-        Assert.Contains(_log.Lines, l => l.Contains("cache hold released 1352 MiB for memory (a.exe): available 3000 MiB < floor 4096 MiB, 2744 MiB still held"));
+        Assert.Equal([(2048 - 1500 + 256) * Mib], _hold.Released); // 부족한 양 + 여유
+        Assert.Contains(_log.Lines, l => l.Contains("cache hold released 804 MiB for memory (a.exe): available 1500 MiB < floor 2048 MiB, 3292 MiB still held"));
         Assert.Equal(256, _hold.Batches.Count); // 내놓은 뒤에는 다시 붙들지 않음: 붙들기 호출은 처음 한 번뿐
     }
 
@@ -529,7 +584,7 @@ public sealed class KeepHoldTests
             elapsed += t.TotalSeconds;
             if (elapsed > 190)
             {
-                _avail = 5000; // 하한 (4096) + 2048 아래
+                _avail = 3500; // 하한 (2048) + 2048 아래
                 late.Add(t.TotalSeconds);
             }
 

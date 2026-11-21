@@ -36,7 +36,7 @@ public sealed class PinKeeper
     private readonly Dictionary<string, IDisposable> _held = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, RecoveryPin> _recovery = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (string Root, string? Cheat)> _cheat = new(StringComparer.OrdinalIgnoreCase); // 게임별 고정 금지 판정 (없음 포함, 탐지 실패는 넣지 않음): 게임 루트가 바뀌면 무효
-    private readonly Dictionary<string, (string Root, string? Kind)> _holdKind = new(StringComparer.OrdinalIgnoreCase); // 게임별 붙들기용 안티치트 종류 (탐지 실패는 넣지 않음): 게임 루트가 바뀌면 무효
+    private readonly Dictionary<string, (string Root, string? Found)> _holdKind = new(StringComparer.OrdinalIgnoreCase); // 게임별 붙들기용 안티치트 종류 (탐지 실패는 넣지 않음): 게임 루트가 바뀌면 무효
     private readonly HashSet<string> _cheatLogged = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyList<GameSettings> _games = []; // Reconcile·CheckMemory 가 마지막으로 받은 등록 게임 (다른 스레드가 읽으므로 Volatile)
     private bool _gamesKnown; // 위 목록을 한 번이라도 받았는가 (못 받았으면 고정 저장 때 등록 여부를 따지지 않음)
@@ -398,7 +398,7 @@ public sealed class PinKeeper
         {
             if (_holdKind.TryGetValue(game.Name, out var known) && known.Root == game.OriginRoot)
             {
-                return (AntiCheat.ForbidsHold(known.Kind) ? known.Kind : null, known.Kind);
+                return (AntiCheat.ForbidsHold(known.Found) ? known.Found : null, game.AntiCheat ?? known.Found); // 캐시에는 감지값을 둠: 설정값이 허용 종류여도 감지값이 금지면 두 번째 호출부터도 막힘
             }
         }
 
@@ -408,7 +408,7 @@ public sealed class PinKeeper
         {
             lock (_lock)
             {
-                _holdKind[game.Name] = (game.OriginRoot, kind);
+                _holdKind[game.Name] = (game.OriginRoot, found);
             }
         }
 

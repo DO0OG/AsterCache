@@ -7,7 +7,9 @@ namespace AsterCache.Windows;
 
 /// 붙들기 한 배치의 결과: 붙든 바이트, 디스크에서 읽힌 것으로 본 바이트, 스파스라 건너뛴 바이트, 오류 수 (열기·매핑·읽기·파일 끝 밖), 느린 조각 수, 새로 연 뷰 수, 읽기 수를 조회한 횟수,
 /// 이 프로세스의 디스크 읽기 수 (하드 폴트) 증가, 걸린 시간 (초), 쓴 CPU 시간 (초), 디스크 읽기가 섞여 경계로 보고 멈췄으면 그때 읽던 범위의 배치 안 위치 (그 뒤 범위는 읽지 않았음, 없으면 -1).
-public readonly record struct HoldBatchResult(long Bytes, long DiskBytes, long SkippedBytes, int Errors, int SlowPieces, int Views, int Checks, long HardFaults, double Seconds, double CpuSeconds, int BoundaryIndex);
+public readonly record struct HoldBatchResult(long Bytes, long DiskBytes, long SkippedBytes, int Errors, int SlowPieces, int Views, int Checks, long HardFaults, double Seconds, double CpuSeconds, int BoundaryIndex, long ImageBytes = 0, long SmallBytes = 0);
+
+// ImageBytes: 실행 가능한 이미지 파일 (첫 두 바이트가 MZ) 이거나 읽지 못해 붙들지 않은 바이트, SmallBytes: MinFileBytes 보다 작은 파일이라 붙들지 않은 바이트.
 
 /// 점검 한 번의 결과: 작업 집합에 있는지 확인한 바이트, 그중 메모리 관리자가 작업 집합에서 줄여 간 (Valid 가 아닌) 바이트, 그것을 다시 읽어 올리다 디스크에서 읽힌 바이트, 붙든 목록에서 뺀 바이트 (바뀐 파일의 몫은 제외),
 /// 다시 읽기 상한에 닿아 멈췄는가, 크기·수정 시각이 바뀌어 뷰를 닫은 파일, 읽기 수를 조회한 횟수, 하드 폴트 증가, 걸린 시간 (초), 쓴 CPU 시간 (초).
@@ -35,7 +37,8 @@ public interface IKeepHold : IDisposable
 
     /// 바뀐 파일의 뷰를 닫고, 붙든 쪽이 작업 집합에 있는지 QueryWorkingSetEx (자기 프로세스, 접근 비트를 건드리지 않음) 로 보아 빠진 쪽만 다시 읽어 올립니다.
     /// 디스크에서 다시 읽힌 양이 refillStopBytes 를 넘으면 그 구간을 목록에서 빼고, 뒤의 빠진 쪽이 있는 구간도 읽지 않고 뺍니다.
-    HoldCheckResult Recheck(long refillStopBytes, CancellationToken ct);
+    /// refill 이 거짓이면 (가용 메모리에 여유가 없음) 줄여 간 쪽을 다시 읽어 올리지 않고 그 구간을 붙든 목록에서 뺍니다.
+    HoldCheckResult Recheck(long refillStopBytes, CancellationToken ct, bool refill = true);
 }
 
 /// 파일마다 섹션을 만들고 파일 핸들은 바로 닫은 채, 큰 뷰 (파일 전체 또는 WindowBytes 창) 를 열어 두고 유지 목록의 범위만 읽어 서비스 작업 집합에 올려 둡니다 (읽지 않은 쪽은 메모리를 쓰지 않음).
@@ -69,6 +72,8 @@ public sealed unsafe class ViewHold : IKeepHold
         public (long Size, long Ticks)? Stamp; // 처음 열 때의 크기·수정 시각
         public bool Dead; // 열 수 없어 붙들지 않음
         public bool Sparse; // 스파스라 붙들지 않음
+        public bool Image; // 실행 가능한 이미지 (MZ) 이거나 읽지 못해 붙들지 않음
+        public bool Small; // MinFileBytes 보다 작아 붙들지 않음
         public readonly Dictionary<long, Window> Windows = [];
         public readonly List<(long Start, long End)> Claimed = []; // 이미 붙든 (또는 내놓은) 구간, 겹치지 않게 합쳐 정렬: 같은 구간을 두 번 붙들지 않고 내놓은 구간을 다시 붙들지 않음
     }
@@ -96,6 +101,8 @@ public sealed unsafe class ViewHold : IKeepHold
         public long Bytes;
         public long Disk;
         public long Skipped;
+        public long Images;
+        public long Smalls;
         public long Faults;
         public long SinceCheck;
         public double SinceMs;
@@ -109,8 +116,14 @@ public sealed unsafe class ViewHold : IKeepHold
         public bool Canceled;
     }
 
-    public ViewHold(Func<uint?>? hardFaults = null, Func<uint?>? pageReads = null, Func<string, uint>? attributes = null)
+    /// 이보다 작은 파일은 붙들지 않습니다: 16 MiB. 색인·설정류 작은 파일은 붙들어 얻는 이득이 작고 (페이지 수 천 개 미만) 게임이 다시 쓰거나 줄일 가능성이 커서 (붙든 뷰가 있으면 크기 줄이기가 오류 1224 로 실패) 가변 표시가 아직 없어도 뺍니다.
+    public const long MinFileBytes = 16L << 20;
+
+    private readonly long _minFileBytes;
+
+    public ViewHold(Func<uint?>? hardFaults = null, Func<uint?>? pageReads = null, Func<string, uint>? attributes = null, long minFileBytes = MinFileBytes)
     {
+        _minFileBytes = minFileBytes;
         _hardFaults = hardFaults ?? ProcessFaults.Query;
         _pageReads = pageReads ?? SystemPageReads.Query;
         _attributes = attributes ?? FileGuards.FileAttributes;
@@ -190,7 +203,7 @@ public sealed unsafe class ViewHold : IKeepHold
                 boundary = tally.Boundary ? batch.Count - 1 : -1;
             }
 
-            return new HoldBatchResult(tally.Bytes, tally.Disk, tally.Skipped, tally.Errors, tally.Slow, tally.Views, tally.Checks, tally.Faults, Stopwatch.GetElapsedTime(started).TotalSeconds, Math.Max(0, StandbyTouch.ThreadCpuSeconds() - cpuBefore), boundary);
+            return new HoldBatchResult(tally.Bytes, tally.Disk, tally.Skipped, tally.Errors, tally.Slow, tally.Views, tally.Checks, tally.Faults, Stopwatch.GetElapsedTime(started).TotalSeconds, Math.Max(0, StandbyTouch.ThreadCpuSeconds() - cpuBefore), boundary, tally.Images, tally.Smalls);
         }
     }
 
@@ -215,7 +228,7 @@ public sealed unsafe class ViewHold : IKeepHold
         }
     }
 
-    public HoldCheckResult Recheck(long refillStopBytes, CancellationToken ct)
+    public HoldCheckResult Recheck(long refillStopBytes, CancellationToken ct, bool refill = true)
     {
         lock (_lock)
         {
@@ -258,9 +271,9 @@ public sealed unsafe class ViewHold : IKeepHold
                     continue;
                 }
 
-                if (capReached)
+                if (capReached || !refill)
                 {
-                    dropped += Unlock(seg, seg.Live); // 읽기 상한에 닿은 뒤: 줄여 간 쪽이 있는 구간은 디스크로 되찾지 않고 목록에서 뺌
+                    dropped += Unlock(seg, seg.Live); // 읽기 상한에 닿은 뒤이거나 가용 메모리에 여유가 없음: 줄여 간 쪽이 있는 구간은 디스크로 되찾지 않고 목록에서 뺌
                     continue;
                 }
 
@@ -477,6 +490,25 @@ public sealed unsafe class ViewHold : IKeepHold
             }
 
             file.Stamp = Stat(range.Path);
+            if (file.Stamp is { Size: var size } && size < _minFileBytes)
+            {
+                file.Small = true;
+                tally.Smalls += range.Length;
+                return null;
+            }
+
+            switch (IsExecutableImage(range.Path))
+            {
+                case true: // 실행 가능한 이미지 (예: 실행 파일, 드라이버): 데이터 섹션으로 붙들지 않음
+                    file.Image = true;
+                    tally.Images += range.Length;
+                    return null;
+                case null: // 읽지 못함: 붙들지 않는 쪽으로
+                    file.Dead = true;
+                    tally.Errors++;
+                    return null;
+            }
+
             file.Section = StandbyTouch.Section.Open(range.Path, out _, out _);
             file.Dead = file.Section is null;
             file.Length = file.Section?.Length ?? 0;
@@ -485,6 +517,20 @@ public sealed unsafe class ViewHold : IKeepHold
         if (file.Sparse)
         {
             tally.Skipped += range.Length;
+            return null;
+        }
+
+        if (file.Small || file.Image)
+        {
+            if (file.Small)
+            {
+                tally.Smalls += range.Length;
+            }
+            else
+            {
+                tally.Images += range.Length;
+            }
+
             return null;
         }
 
@@ -505,6 +551,21 @@ public sealed unsafe class ViewHold : IKeepHold
         }
 
         return file;
+    }
+
+    // 파일의 첫 두 바이트가 MZ 인가 (확장자가 아니라 내용으로 판정). 읽지 못하면 null.
+    private static bool? IsExecutableImage(string path)
+    {
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1);
+            Span<byte> head = stackalloc byte[2];
+            return stream.Read(head) == 2 && head[0] == (byte)'M' && head[1] == (byte)'Z';
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     private Window? WindowFor(FileEntry file, long pos, Tally tally)

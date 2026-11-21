@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using AsterCache.Core.Discovery;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Prefetch;
 using AsterCache.Core.Settings;
@@ -15,8 +16,12 @@ public sealed partial class Prewarmer
     /// 붙드는 양의 상한: 5 GiB. 근거: 2026-11-21 Call of Duty 플레이의 블록 단위 디스크 읽기 기록에서 순위 앞 2·3·4·5·6 GiB 가 경기 중 캐시 경유 읽기 지연의 32·39·42·47·49% 를 덮었고 5 GiB 를 넘기면 거의 늘지 않았습니다 (한 플레이의 근사 값).
     public const long HoldTargetCapBytes = 5L << 30;
 
-    /// 붙든 뒤에도 가용 메모리가 남아 있어야 하는 하한의 최솟값 (MiB): 하한은 max(이 값, prewarm.min_free_ram_mib).
+    /// 붙들기 전용 하한 (MiB): 2 GiB (예열의 prewarm.min_free_ram_mib 와 분리). 가용 메모리에는 즉시 재사용할 수 있는 대기 목록이 들어 있고, 붙든 페이지는 잠그지 않아 Windows 가 필요할 때 줄일 수 있으며,
+    /// 하한 감시가 1~5 초 주기로 덜 중요한 쪽부터 내놓으므로 4 GiB 처럼 높게 잡을 까닭이 없습니다 (이 PC 의 플레이 기록 둘의 최소 가용 3.9~5.7 GiB 에서 4 GiB 를 하한으로 하면 붙든 것을 거의 다 내놓게 됨).
     public const long HoldMinFloorMib = 2048;
+
+    /// 점검이 줄여 간 쪽을 다시 읽어 올리려면 가용 메모리가 하한 + 이 값 (MiB) 이상이어야 합니다: 그렇지 않으면 다시 채우지 않고 그 구간을 붙든 목록에서 뺍니다 (메모리 관리자와 2 분 주기로 주고받지 않게).
+    public const long HoldRefillMarginMib = 1024;
 
     /// 가용 메모리가 하한 아래인지 보는 간격 (GlobalMemoryStatusEx 한 번, 비용은 거의 없음).
     public static readonly TimeSpan HoldWatchEvery = TimeSpan.FromSeconds(5);
@@ -79,8 +84,6 @@ public sealed partial class Prewarmer
     }
 
     private GameSettings? GameOf(string name) => _games.FirstOrDefault(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase));
-
-    private static long HoldFloorMib(GameSettings game) => Math.Max(HoldMinFloorMib, game.Prewarm.MinFreeRamMib);
 
     /// 붙들 목표 (바이트): 기존 예산 (가용 메모리의 PlayTouchAvailableFraction), 붙든 뒤에도 가용 메모리가 하한 위에 남는 양, HoldTargetCapBytes 가운데 가장 작은 것.
     internal static long HoldTargetBytes(long availMib, long floorMib) => Math.Min(HoldTargetCapBytes, Math.Min((long)(availMib * PlayTouchAvailableFraction) << 20, Math.Max(0, availMib - floorMib) << 20));
@@ -556,7 +559,7 @@ public sealed partial class Prewarmer
             return null;
         }
 
-        floorMib = HoldFloorMib(game);
+        floorMib = HoldMinFloorMib;
         long availMib = _env.AvailableRamMib();
         targetBytes = HoldTargetBytes(availMib, floorMib);
         if (targetBytes < HoldMinTargetBytes)
@@ -584,12 +587,13 @@ public sealed partial class Prewarmer
         var reasons = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         long sparseBytes = 0;
         long excludedBytes = 0;
+        long cheatFileBytes = 0;
         List<ReadOp> eligible = [];
         foreach (ReadOp op in keep.Ordered)
         {
             if (!reasons.TryGetValue(op.Path, out string? reason))
             {
-                reasons[op.Path] = reason = _env.IsSparse(op.Path) ? "sparse" : excluded(op.Path);
+                reasons[op.Path] = reason = _env.IsSparse(op.Path) ? "sparse" : AntiCheat.IsProcessName(Path.GetFileName(op.Path)) ? "anti-cheat file" : excluded(op.Path); // 안티치트 구성요소 파일 (예: 리코셰 드라이버) 은 붙들지 않음
             }
 
             if (reason is null)
@@ -599,6 +603,10 @@ public sealed partial class Prewarmer
             else if (reason == "sparse")
             {
                 sparseBytes += op.Length;
+            }
+            else if (reason == "anti-cheat file")
+            {
+                cheatFileBytes += op.Length;
             }
             else
             {
@@ -619,6 +627,8 @@ public sealed partial class Prewarmer
             int errors = 0;
             long hardFaults = 0;
             long diskOnly = 0;
+            long images = 0;
+            long smalls = 0;
             long floor = floorMib;
             WalkResult walk;
             bool locked = false; // _touchSerial 을 쥐고 있는가: HoldLockBatches 배치마다, 그리고 속도 제한으로 쉬기 전에 놓아 다른 만지기가 끼어들 수 있게 함
@@ -635,6 +645,7 @@ public sealed partial class Prewarmer
                     }
 
                     HoldBatchResult r = hold.Hold(batch, linked.Token);
+                    (images, smalls) = (images + r.ImageBytes, smalls + r.SmallBytes);
                     (cpu, checks, errors, hardFaults, diskOnly) = (cpu + r.CpuSeconds, checks + r.Checks, errors + r.Errors, hardFaults + r.HardFaults, diskOnly + r.DiskBytes);
                     double rest = r.BoundaryIndex < 0 ? r.Bytes / (double)PlayTouchBytesPerSecond - r.Seconds : 0; // 붙드는 속도 상한: 게임이 로딩하는 동안 페이지를 몰아서 옮기지 않게
                     if (++inGroup >= HoldLockBatches || rest > 0)
@@ -676,7 +687,9 @@ public sealed partial class Prewarmer
 
             string stopped = walk.Stopped ? $", stopped at the memory floor ({floorMib} MiB, available {_env.AvailableRamMib()} MiB)" : walk.CapReached ? ", disk read cap reached" : string.Empty;
             string missing = walk.Boundaries > 0 ? $", {walk.Boundaries} missing stretches skipped ({walk.SkippedBytes >> 20} MiB not held)" : string.Empty;
-            string excludedText = sparseBytes + excludedBytes > 0 ? $", {excludedBytes >> 20} MiB in volatile or changed files and {sparseBytes >> 20} MiB in sparse files not held" : string.Empty;
+            string excludedText = sparseBytes + excludedBytes + cheatFileBytes + images + smalls > 0
+                ? $", not held: {excludedBytes >> 20} MiB in volatile or changed files, {sparseBytes >> 20} MiB in sparse files, {cheatFileBytes >> 20} MiB in anti-cheat files, {images >> 20} MiB in executable images (MZ) or unreadable files, {smalls >> 20} MiB in files under {ViewHold.MinFileBytes >> 20} MiB"
+                : string.Empty;
             _log.Info($"{game.Name}: cache held while playing ({exe}): {hold.HeldBytes >> 20} MiB of {targetBytes >> 20} MiB target ({total >> 20} MiB list) in {hold.Files} files, {hold.Views} views, in {elapsed:F1} s (cpu {cpu:F1} s, {checks} checks), {walk.Disk >> 20} MiB read from disk ({hardFaults} hard faults){ErrorsText(errors)}{missing}{excludedText}{stopped}{(walk.Boundaries > 0 ? HoldProbe(reads, total, linked.Token) : string.Empty)}{(cheatKind is null ? string.Empty : $" (anti-cheat: {cheatKind}, hold allowed)")}");
             SetHeld(game.Name, hold.HeldBytes);
             outcome = HoldOutcome.Done;
@@ -763,7 +776,7 @@ public sealed partial class Prewarmer
                 if (elapsed - lastCheck >= PlayTouchEvery && (game ?? GameOf(name)) is { } current)
                 {
                     lastCheck = elapsed;
-                    (long trimmed, long refilled, long dropped) = CheckHeld(hold, current, exe, ref lastSkip);
+                    (long trimmed, long refilled, long dropped) = CheckHeld(hold, current, exe, floorMib, ref lastSkip);
                     (trimmedTotal, refilledTotal, droppedTotal, checks) = (trimmedTotal + trimmed, refilledTotal + refilled, droppedTotal + dropped, checks + 1);
                     SetHeld(name, hold.HeldBytes);
                     if (hold.HeldBytes <= 0)
@@ -795,7 +808,7 @@ public sealed partial class Prewarmer
     }
 
     // 붙든 쪽이 작업 집합에 있는지 보고 (QueryWorkingSetEx) 메모리 관리자가 줄여 간 쪽만 다시 읽어 올립니다. 줄여 간 양, 디스크에서 다시 읽은 양, 목록에서 뺀 양을 돌려줍니다.
-    private (long Trimmed, long Refilled, long Dropped) CheckHeld(IKeepHold hold, GameSettings game, string exe, ref string? lastSkip)
+    private (long Trimmed, long Refilled, long Dropped) CheckHeld(IKeepHold hold, GameSettings game, string exe, long floorMib, ref string? lastSkip)
     {
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "play hold check", default, game.OriginRoot, allowWhileYielded: true, preserveGameKey: game.Name);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
@@ -812,7 +825,8 @@ public sealed partial class Prewarmer
         lock (_touchSerial)
         {
             hold.Rebase();
-            r = hold.Recheck(KeepDiskReadCapBytes, linked.Token);
+            bool refill = _env.AvailableRamMib() >= floorMib + HoldRefillMarginMib; // 가용 메모리에 여유가 없으면 줄여 간 쪽을 다시 읽어 오지 않고 그 구간을 목록에서 뺌
+            r = hold.Recheck(KeepDiskReadCapBytes, linked.Token, refill);
         }
 
         string cap = r.CapReached ? $", refill cap reached, {r.DroppedBytes >> 20} MiB taken off the hold" : r.DroppedBytes > 0 ? $", {r.DroppedBytes >> 20} MiB taken off the hold (unreadable)" : string.Empty;

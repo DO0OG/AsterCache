@@ -3130,79 +3130,61 @@ public sealed class SolarTests
 
     private static TouchResult Stopped(long bytesMib, long diskMib) => new(bytesMib * Mib, 0.5, 4, 0, TouchEnd.NeedsDiskReads, diskMib * Mib, 0, 0, 0, 0, StopReason.HardFaults);
 
+    // 시작 만지기의 사다리가 첫 경계에서 멈추면 빠진 조각을 건너뛰며 목록 끝까지 같은 사다리 순서로 만지고 (한 패스, 16 MiB 배치) 빠짐 표시는 그대로 둡니다.
     [Fact]
-    public void ARangeMissingFromMemoryFindsTheFrontInReadOrderAndTouchesOnlyThatInLadderOrderKeepingTheMissingFlag()
+    public void ARangeMissingFromMemoryAtTheStartIsSkippedAndTheRestOfTheListIsTouchedInLadderOrderKeepingTheMissingFlag()
     {
         Prewarmer p = TwoWarmedGames();
-        _queued.Enqueue(Stopped(2, 32)); // 사다리 순서는 덜 중요한 끝의 빈 곳에서 먼저 멈춤
-        _queued.Enqueue(Stopped(15, 5)); // 읽은 순서로 15 MiB 까지 갔고 끝의 5 MiB 는 디스크에서 읽힘
-        _queued.Enqueue(new TouchResult(15 * Mib, 0.4, 0, 0, TouchEnd.Completed));
+        _queued.Enqueue(Stopped(2, 32)); // 사다리 순서가 덜 중요한 끝의 빈 곳에서 먼저 멈춤
+        _queued.Enqueue(Stopped(16, 2)); // 걷기의 첫 배치도 경계를 만남 (이어지는 같은 파일의 범위는 건너뜀, 그 뒤는 기본 결과: 전부 메모리에 있음)
         int solarBefore = _log.Lines.Count;
 
         p.TouchAtGameStart(Game("a"), "a.exe");
 
-        Assert.Equal(3, _touched.Count);
-        Assert.Equal(Reversed(Reads), _touched[0]);
-        Assert.Equal(Reads, _touched[1]); // 중요한 순서
-        Assert.Equal([new ReadOp(@"D:\a\2.bin", 0, 5 * Mib), new ReadOp(@"D:\a\1.bin", 0, 10 * Mib)], _touched[2]); // 앞부분만 사다리 순서로
+        Assert.Equal(Reversed(Reads), _touched[0]); // 첫 시도는 사다리 전체
+        Assert.Equal(new ReadOp(@"D:\a\1.bin", 0, 10 * Mib), _touched[^1][^1]); // 가장 중요한 블록이 마지막
+        Assert.DoesNotContain(_touched.Skip(1).SelectMany(b => b), o => o.Path == @"D:\a\2.bin" && o.Offset >= 6 * Mib); // 경계를 만난 파일의 이어지는 범위는 건너뜀
+        Assert.True(_touched.Skip(1).All(b => b.Sum(o => o.Length) <= Prewarmer.HoldBatchBytes));
         Assert.True(p.Solar.HasMissing("a"));
         Assert.False(p.Solar.HasMark("a"));
-        Assert.Contains("a: cache touched at game start (a.exe): 10 MiB of 30 MiB still in memory (boundary found by hard faults), in 0.9 s (cpu 0.0 s, 0 views, 0 checks), 5 MiB read from disk (0 hard faults), left to the rewarm check", _log.Lines.Last());
+        Assert.Contains("a: cache touched at game start (a.exe) past the first missing stretch", _log.Lines.Last());
+        Assert.Contains("1 missing stretches remembered", _log.Lines.Last());
         Assert.Contains(_log.Lines.Skip(solarBefore), l => l.Contains("a: cache touch at game start (a.exe) found data missing from memory after 2 of 30 MiB"));
     }
 
     [Fact]
-    public void WhenTheMissingPartIsAlreadyKnownTheFrontIsFoundDirectlyAndNothingIsTouchedWhenNoneIsInMemory()
+    public void WhenTheMissingPartIsAlreadyKnownTheStartDoesNotTouchTheWholeLadderFirstButWalksInBatches()
     {
         Prewarmer p = TwoWarmedGames();
         _queued.Enqueue(Stopped(2, 32));
-        _queued.Enqueue(Stopped(15, 5));
-        _queued.Enqueue(new TouchResult(15 * Mib, 0.4, 0, 0, TouchEnd.Completed));
+        _queued.Enqueue(Stopped(16, 2)); // 걷기도 경계를 만나 빠짐 표시가 그대로 남음
         p.TouchAtGameStart(Game("a"), "a.exe");
         _touched.Clear();
         _now += TimeSpan.FromMinutes(5);
-        _queued.Enqueue(Stopped(32, 32)); // 앞부분도 전부 빠짐
+        _queued.Enqueue(Stopped(32, 8)); // 걷기의 첫 배치가 경계를 만남 (한 플레이의 기억은 끝났으므로 새로 시작)
 
         p.TouchAtGameStart(Game("a"), "a.exe");
 
-        Assert.Equal([Reads], _touched); // 알려진 빠짐은 사다리 순서로 시도하지 않고 읽은 순서로 한 번만 (앞부분이 없으니 다시 만지지 않음)
+        Assert.All(_touched, b => Assert.True(b.Sum(o => o.Length) <= Prewarmer.HoldBatchBytes)); // 알려진 빠짐은 사다리 전체로 시도하지 않음
         Assert.True(p.Solar.HasMissing("a"));
-        Assert.Contains("a: cache touch at game start (a.exe) found none of the 30 MiB list in memory", _log.Lines.Last());
+        Assert.Contains("past the first missing stretch", _log.Lines.Last());
+        Assert.Contains("missing stretches remembered", _log.Lines.Last());
     }
 
     [Fact]
-    public void ATouchThatFindsEverythingInMemoryAfterAStaleMissingFlagMakesTheNormalLadderAndClearsTheFlag()
+    public void ATouchThatFindsNoBoundaryAfterAStaleMissingFlagMakesTheNormalLadderAndClearsTheFlag()
     {
         Prewarmer p = TwoWarmedGames();
         _queued.Enqueue(Stopped(2, 32));
-        _queued.Enqueue(Stopped(15, 5));
-        _queued.Enqueue(new TouchResult(15 * Mib, 0.4, 0, 0, TouchEnd.Completed));
         p.TouchAtGameStart(Game("a"), "a.exe");
         _touched.Clear();
         _now += TimeSpan.FromMinutes(5);
 
         p.TouchAtGameStart(Game("a"), "a.exe"); // 이번엔 전부 메모리에 있음 (기본 결과는 끝까지 만짐)
 
-        Assert.Equal([Reads, Reversed(Reads)], _touched);
+        Assert.Equal(Reversed(Reads), _touched[^1]); // 경계가 없으면 처음부터 사다리 한 번
         Assert.False(p.Solar.HasMissing("a"));
         Assert.True(p.Solar.HasMark("a"));
-    }
-
-    [Fact]
-    public void AGameSkippedAsAlreadyWarmAtServiceStartButFoundMissingByItsLadderIsStillTouchedAtGameStart()
-    {
-        _result = Stopped(10, 32); // 서비스 시작 사다리가 빠진 것을 발견함 (표식 없이 빠짐 표시)
-        Prewarmer p = MakePrewarmer(Game("a"));
-        _ = p.RunServiceStart([Game("a")]);
-        Assert.Null(p.LastWarmed("a")); // 이번 서비스가 예열한 기록은 없음
-        Assert.True(p.Solar.HasMissing("a"));
-        _touched.Clear();
-        _result = new TouchResult(100 * Mib, 0.4, 0, 0, TouchEnd.Completed);
-        _queued.Enqueue(Stopped(15, 5));
-
-        p.TouchAtGameStart(Game("a"), "a.exe");
-
-        Assert.Equal([Reads, [new ReadOp(@"D:\a\2.bin", 0, 5 * Mib), new ReadOp(@"D:\a\1.bin", 0, 10 * Mib)]], _touched);
     }
 
     [Fact]
@@ -3300,292 +3282,6 @@ public sealed class SolarTests
         Assert.Contains("skipped (a.exe: disk yielded)", _log.Lines.Last());
     }
 
-    // ---- 게임이 실행되는 동안 캐시 유지 ----
-
-    private static bool IsPeriod(TimeSpan t) => t == Prewarmer.PlayTouchEvery;
-
-    [Fact]
-    public void WhileTheGameRunsTheFrontIsTouchedAgainEveryPeriodAndTheEndIsLoggedOnceTheExeIsGone()
-    {
-        Prewarmer p = TwoWarmedGames();
-        _result = new TouchResult(30 * Mib, 0.4, 0, 0, TouchEnd.Completed);
-        _ = _running.Add("a");
-        int periods = 0;
-        _sleep = (t, ct) =>
-        {
-            if (IsPeriod(t) && ++periods == 3)
-            {
-                _ = _running.Remove("a"); // 두 회차를 돈 뒤 등록 실행 파일이 모두 끝남
-            }
-        };
-
-        p.TouchAtGameStart(Game("a"), "a.exe");
-
-        Assert.Equal(3, periods);
-        Assert.Equal(1 + (2 * 2), _touched.Count); // 시작 만지기 한 번 + 회차마다 (앞부분을 찾는 읽기, 사다리 순서) 두 번
-        Assert.Equal(2, _log.Lines.Count(l => l.Contains("a: cache kept while playing (a.exe): 30 MiB of 30 MiB still in memory, in 0.8 s (cpu 0.0 s, 0 views, 0 checks), 0 MiB read from disk (0 hard faults)")));
-        Assert.EndsWith("a: cache keeping ended after 2 rounds", _log.Lines.Last());
-        Assert.Equal(Reads, _touched[1]); // 앞부분은 중요한 순서로 찾고
-        Assert.Equal(Reversed(Reads), _touched[2]); // 사다리 순서로 만짐
-        Assert.True(p.Solar.HasMark("a")); // 표식은 시작 만지기의 것 그대로
-    }
-
-    [Fact]
-    public void TheKeepingStopsWhenTheGameEndsBeforeTheFirstPeriodOrWhenTheServiceStops()
-    {
-        Prewarmer p = TwoWarmedGames();
-        p.TouchAtGameStart(Game("a"), "a.exe"); // 실행 중이 아님: 주기를 기다린 뒤 바로 끝 (회차 없음, 끝 줄도 없음)
-        Assert.Single(_touched);
-        Assert.DoesNotContain(_log.Lines, l => l.Contains("cache keeping"));
-
-        _ = _running.Add("a");
-        int periods = 0;
-        _sleep = (t, ct) =>
-        {
-            if (IsPeriod(t))
-            {
-                periods++;
-                p.Shutdown(); // 기다리는 동안 서비스가 멈춤
-            }
-        };
-        _now += Prewarmer.StartTouchMinGap;
-        _touched.Clear();
-
-        p.TouchAtGameStart(Game("a"), "a.exe");
-
-        Assert.Equal(1, periods);
-        Assert.Single(_touched); // 시작 만지기만, 유지 회차는 없음
-    }
-
-    [Fact]
-    public void AtMostHalfOfTheAvailableMemoryIsTouchedFromTheFrontOfTheListEachRound()
-    {
-        GameSettings a = Game("a") with { Prewarm = PrewarmSettings.Default with { MinFreeRamMib = 0 } };
-        Prewarmer p = MakePrewarmer(a);
-        Assert.True(p.Run(a, "service start").Ran);
-        _now += TimeSpan.FromMinutes(2);
-        _result = new TouchResult(20 * Mib, 0.4, 0, 0, TouchEnd.Completed);
-        _avail = 40; // 상한 20 MiB
-        _ = _running.Add("a");
-        int periods = 0;
-        _sleep = (t, ct) =>
-        {
-            if (IsPeriod(t) && ++periods == 2)
-            {
-                _ = _running.Remove("a");
-            }
-        };
-        _touched.Clear();
-
-        p.TouchAtGameStart(a, "a.exe");
-
-        Assert.Equal(Reads.Take(2), _touched[1]); // 시작 만지기 다음의 유지 회차: 목록 앞쪽 20 MiB
-        Assert.Equal(Reversed(Reads.Take(2)), _touched[2]);
-        Assert.Contains("a: cache kept while playing (a.exe): 20 MiB of 20 MiB still in memory", _log.Lines.Last(l => l.Contains("cache kept")));
-    }
-
-    [Fact]
-    public void ARoundWithAvailableMemoryUnderTheReserveIsSkippedAndTheSameReasonIsLoggedOnce()
-    {
-        Prewarmer p = TwoWarmedGames();
-        _ = _running.Add("a");
-        int periods = 0;
-        _sleep = (t, ct) =>
-        {
-            if (!IsPeriod(t))
-            {
-                return;
-            }
-
-            periods++;
-            _avail = periods <= 3 ? 1000 : 20000; // 세 회차 동안 예비 (4096 MiB) 아래, 그 뒤 회복
-            if (periods == 5)
-            {
-                _ = _running.Remove("a");
-            }
-        };
-
-        p.TouchAtGameStart(Game("a"), "a.exe");
-
-        Assert.Single(_log.Lines, l => l.Contains("a: cache keeping while playing skipped (a.exe: available 1000 MiB < reserve 4096 MiB)"));
-        Assert.Equal(1 + 2, _touched.Count); // 시작 만지기 + 회복한 네 번째 회차 (찾기, 사다리)
-        Assert.Contains("a: cache kept while playing (a.exe)", _log.Lines.Last(l => l.Contains("cache kept")));
-        Assert.EndsWith("a: cache keeping ended after 1 rounds", _log.Lines.Last());
-    }
-
-    [Fact]
-    public void AnotherStartTouchOfTheSameGameDuringTheKeepingDoesNotStartASecondKeeping()
-    {
-        Prewarmer p = TwoWarmedGames();
-        _ = _running.Add("a");
-        int periods = 0;
-        _sleep = (t, ct) =>
-        {
-            if (!IsPeriod(t))
-            {
-                return;
-            }
-
-            if (++periods == 1)
-            {
-                _now += Prewarmer.StartTouchMinGap;
-                p.TouchAtGameStart(Game("a"), "b.exe"); // 런처 뒤에 본체가 이어 뜸: 시작 만지기는 하지만 유지는 이미 돌고 있음
-            }
-            else
-            {
-                _ = _running.Remove("a");
-            }
-        };
-
-        p.TouchAtGameStart(Game("a"), "a.exe");
-
-        Assert.Equal(2, periods); // 두 번째 유지가 돌았다면 주기를 더 기다림
-        Assert.Single(_log.Lines, l => l.Contains("cache keeping ended"));
-    }
-
-    [Fact]
-    public void TheKeepingRoundsPassTheSameGatesAsTheStartTouch()
-    {
-        Prewarmer p = MakePrewarmer(Game("a"), Game("c"));
-        Assert.True(p.Run(Game("a"), "service start").Ran);
-        _ = _running.Add("a");
-        _ = _running.Add("c");
-        _touched.Clear();
-        int periods = 0;
-        _sleep = (t, ct) =>
-        {
-            if (IsPeriod(t))
-            {
-                periods++;
-                _running.Clear(); // 첫 회차 뒤 끝남
-            }
-        };
-
-        p.TouchAtGameStart(Game("c"), "c.exe"); // 예열한 적 없음: 유지는 시작해도 회차가 게이트에서 걸러짐
-        _enabled = false;
-        p.TouchAtGameStart(Game("a"), "a.exe"); // 사다리 설정이 꺼짐: 유지를 시작하지 않음
-
-        Assert.Equal(1, periods);
-        Assert.Empty(_touched);
-    }
-
-    [Fact]
-    public void ARefusedLeaseAtTheStartDoesNotKeepTheKeepingFromStartingAndTheLaterRoundsRun()
-    {
-        Prewarmer p = TwoWarmedGames();
-        var coordinator = new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), _log);
-        p.SetDiskReadCoordinator(coordinator);
-        coordinator.Yield(@"D:\Games", "game started", "a");
-        coordinator.Yield(@"D:\Games", "game started", "b"); // 같은 디스크의 다른 게임: 시작 만지기의 대여가 거절됨
-        _ = _running.Add("a");
-        int periods = 0;
-        _sleep = (t, ct) =>
-        {
-            if (!IsPeriod(t))
-            {
-                return;
-            }
-
-            if (++periods == 1)
-            {
-                coordinator.Resume(@"D:\Games", "b"); // 다른 게임이 끝나 일시적 사유가 사라짐
-            }
-            else
-            {
-                _ = _running.Remove("a");
-            }
-        };
-
-        p.TouchAtGameStart(Game("a"), "a.exe");
-
-        Assert.Contains(_log.Lines, l => l.Contains("cache touch at game start skipped (a.exe: disk yielded)"));
-        Assert.Equal(2, _touched.Count); // 시작 만지기는 없고 첫 회차 (찾기, 사다리)
-        Assert.Contains(_log.Lines, l => l.Contains("a: cache kept while playing (a.exe)"));
-        Assert.EndsWith("a: cache keeping ended after 1 rounds", _log.Lines.Last());
-    }
-
-    [Fact]
-    public void WhenNothingIsLeftInMemoryTheKeepingEndsAtThatRoundWithTheReason()
-    {
-        Prewarmer p = TwoWarmedGames();
-        _ = _running.Add("a");
-        int periods = 0;
-        _sleep = (t, ct) =>
-        {
-            if (IsPeriod(t) && ++periods <= 2)
-            {
-                _queued.Enqueue(Stopped(32, 32)); // 첫·둘째 회차: 앞부분도 전부 빠짐
-            }
-            else if (IsPeriod(t))
-            {
-                _ = _running.Remove("a"); // 끝나지 않았다면 여기서 멈춤 (시험이 멈추지 않게)
-            }
-        };
-
-        p.TouchAtGameStart(Game("a"), "a.exe");
-
-        Assert.Equal(2, periods); // 한 번은 잡음일 수 있어 연속 두 회차가 같을 때 끝남
-        Assert.Equal(3, _touched.Count); // 시작 만지기 + 회차마다 찾기 한 번 (앞부분이 없으니 다시 만지지 않음)
-        Assert.Contains(_log.Lines, l => l.Contains("a: cache keeping while playing (a.exe) found none of the 30 MiB list in memory"));
-        Assert.EndsWith("a: cache keeping ended after 2 rounds (nothing left in memory in two rounds in a row)", _log.Lines.Last());
-    }
-
-    [Fact]
-    public void WhenTheRankedFrontIsNotInMemoryTheKeepingTriesTheUnrankedOrderOnceMoreBeforeItEnds()
-    {
-        Prewarmer p = TwoWarmedGames();
-        _result = new TouchResult(30 * Mib, 0.4, 0, 0, TouchEnd.Completed);
-        _ranked = [new TraceEvent(@"D:\a\2.bin", 0, 65536)]; // 마지막 예열 뒤 바뀐 순위: 맨 앞 블록이 메모리에 없음
-        _ = _running.Add("a");
-        int periods = 0;
-        _sleep = (t, ct) =>
-        {
-            if (IsPeriod(t) && ++periods == 1)
-            {
-                _queued.Enqueue(Stopped(32, 32)); // 첫 회차 순위 순서의 찾기: 맨 앞부터 빠짐
-            }
-            else if (IsPeriod(t))
-            {
-                _ = _running.Remove("a");
-            }
-        };
-
-        p.TouchAtGameStart(Game("a"), "a.exe");
-
-        Assert.Equal(PlayRanking.Reorder(Reads, _ranked!), _touched[1]); // 순위 순서로 먼저 시도
-        Assert.Equal(Reads, _touched[2]); // 못 찾으면 순위 없는 순서로 한 번 더
-        Assert.Equal(Reversed(Reads), _touched[3]); // 그쪽은 메모리에 있어 사다리 순서로 이어 만짐
-        Assert.Contains(_log.Lines, l => l.Contains("a: cache kept while playing (a.exe): 30 MiB of 30 MiB still in memory"));
-        Assert.DoesNotContain(_log.Lines, l => l.Contains("nothing left in memory"));
-        Assert.EndsWith("a: cache keeping ended after 1 rounds", _log.Lines.Last());
-    }
-
-    [Fact]
-    public void TheKeepingEndsWhenNeitherTheRankedNorTheUnrankedOrderHasAnythingInMemory()
-    {
-        Prewarmer p = TwoWarmedGames();
-        _ranked = [new TraceEvent(@"D:\a\2.bin", 0, 65536)];
-        _ = _running.Add("a");
-        int periods = 0;
-        _sleep = (t, ct) =>
-        {
-            if (IsPeriod(t) && ++periods <= 2)
-            {
-                _queued.Enqueue(Stopped(32, 32)); // 순위 순서
-                _queued.Enqueue(Stopped(32, 32)); // 순위 없는 순서도
-            }
-            else if (IsPeriod(t))
-            {
-                _ = _running.Remove("a");
-            }
-        };
-
-        p.TouchAtGameStart(Game("a"), "a.exe");
-
-        Assert.Equal(5, _touched.Count); // 시작 만지기 + 두 회차의 (순위 순서, 순위 없는 순서) 찾기
-        Assert.EndsWith("a: cache keeping ended after 2 rounds (nothing left in memory in two rounds in a row)", _log.Lines.Last());
-    }
-
     // ---- 중요도 순서 (순위 블록 먼저) 를 네 자리가 같이 씀 ----
 
     [Fact]
@@ -3620,51 +3316,10 @@ public sealed class SolarTests
 
         _touched.Clear();
         _now += TimeSpan.FromMinutes(2);
-        _ = _running.Add("a");
-        int periods = 0;
-        _sleep = (t, ct) =>
-        {
-            if (IsPeriod(t) && ++periods == 2)
-            {
-                _ = _running.Remove("a");
-            }
-        };
 
         p.TouchAtGameStart(Game("a"), "a.exe");
 
-        Assert.Equal(ladder, _touched[0]); // 게임 시작 만지기
-        Assert.Equal(importance, _touched[1]); // 유지 회차: 중요도 순서로 경계까지 찾고
-        Assert.Equal(ladder, _touched[2]); // 그 앞부분을 덜 중요한 것부터 다시 만짐
-    }
-
-    [Fact]
-    public void AKeepingRoundThatStoppedAtTheBoundaryNamesWhatFoundItAndTheCostOfTheRound()
-    {
-        Prewarmer p = TwoWarmedGames();
-        _ = _running.Add("a");
-        int periods = 0;
-        _sleep = (t, ct) =>
-        {
-            if (!IsPeriod(t))
-            {
-                return;
-            }
-
-            if (++periods == 1)
-            {
-                _queued.Enqueue(new TouchResult(20 * Mib, 0.5, 0, 0, TouchEnd.NeedsDiskReads, 3 * Mib, 0, 0.2, 5, 300, StopReason.HardFaults)); // 경계: 20 MiB 에서 디스크 읽기 300 회
-                _queued.Enqueue(new TouchResult(17 * Mib, 0.3, 0, 0, TouchEnd.Completed, 0, 0, 0.1, 4, 0)); // 그 앞부분을 다시
-            }
-            else
-            {
-                _ = _running.Remove("a");
-            }
-        };
-
-        p.TouchAtGameStart(Game("a"), "a.exe");
-
-        Assert.Contains(_log.Lines, l => l.Contains("a: cache kept while playing (a.exe): 17 MiB of 30 MiB still in memory (boundary found by hard faults), in 0.8 s (cpu 0.3 s, 9 views, 0 checks), 3 MiB read from disk (300 hard faults)"));
-        Assert.EndsWith("a: cache keeping ended after 1 rounds", _log.Lines.Last()); // 일부가 남아 있으면 계속
+        Assert.Equal(ladder, _touched[0]); // 게임 시작 만지기도 같은 사다리 순서 (유지 회차의 순서는 KeepTouchTests)
     }
 
     [Fact]
@@ -3676,158 +3331,6 @@ public sealed class SolarTests
         p.TouchAtGameStart(Game("a"), "a.exe");
 
         Assert.Contains(_log.Lines, l => l.Contains("a: cache touch at game start (a.exe) found data missing from memory after 2 of 30 MiB (7 slow pieces, 1 MiB read from disk, 40 hard faults, stopped by slow time)"));
-    }
-
-    [Fact]
-    public void TheKeepListIsComputedOncePerPlayAndAgainOnlyWhenItsInputsChange()
-    {
-        Prewarmer p = TwoWarmedGames();
-        _ranked = [new TraceEvent(@"D:\a\1.bin", 0, 65536)];
-        int plannedBefore = _streamer.PlannedCalls;
-        int rankedBefore = _rankedCalls;
-        _ = _running.Add("a");
-        int periods = 0;
-        _sleep = (t, ct) =>
-        {
-            if (!IsPeriod(t))
-            {
-                return;
-            }
-
-            if (++periods == 3)
-            {
-                _listStamp = "s2"; // 세 번째 회차 전에 목록의 입력 파일이 바뀜
-            }
-            else if (periods == 5)
-            {
-                _ = _running.Remove("a");
-            }
-        };
-
-        p.TouchAtGameStart(Game("a"), "a.exe");
-
-        Assert.Equal(1 + (4 * 2), _touched.Count); // 시작 만지기 + 네 회차 (찾기, 앞부분)
-        Assert.Equal(1 + 2, _streamer.PlannedCalls - plannedBefore); // 시작 만지기 한 번 + 유지 목록은 첫 회차와 입력이 바뀐 세 번째 회차에만 계산
-        Assert.Equal(1 + 2, _rankedCalls - rankedBefore); // 순위 행은 시작 만지기의 사다리와 같은 두 번의 계산에서만 읽음
-    }
-
-    [Fact]
-    public void AKeepListWhoseInputsCouldNotBeReadIsComputedEveryRound()
-    {
-        Prewarmer p = TwoWarmedGames();
-        _listStamp = null; // 표지를 읽지 못함: 재사용하지 않음
-        int plannedBefore = _streamer.PlannedCalls;
-        _ = _running.Add("a");
-        int periods = 0;
-        _sleep = (t, ct) =>
-        {
-            if (IsPeriod(t) && ++periods == 3)
-            {
-                _ = _running.Remove("a");
-            }
-        };
-
-        p.TouchAtGameStart(Game("a"), "a.exe");
-
-        Assert.Equal(1 + 2, _streamer.PlannedCalls - plannedBefore);
-    }
-
-    [Fact]
-    public void ASingleRoundThatFindsNothingInMemoryDoesNotEndTheKeepingAndTheCountStartsOverAfterARoundThatFindsSomething()
-    {
-        Prewarmer p = TwoWarmedGames();
-        _ = _running.Add("a");
-        int periods = 0;
-        _sleep = (t, ct) =>
-        {
-            if (!IsPeriod(t))
-            {
-                return;
-            }
-
-            if (++periods is 1 or 3 or 4)
-            {
-                _queued.Enqueue(Stopped(32, 32)); // 1 회차: 아무것도 없음, 2 회차: 전부 있음 (기본 결과), 3·4 회차: 연속 두 번 없음
-            }
-        };
-
-        p.TouchAtGameStart(Game("a"), "a.exe");
-
-        Assert.Equal(4, periods);
-        Assert.EndsWith("a: cache keeping ended after 4 rounds (nothing left in memory in two rounds in a row)", _log.Lines.Last());
-    }
-
-    [Fact]
-    public void ARoundIsSkippedWhileTheStandbyCacheReuseStaysUnderTheMinimumAndTheNextRoundSaysHowManyWereSkipped()
-    {
-        _keepReuseMibPerQuery = 0; // 재사용이 늘지 않음
-        Prewarmer p = TwoWarmedGames();
-        _ = _running.Add("a");
-        int periods = 0;
-        _sleep = (t, ct) =>
-        {
-            if (!IsPeriod(t))
-            {
-                return;
-            }
-
-            if (++periods == 3)
-            {
-                _keepReuseMibPerQuery = 1100; // 세 번째 점검 전에 게임이 메모리를 많이 가져감
-            }
-            else if (periods == 4)
-            {
-                _ = _running.Remove("a");
-            }
-        };
-
-        p.TouchAtGameStart(Game("a"), "a.exe");
-
-        Assert.Equal(1 + 2, _touched.Count); // 시작 만지기 + 세 번째 점검의 회차 하나 (찾기, 앞부분), 앞의 두 점검은 건너뜀
-        Assert.Contains(_log.Lines, l => l.Contains("a: cache kept while playing (a.exe)") && l.EndsWith(", 2 rounds skipped before"));
-        Assert.EndsWith("a: cache keeping ended after 1 rounds (2 rounds skipped, standby cache reuse under 1024 MiB since the last round)", _log.Lines.Last());
-    }
-
-    [Fact]
-    public void WithoutReadableStandbyListsEveryPeriodRunsARound()
-    {
-        _keepReuseMibPerQuery = -1; // 조회 불가
-        Prewarmer p = TwoWarmedGames();
-        _ = _running.Add("a");
-        int periods = 0;
-        _sleep = (t, ct) =>
-        {
-            if (IsPeriod(t) && ++periods == 3)
-            {
-                _ = _running.Remove("a");
-            }
-        };
-
-        p.TouchAtGameStart(Game("a"), "a.exe");
-
-        Assert.EndsWith("a: cache keeping ended after 2 rounds", _log.Lines.Last());
-    }
-
-    [Fact]
-    public void TheStartTouchOfAGameKnownToBeMissingFindsAndRetouchesInImportanceOrderSoTheRankedBlockIsTouchedLast()
-    {
-        Prewarmer p = TwoWarmedGames();
-        _queued.Enqueue(Stopped(2, 32)); // 첫 시작 만지기: 사다리 순서가 빈 곳에서 멈춰 빠짐 표시가 섬
-        _queued.Enqueue(Stopped(15, 5));
-        _queued.Enqueue(new TouchResult(15 * Mib, 0.4, 0, 0, TouchEnd.Completed));
-        p.TouchAtGameStart(Game("a"), "a.exe");
-        Assert.True(p.Solar.HasMissing("a"));
-        _touched.Clear();
-        _now += TimeSpan.FromMinutes(5);
-        _ranked = [new TraceEvent(@"D:\a\2.bin", 0, 65536)]; // 순위 1 위
-        _queued.Enqueue(Stopped(15, 5)); // 중요도 순서의 찾기가 15 MiB 에서 멈춤
-
-        p.TouchAtGameStart(Game("a"), "a.exe");
-
-        IReadOnlyList<ReadOp> importance = p.Solar.ImportanceOrder(Game("a"), Reads);
-        Assert.Equal(importance, _touched[0]); // 읽은 순서가 아니라 중요도 순서로 찾음
-        Assert.Equal(new ReadOp(@"D:\a\2.bin", 0, 65536), _touched[0][0]);
-        Assert.Equal(new ReadOp(@"D:\a\2.bin", 0, 65536), _touched[1][^1]); // 앞부분을 사다리 순서로 다시 만질 때 순위 블록이 마지막
     }
 
     [Fact]

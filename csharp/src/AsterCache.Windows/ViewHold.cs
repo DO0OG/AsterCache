@@ -9,9 +9,9 @@ namespace AsterCache.Windows;
 /// 이 프로세스의 디스크 읽기 수 (하드 폴트) 증가, 걸린 시간 (초), 쓴 CPU 시간 (초), 디스크 읽기가 섞여 경계로 보고 멈췄으면 그때 읽던 범위의 배치 안 위치 (그 뒤 범위는 읽지 않았음, 없으면 -1).
 public readonly record struct HoldBatchResult(long Bytes, long DiskBytes, long SkippedBytes, int Errors, int SlowPieces, int Views, int Checks, long HardFaults, double Seconds, double CpuSeconds, int BoundaryIndex);
 
-/// 점검 한 번의 결과: 다시 읽어 본 바이트, 메모리 관리자가 줄여 디스크에서 다시 읽힌 바이트, 붙든 목록에서 뺀 바이트 (바뀐 파일의 몫은 제외), 다시 읽기 상한에 닿아 멈췄는가,
-/// 크기·수정 시각이 바뀌어 뷰를 닫은 파일, 읽기 수를 조회한 횟수, 하드 폴트 증가, 걸린 시간 (초), 쓴 CPU 시간 (초).
-public readonly record struct HoldCheckResult(long CheckedBytes, long RefilledBytes, long DroppedBytes, bool CapReached, IReadOnlyList<string> ChangedFiles, int Checks, long HardFaults, double Seconds, double CpuSeconds);
+/// 점검 한 번의 결과: 작업 집합에 있는지 확인한 바이트, 그중 메모리 관리자가 작업 집합에서 줄여 간 (Valid 가 아닌) 바이트, 그것을 다시 읽어 올리다 디스크에서 읽힌 바이트, 붙든 목록에서 뺀 바이트 (바뀐 파일의 몫은 제외),
+/// 다시 읽기 상한에 닿아 멈췄는가, 크기·수정 시각이 바뀌어 뷰를 닫은 파일, 읽기 수를 조회한 횟수, 하드 폴트 증가, 걸린 시간 (초), 쓴 CPU 시간 (초).
+public readonly record struct HoldCheckResult(long CheckedBytes, long TrimmedBytes, long RefilledBytes, long DroppedBytes, bool CapReached, IReadOnlyList<string> ChangedFiles, int Checks, long HardFaults, double Seconds, double CpuSeconds);
 
 /// 게임이 실행되는 동안 유지 목록을 서비스의 매핑 뷰로 붙들어 두는 곳 (ViewHold 의 인터페이스, 시험은 가짜로 바꿉니다).
 public interface IKeepHold : IDisposable
@@ -33,7 +33,8 @@ public interface IKeepHold : IDisposable
     /// 붙든 것을 덜 중요한 쪽 (나중에 붙든 쪽) 부터 bytes 만큼 내놓고 (VirtualUnlock) 내놓은 바이트를 돌려줍니다. 내놓은 범위는 다시 붙들지 않습니다.
     long Release(long bytes);
 
-    /// 바뀐 파일의 뷰를 닫고, 붙든 범위를 중요한 쪽부터 다시 읽어 메모리 관리자가 줄여 간 조각을 하드 폴트로 확인합니다. 디스크에서 다시 읽힌 양이 refillStopBytes 를 넘으면 그 범위를 목록에서 빼고 멈춥니다.
+    /// 바뀐 파일의 뷰를 닫고, 붙든 쪽이 작업 집합에 있는지 QueryWorkingSetEx (자기 프로세스, 접근 비트를 건드리지 않음) 로 보아 빠진 쪽만 다시 읽어 올립니다.
+    /// 디스크에서 다시 읽힌 양이 refillStopBytes 를 넘으면 그 구간을 목록에서 빼고, 뒤의 빠진 쪽이 있는 구간도 읽지 않고 뺍니다.
     HoldCheckResult Recheck(long refillStopBytes, CancellationToken ct);
 }
 
@@ -55,6 +56,7 @@ public sealed unsafe class ViewHold : IKeepHold
     private readonly Dictionary<string, FileEntry> _files = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<Seg> _segs = []; // 붙든 구간 (붙든 순서 = 중요한 순서), 맨 뒤가 가장 덜 중요
     private nint _buffer;
+    private nint _query; // QueryWorkingSetEx 항목 버퍼
     private uint? _faults;
     private uint? _pages;
     private long _held;
@@ -236,31 +238,61 @@ public sealed unsafe class ViewHold : IKeepHold
 
             CompactSegs();
             var tally = new Tally { Signal = _faults is not null };
+            long queried = 0;
+            long trimmed = 0;
             long dropped = 0;
             bool capReached = false;
-            Seg? current = null;
-            for (int i = 0; i < _segs.Count && !tally.Canceled && !capReached; i++)
+            Seg? lastRead = null;
+            for (int i = 0; i < _segs.Count && !tally.Canceled; i++)
             {
-                current = _segs[i];
-                if (!ReadHeld(current, tally, refillStopBytes, ct))
+                Seg seg = _segs[i];
+                if (seg.Live <= 0)
+                {
+                    continue;
+                }
+
+                List<(nint Address, long Length)> missing = NotResident(seg, ref queried);
+                trimmed += missing.Sum(m => m.Length);
+                if (missing.Count == 0)
+                {
+                    continue;
+                }
+
+                if (capReached)
+                {
+                    dropped += Unlock(seg, seg.Live); // 읽기 상한에 닿은 뒤: 줄여 간 쪽이 있는 구간은 디스크로 되찾지 않고 목록에서 뺌
+                    continue;
+                }
+
+                lastRead = seg;
+                bool failed = false;
+                foreach ((nint address, long length) in missing)
+                {
+                    if (!ReadRange(address, length, tally, refillStopBytes, ct, out failed) || failed)
+                    {
+                        break;
+                    }
+                }
+
+                if (failed || tally.Disk > refillStopBytes)
                 {
                     capReached = tally.Disk > refillStopBytes;
-                    dropped += Unlock(current, current.Live);
+                    dropped += Unlock(seg, seg.Live); // 읽을 수 없는 구간이거나 상한을 넘긴 구간
                 }
             }
 
             if (!capReached && !tally.Canceled && tally.SinceCheck > 0)
             {
                 Check(tally);
-                if (tally.Disk > refillStopBytes && current is { Live: > 0 })
+                if (tally.Disk > refillStopBytes && lastRead is { Live: > 0 })
                 {
                     capReached = true;
-                    dropped += Unlock(current, current.Live);
+                    dropped += Unlock(lastRead, lastRead.Live);
                 }
             }
 
             CompactSegs();
-            return new HoldCheckResult(tally.Bytes, tally.Disk, dropped, capReached, changed, tally.Checks, tally.Faults, Stopwatch.GetElapsedTime(started).TotalSeconds, Math.Max(0, StandbyTouch.ThreadCpuSeconds() - cpuBefore));
+            return new HoldCheckResult(queried, trimmed, tally.Disk, dropped, capReached, changed, tally.Checks, tally.Faults, Stopwatch.GetElapsedTime(started).TotalSeconds, Math.Max(0, StandbyTouch.ThreadCpuSeconds() - cpuBefore));
         }
     }
 
@@ -279,6 +311,12 @@ public sealed unsafe class ViewHold : IKeepHold
             {
                 NativeMemory.Free((void*)_buffer);
                 _buffer = 0;
+            }
+
+            if (_query != 0)
+            {
+                NativeMemory.Free((void*)_query);
+                _query = 0;
             }
         }
     }
@@ -321,14 +359,14 @@ public sealed unsafe class ViewHold : IKeepHold
         }
 
         long end = range.Offset + Math.Min(range.Length, file.Length - range.Offset);
-        foreach ((long from, long to) in Uncovered(file.Claimed, range.Offset, end))
+        foreach ((long from, long to) in RangeSets.Uncovered(file.Claimed, range.Offset, end))
         {
             long pos = from;
             for (long n; pos < to && !tally.Boundary && !tally.Canceled && (n = HoldPiece(file, pos, to, tally, ct)) > 0; pos += n)
             {
             }
 
-            Claim(file.Claimed, from, pos);
+            RangeSets.Add(file.Claimed, from, pos);
             if (pos < to)
             {
                 break; // 경계를 만났거나 취소됐거나 읽지 못함: 이 범위의 나머지는 건너뜀
@@ -518,27 +556,83 @@ public sealed unsafe class ViewHold : IKeepHold
 
     // ---- 다시 읽기 ----
 
-    // 구간 하나를 다시 읽습니다. 끝까지 읽었으면 true, 읽기 상한에 닿았거나 읽지 못했거나 취소됐으면 false (읽지 못한 구간은 호출한 쪽이 목록에서 뺌).
-    private bool ReadHeld(Seg seg, Tally tally, long refillStopBytes, CancellationToken ct)
+    // 한 번에 QueryWorkingSetEx 로 묻는 쪽 수 (항목이 쪽마다 16 바이트라 256 KiB 버퍼).
+    private const int QueryPages = 16384;
+
+    // 구간에서 작업 집합에 없는 (Valid 가 아닌) 쪽을 이어진 범위로 묶어 돌려줍니다: 붙든 구간의 쪽 경계 안쪽만 묻습니다. 쪽 단위로 묻는 비용은 붙든 양에 비례하며 (1 GiB 가 26 만 쪽) 아직 실제 양으로 재지 않았습니다.
+    // 조회할 수 없으면 (호출 실패) 빈 목록: 그 구간은 확인하지 못한 것으로 두고 건드리지 않습니다.
+    private List<(nint Address, long Length)> NotResident(Seg seg, ref long queried)
     {
-        Window window = seg.Window;
-        for (long done = 0; done < seg.Live;)
+        List<(nint, long)> runs = [];
+        long begin = seg.Window.View + (seg.Offset - seg.Window.Start);
+        long from = (begin + PageBytes - 1) & ~(PageBytes - 1);
+        long to = (begin + seg.Live) & ~(PageBytes - 1);
+        if (_query == 0)
+        {
+            _query = (nint)NativeMemory.Alloc((nuint)QueryPages * 16);
+        }
+
+        nuint* info = (nuint*)_query;
+        for (long at = from; at < to;)
+        {
+            int pages = (int)Math.Min(QueryPages, (to - at) / PageBytes);
+            for (int i = 0; i < pages; i++)
+            {
+                info[2 * i] = (nuint)(at + (i * PageBytes));
+            }
+
+            if (!NativeMethods.QueryWorkingSetEx(NativeMethods.GetCurrentProcess(), info, (uint)(pages * 16)))
+            {
+                return [];
+            }
+
+            queried += pages * PageBytes;
+            for (int i = 0; i < pages; i++)
+            {
+                if ((info[(2 * i) + 1] & 1) != 0)
+                {
+                    continue; // Valid: 작업 집합에 있음
+                }
+
+                long address = at + (i * PageBytes);
+                if (runs.Count > 0 && runs[^1].Item1 + runs[^1].Item2 == address)
+                {
+                    runs[^1] = (runs[^1].Item1, runs[^1].Item2 + PageBytes);
+                }
+                else
+                {
+                    runs.Add(((nint)address, PageBytes));
+                }
+            }
+
+            at += pages * PageBytes;
+        }
+
+        return runs;
+    }
+
+    // 주소 범위를 1 MiB 씩 읽어 작업 집합에 다시 올립니다 (자기 프로세스, 디스크 오류는 반환값으로 옵니다). 끝까지 읽었으면 true. 읽을 수 없으면 failed, 읽기 상한을 넘기거나 취소되면 false.
+    private bool ReadRange(nint address, long length, Tally tally, long refillStopBytes, CancellationToken ct, out bool failed)
+    {
+        failed = false;
+        for (long done = 0; done < length;)
         {
             if (ct.IsCancellationRequested)
             {
                 tally.Canceled = true;
-                return true; // 취소는 구간을 빼지 않음
+                return false;
             }
 
-            long n = Math.Min(StandbyTouch.PieceBytes, seg.Live - done);
+            long n = Math.Min(StandbyTouch.PieceBytes, length - done);
             long t0 = Stopwatch.GetTimestamp();
             EnsureBuffer();
-            bool ok = NativeMethods.ReadProcessMemory(NativeMethods.GetCurrentProcess(), window.View + (nint)(seg.Offset + done - window.Start), (byte*)_buffer, (nuint)n, out nuint got) && (long)got == n;
+            bool ok = NativeMethods.ReadProcessMemory(NativeMethods.GetCurrentProcess(), address + (nint)done, (byte*)_buffer, (nuint)n, out nuint got) && (long)got == n;
             double ms = Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
             if (!ok)
             {
                 tally.Errors++;
-                return false; // 읽을 수 없는 구간 (파일이 줄었거나 디스크 오류): 붙든 목록에서 뺌
+                failed = true; // 읽을 수 없는 구간 (파일이 줄었거나 디스크 오류)
+                return false;
             }
 
             AfterPiece(tally, n, ms);
@@ -629,73 +723,5 @@ public sealed unsafe class ViewHold : IKeepHold
         {
             return null;
         }
-    }
-
-    // ---- 구간 계산 ----
-
-    // [from, to) 에서 이미 붙든 구간을 뺀 나머지 (앞에서부터).
-    private static List<(long From, long To)> Uncovered(List<(long Start, long End)> claimed, long from, long to)
-    {
-        List<(long, long)> result = [];
-        long cursor = from;
-        for (int i = FirstEndingAfter(claimed, from); i < claimed.Count && claimed[i].Start < to && cursor < to; i++)
-        {
-            if (claimed[i].Start > cursor)
-            {
-                result.Add((cursor, claimed[i].Start));
-            }
-
-            cursor = Math.Max(cursor, claimed[i].End);
-        }
-
-        if (cursor < to)
-        {
-            result.Add((cursor, to));
-        }
-
-        return result;
-    }
-
-    // [from, to) 를 붙든 구간에 더합니다 (맞닿거나 겹치는 구간과 합침).
-    private static void Claim(List<(long Start, long End)> claimed, long from, long to)
-    {
-        if (to <= from)
-        {
-            return;
-        }
-
-        int first = FirstEndingAfter(claimed, from - 1); // 끝이 from 과 맞닿는 구간부터
-        int last = first;
-        long start = from;
-        long end = to;
-        while (last < claimed.Count && claimed[last].Start <= to)
-        {
-            (start, end) = (Math.Min(start, claimed[last].Start), Math.Max(end, claimed[last].End));
-            last++;
-        }
-
-        claimed.RemoveRange(first, last - first);
-        claimed.Insert(first, (start, end));
-    }
-
-    // 끝이 value 보다 큰 첫 구간의 위치 (구간이 합쳐 정렬돼 있어 끝도 정렬됨).
-    private static int FirstEndingAfter(List<(long Start, long End)> claimed, long value)
-    {
-        int low = 0;
-        int high = claimed.Count;
-        while (low < high)
-        {
-            int mid = low + ((high - low) / 2);
-            if (claimed[mid].End > value)
-            {
-                high = mid;
-            }
-            else
-            {
-                low = mid + 1;
-            }
-        }
-
-        return low;
     }
 }

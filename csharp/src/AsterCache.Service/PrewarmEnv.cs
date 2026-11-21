@@ -185,6 +185,9 @@ public sealed class PrewarmEnv
     /// 붙들 뷰 묶음을 엽니다 (게임 하나의 한 플레이에 하나). null 이면 붙들지 못함. 시험은 가짜로 바꿉니다.
     public Func<IKeepHold>? OpenHold { get; init; }
 
+    /// 서비스 프로세스의 지금 작업 집합 (바이트): 붙든 양을 플레이 기록에 더할 때 붙들기 전 값과의 차이로 상한을 둡니다 (메모리 관리자가 줄여 간 만큼은 이미 가용에 들어 있음). 시험은 가짜로 바꿉니다.
+    public Func<long> WorkingSetBytes { get; init; } = () => Environment.WorkingSet;
+
     /// 붙들면 안 되는 파일의 판정 (경로 → 사유, 붙들 수 있으면 null): 가변 파일 표시와 순위 목록을 만든 뒤 바뀐 파일. 판정할 정보가 없는 게임 (원시 트레이스가 한 번도 없어 가변 파일을 가려 본 적이 없음) 이면 함수 자체가 null 이고 그 게임은 붙들지 않습니다.
     public Func<GameSettings, Func<string, string?>?> HoldExclusion { get; init; } = _ => _ => null;
 

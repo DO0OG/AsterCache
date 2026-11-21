@@ -25,7 +25,15 @@ public sealed partial class Prewarmer
         TouchOnceAtGameStart(game, exe);
         if (_solar.Enabled)
         {
-            KeepCacheWhilePlaying(game, exe); // 시작 만지기가 어떻게 끝났든 (대여 양보·재배치 중 같은 일시적 사유 포함) 같은 작업 안에서 게임이 끝날 때까지 주기마다 이어 만짐: 회차마다 게이트를 다시 봄
+            KeepCacheWhilePlaying(game, exe); // 시작 만지기가 어떻게 끝났든 (대여 양보·재배치 중 같은 일시적 사유 포함) 같은 작업 안에서 게임이 끝날 때까지 이어 만짐: 회차마다 게이트를 다시 봄
+        }
+
+        lock (_gate)
+        {
+            if (!_playTouching.Contains(game.Name))
+            {
+                _ = _keepMemory.Remove(game.Name); // 유지가 도는 게임이 없으면 (시작 만지기만 하고 끝남) 기억한 빠진 범위를 버림
+            }
         }
     }
 
@@ -90,7 +98,7 @@ public sealed partial class Prewarmer
                     TouchEnd? end = _solar.HasMissing(game.Name) ? TouchEnd.NeedsDiskReads : _solar.Order(game, ladder, stop, startExe: exe);
                     if (end == TouchEnd.NeedsDiskReads && _solar.HasMissing(game.Name))
                     {
-                        _ = _solar.TouchFront(game, ladder, stop, exe);
+                        TouchAfterStartBoundary(game, ladder, exe, stop); // 첫 경계에서 끝내지 않고 빠진 조각을 건너뛰며 (빠진 범위는 이 플레이 동안 기억) 목록 끝까지
                     }
                 }
             }

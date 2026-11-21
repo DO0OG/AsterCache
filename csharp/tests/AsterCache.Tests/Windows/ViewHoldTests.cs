@@ -73,22 +73,43 @@ public sealed class ViewHoldTests : IDisposable
         }
     }
 
+    [DllImport("psapi.dll", SetLastError = true)]
+    private static extern bool EmptyWorkingSet(nint process);
+
     [Fact]
-    public void ReadingTheHeldRangeAgainCostsNoHardFaultsAndRefillsNothing()
+    public void TheCheckLooksUpTheWorkingSetWithoutReadingAndRefillsNothingWhileEverythingIsResident()
     {
         string a = Make("a.bin", 8);
-        using var hold = new ViewHold();
+        using var hold = new ViewHold(Counter(0), Counter(0)); // 가짜 누계: 다른 시험의 읽기가 판정에 섞이지 않게
         hold.Rebase();
         _ = hold.Hold([new ReadOp(a, 0, 8L * Mib)], CancellationToken.None);
-        hold.Rebase();
 
         HoldCheckResult r = hold.Recheck(Prewarm32Mib, CancellationToken.None);
 
-        Assert.Equal(8L * Mib, r.CheckedBytes);
-        Assert.True(r.HardFaults <= 32, $"hard faults {r.HardFaults}"); // 잡음 허용치 (StandbyTouch.BoundaryFaults) 안
+        Assert.Equal(8L * Mib, r.CheckedBytes); // 쪽마다 작업 집합에 있는지 물음
+        Assert.True(r.TrimmedBytes <= Mib, $"trimmed {r.TrimmedBytes}"); // 줄여 간 쪽이 (거의) 없음: 읽지 않음
         Assert.Equal(0, r.RefilledBytes);
+        Assert.Equal(0, r.Checks); // 읽은 것이 없어 하드 폴트 조회도 없음
         Assert.False(r.CapReached);
         Assert.Equal(8L * Mib, hold.HeldBytes);
+    }
+
+    [Fact]
+    public void WhenTheMemoryManagerTrimsTheWorkingSetTheCheckFindsItAndReadsOnlyThoseBackIn()
+    {
+        string a = Make("a.bin", 8);
+        using var hold = new ViewHold(Counter(0), Counter(0));
+        hold.Rebase();
+        _ = hold.Hold([new ReadOp(a, 0, 8L * Mib)], CancellationToken.None);
+        Assert.True(EmptyWorkingSet(Process.GetCurrentProcess().Handle)); // 메모리 관리자가 작업 집합을 줄이는 것을 흉내 냄: 붙든 쪽이 Valid 에서 빠짐 (페이지는 대기 목록에 있어 디스크 읽기는 없음)
+
+        HoldCheckResult r = hold.Recheck(Prewarm32Mib, CancellationToken.None);
+
+        Assert.True(r.TrimmedBytes >= 4L * Mib, $"trimmed {r.TrimmedBytes}"); // 대부분이 빠짐
+        Assert.Equal(8L * Mib, hold.HeldBytes); // 상한 안: 목록에서 빼지 않음
+        (nint address, long length) = hold.LiveRanges().Single();
+        (int valid, int total) = Resident(address, length);
+        Assert.True(valid >= total * 9 / 10, $"valid {valid} of {total}"); // 빠진 쪽을 다시 읽어 작업 집합에 올림
     }
 
     private const long Prewarm32Mib = 32L << 20;
@@ -225,7 +246,7 @@ public sealed class ViewHoldTests : IDisposable
     }
 
     [Fact]
-    public void CostOfHoldingCheckingAndReleasingSomeTensOfMiBIsWrittenToTheTempFolder()
+    public void HoldingCheckingAndReleasingSomeTensOfMiBFinishesQuickly()
     {
         string a = Make("a.bin", 32);
         string b = Make("b.bin", 32);
@@ -242,7 +263,6 @@ public sealed class ViewHoldTests : IDisposable
 
         Assert.Equal(64L * Mib, held.Bytes);
         Assert.Equal(64L * Mib, released);
-        File.AppendAllText(Path.Combine(Path.GetTempPath(), "w69_hold_cost.txt"),
-            $"hold 64 MiB: {holdTime.TotalMilliseconds:F0} ms wall, cpu {held.CpuSeconds:F3} s; check 64 MiB: {check.Seconds * 1000:F0} ms wall, cpu {check.CpuSeconds:F3} s ({check.Checks} checks); release 64 MiB: {releaseTime.TotalMilliseconds:F0} ms{Environment.NewLine}");
+        Assert.True(holdTime.TotalSeconds < 30 && check.Seconds < 30 && releaseTime.TotalSeconds < 30); // 값은 보고서용으로 따로 재고, 여기서는 터무니없이 느리지 않은지만 봄
     }
 }

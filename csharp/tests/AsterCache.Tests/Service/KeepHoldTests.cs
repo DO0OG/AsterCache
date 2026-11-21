@@ -38,7 +38,8 @@ public sealed class KeepHoldTests
     private Action<long, double, Action<long, double>>? _findGroups; // 찾기 패스 도중 읽은 양이 쌓이는 때 (읽은 양, 시간, 알림) 를 흉내
     private long _p5 = -1; // 우선순위 5 대기 양 (MiB, 음수면 모름)
     private Func<IReadOnlyList<ReadOp>, TouchResult?>? _touchOverride; // 순서 패스 배치의 만지기 결과를 바꿈 (디스크 읽기를 흉내)
-    private string? _findBoundaryFile; // 찾기 패스가 이 파일에서 이어진 두 지점의 빠짐 (경계) 을 확인하고 멈추는 파일
+    private Func<string?>? _findBoundaryOf; // 찾기 패스가 부를 때마다 이 파일에서 이어진 두 지점의 빠짐 (경계) 을 확인하고 멈춤 (null 이면 없음)
+    private readonly List<long> _findCaps = []; // 찾기 패스가 받은 디스크 읽기 상한
     private bool _writtenOn = true; // memory.keep_hold_written_files
     private readonly HashSet<string> _writtenFiles = []; // 게임이 쓰는 파일로 판정되는 경로
     private readonly Dictionary<string, string> _writtenReasons = new(StringComparer.OrdinalIgnoreCase); // 게임이 쓰는 파일을 붙들지 않는 사유 (없으면 조건 충족)
@@ -218,6 +219,8 @@ public sealed class KeepHoldTests
     private FindResult FakeFind(IReadOnlyList<ReadOp> ops, long cap, Action<long, double> onGroup)
     {
         _findCalls.Add(ops);
+        _findCaps.Add(cap);
+        string? boundaryFile = _findBoundaryOf?.Invoke();
         _findGroups?.Invoke(0, 0, onGroup);
         List<ReadOp> resident = [];
         List<ReadOp> missing = [];
@@ -234,7 +237,7 @@ public sealed class KeepHoldTests
                 continue;
             }
 
-            if (_findBoundaryFile is not null && string.Equals(ops[i].Path, _findBoundaryFile, StringComparison.OrdinalIgnoreCase))
+            if (boundaryFile is not null && string.Equals(ops[i].Path, boundaryFile, StringComparison.OrdinalIgnoreCase))
             {
                 (disk, boundaries) = (disk + (2 * _findDiskPerMiss), boundaries + 2);
                 left += ops.Skip(i).Sum(o => o.Length); // 경계: 그 뒤 (덜 중요한 쪽) 는 확인하지 않고 남김
@@ -914,7 +917,7 @@ public sealed class KeepHoldTests
         _findMissing.Add(F(2));
         _findMissing.Add(F(3));
         _findMissing.Add(F(4));
-        _findDiskPerMiss = 5 * Mib; // 경계마다 5 MiB: 두 번째에서 상한 8 MiB 를 넘음
+        _findDiskPerMiss = 20 * Mib; // 경계마다 20 MiB: 두 번째에서 집합이 빈 회차의 상한 32 MiB 를 넘음
         GameSettings cheat = Cheat("a");
         Prewarmer p = Make(Reads, cheat);
         RunFor(12);
@@ -933,14 +936,14 @@ public sealed class KeepHoldTests
         _findMissing.Add(F(3));
         _findMissing.Add(F(4));
         _findMissing.Add(F(5));
-        _findDiskPerMiss = 22 * Mib; // 회차마다 경계 하나에서 상한 (찾은 24 MiB 보다 작아 빈 회차가 아님): 세 회차 만에 플레이 상한 64 MiB 를 넘음 (22, 44, 66)
+        _findDiskPerMiss = 33 * Mib; // 첫 회차 (상한 32 MiB) 와 둘째 회차 (상한 8 MiB) 가 경계 하나에서 각각 상한: 두 회차 만에 플레이 상한 64 MiB 를 넘음 (33, 66)
         GameSettings cheat = Cheat("a");
         Prewarmer p = Make(Reads, cheat);
         RunFor(100);
 
         p.TouchAtGameStart(cheat, "a.exe");
 
-        Assert.Equal(3, _findCalls.Count); // 세 번째 회차에서 66 MiB: 그 뒤는 찾지 않음
+        Assert.Equal(2, _findCalls.Count(c => c.Any(o => o.Path == F(3) || o.Path == F(4) || o.Path == F(5)))); // 집합 밖 다시 확인은 둘째 회차에서 66 MiB: 그 뒤는 하지 않음 (보호 패스 호출은 따로)
         Assert.Contains(_log.Lines, l => l.Contains("no new range looked for"));
         Assert.DoesNotContain(_log.Lines, l => l.Contains("cache keeping ended") && l.Contains("disk reads of this play"));
         string last = _log.Lines.Last(l => l.Contains("cache kept while playing ("));
@@ -950,7 +953,7 @@ public sealed class KeepHoldTests
     }
 
     [Fact]
-    public void WhenMostOfTheListIsRememberedAsMissingTheKeepingEndsAndAnotherExeDoesNotStartItAgain()
+    public void EvenWhenEverythingIsRememberedAsMissingTheKeepingDoesNotEndWhileTheGameRuns()
     {
         foreach (int f in new[] { 1, 2, 3, 4, 5 })
         {
@@ -959,16 +962,26 @@ public sealed class KeepHoldTests
 
         GameSettings cheat = Cheat("a");
         Prewarmer p = Make(Reads, cheat);
-        RunFor(1000); // 게임은 계속 실행 중
+        RunFor(60); // 게임은 계속 실행 중
 
         p.TouchAtGameStart(cheat, "a.exe");
-        int rounds = KeptLines();
-        _now += Prewarmer.StartTouchMinGap;
-        p.TouchAtGameStart(cheat, "b.exe"); // 같은 게임의 다른 실행 파일이 뜸
 
-        Assert.Contains(_log.Lines, l => l.Contains("cache keeping ended after") && l.Contains("most of the list is remembered as missing"));
-        Assert.Equal(rounds, KeptLines()); // 기억과 끝냄이 이어져 다시 시작하지 않음
-        Assert.Single(_log.Lines, l => l.Contains("cache keeping ended after"));
+        Assert.True(KeptLines() >= 3); // 빠진 범위가 목록의 대부분이어도 유지는 게임이 끝날 때까지 이어짐
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("most of the list is remembered as missing"));
+    }
+
+    [Fact]
+    public void AnUnconfirmedStretchAheadOfTheMostImportantFileDoesNotEndTheKeepingEither()
+    {
+        _findBoundaryOf = () => F(1); // 가장 중요한 파일 앞에서 이어진 빠짐: 목록 전체가 경계 뒤
+        GameSettings cheat = Cheat("a");
+        Prewarmer p = Make(Reads, cheat);
+        RunFor(45);
+
+        p.TouchAtGameStart(cheat, "a.exe");
+
+        Assert.True(KeptLines() >= 3);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("cache keeping ended after") && l.Contains("most of the list"));
     }
 
     [Fact]
@@ -993,25 +1006,45 @@ public sealed class KeepHoldTests
     }
 
     [Fact]
-    public void TheRoundReleasesTheSerializationLockBetweenGroupsAndNeverRestsForASpeedLimit()
+    public void TheRoundReleasesTheSerializationLockBetweenGroupsLetsAnotherTouchInAndNeverRestsForASpeedLimit()
     {
         GameSettings cheat = Cheat("a");
         Prewarmer p = Make(Reads, cheat);
         object serial = TouchSerial(p);
         bool before = false;
         bool after = false;
+        bool waiterGotItBetween = false;
+        bool started = false;
         _findGroups = (_, _, onGroup) =>
         {
+            if (started)
+            {
+                return;
+            }
+
+            started = true;
             before = Monitor.IsEntered(serial); // 찾기는 잠금 안에서 시작
-            onGroup(128 * Mib, 0.1); // 128 MiB 를 읽음: 잠금을 놓았다가 바로 다시 잡음 (쉬지 않음)
+            using var got = new ManualResetEventSlim();
+            var waiter = new Thread(() =>
+            {
+                lock (serial) // 다른 실행 파일의 시작 만지기를 흉내: 잠금을 기다림
+                {
+                    got.Set();
+                }
+            });
+            waiter.Start();
+            Thread.Sleep(100); // 대기자가 잠금에서 기다리는 중
+            onGroup(128 * Mib, 0.1); // 128 MiB 를 읽음: 잠금을 놓고 양보한 뒤 다시 잡음
+            waiterGotItBetween = got.IsSet; // 놓은 사이 대기자가 잡았음
             after = Monitor.IsEntered(serial);
+            waiter.Join();
         };
         RunFor(12);
         int shortSleeps = 0;
         Action<TimeSpan, CancellationToken> inner = _sleep!;
         _sleep = (t, ct) =>
         {
-            if (t < TimeSpan.FromSeconds(1)) // 속도 제한으로 쉬는 것은 이제 없음
+            if (t < TimeSpan.FromSeconds(1)) // 속도 제한으로 쉬는 것은 없음
             {
                 shortSleeps++;
             }
@@ -1022,8 +1055,75 @@ public sealed class KeepHoldTests
         p.TouchAtGameStart(cheat, "a.exe");
 
         Assert.True(before);
+        Assert.True(waiterGotItBetween);
         Assert.True(after);
-        Assert.Equal(0, shortSleeps); // 만지는 동안 속도 제한으로 쉬지 않음
+        Assert.Equal(0, shortSleeps);
+    }
+
+    [Fact]
+    public void ThePlayCapCountsOnlyTheReadsOfTheLookOutsideTheSetNotThoseOfTheProtectAndOrderPasses()
+    {
+        _findBoundaryOf = () => F(4); // 집합 밖 (4, 5) 이 매 회차 남음
+        _touchOverride = ranges => KeptLines() >= 1 ? new TouchResult(ranges.Sum(o => o.Length), 0.1, 0, 0, TouchEnd.Completed, 30 * Mib) : null; // 회차의 순서 패스 배치마다 디스크 읽기 30 MiB 로 보고 (경계 없이)
+        GameSettings cheat = Cheat("a");
+        Prewarmer p = Make(Reads, cheat);
+        RunFor(45);
+
+        p.TouchAtGameStart(cheat, "a.exe");
+
+        Assert.True(KeptLines() >= 4);
+        Assert.True(_findCalls.Count(c => c.Any(o => o.Path == F(4))) >= 4); // 순서 패스가 수백 MiB 를 읽은 것으로 보고해도 집합 밖 다시 확인은 매 회차 계속됨
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("no new range looked for"));
+    }
+
+    [Fact]
+    public void WhenTheTailWasPushedOutTheProtectPassTouchesTheMostImportantFirstCutsTheTailAndTheOrderPassTouchesTheRestLeastImportantFirstToTheEnd()
+    {
+        _findBoundaryOf = () => KeptLines() >= 1 ? F(4) : null; // 첫 회차 뒤 꼬리 (4, 5) 가 밀려남
+        GameSettings cheat = Cheat("a");
+        Prewarmer p = Make(Reads, cheat);
+        RunFor(25);
+
+        p.TouchAtGameStart(cheat, "a.exe");
+
+        IReadOnlyList<ReadOp> protect = _findCalls[1]; // 둘째 회차의 첫 찾기 = 보호 패스: 집합 전체를 가장 중요한 것부터
+        Assert.Equal(new ReadOp(F(1), 0, 8 * Mib), protect[0]);
+        Assert.Equal(KeepHoldTests.Reads.Select(o => o.Path), protect.Select(o => o.Path));
+        Assert.Equal(Prewarmer.KeepProtectDiskCapBytes, _findCaps[1]);
+        IReadOnlyList<ReadOp> lastBatch = _touched[^1];
+        IReadOnlyList<ReadOp> firstOfRound = _touched[^2];
+        Assert.Equal(new ReadOp(F(1), 0, 8 * Mib), lastBatch[^1]); // 순서 패스의 끝: 가장 중요한 것이 두 번째로 (회차 처음의 보호 패스에 이어) 만져짐
+        Assert.Equal(new ReadOp(F(3), 0, 8 * Mib), firstOfRound[0]); // 경계에서 꼬리를 뺀 뒤 남은 것 가운데 가장 덜 중요한 것부터
+        Assert.DoesNotContain(_touched.TakeLast(2).SelectMany(b => b), o => o.Path == F(4) || o.Path == F(5)); // 경계 뒤는 이번 회차에 만지지 않음
+    }
+
+    [Fact]
+    public void AnOrderPassThatReadsFromDiskInSeveralBatchesStillRunsToTheMostImportantEnd()
+    {
+        _touchOverride = ranges => KeptLines() >= 1 && ranges.Any(o => o.Path == F(5) || o.Path == F(3))
+            ? new TouchResult(8 * Mib, 0.1, 0, 0, TouchEnd.NeedsDiskReads, 30 * Mib, 0, 0, 0, 0, StopReason.HardFaults) // 배치마다 30 MiB: 합이 이전 상한 (64 MiB) 을 넘음
+            : null;
+        GameSettings cheat = Cheat("a");
+        Prewarmer p = Make(Reads, cheat);
+        RunFor(25);
+
+        p.TouchAtGameStart(cheat, "a.exe");
+
+        Assert.Equal(new ReadOp(F(1), 0, 8 * Mib), _touched[^1][^1]); // 읽기가 여러 번 나도 가장 중요한 쪽까지 만짐 (중간에 끝내는 상한 없음)
+    }
+
+    [Fact]
+    public void ARoundWithAnEmptySetOnlyLooksOutsideItWithTheLargerCapAndLaterRoundsUseTheProtectAndTheNormalCaps()
+    {
+        GameSettings cheat = Cheat("a");
+        Prewarmer p = Make(Reads, cheat);
+        RunFor(25);
+
+        p.TouchAtGameStart(cheat, "a.exe");
+
+        Assert.Equal(Prewarmer.KeepEmptySetRoundDiskCapBytes, _findCaps[0]); // 집합이 빈 첫 회차는 집합 밖 확인만, 회차 상한을 크게
+        Assert.Equal(Prewarmer.KeepProtectDiskCapBytes, _findCaps[1]); // 집합이 생긴 뒤에는 보호 패스가 먼저
+        Assert.Equal(Reads.Select(o => o.Path), _findCalls[0].Select(o => o.Path));
     }
 
     [Fact]
@@ -1036,7 +1136,8 @@ public sealed class KeepHoldTests
         p.TouchAtGameStart(cheat, "a.exe");
 
         Assert.True(KeptLines() >= 3);
-        Assert.Single(_findCalls); // 첫 회차에 집합을 만든 뒤에는 집합 밖이 없어 찾지 않음
+        Assert.Equal(KeptLines(), _findCalls.Count); // 회차마다 찾기는 하나: 첫 회차는 집합 밖 (집합 만들기), 그 뒤는 보호 패스 (집합 밖이 없어 다시 확인은 안 함)
+        Assert.All(_findCalls.Skip(1), c => Assert.Equal(Reads.Select(o => o.Path), c.Select(o => o.Path))); // 보호 패스는 집합 전체를 가장 중요한 것부터
         IReadOnlyList<ReadOp> last = _touched[^1];
         Assert.Equal(new ReadOp(F(1), 0, 8 * Mib), last[^1]); // 순서 패스: 가장 중요한 것이 마지막
     }
@@ -1044,7 +1145,7 @@ public sealed class KeepHoldTests
     [Fact]
     public void ABoundaryCutsOffTheLessImportantRestFromTheSetButItIsLookedAtAgainOutsideTheSetEveryRound()
     {
-        _findBoundaryFile = F(3); // 파일 3 에서 경계: 1, 2 만 집합에 들고 3~5 는 집합 밖
+        _findBoundaryOf = () => F(3); // 파일 3 에서 경계: 1, 2 만 집합에 들고 3~5 는 집합 밖
         GameSettings cheat = Cheat("a");
         Prewarmer p = Make(Reads, cheat);
         RunFor(25);
@@ -1053,7 +1154,7 @@ public sealed class KeepHoldTests
 
         Assert.Contains(_log.Lines, l => l.Contains("cache kept while playing (a.exe)") && l.Contains("set 24 MiB") && l.Contains("24 MiB cut off by a boundary") && l.Contains("0 MiB left out as holes"));
         Assert.True(_findCalls.Count >= 2);
-        Assert.Equal([F(3), F(4), F(5)], _findCalls[1].Select(o => o.Path)); // 다음 회차의 찾기는 집합 밖만 중요한 순서로 확인
+        Assert.Equal([F(3), F(4), F(5)], _findCalls.Skip(1).First(c => c.Any(o => o.Path == F(3))).Select(o => o.Path)); // 다음 회차의 집합 밖 다시 확인은 집합 밖만 중요한 순서로 (보호 패스는 집합만)
         Assert.DoesNotContain(_touched[^1], o => o.Path == F(3) || o.Path == F(4) || o.Path == F(5)); // 순서 패스는 집합만 만짐
     }
 

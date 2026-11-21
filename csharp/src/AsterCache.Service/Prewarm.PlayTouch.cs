@@ -33,14 +33,14 @@ public sealed partial class Prewarmer
     /// 한 회차의 집합 밖 다시 확인 (찾기 패스) 이 디스크에서 읽는 양의 상한: 8 MiB. 빠진 조각 하나를 알아채는 데 읽는 양이 조각 하나 (1 MiB 이하) 입니다. 넘으면 새 범위를 더 확인하지 않고 남은 범위는 이번에 만지지 않으며, 집합의 순서 패스는 상한과 무관하게 항상 돕니다.
     public const long KeepRoundDiskCapBytes = 8L << 20;
 
-    /// 한 플레이에서 이 만지기가 디스크에서 읽는 양의 누적 상한: 64 MiB. 다 쓰면 그 뒤 회차는 집합 밖을 다시 확인하지 않고 지금까지 메모리에 있다고 확인된 집합만 순서 패스로 만집니다 (유지를 끝내지 않음).
+    /// 한 플레이에서 집합 밖 다시 확인이 디스크에서 읽는 양의 누적 상한: 64 MiB (보호·순서 패스의 읽기는 세지 않음). 다 쓰면 그 뒤 회차는 집합 밖을 다시 확인하지 않고 집합만 두 패스로 만집니다 (유지를 끝내지 않고, 집합도 비어 있으면 재사용 누계만 확인하고 넘어감).
     public const long KeepPlayDiskCapBytes = 64L << 20;
 
-    /// 순서 패스 한 번이 디스크에서 읽는 양의 안전 상한: 64 MiB. 집합의 범위가 그 사이 밀려났으면 읽기가 난 범위 하나씩만 빼고 계속하는데, 대부분이 한꺼번에 밀려난 경우 경계마다 읽는 양이 쌓이는 것을 막습니다.
-    public const long KeepOrderDiskCapBytes = 64L << 20;
+    /// 보호 패스 (집합을 가장 중요한 것부터 걸으며 만짐) 가 한 회차에 디스크에서 읽는 양의 상한: 8 MiB. 경계 하나를 알아채는 데 읽는 양은 수 MiB 이므로, 이 상한을 넘으면 그 지점을 경계로 보고 뒤 (덜 중요한 쪽) 를 집합에서 뺍니다.
+    public const long KeepProtectDiskCapBytes = 8L << 20;
 
-    /// 기억한 빠진 범위가 만지려던 목록의 이 비율을 넘으면 (대부분이 빠졌으면) 유지를 끝냅니다.
-    public const double KeepMissingEndFraction = 0.75;
+    /// 집합이 비어 있는 회차 (시작 만지기가 끝까지 가지 못했거나 서비스가 게임 도중 다시 시작함) 의 집합 밖 확인이 읽는 양의 상한: 32 MiB. 이때는 보호·순서 패스가 없어 집합을 처음부터 만들므로 회차 상한을 조금 크게 잡습니다 (플레이 누적 상한은 같음).
+    public const long KeepEmptySetRoundDiskCapBytes = 32L << 20;
 
     /// 한 번에 만지는 양의 상한: 그때 사용 가능한 물리 메모리의 이 비율. 대기 목록은 만진 양과 회차 사이에 게임이 새로 읽는 양을 함께 담아야 하는데,
     /// 경기 중 조사 값은 사용 가능 메모리 약 11 GiB 와 분당 최대 1.7 GiB 라서 만지는 양이 7.6 GiB 이하여야 합니다. 절반은 그 안 (5.5 GiB) 이고 메모리가 달라져도 같은 비율로 따라갑니다.
@@ -71,7 +71,6 @@ public sealed partial class Prewarmer
         int lastRoundPoll = 0; // 시작 만지기가 끝난 때 (이 뒤 KeepMinInterval 이 지나야 첫 회차)
         int fallbackPolls = (int)(PlayTouchEvery.Ticks / KeepPollEvery.Ticks);
         int minPolls = (int)Math.Ceiling((double)KeepMinInterval.Ticks / KeepPollEvery.Ticks);
-        int emptyRounds = 0; // 메모리에 하나도 없던 회차가 연속으로 몇 번인가
         KeepMemory memory = KeepMemoryOf(started.Name); // 이 플레이에서 알게 된 빠진·메모리에 있는 범위 (같은 게임의 다른 실행 파일이 떠도 이어 씀)
         long? reuseAtLastRound = _env.Lists()?.CacheRepurposedBytes; // 시작 만지기가 끝난 때의 대기 목록 재사용 누계
         var keep = new KeepList(); // 이 플레이의 유지 목록 (입력이 바뀔 때만 다시 계산)
@@ -130,18 +129,7 @@ public sealed partial class Prewarmer
                 {
                     (rounds, noted, lastSkip, lastRoundPoll) = (rounds + 1, true, null, polls);
                     reuseAtLastRound = _env.Lists()?.CacheRepurposedBytes;
-                    emptyRounds = empty ? emptyRounds + 1 : 0;
-                    if (endNow is not null)
-                    {
-                        (ended, memory.Finished) = (endNow, true);
-                        break;
-                    }
-
-                    if (emptyRounds >= 2)
-                    {
-                        ended = " (nothing left in memory in two rounds in a row)"; // 같은 줄을 되풀이하고 디스크 읽기가 섞이지 않게 연속 두 회차가 같을 때만 끝냄 (한 번은 잡음일 수 있음): 빠진 것은 게임이 끝난 뒤 재예열에 맡김
-                        break;
-                    }
+                    // 유지는 게임이 끝날 때까지 이어집니다: 목록이 메모리에 하나도 없는 회차가 이어져도 끝내지 않음 (집합 밖 다시 확인은 플레이 누적 상한이 막고, 집합이 비고 상한도 다 쓰면 회차가 할 일이 없어 건너뜀)
                 }
                 else if (skip is { } why && why.Reason != lastSkip)
                 {
@@ -236,6 +224,12 @@ public sealed partial class Prewarmer
             }
         }
 
+        KeepMemory known = KeepMemoryOf(game.Name);
+        if (known.ResidentBytes() == 0 && known.DiskBytes >= KeepPlayDiskCapBytes)
+        {
+            return null; // 집합이 비어 있고 집합 밖 확인의 플레이 상한도 다 씀: 회차가 할 일이 없음 (재사용 누계 확인만 하고 넘어감)
+        }
+
         long availMib = _env.AvailableRamMib();
         if (availMib < game.Prewarm.MinFreeRamMib)
         {
@@ -269,7 +263,7 @@ public sealed partial class Prewarmer
         }
 
         touched = true;
-        empty = t.InMemory <= 0 && t.Total > 0;
+        empty = t.InMemory <= 0 && t.Total > 0 && !t.FindSkipped; // 확인할 수 있었는데 메모리에 하나도 없던 회차만 (플레이 상한 뒤 집합이 비어 할 일이 없는 회차는 아님)
         _solar.NoteKept(game.Name, t.InMemory);
         string probe;
         lock (_touchSerial)
@@ -279,11 +273,6 @@ public sealed partial class Prewarmer
 
         string trigger = reuseGrowth is { } growth ? $", called by {growth >> 20} MiB of standby cache reuse" : ", called by the fixed period (standby cache reuse unknown)";
         _log.Info($"{game.Name}: cache kept while playing ({exe}): {t.InMemory >> 20} MiB of {t.Total >> 20} MiB in memory (found {t.Found >> 20} MiB, ordered {t.Ordered >> 20} MiB), in {t.Seconds:F1} s (cpu {t.Cpu:F1} s, {t.Maps} views, {t.Checks} checks), {t.Disk >> 20} MiB read from disk ({t.HardFaults} hard faults){(t.Errors > 0 ? $", {t.Errors} errors" : string.Empty)}, {t.Boundaries} new missing stretches remembered ({memory.MissingBytes >> 20} MiB of the {memory.ListBytes >> 20} MiB list in all){TallyDetail(t)}{(t.CapReached ? ", disk read cap of the round reached" : string.Empty)}{(t.Left > 0 ? $", {t.Left >> 20} MiB left unconfirmed" : string.Empty)}{(t.FindSkipped ? ", no new range looked for (disk reads of the play at the cap)" : string.Empty)}{trigger}{probe}");
-        if (memory.ListBytes > 0 && memory.MissingBytes + memory.BoundaryBytes >= memory.ListBytes * KeepMissingEndFraction)
-        {
-            endNow = $" (most of the list is remembered as missing: {(memory.MissingBytes + memory.BoundaryBytes) >> 20} of {memory.ListBytes >> 20} MiB)";
-        }
-
         return null;
     }
 

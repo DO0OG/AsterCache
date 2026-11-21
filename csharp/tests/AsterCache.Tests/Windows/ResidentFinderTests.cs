@@ -84,7 +84,9 @@ public sealed class ResidentFinderTests
 
     private double _clock;
 
-    private double Clock() => _clock += 25; // 조회 사이 최소 간격 (20 ms) 을 항상 채움
+    private double _clockStep = 25;
+
+    private double Clock() => _clock += _clockStep; // 기본은 조회 사이 최소 간격 (20 ms) 을 항상 채움
 
     private FindResult Find(FakeMemory memory, IReadOnlyList<ReadOp> ordered, long cap = 1L << 40, Action<long, double>? onGroup = null) =>
         ResidentFinder.Find(ordered, cap, CancellationToken.None, onGroup, () => memory.Faults, () => memory.Pages, memory, Clock);
@@ -153,6 +155,21 @@ public sealed class ResidentFinderTests
         Assert.Equal(2, r.Boundaries);
         Assert.InRange(r.LeftBytes, 380 * Mib, 392 * Mib); // 경계 뒤 (덜 중요한 쪽) 는 확인하지 않고 남김
         Assert.False(r.CapReached);
+    }
+
+    [Fact]
+    public void ThePointAfterASkipIsCheckedEvenWhenTheClockBarelyMovesSoTwoMissesInARowStillMakeABoundary()
+    {
+        _clockStep = 2; // 빠진 조각을 읽는 시간이 조회 간격 (20 ms) 에 못 미치는 실제 HDD: 앞 조회 뒤 경과 시간이 20 ms 가 안 됨
+        var memory = new FakeMemory();
+        memory.Lengths["a"] = 400 * Mib;
+        memory.Cold["a"] = [(0, 400 * Mib)];
+
+        FindResult r = Find(memory, [new ReadOp("a", 0, 400 * Mib)]);
+
+        Assert.True(r.BoundaryHit); // 건너뛴 다음 지점은 시간과 무관하게 조회: 또 빠짐이라 경계
+        Assert.Equal([new ReadOp("a", 1 * Mib, 8 * Mib)], r.Missing);
+        Assert.InRange(r.LeftBytes, 380 * Mib, 392 * Mib);
     }
 
     [Fact]

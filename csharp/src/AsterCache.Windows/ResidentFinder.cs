@@ -29,7 +29,7 @@ internal interface IPieceSource : IDisposable
 
 /// 유지 목록을 중요한 순서로 걸으며 메모리에 있는 범위를 모으고 (읽어서 작업 집합에 올렸다 놓음), 빠진 조각을 싸게 알아채 건너뜁니다.
 /// 빠진 조각 알아채기: 조각 (1 MiB) 하나를 읽는 데 걸린 시간이 의심 기준 (StandbyTouch 의 의심 조각 기준) 보다 길면 8 MiB 를 채우길 기다리지 않고 바로 이 프로세스의 디스크 읽기 수 (하드 폴트) 를 조회합니다 (조회 사이 PromptCheckMinGapMs 이상).
-/// 조회 사이 증가분이 PromptFaults 이상이면 빠짐 (근거: 같은 PC 의 실측에서 메모리에 있는 범위는 조회 사이 +0~1, 캐시에 없는 64 KiB 블록 하나는 2~3). 빠진 조각을 하나 읽는 비용은 그 조각 하나 (1 MiB 이하) 입니다.
+/// 건너뛴 직후의 첫 조각은 이 간격과 무관하게 바로 조회합니다. 조회 사이 증가분이 PromptFaults 이상이면 빠짐 (근거: 같은 PC 의 실측에서 메모리에 있는 범위는 조회 사이 +0~1, 캐시에 없는 64 KiB 블록 하나는 2~3). 빠진 조각을 하나 읽는 비용은 그 조각 하나 (1 MiB 이하) 입니다.
 /// 빠짐을 확인하면 그 뒤의 SkipBaseBytes (목록 순서로 이어지는 범위) 만 건너뛰어 (읽지 않고) Missing 에 더하고, 건너뛴 다음 지점을 다시 확인합니다: 메모리에 있으면 앞의 빠짐은 구멍 하나였으므로 계속 걷고,
 /// 또 빠져 있으면 (이어진 두 지점) 그 지점을 경계로 보아 걷기를 멈추고 그 뒤 (덜 중요한 쪽) 는 확인하지 않은 채 LeftBytes 로 남깁니다 (BoundaryHit).
 /// 그래서 Missing 은 실제로 확인한 빠짐 뒤에서 건너뛴 구간뿐입니다. 느리지 않은 조각은 FaultCheckBytes (64 MiB) 마다 조회하며 이때도 증가분이 PromptFaults 이상이어야 빠짐입니다 (CPU 경합만으로 느려진 조각은 증가분이 없으면 빠짐으로 치지 않음).
@@ -217,7 +217,7 @@ public static class ResidentFinder
                     leftInCurrent = capReached ? Math.Max(0, end - pos) : 0;
                 }
 
-                bool due = signal && (sinceCheck >= StandbyTouch.FaultCheckBytes || (suspect && now() - lastCheckMs >= PromptCheckMinGapMs));
+                bool due = signal && (probing || sinceCheck >= StandbyTouch.FaultCheckBytes || (suspect && now() - lastCheckMs >= PromptCheckMinGapMs)); // 건너뛴 직후의 첫 조각은 시간·간격과 무관하게 반드시 조회 (실제 HDD 에서는 빠진 조각을 읽는 시간이 조회 간격 20 ms 에 못 미칠 수 있음)
                 if (due && Check())
                 {
                     boundaries++;
@@ -237,9 +237,9 @@ public static class ResidentFinder
                         leftInCurrent = Math.Max(0, end - pos);
                     }
                 }
-                else if (probing)
+                else if (probing && (due || !signal))
                 {
-                    probing = false; // 건너뛴 다음 지점이 메모리에 있음: 앞의 빠짐은 구멍 하나
+                    probing = false; // 조회한 건너뛴 다음 지점이 메모리에 있음: 앞의 빠짐은 구멍 하나 (읽기 수를 못 읽으면 가를 수 없어 푼 채 계속)
                 }
 
                 if (sinceGroup >= GroupBytes && onGroup is not null)

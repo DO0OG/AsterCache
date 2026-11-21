@@ -242,7 +242,7 @@ public sealed partial class Prewarmer
 
     // ---- 두 패스 다시 만지기 (붙들지 않는 게임) ----
 
-    /// 이 플레이에서 알게 된 범위: 메모리에 있다고 확인한 집합 (회차는 이 집합만 만짐), 빠진 것으로 확인한 구멍 (다시 만지지 않음, 이 플레이 동안), 디스크 읽기 누적, 경계 때문에 확인하지 않고 남긴 양.
+    /// 이 플레이에서 알게 된 범위: 메모리에 있다고 확인한 집합 (회차는 이 집합만 만짐), 빠진 것으로 확인한 구멍 (다시 만지지 않음, 이 플레이 동안), 집합 밖 다시 확인의 디스크 읽기 누적.
     /// 같은 게임의 다른 실행 파일이 떠도 이어 쓰고 등록 실행 파일이 모두 끝나면 버립니다. 시작 만지기와 유지 회차가 같은 객체를 동시에 고칠 수 있으므로 읽고 쓰는 모든 경로가 자기 잠금 안에서 돕니다.
     private sealed class KeepMemory
     {
@@ -252,7 +252,6 @@ public sealed partial class Prewarmer
         private long _missingBytes;
         private long _diskBytes;
         private long _listBytes;
-        private long _boundaryBytes;
         private bool _finished;
 
         /// 기억한 빠진 구멍의 합.
@@ -287,26 +286,6 @@ public sealed partial class Prewarmer
                 lock (_lock)
                 {
                     return _listBytes;
-                }
-            }
-        }
-
-        /// 가장 최근 찾기가 경계 (이어진 두 지점의 빠짐) 때문에 확인하지 않고 남긴 양 (찾기를 돌지 않은 회차는 앞의 값을 유지).
-        public long BoundaryBytes
-        {
-            get
-            {
-                lock (_lock)
-                {
-                    return _boundaryBytes;
-                }
-            }
-
-            set
-            {
-                lock (_lock)
-                {
-                    _boundaryBytes = value;
                 }
             }
         }
@@ -372,6 +351,23 @@ public sealed partial class Prewarmer
             lock (_lock)
             {
                 RangeSets.Add(SetOf(_resident, op.Path), op.Offset, op.Offset + op.Length);
+            }
+        }
+
+        /// old 범위들을 집합에서 빼고 now 범위들을 더합니다 (보호 패스가 확인한 범위로 집합을 바꿈: 확인하지 못한 범위는 집합에서 빠져 집합 밖이 됨).
+        public void Replace(IReadOnlyList<ReadOp> old, IReadOnlyList<ReadOp> now)
+        {
+            lock (_lock)
+            {
+                foreach (ReadOp op in old)
+                {
+                    RangeSets.Remove(SetOf(_resident, op.Path), op.Offset, op.Offset + op.Length);
+                }
+
+                foreach (ReadOp op in now)
+                {
+                    RangeSets.Add(SetOf(_resident, op.Path), op.Offset, op.Offset + op.Length);
+                }
             }
         }
 
@@ -501,6 +497,18 @@ public sealed partial class Prewarmer
 
         public void CountBatch() => Batches++;
 
+        /// 잠금을 놓고 아주 짧게 쉽니다: 잠금 (Monitor) 은 공정하지 않아 놓자마자 다시 잡으면 기다리던 스레드 (다른 실행 파일의 시작 만지기) 가 차례를 못 얻으므로, 놓은 뒤 한 번 양보해 대기자가 잡게 합니다. 다시 잡는 것은 Enter 가 함.
+        public void Release()
+        {
+            if (!_locked)
+            {
+                return;
+            }
+
+            Exit();
+            Thread.Sleep(1);
+        }
+
         public void Exit()
         {
             if (!_locked)
@@ -536,12 +544,12 @@ public sealed partial class Prewarmer
     }
 
     // 순서 패스: ranges (중요도 순서) 를 덜 중요한 것부터 다시 만져 가장 중요한 것이 대기 목록의 가장 새 자리에 오게 합니다. 속도 제한도 쉼도 없습니다 (낮은 CPU·I/O 우선순위는 호출한 쪽이 이미 걺).
-    // 직렬화 잠금은 HoldLockBatches 배치마다 놓았다 다시 잡을 뿐 잠금 밖에서 쉬지 않습니다. 배치가 디스크 읽기를 만나면 (그 사이 밀려났음) 그 범위 하나만 집합에서 빼고 (구멍으로 기억하지 않고 같은 파일의 뒤 범위도 건드리지 않음) 계속합니다.
+    // 직렬화 잠금은 HoldLockBatches 배치마다 놓고 한 번 양보한 뒤 다시 잡습니다 (속도 제한으로 쉬지 않음). 배치가 디스크 읽기를 만나면 (그 사이 밀려났음) 그 범위 하나만 집합에서 빼고 (구멍으로 기억하지 않고 같은 파일의 뒤 범위도 건드리지 않음) 계속합니다.
     private PassTally OrderPass(IReadOnlyList<ReadOp> ranges, KeepMemory memory, SerialGroup group, CancellationToken ct)
     {
         long started = System.Diagnostics.Stopwatch.GetTimestamp();
         TouchResult sum = new(0, 0, 0, 0, TouchEnd.Completed);
-        WalkResult walk = Walk(LadderOrder.Reverse(ranges), KeepOrderDiskCapBytes, ct, () => true, batch =>
+        WalkResult walk = Walk(LadderOrder.Reverse(ranges), long.MaxValue, ct, () => true, batch => // 중간에 끝내는 읽기 상한은 없음: 읽기가 난 범위를 건너뛰는 것으로만 막음 (상한에 닿아 가장 중요한 쪽을 못 만지는 일이 없게)
         {
             group.Enter();
             TouchResult r = TouchBatch(batch, ct);
@@ -551,7 +559,7 @@ public sealed partial class Prewarmer
             group.CountBatch();
             if (group.Batches >= HoldLockBatches)
             {
-                group.Exit();
+                group.Release();
             }
 
             long consumed = boundary ? r.Bytes + r.SkippedBytes : batch.Sum(o => o.Length);
@@ -566,11 +574,13 @@ public sealed partial class Prewarmer
         return new PassTally(sum.Bytes, walk.Disk, walk.Boundaries, System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalSeconds, sum.CpuSeconds, sum.Maps, sum.Checks, sum.HardFaults, sum.Errors);
     }
 
-    // 목록 (중요도 순서) 에서 기억한 구멍을 빼고 만집니다. 회차는 메모리에 있다고 확인한 집합만 대상으로 합니다.
-    // 1) 순서 패스: 집합을 덜 중요한 것부터 다시 만져 가장 중요한 것이 마지막에 오게 합니다 (가장 중요한 것을 찾기 패스가 먼저 만지고 순서 패스가 다시 만지는 이중 순서를 만들지 않음).
-    // 2) 집합 밖 다시 확인 (findNew, 곧 플레이 누적 디스크 읽기 상한 안일 때만): 집합 밖 (아직 확인하지 않았거나 경계 뒤로 남은 범위) 을 중요한 것부터 걸으며 메모리에 있는 범위를 모아 집합에 더합니다 (ResidentFinder).
-    //    한 지점만 빠졌으면 그 조각을 구멍으로 기억하고 계속, 이어진 두 지점이 빠졌으면 경계로 보아 그 뒤 (덜 중요한 쪽) 는 이번에 확인하지 않습니다. 디스크 읽기는 회차 diskCap, 플레이 KeepPlayDiskCapBytes 안입니다. 상한에 닿아도 1) 은 항상 돕니다.
-    // 3) 집합이 비어 있던 첫 회차 (시작 만지기 뒤) 만, 찾기가 모은 범위를 2) 뒤에 한 번 더 순서 패스로 만져 순서를 바로잡습니다.
+    // 목록 (중요도 순서) 에서 기억한 구멍을 빼고 만집니다. 회차는 집합 P (메모리에 있다고 확인한 범위, 중요도 순서) 가 비어 있지 않으면 이 순서로 돕니다.
+    // 1) 보호 패스: P 를 가장 중요한 것부터 걸으며 만집니다 (ResidentFinder, 가장 중요한 쪽이 회차 시작과 함께 바로 다시 만져짐). 빠진 조각은 하드 폴트 조회로 싸게 알아채 그 조각과 뒤 8 MiB 만 P 에서 빼고 계속하고,
+    //    이어진 두 지점이 빠졌으면 경계로 보아 그 뒤 (덜 중요한 쪽) 를 모두 P 에서 빼고 끝냅니다. 이 패스의 디스크 읽기가 KeepProtectDiskCapBytes 를 넘어도 같습니다 (그 지점을 경계로 봄).
+    // 2) 순서 패스: 보호 패스 뒤 남은 P 만 덜 중요한 것부터 가장 중요한 것까지 다시 만져 가장 중요한 것이 대기 목록의 가장 새 자리에 오게 합니다. 읽기가 나면 그 범위만 P 에서 빼고 끝까지 계속합니다 (중간에 끝내는 상한 없음).
+    // 3) 집합 밖 다시 확인 (findNew, 곧 플레이 누적 상한 안일 때만): 1)·2) 가 끝난 뒤에, P 에 없는 범위 (아직 확인하지 않았거나 경계·건너뛴 구간) 를 중요한 순서로 조금 확인해 메모리에 있으면 P 에 넣습니다.
+    //    디스크 읽기는 회차 diskCap (P 가 비어 있으면 KeepEmptySetRoundDiskCapBytes), 플레이 KeepPlayDiskCapBytes 안이고 플레이 누적에는 이 읽기만 셉니다. 한 지점만 빠졌으면 그 조각을 구멍으로 기억하고 계속, 이어진 두 지점이면 경계로 보아 그 뒤는 이번에 확인하지 않습니다.
+    // P 가 비어 있던 회차 (시작 만지기 뒤 첫 회차) 는 3) 만 돌고, 찾기가 모은 범위를 한 번 더 순서 패스로 만져 순서를 바로잡습니다 (방금 확인한 범위라 읽기가 없어야 함).
     private RememberTally TouchRemembering(IReadOnlyList<ReadOp> importanceOrdered, KeepMemory memory, bool findNew, long diskCap, CancellationToken ct)
     {
         memory.NoteListBytes(importanceOrdered.Sum(o => o.Length));
@@ -579,7 +589,21 @@ public sealed partial class Prewarmer
         long started = System.Diagnostics.Stopwatch.GetTimestamp();
         List<ReadOp> set = memory.ResidentWithin(candidates);
         using var group = new SerialGroup(_touchSerial);
-        PassTally order = OrderPass(set, memory, group, ct);
+        FindResult? protect = null;
+        PassTally order = default;
+        if (set.Count > 0)
+        {
+            group.Enter();
+            protect = _env.FindResident(set, KeepProtectDiskCapBytes, ct, (bytes, seconds) =>
+            {
+                group.Release(); // 묶음마다 잠금을 놓고 한 번 양보해 다른 만지기가 끼어들 수 있게 (쉬는 것은 아님)
+                group.Enter();
+            });
+            group.Exit();
+            memory.Replace(set, protect.Resident); // 확인한 범위만 P 에 남음: 빠진 조각·건너뛴 구간·경계 뒤는 P 에서 빠져 집합 밖이 됨
+            order = OrderPass(memory.ResidentWithin(candidates), memory, group, ct);
+        }
+
         FindResult? f = null;
         PassTally fresh = default;
         long holes = 0;
@@ -587,9 +611,9 @@ public sealed partial class Prewarmer
         if (outside.Count > 0)
         {
             group.Enter();
-            f = _env.FindResident(outside, diskCap, ct, (bytes, seconds) =>
+            f = _env.FindResident(outside, set.Count == 0 ? KeepEmptySetRoundDiskCapBytes : diskCap, ct, (bytes, seconds) =>
             {
-                group.Exit(); // 묶음마다 잠금을 놓아 다른 만지기가 끼어들 수 있게 (쉬지는 않음)
+                group.Release();
                 group.Enter();
             });
             group.Exit();
@@ -604,22 +628,23 @@ public sealed partial class Prewarmer
                 memory.AddResident(op);
             }
 
-            memory.BoundaryBytes = f.BoundaryHit ? f.LeftBytes : 0;
             if (set.Count == 0 && f.Resident.Count > 0)
             {
                 fresh = OrderPass(f.Resident, memory, group, ct);
             }
         }
 
-        memory.AddDisk((f?.DiskBytes ?? 0) + order.Disk + fresh.Disk);
-        long found = f?.Bytes ?? 0;
-        long findDisk = f?.DiskBytes ?? 0;
-        long inMemory = Math.Max(0, order.Bytes - order.Disk) + (f is null ? 0 : Math.Max(0, found - findDisk));
+        memory.AddDisk(f?.DiskBytes ?? 0); // 플레이 누적 상한에는 집합 밖 다시 확인의 읽기만 셈 (보호·순서 패스는 각자의 방어가 있음)
+        long found = (protect?.Bytes ?? 0) + (f?.Bytes ?? 0);
+        long foundDisk = (protect?.DiskBytes ?? 0) + (f?.DiskBytes ?? 0);
+        long inMemory = Math.Max(0, found - foundDisk);
+        long disk = foundDisk + order.Disk + fresh.Disk;
+        long boundaryCut = (protect?.LeftBytes ?? 0) + (f is { BoundaryHit: true } ? f.LeftBytes : 0);
         double elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalSeconds;
-        return new RememberTally(inMemory, total, found, order.Bytes + fresh.Bytes, findDisk + order.Disk + fresh.Disk, (f?.Boundaries ?? 0) + order.Boundaries + fresh.Boundaries, elapsed,
-            order.Cpu + fresh.Cpu + (f?.CpuSeconds ?? 0), order.Maps + fresh.Maps + (f?.Maps ?? 0), order.Checks + fresh.Checks + (f?.Checks ?? 0), order.HardFaults + fresh.HardFaults + (f?.HardFaults ?? 0),
-            order.Errors + fresh.Errors + (f?.Errors ?? 0), f?.LeftBytes ?? 0, f?.CapReached ?? false, !findNew,
-            memory.ResidentBytes(), f is { BoundaryHit: true } ? f.LeftBytes : 0, holes, order.Seconds + fresh.Seconds, order.Cpu + fresh.Cpu, f?.Seconds ?? 0, f?.CpuSeconds ?? 0);
+        return new RememberTally(inMemory, total, found, order.Bytes + fresh.Bytes, disk, (protect?.Boundaries ?? 0) + (f?.Boundaries ?? 0) + order.Boundaries + fresh.Boundaries, elapsed,
+            order.Cpu + fresh.Cpu + (protect?.CpuSeconds ?? 0) + (f?.CpuSeconds ?? 0), order.Maps + fresh.Maps + (protect?.Maps ?? 0) + (f?.Maps ?? 0), order.Checks + fresh.Checks + (protect?.Checks ?? 0) + (f?.Checks ?? 0),
+            order.HardFaults + fresh.HardFaults + (protect?.HardFaults ?? 0) + (f?.HardFaults ?? 0), order.Errors + fresh.Errors + (protect?.Errors ?? 0) + (f?.Errors ?? 0), f?.LeftBytes ?? 0, f?.CapReached ?? false, !findNew,
+            memory.ResidentBytes(), boundaryCut, holes, order.Seconds + fresh.Seconds, order.Cpu + fresh.Cpu, (protect?.Seconds ?? 0) + (f?.Seconds ?? 0), (protect?.CpuSeconds ?? 0) + (f?.CpuSeconds ?? 0));
     }
 
     // 로그에 붙는 회차 설명: 집합 크기, 경계 때문에 뺀 양, 이번에 구멍으로 뺀 양, 두 패스의 시간과 CPU.

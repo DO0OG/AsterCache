@@ -176,6 +176,9 @@ public sealed class PrewarmEnv
     /// 범위를 주어진 순서로 만짐 (파일 캐시에 있는 것을 다시 읽어 대기 목록 맨 뒤로, 디스크 읽기가 섞이면 멈춤). 시험 기본값은 아무것도 안 함.
     public Func<IReadOnlyList<ReadOp>, CancellationToken, TouchResult> TouchRanges { get; init; } = (_, _) => new TouchResult(0, 0, 0, 0, TouchEnd.Completed);
 
+    /// 게임의 예열 목록·순위 목록이 바뀌었는지 가리는 입력 파일의 표지 (같으면 목록이 같음, 읽지 못하면 null → 매번 다시 계산). 시험 기본값은 항상 같음.
+    public Func<GameSettings, string?> ListStamp { get; init; } = _ => string.Empty;
+
     public static Func<GameSettings, bool> GameActiveOnDisk(IReadOnlyList<GameSettings> games,
         Func<string, string, bool> sameDisk, Func<GameSettings, bool> gameRunning) => OrbitRuntime.GameActiveOnDisk(games, sameDisk, gameRunning);
 
@@ -199,6 +202,7 @@ public sealed class PrewarmEnv
             StandbyLadderEnabled = standbyLadder ?? (() => false),
             Lists = MemoryListInfo.Query,
             TouchRanges = StandbyTouch.Run,
+            ListStamp = PrewarmRun.InputStamp,
             RankedRows = g => LoadRefillPlans.RankedRows(g),
             IsSparse = p => FileGuards.IsSparse(p),
             DeviceCalibrationEnabled = orbitRuntime is null ? null : () => orbitRuntime.Mode != "off",

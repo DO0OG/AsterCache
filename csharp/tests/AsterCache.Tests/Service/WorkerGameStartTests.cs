@@ -174,7 +174,7 @@ public sealed class WorkerGameStartTests : IAsyncDisposable
         _workerNow = now;
         var world = new YieldWorld();
         _ = world.Add(50, "big.exe", wsMib: 500);
-        _backgroundYield = new BackgroundYield(() => new AsterSettings(1000, [game]), world.Env(), _log);
+        _backgroundYield = world.Yielder(() => new AsterSettings(1000, [game]), _log);
         _ = await StartWorker(game);
 
         Start(game);
@@ -373,7 +373,7 @@ public sealed class WorkerGameStartTests : IAsyncDisposable
         _quickExit = new QuickExitGuard(new QuickExitEnv { Now = () => time }, _log);
         var world = new YieldWorld();
         _ = world.Add(50, "big.exe", wsMib: 500);
-        _backgroundYield = new BackgroundYield(() => new AsterSettings(1000, [game]), world.Env(), _log);
+        _backgroundYield = world.Yielder(() => new AsterSettings(1000, [game]), _log);
         var recorder = new PlayRecorder(dir.Combine("play_samples.json"), _log, _ => null, sampleInterval: TimeSpan.FromMilliseconds(5));
         _ = await StartWorker(recorder, game);
         Start(game);
@@ -451,7 +451,7 @@ public sealed class WorkerGameStartTests : IAsyncDisposable
         _quickExit = new QuickExitGuard(new QuickExitEnv { Now = () => time, Background = Inline }, _log);
         var world = new YieldWorld();
         _ = world.Add(50, "big.exe", wsMib: 500);
-        _backgroundYield = new BackgroundYield(() => new AsterSettings(1000, [game]), world.Env(), _log);
+        _backgroundYield = world.Yielder(() => new AsterSettings(1000, [game]), _log);
         Worker worker = await StartWorker(game);
         _watcher.OnStart!(new ProcessStart(1, game.ExeNames[0], Stopwatch.GetTimestamp()) { DetectedAt = time });
         await WaitUntil(() => world.Sets.Contains((50, 1)));
@@ -472,7 +472,7 @@ public sealed class WorkerGameStartTests : IAsyncDisposable
     }
 
     [Fact]
-    public async Task ExitConfirmedAfterAPollSeenRunIsHandledOnceAndALaterRestartAfterALauncherYieldDoesNotRestoreOrRedoIt()
+    public async Task ExitConfirmedAfterAPollSeenRunIsHandledOnceAndALaterRestartAfterAnEarlierYieldDoesNotRestoreOrRedoIt()
     {
         using var dir = new TempDir();
         string exe = $"aster-seen-{Guid.NewGuid():N}.exe";
@@ -485,7 +485,7 @@ public sealed class WorkerGameStartTests : IAsyncDisposable
         _quickExit = new QuickExitGuard(new QuickExitEnv { Now = () => time, Background = Inline }, _log);
         var world = new YieldWorld();
         _ = world.Add(50, "big.exe", wsMib: 500);
-        _backgroundYield = new BackgroundYield(() => new AsterSettings(1000, [game]), world.Env(), _log);
+        _backgroundYield = world.Yielder(() => new AsterSettings(1000, [game]), _log);
         Worker worker = await StartWorker(game);
         using var helper = Process.Start(new ProcessStartInfo(copy, "-n 60 127.0.0.1") { UseShellExecute = false, CreateNoWindow = true })!; // 게임이 아닌 시험용 대기 프로세스 (Poll 이 실제로 보게 함)
         try
@@ -512,7 +512,7 @@ public sealed class WorkerGameStartTests : IAsyncDisposable
         Assert.Single(_log.Lines, line => line == "Info: seen exit: exited");
         Assert.Contains((50, 5), world.Sets); // 정상 종료 처리가 양보를 복원함
 
-        _backgroundYield.Begin("trigger", settle: false); // 런처 같은 트리거가 먼저 양보를 엶
+        _backgroundYield.Begin("game started", settle: false); // 게임 exe 시작 전에 먼저 열린 세션
         int afterLauncher = world.Sets.Count;
         time = origin.AddHours(2);
         _workerNow = time;

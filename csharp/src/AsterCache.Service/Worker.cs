@@ -89,6 +89,11 @@ public sealed class Worker : BackgroundService
             prewarm.Footprint = playRecorder.Footprint; // 게임이 실행 뒤 잡는 메모리 (플레이 기록의 최근 중앙값)
         }
 
+        if (backgroundYield is not null && playRecorder is not null)
+        {
+            backgroundYield.Footprint = playRecorder.Footprint; // 배경 양보도 같은 값으로 게임이 가져갈 양을 가늠해 모자랄 때만 비움
+        }
+
         _log = log;
         _riot = riot ?? (prewarm is null ? null : new RiotPhaseWatcher(() => _settings, RiotWatchEnv.Create(prewarm), log)); // 설정 riot.champ_select_prewarm 이 꺼져 있으면 아무것도 부르지 않고 기다림
         DiskActivity.Log = log;
@@ -392,7 +397,7 @@ public sealed class Worker : BackgroundService
 
                 if (_backgroundYield is { } yielder && !backOff)
                 {
-                    _ = Task.Run(() => yielder.Begin("game started", settle: false), CancellationToken.None); // 비우기는 감시기 스레드를 막지 않게 따로, 기다리지 않음 (트리거 경로가 이미 했으면 60초 안이라 무시됨)
+                    _ = Task.Run(() => yielder.Begin("game started", settle: false), CancellationToken.None); // 비우기는 감시기 스레드를 막지 않게 따로, 기다리지 않음 (배경 양보를 시작하는 유일한 경로: 런처·트리거 프로그램만으로는 시작하지 않음)
                 }
 
                 if (_auto is not null)

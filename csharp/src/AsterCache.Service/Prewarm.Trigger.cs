@@ -45,8 +45,7 @@ public sealed partial class Prewarmer
             if (warming.Count > 0)
             {
                 waiting = BeginTriggerWait(warming);
-                PreemptForTrigger(warming); // 같은 디스크의 다른 게임의 배경 읽기는 이 트리거가 먼저: 멈추고 그 게임은 이어 읽기·재시도에 맡김
-                _env.YieldBackground("trigger", ct); // 예열이 가용 메모리를 처음 읽기 (RunBatch) 전에 배경 프로세스의 메모리를 양보시킴 (모두 건너뛸 것이면 비우지 않음)
+                PreemptForTrigger(warming); // 같은 디스크의 다른 게임의 배경 읽기는 이 트리거가 먼저: 멈추고 그 게임은 이어 읽기·재시도에 맡김 (런처만 떴을 때는 다른 프로그램을 양보시키지 않음: 배경 양보는 게임 실행 파일이 뜰 때 Worker 가 시작)
             }
 
             string why = $"trigger {start.ExeName}";
@@ -63,8 +62,8 @@ public sealed partial class Prewarmer
         return results;
     }
 
-    // 게임마다 트리거 예열이 건너뛸 사유, 실제로 읽을 게임이면 null (RunBatch 와 같은 건너뜀 판정, 게임마다 한 번씩만 판정해 표본 읽기를 겹치지 않음). 기록 없는 게임은 RunCold 의 확정 건너뜀 (드라이브 거부·게임 실행 중·쿨다운) 만 봄: 디스크 유휴는 양보 뒤에 바뀔 수 있어 진행으로 셈.
-    // 가용 메모리는 읽지 않음: 양보가 끝난 뒤 처음 읽어야 하고, 메모리 부족은 부분 예열이 읽으니 어차피 진행으로 셈.
+    // 게임마다 트리거 예열이 건너뛸 사유, 실제로 읽을 게임이면 null (RunBatch 와 같은 건너뜀 판정, 게임마다 한 번씩만 판정해 표본 읽기를 겹치지 않음). 기록 없는 게임은 RunCold 의 확정 건너뜀 (드라이브 거부·게임 실행 중·쿨다운) 만 봄: 디스크 유휴는 읽는 사이 바뀔 수 있어 진행으로 셈.
+    // 가용 메모리는 읽지 않음: 메모리 부족은 부분 예열이 읽으니 어차피 진행으로 셈.
     private IReadOnlyList<string?> TriggerSkipReasons(IReadOnlyList<GameSettings> games)
     {
         DateTimeOffset now = _now();

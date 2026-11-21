@@ -51,7 +51,7 @@ public sealed partial class BackgroundYield
         return found;
     }
 
-    // 원래 값이 보통인 대상만 낮춥니다: 메모리 우선순위는 1 보다 크면 매우 낮음 (1) 으로, I/O 우선순위는 보통 (2) 이면 낮음 (1) 으로, CPU 등급은 보통이면 보통보다 낮음으로 (I/O·CPU 설정이 꺼져 있으면 읽지도 않음). 매우 낮음·낮음이던 것과 높은 값은 건드리지 않습니다 (CPU 는 보통보다 높음·높음·실시간·보통보다 낮음·유휴를 모두 그대로 둠).
+    // 원래 값이 보통인 대상만 낮춥니다: 메모리 우선순위는 쓰고 있지 않은 프로세스에 한해 1 보다 크면 매우 낮음 (1) 으로, I/O 우선순위는 보통 (2) 이면 낮음 (1) 으로, CPU 등급은 보통이면 보통보다 낮음으로 (I/O·CPU 설정이 꺼져 있으면 읽지도 않음). 매우 낮음·낮음이던 것과 높은 값은 건드리지 않습니다 (CPU 는 보통보다 높음·높음·실시간·보통보다 낮음·유휴를 모두 그대로 둠).
     // 비정상 종료에도 되돌릴 수 있게 값을 바꾸기 전에 원래 값을 상태 파일에 먼저 적고, 적지 못하면 이번에는 낮추지 않습니다. 새로 낮춘 수를 (메모리, I/O, CPU) 로 돌려줍니다. 어느 쪽을 못 낮췄으면 그쪽 기록만 지웁니다.
     // 이미 낮은 대상은 낮춘 조상에게 물려받은 것이면 (Inherit) 조상의 원래 값으로 함께 기록합니다 (낮춘 수에는 세지 않음). inheritOnly 는 세션 끝에서 물려받은 것만 찾을 때입니다 (새로 낮추지 않음).
     private (int Memory, int Io, int Cpu) Lower(IEnumerable<YieldTarget> targets, IReadOnlyList<(int Pid, string Exe)> processes, bool inheritOnly = false)
@@ -74,7 +74,7 @@ public sealed partial class BackgroundYield
                 continue;
             }
 
-            int memory = env.MemoryPriority(t.Pid) is { } m && m > ProcessMemory.PriorityVeryLow ? m : NotLowered;
+            int memory = !_usage.IsInUse(t.Pid) && env.MemoryPriority(t.Pid) is { } m && m > ProcessMemory.PriorityVeryLow ? m : NotLowered; // 쓰고 있는 프로세스는 메모리 우선순위를 낮추지 않음 (I/O 는 낮춤: 게임 디스크 경합에서 실측된 효과)
             int io = ioOn && env.IoPriority(t.Pid) is { } d && d == ProcessMemory.IoPriorityNormal ? d : NotLowered;
             int cpu = cpuOn && env.CpuClass(t.Pid) is ProcessMemory.CpuClassNormal ? ProcessMemory.CpuClassNormal : NotLowered;
             if (memory != NotLowered || io != NotLowered || cpu != NotLowered)

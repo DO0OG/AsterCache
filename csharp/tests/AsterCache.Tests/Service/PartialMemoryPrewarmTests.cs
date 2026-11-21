@@ -28,7 +28,6 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     private int _snapshotChecks;
     private bool _gameRunning;
     private ProbeResult? _partialProbe; // 부분 예열 뒤 읽은 앞부분에서 고른 표본 (null 이면 ProbeReadMs 를 씀)
-    private int _yields;
 
     private List<int> Probed { get; } = [];
 
@@ -106,7 +105,6 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
                 return new ProbeResult(8, 8, 5.0); // 읽은 구간이 밀려나 차가움
             },
             ProbePartialReadMs = _partialProbe is { } front ? _ => front : null,
-            YieldBackground = (_, _) => _yields++,
         }, _log, StatusPath, () => _now);
     }
 
@@ -827,7 +825,7 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
     }
 
     [Fact]
-    public void ATriggerInsideTheCooldownAfterAMemoryPartialPrewarmReadsNothingAndDoesNotYield()
+    public void ATriggerInsideTheCooldownAfterAMemoryPartialPrewarmReadsNothing()
     {
         _avail = 6000 + Prewarmer.FinalShrinkHeadroomMib;
         _partialProbe = new ProbeResult(8, 0, 0.3);
@@ -840,7 +838,6 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
 
         Assert.StartsWith("cooldown", r.SkipReason, StringComparison.Ordinal); // 전체 목록 표본 (늘 식음) 이 아니라 읽은 앞부분 표본으로 판정
         Assert.Equal(calls, _streamer.Calls.Count);
-        Assert.Equal(0, _yields);
     }
 
     [Fact]

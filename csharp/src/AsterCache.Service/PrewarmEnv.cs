@@ -161,9 +161,6 @@ public sealed class PrewarmEnv
     /// 현재 스레드의 읽기 I/O 우선순위를 낮음 (true) 또는 보통 (false) 으로 바꿈, 바꾸지 못하면 false. 핫 집합 스트림이 다른 읽기에 양보할 때 읽는 스레드에서 부릅니다. 시험 기본값은 항상 성공 (실제 호출 없음).
     public Func<bool, bool> SetReadIoLow { get; init; } = _ => true;
 
-    /// 트리거로 예열이 실제로 시작되기 직전 (가용 메모리 첫 읽기보다 앞) 에 부름: 배경 프로세스의 메모리 양보를 시작하고 가용 메모리가 가라앉을 때까지 기다립니다 (이유, 취소). 기본은 아무것도 안 함.
-    public Action<string, CancellationToken> YieldBackground { get; init; } = (_, _) => { };
-
     /// 설정 memory.standby_ladder (예열한 캐시를 디스크 읽기 없이 다시 만져 순서를 정하고 유지, Solar) 가 켜져 있는가. 시험 기본값은 꺼짐 (실제 호출 없음).
     public Func<bool> StandbyLadderEnabled { get; init; } = () => false;
 
@@ -185,7 +182,7 @@ public sealed class PrewarmEnv
     public static Func<GameSettings, bool> GameActiveOnDisk(IReadOnlyList<GameSettings> games,
         Func<string, string, bool> sameDisk, Func<GameSettings, bool> gameRunning) => OrbitRuntime.GameActiveOnDisk(games, sameDisk, gameRunning);
 
-    public static PrewarmEnv Create(OrbitCalibration? orbitCalibration = null, OrbitRuntime? orbitRuntime = null, BackgroundYield? backgroundYield = null, Func<bool>? standbyLadder = null)
+    public static PrewarmEnv Create(OrbitCalibration? orbitCalibration = null, OrbitRuntime? orbitRuntime = null, Func<bool>? standbyLadder = null)
     {
         Func<GameSettings, bool> gameRunning = DispatchEnv.IsGameRunning;
         Func<string, string, bool> sameDisk = VolumeDisks.SameDisk;
@@ -201,7 +198,6 @@ public sealed class PrewarmEnv
             },
             SameDisk = sameDisk,
             SetReadIoLow = low => ThreadIoPriority.TrySet(low ? IoPriority.Low : IoPriority.Normal),
-            YieldBackground = backgroundYield is null ? (_, _) => { } : (why, ct) => backgroundYield.Begin(why, settle: true, ct),
             StandbyLadderEnabled = standbyLadder ?? (() => false),
             Lists = MemoryListInfo.Query,
             TouchRanges = StandbyTouch.Run,

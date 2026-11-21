@@ -29,7 +29,7 @@ public sealed partial class Prewarmer
         return p is { Samples: > 0 } ? (p.Samples - p.Slow) * 100 / p.Samples : null;
     }
 
-    // 기록 없는 게임의 확정 건너뜀 사유 (게임 실행 중 → 쿨다운). RunCold 와 트리거의 배경 메모리 양보 판정이 같이 씀 (디스크 유휴·메모리는 읽는 사이 바뀌므로 제외).
+    // 기록 없는 게임의 확정 건너뜀 사유 (게임 실행 중 → 쿨다운). RunCold 와 트리거의 건너뜀 판정이 같이 씀 (디스크 유휴·메모리는 읽는 사이 바뀌므로 제외).
     private string? ColdFixedSkip(GameSettings game, DateTimeOffset now)
     {
         if (DriveHasRunningGame(game))

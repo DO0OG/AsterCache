@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json.Nodes;
+using AsterCache.Core.Logging;
 using AsterCache.Core.Settings;
 using AsterCache.Service;
 using AsterCache.Tests.Windows;
@@ -24,6 +25,8 @@ internal sealed class YieldWorld
         public int Io = 2; // I/O 우선순위 (보통)
         public int Cpu = 0x20; // CPU 우선순위 등급 (보통)
         public int Parent;
+        public long CpuTicks; // CPU 시간 누계 (100 ns)
+        public long IoBytes; // 읽기 + 쓰기 전송 바이트 누계
     }
 
     public Dictionary<int, Proc> Procs { get; } = [];
@@ -78,6 +81,9 @@ internal sealed class YieldWorld
 
     public bool WriteFails { get; set; }
 
+    /// 프로세스별 CPU·I/O 누계 조회가 실패함.
+    public bool UsageFails { get; set; }
+
     public IReadOnlyList<string> KnownFolders { get; set; } = [];
 
     public int SelfPid { get; set; } = -1;
@@ -89,6 +95,14 @@ internal sealed class YieldWorld
     public IEnumerable<int> Touched => Described.Concat(Trimmed).Concat(Sets.Select(s => s.Pid)).Concat(PriorityReads).Concat(IoSets.Select(s => s.Pid)).Concat(IoReads).Concat(CpuSets.Select(s => s.Pid)).Concat(CpuReads).Distinct();
 
     public IReadOnlyList<(int Pid, string Exe)> Snapshot() => [.. Procs.Select(p => (p.Key, p.Value.Exe))];
+
+    /// 서비스가 한동안 돌아 1분 전의 쉬는 상태 표본이 쌓여 있는 배경 양보 (그 뒤 CpuTicks·IoBytes 를 늘리면 쓰고 있는 프로세스).
+    public BackgroundYield Yielder(Func<AsterSettings> settings, ILog log)
+    {
+        var yielder = new BackgroundYield(settings, Env(), log);
+        yielder.SampleUsage(Now - TimeSpan.FromMinutes(1));
+        return yielder;
+    }
 
     public BackgroundYieldEnv Env() => new()
     {
@@ -166,6 +180,17 @@ internal sealed class YieldWorld
         AvailableMib = () => Avail(),
         Lists = () => ListsNow,
         PhysicalBytes = () => PhysicalRam,
+        Usage = list =>
+        {
+            list.Clear();
+            if (UsageFails)
+            {
+                return false;
+            }
+
+            list.AddRange(Procs.Select(p => new ProcessUsage(p.Key, p.Value.Exe, p.Value.CpuTicks, 0, p.Value.IoBytes)));
+            return true;
+        },
         Now = () => Now,
         BootTime = () => Boot,
         Delay = (t, _) => Now += t,
@@ -184,11 +209,11 @@ public sealed class BackgroundYieldTests
     private const long Mib = YieldWorld.Mib;
     private readonly ListLog _log = new();
     private readonly YieldWorld _w = new();
-    private AsterSettings _settings = new(1000, [Cod()]);
+    private AsterSettings _settings = new AsterSettings(1000, [Cod()]) with { Memory = new MemorySettings(BackgroundCpuPriority: true) }; // CPU 등급 낮추기는 기본이 꺼짐이라 그쪽을 시험하는 쪽에서 켬
 
     private static GameSettings Cod() => Games.Make("cod", "cod.exe") with { Prewarm = PrewarmSettings.Default with { TriggerExes = ["codlauncher.exe"] } };
 
-    private BackgroundYield Make() => new(() => _settings, _w.Env(), _log);
+    private BackgroundYield Make() => _w.Yielder(() => _settings, _log);
 
     private bool Logged(string text) => _log.Lines.Any(l => l.Contains(text, StringComparison.Ordinal));
 
@@ -252,7 +277,7 @@ public sealed class BackgroundYieldTests
 
         Assert.Equal([(50, 1), (51, 1)], _w.Sets);
         Assert.Equal([50, 52], _w.Trimmed); // 32 MiB 이상만
-        Assert.True(Logged("background yield (trigger): trimmed 2 processes (900 MiB working set), memory priority lowered for 2, I/O priority lowered for 3, CPU priority lowered for 0, available 10000 MiB"));
+        Assert.True(Logged("background yield (trigger): trimmed 2 processes (900 MiB working set, shortfall 6384 MiB), memory priority lowered for 2, I/O priority lowered for 3, CPU priority lowered for 0, 0 in-use processes spared, available 10000 MiB, expected game use 8192 MiB, floor 8192 MiB"));
 
         _w.Now += TimeSpan.FromSeconds(30);
         _ = _w.Add(53, "late.exe", wsMib: 300);
@@ -365,42 +390,71 @@ public sealed class BackgroundYieldTests
     }
 
     [Fact]
-    public void StartDoesNotTrimWhenHeadroomReachesTheTargetButStillLowersPriorityAndSkipsTheSettleWait()
+    public void StartDoesNotTrimWhenAvailableMemoryCoversTheGameAndTheFloorButStillLowersPriorityAndSkipsTheSettleWait()
     {
         _ = _w.Add(50, "big.exe", wsMib: 500);
-        _w.ListsNow = Lists(8192); // 물리 RAM 32 GiB 의 1/4 = 8 GiB
+        _w.Avail = () => 16384; // 하한 8 GiB (물리 RAM 32 GiB 의 1/4) + 게임 예상 8 GiB
 
-        Make().Begin("trigger", settle: true);
+        Make().Begin("game started", settle: true);
 
         Assert.Empty(_w.Trimmed);
         Assert.Equal([(50, 1)], _w.Sets);
         Assert.Equal(_w.Start, _w.Now); // 가라앉기 대기 없음
-        Assert.True(Logged("background yield (trigger): memory priority lowered for 1, I/O priority lowered for 1, CPU priority lowered for 0, no trim needed (headroom 8192 MiB, available 10000 MiB)"));
+        Assert.True(Logged("background yield (game started): memory priority lowered for 1, I/O priority lowered for 1, CPU priority lowered for 0, 0 in-use processes spared, no trim needed (available 16384 MiB, expected game use 8192 MiB, floor 8192 MiB)"));
     }
 
     [Fact]
-    public void StartTrimsWhenHeadroomIsBelowTheTargetAndTheFloorIsFourGibOnSmallMachines()
+    public void StartTrimsOnlyTheShortfallAndOnlyWhenTheFloorIsMissedTheFloorIsFourGibOnSmallMachines()
     {
         _ = _w.Add(50, "big.exe", wsMib: 500);
-        _w.ListsNow = Lists(8191);
-        Make().Begin("trigger", settle: false);
+        _w.Avail = () => 16383;
+        Make().Begin("game started", settle: false);
         Assert.Equal([50], _w.Trimmed);
-        Assert.True(Logged("trimmed 1 processes (500 MiB working set), memory priority lowered for 1, I/O priority lowered for 1, CPU priority lowered for 0, available 10000 MiB, headroom 8191 MiB"));
+        Assert.True(Logged("trimmed 1 processes (500 MiB working set, shortfall 1 MiB), memory priority lowered for 1, I/O priority lowered for 1, CPU priority lowered for 0, 0 in-use processes spared, available 16383 MiB, expected game use 8192 MiB, floor 8192 MiB"));
 
         _w.Trimmed.Clear();
         _w.Procs[50].Ws = 500 * Mib;
         _w.Now += TimeSpan.FromMinutes(5);
-        (_w.PhysicalRam, _w.ListsNow) = (8L * 1024 * Mib, Lists(4096)); // RAM/4 = 2 GiB 라 하한 4 GiB 가 목표
-        Make().Begin("trigger", settle: false);
+        (_w.PhysicalRam, _w.Avail) = (8L * 1024 * Mib, () => 12288); // RAM/4 = 2 GiB 라 하한 4 GiB: 4 GiB + 게임 8 GiB
+        Make().Begin("game started", settle: false);
         Assert.Empty(_w.Trimmed);
-        Assert.True(Logged("no trim needed (headroom 4096 MiB"));
+        Assert.True(Logged("no trim needed (available 12288 MiB, expected game use 8192 MiB, floor 4096 MiB)"));
+    }
+
+    [Fact]
+    public void StartTrimsOnlyAsMuchAsIsMissingAndTheLargestIdleProcessesFirst()
+    {
+        _ = _w.Add(50, "mid.exe", wsMib: 300);
+        _ = _w.Add(51, "big.exe", wsMib: 500);
+        _ = _w.Add(52, "small.exe", wsMib: 200);
+        _w.Avail = () => 16384 - 600; // 600 MiB 모자람
+
+        Make().Begin("game started", settle: false);
+
+        Assert.Equal([51, 50], _w.Trimmed); // 500 + 300 >= 600 에서 멈춤: 작은 것은 비우지 않음
+        Assert.True(Logged("shortfall 600 MiB"));
+    }
+
+    [Fact]
+    public void ThePlayRecordFootprintReplacesTheDefaultGameEstimate()
+    {
+        _ = _w.Add(50, "big.exe", wsMib: 500);
+        _ = _w.Add(10, "cod.exe");
+        _w.Avail = () => 16384 - 3000; // 기본 추정 (8 GiB) 이면 3000 MiB 모자라지만 기록 (3 GiB) 이면 충분
+        BackgroundYield y = Make();
+        y.Footprint = name => name == "cod" ? ((long Mib, int Plays)?)(3072, 3) : null;
+
+        y.Begin("game started", settle: false);
+
+        Assert.Empty(_w.Trimmed);
+        Assert.True(Logged("no trim needed (available 13384 MiB, expected game use 3072 MiB, floor 8192 MiB)"));
     }
 
     [Fact]
     public void ASecondBeginRightAfterAStartWithoutATrimDoesNotWaitToSettleButOneAfterATrimDoes()
     {
         _ = _w.Add(50, "big.exe", wsMib: 500);
-        _w.ListsNow = Lists(8192);
+        _w.Avail = () => 16384;
         BackgroundYield y = Make();
         y.Begin("trigger", settle: false);
         _w.Now += TimeSpan.FromSeconds(1);
@@ -410,7 +464,7 @@ public sealed class BackgroundYieldTests
         Assert.Equal(_w.Start + TimeSpan.FromSeconds(1), _w.Now); // 비운 결과가 없으니 가라앉기를 기다리지 않음
 
         _w.Now += TimeSpan.FromMinutes(5);
-        _w.ListsNow = Lists(1000);
+        _w.Avail = () => 1000;
         y.End();
         y.Begin("trigger", settle: false);
         DateTimeOffset afterTrim = _w.Now += TimeSpan.FromSeconds(1);
@@ -430,7 +484,7 @@ public sealed class BackgroundYieldTests
         y.Begin("trigger", settle: false);
 
         Assert.Equal([50], _w.Trimmed);
-        Assert.True(Logged("trimmed 1 processes (500 MiB working set), memory priority lowered for 1, I/O priority lowered for 1, CPU priority lowered for 1, available 10000 MiB"));
+        Assert.True(Logged("trimmed 1 processes (500 MiB working set, shortfall 6384 MiB), memory priority lowered for 1, I/O priority lowered for 1, CPU priority lowered for 1, 0 in-use processes spared, available 10000 MiB"));
         TickAt(y, 2, 500, null);
         TickAt(y, 4, 500, null);
         Assert.Single(_w.Trimmed); // 조회가 안 되면 다시 비우지 않음
@@ -449,7 +503,7 @@ public sealed class BackgroundYieldTests
 
         TickAt(y, 6, 100, Lists(1000, 10_000 + 1022 + 512));
         Assert.Equal([50, 50], _w.Trimmed);
-        Assert.True(Logged("background yield: trimmed again 1 processes (100 MiB working set), cache repurposed 512 MiB in 120 s, 0 active processes skipped"));
+        Assert.True(Logged("background yield: trimmed again 1 processes (100 MiB working set, shortfall 6384 MiB), cache repurposed 512 MiB in 120 s, 0 active processes skipped, 0 in-use processes spared, available 10000 MiB, expected game use 8192 MiB, floor 8192 MiB"));
     }
 
     [Fact]
@@ -487,7 +541,7 @@ public sealed class BackgroundYieldTests
 
         TickAt(y, 2, 250, Lists(1000, 600)); // 500 MiB 의 절반을 되찾음
         Assert.Single(_w.Trimmed);
-        Assert.True(Logged("trimmed again 0 processes (0 MiB working set), cache repurposed 600 MiB in 120 s, 1 active processes skipped"));
+        Assert.True(Logged("trimmed again 0 processes (0 MiB working set, shortfall 6384 MiB), cache repurposed 600 MiB in 120 s, 1 active processes skipped"));
 
         TickAt(y, 4, 40, Lists(1000, 1200)); // 다시 줄었어도 이 세션에서는 대상이 아님
         Assert.Single(_w.Trimmed);
@@ -509,8 +563,8 @@ public sealed class BackgroundYieldTests
         TickAt(y, 2, 100, Lists(1000, 0)); // 51 은 이번 세션에 처음 보임 (비운 적 없음)
         TickAt(y, 4, 100, Lists(1000, 600));
 
-        Assert.Equal([50, 50, 51], _w.Trimmed);
-        Assert.True(Logged("trimmed again 2 processes (400 MiB working set)"));
+        Assert.Equal([50, 51, 50], _w.Trimmed); // 다시 비우기는 큰 것부터 (51 이 300 MiB, 50 이 100 MiB)
+        Assert.True(Logged("trimmed again 2 processes (400 MiB working set"));
     }
 
     [Fact]
@@ -518,11 +572,10 @@ public sealed class BackgroundYieldTests
     {
         Assert.Equal(4096L << 20, YieldPressure.TargetHeadroomBytes(8L << 30));
         Assert.Equal(8L << 30, YieldPressure.TargetHeadroomBytes(32L << 30));
-        Assert.True(YieldPressure.NeedsTrim(null, 32L << 30));
-        Assert.True(YieldPressure.NeedsTrim(Lists(8191), 32L << 30));
-        Assert.False(YieldPressure.NeedsTrim(Lists(8192), 32L << 30));
-        Assert.False(YieldPressure.NeedsTrim(Lists(4096), 8L << 30)); // 하한 4 GiB 가 목표
-        Assert.True(YieldPressure.NeedsTrim(Lists(4095), 8L << 30));
+        Assert.Equal(0, YieldPressure.ShortfallBytes(16L << 30, 8L << 30, 8L << 30)); // 가용 16 GiB - 게임 8 GiB = 하한: 모자라지 않음
+        Assert.Equal(1L << 30, YieldPressure.ShortfallBytes(15L << 30, 8L << 30, 8L << 30)); // 모자라는 만큼만
+        Assert.Equal(0, YieldPressure.ShortfallBytes(40L << 30, 8L << 30, 8L << 30)); // 남아도 음수가 되지 않음
+        Assert.Equal(4L << 30, YieldPressure.ShortfallBytes(8L << 30, 0, 12L << 30)); // 게임이 이미 가져갔으면 하한만 봄
         Assert.False(YieldPressure.ShouldRetrim(TimeSpan.FromSeconds(119), 600L << 20));
         Assert.False(YieldPressure.ShouldRetrim(TimeSpan.FromMinutes(2), (512L << 20) - 1));
         Assert.False(YieldPressure.ShouldRetrim(TimeSpan.FromMinutes(2), null));
@@ -698,7 +751,7 @@ public sealed class BackgroundYieldTests
     {
         BackgroundYield y = RunningYield();
         _ = _w.IoSetFails.Add(50);
-        _settings = _settings with { Memory = new MemorySettings(true, true, false) };
+        _settings = _settings with { Memory = new MemorySettings(true, true, false, true) };
 
         MaintainAt(y, 1);
         MaintainAt(y, 2);
@@ -929,7 +982,7 @@ public sealed class BackgroundYieldTests
     public void WithTheIoSettingOffOnlyMemoryPriorityIsLoweredAndNothingIoIsReadOrWritten()
     {
         _ = _w.Add(50, "big.exe", wsMib: 500);
-        _settings = _settings with { Memory = new MemorySettings(true, true, false) };
+        _settings = _settings with { Memory = new MemorySettings(true, true, false, true) };
 
         Make().Begin("trigger", settle: false);
 
@@ -945,7 +998,7 @@ public sealed class BackgroundYieldTests
     {
         BackgroundYield y = RunningYield();
         _ = Spawn(60, "kid.exe", 50, 20); // 마지막 점검 뒤에 뜬 자식도 함께 되돌림
-        _settings = _settings with { Memory = new MemorySettings(true, true, false) };
+        _settings = _settings with { Memory = new MemorySettings(true, true, false, true) };
 
         MaintainAt(y, 1);
 
@@ -1406,7 +1459,7 @@ public sealed class BackgroundYieldTests
     }
 
     [Fact]
-    public void SettingDefaultsToOnIsReadAndRejectsBadShapesAndUnknownKeys()
+    public void SettingDefaultsAreReadAndBadShapesAndUnknownKeysAreRejected()
     {
         Assert.True(ParseMemory(null).BackgroundYield);
         Assert.True(ParseMemory(new JsonObject()).BackgroundYield);
@@ -1417,7 +1470,8 @@ public sealed class BackgroundYieldTests
         Assert.False(ParseMemory(new JsonObject { ["background_io_priority"] = false }).BackgroundIoPriority);
         Assert.True(ParseMemory(new JsonObject { ["background_io_priority"] = false }).BackgroundYield);
         Assert.Throws<SettingsException>(() => ParseMemory(new JsonObject { ["background_io_priority"] = 1 }));
-        Assert.True(ParseMemory(null).BackgroundCpuPriority);
+        Assert.False(ParseMemory(null).BackgroundCpuPriority); // 기본 꺼짐
+        Assert.True(ParseMemory(new JsonObject { ["background_cpu_priority"] = true }).BackgroundCpuPriority);
         Assert.False(ParseMemory(new JsonObject { ["background_cpu_priority"] = false }).BackgroundCpuPriority);
         Assert.True(ParseMemory(new JsonObject { ["background_cpu_priority"] = false }).BackgroundIoPriority);
         Assert.Throws<SettingsException>(() => ParseMemory(new JsonObject { ["background_cpu_priority"] = 1 }));
@@ -1488,30 +1542,31 @@ public sealed class BackgroundYieldTests
     }
 
     [Fact]
-    public void TriggerPrewarmYieldsBeforeTheFirstAvailableMemoryReadAndOnlyWhenAWarmupWillRun()
+    public async Task ALauncherStartDoesNotBeginTheYieldAndTheGameExeStartDoes()
     {
-        var events = new List<string>();
-        var prewarm = new Prewarmer([Cod()], new FakeStreamer(), new PrewarmEnv
+        _ = _w.Add(50, "big.exe", wsMib: 500);
+        _settings = new AsterSettings(1000, [Cod()]);
+        var watcher = new CapturingWatcher();
+        var worker = new Worker(_settings, _log, watcher, null, new FakeStreamer(), new ReapplyChecker(ReapplyTests.NoIoEnv(), _log), backgroundYield: Make());
+        await worker.StartAsync(CancellationToken.None);
+        try
         {
-            AvailableRamMib = () =>
-            {
-                events.Add("avail");
-                return 16000;
-            },
-            GameRunning = _ => false,
-            ZoneBytes = _ => 1610L << 20,
-            TraceExists = _ => true,
-            YieldBackground = (why, _) => events.Add("yield:" + why),
-        }, _log, null);
+            await WaitUntil(() => watcher.OnStart is not null);
 
-        Assert.Empty(prewarm.OnProcessStart(new ProcessStart(1, "notepad.exe", 0)));
-        Assert.DoesNotContain("yield:trigger", events); // 트리거가 아니면 예열이 시작되지 않으므로 양보도 없음
-        events.Clear();
+            watcher.OnStart!(new ProcessStart(1, "codlauncher.exe", Stopwatch.GetTimestamp())); // 트리거 프로그램 (게임 실행 파일이 아님)
+            await Task.Delay(300); // 비동기로 도는 양보가 불리지 않았음을 확인할 틈
+            Assert.Empty(_w.Sets);
+            Assert.Empty(_w.Trimmed);
+            Assert.Equal(0, _w.ProcessListCalls);
+            Assert.Null(_w.State);
 
-        _ = prewarm.OnProcessStart(new ProcessStart(2, "codlauncher.exe", 0, "poll"));
-
-        Assert.Equal("yield:trigger", events[0]);
-        Assert.Contains("avail", events);
+            watcher.OnStart!(new ProcessStart(2, "cod.exe", Stopwatch.GetTimestamp()));
+            await WaitUntil(() => _w.Sets.Contains((50, 1)));
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
     }
 
     [Fact]
@@ -1695,12 +1750,170 @@ public sealed class BackgroundYieldTests
         (_w.Procs[80].Priority, _w.Procs[80].Ws) = (5, 500 * Mib); // 첫 단계가 낮추고 비운 것을 되돌려 두 번째 단계의 단언이 규칙을 실제로 확인하게
         _w.Now += TimeSpan.FromMinutes(5);
         _w.KnownFolders = [@"C:\Program Files (x86)\Overwatch"];
-        var second = new BackgroundYield(() => _settings, _w.Env(), _log);
+        BackgroundYield second = _w.Yielder(() => _settings, _log);
         second.Begin("trigger", settle: false);
 
         Assert.Empty(_w.Trimmed);
         Assert.Empty(_w.Sets);
         Assert.Contains(80, _w.Described);
+    }
+
+    // 쓰고 있는 프로세스 판정: CPU 와 읽기·쓰기 전송 누계를 1분 전 표본 (Make) 과 비교합니다. 만든 세 프로세스: 50 은 CPU, 51 은 I/O, 52 는 쉼.
+    private BackgroundYield SessionWithBusyProcesses()
+    {
+        _ = _w.Add(50, "cpu.exe", wsMib: 500);
+        _ = _w.Add(51, "io.exe", wsMib: 400);
+        _ = _w.Add(52, "idle.exe", wsMib: 300);
+        _ = _w.Add(10, "cod.exe");
+        BackgroundYield y = Make();
+        _w.Procs[50].CpuTicks = 60 * Second / 10; // 한 코어의 10%
+        _w.Procs[51].IoBytes = 60L * 64 * 1024; // 초당 64 KiB
+        return y;
+    }
+
+    [Fact]
+    public void ProcessesInUseAreNeitherTrimmedNorGivenALowerMemoryPriorityButTheirIoPriorityIsStillLowered()
+    {
+        BackgroundYield y = SessionWithBusyProcesses();
+
+        y.Begin("game started", settle: false);
+
+        Assert.Equal([52], _w.Trimmed); // 처음 비우기 전에도 가림
+        Assert.Equal([(52, 1)], _w.Sets);
+        Assert.Equal([5, 5, 1], new[] { 50, 51, 52 }.Select(pid => _w.Procs[pid].Priority));
+        Assert.Equal([50, 51, 52], _w.IoSets.Select(s => s.Pid).Order()); // I/O 우선순위 낮추기는 그대로
+        Assert.True(Logged("memory priority lowered for 1, I/O priority lowered for 3, CPU priority lowered for 3, 2 in-use processes spared"));
+    }
+
+    [Fact]
+    public void ABusyProcessStartedAfterTheSessionIsAlsoSparedAtTheNextMaintenanceAndTheRetrimSkipsIt()
+    {
+        BackgroundYield y = RunningSession(Lists(1000, 0));
+        _ = _w.Add(60, "late-busy.exe", wsMib: 400);
+        _ = _w.Add(61, "late-idle.exe", wsMib: 300);
+        _w.Now = _w.Start + TimeSpan.FromMinutes(1);
+        y.Tick(_w.Snapshot()); // 표본: 둘 다 쉼
+        _w.Procs[60].CpuTicks = 60 * Second / 10;
+
+        TickAt(y, 2, 100, Lists(1000, 600));
+
+        Assert.DoesNotContain(_w.Sets, s => s.Pid == 60);
+        Assert.Contains(_w.Sets, s => s.Pid == 61);
+        Assert.DoesNotContain(60, _w.Trimmed);
+        Assert.Contains(61, _w.Trimmed);
+        Assert.True(Logged("1 in-use processes spared"));
+    }
+
+    [Fact]
+    public void WithoutAUsageReadingNothingIsTrimmedOrLoweredInMemoryPriority()
+    {
+        _ = _w.Add(50, "big.exe", wsMib: 500);
+        _w.UsageFails = true;
+
+        Make().Begin("game started", settle: false);
+
+        Assert.Empty(_w.Trimmed);
+        Assert.Empty(_w.Sets);
+        Assert.Equal([(50, 1)], _w.IoSets); // I/O 우선순위는 사용량과 무관하게 그대로
+    }
+
+    [Fact]
+    public void WithoutEarlierSamplesEveryProcessCountsAsInUseUntilTicksHaveBuiltUpTheHistory()
+    {
+        _ = _w.Add(50, "big.exe", wsMib: 500);
+        var y = new BackgroundYield(() => _settings, _w.Env(), _log); // 서비스가 막 시작해 표본이 없음
+
+        y.Begin("game started", settle: false);
+
+        Assert.Empty(_w.Trimmed);
+        Assert.Empty(_w.Sets);
+        Assert.True(Logged("1 in-use processes spared"));
+    }
+
+    [Fact]
+    public void TicksKeepSamplingWithoutASessionSoTheFirstTrimAlreadyKnowsWhoIsBusy()
+    {
+        _ = _w.Add(50, "busy.exe", wsMib: 500);
+        _ = _w.Add(51, "idle.exe", wsMib: 400);
+        var y = new BackgroundYield(() => _settings, _w.Env(), _log);
+        y.Tick([]);
+        _w.Now += TimeSpan.FromSeconds(30);
+        _w.Procs[50].CpuTicks += 30 * Second / 10;
+        y.Tick([]);
+        _w.Now += TimeSpan.FromSeconds(30);
+        _w.Procs[50].CpuTicks += 30 * Second / 10;
+
+        y.Begin("game started", settle: false);
+
+        Assert.Equal([51], _w.Trimmed);
+        Assert.Equal([(51, 1)], _w.Sets);
+    }
+
+    [Fact]
+    public void TheRetrimIsSkippedWhileAvailableMemoryStillCoversTheGameAndTheFloor()
+    {
+        BackgroundYield y = RunningSession(Lists(1000, 0));
+        _w.Avail = () => 16384;
+        Assert.Single(_w.Trimmed);
+
+        TickAt(y, 2, 100, Lists(1000, 600)); // 캐시는 재사용됐지만 가용 메모리가 충분
+
+        Assert.Single(_w.Trimmed);
+        Assert.True(Logged("background yield: not trimmed again, memory is sufficient (available 16384 MiB, expected game use 8192 MiB, floor 8192 MiB), cache repurposed 600 MiB in 120 s"));
+    }
+
+    [Fact]
+    public void TheRetrimCountsTheMemoryTheGameAlreadyTookOutOfWhatItStillNeeds()
+    {
+        _ = _w.Add(50, "big.exe", wsMib: 500);
+        _ = _w.Add(10, "cod.exe");
+        _w.Avail = () => 16384;
+        _w.ListsNow = Lists(1000, 0);
+        BackgroundYield y = Make();
+        y.Begin("game started", settle: false);
+        Assert.Empty(_w.Trimmed);
+        _w.Avail = () => 16384 - 8192 + 100; // 게임이 8092 MiB 를 이미 가져가 남은 예상은 100 MiB: 가용 8292 MiB 가 하한 8192 MiB + 100 MiB 를 채움
+
+        _w.Now = _w.Start + TimeSpan.FromMinutes(2);
+        _w.Procs[50].Ws = 500 * Mib;
+        _w.ListsNow = Lists(1000, 600);
+        y.Tick(_w.Snapshot());
+
+        Assert.Empty(_w.Trimmed);
+        Assert.True(Logged("not trimmed again, memory is sufficient (available 8292 MiB"));
+    }
+
+    [Fact]
+    public void CpuPriorityIsOffByDefaultAndNeitherReadNorWrittenThen()
+    {
+        _settings = _settings with { Memory = MemorySettings.Default };
+        _ = _w.Add(50, "normal.exe");
+        _ = _w.Add(10, "cod.exe");
+
+        Make().Begin("game started", settle: false);
+
+        Assert.Empty(_w.CpuReads);
+        Assert.Empty(_w.CpuSets);
+        Assert.Equal([(50, 1)], _w.Sets);
+        Assert.Equal([(50, 1)], _w.IoSets);
+    }
+
+    [Fact]
+    public void ARestartInsideASessionThatAlreadyLoweredProcessesStillLowersTheirCpuClassOnceTheSettingIsOnAtTheNextTick()
+    {
+        _settings = _settings with { Memory = new MemorySettings(true, true, true, false) };
+        _ = _w.Add(50, "normal.exe");
+        _ = _w.Add(10, "cod.exe");
+        BackgroundYield y = Make();
+        y.Begin("game started", settle: false);
+        Assert.Empty(_w.CpuSets);
+        _settings = _settings with { Memory = new MemorySettings(true, true, true, true) };
+        _w.Now += TimeSpan.FromSeconds(61);
+
+        y.Begin("game started", settle: false); // 같은 세션 안의 두 번째 시작: 이미 낮춘 대상은 다시 보지 않음
+        y.Tick(_w.Snapshot());
+
+        Assert.Equal([(50, 0x4000)], _w.CpuSets);
     }
 
     private static async Task WaitUntil(Func<bool> condition)
@@ -1729,6 +1942,78 @@ public sealed class BackgroundYieldTests
                 // 종료
             }
         }
+    }
+}
+
+/// 쓰고 있는 프로세스 판정의 값 규칙 (프로세스·시계 없이).
+public sealed class UsageWindowTests
+{
+    private static readonly DateTimeOffset T0 = DateTimeOffset.UnixEpoch;
+
+    private static ProcessUsage U(int pid, long cpuTicks, long ioBytes = 0) => new(pid, "p.exe", cpuTicks, 0, ioBytes);
+
+    private static UsageWindow Two(ProcessUsage before, ProcessUsage after, int seconds = 60)
+    {
+        var w = new UsageWindow();
+        w.Add(T0, [before]);
+        w.Add(T0 + TimeSpan.FromSeconds(seconds), [after]);
+        return w;
+    }
+
+    [Fact]
+    public void WithoutTwoSamplesFarEnoughApartItCannotJudgeAndCountsAsInUse()
+    {
+        var w = new UsageWindow();
+        Assert.True(w.IsInUse(1));
+        w.Add(T0, [U(1, 0)]);
+        Assert.True(w.IsInUse(1));
+        w.Add(T0 + TimeSpan.FromSeconds(9), [U(1, 0)]);
+        Assert.True(w.IsInUse(1)); // 간격 10초 미만
+        w.Add(T0 + TimeSpan.FromSeconds(10), [U(1, 0)]);
+        Assert.False(w.IsInUse(1));
+    }
+
+    [Fact]
+    public void CpuAtHalfAPercentOfACoreOrMoreIsInUse()
+    {
+        Assert.True(Two(U(1, 0), U(1, 3_000_000)).IsInUse(1)); // 60초에 0.3초 = 0.5%
+        Assert.False(Two(U(1, 0), U(1, 2_999_999)).IsInUse(1));
+    }
+
+    [Fact]
+    public void ReadPlusWriteTransferAt32KibPerSecondOrMoreIsInUse()
+    {
+        Assert.True(Two(U(1, 0, 0), U(1, 0, 60L * 32 * 1024)).IsInUse(1));
+        Assert.False(Two(U(1, 0, 0), U(1, 0, (60L * 32 * 1024) - 1)).IsInUse(1));
+    }
+
+    [Fact]
+    public void AProcessThatIsNotInTheBaselineIsJudgedByItsWholeTotalAndOneMissingFromTheLatestSampleIsInUse()
+    {
+        var w = new UsageWindow();
+        w.Add(T0, [U(9, 0)]);
+        w.Add(T0 + TimeSpan.FromSeconds(60), [U(1, 3_000_000), U(2, 100)]);
+        Assert.True(w.IsInUse(1)); // 구간 안에 떠서 누계 전체가 사용량
+        Assert.False(w.IsInUse(2));
+        Assert.True(w.IsInUse(3)); // 최근 표본에 없음: 모름
+    }
+
+    [Fact]
+    public void AReusedPidWhoseTotalsAreSmallerThanTheBaselineIsJudgedByItsOwnTotals()
+    {
+        Assert.False(Two(U(1, 900_000_000, 900_000_000), U(1, 100, 100)).IsInUse(1));
+    }
+
+    [Fact]
+    public void TheBaselineIsTheNewestSampleAtLeastOneWindowOldSoAnOldBurstDropsOut()
+    {
+        var w = new UsageWindow();
+        w.Add(T0, [U(1, 0)]);
+        w.Add(T0 + TimeSpan.FromSeconds(30), [U(1, 100_000_000)]); // 10초 분량의 CPU 를 쓴 뒤
+        w.Add(T0 + TimeSpan.FromSeconds(60), [U(1, 100_000_000)]);
+        Assert.True(w.IsInUse(1)); // 기준은 0초 표본: 구간 안에 있음
+        w.Add(T0 + TimeSpan.FromSeconds(90), [U(1, 100_000_000)]);
+        Assert.False(w.IsInUse(1)); // 기준이 30초 표본으로 옮겨 가 그 뒤로는 쉼
     }
 }
 
@@ -1850,7 +2135,7 @@ public sealed class ProcessCpuClassLiveTests
                 DeleteState = () => state = null,
             };
             var log = new ListLog();
-            var yielder = new BackgroundYield(() => new AsterSettings(1000, [Games.Make("cod", "cod.exe")]), env, log);
+            var yielder = new BackgroundYield(() => new AsterSettings(1000, [Games.Make("cod", "cod.exe")]) with { Memory = new MemorySettings(BackgroundCpuPriority: true) }, env, log);
 
             yielder.Begin("test", settle: false);
 

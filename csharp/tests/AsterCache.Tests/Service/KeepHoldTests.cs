@@ -355,7 +355,7 @@ public sealed class KeepHoldTests
         p.TouchAtGameStart(Game("a"), "a.exe");
 
         Assert.Equal([(F(1), 0), (F(2), 0), (F(2), 8), (F(5), 0)], Flat(_hold.Batches));
-        Assert.Contains(_log.Lines, l => l.Contains("cache held while playing (a.exe): 32 MiB") && l.Contains("8 MiB in volatile or changed files and 8 MiB in sparse files not held"));
+        Assert.Contains(_log.Lines, l => l.Contains("cache held while playing (a.exe): 32 MiB") && l.Contains("not held: 8 MiB in volatile or changed files, 8 MiB in sparse files"));
     }
 
     [Fact]

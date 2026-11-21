@@ -25,7 +25,7 @@ public static class SettingsStore
 
     private static readonly string[] TopKeys = ["games", "poll_ms", "watcher", "language", "auto", "max_zone_mib", "riot", "update", "memory", "play"];
     private static readonly string[] MemoryKeys = ["background_yield", "standby_ladder", "background_io_priority", "background_cpu_priority"];
-    private static readonly string[] PlayKeys = ["frame_times"];
+    private static readonly string[] PlayKeys = ["frame_times", "series"];
     private static readonly string[] RiotKeys = ["champ_select_prewarm", "champ_select_budget_mib"];
     private static readonly string[] GameKeys =
         ["name", "exe_names", "trace", "plan", "origin_root", "allowed_roots", "volume_label", "reapply_interval_minutes", "prewarm", "max_stream_mib", "source", "anticheat", "display_name", "display_names", "mode", "paused"];
@@ -157,7 +157,8 @@ public static class SettingsStore
         JObject o = v as JObject ?? throw new SettingsException("play: object expected");
         Unknown(o, PlayKeys, "play");
         bool frameTimes = o.TryGetValue("frame_times", out object? f) ? f as bool? ?? throw new SettingsException("play.frame_times: true or false expected") : PlaySettings.Default.FrameTimes;
-        return new PlaySettings(frameTimes);
+        bool series = o.TryGetValue("series", out object? se) ? se as bool? ?? throw new SettingsException("play.series: true or false expected") : PlaySettings.Default.Series;
+        return new PlaySettings(frameTimes, series);
     }
 
     private static UpdateSettings ParseUpdate(object? v)

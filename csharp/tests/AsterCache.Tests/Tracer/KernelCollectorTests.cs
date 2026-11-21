@@ -100,6 +100,25 @@ public sealed class KernelCollectorTests
     }
 
     [Fact]
+    public void OpenOptionsOfTargetProcessFilesAreKeptPerFileAndComeOutWithTheReadModes()
+    {
+        const string file2 = @"D:\Games\b.bin";
+        KernelCollector c = WithSummary(out _);
+        c.OpenFile(10, 70, File1, 0x4 | 0x20 | 0x01000000); // 순차 + 기록하지 않는 비트
+        c.OpenFile(10, 71, File1, 0x800); // 같은 파일을 임의 접근으로 한 번 더
+        c.OpenFile(10, 72, @"D:\Games\c.bin", 0x8); // 열기만 하고 읽지 않음: 읽기 방식 표에 없음
+        c.OpenFile(11, 73, file2, 0x8); // 대상 프로세스가 아님
+        c.NameKey(7, File1);
+        c.NameKey(8, file2);
+        c.AddRead(T0.AddSeconds(1), 10, 7, 70, 0, 4096);
+        c.AddRead(T0.AddSeconds(1), 10, 8, 74, 0, 4096); // 열기 이벤트를 못 본 파일 (관찰 전에 열림)
+
+        IoRequestSnapshot requests = Assert.IsType<IoRequestSnapshot>(c.FinishIoRequests(new DateTimeOffset(T0.AddSeconds(2)), eventsLost: 0));
+
+        Assert.Equal([(File1, 0x804u), (file2, 0u)], requests.ReadModes!.Select(m => (m.Path, m.OpenOptions)));
+    }
+
+    [Fact]
     public void DiskReadsKeepCountingAfterTheRawWindowClosesWithoutGrowingTheRawRecords()
     {
         KernelCollector c = WithSummary(out _);

@@ -373,4 +373,145 @@ public sealed class StandbyTouchTests : IDisposable
         Assert.NotNull(first);
         Assert.Equal(40L * Mib, r.Bytes); // 메모리에 있는 파일 (방금 쓴 임시 파일): 읽기 수는 같은 프로세스의 다른 스레드가 섞일 수 있어 값은 확인하지 않음
     }
+
+    // ---- 오류의 종류 (기록용) ----
+
+    [Fact]
+    public void ErrorsAreCountedByKindWithTheWin32CodeAndTheWorstFile()
+    {
+        string empty = _dir.Combine("empty.bin");
+        File.WriteAllBytes(empty, []);
+        string missing = _dir.Combine("none.bin");
+        ReadOp[] ranges = [new(missing, 0, Mib), new(_path, 5 * Mib, Mib), new(empty, 0, Mib), new(missing, Mib, Mib), new(_path, 0, Mib)]; // 열기 실패 2 (같은 파일), 파일 끝 밖 1, 크기 0 1, 정상 1
+
+        TouchResult r = Go(ranges, Counter());
+
+        Assert.Equal(4, r.Errors);
+        TouchErrors kinds = Assert.IsType<TouchErrors>(r.ErrorKinds);
+        Assert.Equal(4, kinds.Total);
+        Assert.Equal(3, kinds.Count(TouchErrorKind.Open));
+        Assert.Equal(1, kinds.Count(TouchErrorKind.BeyondEnd));
+        Assert.Equal([(2, 2), (TouchErrors.EmptyFile, 1)], kinds.Codes(TouchErrorKind.Open)); // 2 = ERROR_FILE_NOT_FOUND
+        Assert.Equal((missing, 2), kinds.Worst);
+        Assert.Equal($"open 3 (win32 2 ×2, empty file ×1), beyond end 1; most failures in {missing} ×2", kinds.Describe());
+    }
+
+    [Fact]
+    public void ARunWithoutErrorsCarriesNoErrorKinds() => Assert.Null(Go(Repeat(2), Counter()).ErrorKinds);
+
+    [Fact]
+    public void ErrorKindsAddUpAcrossPartsAndKeepTheWorstFile()
+    {
+        var a = new TouchErrors();
+        a.Add(TouchErrorKind.Map, 2, @"D:\x.bin", 8);
+        var b = new TouchErrors();
+        b.Add(TouchErrorKind.Map, 1, @"D:\x.bin", 8);
+        b.Add(TouchErrorKind.Read, 4, @"D:\y.bin", 23);
+
+        TouchErrors sum = Assert.IsType<TouchErrors>(TouchErrors.Combine(a, b));
+
+        Assert.Equal((3, 4), (sum.Count(TouchErrorKind.Map), sum.Count(TouchErrorKind.Read)));
+        Assert.Equal((@"D:\y.bin", 4), sum.Worst);
+        Assert.Equal(@"map 3 (win32 8 ×3), read 4 (win32 23 ×4); most failures in D:\y.bin ×4", sum.Describe());
+        Assert.Same(b, TouchErrors.Combine(null, b));
+        Assert.Null(TouchErrors.Combine(null, null));
+        Assert.Equal(string.Empty, new TouchErrors().Describe());
+    }
+
+    // ---- 표본 확인 (기록용) ----
+
+    [Fact]
+    public void ProbeReturnsTheHardFaultIncreaseOfEachSampleAndMinusOneForSparseMissingOrOutOfFileOnes()
+    {
+        string sparse = _dir.Combine("sparse.bin");
+        _ = _dir.WriteRandom("sparse.bin", Mib);
+        ReadOp[] samples = [new(_path, 0, StandbyTouch.ProbeBytes), new(_path, Mib, StandbyTouch.ProbeBytes), new(sparse, 0, StandbyTouch.ProbeBytes), new(_dir.Combine("none.bin"), 0, 4096), new(_path, 9 * Mib, 4096), new(_path, Mib + 4096, StandbyTouch.ProbeBytes)];
+
+        int[]? faults = StandbyTouch.Probe(samples, CancellationToken.None, Counter(0, 5, 1, 3), p => p == sparse ? Sparse : Archive); // 앞 두 번 (버림·기준) 뒤 열린 표본마다 한 번씩 조회: 5, 1, 3
+
+        Assert.Equal([5, 1, -1, -1, -1, 3], Assert.IsType<int[]>(faults));
+    }
+
+    [Fact]
+    public void ProbeIsNullWhenTheHardFaultCountCannotBeRead() => Assert.Null(StandbyTouch.Probe([new ReadOp(_path, 0, 4096)], CancellationToken.None, () => null, _ => Archive));
+
+    [Fact]
+    public void ProbeStopsWhenCanceled()
+    {
+        using var cancel = new CancellationTokenSource();
+        cancel.Cancel();
+
+        Assert.Equal([-1, -1], Assert.IsType<int[]>(StandbyTouch.Probe([new ReadOp(_path, 0, 4096), new ReadOp(_path, Mib, 4096)], cancel.Token, Counter(), _ => Archive)));
+    }
+
+    [Fact]
+    public void ProcessSnapshotListsThisProcessWithItsCpuTimeAndWrittenBytes()
+    {
+        List<ProcessUsage> before = [];
+        Assert.True(ProcessFaults.Snapshot(before));
+        ProcessUsage mine = Assert.Single(before, p => p.Pid == Environment.ProcessId);
+        Assert.False(string.IsNullOrEmpty(mine.Name));
+        Assert.True(mine.CpuTicks > 0);
+        Assert.Contains(before, p => p.Pid == 0); // 시스템 유휴 프로세스도 담김 (쓰는 쪽이 뺌)
+
+        _ = _dir.WriteRandom("w.bin", 4 * Mib);
+        long spin = Stopwatch.GetTimestamp() + (Stopwatch.Frequency / 20);
+        while (Stopwatch.GetTimestamp() < spin)
+        {
+        }
+
+        List<ProcessUsage> after = [];
+        Assert.True(ProcessFaults.Snapshot(after));
+        ProcessUsage later = Assert.Single(after, p => p.Pid == Environment.ProcessId);
+        Assert.True(later.CpuTicks > mine.CpuTicks);
+        Assert.True(later.WriteBytes >= mine.WriteBytes + (4 * Mib));
+    }
+
+    [Fact]
+    public void MemoryListPrioritiesAreReadPerPriorityInBytes()
+    {
+        nuint[] v = new nuint[22];
+        v[0] = 10; // 0 으로 채운 목록
+        v[1] = 20; // 여유 목록
+        for (int i = 0; i < 8; i++)
+        {
+            v[5 + i] = (nuint)(100 + i); // 우선순위별 대기 쪽 수
+            v[13 + i] = (nuint)(1000 + i); // 우선순위별 재사용 누계
+        }
+
+        MemoryPriorityLists lists = MemoryListInfo.Priorities(v, 4096);
+
+        Assert.Equal(30 * 4096L, lists.FreeBytes);
+        Assert.Equal(Enumerable.Range(0, 8).Select(i => (100 + i) * 4096L), lists.StandbyBytes);
+        Assert.Equal(Enumerable.Range(0, 8).Select(i => (1000 + i) * 4096L), lists.RepurposedBytes);
+        Assert.Equal(MemoryListInfo.Summarize(v, 4096).CacheRepurposedBytes, lists.RepurposedBytes[5..].Sum()); // 기존 요약 (우선순위 5~7) 과 같은 값
+    }
+
+    [Fact]
+    public void AProbeInsideARoundDoesNotAddItsHardFaultsToTheBoundaryOfTheNextRunInThatRound()
+    {
+        uint value = 1_000_000;
+        Func<uint?> process = () => value; // 이 프로세스의 읽기 수: 메모리에 있는 범위를 만지면 늘지 않음
+        bool firstRead = true;
+        Func<uint?> noisy = () =>
+        {
+            value += firstRead ? 0u : 20u; // 표본 확인이 디스크에서 읽으며 읽기 수를 많이 올림 (첫 조회는 시작 시점의 값)
+            firstRead = false;
+            return value;
+        };
+        ReadOp[] samples = [new(_path, 0, StandbyTouch.ProbeBytes), new(_path, Mib, StandbyTouch.ProbeBytes), new(_path, 0, 4096)];
+
+        TouchResult next;
+        using (StandbyTouch.Round())
+        {
+            _ = Go(Repeat(5), process);
+            int[]? faults = StandbyTouch.Probe(samples, CancellationToken.None, noisy, _ => Archive);
+            next = Go(Repeat(5), process);
+            Assert.True(Assert.IsType<int[]>(faults).Sum() >= 60); // 표본이 실제로 읽기 수를 올렸음
+        }
+
+        Assert.Equal(TouchEnd.Completed, next.End); // 표본 없이 두 번 만졌을 때와 같은 판정 (경계 없음, 읽기 0)
+        Assert.Equal(0, next.HardFaults);
+        Assert.Equal(0, next.DiskBytes);
+    }
 }

@@ -112,7 +112,7 @@ flowchart LR
 |---|---|---|
 | `config.json` | 관리 창·서비스 | 설정과 게임 목록입니다. 쓸 때는 `config.json.lock` 으로 잠그고, 서비스가 5초마다 다시 읽습니다. |
 | `plans\<게임>.trace.json`, `.trace.runN.json`, `.trace.common.json` | 서비스·`aster trace` | 읽기 기록, 플레이별 기록, 모든 플레이에서 반복된 구간입니다. 프리페치·공유 프로필에서 만든 기록은 `.boot.trace.json` 입니다. |
-| `plans\<게임>.trace.runN.json.io.json`, `plans\<게임>.trace.json.io-only.NN.json`, `plans\<게임>.trace.json.io.tried` | 서비스 | 버전 4 디스크 읽기·파일 읽기 방식 집계입니다. `read_modes` 각 행은 `path`, `cache_requests`, `cache_bytes`, `nocache_requests`, `nocache_bytes`, `paging_requests`, `paging_bytes` 를 담습니다. `quality` 에는 `read_modes_files_dropped`, `read_modes_reads_unnamed`, 표시 값 최대 32개의 `read_modes_flag_counts`(`flags`, `reads`), `read_modes_flag_count_other`, `read_modes_observed_until_utc` 가 추가됩니다. `read_modes_dropped_requests` 는 버린 경로 목록 상한을 넘어 경로를 보관하지 못한 요청 수이고, `read_modes_files_dropped_exact` 는 버린 파일 수가 정확한지 표시합니다. 버전 3은 읽을 수 있으며 읽기 방식은 모름입니다. 세션 ID 로 서로 다른 플레이를 구분하고, 측정 전용 요약은 최대 32개까지 둡니다. 계획 입력이 아닌 측정 자료이며 지워도 안전합니다. |
+| `plans\<게임>.trace.runN.json.io.json`, `plans\<게임>.trace.json.io-only.NN.json`, `plans\<게임>.trace.json.io.tried` | 서비스 | 버전 4 디스크 읽기·파일 읽기 방식 집계입니다. `read_modes` 각 행은 `path`, `cache_requests`, `cache_bytes`, `nocache_requests`, `nocache_bytes`, `paging_requests`, `paging_bytes`(알면 `open_options` 도: 대상 프로세스가 파일을 열 때 준 순차·캐시 없음·임의 접근 옵션의 합)를 담습니다. `quality` 에는 `read_modes_files_dropped`, `read_modes_reads_unnamed`, 표시 값 최대 32개의 `read_modes_flag_counts`(`flags`, `reads`), `read_modes_flag_count_other`, `read_modes_observed_until_utc` 가 추가됩니다. `read_modes_dropped_requests` 는 버린 경로 목록 상한을 넘어 경로를 보관하지 못한 요청 수이고, `read_modes_files_dropped_exact` 는 버린 파일 수가 정확한지 표시합니다. 버전 3은 읽을 수 있으며 읽기 방식은 모름입니다. 세션 ID 로 서로 다른 플레이를 구분하고, 측정 전용 요약은 최대 32개까지 둡니다. 계획 입력이 아닌 측정 자료이며 지워도 안전합니다. |
 | `plans\<게임>.plan.json`, `.plan.json.prefetch.json`, `.warmonly.json` | 서비스·`aster plan` | 배치 계획, 예열 입력, 예열 전용 목록입니다. |
 | `plans\<게임>.orbit.json` | 서비스·`aster orbit` | ORBIT 에피소드 모형입니다. |
 | `journals\<게임>.jsonl` | `Applier` | 재배치 저널입니다. 이전 저널은 `.jsonl.<UTC 시각>` 으로 보관합니다. |
@@ -120,6 +120,7 @@ flowchart LR
 | `auto_status.json` | 서비스 | 게임별 자동 단계(`discovered`, `tracing`, `learning`, `waiting_idle`, `relocating`, `done`, `failed`, `skipped`), 재배치 기록, 플레이 기록, 예열 적중률입니다. |
 | `prewarm_status.json` | 서비스 | 게임별 마지막 예열 결과입니다. |
 | `play_samples.json` | 서비스 | 게임별 최근 50회 플레이 구간의 디스크 읽기량·지연과 시작 예열·스트림 상태입니다. 플레이에서 뒤에 뜬 실행 파일마다의 스트림 결과와 +30·+60·+120초 구간(`stageStarts`), 10분 단위 요약(`periods`)도 담습니다. |
+| `play_series\<게임 키>_<시작 시각>.csv` 와 `.lists.csv` | 서비스 | 플레이의 매초 한 줄(프레임 값, CPU·메모리·그래픽 메모리·디스크 값, 서비스가 하던 일)과 30초마다의 우선순위별 대기 목록 크기입니다. 게임별 최근 8개 플레이만 보관합니다. 프레임 간격을 재는 동안 `play.series` 가 `true` 일 때만 쓰며, 열은 [자동 모드](AUTO_MODE.ko.md)에 있습니다. |
 | `quick_exit.json` | 서비스 | 게임별 연속 짧은 종료 횟수와 실행 길이, 그 연속의 건너뜀 결과, 마지막 정상 실행 때 조회한 커널 드라이버 목록입니다. 지워도 안전합니다(횟수가 다시 시작합니다). |
 | `plans\<게임>.trace.json.stages.json`, `.stages.tried` | 서비스 | 병합 트레이스 곁에 만든 단계 색인과 그것을 만들려고 추가로 추적해 본 횟수입니다. 지워도 안전합니다. |
 | `orbit_mode.json`, `disk_model.json`, `benchmark_samples.json` | 서비스 | ORBIT 모드, 디스크별 보정 표본, 로딩 시간 표본입니다. |

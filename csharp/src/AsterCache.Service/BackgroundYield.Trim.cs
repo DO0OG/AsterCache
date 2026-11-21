@@ -53,6 +53,7 @@ public sealed partial class BackgroundYield
     // 작업 집합이 TrimMinBytes 이상인 대상만 비웁니다. 지난번 비우기 직전 값의 절반 이상을 되찾은 대상은 활발한 프로세스라 이 세션에서 다시 비우지 않습니다 (메모리는 안 생기고 비용만 듦).
     private (int Count, long Bytes, int Active) TrimAll(IEnumerable<YieldTarget> targets, DateTimeOffset now)
     {
+        using var activity = ServiceActivity.Begin(ServiceOp.Trim); // 초 단위 기록의 동작 표시
         int count = 0;
         int active = 0;
         long bytes = 0;

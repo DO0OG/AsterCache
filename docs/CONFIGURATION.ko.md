@@ -52,6 +52,7 @@
 | `memory.background_cpu_priority` | `true` | 게임 세션 동안 같은 프로그램의 CPU 우선순위 등급을 보통에서 "보통보다 낮음"으로 낮춰(다른 등급인 프로그램은 그대로 둡니다), 그 스레드가 게임 스레드와 같은 우선순위로 경합하지 않게 하고, 세션이 끝날 때 등급이 여전히 "보통보다 낮음"이면 되돌립니다. `memory.background_yield` 가 `false` 면 아무것도 하지 않으며, `false` 로 두면 이 부분만 끕니다. 설정 탭에는 이 스위치가 없습니다. 실제 플레이에서의 효과는 확인하지 않았습니다. [배경 메모리 양보](AUTO_MODE.ko.md#배경-메모리-양보)를 보십시오. |
 | `memory.standby_ladder` | `true` | 예열 뒤 그 게임의 캐시를 읽은 순서의 역순으로 메모리 안에서 다시 참조해, 로딩이 가장 먼저 필요로 하는 데이터가 가장 나중에 밀려나게 하고, 다른 프로그램이 밀어내기 전에 다시 참조합니다. 일부러 디스크에서 읽지 않으며, 게임이 실행 중인 디스크에서는 돌지 않습니다. `false` 면 끕니다. 설정 탭에는 이 스위치가 없습니다. [SOLAR](SOLAR.ko.md)를 보십시오. |
 | `play.frame_times` | `true` | 게임이 실행되는 동안 프레임 간격(끊김)을 재서 플레이 기록(`play_samples.json`)과 서비스 로그의 `play record` 줄에 남깁니다. 게임 프로세스를 열지 않고 `Microsoft-Windows-DXGI` 의 Present 시작 이벤트만 일반 ETW 세션으로 받습니다. 자동 트레이스를 막는 안티치트 게임과 추적을 끈 게임에서는 켜져 있어도 세션을 열지 않습니다. `false` 면 끕니다. 설정 탭에는 이 스위치가 없습니다. [안티치트](ANTICHEAT.ko.md)를 보십시오. |
+| `play.series` | `true` | 프레임 간격을 재는 동안(`play.frame_times`) 플레이의 매초 한 줄(프레임 값, CPU·메모리·그래픽 메모리·디스크 값, 서비스가 하던 일)을 데이터 폴더의 `play_series` 폴더에 플레이마다 파일 하나(머리줄이 있는 CSV)로 남기고, 30초마다 우선순위별 대기 목록 크기를 그 옆의 `.lists.csv` 파일에 남깁니다. 게임별 최근 8개 플레이만 보관합니다. 게임 프로세스를 열지 않고, 시스템 전체 조회와 성능 카운터에서 값을 얻습니다. 프레임 간격을 재는 플레이에서만 동작하므로 `play.frame_times` 와 같은 게이트가 적용됩니다. `false` 면 끕니다. 설정 탭에는 이 스위치가 없습니다. [자동 모드](AUTO_MODE.ko.md)를 보십시오. |
 | `games` | `[]` | 게임 목록(최대 32개). 게임 하나의 키는 아래에 있습니다. |
 
 ## 게임 하나: `games[]`
@@ -169,7 +170,7 @@
 
 설정 탭의 **업데이트** 카드가 `update.mode` 와 `update.prerelease` 를 정합니다.
 
-이전 버전은 `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, `update`, `memory` 키를 거부하므로, 되돌리기 전에 지워야 합니다. `memory` 는 1.0.3 부터 있는 키이며, 1.0.2 이하 버전은 이 키가 파일에 있으면 값과 상관없이 설정 파일 전체를 거부합니다. `memory.standby_ladder` 는 그보다 새 키입니다. 1.0.3 이하 버전은 이 키가 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오. `auto.stage_stream_enabled` 와 `auto.quick_exit_seconds` 는 그보다 더 새 키입니다. 1.0.3 이하 버전은 둘 중 하나라도 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오. `memory.background_io_priority` 는 1.0.5 부터 있는 키입니다. 1.0.4 이하 버전은 이 키가 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오. `play` 도 같은 이유로 되돌리기 전에 지우십시오(`play.frame_times` 가 새 키입니다).
+이전 버전은 `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, `update`, `memory` 키를 거부하므로, 되돌리기 전에 지워야 합니다. `memory` 는 1.0.3 부터 있는 키이며, 1.0.2 이하 버전은 이 키가 파일에 있으면 값과 상관없이 설정 파일 전체를 거부합니다. `memory.standby_ladder` 는 그보다 새 키입니다. 1.0.3 이하 버전은 이 키가 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오. `auto.stage_stream_enabled` 와 `auto.quick_exit_seconds` 는 그보다 더 새 키입니다. 1.0.3 이하 버전은 둘 중 하나라도 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오. `memory.background_io_priority` 는 1.0.5 부터 있는 키입니다. 1.0.4 이하 버전은 이 키가 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오. `play` 도 같은 이유로 되돌리기 전에 지우십시오(`play.frame_times` 가 새 키이고, `play.series` 는 그보다 더 새 키입니다).
 
 ## 감시기
 

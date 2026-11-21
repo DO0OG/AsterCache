@@ -49,7 +49,7 @@ internal sealed class KernelCollector
         kernel.FileIOName += d => NameKey(d.FileKey, d.FileName);
         kernel.FileIOFileCreate += d => NameKey(d.FileKey, d.FileName);
         kernel.FileIOFileRundown += d => NameKey(d.FileKey, d.FileName);
-        kernel.FileIOCreate += d => OpenFile(d.ProcessID, d.FileObject, d.FileName);
+        kernel.FileIOCreate += d => OpenFile(d.ProcessID, d.FileObject, d.FileName, unchecked((uint)d.CreateOptions));
         kernel.FileIOClose += d => CloseObject(d.FileObject);
         kernel.FileIORead += d => AddRead(d.TimeStamp, d.ProcessID, d.FileKey, d.FileObject, d.Offset, d.IoSize, unchecked((uint)d.IoFlags));
         kernel.FileIOWrite += d => AddWrite(d.TimeStamp, d.ProcessID, d.FileKey, d.FileObject);
@@ -326,7 +326,7 @@ internal sealed class KernelCollector
         }
     }
 
-    internal void OpenFile(int pid, ulong fileObject, string? name)
+    internal void OpenFile(int pid, ulong fileObject, string? name, uint createOptions = 0)
     {
         if (_rawFrozen && _ioSummary is null)
         {
@@ -336,6 +336,11 @@ internal sealed class KernelCollector
         lock (_rawLock)
         {
             _names.NameObject(fileObject, name);
+            if (_ioSummary is not null && createOptions != 0 && !string.IsNullOrEmpty(name) && _tree.IsTarget(pid))
+            {
+                _ioSummary.AddOpen(_devices.ToDosPath(name), createOptions); // 열 때 준 옵션 (순차·임의 접근·캐시 없음): 입출력 요약의 파일별 읽기 방식에 붙음
+            }
+
             if (!_rawFrozen && _listener is { } listener && !string.IsNullOrEmpty(name) && _tree.IsTarget(pid))
             {
                 listener.OnOpen(_devices.ToDosPath(name));

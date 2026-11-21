@@ -50,6 +50,12 @@ public sealed class IoSummaryCollector
     private const uint IrpPagingIo = 0x02;
     private const uint IrpSynchronousPagingIo = 0x40;
 
+    /// 파일 열기 옵션 (NtCreateFile CreateOptions) 중 기록하는 비트: 순차 (FILE_SEQUENTIAL_ONLY), 캐시 없음 (FILE_NO_INTERMEDIATE_BUFFERING), 임의 접근 (FILE_RANDOM_ACCESS).
+    public const uint OpenSequential = 0x4;
+    public const uint OpenNoBuffering = 0x8;
+    public const uint OpenRandomAccess = 0x800;
+    public const uint OpenOptionsMask = OpenSequential | OpenNoBuffering | OpenRandomAccess;
+
     /// 고유 요청 수 상한. 항목 하나가 사전 한 칸 (키 24 B + 값 40 B + 사전 오버헤드) 이라 상한에서 약 20 MB 로 어림잡은 값이며 실제 플레이로 재지 않았습니다.
     public const int MaxRequests = 1 << 18;
 
@@ -69,6 +75,7 @@ public sealed class IoSummaryCollector
     private readonly int _maxDroppedReadModePaths;
     private readonly Dictionary<RequestKey, RequestTotals> _requests = [];
     private readonly Dictionary<string, ReadModeTotals> _readModes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, uint> _openOptions = new(StringComparer.OrdinalIgnoreCase); // 파일별로 열 때 준 옵션 (OpenOptionsMask 비트의 합집합)
     private readonly HashSet<string> _droppedReadModePaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<uint, long> _readModeFlags = [];
     private IoClassTotals _total;
@@ -180,6 +187,25 @@ public sealed class IoSummaryCollector
         _readModes[path] = totals;
     }
 
+    /// 대상 프로세스가 파일을 열 때 준 옵션을 더합니다 (기록만 함: 읽기 집계와 같은 경로 범위·상한). 읽기 집계 상한만큼의 파일까지만 담습니다.
+    public void AddOpen(string path, uint createOptions)
+    {
+        uint options = createOptions & OpenOptionsMask;
+        if (options == 0 || string.IsNullOrWhiteSpace(path) || !IsReadModePath(path))
+        {
+            return;
+        }
+
+        if (_openOptions.TryGetValue(path, out uint known))
+        {
+            _openOptions[path] = known | options;
+        }
+        else if (_openOptions.Count < _maxReadModeFiles)
+        {
+            _openOptions.Add(path, options);
+        }
+    }
+
     public void AddDiskRead(uint disk, long offset, long bytes, long latencyUs, long sessionTimeUs, bool paging)
     {
         bytes = Math.Max(0, bytes);
@@ -234,7 +260,7 @@ public sealed class IoSummaryCollector
 
         IoSummaryReadMode[] readModes = _readModes.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
             .Select(pair => new IoSummaryReadMode(pair.Key, pair.Value.CacheRequests, pair.Value.CacheBytes, pair.Value.NoCacheRequests, pair.Value.NoCacheBytes,
-                pair.Value.PagingRequests, pair.Value.PagingBytes)).ToArray();
+                pair.Value.PagingRequests, pair.Value.PagingBytes, _openOptions.GetValueOrDefault(pair.Key))).ToArray();
         IoFlagCount[] flags = _readModeFlags.OrderBy(pair => pair.Key).Select(pair => new IoFlagCount(pair.Key, pair.Value)).ToArray();
         (IReadOnlyList<SelfReadBatch> selfBatches, long selfDropped) = _selfReads.End();
         return new IoRequestSnapshot(ObservedAtUtc, endedAtUtc.ToUniversalTime(), rawWindows.ToArray(), rawTraceZeroUs, Math.Max(0, eventsLost),

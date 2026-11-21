@@ -503,6 +503,7 @@ public sealed partial class Prewarmer
                 return false;
             }
 
+            using var activity = ServiceActivity.Begin(ServiceOp.Supplement); // 초 단위 기록의 동작 표시: 가드를 지나 실제로 일하는 구간만
             // 읽을지 기다릴지 정하는 판정까지는 예산 계산과 같은 추정 (읽지 않고 돌아가는 틱은 계획을 해석하지 않음). 추정으로는 지역 값만 고치고 지속되는 상태는 새로 읽은 값으로만 고침.
             string? zoneStamp = EstimateStampOf(game, false);
             long? zoneBytes = _estimates.Get("zone", game.Name, zoneStamp, () => _env.ZoneBytes(game));

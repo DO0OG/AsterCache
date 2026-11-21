@@ -641,6 +641,53 @@ public static partial class DiskActivity
         public void Dispose() => _ = PdhCloseQuery(_query);
     }
 
+    /// 게임 프로세스들이 쓰는 그래픽 메모리 전용 사용량 (성능 카운터 `GPU Process Memory` 의 Dedicated Usage, 인스턴스 이름 `pid_<번호>_luid_...`): 프로세스를 열지 않고 카운터 서비스가 주는 값만 읽습니다.
+    public sealed class GpuProcessMemory : IDisposable
+    {
+        private readonly nint _query;
+        private readonly nint _counter;
+
+        private GpuProcessMemory(nint query, nint counter) => (_query, _counter) = (query, counter);
+
+        /// 이 PC 에 카운터가 없거나 열지 못하면 null.
+        public static GpuProcessMemory? Open()
+        {
+            if (PdhOpenQueryW(null, 0, out nint query) != 0)
+            {
+                return null;
+            }
+
+            if (PdhAddEnglishCounterW(query, @"\GPU Process Memory(*)\Dedicated Usage", 0, out nint counter) != 0 || PdhCollectQueryData(query) != 0)
+            {
+                _ = PdhCloseQuery(query);
+                return null;
+            }
+
+            return new GpuProcessMemory(query, counter);
+        }
+
+        /// pids 에 든 프로세스의 전용 사용량 합계 (MiB). 읽지 못하면 null, 그 프로세스가 카운터에 없으면 0.
+        public int? Mib(IReadOnlyCollection<int> pids) => PdhCollectQueryData(_query) == 0 && ReadInstances(_counter) is { } values ? SumMib(values, pids) : null;
+
+        /// 인스턴스 이름 (`pid_1234_luid_0x..._phys_0`) 에서 프로세스 번호가 pids 에 있는 값만 더합니다 (바이트 → MiB).
+        public static int SumMib(IReadOnlyDictionary<string, double> values, IReadOnlyCollection<int> pids)
+        {
+            double bytes = 0;
+            foreach ((string name, double value) in values)
+            {
+                int end = name.StartsWith("pid_", StringComparison.Ordinal) ? name.IndexOf('_', 4) : -1;
+                if (end > 4 && int.TryParse(name.AsSpan(4, end - 4), out int pid) && pids.Contains(pid))
+                {
+                    bytes += value;
+                }
+            }
+
+            return (int)Math.Min(int.MaxValue, bytes / 1_048_576d);
+        }
+
+        public void Dispose() => _ = PdhCloseQuery(_query);
+    }
+
     // 카운터 하나의 인스턴스별 값 (한 인스턴스라도 읽지 못하면 전체를 믿지 않음: 보수적).
     private static unsafe Dictionary<string, double>? ReadInstances(nint counter)
     {
@@ -778,6 +825,19 @@ public sealed partial class CpuLoad
 
         (_idle, _total, _primed) = (idle, total, true);
         return result;
+    }
+
+    /// 시스템 전체 시간 누계 (100 ns): idle 은 유휴 시간, total 은 모든 코어의 커널 + 사용자 시간 (유휴 포함). 읽지 못하면 false. 프로세스별 CPU 시간의 증가분을 이 증가분으로 나누면 전체 CPU 에서 차지한 비율입니다.
+    public static bool Times(out long idle, out long total)
+    {
+        if (!GetSystemTimes(out idle, out long kernel, out long user))
+        {
+            total = 0;
+            return false;
+        }
+
+        total = kernel + user;
+        return true;
     }
 
     [LibraryImport("kernel32.dll", SetLastError = true)]

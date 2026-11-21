@@ -302,7 +302,8 @@ public sealed record MemorySettings(bool BackgroundYield = true, bool StandbyLad
 }
 
 /// 플레이 기록 설정 (config 의 play 객체): frame_times 는 게임 프로세스의 프레임 간격 (끊김) 을 ETW Present 이벤트로 재서 플레이 기록에 남김 (기본 켜짐, 자동 트레이스를 막는 안티치트 게임에서는 켜져 있어도 동작하지 않음).
-public sealed record PlaySettings(bool FrameTimes = true)
+/// series 는 프레임 간격을 재는 플레이에서 매초 한 줄 (프레임 값과 CPU·메모리·그래픽 메모리·디스크 값) 을 플레이마다 파일 하나 (play_series 폴더) 에 남김 (기본 켜짐, frame_times 가 동작하는 플레이에서만).
+public sealed record PlaySettings(bool FrameTimes = true, bool Series = true)
 {
     public static PlaySettings Default { get; } = new();
 }

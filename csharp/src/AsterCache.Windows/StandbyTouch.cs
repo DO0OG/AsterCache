@@ -25,8 +25,8 @@ public enum StopReason
 
 /// 만지기 결과: 만진 바이트, 걸린 시간 (초), 느린 조각 수, 열기·매핑·읽기 오류 수, 끝난 사유, 디스크에서 읽힌 것으로 본 바이트,
 /// 스파스 파일이라 열지 않고 건너뛴 바이트 (파일 크기로 자르지 않은 요청 길이, 만진 것도 빠진 것도 아님), 만지는 스레드가 쓴 CPU 시간 (초), 뷰를 매핑한 횟수,
-/// 이 프로세스의 디스크 읽기 수 (하드 폴트, 읽을 수 없었으면 0), 멈춘 기준, 읽기 수를 조회한 횟수 (조회 한 번이 약 4 ms CPU).
-public readonly record struct TouchResult(long Bytes, double Seconds, int SlowPieces, int Errors, TouchEnd End, long DiskBytes = 0, long SkippedBytes = 0, double CpuSeconds = 0, int Maps = 0, long HardFaults = 0, StopReason Reason = StopReason.None, int Checks = 0);
+/// 이 프로세스의 디스크 읽기 수 (하드 폴트, 읽을 수 없었으면 0), 멈춘 기준, 읽기 수를 조회한 횟수 (조회 한 번이 약 4 ms CPU), 오류의 종류별 수 (오류가 있을 때만, 기록용).
+public readonly record struct TouchResult(long Bytes, double Seconds, int SlowPieces, int Errors, TouchEnd End, long DiskBytes = 0, long SkippedBytes = 0, double CpuSeconds = 0, int Maps = 0, long HardFaults = 0, StopReason Reason = StopReason.None, int Checks = 0, TouchErrors? ErrorKinds = null);
 
 /// 파일 캐시에 이미 있는 범위를 순서대로 다시 읽어 (작업 집합에 올렸다 놓음) 대기 목록의 맨 뒤로 보냅니다. 디스크 읽기는 하지 않는 것이 전제이고, 캐시에 없는 페이지를 만나면 읽기가 되므로 이 프로세스의 디스크 읽기 수 (ProcessFaults, 하드 폴트) 가 얼마나 늘었는지 봐서 허용치를 넘으면 (곧 캐시에 남은 앞부분의 경계에 닿으면) 멈춥니다.
 /// 읽기 수는 조회 비용 (약 4 ms) 때문에 조각마다가 아니라 FaultCheckBytes 만큼 만질 때마다, 그리고 시간이 오래 걸린 조각이 나왔을 때 (SuspectCheckBytes 이상 만진 뒤) 봅니다. 시간만으로는 멈추지 않습니다: 게임이 모든 코어를 쓰는 동안에는 메모리에 있는 범위도 느리게 나오기 때문입니다.
@@ -115,6 +115,9 @@ public static unsafe class StandbyTouch
         public long Bytes;
         public int Slow;
         public int Errors;
+        public readonly TouchErrors Kinds = new(); // Errors 와 같은 단위로 센 종류별 수 (기록용)
+        public readonly Dictionary<string, (TouchErrorKind Kind, int Code)> OpenFailures = new(StringComparer.OrdinalIgnoreCase); // 열지 못한 파일의 종류와 오류 번호
+        public int LastReadCode; // 가장 최근 읽기 실패의 Win32 오류 번호 (같은 뷰에서 포기한 나머지 부분도 같은 번호로 셈)
         public double SlowMs;
         public double SlowSince; // 앞의 조회 뒤 나온 느린 조각의 시간 합 (그 사이 디스크 읽기가 확인되면 SlowMs 에 더함)
         public long Disk;
@@ -213,7 +216,7 @@ public static unsafe class StandbyTouch
             SelfReadLog.Note(tally.DiskRanges, startedUtc, DateTimeOffset.UtcNow); // 디스크 읽기 집계가 이 읽기를 게임의 읽기로 세지 않게
         }
 
-        return new TouchResult(tally.Bytes, Stopwatch.GetElapsedTime(started).TotalSeconds, tally.Slow, tally.Errors, tally.End, tally.Disk, tally.Skipped, Math.Max(0, ThreadCpuSeconds() - cpuBefore), tally.Maps, tally.Faults, tally.Reason, tally.Checks);
+        return new TouchResult(tally.Bytes, Stopwatch.GetElapsedTime(started).TotalSeconds, tally.Slow, tally.Errors, tally.End, tally.Disk, tally.Skipped, Math.Max(0, ThreadCpuSeconds() - cpuBefore), tally.Maps, tally.Faults, tally.Reason, tally.Checks, tally.Errors > 0 ? tally.Kinds : null);
     }
 
     /// 한 회차 (Round) 의 마지막에 부릅니다: 마지막 조회 뒤 만졌지만 아직 조회하지 않은 구간이 있으면 읽기 수를 조회해 그 구간의 디스크 읽기와 경계를 알려 줍니다 (회차 밖이거나 남은 구간이 없으면 빈 결과).
@@ -231,6 +234,88 @@ public static unsafe class StandbyTouch
         Check(tally);
         (meter.Faults, meter.Pages) = (tally.BaselineFaults, tally.BaselinePages);
         return new TouchResult(0, 0, 0, 0, tally.End, tally.Disk, 0, 0, 0, tally.Faults, tally.Reason, tally.Checks);
+    }
+
+    /// 표본 한 곳의 크기: 64 KiB (한 번의 디스크 읽기가 읽는 양의 상한과 같음).
+    public const int ProbeBytes = 64 << 10;
+
+    /// 표본 확인 (기록용): 범위마다 따로 만지고 그 앞뒤의 이 프로세스의 디스크 읽기 수 (하드 폴트) 증가를 돌려줍니다 (범위당 하나). 메모리에 있으면 0 (잡음 +1 쯤), 없으면 한 블록이 2~3 회입니다.
+    /// 열 수 없거나 스파스 파일이거나 파일 끝 밖이면 -1, 읽기 수를 읽을 수 없으면 null. 캐시에 없는 범위는 읽히므로 (범위당 최대 ProbeBytes) 호출하는 쪽이 개수를 적게 (16 곳) 잡습니다. 판정·순서에는 쓰지 않습니다.
+    public static int[]? Probe(IReadOnlyList<ReadOp> samples, CancellationToken ct) => Probe(samples, ct, ProcessFaults.Query, FileGuards.FileAttributes);
+
+    public static int[]? Probe(IReadOnlyList<ReadOp> samples, CancellationToken ct, Func<uint?> hardFaults, Func<string, uint> attributes)
+    {
+        uint? first = hardFaults(); // 이 조회는 판정에 쓰지 않습니다 (Run 과 같은 이유). 표본 확인이 시작할 때의 값이라 회차 기준값 보정의 시작점으로만 씀
+        if (hardFaults() is not { } before)
+        {
+            return null;
+        }
+
+        int[] faults = new int[samples.Count];
+        Array.Fill(faults, -1);
+        Meter? round = _round; // 같은 회차 (Round) 의 다음 Run 이 이어 쓰는 기준값
+        uint start = first ?? before;
+        uint? pagesStart = round?.PageReads?.Invoke();
+        byte* buffer = (byte*)NativeMemory.Alloc(ProbeBytes);
+        try
+        {
+            for (int i = 0; i < samples.Count && !ct.IsCancellationRequested; i++)
+            {
+                ReadOp range = samples[i];
+                if (FileGuards.IsSparse(range.Path, attributes) || Section.Open(range.Path, out _, out _) is not { } section)
+                {
+                    continue;
+                }
+
+                using (section)
+                {
+                    long end = EndOf(range, section);
+                    if (range.Offset < 0 || range.Offset >= section.Length || end <= range.Offset)
+                    {
+                        continue;
+                    }
+
+                    long viewStart = range.Offset & ~(Granularity - 1);
+                    nint view = section.Map(viewStart, end - viewStart);
+                    if (view == 0)
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        bool ok = NativeMethods.ReadProcessMemory(NativeMethods.GetCurrentProcess(), view + (nint)(range.Offset - viewStart), buffer, (nuint)Math.Min(ProbeBytes, end - range.Offset), out _);
+                        if (hardFaults() is not { } after)
+                        {
+                            return null;
+                        }
+
+                        faults[i] = ok ? (int)Math.Min(int.MaxValue, unchecked(after - before)) : -1;
+                        before = after;
+                    }
+                    finally
+                    {
+                        NativeMethods.UnmapViewOfFile(view);
+                    }
+                }
+            }
+        }
+        finally
+        {
+            NativeMemory.Free(buffer);
+
+            // 표본이 낸 읽기는 회차의 기준값에 더해 다음 Run 의 경계 판정에 섞이지 않게 합니다 (표본 확인은 기록만 하고 판정에 영향을 주지 않음).
+            if (round is { Faults: { } known })
+            {
+                round.Faults = unchecked(known + (before - start));
+                if (round.Pages is { } knownPages && pagesStart is { } pages0 && round.PageReads?.Invoke() is { } pages1)
+                {
+                    round.Pages = unchecked(knownPages + (pages1 - pages0));
+                }
+            }
+        }
+
+        return faults;
     }
 
     // 이 스레드가 지금까지 쓴 CPU 시간 (초): 만지는 스레드에서만 부르므로 같은 스레드의 앞뒤 값의 차가 만지는 데 쓴 CPU 시간.
@@ -294,7 +379,7 @@ public static unsafe class StandbyTouch
     }
 
     // 파일의 섹션을 돌려줍니다 (이 Run 에서 이미 열었으면 그것, 열린 파일이 MaxOpenFiles 개면 모두 닫고 비운 뒤). 열 수 없으면 null.
-    private static Section? OpenSection(string path, Dictionary<string, Section?> sections)
+    private static Section? OpenSection(string path, Dictionary<string, Section?> sections, Tally tally)
     {
         if (!sections.TryGetValue(path, out Section? section))
         {
@@ -308,7 +393,11 @@ public static unsafe class StandbyTouch
                 sections.Clear();
             }
 
-            sections[path] = section = Section.Open(path);
+            sections[path] = section = Section.Open(path, out TouchErrorKind kind, out int code);
+            if (section is null)
+            {
+                tally.OpenFailures[path] = (kind, code);
+            }
         }
 
         return section;
@@ -326,10 +415,12 @@ public static unsafe class StandbyTouch
             return first;
         }
 
-        Section? section = OpenSection(range.Path, sections);
+        Section? section = OpenSection(range.Path, sections, tally);
         if (section is null || range.Offset < 0 || range.Offset >= section.Length)
         {
             tally.Errors++;
+            (TouchErrorKind kind, int code) = section is null ? tally.OpenFailures[range.Path] : (TouchErrorKind.BeyondEnd, 0);
+            tally.Kinds.Add(kind, 1, range.Path, code);
             return first;
         }
 
@@ -390,7 +481,9 @@ public static unsafe class StandbyTouch
         nint view = section.Map(viewStart, parts.Max(p => p.To) - viewStart);
         if (view == 0)
         {
+            int code = Marshal.GetLastPInvokeError();
             tally.Errors += parts.Count; // 합친 부분 모두 만지지 못함
+            tally.Kinds.Add(TouchErrorKind.Map, parts.Count, path, code);
             return false;
         }
 
@@ -403,6 +496,7 @@ public static unsafe class StandbyTouch
                 if (!TouchPieces(view, viewStart, path, from, to, buffer, tally, ct))
                 {
                     tally.Errors += parts.Count - i - 1; // 읽기가 실패해 포기한 뷰의 나머지 부분도 오류로 셈
+                    tally.Kinds.Add(TouchErrorKind.Read, parts.Count - i - 1, path, tally.LastReadCode);
                     return false;
                 }
 
@@ -446,10 +540,13 @@ public static unsafe class StandbyTouch
             int n = (int)Math.Min(PieceBytes, to - pos);
             long t0 = tally.Timestamp();
             bool ok = NativeMethods.ReadProcessMemory(NativeMethods.GetCurrentProcess(), view + (nint)(pos - viewStart), buffer, (nuint)n, out nuint got) && (long)got == n;
+            int readCode = ok ? 0 : Marshal.GetLastPInvokeError();
             double ms = Stopwatch.GetElapsedTime(t0, tally.Timestamp()).TotalMilliseconds;
             if (!ok)
             {
                 tally.Errors++;
+                tally.LastReadCode = readCode;
+                tally.Kinds.Add(TouchErrorKind.Read, 1, path, readCode);
                 tally.SlowMs += ms; // 망가진 디스크에서 범위마다 오래 실패해도 멈추게 실패한 시간도 셈
                 StopIfSlow(tally);
                 return false;
@@ -510,25 +607,30 @@ public static unsafe class StandbyTouch
 
         public long Length { get; }
 
-        public static Section? Open(string path)
+        /// 열지 못하면 null 이고 kind·code 에 이유를 돌려줍니다: 열기 실패와 그 Win32 오류 번호, 크기 0 (TouchErrors.EmptyFile), 섹션 만들기 실패 (Map 종류).
+        public static Section? Open(string path, out TouchErrorKind kind, out int code)
         {
+            (kind, code) = (TouchErrorKind.Open, 0);
             try
             {
                 using SafeFileHandle file = NativeMethods.CreateFileW(path, Win32.GenericRead, Win32.ShareAll, 0, Win32.OpenExisting, 0, 0);
                 if (file.IsInvalid)
                 {
+                    code = Marshal.GetLastPInvokeError();
                     return null;
                 }
 
                 long length = RandomAccess.GetLength(file);
                 if (length <= 0)
                 {
+                    code = TouchErrors.EmptyFile;
                     return null; // 크기 0 파일은 매핑할 수 없음
                 }
 
                 SafeFileHandle mapping = NativeMethods.CreateFileMappingW(file, 0, Win32.PageReadonly, 0, 0, null);
                 if (mapping.IsInvalid)
                 {
+                    (kind, code) = (TouchErrorKind.Map, Marshal.GetLastPInvokeError());
                     mapping.Dispose();
                     return null;
                 }

@@ -241,7 +241,7 @@ public sealed class IoSummaryTests : IDisposable
         {
             RawTraceZeroUs = -2000,
             EventsLost = 3,
-            ReadModes = [new IoSummaryReadMode(@"D:\Games\a.bin", 1, 4096, 2, 8192, 3, 12288)],
+            ReadModes = [new IoSummaryReadMode(@"D:\Games\a.bin", 1, 4096, 2, 8192, 3, 12288, IoSummaryCollector.OpenSequential | IoSummaryCollector.OpenRandomAccess)],
             ReadModeFilesDropped = 2,
             ReadModeReadsUnnamed = 4,
             ReadModeFlags = [new IoFlagCount(0x01, 2), new IoFlagCount(0x42, 1)],
@@ -262,6 +262,8 @@ public sealed class IoSummaryTests : IDisposable
         Assert.Equal(expected.Files, actual.Files);
         Assert.Equal(expected.Rows, actual.Rows);
         Assert.Equal(expected.ReadModes, actual.ReadModes);
+        Assert.Equal(IoSummaryCollector.OpenSequential | IoSummaryCollector.OpenRandomAccess, Assert.Single(actual.ReadModes!).OpenOptions); // 파일을 열 때 준 옵션도 그대로
+        Assert.EndsWith("opened with sequential 1, random access 1, no buffering 0 files", actual.FormatReadModesLogLine());
         Assert.Equal(expected.SessionId, actual.SessionId);
         Assert.Equal(expected.Quality.ReadModeFilesDropped, actual.Quality.ReadModeFilesDropped);
         Assert.Equal(expected.Quality.ReadModeReadsUnnamed, actual.Quality.ReadModeReadsUnnamed);

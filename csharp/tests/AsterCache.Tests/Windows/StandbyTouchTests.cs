@@ -1,14 +1,17 @@
 using System.Diagnostics;
 using AsterCache.Core.Prefetch;
+using AsterCache.Core.Trace;
 using AsterCache.Windows;
 using Xunit;
 
 namespace AsterCache.Tests.Windows;
 
-/// 디스크 읽기 감지: 뷰마다 페이지 읽기 누계의 증가분으로 판정 (가짜 누계), 누계가 없을 때의 시간 기준. 파일은 임시 폴더의 작은 파일 (캐시에 있음).
+/// 경계 판정: 이 프로세스의 디스크 읽기 수 (하드 폴트) 의 증가분으로 (가짜 누계), 안전망은 읽기가 확인된 느린 조각의 시간 합. 파일은 임시 폴더의 작은 파일 (캐시에 있음).
 public sealed class StandbyTouchTests : IDisposable
 {
     private const int Mib = 1 << 20;
+    private const uint Archive = 0x20;
+    private const uint Sparse = FileGuards.SparseAttribute;
     private readonly TempDir _dir = new();
     private readonly string _path;
 
@@ -20,114 +23,261 @@ public sealed class StandbyTouchTests : IDisposable
 
     public void Dispose() => _dir.Dispose();
 
-    // 범위마다 하나의 뷰: 2 MiB 범위 n 개. 누계는 뷰 전후 두 번 읽히고, 두 번째 읽기에 perView 쪽을 더함 (null 이면 조회 불가).
-    // viewMs: 뷰마다 가짜 시계가 돌려줄 만지는 시간 (ms) — 시간 상한이 걸린 시간으로 정해지므로 실제 시간에 기대지 않고 정확히 정함.
-    private TouchResult Run(int ranges, uint? perView, double viewMs = 0)
+    // 이 프로세스의 디스크 읽기 수 가짜 누계: 첫 호출 (Run 이 버리는 조회) 은 그대로, 그다음 호출마다 deltas 를 차례로 더해 돌려줌 (deltas[0] 은 기준값을 잡는 호출이라 보통 0, 다 쓰면 그대로).
+    private static Func<uint?> Counter(params uint[] deltas)
     {
         uint value = 1_000_000;
         int calls = 0;
-        Func<uint?> counter = () =>
+        return () =>
         {
-            if (perView is null)
-            {
-                return null;
-            }
-
-            if (++calls % 2 == 0)
-            {
-                value += perView.Value;
-            }
-
+            value += calls > 0 && calls - 1 < deltas.Length ? deltas[calls - 1] : 0;
+            calls++;
             return value;
         };
-        return StandbyTouch.Run([.. Enumerable.Repeat(new ReadOp(_path, 0, 2 * Mib), ranges)], CancellationToken.None, counter, _ => Archive, FakeClock(viewMs));
     }
 
-    // 뷰 하나를 재는 두 번의 호출 (만지기 전, 후) 사이에 ms 가 흐르는 시계 (Stopwatch 틱).
-    private static Func<long> FakeClock(double viewMs)
+    // 시스템 페이지 읽기 가짜 누계: 호출마다 deltas 를 차례로 더함 (첫 호출은 기준값).
+    private static Func<uint?> PageCounter(params uint[] deltas)
+    {
+        uint value = 1_000_000;
+        int calls = 0;
+        return () =>
+        {
+            value += calls < deltas.Length ? deltas[calls] : 0;
+            calls++;
+            return value;
+        };
+    }
+
+    // 조각 하나를 재는 두 번의 호출 (만지기 전, 후) 사이에 msOf(조각 번호) 가 흐르는 시계 (Stopwatch 틱).
+    private static Func<long> Clock(Func<int, double> msOf)
     {
         long ticks = 0;
         int calls = 0;
-        return () => ++calls % 2 == 0 ? ticks += (long)(Stopwatch.Frequency * viewMs / 1000.0) : ticks;
+        return () => ++calls % 2 == 0 ? ticks += (long)(Stopwatch.Frequency * msOf((calls / 2) - 1) / 1000.0) : ticks;
     }
 
+    private List<ReadOp> Repeat(int ranges) => [.. Enumerable.Repeat(new ReadOp(_path, 0, 2 * Mib), ranges)]; // 2 MiB 범위 n 개 (조각 2n 개)
+
+    private static TouchResult Go(IReadOnlyList<ReadOp> ranges, Func<uint?> faults, Func<uint?>? pages = null, Func<long>? clock = null, Func<string, uint>? attributes = null, CancellationToken ct = default) =>
+        StandbyTouch.Run(ranges, ct, faults, pages ?? (() => 1_000_000), attributes ?? (_ => Archive), clock ?? Clock(_ => 0));
+
     [Fact]
-    public void ViewsThatDoNotRaiseThePageReadCountAreInMemoryAndNeverStop()
+    public void RangesThatDoNotRaiseTheHardFaultCountAreInMemoryAndNeverStopNoMatterHowManyPagesOtherProcessesRead()
     {
-        TouchResult r = Run(40, 0);
+        uint pages = 0;
+        TouchResult r = Go(Repeat(40), Counter(), () => pages += 100_000); // 다른 프로세스가 시스템 페이지 읽기를 크게 올려도 이 프로세스의 읽기는 0
 
         Assert.Equal(TouchEnd.Completed, r.End);
         Assert.Equal(40L * 2 * Mib, r.Bytes);
-        Assert.Equal(0, r.DiskBytes);
+        Assert.Equal((0L, 0L, StopReason.None), (r.DiskBytes, r.HardFaults, r.Reason));
     }
 
     [Fact]
-    public void AFewPagesReadByOtherProcessesAreNotCountedAsDiskReads()
+    public void ReadsUpToTheAllowanceInOneCheckPassAndMoreMarkTheBoundaryAndStopRightThere()
     {
-        TouchResult r = Run(40, StandbyTouch.NoisePages); // 뷰마다 허용치 이하
+        TouchResult within = Go(Repeat(40), Counter(0, StandbyTouch.BoundaryFaults), () => 1_000_000); // 64 MiB 에서 한 번, 끝에서 한 번 조회
+        TouchResult over = Go(Repeat(40), Counter(0, StandbyTouch.BoundaryFaults + 1));
+
+        Assert.Equal(TouchEnd.Completed, within.End);
+        Assert.Equal(StandbyTouch.BoundaryFaults, within.HardFaults);
+        Assert.Equal(TouchEnd.NeedsDiskReads, over.End);
+        Assert.Equal(StopReason.HardFaults, over.Reason);
+        Assert.Equal(StandbyTouch.FaultCheckBytes, over.Bytes); // 64 MiB 를 만진 뒤의 조회에서 멈춤
+    }
+
+    [Fact]
+    public void TheAmountReadIsTheSmallerOfThePagesTheSystemReadAndTheFaultsTimesTheReadSizeAndIsZeroWithoutFaults()
+    {
+        var pages = PageCounter(0, 100); // 시스템 쪽 수 +100 쪽
+        TouchResult r = Go(Repeat(40), Counter(0, 20), pages); // 읽기 20 회: 상한 20 x 64 KiB 보다 쪽 수 100 쪽 (400 KiB) 이 작음
+
+        Assert.Equal(100L * 4096, r.DiskBytes);
+        Assert.Equal(20, r.HardFaults);
+
+        TouchResult capped = Go(Repeat(40), Counter(0, 2), PageCounter(0, 5000)); // 읽기 2 회, 시스템은 다른 프로세스 몫까지 크게 올랐음
+        Assert.Equal(2 * StandbyTouch.FaultReadBytes, capped.DiskBytes);
+    }
+
+    [Fact]
+    public void ASlowPieceBeforeTheNextRegularCheckBringsTheCheckForwardOnceEnoughWasTouched()
+    {
+        // 조각 4 번부터 느림 (디스크에서 읽는 구간, 30 ms): 앞의 조회 뒤 8 MiB 를 만졌고 만지는 데 100 ms 이상 걸린 조각 (7 번) 에서 바로 조회 → 읽기가 많아 멈춤
+        TouchResult r = Go(Repeat(40), Counter(0, 500), clock: Clock(k => k >= 4 ? 30.0 : 0));
+
+        Assert.Equal(TouchEnd.NeedsDiskReads, r.End);
+        Assert.Equal(StopReason.HardFaults, r.Reason);
+        Assert.Equal(8L * Mib, r.Bytes); // 64 MiB 까지 가지 않음
+    }
+
+    [Fact]
+    public void TheBroughtForwardCheckWaitsUntilTheTouchTookAtLeastTheMinimumTimeSoBusyCpuDoesNotMakeThemFrequent()
+    {
+        // 모든 조각이 3 ms (의심 조각이지만 34 MiB 를 만져야 100 ms): 당겨진 조회가 34 MiB, 68 MiB 에서만 + 끝에서 한 번
+        TouchResult slow6 = Go(Repeat(40), Counter(), clock: Clock(_ => 3.0));
+        // 모든 조각이 30 ms: 8 MiB 에 240 ms 라 8 MiB 마다 조회
+        TouchResult slow30 = Go(Repeat(40), Counter(), clock: Clock(_ => 30.0));
+
+        Assert.Equal(3, slow6.Checks);
+        Assert.InRange(slow30.Checks, 9, 12);
+        Assert.Equal(TouchEnd.Completed, slow30.End);
+    }
+
+    [Fact]
+    public void ALotOfSlowPiecesWithOnlyANoiseSizedFaultIncreasePerCheckNeverReachTheSafetyNet()
+    {
+        // 모든 조각이 30 ms (CPU 선점), 조회마다 읽기가 1 회 (실측 잡음) 씩 늘어남: 시간 합이 2 초를 넘어도 안전망에 더하지 않음
+        TouchResult noise = Go(Repeat(200), Counter([0, .. Enumerable.Repeat(1u, 200)]), clock: Clock(_ => 30.0));
+        // 같은 조건에서 증가가 하한 (SafetyNetMinFaults) 이면 안전망으로 멈춤
+        TouchResult reads = Go(Repeat(200), Counter([0, .. Enumerable.Repeat(StandbyTouch.SafetyNetMinFaults, 200)]), clock: Clock(_ => 30.0));
+
+        Assert.Equal(TouchEnd.Completed, noise.End);
+        Assert.Equal(400L * Mib, noise.Bytes);
+        Assert.Equal(TouchEnd.NeedsDiskReads, reads.End);
+        Assert.Equal(StopReason.SlowTime, reads.Reason);
+    }
+
+    [Fact]
+    public void SettleChecksWhatWasTouchedAfterTheLastCheckOfARoundAndReportsABoundaryThere()
+    {
+        using (StandbyTouch.Round())
+        {
+            TouchResult run = Go(Repeat(1), Counter(0, 40)); // 2 MiB 만 만져 끝 조회를 미룸
+            TouchResult tail = StandbyTouch.Settle(); // 그 구간의 읽기 40 회 (허용치 32 초과)
+
+            Assert.Equal(TouchEnd.Completed, run.End);
+            Assert.Equal(TouchEnd.NeedsDiskReads, tail.End);
+            Assert.Equal((40L, StopReason.HardFaults, 1), (tail.HardFaults, tail.Reason, tail.Checks));
+            Assert.Equal(TouchEnd.Completed, StandbyTouch.Settle().End); // 남은 구간이 없으면 빈 결과
+        }
+
+        Assert.Equal(TouchEnd.Completed, StandbyTouch.Settle().End); // 회차 밖
+    }
+
+    [Fact]
+    public void SlowPiecesFromCpuContentionAloneNeverStopEvenWhenTheirTimeAddsUpPastTheBudget()
+    {
+        // 모든 조각이 30 ms (CPU 선점) 지만 읽기 수는 늘지 않음: 시간 합 2.4 초 > 2 초여도 계속
+        TouchResult r = Go(Repeat(40), Counter(), clock: Clock(_ => 30));
 
         Assert.Equal(TouchEnd.Completed, r.End);
-        Assert.Equal(0, r.DiskBytes);
+        Assert.Equal(80L * Mib, r.Bytes);
+        Assert.True(r.SlowPieces > 0);
+        Assert.Equal(0, r.HardFaults);
     }
 
     [Fact]
-    public void ViewsReadFromDiskStopOnceMoreThan32MiBAccumulated()
+    public void SlowPiecesThatCoincideWithConfirmedDiskReadsAreTheLastResortAndStopByTime()
     {
-        TouchResult r = Run(40, 512, 20); // 2 MiB 뷰 전체가 디스크에서 읽힘 (20 ms 동안 디스크는 5 MiB 까지 읽을 수 있음)
+        // 조각마다 30 ms 이고 조회마다 (허용치 이하의) 읽기 5 회가 확인됨: 시간 합이 2 초를 넘으면 안전망으로 멈춤
+        TouchResult r = Go(Repeat(200), Counter([0, .. Enumerable.Repeat(5u, 200)]), clock: Clock(_ => 30));
 
         Assert.Equal(TouchEnd.NeedsDiskReads, r.End);
-        Assert.True(r.DiskBytes > StandbyTouch.DiskReadStopBytes);
-        Assert.InRange(r.Bytes, 34L * Mib, 44L * Mib); // 허용치만큼 덜 세어도 몇 뷰 안에 멈춤
+        Assert.Equal(StopReason.SlowTime, r.Reason);
+        Assert.InRange(r.Bytes, 60L * Mib, 100L * Mib);
     }
 
     [Fact]
-    public void ViewsThatAreOnlyPartlyReadFromDiskStillAddUpAndStop()
+    public void WithoutAReadableFaultCountTheSlowPieceTimeIsTheOnlySafetyNetAndFastPiecesNeverStop()
     {
-        TouchResult r = Run(400, 256, 20); // 뷰마다 절반만 디스크에서 읽힘: 뷰 단위 판정이면 놓치던 경우
+        TouchResult fast = Go(Repeat(40), () => null);
+        TouchResult slow = Go(Repeat(100), () => null, clock: Clock(_ => 30));
 
-        Assert.Equal(TouchEnd.NeedsDiskReads, r.End);
-        Assert.True(r.DiskBytes > StandbyTouch.DiskReadStopBytes);
-        Assert.True(r.Bytes < 400L * 2 * Mib);
+        Assert.Equal(TouchEnd.Completed, fast.End);
+        Assert.Equal(TouchEnd.NeedsDiskReads, slow.End);
+        Assert.Equal(StopReason.SlowTime, slow.Reason);
+        Assert.InRange(slow.Bytes, 66L * Mib, 70L * Mib); // 30 ms x 67 조각 > 2 초
     }
 
     [Fact]
-    public void ViewsTouchedInMemoryNeverAddUpToAStopEvenWhenOtherProcessesReadAHugeNumberOfPagesMeanwhile()
+    public void AnUnopenableFileIsAnErrorWhileTheOtherRangesAreStillTouched()
     {
-        _ = _dir.WriteRandom("v.bin", 16 * Mib);
-        uint value = 1_000_000;
+        string notThere = _dir.Combine("none.bin");
+
+        TouchResult r = Go([new ReadOp(_path, 0, 2 * Mib), new ReadOp(notThere, 0, Mib), new ReadOp(_path, 0, Mib)], Counter());
+
+        Assert.Equal(TouchEnd.Completed, r.End);
+        Assert.Equal(3L * Mib, r.Bytes);
+        Assert.Equal(1, r.Errors);
+    }
+
+    [Fact]
+    public void ARoundKeepsTheCountersBaselineAcrossRunsSoTheyAreQueriedLessOften()
+    {
         int calls = 0;
         Func<uint?> counter = () =>
         {
-            if (++calls % 2 == 0 && calls / 2 % 7 == 0) // 7 번째마다 한 뷰에 다른 프로세스의 몰림 (16 MiB 뷰 전체에 해당하는 쪽 수) 이 겹침
-            {
-                value += 4096 * 4;
-            }
-
-            return value;
+            calls++;
+            return 1_000_000;
         };
+        TouchResult[] alone = [Go(Repeat(1), counter), Go(Repeat(1), counter)];
+        int aloneCalls = calls;
+        calls = 0;
 
-        TouchResult r = StandbyTouch.Run([.. Enumerable.Repeat(new ReadOp(_dir.Combine("v.bin"), 0, 16 * Mib), 21)], CancellationToken.None, counter, _ => Archive, FakeClock(5.0)); // 몰림 3 번, 뷰마다 메모리에서 5 ms
+        using (StandbyTouch.Round())
+        {
+            _ = Go(Repeat(1), counter);
+            _ = Go(Repeat(1), counter);
+        }
 
-        Assert.Equal(TouchEnd.Completed, r.End);
-        Assert.Equal(21L * 16 * Mib, r.Bytes);
-        Assert.InRange(r.DiskBytes, 4_000_000, 4_050_000); // 몰린 뷰 3 개가 5 ms 동안 디스크가 읽을 수 있는 양 (약 1.28 MiB) 씩만 셈
+        Assert.Equal(6, aloneCalls); // 따로 부르면 Run 마다 버리는 조회 + 기준 + 끝 조회
+        Assert.Equal(2, calls); // 한 회차 안에서는 처음 한 번의 버리는 조회 + 기준뿐 (두 Run 이 합쳐 8 MiB 미만이라 끝 조회도 미룸)
+        Assert.All(alone, r => Assert.Equal(TouchEnd.Completed, r.End));
     }
 
     [Fact]
-    public void WithoutAPageReadCountTheViewTimeRuleIsUsedInstead()
+    public void TheRangesOfSuspiciousPiecesAreNotedAsTheServicesOwnReadsOnlyWhenDiskReadsWereConfirmed()
     {
-        TouchResult r = Run(20, null); // 캐시에 있는 뷰는 빠름
+        SelfReadObservation observation = SelfReadLog.Begin();
 
-        Assert.Equal(TouchEnd.Completed, r.End);
-        Assert.Equal(0, r.DiskBytes);
-        Assert.False(StandbyTouch.ViewTooSlow(30, 64L << 20)); // 캐시: 64 MiB 에 약 30 ms
-        Assert.True(StandbyTouch.ViewTooSlow(300, 64L << 20)); // HDD: 250 ms 이상
-        Assert.False(StandbyTouch.ViewTooSlow(3, 128 << 10)); // 작은 뷰는 하한 4 ms
-        Assert.True(StandbyTouch.ViewTooSlow(5, 128 << 10));
+        _ = Go(Repeat(8), Counter(0, 4), clock: Clock(k => k == 3 ? 10.0 : 0)); // 의심 조각이 있고 읽기 4 회가 확인됨
+        _ = Go([new ReadOp(_path, 0, 2 * Mib)], Counter(0, 0), clock: Clock(_ => 10.0)); // 의심 조각이지만 읽기 0 회 (CPU 선점)
+
+        (IReadOnlyList<SelfReadBatch> batches, _) = observation.End();
+        ReadOp[] noted = [.. batches.SelectMany(b => b.Ops).Where(o => o.Path == _path)];
+        Assert.Equal([new ReadOp(_path, Mib, Mib)], noted); // 조각 3 번 (두 번째 범위의 뒤쪽 1 MiB)
     }
 
-    private const uint Archive = 0x20;
-    private const uint Sparse = FileGuards.SparseAttribute;
+    [Fact]
+    public void RangesOfTheSameFileThatFollowEachOtherAreMappedAsOneViewInAnyAddressOrder()
+    {
+        ReadOp[] ranges = [.. Enumerable.Range(0, 10).Select(i => new ReadOp(_path, i * 128L * 1024, 64 * 1024))];
+
+        TouchResult forward = Go(ranges, Counter());
+        TouchResult backwards = Go([.. ranges.Reverse()], Counter());
+
+        Assert.Equal(1, forward.Maps);
+        Assert.Equal(1, backwards.Maps);
+        Assert.Equal(10L * 64 * 1024, forward.Bytes);
+    }
+
+    [Fact]
+    public void RangesOfTheSameFileFartherApartThanOneViewAndALongRangeAreMappedSeparately()
+    {
+        _ = _dir.WriteRandom("far.bin", 150 * Mib);
+        string far = _dir.Combine("far.bin");
+
+        TouchResult r = Go([new ReadOp(far, 0, Mib), new ReadOp(far, 70L * Mib, Mib), new ReadOp(far, 72L * Mib, Mib), new ReadOp(far, 140L * Mib, Mib)], Counter());
+        TouchResult longRange = Go([new ReadOp(far, 0, 70 * Mib)], Counter());
+
+        Assert.Equal(4L * Mib, r.Bytes);
+        Assert.Equal(3, r.Maps); // 0 / 70~73 MiB (한 뷰) / 140 MiB
+        Assert.Equal(70L * Mib, longRange.Bytes);
+        Assert.Equal(2, longRange.Maps); // 64 MiB + 6 MiB
+    }
+
+    [Fact]
+    public void AMissingFileOrARangeOutsideTheFileIsAnErrorAndACanceledTouchEndsAsCanceled()
+    {
+        TouchResult r = Go([new ReadOp(_dir.Combine("none.bin"), 0, Mib), new ReadOp(_path, 5 * Mib, Mib), new ReadOp(_path, 0, Mib)], Counter());
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        TouchResult canceled = Go(Repeat(2), Counter(), ct: cts.Token);
+
+        Assert.Equal((2, (long)Mib), (r.Errors, r.Bytes));
+        Assert.Equal(TouchEnd.Canceled, canceled.End);
+        Assert.Equal(0, canceled.Bytes);
+    }
 
     [Fact]
     public void ARangeOfASparseFileIsSkippedBeforeAnySectionIsOpenedAndCountedApartFromTouchedBytesAndErrors()
@@ -135,7 +285,7 @@ public sealed class StandbyTouchTests : IDisposable
         string notThere = _dir.Combine("sparse.bin"); // 열려고 하면 오류로 셈: 오류 0 이면 열지 않은 것
         var asked = new List<string>();
 
-        TouchResult r = StandbyTouch.Run([new ReadOp(notThere, 0, 2 * Mib), new ReadOp(notThere, 4 * Mib, 3 * Mib)], CancellationToken.None, () => 1_000_000, path =>
+        TouchResult r = Go([new ReadOp(notThere, 0, 2 * Mib), new ReadOp(notThere, 4 * Mib, 3 * Mib)], Counter(), attributes: path =>
         {
             asked.Add(path);
             return Archive | Sparse;
@@ -154,7 +304,7 @@ public sealed class StandbyTouchTests : IDisposable
         _ = _dir.WriteRandom("s.bin", 2 * Mib);
         var asked = new List<string>();
 
-        TouchResult r = StandbyTouch.Run([new ReadOp(sparse, 0, 2 * Mib), new ReadOp(_path, 0, 2 * Mib), new ReadOp(sparse, 0, Mib), new ReadOp(_path, 0, Mib)], CancellationToken.None, () => 1_000_000, path =>
+        TouchResult r = Go([new ReadOp(sparse, 0, 2 * Mib), new ReadOp(_path, 0, 2 * Mib), new ReadOp(sparse, 0, Mib), new ReadOp(_path, 0, Mib)], Counter(), attributes: path =>
         {
             asked.Add(path);
             return path == sparse ? Archive | Sparse : Archive;
@@ -173,7 +323,7 @@ public sealed class StandbyTouchTests : IDisposable
         string notThere = _dir.Combine("none.bin");
         Func<string, uint> broken = _ => throw new IOException("attributes unreadable");
 
-        TouchResult r = StandbyTouch.Run([new ReadOp(_path, 0, 2 * Mib), new ReadOp(notThere, 0, Mib)], CancellationToken.None, () => 1_000_000, broken);
+        TouchResult r = Go([new ReadOp(_path, 0, 2 * Mib), new ReadOp(notThere, 0, Mib)], Counter(), attributes: broken);
 
         Assert.Equal(TouchEnd.Completed, r.End);
         Assert.Equal(2L * Mib, r.Bytes); // 열 수 있는 파일은 만지고
@@ -187,7 +337,7 @@ public sealed class StandbyTouchTests : IDisposable
         string[] paths = [.. Enumerable.Range(0, 70).Select(i => _dir.Combine($"none{i}.bin"))]; // 65번째부터 열린 섹션을 모두 닫고 비움 (없는 파일은 오류로 세고 기억됨)
         var asked = new List<string>();
 
-        TouchResult r = StandbyTouch.Run([.. paths.Select(p => new ReadOp(p, 0, Mib)), new ReadOp(paths[0], 0, Mib)], CancellationToken.None, () => 1_000_000, path =>
+        TouchResult r = Go([.. paths.Select(p => new ReadOp(p, 0, Mib)), new ReadOp(paths[0], 0, Mib)], Counter(), attributes: path =>
         {
             asked.Add(path);
             return Archive;
@@ -197,36 +347,30 @@ public sealed class StandbyTouchTests : IDisposable
         Assert.Equal(paths, asked); // 비운 뒤에 다시 만난 첫 파일도 다시 조회하지 않음
     }
 
-    [Theory]
-    [InlineData(0u, 1 << 20, 0.0, 0L)]
-    [InlineData(2u, 1 << 20, 0.0, 0L)] // 허용치 이하
-    [InlineData(3u, 1 << 20, 0.02, 4096L)]
-    [InlineData(300u, 1 << 20, 4.0, 1L << 20)]
-    [InlineData(10000u, 1 << 20, 4.0, 1L << 20)] // 뷰 크기를 넘지 않음
-    [InlineData(2050u, 64 << 20, 1000.0, 0L)] // 1 초 동안의 허용치 2 + 2048 쪽
-    [InlineData(2051u, 64 << 20, 1000.0, 4096L)]
-    [InlineData(5u, 0, 0.0, 0L)]
-    [InlineData(16384u, 64 << 20, 0.0, 0L)] // 시간이 0 이면 디스크가 읽을 수 있는 양도 0
-    [InlineData(16384u, 64 << 20, 20.0, 5368709L)] // 메모리에서 20 ms: 쪽 수는 뷰 전체여도 20 ms 동안 디스크가 읽을 수 있는 양 (256 MiB/s) 까지만
-    [InlineData(20000u, 64 << 20, 250.0, 64L << 20)] // 시간 상한이 뷰 크기와 같아지는 경계
-    [InlineData(16384u, 64 << 20, 500.0, 62906368L)] // 실제로 느린 뷰: 상한 (128 MiB) 이 넉넉해 쪽 수에서 허용치를 뺀 양 그대로
-    public void DiskBytesAreThePagesReadBeyondTheNoiseAllowanceCappedAtTheViewAndAtWhatTheDiskCouldReadInThatTime(uint pagesRead, long viewBytes, double ms, long expected) =>
-        Assert.Equal(expected, StandbyTouch.DiskBytesOf(pagesRead, viewBytes, ms));
-
-    [Fact]
-    public void ASlowViewThatReadItsWholeSizeFromDiskIsCountedInFullPastTheStop()
-    {
-        long one = StandbyTouch.DiskBytesOf(16384, 64L << 20, 500.0); // 64 MiB 뷰를 0.5 초 (HDD 속도) 에 만짐
-
-        Assert.True(one > StandbyTouch.DiskReadStopBytes);
-    }
-
     [Fact]
     public void ACounterThatWrapsAroundIsDifferencedAsUnsigned()
     {
-        uint before = uint.MaxValue - 10;
-        uint after = unchecked(before + 600); // 넘쳐서 작아짐
+        uint value = uint.MaxValue - 10;
+        int calls = 0;
+        Func<uint?> wrapping = () =>
+        {
+            value = calls++ == 0 ? value : unchecked(value + 20); // 기준 뒤 20 회 늘며 넘침
+            return value;
+        };
 
-        Assert.Equal(2L * Mib, StandbyTouch.DiskBytesOf(unchecked(after - before), 2 * Mib, 10.0));
+        TouchResult r = Go(Repeat(2), wrapping);
+
+        Assert.Equal(20, r.HardFaults);
+        Assert.Equal(TouchEnd.Completed, r.End);
+    }
+
+    [Fact]
+    public void TheLiveProcessCounterIsReadableAndALiveTouchOfAFileInMemoryGoesToTheEnd()
+    {
+        uint? first = ProcessFaults.Query();
+        TouchResult r = StandbyTouch.Run(Repeat(20), CancellationToken.None);
+
+        Assert.NotNull(first);
+        Assert.Equal(40L * Mib, r.Bytes); // 메모리에 있는 파일 (방금 쓴 임시 파일): 읽기 수는 같은 프로세스의 다른 스레드가 섞일 수 있어 값은 확인하지 않음
     }
 }

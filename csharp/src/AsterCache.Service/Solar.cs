@@ -81,7 +81,11 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         }
     }
 
-    /// 읽은 목록을 예열 순서의 역순으로 만지고 표식을 남깁니다 (예열 직후, 표식 없는 게임의 첫 사다리). 꺼져 있거나 만질 것이 없으면 null.
+    /// 중요도 순서 (가장 중요한 것이 앞): 순위 목록 (플레이 전체 기록의 블록 순위) 에 든 블록은 순위 순, 그 밖의 예열 블록은 읽은 순서로 그 뒤에. 순위 목록이 없으면 읽은 순서 그대로입니다.
+    /// 사다리·새로 고침 (표식의 사다리)·게임 시작 만지기·실행 중 유지가 모두 이 순서의 역순 (덜 중요한 것부터) 으로 만져, 게임이 메모리를 가져가 대기 목록의 오래된 쪽부터 밀려날 때 덜 중요한 블록이 먼저 나가고 가장 중요한 블록이 가장 늦게 나가게 합니다.
+    public IReadOnlyList<ReadOp> ImportanceOrder(GameSettings game, IReadOnlyList<ReadOp> reads) => env.RankedRows(game) is { } ranked ? PlayRanking.Reorder(reads, ranked) : reads;
+
+    /// 읽은 목록을 중요도 순서의 역순으로 만지고 표식을 남깁니다 (예열 직후, 표식 없는 게임의 첫 사다리). 꺼져 있거나 만질 것이 없으면 null.
     /// made: 표식을 남겼을 때 만진 바이트를 알림 (서비스 시작 직후 여러 게임의 사다리가 Regroup 에 넘길 값).
     /// protectedFirst: null 이면 스트림 끝의 사다리가 아님 (기존 규칙). 비어 있으면 스트림 끝의 사다리인데 직전에 보호한 게임이 없음: 이전 표식이 없는 게임이 만진 전체를 다른 게임의 앞에 있는 양에서 줄임.
     /// 비어 있지 않으면 스트림 끝이고 직전에 보호로 만진 다른 게임 (만진 순서, 바이트): 이 게임과 함께 한 묶음으로 다시 표식합니다.
@@ -93,7 +97,7 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
             return null;
         }
 
-        List<ReadOp> ladder = LadderOrder.Reverse(reads);
+        List<ReadOp> ladder = LadderOrder.Reverse(ImportanceOrder(game, reads));
         if (ladder.Count == 0)
         {
             return null;
@@ -136,7 +140,7 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
 
                 log.Info(startExe is null
                     ? $"{game.Name}: ladder ordered {r.Bytes >> 20} MiB in {r.Seconds:F1} s{Errors(r)}{Sparse(r)}"
-                    : $"{game.Name}: cache touched at game start ({startExe}): {r.Bytes >> 20} MiB in {r.Seconds:F1} s, {r.DiskBytes >> 20} MiB read from disk{(r.Errors > 0 ? $", {r.Errors} errors" : string.Empty)}{Sparse(r)}");
+                    : $"{game.Name}: cache touched at game start ({startExe}): {r.Bytes >> 20} MiB in {r.Seconds:F1} s (cpu {r.CpuSeconds:F1} s, {r.Maps} views, {r.Checks} checks), {r.DiskBytes >> 20} MiB read from disk{(r.Errors > 0 ? $", {r.Errors} errors" : string.Empty)}{Sparse(r)}");
                 break;
             case TouchEnd.Canceled:
                 Forget(game.Name); // 순서가 반쯤만 만들어짐: 표식 없이 둠
@@ -157,15 +161,20 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         return r.End;
     }
 
-    /// 게임 실행 파일이 시작할 때 목록의 일부가 이미 메모리에 없는 게임 (사다리 순서로 만지면 덜 중요한 쪽의 빈 곳에서 먼저 멈추므로 가장 중요한 앞부분을 만지지 못함): 중요한 순서 (읽은 순서) 로 먼저 만져 메모리에 남은 앞부분의 끝을 찾고 (느린 조각에서 멈추는 판정과 디스크 읽기 한도는 Order 와 같음),
+    /// 게임 실행 파일이 시작할 때 목록의 일부가 이미 메모리에 없는 게임 (사다리 순서로 만지면 덜 중요한 쪽의 빈 곳에서 먼저 멈추므로 가장 중요한 앞부분을 만지지 못함): 중요도 순서 (ImportanceOrder) 로 먼저 만져 메모리에 남은 앞부분의 끝을 찾고 (이 프로세스의 디스크 읽기 수로 경계를 찾는 판정과 디스크 읽기 한도는 Order 와 같음),
     /// 그 앞부분만 사다리 순서로 다시 만져 남은 것 가운데 가장 중요한 블록이 가장 늦게 밀려나게 합니다. 전체가 메모리에 있다는 표식은 남기지 않고 빠짐 표시를 그대로 둬 게임이 끝난 뒤 재예열 점검이 나머지를 읽게 합니다.
     /// 다른 게임의 앞에 있는 양은 앞부분이 메모리에 있던 만큼 줄입니다 (이 게임은 표식이 없어 스트림 끝의 사다리와 같이 만진 전체를 줄이는 규칙: ReduceOthers 의 withoutPreviousAll). 자기 표식은 만들지 않으므로 앞에 있는 양을 따로 셀 일이 없습니다.
     /// touch: 범위를 만드는 함수 (기본은 env.TouchRanges). keeping: 게임이 실행되는 동안 앞부분을 유지하는 호출 (호출한 쪽이 reads 를 한 번에 만질 상한까지 잘라 줌): 전부 메모리에 있어도 표식을 새로 만들지 않고 (Order 를 부르지 않음) 앞부분을 사다리 순서로 만지며, 로그 문구만 다릅니다. noneInMemory: 취소가 아니라 메모리에 하나도 남아 있지 않아 멈췄을 때 부름 (유지가 그 회차에서 끝나게).
-    public TouchEnd? TouchFront(GameSettings game, IReadOnlyList<ReadOp> reads, CancellationToken ct, string startExe, Func<IReadOnlyList<ReadOp>, CancellationToken, TouchResult>? touch = null, bool keeping = false, Action? noneInMemory = null)
+    public TouchEnd? TouchFront(GameSettings game, IReadOnlyList<ReadOp> reads, CancellationToken ct, string startExe, Func<IReadOnlyList<ReadOp>, CancellationToken, TouchResult>? touch = null, bool keeping = false, Action? noneInMemory = null, int skippedBefore = 0)
     {
         if (!Enabled || reads.Count == 0)
         {
             return null;
+        }
+
+        if (!keeping)
+        {
+            reads = ImportanceOrder(game, reads); // 게임 시작 때의 호출은 읽은 순서의 목록을 넘기므로 여기서 중요도 순서로 (유지는 이미 그 순서의 목록을 넘김: 두 번 정렬하지 않음)
         }
 
         touch ??= env.TouchRanges;
@@ -194,7 +203,7 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         // 멈춘 곳까지가 앞부분 (건너뛴 스파스 범위의 길이는 목록 위치에 들어감). 멈춘 조각 근처에서 디스크로 읽힌 만큼도 이제 메모리에 있으므로 함께 만짐
         TouchResult r = touch(LadderOrder.Reverse(PrefetchStreamer.Head(reads, find.Bytes + find.SkippedBytes)), ct);
         ReduceOthers([game.Name], [(null, inMemory)], withoutPreviousAll: true);
-        string kept = $"{inMemory >> 20} MiB of {total >> 20} MiB still in memory, in {find.Seconds + r.Seconds:F1} s, {(find.DiskBytes + r.DiskBytes) >> 20} MiB read from disk{Sparse(find)}";
+        string kept = $"{inMemory >> 20} MiB of {total >> 20} MiB still in memory{Stopped(find)}, in {find.Seconds + r.Seconds:F1} s (cpu {find.CpuSeconds + r.CpuSeconds:F1} s, {find.Maps + r.Maps} views, {find.Checks + r.Checks} checks), {(find.DiskBytes + r.DiskBytes) >> 20} MiB read from disk ({find.HardFaults + r.HardFaults} hard faults){Sparse(find)}{(skippedBefore > 0 ? $", {skippedBefore} rounds skipped before" : string.Empty)}";
         log.Info(r.End == TouchEnd.Canceled
             ? $"{game.Name}: {what} stopped after {r.Bytes >> 20} MiB{Errors(r)}{Sparse(r)}"
             : keeping ? $"{game.Name}: cache kept while playing ({startExe}): {kept}" : $"{game.Name}: cache touched at game start ({startExe}): {kept}, left to the rewarm check");
@@ -546,7 +555,10 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
     }
 
     // 다시 채움 로그의 꼬리: 사다리 (역순) 를 몇 MiB 만지고 멈췄는지 (만진 양이 전체에 가까우면 빠진 것은 가장 중요한 앞쪽), 느린 조각 수와 디스크에서 읽힌 양, 오류 수. N 은 건너뛴 스파스 범위를 포함한 사다리 전체 (건너뛴 양은 줄 끝 꼬리로 따로 보임).
-    private static string Missing(TouchResult r, IReadOnlyList<ReadOp> ladder) => $"after {r.Bytes >> 20} of {ladder.Sum(o => o.Length) >> 20} MiB ({r.SlowPieces} slow pieces{(r.DiskBytes > 0 ? $", {r.DiskBytes >> 20} MiB read from disk" : string.Empty)}{(r.Errors > 0 ? $", {r.Errors} errors" : string.Empty)})";
+    private static string Missing(TouchResult r, IReadOnlyList<ReadOp> ladder) => $"after {r.Bytes >> 20} of {ladder.Sum(o => o.Length) >> 20} MiB ({r.SlowPieces} slow pieces{(r.DiskBytes > 0 ? $", {r.DiskBytes >> 20} MiB read from disk" : string.Empty)}{(r.HardFaults > 0 ? $", {r.HardFaults} hard faults" : string.Empty)}{(r.Reason == StopReason.SlowTime ? ", stopped by slow time" : string.Empty)}{(r.Errors > 0 ? $", {r.Errors} errors" : string.Empty)})";
+
+    // 경계에서 멈춘 만지기의 로그 꼬리: 디스크 읽기 수가 허용치를 넘었는지 (경계), 아니면 안전망 (느린 조각의 시간 합) 에 걸렸는지
+    private static string Stopped(TouchResult r) => r.End != TouchEnd.NeedsDiskReads ? string.Empty : r.Reason == StopReason.SlowTime ? " (stopped by slow time)" : " (boundary found by hard faults)";
 
     // 줄 끝에 붙이는 스파스 파일이라 만지지 않은 양 (MiB 로 0 이면 빈 문자열)
     private static string Sparse(TouchResult r) => r.SkippedBytes >> 20 > 0 ? $", {r.SkippedBytes >> 20} MiB in sparse files not touched" : string.Empty;

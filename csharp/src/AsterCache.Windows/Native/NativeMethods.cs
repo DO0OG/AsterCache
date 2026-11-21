@@ -136,6 +136,10 @@ internal static unsafe partial class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool GetProcessTimes(SafeProcessHandle process, long* creation, long* exit, long* kernel, long* user);
 
+    [LibraryImport(Kernel32, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetThreadTimes(nint thread, long* creation, long* exit, long* kernel, long* user);
+
     [LibraryImport(Kernel32, EntryPoint = "K32EmptyWorkingSet", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool EmptyWorkingSet(SafeProcessHandle process);

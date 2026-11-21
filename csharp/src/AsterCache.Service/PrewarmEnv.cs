@@ -357,6 +357,7 @@ public sealed class PrewarmEnv
         IReadOnlyDictionary<string, string> marked = AutoTracer.ReadVolatile(AutoTracer.VolatilePath(g));
         string ranked = LoadRefillPlans.RankedPathOf(g);
         DateTime since = File.GetLastWriteTimeUtc(File.Exists(ranked) ? ranked : raw);
+        HashSet<string> noCacheRead = UnbufferedFiles.NoCacheRead(g);
         WrittenFileHistory? history = null;
         bool? updated = null;
         bool updatedKnown = false;
@@ -391,6 +392,11 @@ public sealed class PrewarmEnv
 
         return new HoldFileRules(path =>
         {
+            if (noCacheRead.Contains(path))
+            {
+                return Prewarmer.HoldNoCacheRead; // 쓰는 파일이든 아니든: 뷰가 있으면 그 파일의 캐시 없는 읽기가 느려짐
+            }
+
             if (VolatileFiles.Reason(path, marked) is { } why)
             {
                 if (!writtenOn || !VolatileFiles.IsGameWritten(path, marked))

@@ -101,4 +101,21 @@ public sealed class UnbufferedFilesTests : IDisposable
         Assert.Empty(UnbufferedFileStore.Read(UnbufferedFiles.PathOf(_game))!.Files); // 판정된 파일이 없으면 빈 목록
         Assert.Equal([_bare, _cached], Paths(PrefetchStreamer.Ops(_game)));
     }
+
+    [Fact]
+    public void RebuildAlsoSavesTheFilesReadMostlyWithoutTheCacheAndTheMissingListMakesItStale()
+    {
+        Func<string, DateTimeOffset?> time = p => File.Exists(p) ? File.GetLastWriteTimeUtc(p) : null;
+        SavePlay(1, Bare, Cached);
+        SavePlay(2, Bare, new IoSummaryReadMode(_cached, 2, Mib, 1, Mib, 0, 0)); // 캐시 읽기가 더 많은 파일 (캐시 경유 4 + 페이징 1 > 캐시 없음 1)
+
+        string line = UnbufferedFiles.Rebuild(_game, DateTimeOffset.UtcNow);
+
+        Assert.Contains("1 files read mostly without the cache", line, StringComparison.Ordinal);
+        Assert.Equal([_bare], UnbufferedFiles.NoCacheRead(_game)); // _cached 는 캐시 없는 읽기가 있어도 캐시 경유가 더 많아 목록에 없음
+        Assert.False(UnbufferedFiles.IsStale(_game, time));
+
+        File.Delete(UnbufferedFiles.NoCacheReadPathOf(_game));
+        Assert.True(UnbufferedFiles.IsStale(_game, time)); // 이 목록이 없던 설치본은 서비스 시작 때 한 번 다시 만듦
+    }
 }

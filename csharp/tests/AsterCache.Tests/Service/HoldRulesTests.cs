@@ -231,4 +231,20 @@ public sealed class HoldRulesTests : IDisposable
         File.SetLastWriteTimeUtc(_static, DateTime.UtcNow.AddMinutes(-5));
         Assert.Equal(Prewarmer.HoldWrittenUpdated, PrewarmEnv.HoldRules(_game, true, PrewarmEnv.GameUpdated, null, end)!.Reason(_written)); // 뒤에 수정됨
     }
+
+    [Fact]
+    public void AFileTheGameReadMostlyWithoutTheCacheIsLeftOutWhetherItIsStaticOrWrittenAndAnOldRecordWithoutTheInformationHoldsAsBefore()
+    {
+        History(4096, 4096, 4096);
+        HoldFileRules before = PrewarmEnv.HoldRules(_game, true, (_, _, _) => false)!;
+        Assert.Null(before.Reason(_static)); // 목록이 없으면 (옛 기록) 지금처럼 붙듦
+        Assert.Null(before.Reason(_written));
+
+        NoCacheReadFileStore.Write(UnbufferedFiles.NoCacheReadPathOf(_game), new NoCacheReadFileList(new HashSet<string>(StringComparer.OrdinalIgnoreCase) { _static, _written }, 4), DateTimeOffset.UtcNow);
+        HoldFileRules after = PrewarmEnv.HoldRules(_game, true, (_, _, _) => false)!;
+
+        Assert.Equal(Prewarmer.HoldNoCacheRead, after.Reason(_static)); // 정적 파일
+        Assert.Equal(Prewarmer.HoldNoCacheRead, after.Reason(_written)); // 게임이 쓰는 파일은 조건을 채워도 뺌
+        Assert.Null(after.Reason(Path.Combine(_games, "other.bin")));
+    }
 }

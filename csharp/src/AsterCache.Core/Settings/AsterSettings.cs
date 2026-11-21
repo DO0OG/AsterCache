@@ -300,6 +300,12 @@ public sealed record MemorySettings(bool BackgroundYield = true, bool StandbyLad
     public static MemorySettings Default { get; } = new();
 }
 
+/// 플레이 기록 설정 (config 의 play 객체): frame_times 는 게임 프로세스의 프레임 간격 (끊김) 을 ETW Present 이벤트로 재서 플레이 기록에 남김 (기본 켜짐, 자동 트레이스를 막는 안티치트 게임에서는 켜져 있어도 동작하지 않음).
+public sealed record PlaySettings(bool FrameTimes = true)
+{
+    public static PlaySettings Default { get; } = new();
+}
+
 /// config.json 한 벌 (검증을 통과한 값만 존재).
 public sealed record AsterSettings(int PollMs, IReadOnlyList<GameSettings> Games, string Watcher = SettingsStore.DefaultWatcher, string Language = SettingsStore.DefaultLanguage)
 {
@@ -313,6 +319,9 @@ public sealed record AsterSettings(int PollMs, IReadOnlyList<GameSettings> Games
 
     /// 배경 메모리 양보 설정.
     public MemorySettings Memory { get; init; } = MemorySettings.Default;
+
+    /// 플레이 기록 설정.
+    public PlaySettings Play { get; init; } = PlaySettings.Default;
 
     /// 자동 재배치가 한 존에 쓰는 크기의 상한 (MiB).
     public int MaxZoneMib { get; init; } = SettingsStore.DefaultMaxZoneMib;

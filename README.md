@@ -23,6 +23,7 @@ AsterCache helps games installed on a hard disk (HDD) load faster. It watches wh
 - It does not change your game files, and does not copy them to another drive (the optional SSD assist storage, off by default, is the one exception).
 - After installing, you do not have to do anything. It works in the background.
 - The tray window shows a summary of each game's last play. It is disk read statistics, not a load-time or frame measurement. A diagnostics ZIP can be exported for support; it stays on your PC.
+- While a game runs, the play record also keeps the frame interval (stutter). It opens no game process: an ordinary ETW session receives only the `Microsoft-Windows-DXGI` Present start event and the service totals it per second. The session is not opened for a game whose anti-cheat blocks automatic tracing, and `play.frame_times` turns it off. Only DirectX games can be measured, and its behavior in a real game and next to anti-cheat has not been checked. See the [anti-cheat page](docs/ANTICHEAT.md).
 - The measured figures in this document are replay times of recorded read patterns, not total load times of a running game.
 
 ## Who it is for

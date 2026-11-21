@@ -1,5 +1,6 @@
 using AsterCache.Core.Logging;
 using AsterCache.Core.Settings;
+using AsterCache.Windows;
 
 namespace AsterCache.Service;
 
@@ -9,14 +10,17 @@ public sealed partial class BackgroundYield
     // 같은 프로세스 (pid 와 생성 시각이 같음) 일 때만 원래 값으로 되돌립니다. 열기 전에 현재 프로세스 목록에서 pid 의 이름을 확인해
     // 없거나 (끝남), 기록한 이름과 다르거나, 기록이 없는 옛 항목이 이름 제외 규칙에 걸리거나, 세션 0·모름이면 열지 않고 버립니다 (pid 재사용).
     // 메모리와 I/O 는 각각 되돌리고, 같은 프로세스인데 쓰기에 실패한 쪽만 kept 에 담아 (성공한 쪽은 NotLowered 로 지움) 다음에 다시 시도하게 합니다. ioOnly 면 I/O 만 되돌립니다.
-    // 되돌린 수와 그 가운데 물려받은 항목의 수 (메모리 기준), I/O 를 되돌린 수를 돌려줍니다.
-    private (int Restored, int Inherited, int IoRestored) Restore(IEnumerable<LoweredProcess> entries, IReadOnlyList<(int Pid, string Exe)> processes, List<LoweredProcess> kept, bool ioOnly = false)
+    // CPU 등급은 지금 값이 우리가 내린 보통보다 낮음일 때만 원래 값으로 되돌립니다 (아니면 그 사이 사용자나 그 프로그램이 바꾼 것이라 건드리지 않고 기록만 지움).
+    // 되돌린 수와 그 가운데 물려받은 항목의 수 (메모리 기준), I/O·CPU 를 되돌린 수를 돌려줍니다.
+    // cpuOnly 면 CPU 등급만 되돌립니다.
+    private (int Restored, int Inherited, int IoRestored, int CpuRestored) Restore(IEnumerable<LoweredProcess> entries, IReadOnlyList<(int Pid, string Exe)> processes, List<LoweredProcess> kept, bool ioOnly = false, bool cpuOnly = false)
     {
         Dictionary<int, string> names = NamesOf(processes);
         HashSet<string> gameExes = BackgroundProcessRules.GameExes(settings().Games);
         int restored = 0;
         int inherited = 0;
         int ioRestored = 0;
+        int cpuRestored = 0;
         foreach (LoweredProcess p in entries)
         {
             if (!names.TryGetValue(p.Pid, out string? current)
@@ -31,20 +35,23 @@ public sealed partial class BackgroundYield
                 continue;
             }
 
-            bool memory = !ioOnly && p.Priority != NotLowered;
-            bool io = p.Io != NotLowered;
+            bool memory = !ioOnly && !cpuOnly && p.Priority != NotLowered;
+            bool io = !cpuOnly && p.Io != NotLowered;
             bool memoryOk = !memory || env.SetMemoryPriority(p.Pid, p.Priority);
             bool ioOk = !io || env.SetIoPriority(p.Pid, p.Io);
+            bool cpu = !ioOnly && p.Cpu != NotLowered && env.CpuClass(p.Pid) is ProcessMemory.CpuClassBelowNormal;
+            bool cpuOk = !cpu || env.SetCpuClass(p.Pid, p.Cpu);
             restored += memory && memoryOk ? 1 : 0;
             inherited += memory && memoryOk && p.Inherited ? 1 : 0;
             ioRestored += io && ioOk ? 1 : 0;
-            if (!memoryOk || !ioOk)
+            cpuRestored += cpu && cpuOk ? 1 : 0;
+            if (!memoryOk || !ioOk || !cpuOk)
             {
-                kept.Add(p with { Priority = memoryOk ? NotLowered : p.Priority, Io = ioOk ? NotLowered : p.Io });
+                kept.Add(p with { Priority = memoryOk ? NotLowered : p.Priority, Io = ioOk ? NotLowered : p.Io, Cpu = cpuOk ? NotLowered : p.Cpu });
             }
         }
 
-        return (restored, inherited, ioRestored);
+        return (restored, inherited, ioRestored, cpuRestored);
     }
 
     // 마지막 점검 뒤에 생긴 자식도 되돌리도록, 되돌리기 전에 물려받은 것만 한 번 더 찾습니다 (새로 낮추지는 않음).
@@ -78,11 +85,11 @@ public sealed partial class BackgroundYield
         CatchInherited(processes);
         List<LoweredProcess> held = [.. _lowered.Values.Where(l => l.Io != NotLowered)];
         var kept = new List<LoweredProcess>();
-        (_, _, int ioRestored) = Restore(held, processes, kept, ioOnly: true);
+        (_, _, int ioRestored, _) = Restore(held, processes, kept, ioOnly: true);
         foreach (LoweredProcess h in held)
         {
             LoweredProcess left = h with { Io = kept.Any(k => k.Pid == h.Pid) ? h.Io : NotLowered };
-            if (left.Priority == NotLowered && left.Io == NotLowered)
+            if (left.Priority == NotLowered && left.Io == NotLowered && left.Cpu == NotLowered)
             {
                 _ = _lowered.Remove(h.Pid);
             }
@@ -94,6 +101,103 @@ public sealed partial class BackgroundYield
 
         _ = SaveState();
         log.Info($"background yield: I/O priority restored for {ioRestored} processes (setting turned off)");
+    }
+
+    // 세션 중 CPU 설정만 꺼졌으면 CPU 등급만 되돌리고 메모리·I/O 쪽 기록은 그대로 둡니다 (ReleaseIo 와 같은 방식). 다시 켜지면 다음 틱에 낮춥니다.
+    private void ReleaseCpu(IReadOnlyList<(int Pid, string Exe)> processes)
+    {
+        if (CpuEnabled)
+        {
+            _cpuReleaseDone = false;
+            return;
+        }
+
+        if (_cpuReleaseDone || !_lowered.Values.Any(l => l.Cpu != NotLowered))
+        {
+            return;
+        }
+
+        (_cpuReleaseDone, _cpuApplied) = (true, false); // 한 번만: 못 되돌린 것은 세션 끝의 되돌리기가 다시 시도
+
+        CatchInherited(processes);
+        List<LoweredProcess> held = [.. _lowered.Values.Where(l => l.Cpu != NotLowered)];
+        var kept = new List<LoweredProcess>();
+        (_, _, _, int cpuRestored) = Restore(held, processes, kept, cpuOnly: true);
+        foreach (LoweredProcess h in held)
+        {
+            LoweredProcess left = h with { Cpu = kept.Any(k => k.Pid == h.Pid) ? h.Cpu : NotLowered };
+            if (left.Priority == NotLowered && left.Io == NotLowered && left.Cpu == NotLowered)
+            {
+                _ = _lowered.Remove(h.Pid);
+            }
+            else
+            {
+                _lowered[h.Pid] = left;
+            }
+        }
+
+        _ = SaveState();
+        log.Info($"background yield: CPU priority restored for {cpuRestored} processes (setting turned off)");
+    }
+
+    // 트리거로 시작한 세션에서 게임이 뜬 뒤 한 번: 이미 고른 대상 가운데 CPU 등급이 보통인 것을 낮춥니다 (메모리·I/O 기록이 이미 있으면 거기에 CPU 값만 더함). 기록을 먼저 쓰고, 쓰지 못하면 낮추지 않습니다.
+    private void LowerCpuLate()
+    {
+        _cpuApplied = true;
+        long at = env.Now().ToFileTime();
+        var plan = new List<LoweredProcess>();
+        foreach (YieldTarget t in _targets.Values.Where(t => !t.InheritOnly))
+        {
+            if (env.CpuClass(t.Pid) is not ProcessMemory.CpuClassNormal)
+            {
+                continue;
+            }
+
+            if (!_lowered.TryGetValue(t.Pid, out LoweredProcess known) || known.Created != t.Created)
+            {
+                plan.Add(new LoweredProcess(t.Pid, t.Exe, t.Path, t.Created, NotLowered, at, Cpu: ProcessMemory.CpuClassNormal));
+            }
+            else if (known.Cpu == NotLowered)
+            {
+                plan.Add(known with { Cpu = ProcessMemory.CpuClassNormal });
+            }
+        }
+
+        foreach (LoweredProcess p in plan)
+        {
+            _lowered[p.Pid] = p;
+        }
+
+        if (plan.Count == 0)
+        {
+            return;
+        }
+
+        if (!SaveState())
+        {
+            foreach (LoweredProcess p in plan)
+            {
+                DropParts(p.Pid, false, false, true);
+            }
+
+            return;
+        }
+
+        int cpuLowered = 0;
+        foreach (LoweredProcess p in plan)
+        {
+            if (env.SetCpuClass(p.Pid, ProcessMemory.CpuClassBelowNormal))
+            {
+                cpuLowered++;
+            }
+            else
+            {
+                DropParts(p.Pid, false, false, true);
+            }
+        }
+
+        _ = SaveState();
+        log.Info($"background yield: CPU priority lowered for {cpuLowered} processes (game started)");
     }
 
     private static Dictionary<int, string> NamesOf(IReadOnlyList<(int Pid, string Exe)> processes)

@@ -6,7 +6,7 @@ namespace AsterCache.Windows;
 /// 다른 프로세스의 경로·작업 집합·생성 시각 (FILETIME)·부모 pid (모르면 0). 읽을 수 없으면 Describe 가 null.
 public readonly record struct ProcessInfo(string Path, long WorkingSetBytes, long Created, int Parent = 0);
 
-/// 배경 프로세스의 메모리 양보에 쓰는 프로세스 단위 호출. 다른 프로세스에 하는 일은 작업 집합 비우기와 메모리·I/O 우선순위 변경 세 가지뿐입니다.
+/// 배경 프로세스의 메모리 양보에 쓰는 프로세스 단위 호출. 다른 프로세스에 하는 일은 작업 집합 비우기와 메모리·I/O·CPU 우선순위 변경 네 가지뿐입니다.
 /// 실패 (접근 거부, 이미 종료) 는 예외가 아니라 null/false 이며 핸들은 항상 닫습니다. 열기 권한은 호출마다 필요한 최소: 조회 0x1000, 비우기 0x1100, 우선순위 쓰기 0x0200.
 public static unsafe class ProcessMemory
 {
@@ -16,6 +16,11 @@ public static unsafe class ProcessMemory
     public const int IoPriorityLow = 1;
 
     public const int IoPriorityNormal = 2;
+
+    /// CPU 우선순위 등급 (GetPriorityClass 값 그대로): 보통 0x20, 보통보다 낮음 0x4000. 낮음 쪽은 Windows 가 부모에게서 자식으로 물려줍니다.
+    public const int CpuClassNormal = 0x20;
+
+    public const int CpuClassBelowNormal = 0x4000;
 
     /// 프로세스를 열지 않고 세션 id 를 묻습니다. 세션 0 은 서비스·시스템 프로세스.
     public static uint? SessionId(int pid) => NativeMethods.ProcessIdToSessionId((uint)pid, out uint session) ? session : null;
@@ -91,6 +96,25 @@ public static unsafe class ProcessMemory
         using SafeProcessHandle h = Open(pid, Win32.ProcessSetInformation);
         uint value = (uint)priority;
         return !h.IsInvalid && NativeMethods.NtSetInformationProcess(h, Win32.ProcessIoPriorityClass, &value, sizeof(uint)) >= 0;
+    }
+
+    /// CPU 우선순위 등급 (GetPriorityClass 값 그대로, 못 읽으면 null).
+    public static int? CpuPriorityClass(int pid)
+    {
+        using SafeProcessHandle h = Open(pid, Win32.ProcessQueryLimitedInformation);
+        if (h.IsInvalid)
+        {
+            return null;
+        }
+
+        uint value = NativeMethods.GetPriorityClass(h);
+        return value == 0 ? null : (int)value;
+    }
+
+    public static bool SetCpuPriorityClass(int pid, int priorityClass)
+    {
+        using SafeProcessHandle h = Open(pid, Win32.ProcessSetInformation);
+        return !h.IsInvalid && NativeMethods.SetPriorityClass(h, (uint)priorityClass);
     }
 
     private static SafeProcessHandle Open(int pid, uint access) => NativeMethods.OpenProcess(access, false, (uint)pid);

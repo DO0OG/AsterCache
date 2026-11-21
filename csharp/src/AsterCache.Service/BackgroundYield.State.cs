@@ -4,7 +4,7 @@ using AsterCache.Windows;
 
 namespace AsterCache.Service;
 
-/// BackgroundYield 의 상태 파일 (background_yield.json): 낮춘 프로세스의 pid·생성 시각·원래 메모리·I/O 우선순위. 직전 실행이 비정상 종료해도 다음 시작 때 되돌리려고 남깁니다.
+/// BackgroundYield 의 상태 파일 (background_yield.json): 낮춘 프로세스의 pid·생성 시각·원래 메모리·I/O·CPU 우선순위. 직전 실행이 비정상 종료해도 다음 시작 때 되돌리려고 남깁니다.
 public sealed partial class BackgroundYield
 {
     private const int MaxPriority = 7;
@@ -36,7 +36,7 @@ public sealed partial class BackgroundYield
                 }
 
                 var kept = new List<LoweredProcess>();
-                (int restored, _, int ioRestored) = Restore([.. _lowered.Values], processes, kept);
+                (int restored, _, int ioRestored, int cpuRestored) = Restore([.. _lowered.Values], processes, kept);
                 _lowered.Clear();
                 _targets.Clear();
                 _skipped.Clear();
@@ -46,9 +46,9 @@ public sealed partial class BackgroundYield
                 }
 
                 _ = SaveState();
-                if (restored > 0 || ioRestored > 0)
+                if (restored > 0 || ioRestored > 0 || cpuRestored > 0)
                 {
-                    log.Info($"background yield: restored memory priority for {restored} processes left by the previous run, I/O priority for {ioRestored}");
+                    log.Info($"background yield: restored memory priority for {restored} processes left by the previous run, I/O priority for {ioRestored}, CPU priority for {cpuRestored}");
                 }
             }
             catch (Exception e) when (e is not OperationCanceledException)
@@ -68,16 +68,17 @@ public sealed partial class BackgroundYield
             {
                 foreach (JObject o in items.OfType<JObject>())
                 {
-                    // priority (메모리) 와 io_priority 는 둘 다 선택이지만 하나는 있어야 하고, 있으면 범위 안이어야 합니다 (옛 파일에는 io_priority 가 없음).
+                    // priority (메모리)·io_priority·cpu_priority 는 모두 선택이지만 하나는 있어야 하고, 있으면 범위 안이어야 합니다 (옛 파일에는 io_priority·cpu_priority 가 없음). cpu_priority 는 보통 등급 (0x20 = 32) 만 적습니다.
                     if (o.TryGetValue("pid", out object? pid) && pid is long id && id > 4 && id <= int.MaxValue
                         && o.TryGetValue("created", out object? created) && created is long at
                         && ReadPriority(o, "priority", ProcessMemory.PriorityVeryLow + 1, MaxPriority) is { } memory
                         && ReadPriority(o, "io_priority", ProcessMemory.IoPriorityNormal, MaxIoPriority) is { } io
-                        && (memory != NotLowered || io != NotLowered))
+                        && ReadPriority(o, "cpu_priority", ProcessMemory.CpuClassNormal, ProcessMemory.CpuClassNormal) is { } cpu
+                        && (memory != NotLowered || io != NotLowered || cpu != NotLowered))
                     {
                         string? exe = o.TryGetValue("exe", out object? name) ? name as string : null; // 선택 필드: 옛 파일에는 없음
                         long loweredAt = o.TryGetValue("lowered_at", out object? lt) && lt is long l && l > 0 ? l : long.MaxValue; // 선택 필드: 옛 파일에는 없음
-                        result.Add(new LoweredProcess((int)id, exe, null, at, memory, loweredAt, o.TryGetValue("inherited", out object? inh) && inh is true, io));
+                        result.Add(new LoweredProcess((int)id, exe, null, at, memory, loweredAt, o.TryGetValue("inherited", out object? inh) && inh is true, io, cpu));
                     }
                 }
             }
@@ -133,6 +134,11 @@ public sealed partial class BackgroundYield
                 if (p.Io != NotLowered)
                 {
                     item.Add("io_priority", (long)p.Io);
+                }
+
+                if (p.Cpu != NotLowered)
+                {
+                    item.Add("cpu_priority", (long)p.Cpu);
                 }
 
                 items.Add(item);

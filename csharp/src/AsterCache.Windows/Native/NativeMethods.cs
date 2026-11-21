@@ -162,6 +162,15 @@ internal static unsafe partial class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool SetProcessInformation(SafeProcessHandle process, int infoClass, byte* info, uint size);
 
+    // https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getpriorityclass (조회 권한 0x1000 으로 읽음, 실패하면 0)
+    [LibraryImport(Kernel32, SetLastError = true)]
+    internal static partial uint GetPriorityClass(SafeProcessHandle process);
+
+    // https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setpriorityclass (PROCESS_SET_INFORMATION 0x0200 필요)
+    [LibraryImport(Kernel32, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool SetPriorityClass(SafeProcessHandle process, uint priorityClass);
+
     // https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryinformationprocess
     [LibraryImport("ntdll.dll")]
     internal static partial int NtQueryInformationProcess(SafeProcessHandle process, int infoClass, nuint* info, uint size, out uint returned);

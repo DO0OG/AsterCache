@@ -22,6 +22,7 @@ internal sealed class YieldWorld
         public long Created = 1000;
         public int Priority = 5;
         public int Io = 2; // I/O 우선순위 (보통)
+        public int Cpu = 0x20; // CPU 우선순위 등급 (보통)
         public int Parent;
     }
 
@@ -38,6 +39,13 @@ internal sealed class YieldWorld
     public List<(int Pid, int Priority)> IoSets { get; } = [];
 
     public List<int> IoReads { get; } = [];
+
+    public List<(int Pid, int Class)> CpuSets { get; } = [];
+
+    public List<int> CpuReads { get; } = [];
+
+    /// CPU 등급 쓰기가 실패하는 pid.
+    public HashSet<int> CpuSetFails { get; } = [];
 
     /// I/O 우선순위 쓰기가 실패하는 pid.
     public HashSet<int> IoSetFails { get; } = [];
@@ -78,7 +86,7 @@ internal sealed class YieldWorld
         Procs[pid] = new Proc { Exe = exe, Session = session, Path = path ?? @"C:\Users\u\AppData\Local\Programs\app\" + exe, Ws = wsMib * Mib, Priority = priority };
 
     /// 조회·쓰기·우선순위 읽기가 닿은 모든 pid (제외 대상은 여기에 한 번도 없어야 함).
-    public IEnumerable<int> Touched => Described.Concat(Trimmed).Concat(Sets.Select(s => s.Pid)).Concat(PriorityReads).Concat(IoSets.Select(s => s.Pid)).Concat(IoReads).Distinct();
+    public IEnumerable<int> Touched => Described.Concat(Trimmed).Concat(Sets.Select(s => s.Pid)).Concat(PriorityReads).Concat(IoSets.Select(s => s.Pid)).Concat(IoReads).Concat(CpuSets.Select(s => s.Pid)).Concat(CpuReads).Distinct();
 
     public IReadOnlyList<(int Pid, string Exe)> Snapshot() => [.. Procs.Select(p => (p.Key, p.Value.Exe))];
 
@@ -139,6 +147,22 @@ internal sealed class YieldWorld
             p.Io = value;
             return true;
         },
+        CpuClass = pid =>
+        {
+            CpuReads.Add(pid);
+            return Procs.TryGetValue(pid, out Proc? p) ? p.Cpu : null;
+        },
+        SetCpuClass = (pid, value) =>
+        {
+            CpuSets.Add((pid, value));
+            if (CpuSetFails.Contains(pid) || !Procs.TryGetValue(pid, out Proc? p))
+            {
+                return false;
+            }
+
+            p.Cpu = value;
+            return true;
+        },
         AvailableMib = () => Avail(),
         Lists = () => ListsNow,
         PhysicalBytes = () => PhysicalRam,
@@ -192,6 +216,8 @@ public sealed class BackgroundYieldTests
         Assert.Equal([(20, 1)], _w.Sets);
         Assert.Equal([(20, 1)], _w.IoSets);
         Assert.Equal([20], _w.IoReads);
+        Assert.Equal([(20, 0x4000)], _w.CpuSets);
+        Assert.Equal([20], _w.CpuReads);
     }
 
     [Fact]
@@ -226,7 +252,7 @@ public sealed class BackgroundYieldTests
 
         Assert.Equal([(50, 1), (51, 1)], _w.Sets);
         Assert.Equal([50, 52], _w.Trimmed); // 32 MiB 이상만
-        Assert.True(Logged("background yield (trigger): trimmed 2 processes (900 MiB working set), memory priority lowered for 2, I/O priority lowered for 3, available 10000 MiB"));
+        Assert.True(Logged("background yield (trigger): trimmed 2 processes (900 MiB working set), memory priority lowered for 2, I/O priority lowered for 3, CPU priority lowered for 0, available 10000 MiB"));
 
         _w.Now += TimeSpan.FromSeconds(30);
         _ = _w.Add(53, "late.exe", wsMib: 300);
@@ -349,7 +375,7 @@ public sealed class BackgroundYieldTests
         Assert.Empty(_w.Trimmed);
         Assert.Equal([(50, 1)], _w.Sets);
         Assert.Equal(_w.Start, _w.Now); // 가라앉기 대기 없음
-        Assert.True(Logged("background yield (trigger): memory priority lowered for 1, I/O priority lowered for 1, no trim needed (headroom 8192 MiB, available 10000 MiB)"));
+        Assert.True(Logged("background yield (trigger): memory priority lowered for 1, I/O priority lowered for 1, CPU priority lowered for 0, no trim needed (headroom 8192 MiB, available 10000 MiB)"));
     }
 
     [Fact]
@@ -359,7 +385,7 @@ public sealed class BackgroundYieldTests
         _w.ListsNow = Lists(8191);
         Make().Begin("trigger", settle: false);
         Assert.Equal([50], _w.Trimmed);
-        Assert.True(Logged("trimmed 1 processes (500 MiB working set), memory priority lowered for 1, I/O priority lowered for 1, available 10000 MiB, headroom 8191 MiB"));
+        Assert.True(Logged("trimmed 1 processes (500 MiB working set), memory priority lowered for 1, I/O priority lowered for 1, CPU priority lowered for 0, available 10000 MiB, headroom 8191 MiB"));
 
         _w.Trimmed.Clear();
         _w.Procs[50].Ws = 500 * Mib;
@@ -404,7 +430,7 @@ public sealed class BackgroundYieldTests
         y.Begin("trigger", settle: false);
 
         Assert.Equal([50], _w.Trimmed);
-        Assert.True(Logged("trimmed 1 processes (500 MiB working set), memory priority lowered for 1, I/O priority lowered for 1, available 10000 MiB"));
+        Assert.True(Logged("trimmed 1 processes (500 MiB working set), memory priority lowered for 1, I/O priority lowered for 1, CPU priority lowered for 1, available 10000 MiB"));
         TickAt(y, 2, 500, null);
         TickAt(y, 4, 500, null);
         Assert.Single(_w.Trimmed); // 조회가 안 되면 다시 비우지 않음
@@ -529,7 +555,7 @@ public sealed class BackgroundYieldTests
     private YieldWorld.Proc Spawn(int pid, string exe, int parent, int seconds)
     {
         YieldWorld.Proc p = _w.Add(pid, exe, priority: 1);
-        p.Io = 1;
+        (p.Io, p.Cpu) = (1, 0x4000); // 낮춘 부모에게서 물려받은 값
         (p.Parent, p.Created) = (parent, _w.Start.ToFileTime() + (seconds * Second));
         return p;
     }
@@ -556,7 +582,7 @@ public sealed class BackgroundYieldTests
         YieldWorld.Proc shell = Spawn(60, "cmd.exe", 50, 20);
         (shell.Path, shell.Ws) = (@"C:\Windows\System32\cmd.exe", 500 * Mib);
         _ = Spawn(61, "git.exe", 60, 40); // Windows 폴더의 자식이 띄운 손자
-        _w.Procs[62] = new YieldWorld.Proc { Exe = "conhost.exe", Path = @"C:\Windows\System32\conhost.exe", Priority = 1, Io = 1, Parent = 61, Created = _w.Start.ToFileTime() + (60 * Second) };
+        _w.Procs[62] = new YieldWorld.Proc { Exe = "conhost.exe", Path = @"C:\Windows\System32\conhost.exe", Priority = 1, Io = 1, Cpu = 0x4000, Parent = 61, Created = _w.Start.ToFileTime() + (60 * Second) };
 
         MaintainAt(y, 2);
 
@@ -987,6 +1013,7 @@ public sealed class BackgroundYieldTests
     public void WhenTheStateFileCannotBeWrittenIoPriorityIsNotLoweredEither()
     {
         _ = _w.Add(50, "big.exe", wsMib: 500);
+        _ = _w.Add(10, "cod.exe");
         _w.WriteFails = true;
 
         Make().Begin("trigger", settle: false);
@@ -994,6 +1021,206 @@ public sealed class BackgroundYieldTests
         Assert.Empty(_w.IoSets);
         Assert.Equal(2, _w.Procs[50].Io);
         Assert.True(Logged("I/O priority lowered for 0"));
+        Assert.Empty(_w.CpuSets);
+        Assert.Equal(0x20, _w.Procs[50].Cpu);
+        Assert.True(Logged("CPU priority lowered for 0"));
+    }
+
+    [Fact]
+    public void OnlyNormalCpuClassIsLoweredToBelowNormalAndRestoredAtTheEndWhileOtherClassesAreLeftAlone()
+    {
+        _ = _w.Add(10, "cod.exe");
+        _ = _w.Add(50, "normal.exe");
+        int[] others = [0x80, 0x100, 0x8000, 0x4000, 0x40]; // 높음, 실시간, 보통보다 높음, 보통보다 낮음, 유휴
+        for (int i = 0; i < others.Length; i++)
+        {
+            _w.Add(51 + i, "other" + i + ".exe").Cpu = others[i];
+        }
+
+        BackgroundYield y = Make();
+        y.Begin("trigger", settle: false);
+
+        Assert.Equal([(50, 0x4000)], _w.CpuSets);
+        Assert.Equal(others, Enumerable.Range(51, others.Length).Select(pid => _w.Procs[pid].Cpu));
+        Assert.Contains("\"cpu_priority\": 32", _w.State, StringComparison.Ordinal);
+        Assert.True(Logged("CPU priority lowered for 1"));
+
+        y.End();
+
+        Assert.Equal([(50, 0x4000), (50, 0x20)], _w.CpuSets);
+        Assert.Equal(0x20, _w.Procs[50].Cpu);
+        Assert.Equal(others, Enumerable.Range(51, others.Length).Select(pid => _w.Procs[pid].Cpu));
+        Assert.Null(_w.State);
+        Assert.True(Logged("CPU priority restored for 1 processes"));
+    }
+
+    [Fact]
+    public void AStartFromATriggerAloneLeavesTheCpuClassAndItIsLoweredOnceTheGameShowsUp()
+    {
+        _ = _w.Add(50, "normal.exe");
+        BackgroundYield y = Make();
+
+        y.Begin("trigger", settle: false);
+
+        Assert.Empty(_w.CpuReads); // 게임이 아직 없음: 낮춘 부모가 게임을 띄워 게임이 낮은 등급을 물려받는 일을 막음
+        Assert.Empty(_w.CpuSets);
+        Assert.Equal([(50, 1)], _w.Sets);
+        Assert.Equal(0x20, _w.Procs[50].Cpu);
+
+        _ = _w.Add(10, "cod.exe");
+        y.Tick(_w.Snapshot());
+
+        Assert.Equal([(50, 0x4000)], _w.CpuSets);
+        Assert.Equal(0x4000, _w.Procs[50].Cpu);
+        Assert.Contains("\"cpu_priority\": 32", _w.State, StringComparison.Ordinal);
+        Assert.Contains("\"priority\": 5", _w.State, StringComparison.Ordinal); // 메모리 기록은 그대로
+
+        y.Tick(_w.Snapshot());
+        Assert.Single(_w.CpuSets); // 한 번만
+
+        y.End();
+
+        Assert.Equal(0x20, _w.Procs[50].Cpu);
+        Assert.Equal(5, _w.Procs[50].Priority);
+        Assert.Null(_w.State);
+    }
+
+    [Fact]
+    public void TurningOnlyTheCpuSwitchOffDuringASessionRestoresTheCpuClassAtOnceAndTurningItOnLowersItAgain()
+    {
+        BackgroundYield y = RunningYield();
+        Assert.Equal(0x4000, _w.Procs[50].Cpu);
+
+        _settings = _settings with { Memory = new MemorySettings(true, true, true, false) };
+        y.Tick(_w.Snapshot());
+
+        Assert.Equal(0x20, _w.Procs[50].Cpu);
+        Assert.Equal(1, _w.Procs[50].Priority); // 메모리·I/O 는 그대로
+        Assert.Equal(1, _w.Procs[50].Io);
+        Assert.DoesNotContain("cpu_priority", _w.State, StringComparison.Ordinal);
+        Assert.True(Logged("CPU priority restored for 1 processes (setting turned off)"));
+
+        y.Tick(_w.Snapshot());
+        Assert.Equal(2, _w.CpuSets.Count); // 되풀이하지 않음
+
+        _settings = _settings with { Memory = new MemorySettings(true, true, true, true) };
+        y.Tick(_w.Snapshot());
+
+        Assert.Equal(0x4000, _w.Procs[50].Cpu);
+        y.End();
+        Assert.Equal([0x20, 5, 2], new[] { _w.Procs[50].Cpu, _w.Procs[50].Priority, _w.Procs[50].Io });
+        Assert.Null(_w.State);
+    }
+
+    [Fact]
+    public void ACpuClassChangedByTheUserOrTheProgramDuringTheSessionIsNotTouchedAtTheEnd()
+    {
+        _ = _w.Add(10, "cod.exe");
+        _ = _w.Add(50, "normal.exe");
+        BackgroundYield y = Make();
+        y.Begin("trigger", settle: false);
+        _w.Procs[50].Cpu = 0x80; // 그 사이 높음으로 올림
+
+        y.End();
+
+        Assert.Equal([(50, 0x4000)], _w.CpuSets);
+        Assert.Equal(0x80, _w.Procs[50].Cpu);
+        Assert.Null(_w.State);
+        Assert.True(Logged("CPU priority restored for 0 processes"));
+    }
+
+    [Fact]
+    public void ACpuClassThatCannotBeSetIsNotRecordedAsLoweredAndTheOtherPrioritiesStillGo()
+    {
+        _ = _w.Add(10, "cod.exe");
+        _ = _w.Add(50, "normal.exe");
+        _w.CpuSetFails.Add(50);
+
+        BackgroundYield y = Make();
+        y.Begin("trigger", settle: false);
+
+        Assert.Equal(1, _w.Procs[50].Io);
+        Assert.True(Logged("CPU priority lowered for 0"));
+        y.End();
+        Assert.Equal([(50, 0x4000)], _w.CpuSets); // 못 낮춘 것은 되돌리기도 없음
+        Assert.Null(_w.State);
+    }
+
+    [Fact]
+    public void WithTheCpuSwitchOffNoCpuClassIsReadOrSetButMemoryAndIoStillAre()
+    {
+        _ = _w.Add(10, "cod.exe");
+        _ = _w.Add(50, "normal.exe");
+        _settings = _settings with { Memory = new MemorySettings(true, true, true, false) };
+
+        Make().Begin("trigger", settle: false);
+
+        Assert.Empty(_w.CpuReads);
+        Assert.Empty(_w.CpuSets);
+        Assert.Equal([(50, 1)], _w.Sets);
+        Assert.Equal([(50, 1)], _w.IoSets);
+    }
+
+    [Fact]
+    public void ChildrenAndGrandchildrenOfAProcessWithLoweredCpuClassAreRestoredWithIt()
+    {
+        BackgroundYield y = RunningYield();
+        _ = Spawn(61, "grandkid.exe", 60, 40);
+        _ = Spawn(60, "kid.exe", 50, 20);
+
+        MaintainAt(y, 2);
+
+        Assert.Equal([(50, 0x4000)], _w.CpuSets); // 물려받은 것은 이미 낮아서 쓰지 않음
+        _ = _w.Procs.Remove(10);
+        y.End();
+
+        Assert.Equal([0x20, 0x20, 0x20], new[] { 50, 60, 61 }.Select(pid => _w.Procs[pid].Cpu));
+        Assert.True(Logged("CPU priority restored for 3 processes"));
+        Assert.Null(_w.State);
+    }
+
+    [Fact]
+    public void AChildWhoseCpuClassWasNotInheritedAsLowIsNotRecordedForCpu()
+    {
+        BackgroundYield y = RunningYield();
+        _ = Spawn(60, "kid.exe", 50, 20).Cpu = 0x80; // 스스로 높음으로 올린 자식
+
+        MaintainAt(y, 2);
+        _ = _w.Procs.Remove(10);
+        y.End();
+
+        Assert.Equal(0x80, _w.Procs[60].Cpu);
+        Assert.DoesNotContain(_w.CpuSets, s => s.Pid == 60);
+    }
+
+    [Fact]
+    public void ARestartedServiceRestoresTheCpuClassOfTheLoweredAndInheritedProcessesFromTheStateFile()
+    {
+        BackgroundYield y = RunningYield();
+        _ = Spawn(60, "kid.exe", 50, 20);
+        MaintainAt(y, 2);
+        Assert.Equal([0x4000, 0x4000], new[] { 50, 60 }.Select(pid => _w.Procs[pid].Cpu));
+
+        Make().Recover();
+
+        Assert.Equal([0x20, 0x20], new[] { 50, 60 }.Select(pid => _w.Procs[pid].Cpu));
+        Assert.Null(_w.State);
+        Assert.True(Logged("CPU priority for 2"));
+    }
+
+    [Fact]
+    public void ACpuOnlyStateEntryRestoresTheClassAndAnInvalidCpuValueIsDropped()
+    {
+        _ = _w.Add(50, "big.exe").Cpu = 0x4000;
+        _ = _w.Add(51, "other.exe").Cpu = 0x4000;
+        _w.State = "{\"lowered\":[{\"pid\":50,\"exe\":\"big.exe\",\"created\":1000,\"cpu_priority\":32},"
+            + "{\"pid\":51,\"exe\":\"other.exe\",\"created\":1000,\"cpu_priority\":64}]}"; // 64 (유휴) 는 우리가 적은 값이 아님
+
+        Make().Recover();
+
+        Assert.Equal([(50, 0x20)], _w.CpuSets);
+        Assert.Equal([0x20, 0x4000], new[] { 50, 51 }.Select(pid => _w.Procs[pid].Cpu));
+        Assert.Null(_w.State);
     }
 
     [Fact]
@@ -1190,6 +1417,10 @@ public sealed class BackgroundYieldTests
         Assert.False(ParseMemory(new JsonObject { ["background_io_priority"] = false }).BackgroundIoPriority);
         Assert.True(ParseMemory(new JsonObject { ["background_io_priority"] = false }).BackgroundYield);
         Assert.Throws<SettingsException>(() => ParseMemory(new JsonObject { ["background_io_priority"] = 1 }));
+        Assert.True(ParseMemory(null).BackgroundCpuPriority);
+        Assert.False(ParseMemory(new JsonObject { ["background_cpu_priority"] = false }).BackgroundCpuPriority);
+        Assert.True(ParseMemory(new JsonObject { ["background_cpu_priority"] = false }).BackgroundIoPriority);
+        Assert.Throws<SettingsException>(() => ParseMemory(new JsonObject { ["background_cpu_priority"] = 1 }));
         Assert.Throws<SettingsException>(() => ParseMemory(new JsonObject { ["unknown"] = 1 }));
         Assert.Throws<SettingsException>(() => ParseMemory(JsonValue.Create(true)));
     }
@@ -1244,6 +1475,8 @@ public sealed class BackgroundYieldTests
         Assert.Empty(_w.Sets);
         Assert.Empty(_w.IoReads);
         Assert.Empty(_w.IoSets);
+        Assert.Empty(_w.CpuReads);
+        Assert.Empty(_w.CpuSets);
 
         _settings = _settings with { Memory = new MemorySettings(true) };
         y.Begin("trigger", settle: false);
@@ -1533,6 +1766,115 @@ public sealed class ProcessMemoryLiveTests
         child.WaitForExit();
         Assert.Null(ProcessMemory.Describe(pid)); // 끝난 프로세스는 예외 없이 null
         Assert.False(ProcessMemory.Trim(pid));
+    }
+}
+
+/// 실제 Windows 호출: 시험이 직접 띄운 자식 프로세스와 시험 프로세스 자신의 CPU 우선순위 등급만 바꿉니다 (끝나면 원래 값으로). 관리자 권한은 필요 없습니다.
+[Trait("Category", "Live")]
+public sealed class ProcessCpuClassLiveTests
+{
+    [Fact]
+    public void ANormalChildIsLoweredToBelowNormalAndRestoredAndALoweredParentPassesItToANewChild()
+    {
+        using Process child = Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "ping.exe"), "-n 30 127.0.0.1") { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true })!;
+        int self = Environment.ProcessId;
+        int? selfOriginal = ProcessMemory.CpuPriorityClass(self);
+        try
+        {
+            Assert.Equal(ProcessMemory.CpuClassNormal, ProcessMemory.CpuPriorityClass(child.Id));
+            Assert.True(ProcessMemory.SetCpuPriorityClass(child.Id, ProcessMemory.CpuClassBelowNormal));
+            Assert.Equal(ProcessMemory.CpuClassBelowNormal, ProcessMemory.CpuPriorityClass(child.Id));
+            Assert.True(ProcessMemory.SetCpuPriorityClass(child.Id, ProcessMemory.CpuClassNormal));
+            Assert.Equal(ProcessMemory.CpuClassNormal, ProcessMemory.CpuPriorityClass(child.Id));
+
+            Assert.Equal(ProcessMemory.CpuClassNormal, selfOriginal);
+            Assert.True(ProcessMemory.SetCpuPriorityClass(self, ProcessMemory.CpuClassBelowNormal));
+            using Process grandchild = Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "ping.exe"), "-n 30 127.0.0.1") { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true })!;
+            try
+            {
+                Assert.Equal(ProcessMemory.CpuClassBelowNormal, ProcessMemory.CpuPriorityClass(grandchild.Id)); // 낮춘 부모가 띄운 자식은 낮은 등급으로 시작
+            }
+            finally
+            {
+                grandchild.Kill();
+            }
+        }
+        finally
+        {
+            _ = ProcessMemory.SetCpuPriorityClass(self, selfOriginal ?? ProcessMemory.CpuClassNormal);
+            child.Kill();
+        }
+
+        Assert.Equal(selfOriginal, ProcessMemory.CpuPriorityClass(self));
+        child.WaitForExit();
+        Assert.Null(ProcessMemory.CpuPriorityClass(1 << 30)); // 없는 프로세스는 예외 없이 null/false
+        Assert.False(ProcessMemory.SetCpuPriorityClass(1 << 30, ProcessMemory.CpuClassBelowNormal));
+    }
+
+    /// 실제 호출로 배경 양보 전체 경로를 돕니다: 처리 대상 목록만 시험이 띄운 자식 프로세스로 좁히고 (다른 프로그램은 건드리지 않음), 나머지는 실제 Windows 호출입니다.
+    [Fact]
+    public void TheBackgroundYieldLowersOnlyNormalChildrenAndRestoresThemWhileAChildAtHighIsLeftAlone()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "cpuyield_live_" + Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(dir);
+        string exe = Path.Combine(dir, "cpuyield_probe.exe");
+        File.Copy(Path.Combine(Environment.SystemDirectory, "ping.exe"), exe);
+        var children = new List<Process>();
+        string? state = null;
+        try
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                children.Add(Process.Start(new ProcessStartInfo(exe, "-n 60 127.0.0.1") { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true })!);
+            }
+
+            int[] pids = [.. children.Select(c => c.Id)];
+            Assert.True(ProcessMemory.SetCpuPriorityClass(pids[2], 0x80)); // 셋째는 사용자가 높음으로 정한 프로세스
+            var env = new BackgroundYieldEnv
+            {
+                Processes = () => [.. ProcessSnapshot.Take().Where(p => pids.Contains(p.Pid)), (1 << 29, "cod.exe")], // 게임이 떠 있는 것으로 보이게 함 (이름 단계에서 걸러져 열지 않음)
+                SessionId = ProcessMemory.SessionId,
+                Describe = ProcessMemory.Describe,
+                Trim = ProcessMemory.Trim,
+                MemoryPriority = ProcessMemory.MemoryPriority,
+                SetMemoryPriority = ProcessMemory.SetMemoryPriority,
+                IoPriority = ProcessMemory.IoPriority,
+                SetIoPriority = ProcessMemory.SetIoPriority,
+                CpuClass = ProcessMemory.CpuPriorityClass,
+                SetCpuClass = ProcessMemory.SetCpuPriorityClass,
+                AvailableMib = () => 100000,
+                WindowsDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                SelfPid = Environment.ProcessId,
+                ReadState = () => state,
+                WriteState = text => state = text,
+                DeleteState = () => state = null,
+            };
+            var log = new ListLog();
+            var yielder = new BackgroundYield(() => new AsterSettings(1000, [Games.Make("cod", "cod.exe")]), env, log);
+
+            yielder.Begin("test", settle: false);
+
+            Assert.Equal([ProcessMemory.CpuClassBelowNormal, ProcessMemory.CpuClassBelowNormal, 0x80], pids.Select(p => ProcessMemory.CpuPriorityClass(p)!.Value));
+            Assert.Contains("\"cpu_priority\": 32", state, StringComparison.Ordinal);
+            Assert.Contains(log.Lines, l => l.Contains("CPU priority lowered for 2", StringComparison.Ordinal));
+
+            yielder.End();
+
+            Assert.Equal([ProcessMemory.CpuClassNormal, ProcessMemory.CpuClassNormal, 0x80], pids.Select(p => ProcessMemory.CpuPriorityClass(p)!.Value));
+            Assert.Null(state);
+            Assert.Contains(log.Lines, l => l.Contains("CPU priority restored for 2 processes", StringComparison.Ordinal));
+        }
+        finally
+        {
+            foreach (Process c in children)
+            {
+                c.Kill();
+                c.WaitForExit();
+                c.Dispose();
+            }
+
+            Directory.Delete(dir, true);
+        }
     }
 }
 

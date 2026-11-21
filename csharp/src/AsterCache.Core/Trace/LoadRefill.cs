@@ -41,11 +41,17 @@ public static class LoadRefillPlanner
     /// 조사에서 예산 안에 담긴 순위 앞쪽 4~5.5 GiB 가 경기 중 지연의 대부분을 덮었으므로 예산 수준인 8 GiB 까지만 둡니다 (그 이상은 예산 밖이라 읽히지 않음).
     public const long RankedCapBytes = 8L << 30;
 
+    /// 게임이 스스로 쓰는 파일의 블록이 순위에 들려면 나와야 하는 플레이 수. 근거: 2026-11-21 Call of Duty 플레이에서 가변 파일 디스크 읽기 블록의 81% (지연으로는 96%) 가 이전 세 플레이 중 하나에서도 읽힌 블록이었고,
+    /// 한 플레이에만 나온 블록은 그 플레이에 새로 쓴 데이터일 수 있어 (처음 보는 블록은 지연 3% 이하) 두 플레이 이상 반복해 읽힌 블록만 정적 파일의 블록과 같은 점수 (플레이 수, 지연 합) 로 줄 세웁니다.
+    public const int WrittenMinPlays = 2;
+
     /// 플레이들의 로드 구간 블록 합집합. 블록은 (여러 플레이에서 나온 횟수 내림, 지연 합 내림, 경로, 번호) 순이고 capBytes 를 넘는 뒷부분은 자릅니다.
     /// stat 은 지금 있는 파일의 크기·수정 시각을 돌려주고 (없거나 허용 밖·가변 파일이면 null → 그 파일 블록은 뺌), 블록이 파일 끝을 넘으면 뺍니다.
     /// 캐시를 거치지 않고만 읽힌 블록 (페이징 요청 0) 과 관찰 중 바뀐 파일은 뺍니다. 시작 시각이 없는 집계는 건너뛰고 PlaysWithoutStarts 로 셉니다.
     /// window 가 null 이면 시작 시각과 무관하게 플레이 전체 구간의 블록을 모읍니다 (시작 시각이 없는 집계도 한 플레이로 세고 Loads 는 0).
-    public static LoadRefillList Collect(IEnumerable<LoadRefillSource> sources, Func<string, LoadRefillFileStat?> stat, TimeSpan? window, long capBytes)
+    /// isWritten 이 있으면 (순위 목록이 게임이 쓰는 파일도 담을 때) 그 파일의 블록은 WrittenMinPlays 개 이상의 플레이에서 나온 것만 담습니다.
+    /// appendOnly 가 참인 파일 (크기가 줄어든 적이 없어 덧붙이기로 보는 파일) 은 관찰 중 수정된 플레이의 읽기도 점수에 넣습니다: 이미 쓰인 위치의 내용은 바뀌지 않으므로 그 플레이에서 읽힌 위치 (시작 때 크기 안이든 덧붙인 뒤든) 는 다음 플레이에도 있습니다.
+    public static LoadRefillList Collect(IEnumerable<LoadRefillSource> sources, Func<string, LoadRefillFileStat?> stat, TimeSpan? window, long capBytes, Func<string, bool>? isWritten = null, Func<string, bool>? appendOnly = null)
     {
         long windowUs = window is { } w ? (long)w.TotalMicroseconds : 0;
         var stats = new Dictionary<string, LoadRefillFileStat?>(StringComparer.OrdinalIgnoreCase);
@@ -80,7 +86,7 @@ public static class LoadRefillPlanner
                 }
 
                 IoSummaryFile file = summary.Files[row.FileNumber];
-                if (file.ChangedDuringSession)
+                if (file.ChangedDuringSession && appendOnly?.Invoke(file.Path) != true)
                 {
                     continue;
                 }
@@ -121,7 +127,8 @@ public static class LoadRefillPlanner
         var all = new List<LoadRefillBlock>();
         foreach ((string path, Dictionary<long, (int Count, long LatencyUs)> blocks) in merged)
         {
-            all.AddRange(blocks.Select(b => new LoadRefillBlock(path, b.Key, b.Value.Count, b.Value.LatencyUs)));
+            int minPlays = isWritten?.Invoke(path) == true ? WrittenMinPlays : 1;
+            all.AddRange(blocks.Where(b => b.Value.Count >= minPlays).Select(b => new LoadRefillBlock(path, b.Key, b.Value.Count, b.Value.LatencyUs)));
         }
 
         all.Sort((a, b) =>

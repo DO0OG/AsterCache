@@ -243,7 +243,13 @@ public static class IoSummaryStore
                 }
             }
 
-            return new IoSummary(started, ended, windows, quality!, files, rows, sessionId!, rawFingerprint, rawTraceZeroUs, rawTraceZeroAtUtc, readModes, targetStarts);
+            List<IoSummaryWriteFile>? writeFiles = ReadWriteFiles(root);
+            if (writeFiles is null)
+            {
+                return null;
+            }
+
+            return new IoSummary(started, ended, windows, quality!, files, rows, sessionId!, rawFingerprint, rawTraceZeroUs, rawTraceZeroAtUtc, readModes, targetStarts, writeFiles.Count == 0 ? null : writeFiles);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException or OverflowException or FormatException or ArgumentException)
         {
@@ -305,6 +311,10 @@ public static class IoSummaryStore
             { "read_modes", readModes },
             { "target_starts_us", (summary.TargetStartsUs ?? []).Select(us => (object?)us).ToList() },
         };
+        if (summary.WriteFiles is { Count: > 0 } writeFiles)
+        {
+            root.Add("write_files", writeFiles.Select(WriteFileJson).ToList()); // 쓰기를 기록한 집계에만 (옛 판은 이 항목을 모르고 무시함)
+        }
 
         string temp = path + ".tmp";
         string text = PyJson.Dumps(root, indent: 1, ensureAscii: false) + "\n";
@@ -318,6 +328,65 @@ public static class IoSummaryStore
         {
             // 표지를 못 지우면 새 집계가 무효로 읽히는 쪽 (안전한 쪽) 으로 남고 다음 정리가 치움
         }
+    }
+
+    private static object? WriteFileJson(IoSummaryWriteFile file) => new JObject
+    {
+        { "path", file.Path },
+        { "writes", file.Writes },
+        { "bytes", file.Bytes },
+        { "nocache_writes", file.NoCacheWrites },
+        { "nocache_bytes", file.NoCacheBytes },
+        { "first_us", file.FirstUs },
+        { "last_us", file.LastUs },
+        { "ranges", file.Ranges.Select(r => (object?)new List<object?> { r.Offset, r.Length }).ToList() },
+        { "ranges_truncated", file.RangesTruncated },
+    };
+
+    // 쓰기 기록 항목 (옛 집계에는 없음): 없으면 빈 목록, 있는데 모양이 다르면 null (집계 전체를 읽지 않음).
+    private static List<IoSummaryWriteFile>? ReadWriteFiles(JObject root)
+    {
+        var files = new List<IoSummaryWriteFile>();
+        if (!root.TryGetValue("write_files", out object? value) || value is null)
+        {
+            return files;
+        }
+
+        if (value is not List<object?> rows)
+        {
+            return null;
+        }
+
+        foreach (object? row in rows)
+        {
+            if (row is not JObject o || !String(o, "path", out string? path) || string.IsNullOrWhiteSpace(path)
+                || !Long(o, "writes", out long writes) || writes < 0
+                || !Long(o, "bytes", out long bytes) || bytes < 0
+                || !Long(o, "nocache_writes", out long noCacheWrites) || noCacheWrites < 0
+                || !Long(o, "nocache_bytes", out long noCacheBytes) || noCacheBytes < 0
+                || !Long(o, "first_us", out long first) || first < 0
+                || !Long(o, "last_us", out long last) || last < first
+                || !o.TryGetValue("ranges", out object? rangesValue) || rangesValue is not List<object?> rangeRows
+                || !o.TryGetValue("ranges_truncated", out object? truncatedValue) || truncatedValue is not bool truncated)
+            {
+                return null;
+            }
+
+            var ranges = new List<IoWriteRange>(rangeRows.Count);
+            foreach (object? range in rangeRows)
+            {
+                if (range is not List<object?> { Count: 2 } cells || cells[0] is not long offset || offset < 0 || cells[1] is not long length || length <= 0)
+                {
+                    return null;
+                }
+
+                ranges.Add(new IoWriteRange(offset, length));
+            }
+
+            files.Add(new IoSummaryWriteFile(path, writes, bytes, noCacheWrites, noCacheBytes, first, last, ranges, truncated));
+        }
+
+        return files;
     }
 
     /// 집계 곁 파일을 옮기되 무효 표지를 함께 옮깁니다 (move 는 실제 이동). 무효 집계가 표지 없이 보이는 순간이 없게 목적지 표지를 먼저 만들고,

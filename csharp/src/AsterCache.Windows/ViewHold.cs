@@ -12,8 +12,12 @@ public readonly record struct HoldBatchResult(long Bytes, long DiskBytes, long S
 // ImageBytes: 실행 가능한 이미지 파일 (첫 두 바이트가 MZ) 이거나 읽지 못해 붙들지 않은 바이트, SmallBytes: MinFileBytes 보다 작은 파일이라 붙들지 않은 바이트.
 
 /// 점검 한 번의 결과: 작업 집합에 있는지 확인한 바이트, 그중 메모리 관리자가 작업 집합에서 줄여 간 (Valid 가 아닌) 바이트, 그것을 다시 읽어 올리다 디스크에서 읽힌 바이트, 붙든 목록에서 뺀 바이트 (바뀐 파일의 몫은 제외),
-/// 다시 읽기 상한에 닿아 멈췄는가, 크기·수정 시각이 바뀌어 뷰를 닫은 파일, 읽기 수를 조회한 횟수, 하드 폴트 증가, 걸린 시간 (초), 쓴 CPU 시간 (초).
-public readonly record struct HoldCheckResult(long CheckedBytes, long TrimmedBytes, long RefilledBytes, long DroppedBytes, bool CapReached, IReadOnlyList<string> ChangedFiles, int Checks, long HardFaults, double Seconds, double CpuSeconds);
+/// 다시 읽기 상한에 닿아 멈췄는가, 크기·수정 시각이 바뀌어 뷰를 닫은 파일, 읽기 수를 조회한 횟수, 하드 폴트 증가, 걸린 시간 (초), 쓴 CPU 시간 (초),
+/// 작업 집합 조회가 (세 번 시도하고도) 실패해 판단하지 못한 구간 수와 마지막 Win32 오류 번호.
+public readonly record struct HoldCheckResult(long CheckedBytes, long TrimmedBytes, long RefilledBytes, long DroppedBytes, bool CapReached, IReadOnlyList<string> ChangedFiles, int Checks, long HardFaults, double Seconds, double CpuSeconds, int QueryFailures = 0, int QueryError = 0);
+
+/// 게임이 쓰는 파일이 바뀌어 5 초 확인이 뷰를 닫은 기록: 파일과 그때 내놓은 바이트.
+public readonly record struct WrittenRelease(string Path, long Bytes);
 
 /// 게임이 실행되는 동안 유지 목록을 서비스의 매핑 뷰로 붙들어 두는 곳 (ViewHold 의 인터페이스, 시험은 가짜로 바꿉니다).
 public interface IKeepHold : IDisposable
@@ -25,6 +29,17 @@ public interface IKeepHold : IDisposable
     int Files { get; }
 
     int Views { get; }
+
+    /// 게임이 플레이 중에 쓰는 파일 (MarkWritten 으로 알린 것) 에서 지금 붙든 바이트와 그 파일 수.
+    long WrittenHeldBytes { get; }
+
+    int WrittenFiles { get; }
+
+    /// 게임이 쓰는 파일을 알립니다 (붙들기 전에 한 번): 이 파일들은 ReleaseChangedWritten 이 따로 자주 확인합니다.
+    void MarkWritten(IReadOnlyCollection<string> paths);
+
+    /// 게임이 쓰는 파일만 크기·수정 시각·생성 시각이 붙들 때와 다른지 봅니다 (파일을 열지 않는 속성 조회). 바뀌었거나 없어졌으면 그 파일의 뷰를 바로 닫고 (다른 파일은 그대로) 이 플레이에서는 다시 붙들지 않습니다.
+    IReadOnlyList<WrittenRelease> ReleaseChangedWritten();
 
     /// 이 프로세스의 디스크 읽기 수 (하드 폴트) 기준값을 지금 값으로 다시 잡습니다: 붙들기·점검 한 회차를 시작할 때 부릅니다 (그 사이 다른 스레드가 낸 읽기가 이번 판정에 섞이지 않게).
     void Rebase();
@@ -57,9 +72,12 @@ public sealed unsafe class ViewHold : IKeepHold
     private readonly Func<uint?> _pageReads;
     private readonly Func<string, uint> _attributes;
     private readonly Dictionary<string, FileEntry> _files = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _written = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<Seg> _segs = []; // 붙든 구간 (붙든 순서 = 중요한 순서), 맨 뒤가 가장 덜 중요
     private nint _buffer;
     private nint _query; // QueryWorkingSetEx 항목 버퍼
+    private int _queryFailures; // 이번 점검에서 조회가 실패해 판단하지 못한 구간 수
+    private int _queryError; // 그때의 마지막 Win32 오류
     private uint? _faults;
     private uint? _pages;
     private long _held;
@@ -69,8 +87,9 @@ public sealed unsafe class ViewHold : IKeepHold
         public string Path { get; } = path;
         public StandbyTouch.Section? Section;
         public long Length;
-        public (long Size, long Ticks)? Stamp; // 처음 열 때의 크기·수정 시각
-        public bool Dead; // 열 수 없어 붙들지 않음
+        public (long Size, long Ticks, long Created)? Stamp; // 처음 열 때의 크기·수정 시각·생성 시각 (임시 파일을 이름만 바꿔 끼운 교체는 생성 시각이 달라짐)
+        public bool Written; // 게임이 플레이 중에 쓰는 파일: 점검과 별개로 자주 확인함
+        public bool Dead; // 열 수 없거나 (또는 바뀌어 닫아서) 붙들지 않음
         public bool Sparse; // 스파스라 붙들지 않음
         public bool Image; // 실행 가능한 이미지 (MZ) 이거나 읽지 못해 붙들지 않음
         public bool Small; // MinFileBytes 보다 작아 붙들지 않음
@@ -162,6 +181,58 @@ public sealed unsafe class ViewHold : IKeepHold
         }
     }
 
+    public long WrittenHeldBytes
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _segs.Where(s => s.Window.File.Written).Sum(s => s.Live);
+            }
+        }
+    }
+
+    public int WrittenFiles
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _files.Values.Count(f => f.Written && f.Windows.Count > 0);
+            }
+        }
+    }
+
+    public void MarkWritten(IReadOnlyCollection<string> paths)
+    {
+        lock (_lock)
+        {
+            _written.UnionWith(paths);
+        }
+    }
+
+    public IReadOnlyList<WrittenRelease> ReleaseChangedWritten()
+    {
+        lock (_lock)
+        {
+            List<WrittenRelease> released = [];
+            foreach (FileEntry f in _files.Values.Where(f => f.Written && f.Windows.Count > 0).ToList())
+            {
+                if (Changed(f))
+                {
+                    released.Add(new WrittenRelease(f.Path, CloseChanged(f)));
+                }
+            }
+
+            if (released.Count > 0)
+            {
+                CompactSegs();
+            }
+
+            return released;
+        }
+    }
+
     /// 붙든 구간의 주소 범위 (시험이 작업 집합에 있는지 확인하는 데만 씀).
     internal IReadOnlyList<(nint Address, long Length)> LiveRanges()
     {
@@ -235,17 +306,13 @@ public sealed unsafe class ViewHold : IKeepHold
             long started = Stopwatch.GetTimestamp();
             double cpuBefore = StandbyTouch.ThreadCpuSeconds();
             List<string> changed = [];
+            (_queryFailures, _queryError) = (0, 0);
             foreach (FileEntry f in _files.Values.Where(f => f.Windows.Count > 0).ToList())
             {
                 if (Changed(f))
                 {
                     changed.Add(f.Path);
-                    foreach (Seg s in _segs.Where(s => s.Window.File == f && s.Live > 0).ToList())
-                    {
-                        _ = Unlock(s, s.Live, close: false);
-                    }
-
-                    CloseFile(f);
+                    _ = CloseChanged(f);
                 }
             }
 
@@ -305,7 +372,7 @@ public sealed unsafe class ViewHold : IKeepHold
             }
 
             CompactSegs();
-            return new HoldCheckResult(queried, trimmed, tally.Disk, dropped, capReached, changed, tally.Checks, tally.Faults, Stopwatch.GetElapsedTime(started).TotalSeconds, Math.Max(0, StandbyTouch.ThreadCpuSeconds() - cpuBefore));
+            return new HoldCheckResult(queried, trimmed, tally.Disk, dropped, capReached, changed, tally.Checks, tally.Faults, Stopwatch.GetElapsedTime(started).TotalSeconds, Math.Max(0, StandbyTouch.ThreadCpuSeconds() - cpuBefore), _queryFailures, _queryError);
         }
     }
 
@@ -489,6 +556,7 @@ public sealed unsafe class ViewHold : IKeepHold
                 return null;
             }
 
+            file.Written = _written.Contains(range.Path);
             file.Stamp = Stat(range.Path);
             if (file.Stamp is { Size: var size } && size < _minFileBytes)
             {
@@ -620,6 +688,25 @@ public sealed unsafe class ViewHold : IKeepHold
     // 한 번에 QueryWorkingSetEx 로 묻는 쪽 수 (항목이 쪽마다 16 바이트라 256 KiB 버퍼).
     private const int QueryPages = 16384;
 
+    // QueryWorkingSetEx 를 최대 세 번 부릅니다 (자기 프로세스의 의사 핸들이라 핸들 수명 문제는 없음; 문서에 간헐 실패 사유는 없고 항목 수가 크기 한도 안이므로 ERROR_BAD_LENGTH 는 나지 않음).
+    // 모두 실패하면 마지막 Win32 오류를 남기고 false: 호출한 쪽은 그 구간을 판단하지 못한 것으로 둡니다.
+    private bool Query(nuint* info, int pages)
+    {
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            if (NativeMethods.QueryWorkingSetEx(NativeMethods.GetCurrentProcess(), info, (uint)(pages * 16)))
+            {
+                return true;
+            }
+
+            _queryError = Marshal.GetLastWin32Error();
+            Thread.Yield();
+        }
+
+        _queryFailures++;
+        return false;
+    }
+
     // 구간에서 작업 집합에 없는 (Valid 가 아닌) 쪽을 이어진 범위로 묶어 돌려줍니다: 붙든 구간의 쪽 경계 안쪽만 묻습니다. 쪽 단위로 묻는 비용은 붙든 양에 비례하며 (1 GiB 가 26 만 쪽) 아직 실제 양으로 재지 않았습니다.
     // 조회할 수 없으면 (호출 실패) 빈 목록: 그 구간은 확인하지 못한 것으로 두고 건드리지 않습니다.
     private List<(nint Address, long Length)> NotResident(Seg seg, ref long queried)
@@ -642,9 +729,9 @@ public sealed unsafe class ViewHold : IKeepHold
                 info[2 * i] = (nuint)(at + (i * PageBytes));
             }
 
-            if (!NativeMethods.QueryWorkingSetEx(NativeMethods.GetCurrentProcess(), info, (uint)(pages * 16)))
+            if (!Query(info, pages))
             {
-                return [];
+                return []; // 조회 실패: 이 구간은 판단하지 못한 것으로 두고 줄어든 것으로 보지 않음 (다시 읽지도, 목록에서 빼지도 않음)
             }
 
             queried += pages * PageBytes;
@@ -739,6 +826,20 @@ public sealed unsafe class ViewHold : IKeepHold
         return take;
     }
 
+    // 바뀐 파일의 붙든 구간을 모두 내놓고 뷰를 닫습니다 (이 플레이에서 다시 붙들지 않음). 내놓은 바이트를 돌려줍니다.
+    private long CloseChanged(FileEntry file)
+    {
+        long released = 0;
+        foreach (Seg s in _segs.Where(s => s.Window.File == file && s.Live > 0).ToList())
+        {
+            released += Unlock(s, s.Live, close: false);
+        }
+
+        CloseFile(file);
+        file.Dead = true;
+        return released;
+    }
+
     private void CompactSegs() => _ = _segs.RemoveAll(s => s.Live <= 0);
 
     private void CloseWindow(Window window)
@@ -770,15 +871,15 @@ public sealed unsafe class ViewHold : IKeepHold
         file.Section = null;
     }
 
-    // 처음 열 때와 크기·수정 시각이 다른가 (파일이 없어졌어도 바뀐 것으로 봄).
+    // 처음 열 때와 크기·수정 시각·생성 시각이 다른가 (파일이 없어졌어도 바뀐 것으로 봄).
     private static bool Changed(FileEntry file) => file.Stamp is not { } stamp || Stat(file.Path) is not { } now || now != stamp;
 
-    private static (long Size, long Ticks)? Stat(string path)
+    private static (long Size, long Ticks, long Created)? Stat(string path)
     {
         try
         {
             var info = new FileInfo(path);
-            return info.Exists ? (info.Length, info.LastWriteTimeUtc.Ticks) : null;
+            return info.Exists ? (info.Length, info.LastWriteTimeUtc.Ticks, info.CreationTimeUtc.Ticks) : null;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {

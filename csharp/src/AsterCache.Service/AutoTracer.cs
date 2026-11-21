@@ -1772,7 +1772,156 @@ public sealed class AutoTracer
 
         RebuildLoadRefill(run.Game);
         RebuildUnbufferedFiles(run.Game);
+        RecordWrittenSizes(run.Game, summary.SessionId);
         RebuildRanked(run.Game);
+    }
+
+    private readonly object _journalGate = new(); // 변경 저널 읽기는 한 번에 하나
+
+    // 변경 저널 (NTFS USN) 로 플레이마다 게임이 쓰는 파일이 잘라내어지거나 교체됐는지 판정해 크기 기록에 더합니다: 세션 끝의 크기만 보면 줄였다 다시 늘린 것을 놓칩니다.
+    // 읽기는 게임 영역 잠금 밖의 낮은 우선순위 스레드에서 돌고 (최대 30 초), 결과를 이력에 반영할 때만 잠급니다. 등록된 게임 중 어느 것이든 실행 중이면 읽지 않고 다음 플레이 끝으로 미룹니다.
+    // 구간은 플레이 기록 (play_samples.json) 에 남은 끝난 플레이 전부 (과거 플레이 포함, 트레이스를 켜지 않은 플레이도) 이고, 이미 판정한 플레이는 건너뜁니다. 저널을 못 읽으면 (권한·저널 없음·상한 초과·일부만 읽음) 그 플레이는 저널로 판정되지 않습니다.
+    private void QueueJournalFill(GameSettings g, IReadOnlyList<string> paths)
+    {
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                FillFromJournal(g, paths);
+            }
+            catch (Exception e) when (e is not (OutOfMemoryException or StackOverflowException))
+            {
+                _log.Warn($"{g.Name}: change journal judgment failed ({e.GetType().Name})"); // 부가 기능: 실패해도 아무것도 건드리지 않음
+            }
+        })
+        {
+            IsBackground = true,
+            Priority = ThreadPriority.BelowNormal,
+            Name = "journal-fill",
+        };
+        thread.Start();
+    }
+
+    internal void FillFromJournal(GameSettings g, IReadOnlyList<string> paths)
+    {
+        if (!Monitor.TryEnter(_journalGate))
+        {
+            return;
+        }
+
+        try
+        {
+            bool GameRunning() => _settings().Games.Any(x => _env.AnyRunning(x.ExeNames));
+            if (GameRunning())
+            {
+                _log.Info($"{g.Name}: change journal not read, a game is running (next time)");
+                return;
+            }
+
+            using var cancel = new CancellationTokenSource();
+            using var watch = new Timer(_ =>
+            {
+                if (GameRunning())
+                {
+                    cancel.Cancel(); // 읽는 도중 게임이 시작됨: 읽기를 멈춤
+                }
+            }, null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+
+            string file = WrittenFileHistory.PathFor(RawTracePath(g));
+            var tracked = WrittenFileHistory.Read(file).Files.Select(f => f.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var reads = new List<(string Volume, (string Path, ulong? Frn)[] Files, UsnRead? Read)>();
+            foreach (IGrouping<string, string> volume in paths.Where(tracked.Contains).Distinct(StringComparer.OrdinalIgnoreCase).GroupBy(p => (Path.GetPathRoot(p) ?? string.Empty).TrimEnd('\\'), StringComparer.OrdinalIgnoreCase))
+            {
+                (string Path, ulong? Frn)[] files = [.. volume.Select(p => (p, _env.FileReference(p)))];
+                HashSet<ulong> frns = [.. files.Where(f => f.Frn is not null).Select(f => f.Frn!.Value)];
+                if (frns.Count > 0)
+                {
+                    reads.Add((volume.Key, files, _env.ReadUsn(volume.Key, frns, cancel.Token)));
+                }
+            }
+
+            if (reads.Count == 0)
+            {
+                return;
+            }
+
+            if (cancel.IsCancellationRequested || GameRunning())
+            {
+                _log.Info($"{g.Name}: change journal result dropped, a game started while it was read (next time)"); // 플레이 중에는 이력도 순위 목록도 바꾸지 않음 ("순위 목록을 만든 뒤 바뀐 파일" 기준 시각이 밀리지 않게)
+                return;
+            }
+
+            using AsterCache.Core.Apply.DataLock? gate = AsterCache.Core.Apply.DataLock.TryAcquire(g.Plan, TimeSpan.FromSeconds(10));
+            if (gate is null)
+            {
+                _log.Info($"{g.Name}: change journal result not saved (zone lock busy)");
+                return;
+            }
+
+            if (GameRunning())
+            {
+                return; // 잠금을 기다리는 사이 게임이 시작됨
+            }
+
+            IReadOnlyList<SessionSpan> sessions = _env.PlaySessions(g.Name);
+            WrittenFileHistory history = WrittenFileHistory.Read(file); // 잠금을 잡은 뒤 다시 읽음: 읽는 동안 플레이 끝의 기록이 바뀌었을 수 있음
+            int added = 0;
+            foreach ((string volume, (string Path, ulong? Frn)[] files, UsnRead? read) in reads)
+            {
+                int n = history.RecordJournal(read, files, sessions);
+                added += n;
+                _log.Info($"{g.Name}: change journal of {volume}: " + (read is null
+                    ? "not readable, those plays are not judged by it"
+                    : $"{files.Length} written files, {read.Events.Count} records since {read.OldestUtc:u}, {n} play judgments added, {history.Files.Count(f => f.Shrank)} files shrank in all"));
+            }
+
+            if (added > 0)
+            {
+                history.Write(file);
+                RebuildRanked(g, " (after the change journal)"); // 덧붙이기로 보는 파일이 달라졌을 수 있음
+            }
+        }
+        finally
+        {
+            Monitor.Exit(_journalGate);
+        }
+    }
+
+    // 플레이가 끝났을 때 게임이 쓰는 파일 (트레이스가 가변으로 표시한 것) 의 크기를 남깁니다: 붙들기가 크기가 줄어든 적이 없는 파일만 고르는 근거 (WrittenFileHistory). 부가 정보라 실패해도 기록 저장은 계속.
+    private void RecordWrittenSizes(GameSettings g, string session)
+    {
+        try
+        {
+            IReadOnlyDictionary<string, string> marked = ReadVolatile(VolatilePath(g));
+            var seen = new List<(string Path, long Size, long MTimeTicks)>();
+            foreach (string path in marked.Keys.Where(p => VolatileFiles.IsGameWritten(p, marked)))
+            {
+                try
+                {
+                    Fingerprint now = _env.Stat(path);
+                    seen.Add((path, now.Size, Fingerprint.UnixEpochTicks + (now.MtimeNs / 100)));
+                }
+                catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
+                {
+                    seen.Add((path, 0, 0)); // 없어짐: 기록한 적이 있는 파일이면 줄어든 것으로 셈
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    // 읽을 수 없는 파일은 이번 플레이에 기록하지 않음
+                }
+            }
+
+            string file = WrittenFileHistory.PathFor(RawTracePath(g));
+            WrittenFileHistory history = WrittenFileHistory.Read(file);
+            history.Record(session, seen, ViewHold.MinFileBytes);
+            history.GameState = PrewarmEnv.GameStateMark(g); // 이 플레이가 끝났을 때의 게임 상태: 다음 플레이가 업데이트 직후인지 가리는 기준
+            history.Write(file);
+            QueueJournalFill(g, [.. seen.Select(x => x.Path)]);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"{g.Name}: written file size history not saved ({e.GetType().Name})");
+        }
     }
 
     /// 서비스 시작 때: 로드 구간 목록·캐시 없이만 읽히는 파일 목록·블록 순위 목록 (각각) 이 없거나 그 게임의 가장 새 집계보다 오래된 게임의 목록을 저장된 집계로 만듭니다 (실행 중인 게임은 건너뜀, 폴더 잠금 안, 낮은 우선순위).
@@ -1853,7 +2002,7 @@ public sealed class AutoTracer
     {
         try
         {
-            _log.Info($"{g.Name}: {LoadRefillPlans.RebuildRanked(g, _env.Now())}{logSuffix}");
+            _log.Info($"{g.Name}: {LoadRefillPlans.RebuildRanked(g, _env.Now(), _settings().Memory is { KeepHold: true, KeepHoldWrittenFiles: true }, [.. _env.PlaySessions(g.Name).Select(x => x.Session)])}{logSuffix}");
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {

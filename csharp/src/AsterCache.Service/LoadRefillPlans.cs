@@ -14,8 +14,9 @@ internal static class LoadRefillPlans
 {
     public static string PathOf(GameSettings g) => LoadRefillStore.PathFor(AutoTracer.RawTracePath(g));
 
-    /// 지금 있고 허용 루트 안이며 가변 파일이 아닌 파일의 크기·수정 시각 (아니면 null).
-    public static Func<string, LoadRefillFileStat?> StatOf(GameSettings g)
+    /// 지금 있고 허용 루트 안이며 가변 파일이 아닌 파일의 크기·수정 시각 (아니면 null). includeWritten 이면 게임이 플레이 중에 스스로 쓰는 파일 (트레이스가 가변으로 표시한 것, VolatileFiles.IsGameWritten) 도 돌려줍니다:
+    /// 순위 목록이 그 파일의 블록도 담을 때 쓰며, 저장한 크기·수정 시각과 지금 값이 다르면 (게임이 다시 썼으면) 그 파일의 블록은 읽을 때 빠집니다.
+    public static Func<string, LoadRefillFileStat?> StatOf(GameSettings g, bool includeWritten = false)
     {
         IReadOnlyDictionary<string, string> marked = AutoTracer.ReadVolatile(AutoTracer.VolatilePath(g));
         return path =>
@@ -23,7 +24,7 @@ internal static class LoadRefillPlans
             try
             {
                 var info = new FileInfo(path);
-                return info.Exists && VolatileFiles.Reason(path, marked) is null && PlanGuards.Inside(path, g.AllowedRoots, RealPaths.Real)
+                return info.Exists && (VolatileFiles.Reason(path, marked) is null || (includeWritten && VolatileFiles.IsGameWritten(path, marked))) && PlanGuards.Inside(path, g.AllowedRoots, RealPaths.Real)
                     ? new LoadRefillFileStat(info.Length, info.LastWriteTimeUtc.Ticks)
                     : null;
             }
@@ -128,12 +129,15 @@ internal static class LoadRefillPlans
     /// 순위 목록을 다시 만들어 저장합니다: 집계 전체 구간 (실행·로드·경기 중) 의 블록을 나온 플레이 수, 지연 합 순으로 줄 세웁니다 (집계가 없으면 낡은 파일을 지움). 로그 한 줄을 돌려줍니다.
     /// 캐시 없이만 읽힌 블록·가변 파일·허용 루트 밖은 로드 목록과 같게 빼고, 예열 목록에서 어차피 빠지는 캐시 없이 읽는 파일 (UnbufferedFiles),
     /// 만져도 캐시에 남지 않는 스파스 파일과 게임 드라이브 밖 파일도 뺍니다 (순위 자리와 예산을 쓰지 않게).
-    public static string RebuildRanked(GameSettings g, DateTimeOffset now) => RebuildRanked(g, now, path => FileGuards.IsSparse(path));
+    /// includeWritten 이면 (memory.keep_hold_written_files) 게임이 플레이 중에 쓰는 파일의 블록도 같은 점수로 줄 세웁니다 (두 플레이 이상 반복해 읽힌 블록만, LoadRefillPlanner.WrittenMinPlays).
+    public static string RebuildRanked(GameSettings g, DateTimeOffset now, bool includeWritten = false, IReadOnlyList<string>? recentPlays = null) => RebuildRanked(g, now, path => FileGuards.IsSparse(path), includeWritten, recentPlays);
 
-    internal static string RebuildRanked(GameSettings g, DateTimeOffset now, Func<string, bool> isSparse)
+    internal static string RebuildRanked(GameSettings g, DateTimeOffset now, Func<string, bool> isSparse, bool includeWritten = false, IReadOnlyList<string>? recentPlays = null)
     {
         string path = RankedPathOf(g);
-        Func<string, LoadRefillFileStat?> inner = StatOf(g);
+        Func<string, LoadRefillFileStat?> inner = StatOf(g, includeWritten);
+        IReadOnlyDictionary<string, string> marked = includeWritten ? AutoTracer.ReadVolatile(AutoTracer.VolatilePath(g)) : new Dictionary<string, string>();
+        WrittenFileHistory history = includeWritten ? WrittenFileHistory.Read(WrittenFileHistory.PathFor(AutoTracer.RawTracePath(g))) : new WrittenFileHistory();
         HashSet<string> unbuffered = UnbufferedFiles.Excluded(g);
         string drive = Path.GetPathRoot(g.OriginRoot) ?? string.Empty;
         int sparseFiles = 0;
@@ -153,7 +157,9 @@ internal static class LoadRefillPlans
             return stat;
         }
 
-        LoadRefillList list = LoadRefillPlanner.Collect(Sources(AutoTracer.RawTracePath(g)), Stat, null, LoadRefillPlanner.RankedCapBytes);
+        LoadRefillList list = LoadRefillPlanner.Collect(Sources(AutoTracer.RawTracePath(g)), Stat, null, LoadRefillPlanner.RankedCapBytes, includeWritten ? file => VolatileFiles.IsGameWritten(file, marked) : null,
+            includeWritten ? file => VolatileFiles.IsGameWritten(file, marked) && inner(file) is { } now && history.IsAppendOnly(file, now.Size, recentPlays) : null); // 크기 기록이 충분하고 줄어든 적이 없는 파일은 수정된 플레이의 읽기도 셈
+        long writtenBlocks = includeWritten ? list.Blocks.Count(b => VolatileFiles.IsGameWritten(b.Path, marked)) : 0;
         if (list.Plays == 0 && !SummaryPaths(AutoTracer.RawTracePath(g)).Any(File.Exists))
         {
             File.Delete(path); // 집계가 하나도 없음: 낡은 파일을 지움
@@ -165,7 +171,8 @@ internal static class LoadRefillPlans
 
         return $"ranked block list built from {list.Plays} plays: {list.Blocks.Count} blocks/{Mib(list.Bytes)} MiB, "
             + $"{Mib(list.SkippedNoCacheBlocks * LoadBoundaries.Block)} MiB left out as read only without the cache, {sparseFiles} sparse files left out, "
-            + $"{Mib(list.DroppedByCapBlocks * LoadBoundaries.Block)} MiB over the {LoadRefillPlanner.RankedCapBytes >> 20} MiB cap";
+            + $"{Mib(list.DroppedByCapBlocks * LoadBoundaries.Block)} MiB over the {LoadRefillPlanner.RankedCapBytes >> 20} MiB cap"
+            + (includeWritten ? $", {Mib(writtenBlocks * LoadBoundaries.Block)} MiB in game-written files" : string.Empty);
     }
 
     // 마지막 예열이 읽은 순위 목록 (순위 파일 경로 → 그 파일의 길이·수정 시각과 읽은 내용).
@@ -233,7 +240,7 @@ internal static class LoadRefillPlans
             return null;
         }
 
-        List<TraceEvent> rows = LoadRefillPlanner.ToRows(pin.List, StatOf(g), cancellationToken);
+        List<TraceEvent> rows = LoadRefillPlanner.ToRows(pin.List, StatOf(g, includeWritten: true), cancellationToken); // 순위 목록이 담은 파일만 나옴 (게임이 쓰는 파일은 memory.keep_hold_written_files 가 켜진 때 만든 목록에만 있음)
         return rows.Count == 0 ? null : rows;
     }
 

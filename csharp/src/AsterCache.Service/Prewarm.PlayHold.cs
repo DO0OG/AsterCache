@@ -39,6 +39,15 @@ public sealed partial class Prewarmer
     /// 게임 실행 여부를 보는 간격 (프로세스 스냅샷 한 번이라 HoldWatchFast 마다 보지 않음).
     public static readonly TimeSpan HoldGameCheckEvery = TimeSpan.FromSeconds(5);
 
+    /// 게임이 쓰는 파일을 붙든 동안 그 파일의 크기·수정 시각·생성 시각이 바뀌었는지 보는 간격 (하한 감시의 느린 간격과 같음). 파일을 열지 않는 속성 조회 한 번이라 비용은 거의 없고, 바뀌면 그 파일의 뷰만 바로 닫습니다.
+    /// 5 초인 근거: 붙든 뷰가 있는 파일에서 막히는 것은 크기를 줄이는 쓰기뿐이고 (오류 1224), 게임이 덧붙이기·덮어쓰기를 한 뒤 줄이기까지 이 시간 안에 닫아야 실패 위험 창이 짧습니다. 조건을 통과한 파일은 줄어든 적이 없으므로 위험은 그 첫 쓰기 뒤에만 생깁니다.
+    public static readonly TimeSpan HoldWrittenCheckEvery = TimeSpan.FromSeconds(5);
+
+    // 게임이 쓰는 파일을 붙들지 않은 사유 (PrewarmEnv.HoldRules 가 돌려주고 시작 줄이 사유별로 바이트를 남김).
+    internal const string HoldWrittenNoHistory = "written file: not enough size history";
+    internal const string HoldWrittenShrank = "written file: shrank before";
+    internal const string HoldWrittenUpdated = "written file: game updated or update unknown";
+
     /// 붙들기에서 _touchSerial 을 놓지 않고 이어 처리하는 배치 수: 이 수만큼 읽은 뒤 (또는 속도 제한으로 쉴 때) 잠금을 놓아 다른 만지기 (다른 실행 파일의 시작 만지기) 가 끼어들 수 있게 합니다. 잠금을 다시 잡을 때마다 하드 폴트 기준값을 새로 잡습니다 (조회 2 회).
     public const int HoldLockBatches = 8;
 
@@ -552,13 +561,14 @@ public sealed partial class Prewarmer
             return null;
         }
 
-        if (_env.HoldExclusion(game) is not { } excluded)
+        if (_env.HoldExclusion(game) is not { } rules)
         {
             NoteHoldSkip(game, exe, "no volatile file information yet, no trace was recorded", ref lastSkip);
             outcome = HoldOutcome.No;
             return null;
         }
 
+        Func<string, string?> excluded = rules.Reason;
         floorMib = HoldMinFloorMib;
         long availMib = _env.AvailableRamMib();
         targetBytes = HoldTargetBytes(availMib, floorMib);
@@ -588,6 +598,9 @@ public sealed partial class Prewarmer
         long sparseBytes = 0;
         long excludedBytes = 0;
         long cheatFileBytes = 0;
+        long writtenNoHistory = 0;
+        long writtenShrank = 0;
+        long writtenUpdated = 0;
         List<ReadOp> eligible = [];
         foreach (ReadOp op in keep.Ordered)
         {
@@ -608,15 +621,30 @@ public sealed partial class Prewarmer
             {
                 cheatFileBytes += op.Length;
             }
+            else if (reason == HoldWrittenNoHistory)
+            {
+                writtenNoHistory += op.Length;
+            }
+            else if (reason == HoldWrittenShrank)
+            {
+                writtenShrank += op.Length;
+            }
+            else if (reason == HoldWrittenUpdated)
+            {
+                writtenUpdated += op.Length;
+            }
             else
             {
                 excludedBytes += op.Length;
             }
         }
 
+        string[] writtenPaths = rules.IsWritten is { } isWritten ? [.. eligible.Select(o => o.Path).Distinct(StringComparer.OrdinalIgnoreCase).Where(isWritten)] : [];
+
         IReadOnlyList<ReadOp> reads = PrefetchStreamer.Head(eligible, targetBytes);
         long total = reads.Sum(o => o.Length);
         IKeepHold hold = open();
+        hold.MarkWritten(writtenPaths); // 게임이 쓰는 파일은 붙든 뒤 5 초마다 바뀌었는지 봄
         _ = _holdHeld.AddOrUpdate(game.Name, (0, _env.WorkingSetBytes()), (_, _) => (0, _env.WorkingSetBytes())); // 붙들기 전의 서비스 작업 집합 (되먹임에 더하는 양의 상한)
         try
         {
@@ -690,7 +718,9 @@ public sealed partial class Prewarmer
             string excludedText = sparseBytes + excludedBytes + cheatFileBytes + images + smalls > 0
                 ? $", not held: {excludedBytes >> 20} MiB in volatile or changed files, {sparseBytes >> 20} MiB in sparse files, {cheatFileBytes >> 20} MiB in anti-cheat files, {images >> 20} MiB in executable images (MZ) or unreadable files, {smalls >> 20} MiB in files under {ViewHold.MinFileBytes >> 20} MiB"
                 : string.Empty;
-            _log.Info($"{game.Name}: cache held while playing ({exe}): {hold.HeldBytes >> 20} MiB of {targetBytes >> 20} MiB target ({total >> 20} MiB list) in {hold.Files} files, {hold.Views} views, in {elapsed:F1} s (cpu {cpu:F1} s, {checks} checks), {walk.Disk >> 20} MiB read from disk ({hardFaults} hard faults){ErrorsText(errors)}{missing}{excludedText}{stopped}{(walk.Boundaries > 0 ? HoldProbe(reads, total, linked.Token) : string.Empty)}{(cheatKind is null ? string.Empty : $" (anti-cheat: {cheatKind}, hold allowed)")}");
+            string writtenText = rules.IsWritten is null ? string.Empty
+                : $", game-written files: {hold.WrittenHeldBytes >> 20} MiB held in {hold.WrittenFiles} files, not held by condition: {writtenNoHistory >> 20} MiB with too little size history, {writtenShrank >> 20} MiB that shrank before, {writtenUpdated >> 20} MiB after a game update or with the update unknown";
+            _log.Info($"{game.Name}: cache held while playing ({exe}): {hold.HeldBytes >> 20} MiB of {targetBytes >> 20} MiB target ({total >> 20} MiB list) in {hold.Files} files, {hold.Views} views, in {elapsed:F1} s (cpu {cpu:F1} s, {checks} checks), {walk.Disk >> 20} MiB read from disk ({hardFaults} hard faults){ErrorsText(errors)}{missing}{excludedText}{writtenText}{stopped}{(walk.Boundaries > 0 ? HoldProbe(reads, total, linked.Token) : string.Empty)}{(cheatKind is null ? string.Empty : $" (anti-cheat: {cheatKind}, hold allowed)")}");
             SetHeld(game.Name, hold.HeldBytes);
             outcome = HoldOutcome.Done;
             return hold;
@@ -729,6 +759,8 @@ public sealed partial class Prewarmer
         long droppedTotal = 0;
         long refilledTotal = 0;
         long trimmedTotal = 0;
+        long writtenReleasedBytes = 0;
+        int writtenReleasedFiles = 0;
         int checks = 0;
         string? lastSkip = null;
         string ended = string.Empty;
@@ -736,9 +768,35 @@ public sealed partial class Prewarmer
         TimeSpan elapsed = TimeSpan.Zero; // 붙든 뒤 쉰 시간의 합 (시험이 시계를 흉내 내지 않아도 되게 시계 대신 씀)
         TimeSpan lastGameCheck = TimeSpan.Zero;
         TimeSpan lastCheck = TimeSpan.Zero;
+        TimeSpan lastWrittenCheck = TimeSpan.Zero;
         long availMib = _env.AvailableRamMib();
+
+        // 게임이 쓰는 파일이 붙들 때와 달라졌으면 그 파일만 풀고 모두 풀려 붙든 것이 없으면 true. 붙들기를 시작하는 동안 (수 초~수십 초) 이미 바뀐 파일을 붙든 직후에 바로 한 번 잡으려고 루프 앞에서도 부릅니다.
+        bool CheckWritten()
+        {
+            foreach (WrittenRelease r in hold.ReleaseChangedWritten())
+            {
+                (writtenReleasedBytes, writtenReleasedFiles) = (writtenReleasedBytes + r.Bytes, writtenReleasedFiles + 1);
+                _log.Info($"{name}: cache hold released a game-written file the game changed ({exe}): {r.Path}, {r.Bytes >> 20} MiB, {elapsed.TotalSeconds:F0} s after the hold started, {hold.HeldBytes >> 20} MiB still held");
+            }
+
+            SetHeld(name, hold.HeldBytes);
+            if (hold.HeldBytes <= 0)
+            {
+                ended = " (nothing left held)";
+                return true;
+            }
+
+            return false;
+        }
+
         try
         {
+            if (hold.WrittenFiles > 0 && CheckWritten())
+            {
+                return HoldOutcome.Done; // 붙든 것이 모두 풀림: finally 가 닫고 끝 줄을 남김
+            }
+
             while (true)
             {
                 TimeSpan interval = availMib < floorMib + HoldNearFloorMib || elapsed < HoldEarlyWindow ? HoldWatchFast : HoldWatchEvery;
@@ -773,6 +831,15 @@ public sealed partial class Prewarmer
                     }
                 }
 
+                if (elapsed - lastWrittenCheck >= HoldWrittenCheckEvery && hold.WrittenFiles > 0)
+                {
+                    lastWrittenCheck = elapsed;
+                    if (CheckWritten())
+                    {
+                        break;
+                    }
+                }
+
                 if (elapsed - lastCheck >= PlayTouchEvery && (game ?? GameOf(name)) is { } current)
                 {
                     lastCheck = elapsed;
@@ -791,7 +858,7 @@ public sealed partial class Prewarmer
         {
             long held = hold.HeldBytes;
             hold.Dispose(); // 덜 중요한 것부터 내놓고 뷰를 닫음
-            _log.Info($"{name}: cache hold ended after {checks} checks ({exe}): {held >> 20} MiB released at the end, peak {peak >> 20} MiB of {targetBytes >> 20} MiB target, {releasedTotal >> 20} MiB released for memory, {trimmedTotal >> 20} MiB reduced by the memory manager, {refilledTotal >> 20} MiB read again from disk, {droppedTotal >> 20} MiB taken off the hold{ended}");
+            _log.Info($"{name}: cache hold ended after {checks} checks ({exe}): {held >> 20} MiB released at the end, peak {peak >> 20} MiB of {targetBytes >> 20} MiB target, {releasedTotal >> 20} MiB released for memory, {trimmedTotal >> 20} MiB reduced by the memory manager, {refilledTotal >> 20} MiB read again from disk, {droppedTotal >> 20} MiB taken off the hold{(writtenReleasedFiles > 0 ? $", {writtenReleasedFiles} game-written files ({writtenReleasedBytes >> 20} MiB) released after the game changed them" : string.Empty)}{ended}");
         }
 
         return off ? HoldOutcome.No : HoldOutcome.Done; // 설정이 꺼졌으면 남은 시간은 지금의 다시 만지기가 이어받음
@@ -827,6 +894,11 @@ public sealed partial class Prewarmer
             hold.Rebase();
             bool refill = _env.AvailableRamMib() >= floorMib + HoldRefillMarginMib; // 가용 메모리에 여유가 없으면 줄여 간 쪽을 다시 읽어 오지 않고 그 구간을 목록에서 뺌
             r = hold.Recheck(KeepDiskReadCapBytes, linked.Token, refill);
+        }
+
+        if (r.QueryFailures > 0)
+        {
+            NoteHoldSkip(game, exe, $"check: the working set query failed for {r.QueryFailures} ranges (error {r.QueryError}), those were not judged", ref lastSkip); // 같은 오류는 한 번만 남김
         }
 
         string cap = r.CapReached ? $", refill cap reached, {r.DroppedBytes >> 20} MiB taken off the hold" : r.DroppedBytes > 0 ? $", {r.DroppedBytes >> 20} MiB taken off the hold (unreadable)" : string.Empty;

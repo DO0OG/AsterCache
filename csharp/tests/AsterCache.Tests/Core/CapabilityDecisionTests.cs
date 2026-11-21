@@ -29,6 +29,19 @@ public sealed class CapabilityDecisionTests
     {
         Assert.Equal(AntiCheat.ForbidsTrace(antiCheatKind), Capabilities.Decide(CapabilityFeature.Trace, antiCheatKind).Outcome == CapabilityOutcome.Block);
         Assert.Equal(AntiCheat.ForbidsPin(antiCheatKind), Capabilities.Decide(CapabilityFeature.Pin, antiCheatKind).Outcome == CapabilityOutcome.Block);
+        Assert.Equal(AntiCheat.ForbidsTrace(antiCheatKind), AntiCheat.ForbidsHold(antiCheatKind)); // 붙들기 게이트는 트레이스 게이트와 같은 범위
+    }
+
+    [Fact]
+    public void RicochetIsAllowedToHoldWhilePinningStaysForbidden()
+    {
+        Assert.False(AntiCheat.ForbidsHold("ricochet"));
+        Assert.True(AntiCheat.ForbidsPin("ricochet"));
+        Assert.False(AntiCheat.ForbidsHold(null));
+        foreach (string kind in new[] { "eac", "battleye", "vanguard", "kernel", "unknown" })
+        {
+            Assert.True(AntiCheat.ForbidsHold(kind), kind);
+        }
     }
 
     [Fact]
@@ -93,6 +106,12 @@ public sealed class CapabilityDecisionTests
         [
             CapabilityOutcome.Allow, CapabilityOutcome.Block, CapabilityOutcome.Block, CapabilityOutcome.Block, CapabilityOutcome.Block,
             CapabilityOutcome.Block, CapabilityOutcome.Block, CapabilityOutcome.Allow, CapabilityOutcome.Allow, CapabilityOutcome.Allow,
+            CapabilityOutcome.Allow, CapabilityOutcome.Allow, CapabilityOutcome.Allow, CapabilityOutcome.Allow, CapabilityOutcome.Allow,
+        ]);
+        AddCases(data, CapabilityFeature.Hold, // 붙들기: 트레이스 금지 종류와 같은 범위 (리코셰는 허용)
+        [
+            CapabilityOutcome.Allow, CapabilityOutcome.Block, CapabilityOutcome.Block, CapabilityOutcome.Block, CapabilityOutcome.Block,
+            CapabilityOutcome.Allow, CapabilityOutcome.Block, CapabilityOutcome.Allow, CapabilityOutcome.Allow, CapabilityOutcome.Allow,
             CapabilityOutcome.Allow, CapabilityOutcome.Allow, CapabilityOutcome.Allow, CapabilityOutcome.Allow, CapabilityOutcome.Allow,
         ]);
         AddCases(data, CapabilityFeature.Relocate,

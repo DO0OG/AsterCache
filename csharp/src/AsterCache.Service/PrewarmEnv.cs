@@ -176,13 +176,28 @@ public sealed class PrewarmEnv
     /// 표본 확인 (기록용, KeepProbe): 범위마다 따로 만져 앞뒤의 하드 폴트 증가를 돌려줌 (읽을 수 없으면 null). 판정·순서에는 쓰지 않습니다. 시험 기본값은 확인 없음.
     public Func<IReadOnlyList<ReadOp>, CancellationToken, int[]?> KeepProbeSamples { get; init; } = (_, _) => null;
 
+    /// 유지 목록을 중요한 순서로 걸으며 메모리에 있는 범위를 찾고 빠진 조각은 건너뜀 (범위, 디스크 읽기 상한, 취소, 읽은 양이 쌓일 때 부르는 알림): 시험은 가짜로 바꿉니다.
+    public Func<IReadOnlyList<ReadOp>, long, CancellationToken, Action<long, double>, FindResult> FindResident { get; init; } = (ops, cap, ct, onGroup) => ResidentFinder.Find(ops, cap, ct, onGroup);
+
+    /// 설정 memory.keep_hold (게임 실행 중 유지 목록을 매핑 뷰로 붙들어 둠) 가 켜져 있는가. 시험 기본값은 꺼짐 (실제 호출 없음).
+    public Func<bool> KeepHoldEnabled { get; init; } = () => false;
+
+    /// 붙들 뷰 묶음을 엽니다 (게임 하나의 한 플레이에 하나). null 이면 붙들지 못함. 시험은 가짜로 바꿉니다.
+    public Func<IKeepHold>? OpenHold { get; init; }
+
+    /// 서비스 프로세스의 지금 작업 집합 (바이트): 붙든 양을 플레이 기록에 더할 때 붙들기 전 값과의 차이로 상한을 둡니다 (메모리 관리자가 줄여 간 만큼은 이미 가용에 들어 있음). 시험은 가짜로 바꿉니다.
+    public Func<long> WorkingSetBytes { get; init; } = () => Environment.WorkingSet;
+
+    /// 붙들면 안 되는 파일의 판정 (경로 → 사유, 붙들 수 있으면 null): 가변 파일 표시와 순위 목록을 만든 뒤 바뀐 파일. 판정할 정보가 없는 게임 (원시 트레이스가 한 번도 없어 가변 파일을 가려 본 적이 없음) 이면 함수 자체가 null 이고 그 게임은 붙들지 않습니다.
+    public Func<GameSettings, Func<string, string?>?> HoldExclusion { get; init; } = _ => _ => null;
+
     /// 게임의 예열 목록·순위 목록이 바뀌었는지 가리는 입력 파일의 표지 (같으면 목록이 같음, 읽지 못하면 null → 매번 다시 계산). 시험 기본값은 항상 같음.
     public Func<GameSettings, string?> ListStamp { get; init; } = _ => string.Empty;
 
     public static Func<GameSettings, bool> GameActiveOnDisk(IReadOnlyList<GameSettings> games,
         Func<string, string, bool> sameDisk, Func<GameSettings, bool> gameRunning) => OrbitRuntime.GameActiveOnDisk(games, sameDisk, gameRunning);
 
-    public static PrewarmEnv Create(OrbitCalibration? orbitCalibration = null, OrbitRuntime? orbitRuntime = null, Func<bool>? standbyLadder = null)
+    public static PrewarmEnv Create(OrbitCalibration? orbitCalibration = null, OrbitRuntime? orbitRuntime = null, Func<bool>? standbyLadder = null, Func<bool>? keepHold = null)
     {
         Func<GameSettings, bool> gameRunning = DispatchEnv.IsGameRunning;
         Func<string, string, bool> sameDisk = VolumeDisks.SameDisk;
@@ -199,6 +214,9 @@ public sealed class PrewarmEnv
             SameDisk = sameDisk,
             SetReadIoLow = low => ThreadIoPriority.TrySet(low ? IoPriority.Low : IoPriority.Normal),
             StandbyLadderEnabled = standbyLadder ?? (() => false),
+            KeepHoldEnabled = keepHold ?? (() => false),
+            OpenHold = () => new ViewHold(),
+            HoldExclusion = HoldRules,
             Lists = MemoryListInfo.Query,
             TouchRanges = StandbyTouch.Run,
             KeepProbeSamples = StandbyTouch.Probe,
@@ -312,6 +330,22 @@ public sealed class PrewarmEnv
             TraceExists = g => File.Exists(g.Trace),
             EffectiveZoneBytes = EffectiveZoneFromPlan,
         };
+    }
+
+    // 붙들기에서 뺄 파일의 판정: 트레이스에서 가변으로 표시한 파일과 이름 규칙에 걸리는 파일 (게임이 세션 중 쓰는 캐시·설정·로그), 순위 목록 (없으면 원시 트레이스) 을 만든 뒤 수정 시각이 바뀐 파일.
+    // 원시 트레이스가 없으면 가변 표시를 만든 적이 없어 어떤 파일이 쓰이는지 모르므로 null (붙들지 않음).
+    private static Func<string, string?>? HoldRules(GameSettings g)
+    {
+        string raw = AutoTracer.RawTracePath(g);
+        if (!File.Exists(raw))
+        {
+            return null;
+        }
+
+        IReadOnlyDictionary<string, string> marked = AutoTracer.ReadVolatile(AutoTracer.VolatilePath(g));
+        string ranked = LoadRefillPlans.RankedPathOf(g);
+        DateTime since = File.GetLastWriteTimeUtc(File.Exists(ranked) ? ranked : raw);
+        return path => VolatileFiles.Reason(path, marked) ?? (File.GetLastWriteTimeUtc(path) > since ? "changed since the ranking was made" : null);
     }
 
     // 등록 exe 이름 프로세스들의 읽기 카운터 합: 하나라도 못 읽거나 하나도 없으면 null (조회 실패를 0 으로 보지 않음).

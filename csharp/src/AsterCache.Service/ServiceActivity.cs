@@ -10,6 +10,9 @@ internal enum ServiceOp
     Stream = 4, // 시작 스트림·이후 실행 파일의 단계 스트림 (stream)
     Trim = 8, // 배경 양보의 작업 집합 비우기 (trim)
     Supplement = 16, // 보충 예열 (supp)
+    Hold = 32, // 유지 목록을 뷰로 붙드는 중 (hold)
+    Check = 64, // 붙든 범위를 다시 읽어 점검하는 중 (check)
+    Release = 128, // 가용 메모리가 하한 아래라 붙든 것을 내놓는 중 (release)
 }
 
 /// 서비스의 동작 표시: 하는 일의 앞뒤를 `using` 으로 감싸면, 표본 루프가 `Take` 로 지난 호출 뒤 한 번이라도 돌았던 것을 읽습니다. 기록만 하고 동작에는 영향이 없습니다.
@@ -23,6 +26,9 @@ internal sealed class ServiceActivity
         (ServiceOp.Stream, "stream"),
         (ServiceOp.Trim, "trim"),
         (ServiceOp.Supplement, "supp"),
+        (ServiceOp.Hold, "hold"),
+        (ServiceOp.Check, "check"),
+        (ServiceOp.Release, "release"),
     ];
 
     public static readonly ServiceActivity Shared = new(); // Ops 다음에 만듦 (생성자가 Ops 의 길이를 씀)

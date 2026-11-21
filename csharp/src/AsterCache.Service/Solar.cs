@@ -210,6 +210,15 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         return r.End;
     }
 
+    /// 실행 중 유지나 시작 만지기가 빠진 조각을 건너뛰며 메모리에 있던 만큼 (inMemoryBytes) 만졌을 때: 다른 게임의 먼저 재사용될 양을 그만큼 줄입니다 (TouchFront 와 같은 규칙: 이 게임은 표식이 없어 만진 전체를 줄임).
+    public void NoteKept(string game, long inMemoryBytes)
+    {
+        if (inMemoryBytes > 0)
+        {
+            ReduceOthers([game], [(null, inMemoryBytes)], withoutPreviousAll: true);
+        }
+    }
+
     /// 표식이 있는 게임의 사다리를 다시 만듭니다 (디스크 읽기 없음). 표식이 없거나 꺼져 있으면 null.
     /// 디스크 읽기가 섞이면 표식을 지우고 다시 채움 표시를 남겨 기존 재예열 점검에 맡깁니다: 재예열은 여기서 부르지 않으며, 재예열이 끝나 사다리가 다시 만들어질 때까지 새로 고치지 않습니다.
     /// touched: 끝까지 만졌을 때 이전 표식과 만진 바이트를 알림 (묶음 새로 고침이 Regroup 에 넘길 값).

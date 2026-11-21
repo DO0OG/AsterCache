@@ -296,7 +296,8 @@ public sealed record RiotSettings(bool ChampSelectPrewarm = false, int ChampSele
 /// standby_ladder 는 예열한 캐시를 디스크 읽기 없이 다시 만져 중요한 것이 마지막에 밀려나게 하고 밀려나기 전에 새로 고침 (기본 켜짐).
 /// background_io_priority 는 배경 양보 동안 그 프로세스들의 디스크 I/O 우선순위도 낮춤 (기본 켜짐, background_yield 가 꺼져 있으면 하지 않음).
 /// background_cpu_priority 는 같은 프로세스 가운데 CPU 우선순위 등급이 보통인 것을 보통보다 낮음으로 낮춤 (기본 꺼짐: 실제 플레이의 초 단위 기록에서 끊긴 초와 아닌 초의 다른 프로세스 CPU 에 차이가 없었음, background_yield 가 꺼져 있으면 하지 않음).
-public sealed record MemorySettings(bool BackgroundYield = true, bool StandbyLadder = true, bool BackgroundIoPriority = true, bool BackgroundCpuPriority = false)
+/// keep_hold 는 게임이 실행되는 동안 유지 목록을 서비스의 매핑 뷰로 붙들어 대기 목록에서 밀려나지 않게 함 (기본 켜짐, 꺼지면 대기 목록을 다시 만지는 지금의 동작, standby_ladder 가 꺼져 있으면 하지 않음).
+public sealed record MemorySettings(bool BackgroundYield = true, bool StandbyLadder = true, bool BackgroundIoPriority = true, bool BackgroundCpuPriority = false, bool KeepHold = true)
 {
     public static MemorySettings Default { get; } = new();
 }

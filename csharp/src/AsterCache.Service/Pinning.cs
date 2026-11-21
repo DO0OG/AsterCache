@@ -36,6 +36,7 @@ public sealed class PinKeeper
     private readonly Dictionary<string, IDisposable> _held = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, RecoveryPin> _recovery = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (string Root, string? Cheat)> _cheat = new(StringComparer.OrdinalIgnoreCase); // 게임별 고정 금지 판정 (없음 포함, 탐지 실패는 넣지 않음): 게임 루트가 바뀌면 무효
+    private readonly Dictionary<string, (string Root, string? Found)> _holdKind = new(StringComparer.OrdinalIgnoreCase); // 게임별 붙들기용 안티치트 종류 (탐지 실패는 넣지 않음): 게임 루트가 바뀌면 무효
     private readonly HashSet<string> _cheatLogged = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyList<GameSettings> _games = []; // Reconcile·CheckMemory 가 마지막으로 받은 등록 게임 (다른 스레드가 읽으므로 Volatile)
     private bool _gamesKnown; // 위 목록을 한 번이라도 받았는가 (못 받았으면 고정 저장 때 등록 여부를 따지지 않음)
@@ -356,7 +357,7 @@ public sealed class PinKeeper
     }
 
     // 안티치트 게임은 파일을 고정하지 않음 (보호 드라이버가 열린 핸들을 문제 삼을 수 있음): 등록 값 (설정을 읽을 때 Riot 규칙으로 채워짐), 없으면 폴더 이름 (한 번만 봄), 탐지 실패도 막음.
-    private string? PinBlocker(GameSettings game)
+    internal string? PinBlocker(GameSettings game)
     {
         if (AntiCheat.ForbidsPin(game.AntiCheat))
         {
@@ -382,6 +383,36 @@ public sealed class PinKeeper
         }
 
         return cheat;
+    }
+
+    /// 게임 실행 중 붙들기의 안티치트 게이트: (막는 종류, 알려진 종류). 고정 게이트 (PinBlocker) 와 같은 방식으로 등록 값 (설정을 읽을 때 Riot 규칙으로 채워짐) 과 폴더 이름으로 감지한 값을 모두 보고, 어느 하나라도 AntiCheat.ForbidsHold 면 막습니다 (탐지 실패 포함).
+    /// 고정과 달리 리코셰는 막지 않습니다. 알려진 종류는 허용된 경우의 로그용입니다. 고정이 함께 보던 물리 RAM·런처 조건은 붙들기에 필요하지 않아 가져오지 않았습니다 (붙들기는 시작 만지기 뒤 게임이 실행 중일 때만 하고 하한 가용 메모리로 따로 지킴).
+    internal (string? Blocker, string? Kind) HoldGate(GameSettings game)
+    {
+        if (AntiCheat.ForbidsHold(game.AntiCheat))
+        {
+            return (game.AntiCheat, game.AntiCheat);
+        }
+
+        lock (_lock)
+        {
+            if (_holdKind.TryGetValue(game.Name, out var known) && known.Root == game.OriginRoot)
+            {
+                return (AntiCheat.ForbidsHold(known.Found) ? known.Found : null, game.AntiCheat ?? known.Found); // 캐시에는 감지값을 둠: 설정값이 허용 종류여도 감지값이 금지면 두 번째 호출부터도 막힘
+            }
+        }
+
+        string? found = _env.AntiCheatOf(game);
+        string? kind = game.AntiCheat ?? found;
+        if (found != AutoEnv.AntiCheatUnknown)
+        {
+            lock (_lock)
+            {
+                _holdKind[game.Name] = (game.OriginRoot, found);
+            }
+        }
+
+        return (AntiCheat.ForbidsHold(found) ? found : null, kind);
     }
 
     // 게임이 돌아 미룬 고정을 게임이 끝났으면 다시 시도합니다 (설정에서 빠진 게임은 버림). 아직 돌면 그대로 둠.

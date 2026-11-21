@@ -4,8 +4,8 @@ using Microsoft.Win32.SafeHandles;
 
 namespace AsterCache.Windows;
 
-/// 대기 목록에서 읽은 값: 여유분 (여유 + 우선순위 0~4 대기) 바이트, 캐시 (우선순위 5~7) 재사용 누계 바이트, 캐시 (우선순위 5~7) 대기 바이트.
-public readonly record struct MemoryLists(long HeadroomBytes, long CacheRepurposedBytes, long CacheStandbyBytes = 0);
+/// 대기 목록에서 읽은 값: 여유분 (여유 + 우선순위 0~4 대기) 바이트, 캐시 (우선순위 5~7) 재사용 누계 바이트, 캐시 (우선순위 5~7) 대기 바이트, 우선순위 5 대기 바이트 (만진 페이지가 들어가는 목록, 모르면 -1).
+public readonly record struct MemoryLists(long HeadroomBytes, long CacheRepurposedBytes, long CacheStandbyBytes = 0, long Priority5StandbyBytes = -1);
 
 /// 우선순위 0~7 별 대기 목록의 크기와 재사용 누계 (바이트, 배열 길이 8), 여유 + 0 으로 채운 목록 바이트 (플레이 기록용).
 public readonly record struct MemoryPriorityLists(long[] StandbyBytes, long[] RepurposedBytes, long FreeBytes);
@@ -77,7 +77,7 @@ public static unsafe class MemoryListInfo
             standby += (long)v[ByPriority + i];
         }
 
-        return new MemoryLists(headroom * pageSize, cache * pageSize, standby * pageSize);
+        return new MemoryLists(headroom * pageSize, cache * pageSize, standby * pageSize, (long)v[ByPriority + CachePriority] * pageSize);
     }
 
     private static bool EnablePrivilege(string name)

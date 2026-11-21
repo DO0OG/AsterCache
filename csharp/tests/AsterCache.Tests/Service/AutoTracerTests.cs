@@ -542,6 +542,7 @@ public sealed class AutoTracerTests : IDisposable
 
         _rig.World.Running = false;
         _rig.World.FileTimes[list] = now.AddMinutes(1);
+        _rig.World.FileTimes[UnbufferedFiles.NoCacheReadPathOf(_game)] = now.AddMinutes(1); // 붙들기용 캐시 없는 읽기 목록도 같이 만들므로 둘 다 더 새로워야 함
         _tracer.RebuildStaleLoadRefills(default); // 목록이 더 새로움
         Assert.False(Built());
 

@@ -48,6 +48,9 @@ public sealed partial class Prewarmer
     internal const string HoldWrittenShrank = "written file: shrank before";
     internal const string HoldWrittenUpdated = "written file: game updated or update unknown";
 
+    // 캐시 없는 읽기가 많아 붙들면 손해가 큰 파일을 붙들지 않은 사유 (시작 줄이 바이트를 남김).
+    internal const string HoldNoCacheRead = "read without the cache";
+
     /// 붙들기에서 _touchSerial 을 놓지 않고 이어 처리하는 배치 수: 이 수만큼 읽은 뒤 (또는 속도 제한으로 쉴 때) 잠금을 놓아 다른 만지기 (다른 실행 파일의 시작 만지기) 가 끼어들 수 있게 합니다. 잠금을 다시 잡을 때마다 하드 폴트 기준값을 새로 잡습니다 (조회 2 회).
     public const int HoldLockBatches = 8;
 
@@ -770,6 +773,7 @@ public sealed partial class Prewarmer
         long sparseBytes = 0;
         long excludedBytes = 0;
         long cheatFileBytes = 0;
+        long noCacheBytes = 0;
         long writtenNoHistory = 0;
         long writtenShrank = 0;
         long writtenUpdated = 0;
@@ -792,6 +796,10 @@ public sealed partial class Prewarmer
             else if (reason == "anti-cheat file")
             {
                 cheatFileBytes += op.Length;
+            }
+            else if (reason == HoldNoCacheRead)
+            {
+                noCacheBytes += op.Length;
             }
             else if (reason == HoldWrittenNoHistory)
             {
@@ -887,8 +895,8 @@ public sealed partial class Prewarmer
 
             string stopped = walk.Stopped ? $", stopped at the memory floor ({floorMib} MiB, available {_env.AvailableRamMib()} MiB)" : walk.CapReached ? ", disk read cap reached" : string.Empty;
             string missing = walk.Boundaries > 0 ? $", {walk.Boundaries} missing stretches skipped ({walk.SkippedBytes >> 20} MiB not held)" : string.Empty;
-            string excludedText = sparseBytes + excludedBytes + cheatFileBytes + images + smalls > 0
-                ? $", not held: {excludedBytes >> 20} MiB in volatile or changed files, {sparseBytes >> 20} MiB in sparse files, {cheatFileBytes >> 20} MiB in anti-cheat files, {images >> 20} MiB in executable images (MZ) or unreadable files, {smalls >> 20} MiB in files under {ViewHold.MinFileBytes >> 20} MiB"
+            string excludedText = sparseBytes + excludedBytes + cheatFileBytes + images + smalls + noCacheBytes > 0
+                ? $", not held: {excludedBytes >> 20} MiB in volatile or changed files, {sparseBytes >> 20} MiB in sparse files, {cheatFileBytes >> 20} MiB in anti-cheat files, {images >> 20} MiB in executable images (MZ) or unreadable files, {smalls >> 20} MiB in files under {ViewHold.MinFileBytes >> 20} MiB, {noCacheBytes >> 20} MiB in files where holding loses more than it gains"
                 : string.Empty;
             string writtenText = rules.IsWritten is null ? string.Empty
                 : $", game-written files: {hold.WrittenHeldBytes >> 20} MiB held in {hold.WrittenFiles} files, not held by condition: {writtenNoHistory >> 20} MiB with too little size history, {writtenShrank >> 20} MiB that shrank before, {writtenUpdated >> 20} MiB after a game update or with the update unknown";

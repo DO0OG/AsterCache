@@ -1416,4 +1416,18 @@ public sealed class KeepHoldTests
         Assert.Contains("0 s after the hold started", released[0]); // 루프의 첫 5 초 확인 전에 바로 잡음
         Assert.True(_hold.WrittenChecks >= 1);
     }
+
+    [Fact]
+    public void AFileWhoseHoldingWouldLoseMoreThanItGainsIsNotHeldAndTheStartLineCountsItsBytes()
+    {
+        _writtenReasons[F(3)] = Prewarmer.HoldNoCacheRead;
+        _writtenReasons[F(4)] = Prewarmer.HoldNoCacheRead;
+        Prewarmer p = Make(Reads);
+        RunFor(0);
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Equal([(F(1), 0), (F(2), 0), (F(2), 8), (F(5), 0)], Flat(_hold.Batches));
+        Assert.Contains(_log.Lines, l => l.Contains("cache held while playing (a.exe): 32 MiB") && l.Contains("16 MiB in files where holding loses more than it gains"));
+    }
 }

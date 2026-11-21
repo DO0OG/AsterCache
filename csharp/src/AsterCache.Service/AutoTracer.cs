@@ -1772,7 +1772,72 @@ public sealed class AutoTracer
 
         RebuildLoadRefill(run.Game);
         RebuildUnbufferedFiles(run.Game);
+        RecordWrittenSizes(run.Game, summary.SessionId);
         RebuildRanked(run.Game);
+    }
+
+    // 변경 저널 (NTFS USN) 로 플레이마다 게임이 쓰는 파일이 잘라내어지거나 교체됐는지 판정해 크기 기록에 더합니다: 세션 끝의 크기만 보면 줄였다 다시 늘린 것을 놓칩니다.
+    // 구간은 플레이 기록 (play_samples.json) 에 남은 끝난 플레이 전부 (과거 플레이 포함, 트레이스를 켜지 않은 플레이도) 이고, 이미 판정한 플레이는 건너뜁니다. 게임이 실행 중이면 읽지 않고, 저널을 못 읽으면 (권한·저널 없음·상한 초과) 크기 기록으로만 남깁니다.
+    private void FillFromJournal(GameSettings g, WrittenFileHistory history, IEnumerable<string> paths)
+    {
+        if (_env.AnyRunning(g.ExeNames))
+        {
+            return;
+        }
+
+        IReadOnlyList<SessionSpan> sessions = _env.PlaySessions(g.Name);
+        var tracked = history.Files.Select(f => f.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (IGrouping<string, string> volume in paths.Where(tracked.Contains).Distinct(StringComparer.OrdinalIgnoreCase).GroupBy(p => (Path.GetPathRoot(p) ?? string.Empty).TrimEnd('\\'), StringComparer.OrdinalIgnoreCase))
+        {
+            (string Path, ulong? Frn)[] files = [.. volume.Select(p => (p, _env.FileReference(p)))];
+            HashSet<ulong> frns = [.. files.Where(f => f.Frn is not null).Select(f => f.Frn!.Value)];
+            if (frns.Count == 0)
+            {
+                continue;
+            }
+
+            UsnRead? read = _env.ReadUsn(volume.Key, frns);
+            int added = history.RecordJournal(read, files, sessions);
+            _log.Info($"{g.Name}: change journal of {volume.Key}: " + (read is null
+                ? "not readable, the size history stays as it is"
+                : $"{frns.Count} written files, {read.Events.Count} records since {read.OldestUtc:u}, {added} play judgments added, {history.Files.Count(f => f.Shrank)} files shrank in all"));
+        }
+    }
+
+    // 플레이가 끝났을 때 게임이 쓰는 파일 (트레이스가 가변으로 표시한 것) 의 크기를 남깁니다: 붙들기가 크기가 줄어든 적이 없는 파일만 고르는 근거 (WrittenFileHistory). 부가 정보라 실패해도 기록 저장은 계속.
+    private void RecordWrittenSizes(GameSettings g, string session)
+    {
+        try
+        {
+            IReadOnlyDictionary<string, string> marked = ReadVolatile(VolatilePath(g));
+            var seen = new List<(string Path, long Size, long MTimeTicks)>();
+            foreach (string path in marked.Keys.Where(p => VolatileFiles.IsGameWritten(p, marked)))
+            {
+                try
+                {
+                    Fingerprint now = _env.Stat(path);
+                    seen.Add((path, now.Size, Fingerprint.UnixEpochTicks + (now.MtimeNs / 100)));
+                }
+                catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
+                {
+                    seen.Add((path, 0, 0)); // 없어짐: 기록한 적이 있는 파일이면 줄어든 것으로 셈
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    // 읽을 수 없는 파일은 이번 플레이에 기록하지 않음
+                }
+            }
+
+            string file = WrittenFileHistory.PathFor(RawTracePath(g));
+            WrittenFileHistory history = WrittenFileHistory.Read(file);
+            history.Record(session, seen, ViewHold.MinFileBytes);
+            FillFromJournal(g, history, seen.Select(s => s.Path));
+            history.Write(file);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"{g.Name}: written file size history not saved ({e.GetType().Name})");
+        }
     }
 
     /// 서비스 시작 때: 로드 구간 목록·캐시 없이만 읽히는 파일 목록·블록 순위 목록 (각각) 이 없거나 그 게임의 가장 새 집계보다 오래된 게임의 목록을 저장된 집계로 만듭니다 (실행 중인 게임은 건너뜀, 폴더 잠금 안, 낮은 우선순위).
@@ -1853,7 +1918,7 @@ public sealed class AutoTracer
     {
         try
         {
-            _log.Info($"{g.Name}: {LoadRefillPlans.RebuildRanked(g, _env.Now())}{logSuffix}");
+            _log.Info($"{g.Name}: {LoadRefillPlans.RebuildRanked(g, _env.Now(), _settings().Memory is { KeepHold: true, KeepHoldWrittenFiles: true })}{logSuffix}");
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {

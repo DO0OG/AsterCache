@@ -200,6 +200,14 @@ public sealed class AutoEnv
     /// 파일의 마지막 수정 시각 (UTC), 없으면 null. 원시 트레이스가 마지막 예열보다 새로운지 보는 데 씁니다.
     public Func<string, DateTimeOffset?> FileWriteTime { get; init; } = _ => null;
 
+    /// 파일의 파일 참조 번호 (속성만 읽는 열기, 열지 못하면 null) 와 볼륨 (예: "D:") 의 변경 저널에서 찾는 파일들의 기록 (못 읽으면 null): 게임이 쓰는 파일이 줄어든 적이 있는지 가리는 근거입니다. 시험 기본값은 모름.
+    public Func<string, ulong?> FileReference { get; init; } = _ => null;
+
+    public Func<string, IReadOnlySet<ulong>, UsnRead?> ReadUsn { get; init; } = (_, _) => null;
+
+    /// 게임의 끝난 플레이 구간들 (플레이 기록, 오래된 순): 변경 저널 기록을 플레이에 맞추는 데 씁니다. 시험 기본값은 없음.
+    public Func<string, IReadOnlyList<SessionSpan>> PlaySessions { get; init; } = _ => [];
+
     /// 파일의 ChangeTime (UTC): 수정 시각을 되돌려도 따라 돌아가지 않는 시각. 열 수 없으면 null (알 수 없음). 시험 기본값은 아주 옛 시각 (바뀌지 않음).
     public Func<string, DateTimeOffset?> ChangeTime { get; init; } = _ => DateTimeOffset.MinValue;
 
@@ -388,6 +396,23 @@ public sealed class AutoEnv
             ProfileEvents = (g, budget) => PlanGuards.Inside(g.OriginRoot, g.AllowedRoots, RealPaths.Real) ? ProfileSupplement.EventsFor(g.OriginRoot, g.ExeNames, budget, RealPaths.Resolve) : [],
             DirectoryExists = Directory.Exists,
             FileWriteTime = path => File.Exists(path) ? File.GetLastWriteTimeUtc(path) : null,
+            PlaySessions = game => PlaySessionList.Read(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(journalDir)) ?? string.Empty, "play_samples.json"), game),
+            FileReference = UsnJournal.FileReference,
+            ReadUsn = (volume, frns) =>
+            {
+                bool low = ThreadIoPriority.TrySet(IoPriority.Low); // 저널을 읽는 동안만 낮은 I/O 우선순위
+                try
+                {
+                    return UsnJournal.Read(volume, frns, UsnJournal.DefaultBudget, UsnJournal.DefaultMaxBytes);
+                }
+                finally
+                {
+                    if (low)
+                    {
+                        _ = ThreadIoPriority.TrySet(IoPriority.Normal);
+                    }
+                }
+            },
             ChangeTime = AsterCache.Windows.FileTimes.ChangeTimeOf,
             GameProcesses = exes => ProcessSnapshot.ReadCounters(exes),
             AnyRunning = exes => ProcessSnapshot.IsRunning(exes),

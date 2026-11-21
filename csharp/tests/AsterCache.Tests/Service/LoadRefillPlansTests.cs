@@ -199,4 +199,63 @@ public sealed class LoadRefillPlansTests : IDisposable
         Assert.False(File.Exists(LoadRefillPlans.PathOf(_game)));
         Assert.Contains("0 blocks/0.0 MiB", line, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void RankedListPutsGameWrittenFilesInTheSameOrderOnlyWhenAskedAndDropsThemWhenTheFileChangedAfterwards()
+    {
+        string written = Path.Combine(Path.GetDirectoryName(_gameFile)!, "cache_0_2.xpakdata");
+        File.WriteAllBytes(written, new byte[4 * Block]);
+        File.WriteAllText(AutoTracer.VolatilePath(_game), $"{{\"{written.Replace("\\", "\\\\", StringComparison.Ordinal)}\": \"opened for write\"}}");
+        IReadOnlyList<IoSummaryFile> files = [new(_gameFile), new(written)];
+        // 쓰는 파일의 블록 1 은 두 플레이에서, 블록 2 는 한 플레이에서만 읽힘. 정적 파일 블록 0 은 한 플레이.
+        IoSummaryStore.WriteForRun(Run(1), Rows(files, Row(0, 0, 2, latencyUs: 10), Row(1, 1, 900, latencyUs: 700), Row(1, 2, 901, latencyUs: 9000)));
+        IoSummaryStore.WriteForRun(Run(2), Rows(files, Row(1, 1, 800, latencyUs: 700)));
+
+        string without = LoadRefillPlans.RebuildRanked(_game, Started);
+        Assert.Equal([(_gameFile, 0L)], LoadRefillPlans.RankedRows(_game)!.Select(r => (r.Path, r.Offset))); // 끄면 (기본) 예전처럼 가변 파일은 순위 밖
+        Assert.DoesNotContain("game-written", without, StringComparison.Ordinal);
+
+        LoadRefillPlans.ForgetRanked(_game); // 마지막 예열이 읽은 순위 기억을 버려 새로 만든 목록을 읽게 함
+        string line = LoadRefillPlans.RebuildRanked(_game, Started, includeWritten: true);
+
+        Assert.Contains("2 blocks/0.1 MiB", line, StringComparison.Ordinal);
+        Assert.EndsWith(", 0.1 MiB in game-written files", line, StringComparison.Ordinal);
+        Assert.Equal([(written, 1L * Block), (_gameFile, 0L)], LoadRefillPlans.RankedRows(_game)!.Select(r => (r.Path, r.Offset))); // 두 플레이 읽힌 블록이 앞, 한 플레이만 읽힌 쓰는 파일 블록 2 는 빠짐
+
+        File.WriteAllBytes(written, new byte[3 * Block]); // 게임이 다시 씀: 저장한 크기·수정 시각과 달라짐
+        Assert.Equal([(_gameFile, 0L)], LoadRefillPlans.RankedRows(_game)!.Select(r => (r.Path, r.Offset)));
+    }
+
+    [Fact]
+    public void RankedListCountsTheReadsOfPlaysThatModifiedAWrittenFileOnlyWhenItsSizeHistoryIsGoodAndNeverShrank()
+    {
+        string written = Path.Combine(Path.GetDirectoryName(_gameFile)!, "cache_0_2.xpakdata");
+        File.WriteAllBytes(written, new byte[4 * Block]);
+        File.WriteAllText(AutoTracer.VolatilePath(_game), $"{{\"{written.Replace("\\", "\\\\", StringComparison.Ordinal)}\": \"opened for write\"}}");
+        IReadOnlyList<IoSummaryFile> files = [new(_gameFile), new(written, true)]; // 쓰는 파일은 두 플레이 모두 수정됨
+        IoSummaryStore.WriteForRun(Run(1), Rows(files, Row(1, 1, 900, latencyUs: 700)));
+        IoSummaryStore.WriteForRun(Run(2), Rows(files, Row(1, 1, 800, latencyUs: 700)));
+        string historyPath = WrittenFileHistory.PathFor(AutoTracer.RawTracePath(_game));
+
+        LoadRefillPlans.RebuildRanked(_game, Started, includeWritten: true); // 크기 기록 없음: 수정된 플레이는 예전처럼 뺌
+        LoadRefillPlans.ForgetRanked(_game);
+        Assert.Null(LoadRefillPlans.RankedRows(_game));
+
+        var history = new WrittenFileHistory();
+        foreach (string s in new[] { "s1", "s2", "s3" })
+        {
+            history.Record(s, [(written, 4 * Block, 7)], 0);
+        }
+
+        history.Write(historyPath);
+        LoadRefillPlans.RebuildRanked(_game, Started, includeWritten: true);
+        LoadRefillPlans.ForgetRanked(_game);
+        Assert.Equal([(written, 1L * Block)], LoadRefillPlans.RankedRows(_game)!.Select(r => (r.Path, r.Offset))); // 줄어든 적 없음: 수정된 두 플레이의 읽기가 점수에 듦
+
+        history.Record("s4", [(written, 2 * Block, 7)], 0); // 줄어듦
+        history.Write(historyPath);
+        LoadRefillPlans.RebuildRanked(_game, Started, includeWritten: true);
+        LoadRefillPlans.ForgetRanked(_game);
+        Assert.Null(LoadRefillPlans.RankedRows(_game));
+    }
 }

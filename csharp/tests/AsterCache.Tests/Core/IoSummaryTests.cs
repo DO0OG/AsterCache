@@ -527,4 +527,88 @@ public sealed class IoSummaryTests : IDisposable
             + "dropped 0 reads/0.0 MiB, latency 2.5 ms sum/1.6 ms max, 3 events lost, truncated False (blocks 0), 12 files scanned in 34 ms, 2 changed during session, 0 reads/0.0 MiB left out as the service's own reads",
             summary.FormatLogLine());
     }
+
+    // ---- 쓰기 기록 ----
+
+    private static IoSummary BuildWrites(IoSummaryCollector collector) => new IoBlockMapper(collector.Snapshot(Started.AddSeconds(1), [], 0, null)).Build(0, 0, 0, 0, 0, false);
+
+    [Fact]
+    public void WritesAreKeptPerFileWithMergedRangesNoCacheCountsAndTimesAndPagingWritesAreNotNoCache()
+    {
+        var collector = new IoSummaryCollector(Started, readModeRoots: [@"D:\Games"]);
+        collector.AddProcessWrite(@"D:\Games\x.xpakdata", 0, 1000, 0x01, 5); // 캐시 없이 쓴 처음 쓰기
+        collector.AddProcessWrite(@"D:\Games\x.xpakdata", 1000, 1000, 0x01, 7); // 이어 붙음: 한 구간으로 합침
+        collector.AddProcessWrite(@"D:\Games\x.xpakdata", 2000, 500, 0, 9); // 캐시 경유
+        collector.AddProcessWrite(@"D:\Games\x.xpakdata", 10_000, 100, 0x03, 11); // 페이징 (캐시 관리자의 쓰기): 캐시 없음으로 세지 않음
+        collector.AddProcessWrite(@"D:\Games\x.xpakdata", 0, 0, 0, 12); // 길이 0 은 무시
+        collector.AddProcessWrite(@"D:\Other\y.bin", 0, 10, 0, 1); // 집계 경로 밖
+        collector.AddProcessWrite(null, 0, 10, 0, 1); // 이름 모름
+
+        IoSummaryWriteFile file = Assert.Single(BuildWrites(collector).WriteFiles!);
+
+        Assert.Equal(@"D:\Games\x.xpakdata", file.Path);
+        Assert.Equal((4L, 2600L, 2L, 2000L, 5L, 11L), (file.Writes, file.Bytes, file.NoCacheWrites, file.NoCacheBytes, file.FirstUs, file.LastUs));
+        Assert.Equal([new IoWriteRange(0, 2500), new IoWriteRange(10_000, 100)], file.Ranges);
+        Assert.False(file.RangesTruncated);
+    }
+
+    [Fact]
+    public void SavedWriteFilesAreCappedKeepingTheFilesWithTheMostBytes()
+    {
+        var collector = new IoSummaryCollector(Started);
+        for (int i = 0; i < IoSummaryCollector.MaxWriteFilesSaved + 10; i++)
+        {
+            collector.AddProcessWrite($@"D:\Games\f{i}.bin", 0, 100 + i, 0, 1);
+        }
+
+        IReadOnlyList<IoSummaryWriteFile> files = BuildWrites(collector).WriteFiles!;
+
+        Assert.Equal(IoSummaryCollector.MaxWriteFilesSaved, files.Count);
+        Assert.Equal($@"D:\Games\f{IoSummaryCollector.MaxWriteFilesSaved + 9}.bin", files[0].Path); // 쓴 바이트가 많은 순
+        Assert.DoesNotContain(files, f => f.Path == @"D:\Games\f0.bin");
+    }
+
+    [Fact]
+    public void AFileWithMoreScatteredWritesThanTheRangeCapKeepsTheCapAndMarksTruncation()
+    {
+        var collector = new IoSummaryCollector(Started);
+        for (int i = 0; i < IoSummaryCollector.MaxWriteRangesPerFile + 3; i++)
+        {
+            collector.AddProcessWrite(@"D:\Games\scattered.bin", i * 1000L, 10, 0, i); // 군데군데 덮어씀: 이어지지 않는 구간
+        }
+
+        IoSummaryWriteFile file = Assert.Single(BuildWrites(collector).WriteFiles!);
+
+        Assert.Equal(IoSummaryCollector.MaxWriteRangesPerFile, file.Ranges.Count);
+        Assert.True(file.RangesTruncated);
+        Assert.Equal(IoSummaryCollector.MaxWriteRangesPerFile + 3, file.Writes); // 쓰기 수·바이트는 구간 상한과 무관하게 셈
+    }
+
+    [Fact]
+    public void WriteRecordsSurviveTheStoreAndSummariesWithoutThemStillRead()
+    {
+        var collector = new IoSummaryCollector(Started);
+        collector.AddProcessWrite(@"D:\Games\x.xpakdata", 4096, 8192, 0x01, 1234);
+        IoSummary summary = BuildWrites(collector);
+        string path = Path.Combine(_dir, "w.trace.run1.json.io.json");
+
+        IoSummaryStore.Write(path, summary);
+        IoSummary back = Assert.IsType<IoSummary>(IoSummaryStore.Read(path));
+
+        IoSummaryWriteFile saved = Assert.Single(summary.WriteFiles!);
+        IoSummaryWriteFile read = Assert.Single(back.WriteFiles!);
+        Assert.Equal((saved.Path, saved.Writes, saved.Bytes, saved.NoCacheWrites, saved.NoCacheBytes, saved.FirstUs, saved.LastUs, saved.RangesTruncated),
+            (read.Path, read.Writes, read.Bytes, read.NoCacheWrites, read.NoCacheBytes, read.FirstUs, read.LastUs, read.RangesTruncated));
+        Assert.Equal([new IoWriteRange(4096, 8192)], read.Ranges);
+
+        string text = File.ReadAllText(path);
+        File.WriteAllText(path, text.Replace("\"write_files\"", "\"x_write_files\"", StringComparison.Ordinal)); // 옛 집계처럼 항목이 없음
+        Assert.Null(Assert.IsType<IoSummary>(IoSummaryStore.Read(path)).WriteFiles);
+
+        File.WriteAllText(path, text.Replace("\"nocache_writes\": 1", "\"nocache_writes\": \"x\"", StringComparison.Ordinal)); // 모양이 다르면 집계 전체를 읽지 않음
+        Assert.Null(IoSummaryStore.Read(path));
+
+        IoSummaryStore.Write(path, SomeSummary());
+        Assert.DoesNotContain("write_files", File.ReadAllText(path), StringComparison.Ordinal); // 쓰기가 없으면 항목도 만들지 않음
+    }
 }

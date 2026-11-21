@@ -182,6 +182,79 @@ public sealed class ViewHoldTests : IDisposable
         }
     }
 
+    // ---- 게임이 쓰는 파일: 5 초 확인 ----
+
+    [Fact]
+    public void AppendingToAHeldWrittenFileThroughAnotherHandleReleasesThatFileAtTheNextCheckAndNotTheOthers()
+    {
+        string written = Make("w.bin", 4);
+        string unchanged = Make("u.bin", 4);
+        string plain = Make("p.bin", 4);
+        using var hold = new ViewHold(minFileBytes: 0);
+        hold.MarkWritten([written, unchanged]);
+        hold.Rebase();
+        _ = hold.Hold([new ReadOp(written, 0, 4L * Mib), new ReadOp(unchanged, 0, 4L * Mib), new ReadOp(plain, 0, 4L * Mib)], CancellationToken.None);
+        Assert.Equal(8L * Mib, hold.WrittenHeldBytes);
+        Assert.Equal(2, hold.WrittenFiles);
+        Assert.Empty(hold.ReleaseChangedWritten()); // 바뀐 것이 없으면 아무것도 닫지 않음
+
+        using (var fs = new FileStream(written, FileMode.Open, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
+        {
+            fs.Seek(0, SeekOrigin.End);
+            fs.Write(new byte[Mib]); // 덧붙이기는 뷰가 있어도 성공
+        }
+
+        File.SetLastWriteTimeUtc(plain, DateTime.UtcNow.AddMinutes(5)); // 게임이 쓰는 파일이 아니면 이 확인은 보지 않음 (2 분 점검 몫)
+        IReadOnlyList<WrittenRelease> released = hold.ReleaseChangedWritten();
+
+        Assert.Equal([new WrittenRelease(written, 4L * Mib)], released);
+        Assert.Equal(8L * Mib, hold.HeldBytes); // 쓰는 파일 하나만 내놓음
+        Assert.Equal(4L * Mib, hold.WrittenHeldBytes);
+        Assert.Equal(1, hold.WrittenFiles);
+        Assert.Empty(hold.ReleaseChangedWritten()); // 같은 파일을 다시 내놓지 않음
+        using (var fs = new FileStream(written, FileMode.Open, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
+        {
+            fs.SetLength(Mib); // 뷰를 닫았으니 크기 줄이기도 됨
+        }
+    }
+
+    [Fact]
+    public void AModifiedTimeChangeAloneAndAReplacementByRenamingATempFileReleaseTheWrittenFile()
+    {
+        string touched = Make("t.bin", 4);
+        string swapped = Make("s.bin", 4);
+        using var hold = new ViewHold(minFileBytes: 0);
+        hold.MarkWritten([touched, swapped]);
+        hold.Rebase();
+        _ = hold.Hold([new ReadOp(touched, 0, 4L * Mib), new ReadOp(swapped, 0, 4L * Mib)], CancellationToken.None);
+
+        File.SetLastWriteTimeUtc(touched, DateTime.UtcNow.AddMinutes(5)); // 크기가 같아도 수정 시각이 바뀜
+        string temp = swapped + ".tmp";
+        File.WriteAllBytes(temp, new byte[4 * Mib]); // 같은 크기의 새 파일로 바꿔 끼움 (임시 파일 + 이름 바꾸기)
+        File.Move(temp, swapped, true);
+        IReadOnlyList<WrittenRelease> released = hold.ReleaseChangedWritten();
+
+        Assert.Equal(new[] { touched, swapped }.Order(StringComparer.OrdinalIgnoreCase), released.Select(r => r.Path).Order(StringComparer.OrdinalIgnoreCase));
+        Assert.Equal(0, hold.HeldBytes);
+    }
+
+    [Fact]
+    public void AReleasedWrittenFileIsNotHeldAgainByALaterHoldInTheSamePlay()
+    {
+        string written = Make("w.bin", 4);
+        using var hold = new ViewHold(minFileBytes: 0);
+        hold.MarkWritten([written]);
+        hold.Rebase();
+        _ = hold.Hold([new ReadOp(written, 0, 2L * Mib)], CancellationToken.None);
+        File.SetLastWriteTimeUtc(written, DateTime.UtcNow.AddMinutes(5));
+        _ = hold.ReleaseChangedWritten();
+
+        _ = hold.Hold([new ReadOp(written, 2L * Mib, 2L * Mib)], CancellationToken.None);
+
+        Assert.Equal(0, hold.HeldBytes);
+        Assert.Equal(0, hold.WrittenFiles);
+    }
+
     [Fact]
     public void DisposeReleasesEverythingAndLeavesNoSectionOrViewSoShrinkingWorks()
     {

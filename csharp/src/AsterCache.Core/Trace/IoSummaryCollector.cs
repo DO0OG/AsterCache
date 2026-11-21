@@ -39,7 +39,8 @@ public sealed record IoRequestSnapshot(
     SelfReadFilter? SelfReads = null,
     IReadOnlyList<SelfReadBatch>? SelfReadBatches = null,
     long SelfReadDroppedOps = 0,
-    IReadOnlyList<long>? TargetStartsUs = null);
+    IReadOnlyList<long>? TargetStartsUs = null,
+    IReadOnlyList<IoSummaryWriteFile>? WriteFiles = null);
 
 /// 디스크 읽기 완료 이벤트를 (디스크, 바이트 위치, 크기) 요청 단위로 합칩니다. 이벤트 콜백 안에서 부르므로 사전 갱신 말고는 하지 않습니다 (파일 조회·문자열·JSON·로그 없음).
 /// 디스크 읽기 이벤트의 IRP 는 논리 읽기의 IRP 와 다른 객체라 이벤트 시점에는 파일을 알 수 없습니다 (실측): 파일·블록은 끝난 뒤 IoBlockMapper 가 배치 표로 정합니다.
@@ -68,6 +69,14 @@ public sealed class IoSummaryCollector
     /// 요청 표시 종류별 집계 상한. 넘는 값은 그 밖으로 합칩니다.
     public const int MaxReadModeFlags = 32;
 
+    /// 쓰기를 모으는 파일 수 상한 (넘는 파일의 쓰기는 모으지 않음)과 저장하는 파일 수 (쓴 바이트가 많은 순): 항목이 파일마다 구간 목록 하나라 가볍지만 로그·설정 파일이 많은 게임에서도 저장 크기가 일정하게 합니다.
+    public const int MaxWriteFilesTracked = 1 << 12;
+
+    public const int MaxWriteFilesSaved = 256;
+
+    /// 파일 하나의 쓴 위치 구간 상한: 이어 붙는 쓰기는 한 구간으로 합치므로 덧붙이기만 하는 파일은 하나로 끝나고, 군데군데 덮어쓰는 파일은 이 수까지만 남깁니다 (넘으면 RangesTruncated).
+    public const int MaxWriteRangesPerFile = 64;
+
     private readonly IReadOnlySet<uint>? _gameDisks;
     private readonly int _maxRequests;
     private readonly string[]? _readModeRoots;
@@ -76,6 +85,7 @@ public sealed class IoSummaryCollector
     private readonly Dictionary<RequestKey, RequestTotals> _requests = [];
     private readonly Dictionary<string, ReadModeTotals> _readModes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, uint> _openOptions = new(StringComparer.OrdinalIgnoreCase); // 파일별로 열 때 준 옵션 (OpenOptionsMask 비트의 합집합)
+    private readonly Dictionary<string, WriteTotals> _writes = new(StringComparer.OrdinalIgnoreCase); // 파일별 쓰기 기록
     private readonly HashSet<string> _droppedReadModePaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<uint, long> _readModeFlags = [];
     private IoClassTotals _total;
@@ -187,6 +197,27 @@ public sealed class IoSummaryCollector
         _readModes[path] = totals;
     }
 
+    /// 대상 프로세스의 파일 쓰기 한 건을 더합니다 (이름을 모르는 쓰기·집계 경로 밖의 쓰기는 모으지 않음). flags 의 IRP_NOCACHE 는 캐시 없이 쓴 요청 표시, sessionTimeUs 는 관찰 시작을 0 으로 한 마이크로초.
+    public void AddProcessWrite(string? path, long offset, long bytes, uint flags, long sessionTimeUs)
+    {
+        if (string.IsNullOrWhiteSpace(path) || offset < 0 || bytes <= 0 || !IsReadModePath(path))
+        {
+            return;
+        }
+
+        if (!_writes.TryGetValue(path, out WriteTotals? totals))
+        {
+            if (_writes.Count >= MaxWriteFilesTracked)
+            {
+                return;
+            }
+
+            _writes[path] = totals = new WriteTotals(Math.Max(0, sessionTimeUs));
+        }
+
+        totals.Add(offset, bytes, (flags & IrpNoCache) != 0 && (flags & (IrpPagingIo | IrpSynchronousPagingIo)) == 0, Math.Max(0, sessionTimeUs));
+    }
+
     /// 대상 프로세스가 파일을 열 때 준 옵션을 더합니다 (기록만 함: 읽기 집계와 같은 경로 범위·상한). 읽기 집계 상한만큼의 파일까지만 담습니다.
     public void AddOpen(string path, uint createOptions)
     {
@@ -263,10 +294,12 @@ public sealed class IoSummaryCollector
                 pair.Value.PagingRequests, pair.Value.PagingBytes, _openOptions.GetValueOrDefault(pair.Key))).ToArray();
         IoFlagCount[] flags = _readModeFlags.OrderBy(pair => pair.Key).Select(pair => new IoFlagCount(pair.Key, pair.Value)).ToArray();
         (IReadOnlyList<SelfReadBatch> selfBatches, long selfDropped) = _selfReads.End();
+        IoSummaryWriteFile[] writes = [.. _writes.OrderByDescending(pair => pair.Value.Bytes).ThenBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase).Take(MaxWriteFilesSaved)
+            .Select(pair => pair.Value.ToFile(pair.Key))];
         return new IoRequestSnapshot(ObservedAtUtc, endedAtUtc.ToUniversalTime(), rawWindows.ToArray(), rawTraceZeroUs, Math.Max(0, eventsLost),
             _total, _latencyMaxUs, _otherDisk, _noFile, _dropped, _pagingReads, _pagingBytes, requests, readModes, _readModeFilesDropped,
             _readModeReadsUnnamed, flags.Length == 0 ? null : flags, _readModeFlagsOther, _readModeDroppedRequests, _readModeFilesDroppedExact,
-            SelfReadBatches: selfBatches, SelfReadDroppedOps: selfDropped);
+            SelfReadBatches: selfBatches, SelfReadDroppedOps: selfDropped, WriteFiles: writes.Length == 0 ? null : writes);
     }
 
     private bool IsReadModePath(string path)
@@ -307,6 +340,52 @@ public sealed class IoSummaryCollector
         public long NoCacheBytes;
         public long PagingRequests;
         public long PagingBytes;
+    }
+
+    // 파일 하나의 쓰기 기록: 이어 붙는 쓰기 (직전 구간의 끝이나 그 안에서 시작) 는 마지막 구간을 늘리고, 아니면 새 구간을 엽니다 (상한을 넘으면 더하지 않고 표시만).
+    private sealed class WriteTotals
+    {
+        private readonly List<IoWriteRange> _ranges = [];
+        private readonly long _firstUs;
+        private bool _truncated;
+        private long _lastUs;
+
+        public WriteTotals(long firstUs) => _firstUs = _lastUs = firstUs;
+
+        public long Writes { get; private set; }
+
+        public long Bytes { get; private set; }
+
+        public long NoCacheWrites { get; private set; }
+
+        public long NoCacheBytes { get; private set; }
+
+        public void Add(long offset, long bytes, bool noCache, long sessionTimeUs)
+        {
+            Writes++;
+            Bytes += bytes;
+            if (noCache)
+            {
+                NoCacheWrites++;
+                NoCacheBytes += bytes;
+            }
+
+            _lastUs = Math.Max(_lastUs, sessionTimeUs);
+            if (_ranges.Count > 0 && _ranges[^1] is { } last && offset >= last.Offset && offset <= last.Offset + last.Length)
+            {
+                _ranges[^1] = last with { Length = Math.Max(last.Length, offset + bytes - last.Offset) };
+            }
+            else if (_ranges.Count < MaxWriteRangesPerFile)
+            {
+                _ranges.Add(new IoWriteRange(offset, bytes));
+            }
+            else
+            {
+                _truncated = true;
+            }
+        }
+
+        public IoSummaryWriteFile ToFile(string path) => new(path, Writes, Bytes, NoCacheWrites, NoCacheBytes, _firstUs, _lastUs, [.. _ranges], _truncated);
     }
 
     private readonly record struct RequestKey(uint Disk, long Offset, long Bytes);

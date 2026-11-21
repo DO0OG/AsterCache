@@ -37,6 +37,9 @@ public sealed class KeepHoldTests
     private readonly List<IReadOnlyList<ReadOp>> _findCalls = []; // 찾기 패스가 받은 목록
     private Action<long, double, Action<long, double>>? _findGroups; // 찾기 패스 도중 읽은 양이 쌓이는 때 (읽은 양, 시간, 알림) 를 흉내
     private long _p5 = -1; // 우선순위 5 대기 양 (MiB, 음수면 모름)
+    private bool _writtenOn = true; // memory.keep_hold_written_files
+    private readonly HashSet<string> _writtenFiles = []; // 게임이 쓰는 파일로 판정되는 경로
+    private readonly Dictionary<string, string> _writtenReasons = new(StringComparer.OrdinalIgnoreCase); // 게임이 쓰는 파일을 붙들지 않는 사유 (없으면 조건 충족)
 
     private static string F(int n) => @"D:\a\" + n + ".bin";
 
@@ -72,9 +75,33 @@ public sealed class KeepHoldTests
         public Func<HoldCheckResult>? NextCheck;
         public Action? OnHold;
         public int ErrorsPerBatch; // 배치마다 돌려줄 열기 오류 수 (공유 없이 열린 파일을 흉내)
+        public readonly HashSet<string> WrittenMarked = new(StringComparer.OrdinalIgnoreCase);
+        public readonly HashSet<string> ChangedWritten = new(StringComparer.OrdinalIgnoreCase); // 게임이 바꾼 것으로 돌려줄 파일 (5 초 확인이 닫음)
+        public int WrittenChecks;
+        private readonly Dictionary<string, long> _writtenBytes = new(StringComparer.OrdinalIgnoreCase);
         private long _held;
 
         public long HeldBytes => _held;
+
+        public long WrittenHeldBytes => _writtenBytes.Values.Sum();
+
+        public int WrittenFiles => _writtenBytes.Count(p => p.Value > 0);
+
+        public void MarkWritten(IReadOnlyCollection<string> paths) => WrittenMarked.UnionWith(paths);
+
+        public IReadOnlyList<WrittenRelease> ReleaseChangedWritten()
+        {
+            WrittenChecks++;
+            List<WrittenRelease> released = [];
+            foreach (string path in ChangedWritten.Where(p => _writtenBytes.TryGetValue(p, out long b) && b > 0).ToList())
+            {
+                released.Add(new WrittenRelease(path, _writtenBytes[path]));
+                _held -= _writtenBytes[path];
+                _writtenBytes[path] = 0;
+            }
+
+            return released;
+        }
 
         public int Files => 3;
 
@@ -102,6 +129,10 @@ public sealed class KeepHoldTests
                 }
 
                 bytes += batch[i].Length;
+                if (WrittenMarked.Contains(batch[i].Path))
+                {
+                    _writtenBytes[batch[i].Path] = _writtenBytes.GetValueOrDefault(batch[i].Path) + batch[i].Length;
+                }
             }
 
             _held += bytes;
@@ -166,7 +197,9 @@ public sealed class KeepHoldTests
                 _opened++;
                 return _hold;
             },
-            HoldExclusion = _ => _hasVolatileInfo ? path => _excluded.Contains(path) ? "volatile" : null : null,
+            HoldExclusion = _ => _hasVolatileInfo
+                ? new HoldFileRules(path => _excluded.Contains(path) ? "volatile" : _writtenReasons.GetValueOrDefault(path), _writtenOn ? path => _writtenFiles.Contains(path) : null)
+                : null,
             WorkingSetBytes = () => (1000 * Mib) + _hold.HeldBytes - _trimmed,
             Sleep = (t, ct) => _sleep?.Invoke(t, ct),
         }, _log, null, () => _now);
@@ -1006,6 +1039,10 @@ public sealed class KeepHoldTests
         Assert.False(ParseMemory("""{"keep_hold":false}""").KeepHold);
         Assert.True(ParseMemory("""{"keep_hold":false}""").StandbyLadder);
         Assert.Throws<SettingsException>(() => ParseMemory("""{"keep_hold":"yes"}"""));
+        Assert.True(ParseMemory("{}").KeepHoldWrittenFiles); // 기본 켜짐
+        Assert.False(ParseMemory("""{"keep_hold_written_files":false}""").KeepHoldWrittenFiles);
+        Assert.True(ParseMemory("""{"keep_hold_written_files":false}""").KeepHold); // 서로 독립
+        Assert.Throws<SettingsException>(() => ParseMemory("""{"keep_hold_written_files":1}"""));
     }
 
     private static MemorySettings ParseMemory(string memory)
@@ -1069,5 +1106,108 @@ public sealed class KeepHoldTests
         Assert.Equal(startAvail - 48, actualDuringHold);
         Assert.Equal(startAvail, recordedDuringHold);
         Assert.Equal(0, prewarmer.KeepHeldMib); // 게임이 끝나면 더하지 않음
+    }
+
+    // ---- 게임이 쓰는 파일 ----
+
+    [Fact]
+    public void AWrittenFileThatMeetsTheConditionsIsHeldAndTheOnesThatDoNotAreCountedByReasonInTheStartLine()
+    {
+        foreach (int n in new[] { 1, 2, 3, 4, 5 })
+        {
+            _ = _writtenFiles.Add(F(n));
+        }
+
+        _writtenReasons[F(3)] = Prewarmer.HoldWrittenNoHistory;
+        _writtenReasons[F(4)] = Prewarmer.HoldWrittenShrank;
+        _writtenReasons[F(5)] = Prewarmer.HoldWrittenUpdated;
+        Prewarmer p = Make(Reads);
+        RunFor(0);
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Equal([(F(1), 0), (F(2), 0), (F(2), 8)], Flat(_hold.Batches));
+        Assert.Equal([F(1), F(2)], _hold.WrittenMarked.Order().ToArray()); // 조건을 채운 쓰는 파일만 5 초 확인 대상
+        Assert.Contains(_log.Lines, l => l.Contains("cache held while playing (a.exe): 24 MiB")
+            && l.Contains("game-written files: 24 MiB held in 2 files, not held by condition: 8 MiB with too little size history, 8 MiB that shrank before, 8 MiB after a game update or with the update unknown"));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("MiB in volatile or changed files")); // 조건 때문에 빠진 양은 가변·바뀐 파일 몫에 섞이지 않음
+    }
+
+    [Fact]
+    public void TheWrittenFilesAreCheckedEveryFiveSecondsAndOnlyTheChangedOneIsReleasedAndNotHeldAgain()
+    {
+        _ = _writtenFiles.Add(F(1));
+        _ = _writtenFiles.Add(F(2));
+        Prewarmer p = Make(Reads);
+        RunFor(30, e =>
+        {
+            if (e == 7)
+            {
+                _ = _hold.ChangedWritten.Add(F(1)); // 게임이 7 초에 첫 쓰기
+            }
+        });
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.InRange(_hold.WrittenChecks, 5, 7); // 31 초 동안 5 초마다
+        string[] released = [.. _log.Lines.Where(l => l.Contains("released a game-written file the game changed"))];
+        _ = Assert.Single(released);
+        Assert.Contains(F(1), released[0]);
+        Assert.Contains("8 MiB, 10 s after the hold started, 40 MiB still held", released[0]); // 7 초에 바뀐 것을 다음 5 초 확인 (10 초) 에 닫음, 다른 파일은 그대로
+        Assert.Equal(3, _hold.Batches.Count); // 다시 붙들지 않음
+        Assert.Contains("1 game-written files (8 MiB) released after the game changed them", _log.Lines.Last());
+    }
+
+    [Fact]
+    public void WithoutAnyWrittenFileHeldTheFiveSecondCheckDoesNotRunButTheStartLineStillSaysSo()
+    {
+        Prewarmer p = Make(Reads);
+        RunFor(30);
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Equal(0, _hold.WrittenChecks);
+        Assert.Contains(_log.Lines, l => l.Contains("game-written files: 0 MiB held in 0 files, not held by condition: 0 MiB with too little size history"));
+    }
+
+    [Fact]
+    public void WhenTheSettingIsOffWrittenFilesAreNeitherCheckedNorMentioned()
+    {
+        _writtenOn = false;
+        _ = _writtenFiles.Add(F(1));
+        Prewarmer p = Make(Reads);
+        RunFor(30);
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Empty(_hold.WrittenMarked);
+        Assert.Equal(0, _hold.WrittenChecks);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("game-written files"));
+    }
+
+    [Fact]
+    public void ReleasingEveryHeldFileAfterChangesEndsTheHold()
+    {
+        foreach (int n in new[] { 1, 2, 3, 4, 5 })
+        {
+            _ = _writtenFiles.Add(F(n));
+        }
+
+        Prewarmer p = Make(Reads);
+        RunFor(60, e =>
+        {
+            if (e == 2)
+            {
+                foreach (int n in new[] { 1, 2, 3, 4, 5 })
+                {
+                    _ = _hold.ChangedWritten.Add(F(n));
+                }
+            }
+        });
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Equal(5, _log.Lines.Count(l => l.Contains("released a game-written file the game changed")));
+        Assert.Contains("(nothing left held)", _log.Lines.Last());
     }
 }

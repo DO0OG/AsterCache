@@ -12,6 +12,10 @@ using AsterCache.Windows;
 
 namespace AsterCache.Service;
 
+/// 붙들기에서 뺄 파일의 판정: Reason 은 경로 → 사유 (붙들 수 있으면 null), IsWritten 은 게임이 플레이 중에 스스로 쓰는 파일인가 (memory.keep_hold_written_files 가 꺼져 있으면 null).
+/// IsWritten 인 파일이 Reason 을 통과했다는 것은 크기 기록·업데이트 판정 조건을 모두 채웠다는 뜻이고, 붙든 뒤에는 5 초마다 바뀌었는지 봅니다.
+public sealed record HoldFileRules(Func<string, string?> Reason, Func<string, bool>? IsWritten = null);
+
 /// 예열이 바깥 세계에 닿는 곳 전부. 시험은 가짜로 바꿉니다.
 public sealed class PrewarmEnv
 {
@@ -188,8 +192,9 @@ public sealed class PrewarmEnv
     /// 서비스 프로세스의 지금 작업 집합 (바이트): 붙든 양을 플레이 기록에 더할 때 붙들기 전 값과의 차이로 상한을 둡니다 (메모리 관리자가 줄여 간 만큼은 이미 가용에 들어 있음). 시험은 가짜로 바꿉니다.
     public Func<long> WorkingSetBytes { get; init; } = () => Environment.WorkingSet;
 
-    /// 붙들면 안 되는 파일의 판정 (경로 → 사유, 붙들 수 있으면 null): 가변 파일 표시와 순위 목록을 만든 뒤 바뀐 파일. 판정할 정보가 없는 게임 (원시 트레이스가 한 번도 없어 가변 파일을 가려 본 적이 없음) 이면 함수 자체가 null 이고 그 게임은 붙들지 않습니다.
-    public Func<GameSettings, Func<string, string?>?> HoldExclusion { get; init; } = _ => _ => null;
+    /// 붙들면 안 되는 파일의 판정 (경로 → 사유, 붙들 수 있으면 null): 가변 파일 표시와 순위 목록을 만든 뒤 바뀐 파일, 게임이 쓰는 파일 중 조건 (크기 기록·업데이트 판정) 을 채우지 못한 것.
+    /// 판정할 정보가 없는 게임 (원시 트레이스가 한 번도 없어 가변 파일을 가려 본 적이 없음) 이면 null 이고 그 게임은 붙들지 않습니다.
+    public Func<GameSettings, HoldFileRules?> HoldExclusion { get; init; } = _ => new HoldFileRules(_ => null);
 
     /// 게임의 예열 목록·순위 목록이 바뀌었는지 가리는 입력 파일의 표지 (같으면 목록이 같음, 읽지 못하면 null → 매번 다시 계산). 시험 기본값은 항상 같음.
     public Func<GameSettings, string?> ListStamp { get; init; } = _ => string.Empty;
@@ -197,7 +202,7 @@ public sealed class PrewarmEnv
     public static Func<GameSettings, bool> GameActiveOnDisk(IReadOnlyList<GameSettings> games,
         Func<string, string, bool> sameDisk, Func<GameSettings, bool> gameRunning) => OrbitRuntime.GameActiveOnDisk(games, sameDisk, gameRunning);
 
-    public static PrewarmEnv Create(OrbitCalibration? orbitCalibration = null, OrbitRuntime? orbitRuntime = null, Func<bool>? standbyLadder = null, Func<bool>? keepHold = null)
+    public static PrewarmEnv Create(OrbitCalibration? orbitCalibration = null, OrbitRuntime? orbitRuntime = null, Func<bool>? standbyLadder = null, Func<bool>? keepHold = null, Func<bool>? keepHoldWritten = null)
     {
         Func<GameSettings, bool> gameRunning = DispatchEnv.IsGameRunning;
         Func<string, string, bool> sameDisk = VolumeDisks.SameDisk;
@@ -216,7 +221,7 @@ public sealed class PrewarmEnv
             StandbyLadderEnabled = standbyLadder ?? (() => false),
             KeepHoldEnabled = keepHold ?? (() => false),
             OpenHold = () => new ViewHold(),
-            HoldExclusion = HoldRules,
+            HoldExclusion = g => HoldRules(g, keepHoldWritten?.Invoke() == true, GameUpdated),
             Lists = MemoryListInfo.Query,
             TouchRanges = StandbyTouch.Run,
             KeepProbeSamples = StandbyTouch.Probe,
@@ -334,7 +339,9 @@ public sealed class PrewarmEnv
 
     // 붙들기에서 뺄 파일의 판정: 트레이스에서 가변으로 표시한 파일과 이름 규칙에 걸리는 파일 (게임이 세션 중 쓰는 캐시·설정·로그), 순위 목록 (없으면 원시 트레이스) 을 만든 뒤 수정 시각이 바뀐 파일.
     // 원시 트레이스가 없으면 가변 표시를 만든 적이 없어 어떤 파일이 쓰이는지 모르므로 null (붙들지 않음).
-    private static Func<string, string?>? HoldRules(GameSettings g)
+    // writtenOn (memory.keep_hold_written_files) 이면 게임이 쓰기로 연 파일은 가변이어도 조건을 채울 때 붙듭니다: (a) 크기가 줄어든 적이 없고 플레이 기록이 WrittenFileHistory.MinSessions 개 이상, (b) 게임이 업데이트되지 않았음 (판단하지 못하면 업데이트로 봄).
+    // (c) 이번 플레이에서 바뀌지 않았는지는 붙든 뒤 5 초마다 ViewHold 가 봅니다. gameUpdated 는 true 업데이트됨, false 아님, null 판단 못 함.
+    internal static HoldFileRules? HoldRules(GameSettings g, bool writtenOn, Func<GameSettings, bool?> gameUpdated)
     {
         string raw = AutoTracer.RawTracePath(g);
         if (!File.Exists(raw))
@@ -345,7 +352,89 @@ public sealed class PrewarmEnv
         IReadOnlyDictionary<string, string> marked = AutoTracer.ReadVolatile(AutoTracer.VolatilePath(g));
         string ranked = LoadRefillPlans.RankedPathOf(g);
         DateTime since = File.GetLastWriteTimeUtc(File.Exists(ranked) ? ranked : raw);
-        return path => VolatileFiles.Reason(path, marked) ?? (File.GetLastWriteTimeUtc(path) > since ? "changed since the ranking was made" : null);
+        WrittenFileHistory? history = null;
+        bool? updated = null;
+        bool updatedKnown = false;
+        string? WrittenCondition(string path)
+        {
+            history ??= WrittenFileHistory.Read(WrittenFileHistory.PathFor(raw));
+            long size;
+            try
+            {
+                size = new FileInfo(path) is { Exists: true } info ? info.Length : 0;
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                size = 0; // 크기를 읽지 못함: 기록과 비교해 줄어든 것으로 봄 (붙들지 않는 쪽)
+            }
+
+            switch (history.Judge(path, size))
+            {
+                case WrittenVerdict.Shrank:
+                    return Prewarmer.HoldWrittenShrank;
+                case WrittenVerdict.InsufficientHistory:
+                    return Prewarmer.HoldWrittenNoHistory;
+            }
+
+            if (!updatedKnown)
+            {
+                (updated, updatedKnown) = (gameUpdated(g), true);
+            }
+
+            return updated == false ? null : Prewarmer.HoldWrittenUpdated;
+        }
+
+        return new HoldFileRules(path =>
+        {
+            if (VolatileFiles.Reason(path, marked) is { } why)
+            {
+                if (!writtenOn || !VolatileFiles.IsGameWritten(path, marked))
+                {
+                    return why;
+                }
+
+                if (WrittenCondition(path) is { } blocked)
+                {
+                    return blocked;
+                }
+            }
+
+            return File.GetLastWriteTimeUtc(path) > since ? "changed since the ranking was made" : null;
+        }, writtenOn ? path => VolatileFiles.IsGameWritten(path, marked) : null);
+    }
+
+    // 계획을 만든 뒤 게임 파일이 바뀌었는가 (업데이트 판정, AutoRelocator 의 ReplanStale 과 같은 기준): 계획의 지문 중 가변 파일을 뺀 것을 지금 파일과 비교합니다.
+    // true 바뀐 파일이 있음, false 모두 같음, null 모름 (계획이 없거나 읽을 수 없고, 지문이 없거나, 읽을 수 없는 파일이 있음: 붙들기는 모르면 업데이트로 봄).
+    internal static bool? GameUpdated(GameSettings g)
+    {
+        try
+        {
+            if (!File.Exists(g.Plan))
+            {
+                return null;
+            }
+
+            PlanFile plan = PlanFile.Load(g.Plan);
+            IReadOnlyDictionary<string, string> marked = AutoTracer.ReadVolatile(AutoTracer.VolatilePath(g));
+            bool unknown = plan.Fingerprints.Count == 0;
+            foreach (Fingerprint fp in plan.Fingerprints.Where(f => VolatileFiles.Reason(f.Path, marked) is null))
+            {
+                switch (ReapplyChecker.Compare(fp, PlanFile.FingerprintOf))
+                {
+                    case true:
+                        return true;
+                    case null:
+                        unknown = true;
+                        break;
+                }
+            }
+
+            return unknown ? null : false;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException or FormatException or InvalidCastException or KeyNotFoundException)
+        {
+            return null;
+        }
     }
 
     // 등록 exe 이름 프로세스들의 읽기 카운터 합: 하나라도 못 읽거나 하나도 없으면 null (조회 실패를 0 으로 보지 않음).

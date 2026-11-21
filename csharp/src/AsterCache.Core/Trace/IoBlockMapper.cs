@@ -114,7 +114,7 @@ public sealed class IoBlockMapper
             _snapshot.ReadModeDroppedRequests, _snapshot.ReadModeFilesDroppedExact, selfRead);
         long? zero = _snapshot.RawTraceZeroUs is { } z && Math.Abs(z) <= long.MaxValue / TimeSpan.TicksPerMicrosecond ? z : null;
         return new IoSummary(_snapshot.ObservedAtUtc, _snapshot.EndedAtUtc, _snapshot.RawWindows, quality, _files, rows, Guid.NewGuid().ToString("N"),
-            null, zero, zero is { } at ? _snapshot.ObservedAtUtc.AddTicks(at * TimeSpan.TicksPerMicrosecond) : null, _snapshot.ReadModes ?? [], _snapshot.TargetStartsUs);
+            null, zero, zero is { } at ? _snapshot.ObservedAtUtc.AddTicks(at * TimeSpan.TicksPerMicrosecond) : null, _snapshot.ReadModes ?? [], _snapshot.TargetStartsUs, _snapshot.WriteFiles);
     }
 
     // 요청 하나를 위치 순으로 걸으며 분류 (바이트·지연 누적) 하고 파일에 닿은 부분은 블록에 더합니다.

@@ -52,7 +52,7 @@ internal sealed class KernelCollector
         kernel.FileIOCreate += d => OpenFile(d.ProcessID, d.FileObject, d.FileName, unchecked((uint)d.CreateOptions));
         kernel.FileIOClose += d => CloseObject(d.FileObject);
         kernel.FileIORead += d => AddRead(d.TimeStamp, d.ProcessID, d.FileKey, d.FileObject, d.Offset, d.IoSize, unchecked((uint)d.IoFlags));
-        kernel.FileIOWrite += d => AddWrite(d.TimeStamp, d.ProcessID, d.FileKey, d.FileObject);
+        kernel.FileIOWrite += d => AddWrite(d.TimeStamp, d.ProcessID, d.FileKey, d.FileObject, d.Offset, d.IoSize, unchecked((uint)d.IoFlags));
         if (_ioSummary is not null)
         {
             kernel.DiskIORead += d => AddDiskRead(d.DiskNumber, d.ByteOffset, d.TransferSize, d.ElapsedTimeMSec, d.TimeStamp, ((int)d.IrpFlags & IrpPagingIo) != 0);
@@ -458,22 +458,32 @@ internal sealed class KernelCollector
             ? (long)Math.Round(milliseconds * 1000d, MidpointRounding.AwayFromZero)
             : 0;
 
-    internal void AddWrite(DateTime time, int pid, ulong key, ulong fileObject)
+    internal void AddWrite(DateTime time, int pid, ulong key, ulong fileObject, long offset = 0, long size = 0, uint ioFlags = 0)
     {
-        // 쓰기도 수집 구간 안만 봄: 예전 창마다 세션과 같은 범위라 가변 파일 판정이 달라지지 않고, 구간 밖에서 표가 자라지 않음
-        if (_rawFrozen)
+        // 원시 기록의 쓰기는 수집 구간 안만 봄: 예전 창마다 세션과 같은 범위라 가변 파일 판정이 달라지지 않고, 구간 밖에서 표가 자라지 않음. 입출력 요약의 쓰기 기록은 읽기 집계처럼 세션 전체를 봄
+        if (_rawFrozen && _ioSummary is null)
         {
             return;
         }
 
         lock (_rawLock)
         {
-            if (_rawFrozen || !_window.IsOpen || !_tree.IsTarget(pid) || !_written.Add(key))
+            if ((_rawFrozen && _ioSummary is null) || !_tree.IsTarget(pid))
             {
                 return;
             }
 
             (string? name, string? fallback) = _names.AtRead(key, fileObject);
+            if (_ioSummary is not null && size > 0 && (name ?? fallback) is { } written)
+            {
+                _ioSummary.AddProcessWrite(_devices.ToDosPath(written), offset, size, ioFlags, SessionTimeUs(time)); // 쓴 위치·크기·캐시 없음 표시: 이름을 아직 모르는 쓰기는 모으지 않음
+            }
+
+            if (_rawFrozen || !_window.IsOpen || !_written.Add(key))
+            {
+                return;
+            }
+
             if (name is null)
             {
                 _pending.Add((_records.Count, key, fallback));

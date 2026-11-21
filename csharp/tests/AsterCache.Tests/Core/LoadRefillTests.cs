@@ -189,4 +189,37 @@ public sealed class LoadRefillTests : IDisposable
         File.WriteAllText(path, text);
         Assert.Null(Assert.IsType<IoSummary>(IoSummaryStore.Read(path)).TargetStartsUs);
     }
+
+    [Fact]
+    public void GameWrittenFilesAreRankedByTheSameScoreAsStaticFilesButOnlyForBlocksReadInTwoOrMorePlays()
+    {
+        const string W = @"D:\Games\w.bin";
+        var files = new[] { new IoSummaryFile(A), new IoSummaryFile(W) };
+        LoadRefillFileStat? Both(string path) => path is A or W ? Stat : null;
+        // 두 플레이: 쓰는 파일 블록 0 은 두 번 (지연 합 1,400), 블록 1 은 한 번 (지연 큼). 정적 파일 블록 0 은 두 번 (지연 합 20), 블록 1 은 한 번.
+        LoadRefillSource first = Source([], files, Row(0, 0, 2, latencyUs: 10), Row(0, 1, 3, latencyUs: 30), Row(1, 0, 4, latencyUs: 700), Row(1, 1, 5, latencyUs: 9000));
+        LoadRefillSource second = Source([], files, Row(0, 0, 2, latencyUs: 10), Row(1, 0, 4, latencyUs: 700));
+
+        LoadRefillList plain = LoadRefillPlanner.Collect([first, second], Both, null, 1L << 30);
+        LoadRefillList withWritten = LoadRefillPlanner.Collect([first, second], Both, null, 1L << 30, path => path == W);
+
+        Assert.Equal(4, plain.Blocks.Count); // 묻지 않으면 지금과 같게 모든 블록
+        Assert.Equal([(W, 0L, 2), (A, 0L, 2), (A, 1L, 1)], withWritten.Blocks.Select(b => (b.Path, b.Block, b.Count))); // 같은 점수 (플레이 수, 지연 합) 로 한 순서, 쓰는 파일의 한 번 읽힌 블록 (W 의 블록 1) 은 빠짐
+    }
+
+    [Fact]
+    public void ReadsOfAPlayThatModifiedTheFileCountOnlyForAppendOnlyWrittenFilesNotForOthers()
+    {
+        const string W = @"D:\Games\w.bin";
+        var changed = new[] { new IoSummaryFile(A, true), new IoSummaryFile(W, true) };
+        LoadRefillFileStat? Both(string path) => path is A or W ? Stat : null;
+        LoadRefillSource first = Source([], changed, Row(0, 0, 2), Row(1, 3, 3, latencyUs: 500)); // 두 파일 모두 이 플레이에서 수정됨
+        LoadRefillSource second = Source([], [new IoSummaryFile(A), new IoSummaryFile(W)], Row(0, 0, 2), Row(1, 3, 3, latencyUs: 500));
+
+        LoadRefillList without = LoadRefillPlanner.Collect([first, second], Both, null, 1L << 30, path => path == W);
+        LoadRefillList with = LoadRefillPlanner.Collect([first, second], Both, null, 1L << 30, path => path == W, path => path == W);
+
+        Assert.Equal([(A, 0L, 1)], without.Blocks.Select(b => (b.Path, b.Block, b.Count))); // 수정된 플레이는 빠져 W 블록은 한 플레이뿐이라 두 플레이 기준에 못 미침
+        Assert.Equal([(W, 3L, 2), (A, 0L, 1)], with.Blocks.Select(b => (b.Path, b.Block, b.Count))); // 덧붙이기로 보는 W 만 두 플레이 (수정된 플레이 포함), 정적 A 는 그대로
+    }
 }

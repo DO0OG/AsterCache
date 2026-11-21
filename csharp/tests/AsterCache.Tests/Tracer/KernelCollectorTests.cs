@@ -360,4 +360,28 @@ public sealed class KernelCollectorTests
 
         Assert.Equal(beforeFreeze, c.Finish());
     }
+
+    [Fact]
+    public void EveryWriteOfTheTargetIsKeptForTheSummaryWithPlaceSizeAndNoCacheFlagEvenAfterTheRawFreezeWhileTheRawRecordsKeepOnlyTheFirstWrite()
+    {
+        var summary = new IoSummaryCollector(new DateTimeOffset(T0), readModeRoots: [@"D:\Games"]);
+        var c = new KernelCollector(["game.exe"], new DevicePaths([]), ioSummary: summary);
+        c.StartProcess(T0, 10, 1, "game.exe");
+        c.NameKey(8, File1);
+        c.AddWrite(T0.AddSeconds(1), 10, 8, 80, 0, 4096, 0x01); // 캐시 없이 쓰기
+        c.AddWrite(T0.AddSeconds(2), 10, 8, 80, 4096, 4096, 0x01);
+        c.Pause(new DateTimeOffset(T0.AddSeconds(3)));
+        c.FreezeRawRecords();
+
+        c.AddWrite(T0.AddSeconds(4), 10, 8, 80, 8192, 4096, 0); // 원시 동결 뒤 캐시 경유 쓰기
+        c.AddWrite(T0.AddSeconds(4), 99, 8, 80, 12288, 4096, 0); // 대상 트리 밖
+        c.AddWrite(T0.AddSeconds(4), 10, 9, 90, 0, 4096, 0); // 이름을 모르는 파일
+        IoRequestSnapshot requests = Assert.IsType<IoRequestSnapshot>(c.FinishIoRequests(new DateTimeOffset(T0.AddSeconds(5)), 0));
+        IoSummaryWriteFile file = Assert.Single(new IoBlockMapper(requests).Build(0, 0, 0, 0, 0, false).WriteFiles!);
+
+        Assert.Equal(File1, file.Path);
+        Assert.Equal((3L, 12288L, 2L, 8192L, 1_000_000L, 4_000_000L), (file.Writes, file.Bytes, file.NoCacheWrites, file.NoCacheBytes, file.FirstUs, file.LastUs));
+        Assert.Equal([new IoWriteRange(0, 12288)], file.Ranges); // 이어 붙는 쓰기는 한 구간
+        Assert.Single(c.Finish(), r => r.Kind == RecordKind.Write); // 원시 기록은 파일마다 첫 쓰기 하나뿐
+    }
 }

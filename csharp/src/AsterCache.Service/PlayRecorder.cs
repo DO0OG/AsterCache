@@ -34,7 +34,27 @@ internal sealed record PlayWindowSummary(
     bool Delayed,
     bool CounterReset,
     double IdleSeconds,
-    uint MaxQueueDepth);
+    uint MaxQueueDepth,
+    long FrameCount = 0,
+    double MaxFrameMs = 0,
+    double PeriodMaxFrameMs = 0, // 직전 검사점 뒤부터 이 검사점까지의 가장 긴 간격 (구간별 값을 누계의 차로 구할 수 없어서 따로 둠)
+    int Over50Ms = 0,
+    int Over100Ms = 0,
+    int Pauses = 0, // 1 초 이상 걸린 간격 (최소화·로딩 멈춤 등): 끊김 수와 따로 셈
+    double MaxPauseMs = 0, // 가장 긴 멈춤 (ms)
+    double PeriodMaxPauseMs = 0); // 직전 검사점 뒤부터 이 검사점까지의 가장 긴 멈춤
+
+/// 서비스 자신의 시스템 값 (프로세스를 열지 않는 값): 전체 CPU 사용률과 그래픽 메모리 전용 사용량 합계 (MiB). 못 읽은 값은 null.
+internal readonly record struct PlaySystemSample(double? CpuPercent, int? GpuDedicatedMib);
+
+internal interface IPlaySystemProbe : IDisposable
+{
+    PlaySystemSample Read();
+}
+
+/// 끊김이 있던 초 한 칸: 시작 뒤 초 T 의 프레임 값과 같은 초의 디스크 읽기 횟수·평균 읽기 시간, 그 초의 시스템 값. 가장 긴 간격이 50 ms 이상이거나 디스크 쪽 느린 초일 때만 담음.
+/// DiskReads·DiskMeanReadMs 는 그 초에 디스크 표본이 없으면 null (읽기 0 건과 구별), Pauses 는 그 초에 끝난 1 초 이상 간격 수와 가장 긴 값 (ms).
+internal sealed record PlayFrameSecond(int T, double MaxMs, int Over50Ms, int Over100Ms, int Frames, ulong? DiskReads, double? DiskMeanReadMs, double? CpuPercent, int? GpuDedicatedMib, int Pauses = 0, double PauseMaxMs = 0);
 
 /// 같은 세션에서 이후에 뜬 실행 파일 하나의 시작 스트림 결과와 그 시작 기준 +30/+60/+120 초 창 (기존 창과 같은 요약 형식).
 internal sealed class PlayStageStart
@@ -66,6 +86,12 @@ internal sealed class PlaySampleRecord
     public PlayWindowSummary? Total { get; set; }
     public List<PlayStageStart> StageStarts { get; set; } = [];
     public List<PlayPeriodSummary> Periods { get; set; } = [];
+    public string? FrameStatus { get; set; } // 프레임을 재지 못했으면 이유 한 단어 (off, blocked, unavailable, no_events), 쟀으면 ok, 기능이 없던 옛 기록은 null
+    public long? FrameEventsLost { get; set; } // 세션이 버퍼 부족으로 잃은 Present 이벤트 수
+    public long? FrameEventsLate { get; set; } // 확정된 초에 늦게 도착해 버린 이벤트 수 (0 이 아니면 그 이벤트가 끝내는 간격이 빠짐)
+    public long? FrameEventsOutOfOrder { get; set; } // 더 늦은 시각 이벤트보다 뒤에 도착한 이벤트 수 (간격은 이벤트 시각 순서로 셈)
+    public double? FrameStoppedAtSeconds { get; set; } // 프레임 측정이 도중에 멈춘 시각 (시작 뒤 초): frameStatus 가 blocked 이면 이 시각 뒤가 blocked
+    public List<PlayFrameSecond>? FrameSeconds { get; set; } // 끊김이 있던 초 목록 (상한 PlayRecorder.MaxFrameSeconds)
 }
 
 /// 게임 시작 때부터 물리 디스크의 누적 통계를 읽어 구간별 표본과 종료 요약을 남깁니다.
@@ -93,11 +119,31 @@ public sealed class PlayRecorder : IDisposable
     private readonly ILog _log;
     private bool _disposed;
     private const string ExistingGameStreamReason = "game already running when observation began";
+    public const int MaxFrameSeconds = 300;
+    public const int MaxFrameSecondsPerPeriod = 50; // 10 분 구간마다의 상한: 앞 구간의 로딩 때문에 뒤 구간의 경기 중 끊김이 지워지지 않게 함
+    public const int FrameSettleSeconds = 5; // ETW 전달 지연 (유휴 PC 에서 60 초 동안 최대 1.46 초 실측, FlushTrace 500 ms 주기) 의 3 배 넘는 여유: 게임이 CPU 를 쓰는 중에는 더 늦을 수 있어 늦게 온 이벤트는 따로 세어 기록함
+    public const int NoEventsSeconds = 30;
+    private const double FrameLogMinMs = 50;
+    private readonly Func<int, long, IFrameSource>? _openFrames;
+    private readonly Func<bool> _frameEnabled;
+    private readonly Func<GameSettings, string?> _frameBlocker;
+    private readonly Func<IPlaySystemProbe?>? _openSystem;
+    private readonly Func<GameSettings, bool>? _isTraceBlocked;
+    private readonly Func<bool>? _blockedGameRunning;
+    private readonly bool[] _frameSlots = new bool[FrameTimeSession.MaxSlots];
 
     internal PlayRecorder(string? path, ILog log, Func<string, IPlayDiskCounter?>? openCounter = null, Func<long>? availableRamMib = null,
         TimeSpan? sampleInterval = null, Func<DateTimeOffset>? now = null, Func<long>? timestamp = null, IReadOnlyList<int>? checkpoints = null,
-        IReadOnlyList<int>? stageCheckpoints = null, int periodSeconds = PlayPeriods.DefaultSeconds)
+        IReadOnlyList<int>? stageCheckpoints = null, int periodSeconds = PlayPeriods.DefaultSeconds,
+        Func<int, long, IFrameSource>? openFrames = null, Func<bool>? frameEnabled = null, Func<GameSettings, string?>? frameBlocker = null, Func<IPlaySystemProbe?>? openSystem = null,
+        Func<GameSettings, bool>? isTraceBlocked = null, Func<bool>? blockedGameRunning = null)
     {
+        _isTraceBlocked = isTraceBlocked; // 안티치트 게이트가 막는 게임인가 (다른 게임의 시작에 열려 있는 세션을 닫는 데 씀)
+        _blockedGameRunning = blockedGameRunning; // 게이트가 막는 등록 게임의 프로세스가 지금 실행 중인가 (실행 중이면 세션을 열지 않음)
+        _openFrames = openFrames;
+        _frameEnabled = frameEnabled ?? (() => true);
+        _frameBlocker = frameBlocker ?? (_ => "unknown"); // 게이트 판정이 없으면 막힌 것으로 (안티치트 게이트를 거치지 않고는 세션을 열지 않음)
+        _openSystem = openSystem;
         _log = log;
         _store = new PlaySamplesStore(path, log);
         _openCounter = openCounter ?? WindowsPlayDiskCounter.Open;
@@ -113,7 +159,9 @@ public sealed class PlayRecorder : IDisposable
     /// 시작 이벤트 시각으로 세션을 만듭니다. 같은 게임의 후속 exe 는 현재 세션에 연결합니다.
     internal bool ObserveStart(GameSettings game, ProcessStart start, PlayWarmSnapshot? warm)
     {
+        StopFramesIfBlocked(game);
         ProcessKey key = new(start.Pid, start.Timestamp);
+        Session? reopen = null;
         lock (_gate)
         {
             if (_disposed || _processSessions.ContainsKey(key))
@@ -128,25 +176,35 @@ public sealed class PlayRecorder : IDisposable
                 long ram = SafeAvailableRam();
                 session = new Session(game, _now(), startedTick, ram, warm, _checkpoints, _sampleInterval.TotalSeconds, observedAfterGameStart: false, stageCheckpoints: _stageCheckpoints, periodSeconds: _periodSeconds);
                 _active.Add(game.Name, session);
+                session.AddProcess(start.Pid);
                 session.SamplingTask = Task.Run(() => SampleSessionAsync(session));
             }
             else
             {
-                session.NoteReturn(_now()); // 유예 중에 같은 게임의 다른 exe 가 뜸: 종료가 아님
+                reopen = session.NoteReturn(_now()) ? session : null; // 유예 중에 같은 게임의 다른 exe 가 뜸: 종료가 아님 (종료 때 닫은 프레임 세션은 다시 엶)
                 session.AddStageStart(start.ExeName, key, start.Timestamp > 0 ? start.Timestamp : _timestamp());
+                session.AddProcess(start.Pid);
             }
 
             _processSessions.Add(key, session);
-            return true;
         }
+
+        if (reopen is not null)
+        {
+            OpenFrames(reopen);
+        }
+
+        return true;
     }
 
     /// 게임이 실행 뒤 잡는 메모리 (몫, MiB) 와 그 값을 낸 플레이 수: 최근 플레이 기록의 중앙값, 쓸 기록이 없으면 null.
     internal (long Mib, int Plays)? Footprint(string game) => GameFootprint.Median(_store.Samples(game));
 
     /// 서비스 시작이나 설정 재적재 때 이미 실행 중인 게임의 관측을 시작합니다.
-    internal bool ObserveExisting(GameSettings game)
+    internal bool ObserveExisting(GameSettings game, IReadOnlyList<int>? pids = null)
     {
+        StopFramesIfBlocked(game); // 설정을 다시 읽어 막히게 바뀐 게임도 여기서 잡힘
+        Session? reopen = null;
         lock (_gate)
         {
             if (_disposed)
@@ -156,7 +214,23 @@ public sealed class PlayRecorder : IDisposable
 
             if (_active.TryGetValue(game.Name, out Session? current))
             {
-                current.NoteReturn(_now()); // 매 틱 실행 중인 게임마다 불림: 유예에서 돌아온 세션의 소멸 표시를 지움
+                reopen = current.NoteReturn(_now()) ? current : null; // 매 틱 실행 중인 게임마다 불림: 유예에서 돌아온 세션의 소멸 표시를 지움
+                foreach (int pid in pids ?? [])
+                {
+                    current.AddProcess(pid); // 뒤늦게 뜬 등록 실행 파일도 프레임 집계 대상으로 (이미 있으면 무시)
+                }
+            }
+        }
+
+        if (reopen is not null)
+        {
+            OpenFrames(reopen);
+        }
+
+        lock (_gate)
+        {
+            if (_disposed || _active.ContainsKey(game.Name))
+            {
                 return false;
             }
 
@@ -165,6 +239,11 @@ public sealed class PlayRecorder : IDisposable
             var session = new Session(game, _now(), tick, SafeAvailableRam(), null, _checkpoints, _sampleInterval.TotalSeconds,
                 observedAfterGameStart: true, initialStartStream: skippedStream, stageCheckpoints: _stageCheckpoints, periodSeconds: _periodSeconds);
             _active.Add(game.Name, session);
+            foreach (int pid in pids ?? [])
+            {
+                session.AddProcess(pid);
+            }
+
             session.SamplingTask = Task.Run(() => SampleSessionAsync(session));
             return true;
         }
@@ -178,6 +257,7 @@ public sealed class PlayRecorder : IDisposable
             return;
         }
 
+        List<Session> gone = [];
         lock (_gate)
         {
             long tick = _timestamp();
@@ -188,8 +268,39 @@ public sealed class PlayRecorder : IDisposable
                 {
                     long lag = Math.Max(0, (long)((now - at).TotalSeconds * Stopwatch.Frequency));
                     session.NoteGone(at, tick - lag); // 시각과 틱을 같은 순간 (첫 관측) 에 맞춤
+                    gone.Add(session);
                 }
             }
+        }
+
+        foreach (Session session in gone)
+        {
+            CloseFramesNow(session, blocked: false, atExit: true); // 게임 프로세스가 끝났으면 종료 유예 (60~90 초) 를 기다리지 않고 바로 닫음
+        }
+    }
+
+    /// 안티치트 게이트가 막는 게임이 시작했거나 실행 중이면 열려 있는 프레임 세션을 모두 닫고 그 뒤를 blocked 로 기록합니다 (게이트 판정은 기존 함수 그대로).
+    private void StopFramesIfBlocked(GameSettings game)
+    {
+        if (_openFrames is null)
+        {
+            return;
+        }
+
+        Session[] open;
+        lock (_gate)
+        {
+            open = [.. _active.Values.Where(s => s.HasFrames)];
+        }
+
+        if (open.Length == 0 || _isTraceBlocked?.Invoke(game) != true)
+        {
+            return; // 열린 세션이 없으면 판정을 부르지 않음 (매 틱 불리므로)
+        }
+
+        foreach (Session session in open)
+        {
+            CloseFramesNow(session, blocked: true, atExit: false);
         }
     }
 
@@ -232,7 +343,7 @@ public sealed class PlayRecorder : IDisposable
         _log.Info(Format(record));
         if (record.Periods.Count > 0)
         {
-            _log.Info($"{record.Game}: play record periods: {PlayPeriods.Format(record.Periods)}");
+            _log.Info($"{record.Game}: play record periods: {PlayPeriods.Format(record.Periods, record.FrameStatus, record.FrameStoppedAtSeconds)}");
         }
     }
 
@@ -289,6 +400,7 @@ public sealed class PlayRecorder : IDisposable
     private async Task SampleSessionAsync(Session session)
     {
         IPlayDiskCounter? counter = null;
+        IPlaySystemProbe? system = null;
         IReadOnlyList<PlayDiskCounters> previous = [];
         long previousTick = 0;
         bool hasBaseline = false;
@@ -305,6 +417,8 @@ public sealed class PlayRecorder : IDisposable
             previousTick = _timestamp();
             hasBaseline = true;
             session.SetPhysicalDisk(counter.PhysicalDisk);
+            OpenFrames(session);
+            system = session.HasFrames ? OpenSystem() : null;
 
             while (true)
             {
@@ -318,7 +432,7 @@ public sealed class PlayRecorder : IDisposable
                 }
 
                 session.NoteAvailable(SafeAvailableRam(), tick);
-                foreach (PlayWindowSummary checkpoint in session.AddSample(previous, current, previousTick, tick))
+                foreach (PlayWindowSummary checkpoint in session.AddSample(previous, current, previousTick, tick, ReadSystem(system)))
                 {
                     PlaySampleRecord record = session.Snapshot(tick);
                     _store.Upsert(record);
@@ -351,7 +465,7 @@ public sealed class PlayRecorder : IDisposable
                     if (final is { Count: > 0 })
                     {
                         long tick = _timestamp();
-                        foreach (PlayWindowSummary checkpoint in session.AddSample(previous, final, previousTick, tick))
+                        foreach (PlayWindowSummary checkpoint in session.AddSample(previous, final, previousTick, tick, ReadSystem(system)))
                         {
                             PlaySampleRecord record = session.Snapshot(tick);
                             _store.Upsert(record);
@@ -377,11 +491,142 @@ public sealed class PlayRecorder : IDisposable
             try
             {
                 counter?.Dispose();
+                system?.Dispose();
             }
             catch (Exception e) when (e is not (StackOverflowException or OutOfMemoryException))
             {
                 // 성능 카운터 정리 실패는 세션이나 서비스를 중단시키지 않습니다.
             }
+
+            CloseFrames(session);
+        }
+    }
+
+    /// 프레임 세션을 열지 말지 정합니다: 설정이 꺼졌으면 off, 자동 트레이스를 막는 안티치트 판정이면 blocked (열지 않음), 열기에 실패하면 unavailable. 어느 쪽이든 디스크 기록은 그대로 갑니다.
+    private void OpenFrames(Session session)
+    {
+        if (_openFrames is null)
+        {
+            return;
+        }
+
+        int slot = -1;
+        try
+        {
+            if (!_frameEnabled())
+            {
+                session.SetFrameStatus("off");
+                return;
+            }
+
+            if (_frameBlocker(session.Game) is not null || _blockedGameRunning?.Invoke() == true)
+            {
+                session.SetFrameStatus("blocked"); // 게이트가 막는 게임이거나, 막는 등록 게임이 지금 실행 중이면 열지 않음
+                return;
+            }
+
+            lock (_gate)
+            {
+                slot = Array.IndexOf(_frameSlots, false);
+                if (slot >= 0)
+                {
+                    _frameSlots[slot] = true;
+                }
+            }
+
+            if (slot < 0)
+            {
+                throw new InvalidOperationException("no free frame session slot");
+            }
+
+            IFrameSource opened = _openFrames(slot, session.StartedTick);
+            if (!session.AttachFrames(opened, slot, _timestamp()))
+            {
+                opened.Dispose(); // 그 사이 세션이 끝남: 남는 ETW 세션이 없게 바로 닫고 칸을 돌려줌
+                ReleaseFrameSlot(slot);
+                return;
+            }
+
+            if (_blockedGameRunning?.Invoke() == true)
+            {
+                CloseFramesNow(session, blocked: true, atExit: false); // 검사와 붙이기 사이에 막는 게임이 시작했으면 바로 닫음
+            }
+        }
+        catch (Exception e) when (e is not (StackOverflowException or OutOfMemoryException))
+        {
+            ReleaseFrameSlot(slot);
+            session.SetFrameStatus("unavailable");
+            _log.Warn($"{session.Game.Name}: frame times unavailable ({e.GetType().Name})");
+        }
+    }
+
+    private void CloseFrames(Session session) => CloseFramesNow(session, blocked: false, atExit: false);
+
+    /// 프레임 세션을 닫습니다 (이미 닫혔으면 아무것도 안 함). blocked 면 그 뒤를 blocked 로 기록하고, atExit 면 게임이 다시 뜰 때 다시 열 수 있게 표시합니다.
+    private void CloseFramesNow(Session session, bool blocked, bool atExit)
+    {
+        IFrameSource? source = null;
+        int slot = -1;
+        try
+        {
+            session.FlushFrames(); // 남은 초도 확정 (더 기다리지 않음)
+            (source, slot) = session.DetachFrames(_timestamp());
+            source?.Dispose();
+        }
+        catch (Exception e) when (e is not (StackOverflowException or OutOfMemoryException))
+        {
+            // 프레임 세션 정리 실패는 세션이나 서비스를 중단시키지 않습니다.
+        }
+
+        ReleaseFrameSlot(slot);
+        if (source is null)
+        {
+            return;
+        }
+
+        if (blocked)
+        {
+            session.MarkFramesBlocked(_timestamp());
+            _log.Info($"{session.Game.Name}: frame times stopped (anti-cheat game started)");
+        }
+        else if (atExit)
+        {
+            session.MarkFramesClosedAtExit();
+        }
+    }
+
+    private void ReleaseFrameSlot(int slot)
+    {
+        if (slot >= 0)
+        {
+            lock (_gate)
+            {
+                _frameSlots[slot] = false;
+            }
+        }
+    }
+
+    private IPlaySystemProbe? OpenSystem()
+    {
+        try
+        {
+            return _openSystem?.Invoke();
+        }
+        catch (Exception e) when (e is not (StackOverflowException or OutOfMemoryException))
+        {
+            return null;
+        }
+    }
+
+    private static PlaySystemSample ReadSystem(IPlaySystemProbe? probe)
+    {
+        try
+        {
+            return probe?.Read() ?? default;
+        }
+        catch (Exception e) when (e is not (StackOverflowException or OutOfMemoryException))
+        {
+            return default;
         }
     }
 
@@ -438,17 +683,43 @@ public sealed class PlayRecorder : IDisposable
         parts.Add(FormatStream(record.StartStream));
         foreach (PlayWindowSummary window in record.Windows)
         {
-            parts.Add(FormatWindow(window, $"{window.Seconds}s"));
+            parts.Add(FormatWindow(window, $"{window.Seconds}s", record.FrameStatus == "blocked" && window.MeasuredAtSeconds <= record.FrameStoppedAtSeconds ? "ok" : record.FrameStatus));
         }
 
         PlayWindowSummary? total = record.Total ?? record.Windows.LastOrDefault(w => w.Seconds == 600);
         string duration = $"total {(int)Math.Round(record.DurationSeconds / 60d, MidpointRounding.AwayFromZero)} min";
         if (total is not null)
         {
-            duration += ", " + FormatWindow(total, "disk read");
+            duration += ", " + FormatWindow(total, "disk read", record.FrameStatus == "blocked" && record.FrameStoppedAtSeconds is not null ? "ok" : record.FrameStatus); // 도중에 멈췄으면 합계는 멈춘 시각까지의 값
         }
 
         parts.Add(duration);
+        List<string> events = [];
+        if (record.FrameEventsLost is > 0)
+        {
+            events.Add($"lost {record.FrameEventsLost}");
+        }
+
+        if (record.FrameEventsLate is > 0)
+        {
+            events.Add($"late {record.FrameEventsLate}"); // 확정 뒤에 도착해 버린 이벤트: 0 이 아니면 그 이벤트가 끝내는 간격이 빠졌을 수 있음
+        }
+
+        if (record.FrameEventsOutOfOrder is > 0)
+        {
+            events.Add($"out of order {record.FrameEventsOutOfOrder}");
+        }
+
+        if (events.Count > 0)
+        {
+            parts.Add("frame events " + string.Join(", ", events));
+        }
+
+        if (record.FrameStoppedAtSeconds is { } stopped)
+        {
+            parts.Add($"frame times stopped at {stopped:F0} s (anti-cheat game started)");
+        }
+
         if (record.Status == "unavailable")
         {
             parts.Add("counter unavailable");
@@ -495,13 +766,13 @@ public sealed class PlayRecorder : IDisposable
         return $"start stream {stream.Status}{(stream.Reason is null ? string.Empty : $" ({stream.Reason})")}";
     }
 
-    private static string FormatWindow(PlayWindowSummary window, string label)
+    private static string FormatWindow(PlayWindowSummary window, string label, string? frameStatus = null)
     {
         string measured = window.Seconds is { } seconds
             ? $"{label} measured at {window.MeasuredAtSeconds:F1}s{(window.Delayed ? $" (late {window.MeasuredAtSeconds - seconds:F1}s, boundary missed)" : string.Empty)}"
             : $"{label} through {window.MeasuredAtSeconds:F1}s";
         string reset = window.CounterReset ? ", counter reset interval missing" : string.Empty;
-        return $"{measured} {window.ReadBytes / 1_048_576d:F0} MiB/{window.ReadCount} reads/{window.ReadSeconds:F1} s read time/{window.SlowSamples} slow samples (longest {window.LongestSlowSamples}, {window.SampleCount} samples, {window.MissingSampleCount} missing{reset}, queue max {window.MaxQueueDepth}, idle {window.IdleSeconds:F1} s)";
+        return $"{measured} {window.ReadBytes / 1_048_576d:F0} MiB/{window.ReadCount} reads/{window.ReadSeconds:F1} s read time/{window.SlowSamples} slow samples (longest {window.LongestSlowSamples}, {window.SampleCount} samples, {window.MissingSampleCount} missing{reset}, queue max {window.MaxQueueDepth}, idle {window.IdleSeconds:F1} s{(frameStatus is null ? string.Empty : ", " + PlayPeriods.FrameText(frameStatus, window.FrameCount, window.MaxFrameMs, window.Over50Ms, window.Over100Ms, window.Pauses, window.MaxPauseMs))})";
     }
 
     private readonly record struct ProcessKey(int Pid, long Timestamp);
@@ -530,6 +801,20 @@ public sealed class PlayRecorder : IDisposable
         private PlayWindowSummary? _goneTotal; // 그 시각까지의 누계
         private int _goneWindows;
         private DateTimeOffset _returnedAt = DateTimeOffset.MinValue; // 유예에서 돌아온 마지막 시각
+        private readonly List<int> _pids = [];
+        private readonly Dictionary<long, PendingSecond> _pending = []; // 프레임이 확정되기를 기다리는 초의 디스크·시스템 값
+        private readonly List<PlayFrameSecond> _frameSeconds = [];
+        private IFrameSource? _frames;
+        private int _frameSlot = -1;
+        private long _framesAttachedTick;
+        private string? _frameStatus; // 프레임 세션이 없을 때의 이유 (닫은 뒤에는 마지막 상태)
+        private long _frameLost;
+        private long _frameLate;
+        private long _frameOutOfOrder;
+        private double? _frameStoppedAt;
+        private bool _framesClosedAtExit;
+
+        private readonly record struct PendingSecond(ulong Reads, double MeanReadMs, bool Slow, PlaySystemSample System);
 
         public GameSettings Game { get; } = game;
         public DateTimeOffset StartedAt { get; } = startedAt;
@@ -556,6 +841,141 @@ public sealed class PlayRecorder : IDisposable
         public Task? SamplingTask { get; set; }
         public DateTimeOffset? EndedAt { get { lock (_gate) { return _endedAt; } } }
         public bool IsUnavailable { get { lock (_gate) { return _status == "unavailable"; } } }
+        public bool HasFrames { get { lock (_gate) { return _frames is not null; } } }
+
+        /// 게임 프로세스 번호를 더합니다 (서비스가 이미 아는 값). 프레임 세션이 열려 있으면 거기에도.
+        public void AddProcess(int pid)
+        {
+            lock (_gate)
+            {
+                if (!_pids.Contains(pid))
+                {
+                    _pids.Add(pid);
+                    _frames?.AddProcess(pid);
+                }
+            }
+        }
+
+        public void SetFrameStatus(string status)
+        {
+            lock (_gate)
+            {
+                _frameStatus = status;
+            }
+        }
+
+        /// 프레임 세션을 붙입니다. 이미 끝났거나 끝내라는 요청을 받은 세션에는 붙이지 않고 false (호출자가 방금 연 세션을 바로 닫음): 닫아 줄 표본 루프가 이미 없을 수 있기 때문.
+        public bool AttachFrames(IFrameSource source, int slot, long tick)
+        {
+            lock (_gate)
+            {
+                if (_requestedEndReason is not null || _endedAt is not null || Stop.IsCancellationRequested)
+                {
+                    return false;
+                }
+
+                (_frames, _frameSlot, _framesAttachedTick) = (source, slot, tick);
+                foreach (int pid in _pids)
+                {
+                    source.AddProcess(pid);
+                }
+
+                return true;
+            }
+        }
+
+        /// 남은 확정 대기 초를 모두 확정합니다 (세션이 끝날 때).
+        public void FlushFrames()
+        {
+            lock (_gate)
+            {
+                FlushFramesLocked();
+            }
+        }
+
+        private void FlushFramesLocked()
+        {
+            if (_frames is { } frames)
+            {
+                IReadOnlyList<FrameSecond> rest = frames.TakeSettled(long.MaxValue);
+                _accumulator.AddFrames(rest);
+                _periodAccumulator.AddFrames(rest);
+                ApplyFrameSeconds(rest, long.MaxValue);
+            }
+        }
+
+        /// 종료 때 닫은 프레임 세션을 게임이 다시 뜰 때 다시 열 수 있게 표시합니다.
+        public void MarkFramesClosedAtExit()
+        {
+            lock (_gate)
+            {
+                _framesClosedAtExit = true;
+            }
+        }
+
+        /// 안티치트 게임이 시작해 프레임 측정을 멈췄습니다: 그 뒤는 blocked, 앞의 값은 그대로 유효합니다.
+        public void MarkFramesBlocked(long tick)
+        {
+            lock (_gate)
+            {
+                (_frameStatus, _frameStoppedAt, _framesClosedAtExit) = ("blocked", Math.Max(0, Stopwatch.GetElapsedTime(StartedTick, tick).TotalSeconds), false);
+            }
+        }
+
+        /// 프레임 세션을 떼어 돌려줍니다 (닫는 것은 호출자). 마지막 상태와 잃은 이벤트 수는 기록에 남깁니다.
+        public (IFrameSource? Source, int Slot) DetachFrames(long tick)
+        {
+            lock (_gate)
+            {
+                IFrameSource? source = _frames;
+                int slot = _frameSlot;
+                if (source is not null)
+                {
+                    _frameStatus = source.AcceptedEvents == 0 ? "no_events" : "ok"; // 끝날 때 이벤트가 하나도 없었으면 30 초가 안 됐어도 0 프레임 정상과 구분함
+                    (_frameLost, _frameLate, _frameOutOfOrder) = (_frameLost + source.EventsLost, _frameLate + source.EventsLate, _frameOutOfOrder + source.EventsOutOfOrder); // 닫았다 다시 열어도 앞의 수를 잃지 않음
+                    (_frames, _frameSlot) = (null, -1);
+                }
+
+                return (source, slot);
+            }
+        }
+
+        private string? FrameStatusLocked(long tick) => _frames is null ? _frameStatus
+            : _frames.AcceptedEvents == 0 && Stopwatch.GetElapsedTime(_framesAttachedTick, tick).TotalSeconds >= NoEventsSeconds ? "no_events" : "ok";
+
+        // 목록이 넘칠 때 버리는 순서의 기준: 1 초 미만 간격의 최대와 1 초 이상 멈춤의 길이 중 큰 쪽 (경기 중 긴 멈춤이 먼저 버려지지 않게)
+        private static double Severity(PlayFrameSecond e) => Math.Max(e.MaxMs, e.PauseMaxMs);
+
+        /// 확정된 초마다 끊김이 있던 초 목록에 담을지 정합니다: 프레임의 가장 긴 간격이 50 ms 이상이거나 같은 초가 디스크 쪽 느린 초일 때.
+        private void ApplyFrameSeconds(IReadOnlyList<FrameSecond> frames, long through)
+        {
+            Dictionary<long, FrameSecond> byT = frames.ToDictionary(f => f.Second);
+            SortedSet<long> seconds = [.. _pending.Keys.Where(t => t <= through), .. byT.Keys];
+            foreach (long t in seconds)
+            {
+                byT.TryGetValue(t, out FrameSecond frame);
+                bool hasDisk = _pending.Remove(t, out PendingSecond disk);
+                if (frame.MaxMs < FrameLogMinMs && !disk.Slow && frame.Pauses == 0)
+                {
+                    continue;
+                }
+
+                _frameSeconds.Add(new PlayFrameSecond((int)t, frame.MaxMs, frame.Over50Ms, frame.Over100Ms, frame.Frames, hasDisk ? disk.Reads : null, hasDisk ? disk.MeanReadMs : null,
+                    disk.System.CpuPercent, disk.System.GpuDedicatedMib, frame.Pauses, frame.PauseMaxMs));
+                int period = (int)(t / Math.Max(1, periodSeconds));
+                int PeriodOf(PlayFrameSecond e) => e.T / Math.Max(1, periodSeconds);
+                if (_frameSeconds.Count(e => PeriodOf(e) == period) > MaxFrameSecondsPerPeriod)
+                {
+                    _frameSeconds.Remove(_frameSeconds.Where(e => PeriodOf(e) == period).MinBy(Severity)!); // 구간 안에서는 가장 긴 간격·멈춤이 작은 것부터 버림 (같으면 먼저 온 것)
+                }
+
+                if (_frameSeconds.Count > MaxFrameSeconds)
+                {
+                    int crowded = _frameSeconds.GroupBy(PeriodOf).MaxBy(g => g.Count())!.Key; // 전체 상한은 칸이 가장 많은 구간에서 덜어냄
+                    _frameSeconds.Remove(_frameSeconds.Where(e => PeriodOf(e) == crowded).MinBy(Severity)!);
+                }
+            }
+        }
 
         public void SetPhysicalDisk(string? physicalDisk)
         {
@@ -627,19 +1047,28 @@ public sealed class PlayRecorder : IDisposable
         }
 
         public IReadOnlyList<PlayWindowSummary> AddSample(IReadOnlyList<PlayDiskCounters> previous, IReadOnlyList<PlayDiskCounters> current,
-            long previousTick, long tick)
+            long previousTick, long tick, PlaySystemSample system = default)
         {
             lock (_gate)
             {
                 double previousElapsed = Math.Max(0, Stopwatch.GetElapsedTime(StartedTick, previousTick).TotalSeconds);
                 double elapsed = Stopwatch.GetElapsedTime(StartedTick, tick).TotalSeconds;
-                IReadOnlyList<PlayWindowSummary> added = _accumulator.Add(previous, current, previousElapsed, elapsed);
+                long through = (long)Math.Floor(elapsed) - FrameSettleSeconds;
+                IReadOnlyList<FrameSecond>? frames = _frames?.TakeSettled(through);
+                IReadOnlyList<PlayWindowSummary> added = _accumulator.Add(previous, current, previousElapsed, elapsed, frames);
                 foreach (PlayWindowSummary window in added)
                 {
                     _windows.Add(window);
                 }
 
-                _periodWindows.AddRange(_periodAccumulator.Add(previous, current, previousElapsed, elapsed));
+                _periodWindows.AddRange(_periodAccumulator.Add(previous, current, previousElapsed, elapsed, frames));
+                if (frames is not null)
+                {
+                    (ulong reads, double meanReadMs, bool slow) = _accumulator.LastSecond;
+                    _pending[(long)Math.Floor((previousElapsed + elapsed) / 2)] = new PendingSecond(reads, meanReadMs, slow, system);
+                    ApplyFrameSeconds(frames, through);
+                }
+
                 foreach (LaterStart later in _laterStarts.Where(l => l.Accumulator is not null && tick > l.StartTick))
                 {
                     IReadOnlyList<PlayWindowSummary> laterWindows = later.Accumulator!.Add(previous, current, Math.Max(0, Stopwatch.GetElapsedTime(later.StartTick, previousTick).TotalSeconds), Stopwatch.GetElapsedTime(later.StartTick, tick).TotalSeconds);
@@ -674,16 +1103,21 @@ public sealed class PlayRecorder : IDisposable
                     return; // 처음 본 시각을 유지, 돌아오기 전의 옛 소멸 표시는 되살리지 않음 (틱 스레드와 시작 이벤트 스레드의 경쟁)
                 }
 
+                FlushFramesLocked(); // 사라진 시각까지의 프레임을 모두 확정한 뒤 누계를 잡음
                 (_goneAt, _goneTick, _goneTotal, _goneWindows) = (at, tick, _accumulator.Total(), _windows.Count);
                 (_gonePeriodTotal, _gonePeriodWindows) = (_periodAccumulator.Total(), _periodWindows.Count);
             }
         }
 
-        public void NoteReturn(DateTimeOffset at)
+        /// 유예에서 돌아온 표시. 종료 때 닫은 프레임 세션을 다시 열어야 하면 true (한 번만).
+        public bool NoteReturn(DateTimeOffset at)
         {
             lock (_gate)
             {
                 (_goneAt, _goneTotal, _returnedAt) = (null, null, at);
+                bool reopen = _framesClosedAtExit;
+                _framesClosedAtExit = false;
+                return reopen;
             }
         }
 
@@ -756,6 +1190,12 @@ public sealed class PlayRecorder : IDisposable
                 Total = final ? _goneTotal ?? _accumulator.Total() : null,
                 StageStarts = [.. _laterStarts.Select(l => l.Record.Copy())],
                 Periods = PlayPeriods.Build(final && _goneAt is not null ? [.. _periodWindows.Take(_gonePeriodWindows)] : _periodWindows, final ? _goneAt is not null ? _gonePeriodTotal : _periodAccumulator.Total() : null),
+                FrameStatus = FrameStatusLocked(tick),
+                FrameEventsLost = FrameStatusLocked(tick) is null ? null : (_frames?.EventsLost ?? 0) + _frameLost,
+                FrameEventsLate = FrameStatusLocked(tick) is null ? null : (_frames?.EventsLate ?? 0) + _frameLate,
+                FrameEventsOutOfOrder = FrameStatusLocked(tick) is null ? null : (_frames?.EventsOutOfOrder ?? 0) + _frameOutOfOrder,
+                FrameStoppedAtSeconds = _frameStoppedAt,
+                FrameSeconds = FrameStatusLocked(tick) is null ? null : [.. _frameSeconds.Where(f => !final || _goneAt is null || f.T < (int)Math.Floor(Stopwatch.GetElapsedTime(StartedTick, _goneTick).TotalSeconds))],
             };
         }
     }
@@ -778,6 +1218,17 @@ public sealed class PlayRecorder : IDisposable
         private double _measuredAtSeconds;
         private bool _lastCounterReset;
         private uint _maxQueueDepth;
+        private long _frameCount;
+        private double _maxFrameMs;
+        private double _sinceCheckpointMaxMs;
+        private int _over50Ms;
+        private int _over100Ms;
+        private int _pauses;
+        private double _maxPauseMs;
+        private double _sinceCheckpointMaxPauseMs;
+
+        /// 가장 최근 표본 한 초의 디스크 읽기 횟수, 평균 읽기 시간 (ms), 느린 초 여부 (위 느린 표본과 같은 판정).
+        public (ulong Reads, double MeanReadMs, bool Slow) LastSecond { get; private set; }
 
         public PlayRecordAccumulator(int[] checkpoints, double sampleIntervalSeconds)
         {
@@ -785,9 +1236,26 @@ public sealed class PlayRecorder : IDisposable
             _sampleIntervalSeconds = Math.Max(0.001, sampleIntervalSeconds);
         }
 
-        public IReadOnlyList<PlayWindowSummary> Add(IReadOnlyList<PlayDiskCounters> previous, IReadOnlyList<PlayDiskCounters> current,
-            double previousElapsedSeconds, double elapsedSeconds)
+        /// 확정된 프레임 초를 누계에 더합니다 (검사점 판정보다 먼저 불러 그 검사점에 들어가게 함).
+        public void AddFrames(IReadOnlyList<FrameSecond>? frames)
         {
+            foreach (FrameSecond frame in frames ?? [])
+            {
+                _frameCount += frame.Frames;
+                _maxFrameMs = Math.Max(_maxFrameMs, frame.MaxMs);
+                _sinceCheckpointMaxMs = Math.Max(_sinceCheckpointMaxMs, frame.MaxMs);
+                _over50Ms += frame.Over50Ms;
+                _over100Ms += frame.Over100Ms;
+                _pauses += frame.Pauses;
+                _maxPauseMs = Math.Max(_maxPauseMs, frame.PauseMaxMs);
+                _sinceCheckpointMaxPauseMs = Math.Max(_sinceCheckpointMaxPauseMs, frame.PauseMaxMs);
+            }
+        }
+
+        public IReadOnlyList<PlayWindowSummary> Add(IReadOnlyList<PlayDiskCounters> previous, IReadOnlyList<PlayDiskCounters> current,
+            double previousElapsedSeconds, double elapsedSeconds, IReadOnlyList<FrameSecond>? frames = null)
+        {
+            AddFrames(frames);
             _sampleCount++;
             _measuredAtSeconds = Math.Max(0, elapsedSeconds);
             int missingExpected = MissingExpectedSamples(previousElapsedSeconds, elapsedSeconds);
@@ -853,6 +1321,7 @@ public sealed class PlayRecorder : IDisposable
             }
 
             _lastCounterReset = reset;
+            LastSecond = (reads, reads == 0 ? 0 : readTime / 10_000d / reads, !reset && reads >= 5 && (double)readTime / reads >= LongRead100ns);
 
             List<PlayWindowSummary> added = [];
             foreach (int checkpoint in _checkpoints)
@@ -861,6 +1330,7 @@ public sealed class PlayRecorder : IDisposable
                 {
                     bool delayed = elapsedSeconds - checkpoint > _sampleIntervalSeconds / 2;
                     added.Add(Snapshot(checkpoint, elapsedSeconds, delayed, reset));
+                    (_sinceCheckpointMaxMs, _sinceCheckpointMaxPauseMs) = (0, 0); // 구간별 가장 긴 간격·멈춤은 검사점마다 다시 셈
                 }
             }
 
@@ -871,7 +1341,8 @@ public sealed class PlayRecorder : IDisposable
 
         private PlayWindowSummary Snapshot(int? seconds, double measuredAtSeconds, bool delayed, bool counterReset) =>
             new(seconds, measuredAtSeconds, _readBytes, _readCount, _readTime100ns / 10_000_000d, _slowSamples, _longestSlowStreak,
-                _sampleCount, _missingSampleCount, delayed, counterReset, _idleTime100ns / 10_000_000d, _maxQueueDepth);
+                _sampleCount, _missingSampleCount, delayed, counterReset, _idleTime100ns / 10_000_000d, _maxQueueDepth,
+                _frameCount, _maxFrameMs, _sinceCheckpointMaxMs, _over50Ms, _over100Ms, _pauses, _maxPauseMs, _sinceCheckpointMaxPauseMs);
 
         private int MissingExpectedSamples(double previousElapsedSeconds, double elapsedSeconds)
         {
@@ -918,6 +1389,33 @@ public sealed class PlayRecorder : IDisposable
             new(sample.DiskNumber, sample.ReadBytes, sample.ReadCount, sample.ReadTime100ns, sample.IdleTime100ns, sample.QueueDepth);
 
         public static IPlayDiskCounter? Open(string path) => DiskInfo.OpenPerformanceMonitor(path) is { } monitor ? new WindowsPlayDiskCounter(monitor) : null;
+    }
+
+    /// 전체 CPU 사용률 (GetSystemTimes) 과 그래픽 메모리 전용 사용량 (성능 카운터): 둘 다 프로세스를 열지 않습니다.
+    internal sealed class WindowsPlaySystemProbe : IPlaySystemProbe
+    {
+        private readonly CpuLoad _cpu = new();
+        private readonly DiskActivity.GpuDedicatedMemory? _gpu = OpenGpu();
+
+        public WindowsPlaySystemProbe() => _ = _cpu.Percent(); // 첫 호출은 기준만 잡음
+
+        public PlaySystemSample Read() => new(_cpu.Percent(), _gpu?.Mib());
+
+        public void Dispose() => _gpu?.Dispose();
+
+        public static IPlaySystemProbe Open() => new WindowsPlaySystemProbe();
+
+        private static DiskActivity.GpuDedicatedMemory? OpenGpu()
+        {
+            try
+            {
+                return DiskActivity.GpuDedicatedMemory.Open();
+            }
+            catch (Exception e) when (e is not (StackOverflowException or OutOfMemoryException))
+            {
+                return null; // 그래픽 메모리 값만 없이 CPU 값은 계속 남김
+            }
+        }
     }
 
     internal sealed class PlaySamplesStore

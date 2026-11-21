@@ -23,8 +23,9 @@ public static class SettingsStore
     public const long MaxFileBytes = 1 << 20;
     public const int MaxGames = 32;
 
-    private static readonly string[] TopKeys = ["games", "poll_ms", "watcher", "language", "auto", "max_zone_mib", "riot", "update", "memory"];
+    private static readonly string[] TopKeys = ["games", "poll_ms", "watcher", "language", "auto", "max_zone_mib", "riot", "update", "memory", "play"];
     private static readonly string[] MemoryKeys = ["background_yield", "standby_ladder", "background_io_priority"];
+    private static readonly string[] PlayKeys = ["frame_times"];
     private static readonly string[] RiotKeys = ["champ_select_prewarm", "champ_select_budget_mib"];
     private static readonly string[] GameKeys =
         ["name", "exe_names", "trace", "plan", "origin_root", "allowed_roots", "volume_label", "reapply_interval_minutes", "prewarm", "max_stream_mib", "source", "anticheat", "display_name", "display_names", "mode", "paused"];
@@ -107,6 +108,7 @@ public static class SettingsStore
         AutoSettings auto = top.TryGetValue("auto", out object? au) ? ParseAuto(au) : AutoSettings.Default;
         RiotSettings riot = top.TryGetValue("riot", out object? rt) ? ParseRiot(rt) : RiotSettings.Default;
         MemorySettings memory = top.TryGetValue("memory", out object? mem) ? ParseMemory(mem) : MemorySettings.Default;
+        PlaySettings play = top.TryGetValue("play", out object? pl) ? ParsePlay(pl) : PlaySettings.Default;
         UpdateSettings update = top.TryGetValue("update", out object? up) ? ParseUpdate(up) : UpdateSettings.Default;
         bool zoneAuto = top.TryGetValue("max_zone_mib", out object? mz) && mz is "auto";
         int maxZone = top.ContainsKey("max_zone_mib") && !zoneAuto ? Int(top["max_zone_mib"], "max_zone_mib", 64, 65536) : DefaultMaxZoneMib;
@@ -125,7 +127,7 @@ public static class SettingsStore
 
         CheckUnique(result.Select(x => x.Name), "games: duplicate name");
         CheckUnique(result.SelectMany(x => x.ExeNames), "games: exe name used twice");
-        return new AsterSettings(poll, result, watcher, language) { Auto = auto, Riot = riot, Memory = memory, Update = update, MaxZoneMib = maxZone, MaxZoneAuto = zoneAuto };
+        return new AsterSettings(poll, result, watcher, language) { Auto = auto, Riot = riot, Memory = memory, Play = play, Update = update, MaxZoneMib = maxZone, MaxZoneAuto = zoneAuto };
     }
 
     private static RiotSettings ParseRiot(object? v)
@@ -147,6 +149,14 @@ public static class SettingsStore
         bool ladder = o.TryGetValue("standby_ladder", out object? l) ? l as bool? ?? throw new SettingsException("memory.standby_ladder: true or false expected") : d.StandbyLadder;
         bool ioPriority = o.TryGetValue("background_io_priority", out object? i) ? i as bool? ?? throw new SettingsException("memory.background_io_priority: true or false expected") : d.BackgroundIoPriority;
         return new MemorySettings(backgroundYield, ladder, ioPriority);
+    }
+
+    private static PlaySettings ParsePlay(object? v)
+    {
+        JObject o = v as JObject ?? throw new SettingsException("play: object expected");
+        Unknown(o, PlayKeys, "play");
+        bool frameTimes = o.TryGetValue("frame_times", out object? f) ? f as bool? ?? throw new SettingsException("play.frame_times: true or false expected") : PlaySettings.Default.FrameTimes;
+        return new PlaySettings(frameTimes);
     }
 
     private static UpdateSettings ParseUpdate(object? v)

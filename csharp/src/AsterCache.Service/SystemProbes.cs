@@ -610,6 +610,37 @@ public static partial class DiskActivity
         }
     }
 
+    /// 그래픽 메모리 전용 사용량 합계 (성능 카운터 `GPU Adapter Memory` 의 Dedicated Usage, 어댑터마다 한 인스턴스): 쿼리를 한 번 열어 두고 부를 때마다 수집합니다. 프로세스를 열지 않습니다.
+    public sealed class GpuDedicatedMemory : IDisposable
+    {
+        private readonly nint _query;
+        private readonly nint _counter;
+
+        private GpuDedicatedMemory(nint query, nint counter) => (_query, _counter) = (query, counter);
+
+        /// 이 PC 에 카운터가 없거나 열지 못하면 null.
+        public static GpuDedicatedMemory? Open()
+        {
+            if (PdhOpenQueryW(null, 0, out nint query) != 0)
+            {
+                return null;
+            }
+
+            if (PdhAddEnglishCounterW(query, @"\GPU Adapter Memory(*)\Dedicated Usage", 0, out nint counter) != 0 || PdhCollectQueryData(query) != 0)
+            {
+                _ = PdhCloseQuery(query);
+                return null;
+            }
+
+            return new GpuDedicatedMemory(query, counter);
+        }
+
+        /// 모든 어댑터의 전용 사용량 합계 (MiB). 읽지 못하면 null.
+        public int? Mib() => PdhCollectQueryData(_query) == 0 && ReadInstances(_counter) is { } values ? (int)Math.Min(int.MaxValue, values.Values.Sum() / 1_048_576d) : null;
+
+        public void Dispose() => _ = PdhCloseQuery(_query);
+    }
+
     // 카운터 하나의 인스턴스별 값 (한 인스턴스라도 읽지 못하면 전체를 믿지 않음: 보수적).
     private static unsafe Dictionary<string, double>? ReadInstances(nint counter)
     {

@@ -7,7 +7,7 @@ using AsterCache.Windows;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
-// 사용법: AsterCache.Service [--console [--watch-test <초>]] [--data-dir <폴더>]   (기본 폴더 %ProgramData%\AsterCache: config.json, plans\, journals\, logs\)
+// 사용법: AsterCache.Service [--console [--watch-test <초> | --frame-test <초> [pid]]] [--data-dir <폴더>]   (기본 폴더 %ProgramData%\AsterCache: config.json, plans\, journals\, logs\)
 // 종료 코드: 0 정상, 2 설정 오류.
 bool console = args.Contains("--console");
 int at = Array.IndexOf(args, "--data-dir");
@@ -36,6 +36,15 @@ if (console && watchAt >= 0)
     // 진단: 서비스를 띄우지 않고 감시기만 돌려 본다 (ETW 가 시작 이벤트를 못 받는 원인을 가르는 용도)
     int seconds = watchAt + 1 < args.Length && int.TryParse(args[watchAt + 1], out int n) && n is > 0 and <= 3600 ? n : 30;
     return await WatchTest.RunAsync(settings.Games.SelectMany(g => g.ExeNames).Distinct(StringComparer.OrdinalIgnoreCase).ToList(), seconds, Console.Out);
+}
+
+int frameAt = Array.IndexOf(args, "--frame-test");
+if (console && frameAt >= 0)
+{
+    // 진단: 서비스를 띄우지 않고 프레임 세션만 열어 Present 이벤트 수와 시계를 잰다 (관리자 필요)
+    int seconds = frameAt + 1 < args.Length && int.TryParse(args[frameAt + 1], out int n) && n is > 0 and <= 3600 ? n : 60;
+    int? framePid = frameAt + 2 < args.Length && int.TryParse(args[frameAt + 2], out int p) ? p : null;
+    return await FrameTest.RunAsync(seconds, framePid, Console.Out);
 }
 
 bool admin = Elevation.IsAdmin();
@@ -69,7 +78,19 @@ Func<IReadOnlyList<string>> knownGameFolders = () => []; // 자동 모드를 만
 BackgroundYield? backgroundYield = canApply ? new BackgroundYield(() => settings, BackgroundYieldEnv.Create(Path.Combine(dataDir, "background_yield.json"), () => knownGameFolders()), log) : null;
 PrewarmEnv prewarmEnv = canApply ? PrewarmEnv.Create(orbitCalibration, orbitRuntime, backgroundYield, () => settings.Memory.StandbyLadder) : baseEnv;
 var prewarm = new Prewarmer(settings.Games, streamer, prewarmEnv, log, canApply ? Path.Combine(dataDir, "prewarm_status.json") : null); // 데이터 폴더를 믿을 수 없으면 (SYSTEM 이 일반 사용자가 쓸 수 있는 곳에 쓰지 않도록) 상태 파일을 쓰지 않음
-var playRecorder = new PlayRecorder(canApply ? Path.Combine(dataDir, "play_samples.json") : null, log);
+// 프레임 간격 측정 (play.frame_times): 자동 트레이스를 막는 안티치트 판정과 게임별 추적 정책을 그대로 재사용해, 막히면 ETW 세션을 열지 않음
+AutoEnv? autoEnv = canApply ? AutoEnv.Create(journalDir, log) : null;
+if (canApply)
+{
+    FrameTimeSession.StopStale(); // 서비스가 비정상 종료한 뒤 남은 세션을 치움
+}
+
+var playRecorder = new PlayRecorder(canApply ? Path.Combine(dataDir, "play_samples.json") : null, log,
+    openFrames: canApply ? FrameTimeSession.Open : null, frameEnabled: () => settings.Play.FrameTimes,
+    frameBlocker: g => !GamePolicy.AllowsTracking(g) ? "policy" : autoEnv?.TraceBlocker(g) ?? (autoEnv is null ? "unknown" : null),
+    openSystem: PlayRecorder.WindowsPlaySystemProbe.Open,
+    isTraceBlocked: g => autoEnv?.TraceBlocker(g) is not null,
+    blockedGameRunning: () => settings.Games.Any(g => autoEnv?.TraceBlocker(g) is not null && DispatchEnv.IsGameRunning(g))); // 막는 게임과 같이 실행 중이면 세션을 열지 않음 (게임이 이미 떠 있는 서비스 시작 때도)
 LoadBoundaryWatch.OrbitApplied = canApply ? streamer.WasPrewarmReordered : _ => false;
 LoadBoundaryWatch.Recorder = canApply ? new BenchmarkRecorder(Path.Combine(dataDir, MetricsJson.SamplesFile), log) : null; // 로딩 표본 기록 (상태 파일과 같은 이유로 canApply 일 때만)
 if (LoadBoundaryWatch.Recorder is { } recorder)
@@ -85,7 +106,7 @@ if (LoadBoundaryWatch.Recorder is { } recorder)
     };
 }
 // 자동 모드는 설정·이동을 쓰므로 canApply 일 때만 (상태 파일도 같은 이유로)
-var auto = canApply ? new AutoMode(new ConfigEditor(dataDir), AutoEnv.Create(journalDir, log), orbitStatus!, log, settings, prewarm) : null;
+var auto = canApply ? new AutoMode(new ConfigEditor(dataDir), autoEnv!, orbitStatus!, log, settings, prewarm) : null;
 if (auto is not null)
 {
     knownGameFolders = () => [.. auto.Registry.LastScan.Select(g => g.InstallDir)];

@@ -1009,7 +1009,8 @@ public sealed class Worker : BackgroundService
         {
             if (processes.Any(process => game.ExeNames.Contains(process.Exe, StringComparer.OrdinalIgnoreCase)))
             {
-                TryPlayRecording("observe running game", () => recorder.ObserveExisting(game));
+                int[] pids = [.. processes.Where(process => game.ExeNames.Contains(process.Exe, StringComparer.OrdinalIgnoreCase)).Select(process => process.Pid)];
+                TryPlayRecording("observe running game", () => recorder.ObserveExisting(game, pids));
             }
         }
     }

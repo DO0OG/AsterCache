@@ -16,7 +16,6 @@ public sealed class PrewarmCooldownTests
     private DateTimeOffset _now = DateTimeOffset.UnixEpoch;
     private ProbeResult? _probe;
     private int _probeCalls;
-    private int _yields;
     private bool _gameRunning;
 
     private static GameSettings Game(string name, int cooldownMin = 30) =>
@@ -33,7 +32,6 @@ public sealed class PrewarmCooldownTests
             _probeCalls++;
             return _probe;
         },
-        YieldBackground = (_, _) => _yields++,
     }, _log, now: () => _now);
 
     // 첫 예열을 한 뒤 minutes 분이 지난 상태: 쿨다운 (30 분) 안이면 마지막 예열 시각이 그대로 기준이 됨.
@@ -119,7 +117,7 @@ public sealed class PrewarmCooldownTests
     }
 
     [Fact]
-    public void TriggerYieldsBackgroundMemoryWhenAColdCacheLiftsTheCooldown()
+    public void TriggerWarmsWhenAColdCacheLiftsTheCooldownAndReadsTheSampleOnlyOnce()
     {
         GameSettings g = Game("a");
         Prewarmer p = WarmedThenWait(g, 5);
@@ -128,14 +126,13 @@ public sealed class PrewarmCooldownTests
         PrewarmResult r = Assert.Single(p.OnProcessStart(new ProcessStart(1, "steam.exe", 0)));
 
         Assert.True(r.Ran);
-        Assert.Equal(1, _yields);
-        Assert.Equal(1, _probeCalls); // 양보 판정의 표본을 본 예열이 다시 읽지 않고 씀
+        Assert.Equal(1, _probeCalls); // 건너뜀 판정의 표본을 본 예열이 다시 읽지 않고 씀
     }
 
     [Theory]
     [InlineData("warm")]
     [InlineData("unreadable")]
-    public void TriggerDoesNotYieldWhenEveryGameWillBeSkippedByTheCooldown(string sample)
+    public void TriggerSkipsWhenEveryGameIsInTheCooldown(string sample)
     {
         GameSettings g = Game("a");
         Prewarmer p = WarmedThenWait(g, 5);
@@ -144,11 +141,10 @@ public sealed class PrewarmCooldownTests
         PrewarmResult r = Assert.Single(p.OnProcessStart(new ProcessStart(1, "steam.exe", 0)));
 
         Assert.StartsWith("cooldown", r.SkipReason, StringComparison.Ordinal);
-        Assert.Equal(0, _yields);
     }
 
     [Fact]
-    public void TriggerYieldsWhenOnlyOneOfTheGamesWillRun()
+    public void TriggerRunsOnlyTheGamesOutsideTheCooldown()
     {
         GameSettings a = Game("a");
         GameSettings b = Game("b");
@@ -159,12 +155,11 @@ public sealed class PrewarmCooldownTests
 
         IReadOnlyList<PrewarmResult> results = p.OnProcessStart(new ProcessStart(1, "steam.exe", 0));
 
-        Assert.Equal(1, _yields);
         Assert.Equal(["b"], results.Where(x => x.Ran).Select(x => x.Game));
     }
 
     [Fact]
-    public void TriggerDoesNotYieldWhenNoGameHasAPlan()
+    public void TriggerDoesNotRunWhenNoGameHasAPlan()
     {
         GameSettings g = Game("noplan");
         Prewarmer p = Make(g);
@@ -172,6 +167,5 @@ public sealed class PrewarmCooldownTests
         PrewarmResult r = Assert.Single(p.OnProcessStart(new ProcessStart(1, "steam.exe", 0)));
 
         Assert.False(r.Ran);
-        Assert.Equal(0, _yields);
     }
 }

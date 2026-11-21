@@ -27,14 +27,13 @@ public sealed class PrewarmTriggerPreemptTests
 
     private Prewarmer Make(PrewarmEnv? env = null, params GameSettings[] games) => new(games, _streamer, env ?? Env(), _log, null, () => Now);
 
-    private static PrewarmEnv Env(Action<GameSettings, IReadOnlyList<ReadOp>, string?, DiskReadCoordinator.Lease?, CancellationToken, CancellationToken>? calibration = null, Action<string, CancellationToken>? yieldBackground = null) => new()
+    private static PrewarmEnv Env(Action<GameSettings, IReadOnlyList<ReadOp>, string?, DiskReadCoordinator.Lease?, CancellationToken, CancellationToken>? calibration = null, Func<long>? available = null) => new()
     {
-        AvailableRamMib = () => 16000,
+        AvailableRamMib = available ?? (() => 16000),
         GameRunning = _ => false,
         ZoneBytes = _ => 100L << 20,
         TraceExists = _ => true,
         DeviceCalibration = calibration,
-        YieldBackground = yieldBackground ?? ((_, _) => { }),
     };
 
     // 배경 경로의 락 시도: 잡히면 바로 놓고 true (Monitor 는 잡은 스레드에서 놓아야 해서 같은 스레드에서 처리).
@@ -149,7 +148,7 @@ public sealed class PrewarmTriggerPreemptTests
     [Fact]
     public void TriggerWaitMarkIsClearedWhenTheTriggerThrows()
     {
-        Prewarmer p = Make(Env(yieldBackground: (_, _) => throw new InvalidOperationException("boom")), Game("b", "launcher.exe"));
+        Prewarmer p = Make(Env(available: () => throw new InvalidOperationException("boom")), Game("b", "launcher.exe"));
 
         Assert.Throws<InvalidOperationException>(() => p.OnProcessStart(Launcher()));
 

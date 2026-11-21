@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using AsterCache.Core;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
@@ -38,12 +39,18 @@ public sealed class BackgroundYieldEnv
     /// 대기 목록 조회 (프로세스를 열지 않는 시스템 전체 통계, 못 읽으면 null). 기본값은 조회 불가.
     public Func<MemoryLists?> Lists { get; init; } = () => null;
 
-    /// 물리 RAM (바이트, 모르면 0). 비우기 목표 여유분을 계산합니다.
+    /// 물리 RAM (바이트, 모르면 0). 비우고 난 뒤 남길 가용 메모리 하한을 계산합니다.
     public Func<long> PhysicalBytes { get; init; } = () => 0;
+
+    /// 모든 프로세스의 CPU 시간·읽기/쓰기 바이트 누계 (프로세스를 열지 않는 조회, 못 읽으면 false). 기본값은 조회 불가라 쓰고 있는 프로세스를 가릴 수 없어 아무것도 비우거나 메모리 우선순위를 낮추지 않습니다.
+    public Func<List<ProcessUsage>, bool> Usage { get; init; } = _ => false;
 
     public Func<DateTimeOffset> Now { get; init; } = () => DateTimeOffset.UtcNow;
 
     /// 시스템이 부팅한 시각. 복구가 재부팅 앞에 적힌 항목의 프로세스 번호를 부모로 쓰지 않게 합니다 (기본값은 아주 옛날: 재부팅하지 않은 것으로 봄).
+    /// 단조 시계 (재부팅·시계 조정에 영향받지 않음, 벽시계 아님): 쓰고 있는 프로세스 표본의 간격을 잴 때만 씁니다.
+    public Func<TimeSpan> Monotonic { get; init; } = () => Stopwatch.GetElapsedTime(0);
+
     public Func<DateTimeOffset> BootTime { get; init; } = () => DateTimeOffset.UnixEpoch;
 
     /// 가용 메모리가 가라앉기를 기다리는 대기 (취소되면 일찍 돌아옴).
@@ -78,6 +85,7 @@ public sealed class BackgroundYieldEnv
         AvailableMib = SystemMemory.AvailableMib,
         Lists = MemoryListInfo.Query,
         PhysicalBytes = SystemMemory.TotalBytes,
+        Usage = ProcessFaults.Snapshot,
         KnownGameFolders = knownGameFolders ?? (() => []),
         WindowsDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows),
         SelfPid = Environment.ProcessId,
@@ -93,10 +101,11 @@ public sealed class BackgroundYieldEnv
     };
 }
 
-/// 게임 세션 동안 게임과 무관한 배경 프로세스가 메모리를 양보하게 합니다 (설정 memory.background_yield).
-/// 비우기: 여유분 (여유 + 우선순위 0~4 대기) 이 모자랄 때만, 그리고 세션 중에는 캐시가 실제로 재사용될 때만 작업 집합을 비워 그 메모리가 예열 캐시보다 먼저 재사용되게 합니다. 우선순위 낮추기: 세션 동안 메모리 우선순위를 매우 낮음으로 내려 그들의 읽기가 캐시를 밀어내지 못하게 하고, 세션이 끝나면 되돌립니다.
-/// I/O 우선순위 낮추기 (설정 memory.background_io_priority): 같은 대상의 디스크 I/O 우선순위를 보통에서 낮음으로 내려 게임의 읽기가 밀리지 않게 하고, 같은 기록·같은 경로로 되돌립니다.
-/// CPU 우선순위 낮추기 (설정 memory.background_cpu_priority): 같은 대상 가운데 CPU 우선순위 등급이 보통인 것만 보통보다 낮음으로 내려 게임 스레드와 같은 우선순위로 경합하지 않게 하고, 같은 기록·같은 경로로 되돌립니다 (되돌릴 때 등급이 보통보다 낮음이 아니면 그 사이 누가 바꾼 것이라 건드리지 않음).
+/// 등록 게임의 실행 파일이 실제로 떠 있는 동안 (런처·트리거 프로그램만 떠 있을 때는 아님) 게임과 무관한 배경 프로세스가 메모리를 양보하게 합니다 (설정 memory.background_yield).
+/// 쓰고 있는 프로세스 (최근 구간에 CPU 나 I/O 를 쓴 프로세스, UsageWindow) 는 비우지도 메모리 우선순위를 낮추지도 않습니다. 쉬는 것으로 확인된 프로세스만 아래 일을 합니다.
+/// 비우기: 가용 메모리에서 게임이 앞으로 가져갈 것으로 보이는 양을 뺀 값이 하한보다 모자랄 때만, 모자라는 만큼만 (큰 프로세스부터) 작업 집합을 비워 그 메모리가 예열 캐시보다 먼저 재사용되게 합니다. 세션 중 다시 비우기도 같은 조건과 캐시가 실제로 재사용될 때만 합니다. 우선순위 낮추기: 세션 동안 메모리 우선순위를 매우 낮음으로 내려 그들의 읽기가 캐시를 밀어내지 못하게 하고, 세션이 끝나면 되돌립니다.
+/// I/O 우선순위 낮추기 (설정 memory.background_io_priority): 같은 대상의 디스크 I/O 우선순위를 보통에서 낮음으로 내려 게임의 읽기가 밀리지 않게 하고, 같은 기록·같은 경로로 되돌립니다 (쓰고 있는 프로세스도 낮춤: 게임 디스크 경합에서 실측된 효과).
+/// CPU 우선순위 낮추기 (설정 memory.background_cpu_priority, 기본 꺼짐): 같은 대상 가운데 CPU 우선순위 등급이 보통인 것만 보통보다 낮음으로 내려 게임 스레드와 같은 우선순위로 경합하지 않게 하고, 같은 기록·같은 경로로 되돌립니다 (되돌릴 때 등급이 보통보다 낮음이 아니면 그 사이 누가 바꾼 것이라 건드리지 않음).
 /// 다른 프로세스에 하는 일은 이 네 가지뿐이며, 게임·런처·안티치트·세션 0 프로세스는 이름·세션 단계에서 걸러 어떤 권한으로도 열지 않습니다 (BackgroundProcessRules).
 public sealed partial class BackgroundYield(Func<AsterSettings> settings, BackgroundYieldEnv env, ILog log)
 {
@@ -107,7 +116,8 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
     public static readonly TimeSpan SettleStep = TimeSpan.FromMilliseconds(500);
     public static readonly TimeSpan SettleMax = TimeSpan.FromSeconds(3);
     public const long TrimMinBytes = 32L << 20;
-    public const long HeadroomFloorBytes = 4096L << 20; // 시작 때 이만큼 여유분이 있으면 비우지 않음 (물리 RAM/4 와 큰 쪽)
+    public const long HeadroomFloorBytes = 4096L << 20; // 게임이 가져간 뒤에도 가용 메모리가 이만큼 (물리 RAM/4 와 큰 쪽) 남으면 비우지 않음
+    public const long DefaultGameMib = 8192; // 플레이 기록이 없는 게임이 가져갈 양의 추정 (기록이 쌓이면 그 몫을 씀): 하한과 같은 크기로 둔 값이며 실측 근거는 없음
     public const long RetrimCacheBytes = 512L << 20; // 유지 주기 사이에 캐시 (우선순위 5~7) 가 이만큼 재사용돼야 다시 비움
     public const long SettleCalmMib = 64;
     internal const int NotLowered = -1; // 그쪽 우선순위는 낮추지 않았음 (되돌릴 것 없음)
@@ -129,6 +139,12 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
     private bool _cpuReleaseDone; // 위와 같음 (CPU 쪽)
     private bool _cpuApplied; // 게임이 실행 중인 채로 대상의 CPU 등급을 이미 낮췄음 (트리거로 시작한 세션은 게임이 뜬 뒤에 한 번 낮춤)
     private readonly Dictionary<int, TrimMemo> _trimMemo = []; // 비운 대상의 직전 작업 집합 (되찾았는지 보려고), 세션이 끝나면 지움
+    private readonly UsageWindow _usage = new(); // 최근 구간의 프로세스별 CPU·I/O 표본: 게임이 없을 때도 틱마다 쌓음 (세션과 무관)
+    private readonly List<ProcessUsage> _usageBuffer = [];
+    private long _startAvailableMib; // 마지막 세션 시작 때의 가용 메모리 (그 뒤 줄어든 만큼은 게임이 이미 가져간 것으로 봄)
+
+    /// 게임이 실행 뒤 잡는 메모리 (플레이 기록의 최근 중앙값, 기록이 없거나 연결되지 않았으면 null).
+    public Func<string, (long Mib, int Plays)?>? Footprint { get; set; }
 
     private bool Enabled => settings().Memory.BackgroundYield;
 
@@ -143,7 +159,32 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
         return settings().Games.Any(g => g.ExeNames.Any(names.Contains));
     }
 
-    /// 세션을 시작합니다: 대상 선택 → 우선순위 낮추기 → 비우기. 설정이 꺼져 있거나 서비스 종료 뒤이거나 60초 안에 다시 불리면 아무것도 안 함. settle 이면 (예열이 가용 메모리를 읽기 전) 비운 페이지가 가용으로 넘어와 가라앉을 때까지 최대 3초 기다립니다.
+    // 떠 있는 등록 게임이 앞으로 가져갈 것으로 보이는 메모리 (MiB): 게임마다 플레이 기록의 몫, 기록이 없으면 기본 추정. 여러 게임이 떠 있으면 가장 큰 쪽.
+    private long ExpectedGameMib(IReadOnlyList<(int Pid, string Exe)> processes)
+    {
+        var names = new HashSet<string>(processes.Select(p => p.Exe), StringComparer.OrdinalIgnoreCase);
+        return settings().Games.Where(g => g.ExeNames.Any(names.Contains)).Select(g => Footprint?.Invoke(g.Name)?.Mib ?? DefaultGameMib).DefaultIfEmpty(DefaultGameMib).Max();
+    }
+
+    // 지금 비워서 만들어야 하는 양 (바이트)과 로그용 값: 가용 메모리에서 게임이 앞으로 가져갈 양 (예상 - 세션 시작 뒤 이미 줄어든 가용) 을 뺀 값이 하한보다 모자란 만큼. 세션 시작 때는 이미 가져간 양이 0.
+    private (long Need, long ExpectedMib, long FloorMib) Shortfall(IReadOnlyList<(int Pid, string Exe)> processes, long availableMib)
+    {
+        long expectedMib = ExpectedGameMib(processes);
+        long floor = YieldPressure.TargetHeadroomBytes(env.PhysicalBytes());
+        long left = Math.Max(0, (expectedMib - Math.Max(0, _startAvailableMib - availableMib)) << 20);
+        return (YieldPressure.ShortfallBytes(availableMib << 20, left, floor), expectedMib, floor >> 20);
+    }
+
+    /// 프로세스별 CPU·I/O 누계 표본을 하나 더합니다 (틱마다와 세션 시작 때). 못 읽으면 기록이 늘지 않아 쓰고 있는 프로세스를 가릴 수 없고, 그러면 아무것도 비우거나 메모리 우선순위를 낮추지 않습니다.
+    internal void SampleUsage(TimeSpan at)
+    {
+        if (env.Usage(_usageBuffer))
+        {
+            _usage.Add(at, _usageBuffer);
+        }
+    }
+
+    /// 세션을 시작합니다: 대상 선택 → 우선순위 낮추기 → (모자랄 때만) 비우기. 등록 게임의 실행 파일이 뜬 뒤에만 부릅니다 (Worker). 설정이 꺼져 있거나 서비스 종료 뒤이거나 60초 안에 다시 불리면 아무것도 안 함. settle 이면 비운 페이지가 가용으로 넘어와 가라앉을 때까지 최대 3초 기다립니다 (지금 운영 경로는 기다리지 않음).
     public void Begin(string reason, bool settle, CancellationToken ct = default)
     {
         if (ct.IsCancellationRequested)
@@ -193,15 +234,15 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
             return;
         }
 
+        string lowered = $"memory priority lowered for {started.Lowered}, I/O priority lowered for {started.IoLowered}, CPU priority lowered for {started.CpuLowered}, {started.Spared} in-use processes spared";
         if (!started.DidTrim)
         {
-            log.Info($"background yield ({reason}): memory priority lowered for {started.Lowered}, I/O priority lowered for {started.IoLowered}, CPU priority lowered for {started.CpuLowered}, no trim needed (headroom {started.HeadroomMib} MiB, available {started.Before} MiB)");
+            log.Info($"background yield ({reason}): {lowered}, no trim needed (available {started.Before} MiB, expected game use {started.ExpectedMib} MiB, floor {started.FloorMib} MiB)");
             return;
         }
 
         string available = settle ? $"{started.Before} -> {WaitForSettle(ct)}" : started.Before.ToString();
-        string headroom = started.HeadroomMib is { } h ? $", headroom {h} MiB" : string.Empty;
-        log.Info($"background yield ({reason}): trimmed {started.Trimmed} processes ({started.TrimmedBytes >> 20} MiB working set), memory priority lowered for {started.Lowered}, I/O priority lowered for {started.IoLowered}, CPU priority lowered for {started.CpuLowered}, available {available} MiB{headroom}");
+        log.Info($"background yield ({reason}): trimmed {started.Trimmed} processes ({started.TrimmedBytes >> 20} MiB working set, shortfall {started.NeedMib} MiB), {lowered}, available {available} MiB, expected game use {started.ExpectedMib} MiB, floor {started.FloorMib} MiB");
     }
 
     /// 30초 틱에서: 세션이 활성일 때만 일합니다. 이미 뜬 프로세스 스냅샷을 받아 쓰며 틱마다 프로세스를 열지 않습니다 (유지 주기에만).
@@ -215,6 +256,11 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
 
         try
         {
+            if (Enabled)
+            {
+                SampleUsage(env.Monotonic()); // 게임이 없을 때도 쌓음: 처음 비우기 전에 쓰고 있는 프로세스를 가리려고
+            }
+
             if (!_active)
             {
                 return;
@@ -340,7 +386,7 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
         return previous;
     }
 
-    private sealed record YieldStart(long Before, int Trimmed, long TrimmedBytes, int Lowered, int IoLowered, int CpuLowered, bool DidTrim, long? HeadroomMib);
+    private sealed record YieldStart(long Before, int Trimmed, long TrimmedBytes, int Lowered, int IoLowered, int CpuLowered, bool DidTrim, int Spared, long NeedMib, long ExpectedMib, long FloorMib);
 }
 
 /// 비운 대상이 비우기 직전에 쓰던 작업 집합. Busy 는 되찾은 것으로 판정돼 이 세션에서 다시 비우지 않는 대상 (pid 재사용은 생성 시각으로 거름).

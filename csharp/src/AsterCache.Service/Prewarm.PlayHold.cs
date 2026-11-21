@@ -770,8 +770,33 @@ public sealed partial class Prewarmer
         TimeSpan lastCheck = TimeSpan.Zero;
         TimeSpan lastWrittenCheck = TimeSpan.Zero;
         long availMib = _env.AvailableRamMib();
+
+        // 게임이 쓰는 파일이 붙들 때와 달라졌으면 그 파일만 풀고 모두 풀려 붙든 것이 없으면 true. 붙들기를 시작하는 동안 (수 초~수십 초) 이미 바뀐 파일을 붙든 직후에 바로 한 번 잡으려고 루프 앞에서도 부릅니다.
+        bool CheckWritten()
+        {
+            foreach (WrittenRelease r in hold.ReleaseChangedWritten())
+            {
+                (writtenReleasedBytes, writtenReleasedFiles) = (writtenReleasedBytes + r.Bytes, writtenReleasedFiles + 1);
+                _log.Info($"{name}: cache hold released a game-written file the game changed ({exe}): {r.Path}, {r.Bytes >> 20} MiB, {elapsed.TotalSeconds:F0} s after the hold started, {hold.HeldBytes >> 20} MiB still held");
+            }
+
+            SetHeld(name, hold.HeldBytes);
+            if (hold.HeldBytes <= 0)
+            {
+                ended = " (nothing left held)";
+                return true;
+            }
+
+            return false;
+        }
+
         try
         {
+            if (hold.WrittenFiles > 0 && CheckWritten())
+            {
+                return HoldOutcome.Done; // 붙든 것이 모두 풀림: finally 가 닫고 끝 줄을 남김
+            }
+
             while (true)
             {
                 TimeSpan interval = availMib < floorMib + HoldNearFloorMib || elapsed < HoldEarlyWindow ? HoldWatchFast : HoldWatchEvery;
@@ -809,16 +834,8 @@ public sealed partial class Prewarmer
                 if (elapsed - lastWrittenCheck >= HoldWrittenCheckEvery && hold.WrittenFiles > 0)
                 {
                     lastWrittenCheck = elapsed;
-                    foreach (WrittenRelease r in hold.ReleaseChangedWritten())
+                    if (CheckWritten())
                     {
-                        (writtenReleasedBytes, writtenReleasedFiles) = (writtenReleasedBytes + r.Bytes, writtenReleasedFiles + 1);
-                        _log.Info($"{name}: cache hold released a game-written file the game changed ({exe}): {r.Path}, {r.Bytes >> 20} MiB, {elapsed.TotalSeconds:F0} s after the hold started, {hold.HeldBytes >> 20} MiB still held");
-                    }
-
-                    SetHeld(name, hold.HeldBytes);
-                    if (hold.HeldBytes <= 0)
-                    {
-                        ended = " (nothing left held)";
                         break;
                     }
                 }

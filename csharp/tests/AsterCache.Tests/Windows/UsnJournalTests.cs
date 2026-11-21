@@ -35,29 +35,33 @@ public sealed class UsnJournalTests : IDisposable
         var events = new List<UsnEvent>();
         DateTime? oldest = null;
 
-        UsnJournal.ParseRecords(data, new HashSet<ulong> { 7 }, events, ref oldest);
+        Assert.True(UsnJournal.ParseRecords(data, new HashSet<ulong> { 7 }, events, ref oldest));
 
         Assert.Equal(t, oldest);
         Assert.Equal([new UsnEvent(7, t, 0x2), new UsnEvent(7, t.AddMinutes(2), 0x4 | 0x80000000)], events);
     }
 
     [Fact]
-    public void ARecordOfAnotherVersionOrWithABadLengthEndsTheParseWithoutThrowing()
+    public void ARecordOfAnotherVersionWithABadLengthOrTimeOrLeftoverBytesIsAPartialResultAndReportsFailure()
     {
         byte[] good = Record(7, DateTime.UtcNow, 0x2, "a");
         byte[] v3 = Record(7, DateTime.UtcNow, 0x2, "a");
         BitConverter.GetBytes((ushort)3).CopyTo(v3, 4);
         byte[] bad = Record(7, DateTime.UtcNow, 0x2, "a");
         BitConverter.GetBytes(4096).CopyTo(bad, 0);
+        byte[] noTime = Record(7, DateTime.UtcNow, 0x2, "a");
+        BitConverter.GetBytes(0L).CopyTo(noTime, 32);
         var events = new List<UsnEvent>();
         DateTime? oldest = null;
 
-        UsnJournal.ParseRecords([.. good, .. v3, .. good], new HashSet<ulong> { 7 }, events, ref oldest);
-        _ = Assert.Single(events); // 셋째 기록은 읽지 않음
-        UsnJournal.ParseRecords(bad, new HashSet<ulong> { 7 }, events, ref oldest);
-        _ = Assert.Single(events);
-        UsnJournal.ParseRecords(new byte[10], new HashSet<ulong> { 7 }, events, ref oldest);
-        _ = Assert.Single(events);
+        Assert.False(UsnJournal.ParseRecords([.. good, .. v3, .. good], new HashSet<ulong> { 7 }, events, ref oldest));
+        _ = Assert.Single(events); // 셋째 기록은 읽지 않고 false
+        Assert.False(UsnJournal.ParseRecords(bad, new HashSet<ulong> { 7 }, events, ref oldest));
+        Assert.False(UsnJournal.ParseRecords(new byte[10], new HashSet<ulong> { 7 }, events, ref oldest)); // 남는 바이트
+        DateTime? none = null;
+        Assert.False(UsnJournal.ParseRecords(noTime, new HashSet<ulong> { 7 }, [], ref none)); // 시각 이상
+        Assert.Null(none);
+        Assert.True(UsnJournal.ParseRecords([], new HashSet<ulong> { 7 }, events, ref oldest)); // 빈 버퍼는 정상
     }
 
     [Fact]

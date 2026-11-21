@@ -130,9 +130,9 @@ internal static class LoadRefillPlans
     /// 캐시 없이만 읽힌 블록·가변 파일·허용 루트 밖은 로드 목록과 같게 빼고, 예열 목록에서 어차피 빠지는 캐시 없이 읽는 파일 (UnbufferedFiles),
     /// 만져도 캐시에 남지 않는 스파스 파일과 게임 드라이브 밖 파일도 뺍니다 (순위 자리와 예산을 쓰지 않게).
     /// includeWritten 이면 (memory.keep_hold_written_files) 게임이 플레이 중에 쓰는 파일의 블록도 같은 점수로 줄 세웁니다 (두 플레이 이상 반복해 읽힌 블록만, LoadRefillPlanner.WrittenMinPlays).
-    public static string RebuildRanked(GameSettings g, DateTimeOffset now, bool includeWritten = false) => RebuildRanked(g, now, path => FileGuards.IsSparse(path), includeWritten);
+    public static string RebuildRanked(GameSettings g, DateTimeOffset now, bool includeWritten = false, IReadOnlyList<string>? recentPlays = null) => RebuildRanked(g, now, path => FileGuards.IsSparse(path), includeWritten, recentPlays);
 
-    internal static string RebuildRanked(GameSettings g, DateTimeOffset now, Func<string, bool> isSparse, bool includeWritten = false)
+    internal static string RebuildRanked(GameSettings g, DateTimeOffset now, Func<string, bool> isSparse, bool includeWritten = false, IReadOnlyList<string>? recentPlays = null)
     {
         string path = RankedPathOf(g);
         Func<string, LoadRefillFileStat?> inner = StatOf(g, includeWritten);
@@ -158,7 +158,7 @@ internal static class LoadRefillPlans
         }
 
         LoadRefillList list = LoadRefillPlanner.Collect(Sources(AutoTracer.RawTracePath(g)), Stat, null, LoadRefillPlanner.RankedCapBytes, includeWritten ? file => VolatileFiles.IsGameWritten(file, marked) : null,
-            includeWritten ? file => VolatileFiles.IsGameWritten(file, marked) && inner(file) is { } now && history.IsAppendOnly(file, now.Size) : null); // 크기 기록이 충분하고 줄어든 적이 없는 파일은 수정된 플레이의 읽기도 셈
+            includeWritten ? file => VolatileFiles.IsGameWritten(file, marked) && inner(file) is { } now && history.IsAppendOnly(file, now.Size, recentPlays) : null); // 크기 기록이 충분하고 줄어든 적이 없는 파일은 수정된 플레이의 읽기도 셈
         long writtenBlocks = includeWritten ? list.Blocks.Count(b => VolatileFiles.IsGameWritten(b.Path, marked)) : 0;
         if (list.Plays == 0 && !SummaryPaths(AutoTracer.RawTracePath(g)).Any(File.Exists))
         {

@@ -42,6 +42,9 @@ public sealed class WrittenFileHistory
 
     public IReadOnlyList<WrittenFile> Files => _files;
 
+    /// 마지막으로 끝난 플레이가 끝났을 때의 게임 상태 표지 (게임 파일의 크기·수정 시각을 합친 값, 계산할 수 없었으면 null): 다음 플레이에서 붙들기 전에 같은 표지를 다시 계산해 다르거나 없으면 업데이트 직후로 보고 붙들지 않습니다.
+    public string? GameState { get; set; }
+
     public static string PathFor(string rawTracePath) => rawTracePath + Suffix;
 
     /// 이 플레이 (session) 에 본 파일들의 크기를 더합니다. 크기 0 은 없어진 파일입니다 (줄어든 것으로 셈).
@@ -79,14 +82,16 @@ public sealed class WrittenFileHistory
             _files.Add(file with { Shrank = shrank, Sessions = sessions });
         }
 
-        if (_files.Count > MaxFiles)
+        while (_files.Count > MaxFiles)
         {
-            _files.RemoveRange(0, _files.Count - MaxFiles);
+            int drop = _files.FindIndex(f => !f.Shrank); // 줄어든 적이 있다는 영구 표시는 파일 수 상한 때문에 지우지 않음 (모두 그런 파일이면 가장 오래된 것부터)
+            _files.RemoveAt(drop < 0 ? 0 : drop);
         }
     }
 
-    /// 지금 크기가 currentSize 인 파일을 붙들어도 되는가: 줄어든 적이 있거나 (또는 마지막 기록보다 지금 작음) 기록이 MinSessions 개보다 적으면 아님.
-    public WrittenVerdict Judge(string path, long currentSize)
+    /// 지금 크기가 currentSize 인 파일을 붙들어도 되는가: 줄어든 적이 있거나 (또는 마지막 기록보다 지금 작음) 아니면 근거가 모자라면 아님.
+    /// recentPlays 는 가장 최근에 끝난 플레이부터의 번호들 (최신이 뒤): 그 가운데 마지막 MinSessions 개가 모두 변경 저널로 판정돼 있어야 저널 근거로 충분하고 (판정이 빠진 플레이가 끼면 저널 근거는 버림), 아니면 크기 기록 MinSessions 개로 갈음합니다.
+    public WrittenVerdict Judge(string path, long currentSize, IReadOnlyList<string>? recentPlays = null)
     {
         WrittenFile? file = _files.Find(f => string.Equals(f.Path, path, StringComparison.OrdinalIgnoreCase));
         if (file is null)
@@ -100,7 +105,7 @@ public sealed class WrittenFileHistory
         }
 
         // 변경 저널이 온전히 덮은 플레이가 MinSessions 개 이상이고 잘라내기가 없으면 (있으면 위에서 Shrank) 설치 직후부터도 충분합니다. 저널을 읽지 못한 파일은 크기 기록의 플레이 수로 갈음합니다.
-        if ((file.Journal?.Count ?? 0) >= MinSessions)
+        if (recentPlays is { Count: >= MinSessions } && recentPlays.Skip(recentPlays.Count - MinSessions).All(p => (file.Journal ?? []).Any(j => j.Session == p)))
         {
             return WrittenVerdict.Ok;
         }
@@ -110,8 +115,8 @@ public sealed class WrittenFileHistory
 
     /// 순위가 수정된 플레이의 읽기도 점수에 넣어도 되는 (덧붙이기로 보는) 파일인가: Judge 가 Ok 이고 변경 저널이 기록한 최근 플레이에 교체 (만들기·삭제·이름 바꾸기) 가 없음.
     /// 저널 기록이 없는 파일은 교체 여부를 모르므로 크기 기록만으로 판단합니다.
-    public bool IsAppendOnly(string path, long currentSize) =>
-        Judge(path, currentSize) == WrittenVerdict.Ok
+    public bool IsAppendOnly(string path, long currentSize, IReadOnlyList<string>? recentPlays = null) =>
+        Judge(path, currentSize, recentPlays) == WrittenVerdict.Ok
         && _files.Find(f => string.Equals(f.Path, path, StringComparison.OrdinalIgnoreCase)) is { } file
         && !(file.Journal ?? []).Any(j => j.Verdict == 'r');
 
@@ -253,7 +258,7 @@ public sealed class WrittenFileHistory
                 files.Add(new WrittenFile(text, shrank, sessions, frn, journal));
             }
 
-            return new WrittenFileHistory(files);
+            return new WrittenFileHistory(files) { GameState = root.TryGetValue("game_state", out object? state) && state is string stateText ? stateText : null };
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException or OverflowException or FormatException or ArgumentException)
         {
@@ -267,6 +272,7 @@ public sealed class WrittenFileHistory
         var root = new JObject
         {
             { "version", (long)Version },
+            { "game_state", GameState },
             { "files", _files.Select(f => (object?)new JObject
                 {
                     { "path", f.Path },

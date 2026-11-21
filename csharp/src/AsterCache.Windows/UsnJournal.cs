@@ -24,6 +24,7 @@ public static unsafe class UsnJournal
     private const int FileIdInfoClass = 18;
     private const int BufferBytes = 1 << 20;
     private const long FileTimeEpochMin = 1;
+    private const long MaxFileTime = 2650467743999999999; // DateTime.MaxValue 의 FILETIME
 
     /// 파일의 64 비트 파일 참조 번호 (NTFS: 레코드 번호와 순번). 속성만 읽는 열기라 게임의 공유 모드와 부딪치지 않습니다. 열지 못하면 null (그 파일은 판정 불가).
     public static ulong? FileReference(string path)
@@ -85,10 +86,9 @@ public static unsafe class UsnJournal
 
                 long after = *(long*)buffer;
                 total += returned;
-                ParseRecords(new ReadOnlySpan<byte>(buffer + 8, (int)returned - 8), frns, events, ref oldest);
-                if (after <= next)
+                if (!ParseRecords(new ReadOnlySpan<byte>(buffer + 8, (int)returned - 8), frns, events, ref oldest) || after <= next)
                 {
-                    break;
+                    return null; // 해석하지 못한 기록이 있거나 읽기가 나아가지 않음: 일부만 읽은 결과로 판정하지 않음
                 }
 
                 next = after;
@@ -102,23 +102,33 @@ public static unsafe class UsnJournal
         }
     }
 
-    /// USN_RECORD_V2 들을 걸으며 시각이 가장 이른 기록의 시각을 oldest 에 남기고 (처음 본 기록), 찾는 번호의 기록만 events 에 더합니다. 모양이 맞지 않는 기록 (v2 가 아님, 길이 이상) 은 거기서 멈춥니다.
-    internal static void ParseRecords(ReadOnlySpan<byte> data, IReadOnlySet<ulong> frns, List<UsnEvent> events, ref DateTime? oldest)
+    /// USN_RECORD_V2 들을 걸으며 처음 본 기록의 시각을 oldest 에 남기고, 찾는 번호의 기록만 events 에 더합니다. 끝까지 해석했으면 true, 모양이 맞지 않는 기록 (v2 가 아님, 길이 이상, 시각 이상, 남는 바이트) 을 만나면 거기서 멈추고 false 입니다 (일부만 읽은 결과).
+    internal static bool ParseRecords(ReadOnlySpan<byte> data, IReadOnlySet<ulong> frns, List<UsnEvent> events, ref DateTime? oldest)
     {
         int at = 0;
-        while (at + 60 <= data.Length)
+        while (at < data.Length)
         {
+            if (at + 60 > data.Length)
+            {
+                return false;
+            }
+
             int length = BitConverter.ToInt32(data.Slice(at, 4));
             ushort major = BitConverter.ToUInt16(data.Slice(at + 4, 2));
             if (length < 60 || at + length > data.Length || major != 2)
             {
-                return;
+                return false;
             }
 
             ulong frn = BitConverter.ToUInt64(data.Slice(at + 8, 8));
             long fileTime = BitConverter.ToInt64(data.Slice(at + 32, 8));
             uint reason = BitConverter.ToUInt32(data.Slice(at + 40, 4));
-            DateTime time = fileTime >= FileTimeEpochMin ? DateTime.FromFileTimeUtc(fileTime) : DateTime.MinValue;
+            if (fileTime < FileTimeEpochMin || fileTime > MaxFileTime)
+            {
+                return false; // 시각을 읽을 수 없는 기록: 처음 기록이면 덮는 범위를 알 수 없음
+            }
+
+            DateTime time = DateTime.FromFileTimeUtc(fileTime);
             oldest ??= time; // 저널은 USN 순이므로 처음 본 기록이 가장 오래됨 (이후 시계가 되돌려진 기록이 덮는 범위를 넓히지 않게 처음 값만 씀)
 
             if (frns.Contains(frn))
@@ -128,5 +138,7 @@ public static unsafe class UsnJournal
 
             at += length;
         }
+
+        return true;
     }
 }

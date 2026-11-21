@@ -1210,4 +1210,22 @@ public sealed class KeepHoldTests
         Assert.Equal(5, _log.Lines.Count(l => l.Contains("released a game-written file the game changed")));
         Assert.Contains("(nothing left held)", _log.Lines.Last());
     }
+
+    [Fact]
+    public void AFileThatChangedWhileTheHoldWasStartingIsReleasedRightAfterTheStartNotOnlyAtTheFirstFiveSecondCheck()
+    {
+        _ = _writtenFiles.Add(F(1));
+        _ = _writtenFiles.Add(F(2));
+        Prewarmer p = Make(Reads);
+        _hold.OnHold = () => _hold.ChangedWritten.Add(F(1)); // 붙드는 동안 게임이 바꿈
+        RunFor(2);
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        string[] released = [.. _log.Lines.Where(l => l.Contains("released a game-written file the game changed"))];
+        _ = Assert.Single(released);
+        Assert.Contains(F(1), released[0]);
+        Assert.Contains("0 s after the hold started", released[0]); // 루프의 첫 5 초 확인 전에 바로 잡음
+        Assert.True(_hold.WrittenChecks >= 1);
+    }
 }

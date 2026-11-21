@@ -142,6 +142,8 @@ public sealed class WrittenFileHistoryTests : IDisposable
         return h;
     }
 
+    private static string[] Recent(params int[] plays) => [.. plays.Select(n => "p" + n)];
+
     private static int Journal(WrittenFileHistory h, UsnRead? read, params SessionSpan[] sessions) => h.RecordJournal(read, [(A, FrnA)], sessions);
 
     [Fact]
@@ -153,8 +155,8 @@ public sealed class WrittenFileHistoryTests : IDisposable
         int added = Journal(h, new UsnRead(T0, [Ev(1, UsnReasons.DataExtend), Ev(2, UsnReasons.DataOverwrite | UsnReasons.DataExtend)]), Play(1), Play(2), Play(3)); // 셋째 플레이는 기록 없음 (바뀌지 않음)
 
         Assert.Equal(3, added);
-        Assert.Equal(WrittenVerdict.Ok, h.Judge(A, 100 * Mib));
-        Assert.True(h.IsAppendOnly(A, 100 * Mib));
+        Assert.Equal(WrittenVerdict.Ok, h.Judge(A, 100 * Mib, Recent(1, 2, 3)));
+        Assert.True(h.IsAppendOnly(A, 100 * Mib, Recent(1, 2, 3)));
         Assert.Equal(['e', 'e', 'u'], h.Files.Single().Journal!.Select(j => j.Verdict));
     }
 
@@ -184,7 +186,7 @@ public sealed class WrittenFileHistoryTests : IDisposable
 
         Assert.Equal(1, added);
         Assert.Equal(["p3"], h.Files.Single().Journal!.Select(j => j.Session));
-        Assert.Equal(WrittenVerdict.InsufficientHistory, h.Judge(A, 100 * Mib)); // 저널 1 + 크기 기록 1
+        Assert.Equal(WrittenVerdict.InsufficientHistory, h.Judge(A, 100 * Mib, Recent(1, 2, 3))); // 저널 1 + 크기 기록 1
     }
 
     [Fact]
@@ -194,8 +196,8 @@ public sealed class WrittenFileHistoryTests : IDisposable
 
         _ = Journal(h, new UsnRead(T0, [Ev(1, UsnReasons.DataExtend), Ev(2, UsnReasons.FileCreate | UsnReasons.RenameNewName), Ev(3, UsnReasons.DataExtend)]), Play(1), Play(2), Play(3));
 
-        Assert.Equal(WrittenVerdict.Ok, h.Judge(A, 100 * Mib));
-        Assert.False(h.IsAppendOnly(A, 100 * Mib));
+        Assert.Equal(WrittenVerdict.Ok, h.Judge(A, 100 * Mib, Recent(1, 2, 3)));
+        Assert.False(h.IsAppendOnly(A, 100 * Mib, Recent(1, 2, 3)));
         Assert.Equal(['e', 'r', 'e'], h.Files.Single().Journal!.Select(j => j.Verdict));
     }
 
@@ -225,7 +227,8 @@ public sealed class WrittenFileHistoryTests : IDisposable
 
         Assert.Equal(1, added);
         Assert.Equal('r', h.Files.Single().Journal![^1].Verdict);
-        Assert.False(h.IsAppendOnly(A, 100 * Mib));
+        Assert.Equal(WrittenVerdict.Ok, h.Judge(A, 100 * Mib, Recent(2, 3, 4)));
+        Assert.False(h.IsAppendOnly(A, 100 * Mib, Recent(2, 3, 4)));
     }
 
     [Fact]
@@ -247,5 +250,41 @@ public sealed class WrittenFileHistoryTests : IDisposable
         Assert.Empty(old.Journal ?? []);
         File.WriteAllText(path, """{"version": 1, "files": [{"path": "x", "shrank": false, "sessions": [], "frn": 1, "journal": [["p", "z"]]}]}""");
         Assert.Empty(WrittenFileHistory.Read(path).Files); // 모르는 판정 글자
+    }
+
+    [Fact]
+    public void AnUnjudgedRecentPlayBreaksTheJournalEvidenceEvenWhenOlderPlaysWereJudged()
+    {
+        WrittenFileHistory h = WithOneSizeRecord();
+        _ = Journal(h, new UsnRead(T0, [Ev(1, UsnReasons.DataExtend)]), Play(1), Play(2), Play(3));
+        Assert.Equal(WrittenVerdict.Ok, h.Judge(A, 100 * Mib, Recent(1, 2, 3)));
+
+        // 넷째 플레이는 저널을 못 읽어 판정되지 않음: 가장 최근 세 플레이 (2, 3, 4) 가 이어서 판정돼 있지 않으므로 저널 근거는 버리고 크기 기록 (1 개) 으로 갈음 = 모자람
+        Assert.Equal(WrittenVerdict.InsufficientHistory, h.Judge(A, 100 * Mib, Recent(1, 2, 3, 4)));
+        Assert.Equal(WrittenVerdict.InsufficientHistory, h.Judge(A, 100 * Mib, Recent(2, 3))); // 최근 플레이가 3 개 미만
+        Assert.Equal(WrittenVerdict.InsufficientHistory, h.Judge(A, 100 * Mib)); // 최근 플레이 목록이 없음
+        _ = Journal(h, new UsnRead(T0, []), Play(1), Play(2), Play(3), Play(4)); // 다음에 읽혀 넷째도 판정됨
+        Assert.Equal(WrittenVerdict.Ok, h.Judge(A, 100 * Mib, Recent(1, 2, 3, 4)));
+    }
+
+    [Fact]
+    public void TheGameStateMarkSurvivesAWriteAndReadAndAFullHistoryKeepsTheShrankFilesWhenItDropsTheOldest()
+    {
+        string path = Path.Combine(_dir, "g.trace.json.written.json");
+        var h = new WrittenFileHistory { GameState = "ABC123" };
+        Play(h, "s1", A, 100);
+        Play(h, "s2", A, 10); // 줄어듦
+        h.Write(path);
+        Assert.Equal("ABC123", WrittenFileHistory.Read(path).GameState);
+        File.WriteAllText(path, """{"version": 1, "files": []}""");
+        Assert.Null(WrittenFileHistory.Read(path).GameState); // 옛 형식
+
+        for (int i = 0; i < WrittenFileHistory.MaxFiles + 3; i++)
+        {
+            Play(h, "s3", $@"D:\Games\f{i}.bin", 100);
+        }
+
+        Assert.True(h.Files.Single(f => f.Path == A).Shrank); // 가장 오래된 A 가 아니라 줄어들지 않은 파일이 밀려남
+        Assert.Equal(WrittenFileHistory.MaxFiles, h.Files.Count);
     }
 }

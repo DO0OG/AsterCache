@@ -84,11 +84,14 @@ public sealed partial class Prewarmer
             // 대신 완료 줄에 걸린 시간·CPU 시간·뷰 수·조회 횟수를 남겨 프레임 간격 기록과 대조할 수 있게 합니다.
             try
             {
-                // 빠짐이 알려진 게임은 사다리 순서로 시도하지 않음 (덜 중요한 쪽의 빈 곳에서 먼저 멈춰 디스크를 읽고 앞부분을 만지지 못함)
-                TouchEnd? end = _solar.HasMissing(game.Name) ? TouchEnd.NeedsDiskReads : _solar.Order(game, ladder, stop, startExe: exe);
-                if (end == TouchEnd.NeedsDiskReads && _solar.HasMissing(game.Name))
+                lock (_touchSerial) // 붙들기·점검과 같이 이 프로세스의 하드 폴트 누계를 쓰므로 겹치지 않게
                 {
-                    _ = _solar.TouchFront(game, ladder, stop, exe);
+                    // 빠짐이 알려진 게임은 사다리 순서로 시도하지 않음 (덜 중요한 쪽의 빈 곳에서 먼저 멈춰 디스크를 읽고 앞부분을 만지지 못함)
+                    TouchEnd? end = _solar.HasMissing(game.Name) ? TouchEnd.NeedsDiskReads : _solar.Order(game, ladder, stop, startExe: exe);
+                    if (end == TouchEnd.NeedsDiskReads && _solar.HasMissing(game.Name))
+                    {
+                        _ = _solar.TouchFront(game, ladder, stop, exe);
+                    }
                 }
             }
             finally

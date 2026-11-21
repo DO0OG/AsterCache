@@ -319,7 +319,7 @@ public static unsafe class StandbyTouch
     }
 
     // 이 스레드가 지금까지 쓴 CPU 시간 (초): 만지는 스레드에서만 부르므로 같은 스레드의 앞뒤 값의 차가 만지는 데 쓴 CPU 시간.
-    private static double ThreadCpuSeconds()
+    internal static double ThreadCpuSeconds()
     {
         long creation, exit, kernel, user;
         return NativeMethods.GetThreadTimes(NativeMethods.GetCurrentThread(), &creation, &exit, &kernel, &user) ? (kernel + user) / 1e7 : 0;
@@ -595,7 +595,7 @@ public static unsafe class StandbyTouch
     }
 
     /// 파일 하나의 읽기 전용 매핑 객체 (뷰는 범위마다 따로 만듭니다). 공유 모드는 FileMapping.Open 과 같습니다.
-    private sealed class Section : IDisposable
+    internal sealed class Section : IDisposable
     {
         private readonly SafeFileHandle _mapping;
 

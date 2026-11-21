@@ -165,7 +165,9 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
     /// 그 앞부분만 사다리 순서로 다시 만져 남은 것 가운데 가장 중요한 블록이 가장 늦게 밀려나게 합니다. 전체가 메모리에 있다는 표식은 남기지 않고 빠짐 표시를 그대로 둬 게임이 끝난 뒤 재예열 점검이 나머지를 읽게 합니다.
     /// 다른 게임의 앞에 있는 양은 앞부분이 메모리에 있던 만큼 줄입니다 (이 게임은 표식이 없어 스트림 끝의 사다리와 같이 만진 전체를 줄이는 규칙: ReduceOthers 의 withoutPreviousAll). 자기 표식은 만들지 않으므로 앞에 있는 양을 따로 셀 일이 없습니다.
     /// touch: 범위를 만드는 함수 (기본은 env.TouchRanges). keeping: 게임이 실행되는 동안 앞부분을 유지하는 호출 (호출한 쪽이 reads 를 한 번에 만질 상한까지 잘라 줌): 전부 메모리에 있어도 표식을 새로 만들지 않고 (Order 를 부르지 않음) 앞부분을 사다리 순서로 만지며, 로그 문구만 다릅니다. noneInMemory: 취소가 아니라 메모리에 하나도 남아 있지 않아 멈췄을 때 부름 (유지가 그 회차에서 끝나게).
-    public TouchEnd? TouchFront(GameSettings game, IReadOnlyList<ReadOp> reads, CancellationToken ct, string startExe, Func<IReadOnlyList<ReadOp>, CancellationToken, TouchResult>? touch = null, bool keeping = false, Action? noneInMemory = null, int skippedBefore = 0)
+    /// walk: 주면 (keeping 일 때만) 앞부분을 한 번에 찾는 대신 이 함수로 목록 끝까지 빠진 조각을 건너뛰며 만져 (합친 결과, 메모리에 있던 범위, 로그 꼬리) 를 받음: 앞부분 하나의 경계에서 끝나지 않게 합니다.
+    public TouchEnd? TouchFront(GameSettings game, IReadOnlyList<ReadOp> reads, CancellationToken ct, string startExe, Func<IReadOnlyList<ReadOp>, CancellationToken, TouchResult>? touch = null, bool keeping = false, Action? noneInMemory = null, int skippedBefore = 0,
+        Func<IReadOnlyList<ReadOp>, CancellationToken, (TouchResult Find, IReadOnlyList<ReadOp> Kept, string Note)>? walk = null)
     {
         if (!Enabled || reads.Count == 0)
         {
@@ -179,7 +181,18 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
 
         touch ??= env.TouchRanges;
         string what = keeping ? $"cache keeping while playing ({startExe})" : $"cache touch at game start ({startExe})";
-        TouchResult find = touch(reads, ct);
+        IReadOnlyList<ReadOp>? walked = null;
+        string walkNote = string.Empty;
+        TouchResult find;
+        if (keeping && walk is not null)
+        {
+            (find, walked, walkNote) = walk(reads, ct);
+        }
+        else
+        {
+            find = touch(reads, ct);
+        }
+
         if (find.End == TouchEnd.Completed && !keeping)
         {
             return Order(game, reads, ct, startExe: startExe); // 전부 메모리에 있음 (빠짐 표시가 낡았거나 앞의 판정이 잡음으로 멈춤): 처음부터 사다리 한 번
@@ -201,9 +214,9 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         }
 
         // 멈춘 곳까지가 앞부분 (건너뛴 스파스 범위의 길이는 목록 위치에 들어감). 멈춘 조각 근처에서 디스크로 읽힌 만큼도 이제 메모리에 있으므로 함께 만짐
-        TouchResult r = touch(LadderOrder.Reverse(PrefetchStreamer.Head(reads, find.Bytes + find.SkippedBytes)), ct);
+        TouchResult r = touch(LadderOrder.Reverse(walked ?? PrefetchStreamer.Head(reads, find.Bytes + find.SkippedBytes)), ct);
         ReduceOthers([game.Name], [(null, inMemory)], withoutPreviousAll: true);
-        string kept = $"{inMemory >> 20} MiB of {total >> 20} MiB still in memory{Stopped(find)}, in {find.Seconds + r.Seconds:F1} s (cpu {find.CpuSeconds + r.CpuSeconds:F1} s, {find.Maps + r.Maps} views, {find.Checks + r.Checks} checks), {(find.DiskBytes + r.DiskBytes) >> 20} MiB read from disk ({find.HardFaults + r.HardFaults} hard faults){ErrorCount(find)}{Sparse(find)}{(skippedBefore > 0 ? $", {skippedBefore} rounds skipped before" : string.Empty)}{(r.End == TouchEnd.Canceled ? string.Empty : ProbeText(find, reads, total, ct))}";
+        string kept = $"{inMemory >> 20} MiB of {total >> 20} MiB still in memory{Stopped(find)}, in {find.Seconds + r.Seconds:F1} s (cpu {find.CpuSeconds + r.CpuSeconds:F1} s, {find.Maps + r.Maps} views, {find.Checks + r.Checks} checks), {(find.DiskBytes + r.DiskBytes) >> 20} MiB read from disk ({find.HardFaults + r.HardFaults} hard faults){ErrorCount(find)}{Sparse(find)}{(skippedBefore > 0 ? $", {skippedBefore} rounds skipped before" : string.Empty)}{walkNote}{(r.End == TouchEnd.Canceled ? string.Empty : ProbeText(find, reads, total, ct))}";
         log.Info(r.End == TouchEnd.Canceled
             ? $"{game.Name}: {what} stopped after {r.Bytes >> 20} MiB{Errors(r)}{Sparse(r)}"
             : keeping ? $"{game.Name}: cache kept while playing ({startExe}): {kept}" : $"{game.Name}: cache touched at game start ({startExe}): {kept}, left to the rewarm check");

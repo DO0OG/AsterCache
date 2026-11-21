@@ -53,16 +53,24 @@ public sealed partial class Prewarmer
         var keep = new KeepList(); // 이 플레이의 유지 목록 (입력이 바뀔 때만 다시 계산)
         bool noted = false; // 이 유지가 로그를 한 줄이라도 남겼는가 (끝 줄을 남길지)
         string? lastSkip = null;
+        string? lastHoldSkip = null;
         string ended = string.Empty; // 끝 줄에 붙일 사유
         try
         {
             CancellationToken stop = _playStop.Token;
-            while (true)
+            // 유지 목록을 뷰로 붙들 수 있으면 (memory.keep_hold, Prewarm.PlayHold) 게임이 끝날 때까지 거기서 돌고, 붙들 수 없는 게임은 아래의 다시 만지기로 남음 (일시적 사유면 회차마다 다시 시도)
+            HoldOutcome held = _env.KeepHoldEnabled() ? HoldWhilePlaying(started, exe, keep, ref lastHoldSkip) : HoldOutcome.No;
+            while (held != HoldOutcome.Done)
             {
                 _env.Sleep(PlayTouchEvery, stop);
                 if (stop.IsCancellationRequested || _games.FirstOrDefault(g => string.Equals(g.Name, started.Name, StringComparison.OrdinalIgnoreCase)) is not { } game || !_env.GameRunning(game))
                 {
                     break; // 서비스가 멈추거나 설정에서 빠지거나 등록 실행 파일이 모두 끝남
+                }
+
+                if (held == HoldOutcome.Retry && _env.KeepHoldEnabled() && (held = HoldWhilePlaying(started, exe, keep, ref lastHoldSkip)) == HoldOutcome.Done)
+                {
+                    break;
                 }
 
                 if (reuseAtLastRound is { } reuseBefore && _env.Lists() is { } lists && lists.CacheRepurposedBytes - reuseBefore < PlayTouchMinReuseBytes)
@@ -187,12 +195,13 @@ public sealed partial class Prewarmer
             {
                 using IDisposable round = StandbyTouch.Round(); // 이 회차의 Run 여러 번이 디스크 읽기 수의 기준값을 이어 씀
                 bool none = false;
-                touched = _solar.TouchFront(game, reads, linked.Token, exe, ThrottledTouch, keeping: true, noneInMemory: () => none = true, skippedBefore: skippedBefore) is not null;
+                Func<IReadOnlyList<ReadOp>, CancellationToken, (TouchResult, IReadOnlyList<ReadOp>, string)>? walk = _env.KeepHoldEnabled() ? KeepWalk : null; // 켜져 있으면 빠진 조각에서 끝내지 않고 건너뛰며 목록 끝까지
+                touched = _solar.TouchFront(game, reads, linked.Token, exe, ThrottledTouch, keeping: true, noneInMemory: () => none = true, skippedBefore: skippedBefore, walk: walk) is not null;
                 if (none && !ReferenceEquals(ordered, all))
                 {
                     // 중요도 순서의 맨 앞이 메모리에 없음 (순위 목록이 마지막 예열 뒤에 바뀌었거나 그 블록이 빠짐): 목록 전체를 잃었다고 보지 않고 순위 없는 순서로 한 번 더 시도
                     none = false;
-                    touched = _solar.TouchFront(game, PrefetchStreamer.Head(all, cap), linked.Token, exe, ThrottledTouch, keeping: true, noneInMemory: () => none = true, skippedBefore: skippedBefore) is not null;
+                    touched = _solar.TouchFront(game, PrefetchStreamer.Head(all, cap), linked.Token, exe, ThrottledTouch, keeping: true, noneInMemory: () => none = true, skippedBefore: skippedBefore, walk: walk) is not null;
                 }
 
                 empty = none;

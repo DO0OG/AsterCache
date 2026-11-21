@@ -83,6 +83,11 @@ internal static unsafe partial class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool UnmapViewOfFile(nint baseAddress);
 
+    // 잠그지 않은 범위에 부르면 FALSE 와 오류 158 (ERROR_NOT_LOCKED) 을 돌려주지만 그 범위를 작업 집합에서 뺍니다 (ViewHold 가 내놓는 데 씀).
+    [LibraryImport(Kernel32, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool VirtualUnlock(nint address, nuint size);
+
     // 매핑한 뷰를 읽을 때 디스크 오류를 예외 (in-page error) 가 아닌 반환값으로 받으려고 씁니다 (현재 프로세스 자신만).
     [LibraryImport(Kernel32, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

@@ -28,6 +28,11 @@ public sealed class BackgroundYieldEnv
 
     public Func<int, int, bool> SetIoPriority { get; init; } = (_, _) => false;
 
+    /// 프로세스 CPU 우선순위 등급 (GetPriorityClass 값, 읽지 못하면 null). 기본값은 읽을 수 없음이라 CPU 쪽은 아무것도 하지 않습니다.
+    public Func<int, int?> CpuClass { get; init; } = _ => null;
+
+    public Func<int, int, bool> SetCpuClass { get; init; } = (_, _) => false;
+
     public required Func<long> AvailableMib { get; init; }
 
     /// 대기 목록 조회 (프로세스를 열지 않는 시스템 전체 통계, 못 읽으면 null). 기본값은 조회 불가.
@@ -68,6 +73,8 @@ public sealed class BackgroundYieldEnv
         SetMemoryPriority = ProcessMemory.SetMemoryPriority,
         IoPriority = ProcessMemory.IoPriority,
         SetIoPriority = ProcessMemory.SetIoPriority,
+        CpuClass = ProcessMemory.CpuPriorityClass,
+        SetCpuClass = ProcessMemory.SetCpuPriorityClass,
         AvailableMib = SystemMemory.AvailableMib,
         Lists = MemoryListInfo.Query,
         PhysicalBytes = SystemMemory.TotalBytes,
@@ -89,7 +96,8 @@ public sealed class BackgroundYieldEnv
 /// 게임 세션 동안 게임과 무관한 배경 프로세스가 메모리를 양보하게 합니다 (설정 memory.background_yield).
 /// 비우기: 여유분 (여유 + 우선순위 0~4 대기) 이 모자랄 때만, 그리고 세션 중에는 캐시가 실제로 재사용될 때만 작업 집합을 비워 그 메모리가 예열 캐시보다 먼저 재사용되게 합니다. 우선순위 낮추기: 세션 동안 메모리 우선순위를 매우 낮음으로 내려 그들의 읽기가 캐시를 밀어내지 못하게 하고, 세션이 끝나면 되돌립니다.
 /// I/O 우선순위 낮추기 (설정 memory.background_io_priority): 같은 대상의 디스크 I/O 우선순위를 보통에서 낮음으로 내려 게임의 읽기가 밀리지 않게 하고, 같은 기록·같은 경로로 되돌립니다.
-/// 다른 프로세스에 하는 일은 이 세 가지뿐이며, 게임·런처·안티치트·세션 0 프로세스는 이름·세션 단계에서 걸러 어떤 권한으로도 열지 않습니다 (BackgroundProcessRules).
+/// CPU 우선순위 낮추기 (설정 memory.background_cpu_priority): 같은 대상 가운데 CPU 우선순위 등급이 보통인 것만 보통보다 낮음으로 내려 게임 스레드와 같은 우선순위로 경합하지 않게 하고, 같은 기록·같은 경로로 되돌립니다 (되돌릴 때 등급이 보통보다 낮음이 아니면 그 사이 누가 바꾼 것이라 건드리지 않음).
+/// 다른 프로세스에 하는 일은 이 네 가지뿐이며, 게임·런처·안티치트·세션 0 프로세스는 이름·세션 단계에서 걸러 어떤 권한으로도 열지 않습니다 (BackgroundProcessRules).
 public sealed partial class BackgroundYield(Func<AsterSettings> settings, BackgroundYieldEnv env, ILog log)
 {
     public static readonly TimeSpan MinInterval = TimeSpan.FromSeconds(60);
@@ -118,11 +126,22 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
     private bool _beginTrimmed; // 마지막 세션 시작이 비웠는지
     private bool _listsWarned;
     private bool _ioReleaseDone; // 세션 중 I/O 설정만 끈 뒤 되돌리기를 이미 한 번 시도함 (실패한 것은 세션 끝에 맡기고 틱마다 되풀이하지 않음)
+    private bool _cpuReleaseDone; // 위와 같음 (CPU 쪽)
+    private bool _cpuApplied; // 게임이 실행 중인 채로 대상의 CPU 등급을 이미 낮췄음 (트리거로 시작한 세션은 게임이 뜬 뒤에 한 번 낮춤)
     private readonly Dictionary<int, TrimMemo> _trimMemo = []; // 비운 대상의 직전 작업 집합 (되찾았는지 보려고), 세션이 끝나면 지움
 
     private bool Enabled => settings().Memory.BackgroundYield;
 
     private bool IoEnabled => Enabled && settings().Memory.BackgroundIoPriority;
+
+    private bool CpuEnabled => Enabled && settings().Memory.BackgroundCpuPriority;
+
+    // 등록 게임의 실행 파일이 지금 떠 있는지 (CPU 등급은 이때만 낮춤: 낮춘 프로세스가 띄운 게임은 낮은 등급을 물려받는데 게임 프로세스는 고칠 수 없기 때문).
+    private bool GameRunning(IReadOnlyList<(int Pid, string Exe)> processes)
+    {
+        var names = new HashSet<string>(processes.Select(p => p.Exe), StringComparer.OrdinalIgnoreCase);
+        return settings().Games.Any(g => g.ExeNames.Any(names.Contains));
+    }
 
     /// 세션을 시작합니다: 대상 선택 → 우선순위 낮추기 → 비우기. 설정이 꺼져 있거나 서비스 종료 뒤이거나 60초 안에 다시 불리면 아무것도 안 함. settle 이면 (예열이 가용 메모리를 읽기 전) 비운 페이지가 가용으로 넘어와 가라앉을 때까지 최대 3초 기다립니다.
     public void Begin(string reason, bool settle, CancellationToken ct = default)
@@ -176,13 +195,13 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
 
         if (!started.DidTrim)
         {
-            log.Info($"background yield ({reason}): memory priority lowered for {started.Lowered}, I/O priority lowered for {started.IoLowered}, no trim needed (headroom {started.HeadroomMib} MiB, available {started.Before} MiB)");
+            log.Info($"background yield ({reason}): memory priority lowered for {started.Lowered}, I/O priority lowered for {started.IoLowered}, CPU priority lowered for {started.CpuLowered}, no trim needed (headroom {started.HeadroomMib} MiB, available {started.Before} MiB)");
             return;
         }
 
         string available = settle ? $"{started.Before} -> {WaitForSettle(ct)}" : started.Before.ToString();
         string headroom = started.HeadroomMib is { } h ? $", headroom {h} MiB" : string.Empty;
-        log.Info($"background yield ({reason}): trimmed {started.Trimmed} processes ({started.TrimmedBytes >> 20} MiB working set), memory priority lowered for {started.Lowered}, I/O priority lowered for {started.IoLowered}, available {available} MiB{headroom}");
+        log.Info($"background yield ({reason}): trimmed {started.Trimmed} processes ({started.TrimmedBytes >> 20} MiB working set), memory priority lowered for {started.Lowered}, I/O priority lowered for {started.IoLowered}, CPU priority lowered for {started.CpuLowered}, available {available} MiB{headroom}");
     }
 
     /// 30초 틱에서: 세션이 활성일 때만 일합니다. 이미 뜬 프로세스 스냅샷을 받아 쓰며 틱마다 프로세스를 열지 않습니다 (유지 주기에만).
@@ -208,8 +227,7 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
             }
 
             DateTimeOffset now = env.Now();
-            var names = new HashSet<string>(processes.Select(p => p.Exe), StringComparer.OrdinalIgnoreCase);
-            bool running = settings().Games.Any(g => g.ExeNames.Any(names.Contains));
+            bool running = GameRunning(processes);
             if (running)
             {
                 _lastActivity = now;
@@ -221,6 +239,12 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
             }
 
             ReleaseIo(processes); // I/O 설정만 꺼졌으면 I/O 우선순위만 먼저 되돌림
+            ReleaseCpu(processes); // CPU 설정만 꺼졌으면 CPU 등급만 먼저 되돌림
+            if (running && !_cpuApplied && CpuEnabled)
+            {
+                LowerCpuLate(); // 트리거로 시작한 세션에서 게임이 뜸: 낮춘 부모가 게임을 띄워 게임이 낮은 등급을 물려받지 않도록 이제야 낮춤
+            }
+
             if (running && now - _lastMaintain >= MaintainEvery)
             {
                 Maintain(processes, now);
@@ -277,7 +301,7 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
         }
 
         var kept = new List<LoweredProcess>();
-        (int restored, int inherited, int ioRestored) = Restore([.. _lowered.Values], processes, kept);
+        (int restored, int inherited, int ioRestored, int cpuRestored) = Restore([.. _lowered.Values], processes, kept);
         (_active, _lastBegin) = (false, null); // 끝난 세션은 60초 제한에 걸리지 않음
         _lowered.Clear();
         foreach (LoweredProcess k in kept)
@@ -289,8 +313,9 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
         _skipped.Clear();
         _trimMemo.Clear();
         (_lastRepurposed, _listsWarned, _ioReleaseDone) = (null, false, false);
+        (_cpuReleaseDone, _cpuApplied) = (false, false);
         _ = SaveState();
-        log.Info($"background yield ended: memory priority restored for {restored} processes ({inherited} inherited), I/O priority restored for {ioRestored} processes");
+        log.Info($"background yield ended: memory priority restored for {restored} processes ({inherited} inherited), I/O priority restored for {ioRestored} processes, CPU priority restored for {cpuRestored} processes");
     }
 
     // 비운 페이지는 변경 목록을 거쳐 대기 목록으로 가는 중이라 (2초 +2.1 GiB, 5초 +3.0, 10초 +3.7) 가용 메모리가 가라앉을 때까지 500ms 간격으로 잽니다:
@@ -315,7 +340,7 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
         return previous;
     }
 
-    private sealed record YieldStart(long Before, int Trimmed, long TrimmedBytes, int Lowered, int IoLowered, bool DidTrim, long? HeadroomMib);
+    private sealed record YieldStart(long Before, int Trimmed, long TrimmedBytes, int Lowered, int IoLowered, int CpuLowered, bool DidTrim, long? HeadroomMib);
 }
 
 /// 비운 대상이 비우기 직전에 쓰던 작업 집합. Busy 는 되찾은 것으로 판정돼 이 세션에서 다시 비우지 않는 대상 (pid 재사용은 생성 시각으로 거름).
@@ -325,7 +350,7 @@ internal readonly record struct TrimMemo(long Created, long Before, bool Busy);
 /// InheritOnly 는 경로가 Windows 폴더 규칙에만 걸린 프로세스입니다 (다른 제외 사유는 없음): 새로 낮추지도 비우지도 않고, 낮춘 부모에게 물려받은 값만 되돌릴 수 있게 후보로 둡니다.
 internal readonly record struct YieldTarget(int Pid, string Exe, string Path, long Created, long WorkingSetBytes, int Parent = 0, bool InheritOnly = false);
 
-/// 메모리·I/O 우선순위를 낮춘 프로세스와 원래 값 (Priority 는 메모리, Io 는 I/O 이고 그쪽을 낮추지 않았으면 NotLowered). 상태 파일에서 읽은 옛 항목은 이름이 없을 수 있고 Io 도 없으며, 경로는 파일에 적지 않습니다.
+/// 메모리·I/O·CPU 우선순위를 낮춘 프로세스와 원래 값 (Priority 는 메모리, Io 는 I/O, Cpu 는 CPU 등급이고 그쪽을 낮추지 않았으면 NotLowered. Cpu 는 보통 등급에서만 낮추므로 NotLowered 가 아니면 항상 보통). 상태 파일에서 읽은 옛 항목은 이름이 없을 수 있고 Io 도 없으며, 경로는 파일에 적지 않습니다.
 /// LoweredAt (FILETIME) 은 낮춘 시각이고 이보다 늦게 만들어진 자식은 낮은 값을 물려받습니다. 물려받은 항목 (Inherited) 은 만든 시각이 곧 낮춰진 시각입니다.
 /// 둘 다 상태 파일에 (lowered_at, inherited) 적고 읽지만, 옛 형식 파일이거나 재부팅 앞에 적힌 항목은 낮춘 시각을 알 수 없음 (MaxValue) 이고, 그 항목의 자식은 물려받은 것으로 보지 않습니다.
-internal readonly record struct LoweredProcess(int Pid, string? Exe, string? Path, long Created, int Priority, long LoweredAt = long.MaxValue, bool Inherited = false, int Io = BackgroundYield.NotLowered);
+internal readonly record struct LoweredProcess(int Pid, string? Exe, string? Path, long Created, int Priority, long LoweredAt = long.MaxValue, bool Inherited = false, int Io = BackgroundYield.NotLowered, int Cpu = BackgroundYield.NotLowered);

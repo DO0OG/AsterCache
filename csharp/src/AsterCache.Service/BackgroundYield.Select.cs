@@ -51,13 +51,14 @@ public sealed partial class BackgroundYield
         return found;
     }
 
-    // 원래 값이 보통인 대상만 낮춥니다: 메모리 우선순위는 1 보다 크면 매우 낮음 (1) 으로, I/O 우선순위는 보통 (2) 이면 낮음 (1) 으로 (I/O 설정이 꺼져 있으면 읽지도 않음). 매우 낮음·낮음이던 것과 높은 값은 건드리지 않습니다.
-    // 비정상 종료에도 되돌릴 수 있게 값을 바꾸기 전에 원래 값을 상태 파일에 먼저 적고, 적지 못하면 이번에는 낮추지 않습니다. 새로 낮춘 수를 (메모리, I/O) 로 돌려줍니다. 한쪽을 못 낮췄으면 그쪽 기록만 지웁니다.
+    // 원래 값이 보통인 대상만 낮춥니다: 메모리 우선순위는 1 보다 크면 매우 낮음 (1) 으로, I/O 우선순위는 보통 (2) 이면 낮음 (1) 으로, CPU 등급은 보통이면 보통보다 낮음으로 (I/O·CPU 설정이 꺼져 있으면 읽지도 않음). 매우 낮음·낮음이던 것과 높은 값은 건드리지 않습니다 (CPU 는 보통보다 높음·높음·실시간·보통보다 낮음·유휴를 모두 그대로 둠).
+    // 비정상 종료에도 되돌릴 수 있게 값을 바꾸기 전에 원래 값을 상태 파일에 먼저 적고, 적지 못하면 이번에는 낮추지 않습니다. 새로 낮춘 수를 (메모리, I/O, CPU) 로 돌려줍니다. 어느 쪽을 못 낮췄으면 그쪽 기록만 지웁니다.
     // 이미 낮은 대상은 낮춘 조상에게 물려받은 것이면 (Inherit) 조상의 원래 값으로 함께 기록합니다 (낮춘 수에는 세지 않음). inheritOnly 는 세션 끝에서 물려받은 것만 찾을 때입니다 (새로 낮추지 않음).
-    private (int Memory, int Io) Lower(IEnumerable<YieldTarget> targets, IReadOnlyList<(int Pid, string Exe)> processes, bool inheritOnly = false)
+    private (int Memory, int Io, int Cpu) Lower(IEnumerable<YieldTarget> targets, IReadOnlyList<(int Pid, string Exe)> processes, bool inheritOnly = false)
     {
         long at = env.Now().ToFileTime();
         bool ioOn = IoEnabled;
+        bool cpuOn = CpuEnabled && GameRunning(processes);
         var plan = new List<LoweredProcess>();
         var candidates = new List<YieldTarget>();
         foreach (YieldTarget t in targets)
@@ -75,9 +76,10 @@ public sealed partial class BackgroundYield
 
             int memory = env.MemoryPriority(t.Pid) is { } m && m > ProcessMemory.PriorityVeryLow ? m : NotLowered;
             int io = ioOn && env.IoPriority(t.Pid) is { } d && d == ProcessMemory.IoPriorityNormal ? d : NotLowered;
-            if (memory != NotLowered || io != NotLowered)
+            int cpu = cpuOn && env.CpuClass(t.Pid) is ProcessMemory.CpuClassNormal ? ProcessMemory.CpuClassNormal : NotLowered;
+            if (memory != NotLowered || io != NotLowered || cpu != NotLowered)
             {
-                plan.Add(new LoweredProcess(t.Pid, t.Exe, t.Path, t.Created, memory, at, Io: io));
+                plan.Add(new LoweredProcess(t.Pid, t.Exe, t.Path, t.Created, memory, at, Io: io, Cpu: cpu));
             }
         }
 
@@ -89,32 +91,35 @@ public sealed partial class BackgroundYield
         List<LoweredProcess> inherited = Inherit(candidates, NamesOf(processes));
         if (plan.Count == 0 && inherited.Count == 0)
         {
-            return (0, 0);
+            return (0, 0, 0);
         }
 
         if (!SaveState())
         {
             foreach (LoweredProcess p in plan)
             {
-                DropParts(p.Pid, p.Priority != NotLowered, p.Io != NotLowered); // 복구 근거를 남기지 못하면 새로 낮추려던 것은 낮추지 않음 (비우기는 계속). 물려받은 항목은 이미 낮으므로 기록에 남겨 되돌림
+                DropParts(p.Pid, p.Priority != NotLowered, p.Io != NotLowered, p.Cpu != NotLowered); // 복구 근거를 남기지 못하면 새로 낮추려던 것은 낮추지 않음 (비우기는 계속). 물려받은 항목은 이미 낮으므로 기록에 남겨 되돌림
             }
 
-            return (0, 0);
+            return (0, 0, 0);
         }
 
         int lowered = 0;
         int ioLowered = 0;
+        int cpuLowered = 0;
         bool failed = false;
         foreach (LoweredProcess p in plan)
         {
             bool memoryOk = p.Priority == NotLowered || env.SetMemoryPriority(p.Pid, ProcessMemory.PriorityVeryLow);
             bool ioOk = p.Io == NotLowered || env.SetIoPriority(p.Pid, ProcessMemory.IoPriorityLow);
+            bool cpuOk = p.Cpu == NotLowered || env.SetCpuClass(p.Pid, ProcessMemory.CpuClassBelowNormal);
             lowered += p.Priority != NotLowered && memoryOk ? 1 : 0;
             ioLowered += p.Io != NotLowered && ioOk ? 1 : 0;
-            if (!memoryOk || !ioOk)
+            cpuLowered += p.Cpu != NotLowered && cpuOk ? 1 : 0;
+            if (!memoryOk || !ioOk || !cpuOk)
             {
                 failed = true;
-                DropParts(p.Pid, !memoryOk, !ioOk); // 못 낮췄으면 되돌릴 것도 없음
+                DropParts(p.Pid, !memoryOk, !ioOk, !cpuOk); // 못 낮췄으면 되돌릴 것도 없음
             }
         }
 
@@ -123,7 +128,7 @@ public sealed partial class BackgroundYield
             _ = SaveState();
         }
 
-        return (lowered, ioLowered);
+        return (lowered, ioLowered, cpuLowered);
     }
 
     private bool IsAnotherProcess(int pid, LoweredProcess recorded, Dictionary<int, string> names)
@@ -134,16 +139,16 @@ public sealed partial class BackgroundYield
             : alive;
     }
 
-    // 기록에서 메모리·I/O 쪽을 지우고, 둘 다 없어지면 항목을 지웁니다 (물려받은 쪽은 그대로 남음).
-    private void DropParts(int pid, bool memory, bool io)
+    // 기록에서 메모리·I/O·CPU 쪽을 지우고, 모두 없어지면 항목을 지웁니다 (물려받은 쪽은 그대로 남음).
+    private void DropParts(int pid, bool memory, bool io, bool cpu)
     {
         if (!_lowered.TryGetValue(pid, out LoweredProcess e))
         {
             return;
         }
 
-        e = e with { Priority = memory ? NotLowered : e.Priority, Io = io ? NotLowered : e.Io };
-        if (e.Priority == NotLowered && e.Io == NotLowered)
+        e = e with { Priority = memory ? NotLowered : e.Priority, Io = io ? NotLowered : e.Io, Cpu = cpu ? NotLowered : e.Cpu };
+        if (e.Priority == NotLowered && e.Io == NotLowered && e.Cpu == NotLowered)
         {
             _ = _lowered.Remove(pid);
         }
@@ -175,14 +180,15 @@ public sealed partial class BackgroundYield
                 bool background = childIo == 0; // 스스로 배경 모드에 들어간 자식 (I/O 매우 낮음, 메모리도 1) 은 물려받은 것이 아님
                 int memory = parent.Priority != NotLowered && !background && env.MemoryPriority(t.Pid) == ProcessMemory.PriorityVeryLow ? parent.Priority : NotLowered;
                 int io = childIo == ProcessMemory.IoPriorityLow ? parent.Io : NotLowered;
-                if (memory == NotLowered && io == NotLowered)
+                int cpu = parent.Cpu != NotLowered && env.CpuClass(t.Pid) is ProcessMemory.CpuClassBelowNormal ? parent.Cpu : NotLowered; // 보통보다 낮음은 Windows 가 부모에게서 물려줌
+                if (memory == NotLowered && io == NotLowered && cpu == NotLowered)
                 {
                     continue;
                 }
 
                 LoweredProcess entry = _lowered.TryGetValue(t.Pid, out LoweredProcess own) && own.Created == t.Created
-                    ? own with { Priority = own.Priority == NotLowered ? memory : own.Priority, Io = own.Io == NotLowered ? io : own.Io, LoweredAt = Math.Min(own.LoweredAt, t.Created) } // 물려받은 쪽은 만든 시각부터 낮았음
-                    : new LoweredProcess(t.Pid, t.Exe, t.Path, t.Created, memory, t.Created, true, io);
+                    ? own with { Priority = own.Priority == NotLowered ? memory : own.Priority, Io = own.Io == NotLowered ? io : own.Io, Cpu = own.Cpu == NotLowered ? cpu : own.Cpu, LoweredAt = Math.Min(own.LoweredAt, t.Created) } // 물려받은 쪽은 만든 시각부터 낮았음
+                    : new LoweredProcess(t.Pid, t.Exe, t.Path, t.Created, memory, t.Created, true, io, cpu);
                 _lowered[t.Pid] = entry;
                 found.Add(entry);
                 grew = true;

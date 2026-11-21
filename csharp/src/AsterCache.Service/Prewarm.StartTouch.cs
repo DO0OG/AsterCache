@@ -28,13 +28,7 @@ public sealed partial class Prewarmer
             KeepCacheWhilePlaying(game, exe); // 시작 만지기가 어떻게 끝났든 (대여 양보·재배치 중 같은 일시적 사유 포함) 같은 작업 안에서 게임이 끝날 때까지 이어 만짐: 회차마다 게이트를 다시 봄
         }
 
-        lock (_gate)
-        {
-            if (!_playTouching.Contains(game.Name))
-            {
-                _ = _keepMemory.Remove(game.Name); // 유지가 도는 게임이 없으면 (시작 만지기만 하고 끝남) 기억한 빠진 범위를 버림
-            }
-        }
+        ForgetKeepMemoryIfStopped(game.Name); // 게임이 더 실행 중이 아니면 기억한 범위와 누적 상한을 버림 (같은 게임의 다른 실행 파일이 떠도 게임이 실행되는 동안은 이어 씀)
     }
 
     private void TouchOnceAtGameStart(GameSettings game, string exe)
@@ -92,14 +86,16 @@ public sealed partial class Prewarmer
             // 대신 완료 줄에 걸린 시간·CPU 시간·뷰 수·조회 횟수를 남겨 프레임 간격 기록과 대조할 수 있게 합니다.
             try
             {
+                TouchEnd? end;
                 lock (_touchSerial) // 붙들기·점검과 같이 이 프로세스의 하드 폴트 누계를 쓰므로 겹치지 않게
                 {
                     // 빠짐이 알려진 게임은 사다리 순서로 시도하지 않음 (덜 중요한 쪽의 빈 곳에서 먼저 멈춰 디스크를 읽고 앞부분을 만지지 못함)
-                    TouchEnd? end = _solar.HasMissing(game.Name) ? TouchEnd.NeedsDiskReads : _solar.Order(game, ladder, stop, startExe: exe);
-                    if (end == TouchEnd.NeedsDiskReads && _solar.HasMissing(game.Name))
-                    {
-                        TouchAfterStartBoundary(game, ladder, exe, stop); // 첫 경계에서 끝내지 않고 빠진 조각을 건너뛰며 (빠진 범위는 이 플레이 동안 기억) 목록 끝까지
-                    }
+                    end = _solar.HasMissing(game.Name) ? TouchEnd.NeedsDiskReads : _solar.Order(game, ladder, stop, startExe: exe);
+                }
+
+                if (end == TouchEnd.NeedsDiskReads && _solar.HasMissing(game.Name))
+                {
+                    TouchAfterStartBoundary(game, ladder, exe, stop); // 첫 경계에서 끝내지 않고 두 패스 (가장 중요한 것부터 찾고 덜 중요한 것부터 다시 만짐) 로 목록 끝까지, 빠진 범위는 이 플레이 동안 기억 (잠금은 묶음마다 직접 잡음)
                 }
             }
             finally

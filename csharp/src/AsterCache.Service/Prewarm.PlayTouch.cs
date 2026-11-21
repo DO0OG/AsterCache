@@ -9,7 +9,8 @@ namespace AsterCache.Service;
 /// 경기 중에도 게임이 새로 읽는 양 (분당 0.8~1.7 GiB, 시작 뒤 180 초에 8.5 GiB 가 재사용된 기록도 있음) 에 밀려 예열한 페이지가 대기 목록에서 빠지므로, 시작 만지기 (TouchAtGameStart) 한 번으로는 경기 중반에 이미 없습니다.
 /// 회차는 대기 목록 재사용 누계가 문턱을 넘을 때 바로 돕니다 (KeepPollEvery 마다 누계만 확인). 회차는 유지 목록을 덜 중요한 것부터 한 패스로 만지고 (Solar.ImportanceOrder 의 역순, 가장 중요한 것이 마지막에 오게),
 /// 캐시에 없는 곳 곧 이 프로세스의 디스크 읽기 수가 허용치를 넘는 경계를 만나면 그 파일의 이어진 범위는 건너뛰고 계속하며 그 범위를 이 플레이 동안 빠진 범위로 기억해 다음 회차부터는 아예 만지지 않습니다 (빠진 범위 하나가 디스크 읽기를 일으키는 것은 처음 발견할 때 한 번뿐).
-/// 디스크 읽기는 회차마다 KeepRoundDiskCapBytes, 플레이 전체로 KeepPlayDiskCapBytes 를 넘지 않습니다. 빠진 부분을 채우는 일은 게임이 끝난 뒤 재예열에 맡깁니다.
+/// 한 회차는 두 패스입니다: 찾기 (가장 중요한 것부터 걸으며 메모리에 있는 범위를 모으고 빠진 조각은 시간이 오래 걸린 조각의 하드 폴트 조회로 싸게 알아채 일정 폭만 건너뜀) 와 순서 (모은 범위만 덜 중요한 것부터 다시 만져 가장 중요한 것이 대기 목록의 가장 새 자리에 오게 함).
+/// 디스크 읽기는 회차의 찾기 패스에서 KeepRoundDiskCapBytes 까지, 플레이 전체로 KeepPlayDiskCapBytes 까지입니다 (뒤에는 새 범위를 찾지 않고 확인된 범위만 두 패스로 만짐). 빠진 부분을 채우는 일은 게임이 끝난 뒤 재예열에 맡깁니다.
 /// 목록은 플레이마다 한 번만 계산하고 입력 파일이 바뀐 때만 다시 계산합니다.
 public sealed partial class Prewarmer
 {
@@ -29,10 +30,10 @@ public sealed partial class Prewarmer
     /// 문턱의 하한: 앞의 여유가 없어도 이보다 작은 재사용마다 돌지 않습니다 (최소 간격과 함께 CPU·메모리 대역을 묶음).
     public const long KeepReuseMinThresholdBytes = 64L << 20;
 
-    /// 한 회차에서 디스크에서 읽는 양의 상한: 8 MiB. 경계 하나를 알아채는 데 약 2 MiB (하드 폴트 32 회 × 64 KiB) 가 읽히므로 새 경계는 회차당 서넛입니다. 넘으면 그 회차는 거기서 끝납니다.
+    /// 한 회차의 찾기 패스가 디스크에서 읽는 양의 상한: 8 MiB. 빠진 조각 하나를 알아채는 데 읽는 양이 조각 하나 (1 MiB 이하) 라 새 경계는 회차당 여럿입니다. 넘으면 찾기 패스는 새 범위를 더 확인하지 않고 남은 범위는 이번에 만지지 않으며, 순서 패스는 모은 것으로 반드시 돕니다.
     public const long KeepRoundDiskCapBytes = 8L << 20;
 
-    /// 한 플레이에서 이 만지기가 디스크에서 읽는 양의 누적 상한: 64 MiB. 다 쓰면 그 플레이의 유지를 끝냅니다 (빠진 것은 게임이 끝난 뒤 재예열에 맡김).
+    /// 한 플레이에서 이 만지기가 디스크에서 읽는 양의 누적 상한: 64 MiB. 다 쓰면 그 뒤 회차는 새 범위를 찾지 않고 지금까지 메모리에 있다고 확인된 범위만 두 패스로 만집니다 (유지를 끝내지 않음).
     public const long KeepPlayDiskCapBytes = 64L << 20;
 
     /// 기억한 빠진 범위가 만지려던 목록의 이 비율을 넘으면 (대부분이 빠졌으면) 유지를 끝냅니다.
@@ -68,6 +69,7 @@ public sealed partial class Prewarmer
         int fallbackPolls = (int)(PlayTouchEvery.Ticks / KeepPollEvery.Ticks);
         int minPolls = (int)Math.Ceiling((double)KeepMinInterval.Ticks / KeepPollEvery.Ticks);
         int emptyRounds = 0; // 메모리에 하나도 없던 회차가 연속으로 몇 번인가
+        KeepMemory memory = KeepMemoryOf(started.Name); // 이 플레이에서 알게 된 빠진·메모리에 있는 범위 (같은 게임의 다른 실행 파일이 떠도 이어 씀)
         long? reuseAtLastRound = _env.Lists()?.CacheRepurposedBytes; // 시작 만지기가 끝난 때의 대기 목록 재사용 누계
         var keep = new KeepList(); // 이 플레이의 유지 목록 (입력이 바뀔 때만 다시 계산)
         bool noted = false; // 이 유지가 로그를 한 줄이라도 남겼는가 (끝 줄을 남길지)
@@ -78,7 +80,13 @@ public sealed partial class Prewarmer
         {
             CancellationToken stop = _playStop.Token;
             // 유지 목록을 뷰로 붙들 수 있으면 (memory.keep_hold, Prewarm.PlayHold) 게임이 끝날 때까지 거기서 돌고, 붙들 수 없는 게임은 아래의 다시 만지기로 남음 (일시적 사유면 주기마다 다시 시도)
-            HoldOutcome held = _env.KeepHoldEnabled() ? HoldWhilePlaying(started, exe, keep, ref lastHoldSkip) : HoldOutcome.No;
+            HoldOutcome held = memory.Finished ? HoldOutcome.Done : _env.KeepHoldEnabled() ? HoldWhilePlaying(started, exe, keep, ref lastHoldSkip) : HoldOutcome.No; // 빠진 범위가 대부분이라 끝낸 플레이는 다른 실행 파일이 떠도 다시 시작하지 않음
+            if (held != HoldOutcome.Done)
+            {
+                using var low = new LowPriorityReader(_env);
+                _ = RefreshKeepList(GameOf(started.Name) ?? started, keep); // 첫 회차의 문턱이 실제 목록 크기로 계산되게 루프에 들어가기 전에 목록을 계산
+            }
+
             while (held != HoldOutcome.Done)
             {
                 _env.Sleep(KeepPollEvery, stop);
@@ -120,7 +128,7 @@ public sealed partial class Prewarmer
                     emptyRounds = empty ? emptyRounds + 1 : 0;
                     if (endNow is not null)
                     {
-                        ended = endNow;
+                        (ended, memory.Finished) = (endNow, true);
                         break;
                     }
 
@@ -142,8 +150,9 @@ public sealed partial class Prewarmer
             lock (_gate)
             {
                 _ = _playTouching.Remove(started.Name);
-                _ = _keepMemory.Remove(started.Name);
             }
+
+            ForgetKeepMemoryIfStopped(started.Name);
 
             if (noted)
             {
@@ -152,9 +161,23 @@ public sealed partial class Prewarmer
         }
     }
 
-    /// 회차를 부르는 재사용 문턱: min(KeepReuseMaxThresholdBytes, 우선순위 5~7 대기 양에서 유지 목록 크기를 뺀 값의 절반), 하한 KeepReuseMinThresholdBytes.
+    /// 회차를 부르는 재사용 문턱: min(KeepReuseMaxThresholdBytes, 우선순위 5 대기 양에서 유지 목록 크기를 뺀 값의 절반), 하한 KeepReuseMinThresholdBytes.
+    /// 만진 페이지는 우선순위 5 로 들어가고 6·7 은 5 가 다 쓰인 뒤에 재사용되므로 유지 목록 앞에 있는 양은 우선순위 5 만입니다 (우선순위 5 의 값을 모르면 5~7 의 합으로 대신함).
     internal static long ReuseThreshold(MemoryLists lists, long listBytes) =>
-        Math.Clamp((lists.CacheStandbyBytes - listBytes) / 2, KeepReuseMinThresholdBytes, KeepReuseMaxThresholdBytes);
+        Math.Clamp(((lists.Priority5StandbyBytes >= 0 ? lists.Priority5StandbyBytes : lists.CacheStandbyBytes) - listBytes) / 2, KeepReuseMinThresholdBytes, KeepReuseMaxThresholdBytes);
+
+    // 게임이 더 실행 중이 아니거나 서비스가 멈췄으면 그 게임의 기억 (빠진·메모리에 있는 범위, 디스크 읽기 누적) 을 버립니다.
+    private void ForgetKeepMemoryIfStopped(string name)
+    {
+        bool running = !_playStop.IsCancellationRequested && GameOf(name) is { } game && _env.GameRunning(game);
+        if (!running)
+        {
+            lock (_gate)
+            {
+                _ = _keepMemory.Remove(name);
+            }
+        }
+    }
 
     /// 한 플레이의 유지 목록: 입력 (계획·트레이스·순위 목록 파일, 부분 예열 범위, 스파스 표시) 이 그대로인 동안 회차마다 다시 계산하지 않고 이 목록을 씁니다.
     private sealed class KeepList
@@ -232,12 +255,7 @@ public sealed partial class Prewarmer
         using var activity = ServiceActivity.Begin(ServiceOp.Keep); // 초 단위 기록의 동작 표시
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(lease?.Token ?? default, _playStop.Token);
         KeepMemory memory = KeepMemoryOf(game.Name);
-        using IDisposable round = StandbyTouch.Round(); // 이 회차의 Run 여러 번이 디스크 읽기 수의 기준값을 이어 씀
-        RememberTally t;
-        lock (_touchSerial)
-        {
-            t = TouchRemembering(reads, memory, KeepRoundDiskCapBytes, linked.Token);
-        }
+        RememberTally t = TouchRemembering(reads, memory, memory.DiskBytes < KeepPlayDiskCapBytes, KeepRoundDiskCapBytes, linked.Token); // 직렬화 잠금은 두 패스가 묶음마다 직접 잡고 놓음
 
         if (linked.IsCancellationRequested)
         {
@@ -248,13 +266,15 @@ public sealed partial class Prewarmer
         touched = true;
         empty = t.InMemory <= 0 && t.Total > 0;
         _solar.NoteKept(game.Name, t.InMemory);
-        string trigger = reuseGrowth is { } growth ? $", called by {growth >> 20} MiB of standby cache reuse" : ", called by the fixed period (standby cache reuse unknown)";
-        _log.Info($"{game.Name}: cache kept while playing ({exe}): {t.InMemory >> 20} MiB of {t.Total >> 20} MiB in memory, in {t.Seconds:F1} s (cpu {t.Cpu:F1} s, {t.Maps} views, {t.Checks} checks), {t.Disk >> 20} MiB read from disk ({t.HardFaults} hard faults){(t.Errors > 0 ? $", {t.Errors} errors" : string.Empty)}, {t.Boundaries} new missing stretches remembered ({memory.MissingBytes >> 20} MiB of the {memory.ListBytes >> 20} MiB list in all){(t.CapReached ? ", disk read cap of the round reached" : string.Empty)}{trigger}{(t.Boundaries > 0 ? HoldProbe(reads, t.Total, linked.Token) : string.Empty)}");
-        if (memory.DiskBytes >= KeepPlayDiskCapBytes)
+        string probe;
+        lock (_touchSerial)
         {
-            endNow = $" (disk reads of this play reached {KeepPlayDiskCapBytes >> 20} MiB)";
+            probe = t.Boundaries > 0 ? HoldProbe(reads, t.Total, linked.Token) : string.Empty; // 표본 확인 (기록용): 다른 만지기와 하드 폴트 누계가 섞이지 않게 잠금 안
         }
-        else if (memory.ListBytes > 0 && memory.MissingBytes >= memory.ListBytes * KeepMissingEndFraction)
+
+        string trigger = reuseGrowth is { } growth ? $", called by {growth >> 20} MiB of standby cache reuse" : ", called by the fixed period (standby cache reuse unknown)";
+        _log.Info($"{game.Name}: cache kept while playing ({exe}): {t.InMemory >> 20} MiB of {t.Total >> 20} MiB in memory (found {t.Found >> 20} MiB, ordered {t.Ordered >> 20} MiB), in {t.Seconds:F1} s (cpu {t.Cpu:F1} s, {t.Maps} views, {t.Checks} checks), {t.Disk >> 20} MiB read from disk ({t.HardFaults} hard faults){(t.Errors > 0 ? $", {t.Errors} errors" : string.Empty)}, {t.Boundaries} new missing stretches remembered ({memory.MissingBytes >> 20} MiB of the {memory.ListBytes >> 20} MiB list in all){(t.CapReached ? ", disk read cap of the round reached" : string.Empty)}{(t.Left > 0 ? $", {t.Left >> 20} MiB left unconfirmed" : string.Empty)}{(t.FindSkipped ? ", no new range looked for (disk reads of the play at the cap)" : string.Empty)}{trigger}{probe}");
+        if (memory.ListBytes > 0 && memory.MissingBytes >= memory.ListBytes * KeepMissingEndFraction)
         {
             endNow = $" (most of the list is remembered as missing: {memory.MissingBytes >> 20} of {memory.ListBytes >> 20} MiB)";
         }

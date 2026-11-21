@@ -31,7 +31,11 @@ public sealed class KeepHoldTests
     private long _trimmed; // 메모리 관리자가 줄여 간 양 (서비스 작업 집합에서 빠짐)
     private Func<long>? _availFn;
     private Action<TimeSpan, CancellationToken>? _sleep;
-    private Func<IReadOnlyList<ReadOp>, TouchResult>? _touch;
+    private readonly HashSet<string> _findMissing = []; // 찾기 패스가 빠진 것으로 확인하는 파일 (그 파일의 범위마다 경계 하나)
+    private long _findDiskPerMiss = 512 * 1024; // 빠진 범위 하나를 알아채는 데 읽는 양
+    private readonly List<IReadOnlyList<ReadOp>> _findCalls = []; // 찾기 패스가 받은 목록
+    private Action<long, double, Action<long, double>>? _findGroups; // 찾기 패스 도중 읽은 양이 쌓이는 때 (읽은 양, 시간, 알림) 를 흉내
+    private long _p5 = -1; // 우선순위 5 대기 양 (MiB, 음수면 모름)
 
     private static string F(int n) => @"D:\a\" + n + ".bin";
 
@@ -139,12 +143,13 @@ public sealed class KeepHoldTests
             CommonFirstOps = (_, _, _) => ([], 0),
             ColdRead = (ops, _) => (new StreamStats(ops.Sum(o => o.Length), 1, 0, 0.01), true),
             StandbyLadderEnabled = () => _ladder,
-            Lists = () => _reuseStep < 0 ? null : new MemoryLists(0, _reuse += _reuseStep * Mib, 8000 * Mib),
+            Lists = () => _reuseStep < 0 ? null : new MemoryLists(0, _reuse += _reuseStep * Mib, 8000 * Mib, _p5 < 0 ? -1 : _p5 * Mib),
+            FindResident = (ops, cap, ct, onGroup) => FakeFind(ops, cap, onGroup),
             TouchRanges = (ranges, ct) =>
             {
                 _touched.Add(ranges);
                 Assert.True(!_serialChecked || Monitor.IsEntered(TouchSerial(_prewarmer!)), "touching must run under the serialization lock");
-                return _touch?.Invoke(ranges) ?? new TouchResult(ranges.Sum(o => o.Length), 0.1, 0, 0, TouchEnd.Completed);
+                return new TouchResult(ranges.Sum(o => o.Length), 0.1, 0, 0, TouchEnd.Completed);
             },
             ListStamp = _ => "s1",
             IsSparse = path => _sparse.Contains(path),
@@ -166,6 +171,41 @@ public sealed class KeepHoldTests
     }
 
     private Prewarmer? _prewarmer;
+
+    // 찾기 패스 가짜: _findMissing 의 파일 범위는 빠진 것 (범위마다 경계 하나, 디스크 읽기 _findDiskPerMiss), 나머지는 메모리에 있음. 디스크 읽기가 cap 에 닿으면 멈추고 나머지는 확인하지 않음.
+    private FindResult FakeFind(IReadOnlyList<ReadOp> ops, long cap, Action<long, double> onGroup)
+    {
+        _findCalls.Add(ops);
+        _findGroups?.Invoke(0, 0, onGroup);
+        List<ReadOp> resident = [];
+        List<ReadOp> missing = [];
+        long disk = 0;
+        int boundaries = 0;
+        long left = 0;
+        bool capReached = false;
+        for (int i = 0; i < ops.Count; i++)
+        {
+            if (capReached)
+            {
+                left += ops[i].Length;
+                continue;
+            }
+
+            if (_findMissing.Contains(ops[i].Path))
+            {
+                missing.Add(ops[i]);
+                (disk, boundaries) = (disk + _findDiskPerMiss, boundaries + 1);
+                capReached = disk >= cap;
+            }
+            else
+            {
+                resident.Add(ops[i]);
+            }
+        }
+
+        long bytes = resident.Sum(o => o.Length);
+        return new FindResult(resident, missing, bytes, disk, 0, boundaries, boundaries + 1, boundaries * 40, 1, 0.2, 0.1, capReached, false, 0, left);
+    }
     private bool _serialChecked; // 켜면 TouchRanges 가 직렬화 잠금 안에서 불리는지 확인 (시작 만지기의 첫 호출은 잠금 안에서 부르지 않는 시험 시작 단계를 제외)
 
     // 붙든 동안 (또는 다시 만지는 동안) seconds 초가 지난 뒤 등록 실행 파일이 끝남. each 는 지난 시간 (초) 을 받아 부름. 쉬는 시간은 시계 대신 이 값으로 셈.
@@ -551,7 +591,7 @@ public sealed class KeepHoldTests
         Assert.True(_hold.Disposed >= 1);
     }
 
-    // ---- 붙들지 않는 게임의 다시 만지기: 재사용에 맞춘 시점, 빠진 범위를 기억하고 건너뜀 ----
+    // ---- 붙들지 않는 게임의 다시 만지기: 재사용에 맞춘 시점, 두 패스, 빠진 범위를 기억하고 건너뜀 ----
 
     private int KeptLines() => _log.Lines.Count(l => l.Contains("cache kept while playing ("));
 
@@ -572,6 +612,29 @@ public sealed class KeepHoldTests
         p.TouchAtGameStart(cheat, "a.exe");
 
         Assert.InRange(firstSeen, 1, 15); // 두 번째 확인 (최소 간격 10 초) 에서 돔: 2 분 주기가 아님
+    }
+
+    [Fact]
+    public void TheFirstRoundsThresholdUsesTheRealSizeOfTheKeepListNotZero()
+    {
+        // 우선순위 5 대기 4 GiB, 목록 3 GiB: 문턱 512 MiB. 목록 크기를 0 으로 계산하면 1 GiB 라 첫 회차가 10 초 뒤가 아니라 20 초 뒤에 돔
+        _p5 = 4096;
+        _reuseStep = 300;
+        ReadOp[] gib = [.. Enumerable.Range(0, 3).Select(i => Op(30 + i, 0, 1024))];
+        GameSettings cheat = Cheat("a");
+        Prewarmer p = Make(gib, cheat);
+        double firstSeen = -1;
+        RunFor(40, e =>
+        {
+            if (firstSeen < 0 && KeptLines() > 0)
+            {
+                firstSeen = e;
+            }
+        });
+
+        p.TouchAtGameStart(cheat, "a.exe");
+
+        Assert.InRange(firstSeen, 1, 15);
     }
 
     [Fact]
@@ -615,77 +678,165 @@ public sealed class KeepHoldTests
     }
 
     [Fact]
-    public void TheThresholdIsHalfOfWhatIsLeftAheadOfTheListUpToOneGiBWithAFloor()
+    public void TheThresholdIsHalfOfWhatIsLeftAheadOfTheListInPriorityFiveUpToOneGiBWithAFloor()
     {
         Assert.Equal(1L << 30, Prewarmer.ReuseThreshold(new MemoryLists(0, 0, 20000 * Mib), 100 * Mib)); // 앞의 여유가 크면 1 GiB
         Assert.Equal(1000 * Mib, Prewarmer.ReuseThreshold(new MemoryLists(0, 0, 3000 * Mib), 1000 * Mib)); // (3000 - 1000) / 2
         Assert.Equal(64 * Mib, Prewarmer.ReuseThreshold(new MemoryLists(0, 0, 500 * Mib), 1000 * Mib)); // 여유가 없으면 하한 64 MiB
+        Assert.Equal(500 * Mib, Prewarmer.ReuseThreshold(new MemoryLists(0, 0, 20000 * Mib, 2000 * Mib), 1000 * Mib)); // 우선순위 6·7 의 대기는 앞의 여유로 세지 않음: 5 만 (2000 - 1000) / 2
     }
 
     [Fact]
-    public void AMissingRangeIsRememberedSoLaterRoundsDoNotTouchItAndCostNoDiskRead()
+    public void EvenWhenTheLeastImportantHalfIsMissingTheMostImportantPartIsFoundAndTouchedLastInTwoPasses()
     {
-        // 파일 2 의 범위는 디스크에서 읽어야 함 (경계): 처음 발견할 때 한 번만 디스크 읽기를 일으키고 그 뒤 회차는 만지지 않음
+        // 목록 [1, 2, 2', 3, 4, 5] 의 덜 중요한 쪽 (4, 5) 이 빠져 있음: 찾기는 중요한 순서로 1~3 을 모으고 순서 패스가 그것을 덜 중요한 것부터 만져 가장 중요한 1 이 마지막
+        _findMissing.Add(F(4));
+        _findMissing.Add(F(5));
         GameSettings cheat = Cheat("a");
         Prewarmer p = Make(Reads, cheat);
-        _touch = ranges =>
-        {
-            int at = ranges.ToList().FindIndex(o => o.Path == F(2));
-            return at < 0 ? new TouchResult(ranges.Sum(o => o.Length), 0.1, 0, 0, TouchEnd.Completed)
-                : new TouchResult((ranges.Take(at).Sum(o => o.Length)) + Mib, 0.1, 3, 0, TouchEnd.NeedsDiskReads, 2 * Mib, 0, 0, 0, 40, StopReason.HardFaults);
-        };
+        RunFor(12);
+
+        p.TouchAtGameStart(cheat, "a.exe");
+
+        Assert.Equal(Reads.Select(o => o.Path), _findCalls[0].Select(o => o.Path)); // 찾기 패스는 중요한 순서로 걸음
+        List<ReadOp> order = [.. _touched.Skip(1).SelectMany(b => b)]; // 시작 만지기 (사다리) 뒤의 순서 패스
+        Assert.Equal(new ReadOp(F(1), 0, 8 * Mib), order[^1]); // 가장 중요한 것이 마지막
+        Assert.Equal(new ReadOp(F(3), 0, 8 * Mib), order[0]); // 모은 것 가운데 가장 덜 중요한 것부터
+        Assert.DoesNotContain(order, o => o.Path == F(4) || o.Path == F(5)); // 빠진 것은 만지지 않음
+    }
+
+    [Fact]
+    public void AMissingRangeIsRememberedSoLaterRoundsDoNotLookAtItOrTouchItAndCostNoDiskRead()
+    {
+        GameSettings cheat = Cheat("a");
+        Prewarmer p = Make(Reads, cheat);
+        _findMissing.Add(F(2));
         RunFor(45);
 
         p.TouchAtGameStart(cheat, "a.exe");
 
         Assert.True(KeptLines() >= 3);
-        Assert.Equal(2, _touched.Count(c => c.Any(o => o.Path == F(2)))); // 시작 만지기 (사다리) 의 첫 시도와 그 뒤 걷기의 발견뿐: 회차는 만지지 않음
+        Assert.Equal(1, _findCalls.Count(c => c.Any(o => o.Path == F(2)))); // 처음 발견하는 회차뿐: 그 뒤 회차는 찾지도 만지지도 않음
+        Assert.Equal(1, _touched.Count(c => c.Any(o => o.Path == F(2)))); // 시작 만지기의 사다리 한 번 외에는 순서 패스도 만지지 않음
         Assert.Contains(_log.Lines, l => l.Contains("a: cache kept while playing (a.exe)") && l.Contains("0 new missing stretches remembered (16 MiB of the 48 MiB list in all)") && l.Contains("0 MiB read from disk"));
     }
 
     [Fact]
-    public void TheDiskReadsOfARoundAreCappedAndTheRoundSaysSo()
+    public void TheRoundCapStopsTheFindButTheOrderPassStillRunsOnWhatWasCollected()
     {
-        bool armed = false;
-        _touch = ranges => armed && ranges.Any(o => o.Path != F(0))
-            ? new TouchResult(Mib, 0.1, 3, 0, TouchEnd.NeedsDiskReads, 5 * Mib, 0, 0, 0, 80, StopReason.HardFaults) // 경계마다 5 MiB 를 읽음: 두 번째에서 상한 8 MiB 를 넘음
-            : new TouchResult(ranges.Sum(o => o.Length), 0.1, 0, 0, TouchEnd.Completed);
+        _findMissing.Add(F(2));
+        _findMissing.Add(F(3));
+        _findMissing.Add(F(4));
+        _findDiskPerMiss = 5 * Mib; // 경계마다 5 MiB: 두 번째에서 상한 8 MiB 를 넘음
         GameSettings cheat = Cheat("a");
         Prewarmer p = Make(Reads, cheat);
-        RunFor(12, e => armed = e >= 1);
+        RunFor(12);
 
         p.TouchAtGameStart(cheat, "a.exe");
 
-        Assert.Contains(_log.Lines, l => l.Contains("cache kept while playing (a.exe)") && l.Contains("10 MiB read from disk") && l.Contains("disk read cap of the round reached"));
+        Assert.Contains(_log.Lines, l => l.Contains("cache kept while playing (a.exe)") && l.Contains("disk read cap of the round reached") && l.Contains("MiB left unconfirmed"));
+        List<ReadOp> order = [.. _touched.Skip(1).SelectMany(b => b)];
+        Assert.Contains(order, o => o.Path == F(1)); // 모은 범위는 순서 패스가 만짐
+        Assert.DoesNotContain(order, o => o.Path == F(5)); // 확인하지 못한 범위는 이번에 만지지 않음
     }
 
     [Fact]
-    public void WhenTheDiskReadsOfThePlayReachTheCapTheKeepingEnds()
+    public void AfterThePlayDiskCapNoNewRangeIsLookedForButTheConfirmedOnesAreStillTouchedAndTheKeepingDoesNotEnd()
     {
-        bool armed = false;
-        _touch = ranges => armed ? new TouchResult(40 * Mib, 0.1, 3, 0, TouchEnd.NeedsDiskReads, 30 * Mib, 0, 0, 0, 480, StopReason.HardFaults) : new TouchResult(ranges.Sum(o => o.Length), 0.1, 0, 0, TouchEnd.Completed);
-        _reuseStep = 1100;
+        _findMissing.Add(F(3));
+        _findMissing.Add(F(4));
+        _findMissing.Add(F(5));
+        _findDiskPerMiss = 30 * Mib; // 회차마다 경계 하나에서 상한: 세 회차 만에 플레이 상한 64 MiB 를 넘음
         GameSettings cheat = Cheat("a");
         Prewarmer p = Make(Reads, cheat);
-        RunFor(200, e => armed = e >= 1);
+        RunFor(100);
 
         p.TouchAtGameStart(cheat, "a.exe");
 
-        Assert.Contains(_log.Lines, l => l.Contains("cache keeping ended after") && l.Contains("disk reads of this play reached 64 MiB"));
+        Assert.Equal(3, _findCalls.Count); // 세 번째 회차에서 90 MiB: 그 뒤는 찾지 않음
+        Assert.Contains(_log.Lines, l => l.Contains("no new range looked for"));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("cache keeping ended") && l.Contains("disk reads of this play"));
+        string last = _log.Lines.Last(l => l.Contains("cache kept while playing ("));
+        Assert.Contains("no new range looked for", last); // 끝까지 회차가 계속 돔
+        IReadOnlyList<ReadOp> lastRound = _touched[^1];
+        Assert.DoesNotContain(lastRound, o => o.Path == F(3) || o.Path == F(4) || o.Path == F(5)); // 확인된 범위 (1, 2) 만 만짐
     }
 
     [Fact]
-    public void WhenMostOfTheListIsRememberedAsMissingTheKeepingEnds()
+    public void WhenMostOfTheListIsRememberedAsMissingTheKeepingEndsAndAnotherExeDoesNotStartItAgain()
     {
-        bool armed = false;
-        _touch = ranges => armed ? new TouchResult(Mib, 0.1, 3, 0, TouchEnd.NeedsDiskReads, Mib, 0, 0, 0, 20, StopReason.HardFaults) : new TouchResult(ranges.Sum(o => o.Length), 0.1, 0, 0, TouchEnd.Completed);
+        foreach (int f in new[] { 1, 2, 3, 4, 5 })
+        {
+            _findMissing.Add(F(f));
+        }
+
         GameSettings cheat = Cheat("a");
         Prewarmer p = Make(Reads, cheat);
-        RunFor(200, e => armed = e >= 1);
+        RunFor(1000); // 게임은 계속 실행 중
 
         p.TouchAtGameStart(cheat, "a.exe");
+        int rounds = KeptLines();
+        _now += Prewarmer.StartTouchMinGap;
+        p.TouchAtGameStart(cheat, "b.exe"); // 같은 게임의 다른 실행 파일이 뜸
 
         Assert.Contains(_log.Lines, l => l.Contains("cache keeping ended after") && l.Contains("most of the list is remembered as missing"));
+        Assert.Equal(rounds, KeptLines()); // 기억과 끝냄이 이어져 다시 시작하지 않음
+        Assert.Single(_log.Lines, l => l.Contains("cache keeping ended after"));
+    }
+
+    [Fact]
+    public void TheMemoryAndTheDiskReadTotalOfThePlayAreKeptWhenAnotherExeOfTheSameGameStartsWhileItRuns()
+    {
+        _findMissing.Add(F(2));
+        GameSettings cheat = Cheat("a");
+        Prewarmer p = Make(Reads, cheat);
+        RunFor(25, e =>
+        {
+            if (e == 15)
+            {
+                _now += Prewarmer.StartTouchMinGap;
+                p.TouchAtGameStart(cheat, "b.exe"); // 유지가 도는 동안 다른 실행 파일이 뜸: 새 유지는 시작하지 않음
+            }
+        });
+
+        p.TouchAtGameStart(cheat, "a.exe");
+
+        Assert.Equal(1, _findCalls.Count(c => c.Any(o => o.Path == F(2)))); // 빠진 범위의 기억이 유지됨
+        Assert.Single(_log.Lines, l => l.Contains("cache keeping ended after"));
+    }
+
+    [Fact]
+    public void TheRoundReleasesTheSerializationLockBetweenGroupsAndRestsOutsideIt()
+    {
+        GameSettings cheat = Cheat("a");
+        Prewarmer p = Make(Reads, cheat);
+        object serial = TouchSerial(p);
+        bool before = false;
+        bool during = true;
+        bool after = false;
+        _findGroups = (_, _, onGroup) =>
+        {
+            before = Monitor.IsEntered(serial); // 찾기는 잠금 안에서 시작
+            onGroup(128 * Mib, 0.1); // 128 MiB 를 읽음: 잠금을 놓고 (속도 제한으로) 쉰 뒤 다시 잡음
+            after = Monitor.IsEntered(serial);
+        };
+        RunFor(12);
+        Action<TimeSpan, CancellationToken> inner = _sleep!;
+        _sleep = (t, ct) =>
+        {
+            if (t < TimeSpan.FromSeconds(1)) // 속도 제한으로 쉬는 것: 0.4 초
+            {
+                during = Monitor.IsEntered(serial);
+            }
+
+            inner(t, ct);
+        };
+
+        p.TouchAtGameStart(cheat, "a.exe");
+
+        Assert.True(before);
+        Assert.False(during); // 쉬는 동안 잠금을 쥐지 않음 (다른 실행 파일의 시작 만지기가 끼어들 수 있음)
+        Assert.True(after);
     }
 
     [Fact]

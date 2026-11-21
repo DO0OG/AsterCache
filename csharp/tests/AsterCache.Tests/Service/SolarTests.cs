@@ -731,6 +731,16 @@ public sealed class SolarTests
     private long _keepReuseMibPerQuery = 1100; // 게임이 실행 중일 때 (등록 실행 파일이 떠 있을 때) 대기 목록 재사용 누계가 조회 한 번마다 이만큼 (MiB) 늘어남: 0 이면 늘지 않음, 음수면 조회 불가
     private long _reuseQueries;
 
+    private readonly HashSet<string> _findMissing = []; // 찾기 패스 (게임 시작 때 첫 경계 뒤) 가 빠진 것으로 확인하는 파일
+
+    // 찾기 패스 가짜: _findMissing 의 파일 범위는 빠진 것 (경계 하나), 나머지는 메모리에 있음.
+    private FindResult FindFake(IReadOnlyList<ReadOp> ops)
+    {
+        List<ReadOp> resident = [.. ops.Where(o => !_findMissing.Contains(o.Path))];
+        List<ReadOp> missing = [.. ops.Where(o => _findMissing.Contains(o.Path))];
+        return new FindResult(resident, missing, resident.Sum(o => o.Length), 0, 0, missing.Count > 0 ? 1 : 0, 1, 0, 1, 0.1, 0.05, false, false, 0, 0);
+    }
+
     private Prewarmer MakePrewarmer(params GameSettings[] games)
     {
         PrewarmEnv env = Env();
@@ -758,6 +768,7 @@ public sealed class SolarTests
                 return lists is { } l && _running.Count > 0 ? _keepReuseMibPerQuery < 0 ? null : l with { CacheRepurposedBytes = l.CacheRepurposedBytes + (_reuseQueries++ * _keepReuseMibPerQuery * Mib) } : lists;
             },
             TouchRanges = env.TouchRanges,
+            FindResident = (ops, cap, ct, onGroup) => FindFake(ops),
             RankedRows = _ =>
             {
                 _rankedCalls++;
@@ -3130,20 +3141,21 @@ public sealed class SolarTests
 
     private static TouchResult Stopped(long bytesMib, long diskMib) => new(bytesMib * Mib, 0.5, 4, 0, TouchEnd.NeedsDiskReads, diskMib * Mib, 0, 0, 0, 0, StopReason.HardFaults);
 
-    // 시작 만지기의 사다리가 첫 경계에서 멈추면 빠진 조각을 건너뛰며 목록 끝까지 같은 사다리 순서로 만지고 (한 패스, 16 MiB 배치) 빠짐 표시는 그대로 둡니다.
+    // 시작 만지기의 사다리가 첫 경계에서 멈추면 두 패스로 목록을 만집니다: 찾기 (가장 중요한 것부터, 빠진 것은 건너뜀) 와 순서 (모은 것만 덜 중요한 것부터). 빠짐 표시는 그대로 둡니다.
     [Fact]
-    public void ARangeMissingFromMemoryAtTheStartIsSkippedAndTheRestOfTheListIsTouchedInLadderOrderKeepingTheMissingFlag()
+    public void ARangeMissingFromMemoryAtTheStartIsSkippedAndOnlyWhatWasFoundIsTouchedInLadderOrderKeepingTheMissingFlag()
     {
         Prewarmer p = TwoWarmedGames();
         _queued.Enqueue(Stopped(2, 32)); // 사다리 순서가 덜 중요한 끝의 빈 곳에서 먼저 멈춤
-        _queued.Enqueue(Stopped(16, 2)); // 걷기의 첫 배치도 경계를 만남 (이어지는 같은 파일의 범위는 건너뜀, 그 뒤는 기본 결과: 전부 메모리에 있음)
+        _ = _findMissing.Add(@"D:\a\2.bin"); // 찾기: 파일 2 가 빠져 있음 (그 뒤 만지기는 기본 결과: 메모리에 있음)
         int solarBefore = _log.Lines.Count;
 
         p.TouchAtGameStart(Game("a"), "a.exe");
 
         Assert.Equal(Reversed(Reads), _touched[0]); // 첫 시도는 사다리 전체
-        Assert.Equal(new ReadOp(@"D:\a\1.bin", 0, 10 * Mib), _touched[^1][^1]); // 가장 중요한 블록이 마지막
-        Assert.DoesNotContain(_touched.Skip(1).SelectMany(b => b), o => o.Path == @"D:\a\2.bin" && o.Offset >= 6 * Mib); // 경계를 만난 파일의 이어지는 범위는 건너뜀
+        List<ReadOp> order = [.. _touched.Skip(1).SelectMany(b => b)]; // 순서 패스
+        Assert.Equal(new ReadOp(@"D:\a\1.bin", 0, 10 * Mib), order[^1]); // 가장 중요한 블록이 마지막
+        Assert.DoesNotContain(order, o => o.Path == @"D:\a\2.bin"); // 빠진 파일은 만지지 않음
         Assert.True(_touched.Skip(1).All(b => b.Sum(o => o.Length) <= Prewarmer.HoldBatchBytes));
         Assert.True(p.Solar.HasMissing("a"));
         Assert.False(p.Solar.HasMark("a"));
@@ -3153,22 +3165,20 @@ public sealed class SolarTests
     }
 
     [Fact]
-    public void WhenTheMissingPartIsAlreadyKnownTheStartDoesNotTouchTheWholeLadderFirstButWalksInBatches()
+    public void WhenTheMissingPartIsAlreadyKnownTheStartDoesNotTouchTheWholeLadderFirstButFindsAndOrders()
     {
         Prewarmer p = TwoWarmedGames();
         _queued.Enqueue(Stopped(2, 32));
-        _queued.Enqueue(Stopped(16, 2)); // 걷기도 경계를 만나 빠짐 표시가 그대로 남음
+        _ = _findMissing.Add(@"D:\a\2.bin");
         p.TouchAtGameStart(Game("a"), "a.exe");
         _touched.Clear();
         _now += TimeSpan.FromMinutes(5);
-        _queued.Enqueue(Stopped(32, 8)); // 걷기의 첫 배치가 경계를 만남 (한 플레이의 기억은 끝났으므로 새로 시작)
 
         p.TouchAtGameStart(Game("a"), "a.exe");
 
         Assert.All(_touched, b => Assert.True(b.Sum(o => o.Length) <= Prewarmer.HoldBatchBytes)); // 알려진 빠짐은 사다리 전체로 시도하지 않음
         Assert.True(p.Solar.HasMissing("a"));
         Assert.Contains("past the first missing stretch", _log.Lines.Last());
-        Assert.Contains("missing stretches remembered", _log.Lines.Last());
     }
 
     [Fact]

@@ -228,27 +228,27 @@ public sealed partial class Prewarmer
         return batch.Count;
     }
 
-    // ---- 빠진 범위를 기억하는 다시 만지기 (붙들지 않는 게임) ----
+    // ---- 두 패스 다시 만지기 (붙들지 않는 게임) ----
 
-    /// 이 플레이에서 빠진 것으로 알게 된 범위: 다음 회차부터는 만지지 않습니다 (디스크 읽기를 다시 일으키지 않게). _touchSerial·_gate 아래에서만 씀.
+    /// 이 플레이에서 알게 된 범위: 빠진 것으로 확인하고 건너뛴 범위 (다음 회차부터는 만지지 않음) 와 메모리에 있다고 확인한 범위 (디스크 읽기 누적 상한 뒤에는 이것만 만짐).
+    /// 같은 게임의 다른 실행 파일이 떠도 이어 쓰고, 등록 실행 파일이 모두 끝나면 버립니다. _touchSerial·_gate 아래에서만 씀.
     private sealed class KeepMemory
     {
         private readonly Dictionary<string, List<(long Start, long End)>> _missing = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, List<(long Start, long End)>> _resident = new(StringComparer.OrdinalIgnoreCase);
 
         public long MissingBytes; // 기억한 빠진 범위의 합
         public long DiskBytes; // 이 플레이에서 이 만지기가 디스크에서 읽은 양의 합
-        public long ListBytes; // 만지려던 목록의 크기 (가장 최근 회차)
+        public long ListBytes; // 만지려던 목록의 크기 (가장 큰 값)
+        public bool Finished; // 빠진 범위가 대부분이라 이 플레이의 유지를 끝냈는가 (다른 실행 파일이 떠도 다시 시작하지 않음)
 
-        public void Add(ReadOp op)
+        public void AddMissing(ReadOp op)
         {
-            if (!_missing.TryGetValue(op.Path, out List<(long Start, long End)>? set))
-            {
-                _missing[op.Path] = set = [];
-            }
-
-            MissingBytes += RangeSets.Uncovered(set, op.Offset, op.Offset + op.Length).Sum(u => u.To - u.From);
-            RangeSets.Add(set, op.Offset, op.Offset + op.Length);
+            MissingBytes += RangeSets.Uncovered(SetOf(_missing, op.Path), op.Offset, op.Offset + op.Length).Sum(u => u.To - u.From);
+            RangeSets.Add(SetOf(_missing, op.Path), op.Offset, op.Offset + op.Length);
         }
+
+        public void AddResident(ReadOp op) => RangeSets.Add(SetOf(_resident, op.Path), op.Offset, op.Offset + op.Length);
 
         /// 목록에서 기억한 빠진 범위를 뺀 나머지 (순서 그대로).
         public List<ReadOp> Without(IReadOnlyList<ReadOp> reads)
@@ -267,6 +267,48 @@ public sealed partial class Prewarmer
 
             return kept;
         }
+
+        /// 목록에서 메모리에 있다고 확인한 범위만 (순서 그대로).
+        public List<ReadOp> ResidentWithin(IReadOnlyList<ReadOp> reads)
+        {
+            List<ReadOp> within = [];
+            foreach (ReadOp op in reads)
+            {
+                if (!_resident.TryGetValue(op.Path, out List<(long Start, long End)>? set))
+                {
+                    continue;
+                }
+
+                long cursor = op.Offset;
+                long end = op.Offset + op.Length;
+                foreach ((long from, long to) in RangeSets.Uncovered(set, op.Offset, end)) // 확인하지 못한 빈 곳 사이사이가 확인된 범위
+                {
+                    if (from > cursor)
+                    {
+                        within.Add(new ReadOp(op.Path, cursor, from - cursor));
+                    }
+
+                    cursor = to;
+                }
+
+                if (cursor < end)
+                {
+                    within.Add(new ReadOp(op.Path, cursor, end - cursor));
+                }
+            }
+
+            return within;
+        }
+
+        private static List<(long Start, long End)> SetOf(Dictionary<string, List<(long Start, long End)>> sets, string path)
+        {
+            if (!sets.TryGetValue(path, out List<(long Start, long End)>? set))
+            {
+                sets[path] = set = [];
+            }
+
+            return set;
+        }
     }
 
     private KeepMemory KeepMemoryOf(string game)
@@ -282,52 +324,169 @@ public sealed partial class Prewarmer
         }
     }
 
-    /// 만지기 한 번의 합계: 메모리에 있던 바이트 (만진 바이트 - 디스크에서 읽힌 바이트), 만지려던 바이트, 디스크 읽기, 새로 기억한 빠진 범위 수, 걸린 시간·CPU·뷰·조회·하드 폴트·오류, 회차 상한에 닿았는가.
-    private sealed record RememberTally(long InMemory, long Total, long Disk, int Boundaries, double Seconds, double Cpu, int Maps, int Checks, long HardFaults, int Errors, bool CapReached);
-
-    // 목록 (중요도 순서) 에서 기억한 빠진 범위를 빼고 덜 중요한 것부터 (가장 중요한 것이 마지막에 오게) 한 패스로 만집니다. 경계를 만나면 그 파일의 이어진 범위를 건너뛰고 계속하며 건너뛴 범위를 기억에 더합니다.
-    // 회차의 디스크 읽기가 diskCap 을 넘으면 거기서 끝납니다. 호출하는 쪽이 _touchSerial 과 StandbyTouch.Round 안에서 부릅니다.
-    private RememberTally TouchRemembering(IReadOnlyList<ReadOp> importanceOrdered, KeepMemory memory, long diskCap, CancellationToken ct)
+    // 직렬화 잠금을 잡았다 놓는 묶음: 읽는 일을 조각 묶음 (GroupBytes, HoldLockBatches) 마다 놓아 다른 만지기 (다른 실행 파일의 시작 만지기) 가 끼어들 수 있게 합니다.
+    // 잠금을 잡을 때마다 StandbyTouch.Round 를 새로 시작해 이 프로세스의 하드 폴트 기준값을 새로 잡습니다 (놓은 사이 다른 스레드가 낸 읽기가 섞이지 않게).
+    private sealed class SerialGroup(object gate) : IDisposable
     {
-        memory.ListBytes = importanceOrdered.Sum(o => o.Length);
-        List<ReadOp> ladder = LadderOrder.Reverse(memory.Without(importanceOrdered));
-        long total = ladder.Sum(o => o.Length);
-        TouchResult sum = new(0, 0, 0, 0, TouchEnd.Completed);
-        WalkResult walk = Walk(ladder, diskCap, ct, () => true, batch =>
+        private IDisposable? _round;
+        private bool _locked;
+
+        public int Batches { get; private set; }
+
+        public void Enter()
         {
-            TouchResult r = ThrottledTouch(batch, ct);
+            if (_locked)
+            {
+                return;
+            }
+
+            Monitor.Enter(gate);
+            (_locked, Batches) = (true, 0);
+            _round = StandbyTouch.Round();
+        }
+
+        public void CountBatch() => Batches++;
+
+        public void Exit()
+        {
+            if (!_locked)
+            {
+                return;
+            }
+
+            _round?.Dispose();
+            _round = null;
+            Monitor.Exit(gate);
+            _locked = false;
+        }
+
+        public void Dispose() => Exit();
+    }
+
+    /// 두 패스 만지기 한 번의 합계: 메모리에 있던 바이트, 이번에 만지려던 바이트, 찾기 패스가 읽은 바이트와 순서 패스가 만진 바이트, 디스크 읽기, 새로 확인한 경계 수, 걸린 시간·CPU·뷰·조회·하드 폴트·오류,
+    /// 찾기가 회차 상한에 닿아 확인하지 못하고 남긴 바이트, 새 범위를 찾지 않았는가 (플레이 상한 뒤).
+    private sealed record RememberTally(long InMemory, long Total, long Found, long Ordered, long Disk, int Boundaries, double Seconds, double Cpu, int Maps, int Checks, long HardFaults, int Errors, long Left, bool CapReached, bool FindSkipped);
+
+    // 한 배치를 순서 패스로 만집니다 (속도 제한은 호출한 쪽이 잠금 밖에서 쉼): 마지막 조회 뒤 만진 구간의 디스크 읽기도 셈.
+    private TouchResult TouchBatch(IReadOnlyList<ReadOp> batch, CancellationToken ct)
+    {
+        TouchResult r = _env.TouchRanges(batch, ct);
+        TouchResult tail = StandbyTouch.Settle();
+        r = r with { DiskBytes = r.DiskBytes + tail.DiskBytes, HardFaults = r.HardFaults + tail.HardFaults, Checks = r.Checks + tail.Checks };
+        return tail.End == TouchEnd.Completed || r.End != TouchEnd.Completed ? r : r with { End = tail.End, Reason = tail.Reason };
+    }
+
+    // 목록 (중요도 순서) 에서 기억한 빠진 범위를 빼고 두 패스로 만집니다.
+    // 1) 찾기 패스: 가장 중요한 것부터 걸으며 메모리에 있는 범위를 모읍니다. 빠진 조각은 시간이 오래 걸린 조각의 하드 폴트 조회로 싸게 알아채 (ResidentFinder) 일정 폭만 건너뛰고 그 구간을 빠진 범위로 기억합니다. 디스크 읽기가 diskCap 에 닿으면 새 범위를 더 확인하지 않고 남은 것은 이번에 만지지 않습니다.
+    //    findNew 가 아니면 (플레이 누적 상한을 넘김) 찾지 않고 지금까지 메모리에 있다고 확인한 범위만 씁니다.
+    // 2) 순서 패스: 모은 범위만 덜 중요한 것부터 다시 만져 가장 중요한 것이 대기 목록의 가장 새 자리에 오게 합니다 (디스크를 읽지 않는 것이 전제: 읽기가 나면 그 범위를 빠진 것으로 기억하고 계속).
+    // 두 패스 모두 _touchSerial 을 묶음마다 놓고 다시 잡으며 (SerialGroup), 속도 제한 (PlayTouchBytesPerSecond) 으로 쉴 때는 잠금 밖에서 쉽니다.
+    private RememberTally TouchRemembering(IReadOnlyList<ReadOp> importanceOrdered, KeepMemory memory, bool findNew, long diskCap, CancellationToken ct)
+    {
+        memory.ListBytes = Math.Max(memory.ListBytes, importanceOrdered.Sum(o => o.Length));
+        List<ReadOp> candidates = memory.Without(importanceOrdered);
+        long total = candidates.Sum(o => o.Length);
+        long started = System.Diagnostics.Stopwatch.GetTimestamp();
+        double cpu = 0;
+        long found = 0;
+        long findDisk = 0;
+        long hardFaults = 0;
+        int boundaries = 0;
+        int maps = 0;
+        int checks = 0;
+        int errors = 0;
+        long left = 0;
+        bool capReached = false;
+        using var group = new SerialGroup(_touchSerial);
+        IReadOnlyList<ReadOp> resident;
+        if (findNew)
+        {
+            group.Enter();
+            FindResult f = _env.FindResident(candidates, diskCap, ct, (bytes, seconds) =>
+            {
+                group.Exit(); // 묶음마다 잠금을 놓아 다른 만지기가 끼어들 수 있게, 속도 제한으로 쉴 때는 잠금 밖에서
+                double rest = (bytes / (double)PlayTouchBytesPerSecond) - seconds;
+                if (rest > 0)
+                {
+                    _env.Sleep(TimeSpan.FromSeconds(rest), ct);
+                }
+
+                group.Enter();
+            });
+            group.Exit();
+            foreach (ReadOp op in f.Missing)
+            {
+                memory.AddMissing(op);
+            }
+
+            foreach (ReadOp op in f.Resident)
+            {
+                memory.AddResident(op);
+            }
+
+            (resident, found, findDisk, boundaries, capReached, left) = (f.Resident, f.Bytes, f.DiskBytes, f.Boundaries, f.CapReached, f.LeftBytes);
+            (cpu, hardFaults, maps, checks, errors) = (f.CpuSeconds, f.HardFaults, f.Maps, f.Checks, f.Errors);
+        }
+        else
+        {
+            resident = memory.ResidentWithin(candidates);
+        }
+
+        List<ReadOp> ladder = LadderOrder.Reverse(resident);
+        TouchResult sum = new(0, 0, 0, 0, TouchEnd.Completed);
+        WalkResult walk = Walk(ladder, KeepRoundDiskCapBytes, ct, () => true, batch =>
+        {
+            group.Enter();
+            TouchResult r = TouchBatch(batch, ct);
             sum = new TouchResult(sum.Bytes + r.Bytes, sum.Seconds + r.Seconds, sum.SlowPieces + r.SlowPieces, sum.Errors + r.Errors, r.End, sum.DiskBytes + r.DiskBytes, sum.SkippedBytes + r.SkippedBytes,
                 sum.CpuSeconds + r.CpuSeconds, sum.Maps + r.Maps, sum.HardFaults + r.HardFaults, r.Reason, sum.Checks + r.Checks, null);
             bool boundary = r.End == TouchEnd.NeedsDiskReads;
+            double rest = boundary ? 0 : (r.Bytes / (double)PlayTouchBytesPerSecond) - r.Seconds;
+            group.CountBatch();
+            if (group.Batches >= HoldLockBatches || rest > 0)
+            {
+                group.Exit();
+                if (rest > 0)
+                {
+                    _env.Sleep(TimeSpan.FromSeconds(rest), ct);
+                }
+            }
+
             long consumed = boundary ? r.Bytes + r.SkippedBytes : batch.Sum(o => o.Length);
             return new WalkStep(boundary ? RangesStarted(batch, consumed) : batch.Count, consumed, r.DiskBytes, boundary);
         });
+        group.Exit();
         foreach (ReadOp op in walk.Missing)
         {
-            memory.Add(op);
+            memory.AddMissing(op); // 순서 패스에서 디스크 읽기가 난 범위: 그 사이 밀려났음
         }
 
-        memory.DiskBytes += walk.Disk;
-        return new RememberTally(Math.Max(0, sum.Bytes - sum.DiskBytes), total, walk.Disk, walk.Boundaries, sum.Seconds, sum.CpuSeconds, sum.Maps, sum.Checks, sum.HardFaults, sum.Errors, walk.CapReached);
+        memory.DiskBytes += findDisk + walk.Disk;
+        long inMemory = findNew ? Math.Max(0, found - findDisk) : Math.Max(0, sum.Bytes - sum.DiskBytes);
+        double elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalSeconds;
+        return new RememberTally(inMemory, total, found, sum.Bytes, findDisk + walk.Disk, boundaries + walk.Boundaries, elapsed, cpu + sum.CpuSeconds, maps + sum.Maps, checks + sum.Checks, hardFaults + sum.HardFaults, errors + sum.Errors, left, capReached || walk.CapReached, !findNew);
     }
 
-    // 게임 실행 파일이 시작할 때 사다리 순서로 만지다 경계에서 멈춘 경우: 첫 경계에서 끝내지 않고 같은 기억하고 건너뛰는 만지기로 목록 끝까지 만져, 메모리에 남은 앞부분과 흩어진 블록 모두 가장 중요한 것이 마지막에 오게 합니다 (새로 안 빠진 범위는 기억에 더함).
-    // 다른 게임의 먼저 재사용될 양은 메모리에 있던 만큼 줄입니다. 호출하는 쪽이 _touchSerial 안에서 부릅니다.
+    // 게임 실행 파일이 시작할 때 사다리 순서로 만지다 경계에서 멈춘 경우: 첫 경계에서 끝내지 않고 같은 두 패스로 목록을 만집니다 (새로 안 빠진 범위는 같은 기억에 더함).
+    // 다른 게임의 먼저 재사용될 양은 메모리에 있던 만큼 줄입니다. 호출하는 쪽이 _touchSerial 을 쥐지 않은 채 부릅니다 (두 패스가 묶음마다 직접 잡고 놓음).
     private void TouchAfterStartBoundary(GameSettings game, IReadOnlyList<ReadOp> readOrder, string exe, CancellationToken stop)
     {
         KeepMemory memory = KeepMemoryOf(game.Name);
         long availMib = _env.AvailableRamMib();
         IReadOnlyList<ReadOp> ordered = PrefetchStreamer.Head(_solar.ImportanceOrder(game, readOrder), (long)(Math.Max(0, availMib) * PlayTouchAvailableFraction) << 20);
-        using IDisposable round = StandbyTouch.Round();
-        RememberTally t = TouchRemembering(ordered, memory, KeepRoundDiskCapBytes, stop);
-        if (t.Boundaries == 0 && !t.CapReached && !stop.IsCancellationRequested)
+        RememberTally t = TouchRemembering(ordered, memory, memory.DiskBytes < KeepPlayDiskCapBytes, KeepRoundDiskCapBytes, stop);
+        if (t.Boundaries == 0 && !t.CapReached && !t.FindSkipped && !stop.IsCancellationRequested)
         {
-            _ = _solar.Order(game, readOrder, stop, startExe: exe); // 경계가 없음 (빠짐 표시가 낡았거나 앞의 판정이 잡음으로 멈춤): 처음부터 사다리 한 번
+            lock (_touchSerial)
+            {
+                _ = _solar.Order(game, readOrder, stop, startExe: exe); // 경계가 없음 (빠짐 표시가 낡았거나 앞의 판정이 잡음으로 멈춤): 처음부터 사다리 한 번
+            }
+
             return;
         }
 
         _solar.NoteKept(game.Name, t.InMemory);
-        _log.Info($"{game.Name}: cache touched at game start ({exe}) past the first missing stretch: {t.InMemory >> 20} MiB of {t.Total >> 20} MiB in memory, in {t.Seconds:F1} s (cpu {t.Cpu:F1} s, {t.Maps} views, {t.Checks} checks), {t.Disk >> 20} MiB read from disk ({t.HardFaults} hard faults), {t.Boundaries} missing stretches remembered ({memory.MissingBytes >> 20} MiB of the list in all), left to the rewarm check");
+        _log.Info($"{game.Name}: cache touched at game start ({exe}) past the first missing stretch: {t.InMemory >> 20} MiB of {t.Total >> 20} MiB in memory (found {t.Found >> 20} MiB, ordered {t.Ordered >> 20} MiB), in {t.Seconds:F1} s (cpu {t.Cpu:F1} s, {t.Maps} views, {t.Checks} checks), {t.Disk >> 20} MiB read from disk ({t.HardFaults} hard faults), {t.Boundaries} missing stretches remembered ({memory.MissingBytes >> 20} MiB of the list in all){(t.Left > 0 ? $", {t.Left >> 20} MiB left unconfirmed" : string.Empty)}, left to the rewarm check");
     }
 
     // ---- 붙들기 ----

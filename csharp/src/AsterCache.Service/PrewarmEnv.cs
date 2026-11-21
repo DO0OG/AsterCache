@@ -491,9 +491,19 @@ public sealed class PrewarmEnv
         }
     }
 
-    // 마지막으로 끝난 플레이 뒤 게임이 바뀌었는가: 저장된 표지가 있으면 지금 표지와 비교해 (계산할 수 없으면 null) 다르면 true, 같으면 false. 표지가 없으면 (서비스를 올린 뒤 첫 플레이) 대체 판정 GameChangedSince.
-    internal static bool? GameUpdated(GameSettings g, string? stored, DateTime? lastPlayEnd) =>
-        stored is null ? GameChangedSince(g, lastPlayEnd) : GameStateMark(g) is { } now ? now != stored : null;
+    // 마지막으로 끝난 플레이 뒤 게임이 바뀌었는가: 두 조건을 모두 통과해야 false (바뀌지 않음) 입니다.
+    // (나) GameChangedSince: 파일 수정 시각이 마지막으로 끝난 플레이의 끝 시각 (프로세스가 사라진 때) 보다 뒤인 것이 없음: 종료 직후 런처가 낸 패치는 표지를 저장하는 시점 (종료 유예와 병합 뒤) 보다 앞이라 표지만으로는 못 잡고 이것이 잡습니다.
+    // (가) 저장된 표지가 있으면 지금 표지와 같음 (표지가 없으면 (나) 만으로 판정: 서비스를 올린 뒤 첫 플레이). 어느 쪽이든 판단할 수 없으면 null, 하나라도 바뀌었으면 true.
+    internal static bool? GameUpdated(GameSettings g, string? stored, DateTime? lastPlayEnd)
+    {
+        bool? since = GameChangedSince(g, lastPlayEnd);
+        if (since != false || stored is null)
+        {
+            return since;
+        }
+
+        return GameStateMark(g) is { } now ? now != stored : null;
+    }
 
     // 등록 exe 이름 프로세스들의 읽기 카운터 합: 하나라도 못 읽거나 하나도 없으면 null (조회 실패를 0 으로 보지 않음).
     private static long? RegisteredReadBytes(GameSettings g)

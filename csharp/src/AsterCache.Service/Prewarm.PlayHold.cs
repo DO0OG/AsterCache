@@ -896,6 +896,11 @@ public sealed partial class Prewarmer
             r = hold.Recheck(KeepDiskReadCapBytes, linked.Token, refill);
         }
 
+        if (r.QueryFailures > 0)
+        {
+            NoteHoldSkip(game, exe, $"check: the working set query failed for {r.QueryFailures} ranges (error {r.QueryError}), those were not judged", ref lastSkip); // 같은 오류는 한 번만 남김
+        }
+
         string cap = r.CapReached ? $", refill cap reached, {r.DroppedBytes >> 20} MiB taken off the hold" : r.DroppedBytes > 0 ? $", {r.DroppedBytes >> 20} MiB taken off the hold (unreadable)" : string.Empty;
         string changed = r.ChangedFiles.Count > 0 ? $", {r.ChangedFiles.Count} changed file(s) released ({r.ChangedFiles[0]})" : string.Empty;
         _log.Info($"{game.Name}: cache hold checked ({exe}): {r.CheckedBytes >> 20} MiB looked up in the working set in {r.Seconds:F1} s (cpu {r.CpuSeconds:F1} s, {r.Checks} checks), {r.TrimmedBytes >> 20} MiB reduced by the memory manager, {r.RefilledBytes >> 20} MiB of it read from disk again ({r.HardFaults} hard faults){cap}{changed}, {hold.HeldBytes >> 20} MiB held");

@@ -12,8 +12,9 @@ public readonly record struct HoldBatchResult(long Bytes, long DiskBytes, long S
 // ImageBytes: 실행 가능한 이미지 파일 (첫 두 바이트가 MZ) 이거나 읽지 못해 붙들지 않은 바이트, SmallBytes: MinFileBytes 보다 작은 파일이라 붙들지 않은 바이트.
 
 /// 점검 한 번의 결과: 작업 집합에 있는지 확인한 바이트, 그중 메모리 관리자가 작업 집합에서 줄여 간 (Valid 가 아닌) 바이트, 그것을 다시 읽어 올리다 디스크에서 읽힌 바이트, 붙든 목록에서 뺀 바이트 (바뀐 파일의 몫은 제외),
-/// 다시 읽기 상한에 닿아 멈췄는가, 크기·수정 시각이 바뀌어 뷰를 닫은 파일, 읽기 수를 조회한 횟수, 하드 폴트 증가, 걸린 시간 (초), 쓴 CPU 시간 (초).
-public readonly record struct HoldCheckResult(long CheckedBytes, long TrimmedBytes, long RefilledBytes, long DroppedBytes, bool CapReached, IReadOnlyList<string> ChangedFiles, int Checks, long HardFaults, double Seconds, double CpuSeconds);
+/// 다시 읽기 상한에 닿아 멈췄는가, 크기·수정 시각이 바뀌어 뷰를 닫은 파일, 읽기 수를 조회한 횟수, 하드 폴트 증가, 걸린 시간 (초), 쓴 CPU 시간 (초),
+/// 작업 집합 조회가 (세 번 시도하고도) 실패해 판단하지 못한 구간 수와 마지막 Win32 오류 번호.
+public readonly record struct HoldCheckResult(long CheckedBytes, long TrimmedBytes, long RefilledBytes, long DroppedBytes, bool CapReached, IReadOnlyList<string> ChangedFiles, int Checks, long HardFaults, double Seconds, double CpuSeconds, int QueryFailures = 0, int QueryError = 0);
 
 /// 게임이 쓰는 파일이 바뀌어 5 초 확인이 뷰를 닫은 기록: 파일과 그때 내놓은 바이트.
 public readonly record struct WrittenRelease(string Path, long Bytes);
@@ -75,6 +76,8 @@ public sealed unsafe class ViewHold : IKeepHold
     private readonly List<Seg> _segs = []; // 붙든 구간 (붙든 순서 = 중요한 순서), 맨 뒤가 가장 덜 중요
     private nint _buffer;
     private nint _query; // QueryWorkingSetEx 항목 버퍼
+    private int _queryFailures; // 이번 점검에서 조회가 실패해 판단하지 못한 구간 수
+    private int _queryError; // 그때의 마지막 Win32 오류
     private uint? _faults;
     private uint? _pages;
     private long _held;
@@ -303,6 +306,7 @@ public sealed unsafe class ViewHold : IKeepHold
             long started = Stopwatch.GetTimestamp();
             double cpuBefore = StandbyTouch.ThreadCpuSeconds();
             List<string> changed = [];
+            (_queryFailures, _queryError) = (0, 0);
             foreach (FileEntry f in _files.Values.Where(f => f.Windows.Count > 0).ToList())
             {
                 if (Changed(f))
@@ -368,7 +372,7 @@ public sealed unsafe class ViewHold : IKeepHold
             }
 
             CompactSegs();
-            return new HoldCheckResult(queried, trimmed, tally.Disk, dropped, capReached, changed, tally.Checks, tally.Faults, Stopwatch.GetElapsedTime(started).TotalSeconds, Math.Max(0, StandbyTouch.ThreadCpuSeconds() - cpuBefore));
+            return new HoldCheckResult(queried, trimmed, tally.Disk, dropped, capReached, changed, tally.Checks, tally.Faults, Stopwatch.GetElapsedTime(started).TotalSeconds, Math.Max(0, StandbyTouch.ThreadCpuSeconds() - cpuBefore), _queryFailures, _queryError);
         }
     }
 
@@ -684,6 +688,25 @@ public sealed unsafe class ViewHold : IKeepHold
     // 한 번에 QueryWorkingSetEx 로 묻는 쪽 수 (항목이 쪽마다 16 바이트라 256 KiB 버퍼).
     private const int QueryPages = 16384;
 
+    // QueryWorkingSetEx 를 최대 세 번 부릅니다 (자기 프로세스의 의사 핸들이라 핸들 수명 문제는 없음; 문서에 간헐 실패 사유는 없고 항목 수가 크기 한도 안이므로 ERROR_BAD_LENGTH 는 나지 않음).
+    // 모두 실패하면 마지막 Win32 오류를 남기고 false: 호출한 쪽은 그 구간을 판단하지 못한 것으로 둡니다.
+    private bool Query(nuint* info, int pages)
+    {
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            if (NativeMethods.QueryWorkingSetEx(NativeMethods.GetCurrentProcess(), info, (uint)(pages * 16)))
+            {
+                return true;
+            }
+
+            _queryError = Marshal.GetLastWin32Error();
+            Thread.Yield();
+        }
+
+        _queryFailures++;
+        return false;
+    }
+
     // 구간에서 작업 집합에 없는 (Valid 가 아닌) 쪽을 이어진 범위로 묶어 돌려줍니다: 붙든 구간의 쪽 경계 안쪽만 묻습니다. 쪽 단위로 묻는 비용은 붙든 양에 비례하며 (1 GiB 가 26 만 쪽) 아직 실제 양으로 재지 않았습니다.
     // 조회할 수 없으면 (호출 실패) 빈 목록: 그 구간은 확인하지 못한 것으로 두고 건드리지 않습니다.
     private List<(nint Address, long Length)> NotResident(Seg seg, ref long queried)
@@ -706,9 +729,9 @@ public sealed unsafe class ViewHold : IKeepHold
                 info[2 * i] = (nuint)(at + (i * PageBytes));
             }
 
-            if (!NativeMethods.QueryWorkingSetEx(NativeMethods.GetCurrentProcess(), info, (uint)(pages * 16)))
+            if (!Query(info, pages))
             {
-                return [];
+                return []; // 조회 실패: 이 구간은 판단하지 못한 것으로 두고 줄어든 것으로 보지 않음 (다시 읽지도, 목록에서 빼지도 않음)
             }
 
             queried += pages * PageBytes;

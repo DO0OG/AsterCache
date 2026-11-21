@@ -214,6 +214,13 @@ internal sealed class FakeWorld
     /// AnyRunning 을 부를 때마다 (넘긴 이름 목록과 함께) 불리는 관찰용 후크.
     public Action<IReadOnlyCollection<string>>? OnAnyRunning { get; set; }
 
+    /// 변경 저널·파일 참조 번호·플레이 기록의 가짜 (기본은 모름).
+    public Func<string, IReadOnlySet<ulong>, CancellationToken, UsnRead?> ReadUsn { get; set; } = (_, _, _) => null;
+
+    public Func<string, ulong?> FileReference { get; set; } = _ => null;
+
+    public IReadOnlyList<SessionSpan> PlayRecords { get; set; } = [];
+
     /// 폴더가 있는가 (거짓이면 드라이브가 분리된 것과 같음).
     public Func<string, bool> DirectoryExists { get; set; } = _ => true;
 
@@ -406,6 +413,9 @@ internal sealed class FakeWorld
         ServiceDir = ServiceDir,
         FileExists = p => Files.Contains(p) || File.Exists(p),
         FileWriteTime = p => FileTimes.TryGetValue(p, out DateTimeOffset t) ? t : null,
+        ReadUsn = (volume, frns, ct) => ReadUsn(volume, frns, ct),
+        FileReference = p => FileReference(p),
+        PlaySessions = _ => PlayRecords,
         RunReadBytes = p => RunReadBytes(p),
         StageIndexTries = AsterCache.Core.Trace.TraceStageIndex.ReadTried,
         IoSummaryTries = IoSummaryStore.ReadTriedOrNull,

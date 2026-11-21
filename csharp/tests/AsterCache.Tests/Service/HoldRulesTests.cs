@@ -160,39 +160,41 @@ public sealed class HoldRulesTests : IDisposable
         PlanOf(Of(_static), Of(_written)).Save(_game.Plan); // 자동 재계획이 이미 새 지문으로 계획을 만든 뒤
         string? after = PrewarmEnv.GameStateMark(_game);
         Assert.NotEqual(before, after);
-        Assert.True(PrewarmEnv.GameUpdated(_game, before, null)); // 업데이트 뒤 첫 플레이: 마지막 플레이가 끝났을 때의 표지와 다름
-        Assert.False(PrewarmEnv.GameUpdated(_game, after, null)); // 그 플레이가 끝나 새 표지가 저장된 뒤에는 정상
+        DateTime later = DateTime.UtcNow.AddMinutes(1); // 마지막 플레이가 끝난 시각 (파일 수정보다 뒤)
+        Assert.True(PrewarmEnv.GameUpdated(_game, before, later)); // 업데이트 뒤 첫 플레이: 마지막 플레이가 끝났을 때의 표지와 다름
+        Assert.False(PrewarmEnv.GameUpdated(_game, after, later)); // 그 플레이가 끝나 새 표지가 저장된 뒤에는 정상
         Assert.Null(PrewarmEnv.GameUpdated(_game, null, null)); // 저장된 표지도 끝난 플레이 기록도 없음 = 모름
 
         File.Delete(_game.Plan);
-        Assert.Null(PrewarmEnv.GameUpdated(_game, before, null)); // 지금 표지를 계산할 수 없음 = 모름
+        Assert.Null(PrewarmEnv.GameUpdated(_game, before, later)); // 지금 표지를 계산할 수 없음 = 모름
     }
 
     [Fact]
     public void TheFirstPlayAfterAnUpdateIsNotHeldEvenThoughThePlanWasRebuiltBeforeButASameMarkHoldsAndAMissingMarkDoesNot()
     {
         Fingerprint Of(string path) => PlanFile.FingerprintOf(path);
+        DateTime later = DateTime.UtcNow.AddMinutes(1); // 마지막 플레이가 끝난 시각
         PlanOf(Of(_static)).Save(_game.Plan);
         _state = PrewarmEnv.GameStateMark(_game); // 마지막 플레이가 끝났을 때 저장된 표지
         History(4096, 4096, 4096);
-        Assert.Null(PrewarmEnv.HoldRules(_game, true, PrewarmEnv.GameUpdated)!.Reason(_written)); // 표지가 같음: 붙듦
+        Assert.Null(PrewarmEnv.HoldRules(_game, true, PrewarmEnv.GameUpdated, null, later)!.Reason(_written)); // 표지가 같고 그 뒤 수정 없음: 붙듦
 
         File.WriteAllBytes(_static, new byte[8192]); // 업데이트
         PlanOf(Of(_static)).Save(_game.Plan); // 재계획이 이미 돌아 계획의 지문은 지금 파일과 같음
-        Assert.Equal(Prewarmer.HoldWrittenUpdated, PrewarmEnv.HoldRules(_game, true, PrewarmEnv.GameUpdated)!.Reason(_written)); // 그래도 첫 플레이는 붙들지 않음
+        Assert.Equal(Prewarmer.HoldWrittenUpdated, PrewarmEnv.HoldRules(_game, true, PrewarmEnv.GameUpdated, null, later)!.Reason(_written)); // 그래도 첫 플레이는 붙들지 않음
 
-        _state = null; // 표지가 저장된 적 없음
+        _state = null; // 표지가 저장된 적 없음 + 끝난 플레이 기록 없음
         History(4096, 4096, 4096);
-        Assert.Equal(Prewarmer.HoldWrittenUpdated, PrewarmEnv.HoldRules(_game, true, PrewarmEnv.GameUpdated)!.Reason(_written));
+        Assert.Equal(Prewarmer.HoldWrittenUpdated, PrewarmEnv.HoldRules(_game, true, PrewarmEnv.GameUpdated, null, null)!.Reason(_written));
 
         _state = "x"; // 계산할 수 없음 (계획 없음)
         History(4096, 4096, 4096);
         File.Delete(_game.Plan);
-        Assert.Equal(Prewarmer.HoldWrittenUpdated, PrewarmEnv.HoldRules(_game, true, PrewarmEnv.GameUpdated)!.Reason(_written));
+        Assert.Equal(Prewarmer.HoldWrittenUpdated, PrewarmEnv.HoldRules(_game, true, PrewarmEnv.GameUpdated, null, later)!.Reason(_written));
     }
 
     [Fact]
-    public void WithoutAStoredMarkTheFilesModifiedAfterTheLastFinishedPlayDecideAndAStoredMarkWinsOverIt()
+    public void TheModifiedTimesDecideWithoutAStoredMarkAndWithOneTheMarkMustAlsoMatch()
     {
         PlanOf(PlanFile.FingerprintOf(_static)).Save(_game.Plan);
         DateTime end = DateTime.UtcNow.AddMinutes(-30); // 정적 파일의 수정 시각 (생성자에서 1 시간 전) 은 그보다 앞
@@ -209,9 +211,11 @@ public sealed class HoldRulesTests : IDisposable
         File.WriteAllBytes(_static, new byte[4096]);
         File.SetLastWriteTimeUtc(_static, DateTime.UtcNow.AddHours(-1));
         PlanOf(PlanFile.FingerprintOf(_static)).Save(_game.Plan);
-        string? mark = PrewarmEnv.GameStateMark(_game);
-        File.SetLastWriteTimeUtc(_static, DateTime.UtcNow.AddMinutes(-5));
-        Assert.True(PrewarmEnv.GameUpdated(_game, mark, DateTime.UtcNow.AddMinutes(10))); // 표지가 있으면 끝난 시각과 무관하게 표지 비교 (대체 판정을 쓰지 않음)
+        File.SetLastWriteTimeUtc(_static, DateTime.UtcNow.AddMinutes(-5)); // 종료 직후 런처의 패치: 마지막 플레이가 끝난 뒤 수정됨
+        string? mark = PrewarmEnv.GameStateMark(_game); // 그 수정을 본 표지가 플레이 끝 처리 때 저장돼 표지는 지금과 같음
+        Assert.True(PrewarmEnv.GameUpdated(_game, mark, end)); // 표지가 같아도 마지막 플레이 끝 뒤 수정된 파일이 있으면 바뀐 것
+        Assert.False(PrewarmEnv.GameUpdated(_game, mark, DateTime.UtcNow.AddMinutes(10))); // 수정이 플레이 끝보다 앞이고 표지도 같으면 바뀌지 않음
+        Assert.Null(PrewarmEnv.GameUpdated(_game, mark, null)); // 끝난 플레이 기록이 없으면 표지가 같아도 모름
     }
 
     [Fact]

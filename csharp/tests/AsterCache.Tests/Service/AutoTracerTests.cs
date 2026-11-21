@@ -2537,4 +2537,36 @@ public sealed class AutoTracerTests : IDisposable
         Assert.True(ScanSourceCleared(_tracer));
         Assert.Contains(_rig.Log.Lines, line => line.Contains("I/O summary not built (IOException)", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void AGameStartingWhileTheChangeJournalIsReadDropsTheResultWhileANormalReadIsAppliedToTheHistory()
+    {
+        string written = @"D:\Games\Foo\xpak_cache\cache_0_2.xpakdata";
+        string historyPath = WrittenFileHistory.PathFor(Raw);
+        var history = new WrittenFileHistory();
+        history.Record("s1", [(written, 100L << 20, 0)], 0);
+        history.Write(historyPath);
+        DateTime t0 = new(2026, 11, 21, 0, 0, 0, DateTimeKind.Utc);
+        _rig.World.PlayRecords = [new SessionSpan("p1", t0.AddHours(1), t0.AddHours(2))];
+        _rig.World.FileReference = _ => 7UL;
+        UsnRead Read() => new(t0, [new UsnEvent(7, t0.AddHours(1.5), UsnReasons.DataExtend)]);
+
+        _rig.World.ReadUsn = (_, _, _) =>
+        {
+            _rig.World.Running = true; // 읽는 도중 게임이 시작됨
+            return Read();
+        };
+        _tracer.FillFromJournal(_game, [written]);
+
+        Assert.Empty(WrittenFileHistory.Read(historyPath).Files.Single().Journal ?? []); // 결과를 반영하지 않음
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("change journal result dropped, a game started", StringComparison.Ordinal));
+        Assert.DoesNotContain(_rig.Log.Lines, l => l.Contains("(after the change journal)", StringComparison.Ordinal)); // 플레이 중에 순위 목록을 다시 만들지 않음
+
+        _rig.World.Running = false;
+        _rig.World.ReadUsn = (_, _, _) => Read();
+        _tracer.FillFromJournal(_game, [written]);
+
+        WrittenJournalSession judged = Assert.Single(WrittenFileHistory.Read(historyPath).Files.Single().Journal!);
+        Assert.Equal(("p1", 'e'), (judged.Session, judged.Verdict));
+    }
 }

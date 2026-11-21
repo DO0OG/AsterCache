@@ -1802,7 +1802,7 @@ public sealed class AutoTracer
         thread.Start();
     }
 
-    private void FillFromJournal(GameSettings g, IReadOnlyList<string> paths)
+    internal void FillFromJournal(GameSettings g, IReadOnlyList<string> paths)
     {
         if (!Monitor.TryEnter(_journalGate))
         {
@@ -1811,11 +1811,21 @@ public sealed class AutoTracer
 
         try
         {
-            if (_settings().Games.Any(x => _env.AnyRunning(x.ExeNames)))
+            bool GameRunning() => _settings().Games.Any(x => _env.AnyRunning(x.ExeNames));
+            if (GameRunning())
             {
                 _log.Info($"{g.Name}: change journal not read, a game is running (next time)");
                 return;
             }
+
+            using var cancel = new CancellationTokenSource();
+            using var watch = new Timer(_ =>
+            {
+                if (GameRunning())
+                {
+                    cancel.Cancel(); // 읽는 도중 게임이 시작됨: 읽기를 멈춤
+                }
+            }, null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
 
             string file = WrittenFileHistory.PathFor(RawTracePath(g));
             var tracked = WrittenFileHistory.Read(file).Files.Select(f => f.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -1826,7 +1836,7 @@ public sealed class AutoTracer
                 HashSet<ulong> frns = [.. files.Where(f => f.Frn is not null).Select(f => f.Frn!.Value)];
                 if (frns.Count > 0)
                 {
-                    reads.Add((volume.Key, files, _env.ReadUsn(volume.Key, frns)));
+                    reads.Add((volume.Key, files, _env.ReadUsn(volume.Key, frns, cancel.Token)));
                 }
             }
 
@@ -1835,11 +1845,22 @@ public sealed class AutoTracer
                 return;
             }
 
+            if (cancel.IsCancellationRequested || GameRunning())
+            {
+                _log.Info($"{g.Name}: change journal result dropped, a game started while it was read (next time)"); // 플레이 중에는 이력도 순위 목록도 바꾸지 않음 ("순위 목록을 만든 뒤 바뀐 파일" 기준 시각이 밀리지 않게)
+                return;
+            }
+
             using AsterCache.Core.Apply.DataLock? gate = AsterCache.Core.Apply.DataLock.TryAcquire(g.Plan, TimeSpan.FromSeconds(10));
             if (gate is null)
             {
                 _log.Info($"{g.Name}: change journal result not saved (zone lock busy)");
                 return;
+            }
+
+            if (GameRunning())
+            {
+                return; // 잠금을 기다리는 사이 게임이 시작됨
             }
 
             IReadOnlyList<SessionSpan> sessions = _env.PlaySessions(g.Name);

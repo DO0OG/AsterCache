@@ -203,7 +203,7 @@ public sealed class AutoEnv
     /// 파일의 파일 참조 번호 (속성만 읽는 열기, 열지 못하면 null) 와 볼륨 (예: "D:") 의 변경 저널에서 찾는 파일들의 기록 (못 읽으면 null): 게임이 쓰는 파일이 줄어든 적이 있는지 가리는 근거입니다. 시험 기본값은 모름.
     public Func<string, ulong?> FileReference { get; init; } = _ => null;
 
-    public Func<string, IReadOnlySet<ulong>, UsnRead?> ReadUsn { get; init; } = (_, _) => null;
+    public Func<string, IReadOnlySet<ulong>, CancellationToken, UsnRead?> ReadUsn { get; init; } = (_, _, _) => null;
 
     /// 게임의 끝난 플레이 구간들 (플레이 기록, 오래된 순): 변경 저널 기록을 플레이에 맞추는 데 씁니다. 시험 기본값은 없음.
     public Func<string, IReadOnlyList<SessionSpan>> PlaySessions { get; init; } = _ => [];
@@ -398,12 +398,12 @@ public sealed class AutoEnv
             FileWriteTime = path => File.Exists(path) ? File.GetLastWriteTimeUtc(path) : null,
             PlaySessions = game => PlaySessionList.Read(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(journalDir)) ?? string.Empty, "play_samples.json"), game),
             FileReference = UsnJournal.FileReference,
-            ReadUsn = (volume, frns) =>
+            ReadUsn = (volume, frns, ct) =>
             {
                 bool low = ThreadIoPriority.TrySet(IoPriority.Low); // 저널을 읽는 동안만 낮은 I/O 우선순위
                 try
                 {
-                    return UsnJournal.Read(volume, frns, UsnJournal.DefaultBudget, UsnJournal.DefaultMaxBytes);
+                    return UsnJournal.Read(volume, frns, UsnJournal.DefaultBudget, UsnJournal.DefaultMaxBytes, ct);
                 }
                 finally
                 {

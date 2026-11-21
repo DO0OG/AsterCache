@@ -72,6 +72,9 @@ public static class AntiCheat
     /// 파일 고정 (pin) 을 하면 안 되는 종류: 트레이스 금지 종류 전부와 리코셰 (보호 드라이버가 열린 핸들을 문제 삼을 수 있음). 리코셰는 실측에서 트레이스가 문제없어 트레이스는 허용합니다. SSD 티어는 안티치트가 있으면 종류와 상관없이 거절.
     public static bool ForbidsPin(string? kind) => Capabilities.Decide(CapabilityFeature.Pin, kind).Outcome == CapabilityOutcome.Block;
 
+    /// 게임 실행 중 유지 목록 붙들기 (서비스의 읽기 전용 매핑을 게임이 끝날 때까지 유지) 를 하면 안 되는 종류: 트레이스 금지 종류와 같은 범위 (eac·battleye·vanguard·kernel·unknown). 리코셰는 고정과 달리 허용합니다.
+    public static bool ForbidsHold(string? kind) => Capabilities.Decide(CapabilityFeature.Hold, kind).Outcome == CapabilityOutcome.Block;
+
     private static bool IsEac(string n) =>
         Same(n, "EasyAntiCheat") || Starts(n, "EasyAntiCheat_EOS") || (Starts(n, "EasyAntiCheat") && Ends(n, ".exe")) || Same(n, "start_protected_game.exe");
 

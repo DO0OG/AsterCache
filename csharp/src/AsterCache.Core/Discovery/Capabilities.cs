@@ -6,6 +6,7 @@ public enum CapabilityFeature
     NewPrefetch,
     Trace,
     Pin,
+    Hold,
     Relocate,
     Tier,
     LobbyHint,
@@ -29,6 +30,7 @@ public static class Capabilities
         CapabilityFeature.NewPrefetch => NewPrefetch(antiCheatKind),
         CapabilityFeature.Trace => Trace(antiCheatKind),
         CapabilityFeature.Pin => Pin(antiCheatKind),
+        CapabilityFeature.Hold => Hold(antiCheatKind),
         CapabilityFeature.Relocate => Relocate(antiCheatKind),
         CapabilityFeature.Tier => Tier(antiCheatKind),
         CapabilityFeature.LobbyHint => Allow("existing lobby hint path"),
@@ -70,6 +72,13 @@ public static class Capabilities
     private static CapabilityDecision Tier(string? kind) => kind is null
         ? Allow("no anti-cheat is present")
         : Block("tiering is refused when any anti-cheat kind is present");
+
+    // 게임 실행 중 유지 목록 붙들기 (memory.keep_hold): 서비스 자기 프로세스의 읽기 전용 매핑이고 게임·런처·안티치트 프로세스를 열지 않습니다. 트레이스를 금지하는 종류에서는 하지 않고, 리코셰와 안티치트가 없는 게임은 허용합니다 (고정과 달리 리코셰를 막지 않음).
+    private static CapabilityDecision Hold(string? kind) => ForbidsHold(kind)
+        ? Block("current hold policy forbids this anti-cheat kind")
+        : Allow("current hold policy allows this anti-cheat kind");
+
+    private static bool ForbidsHold(string? kind) => ForbidsTrace(kind);
 
     private static bool ForbidsTrace(string? kind) => kind is "eac" or "battleye" or "vanguard" or "kernel" or "unknown";
 

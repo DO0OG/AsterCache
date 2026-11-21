@@ -541,9 +541,10 @@ public sealed partial class Prewarmer
         }
 
         GameSettings game = GameOf(started.Name) ?? started;
-        if (_pins.PinBlocker(game) is { } cheat)
+        (string? blocker, string? cheatKind) = _pins.HoldGate(game); // 붙들기 전용 게이트: 트레이스를 금지하는 안티치트에서는 하지 않고 리코셰는 허용 (고정 게이트와 별개)
+        if (blocker is { } cheat)
         {
-            NoteHoldSkip(game, exe, $"anti-cheat: {cheat}", ref lastSkip); // 고정이 건너뛰는 게임: 열린 뷰를 게임 실행 내내 들고 있는 일도 하지 않음
+            NoteHoldSkip(game, exe, $"anti-cheat: {cheat}", ref lastSkip); // 열린 뷰를 게임 실행 내내 들고 있는 일도 하지 않음
             outcome = HoldOutcome.No;
             return null;
         }
@@ -676,7 +677,7 @@ public sealed partial class Prewarmer
             string stopped = walk.Stopped ? $", stopped at the memory floor ({floorMib} MiB, available {_env.AvailableRamMib()} MiB)" : walk.CapReached ? ", disk read cap reached" : string.Empty;
             string missing = walk.Boundaries > 0 ? $", {walk.Boundaries} missing stretches skipped ({walk.SkippedBytes >> 20} MiB not held)" : string.Empty;
             string excludedText = sparseBytes + excludedBytes > 0 ? $", {excludedBytes >> 20} MiB in volatile or changed files and {sparseBytes >> 20} MiB in sparse files not held" : string.Empty;
-            _log.Info($"{game.Name}: cache held while playing ({exe}): {hold.HeldBytes >> 20} MiB of {targetBytes >> 20} MiB target ({total >> 20} MiB list) in {hold.Files} files, {hold.Views} views, in {elapsed:F1} s (cpu {cpu:F1} s, {checks} checks), {walk.Disk >> 20} MiB read from disk ({hardFaults} hard faults){ErrorsText(errors)}{missing}{excludedText}{stopped}{(walk.Boundaries > 0 ? HoldProbe(reads, total, linked.Token) : string.Empty)}");
+            _log.Info($"{game.Name}: cache held while playing ({exe}): {hold.HeldBytes >> 20} MiB of {targetBytes >> 20} MiB target ({total >> 20} MiB list) in {hold.Files} files, {hold.Views} views, in {elapsed:F1} s (cpu {cpu:F1} s, {checks} checks), {walk.Disk >> 20} MiB read from disk ({hardFaults} hard faults){ErrorsText(errors)}{missing}{excludedText}{stopped}{(walk.Boundaries > 0 ? HoldProbe(reads, total, linked.Token) : string.Empty)}{(cheatKind is null ? string.Empty : $" (anti-cheat: {cheatKind}, hold allowed)")}");
             SetHeld(game.Name, hold.HeldBytes);
             outcome = HoldOutcome.Done;
             return hold;

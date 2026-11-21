@@ -3154,7 +3154,9 @@ public sealed class SolarTests
 
         Assert.Equal(Reversed(Reads), _touched[0]); // 첫 시도는 사다리 전체
         List<ReadOp> order = [.. _touched.Skip(1).SelectMany(b => b)]; // 순서 패스
-        Assert.Equal(new ReadOp(@"D:\a\1.bin", 0, 10 * Mib), order[^1]); // 가장 중요한 블록이 마지막
+        Assert.Equal(@"D:\a\1.bin", order[^1].Path);
+        Assert.Equal(10 * Mib, order[^1].Offset + order[^1].Length); // 가장 중요한 범위 (1.bin 앞 10 MiB) 가 마지막: 16 MiB 배치로 쪼개져 마지막 조각은 그 범위의 끝 (6~10 MiB)
+        Assert.Equal(10 * Mib, order.Where(o => o.Offset < 50 * Mib && o.Path.EndsWith("1.bin")).Sum(o => o.Length)); // 앞 10 MiB 전체가 만져짐 (쪼개졌을 뿐 빠진 구간이 아님)
         Assert.DoesNotContain(order, o => o.Path == @"D:\a\2.bin"); // 빠진 파일은 만지지 않음
         Assert.True(_touched.Skip(1).All(b => b.Sum(o => o.Length) <= Prewarmer.HoldBatchBytes));
         Assert.True(p.Solar.HasMissing("a"));

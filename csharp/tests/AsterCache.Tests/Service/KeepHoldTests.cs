@@ -24,6 +24,7 @@ public sealed class KeepHoldTests
     private bool _keepHold = true;
     private bool _ladder = true;
     private bool _hasVolatileInfo = true;
+    private string? _detected; // 설치 폴더에서 감지한 안티치트 종류
     private int _opened;
     private long _avail = 20000;
     private long _reuse; // 대기 목록 재사용 누계 (조회마다 _reuseStep 만큼 늘어남, 음수면 조회 불가)
@@ -67,6 +68,7 @@ public sealed class KeepHoldTests
         public Exception? Throw;
         public Func<HoldCheckResult>? NextCheck;
         public Action? OnHold;
+        public int ErrorsPerBatch; // 배치마다 돌려줄 열기 오류 수 (공유 없이 열린 파일을 흉내)
         private long _held;
 
         public long HeldBytes => _held;
@@ -100,7 +102,7 @@ public sealed class KeepHoldTests
             }
 
             _held += bytes;
-            return new HoldBatchResult(bytes, 0, 0, 0, 0, 1, 1, 0, 0.1, 0.05, -1);
+            return new HoldBatchResult(bytes, 0, 0, ErrorsPerBatch, 0, 1, 1, 0, 0.1, 0.05, -1);
         }
 
         public long Release(long bytes)
@@ -154,6 +156,7 @@ public sealed class KeepHoldTests
             ListStamp = _ => "s1",
             IsSparse = path => _sparse.Contains(path),
             KeepHoldEnabled = () => _keepHold,
+            AntiCheatOf = _ => _detected,
             OpenHold = () =>
             {
                 _opened++;
@@ -377,6 +380,91 @@ public sealed class KeepHoldTests
         Assert.Equal(0, _opened);
         Assert.Contains(_log.Lines, l => l.Contains("cache hold while playing skipped (a.exe: anti-cheat: vanguard)"));
         Assert.Contains(_log.Lines, l => l.Contains("a: cache kept while playing (a.exe): 48 MiB of 48 MiB in memory"));
+    }
+
+    [Fact]
+    public void ARicochetGameIsHeldAndTheStartLineNamesTheAntiCheat()
+    {
+        GameSettings ricochet = Game("a") with { AntiCheat = "ricochet" }; // 고정은 금지지만 붙들기는 허용
+        Prewarmer p = Make(Reads, ricochet);
+        RunFor(2);
+
+        p.TouchAtGameStart(ricochet, "a.exe");
+
+        Assert.Equal(1, _opened);
+        Assert.Contains(_log.Lines, l => l.Contains("cache held while playing (a.exe)") && l.EndsWith("(anti-cheat: ricochet, hold allowed)"));
+    }
+
+    [Theory]
+    [InlineData("eac")]
+    [InlineData("battleye")]
+    [InlineData("vanguard")]
+    [InlineData("kernel")]
+    [InlineData("unknown")]
+    public void AGameWhoseAntiCheatForbidsTracingIsNotHeldAndIsKeptByTheTouching(string kind)
+    {
+        GameSettings game = Game("a") with { AntiCheat = kind };
+        Prewarmer p = Make(Reads, game);
+        RunFor(20);
+
+        p.TouchAtGameStart(game, "a.exe");
+
+        Assert.Equal(0, _opened);
+        Assert.Contains(_log.Lines, l => l.Contains($"cache hold while playing skipped (a.exe: anti-cheat: {kind})"));
+        Assert.Contains(_log.Lines, l => l.Contains("cache kept while playing (a.exe)"));
+    }
+
+    [Theory]
+    [InlineData("ricochet", "vanguard")]
+    [InlineData(null, "eac")]
+    [InlineData("ricochet", "battleye")]
+    public void ADetectedForbiddenKindBlocksEvenWhenTheSettingNamesAnAllowedOneOrNone(string? configured, string detected)
+    {
+        _detected = detected;
+        GameSettings game = Game("a") with { AntiCheat = configured };
+        Prewarmer p = Make(Reads, game);
+        RunFor(20);
+
+        p.TouchAtGameStart(game, "a.exe");
+
+        Assert.Equal(0, _opened);
+        Assert.Contains(_log.Lines, l => l.Contains($"cache hold while playing skipped (a.exe: anti-cheat: {detected})"));
+    }
+
+    [Fact]
+    public void ADetectedRicochetWithNoSettingIsHeld()
+    {
+        _detected = "ricochet";
+        Prewarmer p = Make(Reads);
+        RunFor(2);
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Equal(1, _opened);
+        Assert.Contains(_log.Lines, l => l.EndsWith("(anti-cheat: ricochet, hold allowed)"));
+    }
+
+    [Fact]
+    public void ASharingViolationOnOneFileDoesNotEndTheHoldAndAnotherExeDoesNotHoldAgain()
+    {
+        // 게임이 공유 없이 연 파일은 ViewHold 가 열기 오류로 세고 건너뜀 (붙들기 전체는 계속): 가짜 붙들기는 오류가 있는 배치를 돌려줌
+        GameSettings ricochet = Game("a") with { AntiCheat = "ricochet" };
+        Prewarmer p = Make(Reads, ricochet);
+        _hold.ErrorsPerBatch = 2;
+        RunFor(2, e =>
+        {
+            if (e == 1)
+            {
+                _now += Prewarmer.StartTouchMinGap;
+                p.TouchAtGameStart(ricochet, "sp26-cod.exe"); // 같은 게임의 다른 실행 파일이 뜸: 다시 붙들지 않음
+            }
+        });
+
+        p.TouchAtGameStart(ricochet, "cod.exe");
+
+        Assert.Equal(1, _opened);
+        Assert.Contains(_log.Lines, l => l.Contains("cache held while playing (cod.exe)") && l.Contains("6 errors"));
+        Assert.Single(_log.Lines, l => l.Contains("cache hold ended"));
     }
 
     [Fact]
@@ -746,14 +834,14 @@ public sealed class KeepHoldTests
         _findMissing.Add(F(3));
         _findMissing.Add(F(4));
         _findMissing.Add(F(5));
-        _findDiskPerMiss = 30 * Mib; // 회차마다 경계 하나에서 상한: 세 회차 만에 플레이 상한 64 MiB 를 넘음
+        _findDiskPerMiss = 22 * Mib; // 회차마다 경계 하나에서 상한 (찾은 24 MiB 보다 작아 빈 회차가 아님): 세 회차 만에 플레이 상한 64 MiB 를 넘음 (22, 44, 66)
         GameSettings cheat = Cheat("a");
         Prewarmer p = Make(Reads, cheat);
         RunFor(100);
 
         p.TouchAtGameStart(cheat, "a.exe");
 
-        Assert.Equal(3, _findCalls.Count); // 세 번째 회차에서 90 MiB: 그 뒤는 찾지 않음
+        Assert.Equal(3, _findCalls.Count); // 세 번째 회차에서 66 MiB: 그 뒤는 찾지 않음
         Assert.Contains(_log.Lines, l => l.Contains("no new range looked for"));
         Assert.DoesNotContain(_log.Lines, l => l.Contains("cache keeping ended") && l.Contains("disk reads of this play"));
         string last = _log.Lines.Last(l => l.Contains("cache kept while playing ("));

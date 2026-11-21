@@ -81,12 +81,7 @@ public sealed partial class Prewarmer
             CancellationToken stop = _playStop.Token;
             // 유지 목록을 뷰로 붙들 수 있으면 (memory.keep_hold, Prewarm.PlayHold) 게임이 끝날 때까지 거기서 돌고, 붙들 수 없는 게임은 아래의 다시 만지기로 남음 (일시적 사유면 주기마다 다시 시도)
             HoldOutcome held = memory.Finished ? HoldOutcome.Done : _env.KeepHoldEnabled() ? HoldWhilePlaying(started, exe, keep, ref lastHoldSkip) : HoldOutcome.No; // 빠진 범위가 대부분이라 끝낸 플레이는 다른 실행 파일이 떠도 다시 시작하지 않음
-            if (held != HoldOutcome.Done)
-            {
-                using var low = new LowPriorityReader(_env);
-                _ = RefreshKeepList(GameOf(started.Name) ?? started, keep); // 첫 회차의 문턱이 실제 목록 크기로 계산되게 루프에 들어가기 전에 목록을 계산
-            }
-
+            bool listReady = false;
             while (held != HoldOutcome.Done)
             {
                 _env.Sleep(KeepPollEvery, stop);
@@ -99,6 +94,13 @@ public sealed partial class Prewarmer
                 if (held == HoldOutcome.Retry && polls % fallbackPolls == 0 && _env.KeepHoldEnabled() && (held = HoldWhilePlaying(started, exe, keep, ref lastHoldSkip)) == HoldOutcome.Done)
                 {
                     break;
+                }
+
+                if (!listReady)
+                {
+                    listReady = true;
+                    using var low = new LowPriorityReader(_env);
+                    _ = RefreshKeepList(game, keep); // 첫 회차의 문턱이 실제 목록 크기로 계산되게 첫 확인 때 목록을 계산 (게임이 실행 중일 때만: 그 전에 끝나면 아무것도 하지 않음)
                 }
 
                 MemoryLists? lists = _env.Lists();

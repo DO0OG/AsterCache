@@ -7,10 +7,10 @@ namespace AsterCache.Service;
 
 /// Prewarmer 가 게임이 실행되는 동안 그 게임이 예열해 둔 캐시를 메모리 안에서 다시 만져 유지하는 곳 (붙들지 않는 게임, 곧 안티치트 게이트가 고정을 막는 게임·파일 쓰기 정보가 없는 게임·memory.keep_hold 가 꺼진 경우).
 /// 경기 중에도 게임이 새로 읽는 양 (분당 0.8~1.7 GiB, 시작 뒤 180 초에 8.5 GiB 가 재사용된 기록도 있음) 에 밀려 예열한 페이지가 대기 목록에서 빠지므로, 시작 만지기 (TouchAtGameStart) 한 번으로는 경기 중반에 이미 없습니다.
-/// 회차는 대기 목록 재사용 누계가 문턱을 넘을 때 바로 돕니다 (KeepPollEvery 마다 누계만 확인). 회차는 유지 목록을 덜 중요한 것부터 한 패스로 만지고 (Solar.ImportanceOrder 의 역순, 가장 중요한 것이 마지막에 오게),
-/// 캐시에 없는 곳 곧 이 프로세스의 디스크 읽기 수가 허용치를 넘는 경계를 만나면 그 파일의 이어진 범위는 건너뛰고 계속하며 그 범위를 이 플레이 동안 빠진 범위로 기억해 다음 회차부터는 아예 만지지 않습니다 (빠진 범위 하나가 디스크 읽기를 일으키는 것은 처음 발견할 때 한 번뿐).
-/// 한 회차는 두 패스입니다: 찾기 (가장 중요한 것부터 걸으며 메모리에 있는 범위를 모으고 빠진 조각은 시간이 오래 걸린 조각의 하드 폴트 조회로 싸게 알아채 일정 폭만 건너뜀) 와 순서 (모은 범위만 덜 중요한 것부터 다시 만져 가장 중요한 것이 대기 목록의 가장 새 자리에 오게 함).
-/// 디스크 읽기는 회차의 찾기 패스에서 KeepRoundDiskCapBytes 까지, 플레이 전체로 KeepPlayDiskCapBytes 까지입니다 (뒤에는 새 범위를 찾지 않고 확인된 범위만 두 패스로 만짐). 빠진 부분을 채우는 일은 게임이 끝난 뒤 재예열에 맡깁니다.
+/// 회차는 대기 목록 재사용 누계가 문턱을 넘을 때 바로 돕니다 (KeepPollEvery 마다 누계만 확인). 이 플레이 동안 "메모리에 있다고 확인된 집합" 을 유지하고 회차는 그 집합만 덜 중요한 것부터 다시 만집니다 (순서 패스, 가장 중요한 것이 마지막, 속도 제한도 쉼도 없음).
+/// 집합은 찾기 패스 (ResidentFinder) 가 만듭니다: 가장 중요한 것부터 걸으며 메모리에 있는 범위를 모으고, 빠진 조각은 하드 폴트 조회로 싸게 알아챕니다. 한 지점만 빠졌으면 그 조각만 구멍으로 기억하고 계속하고,
+/// 이어진 두 지점이 빠졌으면 경계로 보아 그 뒤 (덜 중요한 쪽) 는 집합에 넣지 않습니다. 순서 패스에서 디스크 읽기가 난 범위는 그 범위 하나만 집합에서 뺍니다.
+/// 집합 밖을 다시 확인하는 찾기는 순서 패스를 먼저 돈 뒤에, 디스크 읽기를 회차 KeepRoundDiskCapBytes·플레이 KeepPlayDiskCapBytes 안에서 중요한 순서로 조금씩 합니다 (상한에 닿아도 순서 패스는 항상 돎). 빠진 부분을 채우는 일은 게임이 끝난 뒤 재예열에 맡깁니다.
 /// 목록은 플레이마다 한 번만 계산하고 입력 파일이 바뀐 때만 다시 계산합니다.
 public sealed partial class Prewarmer
 {
@@ -30,11 +30,14 @@ public sealed partial class Prewarmer
     /// 문턱의 하한: 앞의 여유가 없어도 이보다 작은 재사용마다 돌지 않습니다 (최소 간격과 함께 CPU·메모리 대역을 묶음).
     public const long KeepReuseMinThresholdBytes = 64L << 20;
 
-    /// 한 회차의 찾기 패스가 디스크에서 읽는 양의 상한: 8 MiB. 빠진 조각 하나를 알아채는 데 읽는 양이 조각 하나 (1 MiB 이하) 라 새 경계는 회차당 여럿입니다. 넘으면 찾기 패스는 새 범위를 더 확인하지 않고 남은 범위는 이번에 만지지 않으며, 순서 패스는 모은 것으로 반드시 돕니다.
+    /// 한 회차의 집합 밖 다시 확인 (찾기 패스) 이 디스크에서 읽는 양의 상한: 8 MiB. 빠진 조각 하나를 알아채는 데 읽는 양이 조각 하나 (1 MiB 이하) 입니다. 넘으면 새 범위를 더 확인하지 않고 남은 범위는 이번에 만지지 않으며, 집합의 순서 패스는 상한과 무관하게 항상 돕니다.
     public const long KeepRoundDiskCapBytes = 8L << 20;
 
-    /// 한 플레이에서 이 만지기가 디스크에서 읽는 양의 누적 상한: 64 MiB. 다 쓰면 그 뒤 회차는 새 범위를 찾지 않고 지금까지 메모리에 있다고 확인된 범위만 두 패스로 만집니다 (유지를 끝내지 않음).
+    /// 한 플레이에서 이 만지기가 디스크에서 읽는 양의 누적 상한: 64 MiB. 다 쓰면 그 뒤 회차는 집합 밖을 다시 확인하지 않고 지금까지 메모리에 있다고 확인된 집합만 순서 패스로 만집니다 (유지를 끝내지 않음).
     public const long KeepPlayDiskCapBytes = 64L << 20;
+
+    /// 순서 패스 한 번이 디스크에서 읽는 양의 안전 상한: 64 MiB. 집합의 범위가 그 사이 밀려났으면 읽기가 난 범위 하나씩만 빼고 계속하는데, 대부분이 한꺼번에 밀려난 경우 경계마다 읽는 양이 쌓이는 것을 막습니다.
+    public const long KeepOrderDiskCapBytes = 64L << 20;
 
     /// 기억한 빠진 범위가 만지려던 목록의 이 비율을 넘으면 (대부분이 빠졌으면) 유지를 끝냅니다.
     public const double KeepMissingEndFraction = 0.75;
@@ -275,10 +278,10 @@ public sealed partial class Prewarmer
         }
 
         string trigger = reuseGrowth is { } growth ? $", called by {growth >> 20} MiB of standby cache reuse" : ", called by the fixed period (standby cache reuse unknown)";
-        _log.Info($"{game.Name}: cache kept while playing ({exe}): {t.InMemory >> 20} MiB of {t.Total >> 20} MiB in memory (found {t.Found >> 20} MiB, ordered {t.Ordered >> 20} MiB), in {t.Seconds:F1} s (cpu {t.Cpu:F1} s, {t.Maps} views, {t.Checks} checks), {t.Disk >> 20} MiB read from disk ({t.HardFaults} hard faults){(t.Errors > 0 ? $", {t.Errors} errors" : string.Empty)}, {t.Boundaries} new missing stretches remembered ({memory.MissingBytes >> 20} MiB of the {memory.ListBytes >> 20} MiB list in all){(t.CapReached ? ", disk read cap of the round reached" : string.Empty)}{(t.Left > 0 ? $", {t.Left >> 20} MiB left unconfirmed" : string.Empty)}{(t.FindSkipped ? ", no new range looked for (disk reads of the play at the cap)" : string.Empty)}{trigger}{probe}");
-        if (memory.ListBytes > 0 && memory.MissingBytes >= memory.ListBytes * KeepMissingEndFraction)
+        _log.Info($"{game.Name}: cache kept while playing ({exe}): {t.InMemory >> 20} MiB of {t.Total >> 20} MiB in memory (found {t.Found >> 20} MiB, ordered {t.Ordered >> 20} MiB), in {t.Seconds:F1} s (cpu {t.Cpu:F1} s, {t.Maps} views, {t.Checks} checks), {t.Disk >> 20} MiB read from disk ({t.HardFaults} hard faults){(t.Errors > 0 ? $", {t.Errors} errors" : string.Empty)}, {t.Boundaries} new missing stretches remembered ({memory.MissingBytes >> 20} MiB of the {memory.ListBytes >> 20} MiB list in all){TallyDetail(t)}{(t.CapReached ? ", disk read cap of the round reached" : string.Empty)}{(t.Left > 0 ? $", {t.Left >> 20} MiB left unconfirmed" : string.Empty)}{(t.FindSkipped ? ", no new range looked for (disk reads of the play at the cap)" : string.Empty)}{trigger}{probe}");
+        if (memory.ListBytes > 0 && memory.MissingBytes + memory.BoundaryBytes >= memory.ListBytes * KeepMissingEndFraction)
         {
-            endNow = $" (most of the list is remembered as missing: {memory.MissingBytes >> 20} of {memory.ListBytes >> 20} MiB)";
+            endNow = $" (most of the list is remembered as missing: {(memory.MissingBytes + memory.BoundaryBytes) >> 20} of {memory.ListBytes >> 20} MiB)";
         }
 
         return null;

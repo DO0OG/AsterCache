@@ -7,8 +7,9 @@ using AsterCache.Windows.Native;
 namespace AsterCache.Windows;
 
 /// 찾기 한 번의 결과: 메모리에 있던 (읽은) 범위, 빠진 것으로 확인하고 건너뛴 범위, 읽은 바이트, 디스크에서 읽힌 것으로 본 바이트, 열기·매핑·읽기 오류 수, 경계를 확인한 횟수, 읽기 수를 조회한 횟수와 하드 폴트 증가,
-/// 새로 연 뷰 수, 걸린 시간 (초), 쓴 CPU 시간 (초), 디스크 읽기 상한에 닿아 멈췄는가, 취소됐는가, 스파스라 건너뛴 바이트, 확인하지 못하고 남긴 바이트.
-public sealed record FindResult(List<ReadOp> Resident, List<ReadOp> Missing, long Bytes, long DiskBytes, int Errors, int Boundaries, int Checks, long HardFaults, int Maps, double Seconds, double CpuSeconds, bool CapReached, bool Canceled, long SparseBytes, long LeftBytes);
+/// 새로 연 뷰 수, 걸린 시간 (초), 쓴 CPU 시간 (초), 디스크 읽기 상한에 닿아 멈췄는가, 취소됐는가, 스파스라 건너뛴 바이트, 확인하지 못하고 남긴 바이트,
+/// 이어진 두 지점에서 빠짐을 확인해 경계로 보고 멈췄는가 (그 뒤 LeftBytes 는 경계 때문에 확인하지 않고 남긴 덜 중요한 쪽).
+public sealed record FindResult(List<ReadOp> Resident, List<ReadOp> Missing, long Bytes, long DiskBytes, int Errors, int Boundaries, int Checks, long HardFaults, int Maps, double Seconds, double CpuSeconds, bool CapReached, bool Canceled, long SparseBytes, long LeftBytes, bool BoundaryHit = false);
 
 /// 조각을 읽는 곳 (시험이 가짜로 바꿉니다): 파일을 열어 길이를 알려 주고 범위를 읽어 작업 집합에 올렸다 놓습니다.
 internal interface IPieceSource : IDisposable
@@ -29,19 +30,17 @@ internal interface IPieceSource : IDisposable
 /// 유지 목록을 중요한 순서로 걸으며 메모리에 있는 범위를 모으고 (읽어서 작업 집합에 올렸다 놓음), 빠진 조각을 싸게 알아채 건너뜁니다.
 /// 빠진 조각 알아채기: 조각 (1 MiB) 하나를 읽는 데 걸린 시간이 의심 기준 (StandbyTouch 의 의심 조각 기준) 보다 길면 8 MiB 를 채우길 기다리지 않고 바로 이 프로세스의 디스크 읽기 수 (하드 폴트) 를 조회합니다 (조회 사이 PromptCheckMinGapMs 이상).
 /// 조회 사이 증가분이 PromptFaults 이상이면 빠짐 (근거: 같은 PC 의 실측에서 메모리에 있는 범위는 조회 사이 +0~1, 캐시에 없는 64 KiB 블록 하나는 2~3). 빠진 조각을 하나 읽는 비용은 그 조각 하나 (1 MiB 이하) 입니다.
-/// 빠짐을 확인하면 그 뒤의 skipBytes (목록 순서로 이어지는 범위, 시작 SkipBaseBytes) 만 건너뛰어 (읽지 않고) Missing 에 더하고, 건너뛴 다음 지점을 다시 확인합니다: 또 빠져 있으면 폭을 두 배로 (SkipMaxBytes 까지), 메모리에 있으면 SkipBaseBytes 로 되돌립니다.
-/// 그래서 Missing 은 실제로 확인한 경계 뒤에서 건너뛴 구간뿐입니다. 느리지 않은 조각은 FaultCheckBytes (64 MiB) 마다 조회하며 이때도 증가분이 PromptFaults 이상이어야 빠짐입니다 (CPU 경합만으로 느려진 조각은 증가분이 없으면 빠짐으로 치지 않음).
+/// 빠짐을 확인하면 그 뒤의 SkipBaseBytes (목록 순서로 이어지는 범위) 만 건너뛰어 (읽지 않고) Missing 에 더하고, 건너뛴 다음 지점을 다시 확인합니다: 메모리에 있으면 앞의 빠짐은 구멍 하나였으므로 계속 걷고,
+/// 또 빠져 있으면 (이어진 두 지점) 그 지점을 경계로 보아 걷기를 멈추고 그 뒤 (덜 중요한 쪽) 는 확인하지 않은 채 LeftBytes 로 남깁니다 (BoundaryHit).
+/// 그래서 Missing 은 실제로 확인한 빠짐 뒤에서 건너뛴 구간뿐입니다. 느리지 않은 조각은 FaultCheckBytes (64 MiB) 마다 조회하며 이때도 증가분이 PromptFaults 이상이어야 빠짐입니다 (CPU 경합만으로 느려진 조각은 증가분이 없으면 빠짐으로 치지 않음).
 /// 디스크에서 읽힌 양이 diskCap 에 닿으면 새 범위를 더 확인하지 않고 멈춥니다 (남은 범위는 만지지 않음, LeftBytes). 스파스 파일은 열지 않고 건너뜁니다.
 public static class ResidentFinder
 {
     /// 빠짐을 확인한 뒤 처음 건너뛰는 폭 (목록 순서로 이어지는 범위의 바이트).
     public const long SkipBaseBytes = 8L << 20;
 
-    /// 연속으로 빠져 있을 때 건너뛰는 폭의 상한: 128 MiB. 폭이 크면 한 확인으로 많이 건너뛰지만 그 사이에 메모리에 있는 부분을 빠진 것으로 기억할 수 있어 두 배씩만 늘리고 상한을 둡니다.
-    public const long SkipMaxBytes = 128L << 20;
-
-    /// 하드 폴트 증가가 이 값 이상이면 빠짐: 메모리에 있는 범위는 +0~1, 빠진 64 KiB 블록 하나는 2~3 (StandbyTouch 의 실측).
-    public const uint PromptFaults = 2;
+    /// 하드 폴트 증가가 이 값 이상이면 빠짐: 메모리에 있는 범위는 +0~1, 빠진 1 MiB 조각 하나는 16~48 (64 KiB 블록당 2~3, StandbyTouch 의 실측). 서비스의 다른 스레드가 20 ms 창에 내는 폴트 (1~5 회) 에 걸리지 않게 조각 하나의 1/2~1/6 인 8 로 둡니다.
+    public const uint PromptFaults = 8;
 
     /// 의심 조각이 나와도 앞의 조회 뒤 이 시간 (ms) 이 지나야 다시 조회합니다: CPU 가 바빠 의심 조각이 흔할 때 조회 (약 4 ms CPU) 가 조각마다 일어나지 않게.
     public const double PromptCheckMinGapMs = 20.0;
@@ -86,9 +85,10 @@ public static class ResidentFinder
         double slowMs = 0; // 읽기 수를 읽을 수 없을 때의 안전망: 느린 조각의 시간 합
         double lastCheckMs = now();
         double groupStartMs = now();
-        long skipBytes = SkipBaseBytes; // 다음에 빠짐을 확인했을 때 건너뛸 폭
         long skipLeft = 0; // 지금 건너뛰는 중인 남은 폭
-        bool probing = false; // 건너뛴 직후의 첫 조각인가 (여기서 또 빠짐이면 폭을 늘림)
+        bool probing = false; // 건너뛴 직후의 첫 조각인가 (여기서 또 빠짐이면 이어진 두 지점: 경계)
+        bool boundaryHit = false;
+        long leftInCurrent = 0; // 멈출 때 지금 범위에서 확인하지 않고 남긴 바이트
         int next = 0;
 
         void Rebase()
@@ -142,7 +142,7 @@ public static class ResidentFinder
         }
 
         Rebase();
-        for (; next < ordered.Count && !capReached && !canceled; next++)
+        for (; next < ordered.Count && !capReached && !canceled && !boundaryHit; next++)
         {
             ReadOp op = ordered[next];
             long pos = op.Offset;
@@ -181,11 +181,12 @@ public static class ResidentFinder
             }
 
             end = Math.Min(end, length);
-            while (pos < end && !capReached && !canceled)
+            while (pos < end && !capReached && !canceled && !boundaryHit)
             {
                 if (ct.IsCancellationRequested)
                 {
                     canceled = true;
+                    leftInCurrent = Math.Max(0, end - pos);
                     break;
                 }
 
@@ -213,19 +214,32 @@ public static class ResidentFinder
                 {
                     slowMs += ms;
                     capReached |= slowMs > StandbyTouch.SlowBudgetMs; // 읽기 수를 읽을 수 없으면 빠짐을 가를 수 없어 시간 안전망으로만 멈춤
+                    leftInCurrent = capReached ? Math.Max(0, end - pos) : 0;
                 }
 
                 bool due = signal && (sinceCheck >= StandbyTouch.FaultCheckBytes || (suspect && now() - lastCheckMs >= PromptCheckMinGapMs));
                 if (due && Check())
                 {
                     boundaries++;
-                    (skipLeft, probing) = (skipBytes, true);
-                    skipBytes = Math.Min(skipBytes * 2, SkipMaxBytes); // 건너뛴 다음 지점도 빠져 있으면 폭을 늘림
+                    if (probing)
+                    {
+                        boundaryHit = true; // 건너뛴 다음 지점도 빠져 있음: 이어진 두 지점이라 경계. 그 뒤는 확인하지 않고 남김
+                        leftInCurrent = Math.Max(0, end - pos);
+                    }
+                    else
+                    {
+                        (skipLeft, probing) = (SkipBaseBytes, true);
+                    }
+
                     capReached |= disk >= diskCap;
+                    if (capReached && !boundaryHit)
+                    {
+                        leftInCurrent = Math.Max(0, end - pos);
+                    }
                 }
                 else if (probing)
                 {
-                    (probing, skipBytes) = (false, SkipBaseBytes); // 건너뛴 다음 지점이 메모리에 있음: 폭을 되돌림
+                    probing = false; // 건너뛴 다음 지점이 메모리에 있음: 앞의 빠짐은 구멍 하나
                 }
 
                 if (sinceGroup >= GroupBytes && onGroup is not null)
@@ -248,8 +262,8 @@ public static class ResidentFinder
             SelfReadLog.Note(diskRanges, startedUtc, DateTimeOffset.UtcNow); // 디스크 읽기 집계가 이 읽기를 게임의 읽기로 세지 않게
         }
 
-        long left = capReached || canceled ? ordered.Skip(next).Sum(o => Math.Max(0, o.Length)) : 0;
-        return new FindResult(resident, missing, bytes, disk, errors, boundaries, checks, faults, source.Maps, Stopwatch.GetElapsedTime(started).TotalSeconds, Math.Max(0, StandbyTouch.ThreadCpuSeconds() - cpuBefore), capReached, canceled, sparse, left);
+        long left = capReached || canceled || boundaryHit ? leftInCurrent + ordered.Skip(next).Sum(o => Math.Max(0, o.Length)) : 0; // 지금 범위의 남은 쪽도 셈 (바깥 루프가 이미 다음으로 넘어감)
+        return new FindResult(resident, missing, bytes, disk, errors, boundaries, checks, faults, source.Maps, Stopwatch.GetElapsedTime(started).TotalSeconds, Math.Max(0, StandbyTouch.ThreadCpuSeconds() - cpuBefore), capReached, canceled, sparse, left, boundaryHit);
     }
 
     /// 실제 조각 읽기: 파일마다 섹션 (파일 핸들은 닫음) 을 열고 64 MiB 뷰를 필요할 때 열어 ReadProcessMemory (자기 프로세스, 디스크 오류가 예외가 아니라 반환값으로 옴) 로 읽습니다. 뷰는 같은 파일의 이어지는 범위에 다시 쓰고 파일이 바뀌면 풉니다.

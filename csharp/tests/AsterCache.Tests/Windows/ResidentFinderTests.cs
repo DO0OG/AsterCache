@@ -21,6 +21,7 @@ public sealed class ResidentFinderTests
         public uint Pages = 1000;
         public bool Slow = true; // 없는 구간을 읽을 때 오래 걸리는가 (끄면 하드 폴트만 늘고 시간은 그대로: 빠짐을 시간으로 가를 수 없는 디스크)
         public long SlowWithoutFaults; // 이 파일 위치 이상은 하드 폴트 없이 느리기만 함 (CPU 경합 흉내): 0 이면 쓰지 않음
+        public uint NoiseFaults; // 그 느린 조각을 읽을 때 서비스의 다른 스레드가 낸 폴트 (잡음)
 
         public int Maps => 0;
 
@@ -69,7 +70,8 @@ public sealed class ResidentFinderTests
             }
             else if (SlowWithoutFaults > 0 && offset >= SlowWithoutFaults)
             {
-                ms = 12; // 메모리에 있어도 느림 (CPU 경합): 하드 폴트는 늘지 않음
+                ms = 12; // 메모리에 있어도 느림 (CPU 경합): 하드 폴트는 늘지 않음 (잡음 폴트만)
+                Faults += NoiseFaults;
             }
 
             return true;
@@ -137,7 +139,7 @@ public sealed class ResidentFinderTests
     }
 
     [Fact]
-    public void WhenTheNextPointIsAlsoMissingTheSkipWidthDoublesUpToTheLimitAndOnlySkippedRangesAreRemembered()
+    public void WhenTheNextPointIsAlsoMissingItIsABoundaryTheWalkStopsAndTheRestIsLeftUnconfirmed()
     {
         var memory = new FakeMemory();
         memory.Lengths["a"] = 400 * Mib;
@@ -145,15 +147,16 @@ public sealed class ResidentFinderTests
 
         FindResult r = Find(memory, [new ReadOp("a", 0, 400 * Mib)]);
 
-        // 0 MiB 에서 빠짐을 확인 → 8 MiB 건너뜀 → 9 MiB 에서 또 빠짐 → 16 MiB 건너뜀 → 26 MiB → 32 → 59 MiB → 64 → 124 MiB → 128 → 253 MiB → 128 (상한)
-        Assert.Equal([8 * Mib, 16 * Mib, 32 * Mib, 64 * Mib, 128 * Mib, 128 * Mib], r.Missing.Select(m => m.Length).Take(6));
-        Assert.Equal([1 * Mib, 10 * Mib, 27 * Mib, 60 * Mib, 125 * Mib, 254 * Mib], r.Missing.Select(m => m.Offset).Take(6)); // 건너뛴 구간은 확인한 조각 바로 뒤에서 시작
-        Assert.All(r.Missing, m => Assert.True(m.Length <= ResidentFinder.SkipMaxBytes));
-        Assert.True(r.Boundaries >= 6);
+        // 0 MiB 에서 빠짐을 확인 → 8 MiB 건너뜀 → 9 MiB 에서 또 빠짐 (이어진 두 지점) → 경계: 거기서 멈춤
+        Assert.True(r.BoundaryHit);
+        Assert.Equal([new ReadOp("a", 1 * Mib, 8 * Mib)], r.Missing); // 구멍으로 남는 것은 건너뛴 구간뿐
+        Assert.Equal(2, r.Boundaries);
+        Assert.InRange(r.LeftBytes, 380 * Mib, 392 * Mib); // 경계 뒤 (덜 중요한 쪽) 는 확인하지 않고 남김
+        Assert.False(r.CapReached);
     }
 
     [Fact]
-    public void WhenTheNextPointIsInMemoryTheSkipWidthGoesBackToTheBase()
+    public void AHoleFollowedByAPointInMemoryIsNotABoundaryAndTheWalkContinuesUntilTwoInARowAreMissing()
     {
         var memory = new FakeMemory();
         memory.Lengths["a"] = 100 * Mib;
@@ -161,8 +164,24 @@ public sealed class ResidentFinderTests
 
         FindResult r = Find(memory, [new ReadOp("a", 0, 100 * Mib)]);
 
-        Assert.Equal(new ReadOp("a", 11 * Mib, 8 * Mib), r.Missing[0]); // 첫 경계 (10 MiB) 뒤 기본 폭 8 MiB 를 건너뜀
-        Assert.Equal(new ReadOp("a", 51 * Mib, 8 * Mib), r.Missing[1]); // 구멍 뒤 지점이 메모리에 있어 폭이 되돌아가 두 번째 경계 뒤에도 기본 폭
+        Assert.Equal(new ReadOp("a", 11 * Mib, 8 * Mib), r.Missing[0]); // 첫 빠짐 (10 MiB) 뒤 8 MiB 를 건너뜀
+        Assert.Equal(new ReadOp("a", 51 * Mib, 8 * Mib), r.Missing[1]); // 구멍 뒤 지점이 메모리에 있어 계속 걸었고 두 번째 빠짐 뒤에도 같은 폭
+        Assert.True(r.BoundaryHit); // 50 MiB 부터는 이어진 두 지점이 빠져 경계
+        Assert.Equal(2, r.Missing.Count);
+    }
+
+    [Fact]
+    public void AFewStrayFaultsFromOtherThreadsAreNotAMissingPiece()
+    {
+        var memory = new FakeMemory { SlowWithoutFaults = 10 * Mib, NoiseFaults = 5 }; // 느린 조각마다 다른 스레드 폴트 5 회: 문턱 8 보다 낮음
+        memory.Lengths["a"] = 40 * Mib;
+
+        FindResult r = Find(memory, [new ReadOp("a", 0, 40 * Mib)]);
+
+        Assert.Equal(0, r.Boundaries);
+        Assert.False(r.BoundaryHit);
+        Assert.Empty(r.Missing);
+        Assert.Equal(40 * Mib, Sum(r.Resident));
     }
 
     [Fact]
@@ -196,10 +215,10 @@ public sealed class ResidentFinderTests
             memory.Cold["f" + i] = [(0, 2 * Mib)];
         }
 
-        FindResult r = Find(memory, [.. Enumerable.Range(0, 20).Select(i => new ReadOp("f" + i, 0, 2 * Mib))], cap: 3 * Mib);
+        FindResult r = Find(memory, [.. Enumerable.Range(0, 20).Select(i => new ReadOp("f" + i, 0, 2 * Mib))], cap: Mib);
 
         Assert.True(r.CapReached);
-        Assert.True(r.DiskBytes >= 3 * Mib && r.DiskBytes <= 4 * Mib, $"disk {r.DiskBytes}");
+        Assert.True(r.DiskBytes >= Mib && r.DiskBytes <= 2 * Mib, $"disk {r.DiskBytes}");
         Assert.True(r.LeftBytes > 0); // 확인하지 못하고 남긴 범위는 이번에 만지지 않음
     }
 

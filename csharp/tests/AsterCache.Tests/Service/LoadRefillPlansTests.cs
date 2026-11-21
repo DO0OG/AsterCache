@@ -258,4 +258,86 @@ public sealed class LoadRefillPlansTests : IDisposable
         LoadRefillPlans.ForgetRanked(_game);
         Assert.Null(LoadRefillPlans.RankedRows(_game));
     }
+
+    private string MakeFile(string name, long blocks)
+    {
+        string path = Path.Combine(Path.GetDirectoryName(_gameFile)!, name);
+        using var f = new FileStream(path, FileMode.Create);
+        f.SetLength(blocks * Block);
+        return path;
+    }
+
+    [Fact]
+    public void SparseFileBlocksAreRankedInASeparateListBySamePlayCountThenLatencyAndTheMainListStaysWithoutThem()
+    {
+        string sparse = MakeFile("sparse.bin", 4);
+        IReadOnlyList<IoSummaryFile> files = [new(_gameFile), new(sparse)];
+        IoSummaryStore.WriteForRun(Run(1), Rows(files, Row(0, 0, 2), Row(1, 1, 900, latencyUs: 5), Row(1, 0, 2, latencyUs: 700)));
+        IoSummaryStore.WriteForRun(Run(2), Rows(files, Row(1, 1, 800, latencyUs: 5), Row(1, 2, 1, latencyUs: 9)));
+
+        string line = LoadRefillPlans.RebuildRanked(_game, Started, path => path == sparse);
+
+        Assert.Equal([(_gameFile, 0L)], LoadRefillPlans.RankedRows(_game)!.Select(r => (r.Path, r.Offset))); // 주 목록은 지금과 같음
+        Assert.Equal([(sparse, 1L * Block), (sparse, 0L), (sparse, 2L * Block)], LoadRefillPlans.SparseRankedRows(_game)!.Select(r => (r.Path, r.Offset))); // 두 플레이에 나온 블록 먼저, 그다음 지연 큰 순
+        Assert.Contains("1 sparse files left out", line, StringComparison.Ordinal);
+        Assert.EndsWith(", sparse list 3 blocks/0.2 MiB in 1 files", line, StringComparison.Ordinal);
+        Assert.NotEqual(LoadRefillPlans.RankedPathOf(_game), LoadRefillPlans.SparseRankedPathOf(_game));
+    }
+
+    [Fact]
+    public void TheSparseListLeavesOutVolatileUnbufferedOutsideAndNoCacheBlocksAndGameWrittenFilesEvenWhenTheMainListTakesThem()
+    {
+        string sparse = MakeFile("sparse.bin", 4);
+        string volatileSparse = MakeFile("vol.bin", 4);
+        string unbuffered = MakeFile("unbuffered.bin", 4);
+        string outside = Path.Combine(_dir, "outside.bin"); // 허용 루트 밖
+        File.WriteAllBytes(outside, new byte[4 * Block]);
+        var info = new FileInfo(unbuffered);
+        UnbufferedFileStore.Write(UnbufferedFiles.PathOf(_game), new UnbufferedFileList(new Dictionary<string, LoadRefillFileStat> { [unbuffered] = new(info.Length, info.LastWriteTimeUtc.Ticks) }, 2), Started);
+        File.WriteAllText(AutoTracer.VolatilePath(_game), $"{{\"{volatileSparse.Replace("\\", "\\\\", StringComparison.Ordinal)}\": \"rewritten by the game\"}}");
+        IReadOnlyList<IoSummaryFile> files = [new(sparse), new(volatileSparse), new(unbuffered), new(outside)];
+        IoSummaryStore.WriteForRun(Run(1), Rows(files, Row(0, 0, 2), Row(0, 1, 3, paging: 0), Row(1, 0, 2), Row(2, 0, 2), Row(3, 0, 2)));
+
+        _ = LoadRefillPlans.RebuildRanked(_game, Started, _ => true, includeWritten: true);
+
+        Assert.Equal([(sparse, 0L)], LoadRefillPlans.SparseRankedRows(_game)!.Select(r => (r.Path, r.Offset))); // 캐시 없이만 읽힌 블록·가변(게임이 쓰는)·캐시 없이 읽는 파일·허용 루트 밖 제외
+    }
+
+    [Fact]
+    public void TheSparseListStopsAtFiveHundredTwelveMiBAndFilesThatChangedAfterTheRankingAreLeftOutOfItsRows()
+    {
+        string sparse = MakeFile("big.bin", 8300);
+        IoSummaryStore.WriteForRun(Run(1), Rows([new IoSummaryFile(sparse)], [.. Enumerable.Range(0, 8200).Select(b => Row(0, b, 2, latencyUs: 100 + b))]));
+
+        string line = LoadRefillPlans.RebuildRanked(_game, Started, path => path == sparse);
+
+        Assert.EndsWith(", sparse list 8192 blocks/512.0 MiB in 1 files", line, StringComparison.Ordinal);
+        List<AsterCache.Core.Trace.TraceEvent> rows = LoadRefillPlans.SparseRankedRows(_game)!;
+        Assert.Equal(8192, rows.Count);
+        Assert.Equal(8199L * Block, rows[0].Offset); // 지연이 가장 큰 블록이 먼저
+
+        File.AppendAllText(sparse, "x"); // 순위를 만든 뒤 바뀐 파일 (크기가 다름)
+        Assert.Null(LoadRefillPlans.SparseRankedRows(_game));
+    }
+
+    [Fact]
+    public void WithoutTheSparseListFileAnOldInstallReadsItAsEmptyAndTheRankingIsStaleSoItIsBuiltOnceMore()
+    {
+        Func<string, DateTimeOffset?> time = p => File.Exists(p) ? File.GetLastWriteTimeUtc(p) : null;
+        IoSummaryStore.WriteForRun(Run(1), Rows([new IoSummaryFile(_gameFile)], Row(0, 0, 2)));
+        LoadRefillPlans.RebuildRanked(_game, Started);
+        Assert.False(LoadRefillPlans.RankedIsStale(_game, time));
+        Assert.True(File.Exists(LoadRefillPlans.SparseRankedPathOf(_game))); // 스파스 파일이 없어도 빈 목록으로 다시 만들었음을 남김
+        Assert.Null(LoadRefillPlans.SparseRankedRows(_game));
+
+        File.Delete(LoadRefillPlans.SparseRankedPathOf(_game)); // 옛 설치본: 주 순위 목록만 있음
+        Assert.Null(LoadRefillPlans.SparseRankedRows(_game));
+        Assert.NotNull(LoadRefillPlans.RankedRows(_game)); // 주 목록은 그대로 읽힘
+        Assert.True(LoadRefillPlans.RankedIsStale(_game, time));
+
+        File.Delete(IoSummaryStore.RunPath(Run(1))); // 집계가 없으면 두 목록 모두 지움
+        LoadRefillPlans.RebuildRanked(_game, Started);
+        Assert.False(File.Exists(LoadRefillPlans.RankedPathOf(_game)));
+        Assert.False(File.Exists(LoadRefillPlans.SparseRankedPathOf(_game)));
+    }
 }

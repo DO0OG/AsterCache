@@ -78,6 +78,18 @@ Windows 의 통계를 읽을 수 없으면(예: 권한이 없을 때) 3번은 �
 - **근거와 확인하지 못한 것.** 이 PC 의 시험(게임 없음)에서 매핑 뷰를 닫지 않은 256 MiB 는 메모리 압박 뒤에도 전부 남았고(다시 만질 때 하드 폴트 +0), 닫은 대조군은 76~100% 밀려났습니다. 파일 핸들을 닫은 섹션과 뷰만 두면 다른 프로세스의 덮어쓰기, 늘리기, 바꿔 끼우기, 삭제, 배타적 열기는 성공했고 크기 줄이기만 오류 1224 로 실패했습니다. `VirtualUnlock` 은 잠그지 않은 범위에 부르면 오류 158 을 돌려주지만 작업 집합에서 빼고 내놓은 순서대로 밀려났습니다(순서 확인은 1 회). 다른 프로세스의 낮은 우선순위·순차 플래그 읽기가 페이지를 앞으로 보내거나 우선순위를 낮추는 동작은 이 PC 에서 재현되지 않았습니다. 확인하지 못한 것: 실제 게임의 읽기 방식(캐시 미스, 비동기·겹친 읽기)에서의 효과, 사용 가능 메모리가 낮을 때 메모리 관리자가 붙든 작업 집합을 줄이는 문턱과 속도, 실제 게임 파일에서의 붙들기·내놓기 비용, 안티치트가 오래 열려 있는 게임 파일 섹션을 어떻게 보는지(그래서 고정과 같은 안티치트 게이트를 씁니다), 실제 플레이에서의 끊김 개선 폭입니다.
 - **로그.** `<게임>: cache held while playing (<exe>): N MiB of T MiB target (L MiB list) in F files, V views, in S s (cpu C s, K checks), D MiB read from disk (H hard faults), M missing stretches skipped (B MiB not held), ...`: 붙들기 결과입니다(건너뛴 양, 가변·바뀐 파일과 스파스 파일 때문에 붙들지 않은 양, 하한이나 읽기 상한으로 멈춘 사유, 끝에 표본 16곳 확인이 붙을 수 있음). `<게임>: cache hold released N MiB for memory (<exe>): available A MiB < floor F MiB, H MiB still held, in S s`: 하한 때문에 내놓았습니다. `<게임>: cache hold checked (<exe>): N MiB read again in S s (cpu C s, K checks), R MiB reduced by the memory manager and read from disk (H hard faults), ..., X MiB held`: 점검입니다(상한에 닿아 뺀 양, 바뀌어 푼 파일이 있으면 붙음). `<게임>: cache hold ended after K checks (<exe>): ...`: 끝낼 때의 합계입니다. `<게임>: cache hold while playing skipped (<exe>: <사유>)` 는 붙들지 않은 까닭입니다(`anti-cheat: ...`, `no volatile file information yet, no trace was recorded`, `available N MiB leaves no room above the floor F MiB`, `disk yielded`). 붙들기 시작 줄에는 `game-written files: N MiB held in F files, not held by condition: A MiB with too little size history, B MiB that shrank before, C MiB after a game update or with the update unknown` 도 붙습니다(게임이 쓰는 파일에서 붙든 양과 조건 때문에 붙들지 않은 양). `<게임>: cache hold released a game-written file the game changed (<exe>): <파일>, N MiB, S s after the hold started, H MiB still held` 는 5 초 확인이 푼 것입니다(파일과 시각). 끝낼 때의 줄에는 `, F game-written files (N MiB) released after the game changed them` 가 붙습니다.
 
+## 게임이 실행되는 동안의 스파스 파일 블록 유지 (`memory.keep_sparse`)
+
+스파스 파일은 매핑으로 붙들거나 만질 수 없습니다. 스파스 파일에 섹션을 만들면 그 파일의 캐시가 파일 전체에서 버려지고 (2026-11-14 확인), 일반 버퍼드 `ReadFile` 은 버리지 않고 캐시에 적중하기 때문입니다. 그래서 블록 순위 목록·붙들기·만지기는 스파스 파일을 빼고, 게임이 그 파일을 읽는 것은 보호받지 못했습니다.
+2026-11-22 Call of Duty 재생에서 경기 중 (170~600 초) 순위 목록 밖 디스크 지연의 93% (261 초 가운데 242 초) 가 스파스 파일의 읽기였습니다. 스파스 파일을 다시 읽을 때 같은 64 KiB 블록 안에서 게임이 아직 읽지 않은 쪽 페이지는 45~64% 가 디스크로 갔고 (다른 파일은 5%), 그래서 블록을 통째로 읽습니다.
+
+- **순위.** 블록 순위 목록을 다시 만들 때 스파스 파일의 블록을 같은 점수 (나온 플레이 수, 이전 플레이의 지연 합) 로 줄 세워 주 목록 옆의 별도 목록 `<게임>.trace.json.ranked-sparse.json` 에 저장합니다. 주 목록은 지금과 같습니다. 목록은 최대 512 MiB 입니다 (`LoadRefillPlanner.SparseRankedCapBytes`). 주 목록과 같은 제외 규칙 (캐시 없이만 읽힌 블록, 허용 루트 밖 파일, 캐시 없이만 읽는 파일) 이 적용되고, 게임이 스스로 쓰는 (가변) 파일은 넣지 않습니다. 이 목록이 생기기 전의 설치본처럼 파일이 없으면 빈 목록으로 읽고, 다음 서비스 시작 때 순위 목록을 한 번 다시 만듭니다.
+- **읽기.** 게임이 실행되는 동안 게임 캐시 유지의 곁 스레드가 이 목록을 가장 중요한 블록부터 64 KiB 한 블록씩 일반 버퍼드 읽기로만 다시 읽습니다. 매핑·뷰·`PrefetchVirtualMemory`·`FILE_FLAG_NO_BUFFERING` 은 쓰지 않습니다. 대기 목록에 있는 페이지를 읽으면 다시 최근에 쓴 것이 되어 게임이 읽는 양에 밀려나지 않습니다. 읽은 내용은 재사용하는 1 MiB 버퍼로 받아 버립니다. 파일은 읽기 전용에 읽기·쓰기·삭제 공유로 열어 회차가 끝날 때 닫고, 열 수 없는 파일은 그 회차에서 건너뜁니다. 안티치트 구성요소 파일은 붙들기와 같이 뺍니다. 실행 이미지는 매핑하지 않는 읽기라 따로 거르지 않습니다.
+- **주기.** 첫 회차는 시작 만지기 직후에 돌고, 시작 뒤 첫 3 분은 20 초마다, 그 뒤는 30 초마다 돕니다. 근거: 2026-11-22 기록에서 시작 뒤 150~180 초에 대기 목록 재사용이 초당 47~63 MiB 였고 그 뒤에는 2 분에 0.7~1.6 GiB 였으므로 20 초에 최대 1.3 GiB, 30 초에 최대 1.9 GiB 가 재사용되어 경기 중 우선순위 5 대기 양 (약 4~6 GiB) 보다 작습니다. 게임이 실행되는 동안의 캐시 유지가 도는 곳이면 어디서나 돕니다 (`memory.standby_ladder` 켜짐, 게임에 트레이스와 순위 목록이 있음: 트레이스를 금지하는 안티치트 게임은 목록이 없음). 붙드는 게임과 다시 만지는 게임 모두입니다.
+- **멈춤.** 버퍼드 읽기는 하드 폴트로 셀 수 없으므로, 한 블록을 읽는 데 2 ms + MiB 당 1 ms 보다 오래 걸리면 (메모리 복사는 MiB 당 1 ms 미만, 하드디스크 읽기는 수 ms 이상) 디스크로 간 읽기로 봅니다. 이어진 두 블록이 디스크로 가면 경계로 보아 그 회차를 멈추고 첫 블록부터 뒤를 이 플레이에서 뺍니다. 한 회차에서 디스크로 4 MiB 를 넘게 읽거나 한 플레이에서 모두 32 MiB 를 넘게 읽으면 이 플레이의 이 유지를 끝냅니다. 가용 메모리가 붙들기의 하한 (2 GiB) 아래면 그 회차는 건너뜁니다: 밀려나는 중인 것을 디스크에서 다시 읽지 않기 위함입니다.
+- **로그.** 시작에 한 번 `<게임>: sparse blocks kept while playing: N MiB in F files (target T MiB)`, 경계를 만나면 `... boundary after N MiB, M MiB left out for the rest of this play`, 끝에 `... ended after R rounds (<exe>): N MiB left in the list, D MiB read from disk` 와 사유 (게임이 끝남·설정에서 끔·디스크 읽기 상한·목록이 빔) 가 남습니다. 플레이 기록 줄은 바뀌지 않습니다.
+- **근거와 확인하지 못한 것.** 추정은 2026-11-22 재생에서 나왔습니다: 이전 플레이의 디스크 지연이 큰 순으로 고른 블록 512 MiB 가 경기 중 순위 목록 밖 디스크 지연 261 초 가운데 약 118 초 (읽기 47 MiB) 를 덮었을 것이고, 그 경기 디스크 지연 전체 866 초의 약 14% 입니다 (1 GiB 였다면 157 초, 18%). 게임이 읽을 때까지 데이터가 캐시에 남는다고 본 위쪽 한계입니다. 실제 플레이에서는 확인하지 못했습니다: 다음 플레이들의 프레임 간격 기록과 스파스 파일 읽기로, 그리고 서비스가 읽은 페이지를 게임이 적중하는지로 확인해야 합니다 (재생에서는 같은 페이지의 다시 읽기가 캐시에 남았습니다). 이 블록들은 주 목록의 블록과 캐시를 나눠 쓰며 512 MiB 가 다른 쪽에 준 손해는 계산하지 않았습니다. 읽는 데 걸린 시간으로 가르므로 CPU 가 바쁠 때 느린 읽기를 디스크로 간 것으로 볼 수 있고, 그래서 이어진 두 블록이 있어야 경계로 봅니다.
+
 ## 언제 도나
 
 아래가 모두 맞아야 합니다. 아니면 아무것도 참조하지 않습니다.
@@ -111,6 +123,8 @@ Windows 의 통계를 읽을 수 없으면(예: 권한이 없을 때) 3번은 �
 게임이 실행되는 동안의 붙들기만 끄려면 `"memory": { "keep_hold": false }` 를 넣습니다. 그러면 위의 대기 목록 다시 참조가 그대로 동작합니다. `memory.keep_hold` 도 새 키라 이전 버전은 이 키가 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오.
 
 게임이 스스로 쓰는 파일의 붙들기만 끄려면 `"memory": { "keep_hold_written_files": false }` 를 넣습니다. 그러면 그런 파일은 예전처럼 붙들지 않고, 블록 순위 목록을 다시 만들 때부터 순위에도 들지 않습니다. 이 키도 새 키라 이전 버전은 이 키가 든 설정 파일을 거부합니다.
+
+스파스 파일 블록 유지만 끄려면 `"memory": { "keep_sparse": false }` 를 넣습니다. 이 키도 새 키이며 이전 버전은 이 키가 들어 있는 설정 파일을 거부합니다.
 
 ## 켜졌는지 확인하는 법
 

@@ -41,6 +41,10 @@ public static class LoadRefillPlanner
     /// 조사에서 예산 안에 담긴 순위 앞쪽 4~5.5 GiB 가 경기 중 지연의 대부분을 덮었으므로 예산 수준인 8 GiB 까지만 둡니다 (그 이상은 예산 밖이라 읽히지 않음).
     public const long RankedCapBytes = 8L << 30;
 
+    /// 스파스 파일 블록 순위 목록의 고정 상한: 512 MiB. 스파스 파일은 매핑하면 캐시가 버려져 주 순위 목록에서 빠지므로 (RankedCapBytes 와 따로) 버퍼드 읽기로만 유지할 블록을 별도로 줄 세웁니다.
+    /// 근거: 2026-11-22 조사에서 이전 플레이 기록의 디스크 지연 순으로 고른 스파스 블록 512 MiB 가 경기 중 순위 밖 디스크 지연 261 초 가운데 약 118 초 (45%) 를 덮었고, 그 이상은 늘어나는 폭이 줄면서 (1 GiB 에서 157 초) 경기 중 캐시를 정적 순위 블록과 나눠 써야 하는 손해가 커집니다 (추정).
+    public const long SparseRankedCapBytes = 512L << 20;
+
     /// 게임이 스스로 쓰는 파일의 블록이 순위에 들려면 나와야 하는 플레이 수. 근거: 2026-11-21 Call of Duty 플레이에서 가변 파일 디스크 읽기 블록의 81% (지연으로는 96%) 가 이전 세 플레이 중 하나에서도 읽힌 블록이었고,
     /// 한 플레이에만 나온 블록은 그 플레이에 새로 쓴 데이터일 수 있어 (처음 보는 블록은 지연 3% 이하) 두 플레이 이상 반복해 읽힌 블록만 정적 파일의 블록과 같은 점수 (플레이 수, 지연 합) 로 줄 세웁니다.
     public const int WrittenMinPlays = 2;
@@ -257,6 +261,11 @@ public static class LoadRefillStore
     public const string RankedSuffix = ".ranked.json";
 
     public static string RankedPathFor(string rawTracePath) => rawTracePath + RankedSuffix;
+
+    /// 스파스 파일 블록 순위 목록 (같은 형식, 주 순위 목록 옆에 따로 둠): 옛 설치본에는 없으며 없으면 빈 목록으로 보고 (Read 가 null) 주 순위 목록 파일의 형식은 바뀌지 않습니다.
+    public const string SparseRankedSuffix = ".ranked-sparse.json";
+
+    public static string SparseRankedPathFor(string rawTracePath) => rawTracePath + SparseRankedSuffix;
 
     /// 목록을 보강하려고 추가로 추적한 횟수를 남기는 곁 파일 (서비스를 다시 시작해도 유지, 원시 트레이스를 다시 쓸 때 지워짐).
     public static string TriedPath(string rawTracePath) => rawTracePath + ".loadrefill.tried";

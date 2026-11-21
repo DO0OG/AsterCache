@@ -7,11 +7,12 @@ namespace AsterCache.Service;
 /// 순위 목록이 없으면 호출하는 쪽이 이 클래스를 거치지 않으므로 지금 동작 그대로입니다.
 internal static class PlayRanking
 {
-    /// 예산을 넘어 잘라야 할 때의 행 순서: 앞부분 예열 전용 (front) → tier0 (선읽기 행의 앞 tier0Bytes, 스케줄러가 접근 순서로 앞에 두는 만큼) → 순위 목록 → 나머지 선읽기 → 나머지 예열 전용 → 추측 행.
-    /// 순위 행에서는 앞 단계와 겹치는 구간을 빼고, 뒤 단계 행에서는 순위 행과 겹치는 구간을 뺍니다 (같은 바이트가 예산을 두 번 쓰지 않게).
-    /// 순위 행은 Rows[RankedFrom..RankedTo] 입니다.
+    /// 예산을 넘어 잘라야 할 때의 행 순서: 앞부분 예열 전용 (front) → tier0 (선읽기 행의 앞 tier0Bytes, 스케줄러가 접근 순서로 앞에 두는 만큼) → 스파스 유지 블록 (sparse) → 순위 목록 → 나머지 선읽기 → 나머지 예열 전용 → 추측 행.
+    /// 스파스 유지 블록 (실행 중 스파스 유지, Prewarm.PlaySparse 가 다시 읽을 최대 512 MiB) 을 순위 목록 앞에 두는 것은 예산이 모자라 일부만 읽을 때도 이 블록이 읽히는 범위에 들게 하기 위함입니다: 메모리에 없으면 유지가 디스크에서 올려야 합니다.
+    /// 스파스·순위 행에서는 앞 단계와 겹치는 구간을 빼고, 뒤 단계 행에서는 스파스·순위 행과 겹치는 구간을 뺍니다 (같은 바이트가 예산을 두 번 쓰지 않게).
+    /// 순위 행은 Rows[RankedFrom..RankedTo] 입니다 (스파스 행은 그 앞).
     public static (List<TraceEvent> Rows, int RankedFrom, int RankedTo) Order(IReadOnlyList<TraceEvent> front, IReadOnlyList<TraceEvent> observed, IEnumerable<TraceEvent> warmOnly, IReadOnlyList<TraceEvent> guess,
-        IReadOnlyList<TraceEvent> ranked, long tier0Bytes)
+        IReadOnlyList<TraceEvent> ranked, long tier0Bytes, IReadOnlyList<TraceEvent>? sparse = null)
     {
         int head = 0;
         for (long taken = 0; head < observed.Count && taken < tier0Bytes; head++)
@@ -21,10 +22,12 @@ internal static class PlayRanking
 
         List<TraceEvent> first = [.. front, .. observed.Take(head)];
         var covered = new RangeIndex(first);
-        List<TraceEvent> rankedNew = [.. ranked.SelectMany(covered.Subtract)];
-        var rankedCover = new RangeIndex(rankedNew);
-        List<TraceEvent> rows = [.. first, .. rankedNew, .. observed.Skip(head).Concat(warmOnly).Concat(guess).SelectMany(rankedCover.Subtract)];
-        return (rows, first.Count, first.Count + rankedNew.Count);
+        List<TraceEvent> sparseNew = [.. (sparse ?? []).SelectMany(covered.Subtract)];
+        var coveredWithSparse = new RangeIndex([.. first, .. sparseNew]);
+        List<TraceEvent> rankedNew = [.. ranked.SelectMany(coveredWithSparse.Subtract)];
+        var rankedCover = new RangeIndex([.. sparseNew, .. rankedNew]);
+        List<TraceEvent> rows = [.. first, .. sparseNew, .. rankedNew, .. observed.Skip(head).Concat(warmOnly).Concat(guess).SelectMany(rankedCover.Subtract)];
+        return (rows, first.Count + sparseNew.Count, first.Count + sparseNew.Count + rankedNew.Count);
     }
 
     /// 유지가 만지는 범위를 순위 순으로 다시 정렬합니다: 순위 목록에 든 64 KiB 블록은 순위 순 (이어진 블록은 한 범위로 합침), 나머지는 지금 순서로 그 뒤에.

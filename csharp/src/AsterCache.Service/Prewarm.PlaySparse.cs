@@ -7,11 +7,13 @@ using AsterCache.Windows;
 
 namespace AsterCache.Service;
 
-/// Prewarmer 가 게임이 실행되는 동안 스파스 속성 파일의 순위 블록 (최대 SparseRankedCapBytes) 을 버퍼드 읽기로 주기마다 다시 읽어 메모리에 남기는 곳 (설정 memory.keep_sparse).
-/// 스파스 파일은 섹션 (매핑) 을 만들면 그 파일의 캐시가 파일 전체에서 버려지므로 (2026-11-14 실험) 붙들기·다시 만지기·순위 목록 어디에도 넣지 못하고, 그 결과 경기 중 순위 밖 디스크 지연의 93% 가 스파스 파일의 읽기였습니다 (2026-11-22 조사).
-/// 그래서 이 유지는 매핑·뷰·PrefetchVirtualMemory 를 부르지 않고 일반 버퍼드 ReadFile 만 씁니다 (IBlockReader). 대기 목록의 페이지를 읽으면 다시 최근에 쓴 것이 되어 경기 중 새로 읽히는 양에 밀려나지 않습니다.
+/// Prewarmer 가 게임이 실행되는 동안 스파스 속성 파일의 순위 블록 (최대 SparseRankedCapBytes) 을 버퍼드 읽기로 주기마다 다시 읽는 곳 (설정 memory.keep_sparse).
+/// 스파스 파일은 섹션 (매핑) 을 만들면 그 파일의 캐시가 파일 전체에서 버려지므로 (2026-11-14 실험) 붙들기·다시 만지기·주 순위 목록 어디에도 넣지 못하고, 그 결과 경기 중 순위 밖 디스크 지연의 93% 가 스파스 파일의 읽기였습니다 (2026-11-22 조사).
+/// 그래서 이 유지는 매핑·뷰·PrefetchVirtualMemory 를 부르지 않고 일반 버퍼드 ReadFile 만 씁니다 (IBlockReader). 이 블록은 예열이 예산 안에서 먼저 읽어 두고 (PlayRanking.Order 의 스파스 행), 이 유지는 그것을 게임이 실행되는 동안 다시 읽습니다.
+/// 대기 목록의 페이지를 버퍼드로 다시 읽으면 다시 최근에 쓴 것이 되어 경기 중 새로 읽히는 양에 밀려나지 않을 것으로 봅니다: 이것은 확인하지 못한 가정입니다 (실험으로 확인한 것은 버퍼드 읽기가 스파스 파일의 캐시를 지우지 않고 적중한다는 것까지). 회차별 디스크 읽기량 (끝 줄) 으로 실제 플레이에서 확인합니다.
 /// 붙들기·다시 만지기와 따로 도는 스레드에서 돕니다 (KeepCacheWhilePlaying 이 시작하고 끝냄): 첫 회차는 시작 만지기가 끝난 직후이고, 그 뒤는 SparseKeepEarlyEvery / SparseKeepEvery 마다 돕니다.
-/// 버퍼드 읽기는 하드 폴트 수로 디스크 읽기를 셀 수 없으므로 블록 하나를 읽는 데 걸린 시간으로 디스크로 갔는지 판정하고, 이어진 두 블록이 디스크로 갔으면 거기를 경계로 보고 뒤 (덜 중요한 쪽) 를 이 플레이의 유지 대상에서 뺍니다.
+/// 회차는 매번 목록의 맨 앞부터 읽습니다: 앞부분은 메모리에 있어 빠르고, 디스크에서 읽힌 블록은 읽은 순간 메모리에 올라오므로 그 회차의 디스크 읽기 상한에 닿으면 그 회차만 끝내고 다음 회차가 이어서 더 나아갑니다.
+/// 버퍼드 읽기는 이 프로세스의 하드 폴트 수에 잡히지 않으므로 (2026-11-22 실험: 콜드 읽기 후에도 하드 폴트 +0) 블록 하나를 읽는 데 걸린 시간으로 디스크로 갔는지 판정하고, 판정한 읽기는 상한으로만 셉니다.
 public sealed partial class Prewarmer
 {
     /// 게임 시작 뒤 이 시간 동안은 SparseKeepEarlyEvery 마다, 그 뒤는 SparseKeepEvery 마다 한 회차를 돕니다. 게임이 시작 뒤 3 분 안에 메모리를 가장 많이 가져가기 때문입니다 (붙들기의 HoldEarlyWindow 와 같은 값).
@@ -29,23 +31,33 @@ public sealed partial class Prewarmer
     /// 디스크로 간 읽기로 보는 기준의 길이 비례분: MiB 당 1 ms (메모리 복사 속도의 위쪽 한계).
     public const double SparseDiskReadSecondsPerMiB = 0.001;
 
-    /// 한 회차에서 디스크에서 읽는 양의 상한: 4 MiB. 넘으면 이 플레이의 스파스 유지를 끝냅니다 (읽는 블록이 64 KiB 라 디스크로 간 블록이 64 개). 이어진 두 블록의 경계 판정이 먼저 막으므로 흩어진 블록이 이만큼 밀려난 경우의 방어입니다.
+    /// 이 유지의 첫 회차가 디스크에서 읽는 양의 상한: 64 MiB. 게임이 시작될 때 예열한 블록 일부가 이미 빠져 있을 수 있어 (게임이 시작 뒤 9~10 GiB 를 잡음) 그 보충을 첫 회차에 크게 허용합니다. 넘으면 그 회차만 끝나고 다음 회차가 이어서 읽습니다.
+    public const long SparseFirstRoundDiskCapBytes = 64L << 20;
+
+    /// 첫 회차 뒤 한 회차가 디스크에서 읽는 양의 상한: 4 MiB (읽는 블록이 64 KiB 라 디스크로 간 블록 64 개). 넘으면 그 회차만 끝나고 다음 회차가 이어서 읽습니다.
     public const long SparseRoundDiskCapBytes = 4L << 20;
 
-    /// 한 플레이에서 이 유지가 디스크에서 읽는 양의 누적 상한: 32 MiB (붙들기의 KeepDiskReadCapBytes 와 같은 값). 넘으면 이 플레이의 스파스 유지를 끝냅니다: 경기 중 디스크 읽기를 늘리지 않기 위한 한도입니다.
-    public const long SparsePlayDiskCapBytes = 32L << 20;
+    /// 한 플레이에서 이 유지가 디스크에서 읽는 양의 누적 상한: 128 MiB. 넘으면 이 플레이의 스파스 유지를 끝냅니다 (경기 중 디스크 읽기를 늘리지 않기 위한 한도).
+    public const long SparsePlayDiskCapBytes = 128L << 20;
 
-    /// 게임이 끝나 스레드를 멈출 때 기다리는 시간의 상한 (한 블록을 읽는 시간보다 훨씬 긺).
+    /// 한 회차의 읽기를 나누는 묶음 크기: 16 MiB (붙들기의 HoldBatchBytes 와 같음). 묶음마다 직렬화 잠금 (_touchSerial) 을 잡았다 놓고 묶음 사이에 SparseBatchPause 만큼 쉬어 복사가 한꺼번에 몰리지 않게 합니다.
+    public const long SparseBatchBytes = 16L << 20;
+
+    /// 묶음 사이에 쉬는 시간: 20 ms (512 MiB 한 회차에서 묶음 32 개에 약 0.6 초). 읽기 스레드가 코어를 연이어 차지하지 않고 게임 스레드에 양보하게 합니다.
+    public static readonly TimeSpan SparseBatchPause = TimeSpan.FromMilliseconds(20);
+
+    /// 게임이 끝나 스레드를 멈출 때 기다리는 시간의 상한 (한 묶음을 읽는 시간보다 훨씬 긺).
     public static readonly TimeSpan SparseJoinWait = TimeSpan.FromSeconds(10);
 
     /// 이 길이를 읽는 데 걸린 시간 (초) 이 이 값을 넘으면 디스크로 간 읽기로 봅니다.
     internal static double SparseDiskReadSeconds(long lengthBytes) => SparseDiskReadBaseSeconds + (lengthBytes / 1048576.0 * SparseDiskReadSecondsPerMiB);
 
-    /// 한 플레이의 스파스 유지 상태: 중요한 순서의 남은 블록 (경계를 만나면 그 지점부터 뒤가 빠짐), 돈 회차 수, 디스크에서 읽은 누적 양.
+    /// 한 플레이의 스파스 유지 상태: 중요한 순서의 블록, 돈 회차 수, 목록에서 이 플레이가 닿은 가장 먼 곳, 디스크로 판정한 읽기의 누적.
     private sealed class SparseKeep
     {
         public IReadOnlyList<ReadOp> Blocks = [];
         public int Rounds;
+        public int Reached; // 어느 회차든 읽은 가장 뒤 블록의 번호 + 1
         public long DiskBytes;
     }
 
@@ -53,8 +65,8 @@ public sealed partial class Prewarmer
     {
         Completed, // 목록 끝까지 읽음
         Skipped, // 조건이 맞지 않아 읽지 않음 (메모리 하한 아래·읽기 양보·재배치 중·메모리에 둔 목록 없음): 다음 회차에 다시
-        Boundary, // 이어진 두 블록이 디스크로 가 뒤를 뺌
-        DiskCap, // 디스크 읽기 상한: 이 플레이의 유지를 끝냄
+        RoundCap, // 이 회차의 디스크 읽기 상한: 이 회차만 끝나고 다음 회차가 이어서 읽음
+        PlayCap, // 플레이 누적 디스크 읽기 상한: 이 플레이의 유지를 끝냄
         Canceled, // 서비스가 멈춤
     }
 
@@ -104,15 +116,9 @@ public sealed partial class Prewarmer
                     break;
                 }
 
-                if (end == SparseRoundEnd.DiskCap)
+                if (end == SparseRoundEnd.PlayCap)
                 {
-                    ended = " (disk read cap reached)";
-                    break;
-                }
-
-                if (keep.Blocks.Count == 0)
-                {
-                    ended = " (nothing left in the list)";
+                    ended = " (disk read cap of the play reached)";
                     break;
                 }
             }
@@ -126,7 +132,7 @@ public sealed partial class Prewarmer
         {
             if (noted)
             {
-                _log.Info($"{started.Name}: sparse blocks kept while playing ended after {keep.Rounds} rounds ({exe}): {keep.Blocks.Sum(b => b.Length) >> 20} MiB left in the list, {keep.DiskBytes >> 20} MiB read from disk{ended}");
+                _log.Info($"{started.Name}: sparse blocks kept while playing ended after {keep.Rounds} rounds ({exe}): reached {keep.Blocks.Take(keep.Reached).Sum(b => b.Length) >> 20} of {keep.Blocks.Sum(b => b.Length) >> 20} MiB of the list, {keep.DiskBytes >> 20} MiB read from disk (judged by read time){ended}");
             }
         }
     }
@@ -144,9 +150,11 @@ public sealed partial class Prewarmer
         return keep.Blocks.Count > 0;
     }
 
-    /// 한 회차: 남은 블록을 가장 중요한 것부터 버퍼드 읽기로 읽습니다. 가용 메모리가 붙들기의 하한 아래면 건너뜁니다 (밀려나는 중인 것을 디스크에서 다시 읽지 않기 위함).
-    /// 이어진 두 블록이 디스크로 갔으면 거기서 멈추고 첫 블록부터 뒤를 뺍니다. 회차·플레이 디스크 읽기 상한을 넘으면 거기서 멈추고 (DiskCap) 이 플레이의 유지를 끝냅니다. 열 수 없는 파일은 그 회차에서 건너뜁니다.
-    /// 읽는 스레드의 I/O 우선순위와 CPU 우선순위는 이 호출 안에서만 낮추고, 읽기 중재의 대여 (양보 중이면 건너뜀) 와 초 단위 기록 표시는 다른 유지 회차와 같습니다.
+    /// 한 회차: 목록을 맨 앞 (가장 중요한 블록) 부터 버퍼드 읽기로 읽습니다. 가용 메모리가 붙들기의 하한 아래면 건너뜁니다 (밀려나는 중인 것을 디스크에서 다시 읽지 않기 위함).
+    /// 디스크로 판정한 읽기의 합이 이 회차의 상한 (첫 회차 SparseFirstRoundDiskCapBytes, 그 뒤 SparseRoundDiskCapBytes) 에 닿으면 이 회차만 끝내고, 플레이 누적 상한에 닿으면 이 플레이의 유지를 끝냅니다 (PlayCap). 열 수 없는 파일은 그 회차에서 건너뜁니다.
+    /// 읽기는 묶음 (SparseBatchBytes) 마다 직렬화 잠금 (_touchSerial) 을 잡았다 놓고 묶음 사이에 쉽니다. 읽는 스레드의 I/O 우선순위만 이 호출 안에서 낮추고 CPU 우선순위는 보통으로 둡니다:
+    /// CPU 우선순위가 낮으면 게임 스레드에 밀려 메모리 복사가 길어져 디스크 읽기로 잘못 셉니다. 디스크로 판정한 읽기는 서비스 자신의 읽기로 기록해 (SelfReadLog) 다음 집계가 게임의 읽기로 세지 않게 합니다.
+    /// 읽기 중재 대여 (양보 중이면 건너뜀) 와 초 단위 기록 표시는 다른 유지 회차와 같습니다.
     private SparseRoundEnd KeepSparseRound(GameSettings game, SparseKeep keep, CancellationToken stop)
     {
         if (!_solar.Enabled || Relocating(game.Name) || _env.OpenBlockReader is not { } open)
@@ -167,7 +175,6 @@ public sealed partial class Prewarmer
             return SparseRoundEnd.Skipped;
         }
 
-        using var low = new LowPriorityReader(_env);
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "play sparse", default, game.OriginRoot, allowWhileYielded: true, preserveGameKey: game.Name);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
         {
@@ -178,52 +185,76 @@ public sealed partial class Prewarmer
         using var activity = ServiceActivity.Begin(ServiceOp.Keep); // 초 단위 기록의 동작 표시
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(lease?.Token ?? default, stop);
         using IBlockReader reader = open();
-        SparseRoundEnd end = SparseRoundEnd.Completed;
+        long roundCap = keep.Rounds == 0 ? SparseFirstRoundDiskCapBytes : SparseRoundDiskCapBytes;
         long roundDisk = 0;
-        int streak = 0; // 이어서 디스크로 간 블록 수
+        List<ReadOp> diskReads = []; // 디스크로 판정한 블록 (서비스 자신의 읽기 기록용)
+        DateTimeOffset startedUtc = DateTimeOffset.UtcNow;
+        SparseRoundEnd end = SparseRoundEnd.Completed;
         IReadOnlyList<ReadOp> blocks = keep.Blocks;
-        for (int i = 0; i < blocks.Count; i++)
+        _ = _env.SetReadIoLow(true);
+        try
         {
-            if (linked.IsCancellationRequested)
+            for (int i = 0; i < blocks.Count && end == SparseRoundEnd.Completed;)
             {
-                return stop.IsCancellationRequested ? SparseRoundEnd.Canceled : SparseRoundEnd.Skipped; // 읽기 중재가 이 회차만 취소함 (게임 끝·다른 게임 시작): 다음 회차에 새 대여로
-            }
+                int to = i;
+                for (long bytes = 0; to < blocks.Count && bytes < SparseBatchBytes; to++)
+                {
+                    bytes += blocks[to].Length;
+                }
 
-            ReadOp block = blocks[i];
-            if (reader.Read(block.Path, block.Offset, (int)block.Length) is not { } seconds)
-            {
-                continue; // 열 수 없거나 읽기 실패: 이 회차에서 그 파일은 건너뜀
-            }
+                lock (_touchSerial) // 다른 만지기·붙들기 점검과 겹치지 않게 묶음마다 잡고 놓음
+                {
+                    for (; i < to && end == SparseRoundEnd.Completed; i++)
+                    {
+                        if (linked.IsCancellationRequested)
+                        {
+                            end = stop.IsCancellationRequested ? SparseRoundEnd.Canceled : SparseRoundEnd.Skipped; // 읽기 중재가 이 회차만 취소함 (게임 끝·다른 게임 시작): 다음 회차에 새 대여로
+                            break;
+                        }
 
-            if (seconds <= SparseDiskReadSeconds(block.Length))
-            {
-                streak = 0;
-                continue;
-            }
+                        ReadOp block = blocks[i];
+                        if (reader.Read(block.Path, block.Offset, (int)block.Length) is not { } seconds)
+                        {
+                            continue; // 열 수 없거나 읽기 실패: 이 회차에서 그 파일은 건너뜀
+                        }
 
-            roundDisk += block.Length;
-            keep.DiskBytes += block.Length;
-            streak++;
-            if (streak >= 2)
-            {
-                long dropped = blocks.Skip(i - 1).Sum(b => b.Length);
-                keep.Blocks = [.. blocks.Take(i - 1)]; // 첫 블록부터 뒤 (덜 중요한 쪽) 는 이 플레이의 유지 대상에서 뺌
-                _log.Info($"{game.Name}: sparse blocks kept while playing: boundary after {keep.Blocks.Sum(b => b.Length) >> 20} MiB, {dropped >> 20} MiB left out for the rest of this play");
-                end = SparseRoundEnd.Boundary;
-            }
+                        keep.Reached = Math.Max(keep.Reached, i + 1);
+                        if (seconds <= SparseDiskReadSeconds(block.Length))
+                        {
+                            continue;
+                        }
 
-            if (roundDisk > SparseRoundDiskCapBytes || keep.DiskBytes > SparsePlayDiskCapBytes)
-            {
-                end = SparseRoundEnd.DiskCap;
-            }
+                        diskReads.Add(block);
+                        roundDisk += block.Length;
+                        keep.DiskBytes += block.Length;
+                        if (keep.DiskBytes >= SparsePlayDiskCapBytes)
+                        {
+                            end = SparseRoundEnd.PlayCap;
+                        }
+                        else if (roundDisk >= roundCap)
+                        {
+                            end = SparseRoundEnd.RoundCap;
+                        }
+                    }
+                }
 
-            if (end != SparseRoundEnd.Completed)
-            {
-                break;
+                if (end == SparseRoundEnd.Completed && i < blocks.Count)
+                {
+                    _env.Sleep(SparseBatchPause, linked.Token); // 묶음 사이: 게임 스레드에 양보
+                }
             }
         }
+        finally
+        {
+            _ = _env.SetReadIoLow(false);
+            SelfReadLog.Note(diskReads, startedUtc, DateTimeOffset.UtcNow); // 디스크 읽기 집계가 이 읽기를 게임의 읽기로 세지 않게
+        }
 
-        keep.Rounds++;
+        if (end != SparseRoundEnd.Canceled && end != SparseRoundEnd.Skipped)
+        {
+            keep.Rounds++;
+        }
+
         return end;
     }
 }

@@ -340,4 +340,22 @@ public sealed class LoadRefillPlansTests : IDisposable
         Assert.False(File.Exists(LoadRefillPlans.RankedPathOf(_game)));
         Assert.False(File.Exists(LoadRefillPlans.SparseRankedPathOf(_game)));
     }
+
+    [Fact]
+    public void TheSparseListFollowsTheSameRememberedSelectionAsTheMainRankingSoPrewarmAndTheKeepSeeTheSameBlocks()
+    {
+        string sparse = MakeFile("sparse.bin", 8);
+        IoSummaryStore.WriteForRun(Run(1), Rows([new IoSummaryFile(sparse)], Row(0, 1, 2)));
+        LoadRefillPlans.RebuildRanked(_game, Started, path => path == sparse);
+        Assert.Equal([(sparse, 1L * Block)], LoadRefillPlans.SparseRankedRows(_game)!.Select(r => (r.Path, r.Offset))); // 기억함
+
+        IoSummaryStore.WriteForRun(Run(2), Rows([new IoSummaryFile(sparse)], Row(0, 5, 2)));
+        File.SetLastWriteTimeUtc(LoadRefillPlans.RankedPathOf(_game), DateTime.UtcNow.AddSeconds(5));
+        LoadRefillPlans.RebuildRanked(_game, Started.AddMinutes(1), path => path == sparse); // 게임이 끝난 뒤 다시 만든 목록: 마지막 예열이 읽은 선택은 그대로
+        File.SetLastWriteTimeUtc(LoadRefillPlans.RankedPathOf(_game), DateTime.UtcNow.AddSeconds(10));
+        Assert.Equal([(sparse, 1L * Block)], LoadRefillPlans.SparseRankedRows(_game)!.Select(r => (r.Path, r.Offset)));
+
+        LoadRefillPlans.ForgetRanked(_game); // 새 예열이 읽으면 새 목록
+        Assert.Equal([(sparse, 1L * Block), (sparse, 5L * Block)], LoadRefillPlans.SparseRankedRows(_game)!.Select(r => (r.Path, r.Offset)).Order());
+    }
 }

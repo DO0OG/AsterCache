@@ -253,7 +253,7 @@ public sealed partial class PrefetchStreamer : IGameStreamer
                 return budget;
             }
 
-            List<TraceEvent> selected = budget < total ? TrimToBudget(game, rows, warmOnlyStart, budget, default, allowSourceRead, LoadRefillPlans.RankedRows(game)).Rows : rows;
+            List<TraceEvent> selected = budget < total ? TrimToBudget(game, rows, warmOnlyStart, budget, default, allowSourceRead, LoadRefillPlans.RankedRows(game), LoadRefillPlans.SparseRankedRows(game)).Rows : rows;
             return selected.Where(r => r.Observed).Sum(r => r.Length);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException or PlanRejectedException)
@@ -882,8 +882,9 @@ public sealed partial class PrefetchStreamer : IGameStreamer
     // frontBytes: 남긴 (가) 의 바이트 (스케줄러가 접근 순서로 먼저 읽는 앞부분에 더해야 하는 양). 전체가 들어가면 순서를 바꾸지 않으므로 0.
     // ranked: 플레이 전체 기록의 블록 순위 목록 (없으면 null → 위 순서 그대로). 있으면 (가) 와 선읽기 행의 앞 tier0Bytes (tier0) 다음, 나머지 선읽기 행 앞에 순위 행을 둡니다 (PlayRanking.Order).
     // noteRanked: 순위 행에서 담은 바이트를 알림 (순위 목록이 있을 때만).
+    // sparse: 스파스 유지 블록 순위 행 (없으면 null): 있으면 tier0 다음, 순위 행 앞에 둡니다 (PlayRanking.Order): 예산이 모자라도 이 블록이 먼저 읽힘.
     internal static List<TraceEvent> SelectToBudget(IReadOnlyList<TraceEvent> rows, long budget, int warmOnlyStart, long frontMs, out long frontBytes, IReadOnlyList<TraceEvent>? ranked = null, long tier0Bytes = 0,
-        Action<long>? noteRanked = null)
+        Action<long>? noteRanked = null, IReadOnlyList<TraceEvent>? sparse = null)
     {
         frontBytes = 0;
         if (rows.Sum(r => r.Length) <= budget)
@@ -907,9 +908,9 @@ public sealed partial class PrefetchStreamer : IGameStreamer
         List<TraceEvent> sorted;
         int rankedFrom = 0;
         int rankedTo = 0;
-        if (ranked is { Count: > 0 })
+        if (ranked is { Count: > 0 } || sparse is { Count: > 0 })
         {
-            (sorted, rankedFrom, rankedTo) = PlayRanking.Order(front, observed, warmOnly.OrderBy(w => w.TMs ?? long.MaxValue), guess, ranked, tier0Bytes);
+            (sorted, rankedFrom, rankedTo) = PlayRanking.Order(front, observed, warmOnly.OrderBy(w => w.TMs ?? long.MaxValue), guess, ranked ?? [], tier0Bytes, sparse);
         }
         else
         {
@@ -952,10 +953,10 @@ public sealed partial class PrefetchStreamer : IGameStreamer
 
     // ranked: 블록 순위 행 (게임이 끝난 뒤 만들어 둔 파일만 읽음, 없으면 null → 순위 없이 지금 순서).
     private static (List<TraceEvent> Rows, long FrontBytes) TrimToBudget(GameSettings game, IReadOnlyList<TraceEvent> rows, int warmOnlyStart, long budget, CancellationToken cancellationToken, bool allowParse,
-        List<TraceEvent>? ranked)
+        List<TraceEvent>? ranked, List<TraceEvent>? sparse = null)
     {
         List<TraceEvent> kept = SelectToBudget(rows, budget, warmOnlyStart, warmOnlyStart < rows.Count ? FrontMs(game, cancellationToken, allowParse) : 0, out long frontBytes,
-            ranked, ranked is null ? 0 : HeadBytesOf(game, cancellationToken, allowParse), PrewarmRun.NoteRankedBytes);
+            ranked, ranked is null && sparse is null ? 0 : HeadBytesOf(game, cancellationToken, allowParse), PrewarmRun.NoteRankedBytes, sparse);
         return (kept, frontBytes);
     }
 
@@ -996,13 +997,15 @@ public sealed partial class PrefetchStreamer : IGameStreamer
         // 예열 목록의 예산은 배정·표시가 쓰는 목록 기준 (Warm): 잔여 계획의 task 합계를 예산으로 쓰면 스케줄러의 파일 전체 승격이 배정량을 넘어 목록을 다 읽고도 부분 예열로 남음
         long budget = Budget(game, ZoneBytes(game, withWarmOnly, cancellationToken, withWarmOnly ? ZoneView.Warm : ZoneView.Budget), total);
         long frontBytes = 0;
+        List<TraceEvent>? sparse = null; // 스파스 유지 블록 순위 행: 예산을 넘어 자를 때 순위 행 앞에 두고, 스파스 구간을 뺀 게임 (SkipSparse) 에서도 이 블록은 남김
         if (budget < total)
         {
             // 순위 목록이 있으면 스트림 (trimLast 아님) 과 사다리·만지기·유지 목록 (trimLast) 이 같은 선택 규칙을 써서 같은 범위 집합을 고름. 없으면 이전과 같이 trimLast 일 때만 자름.
             List<TraceEvent>? ranked = withWarmOnly ? LoadRefillPlans.RankedRows(game, cancellationToken) : null;
-            if (trimLast || ranked is not null)
+            sparse = withWarmOnly ? LoadRefillPlans.SparseRankedRows(game, cancellationToken) : null;
+            if (trimLast || ranked is not null || sparse is not null)
             {
-                (rows, frontBytes) = TrimToBudget(game, rows, warmOnlyStart, budget, cancellationToken, allowParse: true, ranked);
+                (rows, frontBytes) = TrimToBudget(game, rows, warmOnlyStart, budget, cancellationToken, allowParse: true, ranked, sparse);
             }
         }
 
@@ -1013,7 +1016,7 @@ public sealed partial class PrefetchStreamer : IGameStreamer
                 cancellationToken.ThrowIfCancellationRequested();
                 return new FileInfo(p).Length;
             }, headBytes: HeadBytesOf(game, cancellationToken) + frontBytes, cancellationToken: cancellationToken); // 앞부분 가변 범위 (목록 맨 앞) 도 접근 순서로 먼저 읽음
-        return (SparseWarmExclusion.Without(game, UnbufferedFiles.Without(game, ops)), budget, frontBytes); // 캐시 없이만 읽히는 파일은 예열·스트림·고정 목록에서 뺌 (예산 창은 그대로라 빠진 만큼 메모리가 남음), 스파스 표시가 있는 게임 사본은 스파스 구간도 뺌
+        return (SparseWarmExclusion.Without(game, UnbufferedFiles.Without(game, ops), game.SkipSparse && withWarmOnly ? sparse ?? LoadRefillPlans.SparseRankedRows(game, cancellationToken) : null), budget, frontBytes); // 캐시 없이만 읽히는 파일은 예열·스트림·고정 목록에서 뺌 (예산 창은 그대로라 빠진 만큼 메모리가 남음), 스파스 표시가 있는 게임 사본은 스파스 구간도 뺌
     }
 
     /// 고정할 파일: 선읽기 목록의 파일 중 허용 루트 안인 것 (읽기 전용으로만 쓰임). 매핑 총합이 capBytes 를 넘기 전의 앞쪽 파일만.

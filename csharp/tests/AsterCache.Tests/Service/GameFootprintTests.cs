@@ -414,4 +414,27 @@ public sealed class GameFootprintTests
         {
         }
     }
+
+    [Fact]
+    public void ASparseExclusionKeepsOnlyTheSparseKeepBlocksOfASparseFile()
+    {
+        GameSettings game = Game("sparsekeepgame");
+        using var tmp = new TempDir();
+        string sparse = tmp.Combine("s.bin");
+        string normal = tmp.Combine("n.bin");
+        using (SafeFileHandle h = File.OpenHandle(sparse, FileMode.Create, FileAccess.ReadWrite, FileShare.None))
+        {
+            Assert.True(DeviceIoControl(h, 0x900C4, 0, 0, 0, 0, out _, 0)); // FSCTL_SET_SPARSE
+        }
+
+        File.WriteAllBytes(normal, new byte[10]);
+        List<ReadOp> ops = [new(sparse, 0, 1 << 20), new(normal, 0, 10)];
+        AsterCache.Core.Trace.TraceEvent[] keep = [new(sparse, 65536, 65536), new(sparse, 131072, 65536), new(sparse, 524288, 65536)];
+
+        List<ReadOp> kept = SparseWarmExclusion.Without(game with { SkipSparse = true }, ops, keep);
+
+        Assert.Equal([new ReadOp(sparse, 65536, 131072), new ReadOp(sparse, 524288, 65536), new ReadOp(normal, 0, 10)], kept.OrderBy(o => o.Path == normal ? 1 : 0).ThenBy(o => o.Offset)); // 유지 블록과 겹치는 구간만 (이어진 블록은 한 구간), 일반 파일은 그대로
+        Assert.Equal([normal], SparseWarmExclusion.Without(game with { SkipSparse = true }, ops, null).Select(o => o.Path)); // 유지 목록이 없으면 지금처럼 스파스 구간이 모두 빠짐
+        Assert.Equal(2, SparseWarmExclusion.Without(game, ops, keep).Count); // 표시가 없는 게임은 영향이 없음
+    }
 }

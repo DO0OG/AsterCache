@@ -196,21 +196,10 @@ internal static class LoadRefillPlans
             + (includeWritten ? $", {Mib(writtenBlocks * LoadBoundaries.Block)} MiB in game-written files" : string.Empty);
     }
 
-    /// 저장된 스파스 순위 목록을 지금 파일에 맞춰 순위 순 행 (64 KiB 블록 하나씩) 으로 바꿉니다 (목록이 없거나 옛 설치본이거나 쓸 블록이 없으면 null). 크기·수정 시각이 저장할 때와 다른 파일은 빠집니다.
-    internal static List<TraceEvent>? SparseRankedRows(GameSettings g, CancellationToken cancellationToken = default)
-    {
-        if (LoadRefillStore.Read(SparseRankedPathOf(g)) is not { Blocks.Count: > 0 } list)
-        {
-            return null;
-        }
-
-        List<TraceEvent> rows = LoadRefillPlanner.ToRows(list, StatOf(g), cancellationToken);
-        return rows.Count == 0 ? null : rows;
-    }
-
     // 마지막 예열이 읽은 순위 목록 (순위 파일 경로 → 그 파일의 길이·수정 시각과 읽은 내용).
     // 순위 파일은 게임이 끝날 때마다 새로 쓰이지만 메모리의 캐시는 마지막 예열이 읽은 선택 그대로이므로, 사다리·시작 만지기·유지 목록은 새 예열이 읽기 전에는 이 선택을 따라야 합니다.
-    private sealed record RankedPin(long Length, long Ticks, LoadRefillList List);
+    // Sparse: 같은 때 읽은 스파스 파일 블록 순위 목록 (주 순위 목록 파일과 함께 다시 만들어지므로 같은 선택으로 묶음, 없으면 null). 예열이 읽은 스파스 블록과 실행 중 스파스 유지가 같은 목록을 보게 합니다.
+    private sealed record RankedPin(long Length, long Ticks, LoadRefillList List, LoadRefillList? Sparse);
 
     private static readonly ConcurrentDictionary<string, RankedPin> RankedPins = new(StringComparer.OrdinalIgnoreCase);
 
@@ -221,7 +210,24 @@ internal static class LoadRefillPlans
     /// 게임이 끝난 뒤 만들어 둔 파일만 읽고 .io.json 은 읽지 않습니다.
     /// 이 게임의 예열 한 회 (PrewarmRun) 안이면 파일이 바뀌었을 때 새로 읽어 이 회의 선택으로 삼고 (스트림이 읽으면 확정), 그 밖 (사다리·시작 만지기·유지·표본, 다른 게임의 예열 회 안) 이면 기억한 목록을 그대로 씁니다.
     /// 기억한 것이 없으면 (서비스를 막 시작한 때) 지금 파일을 읽어 기억합니다: 그 파일이 마지막 예열 뒤에 바뀌었다면 목록이 어긋날 수 있고, 유지는 그 경우를 스스로 알아차려 순위 없는 순서로 다시 시도합니다.
-    internal static List<TraceEvent>? RankedRows(GameSettings g, CancellationToken cancellationToken = default)
+    internal static List<TraceEvent>? RankedRows(GameSettings g, CancellationToken cancellationToken = default) =>
+        PinOf(g) is { } pin ? ToRowsOf(g, pin, cancellationToken) : null;
+
+    /// 저장된 스파스 순위 목록을 지금 파일에 맞춰 순위 순 행 (64 KiB 블록 하나씩) 으로 바꿉니다: 주 순위 목록 (RankedRows) 과 같은 기억 (예열 한 회 안이면 새로 읽고 스트림이 읽으면 확정) 을 따릅니다.
+    /// 목록이 없거나 (옛 설치본) 쓸 블록이 없으면 null. 크기·수정 시각이 저장할 때와 다른 파일은 빠집니다.
+    internal static List<TraceEvent>? SparseRankedRows(GameSettings g, CancellationToken cancellationToken = default)
+    {
+        if (PinOf(g)?.Sparse is not { Blocks.Count: > 0 } list)
+        {
+            return null;
+        }
+
+        List<TraceEvent> rows = LoadRefillPlanner.ToRows(list, StatOf(g), cancellationToken);
+        return rows.Count == 0 ? null : rows;
+    }
+
+    // 기억한 (또는 예열 한 회 안이면 새로 읽은) 순위 목록 묶음, 없으면 null.
+    private static RankedPin? PinOf(GameSettings g)
     {
         string path = RankedPathOf(g);
         RankedPins.TryGetValue(path, out RankedPin? pin);
@@ -238,13 +244,13 @@ internal static class LoadRefillPlans
                         RankedPending[path] = null;
                     }
 
-                    return inRun ? null : pin is null ? null : ToRowsOf(g, pin, cancellationToken);
+                    return inRun ? null : pin;
                 }
 
                 RankedPin? current = inRun && RankedPending.TryGetValue(path, out RankedPin? pending) ? pending : pin;
                 if (current is null || current.Length != info.Length || current.Ticks != info.LastWriteTimeUtc.Ticks)
                 {
-                    current = LoadRefillStore.Read(path) is { } read ? new RankedPin(info.Length, info.LastWriteTimeUtc.Ticks, read) : null;
+                    current = LoadRefillStore.Read(path) is { } read ? new RankedPin(info.Length, info.LastWriteTimeUtc.Ticks, read, LoadRefillStore.Read(SparseRankedPathOf(g))) : null;
                     if (inRun)
                     {
                         RankedPending[path] = current;
@@ -263,7 +269,7 @@ internal static class LoadRefillPlans
             }
         }
 
-        return pin is null ? null : ToRowsOf(g, pin, cancellationToken);
+        return pin;
     }
 
     private static List<TraceEvent>? ToRowsOf(GameSettings g, RankedPin pin, CancellationToken cancellationToken)

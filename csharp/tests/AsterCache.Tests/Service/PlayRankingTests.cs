@@ -338,4 +338,75 @@ public sealed class PlayRankingTests : IDisposable
 
         Assert.Contains(Merged(touch), r => r.Path.EndsWith("c.bin", StringComparison.Ordinal));
     }
+
+    private static void WriteSparse(GameSettings game, params (string File, long Block)[] blocks)
+    {
+        var files = new Dictionary<string, LoadRefillFileStat>();
+        foreach (string file in blocks.Select(b => Path.Combine(game.OriginRoot, b.File)).Distinct())
+        {
+            var info = new FileInfo(file);
+            files[file] = new LoadRefillFileStat(info.Length, info.LastWriteTimeUtc.Ticks);
+        }
+
+        var list = new LoadRefillList([.. blocks.Select(b => new LoadRefillBlock(Path.Combine(game.OriginRoot, b.File), b.Block, 1, 10))], files, 1, 0, 0, 0, 0);
+        LoadRefillStore.Write(LoadRefillPlans.SparseRankedPathOf(game), list, DateTimeOffset.UtcNow);
+        WriteRanked(game); // 주 순위 목록 (블록 없음) 을 뒤에 써서 기억이 두 목록을 함께 읽게 함
+    }
+
+    [Fact]
+    public void TheSparseKeepBlocksComeRightAfterTier0AndBeforeTheRankedRowsAndStayInsideEvenASmallBudget()
+    {
+        TraceEvent[] rows = [Ev(A, 0, 2), Ev(A, 2, 2), Ev(A, 4, 2), Ev("C", 0, 1, tMs: 1_000), Ev("C", 9, 1, tMs: 90_000), Ev(B, 0, 1, observed: false)];
+        TraceEvent[] ranked = [Ev("R", 7), Ev("R", 3)];
+        TraceEvent[] sparse = [Ev("S", 5), Ev("S", 6), Ev("S", 7)];
+
+        long rankedBytes = -1;
+        List<TraceEvent> kept = PrefetchStreamer.SelectToBudget(rows, 8 * Block, 3, 60_000, out _, ranked, 2 * Block, bytes => rankedBytes = bytes, sparse);
+        List<TraceEvent> small = PrefetchStreamer.SelectToBudget(rows, 5 * Block, 3, 60_000, out _, ranked, 2 * Block, null, sparse);
+
+        Assert.Equal([("C", 0L, 1L), (A, 0L, 2L), ("S", 5L, 1L), ("S", 6L, 1L), ("S", 7L, 1L), ("R", 7L, 1L), ("R", 3L, 1L)], Shape(kept)); // 앞부분 예열 전용 → tier0 → 스파스 유지 블록 → 순위
+        Assert.Equal(2 * Block, rankedBytes); // 순위 목록에서 담은 양에는 스파스 블록이 들지 않음
+        Assert.Equal([("C", 0L, 1L), (A, 0L, 2L), ("S", 5L, 1L), ("S", 6L, 1L)], Shape(small)); // 예산이 모자라도 스파스 블록이 순위 행보다 먼저 들어감
+    }
+
+    [Fact]
+    public void SparseKeepRowsDropWhatTier0AlreadyHoldsAndLaterRowsDropWhatTheSparseRowsHold()
+    {
+        TraceEvent[] rows = [Ev(A, 0, 2), Ev(A, 2, 2), Ev(A, 4, 2), Ev("C", 0, 1, tMs: 1_000), Ev("C", 9, 1, tMs: 90_000), Ev(B, 0, 1, observed: false)];
+        TraceEvent[] sparse = [Ev(A, 0), Ev(A, 3)]; // 블록 0 은 tier0 가 이미 담음, 블록 3 은 뒤의 계획 행 (A 2~3) 과 겹침
+
+        List<TraceEvent> kept = PrefetchStreamer.SelectToBudget(rows, 8 * Block, 3, 60_000, out _, [], 2 * Block, null, sparse);
+
+        Assert.Equal([("C", 0L, 1L), (A, 0L, 2L), (A, 3L, 1L), (A, 2L, 1L), (A, 4L, 2L), ("C", 9L, 1L)], Shape(kept));
+    }
+
+    [Fact]
+    public void WithoutASparseListTheSelectionIsExactlyTheExistingOne()
+    {
+        TraceEvent[] rows = [Ev(A, 0, 2), Ev(A, 10, 2), Ev("C", 0, 2, tMs: 1_000), Ev("C", 5, 2, tMs: 90_000), Ev(B, 0, 2, observed: false)];
+        TraceEvent[] ranked = [Ev("R", 7)];
+
+        List<TraceEvent> existing = PrefetchStreamer.SelectToBudget(rows, 5 * Block, 2, 60_000, out long front, ranked, 3 * Block);
+        List<TraceEvent> none = PrefetchStreamer.SelectToBudget(rows, 5 * Block, 2, 60_000, out long noneFront, ranked, 3 * Block, null, null);
+        List<TraceEvent> empty = PrefetchStreamer.SelectToBudget(rows, 5 * Block, 2, 60_000, out long emptyFront, ranked, 3 * Block, null, []);
+
+        Assert.Equal(existing, none);
+        Assert.Equal(existing, empty);
+        Assert.Equal((front, front), (noneFront, emptyFront));
+    }
+
+    [Fact]
+    public void ThePrewarmStreamReadsTheSparseKeepBlocksFirstEvenWhenTheBudgetDoesNotFitTheWholeListAndTheTouchListAgrees()
+    {
+        GameSettings game = Rig("sparsekeep");
+        WriteSparse(game, ("b.bin", 0), ("b.bin", 1), ("b.bin", 2)); // 예산에 안 들어가 지금은 읽지 않던 b.bin 의 앞 3 블록
+
+        List<ReadOp> stream = PrefetchStreamer.PrewarmOps(game, 500 * Mib).Ops;
+        IReadOnlyList<ReadOp> touch = new PrefetchStreamer().PlannedPrewarmReads(game)!;
+
+        string b = Path.Combine(game.OriginRoot, "b.bin");
+        Assert.Contains(Merged(stream), r => r.Path == b && r.Start == 0 && r.End >= 3 * Block); // 스파스 유지 블록이 읽히는 범위에 듦
+        Assert.Equal(Merged(stream), Merged(touch)); // 사다리·시작 만지기·유지 목록도 같은 선택
+        Assert.Equal(400 * Mib, stream.Sum(o => o.Length)); // 예산은 그대로
+    }
 }

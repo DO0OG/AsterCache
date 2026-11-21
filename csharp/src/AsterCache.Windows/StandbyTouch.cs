@@ -245,7 +245,7 @@ public static unsafe class StandbyTouch
 
     public static int[]? Probe(IReadOnlyList<ReadOp> samples, CancellationToken ct, Func<uint?> hardFaults, Func<string, uint> attributes)
     {
-        _ = hardFaults(); // 첫 조회는 버립니다 (Run 과 같은 이유)
+        uint? first = hardFaults(); // 이 조회는 판정에 쓰지 않습니다 (Run 과 같은 이유). 표본 확인이 시작할 때의 값이라 회차 기준값 보정의 시작점으로만 씀
         if (hardFaults() is not { } before)
         {
             return null;
@@ -253,6 +253,9 @@ public static unsafe class StandbyTouch
 
         int[] faults = new int[samples.Count];
         Array.Fill(faults, -1);
+        Meter? round = _round; // 같은 회차 (Round) 의 다음 Run 이 이어 쓰는 기준값
+        uint start = first ?? before;
+        uint? pagesStart = round?.PageReads?.Invoke();
         byte* buffer = (byte*)NativeMemory.Alloc(ProbeBytes);
         try
         {
@@ -300,6 +303,16 @@ public static unsafe class StandbyTouch
         finally
         {
             NativeMemory.Free(buffer);
+
+            // 표본이 낸 읽기는 회차의 기준값에 더해 다음 Run 의 경계 판정에 섞이지 않게 합니다 (표본 확인은 기록만 하고 판정에 영향을 주지 않음).
+            if (round is { Faults: { } known })
+            {
+                round.Faults = unchecked(known + (before - start));
+                if (round.Pages is { } knownPages && pagesStart is { } pages0 && round.PageReads?.Invoke() is { } pages1)
+                {
+                    round.Pages = unchecked(knownPages + (pages1 - pages0));
+                }
+            }
         }
 
         return faults;

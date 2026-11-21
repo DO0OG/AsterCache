@@ -447,7 +447,7 @@ public sealed class PlayRecorder : IDisposable
                     (seriesTried, series) = (true, OpenSeries(session));
                 }
 
-                PlaySeriesRaw? raw = session.HasFrames ? ReadSeries(series, session) : null;
+                PlaySeriesRaw? raw = session.HasFrames && session.HasSeries ? ReadSeries(series, session) : null;
                 foreach (PlayWindowSummary checkpoint in session.AddSample(previous, current, previousTick, tick, ReadSystem(system), raw))
                 {
                     PlaySampleRecord record = session.Snapshot(tick);
@@ -459,7 +459,7 @@ public sealed class PlayRecorder : IDisposable
                 }
 
                 PersistStage(session, tick);
-                if (session.HasFrames)
+                if (session.HasFrames && session.HasSeries)
                 {
                     TickSeries(series, Stopwatch.GetElapsedTime(session.StartedTick, tick).TotalSeconds);
                 }
@@ -486,7 +486,7 @@ public sealed class PlayRecorder : IDisposable
                     if (final is { Count: > 0 })
                     {
                         long tick = _timestamp();
-                        foreach (PlayWindowSummary checkpoint in session.AddSample(previous, final, previousTick, tick, ReadSystem(system), session.HasFrames ? ReadSeries(series, session) : null))
+                        foreach (PlayWindowSummary checkpoint in session.AddSample(previous, final, previousTick, tick, ReadSystem(system), session.HasFrames && session.HasSeries ? ReadSeries(series, session) : null))
                         {
                             PlaySampleRecord record = session.Snapshot(tick);
                             _store.Upsert(record);
@@ -542,7 +542,7 @@ public sealed class PlayRecorder : IDisposable
             }
 
             var recorder = new PlaySeriesRecorder(probe, new PlaySeriesFile(_seriesDirectory, session.Game.Name, session.StartedAt, _log, _now));
-            session.AttachSeries(recorder);
+            session.AttachSeries(recorder, e => _log.Warn($"{session.Game.Name}: play series stopped ({e.GetType().Name})")); // 초 단위 기록의 실패는 그 플레이의 초 단위 기록만 멈춤
             return recorder;
         }
         catch (Exception e) when (e is not (StackOverflowException or OutOfMemoryException))
@@ -902,7 +902,8 @@ public sealed class PlayRecorder : IDisposable
         private double? _frameStoppedAt;
         private bool _framesClosedAtExit;
 
-        private PlaySeriesRecorder? _series; // 초 단위 기록 (없으면 null)
+        private PlaySeriesRecorder? _series; // 초 단위 기록 (없거나 실패해 멈췄으면 null)
+        private Action<Exception>? _seriesFailed;
 
         private readonly record struct PendingSecond(ulong Reads, double MeanReadMs, bool Slow, PlaySystemSample System, PlaySeriesPoint? Series = null);
 
@@ -947,12 +948,31 @@ public sealed class PlayRecorder : IDisposable
         }
 
         /// 초 단위 기록을 붙입니다 (표본 루프가 프레임 세션이 열린 뒤 한 번).
-        public void AttachSeries(PlaySeriesRecorder series)
+        public void AttachSeries(PlaySeriesRecorder series, Action<Exception> onFailed)
         {
             lock (_gate)
             {
-                _series = series;
+                (_series, _seriesFailed) = (series, onFailed);
             }
+        }
+
+        public bool HasSeries
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _series is not null;
+                }
+            }
+        }
+
+        // 초 단위 기록의 계산·줄 만들기가 실패하면 그 플레이의 초 단위 기록만 멈추고 한 번 알림 (플레이 기록·끊긴 초 목록·디스크 표본은 이어 감). _gate 를 쥔 채 부름.
+        private void StopSeries(Exception e)
+        {
+            Action<Exception>? notify = _seriesFailed;
+            (_series, _seriesFailed) = (null, null);
+            notify?.Invoke(e);
         }
 
         /// 지금까지 알려진 게임 프로세스 번호의 사본.
@@ -1063,7 +1083,15 @@ public sealed class PlayRecorder : IDisposable
             {
                 byT.TryGetValue(t, out FrameSecond frame);
                 bool hasDisk = _pending.Remove(t, out PendingSecond disk);
-                _series?.AddSecond(t, frame, disk.Series); // 모든 초를 초 단위 기록에 (끊긴 초 목록과 따로)
+                try
+                {
+                    _series?.AddSecond(t, frame, disk.Series); // 모든 초를 초 단위 기록에 (끊긴 초 목록과 따로)
+                }
+                catch (Exception e) when (e is not (StackOverflowException or OutOfMemoryException))
+                {
+                    StopSeries(e);
+                }
+
                 if (frame.MaxMs < FrameLogMinMs && !disk.Slow && frame.Pauses == 0)
                 {
                     continue;
@@ -1174,9 +1202,29 @@ public sealed class PlayRecorder : IDisposable
                 if (frames is not null)
                 {
                     (ulong reads, double meanReadMs, bool slow) = _accumulator.LastSecond;
-                    PlaySeriesPoint? point = _series is not null && series is not null ? _series.Point(series with { GpuMib = system.GpuDedicatedMib ?? series.GpuMib }, _pids, previous, current) : null; // 그래픽 메모리는 이미 읽은 시스템 값을 씀
+                    PlaySeriesPoint? point = null;
+                    try
+                    {
+                        if (_series is not null && series is not null)
+                        {
+                            point = _series.Point(series with { GpuMib = system.GpuDedicatedMib ?? series.GpuMib }, _pids, previous, current); // 그래픽 메모리는 이미 읽은 시스템 값을 씀
+                        }
+                        else
+                        {
+                            _series?.Reset(); // 값을 못 읽은 초: 다음 초가 여러 초의 누계 차이를 한 초 값으로 적지 않게 앞 값을 버림
+                        }
+                    }
+                    catch (Exception e) when (e is not (StackOverflowException or OutOfMemoryException))
+                    {
+                        StopSeries(e);
+                    }
+
                     _pending[(long)Math.Floor((previousElapsed + elapsed) / 2)] = new PendingSecond(reads, meanReadMs, slow, system, point);
                     ApplyFrameSeconds(frames, through);
+                }
+                else
+                {
+                    _series?.Reset(); // 프레임 세션이 닫힌 동안: 다시 열린 뒤 첫 초가 그 동안의 누계 차이를 한 초 값으로 적지 않게
                 }
 
                 foreach (LaterStart later in _laterStarts.Where(l => l.Accumulator is not null && tick > l.StartTick))

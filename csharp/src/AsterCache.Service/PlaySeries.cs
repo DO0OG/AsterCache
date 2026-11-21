@@ -38,6 +38,13 @@ internal sealed class PlaySeriesBuilder
     private readonly Dictionary<string, long> _cpuByName = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, long> _writeByName = new(StringComparer.OrdinalIgnoreCase);
 
+    /// 앞 값을 버립니다: 값을 읽지 못한 초 (프레임 세션이 닫혔거나 조회 실패) 뒤의 첫 초가 여러 초의 누계 차이를 한 초 값으로 적지 않게 (그 초는 차이 칸이 비고 기준값만 새로 잡힘).
+    public void Reset()
+    {
+        _previous = null;
+        _before.Clear();
+    }
+
     public PlaySeriesPoint Next(PlaySeriesRaw raw, IReadOnlyCollection<int> gamePids, IReadOnlyList<PlayDiskCounters> previousDisk, IReadOnlyList<PlayDiskCounters> currentDisk)
     {
         PlaySeriesRaw? before = _previous;
@@ -368,6 +375,8 @@ internal sealed class PlaySeriesRecorder(IPlaySeriesProbe probe, PlaySeriesFile 
 
     public PlaySeriesPoint Point(PlaySeriesRaw raw, IReadOnlyCollection<int> gamePids, IReadOnlyList<PlayDiskCounters> previousDisk, IReadOnlyList<PlayDiskCounters> currentDisk) =>
         _builder.Next(raw, gamePids, previousDisk, currentDisk);
+
+    public void Reset() => _builder.Reset();
 
     public void AddSecond(long second, FrameSecond frame, PlaySeriesPoint? point) => file.AddRow(PlaySeriesFormat.Line(second, frame, point));
 

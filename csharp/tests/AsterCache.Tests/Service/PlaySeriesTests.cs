@@ -97,6 +97,20 @@ public sealed class PlaySeriesTests
         Assert.Null(PlaySeriesBuilder.Disk(before, [Disk(9, 0, 0, 0, 0, 0, 0)]));
     }
 
+    [Fact]
+    public void AfterAResetTheFirstSecondHasNoDifferenceValuesSoSeveralSecondsAreNeverWrittenAsOne()
+    {
+        var builder = new PlaySeriesBuilder();
+        _ = builder.Next(Raw(0, 1000, [new(100, "game.exe", 0, 0)], repurposed: 0, pageReads: 0), [100], [], []);
+        builder.Reset(); // 값을 못 읽은 몇 초
+        PlaySeriesPoint point = builder.Next(Raw(500, 9000, [new(100, "game.exe", 4000, 9000)], repurposed: 900 * Mib, pageReads: 5000), [100], [], []);
+
+        Assert.Equal((null, null, null, null, null), (point.CpuSystemPct, point.CpuGamePct, point.ReusedMib, point.PageReads, point.WriteName));
+        Assert.Equal(7000, point.AvailableMib); // 절대값 칸은 그대로
+        PlaySeriesPoint next = builder.Next(Raw(1000, 10_000, [new(100, "game.exe", 4500, 9000)], repurposed: 901 * Mib, pageReads: 5010), [100], [], []);
+        Assert.Equal((50.0, 1.0, 10L), (next.CpuGamePct, next.ReusedMib, next.PageReads)); // 기준이 새로 잡힌 뒤에는 다시 차이가 나옴
+    }
+
     // ---- 줄 만들기 ----
 
     private static string Cell(string line, string column) => line.Split(',')[Array.IndexOf(PlaySeriesFormat.Header.Split(','), column)];
@@ -429,6 +443,27 @@ public sealed class PlaySeriesTests
     }
 
     [Fact]
+    public async Task AFailureWhileBuildingSecondsStopsOnlyTheSeriesAndTheRestOfThePlayRecordIsKept()
+    {
+        using var dir = new TempDir();
+        var log = new ListLog();
+        using var counter = new DiskCounter();
+        var frames = new FakeFrames();
+        frames.Seconds.Add(new FrameSecond(0, 100, 62.5, 1, 1));
+        var probe = new FakeSeries { BadRaw = true }; // 프로세스 목록이 null 이라 Point 가 예외를 던짐
+        PlayRecorder recorder = Recorder(dir, log, counter, frames, () => probe);
+
+        GameSettings game = await Play(recorder, counter, "badraw", 38);
+
+        using JsonDocument json = JsonDocument.Parse(File.ReadAllText(dir.Combine("play_samples.json")));
+        JsonElement sample = json.RootElement.GetProperty("games").GetProperty(game.Name).EnumerateArray().Last();
+        Assert.Equal("complete", sample.GetProperty("status").GetString()); // MarkUnavailable 로 끊기지 않음
+        Assert.Equal(62.5, sample.GetProperty("frameSeconds").EnumerateArray().First().GetProperty("maxMs").GetDouble());
+        Assert.Single(log.Lines, l => l.Contains("play series stopped (NullReferenceException)", StringComparison.Ordinal)); // 한 번만 알림
+        Assert.True(counter.Reads > 4);
+    }
+
+    [Fact]
     public async Task ASwitchedOffSeriesOrAGateThatBlocksFrameTimesOpensNothingAndWritesNothing()
     {
         using var off = new TempDir();
@@ -462,6 +497,7 @@ public sealed class PlaySeriesTests
         private int _reads;
 
         public bool Throw { get; init; }
+        public bool BadRaw { get; init; }
         public bool Disposed { get; private set; }
         public List<int> Pids { get; } = [];
 
@@ -479,6 +515,11 @@ public sealed class PlaySeriesTests
             }
 
             long n = Interlocked.Increment(ref _reads);
+            if (BadRaw)
+            {
+                return new PlaySeriesRaw(n, n * 2, null!, Environment.ProcessId, 1, null, null, null, null, string.Empty);
+            }
+
             return new PlaySeriesRaw(n * 5000, n * 10_000,
                 [new(0, "Idle", n * 5000, 0), new(34, "Series Game.exe", n * 2000, 0), new(Environment.ProcessId, "testhost.exe", n * 100, 0), new(999, "obs.exe", n * 1000, n * 4096)],
                 Environment.ProcessId, 7000, n * Mib, (uint)(n * 10), 6500, 3000, "keep");

@@ -486,4 +486,32 @@ public sealed class StandbyTouchTests : IDisposable
         Assert.Equal(Enumerable.Range(0, 8).Select(i => (1000 + i) * 4096L), lists.RepurposedBytes);
         Assert.Equal(MemoryListInfo.Summarize(v, 4096).CacheRepurposedBytes, lists.RepurposedBytes[5..].Sum()); // 기존 요약 (우선순위 5~7) 과 같은 값
     }
+
+    [Fact]
+    public void AProbeInsideARoundDoesNotAddItsHardFaultsToTheBoundaryOfTheNextRunInThatRound()
+    {
+        uint value = 1_000_000;
+        Func<uint?> process = () => value; // 이 프로세스의 읽기 수: 메모리에 있는 범위를 만지면 늘지 않음
+        bool firstRead = true;
+        Func<uint?> noisy = () =>
+        {
+            value += firstRead ? 0u : 20u; // 표본 확인이 디스크에서 읽으며 읽기 수를 많이 올림 (첫 조회는 시작 시점의 값)
+            firstRead = false;
+            return value;
+        };
+        ReadOp[] samples = [new(_path, 0, StandbyTouch.ProbeBytes), new(_path, Mib, StandbyTouch.ProbeBytes), new(_path, 0, 4096)];
+
+        TouchResult next;
+        using (StandbyTouch.Round())
+        {
+            _ = Go(Repeat(5), process);
+            int[]? faults = StandbyTouch.Probe(samples, CancellationToken.None, noisy, _ => Archive);
+            next = Go(Repeat(5), process);
+            Assert.True(Assert.IsType<int[]>(faults).Sum() >= 60); // 표본이 실제로 읽기 수를 올렸음
+        }
+
+        Assert.Equal(TouchEnd.Completed, next.End); // 표본 없이 두 번 만졌을 때와 같은 판정 (경계 없음, 읽기 0)
+        Assert.Equal(0, next.HardFaults);
+        Assert.Equal(0, next.DiskBytes);
+    }
 }

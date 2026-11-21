@@ -16,14 +16,23 @@ internal sealed class UsageWindow
     public static readonly TimeSpan MinSpan = TimeSpan.FromSeconds(10);
 
     /// 이 이상 쓰면 쓰고 있는 프로세스: CPU 는 초당 100 ns 단위로 한 코어의 0.5%, 전송은 초당 32 KiB (읽기 + 쓰기, 디스크·파이프를 가리지 않음).
+    /// 표본 사이 간격이 이보다 길면 (절전에서 깨어남, 설정을 껐다 켬, 시계가 뜀) 그 차이로는 판정하지 않습니다: 옛 표본을 버리고 새로 쌓으며, 그동안은 쓰는 것으로 봅니다.
+    public static readonly TimeSpan MaxGap = 2 * Window;
+
     public const long CpuTicksPerSecond = 50_000;
 
     public const long IoBytesPerSecond = 32L << 10;
 
-    private readonly List<(DateTimeOffset At, Dictionary<int, (long Cpu, long Io)> Rows)> _samples = [];
+    private readonly List<(TimeSpan At, Dictionary<int, (long Cpu, long Io)> Rows)> _samples = [];
 
-    public void Add(DateTimeOffset at, IReadOnlyList<ProcessUsage> usage)
+    /// at 은 단조 시계 값 (벽시계가 아님: 시계가 뛰거나 되돌아가도 간격이 맞음).
+    public void Add(TimeSpan at, IReadOnlyList<ProcessUsage> usage)
     {
+        if (_samples.Count > 0 && (at - _samples[^1].At > MaxGap || at < _samples[^1].At))
+        {
+            _samples.Clear();
+        }
+
         var rows = new Dictionary<int, (long Cpu, long Io)>(usage.Count);
         foreach (ProcessUsage u in usage)
         {
@@ -37,7 +46,7 @@ internal sealed class UsageWindow
         }
     }
 
-    /// 판정할 수 없으면 (표본이 모자라거나 간격이 짧음, 가장 최근 표본에 이 프로세스가 없음) true: 확실히 쉬는 프로세스만 양보시킵니다.
+    /// 판정할 수 없으면 (표본이 모자라거나 간격이 짧음 (표본이 오래 끊겼다 다시 쌓이는 중 포함), 가장 최근 표본에 이 프로세스가 없음) true: 확실히 쉬는 프로세스만 양보시킵니다.
     /// 기준 표본에 없던 프로세스는 구간 안에 뜬 것이라 누계 전체를 구간의 사용량으로 봅니다 (pid 를 이어받은 새 프로세스는 누계가 작아져 같은 방식으로 셈).
     public bool IsInUse(int pid)
     {
@@ -46,8 +55,8 @@ internal sealed class UsageWindow
             return true;
         }
 
-        (DateTimeOffset from, Dictionary<int, (long Cpu, long Io)> old) = _samples[0];
-        (DateTimeOffset to, Dictionary<int, (long Cpu, long Io)> latest) = _samples[^1];
+        (TimeSpan from, Dictionary<int, (long Cpu, long Io)> old) = _samples[0];
+        (TimeSpan to, Dictionary<int, (long Cpu, long Io)> latest) = _samples[^1];
         double seconds = (to - from).TotalSeconds;
         if (seconds < MinSpan.TotalSeconds || !latest.TryGetValue(pid, out (long Cpu, long Io) now))
         {

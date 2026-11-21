@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using AsterCache.Core;
 using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
@@ -47,6 +48,9 @@ public sealed class BackgroundYieldEnv
     public Func<DateTimeOffset> Now { get; init; } = () => DateTimeOffset.UtcNow;
 
     /// 시스템이 부팅한 시각. 복구가 재부팅 앞에 적힌 항목의 프로세스 번호를 부모로 쓰지 않게 합니다 (기본값은 아주 옛날: 재부팅하지 않은 것으로 봄).
+    /// 단조 시계 (재부팅·시계 조정에 영향받지 않음, 벽시계 아님): 쓰고 있는 프로세스 표본의 간격을 잴 때만 씁니다.
+    public Func<TimeSpan> Monotonic { get; init; } = () => Stopwatch.GetElapsedTime(0);
+
     public Func<DateTimeOffset> BootTime { get; init; } = () => DateTimeOffset.UnixEpoch;
 
     /// 가용 메모리가 가라앉기를 기다리는 대기 (취소되면 일찍 돌아옴).
@@ -172,7 +176,7 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
     }
 
     /// 프로세스별 CPU·I/O 누계 표본을 하나 더합니다 (틱마다와 세션 시작 때). 못 읽으면 기록이 늘지 않아 쓰고 있는 프로세스를 가릴 수 없고, 그러면 아무것도 비우거나 메모리 우선순위를 낮추지 않습니다.
-    internal void SampleUsage(DateTimeOffset at)
+    internal void SampleUsage(TimeSpan at)
     {
         if (env.Usage(_usageBuffer))
         {
@@ -254,7 +258,7 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
         {
             if (Enabled)
             {
-                SampleUsage(env.Now()); // 게임이 없을 때도 쌓음: 처음 비우기 전에 쓰고 있는 프로세스를 가리려고
+                SampleUsage(env.Monotonic()); // 게임이 없을 때도 쌓음: 처음 비우기 전에 쓰고 있는 프로세스를 가리려고
             }
 
             if (!_active)

@@ -97,10 +97,13 @@ internal sealed class YieldWorld
     public IReadOnlyList<(int Pid, string Exe)> Snapshot() => [.. Procs.Select(p => (p.Key, p.Value.Exe))];
 
     /// 서비스가 한동안 돌아 1분 전의 쉬는 상태 표본이 쌓여 있는 배경 양보 (그 뒤 CpuTicks·IoBytes 를 늘리면 쓰고 있는 프로세스).
+    /// 가짜 단조 시계: 가짜 벽시계와 같이 흐릅니다.
+    public TimeSpan Mono => Now - DateTimeOffset.UnixEpoch;
+
     public BackgroundYield Yielder(Func<AsterSettings> settings, ILog log)
     {
         var yielder = new BackgroundYield(settings, Env(), log);
-        yielder.SampleUsage(Now - TimeSpan.FromMinutes(1));
+        yielder.SampleUsage(Mono - TimeSpan.FromMinutes(1));
         return yielder;
     }
 
@@ -192,6 +195,7 @@ internal sealed class YieldWorld
             return true;
         },
         Now = () => Now,
+        Monotonic = () => Mono,
         BootTime = () => Boot,
         Delay = (t, _) => Now += t,
         ReadState = () => State,
@@ -1034,7 +1038,12 @@ public sealed class BackgroundYieldTests
         Assert.Equal(5, _w.Procs[50].Priority);
         Assert.Null(_w.State);
 
-        _w.Now += TimeSpan.FromMinutes(5);
+        foreach (int minutes in new[] { 2, 2, 1 })
+        {
+            _w.Now += TimeSpan.FromMinutes(minutes);
+            y.Tick([]); // 서비스는 세션이 없어도 30초 틱마다 표본을 쌓음 (5분 동안 표본이 끊기면 판정하지 않음)
+        }
+
         y.Begin("trigger", settle: false); // 다음 세션: 둘 다 낮춤
         Assert.Equal([1, 1], new[] { _w.Procs[50].Priority, _w.Procs[50].Io });
         _ = _w.SetFails.Add(50);
@@ -1948,7 +1957,7 @@ public sealed class BackgroundYieldTests
 /// 쓰고 있는 프로세스 판정의 값 규칙 (프로세스·시계 없이).
 public sealed class UsageWindowTests
 {
-    private static readonly DateTimeOffset T0 = DateTimeOffset.UnixEpoch;
+    private static readonly TimeSpan T0 = TimeSpan.Zero; // 단조 시계 값
 
     private static ProcessUsage U(int pid, long cpuTicks, long ioBytes = 0) => new(pid, "p.exe", cpuTicks, 0, ioBytes);
 
@@ -1971,6 +1980,34 @@ public sealed class UsageWindowTests
         Assert.True(w.IsInUse(1)); // 간격 10초 미만
         w.Add(T0 + TimeSpan.FromSeconds(10), [U(1, 0)]);
         Assert.False(w.IsInUse(1));
+    }
+
+    [Fact]
+    public void AfterALongGapBetweenSamplesOldSamplesAreDroppedAndEveryProcessCountsAsInUseUntilNewOnesBuildUp()
+    {
+        var w = new UsageWindow();
+        w.Add(T0, [U(1, 0), U(2, 0)]);
+        w.Add(T0 + TimeSpan.FromSeconds(60), [U(1, 0), U(2, 0)]);
+        Assert.False(w.IsInUse(1)); // 정상 간격: 쉬는 프로세스는 쉬는 것으로
+
+        TimeSpan wake = T0 + TimeSpan.FromSeconds(60) + UsageWindow.MaxGap + TimeSpan.FromSeconds(1); // 절전에서 깨어남
+        w.Add(wake, [U(1, 0), U(2, 0)]);
+        Assert.True(w.IsInUse(1));
+        Assert.True(w.IsInUse(2)); // 옛 표본과 비교하지 않음
+        w.Add(wake + TimeSpan.FromSeconds(30), [U(1, 0), U(2, 100_000_000)]);
+        Assert.False(w.IsInUse(1)); // 새로 쌓인 표본 둘로 다시 판정
+        Assert.True(w.IsInUse(2));
+    }
+
+    [Fact]
+    public void ASampleThatIsExactlyMaxGapLaterOrCameBeforeTheLastOneIsHandledBySameRule()
+    {
+        var w = new UsageWindow();
+        w.Add(T0, [U(1, 0)]);
+        w.Add(T0 + UsageWindow.MaxGap, [U(1, 0)]); // 정확히 MaxGap: 판정에 씀
+        Assert.False(w.IsInUse(1));
+        w.Add(T0, [U(1, 0)]); // 시계가 되돌아감: 버리고 새로 쌓음
+        Assert.True(w.IsInUse(1));
     }
 
     [Fact]

@@ -13,7 +13,7 @@ public sealed partial class BackgroundYield
         (_active, _lastActivity, _lastMaintain, _lastTrim) = (true, now, now, now);
         long before = env.AvailableMib();
         _startAvailableMib = before;
-        SampleUsage(now);
+        SampleUsage(env.Monotonic());
         _skipped.Clear();
         IReadOnlyList<(int Pid, string Exe)> processes = env.Processes();
         Revalidate(processes);

@@ -12,7 +12,8 @@ internal sealed record PlayWarmSnapshot(string Mode, string Result, string? Reas
 
 public sealed record PlayStreamResult(string Status, string? Reason, long? ReadBytes, double? Seconds, double? MegabytesPerSecond);
 
-internal readonly record struct PlayDiskCounters(uint DiskNumber, long ReadBytes, uint ReadCount, long ReadTime100ns, long IdleTime100ns, uint QueueDepth);
+internal readonly record struct PlayDiskCounters(uint DiskNumber, long ReadBytes, uint ReadCount, long ReadTime100ns, long IdleTime100ns, uint QueueDepth,
+    long WriteBytes = 0, uint WriteCount = 0, long WriteTime100ns = 0);
 
 internal interface IPlayDiskCounter : IDisposable
 {
@@ -128,6 +129,9 @@ public sealed class PlayRecorder : IDisposable
     private readonly Func<bool> _frameEnabled;
     private readonly Func<GameSettings, string?> _frameBlocker;
     private readonly Func<IPlaySystemProbe?>? _openSystem;
+    private readonly Func<IPlaySeriesProbe?>? _openSeries;
+    private readonly string? _seriesDirectory;
+    private readonly Func<bool> _seriesEnabled;
     private readonly Func<GameSettings, bool>? _isTraceBlocked;
     private readonly Func<bool>? _blockedGameRunning;
     private readonly bool[] _frameSlots = new bool[FrameTimeSession.MaxSlots];
@@ -136,8 +140,12 @@ public sealed class PlayRecorder : IDisposable
         TimeSpan? sampleInterval = null, Func<DateTimeOffset>? now = null, Func<long>? timestamp = null, IReadOnlyList<int>? checkpoints = null,
         IReadOnlyList<int>? stageCheckpoints = null, int periodSeconds = PlayPeriods.DefaultSeconds,
         Func<int, long, IFrameSource>? openFrames = null, Func<bool>? frameEnabled = null, Func<GameSettings, string?>? frameBlocker = null, Func<IPlaySystemProbe?>? openSystem = null,
-        Func<GameSettings, bool>? isTraceBlocked = null, Func<bool>? blockedGameRunning = null)
+        Func<GameSettings, bool>? isTraceBlocked = null, Func<bool>? blockedGameRunning = null,
+        Func<IPlaySeriesProbe?>? openSeries = null, string? seriesDirectory = null, Func<bool>? seriesEnabled = null)
     {
+        _openSeries = openSeries; // 플레이의 초 단위 기록: 프레임 세션이 열린 (안티치트 게이트를 지난) 플레이에서만 남김
+        _seriesDirectory = seriesDirectory;
+        _seriesEnabled = seriesEnabled ?? (() => true);
         _isTraceBlocked = isTraceBlocked; // 안티치트 게이트가 막는 게임인가 (다른 게임의 시작에 열려 있는 세션을 닫는 데 씀)
         _blockedGameRunning = blockedGameRunning; // 게이트가 막는 등록 게임의 프로세스가 지금 실행 중인가 (실행 중이면 세션을 열지 않음)
         _openFrames = openFrames;
@@ -401,6 +409,8 @@ public sealed class PlayRecorder : IDisposable
     {
         IPlayDiskCounter? counter = null;
         IPlaySystemProbe? system = null;
+        PlaySeriesRecorder? series = null;
+        bool seriesTried = false;
         IReadOnlyList<PlayDiskCounters> previous = [];
         long previousTick = 0;
         bool hasBaseline = false;
@@ -432,7 +442,13 @@ public sealed class PlayRecorder : IDisposable
                 }
 
                 session.NoteAvailable(SafeAvailableRam(), tick);
-                foreach (PlayWindowSummary checkpoint in session.AddSample(previous, current, previousTick, tick, ReadSystem(system)))
+                if (!seriesTried && session.HasFrames)
+                {
+                    (seriesTried, series) = (true, OpenSeries(session));
+                }
+
+                PlaySeriesRaw? raw = session.HasFrames ? ReadSeries(series, session) : null;
+                foreach (PlayWindowSummary checkpoint in session.AddSample(previous, current, previousTick, tick, ReadSystem(system), raw))
                 {
                     PlaySampleRecord record = session.Snapshot(tick);
                     _store.Upsert(record);
@@ -443,6 +459,11 @@ public sealed class PlayRecorder : IDisposable
                 }
 
                 PersistStage(session, tick);
+                if (session.HasFrames)
+                {
+                    TickSeries(series, Stopwatch.GetElapsedTime(session.StartedTick, tick).TotalSeconds);
+                }
+
                 previous = current;
                 previousTick = tick;
             }
@@ -465,7 +486,7 @@ public sealed class PlayRecorder : IDisposable
                     if (final is { Count: > 0 })
                     {
                         long tick = _timestamp();
-                        foreach (PlayWindowSummary checkpoint in session.AddSample(previous, final, previousTick, tick, ReadSystem(system)))
+                        foreach (PlayWindowSummary checkpoint in session.AddSample(previous, final, previousTick, tick, ReadSystem(system), session.HasFrames ? ReadSeries(series, session) : null))
                         {
                             PlaySampleRecord record = session.Snapshot(tick);
                             _store.Upsert(record);
@@ -499,6 +520,73 @@ public sealed class PlayRecorder : IDisposable
             }
 
             CloseFrames(session);
+            CloseSeries(series);
+        }
+    }
+
+    /// 플레이의 초 단위 기록을 엽니다: 설정이 꺼졌거나 쓸 폴더·조회가 없으면 null. 어떤 실패도 디스크 기록을 막지 않습니다.
+    private PlaySeriesRecorder? OpenSeries(Session session)
+    {
+        if (_openSeries is null || _seriesDirectory is null || !_seriesEnabled())
+        {
+            return null;
+        }
+
+        IPlaySeriesProbe? probe = null;
+        try
+        {
+            probe = _openSeries();
+            if (probe is null)
+            {
+                return null;
+            }
+
+            var recorder = new PlaySeriesRecorder(probe, new PlaySeriesFile(_seriesDirectory, session.Game.Name, session.StartedAt, _log, _now));
+            session.AttachSeries(recorder);
+            return recorder;
+        }
+        catch (Exception e) when (e is not (StackOverflowException or OutOfMemoryException))
+        {
+            probe?.Dispose();
+            return null;
+        }
+    }
+
+    private static PlaySeriesRaw? ReadSeries(PlaySeriesRecorder? series, Session session)
+    {
+        try
+        {
+            return series?.Read(session.PidsSnapshot());
+        }
+        catch (Exception e) when (e is not (StackOverflowException or OutOfMemoryException))
+        {
+            return null; // 이 초의 시스템 값만 비움
+        }
+    }
+
+    // 우선순위별 대기 목록 (30 초마다) 과 쌓인 줄 쓰기 (분당 한 번): 실패해도 표본 루프를 멈추지 않음
+    private static void TickSeries(PlaySeriesRecorder? series, double elapsedSeconds)
+    {
+        try
+        {
+            series?.SampleLists(elapsedSeconds);
+            series?.FlushIfDue();
+        }
+        catch (Exception e) when (e is not (StackOverflowException or OutOfMemoryException))
+        {
+            // 기록 실패는 세션이나 서비스를 중단시키지 않습니다.
+        }
+    }
+
+    private static void CloseSeries(PlaySeriesRecorder? series)
+    {
+        try
+        {
+            series?.Dispose();
+        }
+        catch (Exception e) when (e is not (StackOverflowException or OutOfMemoryException))
+        {
+            // 기록 실패는 세션이나 서비스를 중단시키지 않습니다.
         }
     }
 
@@ -814,7 +902,9 @@ public sealed class PlayRecorder : IDisposable
         private double? _frameStoppedAt;
         private bool _framesClosedAtExit;
 
-        private readonly record struct PendingSecond(ulong Reads, double MeanReadMs, bool Slow, PlaySystemSample System);
+        private PlaySeriesRecorder? _series; // 초 단위 기록 (없으면 null)
+
+        private readonly record struct PendingSecond(ulong Reads, double MeanReadMs, bool Slow, PlaySystemSample System, PlaySeriesPoint? Series = null);
 
         public GameSettings Game { get; } = game;
         public DateTimeOffset StartedAt { get; } = startedAt;
@@ -853,6 +943,24 @@ public sealed class PlayRecorder : IDisposable
                     _pids.Add(pid);
                     _frames?.AddProcess(pid);
                 }
+            }
+        }
+
+        /// 초 단위 기록을 붙입니다 (표본 루프가 프레임 세션이 열린 뒤 한 번).
+        public void AttachSeries(PlaySeriesRecorder series)
+        {
+            lock (_gate)
+            {
+                _series = series;
+            }
+        }
+
+        /// 지금까지 알려진 게임 프로세스 번호의 사본.
+        public int[] PidsSnapshot()
+        {
+            lock (_gate)
+            {
+                return [.. _pids];
             }
         }
 
@@ -955,6 +1063,7 @@ public sealed class PlayRecorder : IDisposable
             {
                 byT.TryGetValue(t, out FrameSecond frame);
                 bool hasDisk = _pending.Remove(t, out PendingSecond disk);
+                _series?.AddSecond(t, frame, disk.Series); // 모든 초를 초 단위 기록에 (끊긴 초 목록과 따로)
                 if (frame.MaxMs < FrameLogMinMs && !disk.Slow && frame.Pauses == 0)
                 {
                     continue;
@@ -1047,7 +1156,7 @@ public sealed class PlayRecorder : IDisposable
         }
 
         public IReadOnlyList<PlayWindowSummary> AddSample(IReadOnlyList<PlayDiskCounters> previous, IReadOnlyList<PlayDiskCounters> current,
-            long previousTick, long tick, PlaySystemSample system = default)
+            long previousTick, long tick, PlaySystemSample system = default, PlaySeriesRaw? series = null)
         {
             lock (_gate)
             {
@@ -1065,7 +1174,8 @@ public sealed class PlayRecorder : IDisposable
                 if (frames is not null)
                 {
                     (ulong reads, double meanReadMs, bool slow) = _accumulator.LastSecond;
-                    _pending[(long)Math.Floor((previousElapsed + elapsed) / 2)] = new PendingSecond(reads, meanReadMs, slow, system);
+                    PlaySeriesPoint? point = _series is not null && series is not null ? _series.Point(series with { GpuMib = system.GpuDedicatedMib ?? series.GpuMib }, _pids, previous, current) : null; // 그래픽 메모리는 이미 읽은 시스템 값을 씀
+                    _pending[(long)Math.Floor((previousElapsed + elapsed) / 2)] = new PendingSecond(reads, meanReadMs, slow, system, point);
                     ApplyFrameSeconds(frames, through);
                 }
 
@@ -1386,7 +1496,7 @@ public sealed class PlayRecorder : IDisposable
         public IReadOnlyList<PlayDiskCounters>? Read() => monitor.Read()?.Select(Convert).ToArray();
         public void Dispose() => monitor.Dispose();
         private static PlayDiskCounters Convert(DiskPerformanceSample sample) =>
-            new(sample.DiskNumber, sample.ReadBytes, sample.ReadCount, sample.ReadTime100ns, sample.IdleTime100ns, sample.QueueDepth);
+            new(sample.DiskNumber, sample.ReadBytes, sample.ReadCount, sample.ReadTime100ns, sample.IdleTime100ns, sample.QueueDepth, sample.WriteBytes, sample.WriteCount, sample.WriteTime100ns);
 
         public static IPlayDiskCounter? Open(string path) => DiskInfo.OpenPerformanceMonitor(path) is { } monitor ? new WindowsPlayDiskCounter(monitor) : null;
     }

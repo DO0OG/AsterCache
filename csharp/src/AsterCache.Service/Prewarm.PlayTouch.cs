@@ -180,6 +180,7 @@ public sealed partial class Prewarmer
             }
 
             lease?.NoteReadIssue("play touch", 0, false); // 양보 진단 로그에 이 단계가 보이게
+            using var activity = ServiceActivity.Begin(ServiceOp.Keep); // 초 단위 기록의 동작 표시
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(lease?.Token ?? default, _playStop.Token);
             _ = _env.SetReadIoLow(true); // 시작 만지기와 같이 이 호출 안에서만 낮은 I/O 우선순위
             try
@@ -229,7 +230,7 @@ public sealed partial class Prewarmer
             }
 
             total = new TouchResult(total.Bytes + r.Bytes, total.Seconds + r.Seconds + Math.Max(0, rest), total.SlowPieces + r.SlowPieces, total.Errors + r.Errors, r.End,
-                total.DiskBytes + r.DiskBytes, total.SkippedBytes + r.SkippedBytes, total.CpuSeconds + r.CpuSeconds, total.Maps + r.Maps, total.HardFaults + r.HardFaults, r.Reason, total.Checks + r.Checks);
+                total.DiskBytes + r.DiskBytes, total.SkippedBytes + r.SkippedBytes, total.CpuSeconds + r.CpuSeconds, total.Maps + r.Maps, total.HardFaults + r.HardFaults, r.Reason, total.Checks + r.Checks, TouchErrors.Combine(total.ErrorKinds, r.ErrorKinds));
             if (total.End == TouchEnd.Completed && total.DiskBytes > StandbyTouch.DiskReadStopBytes)
             {
                 return total with { End = TouchEnd.NeedsDiskReads, Reason = StopReason.HardFaults };

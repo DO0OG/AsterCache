@@ -263,6 +263,7 @@ public sealed partial class GameDispatcher
     // 시작 스트림·단계 스트림 공통 본체: 읽기 카운터를 1 초마다 표본해 경계·상한·양보를 판정하고, 묶음마다 메모리 게이트와 우선순위를 적용합니다.
     private StreamOutcome RunStream(GameSettings g, DiskReadCoordinator.Lease? lease, CancellationToken stop, StreamSpec spec)
     {
+        using var activity = ServiceActivity.Begin(ServiceOp.Stream); // 초 단위 기록의 동작 표시
         CancellationToken streamStop = lease?.Token ?? stop;
         int capSeconds = Math.Max(0, _env.StartStreamCapSeconds());
         long startedAt = _env.Timestamp();

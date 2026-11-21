@@ -5,7 +5,8 @@ public sealed record IoSummaryWindow(long StartedUs, long EndedUs);
 /// 파일 표의 한 행. ChangedDuringSession 은 관찰 시작 뒤에 쓰인 파일이라 끝난 뒤 읽은 배치가 읽을 때의 배치와 다를 수 있다는 표시입니다.
 public sealed record IoSummaryFile(string Path, bool ChangedDuringSession = false);
 
-/// 대상 프로세스의 파일 읽기 요청 표시별 집계입니다.
+/// 대상 프로세스의 파일 읽기 요청 표시별 집계입니다. OpenOptions 는 대상 프로세스가 이 파일을 열 때 준 옵션 중 IoSummaryCollector.OpenOptionsMask 비트의 합집합입니다
+/// (순차 FILE_SEQUENTIAL_ONLY 0x4, 캐시 없음 FILE_NO_INTERMEDIATE_BUFFERING 0x8, 임의 접근 FILE_RANDOM_ACCESS 0x800): 관찰이 시작되기 전에 열린 파일은 열기 이벤트가 없어 0 입니다.
 public sealed record IoSummaryReadMode(
     string Path,
     long CacheRequests,
@@ -13,7 +14,8 @@ public sealed record IoSummaryReadMode(
     long NoCacheRequests,
     long NoCacheBytes,
     long PagingRequests,
-    long PagingBytes);
+    long PagingBytes,
+    uint OpenOptions = 0);
 
 /// 관찰한 파일 읽기 표시 값의 요청 수입니다.
 public sealed record IoFlagCount(uint Flags, long Reads);
@@ -105,6 +107,9 @@ public sealed record IoSummary(
         long pagingBytes = modes.Sum(mode => mode.PagingBytes);
         long noCacheOnlyBytes = modes.Where(mode => mode.NoCacheRequests > 0 && mode.CacheRequests == 0 && mode.PagingRequests == 0).Sum(mode => mode.NoCacheBytes);
         int noCacheOnlyFiles = modes.Count(mode => mode.NoCacheRequests > 0 && mode.CacheRequests == 0 && mode.PagingRequests == 0);
+        int sequentialFiles = modes.Count(mode => (mode.OpenOptions & IoSummaryCollector.OpenSequential) != 0);
+        int randomFiles = modes.Count(mode => (mode.OpenOptions & IoSummaryCollector.OpenRandomAccess) != 0);
+        int noBufferingFiles = modes.Count(mode => (mode.OpenOptions & IoSummaryCollector.OpenNoBuffering) != 0);
         string flags = string.Join(", ", (q.ReadModeFlagCounts ?? []).Select(flag => $"0x{flag.Flags:X}×{flag.Reads}"));
         if (q.ReadModeFlagCountOther > 0)
         {
@@ -117,7 +122,8 @@ public sealed record IoSummary(
         }
 
         return $"read modes: {modes.Count} files, cache {Mib(cacheBytes):0.0} MiB, no cache {Mib(noCacheBytes):0.0} MiB, paging {Mib(pagingBytes):0.0} MiB, "
-            + $"{noCacheOnlyFiles} files read only without the cache ({Mib(noCacheOnlyBytes):0.0} MiB), flags {flags}, {q.ReadModeFilesDropped} files dropped, {q.ReadModeReadsUnnamed} reads unnamed";
+            + $"{noCacheOnlyFiles} files read only without the cache ({Mib(noCacheOnlyBytes):0.0} MiB), flags {flags}, {q.ReadModeFilesDropped} files dropped, {q.ReadModeReadsUnnamed} reads unnamed, "
+            + $"opened with sequential {sequentialFiles}, random access {randomFiles}, no buffering {noBufferingFiles} files";
     }
 
     private static double Mib(long bytes) => bytes / (double)(1 << 20);

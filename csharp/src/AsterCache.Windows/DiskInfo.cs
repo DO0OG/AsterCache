@@ -94,7 +94,8 @@ public static unsafe class DiskInfo
 }
 
 /// IOCTL_DISK_PERFORMANCE 의 누적 통계. 시간 값은 100 ns 단위입니다.
-public sealed record DiskPerformanceSample(uint DiskNumber, long ReadBytes, uint ReadCount, long ReadTime100ns, long IdleTime100ns, uint QueueDepth);
+public sealed record DiskPerformanceSample(uint DiskNumber, long ReadBytes, uint ReadCount, long ReadTime100ns, long IdleTime100ns, uint QueueDepth,
+    long WriteBytes = 0, uint WriteCount = 0, long WriteTime100ns = 0);
 
 /// 물리 디스크별 성능 카운터를 읽습니다. 각 성공한 IOCTL_PERFORMANCE 에 대응해 IOCTL_PERFORMANCE_OFF 를 호출해 드라이버 참조 수를 균형 있게 유지합니다.
 public sealed unsafe class DiskPerformanceMonitor : IDisposable
@@ -231,7 +232,7 @@ public sealed unsafe class DiskPerformanceMonitor : IDisposable
             }
 
             DiskPerformanceBuffer data = MemoryMarshal.Read<DiskPerformanceBuffer>(output);
-            return new DiskPerformanceSample(device.Number, data.BytesRead, data.ReadCount, data.ReadTime, data.IdleTime, data.QueueDepth);
+            return new DiskPerformanceSample(device.Number, data.BytesRead, data.ReadCount, data.ReadTime, data.IdleTime, data.QueueDepth, data.BytesWritten, data.WriteCount, data.WriteTime);
         }
     }
 

@@ -142,7 +142,13 @@ public static class IoSummaryStore
                         return null;
                     }
 
-                    readModes.Add(new IoSummaryReadMode(name, cacheRequests, cacheBytes, noCacheRequests, noCacheBytes, pagingRequests, pagingBytes));
+                    long openOptions = 0; // 옛 집계에는 없는 선택 항목
+                    if (mode.TryGetValue("open_options", out object? optionsValue) && (optionsValue is not long parsed || parsed < 0 || parsed > uint.MaxValue || ((openOptions = parsed) & ~(long)IoSummaryCollector.OpenOptionsMask) != 0))
+                    {
+                        return null;
+                    }
+
+                    readModes.Add(new IoSummaryReadMode(name, cacheRequests, cacheBytes, noCacheRequests, noCacheBytes, pagingRequests, pagingBytes, (uint)openOptions));
                 }
             }
 
@@ -278,6 +284,7 @@ public static class IoSummaryStore
             { "nocache_bytes", mode.NoCacheBytes },
             { "paging_requests", mode.PagingRequests },
             { "paging_bytes", mode.PagingBytes },
+            { "open_options", (long)mode.OpenOptions },
         }).ToList();
         var root = new JObject
         {

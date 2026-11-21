@@ -30,6 +30,8 @@ public sealed class SolarTests
     private static GameSettings Game(string name) => Games.Make(name, name + ".exe");
 
     private Action? _onTouch;
+    private Func<IReadOnlyList<ReadOp>, int[]?>? _keepProbe; // 표본 확인의 결과 (없으면 확인 없음)
+    private readonly List<IReadOnlyList<ReadOp>> _keepProbed = [];
 
     private PrewarmEnv Env() => new()
     {
@@ -44,6 +46,11 @@ public sealed class SolarTests
             return _lists;
         },
         RankedRows = _ => _ranked,
+        KeepProbeSamples = (ops, _) =>
+        {
+            _keepProbed.Add(ops);
+            return _keepProbe?.Invoke(ops);
+        },
         TouchRanges = (ranges, ct) =>
         {
             _touched.Add(ranges);
@@ -3060,6 +3067,65 @@ public sealed class SolarTests
         Assert.Equal(Reversed(Reads), _touched.Single());
         Assert.True(p.Solar.HasMark("a"));
         Assert.Contains("a: cache touched at game start (a.exe): 100 MiB in 0.4 s (cpu 0.0 s, 0 views, 0 checks), 0 MiB read from disk", _log.Lines.Last());
+    }
+
+    [Fact]
+    public void ABoundaryFoundWhilePlayingAddsAProbeOfSixteenSpreadSamplesToTheLogWithoutTouchingAnything()
+    {
+        Solar solar = Make();
+        _queued.Enqueue(Stopped(15, 5)); // 10 MiB 가 메모리에 있고 목록 끝 전에 경계를 찾음
+        _queued.Enqueue(new TouchResult(10 * Mib, 0.4, 0, 0, TouchEnd.Completed));
+        _keepProbe = ops => [.. ops.Select((_, i) => i < 5 ? 0 : 3)]; // 앞 다섯 곳만 메모리에 있음
+
+        _ = solar.TouchFront(Game("a"), Reads, CancellationToken.None, "a.exe", keeping: true);
+
+        Assert.Equal(2, _touched.Count); // 표본은 만지기 호출이 아님 (순서·판정에 쓰지 않음)
+        Assert.Equal(16, Assert.Single(_keepProbed).Count);
+        Assert.Matches(@"cache kept while playing \(a\.exe\): .*, probe 5/16 in memory \(positions 0 2 4 6 8 MiB of 30 MiB\)$", _log.Lines.Last(l => l.Contains("cache kept")));
+    }
+
+    [Fact]
+    public void NoProbeIsMadeWhenTheWholeListIsInMemoryOrWhenTheProbeFails()
+    {
+        _keepProbe = ops => [.. ops.Select(_ => 0)];
+        Solar solar = Make();
+        _ = solar.TouchFront(Game("a"), Reads, CancellationToken.None, "a.exe", keeping: true); // 전부 메모리에 있음: 경계가 없음
+
+        Assert.Empty(_keepProbed);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("probe", StringComparison.Ordinal));
+
+        _queued.Enqueue(Stopped(15, 5));
+        _queued.Enqueue(new TouchResult(10 * Mib, 0.4, 0, 0, TouchEnd.Completed));
+        _keepProbe = _ => throw new IOException("probe failed");
+
+        Assert.NotNull(solar.TouchFront(Game("a"), Reads, CancellationToken.None, "a.exe", keeping: true)); // 확인이 실패해도 만지기와 로그는 그대로
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("probe", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("10 MiB of 30 MiB still in memory", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void WhenNoneOfTheListIsInMemoryTheProbeTellsWhetherTheWholeListIsGone()
+    {
+        Solar solar = Make();
+        _queued.Enqueue(Stopped(32, 32)); // 맨 앞에서 경계
+        _keepProbe = ops => [.. ops.Select(_ => 5)]; // 모든 표본이 디스크에서 읽힘
+
+        _ = solar.TouchFront(Game("a"), Reads, CancellationToken.None, "a.exe", keeping: true);
+
+        Assert.Contains("found none of the 30 MiB list in memory (4 slow pieces, 32 MiB read from disk), left to the rewarm check, probe 0/16 in memory (none of 30 MiB)", _log.Lines.Last());
+    }
+
+    [Fact]
+    public void TheErrorCountOfATouchComesWithItsKindsTheWin32CodesAndTheWorstFile()
+    {
+        var kinds = new TouchErrors();
+        kinds.Add(TouchErrorKind.Open, 3, @"D:\a\x.bin", 5);
+        _result = new TouchResult(100 * Mib, 0.4, 0, 3, TouchEnd.Completed, ErrorKinds: kinds);
+        Solar solar = Make();
+
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None, startExe: "a.exe");
+
+        Assert.Contains(@"0 MiB read from disk, 3 errors (open 3 (win32 5 ×3); most failures in D:\a\x.bin ×3)", _log.Lines.Last());
     }
 
     private static TouchResult Stopped(long bytesMib, long diskMib) => new(bytesMib * Mib, 0.5, 4, 0, TouchEnd.NeedsDiskReads, diskMib * Mib, 0, 0, 0, 0, StopReason.HardFaults);

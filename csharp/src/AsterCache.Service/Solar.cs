@@ -140,7 +140,7 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
 
                 log.Info(startExe is null
                     ? $"{game.Name}: ladder ordered {r.Bytes >> 20} MiB in {r.Seconds:F1} s{Errors(r)}{Sparse(r)}"
-                    : $"{game.Name}: cache touched at game start ({startExe}): {r.Bytes >> 20} MiB in {r.Seconds:F1} s (cpu {r.CpuSeconds:F1} s, {r.Maps} views, {r.Checks} checks), {r.DiskBytes >> 20} MiB read from disk{(r.Errors > 0 ? $", {r.Errors} errors" : string.Empty)}{Sparse(r)}");
+                    : $"{game.Name}: cache touched at game start ({startExe}): {r.Bytes >> 20} MiB in {r.Seconds:F1} s (cpu {r.CpuSeconds:F1} s, {r.Maps} views, {r.Checks} checks), {r.DiskBytes >> 20} MiB read from disk{ErrorCount(r)}{Sparse(r)}");
                 break;
             case TouchEnd.Canceled:
                 Forget(game.Name); // 순서가 반쯤만 만들어짐: 표식 없이 둠
@@ -196,14 +196,14 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
 
             log.Info(find.End == TouchEnd.Canceled
                 ? $"{game.Name}: {what} stopped after {find.Bytes >> 20} MiB{Errors(find)}{Sparse(find)}"
-                : $"{game.Name}: {what} found none of the {total >> 20} MiB list in memory ({find.SlowPieces} slow pieces, {find.DiskBytes >> 20} MiB read from disk), left to the rewarm check");
+                : $"{game.Name}: {what} found none of the {total >> 20} MiB list in memory ({find.SlowPieces} slow pieces, {find.DiskBytes >> 20} MiB read from disk{ErrorCount(find)}), left to the rewarm check{ProbeText(find, reads, total, ct)}");
             return find.End;
         }
 
         // 멈춘 곳까지가 앞부분 (건너뛴 스파스 범위의 길이는 목록 위치에 들어감). 멈춘 조각 근처에서 디스크로 읽힌 만큼도 이제 메모리에 있으므로 함께 만짐
         TouchResult r = touch(LadderOrder.Reverse(PrefetchStreamer.Head(reads, find.Bytes + find.SkippedBytes)), ct);
         ReduceOthers([game.Name], [(null, inMemory)], withoutPreviousAll: true);
-        string kept = $"{inMemory >> 20} MiB of {total >> 20} MiB still in memory{Stopped(find)}, in {find.Seconds + r.Seconds:F1} s (cpu {find.CpuSeconds + r.CpuSeconds:F1} s, {find.Maps + r.Maps} views, {find.Checks + r.Checks} checks), {(find.DiskBytes + r.DiskBytes) >> 20} MiB read from disk ({find.HardFaults + r.HardFaults} hard faults){Sparse(find)}{(skippedBefore > 0 ? $", {skippedBefore} rounds skipped before" : string.Empty)}";
+        string kept = $"{inMemory >> 20} MiB of {total >> 20} MiB still in memory{Stopped(find)}, in {find.Seconds + r.Seconds:F1} s (cpu {find.CpuSeconds + r.CpuSeconds:F1} s, {find.Maps + r.Maps} views, {find.Checks + r.Checks} checks), {(find.DiskBytes + r.DiskBytes) >> 20} MiB read from disk ({find.HardFaults + r.HardFaults} hard faults){ErrorCount(find)}{Sparse(find)}{(skippedBefore > 0 ? $", {skippedBefore} rounds skipped before" : string.Empty)}{(r.End == TouchEnd.Canceled ? string.Empty : ProbeText(find, reads, total, ct))}";
         log.Info(r.End == TouchEnd.Canceled
             ? $"{game.Name}: {what} stopped after {r.Bytes >> 20} MiB{Errors(r)}{Sparse(r)}"
             : keeping ? $"{game.Name}: cache kept while playing ({startExe}): {kept}" : $"{game.Name}: cache touched at game start ({startExe}): {kept}, left to the rewarm check");
@@ -555,14 +555,36 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
     }
 
     // 다시 채움 로그의 꼬리: 사다리 (역순) 를 몇 MiB 만지고 멈췄는지 (만진 양이 전체에 가까우면 빠진 것은 가장 중요한 앞쪽), 느린 조각 수와 디스크에서 읽힌 양, 오류 수. N 은 건너뛴 스파스 범위를 포함한 사다리 전체 (건너뛴 양은 줄 끝 꼬리로 따로 보임).
-    private static string Missing(TouchResult r, IReadOnlyList<ReadOp> ladder) => $"after {r.Bytes >> 20} of {ladder.Sum(o => o.Length) >> 20} MiB ({r.SlowPieces} slow pieces{(r.DiskBytes > 0 ? $", {r.DiskBytes >> 20} MiB read from disk" : string.Empty)}{(r.HardFaults > 0 ? $", {r.HardFaults} hard faults" : string.Empty)}{(r.Reason == StopReason.SlowTime ? ", stopped by slow time" : string.Empty)}{(r.Errors > 0 ? $", {r.Errors} errors" : string.Empty)})";
+    private static string Missing(TouchResult r, IReadOnlyList<ReadOp> ladder) => $"after {r.Bytes >> 20} of {ladder.Sum(o => o.Length) >> 20} MiB ({r.SlowPieces} slow pieces{(r.DiskBytes > 0 ? $", {r.DiskBytes >> 20} MiB read from disk" : string.Empty)}{(r.HardFaults > 0 ? $", {r.HardFaults} hard faults" : string.Empty)}{(r.Reason == StopReason.SlowTime ? ", stopped by slow time" : string.Empty)}{ErrorCount(r)})";
 
     // 경계에서 멈춘 만지기의 로그 꼬리: 디스크 읽기 수가 허용치를 넘었는지 (경계), 아니면 안전망 (느린 조각의 시간 합) 에 걸렸는지
+    // 오류 수와 종류별 서술 (열기 실패와 Win32 오류 번호, 파일 끝 밖, 매핑 실패, 읽기 실패, 가장 많이 실패한 파일의 경로): 종류를 모르면 (시험의 가짜 만지기) 수만.
+    private static string ErrorCount(TouchResult r) => r.Errors > 0 ? $", {r.Errors} errors{(r.ErrorKinds?.Describe() is { Length: > 0 } detail ? $" ({detail})" : string.Empty)}" : string.Empty;
+
+    // 경계를 찾은 만지기 (find) 에서만 표본 확인을 하고 로그 꼬리 (앞에 쉼표) 를 돌려줍니다: 기록만 하고 판정·순서에는 쓰지 않으며, 실패해도 빈 문자열입니다.
+    private string ProbeText(TouchResult find, IReadOnlyList<ReadOp> reads, long total, CancellationToken ct)
+    {
+        if (find.End != TouchEnd.NeedsDiskReads)
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            IReadOnlyList<(ReadOp Op, long Offset)> picks = KeepProbe.Pick(reads);
+            return picks.Count > 0 && env.KeepProbeSamples([.. picks.Select(p => p.Op)], ct) is { } faults ? ", " + KeepProbe.Describe(picks, faults, total) : string.Empty;
+        }
+        catch (Exception e) when (e is not (StackOverflowException or OutOfMemoryException))
+        {
+            return string.Empty;
+        }
+    }
+
     private static string Stopped(TouchResult r) => r.End != TouchEnd.NeedsDiskReads ? string.Empty : r.Reason == StopReason.SlowTime ? " (stopped by slow time)" : " (boundary found by hard faults)";
 
     // 줄 끝에 붙이는 스파스 파일이라 만지지 않은 양 (MiB 로 0 이면 빈 문자열)
     private static string Sparse(TouchResult r) => r.SkippedBytes >> 20 > 0 ? $", {r.SkippedBytes >> 20} MiB in sparse files not touched" : string.Empty;
 
     // 줄 끝에 붙이는 오류 수와 디스크에서 읽힌 것으로 본 양
-    private static string Errors(TouchResult r) => (r.Errors > 0 ? $", {r.Errors} errors" : string.Empty) + (r.DiskBytes > 0 ? $", {r.DiskBytes >> 20} MiB read from disk" : string.Empty);
+    private static string Errors(TouchResult r) => ErrorCount(r) + (r.DiskBytes > 0 ? $", {r.DiskBytes >> 20} MiB read from disk" : string.Empty);
 }

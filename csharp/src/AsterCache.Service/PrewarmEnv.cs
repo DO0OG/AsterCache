@@ -176,6 +176,9 @@ public sealed class PrewarmEnv
     /// 범위를 주어진 순서로 만짐 (파일 캐시에 있는 것을 다시 읽어 대기 목록 맨 뒤로, 디스크 읽기가 섞이면 멈춤). 시험 기본값은 아무것도 안 함.
     public Func<IReadOnlyList<ReadOp>, CancellationToken, TouchResult> TouchRanges { get; init; } = (_, _) => new TouchResult(0, 0, 0, 0, TouchEnd.Completed);
 
+    /// 표본 확인 (기록용, KeepProbe): 범위마다 따로 만져 앞뒤의 하드 폴트 증가를 돌려줌 (읽을 수 없으면 null). 판정·순서에는 쓰지 않습니다. 시험 기본값은 확인 없음.
+    public Func<IReadOnlyList<ReadOp>, CancellationToken, int[]?> KeepProbeSamples { get; init; } = (_, _) => null;
+
     /// 게임의 예열 목록·순위 목록이 바뀌었는지 가리는 입력 파일의 표지 (같으면 목록이 같음, 읽지 못하면 null → 매번 다시 계산). 시험 기본값은 항상 같음.
     public Func<GameSettings, string?> ListStamp { get; init; } = _ => string.Empty;
 
@@ -202,6 +205,7 @@ public sealed class PrewarmEnv
             StandbyLadderEnabled = standbyLadder ?? (() => false),
             Lists = MemoryListInfo.Query,
             TouchRanges = StandbyTouch.Run,
+            KeepProbeSamples = StandbyTouch.Probe,
             ListStamp = PrewarmRun.InputStamp,
             RankedRows = g => LoadRefillPlans.RankedRows(g),
             IsSparse = p => FileGuards.IsSparse(p),

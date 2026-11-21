@@ -496,6 +496,7 @@ public sealed partial class Prewarmer
 
         try
         {
+            using var activity = ServiceActivity.Begin(ServiceOp.Supplement); // 초 단위 기록의 동작 표시
             using IDisposable work = TrackGameWork(game.Name);
             if (ct.IsCancellationRequested || !HeavyWorkAllowed(game) || PolicyBlocksPrewarm(game)
                 || DriveHasRunningGame(game) || _games.Any(x => Relocating(x.Name)) || Deferred(game) || MemoryRetryTooSoon(game.Name))

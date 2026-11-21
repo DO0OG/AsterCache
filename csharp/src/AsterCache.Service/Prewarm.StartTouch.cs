@@ -74,6 +74,7 @@ public sealed partial class Prewarmer
 
             lease?.NoteReadIssue("start touch", 0, false); // 양보 진단 로그에 이 단계가 보이게
             touched = true;
+            using var activity = ServiceActivity.Begin(ServiceOp.StartTouch); // 초 단위 기록의 동작 표시
             CancellationToken stop = lease?.Token ?? default;
             _ = _env.SetReadIoLow(true); // 읽는 스레드가 이 호출 안에서만 낮은 우선순위: 시작·단계 스트림과 게임의 읽기에 양보 (이 스레드에서 되돌림)
             Thread reader = Thread.CurrentThread;

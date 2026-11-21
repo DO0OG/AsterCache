@@ -1098,10 +1098,10 @@ public sealed class KeepHoldTests
     }
 
     [Fact]
-    public void AnOrderPassThatReadsFromDiskInSeveralBatchesStillRunsToTheMostImportantEnd()
+    public void AnOrderPassThatReadsFromDiskInSeveralBatchesBelowTheCapStillRunsToTheMostImportantEnd()
     {
         _touchOverride = ranges => KeptLines() >= 1 && ranges.Any(o => o.Path == F(5) || o.Path == F(3))
-            ? new TouchResult(8 * Mib, 0.1, 0, 0, TouchEnd.NeedsDiskReads, 30 * Mib, 0, 0, 0, 0, StopReason.HardFaults) // 배치마다 30 MiB: 합이 이전 상한 (64 MiB) 을 넘음
+            ? new TouchResult(8 * Mib, 0.1, 0, 0, TouchEnd.NeedsDiskReads, 10 * Mib, 0, 0, 0, 0, StopReason.HardFaults) // 배치마다 10 MiB: 세 번이라 합 30 MiB 로 순서 패스 상한 (32 MiB) 아래
             : null;
         GameSettings cheat = Cheat("a");
         Prewarmer p = Make(Reads, cheat);
@@ -1109,7 +1109,26 @@ public sealed class KeepHoldTests
 
         p.TouchAtGameStart(cheat, "a.exe");
 
-        Assert.Equal(new ReadOp(F(1), 0, 8 * Mib), _touched[^1][^1]); // 읽기가 여러 번 나도 가장 중요한 쪽까지 만짐 (중간에 끝내는 상한 없음)
+        Assert.Equal(new ReadOp(F(1), 0, 8 * Mib), _touched[^1][^1]); // 읽기가 여러 번 나도 상한 아래면 가장 중요한 쪽까지 만짐
+    }
+
+    [Fact]
+    public void AnOrderPassThatReadsMoreThanTheCapEndsThereAndTheProtectPassHadAlreadyTouchedTheWholeSet()
+    {
+        _touchOverride = ranges => KeptLines() >= 1
+            ? new TouchResult(8 * Mib, 0.1, 0, 0, TouchEnd.NeedsDiskReads, 20 * Mib, 0, 0, 0, 0, StopReason.HardFaults) // 배치마다 20 MiB: 둘째 배치에서 상한 32 MiB 를 넘음
+            : null;
+        GameSettings cheat = Cheat("a");
+        Prewarmer p = Make(Reads, cheat);
+        RunFor(25);
+
+        p.TouchAtGameStart(cheat, "a.exe");
+
+        IReadOnlyList<ReadOp> protect = _findCalls[1]; // 둘째 회차의 보호 패스: 집합 전체를 가장 중요한 것부터 이미 만짐
+        Assert.Equal(Reads.Select(o => o.Path), protect.Select(o => o.Path));
+        Assert.Equal(new ReadOp(F(1), 0, 8 * Mib), protect[0]);
+        Assert.DoesNotContain(_touched[^1], o => o.Path == F(1)); // 순서 패스는 상한에 닿아 가장 중요한 쪽까지 가지 않고 끝남
+        Assert.Contains(_log.Lines, l => l.Contains("order pass stopped at the disk read cap"));
     }
 
     [Fact]

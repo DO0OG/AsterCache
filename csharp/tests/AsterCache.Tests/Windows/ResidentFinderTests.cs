@@ -167,9 +167,14 @@ public sealed class ResidentFinderTests
 
         FindResult r = Find(memory, [new ReadOp("a", 0, 400 * Mib)]);
 
-        Assert.True(r.BoundaryHit); // 건너뛴 다음 지점은 시간과 무관하게 조회: 또 빠짐이라 경계
-        Assert.Equal([new ReadOp("a", 1 * Mib, 8 * Mib)], r.Missing);
-        Assert.InRange(r.LeftBytes, 380 * Mib, 392 * Mib);
+        // 첫 빠짐은 시계가 20 ms 를 채운 뒤에야 조회돼 그때까지 읽은 조각 (모두 읽혀 메모리에 올라옴) 은 집합에 들고, 건너뛴 구간은 그 바로 뒤에서 시작함
+        long firstEnd = r.Resident[0].Offset + r.Resident[0].Length;
+        Assert.InRange(firstEnd, Mib, 20 * Mib);
+        Assert.Equal([new ReadOp("a", firstEnd, 8 * Mib)], r.Missing); // 건너뛴 구간은 확인한 빠짐 바로 뒤부터 8 MiB, 집합에는 들지 않음
+        Assert.Equal(new ReadOp("a", firstEnd + (8 * Mib), Mib), r.Resident[1]); // 건너뛴 다음 지점은 시계와 무관하게 조회돼 (또 빠짐) 거기서 멈춤
+        Assert.True(r.BoundaryHit);
+        Assert.Equal(2, r.Resident.Count);
+        Assert.InRange(r.LeftBytes, 360 * Mib, 392 * Mib);
     }
 
     [Fact]

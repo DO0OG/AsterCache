@@ -48,6 +48,34 @@ public static class RangeSets
         set.Insert(first, (start, end));
     }
 
+    /// [from, to) 를 set 에서 뺍니다 (걸친 구간은 남는 쪽만 남김).
+    public static void Remove(List<(long Start, long End)> set, long from, long to)
+    {
+        if (to <= from)
+        {
+            return;
+        }
+
+        int first = FirstEndingAfter(set, from);
+        List<(long, long)> kept = [];
+        int i = first;
+        for (; i < set.Count && set[i].Start < to; i++)
+        {
+            if (set[i].Start < from)
+            {
+                kept.Add((set[i].Start, from));
+            }
+
+            if (set[i].End > to)
+            {
+                kept.Add((to, set[i].End));
+            }
+        }
+
+        set.RemoveRange(first, i - first);
+        set.InsertRange(first, kept);
+    }
+
     // 끝이 value 보다 큰 첫 구간의 위치 (구간이 합쳐 정렬돼 있어 끝도 정렬됨).
     private static int FirstEndingAfter(List<(long Start, long End)> set, long value)
     {

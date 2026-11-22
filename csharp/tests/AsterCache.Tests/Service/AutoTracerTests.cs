@@ -2425,7 +2425,7 @@ public sealed class AutoTracerTests : IDisposable
     }
 
     [Fact]
-    public void AGameAlreadyRunningOnTheDiskSkipsTheScanButTheRawTraceIsStillSaved()
+    public void AGameAlreadyRunningOnTheDiskDefersTheScanButTheRawTraceAndTheWrittenSizesAreSavedAtOnce()
     {
         EnableIoSummary();
         Reads((0, 65536));
@@ -2439,7 +2439,108 @@ public sealed class AutoTracerTests : IDisposable
 
         Assert.True(File.Exists(Raw));
         Assert.Equal(0, _rig.World.BuildIoSummaryCalls);
-        Assert.Contains(_rig.Log.Lines, line => line.Contains("I/O summary not built (a game is running)", StringComparison.Ordinal));
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("I/O summary deferred (a game is running on the disk)", StringComparison.Ordinal));
+        Assert.True(File.Exists(WrittenFileHistory.PathFor(Raw))); // 크기 기록은 집계와 떼어 바로 남음
+    }
+
+    [Fact]
+    public void ADeferredScanIsBuiltAndSavedWhenTheGameOnTheDiskExitsAndNotBefore()
+    {
+        EnableIoSummary();
+        Reads((0, 65536));
+        _trace.IoRequests = IoRequests();
+        bool neighbour = true;
+        AutoEnv env = _rig.World.Env();
+        env.GameRunningOnDisk = _ => neighbour;
+        var tracer = new AutoTracer(env, _rig.Status, _rig.Log, () => _rig.Settings) { MinRunBytes = 0 };
+        tracer.Start(_game);
+        EndAfterExitGrace(tracer);
+
+        tracer.Step(); // 다른 게임이 아직 떠 있음
+
+        Assert.Equal(0, _rig.World.BuildIoSummaryCalls);
+        Assert.DoesNotContain(IoSummaryStore.StandalonePaths(Raw), File.Exists);
+
+        neighbour = false;
+        tracer.Step();
+
+        Assert.Equal(1, _rig.World.BuildIoSummaryCalls);
+        Assert.Single(IoSummaryStore.StandalonePaths(Raw), File.Exists); // 단독 집계로 저장
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("deferred I/O summary built and saved", StringComparison.Ordinal));
+        tracer.Step();
+        Assert.Equal(1, _rig.World.BuildIoSummaryCalls); // 한 번만
+    }
+
+    [Fact]
+    public void ADeferredPlayHeldForTheZoneLockIsSavedByTheRetryOnlyAndNotCountedTwice()
+    {
+        EnableIoSummary();
+        Reads((0, 65536));
+        _trace.IoRequests = IoRequests();
+        bool neighbour = true;
+        AutoEnv env = _rig.World.Env();
+        env.GameRunningOnDisk = _ => neighbour;
+        var tracer = new AutoTracer(env, _rig.Status, _rig.Log, () => _rig.Settings) { MinRunBytes = 0 };
+        tracer.Start(_game);
+
+        using (DataLock? gate = DataLock.TryAcquire(_game.Plan)) // 정리·병합 중이라 잠금이 바쁨: 미룬 채 보류됨
+        {
+            Assert.NotNull(gate);
+            _rig.World.Running = false;
+            tracer.Step();
+            _rig.World.Now += GameExitTracker.Grace;
+            tracer.Step();
+            Assert.False(File.Exists(Raw));
+            Assert.Equal(0, _rig.World.BuildIoSummaryCalls);
+            neighbour = false; // 잠금이 풀리기 전에 다른 게임이 끝남
+        }
+
+        tracer.Step(); // 보류한 저장의 재시도가 집계를 만들어 회차에 붙여 저장하고, 같은 Step 의 미룬 집계는 건너뜀
+
+        Assert.Equal(1, _rig.World.BuildIoSummaryCalls);
+        Assert.True(File.Exists(IoSummaryStore.RunPath(TraceWriter.RunPath(Raw, 1))));
+        Assert.DoesNotContain(IoSummaryStore.StandalonePaths(Raw), File.Exists); // 같은 플레이의 두 번째 집계가 없음
+    }
+
+    [Fact]
+    public void OnlyTheNewestDeferredPlayOfAGameIsKept()
+    {
+        EnableIoSummary();
+        Reads((0, 65536));
+        _trace.IoRequests = IoRequests();
+        bool neighbour = true;
+        AutoEnv env = _rig.World.Env();
+        env.GameRunningOnDisk = _ => neighbour;
+        var tracer = new AutoTracer(env, _rig.Status, _rig.Log, () => _rig.Settings) { MinRunBytes = 0 };
+        tracer.Start(_game);
+        EndAfterExitGrace(tracer);
+        _rig.World.Running = true;
+        tracer.Start(_game); // 같은 게임의 다음 플레이도 다른 게임이 떠 있는 동안 끝남
+        EndAfterExitGrace(tracer);
+
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("an older deferred I/O summary was dropped", StringComparison.Ordinal));
+        neighbour = false;
+        tracer.Step();
+
+        Assert.Equal(1, _rig.World.BuildIoSummaryCalls); // 오래된 플레이의 집계는 만들지 않음
+    }
+
+    [Fact]
+    public void WithoutAnotherGameTheScanIsBuiltAtTheEndAsBeforeAndTheSizesAreRecordedOnce()
+    {
+        EnableIoSummary();
+        Reads((0, 65536));
+        _trace.IoRequests = IoRequests();
+        AutoEnv env = _rig.World.Env();
+        env.GameRunningOnDisk = _ => false;
+        var tracer = new AutoTracer(env, _rig.Status, _rig.Log, () => _rig.Settings) { MinRunBytes = 0 };
+
+        tracer.Start(_game);
+        EndAfterExitGrace(tracer);
+
+        Assert.Equal(1, _rig.World.BuildIoSummaryCalls);
+        Assert.DoesNotContain(_rig.Log.Lines, line => line.Contains("deferred", StringComparison.Ordinal));
+        Assert.True(File.Exists(WrittenFileHistory.PathFor(Raw)));
     }
 
     [Fact]

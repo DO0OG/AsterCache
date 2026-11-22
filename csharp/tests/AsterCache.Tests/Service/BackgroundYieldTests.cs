@@ -27,6 +27,7 @@ internal sealed class YieldWorld
         public int Parent;
         public long CpuTicks; // CPU 시간 누계 (100 ns)
         public long IoBytes; // 읽기 + 쓰기 전송 바이트 누계
+        public long UsageWs; // 프로세스별 조회가 알려 주는 작업 집합 (0 이면 모름)
     }
 
     public Dictionary<int, Proc> Procs { get; } = [];
@@ -64,7 +65,12 @@ internal sealed class YieldWorld
 
     public DateTimeOffset Now { get; set; } = DateTimeOffset.UnixEpoch.AddDays(1);
 
-    public Func<long> Avail { get; set; } = () => 10000;
+    public YieldWorld() => Avail = () => 10000 + FreedMib;
+
+    public Func<long> Avail { get; set; }
+
+    /// 비우기가 풀어 준 작업 집합 (MiB): 기본 가용 메모리에 더해져 비우기가 가용 메모리를 올린 것처럼 보임.
+    public long FreedMib { get; set; }
 
     /// 대기 목록 조회 결과 (null 이면 조회 실패).
     public MemoryLists? ListsNow { get; set; }
@@ -128,7 +134,9 @@ internal sealed class YieldWorld
                 return false;
             }
 
+            long before = p.Ws;
             p.Ws = Math.Min(p.Ws, 20 * Mib); // 비우면 작업 집합이 줄어듦
+            FreedMib += (before - p.Ws) / Mib;
             Now += TrimCost;
             return true;
         },
@@ -191,7 +199,7 @@ internal sealed class YieldWorld
                 return false;
             }
 
-            list.AddRange(Procs.Select(p => new ProcessUsage(p.Key, p.Value.Exe, p.Value.CpuTicks, 0, p.Value.IoBytes)));
+            list.AddRange(Procs.Select(p => new ProcessUsage(p.Key, p.Value.Exe, p.Value.CpuTicks, 0, p.Value.IoBytes, p.Value.UsageWs)));
             return true;
         },
         Now = () => Now,
@@ -375,9 +383,9 @@ public sealed class BackgroundYieldTests
     private static MemoryLists Lists(long headroomMib, long repurposedMib = 0) => new(headroomMib * Mib, repurposedMib * Mib);
 
     // 가용 게임 실행 중인 세션: big.exe (500 MiB) 가 시작에서 비워진 상태. 조회 결과는 _w.ListsNow.
-    private BackgroundYield RunningSession(MemoryLists? lists)
+    private BackgroundYield RunningSession(MemoryLists? lists, long bigMib = 500)
     {
-        _ = _w.Add(50, "big.exe", wsMib: 500);
+        _ = _w.Add(50, "big.exe", wsMib: bigMib);
         _ = _w.Add(10, "cod.exe");
         _w.ListsNow = lists;
         BackgroundYield y = Make();
@@ -498,29 +506,30 @@ public sealed class BackgroundYieldTests
     [Fact]
     public void WorkingSetIsTrimmedAgainOnlyWhenTheCacheWasRepurposedByAtLeast512MibSinceTheLastMaintenance()
     {
-        BackgroundYield y = RunningSession(Lists(1000, 10_000));
+        BackgroundYield y = RunningSession(Lists(1000, 10_000), 2000); // 비운 뒤 20 MiB 에서 400 MiB 로 되찾아야 (256 MiB 이상, 2배 이상) 다시 비울 수 있음
         Assert.Single(_w.Trimmed);
 
-        TickAt(y, 2, 100, Lists(1000, 10_000 + 511)); // 작업 집합이 어떻게 늘어도 캐시가 재사용되지 않으면 안 비움
+        TickAt(y, 2, 400, Lists(1000, 10_000 + 511)); // 작업 집합이 어떻게 늘어도 캐시가 재사용되지 않으면 안 비움
         TickAt(y, 4, 1500, Lists(1000, 10_000 + 511 + 511));
         Assert.Single(_w.Trimmed);
 
-        TickAt(y, 6, 100, Lists(1000, 10_000 + 1022 + 512));
+        TickAt(y, 6, 400, Lists(1000, 10_000 + 1022 + 512));
         Assert.Equal([50, 50], _w.Trimmed);
-        Assert.True(Logged("background yield: trimmed again 1 processes (100 MiB working set, shortfall 6384 MiB), cache repurposed 512 MiB in 120 s, 0 active processes skipped, 0 in-use processes spared, available 10000 MiB, expected game use 8192 MiB, floor 8192 MiB"));
+        Assert.True(Logged("background yield: trimmed again 1 processes (400 MiB working set, shortfall 4404 MiB), cache repurposed 512 MiB in 120 s, 0 active processes skipped, 0 in-use processes spared, available 11980 MiB, expected game use 8192 MiB, floor 8192 MiB"));
     }
 
     [Fact]
     public void TheNextMaintenanceCanTrimAgainEvenWhenTheTrimItselfTookTime()
     {
-        BackgroundYield y = RunningSession(Lists(1000, 0));
+        BackgroundYield y = RunningSession(Lists(1000, 0), 2000);
         _w.TrimCost = TimeSpan.FromSeconds(5);
 
-        TickAt(y, 2, 100, Lists(1000, 600));
+        TickAt(y, 2, 400, Lists(1000, 600));
         Assert.Equal([50, 50], _w.Trimmed);
 
+        _ = _w.Add(51, "other.exe", wsMib: 300); // 같은 프로세스는 뚜렷이 늘지 않으면 다시 비우지 않으므로 새 프로세스로 확인
         TickAt(y, 4, 40, Lists(1000, 1200)); // 정확히 2분 뒤: 비우는 동안 흐른 시간이 간격 판정을 모자라게 하지 않음
-        Assert.Equal([50, 50, 50], _w.Trimmed);
+        Assert.Equal([50, 50, 51], _w.Trimmed);
     }
 
     [Fact]
@@ -545,7 +554,7 @@ public sealed class BackgroundYieldTests
 
         TickAt(y, 2, 250, Lists(1000, 600)); // 500 MiB 의 절반을 되찾음
         Assert.Single(_w.Trimmed);
-        Assert.True(Logged("trimmed again 0 processes (0 MiB working set, shortfall 6384 MiB), cache repurposed 600 MiB in 120 s, 1 active processes skipped"));
+        Assert.True(Logged("trimmed again 0 processes (0 MiB working set, shortfall 5904 MiB), cache repurposed 600 MiB in 120 s, 1 active processes skipped"));
 
         TickAt(y, 4, 40, Lists(1000, 1200)); // 다시 줄었어도 이 세션에서는 대상이 아님
         Assert.Single(_w.Trimmed);
@@ -559,7 +568,7 @@ public sealed class BackgroundYieldTests
     }
 
     [Fact]
-    public void ProcessesThatStayedSmallAfterTheTrimAreTrimmedAgain()
+    public void ProcessesThatStayedSmallAfterTheTrimAreNotTrimmedAgainButNewOnesAre()
     {
         BackgroundYield y = RunningSession(Lists(1000, 0));
         _ = _w.Add(51, "other.exe", wsMib: 300);
@@ -567,8 +576,9 @@ public sealed class BackgroundYieldTests
         TickAt(y, 2, 100, Lists(1000, 0)); // 51 은 이번 세션에 처음 보임 (비운 적 없음)
         TickAt(y, 4, 100, Lists(1000, 600));
 
-        Assert.Equal([50, 51, 50], _w.Trimmed); // 다시 비우기는 큰 것부터 (51 이 300 MiB, 50 이 100 MiB)
-        Assert.True(Logged("trimmed again 2 processes (400 MiB working set"));
+        Assert.Equal([50, 51], _w.Trimmed); // 50 은 비운 뒤 20 MiB 에서 100 MiB 로 256 MiB 이상 늘지 않아 건너뜀
+        Assert.True(Logged("trimmed again 1 processes (300 MiB working set"));
+        Assert.True(Logged("1 active processes skipped"));
     }
 
     [Fact]
@@ -587,6 +597,11 @@ public sealed class BackgroundYieldTests
         Assert.True(YieldPressure.RegainedMost(250, 500));
         Assert.False(YieldPressure.RegainedMost(249, 500));
         Assert.False(YieldPressure.RegainedMost(100, 0));
+        Assert.True(YieldPressure.GrewMarkedly(276L << 20, 20L << 20));
+        Assert.False(YieldPressure.GrewMarkedly(275L << 20, 20L << 20)); // 256 MiB 미만 증가
+        Assert.False(YieldPressure.GrewMarkedly(600L << 20, 400L << 20)); // 2배 미만
+        Assert.True(YieldPressure.TrimHelped(1000, 1250, 500L << 20));
+        Assert.False(YieldPressure.TrimHelped(1000, 1249, 500L << 20));
     }
 
     [Fact]
@@ -859,11 +874,11 @@ public sealed class BackgroundYieldTests
     [Fact]
     public void TheMaintenanceRetrimDoesNotOpenWindowsFolderProgramsAgain()
     {
-        BackgroundYield y = RunningSession(Lists(1000, 10_000));
+        BackgroundYield y = RunningSession(Lists(1000, 10_000), 2000);
         _ = _w.Add(70, "svchost.exe", path: @"C:\Windows\System32\svchost.exe", wsMib: 500);
 
-        TickAt(y, 2, 100, Lists(1000, 10_000));
-        TickAt(y, 4, 100, Lists(1000, 10_000 + 600));
+        TickAt(y, 2, 400, Lists(1000, 10_000));
+        TickAt(y, 4, 400, Lists(1000, 10_000 + 600));
         TickAt(y, 6, 100, Lists(1000, 10_000 + 1300));
 
         Assert.True(_w.Trimmed.Count > 1); // 다시 비우기가 일어남
@@ -1890,6 +1905,40 @@ public sealed class BackgroundYieldTests
 
         Assert.Empty(_w.Trimmed);
         Assert.True(Logged("not trimmed again, memory is sufficient (available 8292 MiB"));
+    }
+
+    [Fact]
+    public void TheShortfallSubtractsWhatTheGameProcessesAlreadyUseEvenWhenTheSessionStartsAfterTheGame()
+    {
+        _ = _w.Add(50, "big.exe", wsMib: 500);
+        _ = _w.Add(10, "cod.exe").UsageWs = 8000 * Mib; // 게임이 이미 예상 8192 MiB 중 8000 MiB 를 씀 (가용 메모리 감소는 세션 시작 전에 일어나 시작 기준으로는 0)
+        _w.Avail = () => 3000;
+
+        Make().Begin("game started", settle: false);
+
+        Assert.True(Logged("trimmed 1 processes (500 MiB working set, shortfall 5384 MiB)")); // 하한 8192 + 남은 192 - 가용 3000
+    }
+
+    [Fact]
+    public void AfterATrimThatDidNotRaiseAvailableMemoryNothingIsTrimmedAgainUntilTheSessionEnds()
+    {
+        _w.Avail = () => 10000; // 비워도 가용 메모리가 오르지 않음
+        BackgroundYield y = RunningSession(Lists(1000, 0), 2000);
+        _ = _w.Add(51, "other.exe", wsMib: 300);
+
+        TickAt(y, 2, 400, Lists(1000, 600));
+        TickAt(y, 4, 400, Lists(1000, 1200));
+
+        Assert.Single(_w.Trimmed);
+        Assert.Single(_log.Lines, l => l.Contains("did not raise available memory (10000 -> 10000 MiB), no more trimming until the game ends", StringComparison.Ordinal)); // 상태가 바뀔 때 한 번만
+
+        y.End();
+        _w.Now += TimeSpan.FromMinutes(1);
+        y.Tick(_w.Snapshot()); // 쉬는 표본을 쌓아 쓰는 프로세스로 가려지지 않게 함
+        _w.Now += TimeSpan.FromMinutes(1);
+        y.Tick(_w.Snapshot());
+        y.Begin("game started", settle: false);
+        Assert.Equal(3, _w.Trimmed.Count); // 다음 플레이에서는 다시 비움 (50 과 51)
     }
 
     [Fact]

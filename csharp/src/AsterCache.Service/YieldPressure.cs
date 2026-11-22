@@ -14,6 +14,14 @@ public static class YieldPressure
     public static bool ShouldRetrim(TimeSpan sinceLastTrim, long? cacheRepurposedBytes) =>
         sinceLastTrim >= BackgroundYield.RetrimEvery && cacheRepurposedBytes >= BackgroundYield.RetrimCacheBytes;
 
+    /// 비운 직후보다 RetrimGrowthFactor 배 이상이고 RetrimGrowthMinBytes 이상 늘었을 때만 같은 프로세스를 다시 비웁니다.
+    public static bool GrewMarkedly(long current, long afterTrim) =>
+        current >= afterTrim * BackgroundYield.RetrimGrowthFactor && current - afterTrim >= BackgroundYield.RetrimGrowthMinBytes;
+
+    /// 비우기 뒤 가용 메모리가 비운 양의 TrimGainMinPercent 이상 올랐는지 (아니면 비운 메모리가 게임에 쓰이지 못함).
+    public static bool TrimHelped(long availableBeforeMib, long availableNowMib, long trimmedBytes) =>
+        (availableNowMib - availableBeforeMib) << 20 >= trimmedBytes * BackgroundYield.TrimGainMinPercent / 100;
+
     /// 비우기 직전 작업 집합의 절반 이상을 되찾았으면 활발한 프로세스입니다.
     public static bool RegainedMost(long current, long before) => before > 0 && current * 2 >= before;
 }

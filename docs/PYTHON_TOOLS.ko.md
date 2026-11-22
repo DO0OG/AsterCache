@@ -6,11 +6,11 @@
 
 ## 구성
 
-- `bench/` — 합성 데이터셋(약 2 GiB, 트레이스 4,000건) 생성, 콜드·웜 재생, 콜드 조건 준비, 시나리오 실행기
-- `prefetch/` — NTFS extent 조회(`layout.py`), 물리 위치 정렬과 손익분기 간격 병합(`scheduler.py`), 순차 선읽기(`reader.py`), 명령행 진입점(`cli.py`)
+- `bench/` — 합성 데이터셋(약 2 GiB, 트레이스 4,000건) 생성, 트레이스 재생(캐시를 비운 상태와 데이터가 캐시에 있는 상태 각각), 캐시를 비운 상태 만들기, 시나리오 실행기
+- `prefetch/` — NTFS 할당 구간(extent) 조회(`layout.py`), 물리 위치 정렬과 손익분기 간격 병합(`scheduler.py`), 순차 선읽기(트레이스의 블록을 순서대로 미리 읽음, `reader.py`), 명령행 진입점(`cli.py`)
 - `relayout/` — 트레이스 기준 핫 블록 계획(`plan.py`), NTFS 제자리 이동(`mover.py`), 계획 적용·검증·되돌리기(`apply.py`), 명령행 진입점(`cli.py`)
-- `scripts/` — 관리자 PowerShell에서 한 번 실행하는 실험 스크립트. `e2_vhdx_trial.ps1`(일회용 VHDX 시제품), `e3_hdd_dataset.ps1`(D:\AsterBench 실측)
-- `sqlite_cache.py` — 블록·SHA-256을 한 행에 저장하는 SQLite 캐시와 원본 검증, 축출, 장애 폴백
+- `scripts/` — 관리자 PowerShell에서 한 번 실행하는 실험 스크립트. `e2_vhdx_trial.ps1`(일회용 VHDX 에서 재배치 시험), `e3_hdd_dataset.ps1`(D:\AsterBench 실측)
+- `sqlite_cache.py` — 블록·SHA-256을 한 행에 저장하는 SQLite 캐시와 원본 검증, 축출, 장애 시 원본 읽기로 전환
 - `astercache_v07.py` — 추적 계획(`plan`), 평가(`evaluate`), 점검(`inspect`), RAM·SSD 예열(`ram-warm`, `ssd-warm`) 명령
 - `session_planner.py`, `procmon_import.py` — 이전 버전에서 가져온 학습 계획과 Procmon CSV 가져오기 구성요소. 실제 Windows CSV에서의 동작은 아직 검증하지 않았습니다.
 - `blockcache_v06.py` — 이전 방식과의 비교용으로 보존한 코드
@@ -23,7 +23,7 @@
 
 - Python 3.11 이상. 외부 패키지 의존성은 없습니다. Windows 11에서 Python 3.11.4와 3.12.10으로 검증했습니다.
 - 원본 경로와 캐시 경로는 서로 다른 디렉터리 트리여야 합니다. 실제 속도 비교에는 서로 다른 물리 HDD와 SSD가 필요합니다.
-- 벤치마크와 스트림 튜닝은 비관리자 권한으로 수행했습니다. 재배치 실측(VHDX 와 합성 데이터셋에서 한 실험 E2·E3)의 콜드 조건은 관리자 권한으로 대기 목록을 비운 뒤 만들었고, 재배치 자체도 관리자 권한이 필요합니다.
+- 벤치마크와 스트림 튜닝은 비관리자 권한으로 수행했습니다. 재배치 실측(VHDX 와 합성 데이터셋에서 한 실험 E2·E3)의 캐시를 비운 조건은 관리자 권한으로 대기 목록을 비운 뒤 만들었고, 재배치 자체도 관리자 권한이 필요합니다.
 - 중요한 게임 데이터나 시스템 드라이브에서 바로 쓰지 않습니다. 테스트 폴더에서 먼저 실행하십시오.
 - Linux 파일 I/O와 Windows NTFS I/O는 동등하지 않습니다. Linux 컨테이너 검증 결과는 `VALIDATION_REPORT.md`에 따로 정리했습니다.
 
@@ -37,7 +37,7 @@
 python -m bench.run --root-hdd D:\AsterBench --root-ssd C:\AsterBench [--repeat 3] [--prewarm none|naive] [--prewarm-cmd CMD] [--files 64] [--min-mib 16] [--max-mib 48] [--trace 4000] [--min-free-gib 5] [--out-dir DIR] [--cleanup]
 ```
 
-- `--root-hdd`, `--root-ssd`는 각 물리 장치 위의 데이터셋 폴더입니다. 데이터셋을 만든 뒤 콜드·웜 재생과 예열 비교를 수행합니다.
+- `--root-hdd`, `--root-ssd`는 각 물리 장치 위의 데이터셋 폴더입니다. 데이터셋을 만든 뒤 트레이스 재생(캐시를 비운 상태와 데이터가 캐시에 있는 상태 각각)과 예열 비교를 수행합니다.
 - `--prewarm`의 기본값은 `naive`입니다. `--prewarm-cmd`를 주면 외부 예열 명령을 실행하며, 이 명령은 환경변수 `ASTER_TRACE`(트레이스 JSON 경로)와 `ASTER_ROOT`를 받습니다.
 - `--out-dir`의 기본값은 `results/bench_20261101`입니다.
 - `--cleanup`은 두 데이터셋을 지우고 종료합니다.
@@ -49,7 +49,7 @@ python -m bench.stream_tune --root D:\AsterBench --repeat 3 --out results\stream
 python -m bench.concurrent_run --root D:\AsterBench --repeat 3 --think-us 0 250 1000 --out results\stream_tuning_20261101\concurrent.json [--threads 1] [--chunk-kib 1024] [--seq-hint] [--no-reuse]
 ```
 
-- `stream_tune`은 재배치된 존에서 청크 크기, 큐 깊이, SEQUENTIAL_SCAN 힌트를 바꿔 가며 잽니다. 콜드 준비는 도구 설명대로 언버퍼드 읽기로 핫 범위를 밀어낸 뒤 `--flush-mib`만큼 다른 데이터를 읽는 방식입니다. 드라이브 캐시를 완전히 비웠는지는 확인하지 않았습니다. `--reuse`를 주면 파일 핸들을 유지합니다.
+- `stream_tune`은 재배치된 존에서 청크 크기, 큐 깊이, SEQUENTIAL_SCAN 힌트를 바꿔 가며 잽니다. 캐시를 비우는 준비는 도구 설명대로 언버퍼드 읽기로 핫 범위를 밀어낸 뒤 `--flush-mib`만큼 다른 데이터를 읽는 방식입니다. 드라이브 캐시를 완전히 비웠는지는 확인하지 않았습니다. `--reuse`를 주면 파일 핸들을 유지합니다.
 - `concurrent_run`은 스트림과 트레이스 재생을 동시에 시작하고, 마지막 요청까지의 벽시계 시간을 잽니다. `--think-us`는 요청당 게임 연산 시간(마이크로초)입니다.
 
 ### 재배치 (`relayout`)
@@ -74,7 +74,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\e3_hdd_dataset.ps1 [
 ```
 
 - `e2_vhdx_trial.ps1`은 일회용 고정 크기 VHDX를 만들어 재배치를 끝까지 돌리고 분리합니다. VHDX 파일은 지우지 않습니다. 기본 경로는 C: 위이므로 그 시간은 SSD 기준이며 HDD 증거가 아닙니다.
-- `e3_hdd_dataset.ps1`은 이미 있는 `D:\AsterBench`의 `dataset_meta.json`과 `trace.json`을 옮깁니다. 스크립트는 결과 폴더 `results\relayout_e3\<날짜시각>`에 되돌리기 명령을 `README.txt`로 남깁니다.
+- `e3_hdd_dataset.ps1`은 이미 있는 `D:\AsterBench` 데이터셋(`dataset_meta.json`과 `trace.json`이 있어야 함)을 재배치하고 잽니다. 데이터셋 파일의 데이터 클러스터만 D: 안에서 옮깁니다. 스크립트는 결과 폴더 `results\relayout_e3\<날짜시각>`에 되돌리기 명령을 `README.txt`로 남깁니다.
 - `-SkipRelayout`은 이미 재배치된 데이터셋을 다시 재는 옵션입니다. 이동하지 않고 C(직접)·D(선읽기+재생)·F(동시 스트림)·E(SSD)를 재며, 매니페스트를 가장 최근의 `manifest_after.json`과 비교합니다. 재배치 뒤 시간이 지난 뒤의 지속성을 재는 데 씁니다.
 
 ### 선읽기 계획과 실행 (`prefetch`)
@@ -85,9 +85,9 @@ python -m prefetch.cli --plan trace.json --origin-root D:\Games [--strategy phys
 
 - `--execute`를 붙이지 않으면 실제 읽기 없이 계획만 JSON으로 출력합니다.
 - `--plan`(또는 `--trace`)과 `--origin-root`는 환경변수 `ASTER_TRACE`, `ASTER_ROOT`로 대신할 수 있습니다.
-- `--strategy physical`은 NTFS extent 기준 물리 위치 정렬, `path`는 경로 정렬, `none`은 정렬 없이 읽습니다.
+- `--strategy physical`은 NTFS 할당 구간 기준 물리 위치 정렬, `path`는 경로 정렬, `none`은 정렬 없이 읽습니다.
 - 기본값은 스레드 1(엄격한 존 순서), 청크 1 MiB, 파일 핸들 유지, SEQUENTIAL_SCAN 끔입니다. 재배치 존에서 이 조합이 가장 빨랐습니다(`results/stream_tuning_20261101`). `--no-reuse`는 파일마다 핸들을 닫습니다.
-- `--gap-kib`의 기본값은 0입니다(스윕 최선). `--read-mbps`와 `--seek-ms`는 현재 간격 계산에 쓰지 않습니다.
+- `--gap-kib`의 기본값은 0입니다(간격 값을 바꿔 가며 잰 시험에서 가장 빨랐던 값). `--read-mbps`와 `--seek-ms`는 현재 간격 계산에 쓰지 않습니다.
 
 ### 학습 계획과 예열 (`astercache_v07.py`)
 
@@ -101,7 +101,7 @@ python astercache_v07.py ssd-warm --plan plan.json --origin-root "D:\Games" --ca
 
 - `plan`은 Procmon CSV 여러 개에서 다음 실행의 읽기 블록을 예측합니다. `evaluate`는 학습에 쓰지 않은 CSV로 예측 정확도를 봅니다.
 - `ram-warm`과 `ssd-warm`은 `--execute`가 없으면 계획만 표시합니다.
-- `ssd-warm`의 결과는 이 API를 호출하는 프로그램에서만 쓰입니다. 기존 게임 프로세스는 이 캐시를 읽지 않습니다.
+- `ssd-warm`이 SSD 에 만든 캐시는 아래 [캐시 API](#캐시-api)(`SQLiteBlockCache`)로 읽는 프로그램만 씁니다. 게임 프로세스는 이 캐시를 읽지 않습니다.
 
 ### Procmon 트레이스 변환과 선읽기 입력 (`trace`)
 
@@ -113,12 +113,12 @@ python -m prefetch.cli --trace relayout_plan.json.prefetch.json --origin-root "D
 
 - `trace`는 Procmon CSV를 `trace.json`(모든 실행에서 읽힌 64 KiB 블록의 합집합)과 실행별 `trace.run1.json`, `trace.run2.json`, ...(읽은 순서 그대로)으로 바꿉니다.
 - `relayout plan`은 `--out` 옆에 `<out>.prefetch.json`을 함께 씁니다. 재배치 존에 들어간 블록만 존 순서로 담은 선읽기 입력이며, `prefetch.cli`가 그대로 받습니다. 재배치한 뒤에는 `trace.json` 대신 이 파일로 선읽기합니다(읽는 바이트 = 계획의 `hot_bytes`).
-- `--min-sessions N`은 N개 미만의 실행에서만 읽힌 블록을 핫 집합에서 뺍니다. 기본값은 트레이스가 2개 이상이면 2, 1개면 1입니다.
+- `--min-sessions N`은 N개 미만의 실행에서만 읽힌 블록을 핫 집합(로딩 때 읽힌 블록 전체)에서 뺍니다. 기본값은 트레이스가 2개 이상이면 2, 1개면 1입니다.
 
 ### E6 콜드 한계 측정 스크립트 (`bench`, `csharp/scripts`)
 
 - `bench/lba_curve.py` — 볼륨의 원시 전송 속도 곡선을 읽기 전용으로 잽니다. 20개 지점마다 512 MiB, 4 MiB 요청, 큐 깊이 4 (관리자 권한 필요)
-- `bench/raw_hot_read.py` — 추적한 핫 범위를 LCN 으로 옮깁니다(관리자 권한 불필요). `--read` 를 주면 LCN 순서로 읽습니다(관리자 권한 필요)
+- `bench/raw_hot_read.py` — 추적한 핫 범위가 디스크의 어느 LCN 에 있는지 조회합니다(관리자 권한 불필요). `--read` 를 주면 LCN 순서로 읽습니다(관리자 권한 필요)
 - `bench/wof_ratio.py` — 핫 범위를 8·16 KiB 청크로 나눠 WOF 방식 XPRESS Huffman 압축률을 잽니다(관리자 권한 불필요)
 - `bench/free_runs.py` — 볼륨 비트맵으로 NTFS 볼륨의 빈 구간을 읽기 전용으로 나열합니다(관리자 권한 필요)
 - `csharp/scripts/cs_e6_cold_limit.ps1` — 관리자 권한으로 한 번 실행합니다. 곡선 측정, 원시 읽기, 보존 없이 전부 이동, 재측정, SHA-256 검사를 합니다
@@ -136,4 +136,4 @@ data = cache.read("relative/path.bin", offset, length)   # bytes 반환
 print(cache.stats)
 ```
 
-`block_size`의 기본값은 64 KiB이며 4 KiB에서 4 MiB 사이의 2의 거듭제곱이어야 합니다. `capacity_bytes`는 논리 캐시 페이로드 기준입니다.
+`block_size`의 기본값은 64 KiB이며 4 KiB에서 4 MiB 사이의 2의 거듭제곱이어야 합니다. `capacity_bytes`는 캐시에 담긴 블록 데이터의 바이트 수 기준입니다(SQLite 파일 크기가 아닙니다).

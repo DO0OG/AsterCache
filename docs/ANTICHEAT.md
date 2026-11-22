@@ -25,7 +25,7 @@ Many current games run kernel-level anti-cheat. This page says what AsterCache d
 ## What it does not do
 
 - No code injection, no thread creation in the game process, no reading or writing of its memory, no debug privilege, no hooking, no overlay, and no handle duplication.
-- Game processes are opened only with `PROCESS_QUERY_LIMITED_INFORMATION`, to read the name, path, and bytes read. If a protected process refuses even that when automatic discovery first checks a process, the service decides from ETW events alone and does not try to open that process again on that path (the start and stage streams ask again at each sample). In that case it judges from the reads in the 20 seconds after the refusal is confirmed; reads before those 20 seconds are not counted.
+- Game processes are opened only with `PROCESS_QUERY_LIMITED_INFORMATION`, to read the name, path, and bytes read. Automatic discovery looks at the bytes read through a query-only handle 20 seconds after it first sees a process. If a protected process refuses even that, the process is skipped without a judgment; it is not opened again and no kernel ETW session is started for it (the start stream and the stage stream query again on every sample).
 - No kernel driver.
 - SOLAR, the cooldown sample, the lowered I/O priority of the prewarm's reading thread, and a launcher's prewarm going first open no game, launcher, or anti-cheat process, and they read or change no other process's memory.
 - The quick exit guard and the disk-activity query open no process. The stage stream opens nothing beyond the query-only handle described above, and none of the three reads or changes another process's memory.

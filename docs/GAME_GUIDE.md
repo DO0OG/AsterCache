@@ -4,8 +4,8 @@
 
 This guide covers what AsterCache does to your hard disk, what to be careful about, and how to apply it to a particular kind of game. Automatic mode does all of this for you ([Automatic mode](AUTO_MODE.md)); the manual route with the Python reference tools is at the end. Commands below run from the top-level folder of the repository (`D:\Git\AsterCache`), and no build or pip install is needed.
 
-Scope of validation: trace conversion, planning, prefetch execution, and the launch script were run end to end with three Procmon-format CSV files (2,000 rows each) built from real file paths in D:\AsterBench. The Python administrator steps (relocation `probe`, `apply`, `revert`) were verified only up to getting `not_admin` as a non-administrator, and were not run on a game.
-On 2026-11-02, tracing, relocation, replay, and prewarm with the C# tools were run end to end on a real game, Frostpunk (D:\Frostpunk, no anti-cheat). Anti-cheat games have only usage records and no controlled validation.
+Scope of validation: trace conversion, planning, prefetch (reading the recorded blocks in order alongside the game launch) execution, and the launch script were run end to end with three Procmon-format CSV files (2,000 rows each) built from real file paths in D:\AsterBench. The Python administrator steps (relocation `probe`, `apply`, `revert`) were verified only up to getting `not_admin` as a non-administrator, and were not run on a game.
+On 2026-11-02, tracing, relocation, replay of the recorded read pattern, and prewarm with the C# tools were run end to end on a real game, Frostpunk (D:\Frostpunk, no anti-cheat). Anti-cheat games have only usage records and no controlled validation.
 
 ## Effect on the hard disk
 
@@ -17,14 +17,14 @@ What each feature does to the drive that holds the game:
 | Relocation | The pieces it moves | **The only large write.** It rewrites the moved pieces at a new place on the same drive; the file content does not change | See "Relocation limits" below |
 | Prewarm | The zone (the contiguous area the recorded blocks were moved to), into the RAM file cache | None | RAM budget: half of physical RAM, and free RAM stays above `prewarm.min_free_ram_mib` |
 | Keeping the prewarm | 8 samples of 1 MiB every 10 minutes (`rewarm_minutes`); a re-read of the zone when the cache has gone cold | None | Only for games inside the RAM budget |
-| Keep-awake | 4 KiB every 10 minutes, while a launcher is open or at your usual play hour | None | `auto.keep_awake`; power settings are never changed |
+| Keeping the HDD spinning (`auto.keep_awake`) | 4 KiB every 10 minutes, while a launcher is open or at your usual play hour | None | Power settings are never changed |
 | Start stream and stage stream | The recorded blocks the game reads at start, and the blocks of each later registered program of the same game right after it starts, at low I/O priority | None | `auto.start_stream_cap_seconds`, `auto.stage_stream_enabled`; stops at the loading boundary and when free memory minus the reserve runs out ([Automatic mode](AUTO_MODE.md#6-while-a-game-runs)) |
 | Keeping the cache in order (SOLAR) | Pages already in the file cache, touched again in memory; it stops once more than 32 MiB is counted as read from the disk, so at most about 100 MiB in the worst case ([SOLAR](SOLAR.md)) | None | Not on a disk where a game is running; `memory.standby_ladder` |
 | ORBIT calibration | About 12 MiB per sample stream, uncached ([ORBIT](ORBIT.md)); not done for a prewarm that a launcher starts | None | Only when no game runs and the disk is idle |
 | SSD assist storage (off by default) | The copied files | Copies to the SSD, not to the HDD | Budget 8 GiB per game ([Automatic mode](AUTO_MODE.md#ssd-assist-storage-optional)) |
 
 - **Relocation limits.** The zone is at most 2048 MiB by default (`max_zone_mib`). At most 4 relocations run in 24 hours (`max_relocations_per_day`). At most 8 GiB a day (`max_relocate_gib_per_day`; 2 GiB if the drive looks like SMR), and at most 2 GiB per round (1 GiB if it looks like SMR).
-- **How long it takes.** Relocation took about 5 minutes per 2 GB. On Frostpunk, 639 MB moved in 131 s (4.9 MB/s) and another 212 MB in 45 s on one SMR HDD. A prewarm of a 10 GB hot set took 128 to 416 s in the service log ([Results summary](RESULTS_SUMMARY.md)). The drive is busy during that time.
+- **How long it takes.** Relocation took about 5 minutes per 2 GB. On Frostpunk, 639 MB moved in 131 s (4.9 MB/s) and another 212 MB in 45 s on one SMR HDD. A prewarm of a 10 GB hot set (the blocks the trace saw read during loading) took 128 to 416 s in the service log ([Results summary](RESULTS_SUMMARY.md)). The drive is busy during that time.
 - **Wear, heat, and noise were not measured.** There is no measurement of drive lifetime, temperature, or noise under AsterCache, so none is claimed. The writes are the relocation writes above, which are bounded by the daily and per-round limits.
 - **SMR drives.** After bulk writes an SMR drive can be slow for a while. On the test SMR drive, the first cold read right after 3 GB of scattered writes took 58.8 s (normally 24 s), and after a 2 GB move cold reads went from 19.5 s to 33 s and recovery took 25 minutes to 1.5 hours.
   In the service log, confirming recovery after a relocation took between 6 and 149 minutes and did not follow the amount moved. The service therefore waits for recovery before its next job (drive recovery wait in [Automatic mode](AUTO_MODE.md#7-drive-recovery-wait)). CMR drives were not measured. Relocation moves data in 4 MiB pieces by default.
@@ -60,7 +60,7 @@ What each feature does to the drive that holds the game:
 
 ### Undoing it, and what stays
 
-- **Put a game back.** On the **Games** tab, select the game and click **Revert**. It follows the journal and restores the previous disk layout; the file contents never changed. The command line is `revert` (see step 3 of the manual procedure).
+- **Put a game back.** On the **Games** tab, select the game and click **Revert**. It follows the journal and restores the previous disk layout. Relocation never changes file contents. The command line is `revert` (see step 3 of the manual procedure).
 - **Turn it off.** Clear **Use automatic mode** in the Settings tab, or add the exe to `auto.ignore_exes`. Files already moved stay where they are.
 - **SSD assist.** `aster tier revert --all` removes the links and restores the originals. The copies stay in the tier folder until `aster tier clean`.
 - **Uninstall.** The uninstaller reverts the SSD assist links first, then removes the program and the service. It keeps the data folder `%ProgramData%\AsterCache` (settings, plans, journals, logs); that folder is deleted only if you run `cs_service.ps1 -Action uninstall -PurgeData`. To restore the previous disk layout, press **Revert** before uninstalling.
@@ -73,7 +73,7 @@ What each feature does to the drive that holds the game:
 | A game with anti-cheat | Read [Anti-cheat games](#anti-cheat-games) below and [Anti-cheat compatibility](ANTICHEAT.md) before you play. |
 | A utility that stays running (Wallpaper Engine, OBS Studio, and the like) | It is not registered as a game ([Automatic mode](AUTO_MODE.md#1-discovery)). |
 | A game with a very large hot set | See [Large games](#large-games). |
-| You want to check each step yourself | Use [Doing it by hand](USAGE.md), or the [manual procedure](#manual-procedure-python-reference-tools) here. |
+| You want to check each step yourself | Use [Doing it by hand](USAGE.md#doing-it-by-hand-optional), or the [manual procedure](#manual-procedure-python-reference-tools) here. |
 | You want to validate the whole process on a real game first | Follow the [Frostpunk procedure](#procedure-validated-with-frostpunk-2026-11-02). |
 
 ## Anti-cheat games
@@ -96,26 +96,26 @@ It does no code injection, no hooking, and no kernel driver. Anti-cheat games ha
 
 ## Large games
 
-Installing Call of Duty: Modern Warfare 4 on an HDD is outside official support, and this tool shortens only the fixed loading reads, and may not shorten the streaming reads during play. The prefetch floor time is the hot-set size divided by about 160 MB/s (2 GB: about 12.5 s, 10 GB: about 62.5 s); the hot set of that game during loading was not measured.
+Installing Call of Duty: Modern Warfare 4 on an HDD is outside official support, and this tool shortens only the fixed loading reads, and may not shorten the streaming reads during play. The minimum prefetch time is the hot-set size divided by about 160 MB/s (2 GB: about 12.5 s, 10 GB: about 62.5 s); the hot set of that game during loading was not measured.
 
 <details>
-<summary>Details: floor-time table and reasoning</summary>
+<summary>Details: minimum-time table and reasoning</summary>
 
 Installing Call of Duty: Modern Warfare 4 on an HDD is outside official support: Activision's PC requirements list "115 GB or more of free SSD space" for all three tiers. Whether installation on an HDD is blocked was not confirmed. All modes reportedly have on-demand texture streaming, so besides load times, stutter during play is also expected on an HDD.
 This tool only reduces the reads of fixed loading stretches, and may not reduce the streaming reads that keep happening during play. No load time of Call of Duty: Modern Warfare 4 on an HDD has been reported.
 
-Relocation and prefetch remove seek time but do not reduce the number of bytes read. With sequential reads at about 160 MB/s, the prefetch floor is bytes ÷ 160 MB/s (on a 1 GB = 1000 MB basis; measured in GiB it is about 7% more). These are calculated values; the hot set size of Call of Duty: Modern Warfare 4 during loading was not measured.
+Relocation and prefetch reduce seek time but do not reduce the number of bytes read. With sequential reads at about 160 MB/s, the minimum prefetch time is bytes ÷ 160 MB/s (on a 1 GB = 1000 MB basis; measured in GiB it is about 7% more). These are calculated values; the hot set size of Call of Duty: Modern Warfare 4 during loading was not measured.
 For reference, the prewarm hot set that the service recorded for Call of Duty on the test PC is 10,218 MiB ([Real-world usage records](RESULTS_SUMMARY.md#real-world-usage-records)).
 
-| Hot set | Prefetch floor time | Expectation |
+| Hot set | Minimum prefetch time | Expectation |
 |---:|---:|---|
-| 2 GB or less | about 12.5 s or less | The seek-removal effect can be large |
+| 2 GB or less | about 12.5 s or less | The seek-reduction effect can be large |
 | 5 GB | about 31 s | There may be a gain, but the prefetch time may become similar to the loading |
-| 10 GB | about 62.5 s | The prefetch floor may be longer than the loading, so the effect is limited |
+| 10 GB | about 62.5 s | The minimum prefetch time may be longer than the loading, so the effect is limited |
 | 20 GB | about 125 s | Hard to expect an effect |
 | 30 GB | about 188 s | Hard to expect an effect |
 
-When the hot set exceeds a few GB, the prefetch time becomes the floor and the gain comes mainly from removing seeks. On the synthetic dataset (243 MB) the prefetch took 1.1 to 1.7 seconds. Frostpunk's read pattern was 2.02 GB, and on the relocated zone it took 15.1 s at the HDD sequential limit (about 135 MB/s).
+When the hot set exceeds a few GB, the prefetch time becomes the lower bound and the gain comes mainly from reducing seeks. On the synthetic dataset (243 MB) the prefetch took 1.1 to 1.7 seconds. Frostpunk's read pattern was 2.02 GB, and on the relocated zone it took 15.1 s at the HDD sequential limit (about 135 MB/s).
 
 </details>
 
@@ -135,7 +135,7 @@ cd D:\Git\AsterCache
 python --version
 ```
 
-**The Python tools read only Procmon CSV.** ETW `.etl` conversion is done with the C# CLI: `aster trace --etl <file> --exe <game exe> --origin-root <game folder> --out <file>` (tested with an `.etl` in S3, `cs_etw_check.ps1`, where a name resolution defect was fixed). The Python `trace` and `plan` commands cannot read `.etl`.
+**The Python tools read only Procmon CSV.** ETW `.etl` conversion is done with the C# CLI: `aster trace --etl <file> --exe <game exe> --origin-root <game folder> --out <file>` (tested with an `.etl` in the development test S3, `cs_etw_check.ps1`, where a name resolution defect was fixed). The Python `trace` and `plan` commands cannot read `.etl`.
 
 **Step 1. Collect the trace**
 
@@ -153,7 +153,7 @@ This records which parts of which files the game reads while loading. Recording 
 
 This tool does not filter by process name; it looks only at the Path prefix. If you remove the Process Name filter, reads from other processes such as launchers and antivirus are mixed in if they are in the same folder.
 
-**Ricochet games: leave only an `.etl` with ETW** (for reference; the C# `aster trace --etl` conversion was validated in S3). This `FileIO` profile command was not run; S3 was tested with the repository's `csharp\scripts\aster_fileio.wprp` profile.
+**Ricochet games: leave only an `.etl` with ETW** (for reference; the C# `aster trace --etl` conversion was validated in the development test S3, `cs_etw_check.ps1`). This `FileIO` profile command was not run; S3 was tested with the repository's `csharp\scripts\aster_fileio.wprp` profile.
 Turn the collector on before the game starts and off after it exits, and stop immediately if there is any sign of trouble (launch refusal, warning, account notice). How the collector itself looks to Ricochet is unvalidated, so make the first collection one short offline mission.
 
 ```powershell
@@ -251,14 +251,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File D:\Git\AsterCache\scripts\ga
   -Trace D:\AsterWork\relayout_plan.json.prefetch.json -OriginRoot D:\Games\CoD4 -Game D:\Games\CoD4\iw3sp.exe
 ```
 
-The script starts the prefetch (`prefetch.cli`, zone order) as a hidden background process, immediately starts the game, then waits until the stream finishes and prints the elapsed time and the bytes read. Test output (`cmd.exe /c exit` instead of a game, with a warm cache; not a speed reference):
+The script starts the prefetch (`prefetch.cli`, zone order) as a hidden background process, immediately starts the game, then waits until the stream finishes and prints the elapsed time and the bytes read. Test output (`cmd.exe /c exit` instead of a game, with the data already in the file cache; not a speed reference):
 
 ```
 prefetch started (pid 26632), game started 0.07 s later (pid 32532)
 stream done: 0.46 s since launch (read time 0.06 s), 195.7 MiB, 2169 requests, errors 0, 3,445 MiB/s
 ```
 
-If `errors` is not 0, the trace is stale (a patch, for example).
+If `errors` is not 0, the trace no longer matches the files (a patch, for example).
 
 - `-Game` can also take a URI such as `battlenet://...` or `steam://rungameid/...`. When the launcher starts the game, the prefetch may not finish before the game starts.
 - `-NoPrefetch` runs only the game (for comparison). Pass game arguments as an array, like `-GameArgs '+set','x'`.
@@ -289,7 +289,7 @@ This whole manual procedure has never been run with Call of Duty: Modern Warfare
 
 ## Procedure validated with Frostpunk (2026-11-02)
 
-On 2026-11-02 two scripts ran trace, relocation, cold replay, and an SSD comparison end to end on Frostpunk (9.2 GB, no anti-cheat, D: SMR HDD): `csharp\scripts\cs_e4_game.ps1` and `csharp\scripts\cs_e4_compare.ps1`. The measured values are replay times of traced read patterns, not total load times of a running game ([VALIDATION_REPORT.md](../VALIDATION_REPORT.md)).
+On 2026-11-02 two scripts ran trace, relocation, cold replay (replay of the recorded read pattern after clearing the standby list), and an SSD comparison end to end on Frostpunk (9.2 GB, no anti-cheat, D: SMR HDD): `csharp\scripts\cs_e4_game.ps1` and `csharp\scripts\cs_e4_compare.ps1`. The measured values are replay times of traced read patterns, not total load times of a running game ([VALIDATION_REPORT.md](../VALIDATION_REPORT.md)).
 
 <details>
 <summary>Details: the two scripts and recommended settings</summary>
@@ -334,7 +334,7 @@ The first run has no gain, reads that are not in the trace are not helped, and o
 <summary>Details: all the limits</summary>
 
 - **The first run has no gain.** The run that collects the trace and the relocation time are pure cost. The gain comes only from repeated loads after relocation.
-- **Is the first run required?** Relocation needs a trace. Without one from a first run, automatic mode tries a matching shared profile (`auto.shared_profiles`, weekly download) and then the game's Windows prefetch record. Each gives a boot trace, so relocation can start before the first run.
+- **Is the first run required?** Relocation needs a trace. Without one from a first run, automatic mode tries a matching shared profile (`auto.shared_profiles`, weekly download) and then the game's Windows prefetch record. Each is used as a stand-in for the first-run trace (a boot trace), so relocation can start before the first run.
   Without either, automatic mode still prewarms: the whole folder if it fits the RAM budget, otherwise the files of the game's engine profile (`auto.full_prewarm`, `auto.engine_profiles`, both on by default). Their effect has not been measured yet. A trace recorded on another PC can be brought in with `aster profile import` (see `aster profile export`).
 - First-run read-ahead (E7) stays off by default. See [RESULTS_SUMMARY.md](RESULTS_SUMMARY.md#e7-first-run-read-ahead).
 - **Reads not in the trace are slow.** Reads such as a different level or mode from the recorded load, or texture streaming during play, are not helped by this tool. Blocks read only once do not go into the zone and can cause seeks during prefetch, so consistency across 3 to 5 runs matters.
@@ -386,7 +386,7 @@ League of Legends uses Riot Vanguard, also a kernel-level anti-cheat, so the sam
 3. For recording the relocation, also consider a method that leaves the file read order directly instead of ETW. Do not use collection tools during play, and compare only the read speed after relocation.
 4. Check that the relocation persists after a patch. Move to the next stage only within the range confirmed to have no account risk.
 
-**Estimated hot set and the League client prewarm**
+**Estimated hot set and the League of Legends client prewarm**
 
 - The estimated hot set of League of Legends is about 9 GiB across all modes: about 5.3 GiB from the default rules for Global, UI, Common, and maps 11 and 12, plus about 3.6 GiB for maps 30, 453, and 22, as summed on the test PC (Companions excluded). With a zone limit of 8 GiB, the later part (map 22 for TFT, and Companions) may be cut.
 - With `riot.champ_select_prewarm` on (off by default), the files of the chosen champions and the map are read into RAM during champion select, through the local League client API (`127.0.0.1`). Files inside a running game are not touched.

@@ -392,7 +392,7 @@ public sealed class Worker : BackgroundService
                 if (_prewarm is { } touching && !backOff && GamePolicy.AllowsPrewarm(game) && _settings.Auto.StartStreamEnabled) // 시작 스트림이 허용되는 게임만 (디스패처의 게이트와 같음)
                 {
                     GameSettings started = game;
-                    _ = Task.Run(() => RunPrewarm(() => touching.TouchAtGameStart(started, s.ExeName)), CancellationToken.None); // 시작 스트림·감시기 스레드를 막지 않게 따로, 그 게임의 캐시를 메모리 안에서 다시 만짐
+                    _ = Task.Run(() => RunPrewarm(() => touching.TouchAtGameStart(started, s.ExeName, OtherGameProcessRunning(started, s))), CancellationToken.None); // 시작 스트림·감시기 스레드를 막지 않게 따로, 그 게임의 캐시를 메모리 안에서 다시 만짐
                 }
 
                 if (_backgroundYield is { } yielder && !backOff)

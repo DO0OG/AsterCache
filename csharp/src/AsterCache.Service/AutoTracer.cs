@@ -1525,6 +1525,7 @@ public sealed class AutoTracer
                 }
 
                 WriteIoSummaryLocked(run);
+                RecordWrittenSizesOnce(run); // 집계가 없거나 미뤄졌어도 (파일 크기·속성 조회뿐) 이 플레이의 크기를 바로 남김: 변경 저널 판정 (journal-fill) 이 같은 이력을 고치므로 폴더 잠금 안에서
 
                 replanGeneration = _status.ReplanGeneration(g.Name); // 잠금 안에서 병합한 이벤트와 같은 재계획 세대를 넘김
             });
@@ -1559,7 +1560,6 @@ public sealed class AutoTracer
             {
                 LogIoSummary(run);
                 SaveVolatile(g, marks);
-                RecordWrittenSizesOnce(run); // 집계가 없거나 미뤄졌어도 (파일 크기·속성 조회뿐) 이 플레이의 크기를 바로 남김
                 run.RawWrittenAtStart = _env.FileWriteTime(RawTracePath(g)); // 이 저장이 바꾼 원시 트레이스 시각: 미룬 집계가 그 사이 정리가 바꾸지 않았는지 보는 기준
                 if (run.Number > 1 && TraceBlocker(g) is null)
                 {
@@ -1648,10 +1648,8 @@ public sealed class AutoTracer
             // 같은 디스크의 게임이 이미 도는 중이면 그 로딩과 메타데이터 조회를 다투지 않도록 지금은 만들지 않고, 그 게임이 끝난 뒤 만듦 (기록 저장은 계속, BuildDeferredIoSummaries)
             if (_env.GameRunningOnDisk?.Invoke(PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant()) == true)
             {
-                run.IoSummaryResolved = false;
-                if (!_ioDeferred.Contains(run))
+                if (DeferIoSummary(run))
                 {
-                    _ioDeferred.Add(run);
                     _log.Info($"{g.Name}: I/O summary deferred (a game is running on the disk), built after it exits");
                 }
 
@@ -1685,9 +1683,13 @@ public sealed class AutoTracer
             lock (_lock)
             {
                 reason = _shutdownSource.IsCancellationRequested ? "service shutdown" : _ioScanGameStarted ? "a game started" : "time budget";
+                if (reason == "a game started")
+                {
+                    _ = DeferIoSummary(run); // 조회가 게임 시작으로 멈췄으므로 그 게임이 끝난 뒤 다시 만듦
+                }
             }
 
-            _log.Info($"{g.Name}: I/O summary not built ({reason})");
+            _log.Info($"{g.Name}: I/O summary not built ({reason})" + (reason == "a game started" ? ", deferred until it exits" : string.Empty));
             return;
         }
         catch (Exception e)
@@ -1786,6 +1788,32 @@ public sealed class AutoTracer
         RebuildRanked(run.Game);
     }
 
+    /// 미룬 I/O 집계의 상한: 게임당 가장 최근 플레이 하나. 다른 게임이 오래 떠 있는 동안 플레이마다 원시 읽기 기록이 메모리에 쌓이지 않게 하고, 더 새 플레이가 있으면 오래된 것을 버립니다 (그 크기 기록은 이미 남음).
+    /// 이 run 을 미룬 목록에 새로 넣었으면 true. 호출하는 쪽이 _lock 을 쥐고 부릅니다.
+    private bool DeferIoSummary(Run run)
+    {
+        run.IoSummaryResolved = false; // 나중에 다시 만들 수 있게
+        Run? other = _ioDeferred.FirstOrDefault(r => r != run && string.Equals(r.Game.Name, run.Game.Name, StringComparison.OrdinalIgnoreCase));
+        if (other is not null)
+        {
+            Run older = other.StartedAt <= run.StartedAt ? other : run;
+            _ = _ioDeferred.Remove(older);
+            _log.Info($"{run.Game.Name}: an older deferred I/O summary was dropped, a newer play of the game ended");
+            if (older == run)
+            {
+                return false;
+            }
+        }
+
+        if (_ioDeferred.Contains(run))
+        {
+            return false;
+        }
+
+        _ioDeferred.Add(run);
+        return true;
+    }
+
     // 이 플레이의 게임이 쓰는 파일 크기를 한 번만 남깁니다 (집계를 저장할 때와 저장 없이 끝날 때, 미룬 집계를 나중에 저장할 때 모두 불려도 같은 플레이를 두 번 더하지 않음).
     private void RecordWrittenSizesOnce(Run run)
     {
@@ -1823,6 +1851,11 @@ public sealed class AutoTracer
                 _ = _ioDeferred.Remove(run);
             }
 
+            if (run.IoSummaryResolved)
+            {
+                continue; // 그 사이 다른 경로 (잠금 대기로 보류했다가 다시 저장) 가 이미 집계를 만들어 저장했음: 같은 플레이를 두 번 세지 않음
+            }
+
             ResolveIoSummary(run);
             if (run.IoSummary is null)
             {
@@ -1834,7 +1867,7 @@ public sealed class AutoTracer
             {
                 lock (_lock)
                 {
-                    _ioDeferred.Add(run); // 폴더 잠금이 바쁨: 다음 Step 에서 다시
+                    _ = DeferIoSummary(run); // 폴더 잠금이 바쁨: 다음 Step 에서 다시
                 }
 
                 continue;

@@ -13,7 +13,7 @@
 재배치는 게임 드라이브에 쓰지만 상한이 있습니다. 한 번에 SMR 드라이브는 최대 1 GiB(그 밖에는 2 GiB), 하루에 SMR 은 2 GiB(그 밖에는 8 GiB)이고, PC 가 한가할 때만 합니다. 그 뒤에는 주로 읽습니다. 드라이브 수명, 온도, 소음에 미치는 영향은 측정하지 않았습니다. [하드디스크에 미치는 영향과 주의사항](../README.ko.md#하드디스크에-미치는-영향과-주의사항)과 [게임 적용 안내](GAME_GUIDE.ko.md)를 보십시오.
 
 **게임을 하는 동안 무엇을 하나요?**
-게임이 시작되면 그 게임의 기록된 데이터를 최대 120초 동안 순서대로 읽고(로딩 초반의 많은 읽기가 잦아드는 로딩 경계에서 더 일찍 멈춥니다), 같은 디스크의 배경 작업(재배치, 예열, 다른 읽기)은 기다리거나 멈춥니다. 플레이 기록을 위해 게임 파일이나 프로세스가 아니라 디스크의 읽기 카운터를 표본으로 읽습니다. 트레이스가 허용된 게임에서는 기록 세션이 플레이 내내 열려 있지만, 읽기는 기록 창 안에서만 저장합니다. 게임이 이어서 자기 등록 프로그램을 또 띄우면(예를 들어 런처 격 프로그램 뒤의 본체) 그 프로그램이 처음 읽는 블록을 뜬 직후 낮은 I/O 우선순위로 읽습니다(단계 스트림). 게임과 무관한 프로그램도 그 세션 동안 메모리를 양보합니다([배경 메모리 양보](AUTO_MODE.ko.md#배경-메모리-양보)). 단계는 [자동 모드](AUTO_MODE.ko.md), 설정은 [설정](CONFIGURATION.ko.md)에 있습니다.
+게임이 시작되면 그 게임의 기록된 데이터를 최대 120초 동안 순서대로 읽고(로딩 초반의 많은 읽기가 잦아드는 로딩 경계에서 더 일찍 멈춥니다), 같은 디스크의 배경 작업(재배치, 예열, 다른 읽기)은 기다리거나 멈춥니다. 플레이 기록을 위해 게임 파일이나 프로세스가 아니라 디스크의 읽기 카운터를 표본으로 읽습니다. 트레이스가 허용된 게임에서는 기록 세션이 플레이 내내 열려 있지만, 읽기는 기록 창 안에서만 저장합니다. 게임이 이어서 자기 등록 프로그램을 또 띄우면(예를 들어 런처 뒤에 뜨는 본 프로그램) 그 프로그램이 처음 읽는 블록을 뜬 직후 낮은 I/O 우선순위로 읽습니다(단계 스트림). 게임과 무관한 프로그램도 그 세션 동안 메모리를 양보합니다([배경 메모리 양보](AUTO_MODE.ko.md#배경-메모리-양보)). 단계는 [자동 모드](AUTO_MODE.ko.md), 설정은 [설정](CONFIGURATION.ko.md)에 있습니다.
 
 **지우면 어떻게 되나요? 게임을 목록에서 빼면요?**
 프로그램을 제거하면 먼저 SSD 보조 저장의 링크를 되돌린 뒤 프로그램과 서비스를 지웁니다. 데이터 폴더 `%ProgramData%\AsterCache` 는 남습니다. 이미 옮긴 조각은 되돌려지지 않으며 어느 쪽이든 파일 내용은 그대로입니다. 예전 배치로 복원하려면 먼저 게임 탭에서 **되돌리기**를 누르십시오. 게임을 목록에서 빼도 파일은 그대로입니다. [사용법](USAGE.ko.md#자주-하는-작업)을 보십시오.
@@ -114,7 +114,7 @@ SMR 드라이브(WD20EZAZ) 1대만 측정했고 CMR 은 측정하지 않았습�
 - `background yield state file not written: <예외 형식>`: `background_yield.json` 을 쓰지 못해서 그때는 우선순위를 낮추지 않았다는 뜻입니다(작업 집합은 그래도 비웁니다). 오류와 함께 남는 `background yield failed` 는 그 밖의 실패이며 서비스의 나머지에는 영향이 없습니다.
 
 **로그의 `ladder` 와 `cache refreshed` 줄은 무슨 뜻인가요?**
-[SOLAR](SOLAR.ko.md)가 `service.log` 에 남기는 줄입니다. 전체 목록은 [켜졌는지 확인하는 법](SOLAR.ko.md#켜졌는지-확인하는-법)에 있습니다.
+[SOLAR](SOLAR.ko.md)가 `service.log` 에 남기는 줄입니다(`ladder` 는 예열 뒤 캐시를 읽은 순서의 역순으로 만지는 동작을 SOLAR 가 부르는 이름입니다). 전체 목록은 [켜졌는지 확인하는 법](SOLAR.ko.md#켜졌는지-확인하는-법)에 있습니다.
 - `<게임>: ladder ordered N MiB in S s`: 예열 직후 그 게임의 캐시 N MiB 를 읽은 순서의 역순으로, 디스크 읽기 없이 참조했다는 뜻입니다.
 - `<게임>: cache refreshed in memory: N MiB in S s (R MiB repurposed of A MiB ahead)`: Windows 가 다시 쓴 캐시가 R MiB 로, 그 게임의 페이지보다 먼저 재사용될 A MiB 에 가까워져서 캐시를 다시 참조했다는 뜻입니다.
 - `<게임>: ladder found data missing from memory (K slow pieces, N MiB read from disk), left to the rewarm check`: 목록 일부가 이미 캐시에 없었다는 뜻입니다. 참조하기를 멈췄고, 다음 재예열 점검이 표본이 따뜻해 보여도 그 게임을 다시 예열합니다(`rewarm check: part of the list is not in memory (found by the ladder), prewarming again (cooldown ignored)`).
@@ -126,7 +126,7 @@ SMR 드라이브(WD20EZAZ) 1대만 측정했고 CMR 은 측정하지 않았습�
 - `boot prewarm release: uptime U s, idle since S s, C checks (B not idle), last disk X MiB/s`: 보류한 런처 예열이 그 시각에 풀린 이유입니다. 그때까지 PC가 켜져 있던 시간, 한가한 구간이 시작된 시각, 한가함을 확인한 횟수(5초마다)와 그중 한가하지 않았던 횟수, 마지막으로 본 디스크 처리량을 보여 줍니다.
 - `<게임>: prewarm yields to other disk activity (low I/O priority)`, 그리고 `prewarm done` 줄 끝의 `, yielded N.N s`: 다른 프로그램이 같은 디스크를 읽고 있어서 예열이 모두 합쳐 N.N초 동안 낮은 I/O 우선순위로 읽었다는 뜻입니다. `<게임>: prewarm back to normal I/O priority after N.N s at low` 는 보통 우선순위로 처음 돌아온 때이고, 핫 집합 예열의 `prewarm done`·`prewarm cancelled` 줄 끝(과 로딩 초반에 읽는 블록을 읽는 `load head prewarm` 줄)의 `, read A MiB in S s at normal I/O priority and B MiB in T s at low (K switches)` 는 우선순위별로 읽은 양과 바뀐 횟수입니다. 기록이 없는 게임의 예열과 보충에는 붙지 않습니다.
 - `prewarm prepared in N s before the per-game reads [<사유>]: ...`, `<게임>: load head prewarm started` / `done: N MiB in S s` / `cancelled (<사유>) after N MiB in S s` / `interrupted (caller cancelled) after ...` / `skipped (<사유>)`: 게임별 읽기 전에 시간이 어디에 쓰였는지와 게임마다 로딩 앞부분 읽기가 한 일을 보여 줍니다(첫 줄은 준비가 5초 이상 걸렸을 때만 나옵니다).
-- `<게임>: prewarm cancelled (...) (preempted by trigger prewarm)`, `<게임>: trigger prewarm waited N s for <게임>`: 런처가 예열을 시작해서 같은 디스크의 다른 게임의 배경 예열이 먼저 읽게 길을 내주고 멈췄다는 뜻입니다. 두 번째 줄은 런처의 예열이 그래도 1초 이상 기다려야 했을 때 남습니다.
+- `<게임>: prewarm cancelled (...) (preempted by trigger prewarm)`, `<게임>: trigger prewarm waited N s for <게임>`: 런처가 예열을 시작해서, 같은 디스크의 다른 게임의 배경 예열이 런처의 예열이 먼저 읽도록 멈췄다는 뜻입니다. 두 번째 줄은 런처의 예열이 그래도 1초 이상 기다려야 했을 때 남습니다.
 - `<게임>: device calibration stopped at the 5 s limit, sample discarded`: 예열 전의 짧은 디스크 속도 읽기가 5초를 넘게 걸려 그 표본을 버렸다는 뜻입니다.
 
 **로그의 `stage stream` 과 `quick exit` 줄은 무슨 뜻인가요?**

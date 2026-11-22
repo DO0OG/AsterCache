@@ -16,7 +16,7 @@ What is left is the later part, such as the map chunks of games that are often i
 
 1. **Learn what is read together.** From the play records it groups the data that is read together (an episode, for example one map's loading) and counts how often each episode occurs.
 2. **Count interruptions.** It counts how often a game starts during a prewarm and interrupts it.
-3. **Measure the disk.** Just before its own prewarm, the service reads a little from the disk to learn the range of seek latency and transfer rate.
+3. **Measure the disk.** Right before its own prewarm, the service reads a little from the disk to learn the range of seek latency and transfer rate.
 4. **Try other orders.** It calculates candidate orders in chunks of about 64 MiB and compares each with the current order. The first tier0 chunks stay fixed.
 5. **Change only when it is safe.** It uses a candidate only if the calculation shows a gain even in the worst case of the measured range, and every episode stays within `max(5% of its baseline ready time, 200 ms)`. Otherwise it prewarms exactly as before and records the reason (`episode_regression`) in the plan file. The whole decision has a 500 ms budget.
 
@@ -88,7 +88,7 @@ Change the mode with `aster orbit mode off|shadow|active`.
 | `shadow` | Calculates and records, but keeps the current order. |
 | `active` | Default. Applies the new order when the rules above allow it. |
 
-It drops to `shadow` automatically on a significant deterioration, two consecutive calibration drifts, or two consecutive calculation exceptions, and never goes back up automatically. Calibration reads run only when no game is running and the disk is idle. `config.json` has no new keys.
+It drops to `shadow` automatically on a significant deterioration, two consecutive calibration drifts, or two consecutive calculation exceptions, and never goes back up automatically. Calibration reads run only when no game is running and the disk is idle. ORBIT adds no keys to `config.json`.
 
 <details>
 <summary>Details: automatic demotion, safety rules</summary>
@@ -126,7 +126,7 @@ Deleting these files makes the build behave as before. The previous build ignore
 
 ## Measurement record
 
-The bench compares how soon each episode's data is ready under the baseline order and the ORBIT order (service stopped, games closed, standby list cleared before each round, ABBA crossover).
+The bench compares how soon each episode's data is ready under the baseline order (A) and the ORBIT order (B) (service stopped, games closed, standby list cleared before each round, ABBA crossover).
 
 On 2026-11-09, on a test PC with Call of Duty (ABBA, 10 pairs, 20 runs):
 

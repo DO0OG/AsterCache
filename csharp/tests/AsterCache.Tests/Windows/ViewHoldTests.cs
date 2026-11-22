@@ -134,9 +134,16 @@ public sealed class ViewHoldTests : IDisposable
         hold.Rebase();
         _ = hold.Hold([new ReadOp(a, 0, 8L * Mib)], CancellationToken.None);
         using Process me = Process.GetCurrentProcess();
-        Assert.True(EmptyWorkingSet(me.Handle)); // 메모리 관리자가 작업 집합을 줄이는 것을 흉내 냄: 붙든 쪽이 Valid 에서 빠짐 (페이지는 대기 목록에 있어 디스크 읽기는 없음)
-
-        HoldCheckResult r = hold.Recheck(Prewarm32Mib, CancellationToken.None);
+        HoldCheckResult r = default!;
+        for (int attempt = 0; attempt < 5; attempt++) // 한 번 비운 것이 일부만 빠지는 때가 있어 몇 번 다시 시도 (실제 메모리 관리자의 동작이라 양이 일정하지 않음)
+        {
+            Assert.True(EmptyWorkingSet(me.Handle)); // 메모리 관리자가 작업 집합을 줄이는 것을 흉내 냄: 붙든 쪽이 Valid 에서 빠짐 (페이지는 대기 목록에 있어 디스크 읽기는 없음)
+            r = hold.Recheck(Prewarm32Mib, CancellationToken.None);
+            if (r.TrimmedBytes >= 4L * Mib)
+            {
+                break;
+            }
+        }
 
         Assert.True(r.TrimmedBytes >= 4L * Mib, $"trimmed {r.TrimmedBytes}"); // 대부분이 빠짐
         Assert.Equal(8L * Mib, hold.HeldBytes); // 상한 안: 목록에서 빼지 않음

@@ -1,6 +1,7 @@
 using AsterCache.Core.Apply;
 using AsterCache.Core.Discovery;
 using AsterCache.Core.Json;
+using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
 using AsterCache.Core.Trace;
 using AsterCache.Service;
@@ -2523,6 +2524,68 @@ public sealed class AutoTracerTests : IDisposable
         tracer.Step();
 
         Assert.Equal(1, _rig.World.BuildIoSummaryCalls); // 오래된 플레이의 집계는 만들지 않음
+    }
+
+    private const string WrittenPath = @"D:\Games\Foo\cache.dat";
+
+    // 이전 트레이스가 가변으로 표시한 게임이 쓰는 파일 (32 MiB) 과 끝난 플레이 기록을 준비함.
+    private void WrittenFilesSetup(params string[] plays)
+    {
+        File.WriteAllText(AutoTracer.VolatilePath(_game), System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, string> { [WrittenPath] = "opened for write" }));
+        _rig.World.Stat = path => new Fingerprint(path, 32L << 20, 0);
+        _rig.World.PlayRecords = [.. plays.Select(id => new SessionSpan(id, DateTime.UtcNow.AddYears(1), DateTime.UtcNow.AddYears(1).AddMinutes(1)))];
+    }
+
+    private void WaitForSizeRecords(int count) =>
+        Assert.True(SpinWait.SpinUntil(() => _rig.Log.Lines.Count(l => l.Contains("written file sizes recorded at the end of the play", StringComparison.Ordinal)) >= count, TimeSpan.FromSeconds(20)));
+
+    [Fact]
+    public void ThePlayEndRecordsTheWrittenFileSizesOnceEvenWithoutATraceInThatPlay()
+    {
+        WrittenFilesSetup("play1");
+
+        _tracer.RecordWrittenSizesAtPlayEnd(_game); // 트레이스를 뜨지 않은 플레이
+
+        WaitForSizeRecords(1);
+        WrittenFile file = Assert.Single(WrittenFileHistory.Read(WrittenFileHistory.PathFor(Raw)).Files);
+        Assert.Equal(WrittenPath, file.Path);
+        Assert.Equal(["play1"], file.Sessions.Select(x => x.Session));
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("(1 files, no trace in this play)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void APlayWithATraceIsRecordedUnderTheSamePlayAtTheEndAndWhenTheTraceIsSavedSoItCountsOnce()
+    {
+        EnableIoSummary();
+        Reads((0, 65536));
+        _trace.IoRequests = IoRequests();
+        WrittenFilesSetup("play1");
+        _tracer.Start(_game);
+
+        _tracer.RecordWrittenSizesAtPlayEnd(_game);
+        WaitForSizeRecords(1);
+        EndAfterExitGrace(); // 트레이스를 저장하면서 같은 플레이의 크기를 다시 남김
+
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("trace of this play pending", StringComparison.Ordinal));
+        Assert.Equal(["play1"], Assert.Single(WrittenFileHistory.Read(WrittenFileHistory.PathFor(Raw)).Files).Sessions.Select(x => x.Session));
+    }
+
+    [Fact]
+    public void AfterThreePlaysWithoutATraceTheWrittenFileCountsAsHavingEnoughHistoryToBeHeld()
+    {
+        WrittenFilesSetup("play1");
+        _tracer.RecordWrittenSizesAtPlayEnd(_game);
+        WaitForSizeRecords(1);
+        WrittenFilesSetup("play1", "play2");
+        _tracer.RecordWrittenSizesAtPlayEnd(_game);
+        WaitForSizeRecords(2);
+        Assert.Equal(WrittenVerdict.InsufficientHistory, WrittenFileHistory.Read(WrittenFileHistory.PathFor(Raw)).Judge(WrittenPath, 32L << 20));
+
+        WrittenFilesSetup("play1", "play2", "play3");
+        _tracer.RecordWrittenSizesAtPlayEnd(_game);
+        WaitForSizeRecords(3);
+
+        Assert.Equal(WrittenVerdict.Ok, WrittenFileHistory.Read(WrittenFileHistory.PathFor(Raw)).Judge(WrittenPath, 32L << 20));
     }
 
     [Fact]

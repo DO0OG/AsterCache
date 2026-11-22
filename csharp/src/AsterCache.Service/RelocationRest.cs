@@ -56,7 +56,9 @@ internal sealed class RelocationRest(string game, ILog log, Func<(double? Bps, D
             {
                 if (now() - since >= MaxRest)
                 {
-                    log.Info($"{game}: relocation stops this round after {(now() - since).TotalSeconds:F0} s of rest, other disk activity continues (resumes when the drive is idle)");
+                    log.Info($"{game}: relocation stops this round after {(now() - since).TotalSeconds:F0} s of rest, " + (optimizingNow
+                        ? "the drive optimization continues (resumes when it ends or after its 30 min limit)"
+                        : "other disk activity continues (resumes when the drive is idle)"));
                     return false;
                 }
 

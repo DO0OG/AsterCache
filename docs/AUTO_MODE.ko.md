@@ -540,7 +540,7 @@
 - 옮길 게임과 같은 드라이브에 설치된 등록 게임이 돌지 않습니다(다른 드라이브의 게임은 보지 않습니다).
 - 게임 드라이브 처리량이 30초 동안 연속으로 4 MiB/s 미만입니다.
 - AC 전원이 연결됐거나 배터리가 50% 이상입니다.
-- Windows 드라이브 최적화(`defrag.exe`, 예약 작업 "드라이브 최적화")가 돌지 않습니다. 서비스는 프로세스 이름만 보므로 최적화가 어느 드라이브를 처리하는지 알 수 없어 모든 드라이브의 재배치를 기다립니다. 이미 진행 중인 재배치는 조각 사이에서 쉽니다. 한 번의 실행에 대해 기다리는 시간은 서비스가 그 실행을 처음 본 때부터 최대 30분이며, 그 뒤에는 다른 조건만으로 판단합니다. 실행이 끝난 직후에도 배치 검사와 재배치를 앞당기지 않고 평소 시각에 합니다. 로그는 `drive optimization started at ...`, `drive optimization ended at ... after N s` 이고, 서비스가 시작될 때 이미 돌고 있었다면 `drive optimization already running when the service started ...` 가 남습니다.
+- Windows 드라이브 최적화(`defrag.exe`, 예약 작업 "드라이브 최적화", `\Microsoft\Windows\Defrag\ScheduledDefrag`)가 돌지 않습니다. 서비스는 프로세스 이름만 보므로 최적화가 어느 드라이브를 처리하는지 알 수 없어 모든 드라이브의 재배치를 기다립니다. 이미 진행 중인 재배치는 낮은 I/O 우선순위(`auto.relocate_io_priority` 의 기본값)일 때만 조각 사이에서 쉬고, 보통 우선순위일 때는 끊지 않습니다. 한 번의 실행에 대해 기다리는 시간은 서비스가 그 실행을 처음 본 때부터 최대 30분이며, 그 뒤에는 다른 조건만으로 판단합니다. 실행이 끝난 직후에도 배치 검사와 재배치를 앞당기지 않고 평소 시각에 합니다. 로그는 `drive optimization started at ...`, `drive optimization ended at ... after N s` 이고, 서비스가 시작될 때 이미 돌고 있었다면 `drive optimization already running when the service started ...` 가 남습니다.
 
 CPU 사용률은 보지 않습니다. 재배치는 낮은 I/O 우선순위로 대상 드라이브에만 영향을 줍니다. 6시간을 넘게 한가하지 않으면 `service.log` 에 이유(`game running`, `on battery`, `drive optimization running`, `disk busy`) 한 줄을 남깁니다. 게임마다 지금 어느 단계인지는 관리 창의 **상태** 탭과 **게임** 탭의 단계 열에서 볼 수 있습니다.
 

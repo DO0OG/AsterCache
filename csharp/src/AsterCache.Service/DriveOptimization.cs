@@ -22,21 +22,25 @@ public sealed class DriveOptimization
     public static DriveOptimization? Current { get; set; }
 
     private readonly Func<bool> _running;
-    private readonly Func<DateTimeOffset> _now;
+    private readonly Func<DateTimeOffset> _now; // 로그에 찍는 시각 전용 (벽시계는 UTC 보정에 흔들려 간격·상한 판정에는 쓰지 않음)
+    private readonly Func<long> _uptimeMs; // 간격·상한 판정용 단조 시계 (BootQuiet 와 같음)
     private readonly ILog _log;
     private readonly object _gate = new();
-    private DateTimeOffset? _polledAt;
-    private DateTimeOffset? _startedAt; // 도는 중인 실행을 처음 본 시각 (안 도는 중이면 null)
+    private long? _polledMs;
+    private bool _looked; // 조회에 성공한 적이 있는가 (없으면 처음 보는 실행은 서비스 시작 때 이미 돌던 것)
+    private DateTimeOffset? _startedAt; // 도는 중인 실행을 처음 본 시각 (안 도는 중이면 null), 로그용
+    private long _startedMs;
     private bool _startSeen; // 시작을 직접 봤는가 (false = 서비스가 시작할 때 이미 돌고 있었음)
     private bool _capLogged;
     private DateTimeOffset? _lastEnded;
 
-    /// running: 프로세스 목록에 defrag.exe 가 있는가 (조회가 실패하면 예외 Win32Exception, 직전 상태를 유지). now: 시계.
-    public DriveOptimization(Func<bool> running, ILog log, Func<DateTimeOffset>? now = null)
+    /// running: 프로세스 목록에 defrag.exe 가 있는가 (조회가 실패하면 예외 Win32Exception, 직전 상태를 유지). now: 로그용 벽시계. uptimeMs: 단조 시계 (없으면 Environment.TickCount64).
+    public DriveOptimization(Func<bool> running, ILog log, Func<DateTimeOffset>? now = null, Func<long>? uptimeMs = null)
     {
         _running = running;
         _log = log;
         _now = now ?? (() => DateTimeOffset.UtcNow);
+        _uptimeMs = uptimeMs ?? (() => Environment.TickCount64);
     }
 
     /// 실제 환경: 이미 쓰는 프로세스 이름 목록 조회로 봅니다.
@@ -50,7 +54,7 @@ public sealed class DriveOptimization
             Refresh();
             lock (_gate)
             {
-                return _startedAt is { } started && _now() - started < MaxDefer;
+                return _startedAt is not null && Elapsed(_startedMs) < MaxDefer;
             }
         }
     }
@@ -73,13 +77,13 @@ public sealed class DriveOptimization
         lock (_gate)
         {
             DateTimeOffset now = _now();
-            if (_polledAt is { } polled && now - polled < PollEvery)
+            long ms = _uptimeMs();
+            if (_polledMs is { } polled && Elapsed(polled) < PollEvery)
             {
                 return;
             }
 
-            bool first = _polledAt is null;
-            _polledAt = now;
+            _polledMs = ms;
             bool running;
             try
             {
@@ -90,9 +94,12 @@ public sealed class DriveOptimization
                 return; // 목록을 못 읽으면 직전 상태 그대로 (다음 간격에 다시)
             }
 
+            bool first = !_looked;
+            _looked = true;
+
             if (running && _startedAt is null)
             {
-                (_startedAt, _startSeen, _capLogged) = (now, !first, false);
+                (_startedAt, _startedMs, _startSeen, _capLogged) = (now, ms, !first, false);
                 _log.Info(_startSeen
                     ? $"drive optimization started at {Stamp(now)} ({ExeName} running), relocation waits for it up to {MaxDefer.TotalMinutes:F0} min"
                     : $"drive optimization already running when the service started (seen at {Stamp(now)}, start time unknown), relocation waits for it up to {MaxDefer.TotalMinutes:F0} min");
@@ -101,15 +108,17 @@ public sealed class DriveOptimization
             {
                 _lastEnded = now;
                 _startedAt = null;
-                _log.Info($"drive optimization ended at {Stamp(now)} after {(_startSeen ? string.Empty : "at least ")}{(now - started).TotalSeconds:F0} s (started {Stamp(started)})");
+                _log.Info($"drive optimization ended at {Stamp(now)} after {(_startSeen ? string.Empty : "at least ")}{Elapsed(_startedMs).TotalSeconds:F0} s (started {Stamp(started)})");
             }
-            else if (running && !_capLogged && now - _startedAt >= MaxDefer)
+            else if (running && !_capLogged && Elapsed(_startedMs) >= MaxDefer)
             {
                 _capLogged = true;
                 _log.Info($"drive optimization still running after {MaxDefer.TotalMinutes:F0} min, relocation no longer waits for it");
             }
         }
     }
+
+    private TimeSpan Elapsed(long sinceMs) => TimeSpan.FromMilliseconds(_uptimeMs() - sinceMs);
 
     public static string Stamp(DateTimeOffset t) => $"{t.ToUniversalTime():HH:mm:ss} UTC";
 }

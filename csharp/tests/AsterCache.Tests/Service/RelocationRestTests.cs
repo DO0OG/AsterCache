@@ -121,7 +121,7 @@ public sealed class RelocationRestTests : ApplyTestBase
 
         Assert.False(rest.MayIssue(CancellationToken.None));
 
-        Assert.Contains(_log.Lines, l => l.Contains("relocation stops this round after", StringComparison.Ordinal));
+        Assert.Equal("Info: g: relocation stops this round after 600 s of rest, the drive optimization continues (resumes when it ends or after its 30 min limit)", _log.Lines.Last());
     }
 
     [Fact]

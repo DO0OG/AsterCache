@@ -9,7 +9,8 @@ public sealed class DriveOptimizationTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 11, 23, 3, 0, 0, TimeSpan.Zero);
     private readonly ListLog _log = new();
-    private DateTimeOffset _now = T0;
+    private DateTimeOffset _now = T0; // 로그용 벽시계
+    private long _ms; // 단조 시계
     private bool _running;
     private bool _unreadable; // 프로세스 목록 조회 실패
     private int _lookups;
@@ -18,9 +19,13 @@ public sealed class DriveOptimizationTests
     {
         _lookups++;
         return _unreadable ? throw new Win32Exception(5) : _running;
-    }, _log, () => _now);
+    }, _log, () => _now, () => _ms);
 
-    private void Elapse(TimeSpan span) => _now += span;
+    private void Elapse(TimeSpan span)
+    {
+        _now += span;
+        _ms += (long)span.TotalMilliseconds;
+    }
 
     [Fact]
     public void NoRunMeansNoBlockAndNoLogLine()
@@ -133,6 +138,43 @@ public sealed class DriveOptimizationTests
         Elapse(TimeSpan.FromSeconds(1));
         Assert.True(o.Blocking);
         Assert.Equal(2, _lookups);
+    }
+
+    [Fact]
+    public void AWallClockStepBackDoesNotStallTheDetectionOrStretchTheDeferral()
+    {
+        DriveOptimization o = Make();
+        Assert.False(o.Blocking);
+        Elapse(TimeSpan.FromSeconds(10));
+        _running = true;
+        Assert.True(o.Blocking);
+
+        _now -= TimeSpan.FromHours(1); // 도는 중에 벽시계가 1시간 뒤로 감 (단조 시계는 그대로 흐름)
+        _ms += (long)TimeSpan.FromMinutes(9).TotalMilliseconds;
+        _running = false;
+        Assert.False(o.Blocking); // 간격이 지난 것으로 보고 끝을 알아챔
+        Assert.Contains(_log.Lines, l => l.Contains("after 540 s", StringComparison.Ordinal)); // 길이는 단조 시계로
+
+        _running = true;
+        _now -= TimeSpan.FromHours(1);
+        _ms += (long)TimeSpan.FromSeconds(10).TotalMilliseconds;
+        Assert.True(o.Blocking);
+        _ms += (long)DriveOptimization.MaxDefer.TotalMilliseconds;
+        Assert.False(o.Blocking); // 상한도 단조 시계로 30 분
+    }
+
+    [Fact]
+    public void AFailedFirstLookupStillCountsTheRunSeenNextAsAlreadyRunningAtServiceStart()
+    {
+        _running = true;
+        _unreadable = true;
+        DriveOptimization o = Make();
+        Assert.False(o.Blocking);
+
+        _unreadable = false;
+        Elapse(TimeSpan.FromSeconds(10));
+        Assert.True(o.Blocking);
+        Assert.Contains(_log.Lines, l => l.Contains("already running when the service started", StringComparison.Ordinal));
     }
 
     [Fact]

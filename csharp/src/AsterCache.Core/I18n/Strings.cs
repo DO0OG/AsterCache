@@ -174,7 +174,7 @@ public static partial class L
         ["Toast_Discovered"] = ("새 게임을 찾았습니다: {0}", "New game found: {0}"),
         ["Toast_Relocated"] = ("재배치를 마쳤습니다: {0}", "Relocation finished: {0}"),
         ["Toast_Prewarmed"] = ("예열 완료: {0}", "Prewarm complete: {0}"),
-        ["Toast_FirstRun"] = ("다음 실행부터 빨라집니다: {0}", "Faster from the next launch: {0}"),
+        ["Toast_FirstRun"] = ("첫 실행 기록을 마쳤습니다. 이 기록으로 계획을 세웁니다: {0}", "First run recorded; planning from this recording: {0}"),
         ["Toast_QuickExit"] = ("{0} 이(가) 실행 직후 꺼졌습니다({1}회). 마지막 정상 실행 뒤 새로 올라온 드라이버: {2}.{3}", "{0} exited right after launch ({1} times). Kernel drivers loaded since the last normal run: {2}.{3}"),
         ["Quick_None"] = ("없음", "none"),
         ["Quick_Unknown"] = ("알 수 없음", "unknown"),

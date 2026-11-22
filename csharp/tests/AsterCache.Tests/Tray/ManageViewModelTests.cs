@@ -1200,8 +1200,8 @@ public sealed class ManageViewModelTests : IDisposable
         Assert.Empty(AutoStatusFile.FirstRunFinished(seen, Status("failed"))); // 실패는 알리지 않음
         Assert.Empty(AutoStatusFile.FirstRunFinished(seen, Status("tracing")));
         Assert.Equal(["g"], AutoStatusFile.FirstRunFinished(seen, Status("done")));
-        Assert.Equal("다음 실행부터 빨라집니다: g", L.Get("ko", "Toast_FirstRun", "g"));
-        Assert.Equal("Faster from the next launch: g", L.Get("en", "Toast_FirstRun", "g"));
+        Assert.Equal("첫 실행 기록을 마쳤습니다. 이 기록으로 계획을 세웁니다: g", L.Get("ko", "Toast_FirstRun", "g"));
+        Assert.Equal("First run recorded; planning from this recording: g", L.Get("en", "Toast_FirstRun", "g"));
     }
 
     [Fact]

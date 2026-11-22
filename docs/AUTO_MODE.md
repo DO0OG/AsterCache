@@ -640,7 +640,7 @@ All `auto.*` keys, their meanings, and their defaults are in [CONFIGURATION.md](
 - The Status tab shows one line per game, such as "Auto: Frostpunk discovered → collecting trace → waiting to relocate → relocating → [done]". The Games tab shows the source, stage, and anti-cheat columns.
 - The learning stage shows "First run: learning (read-ahead n MiB)", and "Prewarmed" appears after prewarm.
 - The per-game status line also shows `hit right after prewarm N%` (the hit rate measured right after a prewarm ends) and `SSD assist N GB` (the size of the game's SSD copies).
-- Tray notifications are sent for discovery, for a finished relocation, and when a first run ends ("Faster from the next launch: <game>"). The pop-up can be turned off in the Settings tab's Notifications card (`notifications.enabled` in `tray.json`); the notice is still written to the tray log.
+- Tray notifications are sent for discovery, for a finished relocation, and when a first run ends ("First run recorded; planning from this recording: <game>"). The pop-up can be turned off in the Settings tab's Notifications card (`notifications.enabled` in `tray.json`); the notice is still written to the tray log.
 
 </details>
 

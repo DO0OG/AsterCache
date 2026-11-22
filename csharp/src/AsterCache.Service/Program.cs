@@ -52,6 +52,7 @@ bool canApply = Worker.CanApply(admin, [dataDir, plansDir], log, [configPath]);
 settings = Worker.ForApply(settings, canApply, log, canApply ? new ConfigEditor(dataDir) : null);
 (IProcessWatcher primary, IProcessWatcher? fallback) = Worker.ChooseWatchers(settings, admin);
 string journalDir = Path.Combine(dataDir, "journals");
+DriveOptimization.Current = DriveOptimization.Real(log); // 예약 드라이브 최적화 (defrag.exe) 실행 감지: 도는 동안 재배치를 미룸
 ReapplyEnv reapplyEnv = ReapplyEnv.Create(canApply, journalDir, log, () => settings.Auto.RelocateOrder, g => ReapplyEnv.ParallelFor(settings.Auto, g));
 var checker = new ReapplyChecker(reapplyEnv, log);
 

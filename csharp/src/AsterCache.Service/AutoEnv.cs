@@ -332,6 +332,9 @@ public sealed class AutoEnv
     /// 전원이 AC 이거나 배터리가 충분한가.
     public required Func<bool> PowerOk { get; init; }
 
+    /// 예약 드라이브 최적화 (defrag.exe) 가 도는 중이라 재배치를 미뤄야 하는가 (DriveOptimization). 시험 기본값은 미루지 않음.
+    public Func<bool> DriveOptimizing { get; init; } = () => false;
+
     /// SSD 보조 저장 (선택 기능) 의 엔진. 시험 기본값은 null (건드리지 않음).
     public TierEngine? Tier { get; init; }
 
@@ -467,6 +470,7 @@ public sealed class AutoEnv
             LocateProbeSpots = (letter, zone, ct) => DiskProbe.Locate(letter, zone, ct, () => DiskActivity.IsBusy(letter)),
             CpuPercent = cpu.Percent,
             PowerOk = () => PowerProbe.PowerOk(MinBatteryPercent),
+            DriveOptimizing = () => DriveOptimization.Current?.Blocking == true,
             Tier = log is null ? null : new TierEngine(new TierFs(new IoPriorityHint(err => log.Warn($"ssd tier: low I/O priority hint not applied (Win32 error {err})"))), log, Path.Combine(Path.GetDirectoryName(journalDir) ?? journalDir, "tier")),
         };
     }

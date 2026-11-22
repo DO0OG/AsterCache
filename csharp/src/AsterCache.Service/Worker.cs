@@ -843,6 +843,7 @@ public sealed class Worker : BackgroundService
         }
 
         NoteGameExits();
+        DriveOptimization.Current?.Refresh(); // 최적화의 시작·끝 기록 (재배치를 하지 않을 때도 로그가 남게)
 
         if (_auto is not null && RelocationAllowed(_quiet))
         {

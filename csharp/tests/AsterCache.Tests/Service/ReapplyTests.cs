@@ -144,6 +144,8 @@ public sealed class ReapplyTests
 
         public bool WarnAllowed { get; set; } = true;
 
+        public DateTimeOffset? OptimizationEnded { get; set; }
+
         public DateTimeOffset Now { get; set; } = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
         public CancellationToken LastToken { get; private set; }
@@ -217,6 +219,7 @@ public sealed class ReapplyTests
                 },
                 Options = _ => OptionsFn is { } f ? f() : Options,
                 WarnDegraded = _ => WarnAllowed,
+                OptimizationEnded = () => OptimizationEnded,
                 Now = () => Now,
                 Apply = (_, _, opts, token) =>
                 {
@@ -332,6 +335,7 @@ public sealed class ReapplyTests
     [InlineData(ReapplyVerdict.NotRelocatable)]
     [InlineData(ReapplyVerdict.PostUpdateDelay)]
     [InlineData(ReapplyVerdict.NotIdle)]
+    [InlineData(ReapplyVerdict.DriveOptimizing)]
     public void DegradedLayoutIsDeferredWhenTheAutoGateBlocks(ReapplyVerdict block)
     {
         var rig = new Rig { Moved = false, GateBlock = block };
@@ -348,6 +352,7 @@ public sealed class ReapplyTests
     [InlineData(ReapplyVerdict.GameRunning, true)]
     [InlineData(ReapplyVerdict.PostUpdateDelay, true)]
     [InlineData(ReapplyVerdict.OnBattery, true)]
+    [InlineData(ReapplyVerdict.DriveOptimizing, true)]
     [InlineData(ReapplyVerdict.DailyLimit, false)]
     [InlineData(ReapplyVerdict.NotApplied, false)]
     [InlineData(ReapplyVerdict.NotRelocatable, false)]
@@ -664,6 +669,26 @@ public sealed class ReapplyTests
 
         Assert.Equal((123L, "p.json"), (o.WriteCap, o.SaveTo));
         Assert.Equal(2L << 30, ReapplyEnv.ChooseOptions(g, null, "target", 1).WriteCap); // 연결 전에는 기본 옵션
+    }
+
+    [Fact]
+    public void DegradedLayoutWarningNamesTheEndOfTheLastDriveOptimizationTheServiceSaw()
+    {
+        var rig = new Rig { Moved = false, CanApply = false, OptimizationEnded = new DateTimeOffset(2025, 12, 31, 3, 11, 40, TimeSpan.Zero) };
+
+        rig.Check(Bench);
+
+        Assert.Single(rig.Log.Lines, l => l.StartsWith("Warn", StringComparison.Ordinal) && l.Contains("the last drive optimization the service saw ended at 2025-12-31 03:11 UTC", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void DegradedLayoutWarningHasNoOptimizationTimeWhenTheServiceSawNoRun()
+    {
+        var rig = new Rig { Moved = false, CanApply = false };
+
+        rig.Check(Bench);
+
+        Assert.DoesNotContain(rig.Log.Lines, l => l.Contains("the last drive optimization the service saw", StringComparison.Ordinal));
     }
 
     [Fact]

@@ -341,6 +341,11 @@ public sealed partial class AutoRelocator
             return "on battery";
         }
 
+        if (_env.DriveOptimizing())
+        {
+            return "drive optimization running";
+        }
+
         bool prewarming = _prewarm is { } warm && ready.Any(g => warm.StreamingOnDisk(g.Name)); // 같은 디스크의 예열 스트림과 재배치 쓰기가 겹치지 않게
         if (prewarming != _prewarmHeld)
         {

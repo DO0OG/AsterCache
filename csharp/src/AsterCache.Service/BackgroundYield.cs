@@ -120,6 +120,9 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
     public const long DefaultGameMib = 8192; // 플레이 기록이 없는 게임이 가져갈 양의 추정 (기록이 쌓이면 그 몫을 씀): 하한과 같은 크기로 둔 값이며 실측 근거는 없음
     public const long RetrimCacheBytes = 512L << 20; // 유지 주기 사이에 캐시 (우선순위 5~7) 가 이만큼 재사용돼야 다시 비움
     public const long SettleCalmMib = 64;
+    public const int RetrimGrowthFactor = 2; // 같은 프로세스를 다시 비우려면 작업 집합이 직전에 비운 뒤 값의 이 배수 이상이고
+    public const long RetrimGrowthMinBytes = 256L << 20; // 이만큼 이상 늘어야 함 (그보다 덜 늘었으면 비워도 얻을 것이 적고 그 프로그램만 계속 작업 집합을 빼앗김)
+    public const int TrimGainMinPercent = 50; // 비운 뒤 가용 메모리가 비운 양의 이 비율만큼은 올라야 효과가 있는 것으로 봄 (아니면 그 플레이는 더 비우지 않음)
     internal const int NotLowered = -1; // 그쪽 우선순위는 낮추지 않았음 (되돌릴 것 없음)
 
     private readonly object _lock = new(); // 상태는 모두 이 락 아래 (Begin 의 가용 메모리 대기만 락 밖)
@@ -142,6 +145,8 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
     private readonly UsageWindow _usage = new(); // 최근 구간의 프로세스별 CPU·I/O 표본: 게임이 없을 때도 틱마다 쌓음 (세션과 무관)
     private readonly List<ProcessUsage> _usageBuffer = [];
     private long _startAvailableMib; // 마지막 세션 시작 때의 가용 메모리 (그 뒤 줄어든 만큼은 게임이 이미 가져간 것으로 봄)
+    private (long AvailableMib, long Bytes, long GameMib)? _lastTrimResult; // 마지막으로 실제 비운 때의 (비우기 직전 가용 메모리, 비운 작업 집합 양, 그때 게임 작업 집합): 다음 유지에서 한 번만 효과를 판정하고 지움
+    private bool _trimIneffective; // 직전 비우기가 가용 메모리를 올리지 못해 세션이 끝날 때까지 다시 비우지 않음
 
     /// 게임이 실행 뒤 잡는 메모리 (플레이 기록의 최근 중앙값, 기록이 없거나 연결되지 않았으면 null).
     public Func<string, (long Mib, int Plays)?>? Footprint { get; set; }
@@ -160,18 +165,34 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
     }
 
     // 떠 있는 등록 게임이 앞으로 가져갈 것으로 보이는 메모리 (MiB): 게임마다 플레이 기록의 몫, 기록이 없으면 기본 추정. 여러 게임이 떠 있으면 가장 큰 쪽.
-    private long ExpectedGameMib(IReadOnlyList<(int Pid, string Exe)> processes)
+    // 같은 게임의 실행 파일들이 지금 쓰는 작업 집합 (MiB, 프로세스를 열지 않는 틱 표본 _usageBuffer 에서 읽음, 못 읽었으면 0) 도 함께 돌려줍니다: 이미 가져간 만큼은 앞으로 필요한 양이 아님.
+    private (long Expected, long InUse) GameMib(IReadOnlyList<(int Pid, string Exe)> processes)
     {
-        var names = new HashSet<string>(processes.Select(p => p.Exe), StringComparer.OrdinalIgnoreCase);
-        return settings().Games.Where(g => g.ExeNames.Any(names.Contains)).Select(g => Footprint?.Invoke(g.Name)?.Mib ?? DefaultGameMib).DefaultIfEmpty(DefaultGameMib).Max();
+        (long Expected, long InUse) best = (-1, 0);
+        foreach (GameSettings g in settings().Games)
+        {
+            HashSet<int> pids = [.. processes.Where(p => g.ExeNames.Contains(p.Exe, StringComparer.OrdinalIgnoreCase)).Select(p => p.Pid)];
+            if (pids.Count == 0)
+            {
+                continue;
+            }
+
+            long expected = Footprint?.Invoke(g.Name)?.Mib ?? DefaultGameMib;
+            if (expected > best.Expected)
+            {
+                best = (expected, _usageBuffer.Where(u => pids.Contains(u.Pid)).Sum(u => u.WorkingSetBytes) >> 20);
+            }
+        }
+
+        return best.Expected < 0 ? (DefaultGameMib, 0) : best;
     }
 
-    // 지금 비워서 만들어야 하는 양 (바이트)과 로그용 값: 가용 메모리에서 게임이 앞으로 가져갈 양 (예상 - 세션 시작 뒤 이미 줄어든 가용) 을 뺀 값이 하한보다 모자란 만큼. 세션 시작 때는 이미 가져간 양이 0.
+    // 지금 비워서 만들어야 하는 양 (바이트)과 로그용 값: 가용 메모리에서 게임이 앞으로 가져갈 양 (예상 - 이미 가져간 양) 을 뺀 값이 하한보다 모자란 만큼. 이미 가져간 양은 세션 시작 뒤 줄어든 가용과 게임 프로세스의 지금 작업 집합 가운데 큰 쪽 (게임이 뜬 뒤 세션이 시작되면 앞의 값은 0).
     private (long Need, long ExpectedMib, long FloorMib) Shortfall(IReadOnlyList<(int Pid, string Exe)> processes, long availableMib)
     {
-        long expectedMib = ExpectedGameMib(processes);
+        (long expectedMib, long inUseMib) = GameMib(processes);
         long floor = YieldPressure.TargetHeadroomBytes(env.PhysicalBytes());
-        long left = Math.Max(0, (expectedMib - Math.Max(0, _startAvailableMib - availableMib)) << 20);
+        long left = Math.Max(0, (expectedMib - Math.Max(Math.Max(0, _startAvailableMib - availableMib), inUseMib)) << 20);
         return (YieldPressure.ShortfallBytes(availableMib << 20, left, floor), expectedMib, floor >> 20);
     }
 
@@ -360,6 +381,7 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
         _trimMemo.Clear();
         (_lastRepurposed, _listsWarned, _ioReleaseDone) = (null, false, false);
         (_cpuReleaseDone, _cpuApplied) = (false, false);
+        (_lastTrimResult, _trimIneffective) = (null, false);
         _ = SaveState();
         log.Info($"background yield ended: memory priority restored for {restored} processes ({inherited} inherited), I/O priority restored for {ioRestored} processes, CPU priority restored for {cpuRestored} processes");
     }
@@ -389,8 +411,8 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
     private sealed record YieldStart(long Before, int Trimmed, long TrimmedBytes, int Lowered, int IoLowered, int CpuLowered, bool DidTrim, int Spared, long NeedMib, long ExpectedMib, long FloorMib);
 }
 
-/// 비운 대상이 비우기 직전에 쓰던 작업 집합. Busy 는 되찾은 것으로 판정돼 이 세션에서 다시 비우지 않는 대상 (pid 재사용은 생성 시각으로 거름).
-internal readonly record struct TrimMemo(long Created, long Before, bool Busy);
+/// 비운 대상이 비우기 직전에 쓰던 작업 집합 (After 는 비운 직후 값). Busy 는 되찾은 것으로 판정돼 이 세션에서 다시 비우지 않는 대상 (pid 재사용은 생성 시각으로 거름).
+internal readonly record struct TrimMemo(long Created, long Before, bool Busy, long After = 0);
 
 /// 세션 대상 프로세스: pid 는 재사용되므로 생성 시각 (FILETIME) 과 함께 같은 프로세스인지 봅니다. 이름과 경로는 규칙을 다시 돌릴 때 프로세스를 다시 열지 않으려고 기억합니다.
 /// InheritOnly 는 경로가 Windows 폴더 규칙에만 걸린 프로세스입니다 (다른 제외 사유는 없음): 새로 낮추지도 비우지도 않고, 낮춘 부모에게 물려받은 값만 되돌릴 수 있게 후보로 둡니다.

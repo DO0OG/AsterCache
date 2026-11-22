@@ -33,13 +33,14 @@ public sealed partial class BackgroundYield
         int spared = found.Count(t => !t.InheritOnly && _usage.IsInUse(t.Pid));
         _lastRepurposed = QueryLists()?.CacheRepurposedBytes;
         (long need, long expectedMib, long floorMib) = Shortfall(processes, before);
-        _beginTrimmed = need > 0;
+        _beginTrimmed = need > 0 && !_trimIneffective; // 이 플레이에서 효과가 없었던 비우기는 새 실행 파일이 떠도 되풀이하지 않음
         if (!_beginTrimmed)
         {
             return new YieldStart(before, 0, 0, lowered, ioLowered, cpuLowered, false, spared, 0, expectedMib, floorMib);
         }
 
         (int trimmed, long bytes, _) = TrimAll(found, now, need);
+        NoteTrim(before, bytes, processes);
         return new YieldStart(before, trimmed, bytes, lowered, ioLowered, cpuLowered, true, spared, need >> 20, expectedMib, floorMib);
     }
 
@@ -70,21 +71,34 @@ public sealed partial class BackgroundYield
                 break;
             }
 
-            if (_trimMemo.TryGetValue(t.Pid, out TrimMemo memo) && memo.Created == t.Created
-                && (memo.Busy || YieldPressure.RegainedMost(t.WorkingSetBytes, memo.Before)))
+            bool known = _trimMemo.TryGetValue(t.Pid, out TrimMemo memo) && memo.Created == t.Created;
+            if (known && (memo.Busy || YieldPressure.RegainedMost(t.WorkingSetBytes, memo.Before)))
             {
                 _trimMemo[t.Pid] = memo with { Busy = true };
                 active++;
             }
+            else if (known && !YieldPressure.GrewMarkedly(t.WorkingSetBytes, memo.After))
+            {
+                active++; // 비운 뒤 뚜렷이 늘지 않은 프로세스는 다시 비우지 않음
+            }
             else if (env.Trim(t.Pid))
             {
                 (count, bytes) = (count + 1, bytes + t.WorkingSetBytes);
-                _trimMemo[t.Pid] = new TrimMemo(t.Created, t.WorkingSetBytes, false);
+                _trimMemo[t.Pid] = new TrimMemo(t.Created, t.WorkingSetBytes, false, env.Describe(t.Pid)?.WorkingSetBytes ?? 0);
             }
         }
 
         _lastTrim = now; // 비우기에 걸린 시간을 빼지 않음 (다음 유지 주기의 간격 판정이 한 주기를 건너뛰지 않게)
         return (count, bytes, active);
+    }
+
+    // 실제로 비웠으면 그 직전 가용 메모리와 비운 양을 기억합니다 (다음 유지가 효과를 판정).
+    private void NoteTrim(long availableMib, long bytes, IReadOnlyList<(int Pid, string Exe)> processes)
+    {
+        if (bytes > 0)
+        {
+            _lastTrimResult = (availableMib, bytes, GameMib(processes).InUse);
+        }
     }
 
     // 유지 (2분마다, 등록 게임이 실행 중일 때): 새로 뜬 대상에 우선순위를 낮추고, 마지막 비우기 뒤 RetrimEvery 가 지났고 직전 유지 이후 캐시가 RetrimCacheBytes 이상 재사용됐고 가용 메모리가 시작 때와 같은 조건으로 모자랄 때만 그 모자라는 만큼 다시 비웁니다.
@@ -117,12 +131,23 @@ public sealed partial class BackgroundYield
         long? repurposed = QueryLists()?.CacheRepurposedBytes;
         long? delta = repurposed - _lastRepurposed;
         _lastRepurposed = repurposed;
-        if (!YieldPressure.ShouldRetrim(now - _lastTrim, delta))
+        long availableMib = env.AvailableMib();
+        if (_lastTrimResult is { } last)
+        {
+            _lastTrimResult = null; // 비운 직후 첫 유지에서 한 번만 판정 (나중에 가용이 줄어도 옛 기준점과 비교하지 않음)
+            long gameGrowth = Math.Max(0, GameMib(processes).InUse - last.GameMib); // 비운 메모리가 게임 작업 집합으로 갔으면 가용이 안 올라도 효과가 있었던 것
+            if (!YieldPressure.TrimHelped(last.AvailableMib, availableMib + gameGrowth, last.Bytes))
+            {
+                _trimIneffective = true; // 상태가 바뀔 때 한 번만 알림
+                log.Info($"background yield: not trimmed again, the last trim of {last.Bytes >> 20} MiB working set raised neither available memory ({last.AvailableMib} -> {availableMib} MiB) nor the game's working set (+{gameGrowth} MiB) by half of it, no more trimming until the game ends");
+            }
+        }
+
+        if (_trimIneffective || !YieldPressure.ShouldRetrim(now - _lastTrim, delta))
         {
             return;
         }
 
-        long availableMib = env.AvailableMib();
         (long need, long expectedMib, long floorMib) = Shortfall(processes, availableMib);
         string facts = $"available {availableMib} MiB, expected game use {expectedMib} MiB, floor {floorMib} MiB";
         if (need <= 0)
@@ -134,6 +159,7 @@ public sealed partial class BackgroundYield
         List<YieldTarget> measured = Measure(processes);
         int spared = measured.Count(t => !t.InheritOnly && _usage.IsInUse(t.Pid));
         (int count, long bytes, int active) = TrimAll(measured, now, need);
+        NoteTrim(availableMib, bytes, processes);
         log.Info($"background yield: trimmed again {count} processes ({bytes >> 20} MiB working set, shortfall {need >> 20} MiB), cache repurposed {delta!.Value >> 20} MiB in {(int)span.TotalSeconds} s, {active} active processes skipped, {spared} in-use processes spared, {facts}");
     }
 }

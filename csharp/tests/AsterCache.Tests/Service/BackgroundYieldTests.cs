@@ -601,6 +601,7 @@ public sealed class BackgroundYieldTests
         Assert.False(YieldPressure.GrewMarkedly(275L << 20, 20L << 20)); // 256 MiB 미만 증가
         Assert.False(YieldPressure.GrewMarkedly(600L << 20, 400L << 20)); // 2배 미만
         Assert.True(YieldPressure.TrimHelped(1000, 1250, 500L << 20));
+
         Assert.False(YieldPressure.TrimHelped(1000, 1249, 500L << 20));
     }
 
@@ -1930,7 +1931,7 @@ public sealed class BackgroundYieldTests
         TickAt(y, 4, 400, Lists(1000, 1200));
 
         Assert.Single(_w.Trimmed);
-        Assert.Single(_log.Lines, l => l.Contains("did not raise available memory (10000 -> 10000 MiB), no more trimming until the game ends", StringComparison.Ordinal)); // 상태가 바뀔 때 한 번만
+        Assert.Single(_log.Lines, l => l.Contains("raised neither available memory (10000 -> 10000 MiB) nor the game's working set (+0 MiB) by half of it, no more trimming until the game ends", StringComparison.Ordinal)); // 상태가 바뀔 때 한 번만
 
         y.End();
         _w.Now += TimeSpan.FromMinutes(1);
@@ -1939,6 +1940,33 @@ public sealed class BackgroundYieldTests
         y.Tick(_w.Snapshot());
         y.Begin("game started", settle: false);
         Assert.Equal(3, _w.Trimmed.Count); // 다음 플레이에서는 다시 비움 (50 과 51)
+    }
+
+    [Fact]
+    public void TheTrimEffectIsJudgedOnceRightAfterTheTrimSoLaterDropsInAvailableMemoryDoNotFreezeTrimming()
+    {
+        BackgroundYield y = RunningSession(Lists(1000, 0), 2000);
+        TickAt(y, 2, 400, Lists(1000, 0)); // 비운 직후 첫 유지: 가용이 올랐으므로 효과 있음 (캐시 재사용이 없어 다시 비우지는 않음)
+        Assert.Single(_w.Trimmed);
+
+        _w.Avail = () => 1000; // 그 뒤 게임이 가용 메모리를 가져감
+        TickAt(y, 4, 400, Lists(1000, 600));
+
+        Assert.Equal([50, 50], _w.Trimmed); // 옛 기준점과 비교해 효과 없음으로 굳지 않음
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("no more trimming", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ATrimWhoseMemoryWentToTheGameCountsAsEffectiveEvenThoughAvailableMemoryDidNotRise()
+    {
+        _w.Avail = () => 10000;
+        BackgroundYield y = RunningSession(Lists(1000, 0), 2000);
+        _w.Procs[10].UsageWs = 3000 * Mib; // 비운 뒤 게임 작업 집합이 비운 양 (2000 MiB) 의 절반 이상 늘어남
+
+        TickAt(y, 2, 400, Lists(1000, 600));
+
+        Assert.Equal([50, 50], _w.Trimmed);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("no more trimming", StringComparison.Ordinal));
     }
 
     [Fact]

@@ -145,7 +145,7 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
     private readonly UsageWindow _usage = new(); // 최근 구간의 프로세스별 CPU·I/O 표본: 게임이 없을 때도 틱마다 쌓음 (세션과 무관)
     private readonly List<ProcessUsage> _usageBuffer = [];
     private long _startAvailableMib; // 마지막 세션 시작 때의 가용 메모리 (그 뒤 줄어든 만큼은 게임이 이미 가져간 것으로 봄)
-    private (long AvailableMib, long Bytes)? _lastTrimResult; // 마지막으로 실제 비운 때의 (비우기 직전 가용 메모리, 비운 작업 집합 양): 다음 유지에서 효과가 있었는지 봄
+    private (long AvailableMib, long Bytes, long GameMib)? _lastTrimResult; // 마지막으로 실제 비운 때의 (비우기 직전 가용 메모리, 비운 작업 집합 양, 그때 게임 작업 집합): 다음 유지에서 한 번만 효과를 판정하고 지움
     private bool _trimIneffective; // 직전 비우기가 가용 메모리를 올리지 못해 세션이 끝날 때까지 다시 비우지 않음
 
     /// 게임이 실행 뒤 잡는 메모리 (플레이 기록의 최근 중앙값, 기록이 없거나 연결되지 않았으면 null).

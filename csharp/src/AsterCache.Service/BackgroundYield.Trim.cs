@@ -40,7 +40,7 @@ public sealed partial class BackgroundYield
         }
 
         (int trimmed, long bytes, _) = TrimAll(found, now, need);
-        NoteTrim(before, bytes);
+        NoteTrim(before, bytes, processes);
         return new YieldStart(before, trimmed, bytes, lowered, ioLowered, cpuLowered, true, spared, need >> 20, expectedMib, floorMib);
     }
 
@@ -93,11 +93,11 @@ public sealed partial class BackgroundYield
     }
 
     // 실제로 비웠으면 그 직전 가용 메모리와 비운 양을 기억합니다 (다음 유지가 효과를 판정).
-    private void NoteTrim(long availableMib, long bytes)
+    private void NoteTrim(long availableMib, long bytes, IReadOnlyList<(int Pid, string Exe)> processes)
     {
         if (bytes > 0)
         {
-            _lastTrimResult = (availableMib, bytes);
+            _lastTrimResult = (availableMib, bytes, GameMib(processes).InUse);
         }
     }
 
@@ -131,21 +131,20 @@ public sealed partial class BackgroundYield
         long? repurposed = QueryLists()?.CacheRepurposedBytes;
         long? delta = repurposed - _lastRepurposed;
         _lastRepurposed = repurposed;
-        if (!YieldPressure.ShouldRetrim(now - _lastTrim, delta))
-        {
-            return;
-        }
-
-        if (_trimIneffective)
-        {
-            return;
-        }
-
         long availableMib = env.AvailableMib();
-        if (_lastTrimResult is { } last && !YieldPressure.TrimHelped(last.AvailableMib, availableMib, last.Bytes))
+        if (_lastTrimResult is { } last)
         {
-            _trimIneffective = true; // 상태가 바뀔 때 한 번만 알림
-            log.Info($"background yield: not trimmed again, the last trim of {last.Bytes >> 20} MiB working set did not raise available memory ({last.AvailableMib} -> {availableMib} MiB), no more trimming until the game ends");
+            _lastTrimResult = null; // 비운 직후 첫 유지에서 한 번만 판정 (나중에 가용이 줄어도 옛 기준점과 비교하지 않음)
+            long gameGrowth = Math.Max(0, GameMib(processes).InUse - last.GameMib); // 비운 메모리가 게임 작업 집합으로 갔으면 가용이 안 올라도 효과가 있었던 것
+            if (!YieldPressure.TrimHelped(last.AvailableMib, availableMib + gameGrowth, last.Bytes))
+            {
+                _trimIneffective = true; // 상태가 바뀔 때 한 번만 알림
+                log.Info($"background yield: not trimmed again, the last trim of {last.Bytes >> 20} MiB working set raised neither available memory ({last.AvailableMib} -> {availableMib} MiB) nor the game's working set (+{gameGrowth} MiB) by half of it, no more trimming until the game ends");
+            }
+        }
+
+        if (_trimIneffective || !YieldPressure.ShouldRetrim(now - _lastTrim, delta))
+        {
             return;
         }
 
@@ -160,7 +159,7 @@ public sealed partial class BackgroundYield
         List<YieldTarget> measured = Measure(processes);
         int spared = measured.Count(t => !t.InheritOnly && _usage.IsInUse(t.Pid));
         (int count, long bytes, int active) = TrimAll(measured, now, need);
-        NoteTrim(availableMib, bytes);
+        NoteTrim(availableMib, bytes, processes);
         log.Info($"background yield: trimmed again {count} processes ({bytes >> 20} MiB working set, shortfall {need >> 20} MiB), cache repurposed {delta!.Value >> 20} MiB in {(int)span.TotalSeconds} s, {active} active processes skipped, {spared} in-use processes spared, {facts}");
     }
 }

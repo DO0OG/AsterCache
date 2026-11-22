@@ -18,7 +18,7 @@ public static class YieldPressure
     public static bool GrewMarkedly(long current, long afterTrim) =>
         current >= afterTrim * BackgroundYield.RetrimGrowthFactor && current - afterTrim >= BackgroundYield.RetrimGrowthMinBytes;
 
-    /// 비우기 뒤 가용 메모리가 비운 양의 TrimGainMinPercent 이상 올랐는지 (아니면 비운 메모리가 게임에 쓰이지 못함).
+    /// 비우기 뒤 가용 메모리 (게임 작업 집합이 늘어난 만큼 더한 값) 가 비운 양의 TrimGainMinPercent 이상 올랐는지 (아니면 비운 메모리가 가용으로도 게임으로도 가지 못함).
     public static bool TrimHelped(long availableBeforeMib, long availableNowMib, long trimmedBytes) =>
         (availableNowMib - availableBeforeMib) << 20 >= trimmedBytes * BackgroundYield.TrimGainMinPercent / 100;
 

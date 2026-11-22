@@ -2,7 +2,7 @@
 
 # Usage
 
-> How to use the tray window and the `aster` command, with examples. After installing, [automatic mode](AUTO_MODE.md) does everything on its own; this page is for looking, changing, and doing steps by hand.
+> How to use the tray window and the `aster` command, with examples. After installing, [automatic mode](AUTO_MODE.md) runs each step by itself; this page is for looking, changing, and doing steps by hand.
 
 ## Everyday use
 

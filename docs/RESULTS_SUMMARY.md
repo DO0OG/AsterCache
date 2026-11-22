@@ -457,7 +457,7 @@ These are records of what the service did on one PC (2 TB SMR HDD, 32 GB RAM) on
 | After the service started | The start prewarm read 1,024 MiB. As the disk became idle the rest was read, and Call of Duty's 10,025 MiB was filled within about 10 minutes. League of Legends, held back by the start limit, was read by a waiting retry 12 minutes later. |
 | Layout recovery | A disturbed layout reached reapply through the 5-minute recheck. One game moved 1 GiB and its zone hit rate rose from 35.3% to 53.1%. For a game whose reapply was rejected because another file occupied part of its zone, the service switched to automatic relocation. It moved only the remaining part to a new place, and a contiguous layout was confirmed. |
 | Drive recovery wait | After relocation, the recovery check took 6 minutes after 581 MB was moved and 149 minutes after 43 MB was moved. The time to confirm recovery was not proportional to the amount moved; it ranged from 6 to 149 minutes. |
-| Play record | Since 0.9.0-beta.33 the service records disk read waits during play (`play record:` log lines, `play_samples.json`). No comparison of loading or stutter based on this record exists yet. |
+| Play record | Since 0.9.0-beta.33 the service records disk read waits during play (`play record:` log lines, `play_samples.json`). From 1.0.5 the record also holds the frame interval of the game's processes per second (`play.frame_times`, `play.series`). In four plays of Call of Duty on this PC, the share of seconds in a match with a frame interval over 100 ms was 8.0% and 9.7% in the two plays before the service held the cache while the game ran (`memory.keep_hold`), and 4.0% and 1.4% in the two plays after it. The plays differed in free memory, in the programs running alongside, and in match length, and there are only four of them, so this is not a controlled comparison and does not establish the effect of holding. No comparison of load time exists. |
 
 ### Not measured, and not in the log
 
@@ -469,7 +469,7 @@ These are records of what the service did on one PC (2 TB SMR HDD, 32 GB RAM) on
 - A split by program version (the log has no version).
 - The effect of the start stream on load times.
 - The effect of the stage stream (the blocks of a program the game starts after its first one) on load times and on the reads in the first 2 minutes after that program starts.
-- A comparison of loading or stutter using the play record (`play record:` lines, `play_samples.json`).
+- A comparison of loading or stutter using the play record (`play record:` lines, `play_samples.json`) under controlled conditions; only the four plays above exist, with different conditions.
 
 No tally script is kept in the repository. Reading the line formats above with regular expressions gives the same values.
 

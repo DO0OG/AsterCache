@@ -656,12 +656,13 @@ public sealed partial class Prewarmer
 
     // 게임 실행 파일이 시작할 때 사다리 순서로 만지다 경계에서 멈춘 경우: 첫 경계에서 끝내지 않고 같은 두 패스로 목록을 만집니다 (새로 안 빠진 범위는 같은 기억에 더함).
     // 다른 게임의 먼저 재사용될 양은 메모리에 있던 만큼 줄입니다. 호출하는 쪽이 _touchSerial 을 쥐지 않은 채 부릅니다 (두 패스가 묶음마다 직접 잡고 놓음).
-    private void TouchAfterStartBoundary(GameSettings game, IReadOnlyList<ReadOp> readOrder, string exe, CancellationToken stop)
+    // findNew 가 false 이면 (같은 게임의 다른 프로세스가 이미 실행 중) 집합 밖 범위를 디스크에서 확인하지 않고 이미 메모리에 있다고 아는 범위만 만집니다.
+    private void TouchAfterStartBoundary(GameSettings game, IReadOnlyList<ReadOp> readOrder, string exe, CancellationToken stop, bool findNew = true)
     {
         KeepMemory memory = KeepMemoryOf(game.Name);
         long availMib = _env.AvailableRamMib();
         IReadOnlyList<ReadOp> ordered = PrefetchStreamer.Head(_solar.ImportanceOrder(game, readOrder), (long)(Math.Max(0, availMib) * PlayTouchAvailableFraction) << 20);
-        RememberTally t = TouchRemembering(ordered, memory, memory.DiskBytes < KeepPlayDiskCapBytes, KeepRoundDiskCapBytes, stop);
+        RememberTally t = TouchRemembering(ordered, memory, findNew && memory.DiskBytes < KeepPlayDiskCapBytes, KeepRoundDiskCapBytes, stop);
         if (t.Boundaries == 0 && !t.CapReached && !t.FindSkipped && !stop.IsCancellationRequested)
         {
             lock (_touchSerial)
@@ -673,7 +674,7 @@ public sealed partial class Prewarmer
         }
 
         _solar.NoteKept(game.Name, t.InMemory);
-        _log.Info($"{game.Name}: cache touched at game start ({exe}) past the first missing stretch: {t.InMemory >> 20} MiB of {t.Total >> 20} MiB in memory (found {t.Found >> 20} MiB, ordered {t.Ordered >> 20} MiB), in {t.Seconds:F1} s (cpu {t.Cpu:F1} s, {t.Maps} views, {t.Checks} checks), {t.Disk >> 20} MiB read from disk ({t.HardFaults} hard faults), {t.Boundaries} missing stretches remembered ({memory.MissingBytes >> 20} MiB of the list in all){(t.Left > 0 ? $", {t.Left >> 20} MiB left unconfirmed" : string.Empty)}{TallyDetail(t)}, left to the rewarm check");
+        _log.Info($"{game.Name}: cache touched at game start ({exe}) past the first missing stretch: {t.InMemory >> 20} MiB of {t.Total >> 20} MiB in memory (found {t.Found >> 20} MiB, ordered {t.Ordered >> 20} MiB), in {t.Seconds:F1} s (cpu {t.Cpu:F1} s, {t.Maps} views, {t.Checks} checks), {t.Disk >> 20} MiB read from disk ({t.HardFaults} hard faults), {t.Boundaries} missing stretches remembered ({memory.MissingBytes >> 20} MiB of the list in all){(t.Left > 0 ? $", {t.Left >> 20} MiB left unconfirmed" : string.Empty)}{TallyDetail(t)}, left to the rewarm check{(findNew ? string.Empty : ", disk reads skipped (the game is already running)")}");
     }
 
     // ---- 붙들기 ----

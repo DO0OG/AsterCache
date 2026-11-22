@@ -16,7 +16,7 @@ What is left is the later part, such as the map chunks of games that are often i
 
 1. **Learn what is read together.** From the play records it groups the data that is read together (an episode, for example one map's loading) and counts how often each episode occurs.
 2. **Count interruptions.** It counts how often a game starts during a prewarm and interrupts it.
-3. **Measure the disk.** Just before its own prewarm, the service reads a little from the disk to learn the range of seek latency and transfer rate.
+3. **Measure the disk.** Right before its own prewarm, the service reads a little from the disk to learn the range of seek latency and transfer rate.
 4. **Try other orders.** It calculates candidate orders in chunks of about 64 MiB and compares each with the current order. The first tier0 chunks stay fixed.
 5. **Change only when it is safe.** It uses a candidate only if the calculation shows a gain even in the worst case of the measured range, and every episode stays within `max(5% of its baseline ready time, 200 ms)`. Otherwise it prewarms exactly as before and records the reason (`episode_regression`) in the plan file. The whole decision has a 500 ms budget.
 
@@ -40,7 +40,7 @@ All of these must hold. Until they do, the current order is used.
 | Disk calibration | 38 prewarm streams on that disk (19 for fitting and 19 for calibration, per metric). |
 | Episode model | At least 3 valid play records and at least 1 interruption event. |
 
-To get the calibration sooner, run `aster orbit calibrate --disk <letter> [--samples N]` with the service stopped and all registered games closed. It stops as soon as the device range exists, usually around 40 samples, about 7 minutes.
+To get the calibration sooner, run `aster orbit calibrate --disk <letter> [--samples N]` with the service stopped and all registered games closed. It stops as soon as the disk's seek-latency and throughput ranges (the calibration intervals) can be computed, usually around 40 samples, about 7 minutes.
 
 <details>
 <summary>Details: how the calibrate command samples</summary>
@@ -48,7 +48,7 @@ To get the calibration sooner, run `aster orbit calibrate --disk <letter> [--sam
 - It takes up to N samples (default 60) at 10-second intervals.
 - It skips games that do not yet have a prewarm list, and draws samples from the pool of allowed game files on that disk.
 - It stays more than 64 MiB away from the most recent read position, to avoid drive cache hits.
-- These bootstrap samples were collected in one time window, so the coverage claim is weak. They are replaced once 38 samples have accumulated during operation.
+- These initial samples were collected in one time window, so the evidence that the calibration intervals cover the true values is weak. They are replaced once 38 samples have accumulated from the service's own prewarms.
 - To build the episode model from existing play records, stop the service, close all registered games, and run `aster orbit model --game <name>`.
 
 </details>
@@ -88,14 +88,14 @@ Change the mode with `aster orbit mode off|shadow|active`.
 | `shadow` | Calculates and records, but keeps the current order. |
 | `active` | Default. Applies the new order when the rules above allow it. |
 
-It drops to `shadow` automatically on a significant deterioration, two consecutive calibration drifts, or two consecutive calculation exceptions, and never goes back up automatically. Calibration reads run only when no game is running and the disk is idle. `config.json` has no new keys.
+It drops to `shadow` automatically on a significant deterioration, two consecutive calibration drifts (new measurements falling outside the calibration intervals), or two consecutive calculation exceptions, and never goes back up automatically. Calibration reads run only when no game is running and the disk is idle. ORBIT adds no keys to `config.json`.
 
 <details>
 <summary>Details: automatic demotion, safety rules</summary>
 
 - If the settings file is missing the mode is `active`; if it is corrupt, `shadow`.
-- Demotion triggers: a significant, bootstrap-confirmed deterioration in the existing `ProbeReadyMs` proxy; two consecutive calibration drifts (coverage monitor failure); or two consecutive calculation exceptions.
-- Calibration reads run only inside a disk read-arbitration lease, and only when no game is running and the disk is idle. They run only for games whose anti-cheat policy allows new prewarm (no anti-cheat, or Vanguard).
+- Demotion triggers: a significant, bootstrap-confirmed deterioration in the existing `ProbeReadyMs` proxy; two consecutive calibration drifts (calibration-interval monitor failure); or two consecutive calculation exceptions.
+- Calibration reads run only while the service holds the disk's background-read lease (the permission to read in the background; it is cancelled when a game starts on that disk), and only when no game is running and the disk is idle. They run only for games whose anti-cheat policy allows new prewarm (no anti-cheat, or Vanguard).
 
 </details>
 
@@ -126,7 +126,7 @@ Deleting these files makes the build behave as before. The previous build ignore
 
 ## Measurement record
 
-The bench compares how soon each episode's data is ready under the baseline order and the ORBIT order (service stopped, games closed, standby list cleared before each round, ABBA crossover).
+The benchmark compares how soon each episode's data is ready under the baseline order (A) and the ORBIT order (B) (service stopped, games closed, standby list cleared before each round, ABBA crossover). Flags 2 to 4 in the table below are the numbered pass conditions of this benchmark.
 
 On 2026-11-09, on a test PC with Call of Duty (ABBA, 10 pairs, 20 runs):
 
@@ -140,12 +140,12 @@ The prep time fell, but some episodes got later.
 
 The values of an earlier run on the same day (21.3% reduction, maximum delay 18.2 s) and the full table are in the [results summary](RESULTS_SUMMARY.md#orbit-prewarm-order-bench-2026-11-09).
 
-Rescoring with the new rule rejected the B candidate as `episode_regression`. The modeled worst episode delay was 55.5 s against the measured p95 of 13.1 s, about 4.2 times larger, which is the conservative direction.
+Rescoring with the new rule rejected the B candidate as `episode_regression`. The modeled worst episode delay was 55.5 s against the measured p95 of 13.1 s, about 4.2 times larger. The model overstated the delay, so it erred toward rejecting the candidate.
 
 <details>
 <summary>For developers: how to measure again</summary>
 
-`aster orbit-bench run|summarize` and `csharp\scripts\cs_orbit_bench.ps1` (administrator rights) run the bench.
+`aster orbit-bench run|summarize` and `csharp\scripts\cs_orbit_bench.ps1` (administrator rights) run the benchmark.
 
 **Steps**
 
@@ -160,7 +160,7 @@ Rescoring with the new rule rejected the B candidate as `episode_regression`. Th
 
 **Notes on rescoring**
 
-- It recalculates episode timings from each recorded op completion time; it does not repeat disk reads.
+- It recalculates episode timings from each recorded read completion time; it does not repeat disk reads.
 - It also reevaluates the candidate with the current `Decide` rule and reports whether B would be adopted, the reason, and the modeled worst episode delay.
 - When the inputs contain complete ABBA groups, the output also shows the measured flag 4 p95 delay and its result beside the modeled delay.
 - It reads the episode model from the file passed with `--orbit`, and reads only the device calibration (`disk_model.json`) and the game settings from the data folder. Run files outside the data folder end with `game_settings_unavailable`; `--data-dir <folder>` points the rescore at a copy of the data folder.

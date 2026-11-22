@@ -2441,7 +2441,11 @@ public sealed class AutoTracerTests : IDisposable
         Assert.True(File.Exists(Raw));
         Assert.Equal(0, _rig.World.BuildIoSummaryCalls);
         Assert.Contains(_rig.Log.Lines, line => line.Contains("I/O summary deferred (a game is running on the disk)", StringComparison.Ordinal));
-        Assert.True(File.Exists(WrittenFileHistory.PathFor(Raw))); // 크기 기록은 집계와 떼어 바로 남음
+        Assert.False(File.Exists(WrittenFileHistory.PathFor(Raw))); // 트레이스 저장 쪽은 크기를 남기지 않음 (플레이가 끝날 때 한 곳에서 남김)
+        WrittenFilesSetup("play1");
+        tracer.RecordWrittenSizesAtPlayEnd(_game); // 집계를 미뤄도 크기 기록은 플레이 끝에 바로 남음
+        WaitForSizeRecords(1);
+        Assert.True(File.Exists(WrittenFileHistory.PathFor(Raw)));
     }
 
     [Fact]
@@ -2533,7 +2537,7 @@ public sealed class AutoTracerTests : IDisposable
     {
         File.WriteAllText(AutoTracer.VolatilePath(_game), System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, string> { [WrittenPath] = "opened for write" }));
         _rig.World.Stat = path => new Fingerprint(path, 32L << 20, 0);
-        _rig.World.PlayRecords = [.. plays.Select(id => new SessionSpan(id, DateTime.UtcNow.AddYears(1), DateTime.UtcNow.AddYears(1).AddMinutes(1)))];
+        _rig.World.PlayRecords = [.. plays.Select(id => new SessionSpan(id, _rig.World.Now.UtcDateTime.AddMinutes(-30), _rig.World.Now.UtcDateTime))]; // 방금 끝난 플레이 기록
     }
 
     private void WaitForSizeRecords(int count) =>
@@ -2553,21 +2557,53 @@ public sealed class AutoTracerTests : IDisposable
         Assert.Contains(_rig.Log.Lines, l => l.Contains("(1 files, no trace in this play)", StringComparison.Ordinal));
     }
 
+    private int SessionsOfTheWrittenFile() => Assert.Single(WrittenFileHistory.Read(WrittenFileHistory.PathFor(Raw)).Files).Sessions.Count;
+
     [Fact]
-    public void APlayWithATraceIsRecordedUnderTheSamePlayAtTheEndAndWhenTheTraceIsSavedSoItCountsOnce()
+    public void ATracedPlayLeavesOneSizeRecordWhetherTheTraceIsSavedBeforeOrAfterThePlayRecordEnds()
     {
+        // 트레이스 저장이 먼저 (플레이 기록은 30 초 틱에서야 끝 시각을 씀): 저장 쪽은 크기를 남기지 않고 끝 쪽이 한 번 남김
         EnableIoSummary();
         Reads((0, 65536));
         _trace.IoRequests = IoRequests();
-        WrittenFilesSetup("play1");
+        _rig.World.PlayRecords = [];
+        File.WriteAllText(AutoTracer.VolatilePath(_game), System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, string> { [WrittenPath] = "opened for write" }));
+        _rig.World.Stat = path => new Fingerprint(path, 32L << 20, 0);
         _tracer.Start(_game);
-
+        EndAfterExitGrace();
+        Assert.False(File.Exists(WrittenFileHistory.PathFor(Raw)));
+        WrittenFilesSetup("play1");
         _tracer.RecordWrittenSizesAtPlayEnd(_game);
         WaitForSizeRecords(1);
-        EndAfterExitGrace(); // 트레이스를 저장하면서 같은 플레이의 크기를 다시 남김
+        Assert.Equal(1, SessionsOfTheWrittenFile());
 
-        Assert.Contains(_rig.Log.Lines, l => l.Contains("trace of this play pending", StringComparison.Ordinal));
-        Assert.Equal(["play1"], Assert.Single(WrittenFileHistory.Read(WrittenFileHistory.PathFor(Raw)).Files).Sessions.Select(x => x.Session));
+        // 종료 처리가 먼저: 이어서 트레이스를 저장해도 더 남지 않음
+        _trace.Records.Clear();
+        Reads((0, 65536));
+        _trace.IoRequests = IoRequests();
+        _rig.World.Running = true;
+        _tracer.Start(_game);
+        WrittenFilesSetup("play1", "play2");
+        _tracer.RecordWrittenSizesAtPlayEnd(_game);
+        WaitForSizeRecords(2);
+        EndAfterExitGrace();
+
+        Assert.Equal(2, SessionsOfTheWrittenFile()); // 두 플레이 = 두 건 (플레이마다 한 건)
+    }
+
+    [Fact]
+    public void AShortRunWithoutAFreshPlayRecordDoesNotOverwriteThePreviousPlaysSize()
+    {
+        WrittenFilesSetup("play1");
+        _tracer.RecordWrittenSizesAtPlayEnd(_game);
+        WaitForSizeRecords(1);
+        _rig.World.Now += TimeSpan.FromHours(1); // 플레이 기록에 새 플레이가 없고 직전 플레이는 한참 전
+        _rig.World.Stat = path => new Fingerprint(path, 40L << 20, 0);
+
+        _tracer.RecordWrittenSizesAtPlayEnd(_game);
+        Thread.Sleep(300);
+
+        Assert.Equal(32L << 20, Assert.Single(WrittenFileHistory.Read(WrittenFileHistory.PathFor(Raw)).Files).Sessions.Single().Size);
     }
 
     [Fact]
@@ -2603,7 +2639,7 @@ public sealed class AutoTracerTests : IDisposable
 
         Assert.Equal(1, _rig.World.BuildIoSummaryCalls);
         Assert.DoesNotContain(_rig.Log.Lines, line => line.Contains("deferred", StringComparison.Ordinal));
-        Assert.True(File.Exists(WrittenFileHistory.PathFor(Raw)));
+        Assert.False(File.Exists(WrittenFileHistory.PathFor(Raw))); // 크기 기록은 플레이 끝 쪽 한 곳에서만
     }
 
     [Fact]

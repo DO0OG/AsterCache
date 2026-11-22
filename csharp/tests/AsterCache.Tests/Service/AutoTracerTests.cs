@@ -2425,7 +2425,7 @@ public sealed class AutoTracerTests : IDisposable
     }
 
     [Fact]
-    public void AGameAlreadyRunningOnTheDiskSkipsTheScanButTheRawTraceIsStillSaved()
+    public void AGameAlreadyRunningOnTheDiskDefersTheScanButTheRawTraceAndTheWrittenSizesAreSavedAtOnce()
     {
         EnableIoSummary();
         Reads((0, 65536));
@@ -2439,7 +2439,54 @@ public sealed class AutoTracerTests : IDisposable
 
         Assert.True(File.Exists(Raw));
         Assert.Equal(0, _rig.World.BuildIoSummaryCalls);
-        Assert.Contains(_rig.Log.Lines, line => line.Contains("I/O summary not built (a game is running)", StringComparison.Ordinal));
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("I/O summary deferred (a game is running on the disk)", StringComparison.Ordinal));
+        Assert.True(File.Exists(WrittenFileHistory.PathFor(Raw))); // 크기 기록은 집계와 떼어 바로 남음
+    }
+
+    [Fact]
+    public void ADeferredScanIsBuiltAndSavedWhenTheGameOnTheDiskExitsAndNotBefore()
+    {
+        EnableIoSummary();
+        Reads((0, 65536));
+        _trace.IoRequests = IoRequests();
+        bool neighbour = true;
+        AutoEnv env = _rig.World.Env();
+        env.GameRunningOnDisk = _ => neighbour;
+        var tracer = new AutoTracer(env, _rig.Status, _rig.Log, () => _rig.Settings) { MinRunBytes = 0 };
+        tracer.Start(_game);
+        EndAfterExitGrace(tracer);
+
+        tracer.Step(); // 다른 게임이 아직 떠 있음
+
+        Assert.Equal(0, _rig.World.BuildIoSummaryCalls);
+        Assert.DoesNotContain(IoSummaryStore.StandalonePaths(Raw), File.Exists);
+
+        neighbour = false;
+        tracer.Step();
+
+        Assert.Equal(1, _rig.World.BuildIoSummaryCalls);
+        Assert.Single(IoSummaryStore.StandalonePaths(Raw), File.Exists); // 단독 집계로 저장
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("deferred I/O summary built and saved", StringComparison.Ordinal));
+        tracer.Step();
+        Assert.Equal(1, _rig.World.BuildIoSummaryCalls); // 한 번만
+    }
+
+    [Fact]
+    public void WithoutAnotherGameTheScanIsBuiltAtTheEndAsBeforeAndTheSizesAreRecordedOnce()
+    {
+        EnableIoSummary();
+        Reads((0, 65536));
+        _trace.IoRequests = IoRequests();
+        AutoEnv env = _rig.World.Env();
+        env.GameRunningOnDisk = _ => false;
+        var tracer = new AutoTracer(env, _rig.Status, _rig.Log, () => _rig.Settings) { MinRunBytes = 0 };
+
+        tracer.Start(_game);
+        EndAfterExitGrace(tracer);
+
+        Assert.Equal(1, _rig.World.BuildIoSummaryCalls);
+        Assert.DoesNotContain(_rig.Log.Lines, line => line.Contains("deferred", StringComparison.Ordinal));
+        Assert.True(File.Exists(WrittenFileHistory.PathFor(Raw)));
     }
 
     [Fact]

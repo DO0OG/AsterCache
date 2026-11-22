@@ -29,6 +29,7 @@ public sealed class AutoTracer
     private OrbitModel _orbitModel = new();
     private Run? _run;
     private readonly List<Run> _stopped = []; // 상한에 닿아 세션을 멈췄지만 게임이 끝나길 기다리는 기록 (저장 전)
+    private readonly List<Run> _ioDeferred = []; // 끝난 플레이 중 같은 디스크의 다른 게임이 떠 있어 I/O 집계를 미룬 것 (그 게임이 끝나면 만듦), _lock 으로 보호. 서비스가 다시 시작되면 사라짐 (원시 읽기 요청은 메모리에만 있음)
     private readonly HashSet<string> _cheatLogged = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _policyLogged = new(StringComparer.OrdinalIgnoreCase); // 게임 정책으로 추적을 시작하지 않은 것을 이미 로그한 게임 (다시 허용되면 지움), _lock 으로 보호
     private readonly Dictionary<string, int> _ioSummaryAttempts = new(StringComparer.OrdinalIgnoreCase);
@@ -983,6 +984,7 @@ public sealed class AutoTracer
     public void Step()
     {
         FinishStopped(false);
+        BuildDeferredIoSummaries();
         _shadow.Flush();
         Run? run;
         lock (_lock)
@@ -1557,6 +1559,8 @@ public sealed class AutoTracer
             {
                 LogIoSummary(run);
                 SaveVolatile(g, marks);
+                RecordWrittenSizesOnce(run); // 집계가 없거나 미뤄졌어도 (파일 크기·속성 조회뿐) 이 플레이의 크기를 바로 남김
+                run.RawWrittenAtStart = _env.FileWriteTime(RawTracePath(g)); // 이 저장이 바꾼 원시 트레이스 시각: 미룬 집계가 그 사이 정리가 바꾸지 않았는지 보는 기준
                 if (run.Number > 1 && TraceBlocker(g) is null)
                 {
                     lock (_lock)
@@ -1641,10 +1645,16 @@ public sealed class AutoTracer
                 return;
             }
 
-            // 같은 디스크의 게임이 이미 도는 중이면 그 로딩과 메타데이터 조회를 다투지 않도록 건너뜀 (기록 저장은 계속)
+            // 같은 디스크의 게임이 이미 도는 중이면 그 로딩과 메타데이터 조회를 다투지 않도록 지금은 만들지 않고, 그 게임이 끝난 뒤 만듦 (기록 저장은 계속, BuildDeferredIoSummaries)
             if (_env.GameRunningOnDisk?.Invoke(PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant()) == true)
             {
-                _log.Info($"{g.Name}: I/O summary not built (a game is running)");
+                run.IoSummaryResolved = false;
+                if (!_ioDeferred.Contains(run))
+                {
+                    _ioDeferred.Add(run);
+                    _log.Info($"{g.Name}: I/O summary deferred (a game is running on the disk), built after it exits");
+                }
+
                 return;
             }
 
@@ -1772,8 +1782,70 @@ public sealed class AutoTracer
 
         RebuildLoadRefill(run.Game);
         RebuildUnbufferedFiles(run.Game);
-        RecordWrittenSizes(run.Game, summary.SessionId);
+        RecordWrittenSizesOnce(run);
         RebuildRanked(run.Game);
+    }
+
+    // 이 플레이의 게임이 쓰는 파일 크기를 한 번만 남깁니다 (집계를 저장할 때와 저장 없이 끝날 때, 미룬 집계를 나중에 저장할 때 모두 불려도 같은 플레이를 두 번 더하지 않음).
+    private void RecordWrittenSizesOnce(Run run)
+    {
+        if (!run.SizesRecorded)
+        {
+            run.SizesRecorded = true;
+            RecordWrittenSizes(run.Game, run.IoSummary?.SessionId is { Length: > 0 } id ? id : run.PlaySession);
+        }
+    }
+
+    // 미룬 I/O 집계를 만듭니다: 같은 디스크의 게임이 더는 떠 있지 않을 때만 (조회가 그 게임과 디스크를 다투지 않게). 만든 집계는 단독 집계로 저장해 목록 (로드 재채움·캐시 없이 읽는 파일·순위) 을 갱신합니다.
+    private void BuildDeferredIoSummaries()
+    {
+        Run[] pending;
+        lock (_lock)
+        {
+            if (_ioDeferred.Count == 0 || _shutdownSource.IsCancellationRequested)
+            {
+                return;
+            }
+
+            pending = [.. _ioDeferred];
+        }
+
+        foreach (Run run in pending)
+        {
+            GameSettings g = run.Game;
+            if (_env.GameRunningOnDisk?.Invoke(PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant()) == true)
+            {
+                continue;
+            }
+
+            lock (_lock)
+            {
+                _ = _ioDeferred.Remove(run);
+            }
+
+            ResolveIoSummary(run);
+            if (run.IoSummary is null)
+            {
+                continue; // 다시 막혔거나 (다시 미룸) 만들지 못함 (로그는 ResolveIoSummary 가 남김)
+            }
+
+            run.IoSummary = run.IoSummary with { SessionId = run.PlaySession }; // 이미 남긴 크기 기록과 같은 플레이
+            if (!SaveIoSummaryOnly(run, RetryLockWait, out bool traceChanged))
+            {
+                lock (_lock)
+                {
+                    _ioDeferred.Add(run); // 폴더 잠금이 바쁨: 다음 Step 에서 다시
+                }
+
+                continue;
+            }
+
+            if (!traceChanged)
+            {
+                LogIoSummary(run);
+                _log.Info($"{g.Name}: deferred I/O summary built and saved (the game on the disk exited)");
+            }
+        }
     }
 
     private readonly object _journalGate = new(); // 변경 저널 읽기는 한 번에 하나
@@ -2555,6 +2627,12 @@ public sealed class AutoTracer
 
         public bool IoSummaryLogged { get; set; }
 
+        /// 이 플레이의 식별자 (I/O 집계가 없거나 미뤄진 때의 크기 기록 키, 미룬 집계를 만들 때 집계의 식별자로 씀).
+        public string PlaySession { get; } = Guid.NewGuid().ToString("N");
+
+        /// 이 플레이의 게임이 쓰는 파일 크기를 이미 남겼는가.
+        public bool SizesRecorded { get; set; }
+
         public int LateWindowsStarted { get; set; }
 
         public DateTimeOffset NextLateWindowAt { get; set; }
@@ -2568,7 +2646,7 @@ public sealed class AutoTracer
         public int Number { get; init; } = 1;
 
         /// 시작할 때 원시 트레이스의 수정 시각 (없으면 null). 저장할 때 달라졌으면 그 사이 정리가 파일을 고친 것이라 이 회차 기록은 쓰지 않습니다.
-        public DateTimeOffset? RawWrittenAtStart { get; init; }
+        public DateTimeOffset? RawWrittenAtStart { get; set; }
 
         /// 잠금이 바빠 저장을 미룬 적이 있는지 (알림은 처음 한 번만).
         public bool LockWaitLogged { get; set; }

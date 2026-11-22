@@ -14,7 +14,7 @@
 - `astercache_v07.py` — 추적 계획(`plan`), 평가(`evaluate`), 점검(`inspect`), RAM·SSD 예열(`ram-warm`, `ssd-warm`) 명령
 - `session_planner.py`, `procmon_import.py` — 이전 버전에서 가져온 학습 계획과 Procmon CSV 가져오기 구성요소. 실제 Windows CSV에서의 동작은 아직 검증하지 않았습니다.
 - `blockcache_v06.py` — 이전 방식과의 비교용으로 보존한 코드
-- `tests/` — 단위·회귀 테스트 59개
+- `tests/` — 단위·회귀 테스트
 - `stress.py`, `integration_smoke.py`, `bench_api.py`, `repeat_validation.py` — 검증과 마이크로벤치마크
 - `windows_diagnostics.ps1` — 읽기 전용 PC 환경 점검 스크립트
 - `results/` — 측정 결과 JSON과 로그
@@ -23,8 +23,8 @@
 
 - Python 3.11 이상. 외부 패키지 의존성은 없습니다. Windows 11에서 Python 3.11.4와 3.12.10으로 검증했습니다.
 - 원본 경로와 캐시 경로는 서로 다른 디렉터리 트리여야 합니다. 실제 속도 비교에는 서로 다른 물리 HDD와 SSD가 필요합니다.
-- 벤치마크와 스트림 튜닝은 비관리자 권한으로 수행했습니다. 재배치 실측(VHDX 와 합성 데이터셋에서 한 실험 E2·E3)의 콜드 조건은 관리자 권한으로 스탠바이 목록을 비운 뒤 만들었고, 재배치 자체도 관리자 권한이 필요합니다.
-- 중요한 게임 데이터나 시스템 드라이브에서 바로 쓰지 않습니다. 테스트 폴더에서 먼저 실행하세요.
+- 벤치마크와 스트림 튜닝은 비관리자 권한으로 수행했습니다. 재배치 실측(VHDX 와 합성 데이터셋에서 한 실험 E2·E3)의 콜드 조건은 관리자 권한으로 대기 목록을 비운 뒤 만들었고, 재배치 자체도 관리자 권한이 필요합니다.
+- 중요한 게임 데이터나 시스템 드라이브에서 바로 쓰지 않습니다. 테스트 폴더에서 먼저 실행하십시오.
 - Linux 파일 I/O와 Windows NTFS I/O는 동등하지 않습니다. Linux 컨테이너 검증 결과는 `VALIDATION_REPORT.md`에 따로 정리했습니다.
 
 ## 명령 모음

@@ -279,7 +279,7 @@ Same as bounded, plus a pause while the game's reads over the last 500 ms run at
 | Maximum per-episode p95 delay | 13.1 s (the no-late-episode check, flag 4, failed) |
 | Flags 2 / 3 / 4 (ready time, total read time, no late episode) | pass / pass / fail |
 
-The gain comes at a cost: some episodes were later because of the advance. This is one game, one drive, and one session, so generalizing to other games or drives is premature.
+The gain comes at a cost: some episodes were later because other episodes were moved earlier. This is one game, one drive, and one session, so generalizing to other games or drives is premature.
 
 This bench was run twice on the same day. The table above is the later run (values confirmed from the summary file of the raw data kept outside the repository).
 The earlier run showed a median reduction in value-weighted prep time of 21.3% (per pair 19.5–23.4%), a change in total read time of −0.8% (A about 377 s, B about 372 s), and a maximum per-episode p95 delay of 18.2 s (the no-late-episode check, flag 4, failed). Those values survive only in the commit record of that time, and the raw data could not be found.
@@ -318,7 +318,7 @@ This bench is for the method described in [ORBIT: prewarm order adjustment](ORBI
 
 ## Cautions when reading the results
 
-- **Speed by drive position.** There was no difference in speed by position on the drive (`results/zone_curve_20261101`). So the optimization of placing the relocation zone at a particular position was dropped from the design.
+- **Speed by drive position.** In the first curve measurement (`results/zone_curve_20261101`) there was no difference in speed by position, so the optimization of placing the relocation zone at a particular position was dropped from the design. The later E6 run found the 90% band about 1.6 times slower than the 42% zone (see E6 above).
 - **No gain on the first run.** Relocation takes time to move the files. The gain appears in repeated reads after relocation.
 - **Limit of prefetch before relocation.** Before relocation, the number of HDD seeks and the read throughput (about 39 MiB/s) set the lower bound. After relocation the relocation zone is read sequentially as one stretch, so this lower bound dropped substantially. Because the prewarm cost is much larger than the replay, prewarm is meaningful only when it can finish before loading.
 - **Limit of the cold condition.** The non-administrator measurements replaced the cold condition with an unbuffered re-read (`FILE_FLAG_NO_BUFFERING`). The drive and controller internal caches were not cleared. The run-to-run variation of 55.7~71.3 s in the benchmark is presumed to come from concurrent disk use, but the cause was not measured.
@@ -368,7 +368,7 @@ This is a tally of the log the service wrote on one PC. It is not a controlled b
 |---|---|---|
 | Detection | The Riot-game rule (`Core/Discovery/AntiCheat.cs`) decides `vanguard`. It is not an install-folder name; the condition is a Riot game on a PC that has Vanguard. | Found by a `ricochet` name in the install folder. One log line `anti-cheat detected (ricochet)` (2026-11-02) |
 | Trace (ETW) | 2 collected (2026-11-04), then skipped 8 times (2026-11-04 to 2026-11-10) | 14 collections started (2026-11-04 to 2026-11-09) |
-| Pin | Skipped 4 times | Skipped 7 times |
+| Pin (`prewarm.pin`: the service keeps the prewarmed pages mapped read-only so the cache drops them less) | Skipped 4 times | Skipped 7 times |
 | Relocation | 4 completed, 4 stopped (error lines) | 5 completed, 3 stopped (error lines) |
 | Prewarm | Applied | Applied |
 | SSD assist storage | Refused by policy; off in the settings of the PC in the log | Refused by policy; off in the settings of the PC in the log |
@@ -457,7 +457,7 @@ These are records of what the service did on one PC (2 TB SMR HDD, 32 GB RAM) on
 | After the service started | The start prewarm read 1,024 MiB. As the disk became idle the rest was read, and Call of Duty's 10,025 MiB was filled within about 10 minutes. League of Legends, held back by the start limit, was read by a waiting retry 12 minutes later. |
 | Layout recovery | A disturbed layout reached reapply through the 5-minute recheck. One game moved 1 GiB and its zone hit rate rose from 35.3% to 53.1%. For a game whose reapply was rejected because another file occupied part of its zone, the service switched to automatic relocation. It moved only the remaining part to a new place, and a contiguous layout was confirmed. |
 | Drive recovery wait | After relocation, the recovery check took 6 minutes after 581 MB was moved and 149 minutes after 43 MB was moved. The time to confirm recovery was not proportional to the amount moved; it ranged from 6 to 149 minutes. |
-| Play record | Since 0.9.0-beta.33 the service records disk read waits during play (`play record:` log lines, `play_samples.json`). From 1.0.5 the record also holds the frame interval of the game's processes per second (`play.frame_times`, `play.series`). In four plays of Call of Duty on this PC, the share of seconds in a match with a frame interval over 100 ms was 8.0% and 9.7% in the two plays before the service held the cache while the game ran (`memory.keep_hold`), and 4.0% and 1.4% in the two plays after it. The plays differed in free memory, in the programs running alongside, and in match length, and there are only four of them, so this is not a controlled comparison and does not establish the effect of holding. No comparison of load time exists. |
+| Play record | Since 0.9.0-beta.33 the service records disk read waits during play (`play record:` log lines, `play_samples.json`). From 1.0.5 the record also holds the frame interval of the game's processes per second (`play.frame_times`, `play.series`). In four plays of Call of Duty on this PC, the share of seconds in a match with a frame interval over 100 ms was 8.0% and 9.7% in the two plays before the service began to hold the cache (while a game runs, the service keeps the game's keep-list mapped as views in its own process so those pages are not pushed out of the standby list; `memory.keep_hold`), and 4.0% and 1.4% in the two plays after it. The plays differed in free memory, in the programs running alongside, and in match length, and there are only four of them, so this is not a controlled comparison and does not establish the effect of holding. No comparison of load time exists. |
 
 ### Not measured, and not in the log
 

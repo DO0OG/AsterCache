@@ -88,7 +88,7 @@ It does no code injection, no hooking, and no kernel driver. Anti-cheat games ha
 - **Using Procmon with Ricochet games is not recommended.** No public report of using Procmon with Ricochet was found, and that is not evidence that it is safe. With other anti-cheats (BattlEye, EA), there are cases where the Procmon driver caused the game to refuse to launch, and where the driver stayed after Procmon was closed and a reboot was needed.
   The alternative is Windows built-in ETW (`wpr`, `logman`). "ETW is safer" is a guess, and no report on whether Ricochet conflicts with ETW was found either.
 - **Call of Duty: Modern Warfare 4** (released 2026-10-23) requires TPM 2.0, Secure Boot, and the Ricochet kernel anti-cheat driver. Ricochet monitors and reports applications that interact with the game, and there is no public list of allowed tools.
-  In the Call of Duty: Modern Warfare 4 beta there was a case of a permanent ban from a false positive, and Activision acknowledged it. The risk of losing an account is real.
+  In the Call of Duty: Modern Warfare 4 beta there was a case of a permanent ban from a false positive, and Activision acknowledged it.
 - Order of trying: validate the whole process first with a game without kernel anti-cheat (for example Call of Duty 4: Modern Warfare on Steam, 2007, about 8 GB; use only the single-player campaign and do not connect to online modes).
   Then, for Call of Duty: Modern Warfare 4, test only in the offline campaign, with the game and the Battle.net (or Steam) launcher fully closed while relocating, and leave multiplayer and DMZ out of the first test.
 
@@ -96,7 +96,7 @@ It does no code injection, no hooking, and no kernel driver. Anti-cheat games ha
 
 ## Large games
 
-Installing Call of Duty: Modern Warfare 4 on an HDD is outside official support, and this tool shortens only the fixed loading reads, not the streaming reads during play. The prefetch floor time is the hot-set size divided by about 160 MB/s (2 GB: about 12.5 s, 10 GB: about 62.5 s); the hot set of that game during loading was not measured.
+Installing Call of Duty: Modern Warfare 4 on an HDD is outside official support, and this tool shortens only the fixed loading reads, and may not shorten the streaming reads during play. The prefetch floor time is the hot-set size divided by about 160 MB/s (2 GB: about 12.5 s, 10 GB: about 62.5 s); the hot set of that game during loading was not measured.
 
 <details>
 <summary>Details: floor-time table and reasoning</summary>

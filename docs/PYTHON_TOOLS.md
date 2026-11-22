@@ -14,7 +14,7 @@ This document describes the layout and usage of the repository's Python referenc
 - `astercache_v07.py` — trace planning (`plan`), evaluation (`evaluate`), inspection (`inspect`), and RAM/SSD prewarm (`ram-warm`, `ssd-warm`) commands
 - `session_planner.py`, `procmon_import.py` — the learning planner and Procmon CSV importer carried over from an earlier version. Behavior on real Windows CSV files has not been validated yet.
 - `blockcache_v06.py` — code kept for comparison with the earlier approach
-- `tests/` — 59 unit and regression tests
+- `tests/` — unit and regression tests
 - `stress.py`, `integration_smoke.py`, `bench_api.py`, `repeat_validation.py` — validation and micro-benchmarks
 - `windows_diagnostics.ps1` — a read-only PC environment check script
 - `results/` — measurement result JSON and logs

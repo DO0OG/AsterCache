@@ -24,8 +24,12 @@ public sealed class TouchErrors
     private readonly int[] _counts = new int[4];
     private readonly Dictionary<(TouchErrorKind Kind, int Code), int> _codes = [];
     private readonly Dictionary<string, int> _paths = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string>[] _files = [.. Enumerable.Range(0, 4).Select(_ => new HashSet<string>(StringComparer.OrdinalIgnoreCase))]; // 종류별로 실패한 파일 (수는 MaxPaths 까지만 셈)
 
     public int Count(TouchErrorKind kind) => _counts[(int)kind];
+
+    /// 종류 하나에서 실패한 서로 다른 파일의 수 (범위 수와 달리 같은 파일은 한 번).
+    public int Files(TouchErrorKind kind) => _files[(int)kind].Count;
 
     public int Total => _counts.Sum();
 
@@ -60,6 +64,11 @@ public sealed class TouchErrors
         {
             _paths[path] = known + count;
         }
+
+        if (_files[(int)kind].Count < MaxPaths)
+        {
+            _ = _files[(int)kind].Add(path);
+        }
     }
 
     /// 둘을 합친 값 (앞의 것이 있으면 거기에 더해 돌려주고, 없으면 뒤의 것): 나눠 만진 결과의 오류를 합칠 때.
@@ -90,9 +99,20 @@ public sealed class TouchErrors
                 _paths[path] = known + count;
             }
         }
+
+        for (int k = 0; k < _files.Length; k++)
+        {
+            foreach (string path in other._files[k])
+            {
+                if (_files[k].Count < MaxPaths)
+                {
+                    _ = _files[k].Add(path);
+                }
+            }
+        }
     }
 
-    /// 로그 한 줄용 서술: `open 12 (win32 5 ×12), beyond end 3; most failures in C:\a\b.bin ×15`. 오류가 없으면 빈 문자열.
+    /// 로그 한 줄용 서술: `open 12 ranges in 3 files (win32 5 ×12), beyond end 3 ranges in 1 file; most failures in C:\a\b.bin ×15`. 오류가 없으면 빈 문자열.
     public string Describe()
     {
         List<string> kinds = [];
@@ -105,7 +125,9 @@ public sealed class TouchErrors
 
             string codes = string.Join(", ", Codes(kind).Take(3)
                 .Select(c => $"{(c.Code == EmptyFile ? "empty file" : c.Code == 0 ? "no win32 error" : $"win32 {c.Code}")} ×{c.Count.ToString(CultureInfo.InvariantCulture)}"));
-            kinds.Add($"{label} {Count(kind)}{(kind == TouchErrorKind.BeyondEnd || codes.Length == 0 ? string.Empty : $" ({codes})")}");
+            int files = Files(kind);
+            string spread = $" {(Count(kind) == 1 ? "range" : "ranges")} in {files} {(files == 1 ? "file" : "files")}"; // 범위 수 (3882) 가 파일 몇 개에 걸친 것인지
+            kinds.Add($"{label} {Count(kind)}{spread}{(kind == TouchErrorKind.BeyondEnd || codes.Length == 0 ? string.Empty : $" ({codes})")}");
         }
 
         return kinds.Count == 0 ? string.Empty : $"{string.Join(", ", kinds)}{(Worst is { } worst ? $"; most failures in {worst.Path} ×{worst.Count}" : string.Empty)}";

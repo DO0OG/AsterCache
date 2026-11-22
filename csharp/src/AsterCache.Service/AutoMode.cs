@@ -229,6 +229,7 @@ public sealed class AutoMode
     /// 게임 종료 때 (Worker 의 종료 감지에서 부름): 그 게임의 로딩 경계 감시를 멈춥니다.
     public void NoteGameExit(GameSettings g, DateTimeOffset? exitedAt = null)
     {
+        _tracer.RecordWrittenSizesAtPlayEnd(g); // 트레이스를 뜨지 않은 플레이도 크기 이력을 남김 (플레이 기록은 이 호출 앞에서 이미 저장됨)
         if (_boundaryWatch.TryGetValue(g.Name, out BoundaryWatch? watch)
             && (exitedAt is null || exitedAt.Value >= watch.StartedAt)
             && _boundaryWatch.TryRemove(new KeyValuePair<string, BoundaryWatch>(g.Name, watch)))

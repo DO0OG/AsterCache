@@ -732,10 +732,12 @@ public sealed class SolarTests
     private long _reuseQueries;
 
     private readonly HashSet<string> _findMissing = []; // 찾기 패스 (게임 시작 때 첫 경계 뒤) 가 빠진 것으로 확인하는 파일
+    private readonly List<IReadOnlyList<ReadOp>> _findInputs = []; // 찾기 패스가 받은 목록
 
     // 찾기 패스 가짜: _findMissing 의 파일 범위는 빠진 것 (경계 하나), 나머지는 메모리에 있음.
     private FindResult FindFake(IReadOnlyList<ReadOp> ops)
     {
+        _findInputs.Add(ops);
         List<ReadOp> resident = [.. ops.Where(o => !_findMissing.Contains(o.Path))];
         List<ReadOp> missing = [.. ops.Where(o => _findMissing.Contains(o.Path))];
         return new FindResult(resident, missing, resident.Sum(o => o.Length), 0, 0, missing.Count > 0 ? 1 : 0, 1, 0, 1, 0.1, 0.05, false, false, 0, 0);
@@ -3130,13 +3132,14 @@ public sealed class SolarTests
     public void TheErrorCountOfATouchComesWithItsKindsTheWin32CodesAndTheWorstFile()
     {
         var kinds = new TouchErrors();
-        kinds.Add(TouchErrorKind.Open, 3, @"D:\a\x.bin", 5);
+        kinds.Add(TouchErrorKind.Open, 2, @"D:\a\x.bin", 5);
+        kinds.Add(TouchErrorKind.Open, 1, @"D:\a\y.bin", 5);
         _result = new TouchResult(100 * Mib, 0.4, 0, 3, TouchEnd.Completed, ErrorKinds: kinds);
         Solar solar = Make();
 
         _ = solar.Order(Game("a"), Reads, CancellationToken.None, startExe: "a.exe");
 
-        Assert.Contains(@"0 MiB read from disk, 3 errors (open 3 (win32 5 ×3); most failures in D:\a\x.bin ×3)", _log.Lines.Last());
+        Assert.Contains(@"0 MiB read from disk, 3 errors (open 3 ranges in 2 files (win32 5 ×3); most failures in D:\a\x.bin ×2)", _log.Lines.Last());
     }
 
     private static TouchResult Stopped(long bytesMib, long diskMib) => new(bytesMib * Mib, 0.5, 4, 0, TouchEnd.NeedsDiskReads, diskMib * Mib, 0, 0, 0, 0, StopReason.HardFaults);
@@ -3197,6 +3200,74 @@ public sealed class SolarTests
         Assert.Equal(Reversed(Reads), _touched[^1]); // 경계가 없으면 처음부터 사다리 한 번
         Assert.False(p.Solar.HasMissing("a"));
         Assert.True(p.Solar.HasMark("a"));
+    }
+
+    // 같은 게임의 다른 프로세스가 이미 실행 중이면 (모드 전환) 사다리 전체 만지기도, 집합 밖을 디스크에서 확인하는 찾기도 하지 않고 메모리에 있다고 아는 범위만 만집니다.
+    [Fact]
+    public void WhenAnotherProcessOfTheGameIsRunningTheStartTouchSkipsTheDiskReadingSteps()
+    {
+        Prewarmer p = TwoWarmedGames();
+
+        p.TouchAtGameStart(Game("a"), "a.exe", otherRunning: true); // 아는 메모리 범위가 아직 없음
+
+        Assert.Empty(_touched); // 처음부터 사다리 한 번 (Order) 이 없음
+        Assert.Empty(_findInputs);
+        Assert.Contains("a: cache touched at game start (a.exe) past the first missing stretch: 0 MiB of 30 MiB in memory", _log.Lines.Last());
+        Assert.EndsWith(", left to the rewarm check, disk reads skipped (the game is already running)", _log.Lines.Last());
+    }
+
+    [Fact]
+    public void WhenAnotherProcessOfTheGameIsRunningOnlyTheRangesKnownToBeInMemoryAreTouched()
+    {
+        Prewarmer p = TwoWarmedGames();
+        _queued.Enqueue(Stopped(2, 32));
+        _ = _findMissing.Add(@"D:\a\2.bin");
+        _ = _running.Add("a"); // 게임이 실행 중이어야 이 플레이의 기억이 남음
+        List<ReadOp> touched = [];
+        List<ReadOp> found = [];
+        string? line = null;
+        _sleep = (_, _) =>
+        {
+            _touched.Clear();
+            _findInputs.Clear();
+            _now += TimeSpan.FromMinutes(5);
+            p.TouchAtGameStart(Game("a"), "b.exe", otherRunning: true); // 첫 만지기 뒤 유지 도중에 같은 게임의 다른 실행 파일이 뜸
+            touched.AddRange(_touched.SelectMany(b => b));
+            found.AddRange(_findInputs.SelectMany(b => b));
+            line = _log.Lines.Last();
+            _ = _running.Remove("a");
+        };
+
+        p.TouchAtGameStart(Game("a"), "a.exe"); // 처음 뜸: 파일 1 은 메모리에 있다고 확인, 파일 2 는 구멍으로 기억
+
+        Assert.NotEmpty(touched);
+        Assert.All(touched, o => Assert.EndsWith("1.bin", o.Path)); // 확인한 범위만, 구멍은 건드리지 않음
+        Assert.All(found, o => Assert.EndsWith("1.bin", o.Path)); // 이미 확인한 범위를 다시 보는 보호 패스뿐, 새 범위를 디스크에서 찾지 않음
+        Assert.EndsWith(", disk reads skipped (the game is already running)", line);
+    }
+
+    [Fact]
+    public void WhenNoOtherProcessIsRunningTheStartTouchIsTheSameAsBefore()
+    {
+        Prewarmer p = TwoWarmedGames();
+
+        p.TouchAtGameStart(Game("a"), "a.exe", otherRunning: false);
+
+        Assert.Equal(Reversed(Reads), _touched.Single());
+        Assert.DoesNotContain("disk reads skipped", _log.Lines.Last());
+    }
+
+    [Fact]
+    public void TheMinimumGapStillSkipsTheTouchBeforeTheRunningCheckMatters()
+    {
+        Prewarmer p = TwoWarmedGames();
+        p.TouchAtGameStart(Game("a"), "a.exe");
+        _now += TimeSpan.FromSeconds(30);
+
+        p.TouchAtGameStart(Game("a"), "b.exe", otherRunning: true);
+
+        Assert.Contains("skipped (b.exe: last touch 30 s ago, within 60 s)", _log.Lines.Last());
+        Assert.DoesNotContain("disk reads skipped", _log.Lines.Last());
     }
 
     [Fact]

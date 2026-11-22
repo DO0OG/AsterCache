@@ -1525,7 +1525,6 @@ public sealed class AutoTracer
                 }
 
                 WriteIoSummaryLocked(run);
-                RecordWrittenSizesOnce(run); // 집계가 없거나 미뤄졌어도 (파일 크기·속성 조회뿐) 이 플레이의 크기를 바로 남김: 변경 저널 판정 (journal-fill) 이 같은 이력을 고치므로 폴더 잠금 안에서
 
                 replanGeneration = _status.ReplanGeneration(g.Name); // 잠금 안에서 병합한 이벤트와 같은 재계획 세대를 넘김
             });
@@ -1784,7 +1783,6 @@ public sealed class AutoTracer
 
         RebuildLoadRefill(run.Game);
         RebuildUnbufferedFiles(run.Game);
-        RecordWrittenSizesOnce(run);
         RebuildRanked(run.Game);
     }
 
@@ -1814,14 +1812,52 @@ public sealed class AutoTracer
         return true;
     }
 
-    // 이 플레이의 게임이 쓰는 파일 크기를 한 번만 남깁니다 (집계를 저장할 때와 저장 없이 끝날 때, 미룬 집계를 나중에 저장할 때 모두 불려도 같은 플레이를 두 번 더하지 않음).
-    private void RecordWrittenSizesOnce(Run run)
+    /// 플레이가 끝날 때 한 번 게임이 쓰는 파일의 크기를 남깁니다: 트레이스를 뜨지 않은 플레이 (학습이 끝난 게임은 몇 플레이에 한 번만 뜸) 도 이력이 쌓여야 붙들기가 동작합니다.
+    /// 대상 파일은 이전 트레이스가 남긴 가변 표시 (volatile.json) 에서 얻고, 하는 일은 파일 속성 조회와 작은 이력 파일 읽기·쓰기뿐이라 같은 디스크의 다른 게임이 떠 있어도 합니다.
+    /// 게임 종료 처리를 붙들지 않게 낮은 우선순위 스레드에서 폴더 잠금 안에 돌고, 크기 기록은 이 한 곳에서만 남깁니다 (트레이스 저장 쪽은 남기지 않음): 저장은 플레이 기록이 끝 시각을 쓰기 전에 돌 수 있어 그 플레이의 식별자를 모르므로, 두 곳이 남기면 한 플레이가 두 번 세집니다.
+    /// 트레이스를 뜬 플레이의 새 가변 표시는 다음 플레이 끝부터 반영됩니다. 플레이 기록에 방금 (PlayEndWindow 안에) 끝난 플레이가 없으면 (보이지 않은 짧은 실행 등) 남기지 않습니다: 직전 플레이의 키를 덮어쓰지 않게.
+    // 방금 끝난 플레이로 보는 기준: 플레이 기록의 끝 시각이 이 안에 있어야 함 (종료 감시 틱은 30 초 간격).
+    private static readonly TimeSpan PlayEndWindow = TimeSpan.FromMinutes(10);
+
+    internal void RecordWrittenSizesAtPlayEnd(GameSettings g)
     {
-        if (!run.SizesRecorded)
+        DateTime recent = _env.Now().UtcDateTime - PlayEndWindow;
+        if (TraceBlocker(g) is not null || !_env.FileExists(VolatilePath(g)) || _env.PlaySessions(g.Name).Where(s => s.EndUtc >= recent).Select(s => s.Session).LastOrDefault() is not { Length: > 0 } session)
         {
-            run.SizesRecorded = true;
-            RecordWrittenSizes(run.Game, run.IoSummary?.SessionId is { Length: > 0 } id ? id : run.PlaySession);
+            return; // 트레이스를 막는 게임·가변 표시를 만든 적이 없는 게임·방금 끝난 플레이 기록이 없음
         }
+
+        bool traced;
+        lock (_lock)
+        {
+            traced = _run is { } run && string.Equals(run.Game.Name, g.Name, StringComparison.OrdinalIgnoreCase);
+        }
+
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                using AsterCache.Core.Apply.DataLock? gate = AsterCache.Core.Apply.DataLock.TryAcquire(g.Plan, TimeSpan.FromSeconds(10));
+                if (gate is null)
+                {
+                    _log.Info($"{g.Name}: written file sizes not recorded at the end of the play (zone lock busy)");
+                    return;
+                }
+
+                int files = RecordWrittenSizes(g, session);
+                _log.Info($"{g.Name}: written file sizes recorded at the end of the play ({files} files, {(traced ? "trace of this play pending" : "no trace in this play")})");
+            }
+            catch (Exception e) when (e is not (OutOfMemoryException or StackOverflowException))
+            {
+                _log.Warn($"{g.Name}: written file sizes not recorded ({e.GetType().Name})");
+            }
+        })
+        {
+            IsBackground = true,
+            Priority = ThreadPriority.BelowNormal,
+            Name = "written-sizes",
+        };
+        thread.Start();
     }
 
     // 미룬 I/O 집계를 만듭니다: 같은 디스크의 게임이 더는 떠 있지 않을 때만 (조회가 그 게임과 디스크를 다투지 않게). 만든 집계는 단독 집계로 저장해 목록 (로드 재채움·캐시 없이 읽는 파일·순위) 을 갱신합니다.
@@ -1862,7 +1898,7 @@ public sealed class AutoTracer
                 continue; // 다시 막혔거나 (다시 미룸) 만들지 못함 (로그는 ResolveIoSummary 가 남김)
             }
 
-            run.IoSummary = run.IoSummary with { SessionId = run.PlaySession }; // 이미 남긴 크기 기록과 같은 플레이
+            run.IoSummary = run.IoSummary with { SessionId = run.PlaySession }; // 미룬 집계의 식별자 (같은 플레이의 다른 집계와 구분)
             if (!SaveIoSummaryOnly(run, RetryLockWait, out bool traceChanged))
             {
                 lock (_lock)
@@ -1993,7 +2029,7 @@ public sealed class AutoTracer
     }
 
     // 플레이가 끝났을 때 게임이 쓰는 파일 (트레이스가 가변으로 표시한 것) 의 크기를 남깁니다: 붙들기가 크기가 줄어든 적이 없는 파일만 고르는 근거 (WrittenFileHistory). 부가 정보라 실패해도 기록 저장은 계속.
-    private void RecordWrittenSizes(GameSettings g, string session)
+    private int RecordWrittenSizes(GameSettings g, string session)
     {
         try
         {
@@ -2019,13 +2055,18 @@ public sealed class AutoTracer
             string file = WrittenFileHistory.PathFor(RawTracePath(g));
             WrittenFileHistory history = WrittenFileHistory.Read(file);
             history.Record(session, seen, ViewHold.MinFileBytes);
-            history.GameState = PrewarmEnv.GameStateMark(g); // 이 플레이가 끝났을 때의 게임 상태: 다음 플레이가 업데이트 직후인지 가리는 기준
+            if (_env.GameRunningOnDisk?.Invoke(PlanFile.SplitDrive(g.OriginRoot).ToUpperInvariant()) != true)
+            {
+                history.GameState = PrewarmEnv.GameStateMark(g); // 이 플레이가 끝났을 때의 게임 상태: 다음 플레이가 업데이트 직후인지 가리는 기준. 계획의 모든 파일 속성을 조회하므로 같은 디스크의 다른 게임이 도는 동안은 하지 않음 (기존 표지 유지: 게임이 바뀌었으면 다음 판정이 업데이트로 보아 붙들지 않는 쪽)
+            }
             history.Write(file);
             QueueJournalFill(g, [.. seen.Select(x => x.Path)]);
+            return seen.Count;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             _log.Warn($"{g.Name}: written file size history not saved ({e.GetType().Name})");
+            return 0;
         }
     }
 
@@ -2660,11 +2701,8 @@ public sealed class AutoTracer
 
         public bool IoSummaryLogged { get; set; }
 
-        /// 이 플레이의 식별자 (I/O 집계가 없거나 미뤄진 때의 크기 기록 키, 미룬 집계를 만들 때 집계의 식별자로 씀).
+        /// 이 플레이의 식별자 (미룬 I/O 집계를 만들 때 집계의 식별자로 씀).
         public string PlaySession { get; } = Guid.NewGuid().ToString("N");
-
-        /// 이 플레이의 게임이 쓰는 파일 크기를 이미 남겼는가.
-        public bool SizesRecorded { get; set; }
 
         public int LateWindowsStarted { get; set; }
 

@@ -20,9 +20,10 @@ public sealed partial class Prewarmer
     /// 읽기 중재의 시작 스트림과 같은 대여 안에서 돕니다: 이 게임이 끝나거나 다른 게임이 같은 디스크에서 시작하거나 서비스가 멈추면 취소됩니다. 대여는 서로 막지 않으므로 (DiskReadCoordinator.TryBegin 은 활성 대여 수를 보지 않음) 같은 게임의 시작·단계 스트림과 함께 유효하고,
     /// 시작·단계 스트림이 항상 우선하도록 읽는 스레드의 I/O 우선순위를 낮춰 (디스크 읽기가 섞여도 게임과 스트림의 읽기가 먼저) 돌립니다.
     /// 캐시에 없는 범위 (이 프로세스의 디스크 읽기 수가 허용치를 넘는 곳) 를 만나면 거기서 멈추고 (Solar.Order) 나머지는 재예열 점검에 맡기되, 빠진 것이 확인되거나 이미 알려져 있으면 메모리에 남은 앞부분만 사다리 순서로 만집니다 (Solar.TouchFront). 파일을 읽기만 하고 게임·런처 프로세스는 열지 않습니다.
-    internal void TouchAtGameStart(GameSettings game, string exe)
+    /// otherRunning: 방금 시작한 프로세스 말고 이 게임의 다른 등록 프로세스가 이미 실행 중임 (모드 전환·런처 뒤 본체): 이때는 메모리에 있다고 아는 범위만 만지고 빠진 범위를 디스크에서 채우지 않습니다. 게임의 로딩이 같은 디스크를 읽는 중이라서입니다.
+    internal void TouchAtGameStart(GameSettings game, string exe, bool otherRunning = false)
     {
-        TouchOnceAtGameStart(game, exe);
+        TouchOnceAtGameStart(game, exe, otherRunning);
         if (_solar.Enabled)
         {
             KeepCacheWhilePlaying(game, exe); // 시작 만지기가 어떻게 끝났든 (대여 양보·재배치 중 같은 일시적 사유 포함) 같은 작업 안에서 게임이 끝날 때까지 이어 만짐: 회차마다 게이트를 다시 봄
@@ -31,7 +32,7 @@ public sealed partial class Prewarmer
         ForgetKeepMemoryIfStopped(game.Name); // 게임이 더 실행 중이 아니면 기억한 범위와 누적 상한을 버림 (같은 게임의 다른 실행 파일이 떠도 게임이 실행되는 동안은 이어 씀)
     }
 
-    private void TouchOnceAtGameStart(GameSettings game, string exe)
+    private void TouchOnceAtGameStart(GameSettings game, string exe, bool otherRunning)
     {
         if (!_solar.Enabled || Relocating(game.Name))
         {
@@ -89,13 +90,13 @@ public sealed partial class Prewarmer
                 TouchEnd? end;
                 lock (_touchSerial) // 붙들기·점검과 같이 이 프로세스의 하드 폴트 누계를 쓰므로 겹치지 않게
                 {
-                    // 빠짐이 알려진 게임은 사다리 순서로 시도하지 않음 (덜 중요한 쪽의 빈 곳에서 먼저 멈춰 디스크를 읽고 앞부분을 만지지 못함)
-                    end = _solar.HasMissing(game.Name) ? TouchEnd.NeedsDiskReads : _solar.Order(game, ladder, stop, startExe: exe);
+                    // 빠짐이 알려진 게임은 사다리 순서로 시도하지 않음 (덜 중요한 쪽의 빈 곳에서 먼저 멈춰 디스크를 읽고 앞부분을 만지지 못함). 다른 프로세스가 이미 실행 중이면 사다리도 시도하지 않음 (경계를 찾느라 읽음)
+                    end = otherRunning || _solar.HasMissing(game.Name) ? TouchEnd.NeedsDiskReads : _solar.Order(game, ladder, stop, startExe: exe);
                 }
 
-                if (end == TouchEnd.NeedsDiskReads && _solar.HasMissing(game.Name))
+                if (end == TouchEnd.NeedsDiskReads && (otherRunning || _solar.HasMissing(game.Name)))
                 {
-                    TouchAfterStartBoundary(game, ladder, exe, stop); // 첫 경계에서 끝내지 않고 두 패스 (가장 중요한 것부터 찾고 덜 중요한 것부터 다시 만짐) 로 목록 끝까지, 빠진 범위는 이 플레이 동안 기억 (잠금은 묶음마다 직접 잡음)
+                    TouchAfterStartBoundary(game, ladder, exe, stop, findNew: !otherRunning); // 첫 경계에서 끝내지 않고 두 패스 (가장 중요한 것부터 찾고 덜 중요한 것부터 다시 만짐) 로 목록 끝까지, 빠진 범위는 이 플레이 동안 기억 (잠금은 묶음마다 직접 잡음)
                 }
             }
             finally

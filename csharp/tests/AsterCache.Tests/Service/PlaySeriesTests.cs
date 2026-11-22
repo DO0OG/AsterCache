@@ -137,6 +137,27 @@ public sealed class PlaySeriesTests
     }
 
     [Fact]
+    public void TheGameReadBytesWorkingSetAndLoadPhaseColumnsComeLastSoTheOtherColumnsStayInPlaceAndAFirstSecondLeavesTheDifferenceEmpty()
+    {
+        var builder = new PlaySeriesBuilder();
+        List<ProcessUsage> first = [new(100, "game.exe", 0, 0, 10 * Mib, 2000 * Mib), new(101, "helper.exe", 0, 0, 1 * Mib, 100 * Mib), new(300, "chrome.exe", 0, 0, 500 * Mib, 900 * Mib)];
+        List<ProcessUsage> second = [new(100, "game.exe", 0, 0, 40 * Mib, 2500 * Mib), new(101, "helper.exe", 0, 0, 1 * Mib, 150 * Mib), new(102, "new.exe", 0, 0, 900 * Mib, 50 * Mib), new(300, "chrome.exe", 0, 0, 900 * Mib, 900 * Mib)];
+
+        PlaySeriesPoint start = builder.Next(Raw(0, 1000, first), [100, 101, 102], [], [], LoadState.Loading);
+        PlaySeriesPoint point = builder.Next(Raw(0, 2000, second), [100, 101, 102], [], [], LoadState.NotLoading);
+
+        Assert.Equal((null, null), (start.GameReadBytes, start.GameWorkingSetMib)); // 앞의 값이 없는 첫 초
+        Assert.Equal((30L * Mib, 2700L), (point.GameReadBytes, point.GameWorkingSetMib)); // 게임 프로세스만: 읽기 증가분 (새로 보인 프로세스는 셈하지 않음), 작업 집합 (2500 + 150 + 50)
+        string[] names = PlaySeriesFormat.Header.Split(',');
+        Assert.Equal(["service_ops", "game_read_bytes", "game_ws_mib", "load_phase"], names[^4..]);
+        string line = PlaySeriesFormat.Line(5, default, point);
+        Assert.Equal(((30L * Mib).ToString(CultureInfo.InvariantCulture), "2700", "not_loading"), (Cell(line, "game_read_bytes"), Cell(line, "game_ws_mib"), Cell(line, "load_phase")));
+        string unknown = PlaySeriesFormat.Line(5, default, point with { Load = LoadState.Unknown, GameReadBytes = null });
+        Assert.Equal((string.Empty, "2700", string.Empty), (Cell(unknown, "game_read_bytes"), Cell(unknown, "game_ws_mib"), Cell(unknown, "load_phase")));
+        Assert.Equal("loading", Cell(PlaySeriesFormat.Line(4, default, start with { Load = LoadState.Loading }), "load_phase"));
+    }
+
+    [Fact]
     public void NumbersUseAPointWhateverTheCurrentCulture()
     {
         CultureInfo before = CultureInfo.CurrentCulture;
@@ -487,6 +508,46 @@ public sealed class PlaySeriesTests
 
         Assert.Equal(0, opened);
         Assert.False(Directory.Exists(off.Combine("play_series")));
+        Assert.False(Directory.Exists(blocked.Combine("play_series")));
+    }
+
+    [Fact]
+    public async Task ThePlayStartsAsLoadingAtTheExecutableStartTheSecondsLineSaysSoAndTheStateIsForgottenWhenTheSessionEnds()
+    {
+        using var dir = new TempDir();
+        var log = new ListLog();
+        using var counter = new DiskCounter();
+        var frames = new FakeFrames();
+        frames.Seconds.Add(new FrameSecond(0, 100, 62.5, 1, 1));
+        PlayRecorder recorder = Recorder(dir, log, counter, frames, () => new FakeSeries());
+
+        GameSettings game = await Play(recorder, counter, "Load Game", 40);
+
+        string second0 = Assert.Single(Lines(Assert.Single(SeriesFiles(dir, ".csv"), f => !f.EndsWith(".lists.csv", StringComparison.Ordinal))), l => l.StartsWith("0,", StringComparison.Ordinal));
+        Assert.Equal("loading", Cell(second0, "load_phase")); // 시험은 1 초도 안 돌아 조용한 15 초가 차지 않음
+        Assert.Single(log.Lines, l => l.Contains("Load Game: loading phase started (executable started)", StringComparison.Ordinal));
+        Assert.Contains(log.Lines, l => l.Contains("Load Game: loading phase ended after", StringComparison.Ordinal) && l.Contains("(play ended)", StringComparison.Ordinal));
+        Assert.Equal(LoadState.Unknown, recorder.LoadPhases.StateOf(game.Name));
+    }
+
+    [Fact]
+    public async Task TheLoadingJudgmentStillRunsWithTheSeriesSwitchedOffOrTheGateBlockingFrameTimesUsingOnlyTheDiskRule()
+    {
+        using var off = new TempDir();
+        var offLog = new ListLog();
+        using var offCounter = new DiskCounter();
+        PlayRecorder disabled = Recorder(off, offLog, offCounter, new FakeFrames(), () => new FakeSeries(), enabled: () => false);
+        _ = await Play(disabled, offCounter, "Off Game", 41);
+
+        using var blocked = new TempDir();
+        var blockedLog = new ListLog();
+        using var blockedCounter = new DiskCounter();
+        PlayRecorder gated = Recorder(blocked, blockedLog, blockedCounter, new FakeFrames(), () => new FakeSeries(), blocker: _ => "anti-cheat");
+        _ = await Play(gated, blockedCounter, "Gated Game", 42);
+
+        Assert.Single(offLog.Lines, l => l.Contains("Off Game: loading phase started (executable started)", StringComparison.Ordinal));
+        Assert.Single(blockedLog.Lines, l => l.Contains("Gated Game: loading phase started (executable started)", StringComparison.Ordinal));
+        Assert.False(Directory.Exists(off.Combine("play_series"))); // 기록은 없어도 판정은 돎
         Assert.False(Directory.Exists(blocked.Combine("play_series")));
     }
 

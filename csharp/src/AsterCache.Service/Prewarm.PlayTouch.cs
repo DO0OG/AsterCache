@@ -58,6 +58,10 @@ public sealed partial class Prewarmer
 
     internal void StopPlayTouch() => _playStop.Cancel();
 
+    /// 게임 안 로딩 판정 (서비스가 PlayRecorder 의 것을 이음, 없으면 로딩으로 보지 않음). 로딩인 동안은 게임이 도는 중의 디스크 읽기 (유지 회차, 붙든 범위의 점검) 를 미룹니다: 로딩 구간의 디스크는 이미 포화이고 서비스의 읽기는 게임 요청 사이에 탐색을 더합니다.
+    /// 시작 만지기·처음 붙들기는 게임 실행 파일 시작 때의 일이라 이 판정과 무관하게 돕니다.
+    internal LoadPhaseBoard? LoadPhases { get; set; }
+
     /// 시작 만지기가 끝난 뒤 같은 작업 안에서 부릅니다: 등록 실행 파일이 하나도 실행 중이 아닐 때까지, 먼저 유지 목록을 뷰로 붙들 수 있으면 붙들고 (Prewarm.PlayHold), 아니면 재사용이 문턱을 넘을 때마다 그 게임 목록을 메모리 안에서 다시 만집니다.
     /// 이미 이 게임의 유지가 돌고 있으면 (런처와 본체가 이어 뜬 경우) 바로 끝납니다. 회차마다 읽기 중재의 시작 스트림과 같은 대여를 새로 받아 (그 게임의 끝·다른 게임의 시작으로 취소) 돌고, 서비스가 멈추면 기다리던 것도 바로 끝납니다.
     private void KeepCacheWhilePlaying(GameSettings started, string exe)
@@ -126,6 +130,11 @@ public sealed partial class Prewarmer
                 if (!due)
                 {
                     continue; // 대기 목록에서 밀려난 것이 (거의) 없음: 유지 대상도 밀려나지 않았으니 다시 만질 까닭이 없음
+                }
+
+                if (LoadPhases?.Defers(game.Name, "keep round") == true)
+                {
+                    continue; // 로딩 중: 이 회차는 미룸 (문턱을 넘은 채라 로딩이 끝난 첫 확인에서 바로 돎)
                 }
 
                 (string Reason, string Detail)? skip = KeepRound(game, exe, keep, growth, out bool touched, out bool empty, out string? endNow);

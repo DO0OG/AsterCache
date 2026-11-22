@@ -673,6 +673,25 @@ public sealed class KeepHoldTests
     }
 
     [Fact]
+    public void WhileLoadingTheTwoMinuteCheckOfTheHeldRangesIsDeferredAndRunsRightAfterTheLoadingEnds()
+    {
+        Prewarmer p = Make(Reads);
+        var board = new LoadPhaseBoard(_log);
+        p.LoadPhases = board;
+        bool first = true;
+        RunFor(250, e =>
+        {
+            _ = board.Add("a", new LoadingSample(e, 100 * Mib, null, first)); // 읽기가 계속 많아 상한 (240 초) 으로만 끝남
+            first = false;
+        });
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Equal(1, _hold.Rechecks); // 120 초와 240 초의 점검이 로딩 때문에 미뤄지고, 로딩이 끝난 첫 확인 (초 245) 에서 한 번만
+        Assert.Contains(_log.Lines, l => l.Contains("a: loading phase ended after 244 s (240 s limit); held back: hold check"));
+    }
+
+    [Fact]
     public void WhatTheMemoryManagerReducedIsNotAddedToTheRecordedAvailableMemory()
     {
         // 기록하는 값: 실제 가용 + 붙든 양. 점검 사이에 메모리 관리자가 줄여 간 쪽은 이미 가용 (대기 목록) 에 들어 있으므로 서비스 작업 집합의 증가분으로 상한을 둠
@@ -802,6 +821,37 @@ public sealed class KeepHoldTests
         p.TouchAtGameStart(cheat, "a.exe");
 
         Assert.InRange(firstSeen, 1, 15); // 두 번째 확인 (최소 간격 10 초) 에서 돔: 2 분 주기가 아님
+    }
+
+    [Fact]
+    public void WhileLoadingTheKeepRoundIsDeferredAndRunsAtTheFirstCheckAfterTheLoadingEnds()
+    {
+        GameSettings cheat = Cheat("a");
+        Prewarmer p = Make(Reads, cheat);
+        var board = new LoadPhaseBoard(_log);
+        p.LoadPhases = board;
+        bool first = true;
+        int keptWhileLoading = 0;
+        double firstSeen = -1;
+        RunFor(60, e =>
+        {
+            _ = board.Add("a", new LoadingSample(e, 0, null, first)); // 첫 확인 (초 5) 에 로딩 시작, 조용한 상태가 초 10 부터 15 초 이어져 초 25 에 끝남
+            first = false;
+            if (e <= 25)
+            {
+                keptWhileLoading += KeptLines();
+            }
+            else if (firstSeen < 0 && KeptLines() > 0)
+            {
+                firstSeen = e;
+            }
+        });
+
+        p.TouchAtGameStart(cheat, "a.exe");
+
+        Assert.Equal(0, keptWhileLoading); // 문턱을 넘은 채 (재사용 누계가 늘어남) 로딩 동안은 회차가 돌지 않음
+        Assert.Equal(30, firstSeen); // 초 25 에 로딩이 끝나자마자 도는 회차가 다음 확인에서 보임
+        Assert.Contains(_log.Lines, l => l.Contains("a: loading phase ended after 20 s (quiet for 15 s); held back: keep round"));
     }
 
     [Fact]

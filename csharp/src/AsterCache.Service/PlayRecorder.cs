@@ -136,6 +136,9 @@ public sealed class PlayRecorder : IDisposable
     private readonly Func<bool>? _blockedGameRunning;
     private readonly bool[] _frameSlots = new bool[FrameTimeSession.MaxSlots];
 
+    /// 게임별 로딩 판정의 지금 상태: 표본 루프가 쓰고 서비스의 디스크 읽기 경로가 읽습니다 (게임이 도는 동안 로딩이면 그 회차를 미룸).
+    internal LoadPhaseBoard LoadPhases { get; }
+
     internal PlayRecorder(string? path, ILog log, Func<string, IPlayDiskCounter?>? openCounter = null, Func<long>? availableRamMib = null,
         TimeSpan? sampleInterval = null, Func<DateTimeOffset>? now = null, Func<long>? timestamp = null, IReadOnlyList<int>? checkpoints = null,
         IReadOnlyList<int>? stageCheckpoints = null, int periodSeconds = PlayPeriods.DefaultSeconds,
@@ -153,6 +156,7 @@ public sealed class PlayRecorder : IDisposable
         _frameBlocker = frameBlocker ?? (_ => "unknown"); // 게이트 판정이 없으면 막힌 것으로 (안티치트 게이트를 거치지 않고는 세션을 열지 않음)
         _openSystem = openSystem;
         _log = log;
+        LoadPhases = new LoadPhaseBoard(log);
         _store = new PlaySamplesStore(path, log);
         _openCounter = openCounter ?? WindowsPlayDiskCounter.Open;
         _availableRamMib = availableRamMib ?? SystemMemory.AvailableMib;
@@ -185,6 +189,7 @@ public sealed class PlayRecorder : IDisposable
                 session = new Session(game, _now(), startedTick, ram, warm, _checkpoints, _sampleInterval.TotalSeconds, observedAfterGameStart: false, stageCheckpoints: _stageCheckpoints, periodSeconds: _periodSeconds);
                 _active.Add(game.Name, session);
                 session.AddProcess(start.Pid);
+                session.NoteExeStart();
                 session.SamplingTask = Task.Run(() => SampleSessionAsync(session));
             }
             else
@@ -192,6 +197,7 @@ public sealed class PlayRecorder : IDisposable
                 reopen = session.NoteReturn(_now()) ? session : null; // 유예 중에 같은 게임의 다른 exe 가 뜸: 종료가 아님 (종료 때 닫은 프레임 세션은 다시 엶)
                 session.AddStageStart(start.ExeName, key, start.Timestamp > 0 ? start.Timestamp : _timestamp());
                 session.AddProcess(start.Pid);
+                session.NoteExeStart();
             }
 
             _processSessions.Add(key, session);
@@ -414,6 +420,8 @@ public sealed class PlayRecorder : IDisposable
         IReadOnlyList<PlayDiskCounters> previous = [];
         long previousTick = 0;
         bool hasBaseline = false;
+        var loadFeed = new LoadFeed(session.Game.Name, LoadPhases);
+        LoadState load = LoadState.Unknown;
         try
         {
             counter = _openCounter(session.Game.OriginRoot);
@@ -448,7 +456,8 @@ public sealed class PlayRecorder : IDisposable
                 }
 
                 PlaySeriesRaw? raw = session.HasFrames && session.HasSeries ? ReadSeries(series, session) : null;
-                foreach (PlayWindowSummary checkpoint in session.AddSample(previous, current, previousTick, tick, ReadSystem(system), raw))
+                load = NoteLoad(loadFeed, session, previous, current, tick, raw);
+                foreach (PlayWindowSummary checkpoint in session.AddSample(previous, current, previousTick, tick, ReadSystem(system), raw, load))
                 {
                     PlaySampleRecord record = session.Snapshot(tick);
                     _store.Upsert(record);
@@ -478,6 +487,7 @@ public sealed class PlayRecorder : IDisposable
         }
         finally
         {
+            LoadPhases.Forget(session.Game.Name); // 표본이 끊긴 뒤에는 로딩 상태를 남기지 않음 (서비스의 일을 계속 막지 않게)
             if (counter is not null && hasBaseline && !session.IsUnavailable)
             {
                 try
@@ -486,7 +496,7 @@ public sealed class PlayRecorder : IDisposable
                     if (final is { Count: > 0 })
                     {
                         long tick = _timestamp();
-                        foreach (PlayWindowSummary checkpoint in session.AddSample(previous, final, previousTick, tick, ReadSystem(system), session.HasFrames && session.HasSeries ? ReadSeries(series, session) : null))
+                        foreach (PlayWindowSummary checkpoint in session.AddSample(previous, final, previousTick, tick, ReadSystem(system), session.HasFrames && session.HasSeries ? ReadSeries(series, session) : null, load))
                         {
                             PlaySampleRecord record = session.Snapshot(tick);
                             _store.Upsert(record);
@@ -549,6 +559,19 @@ public sealed class PlayRecorder : IDisposable
         {
             probe?.Dispose();
             return null;
+        }
+    }
+
+    // 이 초의 로딩 판정: 입력을 못 만들면 (조회 실패) 모름으로 두고 표본 루프는 계속 돎
+    private static LoadState NoteLoad(LoadFeed feed, Session session, IReadOnlyList<PlayDiskCounters> previous, IReadOnlyList<PlayDiskCounters> current, long tick, PlaySeriesRaw? raw)
+    {
+        try
+        {
+            return feed.Next(previous, current, Stopwatch.GetElapsedTime(session.StartedTick, tick).TotalSeconds, raw, session.TakeExeStart());
+        }
+        catch (Exception e) when (e is not (StackOverflowException or OutOfMemoryException))
+        {
+            return LoadState.Unknown;
         }
     }
 
@@ -904,6 +927,7 @@ public sealed class PlayRecorder : IDisposable
 
         private PlaySeriesRecorder? _series; // 초 단위 기록 (없거나 실패해 멈췄으면 null)
         private Action<Exception>? _seriesFailed;
+        private bool _exeStarted; // 실행 파일이 새로 떴고 표본 루프가 아직 로딩 판정에 알리지 않음
 
         private readonly record struct PendingSecond(ulong Reads, double MeanReadMs, bool Slow, PlaySystemSample System, PlaySeriesPoint? Series = null);
 
@@ -944,6 +968,25 @@ public sealed class PlayRecorder : IDisposable
                     _pids.Add(pid);
                     _frames?.AddProcess(pid);
                 }
+            }
+        }
+
+        /// 실행 파일이 새로 떴음을 알립니다 (다음 표본의 로딩 판정이 로딩 시작으로 봄).
+        public void NoteExeStart()
+        {
+            lock (_gate)
+            {
+                _exeStarted = true;
+            }
+        }
+
+        /// 알리지 않은 실행 파일 시작이 있었는지 돌려주고 지웁니다.
+        public bool TakeExeStart()
+        {
+            lock (_gate)
+            {
+                (bool started, _exeStarted) = (_exeStarted, false);
+                return started;
             }
         }
 
@@ -1184,7 +1227,7 @@ public sealed class PlayRecorder : IDisposable
         }
 
         public IReadOnlyList<PlayWindowSummary> AddSample(IReadOnlyList<PlayDiskCounters> previous, IReadOnlyList<PlayDiskCounters> current,
-            long previousTick, long tick, PlaySystemSample system = default, PlaySeriesRaw? series = null)
+            long previousTick, long tick, PlaySystemSample system = default, PlaySeriesRaw? series = null, LoadState load = LoadState.Unknown)
         {
             lock (_gate)
             {
@@ -1207,7 +1250,7 @@ public sealed class PlayRecorder : IDisposable
                     {
                         if (_series is not null && series is not null)
                         {
-                            point = _series.Point(series with { GpuMib = system.GpuDedicatedMib ?? series.GpuMib }, _pids, previous, current); // 그래픽 메모리는 이미 읽은 시스템 값을 씀
+                            point = _series.Point(series with { GpuMib = system.GpuDedicatedMib ?? series.GpuMib }, _pids, previous, current, load); // 그래픽 메모리는 이미 읽은 시스템 값을 씀
                         }
                         else
                         {

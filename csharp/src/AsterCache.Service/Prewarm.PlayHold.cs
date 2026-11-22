@@ -1021,7 +1021,7 @@ public sealed partial class Prewarmer
                     }
                 }
 
-                if (elapsed - lastCheck >= PlayTouchEvery && (game ?? GameOf(name)) is { } current)
+                if (elapsed - lastCheck >= PlayTouchEvery && (game ?? GameOf(name)) is { } current && LoadPhases?.Defers(name, "hold check") != true) // 로딩 중이면 점검의 다시 읽기를 미룸 (lastCheck 는 그대로라 로딩이 끝난 첫 확인에서 바로 점검)
                 {
                     lastCheck = elapsed;
                     (long trimmed, long refilled, long dropped) = CheckHeld(hold, current, exe, floorMib, ref lastSkip);

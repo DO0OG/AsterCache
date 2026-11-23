@@ -175,7 +175,7 @@
 
 설정 탭의 **업데이트** 카드가 `update.mode` 와 `update.prerelease` 를 정합니다.
 
-`games[].layout` 은 아직 배포된 버전에 없는 키입니다. 이전 버전은 이 키가 있는 설정 파일을 거부하므로, 되돌리기 전에 지워야 합니다. 이전 버전은 `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, `update`, `memory` 키를 거부하므로, 되돌리기 전에 지워야 합니다. `memory` 는 1.0.3 부터 있는 키이며, 1.0.2 이하 버전은 이 키가 파일에 있으면 값과 상관없이 설정 파일 전체를 거부합니다. `memory.standby_ladder`, `auto.stage_stream_enabled`, `auto.quick_exit_seconds` 는 1.0.4 부터 있는 키입니다. 1.0.3 이하 버전은 이 중 하나라도 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오. `auto.io_summary_enabled`, `memory.background_io_priority`, `memory.background_cpu_priority`, `memory.keep_hold`, `memory.keep_hold_written_files`, `play` 객체(`play.frame_times` 와 `play.series`)는 1.0.5 부터 있는 키입니다. 1.0.4 이하 버전은 이 중 하나라도 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오.
+이전 버전은 `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, `update`, `memory` 키를 거부하므로, 되돌리기 전에 지워야 합니다. `memory` 는 1.0.3 부터 있는 키이며, 1.0.2 이하 버전은 이 키가 파일에 있으면 값과 상관없이 설정 파일 전체를 거부합니다. `memory.standby_ladder`, `auto.stage_stream_enabled`, `auto.quick_exit_seconds` 는 1.0.4 부터 있는 키입니다. 1.0.3 이하 버전은 이 중 하나라도 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오. `auto.io_summary_enabled`, `memory.background_io_priority`, `memory.background_cpu_priority`, `memory.keep_hold`, `memory.keep_hold_written_files`, `play` 객체(`play.frame_times` 와 `play.series`)는 1.0.5 부터 있는 키입니다. 1.0.4 이하 버전은 이 중 하나라도 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오. `auto.relocate_layout`, `games[].layout`, `memory.keep_sparse` 는 1.0.6 부터 있는 키입니다. 1.0.5 이하 버전은 이 중 하나라도 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오.
 
 ## 감시기
 

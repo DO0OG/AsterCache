@@ -393,10 +393,17 @@ public static unsafe class StandbyTouch
                 sections.Clear();
             }
 
-            sections[path] = section = Section.Open(path, out TouchErrorKind kind, out int code);
-            if (section is null)
+            if (tally.OpenFailures.ContainsKey(path))
             {
-                tally.OpenFailures[path] = (kind, code);
+                sections[path] = section = null;
+            }
+            else
+            {
+                sections[path] = section = Section.Open(path, out TouchErrorKind kind, out int code);
+                if (section is null)
+                {
+                    tally.OpenFailures[path] = (kind, code);
+                }
             }
         }
 
@@ -420,7 +427,7 @@ public static unsafe class StandbyTouch
         {
             tally.Errors++;
             (TouchErrorKind kind, int code) = section is null ? tally.OpenFailures[range.Path] : (TouchErrorKind.BeyondEnd, 0);
-            tally.Kinds.Add(kind, 1, range.Path, code);
+            tally.Kinds.Add(kind, 1, range.Path, code, kind == TouchErrorKind.Open ? range.Length : 0);
             return first;
         }
 

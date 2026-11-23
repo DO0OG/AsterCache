@@ -22,6 +22,7 @@ public sealed class SupplementWarmTests : IDisposable
     private long _avail = 16000;
     private long _zoneMib = 100;
     private ProbeResult? _probe;
+    private int _probeCalls;
 
     public SupplementWarmTests() => Directory.CreateDirectory(_dir);
 
@@ -62,7 +63,11 @@ public sealed class SupplementWarmTests : IDisposable
             ZoneBytes = g => Math.Min(_zoneMib, g.MaxStreamMib) * Mib,
             TraceExists = _ => true,
             DiskBytesPerSecond = _ => _disk,
-            ProbeReadMs = _ => _probe,
+            ProbeReadMs = _ =>
+            {
+                _probeCalls++;
+                return _probe;
+            },
         }, _log, statusPath ?? StatusPath, () => _now);
         p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 40 });
         p.Relocating = _ => _relocating;
@@ -301,7 +306,7 @@ public sealed class SupplementWarmTests : IDisposable
     }
 
     [Fact]
-    public void ColdSamplesWhileSupplementPendingWaitForTheIdleSupplementNotAFullRewarm()
+    public void ColdSamplesWhileSupplementPendingRewarmOnlyThePartAlreadyRead()
     {
         Prewarmer p = Make(Game());
         p.RunServiceStart();
@@ -314,14 +319,339 @@ public sealed class SupplementWarmTests : IDisposable
         _disk = 0; // 유휴가 막 시작됨: 전체 재예열 대신 보충 대기
         Ticks(p, 1, on);
 
-        Assert.Single(_streamer.Seen);
+        Assert.Equal(2, _streamer.Seen.Count);
+        Assert.Equal(40, _streamer.Seen[1].MaxStreamMib);
         Assert.True(p.SupplementPending("g"));
 
-        Ticks(p, 1, on); // 30 초 뒤: 아직 모자람
-        Assert.Single(_streamer.Seen);
-        Ticks(p, 1, on); // 60 초 뒤: 보충
+        Ticks(p, 2, on); // 앞부분을 읽은 일이 유휴 기준을 새로 시작하게 하므로 60 초가 차기 전에는 보충하지 않음
         Assert.Equal(2, _streamer.Seen.Count);
+        Ticks(p, 1, on); // 60 초 뒤: 보충
+        Assert.Equal(3, _streamer.Seen.Count);
         Assert.False(p.SupplementPending("g"));
+    }
+
+    [Fact]
+    public void AColdPartialIsRewarmedWhenTheNewMemoryBudgetIsTooSmallAndTheSamePartWaitsForTheRewarmInterval()
+    {
+        _zoneMib = 1000;
+        GameSettings g = Game();
+        Prewarmer p = Make(g);
+        p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 40, RewarmMinutes = 10 });
+        Assert.True(Assert.Single(p.RunServiceStart()).Ran);
+        _avail = 4096 + 40 + 255 + Prewarmer.FinalShrinkHeadroomMib; // 읽은 양보다 255 MiB 만 더 들어가 최소 보충 여유에 못 미칩니다.
+        _probe = new ProbeResult(8, 8, 120.0);
+        AutoSettings on = AutoSettings.Default with { Enabled = true, RewarmMinutes = 10 };
+
+        _disk = 0;
+        Ticks(p, 1, on);
+        _now += TimeSpan.FromMinutes(11);
+        Ticks(p, 1, on);
+
+        Assert.Equal(2, _streamer.Seen.Count);
+        Assert.Equal(40, _streamer.Seen[1].MaxStreamMib);
+        Assert.Contains(_log.Lines, line => line.Contains("supplement waits for memory", StringComparison.Ordinal));
+
+        _probe = new ProbeResult(8, 0, 0.3);
+        Ticks(p, 8, on); // 재예열 간격 안에는 같은 앞부분을 다시 읽지 않습니다.
+        Assert.Equal(2, _streamer.Seen.Count);
+    }
+
+    private Prewarmer StartWithColdPartial(GameSettings g)
+    {
+        _zoneMib = 1000;
+        Prewarmer p = Make(g);
+        p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 40, RewarmMinutes = 10 });
+        Assert.True(Assert.Single(p.RunServiceStart()).Ran);
+        _avail = 4096 + 40 + 255 + Prewarmer.FinalShrinkHeadroomMib; // 보충은 메모리를 기다려 읽지 않음
+        _probe = new ProbeResult(8, 8, 120.0);
+        return p;
+    }
+
+    private static readonly AutoSettings On = AutoSettings.Default with { Enabled = true, RewarmMinutes = 10 };
+
+    [Fact]
+    public void AColdPartialIsRewarmedAtMostTwiceADayAndTheCountSurvivesAServiceRestart()
+    {
+        GameSettings g = Game();
+        Prewarmer p = StartWithColdPartial(g);
+        Ticks(p, 1, On);
+        for (int i = 0; i < 2; i++)
+        {
+            _now += TimeSpan.FromHours(2); // 서로 2 시간 떨어져 있어 곧 다시 식는 경우가 아님
+            Ticks(p, 1, On);
+        }
+
+        Assert.Equal(3, _streamer.Seen.Count);
+        _now += TimeSpan.FromHours(2);
+        int probesBefore = _probeCalls;
+        Ticks(p, 1, On);
+        Assert.Equal(3, _streamer.Seen.Count);
+        Assert.Equal(probesBefore, _probeCalls); // 쉬는 동안 식은 구간의 표본도 읽지 않음
+        Assert.Contains(_log.Lines, line => line.Contains("already read again 2 times in the last 24 h", StringComparison.Ordinal));
+
+        Prewarmer second = Make(g); // 서비스를 다시 시작해도 횟수가 이어짐
+        Assert.True(second.SupplementPending("g"));
+        Ticks(second, 1, On);
+        _now += TimeSpan.FromHours(2);
+        Ticks(second, 1, On);
+        Assert.Equal(3, _streamer.Seen.Count);
+
+        _now += TimeSpan.FromHours(24); // 하루가 지나면 다시 읽음
+        Ticks(second, 1, On);
+        Assert.Equal(4, _streamer.Seen.Count);
+    }
+
+    [Fact]
+    public void AColdPartialThatGoesColdAgainSoonAfterTheReadRestsForADayAlsoAfterARestart()
+    {
+        GameSettings g = Game();
+        Prewarmer p = StartWithColdPartial(g);
+        Ticks(p, 1, On);
+        _now += TimeSpan.FromMinutes(11);
+        Ticks(p, 1, On);
+        Assert.Equal(2, _streamer.Seen.Count); // 한 번 다시 읽음
+
+        _now += TimeSpan.FromMinutes(11); // 읽은 지 2 × rewarm_minutes (20 분) 안에 또 식음
+        Ticks(p, 1, On);
+        Assert.Equal(2, _streamer.Seen.Count);
+        Assert.Contains(_log.Lines, line => line.Contains("went cold again within 20 min of the last read", StringComparison.Ordinal));
+        Assert.NotNull(p.PartialRewarmPause("g"));
+
+        Prewarmer second = Make(g);
+        int probesBefore = _probeCalls;
+        Ticks(second, 1, On);
+        _now += TimeSpan.FromHours(6);
+        Ticks(second, 1, On);
+        Assert.Equal(2, _streamer.Seen.Count);
+        Assert.Equal(probesBefore, _probeCalls);
+
+        _now += TimeSpan.FromHours(24);
+        Ticks(second, 1, On);
+        Assert.Equal(3, _streamer.Seen.Count);
+    }
+
+    [Fact]
+    public void ASetBackClockDoesNotReleaseTheDailyLimit()
+    {
+        GameSettings g = Game();
+        Prewarmer p = StartWithColdPartial(g);
+        Ticks(p, 1, On);
+        for (int i = 0; i < 2; i++)
+        {
+            _now += TimeSpan.FromHours(2);
+            Ticks(p, 1, On);
+        }
+
+        Assert.NotNull(p.PartialRewarmPause("g"));
+        _now -= TimeSpan.FromHours(10);
+
+        (DateTimeOffset until, _) = p.PartialRewarmPause("g")!.Value;
+        Assert.True(until - _now <= TimeSpan.FromHours(24) && until > _now);
+    }
+
+    [Fact]
+    public void AShortSupplementListRecordsTheBytesReadAndKeepsTheWindowForTheNextCapCheck()
+    {
+        _zoneMib = 1000;
+        GameSettings g = Game();
+        Prewarmer p = Make(g);
+        Assert.True(Assert.Single(p.RunServiceStart()).Ran);
+        _avail = 4096 + 500 + Prewarmer.FinalShrinkHeadroomMib;
+        (_streamer.ReadMib, _streamer.RequestedMib) = (100, 100);
+
+        Assert.True(p.Supplement(g, CancellationToken.None));
+
+        Assert.Equal((100L, 1000L), ((long)Status("g")["warmed_mib"]!, (long)Status("g")["hot_mib"]!));
+        Assert.Equal(500L, (long)Status("g")["window_mib"]!);
+        Assert.Equal(2, _streamer.Seen.Count);
+
+        _now += TimeSpan.FromMinutes(11); // 재시도 기한 (10 분) 이 지나도 같은 계획 창을 다시 읽지 않습니다.
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        Assert.Equal(2, _streamer.Seen.Count);
+        Assert.Contains(_log.Lines, line => line.Contains("already read: 100 of 1000 MiB of a 500 MiB window whose plan list ended there", StringComparison.Ordinal)); // 로그에 읽은 양과 창 크기가 함께 나옴
+    }
+
+    [Fact]
+    public void AColdShortSupplementListIsReadAgainFromTheSameWindowWithTheSameSparseMarkAndNeverShrinks()
+    {
+        _zoneMib = 1000;
+        GameSettings g = Game();
+        Prewarmer p = Make(g);
+        p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 40, RewarmMinutes = 10 });
+        Assert.True(Assert.Single(p.RunServiceStart()).Ran);
+        _avail = 4096 + 500 + Prewarmer.FinalShrinkHeadroomMib;
+        (_streamer.ReadMib, _streamer.RequestedMib) = (100, 100);
+        Assert.True(p.Supplement(g, CancellationToken.None)); // 500 MiB 창의 계획 목록은 100 MiB 에서 끝납니다.
+        Assert.Equal((100L, 500L), ((long)Status("g")["warmed_mib"]!, (long)Status("g")["window_mib"]!));
+        p.SetSparseOut("g", true); // 처음 예열이 스파스 범위를 뺐음
+        _probe = new ProbeResult(8, 8, 120.0);
+
+        _disk = 50 << 20;
+        Ticks(p, 1, On); // 재예열 점검 주기만 시작합니다.
+        _now += TimeSpan.FromMinutes(11);
+        _disk = 0;
+        Ticks(p, 1, On); // 유휴 판정이 새로 시작돼 보충은 기다리고, 식은 앞부분을 같은 범위로 재예열합니다.
+
+        Assert.Equal(3, _streamer.Seen.Count);
+        Assert.Equal((500, true), (_streamer.Seen[2].MaxStreamMib, _streamer.Seen[2].SkipSparse)); // 읽은 양 (100) 이 아니라 처음 목록을 만든 창, 스파스 표시도 그대로
+        Assert.True(p.WithSparseMark(g).SkipSparse); // 재예열이 표시를 지우지 않음
+        Assert.True(p.SupplementPending("g"));
+
+        _streamer.ReadMib = 80; // 다음에는 목록이 더 짧게 읽혀도 읽은 양이 줄지 않음
+        _now += TimeSpan.FromHours(3);
+        Ticks(p, 1, On);
+        Assert.Equal(4, _streamer.Seen.Count);
+        Assert.Equal((500, true), (_streamer.Seen[3].MaxStreamMib, _streamer.Seen[3].SkipSparse));
+        Assert.Equal((100L, 500L), ((long)Status("g")["warmed_mib"]!, (long)Status("g")["window_mib"]!));
+        Assert.True(p.WithSparseMark(g).SkipSparse);
+    }
+
+    // 500 MiB 창의 계획 목록이 100 MiB 에서 끝난 보충 뒤의 부분 상태를 만듭니다 (처음 예열이 스파스를 뺀 표시를 켠 채).
+    private Prewarmer StartWithShortListedWindow(GameSettings g)
+    {
+        _zoneMib = 1000;
+        Prewarmer p = Make(g);
+        p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 40, RewarmMinutes = 10 });
+        Assert.True(Assert.Single(p.RunServiceStart()).Ran);
+        _avail = 4096 + 500 + Prewarmer.FinalShrinkHeadroomMib;
+        (_streamer.ReadMib, _streamer.RequestedMib) = (100, 100);
+        p.SetSparseOut("g", true);
+        Assert.True(p.Supplement(g, CancellationToken.None));
+        _probe = new ProbeResult(8, 8, 120.0);
+        return p;
+    }
+
+    [Fact]
+    public void AfterARestartTheColdPartialIsReadAgainFromTheSameWindowWithTheSameSparseMark()
+    {
+        GameSettings g = Game();
+        _ = StartWithShortListedWindow(g);
+        Assert.True((bool)Status("g")["sparse_out"]!); // 상태 파일에 처음 예열이 스파스를 뺐다는 표시가 남음
+        Assert.Equal(500L, (long)Status("g")["window_mib"]!);
+
+        Prewarmer second = Make(g); // 서비스를 다시 시작하면 메모리의 스파스 표시는 사라짐
+        Assert.True(second.SupplementPending("g"));
+        Assert.True(second.WithSparseMark(g).SkipSparse); // 상태 파일에서 되살아남
+
+        _disk = 50 << 20;
+        Ticks(second, 1, On);
+        _now += TimeSpan.FromMinutes(11);
+        _disk = 0;
+        Ticks(second, 1, On);
+
+        GameSettings reread = _streamer.Seen[^1];
+        Assert.Equal(3, _streamer.Seen.Count);
+        Assert.Equal((500, true), (reread.MaxStreamMib, reread.SkipSparse));
+        Assert.True(second.WithSparseMark(g).SkipSparse); // 읽은 뒤에도 표시가 그대로
+    }
+
+    [Fact]
+    public void ACutShortSupplementLeavesAPartialWhoseFirstRangeIsUnknownSoTheWindowPathDoesNotReadIt()
+    {
+        _zoneMib = 1000;
+        GameSettings g = Game();
+        Prewarmer p = Make(g);
+        p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 40, RewarmMinutes = 10 });
+        Assert.True(Assert.Single(p.RunServiceStart()).Ran);
+        _avail = 4096 + 500 + Prewarmer.FinalShrinkHeadroomMib;
+        _streamer.OnStream = _ => false; // 보충이 도중에 끊김
+        (_streamer.ReadMib, _streamer.RequestedMib) = (200, 200);
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        _streamer.OnStream = null;
+        Assert.True(p.SupplementPending("g"));
+        Assert.False(Status("g").ContainsKey("sparse_out")); // 처음 읽은 범위를 모르는 상태로 남음
+        _probe = new ProbeResult(8, 8, 120.0);
+
+        _disk = 50 << 20;
+        Ticks(p, 1, On);
+        _now += TimeSpan.FromMinutes(11);
+        _disk = 0;
+        int streams = _streamer.Seen.Count;
+        Ticks(p, 1, On);
+
+        Assert.Equal(streams, _streamer.Seen.Count); // 창 경로로 읽지 않고 보충에 맡김
+    }
+
+    [Fact]
+    public void AColdPartialWhoseFirstRangeIsUnknownIsNotReadAgainByTheWindowPath()
+    {
+        GameSettings g = Game();
+        _ = StartWithShortListedWindow(g);
+        string text = File.ReadAllText(StatusPath);
+        Assert.Contains("\"sparse_out\"", text);
+        File.WriteAllText(StatusPath, text.Replace("\"sparse_out\"", "\"sparse_out_old\"", StringComparison.Ordinal)); // 옛 형식: 처음 읽은 범위를 모름
+
+        Prewarmer second = Make(g);
+        _disk = 50 << 20;
+        Ticks(second, 1, On);
+        _now += TimeSpan.FromMinutes(11);
+        _disk = 0;
+        Ticks(second, 1, On);
+
+        Assert.Equal(2, _streamer.Seen.Count); // 다시 읽지 않고 보충에 맡김
+        Assert.True(second.SupplementPending("g"));
+    }
+
+    [Fact]
+    public void AColdPartialReadAgainThatShrinksForMemoryKeepsTheWholeHotSize()
+    {
+        GameSettings g = Game();
+        Prewarmer p = StartWithShortListedWindow(g);
+        _now += TimeSpan.FromMinutes(5);
+
+        Assert.True(p.RewarmPartialGame(g, CancellationToken.None, 400).Ran); // 배정량이 창 (500) 보다 작아 다시 읽기가 메모리 부분 예열로 줄어듦
+
+        Assert.Equal(3, _streamer.Seen.Count);
+        Assert.Equal(400, _streamer.Seen[2].MaxStreamMib);
+        Assert.Equal(1000L, (long)Status("g")["hot_mib"]!); // 전체 크기가 창 크기 (500) 로 줄지 않음
+        Assert.True(p.SupplementPending("g"));
+    }
+
+    [Fact]
+    public void WhileTheColdPartialRewarmRestsTheSupplementDoesNotSampleTheFrontEither()
+    {
+        GameSettings g = Game();
+        Prewarmer p = StartWithShortListedWindow(g);
+        _probe = new ProbeResult(8, 0, 0.3); // 따뜻함
+        _now += TimeSpan.FromMinutes(11);
+        int before = _probeCalls;
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        Assert.True(_probeCalls > before); // 쉬지 않을 때는 보충이 읽은 앞부분의 표본을 읽음
+
+        for (int i = 0; i < Prewarmer.MaxPartialRewarmsPerDay; i++)
+        {
+            _now += TimeSpan.FromHours(1);
+            Assert.True(p.RewarmPartialGame(g, CancellationToken.None, null).Ran);
+        }
+
+        Assert.NotNull(p.PartialRewarmPause("g"));
+        _now += TimeSpan.FromMinutes(11);
+        before = _probeCalls;
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        Assert.Equal(before, _probeCalls); // 쉬는 동안에는 표본을 읽지 않음
+    }
+
+    [Theory]
+    [InlineData("game")]
+    [InlineData("busy")]
+    public void ColdPartialRewarmWaitsWhileTheGameRunsOrTheDriveIsBusy(string blocker)
+    {
+        _zoneMib = 1000;
+        Prewarmer p = Make(Game());
+        p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 40, RewarmMinutes = 10 });
+        Assert.True(Assert.Single(p.RunServiceStart()).Ran);
+        _probe = new ProbeResult(8, 8, 120.0);
+        AutoSettings on = AutoSettings.Default with { Enabled = true, RewarmMinutes = 10 };
+
+        _disk = 50 << 20;
+        Ticks(p, 1, on);
+        _now += TimeSpan.FromMinutes(11);
+        _running = blocker == "game";
+        _disk = blocker == "busy" ? 50 << 20 : 0;
+        Ticks(p, 1, on);
+
+        Assert.Single(_streamer.Seen);
+        Assert.True(p.SupplementPending("g"));
     }
 
     [Fact]

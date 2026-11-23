@@ -308,6 +308,11 @@ public sealed partial class Rewarmer
         failed = false;
         try
         {
+            if (_prewarm.SupplementPending(g.Name))
+            {
+                return _prewarm.ProbeFront(g, ct);
+            }
+
             return _prewarm.ColdSamples(g) is { } samples ? _prewarm.ProbeSamplesForGame(g, samples, "rewarm sample", ct) : _prewarm.ProbeFront(g, ct); // 기록 없이 예열한 게임은 그때 읽은 파일 목록에서 고른 표본
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
@@ -366,6 +371,15 @@ public sealed partial class Rewarmer
             return Read(result);
         }
 
+        // 식은 앞부분 다시 읽기를 쉬는 게임은 표본도 읽지 않습니다 (표본도 식은 구간의 디스크 읽기). 보충은 그대로 진행.
+        if (_prewarm.SupplementPending(g.Name) && _prewarm.PartialRewarmPause(g.Name) is { } pause)
+        {
+            NoteCheck(g, pause.Resting ? "partial-rewarm-rest" : "partial-rewarm-limit", PartialRewarmRestMessage(g, pause.Until,
+                pause.Resting ? "it went cold again soon after the last read" : $"it was already read again {Prewarmer.MaxPartialRewarmsPerDay} times in the last 24 h"));
+            _ = _prewarm.SupplementWhenIdle(g, ct);
+            return null;
+        }
+
         ProbeResult? probe = Probe(g, ct, out bool failed);
         if (failed)
         {
@@ -386,10 +400,16 @@ public sealed partial class Rewarmer
                 return false;
             }
 
-            if (!supplemented && probe.Cold && _prewarm.MemoryPartialPending(g.Name))
+            if (!supplemented && probe.Cold && _prewarm.PartialRewarmReadable(g.Name))
             {
-                NoteCheck(g, "partial-cold", $"{g.Name}: rewarm check: the part read into memory went cold ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms, available {_env.AvailableRamMib()} MiB), reading it again (cooldown ignored)"); // 메모리가 모자라 앞부분만 읽은 게임: 읽은 구간이 밀려났을 때만 다시 (남은 구간은 표본에 넣지 않음)
-                return Read(_prewarm.RewarmGame(g, ct, roomMib));
+                if (_prewarm.NotePartialColdAgain(g.Name, TimeSpan.FromMinutes(2L * auto.RewarmMinutes)) is { } restUntil)
+                {
+                    NoteCheck(g, "partial-rewarm-rest", PartialRewarmRestMessage(g, restUntil, $"it went cold again within {2L * auto.RewarmMinutes} min of the last read"));
+                    return null;
+                }
+
+                NoteCheck(g, "partial-cold", $"{g.Name}: rewarm check: the part read into memory went cold ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms, available {_env.AvailableRamMib()} MiB), reading it again (cooldown ignored)"); // 부분 예열에서 실제로 읽은 범위만 표본과 재예열에 씁니다.
+                return Read(_prewarm.RewarmPartialGame(g, ct, roomMib));
             }
         }
         else if (!probe.Cold)
@@ -408,6 +428,10 @@ public sealed partial class Rewarmer
         return null;
     }
 
+    private static string PartialRewarmRestMessage(GameSettings g, DateTimeOffset until, string why) =>
+        $"{g.Name}: rewarm check: not reading the part read into memory again until {until:O} ({why})";
+
     // 재예열이 실제로 읽었으면 true (메모리·지연·대여 거절 등으로 읽기 전에 건너뛰었으면 null: 간격 늘리기에 세지 않음).
     private static bool? Read(PrewarmResult result) => result.Ran || result.Stats is { Bytes: > 0 } ? true : null;
+
 }

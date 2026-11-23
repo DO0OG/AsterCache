@@ -54,8 +54,8 @@ public sealed partial class BackgroundYield
     // 원래 값이 보통인 대상만 낮춥니다: 메모리 우선순위는 쉬는 프로세스는 1 보다 크면 매우 낮음 (1) 으로, 쓰고 있는 프로세스는 4 보다 크면 보통보다 낮음 (4) 으로 (아래 MemoryGoal), I/O 우선순위는 보통 (2) 이면 낮음 (1) 으로, CPU 등급은 보통이면 보통보다 낮음으로 (I/O·CPU 설정이 꺼져 있으면 읽지도 않음). 매우 낮음·낮음이던 것과 높은 값은 건드리지 않습니다 (CPU 는 보통보다 높음·높음·실시간·보통보다 낮음·유휴를 모두 그대로 둠).
     // 비정상 종료에도 되돌릴 수 있게 값을 바꾸기 전에 원래 값을 상태 파일에 먼저 적고, 적지 못하면 이번에는 낮추지 않습니다. 새로 낮춘 수를 (메모리, I/O, CPU) 로 돌려줍니다. 어느 쪽을 못 낮췄으면 그쪽 기록만 지웁니다.
     // 이미 낮은 대상은 낮춘 조상에게 물려받은 것이면 (Inherit) 조상의 원래 값으로 함께 기록합니다 (낮춘 수에는 세지 않음). inheritOnly 는 세션 끝에서 물려받은 것만 찾을 때입니다 (새로 낮추지 않음).
-    // 쓰고 있는 프로세스의 메모리 우선순위는 설정이 켜져 있으면 보통보다 낮음 (4) 으로만 낮춥니다 (작업 집합은 비우지 않음, 반환값의 메모리 수에는 세지 않고 tally.InUse 로 셈). tally 를 주면 적용·실패 수를 거기에 더합니다.
-    private (int Memory, int Io, int Cpu) Lower(IEnumerable<YieldTarget> targets, IReadOnlyList<(int Pid, string Exe)> processes, bool inheritOnly = false, YieldTally? tally = null)
+    // 쓰고 있는 프로세스의 메모리 우선순위는 설정이 켜져 있으면 보통보다 낮음 (4) 으로만 낮춥니다 (작업 집합은 비우지 않음, 반환값의 메모리 수에는 세지 않고 tally.InUse 로 셈). tally 를 주면 적용·실패 수를 거기에 더합니다. durable 이 거짓이면 상태 파일을 디스크 쓰기 캐시를 비우지 않고 씁니다 (빠른 경로).
+    private (int Memory, int Io, int Cpu) Lower(IEnumerable<YieldTarget> targets, IReadOnlyList<(int Pid, string Exe)> processes, bool inheritOnly = false, YieldTally? tally = null, bool durable = true)
     {
         tally ??= new YieldTally();
         long at = env.Now().ToFileTime();
@@ -97,7 +97,7 @@ public sealed partial class BackgroundYield
             return (0, 0, 0);
         }
 
-        if (!SaveState())
+        if (!SaveState(durable))
         {
             foreach (LoweredProcess p in plan)
             {
@@ -140,7 +140,7 @@ public sealed partial class BackgroundYield
         tally.Cpu += cpuLowered;
         if (failed)
         {
-            _ = SaveState();
+            _ = SaveState(durable);
         }
 
         return (lowered, ioLowered, cpuLowered);

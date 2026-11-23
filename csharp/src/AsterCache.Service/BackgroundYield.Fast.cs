@@ -148,7 +148,7 @@ public sealed partial class BackgroundYield
 
             _fastTally.Seen += ready.Count;
             _fastTally.Excluded += ready.Count - known - found.Count;
-            _ = Lower(found, processes, tally: _fastTally);
+            _ = Lower(found, processes, tally: _fastTally, durable: false); // 잦은 쓰기라 디스크 쓰기 캐시를 비우지 않음 (복구에 지장 없음: WriteStateCached 주석)
             foreach (YieldTarget t in found.Where(t => !t.InheritOnly && !(_lowered.TryGetValue(t.Pid, out LoweredProcess entry) && entry.Created == t.Created && entry.Priority != NotLowered)))
             {
                 _deferred[t.Pid] = t.Created; // 메모리 쪽을 아직 안 낮춘 것 (쓰고 있는 것으로 보임): 2분 유지에서 다시 판정

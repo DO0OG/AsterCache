@@ -466,4 +466,82 @@ public sealed class BackgroundYieldFastTests
         Assert.Contains("\"pid\": 61", _w.State, StringComparison.Ordinal);
         Assert.DoesNotContain("\"pid\": 60", _w.State, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void ASwitchedValueIsWrittenToTheStateFileSoARestartFindsAChildThatInheritedIt()
+    {
+        BackgroundYield y = RunningWithBusyProcess(); // 부모 50: 쓰는 중 (4)
+        Assert.Contains("\"applied\": 4", _w.State, StringComparison.Ordinal);
+
+        _w.Now = _w.Start + TimeSpan.FromMinutes(2);
+        y.Tick(_w.Snapshot()); // 쉬게 되어 1 로 전환 (새 항목 없음)
+        Assert.Equal(1, _w.Procs[50].Priority);
+        Assert.DoesNotContain("applied", _w.State, StringComparison.Ordinal); // 파일도 전환한 값 (1 은 적지 않음) 에 맞춤
+
+        YieldWorld.Proc child = _w.Add(70, "worker.exe", priority: 1); // 전환 뒤에 뜬 자식: 1 을 물려받음
+        (child.Io, child.Parent, child.Created) = (1, 50, _w.Start.ToFileTime() + (200 * Second));
+        _w.Yielder(() => _settings, _log).Recover(); // 비정상 종료 뒤의 시작
+
+        Assert.Equal((5, 2), (_w.Procs[70].Priority, _w.Procs[70].Io));
+        Assert.Equal(5, _w.Procs[50].Priority);
+    }
+
+    [Fact]
+    public void TheFastPathWritesTheStateFileWithoutFlushingTheDiskCacheAndTheOtherWritesStillFlush()
+    {
+        BackgroundYield y = RunningWithBusyProcess(); // 세션 시작의 쓰기
+        int flushed = _w.StateWrites - _w.CachedStateWrites;
+        Assert.Equal((1, 0), (flushed, _w.CachedStateWrites));
+        y.FastTick();
+
+        _ = _w.Add(60, "browser.exe");
+        Check(y, 2);
+
+        Assert.Equal(1, _w.CachedStateWrites); // 빠른 경로의 쓰기만 캐시를 비우지 않음
+        Assert.Equal(flushed, _w.StateWrites - _w.CachedStateWrites);
+        Assert.Contains("\"pid\": 60", _w.State, StringComparison.Ordinal);
+        Assert.Contains("\"pid\": 50", _w.State, StringComparison.Ordinal); // 파일은 통째로 쓰므로 앞의 항목도 그대로
+
+        _w.Yielder(() => _settings, _log).Recover(); // 그 내용으로 복구됨
+        Assert.Equal((5, 5), (_w.Procs[50].Priority, _w.Procs[60].Priority));
+        Assert.Null(_w.State);
+    }
+
+    [Fact]
+    public void ATransientFailureToReadTheProcessKeepsTheRecordSoTheEndStillRestoresTheOriginalValue()
+    {
+        BackgroundYield y = RunningWithBusyProcess();
+        _ = _w.DescribeFails.Add(50); // 같은 프로세스인데 이번에는 조회하지 못함
+
+        _w.Now = _w.Start + TimeSpan.FromMinutes(2);
+        y.Tick(_w.Snapshot()); // 쉬게 되어 전환 대상: 읽지 못하니 쓰지 않음
+
+        Assert.Equal([(50, 4)], _w.Sets);
+        Assert.Equal(4, _w.Procs[50].Priority);
+        _ = _w.DescribeFails.Remove(50);
+
+        _w.Now = _w.Start + TimeSpan.FromMinutes(4);
+        y.Tick(_w.Snapshot()); // 다음 회차에 다시 보고 전환
+        Assert.Equal([(50, 4), (50, 1)], _w.Sets);
+
+        y.End();
+        Assert.Equal(5, _w.Procs[50].Priority); // 기록이 남아 있어 원래 값으로 돌아감
+    }
+
+    [Fact]
+    public void AProgramTheUpkeepChoseFirstCountsAsSeenButNotAsNotEligible()
+    {
+        BackgroundYield y = Running();
+        y.FastTick();
+        _ = _w.Add(60, "browser.exe");
+        y.FastTick(); // 처음 보임
+        _w.Now = _w.Start + TimeSpan.FromMinutes(2);
+        y.Tick(_w.Snapshot()); // 2분 유지가 먼저 고름
+        Assert.Contains(_w.Sets, s => s.Pid == 60);
+
+        y.FastTick(); // 이제 확인된 번호: 이미 고른 것이라 제외로 세지 않음
+        y.End();
+
+        Assert.True(Logged("background yield maintenance: fast path saw 1 new processes (0 not eligible)"), string.Join(" | ", _log.Lines));
+    }
 }

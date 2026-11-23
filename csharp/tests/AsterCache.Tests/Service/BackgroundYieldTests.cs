@@ -65,6 +65,9 @@ internal sealed class YieldWorld
 
     public int StateWrites;
 
+    /// 그 가운데 디스크 쓰기 캐시를 비우지 않은 쓰기 (StateWrites 에도 셈).
+    public int CachedStateWrites;
+
     public DateTimeOffset Start { get; } = DateTimeOffset.UnixEpoch.AddDays(1);
 
     public DateTimeOffset Now { get; set; } = DateTimeOffset.UnixEpoch.AddDays(1);
@@ -218,6 +221,12 @@ internal sealed class YieldWorld
         ReadState = () => State,
         WriteState = text =>
         {
+            StateWrites++;
+            State = WriteFails ? throw new IOException("disk full") : text;
+        },
+        WriteStateCached = text =>
+        {
+            CachedStateWrites++;
             StateWrites++;
             State = WriteFails ? throw new IOException("disk full") : text;
         },

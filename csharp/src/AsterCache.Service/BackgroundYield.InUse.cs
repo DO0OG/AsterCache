@@ -17,16 +17,28 @@ public sealed partial class BackgroundYield
 
     // 쓰기 직전에 지금 그 번호를 쓰는 프로세스가 고른 때와 같은 프로세스인지 확인합니다 (Measure·Restore 와 같은 확인): 지금 목록의 이름, 세션 0 이 아님, 조회로 지금 읽은 생성 시각.
     // 번호를 같은 이름의 다른 프로세스가 이어받았으면 거짓이라, 고른 적 없는 프로세스 (경로로만 걸러지는 보호 대상일 수 있음) 에 쓰지 않습니다.
-    private bool IsSameProcess(int pid, string exe, long created, Dictionary<int, string> names) =>
-        names.TryGetValue(pid, out string? current) && string.Equals(current, exe, StringComparison.OrdinalIgnoreCase)
-        && env.SessionId(pid) is not (null or 0) && env.Describe(pid) is { } info && info.Created == created;
+    // 세션이나 조회를 일시적으로 읽지 못하면 모름 (null): 쓰지 않고 기록은 지우지 않아 다음 회차에 다시 봅니다 (지우면 세션 끝의 되돌리기에서 빠져 원래 값을 잃음). 끝났거나 이름·세션·생성 시각이 다를 때만 거짓입니다.
+    private bool? IsSameProcess(int pid, string exe, long created, Dictionary<int, string> names)
+    {
+        if (!names.TryGetValue(pid, out string? current) || !string.Equals(current, exe, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return env.SessionId(pid) switch
+        {
+            null => null,
+            0 => false,
+            _ => env.Describe(pid) is { } info ? info.Created == created : null,
+        };
+    }
 
     // 유지 회차에서: 이미 낮춘 프로세스가 쓰고 있다가 쉬게 됐거나 그 반대면 설정해 둔 값을 바꿉니다. 쓰기 전에 같은 프로세스인지 확인하고, 아니면 대상과 기록에서 뺍니다 (되돌릴 프로세스가 아님).
     // 쓰고 있는데 원래 값이 4 이하였던 프로세스는 원래 값으로 둡니다 (원래보다 높이지 않음). 설정이 세션 중 꺼졌으면 쓰고 있는 프로세스의 값은 그대로 두고 세션 끝에 되돌림.
     private void ReclassifyInUse(IReadOnlyList<(int Pid, string Exe)> processes, YieldTally tally)
     {
         Dictionary<int, string>? names = null;
-        bool dropped = false;
+        bool changed = false; // 값을 바꿨거나 기록을 버림: 상태 파일을 다시 써야 함
         foreach (LoweredProcess p in _lowered.Values.Where(p => p.Priority != NotLowered && !p.Inherited).ToList())
         {
             if (!_targets.TryGetValue(p.Pid, out YieldTarget t) || t.Created != p.Created)
@@ -41,11 +53,17 @@ public sealed partial class BackgroundYield
             }
 
             names ??= NamesOf(processes);
-            if (!IsSameProcess(p.Pid, t.Exe, p.Created, names))
+            bool? same = IsSameProcess(p.Pid, t.Exe, p.Created, names);
+            if (same is null)
+            {
+                continue; // 일시적으로 읽지 못함: 기록을 남기고 다음 회차에 다시 봄
+            }
+
+            if (same is false)
             {
                 _ = _targets.Remove(p.Pid);
                 _ = _lowered.Remove(p.Pid);
-                dropped = true;
+                changed = true;
                 continue;
             }
 
@@ -53,6 +71,7 @@ public sealed partial class BackgroundYield
             {
                 _lowered[p.Pid] = p with { Applied = goal };
                 tally.Switched++;
+                changed = true;
             }
             else
             {
@@ -60,9 +79,9 @@ public sealed partial class BackgroundYield
             }
         }
 
-        if (dropped)
+        if (changed)
         {
-            _ = SaveState();
+            _ = SaveState(); // 설정해 둔 값 (applied) 도 파일에 맞춰 둠: 비정상 종료 뒤 복구가 바뀐 값을 물려받은 자식을 찾게
         }
     }
 
@@ -92,8 +111,14 @@ public sealed partial class BackgroundYield
                 continue; // 아직 쓰고 있음: 다음 유지에서 다시 판정
             }
 
+            bool? same = IsSameProcess(pid, t.Exe, created, names);
+            if (same is null)
+            {
+                continue; // 일시적으로 읽지 못함: 다음 유지에서 다시 봄
+            }
+
             _ = _deferred.Remove(pid);
-            if (!IsSameProcess(pid, t.Exe, created, names))
+            if (same is false)
             {
                 _ = _targets.Remove(pid);
                 continue;

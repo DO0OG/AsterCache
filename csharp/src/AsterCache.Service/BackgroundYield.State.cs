@@ -97,7 +97,7 @@ public sealed partial class BackgroundYield
         !o.TryGetValue(key, out object? value) ? NotLowered : value is long v && v >= min && v <= max ? (int)v : null;
 
     // 낮춘 프로세스가 있으면 상태 파일에 쓰고 없으면 지웁니다. 파일 오류는 경고를 남기고 false (호출자가 낮추기를 포기할 수 있게).
-    private bool SaveState()
+    private bool SaveState(bool durable = true)
     {
         try
         {
@@ -149,7 +149,7 @@ public sealed partial class BackgroundYield
                 items.Add(item);
             }
 
-            env.WriteState(PyJson.Dumps(new JObject { { "lowered", items } }, indent: 2, ensureAscii: false) + "\n");
+            (durable ? env.WriteState : env.WriteStateCached ?? env.WriteState)(PyJson.Dumps(new JObject { { "lowered", items } }, indent: 2, ensureAscii: false) + "\n");
             return true;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)

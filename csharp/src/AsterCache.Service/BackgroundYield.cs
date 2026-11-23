@@ -64,6 +64,10 @@ public sealed class BackgroundYieldEnv
 
     public Action<string> WriteState { get; init; } = _ => { };
 
+    /// 디스크 쓰기 캐시를 비우지 않는 쓰기 (없으면 WriteState 를 씀): 빠른 경로가 일으키는 잦은 쓰기에만 씁니다.
+    /// 서비스가 죽어도 운영체제가 살아 있으면 캐시의 내용은 디스크에 내려가고, 전원이 끊기면 재부팅되어 낮춘 우선순위 자체가 사라져 복구할 것이 없으므로 복구에는 지장이 없습니다.
+    public Action<string>? WriteStateCached { get; init; }
+
     public Action DeleteState { get; init; } = () => { };
 
     /// 런처 탐색이 이미 메모리에 갖고 있는 게임 설치 폴더 (디스크를 새로 훑지 않음, 자동 모드가 꺼져 있으면 빈 목록).
@@ -99,6 +103,12 @@ public sealed class BackgroundYieldEnv
         {
             string tmp = stateFile + ".tmp";
             DurableFile.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(text));
+            File.Move(tmp, stateFile, true);
+        },
+        WriteStateCached = text =>
+        {
+            string tmp = stateFile + ".tmp";
+            DurableFile.WriteAllBytesCached(tmp, PyJson.Utf8.GetBytes(text));
             File.Move(tmp, stateFile, true);
         },
         DeleteState = () => File.Delete(stateFile),

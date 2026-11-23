@@ -374,7 +374,7 @@ public sealed partial class Prewarmer
 
     private readonly HashSet<string> _sparseOut = new(StringComparer.OrdinalIgnoreCase); // 마지막 예열 판정이 스파스 범위를 뺀 게임, _gate 로 보호
 
-    private void SetSparseOut(string game, bool on)
+    internal void SetSparseOut(string game, bool on)
     {
         lock (_gate)
         {
@@ -467,10 +467,19 @@ public sealed partial class Prewarmer
     }
 
     // 메모리 부분 예열 상태를 실제 읽은 양으로 확정 (_gate 안에서 부름): 완전 예열로 기록하지 않고, 나머지는 메모리가 날 때 보충 예열이 읽고, 재예열 점검은 읽은 앞부분만 잼.
-    private void SetMemoryPartialLocked(GameSettings game, StreamStats stats, long windowMib, long hotMib, string? inputs)
+    // listEnded: 계획 목록을 끝까지 읽었음 (메모리로 멈추거나 한도로 마무리해 창 앞쪽만 읽은 것이 아님). 이때 창보다 적게 읽었으면 목록이 창보다 짧은 것이라 창 크기를 남김.
+    private void SetMemoryPartialLocked(GameSettings game, StreamStats stats, long windowMib, long hotMib, string? inputs, bool listEnded = false)
     {
         (long WarmedMib, long HotMib) actual = (ActualMib(stats, windowMib), hotMib);
-        _partialWindowMib.Remove(game.Name);
+        if (listEnded && windowMib > actual.WarmedMib)
+        {
+            _partialWindowMib[game.Name] = windowMib; // 목록이 창보다 짧음: 다시 읽을 때 같은 창으로 같은 목록을 만들도록 창 크기를 남김
+        }
+        else
+        {
+            _partialWindowMib.Remove(game.Name);
+        }
+
         (_memoryPartial[game.Name], _partial[game.Name]) = (actual, actual);
         _supplementReadProgress[game.Name] = new(stats.Bytes, inputs, game);
         _supplementRetry.Remove(game.Name);

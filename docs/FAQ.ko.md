@@ -95,7 +95,7 @@ SMR 드라이브(WD20EZAZ) 1대만 측정했고 CMR 은 측정하지 않았습�
 **예열이 `partial` 로 끝나거나 로그에 메모리 때문에 멈췄다고 나옵니다.**
 가용 메모리에 예열 목록 전체가 들어가지 않아 앞쪽 부분만 읽은 것입니다. 앞쪽 부분을 목록 순서대로 읽는 도중 메모리가 예비량 아래로 내려가도 예열은 읽은 것을 버리지 않습니다. 그 시점에 들어가는 양까지만 더 읽고 그만큼을 부분 예열로 남깁니다. 나머지는 가용 메모리가 읽은 양 + 256 MiB + 예비량(`prewarm.min_free_ram_mib`, 기본 4,096 MiB)을 넘으면 읽으며, 멈춘 뒤 2분 안에는 읽지 않습니다. 예비량과 캐시 예산은 이 때문에 낮추지 않습니다. 목록 전체를 읽은 예열은 `partial` 로 기록되지 않습니다. 저장된 계획이 아직 옮기지 못한 부분만 담고 있는 게임에서는 예전 버전이 그렇게 기록하기도 했습니다(예: `partial 1164/1306 MiB`). `service.log` 에서 볼 줄은 다음과 같습니다.
 - `<게임>: prewarm read the first N of M MiB, the rest does not fit in memory (available A MiB, reserve R MiB) [<사유>]`: 읽기가 한도에서 끝났고 읽은 만큼을 부분 예열로 남겼다는 뜻입니다. 오류가 아닙니다.
-- `<게임>: supplement waits for memory (read X MiB, room for Y MiB)`: `max(256 MiB, 읽은 양의 5%)` 이상 더 들어가지 않아 나머지를 아직 읽지 않는다는 뜻입니다. 기다리는 동안 디스크에서 아무것도 읽지 않습니다.
+- `<게임>: supplement waits for memory (read X MiB, room for Y MiB)`: `max(256 MiB, 읽은 양의 5%)` 이상 더 들어가지 않아 나머지를 아직 읽지 않는다는 뜻입니다. 어떤 창의 계획 목록이 창이 차기 전에 끝났으면 X 뒤에 `of a W MiB window whose plan list ended there` 가 붙고, X 대신 그 창 W 와 비교합니다. 기다리는 동안 디스크에서 아무것도 읽지 않습니다.
 - `<게임>: prewarm stopped by memory; kept the N of M MiB read as partial`
 - `<게임>: prewarm skipped (stopped by memory less than 2 min ago) [<사유>]`
 - `<게임>: prewarm done (...): ..., room X MiB, available Y MiB` 와 `rewarm check: cold (..., available N MiB)`. 그 시점의 메모리를 보여 줍니다.

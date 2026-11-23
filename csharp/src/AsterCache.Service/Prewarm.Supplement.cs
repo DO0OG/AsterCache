@@ -23,7 +23,8 @@ public sealed partial class Prewarmer
         }
     }
 
-    private void NotePartial(GameSettings game, long warmedMib, long hotMib, long bytes)
+    // windowMib: 시작 상한으로 목록을 만든 창 (실제 읽은 양보다 크면 목록이 창보다 짧은 것이라 창 크기를 남김).
+    private void NotePartial(GameSettings game, long warmedMib, long hotMib, long bytes, long windowMib)
     {
         string? inputs = PrewarmRun.InputStamp(game);
         lock (_gate)
@@ -34,7 +35,15 @@ public sealed partial class Prewarmer
                 return; // 메모리 상한이 더 작게 읽어 이미 실제 읽은 양으로 기록함
             }
 
-            _partialWindowMib.Remove(game.Name);
+            if (windowMib > warmedMib && windowMib <= hotMib)
+            {
+                _partialWindowMib[game.Name] = windowMib;
+            }
+            else
+            {
+                _partialWindowMib.Remove(game.Name);
+            }
+
             _partial[game.Name] = (warmedMib, hotMib);
             _resume.Remove(game.Name); // 부분 상태를 새로 정함: 옛 이어 읽기 위치는 낡음
             _supplementReadProgress[game.Name] = new(bytes, inputs, game);
@@ -488,56 +497,6 @@ public sealed partial class Prewarmer
         }
 
         return done;
-    }
-
-    // 보충이 남은 상태의 재예열은 실제로 읽은 앞부분까지만 하고, 보충 상태를 유지합니다.
-    internal PrewarmResult RewarmPartialGame(GameSettings game, CancellationToken ct, long? roomMib)
-    {
-        (long WarmedMib, long HotMib) partial;
-        bool wasMemoryPartial;
-        bool hasPartial;
-        long? windowMib;
-        lock (_gate)
-        {
-            hasPartial = _partial.TryGetValue(game.Name, out partial);
-            wasMemoryPartial = _memoryPartial.ContainsKey(game.Name);
-            windowMib = _partialWindowMib.TryGetValue(game.Name, out long window) ? window : null;
-        }
-
-        if (!hasPartial)
-        {
-            return RewarmGame(game, ct, roomMib);
-        }
-
-        GameSettings front = game with { MaxStreamMib = (int)Math.Min(partial.WarmedMib, int.MaxValue), MaxStreamSet = true };
-        long? frontRoom = roomMib is { } room ? Math.Min(room, partial.WarmedMib) : partial.WarmedMib;
-        PrewarmResult result = RewarmGame(front, ct, frontRoom);
-        long warmedMib = result.Stats is { Bytes: > 0 } stats ? ActualMib(stats, partial.WarmedMib) : partial.WarmedMib;
-        bool memoryPartial;
-        lock (_gate)
-        {
-            memoryPartial = wasMemoryPartial || _memoryPartial.ContainsKey(game.Name);
-            if (warmedMib < partial.HotMib)
-            {
-                _partial[game.Name] = (warmedMib, partial.HotMib);
-                if (windowMib is { } window && window > warmedMib)
-                {
-                    _partialWindowMib[game.Name] = window;
-                }
-
-                if (memoryPartial)
-                {
-                    _memoryPartial[game.Name] = (warmedMib, partial.HotMib);
-                }
-                else
-                {
-                    _memoryPartial.Remove(game.Name);
-                }
-            }
-        }
-
-        PatchPartialStatus(game.Name, warmedMib, partial.HotMib, memoryPartial);
-        return result;
     }
 
     /// 남은 핫 집합 구간을 읽는 보충 예열 한 번 (한 번 끝나면 다시 하지 않음). 다른 예열이 돌고 있거나, 게임·재배치가 있거나, RAM 예산 (예열 예산, 가용 RAM - 여유) 을 넘으면 읽지 않고 false.
@@ -1001,7 +960,7 @@ public sealed partial class Prewarmer
             _supplementNothingNew[game] = state;
         }
 
-        _log.Info($"{game}: supplement waits for memory (read {warmedMib} MiB, room for {fitMib} MiB)");
+        _log.Info($"{game}: supplement waits for memory (read {warmedMib} MiB{WindowNote(game, warmedMib)}, room for {fitMib} MiB)");
     }
 
     private static long ZoneListMib(long? zoneBytes) => zoneBytes is > 0 ? (zoneBytes.Value + (1 << 20) - 1) >> 20 : 0;
@@ -1065,6 +1024,13 @@ public sealed partial class Prewarmer
         }
 
         return true;
+    }
+
+    // 읽은 양과 목록을 만든 창이 다르면 (목록이 창보다 먼저 끝남) 로그에 창 크기를 함께 적을 꼬리, 같으면 빈 문자열.
+    private string WindowNote(string game, long warmedMib)
+    {
+        long windowMib = SupplementCoveredMib(game, (warmedMib, warmedMib));
+        return windowMib > warmedMib ? $" of a {windowMib} MiB window whose plan list ended there" : string.Empty;
     }
 
     private long SupplementCoveredMib(string game, (long WarmedMib, long HotMib) partial)

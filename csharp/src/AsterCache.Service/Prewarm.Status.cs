@@ -33,6 +33,7 @@ public sealed partial class Prewarmer
                 }
 
                 _status[name] = o;
+                LoadPartialRewarm(name, o); // 식은 앞부분 다시 읽은 횟수와 쉬는 시각은 재시작에도 이어짐
                 if (o.TryGetValue("profile_miss_key", out object? miss) && miss is string missKey)
                 {
                     _profileMiss[name] = missKey; // 프로필 미일치 판정은 설치 폴더 mtime 이 같은 동안 다시 열거하지 않음 (재시작 뒤에도 이어짐)
@@ -169,17 +170,21 @@ public sealed partial class Prewarmer
         }
     }
 
-    private void PatchPartialStatus(string game, long warmedMib, long hotMib, bool memoryPartial)
+    // 식은 앞부분을 다시 읽은 뒤의 부분 상태를 상태 파일에 남깁니다. 그 사이 다른 예열이 부분 상태를 바꿨으면 (예열 잠금을 기다리는 동안) 더 새로운 상태를 덮지 않게 건너뜁니다.
+    private void PatchPartialStatus(string game, (long WarmedMib, long HotMib) partial, bool memoryPartial)
     {
+        (long warmedMib, long hotMib) = partial;
         lock (_run)
         {
             bool changed = false;
             lock (_gate)
             {
-                if (_status.TryGetValue(game, out object? entry) && entry is JObject o)
+                if (_partial.TryGetValue(game, out (long WarmedMib, long HotMib) now) && now == partial
+                    && _status.TryGetValue(game, out object? entry) && entry is JObject o)
                 {
                     o["warmed_mib"] = warmedMib;
                     o["hot_mib"] = hotMib;
+                    WritePartialRewarmFields(game, o, _now());
                     if (memoryPartial)
                     {
                         o["partial"] = true;
@@ -296,7 +301,7 @@ public sealed partial class Prewarmer
             _supplementNothingNew[game] = state;
         }
 
-        _log.Info($"{game}: supplement prewarm skipped (the {capMib} MiB that fits is already read: {warmedMib} of {hotMib} MiB)");
+        _log.Info($"{game}: supplement prewarm skipped (the {capMib} MiB that fits is already read: {warmedMib} of {hotMib} MiB{WindowNote(game, warmedMib)})");
     }
 
     private PrewarmResult Record(GameSettings game, DateTimeOffset now, PrewarmResult r, double mbps)
@@ -335,8 +340,13 @@ public sealed partial class Prewarmer
         {
             if (r.Ran && r.Mode is null && _startupTrim.TryGetValue(game.Name, out (long WarmedMib, long HotMib) trim) && game.MaxStreamMib == trim.WarmedMib)
             {
-                entry["warmed_mib"] = ActualMib(r.Stats, trim.WarmedMib); // 서비스 시작 상한으로 앞부분만 읽음 (실제 읽은 양) (보충 예열이 끝나면 둘이 같아짐)
+                long actualMib = ActualMib(r.Stats, trim.WarmedMib);
+                entry["warmed_mib"] = actualMib; // 서비스 시작 상한으로 앞부분만 읽음 (실제 읽은 양) (보충 예열이 끝나면 둘이 같아짐)
                 entry["hot_mib"] = trim.HotMib;
+                if (trim.WarmedMib > actualMib)
+                {
+                    entry["window_mib"] = trim.WarmedMib; // 목록이 상한 창보다 짧음: 다시 읽을 때 같은 창을 씀
+                }
             }
         }
 
@@ -367,6 +377,7 @@ public sealed partial class Prewarmer
                 }
             }
 
+            WritePartialRewarmFields(game.Name, entry, now);
             _status[game.Name] = entry;
         }
 

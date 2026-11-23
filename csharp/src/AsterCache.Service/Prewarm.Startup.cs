@@ -157,7 +157,7 @@ public sealed partial class Prewarmer
                 if (list.FirstOrDefault(g => string.Equals(g.Name, r.Game, StringComparison.OrdinalIgnoreCase)) is { } game)
                 {
                     long warmedMib = ActualMib(r.Stats, t.WarmedMib);
-                    NotePartial(game, warmedMib, t.HotMib, r.Stats?.Bytes ?? MibBytes(warmedMib)); // 상한으로 앞부분만 읽음 (실제 읽은 양): 유휴 때 나머지를 보충 (상태 파일에는 Record 가 이미 남김)
+                    NotePartial(game, warmedMib, t.HotMib, r.Stats?.Bytes ?? MibBytes(warmedMib), t.WarmedMib); // 상한으로 앞부분만 읽음 (실제 읽은 양): 유휴 때 나머지를 보충 (상태 파일에는 Record 가 이미 남김)
                 }
             }
         }

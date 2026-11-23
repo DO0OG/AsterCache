@@ -265,7 +265,7 @@ public sealed partial class Prewarmer
 
                         if (memoryPartial is { } planned)
                         {
-                            SetMemoryPartialLocked(game, stats, planned.WarmedMib, planned.HotMib, inputs);
+                            SetMemoryPartialLocked(game, stats, planned.WarmedMib, planned.HotMib, inputs, listEnded: !shortFinish);
                             if (shortFinish && stats.GapBytes == 0)
                             {
                                 _resume[game.Name] = (planned.WarmedMib, stats.Bytes); // 한도로 마무리: 틈 없는 창 읽기라 보충이 그 창의 이 위치부터 이어 읽고, 사다리도 읽은 범위를 정확히 앎

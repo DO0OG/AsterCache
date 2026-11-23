@@ -219,7 +219,6 @@ public sealed partial class AutoRelocatorTests
     [InlineData("running")]
     [InlineData("relocate_off")]
     [InlineData("extending")]
-    [InlineData("stale_file")]
     [InlineData("switch_file")]
     [InlineData("not_done")]
     [InlineData("no_trace")]
@@ -237,9 +236,6 @@ public sealed partial class AutoRelocatorTests
                 break;
             case "extending":
                 File.Copy(_game.Plan, _game.Plan + ".extend");
-                break;
-            case "stale_file":
-                _w.Files.Add(_game.Plan + ".stale");
                 break;
             case "switch_file":
                 _w.Files.Add(_game.Plan + ".switch");
@@ -356,6 +352,79 @@ public sealed partial class AutoRelocatorTests
         Tick();
 
         Assert.Equal(["other", "bench"], _switched);
+    }
+
+    [Fact]
+    public void AKeptPreviousPlanFileDoesNotStopTheMigrationOfAFinishedGameAndStaysAsItWas()
+    {
+        UseWholeFile();
+        LegacyRangeDone();
+        string stale = _game.Plan + ".stale";
+        _w.Files.Add(stale); // 다시 세우기가 끝난 뒤에도 남는 예전 계획 보관 파일
+
+        Tick();
+
+        Assert.Equal(["bench"], _switched);
+        Assert.Equal([F1, F2], WholeFileLayout.WholeFiles(PlanFile.Load(_game.Plan)));
+        Assert.Contains(stale, _w.Files); // 이행은 활성 계획을 제자리에서 바꿀 뿐 보관 파일을 옮기거나 덮지 않음
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("whole-file placement waits", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("extend", "the zone is being extended")]
+    [InlineData("switch", "a plan switch is unfinished")]
+    [InlineData("no_trace", "the game has no trace")]
+    public void AMigrationThatWaitsForAReasonLogsItOncePerServiceRun(string why, string text)
+    {
+        UseWholeFile();
+        LegacyRangeDone();
+        _w.Files.Add(_game.Plan + ".stale");
+        switch (why)
+        {
+            case "extend":
+                File.Copy(_game.Plan, _game.Plan + ".extend");
+                break;
+            case "switch":
+                _w.Files.Add(_game.Plan + ".switch");
+                break;
+            default:
+                _w.Files.Remove(AutoTracer.RawTracePath(_game));
+                break;
+        }
+
+        Tick();
+        Tick();
+        Tick();
+
+        Assert.Empty(_switched);
+        Assert.Single(_log.Lines, l => l.Contains($"bench: whole-file placement waits, {text}", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AGameThatIsNotAMigrationTargetLogsNoWaitReason()
+    {
+        UseWholeFile(whole: false);
+        LegacyRangeDone();
+        File.Copy(_game.Plan, _game.Plan + ".extend");
+
+        Tick();
+        Tick();
+
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("whole-file placement waits", StringComparison.Ordinal)); // 방식이 ranges
+    }
+
+    [Fact]
+    public void AGameThatAlreadyHasAWholePlanLogsNoWaitReason()
+    {
+        UseWholeFile();
+        Tick();
+        RunUntilDone();
+        File.Copy(_game.Plan, _game.Plan + ".extend");
+        _relocator = null;
+
+        Tick();
+
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("whole-file placement waits", StringComparison.Ordinal));
     }
 
     [Fact]

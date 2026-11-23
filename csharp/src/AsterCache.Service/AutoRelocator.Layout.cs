@@ -19,6 +19,7 @@ public sealed partial class AutoRelocator
     internal const string LayoutDetail = "layout rule changed, relocating whole files";
 
     private readonly HashSet<string> _layoutChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 예전 범위 계획의 통째 배치 이행을 이미 따져 본 게임 (서비스 실행당 한 번)
+    private readonly HashSet<string> _layoutSkipLogged = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 이행을 미루는 사유를 이미 로그로 남긴 게임
     private readonly Dictionary<string, DateTimeOffset> _layoutRetryAt = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 이행을 지금은 못 한 게임과 다시 시도할 시각
 
     // 이 게임의 재배치 방식이 통째 배치인가: 게임별 layout 이 전역 auto.relocate_layout 보다 우선 (GamePolicy.RelocateLayout). 방식을 읽는 곳은 모두 이 함수를 거침.
@@ -90,9 +91,7 @@ public sealed partial class AutoRelocator
         foreach (GameSettings g in s.Games.OrderByDescending(g => played.GetValueOrDefault(g.Name, DateTimeOffset.MinValue)).ThenBy(g => g.Name, StringComparer.Ordinal))
         {
             if (!WholeLayout(g, s) || !HeavyWorkAllowed(g) || !GamePolicy.AllowsRelocate(g) || _status.Get(g.Name) is not { Stage: AutoStage.Done, RelocatedAt: not null } entry
-                || entry.Detail?.StartsWith(StalePlanDetail, StringComparison.Ordinal) == true || _planFailedAt.ContainsKey(g.Name)
-                || !_env.FileExists(g.Plan) || IsExtending(g) || _env.FileExists(g.Plan + StaleSuffix) || _env.FileExists(g.Plan + PlanSwitch.RecordSuffix)
-                || AutoTracer.PlanTracePath(g, _env.FileExists) is null // 트레이스가 없으면 자동 재배치가 이 게임을 집지 못해 이행이 끝나지 않음
+                || !_env.FileExists(g.Plan) || LayoutBlocker(g, entry) is { } blocker && SkipLayoutOnce(g, blocker)
                 || _tier?.IsActive(g.Name) == true || _recovery.IsRelocationHeld(DriveOf(g)) || RecoveryHeldUntil(g) is not null || AnyGameRunning(g)
                 || _layoutRetryAt.TryGetValue(g.Name, out DateTimeOffset retryAt) && _env.Now() < retryAt || !_layoutChecked.Add(g.Name))
             {
@@ -164,6 +163,36 @@ public sealed partial class AutoRelocator
                 _log.Warn($"{g.Name}: whole-file migration failed ({e.GetType().Name}: {FirstLine(e.Message)})");
             }
         }
+    }
+
+    // 이행을 미루는, 시간이 지나도 저절로 풀리지 않는 사유 (없으면 null). 계획 보관 파일 (.stale) 은 다시 세우기가 끝난 뒤에도 남으므로 사유가 아님:
+    // 다시 세우는 중이면 활성 계획이 없거나 (치워 둠) 상태가 완료가 아니거나 확장 표시가 있음. 이행은 활성 계획을 제자리에서 바꾸고 보관 파일은 건드리지 않음.
+    private string? LayoutBlocker(GameSettings g, AutoGameEntry entry) =>
+        entry.Detail?.StartsWith(StalePlanDetail, StringComparison.Ordinal) == true || _planFailedAt.ContainsKey(g.Name) ? "the plan was restored after a failed replan"
+        : IsExtending(g) ? "the zone is being extended"
+        : _env.FileExists(g.Plan + PlanSwitch.RecordSuffix) ? "a plan switch is unfinished"
+        : AutoTracer.PlanTracePath(g, _env.FileExists) is null ? "the game has no trace" // 트레이스가 없으면 자동 재배치가 이 게임을 집지 못해 이행이 끝나지 않음
+        : null;
+
+    // 이행을 미루는 사유를 게임당 서비스 실행에 한 번만 로그로 남김 (이미 통째 계획인 게임은 대상이 아니므로 남기지 않음). 항상 true: 호출한 쪽은 이 게임을 건너뜀.
+    private bool SkipLayoutOnce(GameSettings g, string why)
+    {
+        if (_layoutSkipLogged.Add(g.Name))
+        {
+            try
+            {
+                if (WholeFileLayout.WholeFiles(_env.LoadPlan(g.Plan)) is null)
+                {
+                    _log.Info($"{g.Name}: whole-file placement waits, {why}");
+                }
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                // 읽지 못하면 사유 로그만 생략
+            }
+        }
+
+        return true;
     }
 
     private void RetryLayoutLater(GameSettings g, TimeSpan after)

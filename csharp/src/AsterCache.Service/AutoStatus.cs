@@ -36,7 +36,7 @@ public sealed record DriveRecoveryRecord(string Drive, DateTimeOffset Started, D
 
 /// 게임별 점유 충돌 복구 시도 (auto_status.json 의 replan_attempts): 마지막 계획 SHA, 거절된 LCN, 이번 주기에 쓴 잔여 재계획 수, 다음 시도를 허용하는 시각 (보류 중일 때만).
 /// 계획 SHA 가 바뀌어도 이 기록은 지우지 않습니다 (재시작·새 계획이 횟수 제한을 풀지 못하게). 완료하면 지움.
-public sealed record RecoveryAttempt(string? PlanSha, long? RejectedLcn, int Replans, DateTimeOffset? NextAllowed, string? Reason = null, string? Stamp = null, int OccupiedStreak = 0);
+public sealed record RecoveryAttempt(string? PlanSha, long? RejectedLcn, int Replans, DateTimeOffset? NextAllowed, string? Reason = null, string? Stamp = null, int OccupiedStreak = 0, int RepeatRounds = 0, long? RestStamp = null);
 
 public sealed record AutoEvent(DateTimeOffset At, string Game, string Kind);
 
@@ -664,6 +664,16 @@ public sealed class AutoStatus
                     o.Add("occupied_streak", (long)a.OccupiedStreak); // 점유 사유가 연속된 횟수 (보류 시간을 늘리는 기준, 이동이 성공하면 지움)
                 }
 
+                if (a.RepeatRounds > 0)
+                {
+                    o.Add("repeat_rounds", (long)a.RepeatRounds); // 앞선 저널에서 이미 옮겼던 조각을 다시 옮긴 회차가 이어진 횟수
+                }
+
+                if (a.RestStamp is { } rest)
+                {
+                    o.Add("rest_stamp", rest); // 범위 방식 재배치를 쉬는 중: 쉬기로 한 때의 계획 파일 수정 시각 (UTC 틱), 계획이 바뀌면 풀림
+                }
+
                 attempts.Add(name, o);
             }
 
@@ -752,7 +762,8 @@ public sealed class AutoStatus
                     {
                         _attempts[name] = new RecoveryAttempt(Str(o, "plan_sha"), o.TryGetValue("rejected_lcn", out object? lcn) && lcn is long l ? l : null,
                             o.TryGetValue("replans", out object? n) && n is long count ? (int)Math.Clamp(count, 0, int.MaxValue) : 0, Time(o, "next_allowed"), Str(o, "reason"), Str(o, "stamp"),
-                            o.TryGetValue("occupied_streak", out object? streak) && streak is long sn ? (int)Math.Clamp(sn, 0, int.MaxValue) : 0);
+                            o.TryGetValue("occupied_streak", out object? streak) && streak is long sn ? (int)Math.Clamp(sn, 0, int.MaxValue) : 0,
+                            o.TryGetValue("repeat_rounds", out object? rr) && rr is long rn ? (int)Math.Clamp(rn, 0, int.MaxValue) : 0, o.TryGetValue("rest_stamp", out object? rs) && rs is long rt ? rt : null);
                     }
                 }
             }

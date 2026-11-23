@@ -329,6 +329,16 @@ public sealed class ReapplyEnv
         return Applier.PendingBefore(jr.Rows.ToList()).Count > 0;
     }
 
+    /// 현재 저널의 줄과 바로 앞 저널 (<이름>.jsonl.<UTC 시각> 보관본 중 이름이 가장 나중인 것) 의 줄 (없으면 null).
+    public static (IReadOnlyList<JObject> Current, IReadOnlyList<JObject>? Previous) JournalRounds(string journalDir, GameSettings g)
+    {
+        string journal = JournalPath(journalDir, g);
+        using var current = new Journal(journal);
+        string? archived = Directory.EnumerateFiles(journalDir, g.Name + ".jsonl.*").Where(f => !f.EndsWith(".bak", StringComparison.Ordinal) && !f.EndsWith(".tmp", StringComparison.Ordinal)).Order(StringComparer.Ordinal).LastOrDefault(); // 시각 이름이라 사전순이 시간순
+        using var previous = archived is null ? null : new Journal(archived);
+        return ([.. current.Rows], previous is null ? null : [.. previous.Rows]);
+    }
+
     /// 저널의 현재 줄 수 (없으면 0).
     public static int JournalRows(string journalDir, GameSettings g)
     {

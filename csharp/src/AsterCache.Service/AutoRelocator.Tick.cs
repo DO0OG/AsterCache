@@ -136,6 +136,13 @@ public sealed partial class AutoRelocator
                 continue;
             }
 
+            if (RestHeld(g, s))
+            {
+                WarmNewTrace(g, warms); // 예열은 막지 않음
+                Note(g, AutoStage.WaitingIdle, RestDetail); // 되풀이 감지로 쉬는 중: 재시작해도 풀리지 않음 (auto_status 에 저장)
+                continue;
+            }
+
             if (_transientHold.TryGetValue(g.Name, out (DateTimeOffset Until, string Text) transient))
             {
                 if (transient.Until > _env.Now())

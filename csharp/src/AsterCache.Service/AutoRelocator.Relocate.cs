@@ -271,6 +271,7 @@ public sealed partial class AutoRelocator
                 _status.SetRecovery(g.Name, ClearOccupiedStreakIfMoved(streaked, rep.MovedBytes));
             }
 
+            NoteRepeatRound(g, plan, mark, rep.MovedBytes);
             BeginRecovery(g, s.Auto, rep.MovedBytes, baseline);
             if (rep.Stopped == DataLock.BusyReason)
             {

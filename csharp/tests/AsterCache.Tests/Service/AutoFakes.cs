@@ -364,6 +364,9 @@ internal sealed class FakeWorld
 
     public Func<GameSettings, int> JournalRows { get; set; } = _ => 0;
 
+    /// 현재 저널과 바로 앞 저널의 줄 (기본: 연결 안 함 = 되풀이 감지 없음).
+    public Func<GameSettings, (IReadOnlyList<AsterCache.Core.Json.JObject> Current, IReadOnlyList<AsterCache.Core.Json.JObject>? Previous)>? JournalRounds { get; set; }
+
     /// 같은 볼륨의 다른 게임 계획이 예약한 존 범위 (기본: 없음).
     public Func<GameSettings, IReadOnlyList<(long Lcn, long Clusters)>> Reserved { get; set; } = _ => [];
 
@@ -501,6 +504,7 @@ internal sealed class FakeWorld
         IsSparse = p => IsSparse(p),
         ChangeTime = p => ChangeTime(p),
         JournalRows = g => JournalRows(g),
+        JournalRounds = JournalRounds,
         Lock = g =>
         {
             IDisposable? gate = Lock(g);

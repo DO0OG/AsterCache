@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using AsterCache.Core;
 using AsterCache.Core.Apply;
 using AsterCache.Core.Discovery;
+using AsterCache.Core.Json;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
@@ -274,6 +275,9 @@ public sealed class AutoEnv
     /// 중단된 계획 교체가 있으면 끝까지 진행합니다 (없으면 null). 읽기·보관 실패는 예외로 올라옴.
     public Func<GameSettings, SwitchResult?> ResumeSwitch { get; init; } = _ => null;
 
+    /// 게임의 현재 저널 줄과 바로 앞 저널 (보관된 것 중 가장 최근) 의 줄. 앞선 저널이 없으면 null. 없으면 (시험 기본값) 되풀이 감지를 하지 않음.
+    public Func<GameSettings, (IReadOnlyList<JObject> Current, IReadOnlyList<JObject>? Previous)>? JournalRounds { get; init; }
+
     /// 게임 저널 header 의 plan_sha (저널에 행이 없으면 null). 활성 계획과 맞는지 시작 복구가 대조합니다.
     public Func<GameSettings, string?> JournalPlanSha { get; init; } = _ => null;
 
@@ -455,6 +459,7 @@ public sealed class AutoEnv
             JournalPlanSha = g => ReapplyEnv.JournalPlanSha(journalDir, g),
             HasPendingVerification = g => ReapplyEnv.HasPendingVerification(journalDir, g),
             ArchiveJournal = g => ReapplyEnv.ArchiveJournal(journalDir, g),
+            JournalRounds = g => ReapplyEnv.JournalRounds(journalDir, g),
             MoveAside = (src, dst) =>
             {
                 DataLock.RequireHeld(src);

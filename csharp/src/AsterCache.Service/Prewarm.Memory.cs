@@ -373,31 +373,6 @@ public sealed partial class Prewarmer
     }
 
     private readonly HashSet<string> _sparseOut = new(StringComparer.OrdinalIgnoreCase); // 마지막 예열 판정이 스파스 범위를 뺀 게임, _gate 로 보호
-    private readonly Dictionary<string, long> _sparseWindow = new(StringComparer.OrdinalIgnoreCase); // 처음 예열이 스파스 범위를 넣어 읽은 창의 크기 (MiB, 스파스 포함): 이 창 안에서만 스파스 유지가 읽음, _gate 로 보호
-
-    private void SetSparseWindow(string game, long? windowMib)
-    {
-        lock (_gate)
-        {
-            if (windowMib is { } mib)
-            {
-                _sparseWindow[game] = mib;
-            }
-            else
-            {
-                _ = _sparseWindow.Remove(game);
-            }
-        }
-    }
-
-    // 처음 예열이 스파스 범위를 넣어 읽은 창 (그 창 크기로 줄인 사본, 스파스 표식 없음), 아니면 null.
-    internal GameSettings? SparseWindowOf(GameSettings g)
-    {
-        lock (_gate)
-        {
-            return _sparseWindow.TryGetValue(g.Name, out long mib) ? g with { MaxStreamMib = (int)Math.Min(mib, int.MaxValue), MaxStreamSet = true } : null;
-        }
-    }
 
     private void SetSparseOut(string game, bool on)
     {
@@ -414,22 +389,6 @@ public sealed partial class Prewarmer
         {
             return !g.SkipSparse && _sparseOut.Contains(g.Name) ? g with { SkipSparse = true } : g;
         }
-    }
-
-    // 스파스 범위를 뺀 목록 (withoutSparseMib) 으로 예열했다면 읽었을 창 (MiB, Partial: 목록 전체가 아니라 앞쪽 창): 모자라지 않으면 그 목록 전체, 모자라면 앞쪽 부분 예열의 창, 그것도 읽지 못했을 (건너뜀) 게임이면 null.
-    // 스파스를 예열에 넣는 쪽은 이 창의 실제 읽기 바이트 (ReadSetBytes) 를 넘지 않게 묶어 디스크 읽기와 메모리 부담을 늘리지 않습니다. skip 판정은 RunLocked 와 같은 식입니다.
-    private (long Mib, bool Partial)? ReadWithoutSparseMib(GameSettings game, long withoutSparseMib, long availableRamMib, long? roomMib, long? footprintMib, Func<long?, string?> skipOf)
-    {
-        long? room = footprintMib is null ? roomMib : AvailableCap(game, WindowAvailableMib(availableRamMib), roomMib ?? long.MaxValue, footprintMib);
-        string? skip = skipOf(withoutSparseMib << 20);
-        bool low = skip?.StartsWith("low memory", StringComparison.Ordinal) == true;
-        bool over = skip is null && room is { } limit && withoutSparseMib > limit;
-        if (!low && !over)
-        {
-            return skip is null ? (withoutSparseMib, false) : null;
-        }
-
-        return PartialCapMib(game, withoutSparseMib, WindowAvailableMib(availableRamMib), PhysCapMib(), roomMib ?? long.MaxValue, footprintMib) is { } cap ? (cap, true) : null;
     }
 
     // 계획한 예열 목록에서 스파스 파일이 차지하는 양 (MiB): 사다리가 만지지 못하는 범위. 목록을 계획할 수 없으면 0.
@@ -508,19 +467,18 @@ public sealed partial class Prewarmer
     }
 
     // 메모리 부분 예열 상태를 실제 읽은 양으로 확정 (_gate 안에서 부름): 완전 예열로 기록하지 않고, 나머지는 메모리가 날 때 보충 예열이 읽고, 재예열 점검은 읽은 앞부분만 잼.
-    // sparseBytes: 스파스 범위를 넣어 읽은 예열이 버퍼드로 읽은 스파스 바이트. 부분 예열이 기록하는 읽은 양은 스파스를 뺀 목록 (이후 사다리·보충·표본이 보는 목록) 의 앞부분 길이라 이를 뺌.
-    private void SetMemoryPartialLocked(GameSettings game, StreamStats stats, long windowMib, long hotMib, string? inputs, long sparseBytes = 0)
+    private void SetMemoryPartialLocked(GameSettings game, StreamStats stats, long windowMib, long hotMib, string? inputs)
     {
-        (long WarmedMib, long HotMib) actual = (ActualMib(stats, windowMib, -sparseBytes), hotMib);
+        (long WarmedMib, long HotMib) actual = (ActualMib(stats, windowMib), hotMib);
         (_memoryPartial[game.Name], _partial[game.Name]) = (actual, actual);
-        _supplementReadProgress[game.Name] = new(stats.Bytes - sparseBytes, inputs, game);
+        _supplementReadProgress[game.Name] = new(stats.Bytes, inputs, game);
         _supplementRetry.Remove(game.Name);
     }
 
     // 읽는 도중 메모리 판정으로 멈춘 예열: 멈춘 시각을 기억하고, 줄여 읽던 창 (plan) 이 틈·오류·순서 바꿈 없이 읽은 만큼을 부분 예열로 남김. 남긴 양 (MiB), 안 남겼으면 null.
     // 전체 계획 경로 (plan 없음) 와 0 MiB 는 남기지 않음: 읽은 곳이 목록 앞쪽과 같다고 보장할 수 없음 (보충의 NoteProgress 규칙과 같게).
     // shortcut: 위치는 창 스케줄 기준의 근사 (접근 순서 head 를 넘는 구간은 물리 순서라 목록 앞쪽과 다를 수 있음), 어긋난 구간은 재예열 점검의 표본이 식은 것으로 잡아 다시 읽음.
-    private long? NoteMemoryStop(GameSettings game, StreamStats stats, (long WarmedMib, long HotMib)? plan, long sparseBytes = 0)
+    private long? NoteMemoryStop(GameSettings game, StreamStats stats, (long WarmedMib, long HotMib)? plan)
     {
         bool positional = plan is not null && stats.Bytes > 0 && stats.GapBytes == 0 && stats.Errors == 0 && !_streamer.WasPrewarmReordered(game);
         string? inputs = positional ? PrewarmRun.InputStamp(game) : null;
@@ -533,7 +491,7 @@ public sealed partial class Prewarmer
             }
 
             (long windowMib, long hotMib) = plan!.Value;
-            long warmedMib = ActualMib(stats, windowMib, -sparseBytes);
+            long warmedMib = ActualMib(stats, windowMib);
             if (warmedMib >= hotMib)
             {
                 return null;
@@ -541,7 +499,7 @@ public sealed partial class Prewarmer
 
             _supplementNothingNew.Remove(game.Name);
             _resume.Remove(game.Name); // 부분 상태를 새로 정함: 보충의 옛 이어 읽기 위치는 낡음
-            SetMemoryPartialLocked(game, stats, windowMib, hotMib, inputs, sparseBytes);
+            SetMemoryPartialLocked(game, stats, windowMib, hotMib, inputs);
             return warmedMib;
         }
     }

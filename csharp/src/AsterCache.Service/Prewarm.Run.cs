@@ -139,9 +139,6 @@ public sealed partial class Prewarmer
             string skipNote = string.Empty; // 몫 때문에 건너뛴 사유에 붙일 실제 가용·예비
             (long WarmedMib, long HotMib)? memoryPartial = null;
             long originalHotMib = 0;
-            long? noMoreThanMib = null; // 스파스를 넣어도 예열이 읽는 양이 스파스를 뺐을 때 실제로 읽었을 양보다 늘지 않게 하는 상한
-            bool sparseInWindow = false; // 스파스 범위를 이 예열 한 번의 창 안에 넣어 읽음: 읽은 양·이어 읽을 위치는 스파스를 뺀 목록 기준으로 기록하고, 이후 사다리·보충·표본은 main 처럼 스파스를 뺌
-            long SparseRead(StreamStats stats) => sparseInWindow ? stats.BufferedBytes : 0;
             if (hotBytes is > 0 and long hotRead)
             {
                 long hotMib = (hotRead + (1 << 20) - 1) >> 20;
@@ -162,54 +159,28 @@ public sealed partial class Prewarmer
                 bool sparseOut = false;
                 if ((lowMemory || overBudget) && SparseMib(game with { SkipSparse = false }) is > 0 and long sparseMib)
                 {
-                    if (SparseKeepable(game) && ReadWithoutSparseMib(game, Math.Max(0, hotMib - sparseMib), availableRamMib, roomMib, footprintMib, Skip) is { } without
-                        && ReadSetBytes(game with { SkipSparse = true, MaxStreamMib = without.Partial ? (int)without.Mib : game.MaxStreamMib, MaxStreamSet = without.Partial || game.MaxStreamSet }, without.Partial) is { } withoutBytes
-                        && withoutBytes >> 20 >= 1)
-                    {
-                        noMoreThanMib = withoutBytes >> 20; // 스파스를 뺀 사본이 실제로 읽었을 바이트 (스파스 행을 넣은 채 창을 고른 뒤 빼므로 창보다 작을 수 있음)
-                        sparseInWindow = true;
-                        originalMib = Math.Max(0, originalMib - sparseMib); // 부분 예열 상태의 전체 크기는 스파스를 뺀 목록의 크기 (스파스를 뺀 사본과 같음)
-                        originalHotMib = originalMib;
-                        // 게임 중 스파스 유지 (Prewarm.PlaySparse) 가 이어 둘 수 있으면 이 예열 한 번의 창 안에서만 스파스 범위를 읽음: 순위 목록의 점수 순 한 목록에서 일반 블록과 같은 예산을 다투고 (SelectToBudget) 창 안에 든 만큼만 예열함.
-                        // 창 크기는 스파스를 뺀 사본이 실제로 읽었을 바이트를 넘지 않게 묶음. 이 뒤의 보충·재예열 표본·사다리·시작 만지기는 스파스 표식으로 main 처럼 스파스를 빼고 (되풀이 읽기가 늘지 않음), 스파스 유지만 이 창을 봄.
-                        // 순위 목록이 스파스 블록 없이 만들어진 것이면 계획이 읽는 스파스 범위가 순위 행 뒤 단계에서 같은 규칙으로 다툼.
-                        _log.Info($"{game.Name}: {sparseMib} MiB in sparse files stay in the memory prewarm and share its budget by rank; they are kept while playing");
-                    }
-                    else
-                    {
-                        // 스파스 파일 범위는 사다리가 만지지 못해 가장 오래된 페이지로 남아 먼저 밀려남: 상한이 모자라면 메모리 예열에서 먼저 뺌 (존 배치는 그대로).
-                        // 표시는 이 게임의 사본에 실어 읽기 목록·표본·고정 목록이 같은 범위를 보게 하고, 게임별로 기억해 재예열·사다리 표본도 읽지 않은 범위를 재지 않게 함.
-                        sparseOut = true;
-                        game = game with { SkipSparse = true };
-                        warm = game;
-                        hotMib = Math.Max(0, hotMib - sparseMib);
-                        originalMib = Math.Max(0, originalMib - sparseMib);
-                        originalHotMib = originalMib;
-                        skip = Skip(hotMib << 20);
-                        lowMemory = skip?.StartsWith("low memory", StringComparison.Ordinal) == true;
-                        overBudget = skip is null && room is { } limitAfter && hotMib > limitAfter;
-                        _log.Info($"{game.Name}: {sparseMib} MiB in sparse files left out of the memory prewarm, the ladder cannot touch them");
-                    }
+                    // 스파스 파일 범위는 사다리가 만지지 못해 가장 오래된 페이지로 남아 먼저 밀려남: 상한이 모자라면 메모리 예열에서 먼저 뺌 (존 배치는 그대로).
+                    // 표시는 이 게임의 사본에 실어 읽기 목록·표본·고정 목록이 같은 범위를 보게 하고, 게임별로 기억해 재예열·사다리 표본도 읽지 않은 범위를 재지 않게 함.
+                    sparseOut = true;
+                    game = game with { SkipSparse = true };
+                    warm = game;
+                    hotMib = Math.Max(0, hotMib - sparseMib);
+                    originalMib = Math.Max(0, originalMib - sparseMib);
+                    originalHotMib = originalMib;
+                    skip = Skip(hotMib << 20);
+                    lowMemory = skip?.StartsWith("low memory", StringComparison.Ordinal) == true;
+                    overBudget = skip is null && room is { } limitAfter && hotMib > limitAfter;
+                    _log.Info($"{game.Name}: {sparseMib} MiB in sparse files left out of the memory prewarm, the ladder cannot touch them");
                 }
 
                 if (skip is null || lowMemory)
                 {
-                    SetSparseOut(game.Name, sparseOut || sparseInWindow); // 이번 판정이 정함: 필요할 때만 켬 (창 안에 스파스를 넣은 게임도 이후 경로는 스파스를 뺌)
-                    if (!sparseInWindow)
-                    {
-                        SetSparseWindow(game.Name, null);
-                    }
+                    SetSparseOut(game.Name, sparseOut); // 이번 판정이 정함: 필요할 때만 켬
                 }
 
                 if (lowMemory || overBudget)
                 {
-                    long? partialCap = PartialCapMib(game, hotMib, WindowAvailableMib(availableRamMib), PhysCapMib(), roomMib ?? long.MaxValue, footprintMib);
-                    if (noMoreThanMib is { } noMore)
-                    {
-                        partialCap = Math.Min(partialCap ?? noMore, noMore);
-                    }
-
-                    if (partialCap is { } capMib)
+                    if (PartialCapMib(game, hotMib, WindowAvailableMib(availableRamMib), PhysCapMib(), roomMib ?? long.MaxValue, footprintMib) is { } capMib)
                     {
                         // 전체가 들어가지 않음: 앞쪽부터 들어가는 만큼만 읽음 (max_stream_mib 를 줄인 사본). 틈 메우기는 생략.
                         // 전체 크기는 원래 값을 유지: 서비스 시작 상한으로 이미 줄인 사본이면 그 원래 크기.
@@ -246,16 +217,7 @@ public sealed partial class Prewarmer
 
                     if (finalReadMib > allowedMib)
                     {
-                        long? finalCapMib = PartialCapMib(game, finalReadMib, WindowAvailableMib(availableRamMib), PhysCapMib(), roomMib ?? long.MaxValue, footprintMib);
-                        if (sparseInWindow && finalCapMib is { } shrunk)
-                        {
-                            // 계획 뒤 메모리가 줄어 창을 다시 줄여도 스파스를 뺀 사본이 그 창으로 읽었을 바이트를 넘지 않게 다시 묶음
-                            long mainMib = ReadSetBytes(game with { SkipSparse = true, MaxStreamMib = (int)shrunk, MaxStreamSet = true }, partial: true) is { } mainBytes ? mainBytes >> 20 : shrunk;
-                            finalCapMib = Math.Min(Math.Min(shrunk, noMoreThanMib ?? long.MaxValue), mainMib);
-                            finalCapMib = finalCapMib >= MinPartialMib ? finalCapMib : null;
-                        }
-
-                        if (finalCapMib is { } capMib)
+                        if (PartialCapMib(game, finalReadMib, WindowAvailableMib(availableRamMib), PhysCapMib(), roomMib ?? long.MaxValue, footprintMib) is { } capMib)
                         {
                             originalHotMib = Math.Max(originalHotMib, finalReadMib);
                             memoryPartial = (capMib, originalHotMib);
@@ -303,15 +265,10 @@ public sealed partial class Prewarmer
 
                         if (memoryPartial is { } planned)
                         {
-                            SetMemoryPartialLocked(game, stats, planned.WarmedMib, planned.HotMib, inputs, SparseRead(stats));
+                            SetMemoryPartialLocked(game, stats, planned.WarmedMib, planned.HotMib, inputs);
                             if (shortFinish && stats.GapBytes == 0)
                             {
-                                _resume[game.Name] = (planned.WarmedMib, stats.Bytes - SparseRead(stats)); // 한도로 마무리: 틈 없는 창 읽기라 보충이 그 창의 이 위치부터 이어 읽고, 사다리도 읽은 범위를 정확히 앎 (스파스를 뺀 목록 기준)
-                            }
-
-                            if (sparseInWindow)
-                            {
-                                _sparseWindow[game.Name] = ActualMib(stats, planned.WarmedMib); // 스파스 유지가 읽을 창: 실제로 읽은 양 (스파스 포함)
+                                _resume[game.Name] = (planned.WarmedMib, stats.Bytes); // 한도로 마무리: 틈 없는 창 읽기라 보충이 그 창의 이 위치부터 이어 읽고, 사다리도 읽은 범위를 정확히 앎
                             }
                         }
                         else
@@ -367,7 +324,7 @@ public sealed partial class Prewarmer
                     if (!complete)
                     {
                         string reason = cancelReason ?? "cancelled externally";
-                        long? keptMib = memoryStop ? NoteMemoryStop(game, s, memoryPartial, SparseRead(s)) : null; // Record 가 상태 파일에 쓰기 전에 읽은 데까지를 부분 상태로 확정
+                        long? keptMib = memoryStop ? NoteMemoryStop(game, s, memoryPartial) : null; // Record 가 상태 파일에 쓰기 전에 읽은 데까지를 부분 상태로 확정
                         LogSkipped(game.Name, "prewarm cancelled " + reason, () => $"{game.Name}: prewarm cancelled ({why}) after {s.Bytes >> 20} MiB ({reason}){_readMix.Note()}");
                         if (keptMib is { } kept)
                         {
@@ -392,7 +349,7 @@ public sealed partial class Prewarmer
                     if (memoryStop)
                     {
                         // 읽는 도중 메모리 한도에 걸려 읽은 데까지로 마무리함 (취소·실패가 아닌 부분 예열): 상태는 Settle 이 이미 읽은 양으로 확정함
-                        _log.Info($"{game.Name}: prewarm read the first {ActualMib(s, memoryPartial?.WarmedMib ?? long.MaxValue, -SparseRead(s))} of {memoryPartial?.HotMib} MiB, the rest {cancelReason} [{why}]");
+                        _log.Info($"{game.Name}: prewarm read the first {ActualMib(s, memoryPartial?.WarmedMib ?? long.MaxValue)} of {memoryPartial?.HotMib} MiB, the rest {cancelReason} [{why}]");
                     }
 
                     DateTimeOffset warmedAt = _now();
@@ -404,7 +361,7 @@ public sealed partial class Prewarmer
                     }
 
                     double mbps = s.Seconds > 0 ? s.Bytes / 1048576.0 / s.Seconds : 0;
-                    string kind = memoryPartial is { } part ? $"partial {ActualMib(s, part.WarmedMib, -SparseRead(s))}/{part.HotMib} MiB, the rest does not fit in memory: " : string.Empty;
+                    string kind = memoryPartial is { } part ? $"partial {ActualMib(s, part.WarmedMib)}/{part.HotMib} MiB, the rest does not fit in memory: " : string.Empty;
                     _log.Info($"{game.Name}: prewarm done ({why}): {kind}{s.Bytes >> 20} MiB requested, {s.GapBytes / 1048576.0:F2} MiB gaps filled in {s.Seconds:F2} s = {mbps:F0} hint MB/s, {s.Requests} requests, {s.Errors} errors{s.BufferedNote()}, room {(roomMib is { } roomLimit ? roomLimit + " MiB" : "unlimited")}, available {_env.AvailableRamMib()} MiB{(_yieldedSeconds > 0 ? $", yielded {_yieldedSeconds:F1} s" : string.Empty)}{_readMix.Note()}{_requeued.Note()}");
                     _log.Info($"{game.Name}: prewarm phases ({why}): {run.Summary()}");
                     PrewarmResult done = Record(game, warmedAt, new PrewarmResult(game.Name, true, null, s, warmedAt), mbps);

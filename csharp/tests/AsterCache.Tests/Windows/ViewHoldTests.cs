@@ -201,6 +201,21 @@ public sealed class ViewHoldTests : IDisposable
     }
 
     [Fact]
+    public void HeldRangesListsWhatIsHeldNowAndDropsTheReleasedPart()
+    {
+        string a = Make("a.bin", 4);
+        string b = Make("b.bin", 4);
+        using var hold = new ViewHold(Counter(0), Counter(0), minFileBytes: 0);
+        hold.Rebase();
+        _ = hold.Hold([new ReadOp(a, 0, 4L * Mib), new ReadOp(b, 0, 4L * Mib)], CancellationToken.None);
+        Assert.Equal([new ReadOp(a, 0, 4L * Mib), new ReadOp(b, 0, 4L * Mib)], hold.HeldRanges());
+
+        _ = hold.Release(6L * Mib); // 나중에 붙든 b 전체와 a 의 뒤쪽 2 MiB
+
+        Assert.Equal([new ReadOp(a, 0, 2L * Mib)], hold.HeldRanges());
+    }
+
+    [Fact]
     public void AGivenUpRangeAndAFileThatChangedAfterTheReleaseAreNotReportedAgain()
     {
         string a = Make("a.bin", 4);

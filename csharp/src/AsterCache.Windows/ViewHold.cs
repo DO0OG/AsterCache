@@ -25,6 +25,9 @@ public interface IKeepHold : IDisposable
     /// 지금 붙든 바이트.
     long HeldBytes { get; }
 
+    /// 지금 붙들고 있는 범위 (붙든 순서 = 중요한 순서, 내놓은 뒤쪽은 뺌): 붙들지 못한 나머지를 다시 만지는 유지 회차와 시작 만지기가 붙든 범위를 빼는 데 씁니다.
+    IReadOnlyList<ReadOp> HeldRanges();
+
     /// 뷰를 열어 둔 파일 수와 뷰 수.
     int Files { get; }
 
@@ -283,6 +286,14 @@ public sealed unsafe class ViewHold : IKeepHold
             }
 
             return new HoldBatchResult(tally.Bytes, tally.Disk, tally.Skipped, tally.Errors, tally.Slow, tally.Views, tally.Checks, tally.Faults, Stopwatch.GetElapsedTime(started).TotalSeconds, Math.Max(0, StandbyTouch.ThreadCpuSeconds() - cpuBefore), boundary, tally.Images, tally.Smalls);
+        }
+    }
+
+    public IReadOnlyList<ReadOp> HeldRanges()
+    {
+        lock (_lock)
+        {
+            return [.. _segs.Where(s => s.Live > 0).Select(s => new ReadOp(s.Window.File.Path, s.Offset, s.Live))];
         }
     }
 

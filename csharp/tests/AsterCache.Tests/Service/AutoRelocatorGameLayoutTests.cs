@@ -69,6 +69,25 @@ public sealed partial class AutoRelocatorTests
         Assert.Equal(["other"], _switched);
     }
 
+    [Fact]
+    public void WithAGlobalRangesSettingOnlyTheGameWithTheKeyIsMigratedAndTheOtherKeepsItsRangePlan()
+    {
+        string plan2 = Path.Combine(Root, "plans", "other.plan.json");
+        GameSettings other = new("other", ["other.exe"], plan2 + ".prefetch.json", plan2, Root, [Root], "GAMES", 1440) { Source = "auto" };
+        _settings = _settings with { Games = [_game with { Layout = RelocateLayouts.WholeFile }, other] };
+        UseWholeFile(whole: false);
+        LegacyRangeDone(_settings.Games[0]);
+        PlanFile otherPlan = LegacyRangeDone(other);
+
+        Tick();
+        Tick();
+
+        Assert.Equal(["bench"], _switched);
+        Assert.NotNull(WholeFileLayout.WholeFiles(PlanFile.Load(_game.Plan)));
+        Assert.Equal(otherPlan.Sha(), PlanFile.Load(plan2).Sha()); // 키 없는 게임은 범위 계획 그대로
+        Assert.Null(WholeFileLayout.WholeFiles(PlanFile.Load(plan2)));
+    }
+
     [Theory]
     [InlineData(GameMode.PrewarmOnly, false)]
     [InlineData(GameMode.Inherit, true)]

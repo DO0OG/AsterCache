@@ -153,9 +153,9 @@ public static class ResidualPlanner
             }
 
             order.Add(o);
-            if (wholeFiles is not null && !candidate.SparseAllocations.ContainsKey(o.Path))
+            if (wholeFiles is not null && (!candidate.SparseAllocations.ContainsKey(o.Path) || !wholeFiles.Contains(o.Path)))
             {
-                // shortcut: 통째 배치의 스파스 파일은 아래 범위 규칙을 그대로 씀 (통째 조건에 드는 스파스 파일이 실제로 없음)
+                // shortcut: 통째 목록에 든 스파스 파일만 아래 스파스 범위 규칙을 씀 (통째 조건에 드는 스파스 파일이 실제로 없음). 목록에 없는 스파스 파일은 제자리라 작업이 없음
                 if (wholeFiles.Contains(o.Path) && wholeDone.Add(o.Path))
                 {
                     AddWholeFile(candidate, o.Path, e, prior, parts, sourceLayout);

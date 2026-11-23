@@ -347,6 +347,20 @@ public sealed class LargePieceLayoutApplyTests : ApplyTestBase
     }
 
     [Fact]
+    public void AWholePlanResidualReplanLeavesASparseFileThatIsNotInTheWholeListInPlaceButARangePlanStillMovesIt()
+    {
+        PlanFile whole = PlanFile.Make(Sessions, Root, 2 << 20, Cb, p => Files[p], zoneStartLcn: Zone, capacityBytes: 4L << 20, largePieceMinBytes: Min, sparseFn: p => p == F1);
+        Assert.Equal([F2], WholeFileLayout.WholeFiles(whole)); // F1 은 스파스라 큰 조각도 아니고 제자리
+        PlanFile ranges = PlanFile.Make(Sessions, Root, 2 << 20, Cb, p => Files[p], zoneStartLcn: Zone, sparseFn: p => p == F1);
+
+        PlanFile wholeResidual = ResidualPlanner.Build(whole, ResidualPlanner.PreviousTargets(null, [whole]), p => Vol.Ext[p], n => Vol.Bitmap().FindFreeRun(n, true, 0, PlanGuards.ZoneAlign));
+        PlanFile rangesResidual = ResidualPlanner.Build(ranges, ResidualPlanner.PreviousTargets(null, [ranges]), p => Vol.Ext[p], n => Vol.Bitmap().FindFreeRun(n, true, 0, PlanGuards.ZoneAlign));
+
+        Assert.DoesNotContain(wholeResidual.Tasks, t => t.Path == F1); // 제자리 스파스 파일이 범위 조각으로 zone 에 놓이지 않음
+        Assert.Contains(rangesResidual.Tasks, t => t.Path == F1); // 범위 계획의 잔여 재계획은 그대로
+    }
+
+    [Fact]
     public void AResidualPlanMovesAPieceThatIsNotAtItsTargetAsOneWholePiece()
     {
         PlanFile plan = Whole(Zone);

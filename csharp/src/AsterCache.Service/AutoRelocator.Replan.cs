@@ -20,7 +20,8 @@ public sealed partial class AutoRelocator
         }
         // 저널에 행이 있으면 그대로 둠: 다음 Plan 이 저널과 .stale 로 잔여 재계획하고 교체 때 저널을 보관 (보관부터 하면 이미 옮긴 데이터를 다시 옮김)
         _env.MoveAside(g.Plan, g.Plan + StaleSuffix);
-        _status.ResetForReplan(g.Name, BusyDetail);
+        _status.ResetForReplan(g.Name, BusyDetail, preserveReapplyLimit: true); // 원본은 그대로인 채 계획만 다시 만듦: 되풀이 기록은 지우지 않음
+        NoteReapplyReplan(g, null, null);
         _log.Info($"{g.Name}: {reason}, plan set aside as {StaleSuffix}, will plan again");
     }
 

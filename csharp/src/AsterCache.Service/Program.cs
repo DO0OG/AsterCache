@@ -118,6 +118,7 @@ if (auto is not null)
     reapplyEnv.Started = auto.ReapplyStarted;
     reapplyEnv.Spent = auto.ReapplySpent;
     reapplyEnv.Reapplied = auto.ReapplyMoved;
+    reapplyEnv.LayoutHealthy = auto.ReapplyHealthy;
     reapplyEnv.Options = auto.ReapplyOptions;
     reapplyEnv.WarnDegraded = auto.ReapplyWarnAllowed;
 }

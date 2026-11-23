@@ -137,8 +137,11 @@ public sealed class ReapplyEnv
     /// 재적용이 끝난 뒤 (예외로 끝나도) 실제로 쓴 바이트를 일일 예산·회복 추적에 알림.
     public Action<GameSettings, long> Spent { get; set; } = (_, _) => { };
 
-    /// 성공적으로 돌아온 재적용 회차의 실제 이동량만 알림.
-    public Action<GameSettings, long> Reapplied { get; set; } = (_, _) => { };
+    /// 성공적으로 돌아온 재적용 회차의 실제 이동량과, 회당 쓰기 상한·취소로 멈춰 남은 몫이 있는지 (나뉜 회차) 를 알림.
+    public Action<GameSettings, long, bool> Reapplied { get; set; } = (_, _, _) => { };
+
+    /// 배치 검사가 연속으로 나옴: 나뉜 회차의 이어 옮기기 표시를 내리는 데 씀.
+    public Action<GameSettings> LayoutHealthy { get; set; } = _ => { };
 
     /// 서비스가 정한 재적용 옵션 (회당 쓰기 상한·하루 잔여 예산 반영, 서비스가 자동 모드를 만든 뒤 연결): null 이면 OptionsFor 의 기본.
     public Func<GameSettings, ApplyOptions?> Options { get; set; } = _ => null;
@@ -477,7 +480,6 @@ public sealed class ReapplyChecker
     private readonly Dictionary<string, DateTimeOffset> _warnedAt = new(StringComparer.Ordinal); // 배치 풀림 경고를 낸 시각 (게임당 하루 한 번)
     private readonly HashSet<string> _cancelled = new(StringComparer.Ordinal); // 취소로 반쯤 적용된 게임
     private readonly HashSet<string> _shortRetryPending = new(StringComparer.Ordinal); // 짧은 재검사가 필요한 미완료 배치
-    private readonly HashSet<string> _splitRounds = new(StringComparer.Ordinal); // 쓰기 상한·취소로 나뉘어 이어 옮길 몫이 남은 재적용 (그 이어 옮기기는 되풀이 횟수에 다시 세지 않음)
     private readonly Dictionary<string, ReapplyVerdict> _lastShortRetryLog = new(StringComparer.Ordinal); // 같은 일시 보류의 반복 로그 억제
     private readonly Dictionary<string, long> _sparseHeldLogged = new(StringComparer.Ordinal); // 게임별로 마지막에 로그한 보류 스파스 파일 수 (같은 수의 반복 로그 억제)
 
@@ -496,7 +498,6 @@ public sealed class ReapplyChecker
     {
         HashSet<string> registered = gameNames.ToHashSet(StringComparer.Ordinal);
         _shortRetryPending.RemoveWhere(name => !registered.Contains(name));
-        _splitRounds.RemoveWhere(name => !registered.Contains(name));
         foreach (string name in _lastShortRetryLog.Keys.Where(name => !registered.Contains(name)).ToArray())
         {
             _lastShortRetryLog.Remove(name);
@@ -594,7 +595,7 @@ public sealed class ReapplyChecker
             ReapplyVerdict v = ReapplyPolicy.Decide(new ReapplyInputs(applied, changed, contiguous, Running, () => _env.DiskBusy(game), _env.CanApply, () => _env.Gate(game), unknown));
             if (contiguous == true)
             {
-                _splitRounds.Remove(game.Name); // 배치가 다시 연속: 다음 풀림은 새 회차
+                _env.LayoutHealthy(game); // 배치가 다시 연속: 다음 풀림은 새 회차
             }
 
             bool shortRetry = contiguous == false && IsShortRetryHold(v);
@@ -675,19 +676,7 @@ public sealed class ReapplyChecker
                 }
 
                 _env.Spent(game, rep.MovedBytes);
-                if (!_splitRounds.Contains(game.Name))
-                {
-                    _env.Reapplied(game, rep.MovedBytes); // 되풀이 횟수: 이어 옮기는 회차는 앞 회차의 같은 풀림이라 세지 않음
-                }
-
-                if (rep.MovedBytes > 0 && rep.Stopped is "write_cap" or "cancelled")
-                {
-                    _splitRounds.Add(game.Name);
-                }
-                else if (rep.Stopped is null)
-                {
-                    _splitRounds.Remove(game.Name);
-                }
+                _env.Reapplied(game, rep.MovedBytes, rep.Stopped is "write_cap" or "cancelled"); // 되풀이 횟수 (이어 옮기는 회차를 거르는 일은 기록이 함)
 
                 if (rep.Stopped == DataLock.BusyReason)
                 {

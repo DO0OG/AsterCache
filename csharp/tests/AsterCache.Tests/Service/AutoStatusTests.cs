@@ -276,6 +276,50 @@ public sealed class AutoStatusTests : IDisposable
     }
 
     [Fact]
+    public void ARoundSplitByTheWriteCapIsCountedOnceAndTheSplitMarkSurvivesARestart()
+    {
+        AutoStatus s = Make();
+        s.EnsureReapplyLimit("g", "source", "ranges");
+        TimeSpan week = TimeSpan.FromDays(7);
+
+        Assert.Equal((1, false), s.RecordReapplyRound("g", 100, week, 3, partial: true));
+        AutoStatus restarted = Make();
+        Assert.True(restarted.ReapplyLimit("g")!.SplitPending);
+        Assert.Equal((1, false), restarted.RecordReapplyRound("g", 100, week, 3, partial: true)); // 이어 옮기기: 세지 않고 표시 유지
+        Assert.True(restarted.ReapplyLimit("g")!.SplitPending);
+        Assert.Equal((1, false), restarted.RecordReapplyRound("g", 100, week, 3, partial: false)); // 끝남: 세지 않고 표시를 내림
+        Assert.False(restarted.ReapplyLimit("g")!.SplitPending);
+        Assert.Equal((2, false), restarted.RecordReapplyRound("g", 100, week, 3, partial: false));
+
+        restarted.RecordReapplyRound("g", 100, week, 3, partial: true);
+        restarted.ClearReapplySplit("g");
+        Assert.False(restarted.ReapplyLimit("g")!.SplitPending);
+    }
+
+    [Fact]
+    public void RemovingAGameForgetsItsRepeatRecordAndAReplanKeepingItAdoptsTheNextSourceKey()
+    {
+        AutoStatus s = Make();
+        s.Set("g", "auto", null, AutoStage.Done, "done");
+        s.EnsureReapplyLimit("g", "source", "ranges");
+        _ = s.RecordReapplyRound("g", 100, TimeSpan.FromDays(7), 3);
+
+        s.ResetForReplan("g", "replan", preserveReapplyLimit: true);
+        Assert.Equal(string.Empty, s.ReapplyLimit("g")!.SourceKey);
+        s.EnsureReapplyLimit("g", "next source", "ranges"); // 지문을 이어 받고 회차는 그대로
+        Assert.Equal(("next source", 1), (s.ReapplyLimit("g")!.SourceKey, s.ReapplyRoundsWithin("g", TimeSpan.FromDays(7))));
+        s.EnsureReapplyLimit("g", "another source", "ranges"); // 기준이 정해진 뒤 다른 지문은 새 기록
+        Assert.Equal(0, s.ReapplyRoundsWithin("g", TimeSpan.FromDays(7)));
+
+        s.EnsureReapplyLimit("g", "source", "ranges");
+        _ = s.RecordReapplyRound("g", 100, TimeSpan.FromDays(7), 3);
+        s.Remove("g");
+
+        Assert.Null(s.ReapplyLimit("g"));
+        Assert.Null(Make().ReapplyLimit("g"));
+    }
+
+    [Fact]
     public void ANewPlanClearsTheRepeatHistoryUnlessAZoneHandoffPreservesIt()
     {
         AutoStatus s = Make();

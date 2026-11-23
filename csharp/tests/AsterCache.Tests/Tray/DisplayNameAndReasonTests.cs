@@ -114,6 +114,20 @@ public sealed class DisplayNameAndReasonTests : IDisposable
         Assert.StartsWith("waiting for automatic relocation (", AutoStatusFile.StageText(game, "en"));
     }
 
+    [Theory]
+    [InlineData("waiting_idle", "prewarmed, reapply paused after 3 unchanged-source rounds in 7 days")]
+    [InlineData("done", "relocated (profile), prewarmed, reapply paused after 3 unchanged-source rounds in 7 days")]
+    public void ThePausedRelocationReasonShowsInKoAndEnForWaitingAndFinishedGamesAndKeepsTheOtherMarks(string stage, string detail)
+    {
+        var game = new AutoGame("auto", null, stage, detail);
+
+        Assert.Contains("7일에 3번 다시 놓아 재배치를 쉼", AutoStatusFile.StageText(game, "ko"));
+        Assert.Contains("re-applied 3 times in 7 days", AutoStatusFile.StageText(game, "en"));
+        Assert.Contains("7일에 3번 다시 놓아 재배치를 쉼", AutoStatusFile.HoldReason(game, "ko"));
+        Assert.Contains("예열됨", AutoStatusFile.StageText(game, "ko")); // 예열 표시는 사유와 함께 그대로
+        Assert.Equal("warm", AutoStatusFile.PrewarmPhase(game));
+    }
+
     [Fact]
     public void NewHoldReasonsShowShortTextInKoAndEnAndUnknownStaysVerbatim()
     {

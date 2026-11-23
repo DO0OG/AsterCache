@@ -264,7 +264,7 @@ public sealed partial class AutoRelocator
             }
 
             PlanFile built = _env.ReplanResidual!(g, active, ResidualOlds(g), SessionsFor(g, active));
-            _status.UpdateReapplyLimitSource(g.Name, ReapplySourceKey(built));
+            NoteReapplyReplan(g, active, built);
             LogResidualPlacement(g, built);
             _status.SetRecovery(g.Name, new RecoveryAttempt(built.Sha(), LcnIn(cause.Message), 1, null, prior.Reason, prior.Stamp, prior.OccupiedStreak));
             _ = _seeded.Remove(g.Name);

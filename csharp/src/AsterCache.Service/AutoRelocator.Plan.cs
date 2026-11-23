@@ -48,7 +48,7 @@ public sealed partial class AutoRelocator
             }
 
             bool followResidual = _env.ReplanResidual is not null && PreviousIsResidual(g); // 이전 계획 (.extend 또는 .stale) 이 잔여 계획이면 단일 존 접두부로 가지 않고 모든 이전 task 를 승계
-            bool whole = WholeLayout(g, s) && GamePolicy.AllowsRelocate(g); // 이 게임의 방식이 통째 배치이고 재배치가 허용된 게임만 통째 계획을 만듦 (기본은 범위 계획): 정책이 막은 게임에 통째 계획을 남기면 정책을 풀 때 통째로 옮겨짐
+            bool whole = WholeLayout(g, s) && GamePolicy.AllowsRelocate(g); // 이 게임의 방식이 통째 배치이고 재배치가 허용된 게임만 통째 계획을 만듦 (설정이 ranges 이거나 정책이 막은 게임은 범위 계획): 정책이 막은 게임에 통째 계획을 남기면 정책을 풀 때 통째로 옮겨짐
             (long? start, long usedClusters) = reuseZone && !followResidual && _env.MakePlanAt is not null ? PreviousZone(g, whole) : (null, 0);
             PlanFile Make(long? at, long used) => MakeCandidate(g, s, whole, sessions, zoneMib, at, used);
             if (extending && start is null && reuseZone && !followResidual)

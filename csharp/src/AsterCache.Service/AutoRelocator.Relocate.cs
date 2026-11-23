@@ -78,6 +78,7 @@ public sealed partial class AutoRelocator
                 if (changed)
                 {
                     DropChangedRanges(g, plan);
+                    _status.ClearReapplyLimit(g.Name); // 원본이 바뀜: 다시 놓은 회차를 새로 셈
                 }
 
                 if (!Plan(g, s))

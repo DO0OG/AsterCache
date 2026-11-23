@@ -187,9 +187,9 @@ public sealed partial class AutoRelocator
                 continue;
             }
 
-            if (ReapplyRepeatHeld(g, s.Auto))
+            if (ReapplyRepeatHeld(g, s.Auto) && !RepeatSourceReleased(g, s.Auto))
             {
-                Note(g, AutoStage.WaitingIdle, ReapplyRepeatDetail); // 예열 진행 표시를 붙여 사유를 보임
+                Note(g, AutoStage.WaitingIdle, WaitDetail(g, null)); // 예열 표시는 그대로, 쉬는 사유는 Tagged 가 붙임
                 continue; // 예열은 위에서 요청했고, 반복 제한 동안에는 이 게임의 파일을 옮기지 않음
             }
 

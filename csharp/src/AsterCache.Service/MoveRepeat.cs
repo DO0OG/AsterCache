@@ -11,11 +11,13 @@ public static class MoveRepeat
     public const double MinShare = 0.5;
     public const int RoundsToRest = 2;
 
+    private sealed record Piece(string Path, long Vcn, long Clusters, long? Target, List<(long Vcn, long Lcn, long N)>? From);
+
     // 저널에서 줄 번호 fromRow 이후에 끝난 (done) 단계의 조각. 계획 행 (planned) 은 어느 줄에 있어도 됨.
-    private static List<(string Path, long Vcn, long Clusters)> Moved(IReadOnlyList<JObject> rows, int fromRow)
+    private static List<Piece> Moved(IReadOnlyList<JObject> rows, int fromRow)
     {
-        var planned = new Dictionary<long, (string, long, long)>();
-        var moved = new List<(string, long, long)>();
+        var planned = new Dictionary<long, Piece>();
+        var moved = new List<Piece>();
         for (int i = 0; i < rows.Count; i++)
         {
             JObject r = rows[i];
@@ -27,9 +29,9 @@ public static class MoveRepeat
             if (Equals(st, "planned") && r.TryGetValue("path", out object? p) && p is string path && r.TryGetValue("vcn", out object? v) && v is long vcn
                 && r.TryGetValue("clusters", out object? c) && c is long clusters && clusters > 0)
             {
-                planned[idx] = (path, vcn, clusters);
+                planned[idx] = new Piece(path, vcn, clusters, r.TryGetValue("target_lcn", out object? tl) && tl is long target ? target : null, Segments(r));
             }
-            else if (Equals(st, "done") && i >= fromRow && planned.TryGetValue(idx, out (string, long, long) piece))
+            else if (Equals(st, "done") && i >= fromRow && planned.TryGetValue(idx, out Piece? piece))
             {
                 moved.Add(piece);
             }
@@ -38,21 +40,65 @@ public static class MoveRepeat
         return moved;
     }
 
-    /// current 에서 fromRow 줄 뒤에 끝난 조각의 (앞선 저널 previous 와 겹치는 바이트, 전체 바이트).
-    public static (long Repeated, long Moved) Measure(IReadOnlyList<JObject> current, int fromRow, IReadOnlyList<JObject> previous, long clusterBytes)
+    // planned 행의 from (출발 구간 [vcn, lcn, 길이] 목록), 없거나 모양이 다르면 null.
+    private static List<(long, long, long)>? Segments(JObject row)
     {
-        ILookup<string, (long Vcn, long End)> before = Moved(previous, 0).ToLookup(m => m.Path, m => (m.Vcn, End: m.Vcn + m.Clusters), StringComparer.Ordinal);
-        long repeated = 0, total = 0;
-        foreach ((string path, long vcn, long clusters) in Moved(current, fromRow))
+        if (!row.TryGetValue("from", out object? f) || f is not List<object?> list)
         {
-            total += clusters;
-            long overlap = 0;
-            foreach ((long from, long end) in before[path])
+            return null;
+        }
+
+        var result = new List<(long, long, long)>();
+        foreach (object? o in list)
+        {
+            if (o is not List<object?> { Count: 3 } s || s[0] is not long v || s[1] is not long l || s[2] is not long n)
             {
-                overlap += Math.Max(0, Math.Min(end, vcn + clusters) - Math.Max(from, vcn));
+                return null;
             }
 
-            repeated += Math.Min(overlap, clusters); // 앞선 저널의 조각끼리 겹쳐도 이 조각의 길이를 넘지 않음
+            result.Add((v, l, n));
+        }
+
+        return result;
+    }
+
+    // 이 조각의 클러스터 가운데 앞선 저널의 조각 q 가 놓았던 바로 그 자리에서 떠난 것이 아닌 것 (겹치는 구간만): 서비스가 놓은 자리에서 새 zone 으로 일부러 옮기는 경우 (업데이트·트레이스 증가로 다시 계획) 는 세지 않고,
+    // 다른 도구가 옮겨 놓은 것을 다시 옮기는 경우만 셈. 출발 자리나 앞선 목표가 저널에 없으면 알 수 없으므로 겹치는 만큼 셈.
+    private static long RepeatedClusters(Piece cur, Piece q)
+    {
+        long a = Math.Max(cur.Vcn, q.Vcn), b = Math.Min(cur.Vcn + cur.Clusters, q.Vcn + q.Clusters);
+        if (b <= a)
+        {
+            return 0;
+        }
+
+        if (cur.From is null || q.Target is not { } target)
+        {
+            return b - a;
+        }
+
+        long count = 0;
+        foreach ((long sv, long sl, long sn) in cur.From)
+        {
+            long from = Math.Max(a, sv), to = Math.Min(b, sv + sn);
+            if (to > from && sl + (from - sv) != target + (from - q.Vcn))
+            {
+                count += to - from; // 겹치는 구간의 출발 자리가 앞선 목표와 다름 (같은 구간은 선형이라 첫 클러스터만 비교하면 됨)
+            }
+        }
+
+        return count;
+    }
+
+    /// current 에서 fromRow 줄 뒤에 끝난 조각의 (앞선 저널 previous 가 이미 옮겼던 범위를 그 저널이 놓은 자리가 아닌 곳에서 다시 옮긴 바이트, 전체 바이트).
+    public static (long Repeated, long Moved) Measure(IReadOnlyList<JObject> current, int fromRow, IReadOnlyList<JObject> previous, long clusterBytes)
+    {
+        ILookup<string, Piece> before = Moved(previous, 0).ToLookup(m => m.Path, StringComparer.Ordinal);
+        long repeated = 0, total = 0;
+        foreach (Piece piece in Moved(current, fromRow))
+        {
+            total += piece.Clusters;
+            repeated += Math.Min(before[piece.Path].Sum(q => RepeatedClusters(piece, q)), piece.Clusters); // 앞선 저널의 조각끼리 겹쳐도 이 조각의 길이를 넘지 않음
         }
 
         return (repeated * clusterBytes, total * clusterBytes);

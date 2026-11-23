@@ -13,7 +13,7 @@ public sealed partial class AutoRelocator
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset> _restChecked = new(StringComparer.Ordinal); // 쉬는 게임의 원본 변경 확인 시각
 
     // 한 회차의 이동이 끝났을 때: 이번에 옮긴 조각이 앞선 저널에서 이미 옮긴 조각과 얼마나 같은지 보고, 되풀이 회차가 이어지면 쉼. mark 는 그 회차 전의 저널 줄 수.
-    // 통째 배치 계획은 되돌려지지 않는 형태라 보지 않음. 진단 성격이라 읽기에 실패해도 재배치 흐름은 그대로.
+    // 통째 배치 계획은 되돌려지지 않는 형태라 보지 않음. 진단 성격이라 계산이 어떻게 실패해도 (저널 디코딩 오류 포함) 방금 옮긴 회차를 되돌리지 않고 재배치 흐름은 그대로.
     internal void NoteRepeatRound(GameSettings g, PlanFile plan, int mark, long movedBytes)
     {
         if (_env.JournalRounds is not { } rounds || plan.Stats.ContainsKey(WholeFileLayout.RuleKey) || movedBytes <= 0)
@@ -43,7 +43,7 @@ public sealed partial class AutoRelocator
                 _status.SetRecovery(g.Name, prior with { RepeatRounds = count });
             }
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or AsterCache.Core.Json.PyValueException)
+        catch (Exception e) when (e is not OperationCanceledException)
         {
             _log.Warn($"{g.Name}: earlier journal could not be compared ({e.GetType().Name}), repeat check skipped");
         }

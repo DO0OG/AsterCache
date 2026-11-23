@@ -52,6 +52,39 @@ public sealed class MoveRepeatTests
         Assert.Equal((0L, Clusters * 2 * Cb), MoveRepeat.Measure(current, 0, [Planned(0, "c", 0, Clusters), Done(0)], Cb)); // mark 0 이면 둘 다 이번 회차, 앞선 저널과는 다른 조각
     }
 
+    private static List<JObject> MovedFrom(string path, long vcn, long clusters, long fromLcn, long target)
+    {
+        JObject planned = Planned(0, path, vcn, clusters);
+        planned["target_lcn"] = target;
+        planned["from"] = new List<object?> { new List<object?> { vcn, fromLcn, clusters } };
+        return [planned, Done(0)];
+    }
+
+    [Fact]
+    public void APieceMovedAwayFromWhereTheEarlierJournalPlacedItCountsAndOneLeftInPlaceDoesNot()
+    {
+        List<JObject> earlier = MovedFrom("a", 0, Clusters, 9000, 1000); // 앞선 저널은 이 범위를 LCN 1000 에 놓음
+
+        (long movedBack, long total) = MoveRepeat.Measure(MovedFrom("a", 0, Clusters, 5000, 2000), 0, earlier, Cb); // 최적화가 5000 으로 옮겨 놓은 것을 다시 옮김
+        (long inPlace, _) = MoveRepeat.Measure(MovedFrom("a", 0, Clusters, 1000, 2000), 0, earlier, Cb); // 서비스가 놓은 자리 (1000) 에서 새 zone 으로 일부러 옮김 (다시 계획)
+
+        Assert.Equal((Clusters * Cb, Clusters * Cb), (movedBack, total));
+        Assert.Equal(0, inPlace);
+    }
+
+    [Fact]
+    public void OnlyTheClustersThatLeftADifferentPlaceCountWithinOneOverlap()
+    {
+        List<JObject> earlier = MovedFrom("a", 0, 2 * Clusters, 9000, 1000);
+        JObject planned = Planned(0, "a", 0, 2 * Clusters);
+        planned["target_lcn"] = 2000L;
+        planned["from"] = new List<object?> { new List<object?> { 0L, 1000L, Clusters }, new List<object?> { Clusters, 70000L, Clusters } }; // 앞 절반은 놓은 자리, 뒤 절반은 다른 곳
+
+        (long repeated, long total) = MoveRepeat.Measure([planned, Done(0)], 0, earlier, Cb);
+
+        Assert.Equal((Clusters * Cb, 2 * Clusters * Cb), (repeated, total));
+    }
+
     [Fact]
     public void ARoundNeedsEnoughBytesAndShareToCountAsARepeat()
     {
@@ -74,9 +107,12 @@ public sealed partial class AutoRelocatorTests
         return PlanFile.Load(_game.Plan);
     }
 
-    private static List<JObject> Piece(string path, long vcn) =>
+    private long _fromLcn = 5000; // 이번 회차 조각의 출발 자리: 앞선 저널이 놓은 자리 (PlacedAt) 와 다르면 다른 도구가 옮겨 놓은 것
+    private const long PlacedAt = 1000;
+
+    private List<JObject> Piece(string path, long vcn) =>
     [
-        new() { { "type", "step" }, { "idx", 0L }, { "state", "planned" }, { "path", path }, { "vcn", vcn }, { "clusters", RepeatClusters } },
+        new() { { "type", "step" }, { "idx", 0L }, { "state", "planned" }, { "path", path }, { "vcn", vcn }, { "clusters", RepeatClusters }, { "target_lcn", PlacedAt }, { "from", new List<object?> { new List<object?> { vcn, _fromLcn, RepeatClusters } } } },
         new() { { "type", "step" }, { "idx", 0L }, { "state", "done" } },
     ];
 
@@ -240,5 +276,71 @@ public sealed partial class AutoRelocatorTests
 
         Assert.Null(_status.Recovery("bench")?.RestStamp);
         Assert.Contains(_log.Lines, l => l.Contains("relocation resumes: layout is now whole_file", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RoundsThatMoveFromWhereTheServicePlacedThemAfterAnUpdateOrAGrownTraceDoNotRest()
+    {
+        PlanFile plan = PlannedGame();
+        JournalsOf(() => (F1, 0));
+        _fromLcn = PlacedAt; // 다시 계획한 새 zone 으로 서비스가 자기가 놓은 자리에서 옮김 (업데이트 감지, 트레이스 증가)
+
+        for (int i = 0; i < 4; i++)
+        {
+            Relocator.NoteRepeatRound(_game, plan, 0, 1);
+        }
+
+        Assert.True(_status.Recovery("bench") is null or { RepeatRounds: 0, RestStamp: null });
+    }
+
+    [Fact]
+    public void RoundsThatMovePiecesBackAfterADriveOptimizationMovedThemKeepResting()
+    {
+        PlanFile plan = PlannedGame();
+        JournalsOf(() => (F1, 0));
+        _fromLcn = PlacedAt + 4000; // 최적화가 zone 밖으로 옮겨 놓은 조각을 다시 옮김
+
+        TwoRepeatRounds(plan);
+
+        Assert.NotNull(_status.Recovery("bench")!.RestStamp);
+    }
+
+    [Fact]
+    public void AFailureWhileComparingJournalsNeverUndoesTheRound()
+    {
+        _w.JournalRounds = _ => throw new ArgumentException("bad bytes in the earlier journal"); // 엄격 UTF-8 해독 실패 같은 예상 밖 예외
+        _relocator = null;
+
+        Run(TimeSpan.FromMinutes(3));
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("reverted", StringComparison.Ordinal) || l.Contains("stopped: relocation failed", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("repeat check skipped", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TheResidualReplanAndTheHoldKeepTheRepeatFields()
+    {
+        DoneAndReadyToReplan(out _);
+        CountResidualsAndBlockDryRuns();
+        _status.SetRecovery("bench", new RecoveryAttempt(null, null, 0, null, RepeatRounds: 1));
+        Assert.True(Relocator.HandOffZoneBlocked(_game));
+
+        Run(TimeSpan.FromMinutes(4));
+
+        Assert.True(_handOffResiduals == 1, Why());
+        RecoveryAttempt held = _status.Recovery("bench")!;
+        Assert.Equal((1, 1, true), (held.Replans, held.RepeatRounds, held.NextAllowed is not null)); // 잔여 재계획과 보류를 지나도 남음
+    }
+
+    [Fact]
+    public void AStatusFileFromAnEarlierVersionWithoutTheNewKeysStillLoads()
+    {
+        string path = Path.Combine(Root, "auto_status_old.json");
+        File.WriteAllText(path, """{"replan_attempts": {"bench": {"plan_sha": "abc", "rejected_lcn": 7, "replans": 1, "occupied_streak": 2}}}""");
+
+        RecoveryAttempt loaded = new AutoStatus(path, _log).Recovery("bench")!;
+
+        Assert.Equal((1, 2, 0, (long?)null), (loaded.Replans, loaded.OccupiedStreak, loaded.RepeatRounds, loaded.RestStamp));
     }
 }

@@ -150,6 +150,7 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
         ("auto relocate off", "Why_RelocateOff"),
         ("daily limit reached", "Why_DailyLimit"),
         ("daily write budget reached", "Why_DailyBudget"),
+        ("reapply paused after", "Why_ReapplyPaused"),
         ("drive recovering after relocation", "Why_DriveRecovering"),
         ("startup prewarm in progress", "Why_StartupPrewarm"),
         ("status file was unreadable", "Why_StatusHold"),
@@ -204,6 +205,10 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
         if (g.Stage is "waiting_idle" or "failed" or "skipped" && ReasonText(g.Detail, lang) is { } why)
         {
             parts.Add(why); // 대기·실패 사유를 맨 앞에 (완료 단계의 옛 사유는 붙이지 않음)
+        }
+        else if (g.Stage == "done" && (g.Detail ?? string.Empty).Contains(ReapplyPausedNeedle, StringComparison.Ordinal))
+        {
+            parts.Add(L.Get(lang, "Why_ReapplyPaused")); // 완료 게임도 재배치를 쉬는 중이면 사유를 보임
         }
 
         if ((g.Detail ?? string.Empty).Contains("relocated (profile)", StringComparison.Ordinal))
@@ -267,6 +272,10 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
                 parts.Add(g.Detail);
             }
         }
+        else if (g.Stage == "done" && (g.Detail ?? string.Empty).Contains(ReapplyPausedNeedle, StringComparison.Ordinal))
+        {
+            parts.Add(L.Get(lang, "Why_ReapplyPaused"));
+        }
 
         if (TraceUnavailableTag.Match(g.Detail ?? string.Empty) is { Success: true } blocked)
         {
@@ -288,6 +297,8 @@ public sealed partial record AutoStatusFile(IReadOnlyDictionary<string, AutoGame
     /// 단계 열에 보일 글: 단계 이름 + 부가 설명.
     public static string StageText(AutoGame g, string lang, DateTimeOffset? boot = null) =>
         StageExtra(g, lang, boot) is { } extra ? $"{StageName(g.Stage, lang)} ({extra})" : StageName(g.Stage, lang);
+
+    private const string ReapplyPausedNeedle = "reapply paused after";
 
     [GeneratedRegex(@"^(\d+) MiB read ahead$")]
     private static partial Regex ReadAhead();

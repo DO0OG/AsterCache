@@ -254,7 +254,7 @@ public sealed class GamePolicySettingsTests : IDisposable
         Assert.Equal(RelocateLayouts.WholeFile, GamePolicy.RelocateLayout(whole, AutoSettings.Default with { RelocateLayout = RelocateLayouts.Ranges }));
         Assert.Equal(RelocateLayouts.Ranges, GamePolicy.RelocateLayout(ranges, AutoSettings.Default with { RelocateLayout = RelocateLayouts.WholeFile }));
         Assert.Equal(RelocateLayouts.WholeFile, GamePolicy.RelocateLayout(inherit.Games[0], inherit.Auto)); // 게임별 값이 없으면 전역
-        Assert.Equal(RelocateLayouts.Ranges, GamePolicy.RelocateLayout(Parse().Games[0], AutoSettings.Default)); // 둘 다 없으면 기본 ranges
+        Assert.Equal(RelocateLayouts.WholeFile, GamePolicy.RelocateLayout(Parse().Games[0], AutoSettings.Default)); // 둘 다 없으면 기본 통째 배치
     }
 
     [Fact]

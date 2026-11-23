@@ -131,6 +131,10 @@ public sealed class ReapplyTests
 
         public List<long> Started { get; } = [];
 
+        public List<(long Bytes, bool Split)> Reapplied { get; } = [];
+
+        public int HealthyCalls { get; private set; }
+
         /// Started·Apply·Spent 가 불린 순서.
         public List<string> Calls { get; } = [];
 
@@ -212,6 +216,8 @@ public sealed class ReapplyTests
                     Spent.Add(bytes);
                     Calls.Add("spent");
                 },
+                Reapplied = (_, bytes, _, split) => Reapplied.Add((bytes, split)),
+                LayoutHealthy = _ => HealthyCalls++,
                 ZoneBlocked = _ =>
                 {
                     ZoneBlockedCalls++;
@@ -609,6 +615,42 @@ public sealed class ReapplyTests
 
         Assert.Equal(ReapplyVerdict.Reapply, rig.Check(Bench));
         Assert.Equal([4096L], rig.Spent);
+    }
+
+    [Fact]
+    public void AReapplyRoundReportsItsMovedBytesToTheRepeatCountAndAFailedOneDoesNot()
+    {
+        var rig = new Rig { Moved = false };
+        Assert.Equal(ReapplyVerdict.Reapply, rig.Check(Bench));
+        Assert.Equal([(4096L, false)], rig.Reapplied);
+
+        var failing = new Rig { Moved = false, ApplyThrows = new IOException("x") };
+        Assert.Equal(ReapplyVerdict.Failed, failing.Check(Bench));
+        Assert.Empty(failing.Reapplied);
+    }
+
+    [Theory]
+    [InlineData("write_cap", true)]
+    [InlineData("cancelled", true)]
+    [InlineData(null, false)]
+    public void ARoundStoppedByTheWriteCapOrACancelIsReportedAsSplit(string? stopped, bool split)
+    {
+        var rig = new Rig { Moved = false, ApplyStopped = stopped };
+
+        _ = rig.Check(Bench);
+
+        Assert.Equal([(4096L, split)], rig.Reapplied);
+    }
+
+    [Fact]
+    public void AContiguousLayoutTellsTheRepeatCountSoTheNextRoundIsNew()
+    {
+        var rig = new Rig { Moved = true };
+
+        Assert.Equal(ReapplyVerdict.Healthy, rig.Check(Bench));
+
+        Assert.Equal(1, rig.HealthyCalls);
+        Assert.Empty(rig.Reapplied);
     }
 
     [Fact]

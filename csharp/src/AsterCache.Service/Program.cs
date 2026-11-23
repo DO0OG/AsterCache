@@ -117,6 +117,8 @@ if (auto is not null)
     reapplyEnv.ZoneBlocked = auto.ReapplyZoneBlocked; // 존 점유로 거절된 재적용은 자동 재배치의 잔여 재계획으로
     reapplyEnv.Started = auto.ReapplyStarted;
     reapplyEnv.Spent = auto.ReapplySpent;
+    reapplyEnv.Reapplied = auto.ReapplyMoved;
+    reapplyEnv.LayoutHealthy = auto.ReapplyHealthy;
     reapplyEnv.Options = auto.ReapplyOptions;
     reapplyEnv.WarnDegraded = auto.ReapplyWarnAllowed;
 }

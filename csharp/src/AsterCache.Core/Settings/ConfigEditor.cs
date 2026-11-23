@@ -154,6 +154,7 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
 
     private static void WriteAuto(JObject root, AutoSettings a)
     {
+        bool hadLayout = root.TryGetValue("auto", out object? previous) && previous is JObject old && old.ContainsKey("relocate_layout"); // 파일에 이미 적힌 값은 그대로 따라 씀
         var auto = new JObject
         {
             { "enabled", a.Enabled },
@@ -177,7 +178,6 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             { "relocate_io_priority", a.RelocateIoPriority },
             { "relocate_verify", a.RelocateVerify },
             { "relocate_order", a.RelocateOrder },
-            { "relocate_layout", a.RelocateLayout },
             { "ignore_exes", a.IgnoreExes.Cast<object?>().ToList() },
             { "rewarm_minutes", (long)a.RewarmMinutes },
             { "restream_cooldown_min", (long)a.RestreamCooldownMin },
@@ -207,6 +207,11 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
         if (a.RelocateParallelSet) // 명시되지 않은 값은 쓰지 않음 (자동 규칙 유지)
         {
             auto["relocate_parallel"] = (long)a.RelocateParallel;
+        }
+
+        if (hadLayout || a.RelocateLayout != AutoSettings.Default.RelocateLayout) // 사용자가 적었거나 기본값과 다른 값만 씀: 기본값이 바뀌면 따라가도록 기본값을 대신 적어 두지 않음
+        {
+            auto["relocate_layout"] = a.RelocateLayout;
         }
 
         if (!a.StartStreamEnabled) // 기본값이면 쓰지 않아 기존 파일이 그대로 유지됨

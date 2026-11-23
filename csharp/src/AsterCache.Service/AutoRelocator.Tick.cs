@@ -54,6 +54,8 @@ public sealed partial class AutoRelocator
             _smrBudgetLogged.TryRemove(name, out _);
             _limitSeen.Remove(name);
             _extTried.Remove(name);
+            _repeatSourceChecked.Remove(name);
+            _placementCheckPending.Remove(name);
             _planFailedAt.TryRemove(name, out _);
             _transientHold.TryRemove(name, out _);
             _unreadableHold.TryRemove(name, out _);
@@ -93,6 +95,11 @@ public sealed partial class AutoRelocator
         }
 
         _recovery.Poll();
+        foreach (GameSettings g in s.Games)
+        {
+            _ = ReapplyRepeatHeld(g, s.Auto); // 7일이 지났거나 배치 방식이 바뀌었으면 쉬는 표시를 거둠 (쉬는 게임의 재배치 차단은 아래 틱과 재적용 게이트가 함)
+        }
+
         RecoverReplan(s);
         ReplanChanged(s);
         ReplanExtended(s);
@@ -180,6 +187,12 @@ public sealed partial class AutoRelocator
             {
                 Note(g, AutoStage.Skipped, relocateOn ? $"game policy: {GamePolicy.ModeName(g.Mode)}" : RelocateOff);
                 continue;
+            }
+
+            if (ReapplyRepeatHeld(g, s.Auto) && !RepeatSourceReleased(g, s.Auto))
+            {
+                Note(g, AutoStage.WaitingIdle, WaitDetail(g, null)); // 예열 표시는 그대로, 쉬는 사유는 Tagged 가 붙임
+                continue; // 예열은 위에서 요청했고, 반복 제한 동안에는 이 게임의 파일을 옮기지 않음
             }
 
             long budget = BudgetBytes(s, g); // 0 = 무제한

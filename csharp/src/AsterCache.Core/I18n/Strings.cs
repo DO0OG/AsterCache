@@ -142,6 +142,7 @@ public static partial class L
         ["Why_RelocateOff"] = ("자동 재배치 꺼짐", "auto relocation off"),
         ["Why_DailyLimit"] = ("오늘 재배치 횟수 다 씀", "daily relocation count used up"),
         ["Why_DailyBudget"] = ("오늘 쓰기 한도 다 씀", "daily write limit used up"),
+        ["Why_ReapplyPaused"] = ("원본이 그대로인데 7일에 3번 다시 놓아 재배치를 쉼", "relocation paused: layout re-applied 3 times in 7 days with unchanged files"),
         ["Why_DriveRecovering"] = ("드라이브 안정화 중, 끝나면 자동 진행", "drive settling after relocation, continues automatically"),
         ["Why_StartupPrewarm"] = ("시작 예열 중", "startup prewarm running"),
         ["Why_StatusHold"] = ("상태 파일을 못 읽어 재배치 보류", "status file unreadable, relocation held"),

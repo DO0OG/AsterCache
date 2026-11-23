@@ -25,6 +25,7 @@ public sealed class GameFootprintTests
     private Func<string, bool> _isSparse = _ => false;
     private bool _ladder; // memory.standby_ladder
     private bool _keepSparse; // memory.keep_sparse
+    private bool _startStream = true; // auto.start_stream_enabled
     private List<TraceEvent>? _ranked; // 블록 순위 목록 (null: 순위 목록이 없는 게임)
     private readonly HashSet<string> _running = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<bool> _probedSparse = [];
@@ -46,6 +47,10 @@ public sealed class GameFootprintTests
         public StreamStats Stream(GameSettings game) => throw new NotSupportedException();
 
         public Func<string, bool> IsSparse { get; set; } = _ => false;
+
+        public Func<GameSettings, bool, long?>? ReadBytesOf { get; set; } // 지정하면 부분 여부까지 보고 실제 읽기 바이트를 돌려줌
+
+        public long? PrewarmReadBytes(GameSettings game, bool partial) => ReadBytesOf?.Invoke(game, partial) ?? PrewarmReadBytes(game);
 
         public long? PrewarmReadBytes(GameSettings game) => game.SkipSparse && Planned is not null ? Planned.Where(o => !IsSparse(o.Path)).Sum(o => o.Length) : Math.Min(ZoneMib, game.MaxStreamSet ? game.MaxStreamMib : ZoneMib) * Mib;
 
@@ -83,6 +88,7 @@ public sealed class GameFootprintTests
         IsSparse = p => _isSparse(p),
         StandbyLadderEnabled = () => _ladder,
         KeepSparseEnabled = () => _keepSparse,
+        StartStreamEnabled = () => _startStream,
         OpenBlockReader = () => throw new NotSupportedException(), // 예열 판정은 읽기 도구가 있는지만 봄
         RankedRows = _ => _ranked,
         ProbeReadMs = g =>
@@ -378,6 +384,7 @@ public sealed class GameFootprintTests
 
         Assert.True(p.SparseKeepable(game));
         Assert.Equal(8952, Assert.Single(_streamer.Calls).MaxStreamMib); // 같은 상한, 스파스 범위를 빼지 않은 목록에서 앞쪽부터 들어가는 만큼
+        Assert.Equal((8952L, 10653L), p.PartialInfo("keepsparse")); // 부분 예열 상태의 전체 크기는 스파스를 뺀 값 (보충이 읽을 남은 양이 스파스를 뺐을 때와 같음)
         Assert.Contains(_log.Lines, l => l.Contains("keepsparse: 3000 MiB in sparse files stay in the memory prewarm and share its budget by rank", StringComparison.Ordinal));
         Assert.DoesNotContain(_log.Lines, l => l.Contains("left out of the memory prewarm", StringComparison.Ordinal));
         Assert.False(_streamer.Games.Single().SkipSparse);
@@ -389,22 +396,37 @@ public sealed class GameFootprintTests
     {
         _footprint = (9551, 3);
         GameSettings game = Game("sparsefit2");
-        _streamer.Planned = [new ReadOp(@"D:\Games\sparsefit2\s.bin", 0, 6000 * Mib), new ReadOp(@"D:\Games\sparsefit2
-.bin", 0, 7653 * Mib)];
+        _streamer.Planned = [new ReadOp(@"D:\Games\sparsefit2\s.bin", 0, 6000 * Mib), new ReadOp(@"D:\Games\sparsefit2\n.bin", 0, 7653 * Mib)];
         _isSparse = path => path.EndsWith("s.bin", StringComparison.Ordinal);
         Prewarmer p = Make(game);
-        (_ladder, _keepSparse, _ranked) = (true, true, [new TraceEvent(@"D:\Games\sparsefit2
-.bin", 0, 65536)]);
+        (_ladder, _keepSparse, _ranked) = (true, true, [new TraceEvent(@"D:\Games\sparsefit2\n.bin", 0, 65536)]);
 
         Assert.True(p.Run(game, "service start").Ran);
 
         // 스파스 6,000 MiB 를 빼면 7,653 MiB 로 전체가 들어가 그만큼 읽었을 것: 스파스를 넣어도 읽는 창은 그 양 (13,653 MiB 가 아님) 을 넘지 않고, 그 안에서 점수 순으로 나눔
         Assert.Equal(7653, Assert.Single(_streamer.Calls).MaxStreamMib);
         Assert.False(_streamer.Games.Single().SkipSparse);
+        Assert.Null(p.PartialInfo("sparsefit2")); // 스파스를 뺐다면 전체가 들어가 부분 예열 상태가 없던 게임: 보충이 주기마다 스파스만큼 더 읽게 하지 않음
+    }
+
+    [Fact]
+    public void ThePrewarmNeverReadsMoreThanTheCopyThatLeavesTheSparseRangesOutWouldHaveActuallyRead()
+    {
+        (Prewarmer p, GameSettings game) = KeepableSparseGame("lessread");
+        (_ladder, _keepSparse, _ranked) = (true, true, [new TraceEvent(@"D:\Games\lessread\n.bin", 0, 65536)]);
+        // 스파스를 뺀 사본은 스파스 행을 넣은 채 창 (8,952 MiB) 을 고른 뒤 스파스를 빼므로 창보다 적게 읽음: 여기서는 8,000 MiB
+        _streamer.ReadBytesOf = (g, partial) => g.SkipSparse && partial ? 8000 * Mib : null;
+
+        Assert.True(p.Run(game, "service start").Ran);
+
+        int window = Assert.Single(_streamer.Calls).MaxStreamMib;
+        Assert.True(window * Mib <= 8000 * Mib, $"the window {window} MiB reads more than the main way would (8000 MiB)");
+        Assert.False(_streamer.Games.Single().SkipSparse);
     }
 
     [Theory]
     [InlineData("keep_sparse off")]
+    [InlineData("start stream off")]
     [InlineData("standby ladder off")]
     [InlineData("no ranked list")]
     [InlineData("anti-cheat forbids the hold")]
@@ -412,6 +434,7 @@ public sealed class GameFootprintTests
     {
         (Prewarmer p, GameSettings game) = KeepableSparseGame("nokeep", why == "anti-cheat forbids the hold" ? "vanguard" : null);
         (_ladder, _keepSparse, _ranked) = (why != "standby ladder off", why != "keep_sparse off", why == "no ranked list" ? null : [new TraceEvent(@"D:\Games\nokeep\n.bin", 0, 65536)]);
+        _startStream = why != "start stream off"; // 시작 스트림이 꺼지면 게임 중 유지가 시작되지 않음
 
         Assert.True(p.Run(game, "service start").Ran);
 

@@ -169,10 +169,11 @@ public sealed partial class Prewarmer
         }
     }
 
-    /// 예열이 스파스 범위를 메모리 예열에 넣어도 게임 중 유지가 그 블록을 이어 둘 수 있는가: 설정이 켜져 있고 (memory.keep_sparse, standby_ladder) 읽기 도구가 있고, 붙들기 게이트가 막지 않고, 순위 목록이 있는 게임.
-    /// 아니면 예열 예산이 모자랄 때 스파스 범위를 메모리 예열에서 빼는 이전 판단을 그대로 씁니다 (유지할 수 없는 스파스에 예산을 쓰지 않음). KeepSparseWhilePlaying 이 시작하는 조건과 같은 것을 봅니다.
+    /// 예열이 스파스 범위를 메모리 예열에 넣어도 게임 중 유지가 그 블록을 이어 둘 수 있는가: 게임이 시작할 때 이 유지를 시작하는 조건 (시작 스트림 허용 auto.start_stream_enabled, 사다리 memory.standby_ladder, 설정 memory.keep_sparse, 읽기 도구) 과
+    /// 첫 회차가 통과해야 하는 조건 (붙들기 안티치트 게이트, 순위 목록) 을 모두 만족하는 게임. 아니면 예열 예산이 모자랄 때 스파스 범위를 메모리 예열에서 빼는 이전 판단을 그대로 씁니다 (유지할 수 없는 스파스에 예산을 쓰지 않음).
+    /// 유지를 시작하는 곳이 보는 조건은 모두 여기에 모읍니다. 실행마다 정해지는 일시 상태 (다른 게임 프로세스가 같은 디스크에서 돌아 시작 스트림을 미루는 경우) 는 예열 때 알 수 없어 보지 않습니다.
     internal bool SparseKeepable(GameSettings game) =>
-        _solar.Enabled && _env.KeepSparseEnabled() && _env.OpenBlockReader is not null && _pins.HoldGate(game).Blocker is null && _env.RankedRows(game) is not null;
+        _env.StartStreamEnabled() && _solar.Enabled && _env.KeepSparseEnabled() && _env.OpenBlockReader is not null && _pins.HoldGate(game).Blocker is null && _env.RankedRows(game) is not null;
 
     // 유지 목록에서 스파스 파일 구간을 중요한 순서의 64 KiB 블록으로 뽑습니다 (목록이 바뀌었을 때만). 안티치트 구성요소 파일은 붙들기와 같이 뺍니다. 실행 이미지는 매핑하지 않는 읽기라 따로 거르지 않습니다.
     // 스파스 구간이 없으면 false (그 사유는 why: 사유 이름과 로그에 붙일 수치).

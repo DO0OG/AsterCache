@@ -391,9 +391,9 @@ public sealed partial class Prewarmer
         }
     }
 
-    // 스파스 범위를 뺀 목록 (withoutSparseMib) 으로 예열했다면 읽었을 양 (MiB): 모자라지 않으면 그 목록 전체, 모자라면 앞쪽 부분 예열의 양, 그것도 읽지 못했을 (건너뜀) 게임이면 null.
-    // 스파스를 예열에 넣는 쪽 (SparseKeepable) 이 이 양을 넘지 않게 묶어 디스크 읽기와 메모리 부담을 늘리지 않습니다. skip 판정은 RunLocked 와 같은 식입니다.
-    private long? ReadWithoutSparseMib(GameSettings game, long withoutSparseMib, long availableRamMib, long? roomMib, long? footprintMib, Func<long?, string?> skipOf)
+    // 스파스 범위를 뺀 목록 (withoutSparseMib) 으로 예열했다면 읽었을 창 (MiB, Partial: 목록 전체가 아니라 앞쪽 창): 모자라지 않으면 그 목록 전체, 모자라면 앞쪽 부분 예열의 창, 그것도 읽지 못했을 (건너뜀) 게임이면 null.
+    // 스파스를 예열에 넣는 쪽은 이 창의 실제 읽기 바이트 (ReadSetBytes) 를 넘지 않게 묶어 디스크 읽기와 메모리 부담을 늘리지 않습니다. skip 판정은 RunLocked 와 같은 식입니다.
+    private (long Mib, bool Partial)? ReadWithoutSparseMib(GameSettings game, long withoutSparseMib, long availableRamMib, long? roomMib, long? footprintMib, Func<long?, string?> skipOf)
     {
         long? room = footprintMib is null ? roomMib : AvailableCap(game, WindowAvailableMib(availableRamMib), roomMib ?? long.MaxValue, footprintMib);
         string? skip = skipOf(withoutSparseMib << 20);
@@ -401,10 +401,10 @@ public sealed partial class Prewarmer
         bool over = skip is null && room is { } limit && withoutSparseMib > limit;
         if (!low && !over)
         {
-            return skip is null ? withoutSparseMib : null;
+            return skip is null ? (withoutSparseMib, false) : null;
         }
 
-        return PartialCapMib(game, withoutSparseMib, WindowAvailableMib(availableRamMib), PhysCapMib(), roomMib ?? long.MaxValue, footprintMib);
+        return PartialCapMib(game, withoutSparseMib, WindowAvailableMib(availableRamMib), PhysCapMib(), roomMib ?? long.MaxValue, footprintMib) is { } cap ? (cap, true) : null;
     }
 
     // 계획한 예열 목록에서 스파스 파일이 차지하는 양 (MiB): 사다리가 만지지 못하는 범위. 목록을 계획할 수 없으면 0.

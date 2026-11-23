@@ -189,6 +189,9 @@ public sealed class PrewarmEnv
     /// 붙들 뷰 묶음을 엽니다 (게임 하나의 한 플레이에 하나). null 이면 붙들지 못함. 시험은 가짜로 바꿉니다.
     public Func<IKeepHold>? OpenHold { get; init; }
 
+    /// 설정 auto.start_stream_enabled: 꺼져 있으면 게임이 시작해도 시작 만지기와 그 안에서 시작하는 게임 중 유지 (스파스 유지 포함) 가 돌지 않습니다. 시험 기본값은 켜짐.
+    public Func<bool> StartStreamEnabled { get; init; } = () => true;
+
     /// 설정 memory.keep_sparse (게임 실행 중 예열에 든 스파스 파일 블록을 버퍼드 읽기로 다시 읽어 유지) 가 켜져 있는가. 시험 기본값은 꺼짐 (실제 호출 없음).
     public Func<bool> KeepSparseEnabled { get; init; } = () => false;
 
@@ -208,7 +211,7 @@ public sealed class PrewarmEnv
     public static Func<GameSettings, bool> GameActiveOnDisk(IReadOnlyList<GameSettings> games,
         Func<string, string, bool> sameDisk, Func<GameSettings, bool> gameRunning) => OrbitRuntime.GameActiveOnDisk(games, sameDisk, gameRunning);
 
-    public static PrewarmEnv Create(OrbitCalibration? orbitCalibration = null, OrbitRuntime? orbitRuntime = null, Func<bool>? standbyLadder = null, Func<bool>? keepHold = null, Func<bool>? keepHoldWritten = null, Func<string, IReadOnlyList<AsterCache.Core.Trace.SessionSpan>>? playSessions = null, Func<bool>? keepSparse = null)
+    public static PrewarmEnv Create(OrbitCalibration? orbitCalibration = null, OrbitRuntime? orbitRuntime = null, Func<bool>? standbyLadder = null, Func<bool>? keepHold = null, Func<bool>? keepHoldWritten = null, Func<string, IReadOnlyList<AsterCache.Core.Trace.SessionSpan>>? playSessions = null, Func<bool>? keepSparse = null, Func<bool>? startStream = null)
     {
         Func<GameSettings, bool> gameRunning = DispatchEnv.IsGameRunning;
         Func<string, string, bool> sameDisk = VolumeDisks.SameDisk;
@@ -228,6 +231,7 @@ public sealed class PrewarmEnv
             KeepHoldEnabled = keepHold ?? (() => false),
             OpenHold = () => new ViewHold(),
             KeepSparseEnabled = keepSparse ?? (() => false),
+            StartStreamEnabled = startStream ?? (() => true),
             OpenBlockReader = () => new BufferedBlockReader(),
             HoldExclusion = g =>
             {

@@ -139,7 +139,8 @@ public sealed partial class Prewarmer
             string skipNote = string.Empty; // 몫 때문에 건너뛴 사유에 붙일 실제 가용·예비
             (long WarmedMib, long HotMib)? memoryPartial = null;
             long originalHotMib = 0;
-            long? noMoreThanMib = null; // 스파스를 넣어도 예열이 읽는 양이 스파스를 뺐을 때보다 늘지 않게 하는 상한
+            long? noMoreThanMib = null; // 스파스를 넣어도 예열이 읽는 양이 스파스를 뺐을 때 실제로 읽었을 양보다 늘지 않게 하는 상한
+            bool wholeListWindow = false; // 스파스를 뺐다면 목록 전체가 들어갔을 게임: 창은 읽는 양만 묶고 부분 예열 상태는 남기지 않음
             if (hotBytes is > 0 and long hotRead)
             {
                 long hotMib = (hotRead + (1 << 20) - 1) >> 20;
@@ -160,9 +161,14 @@ public sealed partial class Prewarmer
                 bool sparseOut = false;
                 if ((lowMemory || overBudget) && SparseMib(game with { SkipSparse = false }) is > 0 and long sparseMib)
                 {
-                    if (SparseKeepable(game) && ReadWithoutSparseMib(game, Math.Max(0, hotMib - sparseMib), availableRamMib, roomMib, footprintMib, Skip) is { } withoutSparseMib)
+                    if (SparseKeepable(game) && ReadWithoutSparseMib(game, Math.Max(0, hotMib - sparseMib), availableRamMib, roomMib, footprintMib, Skip) is { } without
+                        && ReadSetBytes(game with { SkipSparse = true, MaxStreamMib = without.Partial ? (int)without.Mib : game.MaxStreamMib, MaxStreamSet = without.Partial || game.MaxStreamSet }, without.Partial) is { } withoutBytes
+                        && withoutBytes >> 20 >= 1)
                     {
-                        noMoreThanMib = withoutSparseMib;
+                        noMoreThanMib = withoutBytes >> 20; // 스파스를 뺀 사본이 실제로 읽었을 바이트 (스파스 행을 넣은 채 창을 고른 뒤 빼므로 창보다 작을 수 있음)
+                        wholeListWindow = !without.Partial;
+                        originalMib = Math.Max(0, originalMib - sparseMib); // 부분 예열 상태가 가리키는 전체 크기도 스파스를 뺀 값: 보충이 읽을 남은 양이 스파스를 뺐을 때를 넘지 않게
+                        originalHotMib = originalMib;
                         // 게임 중 스파스 유지 (Prewarm.PlaySparse) 가 이어 둘 수 있으면 스파스 범위를 통째로 빼지 않음: 순위 목록의 점수 순 한 목록에서 일반 블록과 같은 예산을 다투고 (SelectToBudget) 예산 안에 든 만큼만 예열함.
                         // 순위 목록이 스파스 블록 없이 만들어진 것이면 계획이 읽는 스파스 범위가 순위 행 뒤 단계에서 같은 규칙으로 다툼. 예열한 스파스 범위가 유지 목록이 되어 유지가 실제로 읽은 블록만 이어 둠.
                         // 디스크와 메모리 부담을 늘리지 않으려고 읽는 양은 스파스를 뺐을 때 읽었을 양 (withoutSparseMib) 을 넘지 않게 묶음: 스파스 블록은 같은 양 안에서 자리를 나눔.
@@ -282,7 +288,7 @@ public sealed partial class Prewarmer
                         _supplementNothingNew.Remove(game.Name);
                         _resume.Remove(game.Name); // 일반 예열이 부분 상태를 교체함: 보충의 옛 이어 읽기 위치는 낡음
 
-                        if (memoryPartial is { } planned)
+                        if (memoryPartial is { } planned && !wholeListWindow)
                         {
                             SetMemoryPartialLocked(game, stats, planned.WarmedMib, planned.HotMib, inputs);
                             if (shortFinish && stats.GapBytes == 0)
@@ -380,7 +386,7 @@ public sealed partial class Prewarmer
                     }
 
                     double mbps = s.Seconds > 0 ? s.Bytes / 1048576.0 / s.Seconds : 0;
-                    string kind = memoryPartial is { } part ? $"partial {ActualMib(s, part.WarmedMib)}/{part.HotMib} MiB, the rest does not fit in memory: " : string.Empty;
+                    string kind = memoryPartial is { } part && !wholeListWindow ? $"partial {ActualMib(s, part.WarmedMib)}/{part.HotMib} MiB, the rest does not fit in memory: " : string.Empty;
                     _log.Info($"{game.Name}: prewarm done ({why}): {kind}{s.Bytes >> 20} MiB requested, {s.GapBytes / 1048576.0:F2} MiB gaps filled in {s.Seconds:F2} s = {mbps:F0} hint MB/s, {s.Requests} requests, {s.Errors} errors{s.BufferedNote()}, room {(roomMib is { } roomLimit ? roomLimit + " MiB" : "unlimited")}, available {_env.AvailableRamMib()} MiB{(_yieldedSeconds > 0 ? $", yielded {_yieldedSeconds:F1} s" : string.Empty)}{_readMix.Note()}{_requeued.Note()}");
                     _log.Info($"{game.Name}: prewarm phases ({why}): {run.Summary()}");
                     PrewarmResult done = Record(game, warmedAt, new PrewarmResult(game.Name, true, null, s, warmedAt), mbps);

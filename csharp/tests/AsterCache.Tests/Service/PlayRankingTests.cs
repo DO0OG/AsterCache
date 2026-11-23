@@ -83,6 +83,19 @@ public sealed class PlayRankingTests : IDisposable
     }
 
     [Fact]
+    public void SparseRangesOfAPlanWhoseRankedListHasNoSparseBlockCompeteAfterTheRankedRowsWithoutAFixedShare()
+    {
+        TraceEvent[] rows = [Ev("S", 0, 4), Ev(A, 0, 4)]; // 계획 (선읽기 행): 스파스 파일 4 블록, 일반 4 블록
+        TraceEvent[] ranked = [Ev("R", 0, 3)]; // 스파스 블록이 없는 예전 순위 목록
+
+        List<TraceEvent> some = PrefetchStreamer.SelectToBudget(rows, 5 * Block, 2, 0, out _, ranked, 0);
+        List<TraceEvent> none = PrefetchStreamer.SelectToBudget(rows, 3 * Block, 2, 0, out _, ranked, 0);
+
+        Assert.Equal([("R", 0L, 3L), ("S", 0L, 2L)], Shape(some)); // 순위 행이 먼저, 남은 예산은 계획 행 (스파스 범위 포함) 이 계획 순서로 다툼
+        Assert.Equal([("R", 0L, 3L)], Shape(none)); // 예산이 순위 행에 다 들어가면 스파스 몫을 따로 두지 않음
+    }
+
+    [Fact]
     public void ARankedRowAppearsOnlyWhenTheListIsTooBigForTheBudget()
     {
         TraceEvent[] rows = [Ev(A, 0, 2), Ev(A, 4, 2)];

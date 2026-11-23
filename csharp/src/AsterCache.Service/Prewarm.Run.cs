@@ -139,6 +139,7 @@ public sealed partial class Prewarmer
             string skipNote = string.Empty; // 몫 때문에 건너뛴 사유에 붙일 실제 가용·예비
             (long WarmedMib, long HotMib)? memoryPartial = null;
             long originalHotMib = 0;
+            long? noMoreThanMib = null; // 스파스를 넣어도 예열이 읽는 양이 스파스를 뺐을 때보다 늘지 않게 하는 상한
             if (hotBytes is > 0 and long hotRead)
             {
                 long hotMib = (hotRead + (1 << 20) - 1) >> 20;
@@ -159,18 +160,29 @@ public sealed partial class Prewarmer
                 bool sparseOut = false;
                 if ((lowMemory || overBudget) && SparseMib(game with { SkipSparse = false }) is > 0 and long sparseMib)
                 {
-                    // 스파스 파일 범위는 사다리가 만지지 못해 가장 오래된 페이지로 남아 먼저 밀려남: 상한이 모자라면 메모리 예열에서 먼저 뺌 (존 배치는 그대로).
-                    // 표시는 이 게임의 사본에 실어 읽기 목록·표본·고정 목록이 같은 범위를 보게 하고, 게임별로 기억해 재예열·사다리 표본도 읽지 않은 범위를 재지 않게 함.
-                    sparseOut = true;
-                    game = game with { SkipSparse = true };
-                    warm = game;
-                    hotMib = Math.Max(0, hotMib - sparseMib);
-                    originalMib = Math.Max(0, originalMib - sparseMib);
-                    originalHotMib = originalMib;
-                    skip = Skip(hotMib << 20);
-                    lowMemory = skip?.StartsWith("low memory", StringComparison.Ordinal) == true;
-                    overBudget = skip is null && room is { } limitAfter && hotMib > limitAfter;
-                    _log.Info($"{game.Name}: {sparseMib} MiB in sparse files left out of the memory prewarm, the ladder cannot touch them");
+                    if (SparseKeepable(game) && ReadWithoutSparseMib(game, Math.Max(0, hotMib - sparseMib), availableRamMib, roomMib, footprintMib, Skip) is { } withoutSparseMib)
+                    {
+                        noMoreThanMib = withoutSparseMib;
+                        // 게임 중 스파스 유지 (Prewarm.PlaySparse) 가 이어 둘 수 있으면 스파스 범위를 통째로 빼지 않음: 순위 목록의 점수 순 한 목록에서 일반 블록과 같은 예산을 다투고 (SelectToBudget) 예산 안에 든 만큼만 예열함.
+                        // 순위 목록이 스파스 블록 없이 만들어진 것이면 계획이 읽는 스파스 범위가 순위 행 뒤 단계에서 같은 규칙으로 다툼. 예열한 스파스 범위가 유지 목록이 되어 유지가 실제로 읽은 블록만 이어 둠.
+                        // 디스크와 메모리 부담을 늘리지 않으려고 읽는 양은 스파스를 뺐을 때 읽었을 양 (withoutSparseMib) 을 넘지 않게 묶음: 스파스 블록은 같은 양 안에서 자리를 나눔.
+                        _log.Info($"{game.Name}: {sparseMib} MiB in sparse files stay in the memory prewarm and share its budget by rank; they are kept while playing");
+                    }
+                    else
+                    {
+                        // 스파스 파일 범위는 사다리가 만지지 못해 가장 오래된 페이지로 남아 먼저 밀려남: 상한이 모자라면 메모리 예열에서 먼저 뺌 (존 배치는 그대로).
+                        // 표시는 이 게임의 사본에 실어 읽기 목록·표본·고정 목록이 같은 범위를 보게 하고, 게임별로 기억해 재예열·사다리 표본도 읽지 않은 범위를 재지 않게 함.
+                        sparseOut = true;
+                        game = game with { SkipSparse = true };
+                        warm = game;
+                        hotMib = Math.Max(0, hotMib - sparseMib);
+                        originalMib = Math.Max(0, originalMib - sparseMib);
+                        originalHotMib = originalMib;
+                        skip = Skip(hotMib << 20);
+                        lowMemory = skip?.StartsWith("low memory", StringComparison.Ordinal) == true;
+                        overBudget = skip is null && room is { } limitAfter && hotMib > limitAfter;
+                        _log.Info($"{game.Name}: {sparseMib} MiB in sparse files left out of the memory prewarm, the ladder cannot touch them");
+                    }
                 }
 
                 if (skip is null || lowMemory)
@@ -180,7 +192,13 @@ public sealed partial class Prewarmer
 
                 if (lowMemory || overBudget)
                 {
-                    if (PartialCapMib(game, hotMib, WindowAvailableMib(availableRamMib), PhysCapMib(), roomMib ?? long.MaxValue, footprintMib) is { } capMib)
+                    long? partialCap = PartialCapMib(game, hotMib, WindowAvailableMib(availableRamMib), PhysCapMib(), roomMib ?? long.MaxValue, footprintMib);
+                    if (noMoreThanMib is { } noMore)
+                    {
+                        partialCap = Math.Min(partialCap ?? noMore, noMore);
+                    }
+
+                    if (partialCap is { } capMib)
                     {
                         // 전체가 들어가지 않음: 앞쪽부터 들어가는 만큼만 읽음 (max_stream_mib 를 줄인 사본). 틈 메우기는 생략.
                         // 전체 크기는 원래 값을 유지: 서비스 시작 상한으로 이미 줄인 사본이면 그 원래 크기.
@@ -217,8 +235,9 @@ public sealed partial class Prewarmer
 
                     if (finalReadMib > allowedMib)
                     {
-                        if (PartialCapMib(game, finalReadMib, WindowAvailableMib(availableRamMib), PhysCapMib(), roomMib ?? long.MaxValue, footprintMib) is { } capMib)
+                        if (PartialCapMib(game, finalReadMib, WindowAvailableMib(availableRamMib), PhysCapMib(), roomMib ?? long.MaxValue, footprintMib) is { } finalCap)
                         {
+                            long capMib = Math.Min(finalCap, noMoreThanMib ?? long.MaxValue);
                             originalHotMib = Math.Max(originalHotMib, finalReadMib);
                             memoryPartial = (capMib, originalHotMib);
                             warm = game with { MaxStreamMib = (int)capMib, MaxStreamSet = true };

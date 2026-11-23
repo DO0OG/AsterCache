@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using AsterCache.Core.Prefetch;
 using AsterCache.Core.Settings;
+using AsterCache.Core.Trace;
 using AsterCache.Prefetch;
 using AsterCache.Service;
 using AsterCache.Tests.Windows;
@@ -22,6 +23,9 @@ public sealed class GameFootprintTests
     private long _avail = 19783;
     private (long Mib, int Plays)? _footprint;
     private Func<string, bool> _isSparse = _ => false;
+    private bool _ladder; // memory.standby_ladder
+    private bool _keepSparse; // memory.keep_sparse
+    private List<TraceEvent>? _ranked; // 블록 순위 목록 (null: 순위 목록이 없는 게임)
     private readonly HashSet<string> _running = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<bool> _probedSparse = [];
     private int _snapshots;
@@ -77,6 +81,10 @@ public sealed class GameFootprintTests
         ZoneBytes = g => Math.Min(_streamer.ZoneMib, g.StreamCapBytes(_streamer.ZoneMib * Mib) / Mib) * Mib,
         TraceExists = _ => true,
         IsSparse = p => _isSparse(p),
+        StandbyLadderEnabled = () => _ladder,
+        KeepSparseEnabled = () => _keepSparse,
+        OpenBlockReader = () => throw new NotSupportedException(), // 예열 판정은 읽기 도구가 있는지만 봄
+        RankedRows = _ => _ranked,
         ProbeReadMs = g =>
         {
             _probedSparse.Add(g.SkipSparse);
@@ -349,6 +357,68 @@ public sealed class GameFootprintTests
         _now += TimeSpan.FromHours(1);
         Assert.True(p.Run(game, "rewarm", ignoreCooldown: true).Ran);
         Assert.False(_streamer.Games.Single().SkipSparse);
+    }
+
+    private (Prewarmer Prewarmer, GameSettings Game) KeepableSparseGame(string name, string? antiCheat = null)
+    {
+        _footprint = (9551, 3);
+        GameSettings game = Game(name) with { AntiCheat = antiCheat };
+        _streamer.Planned = [new ReadOp($@"D:\Games\{name}\s.bin", 0, 3000 * Mib), new ReadOp($@"D:\Games\{name}\n.bin", 0, 10653 * Mib)];
+        _isSparse = path => path.EndsWith("s.bin", StringComparison.Ordinal);
+        return (Make(game), game);
+    }
+
+    [Fact]
+    public void WhenTheKeepWhilePlayingCanKeepThemSparseRangesStayInAMemoryPrewarmThatDoesNotFitAndShareItsBudget()
+    {
+        (Prewarmer p, GameSettings game) = KeepableSparseGame("keepsparse");
+        (_ladder, _keepSparse, _ranked) = (true, true, [new TraceEvent(@"D:\Games\keepsparse\n.bin", 0, 65536)]);
+
+        Assert.True(p.Run(game, "service start").Ran);
+
+        Assert.True(p.SparseKeepable(game));
+        Assert.Equal(8952, Assert.Single(_streamer.Calls).MaxStreamMib); // 같은 상한, 스파스 범위를 빼지 않은 목록에서 앞쪽부터 들어가는 만큼
+        Assert.Contains(_log.Lines, l => l.Contains("keepsparse: 3000 MiB in sparse files stay in the memory prewarm and share its budget by rank", StringComparison.Ordinal));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("left out of the memory prewarm", StringComparison.Ordinal));
+        Assert.False(_streamer.Games.Single().SkipSparse);
+        Assert.False(p.WithSparseMark(game).SkipSparse); // 표식이 없으니 보충·표본·유지 목록도 스파스 범위를 그대로 봄
+    }
+
+    [Fact]
+    public void WhenKeepingThemSparseRangesShareTheAmountThatThePrewarmWouldHaveReadWithoutThemAndNeverAddToIt()
+    {
+        _footprint = (9551, 3);
+        GameSettings game = Game("sparsefit2");
+        _streamer.Planned = [new ReadOp(@"D:\Games\sparsefit2\s.bin", 0, 6000 * Mib), new ReadOp(@"D:\Games\sparsefit2
+.bin", 0, 7653 * Mib)];
+        _isSparse = path => path.EndsWith("s.bin", StringComparison.Ordinal);
+        Prewarmer p = Make(game);
+        (_ladder, _keepSparse, _ranked) = (true, true, [new TraceEvent(@"D:\Games\sparsefit2
+.bin", 0, 65536)]);
+
+        Assert.True(p.Run(game, "service start").Ran);
+
+        // 스파스 6,000 MiB 를 빼면 7,653 MiB 로 전체가 들어가 그만큼 읽었을 것: 스파스를 넣어도 읽는 창은 그 양 (13,653 MiB 가 아님) 을 넘지 않고, 그 안에서 점수 순으로 나눔
+        Assert.Equal(7653, Assert.Single(_streamer.Calls).MaxStreamMib);
+        Assert.False(_streamer.Games.Single().SkipSparse);
+    }
+
+    [Theory]
+    [InlineData("keep_sparse off")]
+    [InlineData("standby ladder off")]
+    [InlineData("no ranked list")]
+    [InlineData("anti-cheat forbids the hold")]
+    public void WhenTheKeepWhilePlayingCannotKeepThemTheSparseRangesAreLeftOutAsBefore(string why)
+    {
+        (Prewarmer p, GameSettings game) = KeepableSparseGame("nokeep", why == "anti-cheat forbids the hold" ? "vanguard" : null);
+        (_ladder, _keepSparse, _ranked) = (why != "standby ladder off", why != "keep_sparse off", why == "no ranked list" ? null : [new TraceEvent(@"D:\Games\nokeep\n.bin", 0, 65536)]);
+
+        Assert.True(p.Run(game, "service start").Ran);
+
+        Assert.False(p.SparseKeepable(game));
+        Assert.Equal(8952, Assert.Single(_streamer.Calls).MaxStreamMib);
+        Assert.Contains(_log.Lines, l => l.Contains("nokeep: 3000 MiB in sparse files left out of the memory prewarm", StringComparison.Ordinal));
+        Assert.True(_streamer.Games.Single().SkipSparse);
     }
 
     [Fact]

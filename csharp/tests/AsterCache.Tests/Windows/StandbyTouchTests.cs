@@ -394,7 +394,28 @@ public sealed class StandbyTouchTests : IDisposable
         Assert.Equal([(2, 2), (TouchErrors.EmptyFile, 1)], kinds.Codes(TouchErrorKind.Open)); // 2 = ERROR_FILE_NOT_FOUND
         Assert.Equal((missing, 2), kinds.Worst);
         Assert.Equal((2, 1), (kinds.Files(TouchErrorKind.Open), kinds.Files(TouchErrorKind.BeyondEnd))); // 열기 실패 3 범위는 파일 2 개 (none.bin 2 범위, empty.bin 1 범위)
-        Assert.Equal($"open 3 ranges in 2 files (win32 2 ×2, empty file ×1), beyond end 1 range in 1 file; most failures in {missing} ×2", kinds.Describe());
+        Assert.Equal([(2, 1, 2, 2L * Mib), (TouchErrors.EmptyFile, 1, 1, 1L * Mib)], kinds.OpenFailuresByCode);
+        Assert.Equal($"open 3 ranges in 2 files (win32 2 ×2 (1 file, 2 ranges, 2.00 MiB requested), empty file ×1 (1 file, 1 range, 1.00 MiB requested)), beyond end 1 range in 1 file; most failures in {missing} ×2, {empty} ×1, {_path} ×1", kinds.Describe());
+    }
+
+    [Fact]
+    public void SharingFailuresAreGroupedByCodeAndRequestedBytesWhileOtherFilesContinueAndTheNextCallRetries()
+    {
+        string other = _dir.Combine("other.bin");
+        _ = _dir.WriteRandom("other.bin", Mib);
+        TouchResult failed;
+        using (new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            failed = Go([new ReadOp(_path, 0, 37), new ReadOp(_path, 37, 13), new ReadOp(other, 0, Mib)], Counter());
+        }
+
+        TouchErrors kinds = Assert.IsType<TouchErrors>(failed.ErrorKinds);
+        Assert.Equal((2, (long)Mib), (failed.Errors, failed.Bytes));
+        Assert.Equal([(32, 1, 2, 50L)], kinds.OpenFailuresByCode);
+        Assert.Contains("win32 32 ×2 (1 file, 2 ranges, 50 B requested)", kinds.Describe());
+
+        TouchResult retried = Go([new ReadOp(_path, 0, 50)], Counter());
+        Assert.Equal((0, 50L), (retried.Errors, retried.Bytes));
     }
 
     [Fact]
@@ -414,7 +435,7 @@ public sealed class StandbyTouchTests : IDisposable
 
         Assert.Equal((4, 4), (sum.Count(TouchErrorKind.Map), sum.Count(TouchErrorKind.Read)));
         Assert.Equal((@"D:\y.bin", 4), sum.Worst);
-        Assert.Equal(@"map 4 ranges in 2 files (win32 8 ×4), read 4 ranges in 1 file (win32 23 ×4); most failures in D:\y.bin ×4", sum.Describe()); // 같은 x.bin 은 합쳐도 한 파일
+        Assert.Equal(@"map 4 ranges in 2 files (win32 8 ×4), read 4 ranges in 1 file (win32 23 ×4); most failures in D:\y.bin ×4, D:\x.bin ×3, D:\z.bin ×1", sum.Describe()); // 같은 x.bin 은 합쳐도 한 파일
         Assert.Same(b, TouchErrors.Combine(null, b));
         Assert.Null(TouchErrors.Combine(null, null));
         Assert.Equal(string.Empty, new TouchErrors().Describe());

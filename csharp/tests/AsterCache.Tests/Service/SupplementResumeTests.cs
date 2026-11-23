@@ -459,7 +459,8 @@ public sealed class SupplementResumeTests : IDisposable
 
         Assert.True(p.Supplement(g, CancellationToken.None));
         Assert.True(p.SupplementPending("g"));
-        Assert.Equal((3904L, HotMib), ((long)Status()["warmed_mib"]!, (long)Status()["hot_mib"]!)); // 창의 목록을 끝까지 읽었으므로 읽은 양은 창 크기
+        Assert.Equal((1305L, HotMib), ((long)Status()["warmed_mib"]!, (long)Status()["hot_mib"]!)); // 상태는 실제 수락량을 기록합니다.
+        Assert.Equal(3904L, (long)Status()["window_mib"]!); // 목록 소진으로 재시도를 막는 창 크기는 따로 기록합니다.
 
         _avail = 8255; // 255 MiB 증가는 조기 재시도 기준보다 작음
         Assert.False(p.Supplement(g, CancellationToken.None));
@@ -533,7 +534,8 @@ public sealed class SupplementResumeTests : IDisposable
         GameSettings g = Game();
         Prewarmer p = ReadWholeShortListOfTheWindow(g);
 
-        Assert.Equal(3904L, (long)Status()["warmed_mib"]!); // 읽은 양을 창 크기로 올림
+        Assert.Equal(3500L, (long)Status()["warmed_mib"]!); // 실제 수락량을 기록합니다.
+        Assert.Equal(3904L, (long)Status()["window_mib"]!);
         _probe = new ProbeResult(8, 0, 0.3); // 앞부분이 따뜻함
         for (int i = 0; i < 3; i++)
         {

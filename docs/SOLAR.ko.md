@@ -131,7 +131,7 @@ Windows 의 통계를 읽을 수 없으면(예: 권한이 없을 때) 3번은 �
 
 ## 켜졌는지 확인하는 법
 
-아래 줄은 `service.log` 에 남습니다. `<게임>` 은 게임 이름이고, `, N MiB read from disk`, `, N errors`, `, K MiB in sparse files not touched` 같은 꼬리는 0 이 아닐 때만 붙습니다(MiB 단위 값이 0 MiB 로 보이면 붙이지 않음). 사다리·새로 고침·시작 때의 참조 줄에서는 `, N errors` 뒤에 오류 종류가 괄호로 붙을 수 있습니다. 예를 들어 `(open 12 ranges in 3 files (win32 5 ×12); most failures in <파일> ×7)` 은 열지 못한 범위가 12개이고 3개 파일에 걸쳐 있으며 Win32 오류 5 가 12번이었고 한 파일에서 가장 많이 실패한 횟수가 7번이라는 뜻입니다. 종류는 `open`, `beyond end`(파일 끝을 넘는 범위), `map`, `read` 입니다.
+아래 줄은 `service.log` 에 남습니다. `<게임>` 은 게임 이름이고, `, N MiB read from disk`, `, N errors`, `, K MiB in sparse files not touched` 같은 꼬리는 0 이 아닐 때만 붙습니다(MiB 단위 값이 0 MiB 로 보이면 붙이지 않음). 사다리·새로 고침·시작 때의 참조 줄에서는 `, N errors` 뒤에 오류 종류가 괄호로 붙을 수 있습니다. 예를 들어 `(open 12 ranges in 3 files (win32 5 ×12 (3 files, 12 ranges, 6.00 MiB requested)); most failures in <파일> ×7, <파일> ×3, <파일> ×2)` 은 열지 못한 범위가 12개이고 3개 파일에 걸쳐 있으며 Win32 오류 5 가 12번이었고, 그 12개 범위가 요청한 양이 6.00 MiB 이며, 실패한 범위가 많은 파일이 7번, 3번, 2번 실패했다는 뜻입니다(파일은 최대 4개까지 적습니다). 안쪽 괄호의 오류 번호별 수치는 열기 오류에만 붙습니다. 종류는 `open`, `beyond end`(파일 끝을 넘는 범위), `map`, `read` 입니다.
 
 - `<게임>: ladder ordered N MiB in S s`: 예열이나 재예열 점검 뒤에 사다리를 만들었습니다. `<게임>: ladder has nothing to touch (K MiB in sparse files not touched)` 는 목록 전체가 스파스 파일이라 사다리를 만들지 않았다는 뜻이며, 점검마다가 아니라 그 판정이 새로 나올 때만(서비스를 다시 시작하거나 새 예열 뒤에는 다시) 남습니다.
 - `<게임>: cache refreshed in memory: N MiB in S s (R MiB repurposed of A MiB ahead)`: 새로 고쳤습니다. `R` 은 다시 쓴 양의 늘어난 값, `A` 는 먼저 재사용될 양입니다. 스스로는 시점이 아니었지만 묶음과 함께 새로 고친 게임도 그 게임의 값으로 같은 줄을 남깁니다.

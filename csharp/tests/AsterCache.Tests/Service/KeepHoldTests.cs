@@ -1377,6 +1377,10 @@ public sealed class KeepHoldTests
         Assert.False(ParseMemory("""{"keep_hold_written_files":false}""").KeepHoldWrittenFiles);
         Assert.True(ParseMemory("""{"keep_hold_written_files":false}""").KeepHold); // 서로 독립
         Assert.Throws<SettingsException>(() => ParseMemory("""{"keep_hold_written_files":1}"""));
+        Assert.True(ParseMemory("{}").KeepSparse); // 기본 켜짐
+        Assert.False(ParseMemory("""{"keep_sparse":false}""").KeepSparse);
+        Assert.True(ParseMemory("""{"keep_sparse":false}""").KeepHold); // 서로 독립
+        Assert.Throws<SettingsException>(() => ParseMemory("""{"keep_sparse":"no"}"""));
     }
 
     private static MemorySettings ParseMemory(string memory)

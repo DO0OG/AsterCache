@@ -1,8 +1,10 @@
+using System.Runtime.InteropServices;
 using AsterCache.Core.Prefetch;
 using AsterCache.Core.Settings;
 using AsterCache.Core.Trace;
 using AsterCache.Service;
 using AsterCache.Tracer;
+using Microsoft.Win32.SafeHandles;
 using Xunit;
 
 namespace AsterCache.Tests.Service;
@@ -120,7 +122,7 @@ public sealed class LoadRefillPlansTests : IDisposable
     }
 
     [Fact]
-    public void RankedListLeavesOutNoCacheBlocksVolatileSparseUnbufferedAndUnlistedFilesAndLogsWhatItDropped()
+    public void RankedListLeavesOutNoCacheBlocksVolatileUnbufferedAndUnlistedFilesKeepsSparseBlocksAndLogsWhatItDropped()
     {
         string sparse = Path.Combine(Path.GetDirectoryName(_gameFile)!, "sparse.bin");
         string volatileFile = Path.Combine(Path.GetDirectoryName(_gameFile)!, "vol.bin");
@@ -140,8 +142,47 @@ public sealed class LoadRefillPlansTests : IDisposable
 
         string line = LoadRefillPlans.RebuildRanked(_game, Started, path => path == sparse);
 
-        Assert.Equal([(_gameFile, 0L)], LoadRefillPlans.RankedRows(_game)!.Select(r => (r.Path, r.Offset))); // 캐시 없이만 읽힌 블록·스파스·가변·캐시 없이 읽는 파일·허용 루트 밖 제외
-        Assert.Contains("1 blocks/0.1 MiB, 0.1 MiB left out as read only without the cache, 1 sparse files left out", line, StringComparison.Ordinal);
+        Assert.Equal([(_gameFile, 0L), (sparse, 0L)], LoadRefillPlans.RankedRows(_game)!.Select(r => (r.Path, r.Offset))); // 캐시 없이만 읽힌 블록·가변·캐시 없이 읽는 파일·허용 루트 밖은 빠지고, 스파스 파일의 블록은 같은 점수로 같은 목록에 듦
+        Assert.Contains("2 blocks/0.1 MiB, 0.1 MiB left out as read only without the cache, 0.1 MiB in 1 sparse files", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SparseBlocksAreRankedByTheSamePlayCountAndLatencyAsOrdinaryBlocksInOneList()
+    {
+        string sparse = Path.Combine(Path.GetDirectoryName(_gameFile)!, "sparse.bin");
+        File.WriteAllBytes(sparse, new byte[4 * Block]);
+        IReadOnlyList<IoSummaryFile> files = [new(_gameFile), new(sparse)];
+        // 두 플레이: 일반 블록 0 은 두 플레이 (지연 작음), 스파스 블록 0 은 한 플레이 (지연 큼), 일반 블록 1 은 한 플레이 (지연 작음), 스파스 블록 1 은 한 플레이 (지연 가장 큼)
+        IoSummaryStore.WriteForRun(Run(1), Rows(files, Row(0, 0, 2, latencyUs: 5), Row(1, 0, 2, latencyUs: 900), Row(0, 1, 3, latencyUs: 7), Row(1, 1, 4, latencyUs: 950)));
+        IoSummaryStore.WriteForRun(Run(2), Rows(files, Row(0, 0, 2, latencyUs: 5)));
+
+        _ = LoadRefillPlans.RebuildRanked(_game, Started, path => path == sparse);
+
+        List<TraceEvent> ranked = LoadRefillPlans.RankedRows(_game)!;
+        Assert.Equal([(_gameFile, 0L), (sparse, 1L * Block), (sparse, 0L), (_gameFile, 1L * Block)], ranked.Select(r => (r.Path, r.Offset))); // 나온 플레이 수, 그다음 지연 합: 스파스 블록이 앞이나 뒤에 통째로 몰리지 않고 점수 순으로 섞임
+        List<TraceEvent> kept = PrefetchStreamer.SelectToBudget(ranked, 2 * Block, 0, 0, out _, ranked, 0);
+        Assert.Equal([(_gameFile, 0L), (sparse, 1L * Block)], kept.Select(r => (r.Path, r.Offset))); // 예산이 작으면 점수가 낮은 스파스 블록과 일반 블록이 함께 밀림
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool DeviceIoControl(SafeFileHandle device, uint code, nint input, uint inputSize, nint output, uint outputSize, out uint returned, nint overlapped);
+
+    [Fact]
+    public void ForAGameWhoseMemoryPrewarmLeavesSparseFilesOutTheRankedRowsLeaveThemOutToo()
+    {
+        string sparse = Path.Combine(Path.GetDirectoryName(_gameFile)!, "sparse.bin");
+        File.WriteAllBytes(sparse, new byte[4 * Block]);
+        using (SafeFileHandle h = File.OpenHandle(sparse, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            Assert.True(DeviceIoControl(h, 0x900C4, 0, 0, 0, 0, out _, 0)); // FSCTL_SET_SPARSE: 시험 임시 폴더의 파일에만 씀
+        }
+
+        IReadOnlyList<IoSummaryFile> files = [new(_gameFile), new(sparse)];
+        IoSummaryStore.WriteForRun(Run(1), Rows(files, Row(0, 0, 2), Row(1, 0, 2)));
+        _ = LoadRefillPlans.RebuildRanked(_game, Started);
+
+        Assert.Equal([_gameFile, sparse], LoadRefillPlans.RankedRows(_game)!.Select(r => r.Path));
+        Assert.Equal([_gameFile], LoadRefillPlans.RankedRows(_game with { SkipSparse = true })!.Select(r => r.Path)); // 어차피 빠질 스파스 블록이 예산을 쓰지 않음
     }
 
     [Fact]

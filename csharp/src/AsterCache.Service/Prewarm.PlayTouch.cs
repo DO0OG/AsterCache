@@ -102,9 +102,19 @@ public sealed partial class Prewarmer
         string? lastSkip = null;
         string? lastHoldSkip = null;
         string ended = string.Empty; // 끝 줄에 붙일 사유
+        CancellationTokenSource? sparseStop = null;
+        Task? sparse = null;
         try
         {
             CancellationToken stop = _playStop.Token;
+            if (_env.KeepSparseEnabled() && _env.OpenBlockReader is not null)
+            {
+                // 스파스 파일 블록은 붙들기·다시 만지기가 못 다루므로 (매핑하면 캐시가 버려짐) 같은 게임이 실행되는 동안 곁 스레드가 버퍼드 읽기로 유지합니다 (Prewarm.PlaySparse): 게임이 붙들기로 돌든 다시 만지기로 돌든 같음
+                sparseStop = CancellationTokenSource.CreateLinkedTokenSource(stop);
+                CancellationToken sparseToken = sparseStop.Token;
+                sparse = Task.Run(() => KeepSparseWhilePlaying(started, exe, sparseToken), CancellationToken.None);
+            }
+
             // 유지 목록을 뷰로 붙들 수 있으면 (memory.keep_hold, Prewarm.PlayHold) 게임이 끝날 때까지 거기서 돌고, 붙들 수 없는 게임은 아래의 다시 만지기로 남음 (일시적 사유면 주기마다 다시 시도)
             HoldOutcome held = memory.Finished ? HoldOutcome.Done : _env.KeepHoldEnabled() ? HoldWhilePlaying(started, exe, keep, ref lastHoldSkip) : HoldOutcome.No; // 빠진 범위가 대부분이라 끝낸 플레이는 다른 실행 파일이 떠도 다시 시작하지 않음
             memory.HoldWaiting = held == HoldOutcome.Retry;
@@ -180,6 +190,22 @@ public sealed partial class Prewarmer
         }
         finally
         {
+            sparseStop?.Cancel();
+            bool sparseDone = true;
+            try
+            {
+                sparseDone = sparse?.Wait(SparseJoinWait) ?? true; // 곁 스레드는 예외를 스스로 잡아 끝내므로 오류는 오지 않음
+            }
+            catch (AggregateException)
+            {
+                // 이미 끝난 스레드의 오류 (위 설명대로 오지 않음): 유지를 끝내는 데 영향 없음
+            }
+
+            if (sparseDone)
+            {
+                sparseStop?.Dispose(); // 아직 도는 스레드의 토큰을 닫지 않도록 끝난 때만
+            }
+
             lock (_gate)
             {
                 _ = _playTouching.Remove(started.Name);

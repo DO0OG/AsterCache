@@ -554,6 +554,48 @@ public sealed partial class AutoRelocatorTests
     }
 
     [Fact]
+    public void ARetryAfterATemporaryHoldWhileReplanningASetAsidePlanStillCountsTheRound()
+    {
+        bool first = true;
+        int reads = 0;
+        _w.MakePlanAt = (sessions, origin, zoneMib, lcn, used) => PlanFile.Make(sessions, origin, zoneMib << 20, Cb, p => Vol.Ext[p], zoneStartLcn: lcn, preserveBytes: 64 << 20, fixedClusters: used);
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            ApplyReport rep = real(g, plan, options, ct);
+            if (options.DryRun)
+            {
+                rep.TasksTodo = 1;
+                rep.BytesTodo = 8192;
+            }
+            else if (first)
+            {
+                first = false;
+                OptimizerMovesTheFilesAway();
+                rep.Stopped = Applier.ZoneOccupied;
+            }
+            else
+            {
+                rep.MovedBytes = Math.Max(rep.MovedBytes, 8192);
+            }
+
+            return rep;
+        };
+        Func<GameSettings, PlanFile, long> realDone = _w.JournalDoneClusters;
+        _w.JournalDoneClusters = (g, plan) => reads++ == 0 ? throw new IOException("journal is locked") : realDone(g, plan); // 첫 읽기만 일시 오류
+        _relocator = null;
+        Relocator.PlacementLostMinBytes = 64 << 10;
+        RunTicksUntil(() => _log.Lines.Any(l => l.Contains("will retry", StringComparison.Ordinal)), ticks: 40);
+        Assert.Equal(0, _status.ReapplyRoundsWithin("bench", RepeatWindow));
+
+        _w.Now += TimeSpan.FromMinutes(5);
+        RunTicksUntil(() => _status.Get("bench")?.Stage == AutoStage.Done, ticks: 100);
+
+        Assert.True(reads >= 2);
+        Assert.Equal(1, _status.ReapplyRoundsWithin("bench", RepeatWindow)); // 보류 뒤 다시 시도한 재계획이 잃은 조각을 놓치지 않음
+    }
+
+    [Fact]
     public void AJournalReadErrorWhileReplanningASetAsidePlanHoldsTemporarilyInsteadOfFailingThePlan()
     {
         bool first = true;

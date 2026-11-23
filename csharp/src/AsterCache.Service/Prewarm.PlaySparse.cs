@@ -15,7 +15,7 @@ namespace AsterCache.Service;
 /// 한계: SSD 에서 파일 전체를 10 초마다 읽은 조건이고, 이 유지의 주기 (20~30 초) 와 순위 목록 범위에서 같은지는 재지 않았습니다. 실제 플레이 로그의 회차별 디스크 읽기량 (끝 줄) 으로 확인합니다.
 /// 붙들기·다시 만지기와 따로 도는 스레드에서 돕니다 (KeepCacheWhilePlaying 이 시작하고 끝냄). 붙들기와 같은 안티치트 게이트 (HoldGate) 를 따르고 순위 목록이 있는 게임에서만 돕니다:
 /// 붙들기가 금지된 게임은 이전 기록으로 만든 순위 목록이 남아 있어도 게임 중에 스파스 파일을 읽지 않습니다 (붙들기·다시 만지기·사다리가 스파스 파일을 건너뛰므로 main 도 읽지 않음).
-/// 읽기는 캐시에 있으면 메모리 복사라 디스크를 쓰지 않습니다. 밀려난 블록을 디스크에서 다시 읽게 되는 경우는 붙들기의 다시 붙들기와 같은 조건을 따릅니다 (HoldAgainBlocker, HoldAgainRoundCap, 플레이 합계 HoldAgainDiskCapBytes 를 함께 셈).
+/// 읽기는 캐시에 있으면 메모리 복사라 디스크를 쓰지 않습니다. 밀려난 블록을 디스크에서 다시 읽게 되는 경우는 붙들기의 다시 붙들기와 같은 조건을 따릅니다 (HoldAgainBlocker, 회차 KeepDiskReadCapBytes, 이 유지만의 플레이 합계 SparsePlayDiskCapBytes).
 /// 버퍼드 읽기는 읽기 전에 그 블록이 캐시에 있는지 알 수 없고 이 프로세스의 하드 폴트 수에도 잡히지 않으므로 (2026-11-22 실험: 콜드 읽기 후에도 +0) 읽은 시간으로 디스크로 갔는지 판정합니다:
 /// 캐시 관리자의 미리 읽기를 끈 읽기 도구로 블록 하나의 시간과 이어진 묶음의 누적 시간을 보고, 넘으면 묶음 전체를 디스크로 셉니다 (2026-11-23 하드디스크 시험으로 정한 기준, SOLAR 문서).
 public sealed partial class Prewarmer
@@ -42,7 +42,7 @@ public sealed partial class Prewarmer
 
     public const double SparseGroupSecondsPerMiB = 0.0008;
 
-    /// 한 묶음의 블록 수: 16 (1 MiB). 묶음의 블록 하나라도 기준을 넘거나 누적 시간이 기준을 넘으면 그 묶음 전체를 디스크에서 읽은 것으로 셉니다 (적게 세는 것보다 많이 세는 쪽).
+    /// 한 묶음의 블록 수: 16 (1 MiB). 블록 기준을 넘은 블록은 그 블록만 디스크로 세고, 블록마다는 기준 안인데 누적 시간만 기준을 넘은 묶음은 묶음 전체를 셉니다.
     public const int SparseGroupBlocks = 16;
 
     /// 한 회차의 읽기를 나누는 묶음 크기: 16 MiB (붙들기의 HoldBatchBytes 와 같음). 묶음마다 디스크 읽기 조건 (로딩·대기열) 을 다시 보고 묶음 사이에 SparseBatchPause 만큼 쉬어 복사가 한꺼번에 몰리지 않게 합니다.
@@ -57,7 +57,11 @@ public sealed partial class Prewarmer
     /// 이 길이를 읽는 데 걸린 시간 (초) 이 이 값을 넘으면 디스크로 간 읽기로 봅니다.
     internal static double SparseDiskReadSeconds(long lengthBytes) => SparseDiskReadBaseSeconds + (lengthBytes / 1048576.0 * SparseDiskReadSecondsPerMiB);
 
-    /// 이 길이의 묶음을 읽는 데 걸린 시간 (초) 의 합이 이 값을 넘으면 묶음 전체를 디스크로 간 읽기로 봅니다.
+    /// 한 플레이에서 이 유지가 디스크에서 다시 읽는 양의 상한: 512 MiB. 다시 붙들기의 상한 (HoldAgainDiskCapBytes 1 GiB, 그 합계와 따로 셈) 에 더하지 않는 이 유지만의 상한이라, 잘못 디스크로 센 양이 다시 붙들기를 일찍 멈추게 하지 않습니다.
+    /// 근거: 유지 대상인 스파스 구간은 예열 예산 안의 몇백 MiB (이 PC 의 계획 306 MiB) 이고 회차 상한 (32 MiB) 의 16 회분입니다. 실측으로 고른 값이 아닙니다. 두 상한을 합친 플레이당 최악은 1.5 GiB (다시 붙들기 1 GiB + 이 유지 512 MiB) 입니다.
+    public const long SparsePlayDiskCapBytes = 512L << 20;
+
+    /// 이 길이의 묶음을 읽는 데 걸린 시간 (초) 의 합이 이 값을 넘으면 (블록마다는 기준 안이어도) 묶음 전체를 디스크로 간 읽기로 봅니다.
     internal static double SparseGroupSeconds(long lengthBytes) => SparseGroupBaseSeconds + (lengthBytes / 1048576.0 * SparseGroupSecondsPerMiB);
 
     // 블록 i 에서 시작하는 한 묶음의 끝: 같은 파일에서 바로 이어지는 블록을 최대 SparseGroupBlocks 개.
@@ -191,8 +195,8 @@ public sealed partial class Prewarmer
     }
 
     /// 한 회차: 스파스 블록을 맨 앞 (가장 중요한 블록) 부터 이어진 블록 묶음 (최대 SparseGroupBlocks 개) 단위로 버퍼드 읽기로 읽습니다. 가용 메모리가 붙들기의 하한 아래면 건너뛰고, 묶음마다 다시 봐서 읽는 도중 아래로 내려가면 그 회차를 끝냅니다 (밀려나는 중인 것을 디스크에서 다시 읽지 않기 위함).
-    /// 디스크로 판정한 읽기는 붙들기의 다시 붙들기와 같은 조건에서만 허용합니다: 로딩 판정이 로딩이 아니고 게임 드라이브 대기열이 0 일 때, 회차 KeepDiskReadCapBytes 와 플레이 합계 HoldAgainDiskCapBytes (다시 붙들기의 읽기와 함께 셈) 안에서. 조건은 묶음마다 다시 봅니다.
-    /// 허용되면 묶음을 모두 읽은 뒤 판정합니다: 블록 하나라도 SparseDiskReadSeconds 를 넘거나 걸린 시간의 합이 SparseGroupSeconds 를 넘으면 묶음 전체 (최대 1 MiB) 를 디스크에서 읽은 것으로 세고, 센 양이 회차 상한에 닿으면 그 회차만 끝냅니다 (다음 회차가 맨 앞부터 다시 읽되 앞은 메모리라 빨리 지나가 더 나아감).
+    /// 디스크로 판정한 읽기는 붙들기의 다시 붙들기와 같은 조건에서만 허용합니다: 로딩 판정이 로딩이 아니고 게임 드라이브 대기열이 0 일 때, 회차 KeepDiskReadCapBytes 와 이 유지만의 플레이 합계 SparsePlayDiskCapBytes (다시 붙들기의 합계와 따로 셈) 안에서. 조건은 묶음마다 다시 봅니다.
+    /// 허용되면 묶음을 모두 읽은 뒤 판정합니다: SparseDiskReadSeconds 를 넘은 블록은 그 블록만, 블록마다는 기준 안인데 걸린 시간의 합이 SparseGroupSeconds 를 넘은 묶음은 묶음 전체 (최대 1 MiB) 를 디스크에서 읽은 것으로 세고, 센 양이 회차 상한에 닿으면 그 회차만 끝냅니다 (다음 회차가 맨 앞부터 다시 읽되 앞은 메모리라 빨리 지나가 더 나아감).
     /// 허용되지 않으면 (상한이 0) 앞 회차가 읽어 메모리에 있다고 확인한 블록 (SparseKeep.Known) 만 읽고 기준을 넘는 첫 블록에서 끝냅니다 (그 블록은 읽은 것이라 디스크로 센 것으로 기록): 확인하지 않은 블록은 읽지 않으므로 로딩 중 한 회차가 디스크에 올리는 것은 밀려난 블록 하나 (64 KiB) 입니다.
     /// 읽기 도구는 캐시 관리자의 미리 읽기를 끄고 (RandomAccess) 열어 읽은 만큼만 디스크로 갑니다. 읽는 스레드의 I/O 우선순위만 이 호출 안에서 낮추고 CPU 우선순위는 보통으로 둡니다: CPU 우선순위가 낮으면 게임 스레드에 밀려 메모리 복사가 길어져 디스크 읽기로 잘못 셉니다.
     /// 디스크로 센 읽기는 서비스 자신의 읽기로 기록해 (SelfReadLog, ServiceDiskReads) 다음 집계와 로딩 판정이 게임의 읽기로 세지 않게 합니다. 읽기 중재 대여 (양보 중이면 건너뜀) 와 초 단위 기록 표시는 다른 유지 회차와 같습니다.
@@ -245,7 +249,6 @@ public sealed partial class Prewarmer
         using var activity = ServiceActivity.Begin(ServiceOp.Keep); // 초 단위 기록의 동작 표시
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(lease?.Token ?? default, stop);
         using IBlockReader reader = open();
-        KeepMemory memory = KeepMemoryOf(game.Name);
         IReadOnlyList<ReadOp> blocks = keep.Blocks;
         int count = (int)Math.Min(blocks.Count, HoldTargetBytes(availMib, HoldMinFloorMib) / LoadBoundaries.Block); // 읽는 양은 붙들기의 목표와 같은 식으로 지금 가용 메모리에 맞춰 앞쪽 (가장 중요한 부분) 만
         bool[] known = keep.Known;
@@ -267,7 +270,7 @@ public sealed partial class Prewarmer
                 }
 
                 bool blocked = HoldAgainBlocker(game) is not null; // 묶음마다 다시 봄: 읽는 도중 로딩이 시작될 수 있음
-                long roundCap = blocked ? 0 : HoldAgainRoundCap(memory);
+                long roundCap = blocked ? 0 : Math.Min(KeepDiskReadCapBytes, Math.Max(0, SparsePlayDiskCapBytes - keep.DiskBytes));
                 deferred |= roundCap == 0;
                 int to = SparseGroupEnd(blocks, i, count);
                 long groupBytes = 0;
@@ -305,8 +308,8 @@ public sealed partial class Prewarmer
                 else
                 {
                     double sum = 0;
-                    bool slow = false;
                     long readBytes = 0;
+                    long slowBytes = 0; // 블록 기준을 넘은 블록의 바이트
                     List<ReadOp> read = [];
                     for (; i < to; i++)
                     {
@@ -328,13 +331,14 @@ public sealed partial class Prewarmer
                         read.Add(block);
                         readBytes += block.Length;
                         sum += seconds;
-                        slow |= seconds > SparseDiskReadSeconds(block.Length);
+                        slowBytes += seconds > SparseDiskReadSeconds(block.Length) ? block.Length : 0;
                     }
 
-                    if (end == SparseRoundEnd.Completed && (slow || sum > SparseGroupSeconds(readBytes)))
+                    bool sumSlow = sum > SparseGroupSeconds(readBytes);
+                    if (end == SparseRoundEnd.Completed && (slowBytes > 0 || sumSlow))
                     {
-                        diskReads.AddRange(read); // 묶음 전체를 디스크에서 읽은 것으로 셈
-                        roundDisk += readBytes;
+                        diskReads.AddRange(read); // 서비스 자신의 읽기 기록에는 묶음 전체를 남김 (디스크 읽기가 없던 범위를 남겨도 게임의 읽기 집계에서 뺄 것이 없을 뿐임)
+                        roundDisk += sumSlow ? readBytes : slowBytes; // 센 양: 누적 기준을 넘었으면 묶음 전체, 아니면 블록 기준을 넘은 블록만
                         if (roundDisk >= roundCap)
                         {
                             end = SparseRoundEnd.DiskStop;
@@ -355,7 +359,6 @@ public sealed partial class Prewarmer
             _ = _env.SetReadIoLow(false);
             SelfReadLog.Note(diskReads, startedUtc, DateTimeOffset.UtcNow); // 디스크 읽기 집계가 이 읽기를 게임의 읽기로 세지 않게
             NoteServiceRead(game, roundDisk); // 로딩 판정이 서비스 자신의 읽기를 게임의 읽기에서 뺌
-            memory.AddHoldAgainDisk(roundDisk); // 다시 붙들기와 합쳐 이 플레이의 디스크 읽기 합계에 셈
             keep.DiskBytes += roundDisk;
         }
 

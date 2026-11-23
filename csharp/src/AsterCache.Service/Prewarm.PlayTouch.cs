@@ -275,7 +275,7 @@ public sealed partial class Prewarmer
         keep.All = all;
         keep.Ordered = _solar.ImportanceOrder(game, all);
         keep.Touchable = WithoutSparse(keep.Ordered);
-        keep.Bytes = keep.Touchable.Sum(o => o.Length);
+        keep.Bytes = keep.Ordered.Sum(o => o.Length); // 재사용 문턱의 목록 크기: 스파스 범위도 포함 (대기 목록에 같이 남으므로 이 변경 전과 같은 값, 다시 만지기의 주기를 바꾸지 않음)
         return true;
     }
 

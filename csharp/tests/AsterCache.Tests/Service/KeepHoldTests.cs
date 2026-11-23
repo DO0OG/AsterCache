@@ -631,6 +631,24 @@ public sealed class KeepHoldTests
         Assert.True(looked.Max(o => o.Offset + o.Length) > 0 && looked.Select(o => o.Path).Distinct().Count() >= 9, $"{looked.Select(o => o.Path).Distinct().Count()} ordinary files looked at");
     }
 
+    [Fact]
+    public void TheReuseThresholdListSizeKeepsTheSparseRangesSoTheRememberingTouchingRunsAsOftenAsBeforeAndTheTouchedTargetsLeaveThemOut()
+    {
+        _keepHold = false;
+        _sparse.Add(F(3));
+        Prewarmer p = Make(Reads); // 8 MiB 범위 여섯 개 (48 MiB) 가운데 파일 3 (8 MiB) 이 스파스
+        Type listType = typeof(Prewarmer).GetNestedType("KeepList", BindingFlags.NonPublic)!;
+        object list = Activator.CreateInstance(listType)!;
+
+        bool ok = (bool)typeof(Prewarmer).GetMethod("RefreshKeepList", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(p, [Game("a"), list])!;
+
+        Assert.True(ok);
+        Assert.Equal(48 * Mib, (long)listType.GetField("Bytes")!.GetValue(list)!); // 재사용 문턱을 정하는 목록 크기는 스파스 범위도 포함 (이 변경 전과 같음)
+        var touchable = (IReadOnlyList<ReadOp>)listType.GetField("Touchable")!.GetValue(list)!;
+        Assert.Equal(40 * Mib, touchable.Sum(o => o.Length)); // 만질 대상은 스파스를 뺀 목록
+        Assert.DoesNotContain(touchable, o => o.Path == F(3));
+    }
+
     // ---- 하한·내놓기·점검 ----
 
     [Fact]

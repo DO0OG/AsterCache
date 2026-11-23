@@ -94,16 +94,59 @@ public sealed partial class AutoRelocatorTests
     }
 
     [Fact]
-    public void AWholePlanWithNoFileThatQualifiesFallsBackToTheRangePlan()
+    public void AWholePlanWithNoFileThatQualifiesIsKeptAndNothingIsMoved()
     {
         UseWholeFile();
         Sessions = [Run((F1, 0), (F2, 0))]; // 핫이 파일의 1/16 뿐이라 둘 다 mostly_cold
 
         Tick();
+        RunUntilDone();
 
         Assert.Single(_wholeCalls);
-        Assert.Null(WholeFileLayout.WholeFiles(PlanFile.Load(_game.Plan)));
-        Assert.Contains(_log.Lines, l => l.Contains("no file qualifies for whole-file placement, planning by ranges instead", StringComparison.Ordinal));
+        Assert.Empty(WholeFileLayout.WholeFiles(PlanFile.Load(_game.Plan))!); // 범위 계획으로 대신하지 않음
+        Assert.Empty(Vol.Moves);
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.Contains(_log.Lines, l => l.Contains("no file qualifies for whole-file placement, the game is not relocated (prewarm only)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ALegacyGameWithNoFileThatQualifiesKeepsItsPlanAndStopsBeingReapplied()
+    {
+        UseWholeFile();
+        Sessions = [Run((F1, 0), (F2, 0))];
+        PlanFile legacy = LegacyRangeDone();
+
+        Tick();
+
+        Assert.Empty(_switched);
+        Assert.Equal(legacy.Sha(), PlanFile.Load(_game.Plan).Sha());
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.Equal(ReapplyVerdict.NotApplied, Relocator.ReapplyBlock(_game)); // 정기 재적용·잔여 재계획으로 넘어가지 않음
+        Assert.Contains(_log.Lines, l => l.Contains("the game is not relocated (prewarm only); the plan already applied is left as it is", StringComparison.Ordinal));
+
+        SetAuto(a => a with { RelocateLayout = RelocateLayouts.Ranges });
+        Assert.NotEqual(ReapplyVerdict.NotApplied, Relocator.ReapplyBlock(_game)); // 설정을 ranges 로 되돌리면 평소대로
+    }
+
+    [Fact]
+    public void AnInterruptedPlanSwitchIsContinuedAtTheNextServiceStart()
+    {
+        UseWholeFile();
+        PlanFile legacy = LegacyRangeDone();
+        PlanFile built = WholeFileLayout.Rebuild(legacy, p => Vol.Ext[p], _ => false, null, 2048L << 20)!;
+        _ = PlanSwitch.Commit(built, _game.Plan, JournalPath, () => _w.Now.UtcDateTime, hooks: Hooks(), oldPlans: [legacy]); // 교체는 끝났고 상태 재설정 전에 서비스가 꺼짐
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+
+        Tick();
+
+        Assert.Empty(_switched); // 다시 교체하지 않고 상태만 돌림
+        Assert.Null(Entry.RelocatedAt);
+        Assert.Contains(_log.Lines, l => l.Contains("whole-file placement was interrupted", StringComparison.Ordinal));
+
+        RunUntilDone();
+
+        Assert.Equal(AutoStage.Done, Entry.Stage);
+        Assert.True(Vol.Ext.Values.All(e => e.Count == 1));
     }
 
     [Fact]
@@ -295,7 +338,7 @@ public sealed partial class AutoRelocatorTests
 
         Assert.Empty(_switched);
         Assert.Equal(legacy.Sha(), PlanFile.Load(_game.Plan).Sha());
-        Assert.Contains(_log.Lines, l => l.Contains("no file qualifies for whole-file placement, plan unchanged", StringComparison.Ordinal)); // 한도를 가장 긴 빈 구간으로 줄이면 통째로 놓을 파일이 없음
+        Assert.Contains(_log.Lines, l => l.Contains("no file qualifies for whole-file placement, the game is not relocated (prewarm only); the plan already applied is left as it is", StringComparison.Ordinal)); // 한도를 가장 긴 빈 구간으로 줄이면 통째로 놓을 파일이 없음
     }
 
     [Fact]

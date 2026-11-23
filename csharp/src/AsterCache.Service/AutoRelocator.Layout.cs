@@ -14,6 +14,8 @@ namespace AsterCache.Service;
 /// 설정이 ranges 이면 (기본) 이 파일의 코드는 아무 일도 하지 않습니다. ranges 로 되돌려도 이미 있는 통째 계획은 그대로 둡니다 (검사는 계획의 표지로 판정): 설정을 바꾸는 순간 대량 이동이 일어나지 않게.
 public sealed partial class AutoRelocator
 {
+    private const string NoWholeFiles = "no file qualifies for whole-file placement, the game is not relocated (prewarm only)";
+
     internal const string LayoutDetail = "layout rule changed, relocating whole files";
 
     private readonly HashSet<string> _layoutChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 예전 범위 계획의 통째 배치 이행을 이미 따져 본 게임 (서비스 실행당 한 번)
@@ -21,20 +23,26 @@ public sealed partial class AutoRelocator
 
     private static bool WholeLayout(AsterSettings s) => s.Auto.RelocateLayout == RelocateLayouts.WholeFile;
 
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _wholeNone = new(StringComparer.Ordinal); // 통째로 놓을 파일이 없어 옮기지 않기로 한 게임 (이행에서 예전 범위 계획을 그대로 둔 것): 정기 재적용을 쉼, 서비스 실행마다 다시 따짐
+
     // 후보 계획을 만듦: 통째 방식이고 환경이 통째 계획 함수를 주면 통째 계획 (유효 존 상한까지, 하루 예산이 있으면 그보다 큰 파일은 제자리), 아니면 지금처럼 범위 계획.
-    // 통째로 놓을 파일이 하나도 없으면 (핫 파일이 모두 크기가 핫의 2배를 넘는 등) 같은 입력의 범위 계획으로 대신함: 아무것도 옮기지 않는 통째 계획이 범위 방식의 이득을 막지 않게.
+    // 통째로 놓을 파일이 하나도 없으면 (핫 파일이 모두 크기가 핫의 2배를 넘는 등) 그대로 둠 (옮길 것이 없는 통째 계획, 예열만): 범위 계획으로 대신하면 예약 최적화가 되돌리는 배치가 그 게임에만 남음.
     private PlanFile MakeCandidate(GameSettings g, AsterSettings s, bool whole, IReadOnlyList<IReadOnlyList<TraceEvent>> sessions, long zoneMib, long? at, long used)
     {
         if (whole && _env.MakePlanWhole is { } make)
         {
             long budget = BudgetBytes(s, g);
             PlanFile built = make(sessions, g.OriginRoot, zoneMib, MaxZoneMib(s, g), budget > 0 ? budget : long.MaxValue, at, used);
-            if (WholeFileLayout.WholeFiles(built) is not { Count: 0 })
+            if (WholeFileLayout.WholeFiles(built) is { Count: 0 })
             {
-                return built;
+                _log.Info($"{g.Name}: {NoWholeFiles}");
+            }
+            else
+            {
+                _ = _wholeNone.TryRemove(g.Name, out _);
             }
 
-            _log.Info($"{g.Name}: no file qualifies for whole-file placement, planning by ranges instead");
+            return built;
         }
 
         return at is { } lcn ? _env.MakePlanAt!(sessions, g.OriginRoot, zoneMib, lcn, used) : _env.MakePlan(sessions, g.OriginRoot, zoneMib);
@@ -86,6 +94,14 @@ public sealed partial class AutoRelocator
             try
             {
                 PlanFile plan = _env.LoadPlan(g.Plan);
+                if (plan.Zone.StartLcn is null && WholeFileLayout.WholeFiles(plan) is not null)
+                {
+                    // 계획 교체 뒤 상태를 다시 계획 단계로 돌리기 전에 서비스가 꺼진 흔적: 이대로면 이 게임은 옮겨지지도 검사되지도 않으므로 이어서 상태만 돌림
+                    _status.ResetForReplan(g.Name, LayoutDetail);
+                    _log.Info($"{g.Name}: whole-file placement was interrupted before the game was queued again, continuing");
+                    continue;
+                }
+
                 if (plan.Zone.StartLcn is null || WholeFileLayout.WholeFiles(plan) is not null)
                 {
                     continue; // 존이 아직 없는 계획이거나 이미 통째 계획
@@ -121,6 +137,7 @@ public sealed partial class AutoRelocator
                     _tier?.RevertGame(g.Name, "layout rule changed"); // 링크는 새 배치 전에 되돌림 (심볼릭 링크가 낀 계획은 재배치가 거부함)
                     _env.SwitchPlan(g, built, [plan]); // 저널은 되돌리기 기록으로 보관되고 새 계획의 저널이 따로 시작됨
                     _ = _seeded.Remove(g.Name);
+                    _ = _wholeNone.TryRemove(g.Name, out _);
                     _status.ResetForReplan(g.Name, LayoutDetail); // 다음 틱부터 최근 플레이 순서로 기존 재배치 흐름 (dry-run → 예산·상한 → 적용 → 확인) 을 지남
                     LogRebuilt(g, built);
                 }
@@ -192,7 +209,8 @@ public sealed partial class AutoRelocator
 
         if (WholeFileLayout.WholeFiles(built) is not { Count: > 0 })
         {
-            _log.Info($"{g.Name}: no file qualifies for whole-file placement, plan unchanged");
+            _log.Info($"{g.Name}: {NoWholeFiles}; the plan already applied is left as it is");
+            _wholeNone[g.Name] = 0; // 계획을 바꾸지도 되돌리지도 않고, 재적용·잔여 재계획만 하지 않음
             return null;
         }
 

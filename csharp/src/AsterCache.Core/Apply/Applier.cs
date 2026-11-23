@@ -714,6 +714,7 @@ public static class Applier
         Dictionary<string, long> needs = whole ? FileNeeds(plan, todo, cb) : [];
         long reserved = 0;
         bool noNewFiles = false;
+        var admitted = new HashSet<string>(StringComparer.Ordinal); // 예산을 잡고 시작한 파일: 다른 파일의 앞선 작업이 먼저 와서 놓아 주었다가 다시 이어 받아도 예산을 다시 잡지 않음
 
         void Stop(string? why)
         {
@@ -734,6 +735,7 @@ public static class Applier
         {
             lock (gate)
             {
+                (int N, string Path) pick;
                 while (true)
                 {
                     if (Halted() || remaining == 0)
@@ -747,14 +749,21 @@ public static class Applier
                         return null;
                     }
 
-                    if (whole && noNewFiles)
-                    {
-                        return null;
-                    }
-
                     if (ready.Count > 0)
                     {
-                        if (!whole || Admit())
+                        if (!whole)
+                        {
+                            pick = ready.Min;
+                            break;
+                        }
+
+                        pick = noNewFiles ? ready.FirstOrDefault(r => admitted.Contains(r.Path)) : ready.Min; // 예산이 모자라면 새 파일은 시작하지 않고 이미 맡은 파일의 남은 작업만 이어 감
+                        if (pick.Path is null)
+                        {
+                            return null;
+                        }
+
+                        if (admitted.Contains(pick.Path) || Admit(pick))
                         {
                             break;
                         }
@@ -765,8 +774,8 @@ public static class Applier
                     _ = Monitor.Wait(gate); // 남은 작업이 전부 진행 중인 파일의 뒷 작업
                 }
 
-                (int n, string path) = ready.Min;
-                _ = ready.Remove(ready.Min);
+                (int n, string path) = pick;
+                _ = ready.Remove(pick);
                 _ = queues[path].Dequeue();
                 remaining--;
                 if (!CanIssue())
@@ -801,24 +810,28 @@ public static class Applier
         // (gate 안) ready 의 첫 파일을 이번 회에 시작해도 되는가. 되면 그 파일의 남은 이동량을 쓰기 예산에 잡고 true.
         // 하루 남은 양 (raiseLimit) 보다 큰 파일은 시작하지 않고 다음 날로 미룸 (다른 작은 파일은 계속). 단 뒤 작업의 목표가 그 파일의 원본과 겹치면 건너뛸 수 없어 새 파일을 멈춤.
         // 예산이 모자라면 새 파일을 멈추고, 이번 회 첫 파일이면 상한을 그 파일의 남은 양까지 올려 끝까지 옮김.
-        bool Admit()
+        bool Admit((int N, string Path) first)
         {
-            (int n, string path) = ready.Min;
+            (_, string path) = first;
             long need = needs.GetValueOrDefault(path);
             if (need <= raiseLimit && (reserved == 0 || reserved + need <= writeCap))
             {
                 writeCap = Math.Max(writeCap, reserved + need);
                 reserved += need;
+                _ = admitted.Add(path);
                 return true;
             }
 
-            if (need > raiseLimit && SkipSafe(n, path))
+            if (need > raiseLimit)
             {
-                _ = ready.Remove(ready.Min);
-                remaining -= queues[path].Count;
-                queues[path].Clear();
-                rep.DeferredFiles++;
-                return false;
+                rep.DeferredFiles++; // 하루 남은 양보다 큰 파일: 건너뛸 수 없어 멈추더라도 미룬 것으로 셈 (서비스가 틱마다 되풀이하지 않고 쉼)
+                if (SkipSafe(path))
+                {
+                    _ = ready.Remove(first);
+                    remaining -= queues[path].Count;
+                    queues[path].Clear();
+                    return false;
+                }
             }
 
             noNewFiles = true;
@@ -827,7 +840,7 @@ public static class Applier
             return false;
         }
 
-        bool SkipSafe(int n, string path)
+        bool SkipSafe(string path)
         {
             try
             {
@@ -837,7 +850,7 @@ public static class Applier
                 }
 
                 List<(long A, long B)> src = [.. todo.Where(x => x.Task.Path == path).SelectMany(x => ZoneAllocator.Pieces(ext, x.Task.Vcn + x.Done, x.Task.Vcn + x.Task.Clusters)).Select(p => (p.Lcn, p.Lcn + p.N))];
-                return !todo.Skip(n + 1).Any(x => x.Task.Path != path && src.Any(s => x.Task.TargetLcn + x.Done < s.B && s.A < x.Task.TargetLcn + x.Task.Clusters));
+                return !todo.Any(x => x.Task.Path != path && src.Any(s => x.Task.TargetLcn + x.Done < s.B && s.A < x.Task.TargetLcn + x.Task.Clusters));
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException or Win32Exception)
             {
@@ -860,6 +873,11 @@ public static class Applier
                 {
                     Stop("cancelled");
                     return null;
+                }
+
+                if (ready.Count > 0 && ready.Min.N < q.Peek())
+                {
+                    return null; // 다른 파일의 앞선 작업이 남음: 계획 (위상) 순서를 지키려고 이 파일을 놓고 그 작업부터 (Release 가 이 파일을 다시 대기열에 올림)
                 }
 
                 int n = q.Dequeue();

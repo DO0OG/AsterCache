@@ -268,6 +268,26 @@ public sealed class WholeFileLayoutFollowUpTests : ApplyTestBase
         Assert.Equal(Files[F2], Vol.Ext[F2]); // F2 는 F1 이 비키지 않아 목표를 쓸 수 없으니 시작하지 않음 (실패로 세지 않음)
         Assert.Empty(rep.Failed);
         Assert.Equal("write_cap", rep.Stopped);
+        Assert.Equal(1, rep.DeferredFiles); // 건너뛰지 못해 멈췄어도 미룬 것으로 셈: 서비스가 틱마다 되풀이하지 않고 쉼
+    }
+
+    [Fact]
+    public void AFileWithTwoTasksReleasesItWhenAnotherFilesEarlierTaskIsStillPending()
+    {
+        // F1: 가운데 조각이 이미 목표에 있어 작업이 둘 (앞 64, 뒤 128). 뒤 작업의 목표 [Zone + 128, +128) 는 지금 F2 가 차지해서 F2 가 먼저 비켜야 함
+        Files[F1] = [new Extent(0, 1000, 64), new Extent(64, Zone + 64, 64), new Extent(128, 5000, 128)];
+        Vol.Ext[F1] = [new Extent(0, 1000, 64), new Extent(64, Zone + 64, 64), new Extent(128, 5000, 128)];
+        Files[F2] = [new Extent(0, Zone + 128, 256)];
+        Vol.Ext[F2] = [new Extent(0, Zone + 128, 256)];
+        PlanFile plan = Whole(Zone);
+        Assert.Equal([F1, F2, F1], plan.Tasks.Select(t => t.Path)); // 계획 순서: F1 앞 작업, F2, F1 뒤 작업
+
+        ApplyReport rep = Apply(plan, Exec());
+
+        Assert.Empty(rep.Failed); // 목표가 아직 F2 의 데이터인 채로 F1 뒤 작업을 시작하지 않음
+        Assert.Null(rep.Stopped);
+        Assert.True(Vol.Ext.Values.All(e => e.Count == 1));
+        Assert.True(Verify(plan).Contiguous);
     }
 
     [Fact]

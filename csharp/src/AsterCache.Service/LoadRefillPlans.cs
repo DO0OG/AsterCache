@@ -131,9 +131,10 @@ internal static class LoadRefillPlans
     /// 스파스 파일의 블록도 같은 점수로 이 한 목록에 섞습니다: 예열은 스파스 파일을 매핑하지 않고 버퍼드 읽기로 읽으므로 (ZoneStreamer.RunPvmOrBuffered) 순위 자리와 예산을 일반 파일 블록과 같은 기준으로 다툽니다.
     /// 스파스 블록은 붙들기·다시 만지기·사다리가 어차피 건너뛰므로 (Prewarm.PlayHold 의 sparse 사유, StandbyTouch·ResidentFinder) 그쪽에 영향이 없고, 게임 중에는 Prewarm.PlaySparse 가 버퍼드 읽기로 유지합니다.
     /// includeWritten 이면 (memory.keep_hold_written_files) 게임이 플레이 중에 쓰는 파일의 블록도 같은 점수로 줄 세웁니다 (두 플레이 이상 반복해 읽힌 블록만, LoadRefillPlanner.WrittenMinPlays).
-    public static string RebuildRanked(GameSettings g, DateTimeOffset now, bool includeWritten = false, IReadOnlyList<string>? recentPlays = null) => RebuildRanked(g, now, path => FileGuards.IsSparse(path), includeWritten, recentPlays);
+    /// includeSparse 가 거짓이면 (memory.keep_sparse 가 꺼져 있거나 memory.standby_ladder 가 꺼져 있어 스파스 블록을 유지하지 않음) 스파스 파일의 블록을 이 변경 전처럼 목록에서 뺍니다: 예열 예산을 쓰고도 게임 중에 지켜지지 않는 일이 없게.
+    public static string RebuildRanked(GameSettings g, DateTimeOffset now, bool includeWritten = false, IReadOnlyList<string>? recentPlays = null, bool includeSparse = true) => RebuildRanked(g, now, path => FileGuards.IsSparse(path), includeWritten, recentPlays, includeSparse);
 
-    internal static string RebuildRanked(GameSettings g, DateTimeOffset now, Func<string, bool> isSparse, bool includeWritten = false, IReadOnlyList<string>? recentPlays = null)
+    internal static string RebuildRanked(GameSettings g, DateTimeOffset now, Func<string, bool> isSparse, bool includeWritten = false, IReadOnlyList<string>? recentPlays = null, bool includeSparse = true)
     {
         string path = RankedPathOf(g);
         Func<string, LoadRefillFileStat?> inner = StatOf(g, includeWritten);
@@ -141,8 +142,22 @@ internal static class LoadRefillPlans
         WrittenFileHistory history = includeWritten ? WrittenFileHistory.Read(WrittenFileHistory.PathFor(AutoTracer.RawTracePath(g))) : new WrittenFileHistory();
         HashSet<string> unbuffered = UnbufferedFiles.Excluded(g);
         string drive = Path.GetPathRoot(g.OriginRoot) ?? string.Empty;
-        LoadRefillFileStat? Stat(string file) =>
-            !string.Equals(Path.GetPathRoot(file), drive, StringComparison.OrdinalIgnoreCase) || unbuffered.Contains(file) ? null : inner(file);
+        int sparseLeftOut = 0;
+        LoadRefillFileStat? Stat(string file)
+        {
+            if (!string.Equals(Path.GetPathRoot(file), drive, StringComparison.OrdinalIgnoreCase) || unbuffered.Contains(file) || inner(file) is not { } stat)
+            {
+                return null;
+            }
+
+            if (!includeSparse && isSparse(file))
+            {
+                sparseLeftOut++; // Collect 가 파일마다 한 번만 물으므로 파일 수
+                return null;
+            }
+
+            return stat;
+        }
 
         LoadRefillList list = LoadRefillPlanner.Collect(Sources(AutoTracer.RawTracePath(g)), Stat, null, LoadRefillPlanner.RankedCapBytes, includeWritten ? file => VolatileFiles.IsGameWritten(file, marked) : null,
             includeWritten ? file => VolatileFiles.IsGameWritten(file, marked) && inner(file) is { } now && history.IsAppendOnly(file, now.Size, recentPlays) : null); // 크기 기록이 충분하고 줄어든 적이 없는 파일은 수정된 플레이의 읽기도 셈
@@ -159,7 +174,7 @@ internal static class LoadRefillPlans
         }
 
         return $"ranked block list built from {list.Plays} plays: {list.Blocks.Count} blocks/{Mib(list.Bytes)} MiB, "
-            + $"{Mib(list.SkippedNoCacheBlocks * LoadBoundaries.Block)} MiB left out as read only without the cache, {Mib(sparseBlocks * LoadBoundaries.Block)} MiB in {sparseFiles.Count} sparse files, "
+            + $"{Mib(list.SkippedNoCacheBlocks * LoadBoundaries.Block)} MiB left out as read only without the cache, {(includeSparse ? $"{Mib(sparseBlocks * LoadBoundaries.Block)} MiB in {sparseFiles.Count} sparse files" : $"{sparseLeftOut} sparse files left out")}, "
             + $"{Mib(list.DroppedByCapBlocks * LoadBoundaries.Block)} MiB over the {LoadRefillPlanner.RankedCapBytes >> 20} MiB cap"
             + (includeWritten ? $", {Mib(writtenBlocks * LoadBoundaries.Block)} MiB in game-written files" : string.Empty);
     }

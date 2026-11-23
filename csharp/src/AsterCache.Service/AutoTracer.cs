@@ -2148,7 +2148,7 @@ public sealed class AutoTracer
     {
         try
         {
-            _log.Info($"{g.Name}: {LoadRefillPlans.RebuildRanked(g, _env.Now(), _settings().Memory is { KeepHold: true, KeepHoldWrittenFiles: true }, [.. _env.PlaySessions(g.Name).Select(x => x.Session)])}{logSuffix}");
+            _log.Info($"{g.Name}: {LoadRefillPlans.RebuildRanked(g, _env.Now(), _settings().Memory is { KeepHold: true, KeepHoldWrittenFiles: true }, [.. _env.PlaySessions(g.Name).Select(x => x.Session)], _settings().Memory is { KeepSparse: true, StandbyLadder: true })}{logSuffix}");
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {

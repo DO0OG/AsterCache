@@ -20,7 +20,7 @@ public sealed class SparseKeepTests
     private static readonly string FileB = @"D:\s\b.xsub";
     private static readonly string Dense = @"D:\s\dense.bin";
     private static readonly double Slow = 0.01;
-    private static readonly double Fast = 0.0001;
+    private static readonly double Fast = 0.00002; // 캐시 적중의 64 KiB 복사 (기준 0.15 ms 의 아래, 16 블록의 합 0.32 ms 도 묶음 기준 0.85 ms 의 아래)
 
     private readonly ListLog _log = new();
     private readonly List<(string Path, long Offset, int Length)> _reads = [];
@@ -37,6 +37,7 @@ public sealed class SparseKeepTests
     private long _avail = 20000;
     private int _opened;
     private int _readsUnderLock;
+    private string? _antiCheat; // 게임 설정의 안티치트 종류 (붙들기 게이트)
     private bool _allWarm; // 켜면 모든 블록이 메모리에 있음 (읽기가 모두 빠름)
     private Prewarmer? _prewarmer;
     private List<TraceEvent>? _rows; // 블록 순위 목록 (순위 순, 없으면 null: 순위 목록이 없는 게임)
@@ -113,7 +114,7 @@ public sealed class SparseKeepTests
 
     private Prewarmer Make()
     {
-        GameSettings a = Game();
+        GameSettings a = Game() with { AntiCheat = _antiCheat };
         var p = new Prewarmer([a], new Streamer(this), new PrewarmEnv
         {
             AvailableRamMib = () => Interlocked.Read(ref _avail),
@@ -267,24 +268,26 @@ public sealed class SparseKeepTests
     }
 
     [Fact]
-    public void ABlockCountsAsReadFromDiskOnlyAboveTwoMillisecondsPlusOneMillisecondPerMiB()
+    public void ABlockCountsAsReadFromDiskAboveTheBlockLimitOrAGroupWhoseSumPassesTheGroupLimitAndTheWholeGroupIsCounted()
     {
-        Assert.Equal(0.002 + (0.0625 * 0.001), Prewarmer.SparseDiskReadSeconds(Block), 9);
-        Assert.Equal(0.003, Prewarmer.SparseDiskReadSeconds(1 << 20), 9);
-        _planned = [new ReadOp(FileA, 0, 40 * Block)];
-        _rows = Rows(FileA, 40);
-        double threshold = Prewarmer.SparseDiskReadSeconds(Block);
-        _seconds = (n, _) => n < 20 ? threshold : threshold + 0.0001; // 기준 그대로는 메모리, 조금이라도 넘으면 디스크
+        Assert.Equal(0.00005 + (0.0625 * 0.0016), Prewarmer.SparseDiskReadSeconds(Block), 9); // 64 KiB 에 0.15 ms
+        Assert.Equal(0.00005 + 0.0016, Prewarmer.SparseDiskReadSeconds(1 << 20), 9);
+        Assert.Equal(0.00005 + 0.0008, Prewarmer.SparseGroupSeconds(1 << 20), 9); // 묶음 (1 MiB) 의 누적 기준 0.85 ms
+        _planned = [new ReadOp(FileA, 0, 160 * Block)]; // 묶음 10 개
+        _rows = Rows(FileA, 160);
+        double limit = Prewarmer.SparseDiskReadSeconds(Block);
+        _seconds = (n, _) => n == 5 ? limit + 0.00001 : n is >= 32 and < 48 ? 0.00006 : Fast; // 묶음 0: 블록 하나가 기준을 넘음, 묶음 2: 블록마다 기준 안이지만 합 0.96 ms 가 묶음 기준 0.85 ms 를 넘음, 나머지는 메모리
         Prewarmer p = Direct(1);
         _ = Calm(p);
 
         Run(p);
 
-        Assert.Contains(_log.Lines, l => l.Contains("reached 2 of 2 MiB of the list, 1 MiB read from disk", StringComparison.Ordinal)); // 디스크로 센 블록 20 개 (1.25 MiB), 목록은 끝까지 읽음
+        Assert.Equal(2 * 16 * Block, PlayDiskBytes(p)); // 센 것은 느린 블록이 든 묶음 둘 (각 1 MiB) 전체
+        Assert.Contains(_log.Lines, l => l.Contains("reached 10 of 10 MiB of the list, 2 MiB read from disk", StringComparison.Ordinal));
     }
 
     [Fact]
-    public void ABlockThatIsAlreadyInMemoryAddsNothingToTheDiskCountersAndBlocksReadFromDiskAreCountedAsTheServicesOwnReadsAndInThePlayTotal()
+    public void ABlockThatIsAlreadyInMemoryAddsNothingToTheDiskCountersAndTheGroupsWithBlocksReadFromDiskAreCountedAsTheServicesOwnReadsAndInThePlayTotal()
     {
         _planned = [new ReadOp(FileA, 0, 100 * Block)];
         _rows = Rows(FileA, 100);
@@ -301,10 +304,11 @@ public sealed class SparseKeepTests
 
         (IReadOnlyList<SelfReadBatch> batches, _) = observation.End();
         List<ReadOp> mine = [.. batches.SelectMany(b => b.Ops).Where(o => o.Path == FileA)];
-        Assert.Equal(60, mine.Count); // 첫 회차에 디스크로 판정한 60 블록만 (둘째 회차는 모두 메모리라 기록할 것이 없음)
-        Assert.Equal(Enumerable.Range(40, 60).Select(i => i * Block), mine.Select(o => o.Offset).Order());
-        Assert.Equal(60 * Block, board.ServiceReads.Total(root)); // 로딩 판정이 게임의 읽기에서 뺄 서비스 자신의 읽기
-        Assert.Equal(60 * Block, PlayDiskBytes(p)); // 다시 붙들기와 합쳐 세는 플레이 합계
+        // 묶음 0·1 (블록 0~31) 은 모두 메모리라 세지 않고, 묶음 2 (32~47) 는 일부만 디스크였어도 묶음 전체, 나머지 (48~99) 도 디스크: 블록 32~99 의 68 개. 둘째 회차는 모두 메모리라 기록할 것이 없음.
+        Assert.Equal(68, mine.Count);
+        Assert.Equal(Enumerable.Range(32, 68).Select(i => i * Block), mine.Select(o => o.Offset).Order());
+        Assert.Equal(68 * Block, board.ServiceReads.Total(root)); // 로딩 판정이 게임의 읽기에서 뺄 서비스 자신의 읽기
+        Assert.Equal(68 * Block, PlayDiskBytes(p)); // 다시 붙들기와 합쳐 세는 플레이 합계
     }
 
     [Fact]
@@ -327,7 +331,7 @@ public sealed class SparseKeepTests
     }
 
     [Fact]
-    public void TheDiskReadsOfThePlayShareTheHoldAgainTotalAndWhenItIsSpentARoundStopsAtTheFirstBlockFromDisk()
+    public void TheDiskReadsOfThePlayShareTheHoldAgainTotalAndWhenItIsSpentARoundReadsOnlyTheBlocksKnownToBeInMemory()
     {
         _planned = [new ReadOp(FileA, 0, 1000 * Block)];
         _rows = Rows(FileA, 1000);
@@ -337,9 +341,9 @@ public sealed class SparseKeepTests
 
         Run(p);
 
-        // 1 회차: 남은 10 MiB = 블록 160 개에서 끝남. 2 회차: 합계를 다 써서 앞 160 블록 (메모리) 과 디스크로 간 새 블록 하나에서 끝남.
-        Assert.Equal(160 + 161, _reads.Count);
-        Assert.Equal(Prewarmer.HoldAgainDiskCapBytes + Block, PlayDiskBytes(p)); // 상한을 넘는 것은 회차마다 디스크로 간 블록 하나 (64 KiB) 까지
+        // 1 회차: 남은 10 MiB = 블록 160 개에서 끝남. 2 회차: 합계를 다 써서 앞 회차가 읽은 160 블록 (메모리) 만 읽고 확인하지 않은 블록은 읽지 않음.
+        Assert.Equal(160 + 160, _reads.Count);
+        Assert.Equal(Prewarmer.HoldAgainDiskCapBytes, PlayDiskBytes(p)); // 합계를 넘지 않음
         Assert.Contains("1 rounds with disk reads held back", _log.Lines.Last(l => l.Contains("ended after", StringComparison.Ordinal)), StringComparison.Ordinal);
     }
 
@@ -354,30 +358,59 @@ public sealed class SparseKeepTests
     [InlineData(Blocker.Loading)]
     [InlineData(Blocker.BusyQueue)]
     [InlineData(Blocker.UnknownQueue)]
-    public void WhileTheLoadingPhaseOrTheDriveQueueForbidsDiskReadsTheResidentPartIsStillReadAndEachRoundStopsAtTheFirstBlockFromDisk(Blocker why)
+    public void WhileTheLoadingPhaseOrTheDriveQueueForbidsDiskReadsOnlyTheBlocksKnownToBeInMemoryAreReadAndEachRoundStopsAtTheFirstOneThatWentToDisk(Blocker why)
     {
         _planned = [new ReadOp(FileA, 0, 40 * Block)];
         _rows = Rows(FileA, 40);
-        for (int i = 0; i < 5; i++)
+        Prewarmer p = Direct(3);
+        _ = Calm(p);
+        Action<TimeSpan, int> end = _onSleep!;
+        _onSleep = (t, n) =>
         {
-            _ = _inMemory.Add((FileA, i * Block)); // 앞 5 블록은 메모리에 있음
-        }
+            if (n == 1)
+            {
+                lock (_inMemory)
+                {
+                    for (int i = 10; i < 40; i++)
+                    {
+                        _ = _inMemory.Remove((FileA, i * Block)); // 첫 회차 뒤에 블록 10~39 가 메모리에서 밀려남
+                    }
+                }
 
-        Prewarmer p = Direct(2);
-        var board = new LoadPhaseBoard(_log);
-        p.LoadPhases = board;
-        Feed(board, loading: why == Blocker.Loading, queue: why == Blocker.BusyQueue ? 2L : why == Blocker.UnknownQueue ? null : 0L);
+                var board = new LoadPhaseBoard(_log);
+                p.LoadPhases = board;
+                Feed(board, loading: why == Blocker.Loading, queue: why == Blocker.BusyQueue ? 2L : why == Blocker.UnknownQueue ? null : 0L); // 이제 디스크 읽기가 허용되지 않음
+            }
+
+            end(t, n);
+        };
 
         Run(p);
 
-        // 1 회차: 메모리의 5 블록 + 디스크로 간 블록 하나에서 끝남 (6 읽기). 2 회차: 앞 6 블록이 메모리라 빠르고 다음 디스크 블록 하나에서 끝남 (7 읽기).
-        Assert.Equal(6 + 7, _reads.Count);
-        Assert.Equal(2 * Block, PlayDiskBytes(p));
+        // 1 회차: 40 블록 모두 읽음 (디스크로 센 묶음 셋 = 40 블록). 2 회차: 블록 0~9 는 메모리, 블록 10 은 밀려나 디스크로 간 첫 블록에서 끝남 (11 읽기). 3 회차: 블록 10 은 다시 메모리, 11 에서 끝남 (12 읽기).
+        Assert.Equal(40 + 11 + 12, _reads.Count);
+        Assert.Equal(42 * Block, PlayDiskBytes(p));
         Assert.Contains("2 rounds with disk reads held back", _log.Lines.Last(l => l.Contains("ended after", StringComparison.Ordinal)), StringComparison.Ordinal);
     }
 
     [Fact]
-    public void ALoadingThatStartsInTheMiddleOfARoundIsSeenAtTheNextBatchAndTheRoundStopsAtTheFirstBlockFromDisk()
+    public void WhenDiskReadsAreForbiddenInTheFirstRoundNothingIsKnownToBeInMemoryAndNothingIsRead()
+    {
+        _planned = [new ReadOp(FileA, 0, 40 * Block)];
+        _rows = Rows(FileA, 40);
+        Prewarmer p = Direct(1);
+        var board = new LoadPhaseBoard(_log);
+        p.LoadPhases = board;
+        Feed(board, loading: true, queue: 0L); // 게임 시작 로딩
+
+        Run(p);
+
+        Assert.Empty(_reads);
+        Assert.Equal(0, PlayDiskBytes(p));
+    }
+
+    [Fact]
+    public void ALoadingThatStartsInTheMiddleOfARoundIsSeenAtTheNextGroupAndNothingUnknownIsReadAfterIt()
     {
         _planned = [new ReadOp(FileA, 0, 1000 * Block)];
         _rows = Rows(FileA, 1000);
@@ -395,8 +428,60 @@ public sealed class SparseKeepTests
 
         Run(p);
 
-        // 첫 묶음 (16 MiB = 256 블록) 은 조건을 보고 시작했으므로 끝까지 읽고 (16 MiB < 회차 상한 32 MiB), 둘째 묶음은 로딩을 보고 첫 디스크 블록에서 끝남.
-        Assert.Equal(256 + 1, _reads.Count);
+        // 첫 묶음 (16 블록) 은 조건을 보고 시작했으므로 끝까지 읽고, 다음 묶음부터는 로딩이라 확인된 블록만 읽는데 (첫 묶음의 16 블록은 이미 읽어 확인됨) 그 뒤 묶음의 블록은 확인된 것이 없어 읽지 않음.
+        Assert.Equal(16, _reads.Count);
+        Assert.Equal(16 * Block, PlayDiskBytes(p));
+    }
+
+    [Fact]
+    public void TheMemoryFloorIsWatchedAtEveryGroupAndAFallBelowItInTheMiddleOfARoundEndsTheRound()
+    {
+        _planned = [new ReadOp(FileA, 0, 1000 * Block)];
+        _rows = Rows(FileA, 1000);
+        _allWarm = true;
+        Prewarmer p = Direct(1);
+        _seconds = (n, _) =>
+        {
+            if (n == 10)
+            {
+                Interlocked.Exchange(ref _avail, Prewarmer.HoldMinFloorMib - 1); // 읽는 도중 가용 메모리가 하한 아래로 내려감
+            }
+
+            return Fast;
+        };
+
+        Run(p);
+
+        Assert.Equal(16, _reads.Count); // 읽던 묶음 하나만 끝까지 읽고 끝남
+    }
+
+    [Fact]
+    public void ForAGameWhoseAntiCheatForbidsTheHoldNothingIsOpenedReadOrKeptEvenWithARankedListLeftOver()
+    {
+        _antiCheat = "vanguard";
+        _rows = Rows(FileA, 16);
+        _allWarm = true;
+        Prewarmer p = Direct(1);
+
+        Run(p);
+
+        Assert.Empty(_reads);
+        Assert.Equal(0, _opened);
+        Assert.Contains(_log.Lines, l => l.Contains("a: sparse blocks kept while playing skipped (a.exe: anti-cheat: vanguard)", StringComparison.Ordinal));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("kept while playing:", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ForARicochetGameWhichTheHoldGateAllowsTheKeepRuns()
+    {
+        _antiCheat = "ricochet";
+        _rows = Rows(FileA, 16);
+        _allWarm = true;
+        Prewarmer p = Direct(1);
+
+        Run(p);
+
+        Assert.NotEmpty(_reads);
     }
 
     [Fact]

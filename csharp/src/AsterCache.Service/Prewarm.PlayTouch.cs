@@ -244,7 +244,15 @@ public sealed partial class Prewarmer
         public string? Stamp; // 목록을 만든 때의 입력 표지 (null: 표지를 읽지 못해 재사용하지 않음)
         public IReadOnlyList<ReadOp> All = []; // 사다리 대상 (읽은 순서)
         public IReadOnlyList<ReadOp> Ordered = []; // All 의 중요도 순서 (순위 목록이 없으면 All 과 같은 객체)
+        public IReadOnlyList<ReadOp> Touchable = []; // Ordered 에서 스파스 파일 범위를 뺀 것: 다시 만지기는 스파스를 건너뛰므로 바이트 상한 (Head) 을 먹지 않게 자르기 전에 뺌
         public long Bytes; // 목록의 크기 (재사용 문턱 계산용)
+    }
+
+    // 스파스 파일 범위를 뺍니다 (파일마다 속성을 한 번만 물음): 매핑으로 만지는 일은 스파스 파일을 건너뛰므로 만질 목록의 바이트 상한을 먹지 않게 합니다.
+    private IReadOnlyList<ReadOp> WithoutSparse(IReadOnlyList<ReadOp> ops)
+    {
+        var sparse = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        return [.. ops.Where(o => !(sparse.TryGetValue(o.Path, out bool s) ? s : sparse[o.Path] = _env.IsSparse(o.Path)))];
     }
 
     // 유지 목록이 있으면 입력이 바뀌지 않았는지 보고 (메타데이터 조회뿐), 없거나 바뀌었으면 새로 계산합니다. 계획할 수 없으면 false.
@@ -266,7 +274,8 @@ public sealed partial class Prewarmer
         keep.Stamp = stamp;
         keep.All = all;
         keep.Ordered = _solar.ImportanceOrder(game, all);
-        keep.Bytes = keep.Ordered.Sum(o => o.Length);
+        keep.Touchable = WithoutSparse(keep.Ordered);
+        keep.Bytes = keep.Touchable.Sum(o => o.Length);
         return true;
     }
 
@@ -309,7 +318,7 @@ public sealed partial class Prewarmer
         }
 
         long cap = (long)(availMib * PlayTouchAvailableFraction) << 20;
-        IReadOnlyList<ReadOp> reads = PrefetchStreamer.Head(keep.Ordered, cap); // 목록 앞쪽 (가장 중요한 부분) 만
+        IReadOnlyList<ReadOp> reads = PrefetchStreamer.Head(keep.Touchable, cap); // 목록 앞쪽 (가장 중요한 부분) 만
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "play touch", default, game.OriginRoot, allowWhileYielded: true, preserveGameKey: game.Name);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
         {

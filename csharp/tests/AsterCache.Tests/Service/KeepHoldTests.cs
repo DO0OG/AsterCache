@@ -612,6 +612,25 @@ public sealed class KeepHoldTests
         Assert.Contains(_log.Lines, l => l.Contains("a: cache kept while playing (a.exe): 48 MiB of 48 MiB in memory") && l.Contains("0 new missing stretches remembered"));
     }
 
+    [Fact]
+    public void SparseRangesAheadInTheImportanceOrderDoNotEatTheByteLimitOfTheRememberingTouching()
+    {
+        _keepHold = false;
+        ReadOp[] gib = [.. Enumerable.Range(0, 12).Select(i => Op(30 + i, 0, 1024))];
+        _sparse.Add(F(30));
+        _sparse.Add(F(31));
+        _sparse.Add(F(32)); // 중요한 순서 앞쪽의 스파스 범위 3 GiB: 만지지 않으므로 가용 메모리의 절반 (10,000 MiB) 상한을 먹으면 안 됨
+        Prewarmer p = Make(gib);
+        RunFor(20);
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        List<ReadOp> looked = [.. _findCalls.SelectMany(r => r)]; // 회차가 확인하려고 넘긴 범위 (자른 뒤의 목록)
+        Assert.NotEmpty(looked);
+        Assert.DoesNotContain(looked, o => _sparse.Contains(o.Path));
+        Assert.True(looked.Max(o => o.Offset + o.Length) > 0 && looked.Select(o => o.Path).Distinct().Count() >= 9, $"{looked.Select(o => o.Path).Distinct().Count()} ordinary files looked at");
+    }
+
     // ---- 하한·내놓기·점검 ----
 
     [Fact]

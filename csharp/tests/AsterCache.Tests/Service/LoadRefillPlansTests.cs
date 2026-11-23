@@ -164,6 +164,20 @@ public sealed class LoadRefillPlansTests : IDisposable
         Assert.Equal([(_gameFile, 0L), (sparse, 1L * Block)], kept.Select(r => (r.Path, r.Offset))); // 예산이 작으면 점수가 낮은 스파스 블록과 일반 블록이 함께 밀림
     }
 
+    [Fact]
+    public void WithSparseKeepingTurnedOffTheRankedListLeavesSparseBlocksOutAsBeforeThisChange()
+    {
+        string sparse = Path.Combine(Path.GetDirectoryName(_gameFile)!, "sparse.bin");
+        File.WriteAllBytes(sparse, new byte[4 * Block]);
+        IReadOnlyList<IoSummaryFile> files = [new(_gameFile), new(sparse)];
+        IoSummaryStore.WriteForRun(Run(1), Rows(files, Row(0, 0, 2), Row(1, 0, 2)));
+
+        string line = LoadRefillPlans.RebuildRanked(_game, Started, path => path == sparse, includeSparse: false);
+
+        Assert.Equal([_gameFile], LoadRefillPlans.RankedRows(_game)!.Select(r => r.Path)); // memory.keep_sparse 가 꺼져 있으면 예열 예산을 쓰고도 게임 중 지켜지지 않을 스파스 블록을 순위에 넣지 않음
+        Assert.Contains("1 sparse files left out", line, StringComparison.Ordinal);
+    }
+
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool DeviceIoControl(SafeFileHandle device, uint code, nint input, uint inputSize, nint output, uint outputSize, out uint returned, nint overlapped);
 

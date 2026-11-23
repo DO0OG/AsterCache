@@ -786,7 +786,7 @@ public sealed partial class Prewarmer
     {
         KeepMemory memory = KeepMemoryOf(game.Name);
         long availMib = _env.AvailableRamMib();
-        IReadOnlyList<ReadOp> ordered = PrefetchStreamer.Head(_solar.ImportanceOrder(game, readOrder), (long)(Math.Max(0, availMib) * PlayTouchAvailableFraction) << 20);
+        IReadOnlyList<ReadOp> ordered = PrefetchStreamer.Head(WithoutSparse(_solar.ImportanceOrder(game, readOrder)), (long)(Math.Max(0, availMib) * PlayTouchAvailableFraction) << 20); // 스파스 범위는 만지지 않으므로 상한을 먹지 않게 자르기 전에 뺌
         RememberTally t = TouchRemembering(ordered, memory, findNew && memory.DiskBytes < KeepPlayDiskCapBytes, KeepRoundDiskCapBytes, stop);
         NoteServiceRead(game, t.Disk);
         if (t.Boundaries == 0 && !t.CapReached && !t.FindSkipped && !stop.IsCancellationRequested)

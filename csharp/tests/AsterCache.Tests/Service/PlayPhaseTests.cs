@@ -1,5 +1,4 @@
 using AsterCache.Service;
-using AsterCache.Windows;
 using Xunit;
 
 namespace AsterCache.Tests.Service;
@@ -149,7 +148,22 @@ public sealed class PlayPhaseTests
         Assert.Equal((LoadState.Loading, null), (again.State, again.Started));
         Assert.Equal(LoadState.Loading, Feed(d, 202, 440, driveMib: 30).State); // 처음 로딩이었다면 초 240 에 끝났을 것
         LoadStep end = d.Add(S(441, driveMib: 30));
-        Assert.Equal((LoadState.NotLoading, LoadEnd.TimeLimit, 240.0), (end.State, end.Ended, end.LoadingSeconds));
+        Assert.Equal((LoadState.NotLoading, LoadEnd.TimeLimit, 441.0), (end.State, end.Ended, end.LoadingSeconds)); // 길이는 이어진 로딩 전체 (초 0 부터)
+    }
+
+    [Fact]
+    public void ExecutableStartsThatKeepComingDuringLoadingCannotKeepItGoingPastTheTotalLimit()
+    {
+        LoadDetector d = Loading();
+        LoadStep end = default;
+
+        for (int t = 1; t <= 480 && end.Ended is null; t++)
+        {
+            end = d.Add(S(t, driveMib: 30, exe: t % 100 == 0)); // 100 초마다 실행 파일이 다시 뜨고 읽기는 계속 많음: 240 초 상한은 매번 다시 셈
+        }
+
+        Assert.Equal((LoadState.NotLoading, LoadEnd.TimeLimit, 480.0), (end.State, end.Ended, end.LoadingSeconds));
+        Assert.Equal(LoadState.Loading, d.Add(S(481, driveMib: 30, exe: true)).State); // 새로 뜬 실행 파일은 새 로딩
     }
 
     // ---- 판정 상태와 로그 ----
@@ -214,35 +228,50 @@ public sealed class PlayPhaseTests
 
     // ---- 입력 공급 ----
 
-    private static PlaySeriesRaw Raw(long serviceRead, int? gpu) =>
-        new(null, null, [new ProcessUsage(100, "game.exe", 0, 0, 5 * Mib * 1000), new ProcessUsage(200, "AsterCache.Service.exe", 0, 0, serviceRead)], 200, 7000, null, null, null, gpu, string.Empty);
+    private const string Root = @"D:\Games\g";
 
     private static PlayDiskCounters Disk(long readBytes) => new(1, readBytes, 0, 0, 0, 0);
 
     [Fact]
-    public void TheServicesOwnReadsAreSubtractedFromTheDriveReadsAndTheResultNeverGoesBelowZero()
+    public void WhatTheServiceItselfReadFromTheGameDriveIsSubtractedAndTheResultNeverGoesBelowZero()
     {
         var board = new LoadPhaseBoard(new ListLog());
-        var feed = new LoadFeed("g", board);
+        board.ServiceReads.Add(Root, 7 * Mib); // 세션이 시작하기 전의 읽기는 기준이라 빠지지 않음
+        var feed = new LoadFeed("g", Root, board);
 
-        _ = feed.Next([Disk(0)], [Disk(10 * Mib)], 1, Raw(0, null), false); // 첫 초는 서비스 읽기의 기준만 잡음
-        _ = feed.Next([Disk(10 * Mib)], [Disk(110 * Mib)], 2, Raw(30 * Mib, null), false); // 드라이브 100 MiB 중 서비스 30 MiB
-        _ = feed.Next([Disk(110 * Mib)], [Disk(120 * Mib)], 3, Raw(80 * Mib, null), false); // 서비스 읽기가 드라이브보다 큼 (다른 볼륨 읽기 포함): 0
-        LoadStep after = board.Add("g", S(4)); // 지금까지 들어간 표본의 5 초 합은 10 + 70 + 0 = 80 MiB
+        _ = feed.Next([Disk(0)], [Disk(10 * Mib)], 1, null, false);
+        board.ServiceReads.Add(Root, 30 * Mib);
+        _ = feed.Next([Disk(10 * Mib)], [Disk(110 * Mib)], 2, null, false); // 드라이브 100 MiB 중 서비스 30 MiB
+        board.ServiceReads.Add(@"D:\Other\place", 50 * Mib); // 같은 드라이브면 어느 경로든 같은 누계
+        _ = feed.Next([Disk(110 * Mib)], [Disk(120 * Mib)], 3, null, false); // 서비스 읽기가 드라이브보다 큼: 0
+        LoadStep after = board.Add("g", S(4)); // 5 초 창의 합 10 + 70 + 0 = 80 MiB
 
         Assert.Equal(LoadState.Loading, after.State);
         Assert.Equal(80 * Mib, after.DriveBytes);
     }
 
     [Fact]
-    public void AGameWithoutAGraphicsValueStillGetsTheDiskRuleAndAnUnreadableProcessListFallsBackToTheOwnQuery()
+    public void TheServiceReadsAreCountedPerDriveCaseInsensitivelyAndNothingToAddIsIgnored()
+    {
+        var reads = new ServiceDiskReads();
+
+        reads.Add(@"D:\Games\a", 5);
+        reads.Add(@"d:\other", 7);
+        reads.Add(@"E:\Games", 11);
+        reads.Add(@"D:\Games", 0);
+        reads.Add(@"D:\Games", -4);
+
+        Assert.Equal((12L, 11L, 0L), (reads.Total(@"D:\x"), reads.Total(@"E:\y"), reads.Total(@"F:\z")));
+    }
+
+    [Fact]
+    public void ADriveReadRuleAloneStartsLoadingWhenThereIsNoGraphicsValueAndNoProcessListIsRead()
     {
         var board = new LoadPhaseBoard(new ListLog());
-        var feed = new LoadFeed("g", board);
+        var feed = new LoadFeed("g", Root, board);
 
         LoadState state = feed.Next([Disk(0)], [Disk(200 * Mib)], 1, null, false); // 기록이 꺼진 플레이: 프로세스 목록 없이도 판정이 돎
 
         Assert.Equal(LoadState.Loading, state);
-        Assert.NotNull(ProcessFaults.OwnReadBytes()); // 이 시험 프로세스의 읽기 바이트를 얻을 수 있음 (서비스 자신의 조회와 같은 방법)
     }
 }

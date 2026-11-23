@@ -9,6 +9,9 @@ internal sealed class LoadPhaseBoard(ILog log)
     private readonly object _gate = new();
     private readonly Dictionary<string, Entry> _games = new(StringComparer.OrdinalIgnoreCase);
 
+    /// 서비스 자신의 게임 드라이브 읽기 누계: 읽는 쪽이 더하고 입력 공급 (LoadFeed) 이 드라이브 읽기에서 뺍니다.
+    public ServiceDiskReads ServiceReads { get; } = new();
+
     private sealed class Entry
     {
         public LoadDetector Detector { get; } = new();
@@ -24,7 +27,7 @@ internal sealed class LoadPhaseBoard(ILog log)
         }
     }
 
-    /// 지금 로딩이면 참: 호출한 쪽은 이번 디스크 읽기를 건너뛰거나 미룹니다. 미룬 일의 이름은 로딩이 끝날 때 로그 한 줄에 함께 남습니다.
+    /// 지금 로딩이면 참: 호출한 쪽은 이번 디스크 읽기를 줄이거나 건너뜁니다. 그 일의 이름은 로딩이 끝날 때 로그 한 줄에 함께 남습니다.
     public bool Defers(string game, string what)
     {
         lock (_gate)

@@ -58,9 +58,21 @@ public sealed partial class Prewarmer
 
     internal void StopPlayTouch() => _playStop.Cancel();
 
-    /// 게임 안 로딩 판정 (서비스가 PlayRecorder 의 것을 이음, 없으면 로딩으로 보지 않음). 로딩인 동안은 게임이 도는 중의 디스크 읽기 (유지 회차, 붙든 범위의 점검) 를 미룹니다: 로딩 구간의 디스크는 이미 포화이고 서비스의 읽기는 게임 요청 사이에 탐색을 더합니다.
-    /// 시작 만지기·처음 붙들기는 게임 실행 파일 시작 때의 일이라 이 판정과 무관하게 돕니다.
+    /// 로딩 중 회차의 보호 패스가 디스크에서 읽는 양의 상한: 2 MiB. 빠진 조각 하나를 알아채는 데 읽는 양 (조각 하나가 1 MiB 이하) 정도만 허용합니다. 넘어도 아직 확인하지 못한 범위를 집합에서 빼지 않습니다.
+    public const long KeepLoadingProtectDiskCapBytes = 2L << 20;
+
+    /// 로딩 중 회차의 순서 패스가 디스크에서 읽는 양의 상한: 0 (처음 읽기가 난 배치에서 끝). 메모리에 있는 범위를 다시 만지는 것만 하고 밀려난 범위를 디스크에서 되읽지 않습니다.
+    public const long KeepLoadingOrderDiskCapBytes = 0;
+
+    /// 로딩 중 붙든 범위의 점검이 줄여 간 구간을 디스크에서 다시 읽는 양의 상한: 2 MiB. 넘어도 남은 구간을 붙들기에서 빼지 않습니다 (바뀐 파일 내놓기는 로딩 중에도 그대로 함).
+    public const long KeepLoadingCheckDiskCapBytes = 2L << 20;
+
+    /// 게임 안 로딩 판정 (서비스가 PlayRecorder 의 것을 이음, 없으면 로딩으로 보지 않음). 로딩인 동안은 게임이 도는 중의 디스크 읽기 (유지 회차의 집합 밖 찾기와 순서·보호 패스의 읽기, 붙든 범위 점검의 다시 읽기) 를 작은 상한으로 줄이거나 미룹니다:
+    /// 로딩 구간의 디스크는 이미 포화이고 서비스의 읽기는 게임 요청 사이에 탐색을 더합니다. 메모리에 이미 있는 범위를 다시 만지는 일은 로딩 중에도 돕니다 (대기 목록 재사용이 가장 큰 때라 멈추면 지키던 범위가 밀려남).
+    /// 시작 만지기·처음 붙들기는 게임 실행 파일 시작 때의 일이라 이 판정과 무관하게 돕니다. 서비스가 게임 드라이브에서 읽은 양은 ServiceReads 에 더해 로딩 판정이 게임의 읽기에서 뺍니다.
     internal LoadPhaseBoard? LoadPhases { get; set; }
+
+    private void NoteServiceRead(GameSettings game, long diskBytes) => LoadPhases?.ServiceReads.Add(game.OriginRoot, diskBytes);
 
     /// 시작 만지기가 끝난 뒤 같은 작업 안에서 부릅니다: 등록 실행 파일이 하나도 실행 중이 아닐 때까지, 먼저 유지 목록을 뷰로 붙들 수 있으면 붙들고 (Prewarm.PlayHold), 아니면 재사용이 문턱을 넘을 때마다 그 게임 목록을 메모리 안에서 다시 만집니다.
     /// 이미 이 게임의 유지가 돌고 있으면 (런처와 본체가 이어 뜬 경우) 바로 끝납니다. 회차마다 읽기 중재의 시작 스트림과 같은 대여를 새로 받아 (그 게임의 끝·다른 게임의 시작으로 취소) 돌고, 서비스가 멈추면 기다리던 것도 바로 끝납니다.
@@ -132,12 +144,8 @@ public sealed partial class Prewarmer
                     continue; // 대기 목록에서 밀려난 것이 (거의) 없음: 유지 대상도 밀려나지 않았으니 다시 만질 까닭이 없음
                 }
 
-                if (LoadPhases?.Defers(game.Name, "keep round") == true)
-                {
-                    continue; // 로딩 중: 이 회차는 미룸 (문턱을 넘은 채라 로딩이 끝난 첫 확인에서 바로 돎)
-                }
-
-                (string Reason, string Detail)? skip = KeepRound(game, exe, keep, growth, out bool touched, out bool empty, out string? endNow);
+                bool loading = LoadPhases?.Defers(game.Name, "keep round disk reads") == true; // 로딩 중: 회차는 돌되 디스크 읽기를 줄임
+                (string Reason, string Detail)? skip = KeepRound(game, exe, keep, growth, loading, out bool touched, out bool empty, out string? endNow);
                 if (touched)
                 {
                     (rounds, noted, lastSkip, lastRoundPoll) = (rounds + 1, true, null, polls);
@@ -221,7 +229,7 @@ public sealed partial class Prewarmer
     /// 읽는 스레드는 I/O 우선순위와 CPU 우선순위를 이 호출 안에서만 낮춥니다 (목록을 다시 계산하는 일도 낮은 CPU 우선순위로 돎). 스레드 배경 모드는 페이지의 메모리 우선순위까지 낮춰 만진 페이지가 낮은 우선순위 대기 목록으로 가므로 쓰지 않습니다.
     /// 만지는 일은 시작 만지기·붙들기와 같은 직렬화 잠금 (_touchSerial) 안에서 돕니다: 이 프로세스의 하드 폴트 누계로 경계를 가리므로 다른 만지기와 겹치면 서로의 읽기가 섞입니다.
     /// 로그를 남길 사유로 건너뛰면 그 사유 (같은 사유가 이어지는지 가르는 값, 로그에 붙는 수치) 를 돌려주고, 로그 없이 건너뛰었거나 만졌으면 null. empty: 목록이 메모리에 하나도 남아 있지 않아 만진 것이 없음. endNow: 이 플레이의 유지를 끝낼 사유 (줄 끝에 붙는 말).
-    private (string Reason, string Detail)? KeepRound(GameSettings game, string exe, KeepList keep, long? reuseGrowth, out bool touched, out bool empty, out string? endNow)
+    private (string Reason, string Detail)? KeepRound(GameSettings game, string exe, KeepList keep, long? reuseGrowth, bool loading, out bool touched, out bool empty, out string? endNow)
     {
         (touched, empty, endNow) = (false, false, null);
         if (!_solar.Enabled || Relocating(game.Name) || _solar.HasNothingToTouch(game.Name))
@@ -241,6 +249,11 @@ public sealed partial class Prewarmer
         if (known.ResidentBytes() == 0 && known.DiskBytes >= KeepPlayDiskCapBytes)
         {
             return null; // 집합이 비어 있고 집합 밖 확인의 플레이 상한도 다 씀: 회차가 할 일이 없음 (재사용 누계 확인만 하고 넘어감)
+        }
+
+        if (loading && known.ResidentBytes() == 0)
+        {
+            return null; // 로딩 중이고 다시 만질 집합이 없음 (집합 밖 찾기는 디스크 읽기라 미룸): 기준을 건드리지 않아 로딩이 끝난 첫 확인에서 바로 돎
         }
 
         long availMib = _env.AvailableRamMib();
@@ -267,7 +280,10 @@ public sealed partial class Prewarmer
         using var activity = ServiceActivity.Begin(ServiceOp.Keep); // 초 단위 기록의 동작 표시
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(lease?.Token ?? default, _playStop.Token);
         KeepMemory memory = KeepMemoryOf(game.Name);
-        RememberTally t = TouchRemembering(reads, memory, memory.DiskBytes < KeepPlayDiskCapBytes, KeepRoundDiskCapBytes, linked.Token); // 직렬화 잠금은 두 패스가 묶음마다 직접 잡고 놓음
+        RememberTally t = loading
+            ? TouchRemembering(reads, memory, false, KeepRoundDiskCapBytes, linked.Token, KeepLoadingProtectDiskCapBytes, KeepLoadingOrderDiskCapBytes, trimOnCap: false) // 로딩 중: 집합 밖 찾기 없이 메모리에 있는 범위만 다시 만지고 읽기는 작은 상한, 상한에 닿아도 지키던 범위를 집합에서 빼지 않음
+            : TouchRemembering(reads, memory, memory.DiskBytes < KeepPlayDiskCapBytes, KeepRoundDiskCapBytes, linked.Token); // 직렬화 잠금은 두 패스가 묶음마다 직접 잡고 놓음
+        NoteServiceRead(game, t.Disk);
 
         if (linked.IsCancellationRequested)
         {
@@ -281,11 +297,11 @@ public sealed partial class Prewarmer
         string probe;
         lock (_touchSerial)
         {
-            probe = t.Boundaries > 0 ? HoldProbe(reads, t.Total, linked.Token) : string.Empty; // 표본 확인 (기록용): 다른 만지기와 하드 폴트 누계가 섞이지 않게 잠금 안
+            probe = t.Boundaries > 0 && !loading ? HoldProbe(reads, t.Total, linked.Token) : string.Empty; // 표본 확인 (기록용, 디스크를 읽으므로 로딩 중에는 건너뜀): 다른 만지기와 하드 폴트 누계가 섞이지 않게 잠금 안
         }
 
         string trigger = reuseGrowth is { } growth ? $", called by {growth >> 20} MiB of standby cache reuse" : ", called by the fixed period (standby cache reuse unknown)";
-        _log.Info($"{game.Name}: cache kept while playing ({exe}): {t.InMemory >> 20} MiB of {t.Total >> 20} MiB in memory (found {t.Found >> 20} MiB, ordered {t.Ordered >> 20} MiB), in {t.Seconds:F1} s (cpu {t.Cpu:F1} s, {t.Maps} views, {t.Checks} checks), {t.Disk >> 20} MiB read from disk ({t.HardFaults} hard faults){(t.Errors > 0 ? $", {t.Errors} errors" : string.Empty)}, {t.Boundaries} new missing stretches remembered ({memory.MissingBytes >> 20} MiB of the {memory.ListBytes >> 20} MiB list in all){TallyDetail(t)}{(t.CapReached ? ", disk read cap of the round reached" : string.Empty)}{(t.Left > 0 ? $", {t.Left >> 20} MiB left unconfirmed" : string.Empty)}{(t.FindSkipped ? ", no new range looked for (disk reads of the play at the cap)" : string.Empty)}{trigger}{probe}");
+        _log.Info($"{game.Name}: cache kept while playing ({exe}): {t.InMemory >> 20} MiB of {t.Total >> 20} MiB in memory (found {t.Found >> 20} MiB, ordered {t.Ordered >> 20} MiB), in {t.Seconds:F1} s (cpu {t.Cpu:F1} s, {t.Maps} views, {t.Checks} checks), {t.Disk >> 20} MiB read from disk ({t.HardFaults} hard faults){(t.Errors > 0 ? $", {t.Errors} errors" : string.Empty)}, {t.Boundaries} new missing stretches remembered ({memory.MissingBytes >> 20} MiB of the {memory.ListBytes >> 20} MiB list in all){TallyDetail(t)}{(t.CapReached ? ", disk read cap of the round reached" : string.Empty)}{(t.Left > 0 ? $", {t.Left >> 20} MiB left unconfirmed" : string.Empty)}{(t.FindSkipped ? loading ? ", no new range looked for and disk reads limited (loading phase)" : ", no new range looked for (disk reads of the play at the cap)" : string.Empty)}{trigger}{probe}");
         return null;
     }
 

@@ -41,6 +41,7 @@ internal static class LoadRules
     public const int EndGpuMib = 64; // 그래픽 증가가 GpuWindowSeconds 에 이 미만인 상태가
     public const double QuietSeconds = 15; // 이 시간 이어지면 끝
     public const double MaxLoadingSeconds = 240; // 관찰된 전환 구간은 41~201 초
+    public const double MaxTotalLoadingSeconds = 480; // 로딩 중 실행 파일이 다시 떠도 (런처가 본체를 띄우는 한 번의 이어짐) 이어진 로딩 전체의 상한: 240 초 상한의 두 배. 실행 파일이 계속 다시 떠도 서비스 작업을 이보다 오래 막지 못함
 }
 
 /// 로딩 판정: 입력 표본만으로 상태가 정해지는 순수한 논리입니다 (시계·시스템 호출 없음, 표본 루프 스레드 하나에서 부름).
@@ -49,14 +50,15 @@ internal static class LoadRules
 internal sealed class LoadDetector
 {
     private readonly List<LoadingSample> _window = []; // 그래픽 창 (GpuWindowSeconds) 의 기준이 되는 앞쪽 표본 하나를 포함한 최근 표본
-    private double _loadingSince;
+    private double _loadingSince; // 현재 240 초 상한의 기준 (로딩 중 실행 파일이 뜨면 다시 셈)
+    private double _chainSince; // 이어진 로딩 전체의 시작 (실행 파일이 다시 떠도 그대로)
     private double? _quietSince;
     private bool _rearm; // 상한으로 끝난 뒤 시작 조건이 꺼지기를 기다리는 중
 
     public LoadState State { get; private set; }
 
-    /// 지금 로딩이면 로딩이 시작된 초, 아니면 null.
-    public double? LoadingSince => State == LoadState.Loading ? _loadingSince : null;
+    /// 지금 로딩이면 이어진 로딩이 시작된 초, 아니면 null.
+    public double? LoadingSince => State == LoadState.Loading ? _chainSince : null;
 
     /// 마지막으로 받은 표본의 초.
     public double LastSeconds { get; private set; }
@@ -91,25 +93,25 @@ internal sealed class LoadDetector
                 return new LoadStep(State, DriveBytes: drive, GpuRiseMib: rise);
             }
 
-            (State, _loadingSince, _quietSince) = (LoadState.Loading, s.Seconds, null);
+            (State, _loadingSince, _chainSince, _quietSince) = (LoadState.Loading, s.Seconds, s.Seconds, null);
             return new LoadStep(State, Started: why, DriveBytes: drive, GpuRiseMib: rise);
         }
 
         if (s.ExeStarted)
         {
-            (_loadingSince, _quietSince) = (s.Seconds, null); // 로딩 중에 실행 파일이 또 뜸: 새 로딩으로 상한도 다시 셈
+            (_loadingSince, _quietSince) = (s.Seconds, null); // 로딩 중에 실행 파일이 또 뜸: 240 초 상한은 다시 세되 이어진 로딩 전체의 상한 (MaxTotalLoadingSeconds) 은 그대로
             return new LoadStep(State, DriveBytes: drive, GpuRiseMib: rise);
         }
 
         bool quiet = drive < LoadRules.EndDriveBytes && !(rise >= LoadRules.EndGpuMib);
         _quietSince = quiet ? _quietSince ?? s.Seconds : null;
-        LoadEnd? end = s.Seconds - _quietSince >= LoadRules.QuietSeconds ? LoadEnd.Quiet : s.Seconds - _loadingSince >= LoadRules.MaxLoadingSeconds ? LoadEnd.TimeLimit : null;
+        LoadEnd? end = s.Seconds - _quietSince >= LoadRules.QuietSeconds ? LoadEnd.Quiet : s.Seconds - _loadingSince >= LoadRules.MaxLoadingSeconds || s.Seconds - _chainSince >= LoadRules.MaxTotalLoadingSeconds ? LoadEnd.TimeLimit : null;
         if (end is null)
         {
             return new LoadStep(State, DriveBytes: drive, GpuRiseMib: rise);
         }
 
-        double length = s.Seconds - _loadingSince;
+        double length = s.Seconds - _chainSince;
         (State, _quietSince, _rearm) = (LoadState.NotLoading, null, end == LoadEnd.TimeLimit && hot);
         return new LoadStep(State, Ended: end, LoadingSeconds: length, DriveBytes: drive, GpuRiseMib: rise);
     }

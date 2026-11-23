@@ -136,7 +136,7 @@ public sealed class PlayRecorder : IDisposable
     private readonly Func<bool>? _blockedGameRunning;
     private readonly bool[] _frameSlots = new bool[FrameTimeSession.MaxSlots];
 
-    /// 게임별 로딩 판정의 지금 상태: 표본 루프가 쓰고 서비스의 디스크 읽기 경로가 읽습니다 (게임이 도는 동안 로딩이면 그 회차를 미룸).
+    /// 게임별 로딩 판정의 지금 상태: 표본 루프가 쓰고 서비스의 디스크 읽기 경로가 읽습니다 (게임이 도는 동안 로딩이면 그 경로의 디스크 읽기를 줄임).
     internal LoadPhaseBoard LoadPhases { get; }
 
     internal PlayRecorder(string? path, ILog log, Func<string, IPlayDiskCounter?>? openCounter = null, Func<long>? availableRamMib = null,
@@ -420,7 +420,7 @@ public sealed class PlayRecorder : IDisposable
         IReadOnlyList<PlayDiskCounters> previous = [];
         long previousTick = 0;
         bool hasBaseline = false;
-        var loadFeed = new LoadFeed(session.Game.Name, LoadPhases);
+        var loadFeed = new LoadFeed(session.Game.Name, session.Game.OriginRoot, LoadPhases);
         LoadState load = LoadState.Unknown;
         try
         {

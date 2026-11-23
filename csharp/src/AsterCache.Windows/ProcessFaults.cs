@@ -48,40 +48,7 @@ public static unsafe class ProcessFaults
     {
         lock (Gate)
         {
-            if (!FillLocked())
-            {
-                return null;
-            }
-
-            byte* own = FindEntry((byte*)_buffer, Environment.ProcessId);
-            return own == null ? null : *(uint*)(own + HardFaultCountOffset);
-        }
-    }
-
-    /// 이 프로세스의 읽기 전송 바이트 누계 (ProcessUsage.ReadBytes 와 같은 값, 디스크 구분 없음): 위 조회와 같은 방법으로 자기 항목만 읽습니다. 읽을 수 없으면 null.
-    public static long? OwnReadBytes()
-    {
-        if (sizeof(nint) != 8)
-        {
-            return null;
-        }
-
-        try
-        {
-            lock (Gate)
-            {
-                if (!FillLocked())
-                {
-                    return null;
-                }
-
-                byte* own = FindEntry((byte*)_buffer, Environment.ProcessId);
-                return own == null ? null : (long)*(ulong*)(own + ReadTransferCountOffset);
-            }
-        }
-        catch (OutOfMemoryException)
-        {
-            return null;
+            return FillLocked() ? Find((byte*)_buffer, Environment.ProcessId) : null;
         }
     }
 
@@ -150,14 +117,13 @@ public static unsafe class ProcessFaults
         }
     }
 
-    // 이 번호의 프로세스 항목의 시작 (없으면 null).
-    private static byte* FindEntry(byte* start, int pid)
+    private static uint? Find(byte* start, int pid)
     {
         for (byte* entry = start; ; entry += *(uint*)entry)
         {
             if (*(long*)(entry + ProcessIdOffset) == pid)
             {
-                return entry;
+                return *(uint*)(entry + HardFaultCountOffset);
             }
 
             if (*(uint*)entry == 0) // NextEntryOffset 0 = 마지막 항목

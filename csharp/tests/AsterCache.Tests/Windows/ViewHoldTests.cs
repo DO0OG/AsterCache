@@ -408,6 +408,32 @@ public sealed class ViewHoldTests : IDisposable
         Assert.True(hold.HeldBytes <= 4L * Mib);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void WhenTheRefillCapIsHitTheSegmentsAreTakenOffTheHoldOnlyIfDroppingOnTheCapIsAsked(bool dropOnCap)
+    {
+        string a = Make("a.bin", 8);
+        uint step = 0;
+        uint faults = 5_000_000;
+        uint pages = 5_000_000;
+        using var hold = new ViewHold(() => faults += step, () => pages += step * 10, minFileBytes: 0);
+        hold.Rebase();
+        _ = hold.Hold([new ReadOp(a, 0, 8L * Mib)], CancellationToken.None);
+        step = 100; // 이후의 조회마다 디스크에서 읽힌 것으로 보임: 다시 읽기가 상한에 닿음
+        using Process me = Process.GetCurrentProcess();
+        HoldCheckResult r = default!;
+        for (int attempt = 0; attempt < 5 && !r.CapReached; attempt++)
+        {
+            Assert.True(EmptyWorkingSet(me.Handle));
+            r = hold.Recheck(Mib, CancellationToken.None, dropOnCap: dropOnCap);
+        }
+
+        Assert.True(r.CapReached, $"trimmed {r.TrimmedBytes}, disk {r.RefilledBytes}");
+        Assert.Equal(dropOnCap, r.DroppedBytes > 0);
+        Assert.Equal(dropOnCap, hold.HeldBytes < 8L * Mib); // 거짓이면 상한에 닿아도 구간은 그대로 붙들고 있음
+    }
+
     [Fact]
     public void ACanceledTokenHoldsNothing()
     {

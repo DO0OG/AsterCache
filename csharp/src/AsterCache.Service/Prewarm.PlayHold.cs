@@ -548,11 +548,11 @@ public sealed partial class Prewarmer
 
     // 순서 패스: ranges (중요도 순서) 를 덜 중요한 것부터 다시 만져 가장 중요한 것이 대기 목록의 가장 새 자리에 오게 합니다. 속도 제한도 쉼도 없습니다 (낮은 CPU·I/O 우선순위는 호출한 쪽이 이미 걺).
     // 직렬화 잠금은 HoldLockBatches 배치마다 놓고 한 번 양보한 뒤 다시 잡습니다 (속도 제한으로 쉬지 않음). 배치가 디스크 읽기를 만나면 (그 사이 밀려났음) 그 범위 하나만 집합에서 빼고 (구멍으로 기억하지 않고 같은 파일의 뒤 범위도 건드리지 않음) 계속합니다.
-    private PassTally OrderPass(IReadOnlyList<ReadOp> ranges, KeepMemory memory, SerialGroup group, CancellationToken ct)
+    private PassTally OrderPass(IReadOnlyList<ReadOp> ranges, KeepMemory memory, SerialGroup group, CancellationToken ct, long diskCap = KeepOrderDiskCapBytes)
     {
         long started = System.Diagnostics.Stopwatch.GetTimestamp();
         TouchResult sum = new(0, 0, 0, 0, TouchEnd.Completed);
-        WalkResult walk = Walk(LadderOrder.Reverse(ranges), KeepOrderDiskCapBytes, ct, () => true, batch => // 회차당 읽기 상한 (보호 패스가 이미 가장 중요한 것부터 집합 전체를 만졌으므로 여기서 끝나도 가장 중요한 쪽의 보호는 깨지지 않음)
+        WalkResult walk = Walk(LadderOrder.Reverse(ranges), diskCap, ct, () => true, batch => // 회차당 읽기 상한 (보호 패스가 이미 가장 중요한 것부터 집합 전체를 만졌으므로 여기서 끝나도 가장 중요한 쪽의 보호는 깨지지 않음)
         {
             group.Enter();
             TouchResult r = TouchBatch(batch, ct);
@@ -584,7 +584,9 @@ public sealed partial class Prewarmer
     // 3) 집합 밖 다시 확인 (findNew, 곧 플레이 누적 상한 안일 때만): 1)·2) 가 끝난 뒤에, P 에 없는 범위 (아직 확인하지 않았거나 경계·건너뛴 구간) 를 중요한 순서로 조금 확인해 메모리에 있으면 P 에 넣습니다.
     //    디스크 읽기는 회차 diskCap (P 가 비어 있으면 KeepEmptySetRoundDiskCapBytes), 플레이 KeepPlayDiskCapBytes 안이고 플레이 누적에는 이 읽기만 셉니다. 한 지점만 빠졌으면 그 조각을 구멍으로 기억하고 계속, 이어진 두 지점이면 경계로 보아 그 뒤는 이번에 확인하지 않습니다.
     // P 가 비어 있던 회차 (시작 만지기 뒤 첫 회차) 는 3) 만 돌고, 찾기가 모은 범위를 한 번 더 순서 패스로 만져 순서를 바로잡습니다 (방금 확인한 범위라 읽기가 없어야 함).
-    private RememberTally TouchRemembering(IReadOnlyList<ReadOp> importanceOrdered, KeepMemory memory, bool findNew, long diskCap, CancellationToken ct)
+    // protectCap·orderCap 은 보호·순서 패스의 디스크 읽기 상한, trimOnCap 이 거짓이면 보호 패스가 상한이나 경계에서 멈춰도 확인하지 못한 범위를 집합에서 빼지 않고 빠진 것으로 확인한 조각만 뺍니다 (로딩 중 회차: 지키던 범위를 읽기 상한 때문에 잃지 않게).
+    private RememberTally TouchRemembering(IReadOnlyList<ReadOp> importanceOrdered, KeepMemory memory, bool findNew, long diskCap, CancellationToken ct,
+        long protectCap = KeepProtectDiskCapBytes, long orderCap = KeepOrderDiskCapBytes, bool trimOnCap = true)
     {
         memory.NoteListBytes(importanceOrdered.Sum(o => o.Length));
         List<ReadOp> candidates = memory.Without(importanceOrdered);
@@ -597,14 +599,25 @@ public sealed partial class Prewarmer
         if (set.Count > 0)
         {
             group.Enter();
-            protect = _env.FindResident(set, KeepProtectDiskCapBytes, ct, (bytes, seconds) =>
+            protect = _env.FindResident(set, protectCap, ct, (bytes, seconds) =>
             {
                 group.Release(); // 묶음마다 잠금을 놓고 한 번 양보해 다른 만지기가 끼어들 수 있게 (쉬는 것은 아님)
                 group.Enter();
             });
             group.Exit();
-            memory.Replace(set, protect.Resident); // 확인한 범위만 P 에 남음: 빠진 조각·건너뛴 구간·경계 뒤는 P 에서 빠져 집합 밖이 됨
-            order = OrderPass(memory.ResidentWithin(candidates), memory, group, ct);
+            if (trimOnCap)
+            {
+                memory.Replace(set, protect.Resident); // 확인한 범위만 P 에 남음: 빠진 조각·건너뛴 구간·경계 뒤는 P 에서 빠져 집합 밖이 됨
+            }
+            else
+            {
+                foreach (ReadOp op in protect.Missing)
+                {
+                    memory.RemoveResident(op); // 빠진 것으로 확인한 조각만 뺌: 상한 때문에 확인하지 못한 범위는 집합에 그대로 둠
+                }
+            }
+
+            order = OrderPass(memory.ResidentWithin(candidates), memory, group, ct, orderCap);
         }
 
         FindResult? f = null;
@@ -633,7 +646,7 @@ public sealed partial class Prewarmer
 
             if (set.Count == 0 && f.Resident.Count > 0)
             {
-                fresh = OrderPass(f.Resident, memory, group, ct);
+                fresh = OrderPass(f.Resident, memory, group, ct, orderCap);
             }
         }
 
@@ -663,6 +676,7 @@ public sealed partial class Prewarmer
         long availMib = _env.AvailableRamMib();
         IReadOnlyList<ReadOp> ordered = PrefetchStreamer.Head(_solar.ImportanceOrder(game, readOrder), (long)(Math.Max(0, availMib) * PlayTouchAvailableFraction) << 20);
         RememberTally t = TouchRemembering(ordered, memory, findNew && memory.DiskBytes < KeepPlayDiskCapBytes, KeepRoundDiskCapBytes, stop);
+        NoteServiceRead(game, t.Disk);
         if (t.Boundaries == 0 && !t.CapReached && !t.FindSkipped && !stop.IsCancellationRequested)
         {
             lock (_touchSerial)
@@ -878,6 +892,7 @@ public sealed partial class Prewarmer
                 }
             }
 
+            NoteServiceRead(game, walk.Disk);
             double elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(seconds0).TotalSeconds;
             if (linked.IsCancellationRequested)
             {
@@ -1021,10 +1036,10 @@ public sealed partial class Prewarmer
                     }
                 }
 
-                if (elapsed - lastCheck >= PlayTouchEvery && (game ?? GameOf(name)) is { } current && LoadPhases?.Defers(name, "hold check") != true) // 로딩 중이면 점검의 다시 읽기를 미룸 (lastCheck 는 그대로라 로딩이 끝난 첫 확인에서 바로 점검)
+                if (elapsed - lastCheck >= PlayTouchEvery && (game ?? GameOf(name)) is { } current)
                 {
                     lastCheck = elapsed;
-                    (long trimmed, long refilled, long dropped) = CheckHeld(hold, current, exe, floorMib, ref lastSkip);
+                    (long trimmed, long refilled, long dropped) = CheckHeld(hold, current, exe, floorMib, ref lastSkip, LoadPhases?.Defers(name, "hold check disk reads") == true); // 로딩 중이면 점검은 돌되 다시 읽기를 작은 상한으로 줄임
                     (trimmedTotal, refilledTotal, droppedTotal, checks) = (trimmedTotal + trimmed, refilledTotal + refilled, droppedTotal + dropped, checks + 1);
                     SetHeld(name, hold.HeldBytes);
                     if (hold.HeldBytes <= 0)
@@ -1056,7 +1071,8 @@ public sealed partial class Prewarmer
     }
 
     // 붙든 쪽이 작업 집합에 있는지 보고 (QueryWorkingSetEx) 메모리 관리자가 줄여 간 쪽만 다시 읽어 올립니다. 줄여 간 양, 디스크에서 다시 읽은 양, 목록에서 뺀 양을 돌려줍니다.
-    private (long Trimmed, long Refilled, long Dropped) CheckHeld(IKeepHold hold, GameSettings game, string exe, long floorMib, ref string? lastSkip)
+    // loading 이면 바뀐 파일 내놓기와 작업 집합 조회는 그대로 하고, 줄여 간 구간을 디스크에서 다시 읽는 양만 KeepLoadingCheckDiskCapBytes 로 줄이며 상한에 닿아도 남은 구간을 붙들기에서 빼지 않습니다.
+    private (long Trimmed, long Refilled, long Dropped) CheckHeld(IKeepHold hold, GameSettings game, string exe, long floorMib, ref string? lastSkip, bool loading = false)
     {
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "play hold check", default, game.OriginRoot, allowWhileYielded: true, preserveGameKey: game.Name);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
@@ -1074,8 +1090,10 @@ public sealed partial class Prewarmer
         {
             hold.Rebase();
             bool refill = _env.AvailableRamMib() >= floorMib + HoldRefillMarginMib; // 가용 메모리에 여유가 없으면 줄여 간 쪽을 다시 읽어 오지 않고 그 구간을 목록에서 뺌
-            r = hold.Recheck(KeepDiskReadCapBytes, linked.Token, refill);
+            r = hold.Recheck(loading ? KeepLoadingCheckDiskCapBytes : KeepDiskReadCapBytes, linked.Token, refill, dropOnCap: !loading);
         }
+
+        NoteServiceRead(game, r.RefilledBytes);
 
         if (r.QueryFailures > 0)
         {

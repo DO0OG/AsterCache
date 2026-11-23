@@ -203,6 +203,7 @@ public sealed partial class Prewarmer
 
         ProbeResult? result = checkedProbe is null || (_coordinator is null && !ct.CanBeCanceled) ? plain() : checkedProbe(CanIssue);
         refused = !CanIssue();
+        NoteProbeRead(game, result);
         return refused ? null : result;
     }
 

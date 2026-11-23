@@ -54,6 +54,7 @@ public sealed class ConfigEditorAutoTests : IDisposable
             RelocateLayout = "whole_file",
             MaxRelocateGibPerDay = 0,
             MaxRelocateGibPerDaySet = true,
+            IdleReadGibPerDay = 5,
             KeepAwake = false,
             KeepStreamOnGameStart = true,
             TraceRuns = 5,
@@ -68,6 +69,7 @@ public sealed class ConfigEditorAutoTests : IDisposable
         AutoSettings read = editor.Load()!.Auto;
         Assert.Equal(Plain(custom), Plain(read));
         Assert.Equal(45, read.IdleSeconds);
+        Assert.Equal(5, read.IdleReadGibPerDay);
         Assert.Equal(["a.exe", "b.exe"], read.IgnoreExes);
         Assert.Equal((false, 2048, false), (read.FullPrewarm, read.FullPrewarmMaxMib, read.EngineProfiles));
         Assert.Equal((321, 15, 120, 4), (read.StartStreamCapSeconds, read.TraceLateIntervalMin, read.TraceLateWindowSeconds, read.TraceLateWindows));

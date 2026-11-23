@@ -93,10 +93,10 @@ public sealed class PlayProtectionTests
 
         _game = false;
         r.Poll(); // 이어감 (잔여 시간: 소프트 50 분, 하드 170 분)
-        Pass(r, 2);
+        Pass(r, 4);
         Assert.NotEmpty(_probed); // 종료 뒤 표본이 다시 돎
 
-        Pass(r, 46);
+        Pass(r, 44);
         Assert.True(r.IsRecovering(Drive));
         Pass(r, 2);
         Assert.False(r.IsRecovering(Drive)); // 플레이 시간이 아니라 실제로 지난 시간으로 소프트 상한
@@ -125,7 +125,7 @@ public sealed class PlayProtectionTests
     {
         DriveRecovery r = NewRecovery();
         r.Begin(Drive, Both, TimeSpan.FromMinutes(60));
-        _w.Now += TimeSpan.FromMinutes(2);
+        _w.Now += TimeSpan.FromMinutes(4);
         _game = true;
         r.Poll();
         _game = false;

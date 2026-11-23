@@ -18,6 +18,7 @@ public sealed partial class Rewarmer
     private GameExitTracker? _exitTracker;
     private readonly object _nextLock = new(); // Tick (유지 점검 스레드) 와 PullIn (재적용 틱 스레드) 이 같이 쓰는 _next 보호
     private DateTimeOffset? _next;
+    private bool _afterExitDue; // 게임 종료로 당긴 점검이 아직 돌지 않음: 그 점검은 게임 종료라는 계기가 있는 읽기라 하루 읽기 상한을 받지 않음, _nextLock 으로 보호
     private readonly object _checkLock = new();
     private readonly Dictionary<string, string> _checkState = new(StringComparer.OrdinalIgnoreCase); // 게임별 마지막 재확인 결과 (로그를 바뀔 때만 남김)
     private readonly Dictionary<string, (bool Reread, int Streak)> _coldRuns = new(StringComparer.OrdinalIgnoreCase); // 게임별: 직전 점검이 식은 캐시를 다시 읽었는가, 다시 읽은 뒤 또 식은 횟수의 연속 (그 게임이 식지 않은 점검이 있으면 지움), _nextLock 으로 보호, 메모리에만 둠
@@ -64,7 +65,7 @@ public sealed partial class Rewarmer
     }
 
     /// 게임이 끝났을 때: 다음 점검을 auto.rewarm_after_exit_min 뒤로 당깁니다 (이미 더 이르면 그대로). 게이트 (게임 실행 중·디스크 바쁨) 와 식었을 때만 읽는 점검은 Tick 이 그대로 적용합니다.
-    public void PullIn(AutoSettings auto, DateTimeOffset? heavyWorkNotBefore = null)
+    public void PullIn(AutoSettings auto, DateTimeOffset? heavyWorkNotBefore = null, bool afterExit = false)
     {
         if (!auto.Enabled || auto.RewarmMinutes <= 0 || heavyWorkNotBefore is null && auto.RewarmAfterExitMin <= 0)
         {
@@ -74,6 +75,7 @@ public sealed partial class Rewarmer
         DateTimeOffset due = heavyWorkNotBefore ?? _now() + TimeSpan.FromMinutes(auto.RewarmAfterExitMin);
         lock (_nextLock)
         {
+            _afterExitDue |= afterExit;
             if (_next is not { } next || due < next)
             {
                 _next = due;
@@ -89,6 +91,7 @@ public sealed partial class Rewarmer
             lock (_nextLock)
             {
                 _next = null;
+                _afterExitDue = false;
                 _coldRuns.Clear();
                 _gameDue.Clear();
             }
@@ -99,6 +102,7 @@ public sealed partial class Rewarmer
         _env.CpuPercent(); // 틱마다 불러 두 표본 사이가 한 틱이 되게 함 (재예열 판정에는 쓰지 않음)
 
         DateTimeOffset now = _now();
+        bool afterExit;
         lock (_nextLock)
         {
             if (_next is null)
@@ -113,7 +117,10 @@ public sealed partial class Rewarmer
             }
 
             _next = now + TimeSpan.FromMinutes(auto.RewarmMinutes);
+            (afterExit, _afterExitDue) = (_afterExitDue, false);
         }
+
+        using IDisposable scope = DiskReadLedger.Scope(afterExit ? ReadPurpose.Trigger : ReadPurpose.Idle); // 주기 점검의 읽기는 계기 없는 읽기 (하루 상한 대상), 게임 종료로 당긴 점검은 계기가 있는 읽기
 
         IReadOnlyList<GameSettings> warmed = _prewarm.Warmed();
 
@@ -125,7 +132,7 @@ public sealed partial class Rewarmer
 
         var budget = _prewarm.WarmBudget(); // 순위가 있으면 예산 안에 드는 게임만 점검 (순위가 바뀌면 다음 점검에서 대상도 바뀜)
         DateTimeOffset? nextGateDue = null;
-        foreach (GameSettings g in warmed)
+        foreach (GameSettings g in warmed.OrderByDescending(g => _prewarm.PlayedAt(g.Name))) // 하루 읽기 예산은 가장 최근에 플레이한 게임부터 씀
         {
             if (ct.IsCancellationRequested)
             {
@@ -155,6 +162,11 @@ public sealed partial class Rewarmer
                 continue;
             }
 
+            if (!afterExit && _prewarm.IdleReadsExhausted(g))
+            {
+                continue; // 이 드라이브의 계기 없는 읽기가 하루 상한에 닿음 (로그는 쉬기 시작할 때 한 번): 표본도 읽지 않고 다음 점검에 다시 봄
+            }
+
             NoteColdRun(g.Name, Check(g, ct, RoomOf(g, budget), auto, now), auto, now);
         }
 
@@ -166,6 +178,8 @@ public sealed partial class Rewarmer
                 {
                     _next = due;
                 }
+
+                _afterExitDue |= afterExit; // 게이트 (종료 직후 유예) 에 막혀 읽지 못했으면 게임 종료 점검은 그 게이트가 풀린 뒤로 이어짐
             }
         }
     }
@@ -308,12 +322,11 @@ public sealed partial class Rewarmer
         failed = false;
         try
         {
-            if (_prewarm.SupplementPending(g.Name))
-            {
-                return _prewarm.ProbeFront(g, ct);
-            }
-
-            return _prewarm.ColdSamples(g) is { } samples ? _prewarm.ProbeSamplesForGame(g, samples, "rewarm sample", ct) : _prewarm.ProbeFront(g, ct); // 기록 없이 예열한 게임은 그때 읽은 파일 목록에서 고른 표본
+            ProbeResult? probe = _prewarm.SupplementPending(g.Name)
+                ? _prewarm.ProbeFront(g, ct)
+                : _prewarm.ColdSamples(g) is { } samples ? _prewarm.ProbeSamplesForGame(g, samples, "rewarm sample", ct) : _prewarm.ProbeFront(g, ct); // 기록 없이 예열한 게임은 그때 읽은 파일 목록에서 고른 표본
+            _prewarm.NoteProbeRead(g, probe); // 하루 읽기 집계: 디스크에서 읽힌 (느린) 표본만
+            return probe;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
         {

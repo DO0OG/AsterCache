@@ -224,6 +224,11 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             auto["io_summary_enabled"] = false;
         }
 
+        if (a.IdleReadGibPerDay > 0) // 0 (기본 규칙) 이면 쓰지 않아 기존 파일이 그대로 유지됨
+        {
+            auto["idle_read_gib_per_day"] = (long)a.IdleReadGibPerDay;
+        }
+
         if (a.RelocateHours.Count > 0)
         {
             auto["relocate_hours"] = a.RelocateHours.Select(h => (object?)(long)h).ToList();

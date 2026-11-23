@@ -31,6 +31,13 @@ public sealed class AutoSettingsTests
     private static AsterSettings ParseAuto(JsonObject auto) => ParseTop(t => t["auto"] = auto);
 
     [Fact]
+    public void TheIdleReadLimitDefaultsToTheRuleAndTakesTheGivenGib()
+    {
+        Assert.Equal(0, ParseTop(_ => { }).Auto.IdleReadGibPerDay); // 0: 예열 목록 합의 2 배와 8 GiB 중 큰 값
+        Assert.Equal(3, ParseAuto(new JsonObject { ["idle_read_gib_per_day"] = 3 }).Auto.IdleReadGibPerDay);
+    }
+
+    [Fact]
     public void MissingKeysGetDefaults()
     {
         AsterSettings s = ParseTop(_ => { });
@@ -104,6 +111,8 @@ public sealed class AutoSettingsTests
     [InlineData("relocate_parallel", 9)]
     [InlineData("max_relocate_gib_per_day", -1)]
     [InlineData("max_relocate_gib_per_day", 1048577)]
+    [InlineData("idle_read_gib_per_day", -1)]
+    [InlineData("idle_read_gib_per_day", 1048577)]
     public void OutOfRangeAutoNumberIsRejected(string key, int value)
     {
         var e = Assert.Throws<SettingsException>(() => ParseAuto(new JsonObject { [key] = value }));
@@ -132,6 +141,8 @@ public sealed class AutoSettingsTests
     [InlineData("relocate_parallel", 8)]
     [InlineData("max_relocate_gib_per_day", 0)]
     [InlineData("max_relocate_gib_per_day", 1048576)]
+    [InlineData("idle_read_gib_per_day", 0)]
+    [InlineData("idle_read_gib_per_day", 1048576)]
     public void BoundaryAutoNumbersAreAccepted(string key, int value) => ParseAuto(new JsonObject { [key] = value });
 
     [Theory]

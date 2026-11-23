@@ -127,7 +127,8 @@ public sealed partial class Prewarmer
         _coordinator = coordinator;
         _estimates = new WarmEstimateCache(_now);
         _pins = new PinKeeper(env, log, _now) { Coordinator = coordinator };
-        _solar = new Solar(env, log, _now);
+        _reads = new DiskReadLedger(_now) { Persist = FlushStatus };
+        _solar = new Solar(env, log, _now) { DiskRead = (game, bytes) => _reads.Add(game.OriginRoot, DiskReadLedger.Current, bytes) };
         _rewarm = new Rewarmer(this, env, log, _now);
         LoadStatus();
     }

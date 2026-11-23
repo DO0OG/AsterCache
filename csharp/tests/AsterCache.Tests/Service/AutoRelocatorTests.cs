@@ -2819,7 +2819,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     }
 
     [Fact]
-    public void MatchingMedianBaselineAndFourOfSixFluctuatingSamplesRecoverWithinTwelveMinutes()
+    public void MatchingMedianBaselineAndFourOfSixFluctuatingSamplesRecoverWithinTwentyFourMinutes()
     {
         UseProbe(AutoSettings.RecoveryProbe, zoneAllocated: true);
         double[] baselineRates = [100, 80, 90, 80, 70, 80];
@@ -2857,11 +2857,11 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         Assert.Equal(90, saved.Zone!.Value.Mbps);
         Assert.Equal(80, saved.Ref!.Value.Mbps);
         Assert.Equal(6, baselineReads);
-        Run(TimeSpan.FromMinutes(12));
+        Run(TimeSpan.FromMinutes(24));
 
         Assert.False(Relocator.Recovery.IsRecovering(Drive));
         Assert.Equal(12, recoveryReads);
-        Assert.Contains(_log.Lines, line => line.Contains("recovered after 12 min (statistical recovery:", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, line => line.Contains("recovered after 24 min (statistical recovery:", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -3035,14 +3035,14 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         Assert.True(Relocator.Recovery.IsRecovering(Drive));
 
         (_zoneMbps, _refMbps) = (61, 70);
-        Run(TimeSpan.FromMinutes(5));
+        Run(TimeSpan.FromMinutes(9));
         Assert.True(Relocator.Recovery.IsRecovering(Drive));
         string[] samples = [.. _log.Lines.Where(line => line.Contains("recovery sample cell", StringComparison.Ordinal))];
         Assert.Equal(2, samples.Length);
         Assert.All(samples, line => Assert.Contains("zone 61/98 MB/s, ref 70/72 MB/s, verdict Bad", line, StringComparison.Ordinal));
 
         (_zoneMbps, _refMbps) = (95, 70);
-        Run(TimeSpan.FromMinutes(5));
+        Run(TimeSpan.FromMinutes(9));
 
         Assert.False(Relocator.Recovery.IsRecovering(Drive));
         Assert.Contains(_log.Lines, line => line.Contains("recovered after ", StringComparison.Ordinal)
@@ -3300,7 +3300,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     {
         UseProbe(AutoSettings.RecoveryProbe, zoneAllocated: true);
         DoneAndReadyToReplan(out _);
-        Run(TimeSpan.FromMinutes(6)); // 첫 재배치 뒤 회복
+        Run(TimeSpan.FromMinutes(10)); // 첫 재배치 뒤 회복
         Assert.False(Relocator.Recovery.IsRecovering(Drive));
         Update();
         _w.Now += AutoRelocator.StaleCheckEvery;
@@ -3314,7 +3314,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         Assert.DoesNotContain(_log.Lines, l => l.Contains("waiting 15 min after update", StringComparison.Ordinal));
 
         _zoneMbps = 98;
-        Run(TimeSpan.FromMinutes(6));
+        Run(TimeSpan.FromMinutes(10));
         Tick();
 
         Assert.True(File.Exists(_game.Plan));

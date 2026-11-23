@@ -624,6 +624,11 @@ public sealed partial class Prewarmer
             _yieldedSeconds += readYield.Seconds;
             _readMix += readYield.Mix;
             _requeued += requeue?.Tally ?? default;
+            if (finalStats is { Bytes: > 0 })
+            {
+                _reads.Add(game.OriginRoot, DiskReadLedger.Current, finalStats.Bytes); // 하루 읽기 집계: 끝까지 읽지 못하고 멈춘 스트림도 읽은 만큼 셈
+            }
+
             bool interrupted = !complete && _streamGameStarted;
             _calibrationStop = null;
             (_streaming, _streamStop, _streamCancelDetail) = (null, null, null);

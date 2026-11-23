@@ -22,6 +22,7 @@ public sealed partial class Rewarmer
             return;
         }
 
+        using IDisposable scope = DiskReadLedger.Scope(ReadPurpose.Idle); // 유지 틱의 만지기와 표본은 계기 없는 읽기: 디스크로 읽힌 양을 하루 읽기 집계에 셈 (만지기는 메모리 안이라 상한으로 막지 않음)
         IReadOnlyList<GameSettings> group = DueGroup(Enumerable.Reverse(_prewarm.Warmed()), auto, ct); // Warmed 는 플레이 가능성이 높은 순 (예산 순위가 없으면 최근 예열 순)
         if (group.Count > 0)
         {

@@ -133,6 +133,11 @@ public sealed partial class Prewarmer
             }
         }
 
+        if (stats is { Bytes: > 0 })
+        {
+            _reads.Add(game.OriginRoot, DiskReadLedger.Current, stats.Bytes); // 하루 읽기 집계 (기록 없는 예열은 늘 계기가 있는 읽기)
+        }
+
         if (skip is not null || stats is null)
         {
             if (skip == Cancelled)

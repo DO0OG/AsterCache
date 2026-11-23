@@ -19,7 +19,17 @@ public sealed partial class Prewarmer
 
         try
         {
-            if (JsonRead.ReadFile(_statusPath) is not JObject root || !root.TryGetValue("games", out object? games) || games is not JObject all)
+            if (JsonRead.ReadFile(_statusPath) is not JObject root)
+            {
+                return;
+            }
+
+            if (root.TryGetValue("disk_reads", out object? readLog) && readLog is JObject kept)
+            {
+                _reads.Load(kept); // 드라이브별 24시간 읽은 양은 재시작에도 이어짐 (상한이 서비스를 다시 시작해도 풀리지 않게)
+            }
+
+            if (!root.TryGetValue("games", out object? games) || games is not JObject all)
             {
                 return;
             }
@@ -463,7 +473,7 @@ public sealed partial class Prewarmer
                     string contents;
                     lock (_gate)
                     {
-                        contents = PyJson.Dumps(new JObject { { "games", _status } }, indent: 2, ensureAscii: false) + "\n";
+                        contents = PyJson.Dumps(new JObject { { "games", _status }, { "disk_reads", _reads.ToJson() } }, indent: 2, ensureAscii: false) + "\n";
                     }
 
                     DurableFile.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(contents));

@@ -25,6 +25,9 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
 
     public bool Enabled => env.StandbyLadderEnabled();
 
+    /// 사다리 (묶음 새로 고침·첫 사다리) 의 만지기가 실제로 디스크에서 읽은 바이트를 알림 (읽기 집계용, 하루 읽기 상한이 셈).
+    public Action<GameSettings, long>? DiskRead { get; init; }
+
     public bool HasMark(string game)
     {
         lock (_lock)
@@ -107,6 +110,7 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         LadderMark? earlier = MarkOf(game.Name); // 이 줄이 빠짐을 알릴 때 붙일 값을 위해 지우기 전에 잡아 둠
         long? grown = earlier is null ? null : SolarPolicy.Repurposed(earlier, env.Lists());
         TouchResult r = env.TouchRanges(ladder, ct);
+        DiskRead?.Invoke(game, r.DiskBytes);
         if (startExe is null)
         {
             NoteIdleTouch(r.Seconds); // 게임 시작 때의 만지기는 상한과 무관
@@ -238,6 +242,7 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         long? grown = SolarPolicy.Repurposed(mark, env.Lists());
         long repurposed = grown ?? 0;
         TouchResult r = env.TouchRanges(mark.Ladder, ct);
+        DiskRead?.Invoke(game, r.DiskBytes);
         NoteIdleTouch(r.Seconds);
         switch (r.End)
         {

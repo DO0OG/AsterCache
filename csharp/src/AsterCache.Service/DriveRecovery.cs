@@ -29,9 +29,16 @@ public sealed class DriveRecovery : IDriveRecovery
     public const double CeilingMbps = 250; // 비버퍼드 참조 기준값이 없을 때의 디스크 순차 상한이자 유효한 기준값의 한계 (넘으면 캐시 적중 의심)
     public const double CeilingFactor = 1.25; // 비버퍼드 참조 기준값이 있으면 (존 기준이 더 크면 그 값) × 이 배수 (CeilingMbps 를 넘지 않음)
     public const double SuspectFactor = 1.1; // 쓰기 직후 SuspectWindow 안의 표본이 기준의 이 배수를 넘으면 디스크 캐시 의심
-    private const int MaximumUnknownIntervalMultiplier = 4;
+    private const int MaximumUnknownIntervalMultiplier = 2; // 판정 불가가 이어질 때의 간격 상한은 SampleEvery 의 두 배 (8 분: 기본 간격을 2 분에서 4 분으로 늘리기 전과 같은 상한)
     public static readonly TimeSpan SuspectWindow = TimeSpan.FromMinutes(10);
-    public static readonly TimeSpan SampleEvery = TimeSpan.FromMinutes(2);
+
+    /// 회복 표본 간격. 2 분 간격은 회복이 늦은 드라이브에서 하루 수십 회 (11-11 에 211 회, 38.7 GiB) 를 읽었고, 기준의 90% 를 두 번 연속 넘기는 판정이 4 분 간격에서도 같으므로 두 배로 늘림.
+    public static readonly TimeSpan SampleEvery = TimeSpan.FromMinutes(4);
+
+    /// 드라이브 하나의 표본 읽기 24 시간 상한: 표본 한 번이 최대 192 MiB (ProbeRound.MaxBytes) 라 8 회가 곧 1.5 GiB. 회복이 늦어도 이만큼만 읽고, 상한에 닿으면 표본을 쉬며 선택적 재배치는 회복이 확인되지 않은 채로 보류됩니다
+    /// (보류는 recovery_hard_max_min 이 지나면 표본 없이도 풀림).
+    public const int MaxSamplesPerDay = 8;
+    public const long MaxSampleBytesPerDay = 1536L << 20;
     public static readonly TimeSpan MaximumUnknownSampleEvery = TimeSpan.FromTicks(SampleEvery.Ticks * MaximumUnknownIntervalMultiplier);
 
     private readonly AutoEnv _env;
@@ -39,6 +46,7 @@ public sealed class DriveRecovery : IDriveRecovery
     private readonly AutoStatus? _status;
     private DiskReadCoordinator? _coordinator;
     private readonly Dictionary<string, double> _warmMax = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _budgetLogged = new(StringComparer.Ordinal); // 하루 표본 상한 때문에 표본을 쉬는 드라이브 (쉬기 시작할 때와 풀릴 때만 로그)
     private readonly HashSet<string> _gameLogged = new(StringComparer.Ordinal); // "game running" 로 표본을 미룬 드라이브 (게임이 끝날 때까지 로그는 한 번)
     private readonly Dictionary<string, CancellationTokenSource> _samples = new(StringComparer.Ordinal); // 표본을 재는 중인 드라이브별 취소 (게임 시작이 같은 디스크의 표본을 멈춤)
 
@@ -52,6 +60,9 @@ public sealed class DriveRecovery : IDriveRecovery
     }
 
     public void SetDiskReadCoordinator(DiskReadCoordinator coordinator) => _coordinator = coordinator;
+
+    /// 드라이브별 24시간 읽은 양 집계 (표본 횟수·바이트 상한을 셈, 없으면 상한 없음).
+    internal DiskReadLedger? Reads { get; set; }
 
     /// 드라이브에서 예열이 실제로 낸 MB/s 를 알림: 진단 로그용일 뿐 판정에는 쓰이지 않습니다 (OS 캐시 적중이 섞여 있음).
     public void NoteWarmMbps(string drive, double mbps)
@@ -247,7 +258,7 @@ public sealed class DriveRecovery : IDriveRecovery
                     limitSummaries.Add((key, t));
                 }
 
-                if (t.Baseline is not null && elapsed >= t.Next && !protectedNow)
+                if (t.Baseline is not null && elapsed >= t.Next && !protectedNow && !SampleBudgetReached(key))
                 {
                     due.Add((key, t));
                 }
@@ -273,6 +284,7 @@ public sealed class DriveRecovery : IDriveRecovery
         int rotationIndex = DiskProbe.RotationIndex(t.Rotation);
         SampleDiagnostics diagnostics = new();
         ProbeSample? got = Sample(key, t.Baseline!, rotationIndex, out bool deferred, out bool interruptedDuringRead, diagnostics);
+        Reads?.Add(key, ReadPurpose.Recovery, diagnostics.BytesRead); // 읽기 전에 미룬 회차는 0 바이트라 세지 않음, 읽다 끊긴 회차는 읽은 만큼 한 번으로 셈
         lock (_lock)
         {
             if (deferred)
@@ -711,6 +723,26 @@ public sealed class DriveRecovery : IDriveRecovery
         }
     }
 
+    // 24시간 안에 이 드라이브에서 표본을 MaxSamplesPerDay 회 또는 MaxSampleBytesPerDay 바이트 읽었는가 (_lock 안에서 부름): 그러면 가장 오래된 표본이 창에서 빠질 때까지 쉼. 쉬기 시작할 때와 풀릴 때만 로그.
+    private bool SampleBudgetReached(string key)
+    {
+        if (Reads is not { } reads)
+        {
+            return false;
+        }
+
+        (long bytes, int samples) = reads.Used(key, ReadPurpose.Recovery);
+        bool reached = samples >= MaxSamplesPerDay || bytes >= MaxSampleBytesPerDay;
+        if (reached ? _budgetLogged.Add(key) : _budgetLogged.Remove(key))
+        {
+            _log.Info(reached
+                ? $"drive {key} recovery samples paused: {samples} samples and {bytes >> 20} MiB read in the last 24 h (limit {MaxSamplesPerDay} samples, {MaxSampleBytesPerDay >> 20} MiB), sampling again from {reads.FreeAt(key, ReadPurpose.Recovery, (b, n) => n < MaxSamplesPerDay && b < MaxSampleBytesPerDay):O}; relocation stays on hold until recovered or the hard limit"
+                : $"drive {key} recovery samples resumed: {samples} samples and {bytes >> 20} MiB read in the last 24 h");
+        }
+
+        return reached;
+    }
+
     // 디스크 활동을 못 읽거나 임계 이상이면 바쁨 (기준 측정도 같은 판정을 씀).
     internal static bool Busy(AutoEnv env, string key) => env.DiskBytesPerSecond(key) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond;
 
@@ -760,7 +792,7 @@ public sealed class DriveRecovery : IDriveRecovery
 
     private static TimeSpan UnknownInterval(int streak)
     {
-        long multiplier = 1L << Math.Clamp(streak, 1, 2);
+        long multiplier = 1L << (Math.Clamp(streak, 1, 2) - 1); // 판정 불가 간격은 기본 간격을 늘리기 전과 같은 4 분, 8 분 (표본을 읽지 못한 회차라 디스크를 더 읽지 않음)
         TimeSpan interval = TimeSpan.FromTicks(SampleEvery.Ticks * multiplier);
         return interval <= MaximumUnknownSampleEvery ? interval : MaximumUnknownSampleEvery;
     }

@@ -231,5 +231,6 @@ public sealed partial class Prewarmer
         SupplementTick(ct);
         _rewarm.Tick(auto, ct);
         _rewarm.LadderTick(auto, ct);
+        LogDiskReadsDaily();
     }
 }

@@ -92,7 +92,7 @@ public sealed partial class Prewarmer
     }
 
     /// 게임이 끝났을 때 (Worker 가 부름): 재예열 점검을 앞당깁니다.
-    public void NoteGameExit(DateTimeOffset? heavyWorkNotBefore = null) => _rewarm.PullIn(_auto, heavyWorkNotBefore);
+    public void NoteGameExit(DateTimeOffset? heavyWorkNotBefore = null) => _rewarm.PullIn(_auto, heavyWorkNotBefore, afterExit: true);
 
     private void DropPendingWarm(string game)
     {

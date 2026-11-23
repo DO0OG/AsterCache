@@ -61,6 +61,13 @@ internal sealed class YieldWorld
 
     public int ProcessListCalls;
 
+    public int ProcessIdCalls;
+
+    public int StateWrites;
+
+    /// 그 가운데 디스크 쓰기 캐시를 비우지 않은 쓰기 (StateWrites 에도 셈).
+    public int CachedStateWrites;
+
     public DateTimeOffset Start { get; } = DateTimeOffset.UnixEpoch.AddDays(1);
 
     public DateTimeOffset Now { get; set; } = DateTimeOffset.UnixEpoch.AddDays(1);
@@ -119,6 +126,11 @@ internal sealed class YieldWorld
         {
             ProcessListCalls++;
             return Snapshot();
+        },
+        ProcessIds = () =>
+        {
+            ProcessIdCalls++;
+            return [.. Procs.Keys];
         },
         SessionId = pid => Procs.TryGetValue(pid, out Proc? p) ? p.Session : null,
         Describe = pid =>
@@ -207,7 +219,17 @@ internal sealed class YieldWorld
         BootTime = () => Boot,
         Delay = (t, _) => Now += t,
         ReadState = () => State,
-        WriteState = text => State = WriteFails ? throw new IOException("disk full") : text,
+        WriteState = text =>
+        {
+            StateWrites++;
+            State = WriteFails ? throw new IOException("disk full") : text;
+        },
+        WriteStateCached = text =>
+        {
+            CachedStateWrites++;
+            StateWrites++;
+            State = WriteFails ? throw new IOException("disk full") : text;
+        },
         DeleteState = () => State = null,
         KnownGameFolders = () => KnownFolders,
         WindowsDir = @"C:\Windows",
@@ -1797,8 +1819,9 @@ public sealed class BackgroundYieldTests
     }
 
     [Fact]
-    public void ProcessesInUseAreNeitherTrimmedNorGivenALowerMemoryPriorityButTheirIoPriorityIsStillLowered()
+    public void ProcessesInUseAreNeitherTrimmedNorGivenTheLowestMemoryPriorityAndTheirIoPriorityIsStillLowered()
     {
+        _settings = _settings with { Memory = _settings.Memory with { BackgroundInUseMemoryPriority = false } }; // 쓰고 있는 프로세스의 메모리 우선순위 낮추기를 끄면 예전 동작
         BackgroundYield y = SessionWithBusyProcesses();
 
         y.Begin("game started", settle: false);
@@ -1808,6 +1831,90 @@ public sealed class BackgroundYieldTests
         Assert.Equal([5, 5, 1], new[] { 50, 51, 52 }.Select(pid => _w.Procs[pid].Priority));
         Assert.Equal([50, 51, 52], _w.IoSets.Select(s => s.Pid).Order()); // I/O 우선순위 낮추기는 그대로
         Assert.True(Logged("memory priority lowered for 1, I/O priority lowered for 3, CPU priority lowered for 3, 2 in-use processes spared"));
+        Assert.False(Logged("set below normal"));
+    }
+
+    [Fact]
+    public void ProcessesInUseGetMemoryPriorityBelowNormalWithoutBeingTrimmedAndOnesAlreadyLowerAreLeftAlone()
+    {
+        _ = _w.Add(53, "low-busy.exe", wsMib: 200, priority: 3); // 원래 값이 4 이하: 쓰고 있어도 건드리지 않음
+        BackgroundYield y = SessionWithBusyProcesses();
+        _w.Procs[53].CpuTicks = 60 * Second / 10;
+
+        y.Begin("game started", settle: false);
+
+        Assert.Equal([52], _w.Trimmed); // 작업 집합은 쉬는 프로세스만 비움
+        Assert.Equal([(50, 4), (51, 4), (52, 1)], _w.Sets);
+        Assert.Equal([4, 4, 1, 3], new[] { 50, 51, 52, 53 }.Select(pid => _w.Procs[pid].Priority));
+        Assert.True(Logged("3 in-use processes spared (memory priority set below normal for 2 of them)"));
+        Assert.Contains("\"priority\": 5", _w.State, StringComparison.Ordinal); // 되돌릴 값은 원래 값
+    }
+
+    [Fact]
+    public void TheInUseMemoryPriorityIsRestoredToTheOriginalWhenTheSessionEnds()
+    {
+        BackgroundYield y = SessionWithBusyProcesses();
+        y.Begin("game started", settle: false);
+        Assert.Equal([4, 4, 1], new[] { 50, 51, 52 }.Select(pid => _w.Procs[pid].Priority));
+
+        y.End();
+
+        Assert.Equal([5, 5, 5], new[] { 50, 51, 52 }.Select(pid => _w.Procs[pid].Priority));
+        Assert.Null(_w.State);
+        Assert.True(Logged("memory priority restored for 3 processes"));
+    }
+
+    [Fact]
+    public void ARestartedServiceRestoresTheInUseMemoryPriorityFromTheStateFile()
+    {
+        BackgroundYield y = SessionWithBusyProcesses();
+        y.Begin("game started", settle: false);
+        Assert.Equal(4, _w.Procs[50].Priority);
+
+        Make().Recover(); // 서비스가 비정상 종료한 뒤의 시작: 상태 파일의 원래 값으로 되돌림
+
+        Assert.Equal([5, 5, 5], new[] { 50, 51, 52 }.Select(pid => _w.Procs[pid].Priority));
+        Assert.Null(_w.State);
+    }
+
+    [Fact]
+    public void AProcessThatBecomesIdleGoesToTheLowestAndOneThatBecomesBusyGoesBackToBelowNormalAtTheNextMaintenance()
+    {
+        BackgroundYield y = SessionWithBusyProcesses(); // 50·51 쓰는 중 (4), 52 쉼 (1)
+        y.Begin("game started", settle: false);
+        _ = _w.Add(10, "cod.exe");
+
+        for (int minute = 1; minute <= 2; minute++) // 두 틱의 표본: 50 은 쉬고 52 는 쓰는 중이 됨
+        {
+            _w.Now = _w.Start + TimeSpan.FromMinutes(minute);
+            _w.Procs[51].IoBytes += 60L * 64 * 1024;
+            _w.Procs[52].CpuTicks += 60 * Second / 10;
+            y.Tick(_w.Snapshot());
+        }
+
+        Assert.Equal([1, 4, 4], new[] { 50, 51, 52 }.Select(pid => _w.Procs[pid].Priority));
+        Assert.Equal([(50, 4), (51, 4), (52, 1), (50, 1), (52, 4)], _w.Sets);
+        Assert.True(Logged("switched for 2"));
+        Assert.Contains("\"priority\": 5", _w.State, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ABusyProcessWhoseOriginalMemoryPriorityWasLowerIsNotRaisedAboveItWhenItGoesIdleAndBusyAgain()
+    {
+        _ = _w.Add(50, "idle-then-busy.exe", wsMib: 200, priority: 3);
+        _ = _w.Add(10, "cod.exe");
+        BackgroundYield y = Make();
+        y.Begin("game started", settle: false);
+        Assert.Equal(1, _w.Procs[50].Priority); // 쉬는 동안 매우 낮음
+
+        for (int minute = 1; minute <= 2; minute++)
+        {
+            _w.Now = _w.Start + TimeSpan.FromMinutes(minute);
+            _w.Procs[50].CpuTicks += 60 * Second / 10;
+            y.Tick(_w.Snapshot());
+        }
+
+        Assert.Equal(3, _w.Procs[50].Priority); // 쓰는 중이 되면 원래 값 (3) 으로: 보통보다 낮음 (4) 으로 올리지 않음
     }
 
     [Fact]
@@ -1822,7 +1929,7 @@ public sealed class BackgroundYieldTests
 
         TickAt(y, 2, 100, Lists(1000, 600));
 
-        Assert.DoesNotContain(_w.Sets, s => s.Pid == 60);
+        Assert.DoesNotContain(_w.Sets, s => s.Pid == 60 && s.Priority == 1); // 쓰는 중이라 매우 낮음으로는 낮추지 않음 (보통보다 낮음 4 까지만)
         Assert.Contains(_w.Sets, s => s.Pid == 61);
         Assert.DoesNotContain(60, _w.Trimmed);
         Assert.Contains(61, _w.Trimmed);
@@ -1830,7 +1937,7 @@ public sealed class BackgroundYieldTests
     }
 
     [Fact]
-    public void WithoutAUsageReadingNothingIsTrimmedOrLoweredInMemoryPriority()
+    public void WithoutAUsageReadingNothingIsTrimmedOrLoweredToTheLowestMemoryPriority()
     {
         _ = _w.Add(50, "big.exe", wsMib: 500);
         _w.UsageFails = true;
@@ -1838,7 +1945,7 @@ public sealed class BackgroundYieldTests
         Make().Begin("game started", settle: false);
 
         Assert.Empty(_w.Trimmed);
-        Assert.Empty(_w.Sets);
+        Assert.Equal([(50, 4)], _w.Sets); // 사용량을 모르면 쓰는 중으로 봐 보통보다 낮음 (4) 까지만
         Assert.Equal([(50, 1)], _w.IoSets); // I/O 우선순위는 사용량과 무관하게 그대로
     }
 
@@ -1851,7 +1958,7 @@ public sealed class BackgroundYieldTests
         y.Begin("game started", settle: false);
 
         Assert.Empty(_w.Trimmed);
-        Assert.Empty(_w.Sets);
+        Assert.Equal([(50, 4)], _w.Sets);
         Assert.True(Logged("1 in-use processes spared"));
     }
 
@@ -1871,7 +1978,7 @@ public sealed class BackgroundYieldTests
         y.Begin("game started", settle: false);
 
         Assert.Equal([51], _w.Trimmed);
-        Assert.Equal([(51, 1)], _w.Sets);
+        Assert.Equal([(50, 4), (51, 1)], _w.Sets); // 쓰는 중인 50 은 보통보다 낮음까지만
     }
 
     [Fact]

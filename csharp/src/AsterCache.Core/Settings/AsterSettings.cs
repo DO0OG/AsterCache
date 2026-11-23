@@ -305,7 +305,9 @@ public sealed record RiotSettings(bool ChampSelectPrewarm = false, int ChampSele
 /// keep_hold 는 게임이 실행되는 동안 유지 목록을 서비스의 매핑 뷰로 붙들어 대기 목록에서 밀려나지 않게 함 (기본 켜짐, 꺼지면 대기 목록을 다시 만지는 지금의 동작, standby_ladder 가 꺼져 있으면 하지 않음).
 /// keep_hold_written_files 는 붙들 때 게임이 플레이 중에 쓰는 파일 (트레이스가 가변으로 표시한 xpak_cache 같은 것) 도 조건이 맞으면 붙듦 (기본 켜짐, keep_hold 가 꺼져 있으면 하지 않음): 크기가 줄어든 적이 없고 업데이트 직후가 아니며 이번 플레이에서 바뀌지 않은 파일만, 바뀌면 5 초 안에 그 파일의 뷰를 닫음. 끄면 그런 파일은 예전처럼 붙들지 않고 순위 목록에도 넣지 않음.
 /// keep_sparse 는 게임이 실행되는 동안 예열에 든 스파스 속성 파일의 블록을 버퍼드 읽기로만 주기마다 다시 읽어 메모리에 남김 (기본 켜짐, 스파스 파일은 매핑하면 캐시가 버려져 붙들지 못함, standby_ladder 가 꺼져 있으면 하지 않음).
-public sealed record MemorySettings(bool BackgroundYield = true, bool StandbyLadder = true, bool BackgroundIoPriority = true, bool BackgroundCpuPriority = false, bool KeepHold = true, bool KeepHoldWrittenFiles = true, bool KeepSparse = true)
+/// background_yield_fast 는 게임이 실행되는 동안 새로 뜬 프로세스를 약 3 초 안에 알아채 기존 배경 양보를 적용함 (기본 켜짐, 프로세스 번호 목록만 비교하고 작업 집합은 비우지 않음, background_yield 가 꺼져 있으면 하지 않음).
+/// background_in_use_memory_priority 는 쓰고 있는 배경 프로세스의 메모리 우선순위를 보통보다 낮음 (4) 으로 낮춤 (기본 켜짐, 작업 집합은 비우지 않음, background_yield 가 꺼져 있으면 하지 않음).
+public sealed record MemorySettings(bool BackgroundYield = true, bool StandbyLadder = true, bool BackgroundIoPriority = true, bool BackgroundCpuPriority = false, bool KeepHold = true, bool KeepHoldWrittenFiles = true, bool KeepSparse = true, bool BackgroundYieldFast = true, bool BackgroundInUseMemoryPriority = true)
 {
     public static MemorySettings Default { get; } = new();
 }

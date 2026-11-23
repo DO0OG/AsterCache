@@ -41,6 +41,9 @@ public enum ReapplyVerdict
 
     /// 계획 파일 중 읽을 수 없는 것이 있어 (잠김·권한) 바뀌었는지 모름: 재적용을 보류하고 재계획도 하지 않습니다.
     FilesUnreadable,
+
+    /// 예약 드라이브 최적화 (defrag.exe) 가 도는 중: 한 번의 실행에 30분까지만 미룸 (DriveOptimization).
+    DriveOptimizing,
 }
 
 /// 재적용 판단 입력. GameRunning·DiskBusy 는 비싸므로 필요할 때만 부르는 지연 값입니다.
@@ -137,6 +140,9 @@ public sealed class ReapplyEnv
     /// 배치 풀림 경고를 낼 만한 때인가 (연결 전·시험 기본값은 허용).
     public Func<GameSettings, bool> WarnDegraded { get; set; } = _ => true;
 
+    /// 서비스가 본 가장 최근 드라이브 최적화 실행이 끝난 시각 (본 적 없으면 null, 배치 풀림 경고에 덧붙임).
+    public Func<DateTimeOffset?> OptimizationEnded { get; set; } = () => null;
+
     public Func<DateTimeOffset> Now { get; set; } = () => DateTimeOffset.UtcNow;
 
     /// 실제 구현. 재적용은 관리자이고 폴더 권한이 안전할 때만 (canApply). 저널은 게임마다 journalDir\이름.jsonl 하나를 계속 씁니다 (같은 저널 규칙: 이어하기·되돌리기).
@@ -156,6 +162,7 @@ public sealed class ReapplyEnv
             RealPath = RealPaths.Real,
             Apply = (g, plan, injected, ct) => RunLocked(journalDir, g, plan, ChooseOptions(g, injected, relocateOrder?.Invoke() ?? RelocateOrder.Target, relocateParallel?.Invoke(g) ?? 1), ct, log), // 존을 다시 정하면 계획에 남김
             TierActive = g => TierEngine.HasActive(Path.Combine(Path.GetDirectoryName(journalDir) ?? journalDir, "tier"), g.Name),
+            OptimizationEnded = () => DriveOptimization.Current?.LastEnded,
         };
         return env;
     }
@@ -227,7 +234,7 @@ public sealed class ReapplyEnv
         string letter = PlanFile.SplitDrive(g.OriginRoot);
         var rest = new RelocationRest(g.Name, log,
             () => DiskActivity.MeasureWindow(letter, () => Thread.Sleep(RelocationRest.ObserveDrain), () => Thread.Sleep(RelocationRest.ObserveWindow)),
-            (span, stop) => stop.WaitHandle.WaitOne(span), () => DateTimeOffset.UtcNow);
+            (span, stop) => stop.WaitHandle.WaitOne(span), () => DateTimeOffset.UtcNow, () => DriveOptimization.Current?.Blocking == true);
         Func<bool>? inner = options.CanIssue;
         return options with { CanIssue = () => (inner?.Invoke() ?? true) && rest.MayIssue(ct) };
     }
@@ -605,7 +612,7 @@ public sealed class ReapplyChecker
                 if (!unknown && _env.WarnDegraded(game) && (!_warnedAt.TryGetValue(game.Name, out DateTimeOffset last) || now - last >= TimeSpan.FromDays(1)))
                 {
                     _warnedAt[game.Name] = now;
-                    _log.Warn($"{game.Name}: layout degraded while source files are unchanged (cause unknown; a scheduled drive optimization or another tool may have moved files; the service will retry automatically when safety checks allow it)");
+                    _log.Warn($"{game.Name}: layout degraded while source files are unchanged (cause unknown; a scheduled drive optimization or another tool may have moved files{OptimizationNote()}; the service will retry automatically when safety checks allow it)");
                 }
             }
 
@@ -746,7 +753,10 @@ public sealed class ReapplyChecker
 
     private static bool IsShortRetryHold(ReapplyVerdict verdict) => verdict is
         ReapplyVerdict.GameRunning or ReapplyVerdict.DiskBusy or ReapplyVerdict.Recovering or
-        ReapplyVerdict.OnBattery or ReapplyVerdict.PostUpdateDelay or ReapplyVerdict.NotIdle;
+        ReapplyVerdict.OnBattery or ReapplyVerdict.PostUpdateDelay or ReapplyVerdict.NotIdle or ReapplyVerdict.DriveOptimizing;
+
+    // 서비스가 본 직전 최적화 실행이 있으면 그 끝난 시각 (배치 풀림 경고용).
+    private string OptimizationNote() => _env.OptimizationEnded() is { } ended ? $"; the last drive optimization the service saw ended at {ended.ToUniversalTime():yyyy-MM-dd HH:mm} UTC" : string.Empty;
 
     // 참고용: 핫 데이터 중 존 안 클러스터 비율 (보존 구간이 있는 계획에서는 낮아도 정상).
     private static string ZoneHit(LayoutReport r) =>

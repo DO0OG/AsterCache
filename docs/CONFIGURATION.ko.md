@@ -142,7 +142,7 @@
 | `relocate_io_priority` | `low` | 이동의 I/O 우선순위 힌트: `low` 또는 `normal`. |
 | `relocate_verify` | `sample` | 이동 전후 내용 비교: `sample`, `all`, `off`. |
 | `relocate_order` | `auto` | 이동 순서: `auto`(`target` 과 같음), `target`, `source`(실험용). |
-| `relocate_layout` | `ranges` | 존의 배치 방식: `ranges`(플레이가 읽는 조각을 처음 읽은 순서로 이어 붙임) 또는 `whole_file`(고른 파일을 통째로 한 조각으로 놓고, 크기가 계획이 읽는 양의 2배를 넘는 파일은 계획이 많이 읽는 80 MiB 이상의 구간을 한 조각씩 놓음). 게임의 `layout` 이 있으면 그 게임은 그것을 따릅니다. `whole_file` 의 효과는 재 보지 않았고, 끝까지 돈 Windows 드라이브 최적화가 그런 파일을 그냥 두는지 확인되기 전까지 기본값은 `ranges` 로 둡니다. 자세한 내용: [자동 모드](AUTO_MODE.ko.md#3-재배치). |
+| `relocate_layout` | `ranges` | 존의 배치 방식: `ranges`(플레이가 읽는 조각을 처음 읽은 순서로 이어 붙임) 또는 `whole_file`(고른 파일을 통째로 한 조각으로 놓고, 크기가 계획이 읽는 양의 2배를 넘는 파일은 계획이 바이트의 절반 이상을 읽는 80 MiB 이상의 구간을 한 조각씩 놓음). 게임의 `layout` 이 있으면 그 게임은 그것을 따릅니다. `whole_file` 의 효과는 재 보지 않았고, 끝까지 돈 Windows 드라이브 최적화가 그런 파일을 그냥 두는지 확인되기 전까지 기본값은 `ranges` 로 둡니다. 자세한 내용: [자동 모드](AUTO_MODE.ko.md#3-재배치). |
 | `post_update_delay_min` | 15 | 게임 업데이트를 감지한 뒤 그 게임의 재계획·재배치·예열을 이만큼(분, 0~1440) 미룹니다. 0이면 지연 없음. |
 | `post_relocate_recovery` | `probe` | 재배치 뒤 같은 드라이브의 다음 작업을 미루는 방식: `probe`(2분마다 짧은 표본을 읽어, 기준 속도의 90% 이상이 연속 2번이면 회복으로 봄), `fixed`(`post_update_delay_min` 분 고정), `off`. |
 | `recovery_max_min` | 60 | `probe` 가 회복을 기다리는 최대 시간(분, 1~1440). |

@@ -52,13 +52,33 @@ public static class ResidualPlanner
 
         foreach (PlanFile plan in oldPlans.Where(x => x.Zone.StartLcn is not null))
         {
-            foreach (PlanTask task in plan.Tasks.Concat(HeldTargets(plan)).Where(x => seen.Add(x)))
+            foreach (PlanTask task in plan.Tasks.Concat(HeldTargets(plan)).Concat(WholeTargets(plan)).Where(x => seen.Add(x)))
             {
                 result.Add(task);
             }
         }
 
         return result;
+    }
+
+    // 통째 배치 계획 (잔여가 아닌 것) 의 파일 전체 목표: 이미 목표에 있어 작업이 없거나 일부 조각만 작업인 파일도 "목표에 놓였음" 을 알아보게 함.
+    // 잔여 계획은 위치가 바뀐 zone 을 쓰므로 오프셋이 맞지 않음: 고정 작업이 이미 현재 자리를 이전 목표로 가짐.
+    private static IEnumerable<PlanTask> WholeTargets(PlanFile plan)
+    {
+        if (plan.IsResidual || plan.Zone.StartLcn is not { } start)
+        {
+            yield break;
+        }
+
+        long cb = plan.ClusterBytes;
+        Dictionary<string, long> sizes = plan.Fingerprints.ToDictionary(f => f.Path, f => f.Size, StringComparer.Ordinal);
+        foreach ((string path, long offset) in WholeFileLayout.WholeOffsets(plan))
+        {
+            if (sizes.TryGetValue(path, out long size) && size > 0)
+            {
+                yield return new PlanTask(path, 0, (size + cb - 1) / cb, start + offset);
+            }
+        }
     }
 
     // 보류 파일의 이전 목표: 읽지 못한 동안 task 가 없어도, 읽히게 된 뒤 다시 계획할 때 이미 옮긴 조각을 알아보게 계획에 남겨 둠.
@@ -230,7 +250,7 @@ public static class ResidualPlanner
         JObject stats = new ZoneStats(0, 0, fixedClusters * cb, 0, misaligned, parts.Sum(p => p.N) * cb, moved * cb, moving,
             moving == 0 ? 0 : PyFloat.Round2((double)moved / moving), residual, skipped, ZoneAllocator.CountRuns(sourceLayout.Select(x => (x.Lcn, x.N)).ToList()),
             ZoneAllocator.CountRuns(final)).ToJson();
-        foreach ((string key, object? value) in candidate.Stats.Where(kv => !stats.ContainsKey(kv.Key) && kv.Key != HeldKey && kv.Key != HeldTargetsKey && kv.Key != AdjacentKey && kv.Key != GenerationKey)) // 이전 계획의 보류와 인접 배치 표지는 이번 판정으로 다시 정함
+        foreach ((string key, object? value) in candidate.Stats.Where(kv => !stats.ContainsKey(kv.Key) && kv.Key != HeldKey && kv.Key != HeldTargetsKey && kv.Key != AdjacentKey && kv.Key != GenerationKey && kv.Key != WholeFileLayout.WholeOffsetsKey)) // 이전 계획의 보류와 인접 배치 표지는 이번 판정으로 다시 정함, 통째 파일 오프셋은 옮겨진 zone 기준이라 더는 맞지 않음
         {
             stats.Add(key, value); // hot_blocks, units 와 호출자가 덧붙인 표지는 그대로
         }

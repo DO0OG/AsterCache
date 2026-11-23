@@ -245,7 +245,7 @@ internal static class RelocationEstimateCommand
                         }
 
                         zoneStarts[volumeKey] = new RelocationEstimateZoneStart(volumeKey, volume.DeviceKey, startLcn, diskByte, source,
-                            planOnVolume ? plan!.Zone.Clusters : null);
+                            planOnVolume ? plan!.ZoneLength : null);
                     }
                     else
                     {

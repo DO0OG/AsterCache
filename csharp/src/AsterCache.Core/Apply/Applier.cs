@@ -156,7 +156,7 @@ public static class Applier
 
         rep.DryRun = options.DryRun;
         rep.PlanSaved = persist;
-        return options.Execute ? Execute(plan, vol, todo, rep, journalPath, chunk, options.WriteCap, hooks, digest, Math.Max(1, options.PlanAhead),
+        return options.Execute ? Execute(plan, vol, todo, rep, journalPath, chunk, options.WriteCap, options.RaiseLimit, hooks, digest, Math.Max(1, options.PlanAhead),
             VerifyMode.IsValid(options.Verify) ? options.Verify : VerifyMode.Sample, Math.Clamp(options.Parallel, 1, MaxParallel), cancellationToken, options.CanIssue) : rep;
     }
 
@@ -528,7 +528,7 @@ public static class Applier
     }
 
     private static ApplyReport Execute(PlanFile plan, IVolume vol, List<(int Idx, PlanTask Task, long Done)> todo, ApplyReport rep,
-        string journalPath, long chunk, long writeCap, ApplyHooks hooks, Func<string, long, IReadOnlyList<(long Offset, long Length)>, string> digestFn,
+        string journalPath, long chunk, long writeCap, long raiseLimit, ApplyHooks hooks, Func<string, long, IReadOnlyList<(long Offset, long Length)>, string> digestFn,
         int planAhead, string verify, int parallel, CancellationToken ct, Func<bool>? canIssue)
     {
         ApplyTimings tm = rep.Timings;
@@ -615,7 +615,11 @@ public static class Applier
 
         try
         {
-            RunTasks(plan, vol, todo, rep, jr, before, chunk, writeCap, hooks, Digest, perTask ? SampledDigest : null, planAhead, verify == VerifyMode.Off, parallel, ct, canIssue);
+            RunTasks(plan, vol, todo, rep, jr, before, chunk, writeCap, raiseLimit, hooks, Digest, perTask ? SampledDigest : null, planAhead, verify == VerifyMode.Off, parallel, ct, canIssue);
+            if (rep.DeferredFiles > 0)
+            {
+                rep.Stopped ??= "write_cap"; // 미룬 파일이 남았으므로 끝난 것이 아님 (완료로 확정하지 않게)
+            }
         }
         catch (Exception)
         {
@@ -636,6 +640,33 @@ public static class Applier
         return done;
     }
 
+    // 통째 배치 계획의 파일별 남은 이동량 (바이트). 스파스 작업은 16 클러스터 경계로 내려서 시작하므로 그만큼 더 셈.
+    private static Dictionary<string, long> FileNeeds(PlanFile plan, List<(int Idx, PlanTask Task, long Done)> todo, long cb)
+    {
+        var needs = new Dictionary<string, long>(StringComparer.Ordinal);
+        foreach ((_, PlanTask t, long d) in todo)
+        {
+            long from = plan.SparseAllocations.ContainsKey(t.Path) ? d / SparseAllocation.MoveClusters * SparseAllocation.MoveClusters : d;
+            needs[t.Path] = needs.GetValueOrDefault(t.Path) + (t.Clusters - from) * cb;
+        }
+
+        return needs;
+    }
+
+    /// 이번 회에 쓸 바이트의 상한 추정 (하루 집계의 예정 바이트): 범위 계획은 회당 상한까지, 통째 계획은 첫 파일이 상한보다 크면 그 파일까지 올릴 수 있으나 raiseLimit (하루 남은 양) 를 넘지 않음.
+    /// todoBytes 는 아직 옮기지 않은 양. 실제로 쓴 양은 끝난 뒤 MovedBytes 로 바로잡힘.
+    public static long EstimateWrite(PlanFile plan, long todoBytes, long writeCap, long raiseLimit)
+    {
+        if (!plan.Stats.ContainsKey(WholeFileLayout.RuleKey))
+        {
+            return Math.Min(todoBytes, writeCap);
+        }
+
+        long cb = plan.ClusterBytes;
+        long largest = plan.Tasks.GroupBy(t => t.Path, StringComparer.Ordinal).Select(g => g.Sum(t => t.Clusters) * cb).DefaultIfEmpty(0).Max();
+        return Math.Min(todoBytes, Math.Min(Math.Max(writeCap, largest), raiseLimit));
+    }
+
     // 작업 단위 표본의 키: "t<idx>"
     private static string TaskKey(int idx) => "t" + idx.ToString(CultureInfo.InvariantCulture);
 
@@ -646,7 +677,7 @@ public static class Applier
     // 이라 같은 파일의 작업은 항상 계획 순서로 한 번에 하나, 작업자가 하나면 todo 순서 그대로입니다. 보고서·표본 맵·대기열 같은 공유 상태는 gate 로, 저널 쓰기는 Journal 안의 잠금으로 직렬화.
     // 한 작업자가 멈춤 사유를 정하면 (취소·쓰기 상한·존 점유·예외) 다른 작업자는 진행 중인 조각만 끝내고 단계 행 없이 멈춥니다 (planned 행이 재개 지점).
     private static void RunTasks(PlanFile plan, IVolume vol, List<(int Idx, PlanTask Task, long Done)> todo, ApplyReport rep, Journal jr,
-        OrderedDictionary<string, string?> before, long chunk, long writeCap, ApplyHooks hooks, Func<string, string> digest,
+        OrderedDictionary<string, string?> before, long chunk, long writeCap, long raiseLimit, ApplyHooks hooks, Func<string, string> digest,
         Func<int, PlanTask, (string Sha, List<(long Offset, long Length)> Ranges)?>? taskDigest, int planAhead, bool noVerify, int parallel, CancellationToken ct, Func<bool>? canIssue)
     {
         long cb = vol.ClusterBytes;
@@ -676,6 +707,13 @@ public static class Applier
         }
 
         int remaining = todo.Count;
+
+        // 통째 배치 계획은 파일 하나를 한 작업자가 끝까지 맡고 (같은 파일의 나머지 작업을 이어 받음), 파일을 시작하기 전에 그 파일의 남은 이동량만큼 쓰기 예산을 잡아 둠:
+        // 회당 상한에서도 병렬 실행에서도 파일이 도중에 멈추지 않음. reserved 는 잡아 둔 합, noNewFiles 는 예산이 모자라 새 파일을 시작하지 않는 상태 (진행 중인 파일은 끝까지 감).
+        bool whole = plan.Stats.ContainsKey(WholeFileLayout.RuleKey);
+        Dictionary<string, long> needs = whole ? FileNeeds(plan, todo, cb) : [];
+        long reserved = 0;
+        bool noNewFiles = false;
 
         void Stop(string? why)
         {
@@ -709,9 +747,19 @@ public static class Applier
                         return null;
                     }
 
+                    if (whole && noNewFiles)
+                    {
+                        return null;
+                    }
+
                     if (ready.Count > 0)
                     {
-                        break;
+                        if (!whole || Admit())
+                        {
+                            break;
+                        }
+
+                        continue; // 이번 회에 시작하지 않고 미룬 파일: 다음 파일을 봄 (예산이 모자라 멈추는 경우는 위에서 null)
                     }
 
                     _ = Monitor.Wait(gate); // 남은 작업이 전부 진행 중인 파일의 뒷 작업
@@ -750,6 +798,81 @@ public static class Applier
             }
         }
 
+        // (gate 안) ready 의 첫 파일을 이번 회에 시작해도 되는가. 되면 그 파일의 남은 이동량을 쓰기 예산에 잡고 true.
+        // 하루 남은 양 (raiseLimit) 보다 큰 파일은 시작하지 않고 다음 날로 미룸 (다른 작은 파일은 계속). 단 뒤 작업의 목표가 그 파일의 원본과 겹치면 건너뛸 수 없어 새 파일을 멈춤.
+        // 예산이 모자라면 새 파일을 멈추고, 이번 회 첫 파일이면 상한을 그 파일의 남은 양까지 올려 끝까지 옮김.
+        bool Admit()
+        {
+            (int n, string path) = ready.Min;
+            long need = needs.GetValueOrDefault(path);
+            if (need <= raiseLimit && (reserved == 0 || reserved + need <= writeCap))
+            {
+                writeCap = Math.Max(writeCap, reserved + need);
+                reserved += need;
+                return true;
+            }
+
+            if (need > raiseLimit && SkipSafe(n, path))
+            {
+                _ = ready.Remove(ready.Min);
+                remaining -= queues[path].Count;
+                queues[path].Clear();
+                rep.DeferredFiles++;
+                return false;
+            }
+
+            noNewFiles = true;
+            rep.Stopped ??= "write_cap"; // Stop 을 부르지 않음: 진행 중인 파일은 끝까지 옮김
+            Monitor.PulseAll(gate);
+            return false;
+        }
+
+        bool SkipSafe(int n, string path)
+        {
+            try
+            {
+                if (hooks.Extents(path) is not { } ext)
+                {
+                    return false;
+                }
+
+                List<(long A, long B)> src = [.. todo.Where(x => x.Task.Path == path).SelectMany(x => ZoneAllocator.Pieces(ext, x.Task.Vcn + x.Done, x.Task.Vcn + x.Task.Clusters)).Select(p => (p.Lcn, p.Lcn + p.N))];
+                return !todo.Skip(n + 1).Any(x => x.Task.Path != path && src.Any(s => x.Task.TargetLcn + x.Done < s.B && s.A < x.Task.TargetLcn + x.Task.Clusters));
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or Win32Exception)
+            {
+                return false;
+            }
+        }
+
+        // 통째 배치: 맡은 파일의 다음 작업 (없거나 멈췄으면 null). 같은 파일이 두 작업자에게 갈리지 않게 파일을 맡은 작업자가 끝까지 이어 받음.
+        int? TakeNext(string path)
+        {
+            lock (gate)
+            {
+                Queue<int> q = queues[path];
+                if (Halted() || q.Count == 0)
+                {
+                    return null;
+                }
+
+                if (!CanIssue())
+                {
+                    Stop("cancelled");
+                    return null;
+                }
+
+                int n = q.Dequeue();
+                remaining--;
+                if (!windowed[n])
+                {
+                    PlanRows(todo, n, jr, hooks, tm, fresh, planAhead, windowed);
+                }
+
+                return n;
+            }
+        }
+
         bool HasBefore(string key)
         {
             lock (gate)
@@ -781,26 +904,6 @@ public static class Applier
                 }
 
                 return;
-            }
-
-            if (plan.Stats.ContainsKey(WholeFileLayout.RuleKey))
-            {
-                // 통째 배치의 작업은 한 파일이라, 회당 상한에서 도중에 멈춰 일부만 옮겨진 채 남지 않게 시작 전에 확인함:
-                // 남은 예산이 모자라면 이번 회에 이미 옮긴 것이 있을 때는 시작하지 않고 (다음 회가 이 파일부터), 이 작업이 첫 작업이면 상한을 이 작업의 남은 양까지 올려 끝까지 옮김.
-                long need = (t.Clusters - d) * cb;
-                lock (gate)
-                {
-                    if (Math.Max(0, writeCap - rep.MovedBytes) < need)
-                    {
-                        if (rep.MovedBytes > 0)
-                        {
-                            Stop("write_cap");
-                            return;
-                        }
-
-                        writeCap = rep.MovedBytes + need;
-                    }
-                }
             }
 
             if (!CanIssue()) // 이동 전 표본(파일당 읽기)도 읽지 않음: 취소 뒤에는 디스크를 더 건드리지 않음
@@ -1092,6 +1195,10 @@ public static class Applier
                 try
                 {
                     RunOne(job.N);
+                    while (whole && TakeNext(job.Path) is { } next)
+                    {
+                        RunOne(next);
+                    }
                 }
                 finally
                 {

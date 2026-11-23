@@ -12,6 +12,8 @@ namespace AsterCache.Service;
 /// 임의 경로·명령을 받는 IPC 는 없습니다 (설정 파일과 계획 폴더만 읽음).
 public sealed class Worker : BackgroundService
 {
+    private readonly LayoutCheckAdvance _layoutAdvance = new();
+
     public static readonly TimeSpan FirstCheckDelay = TimeSpan.FromMinutes(1);
     public static readonly TimeSpan CheckTick = TimeSpan.FromSeconds(30);
     // 부팅 조용 구간에 계기 예열을 보류해 둔 동안만 풀림 판정을 이 주기로 돎 (서비스 시작 예열 게이트 Prewarmer.GateStep 과 같음). 그 밖에는 CheckTick 그대로.
@@ -820,6 +822,8 @@ public sealed class Worker : BackgroundService
             _reapplyHold.Remove(name);
         }
 
+        DriveOptimization.Current?.Refresh(); // 최적화의 시작·끝 기록 (재배치를 하지 않을 때도 로그가 남게), 끝났으면 통째 계획 게임의 검사를 앞당김
+        _ = _layoutAdvance.Run(DriveOptimization.Current, due, games, LayoutCheckAdvance.UsesWholeLayout, DateTimeOffset.UtcNow, _log);
         foreach (GameSettings g in games)
         {
             due.TryAdd(g.Name, start + FirstCheckDelay);
@@ -844,7 +848,6 @@ public sealed class Worker : BackgroundService
         }
 
         NoteGameExits();
-        DriveOptimization.Current?.Refresh(); // 최적화의 시작·끝 기록 (재배치를 하지 않을 때도 로그가 남게)
 
         if (_auto is not null && RelocationAllowed(_quiet))
         {

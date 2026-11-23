@@ -102,7 +102,7 @@ public sealed partial class AutoRelocator
     // 교체 결과 한 줄. 교체가 목표를 바꾸므로 이어지는 배치 검사가 "layout degraded" 경고를 낼 수 있고, 그것은 원본 변경이 아니라 이 교체 때문에 다시 적용으로 판정된 것입니다.
     private void LogLegacySparse(GameSettings g, int baselines, PlanFile built)
     {
-        long start = built.Zone.StartLcn ?? 0, length = built.Zone.Clusters;
+        long start = built.Zone.StartLcn ?? 0, length = built.ZoneLength;
         long sparseMoving = built.Tasks.Where(t => built.SparseAllocations.ContainsKey(t.Path) && length > 0 && t.TargetLcn >= start && t.TargetLcn < start + length).Sum(t => t.Clusters);
         int held = HeldFiles(built);
         string place = length > 0 ? $"new run starts at LCN {start} ({length} clusters)" : "nothing left to move";

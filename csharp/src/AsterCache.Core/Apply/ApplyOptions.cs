@@ -13,6 +13,10 @@ public sealed record ApplyOptions(
 {
     /// 배경 작업이 묶음을 발행하기 직전마다 디스크 대여가 아직 유효한지 다시 확인하는 검사입니다.
     public Func<bool>? CanIssue { get; init; }
+
+    /// 통째 배치 계획에서 첫 파일이 WriteCap 보다 크면 그 파일을 한 회에 끝까지 옮기려고 WriteCap 을 올리는데, 올릴 수 있는 최대 쓰기량 (바이트).
+    /// 하루 예산이 있으면 호출자가 하루 남은 양을 줌: 이보다 큰 파일은 이번 회에 시작하지 않고 (다른 작은 파일은 계속) 다음 날로 미룸. 기본은 제한 없음 (하루 예산 0 = 무제한).
+    public long RaiseLimit { get; init; } = long.MaxValue;
 }
 
 /// 재배치 작업의 실행 순서. target: 계획의 대상(존) 순서, source: 현재 원본 첫 extent 의 LCN 오름차순 (결과 배치는 같음, 읽기 탐색이 줄 수 있으나 존 쓰기가 흩어짐).

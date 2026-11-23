@@ -138,7 +138,8 @@ public sealed partial class AutoRelocator
         ApplyOptions run = BaseApplyOptions(s, g);
         long budget = BudgetBytes(s, g); // 0 = 무제한
         run = run with { SaveTo = g.Plan };
-        return budget > 0 ? run with { WriteCap = Math.Max(0, Math.Min(run.WriteCap, budget - _status.RelocationBytesWithin(DailyWindow))) } : run;
+        long left = Math.Max(0, budget - _status.RelocationBytesWithin(DailyWindow));
+        return budget > 0 ? run with { WriteCap = Math.Min(run.WriteCap, left), RaiseLimit = left } : run; // 통째 계획의 큰 첫 파일도 하루 남은 양을 넘겨 올리지 않음
     }
 
     private ApplyOptions BaseApplyOptions(AsterSettings s, GameSettings g)

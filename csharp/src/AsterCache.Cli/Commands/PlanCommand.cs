@@ -70,7 +70,7 @@ internal static class PlanCommand
 
             plan = PlanFile.Make(sessions, originRoot, a.Int("zone-mib")!.Value * Mib, cb, FileLayout.RelocationExtents, zoneStartLcn: start,
                 minSessions: (int)minSessions, preserveBytes: a.Int("preserve-mib")!.Value * Mib, sparseFn: p => FileGuards.IsSparse(p),
-                capacityBytes: a.Int("zone-cap-mib")!.Value * Mib);
+                capacityBytes: a.Int("zone-cap-mib")!.Value * Mib, unmovableFn: FileGuards.RelocationUnmovable);
         }
         else
         {

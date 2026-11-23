@@ -225,7 +225,7 @@ public sealed partial class AutoRelocator
             var cache = new Dictionary<string, IReadOnlyList<Extent>?>(StringComparer.Ordinal);
             IReadOnlyList<Extent>? Ext(string path) => cache.TryGetValue(path, out IReadOnlyList<Extent>? e) ? e : cache[path] = _env.Extents(path);
             long? progressEnd = null;
-            foreach (PlanTask t in plan.Tasks.Where(t => t.TargetLcn >= zoneStart && t.TargetLcn < zoneStart + plan.Zone.Clusters))
+            foreach (PlanTask t in plan.Tasks.Where(t => t.TargetLcn >= zoneStart && t.TargetLcn < zoneStart + plan.ZoneLength))
             {
                 long done = PlanGuards.DonePrefix(Ext(t.Path), t.Vcn, t.Clusters, t.TargetLcn);
                 if (done > 0)
@@ -239,7 +239,7 @@ public sealed partial class AutoRelocator
             long? runStart = plan.Stats.TryGetValue(PlanGuards.ZoneRunStartKey, out object? rs) && rs is long r ? r : null;
             if (lcn is { } at)
             {
-                _log.Info($"{g.Name}: zone rejected at LCN {at}: {RejectedPlace(at, zoneStart, plan.Zone.Clusters, runStart, progressEnd)} (zone {zoneStart}, moved up to {progressEnd?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-"})");
+                _log.Info($"{g.Name}: zone rejected at LCN {at}: {RejectedPlace(at, zoneStart, plan.ZoneLength, runStart, progressEnd)} (zone {zoneStart}, moved up to {progressEnd?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-"})");
             }
         }
         catch (Exception e) when (e is not OperationCanceledException)

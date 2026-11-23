@@ -249,10 +249,10 @@ public sealed partial class AutoRelocator
                     return;
                 }
 
-                run = run with { WriteCap = Math.Min(run.WriteCap, left) }; // 한 번의 적용은 회당 상한과 하루 남은 양 중 작은 쪽까지만 쓰고 나머지는 이어하기가 다시 셈
+                run = run with { WriteCap = Math.Min(run.WriteCap, left), RaiseLimit = left }; // 한 번의 적용은 회당 상한과 하루 남은 양 중 작은 쪽까지만 쓰고 나머지는 이어하기가 다시 셈 (통째 계획의 큰 첫 파일도 하루 남은 양까지만 올림)
             }
 
-            long bytes = Math.Min(dry.BytesTodo, run.WriteCap);
+            long bytes = Applier.EstimateWrite(plan, dry.BytesTodo, run.WriteCap, run.RaiseLimit);
             (DriveBaseline? baseline, bool interrupted) = s.Auto.PostRelocateRecovery == AutoSettings.RecoveryProbe ? MeasureBaseline(g, plan, token) : (null, false);
             if (interrupted)
             {
@@ -264,7 +264,7 @@ public sealed partial class AutoRelocator
             pendingRecovery = bytes;
             ApplyReport rep = ApplyOrDefer(g, plan, run, token);
             _status.SetLastRelocationBytes(rep.MovedBytes); // 시작 때 넣은 예정 바이트 대신 실제로 옮긴 양
-            _log.Info($"{g.Name}: auto relocation moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed, order {rep.OrderUsed ?? order}" + (rep.OrderFallbackReason is not null ? " (fallback)" : string.Empty) + (rep.Stopped is { } why ? $", stopped: {why}" : string.Empty) + rep.SparseSummary + rep.Timings.Summary);
+            _log.Info($"{g.Name}: auto relocation moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed, order {rep.OrderUsed ?? order}" + (rep.OrderFallbackReason is not null ? " (fallback)" : string.Empty) + (rep.Stopped is { } why ? $", stopped: {why}" : string.Empty) + rep.SparseSummary + rep.DeferredSummary + rep.Timings.Summary);
             pendingRecovery = 0;
             if (_status.Recovery(g.Name) is { OccupiedStreak: > 0 } streaked)
             {
@@ -291,9 +291,17 @@ public sealed partial class AutoRelocator
 
                 SetAsideForReplan(g); // 존이 막혔으니 계획을 낡은 것으로 치워 다음 틱에 같은 트레이스로 (새 존을 찾아) 다시 계획
             }
+            else if (rep.DeferredFiles > 0 && rep.MovedBytes == 0)
+            {
+                HoldDeferred(g, rep); // 하루 남은 예산이 다음 파일보다 작아 오늘은 더 옮길 수 없음: 짧은 주기로 되풀이하지 않고 쉼
+            }
             else if (rep.Stopped is not null)
             {
                 Note(g, AutoStage.WaitingIdle, WriteLimitDetail);
+                if (plan.Stats.ContainsKey(WholeFileLayout.RuleKey))
+                {
+                    LogWholeProgress(g, dry, rep);
+                }
             }
             else if (HoldSparseChanged(g, rep.SparseAllocationChangedFiles))
             {
@@ -323,6 +331,11 @@ public sealed partial class AutoRelocator
                 _status.ClearRecovery(g.Name);
                 _status.Complete(g.Name, g.Source, _env.Now(), counted: true, RelocatedTag(plan));
                 _log.Info($"{g.Name}: auto relocation done");
+                if (plan.Stats.ContainsKey(WholeFileLayout.RuleKey))
+                {
+                    _log.Info($"{g.Name}: whole-file placement complete, {layout.ExpectedRuns - layout.OrderedRuns} of {layout.ExpectedRuns} file(s) in one piece inside the zone");
+                }
+
                 if (extending)
                 {
                     FinishExtension(g, plan);
@@ -408,6 +421,16 @@ public sealed partial class AutoRelocator
             _log.Error($"{g.Name}: revert failed, journal kept", e);
             return false;
         }
+    }
+
+    // 하루 남은 쓰기 예산보다 큰 파일만 남아 이번 회에 옮긴 것이 없음: 예산 창이 풀리기를 기다림 (ResourceRetry 뒤 다시).
+    private void HoldDeferred(GameSettings g, ApplyReport rep)
+    {
+        DateTimeOffset until = _env.Now() + ResourceRetry;
+        string text = $"{rep.DeferredFiles} file(s) larger than the remaining daily write budget, retrying after {until.ToUniversalTime():HH:mm} UTC";
+        _transientHold[g.Name] = (until, text);
+        Note(g, AutoStage.WaitingIdle, text);
+        _log.Info($"{g.Name}: {text}");
     }
 
     private const string DataCheckDetail = "data check failed";

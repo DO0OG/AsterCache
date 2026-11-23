@@ -300,6 +300,12 @@ internal sealed class FakeWorld
 
     public List<long> PlanStarts { get; } = [];
 
+    /// 통째 배치 계획 (기본: 연결 안 함 = 설정이 통째 방식이어도 범위 계획). 인자: 세션, 원점, 존 MiB, 통째 한도 MiB, 파일 크기 상한 (바이트), 존 시작, 이미 쓰던 클러스터.
+    public Func<IReadOnlyList<IReadOnlyList<TraceEvent>>, string, long, long, long, long?, long, PlanFile>? MakePlanWhole { get; set; }
+
+    /// 활성 계획을 새 계획으로 바꾸기 (예전 범위 계획의 통째 배치 이행). 기본: 연결 안 함 = 이행하지 않음.
+    public Action<GameSettings, PlanFile, IReadOnlyList<PlanFile>>? SwitchPlan { get; set; }
+
     /// 프리페치 기록 부트스트랩 (S2) 의 가짜: 시험이 boot 트레이스를 만든 것처럼 Files 를 바꾸고 만든 범위 수를 돌려줍니다 (기본 0 = 기록 없음).
     public Func<GameSettings, int> PrefetchBoot { get; set; } = _ => 0;
 
@@ -476,6 +482,12 @@ internal sealed class FakeWorld
         {
             PlanStarts.Add(start);
             return MakePlanAt(sessions, origin, zoneMib, start, used);
+        },
+        MakePlanWhole = MakePlanWhole is null ? null : (sessions, origin, zoneMib, capacityMib, maxFileBytes, start, used) => MakePlanWhole(sessions, origin, zoneMib, capacityMib, maxFileBytes, start, used),
+        SwitchPlan = SwitchPlan is null ? null : (g, plan, olds) =>
+        {
+            RequireHeld($"SwitchPlan {g.Name}");
+            SwitchPlan(g, plan, olds);
         },
         SavePlan = (plan, sessions, path) =>
         {

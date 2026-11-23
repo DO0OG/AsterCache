@@ -48,7 +48,9 @@ public sealed partial class AutoRelocator
             }
 
             bool followResidual = _env.ReplanResidual is not null && PreviousIsResidual(g); // 이전 계획 (.extend 또는 .stale) 이 잔여 계획이면 단일 존 접두부로 가지 않고 모든 이전 task 를 승계
-            (long? start, long usedClusters) = reuseZone && !followResidual && _env.MakePlanAt is not null ? PreviousZone(g) : (null, 0);
+            bool whole = WholeLayout(s); // 설정이 통째 배치일 때만 통째 계획을 만듦 (기본은 범위 계획)
+            (long? start, long usedClusters) = reuseZone && !followResidual && _env.MakePlanAt is not null ? PreviousZone(g, whole) : (null, 0);
+            PlanFile Make(long? at, long used) => MakeCandidate(g, s, whole, sessions, zoneMib, at, used);
             if (extending && start is null && reuseZone && !followResidual)
             {
                 BlockExtension(g, "previous zone start unknown");
@@ -58,13 +60,13 @@ public sealed partial class AutoRelocator
             PlanFile plan;
             try
             {
-                plan = start is { } lcn ? _env.MakePlanAt!(sessions, g.OriginRoot, zoneMib, lcn, usedClusters) : _env.MakePlan(sessions, g.OriginRoot, zoneMib);
+                plan = Make(start, usedClusters);
             }
             catch (PyValueException e) when (start is not null && !extending)
             {
                 // 존 안의 핫 파일이 접근 순서와 반대로 놓이면 (zone overlaps hot data in a cycle) 그 자리에서는 계획할 수 없음: 확장이 아니면 새 존을 찾음
                 _log.Info($"{g.Name}: previous zone cannot be planned in place ({FirstLine(e.Message)}), looking for a new one");
-                (start, plan) = (null, _env.MakePlan(sessions, g.OriginRoot, zoneMib));
+                (start, plan) = (null, Make(null, 0));
             }
 
             if (start is not null && ZoneBlockedByOwnData(plan, extending ? usedClusters : 0))
@@ -76,7 +78,7 @@ public sealed partial class AutoRelocator
                 }
 
                 _log.Info($"{g.Name}: previous zone holds data this plan does not move, looking for a new one");
-                (start, plan) = (null, _env.MakePlan(sessions, g.OriginRoot, zoneMib));
+                (start, plan) = (null, Make(null, 0));
             }
 
             if (start is not null && ZoneReserved(g, plan, extending ? usedClusters : 0))
@@ -88,7 +90,7 @@ public sealed partial class AutoRelocator
                 }
 
                 _log.Info($"{g.Name}: previous zone overlaps another game plan, looking for a new one");
-                (start, plan) = (null, _env.MakePlan(sessions, g.OriginRoot, zoneMib));
+                (start, plan) = (null, Make(null, 0));
             }
 
             if (extending && start is not null && ExtensionRegionInUse(g, plan))
@@ -100,7 +102,7 @@ public sealed partial class AutoRelocator
                 }
 
                 _log.Info($"{g.Name}: the region after the zone is in use, looking for a new one");
-                (start, plan) = (null, _env.MakePlan(sessions, g.OriginRoot, zoneMib));
+                (start, plan) = (null, Make(null, 0));
             }
 
             _ = start is null ? _seeded.Remove(g.Name) : _seeded.Add(g.Name);
@@ -130,6 +132,11 @@ public sealed partial class AutoRelocator
             else if (cheat is not null && cheat != AutoEnv.AntiCheatUnknown)
             {
                 plan.Stats[SupplementCheckedKey] = 1L; // 보충할 것이 없었음: 나중에 다시 따지지 않게 표지
+            }
+
+            if (whole)
+            {
+                LogWholePlan(g, plan, MaxZoneMib(s, g));
             }
 
             plan.Stats[PlannedAtKey] = _env.Now().ToUnixTimeSeconds();

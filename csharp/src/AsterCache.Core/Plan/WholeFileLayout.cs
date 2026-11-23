@@ -1,3 +1,4 @@
+using AsterCache.Core.Apply;
 using AsterCache.Core.Json;
 using AsterCache.Core.Model;
 
@@ -23,7 +24,8 @@ public enum Placement
 public sealed record FileDecision(string Path, int FirstAccess, long HotClusters, long FileClusters, Placement Placement, string? Reason);
 
 /// 통째 배정 결과: 작업·통계·접근 순서 (ZoneAllocator 와 같은 모양) 와 실제로 쓴 파일별 결정 (구멍이 있어 제자리로 내린 파일 반영).
-public sealed record WholePlan(AllocResult Alloc, IReadOnlyList<FileDecision> Decisions);
+/// Offsets: 통째 파일마다 zone 시작에서 그 파일이 놓일 자리까지의 클러스터 수 (이미 그 자리에 있어 작업이 없는 파일 포함).
+public sealed record WholePlan(AllocResult Alloc, IReadOnlyList<FileDecision> Decisions, IReadOnlyDictionary<string, long> Offsets);
 
 /// 파일 전체를 한 조각으로 zone 에 놓는 배치 (예약 드라이브 최적화가 한 조각 파일은 옮기지 않는다는 관찰에 기대). ZoneAllocator 는 건드리지 않고 옆에 둠: ranges 방식이 설정으로 계속 쓰임.
 /// 계획 형식은 version 을 올리지 않고 stats 의 표지 (layout_rule) 로 구분합니다: 표지가 없으면 예전 범위 계획, 알려진 키 밖의 stats 는 읽을 때 그대로 보존됨.
@@ -40,7 +42,12 @@ public static class WholeFileLayout
     /// 계획 stats: 제자리로 둔 파일 수의 사유별 합 (진단용).
     public const string InPlaceFilesKey = "in_place_files";
 
+    /// 계획 stats: whole_files 와 같은 순서로 각 파일이 놓일 자리의 zone 시작 기준 오프셋 (클러스터). 이미 목표에 있어 작업이 없는 파일도 있어서,
+    /// 잔여 재계획이 "이미 목표에 놓인 파일" 을 알아보는 이전 목표로 씀 (작업만으로는 알 수 없음).
+    public const string WholeOffsetsKey = "whole_offsets";
+
     public const string VolatileReason = "volatile";
+    public const string UnmovableReason = "unmovable";
     public const string SparseHolesReason = "sparse_holes";
     public const string MostlyColdReason = "mostly_cold";
     public const string OverDailyLimitReason = "over_daily_limit";
@@ -111,6 +118,12 @@ public static class WholeFileLayout
         return result;
     }
 
+    /// 파일을 통째로 놓을 수 없는 사유 (가변 파일, 옮길 수 없는 파일, 구멍 있는 스파스), 없으면 null. 계획을 처음 만들 때와 예전 계획을 이행할 때가 같은 규칙을 씀.
+    public static string? InPlaceReason(string path, IReadOnlyList<Extent>? extents, long size, long clusterBytes, bool sparse, Func<string, bool>? unmovable) =>
+        VolatileFiles.Ignored(path) ? VolatileReason
+        : unmovable?.Invoke(path) == true ? UnmovableReason
+        : sparse && HasHoles(extents, CeilDiv(size, clusterBytes)) ? SparseHolesReason : null;
+
     /// 파일의 [0, fileClusters) 가 디스크 구간으로 빠짐없이 덮이지 않으면 (구멍 있는 스파스 등) true: 한 조각을 보장할 수 없어 제자리로 둠.
     public static bool HasHoles(IReadOnlyList<Extent>? extents, long fileClusters) =>
         extents is null || ZoneAllocator.Pieces(extents, 0, fileClusters).Sum(p => p.N) != fileClusters;
@@ -139,6 +152,7 @@ public static class WholeFileLayout
         var tasks = new List<PlanTask>();
         var sources = new List<List<(long Lcn, long N)>>();
         var effective = new List<FileDecision>(decisions.Count);
+        var offsets = new Dictionary<string, long>(StringComparer.Ordinal);
         long inPlaceBytes = 0, overflowBytes = 0, misaligned = 0, wholeCount = 0;
         foreach (FileDecision d in decisions)
         {
@@ -163,11 +177,13 @@ public static class WholeFileLayout
                 && pieces[0].Lcn >= zoneStart && pieces[0].Lcn + d.FileClusters <= fixedEnd)
             {
                 inPlaceBytes += d.FileClusters * cb; // 이미 쓰던 구간 안에 한 조각: 그 자리를 그대로 씀
+                offsets[d.Path] = pieces[0].Lcn - zoneStart;
                 continue;
             }
 
-            long target = zoneStart + curOff;
-            curOff += d.FileClusters;
+            long target = rel ? zoneStart + curOff : ResolveSelfOverlap(pieces, zoneStart + curOff, d.FileClusters);
+            offsets[d.Path] = target - zoneStart;
+            curOff = target - zoneStart + d.FileClusters;
             if (sparseFiles?.Contains(d.Path) == true)
             {
                 AddSparseTasks(d, pieces, ext, target, tasks, sources, ref inPlaceBytes, cb);
@@ -216,7 +232,38 @@ public static class WholeFileLayout
         var stats = new ZoneStats(0, 0, inPlaceBytes, overflowBytes, misaligned,
             flat.Sum(p => p.N) * cb, moved * cb, tasks.Count, tasks.Count == 0 ? 0 : PyFloat.Round2((double)moved / tasks.Count),
             curOff, skippedFiles, ZoneAllocator.CountRuns(flat), wholeCount);
-        return new WholePlan(new AllocResult(tasks, stats, order), effective);
+        return new WholePlan(new AllocResult(tasks, stats, order), effective, offsets);
+    }
+
+    // 목표 [target, target + 파일 길이) 가 이 파일 자신의 지금 조각 (이미 목표 자리에 있는 조각은 빼고) 과 겹치면, 그 이동은 자기 자신이 막혀 순환 오류가 됨 (OrderTasks 는 자기 의존을 빼지 않음).
+    // 파일이 한 조각이고 목표 뒤쪽에 있으면 그 자리를 목표로 인정하고 (순서만 포기, 다시 쓰지 않음), 아니면 겹치지 않을 때까지 목표를 자기 조각 끝 뒤로 미룸 (사이는 빈 채로 남음).
+    // shortcut: 미루면 zone_used_clusters 가 한도 (Classify 의 합) 를 넘을 수 있음, 다른 파일끼리의 순환 (서로의 소스에 목표가 겹침) 은 풀지 않고 OrderTasks 의 오류로 새 zone 을 찾게 둠.
+    private static long ResolveSelfOverlap(List<(long Vcn, long Lcn, long N)> pieces, long target, long fileClusters)
+    {
+        bool single = pieces.Count > 0 && pieces.Sum(p => p.N) == fileClusters && ZoneAllocator.CountRuns(pieces.Select(p => (p.Lcn, p.N)).ToList()) == 1;
+        long t = target;
+        for (bool again = true; again;)
+        {
+            again = false;
+            foreach ((long vcn, long lcn, long n) in pieces)
+            {
+                if (lcn == t + vcn || lcn >= t + fileClusters || lcn + n <= t)
+                {
+                    continue; // 이미 목표 자리이거나 겹치지 않음
+                }
+
+                if (single && pieces[0].Lcn - pieces[0].Vcn >= target)
+                {
+                    return pieces[0].Lcn - pieces[0].Vcn;
+                }
+
+                t = lcn + n;
+                again = true;
+                break;
+            }
+        }
+
+        return t;
     }
 
     // 스파스 파일 (구멍 없음): 작업은 16 클러스터 경계로만 (SupportsMove). 16 배수가 아니면 [0, 꼬리 시작) 과 꼬리로 나눔 (ZoneAllocator 의 꼬리 규칙과 같음).
@@ -240,10 +287,16 @@ public static class WholeFileLayout
     }
 
     /// 통째 계획의 stats 표지: layout_rule, whole_files (첫 접근 순), in_place_files (사유별 파일 수).
-    public static void AddStats(JObject stats, IReadOnlyList<FileDecision> decisions)
+    public static void AddStats(JObject stats, IReadOnlyList<FileDecision> decisions, IReadOnlyDictionary<string, long>? offsets = null)
     {
         stats.Add(RuleKey, RuleVersion);
-        stats.Add(WholeFilesKey, decisions.Where(d => d.Placement == Placement.WholeFile).Select(d => (object?)d.Path).ToList());
+        List<string> whole = [.. decisions.Where(d => d.Placement == Placement.WholeFile).Select(d => d.Path)];
+        stats.Add(WholeFilesKey, whole.Select(p => (object?)p).ToList());
+        if (offsets is not null && whole.All(offsets.ContainsKey))
+        {
+            stats.Add(WholeOffsetsKey, whole.Select(p => (object?)offsets[p]).ToList());
+        }
+
         var reasons = new JObject();
         foreach (IGrouping<string, FileDecision> g in decisions.Where(d => d.Placement == Placement.InPlace).GroupBy(d => d.Reason ?? string.Empty).OrderBy(g => g.Key, StringComparer.Ordinal))
         {
@@ -251,6 +304,65 @@ public static class WholeFileLayout
         }
 
         stats.Add(InPlaceFilesKey, reasons);
+    }
+
+    /// 이행에서 새 계획이 물려받지 않는 예전 계획의 stats 키: 잔여·보류 표지는 이번 판정으로 다시 정하고, zone 자리 기록은 새 zone 을 정할 때 다시 씀.
+    private static readonly string[] RebuildDropKeys = [ResidualPlanner.HeldKey, ResidualPlanner.HeldTargetsKey, ResidualPlanner.AdjacentKey, ResidualPlanner.GenerationKey,
+        "residual", "fixed_clusters", PlanGuards.ZoneMarginKey, PlanGuards.ZoneRunStartKey];
+
+    /// 예전 범위 계획을 통째 배치 계획으로 다시 세움 (이행): 접근 순서 (order) 와 지문은 그대로 쓰고, 파일 크기는 지문에서, 지금 배치는 extentsFn 으로 읽음.
+    /// zone 시작은 미정으로 둬서 적용 때 빈 구간을 새로 고름 (예전 zone 의 조각은 고정하지 않음: 고정하면 파일이 통째가 되지 않음).
+    /// 읽지 못하는 파일 (extents null) 이 있으면 지금은 판단할 수 없어 null: 호출자가 나중에 다시 시도. 디스크 구간이 없는 파일 (크기 0·MFT 상주) 은 계획에서 빼고 skipped_files 에 셈.
+    public static PlanFile? Rebuild(PlanFile old, Func<string, IReadOnlyList<Extent>?> extentsFn, Func<string, bool> sparseFn, Func<string, bool>? unmovableFn, long capacityBytes, long maxFileBytes = long.MaxValue)
+    {
+        long cb = old.ClusterBytes;
+        var ext = new Dictionary<string, IReadOnlyList<Extent>?>(StringComparer.Ordinal);
+        var order = new List<PlanRange>();
+        var dropped = new HashSet<string>(StringComparer.Ordinal);
+        foreach (PlanRange o in old.Order)
+        {
+            if (!ext.TryGetValue(o.Path, out IReadOnlyList<Extent>? e))
+            {
+                ext[o.Path] = e = extentsFn(o.Path);
+            }
+
+            if (e is null)
+            {
+                return null;
+            }
+
+            if (e.Count == 0)
+            {
+                _ = dropped.Add(o.Path);
+                continue;
+            }
+
+            order.Add(o);
+        }
+
+        Dictionary<string, long> sizes = old.Fingerprints.ToDictionary(f => f.Path, f => f.Size, StringComparer.Ordinal);
+        var sparse = new HashSet<string>(order.Select(o => o.Path).Distinct(StringComparer.Ordinal).Where(sparseFn), StringComparer.Ordinal);
+        List<FileDecision> classified = Classify(order, sizes, cb, capacityBytes / cb,
+            p => InPlaceReason(p, ext[p], sizes.GetValueOrDefault(p), cb, sparse.Contains(p), unmovableFn), maxFileBytes);
+        long skipped = (old.Stats.TryGetValue("skipped_files", out object? sk) && sk is long s ? s : 0) + dropped.Count;
+        WholePlan whole = Allocate(order, classified, ext, null, cb, 0, sparse, skipped);
+        JObject stats = whole.Alloc.Stats.ToJson();
+        AddStats(stats, whole.Decisions, whole.Offsets);
+        foreach ((string key, object? value) in old.Stats.Where(kv => !stats.ContainsKey(kv.Key) && !RebuildDropKeys.Contains(kv.Key)))
+        {
+            stats.Add(key, value);
+        }
+
+        var printed = order.Select(o => o.Path).ToHashSet(StringComparer.Ordinal);
+        return old with
+        {
+            Zone = new PlanZone(null, order.Sum(o => o.Clusters)),
+            Tasks = whole.Alloc.Tasks,
+            Order = order,
+            Fingerprints = [.. old.Fingerprints.Where(f => !dropped.Contains(f.Path))],
+            SparseAllocations = sparse.Where(printed.Contains).ToDictionary(p => p, p => old.SparseAllocations.TryGetValue(p, out IReadOnlyList<AllocatedRange>? a) ? a : SparseAllocation.Normalize(ext[p]!), StringComparer.Ordinal),
+            Stats = stats,
+        };
     }
 
     /// 통째 배치 계획이면 통째로 놓은 파일 경로 (첫 접근 순), 예전 범위 계획이면 null.
@@ -262,6 +374,14 @@ public static class WholeFileLayout
         }
 
         return plan.Stats.TryGetValue(WholeFilesKey, out object? raw) && raw is List<object?> rows ? rows.OfType<string>().ToList() : [];
+    }
+
+    /// 통째 배치 계획의 파일별 목표 자리 (경로, zone 시작 기준 오프셋). 예전 계획이거나 오프셋이 없으면 비어 있음.
+    public static IReadOnlyList<(string Path, long Offset)> WholeOffsets(PlanFile plan)
+    {
+        IReadOnlyList<string>? files = WholeFiles(plan);
+        return files is not null && plan.Stats.TryGetValue(WholeOffsetsKey, out object? raw) && raw is List<object?> rows && rows.Count == files.Count && rows.All(r => r is long)
+            ? [.. files.Select((p, i) => (p, (long)rows[i]!))] : [];
     }
 
     private static long CeilDiv(long x, long y) => (x + y - 1) / y;

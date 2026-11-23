@@ -238,6 +238,13 @@ public sealed class AutoEnv
     /// (세션, 원점 루트, 존 MiB, 존 시작 LCN) → 그 자리에 존을 두고 만든 계획 (제자리·겹침을 계산에 넣음). 없으면 이전 존 시작을 쓰지 않고 MakePlan 만 씁니다.
     public Func<IReadOnlyList<IReadOnlyList<TraceEvent>>, string, long, long, long, PlanFile>? MakePlanAt { get; init; }
 
+    /// (세션, 원점 루트, 존 MiB, 통째 배치가 쓸 수 있는 길이 MiB, 통째로 놓을 파일 크기 상한 (바이트, 하루 예산이 없으면 long.MaxValue), 존 시작 LCN 또는 null, 이미 쓰던 클러스터) → 통째 배치 계획 (파일 전체를 한 조각으로 zone 에).
+    /// 없으면 (시험 기본값) 설정이 통째 방식이어도 범위 계획을 만듭니다.
+    public Func<IReadOnlyList<IReadOnlyList<TraceEvent>>, string, long, long, long, long?, long, PlanFile>? MakePlanWhole { get; init; }
+
+    /// (게임, 새 활성 계획, 옛 계획들) → 저널을 보관하고 활성 계획을 새 계획으로 바꿈 (저널은 되돌리기 기록으로 남음). 예전 범위 계획에서 통째 계획으로 넘어가는 이행이 씁니다. 없으면 (시험 기본값) 이행하지 않음.
+    public Action<GameSettings, PlanFile, IReadOnlyList<PlanFile>>? SwitchPlan { get; init; }
+
     public required Action<PlanFile, IReadOnlyList<IReadOnlyList<TraceEvent>>, string> SavePlan { get; init; }
 
     public required Func<string, PlanFile> LoadPlan { get; init; }
@@ -429,6 +436,8 @@ public sealed class AutoEnv
             LoadVolatile = AutoTracer.ReadVolatile,
             MakePlan = (sessions, origin, zoneMib) => MakePlanAtLcn(sessions, origin, zoneMib, null, 0),
             MakePlanAt = (sessions, origin, zoneMib, start, used) => MakePlanAtLcn(sessions, origin, zoneMib, start, used),
+            MakePlanWhole = (sessions, origin, zoneMib, capacityMib, maxFileBytes, start, used) => MakePlanAtLcn(sessions, origin, zoneMib, start, used, capacityMib, maxFileBytes),
+            SwitchPlan = (g, plan, olds) => ReapplyEnv.SwitchPlan(journalDir, g, plan, olds),
             SavePlan = (plan, sessions, path) =>
             {
                 DataLock.RequireHeld(path); // 잠금 증표 없이는 활성 계획을 쓰지 않음
@@ -488,11 +497,11 @@ public sealed class AutoEnv
         }
     }
 
-    private static PlanFile MakePlanAtLcn(IReadOnlyList<IReadOnlyList<TraceEvent>> sessions, string origin, long zoneMib, long? start, long usedClusters)
+    private static PlanFile MakePlanAtLcn(IReadOnlyList<IReadOnlyList<TraceEvent>> sessions, string origin, long zoneMib, long? start, long usedClusters, long capacityMib = 0, long maxFileBytes = long.MaxValue)
     {
         int cb = FileLayout.ClusterBytes(origin) is > 0 and int c ? c : throw new PlanRejectedException("cluster size unknown");
         return PlanFile.Make(sessions, origin, zoneMib << 20, cb, FileLayout.RelocationExtents, zoneStartLcn: start, fixedClusters: usedClusters,
-            sparseFn: p => FileGuards.IsSparse(p));
+            sparseFn: p => FileGuards.IsSparse(p), capacityBytes: capacityMib << 20, unmovableFn: FileGuards.RelocationUnmovable, maxFileBytes: maxFileBytes);
     }
 
     /// 탐지를 못 한 결과 (I/O 실패 또는 열거 불완전): 없음이 아니라 모름. 티어는 거절하고 캐시하지 않으며, 등록에는 저장하지 않습니다.

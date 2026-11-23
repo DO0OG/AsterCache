@@ -29,7 +29,7 @@ public sealed record PlanFile(
     public static PlanFile Make(IReadOnlyList<IReadOnlyList<TraceEvent>> sessions, string originRoot, long zoneBytes, long clusterBytes,
         Func<string, IReadOnlyList<Extent>?> extentsFn, Func<string, long>? sizeFn = null, Func<string, Fingerprint>? fingerprintFn = null,
         long? zoneStartLcn = null, long block = HotSet.Block, int minSessions = 1, long preserveBytes = 0, long alignClusters = 4, long fixedClusters = 0,
-        Func<string, bool>? sparseFn = null, long capacityBytes = 0)
+        Func<string, bool>? sparseFn = null, long capacityBytes = 0, Func<string, bool>? unmovableFn = null, long maxFileBytes = long.MaxValue)
     {
         sizeFn ??= p => new FileInfo(p).Length;
         fingerprintFn ??= FingerprintOf;
@@ -42,15 +42,16 @@ public sealed record PlanFile(
         var sparsePaths = new HashSet<string>(paths.Where(p => sparseFn?.Invoke(p) == true), StringComparer.Ordinal);
         long zc = zoneBytes / clusterBytes;
         IReadOnlyList<FileDecision>? decisions = null;
+        IReadOnlyDictionary<string, long>? offsets = null;
         AllocResult alloc;
         if (capacityBytes > 0)
         {
             // 통째 배치: zone.clusters 는 핫 예산 기준 길이 그대로 두고, 통째 파일이 쓸 수 있는 길이만 capacityBytes 로 따로 받음 (예열 예산이 함께 늘지 않게)
             (List<PlanRange> hotOrder, int skippedFiles) = ZoneAllocator.HotRanges(units, ext, clusterBytes, block, sizes, sparsePaths);
             List<FileDecision> classified = WholeFileLayout.Classify(hotOrder, sizes, clusterBytes, capacityBytes / clusterBytes,
-                p => VolatileFiles.Ignored(p) ? WholeFileLayout.VolatileReason : sparsePaths.Contains(p) && WholeFileLayout.HasHoles(ext[p], (sizes[p] + clusterBytes - 1) / clusterBytes) ? WholeFileLayout.SparseHolesReason : null);
+                p => WholeFileLayout.InPlaceReason(p, ext[p], sizes[p], clusterBytes, sparsePaths.Contains(p), unmovableFn), maxFileBytes);
             WholePlan whole = WholeFileLayout.Allocate(hotOrder, classified, ext, zoneStartLcn, clusterBytes, fixedClusters, sparsePaths, skippedFiles, alignClusters);
-            (alloc, decisions) = (whole.Alloc, whole.Decisions);
+            (alloc, decisions, offsets) = (whole.Alloc, whole.Decisions, whole.Offsets);
         }
         else
         {
@@ -75,7 +76,7 @@ public sealed record PlanFile(
         JObject stats = alloc.Stats.ToJson();
         if (decisions is not null)
         {
-            WholeFileLayout.AddStats(stats, decisions);
+            WholeFileLayout.AddStats(stats, decisions, offsets);
         }
 
         stats.Add("hot_blocks", (long)hot.Count);
@@ -267,6 +268,9 @@ public sealed record PlanFile(
 
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(PyJson.Dumps(keep, sortKeys: true))));
     }
+
+    /// zone 이 실제로 차지하는 길이 (클러스터): 통째 배치 계획은 zone.clusters (핫 예산 기준) 보다 길 수 있어 zone_used_clusters 와 큰 쪽, 범위 계획은 zone.clusters 그대로. 진단·표시용.
+    public long ZoneLength => Stats.ContainsKey(WholeFileLayout.RuleKey) && Stats.TryGetValue("zone_used_clusters", out object? used) && used is long u ? Math.Max(Zone.Clusters, u) : Zone.Clusters;
 
     /// 잔여 재계획이 만든 계획인가 (ResidualPlanner 가 stats.residual = 1 을 적음): 이때 Zone 은 새로 옮길 구간뿐 (전부 제자리면 길이 0) 이고 핫셋은 task 전체입니다.
     public bool IsResidual => Stats.TryGetValue("residual", out object? r) && r is 1L;

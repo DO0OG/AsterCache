@@ -286,6 +286,15 @@ public sealed class ReapplyEnv
         return ResidualReplan.Run(candidate, g.Plan, JournalPath(journalDir, g), vol, ReservedFor(g), Hooks(null), () => DateTime.UtcNow, save, olds).Plan;
     }
 
+    /// 활성 계획을 candidate 로 바꿉니다 (저널은 보관하고 새 저널을 씀, 교체 기록이 있어 중간에 꺼져도 이어짐). 이전 목표를 지키지 않는 전체 교체라 잔여 재계획과 달리 후보를 그대로 씁니다.
+    /// DataLock 안에서 실행하며, 잠금을 못 잡으면 PlanRejectedException (DataLock.BusyMessage).
+    public static void SwitchPlan(string journalDir, GameSettings g, PlanFile candidate, IReadOnlyList<PlanFile> olds)
+    {
+        using DataLock gate = Lock(journalDir, g) ?? throw new PlanRejectedException(DataLock.BusyMessage);
+        Directory.CreateDirectory(journalDir);
+        _ = PlanSwitch.Commit(candidate, g.Plan, JournalPath(journalDir, g), () => DateTime.UtcNow, hooks: Hooks(null), oldPlans: olds);
+    }
+
     /// 중단된 계획 교체를 끝까지 진행합니다 (없으면 null). DataLock 안에서 실행하고, 못 잡으면 PlanRejectedException (DataLock.BusyMessage).
     /// 활성 계획이나 저널이 기록과 어긋나면 PlanRejectedException 으로 거절하고 기록은 그대로 둡니다.
     public static SwitchResult? ResumeSwitch(string journalDir, GameSettings g)
@@ -619,9 +628,9 @@ public sealed class ReapplyChecker
             if (v == ReapplyVerdict.Reapply)
             {
                 ApplyOptions? injected = _env.Options(game); // Started 가 집계를 늘리기 전에 한 번만 계산해 Apply 에도 그대로 넘김
-                long cap = (injected ?? new ApplyOptions()).WriteCap;
-                long planned = Math.Min(plan.Tasks.Sum(t => t.Clusters) * plan.ClusterBytes, cap);
-                _env.Started(game, planned); // 예정 바이트 (근사: 계획 전체, 회당 상한까지)
+                ApplyOptions limits = injected ?? new ApplyOptions();
+                long planned = Applier.EstimateWrite(plan, plan.Tasks.Sum(t => t.Clusters) * plan.ClusterBytes, limits.WriteCap, limits.RaiseLimit);
+                _env.Started(game, planned); // 예정 바이트 (근사: 계획 전체, 회당 상한까지, 통째 계획은 큰 첫 파일 크기까지)
                 ApplyReport rep;
                 try
                 {
@@ -667,7 +676,7 @@ public sealed class ReapplyChecker
                     _log.Info($"{game.Name}: previous zone was taken by another file, zone moved" + (rep.JournalArchivedTo is { } a ? $", earlier journal kept as {a}" : string.Empty));
                 }
 
-                _log.Info($"{game.Name}: reapplied, moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed" + (rep.OrderUsed is { } ou ? $", order {ou}" + (rep.OrderFallbackReason is not null ? " (fallback)" : string.Empty) : string.Empty) + (rep.Stopped is { } s ? $", stopped: {s}" : string.Empty) + rep.SparseSummary);
+                _log.Info($"{game.Name}: reapplied, moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed" + (rep.OrderUsed is { } ou ? $", order {ou}" + (rep.OrderFallbackReason is not null ? " (fallback)" : string.Empty) : string.Empty) + (rep.Stopped is { } s ? $", stopped: {s}" : string.Empty) + rep.SparseSummary + rep.DeferredSummary);
                 if (rep.Stopped == "cancelled")
                 {
                     _shortRetryPending.Add(game.Name);
@@ -677,7 +686,7 @@ public sealed class ReapplyChecker
                 }
 
                 _cancelled.Remove(game.Name);
-                if (rep.Stopped == "write_cap")
+                if (rep.Stopped == "write_cap" && !(rep.DeferredFiles > 0 && rep.MovedBytes == 0)) // 하루 남은 예산이 다음 파일보다 작아 아무것도 못 옮긴 회는 짧게 되풀이하지 않음
                 {
                     _shortRetryPending.Add(game.Name); // 회당 쓰기 상한에서 멈춤: 남은 부분을 하루 뒤가 아니라 회복 대기가 풀리는 대로 이어 옮김
                     _lastShortRetryLog[game.Name] = ReapplyVerdict.Reapply;

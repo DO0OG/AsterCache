@@ -99,6 +99,7 @@ public sealed partial class AutoRelocator
         ReplanLegacyVolatile(s);
         ReplanProfileSupplement(s);
         ReplanLegacySparse(s);
+        ReplanLegacyLayout(s);
         PrefetchBootstrap(s);
         WarmCold(s, warms);
         bool relocateOn = s.Auto.Relocate && s.Auto.MaxRelocationsPerDay > 0;

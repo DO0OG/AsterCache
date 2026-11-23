@@ -284,7 +284,7 @@ public sealed class DriveRecovery : IDriveRecovery
         int rotationIndex = DiskProbe.RotationIndex(t.Rotation);
         SampleDiagnostics diagnostics = new();
         ProbeSample? got = Sample(key, t.Baseline!, rotationIndex, out bool deferred, out bool interruptedDuringRead, diagnostics);
-        Reads?.Add(key, ReadPurpose.Recovery, diagnostics.BytesRead); // 읽기 전에 미룬 회차는 0 바이트라 세지 않음, 읽다 끊긴 회차는 읽은 만큼 한 번으로 셈
+        Reads?.Add(key, got is not null ? ReadPurpose.Recovery : ReadPurpose.RecoveryCut, diagnostics.BytesRead); // 바이트는 읽은 만큼 늘 셈 (읽기 전에 미룬 회차는 0), 하루 횟수에는 끝까지 읽은 표본만 넣어 끊긴 회차가 판정 몫을 쓰지 않게 함
         lock (_lock)
         {
             if (deferred)
@@ -731,12 +731,15 @@ public sealed class DriveRecovery : IDriveRecovery
             return false;
         }
 
-        (long bytes, int samples) = reads.Used(key, ReadPurpose.Recovery);
+        long bytes = reads.Used(key, ReadPurpose.Recovery, also: ReadPurpose.RecoveryCut).Bytes; // 바이트는 끊긴 표본이 읽은 것까지
+        int samples = reads.Used(key, ReadPurpose.Recovery).Count; // 횟수는 끝까지 읽은 표본만
         bool reached = samples >= MaxSamplesPerDay || bytes >= MaxSampleBytesPerDay;
         if (reached ? _budgetLogged.Add(key) : _budgetLogged.Remove(key))
         {
+            DateTimeOffset again = reads.FreeAt(key, ReadPurpose.Recovery, (_, n) => n < MaxSamplesPerDay);
+            DateTimeOffset byBytes = reads.FreeAt(key, ReadPurpose.Recovery, (b, _) => b < MaxSampleBytesPerDay, also: ReadPurpose.RecoveryCut);
             _log.Info(reached
-                ? $"drive {key} recovery samples paused: {samples} samples and {bytes >> 20} MiB read in the last 24 h (limit {MaxSamplesPerDay} samples, {MaxSampleBytesPerDay >> 20} MiB), sampling again from {reads.FreeAt(key, ReadPurpose.Recovery, (b, n) => n < MaxSamplesPerDay && b < MaxSampleBytesPerDay):O}; relocation stays on hold until recovered or the hard limit"
+                ? $"drive {key} recovery samples paused: {samples} samples and {bytes >> 20} MiB read in the last 24 h (limit {MaxSamplesPerDay} samples, {MaxSampleBytesPerDay >> 20} MiB), sampling again from {(byBytes > again ? byBytes : again):O}; relocation stays on hold until recovered or the hard limit"
                 : $"drive {key} recovery samples resumed: {samples} samples and {bytes >> 20} MiB read in the last 24 h");
         }
 

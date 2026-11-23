@@ -16,6 +16,7 @@ public sealed class RecoverySampleBudgetTests
     private readonly DriveRecovery _r;
     private int _samples; // 표본 (존·참조 두 곳을 읽는 한 회차) 수
     private long _bytesPerRead = 96 * Mib; // 한 곳을 읽을 때 읽는 양 (두 곳이 한 표본: 기본 192 MiB)
+    private bool _failRead; // 참이면 읽다가 실패함 (읽은 바이트는 남고 표본 결과는 없음)
 
     public RecoverySampleBudgetTests()
     {
@@ -27,7 +28,7 @@ public sealed class RecoverySampleBudgetTests
             }
 
             round.BytesRead += _bytesPerRead;
-            return lcn % 64 == 10 ? 10 : 8; // 기준의 10%: 회복되지 않음
+            return _failRead ? null : lcn % 64 == 10 ? 10 : 8; // 기준의 10%: 회복되지 않음
         };
         _w.ProbeStepLcn = _ => 64;
         _reads = new DiskReadLedger(() => _w.Now);
@@ -120,6 +121,31 @@ public sealed class RecoverySampleBudgetTests
         Assert.False(_r.IsRelocationHeld(Drive)); // 하드 상한 (180 분) 에 표본 없이도 풀림
         Assert.Equal(DriveRecovery.MaxSamplesPerDay, _samples);
         Assert.Contains(_log.Lines, line => line.Contains("recovery not confirmed after the 180 min hard limit, relocation hold released", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ASampleCutShortCountsItsBytesButNotOneOfTheEightSamples()
+    {
+        _failRead = true; // 읽다가 실패한 표본: 판정에 쓰이지 않음
+        _r.Begin(Drive, Both, TimeSpan.FromHours(30));
+
+        for (int minute = 0; minute < 3 * 60; minute++)
+        {
+            Pass(1);
+        }
+
+        Assert.Equal(0, _reads.Used(Drive, ReadPurpose.Recovery).Count); // 끝까지 읽은 표본이 없어 횟수는 그대로
+        long cutBytes = _reads.Used(Drive, ReadPurpose.RecoveryCut).Bytes;
+        Assert.True(cutBytes > 0 && cutBytes < DriveRecovery.MaxSampleBytesPerDay + 192 * Mib); // 바이트 합계 1.5 GiB 가 상한 구실을 함
+        Assert.Contains(_log.Lines, line => line.Contains("recovery samples paused: 0 samples and", StringComparison.Ordinal));
+
+        _failRead = false; // 바이트 상한이 풀리면 (24시간 뒤) 정상 표본이 다시 8회까지 셈
+        for (int minute = 0; minute < 24 * 60; minute++)
+        {
+            Pass(1);
+        }
+
+        Assert.True(_reads.Used(Drive, ReadPurpose.Recovery).Count > 0);
     }
 
     [Fact]

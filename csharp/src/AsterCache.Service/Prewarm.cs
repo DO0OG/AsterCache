@@ -37,7 +37,7 @@ public sealed partial class Prewarmer
     private readonly HashSet<string> _removedGames = new(StringComparer.OrdinalIgnoreCase); // 진행 중 작업이 끝난 뒤 임시 상태를 정리할 게임, _gate 로 보호
     private readonly Dictionary<string, DateTimeOffset> _last = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _lastBeforeBoot = new(StringComparer.OrdinalIgnoreCase); // 부팅 전에 성공한 예열 시각 (상태 파일), 새 트레이스 판정 (LastWarmed) 만 씀, _gate 로 보호
-    private sealed record PendingWarm(DateTimeOffset RetryAt, string Reason, string? TriggerExe = null); // TriggerExe: 막던 게임이 사라져 한 번 다시 시도할 트리거 exe
+    private sealed record PendingWarm(DateTimeOffset RetryAt, string Reason, string? TriggerExe = null, bool IdleOrigin = false); // TriggerExe: 막던 게임이 사라져 한 번 다시 시도할 트리거 exe, IdleOrigin: 처음 실패한 읽기가 계기 없는 읽기라 재시도도 하루 상한을 따름
     private readonly Dictionary<string, PendingWarm> _pendingWarm = new(StringComparer.OrdinalIgnoreCase); // 성공하지 못한 일시 예열과 시작 상한 누락, _gate 로 보호
     private sealed class PrewarmCancelDetail
     {
@@ -128,7 +128,7 @@ public sealed partial class Prewarmer
         _estimates = new WarmEstimateCache(_now);
         _pins = new PinKeeper(env, log, _now) { Coordinator = coordinator };
         _reads = new DiskReadLedger(_now) { Persist = FlushStatus };
-        _solar = new Solar(env, log, _now) { DiskRead = (game, bytes) => _reads.Add(game.OriginRoot, DiskReadLedger.Current, bytes) };
+        _solar = new Solar(env, log, _now) { DiskRead = (game, bytes) => _reads.Add(game.OriginRoot, DiskReadLedger.Current, bytes, game.Name) };
         _rewarm = new Rewarmer(this, env, log, _now);
         LoadStatus();
     }

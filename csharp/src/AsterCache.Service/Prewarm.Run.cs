@@ -15,6 +15,13 @@ public sealed partial class Prewarmer
     // 한 게임의 예외가 나머지 게임의 예열을 막지 않게 합니다.
     internal PrewarmResult Guarded(GameSettings game, string why, bool pin = true, bool ignoreCooldown = false, CancellationToken ct = default, long usedMib = 0, long? roomMib = null, bool trigger = false)
     {
+        // 재배치 뒤 예열은 사용자의 행동이 아니라 서비스 자신의 작업에 따른 읽기라 계기 없는 읽기의 하루 상한을 따릅니다 (못 읽은 것은 다음 게임·런처 시작의 예열이 채움)
+        using IDisposable? scope = why == AfterRelocation ? DiskReadLedger.Scope(ReadPurpose.Idle) : null;
+        if (scope is not null && IdleReadsExhausted(game))
+        {
+            return new PrewarmResult(game.Name, false, IdleReadLimit, null, _now());
+        }
+
         try
         {
             return Run(game, why, pin, ignoreCooldown, ct, usedMib, roomMib, trigger);
@@ -515,6 +522,7 @@ public sealed partial class Prewarmer
         MemoryFit? fit = partial || allowFinish ? new MemoryFit(skipBytes, limitBytes) : null; // 창 읽기와 순서를 바꾸지 않는 읽기만: 읽은 데까지를 부분 예열로 남길 수 있음
         StreamStats? finalStats = null;
         long startedAt = Stopwatch.GetTimestamp();
+        long? diskBefore = _env.DiskReadBytes?.Invoke(game); // 하루 읽기 집계가 물리 디스크의 읽기 증가분을 재는 시작점
         double? streamSeconds = null; // 사다리 시간이 노출 시간에 들어가지 않게 스트림이 끝난 때의 값
         // 읽기는 이 스레드 (묶음 점검 콜백도 같은 스레드) 에서 내므로 I/O 우선순위도 여기서 바꾸고 아래 finally 에서 되돌립니다.
         var readYield = new ReadYield(_env.SetReadIoLow, PrewarmYield.StartsYielding(why, _env.UptimeMs()));
@@ -626,7 +634,7 @@ public sealed partial class Prewarmer
             _requeued += requeue?.Tally ?? default;
             if (finalStats is { Bytes: > 0 })
             {
-                _reads.Add(game.OriginRoot, DiskReadLedger.Current, finalStats.Bytes); // 하루 읽기 집계: 끝까지 읽지 못하고 멈춘 스트림도 읽은 만큼 셈
+                NoteStreamRead(game, finalStats, diskBefore); // 하루 읽기 집계: 끝까지 읽지 못하고 멈춘 스트림도 읽은 만큼 셈
             }
 
             bool interrupted = !complete && _streamGameStarted;

@@ -20,8 +20,14 @@ public sealed class IdleReadBudgetTests : IDisposable
     private long _avail = 16000;
     private ProbeResult? _probe = new ProbeResult(8, 8, 120.0); // 식음
     private double? _disk = 0;
+    private long _diskCounter; // 물리 디스크가 읽은 누계 바이트 (스트리머가 읽을 때마다 늘림)
+    private bool _counterWorks = true;
 
-    public IdleReadBudgetTests() => Directory.CreateDirectory(_dir);
+    public IdleReadBudgetTests()
+    {
+        Directory.CreateDirectory(_dir);
+        _streamer.OnDisk = bytes => _diskCounter += bytes;
+    }
 
     public void Dispose() => Directory.Delete(_dir, true);
 
@@ -33,13 +39,20 @@ public sealed class IdleReadBudgetTests : IDisposable
 
         public long ReadMib { get; set; } = 100;
 
+        public long? DiskMib { get; set; } // 그 읽기에서 실제로 디스크가 읽은 양 (없으면 받아들인 양 전부: 캐시 적중이 아님)
+
+        public double Seconds { get; set; } = 0.01;
+
+        public Action<long>? OnDisk { get; set; }
+
         public StreamStats Stream(GameSettings game) => throw new NotSupportedException();
 
         public (StreamStats Stats, bool Complete) Stream(GameSettings game, CancellationToken stop, Action<long, long>? progress)
         {
             Seen.Add(game);
             long mib = Math.Min(ReadMib, game.MaxStreamMib);
-            return (new StreamStats(mib * Mib, 1, 0, 0.01, RequestedBytes: mib * Mib), !stop.IsCancellationRequested);
+            OnDisk?.Invoke(Math.Min(DiskMib ?? mib, mib) * Mib);
+            return (new StreamStats(mib * Mib, 1, 0, Seconds, RequestedBytes: mib * Mib), !stop.IsCancellationRequested);
         }
     }
 
@@ -55,6 +68,7 @@ public sealed class IdleReadBudgetTests : IDisposable
             ZoneBytes = g => Math.Min(_zoneMib, g.MaxStreamMib) * Mib,
             TraceExists = _ => true,
             DiskBytesPerSecond = _ => _disk,
+            DiskReadBytes = _ => _counterWorks ? _diskCounter : null,
             ProbeReadMs = _ => _probe,
         }, _log, StatusPath, () => _now);
         p.SetAuto(auto);
@@ -143,7 +157,7 @@ public sealed class IdleReadBudgetTests : IDisposable
     {
         GameSettings g = Game();
         Prewarmer p = StartedAndDue(On, g);
-        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 9 * Gib); // 상한 8 GiB 를 넘음
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 9 * Gib, g.Name); // 상한 8 GiB 를 넘음
         int before = _streamer.Seen.Count;
 
         Ticks(p, 1, On);
@@ -151,7 +165,7 @@ public sealed class IdleReadBudgetTests : IDisposable
         Ticks(p, 1, On);
 
         Assert.Equal(before, _streamer.Seen.Count); // 계기 없는 재예열은 쉼
-        Assert.Single(_log.Lines, line => line.Contains("idle disk reads of drive D: paused", StringComparison.Ordinal) && line.Contains("reads started by a game or launcher are not limited", StringComparison.Ordinal));
+        Assert.Single(_log.Lines, line => line.Contains("idle disk reads of g on drive D: paused", StringComparison.Ordinal) && line.Contains("reads started by a game or launcher are not limited", StringComparison.Ordinal));
 
         Assert.True(p.Run(g, "trigger g.exe", ignoreCooldown: true).Ran); // 게임·런처 시작 예열은 상한과 무관
         Assert.Equal(before + 1, _streamer.Seen.Count);
@@ -161,7 +175,7 @@ public sealed class IdleReadBudgetTests : IDisposable
         Ticks(p, 1, On);
 
         Assert.Equal(before + 2, _streamer.Seen.Count); // 하루 뒤 창에서 빠져 다시 읽음
-        Assert.Contains(_log.Lines, line => line.Contains("idle disk reads of drive D: resumed", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, line => line.Contains("idle disk reads of g on drive D: resumed", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -169,7 +183,7 @@ public sealed class IdleReadBudgetTests : IDisposable
     {
         GameSettings g = Game();
         Prewarmer p = StartedAndDue(On, g);
-        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 9 * Gib);
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 9 * Gib, g.Name);
         int before = _streamer.Seen.Count;
 
         p.NoteGameExit(); // 게임이 끝남: 점검을 앞당김
@@ -193,7 +207,7 @@ public sealed class IdleReadBudgetTests : IDisposable
         Prewarmer p = Make(NoRewarm with { StartupWarmMaxMib = 40 }, g);
         Assert.True(Assert.Single(p.RunServiceStart()).Ran);
         Assert.True(p.SupplementPending("g"));
-        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 9 * Gib);
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 9 * Gib, g.Name);
 
         Ticks(p, 6, NoRewarm);
 
@@ -213,7 +227,7 @@ public sealed class IdleReadBudgetTests : IDisposable
     {
         GameSettings g = Game();
         Prewarmer p = Make(NoRewarm with { StartupWarmMaxMib = 40 }, g);
-        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 9 * Gib); // 상한을 넘은 채로 시작
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 9 * Gib, g.Name); // 상한을 넘은 채로 시작
 
         Assert.True(Assert.Single(p.RunServiceStart()).Ran); // 서비스 시작 예열은 상한 밖
 
@@ -222,23 +236,183 @@ public sealed class IdleReadBudgetTests : IDisposable
     }
 
     [Fact]
-    public void TheBudgetIsSpentOnTheMostRecentlyPlayedGameFirst()
+    public void TheChecksGoThroughTheMostRecentlyPlayedGameFirst()
     {
-        _zoneMib = 600;
-        _streamer.ReadMib = 600;
         GameSettings a = Game("a");
         GameSettings b = Game("b");
         GameSettings c = Game("c");
-        AutoSettings auto = On with { IdleReadGibPerDay = 1 }; // 1 GiB: 두 번째 재예열에서 넘음
-        Prewarmer p = StartedAndDue(auto, a, b, c);
+        Prewarmer p = StartedAndDue(On, a, b, c);
         DateTimeOffset played = _now;
         p.LastPlayedAt = name => name switch { "c" => played, "a" => played - TimeSpan.FromHours(1), "b" => played - TimeSpan.FromHours(2), _ => null };
         int before = _streamer.Seen.Count;
 
-        Ticks(p, 1, auto);
+        Ticks(p, 1, On);
 
-        Assert.Equal(["c", "a"], _streamer.Seen.Skip(before).Select(g => g.Name)); // 가장 오래전에 플레이한 b 는 상한에 막힘
-        Assert.True(Used(p, ReadPurpose.Idle) >= 1 * Gib);
+        Assert.Equal(["c", "a", "b"], _streamer.Seen.Skip(before).Select(g => g.Name));
+    }
+
+    [Fact]
+    public void OneGameReadingOverAndOverCannotUseTheShareOfAnotherGameOnTheDrive()
+    {
+        _zoneMib = 600;
+        GameSettings a = Game("a");
+        GameSettings b = Game("b");
+        AutoSettings auto = On with { IdleReadGibPerDay = 1 }; // 1 GiB 를 두 목록 크기에 비례해 나눔: 게임마다 512 MiB
+        Prewarmer p = Make(auto, a, b);
+
+        Assert.Equal(512 * Mib, p.IdleReadShare(a));
+        for (int i = 0; i < 3; i++)
+        {
+            p.DiskReads.Add(a.OriginRoot, ReadPurpose.Idle, 400 * Mib, a.Name);
+            Assert.Equal(i >= 1, p.IdleReadsExhausted(a)); // 400 MiB 는 몫 안, 800 MiB 부터 a 의 몫을 넘음
+        }
+
+        Assert.True(Used(p, ReadPurpose.Idle) > 1 * Gib); // 드라이브 합계는 이미 상한을 넘었지만
+        Assert.False(p.IdleReadsExhausted(b)); // b 의 몫은 그대로 남음
+        Assert.Contains(_log.Lines, line => line.Contains("idle disk reads of a on drive D: paused", StringComparison.Ordinal));
+        Assert.DoesNotContain(_log.Lines, line => line.Contains("idle disk reads of b on drive D: paused", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ACacheHitStreamCountsAlmostNothingAndADiskReadCountsWhatTheDiskRead()
+    {
+        _streamer.DiskMib = 0; // 100 MiB 를 받아들였지만 디스크는 읽지 않음 (메모리에 있던 것)
+        Prewarmer p = StartedAndDue(On, Game());
+
+        Ticks(p, 1, On);
+
+        Assert.Equal(2, _streamer.Seen.Count);
+        Assert.Equal(8 * Mib, Used(p, ReadPurpose.Idle)); // 느린 표본 8 곳뿐, 스트림은 0
+        Assert.Equal(0, Used(p, ReadPurpose.Trigger)); // 시작 예열도 메모리에 있던 것이라 0
+
+        _streamer.DiskMib = 40;
+        _now += TimeSpan.FromMinutes(11);
+        Ticks(p, 1, On);
+
+        Assert.Equal(3, _streamer.Seen.Count);
+        Assert.Equal(8 * Mib + 8 * Mib + 40 * Mib, Used(p, ReadPurpose.Idle)); // 디스크가 읽은 40 MiB 만큼
+    }
+
+    [Fact]
+    public void WithoutTheDiskCounterTheReadTimeTimesTheSequentialCeilingBoundsWhatIsCounted()
+    {
+        _counterWorks = false;
+        _streamer.Seconds = 0.2; // 250 MB/s x 0.2 s = 50 MiB
+        Prewarmer p = StartedAndDue(On, Game());
+
+        Ticks(p, 1, On);
+
+        Assert.Equal(8 * Mib + 50 * Mib, Used(p, ReadPurpose.Idle)); // 받아들인 100 MiB 가 아니라 시간으로 자른 값
+        Assert.Equal(50 * Mib, Used(p, ReadPurpose.Trigger));
+    }
+
+    [Fact]
+    public void TheCountedBytesAreTheSmallerOfTheAcceptedBytesAndTheDiskIncreaseThenTheTimeBoundThenTheAcceptedBytes()
+    {
+        Assert.Equal(30 * Mib, Prewarmer.CountedDiskBytes(100 * Mib, 5, 30 * Mib, 250)); // 디스크 증가분이 더 작음
+        Assert.Equal(100 * Mib, Prewarmer.CountedDiskBytes(100 * Mib, 5, 900 * Mib, 250)); // 다른 프로그램이 읽어 더 커도 받아들인 바이트를 넘지 않음
+        Assert.Equal(0, Prewarmer.CountedDiskBytes(100 * Mib, 5, 0, 250)); // 캐시 적중뿐
+        Assert.Equal(0, Prewarmer.CountedDiskBytes(100 * Mib, 5, -1, 250)); // 카운터가 되돌아갔으면 0 으로 자름
+        Assert.Equal(50 * Mib, Prewarmer.CountedDiskBytes(100 * Mib, 0.2, null, 250)); // 카운터가 없으면 시간 x 순차 상한
+        Assert.Equal(100 * Mib, Prewarmer.CountedDiskBytes(100 * Mib, 9, null, 250)); // 시간 기준이 더 커도 받아들인 바이트까지
+        Assert.Equal(100 * Mib, Prewarmer.CountedDiskBytes(100 * Mib, double.NaN, null, 250)); // 시간도 모르면 받아들인 바이트
+    }
+
+    [Fact]
+    public void ServiceRestartsThatReadWhatIsAlreadyInMemoryDoNotFillTheLimit()
+    {
+        _streamer.DiskMib = 0;
+        GameSettings g = Game();
+        for (int restart = 0; restart < 10; restart++)
+        {
+            Prewarmer p = Make(On, g);
+            p.RunServiceStart();
+            Ticks(p, 3, On);
+        }
+
+        Prewarmer last = Make(On, g);
+        Assert.Equal(0, Used(last, ReadPurpose.Idle));
+        Assert.Equal(0, Used(last, ReadPurpose.Trigger)); // 계기 있는 읽기이지만 캐시에 있던 것은 세어지지 않음
+        Assert.False(last.IdleReadsExhausted(g));
+    }
+
+    [Fact]
+    public void ARetryFromTheWaitingListOfAnIdleRewarmFollowsTheLimitButARetryOfARequestDoesNot()
+    {
+        GameSettings g = Game();
+        Prewarmer p = StartedAndDue(On, g);
+        p.WarmRank = list => list; // 대기 재시도는 예열 예산 배정이 있어야 함
+        _avail = 100; // 메모리가 모자라 계기 없는 재예열이 읽지 못하고 대기 목록으로 넘어감
+        Ticks(p, 1, On);
+        Assert.True(p.HasPendingWarm("g"));
+        int before = _streamer.Seen.Count;
+
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 9 * Gib, g.Name); // 상한 초과
+        _avail = 16000;
+        _now += TimeSpan.FromMinutes(30);
+        Ticks(p, 6, NoRewarm);
+
+        Assert.Equal(before, _streamer.Seen.Count); // 상한에 막혀 재시도하지 않음
+        Assert.True(p.HasPendingWarm("g"));
+
+        _now += TimeSpan.FromHours(25);
+        Ticks(p, 6, NoRewarm);
+
+        Assert.True(_streamer.Seen.Count > before); // 창에서 빠져 재시도함
+
+        // 계기 있는 요청 (게임 시작 예열) 이 실패해 넘어간 재시도는 상한 밖
+        Prewarmer second = Make(On, g);
+        second.WarmRank = list => list;
+        second.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 9 * Gib, g.Name);
+        _avail = 100;
+        Assert.False(second.Run(g, "trigger g.exe", ignoreCooldown: true).Ran);
+        Assert.True(second.HasPendingWarm("g"));
+        _avail = 16000;
+        int seen = _streamer.Seen.Count;
+        _now += TimeSpan.FromMinutes(30);
+        Ticks(second, 6, NoRewarm);
+
+        Assert.True(_streamer.Seen.Count > seen);
+    }
+
+    [Fact]
+    public void ThePrewarmAfterARelocationFollowsTheLimitAndIsCountedAsIdle()
+    {
+        GameSettings g = Game();
+        Prewarmer p = Make(On, g);
+        Assert.True(p.Guarded(g, "auto after relocation", pin: true, ignoreCooldown: true).Ran);
+        Assert.Equal(100 * Mib, Used(p, ReadPurpose.Idle));
+        Assert.Equal(0, Used(p, ReadPurpose.Trigger));
+
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 9 * Gib, g.Name);
+        int before = _streamer.Seen.Count;
+        PrewarmResult limited = p.Guarded(g, "auto after relocation", pin: true, ignoreCooldown: true);
+
+        Assert.False(limited.Ran);
+        Assert.Equal(Prewarmer.IdleReadLimit, limited.SkipReason);
+        Assert.Equal(before, _streamer.Seen.Count);
+        Assert.False(p.HasPendingWarm("g")); // 다음 게임·런처 시작의 예열이 채움
+        Assert.True(p.Run(g, "trigger g.exe", ignoreCooldown: true).Ran); // 그 예열은 상한 밖
+    }
+
+    [Fact]
+    public void TheCheckAfterAGameExitStillRunsWhenTheFirstOneWasBlockedByABusyDrive()
+    {
+        GameSettings g = Game();
+        Prewarmer p = StartedAndDue(On, g);
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 9 * Gib, g.Name);
+        int before = _streamer.Seen.Count;
+        p.NoteGameExit();
+        _disk = 50 << 20; // 드라이브가 바쁨
+        _now += TimeSpan.FromMinutes(4);
+        Ticks(p, 1, On);
+        Assert.Equal(before, _streamer.Seen.Count); // 막혀서 읽지 못함
+
+        _disk = 0;
+        _now += TimeSpan.FromMinutes(11);
+        Ticks(p, 1, On);
+
+        Assert.Equal(before + 1, _streamer.Seen.Count); // 표시가 사라지지 않고 다음 점검이 계기 있는 읽기로 돎
     }
 
     [Fact]
@@ -246,11 +420,12 @@ public sealed class IdleReadBudgetTests : IDisposable
     {
         GameSettings g = Game();
         Prewarmer first = Make(On, g);
-        first.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 300 * Mib); // 64 MiB 이상이라 바로 상태 파일에 씀
+        first.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 300 * Mib, g.Name); // 64 MiB 이상이라 바로 상태 파일에 씀
 
         Assert.Contains("disk_reads", File.ReadAllText(StatusPath), StringComparison.Ordinal);
         Prewarmer second = Make(On, g);
         Assert.Equal(300 * Mib, Used(second, ReadPurpose.Idle));
+        Assert.Equal(300 * Mib, second.DiskReads.Used(g.OriginRoot, ReadPurpose.Idle, g.Name).Bytes); // 게임별 몫도 이어짐
 
         _now -= TimeSpan.FromHours(10);
         Assert.Equal(300 * Mib, Used(second, ReadPurpose.Idle));

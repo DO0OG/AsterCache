@@ -81,12 +81,18 @@ public sealed partial class Prewarmer
 
         lock (_gate)
         {
+            bool idle = DiskReadLedger.Current == ReadPurpose.Idle;
             if (_pendingWarm.TryGetValue(game.Name, out PendingWarm? current) && (current.RetryAt > at || current.TriggerExe is not null))
             {
+                if (current.IdleOrigin && !idle)
+                {
+                    _pendingWarm[game.Name] = current with { IdleOrigin = false }; // 계기 있는 요청도 실패했으면 그 재시도는 상한 밖
+                }
+
                 return; // 재시도 기한 전에 다른 경로가 실패해도 기한을 뒤로 밀지 않음, 당겨 둔 트리거 재시도 표시도 지우지 않음
             }
 
-            _pendingWarm[game.Name] = new(at + PendingWarmRetryDelay(), reason ?? "unsuccessful warm");
+            _pendingWarm[game.Name] = new(at + PendingWarmRetryDelay(), reason ?? "unsuccessful warm", IdleOrigin: idle);
             _pendingWarmBudgetSkipped.Remove(game.Name); // 다른 사유로 새로 잡힌 기한은 예산 회복으로 앞당기지 않음
         }
     }
@@ -154,6 +160,18 @@ public sealed partial class Prewarmer
 
     private bool RetryPendingWarmWhenIdle(GameSettings game, CancellationToken ct)
     {
+        bool idleOrigin;
+        lock (_gate)
+        {
+            idleOrigin = _pendingWarm.TryGetValue(game.Name, out PendingWarm? origin) && origin.IdleOrigin;
+        }
+
+        using IDisposable? scope = idleOrigin ? DiskReadLedger.Scope(ReadPurpose.Idle) : null; // 계기 없는 재예열이 실패해 넘어온 재시도는 같은 하루 상한을 따름 (계기 있는 요청의 재시도는 상한 밖)
+        if (idleOrigin && IdleReadsExhausted(game))
+        {
+            return false;
+        }
+
         if (!PendingWarmCanRead(game, ct))
         {
             ResetIdleSinceForGame(game.Name);

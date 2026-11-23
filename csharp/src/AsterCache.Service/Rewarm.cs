@@ -127,22 +127,26 @@ public sealed partial class Rewarmer
         if (_prewarm.Games.Any(g => _prewarm.Relocating(g.Name)))
         {
             _log.Info("rewarm check skipped: a relocation is running");
+            KeepAfterExit(afterExit);
             return;
         }
 
         var budget = _prewarm.WarmBudget(); // 순위가 있으면 예산 안에 드는 게임만 점검 (순위가 바뀌면 다음 점검에서 대상도 바뀜)
         DateTimeOffset? nextGateDue = null;
+        bool ranCheck = false; // 이 틱에서 Check 까지 간 게임이 있는가
         foreach (GameSettings g in warmed.OrderByDescending(g => _prewarm.PlayedAt(g.Name))) // 하루 읽기 예산은 가장 최근에 플레이한 게임부터 씀
         {
             if (ct.IsCancellationRequested)
             {
                 _log.Info("rewarm check stopped: a game started");
+                KeepAfterExit(afterExit && !ranCheck);
                 return;
             }
 
             if (_prewarm.Games.Any(x => _prewarm.Relocating(x.Name)))
             {
                 _log.Info("rewarm check stopped: a relocation started"); // 점검 주기는 이미 넘어가 있어 다음 주기에 다시 봄
+                KeepAfterExit(afterExit && !ranCheck);
                 return;
             }
 
@@ -167,8 +171,11 @@ public sealed partial class Rewarmer
                 continue; // 이 드라이브의 계기 없는 읽기가 하루 상한에 닿음 (로그는 쉬기 시작할 때 한 번): 표본도 읽지 않고 다음 점검에 다시 봄
             }
 
+            ranCheck = true;
             NoteColdRun(g.Name, Check(g, ct, RoomOf(g, budget), auto, now), auto, now);
         }
+
+        KeepAfterExit(afterExit && warmed.Count > 0 && (!ranCheck || nextGateDue is not null)); // 읽지 못하고 막혔거나 종료 직후 유예에 막힌 게임이 남았으면 게임 종료 점검은 다음 가능한 때로 이어짐
 
         if (nextGateDue is { } due)
         {
@@ -178,8 +185,18 @@ public sealed partial class Rewarmer
                 {
                     _next = due;
                 }
+            }
+        }
+    }
 
-                _afterExitDue |= afterExit; // 게이트 (종료 직후 유예) 에 막혀 읽지 못했으면 게임 종료 점검은 그 게이트가 풀린 뒤로 이어짐
+    // 게임 종료로 당긴 점검이 읽지 못하고 끝났으면 표시를 되살려 다음 점검도 계기 있는 읽기로 돌게 함.
+    private void KeepAfterExit(bool keep)
+    {
+        if (keep)
+        {
+            lock (_nextLock)
+            {
+                _afterExitDue = true;
             }
         }
     }

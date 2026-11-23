@@ -612,6 +612,43 @@ public sealed class KeepHoldTests
         Assert.Contains(_log.Lines, l => l.Contains("a: cache kept while playing (a.exe): 48 MiB of 48 MiB in memory") && l.Contains("0 new missing stretches remembered"));
     }
 
+    [Fact]
+    public void SparseRangesAheadInTheImportanceOrderDoNotEatTheByteLimitOfTheRememberingTouching()
+    {
+        _keepHold = false;
+        ReadOp[] gib = [.. Enumerable.Range(0, 12).Select(i => Op(30 + i, 0, 1024))];
+        _sparse.Add(F(30));
+        _sparse.Add(F(31));
+        _sparse.Add(F(32)); // 중요한 순서 앞쪽의 스파스 범위 3 GiB: 만지지 않으므로 가용 메모리의 절반 (10,000 MiB) 상한을 먹으면 안 됨
+        Prewarmer p = Make(gib);
+        RunFor(20);
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        List<ReadOp> looked = [.. _findCalls.SelectMany(r => r)]; // 회차가 확인하려고 넘긴 범위 (자른 뒤의 목록)
+        Assert.NotEmpty(looked);
+        Assert.DoesNotContain(looked, o => _sparse.Contains(o.Path));
+        Assert.True(looked.Max(o => o.Offset + o.Length) > 0 && looked.Select(o => o.Path).Distinct().Count() >= 9, $"{looked.Select(o => o.Path).Distinct().Count()} ordinary files looked at");
+    }
+
+    [Fact]
+    public void TheReuseThresholdListSizeKeepsTheSparseRangesSoTheRememberingTouchingRunsAsOftenAsBeforeAndTheTouchedTargetsLeaveThemOut()
+    {
+        _keepHold = false;
+        _sparse.Add(F(3));
+        Prewarmer p = Make(Reads); // 8 MiB 범위 여섯 개 (48 MiB) 가운데 파일 3 (8 MiB) 이 스파스
+        Type listType = typeof(Prewarmer).GetNestedType("KeepList", BindingFlags.NonPublic)!;
+        object list = Activator.CreateInstance(listType)!;
+
+        bool ok = (bool)typeof(Prewarmer).GetMethod("RefreshKeepList", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(p, [Game("a"), list])!;
+
+        Assert.True(ok);
+        Assert.Equal(48 * Mib, (long)listType.GetField("Bytes")!.GetValue(list)!); // 재사용 문턱을 정하는 목록 크기는 스파스 범위도 포함 (이 변경 전과 같음)
+        var touchable = (IReadOnlyList<ReadOp>)listType.GetField("Touchable")!.GetValue(list)!;
+        Assert.Equal(40 * Mib, touchable.Sum(o => o.Length)); // 만질 대상은 스파스를 뺀 목록
+        Assert.DoesNotContain(touchable, o => o.Path == F(3));
+    }
+
     // ---- 하한·내놓기·점검 ----
 
     [Fact]
@@ -1377,6 +1414,10 @@ public sealed class KeepHoldTests
         Assert.False(ParseMemory("""{"keep_hold_written_files":false}""").KeepHoldWrittenFiles);
         Assert.True(ParseMemory("""{"keep_hold_written_files":false}""").KeepHold); // 서로 독립
         Assert.Throws<SettingsException>(() => ParseMemory("""{"keep_hold_written_files":1}"""));
+        Assert.True(ParseMemory("{}").KeepSparse); // 기본 켜짐
+        Assert.False(ParseMemory("""{"keep_sparse":false}""").KeepSparse);
+        Assert.True(ParseMemory("""{"keep_sparse":false}""").KeepHold); // 서로 독립
+        Assert.Throws<SettingsException>(() => ParseMemory("""{"keep_sparse":"no"}"""));
     }
 
     private static MemorySettings ParseMemory(string memory)

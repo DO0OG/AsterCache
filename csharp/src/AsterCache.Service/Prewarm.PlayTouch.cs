@@ -102,9 +102,19 @@ public sealed partial class Prewarmer
         string? lastSkip = null;
         string? lastHoldSkip = null;
         string ended = string.Empty; // 끝 줄에 붙일 사유
+        CancellationTokenSource? sparseStop = null;
+        Task? sparse = null;
         try
         {
             CancellationToken stop = _playStop.Token;
+            if (_env.KeepSparseEnabled() && _env.OpenBlockReader is not null)
+            {
+                // 스파스 파일 블록은 붙들기·다시 만지기가 못 다루므로 (매핑하면 캐시가 버려짐) 같은 게임이 실행되는 동안 곁 스레드가 버퍼드 읽기로 유지합니다 (Prewarm.PlaySparse): 게임이 붙들기로 돌든 다시 만지기로 돌든 같음
+                sparseStop = CancellationTokenSource.CreateLinkedTokenSource(stop);
+                CancellationToken sparseToken = sparseStop.Token;
+                sparse = Task.Run(() => KeepSparseWhilePlaying(started, exe, sparseToken), CancellationToken.None);
+            }
+
             // 유지 목록을 뷰로 붙들 수 있으면 (memory.keep_hold, Prewarm.PlayHold) 게임이 끝날 때까지 거기서 돌고, 붙들 수 없는 게임은 아래의 다시 만지기로 남음 (일시적 사유면 주기마다 다시 시도)
             HoldOutcome held = memory.Finished ? HoldOutcome.Done : _env.KeepHoldEnabled() ? HoldWhilePlaying(started, exe, keep, ref lastHoldSkip) : HoldOutcome.No; // 빠진 범위가 대부분이라 끝낸 플레이는 다른 실행 파일이 떠도 다시 시작하지 않음
             memory.HoldWaiting = held == HoldOutcome.Retry;
@@ -180,6 +190,22 @@ public sealed partial class Prewarmer
         }
         finally
         {
+            sparseStop?.Cancel();
+            bool sparseDone = true;
+            try
+            {
+                sparseDone = sparse?.Wait(SparseJoinWait) ?? true; // 곁 스레드는 예외를 스스로 잡아 끝내므로 오류는 오지 않음
+            }
+            catch (AggregateException)
+            {
+                // 이미 끝난 스레드의 오류 (위 설명대로 오지 않음): 유지를 끝내는 데 영향 없음
+            }
+
+            if (sparseDone)
+            {
+                sparseStop?.Dispose(); // 아직 도는 스레드의 토큰을 닫지 않도록 끝난 때만
+            }
+
             lock (_gate)
             {
                 _ = _playTouching.Remove(started.Name);
@@ -218,7 +244,15 @@ public sealed partial class Prewarmer
         public string? Stamp; // 목록을 만든 때의 입력 표지 (null: 표지를 읽지 못해 재사용하지 않음)
         public IReadOnlyList<ReadOp> All = []; // 사다리 대상 (읽은 순서)
         public IReadOnlyList<ReadOp> Ordered = []; // All 의 중요도 순서 (순위 목록이 없으면 All 과 같은 객체)
+        public IReadOnlyList<ReadOp> Touchable = []; // Ordered 에서 스파스 파일 범위를 뺀 것: 다시 만지기는 스파스를 건너뛰므로 바이트 상한 (Head) 을 먹지 않게 자르기 전에 뺌
         public long Bytes; // 목록의 크기 (재사용 문턱 계산용)
+    }
+
+    // 스파스 파일 범위를 뺍니다 (파일마다 속성을 한 번만 물음): 매핑으로 만지는 일은 스파스 파일을 건너뛰므로 만질 목록의 바이트 상한을 먹지 않게 합니다.
+    private IReadOnlyList<ReadOp> WithoutSparse(IReadOnlyList<ReadOp> ops)
+    {
+        var sparse = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        return [.. ops.Where(o => !(sparse.TryGetValue(o.Path, out bool s) ? s : sparse[o.Path] = _env.IsSparse(o.Path)))];
     }
 
     // 유지 목록이 있으면 입력이 바뀌지 않았는지 보고 (메타데이터 조회뿐), 없거나 바뀌었으면 새로 계산합니다. 계획할 수 없으면 false.
@@ -240,7 +274,8 @@ public sealed partial class Prewarmer
         keep.Stamp = stamp;
         keep.All = all;
         keep.Ordered = _solar.ImportanceOrder(game, all);
-        keep.Bytes = keep.Ordered.Sum(o => o.Length);
+        keep.Touchable = WithoutSparse(keep.Ordered);
+        keep.Bytes = keep.Ordered.Sum(o => o.Length); // 재사용 문턱의 목록 크기: 스파스 범위도 포함 (대기 목록에 같이 남으므로 이 변경 전과 같은 값, 다시 만지기의 주기를 바꾸지 않음)
         return true;
     }
 
@@ -283,7 +318,7 @@ public sealed partial class Prewarmer
         }
 
         long cap = (long)(availMib * PlayTouchAvailableFraction) << 20;
-        IReadOnlyList<ReadOp> reads = PrefetchStreamer.Head(keep.Ordered, cap); // 목록 앞쪽 (가장 중요한 부분) 만
+        IReadOnlyList<ReadOp> reads = PrefetchStreamer.Head(keep.Touchable, cap); // 목록 앞쪽 (가장 중요한 부분) 만
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "play touch", default, game.OriginRoot, allowWhileYielded: true, preserveGameKey: game.Name);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
         {

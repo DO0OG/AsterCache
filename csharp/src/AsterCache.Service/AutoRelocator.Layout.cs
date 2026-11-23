@@ -21,7 +21,8 @@ public sealed partial class AutoRelocator
     private readonly HashSet<string> _layoutChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 예전 범위 계획의 통째 배치 이행을 이미 따져 본 게임 (서비스 실행당 한 번)
     private readonly Dictionary<string, DateTimeOffset> _layoutRetryAt = new(StringComparer.Ordinal); // 틱 스레드에서만 씀: 이행을 지금은 못 한 게임과 다시 시도할 시각
 
-    private static bool WholeLayout(AsterSettings s) => s.Auto.RelocateLayout == RelocateLayouts.WholeFile;
+    // 이 게임의 재배치 방식이 통째 배치인가: 게임별 layout 이 전역 auto.relocate_layout 보다 우선 (GamePolicy.RelocateLayout). 방식을 읽는 곳은 모두 이 함수를 거침.
+    private static bool WholeLayout(GameSettings g, AsterSettings s) => GamePolicy.RelocateLayout(g, s.Auto) == RelocateLayouts.WholeFile;
 
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _wholeNone = new(StringComparer.Ordinal); // 통째로 놓을 파일이 없어 옮기지 않기로 한 게임 (이행에서 예전 범위 계획을 그대로 둔 것): 정기 재적용을 쉼, 서비스 실행마다 다시 따짐
 
@@ -33,7 +34,7 @@ public sealed partial class AutoRelocator
         {
             long budget = BudgetBytes(s, g);
             PlanFile built = make(sessions, g.OriginRoot, zoneMib, MaxZoneMib(s, g), budget > 0 ? budget : long.MaxValue, at, used);
-            if (WholeFileLayout.WholeFiles(built) is { Count: 0 })
+            if (WholeFileLayout.WholeFiles(built) is not null && !WholeFileLayout.HasPlacements(built))
             {
                 _log.Info($"{g.Name}: {NoWholeFiles}");
             }
@@ -48,7 +49,7 @@ public sealed partial class AutoRelocator
         return at is { } lcn ? _env.MakePlanAt!(sessions, g.OriginRoot, zoneMib, lcn, used) : _env.MakePlan(sessions, g.OriginRoot, zoneMib);
     }
 
-    // 통째 계획 요약 한 줄: zone 에 놓는 파일 수·바이트, 제자리 파일 수·핫 바이트 (사유별), zone 길이, 한도 때문에 제자리로 돌린 파일 수.
+    // 통째 계획 요약 한 줄: zone 에 놓는 파일 수·바이트, 제자리 파일 수·핫 바이트 (사유별), zone 길이, 한도 때문에 제자리로 돌린 파일 수, 큰 조각 수·바이트.
     private void LogWholePlan(GameSettings g, PlanFile plan, long capacityMib)
     {
         if (WholeFileLayout.WholeFiles(plan) is not { } files)
@@ -63,7 +64,14 @@ public sealed partial class AutoRelocator
         long full = reasons.TryGetValue(WholeFileLayout.ZoneFullReason, out object? z) && z is long zn ? zn : 0;
         long hotInPlace = plan.Stats.TryGetValue("overflow_bytes", out object? o) && o is long ob ? ob : 0;
         _log.Info($"{g.Name}: whole-file plan, {files.Count} file(s) {wholeBytes >> 20} MiB placed in the zone, {inPlace} file(s) {hotInPlace >> 20} MiB hot left in place ({Reasons(reasons)}), "
-            + $"zone {(plan.Stats.TryGetValue("zone_used_clusters", out object? used) && used is long u ? u : 0) * plan.ClusterBytes >> 20} MiB of {capacityMib} MiB, {full} file(s) left in place because of the zone limit");
+            + $"zone {(plan.Stats.TryGetValue("zone_used_clusters", out object? used) && used is long u ? u : 0) * plan.ClusterBytes >> 20} MiB of {capacityMib} MiB, {full} file(s) left in place because of the zone limit, {LargePieceNote(plan)}");
+    }
+
+    // 큰 조각 배치로 zone 에 놓은 구간의 수와 바이트 (로그 한 토막).
+    private static string LargePieceNote(PlanFile plan)
+    {
+        IReadOnlyList<(string Path, long Vcn, long Clusters, long? Offset)> pieces = WholeFileLayout.LargePieces(plan);
+        return $"{pieces.Count} large piece(s) {pieces.Sum(p => p.Clusters) * plan.ClusterBytes >> 20} MiB placed in the zone";
     }
 
     private static string Reasons(JObject reasons) => reasons.Count == 0 ? "none" : string.Join(", ", reasons.Select(kv => $"{kv.Key} {kv.Value}"));
@@ -73,7 +81,7 @@ public sealed partial class AutoRelocator
     // 게임이 실행 중이거나 회복·확장 중이면 건드리지 않고 다음 틱에 다시 따짐. 예열은 계획의 order 와 지금 위치로 하므로 이행 중에도 평소처럼 동작합니다.
     private void ReplanLegacyLayout(AsterSettings s)
     {
-        if (!WholeLayout(s) || !(s.Auto.Relocate && s.Auto.MaxRelocationsPerDay > 0) || _env.SwitchPlan is null)
+        if (!(s.Auto.Relocate && s.Auto.MaxRelocationsPerDay > 0) || _env.SwitchPlan is null || !s.Games.Any(g => WholeLayout(g, s)))
         {
             return;
         }
@@ -81,7 +89,7 @@ public sealed partial class AutoRelocator
         IReadOnlyDictionary<string, DateTimeOffset> played = _status.LastPlayed();
         foreach (GameSettings g in s.Games.OrderByDescending(g => played.GetValueOrDefault(g.Name, DateTimeOffset.MinValue)).ThenBy(g => g.Name, StringComparer.Ordinal))
         {
-            if (!HeavyWorkAllowed(g) || !GamePolicy.AllowsRelocate(g) || _status.Get(g.Name) is not { Stage: AutoStage.Done, RelocatedAt: not null } entry
+            if (!WholeLayout(g, s) || !HeavyWorkAllowed(g) || !GamePolicy.AllowsRelocate(g) || _status.Get(g.Name) is not { Stage: AutoStage.Done, RelocatedAt: not null } entry
                 || entry.Detail?.StartsWith(StalePlanDetail, StringComparison.Ordinal) == true || _planFailedAt.ContainsKey(g.Name)
                 || !_env.FileExists(g.Plan) || IsExtending(g) || _env.FileExists(g.Plan + StaleSuffix) || _env.FileExists(g.Plan + PlanSwitch.RecordSuffix)
                 || AutoTracer.PlanTracePath(g, _env.FileExists) is null // 트레이스가 없으면 자동 재배치가 이 게임을 집지 못해 이행이 끝나지 않음
@@ -207,7 +215,7 @@ public sealed partial class AutoRelocator
             }
         }
 
-        if (WholeFileLayout.WholeFiles(built) is not { Count: > 0 })
+        if (!WholeFileLayout.HasPlacements(built))
         {
             _log.Info($"{g.Name}: {NoWholeFiles}; the plan already applied is left as it is");
             _wholeNone[g.Name] = 0; // 계획을 바꾸지도 되돌리지도 않고, 재적용·잔여 재계획만 하지 않음
@@ -226,7 +234,7 @@ public sealed partial class AutoRelocator
         JObject reasons = built.Stats.TryGetValue(WholeFileLayout.InPlaceFilesKey, out object? raw) && raw is JObject r ? r : new JObject();
         long moveBytes = built.Tasks.Sum(t => t.Clusters) * built.ClusterBytes;
         _log.Info($"{g.Name}: plan rebuilt for whole-file placement, {files.Count} file(s) {wholeBytes >> 20} MiB whole, {reasons.Sum(kv => kv.Value is long n ? n : 0)} left in place ({Reasons(reasons)}), "
-            + $"{moveBytes >> 20} MiB to move; old zone pieces of in-place files stay where they are");
+            + $"{moveBytes >> 20} MiB to move; old zone pieces of in-place files stay where they are, {LargePieceNote(built)}");
     }
 
     // 통째 계획의 이동 진행 한 줄 (회당 상한·하루 예산으로 멈췄을 때): 한 조각으로 놓인 파일 수, 남은 이동량.

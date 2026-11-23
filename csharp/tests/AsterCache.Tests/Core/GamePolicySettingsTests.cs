@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
 using Xunit;
 
@@ -80,6 +81,9 @@ public sealed class GamePolicySettingsTests : IDisposable
     [InlineData("game", "\"mode\":\"weird\"")]
     [InlineData("game", "\"mode\":1")]
     [InlineData("game", "\"paused\":\"yes\"")]
+    [InlineData("game", "\"layout\":\"weird\"")]
+    [InlineData("game", "\"layout\":1")]
+    [InlineData("game", "\"layout\":\"WHOLE_FILE\"")]
     [InlineData("auto", "\"start_stream_enabled\":1")]
     [InlineData("auto", "\"relocate_hours\":[24]")]
     [InlineData("auto", "\"relocate_hours\":[-1]")]
@@ -236,5 +240,40 @@ public sealed class GamePolicySettingsTests : IDisposable
         Assert.DoesNotContain("max_cache_mib", Text(editor), StringComparison.Ordinal);
         Assert.False(s.Games[1].Prewarm.OnServiceStart); // b 의 다른 prewarm 키는 남음
         Assert.Equal(1, Regex.Count(Text(editor), "\"prewarm\"")); // a 의 빈 prewarm 객체는 사라짐
+    }
+
+    [Fact]
+    public void AGameLayoutIsReadAndWinsOverTheGlobalSettingOnlyWhenItIsGiven()
+    {
+        Assert.Null(Parse().Games[0].Layout);
+        GameSettings whole = Parse(autoBody: "\"relocate_layout\":\"ranges\"", gameExtra: ",\"layout\":\"whole_file\"").Games[0];
+        GameSettings ranges = Parse(autoBody: "\"relocate_layout\":\"whole_file\"", gameExtra: ",\"layout\":\"ranges\"").Games[0];
+        AsterSettings inherit = Parse(autoBody: "\"relocate_layout\":\"whole_file\"");
+
+        Assert.Equal((RelocateLayouts.WholeFile, RelocateLayouts.Ranges), (whole.Layout, ranges.Layout));
+        Assert.Equal(RelocateLayouts.WholeFile, GamePolicy.RelocateLayout(whole, AutoSettings.Default with { RelocateLayout = RelocateLayouts.Ranges }));
+        Assert.Equal(RelocateLayouts.Ranges, GamePolicy.RelocateLayout(ranges, AutoSettings.Default with { RelocateLayout = RelocateLayouts.WholeFile }));
+        Assert.Equal(RelocateLayouts.WholeFile, GamePolicy.RelocateLayout(inherit.Games[0], inherit.Auto)); // 게임별 값이 없으면 전역
+        Assert.Equal(RelocateLayouts.Ranges, GamePolicy.RelocateLayout(Parse().Games[0], AutoSettings.Default)); // 둘 다 없으면 기본 ranges
+    }
+
+    [Fact]
+    public void SetGameLayoutWritesTheKeyAndNullRemovesItAndBadInputChangesNothing()
+    {
+        ConfigEditor editor = Editor();
+        string pristine = Text(editor);
+
+        editor.SetGameLayout("A", RelocateLayouts.WholeFile); // 이름은 대소문자 무시
+        Assert.Equal(RelocateLayouts.WholeFile, editor.Load()!.Games[0].Layout);
+        editor.SetGameLayout("a", RelocateLayouts.Ranges);
+        Assert.Equal(RelocateLayouts.Ranges, editor.Load()!.Games[0].Layout);
+
+        string before = Text(editor);
+        Assert.Throws<SettingsException>(() => editor.SetGameLayout("a", "weird"));
+        Assert.Throws<SettingsException>(() => editor.SetGameLayout("nope", RelocateLayouts.WholeFile));
+        Assert.Equal(before, Text(editor));
+
+        editor.SetGameLayout("a", null);
+        Assert.Equal(pristine, Text(editor)); // 지우면 키가 사라져 전역을 따름
     }
 }

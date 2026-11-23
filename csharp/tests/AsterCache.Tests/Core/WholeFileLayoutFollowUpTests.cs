@@ -291,6 +291,28 @@ public sealed class WholeFileLayoutFollowUpTests : ApplyTestBase
     }
 
     [Fact]
+    public void AFileIsNotContinuedPastAnUnstartedFilesEarlierTaskWhenTheBudgetStopsTheNewFile()
+    {
+        // 앞 시험과 같은 배치: F1 작업 둘 (0.75 MiB), F2 (1 MiB) 가 F1 뒤 작업의 목표를 차지. 쓰기 상한 1 MiB 라 F1 을 시작한 뒤 F2 는 예산이 모자라 시작하지 못함
+        Files[F1] = [new Extent(0, 1000, 64), new Extent(64, Zone + 64, 64), new Extent(128, 5000, 128)];
+        Vol.Ext[F1] = [new Extent(0, 1000, 64), new Extent(64, Zone + 64, 64), new Extent(128, 5000, 128)];
+        Files[F2] = [new Extent(0, Zone + 128, 256)];
+        Vol.Ext[F2] = [new Extent(0, Zone + 128, 256)];
+        PlanFile plan = Whole(Zone);
+
+        ApplyReport rep = Apply(plan, Exec(writeCap: Mib));
+
+        Assert.Empty(rep.Failed); // F1 뒤 작업을 F2 보다 먼저 이어 받으면 목표가 아직 F2 의 데이터라 target busy
+        Assert.Equal("write_cap", rep.Stopped);
+        Assert.Equal(Files[F2], Vol.Ext[F2]);
+
+        ApplyReport next = Apply(plan, Exec()); // 다음 회에 이어서 끝남
+        Assert.Empty(next.Failed);
+        Assert.Null(next.Stopped);
+        Assert.True(Verify(plan).Contiguous);
+    }
+
+    [Fact]
     public void ARangePlanIsNotAffectedByTheRaiseLimit()
     {
         PlanFile plan = Make().Resolve(20000);

@@ -55,6 +55,9 @@ public sealed record GameSettings(
     /// 참이면 Mode 와 무관하게 이 게임의 새 작업을 모두 멈춤 (config 의 paused, 없으면 false).
     public bool Paused { get; init; }
 
+    /// 이 게임의 재배치 방식 (config 의 layout: "whole_file" 또는 "ranges"). 없으면 null = 전역 auto.relocate_layout 을 따름. 읽을 때는 GamePolicy.RelocateLayout 으로.
+    public string? Layout { get; init; }
+
     /// 런처가 준 표시 이름 (선택, 화면에만 씀). 내부 키 Name 은 계획·저널·상태 파일명이라 바꾸지 않습니다.
     public string? DisplayName { get; init; }
 

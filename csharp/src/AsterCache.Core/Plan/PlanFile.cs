@@ -29,7 +29,8 @@ public sealed record PlanFile(
     public static PlanFile Make(IReadOnlyList<IReadOnlyList<TraceEvent>> sessions, string originRoot, long zoneBytes, long clusterBytes,
         Func<string, IReadOnlyList<Extent>?> extentsFn, Func<string, long>? sizeFn = null, Func<string, Fingerprint>? fingerprintFn = null,
         long? zoneStartLcn = null, long block = HotSet.Block, int minSessions = 1, long preserveBytes = 0, long alignClusters = 4, long fixedClusters = 0,
-        Func<string, bool>? sparseFn = null, long capacityBytes = 0, Func<string, bool>? unmovableFn = null, long maxFileBytes = long.MaxValue)
+        Func<string, bool>? sparseFn = null, long capacityBytes = 0, Func<string, bool>? unmovableFn = null, long maxFileBytes = long.MaxValue,
+        long largePieceMinBytes = WholeFileLayout.LargePieceMinBytes)
     {
         sizeFn ??= p => new FileInfo(p).Length;
         fingerprintFn ??= FingerprintOf;
@@ -43,15 +44,16 @@ public sealed record PlanFile(
         long zc = zoneBytes / clusterBytes;
         IReadOnlyList<FileDecision>? decisions = null;
         IReadOnlyDictionary<string, long>? offsets = null;
+        IReadOnlyDictionary<(string Path, long Vcn), long>? pieceOffsets = null;
         AllocResult alloc;
         if (capacityBytes > 0)
         {
             // 통째 배치: zone.clusters 는 핫 예산 기준 길이 그대로 두고, 통째 파일이 쓸 수 있는 길이만 capacityBytes 로 따로 받음 (예열 예산이 함께 늘지 않게)
             (List<PlanRange> hotOrder, int skippedFiles) = ZoneAllocator.HotRanges(units, ext, clusterBytes, block, sizes, sparsePaths);
             List<FileDecision> classified = WholeFileLayout.Classify(hotOrder, sizes, clusterBytes, capacityBytes / clusterBytes,
-                p => WholeFileLayout.InPlaceReason(p, ext[p], sizes[p], clusterBytes, sparsePaths.Contains(p), unmovableFn), maxFileBytes);
+                p => WholeFileLayout.InPlaceReason(p, ext[p], sizes[p], clusterBytes, sparsePaths.Contains(p), unmovableFn), maxFileBytes, largePieceMinBytes: largePieceMinBytes, sparse: sparsePaths.Contains);
             WholePlan whole = WholeFileLayout.Allocate(hotOrder, classified, ext, zoneStartLcn, clusterBytes, fixedClusters, sparsePaths, skippedFiles, alignClusters);
-            (alloc, decisions, offsets) = (whole.Alloc, whole.Decisions, whole.Offsets);
+            (alloc, decisions, offsets, pieceOffsets) = (whole.Alloc, whole.Decisions, whole.Offsets, whole.PieceOffsets);
         }
         else
         {
@@ -76,7 +78,7 @@ public sealed record PlanFile(
         JObject stats = alloc.Stats.ToJson();
         if (decisions is not null)
         {
-            WholeFileLayout.AddStats(stats, decisions, offsets);
+            WholeFileLayout.AddStats(stats, decisions, offsets, pieceOffsets);
         }
 
         stats.Add("hot_blocks", (long)hot.Count);

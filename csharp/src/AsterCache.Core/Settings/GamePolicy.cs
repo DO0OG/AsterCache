@@ -9,6 +9,9 @@ public static class GamePolicy
     /// 재배치 계열 (자동 재배치·주기 재적용) 을 해도 되는가.
     public static bool AllowsRelocate(GameSettings g) => !g.Paused && g.Mode is GameMode.Inherit or GameMode.RelocateOnly;
 
+    /// 이 게임의 재배치 방식 (whole_file / ranges): 게임별 layout 이 있으면 그것, 없으면 전역 auto.relocate_layout. 계획 만들기·이행·재적용·검사가 모두 이 함수로 방식을 읽음.
+    public static string RelocateLayout(GameSettings g, AutoSettings a) => g.Layout ?? a.RelocateLayout;
+
     /// 추적 (트레이스 기록) 을 해도 되는가: 끄거나 일시 중지한 게임만 불허.
     public static bool AllowsTracking(GameSettings g) => !g.Paused && g.Mode != GameMode.Off;
 

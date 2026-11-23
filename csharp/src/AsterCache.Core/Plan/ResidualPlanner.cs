@@ -79,6 +79,14 @@ public static class ResidualPlanner
                 yield return new PlanTask(path, 0, (size + cb - 1) / cb, start + offset);
             }
         }
+
+        foreach ((string path, long vcn, long clusters, long? offset) in WholeFileLayout.LargePieces(plan))
+        {
+            if (offset is { } at)
+            {
+                yield return new PlanTask(path, vcn, clusters, start + at); // 큰 조각도 구간 전체가 목표에 놓였음을 알아봄
+            }
+        }
     }
 
     // 보류 파일의 이전 목표: 읽지 못한 동안 task 가 없어도, 읽히게 된 뒤 다시 계획할 때 이미 옮긴 조각을 알아보게 계획에 남겨 둠.
@@ -117,6 +125,9 @@ public static class ResidualPlanner
         IReadOnlyList<string>? wholeList = WholeFileLayout.WholeFiles(candidate); // 통째 배치 계획이면 파일 단위로 고정·잔여를 가름
         var wholeFiles = wholeList?.ToHashSet(StringComparer.Ordinal);
         var wholeDone = new HashSet<string>(StringComparer.Ordinal);
+        Dictionary<string, List<(long Vcn, long Clusters)>> largePieces = WholeFileLayout.LargePieces(candidate).GroupBy(p => p.Path, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.Select(p => (p.Vcn, p.Clusters)).ToList(), StringComparer.Ordinal); // 큰 조각 배치: 고른 구간이 통째 파일과 같은 규칙 (구간 단위로 고정·잔여)
+        var piecesDone = new HashSet<(string Path, long Vcn)>();
         foreach (PlanRange o in candidate.Order)
         {
             if (!ext.TryGetValue(o.Path, out IReadOnlyList<Extent>? e))
@@ -149,8 +160,15 @@ public static class ResidualPlanner
                 {
                     AddWholeFile(candidate, o.Path, e, prior, parts, sourceLayout);
                 }
+                else if (largePieces.TryGetValue(o.Path, out List<(long Vcn, long Clusters)>? chosen))
+                {
+                    foreach ((long vcn, long clusters) in chosen.Where(p => p.Vcn < o.Vcn + o.Clusters && o.Vcn < p.Vcn + p.Clusters && piecesDone.Add((o.Path, p.Vcn))))
+                    {
+                        AddPiece(o.Path, e, vcn, clusters, prior, parts, sourceLayout);
+                    }
+                }
 
-                continue; // 제자리 파일은 작업이 없음
+                continue; // 제자리 파일 (큰 조각 파일의 고르지 않은 범위 포함) 은 작업이 없음
             }
 
             if (candidate.SparseAllocations.TryGetValue(o.Path, out IReadOnlyList<AllocatedRange>? expectedAllocation))
@@ -250,7 +268,7 @@ public static class ResidualPlanner
         JObject stats = new ZoneStats(0, 0, fixedClusters * cb, 0, misaligned, parts.Sum(p => p.N) * cb, moved * cb, moving,
             moving == 0 ? 0 : PyFloat.Round2((double)moved / moving), residual, skipped, ZoneAllocator.CountRuns(sourceLayout.Select(x => (x.Lcn, x.N)).ToList()),
             ZoneAllocator.CountRuns(final)).ToJson();
-        foreach ((string key, object? value) in candidate.Stats.Where(kv => !stats.ContainsKey(kv.Key) && kv.Key != HeldKey && kv.Key != HeldTargetsKey && kv.Key != AdjacentKey && kv.Key != GenerationKey && kv.Key != WholeFileLayout.WholeOffsetsKey)) // 이전 계획의 보류와 인접 배치 표지는 이번 판정으로 다시 정함, 통째 파일 오프셋은 옮겨진 zone 기준이라 더는 맞지 않음
+        foreach ((string key, object? value) in candidate.Stats.Where(kv => !stats.ContainsKey(kv.Key) && kv.Key != HeldKey && kv.Key != HeldTargetsKey && kv.Key != AdjacentKey && kv.Key != GenerationKey && kv.Key != WholeFileLayout.WholeOffsetsKey && kv.Key != WholeFileLayout.LargeOffsetsKey)) // 이전 계획의 보류와 인접 배치 표지는 이번 판정으로 다시 정함, 통째 파일 오프셋은 옮겨진 zone 기준이라 더는 맞지 않음
         {
             stats.Add(key, value); // hot_blocks, units 와 호출자가 덧붙인 표지는 그대로
         }
@@ -289,12 +307,19 @@ public static class ResidualPlanner
     {
         long cb = candidate.ClusterBytes;
         long fileClusters = candidate.Fingerprints.FirstOrDefault(f => f.Path == path) is { } fp ? (fp.Size + cb - 1) / cb : e.Max(x => x.Vcn + x.Clusters);
-        List<(long Vcn, long Lcn, long N)> pieces = ZoneAllocator.Pieces(e, 0, fileClusters);
+        AddPiece(path, e, 0, fileClusters, prior, parts, sourceLayout);
+    }
+
+    // 통째 배치의 한 구간 (통째 파일은 [0, 파일 클러스터), 큰 조각은 고른 구간): 구간 전체가 이전 목표 하나와 같은 delta 로 한 조각일 때만 고정, 아니면 구간 전체를 잔여로.
+    private static void AddPiece(string path, IReadOnlyList<Extent> e, long vcn, long length, Dictionary<(string Path, long Delta), List<(long A, long B)>> prior,
+        List<Part> parts, List<(string Path, long Lcn, long N)> sourceLayout)
+    {
+        List<(long Vcn, long Lcn, long N)> pieces = ZoneAllocator.Pieces(e, vcn, vcn + length);
         sourceLayout.AddRange(pieces.Select(p => (path, p.Lcn, p.N)));
-        bool single = pieces.Count > 0 && pieces.Sum(p => p.N) == fileClusters && ZoneAllocator.CountRuns(pieces.Select(p => (p.Lcn, p.N)).ToList()) == 1;
-        if (single && prior.TryGetValue((path, pieces[0].Lcn - pieces[0].Vcn), out List<(long A, long B)>? ranges) && ranges.Any(r => r.A <= 0 && r.B >= fileClusters))
+        bool single = pieces.Count > 0 && pieces.Sum(p => p.N) == length && ZoneAllocator.CountRuns(pieces.Select(p => (p.Lcn, p.N)).ToList()) == 1;
+        if (single && prior.TryGetValue((path, pieces[0].Lcn - pieces[0].Vcn), out List<(long A, long B)>? ranges) && ranges.Any(r => r.A <= vcn && r.B >= vcn + length))
         {
-            parts.Add(new Part(path, 0, pieces[0].Lcn, fileClusters, true));
+            parts.Add(new Part(path, vcn, pieces[0].Lcn, length, true));
             return;
         }
 

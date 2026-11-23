@@ -84,7 +84,7 @@ public sealed partial class AutoRelocator
 
     private ReapplyVerdict? ReapplyBlockedBy(GameSettings g, AsterSettings s)
     {
-        if (WholeLayout(s) && _wholeNone.ContainsKey(g.Name))
+        if (WholeLayout(g, s) && _wholeNone.ContainsKey(g.Name))
         {
             return ReapplyVerdict.NotApplied; // 통째로 놓을 파일이 없어 옮기지 않기로 한 게임: 예전 범위 계획을 다시 적용하지 않음
         }

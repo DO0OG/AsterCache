@@ -309,4 +309,21 @@ public sealed class PlayPhaseTests
 
         Assert.Equal(LoadState.Loading, state);
     }
+
+
+    [Fact]
+    public void TheDriveQueueOfTheLastSampleIsKeptForTheServiceAndForgottenWithTheGame()
+    {
+        var board = new LoadPhaseBoard(new ListLog());
+        var feed = new LoadFeed("g", Root, board);
+        Assert.Null(board.QueueOf("g")); // 표본이 없으면 모름
+
+        _ = feed.Next([Disk(0)], [new PlayDiskCounters(1, Mib, 0, 0, 0, 3), new PlayDiskCounters(2, Mib, 0, 0, 0, 2)], 1, null, false);
+        Assert.Equal(5, board.QueueOf("g")); // 게임 드라이브의 물리 디스크별 대기열의 합
+        _ = feed.Next([Disk(0)], [new PlayDiskCounters(1, 2 * Mib, 0, 0, 0, 0), new PlayDiskCounters(2, 2 * Mib, 0, 0, 0, 0)], 2, null, false);
+        Assert.Equal(0, board.QueueOf("g")); // 가장 최근 표본
+
+        board.Forget("g");
+        Assert.Null(board.QueueOf("g"));
+    }
 }

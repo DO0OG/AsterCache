@@ -180,6 +180,46 @@ public sealed class ViewHoldTests : IDisposable
     }
 
     [Fact]
+    public void WhatWasReleasedIsReportedMostImportantFirstAndHeldAgainByHoldAndThenNoLongerReported()
+    {
+        string a = Make("a.bin", 4);
+        string b = Make("b.bin", 4);
+        using var hold = new ViewHold(Counter(0), Counter(0), minFileBytes: 0);
+        hold.Rebase();
+        _ = hold.Hold([new ReadOp(a, 0, 4L * Mib), new ReadOp(b, 0, 4L * Mib)], CancellationToken.None);
+        Assert.Empty(hold.ReleasedRanges(long.MaxValue)); // 내놓은 것이 없음
+        _ = hold.Release(6L * Mib); // 나중에 붙든 b 전체와 a 의 뒤쪽 2 MiB
+
+        IReadOnlyList<ReadOp> released = hold.ReleasedRanges(long.MaxValue);
+
+        Assert.Equal([new ReadOp(a, 2L * Mib, 2L * Mib), new ReadOp(b, 0, 4L * Mib)], released); // 덜 중요해서 먼저 내놓은 b 가 뒤
+        Assert.Equal([new ReadOp(a, 2L * Mib, Mib)], hold.ReleasedRanges(Mib)); // 상한까지만
+        HoldBatchResult r = hold.Hold(released, CancellationToken.None);
+        Assert.Equal(6L * Mib, r.Bytes);
+        Assert.Equal(8L * Mib, hold.HeldBytes);
+        Assert.Empty(hold.ReleasedRanges(long.MaxValue)); // 다시 붙들었으면 더 나오지 않음
+    }
+
+    [Fact]
+    public void AGivenUpRangeAndAFileThatChangedAfterTheReleaseAreNotReportedAgain()
+    {
+        string a = Make("a.bin", 4);
+        string b = Make("b.bin", 4);
+        string c = Make("c.bin", 4);
+        using var hold = new ViewHold(Counter(0), Counter(0), minFileBytes: 0);
+        hold.Rebase();
+        _ = hold.Hold([new ReadOp(a, 0, 4L * Mib), new ReadOp(b, 0, 4L * Mib), new ReadOp(c, 0, 4L * Mib)], CancellationToken.None);
+        _ = hold.Release(12L * Mib);
+        hold.GiveUp([new ReadOp(c, 0, 4L * Mib)]); // 메모리에 없어 다시 붙들지 않기로 한 범위
+        File.SetLastWriteTimeUtc(b, DateTime.UtcNow.AddMinutes(5)); // 내놓은 뒤 바뀐 파일
+
+        IReadOnlyList<ReadOp> released = hold.ReleasedRanges(long.MaxValue);
+
+        Assert.Equal([new ReadOp(a, 0, 4L * Mib)], released);
+        Assert.Equal(0, hold.HeldBytes);
+    }
+
+    [Fact]
     public void WhileHeldAnotherHandleCanOverwriteTheSameSizeGrowAndDeleteButShrinkingFailsWithErrorOf1224()
     {
         string a = Make("a.bin", 4);

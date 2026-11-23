@@ -13,6 +13,8 @@ internal sealed class LoadFeed(string game, string root, LoadPhaseBoard board)
         long serviceDelta = Math.Max(0, service - _serviceRead);
         _serviceRead = service;
         long drive = PlaySeriesBuilder.Disk(previous, current)?.ReadBytes ?? 0;
-        return board.Add(game, new LoadingSample(seconds, Math.Max(0, drive - serviceDelta), raw?.GpuGameMib, exeStarted)).State;
+        LoadState state = board.Add(game, new LoadingSample(seconds, Math.Max(0, drive - serviceDelta), raw?.GpuGameMib, exeStarted)).State;
+        board.NoteQueue(game, current.Sum(c => (long)c.QueueDepth)); // 이미 읽은 디스크 성능 값의 대기열: 다시 붙들기가 디스크를 읽어도 되는지 봄
+        return state;
     }
 }

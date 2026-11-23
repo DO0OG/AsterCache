@@ -83,6 +83,9 @@ public sealed class KeepHoldTests
         public readonly HashSet<string> WrittenMarked = new(StringComparer.OrdinalIgnoreCase);
         public readonly HashSet<string> ChangedWritten = new(StringComparer.OrdinalIgnoreCase); // 게임이 바꾼 것으로 돌려줄 파일 (5 초 확인이 닫음)
         public int WrittenChecks;
+        public static readonly string Back = F(90); // 내놓은 부분을 대신하는 가짜 범위의 경로
+        public long PendingBytes; // 내놓았고 아직 다시 붙들지 않은 양
+        public readonly List<ReadOp> GivenUp = [];
         private readonly Dictionary<string, long> _writtenBytes = new(StringComparer.OrdinalIgnoreCase);
         private long _held;
 
@@ -141,6 +144,7 @@ public sealed class KeepHoldTests
             }
 
             _held += bytes;
+            PendingBytes = Math.Max(0, PendingBytes - batch.Where(o => o.Path == Back).Sum(o => o.Length));
             return new HoldBatchResult(bytes, 0, 0, ErrorsPerBatch, 0, 1, 1, 0, 0.1, 0.05, -1, ImageBytesPerBatch, SmallBytesPerBatch);
         }
 
@@ -148,8 +152,17 @@ public sealed class KeepHoldTests
         {
             long released = Math.Min(_held, bytes);
             _held -= released;
+            PendingBytes += released;
             Released.Add(released);
             return released;
+        }
+
+        public IReadOnlyList<ReadOp> ReleasedRanges(long maxBytes) => PendingBytes > 0 && maxBytes > 0 ? [new ReadOp(Back, 0, Math.Min(PendingBytes, maxBytes))] : [];
+
+        public void GiveUp(IReadOnlyList<ReadOp> ranges)
+        {
+            GivenUp.AddRange(ranges);
+            PendingBytes = Math.Max(0, PendingBytes - ranges.Where(o => o.Path == Back).Sum(o => o.Length));
         }
 
         public HoldCheckResult Recheck(long refillStopBytes, CancellationToken ct, bool refill = true, bool dropOnCap = true)
@@ -589,7 +602,7 @@ public sealed class KeepHoldTests
     // ---- 하한·내놓기·점검 ----
 
     [Fact]
-    public void BelowTheFloorTheLeastImportantAreReleasedByTheMissingAmountAndNeverHeldAgain()
+    public void BelowTheFloorTheLeastImportantAreReleasedByTheMissingAmountAndAreNotHeldAgainBeforeTheTwoMinuteCheck()
     {
         ReadOp[] gib = [.. Enumerable.Range(0, 4).Select(i => Op(20 + i, 0, 1024))];
         Prewarmer p = Make(gib);
@@ -599,7 +612,7 @@ public sealed class KeepHoldTests
 
         Assert.Equal([(2048 - 1500 + 256) * Mib], _hold.Released); // 부족한 양 + 여유
         Assert.Contains(_log.Lines, l => l.Contains("cache hold released 804 MiB for memory (a.exe): available 1500 MiB < floor 2048 MiB, 3292 MiB still held"));
-        Assert.Equal(256, _hold.Batches.Count); // 내놓은 뒤에는 다시 붙들지 않음: 붙들기 호출은 처음 한 번뿐
+        Assert.Equal(256, _hold.Batches.Count); // 내놓은 뒤 2 분 점검 전에는 다시 붙들지 않음: 붙들기 호출은 처음 한 번뿐
     }
 
     [Fact]
@@ -1516,7 +1529,7 @@ public sealed class KeepHoldTests
         p.TouchAtGameStart(Game("a"), "a.exe");
 
         Assert.Equal(5, _log.Lines.Count(l => l.Contains("released a game-written file the game changed")));
-        Assert.Contains("(nothing left held)", _log.Lines.Last());
+        Assert.Contains(_log.Lines, l => l.Contains("cache hold ended") && l.Contains("(nothing left held)"));
     }
 
     [Fact]
@@ -1549,5 +1562,343 @@ public sealed class KeepHoldTests
 
         Assert.Equal([(F(1), 0), (F(2), 0), (F(2), 8), (F(5), 0)], Flat(_hold.Batches));
         Assert.Contains(_log.Lines, l => l.Contains("cache held while playing (a.exe): 32 MiB") && l.Contains("16 MiB in files where holding loses more than it gains"));
+    }
+
+    // ---- 다시 붙들기 (하한 때문에 내놓은 것을 되붙듦) ----
+
+    private static void Feed(LoadPhaseBoard board, double e, bool loading, long? queue)
+    {
+        _ = board.Add("a", new LoadingSample(e, loading ? 100 * Mib : 0, null, false)); // 읽기가 많으면 신호 로딩, 아니면 조용함
+        if (queue is { } q)
+        {
+            board.NoteQueue("a", q);
+        }
+    }
+
+    private static void SpendHoldAgainDisk(Prewarmer p, long bytes)
+    {
+        object memory = typeof(Prewarmer).GetMethod("KeepMemoryOf", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(p, ["a"])!;
+        _ = memory.GetType().GetMethod("AddHoldAgainDisk")!.Invoke(memory, [bytes]);
+    }
+
+    private static ReadOp[] Gib() => [.. Enumerable.Range(0, 4).Select(i => Op(20 + i, 0, 1024))];
+
+    [Fact]
+    public void WhenEverythingWasReleasedForMemoryTheKeepingContinuesAndTheTwoMinuteRetryHoldsAgainOnceTheMemoryIsBack()
+    {
+        Prewarmer p = Make(Reads);
+        RunFor(250, e => _avail = e == 1 ? 100 : 20000);
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        List<string> lines = [.. _log.Lines];
+        int released = lines.FindIndex(l => l.Contains("(everything released for memory)"));
+        int again = lines.FindIndex(l => l.Contains("a: cache held while playing (a.exe)") && l.Contains("held again after the memory floor released everything"));
+        Assert.True(released >= 0 && again > released, "the hold is held again after it ended for memory");
+        Assert.Equal(2, _opened);
+        Assert.Contains(lines.Skip(released + 1).Take(again - released - 1), l => l.Contains("cache kept while playing")); // 그 사이 다시 만지기 유지가 이어짐
+        Assert.Contains("48 MiB of 5120 MiB target", lines[again]);
+        Assert.Contains("disk reads of the play 0 MiB of 1024 MiB", lines[again]);
+    }
+
+    [Theory]
+    [InlineData("loading", "loading phase")]
+    [InlineData("busy", "game drive queue is not 0 or unknown")]
+    [InlineData("unknown", "game drive queue is not 0 or unknown")]
+    [InlineData("room", "available memory leaves no room above the floor and the margin")]
+    public void TheRetryAfterEverythingWasReleasedWaitsForTheLoadingPhaseTheDriveQueueAndRoomAboveTheFloorAndLogsTheReasonOnce(string why, string text)
+    {
+        Prewarmer p = Make(Reads);
+        var board = new LoadPhaseBoard(_log);
+        p.LoadPhases = board;
+        RunFor(420, e =>
+        {
+            bool blocked = e < 300;
+            _avail = e == 1 ? 100 : why == "room" && blocked ? 3100 : 20000; // 3100 - 2048 - 1024 = 28 MiB < 64 MiB
+            Feed(board, e, why == "loading" && blocked && e > 100, why == "busy" && blocked ? 2 : why == "unknown" && blocked ? null : 0);
+        });
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        string line = Assert.Single(_log.Lines, l => l.Contains("hold again deferred")); // 두 번의 재시도 (120·240 초) 가 같은 사유로 미뤄져도 한 줄
+        Assert.Contains(text, line);
+        Assert.Equal(2, _opened); // 사유가 풀린 뒤의 재시도 (360 초) 에서 다시 붙듦
+    }
+
+    [Fact]
+    public void TheRetryAfterEverythingWasReleasedAlsoWaitsForALoadingThatStartedWithAnExecutableStart()
+    {
+        Prewarmer p = Make(Reads);
+        var board = new LoadPhaseBoard(_log);
+        p.LoadPhases = board;
+        RunFor(250, e =>
+        {
+            _avail = e == 1 ? 100 : 20000;
+            _ = board.Add("a", new LoadingSample(e, e <= 130 ? 100 * Mib : 0, null, e == 100)); // 초 100 에 실행 파일이 뜸: 초 130 까지 이어지는 로딩
+            board.NoteQueue("a", 0);
+        });
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        _ = Assert.Single(_log.Lines, l => l.Contains("hold again deferred: loading phase")); // 120 초 재시도
+        Assert.Equal(2, _opened); // 240 초 재시도
+    }
+
+    [Fact]
+    public void TheFirstHoldIgnoresTheHoldAgainConditionsEvenWhileLoadingWithABusyQueue()
+    {
+        Prewarmer p = Make(Reads);
+        var board = new LoadPhaseBoard(_log);
+        p.LoadPhases = board;
+        _ = board.Add("a", new LoadingSample(0, 100 * Mib, null, true)); // 실행 파일 시작 로딩
+        board.NoteQueue("a", 9);
+        RunFor(2);
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Equal([(F(1), 0), (F(2), 0), (F(2), 8), (F(3), 0), (F(4), 0), (F(5), 0)], Flat(_hold.Batches));
+        Assert.Contains(_log.Lines, l => l.Contains("a: cache held while playing (a.exe): 48 MiB of 5120 MiB target"));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("hold again") || l.Contains("held again"));
+    }
+
+    [Fact]
+    public void TheHoldAgainReadsFromDiskOnlyUpToTheRoundCapAndTheRestOfThePlayBudget()
+    {
+        Prewarmer p = Make(Reads);
+        bool armed = false;
+        RunFor(130, e =>
+        {
+            _avail = e == 1 ? 100 : 20000;
+            if (e > 1 && !armed)
+            {
+                armed = true;
+                _hold.Missing.Add(F(3)); // 첫 붙들기가 끝난 뒤: 파일 3 이 메모리에서 밀려남 (그 범위에서 경계, 디스크 읽기 12 MiB)
+                _hold.DiskPerMiss = 12 * Mib;
+                SpendHoldAgainDisk(p, Prewarmer.HoldAgainDiskCapBytes - (10 * Mib)); // 플레이 합계 상한까지 10 MiB 남음
+            }
+        });
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        string again = Assert.Single(_log.Lines, l => l.Contains("held again after the memory floor released everything"));
+        Assert.Contains("25 MiB of", again); // 파일 1 과 파일 2 (24 MiB) 에 파일 3 의 경계 앞 한 조각
+        Assert.Contains("disk read cap reached", again); // 12 MiB > 남은 10 MiB: 파일 4·5 는 붙들지 않음
+        Assert.Contains("disk reads of the play 1026 MiB of 1024 MiB", again); // 경계를 알아채는 읽기만큼은 넘을 수 있음
+    }
+
+    [Fact]
+    public void WithThePlayBudgetUsedUpTheHoldAgainHoldsWhatIsInMemoryAndStopsAtTheFirstBatchThatReadsFromDisk()
+    {
+        Prewarmer p = Make(Reads);
+        bool armed = false;
+        RunFor(130, e =>
+        {
+            _avail = e == 1 ? 100 : 20000;
+            if (e > 1 && !armed)
+            {
+                armed = true;
+                _hold.Missing.Add(F(2)); // 첫 배치 (파일 1·2) 에서 경계
+                SpendHoldAgainDisk(p, Prewarmer.HoldAgainDiskCapBytes); // 다 씀
+            }
+        });
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        string again = Assert.Single(_log.Lines, l => l.Contains("held again after the memory floor released everything"));
+        Assert.Contains("a: cache held while playing (a.exe): 9 MiB of", again); // 파일 1 (캐시에 있음) 과 파일 2 의 경계 앞 한 조각
+        Assert.Contains("disk read cap reached", again);
+    }
+
+    [Fact]
+    public void WithThePlayBudgetUsedUpAHoldAgainOfWhatIsAllInMemoryStillHoldsEverything()
+    {
+        Prewarmer p = Make(Reads);
+        bool armed = false;
+        RunFor(130, e =>
+        {
+            _avail = e == 1 ? 100 : 20000;
+            if (e > 1 && !armed)
+            {
+                armed = true;
+                SpendHoldAgainDisk(p, Prewarmer.HoldAgainDiskCapBytes);
+            }
+        });
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        _ = Assert.Single(_log.Lines, l => l.Contains("a: cache held while playing (a.exe): 48 MiB of") && l.Contains("held again after the memory floor released everything"));
+    }
+
+    [Fact]
+    public void AfterAPartialReleaseTheTwoMinuteCheckHoldsTheReleasedPartAgain()
+    {
+        Prewarmer p = Make(Gib());
+        RunFor(130, e => _avail = e == 1 ? 1500 : 20000);
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Equal([(2048 - 1500 + 256) * Mib], _hold.Released);
+        Assert.Equal(0, _hold.PendingBytes);
+        Assert.Contains(_log.Lines, l => l.Contains("a: cache held again after the memory floor released it (a.exe): 804 MiB of 5120 MiB target, 0 MiB read from disk, disk reads of the play 0 MiB of 1024 MiB"));
+        Assert.Contains("804 MiB held again after the memory floor released them", _log.Lines.Last());
+        Assert.Equal(1, _opened); // 같은 붙들기 안에서 다시 붙듦
+    }
+
+    [Theory]
+    [InlineData("loading", "loading phase")]
+    [InlineData("busy", "game drive queue is not 0 or unknown")]
+    [InlineData("unknown", "game drive queue is not 0 or unknown")]
+    [InlineData("room", "available memory leaves no room above the floor and the margin")]
+    public void AfterAPartialReleaseTheTwoMinuteCheckWaitsForTheLoadingPhaseTheDriveQueueAndRoomAboveTheFloorAndLogsTheReasonOnce(string why, string text)
+    {
+        Prewarmer p = Make(Gib());
+        var board = new LoadPhaseBoard(_log);
+        p.LoadPhases = board;
+        RunFor(250, e =>
+        {
+            bool blocked = e < 200;
+            _avail = e == 1 ? 1500 : why == "room" && blocked ? 3100 : 20000;
+            Feed(board, e, why == "loading" && e is > 100 and <= 130, why == "busy" && blocked ? 2 : why == "unknown" && blocked ? null : 0);
+        });
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        string line = Assert.Single(_log.Lines, l => l.Contains("hold again deferred")); // 120 초 점검만 미룸
+        Assert.Contains(text, line);
+        Assert.Equal(0, _hold.PendingBytes); // 240 초 점검에서 다시 붙듦
+        _ = Assert.Single(_log.Lines, l => l.Contains("cache held again after the memory floor released it"));
+    }
+
+    [Fact]
+    public void WhenTheReleasedPartIsNotInMemoryTheHoldAgainGivesItUpAndDoesNotReadItAgainAtTheNextCheck()
+    {
+        Prewarmer p = Make(Gib());
+        RunFor(250, e =>
+        {
+            _avail = e == 1 ? 1500 : 20000;
+            if (e == 2)
+            {
+                _hold.Missing.Add(FakeHold.Back); // 내놓은 범위가 메모리에서 밀려남: 경계
+            }
+        });
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Equal(0, _hold.PendingBytes);
+        Assert.NotEmpty(_hold.GivenUp);
+        _ = Assert.Single(_log.Lines, l => l.Contains("cache held again after the memory floor released it")); // 240 초 점검에서는 더 읽을 것이 없음
+    }
+
+    [Fact]
+    public void ReleasingAndHoldingAgainDoNotAlternateWhenTheAvailableMemoryWobblesJustAboveTheFloor()
+    {
+        Prewarmer p = Make(Gib());
+        long extra = 0; // 게임이 잡은 메모리 (MiB)
+        long lowest = long.MaxValue;
+        _availFn = () => 8000 - (_hold.HeldBytes >> 20) - extra;
+        RunFor(700, e =>
+        {
+            extra = e < 2 ? 0 : e < 10 ? 3000 : e < 150 ? 0 : e % 20 < 10 ? 900 : 0; // 초 2~10 에 하한 아래로, 초 150 부터는 하한 + 1 GiB 바로 위에서 오르내림
+            lowest = e > 130 ? Math.Min(lowest, _availFn()) : lowest;
+        });
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        _ = Assert.Single(_hold.Released); // 내놓기는 한 번뿐
+        _ = Assert.Single(_log.Lines, l => l.Contains("cache held again after the memory floor released it"));
+        Assert.True(lowest >= Prewarmer.HoldMinFloorMib + Prewarmer.HoldRefillMarginMib, $"lowest available {lowest}"); // 다시 붙든 뒤에도 가용이 하한 + 1 GiB 이상
+    }
+
+    [Fact]
+    public void TheHoldAgainTargetAlwaysLeavesTheFloorPlusOneGiBAvailable()
+    {
+        for (long avail = 0; avail <= 40000; avail += 37)
+        {
+            long target = Prewarmer.HoldAgainTargetBytes(avail, Prewarmer.HoldMinFloorMib) >> 20;
+            Assert.True(target == 0 || avail - target >= Prewarmer.HoldMinFloorMib + Prewarmer.HoldRefillMarginMib, $"avail {avail} target {target}");
+            Assert.True(target <= avail / 2 && target <= 5120, $"avail {avail} target {target}");
+        }
+
+        Assert.Equal(28 * Mib, Prewarmer.HoldAgainTargetBytes(3100, 2048));
+        Assert.Equal(5L << 30, Prewarmer.HoldAgainTargetBytes(20000, 2048));
+    }
+
+    [Fact]
+    public void ReleasingEveryGameWrittenFileDoesNotStopTheKeepingTouchingEither()
+    {
+        foreach (int n in new[] { 1, 2, 3, 4, 5 })
+        {
+            _ = _writtenFiles.Add(F(n));
+        }
+
+        Prewarmer p = Make(Reads);
+        RunFor(60, e =>
+        {
+            if (e == 2)
+            {
+                foreach (int n in new[] { 1, 2, 3, 4, 5 })
+                {
+                    _ = _hold.ChangedWritten.Add(F(n));
+                }
+            }
+        });
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Contains(_log.Lines, l => l.Contains("cache kept while playing")); // 붙든 것이 모두 풀린 뒤에도 다시 만지기 유지가 이어짐
+        Assert.Equal(1, _opened); // 다시 붙들지는 않음
+    }
+
+    // ---- 로딩 중 점검·순서 패스 (직전 검토의 후속) ----
+
+    [Fact]
+    public void WhileALoadingThatStartedWithAnExecutableStartTheCheckOfTheHeldRangesRunsExactlyAsOutsideLoading()
+    {
+        _hold.NextCheck = () => new HoldCheckResult(40 * Mib, 6 * Mib, 4 * Mib, 0, false, [], 2, 120, 1.5, 0.4);
+        Prewarmer p = Make(Reads);
+        var board = new LoadPhaseBoard(_log);
+        p.LoadPhases = board;
+        RunFor(130, e => _ = board.Add("a", new LoadingSample(e, 100 * Mib, null, e == 1))); // 초 1 에 실행 파일이 뜨고 읽기가 계속 많음: 120 초 점검은 실행 파일 시작 로딩 중
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+        for (int s = 131; s <= 160; s++)
+        {
+            _ = board.Add("a", new LoadingSample(s, 0, null, false)); // 조용해져 로딩이 끝남
+        }
+
+        Assert.Equal([Prewarmer.KeepDiskReadCapBytes], _hold.RecheckCaps); // 로딩이 없을 때와 같은 상한
+        Assert.Equal([true], _hold.DropOnCaps);
+        Assert.Equal([true], _hold.Refills);
+        Assert.Contains(_log.Lines, l => l.Contains("a: loading phase ended after") && !l.Contains("held back")); // 미룬 일 없음
+    }
+
+    [Fact]
+    public void WhileLoadingTheOrderPassStopsAtTheRoundDiskReadCapEvenWhenNoBatchIsABoundary()
+    {
+        ReadOp[] gib = [.. Enumerable.Range(0, 3).Select(i => Op(30 + i, 0, 1024))];
+        GameSettings cheat = Cheat("a");
+        Prewarmer p = Make(gib, cheat);
+        var board = new LoadPhaseBoard(_log);
+        p.LoadPhases = board;
+        int at15 = 0;
+        int at25 = 0;
+        RunFor(40, e =>
+        {
+            _ = board.Add("a", new LoadingSample(e, 100 * Mib, null, false)); // 초 5 부터 읽기가 계속 많은 경기 안 로딩
+            if (e == 15)
+            {
+                at15 = _touched.Count;
+                _touchOverride = ranges => new TouchResult(ranges.Sum(o => o.Length), 0.1, 0, 0, TouchEnd.Completed) { DiskBytes = 8 * Mib }; // 흩어진 빈 블록: 배치마다 8 MiB 가 디스크에서 읽힘 (경계는 아님)
+            }
+
+            if (e == 25)
+            {
+                at25 = _touched.Count;
+            }
+        });
+
+        p.TouchAtGameStart(cheat, "a.exe");
+
+        Assert.Equal(5, at25 - at15); // 초 20 의 회차: 8 MiB 씩 다섯 배치 (40 MiB) 에서 32 MiB 상한을 넘어 끝남, 3 GiB 전체 (192 배치) 를 만지지 않음
     }
 }

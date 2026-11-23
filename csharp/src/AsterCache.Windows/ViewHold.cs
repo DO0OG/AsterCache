@@ -47,8 +47,14 @@ public interface IKeepHold : IDisposable
     /// 범위들을 순서대로 읽어 (이미 붙든 구간은 건너뜀) 작업 집합에 올린 채 뷰를 닫지 않습니다. 디스크 읽기가 섞여 경계를 만나면 거기서 멈추고 그 위치를 돌려줍니다.
     HoldBatchResult Hold(IReadOnlyList<ReadOp> batch, CancellationToken ct);
 
-    /// 붙든 것을 덜 중요한 쪽 (나중에 붙든 쪽) 부터 bytes 만큼 내놓고 (VirtualUnlock) 내놓은 바이트를 돌려줍니다. 내놓은 범위는 다시 붙들지 않습니다.
+    /// 붙든 것을 덜 중요한 쪽 (나중에 붙든 쪽) 부터 bytes 만큼 내놓고 (VirtualUnlock) 내놓은 바이트를 돌려줍니다. 내놓은 범위는 ReleasedRanges 로 다시 붙들 수 있습니다 (점검이 목록에서 뺀 구간은 아님).
     long Release(long bytes);
+
+    /// Release 로 내놓은 뒤 아직 다시 붙들지 않은 범위를 중요한 순서로 maxBytes 까지 돌려줍니다 (이 플레이에서 바뀌었거나 닫은 파일은 뺌). Hold 로 붙들면 목록에서 빠집니다.
+    IReadOnlyList<ReadOp> ReleasedRanges(long maxBytes);
+
+    /// 다시 붙들지 않기로 한 범위 (메모리에 없던 범위 등): ReleasedRanges 에 더 나오지 않습니다.
+    void GiveUp(IReadOnlyList<ReadOp> ranges);
 
     /// 바뀐 파일의 뷰를 닫고, 붙든 쪽이 작업 집합에 있는지 QueryWorkingSetEx (자기 프로세스, 접근 비트를 건드리지 않음) 로 보아 빠진 쪽만 다시 읽어 올립니다.
     /// 디스크에서 다시 읽힌 양이 refillStopBytes 를 넘으면 그 구간을 목록에서 빼고, 뒤의 빠진 쪽이 있는 구간도 읽지 않고 뺍니다.
@@ -75,6 +81,7 @@ public sealed unsafe class ViewHold : IKeepHold
     private readonly Dictionary<string, FileEntry> _files = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _written = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<Seg> _segs = []; // 붙든 구간 (붙든 순서 = 중요한 순서), 맨 뒤가 가장 덜 중요
+    private readonly List<ReadOp> _released = []; // Release 로 내놓은 범위 (내놓은 순서 = 덜 중요한 쪽부터): 다시 붙들었거나 포기한 부분은 Claimed 에 들어 있어 ReleasedRanges 가 거름
     private nint _buffer;
     private nint _query; // QueryWorkingSetEx 항목 버퍼
     private int _queryFailures; // 이번 점검에서 조회가 실패해 판단하지 못한 구간 수
@@ -292,11 +299,86 @@ public sealed unsafe class ViewHold : IKeepHold
                     continue;
                 }
 
-                released += Unlock(s, Math.Min(s.Live, bytes - released));
+                long end = s.Offset + s.Live;
+                long took = Unlock(s, Math.Min(s.Live, bytes - released));
+                released += took;
+                NoteReleased(s.Window.File, end - took, took);
             }
 
             CompactSegs();
             return released;
+        }
+    }
+
+    // 내놓은 범위를 기억하고 붙든 구간 표시에서 뺍니다 (그래야 같은 범위를 다시 붙들 수 있음).
+    private void NoteReleased(FileEntry file, long from, long length)
+    {
+        if (length > 0)
+        {
+            RangeSets.Remove(file.Claimed, from, from + length);
+            _released.Add(new ReadOp(file.Path, from, length));
+        }
+    }
+
+    public IReadOnlyList<ReadOp> ReleasedRanges(long maxBytes)
+    {
+        lock (_lock)
+        {
+            List<ReadOp> pending = [];
+            Dictionary<FileEntry, bool> usable = [];
+            long total = 0;
+            bool Usable(FileEntry f)
+            {
+                if (!usable.TryGetValue(f, out bool ok))
+                {
+                    usable[f] = ok = !f.Dead && !Changed(f); // 파일마다 속성 조회는 한 번
+                }
+
+                return ok;
+            }
+
+            for (int i = _released.Count - 1; i >= 0; i--) // 나중에 내놓은 쪽이 더 중요함
+            {
+                ReadOp op = _released[i];
+                if (!_files.TryGetValue(op.Path, out FileEntry? file) || !Usable(file))
+                {
+                    _released.RemoveAt(i); // 바뀌었거나 닫은 파일: 다시 붙들지 않음
+                    continue;
+                }
+
+                List<(long From, long To)> left = RangeSets.Uncovered(file.Claimed, op.Offset, op.Offset + op.Length);
+                if (left.Count == 0)
+                {
+                    _released.RemoveAt(i); // 모두 다시 붙들었거나 포기함
+                    continue;
+                }
+
+                foreach ((long from, long to) in left)
+                {
+                    if (total < maxBytes)
+                    {
+                        long n = Math.Min(to - from, maxBytes - total);
+                        pending.Add(new ReadOp(op.Path, from, n));
+                        total += n;
+                    }
+                }
+            }
+
+            return pending;
+        }
+    }
+
+    public void GiveUp(IReadOnlyList<ReadOp> ranges)
+    {
+        lock (_lock)
+        {
+            foreach (ReadOp op in ranges)
+            {
+                if (_files.TryGetValue(op.Path, out FileEntry? file))
+                {
+                    RangeSets.Add(file.Claimed, op.Offset, op.Offset + op.Length);
+                }
+            }
         }
     }
 

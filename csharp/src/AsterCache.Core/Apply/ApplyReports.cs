@@ -47,6 +47,12 @@ public sealed class ApplyReport
         (SparseMovedBytes > 0 ? $", sparse moved {SparseMovedBytes} bytes" : string.Empty)
         + (SparseAllocationChangedFiles > 0 ? $", {SparseAllocationChangedFiles} sparse file(s) held (allocation changed)" : string.Empty);
 
+    /// 통째 배치 계획에서 하루 남은 예산보다 커서 이번 회에 시작하지 않고 미룬 파일 수.
+    public long DeferredFiles { get; set; }
+
+    /// 서비스 로그에 덧붙이는 통째 배치 요약. 미룬 파일이 없으면 빈 문자열.
+    public string DeferredSummary => DeferredFiles > 0 ? $", {DeferredFiles} file(s) larger than the remaining daily write budget deferred" : string.Empty;
+
     public List<FailedStep> Failed { get; } = [];
 
     public string? Stopped { get; set; }
@@ -112,6 +118,11 @@ public sealed class ApplyReport
             {
                 o.Add("order_fallback_reason", OrderFallbackReason);
             }
+        }
+
+        if (DeferredFiles > 0)
+        {
+            o.Add("deferred_files", DeferredFiles);
         }
 
         if (SparseMovedBytes > 0)

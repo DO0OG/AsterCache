@@ -440,7 +440,8 @@ public sealed partial class AutoRelocator
     }
 
     // 이전 계획의 존 시작과 이미 쓰던 클러스터 수 (새 계획이 그 구간의 조각을 제자리에 고정함).
-    private (long? Start, long Used) PreviousZone(GameSettings g)
+    // 통째 배치 계획을 만들 때는 범위 계획의 존을 이어 쓰지 않음: 범위 단위 조각을 제자리로 고정하면 파일이 한 조각이 되지 않으므로 새 존에 세움.
+    private (long? Start, long Used) PreviousZone(GameSettings g, bool whole)
     {
         try
         {
@@ -451,6 +452,11 @@ public sealed partial class AutoRelocator
             }
 
             PlanFile old = _env.LoadPlan(previous);
+            if (whole && !old.Stats.ContainsKey(WholeFileLayout.RuleKey))
+            {
+                return (null, 0);
+            }
+
             return (old.Zone.StartLcn, old.Stats.TryGetValue("zone_used_clusters", out object? u) && u is long used ? used : 0);
         }
         catch (Exception e) when (e is not OperationCanceledException)

@@ -42,6 +42,7 @@ public sealed class SparseKeepTests
     private bool _allWarm; // 켜면 모든 블록이 메모리에 있음 (읽기가 모두 빠름)
     private Prewarmer? _prewarmer;
     private List<TraceEvent>? _rows; // 블록 순위 목록 (순위 순, 없으면 null: 순위 목록이 없는 게임)
+    private readonly List<GameSettings> _plannedFor = []; // 예열 계획을 물은 게임 사본 (창 크기·스파스 표식)
     private List<ReadOp> _planned = [new ReadOp(FileA, 0, Mib), new ReadOp(FileB, 0, Mib), new ReadOp(Dense, 0, 8 * Mib)]; // 예열이 읽은 범위 (유지 목록의 원천)
     private Func<int, string, double?>? _seconds; // 지정하면 (읽기 번호, 경로) → 걸린 시간 (초, null 이면 열 수 없음), 없으면 메모리 모델
     private Action<TimeSpan, int>? _onSleep; // 회차 주기로 쉴 때마다 (쉰 시간, 지금까지 쉰 횟수) 로 부름
@@ -110,7 +111,15 @@ public sealed class SparseKeepTests
     {
         public StreamStats Stream(GameSettings game) => new(30L << 20, 1, 0, 0.01);
 
-        public IReadOnlyList<ReadOp>? PlannedPrewarmReads(GameSettings game) => t._planned;
+        public IReadOnlyList<ReadOp>? PlannedPrewarmReads(GameSettings game)
+        {
+            lock (t._plannedFor)
+            {
+                t._plannedFor.Add(game);
+            }
+
+            return t._planned;
+        }
     }
 
     private IOException Forbidden(string what) => new($"{what} must not be used by the sparse keep");
@@ -536,6 +545,29 @@ public sealed class SparseKeepTests
         string line = Assert.Single(SkipLines()); // 같은 사유가 이어진 두 회차는 한 줄
         Assert.Contains("a: sparse blocks kept while playing skipped (a.exe: low memory, available 2047 MiB < floor 2048 MiB)", line, StringComparison.Ordinal);
         Assert.Contains("skipped rounds: low memory x2", EndLine(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ForAGameWhoseFirstPrewarmReadSparseRangesInItsWindowTheKeepReadsOnlyThatWindowWithoutTheSparseMark()
+    {
+        _rows = Rows(FileA, 8);
+        _allWarm = true;
+        Prewarmer p = Direct(1);
+        typeof(Prewarmer).GetMethod("SetSparseWindow", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(p, ["a", 3L]); // 처음 예열이 스파스를 넣어 읽은 창 3 MiB
+        typeof(Prewarmer).GetMethod("SetSparseOut", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(p, ["a", true]); // 이후 경로는 스파스를 뺌
+        lock (_plannedFor)
+        {
+            _plannedFor.Clear();
+        }
+
+        Run(p);
+
+        Assert.NotEmpty(_reads); // 스파스 표식이 있어도 창 안의 스파스를 읽음
+        lock (_plannedFor)
+        {
+            GameSettings asked = Assert.Single(_plannedFor, g => g.MaxStreamMib == 3);
+            Assert.False(asked.SkipSparse); // 읽은 창 (스파스 포함) 을 물음: 스파스를 뺀 읽은 범위 (CoveredPart) 를 쓰지 않음
+        }
     }
 
     [Fact]

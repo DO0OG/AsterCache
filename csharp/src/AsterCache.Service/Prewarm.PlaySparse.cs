@@ -171,7 +171,7 @@ public sealed partial class Prewarmer
 
     /// 예열이 스파스 범위를 메모리 예열에 넣어도 게임 중 유지가 그 블록을 이어 둘 수 있는가: 게임이 시작할 때 이 유지를 시작하는 조건 (시작 스트림 허용 auto.start_stream_enabled, 사다리 memory.standby_ladder, 설정 memory.keep_sparse, 읽기 도구) 과
     /// 첫 회차가 통과해야 하는 조건 (붙들기 안티치트 게이트, 순위 목록) 을 모두 만족하는 게임. 아니면 예열 예산이 모자랄 때 스파스 범위를 메모리 예열에서 빼는 이전 판단을 그대로 씁니다 (유지할 수 없는 스파스에 예산을 쓰지 않음).
-    /// 유지를 시작하는 곳이 보는 조건은 모두 여기에 모읍니다. 실행마다 정해지는 일시 상태 (다른 게임 프로세스가 같은 디스크에서 돌아 시작 스트림을 미루는 경우) 는 예열 때 알 수 없어 보지 않습니다.
+    /// 유지를 시작하는 곳이 보는 조건은 모두 여기에 모읍니다. 실행마다 정해지는 일시 상태 (실행 직후 종료가 되풀이돼 시작 만지기와 유지를 물리는 backOff) 는 예열 때 알 수 없어 보지 않습니다.
     internal bool SparseKeepable(GameSettings game) =>
         _env.StartStreamEnabled() && _solar.Enabled && _env.KeepSparseEnabled() && _env.OpenBlockReader is not null && _pins.HoldGate(game).Blocker is null && _env.RankedRows(game) is not null;
 
@@ -180,7 +180,8 @@ public sealed partial class Prewarmer
     private bool LoadSparseBlocks(GameSettings game, SparseKeep keep, out (string Reason, string? Detail) why)
     {
         why = default;
-        if (!RefreshKeepList(game, keep.List))
+        GameSettings? window = SparseWindowOf(game);
+        if (!(window is { } w ? RefreshSparseWindowList(game, w, keep.List) : RefreshKeepList(game, keep.List)))
         {
             why = ("keep list unavailable", "the planned prewarm list could not be read");
             return false;
@@ -213,11 +214,33 @@ public sealed partial class Prewarmer
 
         // 예열 선택에 스파스 구간이 없는 사유: 예열이 스파스 범위를 메모리 예열에서 뺐는가 (예산 판정), 아니면 예열 목록에 스파스 파일이 원래 없는가
         string detail = $"{keep.List.Ordered.Count} ranges, {keep.List.Ordered.Sum(o => o.Length) >> 20} MiB in the keep list";
-        why = CoveredPart(game).SkipSparse ? ("sparse files left out of the memory prewarm", detail) : ("no sparse range in the keep list", detail);
+        why = window is null && CoveredPart(game).SkipSparse ? ("sparse files left out of the memory prewarm", detail) : ("no sparse range in the keep list", detail);
         return false;
     }
 
-    // 스파스 유지가 회차를 건너뛰거나 끝낸 사유를 사유가 바뀔 때만 한 줄 남기고 (게임당), count 이면 끝 줄의 사유별 집계에 더합니다 (끝내는 사유는 그 줄 하나로 충분해 세지 않음).
+    // 처음 예열이 스파스 범위를 넣어 읽은 창 (window, 스파스 표식 없음) 의 유지 목록: 그 뒤의 사다리·보충·표본은 스파스를 뺀 읽은 범위 (CoveredPart) 를 보므로 스파스 유지만 이 창을 따로 봅니다.
+    // 창 밖의 스파스는 예열하지 않았으므로 읽지 않습니다. 입력이 바뀌지 않는 동안은 다시 계산하지 않음 (RefreshKeepList 와 같음).
+    private bool RefreshSparseWindowList(GameSettings game, GameSettings window, KeepList keep)
+    {
+        string? input = _env.ListStamp(window);
+        string? stamp = input is null ? null : $"{input}|{window.MaxStreamMib}|sparse window";
+        if (stamp is not null && stamp == keep.Stamp && keep.All.Count > 0)
+        {
+            return true;
+        }
+
+        if (LadderReads(window) is not { Count: > 0 } all)
+        {
+            return false;
+        }
+
+        keep.Stamp = stamp;
+        keep.All = all;
+        keep.Ordered = _solar.ImportanceOrder(game, all);
+        return true;
+    }
+
+    // 스파스 유지가 회차를 건너뛰거나 끝낸 사유를 사유가 바뀔 때만 한 줄 남기고 (플레이당), count 이면 끝 줄의 사유별 집계에 더합니다 (끝내는 사유는 그 줄 하나로 충분해 세지 않음).
     private void NoteSparseSkip(GameSettings game, SparseKeep keep, string reason, string? detail = null, bool count = true)
     {
         if (count)

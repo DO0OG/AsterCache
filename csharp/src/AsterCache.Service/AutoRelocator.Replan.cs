@@ -14,7 +14,7 @@ public sealed partial class AutoRelocator
     // 재배치 도중 목표 존이 막혀 멈춘 경우 (reason 은 로그에 남는 이유, 기본은 존 점유): 업데이트 재계획과 같은 방식으로 저널·계획을 옆으로 치우고 (트레이스는 그대로) 처음 단계로 되돌립니다.
     private const string ZoneOccupiedReason = "zone region appears occupied";
 
-    private readonly HashSet<string> _skipPlacementCheck = new(StringComparer.Ordinal); // 틱 스레드에서만 씀
+    private readonly HashSet<string> _placementCheckPending = new(StringComparer.Ordinal); // 존 점유로 계획을 치운 게임: 다음 재계획이 치운 계획을 기준으로 판정함. 틱 스레드에서만 씀
 
     private void SetAsideForReplan(GameSettings g, string reason = ZoneOccupiedReason)
     {
@@ -36,13 +36,13 @@ public sealed partial class AutoRelocator
             }
         }
 
-        if (reason != ZoneOccupiedReason)
+        if (reason == ZoneOccupiedReason)
         {
-            _ = _skipPlacementCheck.Add(g.Name); // 읽지 못한 파일 보류 등은 놓았던 조각이 제자리를 잃은 것이 아님
+            _ = _placementCheckPending.Add(g.Name); // 존이 막혀 치운 계획만 놓았던 조각이 제자리를 잃었는지 봄 (읽지 못한 파일 보류 등은 아님)
         }
         else
         {
-            _ = _skipPlacementCheck.Remove(g.Name);
+            _ = _placementCheckPending.Remove(g.Name);
         }
 
         _status.ResetForReplan(g.Name, BusyDetail, preserveReapplyLimit: true); // 원본은 그대로인 채 계획만 다시 만듦: 되풀이 기록은 지우지 않음

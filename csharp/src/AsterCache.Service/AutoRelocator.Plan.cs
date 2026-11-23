@@ -165,22 +165,20 @@ public sealed partial class AutoRelocator
                 plan = InheritHeld(g, plan); // 아직 읽지 못하는 보류 파일은 후보에서 빠졌어도 계속 보류로 남김
                 bool hadJournal = _env.JournalRows(g) > 0;
                 List<PlanFile> olds = ResidualOlds(g);
-                bool keptRecord = _status.ReapplyLimit(g.Name) is not null && olds.Count > 0; // 치워 둔 계획의 재계획 (업데이트·확장은 기록이 이미 지워짐)
-                long placed = keptRecord ? _env.JournalDoneClusters(g, olds[0]) : 0; // 잔여 재계획이 저널을 보관하기 전에 읽음
+                bool keptRecord = _status.ReapplyLimit(g.Name) is not null && olds.Count > 0; // 기록이 남은 채 다시 계획 (업데이트·확장은 기록이 이미 지워짐)
+                bool checkPlacement = _placementCheckPending.Remove(g.Name) && keptRecord; // 존이 막혀 치운 바로 그 계획 (olds[0]) 과 견줌: 가변 파일·보류 파일 때문에 다시 계획하는 것은 판정하지 않음
                 try
                 {
+                    long lost = checkPlacement ? LostPlacedClusters(g, olds[0]) : 0; // 잔여 재계획이 저널을 보관하기 전에 읽음: 읽기 오류는 아래 일시 보류로
                     plan = residual(g, plan, olds, sessions);
                     LogResidualPlacement(g, plan);
-                    if (keptRecord)
+                    if (checkPlacement)
                     {
-                        if (_skipPlacementCheck.Remove(g.Name))
-                        {
-                            _status.NoteReapplyReplan(g.Name, false);
-                        }
-                        else
-                        {
-                            NoteReapplyReplan(g, olds[0], plan, placed);
-                        }
+                        NoteReapplyReplan(g, olds[0], lost);
+                    }
+                    else if (keptRecord)
+                    {
+                        _status.NoteReapplyReplan(g.Name, false); // 기록은 이어 가고 지문만 다음 계획의 것으로
                     }
                 }
                 catch (PlanRejectedException e) when (IsTemporaryRejection(e))

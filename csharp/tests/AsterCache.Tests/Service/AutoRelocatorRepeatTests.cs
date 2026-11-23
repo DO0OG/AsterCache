@@ -318,9 +318,9 @@ public sealed partial class AutoRelocatorTests
         Assert.DoesNotContain("reapply_limits", File.ReadAllText(Path.Combine(Root, "auto_status.json")), StringComparison.Ordinal);
     }
 
-    // 이슈 주기의 가짜 세계: dry-run 은 rejects 번 존 점유로 거절하고 아니면 옮길 것이 있다고 보고, 실제 적용은 상한에서 멈춘 것으로 보고함.
-    // 잔여 재계획이 놓았던 조각을 잃은 것으로 보이게 하려면 (placedLost) 새 계획의 고정분을 0 으로, 저널의 done 을 100 클러스터로 둠.
-    private (Func<int> Moves, Action<int> Reject) InstallIssueCycle(bool placedLost)
+    // 이슈 주기의 가짜 세계: dry-run 은 rejects 번 존 점유로 거절하고 아니면 옮길 것이 있다고 보고, 실제 적용은 가짜 볼륨에서 실제로 옮기되 상한에서 멈춘 것으로 보고함.
+    // 놓았던 조각이 제자리를 잃은 양은 값을 덮어쓰지 않고, 가짜 볼륨에서 파일을 다른 자리로 옮겨 만듦 (OptimizerMovesTheFilesAway).
+    private (Func<int> Moves, Action<int> Reject) InstallIssueCycle()
     {
         int rejects = 0;
         int moves = 0;
@@ -336,46 +336,45 @@ public sealed partial class AutoRelocatorTests
             ApplyReport rep = real(g, plan, options, ct);
             if (options.DryRun)
             {
-                rep.TasksTodo = 1; // 가짜 볼륨은 이미 제자리라 옮길 것이 있는 것으로 보고
+                rep.TasksTodo = 1; // 옮길 것이 남은 것으로 보고
                 rep.BytesTodo = 8192;
             }
             else
             {
                 moves++;
-                rep.MovedBytes = 8192;
+                rep.MovedBytes = Math.Max(rep.MovedBytes, 8192);
                 rep.Stopped = "write_cap";
             }
 
             return rep;
         };
-        if (placedLost)
-        {
-            Func<GameSettings, PlanFile, IReadOnlyList<PlanFile>, IReadOnlyList<IReadOnlyList<AsterCache.Core.Trace.TraceEvent>>?, PlanFile> residual = _w.ReplanResidual!;
-            _w.ReplanResidual = (g, candidate, olds, sessions) =>
-            {
-                PlanFile built = residual(g, candidate, olds, sessions);
-                built.Stats["in_place_bytes"] = 0L; // 옮겨 둔 조각을 최적화가 모두 되돌려 새 계획이 고정할 것이 없음
-                return built;
-            };
-            _w.JournalDoneClusters = (_, _) => 100; // 활성 계획 아래에서 100 클러스터를 놓았음
-        }
-
         _relocator = null;
+        Relocator.PlacementLostMinBytes = 64 << 10; // 시험 계획은 수백 KiB: 문턱을 64 KiB 로 낮춤
         return (() => moves, n => rejects = n);
     }
 
-    [Fact]
-    public void ARelocatingGameWithNoRecordThatKeepsLosingWhatItPlacedPausesAtTheThirdRoundByTicksAlone()
+    // 예약 최적화가 서비스가 놓은 조각을 존 밖의 다른 자리로 옮김: 가짜 볼륨에서 실제로 옮김.
+    private int _awayRounds;
+
+    private void OptimizerMovesTheFilesAway()
     {
-        // 기록 없이 재배치 단계에서 시작 (주기 중간에 설치됨): 옮김 → 되돌려짐 → 거절 → 보류 → 잔여 재계획 → 다시 옮김
-        (Func<int> moves, Action<int> reject) = InstallIssueCycle(placedLost: true);
-        Tick();
+        long at = 100000 + 4000 * _awayRounds++; // 매번 다른 빈 자리
+        Vol.Move(F1, 0, at, 256);
+        Vol.Move(F2, 0, at + 1000, 256);
+    }
+
+    [Fact]
+    public void ARelocatingGameWithNoRecordWhosePlacedPiecesKeepGettingMovedAwayPausesAtTheThirdRoundByTicksAlone()
+    {
+        // 기록 없이 재배치 단계에서 시작 (주기 중간에 설치됨): 옮김 → 옮겨짐 → 거절 → 보류 → 잔여 재계획 → 다시 옮김
+        (Func<int> moves, Action<int> reject) = InstallIssueCycle();
+        RunTicksUntil(() => moves() >= 1); // 처음 배치
         Assert.Null(_status.ReapplyLimit("bench"));
-        Assert.Equal(AutoStage.WaitingIdle, Entry.Stage);
         Assert.Equal(0, _status.ReapplyRoundsWithin("bench", RepeatWindow));
 
         for (int round = 1; round <= 3; round++)
         {
+            OptimizerMovesTheFilesAway();
             reject(round == 1 ? 1 : 2); // 첫 주기는 바로 잔여 재계획, 이후는 거절 (보류) → 보류가 끝난 뒤 거절 (잔여 재계획)
             RunTicksUntil(() => _status.ReapplyRoundsWithin("bench", RepeatWindow) >= round, ticks: 400);
             Assert.Equal(round, _status.ReapplyRoundsWithin("bench", RepeatWindow));
@@ -386,6 +385,7 @@ public sealed partial class AutoRelocatorTests
         Assert.Contains(AutoRelocator.ReapplyRepeatDetail, Entry.Detail, StringComparison.Ordinal);
 
         int before = moves();
+        OptimizerMovesTheFilesAway();
         reject(2);
         Run(TimeSpan.FromHours(2));
         Assert.Equal(before, moves()); // 쉬는 동안 옮기지 않음
@@ -397,7 +397,8 @@ public sealed partial class AutoRelocatorTests
     {
         DoneAndReadyToReplan(out _);
         _ = Relocator.ReapplyBlock(_game);
-        (Func<int> moves, Action<int> reject) = InstallIssueCycle(placedLost: true);
+        (Func<int> moves, Action<int> reject) = InstallIssueCycle();
+        OptimizerMovesTheFilesAway();
         reject(1);
         Assert.True(Relocator.HandOffZoneBlocked(_game)); // 첫 회차: 정기 재적용이 존 점유로 넘김
         RunTicksUntil(() => _status.ReapplyRoundsWithin("bench", RepeatWindow) >= 1);
@@ -406,6 +407,7 @@ public sealed partial class AutoRelocatorTests
 
         for (int round = 2; round <= 3; round++)
         {
+            OptimizerMovesTheFilesAway();
             reject(2);
             RunTicksUntil(() => _status.ReapplyRoundsWithin("bench", RepeatWindow) >= round, ticks: 400);
             Assert.Equal(round, _status.ReapplyRoundsWithin("bench", RepeatWindow));
@@ -418,9 +420,9 @@ public sealed partial class AutoRelocatorTests
     [Fact]
     public void AReplanThatKeepsEverythingTheServicePlacedIsNotCountedHoweverOftenItHappens()
     {
-        // 놓은 조각이 그대로이고 존만 다시 잡는 정상 진행: 몇 번을 거쳐도 0회
-        (Func<int> moves, Action<int> reject) = InstallIssueCycle(placedLost: false);
-        Tick();
+        // 놓은 조각이 그대로이고 존만 다시 잡는 정상 진행 (여러 날에 걸친 처음 배치): 몇 번을 거쳐도 0회
+        (Func<int> moves, Action<int> reject) = InstallIssueCycle();
+        RunTicksUntil(() => moves() >= 1); // 처음 배치
         for (int round = 1; round <= 4; round++)
         {
             int movesBefore = moves();
@@ -434,36 +436,28 @@ public sealed partial class AutoRelocatorTests
     }
 
     [Theory]
-    [InlineData(100L, 0L, false)] // 새 고정분 = 예전 고정분 + done: 놓은 조각이 그대로
-    [InlineData(100L, 5L, false)] // 더 늘어도 세지 않음
-    [InlineData(100L, -1L, true)] // 1 클러스터라도 줄었으면 잃은 것
-    [InlineData(0L, 0L, false)]
-    [InlineData(0L, -1L, true)] // 저널의 done 이 없어도 예전 고정분이 줄면 셈 (고정분 감소 분기 단독)
-    public void OnlyAFixedPartSmallerThanThePreviousFixedPartPlusWhatWasDoneCountsAsLostPlacement(long done, long delta, bool lost)
+    [InlineData(0, true)] // 잃은 양이 문턱과 같으면 셈
+    [InlineData(1, false)] // 문턱보다 1 바이트라도 적으면 세지 않음
+    public void OnlyALostPlacementAtOrAboveTheThresholdCountsAsARound(long thresholdAboveLost, bool counted)
     {
-        (Func<int> moves, Action<int> reject) = InstallIssueCycle(placedLost: false);
-        Func<GameSettings, PlanFile, IReadOnlyList<PlanFile>, IReadOnlyList<IReadOnlyList<AsterCache.Core.Trace.TraceEvent>>?, PlanFile> residual = _w.ReplanResidual!;
-        _w.ReplanResidual = (g, candidate, olds, sessions) =>
-        {
-            PlanFile built = residual(g, candidate, olds, sessions);
-            long before = (long)candidate.Stats["in_place_bytes"]! / candidate.ClusterBytes;
-            built.Stats["in_place_bytes"] = (before + done + delta) * built.ClusterBytes;
-            return built;
-        };
-        _w.JournalDoneClusters = (_, _) => done;
-        _relocator = null;
-        Tick(); // 첫 계획과 처음 배치
+        (Func<int> moves, Action<int> reject) = InstallIssueCycle();
+        RunTicksUntil(() => moves() >= 1); // 첫 계획과 처음 배치
+        PlanFile first = PlanFile.Load(_game.Plan);
+        long lostBytes = ReapplyEnv.JournalDoneClusters(JournalPath, first) * Cb;
+        Assert.True(lostBytes > 0);
+        Relocator.PlacementLostMinBytes = lostBytes + thresholdAboveLost;
+        OptimizerMovesTheFilesAway(); // 놓은 조각이 모두 제자리를 잃음
 
         reject(1);
-        RunTicksUntil(() => moves() >= 3, ticks: 400);
+        RunTicksUntil(() => moves() >= 4, ticks: 400);
 
-        Assert.Equal(lost ? 1 : 0, _status.ReapplyRoundsWithin("bench", RepeatWindow));
+        Assert.Equal(counted ? 1 : 0, _status.ReapplyRoundsWithin("bench", RepeatWindow));
     }
 
     [Theory]
     [InlineData(false, 0)]
     [InlineData(true, 1)]
-    public void TheReplanOfAPlanSetAsideBecauseTheZoneWasTakenCountsOnlyWhenWhatWasPlacedIsLost(bool lost, int rounds)
+    public void TheReplanOfAPlanSetAsideBecauseTheZoneWasTakenCountsOnlyWhenWhatWasPlacedIsLost(bool movedAway, int rounds)
     {
         bool first = true;
         _w.MakePlanAt = (sessions, origin, zoneMib, lcn, used) => PlanFile.Make(sessions, origin, zoneMib << 20, Cb, p => Vol.Ext[p], zoneStartLcn: lcn, preserveBytes: 64 << 20, fixedClusters: used);
@@ -479,32 +473,116 @@ public sealed partial class AutoRelocatorTests
             else if (first)
             {
                 first = false;
+                if (movedAway)
+                {
+                    OptimizerMovesTheFilesAway();
+                }
+
                 rep.Stopped = Applier.ZoneOccupied; // 존이 막혀 멈춤: 계획을 치우고 다시 계획
             }
             else
             {
-                rep.MovedBytes = 8192;
+                rep.MovedBytes = Math.Max(rep.MovedBytes, 8192);
             }
 
             return rep;
         };
-        if (lost)
-        {
-            Func<GameSettings, PlanFile, IReadOnlyList<PlanFile>, IReadOnlyList<IReadOnlyList<AsterCache.Core.Trace.TraceEvent>>?, PlanFile> residual = _w.ReplanResidual!;
-            _w.ReplanResidual = (g, candidate, olds, sessions) =>
-            {
-                PlanFile built = residual(g, candidate, olds, sessions);
-                built.Stats["in_place_bytes"] = 0L;
-                return built;
-            };
-        }
-
         _relocator = null;
-        Tick();
-        RunTicksUntil(() => Entry.Stage == AutoStage.Done, ticks: 100);
+        Relocator.PlacementLostMinBytes = 64 << 10;
+        RunTicksUntil(() => _status.Get("bench")?.Stage == AutoStage.Done, ticks: 100);
 
         Assert.Contains(_log.Lines, l => l.Contains("zone region appears occupied, plan set aside", StringComparison.Ordinal));
         Assert.Equal(rounds, _status.ReapplyRoundsWithin("bench", RepeatWindow));
+    }
+
+    [Fact]
+    public void ALayoutSettingChangeAloneBetweenTheSetAsidePlanAndItsReplanIsNotCountedAsLostPlacement()
+    {
+        // 범위 계획으로 놓은 뒤 존이 막혀 치우고, 그 사이 설정이 whole_file 로 바뀌어 후보가 통째 계획이 됨: 놓은 조각은 그대로이므로 0회
+        bool first = true;
+        UseWholeFile(whole: false); // 통째 계획 함수는 연결하고 설정은 ranges
+        _w.MakePlanAt = (sessions, origin, zoneMib, lcn, used) => PlanFile.Make(sessions, origin, zoneMib << 20, Cb, p => Vol.Ext[p], zoneStartLcn: lcn, preserveBytes: 64 << 20, fixedClusters: used);
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            ApplyReport rep = real(g, plan, options, ct);
+            if (options.DryRun)
+            {
+                rep.TasksTodo = 1;
+                rep.BytesTodo = 8192;
+            }
+            else if (first)
+            {
+                first = false;
+                SetAuto(a => a with { RelocateLayout = RelocateLayouts.WholeFile }); // 설정이 통째 배치로 바뀜: 다시 계획할 후보는 통째 계획
+                rep.Stopped = Applier.ZoneOccupied;
+            }
+            else
+            {
+                rep.MovedBytes = Math.Max(rep.MovedBytes, 8192);
+            }
+
+            return rep;
+        };
+        _relocator = null;
+        Relocator.PlacementLostMinBytes = 64 << 10;
+        RunTicksUntil(() => _status.Get("bench")?.Stage == AutoStage.Done, ticks: 100);
+
+        Assert.NotEmpty(_wholeCalls); // 후보가 통째 계획으로 만들어졌음
+        Assert.Equal(0, _status.ReapplyRoundsWithin("bench", RepeatWindow));
+    }
+
+    [Fact]
+    public void AReplanForVolatileFilesComparesNothingAgainstAnOldStalePlanAndCountsNoRound()
+    {
+        // 가변 파일 표시로 활성 계획을 치우지 않고 다시 계획: 남아 있던 예전 .stale 은 기준이 아님
+        (Func<int> moves, Action<int> _) = InstallIssueCycle();
+        RunTicksUntil(() => moves() >= 1); // 처음 배치: 저널에 done 이 생김
+        PlanFile active = PlanFile.Load(_game.Plan);
+        PlanFile staleOld = active with { Stats = active.Stats };
+        staleOld.Stats["residual"] = 1L;
+        staleOld.Stats["in_place_bytes"] = 1L << 30; // 크게 놓은 것으로 보이는 예전 계획
+        staleOld.Save(_game.Plan + ".stale");
+        _status.EnsureReapplyLimit("bench", string.Empty, RelocateLayouts.Ranges);
+        _w.Volatile[F1] = "rewritten by the game"; // 트레이스가 가변으로 표시
+
+        RunTicksUntil(() => moves() >= 3, ticks: 100);
+
+        Assert.Contains(_log.Lines, l => l.Contains("planning again", StringComparison.Ordinal) && l.Contains("rewritten", StringComparison.Ordinal));
+        Assert.Equal(0, _status.ReapplyRoundsWithin("bench", RepeatWindow));
+        Assert.False(_status.ReapplyLimit("bench")?.HandoffPending ?? false);
+    }
+
+    [Fact]
+    public void AJournalReadErrorWhileReplanningASetAsidePlanHoldsTemporarilyInsteadOfFailingThePlan()
+    {
+        bool first = true;
+        _w.MakePlanAt = (sessions, origin, zoneMib, lcn, used) => PlanFile.Make(sessions, origin, zoneMib << 20, Cb, p => Vol.Ext[p], zoneStartLcn: lcn, preserveBytes: 64 << 20, fixedClusters: used);
+        Func<GameSettings, PlanFile, ApplyOptions, CancellationToken, ApplyReport> real = _w.Apply;
+        _w.Apply = (g, plan, options, ct) =>
+        {
+            ApplyReport rep = real(g, plan, options, ct);
+            if (options.DryRun)
+            {
+                rep.TasksTodo = 1;
+                rep.BytesTodo = 8192;
+            }
+            else if (first)
+            {
+                first = false;
+                rep.Stopped = Applier.ZoneOccupied;
+            }
+
+            return rep;
+        };
+        _w.JournalDoneClusters = (_, _) => throw new IOException("journal is locked");
+        _relocator = null;
+        RunTicksUntil(() => _log.Lines.Any(l => l.Contains("will retry", StringComparison.Ordinal)), ticks: 40);
+
+        Assert.True(_log.Lines.Any(l => l.Contains("journal is locked", StringComparison.Ordinal) && l.Contains("nothing was changed, will retry", StringComparison.Ordinal)), string.Join(Environment.NewLine, _log.Lines));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("replan failed", StringComparison.Ordinal));
+        Assert.NotEqual(AutoStage.Done, Entry.Stage);
+        Assert.True(File.Exists(_game.Plan + ".stale")); // 치운 계획은 그대로 (되살리지 않음)
     }
 
     private void RunTicksUntil(Func<bool> done, int ticks = 200)

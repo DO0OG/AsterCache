@@ -1,7 +1,9 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using AsterCache.Core.Apply;
 using AsterCache.Core.Logging;
+using AsterCache.Core.Model;
 using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
 
@@ -9,11 +11,12 @@ namespace AsterCache.Service;
 
 /// 원본이 바뀌지 않았는데 서비스가 다시 놓은 회차가 되풀이될 때 게임별로 이동을 쉬게 합니다.
 /// 한 가지 판정: 원본이 그대로인데 서비스가 이미 놓았던 조각이 제자리를 잃어 그것을 다시 옮겼다 = 1회차.
-/// 놓았던 조각의 양은 예전 계획의 고정분 (in_place_bytes) 과 그 계획 아래 저널에서 done 으로 끝난 클러스터의 합입니다. 세는 곳:
+/// 놓았던 조각은 예전 계획에서 이미 제자리에 놓여 다시 옮기지 않는 조각 (잔여 계획의 in_place_bytes, 작업으로 들어 있음) 과 그 계획 아래 저널에서 done 으로 끝난 작업입니다.
+/// 그 가운데 지금 그 자리에 없는 클러스터의 합을 재계획이 일어나는 순간 한 번 세어, 문턱 이상이면 그 뒤 첫 이동을 한 회차로 셉니다. 새 계획 후보와는 견주지 않습니다 (방식 전환·트레이스·가변 표시로 후보가 달라져도 영향 없음). 세는 곳:
 /// - 정기 재적용이 바이트를 옮기고 돌아온 때 (배치 검사가 적용된 배치의 풀림을 확인한 것), 회당 쓰기 상한·취소로 나뉜 회차의 이어 옮기기는 같은 회차이고 옮길 양이 늘면 새 회차.
 /// - 정기 재적용이 존 점유로 넘긴 뒤의 첫 이동.
-/// - 잔여 재계획 (존 점유) 이나 치워 둔 계획의 재계획으로 새로 얻은 고정분이 놓았던 양보다 줄어, 그 뒤의 첫 이동.
-/// 처음 배치, 놓았던 조각이 제자리에 있는 채 존만 다시 잡는 재계획, 새 계획의 이행은 세지 않습니다.
+/// - 존 점유로 남은 부분만 다시 계획하거나 (잔여 재계획), 적용 도중 존이 막혀 치운 계획을 다시 계획한 뒤의 첫 이동. 가변 파일·읽지 못한 파일 때문에 다시 계획하는 것은 세지 않음.
+/// 처음 배치, 놓은 조각이 제자리에 있는 채 존만 다시 잡는 재계획, 새 계획의 이행은 세지 않습니다.
 public sealed partial class AutoRelocator
 {
     // 조사 사례 (한 게임의 같은 조각을 사흘 동안 하루에도 여러 번 다시 옮김) 에서 정한 기준: 7일 안에 3번이면 그 게임의 재배치를 쉼.
@@ -23,6 +26,11 @@ public sealed partial class AutoRelocator
     private static readonly Regex RepeatTag = new("(, )?" + Regex.Escape(ReapplyRepeatDetail), RegexOptions.None, TimeSpan.FromSeconds(1));
 
     private readonly Dictionary<string, DateTimeOffset> _repeatSourceChecked = new(StringComparer.Ordinal); // 틱 스레드에서만 씀
+
+    /// 놓았던 조각이 제자리를 잃은 양이 이 바이트 이상이어야 한 회차로 셈. 기존 하루 재배치 횟수가 64 MiB 이상 옮긴 회차만 세는 규칙과 맞춰, 한두 클러스터의 변동이나 작은 파일 하나의 이동으로는 세지 않음.
+    internal const long DefaultPlacementLostMinBytes = 64L << 20;
+
+    internal long PlacementLostMinBytes { get; set; } = DefaultPlacementLostMinBytes; // 시험이 줄임
 
     public void NoteReapplyMoved(GameSettings g, long movedBytes, long todoBytes, bool partial)
     {
@@ -97,14 +105,42 @@ public sealed partial class AutoRelocator
         return !ReapplyRepeatHeld(g, auto);
     }
 
-    /// 원본이 그대로인 채 계획을 다시 만들었음 (잔여 재계획·치워 둔 계획의 재계획): 기록은 두고, 새 계획의 고정분이 예전 계획의 고정분과 그 계획 아래 done 으로 끝난 클러스터의 합보다 줄었으면
-    /// (놓았던 조각이 제자리를 잃음) 그 뒤 첫 이동을 한 회차로 셉니다. 이전 기록이 없어도 판정은 같고 (이 게임의 기록은 여기서 만들어짐), 처음 배치는 놓은 조각이 그대로라 세지 않습니다.
-    /// doneClusters 는 저널이 보관되기 전에 읽은 값입니다.
-    private void NoteReapplyReplan(GameSettings g, PlanFile active, PlanFile built, long doneClusters)
+    /// 예전 계획에서 이미 놓였던 조각 (잔여 계획의 이미 제자리인 부분 + 저널의 done 작업) 가운데 지금 그 자리에 없는 클러스터의 합.
+    /// 위치는 배치 검사가 쓰는 조회 (Extents) 로 한 번만 봅니다. 저널은 잔여 재계획이 보관하기 전에 읽어야 합니다. 읽지 못한 파일이 있으면 알 수 없으므로 0.
+    private long LostPlacedClusters(GameSettings g, PlanFile old)
     {
-        _status.EnsureReapplyLimit(g.Name, ReapplySourceKey(active), GamePolicy.RelocateLayout(g, _settings().Auto));
-        bool lost = InPlaceClusters(built) is { } after && InPlaceClusters(active) is { } before && after < before + doneClusters;
-        _status.NoteReapplyReplan(g.Name, lost);
+        long expected = _env.JournalDoneClusters(g, old) + (old.IsResidual ? InPlaceClusters(old) ?? 0 : 0);
+        if (expected == 0)
+        {
+            return 0;
+        }
+
+        var cache = new Dictionary<string, IReadOnlyList<Extent>?>(StringComparer.Ordinal);
+        long placed = 0;
+        foreach (PlanTask t in old.Tasks)
+        {
+            if (!cache.TryGetValue(t.Path, out IReadOnlyList<Extent>? ext))
+            {
+                ext = cache[t.Path] = _env.Extents(t.Path);
+            }
+
+            if (ext is null)
+            {
+                return 0;
+            }
+
+            placed += PlanGuards.PlacedClusters(ext, t.Vcn, t.Clusters, t.TargetLcn);
+        }
+
+        return Math.Max(0, expected - placed);
+    }
+
+    /// 원본이 그대로인 채 계획을 다시 만들었음 (잔여 재계획·치워 둔 계획의 재계획): 기록은 두고, 놓았던 조각이 제자리를 잃은 양 (LostPlacedClusters) 이 문턱 이상이면 그 뒤 첫 이동을 한 회차로 셉니다.
+    /// 이전 기록이 없어도 판정은 같고 (이 게임의 기록은 여기서 만들어짐), 처음 배치는 놓은 조각이 그대로라 세지 않습니다.
+    private void NoteReapplyReplan(GameSettings g, PlanFile old, long lostClusters)
+    {
+        _status.EnsureReapplyLimit(g.Name, ReapplySourceKey(old), GamePolicy.RelocateLayout(g, _settings().Auto));
+        _status.NoteReapplyReplan(g.Name, lostClusters > 0 && lostClusters * old.ClusterBytes >= PlacementLostMinBytes);
     }
 
     private static long? InPlaceClusters(PlanFile plan) => plan.Stats.TryGetValue("in_place_bytes", out object? v) && v is long bytes && plan.ClusterBytes > 0 ? bytes / plan.ClusterBytes : null;

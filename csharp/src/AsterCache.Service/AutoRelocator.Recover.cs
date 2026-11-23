@@ -263,9 +263,9 @@ public sealed partial class AutoRelocator
                 throw new PlanRejectedException(DataLock.PlanChangedMessage); // 기다리는 동안 활성 계획이 바뀜: 옛 계획으로 되돌리지 않고 일시 보류 뒤 새 활성 계획으로 다시
             }
 
-            long placed = _env.JournalDoneClusters(g, active); // 잔여 재계획이 저널을 보관하기 전에 읽음
+            long lost = LostPlacedClusters(g, active); // 잔여 재계획이 저널을 보관하기 전에 읽음
             PlanFile built = _env.ReplanResidual!(g, active, ResidualOlds(g), SessionsFor(g, active));
-            NoteReapplyReplan(g, active, built, placed);
+            NoteReapplyReplan(g, active, lost);
             LogResidualPlacement(g, built);
             _status.SetRecovery(g.Name, new RecoveryAttempt(built.Sha(), LcnIn(cause.Message), 1, null, prior.Reason, prior.Stamp, prior.OccupiedStreak));
             _ = _seeded.Remove(g.Name);

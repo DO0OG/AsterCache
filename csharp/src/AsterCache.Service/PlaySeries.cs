@@ -27,9 +27,11 @@ internal readonly record struct PlaySeriesDisk(ulong ReadCount, long ReadBytes, 
 /// 한 초의 시스템 값 (원시 값의 앞뒤 차이로 구함). 첫 초처럼 앞의 값이 없으면 차이 값은 null.
 /// CPU 비율은 모두 전체 CPU (모든 논리 프로세서) 에서 차지한 비율이라 게임·서비스·다른 프로세스를 더하면 시스템 전체와 맞습니다.
 internal sealed record PlaySeriesPoint(double? CpuSystemPct, double? CpuGamePct, double? CpuServicePct, (string Name, double Pct)? Other1, (string Name, double Pct)? Other2,
-    long? AvailableMib, double? ReusedMib, long? PageReads, int? GpuMib, int? GpuGameMib, PlaySeriesDisk? Disk, string? WriteName, long WriteBytes, string Ops);
+    long? AvailableMib, double? ReusedMib, long? PageReads, int? GpuMib, int? GpuGameMib, PlaySeriesDisk? Disk, string? WriteName, long WriteBytes, string Ops,
+    long? GameReadBytes = null, long? GameWorkingSetMib = null, LoadState Load = LoadState.Unknown);
 
 /// 원시 값 두 개의 차이로 초 단위 값을 만듭니다 (표본 루프 스레드 하나에서만 부름).
+/// 게임 프로세스의 읽기 전송 바이트 증가분과 작업 집합은 같은 프로세스 목록에서 구합니다 (앞의 값이 없던 프로세스는 증가분을 셈하지 않음).
 /// 프로세스는 이름으로 묶어 셉니다 (같은 이름의 프로세스가 여럿이어도 합쳐서 가장 많이 쓴 것을 가림). 번호가 다시 쓰여 CPU 시간이 줄어든 항목은 0 으로 둡니다 (shortcut: 번호가 다시 쓰이고 앞의 값보다 크면 그 한 초가 틀림).
 internal sealed class PlaySeriesBuilder
 {
@@ -45,7 +47,7 @@ internal sealed class PlaySeriesBuilder
         _before.Clear();
     }
 
-    public PlaySeriesPoint Next(PlaySeriesRaw raw, IReadOnlyCollection<int> gamePids, IReadOnlyList<PlayDiskCounters> previousDisk, IReadOnlyList<PlayDiskCounters> currentDisk)
+    public PlaySeriesPoint Next(PlaySeriesRaw raw, IReadOnlyCollection<int> gamePids, IReadOnlyList<PlayDiskCounters> previousDisk, IReadOnlyList<PlayDiskCounters> currentDisk, LoadState load = LoadState.Unknown)
     {
         PlaySeriesRaw? before = _previous;
         _previous = raw;
@@ -54,13 +56,15 @@ internal sealed class PlaySeriesBuilder
         bool hasProcesses = before is not null && _before.Count > 0 && raw.Processes.Count > 0;
         long gameTicks = 0;
         long serviceTicks = 0;
+        long gameRead = 0;
+        long gameWorkingSet = 0;
         _cpuByName.Clear();
         _writeByName.Clear();
         if (hasProcesses)
         {
             foreach (ProcessUsage p in raw.Processes)
             {
-                _ = _before.TryGetValue(p.Pid, out ProcessUsage old);
+                bool known = _before.TryGetValue(p.Pid, out ProcessUsage old);
                 long cpu = Math.Max(0, p.CpuTicks - old.CpuTicks);
                 long write = Math.Max(0, p.WriteBytes - old.WriteBytes);
                 if (p.Pid == 0)
@@ -71,6 +75,8 @@ internal sealed class PlaySeriesBuilder
                 if (gamePids.Contains(p.Pid))
                 {
                     gameTicks += cpu;
+                    gameWorkingSet += p.WorkingSetBytes;
+                    gameRead += known ? Math.Max(0, p.ReadBytes - old.ReadBytes) : 0;
                 }
                 else if (p.Pid == raw.ServicePid)
                 {
@@ -110,7 +116,8 @@ internal sealed class PlaySeriesBuilder
             Pct(others.Count > 0 ? others[0] : null), Pct(others.Count > 1 ? others[1] : null),
             raw.AvailableMib, before is { RepurposedBytes: { } r0 } && raw.RepurposedBytes is { } r1 && r1 >= r0 ? (r1 - r0) / 1_048_576d : null,
             before?.PageReads is { } p0 && raw.PageReads is { } p1 ? unchecked((uint)(p1 - p0)) : null,
-            raw.GpuMib, raw.GpuGameMib, Disk(previousDisk, currentDisk), hasProcesses ? write1?.Name : null, hasProcesses ? write1?.Value ?? 0 : 0, raw.Ops);
+            raw.GpuMib, raw.GpuGameMib, Disk(previousDisk, currentDisk), hasProcesses ? write1?.Name : null, hasProcesses ? write1?.Value ?? 0 : 0, raw.Ops,
+            hasProcesses ? gameRead : null, hasProcesses ? gameWorkingSet >> 20 : null, load);
     }
 
     /// 디스크별 앞뒤 차이의 합 (디스크 번호로 맞추고, 짝이 없거나 누계가 줄어든 디스크는 뺌). 읽기 횟수는 32비트 순환을 고려합니다. 평균 시간은 시간 합 / 횟수 (ms), 대기열은 지금 값의 합.
@@ -163,9 +170,10 @@ internal static class PlaySeriesFormat
     /// 머리줄. cpu_* 는 전체 CPU 에서 차지한 비율 (%), cpu_other* 는 게임·서비스가 아닌 프로세스 가운데 그 초에 가장 많이 쓴 이름 (같은 이름은 합침).
     /// standby57_reused_mib 는 대기 목록 우선순위 5~7 에서 그 초에 재사용된 양, page_reads_n 은 시스템 전체가 디스크에서 페이지를 읽어 온 횟수의 증가분, gpu_game_mib 는 게임 프로세스들의 그래픽 전용 메모리 몫입니다.
     /// disk_* 는 게임이 설치된 물리 디스크의 그 초 값 (읽기·쓰기 횟수, 바이트, 평균 시간 ms, 대기열), write_anyvol_top_* 는 그 초에 쓰기 전송량이 가장 큰 프로세스 이름과 바이트로, 디스크·볼륨을 가리지 않는 값입니다 (네트워크·파이프 쓰기 포함).
+    /// game_read_bytes 는 게임 프로세스들의 읽기 전송 바이트 증가분 (캐시 적중 포함, 디스크·볼륨을 가리지 않음), game_ws_mib 는 게임 프로세스들의 작업 집합 (MiB), load_phase 는 그 초의 로딩 판정 (loading, not_loading, 판정이 없으면 빈 칸) 입니다.
     public const string Header = "t_s,frames,max_frame_ms,over50_n,over100_n,pauses_n,pause_max_ms,cpu_sys_pct,cpu_game_pct,cpu_service_pct,cpu_other1_name,cpu_other1_pct,cpu_other2_name,cpu_other2_pct,"
         + "avail_mib,standby57_reused_mib,page_reads_n,gpu_mib,gpu_game_mib,disk_read_n,disk_read_bytes,disk_read_mean_ms,disk_write_n,disk_write_bytes,disk_write_mean_ms,disk_queue,"
-        + "write_anyvol_top_name,write_anyvol_top_bytes,service_ops";
+        + "write_anyvol_top_name,write_anyvol_top_bytes,service_ops,game_read_bytes,game_ws_mib,load_phase";
 
     /// 우선순위별 대기 목록 파일의 머리줄: 여유 + 0 으로 채운 목록 MiB, 우선순위 0~7 별 대기 MiB, 우선순위 0~7 별 재사용 누계 MiB.
     public const string ListsHeader = "t_s,free_zero_mib,standby_mib_p0,standby_mib_p1,standby_mib_p2,standby_mib_p3,standby_mib_p4,standby_mib_p5,standby_mib_p6,standby_mib_p7,"
@@ -198,7 +206,9 @@ internal static class PlaySeriesFormat
             sb.Append(",,,,,,,");
         }
 
-        sb.Append(',').Append(Name(p.WriteName)).Append(',').Append(p.WriteName is null ? string.Empty : p.WriteBytes.ToString(CultureInfo.InvariantCulture)).Append(',').Append(Name(p.Ops));
+        sb.Append(',').Append(Name(p.WriteName)).Append(',').Append(p.WriteName is null ? string.Empty : p.WriteBytes.ToString(CultureInfo.InvariantCulture)).Append(',').Append(Name(p.Ops))
+            .Append(',').Append(Num(p.GameReadBytes, "F0")).Append(',').Append(Num(p.GameWorkingSetMib, "F0"))
+            .Append(',').Append(p.Load switch { LoadState.Loading => "loading", LoadState.NotLoading => "not_loading", _ => string.Empty });
         return sb.ToString();
     }
 
@@ -373,8 +383,8 @@ internal sealed class PlaySeriesRecorder(IPlaySeriesProbe probe, PlaySeriesFile 
 
     public PlaySeriesRaw Read(IReadOnlyCollection<int> gamePids) => probe.Read(gamePids);
 
-    public PlaySeriesPoint Point(PlaySeriesRaw raw, IReadOnlyCollection<int> gamePids, IReadOnlyList<PlayDiskCounters> previousDisk, IReadOnlyList<PlayDiskCounters> currentDisk) =>
-        _builder.Next(raw, gamePids, previousDisk, currentDisk);
+    public PlaySeriesPoint Point(PlaySeriesRaw raw, IReadOnlyCollection<int> gamePids, IReadOnlyList<PlayDiskCounters> previousDisk, IReadOnlyList<PlayDiskCounters> currentDisk, LoadState load = LoadState.Unknown) =>
+        _builder.Next(raw, gamePids, previousDisk, currentDisk, load);
 
     public void Reset() => _builder.Reset();
 

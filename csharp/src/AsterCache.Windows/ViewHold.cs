@@ -53,7 +53,8 @@ public interface IKeepHold : IDisposable
     /// 바뀐 파일의 뷰를 닫고, 붙든 쪽이 작업 집합에 있는지 QueryWorkingSetEx (자기 프로세스, 접근 비트를 건드리지 않음) 로 보아 빠진 쪽만 다시 읽어 올립니다.
     /// 디스크에서 다시 읽힌 양이 refillStopBytes 를 넘으면 그 구간을 목록에서 빼고, 뒤의 빠진 쪽이 있는 구간도 읽지 않고 뺍니다.
     /// refill 이 거짓이면 (가용 메모리에 여유가 없음) 줄여 간 쪽을 다시 읽어 올리지 않고 그 구간을 붙든 목록에서 뺍니다.
-    HoldCheckResult Recheck(long refillStopBytes, CancellationToken ct, bool refill = true);
+    /// dropOnCap 이 거짓이면 (게임이 로딩 중이라 읽기 상한을 작게 준 점검) 상한에 닿아도 읽지 못한 구간을 붙든 목록에서 빼지 않고 그대로 둡니다 (읽을 수 없는 구간은 그래도 뺌).
+    HoldCheckResult Recheck(long refillStopBytes, CancellationToken ct, bool refill = true, bool dropOnCap = true);
 }
 
 /// 파일마다 섹션을 만들고 파일 핸들은 바로 닫은 채, 큰 뷰 (파일 전체 또는 WindowBytes 창) 를 열어 두고 유지 목록의 범위만 읽어 서비스 작업 집합에 올려 둡니다 (읽지 않은 쪽은 메모리를 쓰지 않음).
@@ -299,7 +300,7 @@ public sealed unsafe class ViewHold : IKeepHold
         }
     }
 
-    public HoldCheckResult Recheck(long refillStopBytes, CancellationToken ct, bool refill = true)
+    public HoldCheckResult Recheck(long refillStopBytes, CancellationToken ct, bool refill = true, bool dropOnCap = true)
     {
         lock (_lock)
         {
@@ -338,6 +339,11 @@ public sealed unsafe class ViewHold : IKeepHold
                     continue;
                 }
 
+                if (capReached && !dropOnCap)
+                {
+                    continue; // 읽기 상한에 닿은 뒤: 남은 구간은 이번에 되찾지 않되 붙들기에서 빼지 않음 (다음 점검이 이어 되찾음)
+                }
+
                 if (capReached || !refill)
                 {
                     dropped += Unlock(seg, seg.Live); // 읽기 상한에 닿은 뒤이거나 가용 메모리에 여유가 없음: 줄여 간 쪽이 있는 구간은 디스크로 되찾지 않고 목록에서 뺌
@@ -357,7 +363,10 @@ public sealed unsafe class ViewHold : IKeepHold
                 if (failed || tally.Disk > refillStopBytes)
                 {
                     capReached = tally.Disk > refillStopBytes;
-                    dropped += Unlock(seg, seg.Live); // 읽을 수 없는 구간이거나 상한을 넘긴 구간
+                    if (failed || dropOnCap)
+                    {
+                        dropped += Unlock(seg, seg.Live); // 읽을 수 없는 구간이거나 상한을 넘긴 구간 (dropOnCap 이 거짓이면 상한만 넘긴 구간은 그대로 둠)
+                    }
                 }
             }
 
@@ -367,7 +376,10 @@ public sealed unsafe class ViewHold : IKeepHold
                 if (tally.Disk > refillStopBytes && lastRead is { Live: > 0 })
                 {
                     capReached = true;
-                    dropped += Unlock(lastRead, lastRead.Live);
+                    if (dropOnCap)
+                    {
+                        dropped += Unlock(lastRead, lastRead.Live);
+                    }
                 }
             }
 

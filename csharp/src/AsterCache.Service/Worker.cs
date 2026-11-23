@@ -87,6 +87,7 @@ public sealed class Worker : BackgroundService
         if (prewarm is not null && playRecorder is not null)
         {
             prewarm.Footprint = playRecorder.Footprint; // 게임이 실행 뒤 잡는 메모리 (플레이 기록의 최근 중앙값)
+            prewarm.LoadPhases = playRecorder.LoadPhases; // 게임 안 로딩 판정: 로딩인 동안 게임 중 디스크 읽기를 미룸
         }
 
         if (backgroundYield is not null && playRecorder is not null)

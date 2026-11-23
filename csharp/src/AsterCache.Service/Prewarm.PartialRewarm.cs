@@ -168,20 +168,53 @@ public sealed partial class Prewarmer
         }
     }
 
+    // 식은 앞부분 다시 읽기를 읽을 수 있는 상태인가: 보충이 남아 있고, 처음 읽은 범위를 같은 방식으로 다시 만들 수 있거나 (같은 창, 같은 스파스 표시) 메모리 부분 예열이라 전체 재예열에 맡길 수 있음.
+    // 범위를 모르는 상태 (메모리로 멈추거나 한도로 마무리해 창이 없음, 옛 형식의 상태 파일) 의 시작 상한 예열은 읽지 않고 보충에 맡김 (이 변경 전과 같음).
+    internal bool PartialRewarmReadable(string game)
+    {
+        lock (_gate)
+        {
+            return _partial.ContainsKey(game) && (!_rangeUnknown.Contains(game) || _memoryPartial.ContainsKey(game));
+        }
+    }
+
+    // 읽은 시각을 남기고 상태 파일에 씁니다 (RewarmPartialGame 이 부분 상태를 따로 못 쓰는 경로).
+    private void PersistPartialRewarm(string game)
+    {
+        lock (_run)
+        {
+            bool changed = false;
+            lock (_gate)
+            {
+                if (_status.TryGetValue(game, out object? entry) && entry is JObject o)
+                {
+                    WritePartialRewarmFields(game, o, _now());
+                    changed = true;
+                }
+            }
+
+            if (changed)
+            {
+                FlushStatus();
+            }
+        }
+    }
+
     // 보충이 남은 상태의 재예열: 처음 읽은 것과 같은 범위 (같은 창 크기, 같은 스파스 제외) 만 다시 읽고 보충 상태를 유지합니다.
     // 목록은 창을 자른 뒤 스파스·캐시 없이 읽는 파일을 빼서 만들어지므로, 실제로 읽은 양이 아니라 처음 목록을 만든 창을 씁니다.
+    // 읽은 범위를 다시 만들 수 없으면 (_rangeUnknown) 메모리 부분 예열은 전체 재예열에 맡기고 (이 변경 전과 같음) 그 밖에는 읽지 않습니다.
     internal PrewarmResult RewarmPartialGame(GameSettings game, CancellationToken ct, long? roomMib)
     {
         (long WarmedMib, long HotMib) partial;
         bool hasPartial;
         bool wasMemoryPartial;
-        bool sparseOut;
+        bool unknown;
         long windowMib;
         lock (_gate)
         {
             hasPartial = _partial.TryGetValue(game.Name, out partial);
             wasMemoryPartial = _memoryPartial.ContainsKey(game.Name);
-            sparseOut = _sparseOut.Contains(game.Name);
+            unknown = _rangeUnknown.Contains(game.Name);
             windowMib = Math.Max(partial.WarmedMib, _partialWindowMib.GetValueOrDefault(game.Name));
         }
 
@@ -190,9 +223,30 @@ public sealed partial class Prewarmer
             return RewarmGame(game, ct, roomMib);
         }
 
+        if (unknown)
+        {
+            if (!wasMemoryPartial)
+            {
+                return new PrewarmResult(game.Name, false, "partial range unknown", null, _now());
+            }
+
+            PrewarmResult whole = RewarmGame(game, ct, roomMib);
+            if (whole.Ran || whole.Stats is { Bytes: > 0 })
+            {
+                lock (_gate)
+                {
+                    NotePartialRewarmReadLocked(game.Name, _now());
+                }
+
+                PersistPartialRewarm(game.Name);
+            }
+
+            return whole;
+        }
+
+        // 스파스 표시는 사본에 실어 넘기고 (예열이 이미 스파스를 뺀 사본의 표시를 지우지 않음) 공유 표시는 건드리지 않음
         GameSettings front = WithSparseMark(game) with { MaxStreamMib = (int)Math.Min(windowMib, int.MaxValue), MaxStreamSet = true };
         PrewarmResult result = RewarmGame(front, ct, roomMib is { } room ? Math.Min(room, windowMib) : windowMib);
-        SetSparseOut(game.Name, sparseOut); // 예열이 이 판정을 다시 정하므로 처음 예열의 표시를 되돌림
         if (!result.Ran && result.Stats is not { Bytes: > 0 })
         {
             return result; // 읽지 않고 건너뜀: 상태는 그대로
@@ -206,11 +260,15 @@ public sealed partial class Prewarmer
         {
             if (!_partial.TryGetValue(game.Name, out current))
             {
-                return result; // 다른 예열이 부분 상태를 끝냄
+                // 예열이 끝난 일반 예열로 보고 부분 상태를 지움 (창 크기가 등록 상한과 같을 때): 다시 읽기 전 상태로 되돌림
+                current = partial;
+                _partial[game.Name] = current;
+                if (wasMemoryPartial)
+                {
+                    _memoryPartial[game.Name] = current;
+                }
             }
-
-            memoryPartial = wasMemoryPartial || _memoryPartial.ContainsKey(game.Name);
-            if (current == partial)
+            else if (current == partial)
             {
                 // 메모리 때문에 줄여 읽은 것이 아니면 읽은 양은 줄지 않음 (같은 범위를 다시 읽었으므로)
                 long warmedMib = Math.Max(partial.WarmedMib, actualMib);
@@ -224,7 +282,18 @@ public sealed partial class Prewarmer
                     }
                 }
             }
+            else
+            {
+                // 다시 읽기 자체가 메모리로 줄어 예열이 부분 상태를 새로 정함: 전체 크기가 창 크기로 줄지 않게 처음 값을 유지
+                current = (current.WarmedMib, partial.HotMib);
+                _partial[game.Name] = current;
+                if (_memoryPartial.ContainsKey(game.Name))
+                {
+                    _memoryPartial[game.Name] = current;
+                }
+            }
 
+            memoryPartial = wasMemoryPartial || _memoryPartial.ContainsKey(game.Name);
             NotePartialRewarmReadLocked(game.Name, now);
         }
 

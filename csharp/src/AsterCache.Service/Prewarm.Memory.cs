@@ -480,6 +480,8 @@ public sealed partial class Prewarmer
             _partialWindowMib.Remove(game.Name);
         }
 
+        _ = listEnded ? _rangeUnknown.Remove(game.Name) : _rangeUnknown.Add(game.Name); // 메모리로 멈추거나 한도로 마무리하면 읽은 범위는 창 앞쪽이라 같은 창으로 다시 만든 목록과 다름
+
         (_memoryPartial[game.Name], _partial[game.Name]) = (actual, actual);
         _supplementReadProgress[game.Name] = new(stats.Bytes, inputs, game);
         _supplementRetry.Remove(game.Name);

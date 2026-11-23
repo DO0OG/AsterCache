@@ -12,6 +12,7 @@ namespace AsterCache.Service;
 /// Prewarmer 의 보충 예열: 끊기거나 부분만 된 핫 집합을 이어 읽고, 무진전이면 재시도를 미룸.
 public sealed partial class Prewarmer
 {
+    private readonly HashSet<string> _rangeUnknown = new(StringComparer.OrdinalIgnoreCase); // 읽은 범위를 같은 방식으로 다시 만들 수 없는 부분 상태 (메모리로 멈추거나 한도로 마무리해 창이 없음, 옛 형식의 상태 파일), _gate 로 보호
     private readonly Dictionary<string, long> _partialWindowMib = new(StringComparer.OrdinalIgnoreCase); // 목록이 소진된 창 크기를 보관합니다. _gate 로 보호합니다.
 
     /// 시작 예열이 상한으로 일부만 읽은 게임이 남아 있는가 (재예열 점검이 "표본이 따뜻함" 으로 건너뛰지 않게).
@@ -35,6 +36,7 @@ public sealed partial class Prewarmer
                 return; // 메모리 상한이 더 작게 읽어 이미 실제 읽은 양으로 기록함
             }
 
+            _ = _rangeUnknown.Remove(game.Name);
             if (windowMib > warmedMib && windowMib <= hotMib)
             {
                 _partialWindowMib[game.Name] = windowMib;
@@ -61,6 +63,7 @@ public sealed partial class Prewarmer
             _partial.Remove(game);
             _memoryPartial.Remove(game);
             _partialWindowMib.Remove(game);
+            _rangeUnknown.Remove(game);
             _memoryRunning.Remove(game);
             _resume.Remove(game);
             _supplementNothingNew.Remove(game);
@@ -286,14 +289,7 @@ public sealed partial class Prewarmer
                 {
                     o["warmed_mib"] = warmedMib;
                     o["hot_mib"] = hotMib;
-                    if (_partialWindowMib.TryGetValue(game.Name, out long windowMib) && windowMib > warmedMib)
-                    {
-                        o["window_mib"] = windowMib;
-                    }
-                    else
-                    {
-                        o.Remove("window_mib");
-                    }
+                    WriteRangeFields(game.Name, o, warmedMib);
                 }
             }
 
@@ -314,6 +310,7 @@ public sealed partial class Prewarmer
             actualMib = Math.Clamp(actualMib, 0, Math.Min(windowMib, cur.HotMib));
             _partial[game.Name] = (actualMib, cur.HotMib);
             _partialWindowMib[game.Name] = windowMib;
+            _ = _rangeUnknown.Remove(game.Name); // 목록이 끝까지 읽힌 창: 같은 창으로 같은 목록을 다시 만들 수 있음
             if (_memoryPartial.ContainsKey(game.Name))
             {
                 _memoryPartial[game.Name] = (actualMib, cur.HotMib);
@@ -327,7 +324,7 @@ public sealed partial class Prewarmer
                 if (_status.TryGetValue(game.Name, out object? entry) && entry is JObject o)
                 {
                     o["warmed_mib"] = actualMib;
-                    o["window_mib"] = windowMib;
+                    WriteRangeFields(game.Name, o, actualMib);
                 }
             }
 
@@ -422,6 +419,7 @@ public sealed partial class Prewarmer
                 {
                     _partial.Remove(name);
                     _partialWindowMib.Remove(name);
+                    _rangeUnknown.Remove(name);
                     _idleSince.Remove(name);
                     _resume.Remove(name);
                     _supplementNothingNew.Remove(name);
@@ -794,6 +792,7 @@ public sealed partial class Prewarmer
                 {
                     _partial.Remove(game.Name); // 실패한 읽기는 되풀이하지 않음 (유휴마다 같은 실패를 반복하지 않게)
                     _partialWindowMib.Remove(game.Name);
+                    _rangeUnknown.Remove(game.Name);
                     _resume.Remove(game.Name);
                     _supplementNothingNew.Remove(game.Name);
                     _supplementReadProgress.Remove(game.Name);
@@ -1012,7 +1011,7 @@ public sealed partial class Prewarmer
             return true;
         }
 
-        if (HeavyWorkAllowed(game) && FrontCold(game, p.WarmedMib, ct, out refused))
+        if (PartialRewarmPause(game.Name) is null && HeavyWorkAllowed(game) && FrontCold(game, p.WarmedMib, ct, out refused)) // 식은 앞부분 다시 읽기를 쉬는 동안에는 그 표본도 읽지 않음
         {
             return false;
         }

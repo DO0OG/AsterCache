@@ -400,7 +400,7 @@ public sealed partial class Rewarmer
                 return false;
             }
 
-            if (!supplemented && probe.Cold && _prewarm.SupplementPending(g.Name))
+            if (!supplemented && probe.Cold && _prewarm.PartialRewarmReadable(g.Name))
             {
                 if (_prewarm.NotePartialColdAgain(g.Name, TimeSpan.FromMinutes(2L * auto.RewarmMinutes)) is { } restUntil)
                 {

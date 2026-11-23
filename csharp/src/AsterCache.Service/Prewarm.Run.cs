@@ -156,7 +156,7 @@ public sealed partial class Prewarmer
                 long? room = footprintMib is null ? roomMib : AvailableCap(game, WindowAvailableMib(availableRamMib), roomMib ?? long.MaxValue, footprintMib);
                 bool lowMemory = skip?.StartsWith("low memory", StringComparison.Ordinal) == true;
                 bool overBudget = skip is null && room is { } limit && hotMib > limit;
-                bool sparseOut = false;
+                bool sparseOut = game.SkipSparse; // 이미 스파스를 뺀 사본 (식은 앞부분 다시 읽기) 은 표시를 지우지 않고 같은 범위를 읽음
                 if ((lowMemory || overBudget) && SparseMib(game with { SkipSparse = false }) is > 0 and long sparseMib)
                 {
                     // 스파스 파일 범위는 사다리가 만지지 못해 가장 오래된 페이지로 남아 먼저 밀려남: 상한이 모자라면 메모리 예열에서 먼저 뺌 (존 배치는 그대로).

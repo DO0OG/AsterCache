@@ -506,6 +506,104 @@ public sealed class SupplementWarmTests : IDisposable
         Assert.True(p.WithSparseMark(g).SkipSparse);
     }
 
+    // 500 MiB 창의 계획 목록이 100 MiB 에서 끝난 보충 뒤의 부분 상태를 만듭니다 (처음 예열이 스파스를 뺀 표시를 켠 채).
+    private Prewarmer StartWithShortListedWindow(GameSettings g)
+    {
+        _zoneMib = 1000;
+        Prewarmer p = Make(g);
+        p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 40, RewarmMinutes = 10 });
+        Assert.True(Assert.Single(p.RunServiceStart()).Ran);
+        _avail = 4096 + 500 + Prewarmer.FinalShrinkHeadroomMib;
+        (_streamer.ReadMib, _streamer.RequestedMib) = (100, 100);
+        p.SetSparseOut("g", true);
+        Assert.True(p.Supplement(g, CancellationToken.None));
+        _probe = new ProbeResult(8, 8, 120.0);
+        return p;
+    }
+
+    [Fact]
+    public void AfterARestartTheColdPartialIsReadAgainFromTheSameWindowWithTheSameSparseMark()
+    {
+        GameSettings g = Game();
+        _ = StartWithShortListedWindow(g);
+        Assert.True((bool)Status("g")["sparse_out"]!); // 상태 파일에 처음 예열이 스파스를 뺐다는 표시가 남음
+        Assert.Equal(500L, (long)Status("g")["window_mib"]!);
+
+        Prewarmer second = Make(g); // 서비스를 다시 시작하면 메모리의 스파스 표시는 사라짐
+        Assert.True(second.SupplementPending("g"));
+        Assert.True(second.WithSparseMark(g).SkipSparse); // 상태 파일에서 되살아남
+
+        _disk = 50 << 20;
+        Ticks(second, 1, On);
+        _now += TimeSpan.FromMinutes(11);
+        _disk = 0;
+        Ticks(second, 1, On);
+
+        GameSettings reread = _streamer.Seen[^1];
+        Assert.Equal(3, _streamer.Seen.Count);
+        Assert.Equal((500, true), (reread.MaxStreamMib, reread.SkipSparse));
+        Assert.True(second.WithSparseMark(g).SkipSparse); // 읽은 뒤에도 표시가 그대로
+    }
+
+    [Fact]
+    public void AColdPartialWhoseFirstRangeIsUnknownIsNotReadAgainByTheWindowPath()
+    {
+        GameSettings g = Game();
+        _ = StartWithShortListedWindow(g);
+        string text = File.ReadAllText(StatusPath);
+        Assert.Contains("\"sparse_out\"", text);
+        File.WriteAllText(StatusPath, text.Replace("\"sparse_out\"", "\"sparse_out_old\"", StringComparison.Ordinal)); // 옛 형식: 처음 읽은 범위를 모름
+
+        Prewarmer second = Make(g);
+        _disk = 50 << 20;
+        Ticks(second, 1, On);
+        _now += TimeSpan.FromMinutes(11);
+        _disk = 0;
+        Ticks(second, 1, On);
+
+        Assert.Equal(2, _streamer.Seen.Count); // 다시 읽지 않고 보충에 맡김
+        Assert.True(second.SupplementPending("g"));
+    }
+
+    [Fact]
+    public void AColdPartialReadAgainThatShrinksForMemoryKeepsTheWholeHotSize()
+    {
+        GameSettings g = Game();
+        Prewarmer p = StartWithShortListedWindow(g);
+        _now += TimeSpan.FromMinutes(5);
+
+        Assert.True(p.RewarmPartialGame(g, CancellationToken.None, 400).Ran); // 배정량이 창 (500) 보다 작아 다시 읽기가 메모리 부분 예열로 줄어듦
+
+        Assert.Equal(3, _streamer.Seen.Count);
+        Assert.Equal(400, _streamer.Seen[2].MaxStreamMib);
+        Assert.Equal(1000L, (long)Status("g")["hot_mib"]!); // 전체 크기가 창 크기 (500) 로 줄지 않음
+        Assert.True(p.SupplementPending("g"));
+    }
+
+    [Fact]
+    public void WhileTheColdPartialRewarmRestsTheSupplementDoesNotSampleTheFrontEither()
+    {
+        GameSettings g = Game();
+        Prewarmer p = StartWithShortListedWindow(g);
+        _probe = new ProbeResult(8, 0, 0.3); // 따뜻함
+        _now += TimeSpan.FromMinutes(11);
+        int before = _probeCalls;
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        Assert.True(_probeCalls > before); // 쉬지 않을 때는 보충이 읽은 앞부분의 표본을 읽음
+
+        for (int i = 0; i < Prewarmer.MaxPartialRewarmsPerDay; i++)
+        {
+            _now += TimeSpan.FromHours(1);
+            Assert.True(p.RewarmPartialGame(g, CancellationToken.None, null).Ran);
+        }
+
+        Assert.NotNull(p.PartialRewarmPause("g"));
+        _now += TimeSpan.FromMinutes(11);
+        before = _probeCalls;
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        Assert.Equal(before, _probeCalls); // 쉬는 동안에는 표본을 읽지 않음
+    }
+
     [Theory]
     [InlineData("game")]
     [InlineData("busy")]

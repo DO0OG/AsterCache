@@ -56,6 +56,15 @@ public sealed partial class Prewarmer
                             _partialWindowMib[name] = windowMib;
                         }
 
+                        if (o.TryGetValue("sparse_out", out object? sparse) && sparse is bool sparseOut)
+                        {
+                            _ = sparseOut ? _sparseOut.Add(name) : _sparseOut.Remove(name); // 처음 예열이 스파스를 뺐는지도 이어짐 (같은 범위를 다시 읽으려고)
+                        }
+                        else
+                        {
+                            _ = _rangeUnknown.Add(name); // 옛 형식: 처음 읽은 범위를 모름
+                        }
+
                         if (o.TryGetValue("partial", out object? memoryFlag) && memoryFlag is true && w > 0 && w <= int.MaxValue)
                         {
                             _memoryPartial[name] = (w, h); // 메모리가 모자라 앞부분만 읽은 상태도 이어짐 (표본 제한과 재읽기)
@@ -145,6 +154,29 @@ public sealed partial class Prewarmer
     private static long? StatusLong(JObject entry, string key) =>
         entry.TryGetValue(key, out object? value) ? value switch { long number => number, int number => number, _ => null } : null;
 
+    // 부분 상태의 읽은 범위를 상태 파일 항목에 함께 씁니다 (_gate 안에서 부름): 목록이 창보다 짧으면 창 크기, 처음 예열이 스파스를 뺐는지.
+    // 범위를 다시 만들 수 없는 상태 (_rangeUnknown) 는 sparse_out 을 쓰지 않아 재시작 뒤에도 모르는 상태로 남음.
+    private void WriteRangeFields(string game, JObject entry, long warmedMib)
+    {
+        if (_partialWindowMib.TryGetValue(game, out long windowMib) && windowMib > warmedMib)
+        {
+            entry["window_mib"] = windowMib;
+        }
+        else
+        {
+            entry.Remove("window_mib");
+        }
+
+        if (_rangeUnknown.Contains(game))
+        {
+            entry.Remove("sparse_out");
+        }
+        else
+        {
+            entry["sparse_out"] = _sparseOut.Contains(game);
+        }
+    }
+
     // 상태 파일의 그 게임 항목에 warmed_mib/hot_mib 를 남깁니다 (항목이 없으면 아무것도 안 함).
     private void PatchStatus(string game, long warmedMib, long hotMib)
     {
@@ -159,6 +191,7 @@ public sealed partial class Prewarmer
                     o["hot_mib"] = hotMib;
                     o["partial"] = false; // 나머지까지 읽음
                     o.Remove("window_mib");
+                    o.Remove("sparse_out");
                     changed = true;
                 }
             }
@@ -185,6 +218,7 @@ public sealed partial class Prewarmer
                     o["warmed_mib"] = warmedMib;
                     o["hot_mib"] = hotMib;
                     WritePartialRewarmFields(game, o, _now());
+                    WriteRangeFields(game, o, warmedMib);
                     if (memoryPartial)
                     {
                         o["partial"] = true;
@@ -192,15 +226,6 @@ public sealed partial class Prewarmer
                     else
                     {
                         o.Remove("partial");
-                    }
-
-                    if (_partialWindowMib.TryGetValue(game, out long windowMib) && windowMib > warmedMib)
-                    {
-                        o["window_mib"] = windowMib;
-                    }
-                    else
-                    {
-                        o.Remove("window_mib");
                     }
 
                     changed = true;
@@ -347,6 +372,8 @@ public sealed partial class Prewarmer
                 {
                     entry["window_mib"] = trim.WarmedMib; // 목록이 상한 창보다 짧음: 다시 읽을 때 같은 창을 씀
                 }
+
+                entry["sparse_out"] = _sparseOut.Contains(game.Name);
             }
         }
 
@@ -355,6 +382,7 @@ public sealed partial class Prewarmer
             if (!_partial.ContainsKey(game.Name))
             {
                 _partialWindowMib.Remove(game.Name);
+                _rangeUnknown.Remove(game.Name);
             }
 
             if (r.Mode is null && _partial.TryGetValue(game.Name, out (long WarmedMib, long HotMib) part))
@@ -370,10 +398,7 @@ public sealed partial class Prewarmer
                 {
                     entry["warmed_mib"] = part.WarmedMib;
                     entry["hot_mib"] = part.HotMib;
-                    if (_partialWindowMib.TryGetValue(game.Name, out long windowMib) && windowMib > part.WarmedMib)
-                    {
-                        entry["window_mib"] = windowMib;
-                    }
+                    WriteRangeFields(game.Name, entry, part.WarmedMib);
                 }
             }
 

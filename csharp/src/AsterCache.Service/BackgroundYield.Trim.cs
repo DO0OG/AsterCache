@@ -29,19 +29,21 @@ public sealed partial class BackgroundYield
             _cpuApplied = CpuEnabled && GameRunning(processes); // 이미 낮춘 대상이 있는 채 다시 시작하면 그 대상의 CPU 등급은 틱의 LowerCpuLate 가 이어서 낮춤 (여기서 적용된 것으로 쳐 버리지 않음)
         }
 
-        (int lowered, int ioLowered, int cpuLowered) = Lower(found, processes);
+        StartFast(processes);
+        var begun = new YieldTally();
+        (int lowered, int ioLowered, int cpuLowered) = Lower(found, processes, tally: begun);
         int spared = found.Count(t => !t.InheritOnly && _usage.IsInUse(t.Pid));
         _lastRepurposed = QueryLists()?.CacheRepurposedBytes;
         (long need, long expectedMib, long floorMib) = Shortfall(processes, before);
         _beginTrimmed = need > 0 && !_trimIneffective; // 이 플레이에서 효과가 없었던 비우기는 새 실행 파일이 떠도 되풀이하지 않음
         if (!_beginTrimmed)
         {
-            return new YieldStart(before, 0, 0, lowered, ioLowered, cpuLowered, false, spared, 0, expectedMib, floorMib);
+            return new YieldStart(before, 0, 0, lowered, ioLowered, cpuLowered, false, spared, 0, expectedMib, floorMib, begun.InUse);
         }
 
         (int trimmed, long bytes, _) = TrimAll(found, now, need);
         NoteTrim(before, bytes, processes);
-        return new YieldStart(before, trimmed, bytes, lowered, ioLowered, cpuLowered, true, spared, need >> 20, expectedMib, floorMib);
+        return new YieldStart(before, trimmed, bytes, lowered, ioLowered, cpuLowered, true, spared, need >> 20, expectedMib, floorMib, begun.InUse);
     }
 
     // 조회 실패는 세션당 한 번만 알립니다.
@@ -127,7 +129,10 @@ public sealed partial class BackgroundYield
             _targets[t.Pid] = t;
         }
 
-        _ = Lower(fresh, processes);
+        var round = new YieldTally();
+        _ = Lower(fresh, processes, tally: round);
+        ReclassifyInUse(round);
+        LogTally(round, span);
         long? repurposed = QueryLists()?.CacheRepurposedBytes;
         long? delta = repurposed - _lastRepurposed;
         _lastRepurposed = repurposed;

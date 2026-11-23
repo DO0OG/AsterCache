@@ -12,6 +12,9 @@ public static unsafe class ProcessMemory
 {
     public const int PriorityVeryLow = 1;
 
+    /// 쓰고 있는 배경 프로세스에 주는 메모리 우선순위: 보통 (5) 보다 한 단계 낮음. 서비스가 예열로 만진 페이지는 우선순위 5 대기 목록에 들어가므로 (서비스의 메모리 우선순위는 보통), 그보다 먼저 재사용됩니다.
+    public const int PriorityBelowNormal = 4;
+
     /// 프로세스 I/O 우선순위 (IO_PRIORITY_HINT 값 그대로): 낮음 1, 보통 2. 매우 낮음 (0) 은 다른 작업이 거의 멈춰 쓰지 않습니다.
     public const int IoPriorityLow = 1;
 

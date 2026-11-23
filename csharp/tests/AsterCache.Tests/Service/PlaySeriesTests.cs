@@ -149,12 +149,41 @@ public sealed class PlaySeriesTests
         Assert.Equal((null, null), (start.GameReadBytes, start.GameWorkingSetMib)); // 앞의 값이 없는 첫 초
         Assert.Equal((30L * Mib, 2700L), (point.GameReadBytes, point.GameWorkingSetMib)); // 게임 프로세스만: 읽기 증가분 (새로 보인 프로세스는 셈하지 않음), 작업 집합 (2500 + 150 + 50)
         string[] names = PlaySeriesFormat.Header.Split(',');
-        Assert.Equal(["service_ops", "game_read_bytes", "game_ws_mib", "load_phase"], names[^4..]);
+        Assert.Equal(["service_ops", "game_read_bytes", "game_ws_mib", "load_phase"], names[^8..^4]); // 그 뒤에 게임 밖 프로세스 열이 더해짐 (아래 시험)
         string line = PlaySeriesFormat.Line(5, default, point);
         Assert.Equal(((30L * Mib).ToString(CultureInfo.InvariantCulture), "2700", "not_loading"), (Cell(line, "game_read_bytes"), Cell(line, "game_ws_mib"), Cell(line, "load_phase")));
         string unknown = PlaySeriesFormat.Line(5, default, point with { Load = LoadState.Unknown, GameReadBytes = null });
         Assert.Equal((string.Empty, "2700", string.Empty), (Cell(unknown, "game_read_bytes"), Cell(unknown, "game_ws_mib"), Cell(unknown, "load_phase")));
         Assert.Equal("loading", Cell(PlaySeriesFormat.Line(4, default, start with { Load = LoadState.Loading }), "load_phase"));
+    }
+
+    [Fact]
+    public void OtherProcessWorkingSetTheBiggestGrowerAndTheYieldCountAreAddedAfterTheOldColumnsWhichKeepTheirPlace()
+    {
+        const string oldHeader = "t_s,frames,max_frame_ms,over50_n,over100_n,pauses_n,pause_max_ms,cpu_sys_pct,cpu_game_pct,cpu_service_pct,cpu_other1_name,cpu_other1_pct,cpu_other2_name,cpu_other2_pct,"
+            + "avail_mib,standby57_reused_mib,page_reads_n,gpu_mib,gpu_game_mib,disk_read_n,disk_read_bytes,disk_read_mean_ms,disk_write_n,disk_write_bytes,disk_write_mean_ms,disk_queue,"
+            + "write_anyvol_top_name,write_anyvol_top_bytes,service_ops,game_read_bytes,game_ws_mib,load_phase";
+        Assert.Equal(oldHeader + ",other_ws_mib,ws_grow_top_name,ws_grow_top_mib,yield_applied_n", PlaySeriesFormat.Header); // 예전 열의 위치와 이름은 그대로
+
+        var builder = new PlaySeriesBuilder();
+        List<ProcessUsage> first = [new(100, "game.exe", 0, 0, 0, 2000 * Mib), new(200, "AsterCache.Service.exe", 0, 0, 0, 300 * Mib), new(300, "chrome.exe", 0, 0, 0, 500 * Mib), new(301, "chrome.exe", 0, 0, 0, 100 * Mib), new(400, "obs.exe", 0, 0, 0, 200 * Mib)];
+        List<ProcessUsage> second = [new(100, "game.exe", 0, 0, 0, 2600 * Mib), new(200, "AsterCache.Service.exe", 0, 0, 0, 900 * Mib), new(300, "chrome.exe", 0, 0, 0, 650 * Mib), new(301, "chrome.exe", 0, 0, 0, 150 * Mib), new(400, "obs.exe", 0, 0, 0, 500 * Mib), new(600, "new.exe", 0, 0, 0, 80 * Mib)];
+
+        PlaySeriesPoint start = builder.Next(Raw(0, 1000, first) with { YieldApplied = 5 }, [100], [], []);
+        PlaySeriesPoint point = builder.Next(Raw(0, 2000, second) with { YieldApplied = 12 }, [100], [], []);
+
+        Assert.Equal((null, null, null), (start.OtherWorkingSetMib, start.WsGrowName, start.YieldApplied)); // 앞의 값이 없는 첫 초
+        Assert.Equal(1380L, point.OtherWorkingSetMib); // 게임과 서비스를 뺀 합 (650 + 150 + 500 + 80)
+        Assert.Equal(("obs.exe", 300L * Mib), (point.WsGrowName, point.WsGrowBytes)); // chrome.exe 는 같은 이름을 합쳐 +200, 새 프로세스 new.exe 는 +80
+        Assert.Equal(7L, point.YieldApplied);
+        string line = PlaySeriesFormat.Line(9, default, point);
+        Assert.Equal(("1380", "obs.exe", "300.0", "7"), (Cell(line, "other_ws_mib"), Cell(line, "ws_grow_top_name"), Cell(line, "ws_grow_top_mib"), Cell(line, "yield_applied_n")));
+
+        PlaySeriesPoint shrink = builder.Next(Raw(0, 3000, [new(100, "game.exe", 0, 0, 0, 2600 * Mib), new(300, "chrome.exe", 0, 0, 0, 100 * Mib)]) with { YieldApplied = 3 }, [100], [], []);
+        Assert.Equal((null, null), (shrink.YieldApplied, shrink.WsGrowName)); // 누계가 줄었으면 (조회 값이 바뀜) 차이를 적지 않고, 늘어난 프로세스가 없으면 이름이 빈 칸
+        string quiet = PlaySeriesFormat.Line(10, default, shrink);
+        Assert.Equal((string.Empty, string.Empty, string.Empty), (Cell(quiet, "ws_grow_top_name"), Cell(quiet, "ws_grow_top_mib"), Cell(quiet, "yield_applied_n")));
+        Assert.Equal(PlaySeriesFormat.Header.Split(',').Length, PlaySeriesFormat.Line(11, default, null).Split(',').Length); // 시스템 값이 없는 초도 열 수가 같음
     }
 
     [Fact]

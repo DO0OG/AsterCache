@@ -12,6 +12,9 @@ public sealed class BackgroundYieldEnv
 {
     public required Func<IReadOnlyList<(int Pid, string Exe)>> Processes { get; init; }
 
+    /// 실행 중인 프로세스 번호만 (프로세스를 열지 않는 가벼운 열거). 빠른 경로가 새 프로세스를 알아채는 데만 씁니다. 기본값은 빈 목록이라 빠른 경로는 아무것도 하지 않습니다.
+    public Func<IReadOnlyList<int>> ProcessIds { get; init; } = () => [];
+
     /// 프로세스를 열지 않고 세션 id 를 묻습니다 (모르면 null).
     public required Func<int, uint?> SessionId { get; init; }
 
@@ -73,6 +76,7 @@ public sealed class BackgroundYieldEnv
     public static BackgroundYieldEnv Create(string stateFile, Func<IReadOnlyList<string>>? knownGameFolders = null) => new()
     {
         Processes = ProcessSnapshot.Take,
+        ProcessIds = ProcessSnapshot.Pids,
         SessionId = ProcessMemory.SessionId,
         Describe = ProcessMemory.Describe,
         Trim = ProcessMemory.Trim,
@@ -255,7 +259,8 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
             return;
         }
 
-        string lowered = $"memory priority lowered for {started.Lowered}, I/O priority lowered for {started.IoLowered}, CPU priority lowered for {started.CpuLowered}, {started.Spared} in-use processes spared";
+        string lowered = $"memory priority lowered for {started.Lowered}, I/O priority lowered for {started.IoLowered}, CPU priority lowered for {started.CpuLowered}, {started.Spared} in-use processes spared"
+            + (started.InUseLowered > 0 ? $" (memory priority set below normal for {started.InUseLowered} of them)" : string.Empty);
         if (!started.DidTrim)
         {
             log.Info($"background yield ({reason}): {lowered}, no trim needed (available {started.Before} MiB, expected game use {started.ExpectedMib} MiB, floor {started.FloorMib} MiB)");
@@ -294,7 +299,7 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
             }
 
             DateTimeOffset now = env.Now();
-            bool running = GameRunning(processes);
+            bool running = _gameRunning = GameRunning(processes);
             if (running)
             {
                 _lastActivity = now;
@@ -361,6 +366,7 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
             return;
         }
 
+        EndFast();
         IReadOnlyList<(int Pid, string Exe)> processes = env.Processes();
         if (_active)
         {
@@ -408,7 +414,7 @@ public sealed partial class BackgroundYield(Func<AsterSettings> settings, Backgr
         return previous;
     }
 
-    private sealed record YieldStart(long Before, int Trimmed, long TrimmedBytes, int Lowered, int IoLowered, int CpuLowered, bool DidTrim, int Spared, long NeedMib, long ExpectedMib, long FloorMib);
+    private sealed record YieldStart(long Before, int Trimmed, long TrimmedBytes, int Lowered, int IoLowered, int CpuLowered, bool DidTrim, int Spared, long NeedMib, long ExpectedMib, long FloorMib, int InUseLowered = 0);
 }
 
 /// 비운 대상이 비우기 직전에 쓰던 작업 집합 (After 는 비운 직후 값). Busy 는 되찾은 것으로 판정돼 이 세션에서 다시 비우지 않는 대상 (pid 재사용은 생성 시각으로 거름).
@@ -420,5 +426,6 @@ internal readonly record struct YieldTarget(int Pid, string Exe, string Path, lo
 
 /// 메모리·I/O·CPU 우선순위를 낮춘 프로세스와 원래 값 (Priority 는 메모리, Io 는 I/O, Cpu 는 CPU 등급이고 그쪽을 낮추지 않았으면 NotLowered. Cpu 는 보통 등급에서만 낮추므로 NotLowered 가 아니면 항상 보통). 상태 파일에서 읽은 옛 항목은 이름이 없을 수 있고 Io 도 없으며, 경로는 파일에 적지 않습니다.
 /// LoweredAt (FILETIME) 은 낮춘 시각이고 이보다 늦게 만들어진 자식은 낮은 값을 물려받습니다. 물려받은 항목 (Inherited) 은 만든 시각이 곧 낮춰진 시각입니다.
+/// Applied 는 메모리 우선순위로 지금 설정해 둔 값 (매우 낮음 1 또는 쓰고 있는 프로세스의 보통보다 낮음 4) 입니다: 상태 파일에는 적지 않고 (되돌릴 값은 Priority 뿐), 옛 항목과 읽어 온 항목은 1 로 봅니다.
 /// 둘 다 상태 파일에 (lowered_at, inherited) 적고 읽지만, 옛 형식 파일이거나 재부팅 앞에 적힌 항목은 낮춘 시각을 알 수 없음 (MaxValue) 이고, 그 항목의 자식은 물려받은 것으로 보지 않습니다.
-internal readonly record struct LoweredProcess(int Pid, string? Exe, string? Path, long Created, int Priority, long LoweredAt = long.MaxValue, bool Inherited = false, int Io = BackgroundYield.NotLowered, int Cpu = BackgroundYield.NotLowered);
+internal readonly record struct LoweredProcess(int Pid, string? Exe, string? Path, long Created, int Priority, long LoweredAt = long.MaxValue, bool Inherited = false, int Io = BackgroundYield.NotLowered, int Cpu = BackgroundYield.NotLowered, int Applied = ProcessMemory.PriorityVeryLow);

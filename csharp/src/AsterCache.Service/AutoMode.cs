@@ -391,6 +391,12 @@ public sealed class AutoMode
     /// 정기 재적용이 쓴 바이트를 일일 예산·회복 추적에 알림 (재적용 루프 스레드에서 부름).
     public void ReapplySpent(GameSettings g, long movedBytes) => Guard("reapply note", () => _relocator.NoteReapplied(g, movedBytes));
 
+    /// 실제 바이트를 옮긴 재적용 회차를 반복 제한에 알림.
+    public void ReapplyMoved(GameSettings g, long movedBytes, long todoBytes, bool partial) => Guard("reapply repeat note", () => _relocator.NoteReapplyMoved(g, movedBytes, todoBytes, partial));
+
+    /// 재적용 검사가 배치를 연속으로 봄: 나뉜 회차의 표시를 내림.
+    public void ReapplyHealthy(GameSettings g) => Guard("reapply repeat note", () => _relocator.NoteReapplyHealthy(g));
+
     /// 재적용 틱 (30 초) 마다. 호출한 스레드에서 이동까지 돌므로 재적용과 겹치지 않습니다 (예열은 따로 돌아 틱을 늦추지 않음).
     public void RelocateTick(ReapplyGate gate, CancellationToken ct)
     {

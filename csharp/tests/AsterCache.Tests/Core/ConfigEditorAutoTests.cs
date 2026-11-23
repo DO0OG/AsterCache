@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using AsterCache.Core.Json;
+using AsterCache.Core.Plan;
 using AsterCache.Core.Settings;
 using Xunit;
 
@@ -22,13 +23,13 @@ public sealed class ConfigEditorAutoTests : IDisposable
     };
 
     [Fact]
-    public void SetAutoRoundTripsAndWritesEveryKeyEvenAtDefaultExceptUnsetParallelAndDailyGib()
+    public void SetAutoRoundTripsAndWritesEveryKeyEvenAtDefaultExceptUnsetParallelDailyGibAndDefaultLayout()
     {
         var editor = new ConfigEditor(_dir);
         editor.Add(Game("a"));
         editor.SetAuto(AutoSettings.Default);
 
-        Assert.Equal(43, CountKeys(File.ReadAllText(editor.ConfigPath), "auto"));
+        Assert.Equal(42, CountKeys(File.ReadAllText(editor.ConfigPath), "auto")); // relocate_layout 은 기본값이면 쓰지 않음
         Assert.Equal(Plain(AutoSettings.Default), Plain(editor.Load()!.Auto));
 
         var custom = new AutoSettings(false, false, true, false, 3, 7, 90, 128, 5, ["a.exe", "b.exe"])
@@ -51,7 +52,7 @@ public sealed class ConfigEditorAutoTests : IDisposable
             RelocateIoPriority = AutoSettings.IoNormal,
             RelocateVerify = "off",
             RelocateOrder = "source",
-            RelocateLayout = "whole_file",
+            RelocateLayout = "ranges",
             MaxRelocateGibPerDay = 0,
             MaxRelocateGibPerDaySet = true,
             IdleReadGibPerDay = 5,
@@ -80,7 +81,7 @@ public sealed class ConfigEditorAutoTests : IDisposable
         Assert.Equal((64, "normal", 0), (read.RelocateChunkMib, read.RelocateIoPriority, read.MaxRelocateGibPerDay));
         Assert.Equal("off", read.RelocateVerify);
         Assert.Equal("source", read.RelocateOrder);
-        Assert.Equal("whole_file", read.RelocateLayout);
+        Assert.Equal("ranges", read.RelocateLayout);
         Assert.Equal(4, read.RelocateParallel);
         Assert.False(read.KeepAwake);
         Assert.True(read.KeepStreamOnGameStart);
@@ -90,6 +91,32 @@ public sealed class ConfigEditorAutoTests : IDisposable
 
         editor.SetAuto(AutoSettings.Default with { RewarmMinutes = 0 });
         Assert.Equal(0, editor.Load()!.Auto.RewarmMinutes);
+    }
+
+    [Fact]
+    public void ADefaultRelocateLayoutIsNotWrittenSoALaterChangeOfTheDefaultReachesTheFile()
+    {
+        var editor = new ConfigEditor(_dir);
+        editor.Add(Game("a"));
+
+        editor.SetAuto(AutoSettings.Default with { TraceRuns = 4 });
+
+        Assert.DoesNotContain("relocate_layout", File.ReadAllText(editor.ConfigPath), StringComparison.Ordinal);
+        Assert.Equal(AutoSettings.Default.RelocateLayout, editor.Load()!.Auto.RelocateLayout);
+    }
+
+    [Fact]
+    public void ARelocateLayoutThatDiffersFromTheDefaultOrIsAlreadyInTheFileIsKeptWhenOtherSettingsAreSaved()
+    {
+        var editor = new ConfigEditor(_dir);
+        editor.Add(Game("a"));
+        editor.SetAuto(AutoSettings.Default with { RelocateLayout = RelocateLayouts.Ranges }); // 사용자가 정한 값
+
+        editor.SetAuto(editor.Load()!.Auto with { TraceRuns = 4 }); // 다른 설정을 저장해도 그대로
+        Assert.Equal(RelocateLayouts.Ranges, editor.Load()!.Auto.RelocateLayout);
+
+        editor.SetAuto(editor.Load()!.Auto with { RelocateLayout = RelocateLayouts.WholeFile }); // 파일에 키가 있으면 기본값이어도 적힌 대로
+        Assert.Equal("whole_file", JsonNode.Parse(File.ReadAllText(editor.ConfigPath))!["auto"]!["relocate_layout"]!.GetValue<string>());
     }
 
     [Fact]

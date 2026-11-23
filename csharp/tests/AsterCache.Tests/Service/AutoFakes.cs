@@ -364,6 +364,8 @@ internal sealed class FakeWorld
 
     public Func<GameSettings, int> JournalRows { get; set; } = _ => 0;
 
+    public Func<GameSettings, PlanFile, long> JournalDoneClusters { get; set; } = (_, _) => 0;
+
     /// 같은 볼륨의 다른 게임 계획이 예약한 존 범위 (기본: 없음).
     public Func<GameSettings, IReadOnlyList<(long Lcn, long Clusters)>> Reserved { get; set; } = _ => [];
 
@@ -501,6 +503,7 @@ internal sealed class FakeWorld
         IsSparse = p => IsSparse(p),
         ChangeTime = p => ChangeTime(p),
         JournalRows = g => JournalRows(g),
+        JournalDoneClusters = (g, plan) => JournalDoneClusters(g, plan),
         Lock = g =>
         {
             IDisposable? gate = Lock(g);

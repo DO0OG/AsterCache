@@ -274,6 +274,9 @@ public sealed class AutoEnv
     /// 중단된 계획 교체가 있으면 끝까지 진행합니다 (없으면 null). 읽기·보관 실패는 예외로 올라옴.
     public Func<GameSettings, SwitchResult?> ResumeSwitch { get; init; } = _ => null;
 
+    /// 활성 계획 아래 저널에서 done 으로 끝난 클러스터의 합 (다른 계획의 저널이면 0): 서비스가 이미 놓은 조각의 양을 되풀이 판정에 씁니다.
+    public Func<GameSettings, PlanFile, long> JournalDoneClusters { get; init; } = (_, _) => 0;
+
     /// 게임 저널 header 의 plan_sha (저널에 행이 없으면 null). 활성 계획과 맞는지 시작 복구가 대조합니다.
     public Func<GameSettings, string?> JournalPlanSha { get; init; } = _ => null;
 
@@ -453,6 +456,7 @@ public sealed class AutoEnv
             ReplanResidual = (g, candidate, olds, sessions) => ReapplyEnv.ReplanResidual(journalDir, g, candidate, olds, sessions),
             ResumeSwitch = g => ReapplyEnv.ResumeSwitch(journalDir, g),
             JournalPlanSha = g => ReapplyEnv.JournalPlanSha(journalDir, g),
+            JournalDoneClusters = (g, plan) => ReapplyEnv.JournalDoneClusters(journalDir, g, plan),
             HasPendingVerification = g => ReapplyEnv.HasPendingVerification(journalDir, g),
             ArchiveJournal = g => ReapplyEnv.ArchiveJournal(journalDir, g),
             MoveAside = (src, dst) =>

@@ -31,6 +31,9 @@ public enum ReapplyVerdict
     Cancelled,
     Failed,
 
+    /// 원본이 그대로인데 다시 놓은 회차가 7일에 3번이라 그 게임의 재배치를 쉼 (AutoRelocator.Repeat).
+    ReapplyLimit,
+
     /// 아래는 자동 모드와 같은 게이트가 미룬 이유 (같은 디스크 게임·다른 게임 실행은 GameRunning, 디스크 바쁨은 DiskBusy 를 씀).
     Recovering,
     OnBattery,
@@ -133,6 +136,12 @@ public sealed class ReapplyEnv
 
     /// 재적용이 끝난 뒤 (예외로 끝나도) 실제로 쓴 바이트를 일일 예산·회복 추적에 알림.
     public Action<GameSettings, long> Spent { get; set; } = (_, _) => { };
+
+    /// 성공적으로 돌아온 재적용 회차의 실제 이동량, 회차 시작 때 옮길 것이 남은 양, 회당 쓰기 상한·취소로 멈춰 남은 몫이 있는지 (나뉜 회차) 를 알림.
+    public Action<GameSettings, long, long, bool> Reapplied { get; set; } = (_, _, _, _) => { };
+
+    /// 배치 검사가 연속으로 나옴: 나뉜 회차의 이어 옮기기 표시를 내리는 데 씀.
+    public Action<GameSettings> LayoutHealthy { get; set; } = _ => { };
 
     /// 서비스가 정한 재적용 옵션 (회당 쓰기 상한·하루 잔여 예산 반영, 서비스가 자동 모드를 만든 뒤 연결): null 이면 OptionsFor 의 기본.
     public Func<GameSettings, ApplyOptions?> Options { get; set; } = _ => null;
@@ -301,6 +310,34 @@ public sealed class ReapplyEnv
     {
         using DataLock gate = Lock(journalDir, g) ?? throw new PlanRejectedException(DataLock.BusyMessage);
         return PlanSwitch.Resume(g.Plan, JournalPath(journalDir, g));
+    }
+
+    /// 활성 계획 아래 저널에서 done 으로 끝난 작업의 클러스터 합 (저널이 없거나 다른 계획의 것이면 0): 서비스가 이미 놓은 조각의 양. 잔여 재계획이 저널을 보관하기 전에 읽습니다.
+    public static long JournalDoneClusters(string journalDir, GameSettings g, PlanFile plan) => JournalDoneClusters(JournalPath(journalDir, g), plan);
+
+    public static long JournalDoneClusters(string journalPath, PlanFile plan)
+    {
+        if (!File.Exists(journalPath))
+        {
+            return 0;
+        }
+
+        using var jr = new Journal(journalPath);
+        if (jr.Rows.FirstOrDefault(r => Equals(r["type"], "header")) is not { } h || !h.TryGetValue("plan_sha", out object? sha) || sha as string != plan.Sha())
+        {
+            return 0;
+        }
+
+        var done = new HashSet<long>();
+        foreach (JObject r in jr.Rows)
+        {
+            if (Equals(r["type"], "step") && r.TryGetValue("state", out object? state) && Equals(state, "done") && r.TryGetValue("idx", out object? idx) && idx is long i && i >= 0 && i < plan.Tasks.Count)
+            {
+                _ = done.Add(i);
+            }
+        }
+
+        return done.Sum(i => plan.Tasks[(int)i].Clusters);
     }
 
     /// 게임 저널 header 의 plan_sha (저널이 없거나 행이 없으면 null).
@@ -584,6 +621,11 @@ public sealed class ReapplyChecker
             // 파일 배치를 못 읽은 항목이 있으면 (희소 파일 등) 판단할 수 없으므로 건강으로 봅니다: 같은 이유로 매 주기 재적용하며 0 바이트를 옮기는 일을 피함.
             bool? contiguous = layout is null || layout.HotClusters == 0 || layout.MissingFiles > 0 ? null : layout.Contiguous;
             ReapplyVerdict v = ReapplyPolicy.Decide(new ReapplyInputs(applied, changed, contiguous, Running, () => _env.DiskBusy(game), _env.CanApply, () => _env.Gate(game), unknown));
+            if (contiguous == true)
+            {
+                _env.LayoutHealthy(game); // 배치가 다시 연속: 다음 풀림은 새 회차
+            }
+
             bool shortRetry = contiguous == false && IsShortRetryHold(v);
             bool continuingShortRetry = _shortRetryPending.Contains(game.Name) && contiguous == false && v == ReapplyVerdict.Reapply;
             if (shortRetry)
@@ -662,6 +704,7 @@ public sealed class ReapplyChecker
                 }
 
                 _env.Spent(game, rep.MovedBytes);
+                _env.Reapplied(game, rep.MovedBytes, rep.BytesTodo, rep.Stopped is "write_cap" or "cancelled"); // 되풀이 횟수 (이어 옮기는 회차를 거르는 일은 기록이 함)
 
                 if (rep.Stopped == DataLock.BusyReason)
                 {

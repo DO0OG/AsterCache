@@ -72,7 +72,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         Directory.CreateDirectory(plans);
         string plan = Path.Combine(plans, "bench.plan.json");
         _game = new GameSettings("bench", ["bench.exe"], plan + ".prefetch.json", plan, Root, [Root], "GAMES", 1440) { Source = "auto" };
-        _settings = new AsterSettings(50, [_game]) with { Auto = AutoSettings.Default with { TraceRuns = 1, IdleMinutesSet = true, RelocateParallel = 1, RelocateParallelSet = true, PostRelocateRecovery = AutoSettings.RecoveryOff } }; // 기존 시험은 idle_minutes (3 분) 만 명시된 설정, 쓰기 뒤 회복 대기는 아래 별도 시험
+        _settings = new AsterSettings(50, [_game]) with { Auto = AutoSettings.Default with { TraceRuns = 1, IdleMinutesSet = true, RelocateParallel = 1, RelocateParallelSet = true, RelocateLayout = RelocateLayouts.Ranges, PostRelocateRecovery = AutoSettings.RecoveryOff } }; // 기존 범위 시험은 방식을 명시하고, 쓰기 뒤 회복 대기는 아래 별도 시험
         _status = new AutoStatus(Path.Combine(Root, "auto_status.json"), _log, () => _w.Now, ticks: FakeClock.Ticks(() => _w.Now));
         _w.Files.Add(AutoTracer.RawTracePath(_game));
         _w.LoadSessions = () => Sessions;
@@ -84,6 +84,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         };
         _w.SystemDrive = Letter == "Z:" ? "Y:" : "Z:"; // 시험 폴더가 있는 드라이브는 시스템 볼륨이 아닌 HDD 로 취급
         _w.JournalRows = _ => File.Exists(JournalPath) ? JournalRowCount() : 0;
+        _w.JournalDoneClusters = (_, plan) => ReapplyEnv.JournalDoneClusters(JournalPath, plan);
         _w.Revert = (_, skipRows, ct) =>
         {
             RevertCalls++;

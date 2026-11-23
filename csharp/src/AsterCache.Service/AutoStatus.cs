@@ -38,6 +38,11 @@ public sealed record DriveRecoveryRecord(string Drive, DateTimeOffset Started, D
 /// 계획 SHA 가 바뀌어도 이 기록은 지우지 않습니다 (재시작·새 계획이 횟수 제한을 풀지 못하게). 완료하면 지움.
 public sealed record RecoveryAttempt(string? PlanSha, long? RejectedLcn, int Replans, DateTimeOffset? NextAllowed, string? Reason = null, string? Stamp = null, int OccupiedStreak = 0);
 
+/// 원본과 배치 방식이 그대로인 재적용 회차의 시각. SourceKey 가 빈 문자열이면 다음에 보는 계획의 지문 목록을 기준으로 삼음 (원본이 그대로인 채 계획만 다시 만든 경우).
+/// HandoffPending: 다음 자동 재배치의 첫 이동을 한 회차로 셈. SplitPending: 직전 회차가 회당 쓰기 상한·취소로 나뉘어 남은 몫이 있음 (그 이어 옮기기는 세지 않음).
+/// SplitRemaining: 나뉜 회차가 멈춘 때 남은 바이트. 다음 회차가 시작할 때 옮길 것이 이보다 늘었으면 이미 끝낸 조각이 제자리를 잃은 것이라 새 회차로 셈.
+public sealed record ReapplyLimitRecord(string SourceKey, string Layout, IReadOnlyList<DateTimeOffset> Rounds, bool HandoffPending = false, bool SplitPending = false, long SplitRemaining = 0);
+
 public sealed record AutoEvent(DateTimeOffset At, string Game, string Kind);
 
 /// 자동 모드 상태 (<데이터 폴더>\auto_status.json). 서비스만 쓰고 트레이가 읽습니다. 파일이 없거나 깨졌으면 빈 상태로 시작합니다.
@@ -65,6 +70,8 @@ public sealed class AutoStatus
     private readonly List<AutoEvent> _events = [];
     private readonly Dictionary<string, DriveRecoveryRecord> _driveRecovery = new(StringComparer.Ordinal);
     private readonly Dictionary<string, RecoveryAttempt> _attempts = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ReapplyLimitRecord> _reapplyLimits = new(StringComparer.Ordinal);
+    private const long SplitGrowthSlackBytes = 1 << 20; // 이어 옮기기 판정에서 옮긴 양 계산의 오차로 보는 크기
 
     /// sleep 은 파일 교체를 다시 시도하기 전의 대기 (시험이 바꿈, 기본은 MoveRetryDelay 만큼 실제로 잠). ticks 는 세션 안 경과 판정용 Stopwatch 틱 (시험이 바꿈).
     public AutoStatus(string? path, ILog log, Func<DateTimeOffset>? now = null, Action<TimeSpan>? sleep = null, Func<long>? ticks = null)
@@ -367,6 +374,147 @@ public sealed class AutoStatus
         }
     }
 
+    public ReapplyLimitRecord? ReapplyLimit(string name)
+    {
+        lock (_lock)
+        {
+            return _reapplyLimits.GetValueOrDefault(name);
+        }
+    }
+
+    /// 원본 지문이나 배치 방식이 달라지면 이전 회차를 새 기준으로 바꿉니다. 기준이 비어 있으면 (계획만 다시 만든 경우) 이 지문을 기준으로 삼고 회차는 그대로 둡니다.
+    public void EnsureReapplyLimit(string name, string sourceKey, string layout)
+    {
+        lock (_lock)
+        {
+            if (_reapplyLimits.TryGetValue(name, out ReapplyLimitRecord? old) && old.Layout == layout)
+            {
+                if (old.SourceKey == sourceKey)
+                {
+                    return;
+                }
+
+                if (old.SourceKey.Length == 0)
+                {
+                    _reapplyLimits[name] = old with { SourceKey = sourceKey };
+                    Save();
+                    return;
+                }
+            }
+
+            _reapplyLimits[name] = new ReapplyLimitRecord(sourceKey, layout, []);
+            Save();
+        }
+    }
+
+    public int ReapplyRoundsWithin(string name, TimeSpan window)
+    {
+        lock (_lock)
+        {
+            DateTimeOffset since = _now() - window;
+            return _reapplyLimits.TryGetValue(name, out ReapplyLimitRecord? record) ? record.Rounds.Count(at => at > since) : 0;
+        }
+    }
+
+    public void MarkReapplyHandoff(string name)
+    {
+        lock (_lock)
+        {
+            if (_reapplyLimits.TryGetValue(name, out ReapplyLimitRecord? old) && !old.HandoffPending)
+            {
+                _reapplyLimits[name] = old with { HandoffPending = true };
+                Save();
+            }
+        }
+    }
+
+    /// 원본이 그대로인 채 계획만 다시 만들었음 (잔여 재계획·치워 둔 계획의 재계획): 기록은 지우지 않고 다음 계획의 지문 목록을 새 기준으로 삼습니다.
+    /// placementLost 면 이미 놓였던 조각이 제자리를 잃은 것이므로 다음 자동 재배치의 첫 이동을 한 회차로 셉니다.
+    public void NoteReapplyReplan(string name, bool placementLost)
+    {
+        lock (_lock)
+        {
+            if (_reapplyLimits.TryGetValue(name, out ReapplyLimitRecord? old))
+            {
+                ReapplyLimitRecord next = old with { SourceKey = string.Empty, HandoffPending = old.HandoffPending || placementLost };
+                if (next != old)
+                {
+                    _reapplyLimits[name] = next;
+                    Save();
+                }
+            }
+        }
+    }
+
+    /// 배치가 다시 연속이 됨: 나뉜 회차의 표시를 내립니다 (다음 흐트러짐은 새 회차).
+    public void ClearReapplySplit(string name)
+    {
+        lock (_lock)
+        {
+            if (_reapplyLimits.TryGetValue(name, out ReapplyLimitRecord? old) && old.SplitPending)
+            {
+                _reapplyLimits[name] = old with { SplitPending = false, SplitRemaining = 0 };
+                Save();
+            }
+        }
+    }
+
+    /// 한 회차를 셉니다. 옮긴 바이트가 0 이면 세지 않고, 직전 회차가 나뉘어 이어 옮기는 회차 (SplitPending) 도 세지 않습니다.
+    /// partial 은 이번 회차가 회당 쓰기 상한·취소로 멈춰 남은 몫이 있다는 뜻입니다. 자동 재배치의 첫 이동 (handoffOnly) 은 넘김 표시가 있을 때만 세고, 이어 옮기기 표시는 건드리지 않습니다.
+    public (int Count, bool ReachedLimit) RecordReapplyRound(string name, long movedBytes, TimeSpan window, int limit, bool handoffOnly = false, bool partial = false, long todoBytes = 0)
+    {
+        lock (_lock)
+        {
+            if (movedBytes <= 0 || !_reapplyLimits.TryGetValue(name, out ReapplyLimitRecord? old))
+            {
+                return (0, false);
+            }
+
+            DateTimeOffset now = _now();
+            DateTimeOffset since = now - window;
+            if (handoffOnly && !old.HandoffPending)
+            {
+                return (old.Rounds.Count(at => at > since), false);
+            }
+
+            if (!handoffOnly && old.SplitPending && todoBytes <= old.SplitRemaining + SplitGrowthSlackBytes)
+            {
+                // 나뉜 회차의 이어 옮기기: 세지 않음. 옮길 것이 이전에 남긴 양보다 늘었으면 (아래로 내려가 새 회차) 이미 끝낸 조각이 제자리를 잃은 것
+                ReapplyLimitRecord next = old with { SplitPending = partial, SplitRemaining = partial ? Math.Max(0, todoBytes - movedBytes) : 0 };
+                if (next != old)
+                {
+                    _reapplyLimits[name] = next;
+                    Save();
+                }
+
+                return (old.Rounds.Count(at => at > since), false);
+            }
+
+            int prior = old.Rounds.Count(at => at > since);
+            List<DateTimeOffset> rounds = [.. old.Rounds.Where(at => at > since), now];
+            _reapplyLimits[name] = old with
+            {
+                Rounds = rounds,
+                HandoffPending = handoffOnly ? false : old.HandoffPending,
+                SplitPending = handoffOnly ? old.SplitPending : partial,
+                SplitRemaining = handoffOnly ? old.SplitRemaining : partial ? Math.Max(0, todoBytes - movedBytes) : 0,
+            };
+            Save();
+            return (rounds.Count, prior < limit && rounds.Count >= limit);
+        }
+    }
+
+    public void ClearReapplyLimit(string name)
+    {
+        lock (_lock)
+        {
+            if (_reapplyLimits.Remove(name))
+            {
+                Save();
+            }
+        }
+    }
+
     /// 실행 직후 종료 알림을 남기고 사건 quick_exit 를 더합니다 (트레이가 새 사건마다 한 번 알림). 항목이 없으면 (자동 모드가 추적하지 않는 게임) 남기지 않습니다.
     public void SetQuickExit(string name, QuickExitRecord record)
     {
@@ -403,14 +551,25 @@ public sealed class AutoStatus
     }
 
     /// 업데이트로 계획이 낡음: relocated_at 을 지우고 discovered 로 되돌려 다음 실행의 트레이스 → 계획 → 재배치를 다시 타게 합니다. 이미 센 일일 상한 기록은 그대로입니다.
-    public void ResetForReplan(string name, string detail)
+    public void ResetForReplan(string name, string detail, bool preserveReapplyLimit = false)
     {
         lock (_lock)
         {
             _replanSeq[name] = _replanSeq.GetValueOrDefault(name) + 1; // 그 게임의 계산 중이던 그림자 결과는 기록하지 않음
+            bool repeatRemoved = !preserveReapplyLimit && _reapplyLimits.Remove(name);
+            if (preserveReapplyLimit && _reapplyLimits.TryGetValue(name, out ReapplyLimitRecord? kept) && kept.SourceKey.Length > 0)
+            {
+                _reapplyLimits[name] = kept with { SourceKey = string.Empty }; // 계획을 다시 만들어도 원본은 그대로: 다음 계획의 지문을 기준으로 삼음
+                repeatRemoved = true; // 저장이 필요함
+            }
+
             if (_games.TryGetValue(name, out AutoGameEntry? old))
             {
                 _games[name] = old with { Stage = AutoStage.Discovered, Detail = detail, At = _now(), RelocatedAt = null, OrbitShadow = null, OrbitRuntime = null }; // 다시 계획하면 옛 그림자 계획은 폐기
+                Save();
+            }
+            else if (repeatRemoved)
+            {
                 Save();
             }
         }
@@ -477,7 +636,7 @@ public sealed class AutoStatus
     {
         lock (_lock)
         {
-            if (_games.Remove(name) | _attempts.Remove(name))
+            if (_games.Remove(name) | _attempts.Remove(name) | _reapplyLimits.Remove(name)) // 같은 이름으로 다시 등록하면 쉼 기록도 새로 시작
             {
                 Save();
             }
@@ -670,6 +829,25 @@ public sealed class AutoStatus
             root.Add("replan_attempts", attempts); // 기록이 없으면 키를 만들지 않음
         }
 
+        if (_reapplyLimits.Count > 0)
+        {
+            var repeats = new JObject();
+            foreach ((string name, ReapplyLimitRecord r) in _reapplyLimits.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+            {
+                repeats.Add(name, new JObject
+                {
+                    { "source_key", r.SourceKey },
+                    { "layout", r.Layout },
+                    { "rounds", r.Rounds.Select(at => (object?)Iso(at)).ToList() },
+                    { "handoff_pending", r.HandoffPending },
+                    { "split_pending", r.SplitPending },
+                    { "split_remaining", r.SplitRemaining },
+                });
+            }
+
+            root.Add("reapply_limits", repeats); // 기록이 없으면 키를 만들지 않음
+        }
+
         try
         {
             string tmp = _path + ".tmp";
@@ -757,6 +935,23 @@ public sealed class AutoStatus
                 }
             }
 
+            if (root.TryGetValue("reapply_limits", out object? rl) && rl is JObject repeats)
+            {
+                foreach ((string name, object? value) in repeats)
+                {
+                    if (value is JObject o && Str(o, "source_key") is { } sourceKey && Str(o, "layout") is { } layout)
+                    {
+                        List<DateTimeOffset> rounds = o.TryGetValue("rounds", out object? rawRounds) && rawRounds is List<object?> roundList
+                            ? roundList.Select(Time).Where(at => at is not null).Select(at => at!.Value).ToList()
+                            : [];
+                        bool handoff = o.TryGetValue("handoff_pending", out object? pending) && pending is bool b && b;
+                        bool split = o.TryGetValue("split_pending", out object? splitValue) && splitValue is bool sb && sb;
+                        long splitRemaining = o.TryGetValue("split_remaining", out object? remaining) && remaining is long sr ? sr : 0;
+                        _reapplyLimits[name] = new ReapplyLimitRecord(sourceKey, layout, rounds, handoff, split, splitRemaining);
+                    }
+                }
+            }
+
             if (root.TryGetValue("events", out object? ev) && ev is List<object?> list)
             {
                 foreach (JObject o in list.OfType<JObject>())
@@ -777,6 +972,7 @@ public sealed class AutoStatus
             _events.Clear();
             _driveRecovery.Clear();
             _attempts.Clear();
+            _reapplyLimits.Clear();
             KeepBad();
             // 일일 상한 기록이 사라졌으므로 24 시간 동안 재배치를 막음 (보수). 이동 바이트 집계는 건드리지 않음.
             _holdUntil = _now() + RelocationHold;

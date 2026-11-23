@@ -104,7 +104,7 @@ public sealed partial class Prewarmer
     /// 붙들 목표 (바이트): 기존 예산 (가용 메모리의 PlayTouchAvailableFraction), 붙든 뒤에도 가용 메모리가 하한 위에 남는 양, HoldTargetCapBytes 가운데 가장 작은 것.
     internal static long HoldTargetBytes(long availMib, long floorMib) => Math.Min(HoldTargetCapBytes, Math.Min((long)(availMib * PlayTouchAvailableFraction) << 20, Math.Max(0, availMib - floorMib) << 20));
 
-    /// 다시 붙들 목표 (바이트): 처음 붙들기와 같은 식이되 하한에 점검의 여유 (HoldRefillMarginMib) 를 더해, 다시 붙든 뒤에도 가용 메모리가 하한 + 1 GiB 이상 남게 합니다 (내놓기는 하한 아래에서 일어나므로 둘 사이의 간격 때문에 내놓기와 되풀이되지 않음).
+    /// 다시 붙들 목표 (바이트): 처음 붙들기와 같은 식이되 하한에 점검의 여유 (HoldRefillMarginMib) 를 더해, 다시 붙든 뒤에도 가용 메모리가 하한 + 1 GiB 이상 남게 합니다 (내놓기는 하한 아래에서 일어나므로 1 GiB 안의 흔들림에서는 내놓기와 번갈아 되풀이되지 않고, 그보다 크게 흔들리면 2분 점검마다 한 번까지 되풀이될 수 있음).
     internal static long HoldAgainTargetBytes(long availMib, long floorMib) => HoldTargetBytes(availMib, floorMib + HoldRefillMarginMib);
 
     // 다시 붙들기를 지금 하지 않을 사유 (없으면 null): 로딩 판정이 로딩 (실행 파일 시작·신호 모두) 이거나, 게임 드라이브의 디스크 대기열이 0 이 아니거나 모름. 판정이 없는 환경 (시험·기록 없음) 은 막지 않습니다.
@@ -154,7 +154,7 @@ public sealed partial class Prewarmer
     /// 한 배치를 처리한 결과: 시작한 범위 수, 만진 바이트, 디스크에서 읽힌 바이트, 디스크 읽기가 섞여 경계로 보고 멈췄는가.
     private readonly record struct WalkStep(int Processed, long Consumed, long Disk, bool Boundary);
 
-    private sealed record WalkResult(List<ReadOp> Kept, List<ReadOp> Missing, long Disk, int Boundaries, long SkippedBytes, long LeftBytes, bool CapReached, bool Stopped);
+    private sealed record WalkResult(List<ReadOp> Kept, List<ReadOp> Missing, List<ReadOp> Hit, long Disk, int Boundaries, long SkippedBytes, long LeftBytes, bool CapReached, bool Stopped);
 
     // 목록을 중요한 쪽부터 HoldBatchBytes 씩 처리합니다. 경계를 만나면 (skipSameFile 이면) 그 파일의 이어지는 범위 (목록에서 바로 뒤따르는 같은 파일의 범위) 를 건너뛰고 다음 범위로 계속하며,
     // 디스크에서 읽은 양이 diskCap 을 넘으면 거기서 끝냅니다. mayContinue 가 거짓이 되면 (가용 메모리가 하한에 닿음) 멈춥니다.
@@ -163,6 +163,7 @@ public sealed partial class Prewarmer
         List<ReadOp> rest = [.. reads.Where(r => r.Length > 0)];
         List<ReadOp> kept = [];
         List<ReadOp> missing = []; // 경계를 만난 범위와 건너뛴 이어지는 범위: 호출한 쪽이 빠진 것으로 기억할 수 있게
+        List<ReadOp> hit = []; // 그 가운데 경계를 만난 (메모리에 없다고 확인한) 범위만
         int next = 0;
         long disk = 0;
         long skipped = 0;
@@ -203,6 +204,7 @@ public sealed partial class Prewarmer
                 rest.InsertRange(next, tail);
                 skipPath = skipSameFile ? batch[started - 1].Path : null; // 같은 파일의 이어지는 범위를 건너뛰는 것은 붙들기만 (다시 만지기는 경계가 난 범위 하나만 뺌)
                 missing.Add(batch[started - 1]);
+                hit.Add(batch[started - 1]);
             }
             else
             {
@@ -216,7 +218,7 @@ public sealed partial class Prewarmer
             }
         }
 
-        return new WalkResult(kept, missing, disk, boundaries, skipped, rest.Skip(next).Sum(o => o.Length), capReached, stopped);
+        return new WalkResult(kept, missing, hit, disk, boundaries, skipped, rest.Skip(next).Sum(o => o.Length), capReached, stopped);
     }
 
     // rest[next..] 에서 HoldBatchBytes 만큼 떼어 냅니다 (걸친 범위는 잘라 나머지를 남김).
@@ -276,6 +278,8 @@ public sealed partial class Prewarmer
         private long _holdAgainDiskBytes;
         private bool _finished;
         private bool _holdReleased;
+        private bool _holdWaiting;
+        private string? _holdRequest;
 
         /// 기억한 빠진 구멍의 합.
         public long MissingBytes
@@ -350,6 +354,49 @@ public sealed partial class Prewarmer
                 {
                     _holdReleased = value;
                 }
+            }
+        }
+
+        /// 붙들기가 하한 때문에 모두 내놓고 끝나 유지 루프가 다시 붙들기를 기다리는 중인가 (붙들기가 도는 동안은 거짓).
+        public bool HoldWaiting
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    return _holdWaiting;
+                }
+            }
+
+            set
+            {
+                lock (_lock)
+                {
+                    _holdWaiting = value;
+                }
+            }
+        }
+
+        /// 기다리는 중에 같은 게임의 다른 실행 파일이 떴음을 알립니다 (붙든 것이 남아 있거나 하한 때문에 내놓은 적이 없으면 아무것도 안 함: 그때는 main 처럼 새 시작이 아무것도 하지 않음).
+        public void RequestHold(string exe)
+        {
+            lock (_lock)
+            {
+                if (_holdWaiting && _holdReleased)
+                {
+                    _holdRequest = exe;
+                }
+            }
+        }
+
+        /// 알린 실행 파일 이름을 한 번만 돌려줍니다 (없으면 null).
+        public string? TakeHoldRequest()
+        {
+            lock (_lock)
+            {
+                string? exe = _holdRequest;
+                _holdRequest = null;
+                return exe;
             }
         }
 
@@ -1144,6 +1191,7 @@ public sealed partial class Prewarmer
                     }
 
                     long again = HoldAgain(hold, current, exe, floorMib, ref lastSkip); // 하한 때문에 내놓은 부분을 조건이 맞을 때 되붙듦
+                    availMib = _env.AvailableRamMib(); // 다시 붙든 (또는 하한에서 멈춘) 뒤의 가용으로 다음 내놓기 감시 간격을 정함
                     if (again > 0)
                     {
                         (heldAgainTotal, lastSkip) = (heldAgainTotal + again, null);
@@ -1204,7 +1252,7 @@ public sealed partial class Prewarmer
         long before = hold.HeldBytes;
         long started = System.Diagnostics.Stopwatch.GetTimestamp();
         WalkResult walk = WalkHold(hold, hold.ReleasedRanges(target), HoldAgainRoundCap(memory), floorMib, linked.Token);
-        hold.GiveUp(walk.Missing);
+        hold.GiveUp(walk.Hit); // 메모리에 없다고 확인한 범위만 포기함: 같은 파일의 건너뛴 뒤 범위는 확인하지 않았으므로 다음 점검이 다시 봄
         NoteServiceRead(game, walk.Disk);
         memory.AddHoldAgainDisk(walk.Disk);
         long held = hold.HeldBytes - before;

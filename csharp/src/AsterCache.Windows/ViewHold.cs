@@ -102,7 +102,7 @@ public sealed unsafe class ViewHold : IKeepHold
         public bool Image; // 실행 가능한 이미지 (MZ) 이거나 읽지 못해 붙들지 않음
         public bool Small; // MinFileBytes 보다 작아 붙들지 않음
         public readonly Dictionary<long, Window> Windows = [];
-        public readonly List<(long Start, long End)> Claimed = []; // 이미 붙든 (또는 내놓은) 구간, 겹치지 않게 합쳐 정렬: 같은 구간을 두 번 붙들지 않고 내놓은 구간을 다시 붙들지 않음
+        public readonly List<(long Start, long End)> Claimed = []; // 이미 붙든 (또는 다시 붙들지 않기로 한) 구간, 겹치지 않게 합쳐 정렬: 같은 구간을 두 번 붙들지 않음. Release 로 내놓은 구간은 여기서 빠져 ReleasedRanges 로 다시 붙들 수 있고, 점검이 뺀 구간·바뀐 파일·GiveUp 한 구간은 남아 다시 붙들지 않음
     }
 
     private sealed class Window

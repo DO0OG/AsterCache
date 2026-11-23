@@ -78,12 +78,16 @@ public sealed partial class Prewarmer
     /// 이미 이 게임의 유지가 돌고 있으면 (런처와 본체가 이어 뜬 경우) 바로 끝납니다. 회차마다 읽기 중재의 시작 스트림과 같은 대여를 새로 받아 (그 게임의 끝·다른 게임의 시작으로 취소) 돌고, 서비스가 멈추면 기다리던 것도 바로 끝납니다.
     private void KeepCacheWhilePlaying(GameSettings started, string exe)
     {
+        bool already;
         lock (_gate)
         {
-            if (!_playTouching.Add(started.Name))
-            {
-                return;
-            }
+            already = !_playTouching.Add(started.Name);
+        }
+
+        if (already)
+        {
+            KeepMemoryOf(started.Name).RequestHold(exe); // 하한 때문에 모두 내놓고 기다리는 중이면 기다리는 유지가 이 시작에서 처음 붙들기를 함 (붙든 것이 남아 있으면 아무것도 안 함)
+            return;
         }
 
         int rounds = 0;
@@ -103,6 +107,7 @@ public sealed partial class Prewarmer
             CancellationToken stop = _playStop.Token;
             // 유지 목록을 뷰로 붙들 수 있으면 (memory.keep_hold, Prewarm.PlayHold) 게임이 끝날 때까지 거기서 돌고, 붙들 수 없는 게임은 아래의 다시 만지기로 남음 (일시적 사유면 주기마다 다시 시도)
             HoldOutcome held = memory.Finished ? HoldOutcome.Done : _env.KeepHoldEnabled() ? HoldWhilePlaying(started, exe, keep, ref lastHoldSkip) : HoldOutcome.No; // 빠진 범위가 대부분이라 끝낸 플레이는 다른 실행 파일이 떠도 다시 시작하지 않음
+            memory.HoldWaiting = held == HoldOutcome.Retry;
             bool listReady = false;
             while (held != HoldOutcome.Done)
             {
@@ -113,9 +118,23 @@ public sealed partial class Prewarmer
                     break; // 서비스가 멈추거나 설정에서 빠지거나 등록 실행 파일이 모두 끝남
                 }
 
-                if (held == HoldOutcome.Retry && polls % fallbackPolls == 0 && _env.KeepHoldEnabled() && (held = HoldWhilePlaying(started, exe, keep, ref lastHoldSkip)) == HoldOutcome.Done)
+                if (held == HoldOutcome.Retry)
                 {
-                    break;
+                    string? newExe = memory.TakeHoldRequest();
+                    if (newExe is not null)
+                    {
+                        (exe, memory.HoldReleased) = (newExe, false); // 모두 내놓은 뒤 같은 게임의 다른 실행 파일이 뜸: main 처럼 그 시작에서 처음 붙들기 (다시 붙들기 조건 없이)
+                    }
+
+                    if ((newExe is not null || polls % fallbackPolls == 0) && _env.KeepHoldEnabled())
+                    {
+                        held = HoldWhilePlaying(started, exe, keep, ref lastHoldSkip);
+                        memory.HoldWaiting = held == HoldOutcome.Retry;
+                        if (held == HoldOutcome.Done)
+                        {
+                            break;
+                        }
+                    }
                 }
 
                 if (!listReady)

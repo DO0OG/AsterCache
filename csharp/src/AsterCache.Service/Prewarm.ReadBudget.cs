@@ -15,10 +15,11 @@ public sealed partial class Prewarmer
     internal const string IdleReadLimit = "idle read limit";
 
     /// 기본 상한의 바닥 (바이트): 예열 목록이 작은 드라이브도 이만큼은 읽을 수 있음.
-    internal const long IdleReadFloorBytes = 8L << 30;
+    internal const long IdleReadFloorBytes = 12L << 30;
 
-    /// 기본 상한은 그 드라이브 게임들의 예열 목록 합의 이 배수 (목록을 전부 두 번 다시 읽는 양).
-    internal const int IdleReadListFactor = 2;
+    /// 기본 상한은 그 드라이브 게임들의 예열 목록 합의 이 배수, 게임마다의 몫도 그 게임 목록의 이 배수 이상입니다 (목록을 하루 세 번, 약 8시간마다 한 번까지 통째로 다시 채울 수 있는 양).
+    /// 그보다 잦은 주기 점검의 다시 채우기는 플레이 전에 또 밀려날 가능성이 커 읽기만 늘리고, 플레이 직전의 채우기는 런처·게임 시작 예열이 이 상한과 무관하게 합니다. 2 배는 이 PC 의 최근 로그에서 일상적으로 상한에 걸렸습니다.
+    internal const int IdleReadListFactor = 3;
 
     private readonly DiskReadLedger _reads; // 드라이브별·목적별 읽은 양의 24시간 집계, 상태 파일에 함께 저장
 
@@ -30,10 +31,10 @@ public sealed partial class Prewarmer
     /// 게임을 마지막으로 플레이한 시각 (모르면 가장 오래된 시각): OrderByDescending 에 넘겨 가장 최근에 플레이한 게임이 앞에 오게 합니다 (같은 시각이면 받은 순서 그대로).
     internal DateTimeOffset PlayedAt(string game) => LastPlayedAt?.Invoke(game) ?? DateTimeOffset.MinValue;
 
-    /// 이 게임 드라이브의 계기 없는 읽기 하루 상한 (바이트): auto.idle_read_gib_per_day 가 0 보다 크면 그 값, 아니면 그 드라이브에 놓인 (예열이 허용된) 게임들의 예열 목록 합의 2 배와 8 GiB 가운데 큰 값.
+    /// 이 게임 드라이브의 계기 없는 읽기 하루 상한 (바이트): auto.idle_read_gib_per_day 가 0 보다 크면 그 값, 아니면 그 드라이브에 놓인 (예열이 허용된) 게임들의 예열 목록 합의 3 배와 12 GiB 가운데 큰 값.
     internal long IdleReadCap(GameSettings game) => IdleReadLimits(game).Cap;
 
-    /// 드라이브 상한과 이 게임의 하루 몫 (바이트): 몫은 상한을 그 드라이브 게임들의 예열 목록 크기에 비례해 나눈 것이라 기본 상한에서는 그 게임 목록의 2 배 이상입니다. 목록 크기를 모르는 게임은 몫이 0 (드라이브 상한만 봄).
+    /// 드라이브 상한과 이 게임의 하루 몫 (바이트): 몫은 상한을 그 드라이브 게임들의 예열 목록 크기에 비례해 나눈 것이라 기본 상한에서는 그 게임 목록의 3 배 이상입니다. 목록 크기를 모르는 게임은 몫이 0 (드라이브 상한만 봄).
     private (long Cap, long Share) IdleReadLimits(GameSettings game)
     {
         string drive = DiskReadLedger.DriveOf(game.OriginRoot);

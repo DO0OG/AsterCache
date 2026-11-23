@@ -129,9 +129,9 @@ public sealed class IdleReadBudgetTests : IDisposable
     }
 
     [Theory]
-    [InlineData(0, 100, 8 * Gib)] // 목록이 작으면 바닥 8 GiB
+    [InlineData(0, 100, 12 * Gib)] // 목록이 작으면 바닥 12 GiB
     [InlineData(3, 6000, 3 * Gib)] // 설정이 있으면 그 값
-    public void TheDefaultLimitIsEightGibForSmallListsAndTheSettingOverridesIt(int setGib, long zoneMib, long expected)
+    public void TheDefaultLimitIsTwelveGibForSmallListsAndTheSettingOverridesIt(int setGib, long zoneMib, long expected)
     {
         _zoneMib = zoneMib;
         Prewarmer p = Make(On with { IdleReadGibPerDay = setGib }, Game());
@@ -148,8 +148,8 @@ public sealed class IdleReadBudgetTests : IDisposable
         GameSettings other = Game("c") with { OriginRoot = @"E:\Games\c" };
         Prewarmer p = Make(On, a, b, other);
 
-        Assert.Equal(12000 * Mib, p.IdleReadCap(a)); // D: 두 게임 3000 + 3000 의 2 배
-        Assert.Equal(8 * Gib, p.IdleReadCap(other)); // E: 은 한 게임 3000 의 2 배가 8 GiB 미만
+        Assert.Equal(18000 * Mib, p.IdleReadCap(a)); // D: 두 게임 3000 + 3000 의 3 배
+        Assert.Equal(12 * Gib, p.IdleReadCap(other)); // E: 은 한 게임 3000 의 3 배가 12 GiB 미만
     }
 
     [Fact]
@@ -157,7 +157,7 @@ public sealed class IdleReadBudgetTests : IDisposable
     {
         GameSettings g = Game();
         Prewarmer p = StartedAndDue(On, g);
-        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 9 * Gib, g.Name); // 상한 8 GiB 를 넘음
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 13 * Gib, g.Name); // 상한 12 GiB 를 넘음
         int before = _streamer.Seen.Count;
 
         Ticks(p, 1, On);
@@ -183,7 +183,7 @@ public sealed class IdleReadBudgetTests : IDisposable
     {
         GameSettings g = Game();
         Prewarmer p = StartedAndDue(On, g);
-        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 9 * Gib, g.Name);
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 13 * Gib, g.Name);
         int before = _streamer.Seen.Count;
 
         p.NoteGameExit(); // 게임이 끝남: 점검을 앞당김
@@ -191,7 +191,7 @@ public sealed class IdleReadBudgetTests : IDisposable
         Ticks(p, 1, On);
 
         Assert.Equal(before + 1, _streamer.Seen.Count); // 게임 종료 뒤 한 번의 다시 채우기는 상한 밖
-        Assert.Equal(9 * Gib, Used(p, ReadPurpose.Idle)); // 그 읽기는 계기 있는 읽기로 세어 계기 없는 몫을 늘리지 않음
+        Assert.Equal(13 * Gib, Used(p, ReadPurpose.Idle)); // 그 읽기는 계기 있는 읽기로 세어 계기 없는 몫을 늘리지 않음
         Assert.Equal(100 * Mib + 8 * Mib + 100 * Mib, Used(p, ReadPurpose.Trigger)); // 시작 예열 + 느린 표본 8 곳 + 게임 종료 뒤 다시 읽기
 
         _now += TimeSpan.FromMinutes(11);
@@ -207,7 +207,7 @@ public sealed class IdleReadBudgetTests : IDisposable
         Prewarmer p = Make(NoRewarm with { StartupWarmMaxMib = 40 }, g);
         Assert.True(Assert.Single(p.RunServiceStart()).Ran);
         Assert.True(p.SupplementPending("g"));
-        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 9 * Gib, g.Name);
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 13 * Gib, g.Name);
 
         Ticks(p, 6, NoRewarm);
 
@@ -227,7 +227,7 @@ public sealed class IdleReadBudgetTests : IDisposable
     {
         GameSettings g = Game();
         Prewarmer p = Make(NoRewarm with { StartupWarmMaxMib = 40 }, g);
-        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 9 * Gib, g.Name); // 상한을 넘은 채로 시작
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 13 * Gib, g.Name); // 상한을 넘은 채로 시작
 
         Assert.True(Assert.Single(p.RunServiceStart()).Ran); // 서비스 시작 예열은 상한 밖
 
@@ -347,7 +347,7 @@ public sealed class IdleReadBudgetTests : IDisposable
         Assert.True(p.HasPendingWarm("g"));
         int before = _streamer.Seen.Count;
 
-        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 9 * Gib, g.Name); // 상한 초과
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 13 * Gib, g.Name); // 상한 초과
         _avail = 16000;
         _now += TimeSpan.FromMinutes(30);
         Ticks(p, 6, NoRewarm);
@@ -363,7 +363,7 @@ public sealed class IdleReadBudgetTests : IDisposable
         // 계기 있는 요청 (게임 시작 예열) 이 실패해 넘어간 재시도는 상한 밖
         Prewarmer second = Make(On, g);
         second.WarmRank = list => list;
-        second.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 9 * Gib, g.Name);
+        second.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 13 * Gib, g.Name);
         _avail = 100;
         Assert.False(second.Run(g, "trigger g.exe", ignoreCooldown: true).Ran);
         Assert.True(second.HasPendingWarm("g"));
@@ -384,7 +384,7 @@ public sealed class IdleReadBudgetTests : IDisposable
         Assert.Equal(100 * Mib, Used(p, ReadPurpose.Idle));
         Assert.Equal(0, Used(p, ReadPurpose.Trigger));
 
-        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 9 * Gib, g.Name);
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 13 * Gib, g.Name);
         int before = _streamer.Seen.Count;
         PrewarmResult limited = p.Guarded(g, "auto after relocation", pin: true, ignoreCooldown: true);
 
@@ -400,7 +400,7 @@ public sealed class IdleReadBudgetTests : IDisposable
     {
         GameSettings g = Game();
         Prewarmer p = StartedAndDue(On, g);
-        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 9 * Gib, g.Name);
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 13 * Gib, g.Name);
         int before = _streamer.Seen.Count;
         p.NoteGameExit();
         _disk = 50 << 20; // 드라이브가 바쁨
@@ -455,7 +455,7 @@ public sealed class IdleReadBudgetTests : IDisposable
 
         string[] lines = [.. _log.Lines.Where(line => line.Contains("disk reads in the last 24 h:", StringComparison.Ordinal))];
         Assert.Single(lines);
-        Assert.Contains("D: trigger reads 100.00 MiB, idle reads 0.00 MiB of 8192.00 MiB limit, recovery reads 0.00 MiB in 0 samples", lines[0], StringComparison.Ordinal);
+        Assert.Contains("D: trigger reads 100.00 MiB, idle reads 0.00 MiB of 12288.00 MiB limit, recovery reads 0.00 MiB in 0 samples", lines[0], StringComparison.Ordinal);
 
         Ticks(p, 4, On);
         Assert.Single(_log.Lines, line => line.Contains("disk reads in the last 24 h:", StringComparison.Ordinal));

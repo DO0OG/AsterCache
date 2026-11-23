@@ -120,7 +120,7 @@ flowchart LR
 | `auto_status.json` | 서비스 | 게임별 자동 단계(`discovered`, `tracing`, `learning`, `waiting_idle`, `relocating`, `done`, `failed`, `skipped`), 재배치 기록, 플레이 기록, 예열 적중률입니다. |
 | `prewarm_status.json` | 서비스 | 게임별 마지막 예열 결과입니다. |
 | `play_samples.json` | 서비스 | 게임별 최근 50회 플레이 구간의 디스크 읽기량·지연과 시작 예열·스트림 상태입니다. 플레이에서 뒤에 뜬 실행 파일마다의 스트림 결과와 +30·+60·+120초 구간(`stageStarts`), 10분 단위 요약(`periods`)도 담습니다. |
-| `play_series\<게임 키>_<시작 시각>.csv` 와 `.lists.csv` | 서비스 | 플레이의 매초 한 줄(프레임 값, CPU·메모리·그래픽 메모리·디스크 값, 게임의 읽기 바이트와 작업 집합, 로딩 판정, 서비스가 하던 일)과 30초마다의 우선순위별 대기 목록 크기입니다. 게임별 최근 8개 플레이만 보관합니다. 프레임 간격을 재는 동안 `play.series` 가 `true` 일 때만 쓰며, 열은 [자동 모드](AUTO_MODE.ko.md)에 있습니다. |
+| `play_series\<게임 키>_<시작 시각>.csv` 와 `.lists.csv` | 서비스 | 플레이의 매초 한 줄(프레임 값, CPU·메모리·그래픽 메모리·디스크 값, 게임의 읽기 바이트와 작업 집합, 로딩 판정(게임이 로딩 중인지), 서비스가 하던 일)과 30초마다의 우선순위별 대기 목록 크기입니다. 게임별 최근 8개 플레이만 보관합니다. 프레임 간격을 재는 동안 `play.series` 가 `true` 일 때만 쓰며, 열은 [자동 모드](AUTO_MODE.ko.md)에 있습니다. |
 | `quick_exit.json` | 서비스 | 게임별 연속 짧은 종료 횟수와 실행 길이, 그 연속의 건너뜀 결과, 마지막 정상 실행 때 조회한 커널 드라이버 목록입니다. 지워도 안전합니다(횟수가 다시 시작합니다). |
 | `plans\<게임>.trace.json.stages.json`, `.stages.tried` | 서비스 | 병합 트레이스와 같은 폴더에 만든 단계 색인과 그것을 만들려고 추가로 추적해 본 횟수입니다. 지워도 안전합니다. |
 | `orbit_mode.json`, `disk_model.json`, `benchmark_samples.json` | 서비스 | ORBIT 모드, 디스크별 보정 표본, 로딩 시간 표본입니다. |

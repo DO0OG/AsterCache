@@ -386,7 +386,7 @@ public sealed class AutoMode
     public void ReapplySpent(GameSettings g, long movedBytes) => Guard("reapply note", () => _relocator.NoteReapplied(g, movedBytes));
 
     /// 실제 바이트를 옮긴 재적용 회차를 반복 제한에 알림.
-    public void ReapplyMoved(GameSettings g, long movedBytes, bool partial) => Guard("reapply repeat note", () => _relocator.NoteReapplyMoved(g, movedBytes, partial));
+    public void ReapplyMoved(GameSettings g, long movedBytes, long todoBytes, bool partial) => Guard("reapply repeat note", () => _relocator.NoteReapplyMoved(g, movedBytes, todoBytes, partial));
 
     /// 재적용 검사가 배치를 연속으로 봄: 나뉜 회차의 표시를 내림.
     public void ReapplyHealthy(GameSettings g) => Guard("reapply repeat note", () => _relocator.NoteReapplyHealthy(g));

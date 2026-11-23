@@ -164,10 +164,24 @@ public sealed partial class AutoRelocator
                 // 저널에 행이 있음 (부분 적용) 이거나 이전 계획이 잔여 계획인 확장: 활성 계획을 새 계획으로 바로 덮지 않고, 이미 옮긴 조각을 지키는 잔여 재계획으로 저널 보관과 함께 바꿈
                 plan = InheritHeld(g, plan); // 아직 읽지 못하는 보류 파일은 후보에서 빠졌어도 계속 보류로 남김
                 bool hadJournal = _env.JournalRows(g) > 0;
+                List<PlanFile> olds = ResidualOlds(g);
+                bool keptRecord = _status.ReapplyLimit(g.Name) is not null && olds.Count > 0; // 치워 둔 계획의 재계획 (업데이트·확장은 기록이 이미 지워짐)
+                long placed = keptRecord ? _env.JournalDoneClusters(g, olds[0]) : 0; // 잔여 재계획이 저널을 보관하기 전에 읽음
                 try
                 {
-                    plan = residual(g, plan, ResidualOlds(g), sessions);
+                    plan = residual(g, plan, olds, sessions);
                     LogResidualPlacement(g, plan);
+                    if (keptRecord)
+                    {
+                        if (_skipPlacementCheck.Remove(g.Name))
+                        {
+                            _status.NoteReapplyReplan(g.Name, false);
+                        }
+                        else
+                        {
+                            NoteReapplyReplan(g, olds[0], plan, placed);
+                        }
+                    }
                 }
                 catch (PlanRejectedException e) when (IsTemporaryRejection(e))
                 {

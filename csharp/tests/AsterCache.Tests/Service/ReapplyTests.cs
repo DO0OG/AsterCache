@@ -216,7 +216,7 @@ public sealed class ReapplyTests
                     Spent.Add(bytes);
                     Calls.Add("spent");
                 },
-                Reapplied = (_, bytes, split) => Reapplied.Add((bytes, split)),
+                Reapplied = (_, bytes, _, split) => Reapplied.Add((bytes, split)),
                 LayoutHealthy = _ => HealthyCalls++,
                 ZoneBlocked = _ =>
                 {

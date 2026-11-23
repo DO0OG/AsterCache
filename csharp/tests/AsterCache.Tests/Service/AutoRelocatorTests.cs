@@ -84,6 +84,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         };
         _w.SystemDrive = Letter == "Z:" ? "Y:" : "Z:"; // 시험 폴더가 있는 드라이브는 시스템 볼륨이 아닌 HDD 로 취급
         _w.JournalRows = _ => File.Exists(JournalPath) ? JournalRowCount() : 0;
+        _w.JournalDoneClusters = (_, plan) => ReapplyEnv.JournalDoneClusters(JournalPath, plan);
         _w.Revert = (_, skipRows, ct) =>
         {
             RevertCalls++;

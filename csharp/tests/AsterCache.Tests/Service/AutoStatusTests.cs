@@ -297,6 +297,23 @@ public sealed class AutoStatusTests : IDisposable
     }
 
     [Fact]
+    public void ASplitRoundEndsWhenWhatIsLeftToMoveGrowsBecauseDonePiecesWereLost()
+    {
+        AutoStatus s = Make();
+        s.EnsureReapplyLimit("g", "source", "ranges");
+        TimeSpan week = TimeSpan.FromDays(7);
+        long mib = 1 << 20;
+
+        Assert.Equal((1, false), s.RecordReapplyRound("g", 400 * mib, week, 3, partial: true, todoBytes: 1000 * mib)); // 600 MiB 남김
+        Assert.Equal(600 * mib, s.ReapplyLimit("g")!.SplitRemaining);
+        Assert.Equal((1, false), s.RecordReapplyRound("g", 400 * mib, week, 3, partial: true, todoBytes: 600 * mib)); // 이어 옮기기: 세지 않음
+        Assert.Equal(200 * mib, s.ReapplyLimit("g")!.SplitRemaining);
+
+        Assert.Equal((2, false), s.RecordReapplyRound("g", 400 * mib, week, 3, partial: true, todoBytes: 900 * mib)); // 옮길 것이 200 → 900 으로 늘어남: 새 회차
+        Assert.Equal(500 * mib, s.ReapplyLimit("g")!.SplitRemaining);
+    }
+
+    [Fact]
     public void RemovingAGameForgetsItsRepeatRecordAndAReplanKeepingItAdoptsTheNextSourceKey()
     {
         AutoStatus s = Make();

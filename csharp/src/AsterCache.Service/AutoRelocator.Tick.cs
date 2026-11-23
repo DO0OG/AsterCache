@@ -54,6 +54,8 @@ public sealed partial class AutoRelocator
             _smrBudgetLogged.TryRemove(name, out _);
             _limitSeen.Remove(name);
             _extTried.Remove(name);
+            _repeatSourceChecked.Remove(name);
+            _skipPlacementCheck.Remove(name);
             _planFailedAt.TryRemove(name, out _);
             _transientHold.TryRemove(name, out _);
             _unreadableHold.TryRemove(name, out _);

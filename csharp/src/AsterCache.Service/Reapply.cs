@@ -137,8 +137,8 @@ public sealed class ReapplyEnv
     /// 재적용이 끝난 뒤 (예외로 끝나도) 실제로 쓴 바이트를 일일 예산·회복 추적에 알림.
     public Action<GameSettings, long> Spent { get; set; } = (_, _) => { };
 
-    /// 성공적으로 돌아온 재적용 회차의 실제 이동량과, 회당 쓰기 상한·취소로 멈춰 남은 몫이 있는지 (나뉜 회차) 를 알림.
-    public Action<GameSettings, long, bool> Reapplied { get; set; } = (_, _, _) => { };
+    /// 성공적으로 돌아온 재적용 회차의 실제 이동량, 회차 시작 때 옮길 것이 남은 양, 회당 쓰기 상한·취소로 멈춰 남은 몫이 있는지 (나뉜 회차) 를 알림.
+    public Action<GameSettings, long, long, bool> Reapplied { get; set; } = (_, _, _, _) => { };
 
     /// 배치 검사가 연속으로 나옴: 나뉜 회차의 이어 옮기기 표시를 내리는 데 씀.
     public Action<GameSettings> LayoutHealthy { get; set; } = _ => { };
@@ -310,6 +310,34 @@ public sealed class ReapplyEnv
     {
         using DataLock gate = Lock(journalDir, g) ?? throw new PlanRejectedException(DataLock.BusyMessage);
         return PlanSwitch.Resume(g.Plan, JournalPath(journalDir, g));
+    }
+
+    /// 활성 계획 아래 저널에서 done 으로 끝난 작업의 클러스터 합 (저널이 없거나 다른 계획의 것이면 0): 서비스가 이미 놓은 조각의 양. 잔여 재계획이 저널을 보관하기 전에 읽습니다.
+    public static long JournalDoneClusters(string journalDir, GameSettings g, PlanFile plan) => JournalDoneClusters(JournalPath(journalDir, g), plan);
+
+    public static long JournalDoneClusters(string journalPath, PlanFile plan)
+    {
+        if (!File.Exists(journalPath))
+        {
+            return 0;
+        }
+
+        using var jr = new Journal(journalPath);
+        if (jr.Rows.FirstOrDefault(r => Equals(r["type"], "header")) is not { } h || !h.TryGetValue("plan_sha", out object? sha) || sha as string != plan.Sha())
+        {
+            return 0;
+        }
+
+        var done = new HashSet<long>();
+        foreach (JObject r in jr.Rows)
+        {
+            if (Equals(r["type"], "step") && r.TryGetValue("state", out object? state) && Equals(state, "done") && r.TryGetValue("idx", out object? idx) && idx is long i && i >= 0 && i < plan.Tasks.Count)
+            {
+                _ = done.Add(i);
+            }
+        }
+
+        return done.Sum(i => plan.Tasks[(int)i].Clusters);
     }
 
     /// 게임 저널 header 의 plan_sha (저널이 없거나 행이 없으면 null).
@@ -676,7 +704,7 @@ public sealed class ReapplyChecker
                 }
 
                 _env.Spent(game, rep.MovedBytes);
-                _env.Reapplied(game, rep.MovedBytes, rep.Stopped is "write_cap" or "cancelled"); // 되풀이 횟수 (이어 옮기는 회차를 거르는 일은 기록이 함)
+                _env.Reapplied(game, rep.MovedBytes, rep.BytesTodo, rep.Stopped is "write_cap" or "cancelled"); // 되풀이 횟수 (이어 옮기는 회차를 거르는 일은 기록이 함)
 
                 if (rep.Stopped == DataLock.BusyReason)
                 {

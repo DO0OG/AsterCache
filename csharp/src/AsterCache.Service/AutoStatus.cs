@@ -40,7 +40,8 @@ public sealed record RecoveryAttempt(string? PlanSha, long? RejectedLcn, int Rep
 
 /// 원본과 배치 방식이 그대로인 재적용 회차의 시각. SourceKey 가 빈 문자열이면 다음에 보는 계획의 지문 목록을 기준으로 삼음 (원본이 그대로인 채 계획만 다시 만든 경우).
 /// HandoffPending: 다음 자동 재배치의 첫 이동을 한 회차로 셈. SplitPending: 직전 회차가 회당 쓰기 상한·취소로 나뉘어 남은 몫이 있음 (그 이어 옮기기는 세지 않음).
-public sealed record ReapplyLimitRecord(string SourceKey, string Layout, IReadOnlyList<DateTimeOffset> Rounds, bool HandoffPending = false, bool SplitPending = false);
+/// SplitRemaining: 나뉜 회차가 멈춘 때 남은 바이트. 다음 회차가 시작할 때 옮길 것이 이보다 늘었으면 이미 끝낸 조각이 제자리를 잃은 것이라 새 회차로 셈.
+public sealed record ReapplyLimitRecord(string SourceKey, string Layout, IReadOnlyList<DateTimeOffset> Rounds, bool HandoffPending = false, bool SplitPending = false, long SplitRemaining = 0);
 
 public sealed record AutoEvent(DateTimeOffset At, string Game, string Kind);
 
@@ -70,6 +71,7 @@ public sealed class AutoStatus
     private readonly Dictionary<string, DriveRecoveryRecord> _driveRecovery = new(StringComparer.Ordinal);
     private readonly Dictionary<string, RecoveryAttempt> _attempts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ReapplyLimitRecord> _reapplyLimits = new(StringComparer.Ordinal);
+    private const long SplitGrowthSlackBytes = 1 << 20; // 이어 옮기기 판정에서 옮긴 양 계산의 오차로 보는 크기
 
     /// sleep 은 파일 교체를 다시 시도하기 전의 대기 (시험이 바꿈, 기본은 MoveRetryDelay 만큼 실제로 잠). ticks 는 세션 안 경과 판정용 Stopwatch 틱 (시험이 바꿈).
     public AutoStatus(string? path, ILog log, Func<DateTimeOffset>? now = null, Action<TimeSpan>? sleep = null, Func<long>? ticks = null)
@@ -451,7 +453,7 @@ public sealed class AutoStatus
         {
             if (_reapplyLimits.TryGetValue(name, out ReapplyLimitRecord? old) && old.SplitPending)
             {
-                _reapplyLimits[name] = old with { SplitPending = false };
+                _reapplyLimits[name] = old with { SplitPending = false, SplitRemaining = 0 };
                 Save();
             }
         }
@@ -459,7 +461,7 @@ public sealed class AutoStatus
 
     /// 한 회차를 셉니다. 옮긴 바이트가 0 이면 세지 않고, 직전 회차가 나뉘어 이어 옮기는 회차 (SplitPending) 도 세지 않습니다.
     /// partial 은 이번 회차가 회당 쓰기 상한·취소로 멈춰 남은 몫이 있다는 뜻입니다. 자동 재배치의 첫 이동 (handoffOnly) 은 넘김 표시가 있을 때만 세고, 이어 옮기기 표시는 건드리지 않습니다.
-    public (int Count, bool ReachedLimit) RecordReapplyRound(string name, long movedBytes, TimeSpan window, int limit, bool handoffOnly = false, bool partial = false)
+    public (int Count, bool ReachedLimit) RecordReapplyRound(string name, long movedBytes, TimeSpan window, int limit, bool handoffOnly = false, bool partial = false, long todoBytes = 0)
     {
         lock (_lock)
         {
@@ -475,11 +477,13 @@ public sealed class AutoStatus
                 return (old.Rounds.Count(at => at > since), false);
             }
 
-            if (!handoffOnly && old.SplitPending)
+            if (!handoffOnly && old.SplitPending && todoBytes <= old.SplitRemaining + SplitGrowthSlackBytes)
             {
-                if (!partial)
+                // 나뉜 회차의 이어 옮기기: 세지 않음. 옮길 것이 이전에 남긴 양보다 늘었으면 (아래로 내려가 새 회차) 이미 끝낸 조각이 제자리를 잃은 것
+                ReapplyLimitRecord next = old with { SplitPending = partial, SplitRemaining = partial ? Math.Max(0, todoBytes - movedBytes) : 0 };
+                if (next != old)
                 {
-                    _reapplyLimits[name] = old with { SplitPending = false };
+                    _reapplyLimits[name] = next;
                     Save();
                 }
 
@@ -488,7 +492,13 @@ public sealed class AutoStatus
 
             int prior = old.Rounds.Count(at => at > since);
             List<DateTimeOffset> rounds = [.. old.Rounds.Where(at => at > since), now];
-            _reapplyLimits[name] = old with { Rounds = rounds, HandoffPending = handoffOnly ? false : old.HandoffPending, SplitPending = handoffOnly ? old.SplitPending : partial };
+            _reapplyLimits[name] = old with
+            {
+                Rounds = rounds,
+                HandoffPending = handoffOnly ? false : old.HandoffPending,
+                SplitPending = handoffOnly ? old.SplitPending : partial,
+                SplitRemaining = handoffOnly ? old.SplitRemaining : partial ? Math.Max(0, todoBytes - movedBytes) : 0,
+            };
             Save();
             return (rounds.Count, prior < limit && rounds.Count >= limit);
         }
@@ -831,6 +841,7 @@ public sealed class AutoStatus
                     { "rounds", r.Rounds.Select(at => (object?)Iso(at)).ToList() },
                     { "handoff_pending", r.HandoffPending },
                     { "split_pending", r.SplitPending },
+                    { "split_remaining", r.SplitRemaining },
                 });
             }
 
@@ -935,7 +946,8 @@ public sealed class AutoStatus
                             : [];
                         bool handoff = o.TryGetValue("handoff_pending", out object? pending) && pending is bool b && b;
                         bool split = o.TryGetValue("split_pending", out object? splitValue) && splitValue is bool sb && sb;
-                        _reapplyLimits[name] = new ReapplyLimitRecord(sourceKey, layout, rounds, handoff, split);
+                        long splitRemaining = o.TryGetValue("split_remaining", out object? remaining) && remaining is long sr ? sr : 0;
+                        _reapplyLimits[name] = new ReapplyLimitRecord(sourceKey, layout, rounds, handoff, split, splitRemaining);
                     }
                 }
             }

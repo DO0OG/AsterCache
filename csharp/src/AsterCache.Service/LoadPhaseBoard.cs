@@ -3,7 +3,7 @@ using AsterCache.Core.Logging;
 namespace AsterCache.Service;
 
 /// 게임별 로딩 판정의 지금 상태: 표본 루프 (PlayRecorder) 가 1초마다 쓰고, 게임이 도는 동안 디스크를 읽는 서비스 경로 (실행 중 캐시 유지 회차, 붙든 범위의 점검) 가 읽습니다.
-/// 상태가 바뀔 때만 한 줄을 로그에 남기므로 (시작 사유, 끝 사유와 길이, 그 사이에 미룬 일) 1초마다 찍히지 않습니다. 붙들기를 다시 붙드는 일 (다음 작업) 도 StateOf 로 같은 상태를 읽습니다.
+/// 상태가 바뀔 때만 한 줄을 로그에 남기므로 (시작 사유, 끝 사유와 길이, 그 사이에 미룬 일) 1초마다 찍히지 않습니다. 붙들기를 다시 붙드는 일도 StateOf 와 QueueOf 로 같은 상태를 읽습니다.
 internal sealed class LoadPhaseBoard(ILog log)
 {
     private readonly object _gate = new();
@@ -16,6 +16,7 @@ internal sealed class LoadPhaseBoard(ILog log)
     {
         public LoadDetector Detector { get; } = new();
         public SortedSet<string> Deferred { get; } = []; // 이번 로딩 동안 미룬 일의 이름
+        public long? Queue { get; set; } // 게임 드라이브의 디스크 대기열 (가장 최근 표본)
     }
 
     /// 이 게임의 지금 상태 (표본이 아직 없거나 표본 루프가 끝났으면 모름).
@@ -24,6 +25,27 @@ internal sealed class LoadPhaseBoard(ILog log)
         lock (_gate)
         {
             return _games.TryGetValue(game, out Entry? entry) ? entry.Detector.State : LoadState.Unknown;
+        }
+    }
+
+    /// 이 게임 드라이브의 가장 최근 디스크 대기열 (표본 루프가 1초마다 읽은 값, 표본이 없으면 모름): 다시 붙들기가 디스크를 읽어도 되는지 봅니다.
+    public long? QueueOf(string game)
+    {
+        lock (_gate)
+        {
+            return _games.TryGetValue(game, out Entry? entry) ? entry.Queue : null;
+        }
+    }
+
+    /// 표본 루프가 이 초의 디스크 대기열을 남깁니다 (판정 입력이 아님).
+    public void NoteQueue(string game, long queue)
+    {
+        lock (_gate)
+        {
+            if (_games.TryGetValue(game, out Entry? entry))
+            {
+                entry.Queue = queue;
+            }
         }
     }
 

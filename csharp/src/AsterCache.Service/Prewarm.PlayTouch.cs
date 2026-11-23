@@ -60,7 +60,7 @@ public sealed partial class Prewarmer
 
     /// 경기 안 로딩 (실행 파일 시작 없이 읽기·그래픽 신호로 잡힌 로딩) 중 회차의 보호 패스와 (집합이 비었을 때의) 찾기 패스가 디스크에서 읽는 양의 상한: 2 MiB. 빠진 조각 하나를 알아채는 데 읽는 양 (조각 하나가 1 MiB 이하) 정도입니다.
     /// 상한은 읽기 수를 조회할 때만 보므로 (빠진 조각이 의심 조각이면 곧바로, 아니면 FaultCheckBytes 64 MiB 마다) 실제 읽기는 보통 2~4 MiB 이고 최악은 한 조회 간격 (64 MiB) 입니다. 넘어도 아직 확인하지 못한 범위를 집합에서 빼지 않습니다.
-    /// 이 로딩 중의 순서 패스는 이번 패스가 메모리에 있다고 확인한 범위에만 돌고 읽기 상한 대신 디스크 읽기가 난 (경계) 배치에서 끝납니다 (최악 배치 하나 HoldBatchBytes 16 MiB).
+    /// 이 로딩 중의 순서 패스는 이번 패스가 메모리에 있다고 확인한 범위에만 돌고 디스크 읽기가 난 (경계) 배치나 일반 회차와 같은 읽기 상한 (KeepOrderDiskCapBytes 32 MiB) 에서 끝납니다 (최악 배치 하나 HoldBatchBytes 16 MiB 를 더한 값).
     public const long KeepLoadingProtectDiskCapBytes = 2L << 20;
 
     /// 경기 안 로딩 중 붙든 범위의 점검이 줄여 간 구간을 디스크에서 다시 읽는 양의 상한: 2 MiB. 읽기 수를 조회할 때만 보므로 (ViewHold.ReadRange, 64 MiB 마다 또는 의심 조각 뒤 8 MiB 이상 만졌을 때) 실제로는 약 8~10 MiB 까지 읽을 수 있고 최악은 64 MiB 입니다.
@@ -78,12 +78,16 @@ public sealed partial class Prewarmer
     /// 이미 이 게임의 유지가 돌고 있으면 (런처와 본체가 이어 뜬 경우) 바로 끝납니다. 회차마다 읽기 중재의 시작 스트림과 같은 대여를 새로 받아 (그 게임의 끝·다른 게임의 시작으로 취소) 돌고, 서비스가 멈추면 기다리던 것도 바로 끝납니다.
     private void KeepCacheWhilePlaying(GameSettings started, string exe)
     {
+        bool already;
         lock (_gate)
         {
-            if (!_playTouching.Add(started.Name))
-            {
-                return;
-            }
+            already = !_playTouching.Add(started.Name);
+        }
+
+        if (already)
+        {
+            KeepMemoryOf(started.Name).RequestHold(exe); // 하한 때문에 모두 내놓고 기다리는 중이면 기다리는 유지가 이 시작에서 처음 붙들기를 함 (붙든 것이 남아 있으면 아무것도 안 함)
+            return;
         }
 
         int rounds = 0;
@@ -103,6 +107,7 @@ public sealed partial class Prewarmer
             CancellationToken stop = _playStop.Token;
             // 유지 목록을 뷰로 붙들 수 있으면 (memory.keep_hold, Prewarm.PlayHold) 게임이 끝날 때까지 거기서 돌고, 붙들 수 없는 게임은 아래의 다시 만지기로 남음 (일시적 사유면 주기마다 다시 시도)
             HoldOutcome held = memory.Finished ? HoldOutcome.Done : _env.KeepHoldEnabled() ? HoldWhilePlaying(started, exe, keep, ref lastHoldSkip) : HoldOutcome.No; // 빠진 범위가 대부분이라 끝낸 플레이는 다른 실행 파일이 떠도 다시 시작하지 않음
+            memory.HoldWaiting = held == HoldOutcome.Retry;
             bool listReady = false;
             while (held != HoldOutcome.Done)
             {
@@ -113,9 +118,23 @@ public sealed partial class Prewarmer
                     break; // 서비스가 멈추거나 설정에서 빠지거나 등록 실행 파일이 모두 끝남
                 }
 
-                if (held == HoldOutcome.Retry && polls % fallbackPolls == 0 && _env.KeepHoldEnabled() && (held = HoldWhilePlaying(started, exe, keep, ref lastHoldSkip)) == HoldOutcome.Done)
+                if (held == HoldOutcome.Retry)
                 {
-                    break;
+                    string? newExe = memory.TakeHoldRequest();
+                    if (newExe is not null)
+                    {
+                        (exe, memory.HoldReleased) = (newExe, false); // 모두 내놓은 뒤 같은 게임의 다른 실행 파일이 뜸: main 처럼 그 시작에서 처음 붙들기 (다시 붙들기 조건 없이)
+                    }
+
+                    if ((newExe is not null || polls % fallbackPolls == 0) && _env.KeepHoldEnabled())
+                    {
+                        held = HoldWhilePlaying(started, exe, keep, ref lastHoldSkip);
+                        memory.HoldWaiting = held == HoldOutcome.Retry;
+                        if (held == HoldOutcome.Done)
+                        {
+                            break;
+                        }
+                    }
                 }
 
                 if (!listReady)

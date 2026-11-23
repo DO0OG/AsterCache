@@ -90,6 +90,22 @@ public sealed class WholeFileLayoutPlanTests : ApplyTestBase
     }
 
     [Fact]
+    public void AWholePlanLongerThanTheHotBudgetZoneStillAppliesAndVerifies()
+    {
+        PlanFile plan = PlanFile.Make(Sessions, Root, 320 * Cb, Cb, p => Files[p], zoneStartLcn: 20000, capacityBytes: Capacity); // 핫 예산 기준 zone 은 320 클러스터, 통째로 놓은 길이는 512
+
+        Assert.Equal((320, 512L), (plan.Zone.Clusters, plan.Stats["zone_used_clusters"]));
+
+        ApplyReport rep = Apply(plan, Exec());
+
+        Assert.Empty(rep.Failed);
+        Assert.All(Vol.Ext.Values, e => Assert.True(OneRun(e)));
+        LayoutReport report = Verify(plan);
+        Assert.True(report.Contiguous);
+        Assert.Equal(512, report.InZoneClusters);
+    }
+
+    [Fact]
     public void AFileSplitIntoTwoPiecesFailsTheCheck()
     {
         PlanFile plan = Whole(20000);

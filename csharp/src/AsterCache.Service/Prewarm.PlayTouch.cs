@@ -5,7 +5,7 @@ using AsterCache.Windows;
 
 namespace AsterCache.Service;
 
-/// Prewarmer 가 게임이 실행되는 동안 그 게임이 예열해 둔 캐시를 메모리 안에서 다시 만져 유지하는 곳 (붙들지 않는 게임, 곧 안티치트 게이트가 고정을 막는 게임·파일 쓰기 정보가 없는 게임·memory.keep_hold 가 꺼진 경우).
+/// Prewarmer 가 게임이 실행되는 동안 그 게임이 예열해 둔 캐시를 메모리 안에서 다시 만져 유지하는 곳 (붙들지 않는 게임, 곧 안티치트 게이트가 고정을 막는 게임·파일 쓰기 정보가 없는 게임·memory.keep_hold 가 꺼진 경우). 붙드는 게임에서도 붙들지 못한 나머지 범위에는 같은 회차가 따로 도는 스레드에서 돕니다 (붙든 범위는 뺌).
 /// 경기 중에도 게임이 새로 읽는 양 (분당 0.8~1.7 GiB, 시작 뒤 180 초에 8.5 GiB 가 재사용된 기록도 있음) 에 밀려 예열한 페이지가 대기 목록에서 빠지므로, 시작 만지기 (TouchAtGameStart) 한 번으로는 경기 중반에 이미 없습니다.
 /// 회차는 대기 목록 재사용 누계가 문턱을 넘을 때 바로 돕니다 (KeepPollEvery 마다 누계만 확인). 이 플레이 동안 "메모리에 있다고 확인된 집합" 을 유지하고 회차는 그 집합만 덜 중요한 것부터 다시 만집니다 (순서 패스, 가장 중요한 것이 마지막, 속도 제한도 쉼도 없음).
 /// 집합은 찾기 패스 (ResidentFinder) 가 만듭니다: 가장 중요한 것부터 걸으며 메모리에 있는 범위를 모으고, 빠진 조각은 하드 폴트 조회로 싸게 알아챕니다. 한 지점만 빠졌으면 그 조각만 구멍으로 기억하고 계속하고,
@@ -74,9 +74,10 @@ public sealed partial class Prewarmer
 
     private void NoteServiceRead(GameSettings game, long diskBytes) => LoadPhases?.ServiceReads.Add(game.OriginRoot, diskBytes);
 
-    /// 시작 만지기가 끝난 뒤 같은 작업 안에서 부릅니다: 등록 실행 파일이 하나도 실행 중이 아닐 때까지, 먼저 유지 목록을 뷰로 붙들 수 있으면 붙들고 (Prewarm.PlayHold), 아니면 재사용이 문턱을 넘을 때마다 그 게임 목록을 메모리 안에서 다시 만집니다.
+    /// 시작 만지기와 같은 작업 안에서 부릅니다 (시작 만지기는 startTouch 로 받아 이 안에서 돌림): 등록 실행 파일이 하나도 실행 중이 아닐 때까지, 먼저 유지 목록을 뷰로 붙들 수 있으면 붙들고 (Prewarm.PlayHold, 시작 만지기보다 먼저),
+    /// 붙들지 못한 범위와 붙들 수 없는 게임의 목록은 재사용이 문턱을 넘을 때마다 메모리 안에서 다시 만집니다.
     /// 이미 이 게임의 유지가 돌고 있으면 (런처와 본체가 이어 뜬 경우) 바로 끝납니다. 회차마다 읽기 중재의 시작 스트림과 같은 대여를 새로 받아 (그 게임의 끝·다른 게임의 시작으로 취소) 돌고, 서비스가 멈추면 기다리던 것도 바로 끝납니다.
-    // startTouch: 이 실행 파일의 시작 만지기 (붙든 범위를 받아 그 범위는 뺌). 붙들 수 있는 게임은 처음 붙들기 뒤에, 붙들지 않는 게임은 지금처럼 맨 먼저 한 번 돕니다.
+    /// startTouch: 이 실행 파일의 시작 만지기 (붙든 범위를 받아 그 범위는 뺌). 붙들 수 있는 게임은 처음 붙들기 뒤에, 붙들지 않는 게임은 맨 먼저 한 번 돕니다.
     private void KeepCacheWhilePlaying(GameSettings started, string exe, Action<IKeepHold?> startTouch)
     {
         bool already;
@@ -94,11 +95,11 @@ public sealed partial class Prewarmer
 
         int rounds = 0;
         int polls = 0;
-        int lastRoundPoll = 0; // 시작 만지기가 끝난 때 (이 뒤 KeepMinInterval 이 지나야 첫 회차)
+        int lastRoundPoll = 0; // 시작 만지기가 끝난 때의 확인 번호 (이 뒤 KeepMinInterval 이 지나야 첫 회차)
         int fallbackPolls = (int)(PlayTouchEvery.Ticks / KeepPollEvery.Ticks);
         int minPolls = (int)Math.Ceiling((double)KeepMinInterval.Ticks / KeepPollEvery.Ticks);
         KeepMemory memory = KeepMemoryOf(started.Name); // 이 플레이에서 알게 된 빠진·메모리에 있는 범위 (같은 게임의 다른 실행 파일이 떠도 이어 씀)
-        long? reuseAtLastRound = _env.Lists()?.CacheRepurposedBytes; // 시작 만지기가 끝난 때의 대기 목록 재사용 누계
+        long? reuseAtLastRound = null; // 시작 만지기가 끝난 때 (StartTouch) 잡는 대기 목록 재사용 누계: 시작 만지기 동안의 재사용이 첫 회차 문턱에 들어가지 않게
         var keep = new KeepList(); // 이 플레이의 유지 목록 (입력이 바뀔 때만 다시 계산)
         bool noted = false; // 이 유지가 로그를 한 줄이라도 남겼는가 (끝 줄을 남길지)
         string? lastSkip = null;
@@ -107,6 +108,8 @@ public sealed partial class Prewarmer
         CancellationTokenSource? sparseStop = null;
         Task? sparse = null;
         bool touchRan = false; // 시작 만지기는 한 번만
+        bool touchDone = false; // 시작 만지기가 끝남 (붙든 동안의 회차는 그 뒤에만 돔: 실행 파일 시작 로딩 중 디스크 읽기가 시작 만지기와 겹쳐 늘지 않게)
+        bool roundsStarted = false; // 붙든 동안의 회차 확인을 시작 만지기가 끝난 뒤 처음 맞았는가
         Task? roundTask = null; // 붙든 동안 붙들지 못한 나머지의 유지 회차 (한 번에 하나)
         int tickPoll = -1;
         int pollBase = 0;
@@ -125,6 +128,8 @@ public sealed partial class Prewarmer
 
                 touchRan = true;
                 startTouch(hold);
+                reuseAtLastRound = _env.Lists()?.CacheRepurposedBytes;
+                Volatile.Write(ref touchDone, true);
                 if (_env.KeepSparseEnabled() && _env.OpenBlockReader is not null)
                 {
                     // 스파스 파일 블록은 붙들기·다시 만지기가 못 다루므로 (매핑하면 캐시가 버려짐) 같은 게임이 실행되는 동안 곁 스레드가 버퍼드 읽기로 유지합니다 (Prewarm.PlaySparse): 게임이 붙들기로 돌든 다시 만지기로 돌든 같음
@@ -184,7 +189,13 @@ public sealed partial class Prewarmer
             void HoldTick(IKeepHold hold, TimeSpan elapsed)
             {
                 int poll = (int)(elapsed / KeepPollEvery);
-                if (poll == tickPoll || roundTask is { IsCompleted: false })
+                if (!Volatile.Read(ref touchDone) || poll == tickPoll || roundTask is { IsCompleted: false })
+                {
+                    return;
+                }
+
+                // 로딩 중에는 돌지 않음 (붙들지 않는 게임과 달리 붙든 게임은 이 회차가 새로 더해진 읽기이므로 실행 파일 시작 로딩 중에는 더하지 않음)
+                if (LoadPhases?.StateOf(started.Name) == LoadState.Loading)
                 {
                     return;
                 }
@@ -192,6 +203,12 @@ public sealed partial class Prewarmer
                 tickPoll = poll;
                 if (GameOf(started.Name) is not { } game || !_env.GameRunning(game))
                 {
+                    return;
+                }
+
+                if (!roundsStarted)
+                {
+                    (roundsStarted, lastRoundPoll) = (true, pollBase + poll); // 시작 만지기가 끝난 뒤 첫 확인: 이 뒤 KeepMinInterval 이 지나야 첫 회차 (붙들지 않는 게임과 같음)
                     return;
                 }
 

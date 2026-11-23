@@ -29,7 +29,7 @@ public sealed partial class Prewarmer
         void Touch(IKeepHold? hold) => TouchOnceAtGameStart(game, exe, otherRunning, hold);
         if (_solar.Enabled)
         {
-            KeepMemoryOf(game.Name).NoteStarted(startedAt ?? _now());
+            KeepMemoryOf(game.Name).NoteStarted(startedAt ?? _now(), _env.AvailableRamMib());
             KeepCacheWhilePlaying(game, exe, Touch); // 시작 만지기가 어떻게 끝났든 (대여 양보·재배치 중 같은 일시적 사유 포함) 같은 작업 안에서 게임이 끝날 때까지 이어 만짐: 회차마다 게이트를 다시 봄
         }
         else

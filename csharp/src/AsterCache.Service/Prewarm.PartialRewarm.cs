@@ -210,12 +210,15 @@ public sealed partial class Prewarmer
         bool wasMemoryPartial;
         bool unknown;
         long windowMib;
+        bool hadWindow;
+        long storedWindow;
         lock (_gate)
         {
             hasPartial = _partial.TryGetValue(game.Name, out partial);
             wasMemoryPartial = _memoryPartial.ContainsKey(game.Name);
             unknown = _rangeUnknown.Contains(game.Name);
-            windowMib = Math.Max(partial.WarmedMib, _partialWindowMib.GetValueOrDefault(game.Name));
+            hadWindow = _partialWindowMib.TryGetValue(game.Name, out storedWindow);
+            windowMib = Math.Max(partial.WarmedMib, hadWindow ? storedWindow : 0);
         }
 
         if (!hasPartial)
@@ -263,6 +266,11 @@ public sealed partial class Prewarmer
                 // 예열이 끝난 일반 예열로 보고 부분 상태를 지움 (창 크기가 등록 상한과 같을 때): 다시 읽기 전 상태로 되돌림
                 current = partial;
                 _partial[game.Name] = current;
+                if (hadWindow)
+                {
+                    _partialWindowMib[game.Name] = storedWindow; // 기록이 지운 창 크기도 되살림
+                }
+
                 if (wasMemoryPartial)
                 {
                     _memoryPartial[game.Name] = current;

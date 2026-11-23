@@ -546,6 +546,33 @@ public sealed class SupplementWarmTests : IDisposable
     }
 
     [Fact]
+    public void ACutShortSupplementLeavesAPartialWhoseFirstRangeIsUnknownSoTheWindowPathDoesNotReadIt()
+    {
+        _zoneMib = 1000;
+        GameSettings g = Game();
+        Prewarmer p = Make(g);
+        p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 40, RewarmMinutes = 10 });
+        Assert.True(Assert.Single(p.RunServiceStart()).Ran);
+        _avail = 4096 + 500 + Prewarmer.FinalShrinkHeadroomMib;
+        _streamer.OnStream = _ => false; // 보충이 도중에 끊김
+        (_streamer.ReadMib, _streamer.RequestedMib) = (200, 200);
+        Assert.False(p.Supplement(g, CancellationToken.None));
+        _streamer.OnStream = null;
+        Assert.True(p.SupplementPending("g"));
+        Assert.False(Status("g").ContainsKey("sparse_out")); // 처음 읽은 범위를 모르는 상태로 남음
+        _probe = new ProbeResult(8, 8, 120.0);
+
+        _disk = 50 << 20;
+        Ticks(p, 1, On);
+        _now += TimeSpan.FromMinutes(11);
+        _disk = 0;
+        int streams = _streamer.Seen.Count;
+        Ticks(p, 1, On);
+
+        Assert.Equal(streams, _streamer.Seen.Count); // 창 경로로 읽지 않고 보충에 맡김
+    }
+
+    [Fact]
     public void AColdPartialWhoseFirstRangeIsUnknownIsNotReadAgainByTheWindowPath()
     {
         GameSettings g = Game();

@@ -242,7 +242,8 @@ public sealed partial class Prewarmer
     private static string MibText(long bytes) => $"{bytes / 1048576.0:F2} MiB";
 
     // 보충이 끊기거나 앞부분만 읽고 끝났을 때 읽은 양을 기억합니다 (줄어들지 않음): 상태 표시와 다음 보충의 시작점. 보충 대기 중인 게임만.
-    private void NoteProgress(GameSettings game, string? inputs, long warmedMib, long hotMib, long bytes)
+    // cutShort: 메모리 한도로 마무리하거나 도중에 끊겨 창 앞쪽만 읽음: 같은 창으로 다시 만든 목록이 읽은 범위와 달라 식은 앞부분 다시 읽기가 같은 범위를 읽을 수 없음.
+    private void NoteProgress(GameSettings game, string? inputs, long warmedMib, long hotMib, long bytes, bool cutShort = false)
     {
         bool changed = false;
         lock (_gate)
@@ -270,6 +271,11 @@ public sealed partial class Prewarmer
                 if (_memoryPartial.ContainsKey(game.Name))
                 {
                     _memoryPartial[game.Name] = (warmedMib, hotMib); // 재예열 점검은 읽은 앞부분에서만 표본을 고름
+                }
+
+                if (cutShort)
+                {
+                    _ = _rangeUnknown.Add(game.Name);
                 }
 
                 changed = true;
@@ -730,7 +736,7 @@ public sealed partial class Prewarmer
                             // 메모리 한도로 읽은 데까지만 읽고 마무리: 읽은 양을 기록하고, 틈 없는 읽기면 다음 보충이 그 위치부터 이어 읽음 (같은 윈도라 위치가 스케줄 앞부분과 같음).
                             // 틈을 메운 계획은 위치를 믿을 수 없어 이어 읽을 위치를 남기지 않고, 읽은 양도 틈 양을 뺀 만큼만 셈 (확실히 읽었다고 할 수 있는 만큼)
                             long keptBytes = skipBytes + Math.Max(0, stats.Bytes - stats.GapBytes);
-                            NoteProgress(game, inputStamp, Math.Min(windowMib ?? p.HotMib, (keptBytes + (1 << 20) - 1) >> 20), p.HotMib, keptBytes);
+                            NoteProgress(game, inputStamp, Math.Min(windowMib ?? p.HotMib, (keptBytes + (1 << 20) - 1) >> 20), p.HotMib, keptBytes, cutShort: true);
                             lock (_gate)
                             {
                                 if (stats.GapBytes == 0)
@@ -812,7 +818,7 @@ public sealed partial class Prewarmer
             if (!r.Complete)
             {
                 long progressBytes = skipBytes + r.Stats.Bytes;
-                NoteProgress(game, inputStamp, ActualMib(r.Stats, windowMib ?? p.HotMib, skipBytes), p.HotMib, progressBytes); // 끊겨도 읽은 양은 버리지 않음: 다음 보충이 이어서 읽음
+                NoteProgress(game, inputStamp, ActualMib(r.Stats, windowMib ?? p.HotMib, skipBytes), p.HotMib, progressBytes, cutShort: true); // 끊겨도 읽은 양은 버리지 않음: 다음 보충이 이어서 읽음
                 bool reordered = _streamer.WasPrewarmReordered(game);
                 // 위치는 틈을 뺀 스케줄 기준 (틈 메운 순서와 달라도 모자라게 셈: 덜 건너뛰는 쪽). 오류가 있으면 앞이 다 읽혔다고 못 하니 버리고, 목록 끝까지 읽은 뒤의 취소 (갱신 읽기 도중) 는 창 완료.
                 long pos = skipBytes + Math.Max(0, r.Stats.Bytes - r.Stats.GapBytes);

@@ -32,12 +32,15 @@ internal sealed class YieldTally
 }
 
 /// BackgroundYield 의 빠른 경로: 등록 게임이 도는 동안 새로 뜬 프로세스를 약 3 초 안에 알아채 기존 Select·Lower 를 그 프로세스들에만 돌립니다 (설정 memory.background_yield_fast).
-/// 새 프로세스는 프로세스 번호 목록 (열지 않음, 한 번에 약 0.05 ms) 의 차이로만 알아채고, 연속 두 번 보인 번호만 (1.5 초 간격, 최대 3 초) 이름·경로를 확인합니다: 곧바로 끝나는 짧은 프로세스는 대상이 되지 않고 상태 파일도 쓰지 않습니다.
+/// 새 프로세스는 프로세스 번호 목록 (열지 않음, 한 번에 약 0.05 ms) 의 차이로만 알아채고, 연속 두 번 보인 번호만 (1.5 초 간격, 최대 3 초) 이름·경로를 확인합니다: 한 번만 보이고 다음 점검 전에 끝난 프로세스는 열지도 상태 파일에 쓰지도 않습니다.
 /// 대상에서 빼는 규칙과 판정 순서, 열기 권한은 2 분 주기의 유지와 같습니다 (같은 Select·Lower). 작업 집합 비우기는 하지 않고, 복원은 기존 상태 파일 경로를 그대로 씁니다.
-/// shortcut: 두 점검 사이에 끝났다가 같은 번호를 다른 프로세스가 이어받으면 알아채지 못합니다 (그 프로세스는 2 분 유지가 이름으로 걸러 다시 고름), 필요하면 번호 대신 생성 시각을 비교하도록 올림.
+/// shortcut: 두 점검 사이에 끝났다가 같은 번호를 다른 프로세스가 이어받으면 알아채지 못합니다 (쓰기 전의 같은 프로세스 확인이 거르며, 2 분 유지가 이름이 다를 때만 다시 고름), 필요하면 번호 대신 생성 시각을 비교하도록 올림.
 public sealed partial class BackgroundYield
 {
     public static readonly TimeSpan FastEvery = TimeSpan.FromMilliseconds(1500);
+
+    /// 실제 점검 간격 (시험이 짧게 바꿈).
+    internal TimeSpan FastInterval { get; set; } = FastEvery;
 
     private HashSet<int> _seen = []; // 이미 처리했거나 세션 시작 때 떠 있던 프로세스 번호
     private HashSet<int> _pending = []; // 직전 점검에서 처음 보인 번호 (이번에도 있으면 처리)
@@ -46,9 +49,10 @@ public sealed partial class BackgroundYield
     private volatile bool _fastOn;
     private volatile TaskCompletionSource _fastSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool _fastWarned;
+    private readonly Dictionary<int, long> _deferred = []; // 빠른 경로가 골랐지만 그때 쓰고 있는 것으로 보여 메모리 쪽을 건너뛴 프로세스 (번호와 생성 시각), 2분 유지에서 쉬는 것으로 판정되면 낮춤
     private long _appliedTotal;
 
-    /// 세션이 시작된 뒤 새로 우선순위를 적용한 프로세스 수의 누계 (초 단위 기록이 초마다 읽어 차이를 남김, 다른 스레드에서 읽음).
+    /// 서비스가 시작된 뒤 새로 우선순위를 적용한 프로세스 수의 누계 (초 단위 기록이 초마다 읽어 차이를 남김, 다른 스레드에서 읽음).
     public long AppliedTotal => Interlocked.Read(ref _appliedTotal);
 
     private bool FastEnabled => Enabled && settings().Memory.BackgroundYieldFast;
@@ -62,7 +66,7 @@ public sealed partial class BackgroundYield
             {
                 if (_fastOn)
                 {
-                    await Task.Delay(FastEvery, ct).ConfigureAwait(false);
+                    await Task.Delay(FastInterval, ct).ConfigureAwait(false);
                     FastTick();
                 }
                 else
@@ -81,17 +85,24 @@ public sealed partial class BackgroundYield
     {
         _seen = [.. processes.Select(p => p.Pid)];
         _pending = [];
+        _deferred.Clear();
         _gameRunning = GameRunning(processes);
         _fastOn = true;
         _ = _fastSignal.TrySetResult();
     }
 
-    // 세션 끝: 모아 둔 집계를 로그에 남기고 신호를 새로 만들어 다음 세션까지 기다리게 함 (EndLocked 가 부름).
+    // 세션 끝: 모아 둔 집계를 로그에 남기고, 시작 신호가 완료된 상태일 때만 새 신호로 바꿔 다음 세션까지 기다리게 함 (EndLocked 가 부름).
+    // 세션 밖에서 EndLocked 가 다시 불려도 (되돌리기에 실패한 항목이 남은 경우) 루프가 기다리는 신호를 바꾸지 않아야 다음 시작이 루프를 깨웁니다.
     private void EndFast()
     {
         _fastOn = false;
-        _fastSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (_fastSignal.Task.IsCompleted)
+        {
+            _fastSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
         (_seen, _pending) = ([], []);
+        _deferred.Clear();
         LogTally(new YieldTally(), null);
     }
 
@@ -128,6 +139,7 @@ public sealed partial class BackgroundYield
 
             IReadOnlyList<(int Pid, string Exe)> processes = env.Processes();
             List<(int Pid, string Exe)> arrivals = [.. processes.Where(p => ready.Contains(p.Pid))];
+            int known = arrivals.Count(p => _targets.ContainsKey(p.Pid) || _skipped.Contains(p.Pid)); // 그 사이 2분 유지가 먼저 고른 것
             List<YieldTarget> found = Select(arrivals, pid => _targets.ContainsKey(pid) || _skipped.Contains(pid));
             foreach (YieldTarget t in found)
             {
@@ -135,8 +147,13 @@ public sealed partial class BackgroundYield
             }
 
             _fastTally.Seen += ready.Count;
-            _fastTally.Excluded += ready.Count - found.Count;
+            _fastTally.Excluded += ready.Count - known - found.Count;
             _ = Lower(found, processes, tally: _fastTally);
+            foreach (YieldTarget t in found.Where(t => !t.InheritOnly && !(_lowered.TryGetValue(t.Pid, out LoweredProcess entry) && entry.Created == t.Created && entry.Priority != NotLowered)))
+            {
+                _deferred[t.Pid] = t.Created; // 메모리 쪽을 아직 안 낮춘 것 (쓰고 있는 것으로 보임): 2분 유지에서 다시 판정
+            }
+
             _fastWarned = false;
         }
         catch (Exception e) when (e is not OperationCanceledException)

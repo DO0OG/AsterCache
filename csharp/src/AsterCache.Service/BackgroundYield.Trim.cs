@@ -131,7 +131,9 @@ public sealed partial class BackgroundYield
 
         var round = new YieldTally();
         _ = Lower(fresh, processes, tally: round);
-        ReclassifyInUse(round);
+        LowerDeferredMemory(processes, round);
+        ReclassifyInUse(processes, round);
+        PruneEnded(names);
         LogTally(round, span);
         long? repurposed = QueryLists()?.CacheRepurposedBytes;
         long? delta = repurposed - _lastRepurposed;

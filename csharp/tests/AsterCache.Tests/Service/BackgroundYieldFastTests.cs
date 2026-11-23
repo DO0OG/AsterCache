@@ -227,7 +227,7 @@ public sealed class BackgroundYieldFastTests
         _w.Now = _w.Start + TimeSpan.FromMinutes(4);
         y.Tick(_w.Snapshot());
 
-        Assert.True(Logged("background yield maintenance in 120 s: fast path saw 3 new processes (2 not eligible), memory priority lowered for 0, set below normal for 0 in-use, switched for 0, I/O priority lowered for 1, CPU priority lowered for 0, 1 failed"));
+        Assert.True(Logged("background yield maintenance in 120 s: fast path saw 3 new processes (2 not eligible), memory priority lowered for 0, set below normal for 0 in-use, switched for 0, I/O priority lowered for 1, CPU priority lowered for 0, 2 failed"), string.Join(" | ", _log.Lines));
     }
 
     private static MemorySettings ParseMemory(string memory)
@@ -292,5 +292,178 @@ public sealed class BackgroundYieldFastTests
         y.End();
 
         Assert.True(Logged("background yield maintenance: fast path saw 1 new processes (0 not eligible)"));
+    }
+
+    // 쓰고 있는 프로세스 (50, 한 코어의 10%) 가 있는 세션: 시작에서 보통보다 낮음 (4) 을 받음.
+    private BackgroundYield RunningWithBusyProcess()
+    {
+        _ = _w.Add(50, "busy.exe", wsMib: 300);
+        _ = _w.Add(10, "cod.exe");
+        BackgroundYield y = _w.Yielder(() => _settings, _log);
+        _w.Procs[50].CpuTicks = 60 * Second / 10;
+        y.Begin("game started", settle: false);
+        Assert.Equal(4, _w.Procs[50].Priority);
+        return y;
+    }
+
+    [Fact]
+    public void ASameNamedProcessThatTookOverTheNumberIsNeverWrittenByTheMaintenanceSwitch()
+    {
+        BackgroundYield y = RunningWithBusyProcess();
+        YieldWorld.Proc taker = _w.Add(50, "busy.exe"); // 낮춘 프로세스가 끝나고 같은 이름의 다른 프로세스가 같은 번호를 이어받음 (경로로만 보호되는 보조 프로세스일 수도 있음)
+        taker.Created = 5000;
+        int sets = _w.Sets.Count;
+        int described = _w.Described.Count;
+
+        _w.Now = _w.Start + TimeSpan.FromMinutes(2);
+        y.Tick(_w.Snapshot()); // 이어받은 프로세스는 쉼: 전환 대상이지만 쓰기 전에 생성 시각이 다름을 확인
+
+        Assert.Equal(sets, _w.Sets.Count); // 쓰기 호출 0
+        Assert.Equal(5, taker.Priority);
+        Assert.True(_w.Described.Count > described); // 확인은 조회 권한으로만
+        Assert.DoesNotContain("\"pid\": 50", _w.State ?? string.Empty, StringComparison.Ordinal); // 그 항목은 버림
+    }
+
+    [Fact]
+    public void ADeferredProcessWhoseNumberWasTakenOverIsNotWrittenEither()
+    {
+        _settings = _settings with { Memory = _settings.Memory with { BackgroundInUseMemoryPriority = false } };
+        BackgroundYield y = Running();
+        y.FastTick();
+        _ = _w.Add(60, "browser.exe");
+        Check(y, 2);
+        Assert.Empty(_w.Sets); // 새 프로세스는 쓰는 중으로 보여 메모리 쪽을 건너뜀
+        _w.Add(60, "browser.exe").Created = 5000; // 같은 이름의 다른 프로세스가 번호를 이어받음
+
+        _w.Now = _w.Start + TimeSpan.FromMinutes(2);
+        y.Tick(_w.Snapshot());
+
+        Assert.Empty(_w.Sets);
+        Assert.Equal(5, _w.Procs[60].Priority);
+    }
+
+    [Fact]
+    public void WithTheInUseSettingOffANewProcessThatTurnsOutIdleGetsTheLowestPriorityAtTheNextMaintenanceLikeBefore()
+    {
+        _settings = _settings with { Memory = _settings.Memory with { BackgroundInUseMemoryPriority = false } };
+        BackgroundYield y = Running();
+        y.FastTick();
+        _ = _w.Add(60, "browser.exe");
+        Check(y, 2);
+        Assert.Empty(_w.Sets); // 처음엔 쓰는 중으로 보여 메모리 쪽은 건너뛰고 I/O 만 낮춤
+        Assert.Equal([(60, 1)], _w.IoSets);
+
+        _w.Now = _w.Start + TimeSpan.FromMinutes(2);
+        y.Tick(_w.Snapshot()); // 쉬는 것으로 판정됨
+
+        Assert.Equal([(60, 1)], _w.Sets);
+        Assert.Contains("\"priority\": 5", _w.State, StringComparison.Ordinal);
+        y.End();
+        Assert.Equal(5, _w.Procs[60].Priority);
+    }
+
+    [Fact]
+    public void WithTheInUseSettingOffANewProcessThatStaysBusyKeepsItsMemoryPriority()
+    {
+        _settings = _settings with { Memory = _settings.Memory with { BackgroundInUseMemoryPriority = false } };
+        BackgroundYield y = Running();
+        y.FastTick();
+        _ = _w.Add(60, "browser.exe");
+        Check(y, 2);
+        _w.Procs[60].CpuTicks = 60 * Second / 10;
+
+        _w.Now = _w.Start + TimeSpan.FromMinutes(2);
+        y.Tick(_w.Snapshot());
+
+        Assert.Empty(_w.Sets);
+    }
+
+    [Fact]
+    public void TheStateFileRecordsTheSetValueOnlyWhenItIsNotOneAndARestartFindsAChildThatInheritedBelowNormal()
+    {
+        _ = RunningWithBusyProcess();
+        Assert.Contains("\"applied\": 4", _w.State, StringComparison.Ordinal);
+        YieldWorld.Proc child = _w.Add(70, "worker.exe", priority: 4); // 마지막 기록 뒤에 뜬 자식: 부모의 4 와 I/O 낮음을 물려받음
+        (child.Io, child.Parent, child.Created) = (1, 50, _w.Start.ToFileTime() + (20 * Second));
+
+        _w.Yielder(() => _settings, _log).Recover(); // 비정상 종료 뒤의 시작
+
+        Assert.Equal((5, 2), (_w.Procs[70].Priority, _w.Procs[70].Io));
+        Assert.Equal(5, _w.Procs[50].Priority);
+        Assert.Null(_w.State);
+    }
+
+    [Fact]
+    public void AnIdleEntryHasNoAppliedKeySoTheFileStaysTheSameAsBeforeForTheLowestPriority()
+    {
+        _ = _w.Add(10, "cod.exe");
+        _ = _w.Add(60, "idle.exe");
+        BackgroundYield y = _w.Yielder(() => _settings, _log);
+
+        y.Begin("game started", settle: false);
+
+        Assert.Equal(1, _w.Procs[60].Priority);
+        Assert.DoesNotContain("applied", _w.State, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TheFastLoopKeepsWorkingWhenTheSessionEndsTwiceBecauseAnEntryCouldNotBeRestored()
+    {
+        _ = _w.Add(60, "idle.exe");
+        _ = _w.Add(10, "cod.exe");
+        BackgroundYield y = _w.Yielder(() => _settings, _log);
+        y.FastInterval = TimeSpan.FromMilliseconds(10);
+        using var stop = new CancellationTokenSource();
+        Task loop = y.RunFastAsync(stop.Token);
+        try
+        {
+            y.Begin("game started", settle: false);
+            _ = _w.SetFails.Add(60); // 되돌리기에 실패해 항목이 남음
+            y.End();
+            await Task.Delay(100);
+            y.End(); // 세션 밖에서 다시 끝남: 루프가 기다리는 신호를 바꾸면 안 됨
+            await Task.Delay(100);
+            _ = _w.SetFails.Remove(60);
+            int before = _w.ProcessIdCalls;
+
+            y.Begin("game started again", settle: false);
+
+            DateTime until = DateTime.UtcNow.AddSeconds(10);
+            while (_w.ProcessIdCalls < before + 3 && DateTime.UtcNow < until)
+            {
+                await Task.Delay(20);
+            }
+
+            Assert.True(_w.ProcessIdCalls >= before + 3, "다음 세션에서 루프가 점검을 다시 불러야 함");
+        }
+        finally
+        {
+            await stop.CancelAsync();
+            await loop;
+        }
+    }
+
+    [Fact]
+    public void RecordsOfEndedProcessesAreDroppedAtTheMaintenanceAndTheStateFileIsWrittenOnlyForNewEntries()
+    {
+        BackgroundYield y = Running();
+        y.FastTick();
+        _ = _w.Add(60, "short-lived.exe");
+        Check(y, 2);
+        Assert.Contains("\"pid\": 60", _w.State, StringComparison.Ordinal);
+        _ = _w.Procs.Remove(60);
+        int writes = _w.StateWrites;
+
+        Check(y, 5); // 새 프로세스가 없으면 쓰지 않음
+        _w.Now = _w.Start + TimeSpan.FromMinutes(2);
+        y.Tick(_w.Snapshot()); // 끝난 항목을 치움 (치우기만으로는 쓰지 않음)
+        Assert.Equal(writes, _w.StateWrites);
+
+        _ = _w.Add(61, "next.exe");
+        Check(y, 2);
+
+        Assert.Equal(writes + 1, _w.StateWrites);
+        Assert.Contains("\"pid\": 61", _w.State, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"pid\": 60", _w.State, StringComparison.Ordinal);
     }
 }

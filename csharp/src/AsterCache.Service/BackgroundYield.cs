@@ -426,6 +426,6 @@ internal readonly record struct YieldTarget(int Pid, string Exe, string Path, lo
 
 /// 메모리·I/O·CPU 우선순위를 낮춘 프로세스와 원래 값 (Priority 는 메모리, Io 는 I/O, Cpu 는 CPU 등급이고 그쪽을 낮추지 않았으면 NotLowered. Cpu 는 보통 등급에서만 낮추므로 NotLowered 가 아니면 항상 보통). 상태 파일에서 읽은 옛 항목은 이름이 없을 수 있고 Io 도 없으며, 경로는 파일에 적지 않습니다.
 /// LoweredAt (FILETIME) 은 낮춘 시각이고 이보다 늦게 만들어진 자식은 낮은 값을 물려받습니다. 물려받은 항목 (Inherited) 은 만든 시각이 곧 낮춰진 시각입니다.
-/// Applied 는 메모리 우선순위로 지금 설정해 둔 값 (매우 낮음 1 또는 쓰고 있는 프로세스의 보통보다 낮음 4) 입니다: 상태 파일에는 적지 않고 (되돌릴 값은 Priority 뿐), 옛 항목과 읽어 온 항목은 1 로 봅니다.
+/// Applied 는 메모리 우선순위로 지금 설정해 둔 값 (매우 낮음 1 또는 쓰고 있는 프로세스의 보통보다 낮음 4) 입니다: 상태 파일에는 1 이 아닐 때만 적고 (되돌릴 값은 Priority 뿐이고, 복구가 4 를 물려받은 자식을 찾는 데 씀), 적지 않은 옛 항목은 1 로 봅니다.
 /// 둘 다 상태 파일에 (lowered_at, inherited) 적고 읽지만, 옛 형식 파일이거나 재부팅 앞에 적힌 항목은 낮춘 시각을 알 수 없음 (MaxValue) 이고, 그 항목의 자식은 물려받은 것으로 보지 않습니다.
 internal readonly record struct LoweredProcess(int Pid, string? Exe, string? Path, long Created, int Priority, long LoweredAt = long.MaxValue, bool Inherited = false, int Io = BackgroundYield.NotLowered, int Cpu = BackgroundYield.NotLowered, int Applied = ProcessMemory.PriorityVeryLow);

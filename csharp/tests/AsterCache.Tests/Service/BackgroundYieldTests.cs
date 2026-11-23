@@ -63,6 +63,8 @@ internal sealed class YieldWorld
 
     public int ProcessIdCalls;
 
+    public int StateWrites;
+
     public DateTimeOffset Start { get; } = DateTimeOffset.UnixEpoch.AddDays(1);
 
     public DateTimeOffset Now { get; set; } = DateTimeOffset.UnixEpoch.AddDays(1);
@@ -214,7 +216,11 @@ internal sealed class YieldWorld
         BootTime = () => Boot,
         Delay = (t, _) => Now += t,
         ReadState = () => State,
-        WriteState = text => State = WriteFails ? throw new IOException("disk full") : text,
+        WriteState = text =>
+        {
+            StateWrites++;
+            State = WriteFails ? throw new IOException("disk full") : text;
+        },
         DeleteState = () => State = null,
         KnownGameFolders = () => KnownFolders,
         WindowsDir = @"C:\Windows",

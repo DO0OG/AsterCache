@@ -289,6 +289,8 @@ internal sealed class FakeWorld
 
     public bool Power { get; set; } = true;
 
+    public bool Optimizing { get; set; }
+
     public Func<IReadOnlyList<IReadOnlyList<TraceEvent>>, string, long, PlanFile> MakePlan { get; set; } = (_, _, _) => throw new InvalidOperationException("MakePlan");
 
     public List<long> PlanZones { get; } = [];
@@ -553,6 +555,7 @@ internal sealed class FakeWorld
         LocateProbeSpots = (drive, lcn, _) => LocateProbeSpots(drive, lcn),
         CpuPercent = () => Cpu,
         PowerOk = () => Power,
+        DriveOptimizing = () => Optimizing,
     };
 
     private static string FakeSummarySession(string sidecar) => new Guid(SHA256.HashData(Encoding.UTF8.GetBytes(sidecar.ToUpperInvariant())).AsSpan(0, 16)).ToString("N");

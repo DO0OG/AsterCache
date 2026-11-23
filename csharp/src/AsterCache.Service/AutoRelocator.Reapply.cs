@@ -115,6 +115,11 @@ public sealed partial class AutoRelocator
             return ReapplyVerdict.OnBattery;
         }
 
+        if (_env.DriveOptimizing())
+        {
+            return ReapplyVerdict.DriveOptimizing;
+        }
+
         if (_env.DiskBytesPerSecond(DriveOf(g)) is not { } bps || bps >= DiskActivity.BusyBytesPerSecond)
         {
             return ReapplyVerdict.DiskBusy;

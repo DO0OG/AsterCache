@@ -634,6 +634,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
     [Theory]
     [InlineData("disk")]
     [InlineData("power")]
+    [InlineData("optimization")]
     [InlineData("game")]
     public void AnyBusyConditionRestartsTheIdleWindow(string busy)
     {
@@ -644,6 +645,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         {
             case "disk": _w.Disk = DiskActivityBytes() + 1; break;
             case "power": _w.Power = false; break;
+            case "optimization": _w.Optimizing = true; break;
             default: _w.Running = true; break;
         }
 
@@ -652,6 +654,7 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         _w.Disk = 0;
         _w.Cpu = 1;
         _w.Power = true;
+        _w.Optimizing = false;
         _w.Running = false;
 
         Run(TimeSpan.FromMinutes(2.5)); // 합치면 3 분을 넘지만 연속이 아님
@@ -3383,6 +3386,17 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         _w.Power = false;
 
         Assert.Equal(ReapplyVerdict.OnBattery, GateAfterIdle());
+    }
+
+    [Fact]
+    public void ReapplyGateDefersWhileTheDriveOptimizationRuns()
+    {
+        _w.Optimizing = true;
+
+        Assert.Equal(ReapplyVerdict.DriveOptimizing, GateAfterIdle());
+
+        _w.Optimizing = false;
+        Assert.Null(GateAfterIdle()); // 끝나면 같은 유휴 조건만 남음
     }
 
     [Fact]

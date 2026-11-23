@@ -98,6 +98,33 @@ public sealed class RelocationRestTests : ApplyTestBase
     }
 
     [Fact]
+    public void RestsWhileTheDriveOptimizationRunsWithoutObservingTheDiskAndResumesWhenItEnds()
+    {
+        bool optimizing = true;
+        int rests = 0;
+        var rest = new RelocationRest("g", _log, () => { _events.Add("observe"); return (0, _state); },
+            (span, _) => { _now += span; optimizing = ++rests < 3; }, () => _now, () => optimizing);
+
+        Assert.True(rest.MayIssue(CancellationToken.None)); // 직전에 한가함을 봤어도 (관측 간격 안) 최적화가 돌면 바로 쉼
+
+        Assert.Equal(3, rests);
+        Assert.Equal(["observe"], _events); // 도는 동안은 디스크를 재지 않고, 끝난 뒤에야 한 번 봄
+        Assert.Collection(_log.Lines,
+            l => Assert.Equal("Info: g: relocation yields to the drive optimization (resting between pieces)", l),
+            l => Assert.Equal("Info: g: relocation resumes after 12.0 s of rest", l));
+    }
+
+    [Fact]
+    public void StopsTheRoundWhenTheDriveOptimizationOutlastsTheRestLimit()
+    {
+        var rest = new RelocationRest("g", _log, () => (0, _state), (span, _) => _now += span, () => _now, () => true);
+
+        Assert.False(rest.MayIssue(CancellationToken.None));
+
+        Assert.Equal("Info: g: relocation stops this round after 600 s of rest, the drive optimization continues (resumes when it ends or after its 30 min limit)", _log.Lines.Last());
+    }
+
+    [Fact]
     public void StopsRightAwayWhenCancelledWhileRestingOrBeforeLikeAGameStart()
     {
         using var cts = new CancellationTokenSource();

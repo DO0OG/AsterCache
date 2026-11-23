@@ -6,7 +6,8 @@ namespace AsterCache.Service;
 /// 활동이 보이면 조각을 내지 않고 쉬다가 (저널이 재개 지점이라 어느 조각 사이에서 멈춰도 안전) 한가해지면 이어 갑니다.
 /// 너무 오래 (MaxRest) 쉬었으면 그 회차를 끝내고 (취소와 같은 중단) 다음 기회에 이어 감: 시작 조건이 한가함을 다시 봅니다.
 /// 서비스 자신의 쓰기는 판정에서 빠집니다: 관측 때 이 스레드는 쓰지 않고 (남은 쓰기가 빠져나갈 시간을 둔 뒤) 그 멈춘 구간만 재기 때문입니다.
-internal sealed class RelocationRest(string game, ILog log, Func<(double? Bps, DiskActivity.SampleState State)> observe, Action<TimeSpan, CancellationToken> sleep, Func<DateTimeOffset> now)
+/// optimizing: 예약 드라이브 최적화가 도는 중인가 (DriveOptimization.Blocking). 값이 싸서 관측 간격과 무관하게 조각마다 보고, 도는 동안은 디스크 관측 없이 쉽니다.
+internal sealed class RelocationRest(string game, ILog log, Func<(double? Bps, DiskActivity.SampleState State)> observe, Action<TimeSpan, CancellationToken> sleep, Func<DateTimeOffset> now, Func<bool>? optimizing = null)
 {
     // 한가한 동안 관측하는 간격: 관측은 멈춤 한 번 (ObserveDrain + ObserveWindow, 약 1 초) 이라 이 간격이면 한가할 때 재배치 속도를 3% 남짓만 줄임 (예열의 한가함 연장 간격과 같음).
     public static readonly TimeSpan ObserveEvery = TimeSpan.FromSeconds(30);
@@ -35,29 +36,34 @@ internal sealed class RelocationRest(string game, ILog log, Func<(double? Bps, D
                 return false;
             }
 
-            if (now() - _observedAt < ObserveEvery)
+            bool optimizingNow = optimizing?.Invoke() == true;
+            if (!optimizingNow && now() - _observedAt < ObserveEvery)
             {
                 return true;
             }
 
-            if (!Busy())
+            if (!optimizingNow && !Busy())
             {
                 _observedAt = now();
                 return true;
             }
 
-            log.Info($"{game}: relocation yields to other disk activity (resting between pieces)");
+            log.Info(optimizingNow
+                ? $"{game}: relocation yields to the drive optimization (resting between pieces)"
+                : $"{game}: relocation yields to other disk activity (resting between pieces)");
             DateTimeOffset since = now();
             while (!stop.IsCancellationRequested)
             {
                 if (now() - since >= MaxRest)
                 {
-                    log.Info($"{game}: relocation stops this round after {(now() - since).TotalSeconds:F0} s of rest, other disk activity continues (resumes when the drive is idle)");
+                    log.Info($"{game}: relocation stops this round after {(now() - since).TotalSeconds:F0} s of rest, " + (optimizingNow
+                        ? "the drive optimization continues (resumes when it ends or after its 30 min limit)"
+                        : "other disk activity continues (resumes when the drive is idle)"));
                     return false;
                 }
 
                 sleep(RestPoll, stop);
-                if (!stop.IsCancellationRequested && !Busy())
+                if (!stop.IsCancellationRequested && optimizing?.Invoke() != true && !Busy())
                 {
                     _observedAt = now();
                     log.Info($"{game}: relocation resumes after {(now() - since).TotalSeconds:F1} s of rest");

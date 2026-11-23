@@ -28,7 +28,7 @@ public sealed class ConfigEditorAutoTests : IDisposable
         editor.Add(Game("a"));
         editor.SetAuto(AutoSettings.Default);
 
-        Assert.Equal(42, CountKeys(File.ReadAllText(editor.ConfigPath), "auto"));
+        Assert.Equal(43, CountKeys(File.ReadAllText(editor.ConfigPath), "auto"));
         Assert.Equal(Plain(AutoSettings.Default), Plain(editor.Load()!.Auto));
 
         var custom = new AutoSettings(false, false, true, false, 3, 7, 90, 128, 5, ["a.exe", "b.exe"])
@@ -51,6 +51,7 @@ public sealed class ConfigEditorAutoTests : IDisposable
             RelocateIoPriority = AutoSettings.IoNormal,
             RelocateVerify = "off",
             RelocateOrder = "source",
+            RelocateLayout = "whole_file",
             MaxRelocateGibPerDay = 0,
             MaxRelocateGibPerDaySet = true,
             KeepAwake = false,
@@ -77,6 +78,7 @@ public sealed class ConfigEditorAutoTests : IDisposable
         Assert.Equal((64, "normal", 0), (read.RelocateChunkMib, read.RelocateIoPriority, read.MaxRelocateGibPerDay));
         Assert.Equal("off", read.RelocateVerify);
         Assert.Equal("source", read.RelocateOrder);
+        Assert.Equal("whole_file", read.RelocateLayout);
         Assert.Equal(4, read.RelocateParallel);
         Assert.False(read.KeepAwake);
         Assert.True(read.KeepStreamOnGameStart);

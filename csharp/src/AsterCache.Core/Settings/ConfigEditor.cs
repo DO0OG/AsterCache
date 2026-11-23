@@ -176,6 +176,7 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             { "relocate_io_priority", a.RelocateIoPriority },
             { "relocate_verify", a.RelocateVerify },
             { "relocate_order", a.RelocateOrder },
+            { "relocate_layout", a.RelocateLayout },
             { "ignore_exes", a.IgnoreExes.Cast<object?>().ToList() },
             { "rewarm_minutes", (long)a.RewarmMinutes },
             { "restream_cooldown_min", (long)a.RestreamCooldownMin },

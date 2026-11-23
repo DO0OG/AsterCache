@@ -78,6 +78,20 @@ public sealed class CliTests
     }
 
     [Fact]
+    public void PlanWithAZoneCapUsesTheWholeFileLayoutAndWithoutOneTheRangeLayout()
+    {
+        using var dir = new TempDir();
+        (string root, string trace) = MakeTree(dir);
+
+        (int code, string text, _) = Run("plan", "--trace", trace, "--origin-root", root, "--zone-mib", "1", "--zone-cap-mib", "4", "--dry-run");
+        (int rangeCode, string rangeText, _) = Run("plan", "--trace", trace, "--origin-root", root, "--zone-mib", "1", "--dry-run");
+
+        Assert.Equal((0, 0), (code, rangeCode));
+        Assert.True(((JObject)Json(text)["stats"]!).ContainsKey("layout_rule"));
+        Assert.False(((JObject)Json(rangeText)["stats"]!).ContainsKey("layout_rule"));
+    }
+
+    [Fact]
     public void PlanWithoutOutIsError()
     {
         using var dir = new TempDir();

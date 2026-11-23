@@ -237,6 +237,24 @@ public sealed class AutoSettingsTests
     }
 
     [Theory]
+    [InlineData("whole_file")]
+    [InlineData("ranges")]
+    public void RelocateLayoutIsParsed(string value) =>
+        Assert.Equal(value, ParseAuto(new JsonObject { ["relocate_layout"] = value }).Auto.RelocateLayout);
+
+    [Theory]
+    [InlineData("WHOLE_FILE")]
+    [InlineData("")]
+    [InlineData("whole")]
+    public void UnknownOrMissingRelocateLayoutFallsBackToRanges(string value)
+    {
+        Assert.Equal("ranges", ParseAuto(new JsonObject { ["relocate_layout"] = value }).Auto.RelocateLayout);
+        Assert.Equal("ranges", ParseAuto(new JsonObject { ["relocate_layout"] = 3 }).Auto.RelocateLayout);
+        Assert.Equal("ranges", ParseAuto(new JsonObject()).Auto.RelocateLayout);
+        Assert.Equal("ranges", AutoSettings.Default.RelocateLayout);
+    }
+
+    [Theory]
     [InlineData("auto")]
     [InlineData("target")]
     [InlineData("source")]

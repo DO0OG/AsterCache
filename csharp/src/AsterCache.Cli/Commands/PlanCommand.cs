@@ -12,6 +12,7 @@ namespace AsterCache.Cli.Commands;
 
 /// relayout/cli.py cmd_plan. 트레이스에서 계획을 만들고, --dry-run 이 아니면 --out 과 <out>.prefetch.json 을 씁니다.
 /// --journal 을 주고 그 저널에 행이 있으면 활성 계획을 덮어쓰지 않고 잔여 재계획 (ResidualReplan) 으로 바꿉니다: 이미 옮긴 범위는 고정하고 저널은 보관.
+/// --zone-cap-mib 가 0 보다 크면 파일 전체를 한 조각으로 zone 에 놓는 통째 배치 (그 값이 통째 파일이 쓸 zone 길이 상한), 0 (기본) 이면 범위 배치. 설정 파일은 읽지 않음.
 /// --from-plan 은 트레이스 대신 그 계획의 Order 를 후보로 써서 같은 잔여 재계획을 합니다 (--trace, --origin-root, --zone-mib 불필요, --out 기본값은 그 계획 자신).
 internal static class PlanCommand
 {
@@ -23,6 +24,7 @@ internal static class PlanCommand
         new("zone-start-lcn", Default: "auto"),
         new("cluster-bytes", Type: ArgType.Int),
         new("preserve-mib", Type: ArgType.Int, Default: "0"),
+        new("zone-cap-mib", Type: ArgType.Int, Default: "0"),
         new("min-sessions", Type: ArgType.Int),
         new("out"),
         new("dry-run", ArgKind.Flag),
@@ -67,7 +69,8 @@ internal static class PlanCommand
             }
 
             plan = PlanFile.Make(sessions, originRoot, a.Int("zone-mib")!.Value * Mib, cb, FileLayout.RelocationExtents, zoneStartLcn: start,
-                minSessions: (int)minSessions, preserveBytes: a.Int("preserve-mib")!.Value * Mib, sparseFn: p => FileGuards.IsSparse(p));
+                minSessions: (int)minSessions, preserveBytes: a.Int("preserve-mib")!.Value * Mib, sparseFn: p => FileGuards.IsSparse(p),
+                capacityBytes: a.Int("zone-cap-mib")!.Value * Mib);
         }
         else
         {

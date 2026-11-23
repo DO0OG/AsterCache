@@ -94,6 +94,9 @@ public static class ResidualPlanner
         var sourceLayout = new List<(string Path, long Lcn, long N)>();
         var dropped = new HashSet<string>(StringComparer.Ordinal);
         var held = new JObject();
+        IReadOnlyList<string>? wholeList = WholeFileLayout.WholeFiles(candidate); // 통째 배치 계획이면 파일 단위로 고정·잔여를 가름
+        var wholeFiles = wholeList?.ToHashSet(StringComparer.Ordinal);
+        var wholeDone = new HashSet<string>(StringComparer.Ordinal);
         foreach (PlanRange o in candidate.Order)
         {
             if (!ext.TryGetValue(o.Path, out IReadOnlyList<Extent>? e))
@@ -119,6 +122,17 @@ public static class ResidualPlanner
             }
 
             order.Add(o);
+            if (wholeFiles is not null && !candidate.SparseAllocations.ContainsKey(o.Path))
+            {
+                // shortcut: 통째 배치의 스파스 파일은 아래 범위 규칙을 그대로 씀 (통째 조건에 드는 스파스 파일이 실제로 없음)
+                if (wholeFiles.Contains(o.Path) && wholeDone.Add(o.Path))
+                {
+                    AddWholeFile(candidate, o.Path, e, prior, parts, sourceLayout);
+                }
+
+                continue; // 제자리 파일은 작업이 없음
+            }
+
             if (candidate.SparseAllocations.TryGetValue(o.Path, out IReadOnlyList<AllocatedRange>? expectedAllocation))
             {
                 if (!expectedAllocation.SequenceEqual(SparseAllocation.Normalize(e)) || !SparseAllocation.Covers(e, o.Vcn, o.Clusters))
@@ -247,6 +261,24 @@ public static class ResidualPlanner
             SparseAllocations = candidate.SparseAllocations.Where(kv => printed.Contains(kv.Key)).ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal),
             Stats = stats,
         };
+    }
+
+    // 통째 배치 파일: 파일 전체가 이전 목표 하나와 같은 delta 로 한 조각일 때만 고정, 아니면 파일 전체를 잔여로 (일부만 고정하면 파일이 두 조각이 됨).
+    private static void AddWholeFile(PlanFile candidate, string path, IReadOnlyList<Extent> e, Dictionary<(string Path, long Delta), List<(long A, long B)>> prior,
+        List<Part> parts, List<(string Path, long Lcn, long N)> sourceLayout)
+    {
+        long cb = candidate.ClusterBytes;
+        long fileClusters = candidate.Fingerprints.FirstOrDefault(f => f.Path == path) is { } fp ? (fp.Size + cb - 1) / cb : e.Max(x => x.Vcn + x.Clusters);
+        List<(long Vcn, long Lcn, long N)> pieces = ZoneAllocator.Pieces(e, 0, fileClusters);
+        sourceLayout.AddRange(pieces.Select(p => (path, p.Lcn, p.N)));
+        bool single = pieces.Count > 0 && pieces.Sum(p => p.N) == fileClusters && ZoneAllocator.CountRuns(pieces.Select(p => (p.Lcn, p.N)).ToList()) == 1;
+        if (single && prior.TryGetValue((path, pieces[0].Lcn - pieces[0].Vcn), out List<(long A, long B)>? ranges) && ranges.Any(r => r.A <= 0 && r.B >= fileClusters))
+        {
+            parts.Add(new Part(path, 0, pieces[0].Lcn, fileClusters, true));
+            return;
+        }
+
+        parts.AddRange(pieces.Select(p => new Part(path, p.Vcn, p.Lcn, p.N, false)));
     }
 
     // 고정 조각을 LCN 이 맞닿는 덩어리로 합쳐 그 끝 LCN 목록을 냄. 순서(결정적): 고정 클러스터가 많은 덩어리 먼저, 같으면 낮은 LCN.

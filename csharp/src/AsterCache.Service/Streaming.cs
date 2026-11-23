@@ -179,7 +179,8 @@ public sealed partial class PrefetchStreamer : IGameStreamer
         {
             cancellationToken.ThrowIfCancellationRequested();
             PlanFile plan = PlanFile.Load(game.Plan);
-            long planBytes = (plan.IsResidual ? plan.Tasks.Sum(t => t.Clusters) : plan.Zone.Clusters) * plan.ClusterBytes;
+            // 통째 배치 계획은 zone 이 핫보다 길고 잔여 작업에 차가운 바이트가 들어가므로, 예열 예산은 핫 범위 (order) 합으로 셈 (예산·파일 전체 승격이 zone 길이를 따라 커지지 않게)
+            long planBytes = (plan.Stats.ContainsKey(WholeFileLayout.RuleKey) ? plan.Order.Sum(o => o.Clusters) : plan.IsResidual ? plan.Tasks.Sum(t => t.Clusters) : plan.Zone.Clusters) * plan.ClusterBytes;
             long plannedWarmBytes = 0;
             long volatileBytes = 0;
             try

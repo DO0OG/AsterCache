@@ -548,17 +548,20 @@ public sealed partial class Prewarmer
 
     // 순서 패스: ranges (중요도 순서) 를 덜 중요한 것부터 다시 만져 가장 중요한 것이 대기 목록의 가장 새 자리에 오게 합니다. 속도 제한도 쉼도 없습니다 (낮은 CPU·I/O 우선순위는 호출한 쪽이 이미 걺).
     // 직렬화 잠금은 HoldLockBatches 배치마다 놓고 한 번 양보한 뒤 다시 잡습니다 (속도 제한으로 쉬지 않음). 배치가 디스크 읽기를 만나면 (그 사이 밀려났음) 그 범위 하나만 집합에서 빼고 (구멍으로 기억하지 않고 같은 파일의 뒤 범위도 건드리지 않음) 계속합니다.
-    private PassTally OrderPass(IReadOnlyList<ReadOp> ranges, KeepMemory memory, SerialGroup group, CancellationToken ct, long diskCap = KeepOrderDiskCapBytes)
+    // stopAtBoundary 이면 (경기 안 로딩 중) 읽기 상한 대신 디스크 읽기가 난 (경계) 배치에서 끝냅니다: 호출한 쪽이 이번에 메모리에 있다고 확인한 범위만 넘기므로 경계는 그 사이 밀려난 경우뿐이고, 조회 잡음 (배치마다 +1 쯤의 하드 폴트) 은 경계가 아니라 멈추지 않습니다.
+    private PassTally OrderPass(IReadOnlyList<ReadOp> ranges, KeepMemory memory, SerialGroup group, CancellationToken ct, bool stopAtBoundary = false)
     {
+        bool hitBoundary = false;
         long started = System.Diagnostics.Stopwatch.GetTimestamp();
         TouchResult sum = new(0, 0, 0, 0, TouchEnd.Completed);
-        WalkResult walk = Walk(LadderOrder.Reverse(ranges), diskCap, ct, () => true, batch => // 회차당 읽기 상한 (보호 패스가 이미 가장 중요한 것부터 집합 전체를 만졌으므로 여기서 끝나도 가장 중요한 쪽의 보호는 깨지지 않음)
+        WalkResult walk = Walk(LadderOrder.Reverse(ranges), stopAtBoundary ? long.MaxValue : KeepOrderDiskCapBytes, ct, () => !hitBoundary, batch => // 회차당 읽기 상한 (보호 패스가 이미 가장 중요한 것부터 집합 전체를 만졌으므로 여기서 끝나도 가장 중요한 쪽의 보호는 깨지지 않음)
         {
             group.Enter();
             TouchResult r = TouchBatch(batch, ct);
             sum = new TouchResult(sum.Bytes + r.Bytes, sum.Seconds + r.Seconds, sum.SlowPieces + r.SlowPieces, sum.Errors + r.Errors, r.End, sum.DiskBytes + r.DiskBytes, sum.SkippedBytes + r.SkippedBytes,
                 sum.CpuSeconds + r.CpuSeconds, sum.Maps + r.Maps, sum.HardFaults + r.HardFaults, r.Reason, sum.Checks + r.Checks, null);
             bool boundary = r.End == TouchEnd.NeedsDiskReads;
+            hitBoundary |= boundary && stopAtBoundary;
             group.CountBatch();
             if (group.Batches >= HoldLockBatches)
             {
@@ -584,9 +587,9 @@ public sealed partial class Prewarmer
     // 3) 집합 밖 다시 확인 (findNew, 곧 플레이 누적 상한 안일 때만): 1)·2) 가 끝난 뒤에, P 에 없는 범위 (아직 확인하지 않았거나 경계·건너뛴 구간) 를 중요한 순서로 조금 확인해 메모리에 있으면 P 에 넣습니다.
     //    디스크 읽기는 회차 diskCap (P 가 비어 있으면 KeepEmptySetRoundDiskCapBytes), 플레이 KeepPlayDiskCapBytes 안이고 플레이 누적에는 이 읽기만 셉니다. 한 지점만 빠졌으면 그 조각을 구멍으로 기억하고 계속, 이어진 두 지점이면 경계로 보아 그 뒤는 이번에 확인하지 않습니다.
     // P 가 비어 있던 회차 (시작 만지기 뒤 첫 회차) 는 3) 만 돌고, 찾기가 모은 범위를 한 번 더 순서 패스로 만져 순서를 바로잡습니다 (방금 확인한 범위라 읽기가 없어야 함).
-    // protectCap·orderCap 은 보호·순서 패스의 디스크 읽기 상한, trimOnCap 이 거짓이면 보호 패스가 상한이나 경계에서 멈춰도 확인하지 못한 범위를 집합에서 빼지 않고 빠진 것으로 확인한 조각만 뺍니다 (로딩 중 회차: 지키던 범위를 읽기 상한 때문에 잃지 않게).
-    private RememberTally TouchRemembering(IReadOnlyList<ReadOp> importanceOrdered, KeepMemory memory, bool findNew, long diskCap, CancellationToken ct,
-        long protectCap = KeepProtectDiskCapBytes, long orderCap = KeepOrderDiskCapBytes, bool trimOnCap = true)
+    // loading (경기 안 로딩, 실행 파일 시작 없이 신호로 잡힌 로딩) 이면 디스크 읽기를 줄입니다: 보호 패스와 집합이 비었을 때의 찾기 패스는 상한 KeepLoadingProtectDiskCapBytes, 집합이 있으면 집합 밖 찾기는 하지 않고,
+    // 보호 패스가 상한이나 경계에서 멈춰도 확인하지 못한 범위를 집합에서 빼지 않고 (빠진 것으로 확인한 조각만 뺌), 순서 패스는 이번에 확인한 범위에만 돌아 경계 배치에서 끝납니다. 메모리에 있는 범위를 다시 만지는 일은 그대로 돕니다.
+    private RememberTally TouchRemembering(IReadOnlyList<ReadOp> importanceOrdered, KeepMemory memory, bool findNew, long diskCap, CancellationToken ct, bool loading = false)
     {
         memory.NoteListBytes(importanceOrdered.Sum(o => o.Length));
         List<ReadOp> candidates = memory.Without(importanceOrdered);
@@ -599,13 +602,13 @@ public sealed partial class Prewarmer
         if (set.Count > 0)
         {
             group.Enter();
-            protect = _env.FindResident(set, protectCap, ct, (bytes, seconds) =>
+            protect = _env.FindResident(set, loading ? KeepLoadingProtectDiskCapBytes : KeepProtectDiskCapBytes, ct, (bytes, seconds) =>
             {
                 group.Release(); // 묶음마다 잠금을 놓고 한 번 양보해 다른 만지기가 끼어들 수 있게 (쉬는 것은 아님)
                 group.Enter();
             });
             group.Exit();
-            if (trimOnCap)
+            if (!loading)
             {
                 memory.Replace(set, protect.Resident); // 확인한 범위만 P 에 남음: 빠진 조각·건너뛴 구간·경계 뒤는 P 에서 빠져 집합 밖이 됨
             }
@@ -617,17 +620,17 @@ public sealed partial class Prewarmer
                 }
             }
 
-            order = OrderPass(memory.ResidentWithin(candidates), memory, group, ct, orderCap);
+            order = OrderPass(loading ? protect.Resident : memory.ResidentWithin(candidates), memory, group, ct, loading);
         }
 
         FindResult? f = null;
         PassTally fresh = default;
         long holes = 0;
-        List<ReadOp> outside = findNew && !ct.IsCancellationRequested ? memory.Unconfirmed(candidates) : [];
+        List<ReadOp> outside = findNew && (!loading || set.Count == 0) && !ct.IsCancellationRequested ? memory.Unconfirmed(candidates) : []; // 경기 안 로딩 중에는 집합이 비었을 때만 찾음 (그래야 시작 직후 첫 회차가 집합을 만듦)
         if (outside.Count > 0)
         {
             group.Enter();
-            f = _env.FindResident(outside, set.Count == 0 ? KeepEmptySetRoundDiskCapBytes : diskCap, ct, (bytes, seconds) =>
+            f = _env.FindResident(outside, loading ? KeepLoadingProtectDiskCapBytes : set.Count == 0 ? KeepEmptySetRoundDiskCapBytes : diskCap, ct, (bytes, seconds) =>
             {
                 group.Release();
                 group.Enter();
@@ -646,7 +649,7 @@ public sealed partial class Prewarmer
 
             if (set.Count == 0 && f.Resident.Count > 0)
             {
-                fresh = OrderPass(f.Resident, memory, group, ct, orderCap);
+                fresh = OrderPass(f.Resident, memory, group, ct, loading);
             }
         }
 

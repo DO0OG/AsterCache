@@ -683,12 +683,7 @@ public sealed class KeepHoldTests
         Prewarmer p = Make(Reads);
         var board = new LoadPhaseBoard(_log);
         p.LoadPhases = board;
-        bool first = true;
-        RunFor(370, e =>
-        {
-            _ = board.Add("a", new LoadingSample(e, 100 * Mib, null, first)); // 읽기가 계속 많아 상한 (240 초) 으로만 끝남: 초 245
-            first = false;
-        });
+        RunFor(370, e => _ = board.Add("a", new LoadingSample(e, 100 * Mib, null, false))); // 경기 안 로딩 (실행 파일 시작 없음): 읽기가 계속 많아 상한 (240 초) 으로만 끝남: 초 245
 
         p.TouchAtGameStart(Game("a"), "a.exe");
 
@@ -845,7 +840,7 @@ public sealed class KeepHoldTests
         {
             if (e >= 15)
             {
-                _ = board.Add("a", new LoadingSample(e, 0, null, e == 15)); // 초 15 에 실행 파일이 뜸: 조용한 상태가 초 20 부터 15 초 이어져 초 35 에 끝남
+                _ = board.Add("a", new LoadingSample(e, e == 15 ? 100 * Mib : 0, null, false)); // 초 15 에 읽기 신호로 로딩이 시작됨 (실행 파일 시작 없음): 조용한 상태가 초 20 부터 15 초 이어져 초 35 에 끝남
             }
 
             if (e == 15)
@@ -869,53 +864,64 @@ public sealed class KeepHoldTests
         Assert.Equal(24 * Mib, _findCalls[3].Sum(o => o.Length)); // 로딩 중 파일 2 에서 경계를 만나 멈췄어도 집합은 그대로 (파일 1, 2 의 24 MiB, 잘렸다면 8 MiB)
         Assert.Equal(3 * Mib, board.ServiceReads.Total(cheat.OriginRoot)); // 경계마다 알아챈 읽기 1 MiB 씩 (초 10·20·30) 이 서비스 자신의 읽기로 셈
         Assert.Contains(_log.Lines, l => l.Contains("a: loading phase ended after 20 s (quiet for 15 s); held back: keep round disk reads"));
-        Assert.Contains(_log.Lines, l => l.Contains("no new range looked for and disk reads limited (loading phase)"));
+        Assert.Contains(_log.Lines, l => l.Contains("disk reads limited (loading phase)"));
     }
 
     [Fact]
-    public void WhileLoadingTheOrderPassEndsAtTheFirstBatchThatReadsFromDiskAndARoundWithNothingToRetouchWaitsForTheLoadingToEnd()
+    public void ASignalLoadingFromTheStartStillLetsTheFirstRoundFindTheSetWithTheSmallCapAndTheOrderPassOnlyStopsAtABatchThatReadsFromDisk()
     {
         ReadOp[] gib = [.. Enumerable.Range(0, 3).Select(i => Op(30 + i, 0, 1024))]; // 16 MiB 배치로 192 개
         GameSettings cheat = Cheat("a");
         Prewarmer p = Make(gib, cheat);
         var board = new LoadPhaseBoard(_log);
         p.LoadPhases = board;
-        int findsWhileEmptyAndLoading = -1;
-        int touchedBefore25 = 0;
-        int touchedBefore30 = 0;
-        int touchedAfterLoadingRound = 0;
+        int at15 = 0;
+        int at25 = 0;
+        int at35 = 0;
         RunFor(40, e =>
         {
-            // 초 5 에 로딩 시작 (집합이 비어 있음), 조용한 상태가 초 10 부터 이어져 초 25 에 끝남. 초 30 에 실행 파일이 다시 뜸
-            _ = board.Add("a", new LoadingSample(e, 0, null, e is 5 or 30));
-            if (e == 20)
+            _ = board.Add("a", new LoadingSample(e, 100 * Mib, null, false)); // 초 5 부터 읽기가 계속 많은 경기 안 로딩 (집합이 아직 비어 있음)
+            if (e == 15)
             {
-                findsWhileEmptyAndLoading = _findCaps.Count;
+                at15 = _touched.Count;
+                _touchOverride = ranges => new TouchResult(ranges.Sum(o => o.Length), 0.1, 0, 0, TouchEnd.Completed) { DiskBytes = 64L << 10 }; // 배치마다 조회 잡음 (64 KiB) 만큼 읽힌 것으로 보임: 경계가 아님
             }
 
             if (e == 25)
             {
-                touchedBefore25 = _touched.Count;
+                at25 = _touched.Count;
+                _touchOverride = ranges => new TouchResult(Mib, 0.1, 0, 0, TouchEnd.NeedsDiskReads) { DiskBytes = Mib }; // 밀려난 범위를 만남: 경계
             }
 
-            if (e == 30)
+            if (e == 35)
             {
-                touchedBefore30 = _touched.Count;
-                _touchOverride = ranges => new TouchResult(ranges.Sum(o => o.Length), 0.1, 0, 0, TouchEnd.Completed) { DiskBytes = Mib }; // 이후의 배치는 디스크에서 1 MiB 를 읽음
-            }
-
-            if (e == 40)
-            {
-                touchedAfterLoadingRound = _touched.Count;
+                at35 = _touched.Count;
             }
         });
 
         p.TouchAtGameStart(cheat, "a.exe");
 
-        Assert.Equal(0, findsWhileEmptyAndLoading); // 집합이 비어 있는 로딩 중의 회차는 아무것도 하지 않음 (찾기도 디스크 읽기)
-        Assert.Equal([Prewarmer.KeepEmptySetRoundDiskCapBytes, Prewarmer.KeepLoadingProtectDiskCapBytes], _findCaps); // 로딩이 끝난 첫 확인 (초 25) 에 집합을 만들고, 다음 로딩 중 회차는 보호 패스만
-        Assert.True(touchedBefore30 - touchedBefore25 >= 192, $"the round after the loading touched {touchedBefore30 - touchedBefore25} batches"); // 상한 안에서 3 GiB 를 모두 만짐
-        Assert.Equal(1, touchedAfterLoadingRound - touchedBefore30); // 로딩 중 순서 패스 (상한 0) 는 디스크를 읽은 첫 배치에서 끝남
+        // 초 10: 집합이 비어 있어도 첫 회차가 2 MiB 상한의 찾기로 집합을 만듦 (시작 로딩이 끝나기를 기다리지 않음), 초 20·30·40: 보호 패스만
+        Assert.Equal([.. Enumerable.Repeat(Prewarmer.KeepLoadingProtectDiskCapBytes, 4)], _findCaps);
+        Assert.Equal(192, at25 - at15); // 잡음은 경계가 아니라 순서 패스가 확인한 3 GiB 전체를 만짐
+        Assert.Equal(1, at35 - at25); // 경계 배치에서 끝남
+    }
+
+    [Fact]
+    public void ARoundDuringALoadingThatStartedWithAnExecutableStartRunsExactlyAsOutsideLoading()
+    {
+        GameSettings cheat = Cheat("a");
+        Prewarmer p = Make(Reads, cheat);
+        var board = new LoadPhaseBoard(_log);
+        p.LoadPhases = board;
+        RunFor(40, e => _ = board.Add("a", new LoadingSample(e, e == 5 ? 100 * Mib : 0, null, e == 5))); // 초 5 에 실행 파일이 뜸 (읽기 신호도 참): 조용한 상태가 초 10 부터 이어져 초 25 에 끝남
+
+        p.TouchAtGameStart(cheat, "a.exe");
+
+        Assert.Equal(Prewarmer.KeepEmptySetRoundDiskCapBytes, _findCaps[0]); // 초 10 의 첫 회차: 로딩이 아닐 때와 같은 찾기 상한
+        Assert.Equal(Prewarmer.KeepProtectDiskCapBytes, _findCaps[1]);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("loading phase)", StringComparison.Ordinal) || l.Contains("held back", StringComparison.Ordinal));
+        Assert.Contains(_log.Lines, l => l.Contains("a: loading phase ended after 20 s (quiet for 15 s)", StringComparison.Ordinal));
     }
 
     [Fact]

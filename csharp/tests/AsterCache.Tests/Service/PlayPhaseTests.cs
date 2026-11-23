@@ -175,19 +175,54 @@ public sealed class PlayPhaseTests
         var board = new LoadPhaseBoard(log);
 
         Assert.Equal(LoadState.Unknown, board.StateOf("g"));
-        Assert.False(board.Defers("g", "keep round")); // 표본이 없으면 미루지 않음
-        _ = board.Add("g", S(0, exe: true));
+        Assert.False(board.Defers("g", "keep round")); // 표본이 없으면 줄이지 않음
+        _ = board.Add("g", S(0, driveMib: 100)); // 읽기 신호로 로딩이 시작됨
         Assert.True(board.Defers("g", "keep round"));
         Assert.True(board.Defers("g", "keep round"));
         Assert.True(board.Defers("g", "hold check"));
-        for (int t = 1; t <= 16; t++)
+        for (int t = 1; t <= 20; t++)
         {
-            _ = board.Add("g", S(t));
+            _ = board.Add("g", S(t)); // 초 5 부터 조용함, 15 초 뒤 (초 20) 끝
         }
 
         Assert.False(board.Defers("g", "keep round"));
         Assert.Equal(LoadState.NotLoading, board.StateOf("G")); // 게임 이름은 대소문자를 가리지 않음
-        Assert.Equal(["Info: g: loading phase started (executable started)", "Info: g: loading phase ended after 16 s (quiet for 15 s); held back: hold check, keep round"], log.Lines);
+        Assert.Equal(["Info: g: loading phase started (drive read 100 MiB within 5 s)", "Info: g: loading phase ended after 20 s (quiet for 15 s); held back: hold check, keep round"], log.Lines);
+    }
+
+    [Fact]
+    public void ALoadingThatStartedWithAnExecutableStartIsStillLoadingForTheStateButNothingIsHeldBackEvenWhenTheSignalsAreAlsoHigh()
+    {
+        var log = new ListLog();
+        var board = new LoadPhaseBoard(log);
+        _ = board.Add("g", S(0, driveMib: 100, exe: true)); // 실행 파일 시작과 읽기 신호가 함께: 실행 파일 시작으로 봄
+
+        Assert.Equal(LoadState.Loading, board.StateOf("g"));
+        Assert.False(board.Defers("g", "keep round"));
+        for (int t = 1; t <= 20; t++)
+        {
+            _ = board.Add("g", S(t, driveMib: t <= 10 ? 100 : 0));
+        }
+
+        Assert.False(board.Defers("g", "keep round"));
+        Assert.Equal(LoadState.Loading, board.StateOf("g")); // 읽기가 이어지는 동안 신호가 계속 높아도 실행 파일 시작 로딩
+        Assert.DoesNotContain(log.Lines, l => l.Contains("held back", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AnExecutableStartDuringASignalLoadingTurnsItIntoAnExecutableStartLoadingAndTheNextSignalLoadingIsASignalOneAgain()
+    {
+        var d = new LoadDetector();
+        _ = Feed(d, 0, 5, driveMib: 30); // 읽기 신호 로딩
+        Assert.True(d.SignalLoading);
+
+        _ = d.Add(S(6, driveMib: 30, exe: true));
+        Assert.Equal((LoadState.Loading, false), (d.State, d.SignalLoading));
+
+        _ = Feed(d, 7, 40); // 읽기가 사라지고 15 초 조용하면 끝
+        Assert.Equal(LoadState.NotLoading, d.State);
+        _ = Feed(d, 41, 47, driveMib: 30);
+        Assert.True(d.SignalLoading); // 새 로딩은 신호로 시작
     }
 
     [Fact]

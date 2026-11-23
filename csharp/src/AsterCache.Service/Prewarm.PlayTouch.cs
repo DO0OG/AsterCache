@@ -58,13 +58,13 @@ public sealed partial class Prewarmer
 
     internal void StopPlayTouch() => _playStop.Cancel();
 
-    /// 로딩 중 회차의 보호 패스가 디스크에서 읽는 양의 상한: 2 MiB. 빠진 조각 하나를 알아채는 데 읽는 양 (조각 하나가 1 MiB 이하) 정도만 허용합니다. 넘어도 아직 확인하지 못한 범위를 집합에서 빼지 않습니다.
+    /// 경기 안 로딩 (실행 파일 시작 없이 읽기·그래픽 신호로 잡힌 로딩) 중 회차의 보호 패스와 (집합이 비었을 때의) 찾기 패스가 디스크에서 읽는 양의 상한: 2 MiB. 빠진 조각 하나를 알아채는 데 읽는 양 (조각 하나가 1 MiB 이하) 정도입니다.
+    /// 상한은 읽기 수를 조회할 때만 보므로 (빠진 조각이 의심 조각이면 곧바로, 아니면 FaultCheckBytes 64 MiB 마다) 실제 읽기는 보통 2~4 MiB 이고 최악은 한 조회 간격 (64 MiB) 입니다. 넘어도 아직 확인하지 못한 범위를 집합에서 빼지 않습니다.
+    /// 이 로딩 중의 순서 패스는 이번 패스가 메모리에 있다고 확인한 범위에만 돌고 읽기 상한 대신 디스크 읽기가 난 (경계) 배치에서 끝납니다 (최악 배치 하나 HoldBatchBytes 16 MiB).
     public const long KeepLoadingProtectDiskCapBytes = 2L << 20;
 
-    /// 로딩 중 회차의 순서 패스가 디스크에서 읽는 양의 상한: 0 (처음 읽기가 난 배치에서 끝). 메모리에 있는 범위를 다시 만지는 것만 하고 밀려난 범위를 디스크에서 되읽지 않습니다.
-    public const long KeepLoadingOrderDiskCapBytes = 0;
-
-    /// 로딩 중 붙든 범위의 점검이 줄여 간 구간을 디스크에서 다시 읽는 양의 상한: 2 MiB. 넘어도 남은 구간을 붙들기에서 빼지 않습니다 (바뀐 파일 내놓기는 로딩 중에도 그대로 함).
+    /// 경기 안 로딩 중 붙든 범위의 점검이 줄여 간 구간을 디스크에서 다시 읽는 양의 상한: 2 MiB. 읽기 수를 조회할 때만 보므로 (ViewHold.ReadRange, 64 MiB 마다 또는 의심 조각 뒤 8 MiB 이상 만졌을 때) 실제로는 약 8~10 MiB 까지 읽을 수 있고 최악은 64 MiB 입니다.
+    /// 넘어도 남은 구간을 붙들기에서 빼지 않습니다 (바뀐 파일 내놓기는 로딩 중에도 그대로 함).
     public const long KeepLoadingCheckDiskCapBytes = 2L << 20;
 
     /// 게임 안 로딩 판정 (서비스가 PlayRecorder 의 것을 이음, 없으면 로딩으로 보지 않음). 로딩인 동안은 게임이 도는 중의 디스크 읽기 (유지 회차의 집합 밖 찾기와 순서·보호 패스의 읽기, 붙든 범위 점검의 다시 읽기) 를 작은 상한으로 줄이거나 미룹니다:
@@ -251,11 +251,6 @@ public sealed partial class Prewarmer
             return null; // 집합이 비어 있고 집합 밖 확인의 플레이 상한도 다 씀: 회차가 할 일이 없음 (재사용 누계 확인만 하고 넘어감)
         }
 
-        if (loading && known.ResidentBytes() == 0)
-        {
-            return null; // 로딩 중이고 다시 만질 집합이 없음 (집합 밖 찾기는 디스크 읽기라 미룸): 기준을 건드리지 않아 로딩이 끝난 첫 확인에서 바로 돎
-        }
-
         long availMib = _env.AvailableRamMib();
         if (availMib < game.Prewarm.MinFreeRamMib)
         {
@@ -280,9 +275,7 @@ public sealed partial class Prewarmer
         using var activity = ServiceActivity.Begin(ServiceOp.Keep); // 초 단위 기록의 동작 표시
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(lease?.Token ?? default, _playStop.Token);
         KeepMemory memory = KeepMemoryOf(game.Name);
-        RememberTally t = loading
-            ? TouchRemembering(reads, memory, false, KeepRoundDiskCapBytes, linked.Token, KeepLoadingProtectDiskCapBytes, KeepLoadingOrderDiskCapBytes, trimOnCap: false) // 로딩 중: 집합 밖 찾기 없이 메모리에 있는 범위만 다시 만지고 읽기는 작은 상한, 상한에 닿아도 지키던 범위를 집합에서 빼지 않음
-            : TouchRemembering(reads, memory, memory.DiskBytes < KeepPlayDiskCapBytes, KeepRoundDiskCapBytes, linked.Token); // 직렬화 잠금은 두 패스가 묶음마다 직접 잡고 놓음
+        RememberTally t = TouchRemembering(reads, memory, memory.DiskBytes < KeepPlayDiskCapBytes, KeepRoundDiskCapBytes, linked.Token, loading); // 직렬화 잠금은 두 패스가 묶음마다 직접 잡고 놓음. 경기 안 로딩 중이면 읽기를 줄임 (TouchRemembering 설명)
         NoteServiceRead(game, t.Disk);
 
         if (linked.IsCancellationRequested)
@@ -301,7 +294,7 @@ public sealed partial class Prewarmer
         }
 
         string trigger = reuseGrowth is { } growth ? $", called by {growth >> 20} MiB of standby cache reuse" : ", called by the fixed period (standby cache reuse unknown)";
-        _log.Info($"{game.Name}: cache kept while playing ({exe}): {t.InMemory >> 20} MiB of {t.Total >> 20} MiB in memory (found {t.Found >> 20} MiB, ordered {t.Ordered >> 20} MiB), in {t.Seconds:F1} s (cpu {t.Cpu:F1} s, {t.Maps} views, {t.Checks} checks), {t.Disk >> 20} MiB read from disk ({t.HardFaults} hard faults){(t.Errors > 0 ? $", {t.Errors} errors" : string.Empty)}, {t.Boundaries} new missing stretches remembered ({memory.MissingBytes >> 20} MiB of the {memory.ListBytes >> 20} MiB list in all){TallyDetail(t)}{(t.CapReached ? ", disk read cap of the round reached" : string.Empty)}{(t.Left > 0 ? $", {t.Left >> 20} MiB left unconfirmed" : string.Empty)}{(t.FindSkipped ? loading ? ", no new range looked for and disk reads limited (loading phase)" : ", no new range looked for (disk reads of the play at the cap)" : string.Empty)}{trigger}{probe}");
+        _log.Info($"{game.Name}: cache kept while playing ({exe}): {t.InMemory >> 20} MiB of {t.Total >> 20} MiB in memory (found {t.Found >> 20} MiB, ordered {t.Ordered >> 20} MiB), in {t.Seconds:F1} s (cpu {t.Cpu:F1} s, {t.Maps} views, {t.Checks} checks), {t.Disk >> 20} MiB read from disk ({t.HardFaults} hard faults){(t.Errors > 0 ? $", {t.Errors} errors" : string.Empty)}, {t.Boundaries} new missing stretches remembered ({memory.MissingBytes >> 20} MiB of the {memory.ListBytes >> 20} MiB list in all){TallyDetail(t)}{(t.CapReached ? ", disk read cap of the round reached" : string.Empty)}{(t.Left > 0 ? $", {t.Left >> 20} MiB left unconfirmed" : string.Empty)}{(loading ? ", disk reads limited (loading phase)" : string.Empty)}{(t.FindSkipped ? ", no new range looked for (disk reads of the play at the cap)" : string.Empty)}{trigger}{probe}");
         return null;
     }
 

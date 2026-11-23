@@ -54,11 +54,15 @@ internal sealed class LoadDetector
     private double _chainSince; // 이어진 로딩 전체의 시작 (실행 파일이 다시 떠도 그대로)
     private double? _quietSince;
     private bool _rearm; // 상한으로 끝난 뒤 시작 조건이 꺼지기를 기다리는 중
+    private bool _byExe; // 지금 로딩이 실행 파일 시작으로 시작됐거나 로딩 중에 실행 파일이 떴음 (그 뒤 읽기·그래픽 신호가 함께 참이어도 실행 파일 시작으로 봄)
 
     public LoadState State { get; private set; }
 
     /// 지금 로딩이면 이어진 로딩이 시작된 초, 아니면 null.
     public double? LoadingSince => State == LoadState.Loading ? _chainSince : null;
+
+    /// 지금 로딩이 실행 파일 시작 없이 읽기·그래픽 신호만으로 잡힌 것인가 (경기 안 로딩). 서비스가 디스크 읽기를 줄이는 것은 이때뿐이고, 실행 파일 시작 때의 로딩은 줄이지 않습니다.
+    public bool SignalLoading => State == LoadState.Loading && !_byExe;
 
     /// 마지막으로 받은 표본의 초.
     public double LastSeconds { get; private set; }
@@ -93,13 +97,13 @@ internal sealed class LoadDetector
                 return new LoadStep(State, DriveBytes: drive, GpuRiseMib: rise);
             }
 
-            (State, _loadingSince, _chainSince, _quietSince) = (LoadState.Loading, s.Seconds, s.Seconds, null);
+            (State, _loadingSince, _chainSince, _quietSince, _byExe) = (LoadState.Loading, s.Seconds, s.Seconds, null, why == LoadStart.ExeStart);
             return new LoadStep(State, Started: why, DriveBytes: drive, GpuRiseMib: rise);
         }
 
         if (s.ExeStarted)
         {
-            (_loadingSince, _quietSince) = (s.Seconds, null); // 로딩 중에 실행 파일이 또 뜸: 240 초 상한은 다시 세되 이어진 로딩 전체의 상한 (MaxTotalLoadingSeconds) 은 그대로
+            (_loadingSince, _quietSince, _byExe) = (s.Seconds, null, true); // 로딩 중에 실행 파일이 또 뜸: 240 초 상한은 다시 세되 이어진 로딩 전체의 상한 (MaxTotalLoadingSeconds) 은 그대로
             return new LoadStep(State, DriveBytes: drive, GpuRiseMib: rise);
         }
 

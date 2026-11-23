@@ -27,12 +27,13 @@ internal sealed class LoadPhaseBoard(ILog log)
         }
     }
 
-    /// 지금 로딩이면 참: 호출한 쪽은 이번 디스크 읽기를 줄이거나 건너뜁니다. 그 일의 이름은 로딩이 끝날 때 로그 한 줄에 함께 남습니다.
+    /// 지금 로딩이 읽기·그래픽 신호로만 잡힌 경기 안 로딩이면 참: 호출한 쪽은 이번 디스크 읽기를 줄이거나 건너뜁니다. 그 일의 이름은 로딩이 끝날 때 로그 한 줄에 함께 남습니다.
+    /// 실행 파일 시작으로 시작된 로딩 (로딩 중에 실행 파일이 뜬 경우 포함) 에서는 거짓입니다: 실행 파일 시작 때의 동작은 로딩 판정이 없을 때와 같아야 합니다. 상태 자체 (StateOf) 와 로그·기록 열은 두 경우 모두 로딩입니다.
     public bool Defers(string game, string what)
     {
         lock (_gate)
         {
-            if (!_games.TryGetValue(game, out Entry? entry) || entry.Detector.State != LoadState.Loading)
+            if (!_games.TryGetValue(game, out Entry? entry) || !entry.Detector.SignalLoading)
             {
                 return false;
             }

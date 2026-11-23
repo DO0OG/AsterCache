@@ -37,6 +37,7 @@ public sealed partial class AutoRelocator
         }
         finally
         {
+            _ = ReapplyRepeatHeld(g, _settings().Auto);
             _prewarm?.EndRelocation(g.Name); // 성공·실패·예외 모두 표시를 내림
         }
     }
@@ -264,6 +265,7 @@ public sealed partial class AutoRelocator
             pendingRecovery = bytes;
             ApplyReport rep = ApplyOrDefer(g, plan, run, token);
             _status.SetLastRelocationBytes(rep.MovedBytes); // 시작 때 넣은 예정 바이트 대신 실제로 옮긴 양
+            _ = RecordReapplyRepeatMove(g, rep.MovedBytes, handoffOnly: true);
             _log.Info($"{g.Name}: auto relocation moved {rep.MovedBytes} bytes, {rep.Failed.Count} failed, order {rep.OrderUsed ?? order}" + (rep.OrderFallbackReason is not null ? " (fallback)" : string.Empty) + (rep.Stopped is { } why ? $", stopped: {why}" : string.Empty) + rep.SparseSummary + rep.DeferredSummary + rep.Timings.Summary);
             pendingRecovery = 0;
             if (_status.Recovery(g.Name) is { OccupiedStreak: > 0 } streaked)

@@ -204,6 +204,90 @@ public sealed class AutoStatusTests : IDisposable
     }
 
     [Fact]
+    public void ReapplyLimitSurvivesRestartAndUnrelatedStatusUpdates()
+    {
+        AutoStatus s = Make();
+        s.Set("g", "auto", null, AutoStage.Done, "done");
+        s.EnsureReapplyLimit("g", "source", "ranges");
+        Assert.Equal((1, false), s.RecordReapplyRound("g", 100, TimeSpan.FromDays(7), 3));
+        Assert.Equal((2, false), s.RecordReapplyRound("g", 100, TimeSpan.FromDays(7), 3));
+
+        s.SetRecovery("g", new RecoveryAttempt(null, null, 1, null));
+        s.ClearRecovery("g");
+        s.MarkPlayed("g", "auto", AutoStage.Done, _now);
+        s.Set("g", "auto", null, AutoStage.WaitingIdle, "waiting");
+        s.Complete("g", "auto", _now, counted: false, "done");
+        s.ResetForReplan("g", "replanning", preserveReapplyLimit: true);
+
+        ReapplyLimitRecord saved = s.ReapplyLimit("g")!;
+        AutoStatus restarted = Make();
+        Assert.Equal(saved with { Rounds = restarted.ReapplyLimit("g")!.Rounds }, restarted.ReapplyLimit("g"));
+        Assert.Equal(2, restarted.ReapplyRoundsWithin("g", TimeSpan.FromDays(7)));
+        Assert.True(((JObject)JsonRead.ReadFile(StatusPath)!).ContainsKey("reapply_limits"));
+    }
+
+    [Fact]
+    public void OldStatusWithoutReapplyLimitLoadsWithoutARepeatRecord()
+    {
+        File.WriteAllText(StatusPath, "{\"games\":{\"g\":{\"source\":\"auto\",\"stage\":\"done\"}}}");
+
+        AutoStatus s = Make();
+
+        Assert.Null(s.ReapplyLimit("g"));
+        Assert.Equal(0, s.ReapplyRoundsWithin("g", TimeSpan.FromDays(7)));
+        s.Set("g", "auto", null, AutoStage.Done, null);
+        Assert.False(((JObject)JsonRead.ReadFile(StatusPath)!).ContainsKey("reapply_limits"));
+    }
+
+    [Fact]
+    public void OnlyTheFirstMoveAfterAZoneHandOverIsCountedAndRoundsThatMovedNothingAreNot()
+    {
+        AutoStatus s = Make();
+        s.EnsureReapplyLimit("g", "source", "ranges");
+        TimeSpan week = TimeSpan.FromDays(7);
+
+        Assert.Equal((0, false), s.RecordReapplyRound("g", 100, week, 3, handoffOnly: true)); // 넘김 표시가 없으면 세지 않음 (처음 배치·이행)
+        s.MarkReapplyHandoff("g");
+        Assert.Equal((0, false), s.RecordReapplyRound("g", 0, week, 3, handoffOnly: true)); // 옮긴 바이트 0 은 세지 않음
+        Assert.Equal((1, false), s.RecordReapplyRound("g", 100, week, 3, handoffOnly: true));
+        Assert.Equal((1, false), s.RecordReapplyRound("g", 100, week, 3, handoffOnly: true)); // 회당 상한으로 나뉜 이어 옮기기
+
+        Assert.Equal(1, s.ReapplyRoundsWithin("g", week));
+    }
+
+    [Fact]
+    public void TheLimitIsReachedExactlyOnceAtTheThirdRoundAndRoundsLeaveTheWindow()
+    {
+        AutoStatus s = Make();
+        s.EnsureReapplyLimit("g", "source", "ranges");
+        TimeSpan week = TimeSpan.FromDays(7);
+
+        Assert.False(s.RecordReapplyRound("g", 1, week, 3).ReachedLimit);
+        _now += TimeSpan.FromDays(3);
+        Assert.False(s.RecordReapplyRound("g", 1, week, 3).ReachedLimit);
+        _now += TimeSpan.FromDays(3);
+        Assert.Equal((3, true), s.RecordReapplyRound("g", 1, week, 3));
+        Assert.Equal((4, false), s.RecordReapplyRound("g", 1, week, 3)); // 이미 기준을 넘긴 뒤에는 다시 알리지 않음
+
+        _now += TimeSpan.FromDays(2); // 첫 회차가 7일 창을 벗어남
+        Assert.Equal(3, s.ReapplyRoundsWithin("g", week));
+        _now += TimeSpan.FromDays(2);
+        Assert.Equal(2, s.ReapplyRoundsWithin("g", week));
+    }
+
+    [Fact]
+    public void ANewPlanClearsTheRepeatHistoryUnlessAZoneHandoffPreservesIt()
+    {
+        AutoStatus s = Make();
+        s.EnsureReapplyLimit("g", "source", "ranges");
+        _ = s.RecordReapplyRound("g", 100, TimeSpan.FromDays(7), 3);
+
+        s.ResetForReplan("g", "new plan");
+
+        Assert.Null(s.ReapplyLimit("g"));
+    }
+
+    [Fact]
     public void RelocationsThatMovedNothingAreNotCountedTowardsTheDailyLimit()
     {
         AutoStatus s = Make();

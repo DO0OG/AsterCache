@@ -1,4 +1,5 @@
 using AsterCache.Core.Json;
+using AsterCache.Core.Plan;
 
 namespace AsterCache.Core.Settings;
 
@@ -251,6 +252,20 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
         using FileStream _ = Lock();
         JObject root = ReadRoot();
         SetOrRemove(GameOf(root, game), "paused", paused ? true : null);
+        Save(root);
+    }
+
+    /// 게임의 재배치 방식 layout 을 정합니다 (null 이면 키를 지워 전역 auto.relocate_layout 을 따름). 없는 게임·잘못된 값은 SettingsException.
+    public void SetGameLayout(string game, string? layout)
+    {
+        if (layout is not null && !RelocateLayouts.IsValid(layout))
+        {
+            throw new SettingsException("games.layout: \"whole_file\" or \"ranges\" expected");
+        }
+
+        using FileStream _ = Lock();
+        JObject root = ReadRoot();
+        SetOrRemove(GameOf(root, game), "layout", layout);
         Save(root);
     }
 

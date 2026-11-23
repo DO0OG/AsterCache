@@ -13,19 +13,25 @@ public static class RelocateLayouts
     public static bool IsValid(string? v) => v is WholeFile or Ranges;
 }
 
-/// zone 에 놓는 방법. 나중에 큰 조각 배치 (파일의 한 구간만 한 조각으로) 를 값 하나로 더함: 배정과 검사는 (경로, vcn, 길이) 구간으로 다룸.
+/// zone 에 놓는 방법: 파일 전체 (WholeFile), 파일의 큰 구간 몇 개만 (LargePieces, 나머지는 제자리), 제자리. 배정과 검사는 (경로, vcn, 길이) 구간으로 다룸.
 public enum Placement
 {
     WholeFile,
     InPlace,
+    LargePieces,
 }
 
-/// 파일 하나의 배치 결정. Reason 은 제자리일 때의 사유 (통째면 null).
-public sealed record FileDecision(string Path, int FirstAccess, long HotClusters, long FileClusters, Placement Placement, string? Reason);
+/// 큰 조각 배치로 고른 파일의 한 구간 [Vcn, Vcn + Clusters). Rank 는 구간이 처음 접근되는 핫 범위의 order 위치 (zone 안 순서를 통째 파일과 함께 정함).
+public sealed record PieceDecision(long Vcn, long Clusters, long HotClusters, long Rank);
+
+/// 파일 하나의 배치 결정. Reason 은 제자리일 때의 사유 (통째·큰 조각이면 null). Rank 는 파일이 처음 접근되는 핫 범위의 order 위치, Pieces 는 큰 조각 배치일 때의 구간 (VCN 순).
+public sealed record FileDecision(string Path, int FirstAccess, long HotClusters, long FileClusters, Placement Placement, string? Reason, IReadOnlyList<PieceDecision>? Pieces = null, long Rank = 0);
 
 /// 통째 배정 결과: 작업·통계·접근 순서 (ZoneAllocator 와 같은 모양) 와 실제로 쓴 파일별 결정 (구멍이 있어 제자리로 내린 파일 반영).
 /// Offsets: 통째 파일마다 zone 시작에서 그 파일이 놓일 자리까지의 클러스터 수 (이미 그 자리에 있어 작업이 없는 파일 포함).
-public sealed record WholePlan(AllocResult Alloc, IReadOnlyList<FileDecision> Decisions, IReadOnlyDictionary<string, long> Offsets);
+/// PieceOffsets: 큰 조각마다 (경로, 시작 vcn) 별 zone 시작 기준 자리.
+public sealed record WholePlan(AllocResult Alloc, IReadOnlyList<FileDecision> Decisions, IReadOnlyDictionary<string, long> Offsets,
+    IReadOnlyDictionary<(string Path, long Vcn), long>? PieceOffsets = null);
 
 /// 파일 전체를 한 조각으로 zone 에 놓는 배치 (예약 드라이브 최적화가 한 조각 파일은 옮기지 않는다는 관찰에 기대). ZoneAllocator 는 건드리지 않고 옆에 둠: ranges 방식이 설정으로 계속 쓰임.
 /// 계획 형식은 version 을 올리지 않고 stats 의 표지 (layout_rule) 로 구분합니다: 표지가 없으면 예전 범위 계획, 알려진 키 밖의 stats 는 읽을 때 그대로 보존됨.
@@ -46,6 +52,17 @@ public static class WholeFileLayout
     /// 잔여 재계획이 "이미 목표에 놓인 파일" 을 알아보는 이전 목표로 씀 (작업만으로는 알 수 없음).
     public const string WholeOffsetsKey = "whole_offsets";
 
+    /// 계획 stats: 큰 조각 배치로 zone 에 놓은 구간 [{path, vcn, clusters}] (zone 안 순서), 없으면 키 자체가 없음. large_offsets 는 같은 순서의 zone 시작 기준 자리 (whole_offsets 와 같은 뜻).
+    public const string LargePiecesKey = "large_pieces";
+
+    public const string LargeOffsetsKey = "large_offsets";
+
+    /// 큰 조각의 최소 길이: 예약 드라이브 최적화를 46분 넘게 돌린 시험 (2026-11-23) 에서 조각 1~56 MiB 는 56개 중 1개만, 64 MiB 는 9개 중 6개, 80 MiB 는 9개 중 9개, 128 MiB 는 10개 중 10개가 제자리에 남아 경계인 64 MiB 를 피함.
+    public const long LargePieceMinBytes = 80L << 20;
+
+    /// 큰 조각으로 고르는 구간의 핫 바이트 비율 하한 (구간 길이 대비).
+    public const double LargePieceHotRatio = 0.5;
+
     public const string VolatileReason = "volatile";
     public const string UnmovableReason = "unmovable";
     public const string SparseHolesReason = "sparse_holes";
@@ -57,62 +74,158 @@ public static class WholeFileLayout
     /// 통째 배치 대상 파일 크기의 상한: 핫 바이트의 이 배수.
     public const double WholeFileRatio = 2.0;
 
-    /// 파일별로 통째로 놓을지 제자리에 둘지 정함 (디스크를 읽지 않는 순수 함수). 결과는 첫 접근 순서.
-    /// 규칙 (처음 맞는 것): 호출자가 준 제자리 사유 (가변·옮길 수 없음·구멍 있는 스파스) → 크기 모름 → 크기 > 핫 × ratio → 크기 > maxFileBytes (하루 예산) →
-    /// 통째 후보의 크기 누적이 capacityClusters 를 넘는 첫 파일부터 끝까지 (늦게 접근하는 파일부터 제자리, ZoneAllocator 의 가득 참 규칙과 같은 모양).
+    /// 파일별로 통째로 놓을지, 큰 조각 몇 개만 놓을지, 제자리에 둘지 정함 (디스크를 읽지 않는 순수 함수). 결과는 첫 접근 순서.
+    /// 규칙 (처음 맞는 것): 호출자가 준 제자리 사유 (가변·옮길 수 없음·구멍 있는 스파스) → 크기 모름 → 크기 > 핫 × ratio (스파스가 아니고 largePieceMinBytes > 0 이면 큰 조각 배치를 먼저 따짐: 아래) →
+    /// 크기 > maxFileBytes (하루 예산) → 후보 (통째 파일과 큰 조각을 첫 접근 순서로 섞은 것) 의 크기 누적이 capacityClusters 를 넘는 첫 후보부터 끝까지 (늦게 접근하는 것부터 제자리, ZoneAllocator 의 가득 참 규칙과 같은 모양).
+    /// 큰 조각 배치: 파일을 largePieceMinBytes 길이 (16 클러스터 배수로 올림) 의 구간으로 나눠 (끝에 걸려 그 길이가 안 되는 구간은 뺌) 핫 비율이 LargePieceHotRatio 이상인 구간을 고르고 이웃한 구간은 하나로 합침.
+    /// shortcut: 스파스 파일은 큰 조각 대상에서 뺌 (잔여 재계획과 검사가 스파스 조각 규칙을 따로 가짐), 필요해지면 그 규칙에 맞춰 넓힘.
     public static List<FileDecision> Classify(IReadOnlyList<PlanRange> order, IReadOnlyDictionary<string, long> sizes, long clusterBytes, long capacityClusters,
-        Func<string, string?> inPlaceReason, long maxFileBytes = long.MaxValue, double ratio = WholeFileRatio)
+        Func<string, string?> inPlaceReason, long maxFileBytes = long.MaxValue, double ratio = WholeFileRatio, long largePieceMinBytes = LargePieceMinBytes, Func<string, bool>? sparse = null)
     {
         var hot = new Dictionary<string, long>(StringComparer.Ordinal);
+        var indices = new Dictionary<string, List<int>>(StringComparer.Ordinal); // 파일별 order 위치 (처음 접근 위치와 큰 조각 구간 계산용)
         var names = new List<string>();
-        foreach (PlanRange o in order)
+        for (int k = 0; k < order.Count; k++)
         {
+            PlanRange o = order[k];
             if (!hot.TryGetValue(o.Path, out long sum))
             {
                 names.Add(o.Path);
+                indices[o.Path] = [];
             }
 
             hot[o.Path] = sum + o.Clusters;
+            indices[o.Path].Add(k);
         }
 
-        var result = new List<FileDecision>(names.Count);
-        long used = 0;
-        bool full = false;
+        long unit = largePieceMinBytes > 0 ? CeilDiv(CeilDiv(largePieceMinBytes, clusterBytes), SparseAllocation.MoveClusters) * SparseAllocation.MoveClusters : 0;
+        var whys = new string?[names.Count];
+        var fileClusters = new long[names.Count];
+        var found = new List<PieceDecision>?[names.Count];
+        var candidates = new List<(long Rank, long Vcn, long Clusters, int File, int Piece)>(); // Piece -1 = 파일 전체
         for (int i = 0; i < names.Count; i++)
         {
             string path = names[i];
             long hotClusters = hot[path];
-            long fileClusters = sizes.TryGetValue(path, out long size) ? CeilDiv(size, clusterBytes) : 0;
+            long fc = fileClusters[i] = sizes.TryGetValue(path, out long size) ? CeilDiv(size, clusterBytes) : 0;
             string? why = inPlaceReason(path);
-            if (why is null && fileClusters <= 0)
+            if (why is null && fc <= 0)
             {
                 why = UnknownSizeReason;
             }
 
-            if (why is null && fileClusters > hotClusters * ratio)
+            if (why is null && fc > hotClusters * ratio)
             {
                 why = MostlyColdReason;
+                if (unit > 0 && sparse?.Invoke(path) != true && PickLargePieces(order, indices[path], fc, unit, clusterBytes, maxFileBytes) is { Count: > 0 } pieces)
+                {
+                    found[i] = pieces;
+                    why = null;
+                }
             }
 
-            if (why is null && fileClusters * clusterBytes > maxFileBytes)
+            if (why is null && found[i] is null && fc * clusterBytes > maxFileBytes)
             {
                 why = OverDailyLimitReason;
             }
 
-            if (why is null)
+            whys[i] = why;
+            if (why is not null)
             {
-                if (full || used + fileClusters > capacityClusters)
-                {
-                    full = true; // 접근 순서의 앞부분만 통째로 놓고 나머지는 제자리 (뒤의 작은 파일도 같음)
-                    why = ZoneFullReason;
-                }
-                else
-                {
-                    used += fileClusters;
-                }
+                continue;
             }
 
-            result.Add(new FileDecision(path, i, hotClusters, fileClusters, why is null ? Placement.WholeFile : Placement.InPlace, why));
+            if (found[i] is { } list)
+            {
+                candidates.AddRange(list.Select((p, j) => (p.Rank, p.Vcn, p.Clusters, i, j)));
+            }
+            else
+            {
+                candidates.Add((indices[path][0], 0, fc, i, -1));
+            }
+        }
+
+        var fits = new HashSet<(int File, int Piece)>();
+        long used = 0;
+        bool full = false;
+        foreach ((_, _, long n, int file, int piece) in candidates.OrderBy(c => c.Rank).ThenBy(c => c.Vcn))
+        {
+            if (full || used + n > capacityClusters)
+            {
+                full = true; // 접근 순서의 앞부분만 놓고 나머지는 제자리 (뒤의 작은 것도 같음)
+                continue;
+            }
+
+            used += n;
+            _ = fits.Add((file, piece));
+        }
+
+        var result = new List<FileDecision>(names.Count);
+        for (int i = 0; i < names.Count; i++)
+        {
+            string path = names[i];
+            long rank = indices[path][0];
+            if (found[i] is { } list)
+            {
+                List<PieceDecision> kept = [.. list.Where((_, j) => fits.Contains((i, j)))];
+                result.Add(kept.Count > 0 ? new FileDecision(path, i, hot[path], fileClusters[i], Placement.LargePieces, null, kept, rank)
+                    : new FileDecision(path, i, hot[path], fileClusters[i], Placement.InPlace, ZoneFullReason, null, rank));
+                continue;
+            }
+
+            string? why = whys[i] ?? (fits.Contains((i, -1)) ? null : ZoneFullReason);
+            result.Add(new FileDecision(path, i, hot[path], fileClusters[i], why is null ? Placement.WholeFile : Placement.InPlace, why, null, rank));
+        }
+
+        return result;
+    }
+
+    // 파일을 unit 길이의 구간으로 나눠 (끝에 걸려 unit 이 안 되는 구간은 뺌) 핫 비율이 LargePieceHotRatio 이상인 구간을 고르고, 이웃한 구간은 하나로 합침. 조각이 maxFileBytes 보다 크면 뺌.
+    // order 의 핫 범위는 파일 안에서 서로 겹치지 않음 (HotRanges 가 중복을 뺌).
+    private static List<PieceDecision> PickLargePieces(IReadOnlyList<PlanRange> order, List<int> indices, long fileClusters, long unit, long clusterBytes, long maxFileBytes)
+    {
+        var result = new List<PieceDecision>();
+        long segments = fileClusters / unit;
+        if (segments == 0)
+        {
+            return result;
+        }
+
+        var hot = new long[segments];
+        var rank = new long[segments];
+        Array.Fill(rank, long.MaxValue);
+        foreach (int k in indices)
+        {
+            long a = order[k].Vcn, b = Math.Min(order[k].Vcn + order[k].Clusters, segments * unit);
+            for (long s = a / unit; s < segments && s * unit < b; s++)
+            {
+                hot[s] += Math.Min(b, (s + 1) * unit) - Math.Max(a, s * unit);
+                rank[s] = Math.Min(rank[s], k);
+            }
+        }
+
+        bool Hot(long s) => hot[s] >= LargePieceHotRatio * unit;
+        for (long s = 0; s < segments;)
+        {
+            if (!Hot(s))
+            {
+                s++;
+                continue;
+            }
+
+            long e = s, sum = 0, first = long.MaxValue;
+            for (; e < segments && Hot(e); e++)
+            {
+                sum += hot[e];
+                first = Math.Min(first, rank[e]);
+            }
+
+            if ((e - s) * unit * clusterBytes <= maxFileBytes)
+            {
+                result.Add(new PieceDecision(s * unit, (e - s) * unit, sum, first));
+            }
+
+            s = e;
         }
 
         return result;
@@ -153,37 +266,50 @@ public static class WholeFileLayout
         var sources = new List<List<(long Lcn, long N)>>();
         var effective = new List<FileDecision>(decisions.Count);
         var offsets = new Dictionary<string, long>(StringComparer.Ordinal);
+        var pieceOffsets = new Dictionary<(string Path, long Vcn), long>();
         long inPlaceBytes = 0, overflowBytes = 0, misaligned = 0, wholeCount = 0;
+        var entries = new List<(FileDecision D, long Vcn, long Length, long Rank)>(); // zone 에 놓을 구간: 통째 파일은 [0, 파일 클러스터), 큰 조각은 고른 구간
         foreach (FileDecision d in decisions)
         {
-            IReadOnlyList<Extent> ext = extentsByFile[d.Path]!;
-            if (d.Placement == Placement.WholeFile && HasHoles(ext, d.FileClusters))
+            if (d.Placement != Placement.InPlace && HasHoles(extentsByFile[d.Path]!, d.FileClusters))
             {
-                effective.Add(d with { Placement = Placement.InPlace, Reason = SparseHolesReason });
+                effective.Add(d with { Placement = Placement.InPlace, Reason = SparseHolesReason, Pieces = null });
                 overflowBytes += d.HotClusters * cb;
                 continue;
             }
 
             effective.Add(d);
-            List<(long Vcn, long Lcn, long N)> pieces = ZoneAllocator.Pieces(ext, 0, d.FileClusters);
-            if (d.Placement != Placement.WholeFile)
+            if (d.Placement == Placement.WholeFile)
+            {
+                entries.Add((d, 0, d.FileClusters, d.Rank));
+            }
+            else if (d.Placement == Placement.LargePieces && d.Pieces is { } chosen)
+            {
+                entries.AddRange(chosen.Select(p => (d, p.Vcn, p.Clusters, p.Rank)));
+                overflowBytes += (d.HotClusters - chosen.Sum(p => p.HotClusters)) * cb; // 고른 구간 밖의 핫 바이트는 제자리
+            }
+            else
             {
                 overflowBytes += d.HotClusters * cb;
-                continue;
             }
+        }
 
+        foreach ((FileDecision d, long v0, long length, _) in entries.OrderBy(e => e.Rank).ThenBy(e => e.Vcn))
+        {
+            IReadOnlyList<Extent> ext = extentsByFile[d.Path]!;
+            List<(long Vcn, long Lcn, long N)> pieces = ZoneAllocator.Pieces(ext, v0, v0 + length);
             wholeCount++;
             if (!rel && fixedClusters > 0 && pieces.Count > 0 && ZoneAllocator.CountRuns(pieces.Select(p => (p.Lcn, p.N)).ToList()) == 1
-                && pieces[0].Lcn >= zoneStart && pieces[0].Lcn + d.FileClusters <= fixedEnd)
+                && pieces[0].Lcn >= zoneStart && pieces[0].Lcn + length <= fixedEnd)
             {
-                inPlaceBytes += d.FileClusters * cb; // 이미 쓰던 구간 안에 한 조각: 그 자리를 그대로 씀
-                offsets[d.Path] = pieces[0].Lcn - zoneStart;
+                inPlaceBytes += length * cb; // 이미 쓰던 구간 안에 한 조각: 그 자리를 그대로 씀
+                SetOffset(d, v0, pieces[0].Lcn - zoneStart);
                 continue;
             }
 
-            long target = rel ? zoneStart + curOff : ResolveSelfOverlap(pieces, zoneStart + curOff, d.FileClusters);
-            offsets[d.Path] = target - zoneStart;
-            curOff = target - zoneStart + d.FileClusters;
+            long target = rel ? zoneStart + curOff : ResolveSelfOverlap(pieces, zoneStart + curOff, length, v0);
+            SetOffset(d, v0, target - zoneStart);
+            curOff = target - zoneStart + length;
             if (sparseFiles?.Contains(d.Path) == true)
             {
                 AddSparseTasks(d, pieces, ext, target, tasks, sources, ref inPlaceBytes, cb);
@@ -192,7 +318,7 @@ public static class WholeFileLayout
 
             foreach ((long vcn, long lcn, long n) in pieces)
             {
-                long goal = target + vcn;
+                long goal = target + vcn - v0;
                 if (lcn == goal)
                 {
                     inPlaceBytes += n * cb;
@@ -232,13 +358,25 @@ public static class WholeFileLayout
         var stats = new ZoneStats(0, 0, inPlaceBytes, overflowBytes, misaligned,
             flat.Sum(p => p.N) * cb, moved * cb, tasks.Count, tasks.Count == 0 ? 0 : PyFloat.Round2((double)moved / tasks.Count),
             curOff, skippedFiles, ZoneAllocator.CountRuns(flat), wholeCount);
-        return new WholePlan(new AllocResult(tasks, stats, order), effective, offsets);
+        return new WholePlan(new AllocResult(tasks, stats, order), effective, offsets, pieceOffsets);
+
+        void SetOffset(FileDecision d, long vcn, long offset)
+        {
+            if (d.Placement == Placement.WholeFile)
+            {
+                offsets[d.Path] = offset;
+            }
+            else
+            {
+                pieceOffsets[(d.Path, vcn)] = offset;
+            }
+        }
     }
 
-    // 목표 [target, target + 파일 길이) 가 이 파일 자신의 지금 조각 (이미 목표 자리에 있는 조각은 빼고) 과 겹치면, 그 이동은 자기 자신이 막혀 순환 오류가 됨 (OrderTasks 는 자기 의존을 빼지 않음).
-    // 파일이 한 조각이고 목표 뒤쪽에 있으면 그 자리를 목표로 인정하고 (순서만 포기, 다시 쓰지 않음), 아니면 겹치지 않을 때까지 목표를 자기 조각 끝 뒤로 미룸 (사이는 빈 채로 남음).
+    // 목표 [target, target + 구간 길이) 가 이 구간 자신의 지금 조각 (이미 목표 자리에 있는 조각은 빼고) 과 겹치면, 그 이동은 자기 자신이 막혀 순환 오류가 됨 (OrderTasks 는 자기 의존을 빼지 않음).
+    // 구간이 한 조각이고 목표 뒤쪽에 있으면 그 자리를 목표로 인정하고 (순서만 포기, 다시 쓰지 않음), 아니면 겹치지 않을 때까지 목표를 자기 조각 끝 뒤로 미룸 (사이는 빈 채로 남음). 구간이 파일 중간이면 vcn0 은 그 시작 vcn.
     // shortcut: 미루면 zone_used_clusters 가 한도 (Classify 의 합) 를 넘을 수 있음, 다른 파일끼리의 순환 (서로의 소스에 목표가 겹침) 은 풀지 않고 OrderTasks 의 오류로 새 zone 을 찾게 둠.
-    private static long ResolveSelfOverlap(List<(long Vcn, long Lcn, long N)> pieces, long target, long fileClusters)
+    private static long ResolveSelfOverlap(List<(long Vcn, long Lcn, long N)> pieces, long target, long fileClusters, long vcn0 = 0)
     {
         bool single = pieces.Count > 0 && pieces.Sum(p => p.N) == fileClusters && ZoneAllocator.CountRuns(pieces.Select(p => (p.Lcn, p.N)).ToList()) == 1;
         long t = target;
@@ -247,14 +385,14 @@ public static class WholeFileLayout
             again = false;
             foreach ((long vcn, long lcn, long n) in pieces)
             {
-                if (lcn == t + vcn || lcn >= t + fileClusters || lcn + n <= t)
+                if (lcn == t + vcn - vcn0 || lcn >= t + fileClusters || lcn + n <= t)
                 {
                     continue; // 이미 목표 자리이거나 겹치지 않음
                 }
 
-                if (single && pieces[0].Lcn - pieces[0].Vcn >= target)
+                if (single && pieces[0].Lcn - (pieces[0].Vcn - vcn0) >= target)
                 {
-                    return pieces[0].Lcn - pieces[0].Vcn;
+                    return pieces[0].Lcn - (pieces[0].Vcn - vcn0);
                 }
 
                 t = lcn + n;
@@ -286,8 +424,9 @@ public static class WholeFileLayout
         }
     }
 
-    /// 통째 계획의 stats 표지: layout_rule, whole_files (첫 접근 순), in_place_files (사유별 파일 수).
-    public static void AddStats(JObject stats, IReadOnlyList<FileDecision> decisions, IReadOnlyDictionary<string, long>? offsets = null)
+    /// 통째 계획의 stats 표지: layout_rule, whole_files (첫 접근 순), 큰 조각이 있으면 large_pieces·large_offsets (zone 안 순서), in_place_files (사유별 파일 수).
+    public static void AddStats(JObject stats, IReadOnlyList<FileDecision> decisions, IReadOnlyDictionary<string, long>? offsets = null,
+        IReadOnlyDictionary<(string Path, long Vcn), long>? pieceOffsets = null)
     {
         stats.Add(RuleKey, RuleVersion);
         List<string> whole = [.. decisions.Where(d => d.Placement == Placement.WholeFile).Select(d => d.Path)];
@@ -295,6 +434,17 @@ public static class WholeFileLayout
         if (offsets is not null && whole.All(offsets.ContainsKey))
         {
             stats.Add(WholeOffsetsKey, whole.Select(p => (object?)offsets[p]).ToList());
+        }
+
+        List<(string Path, PieceDecision Piece)> large = [.. decisions.Where(d => d.Placement == Placement.LargePieces && d.Pieces is not null).SelectMany(d => d.Pieces!.Select(p => (d.Path, p)))
+            .OrderBy(x => x.p.Rank).ThenBy(x => x.p.Vcn)];
+        if (large.Count > 0)
+        {
+            stats.Add(LargePiecesKey, large.Select(x => (object?)new JObject { { "path", x.Path }, { "vcn", x.Piece.Vcn }, { "clusters", x.Piece.Clusters } }).ToList());
+            if (pieceOffsets is not null && large.All(x => pieceOffsets.ContainsKey((x.Path, x.Piece.Vcn))))
+            {
+                stats.Add(LargeOffsetsKey, large.Select(x => (object?)pieceOffsets[(x.Path, x.Piece.Vcn)]).ToList());
+            }
         }
 
         var reasons = new JObject();
@@ -343,11 +493,11 @@ public static class WholeFileLayout
         Dictionary<string, long> sizes = old.Fingerprints.ToDictionary(f => f.Path, f => f.Size, StringComparer.Ordinal);
         var sparse = new HashSet<string>(order.Select(o => o.Path).Distinct(StringComparer.Ordinal).Where(sparseFn), StringComparer.Ordinal);
         List<FileDecision> classified = Classify(order, sizes, cb, capacityBytes / cb,
-            p => InPlaceReason(p, ext[p], sizes.GetValueOrDefault(p), cb, sparse.Contains(p), unmovableFn), maxFileBytes);
+            p => InPlaceReason(p, ext[p], sizes.GetValueOrDefault(p), cb, sparse.Contains(p), unmovableFn), maxFileBytes, sparse: sparse.Contains);
         long skipped = (old.Stats.TryGetValue("skipped_files", out object? sk) && sk is long s ? s : 0) + dropped.Count;
         WholePlan whole = Allocate(order, classified, ext, null, cb, 0, sparse, skipped);
         JObject stats = whole.Alloc.Stats.ToJson();
-        AddStats(stats, whole.Decisions, whole.Offsets);
+        AddStats(stats, whole.Decisions, whole.Offsets, whole.PieceOffsets);
         foreach ((string key, object? value) in old.Stats.Where(kv => !stats.ContainsKey(kv.Key) && !RebuildDropKeys.Contains(kv.Key)))
         {
             stats.Add(key, value);
@@ -383,6 +533,31 @@ public static class WholeFileLayout
         return files is not null && plan.Stats.TryGetValue(WholeOffsetsKey, out object? raw) && raw is List<object?> rows && rows.Count == files.Count && rows.All(r => r is long)
             ? [.. files.Select((p, i) => (p, (long)rows[i]!))] : [];
     }
+
+    /// 통째 배치 계획에서 큰 조각 배치로 zone 에 놓은 구간 (경로, 시작 vcn, 클러스터 수, zone 시작 기준 오프셋 — 기록이 없으면 null). 없으면 비어 있음.
+    public static IReadOnlyList<(string Path, long Vcn, long Clusters, long? Offset)> LargePieces(PlanFile plan)
+    {
+        if (!plan.Stats.TryGetValue(LargePiecesKey, out object? raw) || raw is not List<object?> rows)
+        {
+            return [];
+        }
+
+        List<(string Path, long Vcn, long Clusters)> pieces = [];
+        foreach (JObject r in rows.OfType<JObject>())
+        {
+            if (r.TryGetValue("path", out object? p) && p is string path && r.TryGetValue("vcn", out object? v) && v is long vcn && vcn >= 0
+                && r.TryGetValue("clusters", out object? c) && c is long clusters && clusters > 0)
+            {
+                pieces.Add((path, vcn, clusters));
+            }
+        }
+
+        bool placed = plan.Stats.TryGetValue(LargeOffsetsKey, out object? rawOffsets) && rawOffsets is List<object?> offsets && offsets.Count == pieces.Count && offsets.All(o => o is long);
+        return [.. pieces.Select((x, i) => (x.Path, x.Vcn, x.Clusters, placed ? (long?)(long)((List<object?>)rawOffsets!)[i]! : null))];
+    }
+
+    /// 통째 배치 계획이 zone 에 놓은 것이 (통째 파일이든 큰 조각이든) 하나라도 있는가.
+    public static bool HasPlacements(PlanFile plan) => WholeFiles(plan) is { Count: > 0 } || LargePieces(plan).Count > 0;
 
     private static long CeilDiv(long x, long y) => (x + y - 1) / y;
 }

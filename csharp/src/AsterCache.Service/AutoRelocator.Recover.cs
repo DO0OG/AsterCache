@@ -406,6 +406,7 @@ public sealed partial class AutoRelocator
 
         long from = zoneStart + pinned;
         HashSet<string>? whole = WholeFileLayout.WholeFiles(plan)?.ToHashSet(StringComparer.Ordinal); // 통째 배치 계획: 통째로 놓는 파일은 차가운 부분까지 이 계획의 데이터
+        ILookup<string, (long Vcn, long Clusters)> large = WholeFileLayout.LargePieces(plan).ToLookup(p => p.Path, p => (p.Vcn, p.Clusters), StringComparer.Ordinal); // 큰 조각 파일은 고른 구간만
         foreach (IGrouping<string, PlanRange> file in plan.Order.GroupBy(o => o.Path, StringComparer.Ordinal))
         {
             if (_env.Extents(file.Key) is not { } extents)
@@ -414,7 +415,7 @@ public sealed partial class AutoRelocator
             }
 
             List<(long A, long B)> hot = whole is null ? [.. file.Select(o => (A: o.Vcn, B: o.Vcn + o.Clusters)).OrderBy(r => r.A)]
-                : whole.Contains(file.Key) ? [(0, long.MaxValue)] : [];
+                : whole.Contains(file.Key) ? [(0, long.MaxValue)] : [.. large[file.Key].Select(p => (A: p.Vcn, B: p.Vcn + p.Clusters)).OrderBy(r => r.A)];
             foreach (Extent e in extents.Where(e => e.Lcn < zoneStart + used && from < e.Lcn + e.Clusters))
             {
                 long cur = e.Vcn + Math.Max(0, from - e.Lcn); // 존과 겹치는 VCN 구간 [cur, end)

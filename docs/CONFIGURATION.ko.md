@@ -75,6 +75,7 @@
 | `display_names` | 없음 | 언어별 화면 이름. 예: `{"ko": "발로란트", "en": "VALORANT"}`. 키는 `ko`, `en` 만 됩니다. |
 | `mode` | `inherit` | 이 게임에 서비스가 하는 일의 범위: `inherit`(전부), `prewarm_only`(재배치·정기 재적용 제외), `relocate_only`(예열·재예열·보충 예열(부분 예열 뒤 나머지를 읽는 것)·시작 스트림·고정 제외), `off`(아무것도 안 함). 추적은 `mode` 가 `off` 이거나 `paused` 가 `true` 일 때만 멈춥니다. 게임 탭의 게임 설정 창에서 정책을 고르는 것으로도 바꿉니다. |
 | `paused` | `false` | `true` 면 `mode` 와 무관하게 서비스가 이 게임의 새 작업을 시작하지 않습니다. 학습 데이터와 기록은 그대로 둡니다. 게임 탭의 게임 설정 창에서 일시 중지 체크 상자로도 바꿉니다. |
+| `layout` | (없음) | 이 게임의 존 배치 방식: `whole_file` 또는 `ranges`. 이 게임에 한해 `auto.relocate_layout` 보다 우선합니다. 없으면 `auto.relocate_layout` 을 따릅니다. `config.json` 에서만 정합니다(설정 창은 없습니다). 자세한 내용: [자동 모드](AUTO_MODE.ko.md#3-재배치). |
 
 `display_name` 과 `display_names` 는 손으로 넣을 수 있는 선택 키입니다. 이 키가 든 설정을 beta.24 로 되돌리면 그 버전이 설정을 거부하므로(종료 코드 2), 되돌리기 전에 두 키를 지워야 합니다.
 
@@ -140,7 +141,7 @@
 | `relocate_io_priority` | `low` | 이동의 I/O 우선순위 힌트: `low` 또는 `normal`. |
 | `relocate_verify` | `sample` | 이동 전후 내용 비교: `sample`, `all`, `off`. |
 | `relocate_order` | `auto` | 이동 순서: `auto`(`target` 과 같음), `target`, `source`(실험용). |
-| `relocate_layout` | `ranges` | 존의 배치 방식: `ranges`(플레이가 읽는 조각을 처음 읽은 순서로 이어 붙임) 또는 `whole_file`(고른 파일을 통째로 한 조각으로 놓음). `whole_file` 의 효과는 재 보지 않았고, 끝까지 돈 Windows 드라이브 최적화가 그런 파일을 그냥 두는지 확인되기 전까지 기본값은 꺼 둡니다. 자세한 내용: [자동 모드](AUTO_MODE.ko.md#3-재배치). |
+| `relocate_layout` | `ranges` | 존의 배치 방식: `ranges`(플레이가 읽는 조각을 처음 읽은 순서로 이어 붙임) 또는 `whole_file`(고른 파일을 통째로 한 조각으로 놓고, 대부분이 차가운 파일은 계획이 많이 읽는 80 MiB 이상의 구간을 한 조각으로 놓음). 게임의 `layout` 이 있으면 그 게임은 그것을 따릅니다. `whole_file` 의 효과는 재 보지 않았고, 끝까지 돈 Windows 드라이브 최적화가 그런 파일을 그냥 두는지 확인되기 전까지 기본값은 꺼 둡니다. 자세한 내용: [자동 모드](AUTO_MODE.ko.md#3-재배치). |
 | `post_update_delay_min` | 15 | 게임 업데이트를 감지한 뒤 그 게임의 재계획·재배치·예열을 이만큼(분, 0~1440) 미룹니다. 0이면 지연 없음. |
 | `post_relocate_recovery` | `probe` | 재배치 뒤 같은 드라이브의 다음 작업을 미루는 방식: `probe`(2분마다 짧은 표본을 읽어, 기준 속도의 90% 이상이 연속 2번이면 회복으로 봄), `fixed`(`post_update_delay_min` 분 고정), `off`. |
 | `recovery_max_min` | 60 | `probe` 가 회복을 기다리는 최대 시간(분, 1~1440). |
@@ -173,7 +174,7 @@
 
 설정 탭의 **업데이트** 카드가 `update.mode` 와 `update.prerelease` 를 정합니다.
 
-이전 버전은 `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, `update`, `memory` 키를 거부하므로, 되돌리기 전에 지워야 합니다. `memory` 는 1.0.3 부터 있는 키이며, 1.0.2 이하 버전은 이 키가 파일에 있으면 값과 상관없이 설정 파일 전체를 거부합니다. `memory.standby_ladder`, `auto.stage_stream_enabled`, `auto.quick_exit_seconds` 는 1.0.4 부터 있는 키입니다. 1.0.3 이하 버전은 이 중 하나라도 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오. `auto.io_summary_enabled`, `memory.background_io_priority`, `memory.background_cpu_priority`, `memory.keep_hold`, `memory.keep_hold_written_files`, `play` 객체(`play.frame_times` 와 `play.series`)는 1.0.5 부터 있는 키입니다. 1.0.4 이하 버전은 이 중 하나라도 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오.
+`games[].layout` 은 아직 배포된 버전에 없는 키입니다. 이전 버전은 이 키가 있는 설정 파일을 거부하므로, 되돌리기 전에 지워야 합니다. 이전 버전은 `games[].mode`, `games[].paused`, `auto.start_stream_enabled`, `auto.relocate_hours`, `update`, `memory` 키를 거부하므로, 되돌리기 전에 지워야 합니다. `memory` 는 1.0.3 부터 있는 키이며, 1.0.2 이하 버전은 이 키가 파일에 있으면 값과 상관없이 설정 파일 전체를 거부합니다. `memory.standby_ladder`, `auto.stage_stream_enabled`, `auto.quick_exit_seconds` 는 1.0.4 부터 있는 키입니다. 1.0.3 이하 버전은 이 중 하나라도 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오. `auto.io_summary_enabled`, `memory.background_io_priority`, `memory.background_cpu_priority`, `memory.keep_hold`, `memory.keep_hold_written_files`, `play` 객체(`play.frame_times` 와 `play.series`)는 1.0.5 부터 있는 키입니다. 1.0.4 이하 버전은 이 중 하나라도 든 설정 파일을 거부하므로 되돌리기 전에 지우십시오.
 
 ## 감시기
 

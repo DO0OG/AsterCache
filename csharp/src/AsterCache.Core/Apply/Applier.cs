@@ -758,9 +758,9 @@ public static class Applier
                         }
 
                         pick = noNewFiles ? ready.FirstOrDefault(r => admitted.Contains(r.Path)) : ready.Min; // 예산이 모자라면 새 파일은 시작하지 않고 이미 맡은 파일의 남은 작업만 이어 감
-                        if (pick.Path is null)
+                        if (pick.Path is null || noNewFiles && ready.Min.N < pick.N)
                         {
-                            return null;
+                            return null; // 맡은 파일의 작업이 시작하지 못한 파일의 앞선 작업보다 뒤면 이어 가지 않고 이번 회를 멈춤 (순서를 어기면 그 목표가 아직 쓰이는 중이라 target busy)
                         }
 
                         if (admitted.Contains(pick.Path) || Admit(pick))

@@ -151,7 +151,7 @@ public static class LayoutVerifier
             missing == 0 && sparseChanged.Count == 0 && runs <= expected, sparseChanged.Count, sparseHeld.Count);
     }
 
-    // 통째 배치 계획의 판정: stats.whole_files 의 파일이 각각 한 조각이고 허용 구간 안에 있으면 연속. 제자리로 둔 파일은 흐트러져도 판정에서 뺌.
+    // 통째 배치 계획의 판정: stats.whole_files 의 파일과 stats.large_pieces 의 구간이 각각 한 조각이고 허용 구간 안에 있으면 연속. 제자리로 둔 파일 (큰 조각 파일의 나머지 포함) 은 흐트러져도 판정에서 뺌.
     // 가변·옮길 수 없음·스파스 기준값 없음·할당이 바뀐 스파스는 적용이 건너뛰므로 위 범위 판정과 같은 규칙으로 뺌 (수만 SparseHeldFiles 로 보고).
     // 허용 구간: 비잔여는 [zone 시작, 시작 + max(zone.clusters, zone_used_clusters)), 잔여는 그 파일 작업들의 목표 범위. zone 시작이 아직 없으면 한 조각이기만 하면 됨.
     private static LayoutReport VerifyWholeFiles(PlanFile plan, IReadOnlyList<string> wholeFiles, Func<string, IReadOnlyList<Extent>?> extents,
@@ -166,7 +166,8 @@ public static class LayoutVerifier
         var sparseHeld = new HashSet<string>(StringComparer.Ordinal);
         var starts = new List<long>();
         long files = 0, hot = 0, inZone = 0, fragmented = 0, outside = 0, missing = 0;
-        foreach (string path in wholeFiles)
+        var items = wholeFiles.Select(p => (Path: p, Vcn: 0L, Length: -1L)).Concat(WholeFileLayout.LargePieces(plan).Select(p => (p.Path, p.Vcn, Length: p.Clusters))); // Length -1 = 파일 전체
+        foreach ((string path, long vcn, long length) in items)
         {
             if (VolatileFiles.Ignored(path)
                 || ((unmovable is not null || isSparse is not null) && (unmovable?.Invoke(path) == true || !plan.SparseAllocations.ContainsKey(path) && isSparse?.Invoke(path) == true)))
@@ -199,8 +200,8 @@ public static class LayoutVerifier
                 _ = sparseChanged.Add(path);
             }
 
-            long fileClusters = sizes.TryGetValue(path, out long size) ? (size + cb - 1) / cb : e.Max(x => x.Vcn + x.Clusters);
-            List<(long Lcn, long N)> pieces = ZoneAllocator.Pieces(e, 0, fileClusters).Select(x => (x.Lcn, x.N)).ToList();
+            long fileClusters = length >= 0 ? length : sizes.TryGetValue(path, out long size) ? (size + cb - 1) / cb : e.Max(x => x.Vcn + x.Clusters);
+            List<(long Lcn, long N)> pieces = ZoneAllocator.Pieces(e, vcn, vcn + fileClusters).Select(x => (x.Lcn, x.N)).ToList();
             hot += fileClusters;
             if (pieces.Sum(x => x.N) != fileClusters || ZoneAllocator.CountRuns(pieces) != 1)
             {

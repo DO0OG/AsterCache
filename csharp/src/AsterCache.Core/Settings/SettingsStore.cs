@@ -28,7 +28,7 @@ public static class SettingsStore
     private static readonly string[] PlayKeys = ["frame_times", "series"];
     private static readonly string[] RiotKeys = ["champ_select_prewarm", "champ_select_budget_mib"];
     private static readonly string[] GameKeys =
-        ["name", "exe_names", "trace", "plan", "origin_root", "allowed_roots", "volume_label", "reapply_interval_minutes", "prewarm", "max_stream_mib", "source", "anticheat", "display_name", "display_names", "mode", "paused"];
+        ["name", "exe_names", "trace", "plan", "origin_root", "allowed_roots", "volume_label", "reapply_interval_minutes", "prewarm", "max_stream_mib", "source", "anticheat", "display_name", "display_names", "mode", "paused", "layout"];
     private static readonly string[] AutoKeys =
     [
         "enabled", "discover", "trace", "relocate", "prewarm_recent", "idle_minutes", "trace_cap_seconds", "trace_cap_mib", "start_stream_cap_seconds", "trace_late_interval_min", "trace_late_window_seconds", "trace_late_windows",
@@ -426,6 +426,7 @@ public static class SettingsStore
         }
 
         bool paused = g.TryGetValue("paused", out object? pz) ? pz as bool? ?? throw new SettingsException($"{at}.paused: true or false expected") : false;
+        string? layout = g.TryGetValue("layout", out object? lo) ? lo is string ls && RelocateLayouts.IsValid(ls) ? ls : throw new SettingsException($"{at}.layout: \"whole_file\" or \"ranges\" expected") : null;
         string? displayName = g.TryGetValue("display_name", out object? dn) ? DisplayText(dn, $"{at}.display_name") : null;
         Dictionary<string, string>? displayNames = null;
         if (g.TryGetValue("display_names", out object? dns))
@@ -446,6 +447,7 @@ public static class SettingsStore
             AntiCheat = antiCheat,
             Mode = mode,
             Paused = paused,
+            Layout = layout,
         };
     }
 

@@ -78,7 +78,8 @@ public sealed partial class BackgroundYield
                     {
                         string? exe = o.TryGetValue("exe", out object? name) ? name as string : null; // 선택 필드: 옛 파일에는 없음
                         long loweredAt = o.TryGetValue("lowered_at", out object? lt) && lt is long l && l > 0 ? l : long.MaxValue; // 선택 필드: 옛 파일에는 없음
-                        result.Add(new LoweredProcess((int)id, exe, null, at, memory, loweredAt, o.TryGetValue("inherited", out object? inh) && inh is true, io, cpu));
+                        int applied = ReadPriority(o, "applied", ProcessMemory.PriorityVeryLow, MaxPriority) is { } a && a != NotLowered ? a : ProcessMemory.PriorityVeryLow; // 선택 필드: 없거나 범위 밖이면 1 (옛 파일은 항상 1)
+                        result.Add(new LoweredProcess((int)id, exe, null, at, memory, loweredAt, o.TryGetValue("inherited", out object? inh) && inh is true, io, cpu, applied));
                     }
                 }
             }
@@ -96,7 +97,7 @@ public sealed partial class BackgroundYield
         !o.TryGetValue(key, out object? value) ? NotLowered : value is long v && v >= min && v <= max ? (int)v : null;
 
     // 낮춘 프로세스가 있으면 상태 파일에 쓰고 없으면 지웁니다. 파일 오류는 경고를 남기고 false (호출자가 낮추기를 포기할 수 있게).
-    private bool SaveState()
+    private bool SaveState(bool durable = true)
     {
         try
         {
@@ -129,6 +130,10 @@ public sealed partial class BackgroundYield
                 if (p.Priority != NotLowered)
                 {
                     item.Add("priority", (long)p.Priority);
+                    if (p.Applied != ProcessMemory.PriorityVeryLow)
+                    {
+                        item.Add("applied", (long)p.Applied); // 설정해 둔 값이 1 이 아닐 때만: 복구가 4 를 물려받은 자식도 찾게 (예전 버전은 모르는 키를 무시)
+                    }
                 }
 
                 if (p.Io != NotLowered)
@@ -144,7 +149,7 @@ public sealed partial class BackgroundYield
                 items.Add(item);
             }
 
-            env.WriteState(PyJson.Dumps(new JObject { { "lowered", items } }, indent: 2, ensureAscii: false) + "\n");
+            (durable ? env.WriteState : env.WriteStateCached ?? env.WriteState)(PyJson.Dumps(new JObject { { "lowered", items } }, indent: 2, ensureAscii: false) + "\n");
             return true;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)

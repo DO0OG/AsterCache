@@ -33,6 +33,7 @@ public sealed class SparseKeepTests
     private readonly ManualResetEventSlim _firstRead = new();
     private volatile bool _gameUp = true;
     private volatile bool _enabled = true;
+    private volatile bool _ladder = true; // memory.standby_ladder
     private volatile bool _forbidMapping; // 켜면 매핑·붙들기·찾기·표본 대리자가 불리는 즉시 오류 (유지가 잡아 로그에 "stopped" 를 남기므로 시험이 실패)
     private long _avail = 20000;
     private int _opened;
@@ -128,7 +129,7 @@ public sealed class SparseKeepTests
             DiskBytesPerSecond = _ => 0,
             CommonFirstOps = (_, _, _) => ([], 0),
             ColdRead = (ops, _) => (new StreamStats(ops.Sum(o => o.Length), 1, 0, 0.01), true),
-            StandbyLadderEnabled = () => true,
+            StandbyLadderEnabled = () => _ladder,
             ListStamp = _ => "s1",
             IsSparse = path => _sparse.Contains(path),
             RankedRows = _ => _rows,
@@ -211,6 +212,11 @@ public sealed class SparseKeepTests
     }
 
     private void Run(Prewarmer p) => p.KeepSparseWhilePlaying(Game(), "a.exe", CancellationToken.None);
+
+    // 사유 줄 (같은 사유는 게임당 한 줄) 과 끝 줄
+    private List<string> SkipLines() => [.. _log.Lines.Where(l => l.Contains("sparse blocks kept while playing skipped (", StringComparison.Ordinal))];
+
+    private string EndLine() => _log.Lines.Last(l => l.Contains("sparse blocks kept while playing ended after", StringComparison.Ordinal));
 
     private static void NoStoppedLine(ListLog log) => Assert.DoesNotContain(log.Lines, l => l.Contains("stopped", StringComparison.Ordinal));
 
@@ -426,6 +432,8 @@ public sealed class SparseKeepTests
 
         Assert.Empty(_reads);
         Assert.Equal(0, SparseDisk(p));
+        Assert.Contains("a.exe: nothing read: loading phase", Assert.Single(SkipLines()), StringComparison.Ordinal);
+        Assert.Contains("skipped rounds: nothing read: loading phase x1", EndLine(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -525,6 +533,58 @@ public sealed class SparseKeepTests
 
         Assert.Equal(32, _reads.Count); // 첫 회차와 둘째 회차는 건너뛰고 셋째 회차만 읽음 (셋째 쉼에서 게임이 끝나므로 읽은 회차는 하나)
         Assert.Equal(1, _opened);
+        string line = Assert.Single(SkipLines()); // 같은 사유가 이어진 두 회차는 한 줄
+        Assert.Contains("a: sparse blocks kept while playing skipped (a.exe: low memory, available 2047 MiB < floor 2048 MiB)", line, StringComparison.Ordinal);
+        Assert.Contains("skipped rounds: low memory x2", EndLine(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AReasonThatComesBackAfterARoundThatReadIsLoggedAgain()
+    {
+        _rows = Rows(FileA, 8);
+        _allWarm = true;
+        Prewarmer p = Direct(4);
+        _avail = Prewarmer.HoldMinFloorMib - 1;
+        Action<TimeSpan, int> end = _onSleep!;
+        _onSleep = (t, n) =>
+        {
+            Interlocked.Exchange(ref _avail, n == 1 ? 20000 : n == 2 ? Prewarmer.HoldMinFloorMib - 1 : _avail); // 첫 회차 건너뜀, 둘째 회차 읽음, 셋째 회차 건너뜀
+            end(t, n);
+        };
+
+        Run(p);
+
+        Assert.Equal(2, SkipLines().Count); // 읽은 회차가 끼면 같은 사유도 다시 한 줄
+        Assert.Contains("skipped rounds: low memory x3", EndLine(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WithTheStandbyLadderOffEveryRoundIsSkippedWithOneReasonLine()
+    {
+        _rows = Rows(FileA, 8);
+        Prewarmer p = Direct(3);
+        _ladder = false;
+
+        Run(p);
+
+        Assert.Empty(_reads);
+        Assert.Contains("a.exe: standby ladder is off", Assert.Single(SkipLines()), StringComparison.Ordinal);
+        Assert.Contains("skipped rounds: standby ladder is off x3", EndLine(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WhenThePrewarmLeftTheSparseRangesOutOfTheMemoryPrewarmThatIsTheReasonAndNotThatTheListHasNone()
+    {
+        _planned = [new ReadOp(Dense, 0, 8 * Mib)];
+        _rows = Rows(Dense, 4);
+        Prewarmer p = Direct(2);
+        typeof(Prewarmer).GetMethod("SetSparseOut", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(p, ["a", true]); // 예열 판정이 스파스 범위를 뺐음 (표식)
+
+        Run(p);
+
+        Assert.Empty(_reads);
+        Assert.Contains("a.exe: sparse files left out of the memory prewarm, nothing to keep, the prewarm budget did not fit the whole list; ", Assert.Single(SkipLines()), StringComparison.Ordinal);
+        Assert.Contains("skipped rounds: sparse files left out of the memory prewarm, nothing to keep x2", EndLine(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -538,6 +598,46 @@ public sealed class SparseKeepTests
 
         Assert.Equal(32, _reads.Count);
         Assert.Contains(_log.Lines, l => l.Contains("reached 2 of 2 MiB of the list", StringComparison.Ordinal)); // 열지 못한 파일도 목록에서 빼지 않음 (다음 회차에 다시 시도)
+        Assert.Contains(", 16 block reads failed", EndLine(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ABlockThatCouldNotBeReadIsNotAKeepTargetSoOnlyTheBlocksThatWereReadAreReadWhileDiskReadsAreHeldBack()
+    {
+        _rows = [.. Rows(FileB, 16), .. Rows(FileA, 16)];
+        _seconds = (_, path) => path == FileB ? null : Fast;
+        Prewarmer p = Direct(2);
+        LoadPhaseBoard board = Calm(p);
+        Action<TimeSpan, int> end = _onSleep!;
+        _onSleep = (t, n) =>
+        {
+            if (n == 1)
+            {
+                Feed(board, loading: true, queue: 0); // 둘째 회차는 로딩 중: 앞 회차가 읽어 확인한 블록만 읽음
+            }
+
+            end(t, n);
+        };
+
+        Run(p);
+
+        Assert.Equal(16, _reads.Count(r => r.Path == FileB)); // 읽지 못한 B 의 블록은 둘째 회차에 읽지 않음
+        Assert.Equal(32, _reads.Count(r => r.Path == FileA));
+        Assert.Contains(", 16 block reads failed", EndLine(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ARoundInWhichNoBlockCouldBeReadIsReportedAsNothingRead()
+    {
+        _rows = Rows(FileA, 16);
+        _seconds = (_, _) => null;
+        Prewarmer p = Direct(2);
+
+        Run(p);
+
+        Assert.Contains("a.exe: nothing read: block reads failed, 32 reads failed (a file could not be opened or read)", Assert.Single(SkipLines()), StringComparison.Ordinal); // 계획의 파일 둘 (블록 32 개) 이 모두 실패
+        Assert.Contains("skipped rounds: nothing read: block reads failed x2", EndLine(), StringComparison.Ordinal);
+        Assert.Contains(", 64 block reads failed", EndLine(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -550,20 +650,24 @@ public sealed class SparseKeepTests
 
         Assert.Empty(_reads);
         Assert.Equal(0, _opened);
-        Assert.DoesNotContain(_log.Lines, l => l.Contains("sparse blocks", StringComparison.Ordinal));
+        Assert.Contains("a: sparse blocks kept while playing skipped (a.exe: no ranked block list", Assert.Single(_log.Lines, l => l.Contains("sparse blocks", StringComparison.Ordinal)), StringComparison.Ordinal); // 끝내는 사유라 그 한 줄뿐 (끝 줄 없음)
     }
 
     [Fact]
-    public void WhenThePrewarmedListHasNoSparseRangeNothingIsReadOrLogged()
+    public void WhenThePrewarmedListHasNoSparseRangeNothingIsReadAndEachRoundIsCountedUnderOneReasonLine()
     {
         _planned = [new ReadOp(Dense, 0, 8 * Mib)];
         _rows = Rows(Dense, 4);
-        Prewarmer p = Direct(1);
+        Prewarmer p = Direct(3);
 
         Run(p);
 
         Assert.Empty(_reads);
-        Assert.DoesNotContain(_log.Lines, l => l.Contains("sparse blocks", StringComparison.Ordinal));
+        Assert.Equal(0, _opened);
+        Assert.Contains("a.exe: no sparse range in the keep list, ", Assert.Single(SkipLines()), StringComparison.Ordinal);
+        Assert.Contains(" MiB in the keep list", Assert.Single(SkipLines()), StringComparison.Ordinal);
+        Assert.Contains("skipped rounds: no sparse range in the keep list x3", EndLine(), StringComparison.Ordinal);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("kept while playing:", StringComparison.Ordinal)); // 시작 줄은 읽을 블록이 있을 때만
     }
 
     [Fact]

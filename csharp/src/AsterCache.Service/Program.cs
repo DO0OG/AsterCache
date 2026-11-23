@@ -91,7 +91,7 @@ var playRecorder = new PlayRecorder(canApply ? Path.Combine(dataDir, "play_sampl
     openFrames: canApply ? FrameTimeSession.Open : null, frameEnabled: () => settings.Play.FrameTimes,
     frameBlocker: g => !GamePolicy.AllowsTracking(g) ? "policy" : autoEnv?.TraceBlocker(g) ?? (autoEnv is null ? "unknown" : null),
     openSystem: PlayRecorder.WindowsPlaySystemProbe.Open,
-    openSeries: canApply ? WindowsPlaySeriesProbe.Open : null, seriesDirectory: canApply ? Path.Combine(dataDir, "play_series") : null, seriesEnabled: () => settings.Play.Series,
+    openSeries: canApply ? () => WindowsPlaySeriesProbe.Open(() => backgroundYield?.AppliedTotal ?? 0) : null, seriesDirectory: canApply ? Path.Combine(dataDir, "play_series") : null, seriesEnabled: () => settings.Play.Series,
     isTraceBlocked: g => autoEnv?.TraceBlocker(g) is not null,
     blockedGameRunning: () => settings.Games.Any(g => autoEnv?.TraceBlocker(g) is not null && DispatchEnv.IsGameRunning(g))); // 막는 게임과 같이 실행 중이면 세션을 열지 않음 (게임이 이미 떠 있는 서비스 시작 때도)
 LoadBoundaryWatch.OrbitApplied = canApply ? streamer.WasPrewarmReordered : _ => false;

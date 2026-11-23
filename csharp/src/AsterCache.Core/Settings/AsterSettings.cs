@@ -266,6 +266,9 @@ public sealed record AutoSettings(
     /// 자동 재배치의 실행 순서: "auto" (기본, target 과 같음), "target" 또는 "source" (실험용).
     public string RelocateOrder { get; init; } = Apply.RelocateOrder.Auto;
 
+    /// 자동 재배치의 배치 방식: "ranges" (기본, 핫 범위를 접근 순서로 이어 붙임) 또는 "whole_file" (파일 전체를 한 조각으로 zone 에).
+    public string RelocateLayout { get; init; } = Plan.RelocateLayouts.Ranges;
+
     /// 하루 (24 시간) 에 자동 재배치가 쓸 수 있는 총량 (GiB, 0..1048576). 0 = 무제한.
     public int MaxRelocateGibPerDay { get; init; } = 8;
 

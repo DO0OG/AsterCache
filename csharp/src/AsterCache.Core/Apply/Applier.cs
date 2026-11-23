@@ -783,6 +783,26 @@ public static class Applier
                 return;
             }
 
+            if (plan.Stats.ContainsKey(WholeFileLayout.RuleKey))
+            {
+                // 통째 배치의 작업은 한 파일이라, 회당 상한에서 도중에 멈춰 일부만 옮겨진 채 남지 않게 시작 전에 확인함:
+                // 남은 예산이 모자라면 이번 회에 이미 옮긴 것이 있을 때는 시작하지 않고 (다음 회가 이 파일부터), 이 작업이 첫 작업이면 상한을 이 작업의 남은 양까지 올려 끝까지 옮김.
+                long need = (t.Clusters - d) * cb;
+                lock (gate)
+                {
+                    if (Math.Max(0, writeCap - rep.MovedBytes) < need)
+                    {
+                        if (rep.MovedBytes > 0)
+                        {
+                            Stop("write_cap");
+                            return;
+                        }
+
+                        writeCap = rep.MovedBytes + need;
+                    }
+                }
+            }
+
             if (!CanIssue()) // 이동 전 표본(파일당 읽기)도 읽지 않음: 취소 뒤에는 디스크를 더 건드리지 않음
             {
                 Stop("cancelled");

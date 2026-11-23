@@ -33,7 +33,7 @@ public static class SettingsStore
     [
         "enabled", "discover", "trace", "relocate", "prewarm_recent", "idle_minutes", "trace_cap_seconds", "trace_cap_mib", "start_stream_cap_seconds", "trace_late_interval_min", "trace_late_window_seconds", "trace_late_windows",
         "max_relocations_per_day", "trace_runs", "trace_merge_min_mib", "trace_target_coverage", "trace_runs_max", "ignore_exes", "rewarm_minutes", "idle_seconds", "learn", "full_prewarm", "full_prewarm_max_mib", "engine_profiles", "shared_profiles",
-        "ssd_tier", "post_update_delay_min", "recovery_max_min", "recovery_hard_max_min", "relocate_chunk_mib", "relocate_parallel", "relocate_io_priority", "relocate_verify", "relocate_order", "max_relocate_gib_per_day", "post_relocate_recovery", "keep_awake", "keep_stream_on_game_start", "load_boundary", "restream_cooldown_min", "quick_exit_seconds", "rewarm_after_exit_min", "startup_warm_games", "startup_warm_max_mib",
+        "ssd_tier", "post_update_delay_min", "recovery_max_min", "recovery_hard_max_min", "relocate_chunk_mib", "relocate_parallel", "relocate_io_priority", "relocate_verify", "relocate_order", "relocate_layout", "max_relocate_gib_per_day", "post_relocate_recovery", "keep_awake", "keep_stream_on_game_start", "load_boundary", "restream_cooldown_min", "quick_exit_seconds", "rewarm_after_exit_min", "startup_warm_games", "startup_warm_max_mib",
         "start_stream_enabled", "stage_stream_enabled", "io_summary_enabled", "relocate_hours",
     ];
     private static readonly string[] PrewarmKeys = ["on_service_start", "trigger_exes", "min_free_ram_mib", "cooldown_min", "pin", "max_cache_mib"];
@@ -275,6 +275,7 @@ public static class SettingsStore
             RelocateIoPriority = o.TryGetValue("relocate_io_priority", out object? io) && io is AutoSettings.IoLow or AutoSettings.IoNormal ? (string)io : d.RelocateIoPriority,
             RelocateVerify = o.TryGetValue("relocate_verify", out object? rv) && rv is string rvs && VerifyMode.IsValid(rvs) ? rvs : d.RelocateVerify,
             RelocateOrder = o.TryGetValue("relocate_order", out object? ro) && ro is string ros && RelocateOrder.IsValidSetting(ros) ? ros : d.RelocateOrder,
+            RelocateLayout = o.TryGetValue("relocate_layout", out object? rl) && rl is string rls && RelocateLayouts.IsValid(rls) ? rls : d.RelocateLayout,
             MaxRelocateGibPerDay = maxRelocateGib,
             MaxRelocateGibPerDaySet = o.ContainsKey("max_relocate_gib_per_day") && maxRelocateGib != d.MaxRelocateGibPerDay, // 8 은 기본값으로 취급 (SMR 기본 2 유지)
             SsdTier = o.TryGetValue("ssd_tier", out object? tier) ? ParseSsdTier(tier) : SsdTierSettings.Default,

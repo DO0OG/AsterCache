@@ -29,7 +29,7 @@ public sealed record PlanFile(
     public static PlanFile Make(IReadOnlyList<IReadOnlyList<TraceEvent>> sessions, string originRoot, long zoneBytes, long clusterBytes,
         Func<string, IReadOnlyList<Extent>?> extentsFn, Func<string, long>? sizeFn = null, Func<string, Fingerprint>? fingerprintFn = null,
         long? zoneStartLcn = null, long block = HotSet.Block, int minSessions = 1, long preserveBytes = 0, long alignClusters = 4, long fixedClusters = 0,
-        Func<string, bool>? sparseFn = null)
+        Func<string, bool>? sparseFn = null, long capacityBytes = 0)
     {
         sizeFn ??= p => new FileInfo(p).Length;
         fingerprintFn ??= FingerprintOf;
@@ -41,10 +41,25 @@ public sealed record PlanFile(
         var sizes = paths.ToDictionary(p => p, sizeFn, StringComparer.Ordinal);
         var sparsePaths = new HashSet<string>(paths.Where(p => sparseFn?.Invoke(p) == true), StringComparer.Ordinal);
         long zc = zoneBytes / clusterBytes;
-        AllocResult alloc = ZoneAllocator.Allocate(units, ext, zoneStartLcn, zc, clusterBytes, block, sizes, preserveBytes, alignClusters, fixedClusters, sparsePaths);
+        IReadOnlyList<FileDecision>? decisions = null;
+        AllocResult alloc;
+        if (capacityBytes > 0)
+        {
+            // 통째 배치: zone.clusters 는 핫 예산 기준 길이 그대로 두고, 통째 파일이 쓸 수 있는 길이만 capacityBytes 로 따로 받음 (예열 예산이 함께 늘지 않게)
+            (List<PlanRange> hotOrder, int skippedFiles) = ZoneAllocator.HotRanges(units, ext, clusterBytes, block, sizes, sparsePaths);
+            List<FileDecision> classified = WholeFileLayout.Classify(hotOrder, sizes, clusterBytes, capacityBytes / clusterBytes,
+                p => VolatileFiles.Ignored(p) ? WholeFileLayout.VolatileReason : sparsePaths.Contains(p) && WholeFileLayout.HasHoles(ext[p], (sizes[p] + clusterBytes - 1) / clusterBytes) ? WholeFileLayout.SparseHolesReason : null);
+            WholePlan whole = WholeFileLayout.Allocate(hotOrder, classified, ext, zoneStartLcn, clusterBytes, fixedClusters, sparsePaths, skippedFiles, alignClusters);
+            (alloc, decisions) = (whole.Alloc, whole.Decisions);
+        }
+        else
+        {
+            alloc = ZoneAllocator.Allocate(units, ext, zoneStartLcn, zc, clusterBytes, block, sizes, preserveBytes, alignClusters, fixedClusters, sparsePaths);
+        }
+
         // 제자리·존 가득·보존으로 조각이 빠져 지원하지 못하는 작업 (16클러스터 경계 밖) 이 생기는 스파스 파일은 그 파일만 대상에서 빼고 다시 배정합니다 (뺀 파일은 skipped_files 에 셈).
         var unsupported = new HashSet<string>(StringComparer.Ordinal);
-        while (sparsePaths.Count > 0)
+        while (decisions is null && sparsePaths.Count > 0)
         {
             var bad = alloc.Tasks.Where(t => sparsePaths.Contains(t.Path) && !SparseAllocation.SupportsMove(t.Vcn, t.Clusters, (sizes[t.Path] + clusterBytes - 1) / clusterBytes))
                 .Select(t => t.Path).ToHashSet(StringComparer.Ordinal);
@@ -58,6 +73,11 @@ public sealed record PlanFile(
         }
 
         JObject stats = alloc.Stats.ToJson();
+        if (decisions is not null)
+        {
+            WholeFileLayout.AddStats(stats, decisions);
+        }
+
         stats.Add("hot_blocks", (long)hot.Count);
         stats.Add("units", (long)units.Count);
         if (sparsePaths.Count > 0)

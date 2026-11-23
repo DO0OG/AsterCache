@@ -397,7 +397,7 @@ public sealed partial class AutoRelocator
     // 같은 존을 다시 쓰는 계획의 목표 자리에 이 계획이 옮기지 않는 자기 파일 데이터 (예: 이전 계획이 존에 모은, 이번 기록에서는 핫이 아닌 부분) 가 있는가.
     // 그런 목표로는 이동이 늘 실패하므로 (사용 중인 클러스터) 새 존을 찾아야 합니다. 핫 범위(Order) 밖의 조각이 존의 쓰는 구간과 겹치는지 봅니다.
     // pinned: 확장 중이면 존 앞의 이만큼 (이전 계획이 쓰던 고정 구간, 이동하지 않음) 은 보지 않습니다.
-    private bool ZoneBlockedByOwnData(PlanFile plan, long pinned)
+    internal bool ZoneBlockedByOwnData(PlanFile plan, long pinned)
     {
         if (plan.Zone.StartLcn is not { } zoneStart || !plan.Stats.TryGetValue("zone_used_clusters", out object? u) || u is not long used)
         {
@@ -405,6 +405,7 @@ public sealed partial class AutoRelocator
         }
 
         long from = zoneStart + pinned;
+        HashSet<string>? whole = WholeFileLayout.WholeFiles(plan)?.ToHashSet(StringComparer.Ordinal); // 통째 배치 계획: 통째로 놓는 파일은 차가운 부분까지 이 계획의 데이터
         foreach (IGrouping<string, PlanRange> file in plan.Order.GroupBy(o => o.Path, StringComparer.Ordinal))
         {
             if (_env.Extents(file.Key) is not { } extents)
@@ -412,7 +413,8 @@ public sealed partial class AutoRelocator
                 continue;
             }
 
-            List<(long A, long B)> hot = [.. file.Select(o => (A: o.Vcn, B: o.Vcn + o.Clusters)).OrderBy(r => r.A)];
+            List<(long A, long B)> hot = whole is null ? [.. file.Select(o => (A: o.Vcn, B: o.Vcn + o.Clusters)).OrderBy(r => r.A)]
+                : whole.Contains(file.Key) ? [(0, long.MaxValue)] : [];
             foreach (Extent e in extents.Where(e => e.Lcn < zoneStart + used && from < e.Lcn + e.Clusters))
             {
                 long cur = e.Vcn + Math.Max(0, from - e.Lcn); // 존과 겹치는 VCN 구간 [cur, end)

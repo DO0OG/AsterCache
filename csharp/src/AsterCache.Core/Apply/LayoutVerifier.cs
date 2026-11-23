@@ -43,6 +43,11 @@ public static class LayoutVerifier
     public static LayoutReport Verify(PlanFile plan, Func<string, IReadOnlyList<Extent>?> extents, Func<string, bool>? unmovable = null, Func<string, bool>? isSparse = null,
         bool holdChangedSparse = false)
     {
+        if (WholeFileLayout.WholeFiles(plan) is { } wholeFiles)
+        {
+            return VerifyWholeFiles(plan, wholeFiles, extents, unmovable, isSparse, holdChangedSparse); // 통째 배치 계획: 놓기로 한 파일이 각각 한 조각으로 zone 안에 있는가
+        }
+
         var skip = new Dictionary<string, bool>(StringComparer.Ordinal);
         var ext = new Dictionary<string, IReadOnlyList<Extent>?>(StringComparer.Ordinal);
         var seq = new List<(long Lcn, long N)>();
@@ -145,6 +150,108 @@ public static class LayoutVerifier
         return new LayoutReport(seq.Sum(x => x.N), runs, expected, (long)plan.Stats["current_runs"]!, ascending, inZone, missing,
             missing == 0 && sparseChanged.Count == 0 && runs <= expected, sparseChanged.Count, sparseHeld.Count);
     }
+
+    // 통째 배치 계획의 판정: stats.whole_files 의 파일이 각각 한 조각이고 허용 구간 안에 있으면 연속. 제자리로 둔 파일은 흐트러져도 판정에서 뺌.
+    // 가변·옮길 수 없음·스파스 기준값 없음·할당이 바뀐 스파스는 적용이 건너뛰므로 위 범위 판정과 같은 규칙으로 뺌 (수만 SparseHeldFiles 로 보고).
+    // 허용 구간: 비잔여는 [zone 시작, 시작 + max(zone.clusters, zone_used_clusters)), 잔여는 그 파일 작업들의 목표 범위. zone 시작이 아직 없으면 한 조각이기만 하면 됨.
+    private static LayoutReport VerifyWholeFiles(PlanFile plan, IReadOnlyList<string> wholeFiles, Func<string, IReadOnlyList<Extent>?> extents,
+        Func<string, bool>? unmovable, Func<string, bool>? isSparse, bool holdChangedSparse)
+    {
+        long cb = plan.ClusterBytes;
+        long used = plan.Stats.TryGetValue("zone_used_clusters", out object? u) && u is long usedClusters ? usedClusters : 0;
+        long? zoneEnd = plan.Zone.StartLcn is { } zoneStart ? zoneStart + Math.Max(plan.Zone.Clusters, used) : null;
+        Dictionary<string, List<(long A, long B)>>? targets = plan.IsResidual ? TargetRanges(plan) : null;
+        var sizes = plan.Fingerprints.ToDictionary(f => f.Path, f => f.Size, StringComparer.Ordinal);
+        var sparseChanged = new HashSet<string>(StringComparer.Ordinal);
+        var sparseHeld = new HashSet<string>(StringComparer.Ordinal);
+        var starts = new List<long>();
+        long files = 0, hot = 0, inZone = 0, fragmented = 0, outside = 0, missing = 0;
+        foreach (string path in wholeFiles)
+        {
+            if (VolatileFiles.Ignored(path)
+                || ((unmovable is not null || isSparse is not null) && (unmovable?.Invoke(path) == true || !plan.SparseAllocations.ContainsKey(path) && isSparse?.Invoke(path) == true)))
+            {
+                continue;
+            }
+
+            IReadOnlyList<Extent>? e = extents(path);
+            plan.SparseAllocations.TryGetValue(path, out IReadOnlyList<AllocatedRange>? baseline);
+            if (holdChangedSparse && baseline is not null && (e is null || e.Count == 0 || !baseline.SequenceEqual(SparseAllocation.Normalize(e))))
+            {
+                _ = sparseHeld.Add(path);
+                continue;
+            }
+
+            files++;
+            if (e is null || e.Count == 0)
+            {
+                missing++; // 읽지 못함: 판정 불가 (호출자는 건강으로 봄)
+                if (baseline is not null)
+                {
+                    _ = sparseChanged.Add(path);
+                }
+
+                continue;
+            }
+
+            if (baseline is not null && !baseline.SequenceEqual(SparseAllocation.Normalize(e)))
+            {
+                _ = sparseChanged.Add(path);
+            }
+
+            long fileClusters = sizes.TryGetValue(path, out long size) ? (size + cb - 1) / cb : e.Max(x => x.Vcn + x.Clusters);
+            List<(long Lcn, long N)> pieces = ZoneAllocator.Pieces(e, 0, fileClusters).Select(x => (x.Lcn, x.N)).ToList();
+            hot += fileClusters;
+            if (pieces.Sum(x => x.N) != fileClusters || ZoneAllocator.CountRuns(pieces) != 1)
+            {
+                fragmented++;
+                continue;
+            }
+
+            starts.Add(pieces[0].Lcn);
+            if (targets is not null ? Within(targets, path, pieces[0].Lcn, fileClusters) : plan.Zone.StartLcn is not { } start || pieces[0].Lcn >= start && pieces[0].Lcn + fileClusters <= zoneEnd)
+            {
+                inZone += fileClusters;
+            }
+            else
+            {
+                outside++;
+            }
+        }
+
+        bool ascending = starts.Zip(starts.Skip(1), (a, b) => a <= b).All(x => x);
+        long currentRuns = plan.Stats.TryGetValue("current_runs", out object? c) && c is long runsAtPlan ? runsAtPlan : 0;
+        return new LayoutReport(hot, fragmented, files, currentRuns, ascending, plan.Zone.StartLcn is null ? null : inZone, missing,
+            missing == 0 && sparseChanged.Count == 0 && fragmented == 0 && outside == 0, sparseChanged.Count, sparseHeld.Count);
+    }
+
+    // 잔여 계획: 파일별 작업 목표 범위 (이어진 것은 합침).
+    private static Dictionary<string, List<(long A, long B)>> TargetRanges(PlanFile plan)
+    {
+        var result = new Dictionary<string, List<(long A, long B)>>(StringComparer.Ordinal);
+        foreach (IGrouping<string, PlanTask> file in plan.Tasks.Where(t => t.Clusters > 0).GroupBy(t => t.Path, StringComparer.Ordinal))
+        {
+            var merged = new List<(long A, long B)>();
+            foreach (PlanTask t in file.OrderBy(t => t.TargetLcn))
+            {
+                if (merged.Count > 0 && t.TargetLcn <= merged[^1].B)
+                {
+                    merged[^1] = (merged[^1].A, Math.Max(merged[^1].B, t.TargetLcn + t.Clusters));
+                }
+                else
+                {
+                    merged.Add((t.TargetLcn, t.TargetLcn + t.Clusters));
+                }
+            }
+
+            result[file.Key] = merged;
+        }
+
+        return result;
+    }
+
+    private static bool Within(Dictionary<string, List<(long A, long B)>> targets, string path, long lcn, long clusters) =>
+        targets.TryGetValue(path, out List<(long A, long B)>? ranges) && ranges.Any(r => r.A <= lcn && lcn + clusters <= r.B);
 
     // 잔여 재계획: 존은 새 구간뿐이므로, 목표 자리 (task 의 목표 범위, 서로 겹치지 않음) 에 놓인 클러스터를 존 소속으로 셈.
     private static long InTargets(PlanFile plan, List<(long Lcn, long N)> seq)

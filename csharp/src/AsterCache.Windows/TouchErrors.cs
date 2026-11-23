@@ -11,7 +11,7 @@ public enum TouchErrorKind
     Read,
 }
 
-/// 만지기 오류를 종류별로 센 값 (StandbyTouch.Run 한 번 또는 여러 번을 합친 것): 종류별 수, 종류별 Win32 오류 번호 분포, 가장 많이 실패한 파일의 경로.
+/// 만지기 오류를 종류별로 센 값 (StandbyTouch.Run 한 번 또는 여러 번을 합친 것): 종류별 수, 종류별 Win32 오류 번호 분포, 실패한 파일 경로들.
 /// 수는 TouchResult.Errors 와 같은 단위 (만지지 못한 범위 수) 라 종류별 수의 합이 그 값과 같습니다. 기록만 하고 만지기의 동작에는 쓰지 않습니다.
 public sealed class TouchErrors
 {
@@ -25,6 +25,14 @@ public sealed class TouchErrors
     private readonly Dictionary<(TouchErrorKind Kind, int Code), int> _codes = [];
     private readonly Dictionary<string, int> _paths = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string>[] _files = [.. Enumerable.Range(0, 4).Select(_ => new HashSet<string>(StringComparer.OrdinalIgnoreCase))]; // 종류별로 실패한 파일 (수는 MaxPaths 까지만 셈)
+    private sealed class OpenCodeStat
+    {
+        public int Ranges;
+        public long RequestedBytes;
+        public readonly HashSet<string> Files = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private readonly Dictionary<int, OpenCodeStat> _openByCode = [];
 
     public int Count(TouchErrorKind kind) => _counts[(int)kind];
 
@@ -48,10 +56,18 @@ public sealed class TouchErrors
         }
     }
 
+    private IReadOnlyList<(string Path, int Count)> TopFiles =>
+        [.. _paths.OrderByDescending(p => p.Value).ThenBy(p => p.Key, StringComparer.OrdinalIgnoreCase).Take(4).Select(p => (p.Key, p.Value))];
+
     /// 종류 하나의 오류 번호별 수, 많은 것부터.
     public IReadOnlyList<(int Code, int Count)> Codes(TouchErrorKind kind) => [.. _codes.Where(c => c.Key.Kind == kind).OrderByDescending(c => c.Value).Select(c => (c.Key.Code, c.Value))];
 
-    public void Add(TouchErrorKind kind, int count, string path, int code)
+    /// 열기 오류 코드별 실패 파일 수, 범위 수, 요청 바이트 (파일 수는 MaxPaths 까지만 셉니다).
+    public IReadOnlyList<(int Code, int Files, int Ranges, long RequestedBytes)> OpenFailuresByCode =>
+        [.. _openByCode.OrderByDescending(p => p.Value.Ranges).ThenBy(p => p.Key)
+            .Select(p => (p.Key, p.Value.Files.Count, p.Value.Ranges, p.Value.RequestedBytes))];
+
+    public void Add(TouchErrorKind kind, int count, string path, int code, long requestedBytes = 0)
     {
         if (count <= 0)
         {
@@ -68,6 +84,21 @@ public sealed class TouchErrors
         if (_files[(int)kind].Count < MaxPaths)
         {
             _ = _files[(int)kind].Add(path);
+        }
+
+        if (kind == TouchErrorKind.Open)
+        {
+            if (!_openByCode.TryGetValue(code, out OpenCodeStat? stat))
+            {
+                _openByCode[code] = stat = new OpenCodeStat();
+            }
+
+            stat.Ranges += count;
+            stat.RequestedBytes += Math.Max(0, requestedBytes);
+            if (stat.Files.Count < MaxPaths)
+            {
+                _ = stat.Files.Add(path);
+            }
         }
     }
 
@@ -110,9 +141,27 @@ public sealed class TouchErrors
                 }
             }
         }
+
+        foreach ((int code, OpenCodeStat otherStat) in other._openByCode)
+        {
+            if (!_openByCode.TryGetValue(code, out OpenCodeStat? stat))
+            {
+                _openByCode[code] = stat = new OpenCodeStat();
+            }
+
+            stat.Ranges += otherStat.Ranges;
+            stat.RequestedBytes += otherStat.RequestedBytes;
+            foreach (string path in otherStat.Files)
+            {
+                if (stat.Files.Count < MaxPaths)
+                {
+                    _ = stat.Files.Add(path);
+                }
+            }
+        }
     }
 
-    /// 로그 한 줄용 서술: `open 12 ranges in 3 files (win32 5 ×12), beyond end 3 ranges in 1 file; most failures in C:\a\b.bin ×15`. 오류가 없으면 빈 문자열.
+    /// 로그 한 줄용 서술: 오류 코드별 파일·범위·요청 바이트와 실패가 많은 파일 이름을 최대 4개까지 씁니다. 오류가 없으면 빈 문자열.
     public string Describe()
     {
         List<string> kinds = [];
@@ -123,13 +172,29 @@ public sealed class TouchErrors
                 continue;
             }
 
-            string codes = string.Join(", ", Codes(kind).Take(3)
-                .Select(c => $"{(c.Code == EmptyFile ? "empty file" : c.Code == 0 ? "no win32 error" : $"win32 {c.Code}")} ×{c.Count.ToString(CultureInfo.InvariantCulture)}"));
+            string codes = string.Join(", ", Codes(kind).Take(kind == TouchErrorKind.Open ? int.MaxValue : 3)
+                .Select(c =>
+                {
+                    string text = $"{(c.Code == EmptyFile ? "empty file" : c.Code == 0 ? "no win32 error" : $"win32 {c.Code}")} ×{c.Count.ToString(CultureInfo.InvariantCulture)}";
+                    if (kind == TouchErrorKind.Open && _openByCode.TryGetValue(c.Code, out OpenCodeStat? stat))
+                    {
+                        text += $" ({stat.Files.Count.ToString(CultureInfo.InvariantCulture)} {(stat.Files.Count == 1 ? "file" : "files")}, {stat.Ranges.ToString(CultureInfo.InvariantCulture)} {(stat.Ranges == 1 ? "range" : "ranges")}, {ByteText(stat.RequestedBytes)} requested)";
+                    }
+
+                    return text;
+                }));
             int files = Files(kind);
             string spread = $" {(Count(kind) == 1 ? "range" : "ranges")} in {files} {(files == 1 ? "file" : "files")}"; // 범위 수 (3882) 가 파일 몇 개에 걸친 것인지
             kinds.Add($"{label} {Count(kind)}{spread}{(kind == TouchErrorKind.BeyondEnd || codes.Length == 0 ? string.Empty : $" ({codes})")}");
         }
 
-        return kinds.Count == 0 ? string.Empty : $"{string.Join(", ", kinds)}{(Worst is { } worst ? $"; most failures in {worst.Path} ×{worst.Count}" : string.Empty)}";
+        string failed = string.Join(", ", TopFiles.Select(p => $"{p.Path} ×{p.Count.ToString(CultureInfo.InvariantCulture)}"));
+        return kinds.Count == 0 ? string.Empty : $"{string.Join(", ", kinds)}{(failed.Length > 0 ? $"; most failures in {failed}" : string.Empty)}";
     }
+
+    private static string ByteText(long bytes) => bytes >= 1L << 20
+        ? $"{(bytes / 1048576.0).ToString("F2", CultureInfo.InvariantCulture)} MiB"
+        : bytes >= 1L << 10
+            ? $"{(bytes / 1024.0).ToString("F2", CultureInfo.InvariantCulture)} KiB"
+            : $"{bytes.ToString(CultureInfo.InvariantCulture)} B";
 }

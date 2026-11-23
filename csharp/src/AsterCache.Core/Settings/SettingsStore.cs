@@ -24,7 +24,7 @@ public static class SettingsStore
     public const int MaxGames = 32;
 
     private static readonly string[] TopKeys = ["games", "poll_ms", "watcher", "language", "auto", "max_zone_mib", "riot", "update", "memory", "play"];
-    private static readonly string[] MemoryKeys = ["background_yield", "standby_ladder", "background_io_priority", "background_cpu_priority", "keep_hold", "keep_hold_written_files", "keep_sparse"];
+    private static readonly string[] MemoryKeys = ["background_yield", "standby_ladder", "background_io_priority", "background_cpu_priority", "keep_hold", "keep_hold_written_files", "keep_sparse", "background_yield_fast", "background_in_use_memory_priority"];
     private static readonly string[] PlayKeys = ["frame_times", "series"];
     private static readonly string[] RiotKeys = ["champ_select_prewarm", "champ_select_budget_mib"];
     private static readonly string[] GameKeys =
@@ -152,7 +152,9 @@ public static class SettingsStore
         bool keepHold = o.TryGetValue("keep_hold", out object? k) ? k as bool? ?? throw new SettingsException("memory.keep_hold: true or false expected") : d.KeepHold;
         bool keepHoldWritten = o.TryGetValue("keep_hold_written_files", out object? w) ? w as bool? ?? throw new SettingsException("memory.keep_hold_written_files: true or false expected") : d.KeepHoldWrittenFiles;
         bool keepSparse = o.TryGetValue("keep_sparse", out object? sp) ? sp as bool? ?? throw new SettingsException("memory.keep_sparse: true or false expected") : d.KeepSparse;
-        return new MemorySettings(backgroundYield, ladder, ioPriority, cpuPriority, keepHold, keepHoldWritten, keepSparse);
+        bool yieldFast = o.TryGetValue("background_yield_fast", out object? yf) ? yf as bool? ?? throw new SettingsException("memory.background_yield_fast: true or false expected") : d.BackgroundYieldFast;
+        bool inUseMemory = o.TryGetValue("background_in_use_memory_priority", out object? um) ? um as bool? ?? throw new SettingsException("memory.background_in_use_memory_priority: true or false expected") : d.BackgroundInUseMemoryPriority;
+        return new MemorySettings(backgroundYield, ladder, ioPriority, cpuPriority, keepHold, keepHoldWritten, keepSparse, yieldFast, inUseMemory);
     }
 
     private static PlaySettings ParsePlay(object? v)

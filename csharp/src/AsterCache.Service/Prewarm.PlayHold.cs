@@ -123,7 +123,11 @@ public sealed partial class Prewarmer
     private GameSettings? GameOf(string name) => _games.FirstOrDefault(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase));
 
     /// 붙들 목표 (바이트): 기존 예산 (가용 메모리의 PlayTouchAvailableFraction), 붙든 뒤에도 가용 메모리가 하한 위에 남는 양, HoldTargetCapBytes 가운데 가장 작은 것.
-    internal static long HoldTargetBytes(long availMib, long floorMib) => Math.Min(HoldTargetCapBytes, Math.Min((long)(availMib * PlayTouchAvailableFraction) << 20, Math.Max(0, availMib - floorMib) << 20));
+    internal static long HoldTargetBytes(long availMib, long floorMib, double fraction = PlayTouchAvailableFraction) => Math.Min(HoldTargetCapBytes, Math.Min((long)(availMib * fraction) << 20, Math.Max(0, availMib - floorMib) << 20));
+
+    /// 플레이 기록으로 배운 게임 몫이 아직 없을 때 처음 붙들기 목표에 쓰는 가용 메모리의 비율: 4 분의 1 (몫을 알면 PlayTouchAvailableFraction 의 절반). 게임이 얼마를 잡을지 모르는 처음 몇 플레이에서는 덜 붙들어
+    /// 게임이 메모리를 잡으며 하한 내놓기가 되풀이될 일을 줄이려는 것이고, 재서 고른 값이 아닙니다. 다시 붙들기·이어 붙들기의 식은 그대로입니다.
+    public const double HoldUnknownFootprintFraction = 0.25;
 
     /// 다시 붙들 목표 (바이트): 처음 붙들기와 같은 식이되 하한에 점검의 여유 (HoldRefillMarginMib) 를 더해, 다시 붙든 뒤에도 가용 메모리가 하한 + 1 GiB 이상 남게 합니다 (내놓기는 하한 아래에서 일어나므로 1 GiB 안의 흔들림에서는 내놓기와 번갈아 되풀이되지 않고, 그보다 크게 흔들리면 2분 점검마다 한 번까지 되풀이될 수 있음).
     internal static long HoldAgainTargetBytes(long availMib, long floorMib) => HoldTargetBytes(availMib, floorMib + HoldRefillMarginMib);
@@ -1028,7 +1032,7 @@ public sealed partial class Prewarmer
             return null;
         }
 
-        targetBytes = again ? HoldAgainTargetBytes(availMib, floorMib) : HoldTargetBytes(availMib, floorMib + GameStillToTakeMib(game, memory, availMib));
+        targetBytes = again ? HoldAgainTargetBytes(availMib, floorMib) : HoldTargetBytes(availMib, floorMib + GameStillToTakeMib(game, memory, availMib), FootprintOf(game) is null ? HoldUnknownFootprintFraction : PlayTouchAvailableFraction);
         if (targetBytes < HoldMinTargetBytes)
         {
             NoteHoldSkip(game, exe, again ? $"hold again deferred: {HoldAgainNoRoom}" : $"available {availMib} MiB leaves no room above the floor {floorMib} MiB", ref lastSkip);
@@ -1555,7 +1559,7 @@ public sealed partial class Prewarmer
                     cont.Issues++;
                 }
 
-                if (walk.Disk > 0 || walk.Boundaries > 0 || walk.Stopped || walk.CapReached || linked.IsCancellationRequested || memory.HoldPendingBytes == 0)
+                if (walk.Disk > 0 || walk.Boundaries > 0 || walk.Stopped || walk.CapReached || linked.IsCancellationRequested || memory.HoldPendingBytes == 0 || !hold.CanTellDiskReads) // 디스크 읽기를 알아챌 수 없으면 (하드 폴트 수를 읽을 수 없음) 묶음을 잇지 않음
                 {
                     break; // 디스크 읽기나 빠진 조각이 보이면 이 확인은 여기서 끝 (다음 묶음의 범위가 메모리에 있는지는 알 수 없음)
                 }

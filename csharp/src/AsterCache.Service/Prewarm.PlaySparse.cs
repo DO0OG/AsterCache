@@ -87,6 +87,10 @@ public sealed partial class Prewarmer
         public int Reached; // 어느 회차든 읽은 가장 뒤 블록의 번호 + 1
         public int DeferredRounds; // 디스크 읽기가 허용되지 않아 (로딩·대기열·플레이 합계를 다 씀) 디스크로 간 첫 블록에서 끝나도록 읽은 회차
         public long DiskBytes;
+        public string Exe = string.Empty; // 로그에 붙는 실행 파일 이름
+        public string? LastSkip; // 마지막으로 로그에 남긴 건너뜀 사유 (사유가 바뀔 때만 한 줄을 남기고, 읽은 회차가 나오면 비움)
+        public readonly Dictionary<string, int> Skips = []; // 사유별로 건너뛴 (또는 아무것도 읽지 못한) 회차 수: 끝 줄에 집계
+        public int FailedReads; // 열 수 없거나 읽기가 실패한 블록 읽기 수
     }
 
     private enum SparseRoundEnd
@@ -100,7 +104,7 @@ public sealed partial class Prewarmer
     /// 게임이 끝날 때까지 스파스 유지 회차를 돕니다 (붙들기·다시 만지기 곁 스레드). 예외는 이 기능만 끝내고 서비스의 다른 동작과 플레이 기록은 멈추지 않습니다.
     internal void KeepSparseWhilePlaying(GameSettings started, string exe, CancellationToken stop)
     {
-        var keep = new SparseKeep();
+        var keep = new SparseKeep { Exe = exe };
         string ended = string.Empty;
         bool noted = false; // 시작 줄을 남겼는가 (끝 줄을 남길지)
         TimeSpan elapsed = TimeSpan.Zero; // 쉰 시간의 합 (시험이 시계를 흉내 내지 않아도 되게 시계 대신 씀)
@@ -137,6 +141,7 @@ public sealed partial class Prewarmer
 
                     if (_env.RankedRows(game) is null)
                     {
+                        NoteSparseSkip(game, keep, "no ranked block list (no trace of this game)", count: false);
                         break; // 순위 목록이 없음 (트레이스가 없는 게임): 이 유지를 하지 않음
                     }
                 }
@@ -155,19 +160,23 @@ public sealed partial class Prewarmer
         }
         finally
         {
-            if (noted)
+            if (noted || keep.Skips.Count > 0 || ended.Length > 0)
             {
-                _log.Info($"{started.Name}: sparse blocks kept while playing ended after {keep.Rounds} rounds ({exe}): reached {keep.Blocks.Take(keep.Reached).Sum(b => b.Length) >> 20} of {keep.Blocks.Sum(b => b.Length) >> 20} MiB of the list, {keep.DiskBytes >> 20} MiB read from disk (judged by read time), {keep.DeferredRounds} rounds with disk reads held back (loading phase, game drive queue, or the disk reads of the play spent){ended}");
+                string skipped = keep.Skips.Count > 0 ? $", skipped rounds: {string.Join(", ", keep.Skips.Select(s => $"{s.Key} x{s.Value}"))}" : string.Empty;
+                string failed = keep.FailedReads > 0 ? $", {keep.FailedReads} block reads failed" : string.Empty;
+                _log.Info($"{started.Name}: sparse blocks kept while playing ended after {keep.Rounds} rounds ({exe}): reached {keep.Blocks.Take(keep.Reached).Sum(b => b.Length) >> 20} of {keep.Blocks.Sum(b => b.Length) >> 20} MiB of the list, {keep.DiskBytes >> 20} MiB read from disk (judged by read time), {keep.DeferredRounds} rounds with disk reads held back (loading phase, game drive queue, or the disk reads of the play spent){skipped}{failed}{ended}");
             }
         }
     }
 
     // 유지 목록에서 스파스 파일 구간을 중요한 순서의 64 KiB 블록으로 뽑습니다 (목록이 바뀌었을 때만). 안티치트 구성요소 파일은 붙들기와 같이 뺍니다. 실행 이미지는 매핑하지 않는 읽기라 따로 거르지 않습니다.
-    // 스파스 구간이 없으면 false.
-    private bool LoadSparseBlocks(GameSettings game, SparseKeep keep)
+    // 스파스 구간이 없으면 false (그 사유는 why: 사유 이름과 로그에 붙일 수치).
+    private bool LoadSparseBlocks(GameSettings game, SparseKeep keep, out (string Reason, string? Detail) why)
     {
+        why = default;
         if (!RefreshKeepList(game, keep.List))
         {
+            why = ("keep list unavailable", "the planned prewarm list could not be read");
             return false;
         }
 
@@ -191,7 +200,30 @@ public sealed partial class Prewarmer
             keep.Known = new bool[blocks.Count];
         }
 
-        return keep.Blocks.Count > 0;
+        if (keep.Blocks.Count > 0)
+        {
+            return true;
+        }
+
+        // 예열 선택에 스파스 구간이 없는 사유: 예열이 예산 판정으로 스파스 범위를 메모리 예열에서 뺐는가 (유지할 것이 없음), 아니면 예열 목록에 스파스 파일이 원래 없는가
+        string detail = $"{keep.List.Ordered.Count} ranges, {keep.List.Ordered.Sum(o => o.Length) >> 20} MiB in the keep list";
+        why = CoveredPart(game).SkipSparse ? ("sparse files left out of the memory prewarm, nothing to keep", $"the prewarm budget did not fit the whole list; {detail}") : ("no sparse range in the keep list", detail);
+        return false;
+    }
+
+    // 스파스 유지가 회차를 건너뛰거나 끝낸 사유를 사유가 바뀔 때만 한 줄 남기고 (플레이당), count 이면 끝 줄의 사유별 집계에 더합니다 (끝내는 사유는 그 줄 하나로 충분해 세지 않음).
+    private void NoteSparseSkip(GameSettings game, SparseKeep keep, string reason, string? detail = null, bool count = true)
+    {
+        if (count)
+        {
+            keep.Skips[reason] = keep.Skips.GetValueOrDefault(reason) + 1;
+        }
+
+        if (reason != keep.LastSkip)
+        {
+            keep.LastSkip = reason;
+            _log.Info($"{game.Name}: sparse blocks kept while playing skipped ({keep.Exe}: {reason}{(detail is null ? string.Empty : $", {detail}")})");
+        }
     }
 
     /// 한 회차: 스파스 블록을 맨 앞 (가장 중요한 블록) 부터 이어진 블록 묶음 (최대 SparseGroupBlocks 개) 단위로 버퍼드 읽기로 읽습니다. 가용 메모리가 붙들기의 하한 아래면 건너뛰고, 묶음마다 다시 봐서 읽는 도중 아래로 내려가면 그 회차를 끝냅니다 (밀려나는 중인 것을 디스크에서 다시 읽지 않기 위함).
@@ -203,33 +235,53 @@ public sealed partial class Prewarmer
     /// 읽는 동안 _touchSerial 은 잡지 않습니다: 버퍼드 읽기는 이 프로세스의 하드 폴트 수에 잡히지 않으므로 (위 설명) 다른 만지기의 경계 판정에 섞이지 않고, 디스크로 간 읽기를 기다리며 붙들기 점검을 막을 까닭이 없습니다.
     private SparseRoundEnd KeepSparseRound(GameSettings game, SparseKeep keep, CancellationToken stop, ref bool noted)
     {
-        if (!_solar.Enabled || Relocating(game.Name) || _env.OpenBlockReader is not { } open)
+        if (!_solar.Enabled)
         {
+            NoteSparseSkip(game, keep, "standby ladder is off");
             return SparseRoundEnd.Skipped;
         }
 
+        if (Relocating(game.Name))
+        {
+            NoteSparseSkip(game, keep, "layout relocation is running");
+            return SparseRoundEnd.Skipped;
+        }
+
+        if (_env.OpenBlockReader is not { } open)
+        {
+            NoteSparseSkip(game, keep, "no block reader");
+            return SparseRoundEnd.Skipped;
+        }
+
+        bool recorded;
         lock (_gate)
         {
-            if (!(_last.ContainsKey(game.Name) || _warmAtServiceStart.Contains(game.Name) || _solar.HasMark(game.Name))) // 메모리에 둔 목록이 없음
-            {
-                return SparseRoundEnd.Skipped;
-            }
+            recorded = _last.ContainsKey(game.Name) || _warmAtServiceStart.Contains(game.Name) || _solar.HasMark(game.Name); // 메모리에 둔 목록이 있는가
+        }
+
+        if (!recorded)
+        {
+            NoteSparseSkip(game, keep, "no prewarm record of a list in memory");
+            return SparseRoundEnd.Skipped;
         }
 
         long availMib = _env.AvailableRamMib();
         if (availMib < HoldMinFloorMib)
         {
+            NoteSparseSkip(game, keep, "low memory", $"available {availMib} MiB < floor {HoldMinFloorMib} MiB");
             return SparseRoundEnd.Skipped;
         }
 
         bool listed;
+        (string Reason, string? Detail) why;
         using (new LowPriorityReader(_env)) // 목록을 다시 계산하는 일은 낮은 CPU 우선순위로 (읽기 구간과 따로)
         {
-            listed = LoadSparseBlocks(game, keep);
+            listed = LoadSparseBlocks(game, keep, out why);
         }
 
         if (!listed)
         {
+            NoteSparseSkip(game, keep, why.Reason, why.Detail);
             return SparseRoundEnd.Skipped;
         }
 
@@ -242,6 +294,7 @@ public sealed partial class Prewarmer
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "play sparse", default, game.OriginRoot, allowWhileYielded: true, preserveGameKey: game.Name);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
         {
+            NoteSparseSkip(game, keep, "disk read lease refused");
             return SparseRoundEnd.Skipped;
         }
 
@@ -257,6 +310,10 @@ public sealed partial class Prewarmer
         DateTimeOffset startedUtc = DateTimeOffset.UtcNow;
         SparseRoundEnd end = SparseRoundEnd.Completed;
         bool deferred = false;
+        string? heldBack = null; // 디스크 읽기를 허용하지 않은 첫 사유 (읽은 블록이 없는 회차의 사유)
+        string? skipWhy = null; // 읽는 도중 회차가 끝난 사유 (Skipped 일 때)
+        int readBlocks = 0;
+        int failedBlocks = 0;
         long sincePause = 0;
         _ = _env.SetReadIoLow(true);
         try
@@ -266,12 +323,18 @@ public sealed partial class Prewarmer
                 if (_env.AvailableRamMib() < HoldMinFloorMib)
                 {
                     end = SparseRoundEnd.Skipped; // 읽는 도중 하한 아래로 내려감: 붙들기처럼 묶음마다 봄
+                    skipWhy = "memory fell below the floor during the round";
                     break;
                 }
 
-                bool blocked = HoldAgainBlocker(game) is not null; // 묶음마다 다시 봄: 읽는 도중 로딩이 시작될 수 있음
-                long roundCap = blocked ? 0 : Math.Min(KeepDiskReadCapBytes, Math.Max(0, SparsePlayDiskCapBytes - keep.DiskBytes));
+                string? blockedBy = HoldAgainBlocker(game); // 묶음마다 다시 봄: 읽는 도중 로딩이 시작될 수 있음
+                long roundCap = blockedBy is not null ? 0 : Math.Min(KeepDiskReadCapBytes, Math.Max(0, SparsePlayDiskCapBytes - keep.DiskBytes));
                 deferred |= roundCap == 0;
+                if (roundCap == 0)
+                {
+                    heldBack ??= blockedBy ?? "disk reads of the play spent";
+                }
+
                 int to = SparseGroupEnd(blocks, i, count);
                 long groupBytes = 0;
                 if (roundCap == 0)
@@ -286,6 +349,7 @@ public sealed partial class Prewarmer
                         if (linked.IsCancellationRequested)
                         {
                             end = stop.IsCancellationRequested ? SparseRoundEnd.Canceled : SparseRoundEnd.Skipped; // 읽기 중재가 이 회차만 취소함 (게임 끝·다른 게임 시작): 다음 회차에 새 대여로
+                            skipWhy = "disk read lease canceled the round";
                             break;
                         }
 
@@ -293,9 +357,11 @@ public sealed partial class Prewarmer
                         groupBytes += block.Length;
                         if (reader.Read(block.Path, block.Offset, (int)block.Length) is not { } seconds)
                         {
+                            failedBlocks++;
                             continue; // 열 수 없거나 읽기 실패: 이 회차에서 그 파일은 건너뜀
                         }
 
+                        readBlocks++;
                         keep.Reached = Math.Max(keep.Reached, i + 1);
                         if (seconds > SparseDiskReadSeconds(block.Length))
                         {
@@ -316,6 +382,7 @@ public sealed partial class Prewarmer
                         if (linked.IsCancellationRequested)
                         {
                             end = stop.IsCancellationRequested ? SparseRoundEnd.Canceled : SparseRoundEnd.Skipped;
+                            skipWhy = "disk read lease canceled the round";
                             break;
                         }
 
@@ -323,9 +390,11 @@ public sealed partial class Prewarmer
                         groupBytes += block.Length;
                         if (reader.Read(block.Path, block.Offset, (int)block.Length) is not { } seconds)
                         {
+                            failedBlocks++;
                             continue;
                         }
 
+                        readBlocks++;
                         known[i] = true; // 읽었으므로 (디스크에서 읽었어도) 지금은 메모리에 있음
                         keep.Reached = Math.Max(keep.Reached, i + 1);
                         read.Add(block);
@@ -362,10 +431,26 @@ public sealed partial class Prewarmer
             keep.DiskBytes += roundDisk;
         }
 
+        keep.FailedReads += failedBlocks;
+        if (end == SparseRoundEnd.Skipped)
+        {
+            NoteSparseSkip(game, keep, skipWhy ?? "round skipped");
+        }
+
         if (end != SparseRoundEnd.Canceled && end != SparseRoundEnd.Skipped)
         {
             keep.Rounds++;
             keep.DeferredRounds += deferred ? 1 : 0;
+            if (readBlocks > 0)
+            {
+                keep.LastSkip = null; // 읽은 회차가 나오면 같은 사유가 다시 생길 때 한 줄을 또 남김
+            }
+            else
+            {
+                // 목록은 있는데 한 블록도 읽지 못한 회차: 디스크 읽기를 허용하지 않아 메모리에 있다고 확인한 블록이 없었거나, 모든 읽기가 실패했거나, 목록에서 읽을 양이 0 이었음
+                string reason = failedBlocks > 0 ? "nothing read: block reads failed" : count == 0 ? "nothing read: no room above the floor" : $"nothing read: {heldBack ?? "no block to read"}";
+                NoteSparseSkip(game, keep, reason, failedBlocks > 0 ? $"{failedBlocks} reads failed (a file could not be opened or read)" : null);
+            }
         }
 
         return end;

@@ -212,11 +212,12 @@ public sealed class Worker : BackgroundService
         Task reapply = Task.Run(() => ReapplyLoopAsync(stoppingToken), CancellationToken.None);
         Task reload = Task.Run(() => ReloadLoopAsync(stoppingToken), CancellationToken.None);
         Task keep = Task.Run(() => KeepAwakeLoopAsync(stoppingToken), CancellationToken.None);
+        Task yieldFast = _backgroundYield is { } yielder ? Task.Run(() => yielder.RunFastAsync(stoppingToken), CancellationToken.None) : Task.CompletedTask; // 게임 중 새로 뜬 프로세스에 배경 양보를 빨리 적용 (세션이 없으면 깨지 않음)
         Task auto = _auto is null ? Task.CompletedTask : Task.Run(() => _auto.RunAsync(stoppingToken), CancellationToken.None);
         Task riotWatch = _riot is null ? Task.CompletedTask : Task.Run(() => _riot.RunAsync(stoppingToken), CancellationToken.None); // 챔피언 선택 선읽기는 재배치 루프·게임 시작 처리와 따로
         try
         {
-            await Task.WhenAll(watch, consume, handle, reapply, reload, auto, keep, riotWatch);
+            await Task.WhenAll(watch, consume, handle, reapply, reload, auto, keep, riotWatch, yieldFast);
         }
         finally
         {

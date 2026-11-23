@@ -68,6 +68,8 @@ public sealed class KeepHoldTests
         public readonly List<long> Released = [];
         public readonly HashSet<string> Missing = new(StringComparer.OrdinalIgnoreCase);
         public long DiskPerMiss = 4 * Mib;
+        public bool CanTell = true; // 하드 폴트 수를 읽을 수 있는가 (거짓이면 디스크 읽기를 알아챌 수 없음)
+        public bool CanTellDiskReads => CanTell;
         public long PieceBeforeBoundary = Mib; // 경계를 만나기 전에 읽은 조각 (0 이면 경계에서 하나도 붙들지 못함)
         public int Rebases;
         public int Rechecks;
@@ -265,6 +267,7 @@ public sealed class KeepHoldTests
         _now += TimeSpan.FromMinutes(2);
         _touched.Clear();
         _prewarmer = p;
+        p.Footprint = _ => (0, 3); // 배운 게임 몫이 있음 (0 MiB 라 목표 식은 그대로): 몫이 없을 때의 목표는 따로 시험
         return p;
     }
 
@@ -2528,5 +2531,44 @@ public sealed class KeepHoldTests
         p.TouchAtGameStart(Game("a"), "a.exe");
 
         Assert.Contains(_log.Lines, l => l.Contains("cache held while playing (a.exe): 48 MiB of 1973 MiB target"));
+    }
+
+    [Fact]
+    public void WhenDiskReadsCannotBeToldApartACheckContinuesWithOneBatchOnly()
+    {
+        ReadOp[] big = [Op(1, 0, 8), .. Enumerable.Range(0, 10).Select(i => Op(10 + i, 0, 16))];
+        _hold.Missing.Add(F(1));
+        _hold.DiskPerMiss = 40 * Mib; // 첫 패스가 첫 경계에서 상한을 넘어 끝남: 나머지가 모두 남음
+        Prewarmer p = Make(big);
+        var perSecond = new List<int>();
+        RunFor(20, e =>
+        {
+            if (e == 1)
+            {
+                _hold.DiskPerMiss = 0;
+                _hold.CanTell = false; // 하드 폴트 수를 읽을 수 없는 환경
+            }
+
+            perSecond.Add(_hold.Batches.Count);
+        });
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        int[] perCheck = [.. perSecond.Zip(perSecond.Skip(1), (a, b) => b - a).Where(d => d > 0)];
+        Assert.NotEmpty(perCheck);
+        Assert.All(perCheck, d => Assert.Equal(1, d)); // 디스크 읽기를 알아챌 수 없으면 한 확인에 4 MiB 묶음 하나
+    }
+
+    [Fact]
+    public void WithoutALearnedGameFootprintTheFirstHoldTargetUsesAQuarterOfTheAvailableMemory()
+    {
+        _avail = 14000; // 몫을 알면 min(5 GiB, 7000, 11952) = 5120 MiB, 모르면 14000 / 4 = 3500 MiB
+        Prewarmer p = Make(Reads);
+        p.Footprint = null;
+        RunFor(1);
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Contains(_log.Lines, l => l.Contains("cache held while playing (a.exe): 48 MiB of 3500 MiB target"));
     }
 }

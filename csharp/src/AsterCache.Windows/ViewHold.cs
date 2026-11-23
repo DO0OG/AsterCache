@@ -28,6 +28,9 @@ public interface IKeepHold : IDisposable
     /// 지금 붙들고 있는 범위 (붙든 순서 = 중요한 순서, 내놓은 뒤쪽은 뺌): 붙들지 못한 나머지를 다시 만지는 유지 회차와 시작 만지기가 붙든 범위를 빼는 데 씁니다.
     IReadOnlyList<ReadOp> HeldRanges();
 
+    /// 이 프로세스의 디스크 읽기 수 (하드 폴트) 를 읽을 수 있는가 (Rebase 뒤의 값). 읽을 수 없으면 Hold 의 DiskBytes 가 디스크 읽기를 알아채지 못하므로 호출하는 쪽이 묶음을 이어 부르지 않습니다.
+    bool CanTellDiskReads { get; }
+
     /// 뷰를 열어 둔 파일 수와 뷰 수.
     int Files { get; }
 
@@ -286,6 +289,17 @@ public sealed unsafe class ViewHold : IKeepHold
             }
 
             return new HoldBatchResult(tally.Bytes, tally.Disk, tally.Skipped, tally.Errors, tally.Slow, tally.Views, tally.Checks, tally.Faults, Stopwatch.GetElapsedTime(started).TotalSeconds, Math.Max(0, StandbyTouch.ThreadCpuSeconds() - cpuBefore), boundary, tally.Images, tally.Smalls);
+        }
+    }
+
+    public bool CanTellDiskReads
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _faults is not null;
+            }
         }
     }
 

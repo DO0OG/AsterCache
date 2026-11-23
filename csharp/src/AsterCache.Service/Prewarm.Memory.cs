@@ -470,6 +470,7 @@ public sealed partial class Prewarmer
     private void SetMemoryPartialLocked(GameSettings game, StreamStats stats, long windowMib, long hotMib, string? inputs)
     {
         (long WarmedMib, long HotMib) actual = (ActualMib(stats, windowMib), hotMib);
+        _partialWindowMib.Remove(game.Name);
         (_memoryPartial[game.Name], _partial[game.Name]) = (actual, actual);
         _supplementReadProgress[game.Name] = new(stats.Bytes, inputs, game);
         _supplementRetry.Remove(game.Name);

@@ -24,6 +24,11 @@ public sealed partial class Rewarmer
     private readonly Dictionary<string, DateTimeOffset> _gameDue = new(StringComparer.OrdinalIgnoreCase); // 간격을 늘린 게임의 다음 점검 시각 (그전의 점검 틱은 그 게임을 건너뜀, 게임 종료로 당긴 점검은 지움), _nextLock 으로 보호
     private const int MaxCheckIntervalMinutes = 60; // 늘린 점검 간격의 상한 (rewarm_minutes 가 이보다 길면 그 값)
     private readonly Dictionary<string, DateTimeOffset> _missingTriedAt = new(StringComparer.OrdinalIgnoreCase); // 게임별로 사다리의 다시 채움 표시로 재예열을 마지막 시도한 시각 (성공·실패·건너뜀 모두), _checkLock 으로 보호, 메모리에만 둠
+    private readonly Dictionary<string, List<DateTimeOffset>> _partialRewarmAt = new(StringComparer.OrdinalIgnoreCase); // 게임별로 식은 앞부분을 실제로 다시 읽은 시각 (최근 24 시간), _checkLock 으로 보호, 메모리에만 둠
+
+    // 식은 앞부분 다시 읽기의 게임별 하루 상한. 점검 간격 늘리기만으로는 "읽고 따뜻해짐 → 다시 식음" 이 번갈아 나오면 하루 70 회 넘게 읽을 수 있어, 하루에 읽는 총량을 (이 상한 × 예열 예산 합계 (기본 물리 RAM 의 절반)) 이하로 묶습니다.
+    // 게임 시작·서비스 시작 예열은 이 상한과 무관하고, 서비스를 다시 시작하면 횟수가 지워집니다.
+    internal const int MaxPartialRewarmsPerDay = 6;
 
     public Rewarmer(Prewarmer prewarm, PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
     {
@@ -48,6 +53,11 @@ public sealed partial class Rewarmer
             foreach (string gone in _missingTriedAt.Keys.Where(k => !live.Contains(k)).ToList())
             {
                 _missingTriedAt.Remove(gone);
+            }
+
+            foreach (string gone in _partialRewarmAt.Keys.Where(k => !live.Contains(k)).ToList())
+            {
+                _ = _partialRewarmAt.Remove(gone);
             }
         }
 
@@ -308,6 +318,11 @@ public sealed partial class Rewarmer
         failed = false;
         try
         {
+            if (_prewarm.SupplementPending(g.Name))
+            {
+                return _prewarm.ProbeFront(g, ct);
+            }
+
             return _prewarm.ColdSamples(g) is { } samples ? _prewarm.ProbeSamplesForGame(g, samples, "rewarm sample", ct) : _prewarm.ProbeFront(g, ct); // 기록 없이 예열한 게임은 그때 읽은 파일 목록에서 고른 표본
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlanRejectedException or PyValueException or Win32Exception)
@@ -386,10 +401,22 @@ public sealed partial class Rewarmer
                 return false;
             }
 
-            if (!supplemented && probe.Cold && _prewarm.MemoryPartialPending(g.Name))
+            if (!supplemented && probe.Cold && _prewarm.SupplementPending(g.Name))
             {
-                NoteCheck(g, "partial-cold", $"{g.Name}: rewarm check: the part read into memory went cold ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms, available {_env.AvailableRamMib()} MiB), reading it again (cooldown ignored)"); // 메모리가 모자라 앞부분만 읽은 게임: 읽은 구간이 밀려났을 때만 다시 (남은 구간은 표본에 넣지 않음)
-                return Read(_prewarm.RewarmGame(g, ct, roomMib));
+                if (PartialRewarmsExhausted(g.Name, now))
+                {
+                    NoteCheck(g, "partial-cold-capped", $"{g.Name}: rewarm check: the part read into memory went cold, but it was already read again {MaxPartialRewarmsPerDay} times in the last 24 h, waiting"); // 장치 읽기 총량을 묶음: 게임마다 하루 상한
+                    return null;
+                }
+
+                NoteCheck(g, "partial-cold", $"{g.Name}: rewarm check: the part read into memory went cold ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms, available {_env.AvailableRamMib()} MiB), reading it again (cooldown ignored)"); // 부분 예열에서 실제로 읽은 범위만 표본과 재예열에 씁니다.
+                bool? read = Read(_prewarm.RewarmPartialGame(g, ct, roomMib));
+                if (read == true)
+                {
+                    NotePartialRewarm(g.Name, now);
+                }
+
+                return read;
             }
         }
         else if (!probe.Cold)
@@ -410,4 +437,32 @@ public sealed partial class Rewarmer
 
     // 재예열이 실제로 읽었으면 true (메모리·지연·대여 거절 등으로 읽기 전에 건너뛰었으면 null: 간격 늘리기에 세지 않음).
     private static bool? Read(PrewarmResult result) => result.Ran || result.Stats is { Bytes: > 0 } ? true : null;
+
+    // 최근 24 시간에 식은 앞부분을 MaxPartialRewarmsPerDay 번 읽었는가 (오래된 기록은 지움).
+    private bool PartialRewarmsExhausted(string game, DateTimeOffset now)
+    {
+        lock (_checkLock)
+        {
+            if (!_partialRewarmAt.TryGetValue(game, out List<DateTimeOffset>? times))
+            {
+                return false;
+            }
+
+            _ = times.RemoveAll(t => now - t >= TimeSpan.FromHours(24) || t > now);
+            return times.Count >= MaxPartialRewarmsPerDay;
+        }
+    }
+
+    private void NotePartialRewarm(string game, DateTimeOffset now)
+    {
+        lock (_checkLock)
+        {
+            if (!_partialRewarmAt.TryGetValue(game, out List<DateTimeOffset>? times))
+            {
+                _partialRewarmAt[game] = times = [];
+            }
+
+            times.Add(now);
+        }
+    }
 }

@@ -3132,14 +3132,14 @@ public sealed class SolarTests
     public void TheErrorCountOfATouchComesWithItsKindsTheWin32CodesAndTheWorstFile()
     {
         var kinds = new TouchErrors();
-        kinds.Add(TouchErrorKind.Open, 2, @"D:\a\x.bin", 5);
-        kinds.Add(TouchErrorKind.Open, 1, @"D:\a\y.bin", 5);
+        kinds.Add(TouchErrorKind.Open, 2, @"D:\a\x.bin", 5, 2 * Mib);
+        kinds.Add(TouchErrorKind.Open, 1, @"D:\a\y.bin", 5, Mib);
         _result = new TouchResult(100 * Mib, 0.4, 0, 3, TouchEnd.Completed, ErrorKinds: kinds);
         Solar solar = Make();
 
         _ = solar.Order(Game("a"), Reads, CancellationToken.None, startExe: "a.exe");
 
-        Assert.Contains(@"0 MiB read from disk, 3 errors (open 3 ranges in 2 files (win32 5 ×3); most failures in D:\a\x.bin ×2)", _log.Lines.Last());
+        Assert.Contains(@"0 MiB read from disk, 3 errors (open 3 ranges in 2 files (win32 5 ×3 (2 files, 3 ranges, 3.00 MiB requested)); most failures in D:\a\x.bin ×2, D:\a\y.bin ×1)", _log.Lines.Last());
     }
 
     private static TouchResult Stopped(long bytesMib, long diskMib) => new(bytesMib * Mib, 0.5, 4, 0, TouchEnd.NeedsDiskReads, diskMib * Mib, 0, 0, 0, 0, StopReason.HardFaults);

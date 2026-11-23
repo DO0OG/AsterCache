@@ -50,6 +50,11 @@ public sealed partial class Prewarmer
                     if (o.TryGetValue("warmed_mib", out object? warmed) && warmed is long w && o.TryGetValue("hot_mib", out object? hot) && hot is long h && w < h)
                     {
                         _partial[name] = (w, h); // 부분 예열 뒤 서비스만 다시 시작해도 보충이 이어짐
+                        if (o.TryGetValue("window_mib", out object? window) && window is long windowMib && windowMib > w && windowMib <= h)
+                        {
+                            _partialWindowMib[name] = windowMib;
+                        }
+
                         if (o.TryGetValue("partial", out object? memoryFlag) && memoryFlag is true && w > 0 && w <= int.MaxValue)
                         {
                             _memoryPartial[name] = (w, h); // 메모리가 모자라 앞부분만 읽은 상태도 이어짐 (표본 제한과 재읽기)
@@ -152,6 +157,47 @@ public sealed partial class Prewarmer
                     o["warmed_mib"] = warmedMib;
                     o["hot_mib"] = hotMib;
                     o["partial"] = false; // 나머지까지 읽음
+                    o.Remove("window_mib");
+                    changed = true;
+                }
+            }
+
+            if (changed)
+            {
+                FlushStatus();
+            }
+        }
+    }
+
+    private void PatchPartialStatus(string game, long warmedMib, long hotMib, bool memoryPartial)
+    {
+        lock (_run)
+        {
+            bool changed = false;
+            lock (_gate)
+            {
+                if (_status.TryGetValue(game, out object? entry) && entry is JObject o)
+                {
+                    o["warmed_mib"] = warmedMib;
+                    o["hot_mib"] = hotMib;
+                    if (memoryPartial)
+                    {
+                        o["partial"] = true;
+                    }
+                    else
+                    {
+                        o.Remove("partial");
+                    }
+
+                    if (_partialWindowMib.TryGetValue(game, out long windowMib) && windowMib > warmedMib)
+                    {
+                        o["window_mib"] = windowMib;
+                    }
+                    else
+                    {
+                        o.Remove("window_mib");
+                    }
+
                     changed = true;
                 }
             }
@@ -296,6 +342,11 @@ public sealed partial class Prewarmer
 
         lock (_gate)
         {
+            if (!_partial.ContainsKey(game.Name))
+            {
+                _partialWindowMib.Remove(game.Name);
+            }
+
             if (r.Mode is null && _partial.TryGetValue(game.Name, out (long WarmedMib, long HotMib) part))
             {
                 // 부분 예열 상태는 건너뜀·취소·실패 기록이 덮어쓰지 않음 (재시작 뒤에도 보충·표본 제한이 이어지게). 지우는 것은 완전 성공이나 보충 성공뿐.
@@ -309,6 +360,10 @@ public sealed partial class Prewarmer
                 {
                     entry["warmed_mib"] = part.WarmedMib;
                     entry["hot_mib"] = part.HotMib;
+                    if (_partialWindowMib.TryGetValue(game.Name, out long windowMib) && windowMib > part.WarmedMib)
+                    {
+                        entry["window_mib"] = windowMib;
+                    }
                 }
             }
 
@@ -324,7 +379,7 @@ public sealed partial class Prewarmer
     {
         lock (_gate)
         {
-            return _memoryPartial.TryGetValue(g.Name, out (long WarmedMib, long HotMib) mem) && _partial.ContainsKey(g.Name) ? g with { MaxStreamMib = (int)mem.WarmedMib, MaxStreamSet = true } : g;
+            return _partial.TryGetValue(g.Name, out (long WarmedMib, long HotMib) part) ? g with { MaxStreamMib = (int)Math.Min(part.WarmedMib, int.MaxValue), MaxStreamSet = true } : g;
         }
     }
 

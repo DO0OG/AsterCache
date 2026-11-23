@@ -260,5 +260,5 @@ public sealed partial class Prewarmer
 
     /// 재예열 점검의 표본 측정: 부분 예열 상태면 읽은 앞부분의 잘라낸 목록에서만, 아니면 평소대로.
     internal ProbeResult? ProbeFront(GameSettings g, CancellationToken ct = default, string purpose = "rewarm sample") =>
-        MemoryPartialPending(g.Name) ? ProbeReadMsForGame(WarmedPart(g), purpose, ct, partial: true) : ProbeReadMsForGame(g, purpose, ct);
+        SupplementPending(g.Name) ? ProbeReadMsForGame(WarmedPart(g), purpose, ct, partial: true) : ProbeReadMsForGame(g, purpose, ct);
 }

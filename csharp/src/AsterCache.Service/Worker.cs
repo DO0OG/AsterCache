@@ -86,8 +86,10 @@ public sealed class Worker : BackgroundService
             prewarm.WarmRank = auto.WarmRank;
         }
 
+        DiskIdleGate? idleGate = auto is null ? null : DiskIdleGate.Windows(); // 게임 드라이브가 한가한 틈에만 서비스의 물리 읽기를 냄 (자동 모드가 있는 진짜 서비스에서만, 시험은 주입하지 않음)
         if (prewarm is not null && playRecorder is not null)
         {
+            prewarm.IdleGate = idleGate; // 붙들 목록을 한가한 틈에 채움
             prewarm.Footprint = playRecorder.Footprint; // 게임이 실행 뒤 잡는 메모리 (플레이 기록의 최근 중앙값)
             prewarm.LoadPhases = playRecorder.LoadPhases; // 게임 안 로딩 판정: 로딩인 동안 게임 중 디스크 읽기를 미룸
         }
@@ -110,6 +112,8 @@ public sealed class Worker : BackgroundService
             StartStreamCapSeconds = () => _settings.Auto.StartStreamCapSeconds,
             StartStreamEnabled = () => _settings.Auto.StartStreamEnabled,
             StageStreamEnabled = () => _settings.Auto.StageStreamEnabled,
+            IdleGate = idleGate,
+            StreamIdleOnly = () => _settings.Auto.StreamIdleOnly,
             OtherGameQueued = _queuedStarts.AnyOther,
             IsWarm = prewarm is null ? dispatch.IsWarm : prewarm.AlreadyWarm,
             RecentWarmProbeAt = prewarm is null ? dispatch.RecentWarmProbeAt : prewarm.RecentWarmProbeAt,

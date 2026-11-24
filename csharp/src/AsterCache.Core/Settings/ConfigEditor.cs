@@ -224,6 +224,11 @@ public sealed class ConfigEditor(string dataDir, int lockWaitMs = 5000, Action<i
             auto["stage_stream_enabled"] = false;
         }
 
+        if (!a.StreamIdleOnly)
+        {
+            auto["stream_idle_only"] = false;
+        }
+
         if (!a.IoSummaryEnabled)
         {
             auto["io_summary_enabled"] = false;

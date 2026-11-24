@@ -18,8 +18,12 @@ public sealed partial class GameDispatcher
     // Planner: 목록 계획을 시계·표본·상한 취소 범위 안에서 만들게 넘김 (원본은 스트리머가 스트림 안에서 목록을 만들었음)
     private sealed record StreamSpec(IReadOnlyList<ReadOp>? Ops, int? BoundaryPid, bool StartLow, bool MemoryGate, Func<CancellationToken, IReadOnlyList<ReadOp>?>? Planner = null, bool IgnoreBoundary = false, bool YieldToQueuedGame = false);
 
+    // Idle: 게임 드라이브가 한가할 때만 낸 스트림의 판정 집계 (예전 방식이면 null), LeftBytes: 목록에서 읽지 못하고 남긴 양 (목록 크기를 모르면 0)
     private sealed record StreamOutcome(StreamStats Stats, double Seconds, double MbPerSecond, bool BoundaryStopped, bool CapStopped, string? OtherStop, bool Cancelled,
-        double YieldedSeconds, RuntimeLoadBoundary Boundary);
+        double YieldedSeconds, RuntimeLoadBoundary Boundary, IdleTally? Idle = null, long LeftBytes = 0);
+
+    // 종료 로그에 붙는 꼬리: 한가할 때만 낸 스트림이 낸 묶음과 판정에 막힌 시간, 읽지 못하고 남긴 양 (다음 플레이에서 득실을 가리는 근거)
+    private static string IdleText(StreamOutcome o) => o.Idle is { } idle ? $"; idle-only: {idle.Describe()}, {MiB(o.LeftBytes)} MiB left unread" : string.Empty;
 
     private bool IsLaterStart(GameSettings g, ProcessStart start) =>
         _env.StageStreamEnabled() && !LauncherExes.Is(start.ExeName) && (_env.OtherRunning(g, start) || StartedEarlierThan(g, start));
@@ -56,33 +60,33 @@ public sealed partial class GameDispatcher
         double mbPerSecond = o.MbPerSecond;
         if (o.BoundaryStopped)
         {
-            _log.Info($"{g.Name}: start stream stopped at load boundary after {o.Stats.Bytes} bytes, {o.Seconds:F1} s ({mbPerSecond:F1} MB/s); boundary at {o.Boundary.BoundaryMs} ms, peak {o.Boundary.PeakBytes >> 20} MiB per 10 s, last window {o.Boundary.LastWindowBytes >> 20} MiB, observed {o.Boundary.ObservedMs / 1000d:F1} s");
+            _log.Info($"{g.Name}: start stream stopped at load boundary after {o.Stats.Bytes} bytes, {o.Seconds:F1} s ({mbPerSecond:F1} MB/s); boundary at {o.Boundary.BoundaryMs} ms, peak {o.Boundary.PeakBytes >> 20} MiB per 10 s, last window {o.Boundary.LastWindowBytes >> 20} MiB, observed {o.Boundary.ObservedMs / 1000d:F1} s{IdleText(o)}");
             ReportStream(start, "stopped", "load boundary", o.Stats.Bytes, o.Seconds, mbPerSecond);
             return false;
         }
 
         if (o.CapStopped)
         {
-            _log.Info($"{g.Name}: start stream stopped at cap after {o.Stats.Bytes} bytes, {o.Seconds:F1} s ({mbPerSecond:F1} MB/s)");
+            _log.Info($"{g.Name}: start stream stopped at cap after {o.Stats.Bytes} bytes, {o.Seconds:F1} s ({mbPerSecond:F1} MB/s){IdleText(o)}");
             ReportStream(start, "stopped", "cap", o.Stats.Bytes, o.Seconds, mbPerSecond);
             return false;
         }
 
         if (o.OtherStop is not null)
         {
-            _log.Info($"{g.Name}: start stream stopped at {o.OtherStop} after {o.Stats.Bytes} bytes, {o.Seconds:F1} s ({mbPerSecond:F1} MB/s)");
+            _log.Info($"{g.Name}: start stream stopped at {o.OtherStop} after {o.Stats.Bytes} bytes, {o.Seconds:F1} s ({mbPerSecond:F1} MB/s){IdleText(o)}");
             ReportStream(start, "stopped", o.OtherStop, o.Stats.Bytes, o.Seconds, mbPerSecond);
             return false;
         }
 
         if (o.Cancelled)
         {
-            _log.Info($"{g.Name}: start stream cancelled after {o.Stats.Bytes} bytes");
+            _log.Info($"{g.Name}: start stream cancelled after {o.Stats.Bytes} bytes{IdleText(o)}");
             ReportStream(start, "cancelled", "cancelled", o.Stats.Bytes, o.Seconds, mbPerSecond);
             return false;
         }
 
-        _log.Info($"{g.Name}: streamed {o.Stats.Bytes} bytes in {o.Stats.Requests} requests, {o.Stats.Errors} errors, {o.Seconds:F3} s ({mbPerSecond:F1} MB/s)");
+        _log.Info($"{g.Name}: streamed {o.Stats.Bytes} bytes in {o.Stats.Requests} requests, {o.Stats.Errors} errors, {o.Seconds:F3} s ({mbPerSecond:F1} MB/s){IdleText(o)}");
         ReportStream(start, "completed", null, o.Stats.Bytes, o.Seconds, mbPerSecond);
         return true;
     }
@@ -143,7 +147,7 @@ public sealed partial class GameDispatcher
             string? reason = o.BoundaryStopped ? "load boundary" : o.CapStopped ? "cap" : o.OtherStop ?? (o.Cancelled ? "cancelled" : null);
             string skipped = plan.VolatileSkippedBytes > 0 ? $"; skipped volatile {MiB(plan.VolatileSkippedBytes)} MiB" : string.Empty;
             string source = refill is not null ? $"; source load history ({refill.Plays} plays, {refill.Loads} loads, {MiB(plan.Ops.Sum(op => op.Length))} MiB planned)" : plan.HasStage ? "; source trace stage" : "; source start list";
-            _log.Info($"{g.Name}: stage stream {exe} {MiB(o.Stats.Bytes)} MiB in {o.Seconds:F1} s ({o.MbPerSecond:F1} MB/s, {(reason is null ? "completed" : "stopped, " + reason)}), yielded {o.YieldedSeconds:F1} s{skipped}{source}");
+            _log.Info($"{g.Name}: stage stream {exe} {MiB(o.Stats.Bytes)} MiB in {o.Seconds:F1} s ({o.MbPerSecond:F1} MB/s, {(reason is null ? "completed" : "stopped, " + reason)}), yielded {o.YieldedSeconds:F1} s{skipped}{source}{IdleText(o)}");
             ReportStream(start, reason is null ? "completed" : reason == "cancelled" ? "cancelled" : "stopped", reason, o.Stats.Bytes, o.Seconds, o.MbPerSecond);
             return reason is null;
         }
@@ -277,9 +281,13 @@ public sealed partial class GameDispatcher
         int wantLow = spec.StartLow ? 1 : 0;
         bool low = spec.StartLow;
         DateTimeOffset? quietSince = null;
-        IReadOnlyList<ReadOp>? streamOps = spec.Ops is null ? null : StageStreamPlans.Split(spec.Ops); // 한 묶음이 64 MiB 를 크게 넘지 않게 잘라, 우선순위 전환과 메모리 게이트가 묶음마다 듣게 함
+        DiskIdleGate? gate = _env.StreamIdleOnly() ? _env.IdleGate : null; // 있으면 낮은 I/O 우선순위로 끼어드는 대신 게임 드라이브가 한가할 때만 묶음을 냄
+        IdleTally? idle = gate is null ? null : new IdleTally();
+        IDisposable? ownRead = null; // 낸 묶음이 읽는 동안 (다음 발행 확인 전까지) 한가함 판정이 0 이 이어진 시간을 끊지 않게 함
+        long pieceBytes = gate is null ? StageStreamPlans.PieceBytes : StageStreamPlans.IdleBatchBytes;
+        IReadOnlyList<ReadOp>? streamOps = spec.Ops is null ? null : StageStreamPlans.Split(spec.Ops, pieceBytes); // 한 묶음이 64 MiB 를 크게 넘지 않게 잘라, 우선순위 전환과 메모리 게이트가 묶음마다 듣게 함 (한가할 때만 내는 방식은 16 MiB)
         long remainingBytes = streamOps is null ? long.MaxValue : streamOps.Sum(o => o.Length);
-        ReadYield? readYield = spec.StartLow ? new ReadYield(_env.SetReadIoLow, true) : null;
+        ReadYield? readYield = spec.StartLow && gate is null ? new ReadYield(_env.SetReadIoLow, true) : null;
         object sampleLock = new();
         using var issueStop = CancellationTokenSource.CreateLinkedTokenSource(streamStop);
 
@@ -426,11 +434,52 @@ public sealed partial class GameDispatcher
                 return false;
             }
 
+            if (gate is not null && streamOps is not null && Interlocked.Read(ref remainingBytes) > 0 && !WaitIdle(gate)) // 목록을 다 읽은 뒤의 마지막 확인은 기다리지 않음
+            {
+                return false;
+            }
+
             _ = readYield?.Apply(Volatile.Read(ref wantLow) != 0, _now()); // 읽는 스레드에서만 부름
             return true;
         }
 
-        void Noted(string stage, long bytes, bool isData) => lease?.NoteReadIssue(stage, bytes, isData);
+        // 게임 드라이브가 한가해질 때까지 기다립니다 (새 요청은 그동안 0): 시간 상한·경계 판정이 도는 사이에도 취소되면 곧바로 돌아옵니다. 한가하면 true.
+        bool WaitIdle(DiskIdleGate idleGate)
+        {
+            ownRead?.Dispose(); // 앞서 낸 묶음의 읽기가 끝난 시점
+            ownRead = null;
+            while (true)
+            {
+                string? why = idleGate.Check(g.OriginRoot).Why;
+                idle!.NoteVerdict(why, Environment.TickCount64);
+                if (why is null)
+                {
+                    ownRead = idleGate.Own(g.OriginRoot);
+                    return true;
+                }
+
+                if (issueStop.IsCancellationRequested || !(lease?.IsValid ?? !stop.IsCancellationRequested))
+                {
+                    return false;
+                }
+
+                _env.Sleep(TimeSpan.FromMilliseconds(DiskIdleGate.PollMs), issueStop.Token);
+                SampleReadCounters();
+                if (issueStop.IsCancellationRequested)
+                {
+                    return false;
+                }
+            }
+        }
+
+        void Noted(string stage, long bytes, bool isData)
+        {
+            lease?.NoteReadIssue(stage, bytes, isData);
+            if (stage == "stream batch")
+            {
+                idle?.NoteIssued(bytes);
+            }
+        }
 
         lease?.NoteReadIssue("start stream planning", 0, false);
         using var sampleStop = new CancellationTokenSource();
@@ -455,16 +504,19 @@ public sealed partial class GameDispatcher
                         Interlocked.Exchange(ref remainingBytes, Math.Max(0, total - done));
                     }
 
-                    if (spec.Planner is { } planner)
+                    Func<CancellationToken, IReadOnlyList<ReadOp>?>? planner = spec.Planner ?? (gate is not null && spec.Ops is null ? token => _streamer.StartOps(g, token) : null); // 한가할 때만 내는 방식은 시작 목록 전체도 16 MiB 묶음으로 흘림 (목록을 모르는 스트리머는 null: 기존 경로)
+                    if (planner is not null)
                     {
                         IReadOnlyList<ReadOp>? planned = planner(issueStop.Token); // 원본처럼 시계·표본·상한 취소가 돌기 시작한 뒤에 목록을 만듦
-                        streamOps = planned is null ? null : StageStreamPlans.Split(planned);
+                        streamOps = planned is null ? null : StageStreamPlans.Split(planned, pieceBytes);
                         Interlocked.Exchange(ref remainingBytes, streamOps is null ? long.MaxValue : streamOps.Sum(o => o.Length));
                     }
 
                     (r, complete) = streamOps is null
                         ? _streamer.StreamCoordinated(g, issueStop.Token, Progress, CanIssue, Noted)
-                        : _streamer.StreamOpsCoordinated(g, streamOps, issueStop.Token, Progress, CanIssue, Noted);
+                        : gate is null
+                            ? _streamer.StreamOpsCoordinated(g, streamOps, issueStop.Token, Progress, CanIssue, Noted)
+                            : _streamer.StreamOpsCoordinated(g, streamOps, issueStop.Token, Progress, CanIssue, Noted, StageStreamPlans.IdleBatchBytes);
                 }
                 catch (OperationCanceledException) when (Volatile.Read(ref boundaryStopped) != 0 || Volatile.Read(ref capStopped) != 0 || Volatile.Read(ref otherStop) is not null)
                 {
@@ -496,9 +548,17 @@ public sealed partial class GameDispatcher
         finally
         {
             _ = readYield?.Finish(_now()); // 낮음이 남지 않게 보통으로 되돌림 (읽는 스레드)
+            ownRead?.Dispose();
+            idle?.Close(Environment.TickCount64);
         }
 
         double mbPerSecond = elapsedSeconds > 0 ? r.Bytes / (1_000_000d * elapsedSeconds) : 0;
-        return new StreamOutcome(r, elapsedSeconds, mbPerSecond, boundaryA, capA, otherA, cancelled, readYield?.Seconds ?? 0, boundary);
+        long left = streamOps is null ? 0 : Math.Max(0, streamOps.Sum(o => o.Length) - r.Bytes);
+        if (idle is not null)
+        {
+            idle.EndedBy = boundaryA ? "load boundary" : capA ? "time cap" : otherA ?? (cancelled ? "cancelled" : left > 0 ? "list not finished" : "list finished");
+        }
+
+        return new StreamOutcome(r, elapsedSeconds, mbPerSecond, boundaryA, capA, otherA, cancelled, readYield?.Seconds ?? 0, boundary, idle, left);
     }
 }

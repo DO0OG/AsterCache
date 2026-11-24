@@ -11,7 +11,7 @@ namespace AsterCache.Service;
 /// YieldApplied 는 배경 양보가 지금까지 새로 우선순위를 적용한 프로세스 수의 누계 (메모리 안의 값을 읽을 뿐 프로세스를 열지 않음).
 /// Processes 는 읽는 쪽이 다음 조회 때 다시 쓰는 목록이라 받은 쪽이 바로 처리해야 합니다. GpuMib (모든 어댑터의 전용 사용량) 는 표본 루프가 이미 읽는 값 (PlaySystemSample) 을 쓰므로 실제 조회는 비워 둡니다 (같은 성능 카운터를 초마다 두 번 읽지 않게).
 internal sealed record PlaySeriesRaw(long? CpuIdleTicks, long? CpuTotalTicks, IReadOnlyList<ProcessUsage> Processes, int ServicePid, long? AvailableMib, long? RepurposedBytes,
-    uint? PageReads, int? GpuMib, int? GpuGameMib, string Ops, long? YieldApplied = null);
+    uint? PageReads, int? GpuMib, int? GpuGameMib, string Ops, long? YieldApplied = null, long? ServiceReadBytes = null);
 
 internal interface IPlaySeriesProbe : IDisposable
 {
@@ -30,7 +30,7 @@ internal readonly record struct PlaySeriesDisk(ulong ReadCount, long ReadBytes, 
 internal sealed record PlaySeriesPoint(double? CpuSystemPct, double? CpuGamePct, double? CpuServicePct, (string Name, double Pct)? Other1, (string Name, double Pct)? Other2,
     long? AvailableMib, double? ReusedMib, long? PageReads, int? GpuMib, int? GpuGameMib, PlaySeriesDisk? Disk, string? WriteName, long WriteBytes, string Ops,
     long? GameReadBytes = null, long? GameWorkingSetMib = null, LoadState Load = LoadState.Unknown,
-    long? OtherWorkingSetMib = null, string? WsGrowName = null, long WsGrowBytes = 0, long? YieldApplied = null);
+    long? OtherWorkingSetMib = null, string? WsGrowName = null, long WsGrowBytes = 0, long? YieldApplied = null, long? ServiceReadBytes = null);
 
 /// 원시 값 두 개의 차이로 초 단위 값을 만듭니다 (표본 루프 스레드 하나에서만 부름).
 /// 게임 프로세스의 읽기 전송 바이트 증가분과 작업 집합은 같은 프로세스 목록에서 구합니다 (앞의 값이 없던 프로세스는 증가분을 셈하지 않음).
@@ -143,7 +143,7 @@ internal sealed class PlaySeriesBuilder
             raw.GpuMib, raw.GpuGameMib, Disk(previousDisk, currentDisk), hasProcesses ? write1?.Name : null, hasProcesses ? write1?.Value ?? 0 : 0, raw.Ops,
             hasProcesses ? gameRead : null, hasProcesses ? gameWorkingSet >> 20 : null, load,
             hasProcesses ? otherWorkingSet >> 20 : null, hasProcesses ? grow1?.Name : null, hasProcesses ? grow1?.Value ?? 0 : 0,
-            before?.YieldApplied is { } a0 && raw.YieldApplied is { } a1 && a1 >= a0 ? a1 - a0 : null);
+            before?.YieldApplied is { } a0 && raw.YieldApplied is { } a1 && a1 >= a0 ? a1 - a0 : null, raw.ServiceReadBytes);
     }
 
     /// 디스크별 앞뒤 차이의 합 (디스크 번호로 맞추고, 짝이 없거나 누계가 줄어든 디스크는 뺌). 읽기 횟수는 32비트 순환을 고려합니다. 평균 시간은 시간 합 / 횟수 (ms), 대기열은 지금 값의 합.
@@ -198,10 +198,10 @@ internal static class PlaySeriesFormat
     /// disk_* 는 게임이 설치된 물리 디스크의 그 초 값 (읽기·쓰기 횟수, 바이트, 평균 시간 ms, 대기열), write_anyvol_top_* 는 그 초에 쓰기 전송량이 가장 큰 프로세스 이름과 바이트로, 디스크·볼륨을 가리지 않는 값입니다 (네트워크·파이프 쓰기 포함).
     /// game_read_bytes 는 게임 프로세스들의 읽기 전송 바이트 증가분 (캐시 적중 포함, 디스크·볼륨을 가리지 않음), game_ws_mib 는 게임 프로세스들의 작업 집합 (MiB), load_phase 는 그 초의 로딩 판정 (loading, not_loading, 판정이 없으면 빈 칸) 입니다.
     /// other_ws_mib 는 게임·서비스 밖 프로세스의 작업 집합 합 (MiB), ws_grow_top_name·ws_grow_top_mib 는 그 초에 작업 집합이 가장 많이 늘어난 프로세스 이름 (같은 이름은 합침) 과 증가량 (MiB, 늘어난 프로세스가 없으면 빈 칸),
-    /// yield_applied_n 은 배경 양보가 그 초에 새로 우선순위를 적용한 프로세스 수입니다. 모두 프로세스를 열지 않는 조회와 메모리 안의 값으로 구합니다.
+    /// yield_applied_n 은 배경 양보가 그 초에 새로 우선순위를 적용한 프로세스 수, service_read_bytes 는 서비스가 그 초에 게임 드라이브에서 일으킨 물리 읽기 바이트 (유지 회차·붙들기·점검이 센 디스크 읽기, 로딩 판정이 게임의 읽기에서 빼는 값) 입니다. 모두 프로세스를 열지 않는 조회와 메모리 안의 값으로 구합니다.
     public const string Header = "t_s,frames,max_frame_ms,over50_n,over100_n,pauses_n,pause_max_ms,cpu_sys_pct,cpu_game_pct,cpu_service_pct,cpu_other1_name,cpu_other1_pct,cpu_other2_name,cpu_other2_pct,"
         + "avail_mib,standby57_reused_mib,page_reads_n,gpu_mib,gpu_game_mib,disk_read_n,disk_read_bytes,disk_read_mean_ms,disk_write_n,disk_write_bytes,disk_write_mean_ms,disk_queue,"
-        + "write_anyvol_top_name,write_anyvol_top_bytes,service_ops,game_read_bytes,game_ws_mib,load_phase,other_ws_mib,ws_grow_top_name,ws_grow_top_mib,yield_applied_n";
+        + "write_anyvol_top_name,write_anyvol_top_bytes,service_ops,game_read_bytes,game_ws_mib,load_phase,other_ws_mib,ws_grow_top_name,ws_grow_top_mib,yield_applied_n,service_read_bytes";
 
     /// 우선순위별 대기 목록 파일의 머리줄: 여유 + 0 으로 채운 목록 MiB, 우선순위 0~7 별 대기 MiB, 우선순위 0~7 별 재사용 누계 MiB.
     public const string ListsHeader = "t_s,free_zero_mib,standby_mib_p0,standby_mib_p1,standby_mib_p2,standby_mib_p3,standby_mib_p4,standby_mib_p5,standby_mib_p6,standby_mib_p7,"
@@ -238,7 +238,7 @@ internal static class PlaySeriesFormat
             .Append(',').Append(Num(p.GameReadBytes, "F0")).Append(',').Append(Num(p.GameWorkingSetMib, "F0"))
             .Append(',').Append(p.Load switch { LoadState.Loading => "loading", LoadState.NotLoading => "not_loading", _ => string.Empty })
             .Append(',').Append(Num(p.OtherWorkingSetMib, "F0")).Append(',').Append(Name(p.WsGrowName)).Append(',').Append(p.WsGrowName is null ? string.Empty : Num(p.WsGrowBytes / 1_048_576d, "F1"))
-            .Append(',').Append(Num(p.YieldApplied, "F0"));
+            .Append(',').Append(Num(p.YieldApplied, "F0")).Append(',').Append(Num(p.ServiceReadBytes, "F0"));
         return sb.ToString();
     }
 

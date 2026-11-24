@@ -132,7 +132,7 @@ SMR 드라이브(WD20EZAZ) 1대만 측정했고 CMR 은 측정하지 않았습�
 
 **로그의 `stage stream` 과 `quick exit` 줄은 무슨 뜻인가요?**
 게임이 시작될 때의 동작에서 나옵니다([게임 실행 중](AUTO_MODE.ko.md#6-게임-실행-중)).
-- `<게임>: stage stream <exe> N MiB in S s (R MB/s, completed), yielded Y s`: 게임이 첫 실행 파일 뒤에 띄운 프로그램(`<exe>`)에, 그 단계가 처음 읽는 블록을 낮은 I/O 우선순위로 읽어 준 것입니다. `stopped, load boundary`, `stopped, cap`, `stopped, memory reserve`, `stopped, cancelled` 는 일찍 끝난 이유입니다. 실제 플레이에서 도움이 되는지는 재지 않았습니다.
+- `<게임>: stage stream <exe> N MiB in S s (R MB/s, completed), yielded Y s`: 게임이 첫 실행 파일 뒤에 띄운 프로그램(`<exe>`)에, 그 단계가 처음 읽는 블록을 게임 드라이브가 한가한 동안에만 묶음 하나씩 읽어 준 것입니다(`auto.stream_idle_only` 가 `false` 면 낮은 I/O 우선순위로 읽고, 켜져 있으면 줄 끝에 `; idle-only: N batches, M MiB; held back K times (...) for S s, ended: <reason>, L MiB left unread` 가 붙습니다). `stopped, load boundary`, `stopped, cap`, `stopped, memory reserve`, `stopped, cancelled` 는 일찍 끝난 이유입니다. 실제 플레이에서 도움이 되는지는 재지 않았습니다.
 - `<게임>: stage stream skipped (<exe>: <이유>)`: `cooldown N s`(같은 프로그램이 60초 안에 다시 뜸), `no blocks in the start list`, `no load evidence, ...`(새 프로세스가 로딩이라고 볼 만큼 읽지 않음), `another game started`, `disk yielded` 입니다.
 - `<게임>: exited quickly (Ns)`: `auto.quick_exit_seconds` 보다 짧은 세션입니다. 서비스가 다음 점검에서 종료를 알아채므로 `N` 은 실제 실행보다 조금 깁니다.
 - `<게임>: backing off for this run (quick exit N in a row, ...)`, `<게임>: start stream skipped (quick exit guard: backing off)`, `<게임>: auto trace skipped (quick exit guard: backing off)`: 그 짧은 종료 연속에서 서비스가 한 번 부가 작업을 건너뛰는 실행입니다.

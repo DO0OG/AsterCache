@@ -40,6 +40,12 @@ public sealed partial class PrefetchStreamer
         return Batches([.. ops], stop, progress, canIssue, noteIssue); // 지금 스트림과 같은 버퍼드 묶음 경로 (스파스 파일에 섹션을 만들지 않음)
     }
 
+    public (StreamStats Stats, bool Complete) StreamOpsCoordinated(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue, long batchBytes)
+    {
+        noteIssue?.Invoke("stream schedule", 0, false);
+        return Batches([.. ops], stop, progress, canIssue, noteIssue, null, batchBytes); // 한가할 때만 내는 스트림: 묶음 (판정 단위) 을 작게
+    }
+
     // 추적에서 가변으로 표시된 파일 (이름 규칙 포함): 게임이 쓰거나 줄이는 파일이라 실행 중에 읽지 않음.
     private static HashSet<string> VolatilePaths(GameSettings game, IReadOnlyList<ReadOp> ops)
     {

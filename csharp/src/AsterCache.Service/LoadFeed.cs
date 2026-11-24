@@ -7,11 +7,15 @@ internal sealed class LoadFeed(string game, string root, LoadPhaseBoard board)
 {
     private long _serviceRead = board.ServiceReads.Total(root); // 세션이 시작할 때의 누계가 기준
 
+    /// 가장 최근 초에 서비스가 이 드라이브에서 직접 읽은 바이트 (초 단위 기록의 service_read_bytes).
+    public long LastServiceBytes { get; private set; }
+
     public LoadState Next(IReadOnlyList<PlayDiskCounters> previous, IReadOnlyList<PlayDiskCounters> current, double seconds, PlaySeriesRaw? raw, bool exeStarted)
     {
         long service = board.ServiceReads.Total(root);
         long serviceDelta = Math.Max(0, service - _serviceRead);
         _serviceRead = service;
+        LastServiceBytes = serviceDelta;
         long drive = PlaySeriesBuilder.Disk(previous, current)?.ReadBytes ?? 0;
         LoadState state = board.Add(game, new LoadingSample(seconds, Math.Max(0, drive - serviceDelta), raw?.GpuGameMib, exeStarted)).State;
         board.NoteQueue(game, current.Sum(c => (long)c.QueueDepth)); // 이미 읽은 디스크 성능 값의 대기열: 다시 붙들기가 디스크를 읽어도 되는지 봄

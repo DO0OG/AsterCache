@@ -384,6 +384,22 @@ public sealed class ViewHoldTests : IDisposable
         Assert.Equal(8L * Mib, hold.HeldBytes); // 읽은 것은 붙듦 (디스크에서 읽은 것도 이제 메모리에 있음)
     }
 
+    [Fact]
+    public void AFillingBatchReadsToTheEndAndCountsTheDiskReadsWithoutTreatingThemAsABoundary()
+    {
+        string a = Make("a.bin", 4);
+        string b = Make("b.bin", 4);
+        using var hold = new ViewHold(Counter(100), Counter(1000), minFileBytes: 0);
+        hold.Rebase();
+
+        HoldBatchResult r = hold.Hold([new ReadOp(a, 0, 4L * Mib), new ReadOp(b, 0, 4L * Mib)], CancellationToken.None, fill: true);
+
+        Assert.Equal(-1, r.BoundaryIndex); // 디스크 읽기가 보여도 묶음 끝까지 읽음
+        Assert.True(r.DiskBytes > 0); // 읽은 양은 그대로 돌려줌
+        Assert.Equal(8L * Mib, r.Bytes);
+        Assert.Equal(8L * Mib, hold.HeldBytes);
+    }
+
     [Theory]
     [InlineData(true, true)]
     [InlineData(false, true)]

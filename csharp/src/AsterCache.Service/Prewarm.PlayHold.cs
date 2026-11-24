@@ -66,20 +66,28 @@ public sealed partial class Prewarmer
     /// 붙들 목표가 이보다 작으면 붙들지 않습니다.
     public const long HoldMinTargetBytes = 64L << 20;
 
-    /// 다시 붙들기 (하한 때문에 내놓은 것을 되붙듦) 가 한 플레이에서 디스크로 읽는 양의 합의 상한: 1 GiB. 다 쓰면 그 플레이에서는 캐시에 남아 있는 부분만 붙들고 디스크 읽기가 필요한 배치에서 멈춥니다.
+    /// 다시 붙들기 (하한 때문에 내놓은 것을 되붙듦) 가 한 플레이에서 디스크로 읽는 양의 합의 상한: 1 GiB (이어 붙들기는 따로 HoldFillDiskCapBytes). 다 쓰면 그 플레이에서는 캐시에 남아 있는 부분만 붙들고 디스크 읽기가 필요한 배치에서 멈춥니다.
     /// 근거 (설계 3.2): 다시 붙들기의 디스크 읽기는 회차 상한 (KeepDiskReadCapBytes) 만 있으면 경기 내내 되풀이될 수 있어 플레이 합계에도 상한을 둡니다. 1 GiB 는 처음 붙들기 목표의 5분의 1 이고 실측으로 고른 값이 아닙니다.
     public const long HoldAgainDiskCapBytes = 1L << 30;
 
     /// 이어 붙들기 (처음 붙들기가 멈춰 남은 범위를 붙듦) 가 조건을 확인하는 간격: HoldWatchFast 와 같은 1 초.
     public static readonly TimeSpan HoldContinueEvery = HoldWatchFast;
 
-    /// 이어 붙들기가 한 번에 새로 요청하는 양의 상한: 4 MiB. 근거: 2026-11-23 Call of Duty 플레이에서 첫 붙들기 뒤 대기열이 0 이고 로딩이 아닌 구간이 343 초였고, 1 초마다 4 MiB 씩이면 그 구간의 상한이 343 × 4 = 1,372 MiB 라
-    /// 플레이 합계 읽기 상한 (HoldAgainDiskCapBytes 1 GiB) 과 같은 자릿수입니다. 요청을 이만큼으로 작게 끊어야 새 로딩 신호가 오면 다음 발행을 바로 멈출 수 있습니다. 실측으로 고른 값이 아닙니다.
+    /// 이어 붙들기가 한 번에 새로 요청하는 양의 상한: 4 MiB (게임 드라이브의 한가함을 재지 못하는 환경의 예전 방식, 그리고 한가한 틈에 채울 때 프레임이 나오는 동안의 묶음 크기). 근거: 2026-11-23 Call of Duty 플레이에서 첫 붙들기 뒤 대기열이 0 이고 로딩이 아닌 구간이 343 초였고, 1 초마다 4 MiB 씩이면 그 구간의 상한이 343 × 4 = 1,372 MiB 입니다.
+    /// 요청을 이만큼으로 작게 끊어야 새 로딩 신호가 오면 다음 발행을 바로 멈출 수 있습니다. 실측으로 고른 값이 아닙니다.
     public const long HoldContinueBytes = 4L << 20;
 
     /// 이어 붙들기가 한 번의 확인 (1 초) 에서 이어서 요청하는 묶음 수의 상한: 16 묶음 (64 MiB). 묶음마다 하한·로딩·대기열 조건을 다시 보고, 디스크 읽기나 빠진 조각이 보이거나 하드 폴트 수를 읽지 못한 (계측하지 못한) 묶음이면 그 확인을 거기서 끝내므로 확인당 디스크에서 읽는 양의 최악은 묶음 하나 (HoldContinueBytes) 로 그대로입니다.
     /// 메모리에 있는 범위가 초당 4 MiB 로만 붙으면 5 GiB 에 조건이 맞는 시간으로 1,280 초가 필요하고, 64 MiB 면 약 80 초입니다 (게임이 메모리를 잡는 속도에는 못 미칠 수 있음). 실측으로 고른 값이 아닙니다.
     public const int HoldContinueBatchesPerCheck = 16;
+
+    /// 이어 붙들기가 게임 드라이브가 한가한 틈 (DiskIdleGate) 에 디스크에서 읽어 채우는 양의 플레이 합계 상한: 붙들 목표량의 상한 (HoldTargetCapBytes, 5 GiB).
+    /// 근거: 한 플레이에 붙들 목록을 한 번 채우는 양이고, 2026-11-24 플레이에서 그 플레이에 D: 가 읽은 양 (6,955 MiB) 보다 작습니다. 이어 붙들기는 처리한 범위를 후보에서 빼므로 같은 범위를 한 플레이에 두 번 읽지 않습니다.
+    /// 하한 때문에 내놓은 것을 되붙드는 다시 붙들기 (같은 범위를 되풀이해 읽을 수 있음) 는 HoldAgainDiskCapBytes 1 GiB 로 따로 묶습니다. 한가하지 않은 동안에는 채우지 않으므로 이 값은 하드디스크 수명을 위한 양의 상한이고 게임의 읽기와는 무관합니다.
+    public const long HoldFillDiskCapBytes = HoldTargetCapBytes;
+
+    /// 한가한 틈에 채울 때 한 번의 확인이 이어서 발행하는 시간의 상한: 1 초. 메모리 하한 내놓기·게임 실행 감시·점검을 하는 감시 루프가 채우는 동안 막히지 않게, 이 시간이 지나면 묶음 하나를 끝내고 루프로 돌아갑니다.
+    public static readonly TimeSpan HoldFillSlice = HoldWatchFast;
 
     private readonly ConcurrentDictionary<string, (long Held, long WsBase)> _holdHeld = new(StringComparer.OrdinalIgnoreCase); // 게임별로 지금 붙든 바이트와 붙들기 전 서비스 작업 집합
     private readonly object _touchSerial = new(); // 이 프로세스의 하드 폴트 누계로 경계를 판정하는 일 (시작 만지기, 붙들기, 점검, 다시 만지기) 이 겹치지 않게
@@ -118,6 +126,50 @@ public sealed partial class Prewarmer
         public int Issues;
         public string? State; // 붙드는 중·다 씀·멈춤 가운데 마지막으로 남긴 상태
         public string? LastDeferred; // 마지막으로 남긴 미룸 사유 (같은 사유는 다시 남기지 않음)
+        public HoldFill? Fill; // 한가한 틈에 채우는 판정 (게이트가 없으면 null: 예전 동작)
+        public bool MoreToFill; // 마지막 확인이 시간 상한에서 끝났고 아직 한가함: 감시 루프가 쉬지 않고 이어 부름
+    }
+
+    // 이어 붙들기가 한가한 틈에 채울 때의 판정·묶음 크기·집계.
+    private sealed class HoldFill(DiskIdleGate gate, string key, Func<long> batchBytes)
+    {
+        public IdleTally Tally { get; } = new();
+
+        public long BatchBytes() => batchBytes();
+
+        /// 한가하면 null, 아니면 막힌 사유 (판정 집계에 남김).
+        public string? Check()
+        {
+            string? why = gate.Check(key).Why;
+            Tally.NoteVerdict(why, Environment.TickCount64);
+            return why;
+        }
+
+        public IDisposable Own() => gate.Own(key);
+    }
+
+    internal DiskIdleGate? IdleGate { get; set; }
+
+    // 채우는 묶음의 크기: 프레임이 나오는 동안 (로딩이 아님) 은 게임의 읽기가 기다릴 최악의 시간을 줄이려고 4 MiB, 로딩 중이거나 판정을 모르면 16 MiB.
+    private long FillBatchBytes(GameSettings game) => LoadPhases?.StateOf(game.Name) == LoadState.NotLoading ? HoldContinueBytes : HoldBatchBytes;
+
+    private HoldFill? FillOf(GameSettings game) => IdleGate is { } gate ? new HoldFill(gate, game.OriginRoot, () => FillBatchBytes(game)) : null;
+
+    // 이어 붙들기를 지금 하지 않을 사유 (한가한 틈에 채울 때): 신호로 잡힌 로딩 (실행 파일 시작으로 잡힌 로딩은 아님) 은 보류, 그 밖에는 게임 드라이브가 한가한가만 봅니다.
+    private string? FillBlocker(GameSettings game, HoldFill fill)
+    {
+        if (LoadPhases is { } board && board.StateOf(game.Name) == LoadState.Loading && board.Defers(game.Name, "hold continue"))
+        {
+            fill.Tally.NoteVerdict(DiskIdleGate.LoadingPhase, Environment.TickCount64);
+            return "loading phase";
+        }
+
+        return fill.Check() switch
+        {
+            null => null,
+            DiskIdleGate.QueueBusy => "game drive queue is not 0",
+            _ => "disk activity could not be measured",
+        };
     }
 
     private GameSettings? GameOf(string name) => _games.FirstOrDefault(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase));
@@ -316,6 +368,7 @@ public sealed partial class Prewarmer
         private long _diskBytes;
         private long _listBytes;
         private long _holdAgainDiskBytes;
+        private long _holdFillDiskBytes;
         private bool _finished;
         private bool _holdReleased;
         private bool _holdDiskUnmeasured;
@@ -581,6 +634,26 @@ public sealed partial class Prewarmer
             lock (_lock)
             {
                 _holdAgainDiskBytes += bytes;
+            }
+        }
+
+        /// 이어 붙들기가 이 플레이에서 디스크에서 읽은 양의 합 (다시 붙들기와 따로 셈).
+        public long HoldFillDiskBytes
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    return _holdFillDiskBytes;
+                }
+            }
+        }
+
+        public void AddHoldFillDisk(long bytes)
+        {
+            lock (_lock)
+            {
+                _holdFillDiskBytes += bytes;
             }
         }
 
@@ -1217,7 +1290,8 @@ public sealed partial class Prewarmer
 
     // 목록을 HoldBatchBytes 씩 붙들며 걷습니다 (처음 붙들기와 다시 붙들기 공통): 직렬화 잠금은 HoldLockBatches 배치마다 (또는 속도 상한으로 쉬기 전에) 놓고, 가용 메모리가 하한에 닿으면 멈추고,
     // 디스크에서 읽은 양이 diskCap 을 넘으면 끝냅니다. 배치마다 결과를 each 에 넘깁니다.
-    private WalkResult WalkHold(IKeepHold hold, IReadOnlyList<ReadOp> reads, long diskCap, long floor, CancellationToken ct, Action<HoldBatchResult>? each = null)
+    // fill: 게임 드라이브가 한가함을 확인한 이어 붙들기의 묶음이라 디스크 읽기를 경계로 보지 않고 묶음 끝까지 읽음.
+    private WalkResult WalkHold(IKeepHold hold, IReadOnlyList<ReadOp> reads, long diskCap, long floor, CancellationToken ct, Action<HoldBatchResult>? each = null, bool fill = false)
     {
         bool locked = false; // _touchSerial 을 쥐고 있는가: HoldLockBatches 배치마다, 그리고 속도 제한으로 쉬기 전에 놓아 다른 만지기가 끼어들 수 있게 함
         int inGroup = 0;
@@ -1232,7 +1306,7 @@ public sealed partial class Prewarmer
                     hold.Rebase(); // 잠금을 놓은 사이 다른 스레드가 낸 읽기가 이번 판정에 섞이지 않게
                 }
 
-                HoldBatchResult r = hold.Hold(batch, ct);
+                HoldBatchResult r = fill ? hold.Hold(batch, ct, true) : hold.Hold(batch, ct);
                 each?.Invoke(r);
                 double rest = r.BoundaryIndex < 0 ? r.Bytes / (double)PlayTouchBytesPerSecond - r.Seconds : 0; // 붙드는 속도 상한: 게임이 로딩하는 동안 페이지를 몰아서 옮기지 않게
                 if (++inGroup >= HoldLockBatches || rest > 0)
@@ -1365,8 +1439,12 @@ public sealed partial class Prewarmer
 
             while (true)
             {
-                TimeSpan interval = availMib < floorMib + HoldNearFloorMib || elapsed < HoldEarlyWindow || memory.HoldPendingBytes > 0 ? HoldWatchFast : HoldWatchEvery;
-                _env.Sleep(interval, stop);
+                TimeSpan interval = cont.MoreToFill ? TimeSpan.Zero : availMib < floorMib + HoldNearFloorMib || elapsed < HoldEarlyWindow || memory.HoldPendingBytes > 0 ? HoldWatchFast : HoldWatchEvery; // 한가한 틈에 채우는 중이면 쉬지 않고 바로 이어 (아래 감시를 한 번 지나서)
+                if (interval > TimeSpan.Zero)
+                {
+                    _env.Sleep(interval, stop);
+                }
+
                 elapsed += interval;
                 GameSettings? game = null;
                 if (stop.IsCancellationRequested || ((elapsed - lastGameCheck >= HoldGameCheckEvery || interval >= HoldGameCheckEvery) && ((game = GameOf(name)) is null || !_env.GameRunning(game))))
@@ -1411,11 +1489,21 @@ public sealed partial class Prewarmer
                 if (memory.HoldPendingBytes > 0 && elapsed - lastContinue >= HoldContinueEvery && (game ?? GameOf(name)) is { } continuing)
                 {
                     lastContinue = elapsed;
+                    long fillStart = System.Diagnostics.Stopwatch.GetTimestamp();
                     if (HoldAgain(hold, continuing, exe, floorMib, ref lastContinueSkip, cont) > 0)
                     {
                         SetHeld(name, hold.HeldBytes);
                         peak = Math.Max(peak, hold.HeldBytes);
                     }
+
+                    if (cont.Fill is not null)
+                    {
+                        elapsed += TimeSpan.FromMilliseconds((long)System.Diagnostics.Stopwatch.GetElapsedTime(fillStart).TotalMilliseconds); // 채우는 데 쓴 실제 시간도 감시 주기 (게임 실행·점검) 에 셈
+                    }
+                }
+                else
+                {
+                    cont.MoreToFill = false;
                 }
 
                 // 2 분 점검은 직렬화 잠금을 기다리지 않습니다: 다른 경로 (시작 만지기, 유지 회차) 가 쥐고 있으면 다음 초로 미뤄 같은 스레드의 하한 내놓기가 멈추지 않게 합니다.
@@ -1468,8 +1556,14 @@ public sealed partial class Prewarmer
         finally
         {
             long held = hold.HeldBytes;
+            if (cont.Fill is { } filled)
+            {
+                filled.Tally.Close(Environment.TickCount64);
+                filled.Tally.EndedBy ??= memory.HoldPendingBytes == 0 ? "list finished" : "game ended";
+            }
+
             hold.Dispose(); // 덜 중요한 것부터 내놓고 뷰를 닫음
-            _log.Info($"{name}: cache hold ended after {checks} checks ({exe}): {held >> 20} MiB released at the end, peak {peak >> 20} MiB of {targetBytes >> 20} MiB target, {releasedTotal >> 20} MiB released for memory, {trimmedTotal >> 20} MiB reduced by the memory manager, {refilledTotal >> 20} MiB read again from disk, {droppedTotal >> 20} MiB taken off the hold{(heldAgainTotal > 0 ? $", {heldAgainTotal >> 20} MiB held again after the memory floor released them" : string.Empty)}{(cont.Issues > 0 ? $", {cont.Held >> 20} MiB held by continuing after the first pass ({cont.Issues} requests, {cont.Disk >> 20} MiB read from disk, {memory.HoldPendingBytes >> 20} MiB left)" : string.Empty)}{(writtenReleasedFiles > 0 ? $", {writtenReleasedFiles} game-written files ({writtenReleasedBytes >> 20} MiB) released after the game changed them" : string.Empty)}{ended}");
+            _log.Info($"{name}: cache hold ended after {checks} checks ({exe}): {held >> 20} MiB released at the end, peak {peak >> 20} MiB of {targetBytes >> 20} MiB target, {releasedTotal >> 20} MiB released for memory, {trimmedTotal >> 20} MiB reduced by the memory manager, {refilledTotal >> 20} MiB read again from disk, {droppedTotal >> 20} MiB taken off the hold{(heldAgainTotal > 0 ? $", {heldAgainTotal >> 20} MiB held again after the memory floor released them" : string.Empty)}{(cont.Issues > 0 ? $", {cont.Held >> 20} MiB held by continuing after the first pass ({cont.Issues} requests, {cont.Disk >> 20} MiB read from disk, {memory.HoldPendingBytes >> 20} MiB left)" : string.Empty)}{(cont.Fill is { } fill ? $", filling while the drive was idle: {fill.Tally.Describe()}" : string.Empty)}{(writtenReleasedFiles > 0 ? $", {writtenReleasedFiles} game-written files ({writtenReleasedBytes >> 20} MiB) released after the game changed them" : string.Empty)}{ended}");
         }
 
         return off ? HoldOutcome.No : releasedForMemory ? HoldOutcome.Retry : HoldOutcome.Done; // 설정이 꺼졌으면 남은 시간은 지금의 다시 만지기가 이어받음, 메모리 때문에 모두 사라졌으면 호출한 쪽의 2 분 재시도가 다시 붙듦
@@ -1487,7 +1581,9 @@ public sealed partial class Prewarmer
 
     // 하한 때문에 내놓았던 부분을 중요한 순서로 다시 붙듭니다 (cont 가 null, 2 분 점검 뒤). 같은 조건과 같은 길로 처음 붙들기가 멈춰 남은 범위도 이어 붙듭니다 (cont 가 있음: 1 초마다 불러 4 MiB 한 묶음씩 최대 HoldContinueBatchesPerCheck 묶음).
     // 조건 (묶음마다 모두 맞아야 함): 로딩 판정이 로딩이 아님 (실행 파일 시작·신호 모두), 게임 드라이브의 디스크 대기열 0 (모르면 미룸), 다시 붙든 뒤에도 가용이 하한 + HoldRefillMarginMib 이상 남는 목표 (HoldAgainTargetBytes) 가 최소 (HoldMinTargetBytes) 이상,
-    // 회차 읽기 상한 (KeepDiskReadCapBytes) 과 이 플레이의 합계 상한 (HoldAgainDiskCapBytes: 다시 붙들기와 이어 붙들기가 함께 씀) 안. 내놓기는 이 조건과 무관하게 가용 < 하한에서 바로 일어납니다.
+    // 회차 읽기 상한 (KeepDiskReadCapBytes) 과 이 플레이의 합계 상한 안 (다시 붙들기는 HoldAgainDiskCapBytes, 이어 붙들기는 HoldFillDiskCapBytes 로 따로 셈). 내놓기는 이 조건과 무관하게 가용 < 하한에서 바로 일어납니다.
+    // 한가한 틈에 채우기 (이어 붙들기에서 게이트 IdleGate 가 있을 때): 로딩 (신호로 잡힌 것) 이 아니고 DiskIdleGate 가 한가하다고 하는 동안, 묶음 (프레임이 나오는 동안 4 MiB, 아니면 16 MiB) 하나씩 디스크에서 읽어 채우며 묶음마다 다시 판정합니다.
+    // 한가하지 않으면 새 요청을 내지 않고, 한 번의 확인은 HoldFillSlice 를 넘기면 끝나 (감시 루프가 하한 내놓기·점검을 보고 바로 이어 부름) 디스크 읽기를 경계로 보지 않습니다 (읽는 양은 플레이 합계 상한이 막음).
     // 이어 붙들기는 한 묶음에서 디스크 읽기나 빠진 조각이 보이거나 하드 폴트 수를 읽지 못한 (계측하지 못한) 묶음이면 그 확인을 거기서 끝내므로 (다음 묶음의 범위가 메모리에 있는지는 알 수 없음) 한 번의 확인에서 디스크에서 읽는 양은 묶음 하나 (4 MiB) 안입니다.
     // 메모리에 없던 범위는 다시 읽어 보지 않습니다 (다시 붙들기는 GiveUp, 이어 붙들기는 후보에서 뺌). 이어 붙들기 안에서는 같은 범위를 두 번 요청하지 않게 붙든 범위도 후보에서 뺍니다.
     // 직렬화 잠금은 기다리지 않고 못 잡으면 이번 확인을 건너뜁니다 (감시 스레드가 하한 내놓기를 놓치지 않게): 이어 붙들기는 0, 다시 붙들기는 null (호출한 쪽이 다음 초에 다시 부름). 다시 붙든 바이트를 돌려줍니다.
@@ -1499,11 +1595,17 @@ public sealed partial class Prewarmer
             return 0; // 이 플레이에서 디스크 읽기를 가려내지 못했으면 다시 붙들기·이어 붙들기를 하지 않음
         }
 
-        if (cont is not null && HoldAgainDiskCapBytes - memory.HoldAgainDiskBytes < HoldContinueBytes)
+        if (cont is not null && HoldFillDiskCapBytes - memory.HoldFillDiskBytes < HoldContinueBytes)
         {
             memory.SetHoldPending([]); // 플레이 합계 상한을 다 씀: 이 플레이에서는 다시 풀리지 않으므로 후보를 비우고 한 번만 남김 (감시도 1 초 간격으로 돌 까닭이 없음)
             NoteContinue(game, exe, cont, "stopped: the disk read cap of the play is used", hold, memory);
             return 0;
+        }
+
+        HoldFill? fill = cont is null ? null : cont.Fill ??= FillOf(game);
+        if (cont is not null)
+        {
+            cont.MoreToFill = false;
         }
 
         string what = cont is null ? "hold again" : "hold continue";
@@ -1521,14 +1623,20 @@ public sealed partial class Prewarmer
         IDisposable? activity = null;
         try
         {
-            for (int batch = 0; batch < (cont is null ? 1 : HoldContinueBatchesPerCheck); batch++)
+            for (int batch = 0; batch < (cont is null ? 1 : fill is null ? HoldContinueBatchesPerCheck : int.MaxValue); batch++)
             {
+                if (fill is not null && batch > 0 && System.Diagnostics.Stopwatch.GetElapsedTime(started) >= HoldFillSlice)
+                {
+                    cont!.MoreToFill = true; // 한가한 채로 시간 상한에 닿음: 감시 루프가 하한 내놓기·점검을 보고 바로 이어 부름
+                    break;
+                }
+
                 availMib = _env.AvailableRamMib();
                 target = HoldAgainTargetBytes(availMib, floorMib);
-                string? why = HoldAgainBlocker(game)
+                string? why = (fill is null ? HoldAgainBlocker(game) : FillBlocker(game, fill))
                     ?? (target < HoldMinTargetBytes ? HoldAgainNoRoom
                         : cont is not null && hold.HeldBytes >= HoldTargetCapBytes ? "the held amount is at the target cap"
-                        : cont is not null && HoldAgainDiskCapBytes - memory.HoldAgainDiskBytes < HoldContinueBytes ? "the disk read cap of the play is used"
+                        : cont is not null && HoldFillDiskCapBytes - memory.HoldFillDiskBytes < HoldContinueBytes ? "the disk read cap of the play is used"
                         : null);
                 if (why is not null)
                 {
@@ -1567,7 +1675,7 @@ public sealed partial class Prewarmer
                     activity = ServiceActivity.Begin(ServiceOp.Hold);
                 }
 
-                IReadOnlyList<ReadOp> candidates = cont is null ? hold.ReleasedRanges(target) : PrefetchStreamer.Head(memory.HoldPending(), Math.Min(Math.Min(target, HoldContinueBytes), HoldTargetCapBytes - hold.HeldBytes));
+                IReadOnlyList<ReadOp> candidates = cont is null ? hold.ReleasedRanges(target) : PrefetchStreamer.Head(memory.HoldPending(), Math.Min(Math.Min(target, fill?.BatchBytes() ?? HoldContinueBytes), HoldTargetCapBytes - hold.HeldBytes));
                 if (candidates.Count == 0)
                 {
                     break;
@@ -1583,7 +1691,9 @@ public sealed partial class Prewarmer
                 WalkResult walk;
                 try
                 {
-                    walk = WalkHold(hold, candidates, HoldAgainRoundCap(memory), floorMib, linked!.Token);
+                    using IDisposable? own = fill?.Own(); // 이 읽기가 대기열을 채우는 동안은 한가함 판정이 0 이 이어진 시간을 끊지 않음
+                    long roundCap = cont is null ? HoldAgainRoundCap(memory) : fill is null ? Math.Min(KeepDiskReadCapBytes, Math.Max(0, HoldFillDiskCapBytes - memory.HoldFillDiskBytes)) : Math.Max(0, HoldFillDiskCapBytes - memory.HoldFillDiskBytes);
+                    walk = WalkHold(hold, candidates, roundCap, floorMib, linked!.Token, fill: fill is not null);
                 }
                 finally
                 {
@@ -1598,7 +1708,16 @@ public sealed partial class Prewarmer
 
                 memory.FinishHoldPending(walk.Kept, cont is null ? [] : walk.Hit);
                 NoteServiceRead(game, walk.NotedDisk);
-                memory.AddHoldAgainDisk(walk.Disk);
+                if (cont is null)
+                {
+                    memory.AddHoldAgainDisk(walk.Disk);
+                }
+                else
+                {
+                    memory.AddHoldFillDisk(walk.Disk);
+                }
+
+                fill?.Tally.NoteIssued(walk.Kept.Sum(o => o.Length));
                 diskTotal += walk.Disk;
                 if (walk.Unmeasured)
                 {
@@ -1610,7 +1729,7 @@ public sealed partial class Prewarmer
                     cont.Issues++;
                 }
 
-                if (walk.Disk > 0 || walk.Boundaries > 0 || walk.Stopped || walk.CapReached || linked.IsCancellationRequested || memory.HoldPendingBytes == 0 || walk.Unmeasured) // 계측하지 못한 묶음 (시작이나 끝의 하드 폴트 조회 실패) 이면 다음 묶음의 범위가 메모리에 있는지 알 수 없으므로 잇지 않음
+                if ((fill is null && walk.Disk > 0) || walk.Boundaries > 0 || walk.Stopped || walk.CapReached || linked.IsCancellationRequested || memory.HoldPendingBytes == 0 || walk.Unmeasured) // 계측하지 못한 묶음 (시작이나 끝의 하드 폴트 조회 실패) 이면 다음 묶음의 범위가 메모리에 있는지 알 수 없으므로 잇지 않음. 한가한 틈에 채울 때는 디스크 읽기가 정상이라 끊지 않음 (묶음마다 한가함을 다시 판정)
                 {
                     break; // 디스크 읽기나 빠진 조각이 보이면 이 확인은 여기서 끝 (다음 묶음의 범위가 메모리에 있는지는 알 수 없음)
                 }
@@ -1683,9 +1802,13 @@ public sealed partial class Prewarmer
             }
 
             cont.State = state;
+            if (cont.Fill is { } filling && (state == "finished" || state.StartsWith("stopped", StringComparison.Ordinal)))
+            {
+                filling.Tally.EndedBy = state == "finished" ? "list finished" : state;
+            }
         }
 
-        _log.Info($"{game.Name}: cache hold continuing after the first pass ({exe}): {state}, {cont.Held >> 20} MiB held so far by continuing in {cont.Issues} requests of at most {HoldContinueBytes >> 20} MiB, {cont.Disk >> 20} MiB read from disk (disk reads of the play {memory.HoldAgainDiskBytes >> 20} MiB of {HoldAgainDiskCapBytes >> 20} MiB), {memory.HoldPendingBytes >> 20} MiB left, {hold.HeldBytes >> 20} MiB held");
+        _log.Info($"{game.Name}: cache hold continuing after the first pass ({exe}): {state}, {cont.Held >> 20} MiB held so far by continuing in {cont.Issues} requests of at most {(cont.Fill is null ? HoldContinueBytes : HoldBatchBytes) >> 20} MiB, {cont.Disk >> 20} MiB read from disk (disk reads of the play {memory.HoldFillDiskBytes >> 20} MiB of {HoldFillDiskCapBytes >> 20} MiB), {memory.HoldPendingBytes >> 20} MiB left, {hold.HeldBytes >> 20} MiB held{(cont.Fill is { } fill ? $"; filling while the drive is idle: {fill.Tally.Describe()}" : string.Empty)}");
     }
 
     // 붙든 쪽이 작업 집합에 있는지 보고 (QueryWorkingSetEx) 메모리 관리자가 줄여 간 쪽만 다시 읽어 올립니다. 줄여 간 양, 디스크에서 다시 읽은 양, 목록에서 뺀 양을 돌려줍니다.

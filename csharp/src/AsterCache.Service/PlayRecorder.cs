@@ -457,7 +457,7 @@ public sealed class PlayRecorder : IDisposable
 
                 PlaySeriesRaw? raw = session.HasFrames && session.HasSeries ? ReadSeries(series, session) : null;
                 load = NoteLoad(loadFeed, session, previous, current, tick, raw);
-                foreach (PlayWindowSummary checkpoint in session.AddSample(previous, current, previousTick, tick, ReadSystem(system), raw, load))
+                foreach (PlayWindowSummary checkpoint in session.AddSample(previous, current, previousTick, tick, ReadSystem(system), raw, load, loadFeed.LastServiceBytes))
                 {
                     PlaySampleRecord record = session.Snapshot(tick);
                     _store.Upsert(record);
@@ -1227,7 +1227,7 @@ public sealed class PlayRecorder : IDisposable
         }
 
         public IReadOnlyList<PlayWindowSummary> AddSample(IReadOnlyList<PlayDiskCounters> previous, IReadOnlyList<PlayDiskCounters> current,
-            long previousTick, long tick, PlaySystemSample system = default, PlaySeriesRaw? series = null, LoadState load = LoadState.Unknown)
+            long previousTick, long tick, PlaySystemSample system = default, PlaySeriesRaw? series = null, LoadState load = LoadState.Unknown, long serviceRead = 0)
         {
             lock (_gate)
             {
@@ -1250,7 +1250,7 @@ public sealed class PlayRecorder : IDisposable
                     {
                         if (_series is not null && series is not null)
                         {
-                            point = _series.Point(series with { GpuMib = system.GpuDedicatedMib ?? series.GpuMib }, _pids, previous, current, load); // 그래픽 메모리는 이미 읽은 시스템 값을 씀
+                            point = _series.Point(series with { GpuMib = system.GpuDedicatedMib ?? series.GpuMib, ServiceReadBytes = serviceRead }, _pids, previous, current, load); // 그래픽 메모리는 이미 읽은 시스템 값을 씀
                         }
                         else
                         {

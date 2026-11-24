@@ -149,7 +149,7 @@ public sealed class PlaySeriesTests
         Assert.Equal((null, null), (start.GameReadBytes, start.GameWorkingSetMib)); // 앞의 값이 없는 첫 초
         Assert.Equal((30L * Mib, 2700L), (point.GameReadBytes, point.GameWorkingSetMib)); // 게임 프로세스만: 읽기 증가분 (새로 보인 프로세스는 셈하지 않음), 작업 집합 (2500 + 150 + 50)
         string[] names = PlaySeriesFormat.Header.Split(',');
-        Assert.Equal(["service_ops", "game_read_bytes", "game_ws_mib", "load_phase"], names[^8..^4]); // 그 뒤에 게임 밖 프로세스 열이 더해짐 (아래 시험)
+        Assert.Equal(["service_ops", "game_read_bytes", "game_ws_mib", "load_phase"], names[^9..^5]); // 그 뒤에 게임 밖 프로세스 열이 더해짐 (아래 시험)
         string line = PlaySeriesFormat.Line(5, default, point);
         Assert.Equal(((30L * Mib).ToString(CultureInfo.InvariantCulture), "2700", "not_loading"), (Cell(line, "game_read_bytes"), Cell(line, "game_ws_mib"), Cell(line, "load_phase")));
         string unknown = PlaySeriesFormat.Line(5, default, point with { Load = LoadState.Unknown, GameReadBytes = null });
@@ -163,7 +163,7 @@ public sealed class PlaySeriesTests
         const string oldHeader = "t_s,frames,max_frame_ms,over50_n,over100_n,pauses_n,pause_max_ms,cpu_sys_pct,cpu_game_pct,cpu_service_pct,cpu_other1_name,cpu_other1_pct,cpu_other2_name,cpu_other2_pct,"
             + "avail_mib,standby57_reused_mib,page_reads_n,gpu_mib,gpu_game_mib,disk_read_n,disk_read_bytes,disk_read_mean_ms,disk_write_n,disk_write_bytes,disk_write_mean_ms,disk_queue,"
             + "write_anyvol_top_name,write_anyvol_top_bytes,service_ops,game_read_bytes,game_ws_mib,load_phase";
-        Assert.Equal(oldHeader + ",other_ws_mib,ws_grow_top_name,ws_grow_top_mib,yield_applied_n", PlaySeriesFormat.Header); // 예전 열의 위치와 이름은 그대로
+        Assert.Equal(oldHeader + ",other_ws_mib,ws_grow_top_name,ws_grow_top_mib,yield_applied_n,service_read_bytes", PlaySeriesFormat.Header); // 예전 열의 위치와 이름은 그대로
 
         var builder = new PlaySeriesBuilder();
         List<ProcessUsage> first = [new(100, "game.exe", 0, 0, 0, 2000 * Mib), new(200, "AsterCache.Service.exe", 0, 0, 0, 300 * Mib), new(300, "chrome.exe", 0, 0, 0, 500 * Mib), new(301, "chrome.exe", 0, 0, 0, 100 * Mib), new(400, "obs.exe", 0, 0, 0, 200 * Mib)];
@@ -178,6 +178,10 @@ public sealed class PlaySeriesTests
         Assert.Equal(7L, point.YieldApplied);
         string line = PlaySeriesFormat.Line(9, default, point);
         Assert.Equal(("1380", "obs.exe", "300.0", "7"), (Cell(line, "other_ws_mib"), Cell(line, "ws_grow_top_name"), Cell(line, "ws_grow_top_mib"), Cell(line, "yield_applied_n")));
+        Assert.Equal(string.Empty, Cell(line, "service_read_bytes")); // 서비스 읽기를 알려 주지 않은 초는 빈 칸
+
+        PlaySeriesPoint served = builder.Next(Raw(0, 2500, second) with { ServiceReadBytes = 48L * Mib }, [100], [], []);
+        Assert.Equal((48L * Mib).ToString(CultureInfo.InvariantCulture), Cell(PlaySeriesFormat.Line(10, default, served), "service_read_bytes")); // 서비스가 그 초에 게임 드라이브에서 일으킨 물리 읽기 바이트
 
         PlaySeriesPoint shrink = builder.Next(Raw(0, 3000, [new(100, "game.exe", 0, 0, 0, 2600 * Mib), new(300, "chrome.exe", 0, 0, 0, 100 * Mib)]) with { YieldApplied = 3 }, [100], [], []);
         Assert.Equal((null, null), (shrink.YieldApplied, shrink.WsGrowName)); // 누계가 줄었으면 (조회 값이 바뀜) 차이를 적지 않고, 늘어난 프로세스가 없으면 이름이 빈 칸

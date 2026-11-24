@@ -31,6 +31,13 @@ public sealed class StageStreamDispatchTests
     private Action? _onSleep;
     private bool _stage = true;
     private IReadOnlyList<(int Pid, string Exe)> _processes = [];
+    private DiskIdleGate? _gate; // 있으면 게임 드라이브가 한가할 때만 묶음을 냄
+    private bool _idleOnly = true; // auto.stream_idle_only
+    private long _gateNow; // 한가함 판정의 가짜 시계 (판정이 기다릴 때만 흐름)
+    private long? _gateQueue = 0;
+    private int _cap = 120; // auto.start_stream_cap_seconds
+
+    private DiskIdleGate FakeGate() => new(_ => _gateQueue, () => _gateNow, ms => _gateNow += ms);
 
     private GameDispatcher Dispatcher()
     {
@@ -82,6 +89,9 @@ public sealed class StageStreamDispatchTests
             AvailableMib = () => _available,
             OtherGameQueued = _ => _queuedOther,
             StageStreamEnabled = () => _stage,
+            IdleGate = _gate,
+            StreamIdleOnly = () => _idleOnly,
+            StartStreamCapSeconds = () => _cap,
         });
 
     private ProcessStart Start(int pid, string exe) => new(pid, exe, (long)_sec);
@@ -854,8 +864,98 @@ public sealed class StageStreamDispatchTests
         Assert.Empty(_streamer.Phases);
     }
 
+    [Fact]
+    public void WithAnIdleGateTheStreamIssuesSixteenMiBBatchesOnlyWhenTheDriveIsIdleAndWaitsWhileItIsBusy()
+    {
+        RunningFirst();
+        _gate = FakeGate();
+        _gateQueue = 3; // 게임이 읽는 중
+        _streamer.FirstOps = [A];
+        _streamer.OnBatch = (_, _) => _sec += 1;
+        int sleeps = 0;
+        _onSleep = () =>
+        {
+            if (++sleeps == 4)
+            {
+                _gateQueue = 0;
+            }
+
+            Assert.Empty(_streamer.BatchCount); // 막힌 동안 새 요청 0
+        };
+
+        Assert.True(Dispatcher().Handle(Start(5, "cod.exe")));
+
+        Assert.Equal(12, _streamer.BatchCount[A.Path]); // 192 MiB 를 16 MiB 묶음 열두 개로
+        Assert.Equal(StageStreamPlans.IdleBatchBytes, _streamer.BatchBytesSeen);
+        Assert.Contains(_log.Lines, l => l.Contains("; idle-only: 12 batches, 192 MiB; held back 1 times (queue 1, measurement gap 0, loading 0)", StringComparison.Ordinal) && l.Contains("0 MiB left unread", StringComparison.Ordinal));
+        Assert.Empty(_io);
+    }
+
+    [Fact]
+    public void WhenTheDriveNeverGetsIdleTheStreamReadsNothingStopsAtTheTimeCapAndLogsWhatItLeftUnread()
+    {
+        RunningFirst();
+        _gate = FakeGate();
+        _gateQueue = 2;
+        _cap = 5;
+        _streamer.FirstOps = [A];
+
+        Assert.False(Dispatcher().Handle(Start(5, "cod.exe")));
+
+        Assert.Empty(_streamer.BatchCount);
+        Assert.Contains(_log.Lines, l => l.Contains("start stream stopped at cap after 0 bytes", StringComparison.Ordinal) && l.Contains("idle-only: 0 batches, 0 MiB; held back 1 times (queue 1,", StringComparison.Ordinal) && l.Contains("192 MiB left unread", StringComparison.Ordinal) && l.Contains("ended: time cap", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AMeasurementGapHoldsTheStreamBackLikeABusyDrive()
+    {
+        RunningFirst();
+        _gate = FakeGate();
+        _gateQueue = null;
+        _cap = 3;
+        _streamer.FirstOps = [A];
+
+        Assert.False(Dispatcher().Handle(Start(5, "cod.exe")));
+
+        Assert.Empty(_streamer.BatchCount);
+        Assert.Contains(_log.Lines, l => l.Contains("measurement gap 1", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ALaterStageStreamWithTheGateDoesNotInterleaveAtLowPriorityButAWithoutTheGateOrWithTheSettingOffKeepsTheOldWay()
+    {
+        _gate = FakeGate(); // 디스패처를 만들기 전에 (환경은 만들 때 한 번 읽음)
+        GameDispatcher d = DispatcherAfterFirstExe();
+        _streamer.LaterPlans = _ => new StageLaterPlan([B], true, 0);
+        _streamer.OnBatch = (_, _) => _sec += 4;
+
+        Assert.True(d.Handle(Start(6, "sp26-cod.exe")));
+
+        Assert.Empty(_io); // 낮은 우선순위로 끼어들지 않음
+        Assert.Contains(_log.Lines, l => l.Contains("stage stream sp26-cod.exe 192 MiB in ", StringComparison.Ordinal) && l.Contains("idle-only: 12 batches, 192 MiB", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void WithTheSettingOffTheGateIsNotUsedAndTheStreamKeepsTheLowPriorityWay()
+    {
+        _gate = FakeGate();
+        _idleOnly = false;
+        GameDispatcher d = DispatcherAfterFirstExe();
+        _gateQueue = 9; // 켜져 있었다면 막혔을 것
+        _streamer.LaterPlans = _ => new StageLaterPlan([B], true, 0);
+        _streamer.OnBatch = (_, _) => _sec += 4;
+
+        Assert.True(d.Handle(Start(6, "sp26-cod.exe")));
+
+        Assert.Equal([true, false], _io.Select(c => c.Low));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("idle-only", StringComparison.Ordinal));
+        Assert.True(_streamer.BatchCount[B.Path] > 0);
+    }
+
     private sealed class StageFakeStreamer : IGameStreamer
     {
+        public long BatchBytesSeen { get; private set; }
+
         public LoadRefillPlan? Refill { get; set; }
         public long LastRefillCap { get; private set; }
         public int RefillCalls { get; private set; }
@@ -894,8 +994,17 @@ public sealed class StageStreamDispatchTests
         public (StreamStats Stats, bool Complete) StreamCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue) =>
             Run("all", 192L << 20, progress, canIssue);
 
+        public (StreamStats Stats, bool Complete) StreamOpsCoordinated(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue, long batchBytes)
+        {
+            BatchBytesSeen = batchBytes;
+            return StreamOps(ops, stop, progress, canIssue, batchBytes, noteIssue);
+        }
+
         // FolderWarm.Read 로 실제 묶음 규칙 (64 MiB 이상이 모일 때까지 op 단위) 을 그대로 따름
-        public (StreamStats Stats, bool Complete) StreamOpsCoordinated(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue)
+        public (StreamStats Stats, bool Complete) StreamOpsCoordinated(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue) =>
+            StreamOps(ops, stop, progress, canIssue, FolderWarm.BatchBytes, noteIssue);
+
+        private (StreamStats Stats, bool Complete) StreamOps(IReadOnlyList<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, long batchBytes, Action<string, long, bool>? noteIssue)
         {
             string phase = ops[0].Path;
             Phases.Add(phase);
@@ -912,11 +1021,12 @@ public sealed class StageStreamDispatchTests
                 }
 
                 BatchCount[phase] = index + 1;
+                noteIssue?.Invoke("stream batch", bytes, true); // 진짜 스트리머가 묶음마다 알리는 것과 같음
                 OnBatch?.Invoke(phase, index++);
                 done += bytes;
                 progress?.Invoke(done, total);
                 return new StreamStats(bytes, 1, 0, 0.01);
-            });
+            }, batchBytes);
             return !canIssue() ? (r.Stats with { Aborted = true }, false) : r;
         }
 

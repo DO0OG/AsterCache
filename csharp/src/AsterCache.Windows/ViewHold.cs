@@ -49,7 +49,8 @@ public interface IKeepHold : IDisposable
     void Rebase();
 
     /// 범위들을 순서대로 읽어 (이미 붙든 구간은 건너뜀) 작업 집합에 올린 채 뷰를 닫지 않습니다. 디스크 읽기가 섞여 경계를 만나면 거기서 멈추고 그 위치를 돌려줍니다.
-    HoldBatchResult Hold(IReadOnlyList<ReadOp> batch, CancellationToken ct);
+    /// fill 이 참이면 (호출한 쪽이 게임 드라이브가 한가함을 확인하고 디스크에서 읽어 채우려는 묶음) 디스크 읽기를 경계로 보지 않고 묶음 끝까지 읽습니다: 읽은 양은 DiskBytes 로 돌려줍니다. 읽지 못하는 오류와 취소는 그대로 멈춥니다.
+    HoldBatchResult Hold(IReadOnlyList<ReadOp> batch, CancellationToken ct, bool fill = false);
 
     /// 붙든 것을 덜 중요한 쪽 (나중에 붙든 쪽) 부터 bytes 만큼 내놓고 (VirtualUnlock) 내놓은 바이트를 돌려줍니다. 내놓은 범위는 ReleasedRanges 로 다시 붙들 수 있습니다 (점검이 목록에서 뺀 구간은 아님).
     long Release(long bytes);
@@ -143,6 +144,7 @@ public sealed unsafe class ViewHold : IKeepHold
         public int Views;
         public int Checks;
         public bool Signal = true;
+        public bool Fill; // 디스크에서 읽어 채우는 묶음: 읽기 수가 늘어도 경계로 보지 않음
         public bool Boundary;
         public bool Canceled;
     }
@@ -263,13 +265,13 @@ public sealed unsafe class ViewHold : IKeepHold
         }
     }
 
-    public HoldBatchResult Hold(IReadOnlyList<ReadOp> batch, CancellationToken ct)
+    public HoldBatchResult Hold(IReadOnlyList<ReadOp> batch, CancellationToken ct, bool fill = false)
     {
         lock (_lock)
         {
             long started = Stopwatch.GetTimestamp();
             double cpuBefore = StandbyTouch.ThreadCpuSeconds();
-            var tally = new Tally { Signal = _faults is not null };
+            var tally = new Tally { Signal = _faults is not null, Fill = fill };
             int boundary = -1;
             for (int i = 0; i < batch.Count && !tally.Boundary && !tally.Canceled; i++)
             {
@@ -644,7 +646,7 @@ public sealed unsafe class ViewHold : IKeepHold
             tally.Disk += Math.Min(pages * PageBytes, delta * StandbyTouch.FaultReadBytes);
         }
 
-        if (delta > StandbyTouch.BoundaryFaults || tally.Disk > StandbyTouch.DiskReadStopBytes)
+        if (!tally.Fill && (delta > StandbyTouch.BoundaryFaults || tally.Disk > StandbyTouch.DiskReadStopBytes))
         {
             tally.Boundary = true;
         }

@@ -155,10 +155,9 @@ public sealed class ColdPrewarmTests : IDisposable
     public void ColdPrewarmsCancelledMidwayAreCountedAsIdleSoRepeatingThemStopsAtTheShare()
     {
         GameSettings g = Game("g");
-        ReadBytes = 600 * Mib;
         ReadSeconds = 60; // 디스크 속도의 읽기: 받아들인 바이트를 그대로 셈
         ReadCompletes = false; // 취소됨
-        Planner = (_, _, _, _) => new ColdPlan("full", [new ReadOp(@"D:\g.bin", 0, 600 * Mib)], 600 * Mib, null);
+        Planner = (_, full, _, _) => new ColdPlan("full", [new ReadOp(@"D:\g.bin", 0, Math.Min(600 * Mib, full))], Math.Min(600 * Mib, full), null); // 실제 전달된 창 크기까지만 계획함
         Prewarmer p = MakeOne();
         var results = new List<PrewarmResult>();
 
@@ -170,9 +169,27 @@ public sealed class ColdPrewarmTests : IDisposable
             }
         }
 
-        Assert.Equal(2, _reads.Count); // 600 + 600 MiB 가 1 GiB 몫을 넘은 뒤에는 읽지 않음
-        Assert.Equal(1200 * Mib, Used(p, g, ReadPurpose.Idle));
+        Assert.Equal([600 * Mib, 424 * Mib], _reads.Select(r => r.Sum(o => o.Length))); // 둘째 시도의 창은 남은 424 MiB 로 줄고, 1 GiB 몫을 다 쓴 뒤에는 읽지 않음
+        Assert.Equal(Gib, Used(p, g, ReadPurpose.Idle));
         Assert.Equal([Prewarmer.Cancelled, Prewarmer.Cancelled, Prewarmer.IdleReadLimit, Prewarmer.IdleReadLimit], results.Select(r => r.SkipReason));
+    }
+
+    [Fact]
+    public void AfterAnIdleColdPrewarmThatTheShareCutShortALauncherPrewarmIsNotHeldBackByTheCooldownAndReadsTheRest()
+    {
+        GameSettings g = Game("g");
+        Planner = (_, full, _, _) => new ColdPlan("full", [new ReadOp(@"D:\g.bin", 0, Math.Min(300 * Mib, full))], Math.Min(300 * Mib, full), null);
+        Prewarmer p = MakeOne();
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, Gib - (100 * Mib), g.Name);
+
+        using (DiskReadLedger.Scope(ReadPurpose.Idle))
+        {
+            Assert.True(p.Run(g, "auto cold start").Ran); // 남은 100 MiB 만 읽음
+        }
+
+        Assert.True(p.Run(g, "launcher").Ran); // 쿨다운 (기본 30분) 에 막히지 않음
+        Assert.Equal([100 * Mib, 300 * Mib], _reads.Select(r => r.Sum(o => o.Length))); // 시작 계기의 예열이 나머지까지 읽음
+        Assert.True(p.Run(g, "launcher").SkipReason?.StartsWith("cooldown", StringComparison.Ordinal)); // 제한 없이 끝까지 읽은 뒤에는 쿨다운이 적용됨
     }
 
     [Fact]

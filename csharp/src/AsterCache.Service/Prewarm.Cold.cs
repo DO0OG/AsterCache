@@ -38,7 +38,13 @@ public sealed partial class Prewarmer
         }
 
         TimeSpan cooldown = TimeSpan.FromMinutes(game.Prewarm.CooldownMin);
-        return LastWarmed(game.Name) is { } prev && now - prev < cooldown ? $"cooldown ({Math.Ceiling((cooldown - (now - prev)).TotalMinutes)} min left)" : null;
+        bool reduced;
+        lock (_gate)
+        {
+            reduced = DiskReadLedger.Current != ReadPurpose.Idle && _coldReduced.Contains(game.Name); // 앞선 자동 예열이 남은 양으로 줄어 읽었으면 시작 계기의 예열은 더 큰 범위를 읽을 수 있으므로 쿨다운을 적용하지 않음
+        }
+
+        return !reduced && LastWarmed(game.Name) is { } prev && now - prev < cooldown ? $"cooldown ({Math.Ceiling((cooldown - (now - prev)).TotalMinutes)} min left)" : null;
     }
 
     // 기록 (원시 트레이스·prefetch 기록) 이 없는 게임: 설치 폴더가 예산 이하면 통째로, 크면 엔진 프로필로. 쿨다운은 항상 지킵니다 (같은 폴더를 연달아 두 번 읽지 않게): 재예열도 쿨다운 안이면 다음 점검으로 미룸.
@@ -173,6 +179,7 @@ public sealed partial class Prewarmer
             _last[game.Name] = warmedAt;
             _coldMib[game.Name] = (stats.Bytes + (1 << 20) - 1) >> 20;
             _coldSamples[game.Name] = samples!;
+            _ = windowKey.Length > 0 ? _coldReduced.Add(game.Name) : _coldReduced.Remove(game.Name);
         }
 
         double mbps = stats.Seconds > 0 ? stats.Bytes / 1048576.0 / stats.Seconds : 0;

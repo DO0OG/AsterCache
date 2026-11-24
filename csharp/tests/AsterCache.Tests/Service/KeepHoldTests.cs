@@ -2622,7 +2622,7 @@ public sealed class KeepHoldTests
         p.TouchAtGameStart(Game("a"), "a.exe");
 
         Assert.NotEmpty(_hold.Released); // 내놓기 판단은 평소대로
-        Assert.Equal(unmeasured ? 0 : 1, _probeCalls); // 계측하지 못한 플레이에서는 표본 읽기도 하지 않음
+        Assert.Equal(unmeasured, _probeCalls == 0); // 계측하지 못한 플레이에서는 표본 읽기도 하지 않음 (계측 가능하면 첫 패스의 경계마다 읽음)
         Assert.Equal([!unmeasured], _hold.Refills.Take(1)); // 점검의 다시 읽기도 하지 않음 (줄여 간 쪽은 목록에서 뺌)
         Assert.Equal(unmeasured ? 1 : 0, _log.Lines.Count(l => l.Contains("cache hold stops reading from the disk for this play")));
         Assert.DoesNotContain(_log.Lines, l => l.Contains("disk reads cannot be told apart"));

@@ -361,7 +361,7 @@ public sealed partial class Prewarmer
 
         keep.Stamp = stamp;
         keep.All = all;
-        keep.Ordered = _solar.ImportanceOrder(game, all);
+        keep.Ordered = _env.PlayRankedRows(game) is { } play ? PlayRanking.PlayReorder(all, play) : _solar.ImportanceOrder(game, all); // 유지 회차·붙들기의 순서만 경기 가중 (사다리·시작 만지기는 ImportanceOrder 그대로)
         keep.Touchable = WithoutSparse(keep.Ordered);
         keep.Bytes = keep.Ordered.Sum(o => o.Length); // 재사용 문턱의 목록 크기: 스파스 범위도 포함 (대기 목록에 같이 남으므로 이 변경 전과 같은 값, 다시 만지기의 주기를 바꾸지 않음)
         return true;

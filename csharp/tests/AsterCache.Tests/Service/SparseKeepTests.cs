@@ -42,6 +42,7 @@ public sealed class SparseKeepTests
     private bool _allWarm; // 켜면 모든 블록이 메모리에 있음 (읽기가 모두 빠름)
     private Prewarmer? _prewarmer;
     private List<TraceEvent>? _rows; // 블록 순위 목록 (순위 순, 없으면 null: 순위 목록이 없는 게임)
+    private PlayRankedRows? _playRows; // 유지 목록이 쓰는 경기 가중 순서 (없으면 null: 순위 순서 그대로)
     private List<ReadOp> _planned = [new ReadOp(FileA, 0, Mib), new ReadOp(FileB, 0, Mib), new ReadOp(Dense, 0, 8 * Mib)]; // 예열이 읽은 범위 (유지 목록의 원천)
     private Func<int, string, double?>? _seconds; // 지정하면 (읽기 번호, 경로) → 걸린 시간 (초, null 이면 열 수 없음), 없으면 메모리 모델
     private Action<TimeSpan, int>? _onSleep; // 회차 주기로 쉴 때마다 (쉰 시간, 지금까지 쉰 횟수) 로 부름
@@ -133,6 +134,7 @@ public sealed class SparseKeepTests
             ListStamp = _ => "s1",
             IsSparse = path => _sparse.Contains(path),
             RankedRows = _ => _rows,
+            PlayRankedRows = _ => _playRows,
             TouchRanges = (ranges, ct) => _forbidMapping ? throw Forbidden("touch") : new TouchResult(ranges.Sum(o => o.Length), 0.1, 0, 0, TouchEnd.Completed),
             FindResident = (ops, cap, ct, onGroup) => throw Forbidden("find"),
             KeepProbeSamples = (_, _) => throw Forbidden("probe"),
@@ -244,6 +246,18 @@ public sealed class SparseKeepTests
         Assert.Contains(_log.Lines, l => l.Contains("a: sparse blocks kept while playing: 2 MiB in 2 files", StringComparison.Ordinal));
         Assert.Contains(_log.Lines, l => l.Contains("sparse blocks kept while playing ended after 1 rounds (a.exe): reached 2 of 2 MiB of the list, 0 MiB read from disk", StringComparison.Ordinal));
         NoStoppedLine(_log);
+    }
+
+    [Fact]
+    public void TheKeepListTakesItsOrderFromThePlayRowsWhenThereAreAnyAndFromTheRankedRowsOtherwise()
+    {
+        _rows = [.. Rows(FileB, 16), .. Rows(FileA, 16)]; // 순위: 파일 B 의 블록이 먼저
+        _playRows = new PlayRankedRows(_rows, [.. Rows(FileA, 16), .. Rows(FileB, 16)], new HashSet<string>(_sparse)); // 경기 가중 점수 순: 파일 A 의 블록이 먼저
+        _allWarm = true;
+
+        Run(Direct(1));
+
+        Assert.Equal([.. Rows(FileA, 16).Concat(Rows(FileB, 16)).Select(r => (r.Path, r.Offset, (int)r.Length))], _reads); // 유지 목록 (스파스 유지가 읽는 순서) 이 점수 순서를 받음
     }
 
     [Fact]

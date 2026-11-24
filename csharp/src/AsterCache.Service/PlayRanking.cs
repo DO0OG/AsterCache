@@ -95,6 +95,43 @@ internal static class PlayRanking
         return result;
     }
 
+    /// 유지 회차·붙들기의 중요도 순서: Reorder 와 같되, 읽기 범위 (예열한 범위) 안에 든 유효한 블록 가운데 앞 frontBytes (스파스 파일 블록은 세지 않음) 를 경기 가중 점수 순으로 먼저 놓고 나머지는 순위 순입니다.
+    /// 예산은 파일 대조를 통과한 행 (play 의 행은 이미 대조됨) 가운데 읽기 범위에 온전히 든 것에만 적용하므로, 바뀐 파일이나 예열하지 않은 블록이 예산을 쓰지 않습니다. 같은 블록은 한 번만 나옵니다. 정렬은 하지 않음 (점수 순서는 저장된 것).
+    public static IReadOnlyList<ReadOp> PlayReorder(IReadOnlyList<ReadOp> reads, PlayRankedRows play, long frontBytes = LoadRefillPlanner.PlayFrontBytes)
+    {
+        var covered = new RangeIndex(reads.Select(r => new TraceEvent(r.Path, r.Offset, r.Length)));
+        long left = Math.Max(0, frontBytes) / LoadBoundaries.Block;
+        var front = new List<TraceEvent>();
+        var taken = new HashSet<(string Path, long Block)>(KeyComparer.Instance);
+        foreach (TraceEvent row in play.ByScore)
+        {
+            if (left <= 0)
+            {
+                break;
+            }
+
+            if (covered.Subtract(row).Any())
+            {
+                continue; // 예열한 읽기 범위 밖 (또는 일부만 안)
+            }
+
+            front.Add(row);
+            taken.Add((row.Path, row.Offset / LoadBoundaries.Block));
+            left -= play.Sparse.Contains(row.Path) ? 0 : 1;
+        }
+
+        return Reorder(reads, [.. front, .. play.Ranked.Where(r => !taken.Contains((r.Path, r.Offset / LoadBoundaries.Block)))]);
+    }
+
+    private sealed class KeyComparer : IEqualityComparer<(string Path, long Block)>
+    {
+        public static readonly KeyComparer Instance = new();
+
+        public bool Equals((string Path, long Block) a, (string Path, long Block) b) => a.Block == b.Block && string.Equals(a.Path, b.Path, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((string Path, long Block) k) => HashCode.Combine(StringComparer.OrdinalIgnoreCase.GetHashCode(k.Path), k.Block);
+    }
+
     /// 경로별로 정렬·병합한 구간: 행에서 이미 담은 구간을 빼는 데 씁니다.
     private sealed class RangeIndex
     {
@@ -163,3 +200,6 @@ internal static class PlayRanking
         }
     }
 }
+
+/// 유지 회차·붙들기가 쓰는 순위 행 (Ranked: 지금 순위 순), 경기 가중 점수 순의 행 (ByScore), 스파스 파일 (Sparse). 모두 순위 파일에 저장된 것에서 만들며 파일 세대 대조를 거쳤습니다.
+public sealed record PlayRankedRows(List<TraceEvent> Ranked, List<TraceEvent> ByScore, IReadOnlySet<string> Sparse);

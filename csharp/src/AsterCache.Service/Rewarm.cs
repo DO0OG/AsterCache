@@ -18,7 +18,7 @@ public sealed partial class Rewarmer
     private GameExitTracker? _exitTracker;
     private readonly object _nextLock = new(); // Tick (유지 점검 스레드) 와 PullIn (재적용 틱 스레드) 이 같이 쓰는 _next 보호
     private DateTimeOffset? _next;
-    private DateTimeOffset? _afterExitAt; // 게임 종료로 점검을 당긴 시각: 그 뒤 첫 점검은 게임 종료라는 계기가 있는 읽기라 하루 읽기 상한을 받지 않음, 게임마다 그 점검을 마치면 지우고 (_afterExitDone) 모든 게임이 마치거나 AfterExitSpan 이 지나면 끝, _nextLock 으로 보호
+    private DateTimeOffset? _afterExitAt; // 게임 종료로 점검을 당긴 시각: 그 뒤 첫 점검은 게임마다 한 번 (그 읽기도 계기 없는 읽기라 하루 읽기 상한을 따름), 게임마다 그 점검을 마치면 지우고 (_afterExitDone) 모든 게임이 마치거나 AfterExitSpan 이 지나면 끝, _nextLock 으로 보호
     private long _afterExitSeq; // 게임 종료 표시를 세운 횟수 (점검이 시작할 때의 번호와 같은 종료에만 완료를 반영), _nextLock 으로 보호
     private readonly HashSet<string> _afterExitDone = new(StringComparer.OrdinalIgnoreCase); // 게임 종료 뒤 점검을 이미 마친 게임, _nextLock 으로 보호
     private static readonly TimeSpan AfterExitSpan = TimeSpan.FromHours(24); // 게임 종료 표시를 이어 두는 최대 시간 (막힌 게임이 영영 표시를 붙들지 않게)
@@ -93,6 +93,15 @@ public sealed partial class Rewarmer
         }
     }
 
+    /// 이 게임이 게임 종료 뒤 점검을 아직 마치지 않았는가 (시험과 상태 확인용).
+    internal bool AfterExitPending(string game)
+    {
+        lock (_nextLock)
+        {
+            return _afterExitAt is not null && !_afterExitDone.Contains(game);
+        }
+    }
+
     public void Tick(AutoSettings auto, CancellationToken ct = default)
     {
         if (!auto.Enabled || auto.RewarmMinutes <= 0)
@@ -132,7 +141,7 @@ public sealed partial class Rewarmer
             exitSeq = _afterExitSeq; // 이 점검이 시작할 때의 종료: 점검 도중 새 종료가 들어오면 그 종료의 표시는 이 점검이 지우지 않음
         }
 
-        using IDisposable scope = DiskReadLedger.Scope(ReadPurpose.Idle); // 주기 점검의 읽기는 계기 없는 읽기 (하루 상한 대상), 게임 종료 뒤 아직 점검하지 않은 게임만 아래에서 계기 있는 읽기로 바꿈
+        using IDisposable scope = DiskReadLedger.Scope(ReadPurpose.Idle); // 주기 점검과 게임 종료 뒤 점검의 읽기는 모두 계기 없는 읽기 (하루 상한 대상)
 
         IReadOnlyList<GameSettings> warmed = _prewarm.Warmed();
 
@@ -177,16 +186,15 @@ public sealed partial class Rewarmer
             bool exitCheck;
             lock (_nextLock)
             {
-                exitCheck = afterExit && !_afterExitDone.Contains(g.Name); // 이 게임의 게임 종료 뒤 점검은 계기가 있는 읽기
+                exitCheck = afterExit && !_afterExitDone.Contains(g.Name); // 이 게임의 게임 종료 뒤 점검 (한 번): 게임 시작이 건 읽기가 아니라 서비스가 시작한 읽기라 주기 점검과 같은 하루 상한을 따름
             }
 
-            using IDisposable gameScope = DiskReadLedger.Scope(exitCheck ? ReadPurpose.Trigger : ReadPurpose.Idle);
-            if (!exitCheck && _prewarm.IdleReadsExhausted(g))
+            if (_prewarm.IdleReadsExhausted(g))
             {
                 continue; // 이 드라이브의 계기 없는 읽기가 하루 상한에 닿음 (로그는 쉬기 시작할 때 한 번): 표본도 읽지 않고 다음 점검에 다시 봄
             }
 
-            bool? checkedResult = Check(g, ct, exitCheck ? RoomOf(g, budget) : _prewarm.IdleReadRoom(g, RoomOf(g, budget)), auto, now);
+            bool? checkedResult = Check(g, ct, _prewarm.IdleReadRoom(g, RoomOf(g, budget)), auto, now);
             if (exitCheck && checkedResult is not null)
             {
                 lock (_nextLock)

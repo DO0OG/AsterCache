@@ -97,19 +97,7 @@ public static class IoSummaryStore
                     return null;
                 }
 
-                long? fileSize = null; // 플레이마다 남기는 요약만 가진 선택 항목 (둘 다 있거나 둘 다 없어야 함)
-                long? fileTicks = null;
-                if (fileRow.ContainsKey("size") || fileRow.ContainsKey("mtime_ticks"))
-                {
-                    if (!Long(fileRow, "size", out long sizeValue) || sizeValue < 0 || !Long(fileRow, "mtime_ticks", out long ticksValue))
-                    {
-                        return null;
-                    }
-
-                    (fileSize, fileTicks) = (sizeValue, ticksValue);
-                }
-
-                files.Add(new IoSummaryFile(name, changed, fileSize, fileTicks));
+                files.Add(new IoSummaryFile(name, changed));
             }
 
             var rows = new List<IoSummaryRow>(dataRows.Count);
@@ -256,12 +244,12 @@ public static class IoSummaryStore
             }
 
             List<IoSummaryWriteFile>? writeFiles = ReadWriteFiles(root);
-            if (writeFiles is null || !ReadPlay(root, out IoSummaryPlay? play))
+            if (writeFiles is null)
             {
                 return null;
             }
 
-            return new IoSummary(started, ended, windows, quality!, files, rows, sessionId!, rawFingerprint, rawTraceZeroUs, rawTraceZeroAtUtc, readModes, targetStarts, writeFiles.Count == 0 ? null : writeFiles, play);
+            return new IoSummary(started, ended, windows, quality!, files, rows, sessionId!, rawFingerprint, rawTraceZeroUs, rawTraceZeroAtUtc, readModes, targetStarts, writeFiles.Count == 0 ? null : writeFiles);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException or OverflowException or FormatException or ArgumentException)
         {
@@ -277,20 +265,10 @@ public static class IoSummaryStore
             { "start_us", window.StartedUs },
             { "end_us", window.EndedUs },
         }).ToList();
-        var files = summary.Files.Select(file =>
+        var files = summary.Files.Select(file => (object?)new JObject
         {
-            var row = new JObject
-            {
-                { "path", file.Path },
-                { "changed_during_session", file.ChangedDuringSession },
-            };
-            if (file.Size is { } size && file.MTimeTicks is { } ticks)
-            {
-                row.Add("size", size);
-                row.Add("mtime_ticks", ticks);
-            }
-
-            return (object?)row;
+            { "path", file.Path },
+            { "changed_during_session", file.ChangedDuringSession },
         }).ToList();
         var rows = summary.Rows.Select(row => (object?)new JObject
         {
@@ -336,16 +314,6 @@ public static class IoSummaryStore
         if (summary.WriteFiles is { Count: > 0 } writeFiles)
         {
             root.Add("write_files", writeFiles.Select(WriteFileJson).ToList()); // 쓰기를 기록한 집계에만 (옛 판은 이 항목을 모르고 무시함)
-        }
-
-        if (summary.Play is { } play)
-        {
-            root.Add("play", new JObject
-            {
-                { "disk_only", play.DiskOnly },
-                { "load_phases_us", play.LoadPhases.Select(PairJson).ToList() },
-                { "unobserved_us", play.Unobserved.Select(PairJson).ToList() },
-            }); // 플레이마다 남기는 요약에만 (옛 판은 이 항목을 모르고 무시함)
         }
 
         string temp = path + ".tmp";
@@ -419,49 +387,6 @@ public static class IoSummaryStore
         }
 
         return files;
-    }
-
-    private static object? PairJson(IoSummaryWindow window) => new List<object?> { window.StartedUs, window.EndedUs };
-
-    // 플레이마다 남기는 요약의 부가 정보 (없으면 null 이 정상, 있는데 모양이 다르면 false).
-    private static bool ReadPlay(JObject root, out IoSummaryPlay? play)
-    {
-        play = null;
-        if (!root.TryGetValue("play", out object? value) || value is null)
-        {
-            return true;
-        }
-
-        if (value is not JObject o || !o.TryGetValue("disk_only", out object? diskOnly) || diskOnly is not bool only
-            || !ReadPairs(o, "load_phases_us", out List<IoSummaryWindow>? phases) || !ReadPairs(o, "unobserved_us", out List<IoSummaryWindow>? unobserved))
-        {
-            return false;
-        }
-
-        play = new IoSummaryPlay(only, phases!, unobserved!);
-        return true;
-    }
-
-    private static bool ReadPairs(JObject o, string key, out List<IoSummaryWindow>? pairs)
-    {
-        pairs = null;
-        if (!o.TryGetValue(key, out object? value) || value is not List<object?> rows)
-        {
-            return false;
-        }
-
-        pairs = new List<IoSummaryWindow>(rows.Count);
-        foreach (object? row in rows)
-        {
-            if (row is not List<object?> { Count: 2 } cells || cells[0] is not long start || cells[1] is not long end || end < start)
-            {
-                return false;
-            }
-
-            pairs.Add(new IoSummaryWindow(start, end));
-        }
-
-        return true;
     }
 
     /// 집계 곁 파일을 옮기되 무효 표지를 함께 옮깁니다 (move 는 실제 이동). 무효 집계가 표지 없이 보이는 순간이 없게 목적지 표지를 먼저 만들고,
@@ -547,66 +472,6 @@ public static class IoSummaryStore
         string sessionId = Guid.TryParseExact(summary.SessionId, "N", out _) ? summary.SessionId : Guid.NewGuid().ToString("N");
         Write(target, summary with { RawFingerprint = RawFingerprint(rawTracePath), SessionId = sessionId });
         return target;
-    }
-
-    /// 게임마다 남기는 플레이별 단독 집계의 상한. 근거: 한 개가 이 PC 의 Call of Duty 에서 25~39 MiB 라 12 개면 약 360 MiB 이고,
-    /// 순위가 최근 플레이를 앞세워 읽는 데 12 번이면 충분하다고 봤습니다 (재지 않은 어림).
-    public const int MaxPlaySummaries = 12;
-
-    /// 플레이별 단독 집계 목록 (슬롯 파일 이름과 쓴 시각). 슬롯 파일을 열어 보지 않고 어느 것이 플레이별 집계인지 알기 위한 곁 파일입니다.
-    public static string PlayIndexPath(string rawTracePath) => rawTracePath + ".playio.json";
-
-    /// 방금 쓴 플레이별 단독 집계 (summaryPath) 를 목록에 더하고, 가장 최근 keep 개만 두고 나머지 파일을 지웁니다 (지운 파일 경로를 돌려줌).
-    /// 목록에 있어도 파일이 없거나 쓴 시각이 달라진 슬롯 (다른 집계가 그 슬롯을 덮음) 은 목록에서만 뺍니다: 읽기 방식이 담긴 집계는 이 목록에 없으므로 지우지 않습니다.
-    public static IReadOnlyList<string> RememberPlaySummary(string rawTracePath, string summaryPath, int keep = MaxPlaySummaries)
-    {
-        string dir = Path.GetDirectoryName(Path.GetFullPath(rawTracePath)) ?? string.Empty;
-        var entries = new List<(string Name, long Ticks)>();
-        try
-        {
-            if (File.Exists(PlayIndexPath(rawTracePath)) && JsonRead.ReadFile(PlayIndexPath(rawTracePath)) is List<object?> rows)
-            {
-                foreach (object? row in rows)
-                {
-                    if (row is List<object?> { Count: 2 } cells && cells[0] is string name && name.Length > 0 && cells[1] is long ticks)
-                    {
-                        entries.Add((name, ticks));
-                    }
-                }
-            }
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException)
-        {
-            entries.Clear(); // 목록을 못 읽으면 새로 시작 (옛 플레이별 집계는 슬롯 순환이 덮을 때까지 남음)
-        }
-
-        string added = Path.GetFileName(summaryPath);
-        entries.RemoveAll(e => string.Equals(e.Name, added, StringComparison.OrdinalIgnoreCase));
-        entries.Add((added, File.GetLastWriteTimeUtc(summaryPath).Ticks));
-        entries.RemoveAll(e => !File.Exists(Path.Combine(dir, e.Name)) || File.GetLastWriteTimeUtc(Path.Combine(dir, e.Name)).Ticks != e.Ticks);
-        var deleted = new List<string>();
-        while (entries.Count > Math.Max(1, keep))
-        {
-            string old = Path.Combine(dir, entries[0].Name);
-            try
-            {
-                File.Delete(old);
-                DeleteIfExists(InvalidPath(old));
-                deleted.Add(old);
-            }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-            {
-                // 못 지운 파일은 목록에서만 뺌: 슬롯이 돌아오면 덮임
-            }
-
-            entries.RemoveAt(0);
-        }
-
-        string temp = PlayIndexPath(rawTracePath) + ".tmp";
-        string text = PyJson.Dumps(entries.Select(e => (object?)new List<object?> { e.Name, e.Ticks }).ToList(), ensureAscii: false) + "\n";
-        File.WriteAllBytes(temp, PyJson.Utf8.GetBytes(PyJson.ToCrlf(text)));
-        File.Move(temp, PlayIndexPath(rawTracePath), true);
-        return deleted;
     }
 
     public static string RawFingerprint(string rawTracePath)

@@ -3,13 +3,7 @@ namespace AsterCache.Core.Trace;
 public sealed record IoSummaryWindow(long StartedUs, long EndedUs);
 
 /// 파일 표의 한 행. ChangedDuringSession 은 관찰 시작 뒤에 쓰인 파일이라 끝난 뒤 읽은 배치가 읽을 때의 배치와 다를 수 있다는 표시입니다.
-/// Size·MTimeTicks 는 플레이마다 남기는 요약이 요약을 저장할 때 잰 파일 크기와 수정 시각 (UTC ticks) 입니다 (세대 대조용, 옛 집계에는 없어 null).
-public sealed record IoSummaryFile(string Path, bool ChangedDuringSession = false, long? Size = null, long? MTimeTicks = null);
-
-/// 플레이마다 남기는 디스크 완료 요약의 부가 정보 (옛 집계에는 없어 null).
-/// DiskOnly: 파일 계층 읽기 이벤트 없이 디스크 완료만 관찰한 세션 (읽기 방식·쓰기 기록이 없음).
-/// LoadPhases: 로딩 판정이 로딩으로 본 구간, Unobserved: 계측이 비어 있던 구간 (둘 다 관찰 시작을 0 으로 한 마이크로초이고, Unobserved 는 관찰 시작 전 구간을 음수로 가집니다).
-public sealed record IoSummaryPlay(bool DiskOnly, IReadOnlyList<IoSummaryWindow> LoadPhases, IReadOnlyList<IoSummaryWindow> Unobserved);
+public sealed record IoSummaryFile(string Path, bool ChangedDuringSession = false);
 
 /// 대상 프로세스의 파일 읽기 요청 표시별 집계입니다. OpenOptions 는 대상 프로세스가 이 파일을 열 때 준 옵션 중 IoSummaryCollector.OpenOptionsMask 비트의 합집합입니다
 /// (순차 FILE_SEQUENTIAL_ONLY 0x4, 캐시 없음 FILE_NO_INTERMEDIATE_BUFFERING 0x8, 임의 접근 FILE_RANDOM_ACCESS 0x800): 관찰이 시작되기 전에 열린 파일은 열기 이벤트가 없어 0 입니다.
@@ -106,8 +100,7 @@ public sealed record IoSummary(
     DateTimeOffset? RawTraceZeroAtUtc = null,
     IReadOnlyList<IoSummaryReadMode>? ReadModes = null,
     IReadOnlyList<long>? TargetStartsUs = null,
-    IReadOnlyList<IoSummaryWriteFile>? WriteFiles = null,
-    IoSummaryPlay? Play = null)
+    IReadOnlyList<IoSummaryWriteFile>? WriteFiles = null)
 {
     public bool HasReadModes => Quality.ReadModesObservedUntilUtc is not null;
 

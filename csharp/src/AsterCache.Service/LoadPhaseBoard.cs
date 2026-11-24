@@ -4,34 +4,10 @@ namespace AsterCache.Service;
 
 /// 게임별 로딩 판정의 지금 상태: 표본 루프 (PlayRecorder) 가 1초마다 쓰고, 게임이 도는 동안 디스크를 읽는 서비스 경로 (실행 중 캐시 유지 회차, 붙든 범위의 점검) 가 읽습니다.
 /// 상태가 바뀔 때만 한 줄을 로그에 남기므로 (시작 사유, 끝 사유와 길이, 그 사이에 미룬 일) 1초마다 찍히지 않습니다. 붙들기를 다시 붙드는 일도 StateOf 와 QueueOf 로 같은 상태를 읽습니다.
-internal sealed class LoadPhaseBoard(ILog log, Func<DateTimeOffset>? now = null)
+internal sealed class LoadPhaseBoard(ILog log)
 {
-    // 한 플레이에서 로딩이었던 구간 (시각은 시계 기준, 끝이 null 이면 아직 로딩 중). 플레이가 끝나도 다음 플레이의 첫 표본이 올 때까지 남아 디스크 완료 요약이 읽습니다.
-    private const int MaxPhasesPerPlay = 256;
-
-    private readonly Func<DateTimeOffset> _now = now ?? (() => DateTimeOffset.UtcNow);
     private readonly object _gate = new();
     private readonly Dictionary<string, Entry> _games = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, List<(DateTimeOffset Start, DateTimeOffset? End)>> _phases = new(StringComparer.OrdinalIgnoreCase);
-
-    /// 이 게임의 가장 최근 플레이에서 로딩이었던 구간들 (아직 로딩 중이면 지금까지). 표본이 한 번도 없었으면 빈 목록.
-    public IReadOnlyList<(DateTimeOffset Start, DateTimeOffset End)> PhasesOf(string game)
-    {
-        lock (_gate)
-        {
-            DateTimeOffset at = _now();
-            return _phases.TryGetValue(game, out List<(DateTimeOffset Start, DateTimeOffset? End)>? list) ? [.. list.Select(p => (p.Start, p.End ?? at))] : [];
-        }
-    }
-
-    // 열려 있는 마지막 구간을 닫음 (호출하는 쪽이 _gate 를 쥠).
-    private void ClosePhase(string game)
-    {
-        if (_phases.TryGetValue(game, out List<(DateTimeOffset Start, DateTimeOffset? End)>? list) && list.Count > 0 && list[^1].End is null)
-        {
-            list[^1] = (list[^1].Start, _now());
-        }
-    }
 
     /// 서비스 자신의 게임 드라이브 읽기 누계: 읽는 쪽이 더하고 입력 공급 (LoadFeed) 이 드라이브 읽기에서 뺍니다.
     public ServiceDiskReads ServiceReads { get; } = new();
@@ -99,23 +75,16 @@ internal sealed class LoadPhaseBoard(ILog log, Func<DateTimeOffset>? now = null)
             if (!_games.TryGetValue(game, out Entry? entry))
             {
                 _games[game] = entry = new Entry();
-                _phases[game] = []; // 새 플레이의 첫 표본: 이전 플레이의 구간은 버림
             }
 
             step = entry.Detector.Add(sample);
             if (step.Started is { } started)
             {
                 entry.Deferred.Clear();
-                if (_phases[game].Count < MaxPhasesPerPlay)
-                {
-                    _phases[game].Add((_now(), null));
-                }
-
                 line = $"{game}: loading phase started ({StartText(started, step)})";
             }
             else if (step.Ended is { } ended)
             {
-                ClosePhase(game);
                 line = EndLine(game, EndText(ended), step.LoadingSeconds, entry.Deferred);
             }
         }
@@ -136,7 +105,6 @@ internal sealed class LoadPhaseBoard(ILog log, Func<DateTimeOffset>? now = null)
         {
             if (_games.Remove(game, out Entry? entry) && entry.Detector.LoadingSince is { } since)
             {
-                ClosePhase(game);
                 line = EndLine(game, "play ended", entry.Detector.LastSeconds - since, entry.Deferred);
             }
         }

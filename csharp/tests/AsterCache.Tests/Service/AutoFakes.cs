@@ -242,9 +242,6 @@ internal sealed class FakeWorld
 
     public int TraceStarts { get; private set; }
 
-    /// 디스크 완료만 관찰하는 가벼운 세션을 연 횟수 (플레이마다 남기는 디스크 완료 요약).
-    public int SummaryTraceStarts { get; private set; }
-
     /// 정규화 (경로 해석·stat) 를 부른 횟수.
     public int CanonicalizeCalls { get; private set; }
 
@@ -462,12 +459,6 @@ internal sealed class FakeWorld
             Listener = listener;
             IoSummaryRoots.Add(roots);
             return StartTraceThrows is null ? StartTraceFactory?.Invoke(TraceStarts) ?? Session ?? throw new InvalidOperationException("Session") : throw StartTraceThrows;
-        },
-        StartSummaryTrace = (_, roots) =>
-        {
-            SummaryTraceStarts++;
-            IoSummaryRoots.Add(roots);
-            return StartTraceThrows is null ? Session ?? throw new InvalidOperationException("Session") : throw StartTraceThrows;
         },
         Canonicalize = e =>
         {

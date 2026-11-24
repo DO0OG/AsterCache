@@ -58,7 +58,9 @@ public static class LoadRefillPlanner
     /// 캐시를 거치지 않고만 읽힌 블록 (페이징 요청 0) 과 관찰 중 바뀐 파일은 뺍니다. 시작 시각이 없는 집계는 건너뛰고 PlaysWithoutStarts 로 셉니다.
     /// window 가 null 이면 시작 시각과 무관하게 플레이 전체 구간의 블록을 모읍니다 (시작 시각이 없는 집계도 한 플레이로 세고 Loads 는 0).
     /// window 가 null 일 때는 블록마다 경기 가중 점수도 셉니다: 페이징 읽기가 난 플레이마다 1점, 그 읽기가 한 번만 닿았고 (Requests 1) 실행 파일 시작 뒤 Window 가 지난 (경기·뒤쪽 로딩) 시각이면 PlayPhaseWeight 점.
-    /// 시작 시각이 없거나 첫 시작보다 앞선 행은 구간을 나눌 수 없어 1점입니다.
+    /// 시작 시각이 없거나 첫 시작보다 앞선 행, 이벤트 유실·상한 초과가 있는 회차의 행은 구간을 나눌 수 없어 1점입니다. 120초는 실행 직후 로딩의 근사입니다 (로드가 더 길 수 있음).
+    /// 점수는 요약이 이미 가진 정보로만 셉니다: 서비스 자신의 읽기로 판정돼 요약에서 빠진 행은 점수에 들지 않고 (서비스 읽기와 겹친 한 번짜리 페이징 읽기가 빠질 수 있어 점수는 낮게 잡히는 쪽), 캐시를 거치지 않은 행 (페이징 0) 도 뺍니다.
+    /// 지금 파일의 크기·수정 시각이 목록을 만들 때와 다르면 (ToRows) 그 파일의 블록은 읽을 때 빠집니다.
     /// isWritten 이 있으면 (순위 목록이 게임이 쓰는 파일도 담을 때) 그 파일의 블록은 WrittenMinPlays 개 이상의 플레이에서 나온 것만 담습니다.
     /// appendOnly 가 참인 파일 (크기가 줄어든 적이 없어 덧붙이기로 보는 파일) 은 관찰 중 수정된 플레이의 읽기도 점수에 넣습니다: 이미 쓰인 위치의 내용은 바뀌지 않으므로 그 플레이에서 읽힌 위치 (시작 때 크기 안이든 덧붙인 뒤든) 는 다음 플레이에도 있습니다.
     public static LoadRefillList Collect(IEnumerable<LoadRefillSource> sources, Func<string, LoadRefillFileStat?> stat, TimeSpan? window, long capBytes, Func<string, bool>? isWritten = null, Func<string, bool>? appendOnly = null)
@@ -81,6 +83,7 @@ public static class LoadRefillPlanner
 
             plays++;
             IoSummary summary = source.Summary;
+            bool exact = summary.Quality.EventsLost == 0 && !summary.Quality.Truncated; // 이벤트 유실이나 상한 초과가 있는 회차는 첫 접근 시각을 믿을 수 없어 구간 가중 없이 1점
             var loadsHit = new HashSet<int>();
             foreach (IoSummaryRow row in summary.Rows)
             {
@@ -122,7 +125,7 @@ public static class LoadRefillPlanner
                     merged[file.Path] = blocks = [];
                 }
 
-                int points = window is null && row.Requests == 1 && OutsideLoadWindow(starts, row.FirstSessionUs) ? PlayPhaseWeight : 1;
+                int points = window is null && exact && row.Requests == 1 && OutsideLoadWindow(starts, row.FirstSessionUs) ? PlayPhaseWeight : 1;
                 blocks[row.BlockNumber] = blocks.TryGetValue(row.BlockNumber, out (int Count, long LatencyUs, int Score) old)
                     ? (old.Count + 1, old.LatencyUs + row.LatencySumUs, old.Score + points)
                     : (1, row.LatencySumUs, points);
@@ -350,8 +353,13 @@ public static class LoadRefillStore
                     { "size", list.Files[p].Size },
                     { "mtime_ticks", list.Files[p].MTimeTicks },
                 }).ToList() },
-            { "blocks", list.Blocks.Select(b => (object?)(b.Score == 0 ? new List<object?> { index[b.Path], b.Block, (long)b.Count, b.LatencyUs } : new List<object?> { index[b.Path], b.Block, (long)b.Count, b.LatencyUs, (long)b.Score })).ToList() }, // 다섯째 칸 (경기 가중 점수) 은 순위 목록에만 있음
+            { "blocks", list.Blocks.Select(b => (object?)new List<object?> { index[b.Path], b.Block, (long)b.Count, b.LatencyUs }).ToList() },
         };
+        if (list.Blocks.Any(b => b.Score != 0))
+        {
+            // 경기 가중 점수는 블록 행 (네 칸 그대로) 과 따로 같은 순서의 목록으로 둠: 이 항목을 모르는 이전 판은 무시하고 행을 그대로 읽어 순위를 잃지 않음 (순위 목록에만 있음)
+            root.Add("play_scores", list.Blocks.Select(b => (object?)(long)b.Score).ToList());
+        }
 
         string temp = path + ".tmp";
         string text = PyJson.Dumps(root, ensureAscii: false) + "\n";
@@ -394,15 +402,21 @@ public static class LoadRefillStore
             var blocks = new List<LoadRefillBlock>(blockRows.Count);
             foreach (object? row in blockRows)
             {
-                if (row is not List<object?> { Count: 4 or 5 } cells || cells[0] is not long file || file < 0 || file >= paths.Count
+                if (row is not List<object?> { Count: 4 } cells || cells[0] is not long file || file < 0 || file >= paths.Count
                     || cells[1] is not long block || block < 0 || cells[2] is not long count || count < 1 || count > int.MaxValue
-                    || cells[3] is not long latency || latency < 0
-                    || cells.Count == 5 && (cells[4] is not long score || score < count || score > int.MaxValue))
+                    || cells[3] is not long latency || latency < 0)
                 {
                     return null;
                 }
 
-                blocks.Add(new LoadRefillBlock(paths[(int)file], block, (int)count, latency, cells.Count == 5 ? (int)(long)cells[4]! : 0));
+                blocks.Add(new LoadRefillBlock(paths[(int)file], block, (int)count, latency));
+            }
+
+            // 경기 가중 점수 (선택 항목): 블록 수와 같은 길이이고 모든 값이 그 블록의 플레이 수 이상일 때만 쓰고, 아니면 점수 없이 (예전 순서 그대로) 읽음
+            if (root.TryGetValue("play_scores", out object? scoresValue) && scoresValue is List<object?> scoreRows && scoreRows.Count == blocks.Count
+                && scoreRows.Select((s, i) => s is long score && score >= blocks[i].Count && score <= int.MaxValue).All(ok => ok))
+            {
+                blocks = [.. blocks.Select((b, i) => b with { Score = (int)(long)scoreRows[i]! })];
             }
 
             return new LoadRefillList(blocks, files, (int)plays, (int)loads, (int)withoutStarts, skipped, dropped);

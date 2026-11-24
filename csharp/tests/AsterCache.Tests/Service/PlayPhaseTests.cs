@@ -261,32 +261,6 @@ public sealed class PlayPhaseTests
         Assert.Equal(["Info: g: loading phase started (executable started)", "Info: g: loading phase ended after 21 s (play ended)"], log.Lines);
     }
 
-    [Fact]
-    public void TheBoardKeepsTheLoadingPeriodsOfTheLatestPlayEvenAfterThePlayEndedAndStartsOverWithTheNextPlay()
-    {
-        var start = new DateTimeOffset(2026, 11, 24, 12, 0, 0, TimeSpan.Zero);
-        DateTimeOffset now = start;
-        var board = new LoadPhaseBoard(new ListLog(), () => now);
-        Assert.Empty(board.PhasesOf("g"));
-
-        _ = board.Add("g", S(0, exe: true)); // 12:00:00 에 로딩 시작
-        now = now.AddSeconds(30);
-        Assert.Equal([(start, now)], board.PhasesOf("g")); // 아직 로딩 중이면 지금까지
-        for (int t = 1; t <= 20; t++)
-        {
-            now = now.AddSeconds(1);
-            _ = board.Add("g", S(t)); // 초 1 부터 조용해 초 16 (시계로 30 + 16 초) 에 끝남
-        }
-
-        now = now.AddMinutes(5);
-        board.Forget("g"); // 플레이 끝
-        Assert.Equal([(start, start.AddSeconds(46))], board.PhasesOf("G")); // 표본이 끊긴 뒤에도 남음 (끝난 구간이라 시계가 더 가도 그대로)
-
-        now = now.AddHours(1);
-        _ = board.Add("g", S(0)); // 다음 플레이의 첫 표본
-        Assert.Empty(board.PhasesOf("g"));
-    }
-
     // ---- 입력 공급 ----
 
     private const string Root = @"D:\Games\g";

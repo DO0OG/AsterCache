@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+using AsterCache.Core.Json;
 using AsterCache.Core.Model;
 using AsterCache.Core.Prefetch;
 using AsterCache.Core.Trace;
@@ -259,20 +261,54 @@ public sealed class LoadRefillTests : IDisposable
     }
 
     [Fact]
-    public void ListWithScoresSurvivesAWriteAndReadAndAnOldFourCellListStillReads()
+    public void ScoresAreSavedApartFromTheFourCellRowsSoAnOlderReaderStillReadsTheRanking()
     {
         var files = new Dictionary<string, LoadRefillFileStat> { [A] = Stat };
         string path = Path.Combine(_dir, "j.trace.json" + LoadRefillStore.RankedSuffix);
 
-        LoadRefillStore.Write(path, new LoadRefillList([new(A, 3, 2, 400, 7), new(A, 4, 1, 5)], files, 2, 0, 0, 0, 0), Started);
-        LoadRefillList restored = Assert.IsType<LoadRefillList>(LoadRefillStore.Read(path));
+        LoadRefillStore.Write(path, new LoadRefillList([new(A, 3, 2, 400, 7), new(A, 4, 1, 5, 1)], files, 2, 0, 0, 0, 0), Started);
 
-        Assert.Equal([(3L, 2, 7), (4L, 1, 0)], restored.Blocks.Select(b => (b.Block, b.Count, b.Score)));
-        string compact = new string([.. File.ReadAllText(path).Where(c => !char.IsWhiteSpace(c))]);
-        Assert.Contains("[0,3,2,400,7]", compact, StringComparison.Ordinal);
-        Assert.Contains("[0,4,1,5]", compact, StringComparison.Ordinal); // 점수가 없는 블록은 예전과 같은 네 칸
+        // 이전 판의 읽기 규칙: 필수 최상위 항목만 보고, 블록 행은 정확히 네 칸 (모르는 최상위 항목은 보지 않음)
+        var root = Assert.IsType<JObject>(JsonRead.ReadFile(path));
+        foreach (string key in new[] { "version", "block_size", "plays", "loads", "plays_without_starts", "skipped_nocache_blocks", "dropped_by_cap_blocks", "files", "blocks" })
+        {
+            Assert.True(root.ContainsKey(key), key);
+        }
 
-        File.WriteAllText(path, File.ReadAllText(path).Replace("7]", "1]", StringComparison.Ordinal)); // 점수가 플레이 수보다 작으면 못 읽음
-        Assert.Null(LoadRefillStore.Read(path));
+        Assert.All(Assert.IsType<List<object?>>(root["blocks"]), row => Assert.Equal(4, Assert.IsType<List<object?>>(row).Count));
+        Assert.Equal([7L, 1L], Assert.IsType<List<object?>>(root["play_scores"]).Cast<long>());
+        Assert.Equal([(3L, 2, 7), (4L, 1, 1)], Assert.IsType<LoadRefillList>(LoadRefillStore.Read(path)).Blocks.Select(b => (b.Block, b.Count, b.Score)));
+
+        string text = File.ReadAllText(path);
+        File.WriteAllText(path, text.Replace("\"play_scores\"", "\"x_play_scores\"", StringComparison.Ordinal)); // 점수 항목이 없는 (예전) 파일: 순위는 그대로, 점수만 없음
+        Assert.Equal([(3L, 2, 0), (4L, 1, 0)], Assert.IsType<LoadRefillList>(LoadRefillStore.Read(path)).Blocks.Select(b => (b.Block, b.Count, b.Score)));
+
+        File.WriteAllText(path, Regex.Replace(text, "\"play_scores\":\\s*\\[7,\\s*1\\]", "\"play_scores\": [1, 1]")); // 점수가 플레이 수보다 작음: 점수만 버리고 순위는 읽음
+        Assert.Equal([(3L, 2, 0), (4L, 1, 0)], Assert.IsType<LoadRefillList>(LoadRefillStore.Read(path)).Blocks.Select(b => (b.Block, b.Count, b.Score)));
+
+        File.WriteAllText(path, Regex.Replace(text, "\"play_scores\":\\s*\\[7,\\s*1\\]", "\"play_scores\": [7]")); // 블록 수와 길이가 다름
+        Assert.Equal([0, 0], Assert.IsType<LoadRefillList>(LoadRefillStore.Read(path)).Blocks.Select(b => b.Score));
+
+        LoadRefillStore.Write(path, new LoadRefillList([new(A, 3, 2, 400)], files, 2, 0, 0, 0, 0), Started);
+        Assert.DoesNotContain("play_scores", File.ReadAllText(path), StringComparison.Ordinal); // 점수가 없으면 파일 모양도 예전과 같음
+    }
+
+    [Fact]
+    public void ScoringChangesNeitherTheRankedOrderNorTheLoadListAndALossyPlayGetsNoPhaseWeight()
+    {
+        var files = new[] { new IoSummaryFile(A), new IoSummaryFile(B) };
+        // 블록 A0 는 두 플레이 모두 로드 창 안 (지연 큼), 블록 B0 는 한 플레이의 경기 중 (3 점이지만 플레이 수 1)
+        LoadRefillSource first = Source([Sec(10)], files, Row(0, 0, 11, latencyUs: 900), Row(1, 0, 200, latencyUs: 5));
+        LoadRefillSource second = Source([Sec(10)], files, Row(0, 0, 12, latencyUs: 900));
+
+        LoadRefillList ranked = LoadRefillPlanner.Collect([first, second], Existing, null, 1L << 30);
+        LoadRefillList loads = LoadRefillPlanner.Collect([first, second], Existing, TimeSpan.FromSeconds(120), 1L << 30);
+
+        Assert.Equal([(A, 0L, 2, 1800L, 2), (B, 0L, 1, 5L, 3)], ranked.Blocks.Select(b => (b.Path, b.Block, b.Count, b.LatencyUs, b.Score))); // 순서는 플레이 수 → 지연 합 그대로, 점수는 따로
+        Assert.Equal([(A, 0L, 2, 1800L, 0)], loads.Blocks.Select(b => (b.Path, b.Block, b.Count, b.LatencyUs, b.Score))); // 로드 목록은 점수 없이 지금과 같음
+
+        LoadRefillSource lossy = first with { Summary = first.Summary with { Quality = first.Summary.Quality with { EventsLost = 4 } } };
+        LoadRefillList withLoss = LoadRefillPlanner.Collect([lossy, second], Existing, null, 1L << 30);
+        Assert.Equal(1, withLoss.Blocks.Single(b => b.Path == B).Score); // 이벤트 유실이 있는 회차는 구간 가중 없이 1점
     }
 }

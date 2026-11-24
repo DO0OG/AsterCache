@@ -238,7 +238,7 @@ public sealed class PrewarmEnv
             TouchRanges = StandbyTouch.Run,
             KeepProbeSamples = StandbyTouch.Probe,
             ListStamp = PrewarmRun.InputStamp,
-            RankedRows = g => LoadRefillPlans.RankedRows(g),
+            RankedRows = g => LoadRefillPlans.RankedRows(g, playOrder: true), // 유지·붙들기·사다리·시작 만지기의 중요도 순서 (예열 선택은 Streaming 이 playOrder 없이 부름)
             IsSparse = p => FileGuards.IsSparse(p),
             DeviceCalibrationEnabled = orbitRuntime is null ? null : () => orbitRuntime.Mode != "off",
             DeviceCalibration = orbitCalibration is null ? null : (g, ops, antiCheat, lease, ct, limit) =>

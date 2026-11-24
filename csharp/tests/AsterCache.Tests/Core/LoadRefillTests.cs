@@ -222,4 +222,57 @@ public sealed class LoadRefillTests : IDisposable
         Assert.Equal([(A, 0L, 1)], without.Blocks.Select(b => (b.Path, b.Block, b.Count))); // 수정된 플레이는 빠져 W 블록은 한 플레이뿐이라 두 플레이 기준에 못 미침
         Assert.Equal([(W, 3L, 2), (A, 0L, 1)], with.Blocks.Select(b => (b.Path, b.Block, b.Count))); // 덧붙이기로 보는 W 만 두 플레이 (수정된 플레이 포함), 정적 A 는 그대로
     }
+
+    [Fact]
+    public void WithoutAWindowEachPlayScoresOnePointAndSingleTouchReadsAfterTheLoadWindowThreeAndWithAWindowThereIsNoScore()
+    {
+        var files = new[] { new IoSummaryFile(A), new IoSummaryFile(B) };
+        // 시작 10 초: 로드 창은 10~130 초. 블록 0 창 안, 1 창 밖 (경기), 2 창 밖이지만 두 번 닿음 (시각을 나눌 수 없음), 3 첫 시작보다 앞
+        LoadRefillSource first = Source([Sec(10)], files, Row(0, 0, 11), Row(0, 1, 200), new IoSummaryRow(0, 2, 2, Block, 100, 100, Sec(200), 2), Row(0, 3, 5));
+        LoadRefillSource second = Source([], files, Row(0, 1, 200), Row(1, 0, 200)); // 시작 시각이 없는 요약은 구간을 모름: 1점
+
+        LoadRefillList ranked = LoadRefillPlanner.Collect([first, second], Existing, null, 1L << 30);
+        LoadRefillList loads = LoadRefillPlanner.Collect([first], Existing, TimeSpan.FromSeconds(120), 1L << 30);
+
+        Assert.Equal([(0L, 1), (1L, 4), (2L, 1), (3L, 1)], ranked.Blocks.Where(b => b.Path == A).OrderBy(b => b.Block).Select(b => (b.Block, b.Score))); // 블록 1: 3 + 1
+        Assert.Equal(1, ranked.Blocks.Single(b => b.Path == B).Score);
+        Assert.All(loads.Blocks, b => Assert.Equal(0, b.Score)); // 로드 구간 목록에는 점수를 세지 않음 (목록 파일 모양이 그대로)
+    }
+
+    [Fact]
+    public void PlayOrderPutsTheHighestScoresFirstWithinTheFrontBudgetThenKeepsTheRankedOrderWithoutDuplicates()
+    {
+        LoadRefillBlock Block_(string path, long block, int count, int score) => new(path, block, count, 10, score);
+        LoadRefillBlock[] ranked = [Block_(A, 0, 3, 3), Block_(B, 0, 1, 5), Block_(A, 1, 2, 9), Block_(A, 2, 1, 1), Block_(B, 1, 1, 5)];
+
+        IReadOnlyList<LoadRefillBlock> order = LoadRefillPlanner.PlayOrder(ranked, _ => false, 3 * Block);
+
+        Assert.Equal([(A, 1L), (B, 0L), (B, 1L), (A, 0L), (A, 2L)], order.Select(b => (b.Path, b.Block))); // 앞 3 블록은 점수 순 (같은 점수는 목록 순서), 나머지는 목록 순서
+        Assert.Equal(ranked.Length, order.Select(b => (b.Path, b.Block)).Distinct().Count());
+
+        LoadRefillBlock[] withSparse = [Block_(A, 0, 1, 1), Block_(B, 0, 1, 9), Block_(B, 1, 1, 8), Block_(A, 1, 1, 5), Block_(A, 2, 1, 2)];
+        IReadOnlyList<LoadRefillBlock> sparse = LoadRefillPlanner.PlayOrder(withSparse, path => path == B, 1 * Block);
+        Assert.Equal([(B, 0L), (B, 1L), (A, 1L), (A, 0L), (A, 2L)], sparse.Select(b => (b.Path, b.Block))); // 스파스 파일 블록은 앞 양을 쓰지 않음: 앞 한 블록은 일반 파일의 A1 (5점) 이 차지하고 그 앞의 스파스 블록 둘이 따라 앞에 옴
+
+        LoadRefillBlock[] unknown = [Block_(A, 0, 3, 0), Block_(B, 0, 1, 0)];
+        Assert.Same(unknown, LoadRefillPlanner.PlayOrder(unknown, _ => false)); // 구간을 모르는 (옛) 목록은 그대로
+    }
+
+    [Fact]
+    public void ListWithScoresSurvivesAWriteAndReadAndAnOldFourCellListStillReads()
+    {
+        var files = new Dictionary<string, LoadRefillFileStat> { [A] = Stat };
+        string path = Path.Combine(_dir, "j.trace.json" + LoadRefillStore.RankedSuffix);
+
+        LoadRefillStore.Write(path, new LoadRefillList([new(A, 3, 2, 400, 7), new(A, 4, 1, 5)], files, 2, 0, 0, 0, 0), Started);
+        LoadRefillList restored = Assert.IsType<LoadRefillList>(LoadRefillStore.Read(path));
+
+        Assert.Equal([(3L, 2, 7), (4L, 1, 0)], restored.Blocks.Select(b => (b.Block, b.Count, b.Score)));
+        string compact = new string([.. File.ReadAllText(path).Where(c => !char.IsWhiteSpace(c))]);
+        Assert.Contains("[0,3,2,400,7]", compact, StringComparison.Ordinal);
+        Assert.Contains("[0,4,1,5]", compact, StringComparison.Ordinal); // 점수가 없는 블록은 예전과 같은 네 칸
+
+        File.WriteAllText(path, File.ReadAllText(path).Replace("7]", "1]", StringComparison.Ordinal)); // 점수가 플레이 수보다 작으면 못 읽음
+        Assert.Null(LoadRefillStore.Read(path));
+    }
 }

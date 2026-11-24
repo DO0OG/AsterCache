@@ -87,7 +87,7 @@ public sealed record TraceStageIndex(IReadOnlyList<TraceStage> Stages)
     {
         var runIo = new Regex($@"^{Regex.Escape(stem)}\.run\d+{Regex.Escape(suffix)}{Regex.Escape(IoSummaryStore.Suffix)}(\.invalid)?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         var standaloneIo = new Regex($@"^{Regex.Escape(name)}\.io-only\.\d{{2}}\.json(\.invalid)?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        var targets = new List<string> { IoSummaryStore.RunPath(full), IoSummaryStore.InvalidPath(IoSummaryStore.RunPath(full)), IoSummaryStore.TriedPath(full) };
+        var targets = new List<string> { IoSummaryStore.RunPath(full), IoSummaryStore.InvalidPath(IoSummaryStore.RunPath(full)), IoSummaryStore.TriedPath(full), IoSummaryStore.PlayIndexPath(full) };
         try
         {
             if (Directory.Exists(dir))

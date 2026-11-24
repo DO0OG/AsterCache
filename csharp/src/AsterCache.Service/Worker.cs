@@ -92,6 +92,11 @@ public sealed class Worker : BackgroundService
             prewarm.LoadPhases = playRecorder.LoadPhases; // 게임 안 로딩 판정: 로딩인 동안 게임 중 디스크 읽기를 미룸
         }
 
+        if (auto is not null && playRecorder is not null)
+        {
+            auto.Tracer.LoadPhasesOf = playRecorder.LoadPhases.PhasesOf; // 플레이마다 남기는 디스크 완료 요약의 로딩 구간 경계
+        }
+
         if (backgroundYield is not null && playRecorder is not null)
         {
             backgroundYield.Footprint = playRecorder.Footprint; // 배경 양보도 같은 값으로 게임이 가져갈 양을 가늠해 모자랄 때만 비움

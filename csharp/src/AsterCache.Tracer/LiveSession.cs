@@ -33,6 +33,9 @@ public sealed class LiveSession : IDisposable
     /// DefaultBufferMB 로 세션을 열지 못할 때 쓰는 TraceEvent 기본 크기.
     public const int FallbackBufferMB = 64;
 
+    /// 디스크 완료만 관찰하는 세션 (diskOnly) 의 버퍼 총량 (MB). 파일 읽기·열기 이벤트가 없어 이벤트 수가 훨씬 적으므로 기본보다 작게 둡니다 (재지 않은 어림: 유실 수는 EventsLost 로 남음).
+    public const int DiskOnlyBufferMB = 16;
+
     private readonly TraceEventSession _session;
     private readonly KernelCollector _collector;
     private readonly Task _pump;
@@ -71,22 +74,27 @@ public sealed class LiveSession : IDisposable
     /// 비관리자면 NotAdminException (세션을 만들기 전에 검사).
     public static LiveSession Start(IReadOnlyCollection<string> exeNames, string sessionName = DefaultSessionName, bool restartExisting = false,
         Func<bool>? isAdmin = null, DevicePaths? devices = null, int bufferMB = DefaultBufferMB, LiveListener? listener = null,
-        TimeSpan? flushInterval = null, ILog? log = null, IReadOnlyCollection<string>? ioSummaryRoots = null)
+        TimeSpan? flushInterval = null, ILog? log = null, IReadOnlyCollection<string>? ioSummaryRoots = null, bool diskOnly = false)
     {
         Elevation.RequireAdmin(isAdmin);
+        if (diskOnly && ioSummaryRoots is not { Count: > 0 })
+        {
+            throw new ArgumentException("a disk-only session needs the summary roots", nameof(ioSummaryRoots)); // 디스크 완료 요약이 이 세션이 모으는 전부
+        }
+
         try
         {
-            return Open(exeNames, sessionName, restartExisting, devices, bufferMB, listener, flushInterval, log, ioSummaryRoots);
+            return Open(exeNames, sessionName, restartExisting, devices, bufferMB, listener, flushInterval, log, ioSummaryRoots, diskOnly);
         }
         catch (Exception) when (bufferMB > FallbackBufferMB)
         {
-            return Open(exeNames, sessionName, restartExisting, devices, FallbackBufferMB, listener, flushInterval, log, ioSummaryRoots);
+            return Open(exeNames, sessionName, restartExisting, devices, FallbackBufferMB, listener, flushInterval, log, ioSummaryRoots, diskOnly);
         }
     }
 
     private static LiveSession Open(
         IReadOnlyCollection<string> exeNames, string sessionName, bool restartExisting, DevicePaths? devices, int bufferMB, LiveListener? listener,
-        TimeSpan? flushInterval, ILog? log, IReadOnlyCollection<string>? ioSummaryRoots)
+        TimeSpan? flushInterval, ILog? log, IReadOnlyCollection<string>? ioSummaryRoots, bool diskOnly)
     {
         IReadOnlySet<uint>? gameDisks = ioSummaryRoots is { Count: > 0 } ? GameDiskNumbers(ioSummaryRoots) : null; // 세션을 열기 전에 한 번만 조회
         var session = new TraceEventSession(sessionName,
@@ -94,7 +102,10 @@ public sealed class LiveSession : IDisposable
         try
         {
             session.BufferSizeMB = bufferMB; // 제공자를 켜기 전에만 설정 가능
-            KernelTraceEventParser.Keywords keywords = KernelTraceEventParser.Keywords.Process | KernelTraceEventParser.Keywords.FileIO | KernelTraceEventParser.Keywords.FileIOInit;
+            // diskOnly: 프로세스 (실행 파일 시작 시각) 와 디스크 완료만. 파일 이름·읽기·쓰기 이벤트는 켜지 않아 이벤트가 적고, 읽기 방식·쓰기 기록은 이 세션의 집계에 없음 (파일은 끝난 뒤 배치로 정하므로 디스크 완료 요약은 그대로 만들어짐)
+            KernelTraceEventParser.Keywords keywords = diskOnly
+                ? KernelTraceEventParser.Keywords.Process
+                : KernelTraceEventParser.Keywords.Process | KernelTraceEventParser.Keywords.FileIO | KernelTraceEventParser.Keywords.FileIOInit;
             if (ioSummaryRoots is { Count: > 0 })
             {
                 keywords |= KernelTraceEventParser.Keywords.DiskIO; // 디스크 읽기 완료만: 위치·크기·지연이 오고, 파일은 끝난 뒤 배치로 정함

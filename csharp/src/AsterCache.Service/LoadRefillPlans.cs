@@ -192,7 +192,8 @@ internal static class LoadRefillPlans
     /// 게임이 끝난 뒤 만들어 둔 파일만 읽고 .io.json 은 읽지 않습니다.
     /// 이 게임의 예열 한 회 (PrewarmRun) 안이면 파일이 바뀌었을 때 새로 읽어 이 회의 선택으로 삼고 (스트림이 읽으면 확정), 그 밖 (사다리·시작 만지기·유지·표본, 다른 게임의 예열 회 안) 이면 기억한 목록을 그대로 씁니다.
     /// 기억한 것이 없으면 (서비스를 막 시작한 때) 지금 파일을 읽어 기억합니다: 그 파일이 마지막 예열 뒤에 바뀌었다면 목록이 어긋날 수 있고, 유지는 그 경우를 스스로 알아차려 순위 없는 순서로 다시 시도합니다.
-    internal static List<TraceEvent>? RankedRows(GameSettings g, CancellationToken cancellationToken = default)
+    /// playOrder 이면 (유지·붙들기·사다리가 쓰는 중요도 순서) 앞 LoadRefillPlanner.PlayFrontBytes 를 경기 가중 점수 순으로 놓습니다. 예열 선택은 아니므로 (Streaming 이 이 값 없이 부름) 선택 순서는 그대로입니다.
+    internal static List<TraceEvent>? RankedRows(GameSettings g, CancellationToken cancellationToken = default, bool playOrder = false, Func<string, bool>? isSparse = null)
     {
         string path = RankedPathOf(g);
         RankedPins.TryGetValue(path, out RankedPin? pin);
@@ -209,7 +210,7 @@ internal static class LoadRefillPlans
                         RankedPending[path] = null;
                     }
 
-                    return inRun ? null : pin is null ? null : ToRowsOf(g, pin, cancellationToken);
+                    return inRun ? null : pin is null ? null : ToRowsOf(g, pin, cancellationToken, playOrder, isSparse);
                 }
 
                 RankedPin? current = inRun && RankedPending.TryGetValue(path, out RankedPin? pending) ? pending : pin;
@@ -234,17 +235,18 @@ internal static class LoadRefillPlans
             }
         }
 
-        return pin is null ? null : ToRowsOf(g, pin, cancellationToken);
+        return pin is null ? null : ToRowsOf(g, pin, cancellationToken, playOrder, isSparse);
     }
 
-    private static List<TraceEvent>? ToRowsOf(GameSettings g, RankedPin pin, CancellationToken cancellationToken)
+    private static List<TraceEvent>? ToRowsOf(GameSettings g, RankedPin pin, CancellationToken cancellationToken, bool playOrder, Func<string, bool>? isSparse)
     {
         if (pin.List.Blocks.Count == 0)
         {
             return null;
         }
 
-        List<TraceEvent> rows = LoadRefillPlanner.ToRows(pin.List, StatOf(g, includeWritten: true), cancellationToken); // 순위 목록이 담은 파일만 나옴 (게임이 쓰는 파일은 memory.keep_hold_written_files 가 켜진 때 만든 목록에만 있음)
+        LoadRefillList list = playOrder ? pin.List with { Blocks = LoadRefillPlanner.PlayOrder(pin.List.Blocks, isSparse ?? (path => FileGuards.IsSparse(path))) } : pin.List;
+        List<TraceEvent> rows = LoadRefillPlanner.ToRows(list, StatOf(g, includeWritten: true), cancellationToken); // 순위 목록이 담은 파일만 나옴 (게임이 쓰는 파일은 memory.keep_hold_written_files 가 켜진 때 만든 목록에만 있음)
         if (g.SkipSparse)
         {
             // 스파스 구간을 메모리 예열에서 뺀 게임 (SparseWarmExclusion): 어차피 빠질 스파스 블록이 예산을 쓰지 않게 순위 행에서도 뺌

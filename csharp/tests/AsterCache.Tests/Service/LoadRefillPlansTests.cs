@@ -122,6 +122,18 @@ public sealed class LoadRefillPlansTests : IDisposable
     }
 
     [Fact]
+    public void PlayOrderPutsBlocksReadAfterTheLoadWindowFirstWhileTheSelectionOrderStaysTheSame()
+    {
+        // 두 플레이 (시작 0): 블록 0 은 두 플레이 모두 로드 창 안 (2 점, 플레이 수 2), 블록 1 은 한 플레이의 경기 중 (3 점), 블록 2 는 다른 플레이의 경기 중 (3 점, 지연이 더 작음)
+        IoSummaryStore.WriteForRun(Run(1), Rows([new IoSummaryFile(_gameFile)], Row(0, 0, 2, latencyUs: 700), Row(0, 1, 900, latencyUs: 50)) with { TargetStartsUs = [0] });
+        IoSummaryStore.WriteForRun(Run(2), Rows([new IoSummaryFile(_gameFile)], Row(0, 0, 3, latencyUs: 700), Row(0, 2, 800, latencyUs: 9)) with { TargetStartsUs = [0] });
+        _ = LoadRefillPlans.RebuildRanked(_game, Started);
+
+        Assert.Equal([0L, 1L, 2L], LoadRefillPlans.RankedRows(_game)!.Select(r => r.Offset / Block)); // 예열 선택: 플레이 수, 지연 합 순위 그대로
+        Assert.Equal([1L, 2L, 0L], LoadRefillPlans.RankedRows(_game, playOrder: true, isSparse: _ => false)!.Select(r => r.Offset / Block)); // 유지·붙들기: 경기 가중 점수 순
+    }
+
+    [Fact]
     public void RankedListLeavesOutNoCacheBlocksVolatileUnbufferedAndUnlistedFilesKeepsSparseBlocksAndLogsWhatItDropped()
     {
         string sparse = Path.Combine(Path.GetDirectoryName(_gameFile)!, "sparse.bin");

@@ -536,6 +536,14 @@ public sealed class AutoTracer
 
     public const int MaxIoSummaryTries = IoSummaryStore.MaxTried;
 
+    /// 게임의 가장 최근 플레이에서 로딩이었던 구간 (로딩 판정이 쌓은 값, 서비스를 조립하는 쪽이 채움): 플레이마다 남기는 디스크 완료 요약에 구간 경계로 들어갑니다. 없으면 구간 없이 남김.
+    public Func<string, IReadOnlyList<(DateTimeOffset Start, DateTimeOffset End)>>? LoadPhasesOf { get; set; }
+
+    /// 이 게임의 지금 플레이에 디스크 완료 요약만 남기는 가벼운 세션을 열 차례인가: 이미 원시 트레이스가 있는 (학습이 끝난) 게임에서 트레이스를 허용하는 설정이고 안티치트가 막지 않을 때.
+    /// 원시 트레이스를 뜨는 플레이는 그 세션이 같은 요약을 남기므로 여기서 거르지 않고 부르는 쪽 (Start) 이 따집니다. 정책 (끔·일시 중지) 은 Start 가 먼저 거릅니다.
+    public static bool PlaySummaryWanted(GameSettings g, AutoSettings a, AutoEnv env) =>
+        a.Trace && a.IoSummaryEnabled && g.AllowedRoots.Count > 0 && env.FileExists(RawTracePath(g)) && env.TraceBlocker(g) is null;
+
     /// 읽기 방식 집계가 있는 서로 다른 플레이 두 번을 모으기 위한 추가 추적 차례 (1..MaxIoSummaryTries), 해당 없으면 0.
     public static int IoSummaryAttempt(GameSettings g, AutoSettings a, AutoEnv env)
     {
@@ -663,7 +671,10 @@ public sealed class AutoTracer
     public TimeSpan IoScanBudget { get; init; } = TimeSpan.FromSeconds(30);
 
     /// 이 게임의 다음 플레이를 트레이스할지 (게임 시작 판정과 Start 가 같은 NextTrace 를 씀).
-    public bool WantsRun(GameSettings g)
+    public bool WantsRun(GameSettings g) => WantsRawTrace(g) || PlaySummaryWanted(g, _settings().Auto, _env);
+
+    /// 이 게임의 다음 플레이에 원시 트레이스를 뜰 필요가 있는가 (필요한 회차, 단계 색인, 읽기 방식 집계, 로드 목록 보강 중 하나). 디스크 완료 요약만 남기는 플레이는 여기에 들지 않습니다.
+    public bool WantsRawTrace(GameSettings g)
     {
         AutoSettings auto = _settings().Auto;
         return NextTrace(g, auto, _env, _status, MinRunBytes).Wanted
@@ -802,6 +813,7 @@ public sealed class AutoTracer
         int stageAttempt; // 단계 색인만을 위한 추가 추적의 차례 (아니면 0)
         int ioSummaryAttempt; // 물리 읽기 집계를 위한 추가 추적의 차례 (아니면 0)
         int loadListAttempt; // 로드 구간 목록 보강을 위한 추가 추적의 차례 (아니면 0)
+        bool summaryOnly; // 원시 트레이스 없이 디스크 완료 요약만 남기는 플레이 (위 어느 목적도 아닐 때)
         int runNumber = 0;
         lock (_lock)
         {
@@ -818,6 +830,7 @@ public sealed class AutoTracer
             stageAttempt = next.Wanted ? 0 : StageTraceAttempt(g, auto, _env);
             ioSummaryAttempt = next.Wanted ? 0 : IoSummaryAttemptForService(g, auto);
             loadListAttempt = next.Wanted ? 0 : LoadListAttempt(g, auto, _env);
+            summaryOnly = !next.Wanted && stageAttempt == 0 && ioSummaryAttempt == 0 && loadListAttempt == 0 && PlaySummaryWanted(g, auto, _env);
             firstRun = !_env.FileExists(RawTracePath(g));
             if (_run is { } running)
             {
@@ -829,7 +842,7 @@ public sealed class AutoTracer
                 return false;
             }
 
-            if (_stopCleanupFailed || !wantedAtGameStart && !next.Wanted && stageAttempt == 0 && ioSummaryAttempt == 0 && loadListAttempt == 0)
+            if (_stopCleanupFailed || !wantedAtGameStart && !next.Wanted && stageAttempt == 0 && ioSummaryAttempt == 0 && loadListAttempt == 0 && !summaryOnly)
             {
                 return false;
             }
@@ -850,7 +863,7 @@ public sealed class AutoTracer
             {
                 try
                 {
-                    if (LastRunNumber(g, _env.FileExists) >= MaxRunFiles)
+                    if (!summaryOnly && LastRunNumber(g, _env.FileExists) >= MaxRunFiles)
                     {
                         CompactRunsForRelearn(g);
                         done = RunCount(g, _env.FileExists, _env.RunReadBytes, MinRunBytes);
@@ -863,12 +876,15 @@ public sealed class AutoTracer
                     learn = ls.Enabled && firstRun && GamePolicy.AllowsPrewarm(latest) ? AutoLearn.Create(g, ls, _env.PhysicalRamBytes(), _learn) : null; // 시스템 SSD·SSD 는 위에서 이미 걸러짐
                     var exits = new GameExitTracker(_env.Now);
                     exits.ObserveStarted(g);
-                    _run = new Run(g, _env.StartTrace(g.ExeNames, learn is null ? null : AutoLearn.Listener(learn), auto.IoSummaryEnabled ? g.AllowedRoots : null), _env.Now(), exits)
+                    _run = new Run(g, summaryOnly ? OpenSummarySession(g) : _env.StartTrace(g.ExeNames, learn is null ? null : AutoLearn.Listener(learn), auto.IoSummaryEnabled ? g.AllowedRoots : null), _env.Now(), exits)
                     {
                         Learn = learn,
                         Number = LastRunNumber(g, _env.FileExists) + 1,
                         RawWrittenAtStart = _env.FileWriteTime(RawTracePath(g)),
                         IoSummaryEnabled = auto.IoSummaryEnabled,
+                        SummaryOnly = summaryOnly,
+                        RawEnded = summaryOnly, // 원시 기록은 뜨지 않음: Step 은 게임이 끝나길 기다릴 뿐
+                        InitialWindowEnded = summaryOnly,
                     }; // 번호는 유효 회차 수가 아니라 있는 run 파일 기준 (덮어쓰기 금지)
                     runNumber = _run.Number;
                     _run.Session?.NoteTriggerStart(); // Start 는 등록 실행 파일의 시작을 감지한 직후에만 불림 (게임 시작·재실행 대기 뒤 재시도)
@@ -966,6 +982,12 @@ public sealed class AutoTracer
 
             string purpose = string.Join(" and ", purposes);
             _log.Info($"{g.Name}: auto trace started (run {runNumber} for {purpose})");
+            return true;
+        }
+
+        if (summaryOnly)
+        {
+            _log.Info($"{g.Name}: play summary started (disk completions only, no raw trace)");
             return true;
         }
 
@@ -1377,7 +1399,7 @@ public sealed class AutoTracer
 
         _shadow.Shutdown();
         orbitModel.Dispose();
-        if (!finishing && run is { RawEnded: true, IoSummaryEnabled: true, Session: not null }) // 이미 Finish 가 세션을 멈추는 중이면 그쪽이 저장함
+        if (!finishing && run is { RawEnded: true, IoSummaryEnabled: true, SummaryOnly: false, Session: not null }) // 이미 Finish 가 세션을 멈추는 중이면 그쪽이 저장함. 디스크 완료 요약만 남기는 플레이는 저장할 원시 기록이 없고 요약은 종료 중에는 만들지 않음
         {
             // 원시 기록이 이미 확정된 채 관찰만 이어 가던 중이었음: 이 변경 전에는 상한에서 세션을 멈추고 보류해 두던 기록이라 같은 저장 경로로 보냄 (집계는 변환을 건너뛰고 버림)
             try
@@ -1441,6 +1463,11 @@ public sealed class AutoTracer
             }
 
             ResolveIoSummary(run);
+            if (run.SummaryOnly)
+            {
+                return FinishPlaySummary(run, records, why, lockWait);
+            }
+
             (List<TraceEvent> events, _) = TraceBuilder.Build(records, g.ExeNames, g.OriginRoot);
             List<TraceEvent> canonical = _env.Canonicalize(events);
             IReadOnlyList<StageMark> stageMarks = TraceStageMarks.FromRecords(records, g.ExeNames);
@@ -1706,8 +1733,71 @@ public sealed class AutoTracer
             scan.Dispose();
         }
 
-        run.IoSummary = summary;
+        run.IoSummary = run.SummaryOnly && summary is not null ? WithPlayInfo(run, summary) : summary;
     }
+
+    // 원시 트레이스 없이 디스크 완료 요약만 남기는 플레이의 저장: 요약을 단독 집계로 저장하고 (로드 구간·캐시 없이 읽는 파일·순위 목록은 WriteIoSummaryLocked 가 다시 만듦) 끝냅니다. 잠금이 바쁘면 true (멈춘 채 남겨 다음 Step 에서 다시).
+    // 요약이 아직 없으면 (같은 디스크의 다른 게임이 떠 있어 미룸) 저장할 것이 없고, 그 게임이 끝난 뒤 BuildDeferredIoSummaries 가 만들어 저장합니다.
+    private bool FinishPlaySummary(Run run, IReadOnlyList<TraceRecord> records, string why, TimeSpan? lockWait)
+    {
+        if (!SaveIoSummaryOnly(run, lockWait, out bool traceChanged))
+        {
+            HoldForSave(run, records, why);
+            return true;
+        }
+
+        if (!traceChanged)
+        {
+            LogIoSummary(run);
+        }
+
+        _log.Info($"{run.Game.Name}: play summary ended ({why})" + (run.IoSummary is null ? ", not built yet" : string.Empty));
+        return false;
+    }
+
+    // 플레이마다 남기는 요약의 부가 정보: 로딩 판정 구간 (관찰 시작을 0 으로 한 마이크로초), 계측이 빈 구간 (플레이가 관찰보다 먼저 시작했으면 그 앞 구간을 음수로), 파일의 크기·수정 시각 (세대 대조).
+    private IoSummary WithPlayInfo(Run run, IoSummary summary)
+    {
+        DateTimeOffset from = summary.ObservedAtUtc;
+        long Us(DateTimeOffset at) => (long)(at - from).TotalMicroseconds;
+        var phases = new List<IoSummaryWindow>();
+        foreach ((DateTimeOffset start, DateTimeOffset end) in LoadPhasesOf?.Invoke(run.Game.Name) ?? [])
+        {
+            if (end > from && start < summary.EndedAtUtc)
+            {
+                phases.Add(new IoSummaryWindow(Math.Max(0, Us(start)), Math.Max(0, Us(end))));
+            }
+        }
+
+        var gaps = new List<IoSummaryWindow>();
+        foreach (SessionSpan play in _env.PlaySessions(run.Game.Name))
+        {
+            DateTimeOffset start = new(DateTime.SpecifyKind(play.StartUtc, DateTimeKind.Utc));
+            if (start < from && play.EndUtc >= from.UtcDateTime)
+            {
+                gaps.Add(new IoSummaryWindow(Us(start), 0));
+            }
+        }
+
+        var files = new List<IoSummaryFile>(summary.Files.Count);
+        foreach (IoSummaryFile file in summary.Files)
+        {
+            try
+            {
+                Fingerprint now = _env.Stat(file.Path);
+                files.Add(file with { Size = now.Size, MTimeTicks = Fingerprint.UnixEpochTicks + now.MtimeNs / 100 });
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                files.Add(file); // 크기를 못 잼 (없어졌거나 읽을 수 없음): 세대 대조 없이 둠
+            }
+        }
+
+        return summary with { Files = files, Play = new IoSummaryPlay(DiskOnly: true, phases, gaps) };
+    }
+
+    private IAutoTrace OpenSummarySession(GameSettings g) =>
+        _env.StartSummaryTrace is { } open ? open(g.ExeNames, g.AllowedRoots) : _env.StartTrace(g.ExeNames, null, g.AllowedRoots);
 
     // 서비스가 스스로 읽은 구간 (시작 스트림·예열) 을 디스크 읽기 집계에서 빼기 위한 표: 게임이 같은 시간대에 같은 구간을 읽었으면 남깁니다.
     private static SelfReadFilter OwnReadFilter(IoRequestSnapshot requests, IEnumerable<TraceRecord> records, CancellationToken ct) =>
@@ -1767,7 +1857,14 @@ public sealed class AutoTracer
             string raw = RawTracePath(run.Game);
             if (standalone)
             {
-                IoSummaryStore.WriteStandalone(raw, summary);
+                string target = IoSummaryStore.WriteStandalone(raw, summary);
+                if (run.SummaryOnly)
+                {
+                    foreach (string removed in IoSummaryStore.RememberPlaySummary(raw, target))
+                    {
+                        _log.Info($"{run.Game.Name}: older play summary removed ({Path.GetFileName(removed)}), the latest {IoSummaryStore.MaxPlaySummaries} are kept");
+                    }
+                }
             }
             else
             {
@@ -2081,6 +2178,7 @@ public sealed class AutoTracer
                 return;
             }
 
+            PruneTraceArchives(g);
             bool refillStale = LoadRefillPlans.IsStale(g, _env.FileWriteTime);
             bool unbufferedStale = UnbufferedFiles.IsStale(g, _env.FileWriteTime);
             bool rankedStale = LoadRefillPlans.RankedIsStale(g, _env.FileWriteTime);
@@ -2114,6 +2212,37 @@ public sealed class AutoTracer
                     }
                 }
             });
+        }
+    }
+
+    // 트레이스를 허용하는 게임의 낡은 업데이트 보관본 (.stale, .stale.update) 을 지웁니다: 읽는 곳이 없음 (TraceArchives). 게임이 떠 있거나 원시 트레이스가 없거나 트레이스가 금지된 게임은 건드리지 않음.
+    private void PruneTraceArchives(GameSettings g)
+    {
+        if (_env.AnyRunning(g.ExeNames) || !_env.FileExists(RawTracePath(g)) || _env.TraceBlocker(g) is not null)
+        {
+            return;
+        }
+
+        try
+        {
+            RunBelowNormal(() =>
+            {
+                using AsterCache.Core.Apply.DataLock? gate = AsterCache.Core.Apply.DataLock.TryAcquire(g.Plan, TimeSpan.Zero); // 업데이트 정리가 같은 파일들을 쓰므로 계획 잠금 안에서만 (바쁘면 다음 시작에)
+                if (gate is null)
+                {
+                    return;
+                }
+
+                (int files, long bytes) = TraceArchives.Prune(RawTracePath(g), _env.Now().UtcDateTime.AddDays(-TraceArchives.KeepDays));
+                if (files > 0)
+                {
+                    _log.Info($"{g.Name}: {files} update archive copies of the trace older than {TraceArchives.KeepDays} days removed ({bytes >> 20} MiB), nothing reads them for a game that can be traced");
+                }
+            });
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"{g.Name}: update archive copies not removed ({e.GetType().Name})");
         }
     }
 
@@ -2684,6 +2813,9 @@ public sealed class AutoTracer
         public bool InitialWindowEnded { get; set; }
 
         public bool IoSummaryEnabled { get; init; }
+
+        /// 원시 트레이스 없이 디스크 완료 요약만 남기는 플레이 (가벼운 세션).
+        public bool SummaryOnly { get; init; }
 
         public bool RawEnded { get; set; }
 

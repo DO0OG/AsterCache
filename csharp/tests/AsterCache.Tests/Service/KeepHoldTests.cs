@@ -68,8 +68,7 @@ public sealed class KeepHoldTests
         public readonly List<long> Released = [];
         public readonly HashSet<string> Missing = new(StringComparer.OrdinalIgnoreCase);
         public long DiskPerMiss = 4 * Mib;
-        public bool CanTell = true; // 하드 폴트 수를 읽을 수 있는가 (거짓이면 디스크 읽기를 알아챌 수 없음)
-        public bool CanTellDiskReads => CanTell;
+        public bool Measured = true; // 묶음의 하드 폴트 수를 시작과 끝 모두 읽었는가 (거짓이면 디스크 읽기를 가려내지 못한 묶음)
         public long PieceBeforeBoundary = Mib; // 경계를 만나기 전에 읽은 조각 (0 이면 경계에서 하나도 붙들지 못함)
         public int Rebases;
         public int Rechecks;
@@ -147,7 +146,7 @@ public sealed class KeepHoldTests
                     {
                         _ranges.Add(new ReadOp(batch[i].Path, batch[i].Offset, PieceBeforeBoundary));
                     }
-                    return new HoldBatchResult(bytes, DiskPerMiss, 0, 0, 0, 0, 1, 100, 0.1, 0.05, i);
+                    return new HoldBatchResult(bytes, DiskPerMiss, 0, 0, 0, 0, 1, 100, 0.1, 0.05, i, Measured: Measured);
                 }
 
                 bytes += batch[i].Length;
@@ -161,7 +160,7 @@ public sealed class KeepHoldTests
             _ranges.AddRange(batch);
             PendingBytes = Math.Max(0, PendingBytes - batch.Where(o => o.Path == Back).Sum(o => o.Length));
             _ = PendingOps.RemoveAll(batch.Contains);
-            return new HoldBatchResult(bytes, 0, 0, ErrorsPerBatch, 0, 1, 1, 0, 0.1, 0.05, -1, ImageBytesPerBatch, SmallBytesPerBatch);
+            return new HoldBatchResult(bytes, 0, 0, ErrorsPerBatch, 0, 1, 1, 0, 0.1, 0.05, -1, ImageBytesPerBatch, SmallBytesPerBatch, Measured);
         }
 
         public long Release(long bytes)
@@ -2546,7 +2545,7 @@ public sealed class KeepHoldTests
             if (e == 1)
             {
                 _hold.DiskPerMiss = 0;
-                _hold.CanTell = false; // 하드 폴트 수를 읽을 수 없는 환경
+                _hold.Measured = false; // 하드 폴트 수를 읽을 수 없는 환경
             }
 
             perSecond.Add(_hold.Batches.Count);
@@ -2557,6 +2556,29 @@ public sealed class KeepHoldTests
         int[] perCheck = [.. perSecond.Zip(perSecond.Skip(1), (a, b) => b - a).Where(d => d > 0)];
         Assert.NotEmpty(perCheck);
         Assert.All(perCheck, d => Assert.Equal(1, d)); // 디스크 읽기를 알아챌 수 없으면 한 확인에 4 MiB 묶음 하나
+    }
+
+    [Fact]
+    public void AnUnmeasuredBatchIsCountedAsReadFromDiskInFullAgainstTheSharedPlayBudgetAndTheContinuationStops()
+    {
+        StopTheFirstHoldAtTheCap();
+        Prewarmer p = Make(Reads);
+        int before = -1;
+        RunFor(40, e =>
+        {
+            if (e == 1)
+            {
+                (_hold.DiskPerMiss, _hold.Measured) = (0, false); // 하드 폴트 수를 읽을 수 없어 디스크 읽기를 가려내지 못함
+                before = _hold.Batches.Count;
+                SpendHoldAgainDisk(p, Prewarmer.HoldAgainDiskCapBytes - (6 * Mib)); // 플레이 합계 상한까지 6 MiB 남음
+            }
+        });
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Contains(_log.Lines, l => l.Contains("cache hold continuing after the first pass") && l.Contains("holding, 1 MiB held so far by continuing in 1 requests") && l.Contains("disk reads of the play 1019 MiB of 1024 MiB")); // 한 확인에 묶음 하나 (1 MiB) 만 요청하고 디스크 읽기 0 으로 보고된 그 양이 예산에서 빠짐
+        Assert.Equal(before + 2, _hold.Batches.Count); // 다음 확인의 묶음 (4 MiB) 뒤 예산은 1 MiB 만 남아 한 번 요청분보다 적으므로 멈춤
+        _ = Assert.Single(_log.Lines, l => l.Contains("cache hold continuing after the first pass") && l.Contains("disk reads of the play 1023 MiB of 1024 MiB") && l.Contains("stopped: the disk read cap of the play is used"));
     }
 
     [Fact]

@@ -7,8 +7,9 @@ namespace AsterCache.Windows;
 
 /// 붙들기 한 배치의 결과: 붙든 바이트, 디스크에서 읽힌 것으로 본 바이트, 스파스라 건너뛴 바이트, 오류 수 (열기·매핑·읽기·파일 끝 밖), 느린 조각 수, 새로 연 뷰 수, 읽기 수를 조회한 횟수,
 /// 이 프로세스의 디스크 읽기 수 (하드 폴트) 증가, 걸린 시간 (초), 쓴 CPU 시간 (초), 디스크 읽기가 섞여 경계로 보고 멈췄으면 그때 읽던 범위의 배치 안 위치 (그 뒤 범위는 읽지 않았음, 없으면 -1).
-public readonly record struct HoldBatchResult(long Bytes, long DiskBytes, long SkippedBytes, int Errors, int SlowPieces, int Views, int Checks, long HardFaults, double Seconds, double CpuSeconds, int BoundaryIndex, long ImageBytes = 0, long SmallBytes = 0);
+public readonly record struct HoldBatchResult(long Bytes, long DiskBytes, long SkippedBytes, int Errors, int SlowPieces, int Views, int Checks, long HardFaults, double Seconds, double CpuSeconds, int BoundaryIndex, long ImageBytes = 0, long SmallBytes = 0, bool Measured = true);
 
+// Measured: 묶음 전체 (시작과 끝) 에서 하드 폴트 수를 읽어 DiskBytes 가 믿을 만한가. 거짓이면 호출하는 쪽이 읽은 양 전부를 디스크에서 읽은 것으로 셈합니다.
 // ImageBytes: 실행 가능한 이미지 파일 (첫 두 바이트가 MZ) 이거나 읽지 못해 붙들지 않은 바이트, SmallBytes: MinFileBytes 보다 작은 파일이라 붙들지 않은 바이트.
 
 /// 점검 한 번의 결과: 작업 집합에 있는지 확인한 바이트, 그중 메모리 관리자가 작업 집합에서 줄여 간 (Valid 가 아닌) 바이트, 그것을 다시 읽어 올리다 디스크에서 읽힌 바이트, 붙든 목록에서 뺀 바이트 (바뀐 파일의 몫은 제외),
@@ -27,9 +28,6 @@ public interface IKeepHold : IDisposable
 
     /// 지금 붙들고 있는 범위 (붙든 순서 = 중요한 순서, 내놓은 뒤쪽은 뺌): 붙들지 못한 나머지를 다시 만지는 유지 회차와 시작 만지기가 붙든 범위를 빼는 데 씁니다.
     IReadOnlyList<ReadOp> HeldRanges();
-
-    /// 이 프로세스의 디스크 읽기 수 (하드 폴트) 를 읽을 수 있는가 (Rebase 뒤의 값). 읽을 수 없으면 Hold 의 DiskBytes 가 디스크 읽기를 알아채지 못하므로 호출하는 쪽이 묶음을 이어 부르지 않습니다.
-    bool CanTellDiskReads { get; }
 
     /// 뷰를 열어 둔 파일 수와 뷰 수.
     int Files { get; }
@@ -288,18 +286,7 @@ public sealed unsafe class ViewHold : IKeepHold
                 boundary = tally.Boundary ? batch.Count - 1 : -1;
             }
 
-            return new HoldBatchResult(tally.Bytes, tally.Disk, tally.Skipped, tally.Errors, tally.Slow, tally.Views, tally.Checks, tally.Faults, Stopwatch.GetElapsedTime(started).TotalSeconds, Math.Max(0, StandbyTouch.ThreadCpuSeconds() - cpuBefore), boundary, tally.Images, tally.Smalls);
-        }
-    }
-
-    public bool CanTellDiskReads
-    {
-        get
-        {
-            lock (_lock)
-            {
-                return _faults is not null;
-            }
+            return new HoldBatchResult(tally.Bytes, tally.Disk, tally.Skipped, tally.Errors, tally.Slow, tally.Views, tally.Checks, tally.Faults, Stopwatch.GetElapsedTime(started).TotalSeconds, Math.Max(0, StandbyTouch.ThreadCpuSeconds() - cpuBefore), boundary, tally.Images, tally.Smalls, tally.Signal && tally.SinceCheck == 0); // 읽은 조각이 조회로 닫히지 않았거나 한 번이라도 조회가 실패했으면 계측하지 못한 묶음
         }
     }
 
@@ -624,6 +611,7 @@ public sealed unsafe class ViewHold : IKeepHold
 
         if (!tally.Signal)
         {
+            tally.Disk += n; // 읽기 수를 읽을 수 없으면 디스크 읽기를 가려내지 못하므로 읽은 양 전부를 디스크에서 읽은 것으로 셈 (읽기 상한이 풀리지 않게)
             return;
         }
 
@@ -637,6 +625,8 @@ public sealed unsafe class ViewHold : IKeepHold
     // 읽기 수를 조회해 앞의 조회 뒤 늘어난 만큼을 셈에 더하고, 경계 (허용치 초과) 나 읽은 양 한도에 닿았으면 멈춤 표시.
     private void Check(Tally tally)
     {
+        long span = tally.SinceCheck;
+        bool wasSignal = tally.Signal;
         tally.SinceCheck = 0;
         tally.SinceMs = 0;
         tally.Checks++;
@@ -645,6 +635,11 @@ public sealed unsafe class ViewHold : IKeepHold
         if (now is not { } faultsNow || _faults is not { } before)
         {
             (tally.Signal, _faults, _pages) = (false, now, pagesNow);
+            if (wasSignal)
+            {
+                tally.Disk += span; // 이 조회로 닫히던 조각들은 셀 수 없으므로 전부 디스크에서 읽은 것으로 셈 (이미 셈이 꺼져 있었으면 조각마다 더했음)
+            }
+
             return;
         }
 

@@ -77,7 +77,7 @@ public sealed partial class Prewarmer
     /// 플레이 합계 읽기 상한 (HoldAgainDiskCapBytes 1 GiB) 과 같은 자릿수입니다. 요청을 이만큼으로 작게 끊어야 새 로딩 신호가 오면 다음 발행을 바로 멈출 수 있습니다. 실측으로 고른 값이 아닙니다.
     public const long HoldContinueBytes = 4L << 20;
 
-    /// 이어 붙들기가 한 번의 확인 (1 초) 에서 이어서 요청하는 묶음 수의 상한: 16 묶음 (64 MiB). 묶음마다 하한·로딩·대기열 조건을 다시 보고, 디스크 읽기나 빠진 조각이 보이면 그 확인을 거기서 끝내므로 확인당 디스크에서 읽는 양의 최악은 묶음 하나 (HoldContinueBytes) 로 그대로입니다.
+    /// 이어 붙들기가 한 번의 확인 (1 초) 에서 이어서 요청하는 묶음 수의 상한: 16 묶음 (64 MiB). 묶음마다 하한·로딩·대기열 조건을 다시 보고, 디스크 읽기나 빠진 조각이 보이거나 하드 폴트 수를 읽지 못한 (계측하지 못한) 묶음이면 그 확인을 거기서 끝내므로 확인당 디스크에서 읽는 양의 최악은 묶음 하나 (HoldContinueBytes) 로 그대로입니다.
     /// 메모리에 있는 범위가 초당 4 MiB 로만 붙으면 5 GiB 에 조건이 맞는 시간으로 1,280 초가 필요하고, 64 MiB 면 약 80 초입니다 (게임이 메모리를 잡는 속도에는 못 미칠 수 있음). 실측으로 고른 값이 아닙니다.
     public const int HoldContinueBatchesPerCheck = 16;
 
@@ -1127,7 +1127,7 @@ public sealed partial class Prewarmer
             WalkResult walk = WalkHold(hold, reads, again ? HoldAgainRoundCap(memory) : KeepDiskReadCapBytes, floorMib, linked.Token, r =>
             {
                 (images, smalls) = (images + r.ImageBytes, smalls + r.SmallBytes);
-                (cpu, checks, errors, hardFaults, diskOnly) = (cpu + r.CpuSeconds, checks + r.Checks, errors + r.Errors, hardFaults + r.HardFaults, diskOnly + r.DiskBytes);
+                (cpu, checks, errors, hardFaults, diskOnly) = (cpu + r.CpuSeconds, checks + r.Checks, errors + r.Errors, hardFaults + r.HardFaults, diskOnly + DiskOf(r));
             });
 
             NoteServiceRead(game, walk.Disk);
@@ -1205,7 +1205,7 @@ public sealed partial class Prewarmer
                     }
                 }
 
-                return new WalkStep(r.BoundaryIndex + 1, r.Bytes + r.SkippedBytes, r.DiskBytes, r.BoundaryIndex >= 0);
+                return new WalkStep(r.BoundaryIndex + 1, r.Bytes + r.SkippedBytes, DiskOf(r), r.BoundaryIndex >= 0);
             });
         }
         finally
@@ -1216,6 +1216,9 @@ public sealed partial class Prewarmer
             }
         }
     }
+
+    // 묶음에서 디스크에서 읽힌 것으로 셀 양: 하드 폴트 수를 읽지 못해 계측하지 못한 묶음은 읽은 양 전부 (읽기 상한과 공유 예산이 풀리지 않게 보수적으로).
+    private static long DiskOf(HoldBatchResult r) => r.Measured ? r.DiskBytes : Math.Max(r.DiskBytes, r.Bytes);
 
     private static string ErrorsText(int errors) => errors > 0 ? $", {errors} errors" : string.Empty;
 
@@ -1442,7 +1445,7 @@ public sealed partial class Prewarmer
     // 하한 때문에 내놓았던 부분을 중요한 순서로 다시 붙듭니다 (cont 가 null, 2 분 점검 뒤). 같은 조건과 같은 길로 처음 붙들기가 멈춰 남은 범위도 이어 붙듭니다 (cont 가 있음: 1 초마다 불러 4 MiB 한 묶음씩 최대 HoldContinueBatchesPerCheck 묶음).
     // 조건 (묶음마다 모두 맞아야 함): 로딩 판정이 로딩이 아님 (실행 파일 시작·신호 모두), 게임 드라이브의 디스크 대기열 0 (모르면 미룸), 다시 붙든 뒤에도 가용이 하한 + HoldRefillMarginMib 이상 남는 목표 (HoldAgainTargetBytes) 가 최소 (HoldMinTargetBytes) 이상,
     // 회차 읽기 상한 (KeepDiskReadCapBytes) 과 이 플레이의 합계 상한 (HoldAgainDiskCapBytes: 다시 붙들기와 이어 붙들기가 함께 씀) 안. 내놓기는 이 조건과 무관하게 가용 < 하한에서 바로 일어납니다.
-    // 이어 붙들기는 한 묶음에서 디스크 읽기나 빠진 조각이 보이면 그 확인을 거기서 끝내므로 (다음 묶음의 범위가 메모리에 있는지는 알 수 없음) 한 번의 확인에서 디스크에서 읽는 양은 묶음 하나 (4 MiB) 안입니다.
+    // 이어 붙들기는 한 묶음에서 디스크 읽기나 빠진 조각이 보이거나 하드 폴트 수를 읽지 못한 (계측하지 못한) 묶음이면 그 확인을 거기서 끝내므로 (다음 묶음의 범위가 메모리에 있는지는 알 수 없음) 한 번의 확인에서 디스크에서 읽는 양은 묶음 하나 (4 MiB) 안입니다.
     // 메모리에 없던 범위는 다시 읽어 보지 않습니다 (다시 붙들기는 GiveUp, 이어 붙들기는 후보에서 뺌). 이어 붙들기 안에서는 같은 범위를 두 번 요청하지 않게 붙든 범위도 후보에서 뺍니다.
     // 직렬화 잠금은 기다리지 않고 못 잡으면 이번 확인을 건너뜁니다 (감시 스레드가 하한 내놓기를 놓치지 않게): 이어 붙들기는 0, 다시 붙들기는 null (호출한 쪽이 다음 초에 다시 부름). 다시 붙든 바이트를 돌려줍니다.
     private long? HoldAgain(IKeepHold hold, GameSettings game, string exe, long floorMib, ref string? lastSkip, HoldContinuation? cont = null)
@@ -1535,9 +1538,10 @@ public sealed partial class Prewarmer
                 }
 
                 WalkResult walk;
+                bool unmeasured = false; // 이 묶음에서 하드 폴트 수를 읽지 못해 디스크 읽기를 가려내지 못했는가 (읽은 양 전부를 디스크 읽기로 셈했음)
                 try
                 {
-                    walk = WalkHold(hold, candidates, HoldAgainRoundCap(memory), floorMib, linked!.Token);
+                    walk = WalkHold(hold, candidates, HoldAgainRoundCap(memory), floorMib, linked!.Token, r => unmeasured |= !r.Measured);
                 }
                 finally
                 {
@@ -1559,7 +1563,7 @@ public sealed partial class Prewarmer
                     cont.Issues++;
                 }
 
-                if (walk.Disk > 0 || walk.Boundaries > 0 || walk.Stopped || walk.CapReached || linked.IsCancellationRequested || memory.HoldPendingBytes == 0 || !hold.CanTellDiskReads) // 디스크 읽기를 알아챌 수 없으면 (하드 폴트 수를 읽을 수 없음) 묶음을 잇지 않음
+                if (walk.Disk > 0 || walk.Boundaries > 0 || walk.Stopped || walk.CapReached || linked.IsCancellationRequested || memory.HoldPendingBytes == 0 || unmeasured) // 계측하지 못한 묶음 (시작이나 끝의 하드 폴트 조회 실패) 이면 다음 묶음의 범위가 메모리에 있는지 알 수 없으므로 잇지 않음
                 {
                     break; // 디스크 읽기나 빠진 조각이 보이면 이 확인은 여기서 끝 (다음 묶음의 범위가 메모리에 있는지는 알 수 없음)
                 }

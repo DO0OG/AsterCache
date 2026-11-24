@@ -384,6 +384,53 @@ public sealed class ViewHoldTests : IDisposable
         Assert.Equal(8L * Mib, hold.HeldBytes); // 읽은 것은 붙듦 (디스크에서 읽은 것도 이제 메모리에 있음)
     }
 
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    public void AFailedHardFaultReadAtTheStartOrTheEndOfABatchMakesTheWholeBatchUnmeasuredAndItsReadsCountAsDiskReads(bool startReads, bool endReads)
+    {
+        string a = Make("a.bin", 4);
+        int calls = 0;
+        uint value = 5_000_000;
+        // 첫 두 번은 Rebase (버리는 조회와 기준값), 셋째부터는 묶음 안의 조회: 시작 쪽 실패는 기준값 조회가 null, 끝 쪽 실패는 묶음 끝의 조회가 null
+        Func<uint?> faults = () => ++calls == 2 && !startReads || calls >= 3 && !endReads ? null : value;
+        using var hold = new ViewHold(faults, Counter(0), minFileBytes: 0);
+        hold.Rebase();
+
+        HoldBatchResult r = hold.Hold([new ReadOp(a, 0, 4L * Mib)], CancellationToken.None);
+
+        Assert.Equal(startReads && endReads, r.Measured);
+        if (!r.Measured)
+        {
+            Assert.Equal(4L * Mib, r.DiskBytes); // 계측하지 못한 묶음은 읽은 양 전부를 디스크에서 읽은 것으로 셈
+        }
+        else
+        {
+            Assert.Equal(0, r.DiskBytes);
+        }
+    }
+
+    [Fact]
+    public void WhenTheHardFaultCountCannotBeReadTheCheckReadBackIsStillStoppedByTheDiskReadCap()
+    {
+        string a = Make("a.bin", 8);
+        using var hold = new ViewHold(() => null, () => null, minFileBytes: 0);
+        hold.Rebase();
+        _ = hold.Hold([new ReadOp(a, 0, 8L * Mib)], CancellationToken.None);
+        using Process me = Process.GetCurrentProcess();
+        HoldCheckResult r = default!;
+        for (int attempt = 0; attempt < 5 && !r.CapReached; attempt++)
+        {
+            Assert.True(EmptyWorkingSet(me.Handle));
+            r = hold.Recheck(Mib, CancellationToken.None);
+        }
+
+        Assert.True(r.CapReached, $"trimmed {r.TrimmedBytes}, disk {r.RefilledBytes}"); // 읽기 수를 읽을 수 없어도 되찾아 읽은 양을 디스크 읽기로 셈해 상한에서 멈춤
+        Assert.True(r.RefilledBytes <= 3L * Mib);
+    }
+
     [Fact]
     public void ASparseFileIsNotHeldAndAMissingFileCountsAsAnErrorWhileTheRestIsHeld()
     {

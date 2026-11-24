@@ -132,7 +132,7 @@ public sealed partial class Rewarmer
             exitSeq = _afterExitSeq; // 이 점검이 시작할 때의 종료: 점검 도중 새 종료가 들어오면 그 종료의 표시는 이 점검이 지우지 않음
         }
 
-        using IDisposable scope = DiskReadLedger.Scope(ReadPurpose.Idle); // 주기 점검의 읽기는 계기 없는 읽기 (하루 상한 대상), 게임 종료 뒤 아직 점검하지 않은 게임만 아래에서 계기 있는 읽기로 바꿈
+        using IDisposable scope = DiskReadLedger.Scope(ReadPurpose.Idle); // 주기 점검과 게임 종료 뒤 점검의 읽기는 모두 계기 없는 읽기 (하루 상한 대상)
 
         IReadOnlyList<GameSettings> warmed = _prewarm.Warmed();
 
@@ -177,16 +177,15 @@ public sealed partial class Rewarmer
             bool exitCheck;
             lock (_nextLock)
             {
-                exitCheck = afterExit && !_afterExitDone.Contains(g.Name); // 이 게임의 게임 종료 뒤 점검은 계기가 있는 읽기
+                exitCheck = afterExit && !_afterExitDone.Contains(g.Name); // 이 게임의 게임 종료 뒤 점검 (한 번): 게임 시작이 건 읽기가 아니라 서비스가 시작한 읽기라 주기 점검과 같은 하루 상한을 따름
             }
 
-            using IDisposable gameScope = DiskReadLedger.Scope(exitCheck ? ReadPurpose.Trigger : ReadPurpose.Idle);
-            if (!exitCheck && _prewarm.IdleReadsExhausted(g))
+            if (_prewarm.IdleReadsExhausted(g))
             {
                 continue; // 이 드라이브의 계기 없는 읽기가 하루 상한에 닿음 (로그는 쉬기 시작할 때 한 번): 표본도 읽지 않고 다음 점검에 다시 봄
             }
 
-            bool? checkedResult = Check(g, ct, exitCheck ? RoomOf(g, budget) : _prewarm.IdleReadRoom(g, RoomOf(g, budget)), auto, now);
+            bool? checkedResult = Check(g, ct, _prewarm.IdleReadRoom(g, RoomOf(g, budget)), auto, now);
             if (exitCheck && checkedResult is not null)
             {
                 lock (_nextLock)

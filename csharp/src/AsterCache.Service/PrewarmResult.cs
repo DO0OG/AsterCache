@@ -18,4 +18,7 @@ public sealed record PrewarmResult(string Game, bool Ran, string? SkipReason, St
     public string? Mode { get; init; }
 
     internal string? CancelDetail { get; init; }
+
+    /// 끊긴 다시 채우기를 저장한 위치에서 이어 읽은 예열인가 (처음부터 읽었으면 false).
+    internal bool Resumed { get; init; }
 }

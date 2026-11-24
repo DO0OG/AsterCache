@@ -18,6 +18,7 @@ public sealed partial class Prewarmer
     {
         public readonly List<DateTimeOffset> Times = [];
         public DateTimeOffset? RestUntil;
+        public DateTimeOffset? CompletedAt; // 마지막으로 끝까지 읽은 시각 (끊긴 읽기는 아님): "곧 다시 식으면 쉼" 판정의 기준
     }
 
     private readonly Dictionary<string, PartialRewarmLog> _partialRewarms = new(StringComparer.OrdinalIgnoreCase); // 게임별 다시 읽은 시각과 쉬는 시각, _gate 로 보호
@@ -36,6 +37,11 @@ public sealed partial class Prewarmer
         }
 
         _ = log.Times.RemoveAll(t => now - t >= PartialRewarmSpan);
+        if (log.CompletedAt is { } completed)
+        {
+            log.CompletedAt = completed > now ? now : now - completed >= PartialRewarmSpan ? null : completed;
+        }
+
         if (log.RestUntil is { } rest)
         {
             log.RestUntil = rest <= now ? null : rest > now + PartialRewarmSpan ? now + PartialRewarmSpan : rest;
@@ -70,19 +76,20 @@ public sealed partial class Prewarmer
         }
     }
 
-    /// 식은 앞부분을 또 읽으려는데 마지막으로 다시 읽은 지 within 안이면, 그 읽기로부터 24시간 쉽니다 (읽은 것이 곧 밀려나는 상태에서 같은 읽기를 되풀이하지 않게). 쉬기 시작했으면 풀리는 시각.
+    /// 식은 앞부분을 또 읽으려는데 마지막으로 끝까지 다시 읽은 지 within 안이면, 그 읽기가 끝난 때로부터 24시간 쉽니다 (읽은 것이 곧 밀려나는 상태에서 같은 읽기를 되풀이하지 않게). 쉬기 시작했으면 풀리는 시각.
+    /// 끊겨서 끝까지 읽지 못한 읽기는 기준이 아닙니다 (식은 것이 당연하므로).
     internal DateTimeOffset? NotePartialColdAgain(string game, TimeSpan within)
     {
         DateTimeOffset now = _now();
         DateTimeOffset until;
         lock (_gate)
         {
-            if (FreshPartialRewarmLocked(game, now) is not { } log || log.Times.Count == 0 || now - log.Times.Max() > within)
+            if (FreshPartialRewarmLocked(game, now) is not { } log || log.CompletedAt is not { } completed || now - completed > within)
             {
                 return null;
             }
 
-            until = log.Times.Max() + PartialRewarmSpan;
+            until = completed + PartialRewarmSpan;
             log.RestUntil = until;
         }
 
@@ -107,15 +114,24 @@ public sealed partial class Prewarmer
         return until;
     }
 
-    // 식은 앞부분을 실제로 다시 읽은 때 부릅니다 (_gate 안에서).
-    private void NotePartialRewarmReadLocked(string game, DateTimeOffset now)
+    // 식은 앞부분을 실제로 다시 읽은 때 부릅니다 (_gate 안에서). resumed: 끊긴 읽기를 저장한 위치에서 이어 읽음 (그 회차는 끊긴 시도가 이미 셌으므로 새로 세지 않음),
+    // 처음부터 읽었으면 새 회차. completed: 끝까지 읽음 (그 시각이 "곧 다시 식으면 쉼" 판정의 기준).
+    private void NotePartialRewarmReadLocked(string game, DateTimeOffset now, bool resumed, bool completed)
     {
         if (!_partialRewarms.TryGetValue(game, out PartialRewarmLog? log))
         {
             _partialRewarms[game] = log = new PartialRewarmLog();
         }
 
-        log.Times.Add(now);
+        if (!resumed || log.Times.Count == 0)
+        {
+            log.Times.Add(now);
+        }
+
+        if (completed)
+        {
+            log.CompletedAt = now;
+        }
     }
 
     // 상태 파일 항목에 횟수와 쉬는 시각을 함께 씁니다 (_gate 안에서 부름, 기록이 없으면 키를 지움).
@@ -125,10 +141,12 @@ public sealed partial class Prewarmer
         if (log is { Times.Count: > 0 })
         {
             entry["partial_rewarm_at"] = string.Join(';', log.Times.Select(t => t.ToString("O", CultureInfo.InvariantCulture)));
+            entry["partial_rewarm_done_at"] = log.CompletedAt?.ToString("O", CultureInfo.InvariantCulture) ?? string.Empty; // 빈 값: 끝까지 읽은 적 없음 (키가 없으면 예전 형식)
         }
         else
         {
             entry.Remove("partial_rewarm_at");
+            entry.Remove("partial_rewarm_done_at");
         }
 
         if (log?.RestUntil is { } rest)
@@ -139,6 +157,8 @@ public sealed partial class Prewarmer
         {
             entry.Remove("partial_rewarm_rest_until");
         }
+
+        WriteRewarmResumeFields(game, entry); // 끊긴 다시 채우기의 이어 읽기 위치도 같은 상태 쓰기에 함께 남김
     }
 
     // 상태 파일에서 횟수와 쉬는 시각을 되살립니다 (LoadStatus 가 부름).
@@ -153,6 +173,19 @@ public sealed partial class Prewarmer
                 {
                     log.Times.Add(at);
                 }
+            }
+        }
+
+        if (log.Times.Count > 0)
+        {
+            // 예전 형식 (키가 없음) 은 마지막으로 읽은 시각을 끝까지 읽은 시각으로 봄 (그때는 읽은 시도마다 같은 기준이었음)
+            if (!entry.TryGetValue("partial_rewarm_done_at", out object? done))
+            {
+                log.CompletedAt = log.Times.Max();
+            }
+            else if (done is string doneText && DateTimeOffset.TryParse(doneText, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset doneAt))
+            {
+                log.CompletedAt = doneAt;
             }
         }
 
@@ -238,7 +271,7 @@ public sealed partial class Prewarmer
             {
                 lock (_gate)
                 {
-                    NotePartialRewarmReadLocked(game.Name, _now());
+                    NotePartialRewarmReadLocked(game.Name, _now(), whole.Resumed, whole.Ran);
                 }
 
                 PersistPartialRewarm(game.Name);
@@ -302,7 +335,7 @@ public sealed partial class Prewarmer
             }
 
             memoryPartial = wasMemoryPartial || _memoryPartial.ContainsKey(game.Name);
-            NotePartialRewarmReadLocked(game.Name, now);
+            NotePartialRewarmReadLocked(game.Name, now, result.Resumed, result.Ran);
         }
 
         PatchPartialStatus(game.Name, current, memoryPartial);

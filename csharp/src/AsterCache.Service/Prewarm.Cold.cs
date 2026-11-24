@@ -38,7 +38,13 @@ public sealed partial class Prewarmer
         }
 
         TimeSpan cooldown = TimeSpan.FromMinutes(game.Prewarm.CooldownMin);
-        return LastWarmed(game.Name) is { } prev && now - prev < cooldown ? $"cooldown ({Math.Ceiling((cooldown - (now - prev)).TotalMinutes)} min left)" : null;
+        bool reduced;
+        lock (_gate)
+        {
+            reduced = DiskReadLedger.Current != ReadPurpose.Idle && _coldReduced.Contains(game.Name); // 앞선 자동 예열이 남은 양으로 줄어 읽었으면 시작 계기의 예열은 더 큰 범위를 읽을 수 있으므로 쿨다운을 적용하지 않음
+        }
+
+        return !reduced && LastWarmed(game.Name) is { } prev && now - prev < cooldown ? $"cooldown ({Math.Ceiling((cooldown - (now - prev)).TotalMinutes)} min left)" : null;
     }
 
     // 기록 (원시 트레이스·prefetch 기록) 이 없는 게임: 설치 폴더가 예산 이하면 통째로, 크면 엔진 프로필로. 쿨다운은 항상 지킵니다 (같은 폴더를 연달아 두 번 읽지 않게): 재예열도 쿨다운 안이면 다음 점검으로 미룸.
@@ -74,6 +80,19 @@ public sealed partial class Prewarmer
         long ram = Math.Min(availBudget, PhysCapMib() - held); // min(예열 예산, 가용 RAM - 여유) - 이미 올린 양
         long fullMib = !a.FullPrewarm ? 0 : Math.Min(a.FullPrewarmMaxMib > 0 ? a.FullPrewarmMaxMib : DefaultFullPrewarmMib, availBudget);
         long profileMib = !a.EngineProfiles ? 0 : a.FullPrewarm && a.FullPrewarmMaxMib > 0 ? Math.Min(ram, fullMib) : ram;
+        string windowKey = string.Empty; // 계기 없는 읽기의 남은 양이 계획 창을 줄였으면 그 크기: 줄어든 창에서 못 맞춘 프로필을 그 창에서만 "프로필 없음" 으로 기억해, 더 큰 창으로 읽는 시작 예열이 다시 계획하게 함
+        if (skip is null && DiskReadLedger.Current == ReadPurpose.Idle)
+        {
+            // 계기 없는 읽기 (자동 틱, 주기 재예열) 는 게임 몫과 드라이브 남은 양 가운데 작은 값까지만 읽음: 기록이 없어 목록 크기를 모르는 게임은 IdleReadRoom 이 줄이지 못하므로 계획 창을 여기서 줄임
+            long left = IdleReadRemaining(game) >> 20;
+            windowKey = left < Math.Max(fullMib, profileMib) ? $"|{left}" : string.Empty;
+            (fullMib, profileMib) = (Math.Min(fullMib, left), Math.Min(profileMib, left));
+            if (left <= 0)
+            {
+                skip = IdleReadLimit;
+            }
+        }
+
         if (skip is null && Math.Max(fullMib, profileMib) <= 0)
         {
             skip = $"low memory (available {avail} MiB, reserve {game.Prewarm.MinFreeRamMib} MiB, already held {held} MiB)";
@@ -87,7 +106,7 @@ public sealed partial class Prewarmer
         {
             try
             {
-                string key = Directory.GetLastWriteTimeUtc(game.OriginRoot).Ticks.ToString(); // shortcut: 설치 폴더 자신의 mtime 만 봄 (하위 변경은 놓칠 수 있음), 폴더 mtime 이 바뀌면 다시 열거
+                string key = Directory.GetLastWriteTimeUtc(game.OriginRoot).Ticks + windowKey; // shortcut: 설치 폴더 자신의 mtime 만 봄 (하위 변경은 놓칠 수 있음), 폴더 mtime 이 바뀌면 다시 열거
                 ColdPlan? plan = ProfileMissed(game.Name, key) ? null : _env.ColdPlanner!(game, Math.Max(0, fullMib) << 20, Math.Max(0, profileMib) << 20, ct);
                 if (plan is null)
                 {
@@ -135,7 +154,7 @@ public sealed partial class Prewarmer
 
         if (stats is { Bytes: > 0 })
         {
-            NoteReadBytes(game, stats.Bytes, stats.Seconds); // 하루 읽기 집계 (기록 없는 예열은 늘 계기가 있는 읽기)
+            NoteReadBytes(game, stats.Bytes, stats.Seconds); // 하루 읽기 집계: 자동 틱이 시작한 읽기는 Idle (상한 대상), 게임·런처·서비스 시작이 시작한 읽기는 Trigger (세기만 함). 취소돼 일부만 읽어도 읽은 만큼 셈
         }
 
         if (skip is not null || stats is null)
@@ -160,6 +179,7 @@ public sealed partial class Prewarmer
             _last[game.Name] = warmedAt;
             _coldMib[game.Name] = (stats.Bytes + (1 << 20) - 1) >> 20;
             _coldSamples[game.Name] = samples!;
+            _ = windowKey.Length > 0 ? _coldReduced.Add(game.Name) : _coldReduced.Remove(game.Name);
         }
 
         double mbps = stats.Seconds > 0 ? stats.Bytes / 1048576.0 / stats.Seconds : 0;

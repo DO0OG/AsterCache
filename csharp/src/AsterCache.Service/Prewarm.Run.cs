@@ -643,9 +643,9 @@ public sealed partial class Prewarmer
             _yieldedSeconds += readYield.Seconds;
             _readMix += readYield.Mix;
             _requeued += requeue?.Tally ?? default;
-            if (finalStats is { Bytes: > 0 })
+            if (finalStats is { Bytes: > 0 } or { RefreshBytes: > 0 })
             {
-                NoteStreamRead(game, finalStats); // 하루 읽기 집계: 끝까지 읽지 못하고 멈춘 스트림도 읽은 만큼 셈
+                NoteStreamRead(game, finalStats); // 하루 읽기 집계: 끝까지 읽지 못하고 멈춘 스트림도 읽은 만큼 셈 (본 스트림이 0 바이트여도 끝의 앞부분 다시 읽기가 있으면 셈)
             }
 
             bool interrupted = !complete && _streamGameStarted;

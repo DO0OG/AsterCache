@@ -43,6 +43,8 @@ public sealed class ColdPrewarmTests : IDisposable
 
     private bool ReadCompletes { get; set; } = true;
 
+    private double ReadSeconds { get; set; } = 0.5;
+
     private string? Refusal { get; set; }
 
     /// 부트스트랩 S2 (프리페치 기록으로 boot 트레이스 만들기) 가짜: 부른 횟수와 결과. 만들었으면 true 를 돌려주고 원시·boot 트레이스가 생긴 것으로 침.
@@ -91,7 +93,7 @@ public sealed class ColdPrewarmTests : IDisposable
             ColdRead = (ops, _) =>
             {
                 _reads.Add(ops);
-                return (new StreamStats(ReadBytes ?? ops.Sum(o => o.Length), ops.Count, 0, 0.5), ReadCompletes);
+                return (new StreamStats(ReadBytes ?? ops.Sum(o => o.Length), ops.Count, 0, ReadSeconds), ReadCompletes);
             },
         }, _log, Path.Combine(_dir, _made++ == 0 ? "status.json" : $"status{_made}.json"), () => _now); // 처음 것만 status.json: 같은 파일을 쓰면 다음 Prewarmer 가 이전 예열 기록을 이어받음 (재시작 시험은 따로 있음)
         p.SetAuto(auto ?? AutoSettings.Default);
@@ -102,6 +104,110 @@ public sealed class ColdPrewarmTests : IDisposable
         Games.Make(name, name + ".exe") with { Prewarm = PrewarmSettings.Default with { MinFreeRamMib = minFree } };
 
     private Prewarmer MakeOne(AutoSettings? auto = null, int minFree = 1000) => Make(auto, Game("g", minFree));
+
+    // ---- 계기 없는 읽기의 하루 상한 ----
+
+    private const long Gib = 1L << 30;
+
+    private static long Used(Prewarmer p, GameSettings g, ReadPurpose purpose) => p.DiskReads.Used(g.OriginRoot, purpose).Bytes;
+
+    [Fact]
+    public void AnIdleColdPrewarmPlansOnlyWhatIsLeftOfTheDailyShareAndCountsItAsIdle()
+    {
+        GameSettings g = Game("g");
+        Prewarmer p = MakeOne();
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, Gib - (100 * Mib), g.Name); // 목록 크기를 모르는 게임의 하루 몫 1 GiB 에서 100 MiB 남음
+
+        using (DiskReadLedger.Scope(ReadPurpose.Idle))
+        {
+            Assert.True(p.Run(g, "auto cold start").Ran);
+        }
+
+        Assert.Equal((100 * Mib, 100 * Mib), _caps.Single()); // 폴더·프로필 계획 창이 남은 양으로 줄어듦
+        Assert.Equal(Gib - (100 * Mib) + (10 * Mib), Used(p, g, ReadPurpose.Idle)); // 읽은 양은 계기 없는 읽기로 셈
+        Assert.Equal(0, Used(p, g, ReadPurpose.Trigger));
+    }
+
+    [Fact]
+    public void AtTheDailyShareAnIdleColdPrewarmReadsNothingWhileOneThatAStartOrLauncherAskedForIsNotLimited()
+    {
+        GameSettings g = Game("g");
+        Prewarmer p = MakeOne();
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, Gib, g.Name);
+
+        PrewarmResult idle;
+        using (DiskReadLedger.Scope(ReadPurpose.Idle))
+        {
+            idle = p.Run(g, "auto cold start");
+        }
+
+        Assert.False(idle.Ran);
+        Assert.Equal(Prewarmer.IdleReadLimit, idle.SkipReason);
+        Assert.Empty(_reads);
+
+        Assert.True(p.Run(g, "service start").Ran); // 게임·런처·서비스 시작이 시작한 읽기는 상한 밖
+        Assert.Single(_reads);
+        Assert.True(_caps.Single().Full > 100 * Mib); // 창도 줄이지 않음
+        Assert.Equal(10 * Mib, Used(p, g, ReadPurpose.Trigger));
+    }
+
+    [Fact]
+    public void ColdPrewarmsCancelledMidwayAreCountedAsIdleSoRepeatingThemStopsAtTheShare()
+    {
+        GameSettings g = Game("g");
+        ReadSeconds = 60; // 디스크 속도의 읽기: 받아들인 바이트를 그대로 셈
+        ReadCompletes = false; // 취소됨
+        Planner = (_, full, _, _) => new ColdPlan("full", [new ReadOp(@"D:\g.bin", 0, Math.Min(600 * Mib, full))], Math.Min(600 * Mib, full), null); // 실제 전달된 창 크기까지만 계획함
+        Prewarmer p = MakeOne();
+        var results = new List<PrewarmResult>();
+
+        using (DiskReadLedger.Scope(ReadPurpose.Idle))
+        {
+            for (int i = 0; i < 4; i++)
+            {
+                results.Add(p.Run(g, "auto cold start"));
+            }
+        }
+
+        Assert.Equal([600 * Mib, 424 * Mib], _reads.Select(r => r.Sum(o => o.Length))); // 둘째 시도의 창은 남은 424 MiB 로 줄고, 1 GiB 몫을 다 쓴 뒤에는 읽지 않음
+        Assert.Equal(Gib, Used(p, g, ReadPurpose.Idle));
+        Assert.Equal([Prewarmer.Cancelled, Prewarmer.Cancelled, Prewarmer.IdleReadLimit, Prewarmer.IdleReadLimit], results.Select(r => r.SkipReason));
+    }
+
+    [Fact]
+    public void AfterAnIdleColdPrewarmThatTheShareCutShortALauncherPrewarmIsNotHeldBackByTheCooldownAndReadsTheRest()
+    {
+        GameSettings g = Game("g");
+        Planner = (_, full, _, _) => new ColdPlan("full", [new ReadOp(@"D:\g.bin", 0, Math.Min(300 * Mib, full))], Math.Min(300 * Mib, full), null);
+        Prewarmer p = MakeOne();
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, Gib - (100 * Mib), g.Name);
+
+        using (DiskReadLedger.Scope(ReadPurpose.Idle))
+        {
+            Assert.True(p.Run(g, "auto cold start").Ran); // 남은 100 MiB 만 읽음
+        }
+
+        Assert.True(p.Run(g, "launcher").Ran); // 쿨다운 (기본 30분) 에 막히지 않음
+        Assert.Equal([100 * Mib, 300 * Mib], _reads.Select(r => r.Sum(o => o.Length))); // 시작 계기의 예열이 나머지까지 읽음
+        Assert.True(p.Run(g, "launcher").SkipReason?.StartsWith("cooldown", StringComparison.Ordinal)); // 제한 없이 끝까지 읽은 뒤에는 쿨다운이 적용됨
+    }
+
+    [Fact]
+    public void AProfileThatOnlyTheNarrowedIdleWindowMissedIsNotRememberedAsNoProfileForALaterStart()
+    {
+        GameSettings g = Game("g");
+        Planner = (_, _, profile, _) => profile < 500 * Mib ? ColdPlan.None(FolderWarm.NoEngineProfile) : new ColdPlan("profile Unity", [new ReadOp(@"D:\g.bin", 0, 10 * Mib)], 10 * Mib, null);
+        Prewarmer p = MakeOne();
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, Gib - (100 * Mib), g.Name);
+
+        using (DiskReadLedger.Scope(ReadPurpose.Idle))
+        {
+            Assert.False(p.Run(g, "auto cold start").Ran); // 남은 100 MiB 로는 프로필이 안 맞음
+        }
+
+        Assert.True(p.Run(g, "service start").Ran); // 시작 계기의 예열은 다시 계획해 읽음
+        Assert.Equal(2, _caps.Count);
+    }
 
     // ---- 대상 판정 ----
 

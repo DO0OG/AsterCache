@@ -31,6 +31,11 @@ public sealed record StreamStats(long Bytes, long Requests, long Errors, double 
 
     public long BufferedBytes { get; init; }
 
+    /// 스트림 끝의 앞부분 다시 읽기 (Refresh, 최대 64 MiB) 가 읽은 바이트와 시간: Bytes·Seconds 에는 들지 않고 (읽은 양·노출 시간 계산이 달라지지 않게) 하루 읽기 집계만 따로 셈.
+    public long RefreshBytes { get; init; }
+
+    public double RefreshSeconds { get; init; }
+
     /// 예열 완료 로그 줄에 붙이는 말 (스파스 파일을 버퍼드로 읽은 것이 MiB 로 0 이면 빈 문자열).
     public string BufferedNote() => BufferedBytes >> 20 > 0 ? $", {BufferedBytes >> 20} MiB of sparse files by buffered read" : string.Empty;
 }

@@ -1221,6 +1221,82 @@ public sealed class SupplementResumeTests : IDisposable
         Assert.Equal((3648L, HotMib), ((long)Status()["warmed_mib"]!, (long)Status()["hot_mib"]!)); // 창으로 다시 읽은 양을 기록
     }
 
+    [Theory]
+    [InlineData(true, 1)] // 계기 없는 보충은 두 번째 스트림을 시작하지 않음
+    [InlineData(false, 2)] // 계기 있는 읽기는 상한과 무관
+    public void AnIdleSupplementChecksTheDailyLimitAgainBeforeTheSecondStreamAfterAMemoryStop(bool idle, int streams)
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmedAtServiceCap(g, 20000);
+        _streamer.ReadSetMib = HotMib;
+        _streamer.ScheduleMib = HotMib;
+        _streamer.ErrorCount = 1;
+        _streamer.ReadMib = 1100;
+        p.StreamEnded += (_, _) =>
+        {
+            _avail = 8000;
+            p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 100L << 30, g.Name); // 첫 스트림이 끝난 뒤 하루 상한을 넘음
+        };
+        _streamer.OnProgress = progress =>
+        {
+            if (_streamer.Calls.Count == 1)
+            {
+                _avail = 4096 + 1000;
+                progress(1100 * Mib, HotMib * Mib);
+            }
+            else
+            {
+                _streamer.ErrorCount = 0;
+                _streamer.ReadMib = null;
+            }
+        };
+
+        using (idle ? DiskReadLedger.Scope(ReadPurpose.Idle) : null)
+        {
+            p.Supplement(g, CancellationToken.None);
+        }
+
+        Assert.Equal(streams, _streamer.Calls.Count);
+    }
+
+    [Fact]
+    public void TheSecondWindowOfAnIdleSupplementGetsWhatIsLeftOfTheDailyLimit()
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmedAtServiceCap(g, 20000);
+        p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 1024, RewarmMinutes = 5, IdleReadGibPerDay = 20 });
+        _streamer.ReadSetMib = HotMib;
+        _streamer.ScheduleMib = HotMib;
+        _streamer.ErrorCount = 1;
+        _streamer.ReadMib = 1100;
+        p.StreamEnded += (_, _) =>
+        {
+            _avail = 8000;
+            p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, (20L << 30) - (2000 * Mib), g.Name); // 첫 스트림이 끝난 뒤 하루 상한이 2000 MiB 남음
+        };
+        _streamer.OnProgress = progress =>
+        {
+            if (_streamer.Calls.Count == 1)
+            {
+                _avail = 4096 + 1000;
+                progress(1100 * Mib, HotMib * Mib);
+            }
+            else
+            {
+                _streamer.ErrorCount = 0;
+                _streamer.ReadMib = null;
+            }
+        };
+
+        using (DiskReadLedger.Scope(ReadPurpose.Idle))
+        {
+            p.Supplement(g, CancellationToken.None);
+        }
+
+        Assert.Equal(2, _streamer.Calls.Count);
+        Assert.True(_streamer.Calls[1].MaxStreamMib <= 2000); // 메모리가 허용하는 창 (3648) 이 아니라 남은 양까지만
+    }
+
     [Fact]
     public void AGameStartingRightAfterAnErrorMixedMemoryStopKeepsItFromBeingReadAgain()
     {

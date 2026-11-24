@@ -67,6 +67,17 @@ public static class CacheProbe
 
     /// 표본마다 읽어 걸린 시간 (ms) 을 재고 slowMs 를 넘고 그동안 pageReads (시스템의 페이지 읽기 누계, 기본은 실제 조회) 도 PagesNeeded 이상 늘었으면 느린 것으로 판정합니다 (기본은 1 MiB 용 기준). 누계를 읽을 수 없으면 (null) 시간만으로 봅니다. 열 수 없거나 읽을 것이 없는 표본은 뺍니다. 모두 빠지면 null.
     /// ct 가 취소되면 표본 사이에서 멈추고 null (부분 결과로 판정하지 않음).
+    [ThreadStatic]
+    private static int _slowBeforeCancel;
+
+    /// 마지막 Probe 가 취소로 null 을 돌려주기 전에 읽은 느린 (디스크에서 읽힌) 표본 수를 한 번 돌려주고 지움 (부르는 스레드 기준: 판정에는 쓰지 않고 읽은 양 집계에만 씀).
+    public static int TakeSlowBeforeCancel()
+    {
+        int slow = _slowBeforeCancel;
+        _slowBeforeCancel = 0;
+        return slow;
+    }
+
     public static ProbeResult? Probe(IReadOnlyList<(string Path, long Offset, int Bytes)> samples, double slowMs = ColdThresholdMs, CancellationToken ct = default, Func<bool>? canIssue = null, Func<uint?>? pageReads = null)
     {
         pageReads ??= SystemPageReads.Query;
@@ -74,10 +85,12 @@ public static class CacheProbe
         double total = 0;
         int ok = 0;
         int slow = 0;
+        _slowBeforeCancel = 0;
         foreach ((string path, long offset, int bytes) in samples)
         {
             if (ct.IsCancellationRequested || (canIssue is not null && !canIssue()))
             {
+                _slowBeforeCancel = slow;
                 return null;
             }
 

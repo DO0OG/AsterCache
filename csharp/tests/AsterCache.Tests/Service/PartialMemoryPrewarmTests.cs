@@ -474,6 +474,43 @@ public sealed class PartialMemoryPrewarmTests : IDisposable
         Assert.True((bool)Status()["partial"]!);
     }
 
+    [Theory]
+    [InlineData(true)] // 계기 없는 읽기: 두 번째 스트림의 창을 첫 스트림이 쓴 뒤의 남은 양으로 줄임
+    [InlineData(false)] // 계기 있는 읽기: 그대로
+    public void ASecondStreamAfterAMemoryStopGetsWhatIsLeftOfTheDailyLimitAsItsWindowWhenTheReadIsIdle(bool idle)
+    {
+        _avail = 8000 + 4096 + Prewarmer.FinalShrinkHeadroomMib + 100;
+        Prewarmer p = Make(Game());
+        p.SetAuto(AutoSettings.Default with { IdleReadGibPerDay = 20 });
+        _streamer.OnProgress = progress =>
+        {
+            if (_streamer.Calls.Count > 1)
+            {
+                _streamer.ReadMib = null;
+                return;
+            }
+
+            p.DiskReads.Add(Game().OriginRoot, ReadPurpose.Idle, (20L << 30) - (2000 * Mib), "g"); // 첫 스트림 동안 하루 상한 (20 GiB, 목록 8000 MiB 보다 큼) 이 2000 MiB 남음
+            (_streamer.ReadMib, _avail) = (7, 8000);
+            progress(7 * Mib, 8000 * Mib);
+        };
+
+        using (idle ? DiskReadLedger.Scope(ReadPurpose.Idle) : null)
+        {
+            _ = p.Run(Game(), "test");
+        }
+
+        Assert.Equal(2, _streamer.Calls.Count);
+        if (idle)
+        {
+            Assert.True(_streamer.Calls[1].MaxStreamMib <= 2000); // 메모리가 허용하는 창 (3648) 이 아니라 남은 양까지만
+        }
+        else
+        {
+            Assert.Equal(8000 - 4096 - Prewarmer.FinalShrinkHeadroomMib, _streamer.Calls[1].MaxStreamMib);
+        }
+    }
+
     [Fact]
     public void AFullPathStoppedByAnythingButMemoryIsNeverReadAgain()
     {

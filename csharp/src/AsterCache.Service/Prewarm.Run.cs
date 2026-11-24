@@ -15,6 +15,13 @@ public sealed partial class Prewarmer
     // 한 게임의 예외가 나머지 게임의 예열을 막지 않게 합니다.
     internal PrewarmResult Guarded(GameSettings game, string why, bool pin = true, bool ignoreCooldown = false, CancellationToken ct = default, long usedMib = 0, long? roomMib = null, bool trigger = false)
     {
+        // 재배치 뒤 예열은 사용자의 행동이 아니라 서비스 자신의 작업에 따른 읽기라 계기 없는 읽기의 하루 상한을 따릅니다 (못 읽은 것은 다음 게임·런처 시작의 예열이 채움)
+        using IDisposable? scope = why == AfterRelocation ? DiskReadLedger.Scope(ReadPurpose.Idle) : null;
+        if (scope is not null && IdleReadsExhausted(game))
+        {
+            return new PrewarmResult(game.Name, false, IdleReadLimit, null, _now());
+        }
+
         try
         {
             return Run(game, why, pin, ignoreCooldown, ct, usedMib, roomMib, trigger);
@@ -113,6 +120,17 @@ public sealed partial class Prewarmer
                 PrewarmResult deferred = new(game.Name, false, PostUpdateDelay, null, now);
                 TrackPendingWarm(game, deferred, now);
                 return deferred;
+            }
+
+            if (DiskReadLedger.Current == ReadPurpose.Idle)
+            {
+                // 읽기 잠금을 잡은 뒤 지금 남은 양 (게임 몫과 드라이브 합계 중 작은 쪽) 을 다시 읽어 이 읽기의 예산 상한으로 씀 (잠금을 기다리는 동안 다른 읽기가 썼을 수 있음)
+                if (IdleReadsExhausted(game))
+                {
+                    return new PrewarmResult(game.Name, false, IdleReadLimit, null, now);
+                }
+
+                roomMib = IdleReadRoom(game, roomMib);
             }
 
             if (IsCold(game) && !(_env.ColdRefusal(game) is null && _env.PrefetchBoot(game))) // S2 가 먼저: boot 트레이스가 생기면 더는 기록 없는 게임이 아님
@@ -296,7 +314,8 @@ public sealed partial class Prewarmer
                         streamed = StreamHot(warm, ct, zoneBytes, availableRamMib, memoryPartial is not null, Settle,
                             allowReorder: memoryPartial is null && !HasPartialState(game.Name), roomMib: roomMib ?? long.MaxValue, allowWhileExiting: trigger, why: why, windowMib: memoryPartial?.WarmedMib ?? 0);
                         if (fellBack || memoryPartial is not null || streamed is not { Complete: false, MemoryStop: true }
-                            || MemoryFallbackCapMib(game, finalReadMib, roomMib ?? long.MaxValue, ct) is not { } fallbackCap)
+                            || DiskReadLedger.Current == ReadPurpose.Idle && IdleReadsExhausted(game) // 첫 스트림이 쓴 만큼을 뺀 남은 양으로 두 번째 스트림도 다시 정함
+                            || MemoryFallbackCapMib(game, finalReadMib, IdleReadRoom(game, roomMib) ?? long.MaxValue, ct) is not { } fallbackCap)
                         {
                             break;
                         }
@@ -624,6 +643,11 @@ public sealed partial class Prewarmer
             _yieldedSeconds += readYield.Seconds;
             _readMix += readYield.Mix;
             _requeued += requeue?.Tally ?? default;
+            if (finalStats is { Bytes: > 0 })
+            {
+                NoteStreamRead(game, finalStats); // 하루 읽기 집계: 끝까지 읽지 못하고 멈춘 스트림도 읽은 만큼 셈
+            }
+
             bool interrupted = !complete && _streamGameStarted;
             _calibrationStop = null;
             (_streaming, _streamStop, _streamCancelDetail) = (null, null, null);

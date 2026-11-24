@@ -557,6 +557,7 @@ public sealed partial class Prewarmer
         finally
         {
             long endedAt = Stopwatch.GetTimestamp();
+            NoteReadBytes(game, headDone, Stopwatch.GetElapsedTime(readAt ?? endedAt, endedAt).TotalSeconds); // 하루 읽기 집계 (서비스 시작 묶음의 앞부분 예열은 계기 있는 읽기)
             times.Planning += Stopwatch.GetElapsedTime(startedAt, readAt ?? endedAt).TotalSeconds;
             times.Reading += readAt is { } readStart ? Stopwatch.GetElapsedTime(readStart, endedAt).TotalSeconds : 0;
             if (!ended)

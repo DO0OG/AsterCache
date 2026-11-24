@@ -280,6 +280,9 @@ public sealed record AutoSettings(
 
     public const int SmrMaxRelocateGibPerDay = 2;
 
+    /// 게임 실행 계기 없이 주기로 도는 재예열·보충 예열·사다리가 드라이브마다 하루 (24 시간) 에 읽을 수 있는 총량 (GiB, 0..1048576). 0 = 기본 규칙 (그 드라이브 게임들의 예열 목록 합의 6 배와 24 GiB 가운데 큰 값).
+    public int IdleReadGibPerDay { get; init; }
+
     /// 실제 일일 상한 (GiB): 명시값, 아니면 SMR 로 보이는 HDD 면 2, 그 밖에는 8 (순차 쓰기가 느린 SMR 은 하루에 덜 씀).
     public int MaxRelocateGibFor(bool smr) => MaxRelocateGibPerDaySet || !smr ? MaxRelocateGibPerDay : SmrMaxRelocateGibPerDay;
 

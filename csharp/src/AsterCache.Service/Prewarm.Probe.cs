@@ -148,7 +148,22 @@ public sealed partial class Prewarmer
         return CanIssue() ? (CombineProbes(results), false) : (null, true);
     }
 
+    // 표본 점검이 디스크에서 읽은 양은 하루 읽기 집계에 남김 (재예열 점검·사다리·서비스 시작의 캐시 확인 모두 이 두 함수를 거침).
     internal ProbeResult? ProbeSamplesForGame(GameSettings game, IReadOnlyList<(string Path, long Offset, int Bytes)> samples, string purpose, CancellationToken ct = default)
+    {
+        ProbeResult? result = ProbeSamplesCore(game, samples, purpose, ct);
+        NoteProbeRead(game, result);
+        return result;
+    }
+
+    private ProbeResult? ProbeReadMsForGame(GameSettings game, string purpose, CancellationToken ct = default, bool partial = false)
+    {
+        ProbeResult? result = ProbeReadMsCore(game, purpose, ct, partial);
+        NoteProbeRead(game, result);
+        return result;
+    }
+
+    private ProbeResult? ProbeSamplesCore(GameSettings game, IReadOnlyList<(string Path, long Offset, int Bytes)> samples, string purpose, CancellationToken ct)
     {
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, purpose, ct);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
@@ -203,10 +218,11 @@ public sealed partial class Prewarmer
 
         ProbeResult? result = checkedProbe is null || (_coordinator is null && !ct.CanBeCanceled) ? plain() : checkedProbe(CanIssue);
         refused = !CanIssue();
+        NoteProbeRead(game, result);
         return refused ? null : result;
     }
 
-    private ProbeResult? ProbeReadMsForGame(GameSettings game, string purpose, CancellationToken ct = default, bool partial = false)
+    private ProbeResult? ProbeReadMsCore(GameSettings game, string purpose, CancellationToken ct, bool partial)
     {
         game = WithSparseMark(game); // 스파스를 뺀 예열의 표본은 읽지 않은 범위에서 고르지 않음
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, purpose, ct);

@@ -407,11 +407,21 @@ public sealed partial class Prewarmer
         string[] pending;
         lock (_gate)
         {
-            pending = [.. _partial.Keys];
+            pending = [.. _partial.Keys.OrderByDescending(PlayedAt)]; // 하루 읽기 예산은 가장 최근에 플레이한 게임부터 씀
         }
 
         HashSet<string> pendingPartial = new(StringComparer.OrdinalIgnoreCase);
 
+        using (DiskReadLedger.Scope(ReadPurpose.Idle)) // 이 틱의 보충은 게임 실행 계기 없이 도는 읽기라 하루 상한을 따름 (아래 대기 재시도는 트리거 예열의 재시도라 상한 밖)
+        {
+            SupplementPending(pending, pendingPartial, ct);
+        }
+
+        RetryPendingWarmTick(ct, pendingPartial);
+    }
+
+    private void SupplementPending(string[] pending, HashSet<string> pendingPartial, CancellationToken ct)
+    {
         foreach (string name in pending)
         {
             if (ct.IsCancellationRequested)
@@ -448,8 +458,6 @@ public sealed partial class Prewarmer
 
             SupplementWhenIdle(g, ct);
         }
-
-        RetryPendingWarmTick(ct, pendingPartial);
     }
 
     /// 보충 예열 대기 게임이 IdleNeeded 동안 연속으로 한가했을 때만 Supplement 를 부릅니다 (SupplementTick 과 재예열 점검이 같은 판정을 씀). 유휴가 막 시작됐거나 아직 모자라면 읽지 않고 false.
@@ -458,6 +466,11 @@ public sealed partial class Prewarmer
         if (!HeavyWorkAllowed(g) || PolicyBlocksPrewarm(g))
         {
             return false;
+        }
+
+        if (DiskReadLedger.Current == ReadPurpose.Idle && IdleReadsExhausted(g))
+        {
+            return false; // 계기 없는 읽기만 쉼: 게임 종료 뒤 점검 (Trigger 범위) 의 보충은 그대로 읽음
         }
 
         long? allocatedMib = null;
@@ -471,6 +484,8 @@ public sealed partial class Prewarmer
 
             allocatedMib = budget.AllocMib.GetValueOrDefault(g.Name) is > 0 and long mib ? mib : null;
         }
+
+        allocatedMib = IdleReadRoom(g, allocatedMib); // 계기 없는 읽기는 하루 상한에 남은 양까지만 읽음
 
         bool idle = !DriveHasRunningGame(g) && !_games.Any(x => Relocating(x.Name)) && _env.DiskBytesPerSecond(g) is { } bps && bps < DiskActivity.BusyBytesPerSecond;
         DateTimeOffset now = _now();
@@ -529,6 +544,16 @@ public sealed partial class Prewarmer
                 || DriveHasRunningGame(game) || _games.Any(x => Relocating(x.Name)) || Deferred(game) || MemoryRetryTooSoon(game.Name))
             {
                 return false;
+            }
+
+            if (DiskReadLedger.Current == ReadPurpose.Idle)
+            {
+                if (IdleReadsExhausted(game))
+                {
+                    return false; // 읽기 잠금을 잡은 뒤 남은 양을 다시 읽음
+                }
+
+                allocatedMib = IdleReadRoom(game, allocatedMib);
             }
 
             using var activity = ServiceActivity.Begin(ServiceOp.Supplement); // 초 단위 기록의 동작 표시: 가드를 지나 실제로 일하는 구간만
@@ -772,7 +797,8 @@ public sealed partial class Prewarmer
                         }
                     }, allowReorder: false, roomMib: allocatedMib ?? long.MaxValue, limitBytes: limitMib is { } limitBytesMib ? MibBytes(limitBytesMib) : long.MaxValue, allowFinish: true, windowMib: windowMib ?? p.HotMib);
                     if (fellBack || windowMib is not null || hot is not { Complete: false, MemoryStop: true } || !HeavyWorkAllowed(game)
-                        || MemoryFallbackCapMib(game, finalReadMib, budgetCap, ct) is not { } fallbackCap
+                        || DiskReadLedger.Current == ReadPurpose.Idle && IdleReadsExhausted(game) // 두 번째 스트림을 시작하기 전에도 하루 상한을 다시 확인
+                        || MemoryFallbackCapMib(game, finalReadMib, IdleReadRoom(game, budgetCap) ?? budgetCap, ct) is not { } fallbackCap
                         || fallbackCap <= Math.Max(p.WarmedMib, ActualMib(hot.Value.Stats, p.HotMib, skipBytes)))
                     {
                         break; // 기억한 양이나 이번 회에 (이어 읽은 뒤) 읽은 양 이하로만 들어가면 다시 읽지 않고 아래 기존 취소 경로 (읽은 양·이어 읽을 위치 기억, 재시도 대기)

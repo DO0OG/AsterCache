@@ -138,7 +138,7 @@ public sealed partial class Prewarmer
             {
                 if (_pendingWarm.TryGetValue(game, out PendingWarm? pending))
                 {
-                    _pendingWarm[game] = pending with { RetryAt = _now(), TriggerExe = exe };
+                    _pendingWarm[game] = pending with { RetryAt = _now(), TriggerExe = exe, IdleOrigin = false };
                 }
             }
         }

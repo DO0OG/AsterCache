@@ -1141,6 +1141,38 @@ public sealed class SolarTests
     }
 
     [Fact]
+    public void TheLadderTickKeepsRefreshingInMemoryAtTheIdleReadLimitAndCountsWhatItReadFromDisk()
+    {
+        GrowReuse(1000);
+        Prewarmer p = MakePrewarmer(Game("a"));
+        _ = p.Run(Game("a"), "service start");
+        _touched.Clear();
+        _now += TimeSpan.FromMinutes(5);
+        p.DiskReads.Add(Game("a").OriginRoot, ReadPurpose.Idle, 40L << 30); // 계기 없는 읽기가 하루 상한 (24 GiB) 을 넘음
+        _result = _result with { DiskBytes = 24 * Mib }; // 이번 만지기에서 디스크로 읽힌 양
+        long before = p.DiskReads.Used(@"D:\", ReadPurpose.Idle).Bytes;
+
+        GrowReuse(1000 + 3200);
+        p.Tick(Auto());
+
+        Assert.Single(_touched); // 메모리 안 다시 만지기는 상한에 막히지 않음
+        Assert.Contains(_log.Lines, l => l.Contains("a: cache refreshed in memory", StringComparison.Ordinal));
+        Assert.Equal(before + 24 * Mib, p.DiskReads.Used(@"D:\", ReadPurpose.Idle).Bytes); // 디스크로 읽힌 만큼만 계기 없는 읽기로 셈
+    }
+
+    [Fact]
+    public void ALadderRightAfterAStreamAndTheStreamItselfAreNotCountedTwiceForTheSameRead()
+    {
+        _result = _result with { DiskBytes = 24 * Mib }; // 사다리가 디스크에서 읽은 양
+        Prewarmer p = MakePrewarmer(Game("a"));
+
+        Assert.True(p.Run(Game("a"), "service start").Ran);
+
+        long counted = p.DiskReads.Used(Game("a").OriginRoot, ReadPurpose.Trigger).Bytes;
+        Assert.InRange(counted, 24 * Mib, 24 * Mib + 3 * Mib); // 사다리 24 MiB 한 번 + 스트림은 0.01 s x 순차 상한 (약 2.5 MiB): 스트림 시간에 사다리가 들어가지 않음
+    }
+
+    [Fact]
     public void TheTickDoesNotTouchWhileTheGameRunsOrTheTokenIsCanceled()
     {
         GrowReuse(1000);

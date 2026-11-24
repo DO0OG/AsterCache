@@ -421,8 +421,10 @@ public sealed partial class PrefetchStreamer : IGameStreamer
             StreamStats refresh = Refresh(all, stop, noteIssue);
             if (stop.IsCancellationRequested || refresh.Aborted || (canIssue is not null && !canIssue()))
             {
-                return (r.Stats with { Aborted = true, GapBytes = gapBytes }, false);
+                return (r.Stats with { Aborted = true, GapBytes = gapBytes, RefreshBytes = refresh.Bytes, RefreshSeconds = refresh.Seconds }, false);
             }
+
+            return (r.Stats with { Aborted = r.Stats.Aborted, GapBytes = gapBytes, RefreshBytes = refresh.Bytes, RefreshSeconds = refresh.Seconds }, r.Complete);
         }
 
         bool complete = r.Complete && !stop.IsCancellationRequested;

@@ -44,6 +44,12 @@ public sealed class AutoMode
         if (prewarm is not null)
         {
             prewarm.Recovery = _relocator.Recovery; // 재배치 직후 예열을 드라이브 회복까지 고정
+            if (_relocator.Recovery is DriveRecovery recovery)
+            {
+                recovery.Reads = prewarm.DiskReads; // 회복 표본의 하루 횟수·바이트 상한이 예열의 읽기 집계와 같은 기록을 씀
+            }
+
+            prewarm.LastPlayedAt = name => Status.LastPlayed().TryGetValue(name, out DateTimeOffset at) ? at : null; // 하루 읽기 예산을 가장 최근에 플레이한 게임부터 씀
             prewarm.WarmMeasured += (g, mbps) => Guard("warm mbps note", () => _relocator.NoteWarmMbps(g, mbps));
             prewarm.WarmMeasured += (g, _) => Guard("hit percent", () => RecordHitAfterWarm(prewarm, g)); // 예열 직후 (게임 시작 전) 에만 잼
             prewarm.ColdWarmed += (g, label) => Guard("cold prewarm note", () => _relocator.NoteColdWarmed(g, label)); // 서비스 시작·트리거·틱 어디서 예열하든 같은 표시

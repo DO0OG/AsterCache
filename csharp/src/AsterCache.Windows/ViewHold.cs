@@ -7,8 +7,9 @@ namespace AsterCache.Windows;
 
 /// 붙들기 한 배치의 결과: 붙든 바이트, 디스크에서 읽힌 것으로 본 바이트, 스파스라 건너뛴 바이트, 오류 수 (열기·매핑·읽기·파일 끝 밖), 느린 조각 수, 새로 연 뷰 수, 읽기 수를 조회한 횟수,
 /// 이 프로세스의 디스크 읽기 수 (하드 폴트) 증가, 걸린 시간 (초), 쓴 CPU 시간 (초), 디스크 읽기가 섞여 경계로 보고 멈췄으면 그때 읽던 범위의 배치 안 위치 (그 뒤 범위는 읽지 않았음, 없으면 -1).
-public readonly record struct HoldBatchResult(long Bytes, long DiskBytes, long SkippedBytes, int Errors, int SlowPieces, int Views, int Checks, long HardFaults, double Seconds, double CpuSeconds, int BoundaryIndex, long ImageBytes = 0, long SmallBytes = 0);
+public readonly record struct HoldBatchResult(long Bytes, long DiskBytes, long SkippedBytes, int Errors, int SlowPieces, int Views, int Checks, long HardFaults, double Seconds, double CpuSeconds, int BoundaryIndex, long ImageBytes = 0, long SmallBytes = 0, bool Measured = true);
 
+// Measured: 묶음 전체에서 하드 폴트 수 조회가 시작이나 끝 (또는 중간) 중 한 번도 실패하지 않았는가. 조각을 하나도 읽지 않은 빈 묶음은 읽은 것이 없으므로 참입니다. 거짓이면 DiskBytes 는 디스크 읽기를 다 알아채지 못한 값이므로, 호출하는 쪽이 읽은 양 전부를 예산에 빼되 로딩 판정에는 넘기지 않고 그 플레이의 붙들기 읽기를 더 하지 않습니다.
 // ImageBytes: 실행 가능한 이미지 파일 (첫 두 바이트가 MZ) 이거나 읽지 못해 붙들지 않은 바이트, SmallBytes: MinFileBytes 보다 작은 파일이라 붙들지 않은 바이트.
 
 /// 점검 한 번의 결과: 작업 집합에 있는지 확인한 바이트, 그중 메모리 관리자가 작업 집합에서 줄여 간 (Valid 가 아닌) 바이트, 그것을 다시 읽어 올리다 디스크에서 읽힌 바이트, 붙든 목록에서 뺀 바이트 (바뀐 파일의 몫은 제외),
@@ -24,6 +25,9 @@ public interface IKeepHold : IDisposable
 {
     /// 지금 붙든 바이트.
     long HeldBytes { get; }
+
+    /// 지금 붙들고 있는 범위 (붙든 순서 = 중요한 순서, 내놓은 뒤쪽은 뺌): 붙들지 못한 나머지를 다시 만지는 유지 회차와 시작 만지기가 붙든 범위를 빼는 데 씁니다.
+    IReadOnlyList<ReadOp> HeldRanges();
 
     /// 뷰를 열어 둔 파일 수와 뷰 수.
     int Files { get; }
@@ -282,7 +286,15 @@ public sealed unsafe class ViewHold : IKeepHold
                 boundary = tally.Boundary ? batch.Count - 1 : -1;
             }
 
-            return new HoldBatchResult(tally.Bytes, tally.Disk, tally.Skipped, tally.Errors, tally.Slow, tally.Views, tally.Checks, tally.Faults, Stopwatch.GetElapsedTime(started).TotalSeconds, Math.Max(0, StandbyTouch.ThreadCpuSeconds() - cpuBefore), boundary, tally.Images, tally.Smalls);
+            return new HoldBatchResult(tally.Bytes, tally.Disk, tally.Skipped, tally.Errors, tally.Slow, tally.Views, tally.Checks, tally.Faults, Stopwatch.GetElapsedTime(started).TotalSeconds, Math.Max(0, StandbyTouch.ThreadCpuSeconds() - cpuBefore), boundary, tally.Images, tally.Smalls, tally.Bytes == 0 || (tally.Signal && tally.SinceCheck == 0)); // 읽은 조각이 조회로 닫히지 않았거나 한 번이라도 조회가 실패했으면 계측하지 못한 묶음
+        }
+    }
+
+    public IReadOnlyList<ReadOp> HeldRanges()
+    {
+        lock (_lock)
+        {
+            return [.. _segs.Where(s => s.Live > 0).Select(s => new ReadOp(s.Window.File.Path, s.Offset, s.Live))];
         }
     }
 

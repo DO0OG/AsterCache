@@ -201,6 +201,21 @@ public sealed class ViewHoldTests : IDisposable
     }
 
     [Fact]
+    public void HeldRangesListsWhatIsHeldNowAndDropsTheReleasedPart()
+    {
+        string a = Make("a.bin", 4);
+        string b = Make("b.bin", 4);
+        using var hold = new ViewHold(Counter(0), Counter(0), minFileBytes: 0);
+        hold.Rebase();
+        _ = hold.Hold([new ReadOp(a, 0, 4L * Mib), new ReadOp(b, 0, 4L * Mib)], CancellationToken.None);
+        Assert.Equal([new ReadOp(a, 0, 4L * Mib), new ReadOp(b, 0, 4L * Mib)], hold.HeldRanges());
+
+        _ = hold.Release(6L * Mib); // 나중에 붙든 b 전체와 a 의 뒤쪽 2 MiB
+
+        Assert.Equal([new ReadOp(a, 0, 2L * Mib)], hold.HeldRanges());
+    }
+
+    [Fact]
     public void AGivenUpRangeAndAFileThatChangedAfterTheReleaseAreNotReportedAgain()
     {
         string a = Make("a.bin", 4);
@@ -367,6 +382,62 @@ public sealed class ViewHoldTests : IDisposable
         Assert.True(r.DiskBytes > 0);
         Assert.Equal(100, r.HardFaults);
         Assert.Equal(8L * Mib, hold.HeldBytes); // 읽은 것은 붙듦 (디스크에서 읽은 것도 이제 메모리에 있음)
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    public void AFailedHardFaultReadAtTheStartOrTheEndOfABatchMakesTheWholeBatchUnmeasured(bool startReads, bool endReads)
+    {
+        string a = Make("a.bin", 4);
+        int calls = 0;
+        uint value = 5_000_000;
+        // 첫 두 번은 Rebase (버리는 조회와 기준값), 셋째부터는 묶음 안의 조회: 시작 쪽 실패는 기준값 조회가 null, 끝 쪽 실패는 묶음 끝의 조회가 null
+        Func<uint?> faults = () => ++calls == 2 && !startReads || calls >= 3 && !endReads ? null : value;
+        using var hold = new ViewHold(faults, Counter(0), minFileBytes: 0);
+        hold.Rebase();
+
+        HoldBatchResult r = hold.Hold([new ReadOp(a, 0, 4L * Mib)], CancellationToken.None);
+
+        Assert.Equal(startReads && endReads, r.Measured); // 시작이나 끝 중 한 번이라도 조회가 실패하면 계측하지 못한 묶음
+    }
+
+    [Fact]
+    public void WhenTheLastSegmentIsRefilledExactlyToTheCapTheCheckKeepsItHeld()
+    {
+        string a = Make("a.bin", 8);
+        uint step = 0;
+        uint faults = 5_000_000;
+        uint pages = 5_000_000;
+        using var hold = new ViewHold(() => faults += step, () => pages += step * 10, minFileBytes: 0);
+        hold.Rebase();
+        _ = hold.Hold([new ReadOp(a, 0, 8L * Mib)], CancellationToken.None);
+        step = 100; // 조회 한 번이 4,096,000 바이트 (쪽 수 1,000 개 x 4 KiB) 를 디스크에서 읽은 것으로 보임
+        using Process me = Process.GetCurrentProcess();
+        HoldCheckResult r = default!;
+        for (int attempt = 0; attempt < 5 && r.TrimmedBytes == 0; attempt++)
+        {
+            Assert.True(EmptyWorkingSet(me.Handle));
+            r = hold.Recheck(4_096_000, CancellationToken.None);
+        }
+
+        Assert.True(r.TrimmedBytes > 0);
+        Assert.False(r.CapReached); // 상한을 넘은 것이 아니라 정확히 닿았으므로 되찾은 구간을 그대로 붙듦 (넘어야 내놓음)
+        Assert.Equal(0, r.DroppedBytes);
+        Assert.Equal(8L * Mib, hold.HeldBytes);
+    }
+
+    [Fact]
+    public void AnEmptyBatchIsMeasuredEvenWhenTheHardFaultCountCannotBeRead()
+    {
+        using var hold = new ViewHold(() => null, () => null, minFileBytes: 0);
+        hold.Rebase();
+
+        HoldBatchResult r = hold.Hold([], CancellationToken.None);
+
+        Assert.True(r.Measured); // 읽은 것이 없으므로 잴 것도 없음
     }
 
     [Fact]

@@ -177,7 +177,7 @@ public sealed class IdleReadBudgetTests : IDisposable
     }
 
     [Fact]
-    public void TheCheckAfterAGameExitReadsEvenAtTheLimitAndTheNextRegularCheckIsHeldBack()
+    public void TheCheckAfterAGameExitStopsAtTheLimitLikeTheRegularChecksAndReadsAgainOnceTheWindowHasPassed()
     {
         GameSettings g = Game();
         Prewarmer p = StartedAndDue(On, g);
@@ -188,14 +188,29 @@ public sealed class IdleReadBudgetTests : IDisposable
         _now += TimeSpan.FromMinutes(4);
         Ticks(p, 1, On);
 
-        Assert.Equal(before + 1, _streamer.Seen.Count); // 게임 종료 뒤 한 번의 다시 채우기는 상한 밖
-        Assert.Equal(25 * Gib, Used(p, ReadPurpose.Idle)); // 그 읽기는 계기 있는 읽기로 세어 계기 없는 몫을 늘리지 않음
-        Assert.Equal(100 * Mib + 8 * Mib + 100 * Mib, Used(p, ReadPurpose.Trigger)); // 시작 예열 + 느린 표본 8 곳 + 게임 종료 뒤 다시 읽기
+        Assert.Equal(before, _streamer.Seen.Count); // 게임 종료 뒤 점검도 계기 없는 읽기의 하루 상한에 막힘
+        Assert.Equal(25 * Gib, Used(p, ReadPurpose.Idle));
+        Assert.Equal(100 * Mib, Used(p, ReadPurpose.Trigger)); // 시작 예열뿐: 표본도 읽지 않음
 
-        _now += TimeSpan.FromMinutes(11);
+        _now += TimeSpan.FromHours(25);
         Ticks(p, 1, On);
 
-        Assert.Equal(before + 1, _streamer.Seen.Count); // 그다음 주기 점검은 다시 상한에 막힘
+        Assert.Equal(before + 1, _streamer.Seen.Count); // 하루 뒤 창에서 빠지면 읽음
+    }
+
+    [Fact]
+    public void TheCheckAfterAGameExitCountsWhatItReadsAsIdleReads()
+    {
+        GameSettings g = Game();
+        Prewarmer p = StartedAndDue(On, g);
+
+        p.NoteGameExit();
+        _now += TimeSpan.FromMinutes(4);
+        Ticks(p, 1, On);
+
+        Assert.Equal(2, _streamer.Seen.Count);
+        Assert.Equal(100 * Mib, Used(p, ReadPurpose.Trigger)); // 시작 예열의 몫은 그대로
+        Assert.Equal(100 * Mib + 8 * Mib, Used(p, ReadPurpose.Idle)); // 종료 뒤 점검의 스트림 100 MiB + 느린 표본 8 곳 x 1 MiB
     }
 
     [Fact]
@@ -414,7 +429,6 @@ public sealed class IdleReadBudgetTests : IDisposable
     {
         GameSettings g = Game();
         Prewarmer p = StartedAndDue(On, g);
-        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 25 * Gib, g.Name);
         int before = _streamer.Seen.Count;
         p.NoteGameExit();
         _disk = 50 << 20; // 드라이브가 바쁨
@@ -426,7 +440,7 @@ public sealed class IdleReadBudgetTests : IDisposable
         _now += TimeSpan.FromMinutes(11);
         Ticks(p, 1, On);
 
-        Assert.Equal(before + 1, _streamer.Seen.Count); // 표시가 사라지지 않고 다음 점검이 계기 있는 읽기로 돎
+        Assert.Equal(before + 1, _streamer.Seen.Count); // 바쁨이 풀린 뒤 다음 점검이 계기 없는 읽기로 돎
     }
 
     [Fact]
@@ -482,13 +496,11 @@ public sealed class IdleReadBudgetTests : IDisposable
     }
 
     [Fact]
-    public void TheExitMarkStaysForTheGamesThatWereNotCheckedYetWhenAnotherGameWasChecked()
+    public void TheCheckAfterAGameExitOfAGameThatWasSkippedWaitsForTheLimitLikeAnyOtherCheck()
     {
         GameSettings a = Game("a");
         GameSettings b = Game("b");
         Prewarmer p = StartedAndDue(On, a, b);
-        p.DiskReads.Add(a.OriginRoot, ReadPurpose.Idle, 25 * Gib, a.Name);
-        p.DiskReads.Add(b.OriginRoot, ReadPurpose.Idle, 25 * Gib, b.Name);
         p.NoteGameExit();
         _now += TimeSpan.FromMinutes(4);
         Assert.True(p.Run(b, "service start", ignoreCooldown: true).Ran); // b 는 방금 예열해 이 점검이 건너뜀 (최근 예열)
@@ -496,19 +508,23 @@ public sealed class IdleReadBudgetTests : IDisposable
 
         Ticks(p, 1, On);
 
-        Assert.Equal(before + 1, _streamer.Seen.Count); // a 의 종료 뒤 점검은 상한과 무관하게 읽음
+        Assert.Equal(before + 1, _streamer.Seen.Count); // a 의 종료 뒤 점검만 읽음
         Assert.Equal("a", _streamer.Seen[^1].Name);
+        Assert.False(p.AfterExitCheckPending("a")); // 점검을 마친 게임의 종료 표시는 지워짐
+        Assert.True(p.AfterExitCheckPending("b")); // 건너뛴 게임의 표시는 남음
 
+        p.DiskReads.Add(a.OriginRoot, ReadPurpose.Idle, 25 * Gib, a.Name); // 이제 두 게임 다 상한에 닿음
+        p.DiskReads.Add(b.OriginRoot, ReadPurpose.Idle, 25 * Gib, b.Name);
         _now += TimeSpan.FromMinutes(11);
         Ticks(p, 1, On);
 
-        Assert.Equal(before + 2, _streamer.Seen.Count); // b 의 표시는 남아 있어 다음 점검이 계기 있는 읽기로 읽음
-        Assert.Equal("b", _streamer.Seen[^1].Name);
+        Assert.Equal(before + 1, _streamer.Seen.Count); // b 의 종료 뒤 점검도 상한에 막혀 읽지 않음
+        Assert.True(p.AfterExitCheckPending("b")); // 막힌 게임의 표시도 남음
 
-        _now += TimeSpan.FromMinutes(11);
+        _now += TimeSpan.FromHours(25);
         Ticks(p, 1, On);
 
-        Assert.Equal(before + 2, _streamer.Seen.Count); // 둘 다 마쳤으니 그다음은 다시 상한에 막힘
+        Assert.Equal(before + 3, _streamer.Seen.Count); // 하루 뒤 창에서 빠지면 두 게임 모두 읽음
     }
 
     [Fact]
@@ -609,7 +625,6 @@ public sealed class IdleReadBudgetTests : IDisposable
     {
         GameSettings g = Game();
         Prewarmer p = StartedAndDue(On, g);
-        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 25 * Gib, g.Name);
         p.NoteGameExit();
         _now += TimeSpan.FromMinutes(4);
         bool exitedAgain = false;
@@ -624,13 +639,15 @@ public sealed class IdleReadBudgetTests : IDisposable
         int before = _streamer.Seen.Count;
 
         Ticks(p, 1, On);
-        Assert.Equal(before + 1, _streamer.Seen.Count); // 첫 종료의 점검은 상한 밖
+        Assert.Equal(before + 1, _streamer.Seen.Count); // 첫 종료의 점검
+        Assert.True(p.AfterExitCheckPending("g")); // 도는 중에 들어온 새 종료의 표시는 이 점검이 지우지 않음
 
         _onProbe = null;
         _now += TimeSpan.FromMinutes(11);
         Ticks(p, 1, On);
 
-        Assert.Equal(before + 2, _streamer.Seen.Count); // 새 종료의 표시는 남아 있어 그 점검도 상한 밖
+        Assert.Equal(before + 2, _streamer.Seen.Count); // 새 종료의 점검도 도는 중에 들어온 종료 때문에 막히지 않고 읽음
+        Assert.False(p.AfterExitCheckPending("g")); // 그 점검을 마치면 표시가 지워짐
     }
 
     [Fact]

@@ -1752,12 +1752,12 @@ public sealed partial class Prewarmer
         using var low = new LowPriorityReader(_env);
         using var activity = ServiceActivity.Begin(ServiceOp.Check);
         HoldCheckResult r;
-        bool low = false; // 점검 도중 가용 메모리가 하한 아래로 내려가 끝났는가
+        bool floorHit = false; // 점검 도중 가용 메모리가 하한 아래로 내려가 끝났는가
         lock (_touchSerial)
         {
             hold.Rebase();
             bool refill = !KeepMemoryOf(game.Name).HoldDiskUnmeasured && _env.AvailableRamMib() >= floorMib + HoldRefillMarginMib; // 가용 메모리에 여유가 없거나 이 플레이에서 디스크 읽기를 가려내지 못했으면 줄여 간 쪽을 다시 읽어 오지 않고 그 구간을 목록에서 뺌
-            r = hold.Recheck(loading ? KeepLoadingCheckDiskCapBytes : KeepDiskReadCapBytes, linked.Token, refill, dropOnCap: !loading, memoryLow: () => low |= _env.AvailableRamMib() < floorMib); // 점검 도중에도 가용이 하한 아래로 내려가면 끝내고, 부른 쪽이 바로 내놓음
+            r = hold.Recheck(loading ? KeepLoadingCheckDiskCapBytes : KeepDiskReadCapBytes, linked.Token, refill, dropOnCap: !loading, memoryLow: () => floorHit |= _env.AvailableRamMib() < floorMib); // 점검 도중에도 가용이 하한 아래로 내려가면 끝내고, 부른 쪽이 바로 내놓음
         }
 
         NoteServiceRead(game, r.RefilledBytes);
@@ -1770,6 +1770,6 @@ public sealed partial class Prewarmer
         string cap = r.CapReached ? $", refill cap reached, {r.DroppedBytes >> 20} MiB taken off the hold" : r.DroppedBytes > 0 ? $", {r.DroppedBytes >> 20} MiB taken off the hold (unreadable)" : string.Empty;
         string changed = r.ChangedFiles.Count > 0 ? $", {r.ChangedFiles.Count} changed file(s) released ({r.ChangedFiles[0]})" : string.Empty;
         _log.Info($"{game.Name}: cache hold checked ({exe}): {r.CheckedBytes >> 20} MiB looked up in the working set in {r.Seconds:F1} s (cpu {r.CpuSeconds:F1} s, {r.Checks} checks), {r.TrimmedBytes >> 20} MiB reduced by the memory manager, {r.RefilledBytes >> 20} MiB of it read from disk again ({r.HardFaults} hard faults){cap}{changed}, {hold.HeldBytes >> 20} MiB held");
-        return (r.TrimmedBytes, r.RefilledBytes, r.DroppedBytes, low);
+        return (r.TrimmedBytes, r.RefilledBytes, r.DroppedBytes, floorHit);
     }
 }

@@ -65,6 +65,16 @@ public sealed partial class AutoRelocator
     public ReapplyVerdict? ReapplyBlock(GameSettings g)
     {
         AsterSettings s = _settings();
+        if (_env.FileExists(g.Plan))
+        {
+            PlanFile plan = _env.LoadPlan(g.Plan);
+            _status.EnsureReapplyLimit(g.Name, ReapplySourceKey(plan), GamePolicy.RelocateLayout(g, s.Auto));
+            if (ReapplyRepeatHeld(g, s.Auto))
+            {
+                return ReapplyVerdict.ReapplyLimit;
+            }
+        }
+
         DateTimeOffset now = _env.Now();
         if (!_reapplyIdle.TryGetValue(g.Name, out (IdleTracker Tracker, DateTimeOffset Last) idle) || now - idle.Last > ReapplyIdleGap)
         {
@@ -180,7 +190,8 @@ public sealed partial class AutoRelocator
             return false;
         }
 
-        _status.ResetForReplan(g.Name, BusyDetail);
+        _status.ResetForReplan(g.Name, BusyDetail, preserveReapplyLimit: true);
+        _status.MarkReapplyHandoff(g.Name);
         _log.Info($"{g.Name}: reapply blocked by zone_not_free, handing over to auto relocation to replan the remaining part");
         return true;
     }

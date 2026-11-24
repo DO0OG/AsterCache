@@ -100,7 +100,7 @@ public sealed partial class AutoRelocator
     private string? Tagged(GameSettings g, string stage, string? detail)
     {
         string game = g.Name;
-        string? rest = detail is null ? null : TraceTag.Replace(TierTag.Replace(ProgressTag.Replace(detail, string.Empty), string.Empty), string.Empty).Trim(' ', ',');
+        string? rest = detail is null ? null : RepeatTag.Replace(TraceTag.Replace(TierTag.Replace(ProgressTag.Replace(detail, string.Empty), string.Empty), string.Empty), string.Empty).Trim(' ', ',');
         rest = string.IsNullOrEmpty(rest) ? null : rest;
         if (ShowsProgress(stage) && AutoTracer.NextTrace(g, _settings().Auto, _env, _status) is { Valid: > 0, Wanted: true } next) // 플레이를 더 모으는 중: "trace 2/3", 추가 수집이면 "trace 4/8 (coverage 22%)"
         {
@@ -115,7 +115,8 @@ public sealed partial class AutoRelocator
             rest = rest is null ? tier : rest + ", " + tier;
         }
 
-        return ShowsProgress(stage) && _progress.TryGetValue(game, out string? tag) ? (rest is null ? tag : rest + ", " + tag) : rest;
+        rest = ShowsProgress(stage) && _progress.TryGetValue(game, out string? tag) ? (rest is null ? tag : rest + ", " + tag) : rest;
+        return stage is AutoStage.Done or AutoStage.WaitingIdle && ReapplyPaused(g, _settings().Auto) ? WithRepeatTag(rest) : rest; // 쉬는 중이면 기존 표시 뒤에 사유를 이어 붙임
     }
 
     // 원시 트레이스가 아직 예열된 적 없거나 마지막 예열보다 새로우면 한 번 예열합니다 (같은 트레이스로는 한 번만 시도: 메모리가 모자라 건너뛰어도 30 초마다 다시 부르지 않음).

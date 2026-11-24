@@ -46,15 +46,28 @@ public sealed partial class AutoRelocatorTests
     }
 
     [Fact]
-    public void TheDefaultSettingMakesARangePlanAndNeverCallsTheWholePlanFunction()
+    public void TheRangesSettingMakesARangePlanAndNeverCallsTheWholePlanFunction()
     {
-        UseWholeFile(whole: false);
+        UseWholeFile(whole: false); // 설정에 ranges 를 명시
 
         Tick();
 
         PlanFile plan = PlanFile.Load(_game.Plan);
         Assert.Null(WholeFileLayout.WholeFiles(plan));
         Assert.Empty(_wholeCalls);
+    }
+
+    [Fact]
+    public void TheDefaultSettingMakesAWholePlan()
+    {
+        UseWholeFile();
+        SetAuto(a => a with { RelocateLayout = AutoSettings.Default.RelocateLayout }); // 기본값 그대로
+
+        Tick();
+
+        Assert.Equal(RelocateLayouts.WholeFile, AutoSettings.Default.RelocateLayout);
+        Assert.Equal([F1, F2], WholeFileLayout.WholeFiles(PlanFile.Load(_game.Plan)));
+        Assert.Single(_wholeCalls);
     }
 
     [Fact]

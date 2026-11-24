@@ -48,7 +48,7 @@ public sealed partial class AutoRelocator
             }
 
             bool followResidual = _env.ReplanResidual is not null && PreviousIsResidual(g); // 이전 계획 (.extend 또는 .stale) 이 잔여 계획이면 단일 존 접두부로 가지 않고 모든 이전 task 를 승계
-            bool whole = WholeLayout(g, s) && GamePolicy.AllowsRelocate(g); // 이 게임의 방식이 통째 배치이고 재배치가 허용된 게임만 통째 계획을 만듦 (기본은 범위 계획): 정책이 막은 게임에 통째 계획을 남기면 정책을 풀 때 통째로 옮겨짐
+            bool whole = WholeLayout(g, s) && GamePolicy.AllowsRelocate(g); // 이 게임의 방식이 통째 배치이고 재배치가 허용된 게임만 통째 계획을 만듦 (설정이 ranges 이거나 정책이 막은 게임은 범위 계획): 정책이 막은 게임에 통째 계획을 남기면 정책을 풀 때 통째로 옮겨짐
             (long? start, long usedClusters) = reuseZone && !followResidual && _env.MakePlanAt is not null ? PreviousZone(g, whole) : (null, 0);
             PlanFile Make(long? at, long used) => MakeCandidate(g, s, whole, sessions, zoneMib, at, used);
             if (extending && start is null && reuseZone && !followResidual)
@@ -164,10 +164,22 @@ public sealed partial class AutoRelocator
                 // 저널에 행이 있음 (부분 적용) 이거나 이전 계획이 잔여 계획인 확장: 활성 계획을 새 계획으로 바로 덮지 않고, 이미 옮긴 조각을 지키는 잔여 재계획으로 저널 보관과 함께 바꿈
                 plan = InheritHeld(g, plan); // 아직 읽지 못하는 보류 파일은 후보에서 빠졌어도 계속 보류로 남김
                 bool hadJournal = _env.JournalRows(g) > 0;
+                List<PlanFile> olds = ResidualOlds(g);
+                bool keptRecord = _status.ReapplyLimit(g.Name) is not null && olds.Count > 0; // 기록이 남은 채 다시 계획 (업데이트·확장은 기록이 이미 지워짐)
+                bool checkPlacement = _placementCheckPending.Contains(g.Name) && keptRecord; // 존이 막혀 치운 바로 그 계획 (olds[0]) 과 견줌: 가변 파일·보류 파일 때문에 다시 계획하는 것은 판정하지 않음 (표시는 다시 계획이 끝난 뒤에 지움: 일시 보류 뒤 다시 시도해도 이 주기를 놓치지 않음)
                 try
                 {
-                    plan = residual(g, plan, ResidualOlds(g), sessions);
+                    long lost = checkPlacement ? LostPlacedClusters(g, olds[0]) : 0; // 잔여 재계획이 저널을 보관하기 전에 읽음: 읽기 오류는 아래 일시 보류로
+                    plan = residual(g, plan, olds, sessions);
                     LogResidualPlacement(g, plan);
+                    if (checkPlacement)
+                    {
+                        NoteReapplyReplan(g, olds[0], lost);
+                    }
+                    else if (keptRecord)
+                    {
+                        _status.NoteReapplyReplan(g.Name, false); // 기록은 이어 가고 지문만 다음 계획의 것으로
+                    }
                 }
                 catch (PlanRejectedException e) when (IsTemporaryRejection(e))
                 {
@@ -198,6 +210,8 @@ public sealed partial class AutoRelocator
             {
                 _env.SavePlan(plan, sessions, g.Plan);
             }
+
+            _ = _placementCheckPending.Remove(g.Name);
 
             PlanOutput.SavePrefetch(g.Trace, plan.PrefetchTrace(sessions), warmOnly);
 

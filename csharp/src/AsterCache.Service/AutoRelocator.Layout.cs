@@ -11,7 +11,7 @@ using AsterCache.Core.Trace;
 namespace AsterCache.Service;
 
 /// AutoRelocator 의 통째 배치 (설정 auto.relocate_layout = whole_file): 계획을 파일 전체를 한 조각으로 zone 에 놓는 방식으로 만들고, 예전 범위 계획이 적용된 게임을 새 방식으로 이행합니다.
-/// 설정이 ranges 이면 (기본) 이 파일의 코드는 아무 일도 하지 않습니다. ranges 로 되돌려도 이미 있는 통째 계획은 그대로 둡니다 (검사는 계획의 표지로 판정): 설정을 바꾸는 순간 대량 이동이 일어나지 않게.
+/// 설정이 ranges 이면 이 파일의 코드는 아무 일도 하지 않습니다 (기본은 whole_file). ranges 로 되돌려도 이미 있는 통째 계획은 그대로 둡니다 (검사는 계획의 표지로 판정): 설정을 바꾸는 순간 대량 이동이 일어나지 않게.
 public sealed partial class AutoRelocator
 {
     private const string NoWholeFiles = "no file qualifies for whole-file placement, the game is not relocated (prewarm only)";

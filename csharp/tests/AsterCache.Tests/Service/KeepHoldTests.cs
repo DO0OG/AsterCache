@@ -81,6 +81,8 @@ public sealed class KeepHoldTests
         public int Disposed;
         public Exception? Throw;
         public Func<HoldCheckResult>? NextCheck;
+        public Action? OnRecheck; // 점검이 돌 때 (가용 메모리 변화를 흉내)
+        public Action? OnRelease;
         public Action? OnHold;
         public int ErrorsPerBatch; // 배치마다 돌려줄 열기 오류 수 (공유 없이 열린 파일을 흉내)
         public readonly HashSet<string> WrittenMarked = new(StringComparer.OrdinalIgnoreCase);
@@ -183,6 +185,7 @@ public sealed class KeepHoldTests
             _held -= released;
             PendingBytes += released;
             Released.Add(released);
+            OnRelease?.Invoke();
             return released;
         }
 
@@ -210,6 +213,12 @@ public sealed class KeepHoldTests
             Refills.Add(refill);
             RecheckCaps.Add(refillStopBytes);
             DropOnCaps.Add(dropOnCap);
+            OnRecheck?.Invoke();
+            if (memoryLow?.Invoke() == true)
+            {
+                return new HoldCheckResult(_held, 0, 0, 0, false, [], 0, 0, 0.1, 0.05); // 가용 메모리가 하한 아래: 점검을 끝냄
+            }
+
             return NextCheck?.Invoke() ?? new HoldCheckResult(_held, 0, 0, 0, false, [], 1, 0, 0.5, 0.2);
         }
 
@@ -1818,6 +1827,28 @@ public sealed class KeepHoldTests
         Assert.DoesNotContain(_log.Lines, l => l.Contains("held again after the memory floor released everything"));
         string line = Assert.Single(_log.Lines, l => l.Contains("hold again deferred")); // 두 번의 재시도가 같은 사유라 한 줄
         Assert.Contains("the disk read cap of the play is used", line);
+    }
+
+    [Fact]
+    public void WhenTheTwoMinuteCheckEndsBecauseTheAvailableMemoryFellBelowTheFloorTheReleaseFollowsRightAwayWithoutWaitingForTheNextWatch()
+    {
+        Prewarmer p = Make(Gib());
+        double epoch = 0;
+        double recheckAt = -1;
+        double releaseAt = -1;
+        _hold.OnRecheck = () =>
+        {
+            recheckAt = epoch;
+            _avail = 1500; // 점검이 도는 동안 가용 메모리가 하한 (2048 MiB) 아래로 내려감
+        };
+        _hold.OnRelease = () => releaseAt = releaseAt < 0 ? epoch : releaseAt;
+        RunFor(130, e => epoch = e);
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.True(recheckAt > 0, "the check ran");
+        Assert.Equal(recheckAt, releaseAt); // 같은 감시 주기 안에서 내놓음
+        Assert.Equal((2048 - 1500 + 256) * Mib, _hold.Released[0]);
     }
 
     [Fact]

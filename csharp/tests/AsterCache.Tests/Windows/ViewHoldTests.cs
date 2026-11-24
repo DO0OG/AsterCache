@@ -507,6 +507,33 @@ public sealed class ViewHoldTests : IDisposable
         Assert.Equal(16L * Mib, hold.HeldBytes); // 내놓기는 호출한 쪽이 이어서 함
     }
 
+    [Fact]
+    public void WhenTheReadsReachTheCapExactlyAndTheNextMissingPagesComeBackWithoutDiskReadsTheSegmentStaysHeld()
+    {
+        string a = Make("a.bin", 8);
+        uint faults = 5_000_000;
+        uint pages = 5_000_000;
+        int counts = 0;
+        bool inCheck = false;
+        using var hold = new ViewHold(() => faults += inCheck && ++counts == 1 ? 100u : 0u, () => pages += counts == 1 ? 1000u : 0u, minFileBytes: 0);
+        hold.Rebase();
+        _ = hold.Hold([new ReadOp(a, 0, 8L * Mib)], CancellationToken.None);
+        using Process me = Process.GetCurrentProcess();
+        HoldCheckResult r = default!;
+        for (int attempt = 0; attempt < 5 && r.TrimmedBytes < 4L * Mib; attempt++)
+        {
+            Assert.True(EmptyWorkingSet(me.Handle));
+            (counts, inCheck) = (0, true); // 이 점검의 첫 조회만 4,096,000 바이트를 디스크에서 읽은 것으로 보이고 (정확히 상한), 그 뒤 쪽들은 디스크 읽기 없이 돌아옴
+            r = hold.Recheck(4_096_000, CancellationToken.None);
+            inCheck = false;
+        }
+
+        Assert.True(r.TrimmedBytes >= 4L * Mib, $"trimmed {r.TrimmedBytes}");
+        Assert.False(r.CapReached); // origin/main 과 같게 디스크를 읽는 쪽이 나올 때까지 구간을 유지
+        Assert.Equal(0, r.DroppedBytes);
+        Assert.Equal(8L * Mib, hold.HeldBytes);
+    }
+
     [Theory]
     [InlineData(-4096, true)] // 상한 직전: 마지막 쪽 하나를 읽지 못함
     [InlineData(0, false)] // 정확히 상한: 끝까지 되찾았으므로 유지

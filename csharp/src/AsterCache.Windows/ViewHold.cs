@@ -873,6 +873,7 @@ public sealed unsafe class ViewHold : IKeepHold
     // 주소 범위를 1 MiB 씩 읽어 작업 집합에 다시 올립니다 (자기 프로세스, 디스크 오류는 반환값으로 옵니다). 끝까지 읽었으면 true. 읽을 수 없으면 failed, 읽기 상한에 닿아 못 읽었거나 넘기거나 취소되면 false.
     // 조각을 읽기 전에 아직 조회하지 않은 양 (SinceCheck) 까지 모두 디스크에서 읽힌 것으로 보고 남은 양을 넘길 것 같으면 먼저 조회하며, 그래도 남은 양이 조각보다 작으면 조각을 쪽 단위로 줄입니다 (남은 양이 쪽 하나도 안 되면 멈춤).
     // 읽기 수를 조회할 수 없으면 읽은 양을 모두 디스크 읽기로 셉니다 (Assumed). 상한에 정확히 닿으며 끝까지 읽었으면 true 라 그 구간은 유지됩니다.
+    // 측정한 양이 정확히 상한이면 남은 쪽을 한 쪽씩 읽고 바로 조회해, 대기 목록에서 디스크 읽기 없이 복구되는 쪽은 계속 읽고 (구간 유지) 디스크를 읽으면 상한 초과로 멈춥니다 (origin/main 과 같은 유지·내놓기 판정, 넘는 양은 한 쪽과 읽기 한 번의 크기).
     private bool ReadRange(nint address, long length, Tally tally, long refillStopBytes, CancellationToken ct, Func<bool>? memoryLow, out bool failed)
     {
         failed = false;
@@ -897,13 +898,19 @@ public sealed unsafe class ViewHold : IKeepHold
             }
 
             long room = refillStopBytes - tally.Disk - tally.Assumed - (tally.Signal ? tally.SinceCheck : 0);
+            bool probe = false;
             if (room < n)
             {
                 n = room & ~(PageBytes - 1);
                 if (n <= 0)
                 {
-                    tally.CapHit = true; // 읽을 것이 남았는데 남은 양이 쪽 하나도 안 됨
-                    return false;
+                    if (room != 0 || !tally.Signal)
+                    {
+                        tally.CapHit = true; // 읽을 것이 남았는데 남은 양이 쪽 하나도 안 되고, 정확히 상한에 닿은 것도 아님 (또는 읽기 수를 잴 수 없음)
+                        return false;
+                    }
+
+                    (n, probe) = (Math.Min(PageBytes, length - done), true); // 측정한 읽은 양이 정확히 상한: 다음 쪽이 대기 목록에 있어 디스크 읽기 없이 복구되면 구간을 그대로 두는 기존 동작을 위해 한 쪽씩 읽고 바로 조회함 (디스크를 읽으면 상한 초과로 멈춤)
                 }
             }
 
@@ -930,6 +937,11 @@ public sealed unsafe class ViewHold : IKeepHold
 
             AfterPiece(tally, n, ms); // 여기서 한 조회가 실패하면 Check 가 SinceCheck (이 조각 포함) 를 Assumed 에 더함
             tally.Assumed += measured ? 0 : n;
+            if (probe && tally.Signal && tally.SinceCheck > 0)
+            {
+                Check(tally);
+            }
+
             tally.Boundary = false; // 다시 읽기는 경계를 찾지 않음: 디스크에서 다시 읽힌 양의 상한만 봄
             if (tally.Disk > refillStopBytes)
             {

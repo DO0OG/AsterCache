@@ -1385,6 +1385,26 @@ public sealed partial class Prewarmer
             (KeepMemoryOf(name).HoldReleased, KeepMemoryOf(name).HoldEverReleased) = (true, true);
         }
 
+        // 가용 메모리가 하한 아래이면 붙든 것을 덜 중요한 쪽부터 내놓음. 모두 내놓아 끝났으면 true (호출한 쪽이 반복을 끝냄).
+        bool ReleaseForMemory()
+        {
+            availMib = _env.AvailableRamMib();
+            if (availMib >= floorMib || hold.HeldBytes <= 0)
+            {
+                return false;
+            }
+
+            releasedTotal += ReleaseBelowFloor(hold, name, exe, floorMib, availMib);
+            SetHeld(name, hold.HeldBytes);
+            if (hold.HeldBytes > 0)
+            {
+                return false;
+            }
+
+            EndForMemory(" (everything released for memory)");
+            return true;
+        }
+
         try
         {
             if (hold.WrittenFiles > 0 && CheckWritten())
@@ -1414,16 +1434,9 @@ public sealed partial class Prewarmer
                     break;
                 }
 
-                availMib = _env.AvailableRamMib();
-                if (availMib < floorMib && hold.HeldBytes > 0)
+                if (ReleaseForMemory())
                 {
-                    releasedTotal += ReleaseBelowFloor(hold, name, exe, floorMib, availMib);
-                    SetHeld(name, hold.HeldBytes);
-                    if (hold.HeldBytes <= 0)
-                    {
-                        EndForMemory(" (everything released for memory)");
-                        break;
-                    }
+                    break;
                 }
 
                 if (elapsed - lastWrittenCheck >= HoldWrittenCheckEvery && hold.WrittenFiles > 0)
@@ -1451,7 +1464,7 @@ public sealed partial class Prewarmer
                 if (elapsed - lastCheck >= PlayTouchEvery && (game ?? GameOf(name)) is { } current && Monitor.TryEnter(_touchSerial))
                 {
                     lastCheck = elapsed;
-                    (long trimmed, long refilled, long dropped) result;
+                    (long trimmed, long refilled, long dropped, bool memoryLow) result;
                     try
                     {
                         result = CheckHeld(hold, current, exe, floorMib, ref lastSkip, LoadPhases?.Defers(name, "hold check disk reads") == true); // 로딩 중이면 점검은 돌되 다시 읽기를 작은 상한으로 줄임
@@ -1463,6 +1476,11 @@ public sealed partial class Prewarmer
 
                     (trimmedTotal, refilledTotal, droppedTotal, checks) = (trimmedTotal + result.trimmed, refilledTotal + result.refilled, droppedTotal + result.dropped, checks + 1);
                     SetHeld(name, hold.HeldBytes);
+                    if (result.memoryLow && ReleaseForMemory())
+                    {
+                        break; // 점검이 하한 미달로 끝났으면 다음 감시 주기를 기다리지 않고 바로 내놓음
+                    }
+
                     if (hold.HeldBytes <= 0 && memory.HoldPendingBytes == 0)
                     {
                         if (peak <= 0 && cont.Held <= 0)
@@ -1720,13 +1738,13 @@ public sealed partial class Prewarmer
 
     // 붙든 쪽이 작업 집합에 있는지 보고 (QueryWorkingSetEx) 메모리 관리자가 줄여 간 쪽만 다시 읽어 올립니다. 줄여 간 양, 디스크에서 다시 읽은 양, 목록에서 뺀 양을 돌려줍니다.
     // loading 이면 바뀐 파일 내놓기와 작업 집합 조회는 그대로 하고, 줄여 간 구간을 디스크에서 다시 읽는 양만 KeepLoadingCheckDiskCapBytes 로 줄이며 상한에 닿아도 남은 구간을 붙들기에서 빼지 않습니다.
-    private (long Trimmed, long Refilled, long Dropped) CheckHeld(IKeepHold hold, GameSettings game, string exe, long floorMib, ref string? lastSkip, bool loading = false)
+    private (long Trimmed, long Refilled, long Dropped, bool MemoryLow) CheckHeld(IKeepHold hold, GameSettings game, string exe, long floorMib, ref string? lastSkip, bool loading = false)
     {
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "play hold check", default, game.OriginRoot, allowWhileYielded: true, preserveGameKey: game.Name);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
         {
             NoteHoldSkip(game, exe, "check: disk yielded", ref lastSkip);
-            return (0, 0, 0);
+            return (0, 0, 0, false);
         }
 
         lease?.NoteReadIssue("play hold check", 0, false);
@@ -1734,11 +1752,12 @@ public sealed partial class Prewarmer
         using var low = new LowPriorityReader(_env);
         using var activity = ServiceActivity.Begin(ServiceOp.Check);
         HoldCheckResult r;
+        bool low = false; // 점검 도중 가용 메모리가 하한 아래로 내려가 끝났는가
         lock (_touchSerial)
         {
             hold.Rebase();
             bool refill = !KeepMemoryOf(game.Name).HoldDiskUnmeasured && _env.AvailableRamMib() >= floorMib + HoldRefillMarginMib; // 가용 메모리에 여유가 없거나 이 플레이에서 디스크 읽기를 가려내지 못했으면 줄여 간 쪽을 다시 읽어 오지 않고 그 구간을 목록에서 뺌
-            r = hold.Recheck(loading ? KeepLoadingCheckDiskCapBytes : KeepDiskReadCapBytes, linked.Token, refill, dropOnCap: !loading, memoryLow: () => _env.AvailableRamMib() < floorMib); // 점검 도중에도 가용이 하한 아래로 내려가면 끝내 내놓기가 기다리지 않게
+            r = hold.Recheck(loading ? KeepLoadingCheckDiskCapBytes : KeepDiskReadCapBytes, linked.Token, refill, dropOnCap: !loading, memoryLow: () => low |= _env.AvailableRamMib() < floorMib); // 점검 도중에도 가용이 하한 아래로 내려가면 끝내고, 부른 쪽이 바로 내놓음
         }
 
         NoteServiceRead(game, r.RefilledBytes);
@@ -1751,6 +1770,6 @@ public sealed partial class Prewarmer
         string cap = r.CapReached ? $", refill cap reached, {r.DroppedBytes >> 20} MiB taken off the hold" : r.DroppedBytes > 0 ? $", {r.DroppedBytes >> 20} MiB taken off the hold (unreadable)" : string.Empty;
         string changed = r.ChangedFiles.Count > 0 ? $", {r.ChangedFiles.Count} changed file(s) released ({r.ChangedFiles[0]})" : string.Empty;
         _log.Info($"{game.Name}: cache hold checked ({exe}): {r.CheckedBytes >> 20} MiB looked up in the working set in {r.Seconds:F1} s (cpu {r.CpuSeconds:F1} s, {r.Checks} checks), {r.TrimmedBytes >> 20} MiB reduced by the memory manager, {r.RefilledBytes >> 20} MiB of it read from disk again ({r.HardFaults} hard faults){cap}{changed}, {hold.HeldBytes >> 20} MiB held");
-        return (r.TrimmedBytes, r.RefilledBytes, r.DroppedBytes);
+        return (r.TrimmedBytes, r.RefilledBytes, r.DroppedBytes, low);
     }
 }

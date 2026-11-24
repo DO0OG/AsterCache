@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using AsterCache.Core.Prefetch;
 using AsterCache.Core.Trace;
 using AsterCache.Prefetch.Modes;
@@ -47,6 +48,9 @@ public static class ZoneStreamer
 
     /// 취소 토큰을 확인하는 간격: 이만큼 읽을 때마다 (Pvm 은 이 크기 조각마다) 확인해서, 64 MiB 묶음 도중에도 게임이 뜨면 멈춥니다. Overlapped 는 확인하지 않음.
     public const long CancelCheckBytes = 8L << 20;
+
+    /// 스파스 파일 구간을 버퍼드로 읽기 직전에 noteIssue 로 알리는 단계 이름.
+    public const string SparseBufferedStage = "buffered read of sparse files";
     private const long Page = 4096;
 
     public static StreamStats Run(IReadOnlyList<ReadOp> ops, StreamMethod method = StreamMethod.Pvm, int chunkBytes = DefaultChunkBytes, int queueDepth = 2, CancellationToken ct = default,
@@ -69,6 +73,34 @@ public static class ZoneStreamer
         }
 
         return new StreamStats(bytes, requests, errors, Math.Round(watch.Elapsed.TotalSeconds, 4), aborted, ops.Sum(o => o.Length), hint) { BufferedBytes = buffered };
+    }
+
+    /// noteIssue 로 알리는 조각 단계 이름 ("pvm fragment i/n started|completed, progress x/y bytes") 에서 x (이 호출에서 지금까지 받아들여진 바이트) 를 읽습니다.
+    /// 조각 문구가 아니면 false. 받아들여진 바이트를 조각마다 때맞춰 세려는 호출부가 쓰며 (completed 의 x 에서 앞 조각의 x 를 뺌), 문구는 시험이 이 함수와 함께 고정합니다.
+    public static bool TryFragmentProgress(string stage, out bool completed, out long progress)
+    {
+        (completed, progress) = (false, 0);
+        const string prefix = "pvm fragment ";
+        const string marker = "progress ";
+        if (!stage.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        ReadOnlySpan<char> rest = stage.AsSpan(prefix.Length);
+        int comma = rest.IndexOf(',');
+        int at = rest.IndexOf(marker, StringComparison.Ordinal);
+        if (comma < 0 || at < comma)
+        {
+            return false;
+        }
+
+        ReadOnlySpan<char> head = rest[..comma];
+        ReadOnlySpan<char> word = head[(head.LastIndexOf(' ') + 1)..];
+        completed = word.SequenceEqual("completed");
+        ReadOnlySpan<char> tail = rest[(at + marker.Length)..];
+        int slash = tail.IndexOf('/');
+        return (completed || word.SequenceEqual("started")) && slash > 0 && long.TryParse(tail[..slash], NumberStyles.None, CultureInfo.InvariantCulture, out progress);
     }
 
     // 스파스 속성 파일은 섹션 (CreateFileMapping) 을 만드는 순간 그 파일의 캐시 페이지가 버려지므로 매핑하지 않고 버퍼드 읽기 (RunRead) 로 읽습니다.
@@ -128,7 +160,7 @@ public static class ZoneStreamer
             long e;
             if (isSparse)
             {
-                noteIssue?.Invoke("buffered read of sparse files", part.Sum(o => o.Length), true);
+                noteIssue?.Invoke(SparseBufferedStage, part.Sum(o => o.Length), true);
                 // 앞읽기를 꺼서 요청한 범위만 읽음: 켜 두면 흩어진 목록에서 요청보다 13~23% 더 읽힘 (같은 PC 의 시험 파일 측정)
                 (b, r, e) = RunRead(part, chunk, ct, out partAborted, buffer ??= new byte[chunk], FileOptions.RandomAccess);
                 buffered += b;

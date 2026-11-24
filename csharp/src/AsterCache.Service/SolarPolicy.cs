@@ -42,6 +42,12 @@ internal static class SolarPolicy
     /// 위험할 때 쉬는 동안 쌓이는 쓸 수 있는 시간의 최대 (초): 6,687 MiB 를 처음 만질 때 10.5 초가 걸렸음 (11-24 12:16:26).
     public const double AtRiskBurstSeconds = 12;
 
+    /// 한 게임이 새로 고치는 데 걸리는 시간을 아직 모를 때 (기준 기록이 게임 시작 때의 만지기로만 섰음) 사다리 크기를 이 속도 (바이트/초) 로 나눠 어림합니다: 11-24 로그에서 가장 느렸던 첫 만지기 (6,687 MiB 를 10.5 초 = 약 637 MiB/s) 보다 낮게 잡음.
+    public const double AssumedTouchBytesPerSecond = 512d * (1 << 20);
+
+    /// 5% 경로에서 한 게임의 새로 고침이 5% 경로의 것으로 셈되는 최대 시간: 고르고 나서 이 시간 안에 그 게임의 만지기 시간이 알려지지 않으면 평소처럼 셈.
+    public static readonly TimeSpan AtRiskAttributionWindow = TimeSpan.FromMinutes(2);
+
     /// 만지는 데 touchSeconds 초를 썼을 때 위험 상한 (AtRiskTouchShare) 으로 갚는 데 걸리는 시간.
     public static TimeSpan AtRiskTouchWait(double touchSeconds) => TimeSpan.FromSeconds(touchSeconds / AtRiskTouchShare);
 

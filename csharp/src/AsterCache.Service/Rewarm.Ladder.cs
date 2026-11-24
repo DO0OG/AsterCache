@@ -35,7 +35,7 @@ public sealed partial class Rewarmer
     {
         DateTimeOffset now = _now();
         Lazy<WarmBudgetInfo?> budget = new(_prewarm.WarmBudget); // 표식이 있고 때가 된 게임이 있을 때만 계산
-        return _prewarm.Solar.DueGroup(order, now, g => Touchable(g, now, auto, budget.Value, ct), capped); // capped: 게임이 없을 때의 만지기 시간 상한 (유지 틱만 받음, 스트림 도중의 보호는 받지 않음)
+        return _prewarm.Solar.DueGroup(order, now, g => Touchable(g, now, auto, budget.Value, ct), capped, () => !_prewarm.Games.Any(g => _env.GameRunning(g))); // capped: 게임이 없을 때의 만지기 시간 상한 (유지 틱만 받음, 스트림 도중의 보호는 받지 않음). 5% 경로는 등록된 게임이 하나도 실행 중이 아닐 때만
     }
 
     // 지금 이 게임을 만져도 되는가 (재예열 점검과 같은 게이트, 단 드라이브 사용량은 제외): 재배치 중이 아니고, 방금 예열하지 않았고, ReadBlock 에 막히지 않고, 읽기 대여를 얻을 수 있음.

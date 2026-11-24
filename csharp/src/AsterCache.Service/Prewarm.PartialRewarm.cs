@@ -107,7 +107,7 @@ public sealed partial class Prewarmer
         return until;
     }
 
-    // 식은 앞부분을 실제로 다시 읽은 때 부릅니다 (_gate 안에서).
+    // 식은 앞부분을 끝까지 다시 읽은 때 부릅니다 (_gate 안에서).
     private void NotePartialRewarmReadLocked(string game, DateTimeOffset now)
     {
         if (!_partialRewarms.TryGetValue(game, out PartialRewarmLog? log))
@@ -234,7 +234,7 @@ public sealed partial class Prewarmer
             }
 
             PrewarmResult whole = RewarmGame(game, ct, roomMib);
-            if (whole.Ran || whole.Stats is { Bytes: > 0 })
+            if (whole.Ran) // 끊긴 읽기는 하루 횟수를 쓰지 않음 (읽은 양은 하루 읽기 상한이 셈)
             {
                 lock (_gate)
                 {
@@ -302,7 +302,10 @@ public sealed partial class Prewarmer
             }
 
             memoryPartial = wasMemoryPartial || _memoryPartial.ContainsKey(game.Name);
-            NotePartialRewarmReadLocked(game.Name, now);
+            if (result.Ran)
+            {
+                NotePartialRewarmReadLocked(game.Name, now); // 끝까지 읽은 회차만 셈: 다른 게임이나 이 게임의 실행으로 끊긴 시도가 횟수를 써서 정작 끝까지 채우지 못하는 일이 없게 함 (읽은 바이트는 하루 읽기 상한이 실제 읽은 만큼 셈)
+            }
         }
 
         PatchPartialStatus(game.Name, current, memoryPartial);

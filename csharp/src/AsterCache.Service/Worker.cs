@@ -121,6 +121,7 @@ public sealed class Worker : BackgroundService
             RecentWarmProbeMinutes = () => _settings.Auto.RewarmMinutes,
             BackingOff = quickExit is null ? dispatch.BackingOff : quickExit.IsBackingOff,
         }, coordinator: _coordinator, streamResult: _playRecorder is null ? null : (start, result) => _playRecorder.RecordStartStream(start, result)); // 설정을 다시 읽어도 최신 값
+        _dispatcher.LoadPhases = playRecorder?.LoadPhases; // 스트림의 읽기와 종료 로그를 플레이 기록이 이미 모은 디스크 값과 이음
         _checker = checker;
         _gate = gate ?? new ReapplyGate();
         _quiet = quiet ?? BootQuiet.Real(log, () => _settings.Games, () => prewarm?.UptimeMs() ?? Environment.TickCount64); // 부팅 조용 구간 (시험은 주입)

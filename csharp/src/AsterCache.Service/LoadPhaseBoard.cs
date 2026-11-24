@@ -33,6 +33,8 @@ internal sealed class LoadPhaseBoard(ILog log, Func<DateTimeOffset>? now = null)
         }
     }
 
+    private long _epoch; // 게임 상태가 새로 생길 때마다 늘어남 (디스크 표본 누계가 어느 상태의 것인지 가름)
+
     /// 서비스 자신의 게임 드라이브 읽기 누계: 읽는 쪽이 더하고 입력 공급 (LoadFeed) 이 드라이브 읽기에서 뺍니다.
     public ServiceDiskReads ServiceReads { get; } = new();
 
@@ -41,6 +43,28 @@ internal sealed class LoadPhaseBoard(ILog log, Func<DateTimeOffset>? now = null)
         public LoadDetector Detector { get; } = new();
         public SortedSet<string> Deferred { get; } = []; // 이번 로딩 동안 미룬 일의 이름
         public long? Queue { get; set; } // 게임 드라이브의 디스크 대기열 (가장 최근 표본)
+        public DiskTally Tally { get; set; } // 표본 루프가 이미 읽은 디스크 값의 누계 (스트림 종료 로그가 구간 차이를 구함)
+    }
+
+    /// 이 게임의 디스크 표본 누계 (표본이 아직 없으면 0).
+    public DiskTally TallyOf(string game)
+    {
+        lock (_gate)
+        {
+            return _games.TryGetValue(game, out Entry? entry) ? entry.Tally : default;
+        }
+    }
+
+    /// 표본 루프가 이 초의 디스크 표본 (대기열 합, 읽기 횟수, 읽기 시간 합 ms) 을 누계에 더합니다 (판정 입력이 아님, 새 조회 없음).
+    public void NoteDiskSample(string game, long queue, ulong reads, double readMs)
+    {
+        lock (_gate)
+        {
+            if (_games.TryGetValue(game, out Entry? entry))
+            {
+                entry.Tally = entry.Tally.Add(queue, reads, readMs);
+            }
+        }
     }
 
     /// 이 게임의 지금 상태 (표본이 아직 없거나 표본 루프가 끝났으면 모름).
@@ -98,7 +122,7 @@ internal sealed class LoadPhaseBoard(ILog log, Func<DateTimeOffset>? now = null)
         {
             if (!_games.TryGetValue(game, out Entry? entry))
             {
-                _games[game] = entry = new Entry();
+                _games[game] = entry = new Entry { Tally = new DiskTally(0, 0, 0, 0, ++_epoch) };
                 _phases[game] = []; // 새 플레이의 첫 표본: 이전 플레이의 구간은 버림
             }
 
@@ -158,4 +182,18 @@ internal sealed class LoadPhaseBoard(ILog log, Func<DateTimeOffset>? now = null)
 
     private static string EndLine(string game, string why, double seconds, SortedSet<string> deferred) =>
         $"{game}: loading phase ended after {seconds:F0} s ({why}){(deferred.Count == 0 ? string.Empty : "; held back: " + string.Join(", ", deferred))}";
+}
+
+/// 게임 드라이브의 1초 표본 누계: 표본 수, 대기열이 있던 표본 수, 읽기 횟수와 읽기 시간 합 (ms). 스트림 하나가 도는 동안의 값은 끝의 누계에서 시작의 누계를 빼 구합니다.
+internal readonly record struct DiskTally(long Samples, long Queued, ulong Reads, double ReadMs, long Epoch = 0)
+{
+    public DiskTally Add(long queue, ulong reads, double readMs) => new(Samples + 1, Queued + (queue > 0 ? 1 : 0), Reads + reads, ReadMs + readMs, Epoch);
+
+    /// before 이후의 값 (게임 상태가 지워졌다 다시 생겼으면 — 상태 번호가 다르거나 누계가 줄었으면 — 모름: 표본 없음).
+    public DiskTally Since(DiskTally before) => (before.Epoch != 0 && Epoch != before.Epoch) || Samples < before.Samples || Reads < before.Reads ? default : new(Samples - before.Samples, Queued - before.Queued, Reads - before.Reads, ReadMs - before.ReadMs, Epoch);
+
+    /// 로그 한 줄에 붙일 말: 대기열이 있던 표본의 비율과 읽기 한 번의 평균 시간 (1초 표본의 평균이라 순간 값이 아님).
+    public string Text() => Samples == 0
+        ? "disk samples none"
+        : FormattableString.Invariant($"disk queue present in {100d * Queued / Samples:F0}% of {Samples} samples, mean read latency {(Reads == 0 ? "n/a" : $"{ReadMs / Reads:F1} ms")}");
 }

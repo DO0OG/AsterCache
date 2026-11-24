@@ -3,19 +3,19 @@ using Xunit;
 
 namespace AsterCache.Tests.Service;
 
-/// 게임 드라이브의 한가함 판정: 가짜 시계와 가짜 대기열로 0 이 이어진 시간, 끊김, 계측 공백, 자기 읽기 범위를 시험합니다.
+/// 게임 드라이브의 한가함 판정: 가짜 시계와 가짜 대기열로 0 이 이어진 시간, 끊김, 계측 공백, 묶음마다 새로 재는 것, 같은 디스크의 순번 직렬화를 시험합니다.
 public sealed class DiskIdleGateTests
 {
-    private const string Key = @"D:\Games\a";
+    private const string Key = "D:";
     private long _now = 1000;
     private long? _queue = 0;
-    private readonly List<long?> _queueScript = [];
+    private readonly List<long?> _script = [];
     private int _reads;
 
     private DiskIdleGate Gate() => new(_ =>
     {
         _reads++;
-        return _queueScript.Count > 0 ? _queueScript[Math.Min(_reads - 1, _queueScript.Count - 1)] : _queue;
+        return _script.Count > 0 ? _script[Math.Min(_reads - 1, _script.Count - 1)] : _queue;
     }, () => _now, ms => _now += ms);
 
     [Fact]
@@ -24,53 +24,38 @@ public sealed class DiskIdleGateTests
         DiskIdleGate gate = Gate();
         long start = _now;
 
-        DiskIdleGate.Verdict v = gate.Check(Key);
+        using DiskIdleGate.Turn? turn = gate.TryBegin(Key, CancellationToken.None, out string? why);
 
-        Assert.True(v.Idle);
-        Assert.Equal(DiskIdleGate.IdleHoldMs, _now - start); // 0 이 이어진 시간을 채울 때까지 짧게 지켜봄
+        Assert.NotNull(turn);
+        Assert.Null(why);
+        Assert.Equal(DiskIdleGate.IdleHoldMs, _now - start); // 0 이 이어진 시간을 채울 때까지 지켜봄
     }
 
     [Fact]
-    public void ASecondCheckRightAfterTheFirstIdleOneNeedsNoWaitingBecauseTheZeroRunContinues()
+    public void ANonZeroQueueIsBusyAndLeavesTheTurnFree()
     {
-        DiskIdleGate gate = Gate();
-        _ = gate.Check(Key);
-        long after = _now;
-        _now += 100; // 연속으로 본 것으로 치는 시간 (ContinuityMs) 안
-
-        DiskIdleGate.Verdict v = gate.Check(Key);
-
-        Assert.True(v.Idle);
-        Assert.Equal(after + 100, _now);
-    }
-
-    [Fact]
-    public void ANonZeroQueueIsBusyAndRestartsTheZeroRun()
-    {
-        DiskIdleGate gate = Gate();
-        _ = gate.Check(Key);
         _queue = 2;
-        _now += 50;
+        DiskIdleGate gate = Gate();
 
-        DiskIdleGate.Verdict busy = gate.Check(Key);
+        DiskIdleGate.Turn? busy = gate.TryBegin(Key, CancellationToken.None, out string? why);
         _queue = 0;
-        long start = _now;
-        DiskIdleGate.Verdict again = gate.Check(Key);
+        using DiskIdleGate.Turn? next = gate.TryBegin(Key, CancellationToken.None, out _);
 
-        Assert.Equal(DiskIdleGate.QueueBusy, busy.Why);
-        Assert.True(again.Idle);
-        Assert.Equal(DiskIdleGate.IdleHoldMs, _now - start); // 0 이 이어진 시간을 처음부터 다시 잼
+        Assert.Null(busy);
+        Assert.Equal(DiskIdleGate.QueueBusy, why);
+        Assert.NotNull(next); // 막혀 끝난 판정이 순번을 쥐고 있지 않음
     }
 
     [Fact]
     public void AQueueThatBecomesBusyWhileWaitingEndsTheCheckAsBusy()
     {
-        _queueScript.AddRange([0, 0, 3]);
+        _script.AddRange([0, 0, 3]);
         DiskIdleGate gate = Gate();
 
-        DiskIdleGate.Verdict v = gate.Check(Key);
+        DiskIdleGate.Turn? turn = gate.TryBegin(Key, CancellationToken.None, out string? why);
 
-        Assert.Equal(DiskIdleGate.QueueBusy, v.Why);
+        Assert.Null(turn);
+        Assert.Equal(DiskIdleGate.QueueBusy, why);
     }
 
     [Fact]
@@ -79,43 +64,65 @@ public sealed class DiskIdleGateTests
         _queue = null;
         DiskIdleGate gate = Gate();
 
-        Assert.Equal(DiskIdleGate.MeasureGap, gate.Check(Key).Why);
-        _queue = 0;
-        _ = gate.Check(Key);
-        _queue = null;
-        _now += 10;
-        Assert.Equal(DiskIdleGate.MeasureGap, gate.Check(Key).Why);
+        Assert.Null(gate.TryBegin(Key, CancellationToken.None, out string? why));
+        Assert.Equal(DiskIdleGate.MeasureGap, why);
     }
 
     [Fact]
-    public void AGapBetweenChecksLongerThanTheContinuityTimeRestartsTheZeroRun()
+    public void EveryTurnStartsTheZeroRunOverSoAZeroRightAfterTheOwnReadIsNotCountedAsContinuedIdleness()
     {
         DiskIdleGate gate = Gate();
-        _ = gate.Check(Key);
-        _now += DiskIdleGate.ContinuityMs + 1; // 그 사이 게임이 읽었는지 알 수 없음
+        DiskIdleGate.Turn? first = gate.TryBegin(Key, CancellationToken.None, out _);
+        first!.Dispose(); // 서비스 자신의 읽기가 끝남
         long start = _now;
 
-        DiskIdleGate.Verdict v = gate.Check(Key);
+        using DiskIdleGate.Turn? second = gate.TryBegin(Key, CancellationToken.None, out _);
 
-        Assert.True(v.Idle);
-        Assert.Equal(DiskIdleGate.IdleHoldMs, _now - start);
+        Assert.NotNull(second);
+        Assert.Equal(DiskIdleGate.IdleHoldMs, _now - start); // 다시 처음부터 한가함을 잼
     }
 
     [Fact]
-    public void TheServicesOwnReadDoesNotBreakTheZeroRunEvenWhenItLastsLongerThanTheContinuityTime()
+    public async Task AnotherJudgmentOnTheSameDiskWaitsForTheTurnAndThenMeasuresFromScratch()
     {
         DiskIdleGate gate = Gate();
-        _ = gate.Check(Key);
-        using (gate.Own(Key))
+        DiskIdleGate.Turn? held = gate.TryBegin(Key, CancellationToken.None, out _);
+        Task<(bool Got, long Elapsed)> other = Task.Run(() =>
         {
-            _now += 400; // 서비스가 읽는 동안
-        }
+            long before = Interlocked.Read(ref _now);
+            using DiskIdleGate.Turn? turn = gate.TryBegin("d:", CancellationToken.None, out _); // 같은 디스크 (대소문자 무관)
+            return (turn is not null, Interlocked.Read(ref _now) - before);
+        });
 
-        long after = _now;
-        DiskIdleGate.Verdict v = gate.Check(Key);
+        await Task.Delay(150);
+        Assert.False(other.IsCompleted); // 쥐여 있는 동안은 새 판정을 시작하지 않음
+        held!.Dispose();
+        (bool got, long elapsed) = await other;
 
-        Assert.True(v.Idle);
-        Assert.Equal(after, _now); // 기다리지 않고 바로 이어서 판정
+        Assert.True(got);
+        Assert.True(elapsed >= DiskIdleGate.IdleHoldMs, $"elapsed {elapsed}");
+    }
+
+    [Fact]
+    public void ADifferentDiskHasItsOwnTurn()
+    {
+        DiskIdleGate gate = Gate();
+        using DiskIdleGate.Turn? c = gate.TryBegin("C:", CancellationToken.None, out _);
+
+        using DiskIdleGate.Turn? d = gate.TryBegin("D:", CancellationToken.None, out _);
+
+        Assert.NotNull(d);
+    }
+
+    [Fact]
+    public void ACancelledCallerDoesNotGetATurn()
+    {
+        DiskIdleGate gate = Gate();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        Assert.Null(gate.TryBegin(Key, cts.Token, out string? why));
+        Assert.Equal(DiskIdleGate.Cancelled, why);
     }
 
     [Fact]
@@ -128,12 +135,12 @@ public sealed class DiskIdleGateTests
         tally.NoteVerdict(null, 1500);
         tally.NoteVerdict(DiskIdleGate.MeasureGap, 2000);
         tally.Close(2200);
-        tally.NoteIssued(16L << 20);
+        tally.NoteIssued(1L << 20);
         tally.EndedBy = "list finished";
 
         Assert.Equal(1, tally.BlockedCount(DiskIdleGate.QueueBusy));
         Assert.Equal(1, tally.BlockedCount(DiskIdleGate.MeasureGap));
         Assert.Equal(700, tally.BlockedMs);
-        Assert.Equal("1 batches, 16 MiB; held back 2 times (queue 1, measurement gap 1, loading 0) for 0.7 s, ended: list finished", tally.Describe());
+        Assert.Equal("1 batches, 1 MiB; held back 2 times (queue 1, measurement gap 1, loading 0) for 0.7 s, ended: list finished", tally.Describe());
     }
 }

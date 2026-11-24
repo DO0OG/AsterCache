@@ -19,6 +19,7 @@ public sealed partial class KeepHoldTests
     private readonly HashSet<string> _running = [];
     private readonly FakeHold _hold = new();
     private readonly HashSet<string> _sparse = [];
+    private readonly Dictionary<string, FileLayoutInfo> _layouts = new(StringComparer.OrdinalIgnoreCase); // 파일의 물리 배치 (없으면 위치를 모르는 파일)
     private readonly HashSet<string> _excluded = [];
     private DateTimeOffset _now = new(2026, 11, 22, 12, 0, 0, TimeSpan.Zero);
     private bool _keepHold = true;
@@ -127,7 +128,19 @@ public sealed partial class KeepHoldTests
 
         public void Rebase() => Rebases++;
 
+        private readonly object _sync = new(); // 채우는 스레드의 Hold 와 감시 루프의 Release 가 겹치는 것을 흉내 (진짜 뷰도 한 잠금 아래에서 돎)
+        public Action? OnRelease;
+
         public HoldBatchResult Hold(IReadOnlyList<ReadOp> batch, CancellationToken ct, bool fill = false)
+        {
+            OnHold?.Invoke();
+            lock (_sync)
+            {
+                return HoldLocked(batch, fill);
+            }
+        }
+
+        private HoldBatchResult HoldLocked(IReadOnlyList<ReadOp> batch, bool fill)
         {
             Fills.Add(fill);
             if (Throw is not null)
@@ -135,7 +148,6 @@ public sealed partial class KeepHoldTests
                 throw Throw;
             }
 
-            OnHold?.Invoke();
             Batches.Add(batch);
             long bytes = 0;
             for (int i = 0; i < batch.Count; i++)
@@ -170,6 +182,15 @@ public sealed partial class KeepHoldTests
         private bool IsMissing(ReadOp op) => Missing.Contains(op.Path) || MissingRanges.Contains((op.Path, op.Offset));
 
         public long Release(long bytes)
+        {
+            OnRelease?.Invoke();
+            lock (_sync)
+            {
+                return ReleaseLocked(bytes);
+            }
+        }
+
+        private long ReleaseLocked(long bytes)
         {
             long released = Math.Min(_held, bytes);
             for (long left = released; left > 0 && _ranges.Count > 0;)
@@ -272,6 +293,8 @@ public sealed partial class KeepHoldTests
                 : null,
             WorkingSetBytes = () => (1000 * Mib) + _hold.HeldBytes - _trimmed,
             Sleep = (t, ct) => _sleep?.Invoke(t, ct),
+            FileLayoutOf = path => _layouts.GetValueOrDefault(path),
+            FillPoll = TimeSpan.FromMilliseconds(2),
         }, _log, null, () => _now);
         Assert.True(p.Run(a, "service start").Ran);
         _now += TimeSpan.FromMinutes(2);
@@ -1801,13 +1824,12 @@ public sealed partial class KeepHoldTests
         p.TouchAtGameStart(Game("a"), "a.exe");
 
         string again = Assert.Single(_log.Lines, l => l.Contains("held again after the memory floor released everything"));
-        Assert.Contains("25 MiB of", again); // 파일 1 과 파일 2 (24 MiB) 에 파일 3 의 경계 앞 한 조각
-        Assert.Contains("disk read cap reached", again); // 12 MiB > 남은 10 MiB: 파일 4·5 는 붙들지 않음
-        Assert.Contains("disk reads of the play 1026 MiB of 1024 MiB", again); // 경계를 알아채는 읽기만큼은 넘을 수 있음
+        Assert.Contains("10 MiB of", again); // 남은 예산 (10 MiB) 이 한 묶음 (16 MiB) 보다 적으면 그만큼만 요청: 파일 1 (8 MiB) 과 파일 2 의 앞 2 MiB
+        Assert.DoesNotContain(_hold.Batches.Skip(2).SelectMany(b => b), o => o.Path == F(3)); // 파일 3 이 든 묶음은 요청하지 않음 (예산을 넘지 않음)
     }
 
     [Fact]
-    public void WithThePlayBudgetUsedUpTheHoldAgainHoldsWhatIsInMemoryAndStopsAtTheFirstBatchThatReadsFromDisk()
+    public void WithThePlayBudgetUsedUpTheHoldAgainIssuesNoNewRequestAndLogsTheReasonOnce()
     {
         Prewarmer p = Make(Reads);
         bool armed = false;
@@ -1824,13 +1846,13 @@ public sealed partial class KeepHoldTests
 
         p.TouchAtGameStart(Game("a"), "a.exe");
 
-        string again = Assert.Single(_log.Lines, l => l.Contains("held again after the memory floor released everything"));
-        Assert.Contains("a: cache held while playing (a.exe): 9 MiB of", again); // 파일 1 (캐시에 있음) 과 파일 2 의 경계 앞 한 조각
-        Assert.Contains("disk read cap reached", again);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("held again after the memory floor released everything")); // 예산을 다 쓰면 새 디스크 읽기를 내지 않음 (읽는 조각이 섞일지 미리 알 수 없으므로 메모리에 있는 범위도 붙들지 않음)
+        Assert.Contains(_log.Lines, l => l.Contains("hold again deferred: the disk read cap of the play is used"));
+        Assert.Equal(1, _opened);
     }
 
     [Fact]
-    public void WithThePlayBudgetUsedUpAHoldAgainOfWhatIsAllInMemoryStillHoldsEverything()
+    public void WithThePlayBudgetUsedUpTheRetryAfterEverythingWasReleasedDefersEvenWhenAllOfTheListIsInMemory()
     {
         Prewarmer p = Make(Reads);
         bool armed = false;
@@ -1846,7 +1868,8 @@ public sealed partial class KeepHoldTests
 
         p.TouchAtGameStart(Game("a"), "a.exe");
 
-        _ = Assert.Single(_log.Lines, l => l.Contains("a: cache held while playing (a.exe): 48 MiB of") && l.Contains("held again after the memory floor released everything"));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("held again after the memory floor released everything"));
+        Assert.Contains(_log.Lines, l => l.Contains("hold again deferred: the disk read cap of the play is used"));
     }
 
     [Fact]

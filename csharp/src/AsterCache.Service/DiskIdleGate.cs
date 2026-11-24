@@ -1,40 +1,31 @@
-using AsterCache.Windows;
-
 namespace AsterCache.Service;
 
-/// 게임 드라이브가 한가한가를 판정하는 한 곳: 서비스가 게임 드라이브에서 물리 읽기를 일으킬 수 있는 발행 지점 (붙들기 채우기, 단계·시작 스트림) 이 같은 기준을 씁니다.
-/// 기준: 디스크 대기열이 0 이고 IdleHoldMs 동안 0 이 이어졌으며 계측이 비지 않았을 것. 계측을 읽지 못하면 한가하지 않음으로 봅니다.
-/// 대기열은 디스크 성능 값 (IOCTL_DISK_PERFORMANCE) 을 바로 읽습니다: 플레이 기록의 1 초 표본은 간격이 길어 짧은 한가함을 놓치고, 호출 한 번이 IOCTL 두 번이라 비용이 거의 없습니다.
+/// 게임 드라이브가 한가한가를 판정하는 한 곳: 서비스가 게임 드라이브에서 물리 읽기를 일으키는 붙들기 채우기가 씁니다.
+/// 기준: 디스크 대기열의 순간값이 0 이고 IdleHoldMs 동안 0 이 이어졌으며 계측이 비지 않았을 것. 계측을 읽지 못하면 한가하지 않음으로 봅니다.
+/// 판정과 발행을 물리 디스크 (드라이브 문자) 마다 한 흐름으로 묶습니다: TryBegin 이 새로 IdleHoldMs 를 확인해 순번 (Turn) 을 주고, 호출한 쪽이 묶음 하나를 읽고 순번을 놓으면 다음 판정은 처음부터 다시 잽니다.
+/// 자기 읽기가 끝난 직후의 0 을 이어진 한가함으로 치지 않으므로, 그 사이 게임이나 다른 프로그램의 읽기가 끼어들었다 끝나도 새 묶음을 곧바로 내지 않습니다.
 /// 지연 (읽기 한 건의 평균 시간) 은 기준에 넣지 않았습니다: 서비스 자신이 방금 낸 읽기가 지연에 섞여 게임의 읽기와 가릴 수 없기 때문입니다.
 internal sealed class DiskIdleGate : IDisposable
 {
-    /// 대기열 0 이 이만큼 이어져야 한가함: 게임의 읽기 한 건이 대기열에 머무는 시간 (하드디스크 수 ms~수십 ms) 보다 길고, 채우기 한 묶음이 끝난 뒤 곧 다시 판정할 수 있는 짧은 값입니다 (설계 범위 200~500 ms). 실측으로 고른 값이 아닙니다.
+    /// 대기열 0 이 이만큼 이어져야 한가함: 게임의 읽기 한 건이 대기열에 머무는 시간 (하드디스크 수 ms~수십 ms) 보다 길고 한 번의 판정이 채우기를 너무 늦추지 않는 값입니다 (설계 범위 200~500 ms). 실측으로 고른 값이 아닙니다.
     public const long IdleHoldMs = 300;
 
-    /// 한가함을 기다리는 동안 대기열을 다시 읽는 간격.
-    public const long PollMs = 50;
-
-    /// 이보다 오래 판정하지 않았으면 그 사이 게임이 읽었는지 알 수 없어 0 이 이어진 시간을 처음부터 다시 잽니다 (자기 읽기 중에는 Own 이 이 시각을 이어 줌).
-    public const long ContinuityMs = 250;
+    /// 한가함을 기다리는 동안 대기열을 다시 읽는 간격 (채우기가 도는 동안만 읽음).
+    public const long PollMs = 100;
 
     public const string QueueBusy = "queue";
     public const string MeasureGap = "gap";
     public const string LoadingPhase = "loading";
-
-    private sealed class Track
-    {
-        public long ZeroSince = -1;
-        public long LastAt;
-    }
+    public const string Cancelled = "cancelled";
 
     private readonly object _sync = new();
-    private readonly Dictionary<string, Track> _tracks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, SemaphoreSlim> _turns = new(StringComparer.OrdinalIgnoreCase);
     private readonly Func<string, long?> _queueOf;
     private readonly Func<long> _nowMs;
     private readonly Action<int> _sleep;
     private readonly IDisposable? _owner;
 
-    /// queueOf: 게임 설치 경로 → 그 디스크의 지금 대기열 (읽지 못하면 null). nowMs·sleep: 시험이 시계를 흉내 냅니다.
+    /// queueOf: 드라이브 ("D:") → 그 물리 디스크의 지금 대기열 (읽지 못하면 null). nowMs·sleep: 시험이 시계를 흉내 냅니다.
     public DiskIdleGate(Func<string, long?> queueOf, Func<long>? nowMs = null, Action<int>? sleep = null, IDisposable? owner = null)
     {
         _queueOf = queueOf;
@@ -43,124 +34,135 @@ internal sealed class DiskIdleGate : IDisposable
         _owner = owner;
     }
 
-    /// 판정 결과: 한가하면 Why 가 null, 아니면 QueueBusy·MeasureGap.
-    public readonly record struct Verdict(string? Why)
+    /// 한가하다고 판정된 뒤 묶음 하나를 읽는 동안 쥐는 순번: 놓으면 같은 디스크의 다음 판정이 열립니다.
+    public sealed class Turn(SemaphoreSlim turns) : IDisposable
     {
-        public bool Idle => Why is null;
+        private int _released;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _released, 1) == 0)
+            {
+                _ = turns.Release();
+            }
+        }
     }
 
-    /// 지금 한가한가. 대기열이 0 이어도 IdleHoldMs 가 아직 안 찼으면 그만큼 (최대 IdleHoldMs) 짧게 지켜보다 판정합니다 (호출한 스레드가 잠깐 기다림).
-    public Verdict Check(string key)
+    /// 새로 IdleHoldMs 동안 대기열이 0 인지 보고 한가하면 순번을 돌려줍니다 (why 는 null). 한가하지 않거나 취소되면 null 과 사유 (QueueBusy·MeasureGap·Cancelled).
+    /// 대기열이 0 이면 최대 IdleHoldMs 동안 PollMs 간격으로 지켜보므로 호출한 스레드가 그만큼 기다립니다. 같은 디스크의 다른 순번이 쥐여 있으면 그것이 끝날 때까지 기다립니다.
+    public Turn? TryBegin(string key, CancellationToken ct, out string? why)
     {
-        Track track = TrackOf(key);
+        SemaphoreSlim turns = TurnsOf(key);
+        try
+        {
+            turns.Wait(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            why = Cancelled;
+            return null;
+        }
+
+        long zeroSince = -1;
         while (true)
         {
             long now = _nowMs();
             if (_queueOf(key) is not { } queue)
             {
-                Reset(track);
-                return new Verdict(MeasureGap);
+                _ = turns.Release();
+                why = MeasureGap;
+                return null;
             }
 
-            lock (_sync)
+            if (queue != 0)
             {
-                if (queue != 0)
-                {
-                    (track.ZeroSince, track.LastAt) = (-1, now);
-                    return new Verdict(QueueBusy);
-                }
+                _ = turns.Release();
+                why = QueueBusy;
+                return null;
+            }
 
-                if (track.ZeroSince < 0 || now - track.LastAt > ContinuityMs)
-                {
-                    track.ZeroSince = now; // 앞 판정과 이어지는지 알 수 없음: 지금부터 다시 잼
-                }
+            if (zeroSince < 0)
+            {
+                zeroSince = now;
+            }
 
-                track.LastAt = now;
-                if (now - track.ZeroSince >= IdleHoldMs)
-                {
-                    return new Verdict(null);
-                }
+            if (now - zeroSince >= IdleHoldMs)
+            {
+                why = null;
+                return new Turn(turns);
+            }
+
+            if (ct.IsCancellationRequested)
+            {
+                _ = turns.Release();
+                why = Cancelled;
+                return null;
             }
 
             _sleep((int)PollMs);
         }
     }
 
-    /// 서비스가 이 디스크를 직접 읽는 동안 감싸는 범위: 그 사이에는 대기열이 자기 읽기로 차 있으므로 0 이 이어진 시간을 끊지 않고, 끝나면 이어서 판정합니다 (그 사이 게임이 낸 읽기는 대기열에 남아 있으면 다음 판정이 잡음).
-    public IDisposable Own(string key) => new OwnScope(this, TrackOf(key));
-
     public void Dispose() => _owner?.Dispose();
 
-    private Track TrackOf(string key)
+    private SemaphoreSlim TurnsOf(string key)
     {
         lock (_sync)
         {
-            if (!_tracks.TryGetValue(key, out Track? track))
+            if (!_turns.TryGetValue(key, out SemaphoreSlim? turns))
             {
-                _tracks[key] = track = new Track();
+                _turns[key] = turns = new SemaphoreSlim(1, 1);
             }
 
-            return track;
+            return turns;
         }
     }
 
-    private void Reset(Track track)
-    {
-        lock (_sync)
-        {
-            track.ZeroSince = -1;
-        }
-    }
-
-    private sealed class OwnScope(DiskIdleGate gate, Track track) : IDisposable
-    {
-        public void Dispose()
-        {
-            lock (gate._sync)
-            {
-                if (track.ZeroSince >= 0)
-                {
-                    track.LastAt = gate._nowMs();
-                }
-            }
-        }
-    }
-
-    /// 실제 환경: 게임 설치 경로가 놓인 물리 디스크의 대기열을 디스크 성능 값에서 읽습니다. 디스크마다 모니터를 한 번 열고 닫지 않으며, 열지 못하면 5 초 뒤에 다시 시도합니다 (그동안은 계측 공백).
+    /// 실제 환경: 서비스가 이미 쓰는 성능 카운터 (PhysicalDisk 의 Current Disk Queue Length, 인스턴스 이름의 드라이브 문자로 물리 디스크를 찾음) 에서 순간 대기열을 읽습니다.
+    /// 질의 개체는 하나를 열어 두고 재사용하며 (조회마다 수집을 켜고 끄지 않음) Dispose 때 닫습니다. 읽지 못하면 닫고 5 초 뒤에 다시 엽니다 (그동안은 계측 공백).
     public static DiskIdleGate Windows()
     {
         var reader = new WindowsQueue();
-        return new DiskIdleGate(reader.Read, owner: reader);
+        return new DiskIdleGate(drive => reader.Read(drive), owner: reader);
     }
 
     private sealed class WindowsQueue : IDisposable
     {
         private const long RetryMs = 5000;
         private readonly object _lock = new();
-        private readonly Dictionary<string, (DiskPerformanceMonitor? Monitor, long RetryAt)> _monitors = new(StringComparer.OrdinalIgnoreCase);
+        private DiskActivity.DiskQueueLength? _query;
+        private long _retryAt;
+        private bool _disposed;
 
-        public long? Read(string path)
+        public long? Read(string drive)
         {
             lock (_lock)
             {
-                long now = Environment.TickCount64;
-                if (!_monitors.TryGetValue(path, out (DiskPerformanceMonitor? Monitor, long RetryAt) entry) || (entry.Monitor is null && now >= entry.RetryAt))
-                {
-                    _monitors[path] = entry = (DiskInfo.OpenPerformanceMonitor(path), now + RetryMs);
-                }
-
-                if (entry.Monitor?.Read() is not { } samples)
+                if (_disposed)
                 {
                     return null;
                 }
 
-                long queue = 0;
-                foreach (DiskPerformanceSample sample in samples)
+                long now = Environment.TickCount64;
+                if (_query is null)
                 {
-                    queue += sample.QueueDepth;
+                    if (now < _retryAt)
+                    {
+                        return null;
+                    }
+
+                    _query = DiskActivity.DiskQueueLength.Open();
+                    _retryAt = now + RetryMs;
                 }
 
-                return queue;
+                if (_query?.Read(drive) is { } queue)
+                {
+                    return queue;
+                }
+
+                _query?.Dispose(); // 읽지 못함: 닫고 다음에 다시 엶 (드라이브 구성이 바뀌었을 수 있음)
+                _query = null;
+                return null;
             }
         }
 
@@ -168,18 +170,15 @@ internal sealed class DiskIdleGate : IDisposable
         {
             lock (_lock)
             {
-                foreach ((DiskPerformanceMonitor? monitor, _) in _monitors.Values)
-                {
-                    monitor?.Dispose();
-                }
-
-                _monitors.Clear();
+                _disposed = true;
+                _query?.Dispose();
+                _query = null;
             }
         }
     }
 }
 
-/// 한 번의 채우기나 스트림이 한가함 판정으로 한 일: 낸 묶음과 바이트, 판정에 막힌 횟수 (막히기 시작할 때마다 한 번, 사유별)와 막혀 있던 시간, 끝난 사유. 한 스레드에서만 씁니다.
+/// 한 번의 채우기가 한가함 판정으로 한 일: 낸 묶음과 바이트, 판정에 막힌 횟수 (막히기 시작할 때마다 한 번, 사유별)와 막혀 있던 시간, 끝난 사유. 한 스레드에서만 씁니다.
 internal sealed class IdleTally
 {
     private readonly Dictionary<string, int> _blocked = [];

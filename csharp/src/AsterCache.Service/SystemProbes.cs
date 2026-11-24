@@ -688,6 +688,49 @@ public static partial class DiskActivity
         public void Dispose() => _ = PdhCloseQuery(_query);
     }
 
+    /// 물리 디스크의 지금 대기열 길이 (성능 카운터 `PhysicalDisk` 의 Current Disk Queue Length, 순간값): 질의를 한 번 열어 두고 부를 때마다 수집합니다 (디스크 성능 수집을 켜고 끄지 않고 프로세스도 열지 않음).
+    /// 인스턴스 이름의 드라이브 문자 ("0 C: D:") 로 물리 디스크를 찾아 그 디스크의 값을 더합니다. 한 번에 한 스레드만 부릅니다.
+    public sealed class DiskQueueLength : IDisposable
+    {
+        private readonly nint _query;
+        private readonly nint _counter;
+        private IReadOnlyCollection<string> _remembered = [];
+
+        private DiskQueueLength(nint query, nint counter) => (_query, _counter) = (query, counter);
+
+        /// 이 PC 에 카운터가 없거나 열지 못하면 null.
+        public static DiskQueueLength? Open()
+        {
+            if (PdhOpenQueryW(null, 0, out nint query) != 0)
+            {
+                return null;
+            }
+
+            if (PdhAddEnglishCounterW(query, @"\PhysicalDisk(*)\Current Disk Queue Length", 0, out nint counter) != 0 || PdhCollectQueryData(query) != 0)
+            {
+                _ = PdhCloseQuery(query);
+                return null;
+            }
+
+            return new DiskQueueLength(query, counter);
+        }
+
+        /// drive ("D:") 가 놓인 물리 디스크의 대기열 길이. 읽지 못하거나 드라이브를 찾지 못하면 null.
+        public long? Read(string drive)
+        {
+            if (PdhCollectQueryData(_query) != 0 || ReadInstances(_counter) is not { } values)
+            {
+                return null;
+            }
+
+            double? queue = Sum(drive, values, _remembered, out _, out IReadOnlyCollection<string> disks);
+            _remembered = disks;
+            return queue is { } q ? (long)Math.Round(q) : null;
+        }
+
+        public void Dispose() => _ = PdhCloseQuery(_query);
+    }
+
     // 카운터 하나의 인스턴스별 값 (한 인스턴스라도 읽지 못하면 전체를 믿지 않음: 보수적).
     private static unsafe Dictionary<string, double>? ReadInstances(nint counter)
     {

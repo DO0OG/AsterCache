@@ -101,10 +101,6 @@ public interface IGameStreamer
     /// 주어진 목록을 StreamCoordinated 와 같은 묶음 경로로 흘립니다. 기본은 시작 목록 전체 (StreamCoordinated).
     (StreamStats Stats, bool Complete) StreamOpsCoordinated(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue) =>
         StreamCoordinated(game, stop, progress, canIssue, noteIssue);
-
-    /// batchBytes: 한 묶음 (canIssue 를 확인하는 단위) 의 크기. 묶음을 모르는 스트리머는 기본 크기로 흘립니다.
-    (StreamStats Stats, bool Complete) StreamOpsCoordinated(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue, long batchBytes) =>
-        StreamOpsCoordinated(game, ops, stop, progress, canIssue, noteIssue);
 }
 
 /// 게임의 .prefetch.json 을 Python prefetch.cli 기본값 (physical, 간격 0, 파일 30% 이상이면 통째) 으로 스케줄해 PrefetchVirtualMemory 로 읽습니다.
@@ -447,7 +443,7 @@ public sealed partial class PrefetchStreamer : IGameStreamer
         return ZoneStreamer.Run(refresh, StreamMethod.Read, ct: stop);
     }
 
-    private static (StreamStats Stats, bool Complete) Batches(List<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool>? canIssue, Action<string, long, bool>? noteIssue = null, Action<IReadOnlyList<ReadOp>>? afterBatch = null, long batchBytes = FolderWarm.BatchBytes)
+    private static (StreamStats Stats, bool Complete) Batches(List<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool>? canIssue, Action<string, long, bool>? noteIssue = null, Action<IReadOnlyList<ReadOp>>? afterBatch = null)
     {
         long total = ops.Sum(o => o.Length);
         long done = 0;
@@ -464,7 +460,7 @@ public sealed partial class PrefetchStreamer : IGameStreamer
             progress?.Invoke(done, total);
             afterBatch?.Invoke(batch); // 진행 알림 (묶음 점검) 뒤에 부름: 점검이 스트림을 멈췄으면 호출부가 만지지 않음
             return s;
-        }, batchBytes);
+        });
         return stop.IsCancellationRequested || (canIssue is not null && !canIssue())
             ? (result.Stats with { Aborted = true }, false)
             : result;
@@ -1246,12 +1242,6 @@ public sealed record DispatchEnv
 
     /// auto.stage_stream_enabled: 거짓이면 이후 실행 파일의 단계 스트림과 첫 스트림의 단계 구분을 하지 않음 (지금 동작 그대로).
     public Func<bool> StageStreamEnabled { get; init; } = () => AutoSettings.Default.StageStreamEnabled;
-
-    /// 게임 드라이브의 한가함 판정: 있고 StreamIdleOnly 가 참이면 시작·단계 스트림이 한가할 때만 묶음 하나씩 냅니다 (없으면 예전 방식: 낮은 I/O 우선순위로 게임의 읽기 사이에 끼어듦).
-    internal DiskIdleGate? IdleGate { get; init; }
-
-    /// auto.stream_idle_only: 거짓이면 IdleGate 가 있어도 쓰지 않고 예전 방식으로 흘림.
-    public Func<bool> StreamIdleOnly { get; init; } = () => AutoSettings.Default.StreamIdleOnly;
 
     /// 이름까지 아는 읽기 카운터 (이후 실행 파일의 단계 스트림이 새 프로세스를 가려냄).
     public Func<IReadOnlyCollection<string>, IReadOnlyList<(int Pid, string ExeName, long ReadBytes)>> ReadCountersWithExeNames { get; init; } = ProcessSnapshot.ReadCountersWithExeNames;

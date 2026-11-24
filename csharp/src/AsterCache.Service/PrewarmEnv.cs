@@ -189,6 +189,12 @@ public sealed class PrewarmEnv
     /// 붙들 뷰 묶음을 엽니다 (게임 하나의 한 플레이에 하나). null 이면 붙들지 못함. 시험은 가짜로 바꿉니다.
     public Func<IKeepHold>? OpenHold { get; init; }
 
+    /// 파일의 물리 배치 (붙들기 채우기가 물리적으로 이어진 구간을 고르는 데 씀). null 이면 모두 배치를 모르는 것으로 보고 1 MiB 로 자릅니다.
+    public Func<string, FileLayoutInfo?>? FileLayoutOf { get; init; }
+
+    /// 채우기가 한가함을 기다리거나 끝난 뒤 다시 확인하기까지 쉬는 시간 (null 이면 HoldContinueEvery, 시험은 짧게 줌).
+    public TimeSpan? FillPoll { get; init; }
+
     /// 설정 memory.keep_sparse (게임 실행 중 예열에 든 스파스 파일 블록을 버퍼드 읽기로 다시 읽어 유지) 가 켜져 있는가. 시험 기본값은 꺼짐 (실제 호출 없음).
     public Func<bool> KeepSparseEnabled { get; init; } = () => false;
 
@@ -227,6 +233,7 @@ public sealed class PrewarmEnv
             StandbyLadderEnabled = standbyLadder ?? (() => false),
             KeepHoldEnabled = keepHold ?? (() => false),
             OpenHold = () => new ViewHold(),
+            FileLayoutOf = FileLayout.Get,
             KeepSparseEnabled = keepSparse ?? (() => false),
             OpenBlockReader = () => new BufferedBlockReader(),
             HoldExclusion = g =>

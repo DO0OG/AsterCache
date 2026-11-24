@@ -135,9 +135,6 @@ public sealed record AutoSettings(
     /// 거짓이면 같은 게임의 이후 실행 파일 시작에 단계 스트림을 하지 않고 첫 스트림도 단계를 구분하지 않고 지금처럼 시작 목록 전체를 흘림 (기본 true).
     public bool StageStreamEnabled { get; init; } = true;
 
-    /// 거짓이면 시작·단계 스트림이 게임 드라이브가 한가한 때만 읽지 않고 예전처럼 낮은 I/O 우선순위로 게임의 읽기 사이에 끼어듭니다 (기본 true: 한가할 때만 묶음 하나씩).
-    public bool StreamIdleOnly { get; init; } = true;
-
     /// 거짓이면 자동 트레이스에 디스크 읽기 완료 집계와 그 관찰 수명을 더하지 않습니다 (기본 true).
     public bool IoSummaryEnabled { get; init; } = true;
 

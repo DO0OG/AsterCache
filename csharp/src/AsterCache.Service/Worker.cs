@@ -28,6 +28,7 @@ public sealed class Worker : BackgroundService
     private readonly AutoMode? _auto;
     private readonly SettingsReloader? _reload;
     private readonly KeepAwake? _keepAwake;
+    private readonly DiskIdleGate? _idleGate;
     private readonly RiotPhaseWatcher? _riot;
     private readonly PlayRecorder? _playRecorder;
     private readonly BackgroundYield? _backgroundYield;
@@ -86,7 +87,7 @@ public sealed class Worker : BackgroundService
             prewarm.WarmRank = auto.WarmRank;
         }
 
-        DiskIdleGate? idleGate = auto is null ? null : DiskIdleGate.Windows(); // 게임 드라이브가 한가한 틈에만 서비스의 물리 읽기를 냄 (자동 모드가 있는 진짜 서비스에서만, 시험은 주입하지 않음)
+        DiskIdleGate? idleGate = _idleGate = auto is null ? null : DiskIdleGate.Windows(); // 게임 드라이브가 한가한 틈에만 서비스의 물리 읽기를 냄 (자동 모드가 있는 진짜 서비스에서만, 시험은 주입하지 않음)
         if (prewarm is not null && playRecorder is not null)
         {
             prewarm.IdleGate = idleGate; // 붙들 목록을 한가한 틈에 채움
@@ -112,8 +113,6 @@ public sealed class Worker : BackgroundService
             StartStreamCapSeconds = () => _settings.Auto.StartStreamCapSeconds,
             StartStreamEnabled = () => _settings.Auto.StartStreamEnabled,
             StageStreamEnabled = () => _settings.Auto.StageStreamEnabled,
-            IdleGate = idleGate,
-            StreamIdleOnly = () => _settings.Auto.StreamIdleOnly,
             OtherGameQueued = _queuedStarts.AnyOther,
             IsWarm = prewarm is null ? dispatch.IsWarm : prewarm.AlreadyWarm,
             RecentWarmProbeAt = prewarm is null ? dispatch.RecentWarmProbeAt : prewarm.RecentWarmProbeAt,
@@ -228,6 +227,7 @@ public sealed class Worker : BackgroundService
             _playRecorder?.Dispose();
             _auto?.Shutdown();
             _prewarm?.Shutdown();
+            _idleGate?.Dispose(); // 대기열을 읽던 성능 카운터 질의를 닫음 (예열이 멈춘 뒤)
             _backgroundYield?.Shutdown(); // 예열이 끝난 뒤: 이후 도착한 Begin 은 무시되고 낮춘 우선순위는 모두 되돌림
             _log.Info("service stopped");
         }

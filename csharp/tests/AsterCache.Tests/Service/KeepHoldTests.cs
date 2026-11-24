@@ -2033,6 +2033,28 @@ public sealed class KeepHoldTests
     }
 
     [Fact]
+    public void AfterAnUnmeasuredBatchAnotherExecutableOfTheSameGameDoesNotStartANewHoldEvenAfterEverythingWasReleased()
+    {
+        _hold.Measured = false; // 첫 패스의 첫 묶음에서 계측하지 못함: 이 플레이에서는 더 붙들지 않음
+        Prewarmer p = Make(Reads);
+        RunFor(40, e =>
+        {
+            _avail = e == 1 ? 100 : 20000; // 모두 내놓음
+            if (e == 11)
+            {
+                _now += Prewarmer.StartTouchMinGap;
+                p.TouchAtGameStart(Game("a"), "b.exe"); // 모두 내놓은 뒤 같은 게임의 다른 실행 파일이 뜸
+            }
+        });
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Equal(1, _opened); // 새 붙들기를 열지 않음
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("cache held while playing (b.exe)"));
+        _ = Assert.Single(_log.Lines, l => l.Contains("cache hold stops reading from the disk for this play"));
+    }
+
+    [Fact]
     public void WhenAnotherExecutableStartsWhileSomethingIsStillHeldNothingIsHeldAgain()
     {
         Prewarmer p = Make(Gib());

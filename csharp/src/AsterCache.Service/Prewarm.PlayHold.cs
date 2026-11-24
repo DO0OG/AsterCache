@@ -1056,9 +1056,9 @@ public sealed partial class Prewarmer
         long availMib = _env.AvailableRamMib();
         KeepMemory memory = KeepMemoryOf(game.Name);
         bool again = memory.HoldReleased; // 하한 때문에 모두 내놓은 뒤의 붙들기 (2 분 재시도): 처음 붙들기와 달리 다시 붙들기 조건을 따름
-        if (again && memory.HoldDiskUnmeasured)
+        if (memory.HoldDiskUnmeasured)
         {
-            return null; // 이 플레이에서 디스크 읽기를 가려내지 못함: 다시 붙들지 않음 (사유는 표시를 켠 곳에서 한 번 남김)
+            return null; // 이 플레이에서 디스크 읽기를 가려내지 못함: 모두 내놓은 뒤 같은 게임의 다른 실행 파일이 떠서 again 이 거짓이어도 붙들지 않음 (사유는 표시를 켠 곳에서 한 번 남김)
         }
 
         if (again && HoldAgainBlocker(game) is { } blocked)

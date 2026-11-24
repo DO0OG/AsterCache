@@ -9,7 +9,7 @@ The configuration file is `%ProgramData%\AsterCache\config.json`. Editing it in 
 - The service re-reads the whole file every 5 seconds (when its size or modified time changes), so changes take effect without a restart. If the new configuration fails validation or the folder permission check, the previous settings stay in force and the reason is written to the log.
 - Unknown keys are rejected. Omitted keys take the defaults below.
 - ORBIT is turned on and off from the CLI, not in `config.json` (`aster orbit mode off|shadow|active`). See [ORBIT](ORBIT.md).
-- The management window's Settings and Games tabs write most of these keys. Its **Advanced** section (closed by default) holds seven numeric limits: `prewarm.max_cache_mib`, `auto.startup_warm_games`, `auto.startup_warm_max_mib`, `auto.rewarm_after_exit_min`, `auto.max_relocations_per_day`, `auto.idle_seconds`, and `auto.start_stream_cap_seconds`. A value the window writes equal to its default is removed from the file.
+- The management window's Settings and Games tabs write most of these keys. Its **Advanced** section (closed by default) holds seven numeric values: `prewarm.max_cache_mib`, `auto.startup_warm_games`, `auto.startup_warm_max_mib`, `auto.rewarm_after_exit_min`, `auto.max_relocations_per_day`, `auto.idle_seconds`, and `auto.start_stream_cap_seconds`. A value the window writes equal to its default is removed from the file.
 - The pop-up notification switch is not in `config.json`; it is `notifications.enabled` in `tray.json`.
 
 ```json

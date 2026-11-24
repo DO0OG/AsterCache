@@ -221,6 +221,9 @@ internal sealed class FakeWorld
 
     public IReadOnlyList<SessionSpan> PlayRecords { get; set; } = [];
 
+    /// 플레이 기록 (표본 파일) 을 읽은 횟수.
+    public int PlaySessionReads { get; private set; }
+
     /// 폴더가 있는가 (거짓이면 드라이브가 분리된 것과 같음).
     public Func<string, bool> DirectoryExists { get; set; } = _ => true;
 
@@ -440,7 +443,11 @@ internal sealed class FakeWorld
         FileWriteTime = p => FileTimes.TryGetValue(p, out DateTimeOffset t) ? t : null,
         ReadUsn = (volume, frns, ct) => ReadUsn(volume, frns, ct),
         FileReference = p => FileReference(p),
-        PlaySessions = _ => PlayRecords,
+        PlaySessions = _ =>
+        {
+            PlaySessionReads++;
+            return PlayRecords;
+        },
         RunReadBytes = p => RunReadBytes(p),
         StageIndexTries = AsterCache.Core.Trace.TraceStageIndex.ReadTried,
         IoSummaryTries = IoSummaryStore.ReadTriedOrNull,

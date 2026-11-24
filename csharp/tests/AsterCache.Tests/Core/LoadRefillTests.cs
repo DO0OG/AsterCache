@@ -389,6 +389,23 @@ public sealed class LoadRefillTests : IDisposable
     }
 
     [Fact]
+    public void AWriteCancelledBeforeTheSwapKeepsTheOldFileAndLeavesNoTempFile()
+    {
+        LoadRefillSource first = Source([Sec(10)], [new IoSummaryFile(A)], Row(0, 0, 11));
+        LoadRefillList built = LoadRefillPlanner.WithPlayOrder(LoadRefillPlanner.Collect([first], Existing, null, 1L << 30), _ => false);
+        string path = Path.Combine(_dir, "w.ranked.json");
+        LoadRefillStore.Write(path, built, Started);
+        string before = File.ReadAllText(path);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        Assert.Throws<OperationCanceledException>(() => LoadRefillStore.Write(path, built, Started.AddHours(1), cts.Token));
+
+        Assert.Equal(before, File.ReadAllText(path));
+        Assert.False(File.Exists(path + ".tmp"));
+    }
+
+    [Fact]
     public void ARescoreThatIsCancelledChangesNothing()
     {
         LoadRefillSource first = Source([Sec(10)], [new IoSummaryFile(A)], Row(0, 0, 11));

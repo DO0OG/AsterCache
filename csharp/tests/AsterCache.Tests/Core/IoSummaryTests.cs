@@ -705,6 +705,31 @@ public sealed class IoSummaryTests : IDisposable
     }
 
     [Fact]
+    public void AFailedSlotReplacementKeepsThePreviousSummaryAndACancelledWriteWritesNothing()
+    {
+        string raw = Path.Combine(_dir, "keep.trace.json");
+        File.WriteAllText(raw, "[]\n");
+        IoSummary Disk() => new IoBlockMapper(Snapshot() with { DiskOnly = true }).Build(0, 0, 0, 0, 0, false);
+        for (int i = 0; i < IoSummaryStore.MaxPlayDiskSummaries; i++)
+        {
+            File.SetLastWriteTimeUtc(IoSummaryStore.WritePlayDisk(raw, Disk()), Started.UtcDateTime.AddMinutes(i));
+        }
+
+        string oldest = IoSummaryStore.PlayDiskPath(raw, 1);
+        string before = File.ReadAllText(oldest);
+        Directory.CreateDirectory(oldest + ".tmp"); // 임시 파일을 쓸 수 없게 막아 교체 쓰기를 실패시킴
+
+        Assert.Throws<UnauthorizedAccessException>(() => IoSummaryStore.WritePlayDisk(raw, Disk()));
+        Assert.Equal(before, File.ReadAllText(oldest)); // 기존 슬롯을 먼저 지우지 않으므로 이전 요약이 그대로
+        Assert.NotNull(IoSummaryStore.ReadPlayDisk(oldest));
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        Assert.Throws<OperationCanceledException>(() => IoSummaryStore.WritePlayDisk(raw, Disk(), cts.Token));
+        Assert.Equal(before, File.ReadAllText(oldest));
+    }
+
+    [Fact]
     public void ADiskSlotOnlyReadsBackADiskOnlySummary()
     {
         string raw = Path.Combine(_dir, "k.trace.json");

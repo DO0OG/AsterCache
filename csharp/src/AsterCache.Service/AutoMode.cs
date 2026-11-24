@@ -255,69 +255,83 @@ public sealed class AutoMode
 
     private async Task<bool> WaitAndRetryTraceStartAsync(GameSettings g, Task previousFinish, Func<bool>? isLatestRunningStart, AutoTracer.StartPurpose purpose)
     {
-        bool finished;
-        try
+        var clock = System.Diagnostics.Stopwatch.StartNew(); // 세션이 비길 기다리는 전체 시간 제한 (아래 되풀이 전체에 걸림)
+        bool first = true;
+        while (true)
         {
-            finished = await TraceFinishWaiter(previousFinish, PreviousTraceFinishTimeout, _stop.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (_stop.IsCancellationRequested)
-        {
-            _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (service shutdown)");
-            return false;
-        }
+            bool finished;
+            try
+            {
+                TimeSpan wait = first ? PreviousTraceFinishTimeout : PreviousTraceFinishTimeout - clock.Elapsed;
+                first = false;
+                finished = wait > TimeSpan.Zero && await TraceFinishWaiter(previousFinish, wait, _stop.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_stop.IsCancellationRequested)
+            {
+                _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (service shutdown)");
+                return false;
+            }
 
-        if (!finished)
-        {
+            if (!finished)
+            {
+                if (_stop.IsCancellationRequested)
+                {
+                    _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (service shutdown)");
+                    return false;
+                }
+
+                if (isLatestRunningStart?.Invoke() == false)
+                {
+                    _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (game exited before retry)");
+                    return false;
+                }
+
+                _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (previous trace did not finish within {PreviousTraceFinishTimeout.TotalSeconds:0}s)");
+                return true;
+            }
+
             if (_stop.IsCancellationRequested)
             {
                 _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (service shutdown)");
                 return false;
             }
 
-            if (isLatestRunningStart?.Invoke() == false)
+            AsterSettings latestSettings = _settings;
+            GameSettings? latest = latestSettings.Games.FirstOrDefault(x => string.Equals(x.Name, g.Name, StringComparison.OrdinalIgnoreCase));
+            if (latest is null)
+            {
+                _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (game is no longer registered)");
+                return false;
+            }
+
+            if (!(isLatestRunningStart?.Invoke() ?? true) || !_env.AnyRunning(latest.ExeNames))
             {
                 _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (game exited before retry)");
                 return false;
             }
 
-            _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (previous trace did not finish within {PreviousTraceFinishTimeout.TotalSeconds:0}s)");
+            AutoSettings auto = latestSettings.Auto;
+            if (!auto.Enabled || !auto.Trace || !GamePolicy.AllowsTracking(latest))
+            {
+                _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (retry is no longer eligible)");
+                return false;
+            }
+
+            // 게임 시작 때 정한 목적 (원시 / 요약 전용) 을 끝까지 유지: 대기 중 직전 실행이 저장되며 원시 조건이 바뀌어도 다시 정하지 않음 (안티치트 게이트는 Start 가 최신 설정으로 다시 확인).
+            // 요약 전용이었으면 대기 중 원시 조건이 참이 되어도 원시 세션을 열지 않고, 요약이 꺼졌으면 아무 세션도 열지 않음.
+            bool started = _tracer.Start(latest, out Task? again, purpose);
+            if (!started && again is not null)
+            {
+                // 자리를 내준 직후 다른 게임의 세션이 먼저 열렸음 (원시 시작이면 Start 가 그 요약에 종료를 요청해 둠): 그 세션의 완료를 다시 기다림 (세션이 비거나 시간 제한에 닿을 때까지)
+                previousFinish = again;
+                continue;
+            }
+
+            _log.Info(started
+                ? $"{g.Name}: auto trace start resumed after waiting for the previous trace"
+                : $"{g.Name}: auto trace start abandoned after waiting for the previous trace (retry is no longer eligible)");
             return true;
         }
-
-        if (_stop.IsCancellationRequested)
-        {
-            _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (service shutdown)");
-            return false;
-        }
-
-        AsterSettings latestSettings = _settings;
-        GameSettings? latest = latestSettings.Games.FirstOrDefault(x => string.Equals(x.Name, g.Name, StringComparison.OrdinalIgnoreCase));
-        if (latest is null)
-        {
-            _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (game is no longer registered)");
-            return false;
-        }
-
-        if (!(isLatestRunningStart?.Invoke() ?? true) || !_env.AnyRunning(latest.ExeNames))
-        {
-            _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (game exited before retry)");
-            return false;
-        }
-
-        AutoSettings auto = latestSettings.Auto;
-        if (!auto.Enabled || !auto.Trace || !GamePolicy.AllowsTracking(latest))
-        {
-            _log.Info($"{g.Name}: auto trace start abandoned after waiting for the previous trace (retry is no longer eligible)");
-            return false;
-        }
-
-        // 게임 시작 때 정한 목적 (원시 / 요약 전용) 을 끝까지 유지: 대기 중 직전 실행이 저장되며 원시 조건이 바뀌어도 다시 정하지 않음 (안티치트 게이트는 Start 가 최신 설정으로 다시 확인).
-        // 요약 전용이었으면 대기 중 원시 조건이 참이 되어도 원시 세션을 열지 않고, 요약이 꺼졌으면 아무 세션도 열지 않음.
-        bool started = _tracer.Start(latest, out _, purpose);
-        _log.Info(started
-            ? $"{g.Name}: auto trace start resumed after waiting for the previous trace"
-            : $"{g.Name}: auto trace start abandoned after waiting for the previous trace (retry is no longer eligible)");
-        return true;
     }
 
     private static async Task<bool> WaitForTraceFinishAsync(Task finished, TimeSpan timeout, CancellationToken cancellationToken)

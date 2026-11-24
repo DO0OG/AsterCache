@@ -2962,12 +2962,42 @@ public sealed class AutoTracerTests : IDisposable
 
         Assert.True(finished.IsCompleted); // 다음 시작이 기다리던 완료 신호가 바로 옴
         Assert.False(_tracer.Active);
-        Assert.Equal(0, _rig.World.BuildIoSummaryCalls);
-        Assert.Empty(DiskSlots);
+        Assert.Equal(0, _rig.World.PlaySessionReads); // 세션을 닫은 앞뒤에 표본 파일 읽기도
+        Assert.Equal(0, _rig.World.BuildIoSummaryCalls); // 변환도
+        Assert.Empty(DiskSlots); // 저장도 없음
 
-        _tracer.Step(); // 변환·저장·점수 갱신은 그 뒤 (취소·시간 제한 안에서)
+        _tracer.Step(); // 표본 읽기·변환·저장·점수 갱신은 그 뒤 (취소·시간 제한 안에서)
+        Assert.True(_rig.World.PlaySessionReads > 0);
         Assert.Equal(1, _rig.World.BuildIoSummaryCalls);
         Assert.Single(DiskSlots);
+    }
+
+    [Fact]
+    public void ARawStartWaitingForTheSessionMakesNewSummaryStartsYieldUntilItOpensAndAClosedSummaryCanBePreemptedAgain()
+    {
+        LearnedGame();
+        GameSettings raw = _game with { Name = "bar", ExeNames = ["bar.exe"] }; // 원시 트레이스 파일이 없는 게임: 첫 기록
+        _rig.Settings = _rig.Settings with { Games = [_game, raw] };
+        _rig.World.Session = new FakeTrace();
+        Assert.True(_tracer.Start(_game, out _)); // foo: 요약 세션
+        _rig.World.Running = true;
+
+        Assert.False(_tracer.Start(raw, out Task? first, AutoTracer.StartPurpose.Raw)); // bar: 원시 시작이 요약에 종료를 요청하고 기다림
+        Assert.NotNull(first);
+        _tracer.Step();
+        Assert.True(first.IsCompleted);
+
+        Assert.False(_tracer.Start(_game, out Task? none)); // 원시 시작이 기다리는 동안 새 요약 세션은 열리지 않음
+        Assert.Null(none);
+        Assert.Equal(1, _rig.World.SummaryStarts);
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("play summary not started, a raw trace is waiting for the session", StringComparison.Ordinal));
+
+        Assert.True(_tracer.Start(raw, out _, AutoTracer.StartPurpose.Raw)); // 재시도: 원시 세션이 열림
+        Assert.Equal((1, 1), (_rig.World.SummaryStarts, _rig.World.TraceStarts));
+        _tracer.Shutdown();
+        _rig.World.Now += TimeSpan.FromMinutes(5);
+        Assert.True(_tracer.Start(_game, out _)); // 원시가 세션을 얻은 뒤에는 양보가 풀림 (세션이 비면 요약이 다시 열림)
+        Assert.Equal(2, _rig.World.SummaryStarts);
     }
 
     [Fact]
@@ -3004,7 +3034,7 @@ public sealed class AutoTracerTests : IDisposable
     }
 
     [Fact]
-    public void ARankedUpdateCancelledByAGameStartLeavesTheRankedFileAndTheNextSummaryCountsAllSlots()
+    public void ASaveCancelledByTheTimeBudgetWritesNoSlotAndLeavesTheRankedFileAsItWas()
     {
         LearnedGame();
         string file = Path.Combine(_rig.Dir, "a.bin");
@@ -3020,9 +3050,9 @@ public sealed class AutoTracerTests : IDisposable
         tracer.Step();
         EndSummaryPlay(tracer);
 
-        Assert.Single(DiskSlots); // 요약은 저장됨
-        Assert.Equal(before, File.ReadAllText(rankedPath)); // 시간 제한이 지나 점수 갱신이 취소됨 (순위 파일은 그대로)
-        Assert.Contains(_rig.Log.Lines, l => l.Contains("ranked scores not updated (service stop, game start or time budget)", StringComparison.Ordinal));
+        Assert.Empty(DiskSlots); // 취소 토큰을 먼저 만든 뒤 슬롯을 쓰므로 시간 제한이 지나면 슬롯도 쓰지 않음
+        Assert.Equal(before, File.ReadAllText(rankedPath)); // 순위 파일은 그대로
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("play summary not saved (service stop, game start or time budget)", StringComparison.Ordinal));
     }
 
     [Fact]

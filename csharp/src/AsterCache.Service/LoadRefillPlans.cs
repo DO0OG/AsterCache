@@ -211,7 +211,7 @@ internal static class LoadRefillPlans
         List<LoadRefillSource> sources = ScoreSources(AutoTracer.RawTracePath(g));
         ct.ThrowIfCancellationRequested();
         LoadRefillList rescored = LoadRefillPlanner.Rescore(list, sources, ct);
-        LoadRefillStore.Write(path, rescored, now);
+        LoadRefillStore.Write(path, rescored, now, ct);
         return $"ranked scores updated from {sources.Count} play summaries, blocks and file generations kept: {rescored.Blocks.Count(b => b.Extra > 0)} of {rescored.Blocks.Count} blocks got points from them";
     }
 

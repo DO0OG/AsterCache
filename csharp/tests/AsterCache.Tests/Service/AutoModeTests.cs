@@ -372,6 +372,48 @@ public sealed class AutoModeTests : IDisposable
     }
 
     [Fact]
+    public async Task ARawStartKeepsWaitingAndAsksAgainWhenAnotherGamesSummaryOpenedFirstAndThenOpens()
+    {
+        AddGame("foo", "auto");
+        AddGame("bar", "auto");
+        AddGame("baz", "auto"); // 원시 트레이스가 없는 게임: 첫 기록
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { TraceRuns = 1, IoSummaryEnabled = true } };
+        AutoMode mode = Mode();
+        foreach (string learned in new[] { "foo", "bar" })
+        {
+            string raw = AutoTracer.RawTracePath(Game(learned));
+            Directory.CreateDirectory(Path.GetDirectoryName(raw)!);
+            _rig.World.Files.UnionWith([raw, TraceStageIndex.IndexPath(raw)]);
+            IoSummaryStore.WriteTried(raw, IoSummaryStore.MaxTried);
+        }
+
+        _rig.World.StartSummaryFactory = _ => new FakeTrace();
+        _rig.World.Session = new FakeTrace();
+        _rig.World.RunningExes.Add("baz.exe");
+        Assert.True(mode.Tracer.Start(Game("foo"), out _)); // 요약 A 가 도는 중
+        int waits = 0;
+        mode.TraceFinishWaiter = async (finished, _, cancellationToken) =>
+        {
+            waits++;
+            mode.Tracer.Step(); // 종료 요청을 받은 요약이 세션을 놓음
+            await finished.WaitAsync(cancellationToken);
+            if (waits == 1)
+            {
+                _rig.World.Now += TimeSpan.FromMinutes(5); // 양보 시간이 지난 뒤 다른 게임의 요약 B 가 먼저 열림
+                Assert.True(mode.Tracer.Start(Game("bar"), out Task? other));
+            }
+
+            return true;
+        };
+
+        await mode.OnGameStart(Game("baz"), isLatestRunningStart: () => true).WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(2, waits); // 요약 B 에도 종료를 요청하고 그 완료를 다시 기다림
+        Assert.Equal((1, 2), (_rig.World.TraceStarts, _rig.World.SummaryStarts)); // 원시 세션이 결국 열림
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("baz: auto trace start resumed after waiting for the previous trace", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task ASummaryOnlyStartThatWaitedStillOpensOnlyTheSummarySession()
     {
         Assert.Equal((1, 1), await SummaryOnlyStartAfterWaitingWhile(s => s));

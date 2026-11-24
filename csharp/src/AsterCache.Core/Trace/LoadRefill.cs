@@ -406,8 +406,10 @@ public static class LoadRefillStore
     public static void WriteTried(string rawTracePath, int tries) =>
         File.WriteAllText(TriedPath(rawTracePath), tries.ToString(CultureInfo.InvariantCulture));
 
-    public static void Write(string path, LoadRefillList list, DateTimeOffset builtAtUtc)
+    /// ct 는 임시 파일을 쓰기 전과 교체하기 전에 확인합니다: 취소되면 OperationCanceledException 이고 순위 파일은 그대로입니다 (임시 파일은 치움).
+    public static void Write(string path, LoadRefillList list, DateTimeOffset builtAtUtc, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var paths = list.Files.Keys.Order(StringComparer.OrdinalIgnoreCase).ToList();
         var index = paths.Select((p, i) => (p, i)).ToDictionary(x => x.p, x => (long)x.i, StringComparer.OrdinalIgnoreCase);
         var root = new JObject
@@ -441,6 +443,12 @@ public static class LoadRefillStore
         string temp = path + ".tmp";
         string text = PyJson.Dumps(root, ensureAscii: false) + "\n";
         DurableFile.WriteAllBytes(temp, PyJson.Utf8.GetBytes(PyJson.ToCrlf(text)));
+        if (ct.IsCancellationRequested)
+        {
+            File.Delete(temp);
+            ct.ThrowIfCancellationRequested();
+        }
+
         File.Move(temp, path, true);
     }
 

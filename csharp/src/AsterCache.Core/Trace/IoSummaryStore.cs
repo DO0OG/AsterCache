@@ -585,11 +585,12 @@ public static class IoSummaryStore
 
     /// 플레이마다 남기는 디스크 전용 요약을 빈 슬롯 (없으면 가장 오래된 슬롯) 에 씁니다. 슬롯은 열두 개뿐이라 열두 번째 뒤에는 가장 오래된 것을 덮으므로 게임마다 최근 MaxPlayDiskSummaries 개만 남고,
     /// 읽기 방식이 담긴 단독 집계의 슬롯과 이름이 달라 서로 덮지 않습니다. 원시 트레이스의 지문에 묶지 않습니다 (원시 트레이스는 회차마다 다시 쓰이고, 세대는 요약의 파일 크기·수정 시각으로 대조함).
-    public static string WritePlayDisk(string rawTracePath, IoSummary summary)
+    /// 기존 슬롯을 먼저 지우지 않고 (Write 가 임시 파일에 쓴 뒤 교체함) 교체 쓰기가 실패해도 이전 요약이 남습니다. ct 가 이미 취소됐으면 쓰지 않고 OperationCanceledException.
+    public static string WritePlayDisk(string rawTracePath, IoSummary summary, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         string[] paths = [.. PlayDiskPaths(rawTracePath)];
         string target = paths.FirstOrDefault(path => !File.Exists(path)) ?? paths.OrderBy(path => File.GetLastWriteTimeUtc(path)).First();
-        File.Delete(target);
         string sessionId = Guid.TryParseExact(summary.SessionId, "N", out _) ? summary.SessionId : Guid.NewGuid().ToString("N");
         Write(target, summary with { RawFingerprint = null, SessionId = sessionId });
         return target;

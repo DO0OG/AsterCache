@@ -1732,6 +1732,32 @@ public sealed partial class AutoRelocatorTests : ApplyTestBase
         Assert.Empty(Vol.Moves);
     }
 
+    [Fact]
+    public void TheColdWarmOfAnAutoTickCountsAsAnIdleRead()
+    {
+        UseCold();
+        _status.Set("bench", "auto", null, AutoStage.Discovered, null);
+
+        Tick();
+
+        Assert.Single(_coldReads);
+        Assert.Equal((10L << 20, 0), (_cold!.DiskReads.Used(_game.OriginRoot, ReadPurpose.Idle).Bytes, _cold.DiskReads.Used(_game.OriginRoot, ReadPurpose.Trigger).Bytes)); // 자동 틱이 시작한 읽기는 계기 없는 읽기
+    }
+
+    [Fact]
+    public void TheColdWarmOfAnAutoTickStopsAtTheDailyShareWhileAServiceStartWarmIsNotLimited()
+    {
+        UseCold();
+        _status.Set("bench", "auto", null, AutoStage.Discovered, null);
+        _cold!.DiskReads.Add(_game.OriginRoot, ReadPurpose.Idle, 2L << 30, _game.Name); // 기록 없는 게임의 하루 몫 (1 GiB) 을 다 씀
+
+        Tick();
+
+        Assert.Empty(_coldReads); // 자동 틱의 예열은 멈춤
+        Assert.True(_cold.Run(_game, "service start", ignoreCooldown: true).Ran); // 서비스 시작이 시작한 예열은 상한 밖
+        Assert.Single(_coldReads);
+    }
+
     [Theory]
     [InlineData(true, 2)] // 다른 볼륨이 같은 물리 디스크
     [InlineData(false, 1)] // 다른 디스크: 같은 문자의 게임만

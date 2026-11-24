@@ -74,6 +74,19 @@ public sealed partial class Prewarmer
         long ram = Math.Min(availBudget, PhysCapMib() - held); // min(예열 예산, 가용 RAM - 여유) - 이미 올린 양
         long fullMib = !a.FullPrewarm ? 0 : Math.Min(a.FullPrewarmMaxMib > 0 ? a.FullPrewarmMaxMib : DefaultFullPrewarmMib, availBudget);
         long profileMib = !a.EngineProfiles ? 0 : a.FullPrewarm && a.FullPrewarmMaxMib > 0 ? Math.Min(ram, fullMib) : ram;
+        string windowKey = string.Empty; // 계기 없는 읽기의 남은 양이 계획 창을 줄였으면 그 크기: 줄어든 창에서 못 맞춘 프로필을 그 창에서만 "프로필 없음" 으로 기억해, 더 큰 창으로 읽는 시작 예열이 다시 계획하게 함
+        if (skip is null && DiskReadLedger.Current == ReadPurpose.Idle)
+        {
+            // 계기 없는 읽기 (자동 틱, 주기 재예열) 는 게임 몫과 드라이브 남은 양 가운데 작은 값까지만 읽음: 기록이 없어 목록 크기를 모르는 게임은 IdleReadRoom 이 줄이지 못하므로 계획 창을 여기서 줄임
+            long left = IdleReadRemaining(game) >> 20;
+            windowKey = left < Math.Max(fullMib, profileMib) ? $"|{left}" : string.Empty;
+            (fullMib, profileMib) = (Math.Min(fullMib, left), Math.Min(profileMib, left));
+            if (left <= 0)
+            {
+                skip = IdleReadLimit;
+            }
+        }
+
         if (skip is null && Math.Max(fullMib, profileMib) <= 0)
         {
             skip = $"low memory (available {avail} MiB, reserve {game.Prewarm.MinFreeRamMib} MiB, already held {held} MiB)";
@@ -87,7 +100,7 @@ public sealed partial class Prewarmer
         {
             try
             {
-                string key = Directory.GetLastWriteTimeUtc(game.OriginRoot).Ticks.ToString(); // shortcut: 설치 폴더 자신의 mtime 만 봄 (하위 변경은 놓칠 수 있음), 폴더 mtime 이 바뀌면 다시 열거
+                string key = Directory.GetLastWriteTimeUtc(game.OriginRoot).Ticks + windowKey; // shortcut: 설치 폴더 자신의 mtime 만 봄 (하위 변경은 놓칠 수 있음), 폴더 mtime 이 바뀌면 다시 열거
                 ColdPlan? plan = ProfileMissed(game.Name, key) ? null : _env.ColdPlanner!(game, Math.Max(0, fullMib) << 20, Math.Max(0, profileMib) << 20, ct);
                 if (plan is null)
                 {
@@ -135,7 +148,7 @@ public sealed partial class Prewarmer
 
         if (stats is { Bytes: > 0 })
         {
-            NoteReadBytes(game, stats.Bytes, stats.Seconds); // 하루 읽기 집계 (기록 없는 예열은 늘 계기가 있는 읽기)
+            NoteReadBytes(game, stats.Bytes, stats.Seconds); // 하루 읽기 집계: 자동 틱이 시작한 읽기는 Idle (상한 대상), 게임·런처·서비스 시작이 시작한 읽기는 Trigger (세기만 함). 취소돼 일부만 읽어도 읽은 만큼 셈
         }
 
         if (skip is not null || stats is null)

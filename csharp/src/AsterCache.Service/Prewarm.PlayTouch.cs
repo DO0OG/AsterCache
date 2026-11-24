@@ -73,7 +73,7 @@ public sealed partial class Prewarmer
     /// 시작 만지기·처음 붙들기는 게임 실행 파일 시작 때의 일이라 이 판정과 무관하게 돕니다. 서비스가 게임 드라이브에서 읽은 양은 ServiceReads 에 더해 로딩 판정이 게임의 읽기에서 뺍니다.
     internal LoadPhaseBoard? LoadPhases { get; set; }
 
-    private void NoteServiceRead(GameSettings game, long diskBytes, [CallerMemberName] string caller = "") => LoadPhases?.ServiceReads.Add(game.OriginRoot, diskBytes, ReadPathOf(caller));
+    private void NoteServiceRead(GameSettings game, long diskBytes, [CallerMemberName] string caller = "") => LoadPhases?.ServiceReads.Add(game.OriginRoot, diskBytes, game.Name, ReadPathOf(caller));
 
     // 초 단위 기록·플레이 종료 요약이 경로별로 나눠 보이도록, 부른 메서드로 경로를 가림 (부르는 줄은 그대로). 모르는 호출자는 other 로 셈.
     private static ServiceReadPath ReadPathOf(string caller) => caller switch

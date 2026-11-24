@@ -1,6 +1,7 @@
 using AsterCache.Core.Settings;
 using AsterCache.Prefetch;
 using AsterCache.Service;
+using AsterCache.Tests.Windows;
 using AsterCache.Windows;
 using Xunit;
 
@@ -59,10 +60,10 @@ public sealed class ServiceReadRecordTests
         var board = new LoadPhaseBoard(new ListLog());
         var feed = new LoadFeed("g", Root, board);
 
-        board.ServiceReads.Add(Root, 5 * Mib, ServiceReadPath.Keep);
-        board.ServiceReads.Add(@"D:\Other", 2 * Mib, ServiceReadPath.Hold);
-        board.ServiceReads.AddStream(Root, ServiceReadPath.StartStream, 64 * Mib, 0);
-        board.ServiceReads.AddStream(Root, ServiceReadPath.StartStream, 0, 60 * Mib);
+        board.ServiceReads.Add(Root, 5 * Mib, "g", ServiceReadPath.Keep);
+        board.ServiceReads.Add(@"D:\Other", 2 * Mib, "g", ServiceReadPath.Hold);
+        board.ServiceReads.CountsOf("g").AddStream(ServiceReadPath.StartStream, 64 * Mib, 0);
+        board.ServiceReads.CountsOf("g").AddStream(ServiceReadPath.StartStream, 0, 60 * Mib);
         _ = feed.Next([Disk(0)], [Disk(200 * Mib)], 1, null, false);
         Assert.Equal(new ServiceReadSecond(7 * Mib, 64 * Mib, 60 * Mib), feed.Last);
 
@@ -78,10 +79,10 @@ public sealed class ServiceReadRecordTests
         var board = new LoadPhaseBoard(new ListLog());
         var feed = new LoadFeed("g", Root, board);
 
-        board.ServiceReads.Add(Root, 3 * Mib, ServiceReadPath.Hold);
+        board.ServiceReads.Add(Root, 3 * Mib, "g", ServiceReadPath.Hold);
         Assert.NotEqual(LoadState.Loading, feed.Next([Disk(0)], [Disk(Mib)], 1, null, false)); // 로딩 밖의 초
-        board.ServiceReads.Add(Root, 5 * Mib, ServiceReadPath.Keep);
-        board.ServiceReads.AddStream(Root, ServiceReadPath.StartStream, 64 * Mib, 60 * Mib);
+        board.ServiceReads.Add(Root, 5 * Mib, "g", ServiceReadPath.Keep);
+        board.ServiceReads.CountsOf("g").AddStream(ServiceReadPath.StartStream, 64 * Mib, 60 * Mib);
         Assert.Equal(LoadState.Loading, feed.Next([Disk(Mib)], [Disk(300 * Mib)], 2, null, false)); // 로딩 안의 초
 
         string summary = feed.Summary();
@@ -115,10 +116,10 @@ public sealed class ServiceReadRecordTests
     [Fact]
     public void TheStreamEndLineNamesTheKindAndTheCountedValues()
     {
-        string line = GameDispatcher.StreamReadsLine("g", ServiceReadPath.StageStream, 4, 250 * Mib, 240 * Mib, 122.4, 120.0, new DiskTally(113, 113, 100, 4000));
+        string line = GameDispatcher.StreamReadsLine("g", ServiceReadPath.StageStream, 4, 250 * Mib, 240 * Mib, 6 * Mib, 122.4, 120.0, new DiskTally(113, 113, 100, 4000));
 
-        Assert.Equal("g: stage stream reads: 4 batches, requested 250.0 MiB, accepted 240.0 MiB in 122.4 s, low I/O priority 120.0 s; disk queue present in 100% of 113 samples, mean read latency 40.0 ms", line);
-        Assert.StartsWith("g: start stream reads: ", GameDispatcher.StreamReadsLine("g", ServiceReadPath.StartStream, 0, 0, 0, 0, 0, default), StringComparison.Ordinal);
+        Assert.Equal("g: stage stream reads: 4 batches, requested 250.0 MiB, accepted 240.0 MiB, sparse buffered 6.0 MiB in 122.4 s, low I/O priority 120.0 s; disk queue present in 100% of 113 samples, mean read latency 40.0 ms", line);
+        Assert.StartsWith("g: start stream reads: ", GameDispatcher.StreamReadsLine("g", ServiceReadPath.StartStream, 0, 0, 0, 0, 0, 0, default), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -134,9 +135,10 @@ public sealed class ServiceReadRecordTests
         Assert.True(dispatcher.Handle(new ProcessStart(42, "game.exe", 0)));
 
         Assert.Equal(3, streamer.Batches); // 읽는 일은 그대로
-        Assert.Equal((192 * Mib, 192 * Mib, 0L, 0L), (board.ServiceReads.Requested(game.OriginRoot, ServiceReadPath.StartStream), board.ServiceReads.Accepted(game.OriginRoot, ServiceReadPath.StartStream),
-            board.ServiceReads.Requested(game.OriginRoot, ServiceReadPath.StageStream), board.ServiceReads.Total(game.OriginRoot)));
-        Assert.Single(log.Lines, l => l.StartsWith("Info: game: start stream reads: 3 batches, requested 192.0 MiB, accepted 192.0 MiB in ", StringComparison.Ordinal) && l.EndsWith("; disk samples none", StringComparison.Ordinal));
+        ServiceReadCounts counts = board.ServiceReads.CountsOf("game");
+        Assert.Equal((192 * Mib, 192 * Mib, 0L, 4 * Mib), (counts.Requested(ServiceReadPath.StartStream), counts.Accepted(ServiceReadPath.StartStream), counts.Requested(ServiceReadPath.StageStream), counts.Disk(ServiceReadPath.StartStream)));
+        Assert.Equal(0, board.ServiceReads.Total(game.OriginRoot)); // 로딩 판정이 빼는 드라이브 누계에는 들지 않음
+        Assert.Single(log.Lines, l => l.StartsWith("Info: game: start stream reads: 3 batches, requested 192.0 MiB, accepted 192.0 MiB, sparse buffered 4.0 MiB in ", StringComparison.Ordinal) && l.EndsWith("; disk samples none", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -152,6 +154,150 @@ public sealed class ServiceReadRecordTests
 
         Assert.Equal(3, streamer.Batches);
         Assert.DoesNotContain(log.Lines, l => l.Contains("stream reads", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TwoGamesOnTheSameVolumeKeepTheirOwnCountsWhileTheDriveTotalStaysOneNumber()
+    {
+        var board = new LoadPhaseBoard(new ListLog());
+        var feed1 = new LoadFeed("g1", Root, board);
+        var feed2 = new LoadFeed("g2", Root, board);
+
+        board.ServiceReads.Add(Root, 5 * Mib, "g1", ServiceReadPath.Keep);
+        board.ServiceReads.Add(Root, 3 * Mib, "g2", ServiceReadPath.Hold);
+        board.ServiceReads.CountsOf("g2").AddStream(ServiceReadPath.StageStream, 64 * Mib, 60 * Mib);
+        _ = feed1.Next([Disk(0)], [Disk(Mib)], 1, null, false);
+        _ = feed2.Next([Disk(0)], [Disk(Mib)], 1, null, false);
+
+        Assert.Equal(new ServiceReadSecond(5 * Mib, 0, 0), feed1.Last);
+        Assert.Equal(new ServiceReadSecond(3 * Mib, 64 * Mib, 60 * Mib), feed2.Last);
+        Assert.Contains("keep rounds 0.0/5.0", feed1.Summary(), StringComparison.Ordinal);
+        Assert.DoesNotContain("hold 0.0/3.0", feed1.Summary(), StringComparison.Ordinal);
+        Assert.Equal(8 * Mib, board.ServiceReads.Total(Root)); // 로딩 판정이 빼는 값은 드라이브의 단일 누계
+    }
+
+    [Fact]
+    public void TheCountsAreReadAtTheDiskSampleBoundaryAndALaterReadBelongsToTheNextSecond()
+    {
+        var board = new LoadPhaseBoard(new ListLog());
+        var feed = new LoadFeed("g", Root, board);
+
+        board.ServiceReads.Add(Root, 2 * Mib, "g", ServiceReadPath.Keep);
+        feed.Mark(); // 디스크를 읽은 직후
+        board.ServiceReads.Add(Root, 6 * Mib, "g", ServiceReadPath.Keep); // 그 뒤에 생긴 읽기
+        _ = feed.Next([Disk(0)], [Disk(Mib)], 1, null, false);
+        Assert.Equal(2 * Mib, feed.Last!.Value.ServiceBytes);
+
+        _ = feed.Next([Disk(Mib)], [Disk(Mib)], 2, null, false);
+        Assert.Equal(6 * Mib, feed.Last!.Value.ServiceBytes);
+    }
+
+    [Fact]
+    public void AStreamBatchThatCrossesSecondsPutsTheRequestInTheSecondItWasIssuedAndEachFragmentsAcceptanceInTheSecondItEnded()
+    {
+        GameSettings game = Games.Make("game", "game.exe");
+        var log = new ListLog();
+        var board = new LoadPhaseBoard(log);
+        var feed = new LoadFeed("game", game.OriginRoot, board);
+        var seconds = new List<ServiceReadSecond?>();
+        int second = 0;
+        var streamer = new FragmentStreamer(() =>
+        {
+            feed.Mark();
+            _ = feed.Next([Disk(second * Mib)], [Disk(++second * Mib)], second, null, false);
+            seconds.Add(feed.Last);
+        });
+        var dispatcher = new GameDispatcher([game], streamer, log, coordinator: new DiskReadCoordinator(new VolumeDisks(_ => new HashSet<uint> { 1 }, () => 0), log)) { LoadPhases = board };
+
+        Assert.True(dispatcher.Handle(new ProcessStart(42, "game.exe", 0)));
+
+        Assert.Equal([new ServiceReadSecond(0, 24 * Mib, 8 * Mib), new ServiceReadSecond(0, 0, 8 * Mib), new ServiceReadSecond(0, 0, 8 * Mib)], seconds); // 요청은 낸 초에 한꺼번에, 받아들인 양은 조각마다
+    }
+
+    [Fact]
+    public void TheFragmentNoteParserAgreesWithTheRealPvmNotesAndARejectedFragmentAddsNothing()
+    {
+        using var tmp = new TempDir();
+        tmp.WriteRandom("f.bin", (int)(20 * Mib));
+        var notes = new List<string>();
+        int calls = 0;
+
+        _ = ZoneStreamer.RunPvm([new(tmp.Combine("f.bin"), 0, 20 * Mib)], CancellationToken.None, out _, out long hint, _ => ++calls != 2, (stage, _, _) => notes.Add(stage)); // 두 번째 조각 (8 MiB) 은 거절됨
+
+        long baseline = 0;
+        long accepted = 0;
+        foreach (string note in notes)
+        {
+            Assert.True(ZoneStreamer.TryFragmentProgress(note, out bool completed, out long progress));
+            accepted += completed ? progress - baseline : 0;
+            baseline = progress;
+        }
+
+        Assert.Equal(12 * Mib, hint);
+        Assert.Equal(hint, accepted);
+        Assert.False(ZoneStreamer.TryFragmentProgress(PrefetchStreamer.BatchStage, out _, out _));
+        Assert.False(ZoneStreamer.TryFragmentProgress(ZoneStreamer.SparseBufferedStage, out _, out _));
+    }
+
+    [Fact]
+    public void ThePlaySummaryStopsAtTheSecondTheGameProcessWasFirstGoneAndResumesIfItCameBack()
+    {
+        var board = new LoadPhaseBoard(new ListLog());
+        var feed = new LoadFeed("g", Root, board);
+
+        board.ServiceReads.Add(Root, 2 * Mib, "g", ServiceReadPath.Keep);
+        _ = feed.Next([Disk(0)], [Disk(Mib)], 1, null, false);
+        feed.GoneSeconds = 1.5; // 사라진 시각 (유예 중)
+        board.ServiceReads.Add(Root, 7 * Mib, "g", ServiceReadPath.Keep);
+        _ = feed.Next([Disk(Mib)], [Disk(Mib)], 2, null, false); // 사라진 시각 뒤의 초
+        Assert.Contains("keep rounds 0.0/2.0", feed.Summary(), StringComparison.Ordinal);
+
+        feed.GoneSeconds = null; // 유예에서 돌아옴
+        _ = feed.Next([Disk(Mib)], [Disk(Mib)], 3, null, false);
+        Assert.Contains("keep rounds 0.0/9.0", feed.Summary(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ADiskTallyFromAnEarlierGameStateIsDroppedWhenTheStateWasReplaced()
+    {
+        var board = new LoadPhaseBoard(new ListLog());
+        var feed = new LoadFeed("g", Root, board);
+        _ = feed.Next([Disk(0)], [Disk(Mib, 1, 1000, 1)], 1, null, false);
+        DiskTally before = board.TallyOf("g");
+
+        board.Forget("g");
+        var replaced = new LoadFeed("g", Root, board);
+        _ = replaced.Next([Disk(0)], [Disk(Mib, 1, 1000, 1)], 1, null, false);
+        _ = replaced.Next([Disk(Mib, 1, 1000)], [Disk(2 * Mib, 2, 2000, 1)], 2, null, false); // 누계가 앞의 값보다 커져도 다른 상태의 값
+
+        Assert.Equal(default, board.TallyOf("g").Since(before));
+    }
+
+    // 묶음 하나 (24 MiB) 를 8 MiB 조각 셋으로 읽고, 조각이 끝날 때마다 한 초가 지나게 하는 스트리머
+    private sealed class FragmentStreamer(Action onFragmentEnd) : IGameStreamer
+    {
+        public StreamStats Stream(GameSettings game) => throw new InvalidOperationException();
+
+        public StreamStats Stream(GameSettings game, CancellationToken stop) => throw new InvalidOperationException();
+
+        public (StreamStats Stats, bool Complete) StreamCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue)
+        {
+            if (!canIssue())
+            {
+                return (new StreamStats(0, 0, 0, 0, Aborted: true), false);
+            }
+
+            noteIssue?.Invoke(PrefetchStreamer.BatchStage, 24 * Mib, true);
+            for (int i = 1; i <= 3; i++)
+            {
+                noteIssue?.Invoke($"pvm fragment {i}/3 started, progress {(i - 1) * 8 * Mib}/{24 * Mib} bytes", 8 * Mib, true);
+                noteIssue?.Invoke($"pvm fragment {i}/3 completed, progress {i * 8 * Mib}/{24 * Mib} bytes", 8 * Mib, true);
+                onFragmentEnd();
+            }
+
+            progress?.Invoke(24 * Mib, 24 * Mib);
+            return (new StreamStats(24 * Mib, 3, 0, 0), true);
+        }
     }
 
     // 묶음 3 개 (64 MiB 씩) 를 요청 (noteIssue) 하고 모두 받아들이는 스트리머
@@ -177,6 +323,13 @@ public sealed class ServiceReadRecordTests
 
                 noteIssue?.Invoke(PrefetchStreamer.BatchStage, 64 * Mib, true);
                 Batches++;
+                if (Batches == 1)
+                {
+                    noteIssue?.Invoke(ZoneStreamer.SparseBufferedStage, 4 * Mib, true); // 스파스 구간은 선읽기가 아니라 버퍼드로 읽음
+                }
+
+                noteIssue?.Invoke($"pvm fragment 1/1 started, progress 0/{64 * Mib} bytes", 64 * Mib, true);
+                noteIssue?.Invoke($"pvm fragment 1/1 completed, progress {64 * Mib}/{64 * Mib} bytes", 64 * Mib, true);
                 progress?.Invoke(Batches * 64 * Mib, 3 * 64 * Mib);
             }
 

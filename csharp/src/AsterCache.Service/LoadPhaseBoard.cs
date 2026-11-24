@@ -8,6 +8,7 @@ internal sealed class LoadPhaseBoard(ILog log)
 {
     private readonly object _gate = new();
     private readonly Dictionary<string, Entry> _games = new(StringComparer.OrdinalIgnoreCase);
+    private long _epoch; // 게임 상태가 새로 생길 때마다 늘어남 (디스크 표본 누계가 어느 상태의 것인지 가름)
 
     /// 서비스 자신의 게임 드라이브 읽기 누계: 읽는 쪽이 더하고 입력 공급 (LoadFeed) 이 드라이브 읽기에서 뺍니다.
     public ServiceDiskReads ServiceReads { get; } = new();
@@ -96,7 +97,7 @@ internal sealed class LoadPhaseBoard(ILog log)
         {
             if (!_games.TryGetValue(game, out Entry? entry))
             {
-                _games[game] = entry = new Entry();
+                _games[game] = entry = new Entry { Tally = new DiskTally(0, 0, 0, 0, ++_epoch) };
             }
 
             step = entry.Detector.Add(sample);
@@ -151,12 +152,12 @@ internal sealed class LoadPhaseBoard(ILog log)
 }
 
 /// 게임 드라이브의 1초 표본 누계: 표본 수, 대기열이 있던 표본 수, 읽기 횟수와 읽기 시간 합 (ms). 스트림 하나가 도는 동안의 값은 끝의 누계에서 시작의 누계를 빼 구합니다.
-internal readonly record struct DiskTally(long Samples, long Queued, ulong Reads, double ReadMs)
+internal readonly record struct DiskTally(long Samples, long Queued, ulong Reads, double ReadMs, long Epoch = 0)
 {
-    public DiskTally Add(long queue, ulong reads, double readMs) => new(Samples + 1, Queued + (queue > 0 ? 1 : 0), Reads + reads, ReadMs + readMs);
+    public DiskTally Add(long queue, ulong reads, double readMs) => new(Samples + 1, Queued + (queue > 0 ? 1 : 0), Reads + reads, ReadMs + readMs, Epoch);
 
-    /// before 이후의 값 (게임 상태가 지워졌다 다시 생겨 누계가 줄었으면 모름: 표본 없음).
-    public DiskTally Since(DiskTally before) => Samples < before.Samples || Reads < before.Reads ? default : new(Samples - before.Samples, Queued - before.Queued, Reads - before.Reads, ReadMs - before.ReadMs);
+    /// before 이후의 값 (게임 상태가 지워졌다 다시 생겼으면 — 상태 번호가 다르거나 누계가 줄었으면 — 모름: 표본 없음).
+    public DiskTally Since(DiskTally before) => (before.Epoch != 0 && Epoch != before.Epoch) || Samples < before.Samples || Reads < before.Reads ? default : new(Samples - before.Samples, Queued - before.Queued, Reads - before.Reads, ReadMs - before.ReadMs, Epoch);
 
     /// 로그 한 줄에 붙일 말: 대기열이 있던 표본의 비율과 읽기 한 번의 평균 시간 (1초 표본의 평균이라 순간 값이 아님).
     public string Text() => Samples == 0

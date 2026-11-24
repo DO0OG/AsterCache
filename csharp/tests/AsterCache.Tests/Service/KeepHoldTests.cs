@@ -809,7 +809,7 @@ public sealed class KeepHoldTests
         Assert.Equal([Prewarmer.KeepLoadingCheckDiskCapBytes, Prewarmer.KeepLoadingCheckDiskCapBytes, Prewarmer.KeepDiskReadCapBytes], _hold.RecheckCaps);
         Assert.Equal([false, false, true], _hold.DropOnCaps); // 로딩 중에는 상한에 닿아도 구간을 붙들기에서 빼지 않음
         Assert.Equal(12 * Mib, board.ServiceReads.Total(Game("a").OriginRoot)); // 점검마다 다시 읽은 4 MiB 를 서비스 자신의 읽기로 셈
-        Assert.Equal(12 * Mib, board.ServiceReads.Disk(Game("a").OriginRoot, ServiceReadPath.Check)); // 경로는 점검
+        Assert.Equal(12 * Mib, board.ServiceReads.CountsOf("a").Disk(ServiceReadPath.Check)); // 경로는 점검
         Assert.Contains(_log.Lines, l => l.Contains("a: loading phase ended after 244 s (240 s limit); held back: hold check disk reads"));
     }
 
@@ -982,7 +982,7 @@ public sealed class KeepHoldTests
         Assert.True(touchedAtLoadingEnd > touchedAtLoadingStart, "the in-memory range is retouched while loading"); // 순서 패스는 로딩 중에도 돎
         Assert.Equal(24 * Mib, _findCalls[3].Sum(o => o.Length)); // 로딩 중 파일 2 에서 경계를 만나 멈췄어도 집합은 그대로 (파일 1, 2 의 24 MiB, 잘렸다면 8 MiB)
         Assert.Equal(3 * Mib, board.ServiceReads.Total(cheat.OriginRoot)); // 경계마다 알아챈 읽기 1 MiB 씩 (초 10·20·30) 이 서비스 자신의 읽기로 셈
-        Assert.Equal(3 * Mib, board.ServiceReads.Disk(cheat.OriginRoot, ServiceReadPath.Keep)); // 경로는 유지 회차
+        Assert.Equal(3 * Mib, board.ServiceReads.CountsOf(cheat.Name).Disk(ServiceReadPath.Keep)); // 경로는 유지 회차
         Assert.Contains(_log.Lines, l => l.Contains("a: loading phase ended after 20 s (quiet for 15 s); held back: keep round disk reads"));
         Assert.Contains(_log.Lines, l => l.Contains("disk reads limited (loading phase)"));
     }

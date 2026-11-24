@@ -449,6 +449,7 @@ public sealed class PlayRecorder : IDisposable
                     return;
                 }
 
+                loadFeed.Mark(); // 서비스의 계상값도 이 디스크 표본과 같은 시각 경계에서 읽음 (그 사이의 읽기가 앞 초에 들어가지 않게)
                 session.NoteAvailable(SafeAvailableRam(), tick);
                 if (!seriesTried && session.HasFrames)
                 {
@@ -572,6 +573,7 @@ public sealed class PlayRecorder : IDisposable
     {
         try
         {
+            feed.GoneSeconds = session.GoneSeconds; // 요약은 기존 기록처럼 게임 프로세스가 처음 사라진 시각까지만 셈
             return feed.Next(previous, current, Stopwatch.GetElapsedTime(session.StartedTick, tick).TotalSeconds, raw, session.TakeExeStart());
         }
         catch (Exception e) when (e is not (StackOverflowException or OutOfMemoryException))
@@ -1297,6 +1299,18 @@ public sealed class PlayRecorder : IDisposable
                 _status = "unavailable";
                 _requestedEndReason ??= "counter_unavailable";
                 return SnapshotLocked(tick);
+            }
+        }
+
+        /// 게임 프로세스가 처음 사라진 시각 (플레이 시작 뒤 초). 종료 유예 중이 아니면 null.
+        public double? GoneSeconds
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _goneAt is null ? null : Stopwatch.GetElapsedTime(StartedTick, _goneTick).TotalSeconds;
+                }
             }
         }
 

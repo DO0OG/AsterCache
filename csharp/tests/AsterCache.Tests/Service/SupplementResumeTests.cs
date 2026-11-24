@@ -1221,6 +1221,44 @@ public sealed class SupplementResumeTests : IDisposable
         Assert.Equal((3648L, HotMib), ((long)Status()["warmed_mib"]!, (long)Status()["hot_mib"]!)); // 창으로 다시 읽은 양을 기록
     }
 
+    [Theory]
+    [InlineData(true, 1)] // 계기 없는 보충은 두 번째 스트림을 시작하지 않음
+    [InlineData(false, 2)] // 계기 있는 읽기는 상한과 무관
+    public void AnIdleSupplementChecksTheDailyLimitAgainBeforeTheSecondStreamAfterAMemoryStop(bool idle, int streams)
+    {
+        GameSettings g = Game();
+        Prewarmer p = PartiallyWarmedAtServiceCap(g, 20000);
+        _streamer.ReadSetMib = HotMib;
+        _streamer.ScheduleMib = HotMib;
+        _streamer.ErrorCount = 1;
+        _streamer.ReadMib = 1100;
+        p.StreamEnded += (_, _) =>
+        {
+            _avail = 8000;
+            p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 100L << 30, g.Name); // 첫 스트림이 끝난 뒤 하루 상한을 넘음
+        };
+        _streamer.OnProgress = progress =>
+        {
+            if (_streamer.Calls.Count == 1)
+            {
+                _avail = 4096 + 1000;
+                progress(1100 * Mib, HotMib * Mib);
+            }
+            else
+            {
+                _streamer.ErrorCount = 0;
+                _streamer.ReadMib = null;
+            }
+        };
+
+        using (idle ? DiskReadLedger.Scope(ReadPurpose.Idle) : null)
+        {
+            p.Supplement(g, CancellationToken.None);
+        }
+
+        Assert.Equal(streams, _streamer.Calls.Count);
+    }
+
     [Fact]
     public void AGameStartingRightAfterAnErrorMixedMemoryStopKeepsItFromBeingReadAgain()
     {

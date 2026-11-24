@@ -15,11 +15,12 @@ public sealed partial class Prewarmer
     internal const string IdleReadLimit = "idle read limit";
 
     /// 기본 상한의 바닥 (바이트): 예열 목록이 작은 드라이브도 이만큼은 읽을 수 있음.
-    internal const long IdleReadFloorBytes = 12L << 30;
+    internal const long IdleReadFloorBytes = 24L << 30;
 
-    /// 기본 상한은 그 드라이브 게임들의 예열 목록 합의 이 배수, 게임마다의 몫도 그 게임 목록의 이 배수 이상입니다: 목록을 하루에 세 번 통째로 다시 채울 수 있는 용량입니다 (시간으로 환산하면 약 8시간마다 한 번이라는 어림일 뿐, 캐시가 식는 빈도는 재지 않았음).
-    /// 플레이 직전의 채우기는 런처·게임 시작 예열이 이 상한과 무관하게 합니다. 2 배는 이 PC 의 최근 로그에 대입한 어림에서 일상적으로 상한에 걸려 올렸습니다.
-    internal const int IdleReadListFactor = 3;
+    /// 기본 상한은 그 드라이브 게임들의 예열 목록 합의 이 배수, 게임마다의 몫도 그 게임 목록의 이 배수 이상입니다 (목록을 하루에 여섯 번 통째로 다시 채울 수 있는 용량).
+    /// 이 값은 평소 사용을 줄이려는 것이 아니라 되풀이 읽기가 끝없이 늘어나는 것을 막는 상한입니다 (이 PC 의 최근 로그에 대입한 어림에서 2 배·3 배는 일상적으로 걸려 올렸고, 효과는 재지 않았음).
+    /// 하드디스크를 더 아끼려면 auto.idle_read_gib_per_day 로 낮출 수 있고, 그때는 주기 점검의 다시 채우기가 늦어져 게임 시작이 느려질 수 있습니다. 런처·게임 시작 예열은 이 상한과 무관합니다.
+    internal const int IdleReadListFactor = 6;
 
     private readonly DiskReadLedger _reads; // 드라이브별·목적별 읽은 양의 24시간 집계, 상태 파일에 함께 저장
 
@@ -31,13 +32,13 @@ public sealed partial class Prewarmer
     /// 게임을 마지막으로 플레이한 시각 (모르면 가장 오래된 시각): OrderByDescending 에 넘겨 가장 최근에 플레이한 게임이 앞에 오게 합니다 (같은 시각이면 받은 순서 그대로).
     internal DateTimeOffset PlayedAt(string game) => LastPlayedAt?.Invoke(game) ?? DateTimeOffset.MinValue;
 
-    /// 이 게임 드라이브의 계기 없는 읽기 하루 상한 (바이트): auto.idle_read_gib_per_day 가 0 보다 크면 그 값, 아니면 그 드라이브에 놓인 (예열이 허용된) 게임들의 예열 목록 합의 3 배와 12 GiB 가운데 큰 값.
+    /// 이 게임 드라이브의 계기 없는 읽기 하루 상한 (바이트): auto.idle_read_gib_per_day 가 0 보다 크면 그 값, 아니면 그 드라이브에 놓인 (예열이 허용된) 게임들의 예열 목록 합의 6 배와 24 GiB 가운데 큰 값.
     internal long IdleReadCap(GameSettings game) => IdleReadLimits(game).Cap;
 
     /// 목록 크기를 모르는 게임의 하루 몫 (바이트): 이만큼과 드라이브에 남은 양 중 작은 값까지만 읽음.
     internal const long IdleReadUnknownListShare = 1L << 30;
 
-    /// 드라이브 상한과 이 게임의 하루 몫 (바이트): 몫은 상한을 그 드라이브 게임들의 예열 목록 크기에 비례해 나눈 것이라 기본 상한에서는 그 게임 목록의 3 배 이상입니다.
+    /// 드라이브 상한과 이 게임의 하루 몫 (바이트): 몫은 상한을 그 드라이브 게임들의 예열 목록 크기에 비례해 나눈 것이라 기본 상한에서는 그 게임 목록의 6 배 이상입니다.
     /// 목록 크기를 모르는 게임의 몫은 IdleReadUnknownListShare. 지금 설정에 없는 (지운) 게임은 나누는 데 들지 않으므로 남은 게임의 몫을 바꾸지 않습니다 (그 게임이 쓴 양은 드라이브 합계에는 남음).
     private (long Cap, long Share) IdleReadLimits(GameSettings game)
     {

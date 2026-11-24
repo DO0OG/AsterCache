@@ -33,7 +33,7 @@ public sealed class AutoSettingsTests
     [Fact]
     public void TheIdleReadLimitDefaultsToTheRuleAndTakesTheGivenGib()
     {
-        Assert.Equal(0, ParseTop(_ => { }).Auto.IdleReadGibPerDay); // 0: 예열 목록 합의 3 배와 12 GiB 중 큰 값
+        Assert.Equal(0, ParseTop(_ => { }).Auto.IdleReadGibPerDay); // 0: 예열 목록 합의 6 배와 24 GiB 중 큰 값
         Assert.Equal(3, ParseAuto(new JsonObject { ["idle_read_gib_per_day"] = 3 }).Auto.IdleReadGibPerDay);
     }
 

@@ -80,13 +80,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\e3_hdd_dataset.ps1 [
 ### Prefetch planning and execution (`prefetch`)
 
 ```bash
-python -m prefetch.cli --plan trace.json --origin-root D:\Games [--strategy physical|path|none] [--budget-mib 1024] [--read-mbps 100] [--seek-ms 12] [--gap-kib N] [--full-file-ratio 0.3] [--threads 1] [--chunk-kib 1024] [--no-reuse] [--seq-hint] [--execute]
+python -m prefetch.cli --plan trace.json --origin-root D:\Games [--strategy physical|path|none] [--budget-mib 1024] [--read-mbps 100] [--seek-ms 12] [--gap-kib N] [--full-file-ratio 0.3] [--threads 1] [--chunk-kib 1024] [--no-reuse] [--method read|pvm|pvm-file|overlapped|mmap-touch] [--seq-hint] [--execute]
 ```
 
 - Without `--execute`, it prints only the plan as JSON without actually reading.
 - `--plan` (or `--trace`) and `--origin-root` can be replaced by the environment variables `ASTER_TRACE` and `ASTER_ROOT`.
 - `--strategy physical` sorts by physical position based on NTFS extents, `path` sorts by path, and `none` reads without sorting.
-- The defaults are 1 thread (strict zone order), 1 MiB chunks, file handles kept open, and SEQUENTIAL_SCAN off. This combination was the fastest on the relocated zone (`results/stream_tuning_20261101`). `--no-reuse` closes the handle for every file.
+- The defaults are the `pvm` method (one `PrefetchVirtualMemory` call in zone order), 1 thread (strict zone order), 1 MiB chunks, file handles kept open, and SEQUENTIAL_SCAN off. This combination was the fastest on the relocated zone (`results/stream_tuning_20261101`). `--no-reuse` closes the handle for every file.
 - The default of `--gap-kib` is 0 (the fastest value in the gap sweep). `--read-mbps` and `--seek-ms` are not currently used in the gap calculation.
 
 ### Learning planner and prewarm (`astercache_v07.py`)
@@ -116,6 +116,8 @@ python -m prefetch.cli --trace relayout_plan.json.prefetch.json --origin-root "D
 - `--min-sessions N` removes from the hot set (all blocks read during loading) the blocks read in fewer than N runs. The default is 2 if there are two or more traces, and 1 if there is one.
 
 ### E6 cold-limit measurement scripts (`bench`, `csharp/scripts`)
+
+E6 measured how fast the hot set can be read from an empty cache (the cold limit) before and after relocation; the results are in [Results summary](RESULTS_SUMMARY.md#e6-cold-limit-experiment-2026-11-02).
 
 - `bench/lba_curve.py` — read-only raw transfer-rate curve of a volume: 512 MiB at each of 20 points, 4 MiB requests, queue depth 4 (administrator)
 - `bench/raw_hot_read.py` — maps a trace's hot ranges to LCNs (no administrator); `--read` reads them in LCN order (administrator)

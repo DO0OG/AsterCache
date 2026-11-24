@@ -3524,7 +3524,7 @@ public sealed class SolarTests
         _result = _result with { Seconds = 7 };
         _ = solar.Order(Game("a"), Reads, CancellationToken.None); // 7 초 만짐
         solar.Regroup([("a", 100 * Mib, null)]);
-        _lists = new MemoryLists(0, 9000 * Mib, 8000 * Mib); // 때가 됨
+        _lists = new MemoryLists(0, 3500 * Mib, 8000 * Mib); // 때가 됨
 
         Assert.Empty(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(60))); // 최소 간격 60 초는 지났지만 상한이 막음
         Assert.Empty(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(349)));
@@ -3538,7 +3538,7 @@ public sealed class SolarTests
         Solar solar = Make(); // 0.4 초를 만지면 20 초 뒤부터 허용
         _ = solar.Order(Game("a"), Reads, CancellationToken.None);
         solar.Regroup([("a", 100 * Mib, null)]);
-        _lists = new MemoryLists(0, 9000 * Mib, 8000 * Mib);
+        _lists = new MemoryLists(0, 3500 * Mib, 8000 * Mib);
 
         Assert.Empty(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(59)));
         Assert.Single(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(60)));
@@ -3552,7 +3552,7 @@ public sealed class SolarTests
         _result = _result with { Seconds = 7 };
         _ = solar.Order(Game("a"), Reads, CancellationToken.None, startExe: "a.exe"); // 게임 시작 때의 만지기
         _ = solar.TouchFront(Game("a"), Reads, CancellationToken.None, "a.exe", keeping: true); // 게임 실행 중 유지
-        _lists = new MemoryLists(0, 9000 * Mib, 8000 * Mib);
+        _lists = new MemoryLists(0, 3500 * Mib, 8000 * Mib);
 
         Assert.Single(solar.DueGroup([Game("a")], _now)); // 7 초씩 두 번 썼지만 상한과 무관
 
@@ -3573,7 +3573,7 @@ public sealed class SolarTests
         Prewarmer p = MakePrewarmer(Game("a"));
         _ = p.Run(Game("a"), "service start");
         _touched.Clear();
-        GrowReuse(20000);
+        GrowReuse(1000 + 3500); // 때 (0.4 x 7900 = 3160) 는 됐지만 밀려날 위험 (0.5 x 7900 = 3950) 에는 못 미침
         _now += TimeSpan.FromMinutes(4);
 
         p.Tick(Auto());
@@ -3800,5 +3800,218 @@ public sealed class SolarTests
 
         Assert.Equal(2, _touched.Count); // b 의 사다리, 그 뒤 1순위 a 를 한 번 더
         Assert.Contains(_log.Lines.Skip(logged), l => l.Contains("b: ladder ordered, a touched again after it as the first play priority"));
+    }
+
+    // ---- 밀려날 위험이 가까울 때 2% 대신 5% 상한 (이슈 #358) ----
+
+    [Theory]
+    [InlineData(10000, 4999, false)] // A 10000 MiB 의 0.5 배 = 5000 MiB 미만
+    [InlineData(10000, 5000, true)]
+    [InlineData(1000, 511, false)] // A 가 작으면 하한 512 MiB
+    [InlineData(1000, 512, true)]
+    [InlineData(0, 0, false)]
+    public void TheEvictionRiskIsNearWhenTheReuseReachesHalfOfWhatWasAheadWithTheSameFloor(long aheadMib, long grownMib, bool atRisk)
+    {
+        LadderMark mark = Mark(5000, aheadMib, _now);
+
+        Assert.Equal(atRisk, SolarPolicy.AtRisk(mark, new MemoryLists(0, (5000 + grownMib) * Mib)));
+        Assert.False(SolarPolicy.AtRisk(mark, null)); // 대기 목록을 못 읽으면 위험을 판정하지 않음
+    }
+
+    [Fact]
+    public void BelowTheRiskTheTwoPercentCapHoldsTheRefreshBackAsBefore()
+    {
+        Solar solar = Make();
+        _result = _result with { Seconds = 7 };
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None); // 7 초 만짐: 2% 상한으로는 350 초 뒤
+        _lists = new MemoryLists(0, 3500 * Mib, 8000 * Mib); // 때 (3160) 는 됐지만 위험 (3950) 은 아님
+
+        Assert.Empty(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(60)));
+        Assert.Single(_log.Lines, l => l.Contains("cache refresh deferred: touching time is capped at 2%"));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("brought forward"));
+        Assert.Single(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(350)));
+    }
+
+    [Fact]
+    public void WhenTheEvictionIsNearAndTheTwoPercentCapHoldsBackTheRefreshItRunsWithinTheFivePercentShare()
+    {
+        Solar solar = Make();
+        _result = _result with { Seconds = 7 };
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        _lists = new MemoryLists(0, 4000 * Mib, 8000 * Mib); // 위험 (3950 MiB 이상)
+
+        IReadOnlyList<GameSettings> group = solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(60)); // 2% 로는 350 초 뒤, 5% 몫은 7 초를 갚은 뒤 8 초
+
+        Assert.Equal(["a"], group.Select(g => g.Name));
+        Assert.Single(_log.Lines, l => l.Contains("cache refresh brought forward past the 2% cap, within 5% of wall time: a 4000 MiB repurposed of 7900 MiB ahead"));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("cache refreshed in memory")); // 정했다는 줄일 뿐: 새로 고친 뒤의 줄은 새로 고침이 남김
+    }
+
+    [Fact]
+    public void WhenTheFivePercentShareIsUsedUpTooTheRefreshIsDeferredAndComesBackWhenItHasBuiltUp()
+    {
+        Solar solar = Make();
+        _result = _result with { Seconds = 12 };
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None); // 12 초: 5% 몫이 0 으로 내려감
+        _lists = new MemoryLists(0, 9000 * Mib, 8000 * Mib);
+
+        Assert.Empty(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(60))); // 몫 3 초 < 12 초
+        Assert.Empty(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(61)));
+        Assert.Single(_log.Lines, l => l.Contains("the eviction risk of a is near but touching time is capped at 5% of wall time too"));
+
+        Assert.Single(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(240))); // 몫 12 초
+    }
+
+    [Fact]
+    public void WhenNotEveryGameFitsTheFirstPlayPriorityGameIsRefreshedFirstAndTheOthersAreLeftWithTheirRecordedState()
+    {
+        Solar solar = Make();
+        _result = _result with { Seconds = 5 };
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        _ = solar.Order(Game("b"), Reads, CancellationToken.None); // 2% 로는 500 초 뒤, 5% 몫은 100 초에 7 초 (한 게임 5 초씩)
+        _lists = new MemoryLists(0, 4500 * Mib, 8000 * Mib);
+
+        IReadOnlyList<GameSettings> group = solar.DueGroup([Game("a"), Game("b")], _now + TimeSpan.FromSeconds(100)); // 입력은 순위가 낮은 것부터: b 가 1순위
+
+        Assert.Equal(["b"], group.Select(g => g.Name)); // 둘 다는 10 초라 들어가지 않음: 1순위만
+        Assert.Contains(_log.Lines, l => l.Contains("the others at risk wait for the share to build up"));
+        Assert.True(solar.HasMark("a")); // 건너뛴 게임의 기준 기록은 그대로
+        Assert.Equal(["a", "b"], solar.DueGroup([Game("a"), Game("b")], _now + TimeSpan.FromSeconds(300)).Select(g => g.Name)); // 몫이 쌓이면 둘 다
+    }
+
+    [Fact]
+    public void ATickWithTheEvictionNearRefreshesTheFirstPlayPriorityGameWhenOnlyOneFitsAndLeavesTheOtherMarkAlone()
+    {
+        GrowReuse(1000);
+        _result = _result with { Seconds = 5 };
+        Prewarmer p = MakePrewarmer(Game("a"), Game("b"));
+        PlayOrderIsAThenB(p); // a 가 1순위
+        Assert.True(p.Run(Game("a"), "service start").Ran);
+        Assert.True(p.Run(Game("b"), "service start").Ran);
+        _touched.Clear();
+        _now += TimeSpan.FromMinutes(10);
+        p.Solar.NoteIdleTouch(10); // 2% 상한은 500 초 뒤, 5% 몫은 40 초 앞서 갚은 상태
+        _now += TimeSpan.FromSeconds(70);
+        GrowReuse(1000 + 5000); // 위험
+
+        p.Tick(Auto());
+
+        Assert.Single(_touched); // 5% 몫 (70 초에 약 5.5 초) 에는 한 게임 (5 초) 만 들어감
+        Assert.Contains(_log.Lines, l => l.Contains("a: cache refreshed in memory"));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("b: cache refreshed in memory"));
+        Assert.True(p.Solar.HasMark("b"));
+    }
+
+    [Fact]
+    public void AGameThatIsNotAtRiskDoesNotUseTheFivePercentShareAndALowerRankedGameAtRiskIsNotLaterThanBefore()
+    {
+        // 1순위 G (위험 아님, 새로 고침 2.1 초) 와 낮은 순위 Y (위험, 처음 만지기 10.5 초): 5% 경로는 Y 만 고르고 G 의 몫을 쓰지 않으며, 2% 막힘 시간도 늘리지 않음
+        Solar solar = Make();
+        _result = _result with { Seconds = 10.5 };
+        _ = solar.Order(Game("Y"), Reads, CancellationToken.None);
+        _lists = new MemoryLists(0, 4500 * Mib, 8000 * Mib);
+        _result = _result with { Seconds = 2.1 };
+        _ = solar.Order(Game("G"), Reads, CancellationToken.None); // 4500 MiB 재사용 뒤에 섬: 위험하지 않음
+        // main 에서는 2% 막힘이 10.5 / 0.02 + 2.1 / 0.02 = 630 초 뒤에 풀림
+        DateTimeOffset start = _now;
+        double? firstAt = null;
+
+        for (int second = 30; second <= 700; second += 30)
+        {
+            _now = start + TimeSpan.FromSeconds(second);
+            IReadOnlyList<GameSettings> group = solar.DueGroup([Game("Y"), Game("G")], _now);
+            if (group.Count == 0)
+            {
+                continue;
+            }
+
+            firstAt ??= second;
+            if (second < 630)
+            {
+                Assert.Equal(["Y"], group.Select(g => g.Name)); // 5% 경로: 위험한 Y 만
+            }
+
+            foreach (GameSettings g in group)
+            {
+                solar.NoteIdleTouch(g.Name == "Y" ? 10.5 : 2.1, g.Name); // 주기마다 실제로 걸린 시간을 알림
+            }
+
+            solar.Regroup([.. group.Select(g => (g.Name, 100 * Mib, (LadderMark?)null))]);
+            break;
+        }
+
+        Assert.NotNull(firstAt);
+        Assert.InRange(firstAt!.Value, 1, 630); // main 보다 늦지 않음 (2% 로는 630 초 뒤)
+        Assert.Equal(240, firstAt.Value); // 5% 몫이 10.5 초에 닿는 때: (240 - 12) x 5% = 11.4 초
+
+        // 5% 경로의 새로 고침 (10.5 초) 이 2% 막힘 시간을 늘리지 않음: 630 초가 지나면 2% 경로가 곧바로 열림
+        _lists = new MemoryLists(0, 8000 * Mib, 8000 * Mib); // 모든 게임이 때가 됨 (위험은 아님)
+        _now = start + TimeSpan.FromSeconds(640);
+        Assert.NotEmpty(solar.DueGroup([Game("Y"), Game("G")], _now));
+    }
+
+    [Fact]
+    public void WhenAGameAtRiskDoesNotFitTheShareTheGamesBelowItWaitInsteadOfTakingIt()
+    {
+        Solar solar = Make();
+        _result = new TouchResult(100 * Mib, 5, 0, 0, TouchEnd.Completed);
+        _ = solar.Order(Game("low"), Reads, CancellationToken.None); // 5 초
+        _result = _result with { Seconds = 10.5 };
+        _ = solar.Order(Game("top"), Reads, CancellationToken.None); // 10.5 초: 쓸 수 있는 몫이 모자라면 아래의 low 가 대신 들어가면 안 됨
+        _lists = new MemoryLists(0, 4500 * Mib, 8000 * Mib); // 둘 다 위험
+        DateTimeOffset start = _now;
+
+        // 5% 몫 (start 기준 초): 190 초에 6 초 (low 의 5 초는 들어가지만 top 의 10.5 초는 못 들어감), 400 초에 최대 12 초
+        Assert.Empty(solar.DueGroup([Game("low"), Game("top")], start + TimeSpan.FromSeconds(190))); // 들어가는 low 가 top 대신 몫을 가져가지 않고 기다림
+        Assert.Single(_log.Lines, l => l.Contains("touching time is capped at 5% of wall time too"));
+        Assert.Equal(["top"], solar.DueGroup([Game("low"), Game("top")], start + TimeSpan.FromSeconds(400)).Select(g => g.Name)); // 몫이 쌓이면 top 부터: 남은 1.5 초에 low 는 못 들어감
+    }
+
+    [Fact]
+    public void TheFivePercentPathIsNotUsedWhileARegisteredGameIsRunning()
+    {
+        Solar solar = Make();
+        _result = _result with { Seconds = 7 };
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        _lists = new MemoryLists(0, 4000 * Mib, 8000 * Mib); // 위험
+
+        Assert.Empty(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(60), null, true, () => false)); // 등록된 게임이 실행 중: 평소의 2% 경로만 (미룸)
+        Assert.Single(_log.Lines, l => l.Contains("cache refresh deferred: touching time is capped at 2%"));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("brought forward"));
+        Assert.Single(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(61), null, true, () => true));
+    }
+
+    [Fact]
+    public void AGameWhoseTouchTimeIsUnknownIsEstimatedFromItsLadderSizeNotAsZeroSeconds()
+    {
+        Solar solar = Make();
+        _ = solar.Order(Game("big"), [new ReadOp(@"D:\a\1.bin", 0, 20000 * Mib)], CancellationToken.None, startExe: "big.exe"); // 시작 때의 만지기: 걸린 시간이 기록되지 않음
+        _ = solar.Order(Game("small"), Reads, CancellationToken.None, startExe: "small.exe");
+        solar.NoteIdleTouch(10); // 2% 는 500 초, 5% 몫은 40 초 앞서 갚음: 60 초 뒤 약 3 초 (게임 이름 없음)
+        _lists = new MemoryLists(0, 9000 * Mib, 8000 * Mib);
+
+        Assert.Empty(solar.DueGroup([Game("big")], _now + TimeSpan.FromSeconds(60))); // 20000 MiB / 512 MiB/s = 12 초 (잘림) > 3 초: 0 초로 어림해 몫을 넘겨 쓰지 않음
+        Assert.Single(solar.DueGroup([Game("small")], _now + TimeSpan.FromSeconds(61))); // 30 MiB 는 0.06 초
+    }
+
+    [Fact]
+    public void TheDeferralOfTheFivePercentPathIsLoggedOnceWhenItStartsAndAgainAfterItWasLifted()
+    {
+        Solar solar = Make();
+        _result = _result with { Seconds = 12 };
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None); // 2% 는 600 초, 5% 몫은 0
+        _lists = new MemoryLists(0, 9000 * Mib, 8000 * Mib);
+
+        Assert.Empty(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(60)));
+        Assert.Empty(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(90)));
+        Assert.Single(_log.Lines, l => l.Contains("touching time is capped at 5% of wall time too"));
+
+        DateTimeOffset start = _now;
+        _now = start + TimeSpan.FromSeconds(601);
+        Assert.Single(solar.DueGroup([Game("a")], _now)); // 2% 막힘이 풀림
+        solar.NoteIdleTouch(12, "a"); // 평소 경로로 12 초 만짐
+        Assert.Empty(solar.DueGroup([Game("a")], start + TimeSpan.FromSeconds(662))); // 다시 막히고 위험한데 몫이 없음
+
+        Assert.Equal(2, _log.Lines.Count(l => l.Contains("touching time is capped at 5% of wall time too"))); // 풀렸다가 다시 미루면 다시 한 번
     }
 }

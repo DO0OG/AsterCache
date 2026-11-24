@@ -32,6 +32,29 @@ internal static class SolarPolicy
     /// 만지는 데 touchSeconds 초를 썼을 때 다음 묶음 새로 고침까지 기다릴 시간 (IdleTouchShare 로 나눈 값).
     public static TimeSpan IdleTouchWait(double touchSeconds) => TimeSpan.FromSeconds(touchSeconds / IdleTouchShare);
 
+    /// 재사용 누계가 앞에 있던 양 A 의 이 비율에 닿으면 밀려날 위험이 가깝다고 봅니다 (RefreshDue 의 0.4 배보다 늦고, 실험에서 첫 파일이 밀려난 0.61~0.81 배보다 이른 값).
+    /// 2026-11-24 의 Call of Duty 는 2% 상한 때문에 10분 넘게 쉬는 동안 재사용 누계가 A 의 1.4 배에 닿아 목록 전체가 밀려났음 (12:28 에 6,866 MiB 대 4,973 MiB).
+    public const double AtRiskFraction = 0.5;
+
+    /// 위험할 때 새로 고치는 데 쓰는 시간이 벽시계에서 차지할 수 있는 몫의 상한 (5%, 평소의 IdleTouchShare 와 따로 셈): 쓴 시간을 이 몫으로 나눈 만큼 지나야 같은 몫이 돌아옵니다.
+    public const double AtRiskTouchShare = 0.05;
+
+    /// 위험할 때 쉬는 동안 쌓이는 쓸 수 있는 시간의 최대 (초): 6,687 MiB 를 처음 만질 때 10.5 초가 걸렸음 (11-24 12:16:26).
+    public const double AtRiskBurstSeconds = 12;
+
+    /// 한 게임이 새로 고치는 데 걸리는 시간을 아직 모를 때 (기준 기록이 게임 시작 때의 만지기로만 섰음) 사다리 크기를 이 속도 (바이트/초) 로 나눠 어림합니다: 11-24 로그에서 가장 느렸던 첫 만지기 (6,687 MiB 를 10.5 초 = 약 637 MiB/s) 보다 낮게 잡음.
+    public const double AssumedTouchBytesPerSecond = 512d * (1 << 20);
+
+    /// 5% 경로에서 한 게임의 새로 고침이 5% 경로의 것으로 셈되는 최대 시간: 고르고 나서 이 시간 안에 그 게임의 만지기 시간이 알려지지 않으면 평소처럼 셈.
+    public static readonly TimeSpan AtRiskAttributionWindow = TimeSpan.FromMinutes(2);
+
+    /// 만지는 데 touchSeconds 초를 썼을 때 위험 상한 (AtRiskTouchShare) 으로 갚는 데 걸리는 시간.
+    public static TimeSpan AtRiskTouchWait(double touchSeconds) => TimeSpan.FromSeconds(touchSeconds / AtRiskTouchShare);
+
+    /// 밀려날 위험이 가까운가: 사다리를 만든 뒤 재사용 누계 증가분이 max(하한, AtRiskFraction x A) 이상 (대기 목록을 못 읽으면 판정하지 않음).
+    public static bool AtRisk(LadderMark mark, MemoryLists? lists) =>
+        Repurposed(mark, lists) is { } grown && grown >= Math.Max(MinRepurposedBytes, (long)(AtRiskFraction * mark.AheadBytes));
+
     /// 스트림이 도는 동안 다른 게임의 새로 고칠 때를 보는 간격: 판정마다 대기 목록 통계를 한 번 읽으므로 묶음마다 (약 1초) 보지 않습니다.
     public static readonly TimeSpan ProtectCheckEvery = TimeSpan.FromSeconds(10);
 

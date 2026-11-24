@@ -299,8 +299,11 @@ public sealed class LoadRefillTests : IDisposable
 
     [Theory]
     [InlineData("\"play_scores\": \"4,3,1\"", "\"play_scores\": \"4,3\"")] // 길이가 블록 수와 다름
-    [InlineData("\"play_scores\": \"4,3,1\"", "\"play_scores\": \"99,3,1\"")] // 플레이 수 2 에 99점 (범위 밖: 플레이 수에 디스크 전용 요약의 최대 수를 더한 값의 3 배 초과)
-    [InlineData("\"play_scores\": \"4,3,1\"", "\"play_scores\": \"1,3,1\"")] // 플레이 수 2 에 1점 (플레이 수보다 적음)
+    [InlineData("\"play_scores\": \"4,3,1\"", "\"play_scores\": \"7,3,1\"")] // 플레이 수 2 에 7점 (범위 밖: 3 배 초과)
+    [InlineData("\"play_scores\": \"4,3,1\"", "\"play_scores\": \"3,3,1\"")] // 플레이 수 2 에 3점 (홀짝이 다름)
+    [InlineData("\"play_extra\": \"0,0,0\"", "\"play_extra\": \"0,0\"")] // 길이가 블록 수와 다름
+    [InlineData("\"play_extra\": \"0,0,0\"", "\"play_extra\": \"5,0,0\"")] // 디스크 전용 몫을 빼면 기본 점수가 플레이 수보다 작음 (4 - 5)
+    [InlineData("\"play_extra\": \"0,0,0\"", "\"play_extra\": \"37,0,0\"")] // 디스크 전용 요약의 최대 점수 (3 × 12) 초과
     [InlineData("\"play_scores\": \"4,3,1\"", "\"play_scores\": \"4,3,99999999999999999999\"")] // 정수 범위를 벗어난 값
     [InlineData("\"play_scores\": \"4,3,1\"", "\"play_scores\": \"4,x,1\"")] // 숫자가 아닌 값
     [InlineData("\"play_order\": \"0,1,2\"", "\"play_order\": \"0,1,1\"")] // 순열이 아님
@@ -356,6 +359,44 @@ public sealed class LoadRefillTests : IDisposable
         int after = LoadRefillPlanner.Collect([listed], Existing, null, 1L << 30, scoreOnly: [diskOnly]).Blocks.Single().Score;
 
         Assert.Equal(before + added, after);
+    }
+
+    [Fact]
+    public void RescoringKeepsTheBlocksAndTheFileGenerationsAndOnlyReplacesTheDiskOnlyPointsAndTheScoreOrder()
+    {
+        var files = new[] { new IoSummaryFile(A), new IoSummaryFile(B) };
+        LoadRefillSource first = Source([Sec(10)], files, Row(0, 0, 11, latencyUs: 900), Row(1, 0, 200, latencyUs: 5), Row(0, 1, 300, latencyUs: 50));
+        LoadRefillSource diskOnly = Source([Sec(10)], files, Row(1, 0, 400), Row(0, 5, 400));
+        LoadRefillList built = LoadRefillPlanner.WithPlayOrder(LoadRefillPlanner.Collect([first], Existing, null, 1L << 30, scoreOnly: [diskOnly]), _ => false);
+        Assert.Equal([(A, 0L, 1), (A, 1L, 3), (B, 0L, 6)], built.Blocks.Select(b => (b.Path, b.Block, b.Score)));
+        Assert.Equal([0, 0, 3], built.Blocks.Select(b => b.Extra)); // B0 만 디스크 전용 몫 3
+
+        // 디스크 전용 요약이 새로 하나 더 (A1 에 경기 중 한 번) 생기고, 파일이 그 사이 바뀌어도 목록의 세대 (Stat) 가 그대로라 블록과 파일 표는 그대로
+        LoadRefillSource another = Source([Sec(10)], files, Row(0, 1, 500));
+        LoadRefillList rescored = LoadRefillPlanner.Rescore(built, [diskOnly, another]);
+
+        Assert.Equal(built.Blocks.Select(b => (b.Path, b.Block, b.Count, b.LatencyUs)), rescored.Blocks.Select(b => (b.Path, b.Block, b.Count, b.LatencyUs)));
+        Assert.Equal(built.Files, rescored.Files);
+        Assert.Equal([(A, 1L, 6, 3), (B, 0L, 6, 3), (A, 0L, 1, 0)], rescored.PlayOrder!.Select(i => (rescored.Blocks[i].Path, rescored.Blocks[i].Block, rescored.Blocks[i].Score, rescored.Blocks[i].Extra)));
+        Assert.Equal(built.Blocks.Select(b => b.Score - b.Extra), rescored.Blocks.Select(b => b.Score - b.Extra)); // 원시 요약으로 센 기본 점수는 그대로
+        Assert.Equal([1, 3, 3], LoadRefillPlanner.Rescore(built, []).Blocks.Select(b => b.Score)); // 디스크 전용 요약이 하나도 없으면 몫이 0 으로 돌아감 (기본 점수만)
+
+        string path = Path.Combine(_dir, "rescored.ranked.json");
+        LoadRefillStore.Write(path, rescored, Started);
+        LoadRefillList back = Assert.IsType<LoadRefillList>(LoadRefillStore.Read(path));
+        Assert.Equal(rescored.Blocks.Select(b => (b.Score, b.Extra)), back.Blocks.Select(b => (b.Score, b.Extra)));
+        Assert.Equal(rescored.PlayOrder, back.PlayOrder);
+    }
+
+    [Fact]
+    public void ARescoreThatIsCancelledChangesNothing()
+    {
+        LoadRefillSource first = Source([Sec(10)], [new IoSummaryFile(A)], Row(0, 0, 11));
+        LoadRefillList built = LoadRefillPlanner.WithPlayOrder(LoadRefillPlanner.Collect([first], Existing, null, 1L << 30), _ => false);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        Assert.Throws<OperationCanceledException>(() => LoadRefillPlanner.Rescore(built, [first], cts.Token));
     }
 
     [Fact]

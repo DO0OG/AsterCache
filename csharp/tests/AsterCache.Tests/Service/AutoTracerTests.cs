@@ -2786,6 +2786,13 @@ public sealed class AutoTracerTests : IDisposable
 
     private FakeTrace Summary => _rig.World.SummarySession!;
 
+    // 요약 전용 플레이를 끝냄: 종료 감지 (두 번의 Step) 로 세션을 놓고, 그다음 Step 이 변환·저장·점수 갱신을 함
+    private void EndSummaryPlay(AutoTracer? tracer = null)
+    {
+        EndAfterExitGrace(tracer);
+        (tracer ?? _tracer).Step();
+    }
+
     private string[] DiskSlots => [.. IoSummaryStore.PlayDiskPaths(Raw).Where(File.Exists)];
 
     [Fact]
@@ -2828,6 +2835,9 @@ public sealed class AutoTracerTests : IDisposable
 
         Assert.False(_tracer.Active);
         Assert.True(Summary.Stopped);
+        Assert.Equal(0, _rig.World.BuildIoSummaryCalls); // 세션을 놓은 때에는 변환·저장을 하지 않음
+        Assert.Empty(DiskSlots);
+        _tracer.Step();
         Assert.Equal(0, _rig.World.GameProcessCalls);
         IoSummary saved = Assert.IsType<IoSummary>(IoSummaryStore.ReadPlayDisk(Assert.Single(DiskSlots)));
         Assert.True(saved.Play!.DiskOnly);
@@ -2935,8 +2945,111 @@ public sealed class AutoTracerTests : IDisposable
         Assert.Empty(DiskSlots); // 플레이 중간까지의 요약은 남기지 않음
         Assert.Contains(_rig.Log.Lines, l => l.Contains("foo: play summary dropped", StringComparison.Ordinal));
 
-        Assert.True(_tracer.Start(other, out _, wantedAtGameStart: true)); // 재시도: 원시 세션이 열림
+        Assert.True(_tracer.Start(other, out _, AutoTracer.StartPurpose.Raw)); // 재시도: 원시 세션이 열림
         Assert.Equal((1, 1), (_rig.World.SummaryStarts, _rig.World.TraceStarts));
+    }
+
+    [Fact]
+    public void TheSessionIsReleasedAtOnceSoTheNextStartDoesNotWaitForTheConversionTheSaveOrTheRankingUpdate()
+    {
+        LearnedGame();
+        Assert.True(_tracer.Start(_game, out _));
+        _rig.World.Running = true;
+        _tracer.Step();
+
+        Task finished = _tracer.EndGameSessionAsync(_game, _rig.World.Now);
+        _tracer.Step(); // 세션을 닫는 Step
+
+        Assert.True(finished.IsCompleted); // 다음 시작이 기다리던 완료 신호가 바로 옴
+        Assert.False(_tracer.Active);
+        Assert.Equal(0, _rig.World.BuildIoSummaryCalls);
+        Assert.Empty(DiskSlots);
+
+        _tracer.Step(); // 변환·저장·점수 갱신은 그 뒤 (취소·시간 제한 안에서)
+        Assert.Equal(1, _rig.World.BuildIoSummaryCalls);
+        Assert.Single(DiskSlots);
+    }
+
+    [Fact]
+    public void ASummarySavedAfterTheGameFilesChangedKeepsTheRankedBlocksAndTheirFileGenerationsAndOnlyUpdatesTheScores()
+    {
+        LearnedGame();
+        string file = Path.Combine(_rig.Dir, "a.bin");
+        File.WriteAllBytes(file, new byte[4 * 65536]);
+        string rankedPath = LoadRefillPlans.RankedPathOf(_game);
+        var ranked = new LoadRefillList([new LoadRefillBlock(file, 0, 2, 100, 4), new LoadRefillBlock(file, 1, 1, 50, 3)],
+            new Dictionary<string, LoadRefillFileStat> { [file] = new LoadRefillFileStat(4 * 65536, 12345) }, 2, 0, 0, 0, 0);
+        LoadRefillStore.Write(rankedPath, LoadRefillPlanner.WithPlayOrder(ranked, _ => false), _rig.World.Now);
+        string before = File.ReadAllText(rankedPath);
+        long fileTicks = new FileInfo(file).LastWriteTimeUtc.Ticks; // 저장된 세대 (12345) 와 지금 파일은 이미 다름: 파일이 고쳐진 뒤
+        _rig.World.BuildIoSummary = (snapshot, _, _) => new IoBlockMapper(snapshot).Build(0, 0, 0, 0, 0, false) with
+        {
+            Files = [new IoSummaryFile(file, false, 4 * 65536, 12345)],
+            Rows = [new IoSummaryRow(0, 1, 1, 65536, 20, 20, 200_000_000, 1)],
+        };
+
+        Assert.True(_tracer.Start(_game, out _));
+        _rig.World.Running = true;
+        _tracer.Step();
+        EndSummaryPlay();
+
+        LoadRefillList after = Assert.IsType<LoadRefillList>(LoadRefillStore.Read(rankedPath));
+        Assert.NotEqual(before, File.ReadAllText(rankedPath));
+        Assert.Equal(ranked.Blocks.Select(b => (b.Path, b.Block, b.Count, b.LatencyUs)), after.Blocks.Select(b => (b.Path, b.Block, b.Count, b.LatencyUs)));
+        Assert.Equal(ranked.Files, after.Files); // 지금 파일의 크기·수정 시각을 옛 블록에 새로 붙이지 않음
+        Assert.NotEqual(12345L, fileTicks);
+        Assert.Equal([4, 4], after.Blocks.Select(b => b.Score)); // 블록 1 에만 경기 중 읽기 (기본 점수 3 에 1 점: 요약의 시작 시각이 없어 구간 가중 없음), 요약이 본 세대는 목록의 저장된 세대와 대조
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("foo: ranked scores updated from 1 play summaries, blocks and file generations kept", StringComparison.Ordinal));
+        Assert.DoesNotContain(_rig.Log.Lines, l => l.Contains("ranked block list built", StringComparison.Ordinal)); // 순위를 다시 만들지 않음
+    }
+
+    [Fact]
+    public void ARankedUpdateCancelledByAGameStartLeavesTheRankedFileAndTheNextSummaryCountsAllSlots()
+    {
+        LearnedGame();
+        string file = Path.Combine(_rig.Dir, "a.bin");
+        File.WriteAllBytes(file, new byte[2 * 65536]);
+        string rankedPath = LoadRefillPlans.RankedPathOf(_game);
+        var ranked = new LoadRefillList([new LoadRefillBlock(file, 0, 1, 100, 1)], new Dictionary<string, LoadRefillFileStat> { [file] = new LoadRefillFileStat(2 * 65536, 7) }, 1, 0, 0, 0, 0);
+        LoadRefillStore.Write(rankedPath, LoadRefillPlanner.WithPlayOrder(ranked, _ => false), _rig.World.Now);
+        string before = File.ReadAllText(rankedPath);
+        var tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings) { MinRunBytes = 0, IoScanBudget = TimeSpan.Zero };
+
+        Assert.True(tracer.Start(_game, out _));
+        _rig.World.Running = true;
+        tracer.Step();
+        EndSummaryPlay(tracer);
+
+        Assert.Single(DiskSlots); // 요약은 저장됨
+        Assert.Equal(before, File.ReadAllText(rankedPath)); // 시간 제한이 지나 점수 갱신이 취소됨 (순위 파일은 그대로)
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("ranked scores not updated (service stop, game start or time budget)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AGameWhoseAntiCheatIsForbiddenInTheLatestSettingsOpensNoSessionEvenWhenTheCallerHoldsAnOldCopy()
+    {
+        LearnedGame();
+        _rig.Settings = _rig.Settings with { Games = [_game with { AntiCheat = "eac" }] }; // 대기하는 사이 판정이 확정됨
+
+        Assert.False(_tracer.Start(_game, out _, AutoTracer.StartPurpose.SummaryOnly)); // 호출한 쪽의 _game 은 안티치트 없음
+        Assert.False(_tracer.Start(_game, out _, AutoTracer.StartPurpose.Raw));
+        Assert.False(_tracer.Start(_game, out _));
+
+        Assert.Equal((0, 0), (_rig.World.SummaryStarts, _rig.World.TraceStarts));
+    }
+
+    [Fact]
+    public void ASummaryOnlyPurposeNeverOpensARawSessionEvenWhenARawConditionIsTrueAndOpensNothingWhenTheSummaryIsOff()
+    {
+        LearnedGame();
+        Extra(runs: 3, max: 3); // 원시 조건이 참
+        Assert.True(_tracer.Start(_game, out _, AutoTracer.StartPurpose.SummaryOnly));
+        Assert.Equal((1, 0), (_rig.World.SummaryStarts, _rig.World.TraceStarts));
+
+        _tracer.Shutdown();
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { IoSummaryEnabled = false } };
+        Assert.False(_tracer.Start(_game, out _, AutoTracer.StartPurpose.SummaryOnly));
+        Assert.Equal((1, 0), (_rig.World.SummaryStarts, _rig.World.TraceStarts));
     }
 
     [Fact]
@@ -2948,7 +3061,7 @@ public sealed class AutoTracerTests : IDisposable
         Assert.True(_tracer.Start(_game, out _));
         _rig.World.Running = true;
         _tracer.Step();
-        EndAfterExitGrace();
+        EndSummaryPlay();
 
         Assert.Equal(0, _rig.World.BuildIoSummaryCalls); // 폴더를 훑어 디스크를 읽을 이유가 없음
         IoSummary saved = Assert.IsType<IoSummary>(IoSummaryStore.ReadPlayDisk(Assert.Single(DiskSlots)));
@@ -2974,7 +3087,7 @@ public sealed class AutoTracerTests : IDisposable
         _rig.World.Running = true;
         _tracer.Step();
 
-        Task end = Task.Run(() => EndAfterExitGrace());
+        Task end = Task.Run(() => EndSummaryPlay());
         Assert.True(entered.Wait(TimeSpan.FromSeconds(30)));
         _tracer.CancelShadow("other"); // 감시기가 등록 게임 시작마다 부름: 다음 게임의 시작이 변환에 막히지 않음
         await end.WaitAsync(TimeSpan.FromSeconds(30));
@@ -3003,8 +3116,8 @@ public sealed class AutoTracerTests : IDisposable
         Assert.True(tracer.Start(_game, out _));
         _rig.World.Running = true;
         tracer.Step();
-        EndAfterExitGrace(tracer);
-        Assert.Contains(_rig.Log.Lines, line => line.Contains("I/O summary deferred (a game is running on the disk)", StringComparison.Ordinal));
+        EndSummaryPlay(tracer);
+        Assert.Equal(0, _rig.World.BuildIoSummaryCalls); // 같은 디스크에서 다른 게임이 도는 동안은 만들지 않음
 
         phases = [(observed.AddHours(5), observed.AddHours(6))]; // 다른 게임이 도는 동안 로딩 판정 표가 다음 플레이로 넘어감
         tracer.Step();
@@ -3031,7 +3144,7 @@ public sealed class AutoTracerTests : IDisposable
         Assert.True(tracer.Start(_game, out _));
         _rig.World.Running = true;
         tracer.Step();
-        EndAfterExitGrace(tracer);
+        EndSummaryPlay(tracer);
 
         Assert.Empty(DiskSlots);
         Assert.False(tracer.Active);

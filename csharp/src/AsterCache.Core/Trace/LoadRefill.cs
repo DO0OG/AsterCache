@@ -11,9 +11,10 @@ public readonly record struct LoadRefillFileStat(long Size, long MTimeTicks);
 public sealed record LoadRefillSource(IoSummary Summary, IReadOnlyList<long> StartsUs);
 
 /// 로드 구간에서 처음 접근한 64 KiB 블록 하나. Count 는 그 블록이 나온 플레이 수, LatencyUs 는 플레이별 지연 합의 합입니다.
-/// Score 는 플레이 전체 기록의 순위 목록에서만 채우는 경기 가중 점수 (Count + 2 × 가중 회차 수 + 점수 전용 요약이 더한 점수): 0 이면 구간을 모르는 목록입니다.
+/// Score 는 플레이 전체 기록의 순위 목록에서만 채우는 경기 가중 점수 (Count + 2 × 가중 회차 수 + Extra): 0 이면 구간을 모르는 목록입니다.
+/// Extra 는 그 가운데 플레이마다 남기는 디스크 전용 요약이 더한 점수입니다 (순위 블록을 다시 만들지 않고 이 부분만 갱신하려고 따로 저장).
 /// 순위 목록의 PlayOrder 는 Score 내림 순서의 블록 번호 순열, SparseFiles 는 스파스 파일 (둘 다 순위 파일을 쓸 때 정해 파일에 같이 저장).
-public sealed record LoadRefillBlock(string Path, long Block, int Count, long LatencyUs, int Score = 0);
+public sealed record LoadRefillBlock(string Path, long Block, int Count, long LatencyUs, int Score = 0, int Extra = 0);
 
 /// 모은 로드 구간 블록 목록 (점수 순)과 모으는 과정의 집계.
 public sealed record LoadRefillList(
@@ -67,13 +68,14 @@ public static class LoadRefillPlanner
     /// isWritten 이 있으면 (순위 목록이 게임이 쓰는 파일도 담을 때) 그 파일의 블록은 WrittenMinPlays 개 이상의 플레이에서 나온 것만 담습니다.
     /// appendOnly 가 참인 파일 (크기가 줄어든 적이 없어 덧붙이기로 보는 파일) 은 관찰 중 수정된 플레이의 읽기도 점수에 넣습니다: 이미 쓰인 위치의 내용은 바뀌지 않으므로 그 플레이에서 읽힌 위치 (시작 때 크기 안이든 덧붙인 뒤든) 는 다음 플레이에도 있습니다.
     /// scoreOnly (플레이마다 남기는 디스크 전용 요약, window 가 null 일 때만 씀) 는 경기 가중 점수에만 더합니다: Count·지연 합·목록에 드는 블록과 그 순서는 sources 만으로 정해져 이 요약이 있어도 바뀌지 않습니다 (초기 로드 목록·예열 순위의 입력을 그대로 둠).
-    /// 그래서 디스크 전용 요약에서만 나온 블록은 목록에 들지 못해 점수를 받지 못하고, 원시 트레이스가 그 블록을 목록에 올린 뒤에야 점수가 합쳐집니다. 채점 규칙은 AddScoreOnly 의 설명에 있습니다.
+    /// 그래서 디스크 전용 요약에서만 나온 블록은 목록에 들지 못해 점수를 받지 못하고, 원시 트레이스가 그 블록을 목록에 올린 뒤에야 점수가 합쳐집니다. 채점 규칙은 ScoreDiskOnly 의 설명에 있습니다.
     public static LoadRefillList Collect(IEnumerable<LoadRefillSource> sources, Func<string, LoadRefillFileStat?> stat, TimeSpan? window, long capBytes, Func<string, bool>? isWritten = null, Func<string, bool>? appendOnly = null,
         IEnumerable<LoadRefillSource>? scoreOnly = null)
     {
         long windowUs = window is { } w ? (long)w.TotalMicroseconds : 0;
         var stats = new Dictionary<string, LoadRefillFileStat?>(StringComparer.OrdinalIgnoreCase);
         var merged = new Dictionary<string, Dictionary<long, (int Count, long LatencyUs, int Score)>>(StringComparer.OrdinalIgnoreCase);
+        var extras = new Dictionary<(string Path, long Block), int>(PathBlockComparer.Instance); // 디스크 전용 요약이 더한 점수
         int plays = 0;
         int loads = 0;
         int withoutStarts = 0;
@@ -148,7 +150,13 @@ public static class LoadRefillPlanner
         {
             foreach (LoadRefillSource source in scoreOnly)
             {
-                AddScoreOnly(source, merged, stats, appendOnly);
+                ScoreDiskOnly(source, (path, block) => merged.TryGetValue(path, out Dictionary<long, (int Count, long LatencyUs, int Score)>? blocks) && blocks.ContainsKey(block),
+                    path => stats.GetValueOrDefault(path), appendOnly, (path, block, points) =>
+                    {
+                        (int Count, long LatencyUs, int Score) old = merged[path][block];
+                        merged[path][block] = old with { Score = old.Score + points };
+                        extras[(path, block)] = extras.GetValueOrDefault((path, block)) + points;
+                    });
             }
         }
 
@@ -156,7 +164,7 @@ public static class LoadRefillPlanner
         foreach ((string path, Dictionary<long, (int Count, long LatencyUs, int Score)> blocks) in merged)
         {
             int minPlays = isWritten?.Invoke(path) == true ? WrittenMinPlays : 1;
-            all.AddRange(blocks.Where(b => b.Value.Count >= minPlays).Select(b => new LoadRefillBlock(path, b.Key, b.Value.Count, b.Value.LatencyUs, window is null ? b.Value.Score : 0)));
+            all.AddRange(blocks.Where(b => b.Value.Count >= minPlays).Select(b => new LoadRefillBlock(path, b.Key, b.Value.Count, b.Value.LatencyUs, window is null ? b.Value.Score : 0, extras.GetValueOrDefault((path, b.Key)))));
         }
 
         all.Sort((a, b) =>
@@ -186,34 +194,70 @@ public static class LoadRefillPlanner
         return new LoadRefillList(result, files, plays, loads, withoutStarts, skippedNoCache, all.Count - kept);
     }
 
-    // 디스크 전용 요약 하나를 경기 가중 점수에만 더합니다 (이미 목록에 있는 블록만, Count·지연 합은 그대로). 채점 규칙:
-    // - 캐시를 거치지 않은 행 (페이징 0), 관찰 중 바뀐 파일 (덧붙이기 파일 제외), 파일 크기·수정 시각이 지금 목록을 만들 때 본 값과 다른 파일 (요약을 남긴 뒤 게임이 파일을 바꿈) 의 행은 점수 없음.
+    /// 순위 목록을 다시 만들지 않고 디스크 전용 요약의 점수 (Extra) 만 새로 셉니다: 블록·순서·플레이 수·지연 합과 파일의 크기·수정 시각 (목록을 만든 때의 세대) 은 그대로 두고, 원시 요약으로 센 점수 (Score - Extra) 에 새 Extra 를 더해 점수 순서를 다시 정합니다.
+    /// 요약이 본 파일의 크기·수정 시각은 지금 파일이 아니라 목록에 저장된 세대와 대조하므로 파일 속성을 조회하지 않습니다. 관찰 중 바뀐 파일의 행은 덧붙이기 판정이 없어 점수가 없습니다 (순위 목록을 다시 만들 때 덧붙이기 파일로 판정되면 그 행도 셈).
+    /// 취소되면 OperationCanceledException (목록은 바뀌지 않음).
+    public static LoadRefillList Rescore(LoadRefillList list, IEnumerable<LoadRefillSource> scoreOnly, CancellationToken ct = default)
+    {
+        var position = new Dictionary<(string Path, long Block), int>(PathBlockComparer.Instance);
+        for (int i = 0; i < list.Blocks.Count; i++)
+        {
+            position[(list.Blocks[i].Path, list.Blocks[i].Block)] = i;
+        }
+
+        int[] extra = new int[list.Blocks.Count];
+        foreach (LoadRefillSource source in scoreOnly)
+        {
+            ScoreDiskOnly(source, (path, block) => position.ContainsKey((path, block)), path => list.Files.TryGetValue(path, out LoadRefillFileStat saved) ? saved : null, null,
+                (path, block, points) => extra[position[(path, block)]] += points, ct);
+        }
+
+        LoadRefillList rescored = list with { Blocks = [.. list.Blocks.Select((b, i) => b with { Score = b.Score - b.Extra + extra[i], Extra = extra[i] })] };
+        return WithPlayOrder(rescored, path => list.SparseFiles?.Contains(path) == true);
+    }
+
+    // 디스크 전용 요약 하나를 경기 가중 점수에만 더합니다 (listed 가 참인 블록만, Count·지연 합은 그대로). 채점 규칙:
+    // - 캐시를 거치지 않은 행 (페이징 0), 관찰 중 바뀐 파일 (덧붙이기 파일 제외), 파일 크기·수정 시각이 목록의 세대 (generation) 와 다른 파일 (요약을 남긴 뒤 게임이 파일을 바꿈) 의 행은 점수 없음.
     // - 한 번만 닿고 (Requests 1) 실행 파일 시작 뒤 Window 가 지난 때에 처음 닿았으며 이벤트 유실·상한 초과가 없고 출처가 확실한 행은 PlayPhaseWeight 점, 그 밖의 행은 1점.
     // - 서비스 자신의 읽기와 겹쳐 게임의 읽기인지 알 수 없는 요청 (UncertainRequests) 이 섞인 행은 3점을 받지 못하고 1점입니다: 디스크 전용 요약은 게임이 같은 구간을 읽었는지 알 수 없으므로 겹친 행을 모두 빼면
     //   붙들기·유지가 읽은 블록이 플레이마다 점수를 잃어 순위에서 밀려나는 되먹임이 생기고, 모두 3점으로 세면 서비스가 읽은 블록이 스스로 점수를 올립니다. 1점은 그 플레이에서 그 블록에 닿은 읽기가 있었다는 만큼만 셉니다.
-    // - 이벤트 유실이나 상한 초과가 있는 회차는 첫 접근 시각을 믿을 수 없어 구간 가중 없이 1점 (읽기가 일부 빠졌을 수 있어도 점수를 깎지는 않음).
-    private static void AddScoreOnly(LoadRefillSource source, Dictionary<string, Dictionary<long, (int Count, long LatencyUs, int Score)>> merged, Dictionary<string, LoadRefillFileStat?> stats, Func<string, bool>? appendOnly)
+    // - 이벤트 유실이나 상한 초과가 있는 회차는 첫 접근 시각을 믿을 수 없어 구간 가중 없이 1점 (읽기가 일부 빠졌을 수 있어도 점수를 깎지는 않음). 이 규칙은 점수를 셀 페이징 읽기 행에만 걸립니다 (페이징 0 인 행은 어느 경우에도 점수 없음).
+    private static void ScoreDiskOnly(LoadRefillSource source, Func<string, long, bool> listed, Func<string, LoadRefillFileStat?> generation, Func<string, bool>? appendOnly, Action<string, long, int> add, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         long[] starts = [.. source.StartsUs.Distinct().Order()];
         IoSummary summary = source.Summary;
         bool exact = summary.Quality.EventsLost == 0 && !summary.Quality.Truncated;
+        int seen = 0;
         foreach (IoSummaryRow row in summary.Rows)
         {
+            if ((++seen & 0xFFF) == 0)
+            {
+                ct.ThrowIfCancellationRequested();
+            }
+
             IoSummaryFile file = summary.Files[row.FileNumber];
-            if (row.PagingRequests == 0 || (file.ChangedDuringSession && appendOnly?.Invoke(file.Path) != true)
-                || !merged.TryGetValue(file.Path, out Dictionary<long, (int Count, long LatencyUs, int Score)>? blocks) || !blocks.TryGetValue(row.BlockNumber, out (int Count, long LatencyUs, int Score) old))
+            if (row.PagingRequests == 0 || (file.ChangedDuringSession && appendOnly?.Invoke(file.Path) != true) || !listed(file.Path, row.BlockNumber))
             {
                 continue;
             }
 
-            if (file.Size is { } size && file.MTimeTicks is { } ticks && stats[file.Path] is { } now && (now.Size != size || now.MTimeTicks != ticks))
+            if (file.Size is { } size && file.MTimeTicks is { } ticks && generation(file.Path) is { } now && (now.Size != size || now.MTimeTicks != ticks))
             {
                 continue;
             }
 
-            int points = exact && row.Requests == 1 && row.UncertainRequests == 0 && OutsideLoadWindow(starts, row.FirstSessionUs) ? PlayPhaseWeight : 1;
-            blocks[row.BlockNumber] = old with { Score = old.Score + points };
+            add(file.Path, row.BlockNumber, exact && row.Requests == 1 && row.UncertainRequests == 0 && OutsideLoadWindow(starts, row.FirstSessionUs) ? PlayPhaseWeight : 1);
         }
+    }
+
+    private sealed class PathBlockComparer : IEqualityComparer<(string Path, long Block)>
+    {
+        public static readonly PathBlockComparer Instance = new();
+
+        public bool Equals((string Path, long Block) a, (string Path, long Block) b) => a.Block == b.Block && string.Equals(a.Path, b.Path, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((string Path, long Block) k) => HashCode.Combine(StringComparer.OrdinalIgnoreCase.GetHashCode(k.Path), k.Block);
     }
 
     // 첫 접근 시각이 어느 실행 파일 시작 뒤 Window 가 지난 때인가 (시작이 없거나 첫 시작보다 앞서면 구간을 모르므로 거짓).
@@ -390,6 +434,7 @@ public static class LoadRefillStore
             // 쉼표로 이은 문자열로 저장해 값이 이상해도 (JSON 숫자 범위 오류로 파일 전체가 읽히지 않는 일 없이) 이 항목만 버릴 수 있게 함.
             root.Add("play_scores", string.Join(',', list.Blocks.Select(b => b.Score.ToString(CultureInfo.InvariantCulture))));
             root.Add("play_order", string.Join(',', order.Select(i => i.ToString(CultureInfo.InvariantCulture))));
+            root.Add("play_extra", string.Join(',', list.Blocks.Select(b => b.Extra.ToString(CultureInfo.InvariantCulture)))); // 점수 가운데 디스크 전용 요약이 더한 몫 (없는 파일은 0 으로 읽음)
             root.Add("play_sparse", string.Join(',', paths.Select((p, i) => (p, i)).Where(x => list.SparseFiles?.Contains(x.p) == true).Select(x => x.i.ToString(CultureInfo.InvariantCulture))));
         }
 
@@ -458,9 +503,16 @@ public static class LoadRefillStore
         }
     }
 
-    // 점수 (플레이 수 이상이고 플레이 수의 3배에 디스크 전용 요약의 최대 수 × 3 을 더한 값 이하), 순서 (블록 번호 순열), 스파스 파일 번호가 모두 맞을 때만 돌려줍니다.
+    // 점수 (디스크 전용 요약이 더한 몫 Extra 를 뺀 기본 점수가 플레이 수 + 2 × 가중 회차 수 이므로 플레이 수 이상 3배 이하이고 같은 홀짝, Extra 는 0 이상 3 × 디스크 전용 요약의 최대 수 이하),
+    // 순서 (블록 번호 순열), 스파스 파일 번호가 모두 맞을 때만 돌려줍니다. play_extra 가 없으면 (예전 파일) Extra 는 모두 0 입니다.
     private static (List<LoadRefillBlock> Blocks, int[] Order, HashSet<string> Sparse)? ReadPlayExtras(JObject root, List<LoadRefillBlock> blocks, List<string> paths)
     {
+        int[]? extras = null;
+        if (root.TryGetValue("play_extra", out object? extraValue) && (extraValue is not string extraText || Ints(extraText) is not { } parsedExtras || (extras = parsedExtras).Length != blocks.Count))
+        {
+            return null;
+        }
+
         if (!root.TryGetValue("play_scores", out object? scoresValue) || scoresValue is not string scoresText
             || !root.TryGetValue("play_order", out object? orderValue) || orderValue is not string orderText
             || !root.TryGetValue("play_sparse", out object? sparseValue) || sparseValue is not string sparseText
@@ -474,7 +526,9 @@ public static class LoadRefillStore
         for (int i = 0; i < blocks.Count; i++)
         {
             int count = blocks[i].Count;
-            if (scores[i] < count || scores[i] > 3L * (count + IoSummaryStore.MaxPlayDiskSummaries))
+            long extra = extras?[i] ?? 0;
+            long basis = scores[i] - extra; // 원시 요약만으로 센 점수
+            if (extra > 3L * IoSummaryStore.MaxPlayDiskSummaries || basis < count || basis > 3L * count || (basis - count) % 2 != 0)
             {
                 return null;
             }
@@ -491,7 +545,7 @@ public static class LoadRefillStore
             seen[i] = true;
         }
 
-        return ([.. blocks.Select((b, i) => b with { Score = scores[i] })], order, new HashSet<string>(sparse.Select(i => paths[i]), StringComparer.OrdinalIgnoreCase));
+        return ([.. blocks.Select((b, i) => b with { Score = scores[i], Extra = extras?[i] ?? 0 })], order, new HashSet<string>(sparse.Select(i => paths[i]), StringComparer.OrdinalIgnoreCase));
     }
 
     // 쉼표로 이은 정수 문자열 (빈 문자열은 빈 목록), 하나라도 정수가 아니거나 범위를 벗어나면 null.

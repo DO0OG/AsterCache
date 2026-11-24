@@ -121,6 +121,9 @@ public sealed class IoSummaryCollector
 
     public DateTimeOffset ObservedAtUtc { get; }
 
+    /// 파일 계층 이벤트 없이 디스크 완료만 받는 세션의 집계인가.
+    public bool DiskOnly => _diskOnly;
+
     /// 대상 프로세스의 파일 읽기 요청 표시를 파일별로 더합니다. path 가 없으면 이름을 끝내 못 찾은 읽기로 셉니다.
     public void AddProcessRead(string? path, long requests, long bytes, uint flags)
     {

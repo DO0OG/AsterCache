@@ -151,20 +151,31 @@ public sealed partial class Prewarmer
     // 표본 점검이 디스크에서 읽은 양은 하루 읽기 집계에 남김 (재예열 점검·사다리·서비스 시작의 캐시 확인 모두 이 두 함수를 거침).
     internal ProbeResult? ProbeSamplesForGame(GameSettings game, IReadOnlyList<(string Path, long Offset, int Bytes)> samples, string purpose, CancellationToken ct = default)
     {
-        ProbeResult? result = ProbeSamplesCore(game, samples, purpose, ct);
-        NoteProbeRead(game, result);
+        ProbeResult? result = ProbeSamplesCore(game, samples, purpose, ct, out int slowRead);
+        NoteProbeRead(game, result, slowRead);
         return result;
     }
 
     private ProbeResult? ProbeReadMsForGame(GameSettings game, string purpose, CancellationToken ct = default, bool partial = false)
     {
-        ProbeResult? result = ProbeReadMsCore(game, purpose, ct, partial);
-        NoteProbeRead(game, result);
+        ProbeResult? result = ProbeReadMsCore(game, purpose, ct, partial, out int slowRead);
+        NoteProbeRead(game, result, slowRead);
         return result;
     }
 
-    private ProbeResult? ProbeSamplesCore(GameSettings game, IReadOnlyList<(string Path, long Offset, int Bytes)> samples, string purpose, CancellationToken ct)
+    // 표본 읽기 한 번의 결과와, 그 호출이 디스크에서 읽은 (느린) 표본 수를 slowRead 에 더해 돌려줍니다: 결과가 취소로 없거나 호출한 쪽이 버려도 읽은 표본은 셈에 남도록 결과와 함께 전달합니다.
+    // 호출 직전에 이 스레드에 남은 취소 표본 수를 비워 앞선 다른 호출의 수가 섞이지 않게 합니다.
+    private static ProbeResult? Counted(Func<ProbeResult?> read, ref int slowRead)
     {
+        _ = CacheProbe.TakeSlowBeforeCancel();
+        ProbeResult? result = read();
+        slowRead += result?.Slow ?? CacheProbe.TakeSlowBeforeCancel();
+        return result;
+    }
+
+    private ProbeResult? ProbeSamplesCore(GameSettings game, IReadOnlyList<(string Path, long Offset, int Bytes)> samples, string purpose, CancellationToken ct, out int slowRead)
+    {
+        slowRead = 0;
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, purpose, ct);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
         {
@@ -179,12 +190,12 @@ public sealed partial class Prewarmer
 
         if (_coordinator is null && !ct.CanBeCanceled)
         {
-            return _env.ProbeSamples(samples);
+            return Counted(() => _env.ProbeSamples(samples), ref slowRead);
         }
 
         if (_env.ProbeSamplesChecked is { } checkedProbe)
         {
-            ProbeResult? result = checkedProbe(samples, CanIssue);
+            ProbeResult? result = Counted(() => checkedProbe(samples, CanIssue), ref slowRead);
             return CanIssue() ? result : null;
         }
 
@@ -196,7 +207,7 @@ public sealed partial class Prewarmer
                 return null;
             }
 
-            if (_env.ProbeSamples([sample]) is { } result)
+            if (Counted(() => _env.ProbeSamples([sample]), ref slowRead) is { } result)
             {
                 results.Add(result);
             }
@@ -216,14 +227,16 @@ public sealed partial class Prewarmer
             return null;
         }
 
-        ProbeResult? result = checkedProbe is null || (_coordinator is null && !ct.CanBeCanceled) ? plain() : checkedProbe(CanIssue);
+        int slowRead = 0;
+        ProbeResult? result = Counted(() => checkedProbe is null || (_coordinator is null && !ct.CanBeCanceled) ? plain() : checkedProbe(CanIssue), ref slowRead);
         refused = !CanIssue();
-        NoteProbeRead(game, result);
+        NoteProbeRead(game, result, slowRead);
         return refused ? null : result;
     }
 
-    private ProbeResult? ProbeReadMsCore(GameSettings game, string purpose, CancellationToken ct, bool partial)
+    private ProbeResult? ProbeReadMsCore(GameSettings game, string purpose, CancellationToken ct, bool partial, out int slowRead)
     {
+        slowRead = 0;
         game = WithSparseMark(game); // 스파스를 뺀 예열의 표본은 읽지 않은 범위에서 고르지 않음
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, purpose, ct);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
@@ -239,13 +252,13 @@ public sealed partial class Prewarmer
 
         if (_coordinator is null && !ct.CanBeCanceled)
         {
-            return partial ? (_env.ProbePartialReadMs ?? _env.ProbeReadMs)(game) : _env.ProbeReadMs(game);
+            return Counted(() => partial ? (_env.ProbePartialReadMs ?? _env.ProbeReadMs)(game) : _env.ProbeReadMs(game), ref slowRead);
         }
 
         Func<GameSettings, Func<bool>, ProbeResult?>? checkedProbe = partial ? _env.ProbePartialReadMsChecked ?? _env.ProbeReadMsChecked : _env.ProbeReadMsChecked;
-        ProbeResult? result = checkedProbe is null
+        ProbeResult? result = Counted(() => checkedProbe is null
             ? partial ? (_env.ProbePartialReadMs ?? _env.ProbeReadMs)(game) : _env.ProbeReadMs(game)
-            : checkedProbe(game, CanIssue);
+            : checkedProbe(game, CanIssue), ref slowRead);
         return CanIssue() ? result : null;
     }
 

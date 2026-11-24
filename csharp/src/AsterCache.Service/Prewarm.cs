@@ -62,6 +62,7 @@ public sealed partial class Prewarmer
     private readonly Rewarmer _rewarm;
     private GameExitTracker? _exitTracker;
     private DiskReadCoordinator? _coordinator;
+    private readonly HashSet<string> _coldReduced = new(StringComparer.OrdinalIgnoreCase); // 마지막 기록 없는 예열이 계기 없는 읽기의 남은 양으로 줄어든 창에서 끝난 게임: 게임·런처·서비스 시작의 예열은 쿨다운에 막히지 않음, _gate 로 보호
     private readonly Dictionary<string, long> _coldMib = new(StringComparer.OrdinalIgnoreCase); // 기록 없이 예열해 RAM 에 올려 둔 양 (MiB), _gate 로 보호
     private readonly Dictionary<string, IReadOnlyList<(string Path, long Offset, int Bytes)>> _coldSamples = new(StringComparer.OrdinalIgnoreCase); // 기록 없이 예열한 파일 목록에서 고른 재예열 점검 표본, _gate 로 보호
     private readonly Dictionary<string, ResidencyProbe> _residencyProbes = new(StringComparer.OrdinalIgnoreCase); // 마지막 실제 상주 표본과 계획·trace 세대, _gate 로 보호

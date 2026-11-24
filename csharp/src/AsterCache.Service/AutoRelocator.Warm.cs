@@ -241,6 +241,7 @@ public sealed partial class AutoRelocator
             return;
         }
 
+        using IDisposable? idle = why == ColdWhy ? DiskReadLedger.Scope(ReadPurpose.Idle) : null; // 자동 틱이 시작한 기록 없는 게임의 예열은 게임 실행 계기가 없는 읽기라 하루 상한을 따름 (게임·런처·서비스 시작 계기의 예열은 Prewarmer 가 직접 하며 상한 밖)
         PrewarmResult r = _prewarm!.Guarded(g, "auto " + why, pin: true, ignoreCooldown: true, token, roomMib: why == ColdWhy ? null : _prewarm.BudgetRoomMib(g)); // 재배치 뒤 예열도 재예열·보충과 같은 예산 배정을 받음
         if (why == ColdWhy)
         {

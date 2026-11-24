@@ -59,6 +59,7 @@ public sealed partial class Prewarmer
         _gameIdleSince.Remove(game);
         _coldMib.Remove(game);
         _coldSamples.Remove(game);
+        _coldReduced.Remove(game);
         _resume.Remove(game);
         _supplementReadProgress.Remove(game);
         _supplementRetry.Remove(game);

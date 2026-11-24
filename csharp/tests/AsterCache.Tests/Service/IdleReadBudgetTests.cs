@@ -39,13 +39,15 @@ public sealed class IdleReadBudgetTests : IDisposable
 
         public double Seconds { get; set; } = 10; // 읽는 데 걸린 시간 (100 MiB 가 10 s: 디스크 속도로 읽음, 아주 짧으면 메모리에 있던 것)
 
+        public long RefreshMib { get; set; } // 스트림 끝의 앞부분 다시 읽기 (1 s 에 읽음)
+
         public StreamStats Stream(GameSettings game) => throw new NotSupportedException();
 
         public (StreamStats Stats, bool Complete) Stream(GameSettings game, CancellationToken stop, Action<long, long>? progress)
         {
             Seen.Add(game);
             long mib = Math.Min(ReadMib, game.MaxStreamMib);
-            return (new StreamStats(mib * Mib, 1, 0, Seconds, RequestedBytes: mib * Mib), !stop.IsCancellationRequested);
+            return (new StreamStats(mib * Mib, 1, 0, Seconds, RequestedBytes: mib * Mib) { RefreshBytes = RefreshMib * Mib, RefreshSeconds = 1 }, !stop.IsCancellationRequested);
         }
     }
 
@@ -646,6 +648,69 @@ public sealed class IdleReadBudgetTests : IDisposable
 
         Assert.Equal(before + 2, _streamer.Seen.Count); // 새 종료의 점검도 도는 중에 들어온 종료 때문에 막히지 않고 읽음
         Assert.False(p.AfterExitCheckPending("g")); // 그 점검을 마치면 표시가 지워짐
+    }
+
+    [Fact]
+    public void TheFrontRefreshIsCountedEvenWhenTheStreamItselfReadNothing()
+    {
+        GameSettings g = Game();
+        _streamer.ReadMib = 0;
+        _streamer.RefreshMib = 64;
+        Prewarmer p = Make(On, g);
+
+        _ = p.Run(g, "service start", ignoreCooldown: true);
+
+        Assert.Equal(64 * Mib, Used(p, ReadPurpose.Trigger));
+    }
+
+    private Prewarmer MakeProbing(GameSettings g, Func<IReadOnlyList<(string Path, long Offset, int Bytes)>, Func<bool>, ProbeResult?> checkedProbe) => new([g], _streamer, new PrewarmEnv
+    {
+        AvailableRamMib = () => _avail,
+        GameRunning = _ => false,
+        ZoneBytes = _ => _zoneMib * Mib,
+        TraceExists = _ => true,
+        ProbeSamplesChecked = checkedProbe,
+    }, _log, StatusPath, () => _now);
+
+    private (string File, (string, long, int)[] Samples) SampleFile()
+    {
+        string file = Path.Combine(_dir, "sample.bin");
+        File.WriteAllBytes(file, new byte[2 * (int)Mib]);
+        return (file, [(file, 0, (int)Mib), (file, 0, (int)Mib)]);
+    }
+
+    [Fact]
+    public void ASlowSampleIsCountedEvenWhenTheCancelCameAfterTheLastSampleAndTheResultWasDiscarded()
+    {
+        GameSettings g = Game();
+        (_, (string, long, int)[] samples) = SampleFile();
+        using var cts = new CancellationTokenSource();
+        Prewarmer p = MakeProbing(g, (s, canIssue) =>
+        {
+            ProbeResult? read = CacheProbe.Probe(s, slowMs: -1, canIssue: canIssue, pageReads: () => null); // 두 표본 모두 느림
+            cts.Cancel(); // 마지막 표본을 읽은 뒤 취소: 호출한 쪽은 결과를 버림
+            return read;
+        });
+
+        ProbeResult? result = p.ProbeSamplesForGame(g, samples, "test", cts.Token);
+
+        Assert.Null(result);
+        Assert.Equal(2 * Mib, Used(p, ReadPurpose.Trigger));
+    }
+
+    [Fact]
+    public void TheCancelledSampleCountOfAnEarlierCallOnTheSameThreadIsNotCountedForALaterCallThatReadNothing()
+    {
+        GameSettings g = Game();
+        (_, (string, long, int)[] samples) = SampleFile();
+        int calls = 0;
+        Assert.Null(CacheProbe.Probe(samples, slowMs: -1, canIssue: () => ++calls <= 1, pageReads: () => null)); // 취소 전에 느린 표본 한 곳을 읽고 이 스레드에 수를 남김
+        Prewarmer p = MakeProbing(g, (_, _) => null); // 표본을 읽지 않고 결과 없음
+        using var cts = new CancellationTokenSource();
+
+        Assert.Null(p.ProbeSamplesForGame(g, samples, "test", cts.Token));
+
+        Assert.Equal(0, Used(p, ReadPurpose.Trigger));
     }
 
     [Fact]

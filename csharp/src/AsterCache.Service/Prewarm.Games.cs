@@ -60,7 +60,6 @@ public sealed partial class Prewarmer
         _coldMib.Remove(game);
         _coldSamples.Remove(game);
         _resume.Remove(game);
-        _rewarmResume.Remove(game);
         _supplementReadProgress.Remove(game);
         _supplementRetry.Remove(game);
         foreach (string key in _skipLogged.Keys.Where(k => k.StartsWith(game + "|", StringComparison.OrdinalIgnoreCase)).ToList())
@@ -147,7 +146,7 @@ public sealed partial class Prewarmer
             }
 
             _removedGames.RemoveWhere(live.Contains);
-            foreach (string stale in _resume.Keys.Concat(_rewarmResume.Keys).Concat(_supplementRetry.Keys).Concat(_supplementReadProgress.Keys).Distinct(StringComparer.OrdinalIgnoreCase).ToList())
+            foreach (string stale in _resume.Keys.Concat(_supplementRetry.Keys).Concat(_supplementReadProgress.Keys).Distinct(StringComparer.OrdinalIgnoreCase).ToList())
             {
                 GameSettings? now = games.FirstOrDefault(g => string.Equals(g.Name, stale, StringComparison.OrdinalIgnoreCase));
                 GameSettings? was = before.FirstOrDefault(g => string.Equals(g.Name, stale, StringComparison.OrdinalIgnoreCase));
@@ -156,7 +155,6 @@ public sealed partial class Prewarmer
                 if (changed || removed && !_activeWork.ContainsKey(stale) && !_relocStarted.Contains(stale))
                 {
                     _resume.Remove(stale); // 빠진 게임, 또는 설정 (읽을 목록) 이 바뀐 게임의 이어 읽기 위치는 낡음
-                    _rewarmResume.Remove(stale);
                     _supplementRetry.Remove(stale);
                     _supplementReadProgress.Remove(stale);
                 }
@@ -182,7 +180,6 @@ public sealed partial class Prewarmer
                 _idleSince.Remove(g.Name);
                 _pendingWarmBudgetSkipped.Remove(g.Name);
                 _resume.Remove(g.Name);
-                _rewarmResume.Remove(g.Name);
                 _supplementRetry.Remove(g.Name);
                 _supplementReadProgress.Remove(g.Name);
                 _supplementNothingNew.Remove(g.Name);

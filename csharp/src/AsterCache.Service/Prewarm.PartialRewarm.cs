@@ -1,8 +1,6 @@
 using System.Globalization;
 using AsterCache.Core.Json;
-using AsterCache.Core.Logging;
 using AsterCache.Core.Settings;
-using AsterCache.Prefetch;
 
 namespace AsterCache.Service;
 
@@ -20,13 +18,9 @@ public sealed partial class Prewarmer
     {
         public readonly List<DateTimeOffset> Times = [];
         public DateTimeOffset? RestUntil;
-
-        /// 마지막 시도가 다른 게임·이 게임의 실행으로 끊겼고 읽은 위치를 남겼음 (_rewarmResume): 이어 읽는 시도는 하루 횟수에 새로 세지 않고, 곧 또 식었다는 판정도 하지 않음.
-        public bool Open;
     }
 
     private readonly Dictionary<string, PartialRewarmLog> _partialRewarms = new(StringComparer.OrdinalIgnoreCase); // 게임별 다시 읽은 시각과 쉬는 시각, _gate 로 보호
-    private readonly Dictionary<string, (long WindowMib, long Bytes)> _rewarmResume = new(StringComparer.OrdinalIgnoreCase); // 끊긴 식은 앞부분 다시 읽기가 그 창의 스케줄 앞쪽에서 이미 읽은 바이트: 다음 다시 읽기가 이어 읽는 위치, 상태 파일에도 남김, _gate 로 보호
 
     // 24시간 지난 기록을 지웁니다. 시계가 뒤로 가서 지금보다 뒤인 시각은 지금으로 당겨 상한이 풀리지 않게 합니다. _gate 안에서 부릅니다.
     private PartialRewarmLog? FreshPartialRewarmLocked(string game, DateTimeOffset now)
@@ -50,7 +44,6 @@ public sealed partial class Prewarmer
         if (log.Times.Count == 0 && log.RestUntil is null)
         {
             _ = _partialRewarms.Remove(game);
-            _ = _rewarmResume.Remove(game); // 하루가 지난 끊긴 읽기의 위치는 낡음
             return null;
         }
 
@@ -73,7 +66,7 @@ public sealed partial class Prewarmer
                 return (rest, true);
             }
 
-            return log.Times.Count >= MaxPartialRewarmsPerDay && !log.Open ? (log.Times.Order().ElementAt(log.Times.Count - MaxPartialRewarmsPerDay) + PartialRewarmSpan, false) : null;
+            return log.Times.Count >= MaxPartialRewarmsPerDay ? (log.Times.Order().ElementAt(log.Times.Count - MaxPartialRewarmsPerDay) + PartialRewarmSpan, false) : null;
         }
     }
 
@@ -84,7 +77,7 @@ public sealed partial class Prewarmer
         DateTimeOffset until;
         lock (_gate)
         {
-            if (FreshPartialRewarmLocked(game, now) is not { } log || log.Times.Count == 0 || log.Open || now - log.Times.Max() > within) // 끊긴 읽기는 읽다 만 것이라 곧 식었다고 볼 수 없음
+            if (FreshPartialRewarmLocked(game, now) is not { } log || log.Times.Count == 0 || now - log.Times.Max() > within)
             {
                 return null;
             }
@@ -146,15 +139,6 @@ public sealed partial class Prewarmer
         {
             entry.Remove("partial_rewarm_rest_until");
         }
-
-        if (log is { Open: true } && _rewarmResume.TryGetValue(game, out (long WindowMib, long Bytes) resume))
-        {
-            entry["partial_rewarm_resume"] = $"{resume.WindowMib};{resume.Bytes}";
-        }
-        else
-        {
-            entry.Remove("partial_rewarm_resume");
-        }
     }
 
     // 상태 파일에서 횟수와 쉬는 시각을 되살립니다 (LoadStatus 가 부름).
@@ -178,13 +162,6 @@ public sealed partial class Prewarmer
             log.RestUntil = until;
         }
 
-        if (entry.TryGetValue("partial_rewarm_resume", out object? resume) && resume is string resumeText && resumeText.Split(';') is [var window, var bytes]
-            && long.TryParse(window, CultureInfo.InvariantCulture, out long windowMib) && long.TryParse(bytes, CultureInfo.InvariantCulture, out long readBytes) && windowMib > 0 && readBytes > 0 && log.Times.Count > 0)
-        {
-            log.Open = true;
-            _rewarmResume[game] = (windowMib, readBytes);
-        }
-
         if (log.Times.Count > 0 || log.RestUntil is not null)
         {
             _partialRewarms[game] = log;
@@ -199,69 +176,6 @@ public sealed partial class Prewarmer
         {
             return _partial.ContainsKey(game) && (!_rangeUnknown.Contains(game) || _memoryPartial.ContainsKey(game));
         }
-    }
-
-    // 끊긴 식은 앞부분 다시 읽기를 이어 읽을 위치: 기억한 창이 지금 창과 같고 (목록이 같아야 앞 바이트를 건너뛸 수 있음) 그 앞부분 표본이 메모리에 있을 때만 (ResumePoint, 보충과 같은 확인), 아니면 처음부터 (창, 0).
-    // refused: 디스크 대여가 거절·취소돼 표본을 읽지 못함 (기억은 그대로 둠).
-    private (long WindowMib, long SkipBytes) RewarmResumePoint(GameSettings game, long windowMib, CancellationToken ct, out bool refused)
-    {
-        refused = false;
-        lock (_gate)
-        {
-            if (!_rewarmResume.TryGetValue(game.Name, out (long WindowMib, long Bytes) remembered))
-            {
-                return (windowMib, 0);
-            }
-
-            if (remembered.WindowMib != windowMib)
-            {
-                _ = _rewarmResume.Remove(game.Name);
-                return (windowMib, 0);
-            }
-        }
-
-        return ResumePoint(game, windowMib, ct, out refused, _rewarmResume);
-    }
-
-    // 다시 읽기 한 번을 하루 횟수와 이어 읽을 위치에 반영합니다 (_gate 안에서). 끝까지 읽었으면 끊긴 시도를 이어 끝낸 것이면 새로 세지 않고, 아니면 한 번으로 셉니다.
-    // 끊겼으면 (Ran 아님) 끝까지 읽은 위치가 믿을 만할 때 (오류·틈 메우기·순서 바꿈 없음) 그 위치를 남겨 다음 시도가 이어 읽게 하고 (이어 읽는 시도는 새로 세지 않음) 그 위치를 돌려줍니다. 위치를 믿을 수 없으면 null.
-    // 하루 읽기 양은 스트림이 실제로 읽은 만큼만 이미 셈 (NoteStreamRead).
-    private long? NoteRewarmAttemptLocked(GameSettings game, long windowMib, long skipBytes, PrewarmResult result, DateTimeOffset now)
-    {
-        bool open = _partialRewarms.TryGetValue(game.Name, out PartialRewarmLog? log) && log.Open;
-        long? position = null;
-        if (!result.Ran)
-        {
-            StreamStats stats = result.Stats!;
-            long at = skipBytes + Math.Max(0, stats.Bytes - stats.GapBytes);
-            if (stats.Errors == 0 && stats.GapBytes == 0 && at > 0 && at < MibBytes(windowMib) && !_streamer.WasPrewarmReordered(game))
-            {
-                position = at;
-            }
-        }
-
-        if (position is { } kept)
-        {
-            _rewarmResume[game.Name] = (windowMib, kept);
-        }
-        else
-        {
-            _ = _rewarmResume.Remove(game.Name);
-        }
-
-        if (open && result.Ran)
-        {
-            _partialRewarms[game.Name].Open = false; // 끊긴 시도를 이어 끝냄: 그 시도가 이미 하루 횟수에 한 번으로 세어졌음
-            return null;
-        }
-
-        if (!open)
-        {
-            NotePartialRewarmReadLocked(game.Name, now);
-        }
-
-        _partialRewarms[game.Name].Open = position is not null;
-        return position;
     }
 
     // 읽은 시각을 남기고 상태 파일에 씁니다 (RewarmPartialGame 이 부분 상태를 따로 못 쓰는 경로).
@@ -335,28 +249,16 @@ public sealed partial class Prewarmer
 
         // 스파스 표시는 사본에 실어 넘기고 (예열이 이미 스파스를 뺀 사본의 표시를 지우지 않음) 공유 표시는 건드리지 않음
         GameSettings front = WithSparseMark(game) with { MaxStreamMib = (int)Math.Min(windowMib, int.MaxValue), MaxStreamSet = true };
-        (long resumeWindowMib, long skipBytes) = RewarmResumePoint(game, windowMib, ct, out bool refused);
-        if (refused)
-        {
-            return new PrewarmResult(game.Name, false, "disk read lease refused", null, _now()); // 끊긴 위치는 그대로 두고 다음에 이어 읽음
-        }
-
-        if (skipBytes > 0)
-        {
-            _log.Info($"{game.Name}: rewarm of the part read into memory continues after {skipBytes >> 20} MiB of {resumeWindowMib} MiB, which a cancelled read had already put in memory");
-        }
-
-        PrewarmResult result = RewarmGame(front, ct, roomMib is { } room ? Math.Min(room, windowMib) : windowMib, skipBytes);
+        PrewarmResult result = RewarmGame(front, ct, roomMib is { } room ? Math.Min(room, windowMib) : windowMib);
         if (!result.Ran && result.Stats is not { Bytes: > 0 })
         {
             return result; // 읽지 않고 건너뜀: 상태는 그대로
         }
 
-        long actualMib = result.Stats is { Bytes: > 0 } stats ? ActualMib(stats, windowMib, skipBytes) : 0;
+        long actualMib = result.Stats is { Bytes: > 0 } stats ? ActualMib(stats, windowMib) : 0;
         DateTimeOffset now = _now();
         (long WarmedMib, long HotMib) current;
         bool memoryPartial;
-        long? cutShort;
         lock (_gate)
         {
             if (!_partial.TryGetValue(game.Name, out current))
@@ -400,14 +302,7 @@ public sealed partial class Prewarmer
             }
 
             memoryPartial = wasMemoryPartial || _memoryPartial.ContainsKey(game.Name);
-            cutShort = NoteRewarmAttemptLocked(game, windowMib, skipBytes, result, now);
-        }
-
-        if (!result.Ran)
-        {
-            _log.Info(cutShort is { } position
-                ? $"{game.Name}: rewarm of the part read into memory was cut short after {position >> 20} MiB of {windowMib} MiB ({result.CancelDetail}), the next read continues from there and counts as the same attempt"
-                : $"{game.Name}: rewarm of the part read into memory was cut short ({result.CancelDetail}), the position is not reliable so the next read starts over");
+            NotePartialRewarmReadLocked(game.Name, now);
         }
 
         PatchPartialStatus(game.Name, current, memoryPartial);

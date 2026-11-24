@@ -22,7 +22,6 @@ public sealed class SupplementWarmTests : IDisposable
     private long _avail = 16000;
     private long _zoneMib = 100;
     private ProbeResult? _probe;
-    private ProbeResult? _doneProbe; // 끊긴 다시 읽기를 이어 읽기 전 끊긴 구간 표본의 결과 (null = 확인 못 함 → 처음부터)
     private int _probeCalls;
 
     public SupplementWarmTests() => Directory.CreateDirectory(_dir);
@@ -43,16 +42,7 @@ public sealed class SupplementWarmTests : IDisposable
 
         public long ErrorCount { get; set; }
 
-        /// 예열 스트림이 호출마다 받은 건너뛸 바이트.
-        public List<long> Skips { get; } = [];
-
         public StreamStats Stream(GameSettings game) => throw new NotSupportedException();
-
-        public (StreamStats Stats, bool Complete) StreamPrewarm(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes, long skipBytes)
-        {
-            Skips.Add(skipBytes);
-            return Stream(game, stop, progress);
-        }
 
         public (StreamStats Stats, bool Complete) Stream(GameSettings game, CancellationToken stop, Action<long, long>? progress)
         {
@@ -78,7 +68,6 @@ public sealed class SupplementWarmTests : IDisposable
                 _probeCalls++;
                 return _probe;
             },
-            ProbeDone = (_, _) => _doneProbe,
         }, _log, statusPath ?? StatusPath, () => _now);
         p.SetAuto(AutoSettings.Default with { StartupWarmMaxMib = 40 });
         p.Relocating = _ => _relocating;
@@ -746,118 +735,5 @@ public sealed class SupplementWarmTests : IDisposable
 
         Ticks(p, 6);
         Assert.Equal(2, _streamer.Seen.Count); // 다음 틱에서 다시 읽지 않음
-    }
-
-    // ---- 취소된 식은 앞부분 다시 읽기를 이어 읽기 (이슈 #358) ----
-
-    // 500 MiB 창의 부분 상태에서 다시 읽기를 200 MiB 에서 끊음 (다른 게임이 시작한 것처럼).
-    private PrewarmResult CutRewarmAfter(Prewarmer p, GameSettings g, long readMib)
-    {
-        _now += TimeSpan.FromMinutes(30);
-        _streamer.OnStream = _ => false;
-        _streamer.ReadMib = readMib;
-        PrewarmResult cut = p.RewarmPartialGame(g, CancellationToken.None, null);
-        _streamer.OnStream = null;
-        _streamer.ReadMib = null;
-        return cut;
-    }
-
-    private static string[] RewarmTimes(JObject status) => status.TryGetValue("partial_rewarm_at", out object? at) && at is string text ? text.Split(';', StringSplitOptions.RemoveEmptyEntries) : [];
-
-    [Fact]
-    public void ACancelledColdRewarmKeepsWhereItStoppedAndTheNextOneContinuesAfterItWhenThatPartIsStillInMemory()
-    {
-        GameSettings g = Game();
-        Prewarmer p = StartWithShortListedWindow(g);
-
-        PrewarmResult cut = CutRewarmAfter(p, g, 200);
-
-        Assert.False(cut.Ran);
-        Assert.Contains(_log.Lines, l => l.Contains("cut short after 200 MiB of 500 MiB"));
-        Assert.Equal($"500;{200 * Mib}", (string)Status("g")["partial_rewarm_resume"]!); // 상태 파일에도 남음
-        _doneProbe = new ProbeResult(8, 0, 0.3); // 앞 200 MiB 는 아직 메모리에 있음
-        _now += TimeSpan.FromMinutes(30);
-
-        Assert.True(p.RewarmPartialGame(g, CancellationToken.None, null).Ran);
-
-        Assert.Equal(200 * Mib, _streamer.Skips[^1]); // 이미 읽은 앞부분은 읽지 않음
-        Assert.Contains(_log.Lines, l => l.Contains("continues after 200 MiB of 500 MiB"));
-        Assert.False(Status("g").ContainsKey("partial_rewarm_resume"));
-    }
-
-    [Fact]
-    public void ACancelledRewarmWhoseReadPartWentColdAgainStartsOverInsteadOfSkippingIt()
-    {
-        GameSettings g = Game();
-        Prewarmer p = StartWithShortListedWindow(g);
-        _ = CutRewarmAfter(p, g, 200);
-        _doneProbe = new ProbeResult(8, 6, 40.0); // 앞부분이 식음
-        _now += TimeSpan.FromMinutes(30);
-
-        Assert.True(p.RewarmPartialGame(g, CancellationToken.None, null).Ran);
-
-        Assert.Equal(0, _streamer.Skips[^1]);
-        Assert.False(Status("g").ContainsKey("partial_rewarm_resume"));
-    }
-
-    [Fact]
-    public void ACutRewarmAndTheOnesThatContinueItCountOnceInTheDailyLimitSoTheRewarmThatFinishesIsNotBlocked()
-    {
-        GameSettings g = Game();
-        Prewarmer p = StartWithShortListedWindow(g);
-        _doneProbe = new ProbeResult(8, 0, 0.3);
-
-        _ = CutRewarmAfter(p, g, 200); // 12:34 처럼 끊김
-        _ = CutRewarmAfter(p, g, 150); // 13:30 처럼 이어 읽다 또 끊김
-        _ = CutRewarmAfter(p, g, 100);
-
-        Assert.Single(RewarmTimes(Status("g"))); // 세 번 끊겨도 한 번
-        Assert.Null(p.PartialRewarmPause("g")); // 하루 2번 상한에 걸리지 않음
-        Assert.Equal(350 * Mib, _streamer.Skips[^1]); // 마지막 호출은 200 + 150 MiB 뒤부터 이어 읽음
-
-        _now += TimeSpan.FromMinutes(30);
-        Assert.True(p.RewarmPartialGame(g, CancellationToken.None, null).Ran); // 이어서 끝까지 읽음
-
-        Assert.Single(RewarmTimes(Status("g"))); // 이어 끝낸 시도도 새로 세지 않음
-        Assert.Null(p.PartialRewarmPause("g"));
-        for (int i = 0; i < Prewarmer.MaxPartialRewarmsPerDay; i++)
-        {
-            _now += TimeSpan.FromHours(1);
-            Assert.True(p.RewarmPartialGame(g, CancellationToken.None, null).Ran); // 새로 시작한 다시 읽기는 평소처럼 센다
-        }
-
-        Assert.NotNull(p.PartialRewarmPause("g"));
-    }
-
-    [Fact]
-    public void ACutRewarmIsNotJudgedAsColdAgainRightAfterBeingReadAndItsPositionSurvivesARestart()
-    {
-        GameSettings g = Game();
-        Prewarmer p = StartWithShortListedWindow(g);
-        _ = CutRewarmAfter(p, g, 200);
-
-        Assert.Null(p.NotePartialColdAgain("g", TimeSpan.FromHours(1))); // 읽다 만 것은 곧 식은 것으로 보지 않음 (24시간 쉬지 않음)
-
-        Prewarmer second = Make(g); // 서비스를 다시 시작함: 같은 상태 파일
-        _doneProbe = new ProbeResult(8, 0, 0.3);
-        _now += TimeSpan.FromMinutes(30);
-        Assert.True(second.RewarmPartialGame(g, CancellationToken.None, null).Ran);
-
-        Assert.Equal(200 * Mib, _streamer.Skips[^1]);
-        Assert.Single(RewarmTimes(Status("g")));
-    }
-
-    [Fact]
-    public void ACutRewarmWithErrorsLeavesNoPositionButStillCountsOnce()
-    {
-        GameSettings g = Game();
-        Prewarmer p = StartWithShortListedWindow(g);
-        _streamer.ErrorCount = 1; // 읽다 오류가 났으면 앞이 다 읽혔다고 할 수 없음
-
-        _ = CutRewarmAfter(p, g, 200);
-
-        Assert.False(Status("g").ContainsKey("partial_rewarm_resume"));
-        Assert.Single(RewarmTimes(Status("g")));
-        Assert.Contains(_log.Lines, l => l.Contains("the position is not reliable so the next read starts over"));
     }
 }

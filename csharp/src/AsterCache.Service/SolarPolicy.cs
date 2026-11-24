@@ -45,6 +45,14 @@ internal static class SolarPolicy
     /// 위험할 때 상한이 모자라 일부만 만질 때 한 게임에 만질 최소량: 이보다 작으면 만지는 일이 (표본·열기 비용에 비해) 의미가 없어 건너뜁니다.
     public const long MinPartialTouchBytes = 64L << 20;
 
+    /// 처음 만지는 속도를 모를 때 (이 서비스 시작 뒤 아직 만진 적 없음) 쓸 시간을 양으로 바꾸는 값 (바이트/초): 11-24 로그에서 가장 느렸던 첫 만지기 (6,687 MiB 를 10.5 초 = 약 637 MiB/s) 보다 낮게 잡아 모를 때 더 적게 만짐.
+    /// 이 값은 어디까지나 어느 범위까지 만질지 고르는 데만 쓰고, 5% 와 12 초는 실행 중에 기한으로 따로 지킵니다 (Rewarmer.RefreshGroup 의 TouchGuard).
+    public const double AssumedTouchBytesPerSecond = 512d * (1 << 20);
+
+    /// 드라이브가 바쁘거나 처리량을 모르는 동안의 재참조 (위험할 때의 재참조, 첫 사다리 뒤의 1순위 재참조) 가 캐시에 없는 곳을 만나 디스크에서 읽을 수 있는 양의 최악: 파일 표본은 읽지 않고,
+    /// 만지기는 하드 폴트 수를 FaultCheckBytes 만큼 만질 때마다 보므로 경계를 넘은 뒤 읽는 양은 그 한 묶음이 상한이며, 한 번의 재참조 전체에서 미상주로 판정된 뒤에는 더 만지지 않습니다.
+    public const long BusyDiskReadWorstBytes = StandbyTouch.FaultCheckBytes;
+
     /// 만지는 데 touchSeconds 초를 썼을 때 위험 상한 (AtRiskTouchShare) 으로 갚는 데 걸리는 시간.
     public static TimeSpan AtRiskTouchWait(double touchSeconds) => TimeSpan.FromSeconds(touchSeconds / AtRiskTouchShare);
 

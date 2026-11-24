@@ -25,6 +25,12 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
 
     private readonly record struct DroppedMark(DateTimeOffset At, long? RepurposedBytes, long AheadBytes);
 
+    /// 밀려날 위험이 가까울 때의 재참조 계획: 만질 게임 (덜 중요한 것부터) 과 게임마다 만질 양 상한, 쓸 수 있는 시간 (초, 실행 기한), 위험하다고 본 게임 이름. 만질 것이 없으면 Games 가 null.
+    internal readonly record struct AtRiskRun(IReadOnlyList<(GameSettings Game, long Limit)>? Games, double Seconds, IReadOnlyList<string>? AtRisk)
+    {
+        public int Count => Games?.Count ?? 0;
+    }
+
     public bool Enabled => env.StandbyLadderEnabled();
 
     /// 사다리 (묶음 새로 고침·첫 사다리) 의 만지기가 실제로 디스크에서 읽은 바이트를 알림 (읽기 집계용, 하루 읽기 상한이 셈).
@@ -228,8 +234,9 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
     /// 표식이 있는 게임의 사다리를 다시 만듭니다 (디스크 읽기 없음). 표식이 없거나 꺼져 있으면 null.
     /// 디스크 읽기가 섞이면 표식을 지우고 다시 채움 표시를 남겨 기존 재예열 점검에 맡깁니다: 재예열은 여기서 부르지 않으며, 재예열이 끝나 사다리가 다시 만들어질 때까지 새로 고치지 않습니다.
     /// touched: 끝까지 만졌을 때 이전 표식과 만진 바이트를 알림 (묶음 새로 고침이 Regroup 에 넘길 값).
-    /// byteLimit: 밀려날 위험이 가까워 상한 안에서 일부만 만질 때 (AtRiskPlan) 만질 양: 사다리의 가장 중요한 쪽 (끝) 에서 이만큼만 만지고, 표식은 전체 사다리로 남기되 만진 양만 기록합니다 (나머지는 앞에 그대로 있음).
-    public TouchEnd? Refresh(GameSettings game, CancellationToken ct, Action<LadderMark, long>? touched = null, long byteLimit = long.MaxValue)
+    /// byteLimit: 밀려날 위험이 가까워 상한 안에서 일부만 만질 때 (AtRiskPlan) 만질 양: 사다리의 가장 중요한 쪽 (끝) 에서 이만큼만 만집니다. 일부만 만졌거나 도중에 멈췄으면 표식 (시각·재사용 누계 기준) 은 그대로 둡니다:
+    /// 만지지 못한 범위의 위험 판정이 늦어지지 않게. 만진 양은 다른 게임의 앞에 있는 양에서만 줄이고 (NoteKept), reached 로 알립니다.
+    public TouchEnd? Refresh(GameSettings game, CancellationToken ct, Action<LadderMark, long>? touched = null, long byteLimit = long.MaxValue, Action<long>? reached = null)
     {
         LadderMark? mark;
         lock (_lock)
@@ -256,16 +263,22 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
                 {
                     _ = NoteNothingToTouch(game.Name); // 표식을 지워 틱마다 되풀이하지 않음
                 }
+                else if (partial)
+                {
+                    NoteReached(game.Name, r.Bytes, reached); // 일부만 만짐: 기준 기록은 그대로
+                }
                 else
                 {
                     SetMark(game.Name, mark.Ladder, r);
                     touched?.Invoke(mark, r.Bytes);
+                    reached?.Invoke(r.Bytes);
                 }
 
-                log.Info($"{game.Name}: cache refreshed in memory: {r.Bytes >> 20} MiB in {r.Seconds:F1} s ({repurposed >> 20} MiB repurposed of {mark.AheadBytes >> 20} MiB ahead){(partial ? $", only the most important {byteLimit >> 20} MiB of {ladderBytes >> 20} MiB within the at-risk time share" : string.Empty)}{Errors(r)}{Sparse(r)}");
+                log.Info($"{game.Name}: cache refreshed in memory: {r.Bytes >> 20} MiB in {r.Seconds:F1} s ({repurposed >> 20} MiB repurposed of {mark.AheadBytes >> 20} MiB ahead){(partial ? $", only the most important {byteLimit >> 20} MiB of {ladderBytes >> 20} MiB within the at-risk time share, the rest is still judged from the earlier state" : string.Empty)}{Errors(r)}{Sparse(r)}");
                 break;
             case TouchEnd.Canceled:
-                log.Info($"{game.Name}: cache refresh stopped after {r.Bytes >> 20} MiB{Errors(r)}{Sparse(r)}"); // 표식은 그대로 둠: 다음 틱에 다시 시도
+                NoteReached(game.Name, r.Bytes, reached); // 만진 만큼은 뒤로 갔음: 기준 기록은 그대로 둠 (다음 틱에 다시 시도)
+                log.Info($"{game.Name}: cache refresh stopped after {r.Bytes >> 20} MiB{Errors(r)}{Sparse(r)}");
                 break;
             default:
                 string since = Since(game.Name, mark, grown);
@@ -280,6 +293,16 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         }
 
         return r.End;
+    }
+
+    // 기준 기록을 새로 쓰지 않고 만진 양만 반영: 다른 게임의 앞에 있는 양에서 줄이고 호출한 쪽에 알림.
+    private void NoteReached(string game, long bytes, Action<long>? reached)
+    {
+        if (bytes > 0)
+        {
+            NoteKept(game, bytes);
+            reached?.Invoke(bytes);
+        }
     }
 
     /// 표식이 있는 게임 (입력 순서 그대로).
@@ -316,10 +339,11 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         return marked.Any(m => SolarPolicy.RefreshDue(m.Mark, lists, at) && (usable?.Invoke(m.Game) ?? true)) ? [.. marked.Select(m => m.Game)] : [];
     }
 
-    /// 밀려날 위험이 가까울 때 (표식이 있는 게임 중 하나라도 재사용 누계가 앞에 있던 양의 SolarPolicy.AtRiskFraction 이상이고 usable 이 참) 의 묶음 (입력 순서 그대로, 게임마다 만질 양 상한).
-    /// DueGroup 은 평소의 상한 (IdleTouchShare) 에 막혀 위험한데도 쉴 수 있으므로, 그 틈을 이 판정이 메웁니다: 평소의 상한 대신 AtRiskTouchShare 안에서 만지고, 지금 쓸 수 있는 시간 (AtRiskTouchSeconds) 을 가장 최근 속도로 양으로 바꿔
-    /// 입력의 끝 (가장 중요한 게임) 부터 채웁니다. 모자라면 덜 중요한 게임이 먼저 빠지거나 일부만 (사다리의 가장 중요한 쪽) 만져져 중요한 것이 가장 늦게 밀려나게 합니다. 쓸 수 있는 시간이 거의 없으면 빈 목록. 최소 간격 (GroupEvery) 은 그대로.
-    public IReadOnlyList<(GameSettings Game, long Limit)> AtRiskPlan(IEnumerable<GameSettings> games, DateTimeOffset at, Func<GameSettings, bool>? usable = null)
+    /// 밀려날 위험이 가까울 때 (표식이 있는 게임 중 하나라도 재사용 누계가 앞에 있던 양의 SolarPolicy.AtRiskFraction 이상이고 usable 이 참) 의 묶음 (입력 순서 그대로, 게임마다 만질 양 상한) 과 쓸 수 있는 시간 (초, 실행 기한).
+    /// DueGroup 은 평소의 상한 (IdleTouchShare) 에 막혀 위험한데도 쉴 수 있으므로, 그 틈을 이 판정이 메웁니다: 평소의 상한 대신 AtRiskTouchShare 안에서 만지고, 쓸 수 있는 시간을 가장 최근 속도 (모르면 AssumedTouchBytesPerSecond) 로 양으로 바꿔
+    /// 지금 실제로 만질 수 있는 (usable) 게임 가운데 입력의 끝 (가장 중요한 게임) 부터 채웁니다: 게이트에 막힌 게임은 예산을 가져가지 않습니다. 모자라면 덜 중요한 게임이 먼저 빠지거나 일부만 (사다리의 가장 중요한 쪽) 만져집니다.
+    /// 쓸 수 있는 시간이 거의 없으면 빈 목록. 최소 간격 (GroupEvery) 은 만지기를 시도한 시각 기준이라 계획을 세우면 바로 시각을 남깁니다 (만지다 멈춰도 다음 시도는 GroupEvery 뒤).
+    public AtRiskRun AtRiskPlan(IEnumerable<GameSettings> games, DateTimeOffset at, Func<GameSettings, bool>? usable = null)
     {
         List<(GameSettings Game, LadderMark Mark)> marked = MarkedPairs(games);
         DateTimeOffset? last;
@@ -334,40 +358,48 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
 
         if (marked.Count == 0 || (last is { } groupAt && at - groupAt < SolarPolicy.GroupEvery) || allowance <= 0)
         {
-            return [];
+            return default;
         }
 
         MemoryLists? lists = env.Lists();
-        if (!marked.Any(m => SolarPolicy.AtRisk(m.Mark, lists) && (usable?.Invoke(m.Game) ?? true)))
+        if (!marked.Any(m => SolarPolicy.AtRisk(m.Mark, lists)))
         {
-            return [];
+            return default;
         }
 
-        long budget = rate > 0 ? (long)Math.Min(long.MaxValue, allowance * rate) : long.MaxValue; // 속도를 모르면 (이 서비스 시작 뒤 처음) 쓸 수 있는 시간 안에서 전체를 만짐
-        List<(GameSettings Game, long Limit)> plan = [];
-        bool leftOut = false;
-        for (int i = marked.Count - 1; i >= 0; i--)
+        bool[] workable = [.. marked.Select(m => usable?.Invoke(m.Game) ?? true)]; // 게이트에 막힌 게임은 예산을 받지 않음
+        if (!marked.Where((m, i) => workable[i] && SolarPolicy.AtRisk(m.Mark, lists)).Any())
         {
-            long size = marked[i].Mark.Ladder.Sum(o => o.Length);
-            if (budget < SolarPolicy.MinPartialTouchBytes)
+            return default;
+        }
+
+        long budget = (long)Math.Min(long.MaxValue, allowance * (rate > 0 ? rate : SolarPolicy.AssumedTouchBytesPerSecond));
+        List<(GameSettings Game, long Limit)> plan = [];
+        for (int i = marked.Count - 1; i >= 0 && budget >= SolarPolicy.MinPartialTouchBytes; i--)
+        {
+            if (!workable[i])
             {
-                leftOut = true;
                 continue;
             }
 
+            long size = marked[i].Mark.Ladder.Sum(o => o.Length);
             long limit = Math.Min(size, budget);
-            leftOut |= limit < size;
             plan.Add((marked[i].Game, limit));
-            budget = budget == long.MaxValue ? long.MaxValue : budget - limit;
+            budget -= limit;
+        }
+
+        if (plan.Count == 0)
+        {
+            return default;
         }
 
         plan.Reverse(); // 만지는 순서는 덜 중요한 것부터 (가장 중요한 것이 가장 늦게 밀려남)
-        if (plan.Count > 0)
+        lock (_lock)
         {
-            log.Info($"cache refresh at risk: {string.Join(", ", marked.Where(m => SolarPolicy.AtRisk(m.Mark, lists)).Select(m => m.Game.Name))} reached {SolarPolicy.AtRiskFraction * 100:F0}% of what is ahead repurposed by other memory use, touching within {SolarPolicy.AtRiskTouchShare * 100:F0}% of wall time ({allowance:F1} s available{(leftOut ? ", the least important left out" : string.Empty)})");
+            _groupAt = at;
         }
 
-        return plan;
+        return new AtRiskRun(plan, allowance, [.. marked.Where((m, i) => workable[i] && SolarPolicy.AtRisk(m.Mark, lists)).Select(m => m.Game.Name)]);
     }
 
     /// 사다리 (덜 중요한 것부터) 의 끝에서 bytes 만큼: 가장 중요한 쪽을 같은 순서로 돌려줍니다 (경계의 범위는 끝쪽을 자름).

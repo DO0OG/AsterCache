@@ -195,8 +195,12 @@ public sealed partial class Prewarmer
 
         try
         {
-            _ = _rewarm.RefreshGroup([first], _auto, default, () => false);
-            _log.Info($"{game.Name}: cold prewarm done, {first.Name} touched again after it as the first play priority");
+            // 대기 중인 트리거와 이 디스크의 게임 실행에 양보하고 (이 호출은 _run 안), 실행 기한과 바쁜 드라이브의 상한은 Rewarmer.RefreshGroup 이 지킴
+            (int games, _, _) = _rewarm.RefreshGroup([first], _auto, default, () => TriggerWaitPending() || DriveHasRunningGame(game), deadline: TimeSpan.FromSeconds(SolarPolicy.AtRiskBurstSeconds));
+            if (games > 0)
+            {
+                _log.Info($"{game.Name}: cold prewarm done, {first.Name} touched again after it as the first play priority");
+            }
         }
         catch (Exception e) when (e is not (OperationCanceledException or OutOfMemoryException or StackOverflowException))
         {

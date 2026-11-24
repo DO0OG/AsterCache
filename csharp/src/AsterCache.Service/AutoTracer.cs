@@ -1814,7 +1814,15 @@ public sealed class AutoTracer
             _ioScanGameStarted = false;
         }
 
-        scan.CancelAfter(IoScanBudget);
+        if (IoScanBudget <= TimeSpan.Zero)
+        {
+            scan.Cancel(); // 예산이 없으면 타이머를 기다리지 않고 바로 취소 (CancelAfter 는 0 이어도 타이머 스레드에서 늦게 취소될 수 있음)
+        }
+        else
+        {
+            scan.CancelAfter(IoScanBudget);
+        }
+
         return scan;
     }
 

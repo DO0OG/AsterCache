@@ -13,7 +13,7 @@ namespace AsterCache.Service;
 public sealed partial class Prewarmer
 {
     // 한 게임의 예외가 나머지 게임의 예열을 막지 않게 합니다.
-    internal PrewarmResult Guarded(GameSettings game, string why, bool pin = true, bool ignoreCooldown = false, CancellationToken ct = default, long usedMib = 0, long? roomMib = null, bool trigger = false)
+    internal PrewarmResult Guarded(GameSettings game, string why, bool pin = true, bool ignoreCooldown = false, CancellationToken ct = default, long usedMib = 0, long? roomMib = null, bool trigger = false, long resumeSkipBytes = 0)
     {
         // 재배치 뒤 예열은 사용자의 행동이 아니라 서비스 자신의 작업에 따른 읽기라 계기 없는 읽기의 하루 상한을 따릅니다 (못 읽은 것은 다음 게임·런처 시작의 예열이 채움)
         using IDisposable? scope = why == AfterRelocation ? DiskReadLedger.Scope(ReadPurpose.Idle) : null;
@@ -24,7 +24,7 @@ public sealed partial class Prewarmer
 
         try
         {
-            return Run(game, why, pin, ignoreCooldown, ct, usedMib, roomMib, trigger);
+            return Run(game, why, pin, ignoreCooldown, ct, usedMib, roomMib, trigger, resumeSkipBytes);
         }
         catch (Exception e)
         {
@@ -38,11 +38,11 @@ public sealed partial class Prewarmer
     /// 한 게임을 지금 예열 (조건을 만족할 때만). 동시에 하나만 돕니다.
     /// ct 는 스트림을 시작하기 전 (차례를 기다린 뒤) 과 핫 집합 스트림의 묶음 사이에서 확인합니다. 단 지금 읽는 그 게임이 시작되면 (NoteGameStart) 이 스트림도 다음 묶음 경계에서 멈춥니다 (keep_stream_on_game_start 가 켜졌을 때만 끝까지 읽음).
     /// usedMib: 같은 묶음에서 앞서 올린 핫 집합의 양 (기록 없는 예열의 예산에서 뺌). roomMib: 묶음에 남은 예산 (MiB), 핫 집합이 더 크면 들어가는 만큼만 읽음 (부분 예열).
-    public PrewarmResult Run(GameSettings game, string why, bool pin = true, bool ignoreCooldown = false, CancellationToken ct = default, long usedMib = 0, long? roomMib = null, bool trigger = false)
+    public PrewarmResult Run(GameSettings game, string why, bool pin = true, bool ignoreCooldown = false, CancellationToken ct = default, long usedMib = 0, long? roomMib = null, bool trigger = false, long resumeSkipBytes = 0)
     {
         if (!trigger)
         {
-            return RunLocked(game, why, pin, ignoreCooldown, ct, usedMib, roomMib, trigger);
+            return RunLocked(game, why, pin, ignoreCooldown, ct, usedMib, roomMib, trigger, resumeSkipBytes);
         }
 
         // 트리거 경로는 다른 예열이 락을 쥔 동안 취소할 수 있게 기다림 (게임이 시작돼 ct 가 취소되면 기다리지 않고 포기)
@@ -54,7 +54,7 @@ public sealed partial class Prewarmer
 
         try
         {
-            return RunLocked(game, why, pin, ignoreCooldown, ct, usedMib, roomMib, trigger);
+            return RunLocked(game, why, pin, ignoreCooldown, ct, usedMib, roomMib, trigger, resumeSkipBytes);
         }
         finally
         {
@@ -74,7 +74,7 @@ public sealed partial class Prewarmer
         return cancelled;
     }
 
-    private PrewarmResult RunLocked(GameSettings game, string why, bool pin, bool ignoreCooldown, CancellationToken ct, long usedMib, long? roomMib, bool trigger)
+    private PrewarmResult RunLocked(GameSettings game, string why, bool pin, bool ignoreCooldown, CancellationToken ct, long usedMib, long? roomMib, bool trigger, long resumeSkipBytes = 0)
     {
         lock (_run)
         {
@@ -311,7 +311,7 @@ public sealed partial class Prewarmer
                     _requeued = default;
                     while (true)
                     {
-                        streamed = StreamHot(warm, ct, zoneBytes, availableRamMib, memoryPartial is not null, Settle,
+                        streamed = StreamHot(warm, ct, zoneBytes, availableRamMib, memoryPartial is not null || resumeSkipBytes > 0 && !fellBack, Settle, skipBytes: fellBack ? 0 : resumeSkipBytes, // 끊긴 다시 읽기를 이어 읽음: 틈 메우기 없는 창 읽기로 (건너뛰는 위치가 목록과 같게)
                             allowReorder: memoryPartial is null && !HasPartialState(game.Name), roomMib: roomMib ?? long.MaxValue, allowWhileExiting: trigger, why: why, windowMib: memoryPartial?.WarmedMib ?? 0);
                         if (fellBack || memoryPartial is not null || streamed is not { Complete: false, MemoryStop: true }
                             || DiskReadLedger.Current == ReadPurpose.Idle && IdleReadsExhausted(game) // 첫 스트림이 쓴 만큼을 뺀 남은 양으로 두 번째 스트림도 다시 정함

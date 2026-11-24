@@ -357,13 +357,15 @@ public sealed partial class Prewarmer
     // 끊긴 보충을 이어 읽을 지점: 기억한 윈도를 그대로 쓰고 (읽을 목록이 같아야 앞 바이트를 건너뛸 수 있음: 윈도를 줄이면 접근 순서 뒤쪽의 물리 순서가 달라짐), 그 앞부분 표본이 따뜻할 때만 건너뜀.
     // 윈도가 지금 예산 (cap) 보다 커도 버리지 않음: 호출 쪽이 읽을 총량을 cap 까지로 막음. 식었거나 확인할 수 없거나 읽은 곳이 cap 이상이면 기억을 버리고 cap 으로 처음부터. 전체 핫 집합이 들어가는 경로 (cap 이 전체 크기) 에서도 더 작은 윈도의 기억을 그대로 이어 읽음 (윈도가 바뀌면 목록이 달라 앞 바이트를 건너뛸 수 없으므로 그 윈도를 먼저 끝냄).
     // refused: 디스크 대여가 거절·취소돼 표본을 읽지 못함 (기억은 그대로 두고 호출자가 조용히 멈춤).
-    private (long WindowMib, long SkipBytes) ResumePoint(GameSettings game, long cap, CancellationToken ct, out bool refused)
+    // store: 위치를 기억한 곳 (기본은 보충의 _resume, 취소된 식은 앞부분 다시 읽기는 _rewarmResume).
+    private (long WindowMib, long SkipBytes) ResumePoint(GameSettings game, long cap, CancellationToken ct, out bool refused, Dictionary<string, (long WindowMib, long Bytes)>? store = null)
     {
         refused = false;
+        store ??= _resume;
         (long WindowMib, long Bytes) r;
         lock (_gate)
         {
-            if (!_resume.TryGetValue(game.Name, out r))
+            if (!store.TryGetValue(game.Name, out r))
             {
                 return (cap, 0);
             }
@@ -395,7 +397,7 @@ public sealed partial class Prewarmer
 
         lock (_gate)
         {
-            _resume.Remove(game.Name);
+            store.Remove(game.Name);
         }
 
         return (cap, 0);

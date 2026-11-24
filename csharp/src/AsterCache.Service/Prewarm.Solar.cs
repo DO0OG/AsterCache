@@ -184,6 +184,26 @@ public sealed partial class Prewarmer
         }
     }
 
+    // 기록 없는 게임의 읽기 (RunCold) 는 사다리를 만들지 않지만 새로 읽은 페이지는 플레이 1순위 게임의 뒤에 서므로, 끝난 뒤 그 게임을 한 번 더 만져 가장 늦게 밀려나게 합니다 (스트림 끝의 사다리와 같은 규칙과 게이트, 트리거 예열은 하지 않음).
+    private void KeepFirstPlayPriorityAfterColdRead(GameSettings game, bool trigger)
+    {
+        if (trigger || !_solar.Enabled || _auto.KeepStreamOnGameStart || DriveHasRunningGame(game) || FirstPlayPriority() is not { } first
+            || string.Equals(first.Name, game.Name, StringComparison.OrdinalIgnoreCase) || _solar.Marked([first]).Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            _ = _rewarm.RefreshGroup([first], _auto, default, () => false);
+            _log.Info($"{game.Name}: cold prewarm done, {first.Name} touched again after it as the first play priority");
+        }
+        catch (Exception e) when (e is not (OperationCanceledException or OutOfMemoryException or StackOverflowException))
+        {
+            _log.Warn($"{game.Name}: touching the first play priority after the cold prewarm skipped: {e.GetType().Name}"); // 예열 결과에는 영향을 주지 않음
+        }
+    }
+
     // 사다리 대상 (읽은 순서): 먼저 읽은 가장 중요한 공통 블록 + 읽은 범위 전체. 역순으로 만지면 보충분의 뒤쪽 → … → 스트림 앞부분 → 공통 블록 순서가 됩니다.
     // covered: 읽은 범위를 나타내는 게임 (부분 예열 뒤 표본을 고르는 기준과 같게 MaxStreamMib 로 잘린 사본). 계획할 수 없으면 null.
     internal IReadOnlyList<ReadOp>? LadderReads(GameSettings covered)

@@ -11,7 +11,7 @@ namespace AsterCache.Service;
 public sealed partial class Prewarmer
 {
     // roomMib: WarmBudget 가 이 게임에 배정한 양 (핫 집합이 더 크면 앞쪽 이만큼만 읽음: 일반 부분 예열 경로).
-    internal PrewarmResult RewarmGame(GameSettings game, CancellationToken ct = default, long? roomMib = null) => Guarded(game, "rewarm", pin: true, ignoreCooldown: true, ct, roomMib: roomMib);
+    internal PrewarmResult RewarmGame(GameSettings game, CancellationToken ct = default, long? roomMib = null, long resumeSkipBytes = 0) => Guarded(game, "rewarm", pin: true, ignoreCooldown: true, ct, roomMib: roomMib, resumeSkipBytes: resumeSkipBytes);
 
     internal bool RewarmAlreadyCovered(GameSettings game)
     {

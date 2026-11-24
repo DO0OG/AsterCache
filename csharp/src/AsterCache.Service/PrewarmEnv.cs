@@ -71,9 +71,6 @@ public sealed class PrewarmEnv
     /// 게임이 놓인 드라이브의 처리량 (바이트/초), 읽지 못하면 null. 예열 유지의 유휴 판정용 (기본은 한가함).
     public Func<GameSettings, double?> DiskBytesPerSecond { get; init; } = _ => 0;
 
-    /// 게임이 놓인 물리 디스크가 지금까지 읽은 누계 바이트 (IOCTL_DISK_PERFORMANCE), 읽지 못하면 null. 하루 읽기 집계가 스트림 앞뒤로 두 번 읽어 실제로 디스크에서 읽힌 양을 어림하는 데 씀 (없으면 읽은 시간으로 어림).
-    public Func<GameSettings, long?>? DiskReadBytes { get; init; }
-
     /// 처리량과 표본 상태를 한 번에 읽음 (null 이 고장인지 아직 모름인지 구분). 없으면 DiskBytesPerSecond 로 대신 (null = 고장).
     public Func<GameSettings, (double? Bps, DiskActivity.SampleState State)>? DiskSample { get; init; }
 
@@ -324,7 +321,6 @@ public sealed class PrewarmEnv
             LauncherRunning = () => ProcessSnapshot.IsRunning(LauncherExes.All),
             CpuPercent = new CpuLoad().Percent,
             DiskBytesPerSecond = g => DiskActivity.BytesPerSecond(PlanFile.SplitDrive(g.OriginRoot)),
-            DiskReadBytes = g => PhysicalReadCounter.Total(g.OriginRoot),
             DiskSample = g => DiskActivity.Read(PlanFile.SplitDrive(g.OriginRoot), holdLast: true),
             GameDiskSample = g => DiskActivity.Read(PlanFile.SplitDrive(g.OriginRoot), keepStalled: true, holdLast: true),
             DiskWindowSample = (g, settle, window) => DiskActivity.MeasureWindow(PlanFile.SplitDrive(g.OriginRoot), settle, window),

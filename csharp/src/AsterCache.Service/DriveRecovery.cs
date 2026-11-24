@@ -733,11 +733,11 @@ public sealed class DriveRecovery : IDriveRecovery
 
         long bytes = reads.Used(key, ReadPurpose.Recovery, also: ReadPurpose.RecoveryCut).Bytes; // 바이트는 끊긴 표본이 읽은 것까지
         int samples = reads.Used(key, ReadPurpose.Recovery).Count; // 횟수는 끝까지 읽은 표본만
-        bool reached = samples >= MaxSamplesPerDay || bytes >= MaxSampleBytesPerDay;
+        bool reached = samples >= MaxSamplesPerDay || bytes + ProbeRound.MaxBytes > MaxSampleBytesPerDay; // 표본 한 회 (최대 ProbeRound.MaxBytes) 를 더 읽어도 1.5 GiB 를 넘지 않을 때만 시작
         if (reached ? _budgetLogged.Add(key) : _budgetLogged.Remove(key))
         {
             DateTimeOffset again = reads.FreeAt(key, ReadPurpose.Recovery, (_, n) => n < MaxSamplesPerDay);
-            DateTimeOffset byBytes = reads.FreeAt(key, ReadPurpose.Recovery, (b, _) => b < MaxSampleBytesPerDay, also: ReadPurpose.RecoveryCut);
+            DateTimeOffset byBytes = reads.FreeAt(key, ReadPurpose.Recovery, (b, _) => b + ProbeRound.MaxBytes <= MaxSampleBytesPerDay, also: ReadPurpose.RecoveryCut);
             _log.Info(reached
                 ? $"drive {key} recovery samples paused: {samples} samples and {bytes >> 20} MiB read in the last 24 h (limit {MaxSamplesPerDay} samples, {MaxSampleBytesPerDay >> 20} MiB), sampling again from {(byBytes > again ? byBytes : again):O}; relocation stays on hold until recovered or the hard limit"
                 : $"drive {key} recovery samples resumed: {samples} samples and {bytes >> 20} MiB read in the last 24 h");

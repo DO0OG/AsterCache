@@ -92,7 +92,7 @@ public sealed partial class Prewarmer
                 return; // 재시도 기한 전에 다른 경로가 실패해도 기한을 뒤로 밀지 않음, 당겨 둔 트리거 재시도 표시도 지우지 않음
             }
 
-            _pendingWarm[game.Name] = new(at + PendingWarmRetryDelay(), reason ?? "unsuccessful warm", IdleOrigin: idle);
+            _pendingWarm[game.Name] = new(at + PendingWarmRetryDelay(), reason ?? "unsuccessful warm", IdleOrigin: idle && (current?.IdleOrigin ?? true)); // 처음 요청이 계기 있는 요청이면 뒤이은 주기 작업의 실패가 그 분류를 덮지 않음
             _pendingWarmBudgetSkipped.Remove(game.Name); // 다른 사유로 새로 잡힌 기한은 예산 회복으로 앞당기지 않음
         }
     }
@@ -160,18 +160,6 @@ public sealed partial class Prewarmer
 
     private bool RetryPendingWarmWhenIdle(GameSettings game, CancellationToken ct)
     {
-        bool idleOrigin;
-        lock (_gate)
-        {
-            idleOrigin = _pendingWarm.TryGetValue(game.Name, out PendingWarm? origin) && origin.IdleOrigin;
-        }
-
-        using IDisposable? scope = idleOrigin ? DiskReadLedger.Scope(ReadPurpose.Idle) : null; // 계기 없는 재예열이 실패해 넘어온 재시도는 같은 하루 상한을 따름 (계기 있는 요청의 재시도는 상한 밖)
-        if (idleOrigin && IdleReadsExhausted(game))
-        {
-            return false;
-        }
-
         if (!PendingWarmCanRead(game, ct))
         {
             ResetIdleSinceForGame(game.Name);
@@ -222,7 +210,19 @@ public sealed partial class Prewarmer
                 return false;
             }
 
-            PrewarmResult result = Guarded(game, "pending warm retry", pin: false, ignoreCooldown: true, ct, roomMib: allocatedMib);
+            bool idleOrigin;
+            lock (_gate)
+            {
+                idleOrigin = _pendingWarm.TryGetValue(game.Name, out PendingWarm? origin) && origin.IdleOrigin; // 잠금을 얻은 뒤의 지금 항목
+            }
+
+            using IDisposable? scope = idleOrigin ? DiskReadLedger.Scope(ReadPurpose.Idle) : null; // 계기 없는 재예열이 실패해 넘어온 재시도는 같은 하루 상한을 따름 (계기 있는 요청의 재시도는 상한 밖)
+            if (idleOrigin && IdleReadsExhausted(game))
+            {
+                return false;
+            }
+
+            PrewarmResult result = Guarded(game, "pending warm retry", pin: false, ignoreCooldown: true, ct, roomMib: IdleReadRoom(game, allocatedMib));
             return result.Ran;
         }
         finally

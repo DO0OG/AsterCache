@@ -220,6 +220,10 @@ public sealed partial class Prewarmer
     {
         StopPlayTouch(); // 게임 실행 중 캐시 유지가 기다리거나 만지던 것도 멈춤
         _pins.ReleaseAll("service stopping");
+        if (_reads.HasUnsaved)
+        {
+            FlushStatus(); // 읽은 양 기록의 마지막 변경을 종료 때 저장
+        }
     }
 
     /// 주기 점검 (재적용 틱마다): 가용 RAM 이 모자라면 고정 해제, 예열 유지 주기가 되면 식은 게임을 다시 예열. ct 가 취소되면 (게임 시작) 시작하지 않은 예열은 하지 않습니다.
@@ -232,5 +236,9 @@ public sealed partial class Prewarmer
         _rewarm.Tick(auto, ct);
         _rewarm.LadderTick(auto, ct);
         LogDiskReadsDaily();
+        if (_reads.SaveDue())
+        {
+            FlushStatus(); // 쌓인 변경이 많고 마지막 저장 뒤 10분이 지났을 때만 따로 저장 (그 밖에는 이미 일어나는 저장에 실림)
+        }
     }
 }

@@ -164,4 +164,22 @@ public sealed class RecoverySampleBudgetTests
         _reads.Add(@"F:\", ReadPurpose.Recovery, 192 * Mib); // 다른 드라이브의 표본은 이 드라이브의 상한에 들지 않음
         Assert.Equal((0, 0), _reads.Used(Drive, ReadPurpose.Recovery));
     }
+
+    [Theory]
+    [InlineData(192, 1)] // 6 x 192 + 192 (끊긴 표본) + 192 (새 표본) = 1536 MiB: 시작함
+    [InlineData(193, 0)] // 한 MiB 라도 더 읽어 둔 상태면 새 표본이 1.5 GiB 를 넘으므로 시작하지 않음
+    public void ASampleStartsOnlyWhenAWholeSampleStillFitsInTheByteLimit(long cutMib, int started)
+    {
+        _r.Begin(Drive, Both, TimeSpan.FromHours(30));
+        for (int i = 0; i < 6; i++)
+        {
+            _reads.Add(Drive, ReadPurpose.Recovery, ProbeRound.MaxBytes);
+        }
+
+        _reads.Add(Drive, ReadPurpose.RecoveryCut, cutMib * Mib); // 읽다 끊긴 표본: 횟수는 아니고 바이트만 셈
+
+        Pass(4);
+
+        Assert.Equal(started, _samples);
+    }
 }

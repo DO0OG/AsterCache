@@ -151,18 +151,26 @@ public sealed class DiskReadLedgerTests
     }
 
     [Fact]
-    public void ReadsOnlyReachThePersistCallbackWhenTheyAreLargeEnough()
+    public void ASeparateSaveIsDueOnlyWithEnoughUnsavedBytesAndTenMinutesSinceTheLastSave()
     {
         DiskReadLedger ledger = Make();
-        int saved = 0;
-        ledger.Persist = () => saved++;
+        _now += TimeSpan.FromHours(1);
+        Assert.False(ledger.HasUnsaved);
 
-        ledger.Add(Root, ReadPurpose.Idle, 63 * Mib);
-        ledger.Add(Root, ReadPurpose.Idle, 0);
-        Assert.Equal(0, saved);
+        ledger.Add(Root, ReadPurpose.Idle, DiskReadLedger.SaveEveryBytes - Mib);
+        Assert.True(ledger.HasUnsaved);
+        Assert.False(ledger.SaveDue()); // 바이트가 모자람
 
-        ledger.Add(Root, ReadPurpose.Idle, 64 * Mib);
-        Assert.Equal(1, saved);
+        ledger.Add(Root, ReadPurpose.Idle, Mib);
+        Assert.True(ledger.SaveDue()); // 처음에는 마지막 저장이 없어 바로
+
+        _ = ledger.ToJson(); // 상태 파일에 쓴 것으로 봄
+        Assert.False(ledger.HasUnsaved);
+        ledger.Add(Root, ReadPurpose.Idle, DiskReadLedger.SaveEveryBytes);
+        Assert.False(ledger.SaveDue()); // 바이트는 충분하지만 마지막 저장 뒤 10 분이 안 지남
+
+        _now += DiskReadLedger.SaveEvery;
+        Assert.True(ledger.SaveDue());
     }
 
     [Fact]

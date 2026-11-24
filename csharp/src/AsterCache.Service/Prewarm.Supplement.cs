@@ -485,6 +485,8 @@ public sealed partial class Prewarmer
             allocatedMib = budget.AllocMib.GetValueOrDefault(g.Name) is > 0 and long mib ? mib : null;
         }
 
+        allocatedMib = IdleReadRoom(g, allocatedMib); // 계기 없는 읽기는 하루 상한에 남은 양까지만 읽음
+
         bool idle = !DriveHasRunningGame(g) && !_games.Any(x => Relocating(x.Name)) && _env.DiskBytesPerSecond(g) is { } bps && bps < DiskActivity.BusyBytesPerSecond;
         DateTimeOffset now = _now();
         DateTimeOffset since;
@@ -785,6 +787,7 @@ public sealed partial class Prewarmer
                         }
                     }, allowReorder: false, roomMib: allocatedMib ?? long.MaxValue, limitBytes: limitMib is { } limitBytesMib ? MibBytes(limitBytesMib) : long.MaxValue, allowFinish: true, windowMib: windowMib ?? p.HotMib);
                     if (fellBack || windowMib is not null || hot is not { Complete: false, MemoryStop: true } || !HeavyWorkAllowed(game)
+                        || DiskReadLedger.Current == ReadPurpose.Idle && IdleReadsExhausted(game) // 두 번째 스트림을 시작하기 전에도 하루 상한을 다시 확인
                         || MemoryFallbackCapMib(game, finalReadMib, budgetCap, ct) is not { } fallbackCap
                         || fallbackCap <= Math.Max(p.WarmedMib, ActualMib(hot.Value.Stats, p.HotMib, skipBytes)))
                     {

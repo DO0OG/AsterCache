@@ -1161,6 +1161,18 @@ public sealed class SolarTests
     }
 
     [Fact]
+    public void ALadderRightAfterAStreamAndTheStreamItselfAreNotCountedTwiceForTheSameRead()
+    {
+        _result = _result with { DiskBytes = 24 * Mib }; // 사다리가 디스크에서 읽은 양
+        Prewarmer p = MakePrewarmer(Game("a"));
+
+        Assert.True(p.Run(Game("a"), "service start").Ran);
+
+        long counted = p.DiskReads.Used(Game("a").OriginRoot, ReadPurpose.Trigger).Bytes;
+        Assert.InRange(counted, 24 * Mib, 24 * Mib + 3 * Mib); // 사다리 24 MiB 한 번 + 스트림은 0.01 s x 순차 상한 (약 2.5 MiB): 스트림 시간에 사다리가 들어가지 않음
+    }
+
+    [Fact]
     public void TheTickDoesNotTouchWhileTheGameRunsOrTheTokenIsCanceled()
     {
         GrowReuse(1000);

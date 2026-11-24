@@ -17,8 +17,8 @@ public sealed partial class Prewarmer
     /// 기본 상한의 바닥 (바이트): 예열 목록이 작은 드라이브도 이만큼은 읽을 수 있음.
     internal const long IdleReadFloorBytes = 12L << 30;
 
-    /// 기본 상한은 그 드라이브 게임들의 예열 목록 합의 이 배수, 게임마다의 몫도 그 게임 목록의 이 배수 이상입니다 (목록을 하루 세 번, 약 8시간마다 한 번까지 통째로 다시 채울 수 있는 양).
-    /// 그보다 잦은 주기 점검의 다시 채우기는 플레이 전에 또 밀려날 가능성이 커 읽기만 늘리고, 플레이 직전의 채우기는 런처·게임 시작 예열이 이 상한과 무관하게 합니다. 2 배는 이 PC 의 최근 로그에서 일상적으로 상한에 걸렸습니다.
+    /// 기본 상한은 그 드라이브 게임들의 예열 목록 합의 이 배수, 게임마다의 몫도 그 게임 목록의 이 배수 이상입니다: 목록을 하루에 세 번 통째로 다시 채울 수 있는 용량입니다 (시간으로 환산하면 약 8시간마다 한 번이라는 어림일 뿐, 캐시가 식는 빈도는 재지 않았음).
+    /// 플레이 직전의 채우기는 런처·게임 시작 예열이 이 상한과 무관하게 합니다. 2 배는 이 PC 의 최근 로그에 대입한 어림에서 일상적으로 상한에 걸려 올렸습니다.
     internal const int IdleReadListFactor = 3;
 
     private readonly DiskReadLedger _reads; // 드라이브별·목적별 읽은 양의 24시간 집계, 상태 파일에 함께 저장
@@ -34,7 +34,11 @@ public sealed partial class Prewarmer
     /// 이 게임 드라이브의 계기 없는 읽기 하루 상한 (바이트): auto.idle_read_gib_per_day 가 0 보다 크면 그 값, 아니면 그 드라이브에 놓인 (예열이 허용된) 게임들의 예열 목록 합의 3 배와 12 GiB 가운데 큰 값.
     internal long IdleReadCap(GameSettings game) => IdleReadLimits(game).Cap;
 
-    /// 드라이브 상한과 이 게임의 하루 몫 (바이트): 몫은 상한을 그 드라이브 게임들의 예열 목록 크기에 비례해 나눈 것이라 기본 상한에서는 그 게임 목록의 3 배 이상입니다. 목록 크기를 모르는 게임은 몫이 0 (드라이브 상한만 봄).
+    /// 목록 크기를 모르는 게임의 하루 몫 (바이트): 이만큼과 드라이브에 남은 양 중 작은 값까지만 읽음.
+    internal const long IdleReadUnknownListShare = 1L << 30;
+
+    /// 드라이브 상한과 이 게임의 하루 몫 (바이트): 몫은 상한을 그 드라이브 게임들의 예열 목록 크기에 비례해 나눈 것이라 기본 상한에서는 그 게임 목록의 3 배 이상입니다.
+    /// 목록 크기를 모르는 게임의 몫은 IdleReadUnknownListShare. 지금 설정에 없는 (지운) 게임은 나누는 데 들지 않으므로 남은 게임의 몫을 바꾸지 않습니다 (그 게임이 쓴 양은 드라이브 합계에는 남음).
     private (long Cap, long Share) IdleReadLimits(GameSettings game)
     {
         string drive = DiskReadLedger.DriveOf(game.OriginRoot);
@@ -42,62 +46,86 @@ public sealed partial class Prewarmer
         long listSum = lists.Sum(l => l.Bytes);
         long cap = _auto.IdleReadGibPerDay > 0 ? (long)_auto.IdleReadGibPerDay << 30 : Math.Max(IdleReadFloorBytes, listSum * IdleReadListFactor);
         long own = lists.Where(l => string.Equals(l.Name, game.Name, StringComparison.OrdinalIgnoreCase)).Sum(l => l.Bytes);
-        return (cap, own > 0 && listSum > 0 ? (long)((double)cap * own / listSum) : 0);
+        return (cap, Math.Min(cap, own > 0 && listSum > 0 ? (long)((double)cap * own / listSum) : IdleReadUnknownListShare));
     }
 
-    /// 이 게임의 하루 몫 (바이트), 목록 크기를 모르면 0.
+    /// 이 게임의 하루 몫 (바이트).
     internal long IdleReadShare(GameSettings game) => IdleReadLimits(game).Share;
+
+    /// 이 게임이 지금 계기 없이 더 읽을 수 있는 양 (바이트): 게임 몫과 드라이브 상한 가운데 남은 양이 더 작은 쪽, 다 썼으면 0.
+    internal long IdleReadRemaining(GameSettings game)
+    {
+        (long cap, long share) = IdleReadLimits(game);
+        long left = Math.Min(share - _reads.Used(game.OriginRoot, ReadPurpose.Idle, game.Name).Bytes, cap - _reads.Used(game.OriginRoot, ReadPurpose.Idle).Bytes);
+        return Math.Max(0, left);
+    }
+
+    /// 읽기를 시작하기 전에 남은 양을 그 읽기의 예산 상한 (MiB) 에 반영합니다: 남은 양이 지금 정해진 상한 (room, 없으면 제한 없음) 보다 작으면 그 값으로 줄여 한 번의 읽기가 상한을 넘는 크기를 줄임.
+    /// 목록 전체가 남은 양에 들어가면 바꾸지 않습니다. 계기 있는 읽기 범위에서는 그대로.
+    internal long? IdleReadRoom(GameSettings game, long? room)
+    {
+        if (DiskReadLedger.Current != ReadPurpose.Idle)
+        {
+            return room;
+        }
+
+        long leftMib = IdleReadRemaining(game) >> 20;
+        return leftMib < ZoneMib(game, estimate: true) && leftMib < (room ?? long.MaxValue) ? leftMib : room;
+    }
 
     private readonly HashSet<string> _idleReadsPaused = new(StringComparer.Ordinal); // 상한에 닿아 계기 없는 읽기를 쉬는 드라이브·게임 (쉬기 시작할 때와 풀릴 때만 로그), _gate 로 보호
 
-    /// 이 게임의 계기 없는 읽기를 지금 시작하면 안 되는가: 게임마다 하루 몫 (목록 크기에 비례) 을 다 썼거나, 목록 크기를 모르는 게임은 드라이브 상한에 닿았을 때입니다.
-    /// 몫 덕에 한 게임이 드라이브 상한을 다 쓰지 못합니다. 읽는 도중에는 끊지 않으므로 한 번의 읽기만큼 넘길 수 있습니다.
+    /// 이 게임의 계기 없는 읽기를 지금 시작하면 안 되는가: 게임의 하루 몫과 드라이브 상한 가운데 하나라도 다 썼을 때입니다. 몫 덕에 한 게임이 드라이브 상한을 다 쓰지 못합니다.
+    /// 읽는 도중에는 끊지 않지만 읽기를 시작할 때 남은 양을 창 상한으로 넘기므로 (IdleReadRoom) 한 번의 읽기가 넘는 양은 작습니다.
     /// 가장 오래된 읽기가 24시간 창에서 빠져 다시 읽을 수 있는 시각과 함께, 쉬기 시작할 때와 풀릴 때만 로그를 남깁니다.
     internal bool IdleReadsExhausted(GameSettings game)
     {
         (long cap, long share) = IdleReadLimits(game);
-        bool byGame = share > 0;
-        (long used, _) = _reads.Used(game.OriginRoot, ReadPurpose.Idle, byGame ? game.Name : null);
-        long limit = byGame ? share : cap;
+        long usedGame = _reads.Used(game.OriginRoot, ReadPurpose.Idle, game.Name).Bytes;
+        long usedDrive = _reads.Used(game.OriginRoot, ReadPurpose.Idle).Bytes;
+        bool byGame = usedGame >= share;
+        bool exhausted = byGame || usedDrive >= cap;
         string drive = DiskReadLedger.DriveOf(game.OriginRoot);
         string what = byGame ? $"{game.Name} on drive {drive}" : $"drive {drive}";
-        bool exhausted = used >= limit;
+        long used = byGame ? usedGame : usedDrive;
+        long limit = byGame ? share : cap;
         bool changed;
         lock (_gate)
         {
-            changed = exhausted ? _idleReadsPaused.Add(what) : _idleReadsPaused.Remove(what);
+            if (!exhausted && _idleReadsPaused.Remove($"{game.Name} on drive {drive}"))
+            {
+                what = $"{game.Name} on drive {drive}"; // 풀린 쪽 이름으로 로그
+                changed = true;
+            }
+            else
+            {
+                changed = exhausted ? _idleReadsPaused.Add(what) : _idleReadsPaused.Remove($"drive {drive}");
+            }
         }
 
         if (changed)
         {
             _log.Info(exhausted
                 ? $"idle disk reads of {what} paused: {MibText(used)} read of the {MibText(limit)} limit in the last 24 h, reading again from {_reads.FreeAt(game.OriginRoot, ReadPurpose.Idle, (bytes, _) => bytes < limit, byGame ? game.Name : null):O} (reads started by a game or launcher are not limited)"
-                : $"idle disk reads of {what} resumed: {MibText(used)} read of the {MibText(limit)} limit in the last 24 h");
+                : $"idle disk reads of {what} resumed: {MibText(usedDrive)} read of the {MibText(cap)} drive limit in the last 24 h");
         }
 
         return exhausted;
     }
 
-    /// 읽기 한 번이 디스크에서 읽은 양을 어림해 집계에 더합니다 (게임별 몫으로도 셈).
-    internal void NoteStreamRead(GameSettings game, StreamStats stats, long? diskBefore)
+    /// 읽기 한 번 (스트림) 이 디스크에서 읽은 양을 어림해 집계에 더합니다 (게임별 몫으로도 셈). 시간은 스트리머가 잰, 그 읽기가 실제로 읽은 시간입니다 (대기·양보로 쉰 시간과 사다리가 만진 시간은 들지 않음: 사다리는 자기 양을 따로 더함).
+    internal void NoteStreamRead(GameSettings game, StreamStats stats) => NoteReadBytes(game, stats.Bytes, stats.Seconds);
+
+    internal void NoteReadBytes(GameSettings game, long accepted, double seconds)
     {
-        long? delta = diskBefore is { } before && _env.DiskReadBytes?.Invoke(game) is { } after && after >= before ? after - before : null;
         double ceiling = Recovery?.CeilingFor(DiskReadLedger.DriveOf(game.OriginRoot)) ?? DriveRecovery.CeilingMbps;
-        _reads.Add(game.OriginRoot, DiskReadLedger.Current, CountedDiskBytes(stats.Bytes, stats.Seconds, delta, ceiling), game.Name);
+        _reads.Add(game.OriginRoot, DiskReadLedger.Current, CountedDiskBytes(accepted, seconds, ceiling), game.Name);
     }
 
-    /// 스트림이 받아들인 바이트 (accepted) 를 실제 디스크 읽기에 가깝게 줄입니다: 읽는 동안 물리 디스크의 읽기 증가분 (diskDelta) 이 있으면 그것과 받아들인 바이트 중 작은 값,
-    /// 없으면 읽은 시간 x 순차 읽기 상한 (MB/s) 과 받아들인 바이트 중 작은 값 (디스크는 순차 상한보다 빨리 읽을 수 없으므로 실제보다 적게 세지 않음), 시간도 모르면 받아들인 바이트.
-    /// 메모리에 있던 범위를 다시 받아들인 스트림은 0 에 가깝게 세어지고, 같은 시간에 다른 프로그램이 그 디스크를 읽었으면 그만큼 더 세어질 수 있으나 받아들인 바이트를 넘지 않습니다.
-    internal static long CountedDiskBytes(long accepted, double seconds, long? diskDelta, double ceilingMbps)
-    {
-        if (diskDelta is { } delta)
-        {
-            return Math.Min(accepted, Math.Max(0, delta));
-        }
-
-        return seconds >= 0 && ceilingMbps > 0 && double.IsFinite(seconds) ? Math.Min(accepted, (long)(seconds * ceilingMbps * 1048576)) : accepted;
-    }
+    /// 받아들인 바이트 (accepted) 를 실제 디스크 읽기에 가깝게 줄입니다: 받아들인 바이트와 읽은 시간 x 그 드라이브의 순차 읽기 상한 (MB/s) 가운데 작은 값, 상한이나 시간을 모르면 받아들인 바이트.
+    /// 디스크에서 읽으면 시간이 바이트 / 상한 이상 걸려 받아들인 바이트 그대로 세어지고, 메모리에 있던 범위는 훨씬 빨리 끝나 걸린 시간만큼만 세어집니다.
+    internal static long CountedDiskBytes(long accepted, double seconds, double ceilingMbps) =>
+        seconds >= 0 && ceilingMbps > 0 && double.IsFinite(seconds) ? Math.Min(accepted, (long)(seconds * ceilingMbps * 1048576)) : accepted;
 
     /// 표본 점검이 디스크에서 읽은 양을 더합니다: 느린 (디스크에서 읽힌) 표본 수 x 표본 크기 (캐시에서 읽힌 표본은 디스크를 읽지 않았으므로 셈하지 않음).
     internal void NoteProbeRead(GameSettings game, ProbeResult? probe)

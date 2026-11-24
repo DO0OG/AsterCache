@@ -25,17 +25,41 @@ internal sealed class DiskReadLedger(Func<DateTimeOffset> now)
     // 같은 드라이브·목적의 읽기가 이 간격 안에 이어지면 한 항목으로 합쳐 상태 파일이 커지지 않게 함 (회복 표본은 표본 하나가 한 항목이어야 횟수를 셀 수 있어 합치지 않음).
     private static readonly TimeSpan MergeWithin = TimeSpan.FromMinutes(1);
 
-    // 이만큼 이상 읽은 항목은 바로 상태 파일에 씀 (그보다 작은 것은 다음 상태 파일 쓰기에 실려 나가고, 그 사이에 서비스가 끊기면 이만큼보다 작은 양만 잃음).
-    private const long PersistBytes = 64L << 20;
+    // 따로 저장하는 때: 마지막 저장 뒤 쌓인 변경이 SaveEveryBytes 이상이고 SaveEvery 가 지났을 때뿐 (그 밖의 변경은 이미 일어나는 상태 파일 저장과 서비스 종료 때의 저장에 실려 나감).
+    // 서비스가 갑자기 죽으면 마지막 저장 뒤 최근 몇 분의 기록을 잃을 수 있습니다.
+    public const long SaveEveryBytes = 256L << 20;
+    public static readonly TimeSpan SaveEvery = TimeSpan.FromMinutes(10);
 
     private static readonly AsyncLocal<ReadPurpose?> Scoped = new();
 
     private readonly object _lock = new();
     private readonly Dictionary<(string Drive, ReadPurpose Purpose, string Game), List<(DateTimeOffset At, long Bytes)>> _entries = []; // Game: 게임별로 세는 읽기의 게임 이름, 아니면 빈 문자열
     private DateTimeOffset? _loggedAt; // 하루 한 번 로그를 마지막으로 남긴 시각, _lock 으로 보호
+    private long _unsavedBytes; // 마지막 저장 뒤 더한 바이트, _lock 으로 보호
+    private bool _unsavedOther; // 마지막 저장 뒤 바이트 말고 바뀐 것 (일일 로그 시각) 이 있는가, _lock 으로 보호
+    private DateTimeOffset _savedAt = DateTimeOffset.MinValue; // 마지막으로 저장한 (ToJson 을 부른) 시각, _lock 으로 보호
 
-    /// 큰 읽기를 더한 뒤 상태 파일을 쓰는 호출 (Prewarmer 가 넣음, 없으면 메모리에만 둠).
-    public Action? Persist { get; set; }
+    /// 저장하지 않은 변경이 있는가 (서비스 종료 때 저장할지 판단).
+    public bool HasUnsaved
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _unsavedBytes > 0 || _unsavedOther;
+            }
+        }
+    }
+
+    /// 지금 따로 저장할 때인가: 쌓인 변경이 SaveEveryBytes 이상이고 마지막 저장 뒤 SaveEvery 가 지났을 때.
+    public bool SaveDue()
+    {
+        lock (_lock)
+        {
+            DateTimeOffset at = now();
+            return _unsavedBytes >= SaveEveryBytes && (at < _savedAt || at - _savedAt >= SaveEvery);
+        }
+    }
 
     /// 지금 읽기의 목적: Scope 안이면 그 값, 아니면 Trigger.
     public static ReadPurpose Current => Scoped.Value ?? ReadPurpose.Trigger;
@@ -77,11 +101,8 @@ internal sealed class DiskReadLedger(Func<DateTimeOffset> now)
             {
                 list.Add((at, bytes));
             }
-        }
 
-        if (bytes >= PersistBytes)
-        {
-            Persist?.Invoke();
+            _unsavedBytes += bytes;
         }
     }
 
@@ -156,6 +177,7 @@ internal sealed class DiskReadLedger(Func<DateTimeOffset> now)
             }
 
             _loggedAt = at;
+            _unsavedOther = true;
             return true;
         }
     }
@@ -185,6 +207,7 @@ internal sealed class DiskReadLedger(Func<DateTimeOffset> now)
                 }
             }
 
+            (_unsavedBytes, _unsavedOther, _savedAt) = (0, false, at); // 상태 파일에 쓰려고 부른 것이므로 저장한 것으로 봄
             JObject root = new() { { "drives", drives } };
             if (_loggedAt is { } logged)
             {

@@ -329,6 +329,7 @@ public sealed class SparseKeepTests
         // 서비스 자신의 읽기 기록에는 디스크로 센 묶음 전체를 남김: 묶음 2 (32~47) 는 일부만 디스크였어도 묶음 전체, 나머지 (48~99) 도 디스크라 블록 32~99 의 68 개. 둘째 회차는 모두 메모리라 기록할 것이 없음.
         Assert.Equal(68, mine.Count);
         Assert.Equal(Enumerable.Range(32, 68).Select(i => i * Block), mine.Select(o => o.Offset).Order());
+        Assert.Equal(68 * Block, board.ServiceReads.Disk(root, ServiceReadPath.Sparse)); // 경로는 스파스 유지
         Assert.Equal(68 * Block, board.ServiceReads.Total(root)); // 센 양 (로딩 판정이 게임의 읽기에서 뺄 값): 묶음 2 는 느린 블록 8 개의 시간 합이 묶음 기준을 넘어 묶음 전체, 나머지는 느린 블록 모두
         Assert.Equal(0, HoldAgainDiskBytes(p)); // 다시 붙들기의 합계에는 더하지 않음
     }

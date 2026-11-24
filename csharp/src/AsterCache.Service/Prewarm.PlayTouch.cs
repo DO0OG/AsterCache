@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using AsterCache.Core.Logging;
 using AsterCache.Core.Prefetch;
 using AsterCache.Core.Settings;
@@ -72,7 +73,18 @@ public sealed partial class Prewarmer
     /// 시작 만지기·처음 붙들기는 게임 실행 파일 시작 때의 일이라 이 판정과 무관하게 돕니다. 서비스가 게임 드라이브에서 읽은 양은 ServiceReads 에 더해 로딩 판정이 게임의 읽기에서 뺍니다.
     internal LoadPhaseBoard? LoadPhases { get; set; }
 
-    private void NoteServiceRead(GameSettings game, long diskBytes) => LoadPhases?.ServiceReads.Add(game.OriginRoot, diskBytes);
+    private void NoteServiceRead(GameSettings game, long diskBytes, [CallerMemberName] string caller = "") => LoadPhases?.ServiceReads.Add(game.OriginRoot, diskBytes, ReadPathOf(caller));
+
+    // 초 단위 기록·플레이 종료 요약이 경로별로 나눠 보이도록, 부른 메서드로 경로를 가림 (부르는 줄은 그대로). 모르는 호출자는 other 로 셈.
+    private static ServiceReadPath ReadPathOf(string caller) => caller switch
+    {
+        nameof(TouchAfterStartBoundary) => ServiceReadPath.Touch,
+        nameof(StartHold) or nameof(HoldAgain) => ServiceReadPath.Hold,
+        nameof(CheckHeld) => ServiceReadPath.Check,
+        nameof(KeepRound) => ServiceReadPath.Keep,
+        nameof(KeepSparseRound) => ServiceReadPath.Sparse,
+        _ => ServiceReadPath.Other,
+    };
 
     /// 시작 만지기와 같은 작업 안에서 부릅니다 (시작 만지기는 startTouch 로 받아 이 안에서 돌림): 등록 실행 파일이 하나도 실행 중이 아닐 때까지, 먼저 유지 목록을 뷰로 붙들 수 있으면 붙들고 (Prewarm.PlayHold, 시작 만지기보다 먼저),
     /// 붙들지 못한 범위와 붙들 수 없는 게임의 목록은 재사용이 문턱을 넘을 때마다 메모리 안에서 다시 만집니다.

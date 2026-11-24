@@ -14,9 +14,12 @@ public sealed partial class GameDispatcher
 {
     private readonly Dictionary<string, DateTimeOffset> _lastStage = new(StringComparer.OrdinalIgnoreCase); // (게임, 실행 파일) -> 마지막 단계 스트림 시각
 
+    /// 스트림이 낸 묶음의 요청·받아들인 바이트를 세고 (초 단위 기록의 service_stream_* 열), 끝날 때 그 구간의 디스크 표본을 한 줄로 남기는 판정판 (플레이 기록과 같은 것, 없으면 아무것도 하지 않음). 스트림의 동작에는 쓰지 않습니다.
+    internal LoadPhaseBoard? LoadPhases { get; set; }
+
     /// 스트림 한 번의 구성. Ops 가 null 이면 시작 목록 전체 (IGameStreamer.StreamCoordinated), BoundaryPid 가 있으면 그 프로세스의 읽기만 경계 판정에 셉니다.
     // Planner: 목록 계획을 시계·표본·상한 취소 범위 안에서 만들게 넘김 (원본은 스트리머가 스트림 안에서 목록을 만들었음)
-    private sealed record StreamSpec(IReadOnlyList<ReadOp>? Ops, int? BoundaryPid, bool StartLow, bool MemoryGate, Func<CancellationToken, IReadOnlyList<ReadOp>?>? Planner = null, bool IgnoreBoundary = false, bool YieldToQueuedGame = false);
+    private sealed record StreamSpec(IReadOnlyList<ReadOp>? Ops, int? BoundaryPid, bool StartLow, bool MemoryGate, Func<CancellationToken, IReadOnlyList<ReadOp>?>? Planner = null, bool IgnoreBoundary = false, bool YieldToQueuedGame = false, ServiceReadPath ReadPath = ServiceReadPath.StartStream);
 
     private sealed record StreamOutcome(StreamStats Stats, double Seconds, double MbPerSecond, bool BoundaryStopped, bool CapStopped, string? OtherStop, bool Cancelled,
         double YieldedSeconds, RuntimeLoadBoundary Boundary);
@@ -134,7 +137,7 @@ public sealed partial class GameDispatcher
             }
 
             _lastStage[key] = now;
-            StreamOutcome o = RunStream(g, lease, stop, new StreamSpec(plan.Ops, start.Pid, true, true, null, refill is not null, refill is not null));
+            StreamOutcome o = RunStream(g, lease, stop, new StreamSpec(plan.Ops, start.Pid, true, true, null, refill is not null, refill is not null, ServiceReadPath.StageStream));
             if (refill is not null)
             {
                 _lastStage[key] = _now(); // 흘리는 동안 겹친 같은 로드의 시작이 곧바로 다시 흘리지 않게 끝난 시각부터 대기
@@ -260,6 +263,10 @@ public sealed partial class GameDispatcher
         }
     }
 
+    // 스트림 종료 때의 한 줄: 낸 묶음 수, 요청·받아들인 바이트, 걸린 시간, 낮은 I/O 우선순위로 보낸 시간, 그 구간에 게임 드라이브에 대기열이 있던 표본의 비율과 읽기 한 번의 평균 지연 (플레이 기록이 이미 1초마다 읽은 디스크 값의 집계).
+    internal static string StreamReadsLine(string game, ServiceReadPath path, long batches, long requested, long accepted, double seconds, double lowSeconds, DiskTally disk) =>
+        FormattableString.Invariant($"{game}: {(path == ServiceReadPath.StageStream ? "stage" : "start")} stream reads: {batches} batches, requested {requested / 1_048_576d:F1} MiB, accepted {accepted / 1_048_576d:F1} MiB in {seconds:F1} s, low I/O priority {lowSeconds:F1} s; {disk.Text()}");
+
     // 시작 스트림·단계 스트림 공통 본체: 읽기 카운터를 1 초마다 표본해 경계·상한·양보를 판정하고, 묶음마다 메모리 게이트와 우선순위를 적용합니다.
     private StreamOutcome RunStream(GameSettings g, DiskReadCoordinator.Lease? lease, CancellationToken stop, StreamSpec spec)
     {
@@ -281,6 +288,10 @@ public sealed partial class GameDispatcher
         long remainingBytes = streamOps is null ? long.MaxValue : streamOps.Sum(o => o.Length);
         ReadYield? readYield = spec.StartLow ? new ReadYield(_env.SetReadIoLow, true) : null;
         object sampleLock = new();
+        ServiceDiskReads? served = LoadPhases?.ServiceReads;
+        DiskTally tallyBefore = LoadPhases?.TallyOf(g.Name) ?? default;
+        long batches = 0;
+        long requestedBytes = 0;
         using var issueStop = CancellationTokenSource.CreateLinkedTokenSource(streamStop);
 
         IReadOnlyList<(int Pid, string Exe, long ReadBytes)> Counters() => spec.BoundaryPid is not null
@@ -430,7 +441,16 @@ public sealed partial class GameDispatcher
             return true;
         }
 
-        void Noted(string stage, long bytes, bool isData) => lease?.NoteReadIssue(stage, bytes, isData);
+        void Noted(string stage, long bytes, bool isData)
+        {
+            lease?.NoteReadIssue(stage, bytes, isData);
+            if (stage == PrefetchStreamer.BatchStage)
+            {
+                _ = Interlocked.Increment(ref batches); // 묶음을 낼 때 원자적 더하기만 (읽기 경로에 잠금·할당 없음)
+                _ = Interlocked.Add(ref requestedBytes, bytes);
+                served?.AddStream(g.OriginRoot, spec.ReadPath, bytes, 0);
+            }
+        }
 
         lease?.NoteReadIssue("start stream planning", 0, false);
         using var sampleStop = new CancellationTokenSource();
@@ -451,7 +471,8 @@ public sealed partial class GameDispatcher
                 {
                     void Progress(long done, long total)
                     {
-                        Interlocked.Exchange(ref progressBytes, done);
+                        long before = Interlocked.Exchange(ref progressBytes, done);
+                        served?.AddStream(g.OriginRoot, spec.ReadPath, 0, done - before); // 이 묶음이 받아들인 바이트
                         Interlocked.Exchange(ref remainingBytes, Math.Max(0, total - done));
                     }
 
@@ -499,6 +520,11 @@ public sealed partial class GameDispatcher
         }
 
         double mbPerSecond = elapsedSeconds > 0 ? r.Bytes / (1_000_000d * elapsedSeconds) : 0;
+        if (LoadPhases is { } board)
+        {
+            _log.Info(StreamReadsLine(g.Name, spec.ReadPath, Interlocked.Read(ref batches), Interlocked.Read(ref requestedBytes), r.Bytes, elapsedSeconds, readYield?.Seconds ?? 0, board.TallyOf(g.Name).Since(tallyBefore)));
+        }
+
         return new StreamOutcome(r, elapsedSeconds, mbPerSecond, boundaryA, capA, otherA, cancelled, readYield?.Seconds ?? 0, boundary);
     }
 }

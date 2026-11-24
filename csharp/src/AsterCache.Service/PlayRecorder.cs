@@ -457,7 +457,7 @@ public sealed class PlayRecorder : IDisposable
 
                 PlaySeriesRaw? raw = session.HasFrames && session.HasSeries ? ReadSeries(series, session) : null;
                 load = NoteLoad(loadFeed, session, previous, current, tick, raw);
-                foreach (PlayWindowSummary checkpoint in session.AddSample(previous, current, previousTick, tick, ReadSystem(system), raw, load))
+                foreach (PlayWindowSummary checkpoint in session.AddSample(previous, current, previousTick, tick, ReadSystem(system), raw, load, loadFeed.Last))
                 {
                     PlaySampleRecord record = session.Snapshot(tick);
                     _store.Upsert(record);
@@ -488,6 +488,11 @@ public sealed class PlayRecorder : IDisposable
         finally
         {
             LoadPhases.Forget(session.Game.Name); // 표본이 끊긴 뒤에는 로딩 상태를 남기지 않음 (서비스의 일을 계속 막지 않게)
+            if (hasBaseline)
+            {
+                _log.Info(loadFeed.Summary()); // 이 플레이에서 서비스가 게임 드라이브에서 읽은 양의 경로별 합계 (이미 모은 값을 적을 뿐)
+            }
+
             if (counter is not null && hasBaseline && !session.IsUnavailable)
             {
                 try
@@ -1227,7 +1232,7 @@ public sealed class PlayRecorder : IDisposable
         }
 
         public IReadOnlyList<PlayWindowSummary> AddSample(IReadOnlyList<PlayDiskCounters> previous, IReadOnlyList<PlayDiskCounters> current,
-            long previousTick, long tick, PlaySystemSample system = default, PlaySeriesRaw? series = null, LoadState load = LoadState.Unknown)
+            long previousTick, long tick, PlaySystemSample system = default, PlaySeriesRaw? series = null, LoadState load = LoadState.Unknown, ServiceReadSecond? serviceReads = null)
         {
             lock (_gate)
             {
@@ -1250,7 +1255,7 @@ public sealed class PlayRecorder : IDisposable
                     {
                         if (_series is not null && series is not null)
                         {
-                            point = _series.Point(series with { GpuMib = system.GpuDedicatedMib ?? series.GpuMib }, _pids, previous, current, load); // 그래픽 메모리는 이미 읽은 시스템 값을 씀
+                            point = _series.Point(series with { GpuMib = system.GpuDedicatedMib ?? series.GpuMib, ServiceReads = serviceReads }, _pids, previous, current, load); // 그래픽 메모리는 이미 읽은 시스템 값을 씀
                         }
                         else
                         {

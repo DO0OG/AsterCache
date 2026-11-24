@@ -443,6 +443,9 @@ public sealed partial class PrefetchStreamer : IGameStreamer
         return ZoneStreamer.Run(refresh, StreamMethod.Read, ct: stop);
     }
 
+    /// 묶음 하나를 내기 직전에 noteIssue 로 알리는 단계 이름 (GameDispatcher 가 이 이름으로 묶음 수와 요청 바이트를 셈).
+    internal const string BatchStage = "stream batch";
+
     private static (StreamStats Stats, bool Complete) Batches(List<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool>? canIssue, Action<string, long, bool>? noteIssue = null, Action<IReadOnlyList<ReadOp>>? afterBatch = null)
     {
         long total = ops.Sum(o => o.Length);
@@ -454,7 +457,7 @@ public sealed partial class PrefetchStreamer : IGameStreamer
                 return new StreamStats(0, 0, 0, 0, Aborted: true, RequestedBytes: batch.Sum(op => op.Length));
             }
 
-            noteIssue?.Invoke("stream batch", batch.Sum(op => op.Length), true);
+            noteIssue?.Invoke(BatchStage, batch.Sum(op => op.Length), true);
             StreamStats s = ZoneStreamer.Run(batch, StreamMethod.Pvm, ct: stop, noteIssue: noteIssue);
             done += s.Bytes;
             progress?.Invoke(done, total);

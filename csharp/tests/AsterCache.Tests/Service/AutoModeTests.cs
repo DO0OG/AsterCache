@@ -341,6 +341,43 @@ public sealed class AutoModeTests : IDisposable
         Assert.Contains(_rig.Log.Lines, line => line.Contains("bar: auto trace start resumed after waiting for the previous trace", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData(true, 1)] // 대기 뒤에도 요약이 켜져 있음: 디스크 전용 세션만 열림 (원시 세션은 앞선 게임의 1 개 그대로)
+    [InlineData(false, 0)] // 대기 중 요약이 꺼짐: 아무 세션도 열지 않음 (원시 세션으로 바뀌지도 않음)
+    public async Task ASummaryOnlyStartKeepsItsPurposeAfterWaitingSoTurningTheSummaryOffNeverOpensARawSession(bool summaryStaysOn, int summaryStarts)
+    {
+        AddGame("foo", "auto");
+        AddGame("bar", "auto");
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { TraceRuns = 1, IoSummaryEnabled = true } };
+        AutoMode mode = Mode();
+        string raw = AutoTracer.RawTracePath(Game("bar"));
+        Directory.CreateDirectory(Path.GetDirectoryName(raw)!);
+        _rig.World.Files.UnionWith([raw, TraceStageIndex.IndexPath(raw)]);
+        IoSummaryStore.WriteTried(raw, IoSummaryStore.MaxTried); // 읽기 방식 보강은 끝남: 원시 트레이스를 더 뜰 이유가 없고 요약만 남길 차례
+        _rig.World.SummarySession = new FakeTrace();
+        using var saveStarted = new ManualResetEventSlim();
+        using var finishSave = new ManualResetEventSlim();
+        Task saving = StartSavingTrace(mode, saveStarted, finishSave);
+        _rig.World.RunningExes.Add("bar.exe");
+        mode.TraceFinishWaiter = async (finished, _, cancellationToken) =>
+        {
+            await finished.WaitAsync(cancellationToken);
+            if (!summaryStaysOn)
+            {
+                mode.SetSettings(_rig.Settings with { Auto = _rig.Settings.Auto with { IoSummaryEnabled = false } });
+            }
+
+            return true;
+        };
+
+        Task starting = Task.Run(() => mode.OnGameStart(Game("bar"), isLatestRunningStart: () => true));
+        await Task.Delay(100); // 대기에 들어갈 시간
+        finishSave.Set();
+        await Task.WhenAll(saving, starting).WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal((1, summaryStarts), (_rig.World.TraceStarts, _rig.World.SummaryStarts));
+    }
+
     [Fact]
     public async Task GameStartDoesNotStartAfterWaitingWhenTracingWasTurnedOff()
     {

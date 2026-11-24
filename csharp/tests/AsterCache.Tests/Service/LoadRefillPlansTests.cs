@@ -135,6 +135,57 @@ public sealed class LoadRefillPlansTests : IDisposable
         Assert.Equal([1L, 2L, 0L], play.ByScore.Select(r => r.Offset / Block)); // 유지·붙들기: 경기 가중 점수 순
     }
 
+    private IoSummary DiskOnlyPlay(long fileSize, params IoSummaryRow[] rows) =>
+        Rows([new IoSummaryFile(_gameFile, false, fileSize, new FileInfo(_gameFile).LastWriteTimeUtc.Ticks)], rows) with { TargetStartsUs = [0], Play = new IoSummaryPlay(true, [], []) };
+
+    [Fact]
+    public void ADiskOnlyPlaySummaryChangesOnlyTheScoreOrderAndLeavesTheLoadListAndTheRankedBlocksAsTheyWere()
+    {
+        IoSummaryStore.WriteForRun(Run(1), Rows([new IoSummaryFile(_gameFile)], Row(0, 0, 2, latencyUs: 700), Row(0, 1, 900, latencyUs: 50)) with { TargetStartsUs = [0] });
+        IoSummaryStore.WriteForRun(Run(2), Rows([new IoSummaryFile(_gameFile)], Row(0, 0, 3, latencyUs: 700), Row(0, 2, 800, latencyUs: 9)) with { TargetStartsUs = [0] });
+        string raw = AutoTracer.RawTracePath(_game);
+        _ = LoadRefillPlans.Rebuild(_game, Started);
+        _ = LoadRefillPlans.RebuildRanked(_game, Started);
+        string loadsBefore = File.ReadAllText(LoadRefillPlans.PathOf(_game));
+        LoadRefillList before = LoadRefillStore.Read(LoadRefillPlans.RankedPathOf(_game))!;
+        Assert.Equal([2, 3, 3], before.Blocks.Select(b => b.Score)); // 블록 0: 두 플레이 모두 로드 창 안, 1·2: 경기 중 한 번씩
+        Assert.Equal([1, 2, 0], before.PlayOrder);
+        int sources = LoadRefillPlans.Sources(raw).Count;
+
+        // 디스크 전용 요약: 블록 0 은 경기 중 확실한 한 번 (3점), 블록 2 는 로드 창 안 (1점), 블록 3 은 목록에 없음
+        IoSummaryStore.WritePlayDisk(raw, DiskOnlyPlay(4 * Block, Row(0, 0, 700), Row(0, 2, 3), Row(0, 3, 600)));
+        _ = LoadRefillPlans.Rebuild(_game, Started);
+        _ = LoadRefillPlans.RebuildRanked(_game, Started);
+        LoadRefillList after = LoadRefillStore.Read(LoadRefillPlans.RankedPathOf(_game))!;
+
+        Assert.Equal(loadsBefore, File.ReadAllText(LoadRefillPlans.PathOf(_game))); // 초기 로드 목록은 한 바이트도 달라지지 않음
+        Assert.Equal(sources, LoadRefillPlans.Sources(raw).Count); // 로드 목록·예열 순위·캐시 없이 읽는 파일의 입력에는 들어가지 않음
+        Assert.Equal(before.Blocks.Select(b => (b.Path, b.Block, b.Count, b.LatencyUs)), after.Blocks.Select(b => (b.Path, b.Block, b.Count, b.LatencyUs))); // 순위 목록의 블록·순서·플레이 수·지연 합 그대로
+        Assert.Equal((before.Plays, before.Loads), (after.Plays, after.Loads));
+        Assert.Equal([5, 3, 4], after.Blocks.Select(b => b.Score));
+        Assert.Equal([0, 2, 1], after.PlayOrder);
+    }
+
+    [Fact]
+    public void ADiskOnlyPlayOfAChangedFileIsNotCountedAndTheRankedFileFollowsTheDiskSlotsButTheLoadListDoesNot()
+    {
+        IoSummaryStore.WriteForRun(Run(1), Rows([new IoSummaryFile(_gameFile)], Row(0, 0, 2, latencyUs: 700), Row(0, 1, 900, latencyUs: 50)) with { TargetStartsUs = [0] });
+        string raw = AutoTracer.RawTracePath(_game);
+        _ = LoadRefillPlans.Rebuild(_game, Started);
+        _ = LoadRefillPlans.RebuildRanked(_game, Started);
+        int[] scores = [.. LoadRefillStore.Read(LoadRefillPlans.RankedPathOf(_game))!.Blocks.Select(b => b.Score)];
+        static DateTimeOffset? WriteTime(string path) => File.Exists(path) ? File.GetLastWriteTimeUtc(path) : null;
+        Assert.False(LoadRefillPlans.RankedIsStale(_game, WriteTime));
+
+        string slot = IoSummaryStore.WritePlayDisk(raw, DiskOnlyPlay(3 * Block, Row(0, 0, 700), Row(0, 1, 700))); // 요약을 남긴 뒤 파일 크기가 달라졌다고 보는 요약 (크기가 지금과 다름)
+        File.SetLastWriteTimeUtc(slot, DateTime.UtcNow.AddMinutes(5));
+
+        Assert.True(LoadRefillPlans.RankedIsStale(_game, WriteTime)); // 순위 목록은 디스크 전용 요약을 입력으로 봄
+        Assert.False(LoadRefillPlans.IsStale(_game, WriteTime)); // 로드 목록은 보지 않음
+        _ = LoadRefillPlans.RebuildRanked(_game, Started);
+        Assert.Equal(scores, LoadRefillStore.Read(LoadRefillPlans.RankedPathOf(_game))!.Blocks.Select(b => b.Score)); // 파일 세대가 다른 요약은 점수에 들지 않음
+    }
+
     [Fact]
     public void ThePlayOrderIsFixedWhenTheRankedFileIsWrittenSoReadingItLaterNeedsNoSortOrAttributeLookup()
     {

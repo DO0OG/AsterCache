@@ -11,7 +11,7 @@ public readonly record struct LoadRefillFileStat(long Size, long MTimeTicks);
 public sealed record LoadRefillSource(IoSummary Summary, IReadOnlyList<long> StartsUs);
 
 /// 로드 구간에서 처음 접근한 64 KiB 블록 하나. Count 는 그 블록이 나온 플레이 수, LatencyUs 는 플레이별 지연 합의 합입니다.
-/// Score 는 플레이 전체 기록의 순위 목록에서만 채우는 경기 가중 점수 (Count + 2 × 가중 회차 수): 0 이면 구간을 모르는 목록입니다.
+/// Score 는 플레이 전체 기록의 순위 목록에서만 채우는 경기 가중 점수 (Count + 2 × 가중 회차 수 + 점수 전용 요약이 더한 점수): 0 이면 구간을 모르는 목록입니다.
 /// 순위 목록의 PlayOrder 는 Score 내림 순서의 블록 번호 순열, SparseFiles 는 스파스 파일 (둘 다 순위 파일을 쓸 때 정해 파일에 같이 저장).
 public sealed record LoadRefillBlock(string Path, long Block, int Count, long LatencyUs, int Score = 0);
 
@@ -66,7 +66,10 @@ public static class LoadRefillPlanner
     /// 지금 파일의 크기·수정 시각이 목록을 만들 때와 다르면 (ToRows) 그 파일의 블록은 읽을 때 빠집니다.
     /// isWritten 이 있으면 (순위 목록이 게임이 쓰는 파일도 담을 때) 그 파일의 블록은 WrittenMinPlays 개 이상의 플레이에서 나온 것만 담습니다.
     /// appendOnly 가 참인 파일 (크기가 줄어든 적이 없어 덧붙이기로 보는 파일) 은 관찰 중 수정된 플레이의 읽기도 점수에 넣습니다: 이미 쓰인 위치의 내용은 바뀌지 않으므로 그 플레이에서 읽힌 위치 (시작 때 크기 안이든 덧붙인 뒤든) 는 다음 플레이에도 있습니다.
-    public static LoadRefillList Collect(IEnumerable<LoadRefillSource> sources, Func<string, LoadRefillFileStat?> stat, TimeSpan? window, long capBytes, Func<string, bool>? isWritten = null, Func<string, bool>? appendOnly = null)
+    /// scoreOnly (플레이마다 남기는 디스크 전용 요약, window 가 null 일 때만 씀) 는 경기 가중 점수에만 더합니다: Count·지연 합·목록에 드는 블록과 그 순서는 sources 만으로 정해져 이 요약이 있어도 바뀌지 않습니다 (초기 로드 목록·예열 순위의 입력을 그대로 둠).
+    /// 그래서 디스크 전용 요약에서만 나온 블록은 목록에 들지 못해 점수를 받지 못하고, 원시 트레이스가 그 블록을 목록에 올린 뒤에야 점수가 합쳐집니다. 채점 규칙은 AddScoreOnly 의 설명에 있습니다.
+    public static LoadRefillList Collect(IEnumerable<LoadRefillSource> sources, Func<string, LoadRefillFileStat?> stat, TimeSpan? window, long capBytes, Func<string, bool>? isWritten = null, Func<string, bool>? appendOnly = null,
+        IEnumerable<LoadRefillSource>? scoreOnly = null)
     {
         long windowUs = window is { } w ? (long)w.TotalMicroseconds : 0;
         var stats = new Dictionary<string, LoadRefillFileStat?>(StringComparer.OrdinalIgnoreCase);
@@ -141,6 +144,14 @@ public static class LoadRefillPlanner
             loads += loadsHit.Count;
         }
 
+        if (window is null && scoreOnly is not null)
+        {
+            foreach (LoadRefillSource source in scoreOnly)
+            {
+                AddScoreOnly(source, merged, stats, appendOnly);
+            }
+        }
+
         var all = new List<LoadRefillBlock>();
         foreach ((string path, Dictionary<long, (int Count, long LatencyUs, int Score)> blocks) in merged)
         {
@@ -173,6 +184,36 @@ public static class LoadRefillPlanner
         }
 
         return new LoadRefillList(result, files, plays, loads, withoutStarts, skippedNoCache, all.Count - kept);
+    }
+
+    // 디스크 전용 요약 하나를 경기 가중 점수에만 더합니다 (이미 목록에 있는 블록만, Count·지연 합은 그대로). 채점 규칙:
+    // - 캐시를 거치지 않은 행 (페이징 0), 관찰 중 바뀐 파일 (덧붙이기 파일 제외), 파일 크기·수정 시각이 지금 목록을 만들 때 본 값과 다른 파일 (요약을 남긴 뒤 게임이 파일을 바꿈) 의 행은 점수 없음.
+    // - 한 번만 닿고 (Requests 1) 실행 파일 시작 뒤 Window 가 지난 때에 처음 닿았으며 이벤트 유실·상한 초과가 없고 출처가 확실한 행은 PlayPhaseWeight 점, 그 밖의 행은 1점.
+    // - 서비스 자신의 읽기와 겹쳐 게임의 읽기인지 알 수 없는 요청 (UncertainRequests) 이 섞인 행은 3점을 받지 못하고 1점입니다: 디스크 전용 요약은 게임이 같은 구간을 읽었는지 알 수 없으므로 겹친 행을 모두 빼면
+    //   붙들기·유지가 읽은 블록이 플레이마다 점수를 잃어 순위에서 밀려나는 되먹임이 생기고, 모두 3점으로 세면 서비스가 읽은 블록이 스스로 점수를 올립니다. 1점은 그 플레이에서 그 블록에 닿은 읽기가 있었다는 만큼만 셉니다.
+    // - 이벤트 유실이나 상한 초과가 있는 회차는 첫 접근 시각을 믿을 수 없어 구간 가중 없이 1점 (읽기가 일부 빠졌을 수 있어도 점수를 깎지는 않음).
+    private static void AddScoreOnly(LoadRefillSource source, Dictionary<string, Dictionary<long, (int Count, long LatencyUs, int Score)>> merged, Dictionary<string, LoadRefillFileStat?> stats, Func<string, bool>? appendOnly)
+    {
+        long[] starts = [.. source.StartsUs.Distinct().Order()];
+        IoSummary summary = source.Summary;
+        bool exact = summary.Quality.EventsLost == 0 && !summary.Quality.Truncated;
+        foreach (IoSummaryRow row in summary.Rows)
+        {
+            IoSummaryFile file = summary.Files[row.FileNumber];
+            if (row.PagingRequests == 0 || (file.ChangedDuringSession && appendOnly?.Invoke(file.Path) != true)
+                || !merged.TryGetValue(file.Path, out Dictionary<long, (int Count, long LatencyUs, int Score)>? blocks) || !blocks.TryGetValue(row.BlockNumber, out (int Count, long LatencyUs, int Score) old))
+            {
+                continue;
+            }
+
+            if (file.Size is { } size && file.MTimeTicks is { } ticks && stats[file.Path] is { } now && (now.Size != size || now.MTimeTicks != ticks))
+            {
+                continue;
+            }
+
+            int points = exact && row.Requests == 1 && row.UncertainRequests == 0 && OutsideLoadWindow(starts, row.FirstSessionUs) ? PlayPhaseWeight : 1;
+            blocks[row.BlockNumber] = old with { Score = old.Score + points };
+        }
     }
 
     // 첫 접근 시각이 어느 실행 파일 시작 뒤 Window 가 지난 때인가 (시작이 없거나 첫 시작보다 앞서면 구간을 모르므로 거짓).
@@ -417,7 +458,7 @@ public static class LoadRefillStore
         }
     }
 
-    // 점수 (플레이 수 + 2 × 가중 회차 수 이므로 플레이 수 이상 3배 이하이고 같은 홀짝), 순서 (블록 번호 순열), 스파스 파일 번호가 모두 맞을 때만 돌려줍니다.
+    // 점수 (플레이 수 이상이고 플레이 수의 3배에 디스크 전용 요약의 최대 수 × 3 을 더한 값 이하), 순서 (블록 번호 순열), 스파스 파일 번호가 모두 맞을 때만 돌려줍니다.
     private static (List<LoadRefillBlock> Blocks, int[] Order, HashSet<string> Sparse)? ReadPlayExtras(JObject root, List<LoadRefillBlock> blocks, List<string> paths)
     {
         if (!root.TryGetValue("play_scores", out object? scoresValue) || scoresValue is not string scoresText
@@ -433,7 +474,7 @@ public static class LoadRefillStore
         for (int i = 0; i < blocks.Count; i++)
         {
             int count = blocks[i].Count;
-            if (scores[i] < count || scores[i] > 3L * count || (scores[i] - count) % 2 != 0)
+            if (scores[i] < count || scores[i] > 3L * (count + IoSummaryStore.MaxPlayDiskSummaries))
             {
                 return null;
             }

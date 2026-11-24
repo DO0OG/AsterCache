@@ -77,6 +77,22 @@ internal static class LoadRefillPlans
         return sources;
     }
 
+    /// 플레이마다 남긴 디스크 전용 요약 (게임마다 최근 IoSummaryStore.MaxPlayDiskSummaries 개) 과 각 요약의 실행 파일 시작 시각.
+    /// 순위 목록의 경기 가중 점수에만 쓰고 Sources 에는 들어가지 않습니다: 초기 로드 목록·예열 순위·캐시 없이 읽는 파일의 입력은 이 요약이 있어도 같습니다.
+    public static List<LoadRefillSource> ScoreSources(string raw)
+    {
+        var sources = new List<LoadRefillSource>();
+        foreach (string path in IoSummaryStore.PlayDiskPaths(raw))
+        {
+            if (File.Exists(path) && IoSummaryStore.ReadPlayDisk(path) is { } summary)
+            {
+                sources.Add(new LoadRefillSource(summary, summary.TargetStartsUs ?? []));
+            }
+        }
+
+        return sources;
+    }
+
     private static IReadOnlyList<long> MarkStarts(IoSummary summary, string? runPath)
     {
         if (runPath is null || summary.RawTraceZeroUs is not { } zeroUs || TraceStageIndex.ReadMarks(runPath) is not { } marks)
@@ -91,9 +107,11 @@ internal static class LoadRefillPlans
     public static bool IsStale(GameSettings g, Func<string, DateTimeOffset?> writeTime) => IsStale(g, writeTime, PathOf(g));
 
     /// 집계에서 만든 다른 목록 파일 (listPath) 이 없거나 가장 새 집계보다 오래됐는가.
-    public static bool IsStale(GameSettings g, Func<string, DateTimeOffset?> writeTime, string listPath)
+    /// withPlayDisk 면 플레이마다 남긴 디스크 전용 요약도 입력으로 봅니다 (순위 목록만 그 요약으로 점수를 세므로 다른 목록은 보지 않음).
+    public static bool IsStale(GameSettings g, Func<string, DateTimeOffset?> writeTime, string listPath, bool withPlayDisk = false)
     {
-        DateTimeOffset? newest = SummaryPaths(AutoTracer.RawTracePath(g)).Select(writeTime).Max();
+        string raw = AutoTracer.RawTracePath(g);
+        DateTimeOffset? newest = (withPlayDisk ? SummaryPaths(raw).Concat(IoSummaryStore.PlayDiskPaths(raw)) : SummaryPaths(raw)).Select(writeTime).Max();
         return newest is { } n && (writeTime(listPath) is not { } built || built < n);
     }
 
@@ -124,7 +142,7 @@ internal static class LoadRefillPlans
     public static string RankedPathOf(GameSettings g) => LoadRefillStore.RankedPathFor(AutoTracer.RawTracePath(g));
 
     /// 순위 목록 파일이 없거나 이 게임의 가장 새 집계보다 오래됐는가 (서비스 시작 때 다시 만들지 정함, 집계가 없으면 false).
-    public static bool RankedIsStale(GameSettings g, Func<string, DateTimeOffset?> writeTime) => IsStale(g, writeTime, RankedPathOf(g));
+    public static bool RankedIsStale(GameSettings g, Func<string, DateTimeOffset?> writeTime) => IsStale(g, writeTime, RankedPathOf(g), withPlayDisk: true);
 
     /// 순위 목록을 다시 만들어 저장합니다: 집계 전체 구간 (실행·로드·경기 중) 의 블록을 나온 플레이 수, 지연 합 순으로 줄 세웁니다 (집계가 없으면 낡은 파일을 지움). 로그 한 줄을 돌려줍니다.
     /// 캐시 없이만 읽힌 블록·가변 파일·허용 루트 밖은 로드 목록과 같게 빼고, 예열 목록에서 어차피 빠지는 캐시 없이 읽는 파일 (UnbufferedFiles) 과 게임 드라이브 밖 파일도 뺍니다 (순위 자리와 예산을 쓰지 않게).
@@ -160,7 +178,8 @@ internal static class LoadRefillPlans
         }
 
         LoadRefillList list = LoadRefillPlanner.Collect(Sources(AutoTracer.RawTracePath(g)), Stat, null, LoadRefillPlanner.RankedCapBytes, includeWritten ? file => VolatileFiles.IsGameWritten(file, marked) : null,
-            includeWritten ? file => VolatileFiles.IsGameWritten(file, marked) && inner(file) is { } now && history.IsAppendOnly(file, now.Size, recentPlays) : null); // 크기 기록이 충분하고 줄어든 적이 없는 파일은 수정된 플레이의 읽기도 셈
+            includeWritten ? file => VolatileFiles.IsGameWritten(file, marked) && inner(file) is { } now && history.IsAppendOnly(file, now.Size, recentPlays) : null, // 크기 기록이 충분하고 줄어든 적이 없는 파일은 수정된 플레이의 읽기도 셈
+            ScoreSources(AutoTracer.RawTracePath(g))); // 디스크 전용 요약은 경기 가중 점수에만 더해지고 목록의 블록과 순서는 바꾸지 않음
         list = LoadRefillPlanner.WithPlayOrder(list, isSparse); // 경기 가중 점수 순서와 스파스 표지는 여기서 (게임이 꺼져 있을 때) 한 번 정해 파일에 저장: 게임 중에는 다시 계산하지 않음
         long writtenBlocks = includeWritten ? list.Blocks.Count(b => VolatileFiles.IsGameWritten(b.Path, marked)) : 0;
         HashSet<string> sparseFiles = list.SparseFiles is { } known ? [.. known] : [.. list.Files.Keys.Where(isSparse)]; // 점수 순서를 정할 때 이미 물은 표지를 다시 쓰고, 점수가 없는 목록만 지금 물음 (파일마다 한 번)

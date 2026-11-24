@@ -42,7 +42,8 @@ public sealed class IoBlockMapper
 
     /// 파일 하나의 할당 구간을 더합니다. 요청이 하나도 닿지 않는 구간은 버려 메모리가 요청 수에 묶이게 합니다.
     /// convertible 이 거짓 (압축·암호화 파일) 이면 구간만 남겨 그 위치의 읽기를 "변환 안 함" 으로 셉니다.
-    public void AddFile(string path, bool changedDuringSession, bool convertible, uint disk, IEnumerable<IoFileExtent> extents)
+    /// size·mtimeTicks 는 배치를 읽으며 이미 본 파일 크기와 수정 시각입니다 (디스크 전용 요약의 세대 표지, 주지 않으면 요약에 남기지 않음): 따로 속성을 조회하지 않아 이 변환의 취소·시간 제한 안에 머뭅니다.
+    public void AddFile(string path, bool changedDuringSession, bool convertible, uint disk, IEnumerable<IoFileExtent> extents, long? size = null, long? mtimeTicks = null)
     {
         if (!_byDisk.TryGetValue(disk, out DiskRequests? requests))
         {
@@ -61,7 +62,7 @@ public sealed class IoBlockMapper
             if (convertible && file < 0)
             {
                 file = _files.Count;
-                _files.Add(new IoSummaryFile(path, changedDuringSession));
+                _files.Add(new IoSummaryFile(path, changedDuringSession, size, mtimeTicks));
             }
 
             _intervals.Add(new Interval(disk, extent.DiskOffset, extent.DiskOffset + extent.Length, file, extent.FileOffset));
@@ -102,7 +103,7 @@ public sealed class IoBlockMapper
         var rows = new List<IoSummaryRow>(_blocks.Count);
         foreach (((int file, long block), BlockTotals totals) in _blocks)
         {
-            rows.Add(new IoSummaryRow(file, block, totals.Requests, totals.Bytes, totals.LatencySumUs, totals.LatencyMaxUs, totals.FirstSessionUs, totals.PagingRequests));
+            rows.Add(new IoSummaryRow(file, block, totals.Requests, totals.Bytes, totals.LatencySumUs, totals.LatencyMaxUs, totals.FirstSessionUs, totals.PagingRequests, totals.UncertainRequests));
         }
 
         rows.Sort((a, b) => a.FileNumber != b.FileNumber ? a.FileNumber.CompareTo(b.FileNumber) : a.BlockNumber.CompareTo(b.BlockNumber));
@@ -110,11 +111,13 @@ public sealed class IoBlockMapper
             _snapshot.Total, _snapshot.LatencyMaxUs, linked, _snapshot.OtherDisk, noFile, notConverted, _snapshot.Dropped,
             _snapshot.PagingReads, _snapshot.PagingBytes, _snapshot.EventsLost, _blockTableDropped,
             filesScanned, filesChanged, filesUnreadable, volumesSkipped, scanMs, scanIncomplete,
-            _snapshot.ReadModeFilesDropped, _snapshot.ReadModeReadsUnnamed, _snapshot.ReadModeFlags, _snapshot.ReadModeFlagsOther, _snapshot.EndedAtUtc,
+            _snapshot.ReadModeFilesDropped, _snapshot.ReadModeReadsUnnamed, _snapshot.ReadModeFlags, _snapshot.ReadModeFlagsOther,
+            _snapshot.DiskOnly ? null : _snapshot.EndedAtUtc, // 디스크 전용 세션은 읽기 방식을 수집하지 않았으므로 관측 종료 시각을 비워 HasReadModes 가 거짓이 되게 함 (읽기 방식 보강 횟수에 세지 않음)
             _snapshot.ReadModeDroppedRequests, _snapshot.ReadModeFilesDroppedExact, selfRead);
         long? zero = _snapshot.RawTraceZeroUs is { } z && Math.Abs(z) <= long.MaxValue / TimeSpan.TicksPerMicrosecond ? z : null;
         return new IoSummary(_snapshot.ObservedAtUtc, _snapshot.EndedAtUtc, _snapshot.RawWindows, quality, _files, rows, Guid.NewGuid().ToString("N"),
-            null, zero, zero is { } at ? _snapshot.ObservedAtUtc.AddTicks(at * TimeSpan.TicksPerMicrosecond) : null, _snapshot.ReadModes ?? [], _snapshot.TargetStartsUs, _snapshot.WriteFiles);
+            null, zero, zero is { } at ? _snapshot.ObservedAtUtc.AddTicks(at * TimeSpan.TicksPerMicrosecond) : null, _snapshot.ReadModes ?? [], _snapshot.TargetStartsUs, _snapshot.WriteFiles,
+            _snapshot.DiskOnly ? new IoSummaryPlay(true, [], []) : null);
     }
 
     // 요청 하나를 위치 순으로 걸으며 분류 (바이트·지연 누적) 하고 파일에 닿은 부분은 블록에 더합니다.
@@ -139,6 +142,10 @@ public sealed class IoBlockMapper
                     if (IsSelfRead(request, interval.File, fileOffset, part))
                     {
                         kind = SelfRead;
+                        if (_snapshot.DiskOnly)
+                        {
+                            AddBlocks(interval.File, fileOffset, part, request, consumed, uncertain: true); // 디스크 전용 요약은 게임의 읽기를 모르므로 서비스 읽기와 겹친 행을 빼지 않고 출처 불확실로 표시해 둠 (채점은 LoadRefillPlanner.Collect)
+                        }
                     }
                     else
                     {
@@ -169,7 +176,7 @@ public sealed class IoBlockMapper
 
     private bool InRawWindow(long sessionUs) => _snapshot.RawWindows.Any(w => sessionUs >= w.StartedUs && sessionUs <= w.EndedUs);
 
-    private void AddBlocks(int file, long fileOffset, long length, IoRequest request, long consumed)
+    private void AddBlocks(int file, long fileOffset, long length, IoRequest request, long consumed, bool uncertain = false)
     {
         long position = fileOffset;
         long remaining = length;
@@ -180,12 +187,12 @@ public sealed class IoBlockMapper
             long latency = LatencyUpTo(request, consumed + piece) - LatencyUpTo(request, consumed);
             if (_blocks.TryGetValue((file, block), out BlockTotals? totals))
             {
-                totals.Add(request, piece, latency);
+                totals.Add(request, piece, latency, uncertain);
             }
             else if (_blocks.Count < _maxBlocks)
             {
                 totals = new BlockTotals();
-                totals.Add(request, piece, latency);
+                totals.Add(request, piece, latency, uncertain);
                 _blocks.Add((file, block), totals);
             }
             else
@@ -276,9 +283,11 @@ public sealed class IoBlockMapper
         public long LatencyMaxUs;
         public long FirstSessionUs = long.MaxValue;
         public long PagingRequests;
+        public long UncertainRequests;
 
-        public void Add(IoRequest request, long bytes, long latencyUs)
+        public void Add(IoRequest request, long bytes, long latencyUs, bool uncertain = false)
         {
+            UncertainRequests += uncertain ? request.Count : 0;
             Requests += request.Count;
             Bytes += bytes * request.Count;
             LatencySumUs += latencyUs;

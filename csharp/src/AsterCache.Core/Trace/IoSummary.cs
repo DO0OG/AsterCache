@@ -3,7 +3,13 @@ namespace AsterCache.Core.Trace;
 public sealed record IoSummaryWindow(long StartedUs, long EndedUs);
 
 /// 파일 표의 한 행. ChangedDuringSession 은 관찰 시작 뒤에 쓰인 파일이라 끝난 뒤 읽은 배치가 읽을 때의 배치와 다를 수 있다는 표시입니다.
-public sealed record IoSummaryFile(string Path, bool ChangedDuringSession = false);
+/// Size·MTimeTicks 는 플레이마다 남기는 디스크 전용 요약이 배치를 읽으며 본 파일 크기와 수정 시각 (UTC ticks) 입니다 (점수를 셀 때 지금 파일과 대조하는 세대 표지, 그 밖의 집계에는 없어 null).
+public sealed record IoSummaryFile(string Path, bool ChangedDuringSession = false, long? Size = null, long? MTimeTicks = null);
+
+/// 플레이마다 남기는 디스크 전용 요약의 부가 정보 (그 밖의 집계에는 없어 null).
+/// DiskOnly: 파일 계층 읽기 이벤트 없이 디스크 완료만 관찰한 세션 (읽기 방식·쓰기 기록은 수집하지 않음).
+/// LoadPhases: 로딩 판정이 로딩으로 본 구간, Unobserved: 계측이 비어 있던 구간 (둘 다 관찰 시작을 0 으로 한 마이크로초이고, Unobserved 는 관찰 시작 전 구간을 음수로 가집니다).
+public sealed record IoSummaryPlay(bool DiskOnly, IReadOnlyList<IoSummaryWindow> LoadPhases, IReadOnlyList<IoSummaryWindow> Unobserved);
 
 /// 대상 프로세스의 파일 읽기 요청 표시별 집계입니다. OpenOptions 는 대상 프로세스가 이 파일을 열 때 준 옵션 중 IoSummaryCollector.OpenOptionsMask 비트의 합집합입니다
 /// (순차 FILE_SEQUENTIAL_ONLY 0x4, 캐시 없음 FILE_NO_INTERMEDIATE_BUFFERING 0x8, 임의 접근 FILE_RANDOM_ACCESS 0x800): 관찰이 시작되기 전에 열린 파일은 열기 이벤트가 없어 0 입니다.
@@ -37,6 +43,7 @@ public readonly record struct IoWriteRange(long Offset, long Length);
 public sealed record IoFlagCount(uint Flags, long Reads);
 
 /// (파일, 64 KiB 블록) 하나에 닿은 디스크 읽기. 한 요청이 여러 블록에 걸치므로 Requests 는 "이 블록에 닿은 요청 수"이고 요청 단위 총계는 품질 수치에 따로 있습니다.
+/// UncertainRequests: 그 가운데 서비스 자신의 읽기와 겹쳐 게임의 읽기인지 알 수 없는 요청 수 (디스크 전용 요약만, 그 밖에는 0).
 public sealed record IoSummaryRow(
     int FileNumber,
     long BlockNumber,
@@ -45,7 +52,8 @@ public sealed record IoSummaryRow(
     long LatencySumUs,
     long LatencyMaxUs,
     long FirstSessionUs,
-    long PagingRequests);
+    long PagingRequests,
+    long UncertainRequests = 0);
 
 /// 한 분류의 요청 수·바이트·지연 합 (지연은 디스크 스택에 내려간 때부터 완료까지라 장치 앞 대기를 포함합니다).
 public readonly record struct IoClassTotals(long Reads, long Bytes, long LatencySumUs)
@@ -100,9 +108,13 @@ public sealed record IoSummary(
     DateTimeOffset? RawTraceZeroAtUtc = null,
     IReadOnlyList<IoSummaryReadMode>? ReadModes = null,
     IReadOnlyList<long>? TargetStartsUs = null,
-    IReadOnlyList<IoSummaryWriteFile>? WriteFiles = null)
+    IReadOnlyList<IoSummaryWriteFile>? WriteFiles = null,
+    IoSummaryPlay? Play = null)
 {
     public bool HasReadModes => Quality.ReadModesObservedUntilUtc is not null;
+
+    /// 플레이마다 남기는 디스크 전용 요약인가 (읽기 방식·쓰기 기록이 없고 원시 트레이스 회차에 속하지 않음).
+    public bool IsDiskOnly => Play is { DiskOnly: true };
 
     public string FormatLogLine()
     {

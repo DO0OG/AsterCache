@@ -137,9 +137,10 @@ public sealed class AutoMode
             bool tracking = GamePolicy.AllowsTracking(g); // 끄거나 일시 중지한 게임은 추적·학습·게임 중 로딩 경계 읽기를 모두 하지 않음 (last_played 기록은 계속)
             if (a.Trace && tracking && _tracer.WantsRun(g))
             {
+                bool rawWanted = _tracer.WantsRawTrace(g); // 시작 때의 목적: 원시 트레이스인지, 디스크 전용 요약뿐인지 (재시도가 그 목적을 그대로 따름)
                 if (!_tracer.Start(g, out Task? previousFinish) && previousFinish is not null)
                 {
-                    traceRetry = WaitAndRetryTraceStartAsync(g, previousFinish, isLatestRunningStart);
+                    traceRetry = WaitAndRetryTraceStartAsync(g, previousFinish, isLatestRunningStart, rawWanted);
                 }
             }
             else if (a.Trace && tracking && _tracer.NotNeededLine(g) is var notNeeded && _notNeededLogged.GetValueOrDefault(g.Name) != notNeeded)
@@ -250,7 +251,7 @@ public sealed class AutoMode
         _ = _tracer.EndGameSessionAsync(g, exitedAt); // 새 시작 작업이 같은 완료 신호를 한 번만 기다리게 종료 요청만 전달
     }
 
-    private async Task<bool> WaitAndRetryTraceStartAsync(GameSettings g, Task previousFinish, Func<bool>? isLatestRunningStart)
+    private async Task<bool> WaitAndRetryTraceStartAsync(GameSettings g, Task previousFinish, Func<bool>? isLatestRunningStart, bool rawWanted)
     {
         bool finished;
         try
@@ -308,8 +309,9 @@ public sealed class AutoMode
             return false;
         }
 
-        // 게임 시작 시점의 WantsRun 판정을 유지: 대기 중 직전 실행이 저장되며 값이 바뀌어도 다시 판정하지 않음 (안티치트 게이트는 Start 안에서 그대로 확인)
-        bool started = _tracer.Start(latest, out _, wantedAtGameStart: true);
+        // 게임 시작 시점의 원시 트레이스 판정을 유지: 대기 중 직전 실행이 저장되며 값이 바뀌어도 다시 판정하지 않음 (안티치트 게이트는 Start 안에서 그대로 확인).
+        // 디스크 전용 요약이 목적이었으면 그 판정을 넘기지 않으므로 대기 중 설정이 바뀌어 요약이 꺼졌다면 Start 가 아무 세션도 열지 않고, 원시 세션으로 바뀌는 일도 없음.
+        bool started = _tracer.Start(latest, out _, wantedAtGameStart: rawWanted);
         _log.Info(started
             ? $"{g.Name}: auto trace start resumed after waiting for the previous trace"
             : $"{g.Name}: auto trace start abandoned after waiting for the previous trace (retry is no longer eligible)");

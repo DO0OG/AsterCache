@@ -37,7 +37,7 @@ public static class IoLayoutScan
                 continue;
             }
 
-            foreach ((string path, FileAttributes attributes, DateTime writtenUtc) in Files(root, options))
+            foreach ((string path, FileAttributes attributes, DateTime writtenUtc, long length) in Files(root, options))
             {
                 ct.ThrowIfCancellationRequested();
                 if (scanned >= MaxFiles)
@@ -73,15 +73,16 @@ public static class IoLayoutScan
                 bool changedDuringSession = writtenUtc > snapshot.ObservedAtUtc.UtcDateTime;
                 changed += changedDuringSession ? 1 : 0;
                 bool convertible = (attributes & (FileAttributes.Compressed | FileAttributes.Encrypted)) == 0;
-                mapper.AddFile(path, changedDuringSession, convertible, volume.Disk, extents.Select(e => volume.ToBytes(e)));
+                mapper.AddFile(path, changedDuringSession, convertible, volume.Disk, extents.Select(e => volume.ToBytes(e)),
+                    snapshot.DiskOnly ? length : null, snapshot.DiskOnly ? writtenUtc.Ticks : null); // 디스크 전용 요약만 파일 크기·수정 시각을 남김 (목록을 훑으며 이미 얻은 값이라 따로 조회하지 않음)
             }
         }
 
         return mapper.Build(scanned, changed, unreadable, skipped, clock.ElapsedMilliseconds, incomplete);
     }
 
-    private static FileSystemEnumerable<(string Path, FileAttributes Attributes, DateTime WrittenUtc)> Files(string root, EnumerationOptions options) =>
-        new(root, (ref FileSystemEntry e) => (e.ToFullPath(), e.Attributes, e.LastWriteTimeUtc.UtcDateTime), options)
+    private static FileSystemEnumerable<(string Path, FileAttributes Attributes, DateTime WrittenUtc, long Length)> Files(string root, EnumerationOptions options) =>
+        new(root, (ref FileSystemEntry e) => (e.ToFullPath(), e.Attributes, e.LastWriteTimeUtc.UtcDateTime, e.Length), options)
         {
             ShouldIncludePredicate = (ref FileSystemEntry e) => !e.IsDirectory,
         };

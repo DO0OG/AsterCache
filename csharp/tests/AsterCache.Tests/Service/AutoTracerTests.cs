@@ -1568,7 +1568,7 @@ public sealed class AutoTracerTests : IDisposable
             EndAfterExitGrace();
         }
 
-        Assert.False(_tracer.WantsRun(_game));
+        Assert.False(_tracer.WantsRawTrace(_game));
         Assert.Equal(AutoTracer.MaxIoSummaryTries, IoSummaryStore.ReadTried(Raw));
         Assert.Equal(AutoTracer.MaxIoSummaryTries, _rig.World.TraceStarts);
     }
@@ -1589,11 +1589,12 @@ public sealed class AutoTracerTests : IDisposable
         EndAfterExitGrace(tracer);
 
         Assert.Contains(_rig.Log.Lines, line => line.Contains("I/O summary attempt not recorded", StringComparison.Ordinal));
-        Assert.False(tracer.WantsRun(_game));
+        Assert.False(tracer.WantsRawTrace(_game));
+        _rig.World.SummarySession = new FakeTrace();
         tracer.Start(_game);
 
         Assert.Equal(1, _rig.World.TraceStarts);
-        Assert.False(tracer.Active);
+        Assert.Equal(1, _rig.World.SummaryStarts); // 원시 트레이스는 더 뜨지 않고, 디스크 전용 요약만 남기는 가벼운 세션만 열림
     }
 
     [Fact]
@@ -1609,7 +1610,7 @@ public sealed class AutoTracerTests : IDisposable
         _rig.World.Files.Add(TraceWriter.RunPath(Raw, 1) + ".io.json");
         Assert.True(_tracer.WantsRun(_game));
         _rig.World.Files.Add(IoSummaryStore.StandalonePath(Raw, 1));
-        Assert.False(_tracer.WantsRun(_game));
+        Assert.False(_tracer.WantsRawTrace(_game));
     }
 
     [Fact]
@@ -1685,7 +1686,7 @@ public sealed class AutoTracerTests : IDisposable
         LoadRefillStore.WriteTried(Raw, AutoTracer.MaxLoadListTries - 1);
         Assert.Equal(AutoTracer.MaxLoadListTries, AutoTracer.LoadListAttempt(_game, _rig.Settings.Auto, _rig.World.Env()));
         LoadRefillStore.WriteTried(Raw, AutoTracer.MaxLoadListTries);
-        Assert.False(_tracer.WantsRun(_game));
+        Assert.False(_tracer.WantsRawTrace(_game));
     }
 
     [Fact]
@@ -1694,7 +1695,7 @@ public sealed class AutoTracerTests : IDisposable
         ThinLoadListState(timedPlays: 2);
 
         Assert.Equal(0, AutoTracer.LoadListAttempt(_game, _rig.Settings.Auto, _rig.World.Env()));
-        Assert.False(_tracer.WantsRun(_game));
+        Assert.False(_tracer.WantsRawTrace(_game));
     }
 
     [Fact]
@@ -2343,7 +2344,7 @@ public sealed class AutoTracerTests : IDisposable
             EndAfterExitGrace();
         }
 
-        Assert.False(_tracer.WantsRun(_game));
+        Assert.False(_tracer.WantsRawTrace(_game));
 
         File.Delete(IoSummaryStore.TriedPath(Raw)); // 업데이트·회전이 시도 횟수 파일을 지움: 새 세대
 
@@ -2710,7 +2711,7 @@ public sealed class AutoTracerTests : IDisposable
         using var hold = new FileStream(IoSummaryStore.TriedPath(Raw), FileMode.Open, FileAccess.Read, FileShare.None); // 있지만 읽을 수 없음
 
         Assert.Null(IoSummaryStore.ReadTriedOrNull(Raw));
-        Assert.False(_tracer.WantsRun(_game)); // "파일 없음" 과 달리 메모리 횟수 (2) 를 그대로 믿음
+        Assert.False(_tracer.WantsRawTrace(_game)); // "파일 없음" 과 달리 메모리 횟수 (2) 를 그대로 믿음
     }
 
     // ---- 변환 전후 상태 조회 (저널) 실패 ----
@@ -2769,5 +2770,299 @@ public sealed class AutoTracerTests : IDisposable
 
         WrittenJournalSession judged = Assert.Single(WrittenFileHistory.Read(historyPath).Files.Single().Journal!);
         Assert.Equal(("p1", 'e'), (judged.Session, judged.Verdict));
+    }
+
+    // ---- 플레이마다 남기는 디스크 전용 요약 (원시 트레이스를 뜨지 않는 플레이) ----
+
+    // 학습이 끝나 원시 트레이스도, 단계 색인·읽기 방식 집계·로드 목록 보강도 더 필요 없는 게임 (플레이마다 요약만 남기는 조건)
+    private void LearnedGame()
+    {
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { IoSummaryEnabled = true } };
+        Extra(runs: 1, max: 1);
+        SeedRuns(1);
+        IoSummaryStore.WriteTried(Raw, IoSummaryStore.MaxTried);
+        _rig.World.SummarySession = new FakeTrace { IoRequests = IoRequests() with { DiskOnly = true } };
+    }
+
+    private FakeTrace Summary => _rig.World.SummarySession!;
+
+    private string[] DiskSlots => [.. IoSummaryStore.PlayDiskPaths(Raw).Where(File.Exists)];
+
+    [Fact]
+    public void ALearnedGameOpensADiskOnlySessionEveryPlayWithoutOpeningTheGameProcessAndSavesAPlaySummary()
+    {
+        LearnedGame();
+        string file = @"D:\Games\Foo\a.bin";
+        long ticks = 639_000_000_000_000_000;
+        _rig.World.BuildIoSummary = (snapshot, _, _) => new IoBlockMapper(snapshot).Build(0, 0, 0, 0, 0, false) with
+        {
+            Files = [new IoSummaryFile(file, false, 4096, ticks)],
+            Rows = [new IoSummaryRow(0, 0, 1, 65536, 20, 20, 100, 1)],
+        };
+        _rig.World.PlayRecords = [new SessionSpan("play-1", _rig.World.Now.UtcDateTime.AddSeconds(-5), _rig.World.Now.UtcDateTime.AddMinutes(10))]; // 관찰보다 5 초 먼저 시작한 플레이
+        DateTimeOffset observed = _rig.World.Now;
+        _tracer.LoadPhasesOf = _ => [(observed.AddSeconds(1), observed.AddSeconds(20))];
+        DateTime rawWritten = File.GetLastWriteTimeUtc(Raw);
+
+        Assert.True(_tracer.WantsRun(_game));
+        Assert.False(_tracer.WantsRawTrace(_game));
+        Assert.True(_tracer.Start(_game, out _));
+
+        Assert.Equal((1, 0), (_rig.World.SummaryStarts, _rig.World.TraceStarts)); // 가벼운 세션만 열림
+        Assert.Equal(_game.AllowedRoots, Assert.Single(_rig.World.SummaryRoots));
+        Assert.Equal(1, Summary.TriggerStarts); // 게임 시작 시각을 실행 표지로 넘김
+        _rig.World.Procs = [(100, 5L << 20)];
+        _rig.World.Running = true;
+        for (int i = 0; i < 5; i++)
+        {
+            _rig.World.Now += TimeSpan.FromSeconds(30);
+            _tracer.Step();
+        }
+
+        Assert.True(_tracer.Active); // 시간·읽기량 상한이 없음: 게임이 끝나길 기다림
+        Assert.False(Summary.Stopped);
+        Assert.Equal(0, _rig.World.GameProcessCalls); // 게임 프로세스를 열어 읽은 양을 재지 않음
+        Assert.Empty(_rig.World.ReadOpens);
+
+        EndAfterExitGrace();
+
+        Assert.False(_tracer.Active);
+        Assert.True(Summary.Stopped);
+        Assert.Equal(0, _rig.World.GameProcessCalls);
+        IoSummary saved = Assert.IsType<IoSummary>(IoSummaryStore.ReadPlayDisk(Assert.Single(DiskSlots)));
+        Assert.True(saved.Play!.DiskOnly);
+        Assert.False(saved.HasReadModes); // 읽기 방식을 수집하지 않았음
+        Assert.Equal([new IoSummaryWindow(1_000_000, 20_000_000)], saved.Play.LoadPhases);
+        Assert.Equal([new IoSummaryWindow(-5_000_000, 0)], saved.Play.Unobserved);
+        Assert.Equal((4096L, ticks), (saved.Files.Single().Size, saved.Files.Single().MTimeTicks));
+        Assert.Equal(rawWritten, File.GetLastWriteTimeUtc(Raw)); // 원시 트레이스와 run 파일은 그대로
+        Assert.False(File.Exists(TraceWriter.RunPath(Raw, 2)));
+        Assert.DoesNotContain(IoSummaryStore.StandalonePaths(Raw), File.Exists); // 읽기 방식 단독 집계의 슬롯은 쓰지 않음
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("foo: play summary started (disk completions only, no raw trace)", StringComparison.Ordinal));
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("foo: play summary ended (game exited)", StringComparison.Ordinal));
+        Assert.Equal("auto trace not needed", _tracer.NotNeededLine(_game).Split(" (")[0]);
+        Assert.Contains("io summaries 0", _tracer.NotNeededLine(_game), StringComparison.Ordinal); // 읽기 방식 보강 횟수에 세지 않음
+        Assert.Equal(0, AutoTracer.IoSummaryAttempt(_game, _rig.Settings.Auto, _rig.World.Env())); // 보강 시도 횟수 (이미 한도) 도 그대로
+    }
+
+    [Fact]
+    public void TheNormalRawSessionStillMeasuresTheGameProcessEachStep()
+    {
+        Reads((0, 65536));
+        _tracer.Start(_game);
+        _rig.World.Procs = [(100, 5L << 20)];
+        _rig.World.Running = true;
+
+        _tracer.Step();
+
+        Assert.True(_rig.World.GameProcessCalls > 0); // 디스크 전용 요약 경로만 게임 프로세스를 열지 않음
+    }
+
+    [Fact]
+    public void NoSessionIsOpenedForABlockedPausedOrSwitchedOffGameOrOneWithoutARawTrace()
+    {
+        LearnedGame();
+        GameSettings blocked = _game with { AntiCheat = "eac" };
+        _rig.Settings = _rig.Settings with { Games = [blocked] };
+        Assert.False(_tracer.WantsRun(blocked)); // 트레이스를 금지하는 안티치트: 새 관찰을 더하지 않음
+        Assert.False(_tracer.Start(blocked, out _));
+        Assert.Equal(0, _rig.World.SummaryStarts);
+
+        _rig.Settings = _rig.Settings with { Games = [_game with { Paused = true }] };
+        Assert.False(_tracer.Start(_game with { Paused = true }, out _));
+
+        _rig.Settings = _rig.Settings with { Games = [_game], Auto = _rig.Settings.Auto with { IoSummaryEnabled = false } };
+        Assert.False(_tracer.WantsRun(_game));
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { IoSummaryEnabled = true, Trace = false } };
+        Assert.False(_tracer.WantsRun(_game));
+        Assert.Equal(0, _rig.World.SummaryStarts);
+
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { Trace = true } };
+        File.Delete(Raw); // 원시 트레이스가 없으면 첫 기록이 먼저 (요약은 원시 트레이스가 있는 게임에만)
+        _rig.World.Session = new FakeTrace();
+        Assert.True(_tracer.WantsRun(_game)); // 첫 기록은 일반 세션
+        Assert.True(_tracer.Start(_game, out _));
+        Assert.Equal((0, 1), (_rig.World.SummaryStarts, _rig.World.TraceStarts));
+    }
+
+    [Fact]
+    public void AnAntiCheatThatBecomesForbiddenMidPlayStopsTheSummarySessionAtTheNextStep()
+    {
+        LearnedGame();
+        Assert.True(_tracer.Start(_game, out _));
+        _rig.World.Running = true;
+        _tracer.Step();
+        Assert.True(_tracer.Active);
+
+        _rig.Settings = _rig.Settings with { Games = [_game with { AntiCheat = "eac" }] };
+        _tracer.Step();
+
+        Assert.False(_tracer.Active);
+        Assert.True(Summary.Disposed);
+        Assert.Empty(DiskSlots);
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("foo: trace stopped (anti-cheat: eac)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ALearnedGameThatStillWantsARawTraceRunUsesTheNormalSessionNotTheDiskOnlyOne()
+    {
+        LearnedGame();
+        Extra(runs: 3, max: 3); // 유효 회차 1 < 3: 원시 트레이스를 더 뜸
+        _rig.World.Session = new FakeTrace();
+
+        Assert.True(_tracer.Start(_game, out _));
+
+        Assert.Equal((0, 1), (_rig.World.SummaryStarts, _rig.World.TraceStarts));
+    }
+
+    [Fact]
+    public void ARawTraceOfAnotherGameTakesTheSessionFromARunningSummaryAndIsRetriedNotDropped()
+    {
+        LearnedGame();
+        GameSettings other = _game with { Name = "bar", ExeNames = ["bar.exe"] }; // 원시 트레이스 파일이 없는 게임: 첫 기록
+        _rig.Settings = _rig.Settings with { Games = [_game, other] };
+        _rig.World.Session = new FakeTrace();
+        Assert.True(_tracer.Start(_game, out _)); // foo: 디스크 전용 요약 세션
+        _rig.World.Running = true;
+        _tracer.Step();
+
+        Assert.False(_tracer.Start(other, out Task? previousFinish)); // bar: 첫 기록 (원시 트레이스)
+        Assert.NotNull(previousFinish); // 탈락이 아니라 재시도 신호
+        Assert.False(previousFinish.IsCompleted);
+        _tracer.Step(); // 요약 세션이 끝남
+        Assert.True(previousFinish.IsCompleted);
+        Assert.True(Summary.Stopped);
+        Assert.Empty(DiskSlots); // 플레이 중간까지의 요약은 남기지 않음
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("foo: play summary dropped", StringComparison.Ordinal));
+
+        Assert.True(_tracer.Start(other, out _, wantedAtGameStart: true)); // 재시도: 원시 세션이 열림
+        Assert.Equal((1, 1), (_rig.World.SummaryStarts, _rig.World.TraceStarts));
+    }
+
+    [Fact]
+    public void AGameWithNothingReadOnItsDiskIsSavedWithoutScanningTheGameFolder()
+    {
+        LearnedGame();
+        Summary.IoRequests = new IoSummaryCollector(_rig.World.Now, diskOnly: true).Snapshot(_rig.World.Now.AddMinutes(1), [], 0, null); // 게임 디스크 읽기가 없음
+
+        Assert.True(_tracer.Start(_game, out _));
+        _rig.World.Running = true;
+        _tracer.Step();
+        EndAfterExitGrace();
+
+        Assert.Equal(0, _rig.World.BuildIoSummaryCalls); // 폴더를 훑어 디스크를 읽을 이유가 없음
+        IoSummary saved = Assert.IsType<IoSummary>(IoSummaryStore.ReadPlayDisk(Assert.Single(DiskSlots)));
+        Assert.Empty(saved.Rows);
+    }
+
+    [Fact]
+    public async Task TheFileLayoutScanOfASummaryIsCancelledByAGameStartAndBuiltLaterWithoutBlockingTheNextGame()
+    {
+        LearnedGame();
+        using var entered = new ManualResetEventSlim();
+        bool blocking = true;
+        _rig.World.BuildIoSummary = (snapshot, _, ct) =>
+        {
+            if (blocking)
+            {
+                BlockUntilCancelled(ct, entered);
+            }
+
+            return new IoBlockMapper(snapshot).Build(0, 0, 0, 0, 0, false);
+        };
+        Assert.True(_tracer.Start(_game, out _));
+        _rig.World.Running = true;
+        _tracer.Step();
+
+        Task end = Task.Run(() => EndAfterExitGrace());
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(30)));
+        _tracer.CancelShadow("other"); // 감시기가 등록 게임 시작마다 부름: 다음 게임의 시작이 변환에 막히지 않음
+        await end.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.False(_tracer.Active);
+        Assert.Empty(DiskSlots);
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("I/O summary not built (a game started), deferred until it exits", StringComparison.Ordinal));
+
+        blocking = false;
+        _tracer.Step(); // 그 게임이 끝났으니 (같은 디스크에서 도는 게임 없음) 지금 만듦
+
+        Assert.Single(DiskSlots);
+    }
+
+    [Fact]
+    public void ADeferredSummaryKeepsTheLoadPhasesCapturedWhenThePlayEndedEvenIfTheBoardMovedOn()
+    {
+        LearnedGame();
+        bool neighbour = true;
+        AutoEnv env = _rig.World.Env();
+        env.GameRunningOnDisk = _ => neighbour;
+        var tracer = new AutoTracer(env, _rig.Status, _rig.Log, () => _rig.Settings) { MinRunBytes = 0 };
+        DateTimeOffset observed = _rig.World.Now;
+        List<(DateTimeOffset, DateTimeOffset)> phases = [(observed.AddSeconds(1), observed.AddSeconds(20))];
+        tracer.LoadPhasesOf = _ => phases;
+        Assert.True(tracer.Start(_game, out _));
+        _rig.World.Running = true;
+        tracer.Step();
+        EndAfterExitGrace(tracer);
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("I/O summary deferred (a game is running on the disk)", StringComparison.Ordinal));
+
+        phases = [(observed.AddHours(5), observed.AddHours(6))]; // 다른 게임이 도는 동안 로딩 판정 표가 다음 플레이로 넘어감
+        tracer.Step();
+        Assert.Empty(DiskSlots);
+        neighbour = false;
+        tracer.Step();
+
+        IoSummary saved = Assert.IsType<IoSummary>(IoSummaryStore.ReadPlayDisk(Assert.Single(DiskSlots)));
+        Assert.Equal([new IoSummaryWindow(1_000_000, 20_000_000)], saved.Play!.LoadPhases);
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("deferred I/O summary built and saved", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TheTimeBudgetStopsTheSummaryScanAndNothingIsSaved()
+    {
+        LearnedGame();
+        _rig.World.BuildIoSummary = (_, _, ct) =>
+        {
+            BlockUntilCancelled(ct);
+            return null;
+        };
+        var tracer = new AutoTracer(_rig.World.Env(), _rig.Status, _rig.Log, () => _rig.Settings) { MinRunBytes = 0, IoScanBudget = TimeSpan.FromMilliseconds(50) };
+
+        Assert.True(tracer.Start(_game, out _));
+        _rig.World.Running = true;
+        tracer.Step();
+        EndAfterExitGrace(tracer);
+
+        Assert.Empty(DiskSlots);
+        Assert.False(tracer.Active);
+        Assert.Contains(_rig.Log.Lines, line => line.Contains("I/O summary not built (time budget)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AServiceShutdownWhileASummarySessionRunsDiscardsItWithoutSavingAnything()
+    {
+        LearnedGame();
+        Assert.True(_tracer.Start(_game, out _));
+        _rig.World.Running = true;
+        _tracer.Step();
+
+        _tracer.Shutdown();
+
+        Assert.True(Summary.Disposed);
+        Assert.Empty(DiskSlots);
+        Assert.Equal(0, _rig.World.BuildIoSummaryCalls);
+    }
+
+    [Fact]
+    public void TheGameStartDecisionOnlyChecksTheRawTraceFileAndNeverReadsSummaryFiles()
+    {
+        LearnedGame();
+        IoSummaryStore.WritePlayDisk(Raw, new IoBlockMapper(IoRequests() with { DiskOnly = true }).Build(0, 0, 0, 0, 0, false));
+        _rig.World.IoSummaryReads.Clear();
+
+        Assert.True(_tracer.WantsRun(_game));
+        Assert.True(_tracer.Start(_game, out _));
+
+        Assert.DoesNotContain(_rig.World.IoSummaryReads, path => path.Contains(".io-disk.", StringComparison.Ordinal)); // 판정이 디스크 전용 요약 파일을 읽어 파싱하지 않음
     }
 }

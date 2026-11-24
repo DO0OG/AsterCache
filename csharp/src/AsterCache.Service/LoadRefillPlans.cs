@@ -163,7 +163,7 @@ internal static class LoadRefillPlans
             includeWritten ? file => VolatileFiles.IsGameWritten(file, marked) && inner(file) is { } now && history.IsAppendOnly(file, now.Size, recentPlays) : null); // 크기 기록이 충분하고 줄어든 적이 없는 파일은 수정된 플레이의 읽기도 셈
         list = LoadRefillPlanner.WithPlayOrder(list, isSparse); // 경기 가중 점수 순서와 스파스 표지는 여기서 (게임이 꺼져 있을 때) 한 번 정해 파일에 저장: 게임 중에는 다시 계산하지 않음
         long writtenBlocks = includeWritten ? list.Blocks.Count(b => VolatileFiles.IsGameWritten(b.Path, marked)) : 0;
-        HashSet<string> sparseFiles = [.. list.Files.Keys.Where(isSparse)];
+        HashSet<string> sparseFiles = list.SparseFiles is { } known ? [.. known] : [.. list.Files.Keys.Where(isSparse)]; // 점수 순서를 정할 때 이미 물은 표지를 다시 쓰고, 점수가 없는 목록만 지금 물음 (파일마다 한 번)
         long sparseBlocks = list.Blocks.Count(b => sparseFiles.Contains(b.Path));
         if (list.Plays == 0 && !SummaryPaths(AutoTracer.RawTracePath(g)).Any(File.Exists))
         {

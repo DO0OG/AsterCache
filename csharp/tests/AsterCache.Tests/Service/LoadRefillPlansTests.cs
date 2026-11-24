@@ -150,7 +150,7 @@ public sealed class LoadRefillPlansTests : IDisposable
         PlayRankedRows first = LoadRefillPlans.PlayRankedRows(_game)!;
         PlayRankedRows second = LoadRefillPlans.PlayRankedRows(_game)!;
 
-        Assert.True(afterRebuild > 0); // 속성 조회는 순위 파일을 쓸 때만 (게임이 꺼져 있을 때)
+        Assert.Equal(1, afterRebuild); // 파일마다 한 번, 순위 파일을 쓸 때만 (게임이 꺼져 있을 때)
         Assert.Equal(afterRebuild, sparseLookups); // 목록을 계산하는 호출은 속성 조회를 더하지 않음
         Assert.Equal(first.ByScore, second.ByScore); // 저장된 순서를 읽을 뿐
         Assert.Equal([1L, 0L], first.ByScore.Select(r => r.Offset / Block));

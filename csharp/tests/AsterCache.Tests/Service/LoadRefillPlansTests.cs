@@ -130,7 +130,42 @@ public sealed class LoadRefillPlansTests : IDisposable
         _ = LoadRefillPlans.RebuildRanked(_game, Started);
 
         Assert.Equal([0L, 1L, 2L], LoadRefillPlans.RankedRows(_game)!.Select(r => r.Offset / Block)); // 예열 선택: 플레이 수, 지연 합 순위 그대로
-        Assert.Equal([1L, 2L, 0L], LoadRefillPlans.RankedRows(_game, playOrder: true, isSparse: _ => false)!.Select(r => r.Offset / Block)); // 유지·붙들기: 경기 가중 점수 순
+        PlayRankedRows play = LoadRefillPlans.PlayRankedRows(_game)!;
+        Assert.Equal([0L, 1L, 2L], play.Ranked.Select(r => r.Offset / Block));
+        Assert.Equal([1L, 2L, 0L], play.ByScore.Select(r => r.Offset / Block)); // 유지·붙들기: 경기 가중 점수 순
+    }
+
+    [Fact]
+    public void ThePlayOrderIsFixedWhenTheRankedFileIsWrittenSoReadingItLaterNeedsNoSortOrAttributeLookup()
+    {
+        IoSummaryStore.WriteForRun(Run(1), Rows([new IoSummaryFile(_gameFile)], Row(0, 0, 2, latencyUs: 700), Row(0, 1, 900, latencyUs: 50)) with { TargetStartsUs = [0] });
+        int sparseLookups = 0;
+
+        _ = LoadRefillPlans.RebuildRanked(_game, Started, path =>
+        {
+            sparseLookups++;
+            return false;
+        });
+        int afterRebuild = sparseLookups;
+        PlayRankedRows first = LoadRefillPlans.PlayRankedRows(_game)!;
+        PlayRankedRows second = LoadRefillPlans.PlayRankedRows(_game)!;
+
+        Assert.True(afterRebuild > 0); // 속성 조회는 순위 파일을 쓸 때만 (게임이 꺼져 있을 때)
+        Assert.Equal(afterRebuild, sparseLookups); // 목록을 계산하는 호출은 속성 조회를 더하지 않음
+        Assert.Equal(first.ByScore, second.ByScore); // 저장된 순서를 읽을 뿐
+        Assert.Equal([1L, 0L], first.ByScore.Select(r => r.Offset / Block));
+    }
+
+    [Fact]
+    public void WithoutAStoredPlayOrderThereAreNoPlayRows()
+    {
+        IoSummaryStore.WriteForRun(Run(1), Rows([new IoSummaryFile(_gameFile)], Row(0, 0, 2)));
+        _ = LoadRefillPlans.RebuildRanked(_game, Started);
+        string path = LoadRefillPlans.RankedPathOf(_game);
+        File.WriteAllText(path, File.ReadAllText(path).Replace("\"play_order\"", "\"x_play_order\"", StringComparison.Ordinal)); // 점수 순서가 없는 (예전) 순위 파일
+
+        Assert.Null(LoadRefillPlans.PlayRankedRows(_game));
+        Assert.NotNull(LoadRefillPlans.RankedRows(_game)); // 순위는 그대로 읽힘
     }
 
     [Fact]

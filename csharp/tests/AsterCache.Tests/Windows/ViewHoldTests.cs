@@ -412,8 +412,10 @@ public sealed class ViewHoldTests : IDisposable
         }
     }
 
-    [Fact]
-    public void WhenTheHardFaultCountCannotBeReadTheCheckReadBackIsStillStoppedByTheDiskReadCap()
+    [Theory]
+    [InlineData(1L << 20)]
+    [InlineData(1L << 19)]
+    public void WhenTheHardFaultCountCannotBeReadTheCheckReadsOnePieceNoLargerThanTheRoomLeftAndEndsItsReadBack(long cap)
     {
         string a = Make("a.bin", 8);
         using var hold = new ViewHold(() => null, () => null, minFileBytes: 0);
@@ -421,14 +423,26 @@ public sealed class ViewHoldTests : IDisposable
         _ = hold.Hold([new ReadOp(a, 0, 8L * Mib)], CancellationToken.None);
         using Process me = Process.GetCurrentProcess();
         HoldCheckResult r = default!;
-        for (int attempt = 0; attempt < 5 && !r.CapReached; attempt++)
+        for (int attempt = 0; attempt < 5 && r.RefilledBytes == 0; attempt++)
         {
             Assert.True(EmptyWorkingSet(me.Handle));
-            r = hold.Recheck(Mib, CancellationToken.None);
+            r = hold.Recheck(cap, CancellationToken.None);
         }
 
-        Assert.True(r.CapReached, $"trimmed {r.TrimmedBytes}, disk {r.RefilledBytes}"); // 읽기 수를 읽을 수 없어도 되찾아 읽은 양을 디스크 읽기로 셈해 상한에서 멈춤
-        Assert.True(r.RefilledBytes <= 3L * Mib);
+        Assert.Equal(cap, r.RefilledBytes); // 조각을 읽기 전에 남은 양으로 줄여 상한을 넘지 않고 정확히 닿음
+        Assert.True(r.CapReached);
+        Assert.False(r.Measured);
+    }
+
+    [Fact]
+    public void AnEmptyBatchIsMeasuredEvenWhenTheHardFaultCountCannotBeRead()
+    {
+        using var hold = new ViewHold(() => null, () => null, minFileBytes: 0);
+        hold.Rebase();
+
+        HoldBatchResult r = hold.Hold([], CancellationToken.None);
+
+        Assert.True(r.Measured); // 읽은 것이 없으므로 잴 것도 없음
     }
 
     [Fact]

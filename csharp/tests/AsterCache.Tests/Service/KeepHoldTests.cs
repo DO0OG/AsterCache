@@ -2554,12 +2554,12 @@ public sealed class KeepHoldTests
         p.TouchAtGameStart(Game("a"), "a.exe");
 
         int[] perCheck = [.. perSecond.Zip(perSecond.Skip(1), (a, b) => b - a).Where(d => d > 0)];
-        Assert.NotEmpty(perCheck);
-        Assert.All(perCheck, d => Assert.Equal(1, d)); // 디스크 읽기를 알아챌 수 없으면 한 확인에 4 MiB 묶음 하나
+        _ = Assert.Single(perCheck); // 디스크 읽기를 알아챌 수 없으면 그 묶음 (4 MiB) 하나로 이 플레이의 이어 붙들기가 끝남: 다음 확인에서 더 요청하지 않음
+        Assert.Equal(1, perCheck[0]);
     }
 
     [Fact]
-    public void AnUnmeasuredBatchIsCountedAsReadFromDiskInFullAgainstTheSharedPlayBudgetAndTheContinuationStops()
+    public void AnUnmeasuredBatchIsCountedInFullAgainstTheSharedPlayBudgetAndEndsTheContinuationForTheWholePlay()
     {
         StopTheFirstHoldAtTheCap();
         Prewarmer p = Make(Reads);
@@ -2576,9 +2576,27 @@ public sealed class KeepHoldTests
 
         p.TouchAtGameStart(Game("a"), "a.exe");
 
-        Assert.Contains(_log.Lines, l => l.Contains("cache hold continuing after the first pass") && l.Contains("holding, 1 MiB held so far by continuing in 1 requests") && l.Contains("disk reads of the play 1019 MiB of 1024 MiB")); // 한 확인에 묶음 하나 (1 MiB) 만 요청하고 디스크 읽기 0 으로 보고된 그 양이 예산에서 빠짐
-        Assert.Equal(before + 2, _hold.Batches.Count); // 다음 확인의 묶음 (4 MiB) 뒤 예산은 1 MiB 만 남아 한 번 요청분보다 적으므로 멈춤
-        _ = Assert.Single(_log.Lines, l => l.Contains("cache hold continuing after the first pass") && l.Contains("disk reads of the play 1023 MiB of 1024 MiB") && l.Contains("stopped: the disk read cap of the play is used"));
+        Assert.Equal(before + 1, _hold.Batches.Count); // 계측하지 못한 묶음 하나로 끝: 이 플레이에서는 이어 붙들기를 더 하지 않음
+        Assert.Contains(_log.Lines, l => l.Contains("cache hold continuing after the first pass") && l.Contains("disk reads of the play 1019 MiB of 1024 MiB")); // 그 묶음 (1 MiB) 이 공유 예산에서 빠짐
+        _ = Assert.Single(_log.Lines, l => l.Contains("cache hold stops reading from the disk for this play"));
+    }
+
+    [Fact]
+    public void AnUnmeasuredFirstPassStopsAfterThatBatchHoldsNothingMoreAndDoesNotTellTheLoadingJudgmentAboutTheConservativeAmount()
+    {
+        ReadOp[] big = [.. Enumerable.Range(0, 6).Select(i => Op(10 + i, 0, 16))]; // 16 MiB 배치 여섯 개
+        _hold.Measured = false;
+        Prewarmer p = Make(big);
+        var board = new LoadPhaseBoard(_log);
+        p.LoadPhases = board;
+        RunFor(20);
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        _ = Assert.Single(_hold.Batches); // 첫 패스는 계측하지 못한 첫 묶음에서 끝 (남은 묶음을 발행하지 않음)
+        Assert.Equal(0, board.ServiceReads.Total(Game("a").OriginRoot)); // 보수적으로 센 양은 로딩 판정에 넘기지 않음
+        _ = Assert.Single(_log.Lines, l => l.Contains("cache hold stops reading from the disk for this play"));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("cache hold continuing after the first pass"));
     }
 
     [Fact]

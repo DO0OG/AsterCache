@@ -9,13 +9,13 @@ namespace AsterCache.Windows;
 /// 이 프로세스의 디스크 읽기 수 (하드 폴트) 증가, 걸린 시간 (초), 쓴 CPU 시간 (초), 디스크 읽기가 섞여 경계로 보고 멈췄으면 그때 읽던 범위의 배치 안 위치 (그 뒤 범위는 읽지 않았음, 없으면 -1).
 public readonly record struct HoldBatchResult(long Bytes, long DiskBytes, long SkippedBytes, int Errors, int SlowPieces, int Views, int Checks, long HardFaults, double Seconds, double CpuSeconds, int BoundaryIndex, long ImageBytes = 0, long SmallBytes = 0, bool Measured = true);
 
-// Measured: 묶음 전체 (시작과 끝) 에서 하드 폴트 수를 읽어 DiskBytes 가 믿을 만한가. 거짓이면 호출하는 쪽이 읽은 양 전부를 디스크에서 읽은 것으로 셈합니다.
+// Measured: 묶음 전체에서 하드 폴트 수 조회가 시작이나 끝 (또는 중간) 중 한 번도 실패하지 않았는가. 조각을 하나도 읽지 않은 빈 묶음은 읽은 것이 없으므로 참입니다. 거짓이면 DiskBytes 는 읽은 양 전부 (보수적 값) 이고, 호출하는 쪽은 예산에는 그대로 빼되 로딩 판정에는 넘기지 않고 그 플레이의 붙들기 읽기를 더 하지 않습니다.
 // ImageBytes: 실행 가능한 이미지 파일 (첫 두 바이트가 MZ) 이거나 읽지 못해 붙들지 않은 바이트, SmallBytes: MinFileBytes 보다 작은 파일이라 붙들지 않은 바이트.
 
 /// 점검 한 번의 결과: 작업 집합에 있는지 확인한 바이트, 그중 메모리 관리자가 작업 집합에서 줄여 간 (Valid 가 아닌) 바이트, 그것을 다시 읽어 올리다 디스크에서 읽힌 바이트, 붙든 목록에서 뺀 바이트 (바뀐 파일의 몫은 제외),
 /// 다시 읽기 상한에 닿아 멈췄는가, 크기·수정 시각이 바뀌어 뷰를 닫은 파일, 읽기 수를 조회한 횟수, 하드 폴트 증가, 걸린 시간 (초), 쓴 CPU 시간 (초),
 /// 작업 집합 조회가 (세 번 시도하고도) 실패해 판단하지 못한 구간 수와 마지막 Win32 오류 번호.
-public readonly record struct HoldCheckResult(long CheckedBytes, long TrimmedBytes, long RefilledBytes, long DroppedBytes, bool CapReached, IReadOnlyList<string> ChangedFiles, int Checks, long HardFaults, double Seconds, double CpuSeconds, int QueryFailures = 0, int QueryError = 0);
+public readonly record struct HoldCheckResult(long CheckedBytes, long TrimmedBytes, long RefilledBytes, long DroppedBytes, bool CapReached, IReadOnlyList<string> ChangedFiles, int Checks, long HardFaults, double Seconds, double CpuSeconds, int QueryFailures = 0, int QueryError = 0, bool Measured = true);
 
 /// 게임이 쓰는 파일이 바뀌어 5 초 확인이 뷰를 닫은 기록: 파일과 그때 내놓은 바이트.
 public readonly record struct WrittenRelease(string Path, long Bytes);
@@ -143,6 +143,7 @@ public sealed unsafe class ViewHold : IKeepHold
         public int Views;
         public int Checks;
         public bool Signal = true;
+        public bool Unmeasured; // 다시 읽기에서 계측하지 못한 조각을 만나 그 점검의 다시 읽기를 끝냄
         public bool Boundary;
         public bool Canceled;
     }
@@ -286,7 +287,7 @@ public sealed unsafe class ViewHold : IKeepHold
                 boundary = tally.Boundary ? batch.Count - 1 : -1;
             }
 
-            return new HoldBatchResult(tally.Bytes, tally.Disk, tally.Skipped, tally.Errors, tally.Slow, tally.Views, tally.Checks, tally.Faults, Stopwatch.GetElapsedTime(started).TotalSeconds, Math.Max(0, StandbyTouch.ThreadCpuSeconds() - cpuBefore), boundary, tally.Images, tally.Smalls, tally.Signal && tally.SinceCheck == 0); // 읽은 조각이 조회로 닫히지 않았거나 한 번이라도 조회가 실패했으면 계측하지 못한 묶음
+            return new HoldBatchResult(tally.Bytes, tally.Disk, tally.Skipped, tally.Errors, tally.Slow, tally.Views, tally.Checks, tally.Faults, Stopwatch.GetElapsedTime(started).TotalSeconds, Math.Max(0, StandbyTouch.ThreadCpuSeconds() - cpuBefore), boundary, tally.Images, tally.Smalls, tally.Bytes == 0 || (tally.Signal && tally.SinceCheck == 0)); // 읽은 조각이 조회로 닫히지 않았거나 한 번이라도 조회가 실패했으면 계측하지 못한 묶음
         }
     }
 
@@ -418,7 +419,7 @@ public sealed unsafe class ViewHold : IKeepHold
             long dropped = 0;
             bool capReached = false;
             Seg? lastRead = null;
-            for (int i = 0; i < _segs.Count && !tally.Canceled; i++)
+            for (int i = 0; i < _segs.Count && !tally.Canceled && !tally.Unmeasured; i++)
             {
                 Seg seg = _segs[i];
                 if (seg.Live <= 0)
@@ -454,9 +455,9 @@ public sealed unsafe class ViewHold : IKeepHold
                     }
                 }
 
-                if (failed || tally.Disk > refillStopBytes)
+                if (failed || tally.Disk >= refillStopBytes)
                 {
-                    capReached = tally.Disk > refillStopBytes;
+                    capReached = tally.Disk >= refillStopBytes;
                     if (failed || dropOnCap)
                     {
                         dropped += Unlock(seg, seg.Live); // 읽을 수 없는 구간이거나 상한을 넘긴 구간 (dropOnCap 이 거짓이면 상한만 넘긴 구간은 그대로 둠)
@@ -467,7 +468,7 @@ public sealed unsafe class ViewHold : IKeepHold
             if (!capReached && !tally.Canceled && tally.SinceCheck > 0)
             {
                 Check(tally);
-                if (tally.Disk > refillStopBytes && lastRead is { Live: > 0 })
+                if (tally.Disk >= refillStopBytes && lastRead is { Live: > 0 })
                 {
                     capReached = true;
                     if (dropOnCap)
@@ -478,7 +479,7 @@ public sealed unsafe class ViewHold : IKeepHold
             }
 
             CompactSegs();
-            return new HoldCheckResult(queried, trimmed, tally.Disk, dropped, capReached, changed, tally.Checks, tally.Faults, Stopwatch.GetElapsedTime(started).TotalSeconds, Math.Max(0, StandbyTouch.ThreadCpuSeconds() - cpuBefore), _queryFailures, _queryError);
+            return new HoldCheckResult(queried, trimmed, tally.Disk, dropped, capReached, changed, tally.Checks, tally.Faults, Stopwatch.GetElapsedTime(started).TotalSeconds, Math.Max(0, StandbyTouch.ThreadCpuSeconds() - cpuBefore), _queryFailures, _queryError, tally.Signal);
         }
     }
 
@@ -885,7 +886,13 @@ public sealed unsafe class ViewHold : IKeepHold
                 return false;
             }
 
-            long n = Math.Min(StandbyTouch.PieceBytes, length - done);
+            long room = refillStopBytes - tally.Disk;
+            if (room <= 0)
+            {
+                return false; // 읽기 상한에 이미 닿음
+            }
+
+            long n = Math.Min(Math.Min(StandbyTouch.PieceBytes, length - done), room); // 조각이 남은 양을 넘지 않게 읽기 전에 줄임
             long t0 = Stopwatch.GetTimestamp();
             EnsureBuffer();
             bool ok = NativeMethods.ReadProcessMemory(NativeMethods.GetCurrentProcess(), address + (nint)done, (byte*)_buffer, (nuint)n, out nuint got) && (long)got == n;
@@ -899,7 +906,13 @@ public sealed unsafe class ViewHold : IKeepHold
 
             AfterPiece(tally, n, ms);
             tally.Boundary = false; // 다시 읽기는 경계를 찾지 않음: 디스크에서 다시 읽힌 양의 상한만 봄
-            if (tally.Disk > refillStopBytes)
+            if (!tally.Signal)
+            {
+                tally.Unmeasured = true; // 디스크 읽기를 가려내지 못한 조각 (읽은 양은 이미 디스크 읽기로 셈): 이 점검의 다시 읽기는 여기서 끝
+                return false;
+            }
+
+            if (tally.Disk >= refillStopBytes)
             {
                 return false;
             }

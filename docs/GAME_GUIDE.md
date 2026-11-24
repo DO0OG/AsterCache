@@ -36,8 +36,8 @@ What each feature does to the drive that holds the game:
 
 - **Back up first.** AsterCache physically moves file data. Back up drives that hold important data before using it.
 - **Do not power off or sleep during a move.** A move can resume from its journal, but power loss during writes was not tested. On a laptop, relocation waits for AC power or a battery at 50% or more.
-- **Exclude the drive from Windows drive optimization.** Windows defragments HDDs with a weekly scheduled task, which can undo the relocated layout. Open "Defragment and Optimize Drives" from the Start menu, press "Change settings" for the optimization schedule, open the drive list with "Choose", and uncheck the game drive. Do not run `defrag D:` yourself either.
-  If the layout drifts anyway, the service notices it and restores it, which is another write.
+- **Windows drive optimization.** Windows defragments HDDs with a weekly scheduled task, and that can move pieces AsterCache placed. You do not have to turn it off: the service defers moving files while an optimization runs, and the default layout (`whole_file`, see [Automatic mode](AUTO_MODE.md#3-relocation)) places each chosen file as one piece, which stayed in place on test files and one game after the optimization's defragmentation step. The state after its free-space consolidation step was not seen.
+  If the layout drifts anyway, the service notices it and restores it, which is another write. When a game's files have been placed again three times within seven days with its source files unchanged, relocation for that game is paused (see `auto.relocate_layout` in [Configuration](CONFIGURATION.md)).
 - **Close the game and launcher** before a manual relocation, and check that no related process remains in Task Manager.
 - **Patching or file repair rewrites files.** A game update or launcher repair can undo the layout or make the plan be rejected. The service sets the old plan aside as `.stale` and traces again on the next run. Run `verify` after a patch if you work by hand.
 - **Free space.** The zone needs the same amount of contiguous free space on the game drive. Keep some free.
@@ -270,7 +270,7 @@ If `errors` is not 0, the trace no longer matches the files (a patch, for exampl
 **Step 5. Maintenance**
 
 - After a game patch or file verification/repair, check with `verify` whether the layout is broken. If `verdict` is `non-contiguous` or `apply` reports `source_changed`, collect the trace again from step 1 and redo steps 2 and 3. Patched files have a changed size or modified time, so the existing plan is rejected.
-- Exclude the game drive from Windows drive optimization (see [Cautions](#cautions)).
+- Windows drive optimization can stay on; see [Cautions](#cautions) for what it does to the layout.
 - Whether the layout persists over time was confirmed up to 10 hours on the synthetic dataset. There is no 24-hour confirmation.
 
 **Applying it directly to Call of Duty: Modern Warfare 4**

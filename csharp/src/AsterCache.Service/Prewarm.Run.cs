@@ -309,12 +309,10 @@ public sealed partial class Prewarmer
                     _yieldedSeconds = 0; // StreamHot 이 끝날 때마다 더함 (done 줄에 한 번 보임)
                     _readMix = default;
                     _requeued = default;
-                    _streamResumed = false;
                     while (true)
                     {
                         streamed = StreamHot(warm, ct, zoneBytes, availableRamMib, memoryPartial is not null, Settle,
-                            allowReorder: memoryPartial is null && !HasPartialState(game.Name), roomMib: roomMib ?? long.MaxValue, allowWhileExiting: trigger, why: why, windowMib: memoryPartial?.WarmedMib ?? 0,
-                            resumable: string.Equals(why, "rewarm", StringComparison.Ordinal));
+                            allowReorder: memoryPartial is null && !HasPartialState(game.Name), roomMib: roomMib ?? long.MaxValue, allowWhileExiting: trigger, why: why, windowMib: memoryPartial?.WarmedMib ?? 0);
                         if (fellBack || memoryPartial is not null || streamed is not { Complete: false, MemoryStop: true }
                             || DiskReadLedger.Current == ReadPurpose.Idle && IdleReadsExhausted(game) // 첫 스트림이 쓴 만큼을 뺀 남은 양으로 두 번째 스트림도 다시 정함
                             || MemoryFallbackCapMib(game, finalReadMib, IdleReadRoom(game, roomMib) ?? long.MaxValue, ct) is not { } fallbackCap)
@@ -352,7 +350,7 @@ public sealed partial class Prewarmer
                             _log.Info($"{game.Name}: prewarm stopped by memory; kept the {kept} of {memoryPartial?.HotMib} MiB read as partial");
                         }
 
-                        PrewarmResult stopped = Record(game, now, new PrewarmResult(game.Name, false, Cancelled, s, now) { CancelDetail = reason, Resumed = _streamResumed }, 0);
+                        PrewarmResult stopped = Record(game, now, new PrewarmResult(game.Name, false, Cancelled, s, now) { CancelDetail = reason }, 0);
                         if (memoryStop && s.Bytes > 0)
                         {
                             ExpediteMemoryRetry(game.Name); // 읽은 게 없는 정지 (0 MiB) 는 기존 재시도 주기를 유지
@@ -385,7 +383,7 @@ public sealed partial class Prewarmer
                     string kind = memoryPartial is { } part ? $"partial {ActualMib(s, part.WarmedMib)}/{part.HotMib} MiB, the rest does not fit in memory: " : string.Empty;
                     _log.Info($"{game.Name}: prewarm done ({why}): {kind}{s.Bytes >> 20} MiB requested, {s.GapBytes / 1048576.0:F2} MiB gaps filled in {s.Seconds:F2} s = {mbps:F0} hint MB/s, {s.Requests} requests, {s.Errors} errors{s.BufferedNote()}, room {(roomMib is { } roomLimit ? roomLimit + " MiB" : "unlimited")}, available {_env.AvailableRamMib()} MiB{(_yieldedSeconds > 0 ? $", yielded {_yieldedSeconds:F1} s" : string.Empty)}{_readMix.Note()}{_requeued.Note()}");
                     _log.Info($"{game.Name}: prewarm phases ({why}): {run.Summary()}");
-                    PrewarmResult done = Record(game, warmedAt, new PrewarmResult(game.Name, true, null, s, warmedAt) { Resumed = _streamResumed }, mbps);
+                    PrewarmResult done = Record(game, warmedAt, new PrewarmResult(game.Name, true, null, s, warmedAt), mbps);
                     WarmMeasured?.Invoke(game, mbps);
                     if (pin && !ct.IsCancellationRequested && _games.Any(x => string.Equals(x.Name, game.Name, StringComparison.OrdinalIgnoreCase)))
                     {
@@ -504,8 +502,7 @@ public sealed partial class Prewarmer
     // 틈을 메우는 계획 (partial 아님) 이 마무리하면 통계의 GapBytes > 0 이라 호출 쪽이 읽은 양을 보수적으로 세고 이어 읽을 위치는 남기지 않습니다. limitBytes: 건너뛴 앞부분을 포함해 이만큼까지만 읽음.
     // windowMib: 읽는 창 (MiB) 의 크기, 틈 없는 창 읽기가 한도로 마무리했을 때 읽은 범위의 사다리를 만드는 데 씀 (0 이면 모름: 만들지 않음).
     // skipBytes: 읽기 목록 앞쪽 이만큼은 이미 읽었으니 건너뜀 (끊긴 보충을 이어 읽음, 틈 메우기 없는 경로에서만). onTotal: 이번에 읽을 목록의 길이 (건너뛴 앞부분 제외).
-    // resumable: 다시 채우기 (rewarm): 목록을 확정한 뒤 끊긴 읽기가 남긴 위치를 검증해 이어 읽고, 끊기면 끝까지 읽은 위치를 남김 (Prewarm.RewarmResume.cs).
-    private (StreamStats Stats, bool Complete, string? CancelReason, bool MemoryStop)? StreamHot(GameSettings game, CancellationToken ct, long? zoneBytes, long availableRamMib, bool partial = false, Action<StreamStats, bool>? settle = null, long skipBytes = 0, Action<long>? onTotal = null, bool allowReorder = true, long roomMib = long.MaxValue, bool allowWhileExiting = false, string? why = null, long limitBytes = long.MaxValue, bool allowFinish = false, long windowMib = 0, bool resumable = false)
+    private (StreamStats Stats, bool Complete, string? CancelReason, bool MemoryStop)? StreamHot(GameSettings game, CancellationToken ct, long? zoneBytes, long availableRamMib, bool partial = false, Action<StreamStats, bool>? settle = null, long skipBytes = 0, Action<long>? onTotal = null, bool allowReorder = true, long roomMib = long.MaxValue, bool allowWhileExiting = false, string? why = null, long limitBytes = long.MaxValue, bool allowFinish = false, long windowMib = 0)
     {
         using DiskReadCoordinator.Lease? lease = _coordinator?.TryBegin(game.OriginRoot, "prewarm stream", ct, preserveForGameRoot: _auto.KeepStreamOnGameStart ? game.OriginRoot : null, preserveGameKey: game.Name, allowWhileExiting: allowWhileExiting);
         if (_coordinator is not null && (lease is null || !lease.IsValid))
@@ -534,10 +531,8 @@ public sealed partial class Prewarmer
         DateTimeOffset? last = null;
         bool complete = false;
         bool shortFinish = false; // 메모리 한도로 읽은 데까지만 읽고 마무리함
-        MemoryFit? fit = null; // 창 읽기와 순서를 바꾸지 않는 읽기만 (아래에서 이어 읽을 위치를 정한 뒤 만듦): 읽은 데까지를 부분 예열로 남길 수 있음
+        MemoryFit? fit = partial || allowFinish ? new MemoryFit(skipBytes, limitBytes) : null; // 창 읽기와 순서를 바꾸지 않는 읽기만: 읽은 데까지를 부분 예열로 남길 수 있음
         StreamStats? finalStats = null;
-        string? resumeKey = null; // 다시 채우기: 이 읽기 목록의 지문 (끊기면 이 목록에서 끝까지 읽은 위치를 남김)
-        long confirmedDone = 0; // 이번 읽기에서 취소 없이 끝난 묶음까지 읽은 바이트 (건너뛴 앞부분 제외)
         long startedAt = Stopwatch.GetTimestamp();
         double? streamSeconds = null; // 사다리 시간이 노출 시간에 들어가지 않게 스트림이 끝난 때의 값
         // 읽기는 이 스레드 (묶음 점검 콜백도 같은 스레드) 에서 내므로 I/O 우선순위도 여기서 바꾸고 아래 finally 에서 되돌립니다.
@@ -569,13 +564,6 @@ public sealed partial class Prewarmer
                 long allocationBytes = allocationMib > (long.MaxValue >> 20) ? long.MaxValue : allocationMib << 20;
                 maxBytes = Math.Min(maxBytes, allocationBytes);
             }
-
-            if (resumable && skipBytes == 0)
-            {
-                (resumeKey, skipBytes) = BeginRewarmResume(game, maxBytes, stop.Token); // 목록을 확정한 뒤: 끊긴 다시 채우기가 남긴 위치가 이 목록의 것이고 앞부분이 메모리에 있으면 거기부터 읽음
-            }
-
-            fit = partial || allowFinish ? new MemoryFit(skipBytes, limitBytes) : null;
             RequeueTally protectedOthers = ProtectOthers(game, stop.Token, allowWhileExiting, readYield, skipBytes, maxBytes); // 디스크를 읽기 전에 (보정 읽기도 읽기): 트리거 예열은 하지 않음, 읽을 양이 작으면 하지 않음
             protectedSeconds = protectedOthers.ProtectedSeconds;
             _requeued += protectedOthers;
@@ -602,11 +590,6 @@ public sealed partial class Prewarmer
             {
                 onTotal?.Invoke(total);
                 CheckPrewarmBatch(game, stop, done, total, reserveFinalSet: true, detail: cancelDetail, callerToken: ct, leaseToken: lease?.Token ?? default, yield: readYield, preemptible: true, fit: fit);
-                if (!stop.IsCancellationRequested)
-                {
-                    confirmedDone = done; // 점검까지 끊기지 않았으면 이 묶음은 끝까지 읽힌 것
-                }
-
                 if (done == 0)
                 {
                     return;
@@ -665,11 +648,6 @@ public sealed partial class Prewarmer
                 NoteStreamRead(game, finalStats); // 하루 읽기 집계: 끝까지 읽지 못하고 멈춘 스트림도 읽은 만큼 셈
             }
 
-            if (resumeKey is not null)
-            {
-                NoteRewarmResume(game, resumeKey, skipBytes + confirmedDone, complete || shortFinish, finalStats);
-            }
-
             bool interrupted = !complete && _streamGameStarted;
             _calibrationStop = null;
             (_streaming, _streamStop, _streamCancelDetail) = (null, null, null);
@@ -685,7 +663,7 @@ public sealed partial class Prewarmer
 
             if ((complete || shortFinish) && finalStats is not null)
             {
-                settle?.Invoke(resumeKey is not null && skipBytes > 0 ? finalStats with { Bytes = finalStats.Bytes + skipBytes } : finalStats, shortFinish); // 이어 읽은 읽기의 읽은 양은 건너뛴 앞부분을 포함
+                settle?.Invoke(finalStats, shortFinish);
             }
 
             StreamEnded?.Invoke(game, (complete || shortFinish) && (finalStats is { Bytes: > 0 } || skipBytes > 0)); // 아무것도 읽지 못했으면 예열 완료로 알리지 않음 (이어 읽기의 0 바이트는 앞에서 이미 읽은 것)

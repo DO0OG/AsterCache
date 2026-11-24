@@ -18,7 +18,7 @@ public sealed partial class Rewarmer
     private GameExitTracker? _exitTracker;
     private readonly object _nextLock = new(); // Tick (유지 점검 스레드) 와 PullIn (재적용 틱 스레드) 이 같이 쓰는 _next 보호
     private DateTimeOffset? _next;
-    private DateTimeOffset? _afterExitAt; // 게임 종료로 점검을 당긴 시각: 그 뒤 첫 점검은 게임 종료라는 계기가 있는 읽기라 하루 읽기 상한을 받지 않음, 게임마다 그 점검을 마치면 지우고 (_afterExitDone) 모든 게임이 마치거나 AfterExitSpan 이 지나면 끝, _nextLock 으로 보호
+    private DateTimeOffset? _afterExitAt; // 게임 종료로 점검을 당긴 시각: 그 뒤 첫 점검은 게임마다 한 번 (그 읽기도 계기 없는 읽기라 하루 읽기 상한을 따름), 게임마다 그 점검을 마치면 지우고 (_afterExitDone) 모든 게임이 마치거나 AfterExitSpan 이 지나면 끝, _nextLock 으로 보호
     private long _afterExitSeq; // 게임 종료 표시를 세운 횟수 (점검이 시작할 때의 번호와 같은 종료에만 완료를 반영), _nextLock 으로 보호
     private readonly HashSet<string> _afterExitDone = new(StringComparer.OrdinalIgnoreCase); // 게임 종료 뒤 점검을 이미 마친 게임, _nextLock 으로 보호
     private static readonly TimeSpan AfterExitSpan = TimeSpan.FromHours(24); // 게임 종료 표시를 이어 두는 최대 시간 (막힌 게임이 영영 표시를 붙들지 않게)
@@ -90,6 +90,15 @@ public sealed partial class Rewarmer
                 _next = due;
                 _gameDue.Clear(); // 당겨진 점검은 늘린 간격 때문에 건너뛰지 않음
             }
+        }
+    }
+
+    /// 이 게임이 게임 종료 뒤 점검을 아직 마치지 않았는가 (시험과 상태 확인용).
+    internal bool AfterExitPending(string game)
+    {
+        lock (_nextLock)
+        {
+            return _afterExitAt is not null && !_afterExitDone.Contains(game);
         }
     }
 

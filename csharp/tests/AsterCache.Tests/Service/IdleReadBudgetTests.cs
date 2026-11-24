@@ -508,6 +508,8 @@ public sealed class IdleReadBudgetTests : IDisposable
 
         Assert.Equal(before + 1, _streamer.Seen.Count); // a 의 종료 뒤 점검만 읽음
         Assert.Equal("a", _streamer.Seen[^1].Name);
+        Assert.False(p.AfterExitCheckPending("a")); // 점검을 마친 게임의 종료 표시는 지워짐
+        Assert.True(p.AfterExitCheckPending("b")); // 건너뛴 게임의 표시는 남음
 
         p.DiskReads.Add(a.OriginRoot, ReadPurpose.Idle, 25 * Gib, a.Name); // 이제 두 게임 다 상한에 닿음
         p.DiskReads.Add(b.OriginRoot, ReadPurpose.Idle, 25 * Gib, b.Name);
@@ -515,6 +517,7 @@ public sealed class IdleReadBudgetTests : IDisposable
         Ticks(p, 1, On);
 
         Assert.Equal(before + 1, _streamer.Seen.Count); // b 의 종료 뒤 점검도 상한에 막혀 읽지 않음
+        Assert.True(p.AfterExitCheckPending("b")); // 막힌 게임의 표시도 남음
 
         _now += TimeSpan.FromHours(25);
         Ticks(p, 1, On);
@@ -635,12 +638,14 @@ public sealed class IdleReadBudgetTests : IDisposable
 
         Ticks(p, 1, On);
         Assert.Equal(before + 1, _streamer.Seen.Count); // 첫 종료의 점검
+        Assert.True(p.AfterExitCheckPending("g")); // 도는 중에 들어온 새 종료의 표시는 이 점검이 지우지 않음
 
         _onProbe = null;
         _now += TimeSpan.FromMinutes(11);
         Ticks(p, 1, On);
 
         Assert.Equal(before + 2, _streamer.Seen.Count); // 새 종료의 점검도 도는 중에 들어온 종료 때문에 막히지 않고 읽음
+        Assert.False(p.AfterExitCheckPending("g")); // 그 점검을 마치면 표시가 지워짐
     }
 
     [Fact]

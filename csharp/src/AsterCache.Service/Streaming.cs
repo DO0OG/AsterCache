@@ -55,9 +55,6 @@ public interface IGameStreamer
 
     bool WasPrewarmReordered(GameSettings game) => false;
 
-    /// 예열 스트림이 이번에 읽을 최종 목록 (maxBytes 만큼 틈을 메운 것, 순서를 바꾸기 전), 모르면 null. 끊긴 다시 채우기가 같은 목록에서 이어 읽을 수 있는지 판정하는 데 씁니다.
-    IReadOnlyList<ReadOp>? PrewarmStreamOps(GameSettings game, long maxBytes, CancellationToken stop) => null;
-
     /// 예열이 읽는 목록 (틈 메우기 제외, 부분 예열 뒤 표본을 고르는 것과 같은 기준: game 의 MaxStreamMib 로 잘린 읽은 범위), 모르면 null. 캐시를 디스크 읽기 없이 다시 만지는 사다리 (Solar) 의 대상입니다.
     IReadOnlyList<ReadOp>? PlannedPrewarmReads(GameSettings game) => null;
 
@@ -160,9 +157,6 @@ public sealed partial class PrefetchStreamer : IGameStreamer
     public Func<GameSettings, List<ReadOp>, CancellationToken, List<ReadOp>>? Reorder { get; set; }
 
     public bool WasPrewarmReordered(GameSettings game) => _reordered.GetValueOrDefault(game.Name);
-
-    public IReadOnlyList<ReadOp>? PrewarmStreamOps(GameSettings game, long maxBytes, CancellationToken stop) =>
-        PrewarmOps(game, maxBytes, stop) is { FitsBudget: true } plan ? plan.Ops : null;
 
     public bool WasPrewarmReordered(string game) => _reordered.GetValueOrDefault(game);
 

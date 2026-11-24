@@ -44,7 +44,6 @@ public sealed partial class Prewarmer
 
                 _status[name] = o;
                 LoadPartialRewarm(name, o); // 식은 앞부분 다시 읽은 횟수와 쉬는 시각은 재시작에도 이어짐
-                LoadRewarmResume(name, o, boot); // 끊긴 다시 채우기의 이어 읽기 위치도 (부팅 전의 것은 버림)
                 if (o.TryGetValue("profile_miss_key", out object? miss) && miss is string missKey)
                 {
                     _profileMiss[name] = missKey; // 프로필 미일치 판정은 설치 폴더 mtime 이 같은 동안 다시 열거하지 않음 (재시작 뒤에도 이어짐)

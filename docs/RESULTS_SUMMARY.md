@@ -7,7 +7,7 @@ This page is the home of the measurement records: how each figure was measured, 
 ## What was measured and what was not
 
 - **Measured.** Replay times of recorded read patterns (a synthetic dataset and the game Frostpunk) on a hard disk and an SSD; relocation work time; a prewarm order bench (ORBIT) on Call of Duty; several first-run read-ahead experiments (not adopted); how an SMR drive behaves after bulk writes.
-- **Not measured.** The total load time of a running game, frame stutter during play, a comparison with prewarm turned off, CMR drives, and persistence beyond 24 hours.
+- **Not measured.** The total load time of a running game, a controlled comparison of frame stutter (frame intervals were recorded in only four Call of Duty plays under different conditions; see the frame-interval record below), a comparison with prewarm turned off, CMR drives, and persistence beyond 24 hours.
 - **Usage records.** The service log tally and the 2026-11-11 service records are counts of what the service did. They are not controlled benchmarks (see [Real-world usage records](#real-world-usage-records)).
 
 ## How it was measured
@@ -31,7 +31,7 @@ This page is the home of the measurement records: how each figure was measured, 
 | [E7 first-run read-ahead](#e7-first-run-read-ahead) | No proven gain in six rounds; not adopted, off by default | Synthetic data and trace replay |
 | [ORBIT prewarm order bench](#orbit-prewarm-order-bench-2026-11-09) | Value-weighted prep time down 18.8%; worst-episode p95 up 13.1 s (the no-late-episode check, flag 4, failed) | One game, one drive, one session |
 | [E8 general HDD I/O](#e8-general-hdd-io-2026-11-03) | First cold read after 3 GB of scattered writes 58.8 s (normally 24 s) | SMR drive |
-| [E10](#e10e16-hdd-general-io-2026-11-03) | Relocation work 186 s → 41 s with eight parallel reads (4.5×); SMR recovery after a 2 GB move 25 min to 1.5 h | Test HDD |
+| [E10](#e10e16-hdd-general-io-2026-11-03) | Relocation work 186 s → 88 s (fewer samples, batched journal) → 41 s with eight parallel reads (4.5× in all); SMR recovery after a 2 GB move 25 min to 1.5 h | Test HDD |
 | [Real-world usage records](#real-world-usage-records) | Call of Duty whole-hot-set prewarm 128 to 416 s (7 runs) | Service log, not a benchmark |
 
 ## Results
@@ -65,7 +65,7 @@ This was run with the same synthetic dataset (64 files, 2.1 GiB). The HDD cold i
 
 | Configuration | Prefetch | Replay | Note |
 |---|---:|---:|---|
-| Physical-position sort (`final_physical`) | 11.1 s | 0.05 s | HDD cold 17.8 s, 13.94 times SSD cold |
+| Physical-position sort (`final_physical`) | 11.1 s | 0.05 s | HDD cold 17.8 s; prefetch + replay 11.15 s is 13.94 times the SSD cold of 0.8 s |
 | Path sort (`final_path`) | 11.4 s | 0.05 s | HDD cold 17.3 s |
 | Best of the sweep: physical sort, queue depth 4, gap 0 | 7.80 s | 0.04 s | Total 7.84 s, 7.0 times the SSD cold of 1.12 s |
 | Contiguous-layout upper bound: 243 MB of hot data read sequentially as a single file, 4 MiB chunks | 1.36 s | 0.04 s | Total about 1.40 s, 1.6 times the SSD cold of 0.865 s. 1 MiB chunks: 1.09 s |
@@ -83,9 +83,9 @@ This was run with the same synthetic dataset (64 files, 2.1 GiB). The HDD cold i
 <summary>Details: tables and records</summary>
 
 - **E2 HDD (VHDX, D: HDD).** Cold 27.1 s (13.7 / 64.6 / 27.1), 5.73 s after relocation (6.07 / 5.73 / 5.68). Source: `results/relayout_e2_hdd/summary.json`
-- **E3 median (3 runs, after clearing the standby list with administrator rights).** Before relocation, prefetch + replay 8.04 s, SSD (C: NVMe) direct 0.763 s. After relocation, the prefetch median is 1.05 s (0.93~1.63 s, values of the 3 runs 0.97 / 1.09 / 1.68 s) + replay 0.047 s.
-  - Ratios: D/E 1.43, C/E 10.1, A/E 22.4, D/A 0.064 (about 15.6 times shorter than before relocation)
-  - The earlier README did not give the raw-data path for this median, so it could not be confirmed.
+- **E3 median (3 runs, after clearing the standby list with administrator rights).** Before relocation, prefetch + replay 8.04 s, SSD (C: NVMe) direct 0.763 s. After relocation, the prefetch median is 1.05 s (range 0.93~1.63 s) + replay 0.047 s, and the prefetch + replay totals of the 3 runs were 0.97 / 1.09 / 1.68 s.
+  - Ratios (A: replay on the original layout, C: direct replay after relocation, D: prefetch + replay after relocation, E: direct read from the SSD): D/E 1.43, C/E 10.1, A/E 22.4, D/A 0.064 (about 15.6 times shorter than before relocation)
+  - Source: `results/relayout_e3/20261101_225446/summary.json` (the 3 medians and the ratios are in it).
 
 </details>
 
@@ -100,7 +100,7 @@ This was run with the same synthetic dataset (64 files, 2.1 GiB). The HDD cold i
 | After the fix, Python 3.11 | 4.206 | 1.140 |
 | After the fix, Python 3.12 | 3.967 | 0.979 |
 
-- The 3.11 hit of 1.140 ms exceeds this file's criterion of 1.1 ms.
+- The 3.11 hit of 1.140 ms exceeds the 1.1 ms criterion set in `cache_fix_bench.json`.
 - Source: `results/windows_20261101/cache_fix_bench.json`
 
 </details>
@@ -151,15 +151,15 @@ The hot set of Frostpunk is 2,020,769,792 bytes (30,843 blocks) on the D: WDC WD
 
 | Stage | Cold prefetch (pvm), seconds | Direct replay, seconds | Zone position | Share of hot data inside the zone |
 |---|---:|---:|---|---:|
-| Before relocation (original layout, 35 runs) | 15.05 (1 run) | 24.3 (1 run) | Scattered, 15.47~63.08% | Not applicable |
+| Before relocation (original layout, 35 extents) | 15.05 (1 run) | 24.3 (1 run) | Scattered, 15.47~63.08% | Not applicable |
 | First relocation, preservation rule on (earlier value) | 15.13 | 21.7 / 22.6 (2 runs) | Not recorded in the result folder | Not recorded in the result folder |
 | Full move, 42.142% zone, first measurement | 12.06 (median of 3; 11.84\~12.83) | 21.64 (median of 3; 18.94\~27.32) | 42.142% (LCN 205,810,188) | 100% (493,352 of 493,352 clusters) |
 | Full move, 42.142% zone, final layout | 11.93 (median of 3; 11.84\~12.19) | 17.64 (median of 3; 17.51\~18.33) | 42.142% (LCN 205,810,272) | 100% |
-| Full move, high band 90.00% | 19.06 (median of 3; 18.12\~19.08) | 27.86 (median of 3; 27.59\~31.77) | 90.00% (LCN 439,536,840) | 100% |
+| Full move, zone at 90.00% of the volume | 19.06 (median of 3; 18.12\~19.08) | 27.86 (median of 3; 27.59\~31.77) | 90.00% (LCN 439,536,840) | 100% |
 
 - Reading width and queue depth had no effect. In the original layout, queue depth 1, 2, 4, and 8 with 4 MiB requests, queue depth 4 with 1 MiB and 16 MiB requests took 16.05~16.91 s.
 - The WOF compression ratio is 1.014 at 8 KiB chunks and 1.016 at 16 KiB chunks. This saves only 1.4~1.6% of the bytes read, so it is not worth the decompression cost. 97.7% of the hot bytes are in nine `.dat` files, whose ratio is 1.002~1.003.
-- The high band (the outer 90% of the disk) was about 1.6 times slower than the 42% zone (19.06 s against 11.93 s, pvm). The 300 MB/s points of the LBA curve (73.7%, 78.9%, 89.4%, 94.7%, 100%) were measured on empty space, so they are not valid speeds for data.
+- The zone at 90% of the volume (near the end of the LCN range, the slower inner part of an HDD) was about 1.6 times slower than the 42% zone (19.06 s against 11.93 s, pvm). The 300 MB/s points of the LBA curve (73.7%, 78.9%, 89.4%, 94.7%, 100%) were measured on empty space, so they are not valid speeds for data.
 - Conclusion: the default plan now moves everything (preservation off, `--preserve-mib 0`, no segments kept in place). Before, segments of 8 MiB or more were kept in place (preservation on), which gave the earlier cold prefetch value of 15.1 s; the 11.93 s median is the full-move result. The final layout stays in the 42.142% zone. The cost is a larger move, about 2 GB taking 270~280 s.
 
 </details>
@@ -201,7 +201,7 @@ This build reads ahead only in the gaps between game reads. Saturated replay (`b
 | Synthetic random | saturated | 22.2/37.1/32.5 | 20.1/26.3/31.4 | 32.5 | 26.3 | 1.24 | 5/13/11 | 4/12/10 | 47/40/42 | 51 | 0 |
 | Frostpunk contiguous | saturated | 20.5/18.8/21.6 | 19.0/18.1/20.5 | 20.5 | 19.0 | 1.08 | 13/9/9 | 12/8/8 | 117/117/118 | 125~128 | 0.00 |
 | **fpset scattered** | **saturated** | 55.3/49.0/55.8 | 49.2/54.9/49.5 | 55.3 | 49.5 | 1.12 | 12/18/12 | 12/18/12 | 6/17/9 | 18/36/21 | 0.003~0.010 |
-| Synthetic random | gapped | 22.1/19.4/19.4 | 18.6/22.2/22.3 | 19.5 | 22.2 | 0.88 | 6/8/7 | 5/7/6 | 21/45/45 | 26/51/51 | 0 |
+| Synthetic random | gapped | 22.1/19.4/19.4 | 18.6/22.2/22.3 | 19.4 | 22.2 | 0.88 | 6/8/7 | 5/7/6 | 21/45/45 | 26/51/51 | 0 |
 | Frostpunk contiguous | gapped | 23.4/19.3/15.2 | 16.4/19.9/15.1 | 19.3 | 16.4 | 1.18 | 149/135/128 | 148/134/126 | 616/520/600 | 766/656/731 | 0.19/0.16/0.19 |
 | **fpset scattered** | **gapped** | 49.7/41.0/40.0 | 52.2/50.1/41.0 | 41.0 | 50.1 | **0.82** | 150/148/163 | 148/147/162 | 436/479/532 | 589/628/700 | 0.14/0.13/0.17 |
 
@@ -239,7 +239,7 @@ Reads ahead only sequential files, in 16 MiB steps. The total stays at or below 
 
 **E7f: adaptive (`--mode adaptive`)**
 
-Same as bounded, plus a pause while the game's reads over the last 500 ms run at 80 MiB/s or more, and a 200 ms pause when our request latency doubles. Conditions: cold purge before each run; fpset order A,B,B,A,A,B,B,A,A,B (five runs each); Frostpunk three runs. Times are sums of read delays (s). Raw data: [E7f](../results/csharp_e7f_gen/README.md).
+Same as bounded, plus a pause while the game's reads over the last 500 ms run at 80 MiB/s or more, and a 200 ms pause when the read-ahead's own request latency doubles. Conditions: cold purge before each run; fpset order A,B,B,A,A,B,B,A,A,B (five runs each); Frostpunk three runs. Times are sums of read delays (s). Raw data: [E7f](../results/csharp_e7f_gen/README.md).
 
 | Dataset | Replay | A median (s) | B median (s) | A/B | Read-ahead / request | Hit ratio | yielded |
 |---|---|---:|---:|---:|---|---|---|
@@ -452,19 +452,23 @@ These are records of what the service did on one PC (2 TB SMR HDD, 32 GB RAM) on
 
 | Topic | Record |
 |---|---|
-| Prewarm time | Call of Duty, full re-prewarm of 10,025 MiB: 280 s (36 MB/s) and 253 s (40 MB/s). Supplement prewarm of 9,419 MiB: 269 s. League of Legends, 6,268 MiB: 54 s (117 MB/s); 6,321 MiB: 38 s. |
+| Prewarm time | Call of Duty, full re-prewarm of 10,025 MiB: 280 s (36 MiB/s) and 253 s (40 MiB/s). Supplement prewarm of 9,419 MiB: 269 s. League of Legends, 6,268 MiB: 54 s (117 MiB/s); 6,321 MiB: 38 s. |
 | Keeping the prewarm | Call of Duty: at the re-prewarm check 51 minutes after a full prewarm, 2 of 8 samples were slow, so it was read again. Other programs were using memory at the same time. When available memory shrinks, Windows empties the file cache, so a prewarm may not last long. |
 | After the service started | The start prewarm read 1,024 MiB. As the disk became idle the rest was read, and Call of Duty's 10,025 MiB was filled within about 10 minutes. League of Legends, held back by the start limit, was read by a waiting retry 12 minutes later. |
 | Layout recovery | A disturbed layout reached reapply through the 5-minute recheck. One game moved 1 GiB and its zone hit rate rose from 35.3% to 53.1%. For a game whose reapply was rejected because another file occupied part of its zone, the service switched to automatic relocation. It moved only the remaining part to a new place, and a contiguous layout was confirmed. |
 | Drive recovery wait | After relocation, the recovery check took 6 minutes after 581 MB was moved and 149 minutes after 43 MB was moved. The time to confirm recovery was not proportional to the amount moved; it ranged from 6 to 149 minutes. |
-| Play record | Since 0.9.0-beta.33 the service records disk read waits during play (`play record:` log lines, `play_samples.json`). From 1.0.5 the record also holds the frame interval of the game's processes per second (`play.frame_times`, `play.series`). In four plays of Call of Duty on this PC, the share of seconds in a match with a frame interval over 100 ms was 8.0% and 9.7% in the two plays before the service began to hold the cache (while a game runs, the service keeps the game's keep-list mapped as views in its own process so those pages are not pushed out of the standby list; `memory.keep_hold`), and 4.0% and 1.4% in the two plays after it. In the play with 1.4%, most of the held data was released right after the match began, so that play's low share cannot be credited to holding. Several other changes went in between these plays besides holding, the plays differed in free memory, in the programs running alongside, and in match length, and there are only four of them, so this is not a controlled comparison and does not establish the effect of holding. No comparison of load time exists. |
+| Play record | Since 0.9.0-beta.33 the service records disk read waits during play (`play record:` log lines, `play_samples.json`). |
+
+### Frame-interval record (1.0.5 development builds, Call of Duty, four plays)
+
+From 1.0.5 the record also holds the frame interval of the game's processes per second (`play.frame_times`, `play.series`). In four plays of Call of Duty on this PC, the share of seconds in a match with a frame interval over 100 ms was 8.0% and 9.7% in the two plays before the service began to hold the cache (while a game runs, the service keeps the game's keep-list mapped as views in its own process so those pages are not pushed out of the standby list; `memory.keep_hold`), and 4.0% and 1.4% in the two plays after it. In the play with 1.4%, most of the held data was released right after the match began, so that play's low share cannot be credited to holding. Several other changes went in between these plays besides holding, the plays differed in free memory, in the programs running alongside, and in match length, and there are only four of them, so this is not a controlled comparison and does not establish the effect of holding. No comparison of load time exists.
 
 ### Not measured, and not in the log
 
 <details>
 <summary>Details: tables and records</summary>
 
-- Total game load time, in-game frame stutter, and a comparison with and without prewarm.
+- Total game load time, a controlled comparison of in-game frame stutter, and a comparison with and without prewarm.
 - The hit rate at the moment of game start, and any history of the hit rate (only the latest value exists).
 - A split by program version (the log has no version).
 - The effect of the start stream on load times.

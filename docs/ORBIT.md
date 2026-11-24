@@ -107,7 +107,7 @@ It drops to `shadow` automatically on a significant deterioration, two consecuti
 | `<data folder>\disk_model.json` | Per-disk calibration samples. |
 | `<plans>\<game>.orbit.json` | Episodes, interruption risk, and recent decisions. |
 
-Deleting these files makes the build behave as before. The previous build ignores them and the new keys in `auto_status.json`.
+Deleting these files makes the service prewarm in the current order until the calibration and the episode model have been collected again (the mode returns to its default, `active`). The previous build ignores them and the new keys in `auto_status.json`.
 
 <details>
 <summary>Details: orbit.json version 2</summary>

@@ -2,7 +2,7 @@
 
 # Python 연구·측정 도구
 
-이 문서는 저장소의 Python 참조 구현(`bench/`, `prefetch/`, `relayout/`, `astercache_v07.py` 등)의 구성과 실행 방법을 담습니다. C# 최종본의 사용법은 README 와 `csharp/README.md` 를 보십시오.
+이 문서는 저장소의 Python 참조 구현(`bench/`, `prefetch/`, `relayout/`, `astercache_v07.py` 등)의 구성과 실행 방법을 담습니다. C# 최종본의 사용법은 [README.ko.md](../README.ko.md)와 [csharp/README.ko.md](../csharp/README.ko.md)를 보십시오.
 
 ## 구성
 
@@ -11,7 +11,7 @@
 - `relayout/` — 트레이스 기준 핫 블록 계획(`plan.py`), NTFS 제자리 이동(`mover.py`), 계획 적용·검증·되돌리기(`apply.py`), 명령행 진입점(`cli.py`)
 - `scripts/` — 관리자 PowerShell에서 한 번 실행하는 실험 스크립트. `e2_vhdx_trial.ps1`(일회용 VHDX 에서 재배치 시험), `e3_hdd_dataset.ps1`(D:\AsterBench 실측)
 - `sqlite_cache.py` — 블록·SHA-256을 한 행에 저장하는 SQLite 캐시와 원본 검증, 축출, 장애 시 원본 읽기로 전환
-- `astercache_v07.py` — 추적 계획(`plan`), 평가(`evaluate`), 점검(`inspect`), RAM·SSD 예열(`ram-warm`, `ssd-warm`) 명령
+- `astercache_v07.py` — 트레이스 계획(`plan`), 평가(`evaluate`), 점검(`inspect`), RAM·SSD 예열(`ram-warm`, `ssd-warm`) 명령
 - `session_planner.py`, `procmon_import.py` — 이전 버전에서 가져온 학습 계획과 Procmon CSV 가져오기 구성요소. 실제 Windows CSV에서의 동작은 아직 검증하지 않았습니다.
 - `blockcache_v06.py` — 이전 방식과의 비교용으로 보존한 코드
 - `tests/` — 단위·회귀 테스트
@@ -80,13 +80,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\e3_hdd_dataset.ps1 [
 ### 선읽기 계획과 실행 (`prefetch`)
 
 ```bash
-python -m prefetch.cli --plan trace.json --origin-root D:\Games [--strategy physical|path|none] [--budget-mib 1024] [--read-mbps 100] [--seek-ms 12] [--gap-kib N] [--full-file-ratio 0.3] [--threads 1] [--chunk-kib 1024] [--no-reuse] [--seq-hint] [--execute]
+python -m prefetch.cli --plan trace.json --origin-root D:\Games [--strategy physical|path|none] [--budget-mib 1024] [--read-mbps 100] [--seek-ms 12] [--gap-kib N] [--full-file-ratio 0.3] [--threads 1] [--chunk-kib 1024] [--no-reuse] [--method read|pvm|pvm-file|overlapped|mmap-touch] [--seq-hint] [--execute]
 ```
 
 - `--execute`를 붙이지 않으면 실제 읽기 없이 계획만 JSON으로 출력합니다.
 - `--plan`(또는 `--trace`)과 `--origin-root`는 환경변수 `ASTER_TRACE`, `ASTER_ROOT`로 대신할 수 있습니다.
 - `--strategy physical`은 NTFS 할당 구간 기준 물리 위치 정렬, `path`는 경로 정렬, `none`은 정렬 없이 읽습니다.
-- 기본값은 스레드 1(엄격한 존 순서), 청크 1 MiB, 파일 핸들 유지, SEQUENTIAL_SCAN 끔입니다. 재배치 존에서 이 조합이 가장 빨랐습니다(`results/stream_tuning_20261101`). `--no-reuse`는 파일마다 핸들을 닫습니다.
+- 기본값은 `pvm` 방식(존 순서로 `PrefetchVirtualMemory` 한 번 호출), 스레드 1(엄격한 존 순서), 청크 1 MiB, 파일 핸들 유지, SEQUENTIAL_SCAN 끔입니다. 재배치 존에서 이 조합이 가장 빨랐습니다(`results/stream_tuning_20261101`). `--no-reuse`는 파일마다 핸들을 닫습니다.
 - `--gap-kib`의 기본값은 0입니다(간격 값을 바꿔 가며 잰 시험에서 가장 빨랐던 값). `--read-mbps`와 `--seek-ms`는 현재 간격 계산에 쓰지 않습니다.
 
 ### 학습 계획과 예열 (`astercache_v07.py`)
@@ -117,8 +117,10 @@ python -m prefetch.cli --trace relayout_plan.json.prefetch.json --origin-root "D
 
 ### E6 콜드 한계 측정 스크립트 (`bench`, `csharp/scripts`)
 
+E6 은 재배치 전후에 캐시가 빈 상태에서 핫 집합을 얼마나 빨리 읽을 수 있는지(콜드 한계)를 잰 실험이며, 결과는 [측정 결과 요약](RESULTS_SUMMARY.ko.md#e6-콜드-한계-실험-2026-11-02)에 있습니다.
+
 - `bench/lba_curve.py` — 볼륨의 원시 전송 속도 곡선을 읽기 전용으로 잽니다. 20개 지점마다 512 MiB, 4 MiB 요청, 큐 깊이 4 (관리자 권한 필요)
-- `bench/raw_hot_read.py` — 추적한 핫 범위가 디스크의 어느 LCN 에 있는지 조회합니다(관리자 권한 불필요). `--read` 를 주면 LCN 순서로 읽습니다(관리자 권한 필요)
+- `bench/raw_hot_read.py` — 트레이스한 핫 범위가 디스크의 어느 LCN 에 있는지 조회합니다(관리자 권한 불필요). `--read` 를 주면 LCN 순서로 읽습니다(관리자 권한 필요)
 - `bench/wof_ratio.py` — 핫 범위를 8·16 KiB 청크로 나눠 WOF 방식 XPRESS Huffman 압축률을 잽니다(관리자 권한 불필요)
 - `bench/free_runs.py` — 볼륨 비트맵으로 NTFS 볼륨의 빈 구간을 읽기 전용으로 나열합니다(관리자 권한 필요)
 - `csharp/scripts/cs_e6_cold_limit.ps1` — 관리자 권한으로 한 번 실행합니다. 곡선 측정, 원시 읽기, 보존 없이 전부 이동, 재측정, SHA-256 검사를 합니다

@@ -1796,36 +1796,36 @@ public sealed class KeepHoldTests
     }
 
     [Fact]
-    public void WithThePlayBudgetUsedUpTheHoldAgainHoldsWhatIsInMemoryAndStopsAtTheFirstBatchThatReadsFromDisk()
+    public void WithThePlayBudgetUsedUpTheHoldAgainIssuesNoRequestThatCouldReadTheDiskAndSaysWhyOnce()
     {
         Prewarmer p = Make(Reads);
         bool armed = false;
-        RunFor(130, e =>
+        RunFor(250, e =>
         {
             _avail = e == 1 ? 100 : 20000;
             if (e > 1 && !armed)
             {
                 armed = true;
-                _hold.Missing.Add(F(2)); // 첫 배치 (파일 1·2) 에서 경계
                 SpendHoldAgainDisk(p, Prewarmer.HoldAgainDiskCapBytes); // 다 씀
             }
         });
 
         p.TouchAtGameStart(Game("a"), "a.exe");
 
-        string again = Assert.Single(_log.Lines, l => l.Contains("held again after the memory floor released everything"));
-        Assert.Contains("a: cache held while playing (a.exe): 9 MiB of", again); // 파일 1 (캐시에 있음) 과 파일 2 의 경계 앞 한 조각
-        Assert.Contains("disk read cap reached", again);
+        Assert.Equal(1, _opened); // 120 초와 240 초의 재시도 모두 붙들기를 새로 열지 않음
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("held again after the memory floor released everything"));
+        string line = Assert.Single(_log.Lines, l => l.Contains("hold again deferred")); // 두 번의 재시도가 같은 사유라 한 줄
+        Assert.Contains("the disk read cap of the play is used", line);
     }
 
     [Fact]
-    public void WithThePlayBudgetUsedUpAHoldAgainOfWhatIsAllInMemoryStillHoldsEverything()
+    public void WithThePlayBudgetUsedUpTheTwoMinuteCheckDoesNotHoldTheReleasedPartAgain()
     {
-        Prewarmer p = Make(Reads);
+        Prewarmer p = Make(Gib());
         bool armed = false;
         RunFor(130, e =>
         {
-            _avail = e == 1 ? 100 : 20000;
+            _avail = e == 1 ? 1500 : 20000;
             if (e > 1 && !armed)
             {
                 armed = true;
@@ -1835,7 +1835,9 @@ public sealed class KeepHoldTests
 
         p.TouchAtGameStart(Game("a"), "a.exe");
 
-        _ = Assert.Single(_log.Lines, l => l.Contains("a: cache held while playing (a.exe): 48 MiB of") && l.Contains("held again after the memory floor released everything"));
+        Assert.Equal((2048 - 1500 + 256) * Mib, _hold.PendingBytes); // 내놓은 쪽은 그대로 남음
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("cache held again after the memory floor released it"));
+        Assert.Contains(_log.Lines, l => l.Contains("hold again deferred: the disk read cap of the play is used"));
     }
 
     [Fact]

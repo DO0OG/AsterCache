@@ -61,7 +61,7 @@ public interface IKeepHold : IDisposable
     void GiveUp(IReadOnlyList<ReadOp> ranges);
 
     /// 바뀐 파일의 뷰를 닫고, 붙든 쪽이 작업 집합에 있는지 QueryWorkingSetEx (자기 프로세스, 접근 비트를 건드리지 않음) 로 보아 빠진 쪽만 다시 읽어 올립니다.
-    /// 디스크에서 다시 읽힌 양이 refillStopBytes 를 넘으면 그 구간을 목록에서 빼고, 뒤의 빠진 쪽이 있는 구간도 읽지 않고 뺍니다.
+    /// 읽기 수를 조회하기 전에 읽은 양까지 디스크 읽기로 보고 요청이 refillStopBytes 를 넘기 전에 조회하며 (남은 양보다 큰 요청은 자름), 상한에 닿아 읽지 못한 쪽이 남은 구간은 목록에서 빼고 뒤의 빠진 쪽이 있는 구간도 읽지 않고 뺍니다 (상한에 정확히 닿으며 끝까지 읽은 구간은 그대로).
     /// refill 이 거짓이면 (가용 메모리에 여유가 없음) 줄여 간 쪽을 다시 읽어 올리지 않고 그 구간을 붙든 목록에서 뺍니다.
     /// dropOnCap 이 거짓이면 (게임이 로딩 중이라 읽기 상한을 작게 준 점검) 상한에 닿아도 읽지 못한 구간을 붙든 목록에서 빼지 않고 그대로 둡니다 (읽을 수 없는 구간은 그래도 뺌).
     HoldCheckResult Recheck(long refillStopBytes, CancellationToken ct, bool refill = true, bool dropOnCap = true);
@@ -145,6 +145,8 @@ public sealed unsafe class ViewHold : IKeepHold
         public bool Signal = true;
         public bool Boundary;
         public bool Canceled;
+        public long Assumed; // 읽기 수를 조회할 수 없는 동안 읽은 양: 상한에는 디스크 읽기로 세지만 읽은 양 (Disk) 으로 보고하지는 않음
+        public bool CapHit; // 다시 읽기가 상한 때문에 멈춘 (읽지 못한 쪽이 남음) 이거나 측정한 읽기가 상한을 넘음
     }
 
     /// 이보다 작은 파일은 붙들지 않습니다: 16 MiB. 색인·설정류 작은 파일은 붙들어 얻는 이득이 작고 (페이지 수 천 개 미만) 게임이 다시 쓰거나 줄일 가능성이 커서 (붙든 뷰가 있으면 크기 줄이기가 오류 1224 로 실패) 가변 표시가 아직 없어도 뺍니다.
@@ -454,9 +456,9 @@ public sealed unsafe class ViewHold : IKeepHold
                     }
                 }
 
-                if (failed || tally.Disk > refillStopBytes)
+                if (failed || tally.CapHit)
                 {
-                    capReached = tally.Disk > refillStopBytes;
+                    capReached = tally.CapHit;
                     if (failed || dropOnCap)
                     {
                         dropped += Unlock(seg, seg.Live); // 읽을 수 없는 구간이거나 상한을 넘긴 구간 (dropOnCap 이 거짓이면 상한만 넘긴 구간은 그대로 둠)
@@ -865,7 +867,9 @@ public sealed unsafe class ViewHold : IKeepHold
         return runs;
     }
 
-    // 주소 범위를 1 MiB 씩 읽어 작업 집합에 다시 올립니다 (자기 프로세스, 디스크 오류는 반환값으로 옵니다). 끝까지 읽었으면 true. 읽을 수 없으면 failed, 읽기 상한을 넘기거나 취소되면 false.
+    // 주소 범위를 1 MiB 씩 읽어 작업 집합에 다시 올립니다 (자기 프로세스, 디스크 오류는 반환값으로 옵니다). 끝까지 읽었으면 true. 읽을 수 없으면 failed, 읽기 상한에 닿아 못 읽었거나 넘기거나 취소되면 false.
+    // 조각을 읽기 전에 아직 조회하지 않은 양 (SinceCheck) 까지 모두 디스크에서 읽힌 것으로 보고 남은 양을 넘길 것 같으면 먼저 조회하며, 그래도 남은 양이 조각보다 작으면 조각을 쪽 단위로 줄입니다 (남은 양이 쪽 하나도 안 되면 멈춤).
+    // 읽기 수를 조회할 수 없으면 읽은 양을 모두 디스크 읽기로 셉니다 (Assumed). 상한에 정확히 닿으며 끝까지 읽었으면 true 라 그 구간은 유지됩니다.
     private bool ReadRange(nint address, long length, Tally tally, long refillStopBytes, CancellationToken ct, out bool failed)
     {
         failed = false;
@@ -878,6 +882,24 @@ public sealed unsafe class ViewHold : IKeepHold
             }
 
             long n = Math.Min(StandbyTouch.PieceBytes, length - done);
+            if (tally.Signal && tally.SinceCheck > 0 && tally.Disk + tally.Assumed + tally.SinceCheck + n > refillStopBytes)
+            {
+                long unmeasured = tally.SinceCheck;
+                Check(tally); // 요청이 상한을 넘을 수 있으므로 읽기 전에 조회해 실제 읽은 양으로 바꿈
+                tally.Assumed += tally.Signal ? 0 : unmeasured; // 조회에 실패했으면 조회 전에 읽은 양을 모두 디스크 읽기로 셈
+            }
+
+            long room = refillStopBytes - tally.Disk - tally.Assumed - (tally.Signal ? tally.SinceCheck : 0);
+            if (room < n)
+            {
+                n = room & ~(PageBytes - 1);
+                if (n <= 0)
+                {
+                    tally.CapHit = true; // 읽을 것이 남았는데 남은 양이 쪽 하나도 안 됨
+                    return false;
+                }
+            }
+
             long t0 = Stopwatch.GetTimestamp();
             EnsureBuffer();
             bool ok = NativeMethods.ReadProcessMemory(NativeMethods.GetCurrentProcess(), address + (nint)done, (byte*)_buffer, (nuint)n, out nuint got) && (long)got == n;
@@ -890,9 +912,11 @@ public sealed unsafe class ViewHold : IKeepHold
             }
 
             AfterPiece(tally, n, ms);
+            tally.Assumed += tally.Signal ? 0 : n;
             tally.Boundary = false; // 다시 읽기는 경계를 찾지 않음: 디스크에서 다시 읽힌 양의 상한만 봄
             if (tally.Disk > refillStopBytes)
             {
+                tally.CapHit = true;
                 return false;
             }
 

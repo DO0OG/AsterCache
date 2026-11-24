@@ -66,7 +66,7 @@ public sealed partial class Prewarmer
     /// 붙들 목표가 이보다 작으면 붙들지 않습니다.
     public const long HoldMinTargetBytes = 64L << 20;
 
-    /// 다시 붙들기 (하한 때문에 내놓은 것을 되붙듦) 가 한 플레이에서 디스크로 읽는 양의 합의 상한: 1 GiB. 다 쓰면 그 플레이에서는 캐시에 남아 있는 부분만 붙들고 디스크 읽기가 필요한 배치에서 멈춥니다.
+    /// 다시 붙들기 (하한 때문에 내놓은 것을 되붙듦) 가 한 플레이에서 디스크로 읽는 양의 합의 상한: 1 GiB. 다 쓰면 그 플레이에서는 다시 붙들기 요청을 내지 않습니다 (요청이 디스크를 읽을지는 읽어 보기 전에는 알 수 없으므로). 남은 양이 있는 마지막 회차는 묶음 하나 (HoldBatchBytes) 만큼 넘을 수 있습니다.
     /// 근거 (설계 3.2): 다시 붙들기의 디스크 읽기는 회차 상한 (KeepDiskReadCapBytes) 만 있으면 경기 내내 되풀이될 수 있어 플레이 합계에도 상한을 둡니다. 1 GiB 는 처음 붙들기 목표의 5분의 1 이고 실측으로 고른 값이 아닙니다.
     public const long HoldAgainDiskCapBytes = 1L << 30;
 
@@ -144,8 +144,9 @@ public sealed partial class Prewarmer
         FootprintOf(game)?.Mib is { } footprint ? Math.Max(0, footprint - Math.Max(0, (memory.StartAvailMib ?? availMib) - availMib)) : 0;
 
     private const string HoldAgainNoRoom = "available memory leaves no room above the floor and the margin";
+    private const string HoldAgainCapUsed = "the disk read cap of the play is used";
 
-    // 다시 붙들 때 한 회차의 디스크 읽기 상한: 회차 상한과 이 플레이의 남은 합계 가운데 작은 값 (0 이면 디스크 읽기가 필요한 배치에서 멈춤).
+    // 다시 붙들 때 한 회차의 디스크 읽기 상한: 회차 상한과 이 플레이의 남은 합계 가운데 작은 값 (0 이면 다시 붙들기 요청을 내지 않음: HoldAgainCapUsed).
     private static long HoldAgainRoundCap(KeepMemory memory) => Math.Min(KeepDiskReadCapBytes, Math.Max(0, HoldAgainDiskCapBytes - memory.HoldAgainDiskBytes));
 
     // 읽는 스레드의 I/O 우선순위와 CPU 우선순위를 이 범위 안에서만 낮춥니다 (게임의 읽기와 CPU 를 다투지 않게). 스레드 배경 모드는 메모리 우선순위까지 낮추므로 쓰지 않습니다.
@@ -1067,6 +1068,12 @@ public sealed partial class Prewarmer
             return null;
         }
 
+        if (again && HoldAgainRoundCap(memory) <= 0)
+        {
+            NoteHoldSkip(game, exe, $"hold again deferred: {HoldAgainCapUsed}", ref lastSkip); // 합계를 다 썼으면 디스크를 읽을 수 있는 요청을 내지 않음
+            return null;
+        }
+
         targetBytes = again ? HoldAgainTargetBytes(availMib, floorMib) : HoldTargetBytes(availMib, floorMib + GameStillToTakeMib(game, memory, availMib), FootprintOf(game) is null ? HoldUnknownFootprintFraction : PlayTouchAvailableFraction);
         if (targetBytes < HoldMinTargetBytes)
         {
@@ -1529,6 +1536,7 @@ public sealed partial class Prewarmer
                     ?? (target < HoldMinTargetBytes ? HoldAgainNoRoom
                         : cont is not null && hold.HeldBytes >= HoldTargetCapBytes ? "the held amount is at the target cap"
                         : cont is not null && HoldAgainDiskCapBytes - memory.HoldAgainDiskBytes < HoldContinueBytes ? "the disk read cap of the play is used"
+                        : cont is null && HoldAgainRoundCap(memory) <= 0 ? HoldAgainCapUsed // 합계를 다 썼으면 요청 전에 멈춤 (요청하면 디스크에서 읽는 첫 묶음까지 읽음)
                         : null);
                 if (why is not null)
                 {

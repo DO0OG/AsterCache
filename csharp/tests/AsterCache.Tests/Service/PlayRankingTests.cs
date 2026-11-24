@@ -338,4 +338,31 @@ public sealed class PlayRankingTests : IDisposable
 
         Assert.Contains(Merged(touch), r => r.Path.EndsWith("c.bin", StringComparison.Ordinal));
     }
+
+    private static PlayRankedRows Play(TraceEvent[] ranked, TraceEvent[] byScore, params string[] sparse) => new([.. ranked], [.. byScore], new HashSet<string>(sparse, StringComparer.OrdinalIgnoreCase));
+
+    [Fact]
+    public void ThePlayOrderPutsTheHighestScoredBlocksInsideTheReadRangesFirstAndTheBudgetIgnoresBlocksOutsideThem()
+    {
+        // 읽기 범위: A 의 블록 0~3. 점수 순: A9 (범위 밖), A2, A0, A3, A1. 앞 양은 2 블록 (범위 밖 A9 는 예산을 쓰지 않음)
+        IReadOnlyList<ReadOp> reads = [new ReadOp(A, 0, 4 * Block)];
+        PlayRankedRows play = Play([Ev(A, 0), Ev(A, 1), Ev(A, 2), Ev(A, 3), Ev(A, 9)], [Ev(A, 9), Ev(A, 2), Ev(A, 0), Ev(A, 3), Ev(A, 1)]);
+
+        IReadOnlyList<ReadOp> ordered = PlayRanking.PlayReorder(reads, play, 2 * Block);
+
+        Assert.Equal([(2L, 1L), (0L, 2L), (3L, 1L)], ordered.Select(o => (o.Offset / Block, o.Length / Block))); // 앞 2: A2, A0 (점수 순), 그 뒤는 순위 순 (A1, A3), 이어진 A0·A1 은 한 범위
+        Assert.Equal(reads.Sum(r => r.Length), ordered.Sum(r => r.Length)); // 같은 블록은 한 번만, 빠지는 것 없음
+    }
+
+    [Fact]
+    public void SparseFileBlocksDoNotUseTheFrontBudgetAndWithoutPlayRowsThePlayOrderIsTheRankedOrder()
+    {
+        IReadOnlyList<ReadOp> reads = [new ReadOp(A, 0, 3 * Block), new ReadOp(B, 0, 2 * Block)];
+        PlayRankedRows play = Play([Ev(A, 0), Ev(A, 1), Ev(A, 2), Ev(B, 0), Ev(B, 1)], [Ev(B, 1), Ev(B, 0), Ev(A, 2), Ev(A, 1), Ev(A, 0)], B);
+
+        IReadOnlyList<ReadOp> ordered = PlayRanking.PlayReorder(reads, play, 1 * Block);
+
+        Assert.Equal(PlayRanking.Reorder(reads, [Ev(B, 1), Ev(B, 0), Ev(A, 2), Ev(A, 0), Ev(A, 1)]), ordered); // 스파스 B 두 블록은 예산 밖, 일반 파일은 A2 한 블록이 앞
+        Assert.Equal(PlayRanking.Reorder(reads, play.Ranked), PlayRanking.PlayReorder(reads, Play([.. play.Ranked], [])));
+    }
 }

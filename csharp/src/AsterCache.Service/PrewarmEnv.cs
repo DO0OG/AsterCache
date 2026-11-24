@@ -153,6 +153,9 @@ public sealed class PrewarmEnv
     /// 실행 중 유지가 만지는 순서를 정하는 블록 순위 행 (순위 순, 없으면 null → 순서를 바꾸지 않음). 기본은 없음 (시험용), Create 는 저장된 순위 목록.
     public Func<GameSettings, List<TraceEvent>?> RankedRows { get; init; } = _ => null;
 
+    /// 유지 회차·붙들기 목록이 쓰는 경기 가중 중요도 순서의 행 (없으면 null → RankedRows 순서 그대로). 사다리·시작 만지기는 이 값을 쓰지 않고 RankedRows 순서를 따릅니다. 기본은 없음 (시험용), Create 는 저장된 순위 목록.
+    public Func<GameSettings, PlayRankedRows?> PlayRankedRows { get; init; } = _ => null;
+
     /// 핫 집합 스트림 직전에 원래 op 목록으로 장치 표본을 모읍니다.
     public Action<GameSettings, IReadOnlyList<ReadOp>, string?, DiskReadCoordinator.Lease?, CancellationToken, CancellationToken>? DeviceCalibration { get; init; }
 
@@ -239,6 +242,7 @@ public sealed class PrewarmEnv
             KeepProbeSamples = StandbyTouch.Probe,
             ListStamp = PrewarmRun.InputStamp,
             RankedRows = g => LoadRefillPlans.RankedRows(g),
+            PlayRankedRows = g => LoadRefillPlans.PlayRankedRows(g),
             IsSparse = p => FileGuards.IsSparse(p),
             DeviceCalibrationEnabled = orbitRuntime is null ? null : () => orbitRuntime.Mode != "off",
             DeviceCalibration = orbitCalibration is null ? null : (g, ops, antiCheat, lease, ct, limit) =>

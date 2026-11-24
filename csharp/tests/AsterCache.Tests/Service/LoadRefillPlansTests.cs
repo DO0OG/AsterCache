@@ -122,6 +122,53 @@ public sealed class LoadRefillPlansTests : IDisposable
     }
 
     [Fact]
+    public void PlayOrderPutsBlocksReadAfterTheLoadWindowFirstWhileTheSelectionOrderStaysTheSame()
+    {
+        // 두 플레이 (시작 0): 블록 0 은 두 플레이 모두 로드 창 안 (2 점, 플레이 수 2), 블록 1 은 한 플레이의 경기 중 (3 점), 블록 2 는 다른 플레이의 경기 중 (3 점, 지연이 더 작음)
+        IoSummaryStore.WriteForRun(Run(1), Rows([new IoSummaryFile(_gameFile)], Row(0, 0, 2, latencyUs: 700), Row(0, 1, 900, latencyUs: 50)) with { TargetStartsUs = [0] });
+        IoSummaryStore.WriteForRun(Run(2), Rows([new IoSummaryFile(_gameFile)], Row(0, 0, 3, latencyUs: 700), Row(0, 2, 800, latencyUs: 9)) with { TargetStartsUs = [0] });
+        _ = LoadRefillPlans.RebuildRanked(_game, Started);
+
+        Assert.Equal([0L, 1L, 2L], LoadRefillPlans.RankedRows(_game)!.Select(r => r.Offset / Block)); // 예열 선택: 플레이 수, 지연 합 순위 그대로
+        PlayRankedRows play = LoadRefillPlans.PlayRankedRows(_game)!;
+        Assert.Equal([0L, 1L, 2L], play.Ranked.Select(r => r.Offset / Block));
+        Assert.Equal([1L, 2L, 0L], play.ByScore.Select(r => r.Offset / Block)); // 유지·붙들기: 경기 가중 점수 순
+    }
+
+    [Fact]
+    public void ThePlayOrderIsFixedWhenTheRankedFileIsWrittenSoReadingItLaterNeedsNoSortOrAttributeLookup()
+    {
+        IoSummaryStore.WriteForRun(Run(1), Rows([new IoSummaryFile(_gameFile)], Row(0, 0, 2, latencyUs: 700), Row(0, 1, 900, latencyUs: 50)) with { TargetStartsUs = [0] });
+        int sparseLookups = 0;
+
+        _ = LoadRefillPlans.RebuildRanked(_game, Started, path =>
+        {
+            sparseLookups++;
+            return false;
+        });
+        int afterRebuild = sparseLookups;
+        PlayRankedRows first = LoadRefillPlans.PlayRankedRows(_game)!;
+        PlayRankedRows second = LoadRefillPlans.PlayRankedRows(_game)!;
+
+        Assert.Equal(1, afterRebuild); // 파일마다 한 번, 순위 파일을 쓸 때만 (게임이 꺼져 있을 때)
+        Assert.Equal(afterRebuild, sparseLookups); // 목록을 계산하는 호출은 속성 조회를 더하지 않음
+        Assert.Equal(first.ByScore, second.ByScore); // 저장된 순서를 읽을 뿐
+        Assert.Equal([1L, 0L], first.ByScore.Select(r => r.Offset / Block));
+    }
+
+    [Fact]
+    public void WithoutAStoredPlayOrderThereAreNoPlayRows()
+    {
+        IoSummaryStore.WriteForRun(Run(1), Rows([new IoSummaryFile(_gameFile)], Row(0, 0, 2)));
+        _ = LoadRefillPlans.RebuildRanked(_game, Started);
+        string path = LoadRefillPlans.RankedPathOf(_game);
+        File.WriteAllText(path, File.ReadAllText(path).Replace("\"play_order\"", "\"x_play_order\"", StringComparison.Ordinal)); // 점수 순서가 없는 (예전) 순위 파일
+
+        Assert.Null(LoadRefillPlans.PlayRankedRows(_game));
+        Assert.NotNull(LoadRefillPlans.RankedRows(_game)); // 순위는 그대로 읽힘
+    }
+
+    [Fact]
     public void RankedListLeavesOutNoCacheBlocksVolatileUnbufferedAndUnlistedFilesKeepsSparseBlocksAndLogsWhatItDropped()
     {
         string sparse = Path.Combine(Path.GetDirectoryName(_gameFile)!, "sparse.bin");

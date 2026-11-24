@@ -161,8 +161,9 @@ internal static class LoadRefillPlans
 
         LoadRefillList list = LoadRefillPlanner.Collect(Sources(AutoTracer.RawTracePath(g)), Stat, null, LoadRefillPlanner.RankedCapBytes, includeWritten ? file => VolatileFiles.IsGameWritten(file, marked) : null,
             includeWritten ? file => VolatileFiles.IsGameWritten(file, marked) && inner(file) is { } now && history.IsAppendOnly(file, now.Size, recentPlays) : null); // 크기 기록이 충분하고 줄어든 적이 없는 파일은 수정된 플레이의 읽기도 셈
+        list = LoadRefillPlanner.WithPlayOrder(list, isSparse); // 경기 가중 점수 순서와 스파스 표지는 여기서 (게임이 꺼져 있을 때) 한 번 정해 파일에 저장: 게임 중에는 다시 계산하지 않음
         long writtenBlocks = includeWritten ? list.Blocks.Count(b => VolatileFiles.IsGameWritten(b.Path, marked)) : 0;
-        HashSet<string> sparseFiles = [.. list.Files.Keys.Where(isSparse)];
+        HashSet<string> sparseFiles = list.SparseFiles is { } known ? [.. known] : [.. list.Files.Keys.Where(isSparse)]; // 점수 순서를 정할 때 이미 물은 표지를 다시 쓰고, 점수가 없는 목록만 지금 물음 (파일마다 한 번)
         long sparseBlocks = list.Blocks.Count(b => sparseFiles.Contains(b.Path));
         if (list.Plays == 0 && !SummaryPaths(AutoTracer.RawTracePath(g)).Any(File.Exists))
         {
@@ -192,7 +193,17 @@ internal static class LoadRefillPlans
     /// 게임이 끝난 뒤 만들어 둔 파일만 읽고 .io.json 은 읽지 않습니다.
     /// 이 게임의 예열 한 회 (PrewarmRun) 안이면 파일이 바뀌었을 때 새로 읽어 이 회의 선택으로 삼고 (스트림이 읽으면 확정), 그 밖 (사다리·시작 만지기·유지·표본, 다른 게임의 예열 회 안) 이면 기억한 목록을 그대로 씁니다.
     /// 기억한 것이 없으면 (서비스를 막 시작한 때) 지금 파일을 읽어 기억합니다: 그 파일이 마지막 예열 뒤에 바뀌었다면 목록이 어긋날 수 있고, 유지는 그 경우를 스스로 알아차려 순위 없는 순서로 다시 시도합니다.
-    internal static List<TraceEvent>? RankedRows(GameSettings g, CancellationToken cancellationToken = default)
+    internal static List<TraceEvent>? RankedRows(GameSettings g, CancellationToken cancellationToken = default) =>
+        WithRankedPin(g, pin => ToRowsOf(g, pin, cancellationToken));
+
+    /// 유지 회차·붙들기 목록이 쓰는 중요도 순서의 행: 순위 행 (RankedRows 와 같음) 과 경기 가중 점수 순의 행과 스파스 파일 표지 (PlayRanking.PlayReorder 가 앞 2 GiB 를 정함).
+    /// 순위 파일에 점수 순서가 없으면 (구간을 모르는 예전 목록) null → 지금 순서 그대로. 점수 순서와 스파스 표지는 파일에 저장된 것을 읽을 뿐이라 정렬도 파일 속성 조회도 하지 않습니다 (파일 대조는 RankedRows 와 같은 크기·수정 시각 조회 한 번).
+    internal static PlayRankedRows? PlayRankedRows(GameSettings g, CancellationToken cancellationToken = default) =>
+        WithRankedPin(g, pin => PlayRowsOf(g, pin, cancellationToken));
+
+    // 저장된 순위 목록의 기억 (RankedPins·RankedPending 규칙은 RankedRows 의 설명 그대로) 을 구해 make 로 행을 만듭니다.
+    private static T? WithRankedPin<T>(GameSettings g, Func<RankedPin, T?> make)
+        where T : class
     {
         string path = RankedPathOf(g);
         RankedPins.TryGetValue(path, out RankedPin? pin);
@@ -209,7 +220,7 @@ internal static class LoadRefillPlans
                         RankedPending[path] = null;
                     }
 
-                    return inRun ? null : pin is null ? null : ToRowsOf(g, pin, cancellationToken);
+                    return inRun ? null : pin is null ? null : make(pin);
                 }
 
                 RankedPin? current = inRun && RankedPending.TryGetValue(path, out RankedPin? pending) ? pending : pin;
@@ -234,7 +245,27 @@ internal static class LoadRefillPlans
             }
         }
 
-        return pin is null ? null : ToRowsOf(g, pin, cancellationToken);
+        return pin is null ? null : make(pin);
+    }
+
+    private static PlayRankedRows? PlayRowsOf(GameSettings g, RankedPin pin, CancellationToken cancellationToken)
+    {
+        if (pin.List is not { PlayOrder: { } order, SparseFiles: { } sparseFiles } list || list.Blocks.Count == 0)
+        {
+            return null;
+        }
+
+        Func<string, LoadRefillFileStat?> current = StatOf(g, includeWritten: true);
+        var valid = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase); // 두 순서가 파일 대조를 나눠 씀
+        List<TraceEvent> ranked = LoadRefillPlanner.ToRows(list, current, cancellationToken, valid);
+        List<TraceEvent> byScore = LoadRefillPlanner.ToRows(list, order.Select(i => list.Blocks[i]), current, cancellationToken, valid);
+        if (g.SkipSparse)
+        {
+            ranked = [.. ranked.Where(r => !sparseFiles.Contains(r.Path))]; // 스파스 구간을 메모리 예열에서 뺀 게임: ToRowsOf 와 같은 제외 (저장된 표지로)
+            byScore = [.. byScore.Where(r => !sparseFiles.Contains(r.Path))];
+        }
+
+        return ranked.Count == 0 ? null : new PlayRankedRows(ranked, byScore, sparseFiles);
     }
 
     private static List<TraceEvent>? ToRowsOf(GameSettings g, RankedPin pin, CancellationToken cancellationToken)

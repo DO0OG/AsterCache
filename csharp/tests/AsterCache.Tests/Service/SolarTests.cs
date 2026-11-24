@@ -3415,6 +3415,24 @@ public sealed class SolarTests
     }
 
     [Fact]
+    public void TheImportanceOrderOfTheStartTouchIgnoresThePlayOrderRowsAndFollowsTheRankedOrder()
+    {
+        _ranked = [new TraceEvent(@"D:\a\2.bin", 0, 65536), new TraceEvent(@"D:\a\1.bin", 50 * Mib, 65536)];
+        var play = new PlayRankedRows([.. _ranked], [_ranked[1], _ranked[0]], new HashSet<string>());
+        var solar = new Solar(new PrewarmEnv
+        {
+            AvailableRamMib = () => 20000,
+            GameRunning = _ => false,
+            ZoneBytes = _ => 1000 * Mib,
+            TraceExists = _ => true,
+            RankedRows = _ => _ranked,
+            PlayRankedRows = _ => play,
+        }, _log, () => _now);
+
+        Assert.Equal(PlayRanking.Reorder(Reads, _ranked), solar.ImportanceOrder(Game("a"), Reads)); // 점수 순서 행이 있어도 사다리·시작 만지기가 쓰는 순서는 순위 순 그대로
+    }
+
+    [Fact]
     public void TheLadderAfterThePrewarmTheRefreshTheStartTouchAndTheKeepingAllTouchInTheSameImportanceOrder()
     {
         _ranked = [new TraceEvent(@"D:\a\2.bin", 0, 65536), new TraceEvent(@"D:\a\1.bin", 50 * Mib, 65536)];

@@ -27,27 +27,7 @@ public sealed partial class Rewarmer
         if (group.Count > 0)
         {
             _ = RefreshGroup(group, auto, ct, _prewarm.TriggerWaitPending);
-            return;
         }
-
-        // 평소의 상한 (IdleTouchShare) 과 때가 아님으로 쉬는 중에도 밀려날 위험이 가까우면 (재사용 누계가 앞에 있던 양의 절반) 더 높은 상한 (AtRiskTouchShare) 안에서 가장 중요한 범위부터 만짐
-        Solar.AtRiskRun atRisk = AtRiskGroup(Enumerable.Reverse(_prewarm.Warmed()), auto, ct);
-        if (atRisk.Count > 0)
-        {
-            RefreshReport report = new();
-            long started = System.Diagnostics.Stopwatch.GetTimestamp();
-            (int games, _, _) = RefreshGroup([.. atRisk.Games!.Select(a => a.Game)], auto, ct, _prewarm.TriggerWaitPending, limits: atRisk.Games!.ToDictionary(a => a.Game.Name, a => a.Limit, StringComparer.OrdinalIgnoreCase),
-                deadline: TimeSpan.FromSeconds(atRisk.Seconds), report: report);
-            _log.Info($"cache refresh at risk: {string.Join(", ", atRisk.AtRisk!)} reached {SolarPolicy.AtRiskFraction * 100:F0}% of what is ahead repurposed by other memory use, touched {report.Bytes >> 20} MiB in {System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalSeconds:F1} s within {SolarPolicy.AtRiskTouchShare * 100:F0}% of wall time ({atRisk.Seconds:F1} s available{report.Note})");
-        }
-    }
-
-    /// order (순위가 낮은 것부터) 중 밀려날 위험이 가까워 지금 상한 안에서 만질 게임과 게임마다 만질 양 (Solar.AtRiskPlan): 디스크 읽기를 일으키지 않는 만지기라 다른 프로세스의 드라이브 사용량 (바쁨·상태 미확인) 에 막히지 않고, 게임 실행·종료 직후·예산 게이트는 DueGroup 과 같습니다.
-    internal Solar.AtRiskRun AtRiskGroup(IEnumerable<GameSettings> order, AutoSettings auto, CancellationToken ct)
-    {
-        DateTimeOffset now = _now();
-        Lazy<WarmBudgetInfo?> budget = new(_prewarm.WarmBudget);
-        return _prewarm.Solar.AtRiskPlan(order, now, g => Touchable(g, now, auto, budget.Value, ct));
     }
 
     /// order (순위가 낮은 것부터) 중 지금 새로 고칠 묶음 (Solar.DueGroup, 만질 수 있는 게임 하나라도 때가 됐고 직전 묶음 새로 고침 뒤 60초가 지났을 때): 유지 틱과 스트림 도중의 보호가 같은 판정을 씁니다.
@@ -67,12 +47,7 @@ public sealed partial class Rewarmer
     /// 유지 틱의 묶음 새로 고침과 스트림의 보호 (앞·도중·사다리 직전) 네 호출부가 같은 함수를 씁니다. 게이트에 막힌 게임은 건너뛰고 나머지는 계속하며, halted 가 참이거나 취소·재배치가 시작되면 거기서 멈춥니다.
     /// aheadLess: 스트림 도중의 보호가 넘기는, 진행 중인 스트림의 몫 (Solar.Regroup 참고), 그 밖에는 0.
     /// 돌려주는 값: 끝까지 만진 게임 수와 만진 바이트와 그 게임들 (만진 순서, 이름과 바이트).
-    /// limits: 주면 (밀려날 위험이 가까울 때) 거기 든 게임만, 게임마다 그 양까지 가장 중요한 쪽부터 만짐.
-    /// deadline: 주면 (위험할 때의 재참조와 첫 사다리 뒤의 1순위 재참조) 묶음 전체의 실행 기한 (단조 시계) 이고, 기한이 지나거나 halted (대기 중인 트리거·게임 시작) 가 참이 되면 조각 사이에서 멈춰 잠금을 놓습니다 (TouchGuard).
-    /// 이 경우에는 드라이브가 바쁘거나 처리량을 모를 때 파일 표본을 읽지 않고, 만지다 캐시에 없는 곳 (미상주) 을 만나면 그 한 번의 재참조 전체에서 더 만지지 않습니다 (최악의 디스크 읽기 SolarPolicy.BusyDiskReadWorstBytes).
-    /// report: 주면 만진 양과 멈춘 사유를 채움.
-    internal (int Games, long Bytes, IReadOnlyList<(string Game, long Bytes)> Touched) RefreshGroup(IReadOnlyList<GameSettings> order, AutoSettings auto, CancellationToken ct, Func<bool> halted, long aheadLess = 0, IReadOnlyDictionary<string, long>? limits = null,
-        TimeSpan? deadline = null, RefreshReport? report = null)
+    internal (int Games, long Bytes, IReadOnlyList<(string Game, long Bytes)> Touched) RefreshGroup(IReadOnlyList<GameSettings> order, AutoSettings auto, CancellationToken ct, Func<bool> halted, long aheadLess = 0)
     {
         if (!Monitor.TryEnter(_groupLock))
         {
@@ -80,45 +55,27 @@ public sealed partial class Rewarmer
         }
 
         List<(string Game, long Bytes, LadderMark? Previous)> touched = [];
-        bool careful = deadline is not null;
-        using TouchGuard? guard = deadline is { } span ? new TouchGuard(ct, span, halted) : null;
-        CancellationToken token = guard?.Token ?? ct;
         try
         {
             DateTimeOffset now = _now();
             WarmBudgetInfo? budget = _prewarm.WarmBudget();
             foreach (GameSettings g in order)
             {
-                if (token.IsCancellationRequested || halted() || _prewarm.Games.Any(x => _prewarm.Relocating(x.Name)))
+                if (ct.IsCancellationRequested || halted() || _prewarm.Games.Any(x => _prewarm.Relocating(x.Name)))
                 {
                     break;
                 }
 
-                long limit = long.MaxValue;
-                if (limits is not null && !limits.TryGetValue(g.Name, out limit))
-                {
-                    continue; // 상한 안에 들지 못한 덜 중요한 게임은 이번에 만지지 않음
-                }
-
-                bool noSamples = careful && DriveBusy(g); // 바쁘거나 처리량을 모르면 파일 표본 (게임당 최대 8 MiB) 도 디스크 읽기가 될 수 있어 읽지 않음
-                TouchEnd? end = null;
-                if (Touchable(g, now, auto, budget, token) && Refresh(g, token, (previous, bytes) => touched.Add((g.Name, bytes, previous)), limit, noSamples, out end, bytes => report?.Add(bytes))
+                if (Touchable(g, now, auto, budget, ct) && Refresh(g, ct, (previous, bytes) => touched.Add((g.Name, bytes, previous)))
                     && auto.RewarmAfterExitMin > 0 && _prewarm.FirstPlayPriority() is { } first && string.Equals(first.Name, g.Name, StringComparison.OrdinalIgnoreCase))
                 {
                     PullIn(auto, now); // 플레이 1순위 게임의 표본이 식었음: 다음 재예열 점검을 앞당겨 (기존 경로) 곧 다시 읽게 함. 사용자가 앞당김을 끈 (rewarm_after_exit_min <= 0) 설정은 따름
-                }
-
-                if (noSamples && end == TouchEnd.NeedsDiskReads)
-                {
-                    report?.StopByDisk();
-                    break; // 미상주로 판정됨: 바쁜 드라이브에서 이 재참조 전체가 더 읽지 않음 (남은 게임은 재예열 점검에 맡김)
                 }
             }
         }
         finally
         {
             _prewarm.Solar.Regroup(touched, aheadLess); // 중간에 멈췄어도 만진 것은 이미 뒤로 갔으므로 그만큼을 반영
-            report?.Stopped(guard);
             Monitor.Exit(_groupLock);
         }
 
@@ -127,18 +84,10 @@ public sealed partial class Rewarmer
 
     // 새로 고치기 전에 기존 재예열 점검의 표본 (warm/cold 판정) 을 한 번 거칩니다: warm 일 때만 만집니다.
     // 시간 감시만으로는 CPU 선점을 디스크 읽기로 오판할 수 있어서이고, 이미 식었다면 표식을 지우고 재예열 점검에 맡깁니다. 돌려주는 값: 표본이 식어서 재예열 점검에 맡겼는가 (표본을 못 읽은 경우는 거짓).
-    // noSamples: 표본을 읽지 않고 바로 만짐 (바쁘거나 처리량을 모르는 드라이브의 위험·1순위 재참조): 식었는지는 만지다 미상주 경계에서 알게 됨. end: 만지기의 결과 (만지지 않았으면 null).
-    private bool Refresh(GameSettings g, CancellationToken ct, Action<LadderMark, long> touched, long byteLimit, bool noSamples, out TouchEnd? end, Action<long>? reached)
+    private bool Refresh(GameSettings g, CancellationToken ct, Action<LadderMark, long> touched)
     {
-        end = null;
         Solar solar = _prewarm.Solar;
-        ProbeResult? probe = null;
-        bool failed = false;
-        if (!noSamples)
-        {
-            probe = Probe(g, ct, out failed);
-        }
-
+        ProbeResult? probe = Probe(g, ct, out bool failed);
         if (ct.IsCancellationRequested)
         {
             return false; // 게임 시작 등으로 취소됨: 표식은 그대로
@@ -154,7 +103,7 @@ public sealed partial class Rewarmer
             solar.ClearOverlooked(g.Name);
         }
 
-        if (!noSamples && (probe is null || probe.Cold))
+        if (probe is null || probe.Cold)
         {
             // 식었거나 표본을 읽을 수 없으면 (읽지 못한 것은 식은 것과 같이) 표식을 지우고 재예열 점검에 맡깁니다: 30 초마다 표본 읽기를 되풀이하거나 경고를 반복하지 않음.
             string since = solar.ForgetCold(g.Name);
@@ -163,68 +112,27 @@ public sealed partial class Rewarmer
             return probe is { Cold: true };
         }
 
-        end = Run(g, ct, token => solar.Refresh(g, token, touched, byteLimit, reached), "cache refresh");
+        Run(g, ct, token => solar.Refresh(g, token, touched), "cache refresh");
         return false;
     }
 
     // 재예열 점검이 warm 으로 판정한 게임에 표식이 없으면 (서비스를 다시 시작한 뒤) 읽은 범위 전체의 역순으로 첫 사다리를 만듭니다 (표본은 방금 점검에서 읽음).
-    // auto: 주면 (재예열 점검의 첫 사다리) 새 사다리가 플레이 1순위 게임의 뒤에 서지 않게 그 게임을 한 번 더 만짐. 묶음으로 정리하는 호출 (made 가 있음) 은 주지 않음.
-    private void LadderUnmarked(GameSettings g, CancellationToken ct, Action<long>? made = null, AutoSettings? auto = null)
+    private void LadderUnmarked(GameSettings g, CancellationToken ct, Action<long>? made = null)
     {
         Solar solar = _prewarm.Solar;
         if (solar.Enabled && !solar.HasMark(g.Name) && !solar.HasMissing(g.Name) && !solar.HasNothingToTouch(g.Name) && !_prewarm.TriggerWaitPending() && _prewarm.LadderReads(_prewarm.CoveredPart(g)) is { Count: > 0 } reads)
         {
             Run(g, ct, token => solar.Order(g, reads, token, made), "cache ladder");
-            RetouchFirstPriority(g, auto, ct);
-        }
-    }
-
-    // 방금 만든 사다리가 지킬 게임 (플레이 1순위) 의 뒤에 서면 그 게임이 먼저 밀려나므로, 1순위가 이 게임이 아니고 표식이 있으면 한 번 더 만져 가장 늦게 밀려나게 합니다 (예열 스트림 끝의 사다리와 같은 규칙: Prewarmer.LadderAfterStream).
-    private void RetouchFirstPriority(GameSettings g, AutoSettings? auto, CancellationToken ct)
-    {
-        if (auto is null || !_prewarm.Solar.HasMark(g.Name) || _prewarm.FirstPlayPriority() is not { } first
-            || string.Equals(first.Name, g.Name, StringComparison.OrdinalIgnoreCase) || !_prewarm.Solar.HasMark(first.Name))
-        {
-            return;
-        }
-
-        // 실행 기한과 양보 (TouchGuard) 를 두고, 바쁜 드라이브에서는 표본 없이 미상주 경계에서 멈춤. 줄은 실제로 다시 만진 뒤에만 남김
-        (int games, _, _) = RefreshGroup([first], auto, ct, _prewarm.TriggerWaitPending, deadline: TimeSpan.FromSeconds(SolarPolicy.AtRiskBurstSeconds));
-        if (games > 0)
-        {
-            _log.Info($"{g.Name}: ladder ordered, {first.Name} touched again after it as the first play priority");
-        }
-    }
-
-    // 드라이브가 바쁘거나 처리량을 몰라서 (Tick 의 게이트) 점검을 건너뛰는 동안에도 표식이 없는 게임의 첫 사다리는 만듦: 이 만지기는 메모리 안에서만 하고 캐시에 없는 곳에서 멈추므로 다른 프로세스의 드라이브 사용량은 보지 않습니다 (재참조가 상태 미확인 때문에 쉬지 않게).
-    // 다른 게이트 (재배치·게임 실행·예산·대여) 는 사다리 새로 고침과 같이 Touchable 이 봅니다. 표본을 읽거나 디스크에서 다시 읽는 일은 하지 않음.
-    private void LadderWhileBusy(GameSettings g, AutoSettings auto, DateTimeOffset now, WarmBudgetInfo? budget, CancellationToken ct)
-    {
-        if (!_prewarm.Solar.Enabled || !Touchable(g, now, auto, budget, ct))
-        {
-            return;
-        }
-
-        // 한 번의 만지기 (미상주 경계에서 멈추므로 디스크 읽기는 최악 SolarPolicy.BusyDiskReadWorstBytes) 에도 실행 기한을 두고 대기 중인 트리거에 양보함
-        using var guard = new TouchGuard(ct, TimeSpan.FromSeconds(SolarPolicy.AtRiskBurstSeconds), _prewarm.TriggerWaitPending);
-        if (_prewarm.SupplementPending(g.Name))
-        {
-            LadderWaitingSupplement(g, guard.Token, auto: auto);
-        }
-        else
-        {
-            LadderUnmarked(g, guard.Token, auto: auto);
         }
     }
 
     // 보충이 메모리를 기다리는 중인 게임 (매번 한도로 끝나 읽기를 끝내는 회가 없음) 의 첫 사다리: 읽은 범위 (이어 읽을 위치까지) 의 역순으로 만듭니다. 대상 판정은 Prewarmer 가 함 (WaitingSupplementLadderReads).
-    private void LadderWaitingSupplement(GameSettings g, CancellationToken ct, Action<long>? made = null, AutoSettings? auto = null)
+    private void LadderWaitingSupplement(GameSettings g, CancellationToken ct, Action<long>? made = null)
     {
         Solar solar = _prewarm.Solar;
         if (solar.Enabled && !solar.HasMark(g.Name) && !solar.HasMissing(g.Name) && !solar.HasNothingToTouch(g.Name) && !_prewarm.TriggerWaitPending() && _prewarm.WaitingSupplementLadderReads(g) is { Count: > 0 } reads)
         {
             Run(g, ct, token => solar.Order(g, reads, token, made), "cache ladder");
-            RetouchFirstPriority(g, auto, ct);
         }
     }
 
@@ -274,16 +182,15 @@ public sealed partial class Rewarmer
     }
 
     // 디스크 대여 안에서 만집니다 (거절되면 만지지 않음). 실패해도 점검·틱은 계속합니다.
-    private TouchEnd? Run(GameSettings g, CancellationToken ct, Func<CancellationToken, TouchEnd?> work, string purpose)
+    private void Run(GameSettings g, CancellationToken ct, Func<CancellationToken, TouchEnd?> work, string purpose)
     {
         try
         {
-            return _prewarm.UnderLease(g, purpose, ct, work);
+            _ = _prewarm.UnderLease(g, purpose, ct, work);
         }
         catch (Exception e) when (e is not (OperationCanceledException or OutOfMemoryException or StackOverflowException))
         {
             _log.Warn($"{g.Name}: {purpose} failed: {e.GetType().Name}");
-            return null;
         }
     }
 

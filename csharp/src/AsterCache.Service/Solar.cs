@@ -20,16 +20,11 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
     private DateTimeOffset? _groupAt; // 마지막으로 묶음을 새로 고친 (표식을 같은 기준으로 다시 쓴) 시각, 메모리에만 둠, _lock 으로 보호
     private DateTimeOffset _idleTouchBlockedUntil; // 게임이 없을 때 만지는 데 쓴 시간이 벽시계의 IdleTouchShare 를 넘지 않도록 이 시각까지는 묶음 새로 고침을 하지 않음, 메모리에만 둠, _lock 으로 보호
     private bool _idleTouchDeferredNoted; // 위 상한 때문에 미룬 것을 이미 로그에 남겼는가 (상한이 풀리면 비움), _lock 으로 보호
-    private DateTimeOffset _atRiskTouchBase; // 밀려날 위험이 가까울 때의 상한 (AtRiskTouchShare): 이 시각 이후 지난 시간의 AtRiskTouchShare 만큼이 지금 쓸 수 있는 만지기 시간 (최대 AtRiskBurstSeconds), 만질 때마다 쓴 시간을 그 몫으로 나눈 만큼 뒤로 감, 메모리에만 둠, _lock 으로 보호
-    private double _touchBytesPerSecond; // 가장 최근에 게임이 없을 때 만진 속도 (바이트/초): 쓸 수 있는 시간을 만질 양으로 바꿈, 0 이면 모름, 메모리에만 둠, _lock 으로 보호
+    private DateTimeOffset _atRiskTouchBase; // 위험할 때의 상한 (AtRiskTouchShare): 이 시각 뒤 지난 시간의 AtRiskTouchShare 만큼이 쓸 수 있는 만지기 시간 (최대 AtRiskBurstSeconds), 만질 때마다 쓴 시간을 그 몫으로 나눈 만큼 뒤로 감, 메모리에만 둠, _lock 으로 보호
+    private readonly Dictionary<string, double> _touchSeconds = new(StringComparer.OrdinalIgnoreCase); // 게임마다 가장 최근에 새로 고치거나 사다리를 만드는 데 걸린 시간 (초): 위험할 때 5% 안에 들어가는지 어림하는 데만 씀, 메모리에만 둠, _lock 으로 보호
+    private bool _atRiskDeferredNoted; // 5% 상한도 다 써서 미룬 것을 이미 로그에 남겼는가, _lock 으로 보호
 
     private readonly record struct DroppedMark(DateTimeOffset At, long? RepurposedBytes, long AheadBytes);
-
-    /// 밀려날 위험이 가까울 때의 재참조 계획: 만질 게임 (덜 중요한 것부터) 과 게임마다 만질 양 상한, 쓸 수 있는 시간 (초, 실행 기한), 위험하다고 본 게임 이름. 만질 것이 없으면 Games 가 null.
-    internal readonly record struct AtRiskRun(IReadOnlyList<(GameSettings Game, long Limit)>? Games, double Seconds, IReadOnlyList<string>? AtRisk)
-    {
-        public int Count => Games?.Count ?? 0;
-    }
 
     public bool Enabled => env.StandbyLadderEnabled();
 
@@ -121,7 +116,7 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         DiskRead?.Invoke(game, r.DiskBytes);
         if (startExe is null)
         {
-            NoteIdleTouch(r.Seconds, r.Bytes); // 게임 시작 때의 만지기는 상한과 무관
+            NoteIdleTouch(r.Seconds, game.Name); // 게임 시작 때의 만지기는 상한과 무관
         }
 
         switch (r.End)
@@ -234,9 +229,7 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
     /// 표식이 있는 게임의 사다리를 다시 만듭니다 (디스크 읽기 없음). 표식이 없거나 꺼져 있으면 null.
     /// 디스크 읽기가 섞이면 표식을 지우고 다시 채움 표시를 남겨 기존 재예열 점검에 맡깁니다: 재예열은 여기서 부르지 않으며, 재예열이 끝나 사다리가 다시 만들어질 때까지 새로 고치지 않습니다.
     /// touched: 끝까지 만졌을 때 이전 표식과 만진 바이트를 알림 (묶음 새로 고침이 Regroup 에 넘길 값).
-    /// byteLimit: 밀려날 위험이 가까워 상한 안에서 일부만 만질 때 (AtRiskPlan) 만질 양: 사다리의 가장 중요한 쪽 (끝) 에서 이만큼만 만집니다. 일부만 만졌거나 도중에 멈췄으면 표식 (시각·재사용 누계 기준) 은 그대로 둡니다:
-    /// 만지지 못한 범위의 위험 판정이 늦어지지 않게. 만진 양은 다른 게임의 앞에 있는 양에서만 줄이고 (NoteKept), reached 로 알립니다.
-    public TouchEnd? Refresh(GameSettings game, CancellationToken ct, Action<LadderMark, long>? touched = null, long byteLimit = long.MaxValue, Action<long>? reached = null)
+    public TouchEnd? Refresh(GameSettings game, CancellationToken ct, Action<LadderMark, long>? touched = null)
     {
         LadderMark? mark;
         lock (_lock)
@@ -251,11 +244,9 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
 
         long? grown = SolarPolicy.Repurposed(mark, env.Lists());
         long repurposed = grown ?? 0;
-        long ladderBytes = mark.Ladder.Sum(o => o.Length);
-        bool partial = byteLimit < ladderBytes;
-        TouchResult r = env.TouchRanges(partial ? MostImportant(mark.Ladder, byteLimit) : mark.Ladder, ct);
+        TouchResult r = env.TouchRanges(mark.Ladder, ct);
         DiskRead?.Invoke(game, r.DiskBytes);
-        NoteIdleTouch(r.Seconds, r.Bytes);
+        NoteIdleTouch(r.Seconds, game.Name);
         switch (r.End)
         {
             case TouchEnd.Completed:
@@ -263,22 +254,16 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
                 {
                     _ = NoteNothingToTouch(game.Name); // 표식을 지워 틱마다 되풀이하지 않음
                 }
-                else if (partial)
-                {
-                    NoteReached(game.Name, r.Bytes, reached); // 일부만 만짐: 기준 기록은 그대로
-                }
                 else
                 {
                     SetMark(game.Name, mark.Ladder, r);
                     touched?.Invoke(mark, r.Bytes);
-                    reached?.Invoke(r.Bytes);
                 }
 
-                log.Info($"{game.Name}: cache refreshed in memory: {r.Bytes >> 20} MiB in {r.Seconds:F1} s ({repurposed >> 20} MiB repurposed of {mark.AheadBytes >> 20} MiB ahead){(partial ? $", only the most important {byteLimit >> 20} MiB of {ladderBytes >> 20} MiB within the at-risk time share, the rest is still judged from the earlier state" : string.Empty)}{Errors(r)}{Sparse(r)}");
+                log.Info($"{game.Name}: cache refreshed in memory: {r.Bytes >> 20} MiB in {r.Seconds:F1} s ({repurposed >> 20} MiB repurposed of {mark.AheadBytes >> 20} MiB ahead){Errors(r)}{Sparse(r)}");
                 break;
             case TouchEnd.Canceled:
-                NoteReached(game.Name, r.Bytes, reached); // 만진 만큼은 뒤로 갔음: 기준 기록은 그대로 둠 (다음 틱에 다시 시도)
-                log.Info($"{game.Name}: cache refresh stopped after {r.Bytes >> 20} MiB{Errors(r)}{Sparse(r)}");
+                log.Info($"{game.Name}: cache refresh stopped after {r.Bytes >> 20} MiB{Errors(r)}{Sparse(r)}"); // 표식은 그대로 둠: 다음 틱에 다시 시도
                 break;
             default:
                 string since = Since(game.Name, mark, grown);
@@ -293,16 +278,6 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         }
 
         return r.End;
-    }
-
-    // 기준 기록을 새로 쓰지 않고 만진 양만 반영: 다른 게임의 앞에 있는 양에서 줄이고 호출한 쪽에 알림.
-    private void NoteReached(string game, long bytes, Action<long>? reached)
-    {
-        if (bytes > 0)
-        {
-            NoteKept(game, bytes);
-            reached?.Invoke(bytes);
-        }
     }
 
     /// 표식이 있는 게임 (입력 순서 그대로).
@@ -327,6 +302,11 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         MemoryLists? lists = env.Lists();
         if (capped && IdleTouchBlocked(at, out DateTimeOffset until)) // 스트림 도중의 보호는 상한에 막히지 않음 (capped: false)
         {
+            if (AtRiskGroup(marked, lists, at, usable) is { } rushed)
+            {
+                return rushed; // 밀려날 위험이 가까워 평소의 2% 대신 5% 상한 안에서 새로 고침
+            }
+
             // 상한 때문에 미룸: 때가 된 게임이 있어도 만지지 않고 (게이트 판정도 건너뜀), 미루기 시작할 때만 한 줄 남김
             if (marked.Any(m => SolarPolicy.RefreshDue(m.Mark, lists, at)) && NoteIdleTouchDeferred())
             {
@@ -337,85 +317,6 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         }
 
         return marked.Any(m => SolarPolicy.RefreshDue(m.Mark, lists, at) && (usable?.Invoke(m.Game) ?? true)) ? [.. marked.Select(m => m.Game)] : [];
-    }
-
-    /// 밀려날 위험이 가까울 때 (표식이 있는 게임 중 하나라도 재사용 누계가 앞에 있던 양의 SolarPolicy.AtRiskFraction 이상이고 usable 이 참) 의 묶음 (입력 순서 그대로, 게임마다 만질 양 상한) 과 쓸 수 있는 시간 (초, 실행 기한).
-    /// DueGroup 은 평소의 상한 (IdleTouchShare) 에 막혀 위험한데도 쉴 수 있으므로, 그 틈을 이 판정이 메웁니다: 평소의 상한 대신 AtRiskTouchShare 안에서 만지고, 쓸 수 있는 시간을 가장 최근 속도 (모르면 AssumedTouchBytesPerSecond) 로 양으로 바꿔
-    /// 지금 실제로 만질 수 있는 (usable) 게임 가운데 입력의 끝 (가장 중요한 게임) 부터 채웁니다: 게이트에 막힌 게임은 예산을 가져가지 않습니다. 모자라면 덜 중요한 게임이 먼저 빠지거나 일부만 (사다리의 가장 중요한 쪽) 만져집니다.
-    /// 쓸 수 있는 시간이 거의 없으면 빈 목록. 최소 간격 (GroupEvery) 은 만지기를 시도한 시각 기준이라 계획을 세우면 바로 시각을 남깁니다 (만지다 멈춰도 다음 시도는 GroupEvery 뒤).
-    public AtRiskRun AtRiskPlan(IEnumerable<GameSettings> games, DateTimeOffset at, Func<GameSettings, bool>? usable = null)
-    {
-        List<(GameSettings Game, LadderMark Mark)> marked = MarkedPairs(games);
-        DateTimeOffset? last;
-        double allowance;
-        double rate;
-        lock (_lock)
-        {
-            last = _groupAt;
-            allowance = Math.Min(SolarPolicy.AtRiskBurstSeconds, Math.Max(0, SolarPolicy.AtRiskTouchShare * (at - _atRiskTouchBase).TotalSeconds));
-            rate = _touchBytesPerSecond;
-        }
-
-        if (marked.Count == 0 || (last is { } groupAt && at - groupAt < SolarPolicy.GroupEvery) || allowance <= 0)
-        {
-            return default;
-        }
-
-        MemoryLists? lists = env.Lists();
-        if (!marked.Any(m => SolarPolicy.AtRisk(m.Mark, lists)))
-        {
-            return default;
-        }
-
-        bool[] workable = [.. marked.Select(m => usable?.Invoke(m.Game) ?? true)]; // 게이트에 막힌 게임은 예산을 받지 않음
-        if (!marked.Where((m, i) => workable[i] && SolarPolicy.AtRisk(m.Mark, lists)).Any())
-        {
-            return default;
-        }
-
-        long budget = (long)Math.Min(long.MaxValue, allowance * (rate > 0 ? rate : SolarPolicy.AssumedTouchBytesPerSecond));
-        List<(GameSettings Game, long Limit)> plan = [];
-        for (int i = marked.Count - 1; i >= 0 && budget >= SolarPolicy.MinPartialTouchBytes; i--)
-        {
-            if (!workable[i])
-            {
-                continue;
-            }
-
-            long size = marked[i].Mark.Ladder.Sum(o => o.Length);
-            long limit = Math.Min(size, budget);
-            plan.Add((marked[i].Game, limit));
-            budget -= limit;
-        }
-
-        if (plan.Count == 0)
-        {
-            return default;
-        }
-
-        plan.Reverse(); // 만지는 순서는 덜 중요한 것부터 (가장 중요한 것이 가장 늦게 밀려남)
-        lock (_lock)
-        {
-            _groupAt = at;
-        }
-
-        return new AtRiskRun(plan, allowance, [.. marked.Where((m, i) => workable[i] && SolarPolicy.AtRisk(m.Mark, lists)).Select(m => m.Game.Name)]);
-    }
-
-    /// 사다리 (덜 중요한 것부터) 의 끝에서 bytes 만큼: 가장 중요한 쪽을 같은 순서로 돌려줍니다 (경계의 범위는 끝쪽을 자름).
-    private static List<ReadOp> MostImportant(IReadOnlyList<ReadOp> ladder, long bytes)
-    {
-        List<ReadOp> tail = [];
-        long left = bytes;
-        for (int i = ladder.Count - 1; i >= 0 && left > 0; i--)
-        {
-            ReadOp op = ladder[i];
-            tail.Add(op.Length <= left ? op : op with { Offset = op.Offset + op.Length - left, Length = left });
-            left -= Math.Min(op.Length, left);
-        }
-
-        tail.Reverse();
-        return tail;
     }
 
     /// 표식이 있는 게임 (입력 순서 그대로) 중 어느 하나라도 앞으로 readBytes 를 더 읽으면 새로 고칠 때가 되는 경우에만 그 전체를, 아니면 빈 목록: 작은 재예열이 다른 게임의 캐시를 밀어낼 수 없을 때 스트림 앞의 보호 (와 같은 스트림 끝의 보호) 를 건너뛰는 데 씁니다.
@@ -432,9 +333,67 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         return marked.Any(m => SolarPolicy.ReadReaches(m.Mark, lists, readBytes, at)) ? [.. marked.Select(m => m.Game)] : [];
     }
 
+    /// 평소의 2% 상한에 막혔는데 위험한 (SolarPolicy.AtRisk) 게임이 하나라도 있고 지금 만질 수 있으면 (usable) 새로 고칠 묶음 (입력 순서 그대로), 위험하지 않거나 5% 상한도 다 썼으면 null (그러면 평소처럼 미룸).
+    /// 쓸 수 있는 시간은 5% 상한 (AtRiskTouchShare) 의 몫이고 게임마다 가장 최근에 걸린 시간으로 어림합니다. 다 들어가지 않으면 입력의 끝 (1순위 게임) 부터 채워 들어가는 게임만 새로 고치고 (한 게임은 통째로 하거나 이번에는 건너뜀),
+    /// 건너뛴 게임의 기준 기록은 그대로입니다. 새로 고침 자체 (표본, 미상주에서 멈춤, 게이트) 는 평소와 같습니다.
+    private List<GameSettings>? AtRiskGroup(List<(GameSettings Game, LadderMark Mark)> marked, MemoryLists? lists, DateTimeOffset at, Func<GameSettings, bool>? usable)
+    {
+        List<(GameSettings Game, LadderMark Mark)> atRisk = [.. marked.Where(m => SolarPolicy.AtRisk(m.Mark, lists) && (usable?.Invoke(m.Game) ?? true))];
+        if (atRisk.Count == 0)
+        {
+            return null;
+        }
+
+        double allowance;
+        lock (_lock)
+        {
+            allowance = Math.Min(SolarPolicy.AtRiskBurstSeconds, Math.Max(0, SolarPolicy.AtRiskTouchShare * (at - _atRiskTouchBase).TotalSeconds));
+        }
+
+        bool[] chosen = new bool[marked.Count];
+        for (int i = marked.Count - 1; i >= 0; i--) // 입력의 끝이 1순위 게임
+        {
+            double need;
+            lock (_lock)
+            {
+                need = Math.Min(SolarPolicy.AtRiskBurstSeconds, _touchSeconds.GetValueOrDefault(marked[i].Game.Name));
+            }
+
+            if (allowance > 0 && need <= allowance && (usable?.Invoke(marked[i].Game) ?? true))
+            {
+                chosen[i] = true;
+                allowance -= need;
+            }
+        }
+
+        if (!chosen.Any(c => c))
+        {
+            lock (_lock)
+            {
+                if (_atRiskDeferredNoted)
+                {
+                    return null;
+                }
+
+                _atRiskDeferredNoted = true;
+            }
+
+            log.Info($"cache refresh deferred: the eviction risk of {string.Join(", ", atRisk.Select(m => m.Game.Name))} is near but touching time is capped at {SolarPolicy.AtRiskTouchShare * 100:F0}% of wall time too");
+            return null;
+        }
+
+        lock (_lock)
+        {
+            _atRiskDeferredNoted = false;
+        }
+
+        log.Info($"cache refresh brought forward past the {SolarPolicy.IdleTouchShare * 100:F0}% cap, within {SolarPolicy.AtRiskTouchShare * 100:F0}% of wall time: {string.Join("; ", atRisk.Select(m => $"{m.Game.Name} {(SolarPolicy.Repurposed(m.Mark, lists) ?? 0) >> 20} MiB repurposed of {m.Mark.AheadBytes >> 20} MiB ahead"))}{(chosen.All(c => c) ? string.Empty : ", the games that did not fit are left for later")}");
+        return [.. marked.Where((_, i) => chosen[i]).Select(m => m.Game)];
+    }
+
     /// 게임이 없을 때 만지는 데 seconds 초를 썼음을 알립니다 (게임 시작·실행 중의 만지기는 알리지 않음): 다음 묶음 새로 고침은 그 시간의 1/IdleTouchShare 뒤로 미룹니다. 상한 안에서 막지 않고 쓴 만지기 (스트림 앞·뒤의 보호, 사다리) 도 이 계산에는 들어갑니다. 스트림이 읽는 묶음을 곧바로 다시 만드는 시간은 읽는 일의 일부라 넣지 않습니다 (넣으면 묶음마다 50 배씩 쌓여 도중의 보호가 영영 막힘).
-    /// bytes: 그때 만진 양 (알면): 위험할 때 쓸 수 있는 시간을 양으로 바꾸는 속도를 갱신합니다.
-    public void NoteIdleTouch(double seconds, long bytes = 0)
+    /// game: 주면 그 게임이 걸린 시간을 기억해 위험할 때 5% 안에 들어가는지 어림하는 데 씁니다.
+    public void NoteIdleTouch(double seconds, string? game = null)
     {
         if (seconds <= 0)
         {
@@ -446,10 +405,10 @@ internal sealed class Solar(PrewarmEnv env, ILog log, Func<DateTimeOffset> now)
         {
             _idleTouchBlockedUntil = (end > _idleTouchBlockedUntil ? end : _idleTouchBlockedUntil) + SolarPolicy.IdleTouchWait(seconds);
             DateTimeOffset floor = end - SolarPolicy.AtRiskTouchWait(SolarPolicy.AtRiskBurstSeconds); // 쉬는 동안 쌓이는 몫은 AtRiskBurstSeconds 까지
-            _atRiskTouchBase = (_atRiskTouchBase > floor ? _atRiskTouchBase : floor) + SolarPolicy.AtRiskTouchWait(seconds);
-            if (bytes > 0 && seconds >= 0.05)
+            _atRiskTouchBase = (_atRiskTouchBase > floor ? _atRiskTouchBase : floor) + SolarPolicy.AtRiskTouchWait(seconds); // 실제로 걸린 시간만큼 갚음
+            if (game is not null)
             {
-                _touchBytesPerSecond = bytes / seconds;
+                _touchSeconds[game] = seconds;
             }
         }
     }

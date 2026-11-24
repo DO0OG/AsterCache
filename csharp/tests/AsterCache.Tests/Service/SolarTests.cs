@@ -30,8 +30,6 @@ public sealed class SolarTests
     private static GameSettings Game(string name) => Games.Make(name, name + ".exe");
 
     private Action? _onTouch;
-    private TimeSpan? _blockTouch; // 있으면 만지기가 취소되지 않는 한 이 시간만큼 걸림 (실행 기한 시험)
-    private long _touchDiskBytes; // 가짜 세계의 만지기가 디스크에서 읽은 바이트의 합 (파일 표본 읽기는 _probeReads 로 셈)
     private Func<IReadOnlyList<ReadOp>, int[]?>? _keepProbe; // 표본 확인의 결과 (없으면 확인 없음)
     private readonly List<IReadOnlyList<ReadOp>> _keepProbed = [];
 
@@ -58,16 +56,6 @@ public sealed class SolarTests
             _touched.Add(ranges);
             _onTouch?.Invoke();
             TouchResult next = _queued.Count > 0 ? _queued.Dequeue() : _result;
-            if (_blockTouch is { } block)
-            {
-                long started = System.Diagnostics.Stopwatch.GetTimestamp(); // 긴 만지기: 취소 (기한·양보) 를 조각 사이에서 확인하며 기다림
-                while (!ct.IsCancellationRequested && System.Diagnostics.Stopwatch.GetElapsedTime(started) < block)
-                {
-                    Thread.Sleep(5);
-                }
-            }
-
-            _touchDiskBytes += next.DiskBytes;
             return ct.IsCancellationRequested ? next with { End = TouchEnd.Canceled } : next;
         },
     };
@@ -3518,7 +3506,7 @@ public sealed class SolarTests
         _result = _result with { Seconds = 7 };
         _ = solar.Order(Game("a"), Reads, CancellationToken.None); // 7 초 만짐
         solar.Regroup([("a", 100 * Mib, null)]);
-        _lists = new MemoryLists(0, 9000 * Mib, 8000 * Mib); // 때가 됨
+        _lists = new MemoryLists(0, 3500 * Mib, 8000 * Mib); // 때가 됨
 
         Assert.Empty(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(60))); // 최소 간격 60 초는 지났지만 상한이 막음
         Assert.Empty(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(349)));
@@ -3532,7 +3520,7 @@ public sealed class SolarTests
         Solar solar = Make(); // 0.4 초를 만지면 20 초 뒤부터 허용
         _ = solar.Order(Game("a"), Reads, CancellationToken.None);
         solar.Regroup([("a", 100 * Mib, null)]);
-        _lists = new MemoryLists(0, 9000 * Mib, 8000 * Mib);
+        _lists = new MemoryLists(0, 3500 * Mib, 8000 * Mib);
 
         Assert.Empty(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(59)));
         Assert.Single(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(60)));
@@ -3546,7 +3534,7 @@ public sealed class SolarTests
         _result = _result with { Seconds = 7 };
         _ = solar.Order(Game("a"), Reads, CancellationToken.None, startExe: "a.exe"); // 게임 시작 때의 만지기
         _ = solar.TouchFront(Game("a"), Reads, CancellationToken.None, "a.exe", keeping: true); // 게임 실행 중 유지
-        _lists = new MemoryLists(0, 9000 * Mib, 8000 * Mib);
+        _lists = new MemoryLists(0, 3500 * Mib, 8000 * Mib);
 
         Assert.Single(solar.DueGroup([Game("a")], _now)); // 7 초씩 두 번 썼지만 상한과 무관
 
@@ -3567,7 +3555,7 @@ public sealed class SolarTests
         Prewarmer p = MakePrewarmer(Game("a"));
         _ = p.Run(Game("a"), "service start");
         _touched.Clear();
-        GrowReuse(1000 + 3500); // 때는 됐지만 (0.4 x 7900 = 3160) 밀려날 위험 (0.5 x 7900 = 3950) 에는 못 미침
+        GrowReuse(1000 + 3500); // 때 (0.4 x 7900 = 3160) 는 됐지만 밀려날 위험 (0.5 x 7900 = 3950) 에는 못 미침
         _now += TimeSpan.FromMinutes(4);
 
         p.Tick(Auto());
@@ -3796,7 +3784,7 @@ public sealed class SolarTests
         Assert.Contains(_log.Lines.Skip(logged), l => l.Contains("b: ladder ordered, a touched again after it as the first play priority"));
     }
 
-    // ---- 밀려날 위험이 가까울 때의 재참조 (이슈 #358) ----
+    // ---- 밀려날 위험이 가까울 때 2% 대신 5% 상한 (이슈 #358) ----
 
     [Theory]
     [InlineData(10000, 4999, false)] // A 10000 MiB 의 0.5 배 = 5000 MiB 미만
@@ -3813,340 +3801,86 @@ public sealed class SolarTests
     }
 
     [Fact]
-    public void TheWorstDiskReadOfATouchOnABusyDriveIsOneFaultCheckBatch()
-    {
-        Assert.Equal(64L << 20, SolarPolicy.BusyDiskReadWorstBytes);
-        Assert.Equal(StandbyTouch.FaultCheckBytes, SolarPolicy.BusyDiskReadWorstBytes);
-    }
-
-    private static readonly ReadOp[] Big = [new ReadOp(@"D:\a\1.bin", 0, 1000 * Mib)];
-
-    [Fact]
-    public void WhenTheTwoPercentCapBlocksTheNormalGroupTheAtRiskPlanStillTouchesTheWholeGroupAndNotWhenThereIsNoRisk()
+    public void BelowTheRiskTheTwoPercentCapHoldsTheRefreshBackAsBefore()
     {
         Solar solar = Make();
         _result = _result with { Seconds = 7 };
-        _ = solar.Order(Game("a"), Reads, CancellationToken.None); // 7 초 만짐: 평소의 상한으로는 350 초 뒤
-        solar.Regroup([("a", 100 * Mib, null)]);
-        _lists = new MemoryLists(0, 3000 * Mib, 8000 * Mib); // 3000 MiB 재사용: 때 (0.4 x 7900 = 3160) 도 위험 (3950) 도 아님
-        Assert.Equal(0, solar.AtRiskPlan([Game("a")], _now + TimeSpan.FromSeconds(60)).Count);
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None); // 7 초 만짐: 2% 상한으로는 350 초 뒤
+        _lists = new MemoryLists(0, 3500 * Mib, 8000 * Mib); // 때 (3160) 는 됐지만 위험 (3950) 은 아님
 
-        _lists = new MemoryLists(0, 4000 * Mib, 8000 * Mib); // 위험 (3950 MiB 이상)
-
-        Assert.Empty(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(60))); // 평소의 판정은 상한에 막힘
-        Solar.AtRiskRun run = solar.AtRiskPlan([Game("a")], _now + TimeSpan.FromSeconds(60));
-        (GameSettings game, long limit) = Assert.Single(run.Games!);
-        Assert.Equal(("a", 30 * Mib), (game.Name, limit)); // 목록 전체 (30 MiB) 를 만짐
-        Assert.Equal(["a"], run.AtRisk);
-        Assert.InRange(run.Seconds, 7.9, 8.1); // 쓸 수 있는 시간: 7 초를 갚은 뒤 160 초 x 5%
-        Assert.DoesNotContain(_log.Lines, l => l.Contains("cache refresh at risk")); // 줄은 실제로 만진 뒤에만 (Rewarmer 가 남김)
+        Assert.Empty(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(60)));
+        Assert.Single(_log.Lines, l => l.Contains("cache refresh deferred: touching time is capped at 2%"));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("brought forward"));
+        Assert.Single(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(350)));
     }
 
     [Fact]
-    public void TheAtRiskPlanCountsTheGroupIntervalFromTheAttemptAndHasNothingToSpendRightAfterAMaxBurstTouch()
+    public void WhenTheEvictionIsNearAndTheTwoPercentCapHoldsBackTheRefreshItRunsWithinTheFivePercentShare()
+    {
+        Solar solar = Make();
+        _result = _result with { Seconds = 7 };
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        _lists = new MemoryLists(0, 4000 * Mib, 8000 * Mib); // 위험 (3950 MiB 이상)
+
+        IReadOnlyList<GameSettings> group = solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(60)); // 2% 로는 350 초 뒤, 5% 몫은 7 초를 갚은 뒤 8 초
+
+        Assert.Equal(["a"], group.Select(g => g.Name));
+        Assert.Single(_log.Lines, l => l.Contains("cache refresh brought forward past the 2% cap, within 5% of wall time: a 4000 MiB repurposed of 7900 MiB ahead"));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("cache refreshed in memory")); // 정했다는 줄일 뿐: 새로 고친 뒤의 줄은 새로 고침이 남김
+    }
+
+    [Fact]
+    public void WhenTheFivePercentShareIsUsedUpTooTheRefreshIsDeferredAndComesBackWhenItHasBuiltUp()
     {
         Solar solar = Make();
         _result = _result with { Seconds = 12 };
-        _ = solar.Order(Game("a"), Reads, CancellationToken.None); // 최대로 몰아 쓴 12 초: 쓸 몫이 0
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None); // 12 초: 5% 몫이 0 으로 내려감
         _lists = new MemoryLists(0, 9000 * Mib, 8000 * Mib);
 
-        Assert.Equal(0, solar.AtRiskPlan([Game("a")], _now).Count); // 몫이 없음
-        Assert.Equal(0, solar.AtRiskPlan([Game("a")], _now + TimeSpan.FromSeconds(60)).Count); // 60 초에 3 초 = 이 속도로 25 MiB < 64 MiB 하한
-        Assert.Equal(1, solar.AtRiskPlan([Game("a")], _now + TimeSpan.FromSeconds(240)).Count);
-        Assert.Equal(0, solar.AtRiskPlan([Game("a")], _now + TimeSpan.FromSeconds(299)).Count); // 만지기를 시도한 시각부터 60 초 (새 표식이 쓰이지 않아도)
-        Assert.Equal(1, solar.AtRiskPlan([Game("a")], _now + TimeSpan.FromSeconds(300)).Count);
+        Assert.Empty(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(60))); // 몫 3 초 < 12 초
+        Assert.Empty(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(61)));
+        Assert.Single(_log.Lines, l => l.Contains("the eviction risk of a is near but touching time is capped at 5% of wall time too"));
+
+        Assert.Single(solar.DueGroup([Game("a")], _now + TimeSpan.FromSeconds(240))); // 몫 12 초
     }
 
     [Fact]
-    public void WhenTheShareFallsShortTheLessImportantGameIsCutFirstAndTheMostImportantRangesOfEachGameComeFirst()
+    public void WhenNotEveryGameFitsTheFirstPlayPriorityGameIsRefreshedFirstAndTheOthersAreLeftWithTheirRecordedState()
     {
         Solar solar = Make();
-        _result = new TouchResult(2250 * Mib, 4.5, 0, 0, TouchEnd.Completed); // 속도 500 MiB/s, 4.5 초 쓸 때마다 90 초 뒤로
-        _ = solar.Order(Game("a"), Big, CancellationToken.None);
-        _ = solar.Order(Game("b"), Big, CancellationToken.None); // 쓸 수 있는 시간 3 초 = 1500 MiB (b 전체 1000 + a 일부 500)
-        _lists = new MemoryLists(0, 9000 * Mib, 8000 * Mib);
+        _result = _result with { Seconds = 5 };
+        _ = solar.Order(Game("a"), Reads, CancellationToken.None);
+        _ = solar.Order(Game("b"), Reads, CancellationToken.None); // 2% 로는 500 초 뒤, 5% 몫은 100 초에 7 초 (한 게임 5 초씩)
+        _lists = new MemoryLists(0, 4500 * Mib, 8000 * Mib);
 
-        Solar.AtRiskRun run = solar.AtRiskPlan([Game("a"), Game("b")], _now); // 입력은 덜 중요한 것부터: b 가 가장 중요
+        IReadOnlyList<GameSettings> group = solar.DueGroup([Game("a"), Game("b")], _now + TimeSpan.FromSeconds(100)); // 입력은 순위가 낮은 것부터: b 가 1순위
 
-        Assert.Equal([("a", 500 * Mib), ("b", 1000 * Mib)], run.Games!.Select(p => (p.Game.Name, p.Limit)).ToArray()); // 만지는 순서는 덜 중요한 a 가 먼저
-        _touched.Clear();
-        _ = solar.Refresh(Game("a"), CancellationToken.None, null, 500 * Mib);
-        Assert.Equal([new ReadOp(@"D:\a\1.bin", 500 * Mib, 500 * Mib)], _touched.Single()); // 가장 중요한 쪽 (사다리의 끝) 500 MiB 만
-
-        _touched.Clear();
-        _ = solar.Refresh(Game("a"), CancellationToken.None); // 표식의 사다리는 전체로 남아 다음 새로 고침은 전부 만짐
-        Assert.Equal(1000 * Mib, _touched.Single().Sum(o => o.Length));
+        Assert.Equal(["b"], group.Select(g => g.Name)); // 둘 다는 10 초라 들어가지 않음: 1순위만
+        Assert.Contains(_log.Lines, l => l.Contains("the games that did not fit are left for later"));
+        Assert.True(solar.HasMark("a")); // 건너뛴 게임의 기준 기록은 그대로
+        Assert.Equal(["a", "b"], solar.DueGroup([Game("a"), Game("b")], _now + TimeSpan.FromSeconds(300)).Select(g => g.Name)); // 몫이 쌓이면 둘 다
     }
 
     [Fact]
-    public void WithoutAKnownSpeedTheShareIsStillTurnedIntoAnAmountWithAnAssumedSlowSpeed()
-    {
-        Solar solar = Make();
-        _result = new TouchResult(100 * Mib, 0.01, 0, 0, TouchEnd.Completed); // 너무 짧아 속도를 잴 수 없음
-        _ = solar.Order(Game("a"), [new ReadOp(@"D:\a\1.bin", 0, 20000 * Mib)], CancellationToken.None);
-        _lists = new MemoryLists(0, 9000 * Mib, 8000 * Mib);
-
-        Solar.AtRiskRun run = solar.AtRiskPlan([Game("a")], _now);
-
-        long limit = Assert.Single(run.Games!).Limit;
-        long expected = (long)(SolarPolicy.AtRiskBurstSeconds * SolarPolicy.AssumedTouchBytesPerSecond);
-        Assert.InRange(limit, expected - (64 << 20), expected + (4 << 20)); // 12 초 x 가정한 속도, 제한 없음이 아님
-    }
-
-    [Fact]
-    public void AGameThatCannotBeTouchedNowDoesNotTakeTheBudgetOfOneThatCan()
-    {
-        Solar solar = Make();
-        _result = new TouchResult(2250 * Mib, 4.5, 0, 0, TouchEnd.Completed);
-        _ = solar.Order(Game("a"), Big, CancellationToken.None);
-        _ = solar.Order(Game("b"), Big, CancellationToken.None); // 쓸 수 있는 시간 3 초 = 1500 MiB
-        _lists = new MemoryLists(0, 9000 * Mib, 8000 * Mib);
-
-        Solar.AtRiskRun run = solar.AtRiskPlan([Game("a"), Game("b")], _now, g => g.Name != "b"); // 위쪽 b 가 게이트에 막힘
-
-        Assert.Equal([("a", 1000 * Mib)], run.Games!.Select(p => (p.Game.Name, p.Limit)).ToArray()); // a 가 b 의 몫을 가져가지 못하는 일 없이 전체를 받음
-        Assert.Equal(0, solar.AtRiskPlan([Game("a"), Game("b")], _now + TimeSpan.FromSeconds(90), g => false).Count); // 만질 수 있는 게임이 없으면 계획도 없음
-    }
-
-    [Fact]
-    public void APartialRefreshLeavesTheEarlierStateSoTheRangesItDidNotTouchAreStillJudgedAtRisk()
-    {
-        Solar solar = Make();
-        _ = solar.Order(Game("a"), Big, CancellationToken.None);
-        _lists = new MemoryLists(0, 4500 * Mib, 8000 * Mib); // 위험 (0.5 x 7000 = 3500 MiB 이상)
-        long reached = 0;
-        bool full = false;
-
-        _ = solar.Refresh(Game("a"), CancellationToken.None, (_, _) => full = true, 300 * Mib, b => reached += b);
-
-        Assert.False(full); // 새 표식 (기준 기록) 을 쓰지 않음
-        Assert.Equal(100 * Mib, reached); // 가짜 만지기가 돌려준 양
-        _now += TimeSpan.FromMinutes(5);
-        Assert.Equal(1, solar.AtRiskPlan([Game("a")], _now).Count); // 만지지 못한 범위는 여전히 위험
-
-        _ = solar.Refresh(Game("a"), CancellationToken.None, (_, _) => full = true); // 전체를 끝까지 만지면 새 기준
-        Assert.True(full);
-        _now += TimeSpan.FromMinutes(5);
-        Assert.Equal(0, solar.AtRiskPlan([Game("a")], _now).Count);
-    }
-
-    // 두 게임 (a 가 1순위, 둘 다 표식이 있음) 을 예열한 서비스: 평소의 상한은 250 초 뒤이고 재사용이 위험 (앞에 있던 양의 절반) 에 닿음
-    private Prewarmer TwoGamesAtRisk()
-    {
-        GrowReuse(1000);
-        _result = new TouchResult(6000 * Mib, 5, 0, 0, TouchEnd.Completed); // 5 초 만짐 (평소의 상한은 250 초 뒤), 속도 1200 MiB/s
-        Prewarmer p = MakePrewarmer(Game("a"), Game("b"));
-        PlayOrderIsAThenB(p);
-        Assert.True(p.Run(Game("a"), "service start").Ran);
-        _now += TimeSpan.FromMinutes(2);
-        Assert.True(p.Run(Game("b"), "service start").Ran);
-        _result = new TouchResult(100 * Mib, 0.4, 0, 0, TouchEnd.Completed);
-        _touched.Clear();
-        _streamer.Calls.Clear();
-        _now += TimeSpan.FromMinutes(2);
-        GrowReuse(1000 + 5000); // 위험: 앞에 있던 양 7800 MiB 의 0.5 배 (3900) 를 넘음
-        return p;
-    }
-
-    [Theory]
-    [InlineData(false, false, 1)] // 한가하고 상태를 앎: 기존처럼 표본 점검을 하고 만짐
-    [InlineData(true, false, 0)] // 바쁨
-    [InlineData(false, true, 0)] // 처리량을 모름
-    public void WhenEvictionIsNearTheTickTouchesThroughTheTwoPercentCapAndNeverReadsSamplesOnABusyOrUnknownDrive(bool busy, bool unknown, int samplesPerGame)
-    {
-        Prewarmer p = TwoGamesAtRisk();
-        (_diskBusy, _diskUnknown) = (busy, unknown);
-        int probes = _probeReads;
-        _touchDiskBytes = 0;
-
-        p.Tick(Auto());
-
-        Assert.Equal(2, _touched.Count); // 평소의 상한 (250 초) 안인데도 두 게임을 만짐
-        Assert.Equal(probes + 2 * samplesPerGame, _probeReads); // 바쁘거나 모르면 파일 표본 읽기 0
-        Assert.Equal(0, _touchDiskBytes); // 가짜 세계의 물리 읽기 0
-        Assert.Empty(_streamer.Calls); // 예열 스트림도 없음
-        Assert.Single(_log.Lines, l => l.Contains("cache refresh at risk: ") && l.Contains("reached 50%") && l.Contains("touched 200 MiB") && l.Contains("within 5% of wall time"));
-        Assert.Contains(_log.Lines, l => l.Contains("a: cache refreshed in memory"));
-    }
-
-    [Fact]
-    public void OnABusyDriveTheFirstDataMissingFromMemoryEndsTheWholeRefreshWithAtMostOneBatchOfDiskReads()
-    {
-        Prewarmer p = TwoGamesAtRisk();
-        _diskBusy = true;
-        _result = new TouchResult(30 * Mib, 0.2, 40, 0, TouchEnd.NeedsDiskReads, 30 * Mib); // 미상주 경계: 한 묶음 안에서 디스크 읽기가 보여 멈춤
-        int probes = _probeReads;
-        _touchDiskBytes = 0;
-
-        p.Tick(Auto());
-
-        Assert.Single(_touched); // 첫 게임에서 미상주로 판정된 뒤 다른 게임은 만지지 않음
-        Assert.Equal(probes, _probeReads);
-        Assert.InRange(_touchDiskBytes, 1, SolarPolicy.BusyDiskReadWorstBytes);
-        Assert.Empty(_streamer.Calls); // 읽기는 재예열 점검에 맡김
-        Assert.Contains(_log.Lines, l => l.Contains("cache refresh at risk") && l.Contains("stopped at data missing from memory"));
-    }
-
-    [Fact]
-    public void OnADriveKnownToBeIdleAMissingGameDoesNotEndTheRefreshOfTheOthers()
-    {
-        Prewarmer p = TwoGamesAtRisk();
-        _result = new TouchResult(30 * Mib, 0.2, 40, 0, TouchEnd.NeedsDiskReads, 3 * Mib);
-
-        p.Tick(Auto());
-
-        Assert.Equal(2, _touched.Count); // 기존 동작 그대로
-    }
-
-    [Fact]
-    public void TheRefreshStopsAtItsTimeLimitInsteadOfFollowingTheEstimatedSpeedAndLeavesTheEarlierState()
-    {
-        GrowReuse(1000);
-        _result = new TouchResult(6000 * Mib, 12, 0, 0, TouchEnd.Completed); // 12 초 만짐: 쓸 몫이 0, 속도 500 MiB/s
-        Prewarmer p = MakePrewarmer(Game("a"));
-        Assert.True(p.Run(Game("a"), "service start").Ran);
-        _result = new TouchResult(100 * Mib, 0.4, 0, 0, TouchEnd.Completed);
-        _touched.Clear();
-        p.Solar.NoteIdleTouch(2.8, 1400 * Mib); // 쓴 시간을 56 초 뒤로 미룸: 61 초 뒤 (최근 예열 1분 뒤) 쓸 수 있는 시간은 0.25 초 (실제 시계로 기한이 됨)
-        _now += TimeSpan.FromSeconds(61);
-        GrowReuse(1000 + 5000);
-        _blockTouch = TimeSpan.FromSeconds(5); // 속도 어림보다 훨씬 오래 걸리는 만지기
-        long started = System.Diagnostics.Stopwatch.GetTimestamp();
-
-        p.Tick(Auto());
-
-        Assert.InRange(System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalSeconds, 0, 3); // 5 초를 기다리지 않고 기한에서 멈춤
-        Assert.Single(_touched);
-        Assert.Contains(_log.Lines, l => l.Contains("cache refresh at risk") && l.Contains("stopped at the time limit"));
-        Assert.True(p.Solar.HasMark("a")); // 기준 기록은 그대로
-    }
-
-    [Fact]
-    public void ARefreshInProgressYieldsAtOnceToATriggerThatStartsToWait()
-    {
-        GrowReuse(1000);
-        _result = new TouchResult(6000 * Mib, 12, 0, 0, TouchEnd.Completed);
-        Prewarmer p = MakePrewarmer(Game("a"));
-        Assert.True(p.Run(Game("a"), "service start").Ran);
-        _result = new TouchResult(100 * Mib, 0.4, 0, 0, TouchEnd.Completed);
-        _touched.Clear();
-        _now += TimeSpan.FromSeconds(240); // 쓸 수 있는 시간 12 초
-        GrowReuse(1000 + 5000);
-        _blockTouch = TimeSpan.FromSeconds(10);
-        IDisposable? waiting = null;
-        _onTouch = () => _ = Task.Run(() =>
-        {
-            Thread.Sleep(100);
-            waiting = p.BeginTriggerWait([Game("b")]); // 만지는 도중 트리거 예열이 기다리기 시작함
-        });
-        long started = System.Diagnostics.Stopwatch.GetTimestamp();
-
-        p.Tick(Auto());
-
-        waiting?.Dispose();
-        Assert.InRange(System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalSeconds, 0, 5); // 10 초를 기다리지 않음
-        Assert.Contains(_log.Lines, l => l.Contains("cache refresh at risk") && l.Contains("stopped for a waiting trigger"));
-    }
-
-    [Fact]
-    public void TheTouchGuardStopsAtItsDeadlineAndTellsItApartFromAYieldOrAnOuterCancel()
-    {
-        using (var late = new TouchGuard(CancellationToken.None, TimeSpan.FromMilliseconds(40), () => false))
-        {
-            Assert.True(late.Token.WaitHandle.WaitOne(2000));
-            Assert.True(late.DeadlineHit);
-            Assert.False(late.Yielded);
-        }
-
-        using (var yielding = new TouchGuard(CancellationToken.None, TimeSpan.FromSeconds(30), () => true))
-        {
-            Assert.True(yielding.Token.WaitHandle.WaitOne(2000));
-            Assert.True(yielding.Yielded);
-            Assert.False(yielding.DeadlineHit);
-        }
-
-        using var outer = new CancellationTokenSource();
-        using var guard = new TouchGuard(outer.Token, TimeSpan.FromSeconds(30), () => false);
-        outer.Cancel();
-        Assert.True(guard.Token.IsCancellationRequested);
-        Assert.False(guard.DeadlineHit);
-    }
-
-    [Fact]
-    public void WithoutRiskTheTwoPercentCapStillDefersAndThenResumesTheTouch()
+    public void ATickWithTheEvictionNearRefreshesTheFirstPlayPriorityGameWhenOnlyOneFitsAndLeavesTheOtherMarkAlone()
     {
         GrowReuse(1000);
         _result = _result with { Seconds = 5 };
-        _streamer.Batches.AddRange(TwoBatches());
-        Prewarmer p = MakePrewarmer(Game("a"));
-        _ = p.Run(Game("a"), "service start");
-        _touched.Clear();
-        GrowReuse(1000 + 3500); // 때 (3160) 는 됐지만 위험 (3950) 은 아님
-        _now += TimeSpan.FromMinutes(1);
-
-        p.Tick(Auto());
-
-        Assert.Empty(_touched);
-        Assert.DoesNotContain(_log.Lines, l => l.Contains("cache refresh at risk"));
-        Assert.Contains(_log.Lines, l => l.Contains("cache refresh deferred"));
-
-        _now += TimeSpan.FromMinutes(5); // 상한이 풀림
-        p.Tick(Auto());
-
-        Assert.Single(_touched); // 재개
-    }
-
-    [Fact]
-    public void AGameWithoutAMarkGetsItsFirstLadderEvenWhileTheDriveIsBusyOrItsLoadUnknownWithoutSamples()
-    {
-        GrowReuse(1000);
-        _enabled = false;
-        Prewarmer p = MakePrewarmer(Game("a"));
-        _ = p.Run(Game("a"), "service start");
-        _enabled = true;
-        _streamer.Calls.Clear();
-        int probes = _probeReads;
-        _diskUnknown = true;
-        AutoSettings auto = Auto();
-        p.Tick(auto);
-        _now += TimeSpan.FromMinutes(10.5);
-
-        p.Tick(auto); // 점검은 게이트에 막힘 (바쁨 또는 상태 미확인)
-
-        Assert.True(p.Solar.HasMark("a"));
-        Assert.Equal(3, _touched.Single().Count);
-        Assert.Equal(probes, _probeReads); // 표본을 읽지 않음
-        Assert.Empty(_streamer.Calls);
-        Assert.Contains(_log.Lines, l => l == "Info: a: rewarm check skipped (the game drive is busy or its load is unknown)");
-    }
-
-    [Theory]
-    [InlineData(false, 3)] // 드라이브를 앎: 점검이 a·b 의 표본을 읽고, 1순위 a 의 재참조도 기존처럼 표본을 읽음
-    [InlineData(true, 0)] // 처리량을 모름: 표본 읽기 0
-    public void AFirstLadderMadeByTheRewarmCheckTouchesTheFirstPlayPriorityGameOnceMoreBehindItOnlyAfterTheTouchRan(bool unknown, int samples)
-    {
-        GrowReuse(1000);
         Prewarmer p = MakePrewarmer(Game("a"), Game("b"));
-        PlayOrderIsAThenB(p);
-        Assert.True(p.Run(Game("a"), "service start").Ran); // a: 표식이 있음, 플레이 1순위
-        _enabled = false;
-        Assert.True(p.Run(Game("b"), "service start").Ran); // b: 서비스를 다시 시작한 뒤처럼 사다리가 없음
-        _enabled = true;
+        PlayOrderIsAThenB(p); // a 가 1순위
+        Assert.True(p.Run(Game("a"), "service start").Ran);
+        Assert.True(p.Run(Game("b"), "service start").Ran);
         _touched.Clear();
-        int logged = _log.Lines.Count;
-        _diskUnknown = unknown;
-        AutoSettings auto = Auto();
-        p.Tick(auto);
-        _now += TimeSpan.FromMinutes(10.5);
-        int probes = _probeReads;
+        _now += TimeSpan.FromMinutes(10);
+        p.Solar.NoteIdleTouch(10); // 2% 상한은 500 초 뒤, 5% 몫은 40 초 앞서 갚은 상태
+        _now += TimeSpan.FromSeconds(70);
+        GrowReuse(1000 + 5000); // 위험
 
-        p.Tick(auto);
+        p.Tick(Auto());
 
+        Assert.Single(_touched); // 5% 몫 (70 초에 약 5.5 초) 에는 한 게임 (5 초) 만 들어감
+        Assert.Contains(_log.Lines, l => l.Contains("a: cache refreshed in memory"));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("b: cache refreshed in memory"));
         Assert.True(p.Solar.HasMark("b"));
-        string[] lines = [.. _log.Lines.Skip(logged)];
-        int again = Array.FindIndex(lines, l => l.Contains("b: ladder ordered, a touched again after it as the first play priority"));
-        Assert.True(again > 0);
-        Assert.Contains("a: cache refreshed in memory", lines[again - 1]); // 그 한 번이 a 를 b 의 사다리 뒤에 만듦
-        Assert.Equal(probes + samples, _probeReads);
     }
 }

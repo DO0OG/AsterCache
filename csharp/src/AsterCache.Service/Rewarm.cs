@@ -171,11 +171,6 @@ public sealed partial class Rewarmer
                 }
 
                 NoteCheck(g, block.State, block.Message);
-                if (block.State == "busy")
-                {
-                    LadderWhileBusy(g, auto, now, budget, ct);
-                }
-
                 continue;
             }
 
@@ -454,7 +449,7 @@ public sealed partial class Rewarmer
             bool supplemented = _prewarm.SupplementWhenIdle(g, ct);
             if (!supplemented && !probe.Cold)
             {
-                LadderWaitingSupplement(g, ct, auto: auto); // 보충이 메모리를 기다리는 중이면 (곧 더 읽을 수 있는 상태가 아니면) 읽은 범위의 첫 사다리를 만듦
+                LadderWaitingSupplement(g, ct); // 보충이 메모리를 기다리는 중이면 (곧 더 읽을 수 있는 상태가 아니면) 읽은 범위의 첫 사다리를 만듦
                 return false;
             }
 
@@ -474,7 +469,7 @@ public sealed partial class Rewarmer
         {
             NoteCheck(g, "warm", $"{g.Name}: rewarm check: warm ({probe.Slow}/{probe.Samples} samples over {CacheProbe.ColdThresholdMs:F1} ms, average {probe.AverageMs:F2} ms)");
             solar.ClearOverlooked(g.Name);
-            LadderUnmarked(g, ct, auto: auto); // 서비스를 다시 시작한 뒤 표식이 없는 게임은 warm 일 때 첫 사다리를 만듦
+            LadderUnmarked(g, ct); // 서비스를 다시 시작한 뒤 표식이 없는 게임은 warm 일 때 첫 사다리를 만듦
             return false;
         }
         else

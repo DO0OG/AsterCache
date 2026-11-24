@@ -32,26 +32,15 @@ internal static class SolarPolicy
     /// 만지는 데 touchSeconds 초를 썼을 때 다음 묶음 새로 고침까지 기다릴 시간 (IdleTouchShare 로 나눈 값).
     public static TimeSpan IdleTouchWait(double touchSeconds) => TimeSpan.FromSeconds(touchSeconds / IdleTouchShare);
 
-    /// 재사용 누계가 앞에 있던 양 A 의 이 비율에 닿으면 밀려날 위험이 가깝다고 봅니다: 이때부터는 IdleTouchShare 상한과 묶음 사이의 기다림에 막히지 않고 AtRiskTouchShare 안에서 다시 만집니다 (RefreshDue 의 0.4 배보다 늦고, 실측에서 첫 파일이 밀려난 0.61~0.81 배보다 이른 값).
-    /// 2026-11-24 의 Call of Duty 는 2% 상한 때문에 10분 넘게 쉬는 동안 재사용 누계가 A 의 1.4 배에 닿아 목록 전체가 밀려났음.
+    /// 재사용 누계가 앞에 있던 양 A 의 이 비율에 닿으면 밀려날 위험이 가깝다고 봅니다 (RefreshDue 의 0.4 배보다 늦고, 실험에서 첫 파일이 밀려난 0.61~0.81 배보다 이른 값).
+    /// 2026-11-24 의 Call of Duty 는 2% 상한 때문에 10분 넘게 쉬는 동안 재사용 누계가 A 의 1.4 배에 닿아 목록 전체가 밀려났음 (12:28 에 6,866 MiB 대 4,973 MiB).
     public const double AtRiskFraction = 0.5;
 
-    /// 위험할 때 만지는 시간이 벽시계에서 차지할 수 있는 몫의 상한 (5%): 평소의 2.5 배. 한 번에 6,687 MiB 를 2.1 초에 만진 실측 (11-24 12:16:52) 이면 약 42초에 한 번 만져도 코어 하나의 5% 안.
+    /// 위험할 때 새로 고치는 데 쓰는 시간이 벽시계에서 차지할 수 있는 몫의 상한 (5%, 평소의 IdleTouchShare 와 따로 셈): 쓴 시간을 이 몫으로 나눈 만큼 지나야 같은 몫이 돌아옵니다.
     public const double AtRiskTouchShare = 0.05;
 
-    /// 위험할 때 한 번에 몰아 쓸 수 있는 시간의 최대 (초): 처음 만지는 6,687 MiB 가 10.5 초 걸렸음 (11-24 12:16:26). 쉬는 동안 쌓인 몫이 이보다 크게 한꺼번에 쓰이지는 않음.
+    /// 위험할 때 쉬는 동안 쌓이는 쓸 수 있는 시간의 최대 (초): 6,687 MiB 를 처음 만질 때 10.5 초가 걸렸음 (11-24 12:16:26).
     public const double AtRiskBurstSeconds = 12;
-
-    /// 위험할 때 상한이 모자라 일부만 만질 때 한 게임에 만질 최소량: 이보다 작으면 만지는 일이 (표본·열기 비용에 비해) 의미가 없어 건너뜁니다.
-    public const long MinPartialTouchBytes = 64L << 20;
-
-    /// 처음 만지는 속도를 모를 때 (이 서비스 시작 뒤 아직 만진 적 없음) 쓸 시간을 양으로 바꾸는 값 (바이트/초): 11-24 로그에서 가장 느렸던 첫 만지기 (6,687 MiB 를 10.5 초 = 약 637 MiB/s) 보다 낮게 잡아 모를 때 더 적게 만짐.
-    /// 이 값은 어디까지나 어느 범위까지 만질지 고르는 데만 쓰고, 5% 와 12 초는 실행 중에 기한으로 따로 지킵니다 (Rewarmer.RefreshGroup 의 TouchGuard).
-    public const double AssumedTouchBytesPerSecond = 512d * (1 << 20);
-
-    /// 드라이브가 바쁘거나 처리량을 모르는 동안의 재참조 (위험할 때의 재참조, 첫 사다리 뒤의 1순위 재참조) 가 캐시에 없는 곳을 만나 디스크에서 읽을 수 있는 양의 최악: 파일 표본은 읽지 않고,
-    /// 만지기는 하드 폴트 수를 FaultCheckBytes 만큼 만질 때마다 보므로 경계를 넘은 뒤 읽는 양은 그 한 묶음이 상한이며, 한 번의 재참조 전체에서 미상주로 판정된 뒤에는 더 만지지 않습니다.
-    public const long BusyDiskReadWorstBytes = StandbyTouch.FaultCheckBytes;
 
     /// 만지는 데 touchSeconds 초를 썼을 때 위험 상한 (AtRiskTouchShare) 으로 갚는 데 걸리는 시간.
     public static TimeSpan AtRiskTouchWait(double touchSeconds) => TimeSpan.FromSeconds(touchSeconds / AtRiskTouchShare);

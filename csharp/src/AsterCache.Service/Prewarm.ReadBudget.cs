@@ -152,9 +152,10 @@ public sealed partial class Prewarmer
     }
 
     /// 표본 점검이 디스크에서 읽은 양을 더합니다: 느린 (디스크에서 읽힌) 표본 수 x 표본 크기 (캐시에서 읽힌 표본은 디스크를 읽지 않았으므로 셈하지 않음).
-    internal void NoteProbeRead(GameSettings game, ProbeResult? probe)
+    /// slowRead: 그 호출이 읽은 느린 표본 수를 호출한 쪽이 이미 결과와 함께 받았으면 (결과가 버려지거나 취소로 없어도) 그 값, 없으면 결과나 이 스레드에 남은 값으로 셈.
+    internal void NoteProbeRead(GameSettings game, ProbeResult? probe, int? slowRead = null)
     {
-        int slow = probe?.Slow ?? CacheProbe.TakeSlowBeforeCancel(); // 취소돼 결과가 없어도 그 전에 디스크에서 읽은 표본은 셈
+        int slow = slowRead ?? probe?.Slow ?? CacheProbe.TakeSlowBeforeCancel(); // 취소돼 결과가 없어도 그 전에 디스크에서 읽은 표본은 셈
         if (slow > 0)
         {
             _reads.Add(game.OriginRoot, DiskReadLedger.Current, (long)slow * CacheProbe.SampleBytes, game.Name);

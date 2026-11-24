@@ -64,7 +64,8 @@ public interface IKeepHold : IDisposable
     /// 읽기 수를 조회하기 전에 읽은 양까지 디스크 읽기로 보고 요청이 refillStopBytes 를 넘기 전에 조회하며 (남은 양보다 큰 요청은 자름), 상한에 닿아 읽지 못한 쪽이 남은 구간은 목록에서 빼고 뒤의 빠진 쪽이 있는 구간도 읽지 않고 뺍니다 (상한에 정확히 닿으며 끝까지 읽은 구간은 그대로).
     /// refill 이 거짓이면 (가용 메모리에 여유가 없음) 줄여 간 쪽을 다시 읽어 올리지 않고 그 구간을 붙든 목록에서 뺍니다.
     /// dropOnCap 이 거짓이면 (게임이 로딩 중이라 읽기 상한을 작게 준 점검) 상한에 닿아도 읽지 못한 구간을 붙든 목록에서 빼지 않고 그대로 둡니다 (읽을 수 없는 구간은 그래도 뺌).
-    HoldCheckResult Recheck(long refillStopBytes, CancellationToken ct, bool refill = true, bool dropOnCap = true);
+    /// memoryLow 가 참을 돌려주면 (가용 메모리가 하한 아래) 조각을 읽기 전에 점검을 끝내 (붙든 목록은 그대로) 호출한 쪽이 하한 내놓기를 먼저 하게 합니다.
+    HoldCheckResult Recheck(long refillStopBytes, CancellationToken ct, bool refill = true, bool dropOnCap = true, Func<bool>? memoryLow = null);
 }
 
 /// 파일마다 섹션을 만들고 파일 핸들은 바로 닫은 채, 큰 뷰 (파일 전체 또는 WindowBytes 창) 를 열어 두고 유지 목록의 범위만 읽어 서비스 작업 집합에 올려 둡니다 (읽지 않은 쪽은 메모리를 쓰지 않음).
@@ -396,7 +397,7 @@ public sealed unsafe class ViewHold : IKeepHold
         }
     }
 
-    public HoldCheckResult Recheck(long refillStopBytes, CancellationToken ct, bool refill = true, bool dropOnCap = true)
+    public HoldCheckResult Recheck(long refillStopBytes, CancellationToken ct, bool refill = true, bool dropOnCap = true, Func<bool>? memoryLow = null)
     {
         lock (_lock)
         {
@@ -450,7 +451,7 @@ public sealed unsafe class ViewHold : IKeepHold
                 bool failed = false;
                 foreach ((nint address, long length) in missing)
                 {
-                    if (!ReadRange(address, length, tally, refillStopBytes, ct, out failed) || failed)
+                    if (!ReadRange(address, length, tally, refillStopBytes, ct, memoryLow, out failed) || failed)
                     {
                         break;
                     }
@@ -626,6 +627,7 @@ public sealed unsafe class ViewHold : IKeepHold
     // 읽기 수를 조회해 앞의 조회 뒤 늘어난 만큼을 셈에 더하고, 경계 (허용치 초과) 나 읽은 양 한도에 닿았으면 멈춤 표시.
     private void Check(Tally tally)
     {
+        long unmeasured = tally.SinceCheck;
         tally.SinceCheck = 0;
         tally.SinceMs = 0;
         tally.Checks++;
@@ -634,6 +636,7 @@ public sealed unsafe class ViewHold : IKeepHold
         if (now is not { } faultsNow || _faults is not { } before)
         {
             (tally.Signal, _faults, _pages) = (false, now, pagesNow);
+            tally.Assumed += unmeasured; // 조회에 실패해 앞의 조회 뒤 읽은 양을 잴 수 없음: 모두 디스크 읽기로 셈 (정기·조기·읽기 전 조회 모두)
             return;
         }
 
@@ -870,7 +873,7 @@ public sealed unsafe class ViewHold : IKeepHold
     // 주소 범위를 1 MiB 씩 읽어 작업 집합에 다시 올립니다 (자기 프로세스, 디스크 오류는 반환값으로 옵니다). 끝까지 읽었으면 true. 읽을 수 없으면 failed, 읽기 상한에 닿아 못 읽었거나 넘기거나 취소되면 false.
     // 조각을 읽기 전에 아직 조회하지 않은 양 (SinceCheck) 까지 모두 디스크에서 읽힌 것으로 보고 남은 양을 넘길 것 같으면 먼저 조회하며, 그래도 남은 양이 조각보다 작으면 조각을 쪽 단위로 줄입니다 (남은 양이 쪽 하나도 안 되면 멈춤).
     // 읽기 수를 조회할 수 없으면 읽은 양을 모두 디스크 읽기로 셉니다 (Assumed). 상한에 정확히 닿으며 끝까지 읽었으면 true 라 그 구간은 유지됩니다.
-    private bool ReadRange(nint address, long length, Tally tally, long refillStopBytes, CancellationToken ct, out bool failed)
+    private bool ReadRange(nint address, long length, Tally tally, long refillStopBytes, CancellationToken ct, Func<bool>? memoryLow, out bool failed)
     {
         failed = false;
         for (long done = 0; done < length;)
@@ -882,11 +885,15 @@ public sealed unsafe class ViewHold : IKeepHold
             }
 
             long n = Math.Min(StandbyTouch.PieceBytes, length - done);
+            if (memoryLow?.Invoke() == true)
+            {
+                tally.Canceled = true; // 가용 메모리가 하한 아래: 점검을 끝내 호출한 쪽이 하한 내놓기를 먼저 하게 함 (붙든 목록은 그대로)
+                return false;
+            }
+
             if (tally.Signal && tally.SinceCheck > 0 && tally.Disk + tally.Assumed + tally.SinceCheck + n > refillStopBytes)
             {
-                long unmeasured = tally.SinceCheck;
-                Check(tally); // 요청이 상한을 넘을 수 있으므로 읽기 전에 조회해 실제 읽은 양으로 바꿈
-                tally.Assumed += tally.Signal ? 0 : unmeasured; // 조회에 실패했으면 조회 전에 읽은 양을 모두 디스크 읽기로 셈
+                Check(tally); // 요청이 상한을 넘을 수 있으므로 읽기 전에 조회해 실제 읽은 양으로 바꿈 (실패하면 Check 가 미계측 양을 Assumed 에 더함)
             }
 
             long room = refillStopBytes - tally.Disk - tally.Assumed - (tally.Signal ? tally.SinceCheck : 0);
@@ -902,17 +909,27 @@ public sealed unsafe class ViewHold : IKeepHold
 
             long t0 = Stopwatch.GetTimestamp();
             EnsureBuffer();
+            bool measured = tally.Signal; // 이 조각을 읽기 전부터 읽기 수를 잴 수 있었는가
             bool ok = NativeMethods.ReadProcessMemory(NativeMethods.GetCurrentProcess(), address + (nint)done, (byte*)_buffer, (nuint)n, out nuint got) && (long)got == n;
             double ms = Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
             if (!ok)
             {
                 tally.Errors++;
+                if (measured)
+                {
+                    tally.SinceCheck += (long)got; // 일부만 읽고 실패한 요청도 다음 조회·예산에 반영
+                }
+                else
+                {
+                    tally.Assumed += (long)got;
+                }
+
                 failed = true; // 읽을 수 없는 구간 (파일이 줄었거나 디스크 오류)
                 return false;
             }
 
-            AfterPiece(tally, n, ms);
-            tally.Assumed += tally.Signal ? 0 : n;
+            AfterPiece(tally, n, ms); // 여기서 한 조회가 실패하면 Check 가 SinceCheck (이 조각 포함) 를 Assumed 에 더함
+            tally.Assumed += measured ? 0 : n;
             tally.Boundary = false; // 다시 읽기는 경계를 찾지 않음: 디스크에서 다시 읽힌 양의 상한만 봄
             if (tally.Disk > refillStopBytes)
             {

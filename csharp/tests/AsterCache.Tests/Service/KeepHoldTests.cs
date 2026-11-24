@@ -204,7 +204,7 @@ public sealed class KeepHoldTests
             PendingBytes = Math.Max(0, PendingBytes - ranges.Where(o => o.Path == Back).Sum(o => o.Length));
         }
 
-        public HoldCheckResult Recheck(long refillStopBytes, CancellationToken ct, bool refill = true, bool dropOnCap = true)
+        public HoldCheckResult Recheck(long refillStopBytes, CancellationToken ct, bool refill = true, bool dropOnCap = true, Func<bool>? memoryLow = null)
         {
             Rechecks++;
             Refills.Add(refill);
@@ -1816,6 +1816,34 @@ public sealed class KeepHoldTests
         Assert.DoesNotContain(_log.Lines, l => l.Contains("held again after the memory floor released everything"));
         string line = Assert.Single(_log.Lines, l => l.Contains("hold again deferred")); // 두 번의 재시도가 같은 사유라 한 줄
         Assert.Contains("the disk read cap of the play is used", line);
+    }
+
+    [Fact]
+    public void WhenAnotherExecutableStartsAfterEverythingWasReleasedItsFirstHoldFollowsThePlayBudgetToo()
+    {
+        Prewarmer p = Make(Reads);
+        bool armed = false;
+        RunFor(60, e =>
+        {
+            _avail = e == 1 ? 100 : 20000;
+            if (e > 1 && !armed)
+            {
+                armed = true;
+                SpendHoldAgainDisk(p, Prewarmer.HoldAgainDiskCapBytes); // 이 플레이의 합계를 다 씀
+            }
+
+            if (e == 11)
+            {
+                _now += Prewarmer.StartTouchMinGap;
+                p.TouchAtGameStart(Game("a"), "b.exe"); // 모두 내놓은 뒤 같은 게임의 다른 실행 파일이 뜸: 내놓은 범위를 다시 읽으므로 합계를 따름
+            }
+        });
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Equal(1, _opened);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("cache held while playing (b.exe)"));
+        Assert.Contains(_log.Lines, l => l.Contains("hold again deferred: the disk read cap of the play is used"));
     }
 
     [Fact]

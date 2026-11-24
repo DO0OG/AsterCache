@@ -459,6 +459,54 @@ public sealed class ViewHoldTests : IDisposable
         Assert.Equal(16L * Mib, hold.HeldBytes); // 로딩 중 점검처럼 상한에 닿아도 빼지 않는 경우
     }
 
+    [Fact]
+    public void WhenTheRegularReadCountLookUpFailsMidwayTheWholeUncountedPartCountsAgainstTheCap()
+    {
+        string a = Make("a.bin", 80);
+        uint faults = 5_000_000;
+        bool fail = false;
+        using var hold = new ViewHold(() => fail ? null : faults, () => 5_000_000, minFileBytes: 0);
+        hold.Rebase();
+        _ = hold.Hold([new ReadOp(a, 0, 80L * Mib)], CancellationToken.None);
+        fail = true; // 정기 조회 (64 MiB 마다) 가 실패함
+        using Process me = Process.GetCurrentProcess();
+        HoldCheckResult r = default!;
+        long read = long.MaxValue;
+        for (int attempt = 0; attempt < 5 && !r.CapReached; attempt++)
+        {
+            Assert.True(EmptyWorkingSet(me.Handle));
+            (nint address, long length) = hold.LiveRanges().Single();
+            int before = Resident(address, length).Valid;
+            r = hold.Recheck(70L * Mib, CancellationToken.None, dropOnCap: false);
+            read = (Resident(address, length).Valid - before) * 4096L;
+        }
+
+        Assert.True(r.CapReached, $"trimmed {r.TrimmedBytes}");
+        Assert.True(read <= (70L * Mib) + (64 * 1024), $"read {read}"); // 64 MiB 를 읽은 뒤의 조회 실패에서 그 양 전체를 차감해 남은 6 MiB 까지만 더 읽음
+    }
+
+    [Fact]
+    public void TheCheckEndsBetweenPiecesAndLeavesTheHoldAloneWhenTheAvailableMemoryFallsBelowTheFloor()
+    {
+        string a = Make("a.bin", 16);
+        using var hold = new ViewHold(Counter(0), Counter(0), minFileBytes: 0);
+        hold.Rebase();
+        _ = hold.Hold([new ReadOp(a, 0, 16L * Mib)], CancellationToken.None);
+        using Process me = Process.GetCurrentProcess();
+        Assert.True(EmptyWorkingSet(me.Handle));
+        (nint address, long length) = hold.LiveRanges().Single();
+        int before = Resident(address, length).Valid;
+        int calls = 0;
+
+        HoldCheckResult r = hold.Recheck(Prewarm32Mib, CancellationToken.None, memoryLow: () => ++calls > 2); // 두 조각을 읽은 뒤 하한 아래
+
+        long read = (Resident(address, length).Valid - before) * 4096L;
+        Assert.True(read <= (2L * Mib) + (64 * 1024), $"read {read}");
+        Assert.False(r.CapReached);
+        Assert.Equal(0, r.DroppedBytes);
+        Assert.Equal(16L * Mib, hold.HeldBytes); // 내놓기는 호출한 쪽이 이어서 함
+    }
+
     [Theory]
     [InlineData(-4096, true)] // 상한 직전: 마지막 쪽 하나를 읽지 못함
     [InlineData(0, false)] // 정확히 상한: 끝까지 되찾았으므로 유지

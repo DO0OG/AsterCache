@@ -407,13 +407,13 @@ public sealed class ViewHoldTests : IDisposable
     [Fact]
     public void WhenTheLastSegmentIsRefilledExactlyToTheCapTheCheckKeepsItHeld()
     {
-        string a = Make("a.bin", 8);
+        string a = Make("a.bin", 3);
         uint step = 0;
         uint faults = 5_000_000;
         uint pages = 5_000_000;
         using var hold = new ViewHold(() => faults += step, () => pages += step * 10, minFileBytes: 0);
         hold.Rebase();
-        _ = hold.Hold([new ReadOp(a, 0, 8L * Mib)], CancellationToken.None);
+        _ = hold.Hold([new ReadOp(a, 0, 3L * Mib)], CancellationToken.None);
         step = 100; // 조회 한 번이 4,096,000 바이트 (쪽 수 1,000 개 x 4 KiB) 를 디스크에서 읽은 것으로 보임
         using Process me = Process.GetCurrentProcess();
         HoldCheckResult r = default!;
@@ -426,7 +426,146 @@ public sealed class ViewHoldTests : IDisposable
         Assert.True(r.TrimmedBytes > 0);
         Assert.False(r.CapReached); // 상한을 넘은 것이 아니라 정확히 닿았으므로 되찾은 구간을 그대로 붙듦 (넘어야 내놓음)
         Assert.Equal(0, r.DroppedBytes);
+        Assert.Equal(3L * Mib, hold.HeldBytes);
+    }
+
+    [Theory]
+    [InlineData(2)] // 게임이 로딩 중일 때의 점검 상한
+    [InlineData(8)]
+    public void TheCheckStopsReadingAtTheCapInsteadOfAtTheNextReadCountLookUp(int capMib)
+    {
+        string a = Make("a.bin", 16);
+        uint step = 0;
+        uint faults = 5_000_000;
+        uint pages = 5_000_000;
+        using var hold = new ViewHold(() => faults += step, () => pages += step * 10, minFileBytes: 0);
+        hold.Rebase();
+        _ = hold.Hold([new ReadOp(a, 0, 16L * Mib)], CancellationToken.None);
+        step = 1000; // 조회 한 번이 40 MB 넘는 디스크 읽기로 보임 (정기 조회는 64 MiB 마다라 조회만으로는 상한 안에서 멈출 수 없음)
+        using Process me = Process.GetCurrentProcess();
+        HoldCheckResult r = default!;
+        long read = long.MaxValue;
+        for (int attempt = 0; attempt < 5 && !r.CapReached; attempt++)
+        {
+            Assert.True(EmptyWorkingSet(me.Handle));
+            (nint address, long length) = hold.LiveRanges().Single();
+            int before = Resident(address, length).Valid;
+            r = hold.Recheck(capMib * (long)Mib, CancellationToken.None, dropOnCap: false);
+            read = (Resident(address, length).Valid - before) * 4096L;
+        }
+
+        Assert.True(r.CapReached, $"trimmed {r.TrimmedBytes}");
+        Assert.True(read <= (capMib * (long)Mib) + (64 * 1024), $"read {read}"); // 조회 간격 (64 MiB) 까지 읽으면 줄어든 구간 전체 (16 MiB 가까이) 를 읽게 됨
+        Assert.Equal(16L * Mib, hold.HeldBytes); // 로딩 중 점검처럼 상한에 닿아도 빼지 않는 경우
+    }
+
+    [Fact]
+    public void WhenTheRegularReadCountLookUpFailsMidwayTheWholeUncountedPartCountsAgainstTheCap()
+    {
+        string a = Make("a.bin", 80);
+        uint faults = 5_000_000;
+        bool fail = false;
+        using var hold = new ViewHold(() => fail ? null : faults, () => 5_000_000, minFileBytes: 0);
+        hold.Rebase();
+        _ = hold.Hold([new ReadOp(a, 0, 80L * Mib)], CancellationToken.None);
+        fail = true; // 정기 조회 (64 MiB 마다) 가 실패함
+        using Process me = Process.GetCurrentProcess();
+        HoldCheckResult r = default!;
+        long read = long.MaxValue;
+        for (int attempt = 0; attempt < 5 && !r.CapReached; attempt++)
+        {
+            Assert.True(EmptyWorkingSet(me.Handle));
+            (nint address, long length) = hold.LiveRanges().Single();
+            int before = Resident(address, length).Valid;
+            r = hold.Recheck(70L * Mib, CancellationToken.None, dropOnCap: false);
+            read = (Resident(address, length).Valid - before) * 4096L;
+        }
+
+        Assert.True(r.CapReached, $"trimmed {r.TrimmedBytes}");
+        Assert.True(read <= (70L * Mib) + (64 * 1024), $"read {read}"); // 64 MiB 를 읽은 뒤의 조회 실패에서 그 양 전체를 차감해 남은 6 MiB 까지만 더 읽음
+    }
+
+    [Fact]
+    public void TheCheckEndsBetweenPiecesAndLeavesTheHoldAloneWhenTheAvailableMemoryFallsBelowTheFloor()
+    {
+        string a = Make("a.bin", 16);
+        using var hold = new ViewHold(Counter(0), Counter(0), minFileBytes: 0);
+        hold.Rebase();
+        _ = hold.Hold([new ReadOp(a, 0, 16L * Mib)], CancellationToken.None);
+        using Process me = Process.GetCurrentProcess();
+        Assert.True(EmptyWorkingSet(me.Handle));
+        (nint address, long length) = hold.LiveRanges().Single();
+        int before = Resident(address, length).Valid;
+        int calls = 0;
+
+        HoldCheckResult r = hold.Recheck(Prewarm32Mib, CancellationToken.None, memoryLow: () => ++calls > 2); // 두 조각을 읽은 뒤 하한 아래
+
+        long read = (Resident(address, length).Valid - before) * 4096L;
+        Assert.True(read <= (2L * Mib) + (64 * 1024), $"read {read}");
+        Assert.False(r.CapReached);
+        Assert.Equal(0, r.DroppedBytes);
+        Assert.Equal(16L * Mib, hold.HeldBytes); // 내놓기는 호출한 쪽이 이어서 함
+    }
+
+    [Fact]
+    public void WhenTheReadsReachTheCapExactlyAndTheNextMissingPagesComeBackWithoutDiskReadsTheSegmentStaysHeld()
+    {
+        string a = Make("a.bin", 8);
+        uint faults = 5_000_000;
+        uint pages = 5_000_000;
+        int counts = 0;
+        bool inCheck = false;
+        using var hold = new ViewHold(() => faults += inCheck && ++counts == 1 ? 100u : 0u, () => pages += counts == 1 ? 1000u : 0u, minFileBytes: 0);
+        hold.Rebase();
+        _ = hold.Hold([new ReadOp(a, 0, 8L * Mib)], CancellationToken.None);
+        using Process me = Process.GetCurrentProcess();
+        HoldCheckResult r = default!;
+        for (int attempt = 0; attempt < 5 && r.TrimmedBytes < 4L * Mib; attempt++)
+        {
+            Assert.True(EmptyWorkingSet(me.Handle));
+            (counts, inCheck) = (0, true); // 이 점검의 첫 조회만 4,096,000 바이트를 디스크에서 읽은 것으로 보이고 (정확히 상한), 그 뒤 쪽들은 디스크 읽기 없이 돌아옴
+            r = hold.Recheck(4_096_000, CancellationToken.None);
+            inCheck = false;
+        }
+
+        Assert.True(r.TrimmedBytes >= 4L * Mib, $"trimmed {r.TrimmedBytes}");
+        Assert.False(r.CapReached); // origin/main 과 같게 디스크를 읽는 쪽이 나올 때까지 구간을 유지
+        Assert.Equal(0, r.DroppedBytes);
         Assert.Equal(8L * Mib, hold.HeldBytes);
+    }
+
+    [Theory]
+    [InlineData(-4096, true)] // 상한 직전: 마지막 쪽 하나를 읽지 못함
+    [InlineData(0, false)] // 정확히 상한: 끝까지 되찾았으므로 유지
+    [InlineData(4096, false)] // 상한 초과 여유
+    public void WithoutAHardFaultCountTheCheckCountsWhatItReadsAsDiskReadsAndStopsExactlyAtTheCap(int offset, bool capReached)
+    {
+        string a = Make("a.bin", 8);
+        HoldCheckResult r = default!;
+        long held = 0;
+        for (int attempt = 0; attempt < 5; attempt++) // 같은 프로세스의 다른 시험이 작업 집합을 비우면 줄어든 양이 달라져 다시 시도
+        {
+            using var hold = new ViewHold(() => null, () => null, minFileBytes: 0); // 읽기 수를 읽을 수 없음
+            hold.Rebase();
+            _ = hold.Hold([new ReadOp(a, 0, 8L * Mib)], CancellationToken.None);
+            (nint address, long length) = hold.LiveRanges().Single();
+            using Process me = Process.GetCurrentProcess();
+            Assert.True(EmptyWorkingSet(me.Handle));
+            (int valid, int total) = Resident(address, length);
+            long trimmed = (total - valid) * 4096L;
+            r = hold.Recheck(trimmed + offset, CancellationToken.None);
+            held = hold.HeldBytes;
+            if (r.TrimmedBytes == trimmed && trimmed >= 4L * Mib)
+            {
+                break;
+            }
+        }
+
+        Assert.True(r.TrimmedBytes >= 4L * Mib, $"trimmed {r.TrimmedBytes}");
+        Assert.Equal(capReached, r.CapReached);
+        Assert.Equal(capReached, r.DroppedBytes > 0);
+        Assert.Equal(capReached ? 0 : 8L * Mib, held);
+        Assert.Equal(0, r.RefilledBytes); // 세어 둔 양은 읽은 양으로 보고하지 않음
     }
 
     [Fact]

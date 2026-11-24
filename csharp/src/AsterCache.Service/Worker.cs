@@ -397,7 +397,7 @@ public sealed class Worker : BackgroundService
                 {
                     GameSettings started = game;
                     bool continuing = !newSession; // 세션의 첫 시작은 다른 프로세스가 보여도 디스크 읽기를 건너뛰지 않음 (같은 틱에 잡힌 두 실행 파일, 조회 실패)
-                    _ = Task.Run(() => RunPrewarm(() => touching.TouchAtGameStart(started, s.ExeName, continuing && OtherGameProcessRunning(started, s))), CancellationToken.None); // 시작 스트림·감시기 스레드를 막지 않게 따로, 그 게임의 캐시를 메모리 안에서 다시 만짐
+                    _ = Task.Run(() => RunPrewarm(() => touching.TouchAtGameStart(started, s.ExeName, continuing && OtherGameProcessRunning(started, s), startAt)), CancellationToken.None); // 시작 스트림·감시기 스레드를 막지 않게 따로, 그 게임의 캐시를 메모리 안에서 다시 만짐
                 }
 
                 if (_backgroundYield is { } yielder && !backOff)

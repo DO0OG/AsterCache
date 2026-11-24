@@ -20,6 +20,7 @@ public sealed class IdleReadBudgetTests : IDisposable
     private long _avail = 16000;
     private ProbeResult? _probe = new ProbeResult(8, 8, 120.0); // 식음
     private double? _disk = 0;
+    private Action? _onProbe; // 표본 점검이 도는 동안 부를 것
 
     public IdleReadBudgetTests()
     {
@@ -60,7 +61,11 @@ public sealed class IdleReadBudgetTests : IDisposable
             ZoneBytes = g => Math.Min(_zoneMib, g.MaxStreamMib) * Mib,
             TraceExists = _ => true,
             DiskBytesPerSecond = _ => _disk,
-            ProbeReadMs = _ => _probe,
+            ProbeReadMs = _ =>
+            {
+                _onProbe?.Invoke();
+                return _probe;
+            },
         }, _log, StatusPath, () => _now);
         p.SetAuto(auto);
         return p;
@@ -314,12 +319,15 @@ public sealed class IdleReadBudgetTests : IDisposable
     [Fact]
     public void TheCountedBytesAreTheSmallerOfTheAcceptedBytesAndTheDiskIncreaseThenTheTimeBoundThenTheAcceptedBytes()
     {
-        Assert.Equal(50 * Mib, Prewarmer.CountedDiskBytes(100 * Mib, 0.2, 250)); // 시간 x 순차 상한이 더 작음: 짧은 시간에 끝난 것은 걸린 시간만큼만
-        Assert.Equal(100 * Mib, Prewarmer.CountedDiskBytes(100 * Mib, 0.4, 250)); // 디스크 속도로 읽음: 받아들인 바이트 그대로
+        Assert.Equal(100 * Mib, Prewarmer.CountedDiskBytes(100 * Mib, 0.4, 250)); // 디스크 속도 (250 MiB/s) 로 읽음: 받아들인 바이트 그대로
+        Assert.Equal(100 * Mib, Prewarmer.CountedDiskBytes(100 * Mib, 0.3, 250)); // 상한보다 조금 빠른 디스크 읽기 (333 MiB/s, 상한의 2 배 이하) 도 전부 셈
+        Assert.Equal(100 * Mib, Prewarmer.CountedDiskBytes(100 * Mib, 0.2, 250)); // 정확히 상한의 2 배도 전부 셈
+        Assert.Equal(25 * Mib, Prewarmer.CountedDiskBytes(100 * Mib, 0.1, 250)); // 상한의 2 배를 넘는 속도 (1000 MiB/s) 는 메모리가 섞인 것으로 보고 상한 x 시간
         Assert.Equal(100 * Mib, Prewarmer.CountedDiskBytes(100 * Mib, 9, 250)); // 시간 기준이 더 커도 받아들인 바이트까지
-        Assert.Equal(0, Prewarmer.CountedDiskBytes(100 * Mib, 0, 250)); // 시간이 0 이면 0
+        Assert.Equal(0, Prewarmer.CountedDiskBytes(100 * Mib, 0, 250)); // 재었는데 0 초: 아주 짧은 시간이라 0
+        Assert.Equal(100 * Mib, Prewarmer.CountedDiskBytes(100 * Mib, null, 250)); // 시간 값이 없으면 받아들인 바이트
         Assert.Equal(100 * Mib, Prewarmer.CountedDiskBytes(100 * Mib, 0.01, 0)); // 상한을 모르면 받아들인 바이트
-        Assert.Equal(100 * Mib, Prewarmer.CountedDiskBytes(100 * Mib, double.NaN, 250)); // 시간을 모르면 받아들인 바이트
+        Assert.Equal(100 * Mib, Prewarmer.CountedDiskBytes(100 * Mib, double.NaN, 250)); // 시간이 유효하지 않으면 받아들인 바이트
     }
 
     [Fact]
@@ -560,5 +568,85 @@ public sealed class IdleReadBudgetTests : IDisposable
 
         Assert.Equal(8 * Mib, Used(p, ReadPurpose.Trigger)); // 느린 표본 8 곳
         Assert.Equal(0, Used(p, ReadPurpose.Idle));
+    }
+
+    [Fact]
+    public void AnAfterRelocationPrewarmGetsWhatIsLeftAsItsWindowBudget()
+    {
+        _zoneMib = 600;
+        GameSettings g = Game();
+        Prewarmer p = Make(On with { IdleReadGibPerDay = 1 }, g);
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 624 * Mib, g.Name); // 남은 양 400 MiB
+
+        Assert.True(p.Guarded(g, "auto after relocation", pin: true, ignoreCooldown: true).Ran);
+
+        Assert.True(_streamer.Seen[^1].MaxStreamMib <= 400); // 목록 (600 MiB) 전체가 아니라 남은 양까지만 읽음
+    }
+
+    [Fact]
+    public void AFailedStatusWriteKeepsTheReadsUnsavedAndTheNextWriteSavesThem()
+    {
+        string folder = Path.Combine(_dir, "later");
+        string path = Path.Combine(folder, "prewarm_status.json");
+        GameSettings g = Game();
+        var p = new Prewarmer([g], _streamer, new PrewarmEnv { AvailableRamMib = () => _avail, GameRunning = _ => false, ZoneBytes = _ => 100 * Mib, TraceExists = _ => true }, _log, path, () => _now);
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 300 * Mib, g.Name);
+
+        p.Shutdown(); // 폴더가 없어 쓰기 실패
+        Assert.True(p.DiskReads.HasUnsaved);
+
+        Directory.CreateDirectory(folder);
+        p.Shutdown();
+
+        Assert.False(p.DiskReads.HasUnsaved);
+        Assert.Contains("disk_reads", File.ReadAllText(path), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ACheckThatFinishesDoesNotClearTheMarkOfAGameExitThatArrivedWhileItRan()
+    {
+        GameSettings g = Game();
+        Prewarmer p = StartedAndDue(On, g);
+        p.DiskReads.Add(g.OriginRoot, ReadPurpose.Idle, 25 * Gib, g.Name);
+        p.NoteGameExit();
+        _now += TimeSpan.FromMinutes(4);
+        bool exitedAgain = false;
+        _onProbe = () =>
+        {
+            if (!exitedAgain)
+            {
+                exitedAgain = true;
+                p.NoteGameExit(); // 이 점검이 도는 동안 새 종료가 들어옴
+            }
+        };
+        int before = _streamer.Seen.Count;
+
+        Ticks(p, 1, On);
+        Assert.Equal(before + 1, _streamer.Seen.Count); // 첫 종료의 점검은 상한 밖
+
+        _onProbe = null;
+        _now += TimeSpan.FromMinutes(11);
+        Ticks(p, 1, On);
+
+        Assert.Equal(before + 2, _streamer.Seen.Count); // 새 종료의 표시는 남아 있어 그 점검도 상한 밖
+    }
+
+    [Fact]
+    public void TheFrontRefreshAtTheEndOfAStreamAndTheSamplesReadBeforeACancelAreCounted()
+    {
+        GameSettings g = Game();
+        Prewarmer p = Make(On, g);
+
+        p.NoteStreamRead(g, new StreamStats(100 * Mib, 1, 0, 10) { RefreshBytes = 64 * Mib, RefreshSeconds = 1 });
+        Assert.Equal(164 * Mib, Used(p, ReadPurpose.Trigger)); // 스트림 100 MiB + 끝의 앞부분 다시 읽기 64 MiB (64 MiB/s 라 전부)
+
+        string file = Path.Combine(_dir, "sample.bin");
+        File.WriteAllBytes(file, new byte[2 * (int)Mib]);
+        int calls = 0;
+        ProbeResult? result = CacheProbe.Probe([(file, 0, (int)Mib), (file, 0, (int)Mib)], slowMs: -1, canIssue: () => ++calls <= 1, pageReads: () => null);
+        Assert.Null(result); // 두 번째 표본 전에 취소돼 결과는 없음
+        p.NoteProbeRead(g, result);
+
+        Assert.Equal(164 * Mib + Mib, Used(p, ReadPurpose.Trigger)); // 그 전에 읽은 느린 표본 한 곳은 셈
     }
 }

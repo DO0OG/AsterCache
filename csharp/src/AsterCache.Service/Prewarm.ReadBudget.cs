@@ -114,26 +114,50 @@ public sealed partial class Prewarmer
         return exhausted;
     }
 
-    /// 읽기 한 번 (스트림) 이 디스크에서 읽은 양을 어림해 집계에 더합니다 (게임별 몫으로도 셈). 시간은 스트리머가 잰, 그 읽기가 실제로 읽은 시간입니다 (대기·양보로 쉰 시간과 사다리가 만진 시간은 들지 않음: 사다리는 자기 양을 따로 더함).
-    internal void NoteStreamRead(GameSettings game, StreamStats stats) => NoteReadBytes(game, stats.Bytes, stats.Seconds);
+    /// 읽기 한 번 (스트림) 이 디스크에서 읽은 양을 어림해 집계에 더합니다 (게임별 몫으로도 셈). 시간은 스트리머가 그 읽기 자체에 대해 잰 값입니다 (대기·양보로 쉰 시간과 사다리가 만진 시간은 들지 않음: 사다리는 자기 양을 따로 더함).
+    /// 스트림 끝의 앞부분 다시 읽기 (Refresh) 는 Bytes·Seconds 에 들지 않으므로 따로 더합니다.
+    internal void NoteStreamRead(GameSettings game, StreamStats stats)
+    {
+        NoteReadBytes(game, stats.Bytes, stats.Seconds);
+        if (stats.RefreshBytes > 0)
+        {
+            NoteReadBytes(game, stats.RefreshBytes, stats.RefreshSeconds);
+        }
+    }
 
-    internal void NoteReadBytes(GameSettings game, long accepted, double seconds)
+    /// seconds: 읽는 데 걸린 시간 (재지 못했으면 null).
+    internal void NoteReadBytes(GameSettings game, long accepted, double? seconds)
     {
         double ceiling = Recovery?.CeilingFor(DiskReadLedger.DriveOf(game.OriginRoot)) ?? DriveRecovery.CeilingMbps;
         _reads.Add(game.OriginRoot, DiskReadLedger.Current, CountedDiskBytes(accepted, seconds, ceiling), game.Name);
     }
 
-    /// 받아들인 바이트 (accepted) 를 실제 디스크 읽기에 가깝게 줄입니다: 받아들인 바이트와 읽은 시간 x 그 드라이브의 순차 읽기 상한 (MB/s) 가운데 작은 값, 상한이나 시간을 모르면 받아들인 바이트.
-    /// 디스크에서 읽으면 시간이 바이트 / 상한 이상 걸려 받아들인 바이트 그대로 세어지고, 메모리에 있던 범위는 훨씬 빨리 끝나 걸린 시간만큼만 세어집니다.
-    internal static long CountedDiskBytes(long accepted, double seconds, double ceilingMbps) =>
-        seconds >= 0 && ceilingMbps > 0 && double.IsFinite(seconds) ? Math.Min(accepted, (long)(seconds * ceilingMbps * 1048576)) : accepted;
+    /// 읽기 자체의 속도가 이 배수 이하면 (CeilingFor 가 표본에서 얻은 속도라 실제 디스크가 그보다 빠를 수 있음) 디스크 속도로 보고 받아들인 바이트를 그대로 셉니다. 이를 넘는 속도만 메모리에 있던 것이 섞인 것으로 봅니다.
+    internal const double DiskSpeedMargin = 2;
+
+    /// 받아들인 바이트 (accepted) 를 실제 디스크 읽기에 가깝게 줄입니다: 시간을 재지 못했거나 상한을 모르면 받아들인 바이트. 재었으면 받아들인 바이트와 읽은 시간 x 속도 가운데 작은 값이고,
+    /// 속도는 그 드라이브의 순차 읽기 상한 (ceilingMbps, MiB/s) 과 "그 읽기 자체의 속도" 가운데 큰 값입니다. 단 읽기 자체의 속도가 상한의 DiskSpeedMargin 배 이하일 때만 그 속도를 쓰므로 디스크 속도 범위의 읽기는 받아들인 바이트 그대로 세어지고,
+    /// 그 배수를 넘는 읽기는 상한 x 시간으로 줄어듭니다 (시간이 0 이면 0). 어림이라 메모리에 있던 범위가 섞이면 많게, 표본 속도보다 훨씬 빠른 디스크에서는 적게 세어질 수 있습니다.
+    internal static long CountedDiskBytes(long accepted, double? seconds, double ceilingMbps)
+    {
+        if (seconds is not { } time || !double.IsFinite(time) || time < 0 || ceilingMbps <= 0)
+        {
+            return accepted;
+        }
+
+        double ceiling = ceilingMbps * 1048576;
+        double own = time > 0 ? accepted / time : double.PositiveInfinity; // 그 읽기 자체의 속도 (바이트/초)
+        double speed = own <= ceiling * DiskSpeedMargin ? Math.Max(ceiling, own) : ceiling;
+        return Math.Min(accepted, (long)(time * speed));
+    }
 
     /// 표본 점검이 디스크에서 읽은 양을 더합니다: 느린 (디스크에서 읽힌) 표본 수 x 표본 크기 (캐시에서 읽힌 표본은 디스크를 읽지 않았으므로 셈하지 않음).
     internal void NoteProbeRead(GameSettings game, ProbeResult? probe)
     {
-        if (probe is { Slow: > 0 })
+        int slow = probe?.Slow ?? CacheProbe.TakeSlowBeforeCancel(); // 취소돼 결과가 없어도 그 전에 디스크에서 읽은 표본은 셈
+        if (slow > 0)
         {
-            _reads.Add(game.OriginRoot, DiskReadLedger.Current, (long)probe.Slow * CacheProbe.SampleBytes, game.Name);
+            _reads.Add(game.OriginRoot, DiskReadLedger.Current, (long)slow * CacheProbe.SampleBytes, game.Name);
         }
     }
 

@@ -471,13 +471,15 @@ public sealed partial class Prewarmer
                 lock (_flushGate)
                 {
                     string contents;
+                    DiskReadLedger.SavedMark mark;
                     lock (_gate)
                     {
-                        contents = PyJson.Dumps(new JObject { { "games", _status }, { "disk_reads", _reads.ToJson() } }, indent: 2, ensureAscii: false) + "\n";
+                        contents = PyJson.Dumps(new JObject { { "games", _status }, { "disk_reads", _reads.ToJson(out mark) } }, indent: 2, ensureAscii: false) + "\n";
                     }
 
                     DurableFile.WriteAllBytes(tmp, PyJson.Utf8.GetBytes(contents));
                     File.Move(tmp, _statusPath, true);
+                    _reads.CommitSaved(mark); // 파일 교체가 성공한 뒤에만 읽은 양 기록을 저장한 것으로 봄 (실패하면 다음 저장 때 다시 시도)
                 }
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)

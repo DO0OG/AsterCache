@@ -103,7 +103,7 @@ public sealed class DiskReadLedgerTests
         _now += TimeSpan.FromHours(1);
         first.Add(Root, ReadPurpose.Recovery, 192 * Mib);
 
-        JObject saved = (JObject)JsonRead.Parse(PyJson.Dumps(first.ToJson(), indent: 2, ensureAscii: false))!;
+        JObject saved = (JObject)JsonRead.Parse(PyJson.Dumps(first.ToJson(out _), indent: 2, ensureAscii: false))!;
         DiskReadLedger second = Make();
         second.Load(saved);
 
@@ -139,7 +139,7 @@ public sealed class DiskReadLedgerTests
         Assert.False(ledger.TakeDailyLog());
 
         DiskReadLedger restarted = Make();
-        restarted.Load(ledger.ToJson());
+        restarted.Load(ledger.ToJson(out _));
         _now += TimeSpan.FromHours(23);
         restarted.Add(Root, ReadPurpose.Idle, Mib);
         Assert.False(restarted.TakeDailyLog()); // 재시작해도 마지막 로그에서 24 시간이 안 지남
@@ -164,7 +164,13 @@ public sealed class DiskReadLedgerTests
         ledger.Add(Root, ReadPurpose.Idle, Mib);
         Assert.True(ledger.SaveDue()); // 처음에는 마지막 저장이 없어 바로
 
-        _ = ledger.ToJson(); // 상태 파일에 쓴 것으로 봄
+        _ = ledger.ToJson(out DiskReadLedger.SavedMark mark);
+        Assert.True(ledger.HasUnsaved); // 쓰기가 성공했다고 알리기 전에는 저장한 것이 아님 (실패하면 다시 시도)
+        ledger.Add(Root, ReadPurpose.Idle, Mib); // 쓰는 도중에 더해진 변경
+        ledger.CommitSaved(mark);
+        Assert.True(ledger.HasUnsaved); // 그 변경은 아직 저장하지 않은 것으로 남음
+        _ = ledger.ToJson(out mark);
+        ledger.CommitSaved(mark);
         Assert.False(ledger.HasUnsaved);
         ledger.Add(Root, ReadPurpose.Idle, DiskReadLedger.SaveEveryBytes);
         Assert.False(ledger.SaveDue()); // 바이트는 충분하지만 마지막 저장 뒤 10 분이 안 지남

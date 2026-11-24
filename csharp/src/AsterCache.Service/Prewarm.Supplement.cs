@@ -546,6 +546,16 @@ public sealed partial class Prewarmer
                 return false;
             }
 
+            if (DiskReadLedger.Current == ReadPurpose.Idle)
+            {
+                if (IdleReadsExhausted(game))
+                {
+                    return false; // 읽기 잠금을 잡은 뒤 남은 양을 다시 읽음
+                }
+
+                allocatedMib = IdleReadRoom(game, allocatedMib);
+            }
+
             using var activity = ServiceActivity.Begin(ServiceOp.Supplement); // 초 단위 기록의 동작 표시: 가드를 지나 실제로 일하는 구간만
             // 읽을지 기다릴지 정하는 판정까지는 예산 계산과 같은 추정 (읽지 않고 돌아가는 틱은 계획을 해석하지 않음). 추정으로는 지역 값만 고치고 지속되는 상태는 새로 읽은 값으로만 고침.
             string? zoneStamp = EstimateStampOf(game, false);
@@ -788,7 +798,7 @@ public sealed partial class Prewarmer
                     }, allowReorder: false, roomMib: allocatedMib ?? long.MaxValue, limitBytes: limitMib is { } limitBytesMib ? MibBytes(limitBytesMib) : long.MaxValue, allowFinish: true, windowMib: windowMib ?? p.HotMib);
                     if (fellBack || windowMib is not null || hot is not { Complete: false, MemoryStop: true } || !HeavyWorkAllowed(game)
                         || DiskReadLedger.Current == ReadPurpose.Idle && IdleReadsExhausted(game) // 두 번째 스트림을 시작하기 전에도 하루 상한을 다시 확인
-                        || MemoryFallbackCapMib(game, finalReadMib, budgetCap, ct) is not { } fallbackCap
+                        || MemoryFallbackCapMib(game, finalReadMib, IdleReadRoom(game, budgetCap) ?? budgetCap, ct) is not { } fallbackCap
                         || fallbackCap <= Math.Max(p.WarmedMib, ActualMib(hot.Value.Stats, p.HotMib, skipBytes)))
                     {
                         break; // 기억한 양이나 이번 회에 (이어 읽은 뒤) 읽은 양 이하로만 들어가면 다시 읽지 않고 아래 기존 취소 경로 (읽은 양·이어 읽을 위치 기억, 재시도 대기)

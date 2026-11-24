@@ -36,7 +36,8 @@ internal sealed class DiskReadLedger(Func<DateTimeOffset> now)
     private readonly Dictionary<(string Drive, ReadPurpose Purpose, string Game), List<(DateTimeOffset At, long Bytes)>> _entries = []; // Game: 게임별로 세는 읽기의 게임 이름, 아니면 빈 문자열
     private DateTimeOffset? _loggedAt; // 하루 한 번 로그를 마지막으로 남긴 시각, _lock 으로 보호
     private long _unsavedBytes; // 마지막 저장 뒤 더한 바이트, _lock 으로 보호
-    private bool _unsavedOther; // 마지막 저장 뒤 바이트 말고 바뀐 것 (일일 로그 시각) 이 있는가, _lock 으로 보호
+    private long _otherVersion; // 바이트 말고 바뀐 것 (일일 로그 시각) 의 변경 번호, _lock 으로 보호
+    private long _savedOtherVersion; // 저장이 성공한 변경 번호, _lock 으로 보호
     private DateTimeOffset _savedAt = DateTimeOffset.MinValue; // 마지막으로 저장한 (ToJson 을 부른) 시각, _lock 으로 보호
 
     /// 저장하지 않은 변경이 있는가 (서비스 종료 때 저장할지 판단).
@@ -46,7 +47,7 @@ internal sealed class DiskReadLedger(Func<DateTimeOffset> now)
         {
             lock (_lock)
             {
-                return _unsavedBytes > 0 || _unsavedOther;
+                return _unsavedBytes > 0 || _otherVersion != _savedOtherVersion;
             }
         }
     }
@@ -177,13 +178,27 @@ internal sealed class DiskReadLedger(Func<DateTimeOffset> now)
             }
 
             _loggedAt = at;
-            _unsavedOther = true;
+            _otherVersion++;
             return true;
         }
     }
 
-    /// 상태 파일에 쓸 값: drives 아래 드라이브마다 목적별 "시각=바이트;..." 문자열.
-    public JObject ToJson()
+    /// ToJson 이 만든 값의 저장 성공을 알릴 때 돌려주는 표지: 그 사이에 더해진 변경은 저장하지 않은 것으로 남김.
+    public readonly record struct SavedMark(long Bytes, long OtherVersion);
+
+    /// 상태 파일에 쓴 것이 성공한 뒤에만 부름: 실패하면 부르지 않아 다음 저장 때 다시 시도합니다.
+    public void CommitSaved(SavedMark mark)
+    {
+        lock (_lock)
+        {
+            _unsavedBytes = Math.Max(0, _unsavedBytes - mark.Bytes);
+            _savedOtherVersion = Math.Max(_savedOtherVersion, mark.OtherVersion);
+            _savedAt = now();
+        }
+    }
+
+    /// 상태 파일에 쓸 값: drives 아래 드라이브마다 목적별 "시각=바이트;..." 문자열. 저장이 성공하면 mark 로 CommitSaved 를 부릅니다.
+    public JObject ToJson(out SavedMark mark)
     {
         DateTimeOffset at = now();
         lock (_lock)
@@ -207,7 +222,7 @@ internal sealed class DiskReadLedger(Func<DateTimeOffset> now)
                 }
             }
 
-            (_unsavedBytes, _unsavedOther, _savedAt) = (0, false, at); // 상태 파일에 쓰려고 부른 것이므로 저장한 것으로 봄
+            mark = new SavedMark(_unsavedBytes, _otherVersion);
             JObject root = new() { { "drives", drives } };
             if (_loggedAt is { } logged)
             {

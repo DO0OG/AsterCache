@@ -19,6 +19,7 @@ public sealed partial class Rewarmer
     private readonly object _nextLock = new(); // Tick (유지 점검 스레드) 와 PullIn (재적용 틱 스레드) 이 같이 쓰는 _next 보호
     private DateTimeOffset? _next;
     private DateTimeOffset? _afterExitAt; // 게임 종료로 점검을 당긴 시각: 그 뒤 첫 점검은 게임 종료라는 계기가 있는 읽기라 하루 읽기 상한을 받지 않음, 게임마다 그 점검을 마치면 지우고 (_afterExitDone) 모든 게임이 마치거나 AfterExitSpan 이 지나면 끝, _nextLock 으로 보호
+    private long _afterExitSeq; // 게임 종료 표시를 세운 횟수 (점검이 시작할 때의 번호와 같은 종료에만 완료를 반영), _nextLock 으로 보호
     private readonly HashSet<string> _afterExitDone = new(StringComparer.OrdinalIgnoreCase); // 게임 종료 뒤 점검을 이미 마친 게임, _nextLock 으로 보호
     private static readonly TimeSpan AfterExitSpan = TimeSpan.FromHours(24); // 게임 종료 표시를 이어 두는 최대 시간 (막힌 게임이 영영 표시를 붙들지 않게)
     private readonly object _checkLock = new();
@@ -80,6 +81,7 @@ public sealed partial class Rewarmer
             if (afterExit)
             {
                 _afterExitAt = _now();
+                _afterExitSeq++;
                 _afterExitDone.Clear(); // 새 종료마다 모든 게임의 종료 뒤 점검을 다시 한 번씩
             }
 
@@ -111,6 +113,7 @@ public sealed partial class Rewarmer
 
         DateTimeOffset now = _now();
         bool afterExit;
+        long exitSeq;
         lock (_nextLock)
         {
             if (_next is null)
@@ -126,6 +129,7 @@ public sealed partial class Rewarmer
 
             _next = now + TimeSpan.FromMinutes(auto.RewarmMinutes);
             afterExit = _afterExitAt is { } exitAt && now >= exitAt && now - exitAt < AfterExitSpan; // 점검을 마친 게임은 아래에서 하나씩 지움
+            exitSeq = _afterExitSeq; // 이 점검이 시작할 때의 종료: 점검 도중 새 종료가 들어오면 그 종료의 표시는 이 점검이 지우지 않음
         }
 
         using IDisposable scope = DiskReadLedger.Scope(ReadPurpose.Idle); // 주기 점검의 읽기는 계기 없는 읽기 (하루 상한 대상), 게임 종료 뒤 아직 점검하지 않은 게임만 아래에서 계기 있는 읽기로 바꿈
@@ -187,7 +191,10 @@ public sealed partial class Rewarmer
             {
                 lock (_nextLock)
                 {
-                    _ = _afterExitDone.Add(g.Name); // 점검을 실제로 마친 게임만 완료 처리: 막히거나 건너뛴 게임의 표시는 다음 점검까지 유지
+                    if (exitSeq == _afterExitSeq) // 점검을 실제로 마친 게임만, 점검이 시작할 때의 종료에만 완료 처리: 막히거나 건너뛴 게임과 도중에 들어온 새 종료의 표시는 다음 점검까지 유지
+                    {
+                        _ = _afterExitDone.Add(g.Name);
+                    }
                 }
             }
 
@@ -198,7 +205,7 @@ public sealed partial class Rewarmer
         {
             lock (_nextLock)
             {
-                if (warmed.All(g => _afterExitDone.Contains(g.Name)))
+                if (exitSeq == _afterExitSeq && warmed.All(g => _afterExitDone.Contains(g.Name)))
                 {
                     _afterExitAt = null;
                     _afterExitDone.Clear();

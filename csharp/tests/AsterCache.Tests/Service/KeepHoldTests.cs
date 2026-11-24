@@ -33,6 +33,7 @@ public sealed class KeepHoldTests
     private Func<long>? _availFn;
     private Action<TimeSpan, CancellationToken>? _sleep;
     private readonly HashSet<string> _findMissing = []; // 찾기 패스가 빠진 것으로 확인하는 파일 (그 파일의 범위마다 경계 하나)
+    private int _probeCalls; // 표본 읽기를 부른 횟수
     private long _findDiskPerMiss = 512 * 1024; // 빠진 범위 하나를 알아채는 데 읽는 양
     private readonly List<IReadOnlyList<ReadOp>> _findCalls = []; // 찾기 패스가 받은 목록
     private Action<long, double, Action<long, double>>? _findGroups; // 찾기 패스 도중 읽은 양이 쌓이는 때 (읽은 양, 시간, 알림) 를 흉내
@@ -250,6 +251,11 @@ public sealed class KeepHoldTests
             ListStamp = _ => "s1",
             IsSparse = path => _sparse.Contains(path),
             KeepHoldEnabled = () => _keepHold,
+            KeepProbeSamples = (_, _) =>
+            {
+                _probeCalls++;
+                return null;
+            },
             AntiCheatOf = _ => _detected,
             OpenHold = () =>
             {
@@ -2579,6 +2585,25 @@ public sealed class KeepHoldTests
         Assert.Equal(before + 1, _hold.Batches.Count); // 계측하지 못한 묶음 하나로 끝: 이 플레이에서는 이어 붙들기를 더 하지 않음
         Assert.Contains(_log.Lines, l => l.Contains("cache hold continuing after the first pass") && l.Contains("disk reads of the play 1019 MiB of 1024 MiB")); // 그 묶음 (1 MiB) 이 공유 예산에서 빠짐
         _ = Assert.Single(_log.Lines, l => l.Contains("cache hold stops reading from the disk for this play"));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void AfterAnUnmeasuredBatchTheProbeAndTheCheckReadBackAreSkippedButTheFloorReleaseAndTheReasonLogStayOnce(bool unmeasured)
+    {
+        _hold.Missing.Add(F(2)); // 첫 패스가 경계를 만남 (표본 읽기가 붙는 자리)
+        _hold.Measured = !unmeasured;
+        Prewarmer p = Make(Reads);
+        RunFor(135, e => _avail = e is >= 125 and <= 127 ? 1500 : 20000); // 2 분 점검은 초 120, 초 125 에 하한 아래로 내려가 내놓음
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.NotEmpty(_hold.Released); // 내놓기 판단은 평소대로
+        Assert.Equal(unmeasured ? 0 : 1, _probeCalls); // 계측하지 못한 플레이에서는 표본 읽기도 하지 않음
+        Assert.Equal([!unmeasured], _hold.Refills.Take(1)); // 점검의 다시 읽기도 하지 않음 (줄여 간 쪽은 목록에서 뺌)
+        Assert.Equal(unmeasured ? 1 : 0, _log.Lines.Count(l => l.Contains("cache hold stops reading from the disk for this play")));
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("disk reads cannot be told apart"));
     }
 
     [Fact]

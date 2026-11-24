@@ -389,7 +389,7 @@ public sealed class ViewHoldTests : IDisposable
     [InlineData(false, true)]
     [InlineData(true, false)]
     [InlineData(false, false)]
-    public void AFailedHardFaultReadAtTheStartOrTheEndOfABatchMakesTheWholeBatchUnmeasuredAndItsReadsCountAsDiskReads(bool startReads, bool endReads)
+    public void AFailedHardFaultReadAtTheStartOrTheEndOfABatchMakesTheWholeBatchUnmeasured(bool startReads, bool endReads)
     {
         string a = Make("a.bin", 4);
         int calls = 0;
@@ -401,37 +401,32 @@ public sealed class ViewHoldTests : IDisposable
 
         HoldBatchResult r = hold.Hold([new ReadOp(a, 0, 4L * Mib)], CancellationToken.None);
 
-        Assert.Equal(startReads && endReads, r.Measured);
-        if (!r.Measured)
-        {
-            Assert.Equal(4L * Mib, r.DiskBytes); // 계측하지 못한 묶음은 읽은 양 전부를 디스크에서 읽은 것으로 셈
-        }
-        else
-        {
-            Assert.Equal(0, r.DiskBytes);
-        }
+        Assert.Equal(startReads && endReads, r.Measured); // 시작이나 끝 중 한 번이라도 조회가 실패하면 계측하지 못한 묶음
     }
 
-    [Theory]
-    [InlineData(1L << 20)]
-    [InlineData(1L << 19)]
-    public void WhenTheHardFaultCountCannotBeReadTheCheckReadsOnePieceNoLargerThanTheRoomLeftAndEndsItsReadBack(long cap)
+    [Fact]
+    public void WhenTheLastSegmentIsRefilledExactlyToTheCapTheCheckKeepsItHeld()
     {
         string a = Make("a.bin", 8);
-        using var hold = new ViewHold(() => null, () => null, minFileBytes: 0);
+        uint step = 0;
+        uint faults = 5_000_000;
+        uint pages = 5_000_000;
+        using var hold = new ViewHold(() => faults += step, () => pages += step * 10, minFileBytes: 0);
         hold.Rebase();
         _ = hold.Hold([new ReadOp(a, 0, 8L * Mib)], CancellationToken.None);
+        step = 100; // 조회 한 번이 4,096,000 바이트 (쪽 수 1,000 개 x 4 KiB) 를 디스크에서 읽은 것으로 보임
         using Process me = Process.GetCurrentProcess();
         HoldCheckResult r = default!;
-        for (int attempt = 0; attempt < 5 && r.RefilledBytes == 0; attempt++)
+        for (int attempt = 0; attempt < 5 && r.TrimmedBytes == 0; attempt++)
         {
             Assert.True(EmptyWorkingSet(me.Handle));
-            r = hold.Recheck(cap, CancellationToken.None);
+            r = hold.Recheck(4_096_000, CancellationToken.None);
         }
 
-        Assert.Equal(cap, r.RefilledBytes); // 조각을 읽기 전에 남은 양으로 줄여 상한을 넘지 않고 정확히 닿음
-        Assert.True(r.CapReached);
-        Assert.False(r.Measured);
+        Assert.True(r.TrimmedBytes > 0);
+        Assert.False(r.CapReached); // 상한을 넘은 것이 아니라 정확히 닿았으므로 되찾은 구간을 그대로 붙듦 (넘어야 내놓음)
+        Assert.Equal(0, r.DroppedBytes);
+        Assert.Equal(8L * Mib, hold.HeldBytes);
     }
 
     [Fact]

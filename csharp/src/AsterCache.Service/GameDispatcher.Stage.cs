@@ -12,6 +12,7 @@ namespace AsterCache.Service;
 /// 첫 실행 파일의 스트림은 단계 정보가 있으면 앞부분과 첫 단계만 흘립니다 (다음 단계는 그 실행 파일이 뜰 때 이후 실행 파일 경로가 흘림). 디스패처가 직렬이라 모두 Handle 스레드에서 돕니다.
 public sealed partial class GameDispatcher
 {
+    private StreamHeadroom? _headroom; // 메모리 여유 조회 (스트림은 디스패처 스레드에서 차례로 돎)
     private readonly Dictionary<string, DateTimeOffset> _lastStage = new(StringComparer.OrdinalIgnoreCase); // (게임, 실행 파일) -> 마지막 단계 스트림 시각
 
     /// 스트림이 낸 묶음의 요청·받아들인 바이트를 세고 (초 단위 기록의 service_stream_* 열), 끝날 때 그 구간의 디스크 표본을 한 줄로 남기는 판정판 (플레이 기록과 같은 것, 없으면 아무것도 하지 않음). 스트림의 동작에는 쓰지 않습니다.
@@ -263,9 +264,10 @@ public sealed partial class GameDispatcher
         }
     }
 
-    // 스트림 종료 때의 한 줄: 낸 묶음 수, 요청·받아들인 바이트, 걸린 시간, 낮은 I/O 우선순위로 보낸 시간, 그 구간에 게임 드라이브에 대기열이 있던 표본의 비율과 읽기 한 번의 평균 지연 (플레이 기록이 이미 1초마다 읽은 디스크 값의 집계).
-    internal static string StreamReadsLine(string game, ServiceReadPath path, long batches, long requested, long accepted, long sparseBuffered, double seconds, double lowSeconds, DiskTally disk) =>
-        FormattableString.Invariant($"{game}: {(path == ServiceReadPath.StageStream ? "stage" : "start")} stream reads: {batches} batches, requested {requested / 1_048_576d:F1} MiB, accepted {accepted / 1_048_576d:F1} MiB, sparse buffered {sparseBuffered / 1_048_576d:F1} MiB in {seconds:F1} s, low I/O priority {lowSeconds:F1} s; {disk.Text()}");
+    // 스트림 종료 때의 한 줄: 낸 묶음 수, 요청·받아들인 바이트, 걸린 시간, 낮은 I/O 우선순위로 보낸 시간, 그 구간에 게임 드라이브에 대기열이 있던 표본의 비율과 읽기 한 번의 평균 지연 (플레이 기록이 이미 1초마다 읽은 디스크 값의 집계),
+    // 메모리 여유가 돌아올 때까지 기다린 묶음 수와 그 시간, 스트림 동안의 최소 여유 (조회한 적이 없으면 none).
+    internal static string StreamReadsLine(string game, ServiceReadPath path, long batches, long requested, long accepted, long sparseBuffered, double seconds, double lowSeconds, DiskTally disk, StreamHeadroom? headroom = null) =>
+        FormattableString.Invariant($"{game}: {(path == ServiceReadPath.StageStream ? "stage" : "start")} stream reads: {batches} batches, requested {requested / 1_048_576d:F1} MiB, accepted {accepted / 1_048_576d:F1} MiB, sparse buffered {sparseBuffered / 1_048_576d:F1} MiB in {seconds:F1} s, low I/O priority {lowSeconds:F1} s; {disk.Text()}; memory headroom held {headroom?.HeldBatches ?? 0} batches {headroom?.HeldSeconds ?? 0:F1} s, min {(headroom?.MinBytes is { } min ? $"{min / 1_048_576d:F0} MiB" : "none")}");
 
     // 시작 스트림·단계 스트림 공통 본체: 읽기 카운터를 1 초마다 표본해 경계·상한·양보를 판정하고, 묶음마다 메모리 게이트와 우선순위를 적용합니다.
     private StreamOutcome RunStream(GameSettings g, DiskReadCoordinator.Lease? lease, CancellationToken stop, StreamSpec spec)
@@ -295,6 +297,9 @@ public sealed partial class GameDispatcher
         long acceptedBytes = 0;
         long sparseBytes = 0;
         long fragmentBase = 0; // 지금 조각 호출에서 앞 조각까지 받아들여진 바이트
+        StreamHeadroom headroom = _headroom ??= new StreamHeadroom(_env.Lists, _env.Timestamp); // 조회 주기를 스트림 사이에도 공유
+        headroom.BeginStream();
+        bool lookupFailedLogged = false;
         using var issueStop = CancellationTokenSource.CreateLinkedTokenSource(streamStop);
 
         IReadOnlyList<(int Pid, string Exe, long ReadBytes)> Counters() => spec.BoundaryPid is not null
@@ -444,6 +449,57 @@ public sealed partial class GameDispatcher
             return true;
         }
 
+        // 크기가 bytes 인 다음 묶음이 메모리에 있는 페이지를 밀어내지 않고 들어올 여유가 없는가 (조회 실패도 여유 없음). 로그는 스트림 하나에 한 번.
+        bool HeadroomShort(long bytes)
+        {
+            bool held = headroom.Short(bytes);
+            if (held && headroom.LookupFailed && !lookupFailedLogged)
+            {
+                lookupFailedLogged = true;
+                _log.Warn($"{g.Name}: {(spec.ReadPath == ServiceReadPath.StageStream ? "stage" : "start")} stream memory lists unavailable, no batch is issued until they can be read");
+            }
+
+            return held;
+        }
+
+        // 크기가 bytes 인 묶음을 내기 직전의 판정 (CanIssue 를 포함): 메모리 여유가 모자라면 그 묶음은 내지 않고 1 초마다 (표본 주기) 다시 보며,
+        // 시간 상한·로딩 경계·양보로 끝날 때까지 기다립니다. 더 낼 묶음이 없는 종료 확인은 CanIssue 만 부르므로 기다리지 않습니다.
+        bool Admit(long bytes)
+        {
+            long heldAt = 0;
+            bool held = false;
+            try
+            {
+                while (true)
+                {
+                    if (!CanIssue())
+                    {
+                        return false;
+                    }
+
+                    if (!HeadroomShort(bytes))
+                    {
+                        headroom.NoteIssued(bytes); // 같은 조회 결과를 잇단 묶음이 거듭 쓰지 않게
+                        return true;
+                    }
+
+                    if (!held)
+                    {
+                        (held, heldAt) = (true, _env.Timestamp());
+                    }
+
+                    _env.Sleep(TimeSpan.FromSeconds(1), issueStop.Token);
+                }
+            }
+            finally
+            {
+                if (held)
+                {
+                    headroom.NoteHeld(Stopwatch.GetElapsedTime(heldAt, _env.Timestamp()).TotalSeconds);
+                }
+            }
+        }
+
         void Noted(string stage, long bytes, bool isData)
         {
             lease?.NoteReadIssue(stage, bytes, isData);
@@ -506,8 +562,8 @@ public sealed partial class GameDispatcher
                     }
 
                     (r, complete) = streamOps is null
-                        ? _streamer.StreamCoordinated(g, issueStop.Token, Progress, CanIssue, Noted)
-                        : _streamer.StreamOpsCoordinated(g, streamOps, issueStop.Token, Progress, CanIssue, Noted);
+                        ? _streamer.StreamCoordinated(g, issueStop.Token, Progress, CanIssue, Noted, spec.MemoryGate ? Admit : null)
+                        : _streamer.StreamOpsCoordinated(g, streamOps, issueStop.Token, Progress, CanIssue, Noted, spec.MemoryGate ? Admit : null);
                 }
                 catch (OperationCanceledException) when (Volatile.Read(ref boundaryStopped) != 0 || Volatile.Read(ref capStopped) != 0 || Volatile.Read(ref otherStop) is not null)
                 {
@@ -544,7 +600,7 @@ public sealed partial class GameDispatcher
         double mbPerSecond = elapsedSeconds > 0 ? r.Bytes / (1_000_000d * elapsedSeconds) : 0;
         if (LoadPhases is { } board)
         {
-            _log.Info(StreamReadsLine(g.Name, spec.ReadPath, Interlocked.Read(ref batches), Interlocked.Read(ref requestedBytes), Interlocked.Read(ref acceptedBytes), Interlocked.Read(ref sparseBytes), elapsedSeconds, readYield?.Seconds ?? 0, board.TallyOf(g.Name).Since(tallyBefore)));
+            _log.Info(StreamReadsLine(g.Name, spec.ReadPath, Interlocked.Read(ref batches), Interlocked.Read(ref requestedBytes), Interlocked.Read(ref acceptedBytes), Interlocked.Read(ref sparseBytes), elapsedSeconds, readYield?.Seconds ?? 0, board.TallyOf(g.Name).Since(tallyBefore), headroom));
         }
 
         return new StreamOutcome(r, elapsedSeconds, mbPerSecond, boundaryA, capA, otherA, cancelled, readYield?.Seconds ?? 0, boundary);

@@ -33,6 +33,10 @@ public interface IGameStreamer
     (StreamStats Stats, bool Complete) StreamCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue) =>
         StreamCoordinated(game, stop, progress, canIssue);
 
+    /// admit: 묶음을 내기 직전에 그 묶음의 바이트 수로 부르는 판정 (canIssue 를 포함하고 기다릴 수 있음). 마지막 묶음 뒤의 종료 확인에는 canIssue 만 부릅니다. 모르는 스트리머는 admit 없이 canIssue 만 씁니다.
+    (StreamStats Stats, bool Complete) StreamCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue, Func<long, bool>? admit) =>
+        StreamCoordinated(game, stop, progress, canIssue, noteIssue);
+
     /// 예열 전용 스트림. maxBytes 는 메모리·스트림 예산 안에서 읽을 전체 바이트 상한입니다.
     (StreamStats Stats, bool Complete) StreamPrewarm(GameSettings game, CancellationToken stop, Action<long, long>? progress, long maxBytes) => Stream(game, stop, progress);
 
@@ -101,6 +105,9 @@ public interface IGameStreamer
     /// 주어진 목록을 StreamCoordinated 와 같은 묶음 경로로 흘립니다. 기본은 시작 목록 전체 (StreamCoordinated).
     (StreamStats Stats, bool Complete) StreamOpsCoordinated(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue) =>
         StreamCoordinated(game, stop, progress, canIssue, noteIssue);
+
+    (StreamStats Stats, bool Complete) StreamOpsCoordinated(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue, Func<long, bool>? admit) =>
+        StreamOpsCoordinated(game, ops, stop, progress, canIssue, noteIssue);
 }
 
 /// 게임의 .prefetch.json 을 Python prefetch.cli 기본값 (physical, 간격 0, 파일 30% 이상이면 통째) 으로 스케줄해 PrefetchVirtualMemory 로 읽습니다.
@@ -324,11 +331,14 @@ public sealed partial class PrefetchStreamer : IGameStreamer
         return StreamCoordinated(game, stop, progress, canIssue, null);
     }
 
-    public (StreamStats Stats, bool Complete) StreamCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue)
+    public (StreamStats Stats, bool Complete) StreamCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue) =>
+        StreamCoordinated(game, stop, progress, canIssue, noteIssue, null);
+
+    public (StreamStats Stats, bool Complete) StreamCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue, Func<long, bool>? admit)
     {
         noteIssue?.Invoke("stream schedule", 0, false);
         List<ReadOp> ops = Ops(game, stop);
-        (StreamStats Stats, bool Complete) r = Batches(ops, stop, progress, canIssue, noteIssue);
+        (StreamStats Stats, bool Complete) r = Batches(ops, stop, progress, canIssue, noteIssue, admit: admit);
         return r.Complete && !canIssue() ? (r.Stats with { Aborted = true }, false) : r;
     }
 
@@ -446,18 +456,20 @@ public sealed partial class PrefetchStreamer : IGameStreamer
     /// 묶음 하나를 내기 직전에 noteIssue 로 알리는 단계 이름 (GameDispatcher 가 이 이름으로 묶음 수와 요청 바이트를 셈).
     internal const string BatchStage = "stream batch";
 
-    private static (StreamStats Stats, bool Complete) Batches(List<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool>? canIssue, Action<string, long, bool>? noteIssue = null, Action<IReadOnlyList<ReadOp>>? afterBatch = null)
+    private static (StreamStats Stats, bool Complete) Batches(List<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool>? canIssue, Action<string, long, bool>? noteIssue = null, Action<IReadOnlyList<ReadOp>>? afterBatch = null, Func<long, bool>? admit = null)
     {
         long total = ops.Sum(o => o.Length);
         long done = 0;
         (StreamStats Stats, bool Complete) result = FolderWarm.Read(ops, stop, batch =>
         {
-            if (stop.IsCancellationRequested || (canIssue is not null && !canIssue()))
+            long bytes = batch.Sum(op => op.Length);
+            // admit 는 canIssue 를 포함하며 이 묶음의 크기로 기다릴 수 있음 (종료 확인은 아래처럼 canIssue 만)
+            if (stop.IsCancellationRequested || (canIssue is not null && !(admit?.Invoke(bytes) ?? canIssue())) || (admit is not null && stop.IsCancellationRequested)) // 기다리는 사이 취소·대여 회수가 됐으면 요청으로 세지 않음 (stop 은 대여의 취소를 포함)
             {
-                return new StreamStats(0, 0, 0, 0, Aborted: true, RequestedBytes: batch.Sum(op => op.Length));
+                return new StreamStats(0, 0, 0, 0, Aborted: true, RequestedBytes: bytes);
             }
 
-            noteIssue?.Invoke(BatchStage, batch.Sum(op => op.Length), true);
+            noteIssue?.Invoke(BatchStage, bytes, true);
             StreamStats s = ZoneStreamer.Run(batch, StreamMethod.Pvm, ct: stop, noteIssue: noteIssue);
             done += s.Bytes;
             progress?.Invoke(done, total);
@@ -1252,6 +1264,9 @@ public sealed record DispatchEnv
     /// 가용 메모리 (MiB): 단계 스트림과 시작 스트림의 메모리 게이트. 기본은 게이트 없음.
     public Func<long> AvailableMib { get; init; } = () => long.MaxValue;
 
+    /// 메모리 목록 (여유 = 빈 + 0 으로 채운 + 대기 우선순위 0~4): 스트림이 묶음마다 여유를 봅니다 (StreamHeadroom). 기본은 여유 무한, null 은 조회 실패.
+    public Func<MemoryLists?> Lists { get; init; } = () => new MemoryLists(long.MaxValue, 0);
+
     /// 읽는 스레드의 I/O 우선순위를 낮춤 (true) 또는 보통으로 되돌림 (false), 바꾸지 못하면 false. 기본은 성공으로 칩니다.
     public Func<bool, bool> SetReadIoLow { get; init; } = _ => true;
 
@@ -1271,6 +1286,7 @@ public sealed record DispatchEnv
         OtherProcesses = (g, start) => RegisteredOthers(g, ProcessSnapshot.Take(), start.Pid),
         DiskBusy = g => DiskActivity.BusyUnlessBroken(PlanFile.SplitDrive(g.OriginRoot), keepStalled: true), // 표본이 없거나 낡으면 바쁨 (정체가 60 초를 넘어도 게임 보호는 유지), 카운터 고장은 기존대로 바쁘지 않음
         AvailableMib = SystemMemory.AvailableMib,
+        Lists = MemoryListInfo.Query,
         SetReadIoLow = low => ThreadIoPriority.TrySet(low ? IoPriority.Low : IoPriority.Normal),
     };
 

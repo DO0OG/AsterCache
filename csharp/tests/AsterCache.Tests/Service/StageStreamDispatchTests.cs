@@ -4,6 +4,7 @@ using AsterCache.Core.Settings;
 using AsterCache.Core.Trace;
 using AsterCache.Prefetch;
 using AsterCache.Service;
+using AsterCache.Windows;
 using Xunit;
 
 namespace AsterCache.Tests.Service;
@@ -30,6 +31,7 @@ public sealed class StageStreamDispatchTests
     private int _namedLookups; // 이름 있는 읽기 카운터 조회 횟수
     private Action? _onSleep;
     private bool _stage = true;
+    private MemoryLists? _lists = new(long.MaxValue, 0); // 메모리 목록 조회 결과 (null 은 조회 실패)
     private IReadOnlyList<(int Pid, string Exe)> _processes = [];
 
     private GameDispatcher Dispatcher()
@@ -80,6 +82,7 @@ public sealed class StageStreamDispatchTests
                 return true;
             },
             AvailableMib = () => _available,
+            Lists = () => _lists,
             OtherGameQueued = _ => _queuedOther,
             StageStreamEnabled = () => _stage,
         });
@@ -854,6 +857,190 @@ public sealed class StageStreamDispatchTests
         Assert.Empty(_streamer.Phases);
     }
 
+    private const long Mib = 1L << 20;
+
+    private string EndLine() => _log.Lines.Single(l => l.Contains("stream reads: ", StringComparison.Ordinal));
+
+    [Fact]
+    public void EnoughHeadroomIssuesEveryBatchWithoutWaitingAndRecordsTheMinimum()
+    {
+        GameDispatcher d = DispatcherAfterFirstExe();
+        d.LoadPhases = new LoadPhaseBoard(_log);
+        _lists = new MemoryLists(10_000 * Mib, 0);
+        _streamer.LaterPlans = _ => new StageLaterPlan([B], true, 0);
+        _streamer.OnBatch = (_, _) => _sec += 2;
+
+        Assert.True(d.Handle(Start(6, "sp26-cod.exe")));
+
+        Assert.Equal(3, _streamer.BatchCount[B.Path]);
+        Assert.EndsWith("; memory headroom held 0 batches 0.0 s, min 10000 MiB", EndLine(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ShortHeadroomIssuesNoBatchAndTheStreamStillEndsAtTheTimeCap()
+    {
+        GameDispatcher d = DispatcherAfterFirstExe();
+        d.LoadPhases = new LoadPhaseBoard(_log);
+        _lists = new MemoryLists(64 * Mib + 255 * Mib, 0); // 묶음 + 여분 256 MiB 에 1 MiB 모자람
+        _streamer.LaterPlans = _ => new StageLaterPlan([B], true, 0);
+
+        Assert.False(d.Handle(Start(6, "sp26-cod.exe")));
+
+        Assert.False(_streamer.BatchCount.ContainsKey(B.Path));
+        Assert.Contains(_log.Lines, l => l.Contains("stage stream sp26-cod.exe", StringComparison.Ordinal) && l.Contains("stopped, cap", StringComparison.Ordinal));
+        Assert.Contains("; memory headroom held 1 batches 12", EndLine(), StringComparison.Ordinal); // 상한 120 초 동안 기다림
+        Assert.EndsWith("s, min 319 MiB", EndLine(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void HeadroomThatReturnsLetsTheWaitingBatchGoAndTheRestFollow()
+    {
+        GameDispatcher d = DispatcherAfterFirstExe();
+        d.LoadPhases = new LoadPhaseBoard(_log);
+        _lists = new MemoryLists(100 * Mib, 0);
+        int sleeps = 0;
+        _onSleep = () =>
+        {
+            if (++sleeps == 2)
+            {
+                _lists = new MemoryLists(10_000 * Mib, 0);
+            }
+        };
+        _streamer.LaterPlans = _ => new StageLaterPlan([B], true, 0);
+        _streamer.OnBatch = (_, _) => { }; // 가짜 스트리머는 이 훅이 있어야 묶음 번호를 올림
+
+        Assert.True(d.Handle(Start(6, "sp26-cod.exe")));
+
+        Assert.Equal(3, _streamer.BatchCount[B.Path]);
+        Assert.EndsWith("; memory headroom held 1 batches 2.0 s, min 100 MiB", EndLine(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AFailedLookupHoldsEveryBatchAndLogsOnlyOncePerStream()
+    {
+        GameDispatcher d = DispatcherAfterFirstExe();
+        d.LoadPhases = new LoadPhaseBoard(_log);
+        _lists = null;
+        _streamer.LaterPlans = _ => new StageLaterPlan([B], true, 0);
+
+        Assert.False(d.Handle(Start(6, "sp26-cod.exe")));
+
+        Assert.False(_streamer.BatchCount.ContainsKey(B.Path));
+        Assert.Single(_log.Lines, l => l.Contains("stage stream memory lists unavailable", StringComparison.Ordinal));
+        Assert.EndsWith("s, min none", EndLine(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheStartStreamHoldsOnShortHeadroomToo()
+    {
+        RunningFirst();
+        _streamer.FirstOps = [A];
+        _lists = new MemoryLists(100 * Mib, 0);
+        GameDispatcher d = Dispatcher();
+        d.LoadPhases = new LoadPhaseBoard(_log);
+
+        Assert.False(d.Handle(Start(5, "cod.exe")));
+
+        Assert.Empty(_streamer.BatchCount);
+        Assert.Contains(_log.Lines, l => l.Contains("start stream stopped at cap after ", StringComparison.Ordinal));
+        Assert.Contains("; memory headroom held 1 batches ", EndLine(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DisabledSettingNeverLooksAtTheMemoryLists()
+    {
+        RunningFirst();
+        _stage = false;
+        _lists = null; // 조회가 되면 막혔을 값
+        GameDispatcher d = Dispatcher();
+        d.LoadPhases = new LoadPhaseBoard(_log);
+
+        Assert.True(d.Handle(Start(5, "cod.exe")));
+
+        Assert.Equal(["all"], _streamer.Phases);
+        Assert.EndsWith("; memory headroom held 0 batches 0.0 s, min none", EndLine(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BatchesIssuedBackToBackShareOneLookupSoEachOneIsSubtractedFromIt()
+    {
+        GameDispatcher d = DispatcherAfterFirstExe();
+        d.LoadPhases = new LoadPhaseBoard(_log);
+        ReadOp big = new(@"D:\Games\codig.bin", 0, 384L << 20);
+        _lists = new MemoryLists(384 * Mib, 0); // 묶음 64 MiB + 여분 256 MiB 면 묶음마다 64 MiB 씩 줄어 셋째 묶음에서 모자람
+        _streamer.LaterPlans = _ => new StageLaterPlan([big], true, 0);
+        _streamer.OnBatch = (_, _) => { }; // 시계가 가지 않아 조회는 250 ms 안에서 재사용됨
+
+        Assert.True(d.Handle(Start(6, "sp26-cod.exe")));
+
+        Assert.Equal(6, _streamer.BatchCount[big.Path]);
+        Assert.EndsWith("; memory headroom held 2 batches 2.0 s, min 256 MiB", EndLine(), StringComparison.Ordinal); // 조회마다 두 묶음만 허락
+    }
+
+    [Fact]
+    public void TheHeadroomIsJudgedWithTheRealSizeOfTheNextBatchNotTheLargestPossible()
+    {
+        GameDispatcher d = DispatcherAfterFirstExe();
+        ReadOp big = new(@"D:\Games\codig.bin", 0, 384L << 20);
+        _lists = new MemoryLists(320 * Mib, 0); // 64 MiB 묶음 + 256 MiB 에 딱 맞음 (최대 묶음 96 MiB 로 보면 모자람)
+        _streamer.LaterPlans = _ => new StageLaterPlan([big], true, 0);
+        double firstBatchAt = -1;
+        _streamer.OnBatch = (_, index) => firstBatchAt = index == 0 ? _sec : firstBatchAt;
+
+        Assert.True(d.Handle(Start(6, "sp26-cod.exe")));
+
+        Assert.Equal(100, firstBatchAt); // 기다리지 않고 첫 묶음을 냄
+    }
+
+    [Fact]
+    public void AfterTheLastBatchTheEndCheckNeverWaitsForMemory()
+    {
+        GameDispatcher d = DispatcherAfterFirstExe();
+        d.LoadPhases = new LoadPhaseBoard(_log);
+        _lists = new MemoryLists(10_000 * Mib, 0);
+        _streamer.LaterPlans = _ => new StageLaterPlan([B], true, 0);
+        _streamer.OnBatch = (_, index) =>
+        {
+            _sec += 2;
+            if (index == 2)
+            {
+                _lists = new MemoryLists(0, 0); // 마지막 묶음을 낸 뒤 여유가 사라짐
+            }
+        };
+
+        Assert.True(d.Handle(Start(6, "sp26-cod.exe")));
+
+        Assert.Equal(3, _streamer.BatchCount[B.Path]);
+        Assert.EndsWith("; memory headroom held 0 batches 0.0 s, min 10000 MiB", EndLine(), StringComparison.Ordinal);
+        Assert.Equal(106, _sec); // 종료 확인에서 기다리지 않음
+    }
+
+    [Fact]
+    public void TheLookupPeriodIsSharedByConsecutiveStreams()
+    {
+        RunningFirst();
+        _lists = new MemoryLists(10_000 * Mib, 0);
+        _streamer.FirstOps = [A];
+        _streamer.OnBatch = (_, _) => { }; // 시계가 가지 않아 두 스트림이 250 ms 안에 이어짐
+        int lookups = 0;
+        GameDispatcher d = new([Game, Games.Make("other", "other.exe")], _streamer, _log, () => DateTimeOffset.UnixEpoch.AddSeconds(_sec), new DispatchEnv
+        {
+            ReadCounters = _ => [.. _counters.Select(c => (c.Pid, c.Bytes))],
+            Timestamp = () => (long)(_sec * Stopwatch.Frequency),
+            Lists = () =>
+            {
+                lookups++;
+                return _lists;
+            },
+        });
+
+        Assert.True(d.Handle(Start(5, "cod.exe")));
+        Assert.True(d.Handle(Start(7, "other.exe")));
+
+        Assert.Equal(2, _streamer.Phases.Count); // 스트림이 둘 돌았음
+        Assert.Equal(1, lookups);
+    }
+
     private sealed class StageFakeStreamer : IGameStreamer
     {
         public LoadRefillPlan? Refill { get; set; }
@@ -892,10 +1079,16 @@ public sealed class StageStreamDispatchTests
         public StageLaterPlan PlanLaterStage(GameSettings game, string exe, CancellationToken stop) => LaterPlans(exe);
 
         public (StreamStats Stats, bool Complete) StreamCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue) =>
-            Run("all", 192L << 20, progress, canIssue);
+            Run("all", 192L << 20, progress, canIssue, null);
 
-        // FolderWarm.Read 로 실제 묶음 규칙 (64 MiB 이상이 모일 때까지 op 단위) 을 그대로 따름
-        public (StreamStats Stats, bool Complete) StreamOpsCoordinated(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue)
+        public (StreamStats Stats, bool Complete) StreamCoordinated(GameSettings game, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue, Func<long, bool>? admit) =>
+            Run("all", 192L << 20, progress, canIssue, admit);
+
+        public (StreamStats Stats, bool Complete) StreamOpsCoordinated(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue) =>
+            StreamOpsCoordinated(game, ops, stop, progress, canIssue, noteIssue, null);
+
+        // FolderWarm.Read 로 실제 묶음 규칙 (64 MiB 이상이 모일 때까지 op 단위) 을 그대로 따름. admit 는 실제 스트리머처럼 묶음 앞에서 그 크기로 부르고 (canIssue 를 대신함), 종료 확인은 canIssue 만 씀.
+        public (StreamStats Stats, bool Complete) StreamOpsCoordinated(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue, Func<long, bool>? admit)
         {
             string phase = ops[0].Path;
             Phases.Add(phase);
@@ -906,7 +1099,7 @@ public sealed class StageStreamDispatchTests
             {
                 CanIssueCalls++;
                 long bytes = batch.Sum(o => o.Length);
-                if (!canIssue())
+                if (!(admit?.Invoke(bytes) ?? canIssue()))
                 {
                     return new StreamStats(0, 0, 0, 0, Aborted: true, RequestedBytes: bytes);
                 }
@@ -920,14 +1113,14 @@ public sealed class StageStreamDispatchTests
             return !canIssue() ? (r.Stats with { Aborted = true }, false) : r;
         }
 
-        private (StreamStats Stats, bool Complete) Run(string phase, long total, Action<long, long>? progress, Func<bool> canIssue)
+        private (StreamStats Stats, bool Complete) Run(string phase, long total, Action<long, long>? progress, Func<bool> canIssue, Func<long, bool>? admit)
         {
             Phases.Add(phase);
             const int batches = 3;
             long done = 0;
             for (int i = 0; i < batches; i++)
             {
-                if (!canIssue())
+                if (!(admit?.Invoke(total / batches) ?? canIssue()))
                 {
                     return (new StreamStats(done, 1, 0, 0.01, Aborted: true), false);
                 }

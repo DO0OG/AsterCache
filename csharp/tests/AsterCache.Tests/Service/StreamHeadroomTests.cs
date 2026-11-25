@@ -90,4 +90,36 @@ public sealed class StreamHeadroomTests
 
         Assert.Equal((2L, 3.5), (headroom.HeldBatches, headroom.HeldSeconds));
     }
+
+    [Fact]
+    public void BatchesAllowedOnOneLookupAreSubtractedFromIt()
+    {
+        _lists = new MemoryLists(352 * Mib, 0);
+        StreamHeadroom headroom = Create();
+
+        Assert.False(headroom.Short(64 * Mib)); // 352 >= 64 + 256
+        headroom.NoteIssued(64 * Mib);
+        Assert.True(headroom.Short(64 * Mib)); // 288 < 320: 같은 조회를 거듭 쓰지 않음
+        Assert.Equal(1, _calls);
+        Assert.Equal(288 * Mib, headroom.MinBytes);
+
+        _now += Ms(300);
+        Assert.False(headroom.Short(64 * Mib)); // 새 조회는 처음부터
+        Assert.Equal(2, _calls);
+    }
+
+    [Fact]
+    public void BeginStreamClearsTheRecordButKeepsTheLookupAndItsAge()
+    {
+        StreamHeadroom headroom = Create();
+        _ = headroom.Short(1);
+        headroom.NoteHeld(2);
+
+        headroom.BeginStream();
+
+        Assert.Equal((null, 0L, 0d), (headroom.MinBytes, headroom.HeldBatches, headroom.HeldSeconds));
+        _now += Ms(100);
+        _ = headroom.Short(1);
+        Assert.Equal(1, _calls); // 이어지는 스트림도 250 ms 안이면 같은 조회
+    }
 }

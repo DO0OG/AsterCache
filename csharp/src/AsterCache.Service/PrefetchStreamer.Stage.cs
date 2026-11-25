@@ -34,10 +34,13 @@ public sealed partial class PrefetchStreamer
 
     public LoadRefillPlan? PlanLoadRefill(GameSettings game, long capBytes, CancellationToken stop) => LoadRefillPlans.Plan(game, capBytes, FileLayout.Get, stop);
 
-    public (StreamStats Stats, bool Complete) StreamOpsCoordinated(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue)
+    public (StreamStats Stats, bool Complete) StreamOpsCoordinated(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue) =>
+        StreamOpsCoordinated(game, ops, stop, progress, canIssue, noteIssue, null);
+
+    public (StreamStats Stats, bool Complete) StreamOpsCoordinated(GameSettings game, IReadOnlyList<ReadOp> ops, CancellationToken stop, Action<long, long>? progress, Func<bool> canIssue, Action<string, long, bool>? noteIssue, Func<long, bool>? admit)
     {
         noteIssue?.Invoke("stream schedule", 0, false);
-        return Batches([.. ops], stop, progress, canIssue, noteIssue); // 지금 스트림과 같은 버퍼드 묶음 경로 (스파스 파일에 섹션을 만들지 않음)
+        return Batches([.. ops], stop, progress, canIssue, noteIssue, admit: admit); // 지금 스트림과 같은 버퍼드 묶음 경로 (스파스 파일에 섹션을 만들지 않음)
     }
 
     // 추적에서 가변으로 표시된 파일 (이름 규칙 포함): 게임이 쓰거나 줄이는 파일이라 실행 중에 읽지 않음.

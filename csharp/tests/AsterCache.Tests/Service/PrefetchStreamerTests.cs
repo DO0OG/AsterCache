@@ -73,6 +73,47 @@ public sealed class PrefetchStreamerTests : IDisposable
     }
 
     [Fact]
+    public void AdmitIsAskedWithEachBatchSizeAndTheEndCheckUsesOnlyCanIssue()
+    {
+        WriteTrace(65);
+        var sizes = new List<long>();
+        int checks = 0;
+
+        (var stats, bool complete) = new PrefetchStreamer().StreamCoordinated(_game, CancellationToken.None, null, () =>
+        {
+            checks++;
+            return true;
+        }, null, bytes =>
+        {
+            sizes.Add(bytes);
+            return true;
+        });
+
+        Assert.True(complete);
+        Assert.Equal(65 * Mib, stats.Bytes);
+        Assert.Equal([64 * Mib, Mib], sizes); // 묶음마다 실제 크기로
+        Assert.Equal(2, checks); // 묶음 앞 판정은 admit 가 대신하고, canIssue 는 종료 확인 두 곳 (Batches 끝, StreamCoordinated 끝) 에서만
+    }
+
+    [Fact]
+    public void ABatchIsNotCountedWhenTheStreamIsCancelledWhileItWaitedForAdmit()
+    {
+        WriteTrace(8);
+        using var cancel = new CancellationTokenSource();
+        var notes = new List<string>();
+
+        (var stats, bool complete) = new PrefetchStreamer().StreamCoordinated(_game, cancel.Token, null, () => true, (stage, _, _) => notes.Add(stage), _ =>
+        {
+            cancel.Cancel(); // 판정을 기다리는 사이 취소됨
+            return true;
+        });
+
+        Assert.False(complete);
+        Assert.True(stats.Aborted);
+        Assert.DoesNotContain("stream batch", notes);
+    }
+
+    [Fact]
     public void PrewarmStreamHandsEachReadBatchToTheCallerRightAfterItsProgressNotice()
     {
         string[] files = [Path.Combine(_game.OriginRoot, "a.bin"), Path.Combine(_game.OriginRoot, "b.bin")];

@@ -12,6 +12,7 @@ namespace AsterCache.Service;
 /// 첫 실행 파일의 스트림은 단계 정보가 있으면 앞부분과 첫 단계만 흘립니다 (다음 단계는 그 실행 파일이 뜰 때 이후 실행 파일 경로가 흘림). 디스패처가 직렬이라 모두 Handle 스레드에서 돕니다.
 public sealed partial class GameDispatcher
 {
+    private StreamHeadroom? _headroom; // 메모리 여유 조회 (스트림은 디스패처 스레드에서 차례로 돎)
     private readonly Dictionary<string, DateTimeOffset> _lastStage = new(StringComparer.OrdinalIgnoreCase); // (게임, 실행 파일) -> 마지막 단계 스트림 시각
 
     /// 스트림이 낸 묶음의 요청·받아들인 바이트를 세고 (초 단위 기록의 service_stream_* 열), 끝날 때 그 구간의 디스크 표본을 한 줄로 남기는 판정판 (플레이 기록과 같은 것, 없으면 아무것도 하지 않음). 스트림의 동작에는 쓰지 않습니다.
@@ -296,7 +297,8 @@ public sealed partial class GameDispatcher
         long acceptedBytes = 0;
         long sparseBytes = 0;
         long fragmentBase = 0; // 지금 조각 호출에서 앞 조각까지 받아들여진 바이트
-        var headroom = new StreamHeadroom(_env.Lists, _env.Timestamp);
+        StreamHeadroom headroom = _headroom ??= new StreamHeadroom(_env.Lists, _env.Timestamp); // 조회 주기를 스트림 사이에도 공유
+        headroom.BeginStream();
         bool lookupFailedLogged = false;
         using var issueStop = CancellationTokenSource.CreateLinkedTokenSource(streamStop);
 
@@ -424,16 +426,33 @@ public sealed partial class GameDispatcher
             return true;
         }
 
-        // 다음 묶음이 메모리에 있는 페이지를 밀어내지 않고 들어올 여유가 없는가 (조회 실패도 여유 없음). 로그는 스트림 하나에 한 번.
-        bool HeadroomShort()
+        bool CanIssue()
         {
-            long next = Math.Min(StageStreamPlans.GateBatchBytes, Interlocked.Read(ref remainingBytes));
-            if (!spec.MemoryGate || next <= 0) // 다 읽은 뒤의 마지막 확인은 기다리지 않음
+            if (issueStop.IsCancellationRequested || !(lease?.IsValid ?? !stop.IsCancellationRequested))
             {
                 return false;
             }
 
-            bool held = headroom.Short(next);
+            SampleReadCounters();
+            if (!LeaseValid() || MemoryShort())
+            {
+                return false;
+            }
+
+            if (spec.YieldToQueuedGame && OtherGameQueued(g)) // 긴 목록이 디스패처를 붙잡고 다른 게임의 시작을 막지 않게
+            {
+                StopFor("another game started");
+                return false;
+            }
+
+            _ = readYield?.Apply(Volatile.Read(ref wantLow) != 0, _now()); // 읽는 스레드에서만 부름
+            return true;
+        }
+
+        // 크기가 bytes 인 다음 묶음이 메모리에 있는 페이지를 밀어내지 않고 들어올 여유가 없는가 (조회 실패도 여유 없음). 로그는 스트림 하나에 한 번.
+        bool HeadroomShort(long bytes)
+        {
+            bool held = headroom.Short(bytes);
             if (held && headroom.LookupFailed && !lookupFailedLogged)
             {
                 lookupFailedLogged = true;
@@ -443,8 +462,9 @@ public sealed partial class GameDispatcher
             return held;
         }
 
-        // 묶음을 내도 되는가. 메모리 여유가 모자라면 그 묶음은 내지 않고 1 초마다 (표본 주기) 다시 보며, 시간 상한·로딩 경계·양보로 끝날 때까지 기다립니다.
-        bool CanIssue()
+        // 크기가 bytes 인 묶음을 내기 직전의 판정 (CanIssue 를 포함): 메모리 여유가 모자라면 그 묶음은 내지 않고 1 초마다 (표본 주기) 다시 보며,
+        // 시간 상한·로딩 경계·양보로 끝날 때까지 기다립니다. 더 낼 묶음이 없는 종료 확인은 CanIssue 만 부르므로 기다리지 않습니다.
+        bool Admit(long bytes)
         {
             long heldAt = 0;
             bool held = false;
@@ -452,26 +472,15 @@ public sealed partial class GameDispatcher
             {
                 while (true)
                 {
-                    if (issueStop.IsCancellationRequested || !(lease?.IsValid ?? !stop.IsCancellationRequested))
+                    if (!CanIssue())
                     {
                         return false;
                     }
 
-                    SampleReadCounters();
-                    if (!LeaseValid() || MemoryShort())
+                    if (!HeadroomShort(bytes))
                     {
-                        return false;
-                    }
-
-                    if (spec.YieldToQueuedGame && OtherGameQueued(g)) // 긴 목록이 디스패처를 붙잡고 다른 게임의 시작을 막지 않게
-                    {
-                        StopFor("another game started");
-                        return false;
-                    }
-
-                    if (!HeadroomShort())
-                    {
-                        break;
+                        headroom.NoteIssued(bytes); // 같은 조회 결과를 잇단 묶음이 거듭 쓰지 않게
+                        return true;
                     }
 
                     if (!held)
@@ -489,9 +498,6 @@ public sealed partial class GameDispatcher
                     headroom.NoteHeld(Stopwatch.GetElapsedTime(heldAt, _env.Timestamp()).TotalSeconds);
                 }
             }
-
-            _ = readYield?.Apply(Volatile.Read(ref wantLow) != 0, _now()); // 읽는 스레드에서만 부름
-            return true;
         }
 
         void Noted(string stage, long bytes, bool isData)
@@ -556,8 +562,8 @@ public sealed partial class GameDispatcher
                     }
 
                     (r, complete) = streamOps is null
-                        ? _streamer.StreamCoordinated(g, issueStop.Token, Progress, CanIssue, Noted)
-                        : _streamer.StreamOpsCoordinated(g, streamOps, issueStop.Token, Progress, CanIssue, Noted);
+                        ? _streamer.StreamCoordinated(g, issueStop.Token, Progress, CanIssue, Noted, spec.MemoryGate ? Admit : null)
+                        : _streamer.StreamOpsCoordinated(g, streamOps, issueStop.Token, Progress, CanIssue, Noted, spec.MemoryGate ? Admit : null);
                 }
                 catch (OperationCanceledException) when (Volatile.Read(ref boundaryStopped) != 0 || Volatile.Read(ref capStopped) != 0 || Volatile.Read(ref otherStop) is not null)
                 {

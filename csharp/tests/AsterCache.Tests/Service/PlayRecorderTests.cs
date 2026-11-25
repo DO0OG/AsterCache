@@ -203,6 +203,25 @@ public sealed class PlayRecorderTests
         Assert.True(counter.Disposed);
     }
 
+    [Theory]
+    [InlineData(false, "(complete)")]
+    [InlineData(true, "(before this boot)")]
+    public async Task PlayRecordNamesAWarmFromBeforeThisBootInsteadOfComplete(bool beforeBoot, string shown)
+    {
+        using var dir = new TempDir();
+        var log = new ListLog();
+        using var counter = new FakeCounter();
+        var recorder = new PlayRecorder(dir.Combine("play_samples.json"), log, _ => counter, () => 8192, TimeSpan.FromMilliseconds(10));
+        GameSettings game = Games.Make("warm", "warm.exe");
+        var warm = new PlayWarmSnapshot("hot set", "ok", null, 5656, 11672, 52 * 60, beforeBoot);
+        Assert.True(recorder.ObserveStart(game, new ProcessStart(51, game.ExeNames[0], Stopwatch.GetTimestamp()), warm));
+        await WaitUntil(() => counter.Reads > 0);
+
+        recorder.EndSession(game.Name);
+
+        Assert.Contains(log.Lines, line => line.Contains($"start warm hot set 5656/11672 MiB 52 min ago {shown}", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task SessionStopsCountingAtTheFirstTimeTheProcessWasGone()
     {

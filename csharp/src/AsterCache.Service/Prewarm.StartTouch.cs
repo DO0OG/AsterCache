@@ -49,7 +49,13 @@ public sealed partial class Prewarmer
 
         lock (_gate)
         {
-            if (!(_last.ContainsKey(game.Name) || _warmAtServiceStart.Contains(game.Name) || _solar.HasMark(game.Name)) || _startTouching.Contains(game.Name)) // 메모리에 둔 목록이 없음
+            if (!(_last.ContainsKey(game.Name) || _warmAtServiceStart.Contains(game.Name) || _solar.HasMark(game.Name))) // 메모리에 둔 목록이 없음
+            {
+                _log.Info($"{game.Name}: cache touch at game start skipped ({exe}: no prewarm record of a list in memory)");
+                return;
+            }
+
+            if (_startTouching.Contains(game.Name))
             {
                 return;
             }

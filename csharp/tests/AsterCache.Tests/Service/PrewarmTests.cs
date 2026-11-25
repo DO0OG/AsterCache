@@ -47,6 +47,19 @@ public sealed class PrewarmTests : IDisposable
         Assert.Null(prewarmer.PlayStartSnapshot("game", _now));
     }
 
+    [Fact]
+    public void PlayStartSnapshotMarksAWarmFromBeforeThisBoot()
+    {
+        GameSettings g = Game("a");
+        Prewarmer p = Make(g);
+        Assert.True(p.Run(g, "first").Ran);
+
+        Assert.False(p.PlayStartSnapshot("a", _now)!.BeforeBoot); // 부팅 뒤 (가짜 부팅 시간 하루) 의 예열
+
+        _now += TimeSpan.FromDays(2); // 예열 뒤 하루 넘게 지나 부팅 시각이 그 예열보다 뒤
+        Assert.True(p.PlayStartSnapshot("a", _now)!.BeforeBoot);
+    }
+
     // ---- 조건 판정 ----
 
     [Theory]

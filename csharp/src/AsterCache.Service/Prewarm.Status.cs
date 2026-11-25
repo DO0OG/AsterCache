@@ -154,7 +154,8 @@ public sealed partial class Prewarmer
             DateTimeOffset? completedAt = StatusString(entry, "at") is { } at
                 && DateTimeOffset.TryParse(at, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset parsed) ? parsed : null;
             double? secondsAgo = completedAt is { } then && startedAt >= then ? (startedAt - then).TotalSeconds : null;
-            return new PlayWarmSnapshot(StatusString(entry, "mode") ?? "hot set", result, reason, readMib, targetMib, secondsAgo);
+            bool beforeBoot = completedAt is { } done && done <= _now() - TimeSpan.FromMilliseconds(_env.UptimeMs()); // 서비스 시작 때 부팅 전 예열을 가르는 것과 같은 부팅 시각: 부팅 전의 ok 는 캐시가 비었으니 complete 로 적지 않음
+            return new PlayWarmSnapshot(StatusString(entry, "mode") ?? "hot set", result, reason, readMib, targetMib, secondsAgo, beforeBoot);
         }
     }
 

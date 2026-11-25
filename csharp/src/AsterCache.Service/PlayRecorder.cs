@@ -8,7 +8,7 @@ using AsterCache.Windows;
 
 namespace AsterCache.Service;
 
-internal sealed record PlayWarmSnapshot(string Mode, string Result, string? Reason, long? ReadMib, long? TargetMib, double? SecondsAgo);
+internal sealed record PlayWarmSnapshot(string Mode, string Result, string? Reason, long? ReadMib, long? TargetMib, double? SecondsAgo, bool BeforeBoot = false);
 
 public sealed record PlayStreamResult(string Status, string? Reason, long? ReadBytes, double? Seconds, double? MegabytesPerSecond);
 
@@ -860,7 +860,7 @@ public sealed class PlayRecorder : IDisposable
         string age = warm.SecondsAgo is { } seconds ? $" {(long)(seconds / 60)} min ago" : string.Empty;
         string read = warm.ReadMib is { } readMib ? readMib.ToString(CultureInfo.InvariantCulture) : "?";
         string target = warm.TargetMib is { } targetMib ? targetMib.ToString(CultureInfo.InvariantCulture) : "?";
-        string result = warm.Result == "ok" ? "complete" : warm.Reason == Prewarmer.Cancelled ? "cancelled" : warm.Result;
+        string result = warm.Result == "ok" ? warm.BeforeBoot ? "before this boot" : "complete" : warm.Reason == Prewarmer.Cancelled ? "cancelled" : warm.Result;
         return $"start warm {warm.Mode} {read}/{target} MiB{age} ({result})";
     }
 

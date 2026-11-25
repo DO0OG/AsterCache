@@ -1044,8 +1044,10 @@ public sealed partial class Prewarmer
             return null;
         }
 
-        if (!_solar.Enabled || Relocating(started.Name) || _solar.HasNothingToTouch(started.Name))
+        string? gated = !_solar.Enabled ? "standby ladder is off" : Relocating(started.Name) ? "layout relocation is running" : _solar.HasNothingToTouch(started.Name) ? "nothing to touch: the list is all sparse files" : null;
+        if (gated is not null)
         {
+            NoteHoldSkip(started, exe, gated, ref lastSkip); // 사유 없이 돌아가면 붙들지 않은 까닭을 로그로 알 수 없음
             return null;
         }
 
@@ -1053,6 +1055,7 @@ public sealed partial class Prewarmer
         {
             if (!(_last.ContainsKey(started.Name) || _warmAtServiceStart.Contains(started.Name) || _solar.HasMark(started.Name))) // 메모리에 둔 목록이 없음
             {
+                NoteHoldSkip(started, exe, "no prewarm record of a list in memory", ref lastSkip); // 스파스 유지와 같은 사유 문구
                 return null;
             }
         }

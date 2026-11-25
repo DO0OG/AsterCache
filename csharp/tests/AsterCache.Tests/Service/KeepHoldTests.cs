@@ -499,6 +499,57 @@ public sealed class KeepHoldTests
         Assert.Contains(_log.Lines, l => l.Contains("cache held while playing (a.exe): 32 MiB") && l.Contains("not held: 8 MiB in volatile or changed files, 8 MiB in sparse files"));
     }
 
+    // 예열 기록이 없는 게임 (b 는 서비스 시작 예열을 돌리지 않음) 이 실행 중: 붙들기·시작 만지기·유지 회차가 건너뛴 사유를 한 줄씩만 남김
+    [Fact]
+    public void AGameWithNoPrewarmRecordLogsTheSkipOfTheHoldTheStartTouchAndTheKeepRoundOnce()
+    {
+        Prewarmer p = Make(Reads);
+        _ = _running.Add("b");
+        double elapsed = 0;
+        _sleep = (t, ct) =>
+        {
+            elapsed += t.TotalSeconds;
+            if (elapsed > 400) // 2 분 재시도가 세 번 이상 돔
+            {
+                _ = _running.Remove("b");
+            }
+        };
+
+        p.TouchAtGameStart(Game("b"), "b.exe");
+
+        const string Reason = "no prewarm record of a list in memory";
+        Assert.Equal(0, _opened);
+        Assert.Single(_log.Lines, l => l.Contains($"b: cache hold while playing skipped (b.exe: {Reason})"));
+        Assert.Single(_log.Lines, l => l.Contains($"b: cache touch at game start skipped (b.exe: {Reason})"));
+        Assert.Single(_log.Lines, l => l.Contains($"b: cache keeping while playing skipped (b.exe: {Reason})"));
+        Assert.Empty(_touched);
+    }
+
+    [Fact]
+    public void AGameWithAPrewarmRecordLogsNoNoRecordSkip()
+    {
+        Prewarmer p = Make(Reads);
+        RunFor(20);
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Equal(1, _opened);
+        Assert.DoesNotContain(_log.Lines, l => l.Contains("no prewarm record", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ARelocatingGameLogsWhyItIsNotHeldOnce()
+    {
+        Prewarmer p = Make(Reads);
+        p.Relocating = _ => true;
+        RunFor(400);
+
+        p.TouchAtGameStart(Game("a"), "a.exe");
+
+        Assert.Equal(0, _opened);
+        Assert.Single(_log.Lines, l => l.Contains("a: cache hold while playing skipped (a.exe: layout relocation is running)"));
+    }
+
     [Fact]
     public void AGameWithoutVolatileFileInformationIsNotHeldAndTheKeepTouchingStays()
     {

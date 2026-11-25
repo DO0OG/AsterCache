@@ -219,6 +219,10 @@ public sealed class AutoEnv
     /// (게임 exe 이름들, 선행 읽기 알림 또는 null) → ETW 세션. 알림이 있으면 읽기·열기를 실시간으로 알리고 세션 버퍼를 짧은 간격으로 내려 보냅니다.
     public required Func<IReadOnlyCollection<string>, LiveListener?, IReadOnlyCollection<string>?, IAutoTrace> StartTrace { get; init; }
 
+    /// (게임 exe 이름들, 집계 루트) → 디스크 완료만 관찰하는 가벼운 ETW 세션 (원시 트레이스를 뜨지 않는 플레이마다 디스크 전용 요약을 남기는 데 씀: 프로세스 시작·종료와 디스크 완료 이벤트만 받고 파일 이벤트는 받지 않음).
+    /// 원시 세션과 같은 세션 이름을 쓰므로 서비스가 비정상 종료해 남긴 세션은 다음에 어느 쪽 세션을 열 때든 같은 방식 (이름이 같은 세션을 다시 만듦) 으로 정리됩니다.
+    public required Func<IReadOnlyCollection<string>, IReadOnlyCollection<string>, IAutoTrace> StartSummaryTrace { get; init; }
+
     /// 부트스트랩 S2: 프리페치 기록 (.pf) 으로 이 게임의 boot 트레이스를 만듭니다. 만든 범위 수, 못 만들면 0 (이미 있거나 기록 없음). 시험 기본값은 0.
     public Func<GameSettings, int> PrefetchBoot { get; init; } = _ => 0;
 
@@ -432,6 +436,8 @@ public sealed class AutoEnv
             StartTrace = (exes, listener, roots) => new LiveAutoTrace(LiveSession.Start(
                 exes, TraceSessionName, restartExisting: true, listener: listener,
                 flushInterval: listener is null ? null : EtwProcessWatcher.FlushInterval, log: log, ioSummaryRoots: roots), log),
+            StartSummaryTrace = (exes, roots) => new LiveAutoTrace(LiveSession.Start(
+                exes, TraceSessionName, restartExisting: true, bufferMB: LiveSession.DiskOnlyBufferMB, log: log, ioSummaryRoots: roots, diskOnly: true), log),
             Canonicalize = events => TraceBuilder.CanonicalizeCase(events),
             PrefetchBoot = g => AutoTracer.BootFromPrefetch(g),
             TraceSource = AutoTracer.TraceSourceOf,

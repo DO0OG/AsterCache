@@ -341,6 +341,107 @@ public sealed class AutoModeTests : IDisposable
         Assert.Contains(_rig.Log.Lines, line => line.Contains("bar: auto trace start resumed after waiting for the previous trace", StringComparison.Ordinal));
     }
 
+    // 요약 전용으로 정한 시작 (bar) 이 앞선 저장 (foo) 을 기다리는 사이 duringWait 가 설정을 바꿈. 돌려주는 값: (원시 세션 수, 요약 세션 수), 원시 세션 수에는 foo 의 1 개가 들어 있음.
+    private async Task<(int Raw, int Summary)> SummaryOnlyStartAfterWaitingWhile(Func<AsterSettings, AsterSettings> duringWait)
+    {
+        AddGame("foo", "auto");
+        AddGame("bar", "auto");
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { TraceRuns = 1, IoSummaryEnabled = true } };
+        AutoMode mode = Mode();
+        string raw = AutoTracer.RawTracePath(Game("bar"));
+        Directory.CreateDirectory(Path.GetDirectoryName(raw)!);
+        _rig.World.Files.UnionWith([raw, TraceStageIndex.IndexPath(raw)]);
+        IoSummaryStore.WriteTried(raw, IoSummaryStore.MaxTried); // 읽기 방식 보강은 끝남: 원시 트레이스를 더 뜰 이유가 없고 요약만 남길 차례
+        _rig.World.SummarySession = new FakeTrace();
+        using var saveStarted = new ManualResetEventSlim();
+        using var finishSave = new ManualResetEventSlim();
+        Task saving = StartSavingTrace(mode, saveStarted, finishSave);
+        _rig.World.RunningExes.Add("bar.exe");
+        mode.TraceFinishWaiter = async (finished, _, cancellationToken) =>
+        {
+            await finished.WaitAsync(cancellationToken);
+            mode.SetSettings(duringWait(_rig.Settings));
+            return true;
+        };
+
+        Task starting = Task.Run(() => mode.OnGameStart(Game("bar"), isLatestRunningStart: () => true));
+        await Task.Delay(100); // 대기에 들어갈 시간
+        finishSave.Set();
+        await Task.WhenAll(saving, starting).WaitAsync(TimeSpan.FromSeconds(30));
+        return (_rig.World.TraceStarts, _rig.World.SummaryStarts);
+    }
+
+    [Fact]
+    public async Task ARawStartKeepsWaitingAndAsksAgainWhenAnotherGamesSummaryOpenedFirstAndThenOpens()
+    {
+        AddGame("foo", "auto");
+        AddGame("bar", "auto");
+        AddGame("baz", "auto"); // 원시 트레이스가 없는 게임: 첫 기록
+        _rig.Settings = _rig.Settings with { Auto = _rig.Settings.Auto with { TraceRuns = 1, IoSummaryEnabled = true } };
+        AutoMode mode = Mode();
+        foreach (string learned in new[] { "foo", "bar" })
+        {
+            string raw = AutoTracer.RawTracePath(Game(learned));
+            Directory.CreateDirectory(Path.GetDirectoryName(raw)!);
+            _rig.World.Files.UnionWith([raw, TraceStageIndex.IndexPath(raw)]);
+            IoSummaryStore.WriteTried(raw, IoSummaryStore.MaxTried);
+        }
+
+        _rig.World.StartSummaryFactory = _ => new FakeTrace();
+        _rig.World.Session = new FakeTrace();
+        _rig.World.RunningExes.Add("baz.exe");
+        Assert.True(mode.Tracer.Start(Game("foo"), out _)); // 요약 A 가 도는 중
+        int waits = 0;
+        mode.TraceFinishWaiter = async (finished, _, cancellationToken) =>
+        {
+            waits++;
+            mode.Tracer.Step(); // 종료 요청을 받은 요약이 세션을 놓음
+            await finished.WaitAsync(cancellationToken);
+            if (waits == 1)
+            {
+                _rig.World.Now += TimeSpan.FromMinutes(5); // 양보 시간이 지난 뒤 다른 게임의 요약 B 가 먼저 열림
+                Assert.True(mode.Tracer.Start(Game("bar"), out Task? other));
+            }
+
+            return true;
+        };
+
+        await mode.OnGameStart(Game("baz"), isLatestRunningStart: () => true).WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(2, waits); // 요약 B 에도 종료를 요청하고 그 완료를 다시 기다림
+        Assert.Equal((1, 2), (_rig.World.TraceStarts, _rig.World.SummaryStarts)); // 원시 세션이 결국 열림
+        Assert.Contains(_rig.Log.Lines, l => l.Contains("baz: auto trace start resumed after waiting for the previous trace", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ASummaryOnlyStartThatWaitedStillOpensOnlyTheSummarySession()
+    {
+        Assert.Equal((1, 1), await SummaryOnlyStartAfterWaitingWhile(s => s));
+    }
+
+    [Fact]
+    public async Task TurningTheSummaryOffWhileASummaryOnlyStartWaitsOpensNoSessionAndNeverARawOne()
+    {
+        Assert.Equal((1, 0), await SummaryOnlyStartAfterWaitingWhile(s => s with { Auto = s.Auto with { IoSummaryEnabled = false } }));
+    }
+
+    [Fact]
+    public async Task ARawTraceConditionThatTurnsTrueWhileASummaryOnlyStartWaitsDoesNotMakeItARawSession()
+    {
+        // trace_runs 를 올려 NextTrace 가 참이 됨: 원시 세션을 열면 게임 프로세스 읽기량 조회 경로로 들어가므로 요약 전용 그대로여야 함
+        (int raw, int summary) = await SummaryOnlyStartAfterWaitingWhile(s => s with { Auto = s.Auto with { TraceRuns = 5, TraceRunsMax = 5 } });
+
+        Assert.Equal((1, 1), (raw, summary));
+    }
+
+    [Fact]
+    public async Task AnAntiCheatSettledAsForbiddenWhileAStartWaitsOpensNoSession()
+    {
+        (int raw, int summary) = await SummaryOnlyStartAfterWaitingWhile(s => s with { Games = [.. s.Games.Select(g => g.Name == "bar" ? g with { AntiCheat = "eac" } : g)] });
+
+        Assert.Equal((1, 0), (raw, summary));
+    }
+
     [Fact]
     public async Task GameStartDoesNotStartAfterWaitingWhenTracingWasTurnedOff()
     {

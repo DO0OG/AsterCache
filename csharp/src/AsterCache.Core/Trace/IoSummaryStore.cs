@@ -31,6 +31,25 @@ public static class IoSummaryStore
     public static IReadOnlyList<string> StandalonePaths(string rawTracePath) =>
         Enumerable.Range(1, MaxStandaloneFiles).Select(slot => StandalonePath(rawTracePath, slot)).ToArray();
 
+    /// 플레이마다 남기는 디스크 전용 요약의 슬롯 수 (게임마다 최근 이만큼만 남음). 근거: 한 개가 이 PC 의 Call of Duty 에서 25~39 MiB 라 12 개면 약 360 MiB 이고 (재지 않은 어림),
+    /// 경기 가중 점수가 최근 플레이를 앞세워 보는 데 열두 번이면 충분하다고 봤습니다.
+    public const int MaxPlayDiskSummaries = 12;
+
+    /// 디스크 전용 요약 슬롯의 이름: 읽기 방식이 담긴 단독 집계 (.io-only.NN.json) 의 슬롯과 따로 두어 서로 덮지 않습니다.
+    /// 이 이름 열두 개가 이 모듈이 만들고 지우는 전부입니다 (접두사로 찾아 지우지 않으므로 이름이 비슷한 다른 게임의 파일은 건드리지 않음).
+    public static string PlayDiskPath(string rawTracePath, int slot)
+    {
+        if (slot < 1 || slot > MaxPlayDiskSummaries)
+        {
+            throw new ArgumentOutOfRangeException(nameof(slot));
+        }
+
+        return $"{rawTracePath}.io-disk.{slot:D2}.json";
+    }
+
+    public static IReadOnlyList<string> PlayDiskPaths(string rawTracePath) =>
+        Enumerable.Range(1, MaxPlayDiskSummaries).Select(slot => PlayDiskPath(rawTracePath, slot)).ToArray();
+
     public static string TriedPath(string rawTracePath) => rawTracePath + ".io.tried";
 
     /// 집계 곁 파일이 낡았는데 잠겨 지우지 못했을 때 곁에 남기는 무효 표지 (잠긴 파일 자체는 고칠 수 없으므로 따로 둠). 있으면 읽기가 거부합니다.
@@ -97,7 +116,19 @@ public static class IoSummaryStore
                     return null;
                 }
 
-                files.Add(new IoSummaryFile(name, changed));
+                long? fileSize = null; // 디스크 전용 요약만 가진 선택 항목 (둘 다 있거나 둘 다 없어야 함)
+                long? fileTicks = null;
+                if (fileRow.ContainsKey("size") || fileRow.ContainsKey("mtime_ticks"))
+                {
+                    if (!Long(fileRow, "size", out long sizeValue) || sizeValue < 0 || !Long(fileRow, "mtime_ticks", out long ticksValue))
+                    {
+                        return null;
+                    }
+
+                    (fileSize, fileTicks) = (sizeValue, ticksValue);
+                }
+
+                files.Add(new IoSummaryFile(name, changed, fileSize, fileTicks));
             }
 
             var rows = new List<IoSummaryRow>(dataRows.Count);
@@ -116,7 +147,13 @@ public static class IoSummaryStore
                     return null;
                 }
 
-                rows.Add(new IoSummaryRow((int)fileNumber, block, requests, bytes, sum, max, first, paging));
+                long uncertain = 0; // 디스크 전용 요약만 가진 선택 항목
+                if (row.ContainsKey("uncertain_requests") && (!Long(row, "uncertain_requests", out uncertain) || uncertain < 0 || uncertain > requests))
+                {
+                    return null;
+                }
+
+                rows.Add(new IoSummaryRow((int)fileNumber, block, requests, bytes, sum, max, first, paging, uncertain));
             }
 
             var readModes = new List<IoSummaryReadMode>();
@@ -244,12 +281,12 @@ public static class IoSummaryStore
             }
 
             List<IoSummaryWriteFile>? writeFiles = ReadWriteFiles(root);
-            if (writeFiles is null)
+            if (writeFiles is null || !ReadPlay(root, out IoSummaryPlay? play))
             {
                 return null;
             }
 
-            return new IoSummary(started, ended, windows, quality!, files, rows, sessionId!, rawFingerprint, rawTraceZeroUs, rawTraceZeroAtUtc, readModes, targetStarts, writeFiles.Count == 0 ? null : writeFiles);
+            return new IoSummary(started, ended, windows, quality!, files, rows, sessionId!, rawFingerprint, rawTraceZeroUs, rawTraceZeroAtUtc, readModes, targetStarts, writeFiles.Count == 0 ? null : writeFiles, play);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or PyValueException or OverflowException or FormatException or ArgumentException)
         {
@@ -265,21 +302,40 @@ public static class IoSummaryStore
             { "start_us", window.StartedUs },
             { "end_us", window.EndedUs },
         }).ToList();
-        var files = summary.Files.Select(file => (object?)new JObject
+        var files = summary.Files.Select(file =>
         {
-            { "path", file.Path },
-            { "changed_during_session", file.ChangedDuringSession },
+            var row = new JObject
+            {
+                { "path", file.Path },
+                { "changed_during_session", file.ChangedDuringSession },
+            };
+            if (file.Size is { } size && file.MTimeTicks is { } ticks)
+            {
+                row.Add("size", size);
+                row.Add("mtime_ticks", ticks);
+            }
+
+            return (object?)row;
         }).ToList();
-        var rows = summary.Rows.Select(row => (object?)new JObject
+        var rows = summary.Rows.Select(row =>
         {
-            { "file", (long)row.FileNumber },
-            { "block", row.BlockNumber },
-            { "requests", row.Requests },
-            { "bytes", row.Bytes },
-            { "latency_sum_us", row.LatencySumUs },
-            { "latency_max_us", row.LatencyMaxUs },
-            { "first_session_us", row.FirstSessionUs },
-            { "paging_requests", row.PagingRequests },
+            var json = new JObject
+            {
+                { "file", (long)row.FileNumber },
+                { "block", row.BlockNumber },
+                { "requests", row.Requests },
+                { "bytes", row.Bytes },
+                { "latency_sum_us", row.LatencySumUs },
+                { "latency_max_us", row.LatencyMaxUs },
+                { "first_session_us", row.FirstSessionUs },
+                { "paging_requests", row.PagingRequests },
+            };
+            if (row.UncertainRequests > 0)
+            {
+                json.Add("uncertain_requests", row.UncertainRequests); // 디스크 전용 요약에만
+            }
+
+            return (object?)json;
         }).ToList();
         var readModes = (summary.ReadModes ?? []).Select(mode => (object?)new JObject
         {
@@ -316,6 +372,16 @@ public static class IoSummaryStore
             root.Add("write_files", writeFiles.Select(WriteFileJson).ToList()); // 쓰기를 기록한 집계에만 (옛 판은 이 항목을 모르고 무시함)
         }
 
+        if (summary.Play is { } play)
+        {
+            root.Add("play", new JObject
+            {
+                { "disk_only", play.DiskOnly },
+                { "load_phases_us", play.LoadPhases.Select(PairJson).ToList() },
+                { "unobserved_us", play.Unobserved.Select(PairJson).ToList() },
+            }); // 디스크 전용 요약에만 (옛 판은 이 항목을 모르고 무시함)
+        }
+
         string temp = path + ".tmp";
         string text = PyJson.Dumps(root, indent: 1, ensureAscii: false) + "\n";
         File.WriteAllBytes(temp, PyJson.Utf8.GetBytes(PyJson.ToCrlf(text)));
@@ -328,6 +394,49 @@ public static class IoSummaryStore
         {
             // 표지를 못 지우면 새 집계가 무효로 읽히는 쪽 (안전한 쪽) 으로 남고 다음 정리가 치움
         }
+    }
+
+    private static object? PairJson(IoSummaryWindow window) => new List<object?> { window.StartedUs, window.EndedUs };
+
+    // 디스크 전용 요약의 부가 정보 (없으면 null 이 정상, 있는데 모양이 다르면 false).
+    private static bool ReadPlay(JObject root, out IoSummaryPlay? play)
+    {
+        play = null;
+        if (!root.TryGetValue("play", out object? value) || value is null)
+        {
+            return true;
+        }
+
+        if (value is not JObject o || !o.TryGetValue("disk_only", out object? diskOnly) || diskOnly is not bool only
+            || !ReadPairs(o, "load_phases_us", out List<IoSummaryWindow>? phases) || !ReadPairs(o, "unobserved_us", out List<IoSummaryWindow>? unobserved))
+        {
+            return false;
+        }
+
+        play = new IoSummaryPlay(only, phases!, unobserved!);
+        return true;
+    }
+
+    private static bool ReadPairs(JObject o, string key, out List<IoSummaryWindow>? pairs)
+    {
+        pairs = null;
+        if (!o.TryGetValue(key, out object? value) || value is not List<object?> rows)
+        {
+            return false;
+        }
+
+        pairs = new List<IoSummaryWindow>(rows.Count);
+        foreach (object? row in rows)
+        {
+            if (row is not List<object?> { Count: 2 } cells || cells[0] is not long start || cells[1] is not long end || end < start)
+            {
+                return false;
+            }
+
+            pairs.Add(new IoSummaryWindow(start, end));
+        }
+
+        return true;
     }
 
     private static object? WriteFileJson(IoSummaryWriteFile file) => new JObject
@@ -473,6 +582,22 @@ public static class IoSummaryStore
         Write(target, summary with { RawFingerprint = RawFingerprint(rawTracePath), SessionId = sessionId });
         return target;
     }
+
+    /// 플레이마다 남기는 디스크 전용 요약을 빈 슬롯 (없으면 가장 오래된 슬롯) 에 씁니다. 슬롯은 열두 개뿐이라 열두 번째 뒤에는 가장 오래된 것을 덮으므로 게임마다 최근 MaxPlayDiskSummaries 개만 남고,
+    /// 읽기 방식이 담긴 단독 집계의 슬롯과 이름이 달라 서로 덮지 않습니다. 원시 트레이스의 지문에 묶지 않습니다 (원시 트레이스는 회차마다 다시 쓰이고, 세대는 요약의 파일 크기·수정 시각으로 대조함).
+    /// 기존 슬롯을 먼저 지우지 않고 (Write 가 임시 파일에 쓴 뒤 교체함) 교체 쓰기가 실패해도 이전 요약이 남습니다. ct 가 이미 취소됐으면 쓰지 않고 OperationCanceledException.
+    public static string WritePlayDisk(string rawTracePath, IoSummary summary, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        string[] paths = [.. PlayDiskPaths(rawTracePath)];
+        string target = paths.FirstOrDefault(path => !File.Exists(path)) ?? paths.OrderBy(path => File.GetLastWriteTimeUtc(path)).First();
+        string sessionId = Guid.TryParseExact(summary.SessionId, "N", out _) ? summary.SessionId : Guid.NewGuid().ToString("N");
+        Write(target, summary with { RawFingerprint = null, SessionId = sessionId });
+        return target;
+    }
+
+    /// 디스크 전용 요약 슬롯 파일을 읽습니다: 다른 종류의 집계가 이 이름에 들어 있으면 null.
+    public static IoSummary? ReadPlayDisk(string path) => Read(path) is { IsDiskOnly: true } summary ? summary : null;
 
     public static string RawFingerprint(string rawTracePath)
     {

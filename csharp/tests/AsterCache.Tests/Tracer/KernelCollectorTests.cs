@@ -100,6 +100,29 @@ public sealed class KernelCollectorTests
     }
 
     [Fact]
+    public void ADiskOnlyCollectorKeepsNoProcessStartRecordsButStillFollowsTheTargetTree()
+    {
+        var summary = new IoSummaryCollector(new DateTimeOffset(T0), diskOnly: true);
+        var c = new KernelCollector(["game.exe"], new DevicePaths([]), ioSummary: summary);
+
+        for (int pid = 100; pid < 1100; pid++)
+        {
+            c.StartProcess(T0, pid, 1, "other.exe"); // 시스템 전체의 프로세스 시작
+            c.StopProcess(T0, pid);
+        }
+
+        c.StartProcess(T0, 10, 1, "game.exe");
+        c.StartProcess(T0, 11, 10, "child.exe");
+
+        Assert.True(c.TargetsActive);
+        Assert.Empty(c.Finish()); // 원시 기록을 만들지 않으므로 시작·종료 기록이 쌓이지 않음
+        Assert.Equal((0, 0), c.Footprint);
+        c.StopProcess(T0, 11);
+        c.StopProcess(T0, 10);
+        Assert.False(c.TargetsActive);
+    }
+
+    [Fact]
     public void OpenOptionsOfTargetProcessFilesAreKeptPerFileAndComeOutWithTheReadModes()
     {
         const string file2 = @"D:\Games\b.bin";

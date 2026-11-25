@@ -611,4 +611,132 @@ public sealed class IoSummaryTests : IDisposable
         IoSummaryStore.Write(path, SomeSummary());
         Assert.DoesNotContain("write_files", File.ReadAllText(path), StringComparison.Ordinal); // 쓰기가 없으면 항목도 만들지 않음
     }
+
+    [Fact]
+    public void PlaySummaryInfoFileGenerationsAndUncertainRowsSurviveTheStoreAndOldSummariesWithoutThemStillRead()
+    {
+        IoSummary summary = SomeSummary() with
+        {
+            Files = [new IoSummaryFile(@"D:\Games\a.bin", false, 4096, 639_000_000_000_000_000), new IoSummaryFile(@"D:\Games\b.bin")],
+            Rows = [new IoSummaryRow(0, 0, 3, 3 * 4096, 30, 20, 5, 3, 2), new IoSummaryRow(1, 0, 1, 4096, 10, 10, 6, 1)],
+            Play = new IoSummaryPlay(true, [new IoSummaryWindow(0, 16_000_000), new IoSummaryWindow(300_000_000, 340_000_000)], [new IoSummaryWindow(-5_000_000, 0)]),
+        };
+        string path = Path.Combine(_dir, "p.trace.json.io-disk.01.json");
+
+        IoSummaryStore.Write(path, summary);
+        IoSummary back = Assert.IsType<IoSummary>(IoSummaryStore.Read(path));
+
+        Assert.Equal(summary.Play!.DiskOnly, back.Play!.DiskOnly);
+        Assert.Equal(summary.Play.LoadPhases, back.Play.LoadPhases);
+        Assert.Equal(summary.Play.Unobserved, back.Play.Unobserved); // 관찰 시작 앞 구간은 음수
+        Assert.Equal([(4096L, 639_000_000_000_000_000L), (null, null)], back.Files.Select(f => (f.Size, f.MTimeTicks)));
+        Assert.Equal([2L, 0L], back.Rows.Select(r => r.UncertainRequests));
+
+        string text = File.ReadAllText(path);
+        File.WriteAllText(path, text.Replace("\"play\"", "\"x_play\"", StringComparison.Ordinal)); // 옛 집계처럼 항목이 없음
+        Assert.Null(Assert.IsType<IoSummary>(IoSummaryStore.Read(path)).Play);
+
+        File.WriteAllText(path, text.Replace("\"disk_only\": true", "\"disk_only\": 1", StringComparison.Ordinal)); // 모양이 다르면 집계 전체를 읽지 않음
+        Assert.Null(IoSummaryStore.Read(path));
+        File.WriteAllText(path, text.Replace("\"uncertain_requests\": 2", "\"uncertain_requests\": 9", StringComparison.Ordinal)); // 요청 수보다 많은 불확실 요청
+        Assert.Null(IoSummaryStore.Read(path));
+
+        IoSummaryStore.Write(path, SomeSummary());
+        string plain = File.ReadAllText(path);
+        Assert.DoesNotContain("\"play\"", plain, StringComparison.Ordinal);
+        Assert.DoesNotContain("mtime_ticks", plain, StringComparison.Ordinal);
+        Assert.DoesNotContain("uncertain_requests", plain, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DiskOnlySnapshotsReportNoReadModesAndKeepServiceOverlappedRowsAsUncertainInsteadOfDroppingThem()
+    {
+        const string GameFile = @"D:\Games.bin";
+        var batch = new SelfReadBatch(Started.AddSeconds(4), Started.AddSeconds(6), [new ReadOp(GameFile, 0, 4096)]);
+        IoRequestSnapshot requests = Snapshot(Request(4, 0, 4096, 100, first: 5_000_000, paging: 1), Request(4, 65_536, 4096, 100, first: 5_000_000, paging: 1));
+        requests = requests with { SelfReads = new SelfReadFilter(Started, [batch], []), RawWindows = [new IoSummaryWindow(0, 60_000_000)] };
+
+        IoSummary raw = BuildOne(requests);
+        IoSummary diskOnly = BuildOne(requests with { DiskOnly = true });
+
+        Assert.Equal([1L], raw.Rows.Select(row => row.BlockNumber)); // 원시 세션의 요약: 서비스 읽기로 보이는 행은 뺌 (그대로)
+        Assert.True(raw.HasReadModes);
+        Assert.Null(raw.Play);
+        Assert.Equal([0L, 1L], diskOnly.Rows.Select(row => row.BlockNumber)); // 디스크 전용: 게임의 읽기를 모르므로 빼지 않고 불확실로 표시
+        Assert.Equal([1L, 0L], diskOnly.Rows.Select(row => row.UncertainRequests));
+        Assert.Equal(new IoClassTotals(1, 4096, 100), diskOnly.Quality.SelfRead); // 합계 분류는 그대로 서비스 읽기
+        Assert.False(diskOnly.HasReadModes); // 읽기 방식을 수집하지 않았음: 읽기 방식 보강 횟수에 세지 않음
+        Assert.True(diskOnly.IsDiskOnly);
+
+        static IoSummary BuildOne(IoRequestSnapshot snapshot)
+        {
+            var mapper = new IoBlockMapper(snapshot);
+            mapper.AddFile(GameFile, false, true, 4, [new IoFileExtent(0, 0, 400_000)]);
+            return mapper.Build(1, 0, 0, 0, 1, false);
+        }
+    }
+
+    [Fact]
+    public void DiskOnlyPlaySummariesKeepOnlyTheLatestTwelveInTheirOwnSlotsAndNeverTouchOtherFiles()
+    {
+        string raw = Path.Combine(_dir, "game.trace.json");
+        File.WriteAllText(raw, "[]\n");
+        string readModes = IoSummaryStore.WriteStandalone(raw, new IoBlockMapper(Snapshot()).Build(0, 0, 0, 0, 0, false)); // 읽기 방식 단독 집계의 슬롯
+        string beyondSlots = raw + ".io-disk.13.json"; // 슬롯 번호 밖의 같은 접두사 파일
+        string archive = raw + ".stale";
+        File.WriteAllText(beyondSlots, "x");
+        File.WriteAllText(archive, "x");
+
+        var written = new List<string>();
+        for (int i = 0; i < IoSummaryStore.MaxPlayDiskSummaries + 3; i++)
+        {
+            string path = IoSummaryStore.WritePlayDisk(raw, new IoBlockMapper(Snapshot() with { DiskOnly = true }).Build(0, 0, 0, 0, 0, false));
+            File.SetLastWriteTimeUtc(path, Started.UtcDateTime.AddMinutes(i)); // 슬롯 파일의 쓴 시각이 겹치지 않게
+            written.Add(path);
+        }
+
+        string[] slots = [.. IoSummaryStore.PlayDiskPaths(raw).Where(File.Exists)];
+        Assert.Equal(IoSummaryStore.MaxPlayDiskSummaries, slots.Length);
+        Assert.Equal(IoSummaryStore.MaxPlayDiskSummaries, slots.Select(path => IoSummaryStore.ReadPlayDisk(path)!.SessionId).Distinct().Count());
+        Assert.Equal(written.Take(3), written.Skip(IoSummaryStore.MaxPlayDiskSummaries)); // 열두 번째 뒤에는 가장 오래된 슬롯부터 덮음
+        Assert.True(File.Exists(readModes)); // 읽기 방식이 담긴 단독 집계는 덮지도 지우지도 않음
+        Assert.True(File.Exists(beyondSlots));
+        Assert.True(File.Exists(archive));
+    }
+
+    [Fact]
+    public void AFailedSlotReplacementKeepsThePreviousSummaryAndACancelledWriteWritesNothing()
+    {
+        string raw = Path.Combine(_dir, "keep.trace.json");
+        File.WriteAllText(raw, "[]\n");
+        IoSummary Disk() => new IoBlockMapper(Snapshot() with { DiskOnly = true }).Build(0, 0, 0, 0, 0, false);
+        for (int i = 0; i < IoSummaryStore.MaxPlayDiskSummaries; i++)
+        {
+            File.SetLastWriteTimeUtc(IoSummaryStore.WritePlayDisk(raw, Disk()), Started.UtcDateTime.AddMinutes(i));
+        }
+
+        string oldest = IoSummaryStore.PlayDiskPath(raw, 1);
+        string before = File.ReadAllText(oldest);
+        Directory.CreateDirectory(oldest + ".tmp"); // 임시 파일을 쓸 수 없게 막아 교체 쓰기를 실패시킴
+
+        Assert.Throws<UnauthorizedAccessException>(() => IoSummaryStore.WritePlayDisk(raw, Disk()));
+        Assert.Equal(before, File.ReadAllText(oldest)); // 기존 슬롯을 먼저 지우지 않으므로 이전 요약이 그대로
+        Assert.NotNull(IoSummaryStore.ReadPlayDisk(oldest));
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        Assert.Throws<OperationCanceledException>(() => IoSummaryStore.WritePlayDisk(raw, Disk(), cts.Token));
+        Assert.Equal(before, File.ReadAllText(oldest));
+    }
+
+    [Fact]
+    public void ADiskSlotOnlyReadsBackADiskOnlySummary()
+    {
+        string raw = Path.Combine(_dir, "k.trace.json");
+        string slot = IoSummaryStore.PlayDiskPath(raw, 1);
+        IoSummaryStore.Write(slot, SomeSummary()); // 디스크 전용이 아닌 집계가 이 이름에 들어 있음
+
+        Assert.Null(IoSummaryStore.ReadPlayDisk(slot));
+        Assert.Throws<ArgumentOutOfRangeException>(() => IoSummaryStore.PlayDiskPath(raw, IoSummaryStore.MaxPlayDiskSummaries + 1));
+    }
 }

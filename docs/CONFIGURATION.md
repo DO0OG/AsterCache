@@ -120,7 +120,7 @@ What each stage does is in [Automatic mode](AUTO_MODE.md). Ranges are given in p
 
 | Key | Default | Meaning |
 |---|---|---|
-| `io_summary_enabled` | `true` | In automatic tracing, collect disk-read completions until the game exits and save a per-run file summary, mapped to files after exit by reading file layouts (not file contents). The existing trace and the anti-cheat conditions are unchanged. |
+| `io_summary_enabled` | `true` | In automatic tracing, collect disk-read completions until the game exits and save a per-run file summary, mapped to files after exit by reading file layouts (not file contents). The existing trace and the anti-cheat conditions are unchanged. It also turns on the lighter disk-only session that saves a disk-completion summary for a play that needs no raw recording (the raw trace is already taken); turning it off turns that off too. |
 | `trace_cap_seconds` | 1800 | Time limit of the first trace window, in seconds (30 to 7200). |
 | `trace_cap_mib` | 6144 | Read limit of a trace, in MiB (64 to 65536). The default value means the larger of 6144 and twice the zone limit; any other value is used as written. |
 | `trace_runs` | 3 | If fewer traced plays than this value (1 to 32) have been collected, the service traces the next play again, even when a raw trace exists, and merges it into the hot set (all blocks the traces saw read) to widen the zone. |

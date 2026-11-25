@@ -40,7 +40,8 @@ public sealed record IoRequestSnapshot(
     IReadOnlyList<SelfReadBatch>? SelfReadBatches = null,
     long SelfReadDroppedOps = 0,
     IReadOnlyList<long>? TargetStartsUs = null,
-    IReadOnlyList<IoSummaryWriteFile>? WriteFiles = null);
+    IReadOnlyList<IoSummaryWriteFile>? WriteFiles = null,
+    bool DiskOnly = false);
 
 /// 디스크 읽기 완료 이벤트를 (디스크, 바이트 위치, 크기) 요청 단위로 합칩니다. 이벤트 콜백 안에서 부르므로 사전 갱신 말고는 하지 않습니다 (파일 조회·문자열·JSON·로그 없음).
 /// 디스크 읽기 이벤트의 IRP 는 논리 읽기의 IRP 와 다른 객체라 이벤트 시점에는 파일을 알 수 없습니다 (실측): 파일·블록은 끝난 뒤 IoBlockMapper 가 배치 표로 정합니다.
@@ -101,12 +102,15 @@ public sealed class IoSummaryCollector
     private long _readModeFlagsOther;
     private bool _readModeFilesDroppedExact = true;
     private readonly SelfReadObservation _selfReads = SelfReadLog.Begin(); // 관찰 동안 서비스가 읽은 구간 (Snapshot 이 끝냄)
+    private readonly bool _diskOnly;
 
     /// gameDiskNumbers: 집계 루트가 놓인 볼륨의 디스크 번호들. 모르면 (null) 모든 디스크의 완료를 요청 표에 담습니다.
+    /// diskOnly: 파일 계층 이벤트 없이 디스크 완료만 받는 세션의 집계 (읽기 방식·쓰기 기록은 비어 있고 요약에 그렇게 표시됨).
     public IoSummaryCollector(DateTimeOffset observedAtUtc, IReadOnlySet<uint>? gameDiskNumbers = null, int maxRequests = MaxRequests,
         IReadOnlyCollection<string>? readModeRoots = null, int maxReadModeFiles = MaxReadModeFiles,
-        int maxDroppedReadModePaths = MaxDroppedReadModePaths)
+        int maxDroppedReadModePaths = MaxDroppedReadModePaths, bool diskOnly = false)
     {
+        _diskOnly = diskOnly;
         ObservedAtUtc = observedAtUtc.ToUniversalTime();
         _gameDisks = gameDiskNumbers;
         _maxRequests = maxRequests;
@@ -116,6 +120,9 @@ public sealed class IoSummaryCollector
     }
 
     public DateTimeOffset ObservedAtUtc { get; }
+
+    /// 파일 계층 이벤트 없이 디스크 완료만 받는 세션의 집계인가.
+    public bool DiskOnly => _diskOnly;
 
     /// 대상 프로세스의 파일 읽기 요청 표시를 파일별로 더합니다. path 가 없으면 이름을 끝내 못 찾은 읽기로 셉니다.
     public void AddProcessRead(string? path, long requests, long bytes, uint flags)
@@ -299,7 +306,7 @@ public sealed class IoSummaryCollector
         return new IoRequestSnapshot(ObservedAtUtc, endedAtUtc.ToUniversalTime(), rawWindows.ToArray(), rawTraceZeroUs, Math.Max(0, eventsLost),
             _total, _latencyMaxUs, _otherDisk, _noFile, _dropped, _pagingReads, _pagingBytes, requests, readModes, _readModeFilesDropped,
             _readModeReadsUnnamed, flags.Length == 0 ? null : flags, _readModeFlagsOther, _readModeDroppedRequests, _readModeFilesDroppedExact,
-            SelfReadBatches: selfBatches, SelfReadDroppedOps: selfDropped, WriteFiles: writes.Length == 0 ? null : writes);
+            SelfReadBatches: selfBatches, SelfReadDroppedOps: selfDropped, WriteFiles: writes.Length == 0 ? null : writes, DiskOnly: _diskOnly);
     }
 
     private bool IsReadModePath(string path)

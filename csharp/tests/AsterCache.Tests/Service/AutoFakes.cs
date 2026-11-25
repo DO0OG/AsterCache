@@ -221,6 +221,9 @@ internal sealed class FakeWorld
 
     public IReadOnlyList<SessionSpan> PlayRecords { get; set; } = [];
 
+    /// 플레이 기록 (표본 파일) 을 읽은 횟수.
+    public int PlaySessionReads { get; private set; }
+
     /// 폴더가 있는가 (거짓이면 드라이브가 분리된 것과 같음).
     public Func<string, bool> DirectoryExists { get; set; } = _ => true;
 
@@ -235,6 +238,21 @@ internal sealed class FakeWorld
     public FakeTrace? Session { get; set; }
 
     public Func<int, FakeTrace>? StartTraceFactory { get; set; }
+
+    /// 디스크 전용 요약 세션의 가짜 (StartSummaryTrace): 원시 세션과 따로 세고, 안 정하면 시험이 요약 세션을 열 일이 없다고 본 것이라 열리는 순간 시험이 실패함.
+    public FakeTrace? SummarySession { get; set; }
+
+    public Func<int, FakeTrace>? StartSummaryFactory { get; set; }
+
+    public List<IReadOnlyCollection<string>> SummaryRoots { get; } = [];
+
+    public int SummaryStarts { get; private set; }
+
+    /// 게임 프로세스를 열어 읽은 양을 재는 호출 (GameProcesses) 의 횟수: 디스크 전용 요약 경로는 0 이어야 합니다.
+    public int GameProcessCalls { get; private set; }
+
+    /// ReadIoSummary 로 읽으려 한 곁 파일 경로들 (게임 시작 판정이 어떤 요약을 읽는지 보는 용도).
+    public List<string> IoSummaryReads { get; } = [];
 
     public List<IReadOnlyCollection<string>?> IoSummaryRoots { get; } = [];
 
@@ -425,13 +443,17 @@ internal sealed class FakeWorld
         FileWriteTime = p => FileTimes.TryGetValue(p, out DateTimeOffset t) ? t : null,
         ReadUsn = (volume, frns, ct) => ReadUsn(volume, frns, ct),
         FileReference = p => FileReference(p),
-        PlaySessions = _ => PlayRecords,
+        PlaySessions = _ =>
+        {
+            PlaySessionReads++;
+            return PlayRecords;
+        },
         RunReadBytes = p => RunReadBytes(p),
         StageIndexTries = AsterCache.Core.Trace.TraceStageIndex.ReadTried,
         IoSummaryTries = IoSummaryStore.ReadTriedOrNull,
         LoadListTries = LoadRefillStore.ReadTried,
         LoadListTimedPlays = p => LoadListTimedPlays(p),
-        ReadIoSummary = (sidecar, raw, standalone) => File.Exists(sidecar)
+        ReadIoSummary = (sidecar, raw, standalone) => NoteSummaryRead(sidecar) && File.Exists(sidecar)
             ? !File.Exists(raw) ? null : (standalone ? IoSummaryStore.ReadStandaloneForRaw(sidecar, raw) : IoSummaryStore.ReadForRun(raw))
             : Files.Contains(sidecar) && !Files.Contains(IoSummaryStore.InvalidPath(sidecar)) && (Files.Contains(raw) || File.Exists(raw))
                 ? IoSummaries.WithReadModes(Now, FakeSummarySession(sidecar), @"D:\Games\Foo\a.bin")
@@ -443,7 +465,11 @@ internal sealed class FakeWorld
             return BuildIoSummary(snapshot, roots, ct);
         },
         TraceFingerprint = p => TraceFingerprint(p),
-        GameProcesses = _ => Procs,
+        GameProcesses = _ =>
+        {
+            GameProcessCalls++;
+            return Procs;
+        },
         AnyRunning = exes =>
         {
             OnAnyRunning?.Invoke(exes);
@@ -459,6 +485,12 @@ internal sealed class FakeWorld
             Listener = listener;
             IoSummaryRoots.Add(roots);
             return StartTraceThrows is null ? StartTraceFactory?.Invoke(TraceStarts) ?? Session ?? throw new InvalidOperationException("Session") : throw StartTraceThrows;
+        },
+        StartSummaryTrace = (_, roots) =>
+        {
+            SummaryStarts++;
+            SummaryRoots.Add(roots);
+            return StartTraceThrows is null ? StartSummaryFactory?.Invoke(SummaryStarts) ?? SummarySession ?? throw new InvalidOperationException("a disk-only summary session was opened") : throw StartTraceThrows;
         },
         Canonicalize = e =>
         {
@@ -572,6 +604,12 @@ internal sealed class FakeWorld
         PowerOk = () => Power,
         DriveOptimizing = () => Optimizing,
     };
+
+    private bool NoteSummaryRead(string sidecar)
+    {
+        IoSummaryReads.Add(sidecar);
+        return true;
+    }
 
     private static string FakeSummarySession(string sidecar) => new Guid(SHA256.HashData(Encoding.UTF8.GetBytes(sidecar.ToUpperInvariant())).AsSpan(0, 16)).ToString("N");
 }

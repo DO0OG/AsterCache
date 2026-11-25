@@ -79,6 +79,8 @@ internal sealed class KernelCollector
 
     public bool SawTarget => _sawTarget;
 
+    private bool DiskOnly => _ioSummary is { DiskOnly: true };
+
     /// 실시간 알림 수: 읽는 순간 이름이 풀린 읽기 / 이름이 늦게 와서 늦게 알린 읽기 (Stop 뒤에 읽음).
     public long ResolvedReads => _names.Resolved;
 
@@ -274,9 +276,9 @@ internal sealed class KernelCollector
             }
 
             _active = _tree.ActiveCount;
-            if (!_rawFrozen)
+            if (!_rawFrozen && !DiskOnly)
             {
-                _records.Add(TraceRecord.Start(time, pid, parentPid, image));
+                _records.Add(TraceRecord.Start(time, pid, parentPid, image)); // 디스크 전용 세션은 원시 기록을 만들지 않으므로 시스템 전체의 시작 기록을 쌓지 않음 (프로세스 트리는 _tree 가 대상 프로세스만 쥠)
             }
         }
     }
@@ -293,7 +295,7 @@ internal sealed class KernelCollector
             bool target = _tree.IsTarget(pid);
             _tree.Stop(pid);
             _active = _tree.ActiveCount;
-            if (target && !_rawFrozen)
+            if (target && !_rawFrozen && !DiskOnly)
             {
                 _records.Add(TraceRecord.Stop(time, pid)); // 대상이 아닌 프로세스의 종료는 TraceBuilder 에서도 할 일이 없어 담지 않음
             }

@@ -77,6 +77,22 @@ internal static class LoadRefillPlans
         return sources;
     }
 
+    /// 플레이마다 남긴 디스크 전용 요약 (게임마다 최근 IoSummaryStore.MaxPlayDiskSummaries 개) 과 각 요약의 실행 파일 시작 시각.
+    /// 순위 목록의 경기 가중 점수에만 쓰고 Sources 에는 들어가지 않습니다: 초기 로드 목록·예열 순위·캐시 없이 읽는 파일의 입력은 이 요약이 있어도 같습니다.
+    public static List<LoadRefillSource> ScoreSources(string raw)
+    {
+        var sources = new List<LoadRefillSource>();
+        foreach (string path in IoSummaryStore.PlayDiskPaths(raw))
+        {
+            if (File.Exists(path) && IoSummaryStore.ReadPlayDisk(path) is { } summary)
+            {
+                sources.Add(new LoadRefillSource(summary, summary.TargetStartsUs ?? []));
+            }
+        }
+
+        return sources;
+    }
+
     private static IReadOnlyList<long> MarkStarts(IoSummary summary, string? runPath)
     {
         if (runPath is null || summary.RawTraceZeroUs is not { } zeroUs || TraceStageIndex.ReadMarks(runPath) is not { } marks)
@@ -124,7 +140,7 @@ internal static class LoadRefillPlans
     public static string RankedPathOf(GameSettings g) => LoadRefillStore.RankedPathFor(AutoTracer.RawTracePath(g));
 
     /// 순위 목록 파일이 없거나 이 게임의 가장 새 집계보다 오래됐는가 (서비스 시작 때 다시 만들지 정함, 집계가 없으면 false).
-    public static bool RankedIsStale(GameSettings g, Func<string, DateTimeOffset?> writeTime) => IsStale(g, writeTime, RankedPathOf(g));
+    public static bool RankedIsStale(GameSettings g, Func<string, DateTimeOffset?> writeTime) => IsStale(g, writeTime, RankedPathOf(g)); // 디스크 전용 요약은 입력으로 보지 않음: 그 점수는 요약을 저장할 때 RescoreRanked 가 갱신하고, 서비스 시작 때 순위를 다시 만드는 조건은 그대로
 
     /// 순위 목록을 다시 만들어 저장합니다: 집계 전체 구간 (실행·로드·경기 중) 의 블록을 나온 플레이 수, 지연 합 순으로 줄 세웁니다 (집계가 없으면 낡은 파일을 지움). 로그 한 줄을 돌려줍니다.
     /// 캐시 없이만 읽힌 블록·가변 파일·허용 루트 밖은 로드 목록과 같게 빼고, 예열 목록에서 어차피 빠지는 캐시 없이 읽는 파일 (UnbufferedFiles) 과 게임 드라이브 밖 파일도 뺍니다 (순위 자리와 예산을 쓰지 않게).
@@ -160,7 +176,8 @@ internal static class LoadRefillPlans
         }
 
         LoadRefillList list = LoadRefillPlanner.Collect(Sources(AutoTracer.RawTracePath(g)), Stat, null, LoadRefillPlanner.RankedCapBytes, includeWritten ? file => VolatileFiles.IsGameWritten(file, marked) : null,
-            includeWritten ? file => VolatileFiles.IsGameWritten(file, marked) && inner(file) is { } now && history.IsAppendOnly(file, now.Size, recentPlays) : null); // 크기 기록이 충분하고 줄어든 적이 없는 파일은 수정된 플레이의 읽기도 셈
+            includeWritten ? file => VolatileFiles.IsGameWritten(file, marked) && inner(file) is { } now && history.IsAppendOnly(file, now.Size, recentPlays) : null, // 크기 기록이 충분하고 줄어든 적이 없는 파일은 수정된 플레이의 읽기도 셈
+            ScoreSources(AutoTracer.RawTracePath(g))); // 디스크 전용 요약은 경기 가중 점수에만 더해지고 목록의 블록과 순서는 바꾸지 않음
         list = LoadRefillPlanner.WithPlayOrder(list, isSparse); // 경기 가중 점수 순서와 스파스 표지는 여기서 (게임이 꺼져 있을 때) 한 번 정해 파일에 저장: 게임 중에는 다시 계산하지 않음
         long writtenBlocks = includeWritten ? list.Blocks.Count(b => VolatileFiles.IsGameWritten(b.Path, marked)) : 0;
         HashSet<string> sparseFiles = list.SparseFiles is { } known ? [.. known] : [.. list.Files.Keys.Where(isSparse)]; // 점수 순서를 정할 때 이미 물은 표지를 다시 쓰고, 점수가 없는 목록만 지금 물음 (파일마다 한 번)
@@ -178,6 +195,24 @@ internal static class LoadRefillPlans
             + $"{Mib(list.SkippedNoCacheBlocks * LoadBoundaries.Block)} MiB left out as read only without the cache, {(includeSparse ? $"{Mib(sparseBlocks * LoadBoundaries.Block)} MiB in {sparseFiles.Count} sparse files" : $"{sparseLeftOut} sparse files left out")}, "
             + $"{Mib(list.DroppedByCapBlocks * LoadBoundaries.Block)} MiB over the {LoadRefillPlanner.RankedCapBytes >> 20} MiB cap"
             + (includeWritten ? $", {Mib(writtenBlocks * LoadBoundaries.Block)} MiB in game-written files" : string.Empty);
+    }
+
+    /// 디스크 전용 요약을 저장한 뒤 순위 목록의 경기 가중 점수만 갱신합니다: 저장된 순위의 블록·순서·플레이 수·지연 합과 파일의 크기·수정 시각 (목록을 만든 때의 세대) 을 그대로 두므로
+    /// 그 사이 게임이 파일을 고쳐도 지금 파일의 크기·수정 시각이 옛 블록에 새로 붙지 않고, 예열 순위 (R0) 는 요약이 없을 때와 같습니다. 파일 속성을 조회하지 않고 순위 파일 하나와 요약 슬롯을 읽을 뿐입니다.
+    /// 점수가 저장되지 않은 순위 (이 변경 앞의 예전 파일이거나 순위가 없음) 는 건드리지 않고 그렇다고 알립니다. 취소되면 OperationCanceledException (순위 파일은 그대로, 다음 요약이 다시 셈).
+    public static string RescoreRanked(GameSettings g, DateTimeOffset now, CancellationToken ct = default)
+    {
+        string path = RankedPathOf(g);
+        if (LoadRefillStore.Read(path) is not { PlayOrder: not null } list)
+        {
+            return "ranked scores not updated, no ranked list with scores yet";
+        }
+
+        List<LoadRefillSource> sources = ScoreSources(AutoTracer.RawTracePath(g));
+        ct.ThrowIfCancellationRequested();
+        LoadRefillList rescored = LoadRefillPlanner.Rescore(list, sources, ct);
+        LoadRefillStore.Write(path, rescored, now, ct);
+        return $"ranked scores updated from {sources.Count} play summaries, blocks and file generations kept: {rescored.Blocks.Count(b => b.Extra > 0)} of {rescored.Blocks.Count} blocks got points from them";
     }
 
     // 마지막 예열이 읽은 순위 목록 (순위 파일 경로 → 그 파일의 길이·수정 시각과 읽은 내용).

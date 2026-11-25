@@ -301,6 +301,9 @@ public sealed class LoadRefillTests : IDisposable
     [InlineData("\"play_scores\": \"4,3,1\"", "\"play_scores\": \"4,3\"")] // 길이가 블록 수와 다름
     [InlineData("\"play_scores\": \"4,3,1\"", "\"play_scores\": \"7,3,1\"")] // 플레이 수 2 에 7점 (범위 밖: 3 배 초과)
     [InlineData("\"play_scores\": \"4,3,1\"", "\"play_scores\": \"3,3,1\"")] // 플레이 수 2 에 3점 (홀짝이 다름)
+    [InlineData("\"play_extra\": \"0,0,0\"", "\"play_extra\": \"0,0\"")] // 길이가 블록 수와 다름
+    [InlineData("\"play_extra\": \"0,0,0\"", "\"play_extra\": \"5,0,0\"")] // 디스크 전용 몫을 빼면 기본 점수가 플레이 수보다 작음 (4 - 5)
+    [InlineData("\"play_extra\": \"0,0,0\"", "\"play_extra\": \"37,0,0\"")] // 디스크 전용 요약의 최대 점수 (3 × 12) 초과
     [InlineData("\"play_scores\": \"4,3,1\"", "\"play_scores\": \"4,3,99999999999999999999\"")] // 정수 범위를 벗어난 값
     [InlineData("\"play_scores\": \"4,3,1\"", "\"play_scores\": \"4,x,1\"")] // 숫자가 아닌 값
     [InlineData("\"play_order\": \"0,1,2\"", "\"play_order\": \"0,1,1\"")] // 순열이 아님
@@ -316,6 +319,101 @@ public sealed class LoadRefillTests : IDisposable
 
         Assert.Equal("3:2:0 4:1:0 5:1:0", Blocks(restored)); // 순위는 그대로, 점수는 없음 (예전 순서)
         Assert.Null(restored.PlayOrder);
+    }
+
+    [Fact]
+    public void ADiskOnlySourceOnlyAddsScoreToBlocksAlreadyListedAndNeverChangesCountLatencyOrOrder()
+    {
+        var files = new[] { new IoSummaryFile(A), new IoSummaryFile(B) };
+        LoadRefillSource first = Source([Sec(10)], files, Row(0, 0, 11, latencyUs: 900), Row(1, 0, 200, latencyUs: 5), Row(0, 1, 300, latencyUs: 50));
+        LoadRefillSource second = Source([Sec(10)], files, Row(0, 0, 12, latencyUs: 900));
+        // 디스크 전용 요약: B0 은 경기 중 한 번 (3점), A5 는 목록에 없는 블록, A0 은 로드 창 안 (1점)
+        LoadRefillSource diskOnly = Source([Sec(10)], files, Row(1, 0, 400), Row(0, 5, 400), Row(0, 0, 12));
+
+        LoadRefillList without = LoadRefillPlanner.Collect([first, second], Existing, null, 1L << 30);
+        LoadRefillList with = LoadRefillPlanner.Collect([first, second], Existing, null, 1L << 30, scoreOnly: [diskOnly]);
+        LoadRefillList loadsWithout = LoadRefillPlanner.Collect([first, second], Existing, TimeSpan.FromSeconds(120), 1L << 30);
+        LoadRefillList loadsWith = LoadRefillPlanner.Collect([first, second], Existing, TimeSpan.FromSeconds(120), 1L << 30, scoreOnly: [diskOnly]);
+
+        Assert.Equal([(A, 0L, 2, 1800L, 2), (A, 1L, 1, 50L, 3), (B, 0L, 1, 5L, 3)], without.Blocks.Select(b => (b.Path, b.Block, b.Count, b.LatencyUs, b.Score)));
+        Assert.Equal([(A, 0L, 2, 1800L, 3), (A, 1L, 1, 50L, 3), (B, 0L, 1, 5L, 6)], with.Blocks.Select(b => (b.Path, b.Block, b.Count, b.LatencyUs, b.Score))); // 블록·순서·플레이 수·지연 합은 그대로, 점수만 더해짐, A5 는 목록에 들지 않음
+        Assert.Equal((without.Plays, without.Loads, without.PlaysWithoutStarts), (with.Plays, with.Loads, with.PlaysWithoutStarts));
+        Assert.Equal(loadsWithout.Blocks, loadsWith.Blocks); // 로드 목록 (창이 있음) 은 이 요약이 있어도 같음
+    }
+
+    [Theory]
+    [InlineData(1, 1, 0, true, true, 3)] // 한 번만, 시작 뒤 120 초 넘어 확실한 읽기: 3 점
+    [InlineData(1, 1, 1, true, true, 1)] // 서비스 읽기와 겹쳐 출처가 불확실: 1 점 (빼지도 3 점으로 세지도 않음)
+    [InlineData(2, 1, 0, true, true, 1)] // 두 번 닿음: 1 점
+    [InlineData(1, 0, 0, true, true, 0)] // 캐시를 거치지 않은 읽기: 점수 없음
+    [InlineData(1, 1, 0, false, true, 1)] // 이벤트 유실·상한 초과가 있는 회차: 구간 가중 없이 1 점
+    [InlineData(1, 1, 0, true, false, 0)] // 요약을 남긴 뒤 파일 크기가 달라짐: 점수 없음
+    public void DiskOnlyScoringGivesThreePointsOnlyToACertainSingleReadOutsideTheLoadWindowAndNeverDeductsForUncertainRows(long requests, long paging, long uncertain, bool exact, bool sameGeneration, int added)
+    {
+        LoadRefillSource listed = Source([Sec(1)], [new IoSummaryFile(A)], Row(0, 4, 2));
+        var file = new IoSummaryFile(A, false, sameGeneration ? Stat.Size : Stat.Size + 1, Stat.MTimeTicks);
+        IoSummary summary = Source([Sec(0)], [file], new IoSummaryRow(0, 4, requests, Block * requests, 100, 100, Sec(200), paging, uncertain)).Summary;
+        var diskOnly = new LoadRefillSource(exact ? summary : summary with { Quality = summary.Quality with { EventsLost = 5 } }, [Sec(0)]);
+
+        int before = LoadRefillPlanner.Collect([listed], Existing, null, 1L << 30).Blocks.Single().Score;
+        int after = LoadRefillPlanner.Collect([listed], Existing, null, 1L << 30, scoreOnly: [diskOnly]).Blocks.Single().Score;
+
+        Assert.Equal(before + added, after);
+    }
+
+    [Fact]
+    public void RescoringKeepsTheBlocksAndTheFileGenerationsAndOnlyReplacesTheDiskOnlyPointsAndTheScoreOrder()
+    {
+        var files = new[] { new IoSummaryFile(A), new IoSummaryFile(B) };
+        LoadRefillSource first = Source([Sec(10)], files, Row(0, 0, 11, latencyUs: 900), Row(1, 0, 200, latencyUs: 5), Row(0, 1, 300, latencyUs: 50));
+        LoadRefillSource diskOnly = Source([Sec(10)], files, Row(1, 0, 400), Row(0, 5, 400));
+        LoadRefillList built = LoadRefillPlanner.WithPlayOrder(LoadRefillPlanner.Collect([first], Existing, null, 1L << 30, scoreOnly: [diskOnly]), _ => false);
+        Assert.Equal([(A, 0L, 1), (A, 1L, 3), (B, 0L, 6)], built.Blocks.Select(b => (b.Path, b.Block, b.Score)));
+        Assert.Equal([0, 0, 3], built.Blocks.Select(b => b.Extra)); // B0 만 디스크 전용 몫 3
+
+        // 디스크 전용 요약이 새로 하나 더 (A1 에 경기 중 한 번) 생기고, 파일이 그 사이 바뀌어도 목록의 세대 (Stat) 가 그대로라 블록과 파일 표는 그대로
+        LoadRefillSource another = Source([Sec(10)], files, Row(0, 1, 500));
+        LoadRefillList rescored = LoadRefillPlanner.Rescore(built, [diskOnly, another]);
+
+        Assert.Equal(built.Blocks.Select(b => (b.Path, b.Block, b.Count, b.LatencyUs)), rescored.Blocks.Select(b => (b.Path, b.Block, b.Count, b.LatencyUs)));
+        Assert.Equal(built.Files, rescored.Files);
+        Assert.Equal([(A, 1L, 6, 3), (B, 0L, 6, 3), (A, 0L, 1, 0)], rescored.PlayOrder!.Select(i => (rescored.Blocks[i].Path, rescored.Blocks[i].Block, rescored.Blocks[i].Score, rescored.Blocks[i].Extra)));
+        Assert.Equal(built.Blocks.Select(b => b.Score - b.Extra), rescored.Blocks.Select(b => b.Score - b.Extra)); // 원시 요약으로 센 기본 점수는 그대로
+        Assert.Equal([1, 3, 3], LoadRefillPlanner.Rescore(built, []).Blocks.Select(b => b.Score)); // 디스크 전용 요약이 하나도 없으면 몫이 0 으로 돌아감 (기본 점수만)
+
+        string path = Path.Combine(_dir, "rescored.ranked.json");
+        LoadRefillStore.Write(path, rescored, Started);
+        LoadRefillList back = Assert.IsType<LoadRefillList>(LoadRefillStore.Read(path));
+        Assert.Equal(rescored.Blocks.Select(b => (b.Score, b.Extra)), back.Blocks.Select(b => (b.Score, b.Extra)));
+        Assert.Equal(rescored.PlayOrder, back.PlayOrder);
+    }
+
+    [Fact]
+    public void AWriteCancelledBeforeTheSwapKeepsTheOldFileAndLeavesNoTempFile()
+    {
+        LoadRefillSource first = Source([Sec(10)], [new IoSummaryFile(A)], Row(0, 0, 11));
+        LoadRefillList built = LoadRefillPlanner.WithPlayOrder(LoadRefillPlanner.Collect([first], Existing, null, 1L << 30), _ => false);
+        string path = Path.Combine(_dir, "w.ranked.json");
+        LoadRefillStore.Write(path, built, Started);
+        string before = File.ReadAllText(path);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        Assert.Throws<OperationCanceledException>(() => LoadRefillStore.Write(path, built, Started.AddHours(1), cts.Token));
+
+        Assert.Equal(before, File.ReadAllText(path));
+        Assert.False(File.Exists(path + ".tmp"));
+    }
+
+    [Fact]
+    public void ARescoreThatIsCancelledChangesNothing()
+    {
+        LoadRefillSource first = Source([Sec(10)], [new IoSummaryFile(A)], Row(0, 0, 11));
+        LoadRefillList built = LoadRefillPlanner.WithPlayOrder(LoadRefillPlanner.Collect([first], Existing, null, 1L << 30), _ => false);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        Assert.Throws<OperationCanceledException>(() => LoadRefillPlanner.Rescore(built, [first], cts.Token));
     }
 
     [Fact]

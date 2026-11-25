@@ -26,6 +26,8 @@ public sealed class AutoTracer
     private CancellationTokenSource? _ioScanSource; // 돌고 있는 변환의 취소 (게임 시작·시간 예산·서비스 종료), _lock 으로 보호
     private bool _ioScanGameStarted; // _ioScanSource 가 게임 시작으로 취소됐는가, _lock 으로 보호
     private bool _stopCleanupFailed;
+    private DateTimeOffset _rawWaitUntil; // 세션을 기다리는 원시 시작이 있는 동안 (이 시각까지) 새 요약 세션을 열지 않음, _lock 으로 보호
+    private static readonly TimeSpan RawWaitYield = AutoMode.PreviousTraceFinishTimeout; // 원시 시작이 세션을 기다리는 시간 제한과 같음
     private OrbitModel _orbitModel = new();
     private Run? _run;
     private readonly List<Run> _stopped = []; // 상한에 닿아 세션을 멈췄지만 게임이 끝나길 기다리는 기록 (저장 전)
@@ -536,7 +538,13 @@ public sealed class AutoTracer
 
     public const int MaxIoSummaryTries = IoSummaryStore.MaxTried;
 
-    /// 읽기 방식 집계가 있는 서로 다른 플레이 두 번을 모으기 위한 추가 추적 차례 (1..MaxIoSummaryTries), 해당 없으면 0.
+    /// 이 게임의 지금 플레이에 디스크 전용 요약만 남기는 가벼운 세션을 열 차례인가: 이미 원시 트레이스가 있는 (학습이 끝난) 게임에서 트레이스와 I/O 집계 설정이 켜져 있고 안티치트가 막지 않을 때.
+    /// 원시 트레이스를 뜰 차례이면 그 세션이 같은 집계를 남기므로 부르는 쪽 (Start) 이 원시 쪽을 먼저 따집니다. 게임 정책 (끔·일시 중지) 은 Start 가 먼저 거릅니다.
+    /// 새 설정 키를 만들지 않고 기존 auto.trace 와 io_summary_enabled 를 따릅니다. 원시 트레이스 파일의 존재만 확인하고 요약 파일은 읽지 않습니다 (게임 시작 판정이 가볍게 남도록).
+    public static bool PlaySummaryWanted(GameSettings g, AutoSettings a, AutoEnv env) =>
+        a.Trace && a.IoSummaryEnabled && g.AllowedRoots.Count > 0 && env.FileExists(RawTracePath(g)) && env.TraceBlocker(g) is null;
+
+    /// 읽기 방식 집계가 있는 서로 다른 플레이 두 번을 모으기 위한 추가 추적 차례 (1..MaxIoSummaryTries), 해당 없으면 0. 디스크 전용 요약은 읽기 방식을 수집하지 않으므로 이 횟수에 들지 않습니다 (HasReadModes 가 거짓).
     public static int IoSummaryAttempt(GameSettings g, AutoSettings a, AutoEnv env)
     {
         string raw = RawTracePath(g);
@@ -662,8 +670,14 @@ public sealed class AutoTracer
     /// 끝난 뒤 변환 (게임 폴더 파일 배치 조회) 의 시간 예산: 넘으면 집계만 버리고 원시 기록 저장은 계속합니다.
     public TimeSpan IoScanBudget { get; init; } = TimeSpan.FromSeconds(30);
 
-    /// 이 게임의 다음 플레이를 트레이스할지 (게임 시작 판정과 Start 가 같은 NextTrace 를 씀).
-    public bool WantsRun(GameSettings g)
+    /// 이 게임의 다음 플레이에 세션을 열지 (원시 트레이스, 또는 디스크 전용 요약만).
+    public bool WantsRun(GameSettings g) => WantsRawTrace(g) || PlaySummaryWanted(g, _settings().Auto, _env);
+
+    /// 이 게임의 다음 플레이에 디스크 전용 요약만 남기는 세션을 열 차례인가 (원시 트레이스를 뜰 차례인지는 보지 않음: 부르는 쪽이 WantsRawTrace 결과를 재사용).
+    public bool WantsPlaySummary(GameSettings g) => PlaySummaryWanted(g, _settings().Auto, _env);
+
+    /// 이 게임의 다음 플레이에 원시 트레이스를 뜰 필요가 있는가 (게임 시작 판정과 Start 가 같은 NextTrace 를 씀). 디스크 전용 요약만 남기는 플레이는 여기에 들지 않습니다.
+    public bool WantsRawTrace(GameSettings g)
     {
         AutoSettings auto = _settings().Auto;
         return NextTrace(g, auto, _env, _status, MinRunBytes).Wanted
@@ -752,22 +766,54 @@ public sealed class AutoTracer
 
     public void Start(GameSettings g) => _ = Start(g, out _);
 
+    /// Start 의 목적. Decide: 지금 판정 (게임 시작 첫 호출). Raw / SummaryOnly: 게임 시작 때 정한 목적을 직전 세션을 기다렸다 다시 시도할 때 끝까지 유지:
+    /// Raw 는 그 사이 저장으로 NextTrace 가 바뀌어도 다시 거르지 않고, SummaryOnly 는 그 사이 원시 트레이스 조건 (trace_runs 등) 이 참으로 바뀌어도 원시 세션을 열지 않으며 (게임 프로세스 읽기량 조회 경로로 들어가지 않음) 요약이 꺼졌으면 아무 세션도 열지 않습니다.
+    public enum StartPurpose
+    {
+        Decide,
+        Raw,
+        SummaryOnly,
+    }
+
+    // 세션을 열어도 되는 게임인가: 게임별 정책 (끔·일시 중지) 과 안티치트를 최신 설정의 게임 항목 (latest) 으로 봅니다. 원시·요약 두 세션이 같은 함수 하나를 지나고, 시작 때와 세션을 열기 직전에 부릅니다.
+    // 호출한 쪽이 들고 있던 GameSettings 는 대기하는 사이 낡을 수 있어 (그 사이 안티치트 판정이 금지 종류로 확정됨) 안티치트도 latest 로 봅니다. false 이면 cheat 가 null 이 아니면 안티치트, null 이면 정책이 사유.
+    private bool GateOpen(GameSettings g, out GameSettings latest, out string? cheat)
+    {
+        cheat = null;
+        if (PolicyBlocksTracking(g, out latest))
+        {
+            return false;
+        }
+
+        cheat = TraceBlocker(latest) ?? (ReferenceEquals(g, latest) ? null : TraceBlocker(g)); // 호출한 쪽의 항목이 더 엄격하면 (등록값만 앞서 있는 경우) 그것도 따름: 이 관문은 이전보다 느슨해지지 않음
+        return cheat is null;
+    }
+
     // 저장 마무리 중인 실행만 완료 신호를 돌려줘 시작 작업이 한 번 재시도하게 함.
-    // wantedAtGameStart: 게임 시작 때 이미 "트레이스할 차례"로 판정했고 직전 저장을 기다린 재시도이면 true (그 사이 저장으로 NextTrace 가 바뀌어도 다시 거르지 않음).
-    public bool Start(GameSettings g, out Task? previousFinish, bool wantedAtGameStart = false)
+    public bool Start(GameSettings g, out Task? previousFinish, StartPurpose purpose = StartPurpose.Decide)
     {
         previousFinish = null;
-        if (PolicyBlocksTracking(g, out GameSettings latest))
+        if (!GateOpen(g, out GameSettings latest, out string? cheat))
         {
             bool first;
             lock (_lock)
             {
-                first = _policyLogged.Add(g.Name);
+                if (cheat is null)
+                {
+                    first = _policyLogged.Add(g.Name);
+                }
+                else
+                {
+                    _ = _policyLogged.Remove(g.Name);
+                    first = _cheatLogged.Add(g.Name);
+                }
             }
 
             if (first)
             {
-                _log.Info($"{g.Name}: trace skipped (game policy: {(latest.Paused ? "paused" : GamePolicy.ModeName(latest.Mode))})");
+                _log.Info(cheat is null
+                    ? $"{g.Name}: trace skipped (game policy: {(latest.Paused ? "paused" : GamePolicy.ModeName(latest.Mode))})"
+                    : $"{g.Name}: trace skipped (anti-cheat: {cheat})");
             }
 
             return false;
@@ -778,22 +824,7 @@ public sealed class AutoTracer
             _ = _policyLogged.Remove(g.Name);
         }
 
-        if (TraceBlocker(g) is { } cheat)
-        {
-            bool first;
-            lock (_lock)
-            {
-                first = _cheatLogged.Add(g.Name);
-            }
-
-            if (first)
-            {
-                _log.Info($"{g.Name}: trace skipped (anti-cheat: {cheat})");
-            }
-
-            return false;
-        }
-
+        g = latest;
         string? refused;
         ReadAhead? learn = null;
         int done; // 이미 모은 유효 플레이 수
@@ -802,6 +833,7 @@ public sealed class AutoTracer
         int stageAttempt; // 단계 색인만을 위한 추가 추적의 차례 (아니면 0)
         int ioSummaryAttempt; // 물리 읽기 집계를 위한 추가 추적의 차례 (아니면 0)
         int loadListAttempt; // 로드 구간 목록 보강을 위한 추가 추적의 차례 (아니면 0)
+        bool summaryOnly; // 원시 트레이스 없이 디스크 전용 요약만 남기는 플레이 (위 어느 목적도 아니고 게임 시작 때 원시 트레이스로 정하지도 않았을 때)
         int runNumber = 0;
         lock (_lock)
         {
@@ -815,9 +847,18 @@ public sealed class AutoTracer
             AutoSettings auto = _settings().Auto;
             next = NextTrace(g, auto, _env, _status, MinRunBytes);
             done = next.Valid;
-            stageAttempt = next.Wanted ? 0 : StageTraceAttempt(g, auto, _env);
-            ioSummaryAttempt = next.Wanted ? 0 : IoSummaryAttemptForService(g, auto);
-            loadListAttempt = next.Wanted ? 0 : LoadListAttempt(g, auto, _env);
+            bool summaryPurpose = purpose == StartPurpose.SummaryOnly; // 요약 전용으로 정한 시작은 원시 조건을 보지 않음 (시도 횟수 파일도 남기지 않음)
+            stageAttempt = next.Wanted || summaryPurpose ? 0 : StageTraceAttempt(g, auto, _env);
+            ioSummaryAttempt = next.Wanted || summaryPurpose ? 0 : IoSummaryAttemptForService(g, auto);
+            loadListAttempt = next.Wanted || summaryPurpose ? 0 : LoadListAttempt(g, auto, _env);
+            bool rawStart = !summaryPurpose && (purpose == StartPurpose.Raw || next.Wanted || stageAttempt > 0 || ioSummaryAttempt > 0 || loadListAttempt > 0);
+            summaryOnly = !rawStart && PlaySummaryWanted(g, auto, _env);
+            if (summaryOnly && _env.Now() < _rawWaitUntil)
+            {
+                _log.Info($"{g.Name}: play summary not started, a raw trace is waiting for the session");
+                return false; // 원시 시작이 세션을 기다리는 동안 새 요약 세션은 양보 (원시 트레이스가 먼저)
+            }
+
             firstRun = !_env.FileExists(RawTracePath(g));
             if (_run is { } running)
             {
@@ -825,11 +866,24 @@ public sealed class AutoTracer
                 {
                     previousFinish = running.Finished.Task;
                 }
+                else if (rawStart && running.SummaryOnly && !string.Equals(running.Game.Name, g.Name, StringComparison.OrdinalIgnoreCase) && _env.Capabilities(g.OriginRoot).PrewarmRefusal is null)
+                {
+                    // 원시 트레이스에 우선권: 다른 게임의 디스크 전용 요약 세션은 (세션 이름이 하나뿐이라 함께 못 돎) 이 게임의 원시 트레이스에 자리를 내줍니다. 그 요약은 플레이 중간까지라 남기지 않고, 이 게임의 시작은 요약 세션이 끝나길 기다렸다 다시 시도합니다.
+                    running.Preempted = true;
+                    running.RequestEnd();
+                    previousFinish = running.Finished.Task;
+                    _log.Info($"{running.Game.Name}: play summary ends early, the session goes to the raw trace of {g.Name}");
+                }
+
+                if (rawStart && previousFinish is not null)
+                {
+                    _rawWaitUntil = _env.Now() + RawWaitYield;
+                }
 
                 return false;
             }
 
-            if (_stopCleanupFailed || !wantedAtGameStart && !next.Wanted && stageAttempt == 0 && ioSummaryAttempt == 0 && loadListAttempt == 0)
+            if (_stopCleanupFailed || !rawStart && !summaryOnly)
             {
                 return false;
             }
@@ -840,6 +894,10 @@ public sealed class AutoTracer
                 if (stopped.Saving)
                 {
                     previousFinish = stopped.SaveFinished.Task;
+                    if (rawStart)
+                    {
+                        _rawWaitUntil = _env.Now() + RawWaitYield;
+                    }
                 }
 
                 return false;
@@ -850,7 +908,7 @@ public sealed class AutoTracer
             {
                 try
                 {
-                    if (LastRunNumber(g, _env.FileExists) >= MaxRunFiles)
+                    if (!summaryOnly && LastRunNumber(g, _env.FileExists) >= MaxRunFiles)
                     {
                         CompactRunsForRelearn(g);
                         done = RunCount(g, _env.FileExists, _env.RunReadBytes, MinRunBytes);
@@ -863,14 +921,30 @@ public sealed class AutoTracer
                     learn = ls.Enabled && firstRun && GamePolicy.AllowsPrewarm(latest) ? AutoLearn.Create(g, ls, _env.PhysicalRamBytes(), _learn) : null; // 시스템 SSD·SSD 는 위에서 이미 걸러짐
                     var exits = new GameExitTracker(_env.Now);
                     exits.ObserveStarted(g);
-                    _run = new Run(g, _env.StartTrace(g.ExeNames, learn is null ? null : AutoLearn.Listener(learn), auto.IoSummaryEnabled ? g.AllowedRoots : null), _env.Now(), exits)
+                    if (!GateOpen(g, out GameSettings fresh, out string? blocked))
+                    {
+                        learn?.Dispose();
+                        _log.Info($"{g.Name}: trace start skipped, the settings changed just before the session opened ({(blocked is null ? "game policy" : "anti-cheat: " + blocked)})");
+                        return false; // 트레이스 파일 정리 등을 모두 마친 뒤 세션을 여는 호출 바로 앞에서 최신 설정으로 관문을 다시 검사 (원시·요약 같은 자리)
+                    }
+
+                    g = fresh;
+                    _run = new Run(g, summaryOnly ? _env.StartSummaryTrace(g.ExeNames, g.AllowedRoots) : _env.StartTrace(g.ExeNames, learn is null ? null : AutoLearn.Listener(learn), auto.IoSummaryEnabled ? g.AllowedRoots : null), _env.Now(), exits)
                     {
                         Learn = learn,
                         Number = LastRunNumber(g, _env.FileExists) + 1,
                         RawWrittenAtStart = _env.FileWriteTime(RawTracePath(g)),
                         IoSummaryEnabled = auto.IoSummaryEnabled,
+                        SummaryOnly = summaryOnly,
+                        RawEnded = summaryOnly, // 원시 기록은 뜨지 않음: Step 은 게임이 끝나길 기다릴 뿐
+                        InitialWindowEnded = summaryOnly,
                     }; // 번호는 유효 회차 수가 아니라 있는 run 파일 기준 (덮어쓰기 금지)
                     runNumber = _run.Number;
+                    if (!summaryOnly)
+                    {
+                        _rawWaitUntil = default; // 기다리던 원시 시작이 세션을 얻음
+                    }
+
                     _run.Session?.NoteTriggerStart(); // Start 는 등록 실행 파일의 시작을 감지한 직후에만 불림 (게임 시작·재실행 대기 뒤 재시도)
                     learn?.Start();
                 }
@@ -964,8 +1038,14 @@ public sealed class AutoTracer
                 purposes.Add($"load list, attempt {loadListAttempt}/{MaxLoadListTries}");
             }
 
-            string purpose = string.Join(" and ", purposes);
-            _log.Info($"{g.Name}: auto trace started (run {runNumber} for {purpose})");
+            string reasons = string.Join(" and ", purposes);
+            _log.Info($"{g.Name}: auto trace started (run {runNumber} for {reasons})");
+            return true;
+        }
+
+        if (summaryOnly)
+        {
+            _log.Info($"{g.Name}: play summary started (disk completions only, no raw trace)");
             return true;
         }
 
@@ -1027,7 +1107,7 @@ public sealed class AutoTracer
 
         AsterSettings all = _settings();
         AutoSettings a = all.Auto;
-        IReadOnlyList<(int Pid, long ReadBytes)> procs = _env.GameProcesses(run.Game.ExeNames);
+        IReadOnlyList<(int Pid, long ReadBytes)> procs = run.SummaryOnly ? [] : _env.GameProcesses(run.Game.ExeNames); // 디스크 전용 요약은 게임 프로세스를 열어 읽은 양을 재지 않음 (읽기 상한을 쓰지 않고, 종료는 이름 스냅샷으로 봄)
         foreach ((int pid, long bytes) in procs)
         {
             // 첫 표본의 프로세스는 지금 값이 기준, 그 뒤에 나타난 프로세스는 세션이 열린 뒤에 시작했으므로 0 이 기준
@@ -1377,7 +1457,7 @@ public sealed class AutoTracer
 
         _shadow.Shutdown();
         orbitModel.Dispose();
-        if (!finishing && run is { RawEnded: true, IoSummaryEnabled: true, Session: not null }) // 이미 Finish 가 세션을 멈추는 중이면 그쪽이 저장함
+        if (!finishing && run is { RawEnded: true, IoSummaryEnabled: true, SummaryOnly: false, Session: not null }) // 이미 Finish 가 세션을 멈추는 중이면 그쪽이 저장함. 디스크 전용 요약은 저장할 원시 기록이 없고 서비스 종료 중에는 만들지 않음
         {
             // 원시 기록이 이미 확정된 채 관찰만 이어 가던 중이었음: 이 변경 전에는 상한에서 세션을 멈추고 보류해 두던 기록이라 같은 저장 경로로 보냄 (집계는 변환을 건너뛰고 버림)
             try
@@ -1422,6 +1502,12 @@ public sealed class AutoTracer
             }
 
             IReadOnlyList<TraceRecord> records = run.Held ?? StopSession(run);
+            if (run.SummaryOnly && !stoppedBefore)
+            {
+                ReleaseRun(run); // 디스크 전용 요약은 세션을 닫은 바로 다음 줄에서 다음 시작에 자리를 넘김: 이 앞뒤에 파일 읽기·변환·저장이 없음 (아래 일은 모두 넘긴 뒤)
+                CapturePhases(run); // 메모리의 로딩 구간만 지금 확보 (다음 플레이의 표본이 오면 사라짐)
+            }
+
             if (!stoppedBefore)
             {
                 EndLearn(run);
@@ -1438,6 +1524,11 @@ public sealed class AutoTracer
 
                 _log.Info($"{g.Name}: auto trace stopped ({why}), saving after the game exits");
                 return false;
+            }
+
+            if (run.SummaryOnly)
+            {
+                return FinishPlaySummary(run, why);
             }
 
             ResolveIoSummary(run);
@@ -1669,7 +1760,20 @@ public sealed class AutoTracer
         try
         {
             string before = LayoutStamp(g);
-            RunBelowNormal(() => summary = _env.BuildIoSummary(requests with { SelfReads = OwnReadFilter(requests, run.Records, scan.Token) }, g.AllowedRoots, scan.Token));
+            if (run.SummaryOnly)
+            {
+                CapturePlayInfo(run, scan.Token); // 플레이 기록 (표본) 읽기도 변환과 같은 취소·시간 제한 안
+            }
+
+            if (run.SummaryOnly && requests.Requests.Count == 0)
+            {
+                summary = new IoBlockMapper(requests).Build(0, 0, 0, 0, 0, false); // 게임 디스크 읽기가 하나도 없던 플레이: 폴더를 훑어 디스크를 읽을 이유가 없음
+            }
+            else
+            {
+                RunBelowNormal(() => summary = _env.BuildIoSummary(requests with { SelfReads = OwnReadFilter(requests, run.Records, scan.Token) }, g.AllowedRoots, scan.Token));
+            }
+
             if (summary is not null && before != LayoutStamp(g))
             {
                 _log.Warn($"{g.Name}: I/O summary dropped, the plan or journal changed while file layouts were read");
@@ -1706,8 +1810,137 @@ public sealed class AutoTracer
             scan.Dispose();
         }
 
-        run.IoSummary = summary;
+        run.IoSummary = run.SummaryOnly && summary is not null && run.PlayInfo is { } info ? summary with { Play = info } : summary;
     }
+
+    // 원시 트레이스 없이 디스크 전용 요약만 남기는 플레이의 마무리: 세션은 이미 멈췄고, 이 호출이 끝나면 곧바로 (Finish 의 finally) 다음 시작에 자리를 넘깁니다 (Finished 완료).
+    // 변환 (파일 배치 조회)·저장·순위 점수 갱신은 그 뒤 Step 이 BuildDeferredIoSummaries 로 돌리고, 모두 서비스 종료·등록 게임 시작·시간 제한 (IoScanBudget) 으로 취소됩니다: 다음 게임의 원시 트레이스가 이 마무리를 기다리다 탈락하지 않음.
+    // 같은 디스크에서 다른 게임이 도는 동안은 그 게임이 끝난 뒤 만들고, 폴더 잠금이 바쁘면 다음 Step 에서 다시 (기다리지 않음).
+    private bool FinishPlaySummary(Run run, string why)
+    {
+        if (run.Preempted)
+        {
+            _log.Info($"{run.Game.Name}: play summary dropped (the session went to a raw trace)");
+            return false;
+        }
+
+        lock (_lock)
+        {
+            _ = DeferIoSummary(run);
+        }
+
+        _log.Info($"{run.Game.Name}: play summary ended ({why}), the summary is built after the session is released");
+        return false;
+    }
+
+    // 취소·시간 제한이 있는 작업 구간: 서비스 종료, 등록 게임 시작 (CancelShadow), IoScanBudget 이 지나면 토큰이 취소됩니다. EndScan 으로 닫습니다.
+    private CancellationTokenSource BeginScan()
+    {
+        CancellationTokenSource scan;
+        lock (_lock)
+        {
+            scan = _ioScanSource = CancellationTokenSource.CreateLinkedTokenSource(_shutdownSource.Token);
+            _ioScanGameStarted = false;
+        }
+
+        if (IoScanBudget <= TimeSpan.Zero)
+        {
+            scan.Cancel(); // 예산이 없으면 타이머를 기다리지 않고 바로 취소 (CancelAfter 는 0 이어도 타이머 스레드에서 늦게 취소될 수 있음)
+        }
+        else
+        {
+            scan.CancelAfter(IoScanBudget);
+        }
+
+        return scan;
+    }
+
+    private void EndScan(CancellationTokenSource scan)
+    {
+        lock (_lock)
+        {
+            _ioScanSource = null;
+        }
+
+        scan.Dispose();
+    }
+
+    // 디스크 전용 요약을 저장한 뒤 순위 목록의 점수만 갱신 (순위를 다시 만들지 않음, LoadRefillPlans.RescoreRanked). 취소되면 순위 파일은 그대로이고 다음 요약이 모든 슬롯으로 다시 셈.
+    private void RescoreRanked(GameSettings g, CancellationToken ct)
+    {
+        try
+        {
+            _log.Info($"{g.Name}: {LoadRefillPlans.RescoreRanked(g, _env.Now(), ct)}");
+        }
+        catch (OperationCanceledException)
+        {
+            _log.Info($"{g.Name}: ranked scores not updated (service stop, game start or time budget), the next play summary updates them");
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"{g.Name}: ranked scores not saved ({e.GetType().Name})");
+        }
+    }
+
+    // 디스크 전용 실행을 놓음: 다음 시작이 기다리던 완료 신호를 알리고 실행 목록에서 뺍니다 (세션은 이미 StopSession 이 닫음).
+    private void ReleaseRun(Run run)
+    {
+        lock (_lock)
+        {
+            _run = _run == run ? null : _run;
+        }
+
+        _ = run.Finished.TrySetResult(true);
+    }
+
+    // 플레이가 끝날 때 확보하는 디스크 전용 요약의 로딩 판정 구간 (관찰 시작을 0 으로 한 마이크로초): 메모리의 표만 읽으며 파일을 읽지 않습니다.
+    private void CapturePhases(Run run)
+    {
+        if (run.Phases is not null || run.IoRequests is not { } requests)
+        {
+            return;
+        }
+
+        DateTimeOffset from = requests.ObservedAtUtc;
+        var phases = new List<IoSummaryWindow>();
+        foreach ((DateTimeOffset start, DateTimeOffset end) in LoadPhasesOf?.Invoke(run.Game.Name) ?? [])
+        {
+            if (end > from && start < requests.EndedAtUtc)
+            {
+                phases.Add(new IoSummaryWindow(Math.Max(0, (long)(start - from).TotalMicroseconds), Math.Max(0, (long)(end - from).TotalMicroseconds)));
+            }
+        }
+
+        run.Phases = phases;
+    }
+
+    // 계측이 빈 구간 (플레이 기록이 관찰보다 먼저 시작했다고 하면 그 앞 구간을 음수로, 플레이 기록에 아직 없으면 비어 있음) 을 더해 부가 정보를 완성합니다.
+    // 플레이 기록 파일을 읽으므로 세션을 놓은 뒤 취소 토큰 (서비스 종료·게임 시작·시간 제한) 이 있는 구간에서만 부릅니다.
+    private void CapturePlayInfo(Run run, CancellationToken ct)
+    {
+        if (run.PlayInfo is not null || run.Phases is null || run.IoRequests is not { } requests)
+        {
+            return;
+        }
+
+        ct.ThrowIfCancellationRequested();
+        DateTimeOffset from = requests.ObservedAtUtc;
+        var gaps = new List<IoSummaryWindow>();
+        foreach (SessionSpan play in _env.PlaySessions(run.Game.Name))
+        {
+            DateTimeOffset start = new(DateTime.SpecifyKind(play.StartUtc, DateTimeKind.Utc));
+            if (start < from && play.EndUtc >= from.UtcDateTime)
+            {
+                gaps.Add(new IoSummaryWindow((long)(start - from).TotalMicroseconds, 0));
+            }
+        }
+
+        ct.ThrowIfCancellationRequested();
+        run.PlayInfo = new IoSummaryPlay(DiskOnly: true, run.Phases, gaps);
+    }
+
+    /// 게임의 가장 최근 플레이에서 로딩이었던 구간 (로딩 판정이 쌓은 값, 서비스를 조립하는 쪽이 채움): 디스크 전용 요약에 구간 경계로 들어갑니다. 없으면 구간 없이 남김.
+    public Func<string, IReadOnlyList<(DateTimeOffset Start, DateTimeOffset End)>>? LoadPhasesOf { get; set; }
 
     // 서비스가 스스로 읽은 구간 (시작 스트림·예열) 을 디스크 읽기 집계에서 빼기 위한 표: 게임이 같은 시간대에 같은 구간을 읽었으면 남깁니다.
     private static SelfReadFilter OwnReadFilter(IoRequestSnapshot requests, IEnumerable<TraceRecord> records, CancellationToken ct) =>
@@ -1762,6 +1995,12 @@ public sealed class AutoTracer
             return;
         }
 
+        if (run.SummaryOnly)
+        {
+            SavePlaySummaryLocked(run, summary);
+            return;
+        }
+
         try
         {
             string raw = RawTracePath(run.Game);
@@ -1784,6 +2023,30 @@ public sealed class AutoTracer
         RebuildLoadRefill(run.Game);
         RebuildUnbufferedFiles(run.Game);
         RebuildRanked(run.Game);
+    }
+
+    // 디스크 전용 요약의 저장: 취소 토큰 (서비스 종료·게임 시작·시간 제한) 을 먼저 만든 뒤 슬롯 쓰기와 순위 점수 갱신을 모두 그 안에서 합니다.
+    // 순위 목록의 경기 가중 점수에만 쓰이므로 로드 목록·캐시 없이 읽는 파일 목록도, 순위의 블록과 파일 세대도 다시 만들지 않습니다. 취소되면 요약은 남기지 않고 (순위 파일은 그대로) 로그만 남깁니다.
+    private void SavePlaySummaryLocked(Run run, IoSummary summary)
+    {
+        CancellationTokenSource scan = BeginScan();
+        try
+        {
+            IoSummaryStore.WritePlayDisk(RawTracePath(run.Game), summary, scan.Token); // 읽기 방식이 담긴 단독 집계의 슬롯과 따로: 열두 번째 뒤에는 가장 오래된 디스크 전용 슬롯만 덮음
+            RescoreRanked(run.Game, scan.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            _log.Info($"{run.Game.Name}: play summary not saved (service stop, game start or time budget)");
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"{run.Game.Name}: I/O summary not saved ({e.GetType().Name})");
+        }
+        finally
+        {
+            EndScan(scan);
+        }
     }
 
     /// 미룬 I/O 집계의 상한: 게임당 가장 최근 플레이 하나. 다른 게임이 오래 떠 있는 동안 플레이마다 원시 읽기 기록이 메모리에 쌓이지 않게 하고, 더 새 플레이가 있으면 오래된 것을 버립니다 (그 크기 기록은 이미 남음).
@@ -2686,6 +2949,15 @@ public sealed class AutoTracer
         public bool IoSummaryEnabled { get; init; }
 
         public bool RawEnded { get; set; }
+
+        /// 원시 트레이스 없이 디스크 전용 요약만 남기는 플레이 (가벼운 세션). Preempted: 다른 게임의 원시 트레이스에 세션을 내줘 요약을 남기지 않음. PlayInfo: 플레이가 끝날 때 확보한 구간 경계.
+        public bool SummaryOnly { get; init; }
+
+        public bool Preempted { get; set; }
+
+        public IoSummaryPlay? PlayInfo { get; set; }
+
+        public IReadOnlyList<IoSummaryWindow>? Phases { get; set; }
 
         public string? RawWhy { get; set; }
 

@@ -118,8 +118,20 @@ public sealed class ServiceReadRecordTests
     {
         string line = GameDispatcher.StreamReadsLine("g", ServiceReadPath.StageStream, 4, 250 * Mib, 240 * Mib, 6 * Mib, 122.4, 120.0, new DiskTally(113, 113, 100, 4000));
 
-        Assert.Equal("g: stage stream reads: 4 batches, requested 250.0 MiB, accepted 240.0 MiB, sparse buffered 6.0 MiB in 122.4 s, low I/O priority 120.0 s; disk queue present in 100% of 113 samples, mean read latency 40.0 ms", line);
+        Assert.Equal("g: stage stream reads: 4 batches, requested 250.0 MiB, accepted 240.0 MiB, sparse buffered 6.0 MiB in 122.4 s, low I/O priority 120.0 s; disk queue present in 100% of 113 samples, mean read latency 40.0 ms; memory headroom held 0 batches 0.0 s, min none", line);
         Assert.StartsWith("g: start stream reads: ", GameDispatcher.StreamReadsLine("g", ServiceReadPath.StartStream, 0, 0, 0, 0, 0, 0, default), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheStreamEndLineAddsTheHeldBatchesAndTheMinimumHeadroom()
+    {
+        var headroom = new StreamHeadroom(() => new MemoryLists(500 * Mib, 0), () => 0);
+        Assert.True(headroom.Short(300 * Mib)); // 500 < 300 + 256: 내지 못함
+        headroom.NoteHeld(2.5);
+
+        string line = GameDispatcher.StreamReadsLine("g", ServiceReadPath.StartStream, 0, 0, 0, 0, 0, 0, default, headroom);
+
+        Assert.EndsWith("; disk samples none; memory headroom held 1 batches 2.5 s, min 500 MiB", line, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -138,7 +150,7 @@ public sealed class ServiceReadRecordTests
         ServiceReadCounts counts = board.ServiceReads.CountsOf("game");
         Assert.Equal((192 * Mib, 192 * Mib, 0L, 4 * Mib), (counts.Requested(ServiceReadPath.StartStream), counts.Accepted(ServiceReadPath.StartStream), counts.Requested(ServiceReadPath.StageStream), counts.Disk(ServiceReadPath.StartStream)));
         Assert.Equal(0, board.ServiceReads.Total(game.OriginRoot)); // 로딩 판정이 빼는 드라이브 누계에는 들지 않음
-        Assert.Single(log.Lines, l => l.StartsWith("Info: game: start stream reads: 3 batches, requested 192.0 MiB, accepted 192.0 MiB, sparse buffered 4.0 MiB in ", StringComparison.Ordinal) && l.EndsWith("; disk samples none", StringComparison.Ordinal));
+        Assert.Single(log.Lines, l => l.StartsWith("Info: game: start stream reads: 3 batches, requested 192.0 MiB, accepted 192.0 MiB, sparse buffered 4.0 MiB in ", StringComparison.Ordinal) && l.Contains("; disk samples none; memory headroom held 0 batches 0.0 s, min ", StringComparison.Ordinal));
     }
 
     [Fact]

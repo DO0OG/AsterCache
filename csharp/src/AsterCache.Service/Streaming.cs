@@ -1252,6 +1252,9 @@ public sealed record DispatchEnv
     /// 가용 메모리 (MiB): 단계 스트림과 시작 스트림의 메모리 게이트. 기본은 게이트 없음.
     public Func<long> AvailableMib { get; init; } = () => long.MaxValue;
 
+    /// 메모리 목록 (여유 = 빈 + 0 으로 채운 + 대기 우선순위 0~4): 스트림이 묶음마다 여유를 봅니다 (StreamHeadroom). 기본은 여유 무한, null 은 조회 실패.
+    public Func<MemoryLists?> Lists { get; init; } = () => new MemoryLists(long.MaxValue, 0);
+
     /// 읽는 스레드의 I/O 우선순위를 낮춤 (true) 또는 보통으로 되돌림 (false), 바꾸지 못하면 false. 기본은 성공으로 칩니다.
     public Func<bool, bool> SetReadIoLow { get; init; } = _ => true;
 
@@ -1271,6 +1274,7 @@ public sealed record DispatchEnv
         OtherProcesses = (g, start) => RegisteredOthers(g, ProcessSnapshot.Take(), start.Pid),
         DiskBusy = g => DiskActivity.BusyUnlessBroken(PlanFile.SplitDrive(g.OriginRoot), keepStalled: true), // 표본이 없거나 낡으면 바쁨 (정체가 60 초를 넘어도 게임 보호는 유지), 카운터 고장은 기존대로 바쁘지 않음
         AvailableMib = SystemMemory.AvailableMib,
+        Lists = MemoryListInfo.Query,
         SetReadIoLow = low => ThreadIoPriority.TrySet(low ? IoPriority.Low : IoPriority.Normal),
     };
 

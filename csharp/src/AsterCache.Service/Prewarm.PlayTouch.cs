@@ -396,7 +396,7 @@ public sealed partial class Prewarmer
         {
             if (!(_last.ContainsKey(game.Name) || _warmAtServiceStart.Contains(game.Name) || _solar.HasMark(game.Name))) // 메모리에 둔 목록이 없음
             {
-                return null;
+                return ("no prewarm record", "no prewarm record of a list in memory"); // 호출한 쪽이 같은 사유가 이어지는 동안 한 줄만 남김
             }
         }
 
